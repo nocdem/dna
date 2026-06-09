@@ -12,6 +12,22 @@ publish = false
 [dependencies]
 p3-field = { git = "https://github.com/Plonky3/Plonky3", rev = "82cfad73cd734d37a0d51953094f970c531817ec" }
 p3-goldilocks = { git = "https://github.com/Plonky3/Plonky3", rev = "82cfad73cd734d37a0d51953094f970c531817ec" }
+p3-air = { git = "https://github.com/Plonky3/Plonky3", rev = "82cfad73cd734d37a0d51953094f970c531817ec" }
+p3-dft = { git = "https://github.com/Plonky3/Plonky3", rev = "82cfad73cd734d37a0d51953094f970c531817ec" }
+p3-util = { git = "https://github.com/Plonky3/Plonky3", rev = "82cfad73cd734d37a0d51953094f970c531817ec" }
+p3-fri = { git = "https://github.com/Plonky3/Plonky3", rev = "82cfad73cd734d37a0d51953094f970c531817ec" }
+p3-matrix = { git = "https://github.com/Plonky3/Plonky3", rev = "82cfad73cd734d37a0d51953094f970c531817ec" }
+# Direct deps added in Phase T1 (transcript oracle). Already transitively
+# pulled via p3-fri; declared here to be importable. Same commit pin.
+p3-challenger = { git = "https://github.com/Plonky3/Plonky3", rev = "82cfad73cd734d37a0d51953094f970c531817ec" }
+p3-symmetric = { git = "https://github.com/Plonky3/Plonky3", rev = "82cfad73cd734d37a0d51953094f970c531817ec" }
+# Added Stage M1 (merkle/mmcs oracle, 2026-05-27). Same commit pin.
+p3-merkle-tree = { git = "https://github.com/Plonky3/Plonky3", rev = "82cfad73cd734d37a0d51953094f970c531817ec" }
+p3-commit = { git = "https://github.com/Plonky3/Plonky3", rev = "82cfad73cd734d37a0d51953094f970c531817ec" }
+# Added P2 (stark-priming oracle, 2026-05-30) — real p3_uni_stark::prove over a
+# vendored FibonacciAir. Same commit pin. Default features (no `parallel`); pow=0
+# in the FRI params keeps `prove` grind-free and byte-deterministic.
+p3-uni-stark = { git = "https://github.com/Plonky3/Plonky3", rev = "82cfad73cd734d37a0d51953094f970c531817ec" }
 
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

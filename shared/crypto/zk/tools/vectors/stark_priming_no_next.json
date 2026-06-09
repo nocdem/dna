@@ -1,0 +1,618 @@
+{
+  "air": "vendored SquareAir (uni-stark/tests/no_next_row.rs:16-49 @ 82cfad73)",
+  "challenges": {
+    "stark_alpha_fp2": {
+      "c0_decimal": "11024244236445398872",
+      "c1_decimal": "679859857360178741"
+    },
+    "zeta_fp2": {
+      "c0_decimal": "8076456785599664558",
+      "c1_decimal": "8577096543517711882"
+    },
+    "zeta_next_fp2": {
+      "c0_decimal": "6321493220239873367",
+      "c1_decimal": "2495096903251199992"
+    }
+  },
+  "commitment_with_opening_points_assembly": {
+    "note": "verifier.rs:403-458; non-ZK -> no random round; preprocessed_width==0 -> no preprocessed round; main_next=false -> trace round opens at the single point zeta (verifier.rs:420-428).",
+    "order": [
+      "trace",
+      "quotient_chunks"
+    ],
+    "quotient_chunks": {
+      "per_chunk_domain": "randomized_quotient_chunks_domains[i] = natural_domain_for_degree(chunk_size), shift=ONE (verifier.rs:314-317); split/disjoint domains are recompose-only and NOT used for openings",
+      "points": [
+        {
+          "evals": "chunk_i",
+          "point": "zeta"
+        }
+      ]
+    },
+    "trace": {
+      "domain": "trace_domain = natural_domain_for_degree(2^degree_bits), shift=ONE",
+      "points": [
+        {
+          "evals": "trace_local",
+          "point": "zeta"
+        }
+      ]
+    }
+  },
+  "commitments": {
+    "quotient_commit_root_hex": "2bdaafd1b96e7836aec7b8d366486d5a4b839bfa4e065191f851f789eb3c18362e8638a9aa36c9e511a3c80ba8bb4c62e89323786e8ae64c375ab4502e207a7e",
+    "quotient_commit_serde": {
+      "_marker": null,
+      "cap": [
+        [
+          3925008819619355179,
+          6515943842350942126,
+          10471157544894825291,
+          3897932459818832376,
+          16557825611615733294,
+          7083242644373545745,
+          5541268598592607208,
+          9113632179232201271
+        ]
+      ]
+    },
+    "trace_commit_root_hex": "219177c6081d824cd0cbedf6bec04cd16884a3ec92328f77afb5e5a67e0e5ecb917dfda93eeb1e0e6f12e5d583b482e6aa7e24c6341dbda1a4289d867718841d",
+    "trace_commit_serde": {
+      "_marker": null,
+      "cap": [
+        [
+          5513000817381576993,
+          15081641178576047056,
+          8615160218799801448,
+          14654166174638912943,
+          1017509220204772753,
+          16610036854018085487,
+          11654503523204497066,
+          2126851825664338084
+        ]
+      ]
+    }
+  },
+  "confirmations": {
+    "commitment_observe_path": "CanObserve<MerkleCap<Goldilocks,[u64;8]>> cap_height=0 (serializing_challenger.rs:313-318->301-311); validated by fri_milestone_cross_check_commitment_bytes",
+    "non_zk": true,
+    "opening_coordinate_z_verifier_derived": "zeta is SAMPLED from the transcript (verifier.rs:391), never wire-supplied; only eval vectors observed (two_adic_pcs.rs:689)",
+    "preprocessed_width": 0,
+    "quotient_opening_domain_shift": "ONE (natural_domain_for_degree(chunk_size)); recompose-only split/disjoint domains NOT used for openings",
+    "trace_next_coverage_note": "SquareAir does NOT read the next row (main_next=false) -> trace_next=None (asserted). This is the trace_next-absent path the FibonacciAir vector cannot reach.",
+    "trace_next_present": false,
+    "zeta_next_emitted_but_unused": "zeta_next is computed (verifier.rs:398 unconditional) and emitted in challenges so the C priming/gen can cross-check the derived value, but it is NOT observed and NOT a trace opening point (verifier.rs:420-428 pushes it only when main_next)."
+  },
+  "dnac_stack": {
+    "challenge": "BinomialExtensionField<Goldilocks, 2> (fp2)",
+    "challenger": "SerializingChallenger64<Goldilocks, HashChallenger<u8, FriOracleSha3_512, 64>>",
+    "fri_mmcs": "ExtensionMmcs<Goldilocks, fp2, ValMmcs>",
+    "hash": "FIPS-202 SHA3-512",
+    "input_mmcs": "MerkleTreeMmcs<[Goldilocks;1], [u64;1], FieldHash, MyCompress, 2, 8>",
+    "is_zk": 0,
+    "pcs": "TwoAdicFriPcs (non-ZK)",
+    "val": "Goldilocks"
+  },
+  "format_version": "1",
+  "fri_params": {
+    "commit_proof_of_work_bits": 0,
+    "log_blowup": 2,
+    "log_final_poly_len": 2,
+    "max_log_arity": 1,
+    "num_queries": 2,
+    "query_proof_of_work_bits": 0
+  },
+  "grounding": {
+    "gate1_p3_uni_stark_verify": "Ok",
+    "gate2_p3_verify_fri_on_primed_challenger": "Ok",
+    "note": "commitments + opened_values are emitted by a REAL p3_uni_stark::prove of SquareAir (a*a==b), which never reads the next row -> trace_next=None (asserted). GATE 2 replays verifier.rs:360-391 + two_adic_pcs.rs:687-693 on a recording challenger with a SINGLE-point trace round (verifier.rs:420-428, main_next=false) and feeds it into p3_verify_fri; any priming desync rejects, so the captured seed is provably the real verify_fri-entry state. Shadow vs Plonky3 cross-checked at every sample."
+  },
+  "init_state_ascii": "DNAC|ZK|FRI|TRANSCRIPT|V1",
+  "init_state_hex": "444e41437c5a4b7c4652497c5452414e5343524950547c5631",
+  "instance": {
+    "base_degree_bits": 3,
+    "degree_bits": 3,
+    "num_quotient_chunks": 1,
+    "preprocessed_width": 0
+  },
+  "main_next": false,
+  "opened_values": {
+    "preprocessed": null,
+    "quotient_chunks": [
+      [
+        {
+          "c0_decimal": "14617346103406142180",
+          "c1_decimal": "12911846339293703690"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ]
+    ],
+    "trace_local": [
+      {
+        "c0_decimal": "4714042411552766321",
+        "c1_decimal": "2391942893232700263"
+      },
+      {
+        "c0_decimal": "16294291158063363142",
+        "c1_decimal": "18301742030300814194"
+      }
+    ],
+    "trace_next": null
+  },
+  "oracle": "real_p3_uni_stark_prove",
+  "plonky3_commit": "82cfad73cd734d37a0d51953094f970c531817ec",
+  "proof_serde": {
+    "commit_phase_commits": [
+      {
+        "_marker": null,
+        "cap": [
+          [
+            5664914983036329653,
+            14867423715156955032,
+            16488099905206185435,
+            1593034286808159451,
+            6889981264644179784,
+            6996970934125519256,
+            18126781324835736815,
+            11582471336694294618
+          ]
+        ]
+      }
+    ],
+    "commit_pow_witnesses": [
+      {
+        "value": 0
+      }
+    ],
+    "final_poly": [
+      {
+        "_phantom": null,
+        "value": [
+          {
+            "value": 3163555665601136829
+          },
+          {
+            "value": 5049863008409625060
+          }
+        ]
+      },
+      {
+        "_phantom": null,
+        "value": [
+          {
+            "value": 13366649530266407870
+          },
+          {
+            "value": 14242424853769433512
+          }
+        ]
+      },
+      {
+        "_phantom": null,
+        "value": [
+          {
+            "value": 12354445887042340690
+          },
+          {
+            "value": 14340303273143900744
+          }
+        ]
+      },
+      {
+        "_phantom": null,
+        "value": [
+          {
+            "value": 10062575854717374461
+          },
+          {
+            "value": 11077274526163247413
+          }
+        ]
+      }
+    ],
+    "query_pow_witness": {
+      "value": 0
+    },
+    "query_proofs": [
+      {
+        "commit_phase_openings": [
+          {
+            "log_arity": 1,
+            "opening_proof": [
+              [
+                2473471712925139293,
+                8252953651174286098,
+                14388659902014649458,
+                12000845978302669784,
+                12161778912765980928,
+                12188512852005277999,
+                4492107958305585537,
+                6719412823941429056
+              ],
+              [
+                14215592126030061981,
+                17000783992447550737,
+                16546209350474595643,
+                11303339600821333045,
+                9561698870100954165,
+                15386907136865916315,
+                15471854238505559466,
+                1860844178870906853
+              ],
+              [
+                13010655263616234497,
+                9338146150168960627,
+                8500569480674046967,
+                16793148050470984851,
+                723509637122102920,
+                11944483574522761925,
+                7240591707225848096,
+                10409104108041503112
+              ],
+              [
+                7137397064214086466,
+                18327408829840597887,
+                13814023137146796123,
+                13802222091886180229,
+                11921728470346858474,
+                14292683295212146681,
+                11049954523809944090,
+                18016431115541667304
+              ]
+            ],
+            "sibling_values": [
+              {
+                "_phantom": null,
+                "value": [
+                  {
+                    "value": 5788946249116212647
+                  },
+                  {
+                    "value": 1187752763654227861
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "input_proof": [
+          {
+            "opened_values": [
+              [
+                {
+                  "value": 17899739652807461757
+                },
+                {
+                  "value": 13863332550630304560
+                }
+              ]
+            ],
+            "opening_proof": [
+              [
+                7093641898326558328,
+                17548445597117374708,
+                4454674396169129429,
+                15500611105229370340,
+                11623556436097262931,
+                8876239028435134376,
+                516666931664240834,
+                13855948860151815280
+              ],
+              [
+                15497420873285612722,
+                14156845513392366431,
+                6280202207967604790,
+                5870865416924560751,
+                13550393277968392527,
+                14463363641011060754,
+                15150393538423477428,
+                1544419607426792329
+              ],
+              [
+                17562261055291132579,
+                18379301195408086856,
+                3236629456531255153,
+                4434667756110015770,
+                14952520457357708887,
+                4001030479077778906,
+                1824551462094894518,
+                6504639152573339604
+              ],
+              [
+                14646506921480151094,
+                494857401966503492,
+                18399182489013951530,
+                2166404644920055274,
+                3500518866489259729,
+                7549560040861333010,
+                4657547917200537729,
+                7613585780745973900
+              ],
+              [
+                3953388642750302985,
+                8435078198866258780,
+                5178058160520944223,
+                15960886102222676236,
+                13626308045045020615,
+                17643656023039076172,
+                12789904599390173666,
+                6383125583926250590
+              ]
+            ]
+          },
+          {
+            "opened_values": [
+              [
+                {
+                  "value": 7703239995948512378
+                },
+                {
+                  "value": 0
+                }
+              ]
+            ],
+            "opening_proof": [
+              [
+                11785601434015708141,
+                1587335246170278930,
+                3625599802092202531,
+                11234459911120377423,
+                710740106198913359,
+                7004505495212371153,
+                9339592977908137534,
+                8008770386585064070
+              ],
+              [
+                14456108849836469066,
+                2025538723334684503,
+                10117275605552586935,
+                513374826552307569,
+                3287473998257529689,
+                16351397831526090478,
+                3916719074640749176,
+                17355928873621604988
+              ],
+              [
+                3114513815761481950,
+                10559029230291954378,
+                14135217121232054407,
+                16885318142604625555,
+                959725966684583133,
+                9278633364292539017,
+                2852662851430525983,
+                7183237928259824344
+              ],
+              [
+                476223401227719411,
+                18132031207793486042,
+                2105437247022219044,
+                16647292977060917273,
+                14398445585891153752,
+                3693494519574755391,
+                6437090762016248543,
+                11538138938019520578
+              ],
+              [
+                1973218376291661639,
+                2537694959854193628,
+                15197231457697462470,
+                9029102053648588417,
+                12261229437134308514,
+                7739538007596468885,
+                16412924768259312212,
+                15474110309418033137
+              ]
+            ]
+          }
+        ]
+      },
+      {
+        "commit_phase_openings": [
+          {
+            "log_arity": 1,
+            "opening_proof": [
+              [
+                12770856903227972154,
+                9842776306902942663,
+                18303892967471768042,
+                860356634771588729,
+                657163446839854675,
+                5930881823601024212,
+                15979592936473389326,
+                7969771990840792714
+              ],
+              [
+                9411736883567990025,
+                13745973052411523958,
+                4727492919723327550,
+                9812087732134766323,
+                9371827070354047379,
+                1652782540407666498,
+                14877020303154184600,
+                7302410667984886869
+              ],
+              [
+                8267167663932779801,
+                14150452338039822453,
+                12653973793058637355,
+                2293634682605083884,
+                13979008646411174133,
+                655609655079895526,
+                15313495248394715657,
+                10097023381951539717
+              ],
+              [
+                9865733557523546036,
+                5103227286640831100,
+                17938600403440608242,
+                10639227056098734507,
+                5159040651693126225,
+                5917422420582147996,
+                12814633018325050421,
+                14092212525381638299
+              ]
+            ],
+            "sibling_values": [
+              {
+                "_phantom": null,
+                "value": [
+                  {
+                    "value": 6702885401493478693
+                  },
+                  {
+                    "value": 14454905232990789995
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "input_proof": [
+          {
+            "opened_values": [
+              [
+                {
+                  "value": 17669043876794202429
+                },
+                {
+                  "value": 5883850783648345527
+                }
+              ]
+            ],
+            "opening_proof": [
+              [
+                662932938769562449,
+                2981712806367667082,
+                16622591018721501802,
+                6181803654287170003,
+                235844037972407009,
+                8648290558600373291,
+                5383369503079336559,
+                9999087048179303915
+              ],
+              [
+                18197511329459675750,
+                1575265655237951652,
+                10117329283762441921,
+                3687382875270600383,
+                13223615984286859299,
+                1042358371876649402,
+                11930363970313656896,
+                10412076562962314463
+              ],
+              [
+                5003006259106429110,
+                13944798649066728015,
+                7036783795406452665,
+                17376628224442378505,
+                18446249237345657563,
+                12821531378833283689,
+                10056352285937928351,
+                16846003269214220574
+              ],
+              [
+                13575856453683346087,
+                4441285664348463915,
+                3072334346425242575,
+                11348633382335172864,
+                7180049952994200666,
+                4542437303688590612,
+                578776634344637854,
+                469714232269813432
+              ],
+              [
+                8162989894967777521,
+                11413556333075858575,
+                2358120228355535241,
+                18038250263718329095,
+                12944766241071058164,
+                1139928782625769328,
+                11028661398827489519,
+                2231228521360423678
+              ]
+            ]
+          },
+          {
+            "opened_values": [
+              [
+                {
+                  "value": 8858674846596353567
+                },
+                {
+                  "value": 0
+                }
+              ]
+            ],
+            "opening_proof": [
+              [
+                10404989362896762907,
+                14629352320980369907,
+                5853067326939777033,
+                13816370423584020834,
+                11992069470411909699,
+                11292533814007945959,
+                8035749305106640816,
+                12374521616350995753
+              ],
+              [
+                7661516372262514446,
+                1735835463026590709,
+                17134502073727332653,
+                10636049345289481358,
+                14300556778468123304,
+                8805096998770171689,
+                9143048931339073395,
+                2113860094756714137
+              ],
+              [
+                13939784345385524239,
+                3979373959491179581,
+                1672098917372726612,
+                11694703917354468272,
+                11507768798662323953,
+                8150949973254118979,
+                15459880610211635589,
+                10925266238351690072
+              ],
+              [
+                9299883301761857754,
+                15545666202560459152,
+                6763965002037617033,
+                5349553548426740175,
+                1494414946180391382,
+                973776692447537344,
+                6466280357606647962,
+                2063740907018209946
+              ],
+              [
+                16870592484484189864,
+                1135649924396783486,
+                14770547839595733923,
+                241650294350111294,
+                4740288227079491409,
+                3831665290220396025,
+                14089879404057682085,
+                12950762570687683591
+              ]
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "proof_verification_result": "Ok",
+  "public_values": [],
+  "scope": "stark_priming",
+  "spec_doc": "docs/plans/2026-05-30-pcs-transcript-priming-design.md",
+  "synthetic_primary_oracle": false,
+  "transcript_snapshot_at_verify_fri_entry": {
+    "description": "Verifier challenger primed through verifier.rs:360-391 + two_adic_pcs.rs:687-693 (single-point trace round). Load via dnac_transcript_init(input_buf_hex). output_buf empty (last op was observe).",
+    "input_buf_hex": "9d4e5ebae0498fc439df58cd3a7a3ad0d9032998ecb13b77c72c81a9d6f1832a66ec29ce25f36dd2e3962fe359c427337707f7dce89a9e0a701556a7d57611ae7179bae498a46b4167bb276a63e3312146b427377af320e2729beae668d9fcfde4a276c4d53edbca0a6e07f0d51730b300000000000000000000000000000000",
+    "input_buf_len": 128,
+    "output_buf_remaining_hex": "",
+    "output_buf_remaining_len": 0
+  }
+}

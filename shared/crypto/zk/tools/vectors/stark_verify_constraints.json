@@ -1,0 +1,220 @@
+{
+  "air": "vendored FibonacciAir (uni-stark/tests/fib_air.rs:24-116 @ 82cfad73)",
+  "alpha": {
+    "c0_decimal": "2669004778087695591",
+    "c1_decimal": "3404251838242820393"
+  },
+  "base_degree_bits": 3,
+  "degree_bits": 3,
+  "final_equal": true,
+  "final_lhs": {
+    "c0_decimal": "14223975735859867290",
+    "c1_decimal": "13968586914948292768"
+  },
+  "final_rhs": {
+    "c0_decimal": "14223975735859867290",
+    "c1_decimal": "13968586914948292768"
+  },
+  "folded_constraints": {
+    "c0_decimal": "1761591039352587527",
+    "c1_decimal": "4818272855272106982"
+  },
+  "format_version": "1",
+  "grounding": {
+    "gate1_p3_uni_stark_verify": "Ok",
+    "gate2_pub_verify_constraints": "Ok",
+    "gate3_recompose_quotient_from_chunks": "matches quotient_zeta",
+    "gate4_folded_times_inv_vanishing_eq_quotient": true,
+    "gate5_per_constraint_selector_times_raw_eq_real_received": true,
+    "note": "Ground truth from Plonky3 verifier-side PUB fns only: verify_constraints (verifier.rs:103) + recompose_quotient_from_chunks (verifier.rs:59). The per-constraint fold trace is from a RecordingFolder mirroring VerifierConstraintFolder (folder.rs:215-218, acc=acc*alpha+x) running the REAL Air::eval; folded validated == the real verify_constraints folder accumulator via GATE2 ∧ GATE4; each raw cross-checked selector*raw == real received (GATE5). NOT ProverConstraintFolder; NOT synthetic."
+  },
+  "main_next": true,
+  "main_width": 2,
+  "num_public_values": 3,
+  "num_quotient_chunks": 1,
+  "oracle": "real_p3_uni_stark_verify_constraints",
+  "per_constraint_fold_trace": [
+    {
+      "accumulator_after": {
+        "c0_decimal": "7700230480125503425",
+        "c1_decimal": "15246812695976107251"
+      },
+      "accumulator_before": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      },
+      "constraint_index": 0,
+      "constraint_name": "first_row: trace[0] == public[0] (a)",
+      "raw_constraint_value": {
+        "c0_decimal": "7479478389453476305",
+        "c1_decimal": "2391680840544531035"
+      },
+      "selector": "is_first_row",
+      "selector_applied_value": {
+        "c0_decimal": "7700230480125503425",
+        "c1_decimal": "15246812695976107251"
+      }
+    },
+    {
+      "accumulator_after": {
+        "c0_decimal": "551569493006396948",
+        "c1_decimal": "13431937181673647267"
+      },
+      "accumulator_before": {
+        "c0_decimal": "7700230480125503425",
+        "c1_decimal": "15246812695976107251"
+      },
+      "constraint_index": 1,
+      "constraint_name": "first_row: trace[1] == public[1] (b)",
+      "raw_constraint_value": {
+        "c0_decimal": "13377283146847718425",
+        "c1_decimal": "10358323083976186478"
+      },
+      "selector": "is_first_row",
+      "selector_applied_value": {
+        "c0_decimal": "4896899249803258826",
+        "c1_decimal": "13398037566768464040"
+      }
+    },
+    {
+      "accumulator_after": {
+        "c0_decimal": "13405140922491788766",
+        "c1_decimal": "547809524842255942"
+      },
+      "accumulator_before": {
+        "c0_decimal": "551569493006396948",
+        "c1_decimal": "13431937181673647267"
+      },
+      "constraint_index": 2,
+      "constraint_name": "transition: trace[1] == next[0]",
+      "raw_constraint_value": {
+        "c0_decimal": "9180987711280964054",
+        "c1_decimal": "5766300030412530128"
+      },
+      "selector": "is_transition",
+      "selector_applied_value": {
+        "c0_decimal": "7507449110877045502",
+        "c1_decimal": "9155915529413152514"
+      }
+    },
+    {
+      "accumulator_after": {
+        "c0_decimal": "5285400493562936064",
+        "c1_decimal": "17757417853542807194"
+      },
+      "accumulator_before": {
+        "c0_decimal": "13405140922491788766",
+        "c1_decimal": "547809524842255942"
+      },
+      "constraint_index": 3,
+      "constraint_name": "transition: trace[0]+trace[1] == next[1]",
+      "raw_constraint_value": {
+        "c0_decimal": "14427266403441514942",
+        "c1_decimal": "11696577771993202247"
+      },
+      "selector": "is_transition",
+      "selector_applied_value": {
+        "c0_decimal": "17067918336925238452",
+        "c1_decimal": "14387867260506382522"
+      }
+    },
+    {
+      "accumulator_after": {
+        "c0_decimal": "1761591039352587527",
+        "c1_decimal": "4818272855272106982"
+      },
+      "accumulator_before": {
+        "c0_decimal": "5285400493562936064",
+        "c1_decimal": "17757417853542807194"
+      },
+      "constraint_index": 4,
+      "constraint_name": "last_row: trace[1] == public[2] (x)",
+      "raw_constraint_value": {
+        "c0_decimal": "13377283146847718405",
+        "c1_decimal": "10358323083976186478"
+      },
+      "selector": "is_last_row",
+      "selector_applied_value": {
+        "c0_decimal": "2428095777527838798",
+        "c1_decimal": "15684336060667431485"
+      }
+    }
+  ],
+  "plonky3_commit": "82cfad73cd734d37a0d51953094f970c531817ec",
+  "proof_verification_result": "Ok",
+  "public_values": [
+    "0",
+    "1",
+    "21"
+  ],
+  "quotient_chunks": [
+    [
+      {
+        "c0_decimal": "14075091197101057702",
+        "c1_decimal": "15524007017068409575"
+      },
+      {
+        "c0_decimal": "16891323967294467514",
+        "c1_decimal": "21269219822687084"
+      }
+    ]
+  ],
+  "quotient_recompose_mode": "one_chunk_ch0_plus_ch1_X",
+  "quotient_zeta": {
+    "c0_decimal": "14223975735859867290",
+    "c1_decimal": "13968586914948292768"
+  },
+  "scope": "stark_verify_constraints",
+  "selectors": {
+    "inv_vanishing": {
+      "c0_decimal": "12677883248284905273",
+      "c1_decimal": "14186979040832564571"
+    },
+    "is_first_row": {
+      "c0_decimal": "17649086188723030458",
+      "c1_decimal": "4667912963782051436"
+    },
+    "is_last_row": {
+      "c0_decimal": "3988737367880709210",
+      "c1_decimal": "16143786956205514169"
+    },
+    "is_transition": {
+      "c0_decimal": "10961781634017309989",
+      "c1_decimal": "14946960476403185344"
+    },
+    "z_h": {
+      "c0_decimal": "10950252083874919358",
+      "c1_decimal": "1469973052016759403"
+    }
+  },
+  "spec_doc": "docs/plans/2026-05-30-stark-constraint-check-implementation-design.md",
+  "synthetic_primary_oracle": false,
+  "trace_local": [
+    {
+      "c0_decimal": "7479478389453476305",
+      "c1_decimal": "2391680840544531035"
+    },
+    {
+      "c0_decimal": "13377283146847718426",
+      "c1_decimal": "10358323083976186478"
+    }
+  ],
+  "trace_next": [
+    {
+      "c0_decimal": "4196295435566754372",
+      "c1_decimal": "4592023053563656350"
+    },
+    {
+      "c0_decimal": "6429495132859679789",
+      "c1_decimal": "1053426152527515266"
+    }
+  ],
+  "zeta": {
+    "c0_decimal": "10961782733528937509",
+    "c1_decimal": "14946960476403185344"
+  },
+  "zeta_next": {
+    "c0_decimal": "12535452043832729620",
+    "c1_decimal": "11730963349109698118"
+  }
+}

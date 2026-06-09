@@ -1,0 +1,6230 @@
+{
+  "case_count_d7_trap": 1,
+  "case_count_deterministic_sweep": 168,
+  "case_count_total": 173,
+  "case_count_v6_corrupted": 2,
+  "case_count_v6_honest": 2,
+  "cases": [
+    {
+      "category": "v6_honest",
+      "domain_index": 3,
+      "eval_fp2": {
+        "c0_decimal": "1177090699887663533",
+        "c1_decimal": "15646686859640359525"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1177090699887663533",
+          "c1_decimal": "15646686859640359525"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1177090699887663533",
+          "c1_decimal": "15646686859640359525"
+        }
+      ],
+      "log_global_max_height": 4,
+      "name": "v6_honest_query_0",
+      "notes": "V6 final_poly has length 1 (log_final_poly_len=0) so Horner eval = final_poly[0] independent of x. Plonky3 verify_fri returned Ok(()) on V6 ⇒ this eval equals the folded_eval the verifier carries out of verify_query (folded_eval is not exposed by the public API and is not emitted here).",
+      "reverse_bits_len_result": 12,
+      "verify_fri_acceptance_implies_eval_equals_folded_eval": true,
+      "x_decimal": "18446462594437873665"
+    },
+    {
+      "category": "v6_honest",
+      "domain_index": 12,
+      "eval_fp2": {
+        "c0_decimal": "1177090699887663533",
+        "c1_decimal": "15646686859640359525"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1177090699887663533",
+          "c1_decimal": "15646686859640359525"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1177090699887663533",
+          "c1_decimal": "15646686859640359525"
+        }
+      ],
+      "log_global_max_height": 4,
+      "name": "v6_honest_query_1",
+      "notes": "V6 final_poly has length 1 (log_final_poly_len=0) so Horner eval = final_poly[0] independent of x. Plonky3 verify_fri returned Ok(()) on V6 ⇒ this eval equals the folded_eval the verifier carries out of verify_query (folded_eval is not exposed by the public API and is not emitted here).",
+      "reverse_bits_len_result": 3,
+      "verify_fri_acceptance_implies_eval_equals_folded_eval": true,
+      "x_decimal": "4503599626321920"
+    },
+    {
+      "category": "v6_corrupted_final_poly_0",
+      "corrupted_eval_fp2": {
+        "c0_decimal": "1177090699887663534",
+        "c1_decimal": "15646686859640359525"
+      },
+      "domain_index": 3,
+      "eval_differs": true,
+      "eval_fp2": {
+        "c0_decimal": "1177090699887663534",
+        "c1_decimal": "15646686859640359525"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1177090699887663534",
+          "c1_decimal": "15646686859640359525"
+        }
+      ],
+      "final_poly_len": 1,
+      "honest_eval_fp2": {
+        "c0_decimal": "1177090699887663533",
+        "c1_decimal": "15646686859640359525"
+      },
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1177090699887663534",
+          "c1_decimal": "15646686859640359525"
+        }
+      ],
+      "log_global_max_height": 4,
+      "name": "v6_corrupted_final_poly_0_query_0",
+      "notes": "F1.1 FinalPolyMismatch mirror: V6 final_poly with [0] += GoldFp2::ONE. Plonky3 test at verifier.rs:1569 acknowledges this error cannot be reached via verify_fri (transcript desync occurs first); the C verifier MUST still implement the comparison as defense in depth (design § 8 G5).",
+      "reverse_bits_len_result": 12,
+      "x_decimal": "18446462594437873665"
+    },
+    {
+      "category": "v6_corrupted_final_poly_0",
+      "corrupted_eval_fp2": {
+        "c0_decimal": "1177090699887663534",
+        "c1_decimal": "15646686859640359525"
+      },
+      "domain_index": 12,
+      "eval_differs": true,
+      "eval_fp2": {
+        "c0_decimal": "1177090699887663534",
+        "c1_decimal": "15646686859640359525"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1177090699887663534",
+          "c1_decimal": "15646686859640359525"
+        }
+      ],
+      "final_poly_len": 1,
+      "honest_eval_fp2": {
+        "c0_decimal": "1177090699887663533",
+        "c1_decimal": "15646686859640359525"
+      },
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1177090699887663534",
+          "c1_decimal": "15646686859640359525"
+        }
+      ],
+      "log_global_max_height": 4,
+      "name": "v6_corrupted_final_poly_0_query_1",
+      "notes": "F1.1 FinalPolyMismatch mirror: V6 final_poly with [0] += GoldFp2::ONE. Plonky3 test at verifier.rs:1569 acknowledges this error cannot be reached via verify_fri (transcript desync occurs first); the C verifier MUST still implement the comparison as defense in depth (design § 8 G5).",
+      "reverse_bits_len_result": 3,
+      "x_decimal": "4503599626321920"
+    },
+    {
+      "category": "d7_trap_synthetic",
+      "domain_index": 5,
+      "eval_correct_fp2": {
+        "c0_decimal": "1984618538464001",
+        "c1_decimal": "3114916525371138"
+      },
+      "eval_differs": true,
+      "eval_wrong_fp2": {
+        "c0_decimal": "18446744069414584313",
+        "c1_decimal": "18446744069414584312"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "2"
+        },
+        {
+          "c0_decimal": "3",
+          "c1_decimal": "5"
+        },
+        {
+          "c0_decimal": "7",
+          "c1_decimal": "11"
+        },
+        {
+          "c0_decimal": "13",
+          "c1_decimal": "17"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_correct_fp2": [
+        {
+          "c0_decimal": "13",
+          "c1_decimal": "17"
+        },
+        {
+          "c0_decimal": "218103815",
+          "c1_decimal": "285212683"
+        },
+        {
+          "c0_decimal": "3659174814679043",
+          "c1_decimal": "4785074788630533"
+        },
+        {
+          "c0_decimal": "1984618538464001",
+          "c1_decimal": "3114916525371138"
+        }
+      ],
+      "log_final_height": 1,
+      "log_global_max_height": 4,
+      "name": "trap_log_global_max_height_vs_log_final_height",
+      "notes": "Design doc § M1 D7: x MUST be computed from log_global_max_height, not log_final_height. Off-by-one is silent chain-split-grade non-determinism. V6 cannot demonstrate this (poly_len=1 ⇒ eval is constant); this synthetic poly_len=4 case proves x_correct ≠ x_wrong AND eval_correct ≠ eval_wrong on identical (domain_index, final_poly) inputs.",
+      "reverse_bits_len_with_log_final_height": 1,
+      "reverse_bits_len_with_log_global_max_height": 10,
+      "x_correct_decimal": "16777216",
+      "x_differs": true,
+      "x_wrong_decimal": "18446744069414584320"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 0,
+      "eval_fp2": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 1,
+      "name": "sweep_log_h1_polylen1_idx0_pat_zero",
+      "reverse_bits_len_result": 0,
+      "x_decimal": "1"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 0,
+      "eval_fp2": {
+        "c0_decimal": "1",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 1,
+      "name": "sweep_log_h1_polylen1_idx0_pat_one",
+      "reverse_bits_len_result": 0,
+      "x_decimal": "1"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 0,
+      "eval_fp2": {
+        "c0_decimal": "1",
+        "c1_decimal": "3"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        }
+      ],
+      "log_global_max_height": 1,
+      "name": "sweep_log_h1_polylen1_idx0_pat_sequence",
+      "reverse_bits_len_result": 0,
+      "x_decimal": "1"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 0,
+      "eval_fp2": {
+        "c0_decimal": "3064231679516732793",
+        "c1_decimal": "4485377240496638165"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "3064231679516732793",
+          "c1_decimal": "4485377240496638165"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "3064231679516732793",
+          "c1_decimal": "4485377240496638165"
+        }
+      ],
+      "log_global_max_height": 1,
+      "name": "sweep_log_h1_polylen1_idx0_pat_lcg_random",
+      "reverse_bits_len_result": 0,
+      "x_decimal": "1"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 0,
+      "eval_fp2": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 1,
+      "name": "sweep_log_h1_polylen2_idx0_pat_zero",
+      "reverse_bits_len_result": 0,
+      "x_decimal": "1"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 0,
+      "eval_fp2": {
+        "c0_decimal": "2",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "2",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 1,
+      "name": "sweep_log_h1_polylen2_idx0_pat_one",
+      "reverse_bits_len_result": 0,
+      "x_decimal": "1"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 0,
+      "eval_fp2": {
+        "c0_decimal": "3",
+        "c1_decimal": "9"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        },
+        {
+          "c0_decimal": "2",
+          "c1_decimal": "6"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "2",
+          "c1_decimal": "6"
+        },
+        {
+          "c0_decimal": "3",
+          "c1_decimal": "9"
+        }
+      ],
+      "log_global_max_height": 1,
+      "name": "sweep_log_h1_polylen2_idx0_pat_sequence",
+      "reverse_bits_len_result": 0,
+      "x_decimal": "1"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 0,
+      "eval_fp2": {
+        "c0_decimal": "12103144553372605916",
+        "c1_decimal": "14945435675332416660"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "17024833178217373490",
+          "c1_decimal": "18445978739197278862"
+        },
+        {
+          "c0_decimal": "13525055444569816747",
+          "c1_decimal": "14946201005549722119"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "13525055444569816747",
+          "c1_decimal": "14946201005549722119"
+        },
+        {
+          "c0_decimal": "12103144553372605916",
+          "c1_decimal": "14945435675332416660"
+        }
+      ],
+      "log_global_max_height": 1,
+      "name": "sweep_log_h1_polylen2_idx0_pat_lcg_random",
+      "reverse_bits_len_result": 0,
+      "x_decimal": "1"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 0,
+      "eval_fp2": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 1,
+      "name": "sweep_log_h1_polylen4_idx0_pat_zero",
+      "reverse_bits_len_result": 0,
+      "x_decimal": "1"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 0,
+      "eval_fp2": {
+        "c0_decimal": "4",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "2",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "3",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "4",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 1,
+      "name": "sweep_log_h1_polylen4_idx0_pat_one",
+      "reverse_bits_len_result": 0,
+      "x_decimal": "1"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 0,
+      "eval_fp2": {
+        "c0_decimal": "10",
+        "c1_decimal": "30"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        },
+        {
+          "c0_decimal": "2",
+          "c1_decimal": "6"
+        },
+        {
+          "c0_decimal": "3",
+          "c1_decimal": "9"
+        },
+        {
+          "c0_decimal": "4",
+          "c1_decimal": "12"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "4",
+          "c1_decimal": "12"
+        },
+        {
+          "c0_decimal": "7",
+          "c1_decimal": "21"
+        },
+        {
+          "c0_decimal": "9",
+          "c1_decimal": "27"
+        },
+        {
+          "c0_decimal": "10",
+          "c1_decimal": "30"
+        }
+      ],
+      "log_global_max_height": 1,
+      "name": "sweep_log_h1_polylen4_idx0_pat_sequence",
+      "reverse_bits_len_result": 0,
+      "x_decimal": "1"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 0,
+      "eval_fp2": {
+        "c0_decimal": "11211525715207833445",
+        "c1_decimal": "16896107959127454933"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "8052548028199551652",
+          "c1_decimal": "9473693589179457024"
+        },
+        {
+          "c0_decimal": "4552770294551994909",
+          "c1_decimal": "5973915855531900281"
+        },
+        {
+          "c0_decimal": "1052992560904438166",
+          "c1_decimal": "2474138121884343538"
+        },
+        {
+          "c0_decimal": "15999958900966433039",
+          "c1_decimal": "17421104461946338411"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "15999958900966433039",
+          "c1_decimal": "17421104461946338411"
+        },
+        {
+          "c0_decimal": "17052951461870871205",
+          "c1_decimal": "1448498514416097628"
+        },
+        {
+          "c0_decimal": "3158977687008281793",
+          "c1_decimal": "7422414369947997909"
+        },
+        {
+          "c0_decimal": "11211525715207833445",
+          "c1_decimal": "16896107959127454933"
+        }
+      ],
+      "log_global_max_height": 1,
+      "name": "sweep_log_h1_polylen4_idx0_pat_lcg_random",
+      "reverse_bits_len_result": 0,
+      "x_decimal": "1"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 1,
+      "eval_fp2": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 1,
+      "name": "sweep_log_h1_polylen1_idx1_pat_zero",
+      "reverse_bits_len_result": 1,
+      "x_decimal": "18446744069414584320"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 1,
+      "eval_fp2": {
+        "c0_decimal": "1",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 1,
+      "name": "sweep_log_h1_polylen1_idx1_pat_one",
+      "reverse_bits_len_result": 1,
+      "x_decimal": "18446744069414584320"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 1,
+      "eval_fp2": {
+        "c0_decimal": "1",
+        "c1_decimal": "3"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        }
+      ],
+      "log_global_max_height": 1,
+      "name": "sweep_log_h1_polylen1_idx1_pat_sequence",
+      "reverse_bits_len_result": 1,
+      "x_decimal": "18446744069414584320"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 1,
+      "eval_fp2": {
+        "c0_decimal": "3431482678364401017",
+        "c1_decimal": "4852628239344306389"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "3431482678364401017",
+          "c1_decimal": "4852628239344306389"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "3431482678364401017",
+          "c1_decimal": "4852628239344306389"
+        }
+      ],
+      "log_global_max_height": 1,
+      "name": "sweep_log_h1_polylen1_idx1_pat_lcg_random",
+      "reverse_bits_len_result": 1,
+      "x_decimal": "18446744069414584320"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 1,
+      "eval_fp2": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 1,
+      "name": "sweep_log_h1_polylen2_idx1_pat_zero",
+      "reverse_bits_len_result": 1,
+      "x_decimal": "18446744069414584320"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 1,
+      "eval_fp2": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 1,
+      "name": "sweep_log_h1_polylen2_idx1_pat_one",
+      "reverse_bits_len_result": 1,
+      "x_decimal": "18446744069414584320"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 1,
+      "eval_fp2": {
+        "c0_decimal": "18446744069414584320",
+        "c1_decimal": "18446744069414584318"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        },
+        {
+          "c0_decimal": "2",
+          "c1_decimal": "6"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "2",
+          "c1_decimal": "6"
+        },
+        {
+          "c0_decimal": "18446744069414584320",
+          "c1_decimal": "18446744069414584318"
+        }
+      ],
+      "log_global_max_height": 1,
+      "name": "sweep_log_h1_polylen2_idx1_pat_sequence",
+      "reverse_bits_len_result": 1,
+      "x_decimal": "18446744069414584320"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 1,
+      "eval_fp2": {
+        "c0_decimal": "3499777733647556743",
+        "c1_decimal": "3499777729352589448"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "17392084177065041714",
+          "c1_decimal": "366485664335395470"
+        },
+        {
+          "c0_decimal": "13892306443417484971",
+          "c1_decimal": "15313452004397390343"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "13892306443417484971",
+          "c1_decimal": "15313452004397390343"
+        },
+        {
+          "c0_decimal": "3499777733647556743",
+          "c1_decimal": "3499777729352589448"
+        }
+      ],
+      "log_global_max_height": 1,
+      "name": "sweep_log_h1_polylen2_idx1_pat_lcg_random",
+      "reverse_bits_len_result": 1,
+      "x_decimal": "18446744069414584320"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 1,
+      "eval_fp2": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 1,
+      "name": "sweep_log_h1_polylen4_idx1_pat_zero",
+      "reverse_bits_len_result": 1,
+      "x_decimal": "18446744069414584320"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 1,
+      "eval_fp2": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 1,
+      "name": "sweep_log_h1_polylen4_idx1_pat_one",
+      "reverse_bits_len_result": 1,
+      "x_decimal": "18446744069414584320"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 1,
+      "eval_fp2": {
+        "c0_decimal": "18446744069414584319",
+        "c1_decimal": "18446744069414584315"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        },
+        {
+          "c0_decimal": "2",
+          "c1_decimal": "6"
+        },
+        {
+          "c0_decimal": "3",
+          "c1_decimal": "9"
+        },
+        {
+          "c0_decimal": "4",
+          "c1_decimal": "12"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "4",
+          "c1_decimal": "12"
+        },
+        {
+          "c0_decimal": "18446744069414584320",
+          "c1_decimal": "18446744069414584318"
+        },
+        {
+          "c0_decimal": "3",
+          "c1_decimal": "9"
+        },
+        {
+          "c0_decimal": "18446744069414584319",
+          "c1_decimal": "18446744069414584315"
+        }
+      ],
+      "log_global_max_height": 1,
+      "name": "sweep_log_h1_polylen4_idx1_pat_sequence",
+      "reverse_bits_len_result": 1,
+      "x_decimal": "18446744069414584320"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 1,
+      "eval_fp2": {
+        "c0_decimal": "6999555463000146191",
+        "c1_decimal": "6999555463000146191"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "8419799027047219876",
+          "c1_decimal": "9840944588027125248"
+        },
+        {
+          "c0_decimal": "4920021293399663133",
+          "c1_decimal": "6341166854379568505"
+        },
+        {
+          "c0_decimal": "1420243559752106390",
+          "c1_decimal": "2841389120732011762"
+        },
+        {
+          "c0_decimal": "16367209899814101263",
+          "c1_decimal": "17788355460794006635"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "16367209899814101263",
+          "c1_decimal": "17788355460794006635"
+        },
+        {
+          "c0_decimal": "3499777729352589448",
+          "c1_decimal": "3499777729352589448"
+        },
+        {
+          "c0_decimal": "1420243564047073685",
+          "c1_decimal": "2841389125026979057"
+        },
+        {
+          "c0_decimal": "6999555463000146191",
+          "c1_decimal": "6999555463000146191"
+        }
+      ],
+      "log_global_max_height": 1,
+      "name": "sweep_log_h1_polylen4_idx1_pat_lcg_random",
+      "reverse_bits_len_result": 1,
+      "x_decimal": "18446744069414584320"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 0,
+      "eval_fp2": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 2,
+      "name": "sweep_log_h2_polylen1_idx0_pat_zero",
+      "reverse_bits_len_result": 0,
+      "x_decimal": "1"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 0,
+      "eval_fp2": {
+        "c0_decimal": "1",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 2,
+      "name": "sweep_log_h2_polylen1_idx0_pat_one",
+      "reverse_bits_len_result": 0,
+      "x_decimal": "1"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 0,
+      "eval_fp2": {
+        "c0_decimal": "1",
+        "c1_decimal": "3"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        }
+      ],
+      "log_global_max_height": 2,
+      "name": "sweep_log_h2_polylen1_idx0_pat_sequence",
+      "reverse_bits_len_result": 0,
+      "x_decimal": "1"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 0,
+      "eval_fp2": {
+        "c0_decimal": "16671420043046153593",
+        "c1_decimal": "18092565604026058965"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "16671420043046153593",
+          "c1_decimal": "18092565604026058965"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "16671420043046153593",
+          "c1_decimal": "18092565604026058965"
+        }
+      ],
+      "log_global_max_height": 2,
+      "name": "sweep_log_h2_polylen1_idx0_pat_lcg_random",
+      "reverse_bits_len_result": 0,
+      "x_decimal": "1"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 0,
+      "eval_fp2": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 2,
+      "name": "sweep_log_h2_polylen2_idx0_pat_zero",
+      "reverse_bits_len_result": 0,
+      "x_decimal": "1"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 0,
+      "eval_fp2": {
+        "c0_decimal": "2",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "2",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 2,
+      "name": "sweep_log_h2_polylen2_idx0_pat_one",
+      "reverse_bits_len_result": 0,
+      "x_decimal": "1"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 0,
+      "eval_fp2": {
+        "c0_decimal": "3",
+        "c1_decimal": "9"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        },
+        {
+          "c0_decimal": "2",
+          "c1_decimal": "6"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "2",
+          "c1_decimal": "6"
+        },
+        {
+          "c0_decimal": "3",
+          "c1_decimal": "9"
+        }
+      ],
+      "log_global_max_height": 2,
+      "name": "sweep_log_h2_polylen2_idx0_pat_sequence",
+      "reverse_bits_len_result": 0,
+      "x_decimal": "1"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 0,
+      "eval_fp2": {
+        "c0_decimal": "2424033133012344284",
+        "c1_decimal": "5266324254972155028"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "12185277468037242674",
+          "c1_decimal": "13606423029017148046"
+        },
+        {
+          "c0_decimal": "8685499734389685931",
+          "c1_decimal": "10106645295369591303"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "8685499734389685931",
+          "c1_decimal": "10106645295369591303"
+        },
+        {
+          "c0_decimal": "2424033133012344284",
+          "c1_decimal": "5266324254972155028"
+        }
+      ],
+      "log_global_max_height": 2,
+      "name": "sweep_log_h2_polylen2_idx0_pat_lcg_random",
+      "reverse_bits_len_result": 0,
+      "x_decimal": "1"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 0,
+      "eval_fp2": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 2,
+      "name": "sweep_log_h2_polylen4_idx0_pat_zero",
+      "reverse_bits_len_result": 0,
+      "x_decimal": "1"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 0,
+      "eval_fp2": {
+        "c0_decimal": "4",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "2",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "3",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "4",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 2,
+      "name": "sweep_log_h2_polylen4_idx0_pat_one",
+      "reverse_bits_len_result": 0,
+      "x_decimal": "1"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 0,
+      "eval_fp2": {
+        "c0_decimal": "10",
+        "c1_decimal": "30"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        },
+        {
+          "c0_decimal": "2",
+          "c1_decimal": "6"
+        },
+        {
+          "c0_decimal": "3",
+          "c1_decimal": "9"
+        },
+        {
+          "c0_decimal": "4",
+          "c1_decimal": "12"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "4",
+          "c1_decimal": "12"
+        },
+        {
+          "c0_decimal": "7",
+          "c1_decimal": "21"
+        },
+        {
+          "c0_decimal": "9",
+          "c1_decimal": "27"
+        },
+        {
+          "c0_decimal": "10",
+          "c1_decimal": "30"
+        }
+      ],
+      "log_global_max_height": 2,
+      "name": "sweep_log_h2_polylen4_idx0_pat_sequence",
+      "reverse_bits_len_result": 0,
+      "x_decimal": "1"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 0,
+      "eval_fp2": {
+        "c0_decimal": "10300046952491829092",
+        "c1_decimal": "15984629192116483285"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "3212992318019420836",
+          "c1_decimal": "4634137878999326208"
+        },
+        {
+          "c0_decimal": "18159958658081415709",
+          "c1_decimal": "1134360145351769465"
+        },
+        {
+          "c0_decimal": "14660180924433858966",
+          "c1_decimal": "16081326485413764338"
+        },
+        {
+          "c0_decimal": "11160403190786302223",
+          "c1_decimal": "12581548751766207595"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "11160403190786302223",
+          "c1_decimal": "12581548751766207595"
+        },
+        {
+          "c0_decimal": "7373840045805576868",
+          "c1_decimal": "10216131167765387612"
+        },
+        {
+          "c0_decimal": "7087054634472408256",
+          "c1_decimal": "11350491313117157077"
+        },
+        {
+          "c0_decimal": "10300046952491829092",
+          "c1_decimal": "15984629192116483285"
+        }
+      ],
+      "log_global_max_height": 2,
+      "name": "sweep_log_h2_polylen4_idx0_pat_lcg_random",
+      "reverse_bits_len_result": 0,
+      "x_decimal": "1"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 1,
+      "eval_fp2": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 2,
+      "name": "sweep_log_h2_polylen1_idx1_pat_zero",
+      "reverse_bits_len_result": 2,
+      "x_decimal": "18446744069414584320"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 1,
+      "eval_fp2": {
+        "c0_decimal": "1",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 2,
+      "name": "sweep_log_h2_polylen1_idx1_pat_one",
+      "reverse_bits_len_result": 2,
+      "x_decimal": "18446744069414584320"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 1,
+      "eval_fp2": {
+        "c0_decimal": "1",
+        "c1_decimal": "3"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        }
+      ],
+      "log_global_max_height": 2,
+      "name": "sweep_log_h2_polylen1_idx1_pat_sequence",
+      "reverse_bits_len_result": 2,
+      "x_decimal": "18446744069414584320"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 1,
+      "eval_fp2": {
+        "c0_decimal": "17038671041893821817",
+        "c1_decimal": "13072529164175573"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "17038671041893821817",
+          "c1_decimal": "13072529164175573"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "17038671041893821817",
+          "c1_decimal": "13072529164175573"
+        }
+      ],
+      "log_global_max_height": 2,
+      "name": "sweep_log_h2_polylen1_idx1_pat_lcg_random",
+      "reverse_bits_len_result": 2,
+      "x_decimal": "18446744069414584320"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 1,
+      "eval_fp2": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 2,
+      "name": "sweep_log_h2_polylen2_idx1_pat_zero",
+      "reverse_bits_len_result": 2,
+      "x_decimal": "18446744069414584320"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 1,
+      "eval_fp2": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 2,
+      "name": "sweep_log_h2_polylen2_idx1_pat_one",
+      "reverse_bits_len_result": 2,
+      "x_decimal": "18446744069414584320"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 1,
+      "eval_fp2": {
+        "c0_decimal": "18446744069414584320",
+        "c1_decimal": "18446744069414584318"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        },
+        {
+          "c0_decimal": "2",
+          "c1_decimal": "6"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "2",
+          "c1_decimal": "6"
+        },
+        {
+          "c0_decimal": "18446744069414584320",
+          "c1_decimal": "18446744069414584318"
+        }
+      ],
+      "log_global_max_height": 2,
+      "name": "sweep_log_h2_polylen2_idx1_pat_sequence",
+      "reverse_bits_len_result": 2,
+      "x_decimal": "18446744069414584320"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 1,
+      "eval_fp2": {
+        "c0_decimal": "3499777733647556743",
+        "c1_decimal": "3499777733647556743"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "12552528466884910898",
+          "c1_decimal": "13973674027864816270"
+        },
+        {
+          "c0_decimal": "9052750733237354155",
+          "c1_decimal": "10473896294217259527"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "9052750733237354155",
+          "c1_decimal": "10473896294217259527"
+        },
+        {
+          "c0_decimal": "3499777733647556743",
+          "c1_decimal": "3499777733647556743"
+        }
+      ],
+      "log_global_max_height": 2,
+      "name": "sweep_log_h2_polylen2_idx1_pat_lcg_random",
+      "reverse_bits_len_result": 2,
+      "x_decimal": "18446744069414584320"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 1,
+      "eval_fp2": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 2,
+      "name": "sweep_log_h2_polylen4_idx1_pat_zero",
+      "reverse_bits_len_result": 2,
+      "x_decimal": "18446744069414584320"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 1,
+      "eval_fp2": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 2,
+      "name": "sweep_log_h2_polylen4_idx1_pat_one",
+      "reverse_bits_len_result": 2,
+      "x_decimal": "18446744069414584320"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 1,
+      "eval_fp2": {
+        "c0_decimal": "18446744069414584319",
+        "c1_decimal": "18446744069414584315"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        },
+        {
+          "c0_decimal": "2",
+          "c1_decimal": "6"
+        },
+        {
+          "c0_decimal": "3",
+          "c1_decimal": "9"
+        },
+        {
+          "c0_decimal": "4",
+          "c1_decimal": "12"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "4",
+          "c1_decimal": "12"
+        },
+        {
+          "c0_decimal": "18446744069414584320",
+          "c1_decimal": "18446744069414584318"
+        },
+        {
+          "c0_decimal": "3",
+          "c1_decimal": "9"
+        },
+        {
+          "c0_decimal": "18446744069414584319",
+          "c1_decimal": "18446744069414584315"
+        }
+      ],
+      "log_global_max_height": 2,
+      "name": "sweep_log_h2_polylen4_idx1_pat_sequence",
+      "reverse_bits_len_result": 2,
+      "x_decimal": "18446744069414584320"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 1,
+      "eval_fp2": {
+        "c0_decimal": "6999555467295113486",
+        "c1_decimal": "6999555467295113486"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "3580243316867089060",
+          "c1_decimal": "5001388877846994432"
+        },
+        {
+          "c0_decimal": "80465583219532317",
+          "c1_decimal": "1501611144199437689"
+        },
+        {
+          "c0_decimal": "15027431923281527190",
+          "c1_decimal": "16448577484261432562"
+        },
+        {
+          "c0_decimal": "11527654189633970447",
+          "c1_decimal": "12948799750613875819"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "11527654189633970447",
+          "c1_decimal": "12948799750613875819"
+        },
+        {
+          "c0_decimal": "3499777733647556743",
+          "c1_decimal": "3499777733647556743"
+        },
+        {
+          "c0_decimal": "15027431918986559895",
+          "c1_decimal": "16448577479966465267"
+        },
+        {
+          "c0_decimal": "6999555467295113486",
+          "c1_decimal": "6999555467295113486"
+        }
+      ],
+      "log_global_max_height": 2,
+      "name": "sweep_log_h2_polylen4_idx1_pat_lcg_random",
+      "reverse_bits_len_result": 2,
+      "x_decimal": "18446744069414584320"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 2,
+      "eval_fp2": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 2,
+      "name": "sweep_log_h2_polylen1_idx2_pat_zero",
+      "reverse_bits_len_result": 1,
+      "x_decimal": "281474976710656"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 2,
+      "eval_fp2": {
+        "c0_decimal": "1",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 2,
+      "name": "sweep_log_h2_polylen1_idx2_pat_one",
+      "reverse_bits_len_result": 1,
+      "x_decimal": "281474976710656"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 2,
+      "eval_fp2": {
+        "c0_decimal": "1",
+        "c1_decimal": "3"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        }
+      ],
+      "log_global_max_height": 2,
+      "name": "sweep_log_h2_polylen1_idx2_pat_sequence",
+      "reverse_bits_len_result": 1,
+      "x_decimal": "281474976710656"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 2,
+      "eval_fp2": {
+        "c0_decimal": "17405922040741490041",
+        "c1_decimal": "380323528011843797"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "17405922040741490041",
+          "c1_decimal": "380323528011843797"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "17405922040741490041",
+          "c1_decimal": "380323528011843797"
+        }
+      ],
+      "log_global_max_height": 2,
+      "name": "sweep_log_h2_polylen1_idx2_pat_lcg_random",
+      "reverse_bits_len_result": 1,
+      "x_decimal": "281474976710656"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 2,
+      "eval_fp2": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 2,
+      "name": "sweep_log_h2_polylen2_idx2_pat_zero",
+      "reverse_bits_len_result": 1,
+      "x_decimal": "281474976710656"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 2,
+      "eval_fp2": {
+        "c0_decimal": "281474976710657",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "281474976710657",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 2,
+      "name": "sweep_log_h2_polylen2_idx2_pat_one",
+      "reverse_bits_len_result": 1,
+      "x_decimal": "281474976710656"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 2,
+      "eval_fp2": {
+        "c0_decimal": "562949953421313",
+        "c1_decimal": "1688849860263939"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        },
+        {
+          "c0_decimal": "2",
+          "c1_decimal": "6"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "2",
+          "c1_decimal": "6"
+        },
+        {
+          "c0_decimal": "562949953421313",
+          "c1_decimal": "1688849860263939"
+        }
+      ],
+      "log_global_max_height": 2,
+      "name": "sweep_log_h2_polylen2_idx2_pat_sequence",
+      "reverse_bits_len_result": 1,
+      "x_decimal": "281474976710656"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 2,
+      "eval_fp2": {
+        "c0_decimal": "4873395587010354169",
+        "c1_decimal": "16074020139001852744"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "12919779465732579122",
+          "c1_decimal": "14340925026712484494"
+        },
+        {
+          "c0_decimal": "9420001732085022379",
+          "c1_decimal": "10841147293064927751"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "9420001732085022379",
+          "c1_decimal": "10841147293064927751"
+        },
+        {
+          "c0_decimal": "4873395587010354169",
+          "c1_decimal": "16074020139001852744"
+        }
+      ],
+      "log_global_max_height": 2,
+      "name": "sweep_log_h2_polylen2_idx2_pat_lcg_random",
+      "reverse_bits_len_result": 1,
+      "x_decimal": "281474976710656"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 2,
+      "eval_fp2": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 2,
+      "name": "sweep_log_h2_polylen4_idx2_pat_zero",
+      "reverse_bits_len_result": 1,
+      "x_decimal": "281474976710656"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 2,
+      "eval_fp2": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "281474976710657",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "281474976710656",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 2,
+      "name": "sweep_log_h2_polylen4_idx2_pat_one",
+      "reverse_bits_len_result": 1,
+      "x_decimal": "281474976710656"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 2,
+      "eval_fp2": {
+        "c0_decimal": "18446181119461163007",
+        "c1_decimal": "18445055219554320379"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        },
+        {
+          "c0_decimal": "2",
+          "c1_decimal": "6"
+        },
+        {
+          "c0_decimal": "3",
+          "c1_decimal": "9"
+        },
+        {
+          "c0_decimal": "4",
+          "c1_decimal": "12"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "4",
+          "c1_decimal": "12"
+        },
+        {
+          "c0_decimal": "1125899906842627",
+          "c1_decimal": "3377699720527881"
+        },
+        {
+          "c0_decimal": "844424930131966",
+          "c1_decimal": "2533274790395898"
+        },
+        {
+          "c0_decimal": "18446181119461163007",
+          "c1_decimal": "18445055219554320379"
+        }
+      ],
+      "log_global_max_height": 2,
+      "name": "sweep_log_h2_polylen4_idx2_pat_sequence",
+      "reverse_bits_len_result": 1,
+      "x_decimal": "281474976710656"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 2,
+      "eval_fp2": {
+        "c0_decimal": "10146091404689449511",
+        "c1_decimal": "10146091404689449511"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "3947494315714757284",
+          "c1_decimal": "5368639876694662656"
+        },
+        {
+          "c0_decimal": "447716582067200541",
+          "c1_decimal": "1868862143047105913"
+        },
+        {
+          "c0_decimal": "15394682922129195414",
+          "c1_decimal": "16815828483109100786"
+        },
+        {
+          "c0_decimal": "11894905188481638671",
+          "c1_decimal": "13316050749461544043"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "11894905188481638671",
+          "c1_decimal": "13316050749461544043"
+        },
+        {
+          "c0_decimal": "2878683019966193692",
+          "c1_decimal": "14079307571957692267"
+        },
+        {
+          "c0_decimal": "14503567601096347682",
+          "c1_decimal": "5836302522693356564"
+        },
+        {
+          "c0_decimal": "10146091404689449511",
+          "c1_decimal": "10146091404689449511"
+        }
+      ],
+      "log_global_max_height": 2,
+      "name": "sweep_log_h2_polylen4_idx2_pat_lcg_random",
+      "reverse_bits_len_result": 1,
+      "x_decimal": "281474976710656"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 3,
+      "eval_fp2": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 2,
+      "name": "sweep_log_h2_polylen1_idx3_pat_zero",
+      "reverse_bits_len_result": 3,
+      "x_decimal": "18446462594437873665"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 3,
+      "eval_fp2": {
+        "c0_decimal": "1",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 2,
+      "name": "sweep_log_h2_polylen1_idx3_pat_one",
+      "reverse_bits_len_result": 3,
+      "x_decimal": "18446462594437873665"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 3,
+      "eval_fp2": {
+        "c0_decimal": "1",
+        "c1_decimal": "3"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        }
+      ],
+      "log_global_max_height": 2,
+      "name": "sweep_log_h2_polylen1_idx3_pat_sequence",
+      "reverse_bits_len_result": 3,
+      "x_decimal": "18446462594437873665"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 3,
+      "eval_fp2": {
+        "c0_decimal": "17773173039589158265",
+        "c1_decimal": "747574526859512021"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "17773173039589158265",
+          "c1_decimal": "747574526859512021"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "17773173039589158265",
+          "c1_decimal": "747574526859512021"
+        }
+      ],
+      "log_global_max_height": 2,
+      "name": "sweep_log_h2_polylen1_idx3_pat_lcg_random",
+      "reverse_bits_len_result": 3,
+      "x_decimal": "18446462594437873665"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 3,
+      "eval_fp2": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 2,
+      "name": "sweep_log_h2_polylen2_idx3_pat_zero",
+      "reverse_bits_len_result": 3,
+      "x_decimal": "18446462594437873665"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 3,
+      "eval_fp2": {
+        "c0_decimal": "18446462594437873666",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "18446462594437873666",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 2,
+      "name": "sweep_log_h2_polylen2_idx3_pat_one",
+      "reverse_bits_len_result": 3,
+      "x_decimal": "18446462594437873665"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 3,
+      "eval_fp2": {
+        "c0_decimal": "18446181119461163010",
+        "c1_decimal": "18445055219554320388"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        },
+        {
+          "c0_decimal": "2",
+          "c1_decimal": "6"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "2",
+          "c1_decimal": "6"
+        },
+        {
+          "c0_decimal": "18446181119461163010",
+          "c1_decimal": "18445055219554320388"
+        }
+      ],
+      "log_global_max_height": 2,
+      "name": "sweep_log_h2_polylen2_idx3_pat_sequence",
+      "reverse_bits_len_result": 3,
+      "x_decimal": "18446462594437873665"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 3,
+      "eval_fp2": {
+        "c0_decimal": "7726225982941223228",
+        "c1_decimal": "17814636622324119718"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "13287030464580247346",
+          "c1_decimal": "14708176025560152718"
+        },
+        {
+          "c0_decimal": "9787252730932690603",
+          "c1_decimal": "11208398291912595975"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "9787252730932690603",
+          "c1_decimal": "11208398291912595975"
+        },
+        {
+          "c0_decimal": "7726225982941223228",
+          "c1_decimal": "17814636622324119718"
+        }
+      ],
+      "log_global_max_height": 2,
+      "name": "sweep_log_h2_polylen2_idx3_pat_lcg_random",
+      "reverse_bits_len_result": 3,
+      "x_decimal": "18446462594437873665"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 3,
+      "eval_fp2": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 2,
+      "name": "sweep_log_h2_polylen4_idx3_pat_zero",
+      "reverse_bits_len_result": 3,
+      "x_decimal": "18446462594437873665"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 3,
+      "eval_fp2": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "18446462594437873666",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "18446462594437873665",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 2,
+      "name": "sweep_log_h2_polylen4_idx3_pat_one",
+      "reverse_bits_len_result": 3,
+      "x_decimal": "18446462594437873665"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 3,
+      "eval_fp2": {
+        "c0_decimal": "562949953421310",
+        "c1_decimal": "1688849860263930"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        },
+        {
+          "c0_decimal": "2",
+          "c1_decimal": "6"
+        },
+        {
+          "c0_decimal": "3",
+          "c1_decimal": "9"
+        },
+        {
+          "c0_decimal": "4",
+          "c1_decimal": "12"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "4",
+          "c1_decimal": "12"
+        },
+        {
+          "c0_decimal": "18445618169507741700",
+          "c1_decimal": "18443366369694056458"
+        },
+        {
+          "c0_decimal": "18445899644484452351",
+          "c1_decimal": "18444210794624188411"
+        },
+        {
+          "c0_decimal": "562949953421310",
+          "c1_decimal": "1688849860263930"
+        }
+      ],
+      "log_global_max_height": 2,
+      "name": "sweep_log_h2_polylen4_idx3_pat_sequence",
+      "reverse_bits_len_result": 3,
+      "x_decimal": "18446462594437873665"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 3,
+      "eval_fp2": {
+        "c0_decimal": "3853019521310842871",
+        "c1_decimal": "3853019521310842871"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "4314745314562425508",
+          "c1_decimal": "5735890875542330880"
+        },
+        {
+          "c0_decimal": "814967580914868765",
+          "c1_decimal": "2236113141894774137"
+        },
+        {
+          "c0_decimal": "15761933920976863638",
+          "c1_decimal": "17183079481956769010"
+        },
+        {
+          "c0_decimal": "12262156187329306895",
+          "c1_decimal": "13683301748309212267"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "12262156187329306895",
+          "c1_decimal": "13683301748309212267"
+        },
+        {
+          "c0_decimal": "14670745462778616289",
+          "c1_decimal": "6312412032746928458"
+        },
+        {
+          "c0_decimal": "4335099033957279950",
+          "c1_decimal": "13002364112360271068"
+        },
+        {
+          "c0_decimal": "3853019521310842871",
+          "c1_decimal": "3853019521310842871"
+        }
+      ],
+      "log_global_max_height": 2,
+      "name": "sweep_log_h2_polylen4_idx3_pat_lcg_random",
+      "reverse_bits_len_result": 3,
+      "x_decimal": "18446462594437873665"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 0,
+      "eval_fp2": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 4,
+      "name": "sweep_log_h4_polylen1_idx0_pat_zero",
+      "reverse_bits_len_result": 0,
+      "x_decimal": "1"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 0,
+      "eval_fp2": {
+        "c0_decimal": "1",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 4,
+      "name": "sweep_log_h4_polylen1_idx0_pat_one",
+      "reverse_bits_len_result": 0,
+      "x_decimal": "1"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 0,
+      "eval_fp2": {
+        "c0_decimal": "1",
+        "c1_decimal": "3"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        }
+      ],
+      "log_global_max_height": 4,
+      "name": "sweep_log_h4_polylen1_idx0_pat_sequence",
+      "reverse_bits_len_result": 0,
+      "x_decimal": "1"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 0,
+      "eval_fp2": {
+        "c0_decimal": "6992308622685891961",
+        "c1_decimal": "8413454183665797333"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "6992308622685891961",
+          "c1_decimal": "8413454183665797333"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "6992308622685891961",
+          "c1_decimal": "8413454183665797333"
+        }
+      ],
+      "log_global_max_height": 4,
+      "name": "sweep_log_h4_polylen1_idx0_pat_lcg_random",
+      "reverse_bits_len_result": 0,
+      "x_decimal": "1"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 0,
+      "eval_fp2": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 4,
+      "name": "sweep_log_h4_polylen2_idx0_pat_zero",
+      "reverse_bits_len_result": 0,
+      "x_decimal": "1"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 0,
+      "eval_fp2": {
+        "c0_decimal": "2",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "2",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 4,
+      "name": "sweep_log_h4_polylen2_idx0_pat_one",
+      "reverse_bits_len_result": 0,
+      "x_decimal": "1"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 0,
+      "eval_fp2": {
+        "c0_decimal": "3",
+        "c1_decimal": "9"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        },
+        {
+          "c0_decimal": "2",
+          "c1_decimal": "6"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "2",
+          "c1_decimal": "6"
+        },
+        {
+          "c0_decimal": "3",
+          "c1_decimal": "9"
+        }
+      ],
+      "log_global_max_height": 4,
+      "name": "sweep_log_h4_polylen2_idx0_pat_sequence",
+      "reverse_bits_len_result": 0,
+      "x_decimal": "1"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 0,
+      "eval_fp2": {
+        "c0_decimal": "1512554366001372636",
+        "c1_decimal": "4354845483666216085"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "2506166047676981042",
+          "c1_decimal": "3927311608656886414"
+        },
+        {
+          "c0_decimal": "17453132387738975915",
+          "c1_decimal": "427533875009329671"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "17453132387738975915",
+          "c1_decimal": "427533875009329671"
+        },
+        {
+          "c0_decimal": "1512554366001372636",
+          "c1_decimal": "4354845483666216085"
+        }
+      ],
+      "log_global_max_height": 4,
+      "name": "sweep_log_h4_polylen2_idx0_pat_lcg_random",
+      "reverse_bits_len_result": 0,
+      "x_decimal": "1"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 0,
+      "eval_fp2": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 4,
+      "name": "sweep_log_h4_polylen4_idx0_pat_zero",
+      "reverse_bits_len_result": 0,
+      "x_decimal": "1"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 0,
+      "eval_fp2": {
+        "c0_decimal": "4",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "2",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "3",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "4",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 4,
+      "name": "sweep_log_h4_polylen4_idx0_pat_one",
+      "reverse_bits_len_result": 0,
+      "x_decimal": "1"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 0,
+      "eval_fp2": {
+        "c0_decimal": "10",
+        "c1_decimal": "30"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        },
+        {
+          "c0_decimal": "2",
+          "c1_decimal": "6"
+        },
+        {
+          "c0_decimal": "3",
+          "c1_decimal": "9"
+        },
+        {
+          "c0_decimal": "4",
+          "c1_decimal": "12"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "4",
+          "c1_decimal": "12"
+        },
+        {
+          "c0_decimal": "7",
+          "c1_decimal": "21"
+        },
+        {
+          "c0_decimal": "9",
+          "c1_decimal": "27"
+        },
+        {
+          "c0_decimal": "10",
+          "c1_decimal": "30"
+        }
+      ],
+      "log_global_max_height": 4,
+      "name": "sweep_log_h4_polylen4_idx0_pat_sequence",
+      "reverse_bits_len_result": 0,
+      "x_decimal": "1"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 0,
+      "eval_fp2": {
+        "c0_decimal": "8477089414174918501",
+        "c1_decimal": "14161671658094539989"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "11980624971368710820",
+          "c1_decimal": "13401770532348616192"
+        },
+        {
+          "c0_decimal": "8480847237721154077",
+          "c1_decimal": "9901992798701059449"
+        },
+        {
+          "c0_decimal": "4981069504073597334",
+          "c1_decimal": "6402215065053502706"
+        },
+        {
+          "c0_decimal": "1481291770426040591",
+          "c1_decimal": "2902437331405945963"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1481291770426040591",
+          "c1_decimal": "2902437331405945963"
+        },
+        {
+          "c0_decimal": "6462361274499637925",
+          "c1_decimal": "9304652396459448669"
+        },
+        {
+          "c0_decimal": "14943208512220792002",
+          "c1_decimal": "759901125745923797"
+        },
+        {
+          "c0_decimal": "8477089414174918501",
+          "c1_decimal": "14161671658094539989"
+        }
+      ],
+      "log_global_max_height": 4,
+      "name": "sweep_log_h4_polylen4_idx0_pat_lcg_random",
+      "reverse_bits_len_result": 0,
+      "x_decimal": "1"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 1,
+      "eval_fp2": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 4,
+      "name": "sweep_log_h4_polylen1_idx1_pat_zero",
+      "reverse_bits_len_result": 8,
+      "x_decimal": "18446744069414584320"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 1,
+      "eval_fp2": {
+        "c0_decimal": "1",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 4,
+      "name": "sweep_log_h4_polylen1_idx1_pat_one",
+      "reverse_bits_len_result": 8,
+      "x_decimal": "18446744069414584320"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 1,
+      "eval_fp2": {
+        "c0_decimal": "1",
+        "c1_decimal": "3"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        }
+      ],
+      "log_global_max_height": 4,
+      "name": "sweep_log_h4_polylen1_idx1_pat_sequence",
+      "reverse_bits_len_result": 8,
+      "x_decimal": "18446744069414584320"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 1,
+      "eval_fp2": {
+        "c0_decimal": "7359559621533560185",
+        "c1_decimal": "8780705182513465557"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "7359559621533560185",
+          "c1_decimal": "8780705182513465557"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "7359559621533560185",
+          "c1_decimal": "8780705182513465557"
+        }
+      ],
+      "log_global_max_height": 4,
+      "name": "sweep_log_h4_polylen1_idx1_pat_lcg_random",
+      "reverse_bits_len_result": 8,
+      "x_decimal": "18446744069414584320"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 1,
+      "eval_fp2": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 4,
+      "name": "sweep_log_h4_polylen2_idx1_pat_zero",
+      "reverse_bits_len_result": 8,
+      "x_decimal": "18446744069414584320"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 1,
+      "eval_fp2": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 4,
+      "name": "sweep_log_h4_polylen2_idx1_pat_one",
+      "reverse_bits_len_result": 8,
+      "x_decimal": "18446744069414584320"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 1,
+      "eval_fp2": {
+        "c0_decimal": "18446744069414584320",
+        "c1_decimal": "18446744069414584318"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        },
+        {
+          "c0_decimal": "2",
+          "c1_decimal": "6"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "2",
+          "c1_decimal": "6"
+        },
+        {
+          "c0_decimal": "18446744069414584320",
+          "c1_decimal": "18446744069414584318"
+        }
+      ],
+      "log_global_max_height": 4,
+      "name": "sweep_log_h4_polylen2_idx1_pat_sequence",
+      "reverse_bits_len_result": 8,
+      "x_decimal": "18446744069414584320"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 1,
+      "eval_fp2": {
+        "c0_decimal": "3499777729352589448",
+        "c1_decimal": "3499777733647556743"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "2873417046524649266",
+          "c1_decimal": "4294562607504554638"
+        },
+        {
+          "c0_decimal": "17820383386586644139",
+          "c1_decimal": "794784873856997895"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "17820383386586644139",
+          "c1_decimal": "794784873856997895"
+        },
+        {
+          "c0_decimal": "3499777729352589448",
+          "c1_decimal": "3499777733647556743"
+        }
+      ],
+      "log_global_max_height": 4,
+      "name": "sweep_log_h4_polylen2_idx1_pat_lcg_random",
+      "reverse_bits_len_result": 8,
+      "x_decimal": "18446744069414584320"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 1,
+      "eval_fp2": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 4,
+      "name": "sweep_log_h4_polylen4_idx1_pat_zero",
+      "reverse_bits_len_result": 8,
+      "x_decimal": "18446744069414584320"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 1,
+      "eval_fp2": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 4,
+      "name": "sweep_log_h4_polylen4_idx1_pat_one",
+      "reverse_bits_len_result": 8,
+      "x_decimal": "18446744069414584320"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 1,
+      "eval_fp2": {
+        "c0_decimal": "18446744069414584319",
+        "c1_decimal": "18446744069414584315"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        },
+        {
+          "c0_decimal": "2",
+          "c1_decimal": "6"
+        },
+        {
+          "c0_decimal": "3",
+          "c1_decimal": "9"
+        },
+        {
+          "c0_decimal": "4",
+          "c1_decimal": "12"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "4",
+          "c1_decimal": "12"
+        },
+        {
+          "c0_decimal": "18446744069414584320",
+          "c1_decimal": "18446744069414584318"
+        },
+        {
+          "c0_decimal": "3",
+          "c1_decimal": "9"
+        },
+        {
+          "c0_decimal": "18446744069414584319",
+          "c1_decimal": "18446744069414584315"
+        }
+      ],
+      "log_global_max_height": 4,
+      "name": "sweep_log_h4_polylen4_idx1_pat_sequence",
+      "reverse_bits_len_result": 8,
+      "x_decimal": "18446744069414584320"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 1,
+      "eval_fp2": {
+        "c0_decimal": "6999555467295113486",
+        "c1_decimal": "6999555467295113486"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "12347875970216379044",
+          "c1_decimal": "13769021531196284416"
+        },
+        {
+          "c0_decimal": "8848098236568822301",
+          "c1_decimal": "10269243797548727673"
+        },
+        {
+          "c0_decimal": "5348320502921265558",
+          "c1_decimal": "6769466063901170930"
+        },
+        {
+          "c0_decimal": "1848542769273708815",
+          "c1_decimal": "3269688330253614187"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1848542769273708815",
+          "c1_decimal": "3269688330253614187"
+        },
+        {
+          "c0_decimal": "3499777733647556743",
+          "c1_decimal": "3499777733647556743"
+        },
+        {
+          "c0_decimal": "5348320502921265558",
+          "c1_decimal": "6769466063901170930"
+        },
+        {
+          "c0_decimal": "6999555467295113486",
+          "c1_decimal": "6999555467295113486"
+        }
+      ],
+      "log_global_max_height": 4,
+      "name": "sweep_log_h4_polylen4_idx1_pat_lcg_random",
+      "reverse_bits_len_result": 8,
+      "x_decimal": "18446744069414584320"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 8,
+      "eval_fp2": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 4,
+      "name": "sweep_log_h4_polylen1_idx8_pat_zero",
+      "reverse_bits_len_result": 1,
+      "x_decimal": "17293822564807737345"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 8,
+      "eval_fp2": {
+        "c0_decimal": "1",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 4,
+      "name": "sweep_log_h4_polylen1_idx8_pat_one",
+      "reverse_bits_len_result": 1,
+      "x_decimal": "17293822564807737345"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 8,
+      "eval_fp2": {
+        "c0_decimal": "1",
+        "c1_decimal": "3"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        }
+      ],
+      "log_global_max_height": 4,
+      "name": "sweep_log_h4_polylen1_idx8_pat_sequence",
+      "reverse_bits_len_result": 1,
+      "x_decimal": "17293822564807737345"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 8,
+      "eval_fp2": {
+        "c0_decimal": "9930316613467237753",
+        "c1_decimal": "11351462174447143125"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "9930316613467237753",
+          "c1_decimal": "11351462174447143125"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "9930316613467237753",
+          "c1_decimal": "11351462174447143125"
+        }
+      ],
+      "log_global_max_height": 4,
+      "name": "sweep_log_h4_polylen1_idx8_pat_lcg_random",
+      "reverse_bits_len_result": 1,
+      "x_decimal": "17293822564807737345"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 8,
+      "eval_fp2": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 4,
+      "name": "sweep_log_h4_polylen2_idx8_pat_zero",
+      "reverse_bits_len_result": 1,
+      "x_decimal": "17293822564807737345"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 8,
+      "eval_fp2": {
+        "c0_decimal": "17293822564807737346",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "17293822564807737346",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 4,
+      "name": "sweep_log_h4_polylen2_idx8_pat_one",
+      "reverse_bits_len_result": 1,
+      "x_decimal": "17293822564807737345"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 8,
+      "eval_fp2": {
+        "c0_decimal": "16140901060200890370",
+        "c1_decimal": "11529215041773502468"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        },
+        {
+          "c0_decimal": "2",
+          "c1_decimal": "6"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "2",
+          "c1_decimal": "6"
+        },
+        {
+          "c0_decimal": "16140901060200890370",
+          "c1_decimal": "11529215041773502468"
+        }
+      ],
+      "log_global_max_height": 4,
+      "name": "sweep_log_h4_polylen2_idx8_pat_sequence",
+      "reverse_bits_len_result": 1,
+      "x_decimal": "17293822564807737345"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 8,
+      "eval_fp2": {
+        "c0_decimal": "7557136410953866559",
+        "c1_decimal": "113709487510573334"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "5444174038458326834",
+          "c1_decimal": "6865319599438232206"
+        },
+        {
+          "c0_decimal": "1944396304810770091",
+          "c1_decimal": "3365541865790675463"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1944396304810770091",
+          "c1_decimal": "3365541865790675463"
+        },
+        {
+          "c0_decimal": "7557136410953866559",
+          "c1_decimal": "113709487510573334"
+        }
+      ],
+      "log_global_max_height": 4,
+      "name": "sweep_log_h4_polylen2_idx8_pat_lcg_random",
+      "reverse_bits_len_result": 1,
+      "x_decimal": "17293822564807737345"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 8,
+      "eval_fp2": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 4,
+      "name": "sweep_log_h4_polylen4_idx8_pat_zero",
+      "reverse_bits_len_result": 1,
+      "x_decimal": "17293822564807737345"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 8,
+      "eval_fp2": {
+        "c0_decimal": "17298326164417282050",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "17293822564807737346",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "17293822564790960130",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "17298326164417282050",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 4,
+      "name": "sweep_log_h4_polylen4_idx8_pat_one",
+      "reverse_bits_len_result": 1,
+      "x_decimal": "17293822564807737345"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 8,
+      "eval_fp2": {
+        "c0_decimal": "16158915458655846402",
+        "c1_decimal": "11583258237138370564"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        },
+        {
+          "c0_decimal": "2",
+          "c1_decimal": "6"
+        },
+        {
+          "c0_decimal": "3",
+          "c1_decimal": "9"
+        },
+        {
+          "c0_decimal": "4",
+          "c1_decimal": "12"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "4",
+          "c1_decimal": "12"
+        },
+        {
+          "c0_decimal": "13835058050987196420",
+          "c1_decimal": "4611686014132420618"
+        },
+        {
+          "c0_decimal": "14987979555526934531",
+          "c1_decimal": "8070450527751634951"
+        },
+        {
+          "c0_decimal": "16158915458655846402",
+          "c1_decimal": "11583258237138370564"
+        }
+      ],
+      "log_global_max_height": 4,
+      "name": "sweep_log_h4_polylen4_idx8_pat_sequence",
+      "reverse_bits_len_result": 1,
+      "x_decimal": "17293822564807737345"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 8,
+      "eval_fp2": {
+        "c0_decimal": "13761374835811961344",
+        "c1_decimal": "12801643638446649722"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "14918632962150056612",
+          "c1_decimal": "16339778523129961984"
+        },
+        {
+          "c0_decimal": "11418855228502499869",
+          "c1_decimal": "12840000789482405241"
+        },
+        {
+          "c0_decimal": "7919077494854943126",
+          "c1_decimal": "9340223055834848498"
+        },
+        {
+          "c0_decimal": "4419299761207386383",
+          "c1_decimal": "5840445322187291755"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "4419299761207386383",
+          "c1_decimal": "5840445322187291755"
+        },
+        {
+          "c0_decimal": "18409155021504482243",
+          "c1_decimal": "10965728098061189018"
+        },
+        {
+          "c0_decimal": "2448255710924276264",
+          "c1_decimal": "6839147828994879212"
+        },
+        {
+          "c0_decimal": "13761374835811961344",
+          "c1_decimal": "12801643638446649722"
+        }
+      ],
+      "log_global_max_height": 4,
+      "name": "sweep_log_h4_polylen4_idx8_pat_lcg_random",
+      "reverse_bits_len_result": 1,
+      "x_decimal": "17293822564807737345"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 15,
+      "eval_fp2": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 4,
+      "name": "sweep_log_h4_polylen1_idx15_pat_zero",
+      "reverse_bits_len_result": 15,
+      "x_decimal": "68719476736"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 15,
+      "eval_fp2": {
+        "c0_decimal": "1",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 4,
+      "name": "sweep_log_h4_polylen1_idx15_pat_one",
+      "reverse_bits_len_result": 15,
+      "x_decimal": "68719476736"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 15,
+      "eval_fp2": {
+        "c0_decimal": "1",
+        "c1_decimal": "3"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        }
+      ],
+      "log_global_max_height": 4,
+      "name": "sweep_log_h4_polylen1_idx15_pat_sequence",
+      "reverse_bits_len_result": 15,
+      "x_decimal": "68719476736"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 15,
+      "eval_fp2": {
+        "c0_decimal": "12501073605400915321",
+        "c1_decimal": "13922219166380820693"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "12501073605400915321",
+          "c1_decimal": "13922219166380820693"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "12501073605400915321",
+          "c1_decimal": "13922219166380820693"
+        }
+      ],
+      "log_global_max_height": 4,
+      "name": "sweep_log_h4_polylen1_idx15_pat_lcg_random",
+      "reverse_bits_len_result": 15,
+      "x_decimal": "68719476736"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 15,
+      "eval_fp2": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 4,
+      "name": "sweep_log_h4_polylen2_idx15_pat_zero",
+      "reverse_bits_len_result": 15,
+      "x_decimal": "68719476736"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 15,
+      "eval_fp2": {
+        "c0_decimal": "68719476737",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "68719476737",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 4,
+      "name": "sweep_log_h4_polylen2_idx15_pat_one",
+      "reverse_bits_len_result": 15,
+      "x_decimal": "68719476736"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 15,
+      "eval_fp2": {
+        "c0_decimal": "137438953473",
+        "c1_decimal": "412316860419"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        },
+        {
+          "c0_decimal": "2",
+          "c1_decimal": "6"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "2",
+          "c1_decimal": "6"
+        },
+        {
+          "c0_decimal": "137438953473",
+          "c1_decimal": "412316860419"
+        }
+      ],
+      "log_global_max_height": 4,
+      "name": "sweep_log_h4_polylen2_idx15_pat_sequence",
+      "reverse_bits_len_result": 15,
+      "x_decimal": "68719476736"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 15,
+      "eval_fp2": {
+        "c0_decimal": "14410230191688556330",
+        "c1_decimal": "2057252063862748361"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "8014931030392004402",
+          "c1_decimal": "9436076591371909774"
+        },
+        {
+          "c0_decimal": "4515153296744447659",
+          "c1_decimal": "5936298857724353031"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "4515153296744447659",
+          "c1_decimal": "5936298857724353031"
+        },
+        {
+          "c0_decimal": "14410230191688556330",
+          "c1_decimal": "2057252063862748361"
+        }
+      ],
+      "log_global_max_height": 4,
+      "name": "sweep_log_h4_polylen2_idx15_pat_lcg_random",
+      "reverse_bits_len_result": 15,
+      "x_decimal": "68719476736"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 15,
+      "eval_fp2": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 4,
+      "name": "sweep_log_h4_polylen4_idx15_pat_zero",
+      "reverse_bits_len_result": 15,
+      "x_decimal": "68719476736"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 15,
+      "eval_fp2": {
+        "c0_decimal": "1168231100161",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "68719476737",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1168231104257",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1168231100161",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 4,
+      "name": "sweep_log_h4_polylen4_idx15_pat_one",
+      "reverse_bits_len_result": 15,
+      "x_decimal": "68719476736"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 15,
+      "eval_fp2": {
+        "c0_decimal": "3435973819649",
+        "c1_decimal": "10307921458947"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        },
+        {
+          "c0_decimal": "2",
+          "c1_decimal": "6"
+        },
+        {
+          "c0_decimal": "3",
+          "c1_decimal": "9"
+        },
+        {
+          "c0_decimal": "4",
+          "c1_decimal": "12"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "4",
+          "c1_decimal": "12"
+        },
+        {
+          "c0_decimal": "274877906947",
+          "c1_decimal": "824633720841"
+        },
+        {
+          "c0_decimal": "4604204940290",
+          "c1_decimal": "13812614820870"
+        },
+        {
+          "c0_decimal": "3435973819649",
+          "c1_decimal": "10307921458947"
+        }
+      ],
+      "log_global_max_height": 4,
+      "name": "sweep_log_h4_polylen4_idx15_pat_sequence",
+      "reverse_bits_len_result": 15,
+      "x_decimal": "68719476736"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 15,
+      "eval_fp2": {
+        "c0_decimal": "12740278304816069674",
+        "c1_decimal": "14642775923531045718"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "17489389954083734180",
+          "c1_decimal": "463791441354087936"
+        },
+        {
+          "c0_decimal": "13989612220436177437",
+          "c1_decimal": "15410757781416082809"
+        },
+        {
+          "c0_decimal": "10489834486788620694",
+          "c1_decimal": "11910980047768526066"
+        },
+        {
+          "c0_decimal": "6990056753141063951",
+          "c1_decimal": "8411202314120969323"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "6990056753141063951",
+          "c1_decimal": "8411202314120969323"
+        },
+        {
+          "c0_decimal": "14870933400269801536",
+          "c1_decimal": "2517955272443993567"
+        },
+        {
+          "c0_decimal": "13930843552000847835",
+          "c1_decimal": "7674433013694549450"
+        },
+        {
+          "c0_decimal": "12740278304816069674",
+          "c1_decimal": "14642775923531045718"
+        }
+      ],
+      "log_global_max_height": 4,
+      "name": "sweep_log_h4_polylen4_idx15_pat_lcg_random",
+      "reverse_bits_len_result": 15,
+      "x_decimal": "68719476736"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 0,
+      "eval_fp2": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 8,
+      "name": "sweep_log_h8_polylen1_idx0_pat_zero",
+      "reverse_bits_len_result": 0,
+      "x_decimal": "1"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 0,
+      "eval_fp2": {
+        "c0_decimal": "1",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 8,
+      "name": "sweep_log_h8_polylen1_idx0_pat_one",
+      "reverse_bits_len_result": 0,
+      "x_decimal": "1"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 0,
+      "eval_fp2": {
+        "c0_decimal": "1",
+        "c1_decimal": "3"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        }
+      ],
+      "log_global_max_height": 8,
+      "name": "sweep_log_h8_polylen1_idx0_pat_sequence",
+      "reverse_bits_len_result": 0,
+      "x_decimal": "1"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 0,
+      "eval_fp2": {
+        "c0_decimal": "6080829855674920313",
+        "c1_decimal": "7501975416654825685"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "6080829855674920313",
+          "c1_decimal": "7501975416654825685"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "6080829855674920313",
+          "c1_decimal": "7501975416654825685"
+        }
+      ],
+      "log_global_max_height": 8,
+      "name": "sweep_log_h8_polylen1_idx0_pat_lcg_random",
+      "reverse_bits_len_result": 0,
+      "x_decimal": "1"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 0,
+      "eval_fp2": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 8,
+      "name": "sweep_log_h8_polylen2_idx0_pat_zero",
+      "reverse_bits_len_result": 0,
+      "x_decimal": "1"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 0,
+      "eval_fp2": {
+        "c0_decimal": "2",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "2",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 8,
+      "name": "sweep_log_h8_polylen2_idx0_pat_one",
+      "reverse_bits_len_result": 0,
+      "x_decimal": "1"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 0,
+      "eval_fp2": {
+        "c0_decimal": "3",
+        "c1_decimal": "9"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        },
+        {
+          "c0_decimal": "2",
+          "c1_decimal": "6"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "2",
+          "c1_decimal": "6"
+        },
+        {
+          "c0_decimal": "3",
+          "c1_decimal": "9"
+        }
+      ],
+      "log_global_max_height": 8,
+      "name": "sweep_log_h8_polylen2_idx0_pat_sequence",
+      "reverse_bits_len_result": 0,
+      "x_decimal": "1"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 0,
+      "eval_fp2": {
+        "c0_decimal": "18136340901394013661",
+        "c1_decimal": "2531887953939240084"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1594687280666009394",
+          "c1_decimal": "3015832841645914766"
+        },
+        {
+          "c0_decimal": "16541653620728004267",
+          "c1_decimal": "17962799181707909639"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "16541653620728004267",
+          "c1_decimal": "17962799181707909639"
+        },
+        {
+          "c0_decimal": "18136340901394013661",
+          "c1_decimal": "2531887953939240084"
+        }
+      ],
+      "log_global_max_height": 8,
+      "name": "sweep_log_h8_polylen2_idx0_pat_lcg_random",
+      "reverse_bits_len_result": 0,
+      "x_decimal": "1"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 0,
+      "eval_fp2": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 8,
+      "name": "sweep_log_h8_polylen4_idx0_pat_zero",
+      "reverse_bits_len_result": 0,
+      "x_decimal": "1"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 0,
+      "eval_fp2": {
+        "c0_decimal": "4",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "2",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "3",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "4",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 8,
+      "name": "sweep_log_h8_polylen4_idx0_pat_one",
+      "reverse_bits_len_result": 0,
+      "x_decimal": "1"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 0,
+      "eval_fp2": {
+        "c0_decimal": "10",
+        "c1_decimal": "30"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        },
+        {
+          "c0_decimal": "2",
+          "c1_decimal": "6"
+        },
+        {
+          "c0_decimal": "3",
+          "c1_decimal": "9"
+        },
+        {
+          "c0_decimal": "4",
+          "c1_decimal": "12"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "4",
+          "c1_decimal": "12"
+        },
+        {
+          "c0_decimal": "7",
+          "c1_decimal": "21"
+        },
+        {
+          "c0_decimal": "9",
+          "c1_decimal": "27"
+        },
+        {
+          "c0_decimal": "10",
+          "c1_decimal": "30"
+        }
+      ],
+      "log_global_max_height": 8,
+      "name": "sweep_log_h8_polylen4_idx0_pat_sequence",
+      "reverse_bits_len_result": 0,
+      "x_decimal": "1"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 0,
+      "eval_fp2": {
+        "c0_decimal": "4831174346131031909",
+        "c1_decimal": "10515756590050653397"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "11069146204357739172",
+          "c1_decimal": "12490291765337644544"
+        },
+        {
+          "c0_decimal": "7569368470710182429",
+          "c1_decimal": "8990514031690087801"
+        },
+        {
+          "c0_decimal": "4069590737062625686",
+          "c1_decimal": "5490736298042531058"
+        },
+        {
+          "c0_decimal": "569813003415068943",
+          "c1_decimal": "1990958564394974315"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "569813003415068943",
+          "c1_decimal": "1990958564394974315"
+        },
+        {
+          "c0_decimal": "4639403740477694629",
+          "c1_decimal": "7481694862437505373"
+        },
+        {
+          "c0_decimal": "12208772211187877058",
+          "c1_decimal": "16472208894127593174"
+        },
+        {
+          "c0_decimal": "4831174346131031909",
+          "c1_decimal": "10515756590050653397"
+        }
+      ],
+      "log_global_max_height": 8,
+      "name": "sweep_log_h8_polylen4_idx0_pat_lcg_random",
+      "reverse_bits_len_result": 0,
+      "x_decimal": "1"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 1,
+      "eval_fp2": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 8,
+      "name": "sweep_log_h8_polylen1_idx1_pat_zero",
+      "reverse_bits_len_result": 128,
+      "x_decimal": "18446744069414584320"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 1,
+      "eval_fp2": {
+        "c0_decimal": "1",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 8,
+      "name": "sweep_log_h8_polylen1_idx1_pat_one",
+      "reverse_bits_len_result": 128,
+      "x_decimal": "18446744069414584320"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 1,
+      "eval_fp2": {
+        "c0_decimal": "1",
+        "c1_decimal": "3"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        }
+      ],
+      "log_global_max_height": 8,
+      "name": "sweep_log_h8_polylen1_idx1_pat_sequence",
+      "reverse_bits_len_result": 128,
+      "x_decimal": "18446744069414584320"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 1,
+      "eval_fp2": {
+        "c0_decimal": "6448080854522588537",
+        "c1_decimal": "7869226415502493909"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "6448080854522588537",
+          "c1_decimal": "7869226415502493909"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "6448080854522588537",
+          "c1_decimal": "7869226415502493909"
+        }
+      ],
+      "log_global_max_height": 8,
+      "name": "sweep_log_h8_polylen1_idx1_pat_lcg_random",
+      "reverse_bits_len_result": 128,
+      "x_decimal": "18446744069414584320"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 1,
+      "eval_fp2": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 8,
+      "name": "sweep_log_h8_polylen2_idx1_pat_zero",
+      "reverse_bits_len_result": 128,
+      "x_decimal": "18446744069414584320"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 1,
+      "eval_fp2": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 8,
+      "name": "sweep_log_h8_polylen2_idx1_pat_one",
+      "reverse_bits_len_result": 128,
+      "x_decimal": "18446744069414584320"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 1,
+      "eval_fp2": {
+        "c0_decimal": "18446744069414584320",
+        "c1_decimal": "18446744069414584318"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        },
+        {
+          "c0_decimal": "2",
+          "c1_decimal": "6"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "2",
+          "c1_decimal": "6"
+        },
+        {
+          "c0_decimal": "18446744069414584320",
+          "c1_decimal": "18446744069414584318"
+        }
+      ],
+      "log_global_max_height": 8,
+      "name": "sweep_log_h8_polylen2_idx1_pat_sequence",
+      "reverse_bits_len_result": 128,
+      "x_decimal": "18446744069414584320"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 1,
+      "eval_fp2": {
+        "c0_decimal": "3499777729352589448",
+        "c1_decimal": "3499777729352589448"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1961938279513677618",
+          "c1_decimal": "3383083840493582990"
+        },
+        {
+          "c0_decimal": "16908904619575672491",
+          "c1_decimal": "18330050180555577863"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "16908904619575672491",
+          "c1_decimal": "18330050180555577863"
+        },
+        {
+          "c0_decimal": "3499777729352589448",
+          "c1_decimal": "3499777729352589448"
+        }
+      ],
+      "log_global_max_height": 8,
+      "name": "sweep_log_h8_polylen2_idx1_pat_lcg_random",
+      "reverse_bits_len_result": 128,
+      "x_decimal": "18446744069414584320"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 1,
+      "eval_fp2": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 8,
+      "name": "sweep_log_h8_polylen4_idx1_pat_zero",
+      "reverse_bits_len_result": 128,
+      "x_decimal": "18446744069414584320"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 1,
+      "eval_fp2": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 8,
+      "name": "sweep_log_h8_polylen4_idx1_pat_one",
+      "reverse_bits_len_result": 128,
+      "x_decimal": "18446744069414584320"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 1,
+      "eval_fp2": {
+        "c0_decimal": "18446744069414584319",
+        "c1_decimal": "18446744069414584315"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        },
+        {
+          "c0_decimal": "2",
+          "c1_decimal": "6"
+        },
+        {
+          "c0_decimal": "3",
+          "c1_decimal": "9"
+        },
+        {
+          "c0_decimal": "4",
+          "c1_decimal": "12"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "4",
+          "c1_decimal": "12"
+        },
+        {
+          "c0_decimal": "18446744069414584320",
+          "c1_decimal": "18446744069414584318"
+        },
+        {
+          "c0_decimal": "3",
+          "c1_decimal": "9"
+        },
+        {
+          "c0_decimal": "18446744069414584319",
+          "c1_decimal": "18446744069414584315"
+        }
+      ],
+      "log_global_max_height": 8,
+      "name": "sweep_log_h8_polylen4_idx1_pat_sequence",
+      "reverse_bits_len_result": 128,
+      "x_decimal": "18446744069414584320"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 1,
+      "eval_fp2": {
+        "c0_decimal": "6999555467295113486",
+        "c1_decimal": "6999555467295113486"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "11436397203205407396",
+          "c1_decimal": "12857542764185312768"
+        },
+        {
+          "c0_decimal": "7936619469557850653",
+          "c1_decimal": "9357765030537756025"
+        },
+        {
+          "c0_decimal": "4436841735910293910",
+          "c1_decimal": "5857987296890199282"
+        },
+        {
+          "c0_decimal": "937064002262737167",
+          "c1_decimal": "2358209563242642539"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "937064002262737167",
+          "c1_decimal": "2358209563242642539"
+        },
+        {
+          "c0_decimal": "3499777733647556743",
+          "c1_decimal": "3499777733647556743"
+        },
+        {
+          "c0_decimal": "4436841735910293910",
+          "c1_decimal": "5857987296890199282"
+        },
+        {
+          "c0_decimal": "6999555467295113486",
+          "c1_decimal": "6999555467295113486"
+        }
+      ],
+      "log_global_max_height": 8,
+      "name": "sweep_log_h8_polylen4_idx1_pat_lcg_random",
+      "reverse_bits_len_result": 128,
+      "x_decimal": "18446744069414584320"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 128,
+      "eval_fp2": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 8,
+      "name": "sweep_log_h8_polylen1_idx128_pat_zero",
+      "reverse_bits_len_result": 1,
+      "x_decimal": "13797081185216407910"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 128,
+      "eval_fp2": {
+        "c0_decimal": "1",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 8,
+      "name": "sweep_log_h8_polylen1_idx128_pat_one",
+      "reverse_bits_len_result": 1,
+      "x_decimal": "13797081185216407910"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 128,
+      "eval_fp2": {
+        "c0_decimal": "1",
+        "c1_decimal": "3"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        }
+      ],
+      "log_global_max_height": 8,
+      "name": "sweep_log_h8_polylen1_idx128_pat_sequence",
+      "reverse_bits_len_result": 1,
+      "x_decimal": "13797081185216407910"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 128,
+      "eval_fp2": {
+        "c0_decimal": "16195469560757349753",
+        "c1_decimal": "17616615121737255125"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "16195469560757349753",
+          "c1_decimal": "17616615121737255125"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "16195469560757349753",
+          "c1_decimal": "17616615121737255125"
+        }
+      ],
+      "log_global_max_height": 8,
+      "name": "sweep_log_h8_polylen1_idx128_pat_lcg_random",
+      "reverse_bits_len_result": 1,
+      "x_decimal": "13797081185216407910"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 128,
+      "eval_fp2": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 8,
+      "name": "sweep_log_h8_polylen2_idx128_pat_zero",
+      "reverse_bits_len_result": 1,
+      "x_decimal": "13797081185216407910"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 128,
+      "eval_fp2": {
+        "c0_decimal": "13797081185216407911",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "13797081185216407911",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 8,
+      "name": "sweep_log_h8_polylen2_idx128_pat_one",
+      "reverse_bits_len_result": 1,
+      "x_decimal": "13797081185216407910"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 128,
+      "eval_fp2": {
+        "c0_decimal": "9147418301018231500",
+        "c1_decimal": "8995510833640110179"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        },
+        {
+          "c0_decimal": "2",
+          "c1_decimal": "6"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "2",
+          "c1_decimal": "6"
+        },
+        {
+          "c0_decimal": "9147418301018231500",
+          "c1_decimal": "8995510833640110179"
+        }
+      ],
+      "log_global_max_height": 8,
+      "name": "sweep_log_h8_polylen2_idx128_pat_sequence",
+      "reverse_bits_len_result": 1,
+      "x_decimal": "13797081185216407910"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 128,
+      "eval_fp2": {
+        "c0_decimal": "549851011339646896",
+        "c1_decimal": "14243228903455245352"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "11709326985748438834",
+          "c1_decimal": "13130472546728344206"
+        },
+        {
+          "c0_decimal": "8209549252100882091",
+          "c1_decimal": "9630694813080787463"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "8209549252100882091",
+          "c1_decimal": "9630694813080787463"
+        },
+        {
+          "c0_decimal": "549851011339646896",
+          "c1_decimal": "14243228903455245352"
+        }
+      ],
+      "log_global_max_height": 8,
+      "name": "sweep_log_h8_polylen2_idx128_pat_lcg_random",
+      "reverse_bits_len_result": 1,
+      "x_decimal": "13797081185216407910"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 128,
+      "eval_fp2": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 8,
+      "name": "sweep_log_h8_polylen4_idx128_pat_zero",
+      "reverse_bits_len_result": 1,
+      "x_decimal": "13797081185216407910"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 128,
+      "eval_fp2": {
+        "c0_decimal": "13502350300204966278",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "13797081185216407911",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "13220629229140224359",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "13502350300204966278",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 8,
+      "name": "sweep_log_h8_polylen4_idx128_pat_one",
+      "reverse_bits_len_result": 1,
+      "x_decimal": "13797081185216407910"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 128,
+      "eval_fp2": {
+        "c0_decimal": "8544946717048648520",
+        "c1_decimal": "7188096081731361239"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        },
+        {
+          "c0_decimal": "2",
+          "c1_decimal": "6"
+        },
+        {
+          "c0_decimal": "3",
+          "c1_decimal": "9"
+        },
+        {
+          "c0_decimal": "4",
+          "c1_decimal": "12"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "4",
+          "c1_decimal": "12"
+        },
+        {
+          "c0_decimal": "18294836602036463001",
+          "c1_decimal": "17991021667280220361"
+        },
+        {
+          "c0_decimal": "2191947592515320882",
+          "c1_decimal": "6575842777545962646"
+        },
+        {
+          "c0_decimal": "8544946717048648520",
+          "c1_decimal": "7188096081731361239"
+        }
+      ],
+      "log_global_max_height": 8,
+      "name": "sweep_log_h8_polylen4_idx128_pat_sequence",
+      "reverse_bits_len_result": 1,
+      "x_decimal": "13797081185216407910"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 128,
+      "eval_fp2": {
+        "c0_decimal": "14672398644796111240",
+        "c1_decimal": "1523336664492146879"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "2737041835730616996",
+          "c1_decimal": "4158187396710522368"
+        },
+        {
+          "c0_decimal": "17684008175792611869",
+          "c1_decimal": "658409663062965625"
+        },
+        {
+          "c0_decimal": "14184230442145055126",
+          "c1_decimal": "15605376003124960498"
+        },
+        {
+          "c0_decimal": "10684452708497498383",
+          "c1_decimal": "12105598269477403755"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "10684452708497498383",
+          "c1_decimal": "12105598269477403755"
+        },
+        {
+          "c0_decimal": "18330621195814836758",
+          "c1_decimal": "13577255018515850893"
+        },
+        {
+          "c0_decimal": "7415044566233859709",
+          "c1_decimal": "12811530688766138800"
+        },
+        {
+          "c0_decimal": "14672398644796111240",
+          "c1_decimal": "1523336664492146879"
+        }
+      ],
+      "log_global_max_height": 8,
+      "name": "sweep_log_h8_polylen4_idx128_pat_lcg_random",
+      "reverse_bits_len_result": 1,
+      "x_decimal": "13797081185216407910"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 255,
+      "eval_fp2": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 8,
+      "name": "sweep_log_h8_polylen1_idx255_pat_zero",
+      "reverse_bits_len_result": 255,
+      "x_decimal": "2117504431143841456"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 255,
+      "eval_fp2": {
+        "c0_decimal": "1",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 8,
+      "name": "sweep_log_h8_polylen1_idx255_pat_one",
+      "reverse_bits_len_result": 255,
+      "x_decimal": "2117504431143841456"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 255,
+      "eval_fp2": {
+        "c0_decimal": "1",
+        "c1_decimal": "3"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        }
+      ],
+      "log_global_max_height": 8,
+      "name": "sweep_log_h8_polylen1_idx255_pat_sequence",
+      "reverse_bits_len_result": 255,
+      "x_decimal": "2117504431143841456"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 255,
+      "eval_fp2": {
+        "c0_decimal": "7496114193282559353",
+        "c1_decimal": "8917259754262464725"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "7496114193282559353",
+          "c1_decimal": "8917259754262464725"
+        }
+      ],
+      "final_poly_len": 1,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "7496114193282559353",
+          "c1_decimal": "8917259754262464725"
+        }
+      ],
+      "log_global_max_height": 8,
+      "name": "sweep_log_h8_polylen1_idx255_pat_lcg_random",
+      "reverse_bits_len_result": 255,
+      "x_decimal": "2117504431143841456"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 255,
+      "eval_fp2": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 8,
+      "name": "sweep_log_h8_polylen2_idx255_pat_zero",
+      "reverse_bits_len_result": 255,
+      "x_decimal": "2117504431143841456"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 255,
+      "eval_fp2": {
+        "c0_decimal": "2117504431143841457",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "2117504431143841457",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 8,
+      "name": "sweep_log_h8_polylen2_idx255_pat_one",
+      "reverse_bits_len_result": 255,
+      "x_decimal": "2117504431143841456"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 255,
+      "eval_fp2": {
+        "c0_decimal": "4235008862287682913",
+        "c1_decimal": "12705026586863048739"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        },
+        {
+          "c0_decimal": "2",
+          "c1_decimal": "6"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "2",
+          "c1_decimal": "6"
+        },
+        {
+          "c0_decimal": "4235008862287682913",
+          "c1_decimal": "12705026586863048739"
+        }
+      ],
+      "log_global_max_height": 8,
+      "name": "sweep_log_h8_polylen2_idx255_pat_sequence",
+      "reverse_bits_len_result": 255,
+      "x_decimal": "2117504431143841456"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 255,
+      "eval_fp2": {
+        "c0_decimal": "17293303185189044075",
+        "c1_decimal": "5603079778401307066"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "3009971618273648434",
+          "c1_decimal": "4431117179253553806"
+        },
+        {
+          "c0_decimal": "17956937958335643307",
+          "c1_decimal": "931339445605997063"
+        }
+      ],
+      "final_poly_len": 2,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "17956937958335643307",
+          "c1_decimal": "931339445605997063"
+        },
+        {
+          "c0_decimal": "17293303185189044075",
+          "c1_decimal": "5603079778401307066"
+        }
+      ],
+      "log_global_max_height": 8,
+      "name": "sweep_log_h8_polylen2_idx255_pat_lcg_random",
+      "reverse_bits_len_result": 255,
+      "x_decimal": "2117504431143841456"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 255,
+      "eval_fp2": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 8,
+      "name": "sweep_log_h8_polylen4_idx255_pat_zero",
+      "reverse_bits_len_result": 255,
+      "x_decimal": "2117504431143841456"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 255,
+      "eval_fp2": {
+        "c0_decimal": "15530322174860589629",
+        "c1_decimal": "0"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "2117504431143841457",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "2113000831516470977",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "15530322174860589629",
+          "c1_decimal": "0"
+        }
+      ],
+      "log_global_max_height": 8,
+      "name": "sweep_log_h8_polylen4_idx255_pat_one",
+      "reverse_bits_len_result": 255,
+      "x_decimal": "2117504431143841456"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 255,
+      "eval_fp2": {
+        "c0_decimal": "2550551228538293118",
+        "c1_decimal": "7651653685614879354"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "1",
+          "c1_decimal": "3"
+        },
+        {
+          "c0_decimal": "2",
+          "c1_decimal": "6"
+        },
+        {
+          "c0_decimal": "3",
+          "c1_decimal": "9"
+        },
+        {
+          "c0_decimal": "4",
+          "c1_decimal": "12"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "4",
+          "c1_decimal": "12"
+        },
+        {
+          "c0_decimal": "8470017724575365827",
+          "c1_decimal": "6963309104311513160"
+        },
+        {
+          "c0_decimal": "6334498894922042450",
+          "c1_decimal": "556752615351543029"
+        },
+        {
+          "c0_decimal": "2550551228538293118",
+          "c1_decimal": "7651653685614879354"
+        }
+      ],
+      "log_global_max_height": 8,
+      "name": "sweep_log_h8_polylen4_idx255_pat_sequence",
+      "reverse_bits_len_result": 255,
+      "x_decimal": "2117504431143841456"
+    },
+    {
+      "category": "deterministic_sweep",
+      "domain_index": 255,
+      "eval_fp2": {
+        "c0_decimal": "7151299374051787845",
+        "c1_decimal": "6649106781116162883"
+      },
+      "final_poly_fp2": [
+        {
+          "c0_decimal": "12484430541965378212",
+          "c1_decimal": "13905576102945283584"
+        },
+        {
+          "c0_decimal": "8984652808317821469",
+          "c1_decimal": "10405798369297726841"
+        },
+        {
+          "c0_decimal": "5484875074670264726",
+          "c1_decimal": "6906020635650170098"
+        },
+        {
+          "c0_decimal": "1985097341022707983",
+          "c1_decimal": "3406242902002613355"
+        }
+      ],
+      "final_poly_len": 4,
+      "horner_step_evals_fp2": [
+        {
+          "c0_decimal": "1985097341022707983",
+          "c1_decimal": "3406242902002613355"
+        },
+        {
+          "c0_decimal": "16791664825996403639",
+          "c1_decimal": "16965311174035758151"
+        },
+        {
+          "c0_decimal": "4378846843786621942",
+          "c1_decimal": "18393110866635645726"
+        },
+        {
+          "c0_decimal": "7151299374051787845",
+          "c1_decimal": "6649106781116162883"
+        }
+      ],
+      "log_global_max_height": 8,
+      "name": "sweep_log_h8_polylen4_idx255_pat_lcg_random",
+      "reverse_bits_len_result": 255,
+      "x_decimal": "2117504431143841456"
+    }
+  ],
+  "dnac_stack": {
+    "challenge": "BinomialExtensionField<Goldilocks, 2> (fp2)",
+    "extra_query_index_bits": 0,
+    "folding": "TwoAdicFriFolding",
+    "hash": "FIPS-202 SHA3-512",
+    "val": "Goldilocks"
+  },
+  "errors_vector_reference": "fri_verifier_errors.json",
+  "format_version": "1",
+  "horner_semantics": {
+    "compare_source": "verifier.rs:323-324",
+    "compare_with_folded_eval": "if eval != folded_eval { return Err(FriError::FinalPolyMismatch) }",
+    "d7_invariant": "Design doc § M1 D7: x MUST be derived from log_global_max_height; using log_final_height is silent chain-split-grade non-determinism.",
+    "ef_times_f_semantics": "x lifted to fp2 via GoldFp2::from(x); Plonky3's EF*F (verifier.rs:320) is the same constant-by-extension multiply",
+    "horner_loop": "eval = Challenge::ZERO; for coeff in final_poly.iter().rev() { eval = eval * x + coeff; }",
+    "horner_loop_source": "verifier.rs:318-321",
+    "x_formula": "x = Val::two_adic_generator(log_global_max_height).exp_u64(reverse_bits_len(domain_index, log_global_max_height) as u64)",
+    "x_formula_source": "verifier.rs:311-312"
+  },
+  "plonky3_commit": "82cfad73cd734d37a0d51953094f970c531817ec",
+  "scope": "fri_verifier_terminal_horner",
+  "spec_doc": "docs/plans/2026-05-27-fri-verifier-design.md § 8 + § 12 V5",
+  "v6_context": {
+    "v6_corrupted_final_poly_fp2": [
+      {
+        "c0_decimal": "1177090699887663534",
+        "c1_decimal": "15646686859640359525"
+      }
+    ],
+    "v6_final_poly_fp2": [
+      {
+        "c0_decimal": "1177090699887663533",
+        "c1_decimal": "15646686859640359525"
+      }
+    ],
+    "v6_final_poly_len": 1,
+    "v6_log_arities_sum": 3,
+    "v6_log_final_height": 1,
+    "v6_log_global_max_height": 4,
+    "v6_query_indices_extracted_from_input_mmcs_calls": [
+      3,
+      12
+    ],
+    "v6_verify_fri_gate_result": "Ok(())"
+  },
+  "valid_proof_vector_reference": "fri_verifier_valid.json"
+}

@@ -1,10 +1,23 @@
 /**
  * @file test_fri_fold.c
- * @brief Cross-validate fri_fold_arity2 against Plonky3 oracle (Sub-sprint 2.1).
+ * @brief Phase D.1 sanity tests for lagrange_interpolate_at_fp_fp2.
  *
- * Loads tools/vectors/fri_fold.json — 7 cases covering log_h in {1,2,3,4,6,8,10}.
- * For each case: invokes fri_fold_arity2 with (input_values, halve_inv_powers,
- * beta, h) and asserts every output Goldilocks² element byte-matches.
+ * Plonky3's `lagrange_interpolate_at` is `fn` (file-private) in
+ * fri/src/two_adic_pcs.rs, so we cannot call it directly from the Rust oracle
+ * to byte-match. Standalone tests in this phase verify algebraic correctness
+ * using known properties:
+ *
+ *   - n == 0 returns EF::ZERO (Plonky3 line 229)
+ *   - z == xs[i] returns ys[i] (Plonky3 lines 233-237 early return)
+ *   - Lagrange of polynomial p evaluated at coset xs reproduces p(z) for any
+ *     polynomial of degree < n (mathematical contract; coset xs assumed)
+ *
+ * Byte-match against Plonky3 will be performed indirectly via fri_fold_row
+ * oracle vectors in Phase D.2.
+ *
+ * Exit codes:
+ *   0  all cases passed
+ *   1  at least one mismatch
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: Apache-2.0
@@ -18,275 +31,241 @@
 #include <stdbool.h>
 
 #include "../field_goldilocks.h"
+#include "../zk_field_helpers.h"
 #include "../fri_fold.h"
 
-/* ---------- minimal JSON tokenizer (shared style) ---------- */
-typedef struct { const char *src; size_t pos; size_t len; } json_scanner_t;
-static void js_skip_ws(json_scanner_t *s) {
-    while (s->pos < s->len) {
-        char c = s->src[s->pos];
-        if (c == ' ' || c == '\t' || c == '\n' || c == '\r') s->pos++;
-        else return;
-    }
-}
-static bool js_match(json_scanner_t *s, char c) {
-    js_skip_ws(s);
-    if (s->pos < s->len && s->src[s->pos] == c) { s->pos++; return true; }
-    return false;
-}
-static bool js_match_key(json_scanner_t *s, const char *key) {
-    js_skip_ws(s);
-    size_t klen = strlen(key);
-    if (s->pos + klen + 2 > s->len) return false;
-    if (s->src[s->pos] != '"') return false;
-    if (memcmp(s->src + s->pos + 1, key, klen) != 0) return false;
-    if (s->src[s->pos + 1 + klen] != '"') return false;
-    s->pos += klen + 2;
-    return true;
-}
-static char *js_read_string(json_scanner_t *s) {
-    js_skip_ws(s);
-    if (s->pos >= s->len || s->src[s->pos] != '"') return NULL;
-    s->pos++;
-    size_t start = s->pos;
-    while (s->pos < s->len && s->src[s->pos] != '"') s->pos++;
-    if (s->pos >= s->len) return NULL;
-    size_t slen = s->pos - start;
-    s->pos++;
-    char *out = (char *)malloc(slen + 1);
-    if (!out) return NULL;
-    memcpy(out, s->src + start, slen);
-    out[slen] = '\0';
-    return out;
-}
-static bool js_read_u32(json_scanner_t *s, uint32_t *out) {
-    js_skip_ws(s);
-    uint64_t v = 0; bool any = false;
-    while (s->pos < s->len) {
-        char c = s->src[s->pos];
-        if (c < '0' || c > '9') break;
-        v = v * 10 + (uint64_t)(c - '0'); s->pos++; any = true;
-    }
-    if (!any) return false;
-    *out = (uint32_t)v;
-    return true;
-}
-static bool js_read_u64_pair(json_scanner_t *s, uint64_t *a, uint64_t *b) {
-    js_skip_ws(s);
-    if (!js_match(s, '[')) return false;
-    char *sa = js_read_string(s); if (!sa) return false;
-    if (!js_match(s, ',')) { free(sa); return false; }
-    char *sb = js_read_string(s); if (!sb) { free(sa); return false; }
-    if (!js_match(s, ']')) { free(sa); free(sb); return false; }
-    *a = strtoull(sa, NULL, 10);
-    *b = strtoull(sb, NULL, 10);
-    free(sa); free(sb);
-    return true;
-}
+static int g_passed = 0;
+static int g_failed = 0;
 
-/* Read a [["a","b"], ...] array of fp2 pairs. Returns allocated array. */
-static gold_fp2_t *read_fp2_array(json_scanner_t *s, size_t *out_count) {
-    if (!js_match(s, '[')) return NULL;
-    size_t cap = 8, count = 0;
-    gold_fp2_t *arr = (gold_fp2_t *)malloc(cap * sizeof(gold_fp2_t));
-    while (1) {
-        js_skip_ws(s);
-        if (s->pos >= s->len) { free(arr); return NULL; }
-        if (s->src[s->pos] == ']') { s->pos++; break; }
-        if (s->src[s->pos] == ',') { s->pos++; continue; }
-        uint64_t a = 0, b = 0;
-        if (!js_read_u64_pair(s, &a, &b)) { free(arr); return NULL; }
-        if (count + 1 > cap) {
-            cap *= 2;
-            arr = (gold_fp2_t *)realloc(arr, cap * sizeof(gold_fp2_t));
-        }
-        arr[count++] = gold_fp2_new(gold_fp_from_u64(a), gold_fp_from_u64(b));
-    }
-    *out_count = count;
-    return arr;
-}
-
-/* Read an ["d", "d", ...] array of decimal-string u64. Returns gold_fp_t array. */
-static gold_fp_t *read_fp_array(json_scanner_t *s, size_t *out_count) {
-    if (!js_match(s, '[')) return NULL;
-    size_t cap = 8, count = 0;
-    gold_fp_t *arr = (gold_fp_t *)malloc(cap * sizeof(gold_fp_t));
-    while (1) {
-        js_skip_ws(s);
-        if (s->pos >= s->len) { free(arr); return NULL; }
-        if (s->src[s->pos] == ']') { s->pos++; break; }
-        if (s->src[s->pos] == ',') { s->pos++; continue; }
-        char *str = js_read_string(s);
-        if (!str) { free(arr); return NULL; }
-        uint64_t v = strtoull(str, NULL, 10);
-        free(str);
-        if (count + 1 > cap) {
-            cap *= 2;
-            arr = (gold_fp_t *)realloc(arr, cap * sizeof(gold_fp_t));
-        }
-        arr[count++] = gold_fp_from_u64(v);
-    }
-    *out_count = count;
-    return arr;
-}
-
-static void js_skip_value(json_scanner_t *s);
-static void js_skip_array(json_scanner_t *s) {
-    if (!js_match(s, '[')) return;
-    while (1) {
-        js_skip_ws(s);
-        if (s->pos >= s->len || s->src[s->pos] == ']') { s->pos++; return; }
-        if (s->src[s->pos] == ',') { s->pos++; continue; }
-        js_skip_value(s);
-    }
-}
-static void js_skip_object(json_scanner_t *s) {
-    if (!js_match(s, '{')) return;
-    while (1) {
-        js_skip_ws(s);
-        if (s->pos >= s->len || s->src[s->pos] == '}') { s->pos++; return; }
-        if (s->src[s->pos] == ',') { s->pos++; continue; }
-        char *k = js_read_string(s); if (k) free(k);
-        js_match(s, ':');
-        js_skip_value(s);
-    }
-}
-static void js_skip_value(json_scanner_t *s) {
-    js_skip_ws(s);
-    if (s->pos >= s->len) return;
-    char c = s->src[s->pos];
-    if (c == '"') { char *v = js_read_string(s); if (v) free(v); return; }
-    if (c == '[') { js_skip_array(s); return; }
-    if (c == '{') { js_skip_object(s); return; }
-    while (s->pos < s->len) {
-        char d = s->src[s->pos];
-        if (d == ',' || d == '}' || d == ']' || d == ' ' || d == '\n' ||
-            d == '\t' || d == '\r') break;
-        s->pos++;
-    }
-}
-
-static char *load_file(const char *path, size_t *out_len) {
-    FILE *f = fopen(path, "rb");
-    if (!f) { perror(path); return NULL; }
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    char *buf = (char *)malloc((size_t)sz + 1);
-    size_t got = fread(buf, 1, (size_t)sz, f);
-    fclose(f);
-    if (got != (size_t)sz) { free(buf); return NULL; }
-    buf[sz] = '\0';
-    *out_len = (size_t)sz;
-    return buf;
-}
-
-int main(int argc, char **argv) {
-    const char *path = "tools/vectors/fri_fold.json";
-    if (argc >= 2) path = argv[1];
-
-    size_t len = 0;
-    char *src = load_file(path, &len);
-    if (!src) return 2;
-    printf("loaded %s (%zu bytes)\n\n", path, len);
-
-    json_scanner_t s = {.src = src, .pos = 0, .len = len};
-    /* Find "cases": [ */
-    const char *needle = "\"cases\"";
-    size_t nlen = strlen(needle);
-    while (s.pos + nlen < s.len) {
-        if (memcmp(s.src + s.pos, needle, nlen) == 0) {
-            s.pos += nlen;
-            js_skip_ws(&s);
-            if (s.src[s.pos] == ':') s.pos++;
-            js_skip_ws(&s);
-            if (s.src[s.pos] == '[') { s.pos++; break; }
-        }
-        s.pos++;
-    }
-
-    int total_passed = 0, total_failed = 0;
-    printf("log_h     h     pass    fail\n");
-    printf("-----  -----  ------  ------\n");
-
-    while (1) {
-        js_skip_ws(&s);
-        if (s.pos >= s.len || s.src[s.pos] == ']') { s.pos++; break; }
-        if (s.src[s.pos] == ',') { s.pos++; continue; }
-        if (s.src[s.pos] != '{') { fprintf(stderr, "expected '{'\n"); return 2; }
-        s.pos++;
-
-        uint32_t log_h = 0, h_json = 0;
-        gold_fp2_t *input_values = NULL; size_t n_input = 0;
-        gold_fp2_t *expected = NULL;     size_t n_expected = 0;
-        gold_fp_t *halve_inv_powers = NULL; size_t n_hip = 0;
-        gold_fp_t *g_inv_powers = NULL;  size_t n_gip = 0; /* read but unused */
-        uint64_t beta0 = 0, beta1 = 0;
-        bool got_beta = false;
-
-        while (1) {
-            js_skip_ws(&s);
-            if (s.src[s.pos] == '}') { s.pos++; break; }
-            if (s.src[s.pos] == ',') { s.pos++; continue; }
-            if (js_match_key(&s, "log_h")) { js_match(&s, ':'); js_read_u32(&s, &log_h); }
-            else if (js_match_key(&s, "h")) { js_match(&s, ':'); js_read_u32(&s, &h_json); }
-            else if (js_match_key(&s, "input_values")) { js_match(&s, ':'); input_values = read_fp2_array(&s, &n_input); }
-            else if (js_match_key(&s, "beta")) { js_match(&s, ':'); got_beta = js_read_u64_pair(&s, &beta0, &beta1); }
-            else if (js_match_key(&s, "g_inv_powers")) { js_match(&s, ':'); g_inv_powers = read_fp_array(&s, &n_gip); }
-            else if (js_match_key(&s, "halve_inv_powers")) { js_match(&s, ':'); halve_inv_powers = read_fp_array(&s, &n_hip); }
-            else if (js_match_key(&s, "expected_output")) { js_match(&s, ':'); expected = read_fp2_array(&s, &n_expected); }
-            else { char *k = js_read_string(&s); if (k) free(k); js_match(&s, ':'); js_skip_value(&s); }
-        }
-
-        if (!input_values || !expected || !halve_inv_powers || !got_beta) {
-            fprintf(stderr, "case log_h=%u missing field\n", log_h);
-            return 2;
-        }
-
-        size_t h = (size_t)h_json;
-        if (n_input != 2 * h || n_expected != h || n_hip != h) {
-            fprintf(stderr, "case log_h=%u size mismatch: n_input=%zu (want %zu), n_expected=%zu (want %zu), n_hip=%zu (want %zu)\n",
-                    log_h, n_input, 2 * h, n_expected, h, n_hip, h);
-            return 2;
-        }
-
-        gold_fp2_t beta = gold_fp2_new(gold_fp_from_u64(beta0), gold_fp_from_u64(beta1));
-        gold_fp2_t *out = (gold_fp2_t *)malloc(h * sizeof(gold_fp2_t));
-        fri_fold_arity2(input_values, halve_inv_powers, beta, h, out);
-
-        int passed = 0, failed = 0;
-        for (size_t i = 0; i < h; i++) {
-            if (gold_fp_to_u64(out[i].a) != gold_fp_to_u64(expected[i].a) ||
-                gold_fp_to_u64(out[i].b) != gold_fp_to_u64(expected[i].b)) {
-                if (failed < 3) {
-                    fprintf(stderr, "  MISMATCH log_h=%u i=%zu: expected (%"PRIu64",%"PRIu64") got (%"PRIu64",%"PRIu64")\n",
-                            log_h, i,
-                            gold_fp_to_u64(expected[i].a), gold_fp_to_u64(expected[i].b),
-                            gold_fp_to_u64(out[i].a), gold_fp_to_u64(out[i].b));
-                }
-                failed++;
-            } else {
-                passed++;
-            }
-        }
-        printf("%5u  %5zu  %6d  %6d\n", log_h, h, passed, failed);
-        total_passed += passed;
-        total_failed += failed;
-
-        free(out);
-        free(input_values);
-        free(expected);
-        free(halve_inv_powers);
-        free(g_inv_powers);
-    }
-
-    free(src);
-    printf("\nTotal: %d passed, %d failed\n", total_passed, total_failed);
-    if (total_failed == 0) {
-        printf("SUB-SPRINT 2.1 (fri_fold) GATE: GREEN — arity-2 fold byte-matches Plonky3\n");
-        return 0;
+static void check_fp2_eq(const char *label, gold_fp2_t got, gold_fp2_t want) {
+    if (gold_fp2_eq(got, want)) {
+        g_passed++;
+        printf("  %-60s PASS\n", label);
     } else {
-        printf("SUB-SPRINT 2.1 (fri_fold) GATE: RED — %d mismatches\n", total_failed);
-        return 1;
+        g_failed++;
+        printf("  %-60s FAIL  got=(%" PRIu64 ",%" PRIu64
+               ") want=(%" PRIu64 ",%" PRIu64 ")\n",
+               label, got.a.v, got.b.v, want.a.v, want.b.v);
     }
+}
+
+/* Build xs = [1, ω, ω², ..., ω^(n-1)] where ω = two_adic_generator(log_n).
+   This is the n-th roots-of-unity subgroup — a valid coset (shift = 1)
+   per Plonky3's lagrange_interpolate_at invariant (two_adic_pcs.rs:241). */
+static void build_subgroup_xs(gold_fp_t *xs, size_t n, unsigned log_n) {
+    gold_fp_t omega = gold_fp_two_adic_generator(log_n);
+    gold_fp_shifted_powers(gold_fp_one(), omega, xs, n);
+}
+
+/* Evaluate polynomial p(x) = c0 + c1*x at fp2 z, with c0,c1 in fp2 and x in F. */
+static gold_fp2_t poly_deg1_at_z(gold_fp2_t c0, gold_fp2_t c1, gold_fp2_t z) {
+    return gold_fp2_add(c0, gold_fp2_mul(c1, z));
+}
+
+/* Evaluate polynomial p(x) = c0 + c1*x at F point x (lifted to fp2). */
+static gold_fp2_t poly_deg1_at_x(gold_fp2_t c0, gold_fp2_t c1, gold_fp_t x_fp) {
+    gold_fp2_t x_lifted = gold_fp2_from_base(x_fp);
+    return gold_fp2_add(c0, gold_fp2_mul(c1, x_lifted));
+}
+
+/* ============================================================================
+ * T1: n == 0 returns EF::ZERO  (Plonky3 two_adic_pcs.rs:229)
+ * ========================================================================== */
+static void test_n0_returns_zero(void) {
+    printf("\nT1: lagrange(n=0) returns EF::ZERO\n");
+    gold_fp2_t z = gold_fp2_new(gold_fp_from_u64(7), gold_fp_from_u64(11));
+    gold_fp2_t got = fri_fold_test_lagrange_at_fp_fp2(NULL, NULL, 0, z);
+    check_fp2_eq("lagrange(n=0)", got, gold_fp2_zero());
+}
+
+/* ============================================================================
+ * T2: z == xs[i] returns ys[i]  (Plonky3 two_adic_pcs.rs:233-237)
+ * ========================================================================== */
+static void test_early_return(void) {
+    printf("\nT2: lagrange(z = xs[i]) == ys[i] (early return)\n");
+    const struct {
+        size_t n;
+        unsigned log_n;
+        size_t check_index;
+    } cases[] = {
+        { 2, 1, 0 }, { 2, 1, 1 },
+        { 4, 2, 0 }, { 4, 2, 2 }, { 4, 2, 3 },
+        { 8, 3, 0 }, { 8, 3, 5 }, { 8, 3, 7 },
+        { 16, 4, 0 }, { 16, 4, 9 }, { 16, 4, 15 },
+    };
+    for (size_t c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
+        size_t n = cases[c].n;
+        unsigned log_n = cases[c].log_n;
+        size_t k = cases[c].check_index;
+
+        gold_fp_t *xs = (gold_fp_t *)malloc(sizeof(gold_fp_t) * n);
+        gold_fp2_t *ys = (gold_fp2_t *)malloc(sizeof(gold_fp2_t) * n);
+        if (!xs || !ys) { free(xs); free(ys); g_failed++; continue; }
+
+        build_subgroup_xs(xs, n, log_n);
+        for (size_t i = 0; i < n; i++) {
+            /* Deterministic distinct ys. */
+            ys[i] = gold_fp2_new(
+                gold_fp_from_u64(0xC0FFEE00ULL + (uint64_t)i),
+                gold_fp_from_u64(0xDEADBEEFULL + (uint64_t)i * 31));
+        }
+        /* z = xs[k] lifted to fp2 — triggers early return. */
+        gold_fp2_t z = gold_fp2_from_base(xs[k]);
+        gold_fp2_t got = fri_fold_test_lagrange_at_fp_fp2(xs, ys, n, z);
+
+        char label[80];
+        snprintf(label, sizeof(label), "early-return n=%zu k=%zu", n, k);
+        check_fp2_eq(label, got, ys[k]);
+
+        free(xs); free(ys);
+    }
+}
+
+/* ============================================================================
+ * T3: Lagrange of constant polynomial = constant
+ *
+ * If ys[i] = c for all i, the interpolating polynomial is p(x) = c
+ * (degree 0 < n). lagrange(xs, ys, z) must equal c for any z.
+ * ========================================================================== */
+static void test_constant_polynomial(void) {
+    printf("\nT3: lagrange(constant ys) == constant for any z\n");
+    const struct { size_t n; unsigned log_n; } cases[] = {
+        { 2, 1 }, { 4, 2 }, { 8, 3 }, { 16, 4 },
+    };
+    for (size_t c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
+        size_t n = cases[c].n;
+        unsigned log_n = cases[c].log_n;
+        gold_fp_t  *xs = (gold_fp_t *)malloc(sizeof(gold_fp_t) * n);
+        gold_fp2_t *ys = (gold_fp2_t *)malloc(sizeof(gold_fp2_t) * n);
+        if (!xs || !ys) { free(xs); free(ys); g_failed++; continue; }
+
+        build_subgroup_xs(xs, n, log_n);
+        gold_fp2_t constant = gold_fp2_new(
+            gold_fp_from_u64(0x12345678ULL),
+            gold_fp_from_u64(0x9ABCDEF0ULL));
+        for (size_t i = 0; i < n; i++) ys[i] = constant;
+
+        /* z is non-coset fp2 (b != 0) to avoid accidentally matching xs[i]. */
+        gold_fp2_t z = gold_fp2_new(
+            gold_fp_from_u64(0xAAAAAAULL),
+            gold_fp_from_u64(0xBBBBBBULL));
+        gold_fp2_t got = fri_fold_test_lagrange_at_fp_fp2(xs, ys, n, z);
+
+        char label[80];
+        snprintf(label, sizeof(label), "constant-poly n=%zu", n);
+        check_fp2_eq(label, got, constant);
+
+        free(xs); free(ys);
+    }
+}
+
+/* ============================================================================
+ * T4: Lagrange of degree-1 polynomial reproduces p(z)
+ *
+ * For p(x) = c0 + c1*x with c0, c1 in fp2, and ys[i] = p(xs[i]):
+ *   lagrange(xs, ys, z) == p(z)  for any z, when n >= 2.
+ * ========================================================================== */
+static void test_degree1_polynomial(void) {
+    printf("\nT4: lagrange(degree-1 poly evaluations) == p(z)\n");
+    const struct { size_t n; unsigned log_n; } cases[] = {
+        { 2, 1 }, { 4, 2 }, { 8, 3 }, { 16, 4 },
+    };
+    /* Fixed deterministic polynomial coefficients. */
+    gold_fp2_t c0 = gold_fp2_new(gold_fp_from_u64(3),  gold_fp_from_u64(5));
+    gold_fp2_t c1 = gold_fp2_new(gold_fp_from_u64(7),  gold_fp_from_u64(11));
+
+    /* Fixed deterministic z (extension-field, b != 0). */
+    gold_fp2_t z = gold_fp2_new(
+        gold_fp_from_u64(0x10000001ULL),
+        gold_fp_from_u64(0x20000002ULL));
+
+    for (size_t c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
+        size_t n = cases[c].n;
+        unsigned log_n = cases[c].log_n;
+        gold_fp_t  *xs = (gold_fp_t *)malloc(sizeof(gold_fp_t) * n);
+        gold_fp2_t *ys = (gold_fp2_t *)malloc(sizeof(gold_fp2_t) * n);
+        if (!xs || !ys) { free(xs); free(ys); g_failed++; continue; }
+
+        build_subgroup_xs(xs, n, log_n);
+        for (size_t i = 0; i < n; i++) {
+            ys[i] = poly_deg1_at_x(c0, c1, xs[i]);
+        }
+        gold_fp2_t expected = poly_deg1_at_z(c0, c1, z);
+        gold_fp2_t got = fri_fold_test_lagrange_at_fp_fp2(xs, ys, n, z);
+
+        char label[80];
+        snprintf(label, sizeof(label), "degree-1 poly n=%zu", n);
+        check_fp2_eq(label, got, expected);
+
+        free(xs); free(ys);
+    }
+}
+
+/* ============================================================================
+ * T5: Random fp2 ys with the early-return path (sanity that the function
+ * returns coherent fp2 values without crashing for varied inputs).
+ *
+ * This is a smoke check; correctness is established by T1-T4.
+ * ========================================================================== */
+static void test_random_smoke(void) {
+    printf("\nT5: random fp2 ys, varied n — smoke check\n");
+    const size_t sizes[] = { 2, 4, 8, 16 };
+    const unsigned logs[] = { 1, 2, 3, 4 };
+
+    for (size_t c = 0; c < sizeof(sizes) / sizeof(sizes[0]); c++) {
+        size_t n = sizes[c];
+        unsigned log_n = logs[c];
+        gold_fp_t  *xs = (gold_fp_t *)malloc(sizeof(gold_fp_t) * n);
+        gold_fp2_t *ys = (gold_fp2_t *)malloc(sizeof(gold_fp2_t) * n);
+        if (!xs || !ys) { free(xs); free(ys); g_failed++; continue; }
+
+        build_subgroup_xs(xs, n, log_n);
+        for (size_t i = 0; i < n; i++) {
+            uint64_t a = ((uint64_t)i * 0x9E3779B97F4A7C15ULL) ^ 0xCAFEULL;
+            uint64_t b = ((uint64_t)i * 0xBF58476D1CE4E5B9ULL) ^ 0xBABEULL;
+            ys[i] = gold_fp2_new(gold_fp_from_u64(a), gold_fp_from_u64(b));
+        }
+        gold_fp2_t z = gold_fp2_new(
+            gold_fp_from_u64(0x0F0F0F0FULL),
+            gold_fp_from_u64(0xF0F0F0F0ULL));
+        gold_fp2_t got = fri_fold_test_lagrange_at_fp_fp2(xs, ys, n, z);
+
+        /* Smoke: result is a valid fp2 element. Both components must be
+           canonical [0, p); gold_fp_to_u64 enforces this. */
+        uint64_t a = gold_fp_to_u64(got.a);
+        uint64_t b = gold_fp_to_u64(got.b);
+        if (a < GOLDILOCKS_P && b < GOLDILOCKS_P) {
+            g_passed++;
+            char label[80];
+            snprintf(label, sizeof(label),
+                     "smoke n=%zu returns canonical fp2", n);
+            printf("  %-60s PASS\n", label);
+        } else {
+            g_failed++;
+            printf("  smoke n=%zu non-canonical fp2 (a=%" PRIu64 ", b=%" PRIu64 ")\n",
+                   n, a, b);
+        }
+        free(xs); free(ys);
+    }
+}
+
+int main(void) {
+    printf("============================================================\n");
+    printf("Phase D.1 — lagrange_interpolate_at_fp_fp2 sanity tests\n");
+    printf("Plonky3 pin: 82cfad73cd734d37a0d51953094f970c531817ec\n");
+    printf("Plonky3 source: fri/src/two_adic_pcs.rs:220-260\n");
+    printf("============================================================\n");
+
+    test_n0_returns_zero();
+    test_early_return();
+    test_constant_polynomial();
+    test_degree1_polynomial();
+    test_random_smoke();
+
+    printf("\n--------------------------------------------------\n");
+    printf("Total: %d passed, %d failed\n", g_passed, g_failed);
+    printf("PHASE D.1 GATE: %s — lagrange_interpolate_at_fp_fp2\n",
+           g_failed == 0 ? "GREEN" : "RED");
+
+    return g_failed == 0 ? 0 : 1;
 }

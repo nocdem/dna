@@ -1,0 +1,8 @@
+# Build artifacts (local only)
+build/
+
+# Rust oracle build output
+tools/plonky3_oracle/target/
+
+# Reference material (local-only, SHA-pinned; e.g. NIST.FIPS.202.pdf) — not source-controlled
+refs/

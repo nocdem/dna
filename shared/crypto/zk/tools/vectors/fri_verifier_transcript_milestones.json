@@ -1,0 +1,423 @@
+{
+  "dnac_stack": {
+    "challenge": "BinomialExtensionField<Goldilocks, 2> (fp2)",
+    "challenger": "SerializingChallenger64<Goldilocks, HashChallenger<u8, DnacSha3_512Hasher, 64>>",
+    "extra_query_index_bits": 0,
+    "folding": "TwoAdicFriFolding",
+    "fri_mmcs": "ExtensionMmcs<Goldilocks, fp2, ValMmcs>",
+    "hash": "FIPS-202 SHA3-512",
+    "input_mmcs": "MerkleTreeMmcs<[Goldilocks;1], [u64;1], FieldHash, MyCompress, 2, 8>",
+    "val": "Goldilocks"
+  },
+  "fixture": {
+    "final_poly_len": 1,
+    "init_state_ascii": "DNAC|ZK|FRI|TRANSCRIPT|V1",
+    "init_state_hex": "444e41437c5a4b7c4652497c5452414e5343524950547c5631",
+    "log_arities": [
+      1,
+      1,
+      1
+    ],
+    "log_degree": 3,
+    "log_global_max_height": 4,
+    "num_commit_rounds": 3,
+    "trace_cols": 2,
+    "trace_rows": 8,
+    "trace_seed": 42
+  },
+  "format_version": "1",
+  "fri_params": {
+    "commit_proof_of_work_bits": 0,
+    "log_blowup": 1,
+    "log_final_poly_len": 0,
+    "max_log_arity": 1,
+    "num_queries": 2,
+    "query_proof_of_work_bits": 0
+  },
+  "milestone_count": 18,
+  "milestone_count_breakdown": {
+    "after_alpha_sample": 1,
+    "after_final_poly_observe": 1,
+    "after_log_arity_observe": 3,
+    "after_query_index_sample": 2,
+    "after_query_pow_check_noop": 1,
+    "commit_rounds_beta_sample": 3,
+    "commit_rounds_observe": 3,
+    "commit_rounds_pow_check_noop": 3,
+    "initial_state": 1
+  },
+  "milestones": [
+    {
+      "input_value_summary": {
+        "description": "Verifier challenger primed: observe(commitment) + sample(zeta_v: fp2) + observe_algebra_slice(opened_values[0][0][0]). State at the top of verify_fri (verifier.rs:113)."
+      },
+      "name": "initial_state",
+      "op_index": 0,
+      "operation_kind": "snapshot",
+      "result": null,
+      "transcript": {
+        "input_buf_hex": "bef0c4ed720b0571c77820afd2cb556a8b5da47c9096f4f09e0324616919df304e88cee5e6a6b30a171c717305d586e524385619c3ac10c0bd3cf9ca011400b376b3784ba35bbc5c056ffaadb3b96fca339adb3d6a571840853c54f59f7c0036",
+        "input_buf_len": 96,
+        "output_buf_remaining_hex": "",
+        "output_buf_remaining_len": 0
+      }
+    },
+    {
+      "input_value_summary": {
+        "verifier_rs_line": 143
+      },
+      "name": "after_alpha_sample",
+      "op_index": 1,
+      "operation_kind": "sample_algebra_element_fp2",
+      "result": {
+        "sampled_fp2": {
+          "c0_decimal": "9660879939833410417",
+          "c1_decimal": "4178122995988210668"
+        }
+      },
+      "transcript": {
+        "input_buf_hex": "26ae1796c78ba8791c84472948a39a48533e78e04a1516ce90559673fe9d4cfc75e430bcec86018da8315889b5f3f8c339fbacba6bc4a3ec8612571ea777b371",
+        "input_buf_len": 64,
+        "output_buf_remaining_hex": "26ae1796c78ba8791c84472948a39a48533e78e04a1516ce90559673fe9d4cfc75e430bcec86018da8315889b5f3f8c3",
+        "output_buf_remaining_len": 48
+      }
+    },
+    {
+      "input_value_summary": {
+        "commitment_bytes_hex": "91d29eca3fa12a4385e67d5528745b856b89c7fad3810b95f36f35c06f24a841c73377d7d73e286b092bbd24394caa43696140fd0f9be932a0f2c26c6215edc0",
+        "commitment_bytes_len": 64,
+        "round": 0,
+        "verifier_rs_line": 221
+      },
+      "name": "after_commit_observe_round_0",
+      "op_index": 2,
+      "operation_kind": "observe_commitment",
+      "result": null,
+      "transcript": {
+        "input_buf_hex": "26ae1796c78ba8791c84472948a39a48533e78e04a1516ce90559673fe9d4cfc75e430bcec86018da8315889b5f3f8c339fbacba6bc4a3ec8612571ea777b37191d29eca3fa12a4385e67d5528745b856b89c7fad3810b95f36f35c06f24a841c73377d7d73e286b092bbd24394caa43696140fd0f9be932a0f2c26c6215edc0",
+        "input_buf_len": 128,
+        "output_buf_remaining_hex": "",
+        "output_buf_remaining_len": 0
+      }
+    },
+    {
+      "input_value_summary": {
+        "behavior": "bits == 0 short-circuit (grinding_challenger.rs:40): return true; no observe; no sample; transcript unchanged",
+        "bits": 0,
+        "round": 0,
+        "verifier_rs_line": 222,
+        "witness_decimal": "0"
+      },
+      "name": "after_commit_pow_check_round_0",
+      "op_index": 3,
+      "operation_kind": "check_witness_bits_zero_noop",
+      "result": {
+        "check_witness_result": true
+      },
+      "transcript": {
+        "input_buf_hex": "26ae1796c78ba8791c84472948a39a48533e78e04a1516ce90559673fe9d4cfc75e430bcec86018da8315889b5f3f8c339fbacba6bc4a3ec8612571ea777b37191d29eca3fa12a4385e67d5528745b856b89c7fad3810b95f36f35c06f24a841c73377d7d73e286b092bbd24394caa43696140fd0f9be932a0f2c26c6215edc0",
+        "input_buf_len": 128,
+        "output_buf_remaining_hex": "",
+        "output_buf_remaining_len": 0
+      }
+    },
+    {
+      "input_value_summary": {
+        "round": 0,
+        "verifier_rs_line": 225
+      },
+      "name": "after_beta_sample_round_0",
+      "op_index": 4,
+      "operation_kind": "sample_algebra_element_fp2",
+      "result": {
+        "sampled_fp2": {
+          "c0_decimal": "11168855669177333383",
+          "c1_decimal": "1186438180536354208"
+        }
+      },
+      "transcript": {
+        "input_buf_hex": "d391d5bfa99bcdbcd2e2e94f5093a0adba57b4d6355123c4c2600fe6d0866e14e85c01cac39bd48764e887f70eb76a191077133d3ad485a09affbf0e54ec3687",
+        "input_buf_len": 64,
+        "output_buf_remaining_hex": "d391d5bfa99bcdbcd2e2e94f5093a0adba57b4d6355123c4c2600fe6d0866e14e85c01cac39bd48764e887f70eb76a19",
+        "output_buf_remaining_len": 48
+      }
+    },
+    {
+      "input_value_summary": {
+        "commitment_bytes_hex": "ba2b831ca38ac168d729825fe543ccaab472e50b2c97922bd94bfcc0325190ad054ec83dd86ef5f978a6bcf766f8e1b053e7979787327b4b75a24447b5c8a808",
+        "commitment_bytes_len": 64,
+        "round": 1,
+        "verifier_rs_line": 221
+      },
+      "name": "after_commit_observe_round_1",
+      "op_index": 5,
+      "operation_kind": "observe_commitment",
+      "result": null,
+      "transcript": {
+        "input_buf_hex": "d391d5bfa99bcdbcd2e2e94f5093a0adba57b4d6355123c4c2600fe6d0866e14e85c01cac39bd48764e887f70eb76a191077133d3ad485a09affbf0e54ec3687ba2b831ca38ac168d729825fe543ccaab472e50b2c97922bd94bfcc0325190ad054ec83dd86ef5f978a6bcf766f8e1b053e7979787327b4b75a24447b5c8a808",
+        "input_buf_len": 128,
+        "output_buf_remaining_hex": "",
+        "output_buf_remaining_len": 0
+      }
+    },
+    {
+      "input_value_summary": {
+        "behavior": "bits == 0 short-circuit (grinding_challenger.rs:40): return true; no observe; no sample; transcript unchanged",
+        "bits": 0,
+        "round": 1,
+        "verifier_rs_line": 222,
+        "witness_decimal": "0"
+      },
+      "name": "after_commit_pow_check_round_1",
+      "op_index": 6,
+      "operation_kind": "check_witness_bits_zero_noop",
+      "result": {
+        "check_witness_result": true
+      },
+      "transcript": {
+        "input_buf_hex": "d391d5bfa99bcdbcd2e2e94f5093a0adba57b4d6355123c4c2600fe6d0866e14e85c01cac39bd48764e887f70eb76a191077133d3ad485a09affbf0e54ec3687ba2b831ca38ac168d729825fe543ccaab472e50b2c97922bd94bfcc0325190ad054ec83dd86ef5f978a6bcf766f8e1b053e7979787327b4b75a24447b5c8a808",
+        "input_buf_len": 128,
+        "output_buf_remaining_hex": "",
+        "output_buf_remaining_len": 0
+      }
+    },
+    {
+      "input_value_summary": {
+        "round": 1,
+        "verifier_rs_line": 225
+      },
+      "name": "after_beta_sample_round_1",
+      "op_index": 7,
+      "operation_kind": "sample_algebra_element_fp2",
+      "result": {
+        "sampled_fp2": {
+          "c0_decimal": "17517744524720013099",
+          "c1_decimal": "6251393855932663367"
+        }
+      },
+      "transcript": {
+        "input_buf_hex": "46f3409eff779e0f6addb0246836f29a15326e1fdf45cf3174da6642955410544c9b74b670e599146f9d7537af0f49b256c1699735ed0647f31b87d50dfaff2b",
+        "input_buf_len": 64,
+        "output_buf_remaining_hex": "46f3409eff779e0f6addb0246836f29a15326e1fdf45cf3174da6642955410544c9b74b670e599146f9d7537af0f49b2",
+        "output_buf_remaining_len": 48
+      }
+    },
+    {
+      "input_value_summary": {
+        "commitment_bytes_hex": "7e36d508b34c679a71a9c1a36f5851b49f60435579187d13afcd41a5837defe70df501c347d278c6872a1a445efd99fc3bc02e77dd3416aeccafbbb05621553e",
+        "commitment_bytes_len": 64,
+        "round": 2,
+        "verifier_rs_line": 221
+      },
+      "name": "after_commit_observe_round_2",
+      "op_index": 8,
+      "operation_kind": "observe_commitment",
+      "result": null,
+      "transcript": {
+        "input_buf_hex": "46f3409eff779e0f6addb0246836f29a15326e1fdf45cf3174da6642955410544c9b74b670e599146f9d7537af0f49b256c1699735ed0647f31b87d50dfaff2b7e36d508b34c679a71a9c1a36f5851b49f60435579187d13afcd41a5837defe70df501c347d278c6872a1a445efd99fc3bc02e77dd3416aeccafbbb05621553e",
+        "input_buf_len": 128,
+        "output_buf_remaining_hex": "",
+        "output_buf_remaining_len": 0
+      }
+    },
+    {
+      "input_value_summary": {
+        "behavior": "bits == 0 short-circuit (grinding_challenger.rs:40): return true; no observe; no sample; transcript unchanged",
+        "bits": 0,
+        "round": 2,
+        "verifier_rs_line": 222,
+        "witness_decimal": "0"
+      },
+      "name": "after_commit_pow_check_round_2",
+      "op_index": 9,
+      "operation_kind": "check_witness_bits_zero_noop",
+      "result": {
+        "check_witness_result": true
+      },
+      "transcript": {
+        "input_buf_hex": "46f3409eff779e0f6addb0246836f29a15326e1fdf45cf3174da6642955410544c9b74b670e599146f9d7537af0f49b256c1699735ed0647f31b87d50dfaff2b7e36d508b34c679a71a9c1a36f5851b49f60435579187d13afcd41a5837defe70df501c347d278c6872a1a445efd99fc3bc02e77dd3416aeccafbbb05621553e",
+        "input_buf_len": 128,
+        "output_buf_remaining_hex": "",
+        "output_buf_remaining_len": 0
+      }
+    },
+    {
+      "input_value_summary": {
+        "round": 2,
+        "verifier_rs_line": 225
+      },
+      "name": "after_beta_sample_round_2",
+      "op_index": 10,
+      "operation_kind": "sample_algebra_element_fp2",
+      "result": {
+        "sampled_fp2": {
+          "c0_decimal": "5569320941171557299",
+          "c1_decimal": "6303104469866897638"
+        }
+      },
+      "transcript": {
+        "input_buf_hex": "3a93e9770eb1a6799a6d7de48de1769f823ffddffdbeca8c2a6fe887e50bf2beba9356b8579b16b9b323d6035357016f5779201ebc97e0e64d4a33e372acc3b3",
+        "input_buf_len": 64,
+        "output_buf_remaining_hex": "3a93e9770eb1a6799a6d7de48de1769f823ffddffdbeca8c2a6fe887e50bf2beba9356b8579b16b9b323d6035357016f",
+        "output_buf_remaining_len": 48
+      }
+    },
+    {
+      "input_value_summary": {
+        "final_poly_bytes": 16,
+        "final_poly_fp2_decimal": [
+          {
+            "c0_decimal": "1177090699887663533",
+            "c1_decimal": "15646686859640359525"
+          }
+        ],
+        "final_poly_len": 1,
+        "verifier_rs_line": 238
+      },
+      "name": "after_final_poly_observe",
+      "op_index": 11,
+      "operation_kind": "observe_algebra_slice_fp2",
+      "result": null,
+      "transcript": {
+        "input_buf_hex": "3a93e9770eb1a6799a6d7de48de1769f823ffddffdbeca8c2a6fe887e50bf2beba9356b8579b16b9b323d6035357016f5779201ebc97e0e64d4a33e372acc3b3ad59384bc1dd551065caa294cc3224d9",
+        "input_buf_len": 80,
+        "output_buf_remaining_hex": "",
+        "output_buf_remaining_len": 0
+      }
+    },
+    {
+      "input_value_summary": {
+        "log_arity_index": 0,
+        "log_arity_value": 1,
+        "observed_bytes_hex": "0100000000000000",
+        "observed_fp_decimal": "1",
+        "verifier_rs_line": 250
+      },
+      "name": "after_log_arity_observe_0",
+      "op_index": 12,
+      "operation_kind": "observe_fp",
+      "result": null,
+      "transcript": {
+        "input_buf_hex": "3a93e9770eb1a6799a6d7de48de1769f823ffddffdbeca8c2a6fe887e50bf2beba9356b8579b16b9b323d6035357016f5779201ebc97e0e64d4a33e372acc3b3ad59384bc1dd551065caa294cc3224d90100000000000000",
+        "input_buf_len": 88,
+        "output_buf_remaining_hex": "",
+        "output_buf_remaining_len": 0
+      }
+    },
+    {
+      "input_value_summary": {
+        "log_arity_index": 1,
+        "log_arity_value": 1,
+        "observed_bytes_hex": "0100000000000000",
+        "observed_fp_decimal": "1",
+        "verifier_rs_line": 250
+      },
+      "name": "after_log_arity_observe_1",
+      "op_index": 13,
+      "operation_kind": "observe_fp",
+      "result": null,
+      "transcript": {
+        "input_buf_hex": "3a93e9770eb1a6799a6d7de48de1769f823ffddffdbeca8c2a6fe887e50bf2beba9356b8579b16b9b323d6035357016f5779201ebc97e0e64d4a33e372acc3b3ad59384bc1dd551065caa294cc3224d901000000000000000100000000000000",
+        "input_buf_len": 96,
+        "output_buf_remaining_hex": "",
+        "output_buf_remaining_len": 0
+      }
+    },
+    {
+      "input_value_summary": {
+        "log_arity_index": 2,
+        "log_arity_value": 1,
+        "observed_bytes_hex": "0100000000000000",
+        "observed_fp_decimal": "1",
+        "verifier_rs_line": 250
+      },
+      "name": "after_log_arity_observe_2",
+      "op_index": 14,
+      "operation_kind": "observe_fp",
+      "result": null,
+      "transcript": {
+        "input_buf_hex": "3a93e9770eb1a6799a6d7de48de1769f823ffddffdbeca8c2a6fe887e50bf2beba9356b8579b16b9b323d6035357016f5779201ebc97e0e64d4a33e372acc3b3ad59384bc1dd551065caa294cc3224d9010000000000000001000000000000000100000000000000",
+        "input_buf_len": 104,
+        "output_buf_remaining_hex": "",
+        "output_buf_remaining_len": 0
+      }
+    },
+    {
+      "input_value_summary": {
+        "behavior": "bits == 0 short-circuit (grinding_challenger.rs:40): return true; no observe; no sample; transcript unchanged",
+        "bits": 0,
+        "verifier_rs_line": 254,
+        "witness_decimal": "0"
+      },
+      "name": "after_query_pow_check",
+      "op_index": 15,
+      "operation_kind": "check_witness_bits_zero_noop",
+      "result": {
+        "check_witness_result": true
+      },
+      "transcript": {
+        "input_buf_hex": "3a93e9770eb1a6799a6d7de48de1769f823ffddffdbeca8c2a6fe887e50bf2beba9356b8579b16b9b323d6035357016f5779201ebc97e0e64d4a33e372acc3b3ad59384bc1dd551065caa294cc3224d9010000000000000001000000000000000100000000000000",
+        "input_buf_len": 104,
+        "output_buf_remaining_hex": "",
+        "output_buf_remaining_len": 0
+      }
+    },
+    {
+      "input_value_summary": {
+        "bits": 4,
+        "extra_query_index_bits": 0,
+        "log_global_max_height": 4,
+        "query": 0,
+        "verifier_rs_line": 268
+      },
+      "name": "after_query_index_sample_0",
+      "op_index": 16,
+      "operation_kind": "sample_bits",
+      "result": {
+        "mask_hex": "000000000000000f",
+        "raw_u64_before_mask_decimal": "5105073453587486515",
+        "sampled_index": 3
+      },
+      "transcript": {
+        "input_buf_hex": "ae1c0d2bbe40f2deef39644b90d42e4a3825dbb11b712a94124e043f63a258cb5cdcf4842703e126b83d0129a3bc749e7292809b6f1821ec46d8dd42195bd733",
+        "input_buf_len": 64,
+        "output_buf_remaining_hex": "ae1c0d2bbe40f2deef39644b90d42e4a3825dbb11b712a94124e043f63a258cb5cdcf4842703e126b83d0129a3bc749e7292809b6f1821ec",
+        "output_buf_remaining_len": 56
+      }
+    },
+    {
+      "input_value_summary": {
+        "bits": 4,
+        "extra_query_index_bits": 0,
+        "log_global_max_height": 4,
+        "query": 1,
+        "verifier_rs_line": 268
+      },
+      "name": "after_query_index_sample_1",
+      "op_index": 17,
+      "operation_kind": "sample_bits",
+      "result": {
+        "mask_hex": "000000000000000f",
+        "raw_u64_before_mask_decimal": "8255802471995679212",
+        "sampled_index": 12
+      },
+      "transcript": {
+        "input_buf_hex": "ae1c0d2bbe40f2deef39644b90d42e4a3825dbb11b712a94124e043f63a258cb5cdcf4842703e126b83d0129a3bc749e7292809b6f1821ec46d8dd42195bd733",
+        "input_buf_len": 64,
+        "output_buf_remaining_hex": "ae1c0d2bbe40f2deef39644b90d42e4a3825dbb11b712a94124e043f63a258cb5cdcf4842703e126b83d0129a3bc749e",
+        "output_buf_remaining_len": 48
+      }
+    }
+  ],
+  "plonky3_commit": "82cfad73cd734d37a0d51953094f970c531817ec",
+  "plonky3_verify_fri_gate_result": "Ok(())",
+  "scope": "fri_verifier_transcript_milestones",
+  "shadow_state_disclosure": {
+    "check_witness_bits_zero_handling": "For bits == 0, neither challenger is invoked (Plonky3 grinding_challenger.rs:40-43 short-circuit). The shadow snapshot is therefore identical to the previous milestone — defense-in-depth: the C verifier MUST replicate the same short-circuit (design doc § 5 T3/T4/T8/T9 + invariant D8).",
+    "commitment_serialization_gate": "fri_milestone_cross_check_commitment_bytes runs once at startup, driving Plonky3 SerializingChallenger64::observe(MerkleCap) and asserting our hand-rolled lane-LE serializer produces byte-identical input_buf content. Aborts if mismatch.",
+    "cross_check_protocol": "Every sample call invokes BOTH the real Plonky3 SerializingChallenger64 (backed by HashChallenger<u8, DnacSha3_512Hasher, 64>) AND the shadow's prediction; results must compare equal. Divergence panics; no JSON emitted on divergence.",
+    "shadow_struct": "Shadow (defined adjacent to dump_transcript), mirrors HashChallenger.input_buffer / output_buffer per challenger/src/hash_challenger.rs:10-21."
+  },
+  "spec_doc": "docs/plans/2026-05-27-fri-verifier-design.md § 5 + § 12 V2",
+  "valid_proof_vector_reference": "fri_verifier_valid.json"
+}

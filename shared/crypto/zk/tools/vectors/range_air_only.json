@@ -1,0 +1,3512 @@
+{
+  "additive_only": true,
+  "air": "RangeOnlyAir (range_air B+S, width 65, main_next=false; ADDITIVE)",
+  "blockers": [
+    "B1",
+    "B6",
+    "B7"
+  ],
+  "cases": [
+    {
+      "additive_only": true,
+      "alpha": {
+        "c0_decimal": "8887679085003937922",
+        "c1_decimal": "10842743184065840803"
+      },
+      "amounts": [
+        "11",
+        "22",
+        "33",
+        "44"
+      ],
+      "base_degree_bits": 2,
+      "blockers": [
+        "B1",
+        "B6",
+        "B7"
+      ],
+      "claimed_input_sum": null,
+      "committed_fee": null,
+      "confidential_use_allowed": false,
+      "degree_bits": 2,
+      "final_equal": true,
+      "final_lhs": {
+        "c0_decimal": "4372337807852112324",
+        "c1_decimal": "9924933430278596516"
+      },
+      "final_rhs": {
+        "c0_decimal": "4372337807852112324",
+        "c1_decimal": "9924933430278596516"
+      },
+      "folded_constraints": {
+        "c0_decimal": "336215432794471401",
+        "c1_decimal": "5769339750279315438"
+      },
+      "main_next": false,
+      "main_width": 65,
+      "name": "range_only_db2_full_4amts",
+      "num_public_values": 0,
+      "num_quotient_chunks": 1,
+      "padding_rows": 0,
+      "per_constraint_fold_trace": [
+        {
+          "accumulator_after": {
+            "c0_decimal": "5875899936470462044",
+            "c1_decimal": "6135174895602851754"
+          },
+          "accumulator_before": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "constraint_index": 0,
+          "constraint_name": "B[0]: bit0*(bit0-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "5875899936470462044",
+            "c1_decimal": "6135174895602851754"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "5875899936470462044",
+            "c1_decimal": "6135174895602851754"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "2507278461145874986",
+            "c1_decimal": "2967388129281781684"
+          },
+          "accumulator_before": {
+            "c0_decimal": "5875899936470462044",
+            "c1_decimal": "6135174895602851754"
+          },
+          "constraint_index": 1,
+          "constraint_name": "B[1]: bit1*(bit1-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "6496561257517580761",
+            "c1_decimal": "1939612430461764660"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "6496561257517580761",
+            "c1_decimal": "1939612430461764660"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "16723273003042497266",
+            "c1_decimal": "3650477818614650553"
+          },
+          "accumulator_before": {
+            "c0_decimal": "2507278461145874986",
+            "c1_decimal": "2967388129281781684"
+          },
+          "constraint_index": 2,
+          "constraint_name": "B[2]: bit2*(bit2-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "5875899936470462044",
+            "c1_decimal": "6135174895602851754"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "5875899936470462044",
+            "c1_decimal": "6135174895602851754"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "5140691957333114020",
+            "c1_decimal": "8723605272800077010"
+          },
+          "accumulator_before": {
+            "c0_decimal": "16723273003042497266",
+            "c1_decimal": "3650477818614650553"
+          },
+          "constraint_index": 3,
+          "constraint_name": "B[3]: bit3*(bit3-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "5255238615423343327",
+            "c1_decimal": "10330737360743938848"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "5255238615423343327",
+            "c1_decimal": "10330737360743938848"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "865695932483453525",
+            "c1_decimal": "6757945637225059640"
+          },
+          "accumulator_before": {
+            "c0_decimal": "5140691957333114020",
+            "c1_decimal": "8723605272800077010"
+          },
+          "constraint_index": 4,
+          "constraint_name": "B[4]: bit4*(bit4-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "14063262158267933755",
+            "c1_decimal": "4681482912882346521"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "14063262158267933755",
+            "c1_decimal": "4681482912882346521"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "16625664396449866492",
+            "c1_decimal": "2516200896854686536"
+          },
+          "accumulator_before": {
+            "c0_decimal": "865695932483453525",
+            "c1_decimal": "6757945637225059640"
+          },
+          "constraint_index": 5,
+          "constraint_name": "B[5]: bit5*(bit5-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "6496561257517580761",
+            "c1_decimal": "1939612430461764660"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "6496561257517580761",
+            "c1_decimal": "1939612430461764660"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "9097087844685804256",
+            "c1_decimal": "16904465892094021691"
+          },
+          "accumulator_before": {
+            "c0_decimal": "16625664396449866492",
+            "c1_decimal": "2516200896854686536"
+          },
+          "constraint_index": 6,
+          "constraint_name": "B[6]: bit6*(bit6-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "5310631784580111687",
+            "c1_decimal": "9105001194404307312"
+          },
+          "accumulator_before": {
+            "c0_decimal": "9097087844685804256",
+            "c1_decimal": "16904465892094021691"
+          },
+          "constraint_index": 7,
+          "constraint_name": "B[7]: bit7*(bit7-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "7339734974746659039",
+            "c1_decimal": "14922431749715340571"
+          },
+          "accumulator_before": {
+            "c0_decimal": "5310631784580111687",
+            "c1_decimal": "9105001194404307312"
+          },
+          "constraint_index": 8,
+          "constraint_name": "B[8]: bit8*(bit8-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "7033136549320801037",
+            "c1_decimal": "8513931828340792642"
+          },
+          "accumulator_before": {
+            "c0_decimal": "7339734974746659039",
+            "c1_decimal": "14922431749715340571"
+          },
+          "constraint_index": 9,
+          "constraint_name": "B[9]: bit9*(bit9-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "2416640788259906043",
+            "c1_decimal": "11113518208291345004"
+          },
+          "accumulator_before": {
+            "c0_decimal": "7033136549320801037",
+            "c1_decimal": "8513931828340792642"
+          },
+          "constraint_index": 10,
+          "constraint_name": "B[10]: bit10*(bit10-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "16094825950705906773",
+            "c1_decimal": "8274217687516454647"
+          },
+          "accumulator_before": {
+            "c0_decimal": "2416640788259906043",
+            "c1_decimal": "11113518208291345004"
+          },
+          "constraint_index": 11,
+          "constraint_name": "B[11]: bit11*(bit11-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "11736470821026625597",
+            "c1_decimal": "16721661549296239603"
+          },
+          "accumulator_before": {
+            "c0_decimal": "16094825950705906773",
+            "c1_decimal": "8274217687516454647"
+          },
+          "constraint_index": 12,
+          "constraint_name": "B[12]: bit12*(bit12-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "17641111880216236928",
+            "c1_decimal": "5066461678401928690"
+          },
+          "accumulator_before": {
+            "c0_decimal": "11736470821026625597",
+            "c1_decimal": "16721661549296239603"
+          },
+          "constraint_index": 13,
+          "constraint_name": "B[13]: bit13*(bit13-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "6568518507562684075",
+            "c1_decimal": "1574233187742223120"
+          },
+          "accumulator_before": {
+            "c0_decimal": "17641111880216236928",
+            "c1_decimal": "5066461678401928690"
+          },
+          "constraint_index": 14,
+          "constraint_name": "B[14]: bit14*(bit14-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "14514934198706840149",
+            "c1_decimal": "2812680462862138084"
+          },
+          "accumulator_before": {
+            "c0_decimal": "6568518507562684075",
+            "c1_decimal": "1574233187742223120"
+          },
+          "constraint_index": 15,
+          "constraint_name": "B[15]: bit15*(bit15-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "3503449869501400551",
+            "c1_decimal": "3479233997019271823"
+          },
+          "accumulator_before": {
+            "c0_decimal": "14514934198706840149",
+            "c1_decimal": "2812680462862138084"
+          },
+          "constraint_index": 16,
+          "constraint_name": "B[16]: bit16*(bit16-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "14374262519043190128",
+            "c1_decimal": "18434834986596955713"
+          },
+          "accumulator_before": {
+            "c0_decimal": "3503449869501400551",
+            "c1_decimal": "3479233997019271823"
+          },
+          "constraint_index": 17,
+          "constraint_name": "B[17]: bit17*(bit17-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "1637811423054218479",
+            "c1_decimal": "1111914858540902077"
+          },
+          "accumulator_before": {
+            "c0_decimal": "14374262519043190128",
+            "c1_decimal": "18434834986596955713"
+          },
+          "constraint_index": 18,
+          "constraint_name": "B[18]: bit18*(bit18-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "5858490881390681833",
+            "c1_decimal": "1350882111621358644"
+          },
+          "accumulator_before": {
+            "c0_decimal": "1637811423054218479",
+            "c1_decimal": "1111914858540902077"
+          },
+          "constraint_index": 19,
+          "constraint_name": "B[19]: bit19*(bit19-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "14841818675490893945",
+            "c1_decimal": "18059388797638648995"
+          },
+          "accumulator_before": {
+            "c0_decimal": "5858490881390681833",
+            "c1_decimal": "1350882111621358644"
+          },
+          "constraint_index": 20,
+          "constraint_name": "B[20]: bit20*(bit20-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "6454842931367093270",
+            "c1_decimal": "4961336960220872836"
+          },
+          "accumulator_before": {
+            "c0_decimal": "14841818675490893945",
+            "c1_decimal": "18059388797638648995"
+          },
+          "constraint_index": 21,
+          "constraint_name": "B[21]: bit21*(bit21-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "18124088178779506687",
+            "c1_decimal": "9597221349559466630"
+          },
+          "accumulator_before": {
+            "c0_decimal": "6454842931367093270",
+            "c1_decimal": "4961336960220872836"
+          },
+          "constraint_index": 22,
+          "constraint_name": "B[22]: bit22*(bit22-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "3000291259368169961",
+            "c1_decimal": "1245023548295077378"
+          },
+          "accumulator_before": {
+            "c0_decimal": "18124088178779506687",
+            "c1_decimal": "9597221349559466630"
+          },
+          "constraint_index": 23,
+          "constraint_name": "B[23]: bit23*(bit23-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "15845415828343510272",
+            "c1_decimal": "13410416423136770920"
+          },
+          "accumulator_before": {
+            "c0_decimal": "3000291259368169961",
+            "c1_decimal": "1245023548295077378"
+          },
+          "constraint_index": 24,
+          "constraint_name": "B[24]: bit24*(bit24-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "1504518624051067078",
+            "c1_decimal": "5150702521838834232"
+          },
+          "accumulator_before": {
+            "c0_decimal": "15845415828343510272",
+            "c1_decimal": "13410416423136770920"
+          },
+          "constraint_index": 25,
+          "constraint_name": "B[25]: bit25*(bit25-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "11098307051153711833",
+            "c1_decimal": "1106165099879286224"
+          },
+          "accumulator_before": {
+            "c0_decimal": "1504518624051067078",
+            "c1_decimal": "5150702521838834232"
+          },
+          "constraint_index": 26,
+          "constraint_name": "B[26]: bit26*(bit26-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "6966414541065624976",
+            "c1_decimal": "9575008701998043037"
+          },
+          "accumulator_before": {
+            "c0_decimal": "11098307051153711833",
+            "c1_decimal": "1106165099879286224"
+          },
+          "constraint_index": 27,
+          "constraint_name": "B[27]: bit27*(bit27-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "15253869684947677080",
+            "c1_decimal": "1101306427410570438"
+          },
+          "accumulator_before": {
+            "c0_decimal": "6966414541065624976",
+            "c1_decimal": "9575008701998043037"
+          },
+          "constraint_index": 28,
+          "constraint_name": "B[28]: bit28*(bit28-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "12108991942502110504",
+            "c1_decimal": "12709323435638955470"
+          },
+          "accumulator_before": {
+            "c0_decimal": "15253869684947677080",
+            "c1_decimal": "1101306427410570438"
+          },
+          "constraint_index": 29,
+          "constraint_name": "B[29]: bit29*(bit29-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "8755040586022814771",
+            "c1_decimal": "6318195300296334159"
+          },
+          "accumulator_before": {
+            "c0_decimal": "12108991942502110504",
+            "c1_decimal": "12709323435638955470"
+          },
+          "constraint_index": 30,
+          "constraint_name": "B[30]: bit30*(bit30-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "2668469383972969531",
+            "c1_decimal": "15550207747075013899"
+          },
+          "accumulator_before": {
+            "c0_decimal": "8755040586022814771",
+            "c1_decimal": "6318195300296334159"
+          },
+          "constraint_index": 31,
+          "constraint_name": "B[31]: bit31*(bit31-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "11442880618448119595",
+            "c1_decimal": "12324885026216245409"
+          },
+          "accumulator_before": {
+            "c0_decimal": "2668469383972969531",
+            "c1_decimal": "15550207747075013899"
+          },
+          "constraint_index": 32,
+          "constraint_name": "B[32]: bit32*(bit32-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "14140041193641002256",
+            "c1_decimal": "6287063097212243520"
+          },
+          "accumulator_before": {
+            "c0_decimal": "11442880618448119595",
+            "c1_decimal": "12324885026216245409"
+          },
+          "constraint_index": 33,
+          "constraint_name": "B[33]: bit33*(bit33-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "5169474772652687639",
+            "c1_decimal": "8599891252905774695"
+          },
+          "accumulator_before": {
+            "c0_decimal": "14140041193641002256",
+            "c1_decimal": "6287063097212243520"
+          },
+          "constraint_index": 34,
+          "constraint_name": "B[34]: bit34*(bit34-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "17860047701062065949",
+            "c1_decimal": "14877380952381211814"
+          },
+          "accumulator_before": {
+            "c0_decimal": "5169474772652687639",
+            "c1_decimal": "8599891252905774695"
+          },
+          "constraint_index": 35,
+          "constraint_name": "B[35]: bit35*(bit35-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "17055116398927573351",
+            "c1_decimal": "12505215349409418203"
+          },
+          "accumulator_before": {
+            "c0_decimal": "17860047701062065949",
+            "c1_decimal": "14877380952381211814"
+          },
+          "constraint_index": 36,
+          "constraint_name": "B[36]: bit36*(bit36-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "5901043387325004864",
+            "c1_decimal": "2284503197790563334"
+          },
+          "accumulator_before": {
+            "c0_decimal": "17055116398927573351",
+            "c1_decimal": "12505215349409418203"
+          },
+          "constraint_index": 37,
+          "constraint_name": "B[37]: bit37*(bit37-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "12841777643366111100",
+            "c1_decimal": "14752525605075001809"
+          },
+          "accumulator_before": {
+            "c0_decimal": "5901043387325004864",
+            "c1_decimal": "2284503197790563334"
+          },
+          "constraint_index": 38,
+          "constraint_name": "B[38]: bit38*(bit38-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "3117574518480200665",
+            "c1_decimal": "6947872845972384283"
+          },
+          "accumulator_before": {
+            "c0_decimal": "12841777643366111100",
+            "c1_decimal": "14752525605075001809"
+          },
+          "constraint_index": 39,
+          "constraint_name": "B[39]: bit39*(bit39-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "3345002152263277884",
+            "c1_decimal": "4609795837210327858"
+          },
+          "accumulator_before": {
+            "c0_decimal": "3117574518480200665",
+            "c1_decimal": "6947872845972384283"
+          },
+          "constraint_index": 40,
+          "constraint_name": "B[40]: bit40*(bit40-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "16035590035445192669",
+            "c1_decimal": "1665009301547639561"
+          },
+          "accumulator_before": {
+            "c0_decimal": "3345002152263277884",
+            "c1_decimal": "4609795837210327858"
+          },
+          "constraint_index": 41,
+          "constraint_name": "B[41]: bit41*(bit41-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "8669877341997139408",
+            "c1_decimal": "11937251848863395787"
+          },
+          "accumulator_before": {
+            "c0_decimal": "16035590035445192669",
+            "c1_decimal": "1665009301547639561"
+          },
+          "constraint_index": 42,
+          "constraint_name": "B[42]: bit42*(bit42-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "12394645302937037163",
+            "c1_decimal": "9908416778841763877"
+          },
+          "accumulator_before": {
+            "c0_decimal": "8669877341997139408",
+            "c1_decimal": "11937251848863395787"
+          },
+          "constraint_index": 43,
+          "constraint_name": "B[43]: bit43*(bit43-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "5911052383578303408",
+            "c1_decimal": "1972843403682957424"
+          },
+          "accumulator_before": {
+            "c0_decimal": "12394645302937037163",
+            "c1_decimal": "9908416778841763877"
+          },
+          "constraint_index": 44,
+          "constraint_name": "B[44]: bit44*(bit44-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "16946091257485229378",
+            "c1_decimal": "6460396573634588155"
+          },
+          "accumulator_before": {
+            "c0_decimal": "5911052383578303408",
+            "c1_decimal": "1972843403682957424"
+          },
+          "constraint_index": 45,
+          "constraint_name": "B[45]: bit45*(bit45-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "6192123932448160264",
+            "c1_decimal": "3660616358785992194"
+          },
+          "accumulator_before": {
+            "c0_decimal": "16946091257485229378",
+            "c1_decimal": "6460396573634588155"
+          },
+          "constraint_index": 46,
+          "constraint_name": "B[46]: bit46*(bit46-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "12843786633373204574",
+            "c1_decimal": "8635685783959955164"
+          },
+          "accumulator_before": {
+            "c0_decimal": "6192123932448160264",
+            "c1_decimal": "3660616358785992194"
+          },
+          "constraint_index": 47,
+          "constraint_name": "B[47]: bit47*(bit47-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "6225522999427945147",
+            "c1_decimal": "14893162197177288880"
+          },
+          "accumulator_before": {
+            "c0_decimal": "12843786633373204574",
+            "c1_decimal": "8635685783959955164"
+          },
+          "constraint_index": 48,
+          "constraint_name": "B[48]: bit48*(bit48-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "11819763367622683880",
+            "c1_decimal": "11114981746435089705"
+          },
+          "accumulator_before": {
+            "c0_decimal": "6225522999427945147",
+            "c1_decimal": "14893162197177288880"
+          },
+          "constraint_index": 49,
+          "constraint_name": "B[49]: bit49*(bit49-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "3770212232720931152",
+            "c1_decimal": "17284258462371089282"
+          },
+          "accumulator_before": {
+            "c0_decimal": "11819763367622683880",
+            "c1_decimal": "11114981746435089705"
+          },
+          "constraint_index": 50,
+          "constraint_name": "B[50]: bit50*(bit50-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "10841119041674411900",
+            "c1_decimal": "13931716293716855831"
+          },
+          "accumulator_before": {
+            "c0_decimal": "3770212232720931152",
+            "c1_decimal": "17284258462371089282"
+          },
+          "constraint_index": 51,
+          "constraint_name": "B[51]: bit51*(bit51-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "3339677275357485709",
+            "c1_decimal": "4860744752017491356"
+          },
+          "accumulator_before": {
+            "c0_decimal": "10841119041674411900",
+            "c1_decimal": "13931716293716855831"
+          },
+          "constraint_index": 52,
+          "constraint_name": "B[52]: bit52*(bit52-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "16017929778687329834",
+            "c1_decimal": "928459257228855379"
+          },
+          "accumulator_before": {
+            "c0_decimal": "3339677275357485709",
+            "c1_decimal": "4860744752017491356"
+          },
+          "constraint_index": 53,
+          "constraint_name": "B[53]: bit53*(bit53-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "5997959859320379962",
+            "c1_decimal": "9698127135648828409"
+          },
+          "accumulator_before": {
+            "c0_decimal": "16017929778687329834",
+            "c1_decimal": "928459257228855379"
+          },
+          "constraint_index": 54,
+          "constraint_name": "B[54]: bit54*(bit54-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "11550714432701862144",
+            "c1_decimal": "11614868952439955281"
+          },
+          "accumulator_before": {
+            "c0_decimal": "5997959859320379962",
+            "c1_decimal": "9698127135648828409"
+          },
+          "constraint_index": 55,
+          "constraint_name": "B[55]: bit55*(bit55-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "9761134945229121830",
+            "c1_decimal": "15710064351942149841"
+          },
+          "accumulator_before": {
+            "c0_decimal": "11550714432701862144",
+            "c1_decimal": "11614868952439955281"
+          },
+          "constraint_index": 56,
+          "constraint_name": "B[56]: bit56*(bit56-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "17551662931807709868",
+            "c1_decimal": "36202300950994346"
+          },
+          "accumulator_before": {
+            "c0_decimal": "9761134945229121830",
+            "c1_decimal": "15710064351942149841"
+          },
+          "constraint_index": 57,
+          "constraint_name": "B[57]: bit57*(bit57-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "4331534797493912520",
+            "c1_decimal": "10087970504891651325"
+          },
+          "accumulator_before": {
+            "c0_decimal": "17551662931807709868",
+            "c1_decimal": "36202300950994346"
+          },
+          "constraint_index": 58,
+          "constraint_name": "B[58]: bit58*(bit58-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "12529502059502429935",
+            "c1_decimal": "8303668993365949053"
+          },
+          "accumulator_before": {
+            "c0_decimal": "4331534797493912520",
+            "c1_decimal": "10087970504891651325"
+          },
+          "constraint_index": 59,
+          "constraint_name": "B[59]: bit59*(bit59-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "18320055059418355673",
+            "c1_decimal": "2066785514377073173"
+          },
+          "accumulator_before": {
+            "c0_decimal": "12529502059502429935",
+            "c1_decimal": "8303668993365949053"
+          },
+          "constraint_index": 60,
+          "constraint_name": "B[60]: bit60*(bit60-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "8030187095126218928",
+            "c1_decimal": "14780975960069638340"
+          },
+          "accumulator_before": {
+            "c0_decimal": "18320055059418355673",
+            "c1_decimal": "2066785514377073173"
+          },
+          "constraint_index": 61,
+          "constraint_name": "B[61]: bit61*(bit61-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "7271477433771933192",
+            "c1_decimal": "14749179286100823186"
+          },
+          "accumulator_before": {
+            "c0_decimal": "8030187095126218928",
+            "c1_decimal": "14780975960069638340"
+          },
+          "constraint_index": 62,
+          "constraint_name": "B[62]: bit62*(bit62-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "10019824347832112666",
+            "c1_decimal": "14908208738802438456"
+          },
+          "accumulator_before": {
+            "c0_decimal": "7271477433771933192",
+            "c1_decimal": "14749179286100823186"
+          },
+          "constraint_index": 63,
+          "constraint_name": "B[63]: bit63*(bit63-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "336215432794471401",
+            "c1_decimal": "5769339750279315438"
+          },
+          "accumulator_before": {
+            "c0_decimal": "10019824347832112666",
+            "c1_decimal": "14908208738802438456"
+          },
+          "constraint_index": 64,
+          "constraint_name": "S: sum(bit*2^i) - amount",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        }
+      ],
+      "proof_verification_result": "Ok",
+      "public_values": [],
+      "quotient_chunks": [
+        [
+          {
+            "c0_decimal": "16131123051669604250",
+            "c1_decimal": "15881343088475983435"
+          },
+          {
+            "c0_decimal": "12490334411217197402",
+            "c1_decimal": "6225920994918037291"
+          }
+        ]
+      ],
+      "quotient_zeta": {
+        "c0_decimal": "4372337807852112324",
+        "c1_decimal": "9924933430278596516"
+      },
+      "selectors": {
+        "inv_vanishing": {
+          "c0_decimal": "13181184062050805405",
+          "c1_decimal": "6882804675238016660"
+        },
+        "is_first_row": {
+          "c0_decimal": "8485136068251063052",
+          "c1_decimal": "18157507808286451638"
+        },
+        "is_last_row": {
+          "c0_decimal": "12757927347489550381",
+          "c1_decimal": "6631304361865128690"
+        },
+        "is_transition": {
+          "c0_decimal": "8235200414347418764",
+          "c1_decimal": "4798460479605433844"
+        },
+        "z_h": {
+          "c0_decimal": "5056855676467263855",
+          "c1_decimal": "6093955512996822695"
+        }
+      },
+      "synthetic_primary_oracle": false,
+      "trace_local": [
+        {
+          "c0_decimal": "17684531198281901881",
+          "c1_decimal": "10263063258637321549"
+        },
+        {
+          "c0_decimal": "4964230657090801906",
+          "c1_decimal": "241390351398885377"
+        },
+        {
+          "c0_decimal": "762212871132682441",
+          "c1_decimal": "8183680810777262772"
+        },
+        {
+          "c0_decimal": "40550248167412061",
+          "c1_decimal": "17021044363521603214"
+        },
+        {
+          "c0_decimal": "2842946640028036143",
+          "c1_decimal": "4925385434034564628"
+        },
+        {
+          "c0_decimal": "13482513412323782416",
+          "c1_decimal": "18205353718015698944"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "9851731542949370878",
+          "c1_decimal": "10922924910116074914"
+        }
+      ],
+      "trace_next": null,
+      "trace_rows": [
+        {
+          "amount": "11",
+          "row": 0
+        },
+        {
+          "amount": "22",
+          "row": 1
+        },
+        {
+          "amount": "33",
+          "row": 2
+        },
+        {
+          "amount": "44",
+          "row": 3
+        }
+      ],
+      "zeta": {
+        "c0_decimal": "8234918939370708108",
+        "c1_decimal": "4798460479605433844"
+      },
+      "zeta_next": {
+        "c0_decimal": "3148323262725518948",
+        "c1_decimal": "8382891748327537095"
+      }
+    },
+    {
+      "additive_only": true,
+      "alpha": {
+        "c0_decimal": "16701763622537813266",
+        "c1_decimal": "2085040849150622275"
+      },
+      "amounts": [
+        "7",
+        "14",
+        "21",
+        "28",
+        "35"
+      ],
+      "base_degree_bits": 3,
+      "blockers": [
+        "B1",
+        "B6",
+        "B7"
+      ],
+      "claimed_input_sum": null,
+      "committed_fee": null,
+      "confidential_use_allowed": false,
+      "degree_bits": 3,
+      "final_equal": true,
+      "final_lhs": {
+        "c0_decimal": "16706220825187584411",
+        "c1_decimal": "12515360147892168042"
+      },
+      "final_rhs": {
+        "c0_decimal": "16706220825187584411",
+        "c1_decimal": "12515360147892168042"
+      },
+      "folded_constraints": {
+        "c0_decimal": "8128096118321209171",
+        "c1_decimal": "10926314564235043030"
+      },
+      "main_next": false,
+      "main_width": 65,
+      "name": "range_only_db3_padded_5amts",
+      "num_public_values": 0,
+      "num_quotient_chunks": 1,
+      "padding_rows": 3,
+      "per_constraint_fold_trace": [
+        {
+          "accumulator_after": {
+            "c0_decimal": "10333852080934279877",
+            "c1_decimal": "10998002216659209578"
+          },
+          "accumulator_before": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "constraint_index": 0,
+          "constraint_name": "B[0]: bit0*(bit0-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "10333852080934279877",
+            "c1_decimal": "10998002216659209578"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "10333852080934279877",
+            "c1_decimal": "10998002216659209578"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "10743466651453558690",
+            "c1_decimal": "17942316367268281695"
+          },
+          "accumulator_before": {
+            "c0_decimal": "10333852080934279877",
+            "c1_decimal": "10998002216659209578"
+          },
+          "constraint_index": 1,
+          "constraint_name": "B[1]: bit1*(bit1-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "4927786684047285278",
+            "c1_decimal": "9723730743076569216"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "4927786684047285278",
+            "c1_decimal": "9723730743076569216"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "10275859404345029523",
+            "c1_decimal": "3447803327814092404"
+          },
+          "accumulator_before": {
+            "c0_decimal": "10743466651453558690",
+            "c1_decimal": "17942316367268281695"
+          },
+          "constraint_index": 2,
+          "constraint_name": "B[2]: bit2*(bit2-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "16087349131402452824",
+            "c1_decimal": "140837233605348121"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "16087349131402452824",
+            "c1_decimal": "140837233605348121"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "12628138362887445982",
+            "c1_decimal": "523804832843658887"
+          },
+          "accumulator_before": {
+            "c0_decimal": "10275859404345029523",
+            "c1_decimal": "3447803327814092404"
+          },
+          "constraint_index": 3,
+          "constraint_name": "B[3]: bit3*(bit3-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "1555454757144643604",
+            "c1_decimal": "2548761678197991095"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "1555454757144643604",
+            "c1_decimal": "2548761678197991095"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "2123104303289376711",
+            "c1_decimal": "8979429316956961009"
+          },
+          "accumulator_before": {
+            "c0_decimal": "12628138362887445982",
+            "c1_decimal": "523804832843658887"
+          },
+          "constraint_index": 4,
+          "constraint_name": "B[4]: bit4*(bit4-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "3197882656265732806",
+            "c1_decimal": "14667362816006099978"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "3197882656265732806",
+            "c1_decimal": "14667362816006099978"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "7810939053004916080",
+            "c1_decimal": "6567141900296196630"
+          },
+          "accumulator_before": {
+            "c0_decimal": "2123104303289376711",
+            "c1_decimal": "8979429316956961009"
+          },
+          "constraint_index": 5,
+          "constraint_name": "B[5]: bit5*(bit5-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "15486355525959702810",
+            "c1_decimal": "1239670449373505291"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "15486355525959702810",
+            "c1_decimal": "1239670449373505291"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "9313679052153686666",
+            "c1_decimal": "8157195004172212961"
+          },
+          "accumulator_before": {
+            "c0_decimal": "7810939053004916080",
+            "c1_decimal": "6567141900296196630"
+          },
+          "constraint_index": 6,
+          "constraint_name": "B[6]: bit6*(bit6-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "8586580196500483134",
+            "c1_decimal": "68036130556660096"
+          },
+          "accumulator_before": {
+            "c0_decimal": "9313679052153686666",
+            "c1_decimal": "8157195004172212961"
+          },
+          "constraint_index": 7,
+          "constraint_name": "B[7]: bit7*(bit7-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "4913260562301590477",
+            "c1_decimal": "12112820972259234425"
+          },
+          "accumulator_before": {
+            "c0_decimal": "8586580196500483134",
+            "c1_decimal": "68036130556660096"
+          },
+          "constraint_index": 8,
+          "constraint_name": "B[8]: bit8*(bit8-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "6994261280478267535",
+            "c1_decimal": "2645657543700857754"
+          },
+          "accumulator_before": {
+            "c0_decimal": "4913260562301590477",
+            "c1_decimal": "12112820972259234425"
+          },
+          "constraint_index": 9,
+          "constraint_name": "B[9]: bit9*(bit9-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "8694503435910588060",
+            "c1_decimal": "15766125874977289600"
+          },
+          "accumulator_before": {
+            "c0_decimal": "6994261280478267535",
+            "c1_decimal": "2645657543700857754"
+          },
+          "constraint_index": 10,
+          "constraint_name": "B[10]: bit10*(bit10-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "10200871866145402363",
+            "c1_decimal": "4517388537831243638"
+          },
+          "accumulator_before": {
+            "c0_decimal": "8694503435910588060",
+            "c1_decimal": "15766125874977289600"
+          },
+          "constraint_index": 11,
+          "constraint_name": "B[11]: bit11*(bit11-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "6182517392579688940",
+            "c1_decimal": "9469094284441066857"
+          },
+          "accumulator_before": {
+            "c0_decimal": "10200871866145402363",
+            "c1_decimal": "4517388537831243638"
+          },
+          "constraint_index": 12,
+          "constraint_name": "B[12]: bit12*(bit12-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "13735768201638024731",
+            "c1_decimal": "1776685498155465012"
+          },
+          "accumulator_before": {
+            "c0_decimal": "6182517392579688940",
+            "c1_decimal": "9469094284441066857"
+          },
+          "constraint_index": 13,
+          "constraint_name": "B[13]: bit13*(bit13-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "5928582854173094698",
+            "c1_decimal": "529420118907255797"
+          },
+          "accumulator_before": {
+            "c0_decimal": "13735768201638024731",
+            "c1_decimal": "1776685498155465012"
+          },
+          "constraint_index": 14,
+          "constraint_name": "B[14]: bit14*(bit14-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "3277631222660854012",
+            "c1_decimal": "9108877902224101371"
+          },
+          "accumulator_before": {
+            "c0_decimal": "5928582854173094698",
+            "c1_decimal": "529420118907255797"
+          },
+          "constraint_index": 15,
+          "constraint_name": "B[15]: bit15*(bit15-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "12994644604515301939",
+            "c1_decimal": "16874392883178914245"
+          },
+          "accumulator_before": {
+            "c0_decimal": "3277631222660854012",
+            "c1_decimal": "9108877902224101371"
+          },
+          "constraint_index": 16,
+          "constraint_name": "B[16]: bit16*(bit16-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "17412533274820750449",
+            "c1_decimal": "7320300953652860454"
+          },
+          "accumulator_before": {
+            "c0_decimal": "12994644604515301939",
+            "c1_decimal": "16874392883178914245"
+          },
+          "constraint_index": 17,
+          "constraint_name": "B[17]: bit17*(bit17-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "3521137512819874813",
+            "c1_decimal": "17093232952525755826"
+          },
+          "accumulator_before": {
+            "c0_decimal": "17412533274820750449",
+            "c1_decimal": "7320300953652860454"
+          },
+          "constraint_index": 18,
+          "constraint_name": "B[18]: bit18*(bit18-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "15526973288962758265",
+            "c1_decimal": "648547637118622383"
+          },
+          "accumulator_before": {
+            "c0_decimal": "3521137512819874813",
+            "c1_decimal": "17093232952525755826"
+          },
+          "constraint_index": 19,
+          "constraint_name": "B[19]: bit19*(bit19-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "8923266451513797231",
+            "c1_decimal": "15770989814209803980"
+          },
+          "accumulator_before": {
+            "c0_decimal": "15526973288962758265",
+            "c1_decimal": "648547637118622383"
+          },
+          "constraint_index": 20,
+          "constraint_name": "B[20]: bit20*(bit20-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "16744253136214342985",
+            "c1_decimal": "1807590436586350788"
+          },
+          "accumulator_before": {
+            "c0_decimal": "8923266451513797231",
+            "c1_decimal": "15770989814209803980"
+          },
+          "constraint_index": 21,
+          "constraint_name": "B[21]: bit21*(bit21-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "10316619835224542321",
+            "c1_decimal": "6831995568274793076"
+          },
+          "accumulator_before": {
+            "c0_decimal": "16744253136214342985",
+            "c1_decimal": "1807590436586350788"
+          },
+          "constraint_index": 22,
+          "constraint_name": "B[22]: bit22*(bit22-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "18301654022248486590",
+            "c1_decimal": "9944820417492276077"
+          },
+          "accumulator_before": {
+            "c0_decimal": "10316619835224542321",
+            "c1_decimal": "6831995568274793076"
+          },
+          "constraint_index": 23,
+          "constraint_name": "B[23]: bit23*(bit23-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "3211376902401947942",
+            "c1_decimal": "3886791543296898548"
+          },
+          "accumulator_before": {
+            "c0_decimal": "18301654022248486590",
+            "c1_decimal": "9944820417492276077"
+          },
+          "constraint_index": 24,
+          "constraint_name": "B[24]: bit24*(bit24-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "13953037812785318544",
+            "c1_decimal": "12518737722482018464"
+          },
+          "accumulator_before": {
+            "c0_decimal": "3211376902401947942",
+            "c1_decimal": "3886791543296898548"
+          },
+          "constraint_index": 25,
+          "constraint_name": "B[25]: bit25*(bit25-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "4006401001576744351",
+            "c1_decimal": "13757630628694683485"
+          },
+          "accumulator_before": {
+            "c0_decimal": "13953037812785318544",
+            "c1_decimal": "12518737722482018464"
+          },
+          "constraint_index": 26,
+          "constraint_name": "B[26]: bit26*(bit26-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "1758815429671222566",
+            "c1_decimal": "7855393131615353480"
+          },
+          "accumulator_before": {
+            "c0_decimal": "4006401001576744351",
+            "c1_decimal": "13757630628694683485"
+          },
+          "constraint_index": 27,
+          "constraint_name": "B[27]: bit27*(bit27-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "11873984890763561103",
+            "c1_decimal": "15541430635662729213"
+          },
+          "accumulator_before": {
+            "c0_decimal": "1758815429671222566",
+            "c1_decimal": "7855393131615353480"
+          },
+          "constraint_index": 28,
+          "constraint_name": "B[28]: bit28*(bit28-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "2022201589031847477",
+            "c1_decimal": "12411686295829726156"
+          },
+          "accumulator_before": {
+            "c0_decimal": "11873984890763561103",
+            "c1_decimal": "15541430635662729213"
+          },
+          "constraint_index": 29,
+          "constraint_name": "B[29]: bit29*(bit29-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "18371382279815731931",
+            "c1_decimal": "14069493788787858458"
+          },
+          "accumulator_before": {
+            "c0_decimal": "2022201589031847477",
+            "c1_decimal": "12411686295829726156"
+          },
+          "constraint_index": 30,
+          "constraint_name": "B[30]: bit30*(bit30-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "11773542039767120905",
+            "c1_decimal": "4642284741120378748"
+          },
+          "accumulator_before": {
+            "c0_decimal": "18371382279815731931",
+            "c1_decimal": "14069493788787858458"
+          },
+          "constraint_index": 31,
+          "constraint_name": "B[31]: bit31*(bit31-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "15643476114894107201",
+            "c1_decimal": "2976638856025525692"
+          },
+          "accumulator_before": {
+            "c0_decimal": "11773542039767120905",
+            "c1_decimal": "4642284741120378748"
+          },
+          "constraint_index": 32,
+          "constraint_name": "B[32]: bit32*(bit32-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "5031421613380201501",
+            "c1_decimal": "7024055391042112577"
+          },
+          "accumulator_before": {
+            "c0_decimal": "15643476114894107201",
+            "c1_decimal": "2976638856025525692"
+          },
+          "constraint_index": 33,
+          "constraint_name": "B[33]: bit33*(bit33-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "15902311127447220727",
+            "c1_decimal": "16534609676608450604"
+          },
+          "accumulator_before": {
+            "c0_decimal": "5031421613380201501",
+            "c1_decimal": "7024055391042112577"
+          },
+          "constraint_index": 34,
+          "constraint_name": "B[34]: bit34*(bit34-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "18220372527227172328",
+            "c1_decimal": "8305437405777702542"
+          },
+          "accumulator_before": {
+            "c0_decimal": "15902311127447220727",
+            "c1_decimal": "16534609676608450604"
+          },
+          "constraint_index": 35,
+          "constraint_name": "B[35]: bit35*(bit35-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "17116086769420919804",
+            "c1_decimal": "15453825205012569860"
+          },
+          "accumulator_before": {
+            "c0_decimal": "18220372527227172328",
+            "c1_decimal": "8305437405777702542"
+          },
+          "constraint_index": 36,
+          "constraint_name": "B[36]: bit36*(bit36-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "4653362945610465603",
+            "c1_decimal": "13328986170474746262"
+          },
+          "accumulator_before": {
+            "c0_decimal": "17116086769420919804",
+            "c1_decimal": "15453825205012569860"
+          },
+          "constraint_index": 37,
+          "constraint_name": "B[37]: bit37*(bit37-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "5287031290408186935",
+            "c1_decimal": "2436084903762863227"
+          },
+          "accumulator_before": {
+            "c0_decimal": "4653362945610465603",
+            "c1_decimal": "13328986170474746262"
+          },
+          "constraint_index": 38,
+          "constraint_name": "B[38]: bit38*(bit38-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "14971319842576573345",
+            "c1_decimal": "18408962750993961265"
+          },
+          "accumulator_before": {
+            "c0_decimal": "5287031290408186935",
+            "c1_decimal": "2436084903762863227"
+          },
+          "constraint_index": 39,
+          "constraint_name": "B[39]: bit39*(bit39-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "16435385742184819873",
+            "c1_decimal": "18270054113734915609"
+          },
+          "accumulator_before": {
+            "c0_decimal": "14971319842576573345",
+            "c1_decimal": "18408962750993961265"
+          },
+          "constraint_index": 40,
+          "constraint_name": "B[40]: bit40*(bit40-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "645573221109483317",
+            "c1_decimal": "4563912037998811924"
+          },
+          "accumulator_before": {
+            "c0_decimal": "16435385742184819873",
+            "c1_decimal": "18270054113734915609"
+          },
+          "constraint_index": 41,
+          "constraint_name": "B[41]: bit41*(bit41-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "11540344134783348306",
+            "c1_decimal": "387920104753783359"
+          },
+          "accumulator_before": {
+            "c0_decimal": "645573221109483317",
+            "c1_decimal": "4563912037998811924"
+          },
+          "constraint_index": 42,
+          "constraint_name": "B[42]: bit42*(bit42-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "15719856290983823776",
+            "c1_decimal": "779572256938971892"
+          },
+          "accumulator_before": {
+            "c0_decimal": "11540344134783348306",
+            "c1_decimal": "387920104753783359"
+          },
+          "constraint_index": 43,
+          "constraint_name": "B[43]: bit43*(bit43-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "10371776846386718243",
+            "c1_decimal": "12247910111821584406"
+          },
+          "accumulator_before": {
+            "c0_decimal": "15719856290983823776",
+            "c1_decimal": "779572256938971892"
+          },
+          "constraint_index": 44,
+          "constraint_name": "B[44]: bit44*(bit44-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "12844806535556144706",
+            "c1_decimal": "17078197529019858029"
+          },
+          "accumulator_before": {
+            "c0_decimal": "10371776846386718243",
+            "c1_decimal": "12247910111821584406"
+          },
+          "constraint_index": 45,
+          "constraint_name": "B[45]: bit45*(bit45-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "7374681222036767088",
+            "c1_decimal": "13449525597639987702"
+          },
+          "accumulator_before": {
+            "c0_decimal": "12844806535556144706",
+            "c1_decimal": "17078197529019858029"
+          },
+          "constraint_index": 46,
+          "constraint_name": "B[46]: bit46*(bit46-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "2727999380268192766",
+            "c1_decimal": "15037101571481217457"
+          },
+          "accumulator_before": {
+            "c0_decimal": "7374681222036767088",
+            "c1_decimal": "13449525597639987702"
+          },
+          "constraint_index": 47,
+          "constraint_name": "B[47]: bit47*(bit47-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "8079680906915410912",
+            "c1_decimal": "4297097518737025909"
+          },
+          "accumulator_before": {
+            "c0_decimal": "2727999380268192766",
+            "c1_decimal": "15037101571481217457"
+          },
+          "constraint_index": 48,
+          "constraint_name": "B[48]: bit48*(bit48-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "100434780592706248",
+            "c1_decimal": "12528198520216745418"
+          },
+          "accumulator_before": {
+            "c0_decimal": "8079680906915410912",
+            "c1_decimal": "4297097518737025909"
+          },
+          "constraint_index": 49,
+          "constraint_name": "B[49]: bit49*(bit49-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "13122619725542610176",
+            "c1_decimal": "18400731200863256866"
+          },
+          "accumulator_before": {
+            "c0_decimal": "100434780592706248",
+            "c1_decimal": "12528198520216745418"
+          },
+          "constraint_index": 50,
+          "constraint_name": "B[50]: bit50*(bit50-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "16168816225213265341",
+            "c1_decimal": "1087593907061884027"
+          },
+          "accumulator_before": {
+            "c0_decimal": "13122619725542610176",
+            "c1_decimal": "18400731200863256866"
+          },
+          "constraint_index": 51,
+          "constraint_name": "B[51]: bit51*(bit51-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "1089317410594919012",
+            "c1_decimal": "16966339424152574869"
+          },
+          "accumulator_before": {
+            "c0_decimal": "16168816225213265341",
+            "c1_decimal": "1087593907061884027"
+          },
+          "constraint_index": 52,
+          "constraint_name": "B[52]: bit52*(bit52-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "12015448080539340248",
+            "c1_decimal": "3313068783410087959"
+          },
+          "accumulator_before": {
+            "c0_decimal": "1089317410594919012",
+            "c1_decimal": "16966339424152574869"
+          },
+          "constraint_index": 53,
+          "constraint_name": "B[53]: bit53*(bit53-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "17470568409159234261",
+            "c1_decimal": "2571187695805179681"
+          },
+          "accumulator_before": {
+            "c0_decimal": "12015448080539340248",
+            "c1_decimal": "3313068783410087959"
+          },
+          "constraint_index": 54,
+          "constraint_name": "B[54]: bit54*(bit54-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "7705872914984861945",
+            "c1_decimal": "12952018952162670398"
+          },
+          "accumulator_before": {
+            "c0_decimal": "17470568409159234261",
+            "c1_decimal": "2571187695805179681"
+          },
+          "constraint_index": 55,
+          "constraint_name": "B[55]: bit55*(bit55-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "8128951344375443810",
+            "c1_decimal": "9178168782919644463"
+          },
+          "accumulator_before": {
+            "c0_decimal": "7705872914984861945",
+            "c1_decimal": "12952018952162670398"
+          },
+          "constraint_index": 56,
+          "constraint_name": "B[56]: bit56*(bit56-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "10817859717948107019",
+            "c1_decimal": "3430218534885409915"
+          },
+          "accumulator_before": {
+            "c0_decimal": "8128951344375443810",
+            "c1_decimal": "9178168782919644463"
+          },
+          "constraint_index": 57,
+          "constraint_name": "B[57]: bit57*(bit57-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "3039253564699501358",
+            "c1_decimal": "16301561290072998465"
+          },
+          "accumulator_before": {
+            "c0_decimal": "10817859717948107019",
+            "c1_decimal": "3430218534885409915"
+          },
+          "constraint_index": 58,
+          "constraint_name": "B[58]: bit58*(bit58-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "10071079316394307145",
+            "c1_decimal": "11355924725107213235"
+          },
+          "accumulator_before": {
+            "c0_decimal": "3039253564699501358",
+            "c1_decimal": "16301561290072998465"
+          },
+          "constraint_index": 59,
+          "constraint_name": "B[59]: bit59*(bit59-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "15602269149988619861",
+            "c1_decimal": "9756998520397895430"
+          },
+          "accumulator_before": {
+            "c0_decimal": "10071079316394307145",
+            "c1_decimal": "11355924725107213235"
+          },
+          "constraint_index": 60,
+          "constraint_name": "B[60]: bit60*(bit60-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "2722214976096182830",
+            "c1_decimal": "7391113723903328274"
+          },
+          "accumulator_before": {
+            "c0_decimal": "15602269149988619861",
+            "c1_decimal": "9756998520397895430"
+          },
+          "constraint_index": 61,
+          "constraint_name": "B[61]: bit61*(bit61-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "13411817591699711020",
+            "c1_decimal": "1232320930820233855"
+          },
+          "accumulator_before": {
+            "c0_decimal": "2722214976096182830",
+            "c1_decimal": "7391113723903328274"
+          },
+          "constraint_index": 62,
+          "constraint_name": "B[62]: bit62*(bit62-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "6728693168191826395",
+            "c1_decimal": "1898839593308253313"
+          },
+          "accumulator_before": {
+            "c0_decimal": "13411817591699711020",
+            "c1_decimal": "1232320930820233855"
+          },
+          "constraint_index": 63,
+          "constraint_name": "B[63]: bit63*(bit63-1)",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        },
+        {
+          "accumulator_after": {
+            "c0_decimal": "8128096118321209171",
+            "c1_decimal": "10926314564235043030"
+          },
+          "accumulator_before": {
+            "c0_decimal": "6728693168191826395",
+            "c1_decimal": "1898839593308253313"
+          },
+          "constraint_index": 64,
+          "constraint_name": "S: sum(bit*2^i) - amount",
+          "raw_constraint_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          "selector": "one(unfiltered)",
+          "selector_applied_value": {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        }
+      ],
+      "proof_verification_result": "Ok",
+      "public_values": [],
+      "quotient_chunks": [
+        [
+          {
+            "c0_decimal": "11657499301265752675",
+            "c1_decimal": "10815426882376993985"
+          },
+          {
+            "c0_decimal": "1699933265515174057",
+            "c1_decimal": "3356495084762345151"
+          }
+        ]
+      ],
+      "quotient_zeta": {
+        "c0_decimal": "16706220825187584411",
+        "c1_decimal": "12515360147892168042"
+      },
+      "selectors": {
+        "inv_vanishing": {
+          "c0_decimal": "2758664394824108113",
+          "c1_decimal": "14375001880124172591"
+        },
+        "is_first_row": {
+          "c0_decimal": "3002307803228190913",
+          "c1_decimal": "13361469342468554351"
+        },
+        "is_last_row": {
+          "c0_decimal": "8024720131285010707",
+          "c1_decimal": "6528976895522223058"
+        },
+        "is_transition": {
+          "c0_decimal": "7914774108641159747",
+          "c1_decimal": "5275584576438329155"
+        },
+        "z_h": {
+          "c0_decimal": "11555083966121262377",
+          "c1_decimal": "10890096077391757253"
+        }
+      },
+      "synthetic_primary_oracle": false,
+      "trace_local": [
+        {
+          "c0_decimal": "14643569867576117856",
+          "c1_decimal": "3836811848227414901"
+        },
+        {
+          "c0_decimal": "11616484650031300275",
+          "c1_decimal": "6103870724790019056"
+        },
+        {
+          "c0_decimal": "5017634097195327423",
+          "c1_decimal": "10662595712869549710"
+        },
+        {
+          "c0_decimal": "15888722206416610040",
+          "c1_decimal": "3514640822617613744"
+        },
+        {
+          "c0_decimal": "469063354546843300",
+          "c1_decimal": "1247581946055009589"
+        },
+        {
+          "c0_decimal": "7067913907382816152",
+          "c1_decimal": "15135601027390063256"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        },
+        {
+          "c0_decimal": "12906742389631663020",
+          "c1_decimal": "816796522322041149"
+        }
+      ],
+      "trace_next": null,
+      "trace_rows": [
+        {
+          "amount": "7",
+          "row": 0
+        },
+        {
+          "amount": "14",
+          "row": 1
+        },
+        {
+          "amount": "21",
+          "row": 2
+        },
+        {
+          "amount": "28",
+          "row": 3
+        },
+        {
+          "amount": "35",
+          "row": 4
+        },
+        {
+          "amount": "0",
+          "row": 5
+        },
+        {
+          "amount": "0",
+          "row": 6
+        },
+        {
+          "amount": "0",
+          "row": 7
+        }
+      ],
+      "zeta": {
+        "c0_decimal": "7914775208152787267",
+        "c1_decimal": "5275584576438329155"
+      },
+      "zeta_next": {
+        "c0_decimal": "16247620933281240815",
+        "c1_decimal": "14348932938165991077"
+      }
+    }
+  ],
+  "confidential_use_allowed": false,
+  "format_version": "1",
+  "oracle": "real_p3_uni_stark_verify_constraints",
+  "plonky3_commit": "82cfad73cd734d37a0d51953094f970c531817ec",
+  "scope": "range_proof_air",
+  "spec_doc": "docs/plans/2026-05-30-dnac-range-proof-air-regrounding.md"
+}

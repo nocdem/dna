@@ -1,0 +1,123 @@
+{
+  "air": "vendored SquareAir (uni-stark/tests/no_next_row.rs:16-49 @ 82cfad73)",
+  "alpha": {
+    "c0_decimal": "11024244236445398872",
+    "c1_decimal": "679859857360178741"
+  },
+  "base_degree_bits": 3,
+  "degree_bits": 3,
+  "final_equal": true,
+  "final_lhs": {
+    "c0_decimal": "14617346103406142180",
+    "c1_decimal": "12911846339293703690"
+  },
+  "final_rhs": {
+    "c0_decimal": "14617346103406142180",
+    "c1_decimal": "12911846339293703690"
+  },
+  "folded_constraints": {
+    "c0_decimal": "9151029309336723911",
+    "c1_decimal": "782766546951563817"
+  },
+  "format_version": "1",
+  "grounding": {
+    "gate1_p3_uni_stark_verify": "Ok",
+    "gate2_pub_verify_constraints": "Ok",
+    "gate3_recompose_quotient_from_chunks": "matches quotient_zeta",
+    "gate4_folded_times_inv_vanishing_eq_quotient": true,
+    "gate5_per_constraint_selector_times_raw_eq_real_received": true,
+    "note": "Ground truth from Plonky3 verifier-side PUB fns only: verify_constraints (verifier.rs:103) + recompose_quotient_from_chunks (verifier.rs:59). The per-constraint fold trace is from a RecordingFolder mirroring VerifierConstraintFolder (folder.rs:215-218, acc=acc*alpha+x) running the REAL Air::eval; folded validated == the real verify_constraints folder accumulator via GATE2 ∧ GATE4; each raw cross-checked selector*raw == real received (GATE5). NOT ProverConstraintFolder; NOT synthetic."
+  },
+  "main_next": false,
+  "main_width": 2,
+  "num_public_values": 0,
+  "num_quotient_chunks": 1,
+  "oracle": "real_p3_uni_stark_verify_constraints",
+  "per_constraint_fold_trace": [
+    {
+      "accumulator_after": {
+        "c0_decimal": "9151029309336723911",
+        "c1_decimal": "782766546951563817"
+      },
+      "accumulator_before": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      },
+      "constraint_index": 0,
+      "constraint_name": "all_rows: trace[0]*trace[0] == trace[1]",
+      "raw_constraint_value": {
+        "c0_decimal": "9151029309336723911",
+        "c1_decimal": "782766546951563817"
+      },
+      "selector": "one(unfiltered)",
+      "selector_applied_value": {
+        "c0_decimal": "9151029309336723911",
+        "c1_decimal": "782766546951563817"
+      }
+    }
+  ],
+  "plonky3_commit": "82cfad73cd734d37a0d51953094f970c531817ec",
+  "proof_verification_result": "Ok",
+  "public_values": [],
+  "quotient_chunks": [
+    [
+      {
+        "c0_decimal": "14617346103406142180",
+        "c1_decimal": "12911846339293703690"
+      },
+      {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      }
+    ]
+  ],
+  "quotient_recompose_mode": "one_chunk_ch0_plus_ch1_X",
+  "quotient_zeta": {
+    "c0_decimal": "14617346103406142180",
+    "c1_decimal": "12911846339293703690"
+  },
+  "scope": "stark_verify_constraints",
+  "selectors": {
+    "inv_vanishing": {
+      "c0_decimal": "15955110688833613062",
+      "c1_decimal": "17455356602062853685"
+    },
+    "is_first_row": {
+      "c0_decimal": "9023109857673493760",
+      "c1_decimal": "4580894449960188482"
+    },
+    "is_last_row": {
+      "c0_decimal": "279371878637680250",
+      "c1_decimal": "11866008009058696963"
+    },
+    "is_transition": {
+      "c0_decimal": "8076455686088037038",
+      "c1_decimal": "8577096543517711882"
+    },
+    "z_h": {
+      "c0_decimal": "13770097883324827275",
+      "c1_decimal": "12119155727632391686"
+    }
+  },
+  "spec_doc": "docs/plans/2026-05-30-stark-constraint-check-implementation-design.md",
+  "synthetic_primary_oracle": false,
+  "trace_local": [
+    {
+      "c0_decimal": "4714042411552766321",
+      "c1_decimal": "2391942893232700263"
+    },
+    {
+      "c0_decimal": "16294291158063363142",
+      "c1_decimal": "18301742030300814194"
+    }
+  ],
+  "trace_next": null,
+  "zeta": {
+    "c0_decimal": "8076456785599664558",
+    "c1_decimal": "8577096543517711882"
+  },
+  "zeta_next": {
+    "c0_decimal": "6321493220239873367",
+    "c1_decimal": "2495096903251199992"
+  }
+}

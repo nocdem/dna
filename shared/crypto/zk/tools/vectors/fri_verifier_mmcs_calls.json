@@ -1,0 +1,268 @@
+{
+  "call_count_commit_phase_mmcs": 6,
+  "call_count_input_mmcs": 2,
+  "call_count_total": 8,
+  "calls": [
+    {
+      "call_site": "input_mmcs.verify_batch",
+      "commit_hex": "083776283ead469a534183732d5adabbbc734942f0770538b8bccea604f3426de78c456b2ea646f46cb7d6aaa2aa57ec10364a69627c1bee4e55a81284014863",
+      "dimensions": [
+        {
+          "height": 16,
+          "width": 0
+        }
+      ],
+      "dnac_api_target": "dnac_merkle_verify",
+      "expected_result": "OK",
+      "independent_replay_result_from_plonky3": "Ok(())",
+      "index": 3,
+      "name": "query0_input",
+      "opened_values_hex": [
+        [
+          "00f1e02f61882c58",
+          "3793928be605a333"
+        ]
+      ],
+      "opening_proof_siblings_hex": [
+        "b3317414c9ba6dc633127708b4520b87dab8b59cb97f834a57811ef509c73f986f1ce899c585505fff50819335c85b84219d7adbdb37056470cad47c2d74d200",
+        "f0aa4ab3f5e950983e5943bb7e4d41973a9d150114498e4550890ab86cbad03873f8ecaf5e0fcf2efe2132f46afc91dd7a79606aa989bfae293f72c21e6f5500",
+        "c99da04c492a6fbc00efd8952b1bc78daa5681e377126f644436c7da4a6aa53348eb7915556b4f074d0263cfb186b18227059bc847843ede0d93b44c7173e9a1",
+        "23c6d2810f5029ce6b1186145827c3c03bdb525ee0a44d516261b1412baf6da1cdf2c69372a5287d5e0ce82bbc3e0ffc5d0504b8a08d74890639b69c174bb309"
+      ],
+      "query_index": 0,
+      "round_index": null,
+      "verifier_rs_lines": "589-597 (input MMCS, inside open_input)",
+      "verify_result_from_plonky3": "Ok(())"
+    },
+    {
+      "call_site": "params.mmcs.verify_batch",
+      "commit_hex": "91d29eca3fa12a4385e67d5528745b856b89c7fad3810b95f36f35c06f24a841c73377d7d73e286b092bbd24394caa43696140fd0f9be932a0f2c26c6215edc0",
+      "dimensions": [
+        {
+          "height": 8,
+          "width": 2
+        }
+      ],
+      "dnac_api_target": "dnac_merkle_verify",
+      "expected_result": "OK",
+      "independent_replay_result_from_plonky3": "Ok(())",
+      "index": 1,
+      "name": "query0_commit_round_0",
+      "opened_values_hex": [
+        [
+          "3b710073aa0d4b4322369612dd6458e5",
+          "e11acc026591dc75dc55668a1b9bb5e4"
+        ]
+      ],
+      "opening_proof_siblings_hex": [
+        "a45b51a8fa17793beceb9e3fd906323d01eb2f1780b5a15d0106a079397bf76f07666821b4cb06c362b8cab2972c5d7c5d33c7262cae6695d8ef877dd7cd4a5a",
+        "8a4b9e29ad391aa63d10430924c55b7eefd60869e26f384bc1805436fdec9061736828b07e17e4e2f10df9b42962d41c845079f95afe30f59ad41e1518668069",
+        "00c4e0572ac6daf26b38a9ef173a751ea4f055065edadca33f468fc7432e9a25a1e38e80fdcf42d48680717c277986b63069aa589ca4277e0288becb68df3de8"
+      ],
+      "query_index": 0,
+      "round_index": 0,
+      "verifier_rs_lines": "446-455 (commit-phase MMCS, inside verify_query)",
+      "verify_result_from_plonky3": "Ok(())"
+    },
+    {
+      "call_site": "params.mmcs.verify_batch",
+      "commit_hex": "ba2b831ca38ac168d729825fe543ccaab472e50b2c97922bd94bfcc0325190ad054ec83dd86ef5f978a6bcf766f8e1b053e7979787327b4b75a24447b5c8a808",
+      "dimensions": [
+        {
+          "height": 4,
+          "width": 2
+        }
+      ],
+      "dnac_api_target": "dnac_merkle_verify",
+      "expected_result": "OK",
+      "independent_replay_result_from_plonky3": "Ok(())",
+      "index": 0,
+      "name": "query0_commit_round_1",
+      "opened_values_hex": [
+        [
+          "fbddf54f07d004a212c80b9ba1161587",
+          "a28834f7358b8955bd8a36bebd1c6a1d"
+        ]
+      ],
+      "opening_proof_siblings_hex": [
+        "1b6f0cd3458c9f691ec9f81a4f710e79892eea6b1992bb6c79bca6dacc57761bcebddcd44688dbf324e53203e03712c2e740be22d5c4ba9a97a3067f2a164569",
+        "9147a983585ce940500c073d9dfbdd70cc88ee2999c3ea970282e3d2acdc74596cab3d65110a4dc90ebbfc1e84839554825a90af62d6dcafe633100a97459617"
+      ],
+      "query_index": 0,
+      "round_index": 1,
+      "verifier_rs_lines": "446-455 (commit-phase MMCS, inside verify_query)",
+      "verify_result_from_plonky3": "Ok(())"
+    },
+    {
+      "call_site": "params.mmcs.verify_batch",
+      "commit_hex": "7e36d508b34c679a71a9c1a36f5851b49f60435579187d13afcd41a5837defe70df501c347d278c6872a1a445efd99fc3bc02e77dd3416aeccafbbb05621553e",
+      "dimensions": [
+        {
+          "height": 2,
+          "width": 2
+        }
+      ],
+      "dnac_api_target": "dnac_merkle_verify",
+      "expected_result": "OK",
+      "independent_replay_result_from_plonky3": "Ok(())",
+      "index": 0,
+      "name": "query0_commit_round_2",
+      "opened_values_hex": [
+        [
+          "3902635bc5881011cbbd63ba221e6fb1",
+          "5d8ecef82fbace0c419b5a79595d12f3"
+        ]
+      ],
+      "opening_proof_siblings_hex": [
+        "3e2122edd53dd859dc45f605cbcb10827bd49d1905c6304ff75649ffea07529a2c7779ed01b66b48f702f638d47ce70d3806b90f7773b5a40ab9228ef4cc6d0b"
+      ],
+      "query_index": 0,
+      "round_index": 2,
+      "verifier_rs_lines": "446-455 (commit-phase MMCS, inside verify_query)",
+      "verify_result_from_plonky3": "Ok(())"
+    },
+    {
+      "call_site": "input_mmcs.verify_batch",
+      "commit_hex": "083776283ead469a534183732d5adabbbc734942f0770538b8bccea604f3426de78c456b2ea646f46cb7d6aaa2aa57ec10364a69627c1bee4e55a81284014863",
+      "dimensions": [
+        {
+          "height": 16,
+          "width": 0
+        }
+      ],
+      "dnac_api_target": "dnac_merkle_verify",
+      "expected_result": "OK",
+      "independent_replay_result_from_plonky3": "Ok(())",
+      "index": 12,
+      "name": "query1_input",
+      "opened_values_hex": [
+        [
+          "f26674bc39228496",
+          "d6d545082f08eb69"
+        ]
+      ],
+      "opening_proof_siblings_hex": [
+        "a29031d01fde3cde99f9f64118a745862c88dae9040e66b943a37d463cb908d149e13dea62ab5d6616b8b0a9f9113a4b1a2bd36ba092ea7764836ec3d4aeaa06",
+        "f25d921903ce21b6484f8a77d60fea81f92d9b949cdcc892acfbd4b82c8dedc2a47518fd7ebf2905b9b99fdc883e13942a87554e651b2425f7ab1f9e330715a0",
+        "b2a245f08264d1575f5aec1d0bd6939d550cf77a794997307bf2461ac55bfa528a5b67bde888ca870b0be8ffba874d470c5061fba53ca04622f150afe56478e7",
+        "b4a32217bcb00f6997b9957a27a06f6538c1029d8248d13a1633a0572f0ad69f6a4ac8d43baa23836017f139c19c8aa3a34ea2ea126f6405fd6d2234e95f4f0e"
+      ],
+      "query_index": 1,
+      "round_index": null,
+      "verifier_rs_lines": "589-597 (input MMCS, inside open_input)",
+      "verify_result_from_plonky3": "Ok(())"
+    },
+    {
+      "call_site": "params.mmcs.verify_batch",
+      "commit_hex": "91d29eca3fa12a4385e67d5528745b856b89c7fad3810b95f36f35c06f24a841c73377d7d73e286b092bbd24394caa43696140fd0f9be932a0f2c26c6215edc0",
+      "dimensions": [
+        {
+          "height": 8,
+          "width": 2
+        }
+      ],
+      "dnac_api_target": "dnac_merkle_verify",
+      "expected_result": "OK",
+      "independent_replay_result_from_plonky3": "Ok(())",
+      "index": 6,
+      "name": "query1_commit_round_0",
+      "opened_values_hex": [
+        [
+          "042b9c3abbb2cbe4c158db93781ae753",
+          "dc6c8be8a5b5833027c18d008abcca74"
+        ]
+      ],
+      "opening_proof_siblings_hex": [
+        "257b042b3b8d928c6a39bd4e767738e979cac4a10297c8c9369d1f221ac2bc2c6023e265f9659f851e05462ee2c74387c558ced86fe7891cb3c0d118e17bacef",
+        "acd807e01834d96a9cd2fcff20dd3d6d37fdf3c6024c60f86a3aa60d969d168c2fe5952e40ef8a64fbf1fd5864bc235e55e3312a8a26b46e15298872edb75c54",
+        "675164d33c94d4bcbbb1dca52028f8da57313b5dc9d20110afcf25348f9efab914d641c3922e1bd0b8423b7b9e303e248ba1dfbe9cf6e497ec68727a1887dad5"
+      ],
+      "query_index": 1,
+      "round_index": 0,
+      "verifier_rs_lines": "446-455 (commit-phase MMCS, inside verify_query)",
+      "verify_result_from_plonky3": "Ok(())"
+    },
+    {
+      "call_site": "params.mmcs.verify_batch",
+      "commit_hex": "ba2b831ca38ac168d729825fe543ccaab472e50b2c97922bd94bfcc0325190ad054ec83dd86ef5f978a6bcf766f8e1b053e7979787327b4b75a24447b5c8a808",
+      "dimensions": [
+        {
+          "height": 4,
+          "width": 2
+        }
+      ],
+      "dnac_api_target": "dnac_merkle_verify",
+      "expected_result": "OK",
+      "independent_replay_result_from_plonky3": "Ok(())",
+      "index": 3,
+      "name": "query1_commit_round_1",
+      "opened_values_hex": [
+        [
+          "120670b10779583a119eadda02622e93",
+          "dc86f2ad5574440360a49c799dd2b895"
+        ]
+      ],
+      "opening_proof_siblings_hex": [
+        "d6429f870f690320fa34cb56d2cad47b921ec592d1f85e6cf79bac255a8284ab3cf30e5d17061efe6a283e1d6aa5c4e6489184f4bc34fb39b8022291b21fde74",
+        "5b9d7e2334c07bcd3ef34d5971c1edf0b6112d823818bce584c8b4a7e3cc01f2f004efc8fc767c1dc5912ab9ab5971d562929d0cf0441deda13b36be1a745f81"
+      ],
+      "query_index": 1,
+      "round_index": 1,
+      "verifier_rs_lines": "446-455 (commit-phase MMCS, inside verify_query)",
+      "verify_result_from_plonky3": "Ok(())"
+    },
+    {
+      "call_site": "params.mmcs.verify_batch",
+      "commit_hex": "7e36d508b34c679a71a9c1a36f5851b49f60435579187d13afcd41a5837defe70df501c347d278c6872a1a445efd99fc3bc02e77dd3416aeccafbbb05621553e",
+      "dimensions": [
+        {
+          "height": 2,
+          "width": 2
+        }
+      ],
+      "dnac_api_target": "dnac_merkle_verify",
+      "expected_result": "OK",
+      "independent_replay_result_from_plonky3": "Ok(())",
+      "index": 1,
+      "name": "query1_commit_round_2",
+      "opened_values_hex": [
+        [
+          "e014cec2c4522830d3ac7ab9425eeac3",
+          "b77b63912ff0b6ed39ac437a391d97e0"
+        ]
+      ],
+      "opening_proof_siblings_hex": [
+        "93915ba0cb05983008791df1889f9cfe9d7c755f1d96d92b6857d1e348bcdbbebc67f94e313fd16d072022fb1a6c916c41e5dad7fbcf6c1d158b8a9c5eebd52c"
+      ],
+      "query_index": 1,
+      "round_index": 2,
+      "verifier_rs_lines": "446-455 (commit-phase MMCS, inside verify_query)",
+      "verify_result_from_plonky3": "Ok(())"
+    }
+  ],
+  "dnac_stack": {
+    "challenge": "BinomialExtensionField<Goldilocks, 2> (fp2)",
+    "challenger": "SerializingChallenger64<Goldilocks, HashChallenger<u8, FriOracleSha3_512, 64>>",
+    "extra_query_index_bits": 0,
+    "folding": "TwoAdicFriFolding",
+    "fri_mmcs": "ExtensionMmcs<Goldilocks, fp2, ValMmcs>",
+    "hash": "FIPS-202 SHA3-512",
+    "input_mmcs": "MerkleTreeMmcs<[Goldilocks;1], [u64;1], FieldHash, MyCompress, 2, 8>",
+    "val": "Goldilocks"
+  },
+  "format_version": "1",
+  "instrumentation": {
+    "attribution_protocol": "Records are post-processed by position: for V6 the verifier issues calls in the strict order [q0_input, q0_commit_r0, q0_commit_r1, q0_commit_r2, q1_input, q1_commit_r0, q1_commit_r1, q1_commit_r2]. The wrapper's call_site_label is cross-checked against the expected label at each position.",
+    "cross_check_protocol_a": "Plonky3 verify_fri on the V6 fixture must return Ok(()).",
+    "cross_check_protocol_b": "Every captured call's `result_ok` must be true (inner MMCS accepted it during verify_fri).",
+    "cross_check_protocol_c": "Each captured call is independently replayed through the UNWRAPPED inner MMCS's verify_batch after verify_fri completes; any independent rejection aborts before JSON is written.",
+    "drain_protocol": "The recorder is cleared after pcs.commit() and again after pcs.open() so only verify_fri-time verify_batch calls remain. (commit/open_batch don't invoke verify_batch in MerkleTreeMmcs, but the clears are defensive.)",
+    "wrapper_type": "TraceMmcs<T, Inner> — transparent Mmcs<T> newtype that captures every verify_batch call (commit/dims/index/opened/proof/result) before delegating to the inner MMCS unchanged.",
+    "wrapping_scope": "Both input_mmcs (T=Goldilocks, Inner=ValMmcs) and FriMmcs (T=GoldFp2, Inner=ExtensionMmcs<…, ValMmcs>). The proof is generated and verified using the wrapped types end-to-end."
+  },
+  "plonky3_commit": "82cfad73cd734d37a0d51953094f970c531817ec",
+  "plonky3_verify_fri_gate_result": "Ok(())",
+  "scope": "fri_verifier_mmcs_calls",
+  "spec_doc": "docs/plans/2026-05-27-fri-verifier-design.md § 6 + § 12 V3",
+  "valid_proof_vector_reference": "fri_verifier_valid.json"
+}

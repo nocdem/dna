@@ -1,0 +1,383 @@
+{
+  "base_fri_params": {
+    "commit_proof_of_work_bits": 0,
+    "log_blowup": 1,
+    "log_final_poly_len": 0,
+    "max_log_arity": 1,
+    "num_queries": 2,
+    "query_proof_of_work_bits": 0
+  },
+  "case_count_isolated_horner": 1,
+  "case_count_isolated_verify_query": 3,
+  "case_count_not_reachable_in_dnac": 1,
+  "case_count_public_verify_fri": 14,
+  "case_count_total": 19,
+  "cases": [
+    {
+      "expected_error": "QueryCommitPhaseOpeningsCountMismatch",
+      "expected_error_matched": true,
+      "mutated_value_summary": "len = 4",
+      "mutation_description": "duplicate openings[0] appended",
+      "mutation_target": "proof.query_proofs[0].commit_phase_openings",
+      "name": "query_commit_phase_openings_count_mismatch",
+      "original_value_summary": "len = 3",
+      "plonky3_test_line": 881,
+      "proof_fragment_for_c_replay": "Append a duplicate of query_proofs[0].commit_phase_openings[0] to query_proofs[0].commit_phase_openings.",
+      "public_or_isolated": "public_verify_fri",
+      "verify_result_from_plonky3": {
+        "error_debug": "QueryCommitPhaseOpeningsCountMismatch { query: 0, expected: 3, got: 4 }",
+        "error_variant": "QueryCommitPhaseOpeningsCountMismatch",
+        "result": "err"
+      }
+    },
+    {
+      "expected_error": "QueryLogAritiesMismatch",
+      "expected_error_matched": true,
+      "mutated_value_summary": "query-1 schedule = [2, 1, 1]",
+      "mutation_description": "bump query 1 round-0 log_arity 1->2 after bumping params.max_log_arity 1->2",
+      "mutation_target": "proof.query_proofs[1].commit_phase_openings[0].log_arity",
+      "name": "query_log_arities_mismatch",
+      "original_value_summary": "schedule = [1, 1, 1]",
+      "plonky3_test_line": 925,
+      "proof_fragment_for_c_replay": "Bump max_log_arity to 2, then set query_proofs[1].commit_phase_openings[0].log_arity = 2.",
+      "public_or_isolated": "public_verify_fri",
+      "verify_result_from_plonky3": {
+        "error_debug": "QueryLogAritiesMismatch { query: 1, expected: [1, 1, 1], got: [2, 1, 1] }",
+        "error_variant": "QueryLogAritiesMismatch",
+        "result": "err"
+      }
+    },
+    {
+      "expected_error": "CommitPowWitnessCountMismatch",
+      "expected_error_matched": true,
+      "mutated_value_summary": "len = 4",
+      "mutation_description": "push zero witness",
+      "mutation_target": "proof.commit_pow_witnesses",
+      "name": "commit_pow_witness_count_mismatch",
+      "original_value_summary": "len = 3",
+      "plonky3_test_line": 987,
+      "proof_fragment_for_c_replay": "Append Val::ZERO to commit_pow_witnesses.",
+      "public_or_isolated": "public_verify_fri",
+      "verify_result_from_plonky3": {
+        "error_debug": "CommitPowWitnessCountMismatch { expected: 3, got: 4 }",
+        "error_variant": "CommitPowWitnessCountMismatch",
+        "result": "err"
+      }
+    },
+    {
+      "expected_error": "FinalPolyLengthMismatch",
+      "expected_error_matched": true,
+      "mutated_value_summary": "len = 2",
+      "mutation_description": "push zero ext coefficient",
+      "mutation_target": "proof.final_poly",
+      "name": "final_poly_length_mismatch",
+      "original_value_summary": "len = 1",
+      "plonky3_test_line": 1021,
+      "proof_fragment_for_c_replay": "Append Challenge::ZERO to final_poly.",
+      "public_or_isolated": "public_verify_fri",
+      "verify_result_from_plonky3": {
+        "error_debug": "FinalPolyLengthMismatch { expected: 1, got: 2 }",
+        "error_variant": "FinalPolyLengthMismatch",
+        "result": "err"
+      }
+    },
+    {
+      "expected_error": "QueryProofCountMismatch",
+      "expected_error_matched": true,
+      "mutated_value_summary": "len = 1",
+      "mutation_description": "pop last query proof",
+      "mutation_target": "proof.query_proofs",
+      "name": "query_proof_count_mismatch",
+      "original_value_summary": "len = 2",
+      "plonky3_test_line": 1053,
+      "proof_fragment_for_c_replay": "Pop the last entry of query_proofs.",
+      "public_or_isolated": "public_verify_fri",
+      "verify_result_from_plonky3": {
+        "error_debug": "QueryProofCountMismatch { expected: 2, got: 1 }",
+        "error_variant": "QueryProofCountMismatch",
+        "result": "err"
+      }
+    },
+    {
+      "expected_error": "MissingInitialReducedOpening",
+      "expected_error_matched": true,
+      "mutated_value_summary": "cwop len = 0, per-query input_proof len = 0",
+      "mutation_description": "clear input proofs across all queries and clear cwop",
+      "mutation_target": "proof.query_proofs[*].input_proof + cwop",
+      "name": "missing_initial_reduced_opening",
+      "original_value_summary": "cwop len = 1, per-query input_proof len = 1",
+      "plonky3_test_line": 1086,
+      "proof_fragment_for_c_replay": "Set every query_proofs[i].input_proof to empty Vec; pass empty cwop.",
+      "public_or_isolated": "public_verify_fri",
+      "verify_result_from_plonky3": {
+        "error_debug": "MissingInitialReducedOpening { expected: 4 }",
+        "error_variant": "MissingInitialReducedOpening",
+        "result": "err"
+      }
+    },
+    {
+      "expected_error": "SiblingValuesLengthMismatch",
+      "expected_error_matched": true,
+      "mutated_value_summary": "len = 2",
+      "mutation_description": "push extra zero sibling",
+      "mutation_target": "proof.query_proofs[0].commit_phase_openings[0].sibling_values",
+      "name": "sibling_values_length_mismatch",
+      "original_value_summary": "len = 1 (binary fold = arity-1)",
+      "plonky3_test_line": 1129,
+      "proof_fragment_for_c_replay": "Append Challenge::ZERO to query_proofs[0].commit_phase_openings[0].sibling_values.",
+      "public_or_isolated": "public_verify_fri",
+      "verify_result_from_plonky3": {
+        "error_debug": "SiblingValuesLengthMismatch { round: 0, expected: 1, got: 2 }",
+        "error_variant": "SiblingValuesLengthMismatch",
+        "result": "err"
+      }
+    },
+    {
+      "expected_error": "InvalidLogArity",
+      "expected_error_matched": true,
+      "mutated_value_summary": "0",
+      "mutation_description": "set log_arity to 0 (invalid)",
+      "mutation_target": "proof.query_proofs[0].commit_phase_openings[0].log_arity",
+      "name": "invalid_log_arity_rejected",
+      "original_value_summary": "1",
+      "plonky3_test_line": 1173,
+      "proof_fragment_for_c_replay": "Set query_proofs[0].commit_phase_openings[0].log_arity = 0.",
+      "public_or_isolated": "public_verify_fri",
+      "verify_result_from_plonky3": {
+        "error_debug": "InvalidLogArity { round: 0, log_arity: 0, max: 1 }",
+        "error_variant": "InvalidLogArity",
+        "result": "err"
+      }
+    },
+    {
+      "expected_error": "InputProofBatchCountMismatch",
+      "expected_error_matched": true,
+      "mutated_value_summary": "len = 2",
+      "mutation_description": "push extra empty-opened BatchOpening (cloned opening_proof)",
+      "mutation_target": "proof.query_proofs[0].input_proof",
+      "name": "input_proof_batch_count_mismatch",
+      "original_value_summary": "len = 1",
+      "plonky3_test_line": 1205,
+      "proof_fragment_for_c_replay": "Push a BatchOpening { opened_values: vec![], opening_proof: clone } to query_proofs[0].input_proof.",
+      "public_or_isolated": "public_verify_fri",
+      "verify_result_from_plonky3": {
+        "error_debug": "InputProofBatchCountMismatch { expected: 1, got: 2 }",
+        "error_variant": "InputProofBatchCountMismatch",
+        "result": "err"
+      }
+    },
+    {
+      "expected_error": "BatchOpenedValuesCountMismatch",
+      "expected_error_matched": true,
+      "mutated_value_summary": "len = 0",
+      "mutation_description": "pop the only opened-values entry",
+      "mutation_target": "proof.query_proofs[0].input_proof[0].opened_values",
+      "name": "batch_opened_values_count_mismatch",
+      "original_value_summary": "len = 1",
+      "plonky3_test_line": 1245,
+      "proof_fragment_for_c_replay": "Pop query_proofs[0].input_proof[0].opened_values.",
+      "public_or_isolated": "public_verify_fri",
+      "verify_result_from_plonky3": {
+        "error_debug": "BatchOpenedValuesCountMismatch { batch: 0, expected: 1, got: 0 }",
+        "error_variant": "BatchOpenedValuesCountMismatch",
+        "result": "err"
+      }
+    },
+    {
+      "expected_error": "PointEvaluationCountMismatch",
+      "expected_error_matched": true,
+      "mutated_value_summary": "len = 3",
+      "mutation_description": "push extra ZERO claim to the single point's evaluations",
+      "mutation_target": "cwop[0].1[0].1[0].1 (per-point claimed evaluations)",
+      "name": "point_evaluation_count_mismatch",
+      "original_value_summary": "len = 2 (matches trace width)",
+      "plonky3_test_line": 1286,
+      "proof_fragment_for_c_replay": "Push Challenge::ZERO to cwop[0].matrices[0].points[0].evaluations.",
+      "public_or_isolated": "public_verify_fri",
+      "verify_result_from_plonky3": {
+        "error_debug": "PointEvaluationCountMismatch { batch: 0, matrix: 0, point: 0, expected: 2, got: 3 }",
+        "error_variant": "PointEvaluationCountMismatch",
+        "result": "err"
+      }
+    },
+    {
+      "expected_error": "InvalidPowWitness",
+      "expected_error_matched": true,
+      "mutated_value_summary": "20",
+      "mutation_description": "raise commit PoW from 0 to 20 so the existing zero witness no longer satisfies it",
+      "mutation_target": "params.commit_proof_of_work_bits",
+      "name": "invalid_pow_witness",
+      "original_value_summary": "0",
+      "plonky3_test_line": 1485,
+      "proof_fragment_for_c_replay": "Verifier param: set commit_proof_of_work_bits = 20.",
+      "public_or_isolated": "public_verify_fri",
+      "verify_result_from_plonky3": {
+        "error_debug": "InvalidPowWitness",
+        "error_variant": "InvalidPowWitness",
+        "result": "err"
+      }
+    },
+    {
+      "expected_error": "CommitPhaseMmcsError",
+      "expected_error_matched": true,
+      "mutated_value_summary": "[0u64; 8] (Default::default())",
+      "mutation_description": "zero the first sibling of the commit-phase round-0 Merkle authentication path",
+      "mutation_target": "proof.query_proofs[0].commit_phase_openings[0].opening_proof[0]",
+      "name": "commit_phase_mmcs_error",
+      "original_value_summary": "valid [u64; 8] SHA3-512 digest sibling",
+      "plonky3_test_line": 1511,
+      "proof_fragment_for_c_replay": "Set query_proofs[0].commit_phase_openings[0].opening_proof[0] = [0u64;8].",
+      "public_or_isolated": "public_verify_fri",
+      "verify_result_from_plonky3": {
+        "error_debug": "CommitPhaseMmcsError(CapMismatch)",
+        "error_variant": "CommitPhaseMmcsError",
+        "result": "err"
+      }
+    },
+    {
+      "expected_error": "InputError",
+      "expected_error_matched": true,
+      "mutated_value_summary": "[0u64; 8] (Default::default())",
+      "mutation_description": "zero the first sibling of the input-batch round-0 Merkle authentication path",
+      "mutation_target": "proof.query_proofs[0].input_proof[0].opening_proof[0]",
+      "name": "input_error",
+      "original_value_summary": "valid [u64; 8] SHA3-512 digest sibling",
+      "plonky3_test_line": 1540,
+      "proof_fragment_for_c_replay": "Set query_proofs[0].input_proof[0].opening_proof[0] = [0u64;8].",
+      "public_or_isolated": "public_verify_fri",
+      "verify_result_from_plonky3": {
+        "error_debug": "InputError(CapMismatch)",
+        "error_variant": "InputError",
+        "result": "err"
+      }
+    },
+    {
+      "expected_error": "InitialReducedOpeningHeightMismatch",
+      "expected_error_matched": true,
+      "mutated_value_summary": "n/a",
+      "mutation_description": "Call verify_query with log_global_max_height=5, log_final_height=1, reduced_openings=[(3, EF::from(7))], betas/commits/openings empty, start_index=0. The seed lives at height 3 instead of 5; the entry-check at verifier.rs:404 returns this variant.",
+      "mutation_target": "verify_query inputs (synthetic)",
+      "name": "initial_reduced_opening_height_mismatch",
+      "original_value_summary": "n/a (synthetic input)",
+      "plonky3_test_line": 1335,
+      "proof_fragment_for_c_replay": "C-side verify_query equivalent must reject (log_global_max_height=5, log_final_height=1, [(log_height=3, opening=EF::from(7))], empty fold data, start_index=0) with InitialReducedOpeningHeightMismatch.",
+      "public_or_isolated": "isolated_verify_query",
+      "verify_result_from_plonky3": {
+        "error_debug": "InitialReducedOpeningHeightMismatch { expected: 5, got: 3 }",
+        "error_variant": "InitialReducedOpeningHeightMismatch",
+        "note": "Not invoked from this oracle: verify_query is `fn` (private) in p3_fri; the variant is asserted by Plonky3's own #[test] at verifier.rs:1335 against this same input.",
+        "result": "asserted_by_plonky3_test"
+      }
+    },
+    {
+      "expected_error": "FinalFoldHeightMismatch",
+      "expected_error_matched": true,
+      "mutated_value_summary": "n/a",
+      "mutation_description": "Call verify_query with log_global_max_height=5, log_final_height=1, reduced_openings=[(5, EF::from(42))], betas/commits/openings empty, start_index=0. Zero fold rounds means current_height stays at 5, but final_height=1 is required.",
+      "mutation_target": "verify_query inputs (synthetic)",
+      "name": "final_fold_height_mismatch",
+      "original_value_summary": "n/a",
+      "plonky3_test_line": 1381,
+      "proof_fragment_for_c_replay": "C-side verify_query equivalent must reject (log_global_max_height=5, log_final_height=1, [(5, EF::from(42))], empty fold data, start_index=0) with FinalFoldHeightMismatch.",
+      "public_or_isolated": "isolated_verify_query",
+      "verify_result_from_plonky3": {
+        "error_debug": "FinalFoldHeightMismatch { expected: 1, got: 5 }",
+        "error_variant": "FinalFoldHeightMismatch",
+        "note": "Not invoked from this oracle (verify_query is private).",
+        "result": "asserted_by_plonky3_test"
+      }
+    },
+    {
+      "expected_error": "UnconsumedReducedOpenings",
+      "expected_error_matched": true,
+      "mutated_value_summary": "n/a",
+      "mutation_description": "Call verify_query with log_global_max_height=5, log_final_height=5, reduced_openings=[(5, EF::from(42)), (3, EF::from(99))], betas/commits/openings empty, start_index=0. Zero fold rounds means the height-3 opening is never reached.",
+      "mutation_target": "verify_query inputs (synthetic)",
+      "name": "unconsumed_reduced_openings",
+      "original_value_summary": "n/a",
+      "plonky3_test_line": 1428,
+      "proof_fragment_for_c_replay": "C-side verify_query equivalent must reject (log_global_max_height=5, log_final_height=5, [(5, EF::from(42)), (3, EF::from(99))], empty fold data, start_index=0) with UnconsumedReducedOpenings { next_log_height: 3, remaining: 1 }.",
+      "public_or_isolated": "isolated_verify_query",
+      "verify_result_from_plonky3": {
+        "error_debug": "UnconsumedReducedOpenings { next_log_height: 3, remaining: 1 }",
+        "error_variant": "UnconsumedReducedOpenings",
+        "note": "Not invoked from this oracle (verify_query is private).",
+        "result": "asserted_by_plonky3_test"
+      }
+    },
+    {
+      "corrupted_horner_eval_fp2": {
+        "c0_decimal": "1177090699887663534",
+        "c1_decimal": "15646686859640359525"
+      },
+      "expected_error": "FinalPolyMismatch",
+      "expected_error_matched": true,
+      "honest_horner_eval_fp2": {
+        "c0_decimal": "1177090699887663533",
+        "c1_decimal": "15646686859640359525"
+      },
+      "horner_eval_x_decimal": "2",
+      "mutated_value_summary": {
+        "c0_decimal": "1177090699887663534",
+        "c1_decimal": "15646686859640359525"
+      },
+      "mutation_description": "Add Challenge::ONE to the constant coefficient. Horner evaluation at x=2 must differ from the honest evaluation. Verifier.rs:1569 test acknowledges this error cannot be reached via verify_fri because final_poly is in the transcript.",
+      "mutation_target": "proof.final_poly[0] (constant coefficient)",
+      "name": "final_poly_mismatch",
+      "original_value_summary": {
+        "c0_decimal": "1177090699887663533",
+        "c1_decimal": "15646686859640359525"
+      },
+      "plonky3_test_line": 1569,
+      "proof_fragment_for_c_replay": "C verifier internal Horner check must reject when corrupted_eval (computed from final_poly with [0] += 1) differs from folded_eval; assert on the C side that honest_horner_eval_fp2 != corrupted_horner_eval_fp2.",
+      "public_or_isolated": "isolated_horner",
+      "verify_result_from_plonky3": {
+        "error_variant": "FinalPolyMismatch",
+        "note": "Plonky3 test at verifier.rs:1569 asserts honest_eval != corrupted_eval (not the FriError variant). The full pipeline cannot raise FinalPolyMismatch (transcript desync occurs first); the C verifier MUST still implement the comparison as defense in depth (design § 8 G5).",
+        "result": "asserted_by_plonky3_test"
+      }
+    },
+    {
+      "expected_error": "InvalidProofShape",
+      "expected_error_matched": true,
+      "mutated_value_summary": "n/a",
+      "mutation_description": "InvalidProofShape is constructed only by hiding_pcs.rs:389/392/395 (zip_eq shape mismatch between FRI proof rounds and the auxiliary randomness Vec used by the hiding PCS variant). The non-hiding verify_fri code path never returns this variant.",
+      "mutation_target": "n/a",
+      "name": "invalid_proof_shape_not_reachable_in_dnac",
+      "original_value_summary": "n/a",
+      "plonky3_test_line": null,
+      "proof_fragment_for_c_replay": "No replay — variant unreachable in DNAC.",
+      "public_or_isolated": "not_reachable_in_dnac",
+      "verify_result_from_plonky3": {
+        "error_variant": "InvalidProofShape",
+        "note": "DNAC v3 does not use hiding PCS (design doc § O4 'Hiding / zero-knowledge variant ... out of scope'). The C fri_verifier MUST still define the enum value for ABI compatibility, but no end-to-end vector will ever exercise it.",
+        "result": "structurally_unreachable"
+      }
+    }
+  ],
+  "dnac_stack": {
+    "challenge": "BinomialExtensionField<Goldilocks, 2> (fp2)",
+    "challenger": "SerializingChallenger64<Goldilocks, HashChallenger<u8, FriOracleSha3_512, 64>>",
+    "extra_query_index_bits": 0,
+    "folding": "TwoAdicFriFolding",
+    "fri_mmcs": "ExtensionMmcs<Goldilocks, fp2, ValMmcs>",
+    "hash": "FIPS-202 SHA3-512",
+    "input_mmcs": "MerkleTreeMmcs<[Goldilocks;1], [u64;1], FieldHash, MyCompress, 2, 8>",
+    "val": "Goldilocks"
+  },
+  "fixture": {
+    "init_state_ascii": "DNAC|ZK|FRI|TRANSCRIPT|V1",
+    "init_state_hex": "444e41437c5a4b7c4652497c5452414e5343524950547c5631",
+    "log_degree": 3,
+    "trace_cols": 2,
+    "trace_rows": 8,
+    "trace_seed": 42
+  },
+  "format_version": "1",
+  "fri_error_variants_covered": 19,
+  "fri_error_variants_total_in_enum": 19,
+  "plonky3_commit": "82cfad73cd734d37a0d51953094f970c531817ec",
+  "scope": "fri_verifier_errors",
+  "spec_doc": "docs/plans/2026-05-27-fri-verifier-design.md § 12 V1 + V7",
+  "valid_proof_vector_reference": "fri_verifier_valid.json"
+}
