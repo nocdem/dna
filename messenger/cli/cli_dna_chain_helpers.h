@@ -78,6 +78,15 @@ int dna_chain_cmd_history(dnac_context_t *ctx, int limit);
 int dna_chain_cmd_tx_details(dnac_context_t *ctx, const char *tx_hash_hex);
 
 /**
+ * @brief Witness-direct chain query for TX by hash. Identity-agnostic.
+ *        Distinct exit codes: 0=found, 1=not-found, 2=usage/hex, 3=transport.
+ * @param ctx DNAC context (unused; kept for dispatcher uniformity)
+ * @param tx_hash_hex Transaction hash in hex (128 chars)
+ * @return per exit-code semantics above
+ */
+int dna_chain_cmd_lookup_tx(dnac_context_t *ctx, const char *tx_hash_hex);
+
+/**
  * @brief List Nodus servers
  * @param ctx DNAC context
  * @return 0 on success, non-zero on failure

@@ -208,6 +208,14 @@ static void handle_dnac_ledger(nodus_witness_t *w,
                                  struct nodus_tcp_conn *conn,
                                  const uint8_t *payload, size_t len,
                                  uint32_t txn_id) {
+    /* Auth gate (red-team F-S1, design 2026-05-09-cli-lookup-tx-design.md):
+     * close enumeration leak — only authenticated peers may probe ledger. */
+    if (!conn->peer_id_set) {
+        send_error(conn, txn_id, NODUS_ERR_NOT_AUTHENTICATED,
+                    "session not authenticated");
+        return;
+    }
+
     cbor_decoder_t dec;
     size_t args_count;
     if (decode_args(payload, len, &dec, &args_count) != 0) {

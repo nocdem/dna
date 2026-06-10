@@ -658,6 +658,82 @@ int dna_chain_cmd_tx_details(dnac_context_t *ctx, const char *tx_hash_hex) {
     return 0;
 }
 
+/* ============================================================================
+ * dna_chain_cmd_lookup_tx — witness-direct chain query (no local history dep)
+ *
+ * Wire primitive: nodus_client_dnac_ledger() (T2 dnac_ledger RPC).
+ * Identity-agnostic: queries the witness directly, no -d <wallet> needed.
+ * Auth gate added in handle_dnac_ledger 2026-05-09 (red-team F-S1).
+ * Design: messenger/docs/plans/2026-05-09-cli-lookup-tx-design.md
+ *
+ * Exit codes (distinct, for scripting): 0=found, 1=not-found,
+ *   2=usage/hex error, 3=transport/witness error.
+ *
+ * Sequence field intentionally NOT printed: per-witness SQLite ROWID
+ * (not consensus-agreed, red-team F-D1).
+ * ========================================================================== */
+
+static const char *tx_type_string(uint8_t t) {
+    switch (t) {
+        case DNAC_TX_GENESIS:          return "GENESIS";
+        case DNAC_TX_SPEND:            return "SPEND";
+        case DNAC_TX_BURN:             return "BURN";
+        case DNAC_TX_TOKEN_CREATE:     return "TOKEN_CREATE";
+        case DNAC_TX_STAKE:            return "STAKE";
+        case DNAC_TX_DELEGATE:         return "DELEGATE";
+        case DNAC_TX_UNSTAKE:          return "UNSTAKE";
+        case DNAC_TX_UNDELEGATE:       return "UNDELEGATE";
+        case DNAC_TX_VALIDATOR_UPDATE: return "VALIDATOR_UPDATE";
+        case DNAC_TX_CHAIN_CONFIG:     return "CHAIN_CONFIG";
+        default:                       return "UNKNOWN";
+    }
+}
+
+int dna_chain_cmd_lookup_tx(dnac_context_t *ctx, const char *tx_hash_hex) {
+    (void)ctx;  /* identity-agnostic: query is witness-side, ctx not needed */
+
+    if (!tx_hash_hex || strlen(tx_hash_hex) != DNAC_TX_HASH_SIZE * 2) {
+        fprintf(stderr, "Error: hash must be %d hex chars\n",
+                DNAC_TX_HASH_SIZE * 2);
+        return 2;
+    }
+    uint8_t hash[DNAC_TX_HASH_SIZE];
+    if (hex_to_bytes(tx_hash_hex, hash, DNAC_TX_HASH_SIZE) != 0) {
+        fprintf(stderr, "Error: invalid hex in transaction hash\n");
+        return 2;
+    }
+
+    extern nodus_client_t *nodus_singleton_get(void);
+    nodus_client_t *client = nodus_singleton_get();
+    if (!client || !nodus_client_is_ready(client)) {
+        fprintf(stderr, "Error: nodus client not ready\n");
+        return 3;
+    }
+
+    nodus_dnac_ledger_result_t result;
+    int rc = nodus_client_dnac_ledger(client, hash, &result);
+    if (rc != 0) {
+        fprintf(stderr, "Error: ledger query failed (rc=%d)\n", rc);
+        return 3;
+    }
+
+    if (!result.found) {
+        printf("Transaction NOT FOUND on chain.\n");
+        return 1;
+    }
+
+    char date_str[32];
+    format_timestamp(result.timestamp, date_str, sizeof(date_str));
+    printf("Transaction Found on Chain\n");
+    printf("--------------------------\n");
+    printf("Hash:         %s\n", tx_hash_hex);
+    printf("Type:         %s\n", tx_type_string(result.tx_type));
+    printf("Epoch:        %" PRIu64 "\n", result.epoch);
+    printf("Date:         %s\n", date_str);
+    printf("Nullifiers:   %" PRIu64 "\n", result.nullifier_count);
+    return 0;
+}
+
 int dna_chain_cmd_nodus_list(dnac_context_t *ctx) {
     dnac_witness_info_t *servers = NULL;
     int count = 0;

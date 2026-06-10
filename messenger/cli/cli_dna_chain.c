@@ -54,7 +54,8 @@ static void print_dna_chain_help(void) {
     printf("                                  Send payment (raw base units)\n");
     printf("  sync                            Sync wallet from network\n");
     printf("  history [n]                     Show transaction history (last n entries)\n");
-    printf("  tx <hash>                       Show transaction details\n");
+    printf("  tx <hash>                       Show transaction details (local history)\n");
+    printf("  lookup-tx <hash>                Query chain for TX by hash (witness-direct, exit 0/1)\n");
     printf("  witnesses                       List witness servers\n\n");
 
     printf("Stake & Delegation:\n");
@@ -249,6 +250,14 @@ int dispatch_dna_chain(dna_engine_t *engine, int argc, char **argv, int sub) {
             result = 1;
         } else {
             result = dna_chain_cmd_tx_details(ctx, argv[sub + 1]);
+        }
+    }
+    else if (strcmp(cmd, "lookup-tx") == 0) {
+        if (sub + 1 >= argc) {
+            fprintf(stderr, "Usage: dna-connect-cli dna lookup-tx <hash>\n");
+            result = 2;
+        } else {
+            result = dna_chain_cmd_lookup_tx(ctx, argv[sub + 1]);
         }
     }
     else if (strcmp(cmd, "witnesses") == 0) {
