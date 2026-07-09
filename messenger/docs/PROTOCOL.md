@@ -654,19 +654,20 @@ typedef enum {
 
 ## Appendix A: Additional Protocols
 
-### Circuit Relay Protocol
+### Circuit Relay Protocol (Nodus VPN Mesh)
 
-The circuit relay protocol enables connectivity between peers that cannot establish direct connections (e.g., behind symmetric NAT). A relay node forwards encrypted traffic between two endpoints. Messages remain E2E encrypted (Seal Protocol) — the relay sees only opaque ciphertext.
+Peer-to-peer circuit relay through the Nodus cluster for peers that cannot establish direct connections. Two authenticated clients are bridged over the existing TCP 4001 (client) and TCP 4002 (inter-node) transports. Circuits opened with `nodus_circuit_open_e2e()` are end-to-end encrypted (Kyber1024 KEM → HKDF-SHA3-256 → AES-256-GCM) — relay servers forward only opaque ciphertext. The messenger does not use circuits yet; the SDK is the foundation for future file transfer and voice/video calls.
 
-**Source:** `transport/relay/`
+**Spec:** `nodus/docs/CIRCUIT_PROTOCOL.md`
+**Source:** `nodus/src/circuit/`, `nodus/src/client/nodus_client.c` (`nodus_circuit_*`)
 
 ### Media Storage Protocol
 
-Media attachments (voice messages, video clips, images) are stored in DHT using chunked uploads. The media payload is encrypted with AES-256-GCM before upload. Recipients receive a media reference (DHT key + decryption key) inside the Seal-encrypted message, then fetch and decrypt the media independently.
+Media attachments (voice messages, video clips, images) are stored in DHT using chunked uploads (512 KB chunks client-side, 64 MB max per media object). The media payload is encrypted with AES-256-GCM before upload. Recipients receive a media reference (DHT key + decryption key) inside the Seal-encrypted message, then fetch and decrypt the media independently.
 
 **Supported types:** Voice messages, video, images
 
-**Source:** `dht/shared/dht_media.c`
+**Source:** `dht/shared/nodus_ops.c` (`nodus_ops_media_put/get/exists`), server side `nodus/src/core/nodus_media_storage.c`
 
 ---
 

@@ -1,7 +1,9 @@
-# Nodus Circuit Protocol (VPN Mesh — Faz 1)
+# Nodus Circuit Protocol (VPN Mesh — Faz 1 + E2E)
 
-**Status:** Faz 1 — foundation only (no onion crypto, no rate limits, auto-accept)
-**Introduced:** Nodus v0.10.0
+**Status:** Faz 1 + per-circuit E2E encryption (Kyber1024). Still: no per-hop
+onion mixing, no rate limits, auto-accept.
+**Introduced:** Nodus v0.10.0 (foundation); per-circuit E2E layer added in
+v0.10.2–v0.10.5 (commits `d474ba24`, `436f2b5b`, `37e813c9`)
 **Scope:** Peer-to-peer circuit relay through the Nodus cluster. Two authenticated
 Nodus clients (DNA Connect users) establish a bidirectional stream through one or
 two Nodus servers. Foundation for future file transfer, VoIP, and bulk-data
@@ -25,9 +27,16 @@ inbound push. Each side uses its own `cid` to tag outbound data frames.
 - VoIP signalling (control channel only; media in Faz 2).
 - General bulk-data tunnelling between authenticated peers.
 
-**Faz 1 is NOT:**
-- End-to-end encrypted at the circuit layer (rely on payload-level E2E).
-- Onion-routed (no per-hop Kyber wrapping yet).
+**Shipped after the original Faz 1 scope:**
+- **Per-circuit E2E encryption.** `nodus_circuit_open_e2e()` Kyber1024-encapsulates
+  to the peer's Kyber public key; both ends derive an AES-256-GCM session key.
+  Relay servers forward the ciphertext opaquely (see § 3.3). Circuits opened via
+  plain `nodus_circuit_open()` remain cleartext at the relay.
+
+**Still NOT:**
+- Onion-routed (no per-hop Kyber wrapping — both servers learn `(src_fp, dst_fp)`).
+- Forward-secret (E2E encapsulates to the peer's *static* Kyber key from its
+  profile; compromise of that key exposes past circuit traffic).
 - Offline-capable (peer offline → immediate error, no queuing).
 - Rate-limited per-circuit (no token bucket yet).
 
@@ -107,10 +116,10 @@ Encoders live in `nodus/src/protocol/nodus_tier2.c`; decoder populates
 
 | Method | Dir | Query/Resp | `a` arguments | Notes |
 |--------|-----|------------|----------------|-------|
-| `circ_open` | C→N | query | `{ cid: u64, fp: bytes(64) }` | `fp` = target peer fingerprint. `cid` = client's own session-unique id. |
+| `circ_open` | C→N | query | `{ cid: u64, fp: bytes(64), ect?: bytes(1568) }` | `fp` = target peer fingerprint. `cid` = client's own session-unique id. `ect` = optional Kyber1024 ciphertext for per-circuit E2E (present when opened via `nodus_circuit_open_e2e`). |
 | `circ_open_ok` | N→C | response | `{ cid: u64 }` | Echoes client's `cid`. |
 | `circ_open_err` | N→C | error | `{ cid: u64, code: int }` | `code` ∈ `NODUS_ERR_{CIRCUIT_LIMIT,PEER_OFFLINE,…}`. |
-| `circ_inbound` | N→C | query (push) | `{ cid: u64, fp: bytes(64) }` | `cid` = server-assigned id on target's session. `fp` = originator. Auto-accept in Faz 1. |
+| `circ_inbound` | N→C | query (push) | `{ cid: u64, fp: bytes(64), ect?: bytes(1568) }` | `cid` = server-assigned id on target's session. `fp` = originator. `ect` relayed opaquely from the originator's `circ_open`. Auto-accept in Faz 1. |
 | `circ_data` | C↔N | query (no resp) | `{ cid: u64, d: bytes }` | `d` ≤ 64 KiB. Fire-and-forget. |
 | `circ_close` | C↔N | query (no resp) | `{ cid: u64 }` | Idempotent. |
 
@@ -126,11 +135,44 @@ circuit messages add no extra signing. Encoders live in the same
 
 | Method | Dir | Query/Resp | `a` arguments | Notes |
 |--------|-----|------------|----------------|-------|
-| `ri_open` | A→B | query | `{ ups: u64, src: bytes(64), dst: bytes(64) }` | `ups` = A's upstream circuit id. |
+| `ri_open` | A→B | query | `{ ups: u64, src: bytes(64), dst: bytes(64), ect?: bytes(1568) }` | `ups` = A's upstream circuit id. `ect` relayed opaquely (E2E onion layer — neither server can decrypt it). |
 | `ri_open_ok` | B→A | response | `{ ups: u64, dns: u64 }` | `dns` = B's downstream circuit id. |
 | `ri_open_err` | B→A | error | `{ ups: u64, code: int }` | Target session missing → `PEER_OFFLINE`. |
 | `ri_data` | A↔B | query (no resp) | `{ cid: u64, d: bytes }` | `cid` = the id the *receiver* stored as `our_cid`. |
 | `ri_close` | A↔B | query (no resp) | `{ cid: u64 }` | Idempotent. |
+
+### 3.3 Per-circuit E2E encryption (onion layer)
+
+When a circuit is opened with `nodus_circuit_open_e2e()`:
+
+1. The initiator Kyber1024-encapsulates to the **peer's static Kyber public key**
+   (obtained out-of-band, e.g. from the peer's DHT profile), producing
+   `(e2e_ct, e2e_ss)`. `e2e_ct` rides the `circ_open` as the `ect` field.
+2. Every relay hop (`handle_t2_circ_open` → `ri_open` → `circ_inbound` in
+   `nodus_server.c`) forwards `ect` **opaquely** — servers cannot decapsulate it.
+3. The target decapsulates `ect` with its Kyber secret key on `circ_inbound`.
+4. Both ends derive the session key with the shared channel-crypto KDF
+   (`nodus_channel_crypto_init`, `src/crypto/nodus_channel_crypto.h`):
+   `key = HKDF-SHA3-256(salt = nc ‖ ns, ikm = e2e_ss, info = "nodus-channel-v1")`
+   where the nonces are **deterministic**: `nc` = first 32 bytes of the
+   initiator's fingerprint, `ns` = first 32 bytes of the target's fingerprint
+   (`nodus_client.c` — both sides compute the same values, no extra round-trip).
+5. Each `circ_data` payload is then AES-256-GCM encrypted:
+   `[12-byte nonce ‖ ciphertext ‖ 16-byte tag]` (+28 bytes overhead), with a
+   monotonic counter nonce and minimum-expected-counter replay check on receive
+   (correct over TCP's ordered delivery; a UDP transport would need
+   window-based replay protection instead).
+
+If the target has no Kyber key or decapsulation fails, the inbound handle stays
+`e2e_active=false` and payloads are treated as cleartext — the initiator's
+encrypted frames will not decrypt, so the circuit is effectively unusable
+rather than silently downgraded.
+
+**Test coverage (honest):** same-nodus E2E is verified live in
+`tests/test_circuit_live.c` (both ends `e2e_active`, encrypted payload
+round-trip). **Cross-nodus E2E has no live test** — `tests/test_circuit_cross_live.c`
+exercises the relay path without `ect`. The cross-nodus E2E path is code-complete
+(`nodus_server.c` forwards `ect` through `ri_open`) but unproven end-to-end.
 
 ---
 
@@ -258,6 +300,13 @@ int  nodus_circuit_open(nodus_client_t *client, const nodus_key_t *peer_fp,
                         void *user,
                         nodus_circuit_handle_t **out);
 
+int  nodus_circuit_open_e2e(nodus_client_t *client, const nodus_key_t *peer_fp,
+                            const uint8_t *peer_kyber_pk,
+                            nodus_circuit_data_cb  on_data,
+                            nodus_circuit_close_cb on_close,
+                            void *user,
+                            nodus_circuit_handle_t **out);
+
 void nodus_circuit_set_inbound_cb(nodus_client_t *client,
                                   nodus_circuit_inbound_cb cb, void *user);
 
@@ -273,7 +322,11 @@ int  nodus_circuit_close(nodus_circuit_handle_t *h);
 ```
 
 - `nodus_circuit_open` — allocate a client-side circuit handle, send `circ_open`,
-  resolve on `circ_open_ok` / `circ_open_err`.
+  resolve on `circ_open_ok` / `circ_open_err`. **No E2E** — payload is cleartext
+  at the relay unless the application encrypts it itself.
+- `nodus_circuit_open_e2e` — same as above but Kyber1024-encapsulates to
+  `peer_kyber_pk` and sends the ciphertext as `ect`; all `circ_data` payloads on
+  the handle are transparently AES-256-GCM encrypted/decrypted (see § 3.3).
 - `nodus_circuit_set_inbound_cb` — install the process-wide callback invoked when
   an incoming `circ_inbound` arrives; callback receives an unattached handle.
 - `nodus_circuit_attach` — bind data/close callbacks to an inbound handle (must
@@ -291,12 +344,19 @@ Handles are statically allocated inside `nodus_client_t::circuits[]`
 Faz 1 is an **infrastructure preview** intended for authenticated clients on a
 trusted Nodus cluster. Known limitations:
 
-- **No circuit-layer encryption.** Frames are in cleartext on each hop (TCP 4001
-  is cleartext today; TCP 4002 is cleartext but inter-node peers are mutually
-  authenticated with Dilithium5). Applications MUST apply payload E2E encryption
-  if confidentiality from the Nodus operator is required.
-- **No onion encryption.** The originating Nodus server learns
-  `(src_fp, dst_fp)`; the target server learns the same. No mixing.
+- **E2E is opt-in.** Circuits opened via `nodus_circuit_open_e2e` are end-to-end
+  encrypted (Kyber1024 + AES-256-GCM, § 3.3) and the relay sees only ciphertext.
+  Circuits opened via plain `nodus_circuit_open` carry cleartext payloads at the
+  relay. Transport hops are additionally encrypted since v0.10.2+: the client↔server
+  TCP 4001 tunnel and inter-node TCP 4002 both run Kyber1024 channel encryption
+  (commits `b0881f1a`, `3e858320`), with Dilithium5 mutual auth on 4002.
+- **No forward secrecy.** E2E encapsulates to the peer's long-lived static Kyber
+  key; compromising it retroactively exposes recorded circuit traffic. Per-circuit
+  ephemeral keys are future work.
+- **No onion mixing.** The originating Nodus server learns
+  `(src_fp, dst_fp)`; the target server learns the same. No per-hop wrapping.
+- **Cross-nodus E2E untested live.** Only the same-nodus E2E path has live test
+  coverage (§ 3.3).
 - **Auto-accept.** The target client has no hook to reject a circuit before data
   starts flowing; the only defence is `nodus_circuit_close`.
 - **No offline queueing.** If `presence_is_online(dst_fp)` returns false, the
@@ -316,8 +376,10 @@ trusted Nodus cluster. Known limitations:
 
 ## 9. Faz 2 Roadmap
 
-- **Kyber1024 onion crypto.** Per-hop ML-KEM wrapping so each Nodus server
-  learns only its immediate neighbours.
+- ~~**Kyber1024 E2E crypto.**~~ **DONE** (v0.10.2–v0.10.5) — per-circuit
+  client↔client encryption, § 3.3. Remaining crypto work: per-hop ML-KEM
+  wrapping (true onion, so each Nodus server learns only its immediate
+  neighbours) and per-circuit **ephemeral** keys for forward secrecy.
 - **3-hop configurable routing.** Client-selectable path through N Nodus
   servers (not just 1 or 2).
 - **DNA Connect Flutter integration.** Dart FFI bindings over

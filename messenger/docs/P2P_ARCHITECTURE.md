@@ -91,13 +91,17 @@ With the internal read thread, push notifications for new offline messages arriv
 | `nodus/src/client/nodus_client.c` | Client SDK with internal read thread |
 | `nodus/include/nodus/nodus.h` | Client SDK public API |
 
-## Circuit Relay / VPN Mesh (Faz 1)
+## Circuit Relay / VPN Mesh (Faz 1 + E2E)
 
 Circuit relay enables peer-to-peer data forwarding through Nodus nodes, forming the foundation for VPN mesh networking.
 
 **Architecture:**
 - **Local bridge:** Two clients on the same Nodus node are connected directly via session bridging
 - **Inter-node relay:** Clients on different Nodus nodes are connected via TCP 4002 forwarding
+
+**Per-circuit E2E encryption:** circuits opened with `nodus_circuit_open_e2e()` are end-to-end encrypted between the two clients: the initiator Kyber1024-encapsulates to the peer's static Kyber public key (from its DHT profile), the ciphertext rides `circ_open`/`circ_inbound` opaquely through the relay, and both ends derive an AES-256-GCM session key via HKDF-SHA3-256 with a monotonic counter nonce (replay-protected). Relay servers cannot decrypt circuit payloads. Limitations: incoming circuits are **auto-accepted** (no consent hook yet), and E2E uses the peer's static key (no forward secrecy). Full spec: `nodus/docs/CIRCUIT_PROTOCOL.md`.
+
+**Messenger integration status:** the C library and Flutter app do not use circuits yet — no engine module or FFI bindings exist. The SDK is infrastructure for future file transfer and voice/video calls.
 
 **Protocol messages (TCP 4001 - client-facing):**
 - `circ_open` — Request circuit to a target fingerprint

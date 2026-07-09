@@ -104,6 +104,9 @@ nodus/
 │   │   ├── nodus_channel_primary.c/h   # PRIMARY role: post handling + broadcast
 │   │   ├── nodus_channel_replication.c/h # BACKUP replication + hinted handoff + sync
 │   │   └── nodus_channel_ring.c/h      # Heartbeat-based ring management (no PBFT)
+│   ├── circuit/
+│   │   ├── nodus_circuit.c        # Per-session circuit table (VPN mesh relay)
+│   │   └── nodus_inter_circuit.c  # Inter-node circuit table (cross-nodus relay)
 │   ├── consensus/
 │   │   └── nodus_cluster.c       # Cluster membership + leader election
 │   ├── server/
