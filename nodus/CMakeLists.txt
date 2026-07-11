@@ -377,6 +377,11 @@ add_executable(test_circuit_cross_live tests/test_circuit_cross_live.c)
 target_link_libraries(test_circuit_cross_live nodus dsa nodus pthread)
 add_test(NAME test_circuit_cross_live COMMAND test_circuit_cross_live)
 
+# Circuit latency probe — PQ-VoIP Faz 0 netem characterization (manual, NOT a
+# ctest: run inside a netns with netem via tests/run_circuit_netem.sh).
+add_executable(circuit_latency_probe tests/circuit_latency_probe.c)
+target_link_libraries(circuit_latency_probe nodus dsa nodus pthread)
+
 # Media Tier 2 protocol test
 add_executable(test_media_tier2 tests/test_media_tier2.c)
 target_link_libraries(test_media_tier2 nodus dsa nodus)
