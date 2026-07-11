@@ -187,6 +187,19 @@ static int send_request_progress(nodus_client_t *client, const uint8_t *payload,
     return rc;
 }
 
+/* Tear down an inbound circuit we are not accepting. Sent when the application
+ * registered no circuit-inbound handler (default-deny) or the per-session
+ * circuit table is full — so the originator stops forwarding data against a
+ * cid we never established, rather than us silently black-holing its frames. */
+static void circuit_reject(nodus_client_t *client, uint64_t cid) {
+    uint8_t buf[256];
+    size_t  len = 0;
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    if (nodus_t2_circ_close(txn, client->token, cid, buf, sizeof(buf), &len) == 0) {
+        send_request(client, buf, len);
+    }
+}
+
 /* ── Pending slot management ───────────────────────────────────── */
 
 static nodus_pending_t *alloc_pending(nodus_client_t *client, uint32_t txn) {
@@ -308,6 +321,15 @@ static void client_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
 
     /* Circuit push notifications (Faz 1) */
     if (strcmp(tmp.method, "circ_inbound") == 0 && tmp.has_circ) {
+        /* G2 default-deny: an application that registered no circuit-inbound
+         * handler does not accept circuits. Never allocate a slot (this closes
+         * the slot-exhaustion DoS vector) and never establish E2E crypto — tell
+         * the originator to tear the circuit down at once. */
+        if (!client->on_circuit_inbound) {
+            circuit_reject(client, tmp.circ_cid);
+            nodus_t2_msg_free(&tmp);
+            return;
+        }
         pthread_mutex_lock(&client->circuits_mutex);
         nodus_circuit_handle_t *h = NULL;
         for (int i = 0; i < NODUS_CLIENT_MAX_CIRCUITS; i++) {
@@ -321,6 +343,13 @@ static void client_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
             }
         }
         pthread_mutex_unlock(&client->circuits_mutex);
+        /* Circuit table full — reject rather than silently drop the frames the
+         * originator will send against a cid we never accepted. */
+        if (!h) {
+            circuit_reject(client, tmp.circ_cid);
+            nodus_t2_msg_free(&tmp);
+            return;
+        }
         /* E2E: if circ_inbound has e2e_ct, decapsulate and init per-circuit crypto */
         if (h && tmp.has_e2e_ct && client->identity.has_kyber) {
             uint8_t e2e_ss[NODUS_KYBER_SS_BYTES];

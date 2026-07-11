@@ -168,11 +168,15 @@ If the target has no Kyber key or decapsulation fails, the inbound handle stays
 encrypted frames will not decrypt, so the circuit is effectively unusable
 rather than silently downgraded.
 
-**Test coverage (honest):** same-nodus E2E is verified live in
-`tests/test_circuit_live.c` (both ends `e2e_active`, encrypted payload
-round-trip). **Cross-nodus E2E has no live test** — `tests/test_circuit_cross_live.c`
-exercises the relay path without `ect`. The cross-nodus E2E path is code-complete
-(`nodus_server.c` forwards `ect` through `ri_open`) but unproven end-to-end.
+**Test coverage:** both E2E paths are verified live.
+`tests/test_circuit_live.c` covers same-nodus E2E; `tests/test_circuit_cross_live.c`
+covers cross-nodus E2E (v0.18.7) — the Kyber1024 handshake + AES-256-GCM
+round-trip surviving inter-node `ri_open`/`ri_data` forwarding of the opaque
+`ect`, both directions, plus close propagation. This is a **reachability**
+proof (the encrypted path works between two servers); it is NOT a **liveness**
+proof — latency/jitter behaviour under real network loss is unmeasured and
+must be characterised (e.g. `tc netem`) before the circuit is relied on for
+real-time media.
 
 ---
 
@@ -355,10 +359,17 @@ trusted Nodus cluster. Known limitations:
   ephemeral keys are future work.
 - **No onion mixing.** The originating Nodus server learns
   `(src_fp, dst_fp)`; the target server learns the same. No per-hop wrapping.
-- **Cross-nodus E2E untested live.** Only the same-nodus E2E path has live test
-  coverage (§ 3.3).
-- **Auto-accept.** The target client has no hook to reject a circuit before data
-  starts flowing; the only defence is `nodus_circuit_close`.
+- **Liveness unmeasured.** Both E2E paths are reachability-tested (§ 3.3), but
+  latency/jitter under real network loss is not characterised — the circuit is
+  not yet proven fit for real-time media.
+- **Auto-accept for handler-registered clients.** A client that registered a
+  circuit-inbound handler auto-accepts incoming circuits — the application has
+  no hook to reject a specific circuit before data flows (only
+  `nodus_circuit_close` after). A client with **no** handler default-denies:
+  since v0.18.7 it never allocates a slot and immediately returns `circ_close`
+  to the originator (closes the slot-exhaustion / black-hole vector). A
+  pre-data accept/reject handshake for handler-registered clients is future
+  work (Faz 2).
 - **No offline queueing.** If `presence_is_online(dst_fp)` returns false, the
   originator gets `circ_open_err(PEER_OFFLINE)` immediately.
 - **Trust cluster membership.** Routing assumes the cluster's

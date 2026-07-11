@@ -237,6 +237,55 @@ int main(void) {
     if (!wait_for(&ctx_u2.got_close, 2000)) { FAIL("no close"); goto cleanup; }
     PASS();
 
+    /* ── E2E (Kyber1024) across two servers — closes gap G4 ─────── */
+    /* The plaintext path above proves the relay forwards bytes cross-nodus.
+     * This proves nodus_circuit_open_e2e's Kyber handshake + AES-256-GCM
+     * survives the inter-node ri_open/ri_data forwarding (opaque `ect` relay),
+     * i.e. the encrypted path two real users on two servers actually hit. */
+    ctx_u2.got_inbound = false;
+    ctx_u2.got_data = false;
+
+    TEST("E2E: user1 opens encrypted cross-nodus circuit");
+    nodus_circuit_handle_t *h_u1_e2e = NULL;
+    rc = nodus_circuit_open_e2e(&cl_u1, &id_u2.node_id, id_u2.kyber_pk,
+                                on_data_cb, on_close_cb, &ctx_u1, &h_u1_e2e);
+    if (rc != 0 || !h_u1_e2e) { char m[64]; snprintf(m, sizeof(m), "rc=%d", rc); FAIL(m); goto cleanup; }
+    if (!h_u1_e2e->e2e_active) { FAIL("originator e2e not active"); goto cleanup; }
+    PASS();
+
+    TEST("E2E: user2 inbound has encryption active");
+    if (!wait_for(&ctx_u2.got_inbound, 2000)) { FAIL("no inbound"); goto cleanup; }
+    if (!ctx_u2.inbound_handle || !ctx_u2.inbound_handle->e2e_active) { FAIL("inbound e2e not active"); goto cleanup; }
+    PASS();
+
+    TEST("E2E: u1->u2 encrypted 1KB cross-nodus");
+    uint8_t e2e_pl[1024];
+    for (size_t i = 0; i < sizeof(e2e_pl); i++) e2e_pl[i] = (uint8_t)((i * 7 + 1) & 0xFF);
+    ctx_u2.got_data = false; ctx_u2.received_len = 0;
+    if (nodus_circuit_send(h_u1_e2e, e2e_pl, sizeof(e2e_pl)) != 0) { FAIL("send"); goto cleanup; }
+    if (!wait_for(&ctx_u2.got_data, 2000)) { FAIL("no data"); goto cleanup; }
+    if (ctx_u2.received_len != sizeof(e2e_pl) || memcmp(ctx_u2.received_data, e2e_pl, sizeof(e2e_pl)) != 0) {
+        FAIL("plaintext mismatch after decrypt"); goto cleanup;
+    }
+    PASS();
+
+    TEST("E2E: u2->u1 encrypted reverse cross-nodus");
+    uint8_t e2e_pl2[1024];
+    for (size_t i = 0; i < sizeof(e2e_pl2); i++) e2e_pl2[i] = (uint8_t)((i * 29 + 5) & 0xFF);
+    ctx_u1.got_data = false; ctx_u1.received_len = 0;
+    if (nodus_circuit_send(ctx_u2.inbound_handle, e2e_pl2, sizeof(e2e_pl2)) != 0) { FAIL("send"); goto cleanup; }
+    if (!wait_for(&ctx_u1.got_data, 2000)) { FAIL("no data"); goto cleanup; }
+    if (ctx_u1.received_len != sizeof(e2e_pl2) || memcmp(ctx_u1.received_data, e2e_pl2, sizeof(e2e_pl2)) != 0) {
+        FAIL("plaintext mismatch after decrypt"); goto cleanup;
+    }
+    PASS();
+
+    TEST("E2E: encrypted circuit close propagates cross-nodus");
+    ctx_u2.got_close = false;
+    nodus_circuit_close(h_u1_e2e);
+    if (!wait_for(&ctx_u2.got_close, 2000)) { FAIL("no close"); goto cleanup; }
+    PASS();
+
 cleanup:
     nodus_client_close(&cl_u1);
     nodus_client_close(&cl_u2);

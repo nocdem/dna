@@ -259,6 +259,26 @@ int main(void) {
     if (!wait_for(&ctx_u2.got_close, 2000)) { FAIL("no close"); goto cleanup; }
     PASS();
 
+    /* ── G2 default-deny: a peer with NO inbound handler rejects circuits ── */
+    /* Clear user2's inbound callback so it no longer accepts circuits. An
+     * incoming circ_inbound must then be torn down (circ_close back to the
+     * originator) instead of silently occupying a slot and black-holing data. */
+    TEST("G2: peer without inbound cb rejects circuit");
+    nodus_circuit_set_inbound_cb(&client_u2, NULL, NULL);
+    ctx_u2.got_inbound = false;
+    circuit_test_ctx_t ctx_deny;
+    memset(&ctx_deny, 0, sizeof(ctx_deny));
+    nodus_circuit_handle_t *h_deny = NULL;
+    rc = nodus_circuit_open(&client_u1, &id_u2.node_id,
+                            on_data_cb, on_close_cb, &ctx_deny, &h_deny);
+    if (rc != 0 || !h_deny) { FAIL("open"); goto cleanup; }
+    /* Originator's circuit is torn down by user2's rejection. */
+    if (!wait_for(&ctx_deny.got_close, 2000)) { FAIL("not rejected"); goto cleanup; }
+    /* And user2 never surfaced the circuit to the (absent) application. */
+    if (ctx_u2.got_inbound) { FAIL("inbound leaked to app"); goto cleanup; }
+    if (ctx_deny.got_data)  { FAIL("data flowed on rejected circuit"); goto cleanup; }
+    PASS();
+
     final_rc = 0;
 
 cleanup:
