@@ -13,9 +13,9 @@
 
 #define DNAC_VERSION_MAJOR 0
 #define DNAC_VERSION_MINOR 17
-#define DNAC_VERSION_PATCH 7
+#define DNAC_VERSION_PATCH 8
 
-#define DNAC_VERSION_STRING "0.17.7-stake.wip"
+#define DNAC_VERSION_STRING "0.17.8-stake.wip"
 
 /**
  * @brief Get DNAC library version string

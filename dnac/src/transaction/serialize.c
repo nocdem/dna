@@ -328,6 +328,7 @@ int dnac_tx_deserialize(const uint8_t *buffer,
     ptr += 8;
 
     /* Inputs */
+    if (ptr + 1 > end) { free(tx); return DNAC_ERROR_INVALID_PARAM; }  /* audit L2 */
     uint8_t input_count;
     READ_U8(ptr, input_count);
     if (input_count > DNAC_TX_MAX_INPUTS) {
@@ -347,6 +348,7 @@ int dnac_tx_deserialize(const uint8_t *buffer,
     }
 
     /* Outputs */
+    if (ptr + 1 > end) { free(tx); return DNAC_ERROR_INVALID_PARAM; }  /* audit L2 */
     uint8_t output_count;
     READ_U8(ptr, output_count);
     if (output_count > DNAC_TX_MAX_OUTPUTS) {
@@ -380,6 +382,7 @@ int dnac_tx_deserialize(const uint8_t *buffer,
     }
 
     /* Witnesses */
+    if (ptr + 1 > end) { free(tx); return DNAC_ERROR_INVALID_PARAM; }  /* audit L2 */
     uint8_t witness_count;
     READ_U8(ptr, witness_count);
     if (witness_count > DNAC_TX_MAX_WITNESSES) {
