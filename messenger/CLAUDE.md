@@ -1,8 +1,8 @@
 # DNA Connect - Messenger Development Guidelines
 
-**Last Updated:** 2026-04-08 | **Status:** RC (Release Candidate) | **Phase:** 7 (Flutter UI)
+**Last Updated:** 2026-06-12 | **Status:** RC (Release Candidate) | **Phase:** 7 (Flutter UI)
 
-**Versions:** Library v0.11.6 | Flutter v1.0.0-rc237 | Nodus v0.18.4
+**Versions:** Library v0.11.8 | Flutter v1.0.0-rc238 | Nodus v0.18.6
 
 **Note:** Framework rules (checkpoints, identity override, protocol mode, violations) are in root `/opt/dna/CLAUDE.md`. This file contains messenger-specific guidelines only.
 
@@ -26,28 +26,32 @@ If a failure cannot be reproduced, work continues until it can be. **No `rerun p
 
 ## Engine Modules
 
-The DNA Engine (`src/api/dna_engine.c`) is a modular async C library with 18 domain modules in `src/api/engine/`:
+The DNA Engine (`src/api/dna_engine.c`) is a modular async C library with 22 domain modules in `src/api/engine/`:
 
 | Module | Domain |
 |--------|--------|
 | `dna_engine_addressbook.c` | Address book management |
 | `dna_engine_backup.c` | DHT sync for all data types |
+| `dna_engine_calls.c` | PQ VoIP call control (signaling, key agreement) — Faz A. Owns orchestrator + keystore; uses `dna_call_crypto/fsm/orch.{c,h}` |
 | `dna_engine_channels.c` | Channel CRUD, posts, subscriptions (**DISABLED** — guarded by `DNA_CHANNELS_ENABLED`) |
 | `dna_engine_contacts.c` | Contact requests, blocking |
+| `dna_engine_debug_log.c` | Encrypted debug-log send to developer (Kyber1024 + AES-256-GCM) |
+| `dna_engine_dnac.c` | DNAC digital cash (balance, send, sync, history, UTXOs) |
+| `dna_engine_follow.c` | Follow/unfollow, list, DHT sync |
 | `dna_engine_groups.c` | Group CRUD, GEK encryption, invitations |
 | `dna_engine_helpers.c` | Shared utility functions |
 | `dna_engine_identity.c` | Identity create/load, profiles |
 | `dna_engine_lifecycle.c` | Engine pause/resume (mobile) |
 | `dna_engine_listeners.c` | DHT key subscriptions |
 | `dna_engine_logging.c` | Debug log control |
+| `dna_engine_media.c` | Async media upload/download/exists via Nodus DHT |
 | `dna_engine_messaging.c` | Send/receive, conversations, retry |
 | `dna_engine_presence.c` | Heartbeat, presence lookup |
 | `dna_engine_signing.c` | Data signing operations |
 | `dna_engine_version.c` | Version info and checking |
 | `dna_engine_wall.c` | Personal wall posts |
-| `dna_engine_follow.c` | Follow/unfollow, list, DHT sync |
+| `dna_engine_wall_poll.c` | Periodic batch wall polling (replaces per-contact DHT listeners) |
 | `dna_engine_wallet.c` | Multi-chain wallet (Cellframe, ETH, SOL, TRON, BSC) |
-| `dna_engine_dnac.c` | DNAC digital cash (balance, send, sync, history, UTXOs) |
 | `dna_engine_workers.c` | Background thread pool |
 
 **Directory layout:**
@@ -106,9 +110,9 @@ Flutter connects to the C library via `dart:ffi`:
 
 | Component | Version File | Current | Bump When |
 |-----------|--------------|---------|-----------|
-| C Library | `include/dna/version.h` | v0.11.6 | C code changes |
-| Flutter App | `dna_messenger_flutter/pubspec.yaml` | v1.0.0-rc237+10588 | Flutter/Dart changes |
-| Nodus | `../nodus/include/nodus/nodus_types.h` | v0.18.4 | Nodus changes |
+| C Library | `include/dna/version.h` | v0.11.8 | C code changes |
+| Flutter App | `dna_messenger_flutter/pubspec.yaml` | v1.0.0-rc238+10589 | Flutter/Dart changes |
+| Nodus | `../nodus/include/nodus/nodus_types.h` | v0.18.6 | Nodus changes |
 
 Flutter app displays **both versions** in Settings:
 - App version: from `pubspec.yaml`

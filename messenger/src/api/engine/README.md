@@ -37,6 +37,7 @@ The DNA Engine has been refactored from a 10,843-line monolith into modular comp
 | `dna_engine_wall.c` | — | ✅ Integrated | 4 | Wall post, delete, load, timeline |
 | `dna_engine_follow.c` | — | ✅ Integrated | 7 | Follow/unfollow, list, DHT sync |
 | `dna_engine_dnac.c` | — | ✅ Integrated | 8 | DNAC digital cash (balance, send, sync, history, UTXOs, fee) |
+| `dna_engine_calls.c` | — | ✅ Integrated | 4+incoming | PQ VoIP call control (Faz A): invite/accept/reject/hangup + `dna_calls_handle_incoming`. Owns orchestrator + keystore over `dna_call_crypto/fsm/orch` |
 
 ## Architecture
 

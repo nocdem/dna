@@ -966,6 +966,20 @@ int messenger_accept_group_invitation(ctx, group_uuid);
 int messenger_reject_group_invitation(ctx, group_uuid);
 ```
 
+### 7.1 Call Subsystem (PQ VoIP — Faz A)
+
+A post-quantum 1:1 call-control layer lives in `src/api/engine/dna_call_crypto.{c,h}`,
+`dna_call_fsm.{c,h}`, `dna_call_orch.{c,h}` (unit-tested headless core), plus the engine module
+`dna_engine_calls.{c,h}` that wires it into the live engine. It provides per-call ephemeral-Kyber
+key agreement (`K_call`), a canonical Dilithium5-signed signal builder/parser, a pure call state
+machine, and a mutex-guarded orchestrator (consent gate, dedup, glare tie-break, ended-call
+ring). The engine owns the orchestrator + a per-call keystore; `dna_engine_call_invite/accept/
+reject/hangup` are the public API, and inbound call signals are routed from
+`messenger_transport.c` (a `type:"call_signal"` branch → `dna_calls_handle_incoming`, which
+verifies the inner signature and never stores the body as chat). Call signals ride the Seal
+message channel; media (audio) is Faz B. Wire format: `PROTOCOL.md` §9. Function reference:
+`docs/functions/calls.md`.
+
 ---
 
 ## 8. Database Layer

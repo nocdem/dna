@@ -76,6 +76,7 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #endif
 
 #include "dna_engine_internal.h"
+#include "engine/dna_engine_calls.h"   /* PQ VoIP calls lifecycle */
 #include "dna_api.h"
 #include "crypto/utils/threadpool.h"
 #include "messenger/init.h"
@@ -1737,6 +1738,10 @@ dna_engine_t* dna_engine_create(const char *data_dir) {
         return NULL;
     }
 
+    /* PQ VoIP calls (Faz A): orchestrator + per-call keystore. Non-fatal if it
+     * fails — calls simply stay unavailable, messaging is unaffected. */
+    engine->calls_ctx = dna_calls_ctx_create();
+
     return engine;
 }
 
@@ -2033,6 +2038,12 @@ void dna_engine_destroy(dna_engine_t *engine) {
     if (engine->dnac_ctx) {
         dnac_shutdown((dnac_context_t *)engine->dnac_ctx);
         engine->dnac_ctx = NULL;
+    }
+
+    /* Destroy calls context (orchestrator + keystore) */
+    if (engine->calls_ctx) {
+        dna_calls_ctx_destroy(engine->calls_ctx);
+        engine->calls_ctx = NULL;
     }
 
     /* Free wallet list */

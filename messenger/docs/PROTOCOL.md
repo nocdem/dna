@@ -20,6 +20,7 @@ This document specifies all wire formats and protocols used by DNA Connect.
 | **Nexus Protocol** | v1 | Group symmetric key encryption |
 | **Circuit Relay** | v1 | NAT traversal via relay nodes |
 | **Media Storage** | v1 | Encrypted media attachments in DHT |
+| **Call Signaling** | v1 | PQ VoIP call control over Seal (Faz A) |
 
 ---
 
@@ -33,6 +34,7 @@ This document specifies all wire formats and protocols used by DNA Connect.
 6. [Nexus Protocol](#6-nexus-protocol) - Group Encryption
 7. [Signature Format](#7-signature-format)
 8. [Key File Formats](#8-key-file-formats)
+9. [Call Signaling Protocol](#9-call-signaling-protocol)
 
 ---
 
@@ -689,6 +691,72 @@ Media attachments (voice messages, video clips, images) are stored in DHT using 
 | **Spillway** | Inherits Seal | Signed DHT puts | DHT signatures | Per-message |
 | **Anchor** | Public data | Dilithium5 signature | Self-signed | N/A |
 | **Nexus** | AES-256-GCM | GCM tag | Group membership | Key rotation |
+
+---
+
+## 9. Call Signaling Protocol
+
+*Post-quantum 1:1 call control (Faz A). Media (audio) is Faz B.*
+
+### 9.1 Overview
+
+Call control is a typed-JSON message carried inside a normal **Seal** envelope (§2), so it
+inherits PQ E2E encryption, Dilithium5 identity, and Spillway offline queueing for free. A call
+is negotiated as a small state machine and never touches consensus (`state_root`).
+
+The Seal plaintext body is the UTF-8 JSON below (the same "typed JSON in message body" pattern
+as media references). On updated clients the receive-path router intercepts
+`"type":"call_signal"` bodies and never renders them as chat text.
+
+### 9.2 Signal body (canonical, fixed field order)
+
+```
+{"type":"call_signal","v":1,"call":"<32 hex = 16B call_id>","sig":"<base64 Dilithium5>",
+ "seq":<u32>,"kind":"INVITE|RINGING|ACCEPT|REJECT|BUSY|END"<,per-kind fields>}
+```
+
+| Kind | Extra fields |
+|------|--------------|
+| `INVITE` | `"caller":"<128 hex fp>"`, `"eph_pk":"<base64 1568B ML-KEM-1024 pk>"`, `"cap":{...}` |
+| `ACCEPT` | `"eph_ct":"<base64 1568B>"`, `"static_ct":"<base64 1568B>"` |
+| `REJECT` / `BUSY` / `END` | `"reason":<int>` |
+| `RINGING` | (base fields only) |
+
+**Signature (`sig`).** Computed by Dilithium5 over the body bytes with an **empty** `"sig":""`
+slot, then base64-spliced into that slot. Verification runs over the exact received bytes
+(blank the sig value, verify) — never re-serializing — so it is immune to JSON-encoder
+differences. Both INVITE and ACCEPT are signed. This inner signature is load-bearing: the
+direct-message receive path does not verify Seal's own signature, so `sig` is what binds
+`eph_pk` and the ACCEPT ciphertexts to the caller/callee identity. Verified against the pubkey
+fetched for the dialed fingerprint, asserting `fp == SHA3-512(pk)`.
+
+### 9.3 Per-call key agreement (K_call)
+
+The caller mints a per-call **ephemeral** ML-KEM-1024 keypair (in the signed INVITE). The callee
+encapsulates to both the ephemeral pk and the caller's static pk (from the DHT profile),
+returning `eph_ct` + `static_ct` in the signed ACCEPT. Both sides derive:
+
+```
+K_call = HKDF-SHA3-256(
+    salt = caller_fp[0:32] || callee_fp[0:32],
+    ikm  = ss_eph || ss_static,
+    info = "dna-call-v1" || call_id || SHA3-512(eph_pk)[0:32])   -> 32 bytes
+```
+
+Forward secrecy comes from destroying `ss_eph` (and the ephemeral secret key) at teardown; the
+static secret adds identity depth without weakening it. No new primitive — HKDF-SHA3-256 is the
+audited `hkdf_sha3_256` (RFC 5869). `K_call` keys the media circuit in Faz B.
+
+### 9.4 State machine
+
+`INVITE → RINGING → ACCEPT | REJECT | TIMEOUT | BUSY → (ACTIVE) → END`. The media circuit is
+opened only after a verified ACCEPT; the callee accepts the inbound circuit only via a one-shot,
+windowed consent gate keyed on the caller's fingerprint (no nodus wire change). Non-contacts
+cannot ring (contacts-only by default). Glare (simultaneous mutual INVITE) resolves to the lower
+raw 16-byte `call_id`.
+
+**Source:** `src/api/engine/dna_call_crypto.{c,h}`, `dna_call_fsm.{c,h}`, `dna_call_orch.{c,h}`.
+See `docs/functions/calls.md`.
 
 ---
 

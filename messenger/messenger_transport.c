@@ -27,6 +27,7 @@
 #include "dna_api.h"
 #include "dna_config.h"
 #include "dna/dna_engine.h"
+#include "engine/dna_engine_calls.h"   /* PQ VoIP call-signal routing */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -667,6 +668,22 @@ static void transport_message_received_internal(
             json_object *j_type = NULL;
             if (json_object_object_get_ex(j_msg, "type", &j_type)) {
                 const char *type_str = json_object_get_string(j_type);
+
+                /* PQ VoIP call signal (Faz A): route to the call module and do
+                 * NOT store as a chat message. Only fires for call_signal bodies,
+                 * so no existing message type is affected. */
+                if (type_str && strcmp(type_str, "call_signal") == 0) {
+                    dna_engine_t *engine = dna_engine_get_global();
+                    if (engine) {
+                        dna_calls_handle_incoming(engine, sender_identity,
+                                                  (const char *)plaintext);
+                    }
+                    json_object_put(j_msg);
+                    free(plaintext);
+                    free(sender_identity);
+                    return;
+                }
+
                 if (type_str && (strcmp(type_str, "group_invite") == 0 ||
                                  strcmp(type_str, "groupinvite") == 0)) {
                     message_type = MESSAGE_TYPE_GROUP_INVITATION;

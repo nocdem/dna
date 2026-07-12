@@ -248,6 +248,68 @@ target_link_libraries(test_debug_log_wire ${TEST_LIBS})
 add_test(NAME test_debug_log_wire COMMAND test_debug_log_wire)
 
 # =============================================================================
+# Test: Call Crypto (PQ VoIP Faz A — per-call K_call agreement)
+# =============================================================================
+add_executable(test_call_crypto
+    test_call_crypto.c
+    ${DNA_ROOT}/src/api/engine/dna_call_crypto.c)
+target_include_directories(test_call_crypto PRIVATE ${DNA_ROOT}/src/api/engine)
+target_link_libraries(test_call_crypto ${TEST_LIBS})
+add_test(NAME test_call_crypto COMMAND test_call_crypto)
+
+# Call-signal canonical signer/verifier (F-SIG / F-JSON)
+add_executable(test_call_sign
+    test_call_sign.c
+    ${DNA_ROOT}/src/api/engine/dna_call_crypto.c)
+target_include_directories(test_call_sign PRIVATE ${DNA_ROOT}/src/api/engine)
+target_link_libraries(test_call_sign ${TEST_LIBS})
+add_test(NAME test_call_sign COMMAND test_call_sign)
+
+# Call state machine (determinism-critical pure FSM)
+add_executable(test_call_fsm
+    test_call_fsm.c
+    ${DNA_ROOT}/src/api/engine/dna_call_fsm.c)
+target_include_directories(test_call_fsm PRIVATE ${DNA_ROOT}/src/api/engine)
+target_link_libraries(test_call_fsm ${TEST_LIBS})
+add_test(NAME test_call_fsm COMMAND test_call_fsm)
+
+# Call signal builder (canonical per-kind JSON body)
+add_executable(test_call_signal
+    test_call_signal.c
+    ${DNA_ROOT}/src/api/engine/dna_call_crypto.c)
+target_include_directories(test_call_signal PRIVATE ${DNA_ROOT}/src/api/engine)
+target_link_libraries(test_call_signal ${TEST_LIBS})
+add_test(NAME test_call_signal COMMAND test_call_signal)
+
+# Call signal parser (received-body field extraction, fuzz-safe)
+add_executable(test_call_parse
+    test_call_parse.c
+    ${DNA_ROOT}/src/api/engine/dna_call_crypto.c)
+target_include_directories(test_call_parse PRIVATE ${DNA_ROOT}/src/api/engine)
+target_link_libraries(test_call_parse ${TEST_LIBS})
+add_test(NAME test_call_parse COMMAND test_call_parse)
+
+# Call orchestrator registry (dedup + consent gate + ended-ring + windows)
+add_executable(test_call_orch
+    test_call_orch.c
+    ${DNA_ROOT}/src/api/engine/dna_call_orch.c
+    ${DNA_ROOT}/src/api/engine/dna_call_fsm.c
+    ${DNA_ROOT}/src/api/engine/dna_call_crypto.c)
+target_include_directories(test_call_orch PRIVATE ${DNA_ROOT}/src/api/engine)
+target_link_libraries(test_call_orch ${TEST_LIBS})
+add_test(NAME test_call_orch COMMAND test_call_orch)
+
+# Call orchestrator signal->FSM driver + glare tie-break
+add_executable(test_call_driver
+    test_call_driver.c
+    ${DNA_ROOT}/src/api/engine/dna_call_orch.c
+    ${DNA_ROOT}/src/api/engine/dna_call_fsm.c
+    ${DNA_ROOT}/src/api/engine/dna_call_crypto.c)
+target_include_directories(test_call_driver PRIVATE ${DNA_ROOT}/src/api/engine)
+target_link_libraries(test_call_driver ${TEST_LIBS})
+add_test(NAME test_call_driver COMMAND test_call_driver)
+
+# =============================================================================
 # Test: Platform Keystore (TEE noop backend on desktop)
 # =============================================================================
 add_executable(test_platform_keystore test_platform_keystore.c)

@@ -25,6 +25,7 @@ This directory provides a function-level reference for the DNA Connect codebase.
 | **Database** | [database.md](database.md) | SQLite databases (contacts, cache, profiles) |
 | **Blockchain** | [blockchain.md](blockchain.md) | Multi-chain wallet (Cellframe, ETH, Solana, TRON) |
 | **Engine** | [engine.md](engine.md) | Internal engine implementation |
+| **Calls** | [calls.md](calls.md) | PQ VoIP call subsystem (signaling, key agreement, FSM, orchestrator) |
 | **Key Sizes** | [key-sizes.md](key-sizes.md) | Cryptographic key size reference |
 
 ---

@@ -210,6 +210,11 @@ if(BUILD_SHARED_LIB)
         src/api/engine/dna_engine_debug_log.c
         src/api/engine/dna_debug_log_wire.c
         src/api/engine/dna_engine_dnac.c
+        # PQ VoIP calls (Faz A) — headless core + engine module
+        src/api/engine/dna_call_crypto.c
+        src/api/engine/dna_call_fsm.c
+        src/api/engine/dna_call_orch.c
+        src/api/engine/dna_engine_calls.c
         src/reaction/reaction_json.c
         # DNAC (digital cash) — compiled into libdna for single .so
         ${CMAKE_SOURCE_DIR}/../dnac/src/version.c
@@ -338,6 +343,11 @@ else()
         src/api/engine/dna_engine_debug_log.c
         src/api/engine/dna_debug_log_wire.c
         src/api/engine/dna_engine_dnac.c
+        # PQ VoIP calls (Faz A) — headless core + engine module
+        src/api/engine/dna_call_crypto.c
+        src/api/engine/dna_call_fsm.c
+        src/api/engine/dna_call_orch.c
+        src/api/engine/dna_engine_calls.c
         src/reaction/reaction_json.c
         # DNAC (digital cash) — compiled into libdna for single .so
         ${CMAKE_SOURCE_DIR}/../dnac/src/version.c

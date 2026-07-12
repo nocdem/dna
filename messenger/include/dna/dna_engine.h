@@ -1723,6 +1723,25 @@ DNA_API dna_request_id_t dna_engine_send_message(
     void *user_data
 );
 
+/* ============================================================================
+ * PQ VoIP CALLS (Faz A — signaling + key agreement; media is Faz B)
+ * Full reference: docs/functions/calls.md, PROTOCOL.md §9.
+ * ============================================================================ */
+
+/* Place a call to a contact (by 128-hex fingerprint). Sends a signed INVITE
+ * over the Seal channel. Returns 0 on success, negative on error. */
+DNA_API int dna_engine_call_invite(dna_engine_t *engine, const char *peer_fp);
+
+/* Answer a ringing call (by 32-hex call_id). Derives the call key, sends a
+ * signed ACCEPT, and arms the media consent gate. Returns 0 / negative. */
+DNA_API int dna_engine_call_accept(dna_engine_t *engine, const char *call_id_hex);
+
+/* Decline a ringing call (sends REJECT). Returns 0 / negative. */
+DNA_API int dna_engine_call_reject(dna_engine_t *engine, const char *call_id_hex);
+
+/* End an active or outgoing call (sends END). Returns 0 / negative. */
+DNA_API int dna_engine_call_hangup(dna_engine_t *engine, const char *call_id_hex);
+
 /**
  * Send a reaction to a message (async)
  *

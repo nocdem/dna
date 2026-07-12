@@ -863,6 +863,9 @@ struct dna_engine {
     /* DNAC digital cash (lazy init on first wallet access) */
     void *dnac_ctx;                  /* dnac_context_t* (NULL until first use) */
 
+    /* PQ VoIP calls (Faz A) — owns orchestrator + per-call keystore */
+    void *calls_ctx;                 /* dna_calls_ctx_t* (created at engine init) */
+
     /* Password protection (session state) */
     char *session_password;          /* Password for current session (NULL if unprotected) */
     bool keys_encrypted;             /* True if identity keys are password-protected */
