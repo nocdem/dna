@@ -651,12 +651,20 @@ static void transport_message_received_internal(
                 uint8_t *signer_pub = NULL;
                 size_t signer_pub_len = 0;
                 int resolved;
-                if (ctx->identity && strcmp(claimed_fp_hex, ctx->identity) == 0) {
+                /* Compare/resolve against the canonical 128-hex fingerprint,
+                 * falling back to ctx->identity only if the fingerprint has not
+                 * been resolved yet (login-by-name before resolution). */
+                const char *self_id = ctx->fingerprint ? ctx->fingerprint : ctx->identity;
+                if (self_id && strcmp(claimed_fp_hex, self_id) == 0) {
                     /* self (e.g. cross-device DELETE): use our own signing key */
                     resolved = load_my_dilithium_pubkey(ctx, &signer_pub, &signer_pub_len);
                 } else {
-                    /* reuse the existing keyserver lookup for the resolved sender */
-                    resolved = load_pubkey_for_identity(ctx, sender_identity,
+                    /* Resolve by the AUTHENTICATED claimed fingerprint, not the
+                     * unauthenticated DHT-queue hint. The keyserver cache is
+                     * keyed by fingerprint, so this binds resolution to the same
+                     * value dna_verify_seal_authorship checks and maximizes cache
+                     * hits (fewer false drops). */
+                    resolved = load_pubkey_for_identity(ctx, claimed_fp_hex,
                                                         &signer_pub, &signer_pub_len);
                 }
 
@@ -685,6 +693,14 @@ static void transport_message_received_internal(
              * not the unauthenticated DHT-queue field. */
             free(sender_identity);
             sender_identity = strdup(verified_fp);
+            if (!sender_identity) {
+                QGP_LOG_ERROR(LOG_TAG, "[AUTH] OOM setting verified identity — dropping");
+                if (sender_fp_from_msg) free(sender_fp_from_msg);
+                if (signature) free(signature);
+                qgp_key_free(kyber_key);
+                free(plaintext);
+                return;
+            }
         }
 
         if (sender_fp_from_msg) free(sender_fp_from_msg);
@@ -791,7 +807,11 @@ static void transport_message_received_internal(
                      * by a DELETE the local identity actually signed. A spoofed
                      * self-DELETE from a contact is rejected at the gate before
                      * reaching here. */
-                    bool is_self = (strcmp(sender_identity, ctx->identity) == 0);
+                    /* Compare the verified sender against the canonical 128-hex
+                     * fingerprint (sender_identity is now the verified fp);
+                     * fall back to ctx->identity only if unresolved. */
+                    const char *self_fp = ctx->fingerprint ? ctx->fingerprint : ctx->identity;
+                    bool is_self = (self_fp && strcmp(sender_identity, self_fp) == 0);
 
                     if (is_self) {
                         /* Cross-device sync — actually delete from local DB */
