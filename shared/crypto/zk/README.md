@@ -1,13 +1,20 @@
 # shared/crypto/zk — STARK range proof module (DNAC v3)
 
-**Status (2026-06-09):** v3 ships **transparent**. This ZK stack is the **ADDITIVE, P7-audited, verify-only foundation**, parked in-tree. **Confidential (hidden) amounts are DEFERRED to v4** — decisions + rationale below. Per-module working log: `RESUME.md`. v4 plan: `docs/plans/2026-06-09-v4-confidential-northstar-design.md`.
+**Status (2026-07-12):** v3 ships **transparent**. This ZK stack is a **verify-only,
+parked** foundation (prover [MISSING]; not linked into any consensus binary).
+**Confidential (hidden) amounts are DEFERRED to v4.** The money AIRs' 2026-07
+soundness campaign (2 mints found + fixed, FRI wire-param UB guards, composed
+`range_balance_verify()` door) is COMPLETE and committed on branch
+`zk-range-balance-soundness-hardening`. **Read `RESUME.md` top block FIRST** — it
+is the authoritative current state (where-we-are / what-we-did / what's-next).
+v4 plan: `docs/plans/2026-06-09-v4-confidential-northstar-design.md`.
 
 ---
 
 ## PROJECT STATUS, DECISIONS & WHAT'S MISSING
 
 ### Where we are (one glance)
-- **Built + grounded + P7-audited:** a complete STARK *verifier* stack + range/balance AIR, every public function oracle byte-matched against Plonky3 (pin `82cfad7`). `make clean && make test` GREEN, ~35 binaries, 0 warnings.
+- **Built + grounded + audited:** a complete STARK *verifier* stack + range/balance AIR, every public function oracle byte-matched against Plonky3 (pin `82cfad73`), then hardened by a 2026-07 soundness campaign (13+13+4 subagent audits + 18-member council). `make clean && make test` GREEN, **36 gates**, 0 warnings.
 - **Mode = ADDITIVE only:** amounts are **cleartext**; the proof is *redundant* with the witness's native balance check (`nodus/src/witness/nodus_witness_verify.c:672-783` Check 4, native u64, overflow guard `:719`). **No privacy yet.**
 - **Not linked into consensus:** `shared/crypto/zk` is a standalone Makefile — zero references in `nodus/src` / `dnac/src` (grep-confirmed). Nothing here runs in production.
 - **Confidential (hidden amounts) = DEFERRED to v4.**
@@ -34,7 +41,9 @@
 - **Range/balance AIR (ADDITIVE):** `range_air` (B/S, **52-bit**), `sum_balance` (I/U/F + N count-bound + P public-bound), combined `range_proof_air` air_eval (**56-col, 61 constraints**: B·52 + S + R + P + I + U + F + CI + CU + CF) — end-to-end C↔Plonky3 byte-matched, then 13-subagent soundness red-team (2026-07-11/12).
 - **B6 (field-wrap) CLOSED (2026-07):** amounts range-checked to **52 bits** (`2^52 < p`; 64-bit was vacuous over Goldilocks → a mint), `N_max=1024` ⇒ `Σ < 2^62 < p`. Plus a public-input bound (`claimed`,`fee` `< 2^62`) closing the fee-term mod-p wraparound the red-team found.
 - **B7 (padding/output-count) CLOSED (2026-07):** `is_real` + `(1−is_real)·amount=0` (P) + `cnt` accumulator binding `Σ is_real` to public `n_real`. `blockers==[B1]` only.
-- **Fix design + audit trail:** `dnac/docs/plans/2026-07-11-range-balance-soundness-fix-design.md`.
+- **FRI wire-param UB guards (2026-07-12):** `fri_verifier` rejects degenerate/UB params — `num_queries==0` (accept-any downgrade), `log_global_max_height≥64` (shift-count UB → chain-split class), mixed-height batch (was a `-DNDEBUG`-strippable `assert`, now a runtime reject) → `DNAC_FRI_ERR_UNSUPPORTED_PARAMS`. A FULL production `FriParameters` pin remains a before-consensus MUST-FIX (needs a grounded FRI reference; not invented here).
+- **`range_balance_verify()` composed door (2026-07-12):** the single sound money-gating entry (range B/S first, then balance N/P/I/U/F). `sum_balance` alone accepts the mint witness (KAT E2); the composed door rejects it (KAT E6, mutation-verified).
+- **Fix design + full audit trail:** `dnac/docs/plans/2026-07-11-range-balance-soundness-fix-design.md`.
 - **Research verdict** (in-AIR SHA3 sponge does not exist) + **v4 north-star design doc** (3 mandatory sections + crypto-agility + red-team plan).
 
 ### What's MISSING (v4 work items)
@@ -46,13 +55,19 @@
 - **Consensus integration** + CMake/libdna link + Genesis 7/7 determinism gate. **[MISSING]**
 
 ### Durability
-The current stack (the whole verifier + the FRI P0 fix) was **git-untracked** (P7 finding) — it would vanish on a fresh checkout / `git clean`. Committing the stack locks the fix and its guards in. (This README + the source are part of that commit.)
+The stack (114 files) is **git-tracked**. The 2026-07 soundness fixes + regression
+KATs + FRI guards + composed door are committed on branch
+`zk-range-balance-soundness-hardening` (commits `9d07c968`, `80f8888b`). The guards
+against mint-reintroduction are therefore durable — a fresh checkout keeps them.
+(An earlier P7 note claimed the stack was git-untracked; that referred to
+transient uncommitted working-tree edits, since committed — the tracked file set
+was never zero.)
 
 ---
 
 **Design docs (all local-only, gitignored — read before touching anything here):**
 - `docs/plans/2026-06-09-v4-confidential-northstar-design.md` — **v4 confidential north-star (current direction; read FIRST)**
-- `docs/plans/2026-05-30-dnac-range-proof-air-regrounding.md` — ratified ADDITIVE range_proof_air (66-col), B1/B6/B7 framing
+- `docs/plans/2026-05-30-dnac-range-proof-air-regrounding.md` — HISTORICAL: the 66-col/68-constraint/B6-B7-open framing here is SUPERSEDED by the 2026-07-11 soundness fix (now 56-col/61-constraint, B6/B7 CLOSED). Read it as history.
 - `dnac/docs/plans/2026-05-21-stark-range-proof-keccak-design.md` — original STARK design (§4.5/§6.2 INVALIDATED — see re-grounding)
 - `dnac/docs/plans/2026-05-26-merkle-mmcs-design.md` — Merkle/MMCS module spec
 - `docs/plans/2026-05-26-transcript-design.md` — Fiat-Shamir transcript spec

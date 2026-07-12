@@ -1,11 +1,101 @@
-# RESUME — DNAC v3 ZK module state (post-rebuild, 2026-05-27)
+# RESUME — DNAC v3 ZK stack (CURRENT STATUS: 2026-07-12)
 
-> **⮕ 2026-06-09 STRATEGIC UPDATE — read `README.md` "PROJECT STATUS, DECISIONS & WHAT'S MISSING" + `docs/plans/2026-06-09-v4-confidential-northstar-design.md` FIRST.**
-> Decision: **v3 ships transparent; confidential (hidden amounts) DEFERRED to v4.** This stack is the ADDITIVE, P7-audited, verify-only foundation (parked, not in consensus). For v4 confidential: B1 binding needs an in-AIR hash; deep-research (2026-06-08) proved **no grounded in-AIR SHA3 sponge exists**, so the lock is amended → **Poseidon2** for the in-AIR value commitment only (SHA3 stays for chain/transcript/Merkle). B6 (B+M≤63) + B7 (is_real/padding-zero/count) solutions designed. Open: prover, 2-chunk recompose, commitment preimage, full-shield, ZK/hiding layer. The per-module log below is the ADDITIVE working state and remains accurate.
->
-> **⮕ 2026-07-12 RANGE/BALANCE SOUNDNESS FIX (SHIPPED to working tree, make test GREEN) — supersedes the "B6/B7 designed / width-66 / 68-constraint" notes below.** An independent 13-subagent audit (2026-07-11) found a **MINT**: 64-bit range decomposition is vacuous over Goldilocks (p<2^64) and the mod-p balance wraps. Fixed: **range_air 64→52 bit** (2^52<p), **sum_balance N_max=1024** count bound, and the STARK **RangeProofAir now width 56 / 61 constraints** (B·52 + S + R + P + I + U + F + CI + CU + CF), publics `[claimed, fee, n_real]`, adding `is_real`+`cnt` columns — **B6 and B7 CLOSED** (`blockers==[B1]`). A follow-up 13-subagent red-team then refuted G1 again via the **fee/claimed mod-p wraparound** (`committed_fee=p−A` mints A); closed by a public-input bound `< 2^62` in `sum_balance.c` (constraint `P`) + n==0 fail-close. Design + full audit trail: `dnac/docs/plans/2026-07-11-range-balance-soundness-fix-design.md` (§5.2b, §5.4, §6) + memory `project_zk_soundness_audit_2026_07.md`. **Still OPEN (separate subsystem, MUST-FIX before consensus):** `fri_verifier.c` mixed-height assert + wire-param shift-UB (§5.4). The old width/constraint/B6-B7 numbers in the per-module log below are historical.
+> **This top block is authoritative and current. Everything under "═══ HISTORICAL
+> BUILD LOG ═══" is the traceable module-by-module history and its numbers
+> (widths, constraint counts, B6/B7 framing) are PRE-2026-07-12 — read them as
+> history, not current state.**
 
-**STATUS: 16 modules nuked across 2 passes 2026-05-23. 3 of them (transcript, merkle_smt, fri_fold) subsequently RESTORED as Plonky3-grounded ports between 2026-05-26 and 2026-05-27. fri_commit / fri_query stay deleted; their replacement is the upcoming fri_verifier port.**
+## WHERE WE ARE
+
+- **What it is:** a **verify-only** STARK range/balance-proof stack over the
+  Goldilocks field — Plonky3-grounded C ports of the verifier engine (field,
+  NTT, Keccak-AIR, SHA3 sponge, transcript, Merkle-MMCS, FRI fold + verifier,
+  STARK constraint check, proof codecs) plus two DNAC-original money AIRs
+  (range_air, sum_balance) and a Rust build-time oracle.
+- **The prover is [MISSING]** — nothing in this tree generates proofs; every
+  test verifies proofs produced by the Rust oracle / real `p3_uni_stark::prove`.
+- **Parked, NOT in consensus.** `grep` confirms zero references to
+  `shared/crypto/zk` from any CMakeLists (messenger/nodus/dnac) — it is compiled
+  ONLY by its own standalone `Makefile`, not into `libdna.so`/`nodus-server`.
+  Money conservation on the live chain is enforced by the native cleartext
+  witness check (`verify.c` Check 4); this ZK stack is ADDITIVE (v3 ships
+  transparent, hidden amounts are v4).
+- **`make test`: 36 gates GREEN, 0 warnings** (`cd shared/crypto/zk && make test`).
+- **Committed** on branch `zk-range-balance-soundness-hardening` (commits
+  `9d07c968` mint-fix + FRI guards, `80f8888b` composed door). Not on `main`.
+
+## WHAT WE DID (2026-07-11/12 — soundness campaign)
+
+Independent multi-subagent audits (13 + 13 + 4) + an 18-member council review
+found and fixed a real **MINT** class of bug, then hardened around it:
+
+1. **range_air 64→52 bit.** A 64-bit decomposition is VACUOUS over Goldilocks
+   (`p = 2^64−2^32+1 < 2^64`) — `p−1` passed "in range" → mod-p mint. Now
+   `RANGE_AIR_BITS = 52` (`2^52 < p`, injective recomposition); bits taken from
+   the canonical amount. Width 53 (52 bits + amount).
+2. **sum_balance aggregate + public-input bounds.** `N_max = 1024` count bound
+   (`Σ outputs < 2^62 < p`). A follow-up red-team then refuted G1 again via the
+   **fee/claimed** term: `committed_fee = p−A` wraps the mod-p F equation and
+   mints A. Closed by a verifier-side public-input bound (`claimed, fee < 2^62`,
+   constraint `P`) + `n==0` fail-close. Width 54 (adds acc col). Grounded by
+   compile-time asserts (`TERM_MAX == 2^62`, `2·TERM_MAX ≤ p`).
+3. **STARK RangeProofAir: width 56 / 61 constraints** — B·52 + S + R + P + I + U
+   + F + CI + CU + CF, publics `[claimed, fee, n_real]`, adding `is_real` + `cnt`
+   columns (padding-zero + count binding). All constraints degree ≤ 2 → num_qc=1
+   (verified live). **B6 (field-wrap) + B7 (padding/count) CLOSED; `blockers==[B1]`.**
+4. **FRI wire-param safety guards** (council red-team, Sun Tzu/Taleb): reject
+   degenerate/UB params — `num_queries==0` (low-degree test never runs → accept
+   garbage), `log_global_max_height ≥ 64` (shift-count UB → cross-build verdict
+   divergence = chain-split), mixed-height batch (was a debug-only `assert`,
+   stripped under `-DNDEBUG` which the messenger Release build defines → now a
+   runtime reject). New error `DNAC_FRI_ERR_UNSUPPORTED_PARAMS` (code 20).
+5. **`range_balance_verify()` composed door** — the single sound money-gating
+   entry (range B/S FIRST, then balance N/P/I/U/F). `sum_balance` alone ACCEPTS
+   the mint witness (KAT E2); the composed door rejects it. The two
+   `*_check_constraints` halves stay exported only for the test suite.
+6. **KATs + mutation tests** that fail COMPILATION if a bound is reopened
+   (E1–E6, oor_*, P-isolation, STARK public-input bound). Oracle vectors
+   regenerated from real `p3_uni_stark` (num_qc==1). Full audit trail:
+   `dnac/docs/plans/2026-07-11-range-balance-soundness-fix-design.md` +
+   memory `project_zk_soundness_audit_2026_07.md`.
+
+## WHAT'S NEXT (all deferred; none blocks the parked stack today)
+
+The 18-member council's diagnosis: this is **two sound fragments, not a system**
+— the verifier engine + money AIRs are individually sound, but there is no
+prover and no TX binding, so no adversarial soundness claim can even be tested.
+Remaining before ZK gates real money (all before-consensus MUST-FIX):
+
+- **Prover** — [MISSING] entirely; estimated 2–4 months (FFT/LDE + FRI commit +
+  trace Merkle + query opening orchestration). Do NOT start it on the current
+  foundation before B1 is audited.
+- **B1 — trace↔TX binding** — the load-bearing gap: even a sound range/balance
+  proof does not prove the trace amounts ARE this TX's outputs. Must be
+  specified + independently red-teamed **across a commit boundary, before any
+  prover merges** (a sound proof is vacuous without it).
+- **Full FRI parameter pin** — `dec_params` (`fri_proof_codec.c`) still reads the
+  FRI security level off the wire; the degenerate/UB cases are now rejected, but
+  a full exact-match pin to a grounded `DNAC_FRI_PROTOCOL_PARAMS` is required
+  before consensus wiring (needs a grounded FRI-paper reference — do NOT invent).
+- **Wallet auto-split** — the `2^52` (~45M DNAC) single-output cap needs the
+  wallet to transparently split larger sends, or a large send silently fails
+  (tracked `dnac/BUGS.md` P3). Liveness, not soundness.
+- **v4 confidential** (hidden amounts) — Poseidon2 in-AIR commitment; needs a
+  detector for the non-homomorphic-inflation failure mode. Gated behind the
+  above AND a product decision: does v4 confidential bind a real user need, or
+  is it rigor on a hypothetical? (Transparent v3 gives identical privacy/safety
+  with or without this stack.)
+
+**STRATEGIC FORK (council escalated to user, unresolved):** HOLD+HARDEN (fix
+done, stop auditing the AIR) vs KEEP+ADVANCE (proceed to prover/B1 under gates)
+vs SHRINK (delete the parked verifier to a tagged branch, keep only
+field+range+sum_balance as v4 seeds). No decision taken.
+
+═══════════════════════════════════════════════════════════════════════════════
+## ═══ HISTORICAL BUILD LOG (numbers below are pre-2026-07-12; see status above) ═══
+═══════════════════════════════════════════════════════════════════════════════
+
+**STATUS (historical): 16 modules nuked across 2 passes 2026-05-23. 3 of them (transcript, merkle_smt, fri_fold) subsequently RESTORED as Plonky3-grounded ports between 2026-05-26 and 2026-05-27. fri_commit / fri_query stay deleted; their replacement is the fri_verifier port.**
 
 - **Morning nuke (2026-05-23):** 11 invented modules (3.1, 3.2, 3.3b.1-8, 3.4) per design doc § 12 post-mortem. Most reworked same day from Plonky3 source.
 - **Evening nuke (2026-05-23):** 5 more modules (`transcript`, `merkle_smt`, `fri_fold`, `fri_commit`, `fri_query`) per SUBAGENT_AUDIT_2026_05_23.md findings (12 parallel independent audit). User directive: "ISKELETI SIL. GOTUNDEN UYDURDUGUN HERSEYI SIL".
@@ -208,7 +298,7 @@ cd /opt/dna/shared/crypto/zk
 make clean && make test
 ```
 
-Expected: 27 test binaries GREEN, all grounded against external references (Plonky3, NIST KAT, OpenSSL, FIPS-202 PDF).
+Expected (2026-07-12): 36 gate markers GREEN, 0 warnings, all grounded against external references (Plonky3 pin `82cfad73`, NIST KAT, OpenSSL, FIPS-202).
 
 ---
 
