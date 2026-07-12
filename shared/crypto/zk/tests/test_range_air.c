@@ -226,7 +226,7 @@ typedef struct {
     char *name;
     uint64_t amount_u64;
     uint64_t trace_row[RANGE_AIR_WIDTH];
-    uint64_t bool_residuals[64];
+    uint64_t bool_residuals[RANGE_AIR_BITS];
     uint64_t recompose_residual;
     bool expected_valid;
     bool has_tamper;
@@ -271,13 +271,13 @@ static bool parse_case(json_scanner_t *s, range_air_case_t *out) {
             if (!js_match(s, ':')) return false;
             size_t actual = 0;
             if (!js_read_u64_string_array(s, out->bool_residuals,
-                                          64, &actual)) {
+                                          RANGE_AIR_BITS, &actual)) {
                 return false;
             }
-            if (actual != 64) {
+            if (actual != RANGE_AIR_BITS) {
                 fprintf(stderr,
-                        "FAIL: bool_residuals has %zu entries (want 64)\n",
-                        actual);
+                        "FAIL: bool_residuals has %zu entries (want %zu)\n",
+                        actual, RANGE_AIR_BITS);
                 return false;
             }
         } else if (js_match_key(s, "recompose_residual")) {
@@ -333,10 +333,11 @@ int main(int argc, char **argv) {
     /* Pre-flight: column-binding constants are sane. (test #6 enforces this
      * formally; redundant check here helps debugging if test_air_column_layout
      * was never built.) */
-    if (RANGE_AIR_WIDTH != 65 ||
-        RANGE_AIR_AMOUNT_OFF != 64 ||
+    if (RANGE_AIR_BITS != 52 ||
+        RANGE_AIR_WIDTH != 53 ||
+        RANGE_AIR_AMOUNT_OFF != 52 ||
         RANGE_AIR_BIT_OFF(0) != 0 ||
-        RANGE_AIR_BIT_OFF(63) != 63) {
+        RANGE_AIR_BIT_OFF(51) != 51) {
         fprintf(stderr, "FAIL: column-binding contract violated\n");
         return 2;
     }
@@ -408,12 +409,12 @@ int main(int argc, char **argv) {
          *     short-circuit on; ensures even tamper cases hit the same field
          *     values the oracle saw. */
         {
-            uint64_t my_bool[64];
+            uint64_t my_bool[RANGE_AIR_BITS];
             uint64_t my_recomp = 0;
             range_air_compute_residuals(c.trace_row, my_bool, &my_recomp);
             bool ok = (my_recomp == c.recompose_residual) &&
                       (memcmp(my_bool, c.bool_residuals,
-                              sizeof(uint64_t) * 64) == 0);
+                              sizeof(uint64_t) * RANGE_AIR_BITS) == 0);
             if (ok) {
                 residual_pass++;
             } else {
@@ -428,7 +429,7 @@ int main(int argc, char **argv) {
                                 " ours=%" PRIu64 "\n",
                                 c.recompose_residual, my_recomp);
                     }
-                    for (size_t i = 0; i < 64; i++) {
+                    for (size_t i = 0; i < RANGE_AIR_BITS; i++) {
                         if (my_bool[i] != c.bool_residuals[i]) {
                             fprintf(stderr,
                                     "  bool[%zu]: oracle=%" PRIu64

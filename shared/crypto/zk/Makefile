@@ -290,9 +290,10 @@ $(BUILD)/test_stark_verify_constraints: tests/test_stark_verify_constraints.c st
 # S5.x — C range_proof_air air_eval (range-only + combined, ADDITIVE) vs the real-
 # Plonky3 S5.1 oracle vectors. The two air_eval callbacks are TEST fixtures; the
 # generic dnac_stark_verify_constraints glue (S4) is reused unchanged. Links only
-# field_goldilocks. CONFIDENTIAL use BLOCKED on B1/B6/B7 (asserted from flags). Per
+# field_goldilocks. CONFIDENTIAL use BLOCKED on B1 (asserted from flags; B6/B7
+# closed by the 2026-07 52-bit + is_real/cnt soundness fix). Per
 # docs/plans/2026-05-30-dnac-range-proof-air-regrounding.md (S5.x).
-$(BUILD)/test_range_proof_air: tests/test_range_proof_air.c stark_constraints.h stark_constraints.c field_goldilocks.h field_goldilocks.c | $(BUILD)
+$(BUILD)/test_range_proof_air: tests/test_range_proof_air.c stark_constraints.h stark_constraints.c field_goldilocks.h field_goldilocks.c range_air.h | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) tests/test_range_proof_air.c stark_constraints.c field_goldilocks.c -o $@
 
 # Regenerate the DZKS wrapper vectors from their priming vectors via the C codec
@@ -492,8 +493,8 @@ test: all
 	@echo
 	@echo "============================================================"
 	@echo "Phase B8 S5.x — DNAC range_proof_air C air_eval (ADDITIVE, 82cfad73)"
-	@echo "  range-only (65) + combined range+balance (68) vs real-Plonky3 vectors"
-	@echo "  CONFIDENTIAL use BLOCKED on B1/B6/B7"
+	@echo "  range-only (53) + combined range+balance+is_real/cnt (61) vs real-Plonky3 vectors"
+	@echo "  CONFIDENTIAL use BLOCKED on B1 (B6/B7 closed by 52-bit + is_real/cnt fix)"
 	@echo "============================================================"
 	@$(BUILD)/test_range_proof_air tools/vectors/range_air_only.json tools/vectors/range_proof_air.json
 	@echo

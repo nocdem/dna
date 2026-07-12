@@ -40,6 +40,12 @@ type GoldFp2 = BinomialExtensionField<Goldilocks, 2>;
 /// Goldilocks prime p = 2^64 - 2^32 + 1 = 18446744069414584321.
 const GOLDILOCKS_P: u64 = 0xFFFFFFFF_00000001;
 
+/// Range-check bit width. MUST equal RANGE_AIR_BITS in range_air.h. 52 is chosen
+/// so 2^52 < p (a 64-bit decomposition is vacuous over Goldilocks — see the
+/// 2026-07-11 soundness fix). Bits are taken from the CANONICAL amount so the
+/// bit columns and amount cell reference the same value.
+const RANGE_AIR_BITS: usize = 52;
+
 /// Number of test cases per arithmetic operation.
 const CASES_PER_OP: usize = 1024;
 
@@ -347,16 +353,17 @@ enum Cmd {
         #[arg(long)]
         out: PathBuf,
     },
-    /// S5.1 Phase A — DNAC range-only AIR (B+S, width 65, main_next=false),
+    /// S5.1 Phase A — DNAC range-only AIR (B+S, width 53, main_next=false),
     /// ADDITIVE-only vectors (range_air_only.json). num_qc gated == 1.
     #[command(name = "dump-range-air-only")]
     DumpRangeAirOnly {
         #[arg(long)]
         out: PathBuf,
     },
-    /// S5.1 Phase B — DNAC combined range_proof_air (B+S+I+U+F, width 66,
-    /// main_next=true, 2 public), ADDITIVE-only (range_proof_air.json). CONFIDENTIAL
-    /// use BLOCKED on B1/B6/B7. num_qc gated == 1.
+    /// S5.1 Phase B — DNAC combined range_proof_air (B+S+R+P+I+U+F+CI+CU+CF,
+    /// width 56, main_next=true, 3 public [claimed,fee,n_real]), ADDITIVE-only
+    /// (range_proof_air.json). CONFIDENTIAL use BLOCKED on B1 (B6/B7 closed by
+    /// the 2026-07 52-bit + is_real/cnt fix). num_qc gated == 1.
     #[command(name = "dump-range-proof-air")]
     DumpRangeProofAir {
         #[arg(long)]
@@ -827,7 +834,6 @@ fn dump_field_ops(out_path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> 
 // (design doc section 6.2) makes the u64 representation unique under SHA3.
 // ============================================================================
 
-use p3_air::utils::u64_to_bits_le;
 
 #[derive(Serialize)]
 struct RangeAirColumnLayout {
@@ -862,10 +868,14 @@ struct RangeAirFile {
 }
 
 fn build_range_air_case(name: &str, amount: u64, tamper: Option<(usize, u64)>) -> RangeAirCase {
-    let bits_field: [Goldilocks; 64] = u64_to_bits_le::<Goldilocks>(amount);
-    let amount_field = Goldilocks::from_u64(amount);
+    /* Bits and amount cell both come from the CANONICAL amount, decomposed to
+     * the low RANGE_AIR_BITS bits (matches range_air.c). If canon >= 2^BITS the
+     * dropped high bits make the recomposition residual non-zero → out of range. */
+    let canon = canonical(amount);
+    let amount_field = Goldilocks::from_u64(canon);
 
-    let mut trace_row_field: Vec<Goldilocks> = bits_field.to_vec();
+    let mut trace_row_field: Vec<Goldilocks> =
+        (0..RANGE_AIR_BITS).map(|i| Goldilocks::from_u64((canon >> i) & 1)).collect();
     trace_row_field.push(amount_field);
 
     let mut tamper_note: Option<String> = None;
@@ -875,7 +885,7 @@ fn build_range_air_case(name: &str, amount: u64, tamper: Option<(usize, u64)>) -
         tamper_note = Some(format!("col {col} set to {new_val} (orig {orig})"));
     }
 
-    let bool_residuals: Vec<String> = (0..64)
+    let bool_residuals: Vec<String> = (0..RANGE_AIR_BITS)
         .map(|i| {
             let b = trace_row_field[i];
             let r = b * (b - Goldilocks::ONE);
@@ -886,13 +896,13 @@ fn build_range_air_case(name: &str, amount: u64, tamper: Option<(usize, u64)>) -
     let mut sum = Goldilocks::ZERO;
     let mut pow = Goldilocks::ONE;
     let two = Goldilocks::from_u64(2);
-    for i in 0..64 {
+    for i in 0..RANGE_AIR_BITS {
         sum += trace_row_field[i] * pow;
-        if i < 63 {
+        if i < RANGE_AIR_BITS - 1 {
             pow *= two;
         }
     }
-    let amount_in_trace = trace_row_field[64];
+    let amount_in_trace = trace_row_field[RANGE_AIR_BITS];
     let recompose_residual = sum - amount_in_trace;
 
     let all_bool_zero = bool_residuals.iter().all(|s| s == "0");
@@ -903,7 +913,7 @@ fn build_range_air_case(name: &str, amount: u64, tamper: Option<(usize, u64)>) -
         name: name.to_string(),
         amount_u64: amount.to_string(),
         amount_field: amount_field.as_canonical_u64().to_string(),
-        bits: trace_row_field[0..64].iter().map(|f| f.as_canonical_u64().to_string()).collect(),
+        bits: trace_row_field[0..RANGE_AIR_BITS].iter().map(|f| f.as_canonical_u64().to_string()).collect(),
         trace_row: trace_row_field.iter().map(|f| f.as_canonical_u64().to_string()).collect(),
         bool_residuals,
         recompose_residual: recompose_residual.as_canonical_u64().to_string(),
@@ -915,38 +925,58 @@ fn build_range_air_case(name: &str, amount: u64, tamper: Option<(usize, u64)>) -
 fn dump_range_air(out_path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let mut cases: Vec<RangeAirCase> = Vec::new();
 
-    let edges: &[(&str, u64)] = &[
-        ("edge_zero",       0),
-        ("edge_one",        1),
-        ("edge_two",        2),
-        ("edge_u16_max",    (1u64 << 16) - 1),
-        ("edge_u32_max",    (1u64 << 32) - 1),
-        ("edge_u48_max",    (1u64 << 48) - 1),
-        ("edge_2_pow_63",   1u64 << 63),
-        ("edge_u64_max",    u64::MAX),
+    /* In-range edges (< 2^RANGE_AIR_BITS): expected_valid = true. */
+    let in_range: &[(&str, u64)] = &[
+        ("edge_zero",              0),
+        ("edge_one",               1),
+        ("edge_two",               2),
+        ("edge_u16_max",           (1u64 << 16) - 1),
+        ("edge_u32_max",           (1u64 << 32) - 1),
+        ("edge_u48_max",           (1u64 << 48) - 1),
+        ("edge_2_pow_bits_minus_1", (1u64 << RANGE_AIR_BITS) - 1), /* max in-range */
     ];
-    for &(name, amount) in edges {
+    for &(name, amount) in in_range {
         cases.push(build_range_air_case(name, amount, None));
     }
 
+    /* Out-of-range edges (canonical value >= 2^RANGE_AIR_BITS): expected_valid =
+     * false. These are the soundness KATs — the old 64-bit AIR wrongly accepted
+     * all of them. */
+    let out_of_range: &[(&str, u64)] = &[
+        ("oor_2_pow_bits",  1u64 << RANGE_AIR_BITS),   /* first out-of-range */
+        ("oor_2_pow_63",    1u64 << 63),
+        ("oor_p_minus_1",   GOLDILOCKS_P - 1),         /* the classic mint value */
+    ];
+    for &(name, amount) in out_of_range {
+        cases.push(build_range_air_case(name, amount, None));
+    }
+
+    /* Documented subtlety: a RAW u64 input >= p canonicalizes mod p BEFORE the
+     * range check (the AIR constrains FIELD values). u64::MAX folds to
+     * 2^32 - 2 < 2^52, so it is expected_valid = TRUE here. Rejecting raw
+     * non-canonical wire integers is the (audited, canonical-only) codec
+     * layer's job, not the AIR's. */
+    cases.push(build_range_air_case("canon_fold_u64_max_to_in_range", u64::MAX, None));
+
+    /* Random in-range amounts (masked to RANGE_AIR_BITS): expected_valid = true. */
     for i in 0..70u32 {
-        let amount = deterministic_u64(800, i);
+        let amount = deterministic_u64(800, i) & ((1u64 << RANGE_AIR_BITS) - 1);
         cases.push(build_range_air_case(&format!("rand_{i:02}"), amount, None));
     }
 
     cases.push(build_range_air_case("tamper_bool_bit5_to_2", 12345, Some((5, 2))));
-    cases.push(build_range_air_case("tamper_recomp_amount_off_by_1", 1000, Some((64, 999))));
+    cases.push(build_range_air_case("tamper_recomp_amount_off_by_1", 1000, Some((RANGE_AIR_BITS, 999))));
 
     let file = RangeAirFile {
         format_version: ORACLE_FORMAT_VERSION,
         plonky3_commit: PLONKY3_COMMIT,
         field_p: GOLDILOCKS_P.to_string(),
-        convention: "keccak-air bit-decomp + recomposition idiom: 64 boolean bit cols + 1 amount col; constraints assert_bool per bit + Sum b_i*2^i - amount = 0 over Goldilocks. Direct port of p3_air::utils::u64_to_bits_le.",
-        reference_pattern: "p3_air::utils::u64_to_bits_le (Plonky3 air/src/utils.rs:59) + keccak-air/src/air.rs lines 102-125 production usage",
+        convention: "keccak-air bit-decomp + recomposition idiom: RANGE_AIR_BITS (=52) boolean bit cols + 1 amount col; constraints assert_bool per bit + Sum b_i*2^i - amount = 0 over Goldilocks. Bits taken from canonical amount. 2^52 < p so the range check is non-vacuous (a 64-bit form is vacuous over Goldilocks).",
+        reference_pattern: "p3_air::utils::u64_to_bits_le (Plonky3 air/src/utils.rs:59) + keccak-air/src/air.rs lines 102-125 production usage (which uses 16-bit limbs to stay below p)",
         column_layout: RangeAirColumnLayout {
-            bit_offsets: (0..64).collect(),
-            amount_offset: 64,
-            width: 65,
+            bit_offsets: (0..RANGE_AIR_BITS as u32).collect(),
+            amount_offset: RANGE_AIR_BITS as u32,
+            width: RANGE_AIR_BITS as u32 + 1,
         },
         cases,
     };
@@ -967,7 +997,7 @@ fn dump_range_air(out_path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> 
 // Reference: Plonky3 uni-stark/tests/fib_air.rs::FibonacciAir::eval (lines
 // 44-72). The canonical Plonky3 boundary + transition + boundary AIR idiom
 // with public_values. Sum balance composes by adding ONE accumulator column
-// at offset 65 of the range_air trace; constraints in base Goldilocks:
+// at offset RANGE_AIR_BITS+1 (=53) of the range_air trace; constraints in base Goldilocks:
 //   I (first row):    acc[0] - amount[0] = 0
 //   U (transition):   acc[next] - acc[local] - amount[next] = 0
 //   F (last row):     acc[last] - (claimed_input_sum - committed_fee) = 0
@@ -1030,17 +1060,19 @@ fn build_sum_balance_case(
     let n = amounts.len();
     assert!(n >= 1, "sum_balance case must have at least one output");
 
-    /* Build trace: n × 66.
-     * Each row is bit-decomp + amount cell + acc cell, where
-     * acc[i] = Sum_{j=0..=i} amount[j] (cumulative). */
+    /* Build trace: n × (RANGE_AIR_BITS + 2).
+     * Each row is bit-decomp (RANGE_AIR_BITS bits of the canonical amount) +
+     * amount cell + acc cell, where acc[i] = Sum_{j=0..=i} amount[j]. Bits from
+     * the canonical amount (matches range_air.c / build_range_air_case). */
     let mut trace: Vec<Vec<Goldilocks>> = Vec::with_capacity(n);
     let mut running_acc = Goldilocks::ZERO;
     for &amount in amounts {
-        let bits = u64_to_bits_le::<Goldilocks>(amount);
-        let amount_field = Goldilocks::from_u64(amount);
+        let canon = canonical(amount);
+        let amount_field = Goldilocks::from_u64(canon);
         running_acc = running_acc + amount_field;
 
-        let mut row: Vec<Goldilocks> = bits.to_vec();
+        let mut row: Vec<Goldilocks> =
+            (0..RANGE_AIR_BITS).map(|i| Goldilocks::from_u64((canon >> i) & 1)).collect();
         row.push(amount_field);
         row.push(running_acc);
         trace.push(row);
@@ -1061,16 +1093,19 @@ fn build_sum_balance_case(
         });
     }
 
-    /* Compute residuals from (possibly tampered) trace. */
+    /* Compute residuals from (possibly tampered) trace. amount col =
+     * RANGE_AIR_BITS, acc col = RANGE_AIR_BITS + 1. */
+    let amt_col = RANGE_AIR_BITS;
+    let acc_col = RANGE_AIR_BITS + 1;
     /* I: acc[0] - amount[0]. */
-    let init_residual = (trace[0][65] - trace[0][64]).as_canonical_u64();
+    let init_residual = (trace[0][acc_col] - trace[0][amt_col]).as_canonical_u64();
 
     /* U: acc[next] - acc[local] - amount[next] per transition. */
     let mut update_residuals: Vec<String> = Vec::with_capacity(n.saturating_sub(1));
     for i in 0..n.saturating_sub(1) {
-        let acc_next = trace[i + 1][65];
-        let acc_local = trace[i][65];
-        let amount_next = trace[i + 1][64];
+        let acc_next = trace[i + 1][acc_col];
+        let acc_local = trace[i][acc_col];
+        let amount_next = trace[i + 1][amt_col];
         let r = acc_next - acc_local - amount_next;
         update_residuals.push(r.as_canonical_u64().to_string());
     }
@@ -1079,7 +1114,7 @@ fn build_sum_balance_case(
     let claimed = Goldilocks::from_u64(claimed_input_sum);
     let fee = Goldilocks::from_u64(committed_fee);
     let target = claimed - fee;
-    let final_residual = (trace[n - 1][65] - target).as_canonical_u64();
+    let final_residual = (trace[n - 1][acc_col] - target).as_canonical_u64();
 
     let all_updates_zero = update_residuals.iter().all(|s| s == "0");
     let expected_valid =
@@ -1176,7 +1211,7 @@ fn dump_sum_balance(out_path: &PathBuf) -> Result<(), Box<dyn std::error::Error>
         let claimed = 30u64 + 5; /* sum(amounts) + fee */
         cases.push(build_sum_balance_case(
             "tamper_amount0_n2", amounts, claimed, 5,
-            Some((0, 64, 11)), None,
+            Some((0, RANGE_AIR_BITS, 11)), None,
         ));
     }
     /* T2: amount[1] tamper (n=3) → U at transition 0→1 breaks. */
@@ -1185,7 +1220,7 @@ fn dump_sum_balance(out_path: &PathBuf) -> Result<(), Box<dyn std::error::Error>
         let claimed = 29u64 + 4;
         cases.push(build_sum_balance_case(
             "tamper_amount1_n3", amounts, claimed, 4,
-            Some((1, 64, 14)), None,
+            Some((1, RANGE_AIR_BITS, 14)), None,
         ));
     }
     /* T3: acc[0] tamper (n=2) → I breaks (+ cascading U). */
@@ -1194,7 +1229,7 @@ fn dump_sum_balance(out_path: &PathBuf) -> Result<(), Box<dyn std::error::Error>
         let claimed = 20u64 + 5;
         cases.push(build_sum_balance_case(
             "tamper_acc0_n2", amounts, claimed, 5,
-            Some((0, 65, 8)), None,
+            Some((0, RANGE_AIR_BITS + 1, 8)), None,
         ));
     }
     /* T4: acc[1] tamper (n=3) → U at transition 0→1 breaks. */
@@ -1203,7 +1238,7 @@ fn dump_sum_balance(out_path: &PathBuf) -> Result<(), Box<dyn std::error::Error>
         let claimed = 30u64 + 2;
         cases.push(build_sum_balance_case(
             "tamper_acc1_n3", amounts, claimed, 2,
-            Some((1, 65, 16)), None,
+            Some((1, RANGE_AIR_BITS + 1, 16)), None,
         ));
     }
     /* T5: acc[last] tamper (n=4) → U at last transition + F break. */
@@ -1212,7 +1247,7 @@ fn dump_sum_balance(out_path: &PathBuf) -> Result<(), Box<dyn std::error::Error>
         let claimed = 20u64 + 3;
         cases.push(build_sum_balance_case(
             "tamper_acc_last_n4", amounts, claimed, 3,
-            Some((3, 65, 25)), /* original acc[3] = 20; mutate to 25. */
+            Some((3, RANGE_AIR_BITS + 1, 25)), /* original acc[3] = 20; mutate to 25. */
             None,
         ));
     }
@@ -1244,7 +1279,7 @@ fn dump_sum_balance(out_path: &PathBuf) -> Result<(), Box<dyn std::error::Error>
         let claimed = 36u64 + 9;
         cases.push(build_sum_balance_case(
             "tamper_amount_mid_n8", amounts, claimed, 9,
-            Some((4, 64, 99)), /* row 4's amount cell to 99 (was 5). */
+            Some((4, RANGE_AIR_BITS, 99)), /* row 4's amount cell to 99 (was 5). */
             None,
         ));
     }
@@ -1253,13 +1288,13 @@ fn dump_sum_balance(out_path: &PathBuf) -> Result<(), Box<dyn std::error::Error>
         format_version: ORACLE_FORMAT_VERSION,
         plonky3_commit: PLONKY3_COMMIT,
         field_p: GOLDILOCKS_P.to_string(),
-        convention: "fib_air-style unified-trace accumulator: range_air cols 0..64 (bits + amount) extended with acc col at offset 65; constraints I (first), U (transition), F (last) in Goldilocks. Public inputs: claimed_input_sum and committed_fee.",
+        convention: "fib_air-style unified-trace accumulator: range_air cols 0..RANGE_AIR_BITS (bits + amount at RANGE_AIR_BITS) extended with acc col at RANGE_AIR_BITS+1; constraints N (count bound n<=1024), I (first), U (transition), F (last) in Goldilocks. Each amount < 2^RANGE_AIR_BITS and n<=1024 ⇒ Sum < p, so the accumulator equals the integer sum (no mint-by-wraparound). Public inputs: claimed_input_sum and committed_fee.",
         reference_pattern: "uni-stark/tests/fib_air.rs::FibonacciAir::eval lines 44-72 (boundary + transition + boundary + public_values)",
         column_layout: SumBalanceColumnLayout {
-            bit_offsets: (0..64).collect(),
-            amount_offset: 64,
-            acc_offset: 65,
-            width: 66,
+            bit_offsets: (0..RANGE_AIR_BITS as u32).collect(),
+            amount_offset: RANGE_AIR_BITS as u32,
+            acc_offset: RANGE_AIR_BITS as u32 + 1,
+            width: RANGE_AIR_BITS as u32 + 2,
         },
         cases,
     };
@@ -8121,7 +8156,7 @@ mod stark_priming {
         fri_milestone_serialize_fp2, fri_rollin_observe, fri_rollin_sample_fp2, make_mmcs, to_hex,
         DnacSha3_512Hasher, FriChallengeMmcs, FriChallenger, FriFolding, FriHashChal,
         FriOracleSha3_512, FriValMmcs, GoldFp2, HashRecorder, Shadow, FRI_INIT_STATE,
-        ORACLE_FORMAT_VERSION, PLONKY3_COMMIT,
+        ORACLE_FORMAT_VERSION, PLONKY3_COMMIT, RANGE_AIR_BITS,
     };
     use core::borrow::Borrow;
     use core::marker::PhantomData;
@@ -9548,15 +9583,53 @@ mod stark_priming {
     // S5.1 — DNAC range_proof_air (ADDITIVE mode only). Grounded re-implementation
     // of the SHIPPED range_air (B,S) + sum_balance (I,U,F) constraints as Plonky3
     // AIRs, per docs/plans/2026-05-30-dnac-range-proof-air-regrounding.md (S5.0
-    // red-team APPROVED). NO confidential use, NO trace↔TX binding (B1/B6/B7 OPEN).
+    // red-team APPROVED). NO confidential use, NO trace↔TX binding (B1 OPEN).
     // num_qc gated == 1 (real get_log_num_quotient_chunks via capture, STOP if !=1).
+    //
+    // 2026-07 soundness fix (closes B6 field-wrap + B7 padding/count):
+    //   - bit width 64 → RANGE_AIR_BITS = 52 (2^52 < p; the 64-bit form was vacuous
+    //     over Goldilocks — see range_air.h rationale).
+    //   - RangeProofAir gains is_real + cnt columns: (1−is_real)·amount = 0 forces
+    //     padding rows to zero value (keccak-air export-flag idiom, air.rs:73-79),
+    //     and a fib_air-style count accumulator binds Σ is_real to public n_real.
+    //   - ALL constraints stay degree ≤ 2, so num_qc == 1 (verified live by the
+    //     real get_log_num_quotient_chunks; emit_range_case STOPs on != 1). P is
+    //     (1−is_real)·amount = 2 trace cells = degree 2. NOTE: the unfiltered P +
+    //     ungated U is chosen because it forces padding amount=0 UNCONDITIONALLY
+    //     (a stronger invariant the count-binding relies on), NOT for a degree
+    //     reason: a gated transition is_transition·is_real·amount is ALSO degree 2
+    //     (Plonky3's IsTransition selector has symbolic degree 0 — expression.rs:47
+    //     — only IsFirstRow/IsLastRow cost degree 1). Both designs keep num_qc==1;
+    //     the unconditional-zero form is simply the cleaner invariant.
+    //   - Wrap-safety (OUTPUT side): amounts < 2^52 and height ≤
+    //     2^RANGE_PROOF_MAX_DEGREE_BITS = 1024 rows ⇒ Σ < 2^62 < p — the field
+    //     acc IS the integer sum.
+    //   - Wrap-safety (FEE/CLAIMED side): the F constraint acc − (claimed − fee)
+    //     is mod-p with UNBOUNDED public claimed/fee here. A wire committed_fee =
+    //     p − A wraps F and mints A. Since claimed/fee are PUBLIC (cleartext),
+    //     this is closed by a verifier-side SOFTWARE bound (claimed,fee < 2^62),
+    //     NOT an AIR constraint — enforced in sum_balance.c and tested in
+    //     tests/test_range_proof_air.c ("STARK-path public-input bound"). Any
+    //     money-gating verifier MUST apply it to the public values.
     // ========================================================================
 
-    /// Range-only AIR (Phase A): width 65, main_next=false, 0 public.
-    /// Constraints: B₀..B₆₃ (bitᵢ·(bitᵢ−1), unfiltered) + S (Σ bitᵢ·2ⁱ − amount).
+    /// Column offsets (extend range_air's layout; keep in sync with range_air.h
+    /// and sum_balance.h binding contracts).
+    const COL_AMOUNT: usize = RANGE_AIR_BITS; // 52
+    const COL_ACC: usize = RANGE_AIR_BITS + 1; // 53
+    const COL_IS_REAL: usize = RANGE_AIR_BITS + 2; // 54
+    const COL_CNT: usize = RANGE_AIR_BITS + 3; // 55
+    const RANGE_ONLY_WIDTH: usize = RANGE_AIR_BITS + 1; // 53
+    const RANGE_PROOF_WIDTH: usize = RANGE_AIR_BITS + 4; // 56
+    /// Max trace height for RangeProofAir = 2^10 = 1024 rows, matching
+    /// SUM_BALANCE_MAX_OUTPUTS so 1024·(2^52−1) < 2^62 < p (no wraparound).
+    const RANGE_PROOF_MAX_DEGREE_BITS: usize = 10;
+
+    /// Range-only AIR (Phase A): width 53, main_next=false, 0 public.
+    /// Constraints: B₀..B₅₁ (bitᵢ·(bitᵢ−1), unfiltered) + S (Σ bitᵢ·2ⁱ − amount).
     pub struct RangeOnlyAir;
     impl<F> BaseAir<F> for RangeOnlyAir {
-        fn width(&self) -> usize { 65 }
+        fn width(&self) -> usize { RANGE_ONLY_WIDTH }
         fn main_next_row_columns(&self) -> Vec<usize> { vec![] } // main_next=false
         // num_public_values defaults 0; NO max_constraint_degree hint (force the
         // symbolic degree path so the num_qc gate computes the TRUE degree — red-team #10).
@@ -9564,13 +9637,13 @@ mod stark_priming {
     impl<AB: AirBuilder> Air<AB> for RangeOnlyAir {
         fn eval(&self, builder: &mut AB) {
             let main = builder.main();
-            for i in 0..64 {
+            for i in 0..RANGE_AIR_BITS {
                 builder.assert_bool(main.current(i).unwrap()); // Bᵢ unfiltered
             }
-            let amount = main.current(64).unwrap();
+            let amount = main.current(COL_AMOUNT).unwrap();
             let mut bit_sum = AB::Expr::ZERO;
             let mut weight = AB::Expr::ONE; // 2^0
-            for i in 0..64 {
+            for i in 0..RANGE_AIR_BITS {
                 bit_sum = bit_sum + main.current(i).unwrap() * weight.clone();
                 weight = weight.double();
             }
@@ -9578,14 +9651,25 @@ mod stark_priming {
         }
     }
 
-    /// Combined range_proof_air (Phase B): width 66, main_next=true, 2 public.
-    /// B₀..B₆₃ + S (unfiltered) + I (first) + U (transition) + F (last) = 68.
+    /// Combined range_proof_air (Phase B): width 56, main_next=true, 3 public
+    /// [claimed_input_sum, committed_fee, n_real].
+    /// Constraint order (fold order — the C air_eval MUST mirror it exactly):
+    ///   B₀..B₅₁ (unfiltered) + S (unfiltered)
+    ///   R  (unfiltered): is_real·(is_real−1)          — flag booleanity
+    ///   P  (unfiltered): (1−is_real)·amount           — padding rows carry 0 value
+    ///   I  (first row):  acc − amount
+    ///   U  (transition): acc' − acc − amount'         — padding adds 0 via P
+    ///   F  (last row):   acc − (claimed − fee)
+    ///   CI (first row):  cnt − is_real
+    ///   CU (transition): cnt' − cnt − is_real'
+    ///   CF (last row):   cnt − n_real                 — binds Σ is_real to public N
+    /// = 52 + 1 + 2 + 3 + 3 = 61 constraints, all degree ≤ 2 (num_qc stays 1).
     pub struct RangeProofAir;
     impl<F> BaseAir<F> for RangeProofAir {
-        fn width(&self) -> usize { 66 }
-        fn num_public_values(&self) -> usize { 2 }
-        // main_next_row_columns defaults to all cols (0..66) -> main_next=true
-        // (U reads next-row amount[64] + acc[65]); NO max_constraint_degree hint.
+        fn width(&self) -> usize { RANGE_PROOF_WIDTH }
+        fn num_public_values(&self) -> usize { 3 }
+        // main_next_row_columns defaults to all cols -> main_next=true
+        // (U/CU read next-row amount/acc/is_real/cnt); NO max_constraint_degree hint.
     }
     impl<AB: AirBuilder> Air<AB> for RangeProofAir {
         fn eval(&self, builder: &mut AB) {
@@ -9593,57 +9677,81 @@ mod stark_priming {
             let pis = builder.public_values();
             let claimed: AB::Expr = pis[0].into();
             let fee: AB::Expr = pis[1].into();
-            let amount = main.current(64).unwrap();
-            let acc = main.current(65).unwrap();
-            let acc_next = main.next(65).unwrap();
-            let amount_next = main.next(64).unwrap();
-            // B₀..B₆₃ unfiltered
-            for i in 0..64 {
+            let n_real: AB::Expr = pis[2].into();
+            let amount = main.current(COL_AMOUNT).unwrap();
+            let acc = main.current(COL_ACC).unwrap();
+            let is_real = main.current(COL_IS_REAL).unwrap();
+            let cnt = main.current(COL_CNT).unwrap();
+            let amount_next = main.next(COL_AMOUNT).unwrap();
+            let acc_next = main.next(COL_ACC).unwrap();
+            let is_real_next = main.next(COL_IS_REAL).unwrap();
+            let cnt_next = main.next(COL_CNT).unwrap();
+            // B₀..B₅₁ unfiltered
+            for i in 0..RANGE_AIR_BITS {
                 builder.assert_bool(main.current(i).unwrap());
             }
             // S unfiltered
             let mut bit_sum = AB::Expr::ZERO;
             let mut weight = AB::Expr::ONE;
-            for i in 0..64 {
+            for i in 0..RANGE_AIR_BITS {
                 bit_sum = bit_sum + main.current(i).unwrap() * weight.clone();
                 weight = weight.double();
             }
             builder.assert_eq(bit_sum, amount);
+            // R unfiltered: is_real boolean (builder.rs:191 assert_bool)
+            builder.assert_bool(is_real);
+            // P: padding rows carry zero value — keccak-air export idiom
+            // (when(cond).assert_zero(flag), keccak-air/src/air.rs:76-79):
+            builder.when(AB::Expr::ONE - is_real.into()).assert_zero(amount);
             // I first_row: acc − amount
             builder.when_first_row().assert_eq(acc, amount);
             // U transition: acc_next − acc − amount_next
             builder.when_transition().assert_zero(acc_next - acc - amount_next);
             // F last_row: acc − (claimed − fee)
             builder.when_last_row().assert_eq(acc, claimed - fee);
+            // CI first_row: cnt − is_real
+            builder.when_first_row().assert_eq(cnt, is_real);
+            // CU transition: cnt_next − cnt − is_real_next
+            builder.when_transition().assert_zero(cnt_next - cnt - is_real_next);
+            // CF last_row: cnt − n_real
+            builder.when_last_row().assert_eq(cnt, n_real);
         }
     }
 
     fn generate_range_only_trace(amounts: &[u64], height: usize) -> RowMajorMatrix<Goldilocks> {
-        let w = 65usize;
+        let w = RANGE_ONLY_WIDTH;
         let mut v = Goldilocks::zero_vec(height * w);
         for (r, &amt) in amounts.iter().enumerate() {
-            for i in 0..64 {
+            assert!(amt < (1u64 << RANGE_AIR_BITS), "amount must be < 2^{RANGE_AIR_BITS}");
+            for i in 0..RANGE_AIR_BITS {
                 v[r * w + i] = Goldilocks::from_u64((amt >> i) & 1);
             }
-            v[r * w + 64] = Goldilocks::from_u64(amt);
+            v[r * w + COL_AMOUNT] = Goldilocks::from_u64(amt);
         }
         RowMajorMatrix::new(v, w)
     }
 
-    /// Returns (trace, total = Σ amounts). Padding rows (r >= amounts.len()) are
-    /// zero-amount; acc carries the running sum (stays flat through padding).
+    /// Returns (trace, total = Σ amounts). Padding rows (r >= amounts.len()) have
+    /// amount = 0, is_real = 0; acc and cnt stay flat through padding.
     fn generate_range_proof_trace(amounts: &[u64], height: usize) -> (RowMajorMatrix<Goldilocks>, u64) {
-        let w = 66usize;
+        assert!(height <= (1usize << RANGE_PROOF_MAX_DEGREE_BITS),
+                "height must be <= 2^{RANGE_PROOF_MAX_DEGREE_BITS} (wrap-safety bound)");
+        let w = RANGE_PROOF_WIDTH;
         let mut v = Goldilocks::zero_vec(height * w);
         let mut running: u64 = 0;
+        let mut count: u64 = 0;
         for r in 0..height {
-            let amt = if r < amounts.len() { amounts[r] } else { 0 };
-            for i in 0..64 {
+            let (amt, real) = if r < amounts.len() { (amounts[r], 1u64) } else { (0, 0) };
+            assert!(amt < (1u64 << RANGE_AIR_BITS), "amount must be < 2^{RANGE_AIR_BITS}");
+            for i in 0..RANGE_AIR_BITS {
                 v[r * w + i] = Goldilocks::from_u64((amt >> i) & 1);
             }
-            v[r * w + 64] = Goldilocks::from_u64(amt);
-            running += amt; // ADDITIVE: small amounts, no field wrap (B6 OPEN for confidential)
-            v[r * w + 65] = Goldilocks::from_u64(running);
+            v[r * w + COL_AMOUNT] = Goldilocks::from_u64(amt);
+            running += amt; // < 1024·2^52 = 2^62 < p — wrap-safe by construction
+            v[r * w + COL_ACC] = Goldilocks::from_u64(running);
+            v[r * w + COL_IS_REAL] = Goldilocks::from_u64(real);
+            count += real;
+            v[r * w + COL_CNT] = Goldilocks::from_u64(count);
         }
         (RowMajorMatrix::new(v, w), running)
     }
@@ -9731,10 +9839,11 @@ mod stark_priming {
         let height = 1usize << cap.degree_bits;
         let mut rows_json: Vec<serde_json::Value> = Vec::new();
         for r in 0..height {
-            let amt = if r < amounts.len() { amounts[r] } else { 0 };
+            let (amt, real) = if r < amounts.len() { (amounts[r], 1u64) } else { (0, 0) };
             let mut obj = serde_json::json!({ "row": r, "amount": amt.to_string() });
             if let Some(accs) = acc_rows {
                 obj["acc"] = serde_json::json!(accs.get(r).copied().unwrap_or(0).to_string());
+                obj["is_real"] = serde_json::json!(real.to_string());
             }
             rows_json.push(obj);
         }
@@ -9743,7 +9852,9 @@ mod stark_priming {
             "name": case_name,
             "additive_only": true,
             "confidential_use_allowed": false,
-            "blockers": ["B1", "B6", "B7"],
+            /* B6 (field-wrap) closed by 52-bit + height<=1024; B7 (padding/count)
+             * closed by is_real/P/cnt. B1 (trace<->TX binding) remains OPEN. */
+            "blockers": ["B1"],
             "proof_verification_result": "Ok",
             "synthetic_primary_oracle": false,
             "degree_bits": cap.degree_bits,
@@ -9789,8 +9900,10 @@ mod stark_priming {
             "air": air_name,
             "additive_only": true,
             "confidential_use_allowed": false,
-            "blockers": ["B1", "B6", "B7"],
-            "spec_doc": "docs/plans/2026-05-30-dnac-range-proof-air-regrounding.md",
+            /* B6/B7 closed by the 2026-07 52-bit + is_real/cnt soundness fix;
+             * B1 (trace<->TX binding) remains the confidential blocker. */
+            "blockers": ["B1"],
+            "spec_doc": "docs/plans/2026-05-30-dnac-range-proof-air-regrounding.md + dnac/docs/plans/2026-07-11-range-balance-soundness-fix-design.md",
             "cases": cases
         });
         if let Some(parent) = out_path.parent() { std::fs::create_dir_all(parent)?; }
@@ -9804,30 +9917,38 @@ mod stark_priming {
         let tl = &cap.trace_local;
         let one = GoldFp2::ONE;
         let mut d: Vec<(String, &'static str, GoldFp2, GoldFp2)> = Vec::new();
-        for i in 0..64 {
+        for i in 0..RANGE_AIR_BITS {
             let b = tl[i];
             d.push((format!("B[{i}]: bit{i}*(bit{i}-1)"), "one(unfiltered)", one, b * (b - one)));
         }
         let mut bit_sum = GoldFp2::ZERO;
         let mut weight = GoldFp2::ONE;
-        for i in 0..64 {
+        for i in 0..RANGE_AIR_BITS {
             bit_sum = bit_sum + tl[i] * weight;
             weight = weight.double();
         }
-        d.push(("S: sum(bit*2^i) - amount".to_string(), "one(unfiltered)", one, bit_sum - tl[64]));
+        d.push(("S: sum(bit*2^i) - amount".to_string(), "one(unfiltered)", one, bit_sum - tl[COL_AMOUNT]));
         d
     }
 
     fn range_proof_descs(cap: &VcCapture, pis: &[Goldilocks]) -> Vec<(String, &'static str, GoldFp2, GoldFp2)> {
         let tl = &cap.trace_local;
         let tn = cap.trace_next.as_ref().expect("range_proof: trace_next present");
-        let mut d = range_only_descs(cap); // B0..B63 + S (indices 0..64)
-        // I, U, F (indices 65,66,67)
-        d.push(("I: acc - amount (first_row)".to_string(), "is_first_row", cap.is_first, tl[65] - tl[64]));
-        d.push(("U: acc' - acc - amount' (transition)".to_string(), "is_transition", cap.is_transition, tn[65] - tl[65] - tn[64]));
+        let one = GoldFp2::ONE;
+        let mut d = range_only_descs(cap); // B0..B51 + S (indices 0..RANGE_AIR_BITS)
+        // R, P, I, U, F, CI, CU, CF — same order as RangeProofAir::eval fold order.
+        let is_real = tl[COL_IS_REAL];
+        d.push(("R: is_real*(is_real-1)".to_string(), "one(unfiltered)", one, is_real * (is_real - one)));
+        d.push(("P: (1-is_real)*amount".to_string(), "one_minus_is_real", one - is_real, tl[COL_AMOUNT]));
+        d.push(("I: acc - amount (first_row)".to_string(), "is_first_row", cap.is_first, tl[COL_ACC] - tl[COL_AMOUNT]));
+        d.push(("U: acc' - acc - amount' (transition)".to_string(), "is_transition", cap.is_transition, tn[COL_ACC] - tl[COL_ACC] - tn[COL_AMOUNT]));
         let claimed = GoldFp2::from(pis[0]);
         let fee = GoldFp2::from(pis[1]);
-        d.push(("F: acc - (claimed - fee) (last_row)".to_string(), "is_last_row", cap.is_last, tl[65] - (claimed - fee)));
+        let n_real = GoldFp2::from(pis[2]);
+        d.push(("F: acc - (claimed - fee) (last_row)".to_string(), "is_last_row", cap.is_last, tl[COL_ACC] - (claimed - fee)));
+        d.push(("CI: cnt - is_real (first_row)".to_string(), "is_first_row", cap.is_first, tl[COL_CNT] - tl[COL_IS_REAL]));
+        d.push(("CU: cnt' - cnt - is_real' (transition)".to_string(), "is_transition", cap.is_transition, tn[COL_CNT] - tl[COL_CNT] - tn[COL_IS_REAL]));
+        d.push(("CF: cnt - n_real (last_row)".to_string(), "is_last_row", cap.is_last, tl[COL_CNT] - n_real));
         d
     }
 
@@ -9852,20 +9973,21 @@ mod stark_priming {
             let descs = range_only_descs(&cap);
             cases.push(emit_range_case("range_only_db3_padded_5amts", false, &cap, &descs, &pis, &amounts, 3, None, None, None)?);
         }
-        write_cases(out_path, "RangeOnlyAir (range_air B+S, width 65, main_next=false; ADDITIVE)", cases)?;
-        eprintln!("wrote {} (RangeOnlyAir: 2 cases db2-full + db3-padded; 65 constraints each; num_qc=1; ADDITIVE-only)", out_path.display());
+        write_cases(out_path, "RangeOnlyAir (range_air B+S, width 53, main_next=false; ADDITIVE)", cases)?;
+        eprintln!("wrote {} (RangeOnlyAir: 2 cases db2-full + db3-padded; 53 constraints each; num_qc=1; ADDITIVE-only)", out_path.display());
         Ok(())
     }
 
     pub fn dump_range_proof_air(out_path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
         let mut cases = Vec::new();
-        // Case A: degree_bits=2 (4 rows), fully populated. fee=7, claimed=Σ+7.
+        // Case A: degree_bits=2 (4 rows), fully populated. fee=7, claimed=Σ+7, n_real=4.
         {
             let amounts = [10u64, 20, 30, 40];
             let (trace, total) = generate_range_proof_trace(&amounts, 4);
             let fee = 7u64;
             let claimed = total + fee;
-            let pis = vec![Goldilocks::from_u64(claimed), Goldilocks::from_u64(fee)];
+            let pis = vec![Goldilocks::from_u64(claimed), Goldilocks::from_u64(fee),
+                           Goldilocks::from_u64(amounts.len() as u64)];
             // acc rows for trace_rows display
             let mut accs = Vec::new(); let mut run = 0u64;
             for r in 0..4 { run += if r < amounts.len() { amounts[r] } else { 0 }; accs.push(run); }
@@ -9874,13 +9996,15 @@ mod stark_priming {
             let descs = range_proof_descs(&cap, &pis);
             cases.push(emit_range_case("range_proof_db2_full_4amts", true, &cap, &descs, &pis, &amounts, 0, Some(claimed), Some(fee), Some(&accs))?);
         }
-        // Case B: degree_bits=3 (8 rows), padded (3 amounts + 5 zero-padding). fee=4.
+        // Case B: degree_bits=3 (8 rows), padded (3 amounts + 5 zero-padding rows,
+        // is_real gates them out of cnt; P forces their amount to 0). fee=4, n_real=3.
         {
             let amounts = [100u64, 250, 400];
             let (trace, total) = generate_range_proof_trace(&amounts, 8);
             let fee = 4u64;
             let claimed = total + fee;
-            let pis = vec![Goldilocks::from_u64(claimed), Goldilocks::from_u64(fee)];
+            let pis = vec![Goldilocks::from_u64(claimed), Goldilocks::from_u64(fee),
+                           Goldilocks::from_u64(amounts.len() as u64)];
             let mut accs = Vec::new(); let mut run = 0u64;
             for r in 0..8 { run += if r < amounts.len() { amounts[r] } else { 0 }; accs.push(run); }
             let cfg = dnac_stark_config_lfp0();
@@ -9888,8 +10012,8 @@ mod stark_priming {
             let descs = range_proof_descs(&cap, &pis);
             cases.push(emit_range_case("range_proof_db3_padded_3amts", true, &cap, &descs, &pis, &amounts, 5, Some(claimed), Some(fee), Some(&accs))?);
         }
-        write_cases(out_path, "RangeProofAir (range B+S + balance I+U+F, width 66, main_next=true, 2 public; ADDITIVE)", cases)?;
-        eprintln!("wrote {} (RangeProofAir: 2 cases db2-full + db3-padded; 68 constraints each; num_qc=1; ADDITIVE-only; CONFIDENTIAL BLOCKED on B1/B6/B7)", out_path.display());
+        write_cases(out_path, "RangeProofAir (range B+S + R/P is_real + balance I+U+F + count CI/CU/CF, width 56, main_next=true, 3 public; ADDITIVE)", cases)?;
+        eprintln!("wrote {} (RangeProofAir: 2 cases db2-full + db3-padded; 61 constraints each; num_qc=1; ADDITIVE-only; CONFIDENTIAL BLOCKED on B1)", out_path.display());
         Ok(())
     }
 }

@@ -41,19 +41,44 @@
 #define SB_CT_ASSERT(cond, tag) \
     typedef char sb_ct_assert_##tag[(cond) ? 1 : -1]
 
-/* sum_balance contract. */
-SB_CT_ASSERT(SUM_BALANCE_ACC_OFF == 65, acc_offset);
-SB_CT_ASSERT(SUM_BALANCE_WIDTH   == 66, width);
+/* sum_balance contract (52-bit layout, 2026-07 soundness fix). */
+SB_CT_ASSERT(SUM_BALANCE_ACC_OFF == 53, acc_offset);
+SB_CT_ASSERT(SUM_BALANCE_WIDTH   == 54, width);
 
 /* sum_balance constraint identifiers stable. */
 SB_CT_ASSERT(SUM_BALANCE_CONSTRAINT_INIT   == 'I', cid_init);
 SB_CT_ASSERT(SUM_BALANCE_CONSTRAINT_UPDATE == 'U', cid_update);
 SB_CT_ASSERT(SUM_BALANCE_CONSTRAINT_FINAL  == 'F', cid_final);
+SB_CT_ASSERT(SUM_BALANCE_CONSTRAINT_COUNT  == 'N', cid_count);
+SB_CT_ASSERT(SUM_BALANCE_CONSTRAINT_PUBBOUND == 'P', cid_pubbound);
 
 /* Range_air contract still holds (the unified trace requires both). */
-SB_CT_ASSERT(RANGE_AIR_AMOUNT_OFF == 64, range_amount_offset);
+SB_CT_ASSERT(RANGE_AIR_BITS        == 52, range_bits);
+SB_CT_ASSERT(RANGE_AIR_AMOUNT_OFF  == 52, range_amount_offset);
 SB_CT_ASSERT(RANGE_AIR_BIT_OFF(0)  == 0,  range_bit0);
-SB_CT_ASSERT(RANGE_AIR_BIT_OFF(63) == 63, range_bit63);
+SB_CT_ASSERT(RANGE_AIR_BIT_OFF(51) == 51, range_bit51);
+
+/* Wrap-safety I — OUTPUT accumulator (mint fix): MAX_OUTPUTS * 2^RANGE_AIR_BITS
+ * must stay below Goldilocks p, so the mod-p accumulator equals the integer sum.
+ * (p >> RANGE_AIR_BITS) = 4095 > 1024 = MAX_OUTPUTS. */
+SB_CT_ASSERT(SUM_BALANCE_MAX_OUTPUTS == 1024, max_outputs_1024);
+SB_CT_ASSERT((0xFFFFFFFF00000001ULL >> RANGE_AIR_BITS) > SUM_BALANCE_MAX_OUTPUTS,
+             aggregate_below_p);
+
+/* Wrap-safety II — F-equation PUBLIC-INPUT bound (fee/claimed mint, 2026-07-12).
+ * The output-side bound above is NOT sufficient: the F constraint
+ * acc == claimed - fee is mod p, so a near-p fee wraps it. Soundness of the
+ * pub-bound requires the wrapped band (p - TERM_MAX, p) to be disjoint from the
+ * accumulator range [0, max_acc), i.e. p - TERM_MAX > max_acc. Since
+ * max_acc < TERM_MAX, a clean sufficient (and independently GROUNDED against the
+ * literal Goldilocks prime) condition is 2*TERM_MAX <= p, i.e.
+ * TERM_MAX <= floor(p/2). This is what actually pins the 2^62 ceiling: it FAILS
+ * if TERM_MAX is raised toward p/2 (e.g. MAX_OUTPUTS 1024->2048 => TERM_MAX=2^63,
+ * which reopens a narrow fee-wrap mint band). The aggregate_below_p assert alone
+ * does NOT catch that (4095 > 2048 still holds) — this one does. */
+SB_CT_ASSERT(SUM_BALANCE_TERM_MAX == (1ULL << 62), term_max_is_2_62);
+SB_CT_ASSERT(SUM_BALANCE_TERM_MAX <= (0xFFFFFFFF00000001ULL >> 1),
+             term_max_below_half_p_fee_wrap_safe);
 
 /* sum_balance must come AFTER range_air's amount column (no overlap). */
 SB_CT_ASSERT(SUM_BALANCE_ACC_OFF > RANGE_AIR_AMOUNT_OFF, acc_after_amount);
@@ -85,9 +110,10 @@ int main(void) {
     printf("----------------------------------------------------------------------\n");
 
     /* (1) Constant exposure. */
-    check_eq_size("SUM_BALANCE_WIDTH",      SUM_BALANCE_WIDTH,      66);
-    check_eq_size("SUM_BALANCE_ACC_OFF",    SUM_BALANCE_ACC_OFF,    65);
-    check_eq_size("RANGE_AIR_AMOUNT_OFF",   RANGE_AIR_AMOUNT_OFF,   64);
+    check_eq_size("SUM_BALANCE_WIDTH",       SUM_BALANCE_WIDTH,       54);
+    check_eq_size("SUM_BALANCE_ACC_OFF",     SUM_BALANCE_ACC_OFF,     53);
+    check_eq_size("RANGE_AIR_AMOUNT_OFF",    RANGE_AIR_AMOUNT_OFF,    52);
+    check_eq_size("SUM_BALANCE_MAX_OUTPUTS", SUM_BALANCE_MAX_OUTPUTS, 1024);
 
     /* (2) Adjacency: acc sits immediately after amount. */
     check_eq_size("acc immediately follows amount",

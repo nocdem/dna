@@ -1,14 +1,14 @@
 /**
  * @file test_air_column_layout_range_air.c
- * @brief AIR column-layout BINDING contract test for range_air (design doc § 9 F7).
+ * @brief AIR column-layout BINDING contract test for range_air.
  *
- * Per design doc § 12.4 item 1 + § 9 F7: this test was specified for every AIR
- * module in Faz 3 but **was never written** for the original (now-nuked)
- * range_air.c. Its absence is what allowed the invented column layout to ship
- * without anyone noticing the drift from § 4.5.
+ * This test pins the column-binding contract of range_air.h so any layout
+ * drift is a compile error or assertion failure, not a silent cross-version
+ * proof-acceptance break.
  *
- * This file is the canonical example. Items 2-7 in the rework queue will each
- * get an equivalent test pinned to their module's column-binding contract.
+ * 2026-07 soundness fix: the layout is now 52-bit (RANGE_AIR_BITS = 52,
+ * amount at 52, width 53). The old 64-bit layout was VACUOUS over Goldilocks
+ * (p < 2^64) — see range_air.h header rationale.
  *
  * What this test enforces:
  *   1. Compile-time:  the column offset symbols match the values declared in
@@ -50,14 +50,19 @@
 #define RANGE_AIR_CT_ASSERT(cond, tag) \
     typedef char range_air_ct_assert_##tag[(cond) ? 1 : -1]
 
+RANGE_AIR_CT_ASSERT(RANGE_AIR_BITS        == 52, bits_52);
 RANGE_AIR_CT_ASSERT(RANGE_AIR_BIT_OFF(0)  == 0,  bit0_offset_zero);
 RANGE_AIR_CT_ASSERT(RANGE_AIR_BIT_OFF(1)  == 1,  bit1_offset_one);
 RANGE_AIR_CT_ASSERT(RANGE_AIR_BIT_OFF(31) == 31, bit31_offset);
 RANGE_AIR_CT_ASSERT(RANGE_AIR_BIT_OFF(32) == 32, bit32_offset);
-RANGE_AIR_CT_ASSERT(RANGE_AIR_BIT_OFF(62) == 62, bit62_offset);
-RANGE_AIR_CT_ASSERT(RANGE_AIR_BIT_OFF(63) == 63, bit63_offset);
-RANGE_AIR_CT_ASSERT(RANGE_AIR_AMOUNT_OFF  == 64, amount_offset);
-RANGE_AIR_CT_ASSERT(RANGE_AIR_WIDTH       == 65, width);
+RANGE_AIR_CT_ASSERT(RANGE_AIR_BIT_OFF(50) == 50, bit50_offset);
+RANGE_AIR_CT_ASSERT(RANGE_AIR_BIT_OFF(51) == 51, bit51_offset);
+RANGE_AIR_CT_ASSERT(RANGE_AIR_AMOUNT_OFF  == 52, amount_offset);
+RANGE_AIR_CT_ASSERT(RANGE_AIR_WIDTH       == 53, width);
+
+/* Soundness precondition: the recomposition is injective ONLY if
+ * 2^RANGE_AIR_BITS < p. 52 < 63 gives comfortable margin (2^52 << p). */
+RANGE_AIR_CT_ASSERT(RANGE_AIR_BITS < 63, bits_below_p_margin);
 
 /* The constraint identifier characters are stable. Drift here breaks
  * diagnostic strings that downstream code (range_proof_air, debug tools)
@@ -86,18 +91,19 @@ static void check_eq_u64(const char *what, uint64_t got, uint64_t want) {
 }
 
 int main(void) {
-    printf("test_air_column_layout_range_air — design doc § 9 F7 BINDING contract\n");
+    printf("test_air_column_layout_range_air — BINDING contract (52-bit layout)\n");
     printf("--------------------------------------------------------------------\n");
 
     /* (1) Constant exposure: the macros expand to the values their type/comment
      *     claims. */
-    check_eq_size("RANGE_AIR_WIDTH",      RANGE_AIR_WIDTH,      65);
-    check_eq_size("RANGE_AIR_AMOUNT_OFF", RANGE_AIR_AMOUNT_OFF, 64);
-    check_eq_size("RANGE_AIR_BIT_OFF(0)", RANGE_AIR_BIT_OFF(0), 0);
-    check_eq_size("RANGE_AIR_BIT_OFF(63)", RANGE_AIR_BIT_OFF(63), 63);
+    check_eq_size("RANGE_AIR_BITS",        RANGE_AIR_BITS,        52);
+    check_eq_size("RANGE_AIR_WIDTH",       RANGE_AIR_WIDTH,       53);
+    check_eq_size("RANGE_AIR_AMOUNT_OFF",  RANGE_AIR_AMOUNT_OFF,  52);
+    check_eq_size("RANGE_AIR_BIT_OFF(0)",  RANGE_AIR_BIT_OFF(0),  0);
+    check_eq_size("RANGE_AIR_BIT_OFF(51)", RANGE_AIR_BIT_OFF(51), 51);
 
     /* (2) Strict monotonicity: bit offsets are sequential with no gaps. */
-    for (size_t i = 0; i < 63; i++) {
+    for (size_t i = 0; i < RANGE_AIR_BITS - 1; i++) {
         if (RANGE_AIR_BIT_OFF(i + 1) != RANGE_AIR_BIT_OFF(i) + 1) {
             fprintf(stderr,
                     "FAIL: RANGE_AIR_BIT_OFF non-monotone at i=%zu\n", i);
@@ -107,24 +113,25 @@ int main(void) {
     }
 
     /* (3) Amount and bits don't collide. */
-    if (RANGE_AIR_AMOUNT_OFF < 64) {
+    if (RANGE_AIR_AMOUNT_OFF < RANGE_AIR_BITS) {
         fprintf(stderr, "FAIL: amount offset overlaps a bit column\n");
         fail_count++;
     }
 
     /* (4) Width = bits + 1 (amount). */
     check_eq_size("RANGE_AIR_WIDTH == bits+1",
-                  RANGE_AIR_WIDTH, RANGE_AIR_BIT_OFF(63) + 1 + 1);
+                  RANGE_AIR_WIDTH, RANGE_AIR_BIT_OFF(RANGE_AIR_BITS - 1) + 1 + 1);
 
     /* (5) build_trace places bit i at offset RANGE_AIR_BIT_OFF(i).
-     *     Use single-bit-set amounts (powers of 2) to isolate each position. */
-    for (size_t i = 0; i < 64; i++) {
+     *     Use single-bit-set amounts (powers of 2) to isolate each position.
+     *     Only in-range powers (i < RANGE_AIR_BITS) have a faithful bit image. */
+    for (size_t i = 0; i < RANGE_AIR_BITS; i++) {
         uint64_t amount = (uint64_t)1 << i;
         uint64_t trace[RANGE_AIR_WIDTH];
         range_air_build_trace(&amount, 1, trace, RANGE_AIR_WIDTH);
 
         /* The bit at position i should be 1; all other bits 0. */
-        for (size_t j = 0; j < 64; j++) {
+        for (size_t j = 0; j < RANGE_AIR_BITS; j++) {
             uint64_t want = (j == i) ? 1 : 0;
             if (trace[RANGE_AIR_BIT_OFF(j)] != want) {
                 fprintf(stderr,
@@ -136,14 +143,34 @@ int main(void) {
             }
         }
         /* The amount cell should equal the field-canonical amount. For
-         * amount < p (always true for i < 64) this is just amount. */
+         * amount < p (always true here) this is just amount. */
         check_eq_u64("amount cell mismatch",
+                     trace[RANGE_AIR_AMOUNT_OFF], amount);
+    }
+
+    /* (5b) An out-of-range power (2^RANGE_AIR_BITS) drops out of the bit
+     *      columns entirely: bits all 0, amount cell keeps the canonical
+     *      value — the recomposition constraint is what rejects it. */
+    {
+        uint64_t amount = (uint64_t)1 << RANGE_AIR_BITS;
+        uint64_t trace[RANGE_AIR_WIDTH];
+        range_air_build_trace(&amount, 1, trace, RANGE_AIR_WIDTH);
+        for (size_t j = 0; j < RANGE_AIR_BITS; j++) {
+            if (trace[RANGE_AIR_BIT_OFF(j)] != 0) {
+                fprintf(stderr,
+                        "FAIL: oor 2^%zu: bit[%zu] nonzero\n",
+                        RANGE_AIR_BITS, j);
+                fail_count++;
+            }
+        }
+        check_eq_u64("oor amount cell keeps canonical value",
                      trace[RANGE_AIR_AMOUNT_OFF], amount);
     }
 
     /* (6) build_trace honors row_stride > RANGE_AIR_WIDTH. Embed two
      *     amounts with extra padding columns between rows; assert no
-     *     bleed-over. */
+     *     bleed-over. Both values are < p, so canonical == raw and the low
+     *     RANGE_AIR_BITS bits are the raw low bits. */
     {
         uint64_t amounts[2] = {0x0123456789ABCDEFULL, 0xFEDCBA9876543210ULL};
         const size_t stride = RANGE_AIR_WIDTH + 4; /* 4 padding cells */
@@ -159,7 +186,7 @@ int main(void) {
             uint64_t *row = &buf[r * stride];
             check_eq_u64("multi-row amount cell",
                          row[RANGE_AIR_AMOUNT_OFF], amounts[r]);
-            for (size_t i = 0; i < 64; i++) {
+            for (size_t i = 0; i < RANGE_AIR_BITS; i++) {
                 uint64_t want = (amounts[r] >> i) & 1ULL;
                 if (row[RANGE_AIR_BIT_OFF(i)] != want) {
                     fprintf(stderr,
@@ -194,9 +221,9 @@ int main(void) {
 
     printf("\n");
     if (fail_count == 0) {
-        printf("F7 BINDING contract: GREEN — column layout pinned, runtime behavior consistent\n");
+        printf("BINDING contract: GREEN — 52-bit column layout pinned, runtime behavior consistent\n");
         return 0;
     }
-    printf("F7 BINDING contract: RED — %d failure(s)\n", fail_count);
+    printf("BINDING contract: RED — %d failure(s)\n", fail_count);
     return 1;
 }

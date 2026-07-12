@@ -26,11 +26,13 @@
 /* ============================================================================
  * Trace construction
  *
- * Step 1: delegate range_air's portion (bit cols 0..63 + amount col 64).
- * Step 2: fill the accumulator col (65) as the cumulative sum of amount cells.
+ * Step 1: delegate range_air's portion (bit cols 0..RANGE_AIR_BITS-1 + amount
+ *         col RANGE_AIR_AMOUNT_OFF).
+ * Step 2: fill the accumulator col (SUM_BALANCE_ACC_OFF) as the cumulative sum
+ *         of amount cells.
  *
  * The accumulator is computed by adding amount[i] (Goldilocks canonical, as
- * range_air placed it) into a running sum, written into col 65 row-by-row.
+ * range_air placed it) into a running sum, written into SUM_BALANCE_ACC_OFF row-by-row.
  * ========================================================================== */
 
 void sum_balance_build_trace(const uint64_t *amounts,
@@ -41,8 +43,9 @@ void sum_balance_build_trace(const uint64_t *amounts,
         return;
     }
 
-    /* Step 1: fill range_air's columns (0..64). The row stride passes through
-     * so subsequent rows are placed at the correct offset for our 66-wide
+    /* Step 1: fill range_air's columns (0..RANGE_AIR_AMOUNT_OFF). The row stride
+     * passes through so subsequent rows are placed at the correct offset for our
+     * SUM_BALANCE_WIDTH-wide
      * unified trace. */
     range_air_build_trace(amounts, n, out_trace, row_stride);
 
@@ -78,10 +81,52 @@ bool sum_balance_check_constraints(const uint64_t *trace,
                                    const sum_balance_public_t *pub_in,
                                    char *out_first_failing_constraint,
                                    size_t *out_first_failing_row) {
-    /* Empty trace: no first row, no transitions, no last row — vacuously
-     * satisfied. Matches range_air's behavior. */
+    /* Empty trace: no outputs means the F balance equation is never evaluated,
+     * so claimed/fee would be entirely unconstrained — a vacuous accept. For a
+     * money-conservation check that is a hole, not a benign no-op, so fail
+     * closed. (range_air returns true for n==0 because it has nothing to
+     * range-check; sum_balance MUST assert the balance identity, which needs at
+     * least one row.) */
     if (n_rows == 0) {
-        return true;
+        if (out_first_failing_constraint) {
+            *out_first_failing_constraint = SUM_BALANCE_CONSTRAINT_PUBBOUND;
+        }
+        if (out_first_failing_row) {
+            *out_first_failing_row = 0;
+        }
+        return false;
+    }
+
+    /* Public-input bound (soundness, 2026-07-12 red-team fix). The F constraint
+     * acc == claimed_input_sum - committed_fee is a mod-p equation; a near-p
+     * committed_fee (or claimed_input_sum) wraps it and mints value even when the
+     * outputs are perfectly range-checked. claimed and fee are PUBLIC, so bound
+     * them directly (see SUM_BALANCE_TERM_MAX). Both < 2^62 with acc < 2^62 makes
+     * the field equation equal the integer equation. */
+    if (pub_in->claimed_input_sum >= SUM_BALANCE_TERM_MAX ||
+        pub_in->committed_fee >= SUM_BALANCE_TERM_MAX) {
+        if (out_first_failing_constraint) {
+            *out_first_failing_constraint = SUM_BALANCE_CONSTRAINT_PUBBOUND;
+        }
+        if (out_first_failing_row) {
+            *out_first_failing_row = n_rows - 1;
+        }
+        return false;
+    }
+
+    /* N constraint — aggregate count bound (soundness, 2026-07-11 audit fix).
+     * With each amount < 2^RANGE_AIR_BITS and n_rows <= SUM_BALANCE_MAX_OUTPUTS,
+     * Sum(outputs) < SUM_BALANCE_MAX_OUTPUTS * 2^RANGE_AIR_BITS < p, so the mod-p
+     * accumulator equals the integer sum and cannot wrap. Reject any proof that
+     * declares more rows than this wraparound-safe maximum. */
+    if (n_rows > SUM_BALANCE_MAX_OUTPUTS) {
+        if (out_first_failing_constraint) {
+            *out_first_failing_constraint = SUM_BALANCE_CONSTRAINT_COUNT;
+        }
+        if (out_first_failing_row) {
+            *out_first_failing_row = SUM_BALANCE_MAX_OUTPUTS;
+        }
+        return false;
     }
 
     /* I constraint — first row. */

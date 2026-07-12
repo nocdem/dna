@@ -31,9 +31,10 @@
 
 ### What we DID (done, grounded)
 - **STARK verifier stack (C, pure, no Rust at runtime):** `field_goldilocks`, `zk_field_helpers`, `ntt_goldilocks`, `keccak_ref`, `keccak_p3_{cols,trace,air}`, `sponge_sha3_512`, `transcript`, `merkle_smt`, `fri_fold`, `fri_verifier` (incl. the FRI terminal-index **P0 fix** + its regression guard), `fri_proof_codec`, `stark_priming`, `stark_proof_codec`, `stark_constraints`.
-- **Range/balance AIR (ADDITIVE):** `range_air` (B/S), `sum_balance` (I/U/F), combined `range_proof_air` air_eval (66-col, 68 constraints) — P7-audited (12 independent auditors, 2026-06-01), end-to-end C↔Plonky3 byte-matched.
-- **B6 (field-wrap) solution designed:** B-bit range, `B+M≤63`, B≈57 — pure arithmetic, ready.
-- **B7 (padding/output-count) solution designed:** `is_real` + `(1−is_real)·amount=0` + `count_acc` — existing idioms, ready.
+- **Range/balance AIR (ADDITIVE):** `range_air` (B/S, **52-bit**), `sum_balance` (I/U/F + N count-bound + P public-bound), combined `range_proof_air` air_eval (**56-col, 61 constraints**: B·52 + S + R + P + I + U + F + CI + CU + CF) — end-to-end C↔Plonky3 byte-matched, then 13-subagent soundness red-team (2026-07-11/12).
+- **B6 (field-wrap) CLOSED (2026-07):** amounts range-checked to **52 bits** (`2^52 < p`; 64-bit was vacuous over Goldilocks → a mint), `N_max=1024` ⇒ `Σ < 2^62 < p`. Plus a public-input bound (`claimed`,`fee` `< 2^62`) closing the fee-term mod-p wraparound the red-team found.
+- **B7 (padding/output-count) CLOSED (2026-07):** `is_real` + `(1−is_real)·amount=0` (P) + `cnt` accumulator binding `Σ is_real` to public `n_real`. `blockers==[B1]` only.
+- **Fix design + audit trail:** `dnac/docs/plans/2026-07-11-range-balance-soundness-fix-design.md`.
 - **Research verdict** (in-AIR SHA3 sponge does not exist) + **v4 north-star design doc** (3 mandatory sections + crypto-agility + red-team plan).
 
 ### What's MISSING (v4 work items)

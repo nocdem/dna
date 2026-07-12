@@ -108,7 +108,19 @@ typedef enum {
     DNAC_FRI_ERR_INPUT_ERROR = 17,                        /* InputError(_)                         */
     DNAC_FRI_ERR_FINAL_POLY_MISMATCH = 18,                /* FinalPolyMismatch (two sites — see    */
                                                           /*   file carry-over note)               */
-    DNAC_FRI_ERR_INVALID_POW_WITNESS = 19                 /* InvalidPowWitness                     */
+    DNAC_FRI_ERR_INVALID_POW_WITNESS = 19,                /* InvalidPowWitness                     */
+
+    /* DNAC-specific pre-consensus safety guard (NOT a Plonky3 mirror variant).
+     * Rejects wire-supplied FRI params that are degenerate or would cause
+     * undefined behavior in the verifier, independent of the chosen security
+     * level: num_queries == 0 (the low-degree test never runs — an accept-any-
+     * garbage downgrade), or log_global_max_height >= 64 (shift-count UB feeding
+     * transcript sample_bits / domain_index >>= sum_la → nondeterministic verdict
+     * across builds = chain-split class), or a mixed-height input batch (Phase 2B,
+     * unsupported). A FULL production param pin (exact-match to a grounded secure
+     * FriParameters set) remains a MUST-FIX before consensus wiring — see
+     * dnac/docs/plans/2026-07-11-...-design.md §5.4. */
+    DNAC_FRI_ERR_UNSUPPORTED_PARAMS = 20
 } dnac_fri_status_t;
 
 /* ============================================================================

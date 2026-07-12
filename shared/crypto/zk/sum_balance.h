@@ -2,7 +2,7 @@
  * @file sum_balance.h
  * @brief Output sum-balance AIR (Sprint 3.2 — fib_air pattern port).
  *
- * Extends the range_air trace with a single accumulator column at offset 65,
+ * Extends the range_air trace with a single accumulator column at SUM_BALANCE_ACC_OFF (53),
  * enforcing the conservation claim from design doc § 6.1 / F8:
  *
  *     Sum_{i=0..N-1} output_amount[i] + committed_fee == claimed_input_sum.
@@ -20,7 +20,7 @@
  *
  * Per design doc § 12.4 item 2 + feedback_no_kafadan_crypto.md: NO separate
  * sub-witness struct. The accumulator is a column of the SAME unified trace
- * that range_air operates on. Cols 0..64 are range_air's; col 65 is this
+ * that range_air operates on. Cols 0..RANGE_AIR_AMOUNT_OFF are range_air's; the next col is this
  * module's; both check_constraints functions can be called on the same
  * composed trace without interfering.
  *
@@ -28,9 +28,18 @@
  * Goldilocks canonical u64 in [0, p). Cross-validated by oracle byte-match
  * against tools/vectors/sum_balance.json.
  *
- * Binding contract (per § 9 F7):
- *   - SUM_BALANCE_ACC_OFF == 65
- *   - SUM_BALANCE_WIDTH   == 66
+ * SOUNDNESS — aggregate bound (2026-07-11 audit fix). A mod-p cumulative sum
+ * equals the INTEGER sum only if the sum cannot wrap p. range_air bounds each
+ * amount to < 2^RANGE_AIR_BITS (= 2^52); this module additionally bounds the row
+ * count to <= SUM_BALANCE_MAX_OUTPUTS so that
+ *   (SUM_BALANCE_MAX_OUTPUTS) * 2^RANGE_AIR_BITS < p.
+ * Together these guarantee Sum(outputs) < p, so the field accumulator IS the
+ * integer sum and no mint-by-wraparound is possible. Without both bounds the
+ * balance check is only mod p and a prover can mint multiples of p.
+ *
+ * Binding contract:
+ *   - SUM_BALANCE_ACC_OFF == RANGE_AIR_WIDTH (== 53)
+ *   - SUM_BALANCE_WIDTH   == RANGE_AIR_WIDTH + 1 (== 54)
  * test_air_column_layout_sum_balance asserts these at compile time and
  * at runtime.
  *
@@ -54,17 +63,45 @@ extern "C" {
 /* ============================================================================
  * Column-layout binding contract (extends range_air)
  *
- * Cols 0..63 = bit columns (range_air)
- * Col 64     = amount column (range_air, RANGE_AIR_AMOUNT_OFF)
- * Col 65     = accumulator column (sum_balance, SUM_BALANCE_ACC_OFF)
- * Total width = 66 (SUM_BALANCE_WIDTH).
+ * Cols 0..RANGE_AIR_BITS-1 = bit columns (range_air)
+ * Col RANGE_AIR_AMOUNT_OFF  = amount column (range_air)
+ * Col SUM_BALANCE_ACC_OFF   = accumulator column (sum_balance)
+ * Total width = SUM_BALANCE_WIDTH.
  * ========================================================================== */
 
-/** Offset of the accumulator cell within a row. */
-#define SUM_BALANCE_ACC_OFF         ((size_t)65)
+/** Offset of the accumulator cell within a row (immediately after range_air's
+ *  columns). Derived from RANGE_AIR_WIDTH so the two layouts stay consistent. */
+#define SUM_BALANCE_ACC_OFF         (RANGE_AIR_WIDTH)
 
 /** Number of columns per row when composed with range_air. */
-#define SUM_BALANCE_WIDTH           ((size_t)66)
+#define SUM_BALANCE_WIDTH           (RANGE_AIR_WIDTH + (size_t)1)
+
+/** Maximum number of output rows per proof. Chosen with RANGE_AIR_BITS so that
+ *  SUM_BALANCE_MAX_OUTPUTS * 2^RANGE_AIR_BITS < Goldilocks p, guaranteeing the
+ *  accumulator cannot wrap the field: 1024 * 2^52 = 2^62 < p ≈ 2^64. Raising
+ *  RANGE_AIR_BITS requires lowering this so the product stays below p. */
+#define SUM_BALANCE_MAX_OUTPUTS     ((size_t)1024)
+
+/** Wrap-safe ceiling for the F-constraint public inputs (claimed_input_sum,
+ *  committed_fee). = SUM_BALANCE_MAX_OUTPUTS * 2^RANGE_AIR_BITS = 2^62.
+ *
+ *  SOUNDNESS (2026-07-12 red-team fix — the mint the 07-11 fix left open). The
+ *  final constraint F is a mod-p equation acc == claimed_input_sum - committed_fee.
+ *  Range-checking the OUTPUT amounts is necessary but NOT sufficient: claimed and
+ *  fee are separate terms in that equation, and if either is a near-p field
+ *  element (e.g. committed_fee = p - A, a valid canonical Goldilocks value) then
+ *  (claimed - fee) mod p wraps to a small value the accumulator matches — minting
+ *  A base units while the INTEGER identity Sum(outputs) + fee == claimed fails.
+ *  Because claimed and fee are PUBLIC inputs, the verifier bounds them directly
+ *  in software (no in-circuit range proof needed). With acc < 2^62, and both
+ *  publics < 2^62 < p:
+ *    - claimed >= fee: (claimed - fee) in [0, 2^62); acc == it forces the INTEGER
+ *      identity (two canonical reps equal mod p and both < p are equal).
+ *    - claimed <  fee: (claimed - fee) mod p in (p - 2^62, p) >> 2^62 > acc, so
+ *      no accumulator can match — correctly rejected (fee exceeding inputs).
+ *  Hence the field equation equals the integer equation and no mint-by-wraparound
+ *  survives on the fee/claimed side either. */
+#define SUM_BALANCE_TERM_MAX        (((uint64_t)SUM_BALANCE_MAX_OUTPUTS) << RANGE_AIR_BITS)
 
 /* ============================================================================
  * Constraint identifiers
@@ -78,6 +115,18 @@ extern "C" {
 
 /** Final (last row): acc - (claimed_input_sum - committed_fee) = 0. */
 #define SUM_BALANCE_CONSTRAINT_FINAL    'F'
+
+/** Count bound: n_rows <= SUM_BALANCE_MAX_OUTPUTS. Failure means the proof
+ *  declares more output rows than the wraparound-safe maximum, so the mod-p
+ *  accumulator could no longer be trusted to equal the integer sum. */
+#define SUM_BALANCE_CONSTRAINT_COUNT    'N'
+
+/** Public-input bound: claimed_input_sum and committed_fee must each be
+ *  < SUM_BALANCE_TERM_MAX (= 2^62). Failure means a public input could wrap the
+ *  mod-p F equation and mint value (see SUM_BALANCE_TERM_MAX rationale). Also
+ *  raised when n_rows == 0 (an empty output set leaves F unevaluated, so the
+ *  balance identity would be vacuously "satisfied" — fail closed instead). */
+#define SUM_BALANCE_CONSTRAINT_PUBBOUND 'P'
 
 /* ============================================================================
  * Public input bundle (the AIR's pi[] analog from fib_air)
@@ -107,9 +156,9 @@ typedef struct {
 /**
  * @brief Build the unified range_air + sum_balance trace for n amounts.
  *
- * Each row encodes one amount:
- *   row[RANGE_AIR_BIT_OFF(i)] = (amount >> i) & 1   for i in [0, 64)
- *   row[RANGE_AIR_AMOUNT_OFF] = amount mod p
+ * Each row encodes one amount (canon = amount mod p, per range_air):
+ *   row[RANGE_AIR_BIT_OFF(i)] = (canon >> i) & 1    for i in [0, RANGE_AIR_BITS)
+ *   row[RANGE_AIR_AMOUNT_OFF] = canon
  *   row[SUM_BALANCE_ACC_OFF]  = Sum_{j=0..=row_idx} amount[j] mod p
  *
  * All cells written are Goldilocks canonical u64s in [0, p).
@@ -129,10 +178,15 @@ void sum_balance_build_trace(const uint64_t *amounts,
 /**
  * @brief Check sum-balance constraints across the trace.
  *
- * Per the fib_air idiom (boundary + transition + boundary):
+ * Per the fib_air idiom (boundary + transition + boundary) plus the aggregate
+ * count bound:
+ *   N (count):      n_rows <= SUM_BALANCE_MAX_OUTPUTS  (checked once, up front)
  *   I (first row):  acc[0] - amount[0] = 0
  *   U (transition): acc[next] - acc[local] - amount[next] = 0  for each i
  *   F (last row):   acc[last] - (claimed_input_sum - committed_fee) = 0
+ *
+ * N is the wraparound guard: with range_air bounding each amount < 2^52 and
+ * n_rows <= 1024, Sum(outputs) < 2^62 < p, so acc IS the integer sum.
  *
  * range_air's B/S constraints are NOT checked here — call
  * range_air_check_constraints on the same trace for those.

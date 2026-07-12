@@ -5,11 +5,15 @@
  *        dnac_stark_verify_constraints glue; the two air_eval callbacks are TEST
  *        fixtures mirroring the S5.1 Rust RangeOnlyAir / RangeProofAir.
  *
- *   argv[1] = range_air_only.json   (RangeOnlyAir, 65 constraints, main_next=false)
- *   argv[2] = range_proof_air.json  (RangeProofAir, 68 constraints, main_next=true)
+ *   argv[1] = range_air_only.json   (RangeOnlyAir, 53 constraints, main_next=false)
+ *   argv[2] = range_proof_air.json  (RangeProofAir, 61 constraints, main_next=true)
  *
- * ADDITIVE only. CONFIDENTIAL use BLOCKED on B1/B6/B7 (asserted from the vector
- * flags). Per docs/plans/2026-05-30-dnac-range-proof-air-regrounding.md (S5.x).
+ * 2026-07 soundness fix: 52-bit decomposition (B6 field-wrap closed) plus
+ * is_real/P padding gate and cnt count-accumulator bound to public n_real
+ * (B7 padding/count closed). ADDITIVE only. CONFIDENTIAL use still BLOCKED
+ * on B1 (trace<->TX binding), asserted from the vector flags. Per
+ * docs/plans/2026-05-30-dnac-range-proof-air-regrounding.md (S5.x) +
+ * dnac/docs/plans/2026-07-11-range-balance-soundness-fix-design.md.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: Apache-2.0
@@ -23,6 +27,19 @@
 
 #include "field_goldilocks.h"
 #include "stark_constraints.h"
+#include "range_air.h"
+#include "sum_balance.h"   /* SUM_BALANCE_TERM_MAX — the public-input bound */
+
+/* Column layout (extends range_air; mirrors the Rust oracle constants). */
+#define COL_AMOUNT   (RANGE_AIR_BITS)      /* 52 */
+#define COL_ACC      (RANGE_AIR_BITS + 1)  /* 53 */
+#define COL_IS_REAL  (RANGE_AIR_BITS + 2)  /* 54 */
+#define COL_CNT      (RANGE_AIR_BITS + 3)  /* 55 */
+#define RANGE_ONLY_W (RANGE_AIR_BITS + 1)  /* 53 */
+#define RANGE_PROOF_W (RANGE_AIR_BITS + 4) /* 56 */
+/* Wrap-safety bound: height <= 2^10 = 1024 = SUM_BALANCE_MAX_OUTPUTS so
+ * 1024 * (2^52 - 1) < 2^62 < p (the mod-p acc IS the integer sum). */
+#define RANGE_PROOF_MAX_DEGREE_BITS 10u
 
 /* ===== Minimal JSON scanner (same idiom as tests/test_stark_verify_constraints.c) ===== */
 typedef struct { const char *src; size_t pos; size_t len; } js_t;
@@ -287,48 +304,145 @@ static int parse_file(const char *path, file_t *fl) {
 
 /* ===== AIR air_eval callbacks (TEST fixtures; mirror the S5.1 Rust evals) ===== */
 
-/* RangeOnlyAir — width 65, main_next=false, 0 public. B₀..B₆₃ + S (unfiltered). */
+/* RangeOnlyAir — width 53, main_next=false, 0 public. B₀..B₅₁ + S (unfiltered). */
 static void range_only_air_eval(dnac_stark_folder_t *f) {
     const gold_fp2_t *l = f->trace_local;
-    for (int i = 0; i < 64; i++) {
+    for (size_t i = 0; i < RANGE_AIR_BITS; i++) {
         dnac_stark_folder_assert_bool(f, l[i]); /* Bᵢ = bitᵢ·(bitᵢ−1) */
     }
     /* S = Σ bitᵢ·2ⁱ − amount, low-bit-first */
     gold_fp2_t bit_sum = gold_fp2_zero();
     gold_fp2_t weight = gold_fp2_one(); /* 2^0 */
-    for (int i = 0; i < 64; i++) {
+    for (size_t i = 0; i < RANGE_AIR_BITS; i++) {
         bit_sum = gold_fp2_add(bit_sum, gold_fp2_mul(l[i], weight));
         weight = gold_fp2_add(weight, weight); /* double */
     }
-    dnac_stark_folder_assert_eq(f, bit_sum, l[64]); /* assert_zero(bit_sum − amount) */
+    dnac_stark_folder_assert_eq(f, bit_sum, l[COL_AMOUNT]); /* assert_zero(bit_sum − amount) */
 }
 
-/* RangeProofAir — width 66, main_next=true, 2 public. B + S (unfiltered) + I/U/F. */
+/* RangeProofAir — width 56, main_next=true, 3 public [claimed, fee, n_real].
+ * Fold order MUST mirror the Rust RangeProofAir::eval exactly:
+ * B₀..B₅₁, S, R, P, I, U, F, CI, CU, CF = 61 constraints. */
 static void range_proof_air_eval(dnac_stark_folder_t *f) {
     const gold_fp2_t *l = f->trace_local;
     const gold_fp2_t *n = f->trace_next;
     const gold_fp2_t claimed = gold_fp2_from_base(f->public_values[0]);
     const gold_fp2_t fee = gold_fp2_from_base(f->public_values[1]);
-    for (int i = 0; i < 64; i++) {
+    const gold_fp2_t n_real = gold_fp2_from_base(f->public_values[2]);
+    for (size_t i = 0; i < RANGE_AIR_BITS; i++) {
         dnac_stark_folder_assert_bool(f, l[i]);
     }
     gold_fp2_t bit_sum = gold_fp2_zero();
     gold_fp2_t weight = gold_fp2_one();
-    for (int i = 0; i < 64; i++) {
+    for (size_t i = 0; i < RANGE_AIR_BITS; i++) {
         bit_sum = gold_fp2_add(bit_sum, gold_fp2_mul(l[i], weight));
         weight = gold_fp2_add(weight, weight);
     }
-    dnac_stark_folder_assert_eq(f, bit_sum, l[64]); /* S */
-    /* I first_row: acc − amount = l[65] − l[64] */
-    dnac_stark_folder_when(f, f->is_first_row, gold_fp2_sub(l[65], l[64]));
-    /* U transition: acc_next − acc_local − amount_next = n[65] − l[65] − n[64] */
-    dnac_stark_folder_when(f, f->is_transition, gold_fp2_sub(gold_fp2_sub(n[65], l[65]), n[64]));
-    /* F last_row: acc − (claimed − fee) = l[65] − (claimed − fee) */
-    dnac_stark_folder_when(f, f->is_last_row, gold_fp2_sub(l[65], gold_fp2_sub(claimed, fee)));
+    dnac_stark_folder_assert_eq(f, bit_sum, l[COL_AMOUNT]); /* S */
+    /* R unfiltered: is_real boolean */
+    dnac_stark_folder_assert_bool(f, l[COL_IS_REAL]);
+    /* P: (1 − is_real)·amount — padding rows carry zero value (keccak-air
+     * export-flag idiom: when(cond).assert_zero(target)). */
+    dnac_stark_folder_when(f, gold_fp2_sub(gold_fp2_one(), l[COL_IS_REAL]),
+                           l[COL_AMOUNT]);
+    /* I first_row: acc − amount */
+    dnac_stark_folder_when(f, f->is_first_row, gold_fp2_sub(l[COL_ACC], l[COL_AMOUNT]));
+    /* U transition: acc_next − acc_local − amount_next (padding adds 0 via P) */
+    dnac_stark_folder_when(f, f->is_transition,
+                           gold_fp2_sub(gold_fp2_sub(n[COL_ACC], l[COL_ACC]), n[COL_AMOUNT]));
+    /* F last_row: acc − (claimed − fee) */
+    dnac_stark_folder_when(f, f->is_last_row,
+                           gold_fp2_sub(l[COL_ACC], gold_fp2_sub(claimed, fee)));
+    /* CI first_row: cnt − is_real */
+    dnac_stark_folder_when(f, f->is_first_row, gold_fp2_sub(l[COL_CNT], l[COL_IS_REAL]));
+    /* CU transition: cnt_next − cnt_local − is_real_next */
+    dnac_stark_folder_when(f, f->is_transition,
+                           gold_fp2_sub(gold_fp2_sub(n[COL_CNT], l[COL_CNT]), n[COL_IS_REAL]));
+    /* CF last_row: cnt − n_real (binds Σ is_real to the public output count) */
+    dnac_stark_folder_when(f, f->is_last_row, gold_fp2_sub(l[COL_CNT], n_real));
 }
 
-static const dnac_stark_air_t RANGE_ONLY_AIR = { 65, 0, 0, range_only_air_eval };
-static const dnac_stark_air_t RANGE_PROOF_AIR = { 66, 2, 1, range_proof_air_eval };
+static const dnac_stark_air_t RANGE_ONLY_AIR = { RANGE_ONLY_W, 0, 0, range_only_air_eval };
+static const dnac_stark_air_t RANGE_PROOF_AIR = { RANGE_PROOF_W, 3, 1, range_proof_air_eval };
+
+/* ===== P-constraint isolation (grounded, NOT oracle-lockstep) =====
+ * The soundness role of P = (1-is_real)*amount is to REJECT a value-bearing
+ * padding row (is_real=0, amount!=0). The oracle byte-match and N8 (which
+ * corrupts is_real via other columns) do not isolate P: deleting P would still
+ * byte-match the (all-real) positive vectors. This hand-forged witness drives P
+ * directly: a row with is_real=0 and a nonzero, IN-RANGE amount (so B/S pass and
+ * R passes) must make P's folded contribution nonzero — i.e. the AIR would
+ * reject. A control row with is_real=1 leaves P at zero. Constraint fold order
+ * (mirrors range_proof_air_eval): B0..B51 (0..51), S(52), R(53), P(54), I,U,F,
+ * CI,CU,CF. */
+#define P_CONSTRAINT_INDEX 54
+static int test_p_isolation(void) {
+    int fail = 0;
+    const uint64_t A = 0x1ABCDEuLL; /* in range: < 2^52 */
+
+    for (int real = 0; real <= 1; real++) {
+        gold_fp2_t tl[MAXW];
+        for (size_t i = 0; i < RANGE_PROOF_W; i++) tl[i] = gold_fp2_zero();
+        /* 52-bit decomposition of A so S passes (bits recompose to amount). */
+        for (size_t i = 0; i < RANGE_AIR_BITS; i++) {
+            tl[i] = gold_fp2_from_base(gold_fp_from_u64((A >> i) & 1u));
+        }
+        tl[COL_AMOUNT]  = gold_fp2_from_base(gold_fp_from_u64(A));
+        tl[COL_IS_REAL] = gold_fp2_from_base(gold_fp_from_u64((uint64_t)real));
+        /* acc/cnt left 0 — the gated I/U/F/CI/CU/CF may be nonzero, but we only
+         * assert the UNFILTERED P here (index 54), which is selector-independent. */
+
+        gold_fp2_t zeros[MAXW];
+        for (size_t i = 0; i < RANGE_PROOF_W; i++) zeros[i] = gold_fp2_zero();
+        gold_fp_t pubs[3] = { gold_fp_from_u64(0), gold_fp_from_u64(0), gold_fp_from_u64(0) };
+        dnac_stark_selectors_t sels = dnac_stark_selectors_at_point(gold_fp2_one(), 2);
+        dnac_stark_fold_step_t cap[MAXC];
+        dnac_stark_folder_t fdr;
+        fdr.trace_local = tl;
+        fdr.trace_next = zeros;
+        fdr.main_width = RANGE_PROOF_W;
+        fdr.public_values = pubs;
+        fdr.num_public_values = 3;
+        fdr.is_first_row = sels.is_first_row;
+        fdr.is_last_row = sels.is_last_row;
+        fdr.is_transition = sels.is_transition;
+        dnac_stark_fold_init(&fdr.fold, gold_fp2_one());
+        fdr.capture = cap;
+        fdr.capture_cap = MAXC;
+        fdr.capture_len = 0;
+        range_proof_air_eval(&fdr);
+
+        if (fdr.capture_len <= P_CONSTRAINT_INDEX) {
+            fprintf(stderr, "  P-iso: only %zu constraints captured\n", fdr.capture_len);
+            fail++;
+            continue;
+        }
+        if (real == 0) {
+            /* value-bearing padding row: P MUST equal (1-0)*A = A exactly
+             * (hand-pinned, NOT oracle-lockstep). Nonzero ⇒ the fold rejects. */
+            const gold_fp2_t want = gold_fp2_from_base(gold_fp_from_u64(A));
+            if (!gold_fp2_eq(cap[P_CONSTRAINT_INDEX].received, want)) {
+                fprintf(stderr,
+                        "  [FAIL] P-iso is_real=0,amount!=0: P residual != A "
+                        "(padding injection not detected / wrong formula)\n");
+                fail++;
+            } else {
+                printf("  [OK  ] P-iso is_real=0,amount=0x%llx -> P == amount (rejects padding injection)\n",
+                       (unsigned long long)A);
+            }
+        } else {
+            bool p_zero = gold_fp2_eq(cap[P_CONSTRAINT_INDEX].received, gold_fp2_zero());
+            /* real row: P must be zero (does not spuriously reject). */
+            if (!p_zero) {
+                fprintf(stderr, "  [FAIL] P-iso is_real=1: P residual nonzero (false reject)\n");
+                fail++;
+            } else {
+                printf("  [OK  ] P-iso is_real=1 control -> P zero (no false reject)\n");
+            }
+        }
+    }
+    return fail;
+}
 
 /* ===== positive run ===== */
 static int run_case(const dnac_stark_air_t *air, const case_t *c, int expect_n) {
@@ -435,7 +549,7 @@ static int run_negatives(const case_t *rv, const case_t *cv) {
     {
         gold_fp2_t t[MAXW];
         for (int i = 0; i < cv->n_trace_local; i++) t[i] = cv->trace_local[i];
-        t[64] = gold_fp2_add(t[64], one);
+        t[COL_AMOUNT] = gold_fp2_add(t[COL_AMOUNT], one);
         dnac_stark_verify_status_t st = dnac_stark_verify_constraints(
             &RANGE_PROOF_AIR, t, (size_t)cv->n_trace_local, cv_tn, cv_tn_len,
             cv->public_values, (size_t)cv->n_public, cv->zeta, (size_t)cv->base_degree_bits, cv->alpha, cv->chunk0);
@@ -445,18 +559,19 @@ static int run_negatives(const case_t *rv, const case_t *cv) {
     {
         gold_fp2_t t[MAXW];
         for (int i = 0; i < cv->n_trace_local; i++) t[i] = cv->trace_local[i];
-        t[65] = gold_fp2_add(t[65], one);
+        t[COL_ACC] = gold_fp2_add(t[COL_ACC], one);
         dnac_stark_verify_status_t st = dnac_stark_verify_constraints(
             &RANGE_PROOF_AIR, t, (size_t)cv->n_trace_local, cv_tn, cv_tn_len,
             cv->public_values, (size_t)cv->n_public, cv->zeta, (size_t)cv->base_degree_bits, cv->alpha, cv->chunk0);
         fail += expect_status("N3 corrupt acc column (combined)", st, DNAC_STARK_VERIFY_ERR_OOD_MISMATCH);
     }
-    /* N4 — swap public_values order (combined) -> OOD (F uses fee-claimed). */
+    /* N4 — swap claimed/fee public order (combined) -> OOD (F breaks). */
     {
-        gold_fp_t swapped[2] = { cv->public_values[1], cv->public_values[0] };
+        gold_fp_t swapped[3] = { cv->public_values[1], cv->public_values[0],
+                                 cv->public_values[2] };
         dnac_stark_verify_status_t st = dnac_stark_verify_constraints(
             &RANGE_PROOF_AIR, cv->trace_local, (size_t)cv->n_trace_local, cv_tn, cv_tn_len,
-            swapped, 2, cv->zeta, (size_t)cv->base_degree_bits, cv->alpha, cv->chunk0);
+            swapped, 3, cv->zeta, (size_t)cv->base_degree_bits, cv->alpha, cv->chunk0);
         fail += expect_status("N4 swap public_values (combined)", st, DNAC_STARK_VERIFY_ERR_OOD_MISMATCH);
     }
     /* N5 — wrong width (combined): claim width-1 -> SHAPE. */
@@ -480,6 +595,25 @@ static int run_negatives(const case_t *rv, const case_t *cv) {
             rv->public_values, (size_t)rv->n_public, rv->zeta, (size_t)rv->base_degree_bits, rv->alpha, rv->chunk0);
         fail += expect_status("N7 range-only trace_next absent", st, DNAC_STARK_VERIFY_OK);
     }
+    /* N8 — corrupt is_real column (combined) -> OOD (R/P/CI/CU break). */
+    {
+        gold_fp2_t t[MAXW];
+        for (int i = 0; i < cv->n_trace_local; i++) t[i] = cv->trace_local[i];
+        t[COL_IS_REAL] = gold_fp2_add(t[COL_IS_REAL], one);
+        dnac_stark_verify_status_t st = dnac_stark_verify_constraints(
+            &RANGE_PROOF_AIR, t, (size_t)cv->n_trace_local, cv_tn, cv_tn_len,
+            cv->public_values, (size_t)cv->n_public, cv->zeta, (size_t)cv->base_degree_bits, cv->alpha, cv->chunk0);
+        fail += expect_status("N8 corrupt is_real column (combined)", st, DNAC_STARK_VERIFY_ERR_OOD_MISMATCH);
+    }
+    /* N9 — perturb n_real public (count forgery) -> OOD (CF breaks). */
+    {
+        gold_fp_t forged[3] = { cv->public_values[0], cv->public_values[1],
+                                gold_fp_add(cv->public_values[2], gold_fp_one()) };
+        dnac_stark_verify_status_t st = dnac_stark_verify_constraints(
+            &RANGE_PROOF_AIR, cv->trace_local, (size_t)cv->n_trace_local, cv_tn, cv_tn_len,
+            forged, 3, cv->zeta, (size_t)cv->base_degree_bits, cv->alpha, cv->chunk0);
+        fail += expect_status("N9 forge n_real public (combined)", st, DNAC_STARK_VERIFY_ERR_OOD_MISMATCH);
+    }
     return fail;
 }
 
@@ -487,8 +621,16 @@ static int check_flags(const char *path, const file_t *fl) {
     int fail = 0;
     if (!fl->additive_only) { fprintf(stderr, "  %s: additive_only != true\n", path); fail++; }
     if (fl->confidential_use_allowed) { fprintf(stderr, "  %s: confidential_use_allowed != false\n", path); fail++; }
-    if (!(fl->blocker_b1 && fl->blocker_b6 && fl->blocker_b7)) {
-        fprintf(stderr, "  %s: blockers must include B1, B6, B7\n", path); fail++;
+    /* 2026-07 soundness fix: B6 (field-wrap) closed on the OUTPUT side by 52-bit +
+     * height<=1024. The FEE/CLAIMED side of B6 (the F mod-p equation) is closed by
+     * a verifier-side SOFTWARE bound on the PUBLIC inputs (claimed,fee < 2^62 —
+     * see the "STARK-path public-input bound" test above and sum_balance.c), NOT
+     * an AIR constraint. B7 (padding/count) closed by is_real/P/cnt. B1 flagged. */
+    if (!fl->blocker_b1) {
+        fprintf(stderr, "  %s: blockers must include B1\n", path); fail++;
+    }
+    if (fl->blocker_b6 || fl->blocker_b7) {
+        fprintf(stderr, "  %s: B6/B7 are resolved and must NOT be flagged\n", path); fail++;
     }
     return fail;
 }
@@ -508,22 +650,71 @@ int main(int argc, char **argv) {
     fail += check_flags("range_air_only.json", &rf);
     fail += check_flags("range_proof_air.json", &cf);
 
-    printf("  --- RangeOnlyAir (65 constraints) ---\n");
-    for (int i = 0; i < rf.n_cases; i++) fail += run_case(&RANGE_ONLY_AIR, &rf.cases[i], 65);
+    printf("  --- RangeOnlyAir (53 constraints) ---\n");
+    for (int i = 0; i < rf.n_cases; i++) fail += run_case(&RANGE_ONLY_AIR, &rf.cases[i], 53);
 
-    printf("  --- RangeProofAir combined (68 constraints) ---\n");
-    for (int i = 0; i < cf.n_cases; i++) fail += run_case(&RANGE_PROOF_AIR, &cf.cases[i], 68);
+    printf("  --- RangeProofAir combined (61 constraints) ---\n");
+    for (int i = 0; i < cf.n_cases; i++) {
+        /* Wrap-safety: the combined AIR is only sound for heights <= 2^10
+         * (1024 rows); a vector beyond that bound is invalid by definition. */
+        if (cf.cases[i].base_degree_bits > RANGE_PROOF_MAX_DEGREE_BITS) {
+            fprintf(stderr, "  %s: degree_bits %llu > %u (wrap-safety bound)\n",
+                    cf.cases[i].name,
+                    (unsigned long long)cf.cases[i].base_degree_bits,
+                    RANGE_PROOF_MAX_DEGREE_BITS);
+            fail++;
+        }
+        fail += run_case(&RANGE_PROOF_AIR, &cf.cases[i], 61);
+    }
 
     printf("  --- negative cases ---\n");
     if (rf.n_cases > 0 && cf.n_cases > 0) fail += run_negatives(&rf.cases[0], &cf.cases[0]);
     else { fprintf(stderr, "  no cases for negatives\n"); fail++; }
+
+    printf("  --- P-constraint isolation (forged padding row) ---\n");
+    fail += test_p_isolation();
+
+    /* --- STARK-path fee/claimed public-input bound ---
+     * RangeProofAir's F constraint (acc - (claimed - fee)) is a mod-p equation
+     * with UNBOUNDED public claimed/fee. Range-checking outputs does NOT close
+     * the fee-side wrap: a wire committed_fee = p - A mints A (same G1 bug as the
+     * direct sum_balance path). claimed/fee are PUBLIC (cleartext), so the
+     * closure is a verifier-side SOFTWARE bound (both < SUM_BALANCE_TERM_MAX =
+     * 2^62), NOT an AIR constraint. This is enforced in sum_balance.c; any STARK
+     * verifier gating money MUST apply the same bound to the public values before
+     * trusting the proof. Below grounds that predicate (hand-pinned, no oracle). */
+    printf("  --- STARK-path public-input bound (fee/claimed wrap) ---\n");
+    {
+        const uint64_t GOLD_P = UINT64_C(0xFFFFFFFF00000001);
+        struct { const char *name; uint64_t claimed, fee; bool want_ok; } pv[] = {
+            { "vector publics (107,7) within bound",   107, 7,              true  },
+            { "fee-wrap mint (0, p-1000)",             0,   GOLD_P - 1000,  false },
+            { "claimed-wrap (p-1000, 0)",              GOLD_P - 1000, 0,    false },
+            { "boundary claimed==2^62",                (uint64_t)SUM_BALANCE_TERM_MAX, 0, false },
+            { "boundary claimed==2^62-1 ok",           (uint64_t)SUM_BALANCE_TERM_MAX - 1, 5, true },
+        };
+        for (size_t i = 0; i < sizeof(pv)/sizeof(pv[0]); i++) {
+            bool ok = (pv[i].claimed < SUM_BALANCE_TERM_MAX) &&
+                      (pv[i].fee < SUM_BALANCE_TERM_MAX);
+            if (ok == pv[i].want_ok) {
+                printf("  [OK  ] pub-bound: %s -> %s\n", pv[i].name, ok ? "within" : "rejected");
+            } else {
+                fprintf(stderr, "  [FAIL] pub-bound: %s -> got %s want %s\n",
+                        pv[i].name, ok ? "within" : "rejected",
+                        pv[i].want_ok ? "within" : "rejected");
+                fail++;
+            }
+        }
+    }
 
     if (fail) {
         fprintf(stderr, "test_range_proof_air: %d FAIL(s)\n", fail);
         return 1;
     }
     printf("test_range_proof_air: PASS\n");
-    printf("  RangeOnlyAir + RangeProofAir verify_constraints==OK all cases; per-constraint 65/65 + 68/68;\n");
-    printf("  7 negatives reject/accept as expected; ADDITIVE-only flags confirmed (CONFIDENTIAL blocked B1/B6/B7).\n");
+    printf("  RangeOnlyAir + RangeProofAir verify_constraints==OK all cases; per-constraint 53/53 + 61/61;\n");
+    printf("  9 negatives + P-isolation (forged padding row) + STARK public-input bound (fee-wrap) as expected;\n");
+    printf("  ADDITIVE-only flags confirmed (CONFIDENTIAL blocked B1; B6 output-side + B7 closed by 52-bit +\n");
+    printf("  is_real/cnt; B6 fee-side closed by verifier software pub-bound < 2^62).\n");
     return 0;
 }

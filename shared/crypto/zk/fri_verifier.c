@@ -210,7 +210,18 @@ static dnac_fri_status_t fri_open_input(
         for (size_t m = 0; m < cw->num_matrices; ++m) {
             size_t lh = (size_t)cw->matrices[m].domain.log_size + params->log_blowup;
             if (!have_height) { max_log_height = lh; have_height = true; }
-            else { assert(lh == max_log_height && "FRI open_input: Phase 2B mixed-height not supported"); }
+            /* Mixed-height (Phase 2B) is unsupported. This was a debug-only
+             * assert() — stripped under -DNDEBUG, which the messenger Release
+             * build defines — so a release verifier silently accepted mixed
+             * heights. Reject at runtime instead (2026-07-12 council red-team). */
+            else if (lh != max_log_height) { return DNAC_FRI_ERR_UNSUPPORTED_PARAMS; }
+        }
+
+        /* Guard the shift below: max_log_height > log_global_max_height would make
+         * (log_global_max_height - max_log_height) underflow size_t → shift-count
+         * UB. A well-formed proof always has max_log_height <= log_global_max_height. */
+        if (have_height && max_log_height > log_global_max_height) {
+            return DNAC_FRI_ERR_UNSUPPORTED_PARAMS;
         }
 
         /* reduced_index = index >> (log_global_max_height - log2(max_height)) (verifier.rs:576-580). */
@@ -436,6 +447,19 @@ static dnac_fri_status_t fri_verify_impl(
     size_t lgmh = sum_la + params->log_blowup + params->log_final_poly_len;
     size_t log_final_height = params->log_blowup + params->log_final_poly_len;
     const size_t extra_query_index_bits = 0; /* TwoAdicFriFolding (two_adic_pcs.rs:105-107) */
+
+    /* Pre-consensus param-safety guards (2026-07-12 council red-team: Sun Tzu
+     * num_queries=0 downgrade + Taleb shift-UB). These reject provably-broken
+     * wire params, NOT a chosen security level:
+     *  - num_queries == 0 → the query loop below (and low-degree test) never
+     *    runs → verifier accepts any polynomial. Real FRI has num_queries > 0.
+     *  - lgmh >= 64 → sample_bits(lgmh) does 1u64<<bits (transcript.c) and
+     *    domain_index >>= sum_la (sum_la <= lgmh) are shift-count UB; two builds
+     *    can diverge on identical bytes (chain-split). A real trace has lgmh far
+     *    below 64 (2^lgmh rows). Guarding lgmh covers all downstream shifts. */
+    if (params->num_queries == 0 || lgmh >= 64) {
+        return DNAC_FRI_ERR_UNSUPPORTED_PARAMS;
+    }
 
     /* T1 — alpha (verifier.rs:143). */
     gold_fp2_t alpha = dnac_transcript_sample_fp2(transcript);

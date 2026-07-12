@@ -420,11 +420,12 @@ int main(int argc, char **argv) {
     if (argc >= 2) path = argv[1];
 
     /* Pre-flight: column-binding constants are sane. */
-    if (SUM_BALANCE_WIDTH != 66 ||
-        SUM_BALANCE_ACC_OFF != 65 ||
-        RANGE_AIR_AMOUNT_OFF != 64 ||
+    if (SUM_BALANCE_WIDTH != 54 ||
+        SUM_BALANCE_ACC_OFF != 53 ||
+        RANGE_AIR_AMOUNT_OFF != 52 ||
         RANGE_AIR_BIT_OFF(0) != 0 ||
-        RANGE_AIR_BIT_OFF(63) != 63) {
+        RANGE_AIR_BIT_OFF(51) != 51 ||
+        SUM_BALANCE_MAX_OUTPUTS != 1024) {
         fprintf(stderr, "FAIL: column-binding contract violated\n");
         return 2;
     }
@@ -629,8 +630,185 @@ int main(int argc, char **argv) {
 
     free(src);
 
+    /* ========================================================================
+     * (E) Local soundness negatives (2026-07 mint-fix KATs — not oracle
+     *     byte-match; these pin the ADVERSARIAL witnesses from the audit).
+     * ====================================================================== */
+    int soundness_pass = 0, soundness_fail = 0;
+
+    /* (E1) Count bound: n = MAX_OUTPUTS is the last ACCEPT; n = MAX_OUTPUTS+1
+     *      must REJECT with constraint 'N'. Heap-alloc (multi-hundred-KB
+     *      fixture; stack would overflow). */
+    {
+        const size_t n_over = SUM_BALANCE_MAX_OUTPUTS + 1;
+        uint64_t *amounts = (uint64_t *)calloc(n_over, sizeof(uint64_t));
+        uint64_t *trace = (uint64_t *)calloc(n_over * SUM_BALANCE_WIDTH,
+                                             sizeof(uint64_t));
+        if (!amounts || !trace) {
+            fprintf(stderr, "FAIL: E1 alloc\n");
+            soundness_fail++;
+        } else {
+            for (size_t i = 0; i < n_over; i++) amounts[i] = 1;
+            sum_balance_build_trace(amounts, n_over, trace, SUM_BALANCE_WIDTH);
+
+            /* Boundary ACCEPT at exactly MAX_OUTPUTS. */
+            const sum_balance_public_t pub_max = {
+                .claimed_input_sum = (uint64_t)SUM_BALANCE_MAX_OUTPUTS + 5,
+                .committed_fee = 5,
+            };
+            if (sum_balance_check_constraints(trace, SUM_BALANCE_MAX_OUTPUTS,
+                                              SUM_BALANCE_WIDTH, &pub_max,
+                                              NULL, NULL)) {
+                soundness_pass++;
+            } else {
+                soundness_fail++;
+                fprintf(stderr, "FAIL: E1 n=MAX_OUTPUTS boundary rejected\n");
+            }
+
+            /* MAX_OUTPUTS + 1 must REJECT via 'N' before any row math. */
+            const sum_balance_public_t pub_over = {
+                .claimed_input_sum = (uint64_t)n_over + 5,
+                .committed_fee = 5,
+            };
+            char fc = 0;
+            size_t fr = 0;
+            bool acc_over = sum_balance_check_constraints(
+                trace, n_over, SUM_BALANCE_WIDTH, &pub_over, &fc, &fr);
+            if (!acc_over && fc == SUM_BALANCE_CONSTRAINT_COUNT) {
+                soundness_pass++;
+            } else {
+                soundness_fail++;
+                fprintf(stderr,
+                        "FAIL: E1 n=MAX_OUTPUTS+1 accepted=%d constraint=%c\n",
+                        (int)acc_over, fc ? fc : '?');
+            }
+        }
+        free(amounts);
+        free(trace);
+    }
+
+    /* (E2) The audit's concrete MINT witness: out1 = p-1, out2 = T+1 with
+     *      claimed - fee = T. The mod-p balance alone ACCEPTS (acc wraps to
+     *      T) — the composed range check MUST reject row 0 ('S': p-1 has no
+     *      52-bit witness). This is exactly why range_air+sum_balance are
+     *      only sound TOGETHER. */
+    {
+        const uint64_t GOLD_P = UINT64_C(0xFFFFFFFF00000001);
+        const uint64_t fee = 5, t_val = 10;
+        uint64_t amounts[2] = { GOLD_P - 1, t_val + 1 };
+        uint64_t trace[2 * SUM_BALANCE_WIDTH];
+        memset(trace, 0, sizeof trace);
+        sum_balance_build_trace(amounts, 2, trace, SUM_BALANCE_WIDTH);
+        const sum_balance_public_t pub_mint = {
+            .claimed_input_sum = t_val + fee,
+            .committed_fee = fee,
+        };
+
+        /* Balance alone accepts (documents the wraparound hole)... */
+        bool balance_alone = sum_balance_check_constraints(
+            trace, 2, SUM_BALANCE_WIDTH, &pub_mint, NULL, NULL);
+        /* ...the composed range check is what kills the mint. */
+        char fc = 0;
+        size_t fr = 0, fb = 0;
+        bool range_ok = range_air_check_constraints(trace, 2,
+                                                    SUM_BALANCE_WIDTH,
+                                                    &fc, &fr, &fb);
+        if (balance_alone && !range_ok &&
+            fc == RANGE_AIR_CONSTRAINT_RECOMP && fr == 0) {
+            soundness_pass++;
+        } else {
+            soundness_fail++;
+            fprintf(stderr,
+                    "FAIL: E2 mint witness: balance_alone=%d range_ok=%d "
+                    "constraint=%c row=%zu\n",
+                    (int)balance_alone, (int)range_ok, fc ? fc : '?', fr);
+        }
+    }
+
+    /* (E3) FEE-WRAP MINT (2026-07-12 red-team finding). The 07-11 fix bounded
+     * outputs + count but left the F-equation publics unbounded. A prover sets
+     * committed_fee = p - A (a valid canonical field element); then
+     * (claimed - fee) mod p wraps to A, matched by a single in-range output of A,
+     * minting A base units from claimed = 0. The public-input bound must REJECT
+     * this with constraint 'P' (fee >= 2^62), BEFORE any row math. */
+    {
+        const uint64_t GOLD_P = UINT64_C(0xFFFFFFFF00000001);
+        const uint64_t A = 1000;
+        uint64_t amounts[1] = { A };            /* in range (< 2^52) */
+        uint64_t trace[SUM_BALANCE_WIDTH];
+        memset(trace, 0, sizeof trace);
+        sum_balance_build_trace(amounts, 1, trace, SUM_BALANCE_WIDTH);
+        const sum_balance_public_t pub_wrap = {
+            .claimed_input_sum = 0,             /* declares zero input... */
+            .committed_fee = GOLD_P - A,        /* ...via a near-p wrapping fee */
+        };
+        char fc = 0;
+        size_t fr = 0;
+        bool accepted = sum_balance_check_constraints(
+            trace, 1, SUM_BALANCE_WIDTH, &pub_wrap, &fc, &fr);
+        if (!accepted && fc == SUM_BALANCE_CONSTRAINT_PUBBOUND) {
+            soundness_pass++;
+        } else {
+            soundness_fail++;
+            fprintf(stderr,
+                    "FAIL: E3 fee-wrap mint accepted=%d constraint=%c "
+                    "(want reject 'P')\n",
+                    (int)accepted, fc ? fc : '?');
+        }
+    }
+
+    /* (E4) EMPTY TRACE fail-closed. n_rows == 0 leaves the F balance equation
+     * unevaluated; a money check must reject (not vacuously accept) with 'P'. */
+    {
+        uint64_t dummy = 0;
+        const sum_balance_public_t pub_zero = { .claimed_input_sum = 0,
+                                                .committed_fee = 0 };
+        char fc = 0;
+        size_t fr = 0;
+        bool accepted = sum_balance_check_constraints(
+            &dummy, 0, SUM_BALANCE_WIDTH, &pub_zero, &fc, &fr);
+        if (!accepted && fc == SUM_BALANCE_CONSTRAINT_PUBBOUND) {
+            soundness_pass++;
+        } else {
+            soundness_fail++;
+            fprintf(stderr,
+                    "FAIL: E4 empty trace accepted=%d constraint=%c "
+                    "(want reject 'P')\n",
+                    (int)accepted, fc ? fc : '?');
+        }
+    }
+
+    /* (E5) BOUNDARY: claimed/fee at exactly SUM_BALANCE_TERM_MAX must REJECT,
+     * one below must be allowed through the pub-bound gate (a genuine valid
+     * proof with claimed just below the ceiling still needs its F to hold, so we
+     * only check the gate here via a claimed = TERM_MAX rejection). */
+    {
+        uint64_t amounts[1] = { 5 };
+        uint64_t trace[SUM_BALANCE_WIDTH];
+        memset(trace, 0, sizeof trace);
+        sum_balance_build_trace(amounts, 1, trace, SUM_BALANCE_WIDTH);
+        const sum_balance_public_t pub_at_max = {
+            .claimed_input_sum = SUM_BALANCE_TERM_MAX,   /* == 2^62, out of bound */
+            .committed_fee = 0,
+        };
+        char fc = 0;
+        size_t fr = 0;
+        bool accepted = sum_balance_check_constraints(
+            trace, 1, SUM_BALANCE_WIDTH, &pub_at_max, &fc, &fr);
+        if (!accepted && fc == SUM_BALANCE_CONSTRAINT_PUBBOUND) {
+            soundness_pass++;
+        } else {
+            soundness_fail++;
+            fprintf(stderr,
+                    "FAIL: E5 claimed==TERM_MAX accepted=%d constraint=%c "
+                    "(want reject 'P')\n",
+                    (int)accepted, fc ? fc : '?');
+        }
+    }
+
     int total_fail = reconstruct_fail + outcome_accept_fail +
-                     outcome_reject_fail + residual_fail + pi_perturb_fail;
+                     outcome_reject_fail + residual_fail + pi_perturb_fail +
+                     soundness_fail;
 
     printf("\n");
     printf("Sum_balance test summary (byte-match against Plonky3 commit 82cfad73):\n");
@@ -645,6 +823,8 @@ int main(int argc, char **argv) {
            residual_pass, residual_fail);
     printf("  (D)  PI binding: perturbed claimed/fee → REJECT:   %d PASS / %d FAIL\n",
            pi_perturb_pass, pi_perturb_fail);
+    printf("  (E)  Soundness KATs (N bound + mint witness):       %d PASS / %d FAIL\n",
+           soundness_pass, soundness_fail);
     printf("  Circular self-tests:                                0\n");
     printf("\n");
 
