@@ -163,11 +163,16 @@ embedded witness module (`nodus/src/witness/`).
 - [ ] **T1 decode failure investigation** (Phase 3.2 — pre-existing, unrelated to consensus correctness)
 - [ ] **T3 decode failure on peer connect** (pre-existing, doesn't block consensus)
 
-### Future Protocol Versions
-- [ ] **Protocol v2: hidden amounts via PQ ZK (STARKs)** — design only, no code
-  - STARK libraries to evaluate: winterfell, stone, ethSTARK
-  - Range proofs for amounts
-  - ~50-200 KB proof size acceptable
+### Future Protocol Versions — PQ ZK (STARKs)
+Authoritative status: `shared/crypto/zk/RESUME.md` (top block).
+- [x] STARK approach chosen: **Plonky3-grounded C ports** (pin `82cfad73`, Goldilocks,
+      SHA3-512) — NOT winterfell/stone/ethSTARK. No Rust runtime; oracle byte-matched.
+- [x] **Verifier stack + range/balance AIR built** (verify-only), soundness-audited,
+      2 mints fixed, `make test` GREEN (36 gates). Parked, NOT in consensus.
+- [ ] **Prover [MISSING]**, **B1 trace↔TX binding [OPEN]** (proof vacuous without it),
+      full FRI param pin, consensus integration — all before-consensus MUST-FIX.
+- [ ] **Confidential / hidden amounts = v4** (Poseidon2 in-AIR commitment) — deferred.
+  - Proof size ~100 KB acceptable (DHT chunked storage).
 
 ---
 

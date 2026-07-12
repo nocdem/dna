@@ -37,8 +37,12 @@ DNAC is a post-quantum digital cash system that integrates with DNA Connect:
 
 **Current Implementation: Protocol v1 (Transparent)**
 - Amounts are plaintext in transactions
-- Verification: sum(inputs) == sum(outputs)
-- v2 will add PQ ZK (STARKs) when mature
+- Verification: sum(inputs) == sum(outputs) (native cleartext witness check)
+- Hidden amounts (confidential) will add PQ ZK (STARKs). **Naming note:** the ZK
+  workstream tracks its own generations — the transparent **verify-only STARK
+  stack (v3)** is already built + audited (see Phase 4); **confidential/hidden
+  (v4)** is deferred. The "v2" label in this table predates that split; read
+  Phase 4 + `shared/crypto/zk/RESUME.md` for the real ZK state.
 
 ---
 
@@ -72,18 +76,34 @@ DNAC is a post-quantum digital cash system that integrates with DNA Connect:
 
 **Note:** v2 will use PQ ZK (STARKs) for hidden amounts.
 
-### Phase 4: PQ Zero-Knowledge (STARKs) - DEFERRED TO v2
-- [ ] Evaluate STARK libraries (winterfell, stone, ethSTARK)
-- [ ] Design STARK-based range proofs for amounts
-- [ ] Implement range proof generation
-- [ ] Implement range proof verification
-- [ ] Benchmark proof size (~50-200 KB expected)
-- [ ] Evaluate proof aggregation for multi-output transactions
+### Phase 4: PQ Zero-Knowledge (STARKs) — IN PROGRESS (verify-only foundation built; confidential mode = v4)
+**Authoritative status: `shared/crypto/zk/RESUME.md` (top block). Updated 2026-07-12.**
 
-**v2 ZK Design (PQ-safe):**
-- STARKs: Hash-based, no trusted setup, post-quantum secure
-- Proof size (~100KB) acceptable - DHT uses chunked storage
-- Alternative: Lattice-based ZK when mature
+Library choice made (NOT winterfell/stone/ethSTARK): **Plonky3-grounded clean-room
+C ports** (pinned commit `82cfad73`), so production binaries carry no Rust runtime
+and every primitive is oracle byte-matched against Plonky3. Goldilocks field,
+SHA3-512 hashing, Bitcoin-style v3.0 identity (1 TPS, full history).
+
+- [x] Evaluate STARK approach → chose Plonky3 C ports (Goldilocks + FRI + SHA3)
+- [x] Design + implement STARK **verifier** stack (field, NTT, Keccak-AIR, SHA3
+      sponge, transcript, Merkle-MMCS, FRI fold + verifier, STARK constraint
+      check, proof codecs) — all Plonky3 byte-matched, `make test` GREEN (36 gates)
+- [x] Design + implement **range/balance AIR** (range_air 52-bit, sum_balance) —
+      soundness-audited (13+13+4 subagents + 18-member council); 2 mints found +
+      fixed (64-bit-vacuous range, fee/claimed mod-p wrap); FRI wire-param UB
+      guards; composed `range_balance_verify()` door
+- [ ] **Prover — [MISSING]** (verify-only today; ~2–4 months: FFT/LDE, FRI commit,
+      trace Merkle, query opening orchestration)
+- [ ] **B1 trace↔TX binding** — [OPEN] (a sound proof is vacuous without it;
+      red-team before any prover merges)
+- [ ] Full FRI parameter pin + consensus integration (CMake link, Genesis 7/7)
+- [ ] Wallet auto-split for outputs > 2^52 (~45M DNAC) — `dnac/BUGS.md` P3
+
+**Confidential (hidden amounts) = DEFERRED to v4** (Poseidon2 in-AIR commitment;
+deep-research found no grounded in-AIR SHA3 sponge). v3 ships **transparent** — the
+verify-only ZK stack is ADDITIVE and **parked, not in consensus** (money
+conservation is enforced by the native cleartext witness check today). Proof size
+(~100KB) acceptable — DHT chunked storage.
 
 ### Phase 5: Wallet Core ✅ COMPLETE
 - [x] Create db.h header for database functions

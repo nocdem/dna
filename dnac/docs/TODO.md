@@ -23,9 +23,11 @@
 ## Protocol Decision
 
 **v1 (Current):** Transparent amounts - amounts are plaintext in transactions.
-**v2 (Future):** ZK amounts - STARKs (PQ-safe).
+**ZK (STARKs, PQ-safe):** verify-only stack + range/balance AIR BUILT + audited
+(Plonky3 C ports, parked/not-in-consensus); prover [MISSING]; confidential/hidden
+amounts deferred to v4. See Phase 4 + `shared/crypto/zk/RESUME.md`.
 
-Phase 4 (Range Proofs) is deferred until v2 implementation.
+Phase 4 (Range Proofs) — verification done, generation (prover) pending.
 
 ---
 
@@ -51,13 +53,17 @@ Some unit tests inject fake UTXOs directly via `dnac_db_store_utxo()`:
 
 ---
 
-## Deferred: Phase 4 - PQ Zero-Knowledge (v2 only)
+## Phase 4 - PQ Zero-Knowledge (STARKs) — IN PROGRESS (verify-only; confidential = v4)
+Authoritative status: `shared/crypto/zk/RESUME.md` (top block).
 
-- [ ] Evaluate STARK libraries (winterfell, stone, ethSTARK)
-- [ ] Design STARK-based range proofs
-- [ ] Implement range proof generation
-- [ ] Implement range proof verification
-- [ ] Benchmark proof size (~50-200 KB, OK for chunked DHT)
+- [x] STARK library chosen: **Plonky3-grounded C ports** (pin `82cfad73`), not winterfell/stone/ethSTARK
+- [x] Design + implement STARK **range proofs** (range_air 52-bit + sum_balance) — soundness-audited, 2 mints fixed
+- [x] Implement range proof **verification** (full STARK verifier stack, `make test` GREEN 36 gates)
+- [ ] Implement range proof **generation** — **prover [MISSING]** (~2–4 months)
+- [ ] **B1 trace↔TX binding [OPEN]**, full FRI param pin, consensus integration (before-consensus MUST-FIX)
+- [ ] Wallet auto-split for outputs > 2^52 (`dnac/BUGS.md` P3)
+- [ ] **Confidential / hidden amounts (v4)** — Poseidon2 in-AIR commitment, deferred
+- Proof size ~100 KB acceptable (chunked DHT)
 
 ---
 
