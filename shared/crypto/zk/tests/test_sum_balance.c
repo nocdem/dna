@@ -806,6 +806,102 @@ int main(int argc, char **argv) {
         }
     }
 
+    /* (E6) COMPOSED DOOR range_balance_verify() — closes the G-C footgun that E2
+     * demonstrates (balance-alone ACCEPTS the mint witness). The composed entry
+     * must run range FIRST and reject. */
+    {
+        const uint64_t GOLD_P = UINT64_C(0xFFFFFFFF00000001);
+
+        /* E6a: valid 3-output trace → composed verify ACCEPTS. */
+        {
+            uint64_t amounts[3] = { 10, 20, 30 };
+            uint64_t trace[3 * SUM_BALANCE_WIDTH];
+            memset(trace, 0, sizeof trace);
+            sum_balance_build_trace(amounts, 3, trace, SUM_BALANCE_WIDTH);
+            const sum_balance_public_t pub = {
+                .claimed_input_sum = 60 + 5, .committed_fee = 5,
+            };
+            char fc = 0; size_t fr = 0;
+            if (range_balance_verify(trace, 3, SUM_BALANCE_WIDTH, &pub, &fc, &fr)) {
+                soundness_pass++;
+            } else {
+                soundness_fail++;
+                fprintf(stderr, "FAIL: E6a valid trace rejected constraint=%c\n",
+                        fc ? fc : '?');
+            }
+        }
+
+        /* E6b: THE MINT WITNESS (out1=p-1, out2=T+1) — E2 proves balance-alone
+         * ACCEPTS this; the composed door MUST REJECT it via the range layer
+         * ('S', row 0). This is the footgun-closing assertion. */
+        {
+            const uint64_t fee = 5, t_val = 10;
+            uint64_t amounts[2] = { GOLD_P - 1, t_val + 1 };
+            uint64_t trace[2 * SUM_BALANCE_WIDTH];
+            memset(trace, 0, sizeof trace);
+            sum_balance_build_trace(amounts, 2, trace, SUM_BALANCE_WIDTH);
+            const sum_balance_public_t pub_mint = {
+                .claimed_input_sum = t_val + fee, .committed_fee = fee,
+            };
+            /* sanity: balance-alone still accepts (documents the footgun). */
+            bool balance_alone = sum_balance_check_constraints(
+                trace, 2, SUM_BALANCE_WIDTH, &pub_mint, NULL, NULL);
+            char fc = 0; size_t fr = 0;
+            bool composed = range_balance_verify(trace, 2, SUM_BALANCE_WIDTH,
+                                                 &pub_mint, &fc, &fr);
+            if (balance_alone && !composed &&
+                fc == RANGE_AIR_CONSTRAINT_RECOMP && fr == 0) {
+                soundness_pass++;
+            } else {
+                soundness_fail++;
+                fprintf(stderr,
+                        "FAIL: E6b composed door: balance_alone=%d composed=%d "
+                        "constraint=%c row=%zu (want reject 'S' row 0)\n",
+                        (int)balance_alone, (int)composed, fc ? fc : '?', fr);
+            }
+        }
+
+        /* E6c: fee-wrap mint → composed door rejects via balance layer ('P'). */
+        {
+            uint64_t amounts[1] = { 1000 };
+            uint64_t trace[SUM_BALANCE_WIDTH];
+            memset(trace, 0, sizeof trace);
+            sum_balance_build_trace(amounts, 1, trace, SUM_BALANCE_WIDTH);
+            const sum_balance_public_t pub_wrap = {
+                .claimed_input_sum = 0, .committed_fee = GOLD_P - 1000,
+            };
+            char fc = 0; size_t fr = 0;
+            bool composed = range_balance_verify(trace, 1, SUM_BALANCE_WIDTH,
+                                                 &pub_wrap, &fc, &fr);
+            if (!composed && fc == SUM_BALANCE_CONSTRAINT_PUBBOUND) {
+                soundness_pass++;
+            } else {
+                soundness_fail++;
+                fprintf(stderr, "FAIL: E6c composed fee-wrap composed=%d "
+                        "constraint=%c (want reject 'P')\n",
+                        (int)composed, fc ? fc : '?');
+            }
+        }
+
+        /* E6d: empty trace → composed door fails closed ('P'). */
+        {
+            uint64_t dummy = 0;
+            const sum_balance_public_t pub_zero = { .claimed_input_sum = 0,
+                                                    .committed_fee = 0 };
+            char fc = 0; size_t fr = 0;
+            bool composed = range_balance_verify(&dummy, 0, SUM_BALANCE_WIDTH,
+                                                 &pub_zero, &fc, &fr);
+            if (!composed && fc == SUM_BALANCE_CONSTRAINT_PUBBOUND) {
+                soundness_pass++;
+            } else {
+                soundness_fail++;
+                fprintf(stderr, "FAIL: E6d composed empty composed=%d "
+                        "constraint=%c (want reject 'P')\n",
+                        (int)composed, fc ? fc : '?');
+            }
+        }
+    }
+
     int total_fail = reconstruct_fail + outcome_accept_fail +
                      outcome_reject_fail + residual_fail + pi_perturb_fail +
                      soundness_fail;
@@ -823,7 +919,7 @@ int main(int argc, char **argv) {
            residual_pass, residual_fail);
     printf("  (D)  PI binding: perturbed claimed/fee → REJECT:   %d PASS / %d FAIL\n",
            pi_perturb_pass, pi_perturb_fail);
-    printf("  (E)  Soundness KATs (N bound + mint witness):       %d PASS / %d FAIL\n",
+    printf("  (E)  Soundness KATs (N/pub bound + mint + composed door): %d PASS / %d FAIL\n",
            soundness_pass, soundness_fail);
     printf("  Circular self-tests:                                0\n");
     printf("\n");

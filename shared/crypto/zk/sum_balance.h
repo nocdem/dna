@@ -236,6 +236,42 @@ void sum_balance_compute_residuals(const uint64_t *trace,
                                    uint64_t *out_update_residuals,
                                    uint64_t *out_final_residual);
 
+/**
+ * @brief Composed range + balance check — THE ONLY sound money-gating entry.
+ *
+ * Range and balance are sound ONLY TOGETHER (2026-07-12 council red-team, G-C):
+ * `sum_balance_check_constraints` alone ACCEPTS the mint witness `out1 = p-1`
+ * (KAT E2) — nothing in the balance layer bounds an individual amount, so the
+ * mod-p accumulator can wrap. `range_air_check_constraints` is what proves every
+ * amount is a genuine value `< 2^RANGE_AIR_BITS`. This wrapper runs both on the
+ * SAME trace, in the right order (range first, so an out-of-range amount is
+ * rejected before the balance sum is trusted), and is the single door a caller
+ * that gates money MUST use. Do NOT call the two `*_check_constraints` halves
+ * individually from a money path — they remain exported only for the test suite
+ * (which deliberately calls them apart to demonstrate exactly this requirement).
+ *
+ * Fails closed on n_rows == 0 (via the balance layer's 'P' reject).
+ *
+ * @param trace                          n_rows * row_stride canonical u64 cells.
+ * @param n_rows                         Number of output rows.
+ * @param row_stride                     Cells per row (>= SUM_BALANCE_WIDTH).
+ * @param pub_in                         Public inputs (claimed_input_sum, fee).
+ *                                       MUST NOT be NULL.
+ * @param out_first_failing_constraint   If non-NULL, set to the failing
+ *                                       constraint id — 'B'/'S' (range layer) or
+ *                                       'N'/'P'/'I'/'U'/'F' (balance layer). The
+ *                                       two namespaces do not collide, so this
+ *                                       tells you which layer rejected.
+ * @param out_first_failing_row          If non-NULL, set to the failing row.
+ * @return true iff BOTH the range and the balance constraints hold.
+ */
+bool range_balance_verify(const uint64_t *trace,
+                          size_t n_rows,
+                          size_t row_stride,
+                          const sum_balance_public_t *pub_in,
+                          char *out_first_failing_constraint,
+                          size_t *out_first_failing_row);
+
 #ifdef __cplusplus
 }
 #endif

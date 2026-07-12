@@ -229,3 +229,37 @@ void sum_balance_compute_residuals(const uint64_t *trace,
         *out_final_residual = gold_fp_to_u64(gold_fp_sub(acc_last, target));
     }
 }
+
+/* ============================================================================
+ * Composed range + balance verify — the only sound money-gating entry.
+ * ========================================================================== */
+
+bool range_balance_verify(const uint64_t *trace,
+                          size_t n_rows,
+                          size_t row_stride,
+                          const sum_balance_public_t *pub_in,
+                          char *out_first_failing_constraint,
+                          size_t *out_first_failing_row) {
+    /* Step 1 — RANGE (B/S): prove every output amount is a genuine value
+     * < 2^RANGE_AIR_BITS. This is what rejects the mint witness (out = p-1, which
+     * balance-alone accepts, KAT E2). Run FIRST so an out-of-range amount is
+     * rejected before the accumulator sum is trusted. */
+    size_t fail_bit = 0;
+    if (!range_air_check_constraints(trace, n_rows, row_stride,
+                                     out_first_failing_constraint,
+                                     out_first_failing_row, &fail_bit)) {
+        return false;
+    }
+
+    /* Step 2 — BALANCE (N/P/I/U/F): count bound, public-input (fee/claimed)
+     * bound, and cumulative conservation on the same trace. Fails closed on
+     * n_rows == 0 (range returns true for the empty trace; balance rejects it
+     * with 'P'). */
+    if (!sum_balance_check_constraints(trace, n_rows, row_stride, pub_in,
+                                       out_first_failing_constraint,
+                                       out_first_failing_row)) {
+        return false;
+    }
+
+    return true;
+}
