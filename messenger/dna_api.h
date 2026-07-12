@@ -160,6 +160,10 @@ dna_error_t dna_encrypt_message_raw(
  * @param signature_len_out: Signature length (can be NULL if not needed)
  * @param timestamp_out: v0.08: Message timestamp (can be NULL if not needed)
  * @return: DNA_OK on success, error code otherwise
+ *
+ * NOTE: the Seal wire format does NOT carry the sender's pubkey (v0.07 removed
+ * it). To verify authorship, resolve the sender's Dilithium pubkey from the
+ * keyserver by the returned fingerprint, then call dna_verify_seal_authorship().
  */
 dna_error_t dna_decrypt_message_raw(
     dna_context_t *ctx,
@@ -173,6 +177,27 @@ dna_error_t dna_decrypt_message_raw(
     uint8_t **signature_out,
     size_t *signature_len_out,
     uint64_t *timestamp_out
+);
+
+/**
+ * v0.11.10: Verify authorship of a decrypted Seal (1:1) message.
+ *
+ * Both checks must pass: (1) the signer pubkey binds to the claimed fingerprint
+ * (SHA3-512(signer_pubkey) == claimed_fp_64), and (2) the Dilithium signature is
+ * valid over the plaintext under that pubkey. Forging authorship as another
+ * identity therefore requires that identity's Dilithium private key.
+ *
+ * @param claimed_fp_64: the 64-byte sender fingerprint from the decrypted payload
+ * @param verified_fp_hex_out: on DNA_OK, receives the 128-hex verified fingerprint
+ *        (may be NULL). Its value equals hex(SHA3-512(signer_pubkey)).
+ * @return DNA_OK if authentic; DNA_ERROR_VERIFY otherwise.
+ */
+dna_error_t dna_verify_seal_authorship(
+    const uint8_t *plaintext, size_t plaintext_len,
+    const uint8_t *signature, size_t signature_len,
+    const uint8_t *signer_pubkey, size_t signer_pubkey_len,
+    const uint8_t *claimed_fp_64,
+    char verified_fp_hex_out[129]
 );
 
 // ============================================================================
