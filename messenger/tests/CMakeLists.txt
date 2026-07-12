@@ -125,6 +125,13 @@ target_link_libraries(test_aes256_gcm ${TEST_LIBS})
 add_test(NAME test_aes256_gcm COMMAND test_aes256_gcm)
 
 # =============================================================================
+# Test: Seal sender authentication (dna_verify_seal_authorship, C2/C3 Phase 1)
+# =============================================================================
+add_executable(test_seal_authorship test_seal_authorship.c)
+target_link_libraries(test_seal_authorship ${TEST_LIBS})
+add_test(NAME test_seal_authorship COMMAND test_seal_authorship)
+
+# =============================================================================
 # Test: Key Encryption (PBKDF2 + AES-256-GCM)
 # =============================================================================
 add_executable(test_key_encryption test_key_encryption.c)

@@ -599,10 +599,10 @@ dna_error_t dna_decrypt_message_raw(
         memcpy(*signature_out, qgp_signature_get_bytes(signature), sig_bytes_len);
     }
 
-    // v0.07: Signature verification must be done by caller
-    // Caller must:
-    // 1. Query keyserver for pubkey using returned fingerprint
-    // 2. Verify signature against plaintext using qgp_dilithium5_verify()
+    // v0.07: Signature verification is done by the caller. The Seal wire format
+    // does NOT carry the sender pubkey, so the caller resolves it from the
+    // keyserver by the returned fingerprint, then calls
+    // dna_verify_seal_authorship().
 
     result = DNA_OK;
 
@@ -616,6 +616,47 @@ cleanup:
     if (decrypted) free(decrypted);
 
     return result;
+}
+
+/* v0.11.10: Verify authorship of a decrypted Seal (1:1) message.
+ * Pure function of its inputs (deterministic, no keyserver/DHT dependency).
+ * See declaration in dna_api.h for the security contract. */
+dna_error_t dna_verify_seal_authorship(
+    const uint8_t *plaintext, size_t plaintext_len,
+    const uint8_t *signature, size_t signature_len,
+    const uint8_t *signer_pubkey, size_t signer_pubkey_len,
+    const uint8_t *claimed_fp_64,
+    char verified_fp_hex_out[129])
+{
+    if (!plaintext || !signature || !signer_pubkey || !claimed_fp_64) {
+        return DNA_ERROR_VERIFY;
+    }
+    if (signer_pubkey_len != QGP_DSA87_PUBLICKEYBYTES) {
+        return DNA_ERROR_VERIFY;
+    }
+    /* (1) pubkey <-> fingerprint binding: SHA3-512(pubkey) == claimed_fp.
+     * Same construction used on the send path (fingerprint = SHA3-512(pubkey))
+     * and at profile load. Prevents attributing a message to a fingerprint the
+     * signer does not own. */
+    uint8_t h[64];
+    if (qgp_sha3_512(signer_pubkey, QGP_DSA87_PUBLICKEYBYTES, h) != 0) {
+        return DNA_ERROR_VERIFY;
+    }
+    if (memcmp(h, claimed_fp_64, 64) != 0) {
+        return DNA_ERROR_VERIFY;
+    }
+    /* (2) authorship: Dilithium5 signature valid over the plaintext. */
+    if (qgp_dsa87_verify(signature, signature_len, plaintext, plaintext_len,
+                         signer_pubkey) != 0) {
+        return DNA_ERROR_VERIFY;
+    }
+    if (verified_fp_hex_out) {
+        for (int i = 0; i < 64; i++) {
+            snprintf(verified_fp_hex_out + i * 2, 3, "%02x", h[i]);
+        }
+        verified_fp_hex_out[128] = '\0';
+    }
+    return DNA_OK;
 }
 
 // NOTE: dna_decrypt_message() removed in v0.3.150 - used legacy keyring

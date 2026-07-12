@@ -221,6 +221,32 @@ TRANSPORT                         STORAGE                        DECRYPTION     
 
 **Source:** `messenger/messages.c:592-747`, `transport/internal/transport_offline.c:64-170`
 
+#### Sender authentication on receive (v0.11.10, enforced)
+
+Steps 7–8 above are **enforced on the 1:1 direct-message receive path**
+(`transport_message_received_internal`). After decryption, the receiver:
+
+1. Resolves the sender's Dilithium5 pubkey by the fingerprint carried in the
+   decrypted payload — from the keyserver cache, or the DHT keyserver on a miss
+   (`messenger_load_pubkey`); the local identity key is used when the claimed
+   fingerprint is the receiver's own (e.g. a cross-device DELETE).
+2. Calls `dna_verify_seal_authorship()`, which checks the pubkey↔fingerprint
+   binding (`SHA3-512(pubkey) == fingerprint`) **and** the Dilithium5 signature
+   over the plaintext.
+
+The message is **dropped fail-closed** (not stored, not displayed, no event, no
+DELETE) if the pubkey cannot be resolved or either check fails. `sender_identity`
+is then the cryptographically verified fingerprint — never the unauthenticated
+DHT-queue field. This closes sender spoofing and the contact-triggered
+self-DELETE remote wipe.
+
+> **Note (wire format):** the Seal message does **not** carry the sender pubkey
+> (`qgp_signature` serialization is `type ‖ sig_size ‖ signature`; the pubkey was
+> removed in v0.07), which is why the pubkey is resolved from the keyserver.
+> A residual gap remains: the signature covers only the plaintext, not the
+> ciphertext/recipient, so a legitimate recipient can re-address a signed
+> plaintext to a third party (tracked for a follow-up phase).
+
 ### 2.3 Message Status States (v15: Simplified 4-State Model)
 
 | Status | Value | Icon | Description |
