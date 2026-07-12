@@ -269,6 +269,15 @@ static char* extract_sender_from_encrypted(
         return NULL;
     }
 
+    /* SEC (audit H5): the check at sig_offset+5 only validated the 5-byte
+     * signature prefix. The 2592-byte signing pubkey read below (memcmp +
+     * SHA3-512) must lie fully within the buffer, or a crafted PQSIGENC blob
+     * causes a pre-auth remote heap over-read (and hashes adjacent heap into
+     * a DHT reverse-lookup key). Fail closed if the pubkey runs past the end. */
+    if (sig_offset + 5 + 2592 > msg_len) {
+        return NULL;
+    }
+
     const uint8_t *signing_pubkey = sig_data + 5;
 
     contact_list_t *contacts = NULL;

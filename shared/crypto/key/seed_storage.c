@@ -149,6 +149,9 @@ int seed_storage_save(
                       seed_path, strerror(errno));
         goto cleanup;
     }
+    /* SEC (audit L3): restrict perms on the still-empty file before writing
+     * the encrypted seed, closing the umask-default exposure window. */
+    set_file_permissions(seed_path);
 
     if (fwrite(file_buffer, 1, SEED_STORAGE_TOTAL_SIZE, fp) != SEED_STORAGE_TOTAL_SIZE) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to write seed file");
@@ -432,6 +435,9 @@ int mnemonic_storage_save(
                       mnemonic_path, strerror(errno));
         goto cleanup;
     }
+    /* SEC (audit L3): restrict perms on the still-empty file before writing
+     * the encrypted mnemonic. */
+    set_file_permissions(mnemonic_path);
 
     if (fwrite(file_buffer, 1, MNEMONIC_STORAGE_TOTAL_SIZE, fp) != MNEMONIC_STORAGE_TOTAL_SIZE) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to write mnemonic file");

@@ -418,6 +418,10 @@ int key_save_encrypted(
             QGP_LOG_ERROR(LOG_TAG, "Failed to open file for writing: %s", file_path);
             goto cleanup;
         }
+        /* SEC (audit L3): restrict perms on the still-empty file BEFORE the
+         * key bytes are written, closing the window where the secret sits at
+         * umask-default (often 0644) permissions. */
+        set_file_permissions(file_path);
 
         if (fwrite(buffer, 1, encrypted_size, fp) != encrypted_size) {
             QGP_LOG_ERROR(LOG_TAG, "Failed to write encrypted key file");
@@ -432,6 +436,9 @@ int key_save_encrypted(
             QGP_LOG_ERROR(LOG_TAG, "Failed to open file for writing: %s", file_path);
             goto cleanup;
         }
+        /* SEC (audit L3): restrict perms on the still-empty file before
+         * writing the (unencrypted) key bytes. */
+        set_file_permissions(file_path);
 
         if (fwrite(key_data, 1, key_data_size, fp) != key_data_size) {
             QGP_LOG_ERROR(LOG_TAG, "Failed to write key file");
