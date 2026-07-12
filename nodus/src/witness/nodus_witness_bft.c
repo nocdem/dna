@@ -4923,7 +4923,15 @@ int nodus_witness_bft_handle_commit(nodus_witness_t *w,
             memcpy(votes[i].signature, cmt->certs[i].signature,
                    NODUS_SIG_BYTES);
         }
-        nodus_witness_cert_store(w, bh, votes, (int)cmt->n_precommits);
+        /* SEC (audit M3): nodus_witness_cert_store iterates [0, vote_count)
+         * over `votes`, which the loop above filled to at most
+         * NODUS_T3_MAX_WITNESSES. Passing the raw n_precommits (attacker-
+         * controlled up to the CBOR item cap) would read past the stack
+         * array. Clamp to the number of entries actually populated. */
+        int n_certs = (cmt->n_precommits < (uint32_t)NODUS_T3_MAX_WITNESSES)
+                          ? (int)cmt->n_precommits
+                          : NODUS_T3_MAX_WITNESSES;
+        nodus_witness_cert_store(w, bh, votes, n_certs);
 
         /* Phase 9 / Task 48 — liveness attendance. Credit this block's
          * proposer (cmt->proposer_id), not the precommit voters — the
