@@ -631,6 +631,62 @@ static void transport_message_received_internal(
             &sender_timestamp
         );
 
+        /* === AUTH GATE (audit C2/C3): verify the sender's Dilithium signature
+         * before the message is stored, displayed, or allowed to trigger a
+         * DELETE. The Seal wire carries no pubkey, so resolve it from the
+         * keyserver by the claimed fingerprint (self key resolved locally),
+         * then verify. Fail closed: an unresolvable or non-matching sender is
+         * dropped. This makes sender_identity the cryptographically verified
+         * fingerprint, closing message spoofing (C2) and the contact-triggered
+         * self-DELETE remote wipe (C3). */
+        if (decrypt_result == DNA_OK && plaintext && plaintext_len > 0) {
+            int authentic = 0;
+            char verified_fp[129];
+            if (sender_fp_from_msg && sender_fp_len == 64 && signature && signature_len > 0) {
+                char claimed_fp_hex[129];
+                for (int i = 0; i < 64; i++)
+                    snprintf(claimed_fp_hex + i * 2, 3, "%02x", sender_fp_from_msg[i]);
+                claimed_fp_hex[128] = '\0';
+
+                uint8_t *signer_pub = NULL;
+                size_t signer_pub_len = 0;
+                int resolved;
+                if (ctx->identity && strcmp(claimed_fp_hex, ctx->identity) == 0) {
+                    /* self (e.g. cross-device DELETE): use our own signing key */
+                    resolved = load_my_dilithium_pubkey(ctx, &signer_pub, &signer_pub_len);
+                } else {
+                    /* reuse the existing keyserver lookup for the resolved sender */
+                    resolved = load_pubkey_for_identity(ctx, sender_identity,
+                                                        &signer_pub, &signer_pub_len);
+                }
+
+                if (resolved == 0 &&
+                    dna_verify_seal_authorship(plaintext, plaintext_len,
+                                               signature, signature_len,
+                                               signer_pub, signer_pub_len,
+                                               sender_fp_from_msg, verified_fp) == DNA_OK) {
+                    authentic = 1;
+                }
+                if (signer_pub) free(signer_pub);
+            }
+
+            if (!authentic) {
+                QGP_LOG_WARN(LOG_TAG, "[AUTH] dropped unverified message from claimed %.20s",
+                             sender_identity ? sender_identity : "unknown");
+                if (sender_fp_from_msg) free(sender_fp_from_msg);
+                if (signature) free(signature);
+                qgp_key_free(kyber_key);
+                free(plaintext);
+                free(sender_identity);
+                return;
+            }
+
+            /* Verified: the authoritative sender is the verified fingerprint,
+             * not the unauthenticated DHT-queue field. */
+            free(sender_identity);
+            sender_identity = strdup(verified_fp);
+        }
+
         if (sender_fp_from_msg) free(sender_fp_from_msg);
         if (signature) free(signature);
         qgp_key_free(kyber_key);
@@ -729,6 +785,12 @@ static void transport_message_received_internal(
                     json_object_object_get_ex(j_msg, "hashes", &j_hashes);
 
                     int action = j_action ? json_object_get_int(j_action) : 0;
+                    /* C3: sender_identity is the cryptographically VERIFIED
+                     * fingerprint (AUTH GATE above dropped any unverified
+                     * message), so this local-deletion path can only be reached
+                     * by a DELETE the local identity actually signed. A spoofed
+                     * self-DELETE from a contact is rejected at the gate before
+                     * reaching here. */
                     bool is_self = (strcmp(sender_identity, ctx->identity) == 0);
 
                     if (is_self) {
