@@ -33,7 +33,7 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 
 - [x] **[CLI] P1 - Contact-triggered self-DELETE remote wipe** — a spoofed `{"type":"delete","action":2}` carrying the victim's own fingerprint reached `message_backup_delete_all()`. **Fixed v0.11.10:** the `is_self` local-deletion path is now gated on the cryptographically verified sender (same auth gate).
 
-- [ ] **[CLI] P3 - Seal message appends uninitialized bytes** — encrypt path (`dna_api.c`): `signature_size = qgp_signature_get_size()` (~7224, still counts a pubkey no longer serialized) but `qgp_signature_serialize()` writes only ~4630 bytes; the follow-on `memcpy(..., signature_size)` appends ~2594 uninitialized heap bytes to every Seal message. **Fix:** set `signature_size` to the `qgp_signature_serialize()` return value (actual bytes written) and size the output buffer from that.
+- [x] **[CLI] P3 - Seal message appends uninitialized bytes** — encrypt path (`dna_api.c` + `messages.c`): `signature_size = qgp_signature_get_size()` (~7224, still counted a pubkey no longer serialized) but `qgp_signature_serialize()` writes only ~4630 bytes; the follow-on `memcpy(..., signature_size)` appended ~2594 uninitialized heap bytes to every Seal message. **Fixed v0.11.12:** root cause in `qgp_signature_get_size()` (`shared/crypto/sign/qgp_signature.c`) — now returns `3 + signature_size` (exactly what `qgp_signature_serialize()` writes), fixing both encrypt paths. Non-breaking (decoder reads the header size field; old and new messages both decode). Full messenger ctest 34/34.
 
 ---
 

@@ -66,18 +66,23 @@ void qgp_signature_free(qgp_signature_t *sig) {
 }
 
 /**
- * Get signature total size (for serialization)
+ * Get serialized signature size (matches qgp_signature_serialize output)
  *
  * @param sig: Signature structure
- * @return: Total size in bytes (header + public key + signature)
+ * @return: Serialized size in bytes: type(1) + sig_size(2) + signature.
+ *          The public key is NOT serialized (removed in v0.07 — the sender
+ *          fingerprint travels in the encrypted payload instead), so it must
+ *          not be counted here. Counting it (the old 5+pkey+sig value) made
+ *          callers over-allocate and copy ~2592 uninitialized heap bytes into
+ *          every message (info-leak); this returns exactly what serialize writes.
  */
 size_t qgp_signature_get_size(const qgp_signature_t *sig) {
     if (!sig) {
         return 0;
     }
 
-    // type(1) + pkey_size(2) + sig_size(2) + data
-    return 5 + sig->public_key_size + sig->signature_size;
+    // type(1) + sig_size(2) + signature — public key NOT serialized (v0.07)
+    return 3 + sig->signature_size;
 }
 
 /**
