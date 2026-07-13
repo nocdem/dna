@@ -109,7 +109,7 @@ static size_t parse_fp2_decimal_array(js_t *s,gold_fp2_t *out,size_t cap){
 #define GXB 4       /* input batches/round: random,trace,quotient = 3 */
 #define GXMAT 8     /* matrices per batch (quotient = num_qc)          */
 #define GXR 16      /* commit-phase rounds  */
-#define GXCOL 16    /* columns / evals      */
+#define GXCOL 128   /* columns / evals (RangeProofAir trace width 56+4 rand = 60) */
 #define GXSIB 16    /* siblings             */
 #define GXCHUNK 8   /* quotient chunks      */
 

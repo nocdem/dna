@@ -338,6 +338,14 @@ enum Cmd {
         #[arg(long)]
         out: PathBuf,
     },
+    /// M3a — is_zk=1 proof of the AUDITED RangeProofAir (52-bit range + balance,
+    /// width 56). Amounts HIDDEN via is_zk=1; reuses audited crypto. End-to-end
+    /// C verify (FRI + range/balance constraints) is test_range_balance_zk.
+    #[command(name = "dump-range-proof-air-zk")]
+    DumpRangeProofAirZk {
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// P6 Part B — STARK priming for an AIR that does NOT read the next row
     /// (main_next=false): vendored SquareAir (a*a==b). Same DNAC stack + both
     /// gates as dump-stark-priming, but the proof carries trace_next=None and the
@@ -417,6 +425,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Cmd::DumpFriVerifierRollin { out } => dump_fri_verifier_rollin(&out)?,
         Cmd::DumpStarkPriming { out } => stark_priming::dump_stark_priming(&out)?,
         Cmd::DumpStarkPrimingZk { out } => stark_priming::dump_stark_priming_zk(&out)?,
+        Cmd::DumpRangeProofAirZk { out } => stark_priming::dump_range_proof_air_zk(&out)?,
         Cmd::DumpStarkPrimingNoNext { out } => stark_priming::dump_stark_priming_no_next(&out)?,
         Cmd::DumpStarkVerifyConstraints { out } => {
             stark_priming::dump_stark_verify_constraints(&out)?
@@ -8341,6 +8350,18 @@ mod stark_priming {
     type StarkCfg = StarkConfig<StarkPcs, GoldFp2, FriChallenger>;
     type Dom = TwoAdicMultiplicativeCoset<Goldilocks>;
 
+    // is_zk=1 (hiding) stack — module scope so the generic dump_is_zk_stark helper
+    // (M1/M2/M3a) can name ZkStarkCfg in its where-clause. HidingFriPcs (ZK=true)
+    // over the PLAIN DNAC ValMmcs (see dump_is_zk_stark note on leaf-salt scoping).
+    type ZkStarkPcs = p3_fri::HidingFriPcs<
+        Goldilocks,
+        Radix2Dit<Goldilocks>,
+        FriValMmcs,
+        FriChallengeMmcs,
+        rand::rngs::SmallRng,
+    >;
+    type ZkStarkCfg = StarkConfig<ZkStarkPcs, GoldFp2, FriChallenger>;
+
     fn fp2_json(x: GoldFp2) -> serde_json::Value {
         let (c0, c1) = fri_fp2_to_pair(x);
         serde_json::json!({ "c0_decimal": c0, "c1_decimal": c1 })
@@ -8742,25 +8763,33 @@ mod stark_priming {
     // wrong is_zk observe order diverges and aborts. The full p3_verify_fri
     // replay (unpacking the HidingFriPcs proof tuple) lands with M2's C verifier.
     // ========================================================================
-    pub fn dump_stark_priming_zk(
+    // Generic is_zk=1 (hiding) prove+dump over ANY DNAC-stack AIR. HidingFriPcs
+    // (ZK=true) over the PLAIN DNAC ValMmcs — is_zk=1 hiding = random-codeword
+    // batch blinding + doubled domain (HidingFriPcs::ZK=true), NOT leaf salts, so
+    // the C Merkle verify (plain siblings) handles the openings unchanged.
+    // Leaf-level salt hiding (MerkleTreeHidingMmcs, opening proof = (salts,
+    // siblings)) is deferred to M3b (real amount-confidentiality), needing a
+    // salted-leaf C Merkle verify. This exercises the is_zk verify PLUMBING
+    // (transcript augmentation + random-codeword merge + 3-round coms) — M1
+    // (FibonacciAir), M3a (RangeProofAir: hidden amounts + range/balance).
+    pub fn dump_is_zk_stark<A>(
+        air: &A,
+        trace: RowMajorMatrix<Goldilocks>,
+        pis: Vec<Goldilocks>,
+        scope: &str,
+        air_desc: &str,
+        milestone: &str,
         out_path: &PathBuf,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<(), Box<dyn std::error::Error>>
+    where
+        A: BaseAir<Goldilocks>
+            + Air<SymbolicAirBuilder<Goldilocks>>
+            + for<'a> Air<ProverConstraintFolder<'a, ZkStarkCfg>>
+            + for<'a> Air<VerifierConstraintFolder<'a, ZkStarkCfg>>,
+    {
         use p3_fri::HidingFriPcs;
         use rand::rngs::SmallRng;
         use rand::SeedableRng;
-
-        // ZK stack: HidingFriPcs (ZK=true) over the SAME PLAIN DNAC ValMmcs as the
-        // non-ZK path (FriValMmcs / FriChallengeMmcs). is_zk=1 comes from the
-        // random-codeword batch blinding + doubled domain (HidingFriPcs::ZK=true),
-        // NOT from the MMCS — so the C Merkle verify (plain siblings) handles the
-        // openings unchanged. Leaf-level salt hiding (MerkleTreeHidingMmcs, opening
-        // proof = (salts, siblings)) is a distinct hardening deferred to M3 (where
-        // real amount-confidentiality is claimed), needing a salted-leaf C Merkle
-        // verify. This M1/M2 exercises the full is_zk verify PLUMBING (transcript
-        // augmentation + random-codeword merge + 3-round coms).
-        type ZkStarkPcs =
-            HidingFriPcs<Goldilocks, Radix2Dit<Goldilocks>, FriValMmcs, FriChallengeMmcs, SmallRng>;
-        type ZkStarkCfg = StarkConfig<ZkStarkPcs, GoldFp2, FriChallenger>;
 
         // ------------------------------------------------------------------
         // 1. Build the ZK StarkConfig. pow=0 (deterministic; no grind). Same
@@ -8793,25 +8822,15 @@ mod stark_priming {
         let config: ZkStarkCfg = StarkConfig::new(pcs, challenger);
 
         // ------------------------------------------------------------------
-        // 2. Vendored FibonacciAir; n=8 trace, pis=[0,1,fib(7)=21] (same as the
-        //    non-ZK dump). M3 replaces this AIR with the confidential AIR.
+        // 2. GATE 1 (AUTHORITATIVE) — real is_zk=1 prove + verify of `air`.
         // ------------------------------------------------------------------
-        let air = FibonacciAir {};
-        let n = 1usize << 3;
-        let trace = generate_trace_rows::<Goldilocks>(0, 1, n);
-        let pis: Vec<Goldilocks> =
-            vec![Goldilocks::ZERO, Goldilocks::ONE, Goldilocks::from_u64(21)];
-
-        // ------------------------------------------------------------------
-        // 3. GATE 1 (AUTHORITATIVE) — real is_zk=1 prove + verify.
-        // ------------------------------------------------------------------
-        let proof = prove(&config, &air, trace, &pis);
-        verify(&config, &air, &proof, &pis).map_err(|e| {
+        let proof = prove(&config, air, trace, &pis);
+        verify(&config, air, &proof, &pis).map_err(|e| {
             format!("GATE 1 FAILED: p3_uni_stark::verify rejected the is_zk=1 proof: {e:?}")
         })?;
 
         // ------------------------------------------------------------------
-        // 4. Confirm ZK invariants (the whole point of M1).
+        // 3. Confirm ZK invariants.
         // ------------------------------------------------------------------
         let is_zk = config.is_zk();
         if is_zk != 1 {
@@ -8829,13 +8848,13 @@ mod stark_priming {
             .random
             .clone()
             .ok_or("is_zk=1: opened_values.random MUST be present")?;
-        let preprocessed_width = 0usize; // FibonacciAir: no preprocessed columns
+        let preprocessed_width = 0usize; // no preprocessed columns
         let trace_local = proof.opened_values.trace_local.clone();
         let trace_next = proof
             .opened_values
             .trace_next
             .clone()
-            .ok_or("FibonacciAir: trace_next expected (main_next path)")?;
+            .ok_or("main_next=true AIR: trace_next expected")?;
         let quotient_chunks = proof.opened_values.quotient_chunks.clone();
         let num_qc = quotient_chunks.len(); // MEASURED, not derived (finding #3 discipline)
 
@@ -9004,11 +9023,11 @@ mod stark_priming {
         let envelope = serde_json::json!({
             "format_version": ORACLE_FORMAT_VERSION,
             "plonky3_commit": PLONKY3_COMMIT,
-            "scope": "stark_priming_zk",
+            "scope": scope,
             "oracle": "real_p3_uni_stark_prove_is_zk_1",
             "synthetic_primary_oracle": false,
-            "air": "vendored FibonacciAir (uni-stark/tests/fib_air.rs:24-116 @ 82cfad73)",
-            "milestone": "M1 sandbox confidential — first is_zk=1 proof in the DNAC stack",
+            "air": air_desc,
+            "milestone": milestone,
             "grounding": {
                 "gate1_p3_uni_stark_verify": "Ok",
                 "gate2_priming_divergence_alpha_zeta": "Ok",
@@ -9107,6 +9126,51 @@ mod stark_priming {
             primed_seed_len
         );
         Ok(())
+    }
+
+    /// M1/M2: is_zk=1 over the vendored FibonacciAir (verify plumbing).
+    pub fn dump_stark_priming_zk(out_path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+        let air = FibonacciAir {};
+        let trace = generate_trace_rows::<Goldilocks>(0, 1, 1usize << 3);
+        let pis = vec![Goldilocks::ZERO, Goldilocks::ONE, Goldilocks::from_u64(21)];
+        dump_is_zk_stark(
+            &air,
+            trace,
+            pis,
+            "stark_priming_zk",
+            "vendored FibonacciAir (uni-stark/tests/fib_air.rs:24-116 @ 82cfad73)",
+            "M1 sandbox confidential — first is_zk=1 proof in the DNAC stack",
+            out_path,
+        )
+    }
+
+    /// M3a: is_zk=1 over the AUDITED RangeProofAir — the 2026-07 mint-fixed
+    /// 52-bit range + balance circuit (width 56, 3 publics [claimed,fee,n_real]),
+    /// proven with amounts HIDDEN. Reuses audited crypto (no new construction);
+    /// the Poseidon2 in-AIR value COMMITMENT that binds a public commitment to the
+    /// hidden amount + CONSTRUCTED binding + salted MMCS + tx_binding is M3b
+    /// (RED-TEAM GATED, cannot self-approve). Same valid instance as
+    /// dump_range_proof_air Case A: amounts [10,20,30,40], fee=7, claimed=Σ+7=107,
+    /// n_real=4, base degree_bits=2.
+    pub fn dump_range_proof_air_zk(out_path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+        let amounts = [10u64, 20, 30, 40];
+        let (trace, total) = generate_range_proof_trace(&amounts, 4);
+        let fee = 7u64;
+        let claimed = total + fee;
+        let pis = vec![
+            Goldilocks::from_u64(claimed),
+            Goldilocks::from_u64(fee),
+            Goldilocks::from_u64(amounts.len() as u64),
+        ];
+        dump_is_zk_stark(
+            &RangeProofAir,
+            trace,
+            pis,
+            "range_proof_air_zk",
+            "DNAC RangeProofAir (52-bit range B+S + is_real/P + balance I/U/F + count CI/CU/CF, width 56, 3 public; AUDITED 2026-07 mint-fix) — is_zk=1 HIDDEN amounts",
+            "M3a sandbox confidential — is_zk=1 over the audited range/balance AIR (hidden amounts)",
+            out_path,
+        )
     }
 
     // ========================================================================

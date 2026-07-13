@@ -494,6 +494,11 @@ test: all
 	@$(BUILD)/test_fri_verify_zk tools/vectors/stark_priming_zk.json
 	@echo
 	@echo "============================================================"
+	@echo "M3a — is_zk=1 over the AUDITED RangeProofAir (hidden amounts), end-to-end FRI verify"
+	@echo "============================================================"
+	@$(BUILD)/test_fri_verify_zk tools/vectors/range_proof_air_zk.json
+	@echo
+	@echo "============================================================"
 	@echo "Phase B8 P5 — additive DZKS STARK/PCS wire wrapper (around existing DZKF, 82cfad73)"
 	@echo "============================================================"
 	@$(BUILD)/test_stark_proof_codec tools/vectors/stark_proof_wire.json

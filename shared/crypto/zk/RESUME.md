@@ -20,7 +20,8 @@
   Money conservation on the live chain is enforced by the native cleartext
   witness check (`verify.c` Check 4); this ZK stack is ADDITIVE (v3 ships
   transparent, hidden amounts are v4).
-- **`make test`: 38 gates GREEN, 0 warnings** (`cd shared/crypto/zk && make test`).
+- **`make test`: 38 gates GREEN, 0 warnings** (`cd shared/crypto/zk && make test`;
+  `test_fri_verify_zk` runs twice — FibonacciAir + is_zk RangeProofAir).
 - **Committed** on branch `zk-range-balance-soundness-hardening` (commits
   `9d07c968` mint-fix + FRI guards, `80f8888b` composed door). Not on `main`.
 
@@ -62,11 +63,24 @@ Milestones M1→M2→M3:
   **deferred to M3** (where real amount-confidentiality is claimed). M1/M2 prove
   the is_zk verify PLUMBING (transcript augmentation + random-codeword merge +
   3-round coms).
-- **M3 TODO:** swap FibonacciAir for the confidential AIR (Poseidon2 in-AIR
-  commitment + range+balance, CONSTRUCTED binding column layout, canonical
-  order, tx_binding=truncate(tx_hash), num_qc=8) + the salted-leaf hiding MMCS
-  (real confidentiality). Fixes the v2 REFUTEDs by construction.
-  Consensus/wire migration/nullifiers stay deferred.
+- **M3a DONE + VERIFIED:** is_zk=1 over the **AUDITED RangeProofAir** (the 2026-07
+  mint-fixed 52-bit range + balance circuit, width 56, 3 publics
+  [claimed,fee,n_real]) — **amounts HIDDEN**. Reuses audited crypto (no new
+  construction). Oracle: generic `dump_is_zk_stark<A>` helper +
+  `dump-range-proof-air-zk` (instance amounts=[10,20,30,40], fee=7, claimed=107,
+  n_real=4). GATE1 `p3_uni_stark::verify`=Ok. C end-to-end: `test_fri_verify_zk`
+  on `range_proof_air_zk.json` → `dnac_fri_verify == DNAC_FRI_OK` (trace width 60
+  = 56 base + 4 rand). The range/balance CONSTRAINTS hold via the existing
+  `test_range_proof_air` gate (61/61 verify_constraints==OK). Amounts are hidden
+  by is_zk=1; range+balance proven in-circuit; FRI-verified in C.
+- **M3b TODO — RED-TEAM GATED (cannot self-approve, KAFADAN rule):** the
+  Poseidon2 in-AIR value COMMITMENT binding a public commitment to the hidden
+  amount + CONSTRUCTED binding column layout (v2 SEC-2 fix) + canonical order +
+  tx_binding=truncate(tx_hash) + num_qc=8 + salted-leaf hiding MMCS (real
+  leaf-level confidentiality) + JOINING constraints with FRI on the SAME opened
+  evals (v2 §12-step-5, escape self-consistency). The v2 DESIGN for this failed
+  an independent red-team — M3b must be built by CONSTRUCTION then pass a fresh
+  red-team before it is "done". Consensus/wire migration/nullifiers stay deferred.
 
 ## WHAT WE DID (2026-07-11/12 — soundness campaign)
 
