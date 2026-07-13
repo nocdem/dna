@@ -48,6 +48,11 @@ FRI_VERIFIER_LDADD = $(SHA3_SRC) $(LDLIBS)
 # dnac_fri_verify; the codec test verifies decoded proofs end-to-end).
 FRI_PROOF_CODEC_STACK = fri_proof_codec.c $(FRI_VERIFIER_STACK)
 
+# Everything the C prover (stark_prover.c) links against: trace builders
+# (range_air/sum_balance), NTT + helpers (S2 LDE), Merkle build (S3), and the
+# transcript stack (S5+ Fiat-Shamir; TRANSCRIPT_STACK carries field_goldilocks).
+PROVER_STACK = stark_prover.c sum_balance.c range_air.c ntt_goldilocks.c zk_field_helpers.c merkle_smt.c fri_fold.c $(TRANSCRIPT_STACK)
+
 BUILD = build
 
 TESTS = \
@@ -87,7 +92,18 @@ TESTS = \
     $(BUILD)/test_stark_priming_integrated \
     $(BUILD)/test_stark_constraints_primitives \
     $(BUILD)/test_stark_verify_constraints \
-    $(BUILD)/test_range_proof_air
+    $(BUILD)/test_range_proof_air \
+    $(BUILD)/test_prover_trace \
+    $(BUILD)/test_prover_s2_lde \
+    $(BUILD)/test_prover_s3_commit \
+    $(BUILD)/test_prover_s5_alpha \
+    $(BUILD)/test_prover_s6_quotient \
+    $(BUILD)/test_prover_s7_commit \
+    $(BUILD)/test_prover_s8_zeta \
+    $(BUILD)/test_prover_s9_open \
+    $(BUILD)/test_prover_s10_fri \
+    $(BUILD)/test_prover_s11_query \
+    $(BUILD)/test_prover_s13_verify
 
 .PHONY: all test clean gen-fri-proof-wire gen-stark-proof-wire
 
@@ -314,6 +330,94 @@ $(BUILD)/test_stark_verify_constraints: tests/test_stark_verify_constraints.c st
 $(BUILD)/test_range_proof_air: tests/test_range_proof_air.c stark_constraints.h stark_constraints.c field_goldilocks.h field_goldilocks.c range_air.h | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) tests/test_range_proof_air.c stark_constraints.c field_goldilocks.c -o $@
 
+# S1 (C prover) — RangeProofAir witness-trace builder byte-match KAT vs the
+# oracle's generate_range_proof_trace dump (the exact p3_uni_stark::prove input
+# matrix, PRE-is_zk-randomization). Reuses the range_air/sum_balance builders;
+# stark_prover.c adds is_real/cnt + padding-flat semantics + fail-close guards.
+# Per dnac/docs/plans/2026-07-13-c-stark-prover-design.md (S1).
+$(BUILD)/test_prover_trace: tests/test_prover_trace.c stark_prover.h $(PROVER_STACK) | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_prover_trace.c $(PROVER_STACK) $(SHA3_SRC) $(LDLIBS) -o $@
+
+# S2 (C prover) — is_zk trace randomization (hiding_pcs.rs:110-129 interleave,
+# oracle-dumped SmallRng(1) draws as KAT input, D1 Option B) + per-column coset
+# LDE (iNTT -> zero-pad -> shift^j -> NTT, blowup 2, shift 7) + bit-reversed
+# rows, byte-matched against the REAL committed matrix extracted from
+# pcs.commit (oracle gates G1-G4). Per the S2 stage spec.
+$(BUILD)/test_prover_s2_lde: tests/test_prover_s2_lde.c stark_prover.h $(PROVER_STACK) | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_prover_s2_lde.c $(PROVER_STACK) $(SHA3_SRC) $(LDLIBS) -o $@
+
+# S3 (C prover) — Merkle BUILD over the bit-reversed LDE: canonical-u64-LE row
+# serialization + existing oracle-byte-matched dnac_merkle_commit; root must
+# equal the REAL proof.commitments.trace from the S2 vector (gates G1-G3).
+# Includes the full S1->S2->S3 chain replay + open/verify roundtrip (S12 prep).
+$(BUILD)/test_prover_s3_commit: tests/test_prover_s3_commit.c stark_prover.h $(PROVER_STACK) | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_prover_s3_commit.c $(PROVER_STACK) $(SHA3_SRC) $(LDLIBS) -o $@
+
+# S5 (C prover) — prover-side Fiat-Shamir to alpha: drives the EXISTING
+# transcript.c with the prover.rs:161-195 observe/sample sequence and
+# byte-matches the REAL p3 alpha from range_proof_air_zk.json, on the trace
+# root rebuilt by the C S1->S2->S3 chain (cross-vector tie). Pin D4: the
+# audited verifier-side stark_priming.c is NOT touched.
+$(BUILD)/test_prover_s5_alpha: tests/test_prover_s5_alpha.c stark_prover.h $(PROVER_STACK) | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_prover_s5_alpha.c $(PROVER_STACK) $(SHA3_SRC) $(LDLIBS) -o $@
+
+# S6 (C prover) — quotient computation: selectors-on-coset (domain.rs:277-317),
+# trace-on-quotient-domain gather (stride+bitrev un-reverse, random cols
+# truncated), 61-constraint domain-wide Horner fold with descending alpha
+# powers + Z_H division (prover.rs:399-513), round-robin chunk split
+# (domain.rs:213-246) — every cell byte-matched vs the REAL pub
+# p3_uni_stark::prover::quotient_values output. The hardest prover stage.
+$(BUILD)/test_prover_s6_quotient: tests/test_prover_s6_quotient.c stark_prover.h $(PROVER_STACK) | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_prover_s6_quotient.c $(PROVER_STACK) $(SHA3_SRC) $(LDLIBS) -o $@
+
+# S7 (C prover) — quotient blinding + per-chunk LDE(blowup+1) + ONE 4-matrix
+# SHA3-512 batch commit (hiding_pcs.rs:169-261 get_quotient_ldes + inner mmcs
+# commit): eprint 2024/1037 randomization with the derived last blinding block
+# (recomposition-preserving). Randomness = oracle-dumped SmallRng(1) draws at
+# stream position 256 (D1-B). Root must equal the REAL
+# proof.commitments.quotient_chunks — the full-chain S1->S7 gate.
+$(BUILD)/test_prover_s7_commit: tests/test_prover_s7_commit.c stark_prover.h $(PROVER_STACK) | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_prover_s7_commit.c $(PROVER_STACK) $(SHA3_SRC) $(LDLIBS) -o $@
+
+# S8 (C prover) — randomization-poly commit (plain inner PCS: S2 LDE + S3
+# Merkle on the 8x6 R matrix, hiding_pcs.rs:404-424) + FS to zeta (observe
+# quotient root -> observe random root -> sample zeta; zeta_next = zeta * g of
+# the INITIAL trace subgroup, prover.rs:257-302). Full chain S1->S8 must
+# reproduce the REAL zeta/zeta_next from range_proof_air_zk.json.
+$(BUILD)/test_prover_s8_zeta: tests/test_prover_s8_zeta.c stark_prover.h $(PROVER_STACK) | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_prover_s8_zeta.c $(PROVER_STACK) $(SHA3_SRC) $(LDLIBS) -o $@
+
+# S9 (C prover) — open at zeta: barycentric interpolation of every committed
+# LDE column over the low coset g*K_8 (first h=height>>log_blowup bit-reversed
+# rows, two_adic_pcs.rs:505-543) via the audited fri_fold lagrange kernel;
+# observe the MERGED opened vectors [random, trace@zeta, trace@zeta_next,
+# quotient x4] and sample the FRI batch alpha. Full chain S1->S9 must match the
+# REAL merged opened values + FRI alpha from range_proof_air_zk / the S9 dump.
+$(BUILD)/test_prover_s9_open: tests/test_prover_s9_open.c stark_prover.h $(PROVER_STACK) | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_prover_s9_open.c $(PROVER_STACK) $(SHA3_SRC) $(LDLIBS) -o $@
+
+# S10 (C prover) — FRI commit phase: reduced-opening codeword build
+# (two_adic_pcs.rs:595-658, alpha-batched across rounds) + fold/commit loop
+# (fri/prover.rs:180-257: ExtensionMmcs layer commit + beta sample + fold) +
+# final poly (truncate/bitrev/inverse-NTT). Byte-matches the REAL FRI
+# commit-phase roots, betas (replayed), and final_poly.
+$(BUILD)/test_prover_s10_fri: tests/test_prover_s10_fri.c stark_prover.h $(PROVER_STACK) | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_prover_s10_fri.c $(PROVER_STACK) $(SHA3_SRC) $(LDLIBS) -o $@
+
+# S11+S12 (C prover) — query index sampling (sample_bits(5) after the commit
+# phase == the REAL indices) + FRI query openings (open the retained input +
+# commit-phase trees at each index, verify each path against its root). The
+# full query-proof byte-match is deferred to S13's end-to-end dnac_fri_verify.
+$(BUILD)/test_prover_s11_query: tests/test_prover_s11_query.c stark_prover.h $(PROVER_STACK) | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_prover_s11_query.c $(PROVER_STACK) $(SHA3_SRC) $(LDLIBS) -o $@
+
+# S13 (C prover) — MILESTONE: the full C prover S1->S12 assembles its own
+# priming input + 3-round coms + dnac_fri_proof_t, then dnac_stark_prime_transcript
+# + dnac_fri_verify == DNAC_FRI_OK. Rust-free, end-to-end. Links the prover stack
+# PLUS the verifier + priming (fri_verifier.c, stark_priming.c) as the consumer.
+$(BUILD)/test_prover_s13_verify: tests/test_prover_s13_verify.c stark_prover.h fri_verifier.h stark_priming.h $(PROVER_STACK) fri_verifier.c stark_priming.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_prover_s13_verify.c $(PROVER_STACK) fri_verifier.c stark_priming.c $(SHA3_SRC) $(LDLIBS) -o $@
+
 # Regenerate the DZKS wrapper vectors from their priming vectors via the C codec
 # (the generator is polymorphic on has_trace_next, driven by the JSON's trace_next
 # being an array vs null). Manual (vectors committed + hash-pinned); run after a
@@ -530,6 +634,66 @@ test: all
 	@echo "  CONFIDENTIAL use BLOCKED on B1 (B6/B7 closed by 52-bit + is_real/cnt fix)"
 	@echo "============================================================"
 	@$(BUILD)/test_range_proof_air tools/vectors/range_air_only.json tools/vectors/range_proof_air.json
+	@echo
+	@echo "============================================================"
+	@echo "S1 (C prover) — RangeProofAir witness-trace builder byte-match KAT"
+	@echo "  vs oracle generate_range_proof_trace (p3_uni_stark::prove input, 82cfad73)"
+	@echo "============================================================"
+	@$(BUILD)/test_prover_trace tools/vectors/prover_trace_range_zk.json
+	@echo
+	@echo "============================================================"
+	@echo "S2 (C prover) — is_zk randomize + coset LDE + bit-rev byte-match KAT"
+	@echo "  vs the REAL committed trace matrix (HidingFriPcs commit, 82cfad73)"
+	@echo "============================================================"
+	@$(BUILD)/test_prover_s2_lde tools/vectors/prover_s2_lde_zk.json
+	@echo
+	@echo "============================================================"
+	@echo "S3 (C prover) — Merkle BUILD: root == REAL proof.commitments.trace"
+	@echo "  (S1->S2->S3 chain end-to-end + open/verify roundtrip, 82cfad73)"
+	@echo "============================================================"
+	@$(BUILD)/test_prover_s3_commit tools/vectors/prover_s2_lde_zk.json
+	@echo
+	@echo "============================================================"
+	@echo "S5 (C prover) — FS to alpha: C transcript drive == REAL p3 alpha"
+	@echo "  (prover.rs:161-195 sequence on the C-built trace root, 82cfad73)"
+	@echo "============================================================"
+	@$(BUILD)/test_prover_s5_alpha tools/vectors/prover_s2_lde_zk.json tools/vectors/range_proof_air_zk.json
+	@echo
+	@echo "============================================================"
+	@echo "S6 (C prover) — quotient: C domain-wide fold == REAL p3 quotient_values"
+	@echo "  (selectors + trace gather + 61-constraint alpha fold + Z_H^-1 + split)"
+	@echo "============================================================"
+	@$(BUILD)/test_prover_s6_quotient tools/vectors/prover_s6_quotient_zk.json tools/vectors/prover_s2_lde_zk.json
+	@echo
+	@echo "============================================================"
+	@echo "S7 (C prover) — quotient blinding + 4-matrix commit: full chain S1->S7"
+	@echo "  root == REAL proof.commitments.quotient_chunks (82cfad73)"
+	@echo "============================================================"
+	@$(BUILD)/test_prover_s7_commit tools/vectors/prover_s7_quotient_commit_zk.json tools/vectors/prover_s2_lde_zk.json
+	@echo
+	@echo "============================================================"
+	@echo "S8 (C prover) — R commit + FS to zeta: full chain S1->S8 zeta =="
+	@echo "  REAL p3 zeta/zeta_next (random observe order load-bearing, 82cfad73)"
+	@echo "============================================================"
+	@$(BUILD)/test_prover_s8_zeta tools/vectors/prover_s8_random_zk.json tools/vectors/prover_s7_quotient_commit_zk.json tools/vectors/prover_s2_lde_zk.json tools/vectors/range_proof_air_zk.json
+	@echo
+	@echo "============================================================"
+	@echo "S9 (C prover) — open at zeta: barycentric opened values + FRI alpha"
+	@echo "  full chain S1->S9 == REAL merged opened values (82cfad73)"
+	@echo "============================================================"
+	@$(BUILD)/test_prover_s9_open tools/vectors/prover_s9_open_zk.json tools/vectors/prover_s8_random_zk.json tools/vectors/prover_s7_quotient_commit_zk.json tools/vectors/prover_s2_lde_zk.json tools/vectors/range_proof_air_zk.json
+	@echo
+	@echo "============================================================"
+	@echo "S10 (C prover) — FRI commit phase: reduced-opening + fold/commit + final poly"
+	@echo "  == REAL commit-phase roots / betas / final_poly (82cfad73)"
+	@echo "============================================================"
+	@$(BUILD)/test_prover_s10_fri tools/vectors/prover_s10_fri_zk.json tools/vectors/prover_s8_random_zk.json tools/vectors/prover_s7_quotient_commit_zk.json tools/vectors/prover_s2_lde_zk.json
+	@echo
+	@echo "============================================================"
+	@echo "S11+S12 (C prover) — query indices + Merkle query openings"
+	@echo "  indices == REAL [4,23]; openings verify vs retained roots (82cfad73)"
+	@echo "============================================================"
+	@$(BUILD)/test_prover_s11_query tools/vectors/prover_s11_indices_zk.json tools/vectors/prover_s8_random_zk.json tools/vectors/prover_s7_quotient_commit_zk.json tools/vectors/prover_s2_lde_zk.json
 	@echo
 	@echo "============================================================"
 	@echo "ALL REMAINING (grounded) GATES: GREEN"

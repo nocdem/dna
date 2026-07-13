@@ -1,0 +1,34 @@
+{
+  "betas": [
+    "12881752428390874710",
+    "14834823779161498382"
+  ],
+  "commit_phase_roots_hex": [
+    "5eedc70dccb4742287f0f7e56ce45fb0d016d6a84db42de9a8feb9d7f313bcff05c057eb112b199041325eee330b0ebd7ceb9b7ab1da39d3af125e89753658da"
+  ],
+  "commit_pow_witnesses": [
+    "0"
+  ],
+  "description": "S10 C-prover KAT: FRI commit-phase layer roots + replayed betas + final_poly (4 fp2) + PoW witnesses from the REAL proof (opening_proof.1). fp2 as c0,c1 pairs. GATE 1 held.",
+  "final_poly": [
+    "9571226857193182466",
+    "16474161363929762359",
+    "11363739772757598607",
+    "10555591868936034623",
+    "10889148799607975403",
+    "2728696968986968343",
+    "16065363520045411325",
+    "3418751638633776939"
+  ],
+  "format_version": "1",
+  "params": {
+    "final_poly_len": 4,
+    "log_arity_round0": 1,
+    "log_blowup": 2,
+    "log_final_poly_len": 2,
+    "num_commit_phase_rounds": 1
+  },
+  "plonky3_commit": "82cfad73cd734d37a0d51953094f970c531817ec",
+  "query_pow_witness": "0",
+  "scope": "prover_s10_fri_zk"
+}

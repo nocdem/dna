@@ -346,6 +346,79 @@ enum Cmd {
         #[arg(long)]
         out: PathBuf,
     },
+    /// S1 (C prover) — the DETERMINISTIC base witness trace for the M3a
+    /// RangeProofAir instance (amounts [10,20,30,40], fee 7, claimed 107,
+    /// n_real 4), BEFORE any is_zk randomization (that happens inside
+    /// prove/pcs.commit and is dumped by later prover-stage subcommands).
+    /// Byte-match KAT input for the C prover's S1 trace builder.
+    #[command(name = "dump-prover-trace-range-zk")]
+    DumpProverTraceRangeZk {
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// S2 (C prover) — is_zk=1 trace randomization (hiding_pcs.rs:110-129,
+    /// SmallRng seed=1) + per-column coset LDE (blowup 2, shift 7) +
+    /// bit-reversed rows, for the M3a instance. Dumps the randomized 8x60
+    /// matrix (KAT INPUT — D1 Option B: C consumes oracle-dumped randomness)
+    /// and the committed 32x60 LDE extracted from the REAL pcs.commit.
+    #[command(name = "dump-prover-s2-lde-zk")]
+    DumpProverS2LdeZk {
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// S6 (C prover) — quotient computation ground truth for the M3a instance:
+    /// selectors-on-coset (16), trace-on-quotient-domain (16x56, random cols
+    /// truncated), REAL p3_uni_stark::prover::quotient_values (16 fp2),
+    /// quotient_flat (16x2) + the 4 round-robin split chunk matrices (4x2).
+    #[command(name = "dump-prover-s6-quotient-zk")]
+    DumpProverS6QuotientZk {
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// S7 (C prover) — quotient blinding + split + ONE 4-matrix commit for the
+    /// M3a instance: dumps the 64 codeword + 72 blinding random draws (D1-B
+    /// KAT inputs, stream position = after the trace commit's 256), the REAL
+    /// committed chunk LDEs (4 x 32x6) and the quotient commit root (must
+    /// equal proof.commitments.quotient_chunks).
+    #[command(name = "dump-prover-s7-quotient-commit-zk")]
+    DumpProverS7QuotientCommitZk {
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// S8 (C prover) — the randomization-poly matrix R draws (48 SmallRng(1)
+    /// samples at stream position 392, D1-B KAT input) for the M3a instance;
+    /// gate: standalone plain commit of R == proof.commitments.random.
+    #[command(name = "dump-prover-s8-random-zk")]
+    DumpProverS8RandomZk {
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// S9 (C prover) — open at zeta: the MERGED opened value vectors
+    /// (random@zeta 6, trace@zeta/zeta_next 60 each, quotient chunks@zeta 6×4)
+    /// exactly as observed into the transcript (base ++ 4 rand codewords), and
+    /// the FRI batch alpha sampled immediately after the opened-value observes.
+    #[command(name = "dump-prover-s9-open-zk")]
+    DumpProverS9OpenZk {
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// S10 (C prover) — FRI commit phase ground truth for the M3a instance:
+    /// the commit-phase layer root(s), the per-round beta(s) (replayed), the
+    /// final_poly (4 fp2), and the PoW witnesses — all from the REAL proof.
+    #[command(name = "dump-prover-s10-fri-zk")]
+    DumpProverS10FriZk {
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// S11 (C prover) — query index sampling for the M3a instance: replays the
+    /// full transcript through the commit phase (observe layer roots, sample
+    /// betas, observe final_poly + log_arities, grind query PoW=0) and dumps
+    /// the num_queries sampled indices — the transcript-state ground truth.
+    #[command(name = "dump-prover-s11-indices-zk")]
+    DumpProverS11IndicesZk {
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// P6 Part B — STARK priming for an AIR that does NOT read the next row
     /// (main_next=false): vendored SquareAir (a*a==b). Same DNAC stack + both
     /// gates as dump-stark-priming, but the proof carries trace_next=None and the
@@ -426,6 +499,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Cmd::DumpStarkPriming { out } => stark_priming::dump_stark_priming(&out)?,
         Cmd::DumpStarkPrimingZk { out } => stark_priming::dump_stark_priming_zk(&out)?,
         Cmd::DumpRangeProofAirZk { out } => stark_priming::dump_range_proof_air_zk(&out)?,
+        Cmd::DumpProverTraceRangeZk { out } => stark_priming::dump_prover_trace_range_zk(&out)?,
+        Cmd::DumpProverS2LdeZk { out } => stark_priming::dump_prover_s2_lde_zk(&out)?,
+        Cmd::DumpProverS6QuotientZk { out } => stark_priming::dump_prover_s6_quotient_zk(&out)?,
+        Cmd::DumpProverS7QuotientCommitZk { out } => {
+            stark_priming::dump_prover_s7_quotient_commit_zk(&out)?
+        }
+        Cmd::DumpProverS8RandomZk { out } => stark_priming::dump_prover_s8_random_zk(&out)?,
+        Cmd::DumpProverS9OpenZk { out } => stark_priming::dump_prover_s9_open_zk(&out)?,
+        Cmd::DumpProverS10FriZk { out } => stark_priming::dump_prover_s10_fri_zk(&out)?,
+        Cmd::DumpProverS11IndicesZk { out } => {
+            stark_priming::dump_prover_s11_indices_zk(&out)?
+        }
         Cmd::DumpStarkPrimingNoNext { out } => stark_priming::dump_stark_priming_no_next(&out)?,
         Cmd::DumpStarkVerifyConstraints { out } => {
             stark_priming::dump_stark_verify_constraints(&out)?
@@ -8199,8 +8284,8 @@ mod stark_priming {
     use p3_matrix::dense::{RowMajorMatrix, RowMajorMatrixView};
     use p3_matrix::stack::{VerticalPair, ViewPair};
     use p3_uni_stark::{
-        get_log_num_quotient_chunks, prove, recompose_quotient_from_chunks, verify,
-        verify_constraints, AirLayout, PcsError, ProverConstraintFolder, StarkConfig,
+        get_log_num_quotient_chunks, prove, quotient_values, recompose_quotient_from_chunks,
+        verify, verify_constraints, AirLayout, PcsError, ProverConstraintFolder, StarkConfig,
         StarkGenericConfig, SymbolicAirBuilder, VerifierConstraintFolder,
     };
 
@@ -9171,6 +9256,1318 @@ mod stark_priming {
             "M3a sandbox confidential — is_zk=1 over the audited range/balance AIR (hidden amounts)",
             out_path,
         )
+    }
+
+    // ========================================================================
+    // S1 (C prover) — deterministic base witness trace KAT.
+    //
+    // Dumps the EXACT output of generate_range_proof_trace for the M3a
+    // instance, row-major, one canonical u64 decimal string per cell. This is
+    // the trace handed unmodified to p3_uni_stark::prove (prover.rs:41-45 @
+    // 82cfad73); the is_zk=1 randomization (random codeword columns + doubled
+    // domain, hiding_pcs.rs:110-129) happens INSIDE the PCS commit and is
+    // deliberately NOT part of this dump — the C prover's S1 stage must
+    // reproduce the PRE-randomization matrix byte-for-byte.
+    // ========================================================================
+    pub fn dump_prover_trace_range_zk(
+        out_path: &PathBuf,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // Identical instance to dump_range_proof_air_zk (main.rs above).
+        let amounts = [10u64, 20, 30, 40];
+        let height = 4usize;
+        let (trace, total) = generate_range_proof_trace(&amounts, height);
+        let fee = 7u64;
+        let claimed = total + fee;
+        let n_real = amounts.len() as u64;
+        assert_eq!(trace.width, RANGE_PROOF_WIDTH);
+        assert_eq!(trace.values.len(), height * RANGE_PROOF_WIDTH);
+
+        let amounts_dec: Vec<String> = amounts.iter().map(|a| a.to_string()).collect();
+        let public_values_dec: Vec<String> =
+            vec![claimed.to_string(), fee.to_string(), n_real.to_string()];
+        let trace_dec: Vec<String> = trace
+            .values
+            .iter()
+            .map(|v| v.as_canonical_u64().to_string())
+            .collect();
+        let envelope = serde_json::json!({
+            "format_version": ORACLE_FORMAT_VERSION,
+            "plonky3_commit": PLONKY3_COMMIT,
+            "scope": "prover_trace_range_zk",
+            "description": "S1 C-prover KAT: deterministic base witness trace of the M3a \
+                            RangeProofAir instance (generate_range_proof_trace output, \
+                            row-major, canonical u64 decimal per cell; PRE-randomization).",
+            "width": RANGE_PROOF_WIDTH,
+            "height": height,
+            "amounts": amounts_dec,
+            "n_real": n_real,
+            "fee": fee.to_string(),
+            "claimed": claimed.to_string(),
+            "total": total.to_string(),
+            "public_values": public_values_dec,
+            "trace": trace_dec,
+        });
+
+        if let Some(parent) = out_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut f = File::create(out_path)?;
+        f.write_all(serde_json::to_string_pretty(&envelope)?.as_bytes())?;
+        f.write_all(b"\n")?;
+        eprintln!(
+            "wrote {} (S1 prover trace KAT: {}x{} cells, total={}, claimed={})",
+            out_path.display(),
+            height,
+            RANGE_PROOF_WIDTH,
+            total,
+            claimed
+        );
+        Ok(())
+    }
+
+    // ========================================================================
+    // S2 (C prover) — is_zk trace randomization + coset LDE + bit-rev KAT.
+    //
+    // Dumps, for the M3a instance:
+    //   (a) base_trace          4x56  — S1 tie-in (generate_range_proof_trace)
+    //   (b) randomized_matrix   8x60  — hiding_pcs.rs:110-129 verbatim replay:
+    //       with_random_cols(w + 2*num_random_codewords = 64) then width := 60
+    //       (dense.rs:573-597; draws row-major left-to-right, 64 per base row)
+    //       on a FRESH SmallRng::seed_from_u64(1). Stream-identical to the real
+    //       commit because HidingFriPcs::commit is the FIRST rng consumer in
+    //       prove (prover.rs:151-152 precedes commit_quotient / randomization
+    //       poly). D1 Option B: this matrix is the C KAT's random INPUT.
+    //   (c) lde_bitrev         32x60  — the COMMITTED matrix extracted from a
+    //       real pcs.commit's prover data (two_adic_pcs.rs:301-325:
+    //       coset_lde_batch(evals, log_blowup=2, shift=GENERATOR/ONE=7)
+    //       .bit_reverse_rows()), via input_mmcs.get_matrices.
+    //   (d) trace_commit_root_hex — S3 handshake target.
+    //
+    // GATES before emitting:
+    //   G1: real prove + p3_uni_stark::verify == Ok on the instance.
+    //   G2: Radix2Dit::coset_lde_batch((b), 2, 7).bit_reverse_rows() == (c)
+    //       elementwise — proves the dumped randomized matrix is draw-for-draw
+    //       the one inside the real commit.
+    //   G3: the standalone commit's root == proof.commitments.trace (same
+    //       fresh-seed stream as the GATE-1 prove).
+    // ========================================================================
+    pub fn dump_prover_s2_lde_zk(out_path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+        use p3_dft::TwoAdicSubgroupDft;
+        use p3_field::Field;
+        use p3_fri::HidingFriPcs;
+        use p3_matrix::bitrev::BitReversibleMatrix;
+        use p3_matrix::Matrix;
+        use rand::rngs::SmallRng;
+        use rand::SeedableRng;
+
+        // Identical instance to dump_range_proof_air_zk.
+        let amounts = [10u64, 20, 30, 40];
+        let height = 4usize;
+        let (trace, total) = generate_range_proof_trace(&amounts, height);
+        let fee = 7u64;
+        let claimed = total + fee;
+        let pis = vec![
+            Goldilocks::from_u64(claimed),
+            Goldilocks::from_u64(fee),
+            Goldilocks::from_u64(amounts.len() as u64),
+        ];
+
+        let num_random_codewords = 4usize;
+        let log_blowup = 2usize;
+        let width = RANGE_PROOF_WIDTH; // 56
+        let rand_width = width + num_random_codewords; // 60
+        let lde_height = (height << 1) << log_blowup; // 8 << 2 = 32
+
+        let make_zk_pcs = || -> ZkStarkPcs {
+            let input_mmcs: FriValMmcs = make_mmcs();
+            let challenge_mmcs = FriChallengeMmcs::new(make_mmcs());
+            let fri_params = FriParameters {
+                log_blowup,
+                log_final_poly_len: 2,
+                max_log_arity: 1,
+                num_queries: 2,
+                commit_proof_of_work_bits: 0,
+                query_proof_of_work_bits: 0,
+                mmcs: challenge_mmcs,
+            };
+            HidingFriPcs::new(
+                Radix2Dit::default(),
+                input_mmcs,
+                fri_params,
+                num_random_codewords,
+                SmallRng::seed_from_u64(1),
+            )
+        };
+
+        // ---- GATE 1: real is_zk=1 prove + verify (fresh SmallRng(1)). ----
+        let challenger =
+            FriChallenger::new(FriHashChal::new(FRI_INIT_STATE.to_vec(), FriOracleSha3_512));
+        let config: ZkStarkCfg = StarkConfig::new(make_zk_pcs(), challenger);
+        let proof = prove(&config, &RangeProofAir, trace.clone(), &pis);
+        verify(&config, &RangeProofAir, &proof, &pis).map_err(|e| {
+            format!("S2 GATE 1 FAILED: p3_uni_stark::verify rejected the proof: {e:?}")
+        })?;
+        let proof_trace_root = fri_milestone_serialize_commitment(&proof.commitments.trace);
+
+        // ---- (b) randomized matrix: hiding_pcs.rs:117-123 verbatim replay
+        //      on a fresh SmallRng(1) (first consumer => identical stream). ----
+        let mut rng = SmallRng::seed_from_u64(1);
+        let mut randomized =
+            trace.with_random_cols(width + 2 * num_random_codewords, &mut rng);
+        randomized.width = rand_width;
+        assert_eq!(randomized.height(), 2 * height);
+
+        // ---- raw draw list for the C KAT (D1 Option B input) + GATE 4. ----
+        // with_random_cols consumes exactly height * (width + 2r) Goldilocks
+        // samples, row-major left-to-right (dense.rs:588-593); a fresh
+        // SmallRng(1) reproduces the identical accepted-sample stream.
+        use rand::RngExt as _;
+        let per_row = width + 2 * num_random_codewords; // 64
+        let mut rng_draws = SmallRng::seed_from_u64(1);
+        let draws: Vec<Goldilocks> =
+            (0..height * per_row).map(|_| rng_draws.random()).collect();
+        // GATE 4: base + draws under the reshape layout == randomized matrix
+        // (row 2i = base row i ++ first r draws; row 2i+1 = remaining w+r).
+        let mut reconstructed = Goldilocks::zero_vec(2 * height * rand_width);
+        for i in 0..height {
+            let d = &draws[i * per_row..(i + 1) * per_row];
+            let even = 2 * i * rand_width;
+            let odd = (2 * i + 1) * rand_width;
+            reconstructed[even..even + width]
+                .copy_from_slice(&trace.values[i * width..(i + 1) * width]);
+            reconstructed[even + width..even + rand_width]
+                .copy_from_slice(&d[..num_random_codewords]);
+            reconstructed[odd..odd + rand_width].copy_from_slice(&d[num_random_codewords..]);
+        }
+        if reconstructed != randomized.values {
+            return Err("S2 GATE 4 FAILED: base+draws reshape layout != with_random_cols \
+                        output (draw order or interleave layout wrong)"
+                .into());
+        }
+
+        // ---- (c) committed LDE from a REAL standalone pcs.commit (its own
+        //      fresh SmallRng(1) => same randomized matrix inside). ----
+        let pcs2 = make_zk_pcs();
+        let ext_trace_domain: Dom = <ZkStarkPcs as Pcs<GoldFp2, FriChallenger>>::
+            natural_domain_for_degree(&pcs2, 2 * height); // prover.rs:140
+        let (commit2, pdata2) = <ZkStarkPcs as Pcs<GoldFp2, FriChallenger>>::commit(
+            &pcs2,
+            [(ext_trace_domain, trace.clone())],
+        );
+        let commit2_root = fri_milestone_serialize_commitment(&commit2);
+
+        // GATE 3: standalone commit root == the GATE-1 proof's trace root.
+        if commit2_root != proof_trace_root {
+            return Err("S2 GATE 3 FAILED: standalone pcs.commit root != proof.commitments.trace \
+                        (SmallRng stream mismatch)"
+                .into());
+        }
+
+        let extract_mmcs: FriValMmcs = make_mmcs();
+        let mats = extract_mmcs.get_matrices(&pdata2);
+        if mats.len() != 1 {
+            return Err(format!("S2: expected 1 committed matrix, got {}", mats.len()).into());
+        }
+        let lde_committed = mats[0].clone();
+        assert_eq!(lde_committed.height(), lde_height);
+        assert_eq!(lde_committed.width(), rand_width);
+
+        // GATE 2: independent coset_lde_batch on (b) reproduces (c) elementwise
+        // (two_adic_pcs.rs:313-319: shift = GENERATOR / domain.shift() = 7/1).
+        let shift = Goldilocks::GENERATOR / ext_trace_domain.shift();
+        let lde_recomputed = Radix2Dit::default()
+            .coset_lde_batch(randomized.clone(), log_blowup, shift)
+            .bit_reverse_rows()
+            .to_row_major_matrix();
+        if lde_recomputed.values != lde_committed.values {
+            return Err("S2 GATE 2 FAILED: coset_lde_batch(randomized) != committed LDE \
+                        (randomized-matrix replay is NOT the commit's matrix)"
+                .into());
+        }
+
+        let dec = |m: &RowMajorMatrix<Goldilocks>| -> Vec<String> {
+            m.values
+                .iter()
+                .map(|v| v.as_canonical_u64().to_string())
+                .collect()
+        };
+        let envelope = serde_json::json!({
+            "format_version": ORACLE_FORMAT_VERSION,
+            "plonky3_commit": PLONKY3_COMMIT,
+            "scope": "prover_s2_lde_zk",
+            "description": "S2 C-prover KAT: is_zk=1 trace randomization (SmallRng seed=1, \
+                            with_random_cols(64) + width:=60) + per-column coset LDE \
+                            (log_blowup 2, shift 7) + bit-reversed rows; lde_bitrev is the \
+                            REAL committed matrix (gates G1/G2/G3 held). All matrices flat \
+                            row-major, canonical u64 decimal per cell.",
+            "params": {
+                "width": width,
+                "num_random_codewords": num_random_codewords,
+                "rand_width": rand_width,
+                "log_blowup": log_blowup,
+                "degree": height,
+                "ext_degree": 2 * height,
+                "lde_height": lde_height,
+                "shift": shift.as_canonical_u64().to_string(),
+            },
+            "base_trace": dec(&trace),
+            "random_draws": draws
+                .iter()
+                .map(|v| v.as_canonical_u64().to_string())
+                .collect::<Vec<_>>(),
+            "randomized_matrix": dec(&randomized),
+            "lde_bitrev": dec(&lde_committed),
+            "trace_commit_root_hex": to_hex(&proof_trace_root),
+        });
+
+        if let Some(parent) = out_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut f = File::create(out_path)?;
+        f.write_all(serde_json::to_string_pretty(&envelope)?.as_bytes())?;
+        f.write_all(b"\n")?;
+        eprintln!(
+            "wrote {} (S2 LDE KAT: randomized {}x{}, lde {}x{}, shift={}, gates G1+G2+G3 held)",
+            out_path.display(),
+            2 * height,
+            rand_width,
+            lde_height,
+            rand_width,
+            shift.as_canonical_u64()
+        );
+        Ok(())
+    }
+
+    // ========================================================================
+    // S6 (C prover) — quotient computation ground truth.
+    //
+    // Standalone replay of prove()'s quotient path (prover.rs:125-235) on a
+    // fresh SmallRng(1) config (stream-identical: trace commit is the first
+    // rng consumer), calling the REAL pub Plonky3 functions:
+    //   - selectors: trace_domain.selectors_on_coset(quotient_domain)
+    //     (commit/src/domain.rs:277-317)
+    //   - trace rows: pcs.get_evaluations_on_domain (hiding_pcs.rs:263-279 —
+    //     truncates the 4 random codeword columns; 16x56, natural order)
+    //   - quotient:   p3_uni_stark::prover::quotient_values (prover.rs:399+)
+    //   - chunks:     quotient_domain.split_evals(4, quotient_flat)
+    //     (domain.rs:213-246 round-robin)
+    // GATES: G1 real prove+verify Ok; G3 standalone trace commit root ==
+    // proof.commitments.trace (ties the replayed state to the real proof; the
+    // dumped alpha is additionally cross-checked by the C KAT against
+    // range_proof_air_zk.json's stark_alpha_fp2).
+    // ========================================================================
+    pub fn dump_prover_s6_quotient_zk(
+        out_path: &PathBuf,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use p3_fri::HidingFriPcs;
+        use p3_matrix::Matrix;
+        use rand::rngs::SmallRng;
+        use rand::SeedableRng;
+
+        // Identical instance to dump_range_proof_air_zk.
+        let amounts = [10u64, 20, 30, 40];
+        let height = 4usize;
+        let (trace, total) = generate_range_proof_trace(&amounts, height);
+        let fee = 7u64;
+        let claimed = total + fee;
+        let pis = vec![
+            Goldilocks::from_u64(claimed),
+            Goldilocks::from_u64(fee),
+            Goldilocks::from_u64(amounts.len() as u64),
+        ];
+
+        let num_random_codewords = 4usize;
+        let log_blowup = 2usize;
+        let make_zk_pcs = || -> ZkStarkPcs {
+            let input_mmcs: FriValMmcs = make_mmcs();
+            let challenge_mmcs = FriChallengeMmcs::new(make_mmcs());
+            let fri_params = FriParameters {
+                log_blowup,
+                log_final_poly_len: 2,
+                max_log_arity: 1,
+                num_queries: 2,
+                commit_proof_of_work_bits: 0,
+                query_proof_of_work_bits: 0,
+                mmcs: challenge_mmcs,
+            };
+            HidingFriPcs::new(
+                Radix2Dit::default(),
+                input_mmcs,
+                fri_params,
+                num_random_codewords,
+                SmallRng::seed_from_u64(1),
+            )
+        };
+
+        // ---- GATE 1: real prove + verify. ----
+        let challenger =
+            FriChallenger::new(FriHashChal::new(FRI_INIT_STATE.to_vec(), FriOracleSha3_512));
+        let config: ZkStarkCfg = StarkConfig::new(make_zk_pcs(), challenger);
+        let proof = prove(&config, &RangeProofAir, trace.clone(), &pis);
+        verify(&config, &RangeProofAir, &proof, &pis).map_err(|e| {
+            format!("S6 GATE 1 FAILED: p3_uni_stark::verify rejected the proof: {e:?}")
+        })?;
+        let proof_trace_root = fri_milestone_serialize_commitment(&proof.commitments.trace);
+
+        // ---- Standalone replay up to quotient (prover.rs:41-235). ----
+        let pcs2 = make_zk_pcs();
+        let log_degree = 2usize;
+        let is_zk = 1usize;
+        let log_ext_degree = log_degree + is_zk;
+        let layout = AirLayout {
+            preprocessed_width: 0,
+            main_width: <RangeProofAir as BaseAir<Goldilocks>>::width(&RangeProofAir),
+            num_public_values: 3,
+            num_periodic_columns: 0,
+            ..Default::default()
+        };
+        let log_num_quotient_chunks =
+            get_log_num_quotient_chunks::<Goldilocks, RangeProofAir>(&RangeProofAir, layout, is_zk);
+        let num_qc = 1usize << (log_num_quotient_chunks + is_zk);
+        if num_qc != 4 {
+            return Err(format!("S6: expected num_quotient_chunks=4, got {num_qc}").into());
+        }
+
+        let trace_domain: Dom = <ZkStarkPcs as Pcs<GoldFp2, FriChallenger>>::
+            natural_domain_for_degree(&pcs2, 1 << log_degree);
+        let ext_trace_domain: Dom = <ZkStarkPcs as Pcs<GoldFp2, FriChallenger>>::
+            natural_domain_for_degree(&pcs2, 1 << log_ext_degree);
+        let (trace_commit2, trace_data2) = <ZkStarkPcs as Pcs<GoldFp2, FriChallenger>>::commit(
+            &pcs2,
+            [(ext_trace_domain, trace.clone())],
+        );
+        // GATE 3: replayed state == the real proof's trace commitment.
+        if fri_milestone_serialize_commitment(&trace_commit2) != proof_trace_root {
+            return Err("S6 GATE 3 FAILED: standalone trace commit != proof.commitments.trace"
+                .into());
+        }
+
+        // Challenger to alpha (prover.rs:158-195).
+        let mut ch = FriChallenger::new(FriHashChal::new(
+            FRI_INIT_STATE.to_vec(),
+            FriOracleSha3_512,
+        ));
+        ch.observe(Goldilocks::from_u64(log_ext_degree as u64));
+        ch.observe(Goldilocks::from_u64(log_degree as u64));
+        ch.observe(Goldilocks::from_u64(0)); // preprocessed_width
+        ch.observe(trace_commit2.clone());
+        ch.observe_slice(&pis);
+        let alpha: GoldFp2 = ch.sample_algebra_element();
+
+        // Quotient domain + trace rows on it (prover.rs:200-209).
+        let quotient_domain =
+            ext_trace_domain.create_disjoint_domain(1 << (log_ext_degree + log_num_quotient_chunks));
+        let trace_on_quotient_domain = <ZkStarkPcs as Pcs<GoldFp2, FriChallenger>>::
+            get_evaluations_on_domain(&pcs2, &trace_data2, 0, quotient_domain)
+            .to_row_major_matrix();
+        if trace_on_quotient_domain.height() != 16 || trace_on_quotient_domain.width() != 56 {
+            return Err(format!(
+                "S6: trace_on_quotient_domain is {}x{}, want 16x56",
+                trace_on_quotient_domain.height(),
+                trace_on_quotient_domain.width()
+            )
+            .into());
+        }
+
+        // Selectors (quotient_values recomputes these internally; dumped for
+        // the C stage-level KAT).
+        let sels = trace_domain.selectors_on_coset(quotient_domain);
+
+        // THE real quotient computation (prover.rs:214-225 / :399+).
+        let qvals: Vec<GoldFp2> = quotient_values::<ZkStarkCfg, RangeProofAir, _>(
+            &pcs2,
+            &RangeProofAir,
+            &pis,
+            layout,
+            trace_domain,
+            quotient_domain,
+            &trace_on_quotient_domain,
+            None,
+            alpha,
+        );
+        if qvals.len() != 16 {
+            return Err(format!("S6: expected 16 quotient values, got {}", qvals.len()).into());
+        }
+        let quotient_flat = RowMajorMatrix::new_col(qvals.clone()).flatten_to_base();
+        let chunks = quotient_domain.split_evals(num_qc, quotient_flat.clone());
+
+        let dec_fp = |v: &[Goldilocks]| -> Vec<String> {
+            v.iter().map(|x| x.as_canonical_u64().to_string()).collect()
+        };
+        let dec_fp2_pairs = |v: &[GoldFp2]| -> Vec<String> {
+            v.iter()
+                .flat_map(|x| {
+                    let (c0, c1) = fri_fp2_to_pair(*x);
+                    [c0, c1]
+                })
+                .collect()
+        };
+        let (alpha_c0, alpha_c1) = fri_fp2_to_pair(alpha);
+        let envelope = serde_json::json!({
+            "format_version": ORACLE_FORMAT_VERSION,
+            "plonky3_commit": PLONKY3_COMMIT,
+            "scope": "prover_s6_quotient_zk",
+            "description": "S6 C-prover KAT: selectors-on-coset + trace-on-quotient-domain + \
+                            REAL p3 quotient_values + flat/chunk split for the M3a instance \
+                            (gates G1+G3 held; alpha cross-checked vs range_proof_air_zk by \
+                            the C KAT). Flat row-major decimal; fp2 as c0,c1 pairs.",
+            "params": {
+                "log_degree": log_degree,
+                "log_ext_degree": log_ext_degree,
+                "log_num_quotient_chunks": log_num_quotient_chunks,
+                "num_quotient_chunks": num_qc,
+                "quotient_size": 16,
+                "trace_width": 56,
+                "quotient_domain_shift": quotient_domain.shift().as_canonical_u64().to_string(),
+            },
+            "alpha": [alpha_c0, alpha_c1],
+            "selectors": {
+                "is_first_row": dec_fp(&sels.is_first_row[..16]),
+                "is_last_row": dec_fp(&sels.is_last_row[..16]),
+                "is_transition": dec_fp(&sels.is_transition[..16]),
+                "inv_vanishing": dec_fp(&sels.inv_vanishing[..16]),
+            },
+            "trace_on_quotient_domain": dec_fp(&trace_on_quotient_domain.values),
+            "quotient_values": dec_fp2_pairs(&qvals),
+            "quotient_flat": dec_fp(&quotient_flat.values),
+            "quotient_chunks": chunks
+                .iter()
+                .map(|m| dec_fp(&m.values))
+                .collect::<Vec<_>>(),
+            "trace_commit_root_hex": to_hex(&proof_trace_root),
+        });
+
+        if let Some(parent) = out_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut f = File::create(out_path)?;
+        f.write_all(serde_json::to_string_pretty(&envelope)?.as_bytes())?;
+        f.write_all(b"\n")?;
+        eprintln!(
+            "wrote {} (S6 quotient KAT: 16 fp2 values, 4 chunks 4x2, gates G1+G3 held)",
+            out_path.display()
+        );
+        Ok(())
+    }
+
+    // ========================================================================
+    // S7 (C prover) — quotient blinding + split + 4-matrix commit KAT.
+    //
+    // Standalone replay of prove()'s quotient-commit (prover.rs:255-257 →
+    // hiding_pcs.rs:169-261 get_quotient_ldes → inner mmcs.commit) on a fresh
+    // SmallRng(1) pcs whose stream is advanced by the trace commit exactly as
+    // in prove. Dumps (D1-B): the 64 codeword draws (4 per-chunk
+    // with_random_cols(4), chunks in order, row-major) + the 72 blinding
+    // draws (first 3 chunks' h*w block; last block DERIVED via mul_coeffs
+    // cancellation, hiding_pcs.rs:194-208) as C KAT INPUTS, plus the REAL
+    // committed chunk LDEs (extracted via get_matrices) and the commit root.
+    //
+    // GATES: G1 real prove+verify Ok; G2 standalone quotient commit root ==
+    // proof.commitments.quotient_chunks; G3 the separately-drawn 64+72 values
+    // (fresh rng advanced by 256) reproduce the standalone commit when fed
+    // back through get_quotient_ldes — enforced transitively: the C KAT
+    // rebuilds the LDEs from the dumped draws and must hit the same root.
+    // ========================================================================
+    pub fn dump_prover_s7_quotient_commit_zk(
+        out_path: &PathBuf,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use p3_fri::HidingFriPcs;
+        use p3_matrix::Matrix;
+        use rand::rngs::SmallRng;
+        use rand::RngExt as _;
+        use rand::SeedableRng;
+
+        // Identical instance to dump_range_proof_air_zk.
+        let amounts = [10u64, 20, 30, 40];
+        let height = 4usize;
+        let (trace, total) = generate_range_proof_trace(&amounts, height);
+        let fee = 7u64;
+        let claimed = total + fee;
+        let pis = vec![
+            Goldilocks::from_u64(claimed),
+            Goldilocks::from_u64(fee),
+            Goldilocks::from_u64(amounts.len() as u64),
+        ];
+
+        let num_random_codewords = 4usize;
+        let log_blowup = 2usize;
+        let make_zk_pcs = || -> ZkStarkPcs {
+            let input_mmcs: FriValMmcs = make_mmcs();
+            let challenge_mmcs = FriChallengeMmcs::new(make_mmcs());
+            let fri_params = FriParameters {
+                log_blowup,
+                log_final_poly_len: 2,
+                max_log_arity: 1,
+                num_queries: 2,
+                commit_proof_of_work_bits: 0,
+                query_proof_of_work_bits: 0,
+                mmcs: challenge_mmcs,
+            };
+            HidingFriPcs::new(
+                Radix2Dit::default(),
+                input_mmcs,
+                fri_params,
+                num_random_codewords,
+                SmallRng::seed_from_u64(1),
+            )
+        };
+
+        // ---- GATE 1: real prove + verify. ----
+        let challenger =
+            FriChallenger::new(FriHashChal::new(FRI_INIT_STATE.to_vec(), FriOracleSha3_512));
+        let config: ZkStarkCfg = StarkConfig::new(make_zk_pcs(), challenger);
+        let proof = prove(&config, &RangeProofAir, trace.clone(), &pis);
+        verify(&config, &RangeProofAir, &proof, &pis).map_err(|e| {
+            format!("S7 GATE 1 FAILED: p3_uni_stark::verify rejected the proof: {e:?}")
+        })?;
+        let proof_quotient_root =
+            fri_milestone_serialize_commitment(&proof.commitments.quotient_chunks);
+
+        // ---- Standalone replay: trace commit (advances rng by 256) →
+        //      alpha → quotient_values → commit_quotient. ----
+        let pcs2 = make_zk_pcs();
+        let log_degree = 2usize;
+        let is_zk = 1usize;
+        let log_ext_degree = log_degree + is_zk;
+        let layout = AirLayout {
+            preprocessed_width: 0,
+            main_width: <RangeProofAir as BaseAir<Goldilocks>>::width(&RangeProofAir),
+            num_public_values: 3,
+            num_periodic_columns: 0,
+            ..Default::default()
+        };
+        let log_num_quotient_chunks =
+            get_log_num_quotient_chunks::<Goldilocks, RangeProofAir>(&RangeProofAir, layout, is_zk);
+        let num_qc = 1usize << (log_num_quotient_chunks + is_zk);
+        let trace_domain: Dom = <ZkStarkPcs as Pcs<GoldFp2, FriChallenger>>::
+            natural_domain_for_degree(&pcs2, 1 << log_degree);
+        let ext_trace_domain: Dom = <ZkStarkPcs as Pcs<GoldFp2, FriChallenger>>::
+            natural_domain_for_degree(&pcs2, 1 << log_ext_degree);
+        let (trace_commit2, trace_data2) = <ZkStarkPcs as Pcs<GoldFp2, FriChallenger>>::commit(
+            &pcs2,
+            [(ext_trace_domain, trace.clone())],
+        );
+        let mut ch = FriChallenger::new(FriHashChal::new(
+            FRI_INIT_STATE.to_vec(),
+            FriOracleSha3_512,
+        ));
+        ch.observe(Goldilocks::from_u64(log_ext_degree as u64));
+        ch.observe(Goldilocks::from_u64(log_degree as u64));
+        ch.observe(Goldilocks::from_u64(0));
+        ch.observe(trace_commit2.clone());
+        ch.observe_slice(&pis);
+        let alpha: GoldFp2 = ch.sample_algebra_element();
+        let quotient_domain =
+            ext_trace_domain.create_disjoint_domain(1 << (log_ext_degree + log_num_quotient_chunks));
+        let trace_on_quotient_domain = <ZkStarkPcs as Pcs<GoldFp2, FriChallenger>>::
+            get_evaluations_on_domain(&pcs2, &trace_data2, 0, quotient_domain)
+            .to_row_major_matrix();
+        let qvals: Vec<GoldFp2> = quotient_values::<ZkStarkCfg, RangeProofAir, _>(
+            &pcs2,
+            &RangeProofAir,
+            &pis,
+            layout,
+            trace_domain,
+            quotient_domain,
+            &trace_on_quotient_domain,
+            None,
+            alpha,
+        );
+        let quotient_flat = RowMajorMatrix::new_col(qvals.clone()).flatten_to_base();
+        let (quotient_commit2, quotient_data2) = <ZkStarkPcs as Pcs<GoldFp2, FriChallenger>>::
+            commit_quotient(&pcs2, quotient_domain, quotient_flat.clone(), num_qc);
+        // GATE 2: standalone quotient commit root == the real proof's.
+        if fri_milestone_serialize_commitment(&quotient_commit2) != proof_quotient_root {
+            return Err("S7 GATE 2 FAILED: standalone commit_quotient root != \
+                        proof.commitments.quotient_chunks"
+                .into());
+        }
+        let extract_mmcs: FriValMmcs = make_mmcs();
+        let chunk_ldes = extract_mmcs.get_matrices(&quotient_data2);
+        if chunk_ldes.len() != num_qc {
+            return Err(format!("S7: expected {} chunk LDEs, got {}", num_qc, chunk_ldes.len())
+                .into());
+        }
+        for m in &chunk_ldes {
+            if m.height() != 32 || m.width() != 6 {
+                return Err(format!("S7: chunk LDE is {}x{}, want 32x6", m.height(), m.width())
+                    .into());
+            }
+        }
+
+        // ---- D1-B draw dump: fresh rng, advance by the trace commit's 256
+        //      accepted samples, then 64 codeword + 72 blinding draws. ----
+        let mut rng = SmallRng::seed_from_u64(1);
+        let trace_draws = height * (56 + 2 * num_random_codewords); // 256
+        for _ in 0..trace_draws {
+            let _: Goldilocks = rng.random();
+        }
+        let codeword_rand: Vec<Goldilocks> =
+            (0..num_qc * 4 * num_random_codewords).map(|_| rng.random()).collect(); // 64
+        let blinding_rand: Vec<Goldilocks> =
+            (0..(num_qc - 1) * 4 * (2 + num_random_codewords)).map(|_| rng.random()).collect(); // 72
+
+        let dec_fp = |v: &[Goldilocks]| -> Vec<String> {
+            v.iter().map(|x| x.as_canonical_u64().to_string()).collect()
+        };
+        let envelope = serde_json::json!({
+            "format_version": ORACLE_FORMAT_VERSION,
+            "plonky3_commit": PLONKY3_COMMIT,
+            "scope": "prover_s7_quotient_commit_zk",
+            "description": "S7 C-prover KAT: quotient chunk blinding + split + ONE 4-matrix \
+                            SHA3-512 commit (hiding_pcs.rs:169-261). codeword_rand (64) + \
+                            blinding_rand (72) are the SmallRng(1) draws at stream position \
+                            256 (D1-B inputs); chunk_ldes are the REAL committed matrices; \
+                            root == proof.commitments.quotient_chunks (gates G1+G2).",
+            "params": {
+                "num_quotient_chunks": num_qc,
+                "num_random_codewords": num_random_codewords,
+                "log_blowup": log_blowup,
+                "chunk_lde_blowup_bits": log_blowup + 1,
+                "rows_per_chunk": 4,
+                "chunk_width": 2 + num_random_codewords,
+                "chunk_lde_height": 32,
+                "quotient_domain_shift": quotient_domain.shift().as_canonical_u64().to_string(),
+            },
+            "quotient_flat": dec_fp(&quotient_flat.values),
+            "codeword_rand": dec_fp(&codeword_rand),
+            "blinding_rand": dec_fp(&blinding_rand),
+            "chunk_ldes": chunk_ldes
+                .iter()
+                .map(|m| dec_fp(&m.values))
+                .collect::<Vec<_>>(),
+            "quotient_commit_root_hex": to_hex(&proof_quotient_root),
+        });
+
+        if let Some(parent) = out_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut f = File::create(out_path)?;
+        f.write_all(serde_json::to_string_pretty(&envelope)?.as_bytes())?;
+        f.write_all(b"\n")?;
+        eprintln!(
+            "wrote {} (S7 quotient-commit KAT: 64+72 draws, 4 chunk LDEs 32x6, gates G1+G2 held)",
+            out_path.display()
+        );
+        Ok(())
+    }
+
+    // ========================================================================
+    // S8 (C prover) — randomization-poly matrix R draws.
+    //
+    // R = DenseMatrix::rand(rng, ext_trace_domain.size()=8,
+    // num_random_codewords + Challenge::DIMENSION = 6) — 48 sequential
+    // SmallRng(1) samples at stream position 392 (after trace 256 + quotient
+    // 64+72), hiding_pcs.rs:404-424 + dense.rs:527-533 (row-major). Committed
+    // via the PLAIN inner TwoAdicFriPcs::commit on ext_trace_domain (blowup 2,
+    // shift 7, bitrev, single-matrix Merkle) — exactly the C S2+S3 machinery.
+    //
+    // GATES: G1 real prove+verify Ok; G2 standalone plain commit of the
+    // 48-draw matrix == proof.commitments.random.
+    // ========================================================================
+    pub fn dump_prover_s8_random_zk(
+        out_path: &PathBuf,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use p3_fri::HidingFriPcs;
+        use rand::rngs::SmallRng;
+        use rand::RngExt as _;
+        use rand::SeedableRng;
+
+        let amounts = [10u64, 20, 30, 40];
+        let height = 4usize;
+        let (trace, total) = generate_range_proof_trace(&amounts, height);
+        let fee = 7u64;
+        let claimed = total + fee;
+        let pis = vec![
+            Goldilocks::from_u64(claimed),
+            Goldilocks::from_u64(fee),
+            Goldilocks::from_u64(amounts.len() as u64),
+        ];
+
+        let num_random_codewords = 4usize;
+        let log_blowup = 2usize;
+        let make_zk_pcs = || -> ZkStarkPcs {
+            let input_mmcs: FriValMmcs = make_mmcs();
+            let challenge_mmcs = FriChallengeMmcs::new(make_mmcs());
+            let fri_params = FriParameters {
+                log_blowup,
+                log_final_poly_len: 2,
+                max_log_arity: 1,
+                num_queries: 2,
+                commit_proof_of_work_bits: 0,
+                query_proof_of_work_bits: 0,
+                mmcs: challenge_mmcs,
+            };
+            HidingFriPcs::new(
+                Radix2Dit::default(),
+                input_mmcs,
+                fri_params,
+                num_random_codewords,
+                SmallRng::seed_from_u64(1),
+            )
+        };
+
+        // GATE 1: real prove + verify.
+        let challenger =
+            FriChallenger::new(FriHashChal::new(FRI_INIT_STATE.to_vec(), FriOracleSha3_512));
+        let config: ZkStarkCfg = StarkConfig::new(make_zk_pcs(), challenger);
+        let proof = prove(&config, &RangeProofAir, trace.clone(), &pis);
+        verify(&config, &RangeProofAir, &proof, &pis).map_err(|e| {
+            format!("S8 GATE 1 FAILED: p3_uni_stark::verify rejected the proof: {e:?}")
+        })?;
+        let proof_random_root = fri_milestone_serialize_commitment(
+            &proof
+                .commitments
+                .random
+                .clone()
+                .ok_or("is_zk=1: commitments.random must be present")?,
+        );
+
+        // Draws: fresh rng advanced by 256 (trace) + 64 + 72 (quotient) = 392.
+        let mut rng = SmallRng::seed_from_u64(1);
+        for _ in 0..392 {
+            let _: Goldilocks = rng.random();
+        }
+        let r_width = num_random_codewords + 2; // + Challenge::DIMENSION
+        let r_draws: Vec<Goldilocks> =
+            (0..(2 * height) * r_width).map(|_| rng.random()).collect(); // 48
+
+        // GATE 2: standalone PLAIN commit of R == proof.commitments.random.
+        // (The hiding pcs delegates to the inner TwoAdicFriPcs for this
+        // commit, hiding_pcs.rs:421-422 — replicate via a plain pcs.)
+        let plain_pcs: StarkPcs = {
+            let input_mmcs: FriValMmcs = make_mmcs();
+            let challenge_mmcs = FriChallengeMmcs::new(make_mmcs());
+            TwoAdicFriPcs::new(
+                Radix2Dit::default(),
+                input_mmcs,
+                FriParameters {
+                    log_blowup,
+                    log_final_poly_len: 2,
+                    max_log_arity: 1,
+                    num_queries: 2,
+                    commit_proof_of_work_bits: 0,
+                    query_proof_of_work_bits: 0,
+                    mmcs: challenge_mmcs,
+                },
+            )
+        };
+        let ext_trace_domain: Dom = <StarkPcs as Pcs<GoldFp2, FriChallenger>>::
+            natural_domain_for_degree(&plain_pcs, 2 * height);
+        let r_mat = RowMajorMatrix::new(r_draws.clone(), r_width);
+        let (r_commit, _r_data) = <StarkPcs as Pcs<GoldFp2, FriChallenger>>::commit(
+            &plain_pcs,
+            [(ext_trace_domain, r_mat)],
+        );
+        if fri_milestone_serialize_commitment(&r_commit) != proof_random_root {
+            return Err("S8 GATE 2 FAILED: standalone plain commit of the 48-draw R matrix \
+                        != proof.commitments.random (stream position or layout wrong)"
+                .into());
+        }
+
+        let envelope = serde_json::json!({
+            "format_version": ORACLE_FORMAT_VERSION,
+            "plonky3_commit": PLONKY3_COMMIT,
+            "scope": "prover_s8_random_zk",
+            "description": "S8 C-prover KAT: the 48 SmallRng(1) draws (stream position 392) \
+                            forming the 8x6 randomization matrix R (hiding_pcs.rs:404-424); \
+                            plain inner commit of R == proof.commitments.random (gates G1+G2).",
+            "params": {
+                "r_height": 2 * height,
+                "r_width": r_width,
+                "log_blowup": log_blowup,
+                "stream_position": 392,
+            },
+            "r_draws": r_draws
+                .iter()
+                .map(|x| x.as_canonical_u64().to_string())
+                .collect::<Vec<_>>(),
+            "random_commit_root_hex": to_hex(&proof_random_root),
+        });
+
+        if let Some(parent) = out_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut f = File::create(out_path)?;
+        f.write_all(serde_json::to_string_pretty(&envelope)?.as_bytes())?;
+        f.write_all(b"\n")?;
+        eprintln!(
+            "wrote {} (S8 random KAT: 48 draws @392, root == proof.commitments.random, G1+G2 held)",
+            out_path.display()
+        );
+        Ok(())
+    }
+
+    // ========================================================================
+    // S9 (C prover) — open at zeta: MERGED opened vectors + FRI batch alpha.
+    //
+    // The prover's HidingFriPcs::open barycentric-interpolates every committed
+    // LDE column at zeta (trace also at zeta_next), observes the MERGED
+    // (base ++ 4 random codeword) vectors in round order [random, trace,
+    // quotient] (two_adic_pcs.rs:505-553), then samples the FRI batch alpha
+    // (two_adic_pcs.rs:564). The merged vectors are exactly what the C
+    // verifier M2a consumes; the SPLIT form lives in the serialized proof.
+    //
+    // This dump reconstructs the merged vectors from the REAL proof
+    // (proof.opened_values base ++ proof.opening_proof.0 rand, same merge as
+    // dump_is_zk_stark:8882-8895) and replays the challenger to sample the
+    // FRI batch alpha — both are the S9 C-KAT targets. GATE 1: real prove+verify.
+    // ========================================================================
+    pub fn dump_prover_s9_open_zk(
+        out_path: &PathBuf,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use p3_challenger::FieldChallenger;
+        use p3_fri::HidingFriPcs;
+        use rand::rngs::SmallRng;
+        use rand::SeedableRng;
+
+        let amounts = [10u64, 20, 30, 40];
+        let height = 4usize;
+        let (trace, total) = generate_range_proof_trace(&amounts, height);
+        let fee = 7u64;
+        let claimed = total + fee;
+        let pis = vec![
+            Goldilocks::from_u64(claimed),
+            Goldilocks::from_u64(fee),
+            Goldilocks::from_u64(amounts.len() as u64),
+        ];
+
+        let make_zk_pcs = || -> ZkStarkPcs {
+            let input_mmcs: FriValMmcs = make_mmcs();
+            let challenge_mmcs = FriChallengeMmcs::new(make_mmcs());
+            let fri_params = FriParameters {
+                log_blowup: 2,
+                log_final_poly_len: 2,
+                max_log_arity: 1,
+                num_queries: 2,
+                commit_proof_of_work_bits: 0,
+                query_proof_of_work_bits: 0,
+                mmcs: challenge_mmcs,
+            };
+            HidingFriPcs::new(
+                Radix2Dit::default(),
+                input_mmcs,
+                fri_params,
+                4,
+                SmallRng::seed_from_u64(1),
+            )
+        };
+
+        // GATE 1: real prove + verify.
+        let challenger =
+            FriChallenger::new(FriHashChal::new(FRI_INIT_STATE.to_vec(), FriOracleSha3_512));
+        let config: ZkStarkCfg = StarkConfig::new(make_zk_pcs(), challenger);
+        let proof = prove(&config, &RangeProofAir, trace.clone(), &pis);
+        verify(&config, &RangeProofAir, &proof, &pis).map_err(|e| {
+            format!("S9 GATE 1 FAILED: p3_uni_stark::verify rejected the proof: {e:?}")
+        })?;
+
+        // Merge base ++ rand (hiding_pcs.rs:333-358 inverse; identical to
+        // dump_is_zk_stark). Round order [random, trace, quotient].
+        let rand_ov = &proof.opening_proof.0;
+        let merge = |base: &[GoldFp2], extra: &[GoldFp2]| -> Vec<GoldFp2> {
+            let mut v = base.to_vec();
+            v.extend_from_slice(extra);
+            v
+        };
+        let random_base = proof.opened_values.random.clone().ok_or("is_zk: random")?;
+        let trace_local = proof.opened_values.trace_local.clone();
+        let trace_next = proof.opened_values.trace_next.clone().ok_or("main_next: trace_next")?;
+        let quotient_chunks = proof.opened_values.quotient_chunks.clone();
+
+        let random_merged = merge(&random_base, &rand_ov[0][0][0]);
+        let trace_local_merged = merge(&trace_local, &rand_ov[1][0][0]);
+        let trace_next_merged = merge(&trace_next, &rand_ov[1][0][1]);
+        let quotient_merged: Vec<Vec<GoldFp2>> = quotient_chunks
+            .iter()
+            .enumerate()
+            .map(|(c, chunk)| merge(chunk, &rand_ov[2][c][0]))
+            .collect();
+
+        // Replay the challenger to zeta, observe the merged opened vectors in
+        // order, sample the FRI batch alpha (two_adic_pcs.rs:546 + 564).
+        let mut ch = FriChallenger::new(FriHashChal::new(
+            FRI_INIT_STATE.to_vec(),
+            FriOracleSha3_512,
+        ));
+        ch.observe(Goldilocks::from_u64(3)); // log_ext_degree
+        ch.observe(Goldilocks::from_u64(2)); // log_degree
+        ch.observe(Goldilocks::from_u64(0)); // preprocessed_width
+        ch.observe(proof.commitments.trace.clone());
+        ch.observe_slice(&pis);
+        let _alpha_stark: GoldFp2 = ch.sample_algebra_element();
+        ch.observe(proof.commitments.quotient_chunks.clone());
+        ch.observe(proof.commitments.random.clone().ok_or("is_zk: random commit")?);
+        let _zeta: GoldFp2 = ch.sample_algebra_element();
+        // opened-value observes, exact order (two_adic_pcs.rs:546).
+        ch.observe_algebra_slice(&random_merged);
+        ch.observe_algebra_slice(&trace_local_merged);
+        ch.observe_algebra_slice(&trace_next_merged);
+        for qm in &quotient_merged {
+            ch.observe_algebra_slice(qm);
+        }
+        let fri_alpha: GoldFp2 = ch.sample_algebra_element();
+
+        let dec_fp2_vec = |v: &[GoldFp2]| -> Vec<String> {
+            v.iter()
+                .flat_map(|x| {
+                    let (c0, c1) = fri_fp2_to_pair(*x);
+                    [c0, c1]
+                })
+                .collect()
+        };
+        let (fa0, fa1) = fri_fp2_to_pair(fri_alpha);
+        let envelope = serde_json::json!({
+            "format_version": ORACLE_FORMAT_VERSION,
+            "plonky3_commit": PLONKY3_COMMIT,
+            "scope": "prover_s9_open_zk",
+            "description": "S9 C-prover KAT: MERGED opened value vectors (base ++ 4 random \
+                            codewords) in observe order [random@zeta, trace@zeta, \
+                            trace@zeta_next, quotient chunks@zeta] + the FRI batch alpha \
+                            sampled right after. Reconstructed from the REAL proof (GATE 1). \
+                            fp2 as c0,c1 pairs.",
+            "widths": {
+                "random": random_merged.len(),
+                "trace": trace_local_merged.len(),
+                "quotient_chunk": quotient_merged[0].len(),
+                "num_quotient_chunks": quotient_merged.len(),
+            },
+            "random_at_zeta": dec_fp2_vec(&random_merged),
+            "trace_at_zeta": dec_fp2_vec(&trace_local_merged),
+            "trace_at_zeta_next": dec_fp2_vec(&trace_next_merged),
+            "quotient_at_zeta": quotient_merged
+                .iter()
+                .map(|q| dec_fp2_vec(q))
+                .collect::<Vec<_>>(),
+            "fri_batch_alpha": [fa0, fa1],
+        });
+
+        if let Some(parent) = out_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut f = File::create(out_path)?;
+        f.write_all(serde_json::to_string_pretty(&envelope)?.as_bytes())?;
+        f.write_all(b"\n")?;
+        eprintln!(
+            "wrote {} (S9 open KAT: merged {}+{}+{}+4x{} fp2, FRI batch alpha, GATE 1 held)",
+            out_path.display(),
+            random_merged.len(),
+            trace_local_merged.len(),
+            trace_next_merged.len(),
+            quotient_merged[0].len()
+        );
+        Ok(())
+    }
+
+    // ========================================================================
+    // S10 (C prover) — FRI commit phase ground truth.
+    //
+    // From the REAL proof's inner FriProof (proof.opening_proof.1): the
+    // commit-phase layer roots, final_poly (4 fp2), and PoW witnesses. The
+    // per-round beta is re-derived by replaying the transcript to the FRI
+    // batch alpha (S9), observing each layer commit + grind(0), sampling beta
+    // (fri/prover.rs:218-228). M3a: exactly 1 commit-phase round.
+    // GATE 1: real prove + verify.
+    // ========================================================================
+    pub fn dump_prover_s10_fri_zk(
+        out_path: &PathBuf,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use p3_challenger::{FieldChallenger, GrindingChallenger};
+        use p3_fri::HidingFriPcs;
+        use rand::rngs::SmallRng;
+        use rand::SeedableRng;
+
+        let amounts = [10u64, 20, 30, 40];
+        let height = 4usize;
+        let (trace, total) = generate_range_proof_trace(&amounts, height);
+        let fee = 7u64;
+        let claimed = total + fee;
+        let pis = vec![
+            Goldilocks::from_u64(claimed),
+            Goldilocks::from_u64(fee),
+            Goldilocks::from_u64(amounts.len() as u64),
+        ];
+        let make_zk_pcs = || -> ZkStarkPcs {
+            let input_mmcs: FriValMmcs = make_mmcs();
+            let challenge_mmcs = FriChallengeMmcs::new(make_mmcs());
+            let fri_params = FriParameters {
+                log_blowup: 2,
+                log_final_poly_len: 2,
+                max_log_arity: 1,
+                num_queries: 2,
+                commit_proof_of_work_bits: 0,
+                query_proof_of_work_bits: 0,
+                mmcs: challenge_mmcs,
+            };
+            HidingFriPcs::new(Radix2Dit::default(), input_mmcs, fri_params, 4,
+                              SmallRng::seed_from_u64(1))
+        };
+        let challenger =
+            FriChallenger::new(FriHashChal::new(FRI_INIT_STATE.to_vec(), FriOracleSha3_512));
+        let config: ZkStarkCfg = StarkConfig::new(make_zk_pcs(), challenger);
+        let proof = prove(&config, &RangeProofAir, trace.clone(), &pis);
+        verify(&config, &RangeProofAir, &proof, &pis).map_err(|e| {
+            format!("S10 GATE 1 FAILED: p3_uni_stark::verify rejected the proof: {e:?}")
+        })?;
+
+        let fri = &proof.opening_proof.1;
+        let num_rounds = fri.commit_phase_commits.len();
+
+        // Merge opened values for the S9 observe replay.
+        let rand_ov = &proof.opening_proof.0;
+        let merge = |base: &[GoldFp2], extra: &[GoldFp2]| {
+            let mut v = base.to_vec();
+            v.extend_from_slice(extra);
+            v
+        };
+        let random_merged = merge(
+            &proof.opened_values.random.clone().ok_or("random")?,
+            &rand_ov[0][0][0],
+        );
+        let trace_local_merged =
+            merge(&proof.opened_values.trace_local, &rand_ov[1][0][0]);
+        let trace_next_merged = merge(
+            &proof.opened_values.trace_next.clone().ok_or("trace_next")?,
+            &rand_ov[1][0][1],
+        );
+        let quotient_merged: Vec<Vec<GoldFp2>> = proof
+            .opened_values
+            .quotient_chunks
+            .iter()
+            .enumerate()
+            .map(|(c, chunk)| merge(chunk, &rand_ov[2][c][0]))
+            .collect();
+
+        // Replay to FRI batch alpha (S9 end state), then per round observe the
+        // layer commit, grind(0), sample beta.
+        let mut ch = FriChallenger::new(FriHashChal::new(
+            FRI_INIT_STATE.to_vec(),
+            FriOracleSha3_512,
+        ));
+        ch.observe(Goldilocks::from_u64(3));
+        ch.observe(Goldilocks::from_u64(2));
+        ch.observe(Goldilocks::from_u64(0));
+        ch.observe(proof.commitments.trace.clone());
+        ch.observe_slice(&pis);
+        let _alpha_stark: GoldFp2 = ch.sample_algebra_element();
+        ch.observe(proof.commitments.quotient_chunks.clone());
+        ch.observe(proof.commitments.random.clone().ok_or("random commit")?);
+        let _zeta: GoldFp2 = ch.sample_algebra_element();
+        ch.observe_algebra_slice(&random_merged);
+        ch.observe_algebra_slice(&trace_local_merged);
+        ch.observe_algebra_slice(&trace_next_merged);
+        for qm in &quotient_merged {
+            ch.observe_algebra_slice(qm);
+        }
+        let _fri_alpha: GoldFp2 = ch.sample_algebra_element();
+
+        let mut betas: Vec<GoldFp2> = Vec::new();
+        let mut roots_hex: Vec<String> = Vec::new();
+        for r in 0..num_rounds {
+            let root = fri_milestone_serialize_commitment(&fri.commit_phase_commits[r]);
+            roots_hex.push(to_hex(&root));
+            ch.observe(fri.commit_phase_commits[r].clone());
+            let _w = ch.grind(0); // commit PoW = 0, no transcript mutation
+            let beta: GoldFp2 = ch.sample_algebra_element();
+            betas.push(beta);
+        }
+
+        let dec_fp2_flat = |v: &[GoldFp2]| -> Vec<String> {
+            v.iter()
+                .flat_map(|x| {
+                    let (c0, c1) = fri_fp2_to_pair(*x);
+                    [c0, c1]
+                })
+                .collect()
+        };
+        let commit_pow: Vec<String> = fri
+            .commit_pow_witnesses
+            .iter()
+            .map(|w| w.as_canonical_u64().to_string())
+            .collect();
+        let log_arity0 = fri.query_proofs[0].commit_phase_openings[0].log_arity;
+
+        let envelope = serde_json::json!({
+            "format_version": ORACLE_FORMAT_VERSION,
+            "plonky3_commit": PLONKY3_COMMIT,
+            "scope": "prover_s10_fri_zk",
+            "description": "S10 C-prover KAT: FRI commit-phase layer roots + replayed betas + \
+                            final_poly (4 fp2) + PoW witnesses from the REAL proof \
+                            (opening_proof.1). fp2 as c0,c1 pairs. GATE 1 held.",
+            "params": {
+                "num_commit_phase_rounds": num_rounds,
+                "log_blowup": 2,
+                "log_final_poly_len": 2,
+                "log_arity_round0": log_arity0,
+                "final_poly_len": fri.final_poly.len(),
+            },
+            "commit_phase_roots_hex": roots_hex,
+            "betas": dec_fp2_flat(&betas),
+            "final_poly": dec_fp2_flat(&fri.final_poly),
+            "commit_pow_witnesses": commit_pow,
+            "query_pow_witness": fri.query_pow_witness.as_canonical_u64().to_string(),
+        });
+
+        if let Some(parent) = out_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut f = File::create(out_path)?;
+        f.write_all(serde_json::to_string_pretty(&envelope)?.as_bytes())?;
+        f.write_all(b"\n")?;
+        eprintln!(
+            "wrote {} (S10 FRI KAT: {} round(s), final_poly {} fp2, GATE 1 held)",
+            out_path.display(),
+            num_rounds,
+            fri.final_poly.len()
+        );
+        Ok(())
+    }
+
+    // ========================================================================
+    // S11 (C prover) — query index sampling.
+    //
+    // Replays the whole transcript through the commit phase from the REAL proof
+    // and samples the num_queries query indices (fri/prover.rs:92-131). The C
+    // prover reaches the identical transcript state after its own commit phase;
+    // the indices are the transcript-state ground truth. GATE 1: real prove+verify.
+    // ========================================================================
+    pub fn dump_prover_s11_indices_zk(
+        out_path: &PathBuf,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use p3_challenger::{
+            CanSampleBits, FieldChallenger, GrindingChallenger,
+        };
+        use p3_fri::HidingFriPcs;
+        use rand::rngs::SmallRng;
+        use rand::SeedableRng;
+
+        let amounts = [10u64, 20, 30, 40];
+        let height = 4usize;
+        let (trace, total) = generate_range_proof_trace(&amounts, height);
+        let fee = 7u64;
+        let claimed = total + fee;
+        let pis = vec![
+            Goldilocks::from_u64(claimed),
+            Goldilocks::from_u64(fee),
+            Goldilocks::from_u64(amounts.len() as u64),
+        ];
+        let make_zk_pcs = || -> ZkStarkPcs {
+            let input_mmcs: FriValMmcs = make_mmcs();
+            let challenge_mmcs = FriChallengeMmcs::new(make_mmcs());
+            HidingFriPcs::new(
+                Radix2Dit::default(),
+                input_mmcs,
+                FriParameters {
+                    log_blowup: 2,
+                    log_final_poly_len: 2,
+                    max_log_arity: 1,
+                    num_queries: 2,
+                    commit_proof_of_work_bits: 0,
+                    query_proof_of_work_bits: 0,
+                    mmcs: challenge_mmcs,
+                },
+                4,
+                SmallRng::seed_from_u64(1),
+            )
+        };
+        let challenger =
+            FriChallenger::new(FriHashChal::new(FRI_INIT_STATE.to_vec(), FriOracleSha3_512));
+        let config: ZkStarkCfg = StarkConfig::new(make_zk_pcs(), challenger);
+        let proof = prove(&config, &RangeProofAir, trace.clone(), &pis);
+        verify(&config, &RangeProofAir, &proof, &pis).map_err(|e| {
+            format!("S11 GATE 1 FAILED: verify rejected: {e:?}")
+        })?;
+        let fri = &proof.opening_proof.1;
+
+        // merged opened values (S9).
+        let rand_ov = &proof.opening_proof.0;
+        let merge = |base: &[GoldFp2], extra: &[GoldFp2]| {
+            let mut v = base.to_vec();
+            v.extend_from_slice(extra);
+            v
+        };
+        let random_merged =
+            merge(&proof.opened_values.random.clone().ok_or("random")?, &rand_ov[0][0][0]);
+        let trace_local_merged = merge(&proof.opened_values.trace_local, &rand_ov[1][0][0]);
+        let trace_next_merged =
+            merge(&proof.opened_values.trace_next.clone().ok_or("tn")?, &rand_ov[1][0][1]);
+        let quotient_merged: Vec<Vec<GoldFp2>> = proof
+            .opened_values
+            .quotient_chunks
+            .iter()
+            .enumerate()
+            .map(|(c, chunk)| merge(chunk, &rand_ov[2][c][0]))
+            .collect();
+
+        let mut ch = FriChallenger::new(FriHashChal::new(
+            FRI_INIT_STATE.to_vec(),
+            FriOracleSha3_512,
+        ));
+        ch.observe(Goldilocks::from_u64(3));
+        ch.observe(Goldilocks::from_u64(2));
+        ch.observe(Goldilocks::from_u64(0));
+        ch.observe(proof.commitments.trace.clone());
+        ch.observe_slice(&pis);
+        let _a: GoldFp2 = ch.sample_algebra_element();
+        ch.observe(proof.commitments.quotient_chunks.clone());
+        ch.observe(proof.commitments.random.clone().ok_or("rc")?);
+        let _z: GoldFp2 = ch.sample_algebra_element();
+        ch.observe_algebra_slice(&random_merged);
+        ch.observe_algebra_slice(&trace_local_merged);
+        ch.observe_algebra_slice(&trace_next_merged);
+        for qm in &quotient_merged {
+            ch.observe_algebra_slice(qm);
+        }
+        let _fa: GoldFp2 = ch.sample_algebra_element();
+
+        // commit phase replay.
+        let mut log_arities: Vec<u8> = Vec::new();
+        for (r, cph) in fri.commit_phase_commits.iter().enumerate() {
+            ch.observe(cph.clone());
+            let _w = ch.grind(0);
+            let _beta: GoldFp2 = ch.sample_algebra_element();
+            log_arities.push(fri.query_proofs[0].commit_phase_openings[r].log_arity);
+        }
+        // observe final_poly (prover.rs:257).
+        ch.observe_algebra_slice(&fri.final_poly);
+        // observe log_arities (prover.rs:92-94).
+        for la in &log_arities {
+            ch.observe(Goldilocks::from_u64(*la as u64));
+        }
+        // query PoW grind(0) — no-op. Sample indices.
+        let _qw = ch.grind(0);
+        let log_max_height = 5usize;
+        let num_queries = 2usize;
+        let indices: Vec<u64> =
+            (0..num_queries).map(|_| ch.sample_bits(log_max_height) as u64).collect();
+
+        let envelope = serde_json::json!({
+            "format_version": ORACLE_FORMAT_VERSION,
+            "plonky3_commit": PLONKY3_COMMIT,
+            "scope": "prover_s11_indices_zk",
+            "description": "S11 C-prover KAT: the num_queries query indices sampled after the \
+                            commit phase (sample_bits(5), fri/prover.rs:111). Transcript-state \
+                            ground truth (replayed from the REAL proof). GATE 1 held.",
+            "params": {
+                "num_queries": num_queries,
+                "log_max_height": log_max_height,
+                "num_commit_phase_rounds": fri.commit_phase_commits.len(),
+            },
+            "query_indices": indices.iter().map(|x| x.to_string()).collect::<Vec<_>>(),
+        });
+
+        if let Some(parent) = out_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut f = File::create(out_path)?;
+        f.write_all(serde_json::to_string_pretty(&envelope)?.as_bytes())?;
+        f.write_all(b"\n")?;
+        eprintln!(
+            "wrote {} (S11 indices KAT: {:?}, GATE 1 held)",
+            out_path.display(),
+            indices
+        );
+        Ok(())
     }
 
     // ========================================================================

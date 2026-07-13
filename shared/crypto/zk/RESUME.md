@@ -20,8 +20,12 @@
   Money conservation on the live chain is enforced by the native cleartext
   witness check (`verify.c` Check 4); this ZK stack is ADDITIVE (v3 ships
   transparent, hidden amounts are v4).
-- **`make test`: 38 gates GREEN, 0 warnings** (`cd shared/crypto/zk && make test`;
+- **`make test`: 50 gates GREEN, 0 warnings** (`cd shared/crypto/zk && make test`;
   `test_fri_verify_zk` runs twice — FibonacciAir + is_zk RangeProofAir).
+  **C PROVER COMPLETE (S1-S13):** gates 39-50 = S1 trace + S2 LDE + S3 commit +
+  S5 alpha + S6 quotient + S7 quotient-commit + S8 zeta + S9 open + S10 FRI +
+  S11/S12 query + **S13 MILESTONE (pure-C prove → dnac_fri_verify == DNAC_FRI_OK,
+  Rust-free end-to-end)**, 2026-07-13/14. Red-team PENDING before "done".
 - **Committed** on branch `zk-range-balance-soundness-hardening` (commits
   `9d07c968` mint-fix + FRI guards, `80f8888b` composed door). Not on `main`.
 
@@ -73,6 +77,127 @@ Milestones M1→M2→M3:
   = 56 base + 4 rand). The range/balance CONSTRAINTS hold via the existing
   `test_range_proof_air` gate (61/61 verify_constraints==OK). Amounts are hidden
   by is_zk=1; range+balance proven in-circuit; FRI-verified in C.
+- **NEXT MAJOR TRACK — C PROVER (IN PROGRESS 2026-07-13):** decision (user
+  2026-07-13) = write the prover in **C** (C-only preserved at runtime; Rust
+  oracle stays build-time), starting on **M3a's RangeProofAir** (SHA3-512 only,
+  no Poseidon2). Method: oracle byte-matches every prover stage vs Plonky3 (same
+  discipline that built the verifier). Full 13-stage plan + Determinism/Threat/
+  Red-team sections: **`dnac/docs/plans/2026-07-13-c-stark-prover-design.md`**
+  (local-only). Milestone = S13: C prove → C verify == DNAC_FRI_OK, Rust-free,
+  end-to-end. Hardest piece = quotient poly (S6). Red-team REQUIRED before "done".
+  - **GROUNDING DONE (2026-07-13):** 13 parallel independent agents, one per
+    stage, all 13 GROUNDED with file:line citations. Specs + cross-cutting
+    pins (D1 RNG=oracle-dumped-inputs [user may override to a C SmallRng port],
+    D2 wire shift=0, D3 S10 owns reduced-opening build, D4 no stark_priming.c
+    refactor, D5 scope guards): `dnac/docs/plans/2026-07-13-c-prover-stage-specs.md`
+    + `.json` (local-only).
+  - **S1 DONE (2026-07-13):** `stark_prover.{c,h}` —
+    `dnac_prover_build_range_proof_trace` (port of oracle
+    `generate_range_proof_trace` main.rs:10210-10231; reuses range_air/
+    sum_balance builders + is_real/cnt cols + padding-flat + fail-close
+    guards). Oracle: `dump-prover-trace-range-zk` →
+    `tools/vectors/prover_trace_range_zk.json` (hash-pinned, 2× regen
+    byte-identical). Gate `test_prover_trace`: 224/224 cells byte-match +
+    padding (h=8) + 8/8 fail-close rejects.
+  - **S2 DONE (2026-07-13):** `dnac_prover_randomize_trace` (hiding_pcs.rs:
+    110-129 interleave; randomness CALLER-supplied per pin D1-B — KAT feeds
+    oracle-dumped SmallRng(1) draws, production = OS entropy) +
+    `dnac_prover_coset_lde_bitrev` (per-column iNTT → zero-pad → shift^j →
+    NTT + row bit-reversal; two_adic_pcs.rs:301-325, shift=7, blowup=2).
+    Oracle: `dump-prover-s2-lde-zk` → `tools/vectors/prover_s2_lde_zk.json`
+    (hash-pinned; oracle gates G1 real prove+verify, G2 recomputed LDE ==
+    committed LDE, G3 standalone commit root == proof trace root, G4
+    base+draws reshape == with_random_cols). Gate `test_prover_s2_lde`:
+    randomized 8×60 (480 cells) + LDE 32×60 (1920 cells) byte-match the REAL
+    committed matrix + 6/6 fail-close.
+  - **S3 DONE (2026-07-13):** `dnac_prover_commit_matrix` (canonical-u64-LE
+    row serialization, merkle_tree.rs:302-322, over the EXISTING
+    oracle-byte-matched `dnac_merkle_commit` — no new tree logic). No new
+    oracle subcommand: the S2 vector's `lde_bitrev` + `trace_commit_root_hex`
+    (G1-G3-tied to the real proof) are the KAT. Gate `test_prover_s3_commit`:
+    commit(lde_bitrev) == proof.commitments.trace + **full S1→S2→S3 chain ==
+    real trace commitment** + open/verify roundtrip (S12 prep) + 3/3
+    fail-close. Prover state pin: keep the `dnac_merkle_tree_t*` for the FRI
+    query stage.
+  - **S5 DONE (2026-07-13):** `dnac_prover_fs_to_alpha` — prover-side
+    transcript sequencer (prover.rs:161-195: observe 3/2/0 + trace root +
+    publics → sample alpha) over the EXISTING transcript.c; stark_priming.c
+    UNTOUCHED (pin D4). No new oracle subcommand (alpha + root come from
+    range_proof_air_zk.json). Gate `test_prover_s5_alpha`: C-chain root ==
+    M3a proof trace root (cross-vector tie) + **C alpha == the REAL p3
+    alpha**. Prover keeps the SAME transcript object alive for S6-S11.
+  - **S6 DONE (2026-07-13) — the hardest stage:** `dnac_prover_quotient_selectors`
+    (domain.rs:277-317 selectors_on_coset), `dnac_prover_trace_on_quotient_domain`
+    (stride gather + bitrev un-reverse + random-col truncation),
+    `dnac_prover_quotient_values_range_zk` (61 constraints domain-wide,
+    descending-alpha Horner fold == verifier order, ×Z_H⁻¹),
+    `dnac_prover_quotient_split` (round-robin). Oracle `dump-prover-s6-quotient-zk`
+    calls the REAL pub `p3_uni_stark::prover::quotient_values` (gates G1+G3).
+    Gate `test_prover_s6_quotient`: chain alpha + selectors 4×16 + trace 16×56 +
+    quotient 16×fp2 + 4 chunks ALL byte-match + tamper teeth.
+  - **S7 DONE (2026-07-13):** `dnac_prover_quotient_commit` — eprint 2024/1037
+    blinding (get_zp_cis Lagrange constants, derived last block), 4 random
+    codeword cols/chunk, per-chunk LDE blowup log_blowup+1 with shift k^{-i},
+    v_H·t blinding add, bit-rev, ONE 4-matrix batch commit (existing Phase 2A
+    dnac_merkle_batch_commit). Oracle `dump-prover-s7-quotient-commit-zk`
+    (gates G1+G2: standalone commit_quotient root == proof root; D1-B draw
+    dump at stream position 256: 64 codeword + 72 blinding). Gate
+    `test_prover_s7_commit`: **full C chain S1→S7 reproduces the REAL
+    proof.commitments.quotient_chunks** + all 4 blinded chunk LDEs byte-match.
+    BOTH proof commitments (trace + quotient) now come out of pure C.
+  - **S8 DONE (2026-07-13):** `dnac_prover_random_commit` (R matrix 8×6 plain
+    inner commit via S2 LDE + S3 Merkle) + `dnac_prover_fs_to_zeta` (observe
+    quotient root → observe random root [is_zk, ORDER load-bearing] → sample
+    zeta; zeta_next = zeta·g of INITIAL trace subgroup). Oracle
+    `dump-prover-s8-random-zk` (48 draws @ stream 392; gate: plain R commit ==
+    proof.commitments.random). Gate `test_prover_s8_zeta`: **full chain S1→S8
+    reproduces the REAL zeta AND zeta_next** + random-observe teeth. ALL THREE
+    commitments (trace, quotient, random) now pure C.
+  - **S9 DONE (2026-07-13):** `dnac_prover_open_matrix_at` (barycentric open of
+    every committed LDE column over the low coset g·K_8 — first h=height>>2
+    bit-reversed rows — via the audited fri_fold lagrange kernel; xs = 7·w8^
+    {bitrev}) + `dnac_prover_observe_opened`. The committed matrices already
+    carry the random codeword columns, so opening the full width IS the
+    MERGED vector (no separate merge). Oracle `dump-prover-s9-open-zk`
+    reconstructs the merged vectors from the REAL proof (base ++ rand) + dumps
+    the FRI batch alpha. Gate `test_prover_s9_open`: merged opened
+    (6+60+60+4×6 fp2) byte-match + **observe → FRI batch alpha == REAL**
+    (transcript-state gate) + tamper teeth.
+  - **S10 DONE (2026-07-13):** `dnac_prover_fri_reduced_openings` (alpha-batched
+    across rounds, two_adic_pcs.rs:595-658) + `dnac_prover_fri_commit_phase`
+    (ExtensionMmcs layer commit + beta + fri_fold_matrix_fp2 + final poly
+    truncate/bitrev/inverse-NTT; fri/prover.rs:180-257). Oracle
+    `dump-prover-s10-fri-zk` (commit roots + replayed betas + final_poly from
+    the REAL proof). Gate `test_prover_s10_fri`: layer root + beta + 4-fp2
+    final_poly byte-match + PoW=0.
+  - **S11+S12 DONE (2026-07-13):** query index sampling
+    (`dnac_transcript_sample_bits(5)` × 2 == REAL `[4,23]` — transcript-state
+    gate) + Merkle query openings from the retained input/commit-phase trees
+    (`dnac_merkle_open`/`batch_open`, verify roundtrip). Oracle
+    `dump-prover-s11-indices-zk` (replayed indices). Gate `test_prover_s11_query`.
+  - **S13 DONE = MILESTONE (2026-07-14):** `test_prover_s13_verify` runs the
+    ENTIRE C prover S1→S12, assembles its own `dnac_stark_priming_input_t` +
+    3-round coms `[random, trace, quotient×4]` (merged opened values) +
+    `dnac_fri_proof_t` (per-query batch openings + commit-phase steps), then
+    `dnac_stark_prime_transcript(is_zk=1)` (cross-check out.zeta == prover
+    zeta, fail-close) → **`dnac_fri_verify == DNAC_FRI_OK`**. No oracle JSON for
+    the proof body; only the SmallRng(1) draws are KAT inputs (D1-B). The pure-C
+    prover emits an is_zk=1 RangeProofAir proof (hidden amounts, range+balance
+    proven) that the C verifier accepts — **Rust-free, end-to-end.**
+  - **RED-TEAM DONE (2026-07-14) — milestone HOLDS:** 14 adversarial independent
+    auditors (`wf_3cfef484-b07`), pinned `82cfad73`, told NOT to trust the
+    byte-match. **0 KAFADAN, 0 CRITICAL, 14/14 JUDGMENT.** No stage forges or
+    diverges on M3a; no invented crypto. Findings are all (a) G2 hiding
+    (test-only SmallRng, no CSPRNG, unsalted MMCS — already deferred, plan §2/§6)
+    or (b) instance-shape preconditions (query phase = M3a-hardcoded test
+    scaffolding — the P1 gap; library fns S1-S10 are parametric/grounded).
+    **Applied 3 fail-close guards** (S2 log_lde>=32 UB, S5 preprocessed_width!=0,
+    S10 ro_len<stop_len overread) — no M3a behavior change, suite still GREEN.
+    Report: `dnac/docs/plans/2026-07-14-c-prover-redteam-report.md` (+ `.json`).
+  - **NEXT (all gated, none blocks the demo):** P1 generalize the query phase +
+    `dnac_prover_assemble` for arbitrary instances; production C CSPRNG (OS
+    entropy) + salted-leaf MMCS (M3b) for real hiding; production FRI params +
+    B1 TX-binding (plan §6). P2 perf. Citation re-pin on next touch.
 - **M3b TODO — RED-TEAM GATED (cannot self-approve, KAFADAN rule):** the
   Poseidon2 in-AIR value COMMITMENT binding a public commitment to the hidden
   amount + CONSTRUCTED binding column layout (v2 SEC-2 fix) + canonical order +
@@ -356,7 +481,7 @@ cd /opt/dna/shared/crypto/zk
 make clean && make test
 ```
 
-Expected (2026-07-12): 36 gate markers GREEN, 0 warnings, all grounded against external references (Plonky3 pin `82cfad73`, NIST KAT, OpenSSL, FIPS-202).
+Expected (2026-07-14): 50 gate markers GREEN, 0 warnings, all grounded against external references (Plonky3 pin `82cfad73`, NIST KAT, OpenSSL, FIPS-202).
 
 ---
 

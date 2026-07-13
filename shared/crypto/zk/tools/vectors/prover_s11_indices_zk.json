@@ -1,0 +1,15 @@
+{
+  "description": "S11 C-prover KAT: the num_queries query indices sampled after the commit phase (sample_bits(5), fri/prover.rs:111). Transcript-state ground truth (replayed from the REAL proof). GATE 1 held.",
+  "format_version": "1",
+  "params": {
+    "log_max_height": 5,
+    "num_commit_phase_rounds": 1,
+    "num_queries": 2
+  },
+  "plonky3_commit": "82cfad73cd734d37a0d51953094f970c531817ec",
+  "query_indices": [
+    "4",
+    "23"
+  ],
+  "scope": "prover_s11_indices_zk"
+}
