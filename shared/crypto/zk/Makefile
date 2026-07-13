@@ -82,6 +82,7 @@ TESTS = \
     $(BUILD)/test_fri_proof_codec \
     $(BUILD)/test_stark_priming \
     $(BUILD)/test_stark_priming_zk \
+    $(BUILD)/test_fri_verify_zk \
     $(BUILD)/test_stark_proof_codec \
     $(BUILD)/test_stark_priming_integrated \
     $(BUILD)/test_stark_constraints_primitives \
@@ -263,6 +264,14 @@ $(BUILD)/test_stark_priming: tests/test_stark_priming.c stark_priming.h stark_pr
 # is_zk augmentation (random-commit observe + random opened round first).
 $(BUILD)/test_stark_priming_zk: tests/test_stark_priming_zk.c stark_priming.h stark_priming.c transcript.h transcript.c field_goldilocks.h field_goldilocks.c merkle_smt.h | $(BUILD)
 	$(CC) $(CFLAGS) -DDNAC_TRANSCRIPT_TESTING=1 $(INCLUDES) tests/test_stark_priming_zk.c stark_priming.c transcript.c sponge_sha3_512.c keccak_p3_cols.c keccak_p3_trace.c keccak_ref.c field_goldilocks.c -o $@
+
+# M2b — end-to-end is_zk=1 FRI verification. Builds dnac_fri_proof_t + 3-round
+# coms (random/trace/quotient, merged opened values) from stark_priming_zk.json
+# and runs dnac_stark_prime_transcript(is_zk=1) -> dnac_fri_verify == DNAC_FRI_OK.
+# Ground-truth gate: validates the is_zk transcript + merge against the REAL
+# Plonky3 HidingFriPcs verifier (not just the oracle's own Shadow).
+$(BUILD)/test_fri_verify_zk: tests/test_fri_verify_zk.c fri_verifier.h stark_priming.h stark_priming.c $(FRI_VERIFIER_STACK) | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_fri_verify_zk.c stark_priming.c $(FRI_VERIFIER_STACK) $(FRI_VERIFIER_LDADD) -o $@
 
 # P5 — additive DZKS STARK/PCS wire wrapper around the EXISTING DZKF FRI wire.
 # Roundtrip (decode -> field checks -> re-encode == wire) + the inner DZKF decodes
@@ -478,6 +487,11 @@ test: all
 	@echo "M2 — is_zk=1 (hiding) STARK/PCS priming replay (real HidingFriPcs prove, 82cfad73)"
 	@echo "============================================================"
 	@$(BUILD)/test_stark_priming_zk tools/vectors/stark_priming_zk.json
+	@echo
+	@echo "============================================================"
+	@echo "M2b — end-to-end is_zk=1 FRI verify (dnac_fri_verify on HidingFriPcs proof, 82cfad73)"
+	@echo "============================================================"
+	@$(BUILD)/test_fri_verify_zk tools/vectors/stark_priming_zk.json
 	@echo
 	@echo "============================================================"
 	@echo "Phase B8 P5 — additive DZKS STARK/PCS wire wrapper (around existing DZKF, 82cfad73)"

@@ -8745,21 +8745,21 @@ mod stark_priming {
     pub fn dump_stark_priming_zk(
         out_path: &PathBuf,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        use super::{FieldHash, MyCompress};
-        use p3_commit::ExtensionMmcs;
         use p3_fri::HidingFriPcs;
-        use p3_merkle_tree::MerkleTreeHidingMmcs;
         use rand::rngs::SmallRng;
         use rand::SeedableRng;
 
-        // ZK stack: hiding MMCS (salted leaves) + HidingFriPcs, DNAC SHA3-512
-        // hasher/compress + the SAME SerializingChallenger64 as the non-ZK path.
-        // SALT_ELEMS=2 (hiding_mmcs.rs:25); DIGEST_ELEMS=8, arity N=2 as ValMmcs.
-        type ZkValMmcs =
-            MerkleTreeHidingMmcs<[Goldilocks; 1], [u64; 1], FieldHash, MyCompress, SmallRng, 2, 8, 2>;
-        type ZkChallengeMmcs = ExtensionMmcs<Goldilocks, GoldFp2, ZkValMmcs>;
+        // ZK stack: HidingFriPcs (ZK=true) over the SAME PLAIN DNAC ValMmcs as the
+        // non-ZK path (FriValMmcs / FriChallengeMmcs). is_zk=1 comes from the
+        // random-codeword batch blinding + doubled domain (HidingFriPcs::ZK=true),
+        // NOT from the MMCS — so the C Merkle verify (plain siblings) handles the
+        // openings unchanged. Leaf-level salt hiding (MerkleTreeHidingMmcs, opening
+        // proof = (salts, siblings)) is a distinct hardening deferred to M3 (where
+        // real amount-confidentiality is claimed), needing a salted-leaf C Merkle
+        // verify. This M1/M2 exercises the full is_zk verify PLUMBING (transcript
+        // augmentation + random-codeword merge + 3-round coms).
         type ZkStarkPcs =
-            HidingFriPcs<Goldilocks, Radix2Dit<Goldilocks>, ZkValMmcs, ZkChallengeMmcs, SmallRng>;
+            HidingFriPcs<Goldilocks, Radix2Dit<Goldilocks>, FriValMmcs, FriChallengeMmcs, SmallRng>;
         type ZkStarkCfg = StarkConfig<ZkStarkPcs, GoldFp2, FriChallenger>;
 
         // ------------------------------------------------------------------
@@ -8770,13 +8770,8 @@ mod stark_priming {
         // ------------------------------------------------------------------
         let log_blowup = 2usize;
         let log_final_poly_len = 2usize;
-        let zk_val_mmcs: ZkValMmcs = ZkValMmcs::new(
-            FieldHash::new(super::Sha3_512Hash),
-            MyCompress::new(super::Sha3_512Hash),
-            0,
-            SmallRng::seed_from_u64(1),
-        );
-        let challenge_mmcs = ZkChallengeMmcs::new(zk_val_mmcs.clone());
+        let input_mmcs: FriValMmcs = make_mmcs(); // plain DNAC ValMmcs (non-hiding)
+        let challenge_mmcs = FriChallengeMmcs::new(make_mmcs());
         let fri_params = FriParameters {
             log_blowup,
             log_final_poly_len,
@@ -8789,7 +8784,7 @@ mod stark_priming {
         let init_state: Vec<u8> = FRI_INIT_STATE.to_vec();
         let pcs: ZkStarkPcs = HidingFriPcs::new(
             Radix2Dit::default(),
-            zk_val_mmcs,
+            input_mmcs,
             fri_params,
             4, // num_random_codewords (fib_air.rs:188)
             SmallRng::seed_from_u64(1),
@@ -8845,6 +8840,31 @@ mod stark_priming {
         let num_qc = quotient_chunks.len(); // MEASURED, not derived (finding #3 discipline)
 
         // ------------------------------------------------------------------
+        // 4b. HidingFriPcs MERGE (hiding_pcs.rs::verify: point.1.extend(rand)).
+        //     open() splits the last num_random_codewords (=4) values off EACH
+        //     round/matrix/point into opening_proof.0 (hiding_pcs.rs:334-360);
+        //     verify() re-merges them, and the inner two_adic_pcs verify observes
+        //     the MERGED values (two_adic_pcs.rs:689). So the transcript observe
+        //     (step 12') and the coms claimed_evals BOTH use base ++ rand.
+        //     opening_proof.0 = OpenedValues<Challenge> indexed [round][mat][point];
+        //     coms_to_verify round order = [random, trace, quotient]
+        //     (verifier.rs:403-458).
+        let rand_ov = &proof.opening_proof.0;
+        let merge = |base: &[GoldFp2], extra: &[GoldFp2]| -> Vec<GoldFp2> {
+            let mut v = base.to_vec();
+            v.extend_from_slice(extra);
+            v
+        };
+        let random_merged = merge(&random_values, &rand_ov[0][0][0]);
+        let trace_local_merged = merge(&trace_local, &rand_ov[1][0][0]);
+        let trace_next_merged = merge(&trace_next, &rand_ov[1][0][1]);
+        let quotient_merged: Vec<Vec<GoldFp2>> = quotient_chunks
+            .iter()
+            .enumerate()
+            .map(|(c, chunk)| merge(chunk, &rand_ov[2][c][0]))
+            .collect();
+
+        // ------------------------------------------------------------------
         // 5. Priming replay WITH the is_zk augmentation (verifier.rs:361-411).
         //    Recording challenger + Shadow; every sample cross-checked.
         // ------------------------------------------------------------------
@@ -8898,20 +8918,21 @@ mod stark_priming {
         );
         // (10) sample zeta (verifier.rs:391).
         let zeta = fri_rollin_sample_fp2(&mut hc, &mut shadow, &recorder);
-        // (12') PCS observe opened values in coms_to_verify order (verifier.rs:403-457):
-        //       RANDOM round FIRST (random evals @ zeta), then trace_local @ zeta,
-        //       trace_next @ zeta_next, then quotient chunks @ zeta. Only eval
-        //       vectors are observed (not the point z).
-        for f in &random_values {
+        // (12') PCS observe opened values in coms_to_verify order (verifier.rs:403-457
+        //       + two_adic_pcs.rs:689): RANDOM round FIRST, then trace_local @ zeta,
+        //       trace_next @ zeta_next, then quotient chunks @ zeta. Values are the
+        //       MERGED (base ++ rand codewords) vectors — the inner PCS observes
+        //       after HidingFriPcs::verify merges. Only eval vectors observed.
+        for f in &random_merged {
             fri_rollin_observe(&mut hc, &mut shadow, &fri_milestone_serialize_fp2(*f));
         }
-        for f in &trace_local {
+        for f in &trace_local_merged {
             fri_rollin_observe(&mut hc, &mut shadow, &fri_milestone_serialize_fp2(*f));
         }
-        for f in &trace_next {
+        for f in &trace_next_merged {
             fri_rollin_observe(&mut hc, &mut shadow, &fri_milestone_serialize_fp2(*f));
         }
-        for chunk in &quotient_chunks {
+        for chunk in &quotient_merged {
             for f in chunk {
                 fri_rollin_observe(&mut hc, &mut shadow, &fri_milestone_serialize_fp2(*f));
             }
@@ -8966,13 +8987,16 @@ mod stark_priming {
             serde_json::json!({ "c0_decimal": c0, "c1_decimal": c1 })
         };
         let pub_vals: Vec<String> = pis.iter().map(|p| p.as_canonical_u64().to_string()).collect();
+        // Emit the MERGED opened values (base ++ rand codewords) — these are what
+        // the real verifier observes AND what the coms claimed_evals must carry for
+        // the FRI reduced opening (committed row width = base + num_random_codewords).
         let random_json: Vec<serde_json::Value> =
-            random_values.iter().map(|f| fp2_json(*f)).collect();
+            random_merged.iter().map(|f| fp2_json(*f)).collect();
         let trace_local_json: Vec<serde_json::Value> =
-            trace_local.iter().map(|f| fp2_json(*f)).collect();
+            trace_local_merged.iter().map(|f| fp2_json(*f)).collect();
         let trace_next_json: Vec<serde_json::Value> =
-            trace_next.iter().map(|f| fp2_json(*f)).collect();
-        let quotient_chunks_json: Vec<Vec<serde_json::Value>> = quotient_chunks
+            trace_next_merged.iter().map(|f| fp2_json(*f)).collect();
+        let quotient_chunks_json: Vec<Vec<serde_json::Value>> = quotient_merged
             .iter()
             .map(|c| c.iter().map(|f| fp2_json(*f)).collect())
             .collect();
@@ -8995,10 +9019,10 @@ mod stark_priming {
                 "val": "Goldilocks",
                 "challenge": "BinomialExtensionField<Goldilocks, 2> (fp2)",
                 "hash": "FIPS-202 SHA3-512",
-                "input_mmcs": "MerkleTreeHidingMmcs<[Goldilocks;1], [u64;1], FieldHash, MyCompress, SmallRng, 2, 8, SALT_ELEMS=2>",
-                "fri_mmcs": "ExtensionMmcs<Goldilocks, fp2, ZkValMmcs>",
-                "pcs": "HidingFriPcs (ZK=true), num_random_codewords=4",
-                "salt_grounding": "hiding_mmcs.rs:25 — SALT_ELEMS(2) * 64-bit Goldilocks = 128-bit hiding",
+                "input_mmcs": "MerkleTreeMmcs<[Goldilocks;1], [u64;1], FieldHash, MyCompress, 2, 8> (PLAIN, non-hiding)",
+                "fri_mmcs": "ExtensionMmcs<Goldilocks, fp2, ValMmcs>",
+                "pcs": "HidingFriPcs (ZK=true) over the plain ValMmcs, num_random_codewords=4",
+                "hiding_scope_note": "is_zk=1 hiding here = random-codeword batch blinding + doubled domain (HidingFriPcs::ZK=true), NOT leaf salts. Leaf-level salt hiding (MerkleTreeHidingMmcs, opening proof = (salts,siblings)) is deferred to M3 (real amount-confidentiality), needing a salted-leaf C Merkle verify. This M1/M2 exercises the is_zk verify PLUMBING.",
                 "rng_seed": "SmallRng::seed_from_u64(1) — byte-stable KAT (C verifier never sees the seed; prod proving uses OS entropy)",
                 "challenger": "SerializingChallenger64<Goldilocks, HashChallenger<u8, FriOracleSha3_512, 64>>",
                 "is_zk": is_zk
@@ -9060,7 +9084,15 @@ mod stark_priming {
                 "input_buf_len": primed_seed_len,
                 "output_buf_remaining_hex": output_buf_remaining_hex,
                 "output_buf_remaining_len": shadow.output_buf.len()
-            }
+            },
+            // M2b: HidingFriPcs::Proof is the TUPLE (opened_values_for_rand_cws,
+            // inner_fri_proof) — hiding_pcs.rs Proof type. serde emits a 2-element
+            // array: [0] random-codeword openings (merged into each round's point
+            // values at verify, hiding_pcs.rs verify: point.1.extend(rand_point)),
+            // [1] the standard inner FriProof (commit_phase_commits / final_poly /
+            // query_proofs with 3 input batches: random, trace, quotient).
+            "proof_serde": serde_json::to_value(&proof.opening_proof)?,
+            "proof_serde_format_note": "HidingFriPcs::Proof tuple [rand_cw_openings, inner_FriProof]. The inner FriProof query_proofs carry 3 input batches (random/trace/quotient); the random-codeword openings [0] are merged into each round's opened values before the inner TwoAdicFriPcs verify (hiding_pcs.rs::verify)."
         });
 
         let mut f = File::create(out_path)?;

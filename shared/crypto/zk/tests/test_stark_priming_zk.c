@@ -448,8 +448,8 @@ int main(int argc, char **argv) {
                          "hash_challenger.rs flush", "sampling / final observe must clear output_buf");
 
     /* 8-9. exact lengths */
-    if (ibl != 288 || (uint64_t)ibl != fx.input_buf_len_field) {
-        fprintf(stderr, "MISMATCH field=input_buf_len: got %zu, expected 288 (vector field %llu)\n",
+    if (ibl != 736 || (uint64_t)ibl != fx.input_buf_len_field) {
+        fprintf(stderr, "MISMATCH field=input_buf_len: got %zu, expected 736 (vector field %llu)\n",
                 ibl, (unsigned long long)fx.input_buf_len_field);
         fails++;
     }
