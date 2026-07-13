@@ -16,6 +16,7 @@
 #include "messenger/gek.h"
 #include "crypto/utils/qgp_random.h"
 #include "crypto/hash/qgp_sha3.h"
+#include "crypto/hash/hkdf_sha3.h"
 
 #define TEST_PASS "\033[32mPASS\033[0m"
 #define TEST_FAIL "\033[31mFAIL\033[0m"
@@ -52,8 +53,8 @@ static void test_hkdf_deterministic(void) {
 
     uint8_t out1[GEK_KEY_SIZE], out2[GEK_KEY_SIZE];
 
-    int rc1 = gek_hkdf_sha3_256(salt, 32, ikm, 32, info, info_len, out1, GEK_KEY_SIZE);
-    int rc2 = gek_hkdf_sha3_256(salt, 32, ikm, 32, info, info_len, out2, GEK_KEY_SIZE);
+    int rc1 = hkdf_sha3_256(salt, 32, ikm, 32, info, info_len, out1, GEK_KEY_SIZE);
+    int rc2 = hkdf_sha3_256(salt, 32, ikm, 32, info, info_len, out2, GEK_KEY_SIZE);
 
     if (rc1 != 0 || rc2 != 0) {
         printf("  [%s] HKDF call failed (rc1=%d, rc2=%d)\n", TEST_FAIL, rc1, rc2);
@@ -88,8 +89,8 @@ static void test_hkdf_entropy_sensitivity(void) {
 
     uint8_t out1[GEK_KEY_SIZE], out2[GEK_KEY_SIZE];
 
-    int rc1 = gek_hkdf_sha3_256(salt1, 32, ikm, 32, info, info_len, out1, GEK_KEY_SIZE);
-    int rc2 = gek_hkdf_sha3_256(salt2, 32, ikm, 32, info, info_len, out2, GEK_KEY_SIZE);
+    int rc1 = hkdf_sha3_256(salt1, 32, ikm, 32, info, info_len, out1, GEK_KEY_SIZE);
+    int rc2 = hkdf_sha3_256(salt2, 32, ikm, 32, info, info_len, out2, GEK_KEY_SIZE);
 
     if (rc1 != 0 || rc2 != 0) {
         printf("  [%s] HKDF call failed\n", TEST_FAIL);
@@ -124,8 +125,8 @@ static void test_hkdf_ikm_sensitivity(void) {
 
     uint8_t out1[GEK_KEY_SIZE], out2[GEK_KEY_SIZE];
 
-    int rc1 = gek_hkdf_sha3_256(salt, 32, ikm1, 32, info, info_len, out1, GEK_KEY_SIZE);
-    int rc2 = gek_hkdf_sha3_256(salt, 32, ikm2, 32, info, info_len, out2, GEK_KEY_SIZE);
+    int rc1 = hkdf_sha3_256(salt, 32, ikm1, 32, info, info_len, out1, GEK_KEY_SIZE);
+    int rc2 = hkdf_sha3_256(salt, 32, ikm2, 32, info, info_len, out2, GEK_KEY_SIZE);
 
     if (rc1 != 0 || rc2 != 0) {
         printf("  [%s] HKDF call failed\n", TEST_FAIL);
@@ -157,7 +158,7 @@ static void test_hkdf_nonzero_output(void) {
     const uint8_t *info = (const uint8_t *)GEK_HKDF_INFO;
     uint8_t out[GEK_KEY_SIZE];
 
-    if (gek_hkdf_sha3_256(salt, 32, ikm, 32, info, GEK_HKDF_INFO_LEN, out, GEK_KEY_SIZE) != 0) {
+    if (hkdf_sha3_256(salt, 32, ikm, 32, info, GEK_HKDF_INFO_LEN, out, GEK_KEY_SIZE) != 0) {
         printf("  [%s] HKDF call failed\n", TEST_FAIL);
         return;
     }
@@ -190,7 +191,7 @@ static void test_ratchet_chain_security(void) {
 
     /* Remaining member derives new GEK with entropy */
     uint8_t new_gek_correct[GEK_KEY_SIZE];
-    if (gek_hkdf_sha3_256(entropy, 32, old_gek, 32,
+    if (hkdf_sha3_256(entropy, 32, old_gek, 32,
                            (const uint8_t *)GEK_HKDF_INFO, GEK_HKDF_INFO_LEN,
                            new_gek_correct, GEK_KEY_SIZE) != 0) {
         printf("  [%s] HKDF call failed\n", TEST_FAIL);
@@ -202,7 +203,7 @@ static void test_ratchet_chain_security(void) {
     memset(wrong_entropy, 0xFF, sizeof(wrong_entropy));
 
     uint8_t new_gek_wrong[GEK_KEY_SIZE];
-    if (gek_hkdf_sha3_256(wrong_entropy, 32, old_gek, 32,
+    if (hkdf_sha3_256(wrong_entropy, 32, old_gek, 32,
                            (const uint8_t *)GEK_HKDF_INFO, GEK_HKDF_INFO_LEN,
                            new_gek_wrong, GEK_KEY_SIZE) != 0) {
         printf("  [%s] HKDF call failed\n", TEST_FAIL);
@@ -211,7 +212,7 @@ static void test_ratchet_chain_security(void) {
 
     /* Also try: removed member uses old_gek directly as salt (guessing) */
     uint8_t new_gek_guess[GEK_KEY_SIZE];
-    if (gek_hkdf_sha3_256(old_gek, 32, old_gek, 32,
+    if (hkdf_sha3_256(old_gek, 32, old_gek, 32,
                            (const uint8_t *)GEK_HKDF_INFO, GEK_HKDF_INFO_LEN,
                            new_gek_guess, GEK_KEY_SIZE) != 0) {
         printf("  [%s] HKDF call failed\n", TEST_FAIL);
@@ -280,10 +281,10 @@ static void test_null_params(void) {
     uint8_t buf[32];
     memset(buf, 0, 32);
 
-    int rc1 = gek_hkdf_sha3_256(NULL, 32, buf, 32, buf, 14, buf, 32);
-    int rc2 = gek_hkdf_sha3_256(buf, 32, NULL, 32, buf, 14, buf, 32);
-    int rc3 = gek_hkdf_sha3_256(buf, 32, buf, 32, NULL, 14, buf, 32);
-    int rc4 = gek_hkdf_sha3_256(buf, 32, buf, 32, buf, 14, NULL, 32);
+    int rc1 = hkdf_sha3_256(NULL, 32, buf, 32, buf, 14, buf, 32);
+    int rc2 = hkdf_sha3_256(buf, 32, NULL, 32, buf, 14, buf, 32);
+    int rc3 = hkdf_sha3_256(buf, 32, buf, 32, NULL, 14, buf, 32);
+    int rc4 = hkdf_sha3_256(buf, 32, buf, 32, buf, 14, NULL, 32);
     int rc5 = gek_generate_ratcheted(NULL, buf);
     int rc6 = gek_generate_ratcheted(buf, NULL);
 
@@ -305,7 +306,7 @@ static void test_oversized_output(void) {
     memset(salt, 0xAA, 32);
     memset(ikm, 0xBB, 32);
 
-    int rc = gek_hkdf_sha3_256(salt, 32, ikm, 32,
+    int rc = hkdf_sha3_256(salt, 32, ikm, 32,
                                 (const uint8_t *)GEK_HKDF_INFO, GEK_HKDF_INFO_LEN,
                                 out, 64);  /* 64 > 32 = SHA3-256 output */
 
