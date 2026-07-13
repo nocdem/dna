@@ -1,0 +1,186 @@
+{
+  "air": "vendored FibonacciAir (uni-stark/tests/fib_air.rs:24-116 @ 82cfad73)",
+  "challenges": {
+    "stark_alpha_fp2": {
+      "c0_decimal": "8446614230193646633",
+      "c1_decimal": "957877891702620163"
+    },
+    "zeta_fp2": {
+      "c0_decimal": "14347365279151045297",
+      "c1_decimal": "2576512630787818518"
+    },
+    "zeta_next_fp2": {
+      "c0_decimal": "5371195323287280661",
+      "c1_decimal": "7613005449358721437"
+    }
+  },
+  "commitment_with_opening_points_assembly": {
+    "note": "verifier.rs:403-458; is_zk=1 -> random round FIRST (verifier.rs:403-411); preprocessed_width==0 -> no preprocessed round.",
+    "order": [
+      "random",
+      "trace",
+      "quotient_chunks"
+    ],
+    "quotient_chunks": {
+      "points": [
+        {
+          "evals": "chunk_i",
+          "point": "zeta"
+        }
+      ]
+    },
+    "random": {
+      "domain": "trace_domain = natural_domain_for_degree(2^degree_bits), shift=ONE",
+      "points": [
+        {
+          "evals": "opened_values.random",
+          "point": "zeta"
+        }
+      ]
+    },
+    "trace": {
+      "points": [
+        {
+          "evals": "trace_local",
+          "point": "zeta"
+        },
+        {
+          "evals": "trace_next (main_next=true)",
+          "point": "zeta_next"
+        }
+      ]
+    }
+  },
+  "commitments": {
+    "quotient_commit_root_hex": "c91be3ad3081fe1c4befc915a9f5ccc13ac4ea259961ee058ef62802f1ac0e08ec657ec1867a1e26b4cd9c7f4f3bed7f466ad04a302c027f4136befac6eba6a2",
+    "random_commit_root_hex": "2eddf135bdfe0a16acfbb4fe1f4867e53afe6b3a8dd67121435362d68ff26677017feb8487af68715888a22f8039f495dfb346b74903dbf097a8ad60302a8d73",
+    "trace_commit_root_hex": "2f0a0e33ee9312913d85aabb045150300e89342078a6b5b46ab4e1d983a1a7f659aa2d892731ed36efb706acf6124fb034be6230eaf161c5fb5a1c14e5e8c6f4"
+  },
+  "dnac_stack": {
+    "challenge": "BinomialExtensionField<Goldilocks, 2> (fp2)",
+    "challenger": "SerializingChallenger64<Goldilocks, HashChallenger<u8, FriOracleSha3_512, 64>>",
+    "fri_mmcs": "ExtensionMmcs<Goldilocks, fp2, ZkValMmcs>",
+    "hash": "FIPS-202 SHA3-512",
+    "input_mmcs": "MerkleTreeHidingMmcs<[Goldilocks;1], [u64;1], FieldHash, MyCompress, SmallRng, 2, 8, SALT_ELEMS=2>",
+    "is_zk": 1,
+    "pcs": "HidingFriPcs (ZK=true), num_random_codewords=4",
+    "rng_seed": "SmallRng::seed_from_u64(1) — byte-stable KAT (C verifier never sees the seed; prod proving uses OS entropy)",
+    "salt_grounding": "hiding_mmcs.rs:25 — SALT_ELEMS(2) * 64-bit Goldilocks = 128-bit hiding",
+    "val": "Goldilocks"
+  },
+  "format_version": "1",
+  "fri_params": {
+    "commit_proof_of_work_bits": 0,
+    "log_blowup": 2,
+    "log_final_poly_len": 2,
+    "max_log_arity": 1,
+    "num_queries": 2,
+    "query_proof_of_work_bits": 0
+  },
+  "grounding": {
+    "gate1_p3_uni_stark_verify": "Ok",
+    "gate2_priming_divergence_alpha_zeta": "Ok",
+    "is_zk_transcript_delta": "verifier.rs:383-385 (observe commitments.random after quotient_chunks, before zeta) + verifier.rs:403-411 (coms_to_verify random round FIRST)",
+    "note": "REAL is_zk=1 p3_uni_stark::prove over HidingFriPcs. GATE 1 (full verifier) is authoritative. GATE 2 replays the is_zk observe order up to zeta on a clean challenger; alpha/zeta cross-checked. Full FRI-query replay unpacking the HidingFriPcs proof tuple is M2 (C verifier)."
+  },
+  "init_state_ascii": "DNAC|ZK|FRI|TRANSCRIPT|V1",
+  "init_state_hex": "444e41437c5a4b7c4652497c5452414e5343524950547c5631",
+  "instance": {
+    "base_degree_bits": 3,
+    "degree_bits": 4,
+    "num_quotient_chunks": 4,
+    "num_random_codewords": 4,
+    "preprocessed_width": 0
+  },
+  "milestone": "M1 sandbox confidential — first is_zk=1 proof in the DNAC stack",
+  "opened_values": {
+    "quotient_chunks": [
+      [
+        {
+          "c0_decimal": "14300393603844413268",
+          "c1_decimal": "3258261855599178435"
+        },
+        {
+          "c0_decimal": "4653868843488412157",
+          "c1_decimal": "11854008962872395788"
+        }
+      ],
+      [
+        {
+          "c0_decimal": "17897504731322900867",
+          "c1_decimal": "16807301139721585327"
+        },
+        {
+          "c0_decimal": "16651097210103092515",
+          "c1_decimal": "1360470158333309397"
+        }
+      ],
+      [
+        {
+          "c0_decimal": "14184176801349878104",
+          "c1_decimal": "3185789646905514006"
+        },
+        {
+          "c0_decimal": "15884515356481208196",
+          "c1_decimal": "8808742228255691520"
+        }
+      ],
+      [
+        {
+          "c0_decimal": "3523912238378227681",
+          "c1_decimal": "7377244885244696918"
+        },
+        {
+          "c0_decimal": "10670474452141004521",
+          "c1_decimal": "4495803071212165829"
+        }
+      ]
+    ],
+    "random": [
+      {
+        "c0_decimal": "1065504343250058149",
+        "c1_decimal": "16826152259591989063"
+      },
+      {
+        "c0_decimal": "2754273828612255233",
+        "c1_decimal": "14468934461274402629"
+      }
+    ],
+    "trace_local": [
+      {
+        "c0_decimal": "11477560351632831471",
+        "c1_decimal": "2580078814291351550"
+      },
+      {
+        "c0_decimal": "8311790790004627668",
+        "c1_decimal": "10604663133987110171"
+      }
+    ],
+    "trace_next": [
+      {
+        "c0_decimal": "9132067623543427719",
+        "c1_decimal": "14280506107395757979"
+      },
+      {
+        "c0_decimal": "5905281876730427864",
+        "c1_decimal": "3486220091427645362"
+      }
+    ]
+  },
+  "oracle": "real_p3_uni_stark_prove_is_zk_1",
+  "plonky3_commit": "82cfad73cd734d37a0d51953094f970c531817ec",
+  "public_values": [
+    "0",
+    "1",
+    "21"
+  ],
+  "scope": "stark_priming_zk",
+  "synthetic_primary_oracle": false,
+  "transcript_snapshot_at_verify_fri_entry": {
+    "description": "Verifier challenger primed through verifier.rs:360-411 (is_zk) + PCS observe. Load via dnac_transcript_init(input_buf_hex). output_buf empty (last op was observe).",
+    "input_buf_hex": "b464bb8163e8f72bae9e72f2775ee3f36040927182008af835210fdc052d21b11b2cbe24ea3a92cc2a7681ad9c1f865323c19c96356a4416c71c14b4ae923ab1a53b0e0e8e6ec90e47e79dd1548082e901ae965074253926452fab9a3bfbcbc8efb32e3f547c489ffed758020348ce23d4d8968daf6959731b7dfb37ef542b9387d226ae1e9fbb7e9bd71eb0a48c2ec6d8b9115194c6f351b2e75fceb38a613054176a49373475c6c3b23108e5ab372dfd81624f0edd95400c484eb458e681a483e15f64bab560f8af821f7256873fe92355b1f8b09414e7d5f1f9a2665ce11258c1cb5ba651d8c41698eb08ce32362c84bf4c948e2271dc00d329c962f03e7ae1972fa48273e73056d91306233d6166e9d6bec8fa231594c51ab6cf124d643e",
+    "input_buf_len": 288,
+    "output_buf_remaining_hex": "",
+    "output_buf_remaining_len": 0
+  }
+}

@@ -31,9 +31,10 @@ dnac_stark_priming_status_t dnac_stark_prime_transcript(
     assert(input != NULL);
     assert(out != NULL);
 
-    /* DNAC v3.0 is non-ZK (TwoAdicFriPcs::ZK = false, two_adic_pcs.rs:279). The
-     * ZK random-commitment branch (verifier.rs:382-386) must never execute. */
-    if (input->is_zk != 0) {
+    /* is_zk is a single config bit (config.rs:43 -> 0 or 1). 0 = TwoAdicFriPcs
+     * (v3.0 transparent); 1 = HidingFriPcs (sandbox confidential, M1/M2). Any
+     * other value is a malformed instance. */
+    if (input->is_zk > 1) {
         return DNAC_STARK_PRIMING_ERR_ZK_UNSUPPORTED;
     }
 
@@ -72,7 +73,13 @@ dnac_stark_priming_status_t dnac_stark_prime_transcript(
     dnac_transcript_observe_bytes(transcript, input->quotient_commit.bytes,
                                   DNAC_MERKLE_DIGEST_BYTES);
 
-    /* (9) non-ZK: no random commitment (verifier.rs:382-386; is_zk==0 enforced). */
+    /* (9) is_zk: observe the random commitment AFTER quotient_chunks, BEFORE
+     * zeta (verifier.rs:383-385). is_zk==0 skips (no random branch). */
+    if (input->is_zk != 0) {
+        assert(input->random_commit != NULL);
+        dnac_transcript_observe_bytes(transcript, input->random_commit->bytes,
+                                      DNAC_MERKLE_DIGEST_BYTES);
+    }
 
     /* (10) sample zeta — out-of-domain point (verifier.rs:391). */
     out->zeta = dnac_transcript_sample_fp2(transcript);
@@ -89,9 +96,17 @@ dnac_stark_priming_status_t dnac_stark_prime_transcript(
     out->base_degree_bits = base_degree_bits;
 
     /* (12) PCS observe opened values (two_adic_pcs.rs:687-693), in coms_to_verify
-     * order (verifier.rs:403-458): trace_local @ zeta, trace_next @ zeta_next,
-     * each quotient chunk @ zeta, then preprocessed. Only the eval VECTORS are
-     * observed; the opening coordinate z is never observed (it is bound `_`). */
+     * order (verifier.rs:403-458). For is_zk==1 the RANDOM round is FIRST
+     * (verifier.rs:403-411): random_local @ zeta over the trace domain, before
+     * trace_local. Then trace_local @ zeta, trace_next @ zeta_next, each quotient
+     * chunk @ zeta, then preprocessed. Only the eval VECTORS are observed; the
+     * opening coordinate z is never observed (it is bound `_`). */
+    if (input->is_zk != 0) {
+        assert(input->random_local != NULL);
+        for (size_t i = 0; i < input->random_local_len; ++i) {
+            dnac_transcript_observe_fp2(transcript, input->random_local[i]);
+        }
+    }
     for (size_t i = 0; i < input->trace_local_len; ++i) {
         dnac_transcript_observe_fp2(transcript, input->trace_local[i]);
     }

@@ -56,9 +56,11 @@ extern "C" {
  * ========================================================================== */
 typedef enum {
     DNAC_STARK_PRIMING_OK = 0,
-    /* is_zk != 0. DNAC v3.0 is non-ZK; the ZK random-commitment branch
-     * (verifier.rs:382-386) must never execute. ZK support is a future change
-     * with its own design + vectors. */
+    /* is_zk not in {0,1}. Plonky3 encodes ZK as a single config bit
+     * (config.rs:43 -> 0 or 1); any other value is a malformed instance.
+     * is_zk==1 enables the hiding branch (random commitment observe +
+     * random opened round first); validated by the M1 sandbox vector
+     * stark_priming_zk.json. */
     DNAC_STARK_PRIMING_ERR_ZK_UNSUPPORTED = 1
 } dnac_stark_priming_status_t;
 
@@ -85,6 +87,9 @@ typedef struct {
     dnac_merkle_digest_t        trace_commit;     /* verifier.rs:369 */
     dnac_merkle_digest_t        quotient_commit;  /* verifier.rs:380 */
     const dnac_merkle_digest_t *preprocessed_commit; /* non-NULL iff preprocessed_width>0 */
+    /* ZK random commitment — non-NULL iff is_zk==1. Observed AFTER quotient_commit,
+     * BEFORE zeta (verifier.rs:383-385). Wire-carried (commitments.random). */
+    const dnac_merkle_digest_t *random_commit;
 
     /* Public values — base-field Goldilocks, fixed AIR public-input order
      * (verifier.rs:373). NOT extension elements. */
@@ -92,7 +97,11 @@ typedef struct {
     size_t           num_public_values;
 
     /* Opened values (claimed evaluations) — observed at the PCS layer
-     * (two_adic_pcs.rs:687-693), in coms_to_verify order. */
+     * (two_adic_pcs.rs:687-693), in coms_to_verify order. For is_zk==1 the
+     * RANDOM round is observed FIRST (verifier.rs:403-411): random_local @ zeta
+     * over the trace domain, before trace_local. */
+    const gold_fp2_t        *random_local;      /* @ zeta; non-NULL iff is_zk==1 */
+    size_t                   random_local_len;
     const gold_fp2_t        *trace_local;       /* @ zeta                        */
     size_t                   trace_local_len;
     const gold_fp2_t        *trace_next;         /* @ zeta_next; NULL iff main_next==false */

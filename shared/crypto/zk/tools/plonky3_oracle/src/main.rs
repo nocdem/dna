@@ -328,6 +328,16 @@ enum Cmd {
         #[arg(long)]
         out: PathBuf,
     },
+    /// M1 — FIRST is_zk=1 (hiding) STARK proof in the DNAC stack. FibonacciAir
+    /// proven over HidingFriPcs (ZK=true) + salted MerkleTreeHidingMmcs;
+    /// GATE1 p3_uni_stark::verify authoritative. Emits the is_zk transcript
+    /// observe order (random-commit + random-round-first) + full proof for the
+    /// C verifier (M2) to mirror. Sandbox confidential milestone.
+    #[command(name = "dump-stark-priming-zk")]
+    DumpStarkPrimingZk {
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// P6 Part B — STARK priming for an AIR that does NOT read the next row
     /// (main_next=false): vendored SquareAir (a*a==b). Same DNAC stack + both
     /// gates as dump-stark-priming, but the proof carries trace_next=None and the
@@ -406,6 +416,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Cmd::DumpFriVerifierVerifyQuery { out } => dump_fri_verifier_verify_query(&out)?,
         Cmd::DumpFriVerifierRollin { out } => dump_fri_verifier_rollin(&out)?,
         Cmd::DumpStarkPriming { out } => stark_priming::dump_stark_priming(&out)?,
+        Cmd::DumpStarkPrimingZk { out } => stark_priming::dump_stark_priming_zk(&out)?,
         Cmd::DumpStarkPrimingNoNext { out } => stark_priming::dump_stark_priming_no_next(&out)?,
         Cmd::DumpStarkVerifyConstraints { out } => {
             stark_priming::dump_stark_verify_constraints(&out)?
@@ -8694,6 +8705,373 @@ mod stark_priming {
              GATE2 verify_fri=Ok; degree_bits={}; seed_len={}; synthetic_primary_oracle=false)",
             out_path.display(),
             degree_bits,
+            primed_seed_len
+        );
+        Ok(())
+    }
+
+    // ========================================================================
+    // M1 — is_zk=1 (HIDING) STARK proof for the SANDBOX confidential demo.
+    // 2026-07-13. Same vendored FibonacciAir + DNAC Goldilocks/SHA3-512
+    // challenger as dump_stark_priming, but the PCS is HidingFriPcs (ZK=true)
+    // over a MerkleTreeHidingMmcs (salted leaves). This is the FIRST is_zk=1
+    // proof anywhere in the DNAC stack — the C verifier hard-rejects is_zk!=0
+    // today (stark_priming.c:36). M2 removes that gate and mirrors the observe
+    // order emitted here; M3 swaps FibonacciAir for the confidential AIR.
+    //
+    // Grounding (all @ Plonky3 82cfad73):
+    //   - make_zk_config pattern: uni-stark/tests/fib_air.rs:161-189
+    //     (MerkleTreeHidingMmcs + HidingFriPcs::new(.., num_random_codewords=4,
+    //      SmallRng::seed_from_u64(1))).
+    //   - SALT_ELEMS=2: hiding_mmcs.rs:25 rule "SALT_ELEMS * sizeof(Value) >=
+    //     target security"; Goldilocks value = 64 bits, target = 128 -> 2.
+    //   - is_zk transcript order: verifier.rs:361-411. The is_zk delta vs the
+    //     non-ZK dump is EXACTLY two insertions:
+    //       (9') observe commitments.random AFTER quotient_chunks, BEFORE zeta
+    //            (verifier.rs:383-385).
+    //       (12') coms_to_verify prepends a RANDOM round, so its opened evals
+    //            are observed FIRST (verifier.rs:403-411), before trace/quotient.
+    //   - base_degree_bits = degree_bits - is_zk (verifier.rs:52); the ZK prover
+    //     doubles the trace domain (prover.rs:140), so num_qc folds is_zk twice
+    //     (prover.rs:127: 1<<(log_num_qc + is_zk)).
+    //
+    // GATE 1 (AUTHORITATIVE): p3_uni_stark::verify — the REAL verifier — must
+    // return Ok. That alone proves the whole is_zk transcript + hiding-PCS path
+    // is valid by Plonky3. GATE 2 (priming-divergence): the observe order up to
+    // zeta is replayed on a clean challenger and alpha/zeta cross-checked; a
+    // wrong is_zk observe order diverges and aborts. The full p3_verify_fri
+    // replay (unpacking the HidingFriPcs proof tuple) lands with M2's C verifier.
+    // ========================================================================
+    pub fn dump_stark_priming_zk(
+        out_path: &PathBuf,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use super::{FieldHash, MyCompress};
+        use p3_commit::ExtensionMmcs;
+        use p3_fri::HidingFriPcs;
+        use p3_merkle_tree::MerkleTreeHidingMmcs;
+        use rand::rngs::SmallRng;
+        use rand::SeedableRng;
+
+        // ZK stack: hiding MMCS (salted leaves) + HidingFriPcs, DNAC SHA3-512
+        // hasher/compress + the SAME SerializingChallenger64 as the non-ZK path.
+        // SALT_ELEMS=2 (hiding_mmcs.rs:25); DIGEST_ELEMS=8, arity N=2 as ValMmcs.
+        type ZkValMmcs =
+            MerkleTreeHidingMmcs<[Goldilocks; 1], [u64; 1], FieldHash, MyCompress, SmallRng, 2, 8, 2>;
+        type ZkChallengeMmcs = ExtensionMmcs<Goldilocks, GoldFp2, ZkValMmcs>;
+        type ZkStarkPcs =
+            HidingFriPcs<Goldilocks, Radix2Dit<Goldilocks>, ZkValMmcs, ZkChallengeMmcs, SmallRng>;
+        type ZkStarkCfg = StarkConfig<ZkStarkPcs, GoldFp2, FriChallenger>;
+
+        // ------------------------------------------------------------------
+        // 1. Build the ZK StarkConfig. pow=0 (deterministic; no grind). Same
+        //    degree params as the non-ZK fib config (log_blowup=2, log_final=2,
+        //    num_queries=2). num_random_codewords=4 + SmallRng seed=1 per
+        //    fib_air.rs:187-188. Deterministic seed => byte-stable KAT.
+        // ------------------------------------------------------------------
+        let log_blowup = 2usize;
+        let log_final_poly_len = 2usize;
+        let zk_val_mmcs: ZkValMmcs = ZkValMmcs::new(
+            FieldHash::new(super::Sha3_512Hash),
+            MyCompress::new(super::Sha3_512Hash),
+            0,
+            SmallRng::seed_from_u64(1),
+        );
+        let challenge_mmcs = ZkChallengeMmcs::new(zk_val_mmcs.clone());
+        let fri_params = FriParameters {
+            log_blowup,
+            log_final_poly_len,
+            max_log_arity: 1,
+            num_queries: 2,
+            commit_proof_of_work_bits: 0,
+            query_proof_of_work_bits: 0,
+            mmcs: challenge_mmcs,
+        };
+        let init_state: Vec<u8> = FRI_INIT_STATE.to_vec();
+        let pcs: ZkStarkPcs = HidingFriPcs::new(
+            Radix2Dit::default(),
+            zk_val_mmcs,
+            fri_params,
+            4, // num_random_codewords (fib_air.rs:188)
+            SmallRng::seed_from_u64(1),
+        );
+        let challenger = FriChallenger::new(FriHashChal::new(init_state.clone(), FriOracleSha3_512));
+        let config: ZkStarkCfg = StarkConfig::new(pcs, challenger);
+
+        // ------------------------------------------------------------------
+        // 2. Vendored FibonacciAir; n=8 trace, pis=[0,1,fib(7)=21] (same as the
+        //    non-ZK dump). M3 replaces this AIR with the confidential AIR.
+        // ------------------------------------------------------------------
+        let air = FibonacciAir {};
+        let n = 1usize << 3;
+        let trace = generate_trace_rows::<Goldilocks>(0, 1, n);
+        let pis: Vec<Goldilocks> =
+            vec![Goldilocks::ZERO, Goldilocks::ONE, Goldilocks::from_u64(21)];
+
+        // ------------------------------------------------------------------
+        // 3. GATE 1 (AUTHORITATIVE) — real is_zk=1 prove + verify.
+        // ------------------------------------------------------------------
+        let proof = prove(&config, &air, trace, &pis);
+        verify(&config, &air, &proof, &pis).map_err(|e| {
+            format!("GATE 1 FAILED: p3_uni_stark::verify rejected the is_zk=1 proof: {e:?}")
+        })?;
+
+        // ------------------------------------------------------------------
+        // 4. Confirm ZK invariants (the whole point of M1).
+        // ------------------------------------------------------------------
+        let is_zk = config.is_zk();
+        if is_zk != 1 {
+            return Err(format!("expected is_zk=1 (HidingFriPcs::ZK=true), got {is_zk}").into());
+        }
+        let degree_bits = proof.degree_bits;
+        let base_degree_bits = degree_bits - is_zk; // verifier.rs:52
+        let random_commit = proof
+            .commitments
+            .random
+            .clone()
+            .ok_or("is_zk=1: commitments.random MUST be present")?;
+        let random_values = proof
+            .opened_values
+            .random
+            .clone()
+            .ok_or("is_zk=1: opened_values.random MUST be present")?;
+        let preprocessed_width = 0usize; // FibonacciAir: no preprocessed columns
+        let trace_local = proof.opened_values.trace_local.clone();
+        let trace_next = proof
+            .opened_values
+            .trace_next
+            .clone()
+            .ok_or("FibonacciAir: trace_next expected (main_next path)")?;
+        let quotient_chunks = proof.opened_values.quotient_chunks.clone();
+        let num_qc = quotient_chunks.len(); // MEASURED, not derived (finding #3 discipline)
+
+        // ------------------------------------------------------------------
+        // 5. Priming replay WITH the is_zk augmentation (verifier.rs:361-411).
+        //    Recording challenger + Shadow; every sample cross-checked.
+        // ------------------------------------------------------------------
+        let recorder: HashRecorder = Rc::new(RefCell::new(VecDeque::new()));
+        let hasher = DnacSha3_512Hasher {
+            recorder: recorder.clone(),
+        };
+        let mut hc = HashChallenger::<u8, DnacSha3_512Hasher, 64>::new(init_state.clone(), hasher);
+        let mut shadow = Shadow::new(&init_state);
+
+        // (1)-(3) instance scalars (verifier.rs:361-363).
+        fri_rollin_observe(
+            &mut hc,
+            &mut shadow,
+            &fri_milestone_serialize_fp(Goldilocks::from_usize(degree_bits)),
+        );
+        fri_rollin_observe(
+            &mut hc,
+            &mut shadow,
+            &fri_milestone_serialize_fp(Goldilocks::from_usize(base_degree_bits)),
+        );
+        fri_rollin_observe(
+            &mut hc,
+            &mut shadow,
+            &fri_milestone_serialize_fp(Goldilocks::from_usize(preprocessed_width)),
+        );
+        // (4) trace commitment (verifier.rs:369).
+        fri_rollin_observe(
+            &mut hc,
+            &mut shadow,
+            &fri_milestone_serialize_commitment(&proof.commitments.trace),
+        );
+        // (5) preprocessed_width == 0 -> skip (verifier.rs:370-372).
+        // (6) public values (verifier.rs:373).
+        for pv in &pis {
+            fri_rollin_observe(&mut hc, &mut shadow, &fri_milestone_serialize_fp(*pv));
+        }
+        // (7) sample alpha (verifier.rs:379).
+        let alpha = fri_rollin_sample_fp2(&mut hc, &mut shadow, &recorder);
+        // (8) quotient_chunks commitment (verifier.rs:380).
+        fri_rollin_observe(
+            &mut hc,
+            &mut shadow,
+            &fri_milestone_serialize_commitment(&proof.commitments.quotient_chunks),
+        );
+        // (9') is_zk: observe the random commitment (verifier.rs:383-385).
+        fri_rollin_observe(
+            &mut hc,
+            &mut shadow,
+            &fri_milestone_serialize_commitment(&random_commit),
+        );
+        // (10) sample zeta (verifier.rs:391).
+        let zeta = fri_rollin_sample_fp2(&mut hc, &mut shadow, &recorder);
+        // (12') PCS observe opened values in coms_to_verify order (verifier.rs:403-457):
+        //       RANDOM round FIRST (random evals @ zeta), then trace_local @ zeta,
+        //       trace_next @ zeta_next, then quotient chunks @ zeta. Only eval
+        //       vectors are observed (not the point z).
+        for f in &random_values {
+            fri_rollin_observe(&mut hc, &mut shadow, &fri_milestone_serialize_fp2(*f));
+        }
+        for f in &trace_local {
+            fri_rollin_observe(&mut hc, &mut shadow, &fri_milestone_serialize_fp2(*f));
+        }
+        for f in &trace_next {
+            fri_rollin_observe(&mut hc, &mut shadow, &fri_milestone_serialize_fp2(*f));
+        }
+        for chunk in &quotient_chunks {
+            for f in chunk {
+                fri_rollin_observe(&mut hc, &mut shadow, &fri_milestone_serialize_fp2(*f));
+            }
+        }
+
+        if !shadow.output_buf.is_empty() {
+            return Err("zk priming: output_buffer must be empty at seed capture".into());
+        }
+        if !RefCell::borrow(&*recorder).is_empty() {
+            return Err("zk priming: unconsumed hash events after the priming samples".into());
+        }
+        let primed_seed_hex = to_hex(&shadow.input_buf);
+        let primed_seed_len = shadow.input_buf.len();
+
+        // ------------------------------------------------------------------
+        // 6. GATE 2 (priming-divergence) — replay the is_zk observe order up to
+        //    zeta on a CLEAN challenger; alpha/zeta MUST match the Shadow path.
+        //    A wrong is_zk augmentation (missing random-commit observe, wrong
+        //    position) diverges here. Full p3_verify_fri replay (HidingFriPcs
+        //    proof-tuple unpack) is M2's C-side job.
+        // ------------------------------------------------------------------
+        let mut v = FriChallenger::new(FriHashChal::new(init_state.clone(), FriOracleSha3_512));
+        v.observe(Goldilocks::from_usize(degree_bits)); // verifier.rs:361
+        v.observe(Goldilocks::from_usize(base_degree_bits)); // verifier.rs:362
+        v.observe(Goldilocks::from_usize(preprocessed_width)); // verifier.rs:363
+        v.observe(proof.commitments.trace.clone()); // verifier.rs:369
+        v.observe_slice(&pis); // verifier.rs:373
+        let alpha_v: GoldFp2 = v.sample_algebra_element(); // verifier.rs:379
+        v.observe(proof.commitments.quotient_chunks.clone()); // verifier.rs:380
+        v.observe(random_commit.clone()); // verifier.rs:384 (is_zk)
+        let zeta_v: GoldFp2 = v.sample_algebra_element(); // verifier.rs:391
+        if alpha_v != alpha || zeta_v != zeta {
+            return Err("zk priming divergence: clean challenger vs Shadow (alpha/zeta)".into());
+        }
+
+        // ------------------------------------------------------------------
+        // 7. Emit JSON (reached only if GATE 1 + GATE 2 passed). Schema mirrors
+        //    the non-ZK stark_priming.json so a parallel C test can consume it,
+        //    plus the ZK-only fields (random commitment + random opened round).
+        // ------------------------------------------------------------------
+        // zeta_next = init_trace_domain.next_point(zeta)
+        //           = zeta * two_adic_generator(base_degree_bits) (verifier.rs:398;
+        //           the C priming derives it identically, stark_priming.c step 11).
+        let zeta_next: GoldFp2 = {
+            use p3_field::TwoAdicField;
+            zeta * GoldFp2::from(Goldilocks::two_adic_generator(base_degree_bits))
+        };
+        let output_buf_remaining_hex = to_hex(&shadow.output_buf);
+
+        let fp2_json = |x: GoldFp2| -> serde_json::Value {
+            let (c0, c1) = fri_fp2_to_pair(x);
+            serde_json::json!({ "c0_decimal": c0, "c1_decimal": c1 })
+        };
+        let pub_vals: Vec<String> = pis.iter().map(|p| p.as_canonical_u64().to_string()).collect();
+        let random_json: Vec<serde_json::Value> =
+            random_values.iter().map(|f| fp2_json(*f)).collect();
+        let trace_local_json: Vec<serde_json::Value> =
+            trace_local.iter().map(|f| fp2_json(*f)).collect();
+        let trace_next_json: Vec<serde_json::Value> =
+            trace_next.iter().map(|f| fp2_json(*f)).collect();
+        let quotient_chunks_json: Vec<Vec<serde_json::Value>> = quotient_chunks
+            .iter()
+            .map(|c| c.iter().map(|f| fp2_json(*f)).collect())
+            .collect();
+
+        let envelope = serde_json::json!({
+            "format_version": ORACLE_FORMAT_VERSION,
+            "plonky3_commit": PLONKY3_COMMIT,
+            "scope": "stark_priming_zk",
+            "oracle": "real_p3_uni_stark_prove_is_zk_1",
+            "synthetic_primary_oracle": false,
+            "air": "vendored FibonacciAir (uni-stark/tests/fib_air.rs:24-116 @ 82cfad73)",
+            "milestone": "M1 sandbox confidential — first is_zk=1 proof in the DNAC stack",
+            "grounding": {
+                "gate1_p3_uni_stark_verify": "Ok",
+                "gate2_priming_divergence_alpha_zeta": "Ok",
+                "is_zk_transcript_delta": "verifier.rs:383-385 (observe commitments.random after quotient_chunks, before zeta) + verifier.rs:403-411 (coms_to_verify random round FIRST)",
+                "note": "REAL is_zk=1 p3_uni_stark::prove over HidingFriPcs. GATE 1 (full verifier) is authoritative. GATE 2 replays the is_zk observe order up to zeta on a clean challenger; alpha/zeta cross-checked. Full FRI-query replay unpacking the HidingFriPcs proof tuple is M2 (C verifier)."
+            },
+            "dnac_stack": {
+                "val": "Goldilocks",
+                "challenge": "BinomialExtensionField<Goldilocks, 2> (fp2)",
+                "hash": "FIPS-202 SHA3-512",
+                "input_mmcs": "MerkleTreeHidingMmcs<[Goldilocks;1], [u64;1], FieldHash, MyCompress, SmallRng, 2, 8, SALT_ELEMS=2>",
+                "fri_mmcs": "ExtensionMmcs<Goldilocks, fp2, ZkValMmcs>",
+                "pcs": "HidingFriPcs (ZK=true), num_random_codewords=4",
+                "salt_grounding": "hiding_mmcs.rs:25 — SALT_ELEMS(2) * 64-bit Goldilocks = 128-bit hiding",
+                "rng_seed": "SmallRng::seed_from_u64(1) — byte-stable KAT (C verifier never sees the seed; prod proving uses OS entropy)",
+                "challenger": "SerializingChallenger64<Goldilocks, HashChallenger<u8, FriOracleSha3_512, 64>>",
+                "is_zk": is_zk
+            },
+            "init_state_hex": to_hex(&init_state),
+            "init_state_ascii": String::from_utf8_lossy(&init_state).into_owned(),
+            "commitments": {
+                "trace_commit_root_hex": to_hex(&fri_milestone_serialize_commitment(&proof.commitments.trace)),
+                "quotient_commit_root_hex": to_hex(&fri_milestone_serialize_commitment(&proof.commitments.quotient_chunks)),
+                "random_commit_root_hex": to_hex(&fri_milestone_serialize_commitment(&random_commit))
+            },
+            "fri_params": {
+                "log_blowup": log_blowup,
+                "log_final_poly_len": log_final_poly_len,
+                "max_log_arity": 1,
+                "num_queries": 2,
+                "commit_proof_of_work_bits": 0,
+                "query_proof_of_work_bits": 0
+            },
+            "instance": {
+                "degree_bits": degree_bits,
+                "base_degree_bits": base_degree_bits,
+                "preprocessed_width": preprocessed_width,
+                "num_quotient_chunks": num_qc,
+                "num_random_codewords": 4
+            },
+            "public_values": pub_vals,
+            "challenges": {
+                "stark_alpha_fp2": fp2_json(alpha),
+                "zeta_fp2": fp2_json(zeta),
+                "zeta_next_fp2": fp2_json(zeta_next)
+            },
+            "opened_values": {
+                "random": random_json,
+                "trace_local": trace_local_json,
+                "trace_next": trace_next_json,
+                "quotient_chunks": quotient_chunks_json
+            },
+            "commitment_with_opening_points_assembly": {
+                "order": ["random", "trace", "quotient_chunks"],
+                "note": "verifier.rs:403-458; is_zk=1 -> random round FIRST (verifier.rs:403-411); preprocessed_width==0 -> no preprocessed round.",
+                "random": {
+                    "domain": "trace_domain = natural_domain_for_degree(2^degree_bits), shift=ONE",
+                    "points": [{"point": "zeta", "evals": "opened_values.random"}]
+                },
+                "trace": {
+                    "points": [
+                        {"point": "zeta", "evals": "trace_local"},
+                        {"point": "zeta_next", "evals": "trace_next (main_next=true)"}
+                    ]
+                },
+                "quotient_chunks": {
+                    "points": [{"point": "zeta", "evals": "chunk_i"}]
+                }
+            },
+            "transcript_snapshot_at_verify_fri_entry": {
+                "description": "Verifier challenger primed through verifier.rs:360-411 (is_zk) + PCS observe. Load via dnac_transcript_init(input_buf_hex). output_buf empty (last op was observe).",
+                "input_buf_hex": primed_seed_hex,
+                "input_buf_len": primed_seed_len,
+                "output_buf_remaining_hex": output_buf_remaining_hex,
+                "output_buf_remaining_len": shadow.output_buf.len()
+            }
+        });
+
+        let mut f = File::create(out_path)?;
+        f.write_all(serde_json::to_string_pretty(&envelope)?.as_bytes())?;
+        f.write_all(b"\n")?;
+        eprintln!(
+            "wrote {} (is_zk=1 STARK vector: real p3_uni_stark::prove; GATE1 verify=Ok; \
+             GATE2 alpha/zeta=Ok; degree_bits={}; num_qc={}; seed_len={})",
+            out_path.display(),
+            degree_bits,
+            num_qc,
             primed_seed_len
         );
         Ok(())

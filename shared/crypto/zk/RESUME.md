@@ -20,9 +20,42 @@
   Money conservation on the live chain is enforced by the native cleartext
   witness check (`verify.c` Check 4); this ZK stack is ADDITIVE (v3 ships
   transparent, hidden amounts are v4).
-- **`make test`: 36 gates GREEN, 0 warnings** (`cd shared/crypto/zk && make test`).
+- **`make test`: 37 gates GREEN, 0 warnings** (`cd shared/crypto/zk && make test`).
 - **Committed** on branch `zk-range-balance-soundness-hardening` (commits
   `9d07c968` mint-fix + FRI guards, `80f8888b` composed door). Not on `main`.
+
+## SANDBOX CONFIDENTIAL DEMO (2026-07-13 — in progress, UNCOMMITTED)
+
+After the B1 confidential-amounts design v2 FAILED an independent 10-agent
+red-team (2 structural REFUTEDs: SEC-2 binding *asserted-not-constructed* + full-
+shield collides with cleartext-`committed_fee` consensus code — see
+`dnac/docs/plans/2026-07-13-b1-confidential-amounts-design-v2.md` §15), the
+decision was to STOP iterating the design doc and **build the layout in the
+oracle** (where "same cell" is a fact, num_qc is measured, transcript order is
+observed) as a SANDBOX that never touches the real TX wire / consensus.
+Milestones M1→M2→M3:
+
+- **M1 DONE + VERIFIED:** first is_zk=1 proof in the DNAC stack. Oracle
+  `dump-stark-priming-zk` (`tools/plonky3_oracle`): FibonacciAir over
+  **HidingFriPcs** (ZK=true) + salted **MerkleTreeHidingMmcs** (SALT_ELEMS=2 =
+  128-bit hiding, hiding_mmcs.rs:25). GATE1 `p3_uni_stark::verify`=Ok
+  (authoritative). Measured `num_qc=4`, `degree_bits 3→4` — **empirically
+  confirms is_zk folds twice** (v2 finding #3). Vector:
+  `tools/vectors/stark_priming_zk.json`.
+- **M2a DONE + VERIFIED:** C `stark_priming.c` is_zk=1 support — relaxed the
+  `is_zk!=0` hard-reject to `is_zk>1`; added the two is_zk transcript insertions
+  (observe `random_commit` after quotient/before zeta, verifier.rs:383-385;
+  random opened round FIRST, verifier.rs:403-411). New gate
+  `test_stark_priming_zk` byte-matches M1's real is_zk=1 transcript (288 B +
+  alpha/zeta/zeta_next). Full `make test` GREEN, no regression.
+- **M2b TODO:** FRI-query verification of the is_zk proof (random codewords in
+  the FRI batch → `fri_verifier.c` + `fri_proof_codec.c` handle the HidingFriPcs
+  proof tuple / coms random round). M2a proves the transcript; M2b proves the
+  low-degree opening.
+- **M3 TODO:** swap FibonacciAir for the confidential AIR (Poseidon2 in-AIR
+  commitment + range+balance, CONSTRUCTED binding column layout, canonical
+  order, tx_binding=truncate(tx_hash), num_qc=8). Fixes the v2 REFUTEDs by
+  construction. Consensus/wire migration/nullifiers stay deferred.
 
 ## WHAT WE DID (2026-07-11/12 — soundness campaign)
 

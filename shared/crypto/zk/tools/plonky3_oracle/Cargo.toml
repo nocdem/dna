@@ -33,6 +33,15 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 clap = { version = "4.5", features = ["derive"] }
 
+# is_zk=1 (hiding) prover path — M1 sandbox confidential milestone (2026-07-13).
+# SmallRng seeds the MerkleTreeHidingMmcs leaf-salt + HidingFriPcs random
+# codewords. rand 0.10.1 is ALREADY in Cargo.lock (transitive via
+# p3-merkle-tree); this only makes it directly importable. default-features
+# = false matches the Plonky3 workspace pin (Cargo.toml:80). Determinism:
+# seed_from_u64(1) gives a byte-stable KAT (the C verifier never sees the
+# seed; real proving would use OS entropy).
+rand = { version = "0.10.0", default-features = false, features = ["alloc"] }
+
 # SHA3-512 for Merkle / transcript / commitment hashing. The `sha3` crate
 # implements FIPS-202 verbatim — same standard DNAC's crypto/hash/qgp_sha3.c
 # wraps via OpenSSL. Cross-validation gate: both implementations are FIPS-202

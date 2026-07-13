@@ -81,6 +81,7 @@ TESTS = \
     $(BUILD)/test_fri_verifier_rollin \
     $(BUILD)/test_fri_proof_codec \
     $(BUILD)/test_stark_priming \
+    $(BUILD)/test_stark_priming_zk \
     $(BUILD)/test_stark_proof_codec \
     $(BUILD)/test_stark_priming_integrated \
     $(BUILD)/test_stark_constraints_primitives \
@@ -254,6 +255,14 @@ $(BUILD)/test_fri_proof_codec: tests/test_fri_proof_codec.c fri_proof_codec.h fr
 # docs/plans/2026-05-30-pcs-transcript-priming-design.md.
 $(BUILD)/test_stark_priming: tests/test_stark_priming.c stark_priming.h stark_priming.c transcript.h transcript.c field_goldilocks.h field_goldilocks.c merkle_smt.h | $(BUILD)
 	$(CC) $(CFLAGS) -DDNAC_TRANSCRIPT_TESTING=1 $(INCLUDES) tests/test_stark_priming.c stark_priming.c transcript.c sponge_sha3_512.c keccak_p3_cols.c keccak_p3_trace.c keccak_ref.c field_goldilocks.c -o $@
+
+# M2 — is_zk=1 (hiding) STARK/PCS transcript priming replay. Same helper +
+# stack as the non-ZK test, driven by the M1 sandbox confidential vector
+# (stark_priming_zk.json) — a REAL is_zk=1 p3_uni_stark::prove over HidingFriPcs.
+# Byte-matches the primed transcript (288 B) + alpha/zeta/zeta_next through the
+# is_zk augmentation (random-commit observe + random opened round first).
+$(BUILD)/test_stark_priming_zk: tests/test_stark_priming_zk.c stark_priming.h stark_priming.c transcript.h transcript.c field_goldilocks.h field_goldilocks.c merkle_smt.h | $(BUILD)
+	$(CC) $(CFLAGS) -DDNAC_TRANSCRIPT_TESTING=1 $(INCLUDES) tests/test_stark_priming_zk.c stark_priming.c transcript.c sponge_sha3_512.c keccak_p3_cols.c keccak_p3_trace.c keccak_ref.c field_goldilocks.c -o $@
 
 # P5 — additive DZKS STARK/PCS wire wrapper around the EXISTING DZKF FRI wire.
 # Roundtrip (decode -> field checks -> re-encode == wire) + the inner DZKF decodes
@@ -464,6 +473,11 @@ test: all
 	@echo "Phase B8 P3/P4 — STARK/PCS transcript priming replay (real p3_uni_stark::prove, 82cfad73)"
 	@echo "============================================================"
 	@$(BUILD)/test_stark_priming tools/vectors/stark_priming.json
+	@echo
+	@echo "============================================================"
+	@echo "M2 — is_zk=1 (hiding) STARK/PCS priming replay (real HidingFriPcs prove, 82cfad73)"
+	@echo "============================================================"
+	@$(BUILD)/test_stark_priming_zk tools/vectors/stark_priming_zk.json
 	@echo
 	@echo "============================================================"
 	@echo "Phase B8 P5 — additive DZKS STARK/PCS wire wrapper (around existing DZKF, 82cfad73)"
