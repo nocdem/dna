@@ -412,7 +412,8 @@ BIP39 mnemonic → master_seed (64 bytes)
 Self-encrypted contact list storage in DHT for multi-device sync.
 
 - **DHT Key**: `SHA3-512(identity + ":contactlist")`
-- **TTL**: 365 days (stored via chunked layer)
+- **DHT Storage**: Permanent — single EXCLUSIVE value via `nodus_ops_put_str_exclusive()` (ttl=0, never expires server-side)
+- **Embedded expiry**: Blob header carries `timestamp + 7 days` (`DHT_CONTACTLIST_DEFAULT_TTL`). Informational only (v0.11.12+): fetch logs but ACCEPTS blobs past this expiry, so seed-phrase restore works regardless of when the list was last published. (Pre-v0.11.12 clients rejected expired blobs as "not found", losing contacts on restore.)
 - **Encryption**: Self-encrypted using identity's own Kyber1024 pubkey
 - **Signature**: Dilithium5 signed for authenticity
 

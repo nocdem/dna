@@ -519,12 +519,12 @@ int dht_contactlist_fetch(
     expiry = ntohll(expiry);
     offset += 8;
 
-    // Check expiry
+    // Embedded expiry is informational only: DHT storage is permanent
+    // (EXCLUSIVE, ttl=0), so a stale expiry must not block seed-phrase restore.
     uint64_t now = (uint64_t)time(NULL);
     if (expiry < now) {
-        QGP_LOG_INFO(LOG_TAG, "Contact list expired (expiry=%lu, now=%lu)\n", (unsigned long)expiry, (unsigned long)now);
-        free(blob);
-        return -2;  // Expired
+        QGP_LOG_INFO(LOG_TAG, "Contact list past embedded expiry (expiry=%lu, now=%lu), accepting anyway\n",
+                     (unsigned long)expiry, (unsigned long)now);
     }
 
     // Encrypted JSON length

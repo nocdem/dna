@@ -182,7 +182,7 @@ Files removed:
 | `int dht_contactlist_init(void)` | Initialize contact list subsystem |
 | `void dht_contactlist_cleanup(void)` | Cleanup contact list subsystem |
 | `int dht_contactlist_publish(const char*, const char**, size_t, const uint8_t**, ...)` | Publish encrypted contact list (v2 with salts) |
-| `int dht_contactlist_fetch(const char*, char***, size_t*, uint8_t***, ...)` | Fetch and decrypt contact list (v2 returns salts) |
+| `int dht_contactlist_fetch(const char*, char***, size_t*, uint8_t***, ...)` | Fetch and decrypt contact list (v2 returns salts). v0.11.12+: blobs past the embedded 7-day expiry are accepted (logged only) — DHT storage is permanent, expiry must not block seed restore |
 | `void dht_contactlist_free_contacts(char**, size_t)` | Free contacts array |
 | `void dht_contactlist_free_salts(uint8_t**, size_t)` | Free salts array from fetch |
 | `void dht_contactlist_free(dht_contactlist_t*)` | Free contact list structure |
