@@ -765,6 +765,10 @@ target_compile_definitions(nodus-cli PRIVATE
     NODUS_CLI_HAS_DNAC=1
     DNAC_TX_BUILDER_ONLY=1)
 
+add_executable(nodus-circ tools/nodus-circ.c)
+target_link_libraries(nodus-circ nodus dsa nodus)
+target_compile_options(nodus-circ PRIVATE -Wall -Wextra -Wno-unused-parameter)
+
 add_executable(nodus-server tools/nodus-server.c)
 target_link_libraries(nodus-server nodus dsa nodus)
 target_compile_options(nodus-server PRIVATE -Wall -Wextra -Wno-unused-parameter)
