@@ -110,7 +110,8 @@ TESTS = \
     $(BUILD)/test_poseidon2_air_trace \
     $(BUILD)/test_poseidon2_air \
     $(BUILD)/test_conf_balance_air \
-    $(BUILD)/test_conf_commit_air
+    $(BUILD)/test_conf_commit_air \
+    $(BUILD)/test_conf_root_air
 
 .PHONY: all test clean gen-fri-proof-wire gen-stark-proof-wire bench-prover
 
@@ -162,6 +163,11 @@ $(BUILD)/test_conf_balance_air: tests/test_conf_balance_air.c conf_balance_air.c
 # FP1c Poseidon2 block via the SEC-2 same-window copy (amount == VC.inputs[0]).
 $(BUILD)/test_conf_commit_air: tests/test_conf_commit_air.c conf_commit_air.c conf_balance_air.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c poseidon2_goldilocks.c field_goldilocks.c conf_commit_air.h conf_balance_air.h poseidon2_air.h poseidon2_air_trace.h poseidon2_air_cols.h poseidon2_goldilocks.h field_goldilocks.h | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) tests/test_conf_commit_air.c conf_commit_air.c conf_balance_air.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c poseidon2_goldilocks.c field_goldilocks.c -o $@
+
+# B1 Stage-1 increment 3 — commitment-set-root CA accumulator (capacity-IV sponge
+# fold, is_real-gated). Binds the ordered {c_i} to one root; verifier recompute.
+$(BUILD)/test_conf_root_air: tests/test_conf_root_air.c conf_root_air.c conf_commit_air.c conf_balance_air.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c poseidon2_goldilocks.c field_goldilocks.c conf_root_air.h conf_commit_air.h conf_balance_air.h poseidon2_air.h poseidon2_air_trace.h poseidon2_air_cols.h poseidon2_goldilocks.h field_goldilocks.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_conf_root_air.c conf_root_air.c conf_commit_air.c conf_balance_air.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c poseidon2_goldilocks.c field_goldilocks.c -o $@
 
 # Standalone Keccak / SHA3-512 reference.
 $(BUILD)/test_keccak_ref: tests/test_keccak_ref.c keccak_ref.c keccak_ref.h | $(BUILD)
@@ -791,6 +797,12 @@ test: all
 	@echo "  honest + c-check + SEC-2 attacks rejected (same-window copy, is_zk=0)"
 	@echo "============================================================"
 	@$(BUILD)/test_conf_commit_air
+	@echo
+	@echo "============================================================"
+	@echo "B1 Stage-1 inc.3 — commitment-set-root CA accumulator (capacity-IV fold)"
+	@echo "  honest + verifier recompute + order-forgery + attacks rejected (is_zk=0)"
+	@echo "============================================================"
+	@$(BUILD)/test_conf_root_air
 	@echo
 	@echo "============================================================"
 	@echo "ALL REMAINING (grounded) GATES: GREEN"
