@@ -37,7 +37,7 @@
  * ========================================================================== */
 
 /* GOLDILOCKS_POSEIDON2_RC_8_EXTERNAL_INITIAL (4 rounds x 8), poseidon2.rs:75. */
-static const uint64_t RC8_EXT_INITIAL[POSEIDON2_GOLD_HALF_FULL_ROUNDS]
+const uint64_t POSEIDON2_GOLD_RC8_EXT_INITIAL[POSEIDON2_GOLD_HALF_FULL_ROUNDS]
                                      [POSEIDON2_GOLD_WIDTH] = {
     {0xdd5743e7f2a5a5d9ULL, 0xcb3a864e58ada44bULL, 0xffa2449ed32f8cdcULL,
      0x42025f65d6bd13eeULL, 0x7889175e25506323ULL, 0x34b98bb03d24b737ULL,
@@ -54,7 +54,7 @@ static const uint64_t RC8_EXT_INITIAL[POSEIDON2_GOLD_HALF_FULL_ROUNDS]
 };
 
 /* GOLDILOCKS_POSEIDON2_RC_8_EXTERNAL_FINAL (4 rounds x 8), poseidon2.rs:126. */
-static const uint64_t RC8_EXT_FINAL[POSEIDON2_GOLD_HALF_FULL_ROUNDS]
+const uint64_t POSEIDON2_GOLD_RC8_EXT_FINAL[POSEIDON2_GOLD_HALF_FULL_ROUNDS]
                                    [POSEIDON2_GOLD_WIDTH] = {
     {0x014ef1197d341346ULL, 0x9725e20825d07394ULL, 0xfdb25aef2c5bae3bULL,
      0xbe5402dc598c971eULL, 0x93a5711f04cdca3dULL, 0xc45a9a5b2f8fb97bULL,
@@ -71,7 +71,7 @@ static const uint64_t RC8_EXT_FINAL[POSEIDON2_GOLD_HALF_FULL_ROUNDS]
 };
 
 /* GOLDILOCKS_POSEIDON2_RC_8_INTERNAL (22 scalars), poseidon2.rs:177. */
-static const uint64_t RC8_INTERNAL[POSEIDON2_GOLD_PARTIAL_ROUNDS] = {
+const uint64_t POSEIDON2_GOLD_RC8_INTERNAL[POSEIDON2_GOLD_PARTIAL_ROUNDS] = {
     0x488897d85ff51f56ULL, 0x1140737ccb162218ULL, 0xa7eeb9215866ed35ULL,
     0x9bd2976fee49fcc9ULL, 0xc0c8f0de580a3fccULL, 0x4fb2dae6ee8fc793ULL,
     0x343a89f35f37395bULL, 0x223b525a77ca72c8ULL, 0x56ccb62574aaa918ULL,
@@ -131,7 +131,7 @@ static void apply_mat4(gold_fp_t x[4]) {
 
 /* mds_light_permutation for WIDTH=8 (external.rs:106-157, the 4|8|... arm):
  * apply M_4 to each 4-chunk, then add per-lane column sums sums[i%4]. */
-static void mds_light_8(gold_fp_t state[POSEIDON2_GOLD_WIDTH]) {
+void poseidon2_gold_external_linear_8(gold_fp_t state[POSEIDON2_GOLD_WIDTH]) {
     apply_mat4(&state[0]);
     apply_mat4(&state[4]);
     /* sums[k] = Σ_{j step 4} state[j+k]  =  state[k] + state[k+4]. */
@@ -143,7 +143,7 @@ static void mds_light_8(gold_fp_t state[POSEIDON2_GOLD_WIDTH]) {
 
 /* matmul_internal: sum = Σ state; state[i] = state[i]*DIAG[i] + sum
  * (internal.rs matmul_internal). */
-static void matmul_internal_8(gold_fp_t state[POSEIDON2_GOLD_WIDTH]) {
+void poseidon2_gold_internal_linear_8(gold_fp_t state[POSEIDON2_GOLD_WIDTH]) {
     gold_fp_t sum = state[0];
     for (int i = 1; i < POSEIDON2_GOLD_WIDTH; i++) sum = add(sum, state[i]);
     for (int i = 0; i < POSEIDON2_GOLD_WIDTH; i++)
@@ -159,24 +159,24 @@ void poseidon2_goldilocks8_permute(uint64_t state_u64[POSEIDON2_GOLD_WIDTH]) {
     for (int i = 0; i < POSEIDON2_GOLD_WIDTH; i++) s[i] = fp(state_u64[i]);
 
     /* --- initial external layer (external.rs:319-334) --- */
-    mds_light_8(s); /* the "extra" leading matrix multiplication */
+    poseidon2_gold_external_linear_8(s); /* "extra" leading matrix multiplication */
     for (int r = 0; r < POSEIDON2_GOLD_HALF_FULL_ROUNDS; r++) {
         for (int i = 0; i < POSEIDON2_GOLD_WIDTH; i++)
-            s[i] = add_rc_sbox(s[i], fp(RC8_EXT_INITIAL[r][i]));
-        mds_light_8(s);
+            s[i] = add_rc_sbox(s[i], fp(POSEIDON2_GOLD_RC8_EXT_INITIAL[r][i]));
+        poseidon2_gold_external_linear_8(s);
     }
 
     /* --- internal layer: 22 partial rounds (internal.rs) --- */
     for (int r = 0; r < POSEIDON2_GOLD_PARTIAL_ROUNDS; r++) {
-        s[0] = add_rc_sbox(s[0], fp(RC8_INTERNAL[r])); /* sbox on state[0] only */
-        matmul_internal_8(s);
+        s[0] = add_rc_sbox(s[0], fp(POSEIDON2_GOLD_RC8_INTERNAL[r])); /* sbox on state[0] only */
+        poseidon2_gold_internal_linear_8(s);
     }
 
     /* --- terminal external layer (external.rs:286-302) --- */
     for (int r = 0; r < POSEIDON2_GOLD_HALF_FULL_ROUNDS; r++) {
         for (int i = 0; i < POSEIDON2_GOLD_WIDTH; i++)
-            s[i] = add_rc_sbox(s[i], fp(RC8_EXT_FINAL[r][i]));
-        mds_light_8(s);
+            s[i] = add_rc_sbox(s[i], fp(POSEIDON2_GOLD_RC8_EXT_FINAL[r][i]));
+        poseidon2_gold_external_linear_8(s);
     }
 
     for (int i = 0; i < POSEIDON2_GOLD_WIDTH; i++) state_u64[i] = gold_fp_to_u64(s[i]);

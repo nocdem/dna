@@ -33,6 +33,8 @@
 
 #include <stdint.h>
 
+#include "field_goldilocks.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -64,6 +66,32 @@ extern "C" {
  * wall-clock. Identical output on every platform for identical input.
  */
 void poseidon2_goldilocks8_permute(uint64_t state[POSEIDON2_GOLD_WIDTH]);
+
+/* ---- Reusable linear layers (shared with the poseidon2-air trace/eval) ----
+ *
+ * These are the GenericPoseidon2LinearLayers<Goldilocks, 8> maps: the AIR trace
+ * generation and constraint evaluation apply the SAME external/internal linear
+ * layers as the permutation, so they are exposed here rather than duplicated
+ * (one grounded implementation, one audit surface). Both operate in place on 8
+ * canonical Goldilocks elements. */
+
+/** External (full-round) linear layer = mds_light_permutation over MDSMat4
+ *  (Plonky3 poseidon2/src/external.rs mds_light_permutation, WIDTH=8 arm). */
+void poseidon2_gold_external_linear_8(gold_fp_t state[POSEIDON2_GOLD_WIDTH]);
+
+/** Internal (partial-round) linear layer = matmul_internal with MATRIX_DIAG_8
+ *  (Plonky3 poseidon2/src/internal.rs matmul_internal; equal to the unrolled
+ *  internal_layer_mat_mul_goldilocks_8, proven by poseidon2.rs:1060-1078). */
+void poseidon2_gold_internal_linear_8(gold_fp_t state[POSEIDON2_GOLD_WIDTH]);
+
+/* ---- Round constants (verbatim from Plonky3 82cfad73 goldilocks/src/poseidon2.rs,
+ *      the RoundConstants wired by default_goldilocks_poseidon2_8). Exposed so the
+ *      poseidon2-air trace/eval use the SAME constants as the permutation. ---- */
+extern const uint64_t POSEIDON2_GOLD_RC8_EXT_INITIAL[POSEIDON2_GOLD_HALF_FULL_ROUNDS]
+                                                    [POSEIDON2_GOLD_WIDTH];
+extern const uint64_t POSEIDON2_GOLD_RC8_EXT_FINAL[POSEIDON2_GOLD_HALF_FULL_ROUNDS]
+                                                  [POSEIDON2_GOLD_WIDTH];
+extern const uint64_t POSEIDON2_GOLD_RC8_INTERNAL[POSEIDON2_GOLD_PARTIAL_ROUNDS];
 
 #ifdef __cplusplus
 }

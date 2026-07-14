@@ -38,7 +38,7 @@
   Money conservation on the live chain is enforced by the native cleartext
   witness check (`verify.c` Check 4); this ZK stack is ADDITIVE (v3 ships
   transparent, hidden amounts are v4).
-- **`make test`: 50 test binaries GREEN, 0 warnings** (`cd shared/crypto/zk && make test`;
+- **`make test`: 53 test binaries GREEN, 0 warnings** (`cd shared/crypto/zk && make test`;
   `test_fri_verify_zk` runs twice — FibonacciAir + is_zk RangeProofAir).
   **C PROVER COMPLETE (S1-S13) + P1 arbitrary-instance:** the prover-side gates
   = S1 trace + S2 LDE + S3 commit + S5 alpha + S6 quotient + S7 quotient-commit +
@@ -541,7 +541,7 @@ cd /opt/dna/shared/crypto/zk
 make clean && make test
 ```
 
-Expected (2026-07-14): 50 test binaries GREEN, 0 warnings, all grounded against external references (Plonky3 pin `82cfad73`, NIST KAT, OpenSSL, FIPS-202).
+Expected (2026-07-14): 53 test binaries GREEN, 0 warnings, all grounded against external references (Plonky3 pin `82cfad73`, NIST KAT, OpenSSL, FIPS-202).
 
 ---
 
@@ -558,7 +558,10 @@ Expected (2026-07-14): 50 test binaries GREEN, 0 warnings, all grounded against 
 | `range_air.{c,h}` (Sprint 3.1 rework 2026-05-23) | Real `p3_air::utils::u64_to_bits_le::<Goldilocks>` call; 80 cases byte-match (`tools/vectors/range_air.json`); F7 column-layout binding test ships alongside | HIGH |
 | `sum_balance.{c,h}` (Sprint 3.2 rework 2026-05-23) | U+F = Plonky3 fib_air idiom; I constraint = DNAC-original from § 6.1; 78 cases byte-match (`tools/vectors/sum_balance.json`); F7 column-layout binding test ships alongside | HIGH (partial — I constraint DNAC-original) |
 | `sponge_sha3_512.{c,h}` (Sprint 3.3b.7 rework 2026-05-23) | Triple cross-validation: Plonky3 sha3 crate (74 oracle cases) + keccak_ref + incremental-absorb-vs-oneshot. | HIGH |
-| `poseidon2_goldilocks.{c,h}` (FP1.2 2026-07-14) | Width-8 Poseidon2 permutation. Byte-matches the REAL `default_goldilocks_poseidon2_8().permute` (Plonky3 82cfad73, 16 cases incl. all-zero KAT / near-p / random). Constants (RC 8×4+8×4+22, MATRIX_DIAG_8, RF=8/RP=22/D=7) copied verbatim from `goldilocks/src/poseidon2.rs`. STANDALONE — not yet wired to any AIR/proof-internal path (in-AIR M3b + recursion migration are later phases per the SHA3→Poseidon2 decision doc). | HIGH |
+| `poseidon2_goldilocks.{c,h}` (FP1.2 2026-07-14) | Width-8 Poseidon2 permutation. Byte-matches the REAL `default_goldilocks_poseidon2_8().permute` (Plonky3 82cfad73, 16 cases incl. all-zero KAT / near-p / random). Constants (RC 8×4+8×4+22, MATRIX_DIAG_8, RF=8/RP=22/D=7) copied verbatim from `goldilocks/src/poseidon2.rs`. Also exposes the external/internal linear layers + round constants for AIR reuse. STANDALONE — not yet wired to any proof-internal path. | HIGH |
+| `poseidon2_air_cols.{c,h}` (FP1c.1 2026-07-14) | Poseidon2Cols<8,7,1,4,22> column layout (180 cols, SBOX_REGISTERS=1 deg-3). Structural binding contract vs Plonky3 `poseidon2-air/src/columns.rs` repr(C) order (boundaries 8/72/116/180). | HIGH |
+| `poseidon2_air_trace.{c,h}` (FP1c.2 2026-07-14) | Single-permutation trace-row generation. Byte-matches the REAL `p3_poseidon2_air::generate_trace_rows` (8 cases × 180 cols) + final post == permute cross-check. Port of `generation.rs` generate_trace_rows_for_perm. | HIGH |
+| `poseidon2_air.{c,h}` (FP1c.3 2026-07-14) | Constraint eval (witness residual checker). Port of `poseidon2-air/src/air.rs` eval/eval_full_round/eval_partial_round/eval_sbox(7,1). Grounding: real Plonky3 traces accepted (0 viol) + all 1440 single-col tampers caught. Max constraint degree 3 (blowup-4 compatible). | HIGH |
 
 ### Rust reference oracle (build-time only, post-evening cleanup)
 

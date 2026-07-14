@@ -105,7 +105,10 @@ TESTS = \
     $(BUILD)/test_prover_s11_query \
     $(BUILD)/test_prover_s13_verify \
     $(BUILD)/test_prover_prove \
-    $(BUILD)/test_poseidon2_goldilocks
+    $(BUILD)/test_poseidon2_goldilocks \
+    $(BUILD)/test_poseidon2_air_cols \
+    $(BUILD)/test_poseidon2_air_trace \
+    $(BUILD)/test_poseidon2_air
 
 .PHONY: all test clean gen-fri-proof-wire gen-stark-proof-wire bench-prover
 
@@ -130,6 +133,21 @@ $(BUILD)/test_two_adic_gens: tests/test_two_adic_gens.c field_goldilocks.c field
 # default_goldilocks_poseidon2_8().permute (Plonky3 82cfad73). Grounded port.
 $(BUILD)/test_poseidon2_goldilocks: tests/test_poseidon2_goldilocks.c poseidon2_goldilocks.c field_goldilocks.c poseidon2_goldilocks.h field_goldilocks.h | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) tests/test_poseidon2_goldilocks.c poseidon2_goldilocks.c field_goldilocks.c -o $@
+
+# FP1c.1 — Poseidon2 AIR column-layout binding contract (Poseidon2Cols<8,7,1,4,22>,
+# Plonky3 poseidon2-air/src/columns.rs @ 82cfad73). Structural gate.
+$(BUILD)/test_poseidon2_air_cols: tests/test_poseidon2_air_cols.c poseidon2_air_cols.c poseidon2_air_cols.h poseidon2_goldilocks.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_poseidon2_air_cols.c poseidon2_air_cols.c -o $@
+
+# FP1c.2 — Poseidon2 AIR trace-row generation byte-match vs the real Plonky3
+# generate_trace_rows (poseidon2-air/src/generation.rs @ 82cfad73).
+$(BUILD)/test_poseidon2_air_trace: tests/test_poseidon2_air_trace.c poseidon2_air_trace.c poseidon2_air_cols.c poseidon2_goldilocks.c field_goldilocks.c poseidon2_air_trace.h poseidon2_air_cols.h poseidon2_goldilocks.h field_goldilocks.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_poseidon2_air_trace.c poseidon2_air_trace.c poseidon2_air_cols.c poseidon2_goldilocks.c field_goldilocks.c -o $@
+
+# FP1c.3 — Poseidon2 AIR constraint evaluation. Accept real Plonky3 traces (0
+# violations) + reject every single-column tamper (poseidon2-air/src/air.rs @ 82cfad73).
+$(BUILD)/test_poseidon2_air: tests/test_poseidon2_air.c poseidon2_air.c poseidon2_air_cols.c poseidon2_goldilocks.c field_goldilocks.c poseidon2_air.h poseidon2_air_cols.h poseidon2_goldilocks.h field_goldilocks.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_poseidon2_air.c poseidon2_air.c poseidon2_air_cols.c poseidon2_goldilocks.c field_goldilocks.c -o $@
 
 # Standalone Keccak / SHA3-512 reference.
 $(BUILD)/test_keccak_ref: tests/test_keccak_ref.c keccak_ref.c keccak_ref.h | $(BUILD)
@@ -732,6 +750,21 @@ test: all
 	@echo "  byte-match vs real default_goldilocks_poseidon2_8().permute (82cfad73)"
 	@echo "============================================================"
 	@$(BUILD)/test_poseidon2_goldilocks tools/vectors/poseidon2_goldilocks.json
+	@echo
+	@echo "============================================================"
+	@echo "FP1c.1 — Poseidon2 AIR column layout binding (Poseidon2Cols<8,7,1,4,22>)"
+	@echo "============================================================"
+	@$(BUILD)/test_poseidon2_air_cols
+	@echo
+	@echo "============================================================"
+	@echo "FP1c.2 — Poseidon2 AIR trace-row byte-match (real generate_trace_rows, 82cfad73)"
+	@echo "============================================================"
+	@$(BUILD)/test_poseidon2_air_trace tools/vectors/poseidon2_air_trace.json
+	@echo
+	@echo "============================================================"
+	@echo "FP1c.3 — Poseidon2 AIR constraint eval (accept real trace + tamper-reject, 82cfad73)"
+	@echo "============================================================"
+	@$(BUILD)/test_poseidon2_air tools/vectors/poseidon2_air_trace.json
 	@echo
 	@echo "============================================================"
 	@echo "ALL REMAINING (grounded) GATES: GREEN"

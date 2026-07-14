@@ -27,7 +27,12 @@ use std::path::PathBuf;
 
 use p3_field::extension::BinomialExtensionField;
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing, PrimeField64};
-use p3_goldilocks::{Goldilocks, default_goldilocks_poseidon2_8};
+use p3_goldilocks::{
+    GOLDILOCKS_POSEIDON2_RC_8_EXTERNAL_FINAL, GOLDILOCKS_POSEIDON2_RC_8_EXTERNAL_INITIAL,
+    GOLDILOCKS_POSEIDON2_RC_8_INTERNAL, GenericPoseidon2LinearLayersGoldilocks, Goldilocks,
+    default_goldilocks_poseidon2_8,
+};
+use p3_poseidon2_air::{RoundConstants, generate_trace_rows};
 use p3_symmetric::Permutation;
 use sha3::{Digest, Sha3_512};
 
@@ -483,6 +488,14 @@ enum Cmd {
         #[arg(long)]
         out: PathBuf,
     },
+    /// FP1c.2 — Poseidon2 AIR trace rows via the REAL Plonky3 generate_trace_rows
+    /// over Poseidon2Cols<8,7,1,4,22> (SBOX_REGISTERS=1). The C
+    /// poseidon2_air_generate_row must byte-match each 180-column row.
+    #[command(name = "dump-poseidon2-air-trace")]
+    DumpPoseidon2AirTrace {
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// Dump all (runs all subcommands; ones not yet implemented are skipped).
     DumpAll {
         #[arg(long)]
@@ -547,6 +560,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Cmd::DumpRangeAirOnly { out } => stark_priming::dump_range_air_only(&out)?,
         Cmd::DumpRangeProofAir { out } => stark_priming::dump_range_proof_air(&out)?,
         Cmd::DumpPoseidon2Goldilocks { out } => dump_poseidon2_goldilocks(&out)?,
+        Cmd::DumpPoseidon2AirTrace { out } => dump_poseidon2_air_trace(&out)?,
         Cmd::DumpAll { out_dir } => {
             std::fs::create_dir_all(&out_dir)?;
             dump_field_ops(&out_dir.join("field_ops.json"))?;
@@ -830,6 +844,107 @@ fn dump_poseidon2_goldilocks(out_path: &PathBuf) -> Result<(), Box<dyn std::erro
         sbox_degree: 7,
         full_rounds: 8,
         partial_rounds: 22,
+        cases,
+    };
+    if let Some(parent) = out_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut f = File::create(out_path)?;
+    f.write_all(serde_json::to_string_pretty(&file)?.as_bytes())?;
+    f.write_all(b"\n")?;
+    eprintln!("wrote {}", out_path.display());
+    Ok(())
+}
+
+
+// ============================================================================
+// Poseidon2-AIR trace dump (FP1c.2)
+// ============================================================================
+
+#[derive(Serialize)]
+struct Poseidon2AirTraceCase {
+    input: Vec<String>, // 8
+    row: Vec<String>,   // 180
+}
+
+#[derive(Serialize)]
+struct Poseidon2AirTraceFile {
+    format_version: &'static str,
+    plonky3_commit: &'static str,
+    source: &'static str,
+    width: usize,
+    sbox_degree: u64,
+    sbox_registers: usize,
+    half_full_rounds: usize,
+    partial_rounds: usize,
+    num_cols: usize,
+    cases: Vec<Poseidon2AirTraceCase>,
+}
+
+/// Dump Poseidon2-AIR trace rows via the REAL Plonky3 generate_trace_rows.
+/// Ground truth for the C poseidon2_air_generate_row.
+fn dump_poseidon2_air_trace(out_path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    // Round constants IDENTICAL to default_goldilocks_poseidon2_8 (order:
+    // beginning=external_initial, partial=internal, ending=external_final).
+    let rc = RoundConstants::<Goldilocks, 8, 4, 22>::new(
+        GOLDILOCKS_POSEIDON2_RC_8_EXTERNAL_INITIAL,
+        GOLDILOCKS_POSEIDON2_RC_8_INTERNAL,
+        GOLDILOCKS_POSEIDON2_RC_8_EXTERNAL_FINAL,
+    );
+
+    // 8 inputs (power of two — generate_trace_rows requires it): structured +
+    // splitmix64 spread, all canonical < p.
+    let mut inputs: Vec<[Goldilocks; 8]> = vec![
+        [Goldilocks::from_u64(0); 8],
+        core::array::from_fn(|i| Goldilocks::from_u64(i as u64)),
+        [Goldilocks::from_u64(1); 8],
+        core::array::from_fn(|i| Goldilocks::from_u64(GOLDILOCKS_P - 1 - i as u64)),
+    ];
+    let mut x: u64 = 0x0123_4567_89ab_cdef;
+    for _ in 0..4 {
+        let row: [Goldilocks; 8] = core::array::from_fn(|_| {
+            x = x.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            let mut z = x;
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            z ^= z >> 31;
+            Goldilocks::from_u64(z % GOLDILOCKS_P)
+        });
+        inputs.push(row);
+    }
+
+    let ncols = 180usize;
+    let mat = generate_trace_rows::<
+        Goldilocks,
+        GenericPoseidon2LinearLayersGoldilocks,
+        8,
+        7,
+        1,
+        4,
+        22,
+    >(inputs.clone(), &rc, 0);
+    assert_eq!(mat.width, ncols);
+    assert_eq!(mat.values.len(), inputs.len() * ncols);
+
+    let mut cases = Vec::with_capacity(inputs.len());
+    for (r, inp) in inputs.iter().enumerate() {
+        let input: Vec<String> = inp.iter().map(|v| v.as_canonical_u64().to_string()).collect();
+        let row: Vec<String> = (0..ncols)
+            .map(|c| mat.values[r * ncols + c].as_canonical_u64().to_string())
+            .collect();
+        cases.push(Poseidon2AirTraceCase { input, row });
+    }
+
+    let file = Poseidon2AirTraceFile {
+        format_version: ORACLE_FORMAT_VERSION,
+        plonky3_commit: PLONKY3_COMMIT,
+        source: "p3_poseidon2_air::generate_trace_rows over Poseidon2Cols<8,7,1,4,22>",
+        width: 8,
+        sbox_degree: 7,
+        sbox_registers: 1,
+        half_full_rounds: 4,
+        partial_rounds: 22,
+        num_cols: ncols,
         cases,
     };
     if let Some(parent) = out_path.parent() {
