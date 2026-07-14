@@ -84,6 +84,9 @@ typedef enum {
     /** A supplied random field element is >= Goldilocks p (fail-close;
      *  Plonky3 draws are rejection-sampled canonical, goldilocks.rs:184-193). */
     DNAC_PROVER_ERR_NONCANONICAL = 3,
+    /** The end-to-end self-verify (prime + dnac_fri_verify) unexpectedly
+     *  failed — an internal inconsistency; the prover rejects its own proof. */
+    DNAC_PROVER_ERR_VERIFY = 4,
 } dnac_prover_status_t;
 
 /* ============================================================================

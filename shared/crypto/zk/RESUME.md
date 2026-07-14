@@ -20,12 +20,14 @@
   Money conservation on the live chain is enforced by the native cleartext
   witness check (`verify.c` Check 4); this ZK stack is ADDITIVE (v3 ships
   transparent, hidden amounts are v4).
-- **`make test`: 50 gates GREEN, 0 warnings** (`cd shared/crypto/zk && make test`;
+- **`make test`: 49 test binaries GREEN, 0 warnings** (`cd shared/crypto/zk && make test`;
   `test_fri_verify_zk` runs twice — FibonacciAir + is_zk RangeProofAir).
-  **C PROVER COMPLETE (S1-S13):** gates 39-50 = S1 trace + S2 LDE + S3 commit +
-  S5 alpha + S6 quotient + S7 quotient-commit + S8 zeta + S9 open + S10 FRI +
-  S11/S12 query + **S13 MILESTONE (pure-C prove → dnac_fri_verify == DNAC_FRI_OK,
-  Rust-free end-to-end)**, 2026-07-13/14. Red-team PENDING before "done".
+  **C PROVER COMPLETE (S1-S13) + P1 arbitrary-instance:** the prover-side gates
+  = S1 trace + S2 LDE + S3 commit + S5 alpha + S6 quotient + S7 quotient-commit +
+  S8 zeta + S9 open + S10 FRI + S11/S12 query + **S13 MILESTONE (pure-C prove →
+  dnac_fri_verify == DNAC_FRI_OK, Rust-free)** + **P1 `test_prover_prove` (3
+  instances: heights 4/8/16, 1/2/3 FRI rounds, incl. PADDED, each byte-matching
+  the real Plonky3 proof)**, 2026-07-13/14. Both red-teams DONE (0 CRITICAL).
 - **Committed** on branch `zk-range-balance-soundness-hardening` (commits
   `9d07c968` mint-fix + FRI guards, `80f8888b` composed door). Not on `main`.
 
@@ -194,10 +196,30 @@ Milestones M1→M2→M3:
     **Applied 3 fail-close guards** (S2 log_lde>=32 UB, S5 preprocessed_width!=0,
     S10 ro_len<stop_len overread) — no M3a behavior change, suite still GREEN.
     Report: `dnac/docs/plans/2026-07-14-c-prover-redteam-report.md` (+ `.json`).
-  - **NEXT (all gated, none blocks the demo):** P1 generalize the query phase +
-    `dnac_prover_assemble` for arbitrary instances; production C CSPRNG (OS
+  - **P1 DONE (2026-07-14) — arbitrary-instance prover:** `stark_prover_prove.{c,h}`
+    — `dnac_prover_prove(instance)` derives EVERY shape from `height`
+    (base_degree_bits, degree_bits, log_max_height, num_qc, num FRI rounds,
+    depths, coms domains, draw offsets 64h/16h/18h/12h @ 0/64h/80h/98h), runs
+    S1→S12, does generalized multi-round `answer_query`, assembles the proof +
+    coms + priming, and SELF-VERIFIES (`prime → out.zeta==prover zeta →
+    dnac_fri_verify==OK`). Grounding: 6-agent fan-out (`wf_646dcb7a`), all
+    GROUNDED; specs `dnac/docs/plans/2026-07-14-c-prover-p1-generalization.md`.
+    Oracle `dump-prover-full-instance --which a/b/c`. Gate `test_prover_prove`:
+    **3 instances — height 4 (1 round) / 8 (2 rounds) / 16 (PADDED n_real=12,
+    3 rounds) — each with zeta + 3 roots + final_poly + query indices
+    BYTE-MATCHING the real Plonky3 proof** + C-verify DNAC_FRI_OK. Closes the
+    S13 red-team's "multi-round byte-unverified" gap.
+  - **P1 RED-TEAM DONE (2026-07-14):** 10 adversarial agents (`wf_4b1d2d34`):
+    0 CRITICAL; derivations GROUNDED to the MAX bound (height 1024, 9 rounds).
+    One real defect (missing height<4 guard — height=2 gives 0 FRI rounds,
+    Plonky3 panics) FIXED + arity==1 assert + merkle-open return checks
+    (fail-close). Instance-C (padded, 3 rounds) + query-index byte-match added
+    to close the A2/A8/A9 coverage findings. Report:
+    `dnac/docs/plans/2026-07-14-c-prover-p1-redteam-report.md`.
+  - **NEXT (all gated, none blocks the demo):** production C CSPRNG (OS
     entropy) + salted-leaf MMCS (M3b) for real hiding; production FRI params +
-    B1 TX-binding (plan §6). P2 perf. Citation re-pin on next touch.
+    B1 TX-binding (plan §6). P2 perf. Optional: heights 32-1024 KATs, direct
+    query-proof serde byte-match. Citation re-pin on next touch.
 - **M3b TODO — RED-TEAM GATED (cannot self-approve, KAFADAN rule):** the
   Poseidon2 in-AIR value COMMITMENT binding a public commitment to the hidden
   amount + CONSTRUCTED binding column layout (v2 SEC-2 fix) + canonical order +
@@ -481,7 +503,7 @@ cd /opt/dna/shared/crypto/zk
 make clean && make test
 ```
 
-Expected (2026-07-14): 50 gate markers GREEN, 0 warnings, all grounded against external references (Plonky3 pin `82cfad73`, NIST KAT, OpenSSL, FIPS-202).
+Expected (2026-07-14): 49 test binaries GREEN, 0 warnings, all grounded against external references (Plonky3 pin `82cfad73`, NIST KAT, OpenSSL, FIPS-202).
 
 ---
 

@@ -103,7 +103,8 @@ TESTS = \
     $(BUILD)/test_prover_s9_open \
     $(BUILD)/test_prover_s10_fri \
     $(BUILD)/test_prover_s11_query \
-    $(BUILD)/test_prover_s13_verify
+    $(BUILD)/test_prover_s13_verify \
+    $(BUILD)/test_prover_prove
 
 .PHONY: all test clean gen-fri-proof-wire gen-stark-proof-wire
 
@@ -418,6 +419,13 @@ $(BUILD)/test_prover_s11_query: tests/test_prover_s11_query.c stark_prover.h $(P
 $(BUILD)/test_prover_s13_verify: tests/test_prover_s13_verify.c stark_prover.h fri_verifier.h stark_priming.h $(PROVER_STACK) fri_verifier.c stark_priming.c | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) tests/test_prover_s13_verify.c $(PROVER_STACK) fri_verifier.c stark_priming.c $(SHA3_SRC) $(LDLIBS) -o $@
 
+# P1 (C prover) — library-level dnac_prover_prove on ARBITRARY instances: the
+# instance-generic prove + assemble + self-verify (stark_prover_prove.c). Proves
+# both M3a (1 FRI round) and a height-8 instance (2 FRI rounds, 6-bit indices),
+# exercising the multi-round FRI commit phase + generalized answer_query.
+$(BUILD)/test_prover_prove: tests/test_prover_prove.c stark_prover_prove.h stark_prover_prove.c stark_prover.h fri_verifier.h stark_priming.h $(PROVER_STACK) fri_verifier.c stark_priming.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_prover_prove.c stark_prover_prove.c $(PROVER_STACK) fri_verifier.c stark_priming.c $(SHA3_SRC) $(LDLIBS) -o $@
+
 # Regenerate the DZKS wrapper vectors from their priming vectors via the C codec
 # (the generator is polymorphic on has_trace_next, driven by the JSON's trace_next
 # being an array vs null). Manual (vectors committed + hash-pinned); run after a
@@ -694,6 +702,17 @@ test: all
 	@echo "  indices == REAL [4,23]; openings verify vs retained roots (82cfad73)"
 	@echo "============================================================"
 	@$(BUILD)/test_prover_s11_query tools/vectors/prover_s11_indices_zk.json tools/vectors/prover_s8_random_zk.json tools/vectors/prover_s7_quotient_commit_zk.json tools/vectors/prover_s2_lde_zk.json
+	@echo
+	@echo "============================================================"
+	@echo "S13 (C prover) — MILESTONE: pure-C prove -> dnac_fri_verify == DNAC_FRI_OK"
+	@echo "============================================================"
+	@$(BUILD)/test_prover_s13_verify tools/vectors/prover_s8_random_zk.json tools/vectors/prover_s7_quotient_commit_zk.json tools/vectors/prover_s2_lde_zk.json
+	@echo
+	@echo "============================================================"
+	@echo "P1 (C prover) — dnac_prover_prove on ARBITRARY instances"
+	@echo "  M3a (1 FRI round) + height-8 (2 FRI rounds, 6-bit indices) -> C verify OK"
+	@echo "============================================================"
+	@$(BUILD)/test_prover_prove tools/vectors/prover_full_a.json tools/vectors/prover_full_b.json tools/vectors/prover_full_c.json
 	@echo
 	@echo "============================================================"
 	@echo "ALL REMAINING (grounded) GATES: GREEN"

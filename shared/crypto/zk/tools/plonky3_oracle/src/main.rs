@@ -419,6 +419,19 @@ enum Cmd {
         #[arg(long)]
         out: PathBuf,
     },
+    /// P1 — full-instance dump for the library-level C prover: the entire
+    /// SmallRng(1) draw stream (110*height values) + the REAL is_zk proof's
+    /// cross-check values (commit roots, zeta/zeta_next, final_poly, degree_bits,
+    /// num_commit_phase_rounds, query indices). Instance selected by --which:
+    /// "a" = M3a (amounts [10,20,30,40], height 4, fee 7); "b" = instance-B
+    /// (amounts [1..8], height 8, fee 3, 2 FRI rounds, 6-bit indices).
+    #[command(name = "dump-prover-full-instance")]
+    DumpProverFullInstance {
+        #[arg(long)]
+        which: String,
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// P6 Part B — STARK priming for an AIR that does NOT read the next row
     /// (main_next=false): vendored SquareAir (a*a==b). Same DNAC stack + both
     /// gates as dump-stark-priming, but the proof carries trace_next=None and the
@@ -510,6 +523,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Cmd::DumpProverS10FriZk { out } => stark_priming::dump_prover_s10_fri_zk(&out)?,
         Cmd::DumpProverS11IndicesZk { out } => {
             stark_priming::dump_prover_s11_indices_zk(&out)?
+        }
+        Cmd::DumpProverFullInstance { which, out } => {
+            stark_priming::dump_prover_full_instance(&which, &out)?
         }
         Cmd::DumpStarkPrimingNoNext { out } => stark_priming::dump_stark_priming_no_next(&out)?,
         Cmd::DumpStarkVerifyConstraints { out } => {
@@ -10566,6 +10582,224 @@ mod stark_priming {
             "wrote {} (S11 indices KAT: {:?}, GATE 1 held)",
             out_path.display(),
             indices
+        );
+        Ok(())
+    }
+
+    // ========================================================================
+    // P1 — full-instance dump for the library-level C prover.
+    //
+    // Dumps the entire SmallRng(1) draw stream (110*height values, in
+    // consumption order trace|codeword|blinding|R) so the C dnac_prover_prove
+    // gets its randomness (D1-B), plus the REAL is_zk proof's cross-check
+    // values (commit roots, zeta/zeta_next, final_poly, degree_bits,
+    // num_commit_phase_rounds, replayed query indices). GATE 1: real prove+verify.
+    // ========================================================================
+    pub fn dump_prover_full_instance(
+        which: &str,
+        out_path: &PathBuf,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use p3_challenger::{CanSampleBits, FieldChallenger, GrindingChallenger};
+        use p3_fri::HidingFriPcs;
+        use rand::rngs::SmallRng;
+        use rand::RngExt as _;
+        use rand::SeedableRng;
+
+        let (amounts_vec, height, fee): (Vec<u64>, usize, u64) = match which {
+            "a" => (vec![10, 20, 30, 40], 4, 7),
+            "b" => (vec![1, 2, 3, 4, 5, 6, 7, 8], 8, 3),
+            // instance-c: height 16 -> base_degree_bits 4 -> 3 FRI rounds,
+            // 7-bit query indices. Also padded (n_real=12 < height=16) to
+            // exercise the padded is_zk path end-to-end (red-team A2/A7).
+            "c" => (
+                vec![100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1100, 1200],
+                16,
+                13,
+            ),
+            _ => {
+                return Err(format!("unknown instance '{which}' (want 'a'/'b'/'c')").into())
+            }
+        };
+        let (trace, total) = generate_range_proof_trace(&amounts_vec, height);
+        let claimed = total + fee;
+        let pis = vec![
+            Goldilocks::from_u64(claimed),
+            Goldilocks::from_u64(fee),
+            Goldilocks::from_u64(amounts_vec.len() as u64),
+        ];
+        let num_random_codewords = 4usize;
+        let log_blowup = 2usize;
+        let make_zk_pcs = || -> ZkStarkPcs {
+            let input_mmcs: FriValMmcs = make_mmcs();
+            let challenge_mmcs = FriChallengeMmcs::new(make_mmcs());
+            HidingFriPcs::new(
+                Radix2Dit::default(),
+                input_mmcs,
+                FriParameters {
+                    log_blowup,
+                    log_final_poly_len: 2,
+                    max_log_arity: 1,
+                    num_queries: 2,
+                    commit_proof_of_work_bits: 0,
+                    query_proof_of_work_bits: 0,
+                    mmcs: challenge_mmcs,
+                },
+                num_random_codewords,
+                SmallRng::seed_from_u64(1),
+            )
+        };
+        // GATE 1: real prove + verify.
+        let challenger =
+            FriChallenger::new(FriHashChal::new(FRI_INIT_STATE.to_vec(), FriOracleSha3_512));
+        let config: ZkStarkCfg = StarkConfig::new(make_zk_pcs(), challenger);
+        let proof = prove(&config, &RangeProofAir, trace.clone(), &pis);
+        verify(&config, &RangeProofAir, &proof, &pis)
+            .map_err(|e| format!("P1 GATE 1 FAILED: verify rejected: {e:?}"))?;
+
+        // Full draw stream: fresh SmallRng(1), 110*height draws in order.
+        let n_draws = 110 * height;
+        let mut rng = SmallRng::seed_from_u64(1);
+        let draws: Vec<Goldilocks> = (0..n_draws).map(|_| rng.random()).collect();
+
+        // Cross-check values from the REAL proof.
+        let degree_bits = proof.degree_bits;
+        let trace_root = fri_milestone_serialize_commitment(&proof.commitments.trace);
+        let quot_root =
+            fri_milestone_serialize_commitment(&proof.commitments.quotient_chunks);
+        let rand_root = fri_milestone_serialize_commitment(
+            &proof.commitments.random.clone().ok_or("is_zk random")?,
+        );
+        let fri = &proof.opening_proof.1;
+        let num_rounds = fri.commit_phase_commits.len();
+        let (z0, z1) = {
+            // Replay to zeta.
+            let rand_ov = &proof.opening_proof.0;
+            let merge = |b: &[GoldFp2], e: &[GoldFp2]| {
+                let mut v = b.to_vec();
+                v.extend_from_slice(e);
+                v
+            };
+            let rm = merge(&proof.opened_values.random.clone().ok_or("r")?, &rand_ov[0][0][0]);
+            let tl = merge(&proof.opened_values.trace_local, &rand_ov[1][0][0]);
+            let tn = merge(&proof.opened_values.trace_next.clone().ok_or("tn")?, &rand_ov[1][0][1]);
+            let qm: Vec<Vec<GoldFp2>> = proof
+                .opened_values
+                .quotient_chunks
+                .iter()
+                .enumerate()
+                .map(|(c, ch)| merge(ch, &rand_ov[2][c][0]))
+                .collect();
+            let base_db = degree_bits - 1;
+            let mut ch = FriChallenger::new(FriHashChal::new(
+                FRI_INIT_STATE.to_vec(),
+                FriOracleSha3_512,
+            ));
+            ch.observe(Goldilocks::from_u64(degree_bits as u64));
+            ch.observe(Goldilocks::from_u64(base_db as u64));
+            ch.observe(Goldilocks::from_u64(0));
+            ch.observe(proof.commitments.trace.clone());
+            ch.observe_slice(&pis);
+            let _a: GoldFp2 = ch.sample_algebra_element();
+            ch.observe(proof.commitments.quotient_chunks.clone());
+            ch.observe(proof.commitments.random.clone().ok_or("rc")?);
+            let zeta: GoldFp2 = ch.sample_algebra_element();
+            // observe opened + FRI alpha + commit phase + final poly + arities,
+            // sample query indices.
+            ch.observe_algebra_slice(&rm);
+            ch.observe_algebra_slice(&tl);
+            ch.observe_algebra_slice(&tn);
+            for q in &qm {
+                ch.observe_algebra_slice(q);
+            }
+            let _fa: GoldFp2 = ch.sample_algebra_element();
+            let mut log_arities: Vec<u8> = Vec::new();
+            for (r, cph) in fri.commit_phase_commits.iter().enumerate() {
+                ch.observe(cph.clone());
+                let _w = ch.grind(0);
+                let _beta: GoldFp2 = ch.sample_algebra_element();
+                log_arities.push(fri.query_proofs[0].commit_phase_openings[r].log_arity);
+            }
+            ch.observe_algebra_slice(&fri.final_poly);
+            for la in &log_arities {
+                ch.observe(Goldilocks::from_u64(*la as u64));
+            }
+            let _qw = ch.grind(0);
+            let log_max_height = base_db + 3;
+            let idxs: Vec<u64> =
+                (0..2).map(|_| ch.sample_bits(log_max_height) as u64).collect();
+            (zeta, (idxs, log_max_height))
+        };
+        let zeta = z0;
+        let (query_indices, log_max_height) = z1;
+        let zeta_next = zeta * Goldilocks::from_u64(1); // placeholder; recompute below
+        let _ = zeta_next;
+        // zeta_next = zeta * two_adic_generator(base_degree_bits)
+        let base_db = degree_bits - 1;
+        let g = <Goldilocks as p3_field::TwoAdicField>::two_adic_generator(base_db);
+        let zeta_next = zeta * GoldFp2::from(g);
+
+        let (zc0, zc1) = fri_fp2_to_pair(zeta);
+        let (zn0, zn1) = fri_fp2_to_pair(zeta_next);
+        let draws_dec: Vec<String> =
+            draws.iter().map(|x| x.as_canonical_u64().to_string()).collect();
+        let amounts_dec: Vec<String> =
+            amounts_vec.iter().map(|a| a.to_string()).collect();
+        let publics_dec: Vec<String> = vec![
+            claimed.to_string(),
+            fee.to_string(),
+            (amounts_vec.len() as u64).to_string(),
+        ];
+        let final_poly_dec: Vec<String> = fri
+            .final_poly
+            .iter()
+            .flat_map(|x| {
+                let (a, b) = fri_fp2_to_pair(*x);
+                [a, b]
+            })
+            .collect();
+        let indices_dec: Vec<String> =
+            query_indices.iter().map(|x| x.to_string()).collect();
+        let envelope = serde_json::json!({
+            "format_version": ORACLE_FORMAT_VERSION,
+            "plonky3_commit": PLONKY3_COMMIT,
+            "scope": "prover_full_instance",
+            "which": which,
+            "description": "P1 full-instance dump: complete SmallRng(1) draw stream (110*height) \
+                            for the C library dnac_prover_prove + REAL is_zk proof cross-check \
+                            values. GATE 1 (real prove+verify) held.",
+            "instance": {
+                "amounts": amounts_dec,
+                "n_real": amounts_vec.len(),
+                "height": height,
+                "fee": fee.to_string(),
+                "claimed": claimed.to_string(),
+            },
+            "shape": {
+                "degree_bits": degree_bits,
+                "log_max_height": log_max_height,
+                "num_commit_phase_rounds": num_rounds,
+                "num_draws": n_draws,
+            },
+            "draws": draws_dec,
+            "public_values": publics_dec,
+            "trace_commit_root_hex": to_hex(&trace_root),
+            "quotient_commit_root_hex": to_hex(&quot_root),
+            "random_commit_root_hex": to_hex(&rand_root),
+            "zeta": [zc0, zc1],
+            "zeta_next": [zn0, zn1],
+            "final_poly": final_poly_dec,
+            "query_indices": indices_dec,
+        });
+
+        if let Some(parent) = out_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut f = File::create(out_path)?;
+        f.write_all(serde_json::to_string_pretty(&envelope)?.as_bytes())?;
+        f.write_all(b"\n")?;
+        eprintln!(
+            "wrote {} (P1 full-instance '{}': height {}, {} draws, degree_bits {}, {} FRI rounds, indices {:?})",
+            out_path.display(), which, height, n_draws, degree_bits, num_rounds, query_indices
         );
         Ok(())
     }
