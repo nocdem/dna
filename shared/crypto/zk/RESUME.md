@@ -20,6 +20,18 @@
   byte-matches the real `p3_uni_stark::prove` (82cfad73). Only the Rust oracle's
   SmallRng(1) draw stream is a KAT input (design pin D1-B); production proving
   swaps it for OS entropy (a C CSPRNG is the remaining production gate, G2).
+- **PERF (P2 bench, 2026-07-14 — `make bench-prover`, desktop, TEST params
+  num_queries=2 ~4-bit soundness).** prove_ms 18 (h=4) → 466 (h=1024), ~linear
+  in height (LDE/quotient dominated); verify_ms ~8-11 FLAT; proof 7-20 KB.
+  **Verdict: 1 TPS VIABLE** (prove = wallet UX, sub-second even huge; verify
+  ~0.2-0.3s/proof projected at production params × 1 TPS = fine; storage needs
+  the already-planned pruning/archive). **100 TPS NOT viable per-TX** — verify
+  throughput (100 × ~0.3s = ~30 CPU-s/wall-s per witness) + storage (100 ×
+  ~100 KB = ~1 TB/day full-history) both blow up ~100×; the 100-TPS path is
+  **recursive proof aggregation** (one aggregate proof per BLOCK, not per-TX) —
+  a major future track, aligned with the roadmap's "100 TPS = Cosmos migration
+  2027+, not near-term." The C prover perf is NOT the 1-TPS blocker; B1 binding
+  + production params are.
 - **Parked, NOT in consensus.** `grep` confirms zero references to
   `shared/crypto/zk` from any CMakeLists (messenger/nodus/dnac) — it is compiled
   ONLY by its own standalone `Makefile`, not into `libdna.so`/`nodus-server`.

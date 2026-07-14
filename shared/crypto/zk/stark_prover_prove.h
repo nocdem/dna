@@ -104,6 +104,12 @@ const gold_fp2_t *dnac_prover_proof_final_poly(const dnac_prover_proof_t *p,
 size_t dnac_prover_proof_query_indices(const dnac_prover_proof_t *p,
                                        uint64_t *out, size_t max);
 
+/** Serialized on-chain proof size in bytes: the outer DZKS wire wrapping the
+ *  inner DZKF FRI proof (dnac_stark_proof_encode ∘ dnac_fri_proof_encode). This
+ *  is the true storage/bandwidth cost per confidential TX. Returns 0 on an
+ *  encode error. */
+size_t dnac_prover_proof_wire_size(const dnac_prover_proof_t *p);
+
 void dnac_prover_proof_free(dnac_prover_proof_t *p);
 
 #ifdef __cplusplus

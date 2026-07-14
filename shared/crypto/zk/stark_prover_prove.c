@@ -22,7 +22,9 @@
 #include <string.h>
 
 #include "field_goldilocks.h"
+#include "fri_proof_codec.h"
 #include "stark_priming.h"
+#include "stark_proof_codec.h"
 #include "transcript.h"
 
 /* Fixed RangeProofAir / is_zk=1 config constants. */
@@ -234,6 +236,26 @@ size_t dnac_prover_proof_query_indices(const dnac_prover_proof_t *p,
         for (size_t i = 0; i < n && i < max; i++) out[i] = p->query_indices[i];
     }
     return n;
+}
+
+size_t dnac_prover_proof_wire_size(const dnac_prover_proof_t *cp) {
+    dnac_prover_proof_t *p = (dnac_prover_proof_t *)cp;
+    /* coms were built during the self-verify with the primed zeta (== p->zeta);
+     * rebuild them here so the accessor is independent of verify state. */
+    build_coms(p, p->zeta, p->zeta_next);
+    uint8_t *dzkf = NULL, *dzks = NULL;
+    size_t dzkf_len = 0, dzks_len = 0, out = 0;
+    if (dnac_fri_proof_encode(&p->params, &p->proof, p->coms, 3, &dzkf,
+                              &dzkf_len) == DNAC_FRI_CODEC_OK) {
+        if (dnac_stark_proof_encode(p->degree_bits, p->publics, 3, dzkf,
+                                    dzkf_len, &dzks, &dzks_len) ==
+            DNAC_STARK_WIRE_OK) {
+            out = dzks_len;
+        }
+    }
+    free(dzkf);
+    free(dzks);
+    return out;
 }
 
 void dnac_prover_proof_free(dnac_prover_proof_t *p) {
