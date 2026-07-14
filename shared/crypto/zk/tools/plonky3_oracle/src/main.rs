@@ -27,7 +27,8 @@ use std::path::PathBuf;
 
 use p3_field::extension::BinomialExtensionField;
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing, PrimeField64};
-use p3_goldilocks::Goldilocks;
+use p3_goldilocks::{Goldilocks, default_goldilocks_poseidon2_8};
+use p3_symmetric::Permutation;
 use sha3::{Digest, Sha3_512};
 
 /// Type alias for Goldilocks² extension field (degree-2 binomial extension).
@@ -473,6 +474,15 @@ enum Cmd {
         #[arg(long)]
         out: PathBuf,
     },
+    /// FP1.2 — Poseidon2 permutation over Goldilocks (width 8). Runs the REAL
+    /// `default_goldilocks_poseidon2_8()` (goldilocks/src/poseidon2.rs:570) on a
+    /// fixed input set; the C port `poseidon2_goldilocks8_permute` must byte-match
+    /// each output. Grounds the SHA3->Poseidon2 in-AIR/recursion decision.
+    #[command(name = "dump-poseidon2-goldilocks")]
+    DumpPoseidon2Goldilocks {
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// Dump all (runs all subcommands; ones not yet implemented are skipped).
     DumpAll {
         #[arg(long)]
@@ -536,6 +546,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Cmd::DumpRangeAirOnly { out } => stark_priming::dump_range_air_only(&out)?,
         Cmd::DumpRangeProofAir { out } => stark_priming::dump_range_proof_air(&out)?,
+        Cmd::DumpPoseidon2Goldilocks { out } => dump_poseidon2_goldilocks(&out)?,
         Cmd::DumpAll { out_dir } => {
             std::fs::create_dir_all(&out_dir)?;
             dump_field_ops(&out_dir.join("field_ops.json"))?;
@@ -730,6 +741,96 @@ fn dump_two_adic_gens(out_path: &PathBuf) -> Result<(), Box<dyn std::error::Erro
         plonky3_commit: PLONKY3_COMMIT,
         two_adicity: 32,
         generators: gens,
+    };
+    if let Some(parent) = out_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut f = File::create(out_path)?;
+    f.write_all(serde_json::to_string_pretty(&file)?.as_bytes())?;
+    f.write_all(b"\n")?;
+    eprintln!("wrote {}", out_path.display());
+    Ok(())
+}
+
+
+// ============================================================================
+// Poseidon2-Goldilocks width-8 permutation dump (FP1.2)
+// ============================================================================
+
+#[derive(Serialize)]
+struct Poseidon2Case {
+    input: [String; 8],
+    output: [String; 8],
+}
+
+#[derive(Serialize)]
+struct Poseidon2File {
+    format_version: &'static str,
+    plonky3_commit: &'static str,
+    constructor: &'static str,
+    width: usize,
+    sbox_degree: u64,
+    full_rounds: usize,
+    partial_rounds: usize,
+    cases: Vec<Poseidon2Case>,
+}
+
+/// Dump `default_goldilocks_poseidon2_8().permute(input)` for a fixed input set.
+/// Ground truth for the C port poseidon2_goldilocks8_permute.
+fn dump_poseidon2_goldilocks(out_path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    let perm = default_goldilocks_poseidon2_8();
+
+    // Structured inputs + a deterministic splitmix64 spread (all canonical < p).
+    let mut inputs: Vec<[u64; 8]> = vec![
+        [0, 0, 0, 0, 0, 0, 0, 0],
+        [1, 0, 0, 0, 0, 0, 0, 0],
+        [0, 1, 2, 3, 4, 5, 6, 7],
+        [1, 1, 1, 1, 1, 1, 1, 1],
+        [
+            GOLDILOCKS_P - 1,
+            GOLDILOCKS_P - 2,
+            GOLDILOCKS_P - 3,
+            GOLDILOCKS_P - 4,
+            GOLDILOCKS_P - 5,
+            GOLDILOCKS_P - 6,
+            GOLDILOCKS_P - 7,
+            GOLDILOCKS_P - 8,
+        ],
+    ];
+    // 11 pseudo-random cases via splitmix64, reduced mod p to stay canonical.
+    let mut x: u64 = 0x0123_4567_89ab_cdef;
+    for _ in 0..11 {
+        let mut row = [0u64; 8];
+        for slot in row.iter_mut() {
+            x = x.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            let mut z = x;
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            z ^= z >> 31;
+            *slot = z % GOLDILOCKS_P;
+        }
+        inputs.push(row);
+    }
+
+    let mut cases = Vec::with_capacity(inputs.len());
+    for inp in &inputs {
+        let mut state: [Goldilocks; 8] = core::array::from_fn(|i| Goldilocks::from_u64(inp[i]));
+        perm.permute_mut(&mut state);
+        cases.push(Poseidon2Case {
+            input: core::array::from_fn(|i| inp[i].to_string()),
+            output: core::array::from_fn(|i| state[i].as_canonical_u64().to_string()),
+        });
+    }
+
+    let file = Poseidon2File {
+        format_version: ORACLE_FORMAT_VERSION,
+        plonky3_commit: PLONKY3_COMMIT,
+        constructor: "default_goldilocks_poseidon2_8 (goldilocks/src/poseidon2.rs:570)",
+        width: 8,
+        sbox_degree: 7,
+        full_rounds: 8,
+        partial_rounds: 22,
+        cases,
     };
     if let Some(parent) = out_path.parent() {
         std::fs::create_dir_all(parent)?;

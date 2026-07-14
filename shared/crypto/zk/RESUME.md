@@ -38,7 +38,7 @@
   Money conservation on the live chain is enforced by the native cleartext
   witness check (`verify.c` Check 4); this ZK stack is ADDITIVE (v3 ships
   transparent, hidden amounts are v4).
-- **`make test`: 49 test binaries GREEN, 0 warnings** (`cd shared/crypto/zk && make test`;
+- **`make test`: 50 test binaries GREEN, 0 warnings** (`cd shared/crypto/zk && make test`;
   `test_fri_verify_zk` runs twice — FibonacciAir + is_zk RangeProofAir).
   **C PROVER COMPLETE (S1-S13) + P1 arbitrary-instance:** the prover-side gates
   = S1 trace + S2 LDE + S3 commit + S5 alpha + S6 quotient + S7 quotient-commit +
@@ -50,6 +50,17 @@
   `zk-range-balance-soundness-hardening` (`9d07c968` mint-fix + FRI guards,
   `80f8888b` composed door); the C prover + P1 are on `main`
   (`afecd6dc` S1-S13, `b3515611` P1).
+- **HASH DECISION (2026-07-14 — REVISES the "SHA3-512 uniform / Option B" lock).**
+  Phased SHA3→Poseidon2, per `dnac/docs/plans/2026-07-14-sha3-to-poseidon2-decision.md`
+  (local-only) backed by a 110-agent adversarial research pass (`tasks/w3j3d7i37.output`):
+  chain-level tx-hash = **SHA3-512 (unchanged)**; proof-internal FRI/Merkle/transcript =
+  **SHA3 now → Poseidon2 at the recursion phase** (the current
+  `SerializingChallenger64<HashChallenger<u8,SHA3-512,64>>` is Plonky3-*ungrounded* /
+  self-maintained — RF-1, acceptable only while parked); in-AIR M3b commitment =
+  **Poseidon2 from the start** (SHA3-in-AIR impractical, ~15–100× cost gap). Instance
+  pinned: Goldilocks Poseidon2 width-8, d=7, RF=8, RP=22, hardcoded Grain-LFSR constants
+  from Plonky3 `82cfad73` (`goldilocks/src/poseidon2.rs`). FP1.2 = grounded permutation
+  port (in progress).
 
 ## SANDBOX CONFIDENTIAL DEMO (2026-07-13 — COMMITTED to main)
 
@@ -530,7 +541,7 @@ cd /opt/dna/shared/crypto/zk
 make clean && make test
 ```
 
-Expected (2026-07-14): 49 test binaries GREEN, 0 warnings, all grounded against external references (Plonky3 pin `82cfad73`, NIST KAT, OpenSSL, FIPS-202).
+Expected (2026-07-14): 50 test binaries GREEN, 0 warnings, all grounded against external references (Plonky3 pin `82cfad73`, NIST KAT, OpenSSL, FIPS-202).
 
 ---
 
@@ -547,6 +558,7 @@ Expected (2026-07-14): 49 test binaries GREEN, 0 warnings, all grounded against 
 | `range_air.{c,h}` (Sprint 3.1 rework 2026-05-23) | Real `p3_air::utils::u64_to_bits_le::<Goldilocks>` call; 80 cases byte-match (`tools/vectors/range_air.json`); F7 column-layout binding test ships alongside | HIGH |
 | `sum_balance.{c,h}` (Sprint 3.2 rework 2026-05-23) | U+F = Plonky3 fib_air idiom; I constraint = DNAC-original from § 6.1; 78 cases byte-match (`tools/vectors/sum_balance.json`); F7 column-layout binding test ships alongside | HIGH (partial — I constraint DNAC-original) |
 | `sponge_sha3_512.{c,h}` (Sprint 3.3b.7 rework 2026-05-23) | Triple cross-validation: Plonky3 sha3 crate (74 oracle cases) + keccak_ref + incremental-absorb-vs-oneshot. | HIGH |
+| `poseidon2_goldilocks.{c,h}` (FP1.2 2026-07-14) | Width-8 Poseidon2 permutation. Byte-matches the REAL `default_goldilocks_poseidon2_8().permute` (Plonky3 82cfad73, 16 cases incl. all-zero KAT / near-p / random). Constants (RC 8×4+8×4+22, MATRIX_DIAG_8, RF=8/RP=22/D=7) copied verbatim from `goldilocks/src/poseidon2.rs`. STANDALONE — not yet wired to any AIR/proof-internal path (in-AIR M3b + recursion migration are later phases per the SHA3→Poseidon2 decision doc). | HIGH |
 
 ### Rust reference oracle (build-time only, post-evening cleanup)
 

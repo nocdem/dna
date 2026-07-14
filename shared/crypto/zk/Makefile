@@ -104,7 +104,8 @@ TESTS = \
     $(BUILD)/test_prover_s10_fri \
     $(BUILD)/test_prover_s11_query \
     $(BUILD)/test_prover_s13_verify \
-    $(BUILD)/test_prover_prove
+    $(BUILD)/test_prover_prove \
+    $(BUILD)/test_poseidon2_goldilocks
 
 .PHONY: all test clean gen-fri-proof-wire gen-stark-proof-wire bench-prover
 
@@ -124,6 +125,11 @@ $(BUILD)/test_field_goldilocks_ext: tests/test_field_goldilocks_ext.c field_gold
 # Two-adic generators sanity check.
 $(BUILD)/test_two_adic_gens: tests/test_two_adic_gens.c field_goldilocks.c field_goldilocks.h | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) tests/test_two_adic_gens.c field_goldilocks.c -o $@
+
+# FP1.2 — Poseidon2-Goldilocks width-8 permutation, byte-match vs the real
+# default_goldilocks_poseidon2_8().permute (Plonky3 82cfad73). Grounded port.
+$(BUILD)/test_poseidon2_goldilocks: tests/test_poseidon2_goldilocks.c poseidon2_goldilocks.c field_goldilocks.c poseidon2_goldilocks.h field_goldilocks.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_poseidon2_goldilocks.c poseidon2_goldilocks.c field_goldilocks.c -o $@
 
 # Standalone Keccak / SHA3-512 reference.
 $(BUILD)/test_keccak_ref: tests/test_keccak_ref.c keccak_ref.c keccak_ref.h | $(BUILD)
@@ -720,6 +726,12 @@ test: all
 	@echo "  M3a (1 FRI round) + height-8 (2 FRI rounds, 6-bit indices) -> C verify OK"
 	@echo "============================================================"
 	@$(BUILD)/test_prover_prove tools/vectors/prover_full_a.json tools/vectors/prover_full_b.json tools/vectors/prover_full_c.json
+	@echo
+	@echo "============================================================"
+	@echo "FP1.2 — Poseidon2-Goldilocks width-8 permutation (grounded port)"
+	@echo "  byte-match vs real default_goldilocks_poseidon2_8().permute (82cfad73)"
+	@echo "============================================================"
+	@$(BUILD)/test_poseidon2_goldilocks tools/vectors/poseidon2_goldilocks.json
 	@echo
 	@echo "============================================================"
 	@echo "ALL REMAINING (grounded) GATES: GREEN"
