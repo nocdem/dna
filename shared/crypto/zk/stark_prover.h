@@ -5,11 +5,11 @@
  * First stage of the C prover for the M3a RangeProofAir circuit (the AUDITED
  * 2026-07 mint-fixed 52-bit range + balance AIR, width 56, publics
  * [claimed_input_sum, committed_fee, n_real]). Port of the oracle's
- * `generate_range_proof_trace` (tools/plonky3_oracle/src/main.rs:10210-10231),
+ * `generate_range_proof_trace` (tools/plonky3_oracle/src/main.rs::generate_range_proof_trace),
  * which produces the trace handed unmodified to `p3_uni_stark::prove`
- * (Plonky3 82cfad73 uni-stark/src/prover.rs:41-45).
+ * (Plonky3 82cfad73 uni-stark/src/prover.rs::prove).
  *
- * Column-layout binding contract (oracle main.rs:10092-10097; extends the
+ * Column-layout binding contract (oracle main.rs RangeProofAir column offsets; extends the
  * range_air.h / sum_balance.h contracts):
  *
  *   Cols 0..RANGE_AIR_BITS-1        = little-endian amount bits (range_air)
@@ -19,7 +19,7 @@
  *   Col  STARK_PROVER_CNT_OFF       = running is_real count     (55)
  *   Total width = STARK_PROVER_RANGE_PROOF_WIDTH (56).
  *
- * Padding rows (row >= n_real; oracle main.rs:10208-10228): bits and amount
+ * Padding rows (row >= n_real; oracle main.rs::generate_range_proof_trace (padding arm)): bits and amount
  * are zero, is_real is zero, and acc / cnt stay FLAT at their last real-row
  * values.
  *
@@ -55,17 +55,17 @@ extern "C" {
  * Column-layout binding contract (extends range_air + sum_balance)
  * ========================================================================== */
 
-/** Offset of the is_real flag cell (oracle main.rs:10094 COL_IS_REAL = 54). */
+/** Offset of the is_real flag cell (oracle RangeProofAir COL_IS_REAL = 54). */
 #define STARK_PROVER_IS_REAL_OFF        (SUM_BALANCE_ACC_OFF + (size_t)1)
 
-/** Offset of the running-count cell (oracle main.rs:10095 COL_CNT = 55). */
+/** Offset of the running-count cell (oracle RangeProofAir COL_CNT = 55). */
 #define STARK_PROVER_CNT_OFF            (SUM_BALANCE_ACC_OFF + (size_t)2)
 
-/** Combined RangeProofAir trace width (oracle main.rs:10097 = 56). */
+/** Combined RangeProofAir trace width (oracle RANGE_PROOF_WIDTH = 56). */
 #define STARK_PROVER_RANGE_PROOF_WIDTH  (SUM_BALANCE_WIDTH + (size_t)2)
 
 /** Maximum trace height = SUM_BALANCE_MAX_OUTPUTS (2^10; oracle
- *  main.rs:10098-10100 RANGE_PROOF_MAX_DEGREE_BITS, wrap-safety bound). */
+ *  RANGE_PROOF_MAX_DEGREE_BITS, wrap-safety bound). */
 #define STARK_PROVER_MAX_HEIGHT         SUM_BALANCE_MAX_OUTPUTS
 
 /* ============================================================================
@@ -76,9 +76,10 @@ typedef enum {
     DNAC_PROVER_OK = 0,
     /** NULL pointer / height not a power of two / height 0 or > MAX_HEIGHT /
      *  n_real 0 or > height. Power-of-two is required because
-     *  p3_uni_stark::prove takes log2_strict_usize(height) (prover.rs:43). */
+     *  p3_uni_stark::prove takes log2_strict_usize(height) (prover.rs::prove log2_strict_usize). */
     DNAC_PROVER_ERR_PARAM = 1,
-    /** An amount is >= 2^RANGE_AIR_BITS (oracle main.rs:10219 assert;
+    /** An amount is >= 2^RANGE_AIR_BITS (oracle generate_range_proof_trace
+     *  amount < 2^RANGE_AIR_BITS assert;
      *  fail-close — never canonicalize/truncate an out-of-range amount). */
     DNAC_PROVER_ERR_RANGE = 2,
     /** A supplied random field element is >= Goldilocks p (fail-close;
@@ -96,7 +97,7 @@ typedef enum {
 /**
  * Build the deterministic RangeProofAir witness trace.
  *
- * Port of oracle `generate_range_proof_trace` (main.rs:10210-10231): zeroes
+ * Port of oracle `generate_range_proof_trace` (main.rs::generate_range_proof_trace): zeroes
  * the buffer (Goldilocks::zero_vec, field.rs:386), fills bit/amount/acc via
  * the existing range_air/sum_balance builders for the n_real real rows, sets
  * is_real=1 and cnt=row+1 on real rows, and keeps acc/cnt flat (is_real=0,

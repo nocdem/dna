@@ -288,6 +288,21 @@ int main(int argc, char **argv) {
     failed += run_instance("C", pc);
     failed += cross_check("C", pc);
 
+    /* T5 — negative: reject out-of-domain instances (height<4 → 0 FRI rounds,
+     * red-team A1/A6 fix). Guards the min-height fail-close from regression. */
+    {
+        const uint64_t amt[1] = {5};
+        uint64_t draws2[220]; /* 110*height=220 for height=2 */
+        for (size_t i = 0; i < 220; i++) draws2[i] = 1;
+        dnac_prover_instance_t bad = {amt, 1, 2, 3, draws2, 220};
+        dnac_prover_proof_t *pp = NULL;
+        int rej = (dnac_prover_prove(&bad, &pp) == DNAC_PROVER_ERR_PARAM &&
+                   pp == NULL);
+        if (!rej) failed++;
+        printf("T5 negative: height=2 (0 FRI rounds) rejected          %s\n",
+               rej ? "PASS" : "FAIL");
+    }
+
     if (failed == 0) {
         printf("test_prover_prove: PASS\n");
         printf("P1 PROVE GATE: GREEN — dnac_prover_prove produces a "

@@ -294,7 +294,15 @@ dnac_prover_status_t dnac_prover_prove(
     const size_t degree_bits = base_db + P_IS_ZK;
     const size_t log_max_height = base_db + P_LOG_BLOWUP + P_IS_ZK;
     const size_t lde_h = (size_t)1 << log_max_height;      /* 8*height */
-    const size_t log_num_qc = 1;                           /* AIR-fixed */
+    /* num_qc = 1<<(log_num_quotient_chunks + is_zk); log_num_quotient_chunks =
+     * log2_ceil((max_constraint_degree+is_zk).max(2) - 1). RangeProofAir has
+     * max_constraint_degree 2 ⇒ (2+1).max(2)-1 = 2 ⇒ log2_ceil(2) = 1 ⇒
+     * num_qc = 1<<(1+1) = 4 — HEIGHT-INDEPENDENT, function of the AIR only
+     * (uni-stark symbolic.rs + prover.rs:124-127). The oracle's num_qc gate
+     * (STOP if != measured) enforces this against real p3; P_NUM_QC=4 is
+     * correct for RangeProofAir and MUST be re-derived if the AIR degree
+     * changes (red-team A10). */
+    const size_t log_num_qc = 1;
     const size_t q_size = (size_t)1 << (degree_bits + log_num_qc);
     const size_t num_rounds_expected = base_db - 1;        /* G4 */
     const size_t total = DNAC_PROVER_TOTAL_DRAWS(height);

@@ -3,7 +3,7 @@
  * @brief C STARK prover — stage S1: RangeProofAir witness-trace builder.
  *
  * Port of oracle `generate_range_proof_trace` (tools/plonky3_oracle/src/
- * main.rs:10210-10231 — the trace handed unmodified to p3_uni_stark::prove).
+ * main.rs::generate_range_proof_trace — the trace handed unmodified to p3_uni_stark::prove).
  * See stark_prover.h for the layout contract and scope boundary.
  *
  * Copyright (c) 2026 nocdem
@@ -32,7 +32,7 @@ dnac_prover_status_t dnac_prover_build_range_proof_trace(
     if (amounts == NULL || out_trace == NULL) {
         return DNAC_PROVER_ERR_PARAM;
     }
-    /* Power of two (prover.rs:43 log2_strict_usize) + wrap-safety bound
+    /* Power of two (prover.rs::prove log2_strict_usize) + wrap-safety bound
      * (main.rs:10211-10212). */
     if (height == 0 || (height & (height - 1)) != 0 ||
         height > STARK_PROVER_MAX_HEIGHT) {
@@ -43,7 +43,8 @@ dnac_prover_status_t dnac_prover_build_range_proof_trace(
     if (n_real == 0 || n_real > height) {
         return DNAC_PROVER_ERR_PARAM;
     }
-    /* Every amount must fit RANGE_AIR_BITS (main.rs:10219 assert). Reject
+    /* Every amount must fit RANGE_AIR_BITS (generate_range_proof_trace amount
+     * < 2^RANGE_AIR_BITS assert). Reject
      * BEFORE writing anything — never canonicalize an out-of-range amount. */
     for (size_t i = 0; i < n_real; i++) {
         if (amounts[i] >= (UINT64_C(1) << RANGE_AIR_BITS)) {
@@ -98,6 +99,14 @@ dnac_prover_status_t dnac_prover_randomize_trace(
     uint64_t *out) {
     if (base == NULL || rand_vals == NULL || out == NULL ||
         height == 0 || width == 0 || num_random == 0) {
+        return DNAC_PROVER_ERR_PARAM;
+    }
+    /* size_t-overflow guard (red-team S2 LOW): a hostile height*width would
+     * wrap the draw-validation bound + mis-address writes. Bound by the
+     * pipeline's real ceilings (MAX_HEIGHT rows, width ≤ 60 + codewords); reject
+     * anything that could overflow the per_row / height*per_row products. */
+    if (width > STARK_PROVER_RANGE_PROOF_WIDTH || num_random > width ||
+        height > STARK_PROVER_MAX_HEIGHT) {
         return DNAC_PROVER_ERR_PARAM;
     }
 
@@ -606,6 +615,13 @@ dnac_prover_status_t dnac_prover_quotient_commit(
     for (size_t i = 0; i < (num_chunks - 1) * h * w; i++) {
         if (blinding_rand[i] >= GOLDILOCKS_P) return DNAC_PROVER_ERR_NONCANONICAL;
     }
+    /* quotient_flat canonicality (red-team S7 LOW — was the one input not
+     * checked; the in-house S6 output is always canonical, but fail-close
+     * symmetrically so a foreign non-canonical value can't flow into the
+     * field arithmetic). Length = 2*q_rows (fp2 flatten, 2 base cols/row). */
+    for (size_t i = 0; i < 2 * q_rows; i++) {
+        if (quotient_flat[i] >= GOLDILOCKS_P) return DNAC_PROVER_ERR_NONCANONICAL;
+    }
 
     const unsigned log_q = (unsigned)log2_strict_usize(q_rows);
     const gold_fp_t k = gold_fp_two_adic_generator(log_q);
@@ -1021,10 +1037,15 @@ dnac_prover_status_t dnac_prover_fri_commit_phase(
     if (final_poly_len > DNAC_PROVER_MAX_FINAL_POLY) {
         return DNAC_PROVER_ERR_PARAM;
     }
-    /* Guard the final-poly copy: if ro_len < final_poly_len the fold loop never
-     * runs and the truncate would read past `folded` (heap overread, red-team
-     * S10). A valid FRI codeword always has ro_len >= blowup*final_poly_len. */
-    if (ro_len < stop_len) {
+    /* Reject ro_len <= stop_len (red-team S10 + completeness-critic C3):
+     *  - ro_len < stop_len: the final-poly truncate reads past `folded` (heap
+     *    overread).
+     *  - ro_len == stop_len: the fold loop `while(len > stop_len)` never runs
+     *    ⇒ 0 FRI commit-phase rounds ⇒ no folding low-degree binding, which
+     *    Plonky3 PANICS on (strict assert log_min_height > log_final_poly_len +
+     *    log_blowup, fri/prover.rs:79-81). Fail-close, symmetric with the S2
+     *    log_lde>= guard and the P1 height<4 guard. */
+    if (ro_len <= stop_len) {
         return DNAC_PROVER_ERR_PARAM;
     }
     const unsigned log_final_height = log_blowup + log_final_poly_len;

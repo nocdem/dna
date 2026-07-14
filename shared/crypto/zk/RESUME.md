@@ -1,4 +1,4 @@
-# RESUME — DNAC v3 ZK stack (CURRENT STATUS: 2026-07-12)
+# RESUME — DNAC v3 ZK stack (CURRENT STATUS: 2026-07-14)
 
 > **This top block is authoritative and current. Everything under "═══ HISTORICAL
 > BUILD LOG ═══" is the traceable module-by-module history and its numbers
@@ -7,13 +7,19 @@
 
 ## WHERE WE ARE
 
-- **What it is:** a **verify-only** STARK range/balance-proof stack over the
+- **What it is:** a **prove + verify** STARK range/balance-proof stack over the
   Goldilocks field — Plonky3-grounded C ports of the verifier engine (field,
   NTT, Keccak-AIR, SHA3 sponge, transcript, Merkle-MMCS, FRI fold + verifier,
   STARK constraint check, proof codecs) plus two DNAC-original money AIRs
-  (range_air, sum_balance) and a Rust build-time oracle.
-- **The prover is [MISSING]** — nothing in this tree generates proofs; every
-  test verifies proofs produced by the Rust oracle / real `p3_uni_stark::prove`.
+  (range_air, sum_balance), a **pure-C prover** (`stark_prover.{c,h}` S1-S13 +
+  `stark_prover_prove.{c,h}` instance-generic `dnac_prover_prove`), and a Rust
+  build-time oracle (test-vector generation only, not shipped).
+- **Prover COMPLETE (2026-07-14).** The C prover generates is_zk=1 RangeProofAir
+  proofs (hidden amounts) that the C verifier accepts (`dnac_fri_verify ==
+  DNAC_FRI_OK`) — **Rust-free, end-to-end, arbitrary instance**. Every stage
+  byte-matches the real `p3_uni_stark::prove` (82cfad73). Only the Rust oracle's
+  SmallRng(1) draw stream is a KAT input (design pin D1-B); production proving
+  swaps it for OS entropy (a C CSPRNG is the remaining production gate, G2).
 - **Parked, NOT in consensus.** `grep` confirms zero references to
   `shared/crypto/zk` from any CMakeLists (messenger/nodus/dnac) — it is compiled
   ONLY by its own standalone `Makefile`, not into `libdna.so`/`nodus-server`.
@@ -28,10 +34,12 @@
   dnac_fri_verify == DNAC_FRI_OK, Rust-free)** + **P1 `test_prover_prove` (3
   instances: heights 4/8/16, 1/2/3 FRI rounds, incl. PADDED, each byte-matching
   the real Plonky3 proof)**, 2026-07-13/14. Both red-teams DONE (0 CRITICAL).
-- **Committed** on branch `zk-range-balance-soundness-hardening` (commits
-  `9d07c968` mint-fix + FRI guards, `80f8888b` composed door). Not on `main`.
+- **Committed to `main`.** Prior soundness work on branch
+  `zk-range-balance-soundness-hardening` (`9d07c968` mint-fix + FRI guards,
+  `80f8888b` composed door); the C prover + P1 are on `main`
+  (`afecd6dc` S1-S13, `b3515611` P1).
 
-## SANDBOX CONFIDENTIAL DEMO (2026-07-13 — in progress, UNCOMMITTED)
+## SANDBOX CONFIDENTIAL DEMO (2026-07-13 — COMMITTED to main)
 
 After the B1 confidential-amounts design v2 FAILED an independent 10-agent
 red-team (2 structural REFUTEDs: SEC-2 binding *asserted-not-constructed* + full-
@@ -79,7 +87,7 @@ Milestones M1→M2→M3:
   = 56 base + 4 rand). The range/balance CONSTRAINTS hold via the existing
   `test_range_proof_air` gate (61/61 verify_constraints==OK). Amounts are hidden
   by is_zk=1; range+balance proven in-circuit; FRI-verified in C.
-- **NEXT MAJOR TRACK — C PROVER (IN PROGRESS 2026-07-13):** decision (user
+- **C PROVER (COMPLETE 2026-07-14):** decision (user
   2026-07-13) = write the prover in **C** (C-only preserved at runtime; Rust
   oracle stays build-time), starting on **M3a's RangeProofAir** (SHA3-512 only,
   no Poseidon2). Method: oracle byte-matches every prover stage vs Plonky3 (same
@@ -266,14 +274,20 @@ found and fixed a real **MINT** class of bug, then hardened around it:
 
 ## WHAT'S NEXT (all deferred; none blocks the parked stack today)
 
-The 18-member council's diagnosis: this is **two sound fragments, not a system**
-— the verifier engine + money AIRs are individually sound, but there is no
-prover and no TX binding, so no adversarial soundness claim can even be tested.
-Remaining before ZK gates real money (all before-consensus MUST-FIX):
+> **SUPERSEDED (pre-prover 2026-07-11/12 council snapshot).** The "Prover
+> [MISSING]" / "there is no prover" framing below is HISTORY — the C prover is
+> now COMPLETE (S1-S13 + P1, both red-teams done, committed to main; see the top
+> block). The verifier+prover are a SYSTEM now. The remaining items (B1, FRI
+> param pin, v4 confidential) stay accurate as the before-consensus gates.
 
-- **Prover** — [MISSING] entirely; estimated 2–4 months (FFT/LDE + FRI commit +
-  trace Merkle + query opening orchestration). Do NOT start it on the current
-  foundation before B1 is audited.
+The 18-member council's diagnosis (2026-07-11/12, PRE-PROVER): at that time this
+was **two sound fragments, not a system** — the verifier engine + money AIRs
+individually sound, but no prover and no TX binding. **The prover gap is now
+CLOSED.** Remaining before ZK gates real money (all before-consensus MUST-FIX):
+
+- ~~**Prover** — [MISSING] entirely; estimated 2–4 months~~ **DONE 2026-07-14**
+  (pure-C S1-S13 + P1 arbitrary-instance; C prove → C verify == DNAC_FRI_OK,
+  Rust-free; both red-teams 0 CRITICAL). See the top block.
 - **B1 — trace↔TX binding** — the load-bearing gap: even a sound range/balance
   proof does not prove the trace amounts ARE this TX's outputs. Must be
   specified + independently red-teamed **across a commit boundary, before any
@@ -291,10 +305,11 @@ Remaining before ZK gates real money (all before-consensus MUST-FIX):
   is it rigor on a hypothetical? (Transparent v3 gives identical privacy/safety
   with or without this stack.)
 
-**STRATEGIC FORK (council escalated to user, unresolved):** HOLD+HARDEN (fix
-done, stop auditing the AIR) vs KEEP+ADVANCE (proceed to prover/B1 under gates)
-vs SHRINK (delete the parked verifier to a tagged branch, keep only
-field+range+sum_balance as v4 seeds). No decision taken.
+**STRATEGIC FORK — RESOLVED 2026-07-13 (user chose KEEP+ADVANCE):** the prover
+was built in C (S1-S13) + generalized to arbitrary instances (P1), both
+red-teamed (0 CRITICAL), committed to main. The stack is still PARKED (not in
+consensus); the remaining before-consensus gates (B1 binding, production CSPRNG
++ salted MMCS, FRI param pin) are unstarted. HOLD+HARDEN / SHRINK not taken.
 
 ═══════════════════════════════════════════════════════════════════════════════
 ## ═══ HISTORICAL BUILD LOG (numbers below are pre-2026-07-12; see status above) ═══
