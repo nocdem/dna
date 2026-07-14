@@ -108,7 +108,8 @@ TESTS = \
     $(BUILD)/test_poseidon2_goldilocks \
     $(BUILD)/test_poseidon2_air_cols \
     $(BUILD)/test_poseidon2_air_trace \
-    $(BUILD)/test_poseidon2_air
+    $(BUILD)/test_poseidon2_air \
+    $(BUILD)/test_conf_balance_air
 
 .PHONY: all test clean gen-fri-proof-wire gen-stark-proof-wire bench-prover
 
@@ -148,6 +149,13 @@ $(BUILD)/test_poseidon2_air_trace: tests/test_poseidon2_air_trace.c poseidon2_ai
 # violations) + reject every single-column tamper (poseidon2-air/src/air.rs @ 82cfad73).
 $(BUILD)/test_poseidon2_air: tests/test_poseidon2_air.c poseidon2_air.c poseidon2_air_cols.c poseidon2_goldilocks.c field_goldilocks.c poseidon2_air.h poseidon2_air_cols.h poseidon2_goldilocks.h field_goldilocks.h | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) tests/test_poseidon2_air.c poseidon2_air.c poseidon2_air_cols.c poseidon2_goldilocks.c field_goldilocks.c -o $@
+
+# B1 Stage-1 — confidential balance-conservation + selector AIR (DNAC-original,
+# is_zk=0). Construction gate: honest trace accepted + every SEC-1/SEC-2 attack
+# rejected (incl. the re-red-team padding-MINT). Settles the "build-to-settle"
+# balance/selector layer.
+$(BUILD)/test_conf_balance_air: tests/test_conf_balance_air.c conf_balance_air.c field_goldilocks.c conf_balance_air.h field_goldilocks.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_conf_balance_air.c conf_balance_air.c field_goldilocks.c -o $@
 
 # Standalone Keccak / SHA3-512 reference.
 $(BUILD)/test_keccak_ref: tests/test_keccak_ref.c keccak_ref.c keccak_ref.h | $(BUILD)
@@ -765,6 +773,12 @@ test: all
 	@echo "FP1c.3 — Poseidon2 AIR constraint eval (accept real trace + tamper-reject, 82cfad73)"
 	@echo "============================================================"
 	@$(BUILD)/test_poseidon2_air tools/vectors/poseidon2_air_trace.json
+	@echo
+	@echo "============================================================"
+	@echo "B1 Stage-1 — confidential balance/selector AIR (construction gate, is_zk=0)"
+	@echo "  honest accepted + SEC-1/SEC-2 attacks rejected (padding-MINT closed)"
+	@echo "============================================================"
+	@$(BUILD)/test_conf_balance_air
 	@echo
 	@echo "============================================================"
 	@echo "ALL REMAINING (grounded) GATES: GREEN"
