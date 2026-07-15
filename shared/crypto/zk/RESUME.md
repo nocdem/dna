@@ -38,7 +38,21 @@
   Money conservation on the live chain is enforced by the native cleartext
   witness check (`verify.c` Check 4); this ZK stack is ADDITIVE (v3 ships
   transparent, hidden amounts are v4).
-- **`make test`: 53 test binaries GREEN, 0 warnings** (`cd shared/crypto/zk && make test`;
+- **B1 CONFIDENTIAL AMOUNTS — STAGE-1 (is_zk=0) COMPLETE (2026-07-14).** Design:
+  `dnac/docs/plans/2026-07-14-b1-confidential-amounts-design-v3.md` (v3.1, local-only)
+  + memory `project_v3_zk_implementation_progress` (▶ current). After the v2 design
+  FAILED 2 red-teams on "asserted-not-constructed" (meta-conclusion: BUILD it, don't
+  prose it), the minimal standalone confidential AIR is now BUILT by CONSTRUCTION:
+  `conf_balance_air` (SEC-1 balance + row-type selectors), `conf_commit_air` (SEC-2
+  amount↔commitment via same-window copy onto the FP1c Poseidon2 block),
+  `conf_root_air` (commitment-set-root, capacity-IV sponge fold, is_real-gated),
+  `conf_txbind` (SEC-5 tx-binding: grounded rejection map + tx-bound root). ~34
+  negative KATs; CA mini-red-team PASSED (0 REFUTED, fold collision ~2^128).
+  **These are CONSTRAINT-EVAL modules (no FRI/transcript).** NEXT = **Stage-2**: the
+  full combined-AIR prove→verify (is_zk=1, num_qc=8, N-chunk recompose, prod CSPRNG +
+  salted MMCS, tx_binding as an FS public) — new-session scale. Still PARKED (not in
+  consensus); product-need for confidential amounts is an open question.
+- **`make test`: 57 test binaries GREEN, 0 warnings** (`cd shared/crypto/zk && make test`;
   `test_fri_verify_zk` runs twice — FibonacciAir + is_zk RangeProofAir).
   **C PROVER COMPLETE (S1-S13) + P1 arbitrary-instance:** the prover-side gates
   = S1 trace + S2 LDE + S3 commit + S5 alpha + S6 quotient + S7 quotient-commit +
@@ -541,7 +555,7 @@ cd /opt/dna/shared/crypto/zk
 make clean && make test
 ```
 
-Expected (2026-07-14): 53 test binaries GREEN, 0 warnings, all grounded against external references (Plonky3 pin `82cfad73`, NIST KAT, OpenSSL, FIPS-202).
+Expected (2026-07-14): 57 test binaries GREEN, 0 warnings, all grounded against external references (Plonky3 pin `82cfad73`, NIST KAT, OpenSSL, FIPS-202).
 
 ---
 
