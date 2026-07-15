@@ -91,17 +91,19 @@
       (b) the `--salted` JSON parser CPU-spun on a flag/vector mismatch → anti-spin
       backstop (both directions now clean-reject). Report
       `2026-07-15-b1-stage2-m3b-redteam-report.md`.
-    - **C salted PROVER — primitive STARTED (2026-07-15):** `test_prover_salted_
-      commit.c` reconstructs the conf trace LDE via the PUBLIC prover stages
-      (conf_root_air_generate → randomize → coset_lde_bitrev) and builds the
-      SALTED input-mmcs leaves (leaf = committed row ‖ SALT_ELEMS salts); the C
-      salted trace root **byte-matches the REAL Plonky3 salted proof's
-      commitments.trace**. Salt draw model GROUNDED + cross-checked vs the vector
-      (input-mmcs rng = fresh SmallRng(1); committed-leaf-row i salt = draws[2i],
-      draws[2i+1]; leaf 55 → draws[110,111]). **DEFERRED (rest of the prover):**
-      the quotient-chunk + random-poly input-mmcs salts, the commit-phase FRI-mmcs
-      salt stream (separate SmallRng(1)), salted openings + full self-verify —
-      the remaining salt streams, mirroring M2b→S13.
+    - **C salted PROVER — input-mmcs commits BYTE-MATCHED (2026-07-15):**
+      `test_prover_salted_commit.c` reconstructs the conf LDEs via the PUBLIC
+      prover stages and builds the SALTED input-mmcs leaves (leaf = committed row
+      ‖ SALT_ELEMS salts); the C salted **TRACE and RANDOM roots byte-match the
+      REAL Plonky3 salted proof** (`commitments.trace` / `.random`). BOTH salt
+      streams are GROUNDED + cross-checked vs the vector (design §3a): stream A
+      (input-mmcs: trace `draws[0:16h]` → quotient chunk c → random) and stream B
+      (FRI-mmcs commit-phase layers, separate SmallRng(1)); committed-leaf-row i
+      salt = `draws[base + 2i]`; leaf 55 → trace `draws[110]`, random `draws[1262]`,
+      quotient `draws[238..1134]`; FRI q0 gid 27 → `draws[54]`. **DEFERRED
+      (mechanical, grounded):** the 8-chunk quotient salted batch + commit-phase
+      FRI-mmcs salted layers + salted openings + full self-verify — the remaining
+      prover threading, mirroring M2b→S13.
   Still PARKED (grep-confirmed: no consensus CMake references crypto/zk);
   product-need for confidential amounts is an open question (v3 transparent gives
   the same privacy).

@@ -162,7 +162,53 @@ int main(int argc, char **argv) {
     int ok = memcmp(root.bytes, vroot, DNAC_MERKLE_DIGEST_BYTES) == 0;
     printf("  T1 conf trace LDE reconstructed (64x618, bit-reversed)   %s\n", "PASS");
     printf("  T2 SALTED leaf = row(618) || salt(2) = 4960 B, 64 leaves  %s\n", "PASS");
-    printf("  T3 C salted trace root == REAL Plonky3 salted proof       %s\n", ok ? "PASS" : "FAIL");
+    printf("  T3 C salted TRACE root == REAL Plonky3 salted proof       %s\n", ok ? "PASS" : "FAIL");
+
+    /* ---- SALTED RANDOM commit byte-match ----
+     * Stream A random section: draws[1152 + 2i] for committed row i (h=8:
+     * trace 0..128, quotient 128..1152, random 1152..1280). The R draws (stream
+     * C) are the R section of the conf draw budget (708h = 5664 for h=8; R =
+     * [696h : 708h] = draws[5568 : 5664], 12h = 96). dnac_prover_random_commit
+     * builds the R LDE (2h<<blowup = 64 tall, C_CW=6 wide). */
+    int rok = 0;
+    {
+        /* re-read enough draws: need up to R-section end 708h and salt 1280 */
+        size_t rn2 = 0; char *rj2 = slurp(argv[2], &rn2);
+        size_t big = 708 * height; /* 5664 */
+        uint64_t *d2 = malloc(big * sizeof(uint64_t));
+        size_t g2 = parse_draws(rj2, d2, big);
+        free(rj2);
+        if (g2 >= big) {
+            const size_t CW = 6;
+            const uint64_t *r_draws = d2 + 696 * height; /* stream C R section */
+            uint64_t *r_lde = malloc(lde_h * CW * sizeof(uint64_t));
+            dnac_merkle_digest_t rr; dnac_merkle_tree_t *rt = NULL;
+            if (dnac_prover_random_commit(r_draws, 2 * height, CW, 2, r_lde, rr.bytes, &rt) == DNAC_PROVER_OK) {
+                dnac_merkle_tree_free(rt);
+                /* salted commit: leaf i = r_lde row i (CW*8) || salt draws[1152+2i] */
+                const size_t rsb = (CW + SALT) * 8;
+                uint8_t *rsalted = malloc(lde_h * rsb);
+                for (size_t i = 0; i < lde_h; i++) {
+                    uint8_t *o = rsalted + i * rsb;
+                    for (size_t c = 0; c < CW; c++) put_u64_le(o + c * 8, r_lde[i * CW + c]);
+                    put_u64_le(o + CW * 8,       d2[1152 + 2 * i]);
+                    put_u64_le(o + (CW + 1) * 8, d2[1152 + 2 * i + 1]);
+                }
+                dnac_merkle_digest_t rs; dnac_merkle_tree_t *rst = NULL;
+                dnac_merkle_commit(rsalted, rsb, lde_h, &rs, &rst);
+                dnac_merkle_tree_free(rst);
+                uint8_t vrr[DNAC_MERKLE_DIGEST_BYTES];
+                size_t vn2 = 0; char *vj2 = slurp(argv[1], &vn2);
+                if (vj2 && find_hex(vj2, "random_commit_root_hex", vrr, sizeof vrr) == (int)DNAC_MERKLE_DIGEST_BYTES) {
+                    rok = memcmp(rs.bytes, vrr, DNAC_MERKLE_DIGEST_BYTES) == 0;
+                }
+                free(vj2); free(rsalted);
+            }
+            free(r_lde);
+        }
+        free(d2);
+    }
+    printf("  T3b C salted RANDOM root == REAL Plonky3 salted proof     %s\n", rok ? "PASS" : "FAIL");
 
     /* teeth: a tampered salt must change the root */
     int teeth = 1;
@@ -177,9 +223,10 @@ int main(int argc, char **argv) {
     printf("  T4 teeth: tampered salt -> different root                 %s\n", teeth ? "PASS" : "FAIL");
 
     free(blind); free(base); free(draws); free(rand_c); free(lde); free(salted);
-    if (!ok || !teeth) { printf("test_prover_salted_commit: FAIL\n"); return 1; }
+    if (!ok || !teeth || !rok) { printf("test_prover_salted_commit: FAIL\n"); return 1; }
     printf("test_prover_salted_commit: PASS\n");
-    printf("  pure-C SALTED trace commitment (leaf=row||salt, SALT_ELEMS=2) byte-matches\n");
-    printf("  the REAL Plonky3 salted is_zk=1 proof (82cfad73). The salted-prover primitive.\n");
+    printf("  pure-C SALTED trace + random commitments (leaf=row||salt, SALT_ELEMS=2)\n");
+    printf("  byte-match the REAL Plonky3 salted is_zk=1 proof (82cfad73). Input-mmcs\n");
+    printf("  salt streams (trace draws[0:128], random draws[1152:1280]) grounded.\n");
     return 0;
 }
