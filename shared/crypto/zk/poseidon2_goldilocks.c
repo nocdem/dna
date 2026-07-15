@@ -82,8 +82,10 @@ const uint64_t POSEIDON2_GOLD_RC8_INTERNAL[POSEIDON2_GOLD_PARTIAL_ROUNDS] = {
     0xfbb7865901a1ec41ULL,
 };
 
-/* MATRIX_DIAG_8_GOLDILOCKS, poseidon2.rs:640 ([-2,1,2,1/2,3,-1/2,-3,-4]). */
-static const uint64_t MATRIX_DIAG_8[POSEIDON2_GOLD_WIDTH] = {
+/* MATRIX_DIAG_8_GOLDILOCKS, poseidon2.rs:640 ([-2,1,2,1/2,3,-1/2,-3,-4]).
+ * Exported (was static) 2026-07-15 for the fp2 fold-form linear layer
+ * (conf_root_fold.c) — pure rename, zero logic change. */
+const uint64_t POSEIDON2_GOLD_MATRIX_DIAG_8[POSEIDON2_GOLD_WIDTH] = {
     0xfffffffeffffffffULL, /* -2  */
     0x0000000000000001ULL, /*  1  */
     0x0000000000000002ULL, /*  2  */
@@ -147,7 +149,7 @@ void poseidon2_gold_internal_linear_8(gold_fp_t state[POSEIDON2_GOLD_WIDTH]) {
     gold_fp_t sum = state[0];
     for (int i = 1; i < POSEIDON2_GOLD_WIDTH; i++) sum = add(sum, state[i]);
     for (int i = 0; i < POSEIDON2_GOLD_WIDTH; i++)
-        state[i] = add(mul(state[i], fp(MATRIX_DIAG_8[i])), sum);
+        state[i] = add(mul(state[i], fp(POSEIDON2_GOLD_MATRIX_DIAG_8[i])), sum);
 }
 
 /* ============================================================================

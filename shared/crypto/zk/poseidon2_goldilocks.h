@@ -93,6 +93,12 @@ extern const uint64_t POSEIDON2_GOLD_RC8_EXT_FINAL[POSEIDON2_GOLD_HALF_FULL_ROUN
                                                   [POSEIDON2_GOLD_WIDTH];
 extern const uint64_t POSEIDON2_GOLD_RC8_INTERNAL[POSEIDON2_GOLD_PARTIAL_ROUNDS];
 
+/** MATRIX_DIAG_8_GOLDILOCKS (poseidon2.rs:640, [-2,1,2,1/2,3,-1/2,-3,-4]).
+ *  Exposed 2026-07-15 (pure static-removal/rename, zero logic change — the
+ *  FP1c.4 precedent) so the B1 Stage-2 fp2 fold-form internal linear layer
+ *  (conf_root_fold.c) uses the SAME diagonal as the permutation. */
+extern const uint64_t POSEIDON2_GOLD_MATRIX_DIAG_8[POSEIDON2_GOLD_WIDTH];
+
 #ifdef __cplusplus
 }
 #endif

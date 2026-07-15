@@ -352,6 +352,39 @@ enum Cmd {
         #[arg(long)]
         out: PathBuf,
     },
+    /// B1 Stage-2 — is_zk=1 proof of the COMBINED confidential AIR (Stage-1
+    /// conf_root layout: balance/selectors + Poseidon2 value-commitment +
+    /// commitment-set-root accumulator, width 614, main_next=true, 17 publics
+    /// [commitment_root(4), c_claimed(4), c_fee(4), hash_id, tx_binding(4)]).
+    /// Gates: GATE1 real verify=Ok, GATE2 priming alpha/zeta, GATE3 negative
+    /// control (tampered proof MUST be rejected), measured num_qc MUST be 8
+    /// (STOP otherwise — Poseidon2Air Some(7) hint would give 16). h=8 full
+    /// instance (4 outputs + claimed + fee + 2 padding).
+    #[command(name = "dump-conf-root-air-zk")]
+    DumpConfRootAirZk {
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// B1 Stage-2 — same combined AIR, h=16 PADDED instance (10 outputs +
+    /// claimed + fee = 12 real rows + 4 padding; exercises the is_real cacc
+    /// freeze through padding inside a REAL is_zk=1 proof; 3 FRI rounds).
+    #[command(name = "dump-conf-root-air-zk-h16")]
+    DumpConfRootAirZkH16 {
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// KAT draw stream (D1-B): the first `count` Goldilocks samples of a fresh
+    /// SmallRng::seed_from_u64(1) — the EXACT stream a real HidingFriPcs prove
+    /// consumes (with_random_cols / codeword / blinding / R draws in commit
+    /// order; the stream is AIR-independent). The C prover slices it by its own
+    /// derived offsets. Production proving replaces this with OS entropy.
+    #[command(name = "dump-smallrng-goldilocks")]
+    DumpSmallrngGoldilocks {
+        #[arg(long)]
+        count: usize,
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// S1 (C prover) — the DETERMINISTIC base witness trace for the M3a
     /// RangeProofAir instance (amounts [10,20,30,40], fee 7, claimed 107,
     /// n_real 4), BEFORE any is_zk randomization (that happens inside
@@ -535,6 +568,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Cmd::DumpStarkPriming { out } => stark_priming::dump_stark_priming(&out)?,
         Cmd::DumpStarkPrimingZk { out } => stark_priming::dump_stark_priming_zk(&out)?,
         Cmd::DumpRangeProofAirZk { out } => stark_priming::dump_range_proof_air_zk(&out)?,
+        Cmd::DumpConfRootAirZk { out } => stark_priming::dump_conf_root_air_zk(&out)?,
+        Cmd::DumpConfRootAirZkH16 { out } => stark_priming::dump_conf_root_air_zk_h16(&out)?,
+        Cmd::DumpSmallrngGoldilocks { count, out } => {
+            stark_priming::dump_smallrng_goldilocks(count, &out)?
+        }
         Cmd::DumpProverTraceRangeZk { out } => stark_priming::dump_prover_trace_range_zk(&out)?,
         Cmd::DumpProverS2LdeZk { out } => stark_priming::dump_prover_s2_lde_zk(&out)?,
         Cmd::DumpProverS6QuotientZk { out } => stark_priming::dump_prover_s6_quotient_zk(&out)?,
@@ -9096,13 +9134,18 @@ mod stark_priming {
         scope: &str,
         air_desc: &str,
         milestone: &str,
+        expected_num_qc: Option<usize>,
         out_path: &PathBuf,
     ) -> Result<(), Box<dyn std::error::Error>>
     where
         A: BaseAir<Goldilocks>
             + Air<SymbolicAirBuilder<Goldilocks>>
             + for<'a> Air<ProverConstraintFolder<'a, ZkStarkCfg>>
-            + for<'a> Air<VerifierConstraintFolder<'a, ZkStarkCfg>>,
+            + for<'a> Air<VerifierConstraintFolder<'a, ZkStarkCfg>>
+            // debug-assertions=true (Cargo.toml, grounding GAP4) makes prove()
+            // run p3_air::check_constraints on the honest trace pre-FRI
+            // (prover.rs:381 cfg(debug_assertions) bound) — a free positive gate.
+            + for<'a> Air<p3_air::DebugConstraintBuilder<'a, Goldilocks>>,
     {
         use p3_fri::HidingFriPcs;
         use rand::rngs::SmallRng;
@@ -9141,10 +9184,32 @@ mod stark_priming {
         // ------------------------------------------------------------------
         // 2. GATE 1 (AUTHORITATIVE) — real is_zk=1 prove + verify of `air`.
         // ------------------------------------------------------------------
-        let proof = prove(&config, air, trace, &pis);
+        let mut proof = prove(&config, air, trace, &pis);
         verify(&config, air, &proof, &pis).map_err(|e| {
             format!("GATE 1 FAILED: p3_uni_stark::verify rejected the is_zk=1 proof: {e:?}")
         })?;
+
+        // ------------------------------------------------------------------
+        // 2b. GATE 3 (NEGATIVE CONTROL, 2026-07-15 grounding GAP4a) — mutate one
+        //     opened value; the REAL verifier MUST reject. Guards against a
+        //     vacuously-Ok verify (the "self-consistent trap" the KAFADAN rule
+        //     names). Proof is not Clone: tamper in place, check, restore, then
+        //     re-affirm GATE 1 on the restored proof.
+        // ------------------------------------------------------------------
+        {
+            let orig = proof.opened_values.trace_local[0];
+            proof.opened_values.trace_local[0] += GoldFp2::ONE;
+            if verify(&config, air, &proof, &pis).is_ok() {
+                return Err(
+                    "GATE 3 FAILED: real verifier ACCEPTED a tampered proof (vacuous verify)"
+                        .into(),
+                );
+            }
+            proof.opened_values.trace_local[0] = orig;
+            verify(&config, air, &proof, &pis).map_err(|e| {
+                format!("GATE 3 restore check FAILED: verify rejected the restored proof: {e:?}")
+            })?;
+        }
 
         // ------------------------------------------------------------------
         // 3. Confirm ZK invariants.
@@ -9174,6 +9239,19 @@ mod stark_priming {
             .ok_or("main_next=true AIR: trace_next expected")?;
         let quotient_chunks = proof.opened_values.quotient_chunks.clone();
         let num_qc = quotient_chunks.len(); // MEASURED, not derived (finding #3 discipline)
+        // GATE num_qc (2026-07-15): STOP — do NOT emit a vector — if the measured
+        // chunk count differs from the caller's expectation. For the combined
+        // conf AIR the cliff is real: inheriting poseidon2-air's Some(7) degree
+        // hint (air.rs:139-141) would silently yield num_qc=16 instead of 8.
+        if let Some(exp) = expected_num_qc {
+            if num_qc != exp {
+                return Err(format!(
+                    "GATE num_qc FAILED: measured {num_qc} != expected {exp} — \
+                     shape/degree drift; vector NOT emitted"
+                )
+                .into());
+            }
+        }
 
         // ------------------------------------------------------------------
         // 4b. HidingFriPcs MERGE (hiding_pcs.rs::verify: point.1.extend(rand)).
@@ -9305,6 +9383,47 @@ mod stark_priming {
         }
 
         // ------------------------------------------------------------------
+        // 6b. CONSTRAINT-CHECK GROUND TRUTH (2026-07-15, B1 Stage-2 Faz 2/3).
+        //     Rebuild the verifier's domains EXACTLY (verifier.rs:268-270,
+        //     303-312) and call the REAL pub recompose_quotient_from_chunks
+        //     (verifier.rs:59-96) + the REAL selectors_at_point
+        //     (domain.rs:262-271) so the C N-chunk recompose and the C
+        //     combined air_eval byte-match Plonky3 functions, not a shadow.
+        //     Recompose consumes the UNMERGED chunk vectors (len 2 each) over
+        //     the UNrandomized split domains — verifier.rs:463-467.
+        // ------------------------------------------------------------------
+        let log_num_qc = num_qc.trailing_zeros() as usize - is_zk; // measured, = log2(num_qc) - is_zk
+        let pcs_ref = config.pcs();
+        let trace_domain =
+            <ZkStarkPcs as Pcs<GoldFp2, FriChallenger>>::natural_domain_for_degree(
+                pcs_ref,
+                1usize << degree_bits,
+            ); // verifier.rs:268-270 (shift=ONE, log=degree_bits)
+        let init_trace_domain =
+            <ZkStarkPcs as Pcs<GoldFp2, FriChallenger>>::natural_domain_for_degree(
+                pcs_ref,
+                (1usize << degree_bits) >> is_zk,
+            ); // verifier.rs:303
+        let quotient_domain =
+            trace_domain.create_disjoint_domain(1usize << (degree_bits + log_num_qc)); // verifier.rs:305-311
+        let qc_domains = quotient_domain.split_domains(num_qc); // verifier.rs:312
+        let quotient_zeta: GoldFp2 = recompose_quotient_from_chunks::<ZkStarkCfg>(
+            &qc_domains,
+            &quotient_chunks,
+            zeta,
+        ); // verifier.rs:463-467 (REAL function, unmerged chunks)
+        let sels = init_trace_domain.selectors_at_point::<GoldFp2>(zeta); // verifier.rs:488, domain.rs:262-271
+        let chunk_domains_json: Vec<serde_json::Value> = qc_domains
+            .iter()
+            .map(|d| {
+                serde_json::json!({
+                    "shift_decimal": d.shift().as_canonical_u64().to_string(),
+                    "log_size": d.log_size(),
+                })
+            })
+            .collect();
+
+        // ------------------------------------------------------------------
         // 7. Emit JSON (reached only if GATE 1 + GATE 2 passed). Schema mirrors
         //    the non-ZK stark_priming.json so a parallel C test can consume it,
         //    plus the ZK-only fields (random commitment + random opened round).
@@ -9391,6 +9510,27 @@ mod stark_priming {
                 "zeta_fp2": fp2_json(zeta),
                 "zeta_next_fp2": fp2_json(zeta_next)
             },
+            // B1 Stage-2 (2026-07-15): ground truth for the C N-chunk recompose +
+            // combined air_eval. quotient_zeta = the REAL
+            // recompose_quotient_from_chunks (verifier.rs:59-96) over the
+            // UNrandomized split domains (verifier.rs:305-312, 463-467) with the
+            // UNMERGED chunk vectors; selectors = the REAL selectors_at_point on
+            // init_trace_domain (verifier.rs:303,488; domain.rs:262-271).
+            "constraint_check": {
+                "log_num_quotient_chunks": log_num_qc,
+                "quotient_domain": {
+                    "shift_decimal": quotient_domain.shift().as_canonical_u64().to_string(),
+                    "log_size": quotient_domain.log_size()
+                },
+                "chunk_domains": chunk_domains_json,
+                "selectors_at_zeta": {
+                    "is_first_row": fp2_json(sels.is_first_row),
+                    "is_last_row": fp2_json(sels.is_last_row),
+                    "is_transition": fp2_json(sels.is_transition),
+                    "inv_vanishing": fp2_json(sels.inv_vanishing)
+                },
+                "quotient_zeta_fp2": fp2_json(quotient_zeta)
+            },
             "opened_values": {
                 "random": random_json,
                 "trace_local": trace_local_json,
@@ -9457,6 +9597,7 @@ mod stark_priming {
             "stark_priming_zk",
             "vendored FibonacciAir (uni-stark/tests/fib_air.rs:24-116 @ 82cfad73)",
             "M1 sandbox confidential — first is_zk=1 proof in the DNAC stack",
+            None, // num_qc pinned by the consuming C test, not gated here
             out_path,
         )
     }
@@ -9486,6 +9627,7 @@ mod stark_priming {
             "range_proof_air_zk",
             "DNAC RangeProofAir (52-bit range B+S + is_real/P + balance I/U/F + count CI/CU/CF, width 56, 3 public; AUDITED 2026-07 mint-fix) — is_zk=1 HIDDEN amounts",
             "M3a sandbox confidential — is_zk=1 over the audited range/balance AIR (hidden amounts)",
+            None, // num_qc pinned by the consuming C test, not gated here
             out_path,
         )
     }
@@ -11531,7 +11673,10 @@ mod stark_priming {
             + Air<SymbolicAirBuilder<Goldilocks>>
             + for<'b> Air<ProverConstraintFolder<'b, StarkCfg>>
             + for<'b> Air<VerifierConstraintFolder<'b, StarkCfg>>
-            + for<'b> Air<RecordingFolder<'b>>,
+            + for<'b> Air<RecordingFolder<'b>>
+            // debug-assertions=true (Cargo.toml, grounding GAP4): prove() gains a
+            // cfg(debug_assertions) check_constraints bound (prover.rs:381).
+            + for<'b> Air<p3_air::DebugConstraintBuilder<'b, Goldilocks>>,
     {
         let is_zk = config.is_zk();
         if is_zk != 0 {
@@ -12075,6 +12220,798 @@ mod stark_priming {
             v[r * w + COL_CNT] = Goldilocks::from_u64(count);
         }
         (RowMajorMatrix::new(v, w), running)
+    }
+
+    // ========================================================================
+    // B1 STAGE-2 — COMBINED CONFIDENTIAL AIR (conf_root layout, width 614)
+    // 2026-07-15. Ground truth = the BUILT Stage-1 C modules, cell-for-cell:
+    //   conf_balance_air.{h,c}  BAL block (offsets h:74-90, constraints c:100-154)
+    //   conf_commit_air.{h,c}   VC block @70 (COPY/CAP c:82-98, c_r=end_post(3,·) c:103-108)
+    //   conf_root_air.{h,c}     CA1@250 / CA2@430 / CACC@610 (fold c:28-40,
+    //                           constraints c:119-168), CONF_ROOT_WIDTH=614 (h:75)
+    // Publics (17, design v3.1 §4b pinned FLAT layout, closes open item O-4):
+    //   [commitment_root(4), c_claimed(4), c_fee(4), hash_id(1), tx_binding(4)]
+    // Stage-1 C reads ONLY commitment_root; the c_claimed/c_fee bindings are
+    // Stage-2 CONSTRUCTED additions (selector-gated equalities PB1-PB8, see eval
+    // tail), hash_id moves from a CAP constant to public #12 (design M4), and
+    // tx_binding is FS-OBSERVED ONLY (no AIR constraint — the binding mechanism
+    // is the transcript: a different tx_binding changes every sampled challenge).
+    // The eval EMISSION ORDER below is the alpha-fold order — the Faz-3 C
+    // air_eval MUST mirror it exactly.
+    // ========================================================================
+    use p3_field::Dup;
+    use p3_goldilocks::{
+        default_goldilocks_poseidon2_8, GenericPoseidon2LinearLayersGoldilocks,
+        GOLDILOCKS_POSEIDON2_RC_8_EXTERNAL_FINAL, GOLDILOCKS_POSEIDON2_RC_8_EXTERNAL_INITIAL,
+        GOLDILOCKS_POSEIDON2_RC_8_INTERNAL,
+    };
+    use p3_poseidon2::GenericPoseidon2LinearLayers;
+    use p3_poseidon2_air::{FullRound, PartialRound, Poseidon2Cols, RoundConstants, SBox};
+    use p3_symmetric::Permutation;
+    use sha3::{Digest, Sha3_512};
+
+    // Column geometry — pinned to the C headers (conf_balance_air.h:74-90,
+    // conf_commit_air.h:58-70, conf_root_air.h:67-75, poseidon2_air_cols.h:57-107).
+    const CB_AMOUNT: usize = 0;
+    const CB_BITS: usize = 1; // BITS_j = CB_BITS + j, j in [0,62)
+    const CB_NBITS: usize = 62; // CONF_BAL_RANGE_BITS
+    const CB_OUTPUT_BITS: usize = 52; // outputs/fee 52-bit gate
+    const CB_IS_OUTPUT: usize = 63;
+    const CB_IS_CLAIMED: usize = 64;
+    const CB_IS_FEE: usize = 65;
+    const CB_IS_REAL: usize = 66;
+    const CB_N_CLAIMED: usize = 67;
+    const CB_N_FEE: usize = 68;
+    const CB_BAL: usize = 69;
+    const CONF_VC_OFF: usize = 70; // CONF_COMMIT_VC_OFF
+    const CONF_CA1_OFF: usize = 250; // CONF_ROOT_CA1_OFF
+    const CONF_CA2_OFF: usize = 430; // CONF_ROOT_CA2_OFF
+    const CONF_CACC_OFF: usize = 610; // CONF_ROOT_CACC_OFF
+    const CONF_W: usize = 614; // CONF_ROOT_WIDTH
+    const P2_NCOLS: usize = 180; // P2AIR_NUM_COLS
+    const P2_END_POST3: usize = 172; // p2air_end_post_off(3, 0) = 116 + 3*16 + 8
+    const CONF_DOMSEP_VAL: u64 = 0x608dc3de4da2455b; // SHA3-512("DNAC value-commitment v1")[0:8] BE
+    const CONF_DOMSEP_ACC: u64 = 0x71ad771d32611915; // SHA3-512("DNAC commitment-accumulator v1")[0:8] BE
+    const CONF_HASH_ID: u64 = 1;
+    const CONF_NUM_PUBLICS: usize = 17;
+    const CONF_GOLD_P: u64 = 0xFFFF_FFFF_0000_0001; // field_goldilocks.h:36
+
+    // ------------------------------------------------------------------------
+    // VENDORED Poseidon2-AIR eval — VERBATIM from poseidon2-air/src/air.rs:144-323
+    // @ 82cfad73 (`eval`, `eval_full_round`, `eval_partial_round`, `eval_sbox`
+    // are pub(crate) upstream; vendoring keeps the constraint code IDENTICAL to
+    // stock Plonky3 — same discipline as the vendored FibonacciAir above). Two
+    // mechanical adaptations, ZERO logic change: (1) fns renamed with a p2v_
+    // prefix; (2) the `air: &Poseidon2Air<..>` parameter is replaced by the three
+    // round-constant arrays (`Poseidon2Air.constants` and the `RoundConstants`
+    // fields are pub(crate) upstream; the arrays passed in are the SAME
+    // GOLDILOCKS_POSEIDON2_RC_8_* constants from goldilocks/src/poseidon2.rs).
+    // ------------------------------------------------------------------------
+    fn p2v_eval<
+        AB: AirBuilder,
+        LinearLayers: GenericPoseidon2LinearLayers<WIDTH>,
+        const WIDTH: usize,
+        const SBOX_DEGREE: u64,
+        const SBOX_REGISTERS: usize,
+        const HALF_FULL_ROUNDS: usize,
+        const PARTIAL_ROUNDS: usize,
+    >(
+        rc_beginning: &[[AB::F; WIDTH]; HALF_FULL_ROUNDS],
+        rc_partial: &[AB::F; PARTIAL_ROUNDS],
+        rc_ending: &[[AB::F; WIDTH]; HALF_FULL_ROUNDS],
+        builder: &mut AB,
+        local: &Poseidon2Cols<
+            AB::Var,
+            WIDTH,
+            SBOX_DEGREE,
+            SBOX_REGISTERS,
+            HALF_FULL_ROUNDS,
+            PARTIAL_ROUNDS,
+        >,
+    ) {
+        // air.rs:172-201
+        let mut state: [_; WIDTH] = local.inputs.map(|x| x.into());
+
+        LinearLayers::external_linear_layer(&mut state);
+
+        for round in 0..HALF_FULL_ROUNDS {
+            p2v_eval_full_round::<_, LinearLayers, WIDTH, SBOX_DEGREE, SBOX_REGISTERS>(
+                &mut state,
+                &local.beginning_full_rounds[round],
+                &rc_beginning[round],
+                builder,
+            );
+        }
+
+        for round in 0..PARTIAL_ROUNDS {
+            p2v_eval_partial_round::<_, LinearLayers, WIDTH, SBOX_DEGREE, SBOX_REGISTERS>(
+                &mut state,
+                &local.partial_rounds[round],
+                &rc_partial[round],
+                builder,
+            );
+        }
+
+        for round in 0..HALF_FULL_ROUNDS {
+            p2v_eval_full_round::<_, LinearLayers, WIDTH, SBOX_DEGREE, SBOX_REGISTERS>(
+                &mut state,
+                &local.ending_full_rounds[round],
+                &rc_ending[round],
+                builder,
+            );
+        }
+    }
+
+    // air.rs:234-256 (verbatim)
+    #[inline]
+    fn p2v_eval_full_round<
+        AB: AirBuilder,
+        LinearLayers: GenericPoseidon2LinearLayers<WIDTH>,
+        const WIDTH: usize,
+        const SBOX_DEGREE: u64,
+        const SBOX_REGISTERS: usize,
+    >(
+        state: &mut [AB::Expr; WIDTH],
+        full_round: &FullRound<AB::Var, WIDTH, SBOX_DEGREE, SBOX_REGISTERS>,
+        round_constants: &[AB::F; WIDTH],
+        builder: &mut AB,
+    ) {
+        for (i, (s, r)) in state.iter_mut().zip(round_constants.iter()).enumerate() {
+            *s += r.dup();
+            p2v_eval_sbox(&full_round.sbox[i], s, builder);
+        }
+        LinearLayers::external_linear_layer(state);
+        for (state_i, post_i) in state.iter_mut().zip(full_round.post) {
+            builder.assert_eq(state_i.clone(), post_i);
+            *state_i = post_i.into();
+        }
+    }
+
+    // air.rs:258-278 (verbatim)
+    #[inline]
+    fn p2v_eval_partial_round<
+        AB: AirBuilder,
+        LinearLayers: GenericPoseidon2LinearLayers<WIDTH>,
+        const WIDTH: usize,
+        const SBOX_DEGREE: u64,
+        const SBOX_REGISTERS: usize,
+    >(
+        state: &mut [AB::Expr; WIDTH],
+        partial_round: &PartialRound<AB::Var, WIDTH, SBOX_DEGREE, SBOX_REGISTERS>,
+        round_constant: &AB::F,
+        builder: &mut AB,
+    ) {
+        state[0] += round_constant.dup();
+        p2v_eval_sbox(&partial_round.sbox, &mut state[0], builder);
+
+        builder.assert_eq(state[0].dup(), partial_round.post_sbox);
+        state[0] = partial_round.post_sbox.into();
+
+        LinearLayers::internal_linear_layer(state);
+    }
+
+    // air.rs:287-323 (verbatim)
+    #[inline]
+    fn p2v_eval_sbox<AB, const DEGREE: u64, const REGISTERS: usize>(
+        sbox: &SBox<AB::Var, DEGREE, REGISTERS>,
+        x: &mut AB::Expr,
+        builder: &mut AB,
+    ) where
+        AB: AirBuilder,
+    {
+        *x = match (DEGREE, REGISTERS) {
+            (3, 0) => x.cube(),
+            (5, 0) => x.exp_const_u64::<5>(),
+            (7, 0) => x.exp_const_u64::<7>(),
+            (5, 1) => {
+                let committed_x3 = sbox.0[0].into();
+                let x2 = x.square();
+                builder.assert_eq(committed_x3.dup(), x2.dup() * x.dup());
+                committed_x3 * x2
+            }
+            (7, 1) => {
+                let committed_x3 = sbox.0[0].into();
+                builder.assert_eq(committed_x3.dup(), x.cube());
+                committed_x3.square() * x.dup()
+            }
+            (11, 2) => {
+                let committed_x3 = sbox.0[0].into();
+                let committed_x9 = sbox.0[1].into();
+                let x2 = x.square();
+                builder.assert_eq(committed_x3.dup(), x2.dup() * x.dup());
+                builder.assert_eq(committed_x9.dup(), committed_x3.cube());
+                committed_x9 * x2
+            }
+            _ => panic!(
+                "Unexpected (DEGREE, REGISTERS) of ({}, {})",
+                DEGREE, REGISTERS
+            ),
+        }
+    }
+
+    /// B1 Stage-2 combined confidential AIR. Width 614, main_next=true (the BAL
+    /// accumulators B83-B85, the CA1-input chaining R3-R6 and the gated CACC
+    /// freeze R19-R22 read the next row), 17 public values.
+    ///
+    /// NO max_constraint_degree hint — the symbolic path measures the TRUE
+    /// degree every run (grounding GAP4/R2: inheriting poseidon2-air's Some(7),
+    /// air.rs:139-141, would yield num_qc=16; an under-hint like Some(3) is only
+    /// debug_assert-guarded, symbolic.rs:24-31). Realized max degree is 3 (the
+    /// register-(7,1) S-box form, poseidon2_air.h:14-19) ⇒ measured num_qc must
+    /// be 8 at is_zk=1 — enforced by the dump gate.
+    pub struct ConfRootAir;
+
+    impl BaseAir<Goldilocks> for ConfRootAir {
+        fn width(&self) -> usize {
+            CONF_W
+        }
+        fn num_public_values(&self) -> usize {
+            CONF_NUM_PUBLICS
+        }
+        // main_next_row_columns defaults to all columns -> main_next=true.
+        // NO max_constraint_degree override (see struct doc).
+    }
+
+    impl<AB> Air<AB> for ConfRootAir
+    where
+        AB: AirBuilder<F = Goldilocks>,
+    {
+        fn eval(&self, builder: &mut AB) {
+            let main = builder.main();
+            let pis = builder.public_values();
+            debug_assert_eq!(pis.len(), CONF_NUM_PUBLICS);
+            // §4b FLAT public layout: root=[0..4), c_claimed=[4..8), c_fee=[8..12),
+            // hash_id=[12], tx_binding=[13..17). tx_binding is NEVER read by eval
+            // (FS-observed only — the transcript binds it).
+            let pub_root: [AB::Expr; 4] = core::array::from_fn(|j| pis[j].into());
+            let pub_c_claimed: [AB::Expr; 4] = core::array::from_fn(|j| pis[4 + j].into());
+            let pub_c_fee: [AB::Expr; 4] = core::array::from_fn(|j| pis[8 + j].into());
+            let pub_hash_id: AB::Expr = pis[12].into();
+
+            let ls: &[AB::Var] = main.current_slice();
+            let ns: &[AB::Var] = main.next_slice();
+
+            // ---- BAL block (conf_balance_air.c:100-154) ----------------------
+            let o = ls[CB_IS_OUTPUT];
+            let c = ls[CB_IS_CLAIMED];
+            let f = ls[CB_IS_FEE];
+            let r = ls[CB_IS_REAL];
+            let oe: AB::Expr = o.into();
+            let ce: AB::Expr = c.into();
+            let fe: AB::Expr = f.into();
+            let re: AB::Expr = r.into();
+            // B1-B4 selector booleanity
+            builder.assert_bool(o);
+            builder.assert_bool(c);
+            builder.assert_bool(f);
+            builder.assert_bool(r);
+            // B5-B66 bit booleanity, j = 0..61
+            for j in 0..CB_NBITS {
+                builder.assert_bool(ls[CB_BITS + j]);
+            }
+            // B67 selector sum: is_real == is_output + is_claimed + is_fee
+            builder.assert_eq(r, oe.clone() + ce.clone() + fe.clone());
+            // B68 padding-zero: (1 − is_real)·amount == 0
+            builder
+                .when(AB::Expr::ONE - re.clone())
+                .assert_zero(ls[CB_AMOUNT]);
+            // B69 bit recomposition: Σ bit_j·2^j == amount
+            let mut bit_sum = AB::Expr::ZERO;
+            let mut weight = AB::Expr::ONE;
+            for j in 0..CB_NBITS {
+                bit_sum = bit_sum + ls[CB_BITS + j] * weight.clone();
+                weight = weight.double();
+            }
+            builder.assert_eq(bit_sum, ls[CB_AMOUNT]);
+            // B70-B79 52-bit gate: (is_output + is_fee)·bit_j == 0, j = 52..61
+            for j in CB_OUTPUT_BITS..CB_NBITS {
+                builder
+                    .when(oe.clone() + fe.clone())
+                    .assert_zero(ls[CB_BITS + j]);
+            }
+            // coeff = is_output + is_fee − is_claimed (conf_balance_air.c:23-25)
+            let coeff_local = oe.clone() + fe.clone() - ce.clone();
+            let coeff_next: AB::Expr =
+                ns[CB_IS_OUTPUT].into() + ns[CB_IS_FEE].into() - ns[CB_IS_CLAIMED].into();
+            // B80-B82 first row: BAL = coeff·amount; N_CLAIMED = c; N_FEE = f
+            builder
+                .when_first_row()
+                .assert_eq(ls[CB_BAL], coeff_local * ls[CB_AMOUNT]);
+            builder.when_first_row().assert_eq(ls[CB_N_CLAIMED], c);
+            builder.when_first_row().assert_eq(ls[CB_N_FEE], f);
+            // B83-B85 transitions (next-row form, conf_balance_air.h:45-48)
+            builder.when_transition().assert_zero(
+                ns[CB_BAL].into() - ls[CB_BAL].into() - coeff_next * ns[CB_AMOUNT].into(),
+            );
+            builder.when_transition().assert_zero(
+                ns[CB_N_CLAIMED].into() - ls[CB_N_CLAIMED].into() - ns[CB_IS_CLAIMED].into(),
+            );
+            builder.when_transition().assert_zero(
+                ns[CB_N_FEE].into() - ls[CB_N_FEE].into() - ns[CB_IS_FEE].into(),
+            );
+            // B86-B88 last row: BAL = 0; N_CLAIMED = 1; N_FEE = 1
+            builder.when_last_row().assert_zero(ls[CB_BAL]);
+            builder
+                .when_last_row()
+                .assert_eq(ls[CB_N_CLAIMED], AB::Expr::ONE);
+            builder.when_last_row().assert_eq(ls[CB_N_FEE], AB::Expr::ONE);
+
+            // ---- VC block: value commitment (conf_commit_air.c:82-98) --------
+            // V1: full stock Poseidon2 AIR over the VC 180-col slice.
+            let vc: &Poseidon2Cols<AB::Var, 8, 7, 1, 4, 22> =
+                ls[CONF_VC_OFF..CONF_VC_OFF + P2_NCOLS].borrow();
+            p2v_eval::<AB, GenericPoseidon2LinearLayersGoldilocks, 8, 7, 1, 4, 22>(
+                &GOLDILOCKS_POSEIDON2_RC_8_EXTERNAL_INITIAL,
+                &GOLDILOCKS_POSEIDON2_RC_8_INTERNAL,
+                &GOLDILOCKS_POSEIDON2_RC_8_EXTERNAL_FINAL,
+                builder,
+                vc,
+            );
+            // V2 COPY (SEC-2, same-window): VC.inputs[0] == BAL.amount
+            builder.assert_eq(vc.inputs[0], ls[CB_AMOUNT]);
+            // V3-V7 CAP (conf_commit_air.c:94-98). V4' (hash_id) reads PUBLIC #12
+            // (Stage-2/M4) instead of the Stage-1 constant; the sandbox caller
+            // passes hash_id=1, making the two equivalent for honest instances
+            // while binding the proof to the dispatch id.
+            builder.assert_zero(vc.inputs[3]);
+            builder.assert_eq(
+                vc.inputs[4],
+                AB::Expr::from_u64(CONF_DOMSEP_VAL),
+            );
+            builder.assert_eq(vc.inputs[5], pub_hash_id);
+            builder.assert_zero(vc.inputs[6]);
+            builder.assert_zero(vc.inputs[7]);
+            // c_r = VC end_post(3, ·) (conf_commit_air.c:103-108)
+            let c_r: [AB::Var; 4] =
+                core::array::from_fn(|j| ls[CONF_VC_OFF + P2_END_POST3 + j]);
+
+            // ---- CA blocks: accumulator fold (conf_root_air.c:119-168) -------
+            // R1/R2: full stock Poseidon2 AIR over CA1 and CA2.
+            let ca1: &Poseidon2Cols<AB::Var, 8, 7, 1, 4, 22> =
+                ls[CONF_CA1_OFF..CONF_CA1_OFF + P2_NCOLS].borrow();
+            p2v_eval::<AB, GenericPoseidon2LinearLayersGoldilocks, 8, 7, 1, 4, 22>(
+                &GOLDILOCKS_POSEIDON2_RC_8_EXTERNAL_INITIAL,
+                &GOLDILOCKS_POSEIDON2_RC_8_INTERNAL,
+                &GOLDILOCKS_POSEIDON2_RC_8_EXTERNAL_FINAL,
+                builder,
+                ca1,
+            );
+            let ca2: &Poseidon2Cols<AB::Var, 8, 7, 1, 4, 22> =
+                ls[CONF_CA2_OFF..CONF_CA2_OFF + P2_NCOLS].borrow();
+            p2v_eval::<AB, GenericPoseidon2LinearLayersGoldilocks, 8, 7, 1, 4, 22>(
+                &GOLDILOCKS_POSEIDON2_RC_8_EXTERNAL_INITIAL,
+                &GOLDILOCKS_POSEIDON2_RC_8_INTERNAL,
+                &GOLDILOCKS_POSEIDON2_RC_8_EXTERNAL_FINAL,
+                builder,
+                ca2,
+            );
+            // R3-R6 CA1-input chaining: first row IV = 0 (conf_root_air.c:117,129);
+            // transition: next.CA1.inputs[j] == local.CACC[j] (c:129-134)
+            let ca1n: &Poseidon2Cols<AB::Var, 8, 7, 1, 4, 22> =
+                ns[CONF_CA1_OFF..CONF_CA1_OFF + P2_NCOLS].borrow();
+            for j in 0..4 {
+                builder.when_first_row().assert_zero(ca1.inputs[j]);
+                builder
+                    .when_transition()
+                    .assert_eq(ca1n.inputs[j], ls[CONF_CACC_OFF + j]);
+            }
+            // R7-R10 CA1 capacity: DOMSEP_ACC + zero pad (c:135-138)
+            builder.assert_eq(
+                ca1.inputs[4],
+                AB::Expr::from_u64(CONF_DOMSEP_ACC),
+            );
+            builder.assert_zero(ca1.inputs[5]);
+            builder.assert_zero(ca1.inputs[6]);
+            builder.assert_zero(ca1.inputs[7]);
+            // R11-R14 CA2 rate = c_r (c:140-147)
+            for j in 0..4 {
+                builder.assert_eq(ca2.inputs[j], c_r[j]);
+            }
+            // R15-R18 capacity carry: CA2.inputs[4+k] == CA1.end_post(3, 4+k) (c:148-151)
+            for k in 4..8 {
+                builder.assert_eq(ca2.inputs[k], ls[CONF_CA1_OFF + P2_END_POST3 + k]);
+            }
+            // R19-R22 gated CACC freeze (c:153-162); s2 = CA2.end_post(3, ·)
+            for j in 0..4 {
+                builder.when_first_row().assert_eq(
+                    ls[CONF_CACC_OFF + j],
+                    re.clone() * ls[CONF_CA2_OFF + P2_END_POST3 + j].into(),
+                );
+                let rn: AB::Expr = ns[CB_IS_REAL].into();
+                builder.when_transition().assert_zero(
+                    ns[CONF_CACC_OFF + j].into()
+                        - rn.clone() * ns[CONF_CA2_OFF + P2_END_POST3 + j].into()
+                        - (AB::Expr::ONE - rn) * ls[CONF_CACC_OFF + j].into(),
+                );
+            }
+            // R23-R26 last row: CACC == commitment_root public (c:166-168)
+            for j in 0..4 {
+                builder
+                    .when_last_row()
+                    .assert_eq(ls[CONF_CACC_OFF + j], pub_root[j].clone());
+            }
+
+            // ---- Stage-2 CONSTRUCTED public bindings (NEW vs Stage-1 C) ------
+            // PB1-PB4: is_claimed·(c_r[j] − c_claimed_pub[j]) == 0 — the claimed
+            // row's commitment IS the public (exactly one row has is_claimed=1 by
+            // B87). PB5-PB8: same for the fee row. Degree 2. Without these the
+            // c_claimed/c_fee publics would be free-floating (v2 #4 class).
+            for j in 0..4 {
+                builder.when(c).assert_eq(c_r[j], pub_c_claimed[j].clone());
+            }
+            for j in 0..4 {
+                builder.when(f).assert_eq(c_r[j], pub_c_fee[j].clone());
+            }
+        }
+    }
+
+    /// Deterministic combined-trace builder — cell-for-cell mirror of the C
+    /// generators (conf_balance_air.c:27-74, conf_commit_air.c:35-66,
+    /// conf_root_air.c:60-100). The three Poseidon2 blocks per row are produced
+    /// by the REAL p3_poseidon2_air::generate_trace_rows (one call per
+    /// permutation) — the block cells are Plonky3's own, not a port — and each
+    /// block's final post is cross-checked against the real permutation.
+    /// Returns (trace, commitment_root, c_claimed, c_fee).
+    fn generate_conf_root_trace(
+        outputs: &[u64],
+        fee: u64,
+        blinds: &[(u64, u64)],
+        height: usize,
+    ) -> (
+        RowMajorMatrix<Goldilocks>,
+        [Goldilocks; 4],
+        [Goldilocks; 4],
+        [Goldilocks; 4],
+    ) {
+        let n = outputs.len();
+        assert!(n >= 1, "need at least one output (conf_balance_air.c:32)");
+        assert!(
+            height.is_power_of_two() && n + 2 <= height && height <= (1usize << 11),
+            "height must be a power of two, >= N+2, <= 2^11 (conf_balance_air.c:30-32, h:90)"
+        );
+        for &a in outputs {
+            assert!(a < (1u64 << CB_OUTPUT_BITS), "output must be < 2^52");
+        }
+        assert!(fee < (1u64 << CB_OUTPUT_BITS), "fee must be < 2^52");
+        let claimed: u64 = outputs.iter().sum::<u64>() + fee; // Σ < 2^63 by height bound
+        assert!(claimed < (1u64 << CB_NBITS), "claimed must be < 2^62");
+        assert_eq!(blinds.len(), height, "2 blind lanes per row, incl. padding");
+
+        let rc = RoundConstants::<Goldilocks, 8, 4, 22>::new(
+            GOLDILOCKS_POSEIDON2_RC_8_EXTERNAL_INITIAL,
+            GOLDILOCKS_POSEIDON2_RC_8_INTERNAL,
+            GOLDILOCKS_POSEIDON2_RC_8_EXTERNAL_FINAL,
+        );
+        let perm = default_goldilocks_poseidon2_8();
+        // One REAL Plonky3 trace block per permutation; final post cross-checked
+        // against the real permutation (the FP1c "final-post == permute" gate).
+        let p2row = |input: [Goldilocks; 8]| -> Vec<Goldilocks> {
+            let m = p3_poseidon2_air::generate_trace_rows::<
+                Goldilocks,
+                GenericPoseidon2LinearLayersGoldilocks,
+                8,
+                7,
+                1,
+                4,
+                22,
+            >(vec![input], &rc, 0);
+            assert_eq!(m.width, P2_NCOLS);
+            let mut expect = input;
+            perm.permute_mut(&mut expect);
+            for i in 0..8 {
+                assert_eq!(
+                    m.values[P2_END_POST3 + i],
+                    expect[i],
+                    "generate_trace_rows final post != real permutation"
+                );
+            }
+            m.values
+        };
+
+        let mut v = Goldilocks::zero_vec(height * CONF_W);
+        let mut cacc = [Goldilocks::ZERO; 4];
+        let mut bal = Goldilocks::ZERO;
+        let mut n_claimed = 0u64;
+        let mut n_fee = 0u64;
+        let mut c_claimed = [Goldilocks::ZERO; 4];
+        let mut c_fee = [Goldilocks::ZERO; 4];
+        let mut c_list: Vec<[Goldilocks; 4]> = Vec::with_capacity(n + 2);
+
+        for row in 0..height {
+            // Row order PINNED (conf_balance_air.c:51-54): outputs, claimed, fee, padding.
+            let (amount, o, c, f) = if row < n {
+                (outputs[row], 1u64, 0u64, 0u64)
+            } else if row == n {
+                (claimed, 0, 1, 0)
+            } else if row == n + 1 {
+                (fee, 0, 0, 1)
+            } else {
+                (0, 0, 0, 0)
+            };
+            let is_real = o + c + f;
+            let base = row * CONF_W;
+
+            // BAL block (conf_balance_air.c:56-71)
+            v[base + CB_AMOUNT] = Goldilocks::from_u64(amount);
+            for j in 0..CB_NBITS {
+                v[base + CB_BITS + j] = Goldilocks::from_u64((amount >> j) & 1);
+            }
+            v[base + CB_IS_OUTPUT] = Goldilocks::from_u64(o);
+            v[base + CB_IS_CLAIMED] = Goldilocks::from_u64(c);
+            v[base + CB_IS_FEE] = Goldilocks::from_u64(f);
+            v[base + CB_IS_REAL] = Goldilocks::from_u64(is_real);
+            n_claimed += c;
+            n_fee += f;
+            v[base + CB_N_CLAIMED] = Goldilocks::from_u64(n_claimed);
+            v[base + CB_N_FEE] = Goldilocks::from_u64(n_fee);
+            // coeff = o + f − c, running field balance (conf_balance_air.c:23-25,69)
+            let coeff = Goldilocks::from_u64(o) + Goldilocks::from_u64(f)
+                - Goldilocks::from_u64(c);
+            bal += coeff * Goldilocks::from_u64(amount);
+            v[base + CB_BAL] = bal;
+
+            // VC block: [amount, blind0, blind1, 0, DOMSEP_VAL, hash_id, 0, 0]
+            // (conf_commit_air.c:24-33)
+            let (b0, b1) = blinds[row];
+            assert!(b0 < CONF_GOLD_P && b1 < CONF_GOLD_P, "blinds must be canonical");
+            let vc_in = [
+                Goldilocks::from_u64(amount),
+                Goldilocks::from_u64(b0),
+                Goldilocks::from_u64(b1),
+                Goldilocks::ZERO,
+                Goldilocks::from_u64(CONF_DOMSEP_VAL),
+                Goldilocks::from_u64(CONF_HASH_ID),
+                Goldilocks::ZERO,
+                Goldilocks::ZERO,
+            ];
+            let vc_cells = p2row(vc_in);
+            v[base + CONF_VC_OFF..base + CONF_VC_OFF + P2_NCOLS].copy_from_slice(&vc_cells);
+            let c_r: [Goldilocks; 4] =
+                core::array::from_fn(|j| vc_cells[P2_END_POST3 + j]);
+            if row == n {
+                c_claimed = c_r;
+            }
+            if row == n + 1 {
+                c_fee = c_r;
+            }
+            if is_real == 1 {
+                c_list.push(c_r);
+            }
+
+            // CA1: [cacc_prev, DOMSEP_ACC, 0, 0, 0] (conf_root_air.c:28-33)
+            let ca1_in = [
+                cacc[0],
+                cacc[1],
+                cacc[2],
+                cacc[3],
+                Goldilocks::from_u64(CONF_DOMSEP_ACC),
+                Goldilocks::ZERO,
+                Goldilocks::ZERO,
+                Goldilocks::ZERO,
+            ];
+            let ca1_cells = p2row(ca1_in);
+            v[base + CONF_CA1_OFF..base + CONF_CA1_OFF + P2_NCOLS]
+                .copy_from_slice(&ca1_cells);
+            let s1_cap: [Goldilocks; 4] =
+                core::array::from_fn(|k| ca1_cells[P2_END_POST3 + 4 + k]);
+
+            // CA2: [c_r, s1 capacity carry] (conf_root_air.c:35-40)
+            let ca2_in = [
+                c_r[0], c_r[1], c_r[2], c_r[3], s1_cap[0], s1_cap[1], s1_cap[2], s1_cap[3],
+            ];
+            let ca2_cells = p2row(ca2_in);
+            v[base + CONF_CA2_OFF..base + CONF_CA2_OFF + P2_NCOLS]
+                .copy_from_slice(&ca2_cells);
+            let s2: [Goldilocks; 4] = core::array::from_fn(|j| ca2_cells[P2_END_POST3 + j]);
+
+            // Gated freeze: cacc = is_real ? s2 : cacc_prev (conf_root_air.c:92-95).
+            // Padding rows STILL carry valid permutations (fold runs unconditionally,
+            // c:88-90) — required: the Poseidon2 sub-AIRs are not is_real-gated.
+            if is_real == 1 {
+                cacc = s2;
+            }
+            v[base + CONF_CACC_OFF..base + CONF_CACC_OFF + 4].copy_from_slice(&cacc);
+        }
+
+        // Independent verifier-recompute cross-check (conf_root_air.c:48-58):
+        // fold the ordered c-list from the zero state with the REAL permutation.
+        {
+            assert_eq!(c_list.len(), n + 2);
+            let mut acc = [Goldilocks::ZERO; 4];
+            for cr in &c_list {
+                let mut st1 = [
+                    acc[0],
+                    acc[1],
+                    acc[2],
+                    acc[3],
+                    Goldilocks::from_u64(CONF_DOMSEP_ACC),
+                    Goldilocks::ZERO,
+                    Goldilocks::ZERO,
+                    Goldilocks::ZERO,
+                ];
+                perm.permute_mut(&mut st1);
+                let mut st2 = [cr[0], cr[1], cr[2], cr[3], st1[4], st1[5], st1[6], st1[7]];
+                perm.permute_mut(&mut st2);
+                acc = [st2[0], st2[1], st2[2], st2[3]];
+            }
+            assert_eq!(acc, cacc, "independent root recompute != trace root");
+        }
+
+        (RowMajorMatrix::new(v, CONF_W), cacc, c_claimed, c_fee)
+    }
+
+    /// Sandbox synthetic sighash — mirror of conf_txbind.c:23-26,45-56:
+    /// H_demo = SHA3-512("DNAC_B1_SANDBOX_V3\0" ‖ ctx); domain separator is
+    /// 19 bytes INCLUDING the trailing NUL.
+    fn conf_sandbox_sighash(ctx: &[u8]) -> [u8; 64] {
+        let mut h = Sha3_512::new();
+        h.update(b"DNAC_B1_SANDBOX_V3\0");
+        h.update(ctx);
+        h.finalize().into()
+    }
+
+    /// Byte→Goldilocks rejection map — mirror of conf_txbind.c:35-43 (which
+    /// mirrors the challenger convention transcript.c:380-388 /
+    /// serializing_challenger.rs:335-343): walk the 64-byte digest in 8-byte
+    /// LITTLE-ENDIAN groups, accept v < p, take the first 4; fail-close (None)
+    /// if fewer than 4 accept. Reduce-mod-p is FORBIDDEN (bias).
+    fn conf_txbind_map(digest: &[u8; 64]) -> Option<[Goldilocks; 4]> {
+        let mut out = [Goldilocks::ZERO; 4];
+        let mut k = 0usize;
+        for g in digest.chunks_exact(8) {
+            let v = u64::from_le_bytes(g.try_into().unwrap());
+            if v < CONF_GOLD_P {
+                out[k] = Goldilocks::from_u64(v);
+                k += 1;
+                if k == 4 {
+                    return Some(out);
+                }
+            }
+        }
+        None
+    }
+
+    /// Reproducible-derivation gate for the two domain-separator constants
+    /// (conf_commit_air.h:60, conf_root_air.h:69): first 8 BIG-ENDIAN bytes of
+    /// SHA3-512 over the pinned domain strings.
+    fn conf_check_domseps() -> Result<(), Box<dyn std::error::Error>> {
+        let d_val = Sha3_512::digest(b"DNAC value-commitment v1");
+        let d_acc = Sha3_512::digest(b"DNAC commitment-accumulator v1");
+        let val = u64::from_be_bytes(d_val[0..8].try_into().unwrap());
+        let acc = u64::from_be_bytes(d_acc[0..8].try_into().unwrap());
+        if val != CONF_DOMSEP_VAL {
+            return Err(format!("DOMSEP_VAL derivation mismatch: {val:#x}").into());
+        }
+        if acc != CONF_DOMSEP_ACC {
+            return Err(format!("DOMSEP_ACC derivation mismatch: {acc:#x}").into());
+        }
+        Ok(())
+    }
+
+    /// Shared driver for the two conf-root instances. Blinds are deterministic
+    /// splitmix64-derived canonical values — WITNESS data for a byte-stable KAT
+    /// (production blinding uses OS entropy; the mod-p fold here is a KAT
+    /// convenience, not a production sampling procedure).
+    fn dump_conf_root_air_common(
+        outputs: &[u64],
+        fee: u64,
+        height: usize,
+        scope: &str,
+        milestone: &str,
+        out_path: &PathBuf,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        conf_check_domseps()?;
+        let mut x: u64 = 0xB11D_5EED_0000_0000 ^ (height as u64);
+        let mut next = || -> u64 {
+            x = x.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            let mut z = x;
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            z ^= z >> 31;
+            z % CONF_GOLD_P
+        };
+        let blinds: Vec<(u64, u64)> = (0..height).map(|_| (next(), next())).collect();
+        let (trace, root, c_claimed, c_fee) =
+            generate_conf_root_trace(outputs, fee, &blinds, height);
+
+        // Sandbox tx context (deterministic demo bytes) → sighash → rejection map.
+        let ctx = format!(
+            "conf-root-demo-v1|h={}|n={}|fee={}",
+            height,
+            outputs.len(),
+            fee
+        );
+        let sighash = conf_sandbox_sighash(ctx.as_bytes());
+        let tx_binding = conf_txbind_map(&sighash)
+            .ok_or("tx_binding rejection map fail-close (< 4 canonical groups)")?;
+
+        // §4b FLAT public vector (17): root(4) ‖ c_claimed(4) ‖ c_fee(4) ‖
+        // hash_id(1) ‖ tx_binding(4).
+        let mut pis: Vec<Goldilocks> = Vec::with_capacity(CONF_NUM_PUBLICS);
+        pis.extend_from_slice(&root);
+        pis.extend_from_slice(&c_claimed);
+        pis.extend_from_slice(&c_fee);
+        pis.push(Goldilocks::from_u64(CONF_HASH_ID));
+        pis.extend_from_slice(&tx_binding);
+
+        dump_is_zk_stark(
+            &ConfRootAir,
+            trace,
+            pis,
+            scope,
+            "B1 Stage-2 COMBINED confidential AIR (Stage-1 conf_root layout: BAL 70 + VC 180 \
+             + CA1 180 + CA2 180 + CACC 4 = width 614, main_next=true; 17 publics \
+             [commitment_root(4), c_claimed(4), c_fee(4), hash_id, tx_binding(4)]; \
+             PB1-PB8 selector-gated public bindings CONSTRUCTED; max degree 3)",
+            milestone,
+            Some(8), // num_qc MUST measure 8 (degree 3, is_zk=1) — STOP otherwise
+            out_path,
+        )
+    }
+
+    /// B1 Stage-2 h=8 full instance: 4 outputs + claimed + fee + 2 padding rows.
+    pub fn dump_conf_root_air_zk(out_path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+        dump_conf_root_air_zk_impl(out_path)
+    }
+    fn dump_conf_root_air_zk_impl(
+        out_path: &PathBuf,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        dump_conf_root_air_common(
+            &[10, 20, 30, 40],
+            7,
+            8,
+            "conf_root_air_zk",
+            "B1 Stage-2 — first REAL is_zk=1 proof of the combined confidential AIR (h=8, num_qc=8)",
+            out_path,
+        )
+    }
+
+    /// KAT draw stream (D1-B): first `count` Goldilocks samples of a fresh
+    /// SmallRng(1) — identical to the stream the real HidingFriPcs prove
+    /// consumes (the M3a S2 dump's GATE 4 proved stream-identity with
+    /// with_random_cols; the stream is AIR-independent).
+    pub fn dump_smallrng_goldilocks(
+        count: usize,
+        out_path: &PathBuf,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use rand::rngs::SmallRng;
+        use rand::{RngExt as _, SeedableRng};
+        let mut rng = SmallRng::seed_from_u64(1);
+        let draws: Vec<String> = (0..count)
+            .map(|_| {
+                let g: Goldilocks = rng.random();
+                g.as_canonical_u64().to_string()
+            })
+            .collect();
+        let envelope = serde_json::json!({
+            "format_version": ORACLE_FORMAT_VERSION,
+            "plonky3_commit": PLONKY3_COMMIT,
+            "scope": "smallrng_goldilocks_draws",
+            "source": "fresh SmallRng::seed_from_u64(1), sequential rng.random::<Goldilocks>() — the HidingFriPcs prove consumption stream (D1-B KAT input; production = OS entropy)",
+            "count": count,
+            "draws": draws,
+        });
+        let mut f = File::create(out_path)?;
+        f.write_all(serde_json::to_string_pretty(&envelope)?.as_bytes())?;
+        f.write_all(b"\n")?;
+        eprintln!("wrote {} ({} SmallRng(1) Goldilocks draws)", out_path.display(), count);
+        Ok(())
+    }
+
+    /// B1 Stage-2 h=16 PADDED instance: 10 outputs + claimed + fee = 12 real
+    /// rows + 4 padding (is_real cacc freeze exercised inside a REAL proof;
+    /// 3 FRI rounds).
+    pub fn dump_conf_root_air_zk_h16(
+        out_path: &PathBuf,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        dump_conf_root_air_common(
+            &[5, 10, 15, 20, 25, 30, 35, 40, 45, 50],
+            3,
+            16,
+            "conf_root_air_zk_h16",
+            "B1 Stage-2 — combined confidential AIR, h=16 PADDED instance (freeze through padding, 3 FRI rounds)",
+            out_path,
+        )
     }
 
     /// DNAC-stack StarkConfig with log_final_poly_len=0 (works for degree_bits 2 AND 3,

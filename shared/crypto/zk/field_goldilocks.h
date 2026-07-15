@@ -39,6 +39,14 @@ extern "C" {
  *  Pinned 2026-05-21 from Plonky3 82cfad73 goldilocks/src/extension.rs. */
 #define GOLDILOCKS_EXT_W ((uint64_t)7)
 
+/** Multiplicative-group generator of the Goldilocks base field.
+ *  Pinned 2026-07-15 from Plonky3 82cfad73 goldilocks/src/goldilocks.rs:400
+ *  (`const GENERATOR: Self = Self::new(7)`). Used as the quotient-domain coset
+ *  shift (create_disjoint_domain from a shift-ONE trace domain,
+ *  commit/src/domain.rs:180-193). Numerically equal to GOLDILOCKS_EXT_W by
+ *  coincidence — semantically DISTINCT constants; never alias them. */
+#define GOLDILOCKS_GENERATOR ((uint64_t)7)
+
 /** Multiplicative order of two-adic generator in base field.
  *  Goldilocks has 2^32 | (p-1), so two-adicity = 32. */
 #define GOLDILOCKS_TWO_ADICITY 32

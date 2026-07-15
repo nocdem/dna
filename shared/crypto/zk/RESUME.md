@@ -38,22 +38,41 @@
   Money conservation on the live chain is enforced by the native cleartext
   witness check (`verify.c` Check 4); this ZK stack is ADDITIVE (v3 ships
   transparent, hidden amounts are v4).
-- **B1 CONFIDENTIAL AMOUNTS — STAGE-1 (is_zk=0) COMPLETE (2026-07-14).** Design:
-  `dnac/docs/plans/2026-07-14-b1-confidential-amounts-design-v3.md` (v3.1, local-only)
-  + memory `project_v3_zk_implementation_progress` (▶ current). After the v2 design
-  FAILED 2 red-teams on "asserted-not-constructed" (meta-conclusion: BUILD it, don't
-  prose it), the minimal standalone confidential AIR is now BUILT by CONSTRUCTION:
-  `conf_balance_air` (SEC-1 balance + row-type selectors), `conf_commit_air` (SEC-2
-  amount↔commitment via same-window copy onto the FP1c Poseidon2 block),
-  `conf_root_air` (commitment-set-root, capacity-IV sponge fold, is_real-gated),
-  `conf_txbind` (SEC-5 tx-binding: grounded rejection map + tx-bound root). ~34
-  negative KATs; CA mini-red-team PASSED (0 REFUTED, fold collision ~2^128).
-  **These are CONSTRAINT-EVAL modules (no FRI/transcript).** NEXT = **Stage-2**: the
-  full combined-AIR prove→verify (is_zk=1, num_qc=8, N-chunk recompose, prod CSPRNG +
-  salted MMCS, tx_binding as an FS public) — new-session scale. Still PARKED (not in
-  consensus); product-need for confidential amounts is an open question.
-- **`make test`: 57 test binaries GREEN, 0 warnings** (`cd shared/crypto/zk && make test`;
-  `test_fri_verify_zk` runs twice — FibonacciAir + is_zk RangeProofAir).
+- **B1 CONFIDENTIAL AMOUNTS — 🎯 STAGE-2 (is_zk=1, num_qc=8) COMPLETE (2026-07-15).**
+  Design: `dnac/docs/plans/2026-07-14-b1-confidential-amounts-design-v3.md` (v3.1,
+  local-only) + memory `project_v3_zk_implementation_progress` (▶ current). Stage-1
+  built the standalone confidential AIR by CONSTRUCTION (conf_balance/conf_commit/
+  conf_root/conf_txbind, constraint-eval only). **Stage-2 takes the combined
+  conf_root AIR (WIDTH=614) to a REAL STARK prove→verify at is_zk=1:**
+  - **Rust oracle `ConfRootAir`** (17 publics `[root(4),c_claimed(4),c_fee(4),
+    hash_id,tx_binding(4)]`, main_next=1) → REAL `p3_uni_stark::prove` is_zk=1,
+    verify=Ok, **num_qc MEASURED=8** (STOP gate; the AIR canNOT inherit
+    poseidon2-air's `Some(7)`), GATE3 negative-control (tampered proof rejected),
+    2 vectors (h=8 full + h=16 padded/3-FRI-round), byte-identical regen.
+  - **C N-chunk recompose** `dnac_stark_recompose_quotient_nchunk` (stark_constraints)
+    → byte-matches the REAL `recompose_quotient_from_chunks` (verifier.rs:59-96;
+    inverts Z_j at first_point_i, UNrandomized split domains, GENERATOR=7 shifts).
+  - **C combined air_eval fold** `conf_root_fold.c` (fp2 Poseidon2 lift + all
+    conf constraints in the ORACLE-pinned emission order) → `folded·inv_van ==
+    REAL quotient(zeta)` on a REAL proof (`dnac_stark_verify_constraints_nchunk`).
+  - **Pure-C conf prover** `stark_prover_conf.c` (`dnac_conf_prover_prove`) → zeta +
+    3 commit roots + final_poly **byte-match the REAL Plonky3 is_zk=1 proof** (both
+    instances) + self-verify (FRI == DNAC_FRI_OK **AND** N-chunk constraint check).
+    S6 quotient REUSES the verifier-fold eval row-by-row (ONE emission source).
+  - **tx_binding = FS public** (observed before alpha; tamper→zeta and position-swap
+    →zeta KATs, closes design O-4). **Production CSPRNG** `zk_entropy.c`
+    (getrandom rejection-sample, fail-close) wired into
+    `dnac_conf_prover_prove_production`; OS-entropy proof self-verifies.
+  - **Independent 12-agent red-team: 12/12 SOUND, 0 defects** (0 CRIT/HIGH/MED); 3
+    LOW/hygiene notes all FIXED. Report `dnac/docs/plans/2026-07-15-b1-stage2-
+    redteam-report.md` (local). Grounding: `2026-07-15-b1-stage2-grounding-specs.md`.
+  - **DEFERRED (gated, documented):** salted-leaf MMCS (M3b) — wire-format change +
+    own oracle vectors + own red-team; `2026-07-15-b1-stage2-m3b-salted-mmcs-
+    DEFERRED.md`. Still PARKED (grep-confirmed: no consensus CMake references
+    crypto/zk); product-need for confidential amounts is an open question (v3
+    transparent gives the same privacy).
+- **`make test`: 60 test binaries GREEN, 0 warnings** (`cd shared/crypto/zk && make test`;
+  `test_fri_verify_zk` runs on FibonacciAir + is_zk RangeProofAir + 2 conf-root instances).
   **C PROVER COMPLETE (S1-S13) + P1 arbitrary-instance:** the prover-side gates
   = S1 trace + S2 LDE + S3 commit + S5 alpha + S6 quotient + S7 quotient-commit +
   S8 zeta + S9 open + S10 FRI + S11/S12 query + **S13 MILESTONE (pure-C prove →

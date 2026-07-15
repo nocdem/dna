@@ -68,6 +68,14 @@ extern "C" {
  *  RANGE_PROOF_MAX_DEGREE_BITS, wrap-safety bound). */
 #define STARK_PROVER_MAX_HEIGHT         SUM_BALANCE_MAX_OUTPUTS
 
+/** Maximum BASE trace width the parametric stages accept (size_t-overflow
+ *  guard bound, NOT a protocol constant). Raised 2026-07-15 from the
+ *  RangeProofAir width (56) to cover the B1 Stage-2 combined conf AIR
+ *  (CONF_ROOT_WIDTH = 614); 640 matches DNAC_STARK_MAX_MAIN_WIDTH. With
+ *  height <= 2^10 and per_row <= 640 + 2*num_random, every height*per_row
+ *  product stays far below SIZE_MAX. */
+#define DNAC_PROVER_MAX_TRACE_WIDTH     ((size_t)640)
+
 /* ============================================================================
  * Status codes (separate from every existing zk status enum)
  * ========================================================================== */

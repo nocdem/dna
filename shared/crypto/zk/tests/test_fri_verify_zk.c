@@ -109,9 +109,10 @@ static size_t parse_fp2_decimal_array(js_t *s,gold_fp2_t *out,size_t cap){
 #define GXB 4       /* input batches/round: random,trace,quotient = 3 */
 #define GXMAT 8     /* matrices per batch (quotient = num_qc)          */
 #define GXR 16      /* commit-phase rounds  */
-#define GXCOL 128   /* columns / evals (RangeProofAir trace width 56+4 rand = 60) */
+#define GXCOL 640   /* columns / evals (B1 Stage-2 combined conf AIR: 614+4 rand
+                       = 618 merged; was 128 for RangeProofAir 56+4=60) */
 #define GXSIB 16    /* siblings             */
-#define GXCHUNK 8   /* quotient chunks      */
+#define GXCHUNK 8   /* quotient chunks (num_qc=8 at is_zk=1 / degree 3) */
 
 typedef struct {
     dnac_fri_params_t params;
@@ -246,7 +247,13 @@ static void parse_opened(js_t *s,gx_t *fx){
         if(k&&strcmp(k,"random")==0)fx->random_local_len=parse_fp2_decimal_array(s,fx->random_local,GXCOL);
         else if(k&&strcmp(k,"trace_local")==0)fx->trace_local_len=parse_fp2_decimal_array(s,fx->trace_local,GXCOL);
         else if(k&&strcmp(k,"trace_next")==0){ if(js_peek(s,'[')){ fx->trace_next_len=parse_fp2_decimal_array(s,fx->trace_next,GXCOL); fx->has_trace_next=1; } else { js_skip_value(s); fx->has_trace_next=0; } }
-        else if(k&&strcmp(k,"quotient_chunks")==0){ size_t c=0; js_match(s,'['); while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;} if(c<GXCHUNK)fx->quot_chunk_len[c]=parse_fp2_decimal_array(s,fx->quot_chunk[c],GXCOL); else js_skip_value(s); c++; } fx->num_quot_chunks_parsed=c; }
+        else if(k&&strcmp(k,"quotient_chunks")==0){ size_t c=0; js_match(s,'['); while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;} if(c<GXCHUNK)fx->quot_chunk_len[c]=parse_fp2_decimal_array(s,fx->quot_chunk[c],GXCOL); else js_skip_value(s); c++; }
+            /* CLAMP to the storage cap: a hand-fed vector with >GXCHUNK chunks
+             * must NOT let build_coms write quot_points[c] past the fixed
+             * GXCHUNK arrays (red-team num-qc-gate LOW). The scanner already
+             * consumed the extras via js_skip_value; verification then runs on
+             * GXCHUNK chunks and fails cleanly rather than corrupting memory. */
+            fx->num_quot_chunks_parsed = (c > GXCHUNK) ? (size_t)GXCHUNK : c; }
         else { js_skip_value(s); } free(k); }
 }
 
@@ -335,6 +342,44 @@ int main(int argc,char **argv){
         fprintf(stderr,"  degree_bits=%zu num_qc=%zu queries=%zu batches[0]=%zu random_len=%zu\n",
                 fx->degree_bits, fx->num_quot_chunks_parsed, fx->num_queries, fx->num_batches[0], fx->random_local_len);
         free(fx); return 1;
+    }
+
+    /* ---- B1 Stage-2 tx_binding FS-position KATs (v3.1 §4b, closes O-4) ----
+     * Only for the 17-public combined conf AIR: tx_binding = publics[13..17).
+     * (a) FS-binding canary: a DIFFERENT tx_binding must change zeta (the
+     *     transcript observes every public before alpha, verifier.rs:373) —
+     *     this is the SEC-5 binding MECHANISM at the proof layer.
+     * (b) Position pin: swapping publics[12] (hash_id) and publics[13]
+     *     (tx_binding[0]) must change zeta — observe_slice is order-sensitive,
+     *     so the FLAT layout positions are load-bearing, not decorative. */
+    if (fx->num_public_values == 17) {
+        gold_fp_t saved12 = fx->public_values[12], saved13 = fx->public_values[13];
+        dnac_stark_priming_out_t o2;
+        /* (a) tampered tx_binding[0] */
+        fx->public_values[13] = gold_fp_from_u64(gold_fp_to_u64(saved13) ^ 1u);
+        dnac_transcript_t *t2 = dnac_transcript_init(fx->init_state, fx->init_state_len);
+        memset(&o2, 0, sizeof o2);
+        if (!t2 || dnac_stark_prime_transcript(t2, &in, &o2) != DNAC_STARK_PRIMING_OK ||
+            gold_fp2_eq(o2.zeta, fx->zeta_exp) || gold_fp2_eq(o2.alpha, fx->alpha_exp)) {
+            fprintf(stderr, "TXBIND CANARY FAILED: tampered tx_binding did NOT change alpha/zeta\n");
+            if (t2) dnac_transcript_free(t2);
+            free(fx); return 1;
+        }
+        dnac_transcript_free(t2);
+        fx->public_values[13] = saved13;
+        /* (b) swapped positions 12 <-> 13 */
+        fx->public_values[12] = saved13; fx->public_values[13] = saved12;
+        t2 = dnac_transcript_init(fx->init_state, fx->init_state_len);
+        memset(&o2, 0, sizeof o2);
+        if (!t2 || dnac_stark_prime_transcript(t2, &in, &o2) != DNAC_STARK_PRIMING_OK ||
+            gold_fp2_eq(o2.zeta, fx->zeta_exp)) {
+            fprintf(stderr, "TXBIND POSITION PIN FAILED: swapped publics[12]<->[13] did NOT change zeta\n");
+            if (t2) dnac_transcript_free(t2);
+            free(fx); return 1;
+        }
+        dnac_transcript_free(t2);
+        fx->public_values[12] = saved12; fx->public_values[13] = saved13;
+        printf("  tx_binding FS KATs: tamper->zeta differs + position swap->zeta differs (v3.1 §4b O-4 closed).\n");
     }
 
     printf("test_fri_verify_zk: PASS\n");

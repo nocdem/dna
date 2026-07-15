@@ -93,6 +93,9 @@ TESTS = \
     $(BUILD)/test_stark_constraints_primitives \
     $(BUILD)/test_stark_verify_constraints \
     $(BUILD)/test_range_proof_air \
+    $(BUILD)/test_conf_root_verify \
+    $(BUILD)/test_prover_conf \
+    $(BUILD)/test_zk_entropy \
     $(BUILD)/test_prover_trace \
     $(BUILD)/test_prover_s2_lde \
     $(BUILD)/test_prover_s3_commit \
@@ -381,6 +384,20 @@ $(BUILD)/test_stark_verify_constraints: tests/test_stark_verify_constraints.c st
 $(BUILD)/test_range_proof_air: tests/test_range_proof_air.c stark_constraints.h stark_constraints.c field_goldilocks.h field_goldilocks.c range_air.h | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) tests/test_range_proof_air.c stark_constraints.c field_goldilocks.c -o $@
 
+$(BUILD)/test_conf_root_verify: tests/test_conf_root_verify.c stark_constraints.h stark_constraints.c conf_root_fold.h conf_root_fold.c poseidon2_goldilocks.h poseidon2_goldilocks.c field_goldilocks.h field_goldilocks.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_conf_root_verify.c stark_constraints.c conf_root_fold.c poseidon2_goldilocks.c field_goldilocks.c -o $@
+
+CONF_AIR_STACK = conf_root_air.c conf_commit_air.c conf_balance_air.c conf_txbind.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c poseidon2_goldilocks.c
+
+# Production CSPRNG (G2): self-contained getrandom(2)/urandom, dependency-free
+# (the parked zk stack must not drag in the platform logging chain). PROVER-side
+# only — tests exercise it structurally, never for byte-stable values.
+$(BUILD)/test_zk_entropy: tests/test_zk_entropy.c zk_entropy.h zk_entropy.c field_goldilocks.h field_goldilocks.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_zk_entropy.c zk_entropy.c field_goldilocks.c -o $@
+
+$(BUILD)/test_prover_conf: tests/test_prover_conf.c stark_prover_conf.h stark_prover_conf.c conf_root_fold.h conf_root_fold.c stark_constraints.c zk_entropy.c $(CONF_AIR_STACK) $(PROVER_STACK) fri_verifier.c stark_priming.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_prover_conf.c stark_prover_conf.c conf_root_fold.c stark_constraints.c zk_entropy.c $(CONF_AIR_STACK) $(PROVER_STACK) fri_verifier.c stark_priming.c $(SHA3_SRC) $(LDLIBS) -o $@
+
 # S1 (C prover) — RangeProofAir witness-trace builder byte-match KAT vs the
 # oracle's generate_range_proof_trace dump (the exact p3_uni_stark::prove input
 # matrix, PRE-is_zk-randomization). Reuses the range_air/sum_balance builders;
@@ -668,6 +685,13 @@ test: all
 	@$(BUILD)/test_fri_verify_zk tools/vectors/range_proof_air_zk.json
 	@echo
 	@echo "============================================================"
+	@echo "B1 Stage-2 — COMBINED conf AIR is_zk=1 end-to-end FRI verify (width 614, num_qc=8)"
+	@echo "  h=8 full + h=16 padded instances (real p3 prove, 82cfad73)"
+	@echo "============================================================"
+	@$(BUILD)/test_fri_verify_zk tools/vectors/conf_root_air_zk.json
+	@$(BUILD)/test_fri_verify_zk tools/vectors/conf_root_air_zk_h16.json
+	@echo
+	@echo "============================================================"
 	@echo "Phase B8 P5 — additive DZKS STARK/PCS wire wrapper (around existing DZKF, 82cfad73)"
 	@echo "============================================================"
 	@$(BUILD)/test_stark_proof_codec tools/vectors/stark_proof_wire.json
@@ -699,6 +723,23 @@ test: all
 	@echo "  CONFIDENTIAL use BLOCKED on B1 (B6/B7 closed by 52-bit + is_real/cnt fix)"
 	@echo "============================================================"
 	@$(BUILD)/test_range_proof_air tools/vectors/range_air_only.json tools/vectors/range_proof_air.json
+	@echo
+	@echo "============================================================"
+	@echo "B1 Stage-2 — C constraint layer vs REAL Plonky3 verifier fns (82cfad73)"
+	@echo "  selectors + split-domain shifts + N-chunk recompose (num_qc=8, width 614)"
+	@echo "============================================================"
+	@echo "-- h=8 full instance --"
+	@$(BUILD)/test_conf_root_verify tools/vectors/conf_root_air_zk.json
+	@echo "-- h=16 padded instance --"
+	@$(BUILD)/test_conf_root_verify tools/vectors/conf_root_air_zk_h16.json
+	@echo
+	@echo "============================================================"
+	@echo "B1 Stage-2 — pure-C conf PROVER byte-match vs the REAL Plonky3 proof"
+	@echo "  S1-S12 over the combined AIR (width 614, num_qc=8, 17 publics);"
+	@echo "  zeta + 3 roots + final_poly byte-match + self-verify (FRI + N-chunk)"
+	@echo "============================================================"
+	@$(BUILD)/test_prover_conf tools/vectors/conf_root_air_zk.json tools/vectors/smallrng_goldilocks.json
+	@$(BUILD)/test_prover_conf tools/vectors/conf_root_air_zk_h16.json tools/vectors/smallrng_goldilocks.json
 	@echo
 	@echo "============================================================"
 	@echo "S1 (C prover) — RangeProofAir witness-trace builder byte-match KAT"

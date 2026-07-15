@@ -55,6 +55,104 @@ gold_fp2_t dnac_stark_recompose_quotient_1chunk(const gold_fp2_t chunk0[2]) {
 }
 
 /* ============================================================================
+ * Quotient recompose, N chunks (B1 Stage-2; verifier.rs:59-96, 305-312, 463-467)
+ * ========================================================================== */
+
+/* Z_j(pt) = (pt * shift_inv_j)^(2^chunk_log) - 1 (domain.rs:248-253), fp2 pt. */
+static gold_fp2_t conf_vanish_fp2(gold_fp2_t pt, gold_fp_t shift_inv,
+                                  size_t chunk_log) {
+    gold_fp2_t x = gold_fp2_mul(pt, gold_fp2_from_base(shift_inv));
+    for (size_t i = 0; i < chunk_log; i++) x = gold_fp2_sqr(x);
+    return gold_fp2_sub(x, gold_fp2_one());
+}
+
+/* Same in the base field (first_point args are fp; field.rs:1171-1188 makes the
+ * denominator a pure base-field computation). */
+static gold_fp_t conf_vanish_fp(gold_fp_t pt, gold_fp_t shift_inv,
+                                size_t chunk_log) {
+    gold_fp_t x = gold_fp_mul(pt, shift_inv);
+    for (size_t i = 0; i < chunk_log; i++) x = gold_fp_sqr(x);
+    return gold_fp_sub(x, gold_fp_one());
+}
+
+dnac_stark_verify_status_t dnac_stark_recompose_quotient_nchunk(
+    gold_fp2_t zeta,
+    size_t degree_bits,
+    size_t log_num_qc,
+    size_t is_zk,
+    const gold_fp2_t *chunks,
+    size_t num_qc,
+    size_t chunk_stride,
+    gold_fp2_t *quotient_out) {
+
+    /* Fail-close shape gates (verifier.rs:294-296, 347-357 analogue). */
+    if (!chunks || !quotient_out || chunk_stride < 2) {
+        return DNAC_STARK_VERIFY_ERR_SHAPE;
+    }
+    if (is_zk > 1 || degree_bits < is_zk) return DNAC_STARK_VERIFY_ERR_SHAPE;
+    if (log_num_qc + is_zk >= 63 ||
+        num_qc != ((size_t)1 << (log_num_qc + is_zk)) ||
+        num_qc > DNAC_STARK_MAX_QUOTIENT_CHUNKS) {
+        return DNAC_STARK_VERIFY_ERR_SHAPE;
+    }
+    const size_t q_log = degree_bits + log_num_qc; /* verifier.rs:305-311 */
+    if (q_log > GOLDILOCKS_TWO_ADICITY) return DNAC_STARK_VERIFY_ERR_SHAPE;
+    /* chunk_log = Q_log - (log_num_qc + is_zk) = degree_bits - is_zk
+     * (domain.rs:199-211 split of the size-2^Q_log quotient domain into
+     * num_qc = 2^(log_num_qc+is_zk) chunks). */
+    const size_t chunk_log = degree_bits - is_zk;
+
+    /* Chunk-domain shifts: shift_i = GENERATOR * g_Q^i (domain.rs:180-193 gives
+     * the quotient domain shift = 1 * GENERATOR; :199-211 multiplies by the
+     * subgroup generator power). Ascending wire order i = 0..num_qc-1
+     * (verifier.rs:434-444, 463-467). */
+    const gold_fp_t g_q = gold_fp_two_adic_generator((unsigned)q_log);
+    gold_fp_t shift[DNAC_STARK_MAX_QUOTIENT_CHUNKS];
+    gold_fp_t shift_inv[DNAC_STARK_MAX_QUOTIENT_CHUNKS];
+    gold_fp_t s = gold_fp_from_u64(GOLDILOCKS_GENERATOR);
+    for (size_t i = 0; i < num_qc; i++) {
+        shift[i] = s;
+        shift_inv[i] = gold_fp_inv(s);
+        s = gold_fp_mul(s, g_q);
+    }
+
+    /* Precompute Z_j(zeta) (fp2 numerators). */
+    gold_fp2_t vz[DNAC_STARK_MAX_QUOTIENT_CHUNKS];
+    for (size_t j = 0; j < num_qc; j++) {
+        vz[j] = conf_vanish_fp2(zeta, shift_inv[j], chunk_log);
+    }
+
+    /* zps[i] = prod_{j != i} Z_j(zeta) * Z_j(first_point_i)^-1, first_point_i =
+     * shift_i (domain.rs:164-166); ascending j (verifier.rs:67-83). */
+    const gold_fp2_t x_basis = gold_fp2_new(gold_fp_zero(), gold_fp_one());
+    gold_fp2_t quotient = gold_fp2_zero();
+    for (size_t i = 0; i < num_qc; i++) {
+        gold_fp2_t zps_i = gold_fp2_one();
+        for (size_t j = 0; j < num_qc; j++) {
+            if (j == i) continue;
+            const gold_fp_t den = conf_vanish_fp(shift[i], shift_inv[j], chunk_log);
+            if (gold_fp_eq(den, gold_fp_zero())) {
+                /* Unreachable for disjoint cosets (domain.rs:100-109); reject
+                 * defensively rather than invert zero. */
+                return DNAC_STARK_VERIFY_ERR_SHAPE;
+            }
+            const gold_fp2_t term =
+                gold_fp2_mul(vz[j], gold_fp2_from_base(gold_fp_inv(den)));
+            zps_i = gold_fp2_mul(zps_i, term);
+        }
+        /* val_i = chunk_i[0] + chunk_i[1] * X (from_ext_basis_coefficients,
+         * field.rs:1159-1167; only the first DIMENSION=2 values are read — the
+         * merged random-codeword tail is PCS data, hiding_pcs.rs:349). */
+        const gold_fp2_t val = gold_fp2_add(
+            chunks[i * chunk_stride],
+            gold_fp2_mul(chunks[i * chunk_stride + 1], x_basis));
+        quotient = gold_fp2_add(quotient, gold_fp2_mul(zps_i, val));
+    }
+    *quotient_out = quotient;
+    return DNAC_STARK_VERIFY_OK;
+}
+
+/* ============================================================================
  * Alpha-fold accumulator (folder.rs:215-218)
  * ========================================================================== */
 
@@ -122,6 +220,18 @@ void dnac_stark_folder_when(dnac_stark_folder_t *f, gold_fp2_t selector, gold_fp
     dnac_stark_folder_assert_zero(f, gold_fp2_mul(selector, x));    /* filtered.rs:60-62 */
 }
 
+/* Shared shape gate + fold/OOD core for the 1-chunk and N-chunk entry points.
+ * `quotient` is the already-recomposed quotient(zeta). */
+static dnac_stark_verify_status_t stark_verify_constraints_core(
+    const dnac_stark_air_t *air,
+    const gold_fp2_t *trace_local, size_t trace_local_len,
+    const gold_fp2_t *trace_next, size_t trace_next_len,
+    const gold_fp_t *public_values, size_t num_public_values,
+    gold_fp2_t zeta,
+    size_t base_degree_bits,
+    gold_fp2_t alpha,
+    gold_fp2_t quotient);
+
 dnac_stark_verify_status_t dnac_stark_verify_constraints(
     const dnac_stark_air_t *air,
     const gold_fp2_t *trace_local, size_t trace_local_len,
@@ -132,8 +242,52 @@ dnac_stark_verify_status_t dnac_stark_verify_constraints(
     gold_fp2_t alpha,
     const gold_fp2_t quotient_chunk[2]) {
 
+    if (!quotient_chunk) return DNAC_STARK_VERIFY_ERR_SHAPE;
+    /* quotient(zeta) (num_qc=1). */
+    const gold_fp2_t quotient = dnac_stark_recompose_quotient_1chunk(quotient_chunk);
+    return stark_verify_constraints_core(air, trace_local, trace_local_len,
+                                         trace_next, trace_next_len,
+                                         public_values, num_public_values, zeta,
+                                         base_degree_bits, alpha, quotient);
+}
+
+dnac_stark_verify_status_t dnac_stark_verify_constraints_nchunk(
+    const dnac_stark_air_t *air,
+    const gold_fp2_t *trace_local, size_t trace_local_len,
+    const gold_fp2_t *trace_next, size_t trace_next_len,
+    const gold_fp_t *public_values, size_t num_public_values,
+    gold_fp2_t zeta,
+    size_t degree_bits,
+    size_t log_num_qc,
+    size_t is_zk,
+    gold_fp2_t alpha,
+    const gold_fp2_t *chunks, size_t num_qc, size_t chunk_stride) {
+
+    gold_fp2_t quotient;
+    const dnac_stark_verify_status_t rs = dnac_stark_recompose_quotient_nchunk(
+        zeta, degree_bits, log_num_qc, is_zk, chunks, num_qc, chunk_stride,
+        &quotient);
+    if (rs != DNAC_STARK_VERIFY_OK) return rs;
+    /* Selectors live on init_trace_domain: size 2^(degree_bits - is_zk), shift
+     * ONE (verifier.rs:303, 488) — NOT the chunk-domain size. */
+    return stark_verify_constraints_core(air, trace_local, trace_local_len,
+                                         trace_next, trace_next_len,
+                                         public_values, num_public_values, zeta,
+                                         degree_bits - is_zk, alpha, quotient);
+}
+
+static dnac_stark_verify_status_t stark_verify_constraints_core(
+    const dnac_stark_air_t *air,
+    const gold_fp2_t *trace_local, size_t trace_local_len,
+    const gold_fp2_t *trace_next, size_t trace_next_len,
+    const gold_fp_t *public_values, size_t num_public_values,
+    gold_fp2_t zeta,
+    size_t base_degree_bits,
+    gold_fp2_t alpha,
+    gold_fp2_t quotient) {
+
     /* 1. shape (verifier.rs:327-358 subset). */
-    if (!air || !air->air_eval || !trace_local || !quotient_chunk) {
+    if (!air || !air->air_eval || !trace_local) {
         return DNAC_STARK_VERIFY_ERR_SHAPE;
     }
     if (air->main_width == 0 || air->main_width > DNAC_STARK_MAX_MAIN_WIDTH) {
@@ -147,9 +301,6 @@ dnac_stark_verify_status_t dnac_stark_verify_constraints(
             return DNAC_STARK_VERIFY_ERR_SHAPE;
         }
     }
-
-    /* 2. quotient(zeta) (num_qc=1). */
-    const gold_fp2_t quotient = dnac_stark_recompose_quotient_1chunk(quotient_chunk);
 
     /* 3. selectors at zeta. */
     const dnac_stark_selectors_t sels =

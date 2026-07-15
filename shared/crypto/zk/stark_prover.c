@@ -103,9 +103,11 @@ dnac_prover_status_t dnac_prover_randomize_trace(
     }
     /* size_t-overflow guard (red-team S2 LOW): a hostile height*width would
      * wrap the draw-validation bound + mis-address writes. Bound by the
-     * pipeline's real ceilings (MAX_HEIGHT rows, width ≤ 60 + codewords); reject
-     * anything that could overflow the per_row / height*per_row products. */
-    if (width > STARK_PROVER_RANGE_PROOF_WIDTH || num_random > width ||
+     * pipeline's real ceilings (MAX_HEIGHT rows; width ≤ the AIR-agnostic
+     * DNAC_PROVER_MAX_TRACE_WIDTH = 640, raised 2026-07-15 for the width-614
+     * combined conf AIR); reject anything that could overflow the
+     * per_row / height*per_row products. */
+    if (width > DNAC_PROVER_MAX_TRACE_WIDTH || num_random > width ||
         height > STARK_PROVER_MAX_HEIGHT) {
         return DNAC_PROVER_ERR_PARAM;
     }

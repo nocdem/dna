@@ -31,6 +31,11 @@ p3-uni-stark = { git = "https://github.com/Plonky3/Plonky3", rev = "82cfad73cd73
 # FP1c.2 — poseidon2-air trace generation oracle. Same commit pin. Provides
 # generate_trace_rows + RoundConstants for the Poseidon2Cols<8,7,1,4,22> layout.
 p3-poseidon2-air = { git = "https://github.com/Plonky3/Plonky3", rev = "82cfad73cd734d37a0d51953094f970c531817ec" }
+# B1 Stage-2 (2026-07-15) — GenericPoseidon2LinearLayers trait, needed by the
+# VERBATIM-vendored poseidon2-air eval (air.rs:144-323; pub(crate) upstream) used
+# inside the combined ConfRootAir. Already in Cargo.lock transitively via
+# p3-poseidon2-air; declared to be importable. Same commit pin.
+p3-poseidon2 = { git = "https://github.com/Plonky3/Plonky3", rev = "82cfad73cd734d37a0d51953094f970c531817ec" }
 
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -59,6 +64,12 @@ lto = "fat"
 codegen-units = 1
 panic = "abort"
 strip = "none"
+# B1 Stage-2 (2026-07-15, grounding GAP4): keep debug_assert guards ACTIVE in the
+# oracle. uni-stark/src/symbolic.rs:24-31 validates a max_constraint_degree hint
+# with debug_assert only — a plain --release oracle would silently skip the
+# degree-hint guard. debug-assertions add checks only (no output-value change);
+# vector regeneration stays byte-identical.
+debug-assertions = true
 
 # Aggressive reproducibility: pin the dep graph fully at build time.
 # Cargo.lock will be committed once first build succeeds on a Rust-equipped host.

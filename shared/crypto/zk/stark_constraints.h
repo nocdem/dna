@@ -100,6 +100,59 @@ dnac_stark_selectors_t dnac_stark_selectors_at_point(gold_fp2_t zeta,
 gold_fp2_t dnac_stark_recompose_quotient_1chunk(const gold_fp2_t chunk0[2]);
 
 /* ============================================================================
+ * Quotient recomposition — N chunks (B1 Stage-2, is_zk=1 / num_qc=8).
+ * ========================================================================== */
+
+/** Hard cap on quotient chunks the N-chunk recompose supports (num_qc=8 today;
+ *  the cap is a stack-buffer bound, not a protocol constant). */
+#define DNAC_STARK_MAX_QUOTIENT_CHUNKS ((size_t)64)
+
+/**
+ * @brief Recompose quotient(zeta) from N chunks (verifier.rs:59-96) over the
+ *        UNrandomized split domains (verifier.rs:305-312, 463-467).
+ *
+ * Domain derivation (all verifier-side, never wire-trusted):
+ *   num_qc      == 1 << (log_num_qc + is_zk)            (verifier.rs:294-296)
+ *   Q_log        = degree_bits + log_num_qc              (verifier.rs:305-311)
+ *   quotient dom = coset(shift = GENERATOR = 7, Q_log)   (domain.rs:180-193; trace
+ *                                                         shift ONE, two_adic_pcs.rs:285-287)
+ *   chunk dom i  = coset(7 * g_Q^i, Q_log - (log_num_qc + is_zk))
+ *                                                        (domain.rs:199-211)
+ *   Z_j(pt)      = (pt * shift_j^-1)^(2^chunk_log) - 1   (domain.rs:248-253)
+ *   zps[i]       = prod_{j != i} Z_j(zeta) * Z_j(shift_i)^-1  (verifier.rs:67-83;
+ *                  the INVERTED factor is Z_j at D_i's FIRST POINT = shift_i)
+ *   quotient     = sum_i zps[i] * (chunk_i[0] + chunk_i[1] * X) (verifier.rs:87-95)
+ *
+ * NOTE the randomized chunk domains (size << is_zk, verifier.rs:314-317) are PCS
+ * opening metadata ONLY — recompose never uses them.
+ *
+ * @param zeta          OOD point (fp2).
+ * @param degree_bits   Proof degree_bits (INCLUDING is_zk; verifier.rs:25-53).
+ * @param log_num_qc    log2 #chunks before the is_zk shift (symbolic.rs:15-19).
+ * @param is_zk         0 or 1.
+ * @param chunks        Flattened [num_qc][chunk_stride] fp2 opened values; only
+ *                      the first 2 (= Challenge::DIMENSION) of each chunk are
+ *                      read (merged random-codeword tails are ignored).
+ * @param num_qc        Chunk count; MUST equal 1 << (log_num_qc + is_zk).
+ * @param chunk_stride  Row stride in `chunks` (>= 2).
+ * @param quotient_out  quotient(zeta) on success.
+ * @return DNAC_STARK_VERIFY_OK, or DNAC_STARK_VERIFY_ERR_SHAPE (fail-close:
+ *         NULL args, num_qc/log mismatch, stride < 2, num_qc > cap,
+ *         Q_log > two-adicity, or a zero vanishing denominator — the latter is
+ *         mathematically unreachable for disjoint cosets, domain.rs:100-109,
+ *         but rejected defensively).
+ */
+dnac_stark_verify_status_t dnac_stark_recompose_quotient_nchunk(
+    gold_fp2_t zeta,
+    size_t degree_bits,
+    size_t log_num_qc,
+    size_t is_zk,
+    const gold_fp2_t *chunks,
+    size_t num_qc,
+    size_t chunk_stride,
+    gold_fp2_t *quotient_out);
+
+/* ============================================================================
  * Generic alpha-fold accumulator (folder.rs:59-84, 215-228).
  *
  * The AIR-independent fold state. S4 supplies the trace window + selectors +
@@ -152,9 +205,12 @@ dnac_stark_verify_status_t dnac_stark_final_check(gold_fp2_t folded,
  * way (the pointer is fixed per AIR at compile time).
  * ========================================================================== */
 
-/** Largest main-trace width the glue's zero-window buffer supports
- *  (fib/square = 2; the future combined range_proof_air = 66). */
-#define DNAC_STARK_MAX_MAIN_WIDTH ((size_t)256)
+/** Largest main-trace width the glue's zero-window buffer supports.
+ *  Raised 256 -> 640 (2026-07-15) for the B1 Stage-2 combined confidential AIR
+ *  (CONF_ROOT_WIDTH = 614; the header stays AIR-agnostic — do not include
+ *  conf_root_air.h here). Exactly two use sites, both fail-closed: the
+ *  shape-guard reject and the zero-window stack buffer (~10 KB at 640). */
+#define DNAC_STARK_MAX_MAIN_WIDTH ((size_t)640)
 
 /** One captured fold step (test instrumentation only). */
 typedef struct {
@@ -224,6 +280,33 @@ dnac_stark_verify_status_t dnac_stark_verify_constraints(
     size_t base_degree_bits,
     gold_fp2_t alpha,
     const gold_fp2_t quotient_chunk[2]);
+
+/**
+ * @brief N-chunk generalization of dnac_stark_verify_constraints (B1 Stage-2,
+ *        is_zk=1 / num_qc=8): N-chunk recompose (verifier.rs:59-96,463-467) ->
+ *        selectors at base_degree_bits = degree_bits - is_zk (verifier.rs:303,
+ *        488) -> air_eval alpha-fold -> final OOD check. The num_qc=1 entry
+ *        point above is UNCHANGED (existing KATs).
+ *
+ * @param degree_bits  Proof degree_bits INCLUDING is_zk (selectors use
+ *                     degree_bits - is_zk; chunk domains use degree_bits +
+ *                     log_num_qc — two DIFFERENT sizes, per verifier.rs:303 vs
+ *                     :305-311).
+ * @param chunks       Flattened [num_qc][chunk_stride] opened chunk values; only
+ *                     the first 2 of each chunk are read.
+ * @return DNAC_STARK_VERIFY_OK | _ERR_SHAPE | _ERR_OOD_MISMATCH (fail-close).
+ */
+dnac_stark_verify_status_t dnac_stark_verify_constraints_nchunk(
+    const dnac_stark_air_t *air,
+    const gold_fp2_t *trace_local, size_t trace_local_len,
+    const gold_fp2_t *trace_next, size_t trace_next_len,
+    const gold_fp_t *public_values, size_t num_public_values,
+    gold_fp2_t zeta,
+    size_t degree_bits,
+    size_t log_num_qc,
+    size_t is_zk,
+    gold_fp2_t alpha,
+    const gold_fp2_t *chunks, size_t num_qc, size_t chunk_stride);
 
 #ifdef __cplusplus
 }
