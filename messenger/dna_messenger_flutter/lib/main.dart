@@ -12,9 +12,11 @@ import 'package:url_launcher/url_launcher.dart';
 
 import 'ffi/dna_engine.dart' show DhtConnectedEvent;
 import 'l10n/app_localizations.dart';
+import 'providers/call_provider.dart';
 import 'providers/portfolio_history_provider.dart';
 import 'providers/providers.dart';
 import 'providers/version_check_provider.dart';
+import 'screens/call/call_screen.dart';
 import 'screens/screens.dart';
 import 'screens/lock/lock_screen.dart';
 import 'screens/update_required_screen.dart';
@@ -94,7 +96,28 @@ class DnaMessengerApp extends ConsumerWidget {
       locale: locale,
       navigatorObservers: [routeObserver],
       home: const _AppLoader(),
+      builder: (context, child) {
+        // Full-screen call UI overlays the whole app while a call is active.
+        return Stack(
+          children: [
+            child ?? const SizedBox.shrink(),
+            const _CallOverlay(),
+          ],
+        );
+      },
     );
+  }
+}
+
+/// Renders the full-screen call UI on top of everything while a call exists.
+class _CallOverlay extends ConsumerWidget {
+  const _CallOverlay();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final session = ref.watch(callProvider);
+    if (session == null) return const SizedBox.shrink();
+    return const Positioned.fill(child: CallScreen());
   }
 }
 

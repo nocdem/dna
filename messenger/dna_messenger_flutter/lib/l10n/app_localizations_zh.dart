@@ -2036,4 +2036,28 @@ class AppLocalizationsZh extends AppLocalizations {
   @override
   String get validatorUnstakeFailed =>
       'Couldn\'t shut down — please try again.';
+
+  @override
+  String get callStart => 'Call';
+
+  @override
+  String get callIncoming => 'Incoming call';
+
+  @override
+  String get callCalling => 'Calling…';
+
+  @override
+  String get callConnected => 'Connected';
+
+  @override
+  String get callEnded => 'Call ended';
+
+  @override
+  String get callAnswer => 'Answer';
+
+  @override
+  String get callDecline => 'Decline';
+
+  @override
+  String get callEnd => 'End';
 }

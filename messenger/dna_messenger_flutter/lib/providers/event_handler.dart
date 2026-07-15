@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'dart:ui' show Locale;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../ffi/dna_engine.dart';
+import 'call_provider.dart';
 import '../models/media_ref.dart';
 import '../platform/platform_handler.dart';
 import '../services/media_cache_service.dart';
@@ -206,6 +207,17 @@ class EventHandler {
         _ref.read(contactsProvider.notifier).updateContactStatus(fp, false);
         // Also update selectedContactProvider if this contact is selected
         _updateSelectedContactPresence(fp, false);
+
+      case CallIncomingEvent(callId: final id, peerFingerprint: final fp):
+        _ref.read(callProvider.notifier).onIncoming(id, fp);
+
+      case CallStateEvent(
+          callId: final id,
+          peerFingerprint: final fp,
+          state: final st,
+          isIncoming: final inc
+        ):
+        _ref.read(callProvider.notifier).onStateChanged(id, fp, st, inc);
 
       case MessageReceivedEvent(message: final msg):
         // Groups UI disabled — skip group invitation messages

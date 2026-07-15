@@ -1121,6 +1121,29 @@ class OutboxUpdatedEvent extends DnaEvent {
   OutboxUpdatedEvent(this.contactFingerprint);
 }
 
+/// Incoming PQ VoIP call (INVITE) — show the ring UI (Faz A).
+class CallIncomingEvent extends DnaEvent {
+  final String callId;           // 32 hex chars
+  final String peerFingerprint;  // caller's 128-hex fingerprint
+  CallIncomingEvent(this.callId, this.peerFingerprint);
+}
+
+/// PQ VoIP call state changed. state: 0=ringing, 1=active, 2=ended.
+class CallStateEvent extends DnaEvent {
+  final String callId;
+  final String peerFingerprint;
+  final int state;        // DnaCallState.ringing/active/ended
+  final bool isIncoming;  // true = they called us
+  CallStateEvent(this.callId, this.peerFingerprint, this.state, this.isIncoming);
+}
+
+/// Call UI state constants (mirror dna_call_ui_state_t in dna_engine.h).
+abstract class DnaCallState {
+  static const int ringing = 0;
+  static const int active = 1;
+  static const int ended = 2;
+}
+
 /// Contact request received event - someone sent us a contact request
 class ContactRequestReceivedEvent extends DnaEvent {}
 
@@ -1924,6 +1947,33 @@ class DnaEngine {
         }
         dartEvent = MediaUploadProgressEvent(bytesSent, totalBytes, requestId);
         break;
+      case DnaEventType.DNA_EVENT_CALL_INCOMING:
+      case DnaEventType.DNA_EVENT_CALL_STATE: {
+        // Union `call` layout: call_id[33] @0, peer_fp[129] @33, int state @164,
+        // int reason @168, bool is_incoming @172 (see dna_event_t in dna_engine.h).
+        final idB = <int>[];
+        for (var i = 0; i < 32; i++) {
+          final b = event.data[i];
+          if (b == 0) break;
+          idB.add(b);
+        }
+        final fpB = <int>[];
+        for (var i = 33; i < 161; i++) {
+          final b = event.data[i];
+          if (b == 0) break;
+          fpB.add(b);
+        }
+        final callId = String.fromCharCodes(idB);
+        final peerFp = String.fromCharCodes(fpB);
+        if (type == DnaEventType.DNA_EVENT_CALL_INCOMING) {
+          dartEvent = CallIncomingEvent(callId, peerFp);
+        } else {
+          final state = event.data[164];
+          final isIncoming = event.data[172] != 0;
+          dartEvent = CallStateEvent(callId, peerFp, state, isIncoming);
+        }
+        break;
+      }
       case DnaEventType.DNA_EVENT_ERROR:
         dartEvent = ErrorEvent(0, 'Error occurred');
         break;
@@ -2821,6 +2871,51 @@ class DnaEngine {
       return _bindings.dna_engine_is_following(_engine, fpPtr.cast());
     } finally {
       calloc.free(fpPtr);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // PQ VoIP calls (Faz A — signaling + key agreement; media is Faz B).
+  // Incoming calls arrive as CallIncomingEvent / CallStateEvent on `events`.
+  // ---------------------------------------------------------------------------
+
+  /// Place a call to a contact (by 128-hex fingerprint). Returns true on success.
+  bool callInvite(String peerFingerprint) {
+    final p = peerFingerprint.toNativeUtf8();
+    try {
+      return _bindings.dna_engine_call_invite(_engine, p.cast()) == 0;
+    } finally {
+      calloc.free(p);
+    }
+  }
+
+  /// Answer a ringing call (by 32-hex call id).
+  bool callAccept(String callId) {
+    final p = callId.toNativeUtf8();
+    try {
+      return _bindings.dna_engine_call_accept(_engine, p.cast()) == 0;
+    } finally {
+      calloc.free(p);
+    }
+  }
+
+  /// Decline a ringing call.
+  bool callReject(String callId) {
+    final p = callId.toNativeUtf8();
+    try {
+      return _bindings.dna_engine_call_reject(_engine, p.cast()) == 0;
+    } finally {
+      calloc.free(p);
+    }
+  }
+
+  /// End an active or outgoing call.
+  bool callHangup(String callId) {
+    final p = callId.toNativeUtf8();
+    try {
+      return _bindings.dna_engine_call_hangup(_engine, p.cast()) == 0;
+    } finally {
+      calloc.free(p);
     }
   }
 

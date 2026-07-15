@@ -26,6 +26,7 @@ import 'widgets/message_bubble.dart';
 import 'widgets/message_overlay_controller.dart';
 import 'widgets/reaction_chips.dart';
 import '../../providers/reaction_provider.dart';
+import '../../providers/call_provider.dart';
 
 class ChatScreen extends ConsumerStatefulWidget {
   const ChatScreen({super.key});
@@ -436,6 +437,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   ),
               ]
             : [
+                // Call button (PQ VoIP — Faz A)
+                IconButton(
+                  icon: const FaIcon(FontAwesomeIcons.phone),
+                  tooltip: AppLocalizations.of(context).callStart,
+                  onPressed: () =>
+                      ref.read(callProvider.notifier).call(contact.fingerprint),
+                ),
                 // Search button
                 IconButton(
                   icon: const FaIcon(FontAwesomeIcons.magnifyingGlass),

@@ -159,11 +159,29 @@ inner-signed (`dna_call_sign_body` with the local `identity.dsa`) and sent via
 decrypted `type:"call_signal"` body and hands it to `dna_calls_handle_incoming`, then returns
 before `message_backup_save` — so call signals never render as chat.
 
+**UI events.** The module dispatches engine events for the app:
+- `DNA_EVENT_CALL_INCOMING` — an INVITE arrived (show the ring UI). `data.call`: `call_id`,
+  `peer_fp`.
+- `DNA_EVENT_CALL_STATE` — call state changed. `data.call`: `call_id`, `peer_fp`,
+  `state` (`dna_call_ui_state_t`: 0=ringing, 1=active, 2=ended), `is_incoming`.
+
+## 5. Flutter integration (Faz A UI)
+
+FFI: `DnaEngine.callInvite/callAccept/callReject/callHangup` (in `lib/ffi/dna_engine.dart`,
+bound in `dna_bindings.dart`). Incoming calls + state changes surface as `CallIncomingEvent` /
+`CallStateEvent` on the `DnaEngine.events` stream. `lib/providers/call_provider.dart`
+(`callProvider`, a `NotifierProvider<CallNotifier, CallSession?>`) holds the single active call
+and is driven by those events (routed in `event_handler.dart`). `lib/screens/call/call_screen.dart`
+is the full-screen call UI, overlaid over the whole app by a `builder` in `main.dart` while a call
+exists; the chat screen's phone button starts a call. Strings are localized (`callIncoming`,
+`callCalling`, `callConnected`, `callAnswer`, `callDecline`, `callEnd`, `callStart`); no crypto
+terms in the UI. Media (voice) is Faz B — "Connected" means the secure channel is established.
+
 **Related — F-SIG (observe-only, phase 1):** the transport now also verifies the Seal signature
 over the plaintext of *every* inbound message against the sender's cached Dilithium pubkey and
 logs a warning on mismatch (never drops yet). Enforcement is a device-tested phase 2.
 
-## 5. Tests
+## 6. Tests
 
 | File | Covers |
 |------|--------|

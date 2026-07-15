@@ -718,7 +718,9 @@ abstract class DnaEventType {
   static const int DNA_EVENT_CHANNEL_NEW_POST = 21;  // New post in subscribed channel
   static const int DNA_EVENT_CHANNEL_SUBS_SYNCED = 22;  // Channel subscriptions synced from DHT
   static const int DNA_EVENT_MEDIA_UPLOAD_PROGRESS = 23;  // Media upload byte progress
-  static const int DNA_EVENT_ERROR = 24;
+  static const int DNA_EVENT_CALL_INCOMING = 24;  // Incoming PQ VoIP call (INVITE) — ring UI
+  static const int DNA_EVENT_CALL_STATE = 25;  // Call state changed (ringing/active/ended)
+  static const int DNA_EVENT_ERROR = 26;
 }
 
 /// Event data union - message received
@@ -2187,6 +2189,31 @@ class DnaBindings {
     return _dna_engine_send_message(
         engine, recipient_fingerprint, message, callback, user_data);
   }
+
+  // PQ VoIP calls (Faz A): invite/accept/reject/hangup — int (0 ok, <0 err).
+  late final _dna_engine_call_invite = _lib.lookupFunction<
+      Int32 Function(Pointer<dna_engine_t>, Pointer<Utf8>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>)>('dna_engine_call_invite');
+  int dna_engine_call_invite(Pointer<dna_engine_t> engine, Pointer<Utf8> peerFp) =>
+      _dna_engine_call_invite(engine, peerFp);
+
+  late final _dna_engine_call_accept = _lib.lookupFunction<
+      Int32 Function(Pointer<dna_engine_t>, Pointer<Utf8>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>)>('dna_engine_call_accept');
+  int dna_engine_call_accept(Pointer<dna_engine_t> engine, Pointer<Utf8> callId) =>
+      _dna_engine_call_accept(engine, callId);
+
+  late final _dna_engine_call_reject = _lib.lookupFunction<
+      Int32 Function(Pointer<dna_engine_t>, Pointer<Utf8>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>)>('dna_engine_call_reject');
+  int dna_engine_call_reject(Pointer<dna_engine_t> engine, Pointer<Utf8> callId) =>
+      _dna_engine_call_reject(engine, callId);
+
+  late final _dna_engine_call_hangup = _lib.lookupFunction<
+      Int32 Function(Pointer<dna_engine_t>, Pointer<Utf8>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>)>('dna_engine_call_hangup');
+  int dna_engine_call_hangup(Pointer<dna_engine_t> engine, Pointer<Utf8> callId) =>
+      _dna_engine_call_hangup(engine, callId);
 
   late final _dna_engine_send_reaction = _lib.lookupFunction<
       Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<Utf8>,

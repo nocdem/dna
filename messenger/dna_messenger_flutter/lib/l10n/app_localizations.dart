@@ -3853,6 +3853,54 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Couldn\'t shut down — please try again.'**
   String get validatorUnstakeFailed;
+
+  /// No description provided for @callStart.
+  ///
+  /// In en, this message translates to:
+  /// **'Call'**
+  String get callStart;
+
+  /// No description provided for @callIncoming.
+  ///
+  /// In en, this message translates to:
+  /// **'Incoming call'**
+  String get callIncoming;
+
+  /// No description provided for @callCalling.
+  ///
+  /// In en, this message translates to:
+  /// **'Calling…'**
+  String get callCalling;
+
+  /// No description provided for @callConnected.
+  ///
+  /// In en, this message translates to:
+  /// **'Connected'**
+  String get callConnected;
+
+  /// No description provided for @callEnded.
+  ///
+  /// In en, this message translates to:
+  /// **'Call ended'**
+  String get callEnded;
+
+  /// No description provided for @callAnswer.
+  ///
+  /// In en, this message translates to:
+  /// **'Answer'**
+  String get callAnswer;
+
+  /// No description provided for @callDecline.
+  ///
+  /// In en, this message translates to:
+  /// **'Decline'**
+  String get callDecline;
+
+  /// No description provided for @callEnd.
+  ///
+  /// In en, this message translates to:
+  /// **'End'**
+  String get callEnd;
 }
 
 class _AppLocalizationsDelegate

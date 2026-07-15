@@ -1080,5 +1080,13 @@
   "validatorUnstakeConfirmBody": "This cannot be undone. Your self-stake will come back after the cool-down and your supporters will have their stake returned.",
   "validatorUnstakeConfirmAction": "Yes, shut down",
   "validatorUnstakeSuccess": "Witness shutting down.",
-  "validatorUnstakeFailed": "Couldn't shut down — please try again."
+  "validatorUnstakeFailed": "Couldn't shut down — please try again.",
+  "callStart": "Call",
+  "callIncoming": "Incoming call",
+  "callCalling": "Calling…",
+  "callConnected": "Connected",
+  "callEnded": "Call ended",
+  "callAnswer": "Answer",
+  "callDecline": "Decline",
+  "callEnd": "End"
 }

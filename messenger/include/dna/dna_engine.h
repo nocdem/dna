@@ -805,6 +805,8 @@ typedef enum {
     DNA_EVENT_CHANNEL_NEW_POST,          /* New post in subscribed channel */
     DNA_EVENT_CHANNEL_SUBS_SYNCED,       /* Channel subscriptions synced from DHT */
     DNA_EVENT_MEDIA_UPLOAD_PROGRESS,     /* Media upload byte progress (v0.9.151+) */
+    DNA_EVENT_CALL_INCOMING,             /* Incoming PQ VoIP call (INVITE) — show ring UI (Faz A) */
+    DNA_EVENT_CALL_STATE,                /* Call state changed (ringing/active/ended) (Faz A) */
     DNA_EVENT_ERROR
 } dna_event_type_t;
 
@@ -881,6 +883,13 @@ typedef struct {
             uint64_t total_bytes;
             uint64_t request_id;            /* Matches the upload request ID */
         } media_upload_progress;
+        struct {
+            char call_id[33];               /* 32 hex + null */
+            char peer_fp[129];              /* Caller/callee fingerprint (128 hex + null) */
+            int  state;                     /* dna_call_ui_state_t (for DNA_EVENT_CALL_STATE) */
+            int  reason;                    /* REJECT/BUSY/END reason code (0 if n/a) */
+            bool is_incoming;               /* true = they called us (ring); false = our outgoing call */
+        } call;
         struct {
             int code;
             char message[256];
@@ -1727,6 +1736,13 @@ DNA_API dna_request_id_t dna_engine_send_message(
  * PQ VoIP CALLS (Faz A — signaling + key agreement; media is Faz B)
  * Full reference: docs/functions/calls.md, PROTOCOL.md §9.
  * ============================================================================ */
+
+/* Call state reported to the UI via DNA_EVENT_CALL_STATE. */
+typedef enum {
+    DNA_CALL_UI_RINGING = 0,   /* outgoing: peer is ringing / incoming: awaiting local answer */
+    DNA_CALL_UI_ACTIVE  = 1,   /* call connected (key agreed; media is Faz B) */
+    DNA_CALL_UI_ENDED   = 2    /* call ended (hangup / reject / busy / timeout / peer end) */
+} dna_call_ui_state_t;
 
 /* Place a call to a contact (by 128-hex fingerprint). Sends a signed INVITE
  * over the Seal channel. Returns 0 on success, negative on error. */

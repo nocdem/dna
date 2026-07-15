@@ -2070,4 +2070,28 @@ class AppLocalizationsTr extends AppLocalizations {
 
   @override
   String get validatorUnstakeFailed => 'Kapatılamadı — lütfen tekrar deneyin.';
+
+  @override
+  String get callStart => 'Ara';
+
+  @override
+  String get callIncoming => 'Gelen arama';
+
+  @override
+  String get callCalling => 'Aranıyor…';
+
+  @override
+  String get callConnected => 'Bağlandı';
+
+  @override
+  String get callEnded => 'Arama bitti';
+
+  @override
+  String get callAnswer => 'Cevapla';
+
+  @override
+  String get callDecline => 'Reddet';
+
+  @override
+  String get callEnd => 'Bitir';
 }

@@ -629,5 +629,13 @@
   "validatorUnstakeConfirmBody": "Bu işlem geri alınamaz. Kendi bağlı tutarınız bekleme süresinden sonra geri gelir ve destekçilerinizin tutarları iade edilir.",
   "validatorUnstakeConfirmAction": "Evet, kapat",
   "validatorUnstakeSuccess": "Tanık kapanıyor.",
-  "validatorUnstakeFailed": "Kapatılamadı — lütfen tekrar deneyin."
+  "validatorUnstakeFailed": "Kapatılamadı — lütfen tekrar deneyin.",
+  "callStart": "Ara",
+  "callIncoming": "Gelen arama",
+  "callCalling": "Aranıyor…",
+  "callConnected": "Bağlandı",
+  "callEnded": "Arama bitti",
+  "callAnswer": "Cevapla",
+  "callDecline": "Reddet",
+  "callEnd": "Bitir"
 }

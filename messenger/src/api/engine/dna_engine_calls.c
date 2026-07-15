@@ -196,6 +196,22 @@ done:
     return rc;
 }
 
+/* Emit a call event to the UI (call OUTSIDE the orchestrator mutex). */
+static void emit_call_event(dna_engine_t *engine, dna_event_type_t type,
+                            const char *call_id_hex, const char *peer_fp,
+                            int state, int reason, int is_incoming)
+{
+    dna_event_t ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.type = type;
+    snprintf(ev.data.call.call_id, sizeof(ev.data.call.call_id), "%s", call_id_hex ? call_id_hex : "");
+    snprintf(ev.data.call.peer_fp, sizeof(ev.data.call.peer_fp), "%s", peer_fp ? peer_fp : "");
+    ev.data.call.state = state;
+    ev.data.call.reason = reason;
+    ev.data.call.is_incoming = is_incoming ? true : false;
+    dna_dispatch_event(engine, &ev);
+}
+
 /* ---- incoming ---- */
 
 void dna_calls_handle_incoming(dna_engine_t *engine, const char *sender_fp, const char *body)
@@ -238,6 +254,7 @@ void dna_calls_handle_incoming(dna_engine_t *engine, const char *sender_fp, cons
 
     dna_call_signal_t out = {0};
     int do_send = 0;
+    int emit_type = 0, emit_state = 0, emit_incoming = 0;   /* UI event to fire after unlock */
     char peer_hex[129];
     strncpy(peer_hex, sender_fp, sizeof(peer_hex) - 1);
     peer_hex[sizeof(peer_hex) - 1] = '\0';
@@ -252,6 +269,8 @@ void dna_calls_handle_incoming(dna_engine_t *engine, const char *sender_fp, cons
             out.call_id_hex = p.call_id_hex;
             out.seq = k->tx_seq++;
             do_send = 1;
+            emit_type = DNA_EVENT_CALL_INCOMING;   /* ring UI */
+            emit_incoming = 1;
         }
         break;
     }
@@ -276,11 +295,15 @@ void dna_calls_handle_incoming(dna_engine_t *engine, const char *sender_fp, cons
             qgp_secure_memzero(ss_eph, 32); qgp_secure_memzero(ss_static, 32);
             QGP_LOG_INFO(LOG_TAG, "call %.16s... connected (K_call agreed, media=Faz B)", p.call_id_hex);
         }
+        emit_type = DNA_EVENT_CALL_STATE;
+        emit_state = DNA_CALL_UI_ACTIVE;   /* our outgoing call connected */
         break;
     }
     case CALL_ACT_TEARDOWN:
         ks_free(c, idraw);
         QGP_LOG_INFO(LOG_TAG, "call %.16s... ended by peer", p.call_id_hex);
+        emit_type = DNA_EVENT_CALL_STATE;
+        emit_state = DNA_CALL_UI_ENDED;
         break;
     default:
         break;
@@ -288,6 +311,9 @@ void dna_calls_handle_incoming(dna_engine_t *engine, const char *sender_fp, cons
     pthread_mutex_unlock(&c->mu);
 
     if (do_send) build_sign_send(engine, peer_hex, &out);
+    if (emit_type)
+        emit_call_event(engine, (dna_event_type_t)emit_type, p.call_id_hex,
+                        peer_hex, emit_state, 0, emit_incoming);
 }
 
 /* ---- user actions ---- */
@@ -321,7 +347,11 @@ int dna_engine_call_invite(dna_engine_t *engine, const char *peer_fp)
     pthread_mutex_unlock(&c->mu);
 
     if (!do_send) return -1;
-    return build_sign_send(engine, peer_fp, &out);
+    int rc = build_sign_send(engine, peer_fp, &out);
+    if (rc == 0)
+        emit_call_event(engine, DNA_EVENT_CALL_STATE, id_hex, peer_fp,
+                        DNA_CALL_UI_RINGING, 0, 0);   /* outgoing "Calling…" */
+    return rc;
 }
 
 int dna_engine_call_accept(dna_engine_t *engine, const char *call_id_hex)
@@ -371,6 +401,9 @@ int dna_engine_call_accept(dna_engine_t *engine, const char *call_id_hex)
     pthread_mutex_unlock(&c->mu);
 
     if (do_send) build_sign_send(engine, peer_hex, &out);
+    if (rc == 0)
+        emit_call_event(engine, DNA_EVENT_CALL_STATE, call_id_hex, peer_hex,
+                        DNA_CALL_UI_ACTIVE, 0, 1);   /* we answered → connected */
     return rc;
 }
 
@@ -402,6 +435,8 @@ static int user_end(dna_engine_t *engine, const char *call_id_hex,
     pthread_mutex_unlock(&c->mu);
 
     if (do_send && peer_hex[0]) build_sign_send(engine, peer_hex, &out);
+    emit_call_event(engine, DNA_EVENT_CALL_STATE, call_id_hex, peer_hex,
+                    DNA_CALL_UI_ENDED, 0, 0);
     return 0;
 }
 
