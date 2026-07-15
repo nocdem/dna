@@ -1108,6 +1108,20 @@ int nodus_circuit_open_e2e(nodus_client_t *client, const nodus_key_t *peer_fp,
                             void *user,
                             nodus_circuit_handle_t **out);
 
+/**
+ * Open a circuit keyed by an EXTERNALLY-agreed 32-byte secret (K_call from call
+ * signaling, PQ VoIP Faz A). No in-circuit Kyber handshake: a plain circ_open is
+ * sent and every circ_data payload is AES-256-GCM under a key derived from
+ * k_call + (caller_fp, callee_fp). The peer answers with nodus_circuit_attach_keyed
+ * using the same k_call. Use this for media once K_call is agreed out-of-band.
+ */
+int nodus_circuit_open_keyed(nodus_client_t *client, const nodus_key_t *peer_fp,
+                             const uint8_t k_call[32],
+                             nodus_circuit_data_cb on_data,
+                             nodus_circuit_close_cb on_close,
+                             void *user,
+                             nodus_circuit_handle_t **out);
+
 /** Register global callback for inbound circuits from peers. */
 void nodus_circuit_set_inbound_cb(nodus_client_t *client,
                                     nodus_circuit_inbound_cb cb, void *user);
@@ -1117,6 +1131,20 @@ int nodus_circuit_attach(nodus_circuit_handle_t *h,
                           nodus_circuit_data_cb on_data,
                           nodus_circuit_close_cb on_close,
                           void *user);
+
+/**
+ * Attach to an inbound circuit and key it with an externally-agreed K_call
+ * (call-signaling secret, Faz A) — the callee counterpart of
+ * nodus_circuit_open_keyed. caller_fp is the originator from the inbound
+ * callback. Both ends derive the identical channel key from k_call +
+ * (caller_fp, callee_fp), so subsequent circ_data is E2E AES-256-GCM.
+ */
+int nodus_circuit_attach_keyed(nodus_circuit_handle_t *h,
+                               const nodus_key_t *caller_fp,
+                               const uint8_t k_call[32],
+                               nodus_circuit_data_cb on_data,
+                               nodus_circuit_close_cb on_close,
+                               void *user);
 
 /** Send data through circuit. Returns 0 on success. */
 int nodus_circuit_send(nodus_circuit_handle_t *h,

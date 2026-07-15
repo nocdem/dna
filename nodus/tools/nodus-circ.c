@@ -32,6 +32,11 @@
 static const uint8_t SEED_CALLER[32] = { [0 ... 31] = 0x11 };
 static const uint8_t SEED_CALLEE[32] = { [0 ... 31] = 0x22 };
 
+/* Keyed mode (-k): a fixed pre-agreed K_call, as if agreed via call signaling
+ * (Faz A). Exercises nodus_circuit_open_keyed / nodus_circuit_attach_keyed. */
+static const uint8_t TEST_K_CALL[32] = { [0 ... 31] = 0xC7 };
+static int g_keyed = 0;
+
 #define PROBE_LEN 12   /* [seq u32 LE][send_ts_us u64 LE] */
 
 static uint64_t now_us(void)
@@ -60,9 +65,14 @@ static void callee_on_inbound(struct nodus_client *client, const nodus_key_t *pe
                               nodus_circuit_handle_t *h, void *user)
 {
     (void)client; (void)user;
-    printf("[callee] inbound circuit from %02x%02x%02x%02x...  (accepting, echo mode)\n",
-           peer_fp->bytes[0], peer_fp->bytes[1], peer_fp->bytes[2], peer_fp->bytes[3]);
-    nodus_circuit_attach(h, callee_on_data, callee_on_close, NULL);
+    printf("[callee] inbound circuit from %02x%02x%02x%02x...  (accepting, %s echo mode)\n",
+           peer_fp->bytes[0], peer_fp->bytes[1], peer_fp->bytes[2], peer_fp->bytes[3],
+           g_keyed ? "keyed" : "e2e/plain");
+    if (g_keyed)
+        nodus_circuit_attach_keyed(h, peer_fp, TEST_K_CALL,
+                                   callee_on_data, callee_on_close, NULL);
+    else
+        nodus_circuit_attach(h, callee_on_data, callee_on_close, NULL);
 }
 
 /* ── caller (RTT) ── */
@@ -125,8 +135,9 @@ int main(int argc, char **argv)
     uint16_t port = 4001;
     int count = 50;
     int opt;
-    while ((opt = getopt(argc, argv, "+s:n:h")) != -1) {
+    while ((opt = getopt(argc, argv, "+s:n:kh")) != -1) {
         switch (opt) {
+        case 'k': g_keyed = 1; break;
         case 's': {
             char *c = strchr(optarg, ':');
             static char host[256];
@@ -164,8 +175,11 @@ int main(int argc, char **argv)
                id_caller.fingerprint, id_callee.fingerprint);
 
         nodus_circuit_handle_t *h = NULL;
-        int rc = nodus_circuit_open_e2e(&client, &id_callee.node_id, id_callee.kyber_pk,
-                                        caller_on_data, caller_on_close, NULL, &h);
+        int rc = g_keyed
+            ? nodus_circuit_open_keyed(&client, &id_callee.node_id, TEST_K_CALL,
+                                       caller_on_data, caller_on_close, NULL, &h)
+            : nodus_circuit_open_e2e(&client, &id_callee.node_id, id_callee.kyber_pk,
+                                     caller_on_data, caller_on_close, NULL, &h);
         if (rc != 0 || !h) { fprintf(stderr, "circuit open failed (rc=%d) — callee online?\n", rc); return 1; }
         printf("[caller] circuit open. sending %d probes...\n", count);
 

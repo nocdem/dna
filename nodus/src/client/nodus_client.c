@@ -4818,11 +4818,17 @@ int nodus_ch_conn_unsubscribe(nodus_ch_conn_t *ch,
 
 /* ── Circuit operations (Faz 1) ─────────────────────────────────── */
 
-int nodus_circuit_open(nodus_client_t *client, const nodus_key_t *peer_fp,
-                        nodus_circuit_data_cb on_data,
-                        nodus_circuit_close_cb on_close,
-                        void *user,
-                        nodus_circuit_handle_t **out) {
+/* Shared body for plain and keyed circuit open. k_call != NULL enables the
+ * per-circuit E2E channel crypto using that externally-agreed 32-byte secret
+ * (from call signaling, Faz A) — no in-circuit Kyber handshake; a plain
+ * circ_open is sent and every circ_data payload is transparently AES-256-GCM
+ * encrypted. k_call == NULL is a plaintext relay (relay sees cleartext). */
+static int circuit_open_impl(nodus_client_t *client, const nodus_key_t *peer_fp,
+                             const uint8_t *k_call,
+                             nodus_circuit_data_cb on_data,
+                             nodus_circuit_close_cb on_close,
+                             void *user,
+                             nodus_circuit_handle_t **out) {
     if (!client || !peer_fp || !out) return -1;
     if (!nodus_client_is_ready(client)) return -1;
 
@@ -4845,6 +4851,22 @@ int nodus_circuit_open(nodus_client_t *client, const nodus_key_t *peer_fp,
     h->on_data = on_data;
     h->on_close = on_close;
     h->user = user;
+
+    /* Keyed E2E: derive the per-circuit channel key from the pre-agreed K_call.
+     * Nonces = (caller_fp, callee_fp), matching the inbound side (see
+     * nodus_circuit_attach_keyed and the circ_inbound e2e path). */
+    if (k_call) {
+        uint8_t nc[32], ns[32];
+        memcpy(nc, client->identity.node_id.bytes, 32);  /* own = caller */
+        memcpy(ns, peer_fp->bytes, 32);                    /* peer = callee */
+        if (nodus_channel_crypto_init(&h->e2e_crypto, k_call, nc, ns) != 0) {
+            pthread_mutex_lock(&client->circuits_mutex);
+            h->in_use = false;
+            pthread_mutex_unlock(&client->circuits_mutex);
+            return -1;
+        }
+        h->e2e_active = true;
+    }
 
     uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
     nodus_pending_t *req = alloc_pending(client, txn);
@@ -4906,6 +4928,24 @@ int nodus_circuit_open(nodus_client_t *client, const nodus_key_t *peer_fp,
 
     *out = h;
     return 0;
+}
+
+int nodus_circuit_open(nodus_client_t *client, const nodus_key_t *peer_fp,
+                        nodus_circuit_data_cb on_data,
+                        nodus_circuit_close_cb on_close,
+                        void *user,
+                        nodus_circuit_handle_t **out) {
+    return circuit_open_impl(client, peer_fp, NULL, on_data, on_close, user, out);
+}
+
+int nodus_circuit_open_keyed(nodus_client_t *client, const nodus_key_t *peer_fp,
+                             const uint8_t k_call[32],
+                             nodus_circuit_data_cb on_data,
+                             nodus_circuit_close_cb on_close,
+                             void *user,
+                             nodus_circuit_handle_t **out) {
+    if (!k_call) return -1;
+    return circuit_open_impl(client, peer_fp, k_call, on_data, on_close, user, out);
 }
 
 int nodus_circuit_open_e2e(nodus_client_t *client, const nodus_key_t *peer_fp,
@@ -5034,6 +5074,27 @@ int nodus_circuit_attach(nodus_circuit_handle_t *h,
                           nodus_circuit_close_cb on_close,
                           void *user) {
     if (!h || !h->in_use) return -1;
+    h->on_data = on_data;
+    h->on_close = on_close;
+    h->user = user;
+    return 0;
+}
+
+int nodus_circuit_attach_keyed(nodus_circuit_handle_t *h,
+                               const nodus_key_t *caller_fp,
+                               const uint8_t k_call[32],
+                               nodus_circuit_data_cb on_data,
+                               nodus_circuit_close_cb on_close,
+                               void *user) {
+    if (!h || !h->in_use || !caller_fp || !k_call || !h->client) return -1;
+    /* Callee side: use the pre-agreed K_call (from signaling) as the per-circuit
+     * channel secret. Nonces = (caller_fp, callee_fp) — same order the caller's
+     * nodus_circuit_open_keyed uses, so both ends derive the identical key. */
+    uint8_t nc[32], ns[32];
+    memcpy(nc, caller_fp->bytes, 32);                          /* caller */
+    memcpy(ns, h->client->identity.node_id.bytes, 32);         /* us = callee */
+    if (nodus_channel_crypto_init(&h->e2e_crypto, k_call, nc, ns) != 0) return -1;
+    h->e2e_active = true;
     h->on_data = on_data;
     h->on_close = on_close;
     h->user = user;

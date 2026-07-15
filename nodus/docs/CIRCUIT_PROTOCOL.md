@@ -311,6 +311,20 @@ int  nodus_circuit_open_e2e(nodus_client_t *client, const nodus_key_t *peer_fp,
                             void *user,
                             nodus_circuit_handle_t **out);
 
+int  nodus_circuit_open_keyed(nodus_client_t *client, const nodus_key_t *peer_fp,
+                              const uint8_t k_call[32],
+                              nodus_circuit_data_cb  on_data,
+                              nodus_circuit_close_cb on_close,
+                              void *user,
+                              nodus_circuit_handle_t **out);
+
+int  nodus_circuit_attach_keyed(nodus_circuit_handle_t *h,
+                                const nodus_key_t *caller_fp,
+                                const uint8_t k_call[32],
+                                nodus_circuit_data_cb  on_data,
+                                nodus_circuit_close_cb on_close,
+                                void *user);
+
 void nodus_circuit_set_inbound_cb(nodus_client_t *client,
                                   nodus_circuit_inbound_cb cb, void *user);
 
@@ -331,6 +345,13 @@ int  nodus_circuit_close(nodus_circuit_handle_t *h);
 - `nodus_circuit_open_e2e` — same as above but Kyber1024-encapsulates to
   `peer_kyber_pk` and sends the ciphertext as `ect`; all `circ_data` payloads on
   the handle are transparently AES-256-GCM encrypted/decrypted (see § 3.3).
+- `nodus_circuit_open_keyed` / `nodus_circuit_attach_keyed` — E2E using an
+  **externally-agreed 32-byte `K_call`** (from PQ VoIP call signaling, Faz A)
+  instead of an in-circuit Kyber handshake. A plain `circ_open` is sent (no
+  `ect`); both ends derive the identical channel key from `K_call` +
+  `(caller_fp, callee_fp)` via `nodus_channel_crypto_init`, so `circ_data` is
+  transparently AES-256-GCM. This is the media substrate for VoIP Faz B (media
+  keyed by the call's agreed secret). No new wire format; relay stays blind.
 - `nodus_circuit_set_inbound_cb` — install the process-wide callback invoked when
   an incoming `circ_inbound` arrives; callback receives an unattached handle.
 - `nodus_circuit_attach` — bind data/close callbacks to an inbound handle (must
