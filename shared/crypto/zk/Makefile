@@ -95,6 +95,7 @@ TESTS = \
     $(BUILD)/test_range_proof_air \
     $(BUILD)/test_conf_root_verify \
     $(BUILD)/test_prover_conf \
+    $(BUILD)/test_prover_salted_commit \
     $(BUILD)/test_zk_entropy \
     $(BUILD)/test_prover_trace \
     $(BUILD)/test_prover_s2_lde \
@@ -398,6 +399,9 @@ $(BUILD)/test_zk_entropy: tests/test_zk_entropy.c zk_entropy.h zk_entropy.c fiel
 $(BUILD)/test_prover_conf: tests/test_prover_conf.c stark_prover_conf.h stark_prover_conf.c conf_root_fold.h conf_root_fold.c stark_constraints.c zk_entropy.c $(CONF_AIR_STACK) $(PROVER_STACK) fri_verifier.c stark_priming.c | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) tests/test_prover_conf.c stark_prover_conf.c conf_root_fold.c stark_constraints.c zk_entropy.c $(CONF_AIR_STACK) $(PROVER_STACK) fri_verifier.c stark_priming.c $(SHA3_SRC) $(LDLIBS) -o $@
 
+$(BUILD)/test_prover_salted_commit: tests/test_prover_salted_commit.c stark_prover.h $(CONF_AIR_STACK) $(PROVER_STACK) | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_prover_salted_commit.c $(CONF_AIR_STACK) $(PROVER_STACK) $(SHA3_SRC) $(LDLIBS) -o $@
+
 # S1 (C prover) — RangeProofAir witness-trace builder byte-match KAT vs the
 # oracle's generate_range_proof_trace dump (the exact p3_uni_stark::prove input
 # matrix, PRE-is_zk-randomization). Reuses the range_air/sum_balance builders;
@@ -697,6 +701,12 @@ test: all
 	@echo "============================================================"
 	@$(BUILD)/test_fri_verify_zk tools/vectors/conf_root_air_salted.json --salted
 	@$(BUILD)/test_fri_verify_zk tools/vectors/conf_root_air_salted_h16.json --salted
+	@echo
+	@echo "============================================================"
+	@echo "B1 Stage-2 M3b — pure-C SALTED trace-commit byte-match vs REAL proof"
+	@echo "  leaf = committed row || SALT_ELEMS salts; the salted-prover primitive"
+	@echo "============================================================"
+	@$(BUILD)/test_prover_salted_commit tools/vectors/conf_root_air_salted.json tools/vectors/smallrng_goldilocks.json
 	@echo
 	@echo "============================================================"
 	@echo "Phase B8 P5 — additive DZKS STARK/PCS wire wrapper (around existing DZKF, 82cfad73)"

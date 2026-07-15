@@ -91,16 +91,24 @@
       (b) the `--salted` JSON parser CPU-spun on a flag/vector mismatch → anti-spin
       backstop (both directions now clean-reject). Report
       `2026-07-15-b1-stage2-m3b-redteam-report.md`.
-    - **DEFERRED (next increment):** the C salted PROVER (reproducing the three
-      independent SmallRng salt/codeword streams + salted commits byte-matched) —
-      this session ships the VERIFIER side (oracle produces the salted proof, C
-      verifier accepts it), the consensus-critical direction, mirroring M2b→S13.
+    - **C salted PROVER — primitive STARTED (2026-07-15):** `test_prover_salted_
+      commit.c` reconstructs the conf trace LDE via the PUBLIC prover stages
+      (conf_root_air_generate → randomize → coset_lde_bitrev) and builds the
+      SALTED input-mmcs leaves (leaf = committed row ‖ SALT_ELEMS salts); the C
+      salted trace root **byte-matches the REAL Plonky3 salted proof's
+      commitments.trace**. Salt draw model GROUNDED + cross-checked vs the vector
+      (input-mmcs rng = fresh SmallRng(1); committed-leaf-row i salt = draws[2i],
+      draws[2i+1]; leaf 55 → draws[110,111]). **DEFERRED (rest of the prover):**
+      the quotient-chunk + random-poly input-mmcs salts, the commit-phase FRI-mmcs
+      salt stream (separate SmallRng(1)), salted openings + full self-verify —
+      the remaining salt streams, mirroring M2b→S13.
   Still PARKED (grep-confirmed: no consensus CMake references crypto/zk);
   product-need for confidential amounts is an open question (v3 transparent gives
   the same privacy).
-- **`make test`: 60 test binaries GREEN, 0 warnings** (`cd shared/crypto/zk && make test`;
+- **`make test`: 61 test binaries GREEN, 0 warnings** (`cd shared/crypto/zk && make test`;
   `test_fri_verify_zk` runs on FibonacciAir + is_zk RangeProofAir + 2 conf-root +
-  2 SALTED conf-root (`--salted`) instances).
+  2 SALTED conf-root (`--salted`) instances; `test_prover_salted_commit` byte-matches
+  the salted trace commitment).
   **C PROVER COMPLETE (S1-S13) + P1 arbitrary-instance:** the prover-side gates
   = S1 trace + S2 LDE + S3 commit + S5 alpha + S6 quotient + S7 quotient-commit +
   S8 zeta + S9 open + S10 FRI + S11/S12 query + **S13 MILESTONE (pure-C prove →
