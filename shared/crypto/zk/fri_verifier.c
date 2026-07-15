@@ -40,7 +40,13 @@
 #define FRI_MAX_ROUNDS 64
 #define FRI_MAX_RO     64
 #define FRI_MAX_ARITY  256
-#define FRI_LEAF_CAP   (FRI_MAX_ARITY * 16)
+/* Leaf byte capacity: max over (a) an INPUT-mmcs row = width*8 + salt*8 (the
+ * B1 Stage-2 combined conf trace is 618 wide → 4944 B; +2 salts → 4960 B; capped
+ * generously at 640 cols) and (b) a commit-phase leaf = arity*16 + salt*8.
+ * (Pre-M3b this was FRI_MAX_ARITY*16 = 4096, which UNDER-sized the 618-wide conf
+ * input row — a latent stack overflow into the adjacent rowbuf slot, harmless by
+ * contiguity but a real bug; the salted (cols+salt)*8 bound-check surfaced it.) */
+#define FRI_LEAF_CAP   5248
 
 /* ============================================================================
  * Always-compiled internal helpers (shared by dnac_fri_verify AND test hooks).
@@ -243,9 +249,34 @@ static dnac_fri_status_t fri_open_input(
         if (cw->num_matrices > FRI_MAX_RO) return DNAC_FRI_ERR_INPUT_ERROR;
         for (size_t m = 0; m < cw->num_matrices; ++m) {
             size_t cols = bo->opened_values_lens[m];
+            /* M3b: salted leaf = opened row ‖ salt_elems base salts
+             * (hiding_mmcs.rs:169-170). salt_elems==0 -> plain (backward-compat). */
+            const size_t se = bo->salt_elems;
+            if ((cols + se) * 8 > FRI_LEAF_CAP) return DNAC_FRI_ERR_INPUT_ERROR;
             fri_serialize_base_row(bo->opened_values[m], cols, rowbuf[m]);
+            if (se > 0) {
+                /* SEC-M3b-1: salts[m] present, per matrix. A missing salts row is
+                 * a malformed proof (fail-close). */
+                if (bo->salts == NULL || bo->salts[m] == NULL) {
+                    return DNAC_FRI_ERR_INPUT_ERROR;
+                }
+                /* SEC-M3b-2 canonicality is a `gold_fp_t` TYPE INVARIANT — every
+                 * field element is canonical-by-construction (gold_fp_from_u64 =
+                 * canonicalize_u64, field_goldilocks.c:39-56), so gold_fp_to_u64
+                 * here is already in [0,p). Canonicality of RAW wire bytes is
+                 * enforced at DECODE by rd_base's `>= p` reject (fri_proof_codec.c),
+                 * exactly like every other proof field; the salt wire codec is the
+                 * next increment (M3b-prover), so no raw-salt path reaches here yet.
+                 * (Red-team M3b: an in-struct `gold_fp_to_u64 >= p` guard would be
+                 * DEAD CODE — canonicalize_u64 can never return >= p — so it is
+                 * NOT written here; the honest invariant is stated instead.) */
+                for (size_t s = 0; s < se; ++s) {
+                    fri_put_u64_le(rowbuf[m] + (cols + s) * 8,
+                                   gold_fp_to_u64(bo->salts[m][s]));
+                }
+            }
             opened_rows[m] = rowbuf[m];
-            row_byte_lens[m] = cols * 8;
+            row_byte_lens[m] = (cols + se) * 8;
         }
         if (have_height) {
             /* The verifier supplies the computed reduced_index + height; only the
@@ -376,15 +407,30 @@ static dnac_fri_status_t fri_verify_query(
         idx >>= log_arity;                                         /* :444 */
 
         /* Commit-phase MMCS verify (verifier.rs:446-455): leaf = the arity evals,
-         * at the post-shift index, depth = log_folded_height. */
+         * at the post-shift index, depth = log_folded_height. M3b: when the FRI
+         * mmcs is hiding, ExtensionMmcs BASE-flattens the fp2 evals then the
+         * hiding mmcs appends salt_elems BASE salts (extension_mmcs.rs:77-95 +
+         * hiding_mmcs.rs:169-170): leaf = fp2 row (arity*16 B) ‖ salts (se*8 B). */
+        const size_t cse = step->salt_elems;
+        if (arity * 16 + cse * 8 > FRI_LEAF_CAP) return DNAC_FRI_ERR_COMMIT_PHASE_MMCS_ERROR;
         uint8_t leaf[FRI_LEAF_CAP];
         fri_serialize_fp2_row(evals, arity, leaf);
+        if (cse > 0) {
+            if (step->salts == NULL) return DNAC_FRI_ERR_COMMIT_PHASE_MMCS_ERROR;
+            /* Salt canonicality is the gold_fp_t type invariant (see the input-open
+             * salt block above); enforced at wire-decode by rd_base, not by a dead
+             * in-struct `>= p` guard (red-team M3b). */
+            for (size_t s = 0; s < cse; ++s) {
+                fri_put_u64_le(leaf + arity * 16 + s * 8,
+                               gold_fp_to_u64(step->salts[s]));
+            }
+        }
         dnac_merkle_proof_t mproof;
         mproof.leaf_index   = idx;
         mproof.depth        = (uint32_t)log_folded_height;
         mproof.num_matrices = 1;
         mproof.siblings     = step->opening_proof.siblings;
-        if (dnac_merkle_verify(&commit_phase_commits[round], leaf, arity * 16, &mproof) != DNAC_MERKLE_OK) {
+        if (dnac_merkle_verify(&commit_phase_commits[round], leaf, arity * 16 + cse * 8, &mproof) != DNAC_MERKLE_OK) {
             return DNAC_FRI_ERR_COMMIT_PHASE_MMCS_ERROR;
         }
 

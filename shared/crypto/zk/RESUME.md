@@ -66,13 +66,41 @@
   - **Independent 12-agent red-team: 12/12 SOUND, 0 defects** (0 CRIT/HIGH/MED); 3
     LOW/hygiene notes all FIXED. Report `dnac/docs/plans/2026-07-15-b1-stage2-
     redteam-report.md` (local). Grounding: `2026-07-15-b1-stage2-grounding-specs.md`.
-  - **DEFERRED (gated, documented):** salted-leaf MMCS (M3b) — wire-format change +
-    own oracle vectors + own red-team; `2026-07-15-b1-stage2-m3b-salted-mmcs-
-    DEFERRED.md`. Still PARKED (grep-confirmed: no consensus CMake references
-    crypto/zk); product-need for confidential amounts is an open question (v3
-    transparent gives the same privacy).
+  - **🎯 M3b SALTED-LEAF MMCS — VERIFIER-side COMPLETE (2026-07-15).** Adds
+    leaf-level salt hiding (`MerkleTreeHidingMmcs`, SALT_ELEMS=2 = 128-bit) on top
+    of the Stage-2 random-codeword blinding. Design (3-section):
+    `2026-07-15-b1-stage2-m3b-salted-mmcs-design.md` (local).
+    - **Oracle:** `HidingValMmcs` + `HidingChallengeMmcs` (BOTH input AND FRI mmcs
+      salted — no half-hiding); `dump_is_zk_stark` refactored to a MACRO
+      instantiated for the plain AND salted configs (ONE priming/JSON codepath, no
+      drift; the plain vectors stayed BYTE-IDENTICAL). Real `p3_uni_stark::prove` +
+      GATE1 verify + GATE3 negative-control + num_qc=8. 2 vectors
+      `conf_root_air_salted{,_h16}.json`; opening proofs carry the `(salts,siblings)`
+      tuple, salt[m] length 2.
+    - **C verify:** `fri_verifier.{c,h}` — optional salt fields on the batch-opening
+      + commit-phase-step structs (`salt_elems=0` → unsalted, backward-compat);
+      salted leaf = `row ‖ SALT_ELEMS salts` (input) / `fp2 arity row ‖ base salts`
+      (commit-phase, ExtensionMmcs base-flattened). Real salted proof (h=8 + h=16) →
+      `DNAC_FRI_OK`; salt-tamper (input + commit-phase) → REJECT.
+    - **Latent bug FOUND+FIXED:** `FRI_LEAF_CAP` (4096) UNDER-sized the 618-wide
+      conf input row (4944 B) — a pre-M3b stack overflow surfaced by the salted
+      `(cols+salt)*8` bound-check; raised to 5248.
+    - **Independent 10-agent red-team: 8/10 SOUND, 0 soundness/mint.** 2 LOW fixed:
+      (a) the SEC-M3b-2 canonical-salt `>= p` guard was DEAD CODE (`gold_fp_to_u64`
+      pre-canonicalizes) → replaced with an honest type-invariant comment;
+      (b) the `--salted` JSON parser CPU-spun on a flag/vector mismatch → anti-spin
+      backstop (both directions now clean-reject). Report
+      `2026-07-15-b1-stage2-m3b-redteam-report.md`.
+    - **DEFERRED (next increment):** the C salted PROVER (reproducing the three
+      independent SmallRng salt/codeword streams + salted commits byte-matched) —
+      this session ships the VERIFIER side (oracle produces the salted proof, C
+      verifier accepts it), the consensus-critical direction, mirroring M2b→S13.
+  Still PARKED (grep-confirmed: no consensus CMake references crypto/zk);
+  product-need for confidential amounts is an open question (v3 transparent gives
+  the same privacy).
 - **`make test`: 60 test binaries GREEN, 0 warnings** (`cd shared/crypto/zk && make test`;
-  `test_fri_verify_zk` runs on FibonacciAir + is_zk RangeProofAir + 2 conf-root instances).
+  `test_fri_verify_zk` runs on FibonacciAir + is_zk RangeProofAir + 2 conf-root +
+  2 SALTED conf-root (`--salted`) instances).
   **C PROVER COMPLETE (S1-S13) + P1 arbitrary-instance:** the prover-side gates
   = S1 trace + S2 LDE + S3 commit + S5 alpha + S6 quotient + S7 quotient-commit +
   S8 zeta + S9 open + S10 FRI + S11/S12 query + **S13 MILESTONE (pure-C prove →

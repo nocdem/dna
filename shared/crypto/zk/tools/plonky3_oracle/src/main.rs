@@ -373,6 +373,19 @@ enum Cmd {
         #[arg(long)]
         out: PathBuf,
     },
+    /// B1 Stage-2 M3b — SALTED (MerkleTreeHidingMmcs, SALT_ELEMS=2) is_zk=1 proof
+    /// of the combined conf AIR; opening proofs carry (salts, siblings) tuples.
+    #[command(name = "dump-conf-root-air-salted")]
+    DumpConfRootAirSalted {
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// M3b salted h=16 padded (3 FRI rounds).
+    #[command(name = "dump-conf-root-air-salted-h16")]
+    DumpConfRootAirSaltedH16 {
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// KAT draw stream (D1-B): the first `count` Goldilocks samples of a fresh
     /// SmallRng::seed_from_u64(1) — the EXACT stream a real HidingFriPcs prove
     /// consumes (with_random_cols / codeword / blinding / R draws in commit
@@ -570,6 +583,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Cmd::DumpRangeProofAirZk { out } => stark_priming::dump_range_proof_air_zk(&out)?,
         Cmd::DumpConfRootAirZk { out } => stark_priming::dump_conf_root_air_zk(&out)?,
         Cmd::DumpConfRootAirZkH16 { out } => stark_priming::dump_conf_root_air_zk_h16(&out)?,
+        Cmd::DumpConfRootAirSalted { out } => stark_priming::dump_conf_root_air_salted(&out)?,
+        Cmd::DumpConfRootAirSaltedH16 { out } => {
+            stark_priming::dump_conf_root_air_salted_h16(&out)?
+        }
         Cmd::DumpSmallrngGoldilocks { count, out } => {
             stark_priming::dump_smallrng_goldilocks(count, &out)?
         }
@@ -3653,6 +3670,35 @@ type ValMmcs = MerkleTreeMmcs<[Goldilocks; 1], [u64; 1], FieldHash, MyCompress, 
 
 fn make_mmcs() -> ValMmcs {
     ValMmcs::new(FieldHash::new(Sha3_512Hash), MyCompress::new(Sha3_512Hash), 0)
+}
+
+// B1 Stage-2 M3b (2026-07-15) — SALTED-leaf hiding MMCS. Same SHA3-512
+// hash/compress (N=2, DIGEST_ELEMS=8, cap_height 0) as the plain ValMmcs, PLUS
+// SALT_ELEMS=2 (Goldilocks 64-bit × 2 = 128-bit salt) + a CSPRNG for blinding
+// leaves (hiding_mmcs.rs:39-51,121-134). Commitment type is IDENTICAL to the
+// plain ValMmcs (MerkleCap<Goldilocks,[u64;8]>), so the generic dump helper's
+// commitment serialization is unchanged.
+const M3B_SALT_ELEMS: usize = 2;
+type HidingValMmcs = p3_merkle_tree::MerkleTreeHidingMmcs<
+    [Goldilocks; 1],
+    [u64; 1],
+    FieldHash,
+    MyCompress,
+    rand::rngs::SmallRng,
+    2,
+    8,
+    M3B_SALT_ELEMS,
+>;
+type HidingChallengeMmcs = p3_commit::ExtensionMmcs<Goldilocks, GoldFp2, HidingValMmcs>;
+
+fn make_hiding_mmcs(seed: u64) -> HidingValMmcs {
+    use rand::SeedableRng;
+    HidingValMmcs::new(
+        FieldHash::new(Sha3_512Hash),
+        MyCompress::new(Sha3_512Hash),
+        0,
+        rand::rngs::SmallRng::seed_from_u64(seed),
+    )
 }
 
 #[derive(Serialize)]
@@ -8717,6 +8763,72 @@ mod stark_priming {
     >;
     type ZkStarkCfg = StarkConfig<ZkStarkPcs, GoldFp2, FriChallenger>;
 
+    // M3b (2026-07-15): the SALTED is_zk=1 config — same HidingFriPcs
+    // (ZK=true, num_random_codewords=4) but over the salted MerkleTreeHidingMmcs
+    // for BOTH the input mmcs AND the FRI challenge mmcs (no half-hiding —
+    // hiding_pcs.rs:25-26 is not compile-enforced; fib_air.rs:160-172 pattern).
+    type SaltedZkStarkPcs = p3_fri::HidingFriPcs<
+        Goldilocks,
+        Radix2Dit<Goldilocks>,
+        super::HidingValMmcs,
+        super::HidingChallengeMmcs,
+        rand::rngs::SmallRng,
+    >;
+    type SaltedZkStarkCfg = StarkConfig<SaltedZkStarkPcs, GoldFp2, FriChallenger>;
+
+    // Shared FRI params for the is_zk=1 configs (log_blowup=2, log_final=2,
+    // num_queries=2, pow=0 — byte-stable; matches the pre-M3b inline construction).
+    fn zk_fri_params<MmcsT>(challenge_mmcs: MmcsT) -> FriParameters<MmcsT> {
+        FriParameters {
+            log_blowup: 2,
+            log_final_poly_len: 2,
+            max_log_arity: 1,
+            num_queries: 2,
+            commit_proof_of_work_bits: 0,
+            query_proof_of_work_bits: 0,
+            mmcs: challenge_mmcs,
+        }
+    }
+
+    /// Plain is_zk=1 config (PLAIN ValMmcs) — the pre-M3b path; kept byte-stable.
+    fn make_plain_zk_config() -> ZkStarkCfg {
+        use p3_fri::HidingFriPcs;
+        use rand::rngs::SmallRng;
+        use rand::SeedableRng;
+        let pcs: ZkStarkPcs = HidingFriPcs::new(
+            Radix2Dit::default(),
+            make_mmcs(),
+            zk_fri_params(FriChallengeMmcs::new(make_mmcs())),
+            4, // num_random_codewords (fib_air.rs:188)
+            SmallRng::seed_from_u64(1),
+        );
+        let challenger =
+            FriChallenger::new(FriHashChal::new(FRI_INIT_STATE.to_vec(), FriOracleSha3_512));
+        StarkConfig::new(pcs, challenger)
+    }
+
+    /// SALTED is_zk=1 config (MerkleTreeHidingMmcs, SALT_ELEMS=2). Three
+    /// independent SmallRng(1) streams (fib_air.rs:184-188): input-mmcs salts,
+    /// FRI-mmcs salts (a CLONE of the input mmcs's rng, hiding_mmcs.rs:84-89 =
+    /// independent seed-1 stream), and HidingFriPcs codeword/blinding/R.
+    fn make_salted_zk_config() -> SaltedZkStarkCfg {
+        use p3_fri::HidingFriPcs;
+        use rand::rngs::SmallRng;
+        use rand::SeedableRng;
+        let val_mmcs = super::make_hiding_mmcs(1);
+        let challenge_mmcs = super::HidingChallengeMmcs::new(val_mmcs.clone());
+        let pcs: SaltedZkStarkPcs = HidingFriPcs::new(
+            Radix2Dit::default(),
+            val_mmcs,
+            zk_fri_params(challenge_mmcs),
+            4,
+            SmallRng::seed_from_u64(1),
+        );
+        let challenger =
+            FriChallenger::new(FriHashChal::new(FRI_INIT_STATE.to_vec(), FriOracleSha3_512));
+        StarkConfig::new(pcs, challenger)
+    }
+
     fn fp2_json(x: GoldFp2) -> serde_json::Value {
         let (c0, c1) = fri_fp2_to_pair(x);
         serde_json::json!({ "c0_decimal": c0, "c1_decimal": c1 })
@@ -9127,7 +9239,23 @@ mod stark_priming {
     // salted-leaf C Merkle verify. This exercises the is_zk verify PLUMBING
     // (transcript augmentation + random-codeword merge + 3-round coms) — M1
     // (FibonacciAir), M3a (RangeProofAir: hidden amounts + range/balance).
-    pub fn dump_is_zk_stark<A>(
+    // 2026-07-15 M3b: generalized over the config `SC` so BOTH the plain-ValMmcs
+    // is_zk=1 config AND the salted MerkleTreeHidingMmcs config drive ONE priming/
+    // JSON codepath (no duplication of the subtle transcript logic — KAFADAN
+    // drift hazard). The caller constructs `config`; init_state stays the shared
+    // FRI_INIT_STATE constant. Both configs share Val/Challenge/Challenger and the
+    // Commitment type MerkleCap<Goldilocks,[u64;8]>.
+    // M3b (2026-07-15): ONE priming/JSON codepath instantiated for BOTH the
+    // plain-ValMmcs is_zk=1 config AND the salted MerkleTreeHidingMmcs config via
+    // a macro — avoids BOTH hand-duplication drift (KAFADAN hazard) AND the
+    // generic-associated-type-projection wall (`proof.opening_proof.0`, the
+    // concrete Domain, do not reduce through `SC::Pcs`). The macro body is the
+    // single source of truth; `$cfg_ty`/`$pcs_ty` differ only in the MMCS type
+    // params. The salts live INSIDE `proof.opening_proof.1` and flow through
+    // `serde_json::to_value(&proof.opening_proof)` unchanged.
+    macro_rules! define_dump_is_zk_stark {
+        ($fn_name:ident, $cfg_ty:ty, $pcs_ty:ty, $make_cfg:expr) => {
+    pub fn $fn_name<A>(
         air: &A,
         trace: RowMajorMatrix<Goldilocks>,
         pis: Vec<Goldilocks>,
@@ -9140,46 +9268,17 @@ mod stark_priming {
     where
         A: BaseAir<Goldilocks>
             + Air<SymbolicAirBuilder<Goldilocks>>
-            + for<'a> Air<ProverConstraintFolder<'a, ZkStarkCfg>>
-            + for<'a> Air<VerifierConstraintFolder<'a, ZkStarkCfg>>
+            + for<'a> Air<ProverConstraintFolder<'a, $cfg_ty>>
+            + for<'a> Air<VerifierConstraintFolder<'a, $cfg_ty>>
             // debug-assertions=true (Cargo.toml, grounding GAP4) makes prove()
             // run p3_air::check_constraints on the honest trace pre-FRI
             // (prover.rs:381 cfg(debug_assertions) bound) — a free positive gate.
             + for<'a> Air<p3_air::DebugConstraintBuilder<'a, Goldilocks>>,
     {
-        use p3_fri::HidingFriPcs;
-        use rand::rngs::SmallRng;
-        use rand::SeedableRng;
-
-        // ------------------------------------------------------------------
-        // 1. Build the ZK StarkConfig. pow=0 (deterministic; no grind). Same
-        //    degree params as the non-ZK fib config (log_blowup=2, log_final=2,
-        //    num_queries=2). num_random_codewords=4 + SmallRng seed=1 per
-        //    fib_air.rs:187-188. Deterministic seed => byte-stable KAT.
-        // ------------------------------------------------------------------
+        let config: $cfg_ty = $make_cfg;
         let log_blowup = 2usize;
         let log_final_poly_len = 2usize;
-        let input_mmcs: FriValMmcs = make_mmcs(); // plain DNAC ValMmcs (non-hiding)
-        let challenge_mmcs = FriChallengeMmcs::new(make_mmcs());
-        let fri_params = FriParameters {
-            log_blowup,
-            log_final_poly_len,
-            max_log_arity: 1,
-            num_queries: 2,
-            commit_proof_of_work_bits: 0,
-            query_proof_of_work_bits: 0,
-            mmcs: challenge_mmcs,
-        };
         let init_state: Vec<u8> = FRI_INIT_STATE.to_vec();
-        let pcs: ZkStarkPcs = HidingFriPcs::new(
-            Radix2Dit::default(),
-            input_mmcs,
-            fri_params,
-            4, // num_random_codewords (fib_air.rs:188)
-            SmallRng::seed_from_u64(1),
-        );
-        let challenger = FriChallenger::new(FriHashChal::new(init_state.clone(), FriOracleSha3_512));
-        let config: ZkStarkCfg = StarkConfig::new(pcs, challenger);
 
         // ------------------------------------------------------------------
         // 2. GATE 1 (AUTHORITATIVE) — real is_zk=1 prove + verify of `air`.
@@ -9395,19 +9494,19 @@ mod stark_priming {
         let log_num_qc = num_qc.trailing_zeros() as usize - is_zk; // measured, = log2(num_qc) - is_zk
         let pcs_ref = config.pcs();
         let trace_domain =
-            <ZkStarkPcs as Pcs<GoldFp2, FriChallenger>>::natural_domain_for_degree(
+            <$pcs_ty as Pcs<GoldFp2, FriChallenger>>::natural_domain_for_degree(
                 pcs_ref,
                 1usize << degree_bits,
             ); // verifier.rs:268-270 (shift=ONE, log=degree_bits)
         let init_trace_domain =
-            <ZkStarkPcs as Pcs<GoldFp2, FriChallenger>>::natural_domain_for_degree(
+            <$pcs_ty as Pcs<GoldFp2, FriChallenger>>::natural_domain_for_degree(
                 pcs_ref,
                 (1usize << degree_bits) >> is_zk,
             ); // verifier.rs:303
         let quotient_domain =
             trace_domain.create_disjoint_domain(1usize << (degree_bits + log_num_qc)); // verifier.rs:305-311
         let qc_domains = quotient_domain.split_domains(num_qc); // verifier.rs:312
-        let quotient_zeta: GoldFp2 = recompose_quotient_from_chunks::<ZkStarkCfg>(
+        let quotient_zeta: GoldFp2 = recompose_quotient_from_chunks::<$cfg_ty>(
             &qc_domains,
             &quotient_chunks,
             zeta,
@@ -9584,6 +9683,17 @@ mod stark_priming {
         );
         Ok(())
     }
+        }; // end macro arm
+    }
+
+    // Instantiate the ONE codepath for the plain and salted is_zk=1 configs.
+    define_dump_is_zk_stark!(dump_is_zk_stark, ZkStarkCfg, ZkStarkPcs, make_plain_zk_config());
+    define_dump_is_zk_stark!(
+        dump_is_zk_stark_salted,
+        SaltedZkStarkCfg,
+        SaltedZkStarkPcs,
+        make_salted_zk_config()
+    );
 
     /// M1/M2: is_zk=1 over the vendored FibonacciAir (verify plumbing).
     pub fn dump_stark_priming_zk(out_path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
@@ -12898,6 +13008,7 @@ mod stark_priming {
         height: usize,
         scope: &str,
         milestone: &str,
+        salted: bool,
         out_path: &PathBuf,
     ) -> Result<(), Box<dyn std::error::Error>> {
         conf_check_domseps()?;
@@ -12934,19 +13045,21 @@ mod stark_priming {
         pis.push(Goldilocks::from_u64(CONF_HASH_ID));
         pis.extend_from_slice(&tx_binding);
 
-        dump_is_zk_stark(
-            &ConfRootAir,
-            trace,
-            pis,
-            scope,
-            "B1 Stage-2 COMBINED confidential AIR (Stage-1 conf_root layout: BAL 70 + VC 180 \
+        let air_desc = "B1 Stage-2 COMBINED confidential AIR (Stage-1 conf_root layout: BAL 70 + VC 180 \
              + CA1 180 + CA2 180 + CACC 4 = width 614, main_next=true; 17 publics \
              [commitment_root(4), c_claimed(4), c_fee(4), hash_id, tx_binding(4)]; \
-             PB1-PB8 selector-gated public bindings CONSTRUCTED; max degree 3)",
-            milestone,
-            Some(8), // num_qc MUST measure 8 (degree 3, is_zk=1) — STOP otherwise
-            out_path,
-        )
+             PB1-PB8 selector-gated public bindings CONSTRUCTED; max degree 3)";
+        if salted {
+            // M3b: SALTED MerkleTreeHidingMmcs (SALT_ELEMS=2) for BOTH input and
+            // FRI mmcs — proof.opening_proof carries (salts, siblings) tuples.
+            dump_is_zk_stark_salted(
+                &ConfRootAir, trace, pis, scope, air_desc, milestone, Some(8), out_path,
+            )
+        } else {
+            dump_is_zk_stark(
+                &ConfRootAir, trace, pis, scope, air_desc, milestone, Some(8), out_path,
+            )
+        }
     }
 
     /// B1 Stage-2 h=8 full instance: 4 outputs + claimed + fee + 2 padding rows.
@@ -12962,6 +13075,38 @@ mod stark_priming {
             8,
             "conf_root_air_zk",
             "B1 Stage-2 — first REAL is_zk=1 proof of the combined confidential AIR (h=8, num_qc=8)",
+            false,
+            out_path,
+        )
+    }
+
+    /// M3b h=8: the SALTED (MerkleTreeHidingMmcs, SALT_ELEMS=2) variant of the
+    /// combined conf AIR — proof.opening_proof carries (salts, siblings) tuples.
+    pub fn dump_conf_root_air_salted(
+        out_path: &PathBuf,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        dump_conf_root_air_common(
+            &[10, 20, 30, 40],
+            7,
+            8,
+            "conf_root_air_salted",
+            "B1 Stage-2 M3b — SALTED is_zk=1 proof of the combined confidential AIR (h=8, num_qc=8, SALT_ELEMS=2 leaf hiding)",
+            true,
+            out_path,
+        )
+    }
+
+    /// M3b h=16 PADDED salted variant (3 FRI rounds, freeze through padding).
+    pub fn dump_conf_root_air_salted_h16(
+        out_path: &PathBuf,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        dump_conf_root_air_common(
+            &[5, 10, 15, 20, 25, 30, 35, 40, 45, 50],
+            3,
+            16,
+            "conf_root_air_salted_h16",
+            "B1 Stage-2 M3b — SALTED combined conf AIR, h=16 PADDED (3 FRI rounds, SALT_ELEMS=2)",
+            true,
             out_path,
         )
     }
@@ -13010,6 +13155,7 @@ mod stark_priming {
             16,
             "conf_root_air_zk_h16",
             "B1 Stage-2 — combined confidential AIR, h=16 PADDED instance (freeze through padding, 3 FRI rounds)",
+            false,
             out_path,
         )
     }

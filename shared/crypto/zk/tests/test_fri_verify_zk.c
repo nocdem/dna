@@ -79,13 +79,22 @@ static size_t hex_decode(const char *hex,uint8_t *buf,size_t cap){
     for(size_t i=0;i<n;i++){ int hi=hexnib(hex[2*i]),lo=hexnib(hex[2*i+1]); if(hi<0||lo<0)return (size_t)-1; buf[i]=(uint8_t)((hi<<4)|lo); } return n;
 }
 static void put_u64_le(uint8_t *p,uint64_t v){ for(int i=0;i<8;i++)p[i]=(uint8_t)(v>>(8*i)); }
-static int read_u64_array(js_t *s,uint64_t *out,int cap){ int n=0; js_match(s,'['); while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;} uint64_t v; if(!js_read_u64(s,&v))return -1; if(n<cap)out[n]=v; n++; } return n; }
+/* Anti-spin (red-team M3b DEFECT-2A): if the next token is NOT a number (e.g. a
+ * salted (salts,siblings) tuple fed to the unsalted parser, or a shape mismatch),
+ * js_read_u64 does not advance the cursor. Skip that value so the enclosing
+ * while(!']') always makes progress — a malformed vector is a clean parse, not a
+ * CPU-spin hang. Backstop `before==pos` -> s->pos++ guarantees termination even
+ * if js_skip_value itself stalls. Test-harness only (not the verifier engine). */
+static int read_u64_array(js_t *s,uint64_t *out,int cap){ int n=0; js_match(s,'['); while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;} size_t before=s->pos; uint64_t v; if(js_read_u64(s,&v)){ if(n<cap)out[n]=v; n++; } else { js_skip_value(s); } if(s->pos==before) s->pos++; } return n; }
 static void parse_lanes_digest(js_t *s,uint8_t out[64]){ uint64_t l[8]={0}; read_u64_array(s,l,8); for(int i=0;i<8;i++)put_u64_le(out+i*8,l[i]); }
 static void parse_commit_digest(js_t *s,uint8_t out[64]){
     js_match(s,'{'); while(!js_match(s,'}')){ if(js_peek(s,',')){s->pos++;continue;} char*k=js_read_string(s); js_match(s,':');
         if(k&&strcmp(k,"cap")==0){ js_match(s,'['); parse_lanes_digest(s,out); while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;} js_skip_value(s);} } else { js_skip_value(s); } free(k); }
 }
-static uint64_t parse_base_obj(js_t *s){ uint64_t r=0; js_match(s,'{'); while(!js_match(s,'}')){ if(js_peek(s,',')){s->pos++;continue;} char*k=js_read_string(s); js_match(s,':'); if(k&&strcmp(k,"value")==0)js_read_u64(s,&r); else js_skip_value(s); free(k);} return r; }
+/* Anti-spin backstop (red-team M3b DEFECT-2A): if fed a raw number instead of a
+ * {"value":N} object (shape mismatch from the wrong --salted flag), the inner
+ * loop must still advance. before==pos -> s->pos++ guarantees termination. */
+static uint64_t parse_base_obj(js_t *s){ uint64_t r=0; js_match(s,'{'); while(!js_match(s,'}')){ if(js_peek(s,',')){s->pos++;continue;} size_t before=s->pos; char*k=js_read_string(s); js_match(s,':'); if(k&&strcmp(k,"value")==0)js_read_u64(s,&r); else js_skip_value(s); free(k); if(s->pos==before) s->pos++; } return r; }
 static gold_fp2_t parse_fp2_wrapped(js_t *s){
     uint64_t comps[2]={0,0}; int n=0; js_match(s,'{');
     while(!js_match(s,'}')){ if(js_peek(s,',')){s->pos++;continue;} char*k=js_read_string(s); js_match(s,':');
@@ -134,6 +143,12 @@ typedef struct {
     dnac_fri_query_proof_t qp[GXQ]; size_t num_queries;
     dnac_fri_proof_t proof;
 
+    /* M3b salted-leaf hiding (SALT_ELEMS=2). salted=0 -> plain (backward-compat). */
+    int      salted; size_t salt_elems;
+    gold_fp_t inp_salt[GXQ][GXB][GXMAT][8];         /* per input matrix salts */
+    const gold_fp_t *inp_saltptr[GXQ][GXB][GXMAT];
+    gold_fp_t cpo_salt[GXQ][GXR][8];                /* per commit-phase step salts */
+
     /* stark scalars + commitments */
     size_t degree_bits, num_quotient_chunks;
     dnac_merkle_digest_t trace_commit, quotient_commit, random_commit;
@@ -161,12 +176,31 @@ static void parse_cpo(js_t *s,gx_t *fx,size_t q,size_t r){
     while(!js_match(s,'}')){ if(js_peek(s,',')){s->pos++;continue;} char*k=js_read_string(s); js_match(s,':');
         if(k&&strcmp(k,"log_arity")==0){ uint64_t v; js_read_u64(s,&v); la=(uint8_t)v; }
         else if(k&&strcmp(k,"sibling_values")==0){ js_match(s,'['); while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;} gold_fp2_t fv=parse_fp2_wrapped(s); if(nsib<GXSIB)fx->cpo_sib[q][r][nsib]=fv; nsib++; } }
-        else if(k&&strcmp(k,"opening_proof")==0){ js_match(s,'['); while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;} if(npsib<GXSIB)parse_lanes_digest(s,fx->cpo_psib[q][r][npsib].bytes); else js_skip_value(s); npsib++; } }
+        else if(k&&strcmp(k,"opening_proof")==0){
+            if(fx->salted){
+                /* M3b: [salts, siblings]; commit-phase has ONE matrix -> salts=[[base,base]]. */
+                js_match(s,'[');
+                size_t sm=0; js_match(s,'[');
+                while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;}
+                    size_t se=0; js_match(s,'[');
+                    while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;} uint64_t sv=parse_base_obj(s); if(sm==0&&se<8)fx->cpo_salt[q][r][se]=gold_fp_from_u64(sv); se++; }
+                    if(se!=fx->salt_elems){ fprintf(stderr,"salt count %zu != %zu (cpo r=%zu)\n",se,fx->salt_elems,r); exit(1); }
+                    sm++;
+                }
+                if(js_peek(s,',')) s->pos++;
+                js_match(s,'[');
+                while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;} if(npsib<GXSIB)parse_lanes_digest(s,fx->cpo_psib[q][r][npsib].bytes); else js_skip_value(s); npsib++; }
+                while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;} js_skip_value(s); }
+            } else {
+                js_match(s,'['); while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;} if(npsib<GXSIB)parse_lanes_digest(s,fx->cpo_psib[q][r][npsib].bytes); else js_skip_value(s); npsib++; }
+            }
+        }
         else { js_skip_value(s); }
         free(k);
     }
     fx->cpo[q][r].log_arity=la; fx->cpo[q][r].sibling_values=fx->cpo_sib[q][r]; fx->cpo[q][r].num_sibling_values=nsib;
     fx->cpo[q][r].opening_proof.leaf_index=0; fx->cpo[q][r].opening_proof.depth=(uint32_t)npsib; fx->cpo[q][r].opening_proof.num_matrices=1; fx->cpo[q][r].opening_proof.siblings=fx->cpo_psib[q][r];
+    if(fx->salted){ fx->cpo[q][r].salts=fx->cpo_salt[q][r]; fx->cpo[q][r].salt_elems=fx->salt_elems; }
 }
 /* opened_values = [[matrix0 row],[matrix1 row],...] (Vec<Vec<Val>>, base field);
  * opening_proof = one Merkle path for the whole batch (same-height matrices). */
@@ -182,13 +216,37 @@ static void parse_input_batch(js_t *s,gx_t *fx,size_t q,size_t b){
                 nmat++;
             }
         }
-        else if(bk&&strcmp(bk,"opening_proof")==0){ js_match(s,'['); while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;} if(nsib<GXSIB)parse_lanes_digest(s,fx->inp_sib[q][b][nsib].bytes); else js_skip_value(s); nsib++; } }
+        else if(bk&&strcmp(bk,"opening_proof")==0){
+            if(fx->salted){
+                /* M3b: opening_proof = [salts, siblings]. salts = per-matrix
+                 * [[base,base],...]; siblings = [[lanes],...]. */
+                js_match(s,'[');
+                /* element 0: salts */
+                size_t sm=0; js_match(s,'[');
+                while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;}
+                    size_t se=0; js_match(s,'[');
+                    while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;} uint64_t sv=parse_base_obj(s); if(sm<GXMAT&&se<8)fx->inp_salt[q][b][sm][se]=gold_fp_from_u64(sv); se++; }
+                    /* SEC-M3b-1: pin salt count per matrix == salt_elems (fail-close) */
+                    if(se!=fx->salt_elems){ fprintf(stderr,"salt count %zu != %zu (input m=%zu)\n",se,fx->salt_elems,sm); exit(1); }
+                    if(sm<GXMAT)fx->inp_saltptr[q][b][sm]=fx->inp_salt[q][b][sm];
+                    sm++;
+                }
+                if(js_peek(s,',')) s->pos++;
+                /* element 1: siblings */
+                js_match(s,'[');
+                while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;} if(nsib<GXSIB)parse_lanes_digest(s,fx->inp_sib[q][b][nsib].bytes); else js_skip_value(s); nsib++; }
+                while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;} js_skip_value(s); }
+            } else {
+                js_match(s,'['); while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;} if(nsib<GXSIB)parse_lanes_digest(s,fx->inp_sib[q][b][nsib].bytes); else js_skip_value(s); nsib++; }
+            }
+        }
         else { js_skip_value(s); }
         free(bk);
     }
     fx->inp_nmat[q][b]=nmat;
     fx->bo[q][b].opened_values=fx->inp_rowptr[q][b]; fx->bo[q][b].opened_values_lens=fx->inp_lens[q][b]; fx->bo[q][b].num_matrices=nmat;
     fx->bo[q][b].opening_proof.leaf_index=0; fx->bo[q][b].opening_proof.depth=(uint32_t)nsib; fx->bo[q][b].opening_proof.num_matrices=nmat; fx->bo[q][b].opening_proof.siblings=fx->inp_sib[q][b];
+    if(fx->salted){ fx->bo[q][b].salts=fx->inp_saltptr[q][b]; fx->bo[q][b].salt_elems=fx->salt_elems; }
 }
 static void parse_query_proof(js_t *s,gx_t *fx,size_t q){
     size_t ncpo=0,nbatch=0; js_match(s,'{');
@@ -293,8 +351,11 @@ static void build_coms(gx_t *fx, gold_fp2_t zeta, gold_fp2_t zeta_next){
 }
 
 int main(int argc,char **argv){
-    if(argc<2){ fprintf(stderr,"usage: %s <stark_priming_zk.json>\n",argv[0]); return 2; }
+    if(argc<2){ fprintf(stderr,"usage: %s <vector.json> [--salted]\n",argv[0]); return 2; }
     gx_t *fx=(gx_t*)calloc(1,sizeof *fx); if(!fx)return 2;
+    /* M3b: --salted selects the (salts, siblings) opening-proof tuple parse +
+     * SALT_ELEMS=2 leaf-salt verify. MUST be set BEFORE proof_serde parse. */
+    for(int a=2;a<argc;a++){ if(strcmp(argv[a],"--salted")==0){ fx->salted=1; fx->salt_elems=2; } }
     size_t bl=0; char *blob=slurp(argv[1],&bl); if(!blob){ fprintf(stderr,"cannot read %s\n",argv[1]); free(fx); return 2; }
     js_t s={blob,0,bl}; js_match(&s,'{');
     while(!js_match(&s,'}')){ if(js_peek(&s,',')){s.pos++;continue;} char*k=js_read_string(&s); if(!k)break; js_match(&s,':');
@@ -380,6 +441,48 @@ int main(int argc,char **argv){
         dnac_transcript_free(t2);
         fx->public_values[12] = saved12; fx->public_values[13] = saved13;
         printf("  tx_binding FS KATs: tamper->zeta differs + position swap->zeta differs (v3.1 §4b O-4 closed).\n");
+    }
+
+    /* ---- M3b salted-leaf negative KATs (SEC-M3b-1/2) ----
+     * Re-verify after mutating salt data; the verifier MUST reject. Each
+     * re-verify needs a FRESH primed transcript (verify consumes it). Helper:
+     * reprime + dnac_fri_verify, returns the status. */
+    if (fx->salted) {
+        #define RESALT_VERIFY() ({                                            \
+            dnac_transcript_t *_rt = dnac_transcript_init(fx->init_state, fx->init_state_len); \
+            dnac_stark_priming_out_t _ro; memset(&_ro,0,sizeof _ro);           \
+            dnac_fri_status_t _rs = DNAC_FRI_ERR_INPUT_ERROR;                  \
+            if(_rt && dnac_stark_prime_transcript(_rt,&in,&_ro)==DNAC_STARK_PRIMING_OK){ \
+                build_coms(fx,_ro.zeta,_ro.zeta_next);                         \
+                _rs = dnac_fri_verify(&fx->params,&fx->proof,_rt,fx->cwop,3);  \
+            }                                                                  \
+            if(_rt) dnac_transcript_free(_rt);                                 \
+            _rs; })
+
+        int neg = 1;
+        /* control: salted proof still verifies via the helper */
+        if (RESALT_VERIFY() != DNAC_FRI_OK) neg = 0;
+        /* (a) tamper an input salt VALUE -> different leaf -> reject (proves the
+         *     salt is bound into the leaf hash, not ignored). */
+        gold_fp_t sv0 = fx->inp_salt[0][1][0][0]; /* query 0, trace batch, matrix 0, salt 0 */
+        fx->inp_salt[0][1][0][0] = gold_fp_from_u64(gold_fp_to_u64(sv0) ^ 1u);
+        if (RESALT_VERIFY() == DNAC_FRI_OK) { fprintf(stderr,"SALT-TAMPER not rejected\n"); neg=0; }
+        fx->inp_salt[0][1][0][0] = sv0;
+        /* (b) tamper a COMMIT-PHASE salt value -> different leaf -> reject (the
+         *     FRI-side salts are bound too; no half-hiding, SEC-M3b-3). The
+         *     non-canonical >=p guard (SEC-M3b-2) is a code-path guard the
+         *     red-team verifies by reading fri_verifier.c; it cannot be poked
+         *     in-process because gold_fp_from_u64 canonicalizes on construction. */
+        gold_fp_t csv = fx->cpo_salt[0][0][0];
+        fx->cpo_salt[0][0][0] = gold_fp_from_u64(gold_fp_to_u64(csv) ^ 1u);
+        if (RESALT_VERIFY() == DNAC_FRI_OK) { fprintf(stderr,"COMMIT-PHASE SALT-TAMPER not rejected\n"); neg=0; }
+        fx->cpo_salt[0][0][0] = csv;
+        /* (c) restore -> verifies again */
+        if (RESALT_VERIFY() != DNAC_FRI_OK) { fprintf(stderr,"restore did NOT re-verify\n"); neg=0; }
+        #undef RESALT_VERIFY
+        if (!neg) { free(fx); return 1; }
+        printf("  M3b salted negatives: input-salt tamper + commit-phase-salt tamper both REJECTED,\n");
+        printf("    restore re-verifies (salts are bound into the leaf hash; SEC-M3b-1/2).\n");
     }
 
     printf("test_fri_verify_zk: PASS\n");

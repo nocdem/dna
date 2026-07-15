@@ -692,6 +692,13 @@ test: all
 	@$(BUILD)/test_fri_verify_zk tools/vectors/conf_root_air_zk_h16.json
 	@echo
 	@echo "============================================================"
+	@echo "B1 Stage-2 M3b — SALTED-leaf hiding MMCS end-to-end FRI verify"
+	@echo "  (salts,siblings) opening tuple; leaf = row||salt; SEC-M3b negatives"
+	@echo "============================================================"
+	@$(BUILD)/test_fri_verify_zk tools/vectors/conf_root_air_salted.json --salted
+	@$(BUILD)/test_fri_verify_zk tools/vectors/conf_root_air_salted_h16.json --salted
+	@echo
+	@echo "============================================================"
 	@echo "Phase B8 P5 — additive DZKS STARK/PCS wire wrapper (around existing DZKF, 82cfad73)"
 	@echo "============================================================"
 	@$(BUILD)/test_stark_proof_codec tools/vectors/stark_proof_wire.json

@@ -238,6 +238,14 @@ typedef struct {
     const gold_fp2_t   *sibling_values;  /* proof.rs:39 (Vec<F>=Challenge) */
     size_t              num_sibling_values;
     dnac_merkle_proof_t opening_proof;   /* proof.rs:41 (M::Proof)        */
+    /* M3b salted-leaf hiding (0 = unsalted / plain MMCS, backward-compatible).
+     * When the FRI challenge mmcs is a MerkleTreeHidingMmcs, the leaf preimage is
+     * the arity fp2 evals (BASE-flattened by ExtensionMmcs, extension_mmcs.rs:
+     * 77-95) followed by `salt_elems` BASE salt elements (hiding_mmcs.rs:169-170).
+     * The verifier appends salt bytes to the leaf and MUST reject a non-canonical
+     * salt (SEC-M3b-2) and a salt count != salt_elems (SEC-M3b-1). */
+    const gold_fp_t    *salts;           /* [salt_elems] base-field, or NULL */
+    size_t              salt_elems;      /* SALT_ELEMS, or 0 if unsalted     */
 } dnac_fri_commit_phase_proof_step_t;
 
 /**
@@ -251,6 +259,14 @@ typedef struct {
     const size_t            *opened_values_lens;  /* per-matrix column count        */
     size_t                   num_matrices;
     dnac_merkle_proof_t      opening_proof;        /* InputMmcs::Proof               */
+    /* M3b salted-leaf hiding (0 = unsalted, backward-compatible). Per matrix, the
+     * leaf preimage is opened_values[m] (canonical u64-LE) followed by
+     * `salt_elems` BASE salt elements salts[m][0..salt_elems) (hiding_mmcs.rs:
+     * 169-170). SEC-M3b-1: the caller/parser MUST pin salts[m] to exactly
+     * salt_elems per matrix (fail-close); the verifier rejects non-canonical
+     * salts (SEC-M3b-2). */
+    const gold_fp_t * const *salts;                /* [matrix][salt_elems], or NULL */
+    size_t                   salt_elems;           /* SALT_ELEMS, or 0 if unsalted  */
 } dnac_fri_batch_opening_t;
 
 /**
