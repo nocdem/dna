@@ -195,7 +195,7 @@ int main(int argc, char **argv) {
     {
         dnac_merkle_tree_t *rt = NULL;
         int bad = 1;
-        if (dnac_prover_random_commit(r_draws, 8, S8_CW, 2, r_lde, r_root,
+        if (dnac_prover_random_commit(r_draws, 8, S8_CW, 2, NULL, 0, r_lde, r_root,
                                       &rt) == DNAC_PROVER_OK) {
             bad = memcmp(r_root, random_root_v, sizeof(r_root)) != 0;
         }
@@ -230,7 +230,7 @@ int main(int argc, char **argv) {
                                         randomized_c) == DNAC_PROVER_OK &&
             dnac_prover_coset_lde_bitrev(randomized_c, 2 * S8_H, S8_RAND_W, 2,
                                          7, lde_c) == DNAC_PROVER_OK &&
-            dnac_prover_commit_matrix(lde_c, S8_LDE_H, S8_RAND_W, troot,
+            dnac_prover_commit_matrix(lde_c, S8_LDE_H, S8_RAND_W, NULL, 0, troot,
                                       &ttree) == DNAC_PROVER_OK &&
             dnac_prover_fs_to_alpha(t, 3, 2, 0, troot, publics, 3, &alpha) ==
                 DNAC_PROVER_OK &&
@@ -243,7 +243,7 @@ int main(int argc, char **argv) {
                                                  alpha, sf, sl, st, iv,
                                                  qflat) == DNAC_PROVER_OK &&
             dnac_prover_quotient_commit(qflat, S8_QS, S8_NQ, 4, 2, 7, codeword,
-                                        blinding, chunk_ldes, qroot,
+                                        blinding, NULL, 0, chunk_ldes, qroot,
                                         &qtree) == DNAC_PROVER_OK &&
             dnac_prover_fs_to_zeta(t, qroot, r_root, 2, &zeta, &zeta_next) ==
                 DNAC_PROVER_OK) {
@@ -308,10 +308,10 @@ int main(int argc, char **argv) {
         int bad = 0;
         memcpy(bad_draws, r_draws, sizeof(bad_draws));
         bad_draws[5] = GOLDILOCKS_P;
-        if (dnac_prover_random_commit(bad_draws, 8, S8_CW, 2, lde_t, root_t,
+        if (dnac_prover_random_commit(bad_draws, 8, S8_CW, 2, NULL, 0, lde_t, root_t,
                                       &rt) != DNAC_PROVER_ERR_NONCANONICAL)
             bad++;
-        if (dnac_prover_random_commit(r_draws, 6, S8_CW, 2, lde_t, root_t,
+        if (dnac_prover_random_commit(r_draws, 6, S8_CW, 2, NULL, 0, lde_t, root_t,
                                       &rt) != DNAC_PROVER_ERR_PARAM)
             bad++; /* non-power-of-two height */
         if (dnac_prover_fs_to_zeta(NULL, random_root_v, NULL, 2, &z, &zn) !=

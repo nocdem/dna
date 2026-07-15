@@ -407,7 +407,7 @@ dnac_prover_status_t dnac_prover_prove(
         s = dnac_prover_coset_lde_bitrev(rand_c, 2 * height, P_RAND_W,
                                          P_LOG_BLOWUP, 7, lde_c);
         if (s != DNAC_PROVER_OK) { rc = s; goto cleanup; }
-        s = dnac_prover_commit_matrix(lde_c, lde_h, P_RAND_W,
+        s = dnac_prover_commit_matrix(lde_c, lde_h, P_RAND_W, NULL, 0,
                                       p->trace_c.bytes, &ttree);
         if (s != DNAC_PROVER_OK) { rc = s; goto cleanup; }
         s = dnac_prover_fs_to_alpha(t, degree_bits, base_db, 0, p->trace_c.bytes,
@@ -425,9 +425,11 @@ dnac_prover_status_t dnac_prover_prove(
         if (s != DNAC_PROVER_OK) { rc = s; goto cleanup; }
         s = dnac_prover_quotient_commit(qflat, q_size, P_NUM_QC, P_NUM_RANDOM,
                                         P_LOG_BLOWUP, 7, codeword, blinding,
+                                        NULL, 0,
                                         chunk_ldes, p->quot_c.bytes, &qtree);
         if (s != DNAC_PROVER_OK) { rc = s; goto cleanup; }
         s = dnac_prover_random_commit(r_draws, 2 * height, P_CW, P_LOG_BLOWUP,
+                                      NULL, 0,
                                       r_lde, p->rand_c.bytes, &rtree);
         if (s != DNAC_PROVER_OK) { rc = s; goto cleanup; }
         s = dnac_prover_fs_to_zeta(t, p->quot_c.bytes, p->rand_c.bytes,
@@ -481,7 +483,8 @@ dnac_prover_status_t dnac_prover_prove(
         }
     }
     if (dnac_prover_fri_commit_phase(ro, lde_h, P_LOG_BLOWUP,
-                                     P_LOG_FINAL_POLY_LEN, P_MAX_LOG_ARITY, t,
+                                     P_LOG_FINAL_POLY_LEN, P_MAX_LOG_ARITY,
+                                     NULL, 0, t,
                                      &res) != DNAC_PROVER_OK) {
         goto cleanup;
     }

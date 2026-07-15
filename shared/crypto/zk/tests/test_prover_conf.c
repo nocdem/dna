@@ -193,6 +193,14 @@ int main(int argc,char **argv){
     inst.blind=blind; inst.height=height;
     inst.draws=draws; inst.num_draws=need;
 
+    /* M3b: --salted runs the SALTED prover (salt_draws = the SAME fresh
+     * SmallRng(1) sequence; stream A uses [0:160h], stream B from pos 0). When
+     * salted, argv[1] must be a conf_root_air_salted*.json so the roots/zeta/
+     * final_poly byte-match the REAL salted proof. */
+    int salted=0;
+    for(int a=3;a<argc;a++) if(strcmp(argv[a],"--salted")==0)salted=1;
+    if(salted){ inst.salt_draws=draws; inst.num_salt_draws=need; }
+
     int fails=0;
     printf("── conf instance: height=%zu n_out=%zu degree_bits=%zu draws=%zu\n",
            height,n_out,fx->degree_bits,need);
@@ -259,7 +267,11 @@ int main(int argc,char **argv){
      * N-chunk constraint check) and re-verify, and publics (which do NOT
      * depend on the draws) must still equal the KAT proof's publics. */
     {
+        /* production fills BOTH draws AND salt_draws from OS entropy (genuinely
+         * salted, M3b), so value-independent: proof self-verifies + publics
+         * (which don't depend on the random streams) match. */
         dnac_conf_prover_instance_t pi=inst; pi.draws=NULL; pi.num_draws=0;
+        pi.salt_draws=NULL; pi.num_salt_draws=0;
         dnac_conf_prover_proof_t *pp=NULL;
         dnac_prover_status_t ps=dnac_conf_prover_prove_production(&pi,&pp);
         int ok=(ps==DNAC_PROVER_OK)&&pp&&
@@ -269,7 +281,7 @@ int main(int argc,char **argv){
             for(size_t i=0;ok&&i<np;i++)
                 if(gold_fp_to_u64(pub[i])!=fx->public_values[i])ok=0;
         }
-        printf("  T7 production (OS-entropy) prove self-verifies + publics match %s\n",
+        printf("  T7 production (OS-entropy, SALTED) self-verifies + publics match %s\n",
                ok?"PASS":"FAIL");
         if(!ok)fails++;
         if(pp)dnac_conf_prover_proof_free(pp);

@@ -207,7 +207,7 @@ int main(int argc, char **argv) {
                                         randomized_c) != DNAC_PROVER_OK ||
             dnac_prover_coset_lde_bitrev(randomized_c, 2 * S6_H, S6_RAND_W, 2,
                                          7, lde_c) != DNAC_PROVER_OK ||
-            dnac_prover_commit_matrix(lde_c, S6_LDE_H, S6_RAND_W, root_c,
+            dnac_prover_commit_matrix(lde_c, S6_LDE_H, S6_RAND_W, NULL, 0, root_c,
                                       &tree) != DNAC_PROVER_OK) {
             fprintf(stderr, "chain rebuild FAIL\n");
             free(s6);

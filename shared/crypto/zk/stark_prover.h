@@ -223,6 +223,8 @@ dnac_prover_status_t dnac_prover_commit_matrix(
     const uint64_t *mat,
     size_t height,
     size_t width,
+    const uint64_t *salts,     /* M3b: [height*salt_elems] or NULL (unsalted) */
+    size_t          salt_elems,/* 0 = plain leaf; >0 = salted leaf row‖salts */
     uint8_t out_root[DNAC_MERKLE_DIGEST_BYTES],
     dnac_merkle_tree_t **out_tree);
 
@@ -404,6 +406,8 @@ dnac_prover_status_t dnac_prover_quotient_commit(
     uint64_t q_shift,
     const uint64_t *codeword_rand,
     const uint64_t *blinding_rand,
+    const uint64_t *salts,      /* M3b: [num_chunks*lde_h*salt_elems] or NULL */
+    size_t          salt_elems,
     uint64_t *out_chunk_ldes,
     uint8_t out_root[DNAC_MERKLE_DIGEST_BYTES],
     dnac_merkle_batch_tree_t **out_tree);
@@ -431,6 +435,8 @@ dnac_prover_status_t dnac_prover_random_commit(
     size_t height,
     size_t width,
     unsigned log_blowup,
+    const uint64_t *salts,     /* M3b: [(height<<log_blowup)*salt_elems] or NULL */
+    size_t          salt_elems,
     uint64_t *out_lde,
     uint8_t out_root[DNAC_MERKLE_DIGEST_BYTES],
     dnac_merkle_tree_t **out_tree);
@@ -583,6 +589,8 @@ dnac_prover_status_t dnac_prover_fri_commit_phase(
     unsigned log_blowup,
     unsigned log_final_poly_len,
     unsigned max_log_arity,
+    const uint64_t *salt_draws, /* M3b: FRI-mmcs stream B, or NULL (unsalted) */
+    size_t          salt_elems,
     dnac_transcript_t *t,
     dnac_prover_fri_result_t *res);
 

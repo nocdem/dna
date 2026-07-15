@@ -757,6 +757,9 @@ test: all
 	@echo "============================================================"
 	@$(BUILD)/test_prover_conf tools/vectors/conf_root_air_zk.json tools/vectors/smallrng_goldilocks.json
 	@$(BUILD)/test_prover_conf tools/vectors/conf_root_air_zk_h16.json tools/vectors/smallrng_goldilocks.json
+	@echo "  -- M3b: SALTED conf prover (every commit+opening salted) --"
+	@$(BUILD)/test_prover_conf tools/vectors/conf_root_air_salted.json tools/vectors/smallrng_goldilocks.json --salted
+	@$(BUILD)/test_prover_conf tools/vectors/conf_root_air_salted_h16.json tools/vectors/smallrng_goldilocks.json --salted
 	@echo
 	@echo "============================================================"
 	@echo "S1 (C prover) — RangeProofAir witness-trace builder byte-match KAT"

@@ -65,7 +65,21 @@ typedef struct {
     uint64_t        tx_binding[4];
     const uint64_t *draws;
     size_t          num_draws;   /* must equal DNAC_CONF_PROVER_TOTAL_DRAWS */
+    /* M3b salted-leaf hiding: a fresh-SmallRng(1) salt sequence (both the
+     * input-mmcs stream A and the FRI-mmcs stream B slice this ONE buffer from
+     * their own offsets; design §3a). NULL -> unsalted (plain leaves). Length
+     * must be >= DNAC_CONF_PROVER_SALT_DRAWS(height). */
+    const uint64_t *salt_draws;
+    size_t          num_salt_draws;
 } dnac_conf_prover_instance_t;
+
+/** SALT_ELEMS for the M3b hiding MMCS (Goldilocks 64-bit x 2 = 128-bit). */
+#define C_SALT_ELEMS 2u
+
+/** Salt draws needed: input stream A = 160h (trace 16h + quotient 128h +
+ *  random 16h) is the max; the FRI stream B (< 2*sum of layer heights <
+ *  2*lde_h) reuses the SAME buffer from position 0. lde_h = 8h. */
+#define DNAC_CONF_PROVER_SALT_DRAWS(height) ((size_t)160 * (size_t)(height))
 
 /** Opaque produced proof; free with dnac_conf_prover_proof_free. */
 typedef struct dnac_conf_prover_proof_s dnac_conf_prover_proof_t;
@@ -81,13 +95,18 @@ dnac_prover_status_t dnac_conf_prover_prove(
     dnac_conf_prover_proof_t         **out_proof);
 
 /**
- * PRODUCTION entry point (G2): fills the is_zk hiding draw stream from OS
- * entropy (dnac_zk_fill_draws — rejection-sampled canonical Goldilocks,
- * fail-close) and proves. Same instance fields as dnac_conf_prover_prove EXCEPT
- * `draws`/`num_draws` are IGNORED (filled internally). Use this in a wallet;
- * use dnac_conf_prover_prove with a fixed stream only for byte-stable KATs.
- * Returns DNAC_PROVER_ERR_PARAM if the instance shape is invalid or entropy
- * fails (fail-close — never a partial/zero-draw proof).
+ * PRODUCTION entry point (G2): fills BOTH secret streams from OS entropy and
+ * proves a GENUINELY SALTED (M3b leaf-hiding) proof —
+ *   - the is_zk codeword/blinding stream (`draws`, 708h), AND
+ *   - the salted-leaf MMCS salt stream (`salt_draws`, 160h)
+ * via dnac_zk_fill_draws (rejection-sampled canonical Goldilocks, fail-close).
+ * Same instance fields as dnac_conf_prover_prove EXCEPT `draws`/`num_draws` AND
+ * `salt_draws`/`num_salt_draws` are IGNORED (filled internally). Use this in a
+ * wallet — it delivers BOTH the is_zk randomization AND the leaf-salt hiding
+ * that keeps the committed trace rows (confidential amounts/blinds) hidden at
+ * the FRI query openings. Use dnac_conf_prover_prove with fixed streams only for
+ * byte-stable KATs. Returns DNAC_PROVER_ERR_PARAM if the instance shape is
+ * invalid or entropy fails (fail-close — never a partial or non-hiding proof).
  */
 dnac_prover_status_t dnac_conf_prover_prove_production(
     const dnac_conf_prover_instance_t *inst,

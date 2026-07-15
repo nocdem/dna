@@ -64,6 +64,13 @@ struct dnac_conf_prover_proof_s {
     gold_fp2_t *cp_step_sib;
     dnac_merkle_digest_t *cp_step_psib;
 
+    /* M3b salted openings: per-query salt values (gold_fp_t) + per-matrix
+     * pointer arrays (the opening structs' `salts` field is
+     * `const gold_fp_t * const *`). NULL/0 when unsalted. */
+    gold_fp_t *rand_salt, *trace_salt, *quot_salt, *cp_salt;
+    const gold_fp_t **rand_saltp, **trace_saltp, **quot_saltp;
+    int salted; size_t salt_elems;
+
     dnac_fri_proof_t proof;
     dnac_fri_params_t params;
     dnac_fri_opening_point_t rand_pt[1], trace_pt[2];
@@ -318,6 +325,13 @@ void dnac_conf_prover_proof_free(dnac_conf_prover_proof_t *p) {
     free(p->cp_steps);
     free(p->cp_step_sib);
     free(p->cp_step_psib);
+    free(p->rand_salt);
+    free(p->trace_salt);
+    free(p->quot_salt);
+    free(p->cp_salt);
+    free(p->rand_saltp);
+    free(p->trace_saltp);
+    free(p->quot_saltp);
     free(p);
 }
 
@@ -332,22 +346,35 @@ dnac_prover_status_t dnac_conf_prover_prove_production(
         return DNAC_PROVER_ERR_PARAM; /* validate before sizing the stream */
     }
     const size_t nd = DNAC_CONF_PROVER_TOTAL_DRAWS(height);
+    /* M3b (red-team prover fix): production must be GENUINELY SALTED, else the
+     * FRI query openings expose the committed trace rows (confidential amounts)
+     * and the caller gets a non-hiding proof it cannot detect. Fill BOTH the
+     * is_zk codeword stream (nd = 708h) AND the salt stream (ns = 160h) from OS
+     * entropy — the salt streams A/B are independent fresh CSPRNG streams (design
+     * §3a), so a fresh OS-entropy salt buffer is a valid production salt source. */
+    const size_t ns = DNAC_CONF_PROVER_SALT_DRAWS(height);
     uint64_t *draws = (uint64_t *)malloc(nd * sizeof(uint64_t));
-    if (draws == NULL) return DNAC_PROVER_ERR_PARAM;
-    if (dnac_zk_fill_draws(draws, nd) != 0) {
-        free(draws); /* fail-close on entropy error — no partial-draw proof */
+    uint64_t *salts = (uint64_t *)malloc(ns * sizeof(uint64_t));
+    if (draws == NULL || salts == NULL) { free(draws); free(salts); return DNAC_PROVER_ERR_PARAM; }
+    if (dnac_zk_fill_draws(draws, nd) != 0 || dnac_zk_fill_draws(salts, ns) != 0) {
+        /* fail-close on entropy error — no partial/non-hiding proof. */
+        for (volatile uint64_t *z = draws; z < draws + nd; z++) *z = 0;
+        for (volatile uint64_t *z = salts; z < salts + ns; z++) *z = 0;
+        free(draws); free(salts);
         return DNAC_PROVER_ERR_PARAM;
     }
     dnac_conf_prover_instance_t local = *inst;
     local.draws = draws;
     local.num_draws = nd;
+    local.salt_draws = salts;      /* genuinely salted production proof */
+    local.num_salt_draws = ns;
     const dnac_prover_status_t rc = dnac_conf_prover_prove(&local, out_proof);
-    /* Zeroize the hiding-draw stream before free (client-side hygiene:
-     * red-team csprng LOW): the blinding values are the ONLY secret that keeps
-     * amounts hidden — don't leave them in freed heap. volatile memset so the
-     * compiler cannot elide it. */
+    /* Zeroize both secret streams before free (client-side hygiene): the
+     * codeword blinding AND the leaf salts hide the committed amounts — don't
+     * leave them in freed heap. volatile so the compiler cannot elide it. */
     for (volatile uint64_t *z = draws; z < draws + nd; z++) *z = 0;
-    free(draws);
+    for (volatile uint64_t *z = salts; z < salts + ns; z++) *z = 0;
+    free(draws); free(salts);
     return rc;
 }
 
@@ -370,6 +397,12 @@ dnac_prover_status_t dnac_conf_prover_prove(
         return DNAC_PROVER_ERR_PARAM;
     }
     if (inst->num_draws != DNAC_CONF_PROVER_TOTAL_DRAWS(height)) {
+        return DNAC_PROVER_ERR_PARAM;
+    }
+    /* M3b: salt_draws optional (NULL=unsalted). If present, must cover stream A
+     * (160h). Stream B reuses the same buffer from position 0 (< 2*lde_h < 160h). */
+    if (inst->salt_draws != NULL &&
+        inst->num_salt_draws < DNAC_CONF_PROVER_SALT_DRAWS(height)) {
         return DNAC_PROVER_ERR_PARAM;
     }
     for (size_t j = 0; j < 4; j++) {
@@ -478,14 +511,23 @@ dnac_prover_status_t dnac_conf_prover_prove(
     gold_fp2_t alpha, zeta, zeta_next, fri_alpha;
     {
         dnac_prover_status_t s;
+        /* M3b salt slices (all into the ONE stream-A salt_draws buffer; the
+         * input-mmcs consumes trace→quotient→random contiguously, design §3a).
+         * salt_draws==NULL -> unsalted (SE=0). The FRI commit-phase uses stream
+         * B = a SEPARATE fresh SmallRng(1) = the SAME buffer FROM POSITION 0. */
+        const size_t SE = inst->salt_draws ? (size_t)C_SALT_ELEMS : 0;
+        const uint64_t *sd = inst->salt_draws;
+        const size_t salt_quot_off = lde_h * SE;                    /* 16h */
+        const size_t salt_rand_off = lde_h * SE * (1 + C_NUM_QC);   /* 16h*9 */
         s = dnac_prover_randomize_trace(base_c, height, C_W, C_NUM_RANDOM,
                                         trace_draws, rand_c);
         if (s != DNAC_PROVER_OK) { rc = s; goto cleanup; }
         s = dnac_prover_coset_lde_bitrev(rand_c, 2 * height, C_RAND_W,
                                          C_LOG_BLOWUP, 7, lde_c);
         if (s != DNAC_PROVER_OK) { rc = s; goto cleanup; }
-        s = dnac_prover_commit_matrix(lde_c, lde_h, C_RAND_W, p->trace_c.bytes,
-                                      &ttree);
+        s = dnac_prover_commit_matrix(lde_c, lde_h, C_RAND_W,
+                                      sd ? &sd[0] : NULL, SE,
+                                      p->trace_c.bytes, &ttree);
         if (s != DNAC_PROVER_OK) { rc = s; goto cleanup; }
         s = dnac_prover_fs_to_alpha(t, degree_bits, base_db, 0,
                                     p->trace_c.bytes, publics_u, C_NPUB,
@@ -503,9 +545,11 @@ dnac_prover_status_t dnac_conf_prover_prove(
         if (s != DNAC_PROVER_OK) { rc = s; goto cleanup; }
         s = dnac_prover_quotient_commit(qflat, q_size, C_NUM_QC, C_NUM_RANDOM,
                                         C_LOG_BLOWUP, 7, codeword, blinding,
+                                        sd ? &sd[salt_quot_off] : NULL, SE,
                                         chunk_ldes, p->quot_c.bytes, &qtree);
         if (s != DNAC_PROVER_OK) { rc = s; goto cleanup; }
         s = dnac_prover_random_commit(r_draws, 2 * height, C_CW, C_LOG_BLOWUP,
+                                      sd ? &sd[salt_rand_off] : NULL, SE,
                                       r_lde, p->rand_c.bytes, &rtree);
         if (s != DNAC_PROVER_OK) { rc = s; goto cleanup; }
         s = dnac_prover_fs_to_zeta(t, p->quot_c.bytes, p->rand_c.bytes,
@@ -579,8 +623,10 @@ dnac_prover_status_t dnac_conf_prover_prove(
         }
     }
     if (dnac_prover_fri_commit_phase(ro, lde_h, C_LOG_BLOWUP,
-                                     C_LOG_FINAL_POLY_LEN, C_MAX_LOG_ARITY, t,
-                                     &res) != DNAC_PROVER_OK) {
+                                     C_LOG_FINAL_POLY_LEN, C_MAX_LOG_ARITY,
+                                     inst->salt_draws, /* stream B from pos 0 */
+                                     inst->salt_draws ? (size_t)C_SALT_ELEMS : 0,
+                                     t, &res) != DNAC_PROVER_OK) {
         goto cleanup;
     }
     have_res = 1;
@@ -640,12 +686,28 @@ dnac_prover_status_t dnac_conf_prover_prove(
         p->cp_step_sib = (gold_fp2_t *)malloc(nq * nr * sizeof(gold_fp2_t));
         p->cp_step_psib = (dnac_merkle_digest_t *)malloc(
             nq * cp_depth_sum * sizeof(dnac_merkle_digest_t));
+        /* M3b salt storage (per-query opening salts, gold_fp_t) + pointer arrays */
+        const size_t SE = inst->salt_draws ? (size_t)C_SALT_ELEMS : 0;
+        p->salted = inst->salt_draws != NULL;
+        p->salt_elems = SE;
+        if (SE > 0) {
+            p->rand_salt  = (gold_fp_t *)malloc(nq * SE * sizeof(gold_fp_t));
+            p->trace_salt = (gold_fp_t *)malloc(nq * SE * sizeof(gold_fp_t));
+            p->quot_salt  = (gold_fp_t *)malloc(nq * C_NUM_QC * SE * sizeof(gold_fp_t));
+            p->cp_salt    = (gold_fp_t *)malloc(nq * nr * SE * sizeof(gold_fp_t));
+            p->rand_saltp  = (const gold_fp_t **)malloc(nq * sizeof(gold_fp_t *));
+            p->trace_saltp = (const gold_fp_t **)malloc(nq * sizeof(gold_fp_t *));
+            p->quot_saltp  = (const gold_fp_t **)malloc(nq * C_NUM_QC * sizeof(gold_fp_t *));
+        }
         if (!p->query_proofs || !p->batches || !p->rand_rows ||
             !p->trace_rows || !p->quot_rows || !p->rand_rowptr ||
             !p->trace_rowptr || !p->quot_rowptr || !p->rand_len ||
             !p->trace_len || !p->quot_len || !p->rand_sib || !p->trace_sib ||
             !p->quot_sib || !p->cp_steps || !p->cp_step_sib ||
-            !p->cp_step_psib) {
+            !p->cp_step_psib ||
+            (SE > 0 && (!p->rand_salt || !p->trace_salt || !p->quot_salt ||
+                        !p->cp_salt || !p->rand_saltp || !p->trace_saltp ||
+                        !p->quot_saltp))) {
             goto cleanup;
         }
 
@@ -674,6 +736,15 @@ dnac_prover_status_t dnac_conf_prover_prove(
             B[0].opening_proof.depth = (uint32_t)in_depth;
             B[0].opening_proof.num_matrices = 1;
             B[0].opening_proof.siblings = &p->rand_sib[q * in_depth];
+            if (SE > 0) {
+                /* random salt (stream A random section = draws[lde_h*SE*(1+C_NUM_QC)]) */
+                const size_t off = lde_h * SE * (1 + C_NUM_QC) + (size_t)index * SE;
+                for (size_t s = 0; s < SE; s++)
+                    p->rand_salt[q * SE + s] = gold_fp_from_u64(inst->salt_draws[off + s]);
+                p->rand_saltp[q] = &p->rand_salt[q * SE];
+                B[0].salts = &p->rand_saltp[q];
+                B[0].salt_elems = SE;
+            }
 
             /* batch 1: trace */
             for (size_t i = 0; i < C_RAND_W; i++)
@@ -693,6 +764,15 @@ dnac_prover_status_t dnac_conf_prover_prove(
             B[1].opening_proof.depth = (uint32_t)in_depth;
             B[1].opening_proof.num_matrices = 1;
             B[1].opening_proof.siblings = &p->trace_sib[q * in_depth];
+            if (SE > 0) {
+                /* trace salt (stream A trace section = draws[2*index]) */
+                const size_t off = (size_t)index * SE;
+                for (size_t s = 0; s < SE; s++)
+                    p->trace_salt[q * SE + s] = gold_fp_from_u64(inst->salt_draws[off + s]);
+                p->trace_saltp[q] = &p->trace_salt[q * SE];
+                B[1].salts = &p->trace_saltp[q];
+                B[1].salt_elems = SE;
+            }
 
             /* batch 2: quotient (num_qc matrices, shared path) */
             for (size_t m = 0; m < C_NUM_QC; m++) {
@@ -719,10 +799,24 @@ dnac_prover_status_t dnac_conf_prover_prove(
             B[2].opening_proof.depth = (uint32_t)in_depth;
             B[2].opening_proof.num_matrices = C_NUM_QC;
             B[2].opening_proof.siblings = &p->quot_sib[q * in_depth];
+            if (SE > 0) {
+                /* quotient salts (stream A quotient section = draws[lde_h*SE +
+                 * m*lde_h*SE + 2*index]) per chunk matrix m. */
+                for (size_t m = 0; m < C_NUM_QC; m++) {
+                    const size_t off = lde_h * SE + m * lde_h * SE + (size_t)index * SE;
+                    gold_fp_t *dst = &p->quot_salt[(q * C_NUM_QC + m) * SE];
+                    for (size_t s = 0; s < SE; s++)
+                        dst[s] = gold_fp_from_u64(inst->salt_draws[off + s]);
+                    p->quot_saltp[q * C_NUM_QC + m] = dst;
+                }
+                B[2].salts = &p->quot_saltp[q * C_NUM_QC];
+                B[2].salt_elems = SE;
+            }
 
             /* commit-phase openings */
             uint64_t cur = index;
             size_t psib_off = q * cp_depth_sum;
+            size_t cp_salt_off = 0; /* stream B cumulative offset (layer-major) */
             for (size_t r = 0; r < nr; r++) {
                 const unsigned a = res.layer_log_arities[r];
                 if (a != 1) goto cleanup; /* arity-2 only; fail-close */
@@ -746,6 +840,17 @@ dnac_prover_status_t dnac_conf_prover_prove(
                 S->opening_proof.depth = (uint32_t)depth;
                 S->opening_proof.num_matrices = 1;
                 S->opening_proof.siblings = &p->cp_step_psib[psib_off];
+                if (SE > 0) {
+                    /* stream B: layer r salt for folded row gid at
+                     * draws[cp_salt_off + gid*SE] (design §3a). */
+                    const size_t off = cp_salt_off + (size_t)gid * SE;
+                    gold_fp_t *dst = &p->cp_salt[(q * nr + r) * SE];
+                    for (size_t s = 0; s < SE; s++)
+                        dst[s] = gold_fp_from_u64(inst->salt_draws[off + s]);
+                    S->salts = dst;
+                    S->salt_elems = SE;
+                }
+                cp_salt_off += res.layer_heights[r] * SE;
                 psib_off += depth;
                 cur = gid;
             }

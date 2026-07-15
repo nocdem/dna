@@ -91,26 +91,37 @@
       (b) the `--salted` JSON parser CPU-spun on a flag/vector mismatch → anti-spin
       backstop (both directions now clean-reject). Report
       `2026-07-15-b1-stage2-m3b-redteam-report.md`.
-    - **C salted PROVER — input-mmcs commits BYTE-MATCHED (2026-07-15):**
-      `test_prover_salted_commit.c` reconstructs the conf LDEs via the PUBLIC
-      prover stages and builds the SALTED input-mmcs leaves (leaf = committed row
-      ‖ SALT_ELEMS salts); the C salted **TRACE and RANDOM roots byte-match the
-      REAL Plonky3 salted proof** (`commitments.trace` / `.random`). BOTH salt
-      streams are GROUNDED + cross-checked vs the vector (design §3a): stream A
-      (input-mmcs: trace `draws[0:16h]` → quotient chunk c → random) and stream B
-      (FRI-mmcs commit-phase layers, separate SmallRng(1)); committed-leaf-row i
-      salt = `draws[base + 2i]`; leaf 55 → trace `draws[110]`, random `draws[1262]`,
-      quotient `draws[238..1134]`; FRI q0 gid 27 → `draws[54]`. **DEFERRED
-      (mechanical, grounded):** the 8-chunk quotient salted batch + commit-phase
-      FRI-mmcs salted layers + salted openings + full self-verify — the remaining
-      prover threading, mirroring M2b→S13.
+    - **🎯 C salted PROVER — FULL self-verify COMPLETE (2026-07-15):** the pure-C
+      conf prover now PRODUCES a SALTED is_zk=1 proof that byte-matches the REAL
+      Plonky3 salted proof AND self-verifies. Rust-free end-to-end.
+      - **4 commit fns** (`dnac_prover_commit_matrix/_quotient_commit/_random_commit/
+        _fri_commit_phase`) gained an optional salt param (`salt_elems=0` = unsalted,
+        RangeProofAir path byte-identical; all 32 gates GREEN). ~33 caller sites
+        updated (a fork swept the S3-S13 tests).
+      - **Salt threading (`stark_prover_conf.c` salted mode):** stream A (input-mmcs,
+        contiguous offsets trace `[0]` / quotient `[16h]` / random `[16h·9]`) into
+        trace/quotient/random commits; stream B (FRI-mmcs, separate SmallRng(1) from
+        pos 0) into the commit-phase layers; salted query openings (commit↔opening
+        salt formulas symmetric per matrix). Transcript alpha/zeta/beta all derive
+        from SALTED roots (commits salted before observe).
+      - **Gate `test_prover_conf --salted` (h=8 + h=16):** trace/quotient/random
+        roots + zeta + final_poly BYTE-MATCH the REAL salted proof (trace root
+        `8e24ec9b`) + self-verify (FRI `DNAC_FRI_OK` + N-chunk constraint check).
+      - **Production is GENUINELY SALTED (red-team fix):** `dnac_conf_prover_prove_
+        production` fills BOTH the codeword stream (708h) AND the salt stream (160h)
+        from OS entropy → a real hiding proof; the earlier version left `salt_draws=
+        NULL` (unsalted, non-hiding — the sole red-team finding, LOW, non-soundness).
+      - **Independent 10-agent red-team: 9/10 SOUND, 0 soundness/mint;** the 1 LOW
+        (production-unsalted) FIXED. Report `2026-07-15-b1-stage2-m3b-prover-
+        redteam-report.md`. Salt layout: design §3a.
   Still PARKED (grep-confirmed: no consensus CMake references crypto/zk);
   product-need for confidential amounts is an open question (v3 transparent gives
   the same privacy).
 - **`make test`: 61 test binaries GREEN, 0 warnings** (`cd shared/crypto/zk && make test`;
   `test_fri_verify_zk` runs on FibonacciAir + is_zk RangeProofAir + 2 conf-root +
-  2 SALTED conf-root (`--salted`) instances; `test_prover_salted_commit` byte-matches
-  the salted trace commitment).
+  2 SALTED conf-root (`--salted`) instances; `test_prover_conf` runs 2 unsalted +
+  2 SALTED conf-prover instances; `test_prover_salted_commit` byte-matches the
+  salted trace + random commitments).
   **C PROVER COMPLETE (S1-S13) + P1 arbitrary-instance:** the prover-side gates
   = S1 trace + S2 LDE + S3 commit + S5 alpha + S6 quotient + S7 quotient-commit +
   S8 zeta + S9 open + S10 FRI + S11/S12 query + **S13 MILESTONE (pure-C prove →

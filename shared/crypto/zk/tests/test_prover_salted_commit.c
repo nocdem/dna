@@ -183,7 +183,7 @@ int main(int argc, char **argv) {
             const uint64_t *r_draws = d2 + 696 * height; /* stream C R section */
             uint64_t *r_lde = malloc(lde_h * CW * sizeof(uint64_t));
             dnac_merkle_digest_t rr; dnac_merkle_tree_t *rt = NULL;
-            if (dnac_prover_random_commit(r_draws, 2 * height, CW, 2, r_lde, rr.bytes, &rt) == DNAC_PROVER_OK) {
+            if (dnac_prover_random_commit(r_draws, 2 * height, CW, 2, NULL, 0, r_lde, rr.bytes, &rt) == DNAC_PROVER_OK) {
                 dnac_merkle_tree_free(rt);
                 /* salted commit: leaf i = r_lde row i (CW*8) || salt draws[1152+2i] */
                 const size_t rsb = (CW + SALT) * 8;

@@ -145,13 +145,13 @@ int main(int argc, char **argv) {
               dnac_prover_build_range_proof_trace(amounts, 4, 4, base_c, NULL) == DNAC_PROVER_OK &&
               dnac_prover_randomize_trace(base_c, H, W, R, trace_draws, randomized_c) == DNAC_PROVER_OK &&
               dnac_prover_coset_lde_bitrev(randomized_c, 2 * H, RAND_W, 2, 7, lde_c) == DNAC_PROVER_OK &&
-              dnac_prover_commit_matrix(lde_c, LDE_H, RAND_W, troot, &ttree) == DNAC_PROVER_OK &&
+              dnac_prover_commit_matrix(lde_c, LDE_H, RAND_W, NULL, 0, troot, &ttree) == DNAC_PROVER_OK &&
               dnac_prover_fs_to_alpha(t, 3, 2, 0, troot, publics, 3, &alpha) == DNAC_PROVER_OK &&
               dnac_prover_quotient_selectors(2, 4, 7, sf, sl, st, iv) == DNAC_PROVER_OK &&
               dnac_prover_trace_on_quotient_domain(lde_c, LDE_H, RAND_W, QS, W, trace_q) == DNAC_PROVER_OK &&
               dnac_prover_quotient_values_range_zk(trace_q, QS, 4, publics, alpha, sf, sl, st, iv, qflat) == DNAC_PROVER_OK &&
-              dnac_prover_quotient_commit(qflat, QS, NQ, 4, 2, 7, codeword, blinding, chunk_ldes, qroot, &qtree) == DNAC_PROVER_OK &&
-              dnac_prover_random_commit(r_draws, 8, CW, 2, r_lde, rroot, &rtree) == DNAC_PROVER_OK &&
+              dnac_prover_quotient_commit(qflat, QS, NQ, 4, 2, 7, codeword, blinding, NULL, 0, chunk_ldes, qroot, &qtree) == DNAC_PROVER_OK &&
+              dnac_prover_random_commit(r_draws, 8, CW, 2, NULL, 0, r_lde, rroot, &rtree) == DNAC_PROVER_OK &&
               dnac_prover_fs_to_zeta(t, qroot, rroot, 2, &zeta, &zeta_next) == DNAC_PROVER_OK &&
               dnac_prover_open_matrix_at(r_lde, LDE_H, CW, 2, zeta, r_open) == DNAC_PROVER_OK &&
               dnac_prover_open_matrix_at(lde_c, LDE_H, RAND_W, 2, zeta, t_open) == DNAC_PROVER_OK &&
@@ -181,7 +181,7 @@ int main(int argc, char **argv) {
             rounds[2 + k] = (dnac_prover_fri_input_round_t){&chunk_ldes[k * CHUNK_LDE_CELLS], LDE_H, CW, 1, &zeta, q_ov[k]};
         }
         if (dnac_prover_fri_reduced_openings(rounds, 2 + NQ, LOG_H, fri_alpha, ro) != DNAC_PROVER_OK ||
-            dnac_prover_fri_commit_phase(ro, LDE_H, 2, 2, 1, t, &res) != DNAC_PROVER_OK) {
+            dnac_prover_fri_commit_phase(ro, LDE_H, 2, 2, 1, NULL, 0, t, &res) != DNAC_PROVER_OK) {
             fprintf(stderr, "commit phase FAIL\n");
             free(j11); free(j8); free(j7); free(j2);
             return 2;

@@ -223,7 +223,7 @@ int main(int argc, char **argv) {
                                         randomized_c) == DNAC_PROVER_OK &&
             dnac_prover_coset_lde_bitrev(randomized_c, 2 * S7_H, S7_RAND_W, 2,
                                          7, lde_c) == DNAC_PROVER_OK &&
-            dnac_prover_commit_matrix(lde_c, S7_LDE_H, S7_RAND_W, root_t,
+            dnac_prover_commit_matrix(lde_c, S7_LDE_H, S7_RAND_W, NULL, 0, root_t,
                                       &tree) == DNAC_PROVER_OK &&
             dnac_prover_fs_to_alpha(t, 3, 2, 0, root_t, publics, 3, &alpha) ==
                 DNAC_PROVER_OK &&
@@ -251,7 +251,7 @@ int main(int argc, char **argv) {
         dnac_merkle_batch_tree_t *btree = NULL;
         int bad_ldes = 1, bad_root = 1;
         if (dnac_prover_quotient_commit(qflat_c, S7_QS, S7_NQ, 4, 2, 7,
-                                        codeword, blinding, chunk_ldes_c,
+                                        codeword, blinding, NULL, 0, chunk_ldes_c,
                                         root_c, &btree) == DNAC_PROVER_OK) {
             bad_ldes = compare_cells("T2", chunk_ldes_c, chunk_ldes_v,
                                      S7_NQ * S7_CHUNK_LDE_CELLS, S7_CW);
@@ -276,16 +276,16 @@ int main(int argc, char **argv) {
         memcpy(bad_rand, codeword, sizeof(bad_rand));
         bad_rand[10] = GOLDILOCKS_P;
         if (dnac_prover_quotient_commit(qflat_c, S7_QS, S7_NQ, 4, 2, 7,
-                                        bad_rand, blinding, chunk_ldes_c,
+                                        bad_rand, blinding, NULL, 0, chunk_ldes_c,
                                         root_c, &btree) !=
             DNAC_PROVER_ERR_NONCANONICAL)
             bad++;
         if (dnac_prover_quotient_commit(qflat_c, S7_QS, 1, 4, 2, 7, codeword,
-                                        blinding, chunk_ldes_c, root_c,
+                                        blinding, NULL, 0, chunk_ldes_c, root_c,
                                         &btree) != DNAC_PROVER_ERR_PARAM)
             bad++; /* num_chunks < 2 breaks hiding */
         if (dnac_prover_quotient_commit(qflat_c, S7_QS, S7_NQ, 4, 0, 7,
-                                        codeword, blinding, chunk_ldes_c,
+                                        codeword, blinding, NULL, 0, chunk_ldes_c,
                                         root_c, &btree) !=
             DNAC_PROVER_ERR_PARAM)
             bad++;

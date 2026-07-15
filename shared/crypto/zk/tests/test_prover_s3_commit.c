@@ -138,7 +138,7 @@ int main(int argc, char **argv) {
     {
         uint8_t root[DNAC_MERKLE_DIGEST_BYTES];
         int bad = 1;
-        if (dnac_prover_commit_matrix(lde_vec, S3_LDE_H, S3_RAND_W, root,
+        if (dnac_prover_commit_matrix(lde_vec, S3_LDE_H, S3_RAND_W, NULL, 0, root,
                                       &tree) == DNAC_PROVER_OK) {
             bad = memcmp(root, root_expect, sizeof(root)) != 0;
         }
@@ -162,7 +162,7 @@ int main(int argc, char **argv) {
                                         randomized_c) == DNAC_PROVER_OK &&
             dnac_prover_coset_lde_bitrev(randomized_c, 2 * S3_H, S3_RAND_W, 2,
                                          7, lde_c) == DNAC_PROVER_OK &&
-            dnac_prover_commit_matrix(lde_c, S3_LDE_H, S3_RAND_W, root,
+            dnac_prover_commit_matrix(lde_c, S3_LDE_H, S3_RAND_W, NULL, 0, root,
                                       &chain_tree) == DNAC_PROVER_OK) {
             bad = memcmp(root, root_expect, sizeof(root)) != 0;
         }
@@ -212,17 +212,17 @@ int main(int argc, char **argv) {
         int bad = 0;
         memcpy(bad_mat, lde_vec, sizeof(bad_mat));
         bad_mat[7] = GOLDILOCKS_P; /* non-canonical cell */
-        if (dnac_prover_commit_matrix(bad_mat, S3_LDE_H, S3_RAND_W, root, &t) !=
+        if (dnac_prover_commit_matrix(bad_mat, S3_LDE_H, S3_RAND_W, NULL, 0, root, &t) !=
                 DNAC_PROVER_ERR_NONCANONICAL ||
             t != NULL)
             bad++;
         t = NULL;
-        if (dnac_prover_commit_matrix(lde_vec, 24, S3_RAND_W, root, &t) !=
+        if (dnac_prover_commit_matrix(lde_vec, 24, S3_RAND_W, NULL, 0, root, &t) !=
                 DNAC_PROVER_ERR_PARAM /* non-power-of-two height */
             || t != NULL)
             bad++;
         t = NULL;
-        if (dnac_prover_commit_matrix(lde_vec, S3_LDE_H, 0, root, &t) !=
+        if (dnac_prover_commit_matrix(lde_vec, S3_LDE_H, 0, NULL, 0, root, &t) !=
                 DNAC_PROVER_ERR_PARAM ||
             t != NULL)
             bad++;
