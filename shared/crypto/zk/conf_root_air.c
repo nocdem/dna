@@ -39,6 +39,12 @@ static void do_fold(const uint64_t cacc_prev[LANES], const uint64_t c[LANES],
         cacc_new[k] = ca2_out[p2air_end_post_off(P2AIR_HALF_FULL_ROUNDS - 1, k)];
 }
 
+void conf_root_air_fold_step(const uint64_t prev[LANES], const uint64_t c[LANES],
+                             uint64_t out[LANES]) {
+    uint64_t ca1[P2AIR_NUM_COLS], ca2[P2AIR_NUM_COLS];
+    do_fold(prev, c, ca1, ca2, out);
+}
+
 void conf_root_air_recompute_root(const uint64_t *c_list, size_t count,
                                   uint64_t root_out[LANES]) {
     uint64_t cacc[LANES] = {0, 0, 0, 0};

@@ -111,7 +111,8 @@ TESTS = \
     $(BUILD)/test_poseidon2_air \
     $(BUILD)/test_conf_balance_air \
     $(BUILD)/test_conf_commit_air \
-    $(BUILD)/test_conf_root_air
+    $(BUILD)/test_conf_root_air \
+    $(BUILD)/test_conf_txbind
 
 .PHONY: all test clean gen-fri-proof-wire gen-stark-proof-wire bench-prover
 
@@ -168,6 +169,11 @@ $(BUILD)/test_conf_commit_air: tests/test_conf_commit_air.c conf_commit_air.c co
 # fold, is_real-gated). Binds the ordered {c_i} to one root; verifier recompute.
 $(BUILD)/test_conf_root_air: tests/test_conf_root_air.c conf_root_air.c conf_commit_air.c conf_balance_air.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c poseidon2_goldilocks.c field_goldilocks.c conf_root_air.h conf_commit_air.h conf_balance_air.h poseidon2_air.h poseidon2_air_trace.h poseidon2_air_cols.h poseidon2_goldilocks.h field_goldilocks.h | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) tests/test_conf_root_air.c conf_root_air.c conf_commit_air.c conf_balance_air.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c poseidon2_goldilocks.c field_goldilocks.c -o $@
+
+# B1 Stage-1 — tx_binding (SEC-5 mechanism): grounded rejection map (challenger
+# convention) + sandbox sighash (SHA3-512) + tx-bound root (fold into commitment root).
+$(BUILD)/test_conf_txbind: tests/test_conf_txbind.c conf_txbind.c conf_root_air.c conf_commit_air.c conf_balance_air.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c poseidon2_goldilocks.c field_goldilocks.c keccak_ref.c conf_txbind.h conf_root_air.h field_goldilocks.h keccak_ref.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_conf_txbind.c conf_txbind.c conf_root_air.c conf_commit_air.c conf_balance_air.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c poseidon2_goldilocks.c field_goldilocks.c keccak_ref.c $(SHA3_SRC) $(LDLIBS) -o $@
 
 # Standalone Keccak / SHA3-512 reference.
 $(BUILD)/test_keccak_ref: tests/test_keccak_ref.c keccak_ref.c keccak_ref.h | $(BUILD)
@@ -803,6 +809,11 @@ test: all
 	@echo "  honest + verifier recompute + order-forgery + attacks rejected (is_zk=0)"
 	@echo "============================================================"
 	@$(BUILD)/test_conf_root_air
+	@echo
+	@echo "============================================================"
+	@echo "B1 Stage-1 — tx_binding (SEC-5 mechanism: rejection map + tx-bound root)"
+	@echo "============================================================"
+	@$(BUILD)/test_conf_txbind
 	@echo
 	@echo "============================================================"
 	@echo "ALL REMAINING (grounded) GATES: GREEN"

@@ -101,6 +101,14 @@ int conf_root_air_eval(const uint64_t *trace, size_t n_rows,
 void conf_root_air_recompute_root(const uint64_t *c_list, size_t count,
                                   uint64_t root_out[CONF_COMMIT_C_LANES]);
 
+/**
+ * @brief One capacity-IV sponge fold step W(prev, c) — exposed for the tx_binding
+ *        layer (fold tx_binding into the commitment root).
+ */
+void conf_root_air_fold_step(const uint64_t prev[CONF_COMMIT_C_LANES],
+                             const uint64_t c[CONF_COMMIT_C_LANES],
+                             uint64_t out[CONF_COMMIT_C_LANES]);
+
 #ifdef __cplusplus
 }
 #endif
