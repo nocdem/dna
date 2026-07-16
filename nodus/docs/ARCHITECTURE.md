@@ -918,6 +918,38 @@ Server configuration via JSON file (default: `/etc/nodus.conf`):
 - **TCP 4002** — Inter-node replication (Tier 1 TCP)
 - **TCP 4003** — Channel system: client posts + inter-node replication (dedicated)
 
+### Inter-node dialer authentication (TCP 4002, v0.18.11)
+
+The acceptor authenticates the dialer via a Dilithium5 challenge/response. The
+**dialer** in turn authenticates the acceptor's Kyber public key before
+encapsulating to it — otherwise an active MITM on the (plaintext) handshake could
+substitute its own key and own the resulting channel key, making every downstream
+AEAD property moot. Three gates, all **fail-closed**, on both dialer paths (the
+inter-node session and the DHT batch-forward):
+
+1. **Downgrade-close** — if this node has a Kyber identity, an `auth_ok` missing
+   `kyber_pk` / `kpk_sig` / `server_pk` is refused. It never falls through to the
+   plaintext branch, so an attacker cannot force cleartext by stripping a field.
+2. **Signature** — `kpk_sig` must verify over `(kyber_pk ‖ challenge_nonce)` under
+   `server_pk`. The dialer therefore **retains the challenge nonce** it signed
+   (previously it was signed and discarded, so the binding was uncheckable).
+3. **Identity pin** — `fingerprint(server_pk)` must equal the `node_id` the dialer
+   believed it was calling, recorded at connect time on the connection
+   (`expected_peer_id`, deliberately distinct from the verified `peer_id`). Gate 2
+   alone only proves the triple is *self-consistent* — an attacker signs its own
+   key with its own identity and passes. The pin is what binds the channel to the
+   intended peer.
+
+On pin mismatch the dialer **fails closed and alarms**; it does **not** re-resolve
+the identity, because FIND_NODE data is unsigned and re-pinning at attack time
+would let the same adversary both trigger and answer the mismatch. Recovery is via
+authenticated discovery refresh. Trust assumption: the routing-table `node_id`
+used as the pin reference is trusted-discovery (adversarial UDP-4000 Kademlia
+injection is out of scope, consistent with the honest-cluster-membership
+assumption). A peer that legitimately rotates its identity is refused until
+routing refreshes — a bounded replication-liveness gap; witness BFT (4004) carries
+no channel crypto and is unaffected.
+
 Data is stored in:
 - `<data_path>/nodus.db` — DHT value storage (SQLite)
 - `<data_path>/channels.db` — Channel post storage (SQLite)

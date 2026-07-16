@@ -71,6 +71,18 @@ typedef struct nodus_tcp_conn {
     bool                peer_id_set;
     bool                is_nodus;    /* true = Nodus peer, false = client */
 
+    /* CRIT-1: EXPECTED peer identity, set by the DIALER at connect time from
+     * the routing/roster entry it dialed — i.e. "who we believe we are calling".
+     * Deliberately distinct from `peer_id` above, which is the VERIFIED identity
+     * written only after authentication: conflating the two would let a reader
+     * mistake an unverified expectation for a proven identity, which is exactly
+     * the confusion the kyber_pk pin exists to prevent. The dialer pins
+     * fingerprint(server_pk) against this before Kyber-encapsulating, so an
+     * on-path attacker cannot substitute its own self-consistent
+     * (server_pk, kyber_pk, kpk_sig) triple. */
+    nodus_key_t         expected_peer_id;
+    bool                expected_peer_id_set;
+
     /* C-01/C-02: Auth state for inter-node and witness ports */
     uint8_t             auth_nonce[NODUS_NONCE_LEN];
     bool                auth_nonce_pending;

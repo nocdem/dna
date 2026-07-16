@@ -55,8 +55,9 @@ static uint8_t resp_buf[RESP_BUF_SIZE];
 
 /* Forward declaration for inter_tcp pool send (used in replicate_value and hinted_retry) */
 static int dht_republish_send(nodus_server_t *srv, const char *ip,
-                               uint16_t port, const uint8_t *frame,
-                               size_t flen);
+                               uint16_t port,
+                               const nodus_key_t *expected_node_id,
+                               const uint8_t *frame, size_t flen);
 
 /* Forward declaration: iterative lookup engine (defined later in file).
  * Used by replicate_value / replicate_media_chunk for large-cluster PUT
@@ -486,7 +487,7 @@ static void subscription_notify(nodus_server_t *srv, const nodus_key_t *key,
         if (nodus_key_cmp(&e->subscriber_node_id, &srv->identity.node_id) == 0) continue;
         if (!e->subscriber_ip[0]) continue;
         if (dht_republish_send(srv, e->subscriber_ip, e->subscriber_port,
-                                frame, flen) == 0) {
+                                &e->subscriber_node_id, frame, flen) == 0) {
             sent++;
         }
     }
@@ -506,8 +507,9 @@ static void subscription_notify(nodus_server_t *srv, const nodus_key_t *key,
 
 /* Forward declaration for inter_tcp pool replication */
 static int dht_republish_send(nodus_server_t *srv, const char *ip,
-                               uint16_t port, const uint8_t *frame,
-                               size_t flen);
+                               uint16_t port,
+                               const nodus_key_t *expected_node_id,
+                               const uint8_t *frame, size_t flen);
 
 /* ── Server-to-server TCP STORE (with hinted handoff on failure) ── */
 
@@ -597,7 +599,8 @@ static void do_replicate_store_frame(nodus_server_t *srv,
             continue;
         }
 
-        int send_rc = dht_republish_send(srv, closest[i].ip, closest[i].tcp_port, frame, flen);
+        int send_rc = dht_republish_send(srv, closest[i].ip, closest[i].tcp_port,
+                                          &closest[i].node_id, frame, flen);
         if (is_media) {
             fprintf(stderr,
                     "MEDIA-REPL-SEND: hash=%s peer=%s:%d rc=%d flen=%zu\n",
@@ -720,6 +723,7 @@ static void put_replication_complete(nodus_server_t *srv,
     for (int i = 0; i < count; i++) {
         if (nodus_key_cmp(&closest[i].node_id, &srv->identity.node_id) == 0) continue;
         if (dht_republish_send(srv, closest[i].ip, closest[i].tcp_port,
+                                &closest[i].node_id,
                                 ctx->frame, ctx->flen) == 0) {
             sent++;
         } else {
@@ -848,6 +852,7 @@ static void media_replication_complete(nodus_server_t *srv,
     for (int i = 0; i < count; i++) {
         if (nodus_key_cmp(&closest[i].node_id, &srv->identity.node_id) == 0) continue;
         if (dht_republish_send(srv, closest[i].ip, closest[i].tcp_port,
+                                &closest[i].node_id,
                                 ctx->frame, ctx->flen) == 0) {
             sent++;
         } else {
@@ -940,6 +945,7 @@ static void dht_hinted_retry(nodus_server_t *srv) {
         int h_sent = 0, h_bumped = 0, h_expired = 0;
         for (size_t j = 0; j < count; j++) {
             if (dht_republish_send(srv, ip, tcp_port,
+                                    &node_id,
                                     entries[j].frame_data,
                                     entries[j].frame_len) == 0) {
                 nodus_storage_hinted_delete(&srv->storage, entries[j].id);
@@ -1206,13 +1212,24 @@ static void server_on_pending_full(nodus_tcp_conn_t *conn,
  *  Frame is already wire-encoded (nodus_frame_encode already called by caller).
  *  Returns 0 on success, -1 on failure (caller should use hinted handoff). */
 static int dht_republish_send(nodus_server_t *srv, const char *ip,
-                               uint16_t port, const uint8_t *frame,
-                               size_t flen) {
+                               uint16_t port,
+                               const nodus_key_t *expected_node_id,
+                               const uint8_t *frame, size_t flen) {
     nodus_tcp_conn_t *conn = nodus_tcp_find_by_addr(&srv->inter_tcp, ip, port);
     if (!conn) {
         conn = nodus_tcp_connect(&srv->inter_tcp, ip, port);
         if (!conn) return -1;
         conn->is_nodus = true;
+        /* CRIT-1: record WHO we believe we are dialing, from the routing/roster
+         * entry that produced this ip:port. The auth_ok handler pins
+         * fingerprint(server_pk) against it before Kyber-encapsulating, so an
+         * on-path attacker cannot substitute its own identity. Stored on the
+         * conn (not the session) because on_inter_connect fires later and
+         * inter_session_clear() would wipe session state. */
+        if (expected_node_id) {
+            conn->expected_peer_id = *expected_node_id;
+            conn->expected_peer_id_set = true;
+        }
         /* on_inter_connect callback handles auth_required + hello */
     }
 
@@ -1391,7 +1408,7 @@ static void dht_republish(nodus_server_t *srv) {
         for (int j = 0; j < n; j++) {
             if (nodus_key_cmp(&closest[j].node_id, &srv->identity.node_id) == 0) continue;
             int rc = dht_republish_send(srv, closest[j].ip, closest[j].tcp_port,
-                                         frame, flen);
+                                         &closest[j].node_id, frame, flen);
             if (rc != 0) {
                 uint64_t offline = nodus_cluster_peer_offline_secs(&srv->cluster,
                                                                     &closest[j].node_id);
@@ -2570,6 +2587,10 @@ static void bf_handle_event(nodus_server_t *srv, int fd, uint32_t events) {
          * socket and only runs outbound (we dialed the leader), so no
          * inbound-conn oracle vector exists here — just the domain tag. */
         nodus_sig_t sig;
+        /* CRIT-1: retain the challenge nonce so BF_RECV_AUTHOK can verify the
+         * peer's kpk_sig over (kyber_pk || nonce). */
+        memcpy(c->challenge_nonce, msg.nonce, NODUS_NONCE_LEN);
+        c->has_challenge_nonce = true;
         if (nodus_sign_auth_challenge(&sig, msg.nonce, &srv->identity.sk) != 0) {
             nodus_t2_msg_free(&msg);
             bf_forward_fail(srv, b, c); return;
@@ -2607,10 +2628,49 @@ static void bf_handle_event(nodus_server_t *srv, int fd, uint32_t events) {
         memcpy(c->token, msg.token, NODUS_SESSION_TOKEN_LEN);
         uint32_t authok_txn = msg.txn_id;
 
+        /* CRIT-1: authenticate the peer's Kyber pk BEFORE encapsulating to it —
+         * verify kpk_sig over (kyber_pk || our challenge nonce) under server_pk,
+         * then pin fingerprint(server_pk) to the FIND_NODE peer we dialed. The
+         * signature alone only proves the triple is self-consistent; the pin is
+         * what stops an on-path MITM from substituting its own identity. All
+         * paths fail closed (bf_forward_fail). */
+        if (!msg.has_kyber_pk || !msg.has_kpk_sig || !msg.has_server_pk ||
+            !c->has_challenge_nonce || !c->has_expected_node_id) {
+            fprintf(stderr,
+                    "BF CRIT-1: auth_ok from %s:%u missing kyber_pk/kpk_sig/"
+                    "server_pk or local pin state — refusing\n",
+                    c->ip, (unsigned)c->port);
+            nodus_t2_msg_free(&msg);
+            bf_forward_fail(srv, b, c); return;
+        }
+        {
+            uint8_t sign_data[NODUS_KYBER_PK_BYTES + NODUS_NONCE_LEN];
+            memcpy(sign_data, msg.kyber_pk, NODUS_KYBER_PK_BYTES);
+            memcpy(sign_data + NODUS_KYBER_PK_BYTES,
+                   c->challenge_nonce, NODUS_NONCE_LEN);
+            nodus_key_t actual_id;
+            if (nodus_verify_kyber_bind(&msg.kpk_sig, sign_data,
+                                         sizeof(sign_data), &msg.server_pk) != 0) {
+                fprintf(stderr,
+                        "BF CRIT-1: kyber_pk signature INVALID from %s:%u — "
+                        "possible MITM, refusing\n", c->ip, (unsigned)c->port);
+                nodus_t2_msg_free(&msg);
+                bf_forward_fail(srv, b, c); return;
+            }
+            if (nodus_fingerprint(&msg.server_pk, &actual_id) != 0 ||
+                nodus_key_cmp(&actual_id, &c->expected_node_id) != 0) {
+                fprintf(stderr,
+                        "BF CRIT-1: identity PIN MISMATCH at %s:%u — server_pk "
+                        "fingerprint != dialed node_id, refusing\n",
+                        c->ip, (unsigned)c->port);
+                nodus_t2_msg_free(&msg);
+                bf_forward_fail(srv, b, c); return;
+            }
+        }
+
         /* Kyber encapsulate → shared secret + ciphertext */
         uint8_t ct[NODUS_KYBER_CT_BYTES], ss[NODUS_KYBER_SS_BYTES];
-        if (!msg.has_kyber_pk ||
-            qgp_kem1024_encapsulate(ct, ss, msg.kyber_pk) != 0) {
+        if (qgp_kem1024_encapsulate(ct, ss, msg.kyber_pk) != 0) {
             nodus_t2_msg_free(&msg);
             bf_forward_fail(srv, b, c); return;
         }
@@ -2834,6 +2894,15 @@ static int bf_start_forward(nodus_server_t *srv, dht_bf_batch_t *b,
     dht_bf_conn_t *c = &b->forwards[fi];
     memset(c, 0, sizeof(*c));
     c->fd = -1;
+
+    /* CRIT-1: record WHO we are dialing (the FIND_NODE-closest peer, NOT the
+     * leader — pinning against a leader_id here would self-partition every
+     * non-leader GET). The auth_ok handler pins fingerprint(server_pk) against
+     * this before Kyber-encapsulating. */
+    if (peer) {
+        c->expected_node_id = peer->node_id;
+        c->has_expected_node_id = true;
+    }
 
     /* Copy key indices */
     c->key_indices = malloc((size_t)key_count * sizeof(int));
@@ -3575,7 +3644,7 @@ static void listen_fwd_complete(nodus_server_t *srv,
     for (int i = 0; i < count; i++) {
         if (nodus_key_cmp(&closest[i].node_id, &srv->identity.node_id) == 0) continue;
         if (dht_republish_send(srv, closest[i].ip, closest[i].tcp_port,
-                                frame, flen) == 0) {
+                                &closest[i].node_id, frame, flen) == 0) {
             sent++;
         }
     }
@@ -4019,6 +4088,11 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
             }
             nodus_sig_t sig;
             nodus_sign_auth_challenge(&sig, msg.nonce, &srv->identity.sk);
+            /* CRIT-1: retain the challenge nonce — the peer signs
+             * (kyber_pk || this nonce) as kpk_sig, so auth_ok cannot verify the
+             * binding without it. Previously it was signed and discarded. */
+            memcpy(sess->challenge_nonce, msg.nonce, NODUS_NONCE_LEN);
+            sess->has_challenge_nonce = true;
             uint8_t buf[8192];
             size_t rlen = 0;
             nodus_t2_auth(msg.txn_id, &sig, buf, sizeof(buf), &rlen);
@@ -4032,7 +4106,90 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
             /* Inter-node Kyber handshake (connecting side).
              * Keep auth gate CLOSED (auth_state != AUTH_OK) during handshake
              * so no plaintext frames leak through. Open after key_ack. */
-            if (msg.has_kyber_pk && srv->identity.has_kyber) {
+            /* CRIT-1: authenticate the peer's Kyber public key BEFORE
+             * encapsulating to it. Without this an active MITM on the plaintext
+             * handshake substitutes its own self-consistent triple
+             * (server_pk', kyber_pk', kpk_sig') and owns the channel key — which
+             * makes every downstream nonce/AEAD property moot. Three gates, all
+             * fail-closed:
+             *   1. downgrade-close: if WE support Kyber, a missing kyber_pk /
+             *      kpk_sig / server_pk is refused — never fall through to the
+             *      plaintext branch (an attacker could otherwise just strip the
+             *      field to force cleartext inter-node traffic).
+             *   2. signature: kpk_sig must verify over (kyber_pk || the nonce we
+             *      challenged with) under server_pk.
+             *   3. identity pin: fingerprint(server_pk) must equal the node_id we
+             *      believed we were dialing. Step 2 alone only proves the triple
+             *      is SELF-consistent — the attacker signs its own key with its
+             *      own identity and passes. The pin is what actually binds the
+             *      channel to the intended peer; SHA3-512 preimage resistance
+             *      means a MITM cannot produce a pk matching that fingerprint.
+             * Trust note: the pin reference is the routing-table node_id
+             * (trusted-discovery; adversarial UDP-4000 Kademlia injection is out
+             * of scope per the threat model). */
+            if (srv->identity.has_kyber) {
+                bool bind_ok = false;
+
+                if (!msg.has_kyber_pk || !msg.has_kpk_sig || !msg.has_server_pk) {
+                    fprintf(stderr,
+                            "INTER CRIT-1: auth_ok missing kyber_pk/kpk_sig/server_pk "
+                            "from %s:%u — refusing (downgrade attempt?)\n",
+                            sess->conn->ip, (unsigned)sess->conn->port);
+                } else if (!sess->has_challenge_nonce) {
+                    fprintf(stderr,
+                            "INTER CRIT-1: no retained challenge nonce for %s:%u — "
+                            "cannot verify kpk_sig, refusing\n",
+                            sess->conn->ip, (unsigned)sess->conn->port);
+                } else {
+                    uint8_t sign_data[NODUS_KYBER_PK_BYTES + NODUS_NONCE_LEN];
+                    memcpy(sign_data, msg.kyber_pk, NODUS_KYBER_PK_BYTES);
+                    memcpy(sign_data + NODUS_KYBER_PK_BYTES,
+                           sess->challenge_nonce, NODUS_NONCE_LEN);
+
+                    if (nodus_verify_kyber_bind(&msg.kpk_sig, sign_data,
+                                                 sizeof(sign_data),
+                                                 &msg.server_pk) != 0) {
+                        fprintf(stderr,
+                                "INTER CRIT-1: kyber_pk signature INVALID from %s:%u "
+                                "— possible MITM, refusing\n",
+                                sess->conn->ip, (unsigned)sess->conn->port);
+                    } else if (!sess->conn->expected_peer_id_set) {
+                        fprintf(stderr,
+                                "INTER CRIT-1: no expected peer identity for %s:%u "
+                                "— cannot pin, refusing\n",
+                                sess->conn->ip, (unsigned)sess->conn->port);
+                    } else {
+                        nodus_key_t actual_id;
+                        if (nodus_fingerprint(&msg.server_pk, &actual_id) != 0) {
+                            fprintf(stderr,
+                                    "INTER CRIT-1: fingerprint() failed for %s:%u "
+                                    "— refusing\n",
+                                    sess->conn->ip, (unsigned)sess->conn->port);
+                        } else if (nodus_key_cmp(&actual_id,
+                                                 &sess->conn->expected_peer_id) != 0) {
+                            /* Fail closed + alarm. Do NOT re-resolve the identity
+                             * here: FIND_NODE data is unsigned, so adopting a
+                             * fresh node_id at attack time would let the same
+                             * adversary both trigger and answer the mismatch.
+                             * Recovery is via authenticated discovery refresh. */
+                            fprintf(stderr,
+                                    "INTER CRIT-1: identity PIN MISMATCH at %s:%u — "
+                                    "server_pk fingerprint != dialed node_id. "
+                                    "Refusing (MITM or peer identity rotation).\n",
+                                    sess->conn->ip, (unsigned)sess->conn->port);
+                        } else {
+                            bind_ok = true;
+                        }
+                    }
+                }
+
+                if (!bind_ok) {
+                    sess->conn->auth_state = NODUS_CONN_AUTH_FAILED;
+                    nodus_t2_msg_free(&msg);
+                    nodus_tcp_disconnect(&srv->inter_tcp, sess->conn);
+                    return;
+                }
+
                 uint8_t ct[NODUS_KYBER_CT_BYTES], ss_buf[NODUS_KYBER_SS_BYTES];
                 if (qgp_kem1024_encapsulate(ct, ss_buf, msg.kyber_pk) == 0) {
                     uint8_t nc[NODUS_NONCE_LEN];
@@ -4048,7 +4205,9 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
                 }
                 qgp_secure_memzero(ss_buf, sizeof(ss_buf));
             } else {
-                /* No Kyber — open auth gate + flush immediately (plaintext) */
+                /* This node has no Kyber identity — it cannot do channel
+                 * encryption at all, so plaintext is the only option and is not
+                 * an attacker-induced downgrade. */
                 sess->conn->auth_state = NODUS_CONN_AUTH_OK;
                 nodus_tcp_pending_flush(sess->conn);
             }

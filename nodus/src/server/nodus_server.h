@@ -133,6 +133,13 @@ typedef struct {
     uint8_t             pending_ss[32];     /* shared secret awaiting key_ack */
     uint8_t             pending_nc[32];     /* client nonce awaiting key_ack */
     bool                pending_kyber;
+
+    /* CRIT-1: the auth challenge nonce we received and signed, retained so the
+     * dialer can reconstruct the signed message (kyber_pk || nonce) and verify
+     * the peer's kpk_sig at auth_ok time. Previously the nonce was signed and
+     * immediately discarded, so the binding could not be checked at all. */
+    uint8_t             challenge_nonce[NODUS_NONCE_LEN];
+    bool                has_challenge_nonce;
 } nodus_inter_session_t;
 
 #define NODUS_MAX_INTER_SESSIONS  NODUS_TCP_MAX_CONNS
@@ -284,6 +291,14 @@ typedef struct {
     bool        encrypted;          /**< true after successful Kyber key exchange */
     uint8_t     pending_ss[32];     /**< Shared secret (cleared after key_ack) */
     uint8_t     pending_nc[32];     /**< Local nonce (cleared after key_ack) */
+    /* CRIT-1: retained challenge nonce + EXPECTED peer identity, so the
+     * batch-forward dialer can verify the peer's kpk_sig over
+     * (kyber_pk || challenge_nonce) and pin fingerprint(server_pk) against the
+     * FIND_NODE peer it actually dialed, before Kyber-encapsulating to it. */
+    uint8_t     challenge_nonce[NODUS_NONCE_LEN];
+    bool        has_challenge_nonce;
+    nodus_key_t expected_node_id;   /**< the peer bf_start_forward dialed */
+    bool        has_expected_node_id;
     /* Batch keys (stored for sending after auth) */
     nodus_key_t *batch_keys;     /**< Keys to query (heap, freed on cleanup) */
     int         batch_key_count;
