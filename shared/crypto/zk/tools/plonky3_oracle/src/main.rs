@@ -386,6 +386,17 @@ enum Cmd {
         #[arg(long)]
         out: PathBuf,
     },
+    /// DUAL-MODE S1e — is_zk=1 proof of the C1 Action AIR (conf_action_air,
+    /// width 813, main_next=true, 0 publics: forced phase-counter + freeze-carry
+    /// + single-row note-commitment + condition-3 spend-auth + balance
+    /// conservation). GATE1 verify=Ok, GATE3 tampered-reject, measured num_qc
+    /// MUST be 8 (STOP otherwise). h=128 conserving instance (INPUT 100 = OUTPUT
+    /// 70 + FEE 30 + dummy-last).
+    #[command(name = "dump-conf-action-air-zk")]
+    DumpConfActionAirZk {
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// KAT draw stream (D1-B): the first `count` Goldilocks samples of a fresh
     /// SmallRng::seed_from_u64(1) — the EXACT stream a real HidingFriPcs prove
     /// consumes (with_random_cols / codeword / blinding / R draws in commit
@@ -597,6 +608,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Cmd::DumpConfRootAirSaltedH16 { out } => {
             stark_priming::dump_conf_root_air_salted_h16(&out)?
         }
+        Cmd::DumpConfActionAirZk { out } => stark_priming::dump_conf_action_air_zk(&out)?,
         Cmd::DumpSmallrngGoldilocks { count, out } => {
             stark_priming::dump_smallrng_goldilocks(count, &out)?
         }
@@ -13301,6 +13313,661 @@ mod stark_priming {
             "conf_root_air_zk_h16",
             "B1 Stage-2 — combined confidential AIR, h=16 PADDED instance (freeze through padding, 3 FRI rounds)",
             false,
+            out_path,
+        )
+    }
+
+    // ========================================================================
+    // DUAL-MODE S1e — ConfActionAir: the REAL-STARK lift of the C1 Action AIR
+    // (conf_action_air.{c,h}, WIDTH=813). is_zk=1 prove->verify of the SAME
+    // construction-gate constraint set (conf_action_air_eval): forced
+    // phase-counter (E1/E2/E3/E13), freeze-carry (E4/E6/E7/E8'/E11/PZ), E15
+    // pos/nk/addr frozen carries, S1c single-row note-commitment (poseidon2
+    // NC1/NC2 + gated pins), condition-3 spend-auth (poseidon2 AC1/AC2), and
+    // S1d balance conservation. Mirrors ConfRootAir above (do_fold poseidon2
+    // machinery reused verbatim via p2v_eval + the p2row closure).
+    //
+    // PUBLIC INTERFACE: num_public_values = 0. The as-built C1 construction gate
+    // reads NO public inputs (conf_action_air_eval takes only (trace, n_rows));
+    // balance conservation is the internal last-row BAL=0 invariant, and the
+    // note-commitment / spend-auth are internal. The dm-c1 boundary publics
+    // (pub_has_boundary / pub_dir_*) were SCOPED OUT of the built gate
+    // (conf_action_air.h:84-86, "C6 turnstile, needs AIR public inputs") and
+    // tx_binding belongs to S5 (V4 wire). Lifting either now would be lifting
+    // something the construction gate never built — so the faithful S1e lift is
+    // a self-contained AIR with zero eval-read publics.
+    //
+    // NO max_constraint_degree hint — measured every run (same discipline as
+    // ConfRootAir; inheriting poseidon2-air's Some(7) would yield num_qc=16).
+    // Realized max degree = 3 (the register-(7,1) S-box + the degree-3 gated
+    // pins `PHI0·ISREAL·(pin)`), IDENTICAL dominant structure to ConfRootAir
+    // ⇒ expected measured num_qc = 8 (STOP-gate enforced).
+    // ========================================================================
+
+    // ── Column offsets — PINNED to conf_action_air.h:118-168. ──
+    const CA_K: usize = 32; // CONF_ACTION_K
+    const CA_LOG_K: usize = 5; // CONF_ACTION_LOG_K
+    const CA_CMLANES: usize = 4; // CONF_ACTION_CM_LANES
+    const CA_ADDR_LANES: usize = 4; // CONF_ACTION_ADDR_LANES
+    const CA_VALUE_BITS: usize = 52; // CONF_ACTION_VALUE_BITS
+    const CA_PHI: usize = 0;
+    const CA_PHIBITS: usize = 1; // [1, 1+LOG_K)
+    const CA_W: usize = CA_PHIBITS + CA_LOG_K; // 6
+    const CA_INV: usize = CA_W + 1; // 7
+    const CA_ISREAL: usize = CA_INV + 1; // 8
+    const CA_CMOUT: usize = CA_ISREAL + 1; // 9  [9,13)
+    const CA_CMCARRY: usize = CA_CMOUT + CA_CMLANES; // 13 [13,17)
+    const CA_VALUE: usize = CA_CMCARRY + CA_CMLANES; // 17
+    const CA_ADDR: usize = CA_VALUE + 1; // 18 [18,22)
+    const CA_RCM: usize = CA_ADDR + 4; // 22 [22,24)
+    const CA_NC1: usize = CA_RCM + 2; // 24
+    const CA_NC2: usize = CA_NC1 + P2_NCOLS; // 204
+    const CA_VBITS: usize = CA_NC2 + P2_NCOLS; // 384 [384,436)
+    const CA_ISIN: usize = CA_VBITS + CA_VALUE_BITS; // 436
+    const CA_ISOUT: usize = CA_ISIN + 1; // 437
+    const CA_ISFEE: usize = CA_ISOUT + 1; // 438
+    const CA_PHI0: usize = CA_ISFEE + 1; // 439
+    const CA_INV0: usize = CA_PHI0 + 1; // 440
+    const CA_BALCON: usize = CA_INV0 + 1; // 441
+    const CA_BALCOEF: usize = CA_BALCON + 1; // 442
+    const CA_BAL: usize = CA_BALCOEF + 1; // 443
+    const CA_POSSRC: usize = CA_BAL + 1; // 444
+    const CA_NKSRC: usize = CA_POSSRC + 1; // 445
+    const CA_POSCARRY: usize = CA_NKSRC + 1; // 446
+    const CA_NKCARRY: usize = CA_POSCARRY + 1; // 447
+    const CA_ADDRCARRY: usize = CA_NKCARRY + 1; // 448 [448,452)
+    const CA_AK: usize = CA_ADDRCARRY + CA_ADDR_LANES; // 452
+    const CA_AC1: usize = CA_AK + 1; // 453
+    const CA_AC2: usize = CA_AC1 + P2_NCOLS; // 633
+    const CA_W_WIDTH: usize = CA_AC2 + P2_NCOLS; // 813  (CONF_ACTION_WIDTH)
+
+    const CA_ROLE_INPUT: u8 = 0;
+    const CA_ROLE_OUTPUT: u8 = 1;
+    const CA_ROLE_FEE: u8 = 2;
+
+    // shielded_domsep.h:33,45 — SHA3-512("<string>")[0:8] BE, checked at runtime.
+    const CA_DOMSEP_NOTE: u64 = 0xf516_9f66_5f71_0593; // "DNAC note-commitment v1"
+    const CA_DOMSEP_ADDR: u64 = 0x15ff_bd84_5695_fb2d; // "DNAC shielded-address v1"
+
+    /// One shielded note-block input (conf_action_air_generate params).
+    #[derive(Clone, Copy)]
+    struct ActionNote {
+        role: u8,
+        value: u64,
+        addr: [u64; 4], // recipient (OUTPUT/FEE); OVERRIDDEN for INPUT (derived)
+        rcm: [u64; 2],
+        pos: u64,
+        nk: u64,
+        ak: u64,
+    }
+
+    /// Reproducible-derivation gate for the two DOMSEPs this AIR pins
+    /// (shielded_domsep.h:31-45): first 8 BIG-ENDIAN bytes of SHA3-512 over the
+    /// pinned strings — KAFADAN barrier (the literal is a function of a named
+    /// string, never an invented number).
+    fn conf_action_check_domseps() -> Result<(), Box<dyn std::error::Error>> {
+        let d_note = Sha3_512::digest(b"DNAC note-commitment v1");
+        let d_addr = Sha3_512::digest(b"DNAC shielded-address v1");
+        let note = u64::from_be_bytes(d_note[0..8].try_into().unwrap());
+        let addr = u64::from_be_bytes(d_addr[0..8].try_into().unwrap());
+        if note != CA_DOMSEP_NOTE {
+            return Err(format!("DOMSEP_NOTE derivation mismatch: {note:#x}").into());
+        }
+        if addr != CA_DOMSEP_ADDR {
+            return Err(format!("DOMSEP_ADDR derivation mismatch: {addr:#x}").into());
+        }
+        Ok(())
+    }
+
+    /// The C1 Action AIR (conf_action_air.c). Width 813, main_next=true (E3
+    /// forced counter, E4/E11 freeze, E15 carries, BAL transition, E17 roles all
+    /// read the next row), 0 public values.
+    pub struct ConfActionAir;
+
+    impl BaseAir<Goldilocks> for ConfActionAir {
+        fn width(&self) -> usize {
+            CA_W_WIDTH
+        }
+        fn num_public_values(&self) -> usize {
+            0
+        }
+        // NO max_constraint_degree override (measured — see module doc).
+    }
+
+    impl<AB> Air<AB> for ConfActionAir
+    where
+        AB: AirBuilder<F = Goldilocks>,
+    {
+        fn eval(&self, builder: &mut AB) {
+            let main = builder.main();
+            let ls: &[AB::Var] = main.current_slice();
+            let ns: &[AB::Var] = main.next_slice();
+
+            let phi: AB::Expr = ls[CA_PHI].into();
+            let w: AB::Expr = ls[CA_W].into();
+            let is_real: AB::Expr = ls[CA_ISREAL].into();
+            let km1 = AB::Expr::from_u64((CA_K as u64) - 1);
+
+            // ── E1 range gate: φ = Σ b_i·2^i, each b_i boolean ⇒ φ ∈ {0..K−1}. ──
+            let mut recomp = AB::Expr::ZERO;
+            let mut weight = AB::Expr::ONE;
+            for i in 0..CA_LOG_K {
+                builder.assert_bool(ls[CA_PHIBITS + i]);
+                recomp = recomp + ls[CA_PHIBITS + i] * weight.clone();
+                weight = weight.double();
+            }
+            builder.assert_eq(recomp, phi.clone());
+
+            // ── E2 wrap indicator via is_zero on d = φ − (K−1). ──
+            let d = phi.clone() - km1;
+            builder.assert_bool(ls[CA_W]);
+            builder.assert_eq(d.clone() * ls[CA_INV], AB::Expr::ONE - w.clone());
+            builder.assert_zero(d * w.clone());
+
+            // ── E13 φ anchor: is_first_row·φ = 0. ──
+            builder.when_first_row().assert_zero(ls[CA_PHI]);
+
+            // ── E3 forced counter (transition r−1→r; w_prev = ls[W]). ──
+            builder.when_transition().assert_zero(
+                (AB::Expr::ONE - w.clone()) * (ns[CA_PHI].into() - ls[CA_PHI].into() - AB::Expr::ONE),
+            );
+            builder
+                .when_transition()
+                .assert_zero(w.clone() * ns[CA_PHI].into());
+
+            // ── S1b freeze-carry: E6 booleanity + PZ padding-zero + E8'/E4/E11. ──
+            builder.assert_bool(ls[CA_ISREAL]);
+            let nreal = AB::Expr::ONE - is_real.clone();
+            for j in 0..CA_CMLANES {
+                builder.assert_zero(nreal.clone() * ls[CA_CMCARRY + j].into()); // PZ carry
+                builder.assert_zero(nreal.clone() * ls[CA_CMOUT + j].into()); // PZ output
+                // E8' block-0 init (first row): IS_REAL·(cm_carry − cm_output) = 0.
+                builder
+                    .when_first_row()
+                    .assert_zero(is_real.clone() * (ls[CA_CMCARRY + j].into() - ls[CA_CMOUT + j].into()));
+                // E4 freeze (non-wrap): (1−w_prev)·(next.carry − carry) = 0.
+                builder.when_transition().assert_zero(
+                    (AB::Expr::ONE - w.clone()) * (ns[CA_CMCARRY + j].into() - ls[CA_CMCARRY + j].into()),
+                );
+                // E11 wrap-load (block start): w_prev·(next.carry − next.output) = 0.
+                builder
+                    .when_transition()
+                    .assert_zero(w.clone() * (ns[CA_CMCARRY + j].into() - ns[CA_CMOUT + j].into()));
+            }
+            // E6 block-const: IS_REAL constant across a non-wrap adjacent pair.
+            builder.when_transition().assert_zero(
+                (AB::Expr::ONE - w.clone()) * (ns[CA_ISREAL].into() - ls[CA_ISREAL].into()),
+            );
+
+            // ── E15 frozen carries (pos/nk/addr) — same freeze pattern as cm. ──
+            // (carry_off, src_off, lanes). addr's source is the note ADDR[4] cells.
+            let carries: [(usize, usize, usize); 3] = [
+                (CA_POSCARRY, CA_POSSRC, 1),
+                (CA_NKCARRY, CA_NKSRC, 1),
+                (CA_ADDRCARRY, CA_ADDR, CA_ADDR_LANES),
+            ];
+            for (carry_off, src_off, lanes) in carries {
+                for j in 0..lanes {
+                    builder.assert_zero(nreal.clone() * ls[carry_off + j].into()); // padding-zero
+                    builder.when_first_row().assert_zero(
+                        is_real.clone() * (ls[carry_off + j].into() - ls[src_off + j].into()),
+                    ); // E8'
+                    builder.when_transition().assert_zero(
+                        (AB::Expr::ONE - w.clone())
+                            * (ns[carry_off + j].into() - ls[carry_off + j].into()),
+                    ); // E4 freeze
+                    builder.when_transition().assert_zero(
+                        w.clone() * (ns[carry_off + j].into() - ns[src_off + j].into()),
+                    ); // E11 wrap-load
+                }
+            }
+
+            // ── S1c note-commitment: NC1/NC2 poseidon2 (always-on) + gated pins. ──
+            let nc1: &Poseidon2Cols<AB::Var, 8, 7, 1, 4, 22> =
+                ls[CA_NC1..CA_NC1 + P2_NCOLS].borrow();
+            p2v_eval::<AB, GenericPoseidon2LinearLayersGoldilocks, 8, 7, 1, 4, 22>(
+                &GOLDILOCKS_POSEIDON2_RC_8_EXTERNAL_INITIAL,
+                &GOLDILOCKS_POSEIDON2_RC_8_INTERNAL,
+                &GOLDILOCKS_POSEIDON2_RC_8_EXTERNAL_FINAL,
+                builder,
+                nc1,
+            );
+            let nc2: &Poseidon2Cols<AB::Var, 8, 7, 1, 4, 22> =
+                ls[CA_NC2..CA_NC2 + P2_NCOLS].borrow();
+            p2v_eval::<AB, GenericPoseidon2LinearLayersGoldilocks, 8, 7, 1, 4, 22>(
+                &GOLDILOCKS_POSEIDON2_RC_8_EXTERNAL_INITIAL,
+                &GOLDILOCKS_POSEIDON2_RC_8_INTERNAL,
+                &GOLDILOCKS_POSEIDON2_RC_8_EXTERNAL_FINAL,
+                builder,
+                nc2,
+            );
+            // Block-start ∧ REAL selector (field values — red-team MF-1). Degree 2.
+            let nc_gate: AB::Expr = ls[CA_PHI0].into() * is_real.clone();
+            // NC1.in = [value, addr0, addr1, addr2, 0,0,0,0].
+            builder.when(nc_gate.clone()).assert_eq(nc1.inputs[0], ls[CA_VALUE]);
+            builder.when(nc_gate.clone()).assert_eq(nc1.inputs[1], ls[CA_ADDR]);
+            builder.when(nc_gate.clone()).assert_eq(nc1.inputs[2], ls[CA_ADDR + 1]);
+            builder.when(nc_gate.clone()).assert_eq(nc1.inputs[3], ls[CA_ADDR + 2]);
+            for k in 4..8 {
+                builder.when(nc_gate.clone()).assert_zero(nc1.inputs[k]);
+            }
+            // NC2.in = [addr3, rcm0, rcm1, DOMSEP_NOTE, NC1.end_post(3,4..8)].
+            builder.when(nc_gate.clone()).assert_eq(nc2.inputs[0], ls[CA_ADDR + 3]);
+            builder.when(nc_gate.clone()).assert_eq(nc2.inputs[1], ls[CA_RCM]);
+            builder.when(nc_gate.clone()).assert_eq(nc2.inputs[2], ls[CA_RCM + 1]);
+            builder
+                .when(nc_gate.clone())
+                .assert_eq(nc2.inputs[3], AB::Expr::from_u64(CA_DOMSEP_NOTE));
+            for k in 4..8 {
+                builder
+                    .when(nc_gate.clone())
+                    .assert_eq(nc2.inputs[k], ls[CA_NC1 + P2_END_POST3 + k]);
+            }
+            // cm_output == NC2.end_post(3, 0..4).
+            for j in 0..CA_CMLANES {
+                builder
+                    .when(nc_gate.clone())
+                    .assert_eq(ls[CA_CMOUT + j], ls[CA_NC2 + P2_END_POST3 + j]);
+            }
+
+            // ── condition-3 spend-auth: AC1/AC2 poseidon2 (always-on) + gated. ──
+            let ac1: &Poseidon2Cols<AB::Var, 8, 7, 1, 4, 22> =
+                ls[CA_AC1..CA_AC1 + P2_NCOLS].borrow();
+            p2v_eval::<AB, GenericPoseidon2LinearLayersGoldilocks, 8, 7, 1, 4, 22>(
+                &GOLDILOCKS_POSEIDON2_RC_8_EXTERNAL_INITIAL,
+                &GOLDILOCKS_POSEIDON2_RC_8_INTERNAL,
+                &GOLDILOCKS_POSEIDON2_RC_8_EXTERNAL_FINAL,
+                builder,
+                ac1,
+            );
+            let ac2: &Poseidon2Cols<AB::Var, 8, 7, 1, 4, 22> =
+                ls[CA_AC2..CA_AC2 + P2_NCOLS].borrow();
+            p2v_eval::<AB, GenericPoseidon2LinearLayersGoldilocks, 8, 7, 1, 4, 22>(
+                &GOLDILOCKS_POSEIDON2_RC_8_EXTERNAL_INITIAL,
+                &GOLDILOCKS_POSEIDON2_RC_8_INTERNAL,
+                &GOLDILOCKS_POSEIDON2_RC_8_EXTERNAL_FINAL,
+                builder,
+                ac2,
+            );
+            // Block-start ∧ IS_INPUT (field value — MF-1). Degree 2.
+            let ac_gate: AB::Expr = ls[CA_PHI0].into() * ls[CA_ISIN].into();
+            // AC1.in = [ak, nk, DOMSEP_ADDR, 0, 0,0,0,0]; nk == nk_src (one-cell).
+            builder.when(ac_gate.clone()).assert_eq(ac1.inputs[0], ls[CA_AK]);
+            builder.when(ac_gate.clone()).assert_eq(ac1.inputs[1], ls[CA_NKSRC]);
+            builder
+                .when(ac_gate.clone())
+                .assert_eq(ac1.inputs[2], AB::Expr::from_u64(CA_DOMSEP_ADDR));
+            builder.when(ac_gate.clone()).assert_zero(ac1.inputs[3]);
+            for k in 4..8 {
+                builder.when(ac_gate.clone()).assert_zero(ac1.inputs[k]);
+            }
+            // AC2.in[0..4] = 0 (pad); AC2.in[4..8] = AC1.end_post(3, 4..8).
+            for k in 0..4 {
+                builder.when(ac_gate.clone()).assert_zero(ac2.inputs[k]);
+            }
+            for k in 4..8 {
+                builder
+                    .when(ac_gate.clone())
+                    .assert_eq(ac2.inputs[k], ls[CA_AC1 + P2_END_POST3 + k]);
+            }
+            // addr_pub (AC2.end_post) == the committed note ADDR[4].
+            for j in 0..CA_ADDR_LANES {
+                builder
+                    .when(ac_gate.clone())
+                    .assert_eq(ls[CA_ADDR + j], ls[CA_AC2 + P2_END_POST3 + j]);
+            }
+
+            // ── S1d balance conservation ─────────────────────────────────────
+            // RANGE: value = Σ bits_j·2^j (52 bits) ⇒ value < 2^52; recomp == value.
+            let mut vrecomp = AB::Expr::ZERO;
+            let mut vweight = AB::Expr::ONE;
+            for j in 0..CA_VALUE_BITS {
+                builder.assert_bool(ls[CA_VBITS + j]);
+                vrecomp = vrecomp + ls[CA_VBITS + j] * vweight.clone();
+                vweight = vweight.double();
+            }
+            builder.assert_eq(vrecomp, ls[CA_VALUE]);
+
+            // ROLE: booleanity + exactly one role per real block.
+            builder.assert_bool(ls[CA_ISIN]);
+            builder.assert_bool(ls[CA_ISOUT]);
+            builder.assert_bool(ls[CA_ISFEE]);
+            builder.assert_eq(
+                ls[CA_ISREAL],
+                ls[CA_ISIN].into() + ls[CA_ISOUT].into() + ls[CA_ISFEE].into(),
+            );
+
+            // PHI0 is_zero(φ): φ·inv0 = 1−phi_is0, φ·phi_is0 = 0, phi_is0²=phi_is0.
+            let phi_is0: AB::Expr = ls[CA_PHI0].into();
+            builder.assert_bool(ls[CA_PHI0]);
+            builder.assert_eq(
+                phi.clone() * ls[CA_INV0].into(),
+                AB::Expr::ONE - phi_is0.clone(),
+            );
+            builder.assert_zero(phi.clone() * phi_is0.clone());
+
+            // E10' IS_BAL_CONTRIB = phi_is0·IS_REAL (fires once/block at φ=0).
+            builder.assert_eq(ls[CA_BALCON], phi_is0 * is_real.clone());
+            // E14 bal_coeff = IS_BAL_CONTRIB·(IS_INPUT − IS_OUTPUT − IS_FEE).
+            let sign = ls[CA_ISIN].into() - ls[CA_ISOUT].into() - ls[CA_ISFEE].into();
+            builder.assert_eq(ls[CA_BALCOEF], ls[CA_BALCON].into() * sign);
+
+            // BAL accumulator: first = own contribution; transition adds this row's;
+            // last = 0 ⇒ Σin = Σout + fee.
+            builder
+                .when_first_row()
+                .assert_eq(ls[CA_BAL], ls[CA_BALCOEF].into() * ls[CA_VALUE]);
+            builder.when_transition().assert_zero(
+                ns[CA_BAL].into() - ls[CA_BAL].into() - ns[CA_BALCOEF].into() * ns[CA_VALUE].into(),
+            );
+            builder.when_last_row().assert_zero(ls[CA_BAL]);
+
+            // E17 role selectors per-block const (non-wrap transition).
+            let g = AB::Expr::ONE - w.clone();
+            builder
+                .when_transition()
+                .assert_zero(g.clone() * (ns[CA_ISIN].into() - ls[CA_ISIN].into()));
+            builder
+                .when_transition()
+                .assert_zero(g.clone() * (ns[CA_ISOUT].into() - ls[CA_ISOUT].into()));
+            builder
+                .when_transition()
+                .assert_zero(g * (ns[CA_ISFEE].into() - ls[CA_ISFEE].into()));
+
+            // E7 dummy-last: the final row is dummy (with E6 ⇒ whole last block).
+            builder.when_last_row().assert_zero(ls[CA_ISREAL]);
+        }
+    }
+
+    /// Deterministic ConfActionAir trace builder — cell-for-cell mirror of
+    /// conf_action_air_generate (conf_action_air.c:80-241). The four Poseidon2
+    /// blocks per φ=0 real row (NC1/NC2 note-commitment, AC1/AC2 spend-auth) and
+    /// the inert all-zero filler use the REAL p3_poseidon2_air::generate_trace_rows
+    /// (one call per permutation), each cross-checked against the real permutation.
+    fn generate_conf_action_trace(
+        log_height: usize,
+        notes: &[ActionNote],
+    ) -> RowMajorMatrix<Goldilocks> {
+        assert!(
+            log_height >= CA_LOG_K && log_height <= 10,
+            "log_height in [LOG_K, 10] (conf_action_air.h:177-178)"
+        );
+        let rows = 1usize << log_height;
+        let num_blocks = rows / CA_K;
+        assert!(
+            notes.len() + 1 <= num_blocks,
+            "E7: last block MUST be dummy (conf_action_air.c:92-93)"
+        );
+
+        // Honest-prover balance conservation: Σin − Σout − Σfee = 0 (field).
+        {
+            let mut bal = Goldilocks::ZERO;
+            for note in notes {
+                assert!(note.value < (1u64 << CA_VALUE_BITS), "value < 2^52");
+                assert!(note.role <= CA_ROLE_FEE, "role tag valid");
+                let sign = if note.role == CA_ROLE_INPUT {
+                    Goldilocks::ONE
+                } else {
+                    -Goldilocks::ONE
+                };
+                bal += sign * Goldilocks::from_u64(note.value);
+            }
+            assert_eq!(bal, Goldilocks::ZERO, "non-conserving balance");
+        }
+
+        let rc = RoundConstants::<Goldilocks, 8, 4, 22>::new(
+            GOLDILOCKS_POSEIDON2_RC_8_EXTERNAL_INITIAL,
+            GOLDILOCKS_POSEIDON2_RC_8_INTERNAL,
+            GOLDILOCKS_POSEIDON2_RC_8_EXTERNAL_FINAL,
+        );
+        let perm = default_goldilocks_poseidon2_8();
+        let p2row = |input: [Goldilocks; 8]| -> Vec<Goldilocks> {
+            let m = p3_poseidon2_air::generate_trace_rows::<
+                Goldilocks,
+                GenericPoseidon2LinearLayersGoldilocks,
+                8,
+                7,
+                1,
+                4,
+                22,
+            >(vec![input], &rc, 0);
+            assert_eq!(m.width, P2_NCOLS);
+            let mut expect = input;
+            perm.permute_mut(&mut expect);
+            for i in 0..8 {
+                assert_eq!(
+                    m.values[P2_END_POST3 + i],
+                    expect[i],
+                    "generate_trace_rows final post != real permutation"
+                );
+            }
+            m.values
+        };
+        // end_post(3, ·) of a poseidon2 block (== the C nc_out()).
+        let post = |cells: &[Goldilocks]| -> [Goldilocks; 8] {
+            core::array::from_fn(|k| cells[P2_END_POST3 + k])
+        };
+        let zero_blk = p2row([Goldilocks::ZERO; 8]);
+
+        let mut v = Goldilocks::zero_vec(rows * CA_W_WIDTH);
+        let mut bal = Goldilocks::ZERO;
+
+        for r in 0..rows {
+            let base = r * CA_W_WIDTH;
+            let phi = (r % CA_K) as u64;
+            let blk = r / CA_K;
+
+            v[base + CA_PHI] = Goldilocks::from_u64(phi);
+            for i in 0..CA_LOG_K {
+                v[base + CA_PHIBITS + i] = Goldilocks::from_u64((phi >> i) & 1);
+            }
+            let w = if phi == (CA_K as u64) - 1 { 1u64 } else { 0 };
+            // d = φ − (K−1) as a FIELD subtraction (matches eval); inv when w==0.
+            let d = Goldilocks::from_u64(phi) - Goldilocks::from_u64((CA_K as u64) - 1);
+            v[base + CA_W] = Goldilocks::from_u64(w);
+            v[base + CA_INV] = if w == 0 {
+                p3_field::Field::inverse(&d)
+            } else {
+                Goldilocks::ZERO
+            };
+
+            let is_real = blk < notes.len();
+            v[base + CA_ISREAL] = Goldilocks::from_u64(is_real as u64);
+
+            // Default inert poseidon2 blocks (valid perm of zeros).
+            v[base + CA_NC1..base + CA_NC1 + P2_NCOLS].copy_from_slice(&zero_blk);
+            v[base + CA_NC2..base + CA_NC2 + P2_NCOLS].copy_from_slice(&zero_blk);
+            v[base + CA_AC1..base + CA_AC1 + P2_NCOLS].copy_from_slice(&zero_blk);
+            v[base + CA_AC2..base + CA_AC2 + P2_NCOLS].copy_from_slice(&zero_blk);
+
+            let vval: u64 = if is_real && phi == 0 {
+                notes[blk].value
+            } else {
+                0
+            };
+
+            if is_real && phi == 0 {
+                let note = &notes[blk];
+                // condition-3: INPUT notes derive addr = Poseidon2(ak, nk).
+                let na: [Goldilocks; 4] = if note.role == CA_ROLE_INPUT {
+                    let in1 = [
+                        Goldilocks::from_u64(note.ak),
+                        Goldilocks::from_u64(note.nk),
+                        Goldilocks::from_u64(CA_DOMSEP_ADDR),
+                        Goldilocks::ZERO,
+                        Goldilocks::ZERO,
+                        Goldilocks::ZERO,
+                        Goldilocks::ZERO,
+                        Goldilocks::ZERO,
+                    ];
+                    let b1 = p2row(in1);
+                    let s1 = post(&b1);
+                    let in2 = [
+                        Goldilocks::ZERO,
+                        Goldilocks::ZERO,
+                        Goldilocks::ZERO,
+                        Goldilocks::ZERO,
+                        s1[4],
+                        s1[5],
+                        s1[6],
+                        s1[7],
+                    ];
+                    let b2 = p2row(in2);
+                    v[base + CA_AC1..base + CA_AC1 + P2_NCOLS].copy_from_slice(&b1);
+                    v[base + CA_AC2..base + CA_AC2 + P2_NCOLS].copy_from_slice(&b2);
+                    v[base + CA_AK] = Goldilocks::from_u64(note.ak);
+                    let p2 = post(&b2);
+                    [p2[0], p2[1], p2[2], p2[3]]
+                } else {
+                    core::array::from_fn(|j| Goldilocks::from_u64(note.addr[j]))
+                };
+
+                v[base + CA_VALUE] = Goldilocks::from_u64(note.value);
+                for j in 0..4 {
+                    v[base + CA_ADDR + j] = na[j];
+                }
+                for j in 0..2 {
+                    v[base + CA_RCM + j] = Goldilocks::from_u64(note.rcm[j]);
+                }
+
+                // note_commit_blocks (E9'): NC1/NC2 sponge over the note fields.
+                let nc1_in = [
+                    Goldilocks::from_u64(note.value),
+                    na[0],
+                    na[1],
+                    na[2],
+                    Goldilocks::ZERO,
+                    Goldilocks::ZERO,
+                    Goldilocks::ZERO,
+                    Goldilocks::ZERO,
+                ];
+                let nc1 = p2row(nc1_in);
+                let s1 = post(&nc1);
+                let nc2_in = [
+                    na[3],
+                    Goldilocks::from_u64(note.rcm[0]),
+                    Goldilocks::from_u64(note.rcm[1]),
+                    Goldilocks::from_u64(CA_DOMSEP_NOTE),
+                    s1[4],
+                    s1[5],
+                    s1[6],
+                    s1[7],
+                ];
+                let nc2 = p2row(nc2_in);
+                let cm = post(&nc2);
+                v[base + CA_NC1..base + CA_NC1 + P2_NCOLS].copy_from_slice(&nc1);
+                v[base + CA_NC2..base + CA_NC2 + P2_NCOLS].copy_from_slice(&nc2);
+                for j in 0..CA_CMLANES {
+                    v[base + CA_CMOUT + j] = cm[j];
+                }
+
+                v[base + CA_POSSRC] = Goldilocks::from_u64(note.pos);
+                v[base + CA_NKSRC] = Goldilocks::from_u64(note.nk);
+            }
+
+            // S1b + E15 frozen carries: hold the block's φ=0 source values.
+            if is_real {
+                let blk0 = blk * CA_K * CA_W_WIDTH;
+                for j in 0..CA_CMLANES {
+                    v[base + CA_CMCARRY + j] = v[blk0 + CA_CMOUT + j];
+                }
+                v[base + CA_POSCARRY] = v[blk0 + CA_POSSRC];
+                v[base + CA_NKCARRY] = v[blk0 + CA_NKSRC];
+                for j in 0..CA_ADDR_LANES {
+                    v[base + CA_ADDRCARRY + j] = v[blk0 + CA_ADDR + j];
+                }
+            }
+
+            // ── S1d balance layer ──
+            let phi_is0 = phi == 0;
+            v[base + CA_PHI0] = Goldilocks::from_u64(phi_is0 as u64);
+            v[base + CA_INV0] = if phi_is0 {
+                Goldilocks::ZERO
+            } else {
+                p3_field::Field::inverse(&Goldilocks::from_u64(phi))
+            };
+
+            let (is_in, is_out, is_fee) = if is_real {
+                match notes[blk].role {
+                    CA_ROLE_INPUT => (1u64, 0, 0),
+                    CA_ROLE_OUTPUT => (0, 1, 0),
+                    _ => (0, 0, 1),
+                }
+            } else {
+                (0, 0, 0)
+            };
+            v[base + CA_ISIN] = Goldilocks::from_u64(is_in);
+            v[base + CA_ISOUT] = Goldilocks::from_u64(is_out);
+            v[base + CA_ISFEE] = Goldilocks::from_u64(is_fee);
+
+            for j in 0..CA_VALUE_BITS {
+                v[base + CA_VBITS + j] = Goldilocks::from_u64((vval >> j) & 1);
+            }
+
+            let bal_contrib = phi_is0 && is_real;
+            v[base + CA_BALCON] = Goldilocks::from_u64(bal_contrib as u64);
+            let sign = Goldilocks::from_u64(is_in)
+                - Goldilocks::from_u64(is_out)
+                - Goldilocks::from_u64(is_fee);
+            let bal_coeff = Goldilocks::from_u64(bal_contrib as u64) * sign;
+            v[base + CA_BALCOEF] = bal_coeff;
+            bal += bal_coeff * Goldilocks::from_u64(vval);
+            v[base + CA_BAL] = bal;
+        }
+
+        RowMajorMatrix::new(v, CA_W_WIDTH)
+    }
+
+    /// S1e h=128 (4 blocks) instance: INPUT 100 = OUTPUT 70 + FEE 30 (conserving)
+    /// + 1 dummy-last. The INPUT note is addressed to its own (ak, nk) via
+    /// condition-3; OUTPUT/FEE carry recipient/filler addresses. Real is_zk=1
+    /// prove -> GATE1 verify=Ok, GATE3 tampered-reject, num_qc STOP-gate == 8.
+    pub fn dump_conf_action_air_zk(
+        out_path: &PathBuf,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        conf_action_check_domseps()?;
+        let notes = [
+            ActionNote {
+                role: CA_ROLE_INPUT,
+                value: 100,
+                addr: [0; 4], // overridden (derived from ak,nk)
+                rcm: [0x11, 0x12],
+                pos: 5,
+                nk: 0x2222_2222,
+                ak: 0x1111_1111,
+            },
+            ActionNote {
+                role: CA_ROLE_OUTPUT,
+                value: 70,
+                addr: [0xAA01, 0xAA02, 0xAA03, 0xAA04],
+                rcm: [0x21, 0x22],
+                pos: 0,
+                nk: 0,
+                ak: 0,
+            },
+            ActionNote {
+                role: CA_ROLE_FEE,
+                value: 30,
+                addr: [0xFEE1, 0xFEE2, 0xFEE3, 0xFEE4],
+                rcm: [0x31, 0x32],
+                pos: 0,
+                nk: 0,
+                ak: 0,
+            },
+        ];
+        let trace = generate_conf_action_trace(7, &notes); // H = 128 = 4 blocks
+        let pis: Vec<Goldilocks> = Vec::new(); // num_public_values = 0
+        dump_is_zk_stark(
+            &ConfActionAir,
+            trace,
+            pis,
+            "conf_action_air_zk",
+            "DUAL-MODE S1e — first REAL is_zk=1 proof of the C1 Action AIR \
+             (conf_action_air, width 813, main_next=true, 0 publics; forced \
+             phase-counter + freeze-carry + note-commitment + condition-3 \
+             spend-auth + balance conservation; max degree 3, num_qc 8)",
+            "DUAL-MODE S1e.1/2 — C1 Action AIR real-STARK lift (h=128, num_qc=8)",
+            Some(8),
             out_path,
         )
     }

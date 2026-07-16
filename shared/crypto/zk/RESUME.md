@@ -269,6 +269,26 @@
       real prover, S1f 10+ agent red-team. **This is the multi-session execution
       boundary** — the construction gate de-risked it (every constraint written +
       tested in C; the Rust port is translation with a byte-match oracle to check).
+    - **🎯 S1e.1 + S1e.2 DONE (2026-07-17) — REAL is_zk=1 STARK of the C1 Action AIR.**
+      Rust `ConfActionAir` added to the oracle (`tools/plonky3_oracle/src/main.rs`):
+      `BaseAir` width=813, **num_public_values=0** (the AS-BUILT construction gate
+      reads no eval publics — balance conservation is the internal last-row BAL=0;
+      dm-c1 boundary publics + tx_binding are scoped to C6/S5, NOT lifted here),
+      `max_constraint_degree=None` (MEASURED). `Air::eval` ports every constraint
+      (E1/E2/E3/E13 φ-counter, E4/E6/E7/E8′/E11/PZ freeze-carry, E15 pos/nk/addr
+      carries, S1c note-commitment NC1/NC2 + field-value gated pins, cond-3 AC1/AC2
+      spend-auth, S1d balance) — the C `row[r-1]` reads become `when_transition`
+      over (local,next), mirroring ConfRootAir. Trace builder mirrors
+      `conf_action_air_generate` cell-for-cell (REAL `generate_trace_rows` per
+      poseidon2 block, cross-checked vs the real permutation). CLI:
+      `dump-conf-action-air-zk`. **Run:** GATE1 verify=Ok, GATE2 alpha/zeta=Ok,
+      GATE3 tampered-reject, **num_qc MEASURED = 8** (STOP-gate `Some(8)` — the
+      analytic prediction held; did NOT inherit poseidon2-air `Some(7)`→16),
+      degree_bits=8 (H=128=2⁷ is_zk-doubled). Vector emitted, `cargo build` clean
+      (0 warnings). **NEXT: S1e.3** C fp2 fold (`conf_action_fold.c`, reuse
+      conf_root_fold) → S1e.4 pure-C prover (route transcript through
+      `dnac_stark_priming`, H2/H3) → S1e.5 negative KATs through the real prover →
+      S1f 10+ agent red-team.
     - **S4 NEXT after S1e** — aggregate C1+C3+C4 (one Action AIR/TX) with the
       recorded composition obligations (leaf==cm_carry, pin D, nullify iff IS_INPUT).
   - **THEN:** S2 C3 membership (+ M1/M2 goals, + E5 point-read reader), S3 C4
