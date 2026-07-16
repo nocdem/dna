@@ -141,6 +141,10 @@ static void conn_free(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     if (conn->slot >= 0 && conn->slot < NODUS_TCP_MAX_CONNS)
         tcp->pool[conn->slot] = NULL;
 
+    /* D2.4: preserve this conn's decrypt-failure count before the struct dies,
+     * so the harness gate can still see it after a teardown. */
+    tcp->decrypt_fail_total += conn->decrypt_skip_count;
+
     tcp->count--;
     pending_free_all(conn);   /* Phase 3: drop any queued frames */
 
@@ -377,9 +381,17 @@ static bool try_parse_frames(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
                          * leftover it is rare and self-heals; if it is a
                          * real replay/attack we want rx_counter to stay
                          * strictly monotonic. */
-                        conn->decrypt_skip_count++;   /* Phase 3.2a visibility */
+                        /* D2.3: this is an AEAD FAILURE, not a benign event. On
+                         * an ordered TCP stream there is no legitimate
+                         * post-established plaintext frame (the established flip
+                         * re-processes buffered bytes as encrypted), so any hit
+                         * here means tampering, a key/role mismatch, or a real
+                         * bug. The old "(in-flight plaintext)" text asserted a
+                         * benign cause and would have masked exactly that. */
+                        conn->decrypt_skip_count++;
                         QGP_LOG_WARN(LOG_TAG_TCP,
-                                     "decrypt skip: conn=%s:%d slot=%d cc=%p frame_len=%u skip_count=%u (in-flight plaintext)",
+                                     "AEAD DECRYPT FAILED: conn=%s:%d slot=%d cc=%p frame_len=%u fail_count=%u "
+                                     "(frame dropped; tamper/key-mismatch — NOT expected on an ordered stream)",
                                      conn->ip, conn->port, conn->slot,
                                      (void *)cc,
                                      (unsigned)frame.payload_len,
@@ -1261,6 +1273,16 @@ nodus_tcp_conn_t *nodus_tcp_find_by_id(nodus_tcp_t *tcp,
             return c;
     }
     return NULL;
+}
+
+uint64_t nodus_tcp_decrypt_fail_total(const nodus_tcp_t *tcp) {
+    if (!tcp) return 0;
+    /* Freed conns already folded their count into decrypt_fail_total (conn_free);
+     * add what the still-live conns are carrying. */
+    uint64_t total = tcp->decrypt_fail_total;
+    for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++)
+        if (tcp->pool[i]) total += tcp->pool[i]->decrypt_skip_count;
+    return total;
 }
 
 nodus_tcp_conn_t *nodus_tcp_find_by_addr(nodus_tcp_t *tcp,

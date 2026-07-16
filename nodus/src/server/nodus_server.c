@@ -4269,6 +4269,28 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
                     nodus_t2_error(msg.txn_id, NODUS_ERR_INVALID_SIGNATURE,
                                     "fingerprint mismatch", resp_buf, sizeof(resp_buf), &rlen);
                     nodus_tcp_send_raw(sess->conn, resp_buf, rlen);
+                } else if (srv->identity.has_kyber && msg.proto_version < 2) {
+                    /* C1/G3: inter-node proto_version floor. `proto_version`
+                     * arrives in the PLAINTEXT pre-auth hello and is not covered
+                     * by any signature (nodus_sign_auth_challenge signs only the
+                     * 32-byte nonce), so an active MITM could advertise v<2 to
+                     * push this link onto the no-Kyber branch — i.e. force
+                     * CLEARTEXT inter-node replication and open frame injection.
+                     * Every node hardcodes v=2, so a v<2 peer on 4002 is either
+                     * an attacker or a build that predates channel encryption;
+                     * refuse it. (4002 is operator-only — unlike the 4001 client
+                     * port there is no legacy-app population to preserve.) */
+                    fprintf(stderr,
+                            "INTER: rejecting peer %s:%u — proto_version=%u < 2 "
+                            "(downgrade attempt or pre-encryption build)\n",
+                            sess->conn->ip, (unsigned)sess->conn->port,
+                            (unsigned)msg.proto_version);
+                    size_t rlen = 0;
+                    nodus_t2_error(msg.txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                                    "inter-node requires proto_version >= 2",
+                                    resp_buf, sizeof(resp_buf), &rlen);
+                    nodus_tcp_send_raw(sess->conn, resp_buf, rlen);
+                    sess->conn->auth_state = NODUS_CONN_AUTH_FAILED;
                 } else {
                     sess->client_pk = msg.pk;
                     sess->client_fp = msg.fp;

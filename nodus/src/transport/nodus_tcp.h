@@ -192,6 +192,16 @@ typedef struct nodus_tcp {
     nodus_tcp_conn_t   *pool[NODUS_TCP_MAX_CONNS];
     int                 count;
 
+    /* D2.4: cumulative post-established AEAD decrypt failures across ALL conns
+     * on this transport, INCLUDING conns that have since been freed. The
+     * per-conn decrypt_skip_count dies with the conn (conn_free), so a gate that
+     * sums the live pool reads 0 precisely when a failure caused a teardown —
+     * i.e. it is blind to the regression it exists to catch. conn_free folds the
+     * per-conn count in here before freeing. On a healthy cluster this MUST stay
+     * 0: on an ordered TCP stream there is no legitimate post-established
+     * decrypt failure. */
+    uint64_t            decrypt_fail_total;
+
     /* Callbacks */
     nodus_tcp_frame_fn  on_frame;
     nodus_tcp_event_fn  on_accept;
@@ -264,6 +274,12 @@ int nodus_tcp_poll(nodus_tcp_t *tcp, int timeout_ms);
 
 /** Disconnect and free a connection. */
 void nodus_tcp_disconnect(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn);
+
+/** D2.4 gate: cumulative post-established AEAD decrypt failures on this
+ *  transport, surviving conn teardown (live conns + all freed ones). MUST be 0
+ *  on a healthy cluster — there is no legitimate post-established decrypt
+ *  failure on an ordered TCP stream. */
+uint64_t nodus_tcp_decrypt_fail_total(const nodus_tcp_t *tcp);
 
 /** Find connection by peer ID. */
 nodus_tcp_conn_t *nodus_tcp_find_by_id(nodus_tcp_t *tcp,
