@@ -471,6 +471,25 @@ int main(void) {
         expect_reject("committed ADDR != Poseidon2(ak,nk)", bad);
     }
 
+    /* REJECT 37 (red-team MF-1): NON-CANONICAL selector bypass. Set IS_INPUT at the
+     * φ=0 auth row to p+1 (≡ field-1, so the balance still credits it as an input)
+     * AND corrupt ak. A raw `==1` gate would read !=1 and SKIP the spend-auth check
+     * → theft with zero key knowledge. The field-value gate (fp/gold_fp_eq) fires
+     * on the field-1, so the corrupt ak is caught. */
+    {
+        uint64_t bad[ROWS * CONF_ACTION_WIDTH]; memcpy(bad, honest, sizeof bad);
+        set(bad, 0, CONF_ACTION_ISIN_OFF, GOLDILOCKS_P + 1); /* ≡ 1 in the field */
+        set(bad, 0, CONF_ACTION_AC1_OFF + p2air_input_off(0), 0xBAD); /* wrong ak */
+        expect_reject("MF-1: non-canonical IS_INPUT + wrong ak", bad);
+    }
+    /* REJECT 38 (MF-1): non-canonical W hiding a block-start to skip note-commit. */
+    {
+        uint64_t bad[ROWS * CONF_ACTION_WIDTH]; memcpy(bad, honest, sizeof bad);
+        set(bad, 0, CONF_ACTION_ISREAL_OFF, GOLDILOCKS_P + 1); /* ≡ 1 field */
+        set(bad, 0, CONF_ACTION_CMOUT_OFF + 0, 0xBAD); /* corrupt cm_output */
+        expect_reject("MF-1: non-canonical IS_REAL + corrupt cm", bad);
+    }
+
     printf("------------------------------------------------------------\n");
     if (fails) {
         printf("C1 complete: %d FAIL\n", fails);

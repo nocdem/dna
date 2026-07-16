@@ -238,6 +238,15 @@
       addr_pub=H(attacker_ak,attacker_nk) matching the victim's committed ADDR.
       D3 hash-based authority (no signature). 5 KATs (THEFT/wrong-ak, nk one-cell,
       DOMSEP, capacity, ADDR forge) rejected. `conf_action_derive_addr` exposed.
+      **6-agent red-team (wu273jmu4): 0 CRITICAL; HIGH MF-1 FIXED** — the eval's
+      witness-cell gates used raw uint64 `==1` while the field constraints read the
+      same cells via `fp()`; a non-canonical `IS_INPUT=p+1` (≡ field-1, so balance
+      credits it) reads `≠1` raw → the gated spend-auth pin was SKIPPED = theft.
+      Fixed all 3 gates (block-start/IS_REAL/IS_INPUT) to the FIELD value
+      (`gold_fp_eq(fp(cell),1)`, what the real STARK folds) + 2 non-canonical
+      regression KATs. **S4 obligations added (INFO):** nullify iff IS_INPUT
+      (role-bound, + relabel-and-nullify reject test); ak/nk full-field entropy in
+      production (mirror C4 nk watch-item).
     - **⭐ C1 SOUNDNESS-COMPLETE for the shielded SPEND** (binding + note-commitment
       + balance + range + carries + membership-ready pos + nullifier-ready nk +
       spend-authority). Only the shield/deshield BOUNDARY (C6 turnstile, needs AIR

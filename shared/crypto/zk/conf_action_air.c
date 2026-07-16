@@ -405,12 +405,16 @@ int conf_action_air_eval(const uint64_t *trace, size_t n_rows) {
         viol += poseidon2_air_eval_row(nc1);
         viol += poseidon2_air_eval_row(nc2);
 
-        int block_start = (r == 0);
-        if (r > 0) {
-            const uint64_t *prev = trace + (r - 1) * CONF_ACTION_WIDTH;
-            if (prev[CONF_ACTION_W_OFF] == 1) block_start = 1;
-        }
-        if (block_start && row[CONF_ACTION_ISREAL_OFF] == 1) {
+        /* Block-start = φ==0, read from the is_zero-constrained phi_is0 column via
+         * the FIELD value (red-team MF-1): raw uint64 `==1` gates are bypassable by
+         * a non-canonical witness (IS_INPUT=p+1 canonicalizes to field-1 so the
+         * balance credits it, but reads !=1 raw so the gated auth pin is skipped =
+         * theft). Every gate here uses fp()/gold_fp_eq — exactly the selector the
+         * real STARK folds — so a non-canonical representative cannot desync the
+         * gate from the field constraints. */
+        int block_start = gold_fp_eq(fp(row[CONF_ACTION_PHI0_OFF]), one);
+        int is_real_row = gold_fp_eq(fp(row[CONF_ACTION_ISREAL_OFF]), one);
+        if (block_start && is_real_row) {
             const uint64_t value = row[CONF_ACTION_VALUE_OFF];
             const uint64_t *ad = row + CONF_ACTION_ADDR_OFF;
             const uint64_t *rc = row + CONF_ACTION_RCM_OFF;
@@ -447,7 +451,8 @@ int conf_action_air_eval(const uint64_t *trace, size_t n_rows) {
         const uint64_t *ac2 = row + CONF_ACTION_AC2_OFF;
         viol += poseidon2_air_eval_row(ac1);
         viol += poseidon2_air_eval_row(ac2);
-        if (block_start && row[CONF_ACTION_ISIN_OFF] == 1) {
+        /* Field-value gate (MF-1): IS_INPUT via fp()/gold_fp_eq, not raw `==1`. */
+        if (block_start && gold_fp_eq(fp(row[CONF_ACTION_ISIN_OFF]), one)) {
             /* AC1.in = [ak, nk, DOMSEP_ADDR, 0, 0,0,0,0]; nk is the SAME nk_src
              * cell C4 nullifies (one-cell binding). */
             if (ac1[p2air_input_off(0)] != row[CONF_ACTION_AK_OFF]) viol++;
