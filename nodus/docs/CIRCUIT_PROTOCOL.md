@@ -162,6 +162,19 @@ When a circuit is opened with `nodus_circuit_open_e2e()`:
    monotonic counter nonce and minimum-expected-counter replay check on receive
    (correct over TCP's ordered delivery; a UDP transport would need
    window-based replay protection instead).
+6. **AEAD completeness (v0.18.10).** On an `e2e_active` circuit **every**
+   inbound `circ_data` frame must authenticate: the receive path decrypts any
+   frame of `len >= NODUS_CHANNEL_OVERHEAD` (28 B — note a 28-byte frame is a
+   valid *empty-plaintext* AEAD frame and is delivered as 0 bytes), and
+   **fail-closed drops** anything shorter, plus any decrypt failure or
+   allocation failure. A frame is never delivered raw/unauthenticated on an
+   encrypted circuit. (Previously the gate was `len > 28`, so a ≤28-byte frame
+   bypassed AEAD entirely and reached the application unauthenticated with
+   `rx_counter` untouched — i.e. indefinitely replayable.) The **non-e2e**
+   passthrough is unchanged and remains length-agnostic: plain circuits
+   legitimately carry raw bytes of any length. The same rule applies to the
+   client↔server / inter-node tunnel receive path (`nodus_tcp.c`), where a
+   short frame previously reached the post-auth method dispatcher.
 
 If the target has no Kyber key or decapsulation fails, the inbound handle stays
 `e2e_active=false` and payloads are treated as cleartext — the initiator's

@@ -324,40 +324,80 @@ static bool try_parse_frames(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
         uint8_t *dec_buf = NULL;
 
         nodus_channel_crypto_t *cc = &conn->channel_crypto;
-        if (cc->established && frame.payload_len > NODUS_CHANNEL_OVERHEAD) {
-            size_t pt_max = frame.payload_len - NODUS_CHANNEL_OVERHEAD;
-            dec_buf = malloc(pt_max > 0 ? pt_max : 1);
-            if (dec_buf) {
-                size_t pt_len = 0;
-                if (nodus_channel_decrypt(cc, frame.payload, frame.payload_len,
-                                          dec_buf, pt_max, &pt_len) == 0) {
-                    dispatch_payload = dec_buf;
-                    dispatch_len = pt_len;
+        if (cc->established) {
+            /* CRIT-3 — AEAD completeness. Once the channel is established,
+             * EVERY frame must be authenticated. Previously this gated on
+             * 'payload_len > NODUS_CHANNEL_OVERHEAD', so a <=28-byte payload
+             * skipped the decrypt block entirely and fell through to the raw
+             * on_frame() dispatch below — unauthenticated, with rx_counter
+             * untouched (indefinitely replayable). On the inter-node channel
+             * that reached the post-auth method dispatcher, letting an on-path
+             * attacker inject authenticated-peer messages with no key at all.
+             * A short frame or an allocation failure must now DROP the frame,
+             * never dispatch it raw.
+             *
+             * Boundary is '>= NODUS_CHANNEL_OVERHEAD': a 28-byte frame is a
+             * valid EMPTY-plaintext AEAD frame (nonce12+tag16) which the module
+             * explicitly supports, so dropping it would break legitimate empty
+             * frames. Only '< OVERHEAD' is impossible-to-authenticate.
+             * See tests/test_channel_crypto_aead_complete.c. */
+            bool drop_frame = false;
+
+            if (frame.payload_len < NODUS_CHANNEL_OVERHEAD) {
+                conn->decrypt_skip_count++;
+                QGP_LOG_WARN(LOG_TAG_TCP,
+                             "short frame dropped: conn=%s:%d slot=%d frame_len=%u < overhead=%u (unauthenticatable)",
+                             conn->ip, conn->port, conn->slot,
+                             (unsigned)frame.payload_len,
+                             (unsigned)NODUS_CHANNEL_OVERHEAD);
+                drop_frame = true;
+            } else {
+                /* Safe: payload_len >= NODUS_CHANNEL_OVERHEAD checked above,
+                 * so the subtraction cannot underflow. */
+                size_t pt_max = frame.payload_len - NODUS_CHANNEL_OVERHEAD;
+                dec_buf = malloc(pt_max > 0 ? pt_max : 1);
+                if (!dec_buf) {
+                    QGP_LOG_ERROR(LOG_TAG_TCP,
+                                  "decrypt alloc failed, frame dropped: conn=%s:%d slot=%d frame_len=%u",
+                                  conn->ip, conn->port, conn->slot,
+                                  (unsigned)frame.payload_len);
+                    drop_frame = true;   /* fail closed — never dispatch ciphertext raw */
                 } else {
-                    /* Decrypt failed — drop the frame, do NOT reset
-                     * rx_counter. A reset opens a silent replay window:
-                     * later legitimate out-of-order frames would be
-                     * (mis)accepted or (mis)rejected against a stale
-                     * baseline. If this is truly an in-flight plaintext
-                     * leftover it is rare and self-heals; if it is a
-                     * real replay/attack we want rx_counter to stay
-                     * strictly monotonic. */
-                    conn->decrypt_skip_count++;   /* Phase 3.2a visibility */
-                    QGP_LOG_WARN(LOG_TAG_TCP,
-                                 "decrypt skip: conn=%s:%d slot=%d cc=%p frame_len=%u skip_count=%u (in-flight plaintext)",
-                                 conn->ip, conn->port, conn->slot,
-                                 (void *)cc,
-                                 (unsigned)frame.payload_len,
-                                 (unsigned)conn->decrypt_skip_count);
-                    free(dec_buf);
-                    dec_buf = NULL;
-                    /* Skip this frame, continue processing */
-                    size_t remaining = conn->rlen - consumed;
-                    if (remaining > 0)
-                        memmove(conn->rbuf, conn->rbuf + consumed, remaining);
-                    conn->rlen = remaining;
-                    continue;
+                    size_t pt_len = 0;
+                    if (nodus_channel_decrypt(cc, frame.payload, frame.payload_len,
+                                              dec_buf, pt_max, &pt_len) == 0) {
+                        dispatch_payload = dec_buf;
+                        dispatch_len = pt_len;
+                    } else {
+                        /* Decrypt failed — drop the frame, do NOT reset
+                         * rx_counter. A reset opens a silent replay window:
+                         * later legitimate out-of-order frames would be
+                         * (mis)accepted or (mis)rejected against a stale
+                         * baseline. If this is truly an in-flight plaintext
+                         * leftover it is rare and self-heals; if it is a
+                         * real replay/attack we want rx_counter to stay
+                         * strictly monotonic. */
+                        conn->decrypt_skip_count++;   /* Phase 3.2a visibility */
+                        QGP_LOG_WARN(LOG_TAG_TCP,
+                                     "decrypt skip: conn=%s:%d slot=%d cc=%p frame_len=%u skip_count=%u (in-flight plaintext)",
+                                     conn->ip, conn->port, conn->slot,
+                                     (void *)cc,
+                                     (unsigned)frame.payload_len,
+                                     (unsigned)conn->decrypt_skip_count);
+                        free(dec_buf);
+                        dec_buf = NULL;
+                        drop_frame = true;
+                    }
                 }
+            }
+
+            if (drop_frame) {
+                /* Skip this frame, continue processing */
+                size_t remaining = conn->rlen - consumed;
+                if (remaining > 0)
+                    memmove(conn->rbuf, conn->rbuf + consumed, remaining);
+                conn->rlen = remaining;
+                continue;
             }
         }
 

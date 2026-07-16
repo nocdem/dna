@@ -728,6 +728,16 @@ add_executable(test_channel_crypto tests/test_channel_crypto.c)
 target_link_libraries(test_channel_crypto nodus dsa kem nodus)
 add_test(NAME test_channel_crypto COMMAND test_channel_crypto)
 
+# CRIT-3 — AEAD completeness boundary regression test.
+# Pins '>= NODUS_CHANNEL_OVERHEAD -> decrypt' / '< OVERHEAD -> fail-closed drop':
+# a 28-byte empty AEAD frame is legitimate and MUST decrypt (so "drop <=28" is
+# wrong), while anything shorter MUST be rejected. Guards the fix that stops
+# short frames from being dispatched raw/unauthenticated on an established
+# channel (nodus_tcp.c on_frame, nodus_client.c circ_data).
+add_executable(test_channel_crypto_aead_complete tests/test_channel_crypto_aead_complete.c)
+target_link_libraries(test_channel_crypto_aead_complete nodus dsa kem nodus)
+add_test(NAME test_channel_crypto_aead_complete COMMAND test_channel_crypto_aead_complete)
+
 # B3 fix — per-conn channel_crypto isolation regression test.
 # Asserts that two nodus_tcp_conn_t structs have separate inline
 # channel_crypto storage (no pointer aliasing), independent counters,

@@ -385,20 +385,43 @@ static void client_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
         bool e2e = h ? h->e2e_active : false;
         pthread_mutex_unlock(&client->circuits_mutex);
 
-        /* E2E decrypt if onion layer active */
-        if (cb && e2e && tmp.circ_data && tmp.circ_data_len > NODUS_CHANNEL_OVERHEAD) {
-            size_t pt_cap = tmp.circ_data_len - NODUS_CHANNEL_OVERHEAD;
-            uint8_t *pt = malloc(pt_cap > 0 ? pt_cap : 1);
-            if (pt) {
-                size_t pt_len = 0;
-                if (nodus_channel_decrypt(&h->e2e_crypto, tmp.circ_data, tmp.circ_data_len,
-                                           pt, pt_cap, &pt_len) == 0) {
-                    cb(h, pt, pt_len, user);
+        /* CRIT-3 — AEAD completeness on the circuit copy of the same gate.
+         * Gate on (cb && e2e) FIRST: on an e2e-active circuit EVERY frame must
+         * authenticate, so a short frame / alloc failure DROPS here instead of
+         * falling through to the raw 'else if (cb)' delivery below. The old
+         * 'circ_data_len > NODUS_CHANNEL_OVERHEAD' gate let a <=28-byte frame
+         * reach the app raw and unauthenticated on an encrypted circuit.
+         *
+         * Boundary is '>= NODUS_CHANNEL_OVERHEAD' (28 B == valid empty AEAD
+         * frame — see tests/test_channel_crypto_aead_complete.c). The non-e2e
+         * passthrough stays length-agnostic: plain circuits legitimately carry
+         * raw bytes of any length. */
+        if (cb && e2e) {
+            if (!tmp.circ_data || tmp.circ_data_len < NODUS_CHANNEL_OVERHEAD) {
+                QGP_LOG_WARN(LOG_TAG,
+                             "Circuit e2e short frame dropped (cid=%llu len=%zu < overhead=%u)",
+                             (unsigned long long)h->cid,
+                             tmp.circ_data ? tmp.circ_data_len : (size_t)0,
+                             (unsigned)NODUS_CHANNEL_OVERHEAD);
+            } else {
+                /* Safe: length checked above, subtraction cannot underflow. */
+                size_t pt_cap = tmp.circ_data_len - NODUS_CHANNEL_OVERHEAD;
+                uint8_t *pt = malloc(pt_cap > 0 ? pt_cap : 1);
+                if (!pt) {
+                    QGP_LOG_ERROR(LOG_TAG,
+                                  "Circuit e2e alloc failed, frame dropped (cid=%llu)",
+                                  (unsigned long long)h->cid);
                 } else {
-                    QGP_LOG_ERROR(LOG_TAG, "Circuit E2E decrypt failed (cid=%llu)",
-                                 (unsigned long long)h->cid);
+                    size_t pt_len = 0;
+                    if (nodus_channel_decrypt(&h->e2e_crypto, tmp.circ_data, tmp.circ_data_len,
+                                               pt, pt_cap, &pt_len) == 0) {
+                        cb(h, pt, pt_len, user);
+                    } else {
+                        QGP_LOG_ERROR(LOG_TAG, "Circuit E2E decrypt failed (cid=%llu)",
+                                     (unsigned long long)h->cid);
+                    }
+                    free(pt);
                 }
-                free(pt);
             }
         } else if (cb) {
             cb(h, tmp.circ_data, tmp.circ_data_len, user);
