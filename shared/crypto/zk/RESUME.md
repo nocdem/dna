@@ -229,10 +229,19 @@
       pattern as cm_carry, factored `e15_freeze_check`). Sources at φ=0: new pos/nk
       witness cells + the note's ADDR[4] (committed into cm). These are the cells
       S4 hands to C3 (pos_carry) and C4 (cm/pos/nk_carry). 4 carry attacks rejected.
-      Scoped-out next: condition-3 addr_pub=Poseidon2(ak,nk) spend-authority (binds
-      nk_carry to the committed addr — a poseidon2 block).
-    - **⭐ FULL SHIELDED SPEND CIRCUIT built as construction gates** — C1 (S1a-d +
-      E15 carries) + C3 + C4, each red-teamed. **S4 COMPOSITION OBLIGATIONS (record, must hold when
+      Scoped-out next: condition-3 (done below).
+    - **S1-cond3 DONE — spend authority** (`conf_action_air`, WIDTH=813): two
+      poseidon2 blocks AC1/AC2 compute addr_pub=Poseidon2(ak, nk, DOMSEP_ADDR) and,
+      on INPUT φ=0 rows, force it == the note's committed ADDR (bound into cm at
+      S1c). nk is the SAME nk_src cell C4 nullifies. **Closes the THEFT vector by
+      construction:** a spender presenting a victim's public cm can't produce
+      addr_pub=H(attacker_ak,attacker_nk) matching the victim's committed ADDR.
+      D3 hash-based authority (no signature). 5 KATs (THEFT/wrong-ak, nk one-cell,
+      DOMSEP, capacity, ADDR forge) rejected. `conf_action_derive_addr` exposed.
+    - **⭐ C1 SOUNDNESS-COMPLETE for the shielded SPEND** (binding + note-commitment
+      + balance + range + carries + membership-ready pos + nullifier-ready nk +
+      spend-authority). Only the shield/deshield BOUNDARY (C6 turnstile, needs AIR
+      public inputs) is scoped out. + C3 + C4, each red-teamed. **S4 COMPOSITION OBLIGATIONS (record, must hold when
       composing):** (1) pin D as compile-time/phase-schedule constant (no ungated
       per-level active selector — add a negative test that the root check fires
       only at phase P_mem+D); (2) bind C3.leaf==C1.cm_carry, C3.pos==C1.pos_carry,

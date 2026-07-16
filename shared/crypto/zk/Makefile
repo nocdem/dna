@@ -928,8 +928,8 @@ test: all
 	@$(BUILD)/test_note_commit tools/vectors/note_commit_sponge.json
 	@echo
 	@echo "============================================================"
-	@echo "S1a-S1d dual-mode C1 — phase-counter + freeze-carry + note-commitment + balance"
-	@echo "  in-circuit cm byte-matches S0; §4b MINT + non-conservation + all deviations rejected"
+	@echo "S1 C1 COMPLETE — φ-counter+freeze-carry+note-commitment+balance+carries+cond-3"
+	@echo "  in-circuit cm byte-matches S0; §4b MINT + THEFT + non-conservation + all rejected"
 	@echo "============================================================"
 	@$(BUILD)/test_conf_action_air
 	@echo

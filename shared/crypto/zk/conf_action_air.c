@@ -35,6 +35,20 @@ static uint64_t nc_out(const uint64_t *blk, size_t k) {
     return blk[p2air_end_post_off(P2AIR_HALF_FULL_ROUNDS - 1, k)];
 }
 
+/* Generic fixed-length PaddingFreeSponge<8,4,4> over in[8] (== S0 sponge): block1
+ * absorbs in[0..4] zero-cap, block2 absorbs in[4..8] with block1 capacity carry;
+ * digest = block2.out[0..4]. Used for condition-3 (addr_pub). */
+static void action_sponge8(const uint64_t in[8], uint64_t *blk1, uint64_t *blk2,
+                           uint64_t out[CONF_ACTION_CM_LANES]) {
+    uint64_t in1[8] = {in[0], in[1], in[2], in[3], 0, 0, 0, 0};
+    poseidon2_air_generate_row(in1, blk1);
+    uint64_t s1[8];
+    for (int k = 0; k < 8; k++) s1[k] = nc_out(blk1, (size_t)k);
+    uint64_t in2[8] = {in[4], in[5], in[6], in[7], s1[4], s1[5], s1[6], s1[7]};
+    poseidon2_air_generate_row(in2, blk2);
+    for (int k = 0; k < CONF_ACTION_CM_LANES; k++) out[k] = nc_out(blk2, (size_t)k);
+}
+
 /* Compute the in-circuit note-commitment (E9′): two poseidon2 blocks realising
  * the S0 note_commit PaddingFreeSponge<8,4,4> over (value, addr[4], rcm[2],
  * DOMSEP_NOTE), all-zero IV, DOMSEP as the last rate element of block 2. Writes
@@ -56,11 +70,18 @@ static void note_commit_blocks(uint64_t value, const uint64_t addr[4],
         cm_out[k] = nc_out(nc2_out, (size_t)k);
 }
 
+void conf_action_derive_addr(uint64_t ak, uint64_t nk,
+                             uint64_t addr_out[CONF_ACTION_ADDR_LANES]) {
+    uint64_t in[8] = {ak, nk, DNAC_DOMSEP_ADDR, 0, 0, 0, 0, 0};
+    uint64_t b1[P2AIR_NUM_COLS], b2[P2AIR_NUM_COLS];
+    action_sponge8(in, b1, b2, addr_out);
+}
+
 bool conf_action_air_generate(unsigned log_height, const uint64_t *value,
                               const uint64_t *addr, const uint64_t *rcm,
                               const uint8_t *roles, const uint64_t *pos,
-                              const uint64_t *nk, size_t num_notes,
-                              uint64_t *trace_out) {
+                              const uint64_t *nk, const uint64_t *ak,
+                              size_t num_notes, uint64_t *trace_out) {
     if (log_height < CONF_ACTION_MIN_LOG_HEIGHT ||
         log_height > CONF_ACTION_MAX_LOG_HEIGHT)
         return false;
@@ -70,7 +91,8 @@ bool conf_action_air_generate(unsigned log_height, const uint64_t *value,
     const size_t num_blocks = rows / CONF_ACTION_K;
     /* E7: the last block MUST be dummy, so at most num_blocks-1 real notes. */
     if (num_notes + 1 > num_blocks) return false;
-    if (num_notes > 0 && (!value || !addr || !rcm || !roles || !pos || !nk))
+    if (num_notes > 0 &&
+        (!value || !addr || !rcm || !roles || !pos || !nk || !ak))
         return false;
 
     /* Honest-prover preconditions: every value < 2^52, roles valid, and the
@@ -124,12 +146,28 @@ bool conf_action_air_generate(unsigned log_height, const uint64_t *value,
          * poseidon2 constraints hold on every row. */
         memcpy(row + CONF_ACTION_NC1_OFF, zero_blk, sizeof zero_blk);
         memcpy(row + CONF_ACTION_NC2_OFF, zero_blk, sizeof zero_blk);
+        memcpy(row + CONF_ACTION_AC1_OFF, zero_blk, sizeof zero_blk);
+        memcpy(row + CONF_ACTION_AC2_OFF, zero_blk, sizeof zero_blk);
 
         if (is_real && phi == 0) {
             /* S1c single-row note-commitment at the block-start φ=0 row. */
             const uint64_t *nv = value + blk;
-            const uint64_t *na = addr + blk * CONF_ACTION_ADDR_LANES;
             const uint64_t *nr = rcm + blk * CONF_ACTION_RCM_LANES;
+
+            /* condition-3 (INPUT notes): the note address IS Poseidon2(ak,nk) — an
+             * input note is addressed to the spender's own keys, and this is what
+             * spend authority proves. OUTPUT/FEE use the passed recipient address. */
+            uint64_t na[CONF_ACTION_ADDR_LANES];
+            if (roles[blk] == CONF_ACTION_ROLE_INPUT) {
+                uint64_t ac_in[8] = {ak[blk], nk[blk], DNAC_DOMSEP_ADDR, 0, 0, 0, 0, 0};
+                action_sponge8(ac_in, row + CONF_ACTION_AC1_OFF,
+                               row + CONF_ACTION_AC2_OFF, na);
+                row[CONF_ACTION_AK_OFF] = ak[blk];
+            } else {
+                const uint64_t *pa = addr + blk * CONF_ACTION_ADDR_LANES;
+                for (unsigned j = 0; j < CONF_ACTION_ADDR_LANES; j++) na[j] = pa[j];
+            }
+
             row[CONF_ACTION_VALUE_OFF] = *nv;
             for (unsigned j = 0; j < CONF_ACTION_ADDR_LANES; j++)
                 row[CONF_ACTION_ADDR_OFF + j] = na[j];
@@ -397,6 +435,35 @@ int conf_action_air_eval(const uint64_t *trace, size_t n_rows) {
             /* cm_output == NC2.out[0..4] (E9′ single-row). Then S1b freezes it. */
             for (size_t j = 0; j < CONF_ACTION_CM_LANES; j++)
                 if (row[CONF_ACTION_CMOUT_OFF + j] != nc_out(nc2, j)) viol++;
+        }
+
+        /* ── condition-3 spend authority: addr_pub == Poseidon2(ak, nk) ───────
+         * The AC1/AC2 poseidon2 blocks are valid perms every row (always-on); the
+         * spend-auth binding fires on INPUT-note block-start rows. It forces the
+         * committed ADDR to be the hash of (ak, nk) — so a spender must know the
+         * keys behind the note's address (closes theft: a victim's public cm has
+         * the victim's ADDR, which ≠ Poseidon2(attacker_ak, attacker_nk)). */
+        const uint64_t *ac1 = row + CONF_ACTION_AC1_OFF;
+        const uint64_t *ac2 = row + CONF_ACTION_AC2_OFF;
+        viol += poseidon2_air_eval_row(ac1);
+        viol += poseidon2_air_eval_row(ac2);
+        if (block_start && row[CONF_ACTION_ISIN_OFF] == 1) {
+            /* AC1.in = [ak, nk, DOMSEP_ADDR, 0, 0,0,0,0]; nk is the SAME nk_src
+             * cell C4 nullifies (one-cell binding). */
+            if (ac1[p2air_input_off(0)] != row[CONF_ACTION_AK_OFF]) viol++;
+            if (ac1[p2air_input_off(1)] != row[CONF_ACTION_NKSRC_OFF]) viol++;
+            if (ac1[p2air_input_off(2)] != DNAC_DOMSEP_ADDR) viol++;
+            if (ac1[p2air_input_off(3)] != 0) viol++;
+            for (size_t k = 4; k < 8; k++)
+                if (ac1[p2air_input_off(k)] != 0) viol++;
+            /* AC2.in[0..4] = 0 (pad); AC2.in[4..8] = AC1.out[4..8] (capacity). */
+            for (size_t k = 0; k < 4; k++)
+                if (ac2[p2air_input_off(k)] != 0) viol++;
+            for (size_t k = 4; k < 8; k++)
+                if (ac2[p2air_input_off(k)] != nc_out(ac1, k)) viol++;
+            /* addr_pub (AC2.out) == the committed note ADDR[4]. */
+            for (size_t j = 0; j < CONF_ACTION_ADDR_LANES; j++)
+                if (row[CONF_ACTION_ADDR_OFF + j] != nc_out(ac2, j)) viol++;
         }
 
         /* ── S1d balance conservation ─────────────────────────────────────── */

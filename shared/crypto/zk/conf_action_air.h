@@ -74,9 +74,16 @@
  *     committed into cm at S1c), so addr_carry == the committed recipient address.
  *     At S4 composition: C3 reads pos_carry, C4 reads cm_carry/pos_carry/nk_carry
  *     — all frozen, all provably one note's fields.
- *   Scoped OUT (own step): condition-3 addr_pub=Poseidon2(ak,nk) spend-authority
- *   (binds nk_carry to the committed addr — a poseidon2 block, next); shield/
- *   deshield BOUNDARY public binding (C6 turnstile, needs AIR public inputs).
+ *   S1-cond3 (THIS increment): SPEND AUTHORITY (parent §1.6 condition-3, D3 hash-
+ *   based — no signature). Two poseidon2 blocks AC1/AC2 compute
+ *   addr_pub = PaddingFreeSponge(ak, nk, DOMSEP_ADDR, 0,0,0,0,0), and (on INPUT
+ *   φ=0 rows) the result MUST equal the note's committed ADDR[4] (S1c, ==
+ *   addr_carry). Since ADDR is bound into cm, spending a note requires knowing the
+ *   (ak, nk) whose hash is its address — closing the theft vector (present a
+ *   victim's public cm + your own nk: addr_pub ≠ the committed addr → reject).
+ *   The nk here is the SAME nk_src cell C4 nullifies (one-cell). ak is a witness.
+ *   Scoped OUT (own step): shield/deshield BOUNDARY public binding (C6 turnstile,
+ *   needs AIR public inputs).
  *   Later: S1e constraint-eval fold + degree/num_qc, S1f prover + self-verify.
  *
  * ── Block structure ────────────────────────────────────────────────────────
@@ -148,7 +155,11 @@ extern "C" {
 #define CONF_ACTION_POSCARRY_OFF (CONF_ACTION_NKSRC_OFF + 1)        /* pos_carry (frozen) */
 #define CONF_ACTION_NKCARRY_OFF  (CONF_ACTION_POSCARRY_OFF + 1)     /* nk_carry (frozen) */
 #define CONF_ACTION_ADDRCARRY_OFF (CONF_ACTION_NKCARRY_OFF + 1)     /* addr_carry[4] (frozen) */
-#define CONF_ACTION_WIDTH       (CONF_ACTION_ADDRCARRY_OFF + CONF_ACTION_ADDR_LANES) /* WIDTH = 452 */
+/* ── condition-3 spend authority (addr_pub = Poseidon2(ak,nk)) ── */
+#define CONF_ACTION_AK_OFF      (CONF_ACTION_ADDRCARRY_OFF + CONF_ACTION_ADDR_LANES) /* ak (φ=0, input) */
+#define CONF_ACTION_AC1_OFF     (CONF_ACTION_AK_OFF + 1)            /* poseidon2 block 1 */
+#define CONF_ACTION_AC2_OFF     (CONF_ACTION_AC1_OFF + P2AIR_NUM_COLS) /* poseidon2 block 2 */
+#define CONF_ACTION_WIDTH       (CONF_ACTION_AC2_OFF + P2AIR_NUM_COLS) /* WIDTH = 813 */
 
 /* addr_pub / rcm widths (S0 note_commit layout). */
 #define CONF_ACTION_ADDR_LANES  4
@@ -185,6 +196,11 @@ extern "C" {
  * @param pos         num_notes tree positions (E15 pos_carry source; C3 reads it).
  * @param nk          num_notes spend-key nullifier components (E15 nk_carry
  *                    source; C4 reads it). May be NULL only if num_notes == 0.
+ * @param ak          num_notes spend-authority keys (condition-3). For INPUT
+ *                    notes the note ADDRESS is DERIVED as Poseidon2(ak,nk)
+ *                    (overriding `addr` for those blocks — your input notes are
+ *                    addressed to YOU); for OUTPUT/FEE `ak` is unused and `addr`
+ *                    is the recipient/filler. May be NULL only if num_notes == 0.
  * @param num_notes   number of REAL note-blocks; MUST be ≤ (H/K − 1) (E7).
  * @param trace_out   caller buffer of (2^log_height * CONF_ACTION_WIDTH) uint64.
  * @return true on success; false on a parameter error (incl. non-conserving
@@ -193,16 +209,28 @@ extern "C" {
 bool conf_action_air_generate(unsigned log_height, const uint64_t *value,
                               const uint64_t *addr, const uint64_t *rcm,
                               const uint8_t *roles, const uint64_t *pos,
-                              const uint64_t *nk, size_t num_notes,
-                              uint64_t *trace_out);
+                              const uint64_t *nk, const uint64_t *ak,
+                              size_t num_notes, uint64_t *trace_out);
 
 /**
- * @brief Evaluate ALL S1a constraints (E1/E2/E3/E13) over a trace.
+ * @brief Evaluate ALL constraints over a trace (see file header for the set).
  * @param trace   2^log_height rows × CONF_ACTION_WIDTH canonical columns.
  * @param n_rows  number of rows (= 2^log_height).
  * @return number of violated constraints; 0 == valid witness.
  */
 int conf_action_air_eval(const uint64_t *trace, size_t n_rows);
+
+/**
+ * @brief Derive a shielded input-note address addr_pub = Poseidon2(ak, nk)
+ *        (condition-3): PaddingFreeSponge<8,4,4>(ak, nk, DOMSEP_ADDR, 0,…). The
+ *        same computation the in-circuit AC1/AC2 blocks perform; exposed so a
+ *        caller/test can construct a note addressed to (ak, nk).
+ * @param ak       spend-authority key (canonical).
+ * @param nk       nullifier key (canonical).
+ * @param addr_out 4-lane derived address.
+ */
+void conf_action_derive_addr(uint64_t ak, uint64_t nk,
+                             uint64_t addr_out[CONF_ACTION_ADDR_LANES]);
 
 #ifdef __cplusplus
 }

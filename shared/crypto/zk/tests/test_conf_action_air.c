@@ -57,20 +57,30 @@ int main(void) {
     };
     const uint64_t pos[3] = {5, 99, 4096};      /* E15 pos_carry sources */
     const uint64_t nk[3] = {0xA11CE, 0xB0B, 42}; /* E15 nk_carry sources */
+    const uint64_t ak[3] = {0xACE, 0, 0};        /* condition-3 spend-auth (input only) */
+
+    /* The INPUT note (block 0) is addressed to (ak0, nk0): addr = Poseidon2(ak,nk).
+     * generate derives it; the test mirrors that for the cm byte-match target.
+     * OUTPUT/FEE keep their passed addresses. */
+    uint64_t eff_addr[3][CONF_ACTION_ADDR_LANES];
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < CONF_ACTION_ADDR_LANES; j++) eff_addr[i][j] = addr[i][j];
+    conf_action_derive_addr(ak[0], nk[0], eff_addr[0]); /* block 0 is INPUT */
+
     /* Expected commitments via the S0 note_commit sponge (byte-match target). */
     uint64_t expect_cm[3][CONF_ACTION_CM_LANES];
     for (int i = 0; i < 3; i++)
-        note_commit(value[i], addr[i], rcm[i], expect_cm[i]);
+        note_commit(value[i], eff_addr[i], rcm[i], expect_cm[i]);
 
     uint64_t honest[ROWS * CONF_ACTION_WIDTH];
     if (!conf_action_air_generate(LOG_H, value, &addr[0][0], &rcm[0][0], roles,
-                                  pos, nk, 3, honest)) {
+                                  pos, nk, ak, 3, honest)) {
         printf("FAIL: honest generate failed\n");
         return 1;
     }
 
     printf("============================================================\n");
-    printf("C1 S1a-E15 — phase-counter + freeze-carry + note-commitment + balance + carries\n");
+    printf("C1 complete — phase-counter+freeze-carry+note-commitment+balance+carries+spend-auth\n");
     printf("  K=%d, H=%u, WIDTH=%d\n", CONF_ACTION_K, ROWS, CONF_ACTION_WIDTH);
     printf("============================================================\n");
 
@@ -418,12 +428,55 @@ int main(void) {
         expect_reject("block-0 nk_carry != src (E15/E8')", bad);
     }
 
+    /* ── condition-3 spend-authority attacks (block 0 = INPUT) ────────────── */
+
+    /* Sanity: the input note's committed ADDR == Poseidon2(ak0, nk0). */
+    {
+        int ok = 1;
+        for (unsigned j = 0; j < CONF_ACTION_ADDR_LANES; j++)
+            if (honest[0 * CONF_ACTION_WIDTH + CONF_ACTION_ADDR_OFF + j] != eff_addr[0][j]) ok = 0;
+        printf("  [accept] input ADDR == Poseidon2(ak,nk) (cond-3)   %s\n", ok ? "OK" : "FAIL");
+        if (!ok) fails++;
+    }
+    /* REJECT 32: THEFT — forge ak (AC1.in[0]) so addr_pub != committed ADDR.
+     * A spender who does NOT know the note's (ak,nk) is rejected. */
+    {
+        uint64_t bad[ROWS * CONF_ACTION_WIDTH]; memcpy(bad, honest, sizeof bad);
+        set(bad, 0, CONF_ACTION_AC1_OFF + p2air_input_off(0), 0xBAD); /* wrong ak */
+        expect_reject("THEFT: wrong ak != addr preimage (cond-3)", bad);
+    }
+    /* REJECT 33: nk used in cond-3 != nk_src (the nullifier key) — one-cell bind. */
+    {
+        uint64_t bad[ROWS * CONF_ACTION_WIDTH]; memcpy(bad, honest, sizeof bad);
+        set(bad, 0, CONF_ACTION_AC1_OFF + p2air_input_off(1), nk[0] + 1);
+        expect_reject("cond-3 nk != nk_src (one-cell)", bad);
+    }
+    /* REJECT 34: wrong DOMSEP_ADDR pad cell (AC1.in[2]). */
+    {
+        uint64_t bad[ROWS * CONF_ACTION_WIDTH]; memcpy(bad, honest, sizeof bad);
+        set(bad, 0, CONF_ACTION_AC1_OFF + p2air_input_off(2), 999);
+        expect_reject("wrong DOMSEP_ADDR (AC1.in[2])", bad);
+    }
+    /* REJECT 35: break AC2 capacity carry (AC2.in[5] != AC1.out[5]). */
+    {
+        uint64_t bad[ROWS * CONF_ACTION_WIDTH]; memcpy(bad, honest, sizeof bad);
+        set(bad, 0, CONF_ACTION_AC2_OFF + p2air_input_off(5), 12345);
+        expect_reject("AC2 capacity-carry break (cond-3)", bad);
+    }
+    /* REJECT 36: forge the committed ADDR to a different value (addr_pub mismatch).
+     * (Also changes cm, but the cond-3 addr_pub==ADDR binding fires directly.) */
+    {
+        uint64_t bad[ROWS * CONF_ACTION_WIDTH]; memcpy(bad, honest, sizeof bad);
+        set(bad, 0, CONF_ACTION_ADDR_OFF + 0, honest[CONF_ACTION_ADDR_OFF + 0] + 1);
+        expect_reject("committed ADDR != Poseidon2(ak,nk)", bad);
+    }
+
     printf("------------------------------------------------------------\n");
     if (fails) {
-        printf("C1 S1a-E15: %d FAIL\n", fails);
+        printf("C1 complete: %d FAIL\n", fails);
         return 1;
     }
-    printf("C1 S1a-E15: honest accepted (cm byte-matches S0, BAL=0) + phase-counter,"
+    printf("C1 complete: honest accepted (cm byte-matches S0, BAL=0, addr=H(ak,nk)) + phase-counter,"
            " freeze-carry, note-commitment & balance deviations rejected — PASS\n");
     return 0;
 }
