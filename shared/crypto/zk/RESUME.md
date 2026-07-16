@@ -257,9 +257,20 @@
       C4 reads the SAME frozen pos_carry (F4); (3) **is_dummy ⇒ v_old=0** (C1 E17 —
       else a real input mislabeled dummy skips membership = mint; dm-c3 §4b attack-4
       OPEN until E17 binds it); (4) anchor verifier-substituted (C6 freshness).
-    - **S1e/S4 NEXT** — the real-STARK lift: port the construction-gate constraints
-      to the fp2 folder (conf_root_fold.c form) + measure degree/num_qc (needs a
-      Rust oracle) → aggregate prover + self-verify + red-team.
+    - **S1e PLAN written** — `dnac/docs/plans/2026-07-16-dm-s1e-realstark-lift-plan.md`
+      (local). Real-STARK lift of the C1 construction gate, mirroring B1 Stage-2.
+      **num_qc determined analytically = 8** (dominant constraint = Poseidon2 S-box
+      x^7, IDENTICAL to ConfRootAir which measured 8; C1's added gates are degree
+      ≤3; oracle MUST override `max_constraint_degree=None` to MEASURE, not inherit
+      poseidon2-air's Some(7)→16). Stages: S1e.1 Rust ConfActionAir (813-col, ~2×
+      ConfRootAir eval), S1e.2 measure num_qc (STOP=8) + byte-match vector, S1e.3 C
+      fp2 fold, S1e.4 pure-C prover + self-verify (route through dnac_stark_priming,
+      parent H2/H3 statement binding), S1e.5 re-run C1 negative KATs through the
+      real prover, S1f 10+ agent red-team. **This is the multi-session execution
+      boundary** — the construction gate de-risked it (every constraint written +
+      tested in C; the Rust port is translation with a byte-match oracle to check).
+    - **S4 NEXT after S1e** — aggregate C1+C3+C4 (one Action AIR/TX) with the
+      recorded composition obligations (leaf==cm_carry, pin D, nullify iff IS_INPUT).
   - **THEN:** S2 C3 membership (+ M1/M2 goals, + E5 point-read reader), S3 C4
     nullifier, S4 aggregate prover/verifier (+ H2/H3), S5 V4 wire, S6 consensus
     (state_root v4), S7 note-enc+wallet, S8 Genesis 7/7.
