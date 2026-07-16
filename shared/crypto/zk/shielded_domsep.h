@@ -57,12 +57,19 @@ extern "C" {
  * a leaf's 8th element is DOMSEP_NOTE, an internal node's 8th is a Poseidon2
  * output — collision requires grinding right_child[3] == DOMSEP_NOTE, a ~2^64
  * event at the hash level ALONE. Full 2^128 leaf/internal separation for the
- * note tree is NOT achieved by this constant; it is a numbered SECURITY GOAL for
- * the C3 membership AIR (S2): the in-circuit path verifier MUST pin the tree
- * height and reject an h+1 leaf-decomposition (so an internal node cannot be
- * presented as a leaf or vice-versa), and bind value<2^52 + addr=H(ak,nk). This
- * constant is reserved for a future tagged-compress variant should that path
- * choose explicit domain tagging instead. compression.rs:4-11 states the tree
+ * note tree is NOT achieved by this constant.
+ *
+ * ⚠ WHERE IT IS DISCHARGED (red-team C3-HIGH correction): the standalone C3
+ * membership gate (conf_membership_air.c) does NOT close this — it takes the tree
+ * depth D and the leaf as FREE inputs and never leaf-types level-0. The ~2^64
+ * grinding gap is closed STRUCTURALLY at S4 COMPOSITION: (a) D pinned as a
+ * compile-time / phase-schedule constant (a note at a wrong depth has no
+ * shorter/longer path to prove), and (b) the C1 binding leaf == cm_carry (the
+ * leaf is a real note commitment, whose 8th preimage element is DOMSEP_NOTE), so
+ * an internal-node digest cannot be substituted for a leaf. C3 STANDALONE
+ * provides NO leaf/internal typing — do not assume it does. This constant is
+ * reserved for a future tagged-compress variant should S4 choose explicit domain
+ * tagging instead. compression.rs:4-11 states only the tree
  * PseudoCompressionFunction contract (non-leaf preimages are compression
  * outputs); it does NOT itself provide leaf/internal typing. */
 #define DNAC_DOMSEP_MERKLE ((uint64_t)0x388daa5546d4d985ULL)

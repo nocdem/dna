@@ -205,9 +205,29 @@
       shield/deshield BOUNDARY selectors + N_BOUNDARY==pub_has_boundary PUBLIC bind
       (C6 turnstile interface, needs AIR public inputs); nk/pos/addr carries (E15,
       consumed by C3/C4 at S2/S3).
-    - **S1e NEXT** — the real-STARK fold: port these construction-gate constraints
-      to the fp2 folder (conf_root_fold.c form) + measure degree/num_qc; then S1f
-      prover + self-verify + the 10+ agent red-team on the composed C1.
+    - **S2 DONE — C3 membership AIR** (`conf_membership_air.{c,h}`): Poseidon2
+      Merkle-path verify, walk order merkle_smt.h:28-30 (SHA3→Poseidon2), compress
+      = S0 note_merkle_compress (capacity-preserving, F1). Per level: ONE
+      direction-bit cell drives walk + POSACC (F2), 2-perm compress, chaining,
+      POSACC=Σbit·2^i (F3), root==anchor, leaf==public, pos==POSACC. Honest path
+      accepted (AIR root byte-matches S0) + 9 attacks rejected. WIDTH=370.
+      **10-agent red-team (wbmpt881n): 0 CRITICAL, MERGE-READY.** HIGH doc-fix
+      applied (the leaf/internal-separation claim moved from "C3 discharges it" to
+      "S4 composition discharges it" — shielded_domsep.h + note_commit.h corrected).
+    - **S3 DONE — C4 nullifier AIR** (`conf_nullifier_air.{c,h}`): ρ=CRH(cm,pos),
+      nf=PRF(nk,ρ), both S0 2-perm sponges, distinct DOMSEPs. Honest + Faerie-Gold/
+      key-binding soundness + 9 attacks rejected. WIDTH=730. Red-team wmxbspk01.
+    - **⭐ FULL SHIELDED SPEND CIRCUIT built as construction gates** — C1 (S1a-d) +
+      C3 + C4, each red-teamed. **S4 COMPOSITION OBLIGATIONS (record, must hold when
+      composing):** (1) pin D as compile-time/phase-schedule constant (no ungated
+      per-level active selector — add a negative test that the root check fires
+      only at phase P_mem+D); (2) bind C3.leaf==C1.cm_carry, C3.pos==C1.pos_carry,
+      C4 reads the SAME frozen pos_carry (F4); (3) **is_dummy ⇒ v_old=0** (C1 E17 —
+      else a real input mislabeled dummy skips membership = mint; dm-c3 §4b attack-4
+      OPEN until E17 binds it); (4) anchor verifier-substituted (C6 freshness).
+    - **S1e/S4 NEXT** — the real-STARK lift: port the construction-gate constraints
+      to the fp2 folder (conf_root_fold.c form) + measure degree/num_qc (needs a
+      Rust oracle) → aggregate prover + self-verify + red-team.
   - **THEN:** S2 C3 membership (+ M1/M2 goals, + E5 point-read reader), S3 C4
     nullifier, S4 aggregate prover/verifier (+ H2/H3), S5 V4 wire, S6 consensus
     (state_root v4), S7 note-enc+wallet, S8 Genesis 7/7.

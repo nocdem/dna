@@ -78,8 +78,10 @@ void note_commit(uint64_t value, const uint64_t addr_pub[NOTE_ADDR_LANES],
  *        TruncatedPermutation, dm-c3 F1). Child order is caller-fixed (Merkle
  *        walk pins it by pos bit). NOTE: the 2^128 figure is the sponge's
  *        collision resistance; full LEAF/INTERNAL-node separation for the tree is
- *        a C3-AIR obligation (fixed-height path check), see shielded_domsep.h
- *        DNAC_DOMSEP_MERKLE — not provided by this function alone (red-team M1/M2).
+ *        NOT provided by this function NOR by the standalone C3 gate — it is
+ *        discharged structurally at S4 composition (D pinned as a constant + C1
+ *        leaf==cm_carry), see shielded_domsep.h DNAC_DOMSEP_MERKLE (red-team
+ *        C3-HIGH).
  * @param left   4-lane left child digest.
  * @param right  4-lane right child digest.
  * @param out    4-lane parent digest.

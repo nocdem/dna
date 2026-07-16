@@ -120,7 +120,9 @@ TESTS = \
     $(BUILD)/test_note_commit \
     $(BUILD)/test_shielded_domsep \
     $(BUILD)/test_shielded_fri_params \
-    $(BUILD)/test_conf_action_air
+    $(BUILD)/test_conf_action_air \
+    $(BUILD)/test_conf_membership_air \
+    $(BUILD)/test_conf_nullifier_air
 
 .PHONY: all test clean gen-fri-proof-wire gen-stark-proof-wire bench-prover
 
@@ -164,6 +166,15 @@ $(BUILD)/test_shielded_fri_params: tests/test_shielded_fri_params.c shielded_fri
 # sponge (cm byte-match) → links the poseidon2 + sponge stack.
 $(BUILD)/test_conf_action_air: tests/test_conf_action_air.c conf_action_air.c note_commit.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c poseidon2_goldilocks.c field_goldilocks.c conf_action_air.h note_commit.h shielded_domsep.h poseidon2_air.h poseidon2_air_cols.h field_goldilocks.h | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) tests/test_conf_action_air.c conf_action_air.c note_commit.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c poseidon2_goldilocks.c field_goldilocks.c -o $@
+
+# S2 dual-mode C3 — Poseidon2 Merkle-path membership construction gate (is_zk=0).
+$(BUILD)/test_conf_membership_air: tests/test_conf_membership_air.c conf_membership_air.c note_commit.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c poseidon2_goldilocks.c field_goldilocks.c conf_membership_air.h note_commit.h poseidon2_air.h poseidon2_air_cols.h field_goldilocks.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_conf_membership_air.c conf_membership_air.c note_commit.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c poseidon2_goldilocks.c field_goldilocks.c -o $@
+
+# S3 dual-mode C4 — nullifier-PRF construction gate (is_zk=0). SHA3 for the
+# DOMSEP derivation check is compile-time; links poseidon2 stack.
+$(BUILD)/test_conf_nullifier_air: tests/test_conf_nullifier_air.c conf_nullifier_air.c note_commit.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c poseidon2_goldilocks.c field_goldilocks.c conf_nullifier_air.h note_commit.h shielded_domsep.h poseidon2_air.h poseidon2_air_cols.h field_goldilocks.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_conf_nullifier_air.c conf_nullifier_air.c note_commit.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c poseidon2_goldilocks.c field_goldilocks.c -o $@
 
 # FP1c.1 — Poseidon2 AIR column-layout binding contract (Poseidon2Cols<8,7,1,4,22>,
 # Plonky3 poseidon2-air/src/columns.rs @ 82cfad73). Structural gate.
@@ -921,6 +932,18 @@ test: all
 	@echo "  in-circuit cm byte-matches S0; §4b MINT + non-conservation + all deviations rejected"
 	@echo "============================================================"
 	@$(BUILD)/test_conf_action_air
+	@echo
+	@echo "============================================================"
+	@echo "S2 dual-mode C3 — Poseidon2 Merkle-path membership (is_zk=0)"
+	@echo "  honest path accepted (root byte-matches S0) + 9 attacks rejected"
+	@echo "============================================================"
+	@$(BUILD)/test_conf_membership_air
+	@echo
+	@echo "============================================================"
+	@echo "S3 dual-mode C4 — nullifier-PRF (ρ=CRH(cm,pos), nf=PRF(nk,ρ))"
+	@echo "  honest accepted + Faerie-Gold/key-binding soundness + 9 attacks rejected"
+	@echo "============================================================"
+	@$(BUILD)/test_conf_nullifier_air
 	@echo
 	@echo "============================================================"
 	@echo "ALL REMAINING (grounded) GATES: GREEN"
