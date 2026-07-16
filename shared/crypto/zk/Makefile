@@ -119,7 +119,8 @@ TESTS = \
     $(BUILD)/test_conf_txbind \
     $(BUILD)/test_note_commit \
     $(BUILD)/test_shielded_domsep \
-    $(BUILD)/test_shielded_fri_params
+    $(BUILD)/test_shielded_fri_params \
+    $(BUILD)/test_conf_action_air
 
 .PHONY: all test clean gen-fri-proof-wire gen-stark-proof-wire bench-prover
 
@@ -157,6 +158,10 @@ $(BUILD)/test_shielded_domsep: tests/test_shielded_domsep.c field_goldilocks.c s
 # S0 dual-mode — pinned consensus FRI params + hardened verify substitution/reject.
 $(BUILD)/test_shielded_fri_params: tests/test_shielded_fri_params.c shielded_fri_params.h fri_proof_codec.h $(FRI_PROOF_CODEC_STACK) | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) tests/test_shielded_fri_params.c $(FRI_PROOF_CODEC_STACK) $(FRI_VERIFIER_LDADD) -o $@
+
+# S1a dual-mode C1 — forced phase-counter construction gate (is_zk=0).
+$(BUILD)/test_conf_action_air: tests/test_conf_action_air.c conf_action_air.c field_goldilocks.c conf_action_air.h field_goldilocks.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_conf_action_air.c conf_action_air.c field_goldilocks.c -o $@
 
 # FP1c.1 — Poseidon2 AIR column-layout binding contract (Poseidon2Cols<8,7,1,4,22>,
 # Plonky3 poseidon2-air/src/columns.rs @ 82cfad73). Structural gate.
@@ -908,6 +913,12 @@ test: all
 	@echo "  byte-match vs real Plonky3 PaddingFreeSponge (82cfad73)"
 	@echo "============================================================"
 	@$(BUILD)/test_note_commit tools/vectors/note_commit_sponge.json
+	@echo
+	@echo "============================================================"
+	@echo "S1a+S1b dual-mode C1 — phase-counter + freeze-carry binding (K=32)"
+	@echo "  honest accepted + φ-deviations + freeze-carry attacks rejected (is_zk=0)"
+	@echo "============================================================"
+	@$(BUILD)/test_conf_action_air
 	@echo
 	@echo "============================================================"
 	@echo "ALL REMAINING (grounded) GATES: GREEN"

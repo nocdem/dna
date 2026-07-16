@@ -176,10 +176,24 @@
     — C3 must pin tree height + reject the h+1 leaf-decomposition (leaf/internal
     separation) and bind value<2^52 + addr=H(ak,nk). These are documented in
     `fri_proof_codec.h` + `shielded_domsep.h` at the code they gate.
-  - **NEXT:** S1 = C1 phase-block balance/note-commitment AIR (E1-E17 forced-counter
-    + freeze-carry binding). Then S2 C3 membership (+ M1/M2 goals), S3 C4 nullifier,
-    S4 aggregate prover/verifier (+ H2/H3), S5 V4 wire, S6 consensus (state_root v4),
-    S7 note-enc+wallet, S8 Genesis 7/7.
+  - **S1 IN PROGRESS — C1 phase-block AIR (`conf_action_air.{c,h}`, is_zk=0
+    construction-gate, built incrementally):**
+    - **S1a DONE** — forced φ-counter (E1 range-gate, E2 is_zero wrap-indicator, E3
+      forced transition, E13 anchor), K=32. `test_conf_action_air`: honest cycling
+      accepted + 9 φ-deviations rejected. The prover-independent positioning.
+    - **S1b DONE** — freeze-carry binding (E4 freeze, E6 block-const IS_REAL, E7
+      dummy-last, E8′ block-0 init, E11 wrap-load, padding-zero), grounded to
+      `conf_root_fold.c:281-292`. cm_carry holds each block's φ=0 cm_output frozen
+      block-wide; 6 freeze-carry attacks rejected. **This is the cross-region
+      binding crux (13-round convergence) — BUILT + sound by construction.**
+    - **S1c NEXT** — single-row note-commitment (E9′): bind cm_output to the S0
+      note_commit sponge (2 poseidon2-air blocks, mirrors conf_root CA1/CA2 with
+      all-zero-IV + DOMSEP-as-last layout) + same-row value↔cm (SEC-2). Then S1d
+      balance once-per-block + boundary + role selectors (E17) + nk/pos/addr carries
+      (E15), S1e fold + degree/num_qc, S1f prover + self-verify + 10+ agent red-team.
+  - **THEN:** S2 C3 membership (+ M1/M2 goals, + E5 point-read reader), S3 C4
+    nullifier, S4 aggregate prover/verifier (+ H2/H3), S5 V4 wire, S6 consensus
+    (state_root v4), S7 note-enc+wallet, S8 Genesis 7/7.
 - **`make test`: 64 test binaries GREEN, 0 warnings** (`cd shared/crypto/zk && make test`;
   incl. the 3 S0 dual-mode gates test_note_commit / test_shielded_domsep /
   test_shielded_fri_params;
