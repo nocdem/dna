@@ -26,6 +26,7 @@
 #include <string.h>
 
 #include "field_goldilocks.h" /* GOLDILOCKS_P, gold_fp_to_u64/from_u64, gold_fp2_new */
+#include "shielded_fri_params.h" /* pinned consensus FRI params (S0/C5) */
 
 /* ============================================================================
  * Decoded package — owns all allocations via a registry.
@@ -612,5 +613,61 @@ dnac_fri_codec_status_t dnac_fri_verify_wire(
                                            transcript, com, n);
     if (out_fri_status) *out_fri_status = fs;
     dnac_fri_wire_free(pkg);
+    return DNAC_FRI_CODEC_OK;
+}
+
+dnac_fri_codec_status_t dnac_fri_verify_wire_shielded(
+    const uint8_t        *buf,
+    size_t                len,
+    dnac_transcript_t    *transcript,
+    dnac_fri_status_t    *out_fri_status)
+{
+    /* (0) Fail-closed contract (red-team S0-M4): a consensus caller MUST receive
+     * the verdict — a NULL out slot would swallow it. Reject up front. */
+    if (!out_fri_status) return DNAC_FRI_CODEC_ERR_NULL;
+    *out_fri_status = DNAC_FRI_ERR_INVALID_POW_WITNESS; /* fail-closed default */
+
+    dnac_fri_wire_package_t *pkg = NULL;
+    dnac_fri_codec_status_t cs = dnac_fri_proof_decode(buf, len, &pkg);
+    if (cs != DNAC_FRI_CODEC_OK) return cs;
+
+    /* (1) Tamper detection: wire params MUST equal the pinned consensus set.
+     * A shielded proof carrying anything else is rejected outright. */
+    const dnac_fri_params_t *pinned = dnac_shielded_fri_params();
+    if (!dnac_fri_params_eq(dnac_fri_wire_params(pkg), pinned)) {
+        dnac_fri_wire_free(pkg);
+        return DNAC_FRI_CODEC_ERR_SHIELDED_PARAM_MISMATCH;
+    }
+
+    /* (2) Trace-height pin (dm-c5 C5e): the largest committed matrix domain
+     * height must equal the pinned shielded COMMITTED height, so a prover cannot
+     * slide lgmh to weaken the low-degree test. The committed domain log_size is
+     * base_degree_bits + is_zk (the is_zk hiding transform commits at base+1 — see
+     * shielded_fri_params.h; grounded to conf_root_air_zk.json base_degree_bits+1),
+     * so the pin is DNAC_SHIELDED_COMMITTED_LOG_HEIGHT == 11, NOT the physical 10. */
+    size_t n = 0;
+    const dnac_fri_commitment_with_opening_points_t *com =
+        dnac_fri_wire_commitments(pkg, &n);
+    size_t max_log_height = 0;
+    for (size_t i = 0; i < n; i++) {
+        for (size_t j = 0; j < com[i].num_matrices; j++) {
+            size_t lh = com[i].matrices[j].domain.log_size;
+            if (lh > max_log_height) max_log_height = lh;
+        }
+    }
+    if (max_log_height != DNAC_SHIELDED_COMMITTED_LOG_HEIGHT) {
+        dnac_fri_wire_free(pkg);
+        return DNAC_FRI_CODEC_ERR_SHIELDED_HEIGHT_MISMATCH;
+    }
+
+    /* (3) SUBSTITUTE the pinned params — the verifier's own constant sets the
+     * security level, never the wire pointer. */
+    dnac_fri_status_t fs = dnac_fri_verify(pinned, dnac_fri_wire_proof(pkg),
+                                           transcript, com, n);
+    *out_fri_status = fs;
+    dnac_fri_wire_free(pkg);
+    /* (4) Fail-closed (M4): a non-OK verdict is a codec-level rejection, not a
+     * silent CODEC_OK the caller might ignore. */
+    if (fs != DNAC_FRI_OK) return DNAC_FRI_CODEC_ERR_SHIELDED_VERIFY_FAILED;
     return DNAC_FRI_CODEC_OK;
 }

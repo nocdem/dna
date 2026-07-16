@@ -117,7 +117,72 @@
   Still PARKED (grep-confirmed: no consensus CMake references crypto/zk);
   product-need for confidential amounts is an open question (v3 transparent gives
   the same privacy).
-- **`make test`: 61 test binaries GREEN, 0 warnings** (`cd shared/crypto/zk && make test`;
+- **DUAL-MODE SHIELDED — S0 PRIMITIVES + PINS COMPLETE (2026-07-16).**
+  Design: `dnac/docs/plans/2026-07-15-dual-mode-transparent-shielded-design.md` +
+  component docs `dnac/docs/plans/2026-07-16-dm-c1..c7-*.md` (all local-only) +
+  memory `project_dual_mode_design` (~25 red-team rounds, no open CRITICAL at
+  design level). S0 is the first IMPLEMENTATION step: the byte-matched primitives
+  and consensus pins that C1/C3/C4 (the shielded SPEND AIR) all rest on.
+  - **Note-commitment sponge** (`note_commit.{c,h}`): stock Plonky3
+    `PaddingFreeSponge<default_goldilocks_poseidon2_8,8,4,4>` (all-zero IV, rate-4/
+    capacity-4 → CR 2^128 [BDPA08]). `cm = sponge(value, addr_pub[4], rcm[2],
+    DOMSEP_NOTE)` — domain sep via a preimage ELEMENT, not a non-standard IV, so it
+    IS a Plonky3 primitive (discharges the `conf_root_air.h:47` owed byte-match).
+    8 elems = exactly 2 rate-4 permutations, squeeze 4 lanes = 256-bit cm.
+  - **Merkle 2-to-1 compress** (`note_merkle_compress`): SAME PaddingFreeSponge over
+    `(left[4]‖right[4])` — capacity-preserving (dm-c3 F1: a bare width-8
+    TruncatedPermutation is zero-capacity/invertible = not CR).
+  - **Byte-match KAT** `test_note_commit` (8/8 cases) vs oracle
+    `dump-note-commit-sponge` → `tools/vectors/note_commit_sponge.json`.
+  - **DOMSEP constants** (`shielded_domsep.h`): NOTE/RHO/NF/ADDR/MERKLE =
+    `SHA3-512("...")[0:8]` BE, all < p, all distinct (incl. vs B1's VAL/ACC).
+    `test_shielded_domsep` re-derives + checks canonicity + distinctness (also
+    re-derives the two B1 constants to prove the rule).
+  - **FRI params → consensus constant** (`shielded_fri_params.{c,h}`, EXISTENTIAL —
+    sole in-pool-mint barrier): `DNAC_SHIELDED_FRI_PARAMS` = Plonky3
+    `new_benchmark_zk` (config.rs:102-113) — log_blowup 2, num_queries 100, query_pow
+    16 → 216-bit conjectured soundness. New hardened entry
+    `dnac_fri_verify_wire_shielded` SUBSTITUTES the pinned params (never wire),
+    REJECTS non-pinned wire params + off-height proofs (committed domain pinned to
+    2^11 = base 10 + is_zk 1, dm-c5 C5e — see H1 below). Generic
+    `dnac_fri_verify_wire` untouched (parked B1/test
+    paths keep their test params). `test_shielded_fri_params` asserts grounding +
+    the substitution/reject guard.
+  - **Shielded-enc seed** (`seed_derivation.c` + `bip39.h`): new non-breaking
+    `qgp_derive_shielded_enc_seed` = SHAKE256(master ‖ "qgp-shielded-enc-v1", 32),
+    domain-separated from signing/encryption (D6/I3). Test in
+    `messenger/tests/test_bip39_bip32.c` (determinism + separation).
+  - **Gate:** `cd shared/crypto/zk && make test` GREEN, 0 warnings (3 new S0 gates);
+    libdna builds clean; `test_bip39_bip32` GREEN.
+  - **Independent 12-agent red-team (run w5deaevcv, 2026-07-16): 0 CRITICAL → gate
+    passes.** Pre-commit fixes APPLIED: **H1** — the is_zk COMMITTED trace domain is
+    `base+1` (conf_root_air_zk.json `base_degree_bits:3→degree_bits:4`), so the
+    height pin is `DNAC_SHIELDED_COMMITTED_LOG_HEIGHT == 11`, NOT the physical 10
+    (my first cut was wrong + had a false "is_zk doubling is FRI-internal only"
+    comment — corrected); **M4** — `dnac_fri_verify_wire_shielded` is now fail-closed
+    (NULL out rejected, non-OK verdict → `ERR_SHIELDED_VERIFY_FAILED`, pre-set
+    rejecting default); **M1/M2** — leaf/internal domain-sep claim corrected to
+    honest (~2^64 at the hash level; full separation is a C3-AIR fixed-height goal,
+    NOT a Plonky3 "tree model"); citation drift + Makefile stale prereqs fixed; seed
+    KAT + oracle canonicity assert added.
+  - **⚠ RECORDED HARD BLOCKERS for S4/S8 consensus wiring (red-team, numbered):**
+    **H2** — the DEEP/zeta opening point is currently WIRE-READ + transcript-unbound
+    (`dec_point`); the S4 shielded verify MUST sample zeta after observing the
+    trace/quotient roots (route through `dnac_stark_priming`) and fail-close on any
+    wire opening point. **H3** — the wrapper pins the security LEVEL+height but not
+    the STATEMENT (does not observe wire commitments into the transcript); S4 must
+    prime the transcript per uni-stark. **M5** — the unpinned sibling
+    `dnac_fri_verify_wire` must be gated/renamed test-only before consensus. **M1/M2**
+    — C3 must pin tree height + reject the h+1 leaf-decomposition (leaf/internal
+    separation) and bind value<2^52 + addr=H(ak,nk). These are documented in
+    `fri_proof_codec.h` + `shielded_domsep.h` at the code they gate.
+  - **NEXT:** S1 = C1 phase-block balance/note-commitment AIR (E1-E17 forced-counter
+    + freeze-carry binding). Then S2 C3 membership (+ M1/M2 goals), S3 C4 nullifier,
+    S4 aggregate prover/verifier (+ H2/H3), S5 V4 wire, S6 consensus (state_root v4),
+    S7 note-enc+wallet, S8 Genesis 7/7.
+- **`make test`: 64 test binaries GREEN, 0 warnings** (`cd shared/crypto/zk && make test`;
+  incl. the 3 S0 dual-mode gates test_note_commit / test_shielded_domsep /
+  test_shielded_fri_params;
   `test_fri_verify_zk` runs on FibonacciAir + is_zk RangeProofAir + 2 conf-root +
   2 SALTED conf-root (`--salted`) instances; `test_prover_conf` runs 2 unsalted +
   2 SALTED conf-prover instances; `test_prover_salted_commit` byte-matches the

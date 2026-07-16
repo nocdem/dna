@@ -77,7 +77,10 @@ typedef enum {
     DNAC_FRI_CODEC_ERR_BAD_DEPTH = 8,          /* Merkle proof depth out of bounds     */
     DNAC_FRI_CODEC_ERR_TRAILING = 9,           /* bytes remain after the last field    */
     DNAC_FRI_CODEC_ERR_OOM = 10,               /* allocation failure                   */
-    DNAC_FRI_CODEC_ERR_TOO_LARGE = 11          /* total_len > MAX_TOTAL_LEN             */
+    DNAC_FRI_CODEC_ERR_TOO_LARGE = 11,         /* total_len > MAX_TOTAL_LEN             */
+    DNAC_FRI_CODEC_ERR_SHIELDED_PARAM_MISMATCH = 12, /* wire FRI params != pinned consensus set (S0/C5) */
+    DNAC_FRI_CODEC_ERR_SHIELDED_HEIGHT_MISMATCH = 13, /* committed trace domain != pinned shielded height */
+    DNAC_FRI_CODEC_ERR_SHIELDED_VERIFY_FAILED = 14   /* shielded FRI verify != DNAC_FRI_OK (fail-closed) */
 } dnac_fri_codec_status_t;
 
 /* Opaque owner of a decoded proof package (params + proof + commitments + all
@@ -128,6 +131,48 @@ void dnac_fri_wire_free(dnac_fri_wire_package_t *pkg);
  * unchanged and the caller must inspect the returned codec status.
  * ========================================================================== */
 dnac_fri_codec_status_t dnac_fri_verify_wire(
+    const uint8_t        *buf,
+    size_t                len,
+    dnac_transcript_t    *transcript,
+    dnac_fri_status_t    *out_fri_status);
+
+/* ============================================================================
+ * SHIELDED (consensus) verify — the hardened entry point (S0/C5, EXISTENTIAL).
+ *
+ * Unlike dnac_fri_verify_wire (which trusts the wire-decoded params — correct
+ * only for the parked B1/test paths at their own test params), this:
+ *   1. REJECTS if the wire-embedded FRI params differ from the pinned consensus
+ *      set DNAC_SHIELDED_FRI_PARAMS (tamper detection) →
+ *      DNAC_FRI_CODEC_ERR_SHIELDED_PARAM_MISMATCH.
+ *   2. REJECTS if the largest committed matrix domain height != the pinned
+ *      shielded trace height DNAC_SHIELDED_STARK_LOG_HEIGHT (dm-c5 C5e) →
+ *      DNAC_FRI_CODEC_ERR_SHIELDED_HEIGHT_MISMATCH.
+ *   3. SUBSTITUTES the pinned params into dnac_fri_verify — the verifier's OWN
+ *      constant sets the security level, NEVER a wire value (dm-c5 C5a′). Even
+ *      if step 1 somehow passed a crafted-equal set, verification uses the
+ *      pinned struct, not the wire pointer.
+ *
+ * FAIL-CLOSED (red-team S0-M4): `out_fri_status` MUST be non-NULL (else
+ * DNAC_FRI_CODEC_ERR_NULL) and is pre-set to a rejecting value; a non-OK verify
+ * verdict returns DNAC_FRI_CODEC_ERR_SHIELDED_VERIFY_FAILED (not a silent
+ * CODEC_OK a caller might treat as accept). CODEC_OK ⟺ *out_fri_status ==
+ * DNAC_FRI_OK.
+ *
+ * ⚠ NOT YET CONSENSUS-COMPLETE — S4/S8 HARD BLOCKERS (red-team S0-H2/H3, recorded
+ * as numbered goals): the wrapper pins the security LEVEL + height but does NOT
+ * yet pin the STATEMENT. (H2) The DEEP/zeta opening point is currently WIRE-READ
+ * (dec_point, fri_verifier fri_open_input) and transcript-unbound — Plonky3
+ * samples zeta after observing the trace/quotient roots (uni-stark verifier.rs).
+ * (H3) This wrapper does not observe the wire commitments into `transcript`, so
+ * an unprimed transcript collapses Fiat–Shamir (alpha is the first op,
+ * fri_verifier.c:511). The S4 shielded verify layer MUST route through
+ * dnac_stark_priming (reconstruct round structure, observe roots, SAMPLE zeta,
+ * fail-close on any wire-supplied opening point) BEFORE this is wired into
+ * consensus. Until then this entry is param/height-hardened but statement-open;
+ * do NOT gate value on it. The transcript arg MUST already be primed by that
+ * caller (public inputs + tx_binding observed).
+ * ========================================================================== */
+dnac_fri_codec_status_t dnac_fri_verify_wire_shielded(
     const uint8_t        *buf,
     size_t                len,
     dnac_transcript_t    *transcript,

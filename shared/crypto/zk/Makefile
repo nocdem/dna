@@ -46,7 +46,7 @@ FRI_VERIFIER_LDADD = $(SHA3_SRC) $(LDLIBS)
 
 # Proof wire codec links the full FRI verifier stack (dnac_fri_verify_wire calls
 # dnac_fri_verify; the codec test verifies decoded proofs end-to-end).
-FRI_PROOF_CODEC_STACK = fri_proof_codec.c $(FRI_VERIFIER_STACK)
+FRI_PROOF_CODEC_STACK = fri_proof_codec.c shielded_fri_params.c $(FRI_VERIFIER_STACK)
 
 # Everything the C prover (stark_prover.c) links against: trace builders
 # (range_air/sum_balance), NTT + helpers (S2 LDE), Merkle build (S3), and the
@@ -116,7 +116,10 @@ TESTS = \
     $(BUILD)/test_conf_balance_air \
     $(BUILD)/test_conf_commit_air \
     $(BUILD)/test_conf_root_air \
-    $(BUILD)/test_conf_txbind
+    $(BUILD)/test_conf_txbind \
+    $(BUILD)/test_note_commit \
+    $(BUILD)/test_shielded_domsep \
+    $(BUILD)/test_shielded_fri_params
 
 .PHONY: all test clean gen-fri-proof-wire gen-stark-proof-wire bench-prover
 
@@ -141,6 +144,19 @@ $(BUILD)/test_two_adic_gens: tests/test_two_adic_gens.c field_goldilocks.c field
 # default_goldilocks_poseidon2_8().permute (Plonky3 82cfad73). Grounded port.
 $(BUILD)/test_poseidon2_goldilocks: tests/test_poseidon2_goldilocks.c poseidon2_goldilocks.c field_goldilocks.c poseidon2_goldilocks.h field_goldilocks.h | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) tests/test_poseidon2_goldilocks.c poseidon2_goldilocks.c field_goldilocks.c -o $@
+
+# S0 dual-mode — note-commitment + Merkle-compress PaddingFreeSponge<8,4,4>
+# byte-match vs Plonky3 (tools/vectors/note_commit_sponge.json).
+$(BUILD)/test_note_commit: tests/test_note_commit.c note_commit.c poseidon2_goldilocks.c field_goldilocks.c note_commit.h shielded_domsep.h poseidon2_goldilocks.h field_goldilocks.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_note_commit.c note_commit.c poseidon2_goldilocks.c field_goldilocks.c -o $@
+
+# S0 dual-mode — shielded DOMSEP derivation + canonicity + distinctness (SHA3).
+$(BUILD)/test_shielded_domsep: tests/test_shielded_domsep.c field_goldilocks.c shielded_domsep.h conf_commit_air.h conf_root_air.h field_goldilocks.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_shielded_domsep.c field_goldilocks.c $(SHA3_SRC) $(LDLIBS) -o $@
+
+# S0 dual-mode — pinned consensus FRI params + hardened verify substitution/reject.
+$(BUILD)/test_shielded_fri_params: tests/test_shielded_fri_params.c shielded_fri_params.h fri_proof_codec.h $(FRI_PROOF_CODEC_STACK) | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_shielded_fri_params.c $(FRI_PROOF_CODEC_STACK) $(FRI_VERIFIER_LDADD) -o $@
 
 # FP1c.1 — Poseidon2 AIR column-layout binding contract (Poseidon2Cols<8,7,1,4,22>,
 # Plonky3 poseidon2-air/src/columns.rs @ 82cfad73). Structural gate.
@@ -315,7 +331,7 @@ $(BUILD)/test_fri_verifier_rollin: tests/test_fri_verifier_rollin.c fri_verifier
 
 # Proof wire codec — roundtrip (decode->verify->encode==wire) + negative cases.
 # Uses only the production codec + verifier APIs (no DNAC_FRI_TESTING hooks).
-$(BUILD)/test_fri_proof_codec: tests/test_fri_proof_codec.c fri_proof_codec.h fri_proof_codec.c $(FRI_VERIFIER_STACK) | $(BUILD)
+$(BUILD)/test_fri_proof_codec: tests/test_fri_proof_codec.c fri_proof_codec.h fri_proof_codec.c shielded_fri_params.c shielded_fri_params.h $(FRI_VERIFIER_STACK) | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) tests/test_fri_proof_codec.c $(FRI_PROOF_CODEC_STACK) $(FRI_VERIFIER_LDADD) -o $@
 
 # P3/P4 — STARK/PCS transcript priming helper replay. Primes a transcript through
@@ -494,8 +510,8 @@ $(BUILD)/test_prover_s13_verify: tests/test_prover_s13_verify.c stark_prover.h f
 # instance-generic prove + assemble + self-verify (stark_prover_prove.c). Proves
 # both M3a (1 FRI round) and a height-8 instance (2 FRI rounds, 6-bit indices),
 # exercising the multi-round FRI commit phase + generalized answer_query.
-$(BUILD)/test_prover_prove: tests/test_prover_prove.c stark_prover_prove.h stark_prover_prove.c stark_prover.h fri_verifier.h stark_priming.h fri_proof_codec.h stark_proof_codec.h $(PROVER_STACK) fri_verifier.c stark_priming.c fri_proof_codec.c stark_proof_codec.c | $(BUILD)
-	$(CC) $(CFLAGS) $(INCLUDES) tests/test_prover_prove.c stark_prover_prove.c $(PROVER_STACK) fri_verifier.c stark_priming.c fri_proof_codec.c stark_proof_codec.c $(SHA3_SRC) $(LDLIBS) -o $@
+$(BUILD)/test_prover_prove: tests/test_prover_prove.c stark_prover_prove.h stark_prover_prove.c stark_prover.h fri_verifier.h stark_priming.h fri_proof_codec.h stark_proof_codec.h $(PROVER_STACK) fri_verifier.c stark_priming.c fri_proof_codec.c shielded_fri_params.c shielded_fri_params.h stark_proof_codec.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_prover_prove.c stark_prover_prove.c $(PROVER_STACK) fri_verifier.c stark_priming.c fri_proof_codec.c shielded_fri_params.c stark_proof_codec.c $(SHA3_SRC) $(LDLIBS) -o $@
 
 # Regenerate the DZKS wrapper vectors from their priming vectors via the C codec
 # (the generator is polymorphic on has_trace_next, driven by the JSON's trace_next
@@ -518,7 +534,7 @@ gen-fri-proof-wire: | $(BUILD)
 # Measures prove_ms + verify_ms + wire proof size across instance heights.
 #   make bench-prover && ./build/bench_prover
 bench-prover: | $(BUILD)
-	$(CC) $(CFLAGS) $(INCLUDES) tools/bench_prover.c stark_prover_prove.c $(PROVER_STACK) fri_verifier.c stark_priming.c fri_proof_codec.c stark_proof_codec.c $(SHA3_SRC) $(LDLIBS) -o $(BUILD)/bench_prover
+	$(CC) $(CFLAGS) $(INCLUDES) tools/bench_prover.c stark_prover_prove.c $(PROVER_STACK) fri_verifier.c stark_priming.c fri_proof_codec.c shielded_fri_params.c stark_proof_codec.c $(SHA3_SRC) $(LDLIBS) -o $(BUILD)/bench_prover
 	$(BUILD)/bench_prover
 
 test: all
@@ -875,6 +891,23 @@ test: all
 	@echo "B1 Stage-1 — tx_binding (SEC-5 mechanism: rejection map + tx-bound root)"
 	@echo "============================================================"
 	@$(BUILD)/test_conf_txbind
+	@echo
+	@echo "============================================================"
+	@echo "S0 dual-mode — shielded DOMSEP derivation + canonicity + distinctness"
+	@echo "============================================================"
+	@$(BUILD)/test_shielded_domsep
+	@echo
+	@echo "============================================================"
+	@echo "S0 dual-mode — pinned consensus FRI params (216-bit) + substitution guard"
+	@echo "  wire params ignored/rejected; verifier uses DNAC_SHIELDED_FRI_PARAMS"
+	@echo "============================================================"
+	@$(BUILD)/test_shielded_fri_params tools/vectors/fri_proof_wire.json
+	@echo
+	@echo "============================================================"
+	@echo "S0 dual-mode — note-commitment + Merkle-compress PaddingFreeSponge<8,4,4>"
+	@echo "  byte-match vs real Plonky3 PaddingFreeSponge (82cfad73)"
+	@echo "============================================================"
+	@$(BUILD)/test_note_commit tools/vectors/note_commit_sponge.json
 	@echo
 	@echo "============================================================"
 	@echo "ALL REMAINING (grounded) GATES: GREEN"

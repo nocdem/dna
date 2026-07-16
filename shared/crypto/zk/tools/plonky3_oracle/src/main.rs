@@ -33,7 +33,7 @@ use p3_goldilocks::{
     default_goldilocks_poseidon2_8,
 };
 use p3_poseidon2_air::{RoundConstants, generate_trace_rows};
-use p3_symmetric::Permutation;
+use p3_symmetric::{PaddingFreeSponge, Permutation};
 use sha3::{Digest, Sha3_512};
 
 /// Type alias for Goldilocks² extension field (degree-2 binomial extension).
@@ -542,6 +542,16 @@ enum Cmd {
         #[arg(long)]
         out: PathBuf,
     },
+    /// S0 dual-mode — note-commitment + Merkle-compress PaddingFreeSponge KAT.
+    /// Both are the stock Plonky3 `PaddingFreeSponge<Perm,8,4,4>` (all-zero IV,
+    /// rate-4/capacity-4 → CR |F|^{c/2}=2^128 [BDPA08], symmetric/src/sponge.rs)
+    /// over the real `default_goldilocks_poseidon2_8` permutation. Ground truth
+    /// for the C note_commit.c byte-match (dm-c1 item-1, dm-c3 F1).
+    #[command(name = "dump-note-commit-sponge")]
+    DumpNoteCommitSponge {
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// Dump all (runs all subcommands; ones not yet implemented are skipped).
     DumpAll {
         #[arg(long)]
@@ -616,6 +626,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Cmd::DumpRangeProofAir { out } => stark_priming::dump_range_proof_air(&out)?,
         Cmd::DumpPoseidon2Goldilocks { out } => dump_poseidon2_goldilocks(&out)?,
         Cmd::DumpPoseidon2AirTrace { out } => dump_poseidon2_air_trace(&out)?,
+        Cmd::DumpNoteCommitSponge { out } => dump_note_commit_sponge(&out)?,
         Cmd::DumpAll { out_dir } => {
             std::fs::create_dir_all(&out_dir)?;
             dump_field_ops(&out_dir.join("field_ops.json"))?;
@@ -911,6 +922,140 @@ fn dump_poseidon2_goldilocks(out_path: &PathBuf) -> Result<(), Box<dyn std::erro
     Ok(())
 }
 
+
+// ============================================================================
+// S0 dual-mode — note-commitment / Merkle-compress PaddingFreeSponge (dm-c1/c3)
+// ============================================================================
+
+/// DOMSEP_NOTE = SHA3-512("DNAC note-commitment v1")[0:8] BE (verified < p).
+/// Kept in sync with note_commit.h (S0.5). The oracle recomputes it from the
+/// string so the vector self-documents the derivation (never hard-coded blind).
+fn domsep_note() -> u64 {
+    let d = Sha3_512::digest(b"DNAC note-commitment v1");
+    let v = u64::from_be_bytes(d[0..8].try_into().unwrap());
+    debug_assert!(v < GOLDILOCKS_P, "DOMSEP_NOTE must be canonical (< p)");
+    v
+}
+
+#[derive(Serialize)]
+struct SpongeCase {
+    label: String,
+    input: Vec<String>,  // absorbed field elements (canonical)
+    output: [String; 4], // squeezed OUT=4 lanes (256-bit digest)
+}
+
+#[derive(Serialize)]
+struct NoteCommitFile {
+    format_version: &'static str,
+    plonky3_commit: &'static str,
+    construction: &'static str,
+    width: usize,
+    rate: usize,
+    capacity: usize,
+    out: usize,
+    domsep_note: String,
+    cases: Vec<SpongeCase>,
+}
+
+/// Dump `PaddingFreeSponge::<Perm,8,4,4>::hash_iter(input)` for the two
+/// dual-mode use-cases:
+///   - note-commitment: preimage `[value, addr_pub[4], rcm[2], DOMSEP_NOTE]`
+///     (8 elems = 2 rate-4 blocks; leaf hash, dm-c1 §4c.1 item-1).
+///   - merkle-compress: `[left[4], right[4]]` (8 elems; capacity-preserving
+///     2-to-1 tree compress, dm-c3 F1 — NOT a zero-capacity TruncatedPermutation).
+/// Ground truth for the C `note_commit.c` byte-match.
+fn dump_note_commit_sponge(out_path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    use p3_symmetric::CryptographicHasher;
+    let perm = default_goldilocks_poseidon2_8();
+    let sponge = PaddingFreeSponge::<_, 8, 4, 4>::new(perm);
+    let ds = domsep_note();
+
+    let g = |v: u64| Goldilocks::from_u64(v);
+    let run = |label: &str, input: &[u64]| -> SpongeCase {
+        let digest: [Goldilocks; 4] = sponge.hash_iter(input.iter().copied().map(g));
+        SpongeCase {
+            label: label.to_string(),
+            input: input.iter().map(|v| v.to_string()).collect(),
+            output: core::array::from_fn(|i| digest[i].as_canonical_u64().to_string()),
+        }
+    };
+
+    // note-commitment preimages: [value, a0,a1,a2,a3, r0,r1, DOMSEP_NOTE]
+    let note = |value: u64, addr: [u64; 4], rcm: [u64; 2]| -> Vec<u64> {
+        vec![value, addr[0], addr[1], addr[2], addr[3], rcm[0], rcm[1], ds]
+    };
+    let mut cases = vec![
+        run("note/zero", &note(0, [0, 0, 0, 0], [0, 0])),
+        run("note/one", &note(1, [0, 0, 0, 0], [0, 0])),
+        run(
+            "note/typical",
+            &note(1_000_000, [11, 22, 33, 44], [0xdead, 0xbeef]),
+        ),
+        run(
+            "note/maxval",
+            &note((1u64 << 52) - 1, [7, 8, 9, 10], [123, 456]),
+        ),
+        run(
+            "note/big-fields",
+            &note(
+                GOLDILOCKS_P - 1,
+                [
+                    GOLDILOCKS_P - 2,
+                    GOLDILOCKS_P - 3,
+                    GOLDILOCKS_P - 4,
+                    GOLDILOCKS_P - 5,
+                ],
+                [GOLDILOCKS_P - 6, GOLDILOCKS_P - 7],
+            ),
+        ),
+    ];
+
+    // merkle-compress inputs: [l0,l1,l2,l3, r0,r1,r2,r3]
+    let compress = |l: [u64; 4], r: [u64; 4]| -> Vec<u64> {
+        vec![l[0], l[1], l[2], l[3], r[0], r[1], r[2], r[3]]
+    };
+    cases.push(run(
+        "compress/zero",
+        &compress([0, 0, 0, 0], [0, 0, 0, 0]),
+    ));
+    cases.push(run(
+        "compress/seq",
+        &compress([1, 2, 3, 4], [5, 6, 7, 8]),
+    ));
+    cases.push(run(
+        "compress/asymmetric",
+        &compress(
+            [111, 222, 333, 444],
+            [
+                GOLDILOCKS_P - 1,
+                GOLDILOCKS_P - 100,
+                777,
+                GOLDILOCKS_P - 12345,
+            ],
+        ),
+    ));
+
+    let file = NoteCommitFile {
+        format_version: ORACLE_FORMAT_VERSION,
+        plonky3_commit: PLONKY3_COMMIT,
+        construction: "PaddingFreeSponge<default_goldilocks_poseidon2_8,8,4,4> \
+                       (symmetric/src/sponge.rs, all-zero IV)",
+        width: 8,
+        rate: 4,
+        capacity: 4,
+        out: 4,
+        domsep_note: ds.to_string(),
+        cases,
+    };
+    if let Some(parent) = out_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut f = File::create(out_path)?;
+    f.write_all(serde_json::to_string_pretty(&file)?.as_bytes())?;
+    f.write_all(b"\n")?;
+    eprintln!("wrote {}", out_path.display());
+    Ok(())
+}
 
 // ============================================================================
 // Poseidon2-AIR trace dump (FP1c.2)
