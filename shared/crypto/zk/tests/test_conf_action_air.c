@@ -55,20 +55,22 @@ int main(void) {
     const uint64_t rcm[3][CONF_ACTION_RCM_LANES] = {
         {0xdead, 0xbeef}, {123, 456}, {777, 888},
     };
+    const uint64_t pos[3] = {5, 99, 4096};      /* E15 pos_carry sources */
+    const uint64_t nk[3] = {0xA11CE, 0xB0B, 42}; /* E15 nk_carry sources */
     /* Expected commitments via the S0 note_commit sponge (byte-match target). */
     uint64_t expect_cm[3][CONF_ACTION_CM_LANES];
     for (int i = 0; i < 3; i++)
         note_commit(value[i], addr[i], rcm[i], expect_cm[i]);
 
     uint64_t honest[ROWS * CONF_ACTION_WIDTH];
-    if (!conf_action_air_generate(LOG_H, value, &addr[0][0], &rcm[0][0], roles, 3,
-                                  honest)) {
+    if (!conf_action_air_generate(LOG_H, value, &addr[0][0], &rcm[0][0], roles,
+                                  pos, nk, 3, honest)) {
         printf("FAIL: honest generate failed\n");
         return 1;
     }
 
     printf("============================================================\n");
-    printf("C1 S1a-S1d — phase-counter + freeze-carry + note-commitment + balance\n");
+    printf("C1 S1a-E15 — phase-counter + freeze-carry + note-commitment + balance + carries\n");
     printf("  K=%d, H=%u, WIDTH=%d\n", CONF_ACTION_K, ROWS, CONF_ACTION_WIDTH);
     printf("============================================================\n");
 
@@ -377,12 +379,51 @@ int main(void) {
         expect_reject("forge phi_is0 at φ!=0 (is_zero)", bad);
     }
 
+    /* ── E15 frozen-carry attacks (pos/nk/addr) ───────────────────────────── */
+
+    /* Sanity: pos/nk/addr carries hold block-1's sources across its block. */
+    {
+        int ok = 1;
+        for (size_t r = 32; r < 64; r++) {
+            if (honest[r * CONF_ACTION_WIDTH + CONF_ACTION_POSCARRY_OFF] != pos[1]) ok = 0;
+            if (honest[r * CONF_ACTION_WIDTH + CONF_ACTION_NKCARRY_OFF] != nk[1]) ok = 0;
+            for (unsigned j = 0; j < CONF_ACTION_ADDR_LANES; j++)
+                if (honest[r * CONF_ACTION_WIDTH + CONF_ACTION_ADDRCARRY_OFF + j] != addr[1][j]) ok = 0;
+        }
+        printf("  [accept] pos/nk/addr carries frozen == block-1 src %s\n", ok ? "OK" : "FAIL");
+        if (!ok) fails++;
+    }
+    /* REJECT 28: mutate pos_carry mid-block (E4 freeze). */
+    {
+        uint64_t bad[ROWS * CONF_ACTION_WIDTH]; memcpy(bad, honest, sizeof bad);
+        set(bad, 40, CONF_ACTION_POSCARRY_OFF, 777);
+        expect_reject("mutate pos_carry mid-block (E15/E4)", bad);
+    }
+    /* REJECT 29: desync nk_carry block-start load (E11). */
+    {
+        uint64_t bad[ROWS * CONF_ACTION_WIDTH]; memcpy(bad, honest, sizeof bad);
+        set(bad, 32, CONF_ACTION_NKCARRY_OFF, 555);
+        expect_reject("desync nk_carry load (E15/E11)", bad);
+    }
+    /* REJECT 30: inject into a dummy block's addr_carry (padding-zero). */
+    {
+        uint64_t bad[ROWS * CONF_ACTION_WIDTH]; memcpy(bad, honest, sizeof bad);
+        set(bad, 100, CONF_ACTION_ADDRCARRY_OFF + 1, 9);
+        expect_reject("inject dummy addr_carry (E15 padding-zero)", bad);
+    }
+    /* REJECT 31: block-0 nk_carry != source (E8' init). */
+    {
+        uint64_t bad[ROWS * CONF_ACTION_WIDTH]; memcpy(bad, honest, sizeof bad);
+        set(bad, 0, CONF_ACTION_NKCARRY_OFF, 333);
+        expect_reject("block-0 nk_carry != src (E15/E8')", bad);
+    }
+
     printf("------------------------------------------------------------\n");
     if (fails) {
-        printf("C1 S1a-S1d: %d FAIL\n", fails);
+        printf("C1 S1a-E15: %d FAIL\n", fails);
         return 1;
     }
-    printf("C1 S1a-S1d: honest accepted (cm byte-matches S0, BAL=0) + phase-counter,"
+    printf("C1 S1a-E15: honest accepted (cm byte-matches S0, BAL=0) + phase-counter,"
            " freeze-carry, note-commitment & balance deviations rejected — PASS\n");
     return 0;
 }

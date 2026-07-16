@@ -66,10 +66,17 @@
  *              next.bal_coeff·next.value; last row BAL = 0 ⇒ Σin = Σout + fee.
  *     The value cell IS the note-commitment preimage value (S1c) AND the balance
  *     summand — completing the E9′ same-row value↔cm↔balance chain.
- *   Scoped OUT of this increment (own step): shield/deshield BOUNDARY selectors +
- *   the N_BOUNDARY==pub_has_boundary PUBLIC binding (the C6 turnstile interface,
- *   needs AIR public inputs); nk/pos/addr frozen carries (E15, consumed by C3/C4
- *   at S2/S3).
+ *   S1-E15 (THIS increment): the nk/pos/addr FROZEN CARRIES — composition plumbing.
+ *     columns: pos_src/nk_src (φ=0 sources), pos_carry, nk_carry, addr_carry[4].
+ *     Each carry uses the SAME S1b freeze pattern (E8′ block-0 init, E4 freeze,
+ *     E11 wrap-load, padding-zero) so it holds its block's φ=0 source value
+ *     block-wide. addr_carry's source is the note's ADDR[4] cells (already
+ *     committed into cm at S1c), so addr_carry == the committed recipient address.
+ *     At S4 composition: C3 reads pos_carry, C4 reads cm_carry/pos_carry/nk_carry
+ *     — all frozen, all provably one note's fields.
+ *   Scoped OUT (own step): condition-3 addr_pub=Poseidon2(ak,nk) spend-authority
+ *   (binds nk_carry to the committed addr — a poseidon2 block, next); shield/
+ *   deshield BOUNDARY public binding (C6 turnstile, needs AIR public inputs).
  *   Later: S1e constraint-eval fold + degree/num_qc, S1f prover + self-verify.
  *
  * ── Block structure ────────────────────────────────────────────────────────
@@ -135,7 +142,13 @@ extern "C" {
 #define CONF_ACTION_BALCON_OFF  (CONF_ACTION_INV0_OFF + 1)          /* IS_BAL_CONTRIB */
 #define CONF_ACTION_BALCOEF_OFF (CONF_ACTION_BALCON_OFF + 1)        /* bal_coeff */
 #define CONF_ACTION_BAL_OFF     (CONF_ACTION_BALCOEF_OFF + 1)       /* running signed BAL */
-#define CONF_ACTION_WIDTH       (CONF_ACTION_BAL_OFF + 1)           /* S1d WIDTH = 444 */
+/* ── E15 frozen carries (composition plumbing for C3/C4) ── */
+#define CONF_ACTION_POSSRC_OFF   (CONF_ACTION_BAL_OFF + 1)          /* pos source (φ=0) */
+#define CONF_ACTION_NKSRC_OFF    (CONF_ACTION_POSSRC_OFF + 1)       /* nk source (φ=0) */
+#define CONF_ACTION_POSCARRY_OFF (CONF_ACTION_NKSRC_OFF + 1)        /* pos_carry (frozen) */
+#define CONF_ACTION_NKCARRY_OFF  (CONF_ACTION_POSCARRY_OFF + 1)     /* nk_carry (frozen) */
+#define CONF_ACTION_ADDRCARRY_OFF (CONF_ACTION_NKCARRY_OFF + 1)     /* addr_carry[4] (frozen) */
+#define CONF_ACTION_WIDTH       (CONF_ACTION_ADDRCARRY_OFF + CONF_ACTION_ADDR_LANES) /* WIDTH = 452 */
 
 /* addr_pub / rcm widths (S0 note_commit layout). */
 #define CONF_ACTION_ADDR_LANES  4
@@ -169,6 +182,9 @@ extern "C" {
  * @param rcm         num_notes × CONF_ACTION_RCM_LANES commitment randomness.
  * @param roles       num_notes per-block role tags (CONF_ACTION_ROLE_*). The
  *                    signed balance MUST conserve: Σ INPUT − Σ OUTPUT − Σ FEE = 0.
+ * @param pos         num_notes tree positions (E15 pos_carry source; C3 reads it).
+ * @param nk          num_notes spend-key nullifier components (E15 nk_carry
+ *                    source; C4 reads it). May be NULL only if num_notes == 0.
  * @param num_notes   number of REAL note-blocks; MUST be ≤ (H/K − 1) (E7).
  * @param trace_out   caller buffer of (2^log_height * CONF_ACTION_WIDTH) uint64.
  * @return true on success; false on a parameter error (incl. non-conserving
@@ -176,7 +192,8 @@ extern "C" {
  */
 bool conf_action_air_generate(unsigned log_height, const uint64_t *value,
                               const uint64_t *addr, const uint64_t *rcm,
-                              const uint8_t *roles, size_t num_notes,
+                              const uint8_t *roles, const uint64_t *pos,
+                              const uint64_t *nk, size_t num_notes,
                               uint64_t *trace_out);
 
 /**

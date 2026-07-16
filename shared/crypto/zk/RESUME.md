@@ -224,8 +224,15 @@
       note (closes a composition-time Faerie-Gold). +symmetric cell-divergence KATs.
       MF-2 (routing: set-check owner = parent §1.8/S4 not C6) + MF-3 (canonical-pos
       precondition) doc-fixed.
-    - **⭐ FULL SHIELDED SPEND CIRCUIT built as construction gates** — C1 (S1a-d) +
-      C3 + C4, each red-teamed. **S4 COMPOSITION OBLIGATIONS (record, must hold when
+    - **S1-E15 DONE — nk/pos/addr frozen carries** in C1 (`conf_action_air`,
+      WIDTH=452): pos_carry/nk_carry/addr_carry frozen block-wide (same E8′/E4/E11
+      pattern as cm_carry, factored `e15_freeze_check`). Sources at φ=0: new pos/nk
+      witness cells + the note's ADDR[4] (committed into cm). These are the cells
+      S4 hands to C3 (pos_carry) and C4 (cm/pos/nk_carry). 4 carry attacks rejected.
+      Scoped-out next: condition-3 addr_pub=Poseidon2(ak,nk) spend-authority (binds
+      nk_carry to the committed addr — a poseidon2 block).
+    - **⭐ FULL SHIELDED SPEND CIRCUIT built as construction gates** — C1 (S1a-d +
+      E15 carries) + C3 + C4, each red-teamed. **S4 COMPOSITION OBLIGATIONS (record, must hold when
       composing):** (1) pin D as compile-time/phase-schedule constant (no ungated
       per-level active selector — add a negative test that the root check fires
       only at phase P_mem+D); (2) bind C3.leaf==C1.cm_carry, C3.pos==C1.pos_carry,

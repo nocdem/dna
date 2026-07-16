@@ -58,7 +58,8 @@ static void note_commit_blocks(uint64_t value, const uint64_t addr[4],
 
 bool conf_action_air_generate(unsigned log_height, const uint64_t *value,
                               const uint64_t *addr, const uint64_t *rcm,
-                              const uint8_t *roles, size_t num_notes,
+                              const uint8_t *roles, const uint64_t *pos,
+                              const uint64_t *nk, size_t num_notes,
                               uint64_t *trace_out) {
     if (log_height < CONF_ACTION_MIN_LOG_HEIGHT ||
         log_height > CONF_ACTION_MAX_LOG_HEIGHT)
@@ -69,7 +70,8 @@ bool conf_action_air_generate(unsigned log_height, const uint64_t *value,
     const size_t num_blocks = rows / CONF_ACTION_K;
     /* E7: the last block MUST be dummy, so at most num_blocks-1 real notes. */
     if (num_notes + 1 > num_blocks) return false;
-    if (num_notes > 0 && (!value || !addr || !rcm || !roles)) return false;
+    if (num_notes > 0 && (!value || !addr || !rcm || !roles || !pos || !nk))
+        return false;
 
     /* Honest-prover preconditions: every value < 2^52, roles valid, and the
      * signed balance conserves (Σin = Σout + fee) so the last-row BAL=0 holds. */
@@ -140,16 +142,24 @@ bool conf_action_air_generate(unsigned log_height, const uint64_t *value,
             /* cm_output := NC2.out (E9′); S1b carry freezes it block-wide. */
             for (unsigned j = 0; j < CONF_ACTION_CM_LANES; j++)
                 row[CONF_ACTION_CMOUT_OFF + j] = cm[j];
+
+            /* E15 sources at φ=0: pos, nk (new witnesses); addr source = ADDR[4]. */
+            row[CONF_ACTION_POSSRC_OFF] = pos[blk];
+            row[CONF_ACTION_NKSRC_OFF] = nk[blk];
         }
 
-        /* S1b: cm_carry holds the block's commitment (0 for dummy). */
+        /* S1b + E15: the frozen carries hold the block's φ=0 source values (0 for
+         * dummy). The block's φ=0 row is filled first (r = blk·K), so φ>0 rows copy
+         * from it. cm_carry ← cm_output; pos/nk/addr_carry ← their φ=0 sources. */
         if (is_real) {
-            /* carry = the block's φ=0 cm_output. Recompute once per block at φ=0;
-             * for φ>0 rows copy from the block's φ=0 row already filled. */
             const uint64_t *blk0 =
                 trace_out + (blk * CONF_ACTION_K) * CONF_ACTION_WIDTH;
             for (unsigned j = 0; j < CONF_ACTION_CM_LANES; j++)
                 row[CONF_ACTION_CMCARRY_OFF + j] = blk0[CONF_ACTION_CMOUT_OFF + j];
+            row[CONF_ACTION_POSCARRY_OFF] = blk0[CONF_ACTION_POSSRC_OFF];
+            row[CONF_ACTION_NKCARRY_OFF] = blk0[CONF_ACTION_NKSRC_OFF];
+            for (unsigned j = 0; j < CONF_ACTION_ADDR_LANES; j++)
+                row[CONF_ACTION_ADDRCARRY_OFF + j] = blk0[CONF_ACTION_ADDR_OFF + j];
         }
 
         /* ── S1d balance layer ─────────────────────────────────────────────── */
@@ -190,6 +200,36 @@ bool conf_action_air_generate(unsigned log_height, const uint64_t *value,
         row[CONF_ACTION_BAL_OFF] = gold_fp_to_u64(bal_acc);
     }
     return true;
+}
+
+/* E15 freeze-carry check for ONE carry (`lanes` wide) whose φ=0 source is at
+ * `src_off`: padding-zero on dummy blocks, E8′ block-0 init, E4 freeze + E11
+ * wrap-load on transitions — the exact S1b cm_carry pattern, factored so pos/nk/
+ * addr carries reuse it verbatim. Returns the violation count for this carry. */
+static int e15_freeze_check(const uint64_t *trace, size_t r, size_t carry_off,
+                            size_t src_off, unsigned lanes) {
+    int viol = 0;
+    const uint64_t *row = trace + r * CONF_ACTION_WIDTH;
+    gold_fp_t is_real = fp(row[CONF_ACTION_ISREAL_OFF]);
+    gold_fp_t one = gold_fp_one();
+    for (unsigned j = 0; j < lanes; j++) {
+        gold_fp_t carry = fp(row[carry_off + j]);
+        gold_fp_t src = fp(row[src_off + j]);
+        /* padding-zero: dummy block carries nothing. */
+        if (!gold_fp_is_zero(mul(sub(one, is_real), carry))) viol++;
+        if (r == 0) {
+            /* E8′ block-0 init. */
+            if (!gold_fp_is_zero(mul(is_real, sub(carry, src)))) viol++;
+        } else {
+            const uint64_t *prev = trace + (r - 1) * CONF_ACTION_WIDTH;
+            gold_fp_t w_prev = fp(prev[CONF_ACTION_W_OFF]);
+            gold_fp_t carry_prev = fp(prev[carry_off + j]);
+            /* E4 freeze (non-wrap) + E11 wrap-load (block start). */
+            if (!gold_fp_is_zero(mul(sub(one, w_prev), sub(carry, carry_prev)))) viol++;
+            if (!gold_fp_is_zero(mul(w_prev, sub(carry, src)))) viol++;
+        }
+    }
+    return viol;
 }
 
 int conf_action_air_eval(const uint64_t *trace, size_t n_rows) {
@@ -302,6 +342,18 @@ int conf_action_air_eval(const uint64_t *trace, size_t n_rows) {
                 if (!gold_fp_is_zero(mul(w_prev, sub(carry, out)))) viol++;
             }
         }
+
+        /* ── E15 frozen carries (pos/nk/addr) — same freeze pattern as cm_carry ─
+         * These export one note's fields, frozen block-wide, for S4 to hand to C3
+         * (pos_carry) and C4 (pos_carry/nk_carry). addr_carry's source is the
+         * note's ADDR (committed into cm at S1c), so it == the recipient address
+         * the spend-authority (condition-3, next) will bind nk to. */
+        viol += e15_freeze_check(trace, r, CONF_ACTION_POSCARRY_OFF,
+                                 CONF_ACTION_POSSRC_OFF, 1);
+        viol += e15_freeze_check(trace, r, CONF_ACTION_NKCARRY_OFF,
+                                 CONF_ACTION_NKSRC_OFF, 1);
+        viol += e15_freeze_check(trace, r, CONF_ACTION_ADDRCARRY_OFF,
+                                 CONF_ACTION_ADDR_OFF, CONF_ACTION_ADDR_LANES);
 
         /* ── S1c single-row note-commitment (E9′) ─────────────────────────────
          * The two poseidon2 blocks are valid permutations on EVERY row (the
