@@ -385,19 +385,29 @@ static void client_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
         nodus_circuit_data_cb cb = h ? h->on_data : NULL;
         void *user = h ? h->user : NULL;
         bool e2e = h ? h->e2e_active : false;
-        pthread_mutex_unlock(&client->circuits_mutex);
 
-        /* CRIT-3 — AEAD completeness on the circuit copy of the same gate.
-         * Gate on (cb && e2e) FIRST: on an e2e-active circuit EVERY frame must
-         * authenticate, so a short frame / alloc failure DROPS here instead of
-         * falling through to the raw 'else if (cb)' delivery below. The old
-         * 'circ_data_len > NODUS_CHANNEL_OVERHEAD' gate let a <=28-byte frame
-         * reach the app raw and unauthenticated on an encrypted circuit.
+        /* H11/RX-lock: the AEAD decrypt runs HERE, still holding circuits_mutex.
+         * It used to run after the unlock, reading &h->e2e_crypto unlocked —
+         * which raced nodus_circuit_close() wiping the key (H11) and
+         * nodus_circuit_open() memset-recycling the fixed-array slot under the
+         * decrypting thread, i.e. a torn key read. Holding the lock across the
+         * decrypt is safe: it is a few microseconds of AES-GCM and takes no
+         * other lock. What must NEVER happen under this mutex is invoking the
+         * app CALLBACK — that re-enters nodus_circuit_close/open and would
+         * self-deadlock the non-recursive mutex — so the callback is deferred to
+         * after the unlock below.
          *
-         * Boundary is '>= NODUS_CHANNEL_OVERHEAD' (28 B == valid empty AEAD
-         * frame — see tests/test_channel_crypto_aead_complete.c). The non-e2e
-         * passthrough stays length-agnostic: plain circuits legitimately carry
-         * raw bytes of any length. */
+         * CRIT-3 — AEAD completeness: gate on (cb && e2e) FIRST so an e2e-active
+         * circuit can never fall through to the raw delivery path; a short frame,
+         * an alloc failure or a decrypt failure DROPS. Boundary is
+         * '>= NODUS_CHANNEL_OVERHEAD' (28 B == valid empty AEAD frame, see
+         * tests/test_channel_crypto_aead_complete.c). The non-e2e passthrough
+         * stays length-agnostic: plain circuits legitimately carry raw bytes of
+         * any length. */
+        uint8_t *pt = NULL;
+        size_t pt_len = 0;
+        bool deliver_pt = false;
+
         if (cb && e2e) {
             if (!tmp.circ_data || tmp.circ_data_len < NODUS_CHANNEL_OVERHEAD) {
                 QGP_LOG_WARN(LOG_TAG,
@@ -408,26 +418,33 @@ static void client_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
             } else {
                 /* Safe: length checked above, subtraction cannot underflow. */
                 size_t pt_cap = tmp.circ_data_len - NODUS_CHANNEL_OVERHEAD;
-                uint8_t *pt = malloc(pt_cap > 0 ? pt_cap : 1);
+                pt = malloc(pt_cap > 0 ? pt_cap : 1);
                 if (!pt) {
                     QGP_LOG_ERROR(LOG_TAG,
                                   "Circuit e2e alloc failed, frame dropped (cid=%llu)",
                                   (unsigned long long)h->cid);
+                } else if (nodus_channel_decrypt(&h->e2e_crypto,
+                                                 tmp.circ_data, tmp.circ_data_len,
+                                                 pt, pt_cap, &pt_len) == 0) {
+                    deliver_pt = true;
                 } else {
-                    size_t pt_len = 0;
-                    if (nodus_channel_decrypt(&h->e2e_crypto, tmp.circ_data, tmp.circ_data_len,
-                                               pt, pt_cap, &pt_len) == 0) {
-                        cb(h, pt, pt_len, user);
-                    } else {
-                        QGP_LOG_ERROR(LOG_TAG, "Circuit E2E decrypt failed (cid=%llu)",
-                                     (unsigned long long)h->cid);
-                    }
+                    QGP_LOG_ERROR(LOG_TAG, "Circuit E2E decrypt failed (cid=%llu)",
+                                 (unsigned long long)h->cid);
                     free(pt);
+                    pt = NULL;
                 }
             }
-        } else if (cb) {
+        }
+        pthread_mutex_unlock(&client->circuits_mutex);
+
+        /* Callbacks are invoked OUTSIDE circuits_mutex (they re-enter the
+         * circuit API). */
+        if (deliver_pt) {
+            cb(h, pt, pt_len, user);
+        } else if (cb && !e2e) {
             cb(h, tmp.circ_data, tmp.circ_data_len, user);
         }
+        free(pt);
         nodus_t2_msg_free(&tmp);
         return;
     }
@@ -442,6 +459,11 @@ static void client_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
                 cb = h->on_close;
                 user = h->user;
                 h->closed = true;
+                /* H11: same wipe on the peer-initiated close path — the key must
+                 * not outlive the circuit here either. Under the lock, before the
+                 * slot is released; the callback runs after the unlock. */
+                nodus_channel_crypto_clear(&h->e2e_crypto);
+                h->e2e_active = false;
                 h->in_use = false;
                 break;
             }
@@ -5220,9 +5242,20 @@ int nodus_circuit_close(nodus_circuit_handle_t *h) {
     }
     if (client) {
         pthread_mutex_lock(&client->circuits_mutex);
+        /* H11: wipe the per-circuit AES key + counters before releasing the slot.
+         * Closing only cleared in_use, so the key lingered in the fixed-array
+         * slot until some later open() happened to memset it — key material must
+         * never outlive the circuit. Safe to do under the lock now that the RX
+         * decrypt also runs under it (it used to race this wipe and tear the key
+         * mid-read); nodus_channel_crypto_clear takes no lock and no callback is
+         * invoked here. */
+        nodus_channel_crypto_clear(&h->e2e_crypto);
+        h->e2e_active = false;
         h->in_use = false;
         pthread_mutex_unlock(&client->circuits_mutex);
     } else {
+        nodus_channel_crypto_clear(&h->e2e_crypto);
+        h->e2e_active = false;
         h->in_use = false;
     }
     return 0;
