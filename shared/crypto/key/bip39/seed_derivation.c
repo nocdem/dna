@@ -199,6 +199,62 @@ int qgp_derive_seeds_with_master(
 }
 
 /**
+ * Derive the dedicated shielded-pool encryption seed (dual-mode D6/I3).
+ *
+ * shielded_enc_seed = SHAKE256(master_seed || "qgp-shielded-enc-v1", 32).
+ * Domain-separated from signing/encryption contexts — see bip39.h.
+ */
+int qgp_derive_shielded_enc_seed(
+    const char *mnemonic,
+    const char *passphrase,
+    uint8_t shielded_enc_seed[32]
+) {
+    if (!mnemonic || !shielded_enc_seed) {
+        return -1;
+    }
+
+    // Validate mnemonic
+    if (!bip39_validate_mnemonic(mnemonic)) {
+        QGP_LOG_ERROR("SEED", "Invalid BIP39 mnemonic");
+        return -1;
+    }
+
+    // Derive 64-byte master seed from mnemonic
+    uint8_t master_seed[BIP39_SEED_SIZE];
+    if (bip39_mnemonic_to_seed(mnemonic, passphrase, master_seed) != 0) {
+        QGP_LOG_ERROR("SEED", "Failed to derive master seed from mnemonic");
+        qgp_secure_memzero(master_seed, BIP39_SEED_SIZE);
+        return -1;
+    }
+
+    // Derive shielded-enc seed: SHAKE256(master_seed || "qgp-shielded-enc-v1", 32)
+    {
+        const char *shielded_context = "qgp-shielded-enc-v1";
+        size_t context_len = strlen(shielded_context);
+        size_t input_len = BIP39_SEED_SIZE + context_len;
+
+        uint8_t *input = malloc(input_len);
+        if (!input) {
+            QGP_LOG_ERROR("SEED", "Memory allocation failed");
+            qgp_secure_memzero(master_seed, BIP39_SEED_SIZE);
+            return -1;
+        }
+
+        memcpy(input, master_seed, BIP39_SEED_SIZE);
+        memcpy(input + BIP39_SEED_SIZE, shielded_context, context_len);
+
+        shake256(shielded_enc_seed, 32, input, input_len);
+        qgp_secure_memzero(input, input_len);
+        free(input);
+    }
+
+    // Clear master seed from memory (security)
+    qgp_secure_memzero(master_seed, BIP39_SEED_SIZE);
+
+    return 0;
+}
+
+/**
  * Display BIP39 mnemonic in a user-friendly format
  *
  * Prints mnemonic with word numbers for easy verification and backup.

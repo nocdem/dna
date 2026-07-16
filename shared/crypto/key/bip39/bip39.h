@@ -210,6 +210,26 @@ DNA_API int qgp_derive_seeds_with_master(
 );
 
 /**
+ * Derive the DEDICATED shielded-pool encryption seed from a BIP39 mnemonic.
+ *
+ * This is the DUAL-MODE note-encryption viewing key seed (design D6 / I3):
+ *   shielded_enc_seed = SHAKE256(master_seed || "qgp-shielded-enc-v1", 32)
+ * It is domain-separated from BOTH "qgp-signing-v1" and "qgp-encryption-v1", so
+ * a messenger-key compromise does NOT expose shielded viewing (isolated blast
+ * radius). The Kyber1024 shielded_enc keypair is derived from this seed.
+ *
+ * @param mnemonic          BIP39 mnemonic phrase (12/15/18/21/24 words)
+ * @param passphrase        Optional passphrase (empty string if none)
+ * @param shielded_enc_seed Output buffer for the shielded-enc seed (32 bytes)
+ * @return 0 on success, -1 on error
+ */
+DNA_API int qgp_derive_shielded_enc_seed(
+    const char *mnemonic,
+    const char *passphrase,
+    uint8_t shielded_enc_seed[32]
+);
+
+/**
  * Display BIP39 mnemonic in a user-friendly format
  *
  * @param mnemonic BIP39 mnemonic phrase

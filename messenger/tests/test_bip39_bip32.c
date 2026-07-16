@@ -211,6 +211,44 @@ static int test_qgp_seed_derivation(void) {
     if (ret != 0) TEST_FAILED("QGP seed derivation with master failed");
     TEST_PASSED("QGP seeds with master derived");
 
+    /* Dual-mode D6: dedicated shielded-encryption seed ("qgp-shielded-enc-v1").
+     * MUST be deterministic AND domain-separated from BOTH signing and
+     * encryption seeds (a messenger-key compromise must not expose shielded
+     * viewing — isolated blast radius). */
+    uint8_t shielded_seed[32];
+    uint8_t shielded_seed2[32];
+    ret = qgp_derive_shielded_enc_seed(mnemonic, "", shielded_seed);
+    if (ret != 0) TEST_FAILED("Shielded-enc seed derivation failed");
+    ret = qgp_derive_shielded_enc_seed(mnemonic, "", shielded_seed2);
+    if (ret != 0) TEST_FAILED("Shielded-enc seed re-derivation failed");
+    if (memcmp(shielded_seed, shielded_seed2, 32) != 0) {
+        TEST_FAILED("Shielded-enc seed is not deterministic");
+    }
+    TEST_PASSED("Shielded-enc seed is deterministic");
+    if (memcmp(shielded_seed, signing_seed, 32) == 0) {
+        TEST_FAILED("Shielded-enc seed collides with signing seed (no domain sep)");
+    }
+    if (memcmp(shielded_seed, encryption_seed, 32) == 0) {
+        TEST_FAILED("Shielded-enc seed collides with encryption seed (no domain sep)");
+    }
+    TEST_PASSED("Shielded-enc seed is domain-separated from signing/encryption");
+    print_hex("Shielded-enc seed", shielded_seed, 32);
+
+    /* Fixed KAT: for the canonical all-"abandon"/about test vector the shielded
+     * seed = SHAKE256(master_seed || "qgp-shielded-enc-v1", 32) is machine-
+     * independent. Locks the derivation so a silent context/algorithm change is
+     * caught (KAFADAN guard). */
+    static const uint8_t kExpectedShielded[32] = {
+        0x8b, 0x3e, 0x62, 0x32, 0x8e, 0x98, 0x8e, 0x73,
+        0x5d, 0x60, 0x0f, 0x0e, 0x5b, 0x37, 0x8f, 0x7d,
+        0x8c, 0x2e, 0xec, 0xa6, 0x7b, 0x26, 0x60, 0x3e,
+        0x35, 0x3b, 0xca, 0x82, 0xf9, 0x00, 0x64, 0xf2,
+    };
+    if (memcmp(shielded_seed, kExpectedShielded, 32) != 0) {
+        TEST_FAILED("Shielded-enc seed does not match known-answer vector");
+    }
+    TEST_PASSED("Shielded-enc seed matches known-answer vector");
+
     return 0;
 }
 
