@@ -301,10 +301,25 @@
       T6 folded·inv_van == quotient(zeta) on the REAL is_zk=1 proof (== port
       fidelity G-S1e-1), T7 negatives (phi/BAL/ADDR tamper → OOD, 2× SHAPE) —
       ALL PASS.** Full `make test` GREEN, 0 warnings; conf_root_verify unchanged.
-      **NEXT: S1e.4** pure-C prover (`stark_prover_action.c`, reuse
-      `dnac_conf_prover_prove`; route transcript through `dnac_stark_priming`,
-      parent H2/H3 statement binding) byte-matching the REAL proof + self-verify →
-      S1e.5 negative KATs through the real prover → S1f 10+ agent red-team.
+    - **🎯 S1e.4 + S1e.5 DONE (2026-07-17) — pure-C C1 Action PROVER byte-matches
+      the REAL Plonky3 proof, Rust-free end-to-end.** `stark_prover_action.{c,h}`
+      (`dnac_action_prover_prove`, mirrors the conf prover; UNSALTED, 0 publics,
+      width 813; S1 trace = `conf_action_air_generate`, S6 quotient REUSES
+      `dnac_conf_action_fold_air_eval` — ONE emission source prover+verifier).
+      Draw layout (only the trace section grows vs conf_root): trace (813+8)h @0,
+      codeword 32h @821h, blinding 42h @853h, R 12h @895h → **907h total**.
+      `test_prover_action` on `conf_action_air_zk.json` + `smallrng_goldilocks.json`
+      (regenerated to 116096 draws, prefix-stable): **T2 prove+self-verify (FRI
+      DNAC_FRI_OK + N-chunk), T3 zeta, T4 trace/quotient/random roots, T5
+      final_poly ALL byte-match the REAL is_zk=1 proof; T6 fail-close; T7
+      production OS-entropy self-verifies; T8 (S1e.5) 3 cheat instances
+      (non-conserving/range/block-budget) fail to prove.** The T4 root match
+      retro-proves the S1e.1 Rust↔C trace-builder byte-identity. **BUG FOUND+FIXED
+      (by the byte-match, as designed): `FRI_LEAF_CAP` 5248→6656** — the 817-wide
+      conf_action input row (6536 B) overflowed the cap sized for conf_root's 618
+      → `DNAC_FRI_ERR_INPUT_ERROR`. Full `make test` GREEN, 0 warnings; conf_root
+      prover (incl. salted) unaffected. **NEXT: S1f** 10+ agent red-team on the
+      composed real-STARK C1 → then S4 aggregate (C1+C3+C4).
     - **S4 NEXT after S1e** — aggregate C1+C3+C4 (one Action AIR/TX) with the
       recorded composition obligations (leaf==cm_carry, pin D, nullify iff IS_INPUT).
   - **THEN:** S2 C3 membership (+ M1/M2 goals, + E5 point-read reader), S3 C4

@@ -96,6 +96,7 @@ TESTS = \
     $(BUILD)/test_conf_root_verify \
     $(BUILD)/test_conf_action_verify \
     $(BUILD)/test_prover_conf \
+    $(BUILD)/test_prover_action \
     $(BUILD)/test_prover_salted_commit \
     $(BUILD)/test_zk_entropy \
     $(BUILD)/test_prover_trace \
@@ -436,6 +437,11 @@ $(BUILD)/test_zk_entropy: tests/test_zk_entropy.c zk_entropy.h zk_entropy.c fiel
 
 $(BUILD)/test_prover_conf: tests/test_prover_conf.c stark_prover_conf.h stark_prover_conf.c conf_root_fold.h conf_root_fold.c poseidon2_fold.h poseidon2_fold.c stark_constraints.c zk_entropy.c $(CONF_AIR_STACK) $(PROVER_STACK) fri_verifier.c stark_priming.c | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) tests/test_prover_conf.c stark_prover_conf.c conf_root_fold.c poseidon2_fold.c stark_constraints.c zk_entropy.c $(CONF_AIR_STACK) $(PROVER_STACK) fri_verifier.c stark_priming.c $(SHA3_SRC) $(LDLIBS) -o $@
+
+# Dual-mode S1e.4 — pure-C C1 Action prover byte-match vs the REAL Plonky3 proof.
+ACTION_AIR_STACK = conf_action_air.c note_commit.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c poseidon2_goldilocks.c
+$(BUILD)/test_prover_action: tests/test_prover_action.c stark_prover_action.h stark_prover_action.c conf_action_fold.h conf_action_fold.c poseidon2_fold.h poseidon2_fold.c stark_constraints.c zk_entropy.c $(ACTION_AIR_STACK) $(PROVER_STACK) fri_verifier.c stark_priming.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_prover_action.c stark_prover_action.c conf_action_fold.c poseidon2_fold.c stark_constraints.c zk_entropy.c $(ACTION_AIR_STACK) $(PROVER_STACK) fri_verifier.c stark_priming.c $(SHA3_SRC) $(LDLIBS) -o $@
 
 $(BUILD)/test_prover_salted_commit: tests/test_prover_salted_commit.c stark_prover.h $(CONF_AIR_STACK) $(PROVER_STACK) | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) tests/test_prover_salted_commit.c $(CONF_AIR_STACK) $(PROVER_STACK) $(SHA3_SRC) $(LDLIBS) -o $@
@@ -942,6 +948,12 @@ test: all
 	@echo "  folded*inv_van == quotient(zeta) (width 813, num_qc=8) + negatives"
 	@echo "============================================================"
 	@$(BUILD)/test_conf_action_verify tools/vectors/conf_action_air_zk.json
+	@echo
+	@echo "============================================================"
+	@echo "S1e.4 dual-mode C1 PROVER — pure-C prove byte-match vs REAL Plonky3"
+	@echo "  zeta + 3 roots + final_poly byte-match + self-verify (FRI + N-chunk)"
+	@echo "============================================================"
+	@$(BUILD)/test_prover_action tools/vectors/conf_action_air_zk.json tools/vectors/smallrng_goldilocks.json
 	@echo
 	@echo "============================================================"
 	@echo "S2 dual-mode C3 — Poseidon2 Merkle-path membership (is_zk=0)"
