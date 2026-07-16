@@ -44,8 +44,10 @@ static void init_pair(nodus_channel_crypto_t *tx, nodus_channel_crypto_t *rx)
     memset(ss, 0x11, sizeof(ss));
     memset(nc, 0x22, sizeof(nc));
     memset(ns, 0x33, sizeof(ns));
-    nodus_channel_crypto_init(tx, ss, nc, ns);
-    nodus_channel_crypto_init(rx, ss, nc, ns);
+    /* Opposite roles: tx sends, rx receives. Same roles would (correctly) trip
+     * the C1 reflection guard, since a node never receives its own role. */
+    nodus_channel_crypto_init(tx, ss, nc, ns, NODUS_CHANNEL_ROLE_INITIATOR);
+    nodus_channel_crypto_init(rx, ss, nc, ns, NODUS_CHANNEL_ROLE_RESPONDER);
 }
 
 /* ── Test 1: an empty-plaintext frame is exactly OVERHEAD bytes ──────────── */

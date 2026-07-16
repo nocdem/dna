@@ -192,8 +192,10 @@ int nodus_auth_handle_key_init(nodus_server_t *srv, nodus_session_t *sess,
 
     /* Init channel crypto AFTER KEY_ACK is queued for send. Storage lives
      * on the conn struct (B3); no separate session-level alias. */
+    /* We ACCEPTED this client connection → responder. */
     rc = nodus_channel_crypto_init(&sess->conn->channel_crypto,
-                                    shared_secret, nonce_c, nonce_s);
+                                    shared_secret, nonce_c, nonce_s,
+                                    NODUS_CHANNEL_ROLE_RESPONDER);
     qgp_secure_memzero(shared_secret, sizeof(shared_secret));
     if (rc != 0) {
         size_t err_len = 0;

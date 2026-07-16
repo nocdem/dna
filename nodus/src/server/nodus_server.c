@@ -2714,9 +2714,10 @@ static void bf_handle_event(nodus_server_t *srv, int fd, uint32_t events) {
             bf_forward_fail(srv, b, c); return;
         }
 
-        /* Derive AES-256-GCM session key */
+        /* Derive AES-256-GCM session key. We DIALED this peer → initiator. */
         nodus_channel_crypto_init(&c->crypto, c->pending_ss,
-                                    c->pending_nc, msg.key_nonce);
+                                    c->pending_nc, msg.key_nonce,
+                                    NODUS_CHANNEL_ROLE_INITIATOR);
         c->encrypted = true;
         qgp_secure_memzero(c->pending_ss, sizeof(c->pending_ss));
         qgp_secure_memzero(c->pending_nc, sizeof(c->pending_nc));
@@ -4226,8 +4227,10 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
              * B3 fix — init the per-conn channel_crypto directly; no
              * separate crypto-pointer alias needed. */
             if (msg.has_key_nonce) {
+                /* We DIALED this peer (outgoing inter-node conn) → initiator. */
                 nodus_channel_crypto_init(&sess->conn->channel_crypto,
-                                           sess->pending_ss, sess->pending_nc, msg.key_nonce);
+                                           sess->pending_ss, sess->pending_nc, msg.key_nonce,
+                                           NODUS_CHANNEL_ROLE_INITIATOR);
                 fprintf(stderr,
                         "CRYPTO: SET_OUTGOING slot=%d peer=%s:%u (inter-node encrypted)\n",
                         sess->conn->slot, sess->conn->ip, (unsigned)sess->conn->port);
@@ -4351,9 +4354,11 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
                     size_t ka_len = 0;
                     nodus_t2_key_ack(msg.txn_id, ns, ka_buf, sizeof(ka_buf), &ka_len);
                     nodus_tcp_send_raw(sess->conn, ka_buf, ka_len);
-                    /* B3 fix — init per-conn channel_crypto directly. */
+                    /* B3 fix — init per-conn channel_crypto directly.
+                     * We ACCEPTED this inter-node conn → responder. */
                     nodus_channel_crypto_init(&sess->conn->channel_crypto,
-                                               ss_buf, msg.key_nonce, ns);
+                                               ss_buf, msg.key_nonce, ns,
+                                               NODUS_CHANNEL_ROLE_RESPONDER);
                     qgp_secure_memzero(ss_buf, sizeof(ss_buf));
                     fprintf(stderr,
                             "CRYPTO: SET_INCOMING slot=%d peer=%s:%u (inter-node encrypted)\n",
@@ -4666,10 +4671,20 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
         uint64_t tx_ctr = 0, rx_ctr = 0;
         if (sess->conn) {
             nodus_channel_crypto_t *cc = &sess->conn->channel_crypto;
+            /* C1: rx_counter is now per-role. For this forensic summary report
+             * the PEER's stream — i.e. the role opposite ours; a legacy peer's
+             * frames land in the LEGACY slot, so take the max of the two we can
+             * legitimately receive (we never accept our own role). */
+            uint64_t rx_peer = cc->rx_counter[NODUS_CHANNEL_ROLE_LEGACY];
+            for (uint8_t r = NODUS_CHANNEL_ROLE_INITIATOR;
+                 r < NODUS_CHANNEL_ROLE_COUNT; r++) {
+                if (r != cc->my_role && cc->rx_counter[r] > rx_peer)
+                    rx_peer = cc->rx_counter[r];
+            }
             crypto_state = cc->established ? "established" :
-                           (cc->tx_counter || cc->rx_counter ? "pending" : "none");
+                           (cc->tx_counter || rx_peer ? "pending" : "none");
             tx_ctr = cc->tx_counter;
-            rx_ctr = cc->rx_counter;
+            rx_ctr = rx_peer;
         }
         int authed = (sess->conn && sess->conn->authenticated) ? 1 : 0;
         int peer_id_set = (sess->conn && sess->conn->peer_id_set) ? 1 : 0;

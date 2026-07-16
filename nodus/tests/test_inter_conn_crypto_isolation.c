@@ -37,6 +37,14 @@ static int tests_failed = 0;
 
 #define CHECK(expr, msg) do { if (!(expr)) { FAIL(msg); return; } } while(0)
 
+/** C1: rx_counter is per-role now — a clean instance has every slot at zero. */
+static bool rx_counters_all_zero(const nodus_channel_crypto_t *cc)
+{
+    for (int r = 0; r < NODUS_CHANNEL_ROLE_COUNT; r++)
+        if (cc->rx_counter[r] != 0) return false;
+    return true;
+}
+
 /* ── Test 1: separate storage addresses ─────────────────────────── */
 static void test_separate_storage(void)
 {
@@ -55,9 +63,10 @@ static void test_separate_storage(void)
     CHECK(c1.channel_crypto.established == false, "c1 not zero-init established");
     CHECK(c2.channel_crypto.established == false, "c2 not zero-init established");
     CHECK(c1.channel_crypto.tx_counter == 0, "c1 tx_counter not zero");
-    CHECK(c1.channel_crypto.rx_counter == 0, "c1 rx_counter not zero");
+    /* C1: rx_counter is now per-role — every slot must start clean. */
+    CHECK(rx_counters_all_zero(&c1.channel_crypto), "c1 rx_counter not zero");
     CHECK(c2.channel_crypto.tx_counter == 0, "c2 tx_counter not zero");
-    CHECK(c2.channel_crypto.rx_counter == 0, "c2 rx_counter not zero");
+    CHECK(rx_counters_all_zero(&c2.channel_crypto), "c2 rx_counter not zero");
 
     PASS();
 }
@@ -78,14 +87,16 @@ static void test_independent_init(void)
     memset(ns, 0x22, 32);
 
     /* Init c1 only. */
-    CHECK(nodus_channel_crypto_init(&c1.channel_crypto, ss1, nc, ns) == 0,
+    CHECK(nodus_channel_crypto_init(&c1.channel_crypto, ss1, nc, ns,
+                                     NODUS_CHANNEL_ROLE_INITIATOR) == 0,
           "c1 init failed");
     CHECK(c1.channel_crypto.established == true, "c1 not established post-init");
     CHECK(c2.channel_crypto.established == false,
           "c2 unexpectedly established (should be untouched)");
 
     /* Now init c2 with a different shared secret. */
-    CHECK(nodus_channel_crypto_init(&c2.channel_crypto, ss2, nc, ns) == 0,
+    CHECK(nodus_channel_crypto_init(&c2.channel_crypto, ss2, nc, ns,
+                                     NODUS_CHANNEL_ROLE_INITIATOR) == 0,
           "c2 init failed");
     CHECK(c2.channel_crypto.established == true, "c2 not established post-init");
 
@@ -112,8 +123,10 @@ static void test_independent_counters(void)
     memset(nc, 0x11, 32);
     memset(ns, 0x22, 32);
 
-    CHECK(nodus_channel_crypto_init(&c1.channel_crypto, ss1, nc, ns) == 0, "c1 init");
-    CHECK(nodus_channel_crypto_init(&c2.channel_crypto, ss2, nc, ns) == 0, "c2 init");
+    CHECK(nodus_channel_crypto_init(&c1.channel_crypto, ss1, nc, ns,
+                                     NODUS_CHANNEL_ROLE_INITIATOR) == 0, "c1 init");
+    CHECK(nodus_channel_crypto_init(&c2.channel_crypto, ss2, nc, ns,
+                                     NODUS_CHANNEL_ROLE_INITIATOR) == 0, "c2 init");
 
     uint8_t pt[32];
     memset(pt, 0xCC, sizeof(pt));
@@ -158,8 +171,10 @@ static void test_clear_isolation(void)
     memset(nc, 0x11, 32);
     memset(ns, 0x22, 32);
 
-    CHECK(nodus_channel_crypto_init(&c1.channel_crypto, ss, nc, ns) == 0, "c1 init");
-    CHECK(nodus_channel_crypto_init(&c2.channel_crypto, ss, nc, ns) == 0, "c2 init");
+    CHECK(nodus_channel_crypto_init(&c1.channel_crypto, ss, nc, ns,
+                                     NODUS_CHANNEL_ROLE_INITIATOR) == 0, "c1 init");
+    CHECK(nodus_channel_crypto_init(&c2.channel_crypto, ss, nc, ns,
+                                     NODUS_CHANNEL_ROLE_INITIATOR) == 0, "c2 init");
 
     /* Both established. */
     CHECK(c1.channel_crypto.established == true, "c1 pre-clear");
@@ -204,7 +219,8 @@ static void test_recycle_no_leak(void)
     memset(ns, 0x22, 32);
 
     /* Use c1, advance it, then clear (simulating conn_free). */
-    CHECK(nodus_channel_crypto_init(&c1.channel_crypto, ss, nc, ns) == 0, "c1 init");
+    CHECK(nodus_channel_crypto_init(&c1.channel_crypto, ss, nc, ns,
+                                     NODUS_CHANNEL_ROLE_INITIATOR) == 0, "c1 init");
     uint8_t pt[8] = {0}, ct[64];
     size_t ct_len = 0;
     for (int i = 0; i < 5; i++) {
@@ -222,13 +238,14 @@ static void test_recycle_no_leak(void)
     /* Pre-init invariants on the recycled struct: no leftover state. */
     CHECK(c1.channel_crypto.established == false, "recycle established leak");
     CHECK(c1.channel_crypto.tx_counter == 0, "recycle tx_counter leak");
-    CHECK(c1.channel_crypto.rx_counter == 0, "recycle rx_counter leak");
+    CHECK(rx_counters_all_zero(&c1.channel_crypto), "recycle rx_counter leak");
 
     /* New init on the recycled struct should produce a fresh session
      * with counter=0 — exactly the path that pre-B3 was racing on. */
     uint8_t ss2[32];
     memset(ss2, 0xCC, 32);
-    CHECK(nodus_channel_crypto_init(&c1.channel_crypto, ss2, nc, ns) == 0, "recycle init");
+    CHECK(nodus_channel_crypto_init(&c1.channel_crypto, ss2, nc, ns,
+                                     NODUS_CHANNEL_ROLE_INITIATOR) == 0, "recycle init");
     CHECK(c1.channel_crypto.tx_counter == 0, "post-recycle counter not zero");
     CHECK(c1.channel_crypto.established == true, "post-recycle not established");
 

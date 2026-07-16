@@ -33,8 +33,10 @@ static void test_basic_roundtrip(void)
     memset(nonce_s, 0xEF, 32);
 
     nodus_channel_crypto_t sender, receiver;
-    CHECK(nodus_channel_crypto_init(&sender, shared_secret, nonce_c, nonce_s) == 0, "sender init");
-    CHECK(nodus_channel_crypto_init(&receiver, shared_secret, nonce_c, nonce_s) == 0, "receiver init");
+    CHECK(nodus_channel_crypto_init(&sender, shared_secret, nonce_c, nonce_s,
+                                     NODUS_CHANNEL_ROLE_INITIATOR) == 0, "sender init");
+    CHECK(nodus_channel_crypto_init(&receiver, shared_secret, nonce_c, nonce_s,
+                                     NODUS_CHANNEL_ROLE_RESPONDER) == 0, "receiver init");
     CHECK(sender.established, "sender not established");
     CHECK(receiver.established, "receiver not established");
 
@@ -78,8 +80,10 @@ static void test_real_kyber_handshake(void)
     memset(nonce_s, 0x22, 32);
 
     nodus_channel_crypto_t client_cc, server_cc;
-    CHECK(nodus_channel_crypto_init(&client_cc, client_ss, nonce_c, nonce_s) == 0, "client init");
-    CHECK(nodus_channel_crypto_init(&server_cc, server_ss, nonce_c, nonce_s) == 0, "server init");
+    CHECK(nodus_channel_crypto_init(&client_cc, client_ss, nonce_c, nonce_s,
+                                     NODUS_CHANNEL_ROLE_INITIATOR) == 0, "client init");
+    CHECK(nodus_channel_crypto_init(&server_cc, server_ss, nonce_c, nonce_s,
+                                     NODUS_CHANNEL_ROLE_RESPONDER) == 0, "server init");
 
     /* Client -> Server */
     const char *payload = "DHT GET request (encrypted)";
@@ -118,8 +122,8 @@ static void test_tamper_detection(void)
     memset(ss, 0x42, 32); memset(nc, 0x01, 32); memset(ns, 0x02, 32);
 
     nodus_channel_crypto_t enc_cc, dec_cc;
-    nodus_channel_crypto_init(&enc_cc, ss, nc, ns);
-    nodus_channel_crypto_init(&dec_cc, ss, nc, ns);
+    nodus_channel_crypto_init(&enc_cc, ss, nc, ns, NODUS_CHANNEL_ROLE_INITIATOR);
+    nodus_channel_crypto_init(&dec_cc, ss, nc, ns, NODUS_CHANNEL_ROLE_RESPONDER);
 
     const char *msg = "sensitive data";
     uint8_t encrypted[256];
@@ -149,8 +153,8 @@ static void test_wrong_key(void)
     memset(nc, 0x01, 32); memset(ns, 0x02, 32);
 
     nodus_channel_crypto_t enc_cc, dec_cc;
-    nodus_channel_crypto_init(&enc_cc, ss1, nc, ns);
-    nodus_channel_crypto_init(&dec_cc, ss2, nc, ns);
+    nodus_channel_crypto_init(&enc_cc, ss1, nc, ns, NODUS_CHANNEL_ROLE_INITIATOR);
+    nodus_channel_crypto_init(&dec_cc, ss2, nc, ns, NODUS_CHANNEL_ROLE_RESPONDER);
 
     const char *msg = "secret";
     uint8_t encrypted[256];
@@ -177,7 +181,7 @@ static void test_counter_increment(void)
     memset(ss, 0x55, 32); memset(nc, 0x01, 32); memset(ns, 0x02, 32);
 
     nodus_channel_crypto_t cc;
-    nodus_channel_crypto_init(&cc, ss, nc, ns);
+    nodus_channel_crypto_init(&cc, ss, nc, ns, NODUS_CHANNEL_ROLE_INITIATOR);
     CHECK(cc.tx_counter == 0, "initial counter != 0");
 
     uint8_t data[] = "x";
@@ -204,8 +208,8 @@ static void test_replay_protection(void)
     memset(ss, 0x66, 32); memset(nc, 0x01, 32); memset(ns, 0x02, 32);
 
     nodus_channel_crypto_t enc_cc, dec_cc;
-    nodus_channel_crypto_init(&enc_cc, ss, nc, ns);
-    nodus_channel_crypto_init(&dec_cc, ss, nc, ns);
+    nodus_channel_crypto_init(&enc_cc, ss, nc, ns, NODUS_CHANNEL_ROLE_INITIATOR);
+    nodus_channel_crypto_init(&dec_cc, ss, nc, ns, NODUS_CHANNEL_ROLE_RESPONDER);
 
     uint8_t msg[] = "message";
     uint8_t enc1[64], enc2[64];
@@ -237,8 +241,8 @@ static void test_large_payload(void)
     memset(ss, 0x77, 32); memset(nc, 0x01, 32); memset(ns, 0x02, 32);
 
     nodus_channel_crypto_t enc_cc, dec_cc;
-    nodus_channel_crypto_init(&enc_cc, ss, nc, ns);
-    nodus_channel_crypto_init(&dec_cc, ss, nc, ns);
+    nodus_channel_crypto_init(&enc_cc, ss, nc, ns, NODUS_CHANNEL_ROLE_INITIATOR);
+    nodus_channel_crypto_init(&dec_cc, ss, nc, ns, NODUS_CHANNEL_ROLE_RESPONDER);
 
     size_t plen = 65536;
     uint8_t *plaintext = malloc(plen);
@@ -274,8 +278,8 @@ static void test_empty_payload(void)
     memset(ss, 0x88, 32); memset(nc, 0x01, 32); memset(ns, 0x02, 32);
 
     nodus_channel_crypto_t enc_cc, dec_cc;
-    nodus_channel_crypto_init(&enc_cc, ss, nc, ns);
-    nodus_channel_crypto_init(&dec_cc, ss, nc, ns);
+    nodus_channel_crypto_init(&enc_cc, ss, nc, ns, NODUS_CHANNEL_ROLE_INITIATOR);
+    nodus_channel_crypto_init(&dec_cc, ss, nc, ns, NODUS_CHANNEL_ROLE_RESPONDER);
 
     uint8_t encrypted[64];
     size_t enc_len = 0;
@@ -303,14 +307,16 @@ static void test_key_derivation_determinism(void)
     memset(ss, 0x99, 32); memset(nc, 0xAA, 32); memset(ns, 0xBB, 32);
 
     nodus_channel_crypto_t cc1, cc2;
-    nodus_channel_crypto_init(&cc1, ss, nc, ns);
-    nodus_channel_crypto_init(&cc2, ss, nc, ns);
+    /* Same role on purpose: this asserts KEY-derivation determinism, and the
+     * role is a nonce input only — it never enters the KDF. */
+    nodus_channel_crypto_init(&cc1, ss, nc, ns, NODUS_CHANNEL_ROLE_INITIATOR);
+    nodus_channel_crypto_init(&cc2, ss, nc, ns, NODUS_CHANNEL_ROLE_INITIATOR);
     CHECK(memcmp(cc1.key, cc2.key, NODUS_CHANNEL_KEY_LEN) == 0, "keys differ");
 
     uint8_t ns2[32];
     memset(ns2, 0xCC, 32);
     nodus_channel_crypto_t cc3;
-    nodus_channel_crypto_init(&cc3, ss, nc, ns2);
+    nodus_channel_crypto_init(&cc3, ss, nc, ns2, NODUS_CHANNEL_ROLE_INITIATOR);
     CHECK(memcmp(cc1.key, cc3.key, NODUS_CHANNEL_KEY_LEN) != 0, "diff nonces same key");
 
     nodus_channel_crypto_clear(&cc1);
@@ -328,7 +334,7 @@ static void test_secure_clear(void)
     memset(ss, 0xFF, 32); memset(nc, 0x01, 32); memset(ns, 0x02, 32);
 
     nodus_channel_crypto_t cc;
-    nodus_channel_crypto_init(&cc, ss, nc, ns);
+    nodus_channel_crypto_init(&cc, ss, nc, ns, NODUS_CHANNEL_ROLE_INITIATOR);
     CHECK(cc.established, "not established");
 
     nodus_channel_crypto_clear(&cc);

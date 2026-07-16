@@ -357,7 +357,9 @@ static void client_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
                 uint8_t nc[32], ns[32];
                 memcpy(nc, tmp.circ_peer_fp.bytes, 32);  /* src = peer */
                 memcpy(ns, client->identity.node_id.bytes, 32);  /* dst = us */
-                nodus_channel_crypto_init(&h->e2e_crypto, e2e_ss, nc, ns);
+                /* We ACCEPTED this circuit (circ_inbound) → responder. */
+                nodus_channel_crypto_init(&h->e2e_crypto, e2e_ss, nc, ns,
+                                          NODUS_CHANNEL_ROLE_RESPONDER);
                 h->e2e_active = true;
                 QGP_LOG_INFO(LOG_TAG, "Circuit E2E: inbound onion layer active (cid=%llu)",
                              (unsigned long long)h->cid);
@@ -833,8 +835,10 @@ static int do_auth(nodus_client_t *client) {
         /* Init channel crypto.
          * B3 fix — init the per-conn channel_crypto directly; storage is
          * now owned by the conn struct, no separate alias to attach. */
+        /* We DIALED the server → initiator. */
         if (nodus_channel_crypto_init(&((nodus_tcp_conn_t *)client->conn)->channel_crypto,
-                                       shared_secret, nonce_c, resp->key_nonce) != 0) {
+                                       shared_secret, nonce_c, resp->key_nonce,
+                                       NODUS_CHANNEL_ROLE_INITIATOR) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "Auth: channel crypto init failed");
             qgp_secure_memzero(shared_secret, sizeof(shared_secret));
             free_pending(client, req);
@@ -4882,7 +4886,9 @@ static int circuit_open_impl(nodus_client_t *client, const nodus_key_t *peer_fp,
         uint8_t nc[32], ns[32];
         memcpy(nc, client->identity.node_id.bytes, 32);  /* own = caller */
         memcpy(ns, peer_fp->bytes, 32);                    /* peer = callee */
-        if (nodus_channel_crypto_init(&h->e2e_crypto, k_call, nc, ns) != 0) {
+        /* We OPENED this circuit → initiator. */
+        if (nodus_channel_crypto_init(&h->e2e_crypto, k_call, nc, ns,
+                                       NODUS_CHANNEL_ROLE_INITIATOR) != 0) {
             pthread_mutex_lock(&client->circuits_mutex);
             h->in_use = false;
             pthread_mutex_unlock(&client->circuits_mutex);
@@ -5013,7 +5019,9 @@ int nodus_circuit_open_e2e(nodus_client_t *client, const nodus_key_t *peer_fp,
     uint8_t nc[32], ns[32];
     memcpy(nc, client->identity.node_id.bytes, 32);
     memcpy(ns, peer_fp->bytes, 32);
-    if (nodus_channel_crypto_init(&h->e2e_crypto, e2e_ss, nc, ns) != 0) {
+    /* We OPENED this circuit → initiator. */
+    if (nodus_channel_crypto_init(&h->e2e_crypto, e2e_ss, nc, ns,
+                                   NODUS_CHANNEL_ROLE_INITIATOR) != 0) {
         qgp_secure_memzero(e2e_ss, sizeof(e2e_ss));
         pthread_mutex_lock(&client->circuits_mutex);
         h->in_use = false;
@@ -5116,7 +5124,23 @@ int nodus_circuit_attach_keyed(nodus_circuit_handle_t *h,
     uint8_t nc[32], ns[32];
     memcpy(nc, caller_fp->bytes, 32);                          /* caller */
     memcpy(ns, h->client->identity.node_id.bytes, 32);         /* us = callee */
-    if (nodus_channel_crypto_init(&h->e2e_crypto, k_call, nc, ns) != 0) return -1;
+    /* C1 re-init guard (callsite-owned — init() cannot tell a live channel from
+     * uninitialised memory). This is a public API and a handle is long-lived and
+     * zeroed at claim, so a second attach on an already-keyed circuit would
+     * re-key it in place and reset tx_counter to 0 under a key that may repeat —
+     * an immediate (key, nonce) reuse. Fail closed; the caller must close the
+     * circuit and open a fresh one. */
+    if (h->e2e_crypto.established) {
+        QGP_LOG_ERROR(LOG_TAG,
+                      "attach_keyed: circuit already keyed (cid=%llu) — refusing "
+                      "to re-key in place",
+                      (unsigned long long)h->cid);
+        return -1;
+    }
+
+    /* We ATTACHED to an inbound circuit → responder. */
+    if (nodus_channel_crypto_init(&h->e2e_crypto, k_call, nc, ns,
+                                   NODUS_CHANNEL_ROLE_RESPONDER) != 0) return -1;
     h->e2e_active = true;
     h->on_data = on_data;
     h->on_close = on_close;
@@ -5134,13 +5158,32 @@ int nodus_circuit_send(nodus_circuit_handle_t *h, const uint8_t *data, size_t le
     size_t send_len = len;
     uint8_t *enc_data = NULL;
 
-    /* E2E encrypt if onion layer active */
+    /* E2E encrypt if onion layer active.
+     *
+     * H2/C1: nodus_channel_encrypt does an unsynchronised tx_counter++ and
+     * derives the nonce from it. send_request's send_mutex only serialises the
+     * TCP write — it is taken AFTER this, so two threads sending on the same
+     * handle (e.g. VoIP media + control) could both read tx_counter=N, both
+     * build nonce N, and both encrypt under (key, nonce N): the exact
+     * same-direction (key, nonce) reuse the role-in-nonce fix exists to prevent.
+     * The role byte does NOT help here — both frames carry OUR role.
+     *
+     * So read+increment+encrypt must be atomic. circuits_mutex is reused rather
+     * than a per-handle mutex because handles are memset(0) on claim, which
+     * would zero an embedded pthread_mutex_t. The critical section is a few
+     * microseconds of AES-GCM and takes no other lock; the network I/O
+     * (send_request) stays OUTSIDE it, so no lock-order inversion with
+     * send_mutex and no I/O under circuits_mutex. */
     if (h->e2e_active) {
         size_t enc_cap = len + NODUS_CHANNEL_OVERHEAD;
         enc_data = malloc(enc_cap);
         if (!enc_data) return -1;
         size_t enc_out = 0;
-        if (nodus_channel_encrypt(&h->e2e_crypto, data, len, enc_data, enc_cap, &enc_out) != 0) {
+        pthread_mutex_lock(&client->circuits_mutex);
+        int erc = nodus_channel_encrypt(&h->e2e_crypto, data, len,
+                                        enc_data, enc_cap, &enc_out);
+        pthread_mutex_unlock(&client->circuits_mutex);
+        if (erc != 0) {
             free(enc_data);
             return -1;
         }

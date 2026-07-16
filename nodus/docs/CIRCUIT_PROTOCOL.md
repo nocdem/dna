@@ -162,6 +162,30 @@ When a circuit is opened with `nodus_circuit_open_e2e()`:
    monotonic counter nonce and minimum-expected-counter replay check on receive
    (correct over TCP's ordered delivery; a UDP transport would need
    window-based replay protection instead).
+
+   **Nonce layout + direction separation (C1, v0.18.12).** The 12-byte GCM nonce
+   is `[counter u64 LE (bytes 0-7)] ‖ [role (byte 8)] ‖ [0x00 ×3]`. Both ends of a
+   channel derive the SAME AES key and each encrypts from `tx_counter=0`, so
+   without a direction marker the two directions reused every (key, nonce) — a
+   two-time pad plus GHASH key exposure. The role byte is the nonce's fixed
+   field: `0x01` = initiator (dialed/opened), `0x02` = responder
+   (accepted/attached), per NIST SP 800-38D §8.2.1 ("no two distinct devices
+   shall share the same fixed field"). Values are non-zero because `0x00` is what
+   a legacy peer emits. The role MUST be a static per-callsite constant, never
+   derived by comparing fingerprints (a self-connection would collapse both ends
+   to the same role). The nonce is transmitted, so the scheme is
+   **self-describing**: a legacy peer decrypts a role-tagged frame fine and vice
+   versa — no flag day, no coordinated cutover.
+
+   **Reflection guard.** A receiver rejects any frame whose role byte equals its
+   OWN role — a node never legitimately receives a frame it could have sent.
+   Without it, an on-path attacker could reflect a node's own ciphertext back and
+   it would authenticate (shared key) and dispatch as peer-origin, and its
+   counter would advance the replay window against the real peer. The check runs
+   on the plaintext wire nonce before any GCM work (denying a decrypt CPU-DoS).
+   Residual: legacy↔legacy (both `0x00`) is unguarded until both ends upgrade; an
+   upgraded node is guarded even against a legacy peer. The replay window is
+   tracked per role, so the two directions cannot advance each other's baseline.
 6. **AEAD completeness (v0.18.10).** On an `e2e_active` circuit **every**
    inbound `circ_data` frame must authenticate: the receive path decrypts any
    frame of `len >= NODUS_CHANNEL_OVERHEAD` (28 B — note a 28-byte frame is a
