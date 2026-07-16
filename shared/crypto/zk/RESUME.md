@@ -186,11 +186,18 @@
       `conf_root_fold.c:281-292`. cm_carry holds each block's φ=0 cm_output frozen
       block-wide; 6 freeze-carry attacks rejected. **This is the cross-region
       binding crux (13-round convergence) — BUILT + sound by construction.**
-    - **S1c NEXT** — single-row note-commitment (E9′): bind cm_output to the S0
-      note_commit sponge (2 poseidon2-air blocks, mirrors conf_root CA1/CA2 with
-      all-zero-IV + DOMSEP-as-last layout) + same-row value↔cm (SEC-2). Then S1d
-      balance once-per-block + boundary + role selectors (E17) + nk/pos/addr carries
-      (E15), S1e fold + degree/num_qc, S1f prover + self-verify + 10+ agent red-team.
+    - **S1c DONE** — single-row note-commitment (E9′): cm_output is now the
+      IN-CIRCUIT S0 note_commit sponge (2 poseidon2-air blocks NC1/NC2, mirrors
+      conf_root CA1/CA2, all-zero-IV + DOMSEP-as-last). `test_conf_action_air`:
+      in-circuit cm BYTE-MATCHES S0 note_commit() for all notes; the **§4b MINT
+      (value cell ≠ hashed value) is CAUGHT by construction** + 6 note-commitment
+      attacks (DOMSEP, capacity-IV, capacity-carry, cm-desync, poseidon2 tamper)
+      rejected. WIDTH=384. value↔cm bound by collision-resistant hash → the
+      mint/theft class is closed. (value↔balance-AMOUNT same-row copy is S1d.)
+    - **S1d NEXT** — balance once-per-block (E10′/E14 IS_BAL_CONTRIB+bal_coeff) +
+      boundary public-bind (N_BOUNDARY exact) + role selectors per block (E17) +
+      nk/pos/addr carries (E15). Then S1e fold + degree/num_qc, S1f prover +
+      self-verify + 10+ agent red-team.
   - **THEN:** S2 C3 membership (+ M1/M2 goals, + E5 point-read reader), S3 C4
     nullifier, S4 aggregate prover/verifier (+ H2/H3), S5 V4 wire, S6 consensus
     (state_root v4), S7 note-enc+wallet, S8 Genesis 7/7.

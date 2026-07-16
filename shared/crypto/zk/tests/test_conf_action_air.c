@@ -20,6 +20,7 @@
 
 #include "../conf_action_air.h"
 #include "../field_goldilocks.h"
+#include "../note_commit.h"
 
 /* log_height = 7 → H = 128 = 4 full K=32 blocks (exercises the wrap 3×). */
 #define LOG_H 7u
@@ -43,21 +44,30 @@ static void set(uint64_t *t, size_t row, size_t off, uint64_t val) {
 }
 
 int main(void) {
-    /* H=128 = 4 blocks of K=32. 3 real notes (blocks 0-2) + dummy-last (block 3). */
-    const uint64_t cm[3][CONF_ACTION_CM_LANES] = {
-        {111, 112, 113, 114},
-        {221, 222, 223, 224},
-        {331, 332, 333, 334},
+    /* H=128 = 4 blocks of K=32. 3 real notes (blocks 0-2) + dummy-last (block 3).
+     * Each note = (value, addr_pub[4], rcm[2]); its cm is computed in-circuit. */
+    const uint64_t value[3] = {1000000, 5, 4503599627370495u /* 2^52-1 */};
+    const uint64_t addr[3][CONF_ACTION_ADDR_LANES] = {
+        {11, 22, 33, 44}, {51, 52, 53, 54}, {91, 92, 93, 94},
     };
+    const uint64_t rcm[3][CONF_ACTION_RCM_LANES] = {
+        {0xdead, 0xbeef}, {123, 456}, {777, 888},
+    };
+    /* Expected commitments via the S0 note_commit sponge (byte-match target). */
+    uint64_t expect_cm[3][CONF_ACTION_CM_LANES];
+    for (int i = 0; i < 3; i++)
+        note_commit(value[i], addr[i], rcm[i], expect_cm[i]);
+
     uint64_t honest[ROWS * CONF_ACTION_WIDTH];
-    if (!conf_action_air_generate(LOG_H, &cm[0][0], 3, honest)) {
+    if (!conf_action_air_generate(LOG_H, value, &addr[0][0], &rcm[0][0], 3,
+                                  honest)) {
         printf("FAIL: honest generate failed\n");
         return 1;
     }
 
     printf("============================================================\n");
-    printf("C1 S1a+S1b — phase-counter + freeze-carry, K=%d, H=%u\n",
-           CONF_ACTION_K, ROWS);
+    printf("C1 S1a+S1b+S1c — phase-counter + freeze-carry + note-commitment\n");
+    printf("  K=%d, H=%u, WIDTH=%d\n", CONF_ACTION_K, ROWS, CONF_ACTION_WIDTH);
     printf("============================================================\n");
 
     /* ACCEPT: honest trace. */
@@ -144,6 +154,21 @@ int main(void) {
         expect_reject("phi-bits recomposition mismatch", bad);
     }
 
+    /* ── S1c byte-match: in-circuit cm_output == S0 note_commit() ────────────
+     * The whole point of E9′ — the AIR-computed commitment equals the trusted S0
+     * sponge, so value is bound to cm by a collision-resistant hash. */
+    {
+        int ok = 1;
+        const size_t blk0_row[3] = {0, 32, 64};
+        for (int i = 0; i < 3; i++)
+            for (unsigned j = 0; j < CONF_ACTION_CM_LANES; j++)
+                if (honest[blk0_row[i] * CONF_ACTION_WIDTH + CONF_ACTION_CMOUT_OFF + j] !=
+                    expect_cm[i][j]) ok = 0;
+        printf("  [accept] in-circuit cm_output == S0 note_commit()   %s\n",
+               ok ? "OK" : "FAIL");
+        if (!ok) fails++;
+    }
+
     /* ── S1b freeze-carry attacks ──────────────────────────────────────────
      * Sanity: cm_carry holds block 1's commitment across its whole block
      * (rows 32..63), loaded at row 32 (φ=0). */
@@ -152,7 +177,7 @@ int main(void) {
         for (size_t r = 32; r < 64; r++)
             for (unsigned j = 0; j < CONF_ACTION_CM_LANES; j++)
                 if (honest[r * CONF_ACTION_WIDTH + CONF_ACTION_CMCARRY_OFF + j] !=
-                    cm[1][j]) ok = 0;
+                    expect_cm[1][j]) ok = 0;
         printf("  [accept] cm_carry frozen == block-1 cm across block  %s\n",
                ok ? "OK" : "FAIL");
         if (!ok) fails++;
@@ -233,12 +258,65 @@ int main(void) {
         expect_reject("forge inv (is_zero binding broken)", bad);
     }
 
+    /* ── S1c note-commitment attacks ──────────────────────────────────────── */
+
+    /* REJECT 16: the §4b MINT — claim value=1000 for the real note-5 (block 1).
+     * Change ONLY the value cell; the poseidon2 blocks still hash the real 5, so
+     * NC1.in[0] (=5) != the forged value cell (=1000). Caught. */
+    {
+        uint64_t bad[ROWS * CONF_ACTION_WIDTH];
+        memcpy(bad, honest, sizeof bad);
+        set(bad, 32, CONF_ACTION_VALUE_OFF, 1000); /* block-1 real value is 5 */
+        expect_reject("MINT: value cell != hashed value (§4b)", bad);
+    }
+
+    /* REJECT 17: swap the DOMSEP_NOTE pad cell in NC2 (domain confusion). */
+    {
+        uint64_t bad[ROWS * CONF_ACTION_WIDTH];
+        memcpy(bad, honest, sizeof bad);
+        set(bad, 0, CONF_ACTION_NC2_OFF + p2air_input_off(3), 999);
+        expect_reject("wrong DOMSEP_NOTE pad cell (NC2.in[3])", bad);
+    }
+
+    /* REJECT 18: break NC1 all-zero-IV capacity (NC1.in[4] != 0). */
+    {
+        uint64_t bad[ROWS * CONF_ACTION_WIDTH];
+        memcpy(bad, honest, sizeof bad);
+        set(bad, 0, CONF_ACTION_NC1_OFF + p2air_input_off(4), 7);
+        expect_reject("NC1 capacity IV != 0 (absorb-pad pin)", bad);
+    }
+
+    /* REJECT 19: break the capacity carry (NC2.in[5] != NC1.out[5]). */
+    {
+        uint64_t bad[ROWS * CONF_ACTION_WIDTH];
+        memcpy(bad, honest, sizeof bad);
+        set(bad, 0, CONF_ACTION_NC2_OFF + p2air_input_off(5), 123456);
+        expect_reject("capacity carry NC2.in != NC1.out", bad);
+    }
+
+    /* REJECT 20: desync cm_output from NC2.out (cm_output != the sponge output). */
+    {
+        uint64_t bad[ROWS * CONF_ACTION_WIDTH];
+        memcpy(bad, honest, sizeof bad);
+        set(bad, 0, CONF_ACTION_CMOUT_OFF + 0, 424242);
+        expect_reject("cm_output != NC2.out (E9' bind)", bad);
+    }
+
+    /* REJECT 21: tamper a poseidon2 internal cell (breaks poseidon2_air_eval). */
+    {
+        uint64_t bad[ROWS * CONF_ACTION_WIDTH];
+        memcpy(bad, honest, sizeof bad);
+        set(bad, 0, CONF_ACTION_NC1_OFF + p2air_end_post_off(0, 0),
+            honest[CONF_ACTION_NC1_OFF + p2air_end_post_off(0, 0)] + 1);
+        expect_reject("tampered poseidon2 NC1 internal cell", bad);
+    }
+
     printf("------------------------------------------------------------\n");
     if (fails) {
-        printf("C1 S1a+S1b: %d FAIL\n", fails);
+        printf("C1 S1a+S1b+S1c: %d FAIL\n", fails);
         return 1;
     }
-    printf("C1 S1a+S1b: honest accepted + phase-counter & freeze-carry deviations "
-           "rejected — PASS\n");
+    printf("C1 S1a+S1b+S1c: honest accepted (cm byte-matches S0) + phase-counter, "
+           "freeze-carry & note-commitment deviations rejected — PASS\n");
     return 0;
 }

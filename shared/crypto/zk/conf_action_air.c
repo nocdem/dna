@@ -12,7 +12,13 @@
 
 #include "conf_action_air.h"
 
+#include <string.h>
+
 #include "field_goldilocks.h"
+#include "poseidon2_air.h"       /* poseidon2_air_eval_row */
+#include "poseidon2_air_cols.h"  /* p2air offsets */
+#include "poseidon2_air_trace.h" /* poseidon2_air_generate_row */
+#include "shielded_domsep.h"     /* DNAC_DOMSEP_NOTE */
 
 static inline gold_fp_t fp(uint64_t v) { return gold_fp_from_u64(v); }
 static inline gold_fp_t add(gold_fp_t a, gold_fp_t b) { return gold_fp_add(a, b); }
@@ -24,7 +30,34 @@ static gold_fp_t bool_res(gold_fp_t s) {
     return mul(s, sub(s, gold_fp_one()));
 }
 
-bool conf_action_air_generate(unsigned log_height, const uint64_t *cm,
+/* Read poseidon2-air block output lane k (the final permutation state). */
+static uint64_t nc_out(const uint64_t *blk, size_t k) {
+    return blk[p2air_end_post_off(P2AIR_HALF_FULL_ROUNDS - 1, k)];
+}
+
+/* Compute the in-circuit note-commitment (E9′): two poseidon2 blocks realising
+ * the S0 note_commit PaddingFreeSponge<8,4,4> over (value, addr[4], rcm[2],
+ * DOMSEP_NOTE), all-zero IV, DOMSEP as the last rate element of block 2. Writes
+ * NC1/NC2 (P2AIR_NUM_COLS each) and returns cm = NC2.out[0..4]. Mirrors
+ * conf_root_air.c do_fold (CA1/CA2 capacity carry). */
+static void note_commit_blocks(uint64_t value, const uint64_t addr[4],
+                               const uint64_t rcm[2], uint64_t *nc1_out,
+                               uint64_t *nc2_out,
+                               uint64_t cm_out[CONF_ACTION_CM_LANES]) {
+    uint64_t nc1_in[8] = {value, addr[0], addr[1], addr[2], 0, 0, 0, 0};
+    poseidon2_air_generate_row(nc1_in, nc1_out);
+    uint64_t s1[8];
+    for (int k = 0; k < 8; k++) s1[k] = nc_out(nc1_out, (size_t)k);
+
+    uint64_t nc2_in[8] = {addr[3], rcm[0], rcm[1], DNAC_DOMSEP_NOTE,
+                          s1[4], s1[5], s1[6], s1[7]};
+    poseidon2_air_generate_row(nc2_in, nc2_out);
+    for (int k = 0; k < CONF_ACTION_CM_LANES; k++)
+        cm_out[k] = nc_out(nc2_out, (size_t)k);
+}
+
+bool conf_action_air_generate(unsigned log_height, const uint64_t *value,
+                              const uint64_t *addr, const uint64_t *rcm,
                               size_t num_notes, uint64_t *trace_out) {
     if (log_height < CONF_ACTION_MIN_LOG_HEIGHT ||
         log_height > CONF_ACTION_MAX_LOG_HEIGHT)
@@ -35,9 +68,15 @@ bool conf_action_air_generate(unsigned log_height, const uint64_t *cm,
     const size_t num_blocks = rows / CONF_ACTION_K;
     /* E7: the last block MUST be dummy, so at most num_blocks-1 real notes. */
     if (num_notes + 1 > num_blocks) return false;
-    if (num_notes > 0 && !cm) return false;
+    if (num_notes > 0 && (!value || !addr || !rcm)) return false;
 
     for (size_t i = 0; i < rows * CONF_ACTION_WIDTH; i++) trace_out[i] = 0;
+
+    /* poseidon2 block of the all-zero input — the inert filler for non-φ=0 rows
+     * (a valid permutation so poseidon2_air_eval passes every row). */
+    uint64_t zero_in[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+    uint64_t zero_blk[P2AIR_NUM_COLS];
+    poseidon2_air_generate_row(zero_in, zero_blk);
 
     for (size_t r = 0; r < rows; r++) {
         uint64_t *row = trace_out + r * CONF_ACTION_WIDTH;
@@ -58,21 +97,42 @@ bool conf_action_air_generate(unsigned log_height, const uint64_t *cm,
         row[CONF_ACTION_W_OFF] = w;
         row[CONF_ACTION_INV_OFF] = inv;
 
-        /* S1b freeze-carry. Real blocks [0, num_notes): IS_REAL=1, this block's
-         * commitment loaded at φ=0 into cm_output, frozen block-wide in cm_carry.
-         * Dummy blocks (incl. the E7 last): IS_REAL=0, cm_output/cm_carry = 0. */
         int is_real = (blk < num_notes) ? 1 : 0;
         row[CONF_ACTION_ISREAL_OFF] = (uint64_t)is_real;
-        if (is_real) {
-            const uint64_t *bc = cm + blk * CONF_ACTION_CM_LANES;
-            for (unsigned j = 0; j < CONF_ACTION_CM_LANES; j++) {
-                /* cm_output written ONLY at the φ=0 row (E9′ single-row); the
-                 * carry holds it for the whole block. */
-                if (phi == 0) row[CONF_ACTION_CMOUT_OFF + j] = bc[j];
-                row[CONF_ACTION_CMCARRY_OFF + j] = bc[j];
-            }
+
+        /* Default: inert poseidon2 blocks (valid perm of zeros) so the always-on
+         * poseidon2 constraints hold on every row. */
+        memcpy(row + CONF_ACTION_NC1_OFF, zero_blk, sizeof zero_blk);
+        memcpy(row + CONF_ACTION_NC2_OFF, zero_blk, sizeof zero_blk);
+
+        if (is_real && phi == 0) {
+            /* S1c single-row note-commitment at the block-start φ=0 row. */
+            const uint64_t *nv = value + blk;
+            const uint64_t *na = addr + blk * CONF_ACTION_ADDR_LANES;
+            const uint64_t *nr = rcm + blk * CONF_ACTION_RCM_LANES;
+            row[CONF_ACTION_VALUE_OFF] = *nv;
+            for (unsigned j = 0; j < CONF_ACTION_ADDR_LANES; j++)
+                row[CONF_ACTION_ADDR_OFF + j] = na[j];
+            for (unsigned j = 0; j < CONF_ACTION_RCM_LANES; j++)
+                row[CONF_ACTION_RCM_OFF + j] = nr[j];
+
+            uint64_t cm[CONF_ACTION_CM_LANES];
+            note_commit_blocks(*nv, na, nr, row + CONF_ACTION_NC1_OFF,
+                               row + CONF_ACTION_NC2_OFF, cm);
+            /* cm_output := NC2.out (E9′); S1b carry freezes it block-wide. */
+            for (unsigned j = 0; j < CONF_ACTION_CM_LANES; j++)
+                row[CONF_ACTION_CMOUT_OFF + j] = cm[j];
         }
-        /* dummy rows already zeroed. */
+
+        /* S1b: cm_carry holds the block's commitment (0 for dummy). */
+        if (is_real) {
+            /* carry = the block's φ=0 cm_output. Recompute once per block at φ=0;
+             * for φ>0 rows copy from the block's φ=0 row already filled. */
+            const uint64_t *blk0 =
+                trace_out + (blk * CONF_ACTION_K) * CONF_ACTION_WIDTH;
+            for (unsigned j = 0; j < CONF_ACTION_CM_LANES; j++)
+                row[CONF_ACTION_CMCARRY_OFF + j] = blk0[CONF_ACTION_CMOUT_OFF + j];
+        }
     }
     return true;
 }
@@ -180,6 +240,50 @@ int conf_action_air_eval(const uint64_t *trace, size_t n_rows) {
                  * THIS row's φ=0 cm_output. */
                 if (!gold_fp_is_zero(mul(w_prev, sub(carry, out)))) viol++;
             }
+        }
+
+        /* ── S1c single-row note-commitment (E9′) ─────────────────────────────
+         * The two poseidon2 blocks are valid permutations on EVERY row (the
+         * always-on poseidon2 constraints; non-block-start rows hold inert perms,
+         * later phases will bind them). The NOTE-COMMITMENT binding fires only at
+         * a block-start φ=0 REAL row — detected via is_first_row (r==0) or the
+         * previous row's forced wrap (w_prev==1), the same rows E8′/E11 seed the
+         * carry. */
+        const uint64_t *nc1 = row + CONF_ACTION_NC1_OFF;
+        const uint64_t *nc2 = row + CONF_ACTION_NC2_OFF;
+        viol += poseidon2_air_eval_row(nc1);
+        viol += poseidon2_air_eval_row(nc2);
+
+        int block_start = (r == 0);
+        if (r > 0) {
+            const uint64_t *prev = trace + (r - 1) * CONF_ACTION_WIDTH;
+            if (prev[CONF_ACTION_W_OFF] == 1) block_start = 1;
+        }
+        if (block_start && row[CONF_ACTION_ISREAL_OFF] == 1) {
+            const uint64_t value = row[CONF_ACTION_VALUE_OFF];
+            const uint64_t *ad = row + CONF_ACTION_ADDR_OFF;
+            const uint64_t *rc = row + CONF_ACTION_RCM_OFF;
+
+            /* NC1.in = [value, addr0, addr1, addr2, 0,0,0,0] (all-zero IV). */
+            if (nc1[p2air_input_off(0)] != value) viol++;
+            if (nc1[p2air_input_off(1)] != ad[0]) viol++;
+            if (nc1[p2air_input_off(2)] != ad[1]) viol++;
+            if (nc1[p2air_input_off(3)] != ad[2]) viol++;
+            for (size_t k = 4; k < 8; k++)
+                if (nc1[p2air_input_off(k)] != 0) viol++;
+
+            /* NC2.in[0..4] = [addr3, rcm0, rcm1, DOMSEP_NOTE];
+             * NC2.in[4..8] = NC1.out[4..8] (capacity carry). */
+            if (nc2[p2air_input_off(0)] != ad[3]) viol++;
+            if (nc2[p2air_input_off(1)] != rc[0]) viol++;
+            if (nc2[p2air_input_off(2)] != rc[1]) viol++;
+            if (nc2[p2air_input_off(3)] != DNAC_DOMSEP_NOTE) viol++;
+            for (size_t k = 4; k < 8; k++)
+                if (nc2[p2air_input_off(k)] != nc_out(nc1, k)) viol++;
+
+            /* cm_output == NC2.out[0..4] (E9′ single-row). Then S1b freezes it. */
+            for (size_t j = 0; j < CONF_ACTION_CM_LANES; j++)
+                if (row[CONF_ACTION_CMOUT_OFF + j] != nc_out(nc2, j)) viol++;
         }
 
         /* E7 dummy-last: the final row is dummy ⇒ (with E6) the whole last block

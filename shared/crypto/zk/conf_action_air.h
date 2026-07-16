@@ -37,11 +37,24 @@
  *       E11 wrap-load     w_prev·(cm_carry_j−cm_output_j)=0           [seed next block]
  *     ⇒ at EVERY row, cm_carry == that block's φ=0 cm_output (in-trace same-row
  *       binding like B1 SEC-2; the cross-region read E5 lands in S2 with C3).
+ *   S1c (THIS increment): the single-row NOTE-COMMITMENT (E9′) — cm_output is now
+ *   the in-circuit S0 note_commit sponge over the note fields, so the value is
+ *   bound to cm by a collision-resistant HASH (closes the §4b mint/theft class).
+ *     columns (at the φ=0 row): value, addr_pub[4], rcm[2], and two poseidon2-air
+ *     blocks NC1/NC2 (P2AIR_NUM_COLS each; mirrors conf_root_air do_fold CA1/CA2).
+ *     construction (== S0 note_sponge_hash8, all-zero IV, DOMSEP as last element):
+ *       NC1.in = [value, addr0, addr1, addr2, 0, 0, 0, 0]
+ *       NC2.in = [addr3, rcm0, rcm1, DOMSEP_NOTE, NC1.out[4..8]]   (capacity carry)
+ *       cm_output = NC2.out[0..4]
+ *     constraints (gated on the block-start φ=0 REAL rows, r==0 ∨ w_prev==1):
+ *       poseidon2_air_eval(NC1)=poseidon2_air_eval(NC2)=0 (every row — valid perm),
+ *       NC1.in pins + NC1 capacity==0, NC2.in pins + NC2 capacity==NC1.out[4..8],
+ *       DOMSEP_NOTE pin, cm_output == NC2.out[0..4]. The value cell is same-row
+ *       (SEC-2) — bound to the balance AMOUNT in S1d.
  *   Later increments EXTEND this same trace (one row = one shared witness):
- *     S1c single-row note-commitment (E9′, binds cm_output to the S0 note_commit
- *     sponge over value/addr_pub/rcm), S1d balance once-per-block (E10′/E14) +
- *     boundary public-bind + role selectors per block (E17) + nk/pos/addr carries
- *     (E15), S1e constraint-eval fold + degree/num_qc, S1f prover + self-verify.
+ *     S1d balance once-per-block (E10′/E14) + boundary public-bind + role selectors
+ *     per block (E17) + nk/pos/addr carries (E15), S1e constraint-eval fold +
+ *     degree/num_qc, S1f prover + self-verify.
  *
  * ── Block structure ────────────────────────────────────────────────────────
  * K = 32 rows per note-block (power of two so 2^k tiling + the E7 dummy-last hold;
@@ -66,6 +79,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "poseidon2_air_cols.h" /* P2AIR_NUM_COLS, p2air offsets (S1c) */
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -88,7 +103,17 @@ extern "C" {
 #define CONF_ACTION_ISREAL_OFF  (CONF_ACTION_INV_OFF + 1)            /* per-block real/dummy */
 #define CONF_ACTION_CMOUT_OFF   (CONF_ACTION_ISREAL_OFF + 1)         /* cm_output[4] (φ=0 note cm) */
 #define CONF_ACTION_CMCARRY_OFF (CONF_ACTION_CMOUT_OFF + CONF_ACTION_CM_LANES) /* cm_carry[4] frozen */
-#define CONF_ACTION_WIDTH       (CONF_ACTION_CMCARRY_OFF + CONF_ACTION_CM_LANES) /* S1b WIDTH = 17 */
+/* ── S1c single-row note-commitment block (E9′) ── */
+#define CONF_ACTION_VALUE_OFF   (CONF_ACTION_CMCARRY_OFF + CONF_ACTION_CM_LANES) /* note value */
+#define CONF_ACTION_ADDR_OFF    (CONF_ACTION_VALUE_OFF + 1)          /* addr_pub[4] */
+#define CONF_ACTION_RCM_OFF     (CONF_ACTION_ADDR_OFF + 4)           /* rcm[2] */
+#define CONF_ACTION_NC1_OFF     (CONF_ACTION_RCM_OFF + 2)            /* poseidon2 block 1 */
+#define CONF_ACTION_NC2_OFF     (CONF_ACTION_NC1_OFF + P2AIR_NUM_COLS) /* poseidon2 block 2 */
+#define CONF_ACTION_WIDTH       (CONF_ACTION_NC2_OFF + P2AIR_NUM_COLS) /* S1c WIDTH = 384 */
+
+/* addr_pub / rcm widths (S0 note_commit layout). */
+#define CONF_ACTION_ADDR_LANES  4
+#define CONF_ACTION_RCM_LANES   2
 
 /** Max log2(height). H = 2^log_height, log_height ∈ [LOG_K, this]. The shielded
  *  cap is H = 1024 = 2^10 (dm-c1 §4d.8; STARK_PROVER_MAX_HEIGHT). */
@@ -96,20 +121,25 @@ extern "C" {
 #define CONF_ACTION_MAX_LOG_HEIGHT 10
 
 /**
- * @brief Honest-prover trace generation for the S1a+S1b skeleton.
- *        Fills the phase counter (φ cycling 0..K−1, bits, w, inv) and the
- *        freeze-carry block: the first `num_notes` K-row blocks are REAL, each
- *        carrying commitment `cm[i][0..CM_LANES)`; remaining blocks (incl. the
- *        mandatory dummy-last, E7) are dummy (IS_REAL=0, carry 0). cm_output is
- *        written at each real block's φ=0 row and cm_carry is frozen block-wide.
+ * @brief Honest-prover trace generation for the S1a+S1b+S1c skeleton.
+ *        Fills the phase counter, the freeze-carry block, AND the single-row
+ *        note-commitment (E9′): each of the first `num_notes` REAL blocks carries
+ *        a note (value, addr_pub[4], rcm[2]); its commitment cm = note_commit
+ *        sponge is COMPUTED IN-CIRCUIT (two poseidon2 blocks NC1/NC2 at the φ=0
+ *        row) and equals the S0 note_commit() digest. cm_output := NC2 output at
+ *        φ=0; cm_carry freezes it block-wide (S1b). Remaining blocks (incl. the
+ *        mandatory dummy-last, E7) are dummy. The poseidon2 blocks at non-φ=0
+ *        rows hold a valid permutation of zeros (inert; later phases use them).
  * @param log_height  trace height = 2^log_height, ∈ [LOG_K, MAX_LOG_HEIGHT].
- * @param cm          num_notes × CONF_ACTION_CM_LANES canonical commitments.
- * @param num_notes   number of REAL note-blocks; MUST be ≤ (H/K − 1) so the last
- *                    block is dummy (E7). 0 is allowed (all-dummy trace).
+ * @param value       num_notes note values (canonical; caller ensures < 2^52).
+ * @param addr        num_notes × CONF_ACTION_ADDR_LANES recipient addresses.
+ * @param rcm         num_notes × CONF_ACTION_RCM_LANES commitment randomness.
+ * @param num_notes   number of REAL note-blocks; MUST be ≤ (H/K − 1) (E7).
  * @param trace_out   caller buffer of (2^log_height * CONF_ACTION_WIDTH) uint64.
  * @return true on success; false on a parameter error.
  */
-bool conf_action_air_generate(unsigned log_height, const uint64_t *cm,
+bool conf_action_air_generate(unsigned log_height, const uint64_t *value,
+                              const uint64_t *addr, const uint64_t *rcm,
                               size_t num_notes, uint64_t *trace_out);
 
 /**

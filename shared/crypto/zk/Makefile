@@ -159,9 +159,11 @@ $(BUILD)/test_shielded_domsep: tests/test_shielded_domsep.c field_goldilocks.c s
 $(BUILD)/test_shielded_fri_params: tests/test_shielded_fri_params.c shielded_fri_params.h fri_proof_codec.h $(FRI_PROOF_CODEC_STACK) | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) tests/test_shielded_fri_params.c $(FRI_PROOF_CODEC_STACK) $(FRI_VERIFIER_LDADD) -o $@
 
-# S1a dual-mode C1 — forced phase-counter construction gate (is_zk=0).
-$(BUILD)/test_conf_action_air: tests/test_conf_action_air.c conf_action_air.c field_goldilocks.c conf_action_air.h field_goldilocks.h | $(BUILD)
-	$(CC) $(CFLAGS) $(INCLUDES) tests/test_conf_action_air.c conf_action_air.c field_goldilocks.c -o $@
+# S1a/S1b/S1c dual-mode C1 — phase-counter + freeze-carry + note-commitment
+# (is_zk=0 construction gate). S1c composes poseidon2-air + the S0 note_commit
+# sponge (cm byte-match) → links the poseidon2 + sponge stack.
+$(BUILD)/test_conf_action_air: tests/test_conf_action_air.c conf_action_air.c note_commit.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c poseidon2_goldilocks.c field_goldilocks.c conf_action_air.h note_commit.h shielded_domsep.h poseidon2_air.h poseidon2_air_cols.h field_goldilocks.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_conf_action_air.c conf_action_air.c note_commit.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c poseidon2_goldilocks.c field_goldilocks.c -o $@
 
 # FP1c.1 — Poseidon2 AIR column-layout binding contract (Poseidon2Cols<8,7,1,4,22>,
 # Plonky3 poseidon2-air/src/columns.rs @ 82cfad73). Structural gate.
@@ -915,8 +917,8 @@ test: all
 	@$(BUILD)/test_note_commit tools/vectors/note_commit_sponge.json
 	@echo
 	@echo "============================================================"
-	@echo "S1a+S1b dual-mode C1 — phase-counter + freeze-carry binding (K=32)"
-	@echo "  honest accepted + φ-deviations + freeze-carry attacks rejected (is_zk=0)"
+	@echo "S1a+S1b+S1c dual-mode C1 — phase-counter + freeze-carry + note-commitment"
+	@echo "  in-circuit cm byte-matches S0 note_commit; §4b MINT + all deviations rejected"
 	@echo "============================================================"
 	@$(BUILD)/test_conf_action_air
 	@echo
