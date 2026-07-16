@@ -215,8 +215,15 @@
       applied (the leaf/internal-separation claim moved from "C3 discharges it" to
       "S4 composition discharges it" — shielded_domsep.h + note_commit.h corrected).
     - **S3 DONE — C4 nullifier AIR** (`conf_nullifier_air.{c,h}`): ρ=CRH(cm,pos),
-      nf=PRF(nk,ρ), both S0 2-perm sponges, distinct DOMSEPs. Honest + Faerie-Gold/
-      key-binding soundness + 9 attacks rejected. WIDTH=730. Red-team wmxbspk01.
+      nf=PRF(nk,ρ), both S0 2-perm sponges, distinct DOMSEPs (G5). nk as first
+      message element (Orchard §5.4.1.10). Honest + Faerie-Gold/key-binding
+      soundness + 12 attacks rejected. WIDTH=730. **10-agent red-team (wmxbspk01):
+      0 CRITICAL, MERGE-READY.** HIGH MF-1 FIXED in-commit: ρ-input now binds the
+      CM/POS trace CELLS (not just eval params) mirroring the nk pin, so S4 wiring
+      C1's cm_carry/pos_carry into those cells forces the nullifier over the spent
+      note (closes a composition-time Faerie-Gold). +symmetric cell-divergence KATs.
+      MF-2 (routing: set-check owner = parent §1.8/S4 not C6) + MF-3 (canonical-pos
+      precondition) doc-fixed.
     - **⭐ FULL SHIELDED SPEND CIRCUIT built as construction gates** — C1 (S1a-d) +
       C3 + C4, each red-teamed. **S4 COMPOSITION OBLIGATIONS (record, must hold when
       composing):** (1) pin D as compile-time/phase-schedule constant (no ungated
