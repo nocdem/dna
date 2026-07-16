@@ -318,8 +318,32 @@
       (by the byte-match, as designed): `FRI_LEAF_CAP` 5248→6656** — the 817-wide
       conf_action input row (6536 B) overflowed the cap sized for conf_root's 618
       → `DNAC_FRI_ERR_INPUT_ERROR`. Full `make test` GREEN, 0 warnings; conf_root
-      prover (incl. salted) unaffected. **NEXT: S1f** 10+ agent red-team on the
-      composed real-STARK C1 → then S4 aggregate (C1+C3+C4).
+      prover (incl. salted) unaffected.
+    - **🎯 S1f DONE (2026-07-17) — 12-agent red-team: C1 (S1e) MERGE-READY, 0
+      CRITICAL / 0 HIGH.** 30 agents (12 finders → adversarial verify → synth),
+      52 findings → 6 CONFIRMED (3 LOW, 3 INFO), 0 reachable MINT/THEFT/double-
+      spend. Report `dnac/docs/plans/2026-07-17-s1e-c1-realstark-redteam-report.md`
+      (local). **F1 FIXED (the one true code defect):** `conf_action_air_generate`
+      now REJECTS non-canonical caller lanes (addr/rcm/pos/nk/ak ≥ p, fail-close)
+      — a raw non-canonical lane would diverge from the field-reduced poseidon
+      input, breaking the C↔Rust trace byte-identity S1e rests on. Regression KAT
+      `test_prover_action` T8 (4/4). **F2/F4 guardrail comments added:**
+      `dnac_action_prover_proof_verify` is SELF-VERIFY/KAT-ONLY — NOT a consensus
+      verifier (0 publics, no membership/nullifier/tx-binding → free-floating
+      existence proof; phantom-input & replay open until S4+S5); A_NUM_QC=8 is
+      oracle-measured, any degree≥5 edit MUST re-run the oracle gate.
+      **TRACKED (not S1e-scope):** F3 — ak/nk are ONE Goldilocks lane each (~2^64
+      under Grover); widen to multi-lane before the pool is called PQ for spend
+      auth (S4/design). F5 (INFO) — production draws are OS-entropy (non-zero
+      w.h.p.); an all-zero KAT stream loses hiding (privacy, not soundness).
+      **S4/S5 OBLIGATIONS (red-team-confirmed anti-mint/theft is HERE, not in C1
+      alone):** S4 must add C3 tree-membership + C4 nullifier over the frozen
+      carries (a phantom input balances a real output until then); S5 must add ≥1
+      public value (commitment/nullifier/tx-hash) absorbed into the transcript so
+      the proof binds to a transaction (else replayable). **NEXT: S4** aggregate
+      C1+C3+C4 — needs a 3-section design doc (Determinism / Threat Model /
+      Red-team) before code; C3/C4 are currently standalone is_zk=0 gates that S4
+      embeds as phases inside the K=32 block consuming cm_carry/pos_carry/nk_carry.
     - **S4 NEXT after S1e** — aggregate C1+C3+C4 (one Action AIR/TX) with the
       recorded composition obligations (leaf==cm_carry, pin D, nullify iff IS_INPUT).
   - **THEN:** S2 C3 membership (+ M1/M2 goals, + E5 point-read reader), S3 C4

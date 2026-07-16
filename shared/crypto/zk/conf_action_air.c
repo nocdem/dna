@@ -95,13 +95,31 @@ bool conf_action_air_generate(unsigned log_height, const uint64_t *value,
         (!value || !addr || !rcm || !roles || !pos || !nk || !ak))
         return false;
 
-    /* Honest-prover preconditions: every value < 2^52, roles valid, and the
-     * signed balance conserves (Σin = Σout + fee) so the last-row BAL=0 holds. */
+    /* Honest-prover preconditions: every value < 2^52, roles valid, all
+     * caller lanes canonical (< p), and the signed balance conserves
+     * (Σin = Σout + fee) so the last-row BAL=0 holds. */
     {
         gold_fp_t bal = gold_fp_zero();
         for (size_t i = 0; i < num_notes; i++) {
             if (value[i] >= ((uint64_t)1 << CONF_ACTION_VALUE_BITS)) return false;
             if (roles[i] > CONF_ACTION_ROLE_FEE) return false;
+            /* Reject NON-CANONICAL caller lanes (red-team S1f F1, fail-close):
+             * generate stores addr/rcm/pos/nk/ak RAW into their cells, but the
+             * poseidon2 blocks (and the Rust oracle trace builder) store them
+             * FIELD-REDUCED. A lane ≥ p would make the raw cell diverge from the
+             * reduced poseidon input — breaking the C↔Rust trace byte-identity
+             * S1e rests on, and the construction-gate self-consistency. Bounding
+             * every lane < p keeps generate deterministic and divergence-free.
+             * (value < 2^52 already implies < p.) */
+            for (unsigned j = 0; j < CONF_ACTION_ADDR_LANES; j++)
+                if (addr[i * CONF_ACTION_ADDR_LANES + j] >= GOLDILOCKS_P)
+                    return false;
+            for (unsigned j = 0; j < CONF_ACTION_RCM_LANES; j++)
+                if (rcm[i * CONF_ACTION_RCM_LANES + j] >= GOLDILOCKS_P)
+                    return false;
+            if (pos[i] >= GOLDILOCKS_P) return false;
+            if (nk[i] >= GOLDILOCKS_P) return false;
+            if (ak[i] >= GOLDILOCKS_P) return false;
             gold_fp_t sign = (roles[i] == CONF_ACTION_ROLE_INPUT)
                                  ? gold_fp_one()
                                  : gold_fp_neg(gold_fp_one());

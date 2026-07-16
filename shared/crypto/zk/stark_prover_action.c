@@ -29,7 +29,13 @@
 #define A_LOG_FINAL_POLY_LEN 2u
 #define A_MAX_LOG_ARITY 1u
 #define A_NUM_QUERIES 2u
-#define A_NUM_QC 8u          /* degree-3 AIR at is_zk=1; oracle-measured */
+/* A_NUM_QC is HARDCODED to the oracle-MEASURED value (dump_conf_action_air_zk
+ * STOP-gate == 8). As-built max degree is 3 → num_qc=8 is correct through
+ * degree 4 (breaks at 5). The C prove + self-verify use the same 8 on both
+ * sides, so they can NOT catch a future degree≥5 constraint edit — such an edit
+ * MUST be paired with a re-run of the oracle num_qc byte-match gate (red-team
+ * S1f F4). Never trust C self-verify alone for degree. */
+#define A_NUM_QC 8u
 #define A_LOG_NUM_QC 2u
 #define A_NUM_RANDOM 4u
 #define A_W ((size_t)CONF_ACTION_WIDTH)   /* 813 */
@@ -195,6 +201,15 @@ static void build_coms(dnac_action_prover_proof_t *p, gold_fp2_t zeta,
     p->coms[2].num_matrices = A_NUM_QC;
 }
 
+/* ⚠ SELF-VERIFY / KAT ONLY — NOT A CONSENSUS VERIFIER (red-team S1f F2).
+ * A passing C1 proof is a FREE-FLOATING existence proof: C1 has 0 public values
+ * and no membership/nullifier/tx-binding constraints, so it proves ONLY internal
+ * consistency (a conserving, range-valid, self-authorized action EXISTS). It does
+ * NOT prove the input notes exist/are-owned/are-unspent (C3 membership + C4
+ * nullifier — S4) NOR bind the proof to a transaction (tx_binding — S5): a
+ * phantom input can balance a real output, and the proof is replayable. Do NOT
+ * promote this into any consensus path until S4 + S5 land (≥1 commitment /
+ * nullifier / tx-hash as a public value, absorbed into the transcript). */
 dnac_fri_status_t dnac_action_prover_proof_verify(
     const dnac_action_prover_proof_t *cp) {
     dnac_action_prover_proof_t *p = (dnac_action_prover_proof_t *)cp;

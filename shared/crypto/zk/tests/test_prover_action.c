@@ -248,7 +248,14 @@ int main(int argc,char **argv){
         ci=inst; ci.value=v4; ci.addr=a4; ci.rcm=r4; ci.roles=ro4;
         ci.pos=p4; ci.nk=nk4; ci.ak=ak4; ci.num_notes=4; /* +1 dummy > 4 blocks */
         if(dnac_action_prover_prove(&ci,&bad)!=DNAC_PROVER_ERR_RANGE)ok=0;
-        printf("  T8 (S1e.5) cheat instances fail to prove (3/3 RANGE)  %s\n",
+        /* (d) NON-CANONICAL OUTPUT addr lane (== p) — red-team S1f F1 fix: the
+         * raw ADDR cell would diverge from the reduced poseidon input; generate
+         * fail-closes so the C<->Rust trace byte-identity can never break. */
+        const uint64_t a_nc[3*4]={ 0,0,0,0, GOLDILOCKS_P,0xAA02,0xAA03,0xAA04,
+                                   0xFEE1,0xFEE2,0xFEE3,0xFEE4 };
+        ci=inst; ci.addr=a_nc;
+        if(dnac_action_prover_prove(&ci,&bad)!=DNAC_PROVER_ERR_RANGE)ok=0;
+        printf("  T8 (S1e.5+F1) cheat instances fail to prove (4/4 RANGE) %s\n",
                ok?"PASS":"FAIL");
         if(!ok)fails++;
     }
