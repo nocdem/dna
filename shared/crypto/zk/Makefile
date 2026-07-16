@@ -94,6 +94,7 @@ TESTS = \
     $(BUILD)/test_stark_verify_constraints \
     $(BUILD)/test_range_proof_air \
     $(BUILD)/test_conf_root_verify \
+    $(BUILD)/test_conf_action_verify \
     $(BUILD)/test_prover_conf \
     $(BUILD)/test_prover_salted_commit \
     $(BUILD)/test_zk_entropy \
@@ -419,8 +420,11 @@ $(BUILD)/test_stark_verify_constraints: tests/test_stark_verify_constraints.c st
 $(BUILD)/test_range_proof_air: tests/test_range_proof_air.c stark_constraints.h stark_constraints.c field_goldilocks.h field_goldilocks.c range_air.h | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) tests/test_range_proof_air.c stark_constraints.c field_goldilocks.c -o $@
 
-$(BUILD)/test_conf_root_verify: tests/test_conf_root_verify.c stark_constraints.h stark_constraints.c conf_root_fold.h conf_root_fold.c poseidon2_goldilocks.h poseidon2_goldilocks.c field_goldilocks.h field_goldilocks.c | $(BUILD)
-	$(CC) $(CFLAGS) $(INCLUDES) tests/test_conf_root_verify.c stark_constraints.c conf_root_fold.c poseidon2_goldilocks.c field_goldilocks.c -o $@
+$(BUILD)/test_conf_root_verify: tests/test_conf_root_verify.c stark_constraints.h stark_constraints.c conf_root_fold.h conf_root_fold.c poseidon2_fold.h poseidon2_fold.c poseidon2_goldilocks.h poseidon2_goldilocks.c field_goldilocks.h field_goldilocks.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_conf_root_verify.c stark_constraints.c conf_root_fold.c poseidon2_fold.c poseidon2_goldilocks.c field_goldilocks.c -o $@
+
+$(BUILD)/test_conf_action_verify: tests/test_conf_action_verify.c stark_constraints.h stark_constraints.c conf_action_fold.h conf_action_fold.c conf_action_air.h poseidon2_fold.h poseidon2_fold.c poseidon2_goldilocks.h poseidon2_goldilocks.c field_goldilocks.h field_goldilocks.c shielded_domsep.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_conf_action_verify.c stark_constraints.c conf_action_fold.c poseidon2_fold.c poseidon2_goldilocks.c field_goldilocks.c -o $@
 
 CONF_AIR_STACK = conf_root_air.c conf_commit_air.c conf_balance_air.c conf_txbind.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c poseidon2_goldilocks.c
 
@@ -430,8 +434,8 @@ CONF_AIR_STACK = conf_root_air.c conf_commit_air.c conf_balance_air.c conf_txbin
 $(BUILD)/test_zk_entropy: tests/test_zk_entropy.c zk_entropy.h zk_entropy.c field_goldilocks.h field_goldilocks.c | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) tests/test_zk_entropy.c zk_entropy.c field_goldilocks.c -o $@
 
-$(BUILD)/test_prover_conf: tests/test_prover_conf.c stark_prover_conf.h stark_prover_conf.c conf_root_fold.h conf_root_fold.c stark_constraints.c zk_entropy.c $(CONF_AIR_STACK) $(PROVER_STACK) fri_verifier.c stark_priming.c | $(BUILD)
-	$(CC) $(CFLAGS) $(INCLUDES) tests/test_prover_conf.c stark_prover_conf.c conf_root_fold.c stark_constraints.c zk_entropy.c $(CONF_AIR_STACK) $(PROVER_STACK) fri_verifier.c stark_priming.c $(SHA3_SRC) $(LDLIBS) -o $@
+$(BUILD)/test_prover_conf: tests/test_prover_conf.c stark_prover_conf.h stark_prover_conf.c conf_root_fold.h conf_root_fold.c poseidon2_fold.h poseidon2_fold.c stark_constraints.c zk_entropy.c $(CONF_AIR_STACK) $(PROVER_STACK) fri_verifier.c stark_priming.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_prover_conf.c stark_prover_conf.c conf_root_fold.c poseidon2_fold.c stark_constraints.c zk_entropy.c $(CONF_AIR_STACK) $(PROVER_STACK) fri_verifier.c stark_priming.c $(SHA3_SRC) $(LDLIBS) -o $@
 
 $(BUILD)/test_prover_salted_commit: tests/test_prover_salted_commit.c stark_prover.h $(CONF_AIR_STACK) $(PROVER_STACK) | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) tests/test_prover_salted_commit.c $(CONF_AIR_STACK) $(PROVER_STACK) $(SHA3_SRC) $(LDLIBS) -o $@
@@ -932,6 +936,12 @@ test: all
 	@echo "  in-circuit cm byte-matches S0; §4b MINT + THEFT + non-conservation + all rejected"
 	@echo "============================================================"
 	@$(BUILD)/test_conf_action_air
+	@echo
+	@echo "============================================================"
+	@echo "S1e.3 dual-mode C1 fold — fp2 verifier-fold vs REAL is_zk=1 proof"
+	@echo "  folded*inv_van == quotient(zeta) (width 813, num_qc=8) + negatives"
+	@echo "============================================================"
+	@$(BUILD)/test_conf_action_verify tools/vectors/conf_action_air_zk.json
 	@echo
 	@echo "============================================================"
 	@echo "S2 dual-mode C3 — Poseidon2 Merkle-path membership (is_zk=0)"
