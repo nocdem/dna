@@ -58,7 +58,8 @@ static void note_commit_blocks(uint64_t value, const uint64_t addr[4],
 
 bool conf_action_air_generate(unsigned log_height, const uint64_t *value,
                               const uint64_t *addr, const uint64_t *rcm,
-                              size_t num_notes, uint64_t *trace_out) {
+                              const uint8_t *roles, size_t num_notes,
+                              uint64_t *trace_out) {
     if (log_height < CONF_ACTION_MIN_LOG_HEIGHT ||
         log_height > CONF_ACTION_MAX_LOG_HEIGHT)
         return false;
@@ -68,7 +69,22 @@ bool conf_action_air_generate(unsigned log_height, const uint64_t *value,
     const size_t num_blocks = rows / CONF_ACTION_K;
     /* E7: the last block MUST be dummy, so at most num_blocks-1 real notes. */
     if (num_notes + 1 > num_blocks) return false;
-    if (num_notes > 0 && (!value || !addr || !rcm)) return false;
+    if (num_notes > 0 && (!value || !addr || !rcm || !roles)) return false;
+
+    /* Honest-prover preconditions: every value < 2^52, roles valid, and the
+     * signed balance conserves (Σin = Σout + fee) so the last-row BAL=0 holds. */
+    {
+        gold_fp_t bal = gold_fp_zero();
+        for (size_t i = 0; i < num_notes; i++) {
+            if (value[i] >= ((uint64_t)1 << CONF_ACTION_VALUE_BITS)) return false;
+            if (roles[i] > CONF_ACTION_ROLE_FEE) return false;
+            gold_fp_t sign = (roles[i] == CONF_ACTION_ROLE_INPUT)
+                                 ? gold_fp_one()
+                                 : gold_fp_neg(gold_fp_one());
+            bal = add(bal, mul(sign, fp(value[i])));
+        }
+        if (!gold_fp_is_zero(bal)) return false; /* non-conserving */
+    }
 
     for (size_t i = 0; i < rows * CONF_ACTION_WIDTH; i++) trace_out[i] = 0;
 
@@ -77,6 +93,8 @@ bool conf_action_air_generate(unsigned log_height, const uint64_t *value,
     uint64_t zero_in[8] = {0, 0, 0, 0, 0, 0, 0, 0};
     uint64_t zero_blk[P2AIR_NUM_COLS];
     poseidon2_air_generate_row(zero_in, zero_blk);
+
+    gold_fp_t bal_acc = gold_fp_zero(); /* running signed balance (S1d) */
 
     for (size_t r = 0; r < rows; r++) {
         uint64_t *row = trace_out + r * CONF_ACTION_WIDTH;
@@ -133,6 +151,43 @@ bool conf_action_air_generate(unsigned log_height, const uint64_t *value,
             for (unsigned j = 0; j < CONF_ACTION_CM_LANES; j++)
                 row[CONF_ACTION_CMCARRY_OFF + j] = blk0[CONF_ACTION_CMOUT_OFF + j];
         }
+
+        /* ── S1d balance layer ─────────────────────────────────────────────── */
+        /* phi_is0 = [φ==0] via is_zero(φ). inv0 = φ^{-1} when φ≠0, else 0. */
+        uint64_t phi_is0 = (phi == 0) ? 1u : 0u;
+        row[CONF_ACTION_PHI0_OFF] = phi_is0;
+        row[CONF_ACTION_INV0_OFF] =
+            (phi == 0) ? 0 : gold_fp_to_u64(gold_fp_inv(fp(phi)));
+
+        /* Role selectors: per-BLOCK constant (set on EVERY row of a real block). */
+        uint64_t is_in = 0, is_out = 0, is_fee = 0;
+        if (is_real) {
+            switch (roles[blk]) {
+                case CONF_ACTION_ROLE_INPUT:  is_in = 1;  break;
+                case CONF_ACTION_ROLE_OUTPUT: is_out = 1; break;
+                default:                      is_fee = 1; break; /* FEE */
+            }
+        }
+        row[CONF_ACTION_ISIN_OFF] = is_in;
+        row[CONF_ACTION_ISOUT_OFF] = is_out;
+        row[CONF_ACTION_ISFEE_OFF] = is_fee;
+
+        /* Value bit-decomposition (52-bit range) — only the φ=0 row carries a
+         * value; other rows have VALUE=0 ⇒ all-zero bits (recomp 0==0). */
+        uint64_t vval = row[CONF_ACTION_VALUE_OFF];
+        for (unsigned j = 0; j < CONF_ACTION_VALUE_BITS; j++)
+            row[CONF_ACTION_VBITS_OFF + j] = (vval >> j) & 1u;
+
+        /* E10′ once-per-block contribution + E14 bal_coeff (signed). */
+        uint64_t bal_contrib = phi_is0 & (uint64_t)is_real;
+        row[CONF_ACTION_BALCON_OFF] = bal_contrib;
+        gold_fp_t sign = sub(fp(is_in), add(fp(is_out), fp(is_fee)));
+        gold_fp_t bal_coeff = mul(fp(bal_contrib), sign);
+        row[CONF_ACTION_BALCOEF_OFF] = gold_fp_to_u64(bal_coeff);
+
+        /* BAL accumulator: += bal_coeff·value (fires once/block at φ=0). */
+        bal_acc = add(bal_acc, mul(bal_coeff, fp(vval)));
+        row[CONF_ACTION_BAL_OFF] = gold_fp_to_u64(bal_acc);
     }
     return true;
 }
@@ -148,6 +203,12 @@ int conf_action_air_eval(const uint64_t *trace, size_t n_rows) {
     pow2[0] = gold_fp_one();
     for (unsigned i = 1; i < CONF_ACTION_LOG_K; i++)
         pow2[i] = add(pow2[i - 1], pow2[i - 1]);
+
+    /* Precompute 2^j for j ∈ [0, VALUE_BITS) (S1d range gate). */
+    gold_fp_t pow2v[CONF_ACTION_VALUE_BITS];
+    pow2v[0] = gold_fp_one();
+    for (unsigned j = 1; j < CONF_ACTION_VALUE_BITS; j++)
+        pow2v[j] = add(pow2v[j - 1], pow2v[j - 1]);
 
     const gold_fp_t one = gold_fp_one();
 
@@ -284,6 +345,69 @@ int conf_action_air_eval(const uint64_t *trace, size_t n_rows) {
             /* cm_output == NC2.out[0..4] (E9′ single-row). Then S1b freezes it. */
             for (size_t j = 0; j < CONF_ACTION_CM_LANES; j++)
                 if (row[CONF_ACTION_CMOUT_OFF + j] != nc_out(nc2, j)) viol++;
+        }
+
+        /* ── S1d balance conservation ─────────────────────────────────────── */
+        gold_fp_t value = fp(row[CONF_ACTION_VALUE_OFF]);
+        gold_fp_t is_in = fp(row[CONF_ACTION_ISIN_OFF]);
+        gold_fp_t is_out = fp(row[CONF_ACTION_ISOUT_OFF]);
+        gold_fp_t is_fee = fp(row[CONF_ACTION_ISFEE_OFF]);
+        gold_fp_t phi_is0 = fp(row[CONF_ACTION_PHI0_OFF]);
+        gold_fp_t inv0 = fp(row[CONF_ACTION_INV0_OFF]);
+        gold_fp_t balcon = fp(row[CONF_ACTION_BALCON_OFF]);
+        gold_fp_t balcoef = fp(row[CONF_ACTION_BALCOEF_OFF]);
+        gold_fp_t bal = fp(row[CONF_ACTION_BAL_OFF]);
+
+        /* RANGE: value = Σ bits_j·2^j (52 bits) ⇒ value < 2^52; recomp == value.
+         * (Non-φ=0 rows carry value 0 with all-zero bits ⇒ 0 == 0.) */
+        gold_fp_t vrecomp = gold_fp_zero();
+        for (unsigned j = 0; j < CONF_ACTION_VALUE_BITS; j++) {
+            gold_fp_t bit = fp(row[CONF_ACTION_VBITS_OFF + j]);
+            if (!gold_fp_is_zero(bool_res(bit))) viol++;
+            vrecomp = add(vrecomp, mul(bit, pow2v[j]));
+        }
+        if (!gold_fp_eq(vrecomp, value)) viol++;
+
+        /* ROLE: booleanity + exactly one role per real block (sum == IS_REAL). */
+        if (!gold_fp_is_zero(bool_res(is_in))) viol++;
+        if (!gold_fp_is_zero(bool_res(is_out))) viol++;
+        if (!gold_fp_is_zero(bool_res(is_fee))) viol++;
+        if (!gold_fp_eq(add(add(is_in, is_out), is_fee), is_real)) viol++;
+
+        /* PHI0: is_zero(φ): φ·inv0 = 1−phi_is0, φ·phi_is0 = 0, phi_is0²=phi_is0. */
+        if (!gold_fp_is_zero(bool_res(phi_is0))) viol++;
+        if (!gold_fp_eq(mul(phi, inv0), sub(one, phi_is0))) viol++;
+        if (!gold_fp_is_zero(mul(phi, phi_is0))) viol++;
+
+        /* E10′ IS_BAL_CONTRIB = phi_is0·IS_REAL (fires once/block at φ=0). */
+        if (!gold_fp_eq(balcon, mul(phi_is0, is_real))) viol++;
+
+        /* E14 bal_coeff = IS_BAL_CONTRIB·(IS_INPUT − IS_OUTPUT − IS_FEE). */
+        gold_fp_t sign = sub(is_in, add(is_out, is_fee));
+        if (!gold_fp_eq(balcoef, mul(balcon, sign))) viol++;
+
+        /* BAL accumulator: first row = its own contribution; transition adds this
+         * row's; last row = 0 ⇒ Σin = Σout + fee over the integers (each value
+         * <2^52, ≤ H/K blocks ⇒ |Σ| < 2^52·32 = 2^57 ≪ p, no field wrap). */
+        gold_fp_t contrib = mul(balcoef, value);
+        if (r == 0) {
+            if (!gold_fp_eq(bal, contrib)) viol++;
+        } else {
+            gold_fp_t bal_prev = fp(trace[(r - 1) * CONF_ACTION_WIDTH + CONF_ACTION_BAL_OFF]);
+            if (!gold_fp_eq(bal, add(bal_prev, contrib))) viol++;
+        }
+        if (r == n_rows - 1) {
+            if (!gold_fp_is_zero(bal)) viol++;
+        }
+
+        /* E17 role selectors per-block const (non-wrap transition). */
+        if (r > 0) {
+            const uint64_t *prev = trace + (r - 1) * CONF_ACTION_WIDTH;
+            gold_fp_t w_prev = fp(prev[CONF_ACTION_W_OFF]);
+            gold_fp_t g = sub(one, w_prev);
+            if (!gold_fp_is_zero(mul(g, sub(is_in, fp(prev[CONF_ACTION_ISIN_OFF]))))) viol++;
+            if (!gold_fp_is_zero(mul(g, sub(is_out, fp(prev[CONF_ACTION_ISOUT_OFF]))))) viol++;
+            if (!gold_fp_is_zero(mul(g, sub(is_fee, fp(prev[CONF_ACTION_ISFEE_OFF]))))) viol++;
         }
 
         /* E7 dummy-last: the final row is dummy ⇒ (with E6) the whole last block

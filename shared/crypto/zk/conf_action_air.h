@@ -51,10 +51,26 @@
  *       NC1.in pins + NC1 capacity==0, NC2.in pins + NC2 capacity==NC1.out[4..8],
  *       DOMSEP_NOTE pin, cm_output == NC2.out[0..4]. The value cell is same-row
  *       (SEC-2) — bound to the balance AMOUNT in S1d.
- *   Later increments EXTEND this same trace (one row = one shared witness):
- *     S1d balance once-per-block (E10′/E14) + boundary public-bind + role selectors
- *     per block (E17) + nk/pos/addr carries (E15), S1e constraint-eval fold +
- *     degree/num_qc, S1f prover + self-verify.
+ *   S1d (THIS increment): the BALANCE-CONSERVATION layer — the money mint barrier.
+ *     columns: value bits[52] (range), role selectors IS_INPUT/IS_OUTPUT/IS_FEE,
+ *              phi_is0 (is_zero(φ) indicator) + inv0, IS_BAL_CONTRIB, bal_coeff,
+ *              BAL (running signed balance).
+ *     constraints (all degree ≤ 2):
+ *       RANGE  value = Σ bits_j·2^j (52 bits) ⇒ value < 2^52; recomp == value
+ *       ROLE   IS_* boolean; IS_INPUT+IS_OUTPUT+IS_FEE == IS_REAL (one role/real
+ *              block); E17 each role per-block const (1−w_prev)·(role−role_prev)=0
+ *       PHI0   is_zero(φ): φ·inv0=1−phi_is0, φ·phi_is0=0, phi_is0²=phi_is0
+ *       E10′   IS_BAL_CONTRIB = phi_is0·IS_REAL (fires once/block at φ=0)
+ *       E14    bal_coeff = IS_BAL_CONTRIB·(IS_INPUT − IS_OUTPUT − IS_FEE) (deg-2)
+ *       BAL    first row BAL = bal_coeff·value; transition next.BAL = local.BAL +
+ *              next.bal_coeff·next.value; last row BAL = 0 ⇒ Σin = Σout + fee.
+ *     The value cell IS the note-commitment preimage value (S1c) AND the balance
+ *     summand — completing the E9′ same-row value↔cm↔balance chain.
+ *   Scoped OUT of this increment (own step): shield/deshield BOUNDARY selectors +
+ *   the N_BOUNDARY==pub_has_boundary PUBLIC binding (the C6 turnstile interface,
+ *   needs AIR public inputs); nk/pos/addr frozen carries (E15, consumed by C3/C4
+ *   at S2/S3).
+ *   Later: S1e constraint-eval fold + degree/num_qc, S1f prover + self-verify.
  *
  * ── Block structure ────────────────────────────────────────────────────────
  * K = 32 rows per note-block (power of two so 2^k tiling + the E7 dummy-last hold;
@@ -109,11 +125,28 @@ extern "C" {
 #define CONF_ACTION_RCM_OFF     (CONF_ACTION_ADDR_OFF + 4)           /* rcm[2] */
 #define CONF_ACTION_NC1_OFF     (CONF_ACTION_RCM_OFF + 2)            /* poseidon2 block 1 */
 #define CONF_ACTION_NC2_OFF     (CONF_ACTION_NC1_OFF + P2AIR_NUM_COLS) /* poseidon2 block 2 */
-#define CONF_ACTION_WIDTH       (CONF_ACTION_NC2_OFF + P2AIR_NUM_COLS) /* S1c WIDTH = 384 */
+/* ── S1d balance-conservation block ── */
+#define CONF_ACTION_VBITS_OFF   (CONF_ACTION_NC2_OFF + P2AIR_NUM_COLS) /* value bits[52] */
+#define CONF_ACTION_ISIN_OFF    (CONF_ACTION_VBITS_OFF + CONF_ACTION_VALUE_BITS) /* IS_INPUT */
+#define CONF_ACTION_ISOUT_OFF   (CONF_ACTION_ISIN_OFF + 1)          /* IS_OUTPUT */
+#define CONF_ACTION_ISFEE_OFF   (CONF_ACTION_ISOUT_OFF + 1)         /* IS_FEE */
+#define CONF_ACTION_PHI0_OFF    (CONF_ACTION_ISFEE_OFF + 1)         /* is_zero(φ) indicator */
+#define CONF_ACTION_INV0_OFF    (CONF_ACTION_PHI0_OFF + 1)          /* is_zero(φ) witness */
+#define CONF_ACTION_BALCON_OFF  (CONF_ACTION_INV0_OFF + 1)          /* IS_BAL_CONTRIB */
+#define CONF_ACTION_BALCOEF_OFF (CONF_ACTION_BALCON_OFF + 1)        /* bal_coeff */
+#define CONF_ACTION_BAL_OFF     (CONF_ACTION_BALCOEF_OFF + 1)       /* running signed BAL */
+#define CONF_ACTION_WIDTH       (CONF_ACTION_BAL_OFF + 1)           /* S1d WIDTH = 444 */
 
 /* addr_pub / rcm widths (S0 note_commit layout). */
 #define CONF_ACTION_ADDR_LANES  4
 #define CONF_ACTION_RCM_LANES   2
+/* Range width for a hidden note value (< 2^52), dm-c1 §5 / RANGE_AIR_BITS. */
+#define CONF_ACTION_VALUE_BITS  52
+
+/* Per-block role tags (passed to generate; a real block has exactly one). */
+#define CONF_ACTION_ROLE_INPUT  0
+#define CONF_ACTION_ROLE_OUTPUT 1
+#define CONF_ACTION_ROLE_FEE    2
 
 /** Max log2(height). H = 2^log_height, log_height ∈ [LOG_K, this]. The shielded
  *  cap is H = 1024 = 2^10 (dm-c1 §4d.8; STARK_PROVER_MAX_HEIGHT). */
@@ -134,13 +167,17 @@ extern "C" {
  * @param value       num_notes note values (canonical; caller ensures < 2^52).
  * @param addr        num_notes × CONF_ACTION_ADDR_LANES recipient addresses.
  * @param rcm         num_notes × CONF_ACTION_RCM_LANES commitment randomness.
+ * @param roles       num_notes per-block role tags (CONF_ACTION_ROLE_*). The
+ *                    signed balance MUST conserve: Σ INPUT − Σ OUTPUT − Σ FEE = 0.
  * @param num_notes   number of REAL note-blocks; MUST be ≤ (H/K − 1) (E7).
  * @param trace_out   caller buffer of (2^log_height * CONF_ACTION_WIDTH) uint64.
- * @return true on success; false on a parameter error.
+ * @return true on success; false on a parameter error (incl. non-conserving
+ *         balance or a value ≥ 2^52).
  */
 bool conf_action_air_generate(unsigned log_height, const uint64_t *value,
                               const uint64_t *addr, const uint64_t *rcm,
-                              size_t num_notes, uint64_t *trace_out);
+                              const uint8_t *roles, size_t num_notes,
+                              uint64_t *trace_out);
 
 /**
  * @brief Evaluate ALL S1a constraints (E1/E2/E3/E13) over a trace.

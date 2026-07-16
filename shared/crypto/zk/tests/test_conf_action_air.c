@@ -45,8 +45,10 @@ static void set(uint64_t *t, size_t row, size_t off, uint64_t val) {
 
 int main(void) {
     /* H=128 = 4 blocks of K=32. 3 real notes (blocks 0-2) + dummy-last (block 3).
-     * Each note = (value, addr_pub[4], rcm[2]); its cm is computed in-circuit. */
-    const uint64_t value[3] = {1000000, 5, 4503599627370495u /* 2^52-1 */};
+     * Conserving instance: INPUT 100 = OUTPUT 90 + FEE 10. */
+    const uint64_t value[3] = {100, 90, 10};
+    const uint8_t roles[3] = {CONF_ACTION_ROLE_INPUT, CONF_ACTION_ROLE_OUTPUT,
+                              CONF_ACTION_ROLE_FEE};
     const uint64_t addr[3][CONF_ACTION_ADDR_LANES] = {
         {11, 22, 33, 44}, {51, 52, 53, 54}, {91, 92, 93, 94},
     };
@@ -59,14 +61,14 @@ int main(void) {
         note_commit(value[i], addr[i], rcm[i], expect_cm[i]);
 
     uint64_t honest[ROWS * CONF_ACTION_WIDTH];
-    if (!conf_action_air_generate(LOG_H, value, &addr[0][0], &rcm[0][0], 3,
+    if (!conf_action_air_generate(LOG_H, value, &addr[0][0], &rcm[0][0], roles, 3,
                                   honest)) {
         printf("FAIL: honest generate failed\n");
         return 1;
     }
 
     printf("============================================================\n");
-    printf("C1 S1a+S1b+S1c — phase-counter + freeze-carry + note-commitment\n");
+    printf("C1 S1a-S1d — phase-counter + freeze-carry + note-commitment + balance\n");
     printf("  K=%d, H=%u, WIDTH=%d\n", CONF_ACTION_K, ROWS, CONF_ACTION_WIDTH);
     printf("============================================================\n");
 
@@ -260,13 +262,13 @@ int main(void) {
 
     /* ── S1c note-commitment attacks ──────────────────────────────────────── */
 
-    /* REJECT 16: the §4b MINT — claim value=1000 for the real note-5 (block 1).
-     * Change ONLY the value cell; the poseidon2 blocks still hash the real 5, so
-     * NC1.in[0] (=5) != the forged value cell (=1000). Caught. */
+    /* REJECT 16: the §4b MINT — inflate block-1's value cell (real value 90).
+     * Change ONLY the value cell: the poseidon2 blocks still hash the real 90, so
+     * NC1.in[0] (=90) != the forged value (=1000); also breaks range + balance. */
     {
         uint64_t bad[ROWS * CONF_ACTION_WIDTH];
         memcpy(bad, honest, sizeof bad);
-        set(bad, 32, CONF_ACTION_VALUE_OFF, 1000); /* block-1 real value is 5 */
+        set(bad, 32, CONF_ACTION_VALUE_OFF, 1000); /* block-1 real value is 90 */
         expect_reject("MINT: value cell != hashed value (§4b)", bad);
     }
 
@@ -311,12 +313,76 @@ int main(void) {
         expect_reject("tampered poseidon2 NC1 internal cell", bad);
     }
 
+    /* ── S1d balance-conservation attacks ─────────────────────────────────── */
+
+    /* Sanity: BAL == 0 at the last row (Σin = Σout + fee). */
+    {
+        uint64_t last_bal =
+            honest[(ROWS - 1) * CONF_ACTION_WIDTH + CONF_ACTION_BAL_OFF];
+        printf("  [accept] BAL == 0 at last row (100 = 90 + 10)       %s\n",
+               last_bal == 0 ? "OK" : "FAIL");
+        if (last_bal != 0) fails++;
+    }
+
+    /* REJECT 22: BAL-consistent MINT — inflate the INPUT value AND its bits AND
+     * re-hash would be needed; here we tamper the running BAL at the last row to
+     * fake conservation while the accumulator disagrees. */
+    {
+        uint64_t bad[ROWS * CONF_ACTION_WIDTH];
+        memcpy(bad, honest, sizeof bad);
+        set(bad, ROWS - 1, CONF_ACTION_BAL_OFF, 5); /* was 0 */
+        expect_reject("BAL != 0 at last row (non-conservation)", bad);
+    }
+
+    /* REJECT 23: value ≥ 2^52 (range overflow) — set VALUE past the 52-bit gate;
+     * the 52 bits cannot recompose it. */
+    {
+        uint64_t bad[ROWS * CONF_ACTION_WIDTH];
+        memcpy(bad, honest, sizeof bad);
+        set(bad, 0, CONF_ACTION_VALUE_OFF, (uint64_t)1 << 52);
+        expect_reject("value >= 2^52 (range gate)", bad);
+    }
+
+    /* REJECT 24: two roles on one block (IS_OUTPUT=1 on the INPUT block row 0).
+     * Role sum 2 != IS_REAL. */
+    {
+        uint64_t bad[ROWS * CONF_ACTION_WIDTH];
+        memcpy(bad, honest, sizeof bad);
+        set(bad, 0, CONF_ACTION_ISOUT_OFF, 1); /* block 0 is INPUT */
+        expect_reject("two roles on one block (role-sum)", bad);
+    }
+
+    /* REJECT 25: role flip mid-block (E17) — change IS_INPUT at row 5 of block 0. */
+    {
+        uint64_t bad[ROWS * CONF_ACTION_WIDTH];
+        memcpy(bad, honest, sizeof bad);
+        set(bad, 5, CONF_ACTION_ISIN_OFF, 0);
+        expect_reject("role flip mid-block (E17)", bad);
+    }
+
+    /* REJECT 26: forge IS_BAL_CONTRIB at a non-φ=0 row (double-count a value). */
+    {
+        uint64_t bad[ROWS * CONF_ACTION_WIDTH];
+        memcpy(bad, honest, sizeof bad);
+        set(bad, 3, CONF_ACTION_BALCON_OFF, 1); /* φ=3, should be 0 */
+        expect_reject("forge IS_BAL_CONTRIB off-φ=0 (E10')", bad);
+    }
+
+    /* REJECT 27: forge phi_is0=1 at a non-zero φ (break the is_zero indicator). */
+    {
+        uint64_t bad[ROWS * CONF_ACTION_WIDTH];
+        memcpy(bad, honest, sizeof bad);
+        set(bad, 4, CONF_ACTION_PHI0_OFF, 1); /* φ=4 */
+        set(bad, 4, CONF_ACTION_INV0_OFF, 0);
+        expect_reject("forge phi_is0 at φ!=0 (is_zero)", bad);
+    }
+
     printf("------------------------------------------------------------\n");
     if (fails) {
-        printf("C1 S1a+S1b+S1c: %d FAIL\n", fails);
+        printf("C1 S1a-S1d: %d FAIL\n", fails);
         return 1;
     }
-    printf("C1 S1a+S1b+S1c: honest accepted (cm byte-matches S0) + phase-counter, "
-           "freeze-carry & note-commitment deviations rejected — PASS\n");
+    printf("C1 S1a-S1d: honest accepted (cm byte-matches S0, BAL=0) + phase-counter,"
+           " freeze-carry, note-commitment & balance deviations rejected — PASS\n");
     return 0;
 }

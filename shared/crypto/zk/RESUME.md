@@ -194,10 +194,20 @@
       attacks (DOMSEP, capacity-IV, capacity-carry, cm-desync, poseidon2 tamper)
       rejected. WIDTH=384. value↔cm bound by collision-resistant hash → the
       mint/theft class is closed. (value↔balance-AMOUNT same-row copy is S1d.)
-    - **S1d NEXT** — balance once-per-block (E10′/E14 IS_BAL_CONTRIB+bal_coeff) +
-      boundary public-bind (N_BOUNDARY exact) + role selectors per block (E17) +
-      nk/pos/addr carries (E15). Then S1e fold + degree/num_qc, S1f prover +
-      self-verify + 10+ agent red-team.
+    - **S1d DONE** — balance conservation (the money mint barrier): role selectors
+      IS_INPUT/IS_OUTPUT/IS_FEE (E17 per-block const), 52-bit range on value,
+      phi_is0 is_zero(φ) indicator, IS_BAL_CONTRIB=phi_is0·IS_REAL (once/block),
+      bal_coeff (signed), BAL accumulator, last-row BAL=0 ⇒ Σin=Σout+fee. The value
+      cell IS the note-commitment preimage value AND the balance summand (E9′
+      value↔cm↔balance chain complete). `test_conf_action_air`: honest balanced
+      (BAL=0) accepted + non-conservation, range>2^52, multi-role, role-flip (E17),
+      forged IS_BAL_CONTRIB/phi_is0 rejected. WIDTH=444. **Scoped OUT (own step):**
+      shield/deshield BOUNDARY selectors + N_BOUNDARY==pub_has_boundary PUBLIC bind
+      (C6 turnstile interface, needs AIR public inputs); nk/pos/addr carries (E15,
+      consumed by C3/C4 at S2/S3).
+    - **S1e NEXT** — the real-STARK fold: port these construction-gate constraints
+      to the fp2 folder (conf_root_fold.c form) + measure degree/num_qc; then S1f
+      prover + self-verify + the 10+ agent red-team on the composed C1.
   - **THEN:** S2 C3 membership (+ M1/M2 goals, + E5 point-read reader), S3 C4
     nullifier, S4 aggregate prover/verifier (+ H2/H3), S5 V4 wire, S6 consensus
     (state_root v4), S7 note-enc+wallet, S8 Genesis 7/7.
