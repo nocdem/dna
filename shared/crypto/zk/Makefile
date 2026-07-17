@@ -98,6 +98,7 @@ TESTS = \
     $(BUILD)/test_conf_action_agg_verify \
     $(BUILD)/test_prover_conf \
     $(BUILD)/test_prover_action \
+    $(BUILD)/test_prover_agg \
     $(BUILD)/test_prover_salted_commit \
     $(BUILD)/test_zk_entropy \
     $(BUILD)/test_prover_trace \
@@ -452,6 +453,10 @@ $(BUILD)/test_prover_conf: tests/test_prover_conf.c stark_prover_conf.h stark_pr
 ACTION_AIR_STACK = conf_action_air.c note_commit.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c poseidon2_goldilocks.c
 $(BUILD)/test_prover_action: tests/test_prover_action.c stark_prover_action.h stark_prover_action.c conf_action_fold.h conf_action_fold.c poseidon2_fold.h poseidon2_fold.c stark_constraints.c zk_entropy.c $(ACTION_AIR_STACK) $(PROVER_STACK) fri_verifier.c stark_priming.c | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) tests/test_prover_action.c stark_prover_action.c conf_action_fold.c poseidon2_fold.c stark_constraints.c zk_entropy.c $(ACTION_AIR_STACK) $(PROVER_STACK) fri_verifier.c stark_priming.c $(SHA3_SRC) $(LDLIBS) -o $@
+
+# Dual-mode S4b.4 — aggregate prover byte-match vs REAL is_zk=1 proof (21 publics).
+$(BUILD)/test_prover_agg: tests/test_prover_agg.c stark_prover_agg.h stark_prover_agg.c conf_action_agg_fold.h conf_action_agg_fold.c conf_action_fold.h conf_action_fold.c conf_action_agg_air.h poseidon2_fold.h poseidon2_fold.c stark_constraints.c $(ACTION_AIR_STACK) $(PROVER_STACK) fri_verifier.c stark_priming.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_prover_agg.c stark_prover_agg.c conf_action_agg_fold.c conf_action_fold.c poseidon2_fold.c stark_constraints.c $(ACTION_AIR_STACK) $(PROVER_STACK) fri_verifier.c stark_priming.c $(SHA3_SRC) $(LDLIBS) -o $@
 
 $(BUILD)/test_prover_salted_commit: tests/test_prover_salted_commit.c stark_prover.h $(CONF_AIR_STACK) $(PROVER_STACK) | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) tests/test_prover_salted_commit.c $(CONF_AIR_STACK) $(PROVER_STACK) $(SHA3_SRC) $(LDLIBS) -o $@
@@ -976,6 +981,12 @@ test: all
 	@echo "  zeta + 3 roots + final_poly byte-match + self-verify (FRI + N-chunk)"
 	@echo "============================================================"
 	@$(BUILD)/test_prover_action tools/vectors/conf_action_air_zk.json tools/vectors/smallrng_goldilocks.json
+	@echo
+	@echo "============================================================"
+	@echo "S4b.4 dual-mode AGGREGATE PROVER — pure-C prove byte-match vs REAL Plonky3"
+	@echo "  zeta + 3 roots + final_poly + 21 publics byte-match + self-verify"
+	@echo "============================================================"
+	@$(BUILD)/test_prover_agg tools/vectors/conf_action_agg_air_zk.json tools/vectors/smallrng_goldilocks.json
 	@echo
 	@echo "============================================================"
 	@echo "S2 dual-mode C3 — Poseidon2 Merkle-path membership (is_zk=0)"

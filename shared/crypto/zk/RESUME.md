@@ -459,8 +459,23 @@
       constraint CONTENT and EMISSION ORDER. T7 negatives: tampered
       C1/membership-CUR/nullifier-NF/N_input cell + tampered anchor public -> OOD;
       wrong publics count / missing trace_next -> SHAPE. Full `make test` GREEN
-      0-warn. **Next: S4b.4** pure-C prover (stark_prover_agg.c) byte-matching
-      this vector (extend stark_prover_action.c; new draw layout for width 1936).
+      0-warn.
+    - **🎯 S4b.4 DONE (2026-07-17) — pure-C AGGREGATE prover FULL byte-match.**
+      `stark_prover_agg.{c,h}` (`dnac_agg_prover_prove`): the S1→S12 pipeline over
+      the parametric stage library with the 1936-wide ZK trace generator
+      (`agg_zk_generate` — C1 scatter + membership walk + nullifier sponge + is_zero
+      selector columns, byte-matching the Rust generate) and the aggregate fold as
+      the S6 quotient source (WITH the 21 publics). Draw layout: trace (1936+8)h ‖
+      codeword 32h ‖ blinding 42h ‖ R 12h = 2030h. `test_prover_agg`: **zeta + all
+      3 commitment roots + final_poly + the 21 public values (anchor||num_input||
+      nf_slots) byte-match the REAL Plonky3 is_zk=1 proof** + self-verify (FRI
+      DNAC_FRI_OK + N-chunk constraint check) — Rust-free end-to-end. FRI_LEAF_CAP
+      15488→16384 (the 1940-wide merged ZK leaf = 15520 B > old cap; S4b.1 had
+      mis-sized it for the 1919 construction-gate width). smallrng vector regen to
+      262144 draws (prefix-stable; existing provers unaffected), hash re-pinned.
+      Full `make test` GREEN 0-warn. **S4b COMPLETE: oracle → fold → prover, the
+      aggregate real-STARK is Rust-free byte-matched end-to-end.** **Next: S4b.5**
+      negative KATs (cheat instances fail to prove) + **S4f** 10+ agent red-team.
     - **⚠ S4b.2 DESIGN FINDING (2026-07-17) — the real-STARK lift is NOT a
       mechanical S1e-mirror; it has genuine soundness-critical design content the
       S4a construction gate hid (S4a reads φ + r DIRECTLY in a C loop; the fold is

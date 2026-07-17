@@ -41,13 +41,14 @@
 #define FRI_MAX_RO     64
 #define FRI_MAX_ARITY  256
 /* Leaf byte capacity: max over (a) an INPUT-mmcs row = width*8 + salt*8 and
- * (b) a commit-phase leaf = arity*16 + salt*8. Sized for the widest AIR: the S4
- * AGGREGATE Action trace is 1919 wide (1915 + 4 random) → 15352 B; +2 salts →
- * 15368 B; capped at 1936 cols = 15488 B. (Raised 2026-07-17 from 6656, which was
- * sized for the 817-wide conf_action trace and UNDER-sizes the 1919-wide
- * conf_action_agg input row → DNAC_FRI_ERR_INPUT_ERROR. rowbuf[64][CAP] =
- * 64*15488 ≈ 990 KB stack, within the 8 MB default.) */
-#define FRI_LEAF_CAP   15488
+ * (b) a commit-phase leaf = arity*16 + salt*8. Sized for the widest AIR: the S4b
+ * AGGREGATE Action ZK trace is 1936 wide, merged with 4 random codewords → 1940
+ * cols = 15520 B; +2 salts → 15536 B. Capped at 2048 cols = 16384 B for headroom.
+ * (Raised 2026-07-17 from 15488, which was mistakenly sized for the 1919-wide
+ * CONSTRUCTION-gate trace and under-sizes the 1940-wide ZK input row →
+ * DNAC_FRI_ERR_INPUT_ERROR. rowbuf[64][CAP] = 64*16384 = 1 MB stack, within the
+ * 8 MB default.) */
+#define FRI_LEAF_CAP   16384
 
 /* ============================================================================
  * Always-compiled internal helpers (shared by dnac_fri_verify AND test hooks).
