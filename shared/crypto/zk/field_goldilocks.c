@@ -199,18 +199,16 @@ bool gold_fp_is_zero(gold_fp_t a) {
  * Plonky3 commits 7 as a 2^32-th primitive root of unity.
  * A 2^bits-th root is then 7^(2^(32 - bits)) mod p.
  *
- * For Faz 1 this is a STUB — implementation deferred to Sprint 1.4 or later
- * (currently called only by header-declared consistency checks).
+ * COMPLETE + oracle-validated: test_two_adic_gens byte-matches Plonky3
+ * two_adic_generator for all bits (33/33 cases). (Earlier "STUB" note was stale.)
  * ========================================================================== */
 
 gold_fp_t gold_fp_two_adic_generator(unsigned bits) {
     if (bits == 0 || bits > GOLDILOCKS_TWO_ADICITY) {
         return gold_fp_one();
     }
-    /* Generator of order 2^32 — Plonky3 uses 7^(p-1)/2^32.
-     * For Sprint 1.2 we hardcode the result for the most common case (bits=32)
-     * and compute by repeated squaring otherwise. Full implementation in
-     * Sprint 1.3+ once test vectors are dumped. */
+    /* Generator of order 2^32 = Plonky3's 7^((p-1)/2^32); a 2^bits-th root is
+     * g32^(2^(32-bits)) by repeated squaring. Oracle-byte-matched (see above). */
     gold_fp_t g32 = (gold_fp_t){.v = 1753635133440165772ULL};  /* Plonky3 const */
     if (bits == GOLDILOCKS_TWO_ADICITY) return g32;
     /* g_bits = g32 ^ (2^(32 - bits)) */
@@ -223,10 +221,10 @@ gold_fp_t gold_fp_two_adic_generator(unsigned bits) {
 }
 
 /* ============================================================================
- * Extension field Goldilocks² (Sprint 1.3 SCOPE — declared, not implemented)
+ * Extension field Goldilocks² — COMPLETE + oracle-validated.
  *
- * STUB only: returns zeros / identities. Sprint 1.3 fills these in once
- * dump-field-ext oracle vectors are available.
+ * test_field_goldilocks_ext byte-matches Plonky3 (field_ext.json) for
+ * add/sub/mul/neg/sqr/inv. (Earlier "STUB only: returns zeros" note was stale.)
  * ========================================================================== */
 
 gold_fp2_t gold_fp2_zero(void) { return (gold_fp2_t){gold_fp_zero(), gold_fp_zero()}; }

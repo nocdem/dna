@@ -582,6 +582,12 @@ bench-prover: | $(BUILD)
 
 test: all
 	@echo "============================================================"
+	@echo "[0] Vector integrity — sha256sum -c .expected_hashes"
+	@echo "============================================================"
+	@cd tools/vectors && sha256sum -c --quiet .expected_hashes
+	@echo "vector hashes OK"
+	@echo
+	@echo "============================================================"
 	@echo "Sprint 1.2 — field_goldilocks (base)"
 	@echo "============================================================"
 	@$(BUILD)/test_field_goldilocks tools/vectors/field_ops.json

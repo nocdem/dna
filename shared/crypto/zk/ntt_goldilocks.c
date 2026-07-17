@@ -1,6 +1,8 @@
 /**
  * @file ntt_goldilocks.c
- * @brief Number-Theoretic Transform over Goldilocks (Sub-sprint 3.5a) — Phase A stub.
+ * @brief Number-Theoretic Transform over Goldilocks — COMPLETE Cooley-Tukey
+ *        Radix2Dit; test_ntt_goldilocks_oracle byte-matches Plonky3 (64 cases,
+ *        0 circular). ("Phase A stub" was a stale label.)
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: Apache-2.0
