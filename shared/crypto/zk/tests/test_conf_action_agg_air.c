@@ -24,6 +24,9 @@
 static size_t memb_cell(size_t r, size_t off) {
     return r * CONF_AGG_WIDTH + CONF_AGG_MEMB_OFF + off;
 }
+static size_t nf_cell(size_t r, size_t off) {
+    return r * CONF_AGG_WIDTH + CONF_AGG_NF_OFF + off;
+}
 
 int main(void) {
     const unsigned log_height = 7; /* H=128, 4 blocks */
@@ -46,6 +49,7 @@ int main(void) {
     for (size_t i = 0; i < 3 * D * 4; i++) siblings[i] = 0x1000 + i;
 
     uint64_t anchor[4];
+    uint64_t nf_out[3 * 4];
     uint64_t *trace = (uint64_t *)calloc(rows * CONF_AGG_WIDTH, sizeof(uint64_t));
     if (!trace) return 2;
 
@@ -54,7 +58,7 @@ int main(void) {
 
     /* ── honest ── */
     if (!conf_action_agg_air_generate(log_height, value, addr, rcm, roles, pos, nk,
-                                      ak, 3, siblings, anchor, trace)) {
+                                      ak, 3, siblings, anchor, nf_out, trace)) {
         printf("  generate FAILED\n");
         free(trace);
         return 1;
@@ -148,13 +152,64 @@ int main(void) {
         trace[off] = s;
     }
 
+    /* ── S4a.3a nullifier: nf cell != NF2.out -> G4 single-source fires ──
+     * The nf-phase row of the INPUT block (block 0) is φ=D+1. */
+    {
+        const size_t nfrow = (size_t)(D + 1); /* block 0, φ=D+1 */
+        const size_t off = nf_cell(nfrow, CONF_NF_NF_OFF);
+        uint64_t s = trace[off];
+        trace[off] = gold_fp_to_u64(gold_fp_add(gold_fp_from_u64(s), gold_fp_one()));
+        int t = conf_action_agg_air_eval(trace, rows, anchor);
+        printf("  nf cell != NF2.out -> caught                        %s (%d)\n",
+               t > 0 ? "PASS" : "FAIL", t);
+        if (t == 0) fails++;
+        trace[off] = s;
+    }
+
+    /* ── nullifier cross-region bind: CM cell != cm_carry -> G-S4-3 fires ── */
+    {
+        const size_t nfrow = (size_t)(D + 1);
+        const size_t off = nf_cell(nfrow, CONF_NF_CM_OFF);
+        uint64_t s = trace[off];
+        trace[off] = gold_fp_to_u64(gold_fp_add(gold_fp_from_u64(s), gold_fp_one()));
+        int t = conf_action_agg_air_eval(trace, rows, anchor);
+        printf("  nf CM cell != cm_carry -> caught (G-S4-3)           %s (%d)\n",
+               t > 0 ? "PASS" : "FAIL", t);
+        if (t == 0) fails++;
+        trace[off] = s;
+    }
+
+    /* ── nullifier inert: forge a CM cell on a non-nf row (φ=0) -> fires ── */
+    {
+        const size_t off = nf_cell(0, CONF_NF_CM_OFF); /* block 0, φ=0 */
+        uint64_t s = trace[off];
+        trace[off] = 0x1234;
+        int t = conf_action_agg_air_eval(trace, rows, anchor);
+        printf("  nf CM forged on φ=0 (inert) -> caught               %s (%d)\n",
+               t > 0 ? "PASS" : "FAIL", t);
+        if (t == 0) fails++;
+        trace[off] = s;
+    }
+
+    /* ── nf_out is the derived nullifier of the INPUT (block 0), nonzero;
+     * OUTPUT/FEE slots zero. ── */
+    {
+        int ok = 0;
+        for (int j = 0; j < 4; j++) ok |= (nf_out[0 * 4 + j] != 0);
+        int zero_out = 1;
+        for (int j = 0; j < 4; j++) zero_out &= (nf_out[1 * 4 + j] == 0);
+        printf("  nf_out: INPUT nf nonzero + OUTPUT slot zero          %s\n",
+               (ok && zero_out) ? "PASS" : "FAIL");
+        if (!(ok && zero_out)) fails++;
+    }
+
     free(trace);
     if (fails) {
         printf("test_conf_action_agg_air: FAIL (%d)\n", fails);
         return 1;
     }
     printf("test_conf_action_agg_air: PASS\n");
-    printf("  S4a.2: C3 membership embedded (leaf==cm_carry, root==anchor) with\n");
-    printf("  §3 POSACC init/stop/wrap gating — the F6 double-spend is closed.\n");
+    printf("  S4a.2 membership (leaf==cm_carry, root==anchor, POSACC F6-gated) +\n");
+    printf("  S4a.3a nullifier (cm/pos/nk==carries, nf=PRF(nk,CRH(cm,pos))).\n");
     return 0;
 }

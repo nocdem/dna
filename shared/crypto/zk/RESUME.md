@@ -393,9 +393,20 @@
       ==0` inert, φ=D `POSACC==pos_carry`. Leaf φ=1 `CUR==cm_carry` (G-S4-1), root
       φ=D `MC2.out==anchor`. `test_conf_action_agg_air` (8/8): honest eval==0 +
       **F6 POSACC free-base double-spend CAUGHT** + leaf/root/BIT/inert tampers
-      caught. Full `make test` GREEN 0-warn. **NEXT: S4a.3** C4 nullifier phase
-      (φ=D+1, cm/pos/nk==carries) + nullifier EXACT-COUNT bijective bind + the
-      anchor/nf public interface; then S4b-e (S1e precedent) → S4f red-team.
+      caught. Full `make test` GREEN 0-warn.
+    - **S4a.3a DONE (2026-07-17) — C4 nullifier embedded + cross-region bind.**
+      At φ=D+1 of each INPUT block: RHO1/RHO2/NF1/NF2 poseidon always-on (inert =
+      zero-perm), gated on is_nf·IS_INPUT. The cm/pos/nk cells are wired to the C1
+      frozen carries (cm_carry/pos_carry/nk_carry — G-S4-3 cross-region bind);
+      ρ=CRH(cm,pos) then nf=PRF(nk,ρ) derived; NF cell==NF2.out (G4). Inert
+      nf-rows zero the CM/POS/NK/NF cells. generate outputs nf per INPUT.
+      `test_conf_action_agg_air` (12/12): + nf!=NF2.out caught, nf CM!=cm_carry
+      caught (G-S4-3), nf inert caught, nf_out INPUT-nonzero/OUTPUT-zero. Full
+      `make test` GREEN 0-warn. **NEXT: S4a.3b** nullifier EXACT-COUNT bijective
+      bind (N_nf==N_input, drop/add reject — the red-team soundness-critical
+      count) + the anchor/nf counted public interface (pairs with S5 wire); then
+      S4b-e (S1e precedent: width bump, oracle+num_qc, fold, prover byte-match) →
+      S4f red-team.
       recorded composition obligations (leaf==cm_carry, pin D, nullify iff IS_INPUT).
   - **THEN:** S2 C3 membership (+ M1/M2 goals, + E5 point-read reader), S3 C4
     nullifier, S4 aggregate prover/verifier (+ H2/H3), S5 V4 wire, S6 consensus

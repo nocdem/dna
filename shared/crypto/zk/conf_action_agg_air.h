@@ -41,7 +41,14 @@
  *       φ=D  final      POSACC == pos_carry  (ties the walk to the pos C4 nullifies).
  *     Membership runs iff IS_INPUT (an OUTPUT is a NEW note, inserted by
  *     consensus, not proven-member). anchor is a public (verifier-substituted).
- *   S4a.3: C4 nullifier phase + nullifier EXACT-COUNT bijective bind + publics.
+ *   S4a.3a (THIS increment): C4 NULLIFIER embedded at φ=D+1, gated on
+ *     is_nf·IS_INPUT. Poseidon RHO1/RHO2/NF1/NF2 always-on (inert = zero-perm);
+ *     the pins wire cm/pos/nk cells to the C1 frozen carries (cm_carry /
+ *     pos_carry / nk_carry — the cross-region bind, G-S4-3), derive
+ *     ρ=CRH(cm,pos) then nf=PRF(nk,ρ), and pin NF==NF2.out. Inert nf-rows
+ *     zero the CM/POS/NK/NF cells. generate outputs nf per INPUT note.
+ *   S4a.3b: nullifier EXACT-COUNT bijective bind (N_nf==N_input) + the counted
+ *     anchor/nf public interface (pairs with the S5 wire).
  *   S4b-e: width-cap bump, Rust oracle + num_qc, fp2 fold, pure-C prover
  *     byte-match (all S1e precedent). S4f: 10+ agent red-team.
  *
@@ -97,6 +104,8 @@ extern "C" {
  *                       May be NULL only if there are no INPUT notes.
  * @param anchor_out  the computed common root of the INPUT notes' paths (the
  *                    verifier-substituted anchor). Zeroed if no INPUT notes.
+ * @param nf_out      num_notes × CONF_NF_LANES; each INPUT note's derived
+ *                    nullifier nf=PRF(nk,CRH(cm,pos)); OUTPUT/FEE slots zeroed.
  * @param trace_out   caller buffer of (2^log_height * CONF_AGG_WIDTH) uint64.
  * @return true on success; false on a C1 parameter error OR if two INPUT notes'
  *         paths yield DIFFERENT roots (inconsistent siblings — all inputs must
@@ -109,7 +118,7 @@ bool conf_action_agg_air_generate(unsigned log_height, const uint64_t *value,
                                   size_t num_notes,
                                   const uint64_t *memb_siblings,
                                   uint64_t anchor_out[CONF_MEMB_LANES],
-                                  uint64_t *trace_out);
+                                  uint64_t *nf_out, uint64_t *trace_out);
 
 /**
  * @brief Evaluate ALL aggregate constraints (S4a.1 C1 + is_nf; S4a.2 membership
