@@ -50,6 +50,60 @@ extern "C" {
 #define DNAC_TX_PREIMAGE_DOMAIN_V2   "DNAC_TX_V2\0"
 #define DNAC_TX_PREIMAGE_DOMAIN_V2_LEN  11   /* sizeof("DNAC_TX_V2") + 1 NUL */
 
+/* ============================================================================
+ * Dual-mode S5 — shielded (confidential) TX wire
+ * (design dnac/docs/plans/2026-07-17-dm-s5-v4-wire-design.md).
+ *
+ * ADDITIVE: fields below are populated & serialized ONLY when
+ * type == DNAC_TX_SHIELDED; every other TX type stays byte-identical to v2.
+ * ========================================================================== */
+
+/* D1 — preimage domain separator for a shielded TX's SHA3-512 tx-hash preimage.
+ * Same KIND/layout as the V2 tag (11B, NUL-terminated, prepended). Distinct from
+ * V1 (none) and V2 ("DNAC_TX_V2\0"). */
+#define DNAC_TX_PREIMAGE_DOMAIN_V4      "DNAC_TX_V4\0"
+#define DNAC_TX_PREIMAGE_DOMAIN_V4_LEN  11
+
+/* D3/D4/A-4 — the statement-binding sighash gets its OWN tag, which MUST differ
+ * from the tx-hash preimage tag (sharing one tag across two hash purposes violates
+ * domain separation). SHA3-512(sighash_v4 preimage) is mapped to 4 Goldilocks
+ * lanes = tx_binding by conf_txbind_map at S6/prover; S5 carries tx_binding bytes. */
+#define DNAC_SIGHASH_DOMAIN_V4          "DNAC_SIGHASH_V4\0"
+#define DNAC_SIGHASH_DOMAIN_V4_LEN      16
+
+/* Shielded aggregate limits — MUST equal the aggregate AIR's S6-pinned constants
+ * CONF_AGGZK_MAX_INPUTS / CONF_AGGZK_MAX_OUTPUTS (= 4) in
+ * shared/crypto/zk/conf_action_agg_fold.h. dnac cannot include that parked zk
+ * header, so the values are pinned here with the cross-reference: a wire MAX that
+ * exceeded the AIR MAX would accept a set the proof cannot bind. */
+#define DNAC_SHIELDED_MAX_INPUTS   4
+#define DNAC_SHIELDED_MAX_OUTPUTS  4
+#define DNAC_SHIELDED_LANES        4   /* Goldilocks lanes per anchor/nullifier/commitment/tx_binding */
+
+/**
+ * @brief Shielded-TX appended fields (dual-mode S5).
+ *
+ * Populated only when dnac_transaction_t.type == DNAC_TX_SHIELDED. Each lane is a
+ * canonical Goldilocks element (< p) carried as u64, BIG-ENDIAN on the wire; the
+ * FRI proof is an opaque blob. The field set EQUALS the aggregate proof's 43 public
+ * values (design D6): anchor ‖ nf_slot[0..num_input) ‖ output_commit[0..num_output)
+ * ‖ fee ‖ tx_binding. Unused nf/output slots MUST be zero (canonical, DET-S5-3).
+ *
+ * S5 carries tx_binding as bytes; the conf_txbind_map derivation + FRI verify are
+ * S6 (where the zk stack links into consensus).
+ */
+typedef struct {
+    uint64_t anchor[DNAC_SHIELDED_LANES];                                   /**< membership tree root */
+    uint8_t  num_input;                                                     /**< 0..MAX_INPUTS */
+    uint64_t nf_set[DNAC_SHIELDED_MAX_INPUTS][DNAC_SHIELDED_LANES];         /**< nullifiers; slots >=num_input zero */
+    uint8_t  num_output;                                                    /**< 0..MAX_OUTPUTS */
+    uint64_t output_commit[DNAC_SHIELDED_MAX_OUTPUTS][DNAC_SHIELDED_LANES]; /**< note commitments; slots >=num_output zero */
+    uint64_t fee;                                                           /**< balance-bound fee (== header committed_fee, D7.2) */
+    uint64_t tx_binding[DNAC_SHIELDED_LANES];                               /**< = conf_txbind_map(sighash_v4); bytes at S5 */
+    uint8_t *fri_proof;                                                     /**< opaque is_zk=1 aggregate proof blob (owned) */
+    uint32_t fri_proof_len;                                                 /**< blob length in bytes */
+} dnac_tx_shielded_fields_t;
+
 /* STAKE TX appended fields — wire & preimage constants
  * (design §2.3, Phase 5 Task 16).
  *
@@ -303,6 +357,7 @@ struct dnac_transaction {
     dnac_tx_undelegate_fields_t       undelegate_fields;       /**< valid when type == DNAC_TX_UNDELEGATE */
     dnac_tx_validator_update_fields_t validator_update_fields; /**< valid when type == DNAC_TX_VALIDATOR_UPDATE */
     dnac_tx_chain_config_fields_t     chain_config_fields;     /**< valid when type == DNAC_TX_CHAIN_CONFIG */
+    dnac_tx_shielded_fields_t         shielded_fields;         /**< valid when type == DNAC_TX_SHIELDED (dual-mode S5) */
 };
 
 /* ============================================================================
