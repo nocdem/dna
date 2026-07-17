@@ -521,6 +521,31 @@
       `make test` GREEN 0-warn. **Next: S5** V4 wire (DNAC_TX_V4/tx_binding
       preimage/nf-set consumer, per the revised `2026-07-17-dm-s5-v4-wire-design.md`
       §0 D1–D7) → S6 consensus (BREAKING, needs approval).
+    - **🎯 S5 wire DONE + S6 ROADMAP + Phase-P (production-harden) STARTED (2026-07-17).**
+      S5 V4 wire shipped (DNAC_TX_SHIELDED ser/deser + sighash_v4 + V4 tx_hash +
+      fee-equality + transparent-exclusion, round-trip KAT 10/10 ASAN-clean, libdna
+      GREEN; re-audit 0 CRIT, 2 findings fixed). Roadmap `2026-07-17-dm-s6-roadmap.md`
+      splits S6 into **Phase P (non-breaking production-harden, parked)** + **Phase C
+      (BREAKING consensus)**. Phase P progress:
+      - **P1 DONE** — query-PoW grind (`dnac_transcript_grind`, Plonky3
+        grinding_challenger.rs port + clone) wired into all 4 provers; unit-tested to
+        production 16-bit; backward-compat (grind(0) no-op → vectors byte-identical).
+      - **P2 grounded-RESOLVED** — H2 (zeta sampled, `stark_priming.c:84`) + H3
+        (publics observed pre-alpha, `:63-65`) ALREADY satisfied; tx_binding
+        verifier-loop needs the wire → Phase C.
+      - **P3 RESOLVED** — "audited AIR ≠ proven AIR" is NOT a hole (proven 1946 AIR
+        red-teamed); authoritative relationship documented (`conf_action_agg_air.h`).
+      - **P4 DONE** — salted aggregate prover (M3b MerkleTreeHidingMmcs, SALT_ELEMS=2):
+        threaded salt into S2-S8 commits + S12 per-query gather (mirror conf, 160h
+        width-independent); oracle `--salted` → `conf_action_agg_air_zk_salted.json`;
+        `test_prover_agg --salted` BYTE-MATCHES the real Plonky3 salted proof + self-
+        verifies. **1-agent red-team: 0 CRIT/0 HIGH** (offsets exact conf mirror,
+        unsalted byte-identical, C==real-Plonky3-salted, ASAN+UBSAN clean).
+      - **Phase-P non-blocking tails:** (a) production prover entries (query_pow 16 +
+        num_queries 100 + OS-entropy salts, stream A/B/trace INDEPENDENT); (b) salted
+        vector metadata note inherits the shared macro's plain-config "NOT leaf salts"
+        string (LOW cosmetic, C never reads it; fix when the dump macro/conf vectors
+        next regenerate); (c) h=256 salted oracle vector.
     - **⚠ S4b.2 DESIGN FINDING (2026-07-17) — the real-STARK lift is NOT a
       mechanical S1e-mirror; it has genuine soundness-critical design content the
       S4a construction gate hid (S4a reads φ + r DIRECTLY in a C loop; the fold is
