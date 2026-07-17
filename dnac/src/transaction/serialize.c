@@ -126,6 +126,11 @@ static size_t calc_tx_size(const dnac_transaction_t *tx) {
         size += DNAC_CC_WIRE_FIXED_LEN +
                 (size_t)n * DNAC_CC_WIRE_PER_VOTE;
     }
+    /* Dual-mode S5. Shielded section (only for DNAC_TX_SHIELDED). */
+    if (tx->type == DNAC_TX_SHIELDED) {
+        size += (size_t)DNAC_TX_SHIELDED_FIXED_SIZE +
+                tx->shielded_fields.fri_proof_len;
+    }
 
     /* Optional anchored-genesis chain_def trailer (v2 wire extension).
      * Only present when has_chain_def is true (always 0 for non-genesis).
@@ -137,6 +142,89 @@ static size_t calc_tx_size(const dnac_transaction_t *tx) {
     }
 
     return size;
+}
+
+/* ── Dual-mode S5 — shielded section (BIG-ENDIAN lanes; DET-S5-1). ── */
+#define DNAC_SHIELDED_GOLDILOCKS_P 0xFFFFFFFF00000001ULL /* 2^64-2^32+1 */
+
+static void write_shielded_section(uint8_t **pp,
+                                   const dnac_tx_shielded_fields_t *sf) {
+    uint8_t *ptr = *pp;
+    uint8_t be[8];
+    for (unsigned j = 0; j < DNAC_SHIELDED_LANES; j++) {
+        be64_to_bytes(sf->anchor[j], be); WRITE_BLOB(ptr, be, 8);
+    }
+    WRITE_U8(ptr, sf->num_input);
+    for (unsigned s = 0; s < DNAC_SHIELDED_MAX_INPUTS; s++)
+        for (unsigned j = 0; j < DNAC_SHIELDED_LANES; j++) {
+            be64_to_bytes(sf->nf_set[s][j], be); WRITE_BLOB(ptr, be, 8);
+        }
+    WRITE_U8(ptr, sf->num_output);
+    for (unsigned s = 0; s < DNAC_SHIELDED_MAX_OUTPUTS; s++)
+        for (unsigned j = 0; j < DNAC_SHIELDED_LANES; j++) {
+            be64_to_bytes(sf->output_commit[s][j], be); WRITE_BLOB(ptr, be, 8);
+        }
+    be64_to_bytes(sf->fee, be); WRITE_BLOB(ptr, be, 8);
+    for (unsigned j = 0; j < DNAC_SHIELDED_LANES; j++) {
+        be64_to_bytes(sf->tx_binding[j], be); WRITE_BLOB(ptr, be, 8);
+    }
+    uint8_t lb[4] = { (uint8_t)(sf->fri_proof_len >> 24), (uint8_t)(sf->fri_proof_len >> 16),
+                      (uint8_t)(sf->fri_proof_len >> 8),  (uint8_t)(sf->fri_proof_len) };
+    WRITE_BLOB(ptr, lb, 4);
+    if (sf->fri_proof_len && sf->fri_proof)
+        WRITE_BLOB(ptr, sf->fri_proof, sf->fri_proof_len);
+    *pp = ptr;
+}
+
+/* Reject non-canonical lanes (A-9: each 8-byte lane MUST be < p). */
+static int shielded_lane_bad(uint64_t v) { return v >= DNAC_SHIELDED_GOLDILOCKS_P; }
+
+static int read_shielded_section(const uint8_t **pp, const uint8_t *end,
+                                 dnac_tx_shielded_fields_t *sf) {
+    const uint8_t *ptr = *pp;
+    if ((size_t)(end - ptr) < (size_t)DNAC_TX_SHIELDED_FIXED_SIZE) return -1;
+    for (unsigned j = 0; j < DNAC_SHIELDED_LANES; j++) {
+        sf->anchor[j] = be64_from_bytes(ptr); ptr += 8;
+        if (shielded_lane_bad(sf->anchor[j])) return -1;
+    }
+    READ_U8(ptr, sf->num_input);
+    if (sf->num_input > DNAC_SHIELDED_MAX_INPUTS) return -1;
+    for (unsigned s = 0; s < DNAC_SHIELDED_MAX_INPUTS; s++)
+        for (unsigned j = 0; j < DNAC_SHIELDED_LANES; j++) {
+            sf->nf_set[s][j] = be64_from_bytes(ptr); ptr += 8;
+            if (shielded_lane_bad(sf->nf_set[s][j])) return -1;
+            /* DET-S5-3: unused slots (s >= num_input) MUST be zero (canonical). */
+            if (s >= sf->num_input && sf->nf_set[s][j] != 0) return -1;
+        }
+    READ_U8(ptr, sf->num_output);
+    if (sf->num_output > DNAC_SHIELDED_MAX_OUTPUTS) return -1;
+    for (unsigned s = 0; s < DNAC_SHIELDED_MAX_OUTPUTS; s++)
+        for (unsigned j = 0; j < DNAC_SHIELDED_LANES; j++) {
+            sf->output_commit[s][j] = be64_from_bytes(ptr); ptr += 8;
+            if (shielded_lane_bad(sf->output_commit[s][j])) return -1;
+            if (s >= sf->num_output && sf->output_commit[s][j] != 0) return -1;
+        }
+    sf->fee = be64_from_bytes(ptr); ptr += 8;
+    if (shielded_lane_bad(sf->fee)) return -1;
+    for (unsigned j = 0; j < DNAC_SHIELDED_LANES; j++) {
+        sf->tx_binding[j] = be64_from_bytes(ptr); ptr += 8;
+        if (shielded_lane_bad(sf->tx_binding[j])) return -1;
+    }
+    uint32_t len = ((uint32_t)ptr[0] << 24) | ((uint32_t)ptr[1] << 16)
+                 | ((uint32_t)ptr[2] << 8)  | (uint32_t)ptr[3];
+    ptr += 4;
+    if ((size_t)(end - ptr) < (size_t)len) return -1;
+    sf->fri_proof_len = len;
+    if (len) {
+        sf->fri_proof = (uint8_t *)malloc(len);
+        if (!sf->fri_proof) return -1;
+        memcpy(sf->fri_proof, ptr, len);
+        ptr += len;
+    } else {
+        sf->fri_proof = NULL;
+    }
+    *pp = ptr;
+    return 0;
 }
 
 int dnac_tx_serialize(const dnac_transaction_t *tx,
@@ -270,6 +358,12 @@ int dnac_tx_serialize(const dnac_transaction_t *tx,
         ptr += written;
     }
 
+    /* Dual-mode S5. Shielded section (only DNAC_TX_SHIELDED; additive trailer,
+     * placed after all type-appended fields, before the chain_def trailer). */
+    if (tx->type == DNAC_TX_SHIELDED) {
+        write_shielded_section(&ptr, &tx->shielded_fields);
+    }
+
     /* Anchored-genesis chain_def trailer (optional, genesis TX only). */
     WRITE_U8(ptr, tx->has_chain_def ? 1 : 0);
     if (tx->has_chain_def) {
@@ -316,8 +410,11 @@ int dnac_tx_deserialize(const uint8_t *buffer,
     READ_U8(ptr, tx->type);
     /* M-32: Validate tx_type is within known range.
      * Phase 5 Task 16 admitted stake/delegation types (4..9).
-     * Hard-Fork v1 adds DNAC_TX_CHAIN_CONFIG (10). */
-    if (tx->type > DNAC_TX_CHAIN_CONFIG) {
+     * Hard-Fork v1 adds DNAC_TX_CHAIN_CONFIG (10).
+     * Dual-mode S5 adds DNAC_TX_SHIELDED (11) — additive: a node built WITHOUT
+     * this change still rejects type 11 (fail-closed), so V4 stays inert on the
+     * live chain until S6. */
+    if (tx->type > DNAC_TX_SHIELDED) {
         free(tx);
         return DNAC_ERROR_INVALID_PARAM;
     }
@@ -332,6 +429,12 @@ int dnac_tx_deserialize(const uint8_t *buffer,
     uint8_t input_count;
     READ_U8(ptr, input_count);
     if (input_count > DNAC_TX_MAX_INPUTS) {
+        free(tx);
+        return DNAC_ERROR_INVALID_PARAM;
+    }
+    /* D7.1 transparent-exclusion: a shielded TX carries NO transparent inputs —
+     * all value movement lives in the shielded section (no plaintext to smuggle). */
+    if (tx->type == DNAC_TX_SHIELDED && input_count != 0) {
         free(tx);
         return DNAC_ERROR_INVALID_PARAM;
     }
@@ -352,6 +455,11 @@ int dnac_tx_deserialize(const uint8_t *buffer,
     uint8_t output_count;
     READ_U8(ptr, output_count);
     if (output_count > DNAC_TX_MAX_OUTPUTS) {
+        free(tx);
+        return DNAC_ERROR_INVALID_PARAM;
+    }
+    /* D7.1 transparent-exclusion: a shielded TX carries NO transparent outputs. */
+    if (tx->type == DNAC_TX_SHIELDED && output_count != 0) {
         free(tx);
         return DNAC_ERROR_INVALID_PARAM;
     }
@@ -503,6 +611,15 @@ int dnac_tx_deserialize(const uint8_t *buffer,
         ptr += consumed;
     }
 
+    /* Dual-mode S5. Shielded section (only DNAC_TX_SHIELDED; read after the
+     * type-appended fields, before the chain_def trailer — matches serialize). */
+    if (tx->type == DNAC_TX_SHIELDED) {
+        if (read_shielded_section(&ptr, end, &tx->shielded_fields) != 0) {
+            free(tx);
+            return DNAC_ERROR_INVALID_PARAM;
+        }
+    }
+
     /* Optional anchored-genesis chain_def trailer.
      *
      * Backward compat: if ptr reached end, this is a legacy v1 TX with
@@ -531,6 +648,16 @@ int dnac_tx_deserialize(const uint8_t *buffer,
 
     *tx_out = tx;
     return DNAC_SUCCESS;
+}
+
+void dnac_tx_free(dnac_transaction_t *tx) {
+    if (!tx) return;
+    /* Only DNAC_TX_SHIELDED owns a separate heap blob; NULL elsewhere. */
+    if (tx->shielded_fields.fri_proof) {
+        free(tx->shielded_fields.fri_proof);
+        tx->shielded_fields.fri_proof = NULL;
+    }
+    free(tx);
 }
 
 /* dnac_tx_read_committed_fee moved to dnac/transaction.h as static inline

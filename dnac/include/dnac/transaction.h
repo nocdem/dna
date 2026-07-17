@@ -104,6 +104,15 @@ typedef struct {
     uint32_t fri_proof_len;                                                 /**< blob length in bytes */
 } dnac_tx_shielded_fields_t;
 
+/* Fixed (proof-independent) wire size of the shielded section, BIG-ENDIAN:
+ *   anchor(LANES*8) + num_input(1) + nf_set(MI*LANES*8) + num_output(1)
+ *   + output_commit(MO*LANES*8) + fee(8) + tx_binding(LANES*8) + fri_proof_len(4).
+ * Total = 334 B for LANES=4, MI=MO=4. The FRI blob (fri_proof_len bytes) follows. */
+#define DNAC_TX_SHIELDED_FIXED_SIZE                                              \
+    (DNAC_SHIELDED_LANES * 8 + 1 + DNAC_SHIELDED_MAX_INPUTS * DNAC_SHIELDED_LANES * 8 \
+     + 1 + DNAC_SHIELDED_MAX_OUTPUTS * DNAC_SHIELDED_LANES * 8 + 8               \
+     + DNAC_SHIELDED_LANES * 8 + 4)
+
 /* STAKE TX appended fields — wire & preimage constants
  * (design §2.3, Phase 5 Task 16).
  *
@@ -623,6 +632,18 @@ int dnac_tx_serialize(const dnac_transaction_t *tx,
 int dnac_tx_deserialize(const uint8_t *buffer,
                         size_t buffer_len,
                         dnac_transaction_t **tx_out);
+
+/**
+ * @brief Free a transaction, including any heap the shielded section owns.
+ *
+ * dnac_transaction_t is otherwise a single allocation, so pre-S5 code frees it
+ * with plain free(). A DNAC_TX_SHIELDED TX additionally owns shielded_fields.
+ * fri_proof (a separate malloc from dnac_tx_deserialize); this helper releases
+ * it first. Safe on NULL and on non-shielded TXs (fri_proof is NULL there).
+ *
+ * @param tx Transaction to free (may be NULL)
+ */
+void dnac_tx_free(dnac_transaction_t *tx);
 
 /**
  * @brief Compute transaction hash
