@@ -2,6 +2,22 @@
  * @file conf_action_agg_air.h
  * @brief Dual-mode S4 — AGGREGATE Action AIR (C1 ⊕ C3 ⊕ C4), is_zk=0 gate.
  *
+ * ⚠ AUTHORITATIVE-OBJECT NOTE (P3, 2026-07-17). Two formulations of this AIR exist:
+ *   (1) THIS is_zk=0 CONSTRUCTION gate — WIDTH 1915, runtime φ-branches, filled by
+ *       a C scatter/gather. Used ONLY by test_conf_action_agg_air.c. It verifies
+ *       the constraint LOGIC by construction.
+ *   (2) The is_zk=1 PROVEN AIR — WIDTH 1946, committed is_zero SELECTOR columns
+ *       (conf_action_agg_fold.{c,h} + the Rust oracle + stark_prover_agg.c). This is
+ *       what a REAL Plonky3 is_zk=1 proof commits; the C fold+prover BYTE-MATCH it
+ *       (test_conf_action_agg_verify / test_prover_agg) and it was RED-TEAMED
+ *       (S4f 10-agent + the 2026-07-17 re-audit, 0 CRITICAL).
+ * The PROVEN 1946 AIR (2) is the AUTHORITATIVE object and is independently audited;
+ * this 1915 construction gate (1) is ADDITIONAL independent-formulation coverage of
+ * the same constraint system, NOT the proven object. They are hand-corresponded
+ * (the 1946 re-lays-out (1)'s runtime φ-branches as committed selectors) — so when
+ * changing the constraint system, edit BOTH or the byte-match/fold tests will catch
+ * the drift. (Full single-object consolidation = retire (1); deferred.)
+ *
  * The full shielded-spend AIR: the C1 balance/note-commitment/spend-auth AIR
  * (conf_action_air, WIDTH 813) with the C3 Merkle-membership and C4 nullifier
  * sub-proofs embedded as PHASES inside each K=32 note-block, consuming C1's
