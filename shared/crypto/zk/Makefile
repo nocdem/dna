@@ -95,6 +95,7 @@ TESTS = \
     $(BUILD)/test_range_proof_air \
     $(BUILD)/test_conf_root_verify \
     $(BUILD)/test_conf_action_verify \
+    $(BUILD)/test_conf_action_agg_verify \
     $(BUILD)/test_prover_conf \
     $(BUILD)/test_prover_action \
     $(BUILD)/test_prover_salted_commit \
@@ -431,6 +432,10 @@ $(BUILD)/test_conf_root_verify: tests/test_conf_root_verify.c stark_constraints.
 
 $(BUILD)/test_conf_action_verify: tests/test_conf_action_verify.c stark_constraints.h stark_constraints.c conf_action_fold.h conf_action_fold.c conf_action_air.h poseidon2_fold.h poseidon2_fold.c poseidon2_goldilocks.h poseidon2_goldilocks.c field_goldilocks.h field_goldilocks.c shielded_domsep.h | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) tests/test_conf_action_verify.c stark_constraints.c conf_action_fold.c poseidon2_fold.c poseidon2_goldilocks.c field_goldilocks.c -o $@
+
+# Dual-mode S4b — aggregate Action AIR fold vs REAL is_zk=1 proof (C1 reuse).
+$(BUILD)/test_conf_action_agg_verify: tests/test_conf_action_agg_verify.c stark_constraints.h stark_constraints.c conf_action_agg_fold.h conf_action_agg_fold.c conf_action_fold.h conf_action_fold.c conf_action_agg_air.h conf_action_air.h conf_membership_air.h conf_nullifier_air.h poseidon2_fold.h poseidon2_fold.c poseidon2_goldilocks.h poseidon2_goldilocks.c field_goldilocks.h field_goldilocks.c shielded_domsep.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_conf_action_agg_verify.c stark_constraints.c conf_action_agg_fold.c conf_action_fold.c poseidon2_fold.c poseidon2_goldilocks.c field_goldilocks.c -o $@
 
 CONF_AIR_STACK = conf_root_air.c conf_commit_air.c conf_balance_air.c conf_txbind.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c poseidon2_goldilocks.c
 
@@ -959,6 +964,12 @@ test: all
 	@echo "  folded*inv_van == quotient(zeta) (width 813, num_qc=8) + negatives"
 	@echo "============================================================"
 	@$(BUILD)/test_conf_action_verify tools/vectors/conf_action_air_zk.json
+	@echo
+	@echo "============================================================"
+	@echo "S4b.3 dual-mode AGGREGATE fold — fp2 verifier-fold vs REAL is_zk=1 proof"
+	@echo "  folded*inv_van == quotient(zeta) (width 1936, num_qc=8) + negatives"
+	@echo "============================================================"
+	@$(BUILD)/test_conf_action_agg_verify tools/vectors/conf_action_agg_air_zk.json
 	@echo
 	@echo "============================================================"
 	@echo "S1e.4 dual-mode C1 PROVER — pure-C prove byte-match vs REAL Plonky3"

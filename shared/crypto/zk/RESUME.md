@@ -446,8 +446,21 @@
       [0,num_input) bijective to inputs; a spurious nf has no slot).** Routing bind
       degree gate_nf(2)*slot_sel(1)*1 = 4, so **num_qc still MEASURED == 8.** Real
       prove->verify=Ok, tampered-reject, byte-identical regen; vector hash re-pinned
-      (be497233). Full `make test` GREEN. **Next: S4b.3** C fp2 fold
-      (conf_action_agg_fold.c) verifying `conf_action_agg_air_zk.json`.
+      (be497233). Full `make test` GREEN.
+    - **🎯 S4b.3 DONE (2026-07-17) — C fp2 verifier-fold byte-match.**
+      `conf_action_agg_fold.{c,h}` (DNAC_CONF_ACTION_AGG_FOLD_AIR, width 1936,
+      21 publics, main_next=1) emits the aggregate constraint polynomial in fp2
+      at zeta in the EXACT oracle emission order. **C1 region reused by calling
+      `dnac_conf_action_fold_air_eval(f)`** (the C analog of the oracle's
+      `ConfActionAir.eval(builder)`), then the aggregate constraints. ZK trace
+      layout (CONF_AGGZK_*, distinct from the 1915 construction gate) lives in the
+      fold header. `test_conf_action_agg_verify` (T6): **folded*inv_van ==
+      quotient(zeta) on the REAL Plonky3 proof — PASS on first run**, pinning both
+      constraint CONTENT and EMISSION ORDER. T7 negatives: tampered
+      C1/membership-CUR/nullifier-NF/N_input cell + tampered anchor public -> OOD;
+      wrong publics count / missing trace_next -> SHAPE. Full `make test` GREEN
+      0-warn. **Next: S4b.4** pure-C prover (stark_prover_agg.c) byte-matching
+      this vector (extend stark_prover_action.c; new draw layout for width 1936).
     - **⚠ S4b.2 DESIGN FINDING (2026-07-17) — the real-STARK lift is NOT a
       mechanical S1e-mirror; it has genuine soundness-critical design content the
       S4a construction gate hid (S4a reads φ + r DIRECTLY in a C loop; the fold is
