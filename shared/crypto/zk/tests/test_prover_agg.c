@@ -136,15 +136,42 @@ int main(int argc,char **argv){
 
     /* Instance selector: default 1-input (dump_conf_action_agg_air_zk); "2in" =
      * the two-input KAT (dump_conf_action_agg_air_zk_2in) — both at H=128. */
-    const int two_in = (argc >= 4 && strcmp(argv[3], "2in") == 0);
-    const unsigned log_height = 7;
+    const int two_in  = (argc >= 4 && strcmp(argv[3], "2in") == 0);
+    const int four_in = (argc >= 4 && strcmp(argv[3], "4in") == 0);
+    const unsigned log_height = four_in ? 8 : 7;
     const size_t height = (size_t)1 << log_height;
-    uint64_t value[3], addr[3*4], rcm[3*2], pos[3], nk[3], ak[3];
-    uint8_t roles[3];
-    uint64_t memb_siblings[3*4*4];
+    uint64_t value[5], addr[5*4], rcm[5*2], pos[5], nk[5], ak[5];
+    uint8_t roles[5];
+    uint64_t memb_siblings[5*4*4];
     size_t num_notes = 3;
     memset(memb_siblings, 0, sizeof memb_siblings);
-    if (two_in) {
+    if (four_in) {
+        /* 4 INPUT (25×4) = OUTPUT 100; all four in ONE depth-4 tree at pos 0..3
+         * (leaves 0/1 and 2/3 pair, subtree roots pair at level 1) → one anchor.
+         * Fills N_input to MAX_INPUTS=4 (all 4 slots) — the GAP-1 boundary. */
+        num_notes = 5;
+        for(int i=0;i<4;i++){ value[i]=25; roles[i]=CONF_ACTION_ROLE_INPUT; pos[i]=(uint64_t)i; }
+        value[4]=100; roles[4]=CONF_ACTION_ROLE_OUTPUT; pos[4]=0;
+        const uint64_t k[5]={0x22222222ULL,0x33333333ULL,0x44444444ULL,0x55555555ULL,0}; memcpy(nk,k,sizeof k);
+        const uint64_t a[5]={0x11111111ULL,0x12121212ULL,0x13131313ULL,0x14141414ULL,0}; memcpy(ak,a,sizeof a);
+        const uint64_t rc[5*2]={0x11,0x12, 0x13,0x14, 0x15,0x16, 0x17,0x18, 0x21,0x22}; memcpy(rcm,rc,sizeof rc);
+        uint64_t ad[5*4]; memset(ad,0,sizeof ad);
+        ad[4*4+0]=0xAA01; ad[4*4+1]=0xAA02; ad[4*4+2]=0xAA03; ad[4*4+3]=0xAA04; memcpy(addr,ad,sizeof ad);
+        /* cm0..3 + internal nodes N01=compress(cm0,cm1), N23=compress(cm2,cm3). */
+        uint64_t cm[4][4], adr[4];
+        for(int i=0;i<4;i++){ conf_action_derive_addr(ak[i],nk[i],adr); note_commit(25,adr,&rcm[i*2],cm[i]); }
+        uint64_t n01[4], n23[4];
+        note_merkle_compress(cm[0],cm[1],n01);
+        note_merkle_compress(cm[2],cm[3],n23);
+        const uint64_t e2[4]={0x3001,0x3002,0x3003,0x3004}, e3[4]={0x4001,0x4002,0x4003,0x4004};
+        uint64_t *ms=memb_siblings;
+        for(int j=0;j<4;j++){
+            ms[0*16+0*4+j]=cm[1][j]; ms[0*16+1*4+j]=n23[j]; ms[0*16+2*4+j]=e2[j]; ms[0*16+3*4+j]=e3[j];
+            ms[1*16+0*4+j]=cm[0][j]; ms[1*16+1*4+j]=n23[j]; ms[1*16+2*4+j]=e2[j]; ms[1*16+3*4+j]=e3[j];
+            ms[2*16+0*4+j]=cm[3][j]; ms[2*16+1*4+j]=n01[j]; ms[2*16+2*4+j]=e2[j]; ms[2*16+3*4+j]=e3[j];
+            ms[3*16+0*4+j]=cm[2][j]; ms[3*16+1*4+j]=n01[j]; ms[3*16+2*4+j]=e2[j]; ms[3*16+3*4+j]=e3[j];
+        }
+    } else if (two_in) {
         /* 2 INPUT (60+40) = OUTPUT 100; the two inputs are level-0 SIBLINGS of
          * each other (pos 0 and 1) so both walks converge to ONE anchor. */
         const uint64_t v[3]={60,40,100};       memcpy(value,v,sizeof v);
@@ -197,7 +224,7 @@ int main(int argc,char **argv){
 
     int fails=0;
     printf("── aggregate instance (%s): height=%zu num_notes=%zu degree_bits=%zu draws=%zu\n",
-           two_in?"2-INPUT":"1-input", height, num_notes, fx->degree_bits, need);
+           four_in?"4-INPUT":two_in?"2-INPUT":"1-input", height, num_notes, fx->degree_bits, need);
 
     dnac_agg_prover_proof_t *pf=NULL;
     dnac_prover_status_t st=dnac_agg_prover_prove(&inst,&pf);
@@ -247,7 +274,7 @@ int main(int argc,char **argv){
      * fail-close BEFORE a proof is produced. (The complementary "tampered proof
      * -> OOD" half is test_conf_action_agg_verify T7; construction-gate mint /
      * double-spend / nf-drop/add soundness is test_conf_action_agg_air 14/14.) */
-    if(!two_in){
+    if(!two_in && !four_in){
         int ok=1;
         dnac_agg_prover_proof_t *bad=NULL;
         /* (a) non-conserving balance: INPUT 100 != OUTPUT 60 + FEE 30. */

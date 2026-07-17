@@ -991,6 +991,9 @@ test: all
 	@echo "  S4b.6 multi-input KAT — 2 INPUT notes (level-0 siblings, one anchor):"
 	@$(BUILD)/test_prover_agg tools/vectors/conf_action_agg_air_zk_2in.json tools/vectors/smallrng_goldilocks.json 2in
 	@echo
+	@echo "  S4b.6 boundary KAT — 4 INPUT notes (one depth-4 tree, N_input=MAX_INPUTS=4):"
+	@$(BUILD)/test_prover_agg tools/vectors/conf_action_agg_air_zk_4in.json tools/vectors/smallrng_goldilocks.json 4in
+	@echo
 	@echo "============================================================"
 	@echo "S2 dual-mode C3 — Poseidon2 Merkle-path membership (is_zk=0)"
 	@echo "  honest path accepted (root byte-matches S0) + 9 attacks rejected"

@@ -413,6 +413,13 @@ enum Cmd {
         #[arg(long)]
         out: PathBuf,
     },
+    /// DUAL-MODE S4b.6 — FOUR-input aggregate KAT (all in one depth-4 tree;
+    /// N_input=MAX_INPUTS=4, all 4 slots used — the GAP-1 boundary). num_qc 8.
+    #[command(name = "dump-conf-action-agg-air-zk-4in")]
+    DumpConfActionAggAirZk4in {
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// KAT draw stream (D1-B): the first `count` Goldilocks samples of a fresh
     /// SmallRng::seed_from_u64(1) — the EXACT stream a real HidingFriPcs prove
     /// consumes (with_random_cols / codeword / blinding / R draws in commit
@@ -630,6 +637,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Cmd::DumpConfActionAggAirZk2in { out } => {
             stark_priming::dump_conf_action_agg_air_zk_2in(&out)?
+        }
+        Cmd::DumpConfActionAggAirZk4in { out } => {
+            stark_priming::dump_conf_action_agg_air_zk_4in(&out)?
         }
         Cmd::DumpSmallrngGoldilocks { count, out } => {
             stark_priming::dump_smallrng_goldilocks(count, &out)?
@@ -14793,6 +14803,93 @@ mod stark_priming {
             Goldilocks::from_u64(CA_DOMSEP_NOTE), n1[4], n1[5], n1[6], n1[7],
         ]);
         [cm[0], cm[1], cm[2], cm[3]]
+    }
+
+    /// Merkle 2-to-1 compress (S0 note_merkle_compress): PaddingFreeSponge<8,4,4>
+    /// over (left[4] ‖ right[4]). Used to build the internal nodes of multi-input
+    /// Merkle instances (S4b.6 4-input KAT).
+    fn agg_compress(left: [Goldilocks; 4], right: [Goldilocks; 4]) -> [Goldilocks; 4] {
+        let rc = RoundConstants::<Goldilocks, 8, 4, 22>::new(
+            GOLDILOCKS_POSEIDON2_RC_8_EXTERNAL_INITIAL,
+            GOLDILOCKS_POSEIDON2_RC_8_INTERNAL,
+            GOLDILOCKS_POSEIDON2_RC_8_EXTERNAL_FINAL,
+        );
+        let perm = default_goldilocks_poseidon2_8();
+        let p2 = |input: [Goldilocks; 8]| -> [Goldilocks; 8] {
+            let m = p3_poseidon2_air::generate_trace_rows::<
+                Goldilocks, GenericPoseidon2LinearLayersGoldilocks, 8, 7, 1, 4, 22,
+            >(vec![input], &rc, 0);
+            let mut e = input;
+            perm.permute_mut(&mut e);
+            core::array::from_fn(|k| m.values[P2_END_POST3 + k])
+        };
+        let s1 = p2([left[0], left[1], left[2], left[3],
+                     Goldilocks::ZERO, Goldilocks::ZERO, Goldilocks::ZERO, Goldilocks::ZERO]);
+        let o = p2([right[0], right[1], right[2], right[3], s1[4], s1[5], s1[6], s1[7]]);
+        [o[0], o[1], o[2], o[3]]
+    }
+
+    /// S4b.6 boundary KAT: FOUR INPUT notes (25×4 = OUTPUT 100) at positions 0..3
+    /// of ONE depth-4 tree (leaves 0/1 and 2/3 pair up; the two subtree roots pair
+    /// at level 1), so all four converge to ONE anchor. Fills N_input to
+    /// MAX_INPUTS=4 (all four nf slots used) — the GAP-1 boundary. h=256 (8 blocks).
+    pub fn dump_conf_action_agg_air_zk_4in(
+        out_path: &PathBuf,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        conf_action_check_domseps()?;
+        conf_agg_check_domseps()?;
+        let mk = |ak, nk, rcm: [u64; 2]| ActionNote {
+            role: CA_ROLE_INPUT, value: 25, addr: [0; 4], rcm, pos: 0, nk, ak };
+        let mut notes = [
+            mk(0x1111_1111, 0x2222_2222, [0x11, 0x12]),
+            mk(0x1212_1212, 0x3333_3333, [0x13, 0x14]),
+            mk(0x1313_1313, 0x4444_4444, [0x15, 0x16]),
+            mk(0x1414_1414, 0x5555_5555, [0x17, 0x18]),
+            ActionNote { role: CA_ROLE_OUTPUT, value: 100,
+                         addr: [0xAA01, 0xAA02, 0xAA03, 0xAA04],
+                         rcm: [0x21, 0x22], pos: 0, nk: 0, ak: 0 },
+        ];
+        notes[0].pos = 0; notes[1].pos = 1; notes[2].pos = 2; notes[3].pos = 3;
+        let cm: [[Goldilocks; 4]; 4] =
+            core::array::from_fn(|i| agg_input_note_cm(notes[i].ak, notes[i].nk, 25, notes[i].rcm));
+        let u = |g: [Goldilocks; 4]| -> [u64; 4] {
+            core::array::from_fn(|j| p3_field::PrimeField64::as_canonical_u64(&g[j]))
+        };
+        let n01 = u(agg_compress(cm[0], cm[1]));
+        let n23 = u(agg_compress(cm[2], cm[3]));
+        let (c0, c1, c2, c3) = (u(cm[0]), u(cm[1]), u(cm[2]), u(cm[3]));
+        let e2: [u64; 4] = [0x3001, 0x3002, 0x3003, 0x3004];
+        let e3: [u64; 4] = [0x4001, 0x4002, 0x4003, 0x4004];
+        // in0:[cm1,N23,E2,E3] in1:[cm0,N23,E2,E3] in2:[cm3,N01,E2,E3] in3:[cm2,N01,E2,E3]
+        let memb_siblings: [[[u64; AGG_MEMB_LANES]; AGG_D]; 5] = [
+            [c1, n23, e2, e3],
+            [c0, n23, e2, e3],
+            [c3, n01, e2, e3],
+            [c2, n01, e2, e3],
+            [[0; 4]; AGG_D],
+        ];
+        let (trace, anchor, num_input, nf_slots) =
+            generate_conf_action_agg_trace(8, &notes, &memb_siblings); // H=256=8 blocks
+        let mut pis: Vec<Goldilocks> = Vec::with_capacity(AGG_NUM_PUBLICS);
+        pis.extend_from_slice(&anchor);
+        pis.push(Goldilocks::from_u64(num_input));
+        for s in 0..AGG_MAX_INPUTS {
+            for j in 0..AGG_NF_LANES {
+                pis.push(nf_slots[s][j]);
+            }
+        }
+        dump_is_zk_stark(
+            &ConfActionAggAir,
+            trace,
+            pis,
+            "conf_action_agg_air_zk_4in",
+            "DUAL-MODE S4b.6 — FOUR-input aggregate Action AIR (all four in one \
+             depth-4 tree → one anchor; N_input=MAX_INPUTS=4, all 4 nf slots used; \
+             the GAP-1 boundary)",
+            "DUAL-MODE S4b.6 — 4-input aggregate real-STARK lift (h=256, num_qc=8)",
+            Some(8),
+            out_path,
+        )
     }
 
     /// S4b.6 multi-input KAT: TWO INPUT notes (60 + 40 = OUTPUT 100, fee 0) that
