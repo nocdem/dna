@@ -252,11 +252,15 @@ void gold_fp2_batch_inv_general(const gold_fp2_t *x, gold_fp2_t *result, size_t 
  * passes lb_n into the small-path function. This C port collapses dispatch +
  * small-path into one function.
  *
- * Oracle byte-match against `p3_util::reverse_slice_index_bits` is REQUIRED
- * before fri_fold consumes this. KAT tests in test_zk_field_helpers.c verify
- * the permutation matches a reference-derived index map (vals[i] == bit_reverse(i)
- * when initial vals = [0,1,...,n-1]) but do not substitute for the Plonky3
- * oracle gate.
+ * Oracle coverage (status): this is now consumed by fri_fold.c AND stark_prover.c,
+ * BOTH of which are byte-matched against real Plonky3 vectors
+ * (test_fri_fold_row_oracle.c / test_fri_fold_matrix_oracle.c;
+ * test_prover_prove.c) — a wrong permutation here would break those byte-matches.
+ * So this port is TRANSITIVELY oracle-gated. The direct KAT in
+ * test_zk_field_helpers.c additionally checks the defining property
+ * (vals[i] == bit_reverse(i) for vals = [0,1,...,n-1]). (No standalone
+ * dump-reverse-slice oracle vector — the transitive fri_fold/prover gate is
+ * stronger, since it exercises the permutation inside a full real proof.)
  */
 void reverse_slice_index_bits_fp(gold_fp_t *vals, size_t n) {
     if (n == 0) {

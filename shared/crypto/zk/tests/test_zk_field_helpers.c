@@ -10,9 +10,11 @@
  *   - gold_fp2_halve (per-component property)
  *   - gold_fp_from_usize (KAT + canonicalization)
  *
- * Phase A tests are self-contained (no oracle JSON). Oracle byte-match for
- * helpers that have Plonky3 internal output (reverse_slice_index_bits, etc.)
- * is deferred to Phase B + later.
+ * These direct tests check each helper's defining property (no standalone oracle
+ * JSON). The Plonky3-consuming helpers (reverse_slice_index_bits, halve,
+ * batch_inv, shifted_powers) are ALSO transitively oracle-gated: fri_fold.c and
+ * stark_prover.c consume them and are byte-matched to real Plonky3 vectors
+ * (test_fri_fold_*_oracle.c, test_prover_prove.c) — an error here breaks those.
  *
  * Exit codes:
  *   0  all cases passed
