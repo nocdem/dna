@@ -382,9 +382,20 @@
       red-team-critical "phase selectors must be forced" property). D=CONF_AGG_
       TREE_DEPTH=4 (test value; consensus-pinned at S6). `test_conf_action_agg_air`:
       honest eval==0 + C1-BAL tamper caught (reuse) + is_nf forge/drop/inv-tamper
-      caught. Membership+nullifier regions RESERVED (zeroed). **NEXT: S4a.2** C3
-      membership phases (φ=1..D) + the §3 POSACC init/stop/wrap gating (the design
-      red-team F6 double-spend fix); then S4a.3 nullifier + exact-count + publics.
+      caught. Membership+nullifier regions RESERVED (zeroed).
+    - **S4a.2 DONE (2026-07-17) — C3 membership embedded + F6 double-spend CLOSED.**
+      conf_action_agg generate walks each INPUT block's cm_carry up D levels
+      (φ=1..D) with per-note siblings → computes the common anchor; eval runs the
+      membership constraints phase-gated on [φ∈1..D]·IS_INPUT (poseidon MC1/MC2
+      always-on, inert rows = zero-perm; pins gated). **§3 POSACC init/stop/wrap
+      gating IMPLEMENTED (the design red-team F6 fix):** φ=1 PURE-INIT
+      `POSACC==bit·2⁰` (never reads the φ=0 C1 row), φ>1 chain, `(1−active)·POSACC
+      ==0` inert, φ=D `POSACC==pos_carry`. Leaf φ=1 `CUR==cm_carry` (G-S4-1), root
+      φ=D `MC2.out==anchor`. `test_conf_action_agg_air` (8/8): honest eval==0 +
+      **F6 POSACC free-base double-spend CAUGHT** + leaf/root/BIT/inert tampers
+      caught. Full `make test` GREEN 0-warn. **NEXT: S4a.3** C4 nullifier phase
+      (φ=D+1, cm/pos/nk==carries) + nullifier EXACT-COUNT bijective bind + the
+      anchor/nf public interface; then S4b-e (S1e precedent) → S4f red-team.
       recorded composition obligations (leaf==cm_carry, pin D, nullify iff IS_INPUT).
   - **THEN:** S2 C3 membership (+ M1/M2 goals, + E5 point-read reader), S3 C4
     nullifier, S4 aggregate prover/verifier (+ H2/H3), S5 V4 wire, S6 consensus

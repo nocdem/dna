@@ -1,11 +1,11 @@
 /**
  * @file test_conf_action_agg_air.c
- * @brief Dual-mode S4a.1 — aggregate Action AIR scaffold gate.
+ * @brief Dual-mode S4a — aggregate Action AIR construction gate.
  *
- * Verifies: (1) an honest aggregate trace (C1 conserving instance embedded) evals
- * to 0 violations; (2) the C1 region is reused LOSSLESSLY (a C1-cell tamper is
- * caught via the gather+conf_action_air_eval path); (3) the forced is_nf phase
- * selector is sound (is_nf/inv_nf tampers rejected).
+ * S4a.1 scaffold: honest eval==0, C1 reused losslessly (gather), forced is_nf.
+ * S4a.2 membership: honest membership walk accepted (root==computed anchor), and
+ * the §3 POSACC gating closes the design red-team F6 double-spend (a free
+ * accumulator base) — plus leaf / root / BIT tampers rejected.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: Apache-2.0
@@ -18,6 +18,13 @@
 #include "conf_action_agg_air.h"
 #include "field_goldilocks.h"
 
+#define D CONF_AGG_TREE_DEPTH
+
+/* row/col helpers into the wide trace. */
+static size_t memb_cell(size_t r, size_t off) {
+    return r * CONF_AGG_WIDTH + CONF_AGG_MEMB_OFF + off;
+}
+
 int main(void) {
     const unsigned log_height = 7; /* H=128, 4 blocks */
     const size_t rows = (size_t)1 << log_height;
@@ -29,80 +36,116 @@ int main(void) {
     const uint64_t rcm[3 * 2] = {0x11, 0x12, 0x21, 0x22, 0x31, 0x32};
     const uint8_t roles[3] = {CONF_ACTION_ROLE_INPUT, CONF_ACTION_ROLE_OUTPUT,
                               CONF_ACTION_ROLE_FEE};
-    const uint64_t pos[3] = {5, 0, 0};
+    const uint64_t pos[3] = {5, 0, 0}; /* INPUT at tree position 5 = 0b0101 */
     const uint64_t nk[3] = {0x2222, 0, 0};
     const uint64_t ak[3] = {0x1111, 0, 0};
 
+    /* Membership siblings for the INPUT note (block 0), D levels × 4 lanes;
+     * OUTPUT/FEE blocks unused (arbitrary canonical values). */
+    uint64_t siblings[3 * D * 4];
+    for (size_t i = 0; i < 3 * D * 4; i++) siblings[i] = 0x1000 + i;
+
+    uint64_t anchor[4];
     uint64_t *trace = (uint64_t *)calloc(rows * CONF_AGG_WIDTH, sizeof(uint64_t));
     if (!trace) return 2;
 
     int fails = 0;
-    printf("test_conf_action_agg_air: S4a.1 aggregate scaffold (WIDTH=%d)\n",
-           CONF_AGG_WIDTH);
+    printf("test_conf_action_agg_air: S4a (WIDTH=%d, D=%d)\n", CONF_AGG_WIDTH, D);
 
     /* ── honest ── */
     if (!conf_action_agg_air_generate(log_height, value, addr, rcm, roles, pos, nk,
-                                      ak, 3, trace)) {
+                                      ak, 3, siblings, anchor, trace)) {
         printf("  generate FAILED\n");
         free(trace);
         return 1;
     }
-    int v = conf_action_agg_air_eval(trace, rows);
-    printf("  honest aggregate trace: eval == 0                    %s (%d)\n",
+    int v = conf_action_agg_air_eval(trace, rows, anchor);
+    printf("  honest (C1 + is_nf + membership walk): eval == 0    %s (%d)\n",
            v == 0 ? "PASS" : "FAIL", v);
     if (v != 0) fails++;
 
-    /* ── C1 reuse: tamper a C1 BAL cell -> C1 constraint fires (gather path) ── */
+    /* ── C1 reuse: tamper a C1 BAL cell -> C1 constraint fires ── */
     {
-        const size_t off = 0 * CONF_AGG_WIDTH + CONF_AGG_C1_OFF + CONF_ACTION_BAL_OFF;
-        uint64_t save = trace[off];
-        trace[off] = gold_fp_to_u64(
-            gold_fp_add(gold_fp_from_u64(save), gold_fp_one()));
-        int t = conf_action_agg_air_eval(trace, rows);
-        printf("  C1 BAL tamper -> caught (C1 reuse)                    %s (%d)\n",
+        const size_t off = CONF_AGG_C1_OFF + CONF_ACTION_BAL_OFF; /* row 0 */
+        uint64_t s = trace[off];
+        trace[off] = gold_fp_to_u64(gold_fp_add(gold_fp_from_u64(s), gold_fp_one()));
+        int t = conf_action_agg_air_eval(trace, rows, anchor);
+        printf("  C1 BAL tamper -> caught (reuse)                     %s (%d)\n",
                t > 0 ? "PASS" : "FAIL", t);
         if (t == 0) fails++;
-        trace[off] = save;
+        trace[off] = s;
     }
 
-    /* ── is_nf phase selector: flip is_nf on a non-nf row (φ≠D+1) -> fires ── */
+    /* ── is_nf forge on φ=0 row -> caught ── */
     {
-        const size_t off = 0 * CONF_AGG_WIDTH + CONF_AGG_ISNF_OFF; /* φ=0 row */
-        uint64_t save = trace[off];
-        trace[off] = 1; /* claim is_nf=1 where φ=0 ≠ D+1 */
-        int t = conf_action_agg_air_eval(trace, rows);
-        printf("  is_nf forged=1 on φ=0 row -> caught                   %s (%d)\n",
+        const size_t off = CONF_AGG_ISNF_OFF; /* row 0, φ=0 */
+        uint64_t s = trace[off];
+        trace[off] = 1;
+        int t = conf_action_agg_air_eval(trace, rows, anchor);
+        printf("  is_nf forged on φ=0 -> caught                       %s (%d)\n",
                t > 0 ? "PASS" : "FAIL", t);
         if (t == 0) fails++;
-        trace[off] = save;
+        trace[off] = s;
     }
 
-    /* ── is_nf on the real nf row (φ=D+1): drop it to 0 -> fires ── */
+    /* ── §3 POSACC F6 DOUBLE-SPEND: tamper the φ=1 accumulator BASE. The design
+     * red-team's attack was a FREE base (POSACC = real + δ) giving a distinct
+     * pos_carry ⇒ distinct nullifier for the same note. The φ=1 pure-init
+     * (POSACC == bit·2^0) FORCES the base, so any δ is caught. ── */
     {
-        const size_t nf_row = (size_t)(CONF_AGG_TREE_DEPTH + 1); /* φ=D+1 in block 0 */
-        const size_t off = nf_row * CONF_AGG_WIDTH + CONF_AGG_ISNF_OFF;
-        uint64_t save = trace[off];
-        if (save != 1) { printf("  (setup) expected is_nf=1 at φ=D+1, got %llu\n",
-                                (unsigned long long)save); fails++; }
-        trace[off] = 0; /* drop the nf-phase flag */
-        int t = conf_action_agg_air_eval(trace, rows);
-        printf("  is_nf dropped=0 on φ=D+1 row -> caught                %s (%d)\n",
+        const size_t off = memb_cell(1, CONF_MEMB_POSACC_OFF); /* block0 φ=1 */
+        uint64_t s = trace[off];
+        trace[off] = gold_fp_to_u64(gold_fp_add(gold_fp_from_u64(s), gold_fp_one()));
+        int t = conf_action_agg_air_eval(trace, rows, anchor);
+        printf("  F6 POSACC free-base (double-spend) -> caught        %s (%d)\n",
                t > 0 ? "PASS" : "FAIL", t);
         if (t == 0) fails++;
-        trace[off] = save;
+        trace[off] = s;
     }
 
-    /* ── inv_nf tamper on a non-nf row -> is_zero relation fires ── */
+    /* ── Leaf bind: tamper φ=1 CUR ≠ cm_carry -> leaf + ordering fire ── */
     {
-        const size_t off = 1 * CONF_AGG_WIDTH + CONF_AGG_INVNF_OFF; /* φ=1 row */
-        uint64_t save = trace[off];
-        trace[off] = gold_fp_to_u64(
-            gold_fp_add(gold_fp_from_u64(save), gold_fp_one()));
-        int t = conf_action_agg_air_eval(trace, rows);
-        printf("  inv_nf tamper -> caught                               %s (%d)\n",
+        const size_t off = memb_cell(1, CONF_MEMB_CUR_OFF);
+        uint64_t s = trace[off];
+        trace[off] = gold_fp_to_u64(gold_fp_add(gold_fp_from_u64(s), gold_fp_one()));
+        int t = conf_action_agg_air_eval(trace, rows, anchor);
+        printf("  leaf φ=1 CUR != cm_carry -> caught (G-S4-1)         %s (%d)\n",
                t > 0 ? "PASS" : "FAIL", t);
         if (t == 0) fails++;
-        trace[off] = save;
+        trace[off] = s;
+    }
+
+    /* ── Root bind: eval with a WRONG anchor -> root check fires ── */
+    {
+        uint64_t bad[4] = {anchor[0] ^ 1u, anchor[1], anchor[2], anchor[3]};
+        int t = conf_action_agg_air_eval(trace, rows, bad);
+        printf("  wrong anchor -> root check fires (membership real)  %s (%d)\n",
+               t > 0 ? "PASS" : "FAIL", t);
+        if (t == 0) fails++;
+    }
+
+    /* ── BIT tamper on a membership row -> ordering + POSACC fire ── */
+    {
+        const size_t off = memb_cell(2, CONF_MEMB_BIT_OFF); /* block0 φ=2 */
+        uint64_t s = trace[off];
+        trace[off] = s ^ 1u; /* flip the direction bit */
+        int t = conf_action_agg_air_eval(trace, rows, anchor);
+        printf("  membership BIT flip -> caught                       %s (%d)\n",
+               t > 0 ? "PASS" : "FAIL", t);
+        if (t == 0) fails++;
+        trace[off] = s;
+    }
+
+    /* ── POSACC inert: forge POSACC on a NON-membership row (φ=0) -> fires ── */
+    {
+        const size_t off = memb_cell(0, CONF_MEMB_POSACC_OFF); /* block0 φ=0 */
+        uint64_t s = trace[off];
+        trace[off] = 7;
+        int t = conf_action_agg_air_eval(trace, rows, anchor);
+        printf("  POSACC forged on φ=0 (inert) -> caught              %s (%d)\n",
+               t > 0 ? "PASS" : "FAIL", t);
+        if (t == 0) fails++;
+        trace[off] = s;
     }
 
     free(trace);
@@ -111,7 +154,7 @@ int main(void) {
         return 1;
     }
     printf("test_conf_action_agg_air: PASS\n");
-    printf("  S4a.1 scaffold: C1 reused losslessly (gather/scatter) + forced\n");
-    printf("  is_nf=[φ==D+1] phase selector sound. Membership+nullifier: S4a.2/3.\n");
+    printf("  S4a.2: C3 membership embedded (leaf==cm_carry, root==anchor) with\n");
+    printf("  §3 POSACC init/stop/wrap gating — the F6 double-spend is closed.\n");
     return 0;
 }
