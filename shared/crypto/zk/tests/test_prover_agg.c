@@ -218,6 +218,38 @@ int main(int argc,char **argv){
         if(!ok)fails++;
     }
 
+    /* T8 (S4b.5) — cheat instances FAIL to prove through the real prover. The
+     * honest-prover preconditions (conf_action_air_generate: balance, range,
+     * budget, canonical lanes) plus the aggregate anchor-consistency check
+     * fail-close BEFORE a proof is produced. (The complementary "tampered proof
+     * -> OOD" half is test_conf_action_agg_verify T7; construction-gate mint /
+     * double-spend / nf-drop/add soundness is test_conf_action_agg_air 14/14.) */
+    {
+        int ok=1;
+        dnac_agg_prover_proof_t *bad=NULL;
+        /* (a) non-conserving balance: INPUT 100 != OUTPUT 60 + FEE 30. */
+        const uint64_t v_bad[3]={100,60,30};
+        dnac_agg_prover_instance_t ci=inst; ci.value=v_bad;
+        if(dnac_agg_prover_prove(&ci,&bad)!=DNAC_PROVER_ERR_RANGE)ok=0;
+        /* (b) value >= 2^52 (range overflow). */
+        const uint64_t v_ovf[3]={ (uint64_t)1<<52, ((uint64_t)1<<52)-30, 30 };
+        ci=inst; ci.value=v_ovf;
+        if(dnac_agg_prover_prove(&ci,&bad)!=DNAC_PROVER_ERR_RANGE)ok=0;
+        /* (c) NON-CANONICAL OUTPUT addr lane (== p): generate fail-closes so the
+         * C<->Rust trace byte-identity can never break (red-team S1f F1). */
+        const uint64_t a_nc[3*4]={ 0,0,0,0, GOLDILOCKS_P,0xAA02,0xAA03,0xAA04,
+                                   0xFEE1,0xFEE2,0xFEE3,0xFEE4 };
+        ci=inst; ci.addr=a_nc;
+        if(dnac_agg_prover_prove(&ci,&bad)!=DNAC_PROVER_ERR_RANGE)ok=0;
+        /* (d) aggregate-specific: a NULL sibling set with an INPUT note -> the
+         * membership walk cannot run -> agg_zk_generate fail-closes (RANGE). */
+        ci=inst; ci.memb_siblings=NULL;
+        if(dnac_agg_prover_prove(&ci,&bad)!=DNAC_PROVER_ERR_RANGE)ok=0;
+        printf("  T8 (S4b.5) cheat instances fail to prove (4/4 RANGE)  %s\n",
+               ok?"PASS":"FAIL");
+        if(!ok)fails++;
+    }
+
     dnac_agg_prover_proof_free(pf);
     free(draws);
     if(fails){ printf("test_prover_agg: FAIL (%d)\n",fails); free(fx); return 1; }
