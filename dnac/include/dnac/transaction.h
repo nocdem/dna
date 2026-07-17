@@ -646,6 +646,26 @@ int dnac_tx_deserialize(const uint8_t *buffer,
 void dnac_tx_free(dnac_transaction_t *tx);
 
 /**
+ * @brief Compute the shielded statement-binding sighash (dual-mode S5, design D3).
+ *
+ * SHA3-512 over the canonical preimage
+ *   DNAC_SIGHASH_V4\0 ‖ chain_id[32] ‖ num_input ‖ nf_set[MI][4]
+ *   ‖ num_output ‖ output_commit[MO][4] ‖ fee ‖ anchor[4]   (all lanes BIG-ENDIAN).
+ * Its OWN domain tag (A-4), distinct from the tx-hash preimage tag. The prover maps
+ * this to tx_binding = conf_txbind_map(sighash) (S6/prover, zk stack); the consensus
+ * verifier recomputes it from the wire and equates it to the proof public. S5 only
+ * assembles the preimage + SHA3-512 (both in libdna); the field-element map is S6.
+ *
+ * @param sf          shielded fields (canonical: unused nf/output slots zero)
+ * @param chain_id    32-byte chain identifier (anti cross-zone replay)
+ * @param out_sighash [out] 64-byte SHA3-512 digest
+ * @return DNAC_SUCCESS or error code
+ */
+int dnac_tx_shielded_sighash(const dnac_tx_shielded_fields_t *sf,
+                             const uint8_t chain_id[32],
+                             uint8_t out_sighash[64]);
+
+/**
  * @brief Compute transaction hash
  *
  * @param tx Transaction

@@ -125,6 +125,34 @@ int main(void) {
         free(tp);
     }
 
+    /* ---- T5-T8: sighash_v4 (design D3) ---- */
+    {
+        uint8_t chain_id[32];
+        for (unsigned i = 0; i < 32; i++) chain_id[i] = (uint8_t)(0x40 + i);
+        uint8_t h1[64], h2[64], h3[64], h4[64];
+        int r5 = dnac_tx_shielded_sighash(&tx->shielded_fields, chain_id, h1);
+        int r5b = dnac_tx_shielded_sighash(&tx->shielded_fields, chain_id, h2);
+        CHECK(r5 == DNAC_SUCCESS && r5b == DNAC_SUCCESS && memcmp(h1, h2, 64) == 0,
+              "T5 sighash_v4 deterministic (same input -> same 64B)");
+
+        /* Tamper the fee -> different sighash. */
+        dnac_transaction_t *tt = make_shielded();
+        tt->shielded_fields.fee += 1;
+        dnac_tx_shielded_sighash(&tt->shielded_fields, chain_id, h3);
+        CHECK(memcmp(h1, h3, 64) != 0, "T6 sighash binds fee (tamper -> differs)");
+        free(tt);
+
+        /* Different chain_id -> different sighash (G6 cross-zone). */
+        uint8_t chain_id2[32];
+        memcpy(chain_id2, chain_id, 32); chain_id2[0] ^= 0xFF;
+        dnac_tx_shielded_sighash(&tx->shielded_fields, chain_id2, h4);
+        CHECK(memcmp(h1, h4, 64) != 0, "T7 sighash binds chain_id (differs -> differs)");
+
+        /* Non-NUL sighash (sanity). */
+        int nz = 0; for (unsigned i = 0; i < 64; i++) if (h1[i]) nz = 1;
+        CHECK(nz, "T8 sighash_v4 is non-zero");
+    }
+
     free(tx);
     printf("test_shielded_wire: %s (%d fail)\n", fails ? "FAIL" : "PASS", fails);
     return fails ? 1 : 0;

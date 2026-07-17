@@ -28,6 +28,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+#include "crypto/hash/qgp_sha3.h"           /* dual-mode S5: sighash_v4 (SHA3-512) */
 
 /* Pin shared wire constants against dnac's authoritative values — any
  * drift between libnodus and libdna would silently break consensus. */
@@ -658,6 +659,43 @@ void dnac_tx_free(dnac_transaction_t *tx) {
         tx->shielded_fields.fri_proof = NULL;
     }
     free(tx);
+}
+
+int dnac_tx_shielded_sighash(const dnac_tx_shielded_fields_t *sf,
+                             const uint8_t chain_id[32],
+                             uint8_t out_sighash[QGP_SHA3_512_DIGEST_LENGTH]) {
+    if (!sf || !chain_id || !out_sighash) return DNAC_ERROR_INVALID_PARAM;
+
+    /* sighash_v4 preimage (design D3), all lanes BIG-ENDIAN, canonical fixed-width:
+     *   DNAC_SIGHASH_V4\0 ‖ chain_id[32] ‖ num_input(1) ‖ nf_set[MI][4]
+     *   ‖ num_output(1) ‖ output_commit[MO][4] ‖ fee(8) ‖ anchor[4].
+     * Its OWN tag (A-4, distinct from the tx-hash preimage tag). Prover and verifier
+     * hash the SAME canonical wire form (unused slots zero, DET-S5-3) → equal
+     * sighash → tx_binding = conf_txbind_map(sighash) matches (mapping at S6/prover). */
+    uint8_t pre[DNAC_SIGHASH_DOMAIN_V4_LEN + 32 + 1
+                + DNAC_SHIELDED_MAX_INPUTS * DNAC_SHIELDED_LANES * 8 + 1
+                + DNAC_SHIELDED_MAX_OUTPUTS * DNAC_SHIELDED_LANES * 8 + 8
+                + DNAC_SHIELDED_LANES * 8];
+    uint8_t *p = pre;
+    memcpy(p, DNAC_SIGHASH_DOMAIN_V4, DNAC_SIGHASH_DOMAIN_V4_LEN);
+    p += DNAC_SIGHASH_DOMAIN_V4_LEN;
+    memcpy(p, chain_id, 32); p += 32;
+    *p++ = sf->num_input;
+    for (unsigned s = 0; s < DNAC_SHIELDED_MAX_INPUTS; s++)
+        for (unsigned j = 0; j < DNAC_SHIELDED_LANES; j++) {
+            be64_to_bytes(sf->nf_set[s][j], p); p += 8;
+        }
+    *p++ = sf->num_output;
+    for (unsigned s = 0; s < DNAC_SHIELDED_MAX_OUTPUTS; s++)
+        for (unsigned j = 0; j < DNAC_SHIELDED_LANES; j++) {
+            be64_to_bytes(sf->output_commit[s][j], p); p += 8;
+        }
+    be64_to_bytes(sf->fee, p); p += 8;
+    for (unsigned j = 0; j < DNAC_SHIELDED_LANES; j++) {
+        be64_to_bytes(sf->anchor[j], p); p += 8;
+    }
+    return qgp_sha3_512(pre, (size_t)(p - pre), out_sighash) == 0
+               ? DNAC_SUCCESS : DNAC_ERROR_INVALID_PARAM;
 }
 
 /* dnac_tx_read_committed_fee moved to dnac/transaction.h as static inline
