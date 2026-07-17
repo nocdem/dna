@@ -216,9 +216,15 @@ int dnac_tx_compute_hash(const dnac_transaction_t *tx, uint8_t *hash_out) {
      * seed, memo) are hashed verbatim (no endianness).
      * ────────────────────────────────────────────────────────────────── */
 
-    /* Domain separator (SEC-06) */
-    EVP_DigestUpdate(ctx, DNAC_TX_PREIMAGE_DOMAIN_V2,
-                     DNAC_TX_PREIMAGE_DOMAIN_V2_LEN);
+    /* Domain separator (SEC-06). A shielded (V4) TX gets its OWN tag so a shielded
+     * preimage can never collide with a V2 preimage (re-audit Finding 5). */
+    if (tx->type == DNAC_TX_SHIELDED) {
+        EVP_DigestUpdate(ctx, DNAC_TX_PREIMAGE_DOMAIN_V4,
+                         DNAC_TX_PREIMAGE_DOMAIN_V4_LEN);
+    } else {
+        EVP_DigestUpdate(ctx, DNAC_TX_PREIMAGE_DOMAIN_V2,
+                         DNAC_TX_PREIMAGE_DOMAIN_V2_LEN);
+    }
 
     /* Header: version, type, timestamp (BE), chain_id, committed_fee (BE) */
     uint8_t type_byte = (uint8_t)tx->type;
@@ -336,6 +342,34 @@ int dnac_tx_compute_hash(const dnac_transaction_t *tx, uint8_t *hash_out) {
         for (uint8_t i = 0; i < n; i++) {
             EVP_DigestUpdate(ctx, cc->committee_votes[i].witness_id, 32);
             EVP_DigestUpdate(ctx, cc->committee_votes[i].signature, DNAC_SIGNATURE_SIZE);
+        }
+    }
+
+    /* Dual-mode S5 (re-audit Finding 5). Shielded statement — bind the full V4
+     * shielded section into tx_hash so two shielded TXs with an identical header but
+     * different anchor/nf/output/fee/tx_binding get DISTINCT tx_hashes (else a
+     * tx-identity collision → dedup/replay/inclusion malleability). BIG-ENDIAN lanes;
+     * the FRI proof blob is NOT hashed (a re-randomized proof of the same statement
+     * is the same TX). */
+    if (tx->type == DNAC_TX_SHIELDED) {
+        const dnac_tx_shielded_fields_t *sf = &tx->shielded_fields;
+        uint8_t lane[8];
+        for (unsigned j = 0; j < DNAC_SHIELDED_LANES; j++) {
+            tx_be64_into(sf->anchor[j], lane); EVP_DigestUpdate(ctx, lane, 8);
+        }
+        EVP_DigestUpdate(ctx, &sf->num_input, sizeof(uint8_t));
+        for (unsigned s = 0; s < DNAC_SHIELDED_MAX_INPUTS; s++)
+            for (unsigned j = 0; j < DNAC_SHIELDED_LANES; j++) {
+                tx_be64_into(sf->nf_set[s][j], lane); EVP_DigestUpdate(ctx, lane, 8);
+            }
+        EVP_DigestUpdate(ctx, &sf->num_output, sizeof(uint8_t));
+        for (unsigned s = 0; s < DNAC_SHIELDED_MAX_OUTPUTS; s++)
+            for (unsigned j = 0; j < DNAC_SHIELDED_LANES; j++) {
+                tx_be64_into(sf->output_commit[s][j], lane); EVP_DigestUpdate(ctx, lane, 8);
+            }
+        tx_be64_into(sf->fee, lane); EVP_DigestUpdate(ctx, lane, 8);
+        for (unsigned j = 0; j < DNAC_SHIELDED_LANES; j++) {
+            tx_be64_into(sf->tx_binding[j], lane); EVP_DigestUpdate(ctx, lane, 8);
         }
     }
 

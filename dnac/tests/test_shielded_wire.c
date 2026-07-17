@@ -153,6 +153,36 @@ int main(void) {
         CHECK(nz, "T8 sighash_v4 is non-zero");
     }
 
+    /* ---- T9 (re-audit Finding 6): shielded fee != committed_fee rejected ---- */
+    {
+        dnac_transaction_t *tf = make_shielded();
+        tf->committed_fee = tf->shielded_fields.fee + 1; /* dual-channel mismatch */
+        uint8_t fbuf[4096]; size_t fw = 0;
+        if (dnac_tx_serialize(tf, fbuf, sizeof fbuf, &fw) == DNAC_SUCCESS) {
+            dnac_transaction_t *t = NULL;
+            rc = dnac_tx_deserialize(fbuf, fw, &t);
+            CHECK(rc != DNAC_SUCCESS, "T9 shielded fee != committed_fee rejected (D7.2)");
+            if (rc == DNAC_SUCCESS) dnac_tx_free(t);
+        } else { CHECK(0, "T9 serialize"); }
+        free(tf);
+    }
+
+    /* ---- T10 (re-audit Finding 5): tx_hash binds the shielded statement ---- */
+    {
+        uint8_t h_a[64], h_b[64];
+        dnac_transaction_t *ta = make_shielded();
+        ta->chain_id[0] = 0x55;
+        int rh = dnac_tx_compute_hash(ta, h_a);
+        CHECK(rh == DNAC_SUCCESS, "T10a compute_hash(shielded) -> SUCCESS");
+        dnac_transaction_t *tb = make_shielded();
+        tb->chain_id[0] = 0x55;
+        tb->shielded_fields.output_commit[0][0] ^= 0x1ULL; /* different statement */
+        dnac_tx_compute_hash(tb, h_b);
+        CHECK(memcmp(h_a, h_b, 64) != 0, "T10b tx_hash binds output_commit (differs)");
+        free(ta);
+        free(tb);
+    }
+
     free(tx);
     printf("test_shielded_wire: %s (%d fail)\n", fails ? "FAIL" : "PASS", fails);
     return fails ? 1 : 0;

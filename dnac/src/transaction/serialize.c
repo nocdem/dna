@@ -619,6 +619,15 @@ int dnac_tx_deserialize(const uint8_t *buffer,
             free(tx);
             return DNAC_ERROR_INVALID_PARAM;
         }
+        /* D7.2 (re-audit Finding 6): the shielded (proof-bound, sighash_v4) fee MUST
+         * equal the header committed_fee — the channel the transparent fee-pool logic
+         * reads (dnac_tx_read_committed_fee). Without this, a shielded TX with
+         * sf->fee=0 (proof balances Σin=Σout) but committed_fee=X credits the pool X
+         * with no offsetting debit → fee-pool mint. Single authoritative fee. */
+        if (tx->shielded_fields.fee != tx->committed_fee) {
+            dnac_tx_free(tx); /* frees the just-read fri_proof too */
+            return DNAC_ERROR_INVALID_PARAM;
+        }
     }
 
     /* Optional anchored-genesis chain_def trailer.
