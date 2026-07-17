@@ -397,6 +397,15 @@ enum Cmd {
         #[arg(long)]
         out: PathBuf,
     },
+    /// DUAL-MODE S4b.2a — the AGGREGATE Action AIR (ConfActionAggAir, width 1927,
+    /// main_next=true, 4 publics=anchor): C1 reuse + C3 membership + C4 nullifier
+    /// at forced φ-phase rows. GATE1 verify=Ok, GATE3 tampered-reject, measured
+    /// num_qc MUST be 8 (STOP otherwise). h=128 conserving instance.
+    #[command(name = "dump-conf-action-agg-air-zk")]
+    DumpConfActionAggAirZk {
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// KAT draw stream (D1-B): the first `count` Goldilocks samples of a fresh
     /// SmallRng::seed_from_u64(1) — the EXACT stream a real HidingFriPcs prove
     /// consumes (with_random_cols / codeword / blinding / R draws in commit
@@ -609,6 +618,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             stark_priming::dump_conf_root_air_salted_h16(&out)?
         }
         Cmd::DumpConfActionAirZk { out } => stark_priming::dump_conf_action_air_zk(&out)?,
+        Cmd::DumpConfActionAggAirZk { out } => {
+            stark_priming::dump_conf_action_agg_air_zk(&out)?
+        }
         Cmd::DumpSmallrngGoldilocks { count, out } => {
             stark_priming::dump_smallrng_goldilocks(count, &out)?
         }
@@ -13967,6 +13979,643 @@ mod stark_priming {
              phase-counter + freeze-carry + note-commitment + condition-3 \
              spend-auth + balance conservation; max degree 3, num_qc 8)",
             "DUAL-MODE S1e.1/2 — C1 Action AIR real-STARK lift (h=128, num_qc=8)",
+            Some(8),
+            out_path,
+        )
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // DUAL-MODE S4b — ConfActionAggAir: the REAL-STARK lift of the AGGREGATE
+    // Action AIR (conf_action_agg_air.{c,h}, C1 ⊕ C3 membership ⊕ C4 nullifier).
+    //
+    // C1 is reused for FREE: `ConfActionAggAir::eval` calls `ConfActionAir.eval`
+    // on the wide builder — ConfActionAir touches ONLY columns [0,813), so it
+    // re-emits every C1 constraint on the aggregate trace with ZERO duplication.
+    //
+    // The membership + nullifier phases run at FORCED φ-phase rows selected by
+    // COMMITTED is_zero gadgets, NOT the C construction gate's runtime `phi==c`
+    // branch (a real STARK cannot branch on a trace value): `is_lvl[i]=[φ==i]`
+    // (i=1..D), `is_nf=[φ==D+1]`. The membership level chaining `next.CUR ==
+    // local.MC2.out` fires on the φ=i−1→φ=i transition, gated by COMMITTED
+    // `active_lvl[i]=is_lvl[i]·IS_INPUT` helpers so the transition gate is
+    // degree 2 (not 3) and the whole constraint stays degree ≤ 4 — the num_qc
+    // STOP-gate (== 8) is load-bearing (Plonky3 symbolic.rs:74-79 at is_zk=1:
+    // num_qc = 1<<(log2_ceil(deg−1+1)+1); deg≤4 ⇒ 8, deg=5 ⇒ 16).
+    //
+    // Degree tally (max over constraints, WITHOUT the is_zk +1):
+    //   is_zero gadgets                          : 2  (d·inv)
+    //   active_lvl def is_lvl·IS_INPUT           : 2
+    //   ordering  when(active_memb=1)·(mc1−left) : 1·2 = 3
+    //   chaining  transition·active_lvl²·(cur−out): (2·1)+1 = 4
+    //   POSACC chain transition·gate²·(deg1)     : (2·1)+1 = 4
+    //   nullifier when(is_nf·IS_INPUT=2)·(deg1)  : 3
+    //   (C1 reuse: max degree 3, poseidon S-box (7,1) register form)
+    //   ⇒ AIR max degree = 4 ⇒ num_qc MEASURED must be 8 (STOP otherwise).
+    //
+    // S4b.2a (THIS): C1 reuse + selectors + membership + nullifier + anchor[4]
+    //   public (row-local, bound at φ=D INPUT rows). num_qc MEASURED == 8.
+    // S4b.2b (NEXT): the nf-public counter-routing (nullifier-set completeness).
+    // ════════════════════════════════════════════════════════════════════════
+
+    // ── Column offsets — PINNED to conf_membership_air.h:65-71 /
+    //    conf_nullifier_air.h:62-70; aggregate layout extends
+    //    conf_action_agg_air.h:93-98 with the is_zk selector columns. ──
+    const AGG_MEMB_LANES: usize = 4; // CONF_MEMB_LANES
+    const AGG_MEMB_CUR: usize = 0;
+    const AGG_MEMB_SIB: usize = 4;
+    const AGG_MEMB_BIT: usize = 8;
+    const AGG_MEMB_MC1: usize = 9;
+    const AGG_MEMB_MC2: usize = AGG_MEMB_MC1 + P2_NCOLS; // 189
+    const AGG_MEMB_POSACC: usize = AGG_MEMB_MC2 + P2_NCOLS; // 369
+    const AGG_MEMB_WIDTH: usize = AGG_MEMB_POSACC + 1; // 370
+
+    const AGG_NF_LANES: usize = 4; // CONF_NF_LANES
+    const AGG_NF_CM: usize = 0;
+    const AGG_NF_POS: usize = 4;
+    const AGG_NF_NK: usize = 5;
+    const AGG_NF_RHO1: usize = 6;
+    const AGG_NF_RHO2: usize = AGG_NF_RHO1 + P2_NCOLS;
+    const AGG_NF_NF1: usize = AGG_NF_RHO2 + P2_NCOLS;
+    const AGG_NF_NF2: usize = AGG_NF_NF1 + P2_NCOLS;
+    const AGG_NF_NF: usize = AGG_NF_NF2 + P2_NCOLS;
+    const AGG_NF_WIDTH: usize = AGG_NF_NF + AGG_NF_LANES;
+
+    const AGG_D: usize = 4; // CONF_AGG_TREE_DEPTH
+    const AGG_MEMB_OFF: usize = CA_W_WIDTH; // 813  (CONF_AGG_MEMB_OFF)
+    const AGG_NF_OFF: usize = AGG_MEMB_OFF + AGG_MEMB_WIDTH; // 1183
+    const AGG_ISNF_OFF: usize = AGG_NF_OFF + AGG_NF_WIDTH; // 1913
+    const AGG_INVNF_OFF: usize = AGG_ISNF_OFF + 1; // 1914
+    const AGG_ISLVL_OFF: usize = AGG_INVNF_OFF + 1; // 1915  [.., +D)
+    const AGG_INVLVL_OFF: usize = AGG_ISLVL_OFF + AGG_D; // 1919 [.., +D)
+    const AGG_ACTLVL_OFF: usize = AGG_INVLVL_OFF + AGG_D; // 1923 [.., +D)
+    const AGG_ZK_WIDTH: usize = AGG_ACTLVL_OFF + AGG_D; // 1927
+
+    const AGG_NF_PHI: u64 = (AGG_D + 1) as u64; // D+1 = 5
+
+    // shielded_domsep.h:37,41 — SHA3-512("<string>")[0:8] BE (checked at runtime).
+    const AGG_DOMSEP_RHO: u64 = 0x79b6_db2f_d9e0_0ea6; // "DNAC nullifier-rho v1"
+    const AGG_DOMSEP_NF: u64 = 0x1179_dd8e_919f_692a; // "DNAC nullifier-prf v1"
+
+    /// Reproducible-derivation gate for the ρ/nf DOMSEPs (shielded_domsep.h:35-41):
+    /// first 8 BIG-ENDIAN bytes of SHA3-512 over the pinned strings (KAFADAN barrier).
+    fn conf_agg_check_domseps() -> Result<(), Box<dyn std::error::Error>> {
+        let d_rho = Sha3_512::digest(b"DNAC nullifier-rho v1");
+        let d_nf = Sha3_512::digest(b"DNAC nullifier-prf v1");
+        let rho = u64::from_be_bytes(d_rho[0..8].try_into().unwrap());
+        let nf = u64::from_be_bytes(d_nf[0..8].try_into().unwrap());
+        if rho != AGG_DOMSEP_RHO {
+            return Err(format!("DOMSEP_RHO derivation mismatch: {rho:#x}").into());
+        }
+        if nf != AGG_DOMSEP_NF {
+            return Err(format!("DOMSEP_NF derivation mismatch: {nf:#x}").into());
+        }
+        Ok(())
+    }
+
+    /// The aggregate Action AIR (conf_action_agg_air.c real-STARK form). Width
+    /// 1927, main_next=true (C1 + membership chaining read the next row), 4 public
+    /// values (anchor[4]; nf publics added S4b.2b).
+    pub struct ConfActionAggAir;
+
+    impl BaseAir<Goldilocks> for ConfActionAggAir {
+        fn width(&self) -> usize {
+            AGG_ZK_WIDTH
+        }
+        fn num_public_values(&self) -> usize {
+            AGG_MEMB_LANES // anchor[4] (S4b.2a)
+        }
+        // NO max_constraint_degree override (MEASURED — STOP-gate == 8).
+    }
+
+    impl<AB> Air<AB> for ConfActionAggAir
+    where
+        AB: AirBuilder<F = Goldilocks>,
+    {
+        fn eval(&self, builder: &mut AB) {
+            // ── C1 reuse: emits every conf_action_air constraint on [0,813). ──
+            ConfActionAir.eval(builder);
+
+            let main = builder.main();
+            let pis = builder.public_values();
+            let anchor: [AB::Expr; AGG_MEMB_LANES] = core::array::from_fn(|j| pis[j].into());
+            let ls: &[AB::Var] = main.current_slice();
+            let ns: &[AB::Var] = main.next_slice();
+
+            let phi: AB::Expr = ls[CA_PHI].into();
+            let is_input: AB::Expr = ls[CA_ISIN].into();
+
+            // ── is_nf = is_zero(φ − (D+1)). ──
+            let is_nf: AB::Expr = ls[AGG_ISNF_OFF].into();
+            builder.assert_bool(ls[AGG_ISNF_OFF]);
+            let d_nf = phi.clone() - AB::Expr::from_u64(AGG_NF_PHI);
+            builder.assert_eq(
+                d_nf.clone() * ls[AGG_INVNF_OFF],
+                AB::Expr::ONE - is_nf.clone(),
+            );
+            builder.assert_zero(d_nf * is_nf.clone());
+
+            // ── is_lvl[i]=is_zero(φ−i); active_lvl[i]=is_lvl[i]·IS_INPUT (i=1..D). ──
+            for i in 1..=AGG_D {
+                let il = ls[AGG_ISLVL_OFF + (i - 1)];
+                let ile: AB::Expr = il.into();
+                builder.assert_bool(il);
+                let d_i = phi.clone() - AB::Expr::from_u64(i as u64);
+                builder.assert_eq(
+                    d_i.clone() * ls[AGG_INVLVL_OFF + (i - 1)],
+                    AB::Expr::ONE - ile.clone(),
+                );
+                builder.assert_zero(d_i * ile.clone());
+                // active_lvl[i] committed helper: keeps the chaining gate degree 2.
+                builder.assert_eq(ls[AGG_ACTLVL_OFF + (i - 1)], ile * is_input.clone());
+            }
+            // active_memb = Σ active_lvl[i] (mutually exclusive ⇒ ∈ {0,1}).
+            let mut active_memb: AB::Expr = AB::Expr::ZERO;
+            for i in 0..AGG_D {
+                active_memb = active_memb + ls[AGG_ACTLVL_OFF + i].into();
+            }
+
+            // ── C3 membership: MC1/MC2 poseidon2 always-on + gated pins. ──
+            let mc1: &Poseidon2Cols<AB::Var, 8, 7, 1, 4, 22> = ls
+                [AGG_MEMB_OFF + AGG_MEMB_MC1..AGG_MEMB_OFF + AGG_MEMB_MC1 + P2_NCOLS]
+                .borrow();
+            p2v_eval::<AB, GenericPoseidon2LinearLayersGoldilocks, 8, 7, 1, 4, 22>(
+                &GOLDILOCKS_POSEIDON2_RC_8_EXTERNAL_INITIAL,
+                &GOLDILOCKS_POSEIDON2_RC_8_INTERNAL,
+                &GOLDILOCKS_POSEIDON2_RC_8_EXTERNAL_FINAL,
+                builder,
+                mc1,
+            );
+            let mc2: &Poseidon2Cols<AB::Var, 8, 7, 1, 4, 22> = ls
+                [AGG_MEMB_OFF + AGG_MEMB_MC2..AGG_MEMB_OFF + AGG_MEMB_MC2 + P2_NCOLS]
+                .borrow();
+            p2v_eval::<AB, GenericPoseidon2LinearLayersGoldilocks, 8, 7, 1, 4, 22>(
+                &GOLDILOCKS_POSEIDON2_RC_8_EXTERNAL_INITIAL,
+                &GOLDILOCKS_POSEIDON2_RC_8_INTERNAL,
+                &GOLDILOCKS_POSEIDON2_RC_8_EXTERNAL_FINAL,
+                builder,
+                mc2,
+            );
+
+            let bit: AB::Expr = ls[AGG_MEMB_OFF + AGG_MEMB_BIT].into();
+            // BIT booleanity (gated active).
+            builder
+                .when(active_memb.clone())
+                .assert_bool(ls[AGG_MEMB_OFF + AGG_MEMB_BIT]);
+            // Ordering (dm-c3 F2): MC1.in=left, MC2.in=right; capacity carry.
+            for j in 0..AGG_MEMB_LANES {
+                let cur: AB::Expr = ls[AGG_MEMB_OFF + AGG_MEMB_CUR + j].into();
+                let sib: AB::Expr = ls[AGG_MEMB_OFF + AGG_MEMB_SIB + j].into();
+                let left = cur.clone() + bit.clone() * (sib.clone() - cur.clone());
+                let right = sib.clone() + bit.clone() * (cur - sib);
+                builder.when(active_memb.clone()).assert_eq(mc1.inputs[j], left);
+                builder.when(active_memb.clone()).assert_eq(mc2.inputs[j], right);
+            }
+            for k in 4..8 {
+                builder.when(active_memb.clone()).assert_zero(mc1.inputs[k]); // MC1 zero-cap
+                builder.when(active_memb.clone()).assert_eq(
+                    mc2.inputs[k],
+                    ls[AGG_MEMB_OFF + AGG_MEMB_MC1 + P2_END_POST3 + k],
+                ); // MC2 cap carry
+            }
+            // Leaf (φ=1): CUR == cm_carry (the frozen note commitment — G-S4-1).
+            for j in 0..AGG_MEMB_LANES {
+                builder.when(ls[AGG_ACTLVL_OFF]).assert_eq(
+                    ls[AGG_MEMB_OFF + AGG_MEMB_CUR + j],
+                    ls[CA_CMCARRY + j],
+                );
+            }
+            // POSACC §3 gating (design red-team F6 double-spend fix):
+            //   φ=1 PURE-INIT: POSACC == bit·2^0 == bit (NEVER reads the φ=0 row).
+            builder.when(ls[AGG_ACTLVL_OFF]).assert_eq(
+                ls[AGG_MEMB_OFF + AGG_MEMB_POSACC],
+                ls[AGG_MEMB_OFF + AGG_MEMB_BIT],
+            );
+            //   inert: (1 − active_memb)·POSACC == 0 (no leak over φ=0 / K-wrap).
+            builder.assert_zero(
+                (AB::Expr::ONE - active_memb.clone()) * ls[AGG_MEMB_OFF + AGG_MEMB_POSACC].into(),
+            );
+            //   φ=i chain (i=2..D): transition gated active_lvl[i−1]·active_lvl[i].
+            for i in 2..=AGG_D {
+                let la: AB::Expr = ls[AGG_ACTLVL_OFF + (i - 2)].into(); // local φ=i−1
+                let na: AB::Expr = ns[AGG_ACTLVL_OFF + (i - 1)].into(); // next  φ=i
+                let gate = la * na;
+                // Chaining: next.CUR == local.MC2.out.
+                for j in 0..AGG_MEMB_LANES {
+                    let loc_out: AB::Expr = ls[AGG_MEMB_OFF + AGG_MEMB_MC2 + P2_END_POST3 + j].into();
+                    let nxt_cur: AB::Expr = ns[AGG_MEMB_OFF + AGG_MEMB_CUR + j].into();
+                    builder
+                        .when_transition()
+                        .assert_zero(gate.clone() * (nxt_cur - loc_out));
+                }
+                // POSACC: next.POSACC == local.POSACC + next.bit·2^(i−1).
+                let loc_pacc: AB::Expr = ls[AGG_MEMB_OFF + AGG_MEMB_POSACC].into();
+                let nxt_pacc: AB::Expr = ns[AGG_MEMB_OFF + AGG_MEMB_POSACC].into();
+                let nxt_bit: AB::Expr = ns[AGG_MEMB_OFF + AGG_MEMB_BIT].into();
+                let w = AB::Expr::from_u64(1u64 << (i - 1));
+                builder
+                    .when_transition()
+                    .assert_zero(gate * (nxt_pacc - loc_pacc - nxt_bit * w));
+            }
+            // Last level (φ=D): root MC2.out == anchor; POSACC == pos_carry.
+            for j in 0..AGG_MEMB_LANES {
+                builder.when(ls[AGG_ACTLVL_OFF + (AGG_D - 1)]).assert_eq(
+                    ls[AGG_MEMB_OFF + AGG_MEMB_MC2 + P2_END_POST3 + j],
+                    anchor[j].clone(),
+                );
+            }
+            builder.when(ls[AGG_ACTLVL_OFF + (AGG_D - 1)]).assert_eq(
+                ls[AGG_MEMB_OFF + AGG_MEMB_POSACC],
+                ls[CA_POSCARRY],
+            );
+
+            // ── C4 nullifier: RHO1/RHO2/NF1/NF2 poseidon2 always-on + gated pins. ──
+            let rho1: &Poseidon2Cols<AB::Var, 8, 7, 1, 4, 22> =
+                ls[AGG_NF_OFF + AGG_NF_RHO1..AGG_NF_OFF + AGG_NF_RHO1 + P2_NCOLS].borrow();
+            p2v_eval::<AB, GenericPoseidon2LinearLayersGoldilocks, 8, 7, 1, 4, 22>(
+                &GOLDILOCKS_POSEIDON2_RC_8_EXTERNAL_INITIAL,
+                &GOLDILOCKS_POSEIDON2_RC_8_INTERNAL,
+                &GOLDILOCKS_POSEIDON2_RC_8_EXTERNAL_FINAL,
+                builder,
+                rho1,
+            );
+            let rho2: &Poseidon2Cols<AB::Var, 8, 7, 1, 4, 22> =
+                ls[AGG_NF_OFF + AGG_NF_RHO2..AGG_NF_OFF + AGG_NF_RHO2 + P2_NCOLS].borrow();
+            p2v_eval::<AB, GenericPoseidon2LinearLayersGoldilocks, 8, 7, 1, 4, 22>(
+                &GOLDILOCKS_POSEIDON2_RC_8_EXTERNAL_INITIAL,
+                &GOLDILOCKS_POSEIDON2_RC_8_INTERNAL,
+                &GOLDILOCKS_POSEIDON2_RC_8_EXTERNAL_FINAL,
+                builder,
+                rho2,
+            );
+            let nf1: &Poseidon2Cols<AB::Var, 8, 7, 1, 4, 22> =
+                ls[AGG_NF_OFF + AGG_NF_NF1..AGG_NF_OFF + AGG_NF_NF1 + P2_NCOLS].borrow();
+            p2v_eval::<AB, GenericPoseidon2LinearLayersGoldilocks, 8, 7, 1, 4, 22>(
+                &GOLDILOCKS_POSEIDON2_RC_8_EXTERNAL_INITIAL,
+                &GOLDILOCKS_POSEIDON2_RC_8_INTERNAL,
+                &GOLDILOCKS_POSEIDON2_RC_8_EXTERNAL_FINAL,
+                builder,
+                nf1,
+            );
+            let nf2: &Poseidon2Cols<AB::Var, 8, 7, 1, 4, 22> =
+                ls[AGG_NF_OFF + AGG_NF_NF2..AGG_NF_OFF + AGG_NF_NF2 + P2_NCOLS].borrow();
+            p2v_eval::<AB, GenericPoseidon2LinearLayersGoldilocks, 8, 7, 1, 4, 22>(
+                &GOLDILOCKS_POSEIDON2_RC_8_EXTERNAL_INITIAL,
+                &GOLDILOCKS_POSEIDON2_RC_8_INTERNAL,
+                &GOLDILOCKS_POSEIDON2_RC_8_EXTERNAL_FINAL,
+                builder,
+                nf2,
+            );
+            // gate_nf = is_nf·IS_INPUT (degree 2). Fires at φ=D+1 of an INPUT block.
+            let gate_nf: AB::Expr = is_nf * is_input;
+            // cm/pos/nk cells == C1 frozen carries (cross-region bind — G-S4-3).
+            for j in 0..AGG_NF_LANES {
+                builder.when(gate_nf.clone()).assert_eq(
+                    ls[AGG_NF_OFF + AGG_NF_CM + j],
+                    ls[CA_CMCARRY + j],
+                );
+            }
+            builder
+                .when(gate_nf.clone())
+                .assert_eq(ls[AGG_NF_OFF + AGG_NF_POS], ls[CA_POSCARRY]);
+            builder
+                .when(gate_nf.clone())
+                .assert_eq(ls[AGG_NF_OFF + AGG_NF_NK], ls[CA_NKCARRY]);
+            // ρ = CRH(cm,pos): RHO1.in=[cm,0,0,0,0]; RHO2.in=[pos,DOMSEP_RHO,0,0,cap].
+            for j in 0..AGG_NF_LANES {
+                builder
+                    .when(gate_nf.clone())
+                    .assert_eq(rho1.inputs[j], ls[AGG_NF_OFF + AGG_NF_CM + j]);
+            }
+            for k in 4..8 {
+                builder.when(gate_nf.clone()).assert_zero(rho1.inputs[k]);
+            }
+            builder
+                .when(gate_nf.clone())
+                .assert_eq(rho2.inputs[0], ls[AGG_NF_OFF + AGG_NF_POS]);
+            builder
+                .when(gate_nf.clone())
+                .assert_eq(rho2.inputs[1], AB::Expr::from_u64(AGG_DOMSEP_RHO));
+            builder.when(gate_nf.clone()).assert_zero(rho2.inputs[2]);
+            builder.when(gate_nf.clone()).assert_zero(rho2.inputs[3]);
+            for k in 4..8 {
+                builder.when(gate_nf.clone()).assert_eq(
+                    rho2.inputs[k],
+                    ls[AGG_NF_OFF + AGG_NF_RHO1 + P2_END_POST3 + k],
+                );
+            }
+            // nf = PRF(nk,ρ): NF1.in=[nk,ρ0,ρ1,ρ2,0,0,0,0]; NF2.in=[ρ3,DOMSEP_NF,0,0,cap].
+            builder
+                .when(gate_nf.clone())
+                .assert_eq(nf1.inputs[0], ls[AGG_NF_OFF + AGG_NF_NK]);
+            for j in 0..3 {
+                builder.when(gate_nf.clone()).assert_eq(
+                    nf1.inputs[1 + j],
+                    ls[AGG_NF_OFF + AGG_NF_RHO2 + P2_END_POST3 + j],
+                );
+            }
+            for k in 4..8 {
+                builder.when(gate_nf.clone()).assert_zero(nf1.inputs[k]);
+            }
+            builder.when(gate_nf.clone()).assert_eq(
+                nf2.inputs[0],
+                ls[AGG_NF_OFF + AGG_NF_RHO2 + P2_END_POST3 + 3],
+            );
+            builder
+                .when(gate_nf.clone())
+                .assert_eq(nf2.inputs[1], AB::Expr::from_u64(AGG_DOMSEP_NF));
+            builder.when(gate_nf.clone()).assert_zero(nf2.inputs[2]);
+            builder.when(gate_nf.clone()).assert_zero(nf2.inputs[3]);
+            for k in 4..8 {
+                builder.when(gate_nf.clone()).assert_eq(
+                    nf2.inputs[k],
+                    ls[AGG_NF_OFF + AGG_NF_NF1 + P2_END_POST3 + k],
+                );
+            }
+            // NF cell == NF2.out (G4 single-source).
+            for j in 0..AGG_NF_LANES {
+                builder.when(gate_nf.clone()).assert_eq(
+                    ls[AGG_NF_OFF + AGG_NF_NF + j],
+                    ls[AGG_NF_OFF + AGG_NF_NF2 + P2_END_POST3 + j],
+                );
+            }
+            // Inert nf (¬gate_nf): CM/POS/NK/NF cells == 0.
+            let ninert = AB::Expr::ONE - gate_nf;
+            for j in 0..AGG_NF_LANES {
+                builder
+                    .when(ninert.clone())
+                    .assert_zero(ls[AGG_NF_OFF + AGG_NF_CM + j]);
+            }
+            builder
+                .when(ninert.clone())
+                .assert_zero(ls[AGG_NF_OFF + AGG_NF_POS]);
+            builder
+                .when(ninert.clone())
+                .assert_zero(ls[AGG_NF_OFF + AGG_NF_NK]);
+            for j in 0..AGG_NF_LANES {
+                builder
+                    .when(ninert.clone())
+                    .assert_zero(ls[AGG_NF_OFF + AGG_NF_NF + j]);
+            }
+        }
+    }
+
+    /// Deterministic ConfActionAggAir trace builder — reuses
+    /// generate_conf_action_trace (C1, 813-wide) then SCATTERS into the wide row
+    /// and fills the membership walk (φ∈[1,D]), the nullifier sponge (φ=D+1), and
+    /// the forced is_zero selectors (is_nf, is_lvl[i], active_lvl[i]). Mirrors
+    /// conf_action_agg_air_generate (conf_action_agg_air.c:67-234). Returns the
+    /// trace + the common anchor (the INPUT notes' shared Merkle root = public).
+    fn generate_conf_action_agg_trace(
+        log_height: usize,
+        notes: &[ActionNote],
+        memb_siblings: &[[[u64; AGG_MEMB_LANES]; AGG_D]],
+    ) -> (RowMajorMatrix<Goldilocks>, [Goldilocks; AGG_MEMB_LANES]) {
+        let c1 = generate_conf_action_trace(log_height, notes);
+        let rows = 1usize << log_height;
+        let k = CA_K;
+
+        let rc = RoundConstants::<Goldilocks, 8, 4, 22>::new(
+            GOLDILOCKS_POSEIDON2_RC_8_EXTERNAL_INITIAL,
+            GOLDILOCKS_POSEIDON2_RC_8_INTERNAL,
+            GOLDILOCKS_POSEIDON2_RC_8_EXTERNAL_FINAL,
+        );
+        let perm = default_goldilocks_poseidon2_8();
+        let p2row = |input: [Goldilocks; 8]| -> Vec<Goldilocks> {
+            let m = p3_poseidon2_air::generate_trace_rows::<
+                Goldilocks,
+                GenericPoseidon2LinearLayersGoldilocks,
+                8,
+                7,
+                1,
+                4,
+                22,
+            >(vec![input], &rc, 0);
+            let mut expect = input;
+            perm.permute_mut(&mut expect);
+            for i in 0..8 {
+                assert_eq!(m.values[P2_END_POST3 + i], expect[i]);
+            }
+            m.values
+        };
+        let post = |cells: &[Goldilocks]| -> [Goldilocks; 8] {
+            core::array::from_fn(|k| cells[P2_END_POST3 + k])
+        };
+        let zero_blk = p2row([Goldilocks::ZERO; 8]);
+
+        let mut v = Goldilocks::zero_vec(rows * AGG_ZK_WIDTH);
+
+        // ── Pass 1: scatter C1 + fill selectors + inert poseidon blocks. ──
+        for r in 0..rows {
+            let base = r * AGG_ZK_WIDTH;
+            v[base..base + CA_W_WIDTH]
+                .copy_from_slice(&c1.values[r * CA_W_WIDTH..r * CA_W_WIDTH + CA_W_WIDTH]);
+
+            let phi = (r % k) as u64;
+            let blk = r / k;
+            let is_input =
+                blk < notes.len() && notes[blk].role == CA_ROLE_INPUT;
+
+            // is_nf = is_zero(φ − (D+1)).
+            let is_nf = phi == AGG_NF_PHI;
+            v[base + AGG_ISNF_OFF] = Goldilocks::from_u64(is_nf as u64);
+            let d_nf = Goldilocks::from_u64(phi) - Goldilocks::from_u64(AGG_NF_PHI);
+            v[base + AGG_INVNF_OFF] = if is_nf {
+                Goldilocks::ZERO
+            } else {
+                p3_field::Field::inverse(&d_nf)
+            };
+
+            // is_lvl[i] = is_zero(φ − i); active_lvl[i] = is_lvl[i]·IS_INPUT.
+            for i in 1..=AGG_D {
+                let is_lvl = phi == i as u64;
+                v[base + AGG_ISLVL_OFF + (i - 1)] = Goldilocks::from_u64(is_lvl as u64);
+                let d_i = Goldilocks::from_u64(phi) - Goldilocks::from_u64(i as u64);
+                v[base + AGG_INVLVL_OFF + (i - 1)] = if is_lvl {
+                    Goldilocks::ZERO
+                } else {
+                    p3_field::Field::inverse(&d_i)
+                };
+                v[base + AGG_ACTLVL_OFF + (i - 1)] =
+                    Goldilocks::from_u64((is_lvl && is_input) as u64);
+            }
+
+            // Inert membership + nullifier poseidon blocks (valid zero-perm).
+            let mo = base + AGG_MEMB_OFF;
+            v[mo + AGG_MEMB_MC1..mo + AGG_MEMB_MC1 + P2_NCOLS].copy_from_slice(&zero_blk);
+            v[mo + AGG_MEMB_MC2..mo + AGG_MEMB_MC2 + P2_NCOLS].copy_from_slice(&zero_blk);
+            let no = base + AGG_NF_OFF;
+            v[no + AGG_NF_RHO1..no + AGG_NF_RHO1 + P2_NCOLS].copy_from_slice(&zero_blk);
+            v[no + AGG_NF_RHO2..no + AGG_NF_RHO2 + P2_NCOLS].copy_from_slice(&zero_blk);
+            v[no + AGG_NF_NF1..no + AGG_NF_NF1 + P2_NCOLS].copy_from_slice(&zero_blk);
+            v[no + AGG_NF_NF2..no + AGG_NF_NF2 + P2_NCOLS].copy_from_slice(&zero_blk);
+        }
+
+        // ── Pass 2: membership walk + nullifier for each INPUT block. ──
+        let mut anchor = [Goldilocks::ZERO; AGG_MEMB_LANES];
+        let mut have_anchor = false;
+        for (blk, note) in notes.iter().enumerate() {
+            if note.role != CA_ROLE_INPUT {
+                continue;
+            }
+            // cm = block's frozen commitment (C1 cm_carry, constant block-wide).
+            let blk0 = blk * k * AGG_ZK_WIDTH;
+            let mut cur: [Goldilocks; AGG_MEMB_LANES] =
+                core::array::from_fn(|j| v[blk0 + CA_CMCARRY + j]);
+            let cm0 = cur;
+            let sibs = &memb_siblings[blk];
+
+            let mut pacc: u64 = 0;
+            for i in 0..AGG_D {
+                let r = blk * k + (i + 1); // φ = i+1
+                let mo = r * AGG_ZK_WIDTH + AGG_MEMB_OFF;
+                let sib: [Goldilocks; AGG_MEMB_LANES] =
+                    core::array::from_fn(|j| Goldilocks::from_u64(sibs[i][j]));
+                let bit = (note.pos >> i) & 1;
+                for j in 0..AGG_MEMB_LANES {
+                    v[mo + AGG_MEMB_CUR + j] = cur[j];
+                    v[mo + AGG_MEMB_SIB + j] = sib[j];
+                }
+                v[mo + AGG_MEMB_BIT] = Goldilocks::from_u64(bit);
+                let (left, right) = if bit == 1 { (sib, cur) } else { (cur, sib) };
+                let in1 = [
+                    left[0], left[1], left[2], left[3],
+                    Goldilocks::ZERO, Goldilocks::ZERO, Goldilocks::ZERO, Goldilocks::ZERO,
+                ];
+                let b1 = p2row(in1);
+                let s1 = post(&b1);
+                let in2 = [right[0], right[1], right[2], right[3], s1[4], s1[5], s1[6], s1[7]];
+                let b2 = p2row(in2);
+                v[mo + AGG_MEMB_MC1..mo + AGG_MEMB_MC1 + P2_NCOLS].copy_from_slice(&b1);
+                v[mo + AGG_MEMB_MC2..mo + AGG_MEMB_MC2 + P2_NCOLS].copy_from_slice(&b2);
+                let p2 = post(&b2);
+                cur = [p2[0], p2[1], p2[2], p2[3]];
+                pacc += bit << i;
+                v[mo + AGG_MEMB_POSACC] = Goldilocks::from_u64(pacc);
+            }
+
+            if !have_anchor {
+                anchor = cur;
+                have_anchor = true;
+            } else {
+                assert_eq!(cur, anchor, "INPUT notes must share ONE anchor");
+            }
+
+            // Nullifier at φ=D+1: ρ=CRH(cm,pos), nf=PRF(nk,ρ).
+            let r = blk * k + (AGG_D + 1);
+            let no = r * AGG_ZK_WIDTH + AGG_NF_OFF;
+            let np = Goldilocks::from_u64(note.pos);
+            let nnk = Goldilocks::from_u64(note.nk);
+            for j in 0..AGG_NF_LANES {
+                v[no + AGG_NF_CM + j] = cm0[j];
+            }
+            v[no + AGG_NF_POS] = np;
+            v[no + AGG_NF_NK] = nnk;
+            // ρ sponge.
+            let rho1_in = [
+                cm0[0], cm0[1], cm0[2], cm0[3],
+                Goldilocks::ZERO, Goldilocks::ZERO, Goldilocks::ZERO, Goldilocks::ZERO,
+            ];
+            let rho1 = p2row(rho1_in);
+            let rs1 = post(&rho1);
+            let rho2_in = [
+                np,
+                Goldilocks::from_u64(AGG_DOMSEP_RHO),
+                Goldilocks::ZERO,
+                Goldilocks::ZERO,
+                rs1[4], rs1[5], rs1[6], rs1[7],
+            ];
+            let rho2 = p2row(rho2_in);
+            let rho = post(&rho2);
+            v[no + AGG_NF_RHO1..no + AGG_NF_RHO1 + P2_NCOLS].copy_from_slice(&rho1);
+            v[no + AGG_NF_RHO2..no + AGG_NF_RHO2 + P2_NCOLS].copy_from_slice(&rho2);
+            // nf sponge.
+            let nf1_in = [
+                nnk, rho[0], rho[1], rho[2],
+                Goldilocks::ZERO, Goldilocks::ZERO, Goldilocks::ZERO, Goldilocks::ZERO,
+            ];
+            let nf1 = p2row(nf1_in);
+            let ns1 = post(&nf1);
+            let nf2_in = [
+                rho[3],
+                Goldilocks::from_u64(AGG_DOMSEP_NF),
+                Goldilocks::ZERO,
+                Goldilocks::ZERO,
+                ns1[4], ns1[5], ns1[6], ns1[7],
+            ];
+            let nf2 = p2row(nf2_in);
+            let nf = post(&nf2);
+            v[no + AGG_NF_NF1..no + AGG_NF_NF1 + P2_NCOLS].copy_from_slice(&nf1);
+            v[no + AGG_NF_NF2..no + AGG_NF_NF2 + P2_NCOLS].copy_from_slice(&nf2);
+            for j in 0..AGG_NF_LANES {
+                v[no + AGG_NF_NF + j] = nf[j];
+            }
+        }
+
+        (RowMajorMatrix::new(v, AGG_ZK_WIDTH), anchor)
+    }
+
+    /// S4b.2a instance: INPUT 100 = OUTPUT 70 + FEE 30 (conserving) + 1 dummy-last,
+    /// D=4 membership, the INPUT addressed to its own (ak,nk) via condition-3 and
+    /// a member of the tree at the computed anchor. Real is_zk=1 prove → GATE1
+    /// verify=Ok, GATE3 tampered-reject, num_qc STOP-gate == 8.
+    pub fn dump_conf_action_agg_air_zk(
+        out_path: &PathBuf,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        conf_action_check_domseps()?;
+        conf_agg_check_domseps()?;
+        let notes = [
+            ActionNote {
+                role: CA_ROLE_INPUT,
+                value: 100,
+                addr: [0; 4], // overridden (derived from ak,nk)
+                rcm: [0x11, 0x12],
+                pos: 5, // bits LSB-first over D=4: [1,0,1,0]
+                nk: 0x2222_2222,
+                ak: 0x1111_1111,
+            },
+            ActionNote {
+                role: CA_ROLE_OUTPUT,
+                value: 70,
+                addr: [0xAA01, 0xAA02, 0xAA03, 0xAA04],
+                rcm: [0x21, 0x22],
+                pos: 0,
+                nk: 0,
+                ak: 0,
+            },
+            ActionNote {
+                role: CA_ROLE_FEE,
+                value: 30,
+                addr: [0xFEE1, 0xFEE2, 0xFEE3, 0xFEE4],
+                rcm: [0x31, 0x32],
+                pos: 0,
+                nk: 0,
+                ak: 0,
+            },
+        ];
+        // Arbitrary but fixed sibling digests for the INPUT's D=4 path (only the
+        // INPUT block's siblings are consumed; OUTPUT/FEE entries are ignored).
+        let memb_siblings: [[[u64; AGG_MEMB_LANES]; AGG_D]; 3] = [
+            [
+                [0x1001, 0x1002, 0x1003, 0x1004],
+                [0x2001, 0x2002, 0x2003, 0x2004],
+                [0x3001, 0x3002, 0x3003, 0x3004],
+                [0x4001, 0x4002, 0x4003, 0x4004],
+            ],
+            [[0; 4]; AGG_D],
+            [[0; 4]; AGG_D],
+        ];
+        let (trace, anchor) = generate_conf_action_agg_trace(7, &notes, &memb_siblings); // H=128=4 blocks
+        let pis: Vec<Goldilocks> = anchor.to_vec(); // num_public_values = 4 (anchor)
+        dump_is_zk_stark(
+            &ConfActionAggAir,
+            trace,
+            pis,
+            "conf_action_agg_air_zk",
+            "DUAL-MODE S4b — first REAL is_zk=1 proof of the AGGREGATE Action AIR \
+             (conf_action_agg_air, width 1927, main_next=true, 4 publics=anchor; \
+             C1 reuse + C3 membership + C4 nullifier at forced φ-phase rows via \
+             committed is_zero selectors; max degree 4, num_qc 8)",
+            "DUAL-MODE S4b.2a — aggregate Action AIR real-STARK lift (h=128, num_qc=8)",
             Some(8),
             out_path,
         )

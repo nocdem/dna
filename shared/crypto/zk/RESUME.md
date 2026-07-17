@@ -419,6 +419,23 @@
     - **S4b.1 DONE (2026-07-17) — width caps** (b6863ff6): MAX_MAIN_WIDTH +
       PROVER_MAX_TRACE_WIDTH 1024→2048, FRI_LEAF_CAP 6656→15488 (1919-wide row).
       C1 prover still byte-matches.
+    - **🎯 S4b.2a DONE (2026-07-17) — Rust `ConfActionAggAir` oracle + REAL
+      is_zk=1 STARK.** `tools/plonky3_oracle/src/main.rs`: the aggregate AIR
+      (WIDTH 1927, main_next=true, 4 publics=anchor) lifts the S4a construction
+      gate to a real Plonky3 proof. **C1 reused for free** (`ConfActionAir.eval`
+      called on the wide builder — touches only [0,813)); membership + nullifier
+      run at forced φ-phase rows via COMMITTED is_zero selectors (`is_lvl[i]=[φ==i]`,
+      `is_nf=[φ==D+1]`) — NOT the C construction gate's runtime `phi==c` branch.
+      Membership chaining `next.CUR==local.MC2.out` gated by committed
+      `active_lvl[i]=is_lvl[i]·IS_INPUT` helpers → transition gate degree 2, whole
+      AIR max degree 4. **Real prove → GATE1 verify=Ok, GATE3 tampered-reject,
+      num_qc MEASURED == 8** (STOP-gate held — the design's degree-4/num_qc-8
+      analysis confirmed empirically; symbolic.rs:74-79). degree_bits=8 (h=128).
+      Vector `tools/vectors/conf_action_agg_air_zk.json` byte-identical regen
+      (NO-FLAKY), hash pinned in `.expected_hashes`. Layout: [0,813)=C1,
+      [813,1183)=MEMB, [1183,1913)=NF, 1913=IS_NF, 1914=INV_NF, [1915,1919)=IS_LVL,
+      [1919,1923)=INV_LVL, [1923,1927)=ACTIVE_LVL. **The anchor is row-local (φ=D
+      INPUT rows); nf-publics NOT yet exposed — that is S4b.2b (counter routing).**
     - **⚠ S4b.2 DESIGN FINDING (2026-07-17) — the real-STARK lift is NOT a
       mechanical S1e-mirror; it has genuine soundness-critical design content the
       S4a construction gate hid (S4a reads φ + r DIRECTLY in a C loop; the fold is
