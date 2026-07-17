@@ -299,7 +299,8 @@ static bool agg_zk_generate(unsigned log_height,
         pub_out[CONF_AGGZK_PUB_FEE] = gold_fp_from_u64(lastrow[CONF_AGGZK_FEEACC_OFF]);
     }
     for (unsigned j = 0; j < CONF_AGGZK_MEMB_LANES; j++)
-        pub_out[CONF_AGGZK_PUB_TXBIND + j] = gold_fp_from_u64(0); /* FS-observed */
+        pub_out[CONF_AGGZK_PUB_TXBIND + j] =
+            gold_fp_from_u64(inst->tx_binding ? inst->tx_binding[j] : 0); /* FS-observed */
     return true;
 }
 

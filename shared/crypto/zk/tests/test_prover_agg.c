@@ -220,6 +220,13 @@ int main(int argc,char **argv){
     inst.value=value; inst.addr=addr; inst.rcm=rcm; inst.roles=roles;
     inst.pos=pos; inst.nk=nk; inst.ak=ak; inst.num_notes=num_notes;
     inst.memb_siblings=memb_siblings;
+    /* Sample KAT tx_binding — MUST match the oracle's AGG_KAT_TXBIND (production
+     * uses conf_txbind_map(sighash_v4)). Proves the interface carries a real
+     * caller-provided tx_binding (not hardcoded 0) + the proof FS-welds to it. */
+    static const uint64_t kat_txbind[4] = {
+        0x1111111111111111ULL, 0x2222222222222222ULL,
+        0x3333333333333333ULL, 0x4444444444444444ULL };
+    inst.tx_binding=kat_txbind;
     inst.log_height=log_height; inst.draws=draws; inst.num_draws=need;
 
     int fails=0;

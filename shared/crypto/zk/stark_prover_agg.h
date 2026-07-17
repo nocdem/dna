@@ -63,6 +63,9 @@ typedef struct {
     const uint64_t *ak;         /* num_notes spend-authority keys */
     size_t          num_notes;  /* real note-blocks; num_notes+1 <= H/K */
     const uint64_t *memb_siblings; /* num_notes * D * 4 (INPUT blocks consumed) */
+    const uint64_t *tx_binding; /* 4 canonical lanes; FS-observed statement binding.
+                                 * Production = conf_txbind_map(sighash_v4) (dnac S5
+                                 * sighash → 4 lanes, wired at S6). NULL => zero. */
     unsigned        log_height; /* height = 2^log_height, in [LOG_K, 10] */
     const uint64_t *draws;
     size_t          num_draws;  /* must equal DNAC_AGG_PROVER_TOTAL_DRAWS */

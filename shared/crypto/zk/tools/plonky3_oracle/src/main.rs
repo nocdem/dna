@@ -14105,6 +14105,18 @@ mod stark_priming {
     const AGG_DOMSEP_RHO: u64 = 0x79b6_db2f_d9e0_0ea6; // "DNAC nullifier-rho v1"
     const AGG_DOMSEP_NF: u64 = 0x1179_dd8e_919f_692a; // "DNAC nullifier-prf v1"
 
+    // Sample KAT tx_binding (canonical Goldilocks lanes, all < p). tx_binding is the
+    // FS-observed statement-binding public; PRODUCTION sets it to
+    // conf_txbind_map(sighash_v4) (the dnac S5 sighash mapped to 4 lanes, wired at
+    // S6). The KAT uses this fixed NON-ZERO value to prove the interface CARRIES a
+    // caller-provided tx_binding (not hardcoded 0) and the proof is FS-welded to it.
+    const AGG_KAT_TXBIND: [u64; 4] = [
+        0x1111_1111_1111_1111,
+        0x2222_2222_2222_2222,
+        0x3333_3333_3333_3333,
+        0x4444_4444_4444_4444,
+    ];
+
     /// Reproducible-derivation gate for the ρ/nf DOMSEPs (shielded_domsep.h:35-41):
     /// first 8 BIG-ENDIAN bytes of SHA3-512 over the pinned strings (KAFADAN barrier).
     fn conf_agg_check_domseps() -> Result<(), Box<dyn std::error::Error>> {
@@ -14840,6 +14852,7 @@ mod stark_priming {
         num_output: u64,
         output_commit: [[Goldilocks; CA_CMLANES]; AGG_MAX_OUTPUTS],
         fee: Goldilocks,
+        tx_binding: [Goldilocks; AGG_MEMB_LANES],
     ) -> Vec<Goldilocks> {
         let mut pis: Vec<Goldilocks> = Vec::with_capacity(AGG_NUM_PUBLICS);
         pis.extend_from_slice(&anchor);
@@ -14856,8 +14869,8 @@ mod stark_priming {
             }
         }
         pis.push(fee);
-        for _ in 0..AGG_MEMB_LANES {
-            pis.push(Goldilocks::ZERO); // tx_binding — FS-observed, eval-free
+        for j in 0..AGG_MEMB_LANES {
+            pis.push(tx_binding[j]); // FS-observed statement binding (caller-provided)
         }
         debug_assert_eq!(pis.len(), AGG_NUM_PUBLICS);
         pis
@@ -14915,7 +14928,10 @@ mod stark_priming {
         ];
         let (trace, anchor, num_input, nf_slots, num_output, output_commit, fee) =
             generate_conf_action_agg_trace(7, &notes, &memb_siblings); // H=128=4 blocks
-        let pis = agg_build_pis(anchor, num_input, nf_slots, num_output, output_commit, fee);
+        let kat_txbind: [Goldilocks; AGG_MEMB_LANES] =
+            core::array::from_fn(|j| Goldilocks::from_u64(AGG_KAT_TXBIND[j]));
+        let pis = agg_build_pis(anchor, num_input, nf_slots, num_output, output_commit, fee,
+                                kat_txbind);
         dump_is_zk_stark(
             &ConfActionAggAir,
             trace,
@@ -15042,7 +15058,10 @@ mod stark_priming {
         ];
         let (trace, anchor, num_input, nf_slots, num_output, output_commit, fee) =
             generate_conf_action_agg_trace(8, &notes, &memb_siblings); // H=256=8 blocks
-        let pis = agg_build_pis(anchor, num_input, nf_slots, num_output, output_commit, fee);
+        let kat_txbind: [Goldilocks; AGG_MEMB_LANES] =
+            core::array::from_fn(|j| Goldilocks::from_u64(AGG_KAT_TXBIND[j]));
+        let pis = agg_build_pis(anchor, num_input, nf_slots, num_output, output_commit, fee,
+                                kat_txbind);
         dump_is_zk_stark(
             &ConfActionAggAir,
             trace,
@@ -15096,7 +15115,10 @@ mod stark_priming {
         ];
         let (trace, anchor, num_input, nf_slots, num_output, output_commit, fee) =
             generate_conf_action_agg_trace(7, &notes, &memb_siblings); // H=128=4 blocks
-        let pis = agg_build_pis(anchor, num_input, nf_slots, num_output, output_commit, fee);
+        let kat_txbind: [Goldilocks; AGG_MEMB_LANES] =
+            core::array::from_fn(|j| Goldilocks::from_u64(AGG_KAT_TXBIND[j]));
+        let pis = agg_build_pis(anchor, num_input, nf_slots, num_output, output_commit, fee,
+                                kat_txbind);
         dump_is_zk_stark(
             &ConfActionAggAir,
             trace,
