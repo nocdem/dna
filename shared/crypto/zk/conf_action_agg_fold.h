@@ -10,7 +10,7 @@
  * (tools/plonky3_oracle/src/main.rs), which itself is proven by a REAL is_zk=1
  * p3_uni_stark proof (tools/vectors/conf_action_agg_air_zk.json).
  *
- * ── ZK trace layout (WIDTH 1936 — DIFFERENT from the 1915-wide construction
+ * ── ZK trace layout (WIDTH 1946 — DIFFERENT from the 1915-wide construction
  *    gate: the real-STARK adds committed is_zero SELECTOR columns the C
  *    construction gate replaced with runtime phi-branches). ──
  *   [0,813)         C1 region (conf_action_air, offsets unchanged)
@@ -24,8 +24,13 @@
  *   1927            N_INPUT (running INPUT-block counter)
  *   [1928,1932)     SLOT_SEL[MAX_INPUTS] = is_zero(N_INPUT-1-s)
  *   [1932,1936)     INV_SLOT[MAX_INPUTS]
+ *   1936            N_OUTPUT (running OUTPUT-block counter, S4c)
+ *   [1937,1941)     OSLOT_SEL[MAX_OUTPUTS] = is_zero(N_OUTPUT-1-s)
+ *   [1941,1945)     INV_OSLOT[MAX_OUTPUTS]
+ *   1945            FEE_ACC (Σ IS_FEE·value accumulator)
  *
- * ── Publics (21): anchor[4] || num_input || nf_slot[MAX_INPUTS][4]. ──
+ * ── Publics (43, S4c): anchor[4] || num_input || nf_slot[MI][4] || num_output ||
+ *    output_commit[MO][4] || fee || tx_binding[4] (tx_binding FS-observed). ──
  *
  * EMISSION ORDER (the alpha-fold is order-sensitive) mirrors the oracle:
  *   ConfActionAir.eval (C1, via dnac_conf_action_fold_air_eval) ->
@@ -93,16 +98,29 @@ extern "C" {
 #define CONF_AGGZK_NIN_OFF (CONF_AGGZK_ACTLVL_OFF + CONF_AGGZK_D)          /* 1927 */
 #define CONF_AGGZK_SLOTSEL_OFF (CONF_AGGZK_NIN_OFF + 1)                    /* 1928 */
 #define CONF_AGGZK_INVSLOT_OFF (CONF_AGGZK_SLOTSEL_OFF + CONF_AGGZK_MAX_INPUTS) /* 1932 */
-#define CONF_AGGZK_WIDTH (CONF_AGGZK_INVSLOT_OFF + CONF_AGGZK_MAX_INPUTS)  /* 1936 */
+/* S4c output routing columns (OUTPUT analog of the N_input machinery) + fee acc. */
+#define CONF_AGGZK_MAX_OUTPUTS 4 /* MAX_OUTPUTS — S6-pinned (mirrors MAX_INPUTS) */
+#define CONF_AGGZK_NOUT_OFF (CONF_AGGZK_INVSLOT_OFF + CONF_AGGZK_MAX_INPUTS)    /* 1936 */
+#define CONF_AGGZK_OSLOTSEL_OFF (CONF_AGGZK_NOUT_OFF + 1)                       /* 1937 */
+#define CONF_AGGZK_INVOSLOT_OFF (CONF_AGGZK_OSLOTSEL_OFF + CONF_AGGZK_MAX_OUTPUTS) /* 1941 */
+#define CONF_AGGZK_FEEACC_OFF (CONF_AGGZK_INVOSLOT_OFF + CONF_AGGZK_MAX_OUTPUTS)    /* 1945 */
+#define CONF_AGGZK_WIDTH (CONF_AGGZK_FEEACC_OFF + 1)                            /* 1946 */
 
 #define CONF_AGGZK_NF_PHI (CONF_AGGZK_D + 1) /* D+1 = 5 */
 
-/* public-value layout */
+/* public-value layout (S4c: 21 → 43):
+ *   anchor[4] ‖ num_input ‖ nf_slot[MI][4] ‖ num_output ‖ output_commit[MO][4]
+ *   ‖ fee ‖ tx_binding[4]. */
 #define CONF_AGGZK_PUB_ANCHOR 0
 #define CONF_AGGZK_PUB_NUMIN (CONF_AGGZK_PUB_ANCHOR + CONF_AGGZK_MEMB_LANES) /* 4 */
 #define CONF_AGGZK_PUB_NFSLOT (CONF_AGGZK_PUB_NUMIN + 1)                     /* 5 */
-#define CONF_AGGZK_NUM_PUBLICS \
+#define CONF_AGGZK_PUB_NUMOUT \
     (CONF_AGGZK_PUB_NFSLOT + CONF_AGGZK_MAX_INPUTS * CONF_AGGZK_NF_LANES) /* 21 */
+#define CONF_AGGZK_PUB_OCOMMIT (CONF_AGGZK_PUB_NUMOUT + 1)                   /* 22 */
+#define CONF_AGGZK_PUB_FEE \
+    (CONF_AGGZK_PUB_OCOMMIT + CONF_AGGZK_MAX_OUTPUTS * CONF_ACTION_CM_LANES) /* 38 */
+#define CONF_AGGZK_PUB_TXBIND (CONF_AGGZK_PUB_FEE + 1)                       /* 39 */
+#define CONF_AGGZK_NUM_PUBLICS (CONF_AGGZK_PUB_TXBIND + CONF_AGGZK_MEMB_LANES) /* 43 */
 
 /**
  * @brief The aggregate Action AIR fold-form eval (dnac_stark_air_t callback).
@@ -112,8 +130,8 @@ extern "C" {
  */
 void dnac_conf_action_agg_fold_air_eval(dnac_stark_folder_t *folder);
 
-/** AIR descriptor for dnac_stark_verify_constraints_nchunk (width 1936,
- *  21 publics, main_next=1). */
+/** AIR descriptor for dnac_stark_verify_constraints_nchunk (width 1946,
+ *  43 publics, main_next=1). */
 extern const dnac_stark_air_t DNAC_CONF_ACTION_AGG_FOLD_AIR;
 
 #ifdef __cplusplus

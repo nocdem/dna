@@ -3,9 +3,9 @@
  * @brief Dual-mode S4b.4 — pure-C prover for the AGGREGATE Action AIR.
  *
  * Mirrors the C1 Action prover (stark_prover_action.c) with the aggregate
- * constants and the two AIR-specific stages swapped (S1 trace = the 1936-wide
+ * constants and the two AIR-specific stages swapped (S1 trace = the 1946-wide
  * ZK generator agg_zk_generate, S6 quotient = dnac_conf_action_agg_fold_air_eval
- * with the 21 public values). UNSALTED. See stark_prover_agg.h.
+ * with the 43 public values). UNSALTED. See stark_prover_agg.h.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: Apache-2.0
@@ -34,10 +34,10 @@
 #define A_NUM_QC 8u
 #define A_LOG_NUM_QC 2u
 #define A_NUM_RANDOM 4u
-#define A_W ((size_t)CONF_AGGZK_WIDTH)     /* 1936 */
-#define A_RAND_W (A_W + A_NUM_RANDOM)      /* 1940 */
+#define A_W ((size_t)CONF_AGGZK_WIDTH)     /* 1946 (S4c) */
+#define A_RAND_W (A_W + A_NUM_RANDOM)      /* 1950 */
 #define A_CW ((size_t)2 + A_NUM_RANDOM)    /* 6 */
-#define A_NUM_PUBLICS ((size_t)CONF_AGGZK_NUM_PUBLICS) /* 21 */
+#define A_NUM_PUBLICS ((size_t)CONF_AGGZK_NUM_PUBLICS) /* 43 (S4c) */
 
 struct dnac_agg_prover_proof_s {
     size_t base_degree_bits, degree_bits, log_max_height, lde_h, num_fri_rounds;
@@ -92,10 +92,10 @@ static uint64_t p2out(const uint64_t *blk, unsigned k) {
     return blk[p2air_end_post_off(P2AIR_HALF_FULL_ROUNDS - 1, (size_t)k)];
 }
 
-/* ── S1: the 1936-wide ZK trace — byte-matches generate_conf_action_agg_trace.
+/* ── S1: the 1946-wide ZK trace — byte-matches generate_conf_action_agg_trace.
  * C1 scatter + membership walk (φ∈[1,D]) + nullifier sponge (φ=D+1) + the
  * is_zero SELECTOR columns (is_nf / is_lvl / active_lvl / N_input / slot_sel).
- * Also computes the 21 public values (anchor / num_input / nf_slots). ── */
+ * Also computes the 43 public values (anchor / num_input / nf_slots). ── */
 static bool agg_zk_generate(unsigned log_height,
                             const dnac_agg_prover_instance_t *inst,
                             uint64_t *trace_out, gold_fp_t *pub_out) {
@@ -121,6 +121,8 @@ static bool agg_zk_generate(unsigned log_height,
 
     /* ── Pass 1: scatter C1 + selectors + inert poseidon blocks. ── */
     uint64_t n_in_acc = 0;
+    uint64_t n_out_acc = 0; /* S4c: running OUTPUT-block counter. */
+    uint64_t f_acc = 0;     /* S4c: running Σ(IS_FEE·value). */
     for (size_t r = 0; r < rows; r++) {
         uint64_t *row = trace_out + r * CONF_AGGZK_WIDTH;
         memcpy(row, c1 + r * CONF_ACTION_WIDTH,
@@ -156,6 +158,24 @@ static bool agg_zk_generate(unsigned log_height,
                                             gold_fp_from_u64((uint64_t)s + 1));
             row[CONF_AGGZK_INVSLOT_OFF + s] = sel ? 0 : gold_fp_to_u64(gold_fp_inv(e));
         }
+
+        /* S4c: N_output counter + oslot_sel[s] = is_zero(N_output−1−s). */
+        const int is_output =
+            blk < inst->num_notes && inst->roles[blk] == CONF_ACTION_ROLE_OUTPUT;
+        if (phi == 0 && is_output) n_out_acc += 1;
+        row[CONF_AGGZK_NOUT_OFF] = n_out_acc;
+        for (unsigned s = 0; s < CONF_AGGZK_MAX_OUTPUTS; s++) {
+            const int osel = (n_out_acc == (uint64_t)s + 1);
+            row[CONF_AGGZK_OSLOTSEL_OFF + s] = osel ? 1u : 0u;
+            const gold_fp_t e = gold_fp_sub(gold_fp_from_u64(n_out_acc),
+                                            gold_fp_from_u64((uint64_t)s + 1));
+            row[CONF_AGGZK_INVOSLOT_OFF + s] = osel ? 0 : gold_fp_to_u64(gold_fp_inv(e));
+        }
+        /* S4c: FEE_ACC = running Σ(IS_FEE·value) (fee binding, mirrors N_input). */
+        const int is_fee =
+            blk < inst->num_notes && inst->roles[blk] == CONF_ACTION_ROLE_FEE;
+        if (phi == 0 && is_fee) f_acc += inst->value[blk];
+        row[CONF_AGGZK_FEEACC_OFF] = f_acc;
 
         uint64_t *m = row + CONF_AGGZK_MEMB_OFF;
         memcpy(m + CONF_AGGZK_MEMB_MC1, zero_blk, sizeof zero_blk);
@@ -260,11 +280,31 @@ static bool agg_zk_generate(unsigned log_height,
         for (unsigned j = 0; j < 4; j++)
             pub_out[CONF_AGGZK_PUB_NFSLOT + s * 4 + j] =
                 gold_fp_from_u64(nf_slots[s][j]);
+
+    /* ── S4c OUTPUT/FEE publics: output_commit[s] = s-th OUTPUT block's frozen
+     *    cm_carry (φ=0 row); fee = FEE_ACC last-row total; tx_binding = 0. ── */
+    uint64_t num_output = 0;
+    for (size_t blk = 0; blk < inst->num_notes; blk++) {
+        if (inst->roles[blk] != CONF_ACTION_ROLE_OUTPUT) continue;
+        if (num_output >= CONF_AGGZK_MAX_OUTPUTS) return false;
+        const uint64_t *blk0 = trace_out + (blk * K) * CONF_AGGZK_WIDTH;
+        for (unsigned j = 0; j < 4; j++)
+            pub_out[CONF_AGGZK_PUB_OCOMMIT + num_output * 4 + j] =
+                gold_fp_from_u64(blk0[CONF_ACTION_CMCARRY_OFF + j]);
+        num_output++;
+    }
+    pub_out[CONF_AGGZK_PUB_NUMOUT] = gold_fp_from_u64(num_output);
+    {
+        const uint64_t *lastrow = trace_out + (rows - 1) * CONF_AGGZK_WIDTH;
+        pub_out[CONF_AGGZK_PUB_FEE] = gold_fp_from_u64(lastrow[CONF_AGGZK_FEEACC_OFF]);
+    }
+    for (unsigned j = 0; j < CONF_AGGZK_MEMB_LANES; j++)
+        pub_out[CONF_AGGZK_PUB_TXBIND + j] = gold_fp_from_u64(0); /* FS-observed */
     return true;
 }
 
 /* ── S6: aggregate quotient values — REUSES the verifier-fold eval per row
- * (WITH the 21 public values). ── */
+ * (WITH the 43 public values). ── */
 static dnac_prover_status_t agg_quotient_values(
     const uint64_t *trace_q, size_t q_rows, size_t next_step, gold_fp2_t alpha,
     const gold_fp_t *publics, const uint64_t *sf, const uint64_t *sl,
@@ -306,7 +346,7 @@ static dnac_prover_status_t agg_quotient_values(
     return DNAC_PROVER_OK;
 }
 
-/* ── priming input (21 publics, num_qc=8) ── */
+/* ── priming input (43 publics, num_qc=8) ── */
 static void build_prime_input(dnac_agg_prover_proof_t *p) {
     memset(&p->prime_in, 0, sizeof(p->prime_in));
     p->prime_in.degree_bits = p->degree_bits;
@@ -549,7 +589,7 @@ dnac_prover_status_t dnac_agg_prover_prove(
         goto cleanup;
     }
 
-    /* ── S1: the 1936-wide ZK trace + the 21 public values ── */
+    /* ── S1: the 1946-wide ZK trace + the 43 public values ── */
     if (!agg_zk_generate(inst->log_height, inst, base_c, p->publics)) {
         rc = DNAC_PROVER_ERR_RANGE;
         goto cleanup;

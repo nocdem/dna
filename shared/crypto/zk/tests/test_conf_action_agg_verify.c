@@ -75,10 +75,10 @@ static size_t parse_fp2_decimal_array(js_t *s,gold_fp2_t *out,size_t cap){
     return n;
 }
 
-/* ===== fixture (CV_W covers 1936 + 4 random merged; CV_PUB covers 21) ===== */
+/* ===== fixture (CV_W covers 1946 + 4 random merged; CV_PUB covers 43) ===== */
 #define CV_W 2048
 #define CV_QC 8
-#define CV_PUB 32
+#define CV_PUB 48
 
 typedef struct {
     size_t degree_bits, num_quotient_chunks;
@@ -152,7 +152,7 @@ int main(int argc,char **argv){
               && fx->num_quotient_chunks==((size_t)1<<(fx->log_num_qc+is_zk))
               && fx->num_quot_chunks_parsed==fx->num_quotient_chunks
               && fx->num_public_values==CONF_AGGZK_NUM_PUBLICS;
-        printf("  T1 shape: num_qc=8, log_num_qc=2, publics=21           %s\n", ok?"PASS":"FAIL");
+        printf("  T1 shape: num_qc=8, log_num_qc=2, publics=43           %s\n", ok?"PASS":"FAIL");
         if(!ok){ printf("     (num_qc=%zu log_num_qc=%zu publics=%zu)\n",fx->num_quotient_chunks,fx->log_num_qc,fx->num_public_values); fails++; }
     }
 

@@ -1,22 +1,24 @@
 /**
  * @file stark_prover_agg.h
  * @brief Dual-mode S4b.4 — pure-C prover for the AGGREGATE Action AIR
- *        (ConfActionAggAir ZK layout, width 1936, is_zk=1, num_qc=8, 21 publics).
+ *        (ConfActionAggAir ZK layout, width 1946, is_zk=1, num_qc=8, 43 publics).
  *
  * The aggregate sibling of dnac_action_prover_prove (stark_prover_action.h):
  * the SAME S1→S12 pipeline over the parametric stage library (stark_prover.h),
  * with the aggregate-specific pieces swapped in:
  *
- *   S1  trace     = the 1936-wide ZK trace (C1 scatter + membership walk +
- *                   nullifier sponge + is_zero SELECTOR columns), byte-matching
- *                   the Rust generate_conf_action_agg_trace
+ *   S1  trace     = the 1946-wide ZK trace (C1 scatter + membership walk +
+ *                   nullifier sponge + is_zero SELECTOR columns + S4c output
+ *                   routing/fee-acc), byte-matching Rust generate_conf_action_agg_trace
  *   S6  quotient  = the aggregate constraint set evaluated domain-wide by
  *                   REUSING dnac_conf_action_agg_fold_air_eval row-by-row (with
- *                   the 21 public values) — ONE emission source prover+verifier
- *   publics       = anchor[4] || num_input || nf_slot[MAX_INPUTS][4] (21)
+ *                   the 43 public values) — ONE emission source prover+verifier
+ *   publics       = anchor[4] || num_input || nf_slot[MI][4] || num_output ||
+ *                   output_commit[MO][4] || fee || tx_binding[4]  (43, S4c)
  *
- * Draw layout (SmallRng order, D1-B): trace (1936+8)·h @0 ‖ codeword 32h ‖
- *   blinding 42h ‖ R 12h  — total 2030h (only the trace section grows vs C1).
+ * Draw layout (SmallRng order, D1-B): trace (W+8)·h @0 ‖ codeword 32h ‖
+ *   blinding 42h ‖ R 12h  — total (W+94)h = 2040h at W=1946 (only the trace
+ *   section grows vs C1; symbolic in A_W so it tracks the width).
  *
  * UNSALTED (M3b leaf-salt hiding deferred to S7/wallet). See stark_prover_action.h.
  *
@@ -39,8 +41,11 @@
 extern "C" {
 #endif
 
-/** Total SmallRng draws for an is_zk=1 aggregate instance (width 1936). */
-#define DNAC_AGG_PROVER_TOTAL_DRAWS(height) ((size_t)2030 * (size_t)(height))
+/** Total SmallRng draws for an is_zk=1 aggregate instance: trace (W+8)h ‖
+ *  codeword 32h ‖ blinding 42h ‖ R 12h = (W+94)h. W = CONF_AGGZK_WIDTH = 1946
+ *  (S4c), so 2040h; symbolic so it tracks any future width change. */
+#define DNAC_AGG_PROVER_TOTAL_DRAWS(height) \
+    ((size_t)(CONF_AGGZK_WIDTH + 94) * (size_t)(height))
 
 /**
  * An aggregate prove request — one shielded action's notes + the INPUT notes'
@@ -67,7 +72,7 @@ typedef struct {
 typedef struct dnac_agg_prover_proof_s dnac_agg_prover_proof_t;
 
 /**
- * Prove an aggregate instance and SELF-VERIFY (priming with the 21 publics +
+ * Prove an aggregate instance and SELF-VERIFY (priming with the 43 publics +
  * zeta cross-check + dnac_fri_verify == DNAC_FRI_OK + the N-chunk constraint
  * check == OK). Fail-close on any inconsistency.
  */

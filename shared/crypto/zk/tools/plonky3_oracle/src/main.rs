@@ -14079,15 +14079,27 @@ mod stark_priming {
     const AGG_MAX_INPUTS: usize = 4; // MAX_INPUTS — S6-pinned consensus constant (KAT: modest)
     const AGG_SLOTSEL_OFF: usize = AGG_NIN_OFF + 1; // 1928 [.., +M) slot_sel[s]=is_zero(N_in−1−s)
     const AGG_INVSLOT_OFF: usize = AGG_SLOTSEL_OFF + AGG_MAX_INPUTS; // 1932 [.., +M)
-    const AGG_ZK_WIDTH: usize = AGG_INVSLOT_OFF + AGG_MAX_INPUTS; // 1936
+    // ── S4c output routing columns (OUTPUT analog of the N_input machinery). ──
+    const AGG_MAX_OUTPUTS: usize = 4; // MAX_OUTPUTS — S6-pinned (mirrors MAX_INPUTS; 8in+8out height-budget OK)
+    const AGG_NOUT_OFF: usize = AGG_INVSLOT_OFF + AGG_MAX_INPUTS; // 1936 running OUTPUT-block counter
+    const AGG_OSLOTSEL_OFF: usize = AGG_NOUT_OFF + 1; // 1937 [.., +MO) oslot_sel[s]=is_zero(N_out−1−s)
+    const AGG_INVOSLOT_OFF: usize = AGG_OSLOTSEL_OFF + AGG_MAX_OUTPUTS; // 1941 [.., +MO)
+    const AGG_FEEACC_OFF: usize = AGG_INVOSLOT_OFF + AGG_MAX_OUTPUTS; // 1945 Σ IS_FEE·value accumulator
+    const AGG_ZK_WIDTH: usize = AGG_FEEACC_OFF + 1; // 1946
 
     const AGG_NF_PHI: u64 = (AGG_D + 1) as u64; // D+1 = 5
 
-    // Public-value layout: anchor[4] ‖ num_input ‖ nf_slot[MAX_INPUTS][4].
+    // Public-value layout (S4c: 21 → 43):
+    //   anchor[4] ‖ num_input ‖ nf_slot[MI][4] ‖ num_output ‖ output_commit[MO][4]
+    //   ‖ fee ‖ tx_binding[4].
     const AGG_PUB_ANCHOR: usize = 0;
     const AGG_PUB_NUMIN: usize = AGG_PUB_ANCHOR + AGG_MEMB_LANES; // 4
     const AGG_PUB_NFSLOT: usize = AGG_PUB_NUMIN + 1; // 5
-    const AGG_NUM_PUBLICS: usize = AGG_PUB_NFSLOT + AGG_MAX_INPUTS * AGG_NF_LANES; // 21
+    const AGG_PUB_NUMOUT: usize = AGG_PUB_NFSLOT + AGG_MAX_INPUTS * AGG_NF_LANES; // 21
+    const AGG_PUB_OCOMMIT: usize = AGG_PUB_NUMOUT + 1; // 22  [.., +MO*4)
+    const AGG_PUB_FEE: usize = AGG_PUB_OCOMMIT + AGG_MAX_OUTPUTS * CA_CMLANES; // 38
+    const AGG_PUB_TXBIND: usize = AGG_PUB_FEE + 1; // 39  [.., +4) FS-observed, eval-free
+    const AGG_NUM_PUBLICS: usize = AGG_PUB_TXBIND + AGG_MEMB_LANES; // 43
 
     // shielded_domsep.h:37,41 — SHA3-512("<string>")[0:8] BE (checked at runtime).
     const AGG_DOMSEP_RHO: u64 = 0x79b6_db2f_d9e0_0ea6; // "DNAC nullifier-rho v1"
@@ -14140,6 +14152,13 @@ mod stark_priming {
             let nf_slot_pub: [[AB::Expr; AGG_NF_LANES]; AGG_MAX_INPUTS] = core::array::from_fn(|s| {
                 core::array::from_fn(|j| pis[AGG_PUB_NFSLOT + s * AGG_NF_LANES + j].into())
             });
+            // S4c output/fee publics (read up-front so the `pis` borrow ends before the
+            // mutable builder calls; tx_binding is FS-observed only, never eval-read).
+            let num_output_pub: AB::Expr = pis[AGG_PUB_NUMOUT].into();
+            let ocommit_pub: [[AB::Expr; CA_CMLANES]; AGG_MAX_OUTPUTS] = core::array::from_fn(|s| {
+                core::array::from_fn(|j| pis[AGG_PUB_OCOMMIT + s * CA_CMLANES + j].into())
+            });
+            let fee_pub: AB::Expr = pis[AGG_PUB_FEE].into();
             let ls: &[AB::Var] = main.current_slice();
             let ns: &[AB::Var] = main.next_slice();
 
@@ -14452,6 +14471,77 @@ mod stark_priming {
                 slot_sum = slot_sum + ls[AGG_SLOTSEL_OFF + s].into();
             }
             builder.assert_zero(gate_nf.clone() * (slot_sum - AB::Expr::ONE));
+
+            // ── S4c: OUTPUT-block routing (analog of the N_input machinery) + fee
+            //    promotion. Closes A-6 (GAP3 output side): output_commit + fee become
+            //    circuit-emitted, balance-bound publics so tx_binding over them is
+            //    structural, not assumed. tx_binding[4] itself is FS-observed only
+            //    (eval-free — the S5 wire fills it via conf_txbind_map(sighash_v4)).
+            //    num_output_pub / ocommit_pub / fee_pub are read up-front. ──
+            let is_output: AB::Expr = ls[CA_ISOUT].into();
+            let is_fee: AB::Expr = ls[CA_ISFEE].into();
+            let cphi0: AB::Expr = ls[CA_PHI0].into();
+
+            // N_output = running count of OUTPUT blocks (increment at each block's
+            // φ=0 row: next.PHI0·next.IS_OUTPUT), constant block-wide. Mirrors N_input.
+            builder
+                .when_first_row()
+                .assert_eq(ls[AGG_NOUT_OFF], cphi0.clone() * is_output.clone());
+            let nphi0b: AB::Expr = ns[CA_PHI0].into();
+            let nisout: AB::Expr = ns[CA_ISOUT].into();
+            builder.when_transition().assert_zero(
+                ns[AGG_NOUT_OFF].into() - ls[AGG_NOUT_OFF].into() - nphi0b * nisout,
+            );
+            builder
+                .when_last_row()
+                .assert_eq(ls[AGG_NOUT_OFF], num_output_pub);
+            // oslot_sel[s] = is_zero(N_output − 1 − s), s ∈ [0, MAX_OUTPUTS).
+            let n_out: AB::Expr = ls[AGG_NOUT_OFF].into();
+            for s in 0..AGG_MAX_OUTPUTS {
+                let os = ls[AGG_OSLOTSEL_OFF + s];
+                let ose: AB::Expr = os.into();
+                builder.assert_bool(os);
+                let e_s = n_out.clone() - AB::Expr::from_u64((s as u64) + 1);
+                builder.assert_eq(
+                    e_s.clone() * ls[AGG_INVOSLOT_OFF + s],
+                    AB::Expr::ONE - ose.clone(),
+                );
+                builder.assert_zero(e_s * ose);
+            }
+            // Routing: at an OUTPUT block's φ=0 row (gate_out = PHI0·IS_OUTPUT) the
+            // frozen note commitment cm_carry == output_commit[N_output−1]
+            // (degree gate_out(2)·oslot_sel(1)·1 = 4, matching the input side).
+            let gate_out: AB::Expr = cphi0.clone() * is_output.clone();
+            for s in 0..AGG_MAX_OUTPUTS {
+                let osel: AB::Expr = gate_out.clone() * ls[AGG_OSLOTSEL_OFF + s].into();
+                for j in 0..CA_CMLANES {
+                    let cmj: AB::Expr = ls[CA_CMCARRY + j].into();
+                    builder.assert_zero(osel.clone() * (cmj - ocommit_pub[s][j].clone()));
+                }
+            }
+            // Every OUTPUT block routes to EXACTLY ONE slot (A-6 completeness, the
+            // GAP-1 analog): gate_out·(Σ oslot_sel − 1) == 0 ⇒ N_output ∈ [1, MAX_OUTPUTS].
+            let mut osum: AB::Expr = AB::Expr::ZERO;
+            for s in 0..AGG_MAX_OUTPUTS {
+                osum = osum + ls[AGG_OSLOTSEL_OFF + s].into();
+            }
+            builder.assert_zero(gate_out * (osum - AB::Expr::ONE));
+            // Fee promotion (A-6): fee_pub == Σ(IS_FEE·value) via a running FEE_ACC
+            // accumulator (mirrors N_input) — binds fee EVEN WHEN there is no FEE
+            // block (⇒ fee_pub forced 0); an unbound fee_pub would be a fee-pool mint.
+            // Increment at each FEE block's φ=0 row: next.PHI0·next.IS_FEE·next.value.
+            builder
+                .when_first_row()
+                .assert_eq(ls[AGG_FEEACC_OFF], cphi0 * is_fee * ls[CA_VALUE].into());
+            let nphi0f: AB::Expr = ns[CA_PHI0].into();
+            let nisfee: AB::Expr = ns[CA_ISFEE].into();
+            let nval: AB::Expr = ns[CA_VALUE].into();
+            builder.when_transition().assert_zero(
+                ns[AGG_FEEACC_OFF].into() - ls[AGG_FEEACC_OFF].into() - nphi0f * nisfee * nval,
+            );
+            builder
+                .when_last_row()
+                .assert_eq(ls[AGG_FEEACC_OFF], fee_pub);
         }
     }
 
@@ -14470,6 +14560,9 @@ mod stark_priming {
         [Goldilocks; AGG_MEMB_LANES],
         u64,
         [[Goldilocks; AGG_NF_LANES]; AGG_MAX_INPUTS],
+        u64,
+        [[Goldilocks; CA_CMLANES]; AGG_MAX_OUTPUTS],
+        Goldilocks,
     ) {
         let c1 = generate_conf_action_trace(log_height, notes);
         let rows = 1usize << log_height;
@@ -14507,6 +14600,8 @@ mod stark_priming {
 
         // ── Pass 1: scatter C1 + fill selectors + inert poseidon blocks. ──
         let mut n_in_acc: u64 = 0; // running INPUT-block counter (mirrors the AIR).
+        let mut n_out_acc: u64 = 0; // running OUTPUT-block counter (S4c, mirrors N_input).
+        let mut f_acc: u64 = 0; // running Σ(IS_FEE·value) accumulator (S4c fee binding).
         for r in 0..rows {
             let base = r * AGG_ZK_WIDTH;
             v[base..base + CA_W_WIDTH]
@@ -14533,6 +14628,30 @@ mod stark_priming {
                     p3_field::Field::inverse(&e_s)
                 };
             }
+
+            // S4c: N_output running counter + oslot_sel[s] = is_zero(N_output−1−s).
+            let is_output = blk < notes.len() && notes[blk].role == CA_ROLE_OUTPUT;
+            if phi == 0 && is_output {
+                n_out_acc += 1;
+            }
+            v[base + AGG_NOUT_OFF] = Goldilocks::from_u64(n_out_acc);
+            for s in 0..AGG_MAX_OUTPUTS {
+                let osel = n_out_acc == (s as u64) + 1;
+                v[base + AGG_OSLOTSEL_OFF + s] = Goldilocks::from_u64(osel as u64);
+                let e_s = Goldilocks::from_u64(n_out_acc) - Goldilocks::from_u64((s as u64) + 1);
+                v[base + AGG_INVOSLOT_OFF + s] = if osel {
+                    Goldilocks::ZERO
+                } else {
+                    p3_field::Field::inverse(&e_s)
+                };
+            }
+
+            // S4c: FEE_ACC = running Σ(IS_FEE·value) (fee binding, mirrors N_input).
+            let is_fee_blk = blk < notes.len() && notes[blk].role == CA_ROLE_FEE;
+            if phi == 0 && is_fee_blk {
+                f_acc += notes[blk].value;
+            }
+            v[base + AGG_FEEACC_OFF] = Goldilocks::from_u64(f_acc);
 
             // is_nf = is_zero(φ − (D+1)).
             let is_nf = phi == AGG_NF_PHI;
@@ -14679,7 +14798,69 @@ mod stark_priming {
             num_input += 1;
         }
 
-        (RowMajorMatrix::new(v, AGG_ZK_WIDTH), anchor, num_input, nf_slots)
+        // ── S4c OUTPUT/FEE publics: output_commit[s] = s-th OUTPUT block's frozen
+        //    cm_carry (read at its φ=0 row, == the AIR's routed value); fee = the
+        //    single FEE block's balance-bound value. ──
+        let mut num_output: u64 = 0;
+        let mut output_commit = [[Goldilocks::ZERO; CA_CMLANES]; AGG_MAX_OUTPUTS];
+        for (blk, note) in notes.iter().enumerate() {
+            if note.role == CA_ROLE_OUTPUT {
+                let base = (blk * k) * AGG_ZK_WIDTH; // the block's φ=0 row
+                assert!(
+                    (num_output as usize) < AGG_MAX_OUTPUTS,
+                    "more than MAX_OUTPUTS outputs"
+                );
+                output_commit[num_output as usize] =
+                    core::array::from_fn(|j| v[base + CA_CMCARRY + j]);
+                num_output += 1;
+            }
+        }
+        // fee == the FEE_ACC last-row value (Σ IS_FEE·value), 0 if no FEE block.
+        let fee = Goldilocks::from_u64(f_acc);
+
+        (
+            RowMajorMatrix::new(v, AGG_ZK_WIDTH),
+            anchor,
+            num_input,
+            nf_slots,
+            num_output,
+            output_commit,
+            fee,
+        )
+    }
+
+    /// Build the 43-public vector: anchor[4] ‖ num_input ‖ nf_slot[MI][4] ‖
+    /// num_output ‖ output_commit[MO][4] ‖ fee ‖ tx_binding[4]. tx_binding is the
+    /// FS-observed placeholder (0 in KATs; the S5 wire fills it via
+    /// conf_txbind_map(sighash_v4)).
+    fn agg_build_pis(
+        anchor: [Goldilocks; AGG_MEMB_LANES],
+        num_input: u64,
+        nf_slots: [[Goldilocks; AGG_NF_LANES]; AGG_MAX_INPUTS],
+        num_output: u64,
+        output_commit: [[Goldilocks; CA_CMLANES]; AGG_MAX_OUTPUTS],
+        fee: Goldilocks,
+    ) -> Vec<Goldilocks> {
+        let mut pis: Vec<Goldilocks> = Vec::with_capacity(AGG_NUM_PUBLICS);
+        pis.extend_from_slice(&anchor);
+        pis.push(Goldilocks::from_u64(num_input));
+        for s in 0..AGG_MAX_INPUTS {
+            for j in 0..AGG_NF_LANES {
+                pis.push(nf_slots[s][j]);
+            }
+        }
+        pis.push(Goldilocks::from_u64(num_output));
+        for s in 0..AGG_MAX_OUTPUTS {
+            for j in 0..CA_CMLANES {
+                pis.push(output_commit[s][j]);
+            }
+        }
+        pis.push(fee);
+        for _ in 0..AGG_MEMB_LANES {
+            pis.push(Goldilocks::ZERO); // tx_binding — FS-observed, eval-free
+        }
+        debug_assert_eq!(pis.len(), AGG_NUM_PUBLICS);
+        pis
     }
 
     /// S4b.2a instance: INPUT 100 = OUTPUT 70 + FEE 30 (conserving) + 1 dummy-last,
@@ -14732,30 +14913,21 @@ mod stark_priming {
             [[0; 4]; AGG_D],
             [[0; 4]; AGG_D],
         ];
-        let (trace, anchor, num_input, nf_slots) =
+        let (trace, anchor, num_input, nf_slots, num_output, output_commit, fee) =
             generate_conf_action_agg_trace(7, &notes, &memb_siblings); // H=128=4 blocks
-        // pis = anchor[4] ‖ num_input ‖ nf_slot[MAX_INPUTS][4].
-        let mut pis: Vec<Goldilocks> = Vec::with_capacity(AGG_NUM_PUBLICS);
-        pis.extend_from_slice(&anchor);
-        pis.push(Goldilocks::from_u64(num_input));
-        for s in 0..AGG_MAX_INPUTS {
-            for j in 0..AGG_NF_LANES {
-                pis.push(nf_slots[s][j]);
-            }
-        }
-        debug_assert_eq!(pis.len(), AGG_NUM_PUBLICS);
+        let pis = agg_build_pis(anchor, num_input, nf_slots, num_output, output_commit, fee);
         dump_is_zk_stark(
             &ConfActionAggAir,
             trace,
             pis,
             "conf_action_agg_air_zk",
-            "DUAL-MODE S4b — REAL is_zk=1 proof of the AGGREGATE Action AIR \
-             (conf_action_agg_air, width 1936, main_next=true, 21 publics = \
-             anchor[4] ‖ num_input ‖ nf_slot[4][4]; C1 reuse + C3 membership + \
-             C4 nullifier at forced φ-phase rows via committed is_zero selectors; \
-             nf-public position-forced slot routing (N_input counter); max degree \
-             4, num_qc 8)",
-            "DUAL-MODE S4b.2 — aggregate Action AIR real-STARK lift + nf routing (h=128, num_qc=8)",
+            "DUAL-MODE S4c — REAL is_zk=1 proof of the AGGREGATE Action AIR \
+             (conf_action_agg_air, width 1945, main_next=true, 43 publics = \
+             anchor[4] ‖ num_input ‖ nf_slot[4][4] ‖ num_output ‖ output_commit[4][4] \
+             ‖ fee ‖ tx_binding[4]; C1 reuse + C3 membership + C4 nullifier + nf \
+             routing + OUTPUT-block routing (N_output counter) + fee promotion; \
+             max degree 4, num_qc 8)",
+            "DUAL-MODE S4c — aggregate Action AIR + output/fee promotion (h=128, num_qc=8)",
             Some(8),
             out_path,
         )
@@ -14868,16 +15040,9 @@ mod stark_priming {
             [c2, n01, e2, e3],
             [[0; 4]; AGG_D],
         ];
-        let (trace, anchor, num_input, nf_slots) =
+        let (trace, anchor, num_input, nf_slots, num_output, output_commit, fee) =
             generate_conf_action_agg_trace(8, &notes, &memb_siblings); // H=256=8 blocks
-        let mut pis: Vec<Goldilocks> = Vec::with_capacity(AGG_NUM_PUBLICS);
-        pis.extend_from_slice(&anchor);
-        pis.push(Goldilocks::from_u64(num_input));
-        for s in 0..AGG_MAX_INPUTS {
-            for j in 0..AGG_NF_LANES {
-                pis.push(nf_slots[s][j]);
-            }
-        }
+        let pis = agg_build_pis(anchor, num_input, nf_slots, num_output, output_commit, fee);
         dump_is_zk_stark(
             &ConfActionAggAir,
             trace,
@@ -14929,16 +15094,9 @@ mod stark_priming {
             [cm0u, up[0], up[1], up[2]],
             [[0; 4]; AGG_D],
         ];
-        let (trace, anchor, num_input, nf_slots) =
+        let (trace, anchor, num_input, nf_slots, num_output, output_commit, fee) =
             generate_conf_action_agg_trace(7, &notes, &memb_siblings); // H=128=4 blocks
-        let mut pis: Vec<Goldilocks> = Vec::with_capacity(AGG_NUM_PUBLICS);
-        pis.extend_from_slice(&anchor);
-        pis.push(Goldilocks::from_u64(num_input));
-        for s in 0..AGG_MAX_INPUTS {
-            for j in 0..AGG_NF_LANES {
-                pis.push(nf_slots[s][j]);
-            }
-        }
+        let pis = agg_build_pis(anchor, num_input, nf_slots, num_output, output_commit, fee);
         dump_is_zk_stark(
             &ConfActionAggAir,
             trace,

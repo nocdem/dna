@@ -267,11 +267,74 @@ void dnac_conf_action_agg_fold_air_eval(dnac_stark_folder_t *f) {
         dnac_stark_folder_assert_zero(
             f, gold_fp2_mul(gate_nf, gold_fp2_sub(slot_sum, one)));
     }
+
+    /* ── S4c: OUTPUT-block routing + fee accumulator (mirrors the N_input machinery;
+     *    closes A-6 GAP3 output side — output_commit + fee are circuit-emitted,
+     *    balance-bound publics). EMISSION ORDER mirrors the oracle exactly. ── */
+    const gold_fp2_t num_output_pub = gold_fp2_from_base(PUB[CONF_AGGZK_PUB_NUMOUT]);
+    const gold_fp2_t fee_pub = gold_fp2_from_base(PUB[CONF_AGGZK_PUB_FEE]);
+    const gold_fp2_t is_output = L[CONF_ACTION_ISOUT_OFF];
+    const gold_fp2_t is_fee = L[CONF_ACTION_ISFEE_OFF];
+    /* N_output first row: N_output == PHI0·IS_OUTPUT. */
+    dnac_stark_folder_when(
+        f, f->is_first_row,
+        gold_fp2_sub(L[CONF_AGGZK_NOUT_OFF], gold_fp2_mul(phi0, is_output)));
+    /* transition: next.N_output − N_output − next.PHI0·next.IS_OUTPUT == 0. */
+    dnac_stark_folder_when(
+        f, f->is_transition,
+        gold_fp2_sub(gold_fp2_sub(N[CONF_AGGZK_NOUT_OFF], L[CONF_AGGZK_NOUT_OFF]),
+                     gold_fp2_mul(N[CONF_ACTION_PHI0_OFF], N[CONF_ACTION_ISOUT_OFF])));
+    /* last row: N_output == num_output public. */
+    dnac_stark_folder_when(f, f->is_last_row,
+                           gold_fp2_sub(L[CONF_AGGZK_NOUT_OFF], num_output_pub));
+    /* oslot_sel[s] = is_zero(N_output − 1 − s). */
+    for (unsigned s = 0; s < CONF_AGGZK_MAX_OUTPUTS; s++) {
+        const gold_fp2_t os = L[CONF_AGGZK_OSLOTSEL_OFF + s];
+        dnac_stark_folder_assert_bool(f, os);
+        const gold_fp2_t e_s = gold_fp2_sub(L[CONF_AGGZK_NOUT_OFF], fp2u((uint64_t)s + 1));
+        dnac_stark_folder_assert_eq(f, gold_fp2_mul(e_s, L[CONF_AGGZK_INVOSLOT_OFF + s]),
+                                    gold_fp2_sub(one, os));
+        dnac_stark_folder_assert_zero(f, gold_fp2_mul(e_s, os));
+    }
+    /* Routing: gate_out·oslot_sel[s]·(cm_carry − output_commit[s]) == 0,
+     * gate_out = PHI0·IS_OUTPUT (the frozen note commitment at the OUTPUT φ=0 row). */
+    const gold_fp2_t gate_out = gold_fp2_mul(phi0, is_output);
+    for (unsigned s = 0; s < CONF_AGGZK_MAX_OUTPUTS; s++) {
+        const gold_fp2_t osel = gold_fp2_mul(gate_out, L[CONF_AGGZK_OSLOTSEL_OFF + s]);
+        for (unsigned j = 0; j < CONF_ACTION_CM_LANES; j++) {
+            const gold_fp2_t oc = gold_fp2_from_base(
+                PUB[CONF_AGGZK_PUB_OCOMMIT + s * CONF_ACTION_CM_LANES + j]);
+            dnac_stark_folder_assert_zero(
+                f, gold_fp2_mul(osel, gold_fp2_sub(L[CONF_ACTION_CMCARRY_OFF + j], oc)));
+        }
+    }
+    /* Exactly one slot per OUTPUT block (A-6 completeness / GAP-1 analog):
+     * gate_out·(Σ oslot_sel − 1) == 0 ⇒ N_output ∈ [1, MAX_OUTPUTS]. */
+    {
+        gold_fp2_t osum = gold_fp2_zero();
+        for (unsigned s = 0; s < CONF_AGGZK_MAX_OUTPUTS; s++)
+            osum = gold_fp2_add(osum, L[CONF_AGGZK_OSLOTSEL_OFF + s]);
+        dnac_stark_folder_assert_zero(f, gold_fp2_mul(gate_out, gold_fp2_sub(osum, one)));
+    }
+    /* Fee promotion: fee_pub == Σ(IS_FEE·value) via the FEE_ACC accumulator — binds
+     * fee EVEN WHEN there is no FEE block (⇒ fee_pub forced 0), closing the fee-pool
+     * mint. Increment at each FEE block's φ=0 row: next.PHI0·next.IS_FEE·next.value. */
+    dnac_stark_folder_when(
+        f, f->is_first_row,
+        gold_fp2_sub(L[CONF_AGGZK_FEEACC_OFF],
+                     gold_fp2_mul(gold_fp2_mul(phi0, is_fee), L[CONF_ACTION_VALUE_OFF])));
+    dnac_stark_folder_when(
+        f, f->is_transition,
+        gold_fp2_sub(gold_fp2_sub(N[CONF_AGGZK_FEEACC_OFF], L[CONF_AGGZK_FEEACC_OFF]),
+                     gold_fp2_mul(gold_fp2_mul(N[CONF_ACTION_PHI0_OFF], N[CONF_ACTION_ISFEE_OFF]),
+                                  N[CONF_ACTION_VALUE_OFF])));
+    dnac_stark_folder_when(f, f->is_last_row,
+                           gold_fp2_sub(L[CONF_AGGZK_FEEACC_OFF], fee_pub));
 }
 
 const dnac_stark_air_t DNAC_CONF_ACTION_AGG_FOLD_AIR = {
-    CONF_AGGZK_WIDTH,        /* main_width = 1936 */
-    CONF_AGGZK_NUM_PUBLICS,  /* 21 */
-    1,                       /* main_next: C1 counter/freeze + membership chaining + N_input */
+    CONF_AGGZK_WIDTH,        /* main_width = 1946 (S4c: +output routing +fee acc) */
+    CONF_AGGZK_NUM_PUBLICS,  /* 43 */
+    1,                       /* main_next: C1 counter/freeze + membership chaining + N_input/N_output */
     dnac_conf_action_agg_fold_air_eval,
 };

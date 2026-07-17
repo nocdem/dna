@@ -83,7 +83,7 @@ static gold_fp2_t parse_fp2_wrapped(js_t *s){
 }
 
 #define TP_FP 16
-#define TP_PUB 32
+#define TP_PUB 48  /* covers the 43 S4c publics (anchor||num_in||nf||num_out||ocommit||fee||txbind) */
 
 typedef struct {
     size_t degree_bits;
@@ -304,7 +304,7 @@ int main(int argc,char **argv){
     free(draws);
     if(fails){ printf("test_prover_agg: FAIL (%d)\n",fails); free(fx); return 1; }
     printf("test_prover_agg: PASS\n");
-    printf("  pure-C AGGREGATE prove (width 1936, num_qc=8, 21 publics) byte-matches\n");
+    printf("  pure-C AGGREGATE prove (width 1946, num_qc=8, 43 publics) byte-matches\n");
     printf("  the REAL Plonky3 is_zk=1 proof (zeta+roots+final_poly+publics) and\n");
     printf("  self-verifies (FRI + N-chunk constraint check). Rust-free end-to-end.\n");
     free(fx);

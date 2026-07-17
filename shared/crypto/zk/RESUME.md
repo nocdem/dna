@@ -501,8 +501,26 @@
       each input's cm (`conf_action_derive_addr`+`note_commit`) to build the shared
       sibling tree; byte-matches zeta+3 roots+final_poly+21 publics. smallrng
       extended 262144→524288 (prefix-stable). make test GREEN 0-warn.
-      **S4b MERGE-READY (0 deployed-exploitable holes).** **Next: S5** V4 wire
-      (DNAC_TX_V4, tx_binding, nf-set) → S6 consensus (BREAKING, needs approval).
+      **S4b MERGE-READY (0 deployed-exploitable holes).**
+    - **🎯 S4c DONE (2026-07-17) — OUTPUT/fee promotion (closes S5.2 red-team A-6
+      CRITICAL: GAP3 output side is an AIR step, not pure wire).** The S5 V4-wire
+      design red-team (1 independent agent, zero-consumer scope) found that binding
+      the proof to a tx requires the OUTPUT side to have the SAME routing rigor
+      GAP-1 gave INPUTs — else an unbacked `output_commit`/`fee` public mints.
+      **Extended oracle+fold+prover** (`ConfActionAggAir`/`conf_action_agg_fold.c`/
+      `stark_prover_agg.c`): width 1936→**1946**, publics 21→**43**
+      (+`num_output` +`output_commit[MAX_OUTPUTS=4][4]` +`fee` +`tx_binding[4]`
+      FS-observed). New constraints (all the OUTPUT analog of the N_input machinery):
+      `N_output` counter + `oslot_sel[s]=is_zero(N_output−1−s)` routing of the frozen
+      OUTPUT-block `cm_carry` to `output_commit[N_output−1]` at `gate_out=PHI0·IS_OUTPUT`,
+      + `gate_out·(Σ oslot_sel−1)==0` (exactly-one-slot); and a **`FEE_ACC` accumulator**
+      `fee_pub==Σ(IS_FEE·value)` — binds fee EVEN with no FEE block (the single-gate
+      version left `fee_pub` unbound → fee-pool mint; caught + fixed pre-build).
+      `num_qc` MEASURED still **8** (degree stayed 4). Draw layout auto-tracks width
+      ((W+94)h=2040h). 1/2/4-input proofs byte-match the REAL Plonky3 is_zk=1 proof;
+      `make test` GREEN 0-warn. **Next: S5** V4 wire (DNAC_TX_V4/tx_binding
+      preimage/nf-set consumer, per the revised `2026-07-17-dm-s5-v4-wire-design.md`
+      §0 D1–D7) → S6 consensus (BREAKING, needs approval).
     - **⚠ S4b.2 DESIGN FINDING (2026-07-17) — the real-STARK lift is NOT a
       mechanical S1e-mirror; it has genuine soundness-critical design content the
       S4a construction gate hid (S4a reads φ + r DIRECTLY in a C loop; the fold is
