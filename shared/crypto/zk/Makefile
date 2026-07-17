@@ -75,6 +75,7 @@ TESTS = \
     $(BUILD)/test_fri_fold_matrix_loga1_oracle \
     $(BUILD)/test_fri_fold_matrix_oracle \
     $(BUILD)/test_transcript_oracle \
+    $(BUILD)/test_transcript_grind \
     $(BUILD)/test_merkle_mmcs \
     $(BUILD)/test_merkle_mmcs_batch \
     $(BUILD)/test_fri_verifier_shape \
@@ -291,6 +292,10 @@ $(BUILD)/test_fri_fold_matrix_oracle: tests/test_fri_fold_matrix_oracle.c fri_fo
 # canonicalization. See docs/plans/2026-05-26-transcript-design.md § 15.
 $(BUILD)/test_transcript_oracle: tests/test_transcript_oracle.c transcript.c sponge_sha3_512.c keccak_p3_cols.c keccak_p3_trace.c keccak_ref.c field_goldilocks.c transcript.h sponge_sha3_512.h keccak_p3_cols.h keccak_p3_trace.h keccak_ref.h field_goldilocks.h | $(BUILD)
 	$(CC) $(CFLAGS) -DDNAC_TRANSCRIPT_TESTING=1 $(INCLUDES) tests/test_transcript_oracle.c transcript.c sponge_sha3_512.c keccak_p3_cols.c keccak_p3_trace.c keccak_ref.c field_goldilocks.c -o $@
+
+# P1 — query-PoW grind unit test (dnac_transcript_grind, Plonky3 grinding_challenger).
+$(BUILD)/test_transcript_grind: tests/test_transcript_grind.c transcript.c sponge_sha3_512.c keccak_p3_cols.c keccak_p3_trace.c keccak_ref.c field_goldilocks.c transcript.h field_goldilocks.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_transcript_grind.c transcript.c sponge_sha3_512.c keccak_p3_cols.c keccak_p3_trace.c keccak_ref.c field_goldilocks.c -o $@
 
 # Stage M3 — Merkle/MMCS C oracle replay against tools/vectors/merkle_mmcs.json.
 # Links merkle_smt.c plus the OpenSSL-backed qgp_sha3_512 one-shot for both the
@@ -681,6 +686,11 @@ test: all
 	@echo "Phase T3 — DNAC transcript C oracle replay (Plonky3 commit 82cfad73)"
 	@echo "============================================================"
 	@$(BUILD)/test_transcript_oracle tools/vectors/transcript.json
+	@echo
+	@echo "============================================================"
+	@echo "P1 — query-PoW grind (dnac_transcript_grind)"
+	@echo "============================================================"
+	@$(BUILD)/test_transcript_grind
 	@echo
 	@echo "============================================================"
 	@echo "Stage M3 — DNAC Merkle/MMCS C oracle replay (Strategy C, Plonky3 82cfad73)"

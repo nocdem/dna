@@ -267,6 +267,28 @@ uint64_t dnac_transcript_sample_bits(dnac_transcript_t *t, size_t bits);
  */
 bool dnac_transcript_check_witness(dnac_transcript_t *t, size_t bits, fp_t witness);
 
+/**
+ * @brief Deep-copy a transcript (independent input_buf; safe to mutate/free
+ *        without affecting the source). Used by the grinding search.
+ * @return Heap-allocated clone, or NULL on allocation failure.
+ */
+dnac_transcript_t *dnac_transcript_clone(const dnac_transcript_t *src);
+
+/**
+ * @brief Grinding proof-of-work: find the least witness w (0,1,2,...) such that
+ *        check_witness(bits, w) holds, then APPLY it to `t` (observe + sample) so
+ *        the transcript advances identically to the verifier's check_witness.
+ *
+ * Mirrors `GrindingChallenger::grind` (Plonky3 grinding_challenger.rs:29-37).
+ * bits==0 is a no-op returning witness 0 (transcript unchanged), so query_pow=0
+ * proofs are byte-identical to the pre-grind path.
+ *
+ * @param t     transcript (mutated: witness observed + bits sampled)
+ * @param bits  proof-of-work difficulty (leading zero bits of the sample)
+ * @return      the winning witness (store it in the proof for the verifier)
+ */
+fp_t dnac_transcript_grind(dnac_transcript_t *t, size_t bits);
+
 /* ============================================================================
  * Test-only state inspection (Phase T3 replay support)
  *

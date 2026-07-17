@@ -268,6 +268,29 @@ dnac_transcript_init_default(void)
                                 DNAC_TRANSCRIPT_PROD_INIT_STATE_LEN);
 }
 
+dnac_transcript_t *
+dnac_transcript_clone(const dnac_transcript_t *src)
+{
+    if (!src) {
+        return NULL;
+    }
+    dnac_transcript_t *t = (dnac_transcript_t *)calloc(1, sizeof(*t));
+    if (!t) {
+        return NULL;
+    }
+    t->input_buf = NULL;
+    t->input_len = 0;
+    t->input_cap = 0;
+    if (src->input_len > 0) {
+        input_reserve_(t, src->input_len);
+        memcpy(t->input_buf, src->input_buf, src->input_len);
+        t->input_len = src->input_len;
+    }
+    memcpy(t->output_buf, src->output_buf, sizeof(t->output_buf));
+    t->output_len = src->output_len;
+    return t;
+}
+
 void
 dnac_transcript_free(dnac_transcript_t *t)
 {
@@ -450,6 +473,41 @@ dnac_transcript_check_witness(dnac_transcript_t *t, size_t bits, fp_t witness)
     }
     dnac_transcript_observe_fp(t, witness);
     return dnac_transcript_sample_bits(t, bits) == 0;
+}
+
+fp_t
+dnac_transcript_grind(dnac_transcript_t *t, size_t bits)
+{
+    assert(t != NULL);
+    /* GrindingChallenger::grind default body (Plonky3
+     * grinding_challenger.rs:29-37):
+     *   let witness = (0..).map(F::from_canonical_usize)
+     *                      .find(|w| self.clone().check_witness(bits, *w)).unwrap();
+     *   assert!(self.check_witness(bits, witness));
+     *   witness
+     *
+     * The search probes candidate witnesses 0,1,2,... on a CLONE of the current
+     * state (self.clone()); the state under search never changes. bits==0:
+     * check_witness(0,_) is always true → witness 0, and the final
+     * check_witness(0,0) is a no-op — transcript UNCHANGED (identical to the
+     * prior grind(0) no-op, so query_pow=0 proofs stay byte-identical). */
+    if (bits == 0) {
+        return gold_fp_from_u64(0);
+    }
+    uint64_t w = 0;
+    for (;;) {
+        dnac_transcript_t *probe = dnac_transcript_clone(t);
+        bool ok = dnac_transcript_check_witness(probe, bits, gold_fp_from_u64(w));
+        dnac_transcript_free(probe);
+        if (ok) {
+            break;
+        }
+        w++;
+    }
+    /* Apply to the real transcript (observe witness + sample_bits) so the state
+     * advances exactly as the verifier's check_witness(bits, witness) does. */
+    dnac_transcript_check_witness(t, bits, gold_fp_from_u64(w));
+    return gold_fp_from_u64(w);
 }
 
 /* ============================================================================
