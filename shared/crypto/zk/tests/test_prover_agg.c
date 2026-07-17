@@ -24,7 +24,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "conf_action_air.h"   /* conf_action_derive_addr */
 #include "field_goldilocks.h"
+#include "note_commit.h"       /* note_commit (build multi-input siblings) */
 #include "stark_prover_agg.h"
 
 /* ===== JSON scanner (test-local convention) ===== */
@@ -132,27 +134,48 @@ int main(int argc,char **argv){
     { size_t bl=0; char *blob=slurp(argv[1],&bl); if(!blob){ fprintf(stderr,"cannot read %s\n",argv[1]); return 2; }
       js_t s={blob,0,bl}; parse_vector(&s,fx); free(blob); }
 
-    /* Fixed instance == dump_conf_action_agg_air_zk (log_height 7, H=128). */
+    /* Instance selector: default 1-input (dump_conf_action_agg_air_zk); "2in" =
+     * the two-input KAT (dump_conf_action_agg_air_zk_2in) — both at H=128. */
+    const int two_in = (argc >= 4 && strcmp(argv[3], "2in") == 0);
     const unsigned log_height = 7;
     const size_t height = (size_t)1 << log_height;
-    const uint64_t value[3] = {100, 70, 30};
-    const uint64_t addr[3*4] = {
-        0,0,0,0,
-        0xAA01,0xAA02,0xAA03,0xAA04,
-        0xFEE1,0xFEE2,0xFEE3,0xFEE4
-    };
-    const uint64_t rcm[3*2] = {0x11,0x12, 0x21,0x22, 0x31,0x32};
-    const uint8_t  roles[3] = {CONF_ACTION_ROLE_INPUT, CONF_ACTION_ROLE_OUTPUT, CONF_ACTION_ROLE_FEE};
-    const uint64_t pos[3]   = {5, 0, 0};
-    const uint64_t nk[3]    = {0x22222222ULL, 0, 0};
-    const uint64_t ak[3]    = {0x11111111ULL, 0, 0};
-    /* memb_siblings: num_notes(3) * D(4) * 4 lanes; only INPUT block 0 consumed. */
-    const uint64_t memb_siblings[3*4*4] = {
-        0x1001,0x1002,0x1003,0x1004,  0x2001,0x2002,0x2003,0x2004,
-        0x3001,0x3002,0x3003,0x3004,  0x4001,0x4002,0x4003,0x4004,
-        0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
-        0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0
-    };
+    uint64_t value[3], addr[3*4], rcm[3*2], pos[3], nk[3], ak[3];
+    uint8_t roles[3];
+    uint64_t memb_siblings[3*4*4];
+    size_t num_notes = 3;
+    memset(memb_siblings, 0, sizeof memb_siblings);
+    if (two_in) {
+        /* 2 INPUT (60+40) = OUTPUT 100; the two inputs are level-0 SIBLINGS of
+         * each other (pos 0 and 1) so both walks converge to ONE anchor. */
+        const uint64_t v[3]={60,40,100};       memcpy(value,v,sizeof v);
+        const uint8_t  r[3]={CONF_ACTION_ROLE_INPUT,CONF_ACTION_ROLE_INPUT,CONF_ACTION_ROLE_OUTPUT}; memcpy(roles,r,sizeof r);
+        const uint64_t p[3]={0,1,0};           memcpy(pos,p,sizeof p);
+        const uint64_t k[3]={0x22222222ULL,0x33333333ULL,0}; memcpy(nk,k,sizeof k);
+        const uint64_t a[3]={0x11111111ULL,0x12121212ULL,0}; memcpy(ak,a,sizeof a);
+        const uint64_t ad[3*4]={0,0,0,0, 0,0,0,0, 0xAA01,0xAA02,0xAA03,0xAA04}; memcpy(addr,ad,sizeof ad);
+        const uint64_t rc[3*2]={0x11,0x12, 0x13,0x14, 0x21,0x22}; memcpy(rcm,rc,sizeof rc);
+        /* compute the two inputs' cm and build sibling-of-each-other + shared upper. */
+        uint64_t addr0[4],addr1[4],cm0[4],cm1[4];
+        conf_action_derive_addr(ak[0],nk[0],addr0);  note_commit(value[0],addr0,&rcm[0],cm0);
+        conf_action_derive_addr(ak[1],nk[1],addr1);  note_commit(value[1],addr1,&rcm[2],cm1);
+        const uint64_t up[3][4]={{0x2001,0x2002,0x2003,0x2004},{0x3001,0x3002,0x3003,0x3004},{0x4001,0x4002,0x4003,0x4004}};
+        for(int j=0;j<4;j++){ memb_siblings[0*16+0*4+j]=cm1[j]; memb_siblings[1*16+0*4+j]=cm0[j]; }
+        for(int l=0;l<3;l++) for(int j=0;j<4;j++){ memb_siblings[0*16+(l+1)*4+j]=up[l][j]; memb_siblings[1*16+(l+1)*4+j]=up[l][j]; }
+    } else {
+        /* 1 INPUT 100 = OUTPUT 70 + FEE 30 (== dump_conf_action_agg_air_zk). */
+        const uint64_t v[3]={100,70,30};       memcpy(value,v,sizeof v);
+        const uint8_t  r[3]={CONF_ACTION_ROLE_INPUT,CONF_ACTION_ROLE_OUTPUT,CONF_ACTION_ROLE_FEE}; memcpy(roles,r,sizeof r);
+        const uint64_t p[3]={5,0,0};           memcpy(pos,p,sizeof p);
+        const uint64_t k[3]={0x22222222ULL,0,0}; memcpy(nk,k,sizeof k);
+        const uint64_t a[3]={0x11111111ULL,0,0}; memcpy(ak,a,sizeof a);
+        const uint64_t ad[3*4]={0,0,0,0, 0xAA01,0xAA02,0xAA03,0xAA04, 0xFEE1,0xFEE2,0xFEE3,0xFEE4}; memcpy(addr,ad,sizeof ad);
+        const uint64_t rc[3*2]={0x11,0x12, 0x21,0x22, 0x31,0x32}; memcpy(rcm,rc,sizeof rc);
+        const uint64_t sib[3*4*4]={
+            0x1001,0x1002,0x1003,0x1004, 0x2001,0x2002,0x2003,0x2004,
+            0x3001,0x3002,0x3003,0x3004, 0x4001,0x4002,0x4003,0x4004,
+            0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 };
+        memcpy(memb_siblings,sib,sizeof sib);
+    }
 
     const size_t need = DNAC_AGG_PROVER_TOTAL_DRAWS(height);
     uint64_t *draws=(uint64_t*)malloc(need*sizeof(uint64_t));
@@ -168,13 +191,13 @@ int main(int argc,char **argv){
 
     dnac_agg_prover_instance_t inst; memset(&inst,0,sizeof inst);
     inst.value=value; inst.addr=addr; inst.rcm=rcm; inst.roles=roles;
-    inst.pos=pos; inst.nk=nk; inst.ak=ak; inst.num_notes=3;
+    inst.pos=pos; inst.nk=nk; inst.ak=ak; inst.num_notes=num_notes;
     inst.memb_siblings=memb_siblings;
     inst.log_height=log_height; inst.draws=draws; inst.num_draws=need;
 
     int fails=0;
-    printf("── aggregate instance: height=%zu num_notes=3 degree_bits=%zu draws=%zu\n",
-           height,fx->degree_bits,need);
+    printf("── aggregate instance (%s): height=%zu num_notes=%zu degree_bits=%zu draws=%zu\n",
+           two_in?"2-INPUT":"1-input", height, num_notes, fx->degree_bits, need);
 
     dnac_agg_prover_proof_t *pf=NULL;
     dnac_prover_status_t st=dnac_agg_prover_prove(&inst,&pf);
@@ -224,7 +247,7 @@ int main(int argc,char **argv){
      * fail-close BEFORE a proof is produced. (The complementary "tampered proof
      * -> OOD" half is test_conf_action_agg_verify T7; construction-gate mint /
      * double-spend / nf-drop/add soundness is test_conf_action_agg_air 14/14.) */
-    {
+    if(!two_in){
         int ok=1;
         dnac_agg_prover_proof_t *bad=NULL;
         /* (a) non-conserving balance: INPUT 100 != OUTPUT 60 + FEE 30. */

@@ -406,6 +406,13 @@ enum Cmd {
         #[arg(long)]
         out: PathBuf,
     },
+    /// DUAL-MODE S4b.6 — TWO-input aggregate KAT (both inputs level-0 siblings
+    /// sharing one anchor; N_input=2, slots 0+1 used). num_qc MUST be 8.
+    #[command(name = "dump-conf-action-agg-air-zk-2in")]
+    DumpConfActionAggAirZk2in {
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// KAT draw stream (D1-B): the first `count` Goldilocks samples of a fresh
     /// SmallRng::seed_from_u64(1) — the EXACT stream a real HidingFriPcs prove
     /// consumes (with_random_cols / codeword / blinding / R draws in commit
@@ -620,6 +627,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Cmd::DumpConfActionAirZk { out } => stark_priming::dump_conf_action_air_zk(&out)?,
         Cmd::DumpConfActionAggAirZk { out } => {
             stark_priming::dump_conf_action_agg_air_zk(&out)?
+        }
+        Cmd::DumpConfActionAggAirZk2in { out } => {
+            stark_priming::dump_conf_action_agg_air_zk_2in(&out)?
         }
         Cmd::DumpSmallrngGoldilocks { count, out } => {
             stark_priming::dump_smallrng_goldilocks(count, &out)?
@@ -14736,6 +14746,111 @@ mod stark_priming {
              nf-public position-forced slot routing (N_input counter); max degree \
              4, num_qc 8)",
             "DUAL-MODE S4b.2 — aggregate Action AIR real-STARK lift + nf routing (h=128, num_qc=8)",
+            Some(8),
+            out_path,
+        )
+    }
+
+    /// Compute an INPUT note's commitment cm = note_commit(value, addr, rcm) with
+    /// addr = Poseidon2(ak, nk, DOMSEP_ADDR) (condition-3) — cell-for-cell the C1
+    /// INPUT cm (generate_conf_action_trace). Used to build multi-input Merkle
+    /// instances whose leaves must converge to ONE anchor (S4b.6 KATs).
+    fn agg_input_note_cm(ak: u64, nk: u64, value: u64, rcm: [u64; 2]) -> [Goldilocks; 4] {
+        let rc = RoundConstants::<Goldilocks, 8, 4, 22>::new(
+            GOLDILOCKS_POSEIDON2_RC_8_EXTERNAL_INITIAL,
+            GOLDILOCKS_POSEIDON2_RC_8_INTERNAL,
+            GOLDILOCKS_POSEIDON2_RC_8_EXTERNAL_FINAL,
+        );
+        let perm = default_goldilocks_poseidon2_8();
+        let p2 = |input: [Goldilocks; 8]| -> [Goldilocks; 8] {
+            let m = p3_poseidon2_air::generate_trace_rows::<
+                Goldilocks,
+                GenericPoseidon2LinearLayersGoldilocks,
+                8, 7, 1, 4, 22,
+            >(vec![input], &rc, 0);
+            let mut expect = input;
+            perm.permute_mut(&mut expect);
+            core::array::from_fn(|k| m.values[P2_END_POST3 + k])
+        };
+        // addr = Poseidon2(ak, nk, DOMSEP_ADDR) via the two spend-auth blocks.
+        let s1 = p2([
+            Goldilocks::from_u64(ak), Goldilocks::from_u64(nk),
+            Goldilocks::from_u64(CA_DOMSEP_ADDR), Goldilocks::ZERO,
+            Goldilocks::ZERO, Goldilocks::ZERO, Goldilocks::ZERO, Goldilocks::ZERO,
+        ]);
+        let a = p2([
+            Goldilocks::ZERO, Goldilocks::ZERO, Goldilocks::ZERO, Goldilocks::ZERO,
+            s1[4], s1[5], s1[6], s1[7],
+        ]);
+        let addr = [a[0], a[1], a[2], a[3]];
+        // cm = note_commit(value, addr, rcm) via NC1/NC2.
+        let n1 = p2([
+            Goldilocks::from_u64(value), addr[0], addr[1], addr[2],
+            Goldilocks::ZERO, Goldilocks::ZERO, Goldilocks::ZERO, Goldilocks::ZERO,
+        ]);
+        let cm = p2([
+            addr[3], Goldilocks::from_u64(rcm[0]), Goldilocks::from_u64(rcm[1]),
+            Goldilocks::from_u64(CA_DOMSEP_NOTE), n1[4], n1[5], n1[6], n1[7],
+        ]);
+        [cm[0], cm[1], cm[2], cm[3]]
+    }
+
+    /// S4b.6 multi-input KAT: TWO INPUT notes (60 + 40 = OUTPUT 100, fee 0) that
+    /// are level-0 SIBLINGS of each other (pos 0 and 1), so both membership walks
+    /// converge to ONE anchor with shared upper siblings. Exercises N_input → 2,
+    /// slot routing to slots 0 AND 1, and the GAP-1 exactly-one-slot bound with
+    /// >1 input. h=128 (4 blocks, fits the KAT draw stream). Real is_zk=1 prove →
+    /// verify + num_qc 8.
+    pub fn dump_conf_action_agg_air_zk_2in(
+        out_path: &PathBuf,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        conf_action_check_domseps()?;
+        conf_agg_check_domseps()?;
+        let notes = [
+            ActionNote { role: CA_ROLE_INPUT, value: 60, addr: [0; 4],
+                         rcm: [0x11, 0x12], pos: 0, nk: 0x2222_2222, ak: 0x1111_1111 },
+            ActionNote { role: CA_ROLE_INPUT, value: 40, addr: [0; 4],
+                         rcm: [0x13, 0x14], pos: 1, nk: 0x3333_3333, ak: 0x1212_1212 },
+            ActionNote { role: CA_ROLE_OUTPUT, value: 100,
+                         addr: [0xAA01, 0xAA02, 0xAA03, 0xAA04],
+                         rcm: [0x21, 0x22], pos: 0, nk: 0, ak: 0 },
+        ];
+        // cm of the two inputs (level-0 siblings of each other).
+        let cm0 = agg_input_note_cm(notes[0].ak, notes[0].nk, notes[0].value, notes[0].rcm);
+        let cm1 = agg_input_note_cm(notes[1].ak, notes[1].nk, notes[1].value, notes[1].rcm);
+        let cm0u: [u64; 4] = core::array::from_fn(|j| p3_field::PrimeField64::as_canonical_u64(&cm0[j]));
+        let cm1u: [u64; 4] = core::array::from_fn(|j| p3_field::PrimeField64::as_canonical_u64(&cm1[j]));
+        // Shared upper siblings (levels 1..D), arbitrary but fixed.
+        let up: [[u64; AGG_MEMB_LANES]; 3] = [
+            [0x2001, 0x2002, 0x2003, 0x2004],
+            [0x3001, 0x3002, 0x3003, 0x3004],
+            [0x4001, 0x4002, 0x4003, 0x4004],
+        ];
+        // input0 (pos0, bit0=0): sib0 = cm1 ; input1 (pos1, bit0=1): sib0 = cm0.
+        let memb_siblings: [[[u64; AGG_MEMB_LANES]; AGG_D]; 3] = [
+            [cm1u, up[0], up[1], up[2]],
+            [cm0u, up[0], up[1], up[2]],
+            [[0; 4]; AGG_D],
+        ];
+        let (trace, anchor, num_input, nf_slots) =
+            generate_conf_action_agg_trace(7, &notes, &memb_siblings); // H=128=4 blocks
+        let mut pis: Vec<Goldilocks> = Vec::with_capacity(AGG_NUM_PUBLICS);
+        pis.extend_from_slice(&anchor);
+        pis.push(Goldilocks::from_u64(num_input));
+        for s in 0..AGG_MAX_INPUTS {
+            for j in 0..AGG_NF_LANES {
+                pis.push(nf_slots[s][j]);
+            }
+        }
+        dump_is_zk_stark(
+            &ConfActionAggAir,
+            trace,
+            pis,
+            "conf_action_agg_air_zk_2in",
+            "DUAL-MODE S4b.6 — TWO-input aggregate Action AIR (both inputs level-0 \
+             siblings sharing ONE anchor; N_input=2, slots 0+1 used; GAP-1 \
+             exactly-one-slot bound exercised with >1 input)",
+            "DUAL-MODE S4b.6 — 2-input aggregate real-STARK lift (h=256, num_qc=8)",
             Some(8),
             out_path,
         )
