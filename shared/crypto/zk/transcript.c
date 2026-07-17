@@ -494,19 +494,48 @@ dnac_transcript_grind(dnac_transcript_t *t, size_t bits)
     if (bits == 0) {
         return gold_fp_from_u64(0);
     }
+    /* Snapshot the pre-grind state ONCE, then check candidates directly on `t`,
+     * restoring the snapshot (memcpy only — no per-iteration malloc/free) on a
+     * miss. Semantically identical to searching on a fresh clone each iteration
+     * (t is untouched between candidates), but ~two orders of magnitude faster:
+     * cost per candidate is one check_witness (observe + one SHA3), not a full
+     * transcript deep-copy. The winning candidate's check_witness is left applied
+     * to t (state advanced exactly as the verifier's check_witness), so no re-apply. */
+    const size_t snap_len = t->input_len;
+    uint8_t *snap_input = (uint8_t *)malloc(snap_len ? snap_len : 1);
+    if (!snap_input) {
+        /* OOM fallback: correct but slow clone-per-iteration path. */
+        uint64_t w = 0;
+        for (;;) {
+            dnac_transcript_t *probe = dnac_transcript_clone(t);
+            bool ok = dnac_transcript_check_witness(probe, bits, gold_fp_from_u64(w));
+            dnac_transcript_free(probe);
+            if (ok) break;
+            w++;
+        }
+        dnac_transcript_check_witness(t, bits, gold_fp_from_u64(w));
+        return gold_fp_from_u64(w);
+    }
+    if (snap_len) memcpy(snap_input, t->input_buf, snap_len);
+    uint8_t snap_output[DNAC_TRANSCRIPT_DIGEST_BYTES];
+    memcpy(snap_output, t->output_buf, sizeof(snap_output));
+    const size_t snap_out_len = t->output_len;
+
     uint64_t w = 0;
     for (;;) {
-        dnac_transcript_t *probe = dnac_transcript_clone(t);
-        bool ok = dnac_transcript_check_witness(probe, bits, gold_fp_from_u64(w));
-        dnac_transcript_free(probe);
-        if (ok) {
-            break;
+        if (dnac_transcript_check_witness(t, bits, gold_fp_from_u64(w))) {
+            break; /* t is now advanced past the winning witness — done. */
         }
+        /* restore the pre-grind state (buffer capacity only grows, so it still
+         * holds >= snap_len; no realloc). */
+        input_reserve_(t, snap_len);
+        if (snap_len) memcpy(t->input_buf, snap_input, snap_len);
+        t->input_len = snap_len;
+        memcpy(t->output_buf, snap_output, sizeof(snap_output));
+        t->output_len = snap_out_len;
         w++;
     }
-    /* Apply to the real transcript (observe witness + sample_bits) so the state
-     * advances exactly as the verifier's check_witness(bits, witness) does. */
-    dnac_transcript_check_witness(t, bits, gold_fp_from_u64(w));
+    free(snap_input);
     return gold_fp_from_u64(w);
 }
 

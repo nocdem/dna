@@ -28,6 +28,7 @@
 
 #include "keccak_p3_cols.h"
 #include "keccak_p3_trace.h"
+#include "keccak_ref.h"    /* plain Keccak-f[1600] — fast permutation for hashing */
 
 /* ============================================================================
  * Lane byte-order helpers (FIPS-202 little-endian)
@@ -64,9 +65,14 @@ static void u64_to_le_bytes(uint64_t v, uint8_t b[8]) {
  * ========================================================================== */
 
 static void permute_via_keccak_p3(uint64_t state[SHA3_512_STATE_LANES]) {
-    keccak_p3_cols_t rows[KECCAK_P3_NUM_ROUNDS];
-    keccak_p3_generate_trace_one_perm(rows, state);
-    keccak_p3_extract_output(rows, state);
+    /* PERF: use the plain Keccak-f[1600] permutation, NOT the AIR-trace generator.
+     * keccak_p3_generate_trace_one_perm builds a full keccak-AIR trace per
+     * permutation (needed only for IN-CIRCUIT keccak); the transcript/sponge need
+     * only the digest, so this is ~25x cheaper. keccak_ref_f1600 is byte-identical
+     * (both FIPS-202 Keccak-f[1600], cross-validated NIST KAT + OpenSSL) — the full
+     * 72-case sponge KAT + every transcript/proof byte-match test is the gate. This
+     * is the FRI query-PoW grind's hot path (2^bits permutations). */
+    keccak_ref_f1600(state);
 }
 
 /* XOR a full rate-sized block (72 bytes = 9 lanes) into state[0..9]. */
