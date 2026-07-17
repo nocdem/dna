@@ -402,11 +402,20 @@
       nf-rows zero the CM/POS/NK/NF cells. generate outputs nf per INPUT.
       `test_conf_action_agg_air` (12/12): + nf!=NF2.out caught, nf CM!=cm_carry
       caught (G-S4-3), nf inert caught, nf_out INPUT-nonzero/OUTPUT-zero. Full
-      `make test` GREEN 0-warn. **NEXT: S4a.3b** nullifier EXACT-COUNT bijective
-      bind (N_nf==N_input, drop/add reject — the red-team soundness-critical
-      count) + the anchor/nf counted public interface (pairs with S5 wire); then
-      S4b-e (S1e precedent: width bump, oracle+num_qc, fold, prover byte-match) →
-      S4f red-team.
+      `make test` GREEN 0-warn.
+    - **🎯 S4a COMPLETE (2026-07-17) — S4a.3b nf public interface + aggregate
+      construction gate DONE.** Every φ=D+1 row's NF cell is bound to a per-block
+      public `pub_nf[blk]` (DET-S4-4): an INPUT's nullifier is a verifier-observed
+      public, a dummy/OUTPUT slot forced 0. Per-block binding gives the exact-count
+      implicitly — `test_conf_action_agg_air` (14/14) proves **nf DROP (zero a real
+      slot) and nf ADD (spurious on a dummy slot) both REJECTED**, plus all of
+      S4a.1/2/3a. **The full aggregate construction gate is done: C1 (reused) +
+      C3 membership (F6 POSACC-gated, no double-spend) + C4 nullifier (cm/pos/nk
+      carry-bound) + nf publics.** The dm-c2 cross-region binding — mint/theft/
+      double-spend — is closed by construction and tested. Full `make test` GREEN
+      0-warn. **NEXT: S4b** real-STARK lift (mirrors S1e): raise
+      DNAC_STARK_MAX_MAIN_WIDTH (1024→2048 for WIDTH 1915) → Rust ConfActionAggAir
+      oracle + MEASURE num_qc → fp2 fold → pure-C prover byte-match → S4f red-team.
       recorded composition obligations (leaf==cm_carry, pin D, nullify iff IS_INPUT).
   - **THEN:** S2 C3 membership (+ M1/M2 goals, + E5 point-read reader), S3 C4
     nullifier, S4 aggregate prover/verifier (+ H2/H3), S5 V4 wire, S6 consensus

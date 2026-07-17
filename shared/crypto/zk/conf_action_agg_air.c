@@ -71,11 +71,12 @@ bool conf_action_agg_air_generate(unsigned log_height, const uint64_t *value,
                                   size_t num_notes,
                                   const uint64_t *memb_siblings,
                                   uint64_t anchor_out[CONF_MEMB_LANES],
-                                  uint64_t *nf_out, uint64_t *trace_out) {
+                                  uint64_t *nf_out, uint64_t *pub_nf_out,
+                                  uint64_t *trace_out) {
     if (log_height < CONF_ACTION_MIN_LOG_HEIGHT ||
         log_height > CONF_ACTION_MAX_LOG_HEIGHT)
         return false;
-    if (!trace_out || !anchor_out || !nf_out) return false;
+    if (!trace_out || !anchor_out || !nf_out || !pub_nf_out) return false;
 
     const size_t rows = (size_t)1 << log_height;
     const size_t K = CONF_ACTION_K;
@@ -216,13 +217,26 @@ bool conf_action_agg_air_generate(unsigned log_height, const uint64_t *value,
     if (!have_anchor)
         for (unsigned j = 0; j < CONF_MEMB_LANES; j++) anchor_out[j] = 0;
 
+    /* S4a.3b: the per-block public nullifiers = each block's φ=D+1 NF cell
+     * (the derived nf for an INPUT block, 0 for OUTPUT/FEE/dummy). */
+    {
+        const size_t num_blocks = rows / K;
+        for (size_t blk = 0; blk < num_blocks; blk++) {
+            const size_t nfrow = blk * K + (size_t)(D_DEPTH + 1);
+            const uint64_t *nfr = NFR(trace_out + nfrow * CONF_AGG_WIDTH);
+            for (unsigned j = 0; j < CONF_NF_LANES; j++)
+                pub_nf_out[blk * CONF_NF_LANES + j] = nfr[CONF_NF_NF_OFF + j];
+        }
+    }
+
     free(c1);
     return true;
 }
 
 int conf_action_agg_air_eval(const uint64_t *trace, size_t n_rows,
-                             const uint64_t anchor[CONF_MEMB_LANES]) {
-    if (!trace || n_rows == 0 || !anchor) return 1;
+                             const uint64_t anchor[CONF_MEMB_LANES],
+                             const uint64_t *pub_nf) {
+    if (!trace || n_rows == 0 || !anchor || !pub_nf) return 1;
     int viol = 0;
     const gold_fp_t one = gold_fp_one();
 
@@ -397,6 +411,19 @@ int conf_action_agg_air_eval(const uint64_t *trace, size_t n_rows,
                 if (nfr[CONF_NF_NK_OFF] != 0) viol++;
                 for (unsigned j = 0; j < CONF_NF_LANES; j++)
                     if (nfr[CONF_NF_NF_OFF + j] != 0) viol++;
+            }
+
+            /* ── S4a.3b: nf PUBLIC bind (DET-S4-4). At the φ=D+1 row of every
+             * block, the NF cell == the block's public nf slot: an INPUT's
+             * nullifier is a verifier-observed public (consensus checks it vs the
+             * seen-set), a non-INPUT slot is forced 0. Per-block binding gives the
+             * exact-count implicitly (no drop: the slot is pinned to the NF cell;
+             * no add: non-INPUT NF cells are 0). ── */
+            if (phi == CONF_AGG_NF_PHI) {
+                const size_t blk = r / CONF_ACTION_K;
+                for (unsigned j = 0; j < CONF_NF_LANES; j++)
+                    if (nfr[CONF_NF_NF_OFF + j] !=
+                        pub_nf[blk * CONF_NF_LANES + j]) viol++;
             }
         }
     }

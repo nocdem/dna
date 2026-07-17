@@ -47,8 +47,15 @@
  *     pos_carry / nk_carry — the cross-region bind, G-S4-3), derive
  *     ρ=CRH(cm,pos) then nf=PRF(nk,ρ), and pin NF==NF2.out. Inert nf-rows
  *     zero the CM/POS/NK/NF cells. generate outputs nf per INPUT note.
- *   S4a.3b: nullifier EXACT-COUNT bijective bind (N_nf==N_input) + the counted
- *     anchor/nf public interface (pairs with the S5 wire).
+ *   S4a.3b (THIS increment): the nf PUBLIC interface (DET-S4-4). At every φ=D+1
+ *     row, the NF cell is bound to a per-block public `pub_nf[blk]` — so every
+ *     INPUT's nullifier is a verifier-observed public (consensus checks it vs the
+ *     seen-nullifier set) and a dummy/OUTPUT block's slot is forced 0. Per-block
+ *     binding gives the EXACT-COUNT implicitly (each block's slot is pinned to its
+ *     NF cell, which the derivation forces = nf for INPUT / 0 for inert): a prover
+ *     can neither DROP a real input's nf (its slot is bound) nor ADD a spurious
+ *     one (non-INPUT slots forced 0). The compact MAX_INPUTS array is an S5-wire
+ *     optimization.
  *   S4b-e: width-cap bump, Rust oracle + num_qc, fp2 fold, pure-C prover
  *     byte-match (all S1e precedent). S4f: 10+ agent red-team.
  *
@@ -106,6 +113,9 @@ extern "C" {
  *                    verifier-substituted anchor). Zeroed if no INPUT notes.
  * @param nf_out      num_notes × CONF_NF_LANES; each INPUT note's derived
  *                    nullifier nf=PRF(nk,CRH(cm,pos)); OUTPUT/FEE slots zeroed.
+ * @param pub_nf_out  (2^log_height / CONF_ACTION_K) × CONF_NF_LANES — the per-block
+ *                    public nullifiers (block blk's NF cell at φ=D+1: the nf for
+ *                    an INPUT block, 0 otherwise). This is the DET-S4-4 public.
  * @param trace_out   caller buffer of (2^log_height * CONF_AGG_WIDTH) uint64.
  * @return true on success; false on a C1 parameter error OR if two INPUT notes'
  *         paths yield DIFFERENT roots (inconsistent siblings — all inputs must
@@ -118,7 +128,8 @@ bool conf_action_agg_air_generate(unsigned log_height, const uint64_t *value,
                                   size_t num_notes,
                                   const uint64_t *memb_siblings,
                                   uint64_t anchor_out[CONF_MEMB_LANES],
-                                  uint64_t *nf_out, uint64_t *trace_out);
+                                  uint64_t *nf_out, uint64_t *pub_nf_out,
+                                  uint64_t *trace_out);
 
 /**
  * @brief Evaluate ALL aggregate constraints (S4a.1 C1 + is_nf; S4a.2 membership
@@ -128,10 +139,13 @@ bool conf_action_agg_air_generate(unsigned log_height, const uint64_t *value,
  * @param n_rows  number of rows (= 2^log_height).
  * @param anchor  the public note-tree root (verifier-substituted) the last
  *                membership level (φ=D) of every INPUT block must reach.
+ * @param pub_nf  (n_rows / CONF_ACTION_K) × CONF_NF_LANES per-block public
+ *                nullifiers; each block's φ=D+1 NF cell must equal its slot.
  * @return number of violated constraints; 0 == valid witness.
  */
 int conf_action_agg_air_eval(const uint64_t *trace, size_t n_rows,
-                             const uint64_t anchor[CONF_MEMB_LANES]);
+                             const uint64_t anchor[CONF_MEMB_LANES],
+                             const uint64_t *pub_nf);
 
 #ifdef __cplusplus
 }

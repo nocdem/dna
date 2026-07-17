@@ -50,20 +50,23 @@ int main(void) {
 
     uint64_t anchor[4];
     uint64_t nf_out[3 * 4];
+    const size_t num_blocks = rows / CONF_ACTION_K; /* 4 */
+    uint64_t *pub_nf = (uint64_t *)calloc(num_blocks * 4, sizeof(uint64_t));
     uint64_t *trace = (uint64_t *)calloc(rows * CONF_AGG_WIDTH, sizeof(uint64_t));
-    if (!trace) return 2;
+    if (!trace || !pub_nf) return 2;
 
     int fails = 0;
     printf("test_conf_action_agg_air: S4a (WIDTH=%d, D=%d)\n", CONF_AGG_WIDTH, D);
 
     /* ── honest ── */
     if (!conf_action_agg_air_generate(log_height, value, addr, rcm, roles, pos, nk,
-                                      ak, 3, siblings, anchor, nf_out, trace)) {
+                                      ak, 3, siblings, anchor, nf_out, pub_nf,
+                                      trace)) {
         printf("  generate FAILED\n");
         free(trace);
         return 1;
     }
-    int v = conf_action_agg_air_eval(trace, rows, anchor);
+    int v = conf_action_agg_air_eval(trace, rows, anchor, pub_nf);
     printf("  honest (C1 + is_nf + membership walk): eval == 0    %s (%d)\n",
            v == 0 ? "PASS" : "FAIL", v);
     if (v != 0) fails++;
@@ -73,7 +76,7 @@ int main(void) {
         const size_t off = CONF_AGG_C1_OFF + CONF_ACTION_BAL_OFF; /* row 0 */
         uint64_t s = trace[off];
         trace[off] = gold_fp_to_u64(gold_fp_add(gold_fp_from_u64(s), gold_fp_one()));
-        int t = conf_action_agg_air_eval(trace, rows, anchor);
+        int t = conf_action_agg_air_eval(trace, rows, anchor, pub_nf);
         printf("  C1 BAL tamper -> caught (reuse)                     %s (%d)\n",
                t > 0 ? "PASS" : "FAIL", t);
         if (t == 0) fails++;
@@ -85,7 +88,7 @@ int main(void) {
         const size_t off = CONF_AGG_ISNF_OFF; /* row 0, φ=0 */
         uint64_t s = trace[off];
         trace[off] = 1;
-        int t = conf_action_agg_air_eval(trace, rows, anchor);
+        int t = conf_action_agg_air_eval(trace, rows, anchor, pub_nf);
         printf("  is_nf forged on φ=0 -> caught                       %s (%d)\n",
                t > 0 ? "PASS" : "FAIL", t);
         if (t == 0) fails++;
@@ -100,7 +103,7 @@ int main(void) {
         const size_t off = memb_cell(1, CONF_MEMB_POSACC_OFF); /* block0 φ=1 */
         uint64_t s = trace[off];
         trace[off] = gold_fp_to_u64(gold_fp_add(gold_fp_from_u64(s), gold_fp_one()));
-        int t = conf_action_agg_air_eval(trace, rows, anchor);
+        int t = conf_action_agg_air_eval(trace, rows, anchor, pub_nf);
         printf("  F6 POSACC free-base (double-spend) -> caught        %s (%d)\n",
                t > 0 ? "PASS" : "FAIL", t);
         if (t == 0) fails++;
@@ -112,7 +115,7 @@ int main(void) {
         const size_t off = memb_cell(1, CONF_MEMB_CUR_OFF);
         uint64_t s = trace[off];
         trace[off] = gold_fp_to_u64(gold_fp_add(gold_fp_from_u64(s), gold_fp_one()));
-        int t = conf_action_agg_air_eval(trace, rows, anchor);
+        int t = conf_action_agg_air_eval(trace, rows, anchor, pub_nf);
         printf("  leaf φ=1 CUR != cm_carry -> caught (G-S4-1)         %s (%d)\n",
                t > 0 ? "PASS" : "FAIL", t);
         if (t == 0) fails++;
@@ -122,7 +125,7 @@ int main(void) {
     /* ── Root bind: eval with a WRONG anchor -> root check fires ── */
     {
         uint64_t bad[4] = {anchor[0] ^ 1u, anchor[1], anchor[2], anchor[3]};
-        int t = conf_action_agg_air_eval(trace, rows, bad);
+        int t = conf_action_agg_air_eval(trace, rows, bad, pub_nf);
         printf("  wrong anchor -> root check fires (membership real)  %s (%d)\n",
                t > 0 ? "PASS" : "FAIL", t);
         if (t == 0) fails++;
@@ -133,7 +136,7 @@ int main(void) {
         const size_t off = memb_cell(2, CONF_MEMB_BIT_OFF); /* block0 φ=2 */
         uint64_t s = trace[off];
         trace[off] = s ^ 1u; /* flip the direction bit */
-        int t = conf_action_agg_air_eval(trace, rows, anchor);
+        int t = conf_action_agg_air_eval(trace, rows, anchor, pub_nf);
         printf("  membership BIT flip -> caught                       %s (%d)\n",
                t > 0 ? "PASS" : "FAIL", t);
         if (t == 0) fails++;
@@ -145,7 +148,7 @@ int main(void) {
         const size_t off = memb_cell(0, CONF_MEMB_POSACC_OFF); /* block0 φ=0 */
         uint64_t s = trace[off];
         trace[off] = 7;
-        int t = conf_action_agg_air_eval(trace, rows, anchor);
+        int t = conf_action_agg_air_eval(trace, rows, anchor, pub_nf);
         printf("  POSACC forged on φ=0 (inert) -> caught              %s (%d)\n",
                t > 0 ? "PASS" : "FAIL", t);
         if (t == 0) fails++;
@@ -159,7 +162,7 @@ int main(void) {
         const size_t off = nf_cell(nfrow, CONF_NF_NF_OFF);
         uint64_t s = trace[off];
         trace[off] = gold_fp_to_u64(gold_fp_add(gold_fp_from_u64(s), gold_fp_one()));
-        int t = conf_action_agg_air_eval(trace, rows, anchor);
+        int t = conf_action_agg_air_eval(trace, rows, anchor, pub_nf);
         printf("  nf cell != NF2.out -> caught                        %s (%d)\n",
                t > 0 ? "PASS" : "FAIL", t);
         if (t == 0) fails++;
@@ -172,7 +175,7 @@ int main(void) {
         const size_t off = nf_cell(nfrow, CONF_NF_CM_OFF);
         uint64_t s = trace[off];
         trace[off] = gold_fp_to_u64(gold_fp_add(gold_fp_from_u64(s), gold_fp_one()));
-        int t = conf_action_agg_air_eval(trace, rows, anchor);
+        int t = conf_action_agg_air_eval(trace, rows, anchor, pub_nf);
         printf("  nf CM cell != cm_carry -> caught (G-S4-3)           %s (%d)\n",
                t > 0 ? "PASS" : "FAIL", t);
         if (t == 0) fails++;
@@ -184,7 +187,7 @@ int main(void) {
         const size_t off = nf_cell(0, CONF_NF_CM_OFF); /* block 0, φ=0 */
         uint64_t s = trace[off];
         trace[off] = 0x1234;
-        int t = conf_action_agg_air_eval(trace, rows, anchor);
+        int t = conf_action_agg_air_eval(trace, rows, anchor, pub_nf);
         printf("  nf CM forged on φ=0 (inert) -> caught               %s (%d)\n",
                t > 0 ? "PASS" : "FAIL", t);
         if (t == 0) fails++;
@@ -203,13 +206,39 @@ int main(void) {
         if (!(ok && zero_out)) fails++;
     }
 
+    /* ── S4a.3b nf public DROP: zero the INPUT block's public nf slot -> the
+     * per-block bind (NF cell == pub_nf[blk]) fires (can't drop a real nf). ── */
+    {
+        uint64_t save[4];
+        for (int j = 0; j < 4; j++) { save[j] = pub_nf[0 * 4 + j]; pub_nf[0 * 4 + j] = 0; }
+        int t = conf_action_agg_air_eval(trace, rows, anchor, pub_nf);
+        printf("  nf public DROP (zeroed INPUT slot) -> caught         %s (%d)\n",
+               t > 0 ? "PASS" : "FAIL", t);
+        if (t == 0) fails++;
+        for (int j = 0; j < 4; j++) pub_nf[0 * 4 + j] = save[j];
+    }
+
+    /* ── S4a.3b nf public ADD: set a DUMMY block's public nf slot nonzero -> the
+     * bind fires (the dummy block's NF cell is 0, can't add a spurious nf). ── */
+    {
+        const size_t dblk = num_blocks - 1; /* dummy-last block */
+        uint64_t save = pub_nf[dblk * 4 + 0];
+        pub_nf[dblk * 4 + 0] = 0x9999;
+        int t = conf_action_agg_air_eval(trace, rows, anchor, pub_nf);
+        printf("  nf public ADD (spurious on dummy slot) -> caught     %s (%d)\n",
+               t > 0 ? "PASS" : "FAIL", t);
+        if (t == 0) fails++;
+        pub_nf[dblk * 4 + 0] = save;
+    }
+
     free(trace);
+    free(pub_nf);
     if (fails) {
         printf("test_conf_action_agg_air: FAIL (%d)\n", fails);
         return 1;
     }
     printf("test_conf_action_agg_air: PASS\n");
-    printf("  S4a.2 membership (leaf==cm_carry, root==anchor, POSACC F6-gated) +\n");
-    printf("  S4a.3a nullifier (cm/pos/nk==carries, nf=PRF(nk,CRH(cm,pos))).\n");
+    printf("  S4a COMPLETE: C1 + C3 membership (F6-gated) + C4 nullifier (carry-\n");
+    printf("  bound) + nf public interface (DET-S4-4, drop/add rejected).\n");
     return 0;
 }
