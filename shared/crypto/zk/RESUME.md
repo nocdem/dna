@@ -344,7 +344,34 @@
       C1+C3+C4 — needs a 3-section design doc (Determinism / Threat Model /
       Red-team) before code; C3/C4 are currently standalone is_zk=0 gates that S4
       embeds as phases inside the K=32 block consuming cm_carry/pos_carry/nk_carry.
-    - **S4 NEXT after S1e** — aggregate C1+C3+C4 (one Action AIR/TX) with the
+    - **S4 DESIGN DRAFT written + DESIGN RED-TEAM running (2026-07-17).**
+      `dnac/docs/plans/2026-07-17-dm-s4-aggregate-design.md` (local). **Key
+      finding: C1 (conf_action) ALREADY resolves the dm-c2 cross-region-binding
+      saga** — dm-c2 proved (5 rounds) a TRANSPORT arg (pass-through/LogUp) can't
+      bind (it faithfully transports a FORGED tuple, §7.4); the §7.5 fix was
+      "compute the note-commitment in-row, same-row-bound to value." C1's S1c
+      in-row note-commitment (cm⇔value collision-resistant) + the FORCED
+      phase-counter (replaces dm-c2's fatal FREE `same_note` with a pinned block
+      structure) + freeze-carry do exactly that. So S4 = embed C3 membership (φ∈
+      [1,D]) + C4 nullifier (φ=D+1) as PHASES in the K=32 block, same-row-binding
+      inputs to the frozen cm/pos/nk_carry (degree-1, NO LogUp, NO preprocessed
+      cols). Adds anchor[4]+nf[4] publics (discharges the S1f-F2 free-floating
+      guardrail). **11-agent DESIGN red-team (run wk5a3kmgq): CONDITIONALLY SOUND,
+      0 CRITICAL — architecture HOLDS, do NOT redesign** (the §0 claim that killed
+      all 5 dm-c2 approaches genuinely closes: C1's in-row note-commitment
+      de-orphans cm↔value). **1 HIGH blocker CAUGHT + SPECIFIED (design v2):** C3
+      POSACC position-accumulator had a FREE base across the φ-seam → prove the SAME
+      note twice with pos_carry=real_pos and real_pos+1 → 2 distinct nullifiers →
+      double-spend (pos ∉ cm preimage, membership passes both). FIX in §3: apply
+      C1's E8′/E4/PZ discipline to POSACC (φ=1 pure-init, inert outside [1,D], no
+      wrap leak). Also specified: nullifier EXACT-COUNT bijective bind
+      (N_nf==N_input both directions, drop/add reject); degree is 4 not 3 (num_qc=8
+      survives, headroom gone, oracle STOP-gate load-bearing); leaf/internal
+      structural sep (absorb DNAC_DOMSEP_MERKLE in compress). Report + design v2
+      local (`2026-07-17-dm-s4-{aggregate-design,design-redteam-report}.md`).
+      **CLEARED for S4a** (extend construction gate) → S4b-e (width bump, oracle,
+      fold, prover, all S1e precedent) → S4f red-team → S5 wire → S6 consensus
+      (BREAKING, needs approval) → S7 wallet → S8 Genesis 7/7.
       recorded composition obligations (leaf==cm_carry, pin D, nullify iff IS_INPUT).
   - **THEN:** S2 C3 membership (+ M1/M2 goals, + E5 point-read reader), S3 C4
     nullifier, S4 aggregate prover/verifier (+ H2/H3), S5 V4 wire, S6 consensus
