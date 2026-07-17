@@ -40,8 +40,11 @@ int main(void) {
         dnac_transcript_free(ref);
     }
 
-    /* T3.. — bits>0: grind finds a valid witness + advances state like check_witness. */
-    for (size_t bits = 4; bits <= 12; bits += 4) {
+    /* T3.. — bits>0 up to the PRODUCTION query-PoW level (16, per
+     * shielded_fri_params.h): grind finds a valid witness + advances state exactly
+     * like check_witness (which IS the verifier's query-PoW check, fri_verifier.c:542).
+     * bits=16 validates the production query-PoW end to end. */
+    for (size_t bits = 4; bits <= 16; bits += 4) {
         dnac_transcript_t *t = dnac_transcript_init(seed, sizeof seed);
         dnac_transcript_t *probe = dnac_transcript_clone(t); /* pre-grind snapshot */
 

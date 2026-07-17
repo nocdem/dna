@@ -1046,6 +1046,8 @@ dnac_prover_status_t dnac_prover_fri_commit_phase(
     unsigned log_blowup,
     unsigned log_final_poly_len,
     unsigned max_log_arity,
+    unsigned commit_pow_bits,   /* P1: per-round commit PoW (0 = grind no-op) */
+    unsigned query_pow_bits,    /* P1: query PoW (0 = grind no-op) */
     const uint64_t *salt_draws, /* M3b: stream B (FRI-mmcs), or NULL */
     size_t          salt_elems,
     dnac_transcript_t *t,
@@ -1151,8 +1153,10 @@ dnac_prover_status_t dnac_prover_fri_commit_phase(
             return DNAC_PROVER_ERR_PARAM;
         }
 
-        /* observe root, grind(0) [no-op], sample beta (prover.rs:218-228). */
+        /* observe root, grind commit PoW, sample beta (prover.rs:218-228). */
         dnac_transcript_observe_bytes(t, root.bytes, DNAC_MERKLE_DIGEST_BYTES);
+        res->commit_pow_witnesses[round] =
+            dnac_transcript_grind(t, commit_pow_bits); /* no-op at 0 */
         const gold_fp2_t beta = dnac_transcript_sample_fp2(t);
 
         /* fold with beta (fri_fold_matrix_fp2, arity path already byte-matched). */
@@ -1192,11 +1196,12 @@ dnac_prover_status_t dnac_prover_fri_commit_phase(
     for (size_t i = 0; i < final_poly_len; i++) {
         dnac_transcript_observe_fp2(t, res->final_poly[i]);
     }
-    /* observe each round's log_arity (prover.rs:92-94) + query PoW grind(0). */
+    /* observe each round's log_arity (prover.rs:92-94) + grind the query PoW. */
     for (size_t r = 0; r < res->num_rounds; r++) {
         dnac_transcript_observe_fp(
             t, gold_fp_from_u64((uint64_t)res->log_arities[r]));
     }
+    res->query_pow_witness = dnac_transcript_grind(t, query_pow_bits); /* no-op at 0 */
 
     free(folded);
     return DNAC_PROVER_OK;

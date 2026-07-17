@@ -562,6 +562,10 @@ typedef struct {
     dnac_merkle_tree_t *layer_trees[DNAC_PROVER_MAX_FRI_ROUNDS];
     size_t final_poly_len;
     gold_fp2_t final_poly[DNAC_PROVER_MAX_FINAL_POLY];
+    /* P1: PoW grinding witnesses (per-round commit PoW + one query PoW). All 0
+     * when the corresponding pow_bits==0 (grind no-op) — backward-compatible. */
+    gold_fp_t commit_pow_witnesses[DNAC_PROVER_MAX_FRI_ROUNDS];
+    gold_fp_t query_pow_witness;
 } dnac_prover_fri_result_t;
 
 /** Release the retained layer matrices + trees held in a result. */
@@ -591,6 +595,8 @@ dnac_prover_status_t dnac_prover_fri_commit_phase(
     unsigned log_blowup,
     unsigned log_final_poly_len,
     unsigned max_log_arity,
+    unsigned commit_pow_bits,   /* P1: per-round commit PoW (0 = grind no-op) */
+    unsigned query_pow_bits,    /* P1: query PoW (0 = grind no-op) */
     const uint64_t *salt_draws, /* M3b: FRI-mmcs stream B, or NULL (unsalted) */
     size_t          salt_elems,
     dnac_transcript_t *t,

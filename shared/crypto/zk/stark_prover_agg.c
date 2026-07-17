@@ -690,6 +690,7 @@ dnac_prover_status_t dnac_agg_prover_prove(
     }
     if (dnac_prover_fri_commit_phase(ro, lde_h, A_LOG_BLOWUP,
                                      A_LOG_FINAL_POLY_LEN, A_MAX_LOG_ARITY,
+                                     0, 0, /* P1 commit/query PoW bits (test params) */
                                      NULL, 0, t, &res) != DNAC_PROVER_OK) {
         goto cleanup;
     }
@@ -867,13 +868,15 @@ dnac_prover_status_t dnac_agg_prover_prove(
     memset(&p->proof, 0, sizeof(p->proof));
     p->proof.commit_phase_commits = p->cp_commits;
     p->proof.num_commit_phase_commits = res.num_rounds;
+    for (size_t r = 0; r < res.num_rounds; r++)
+        p->cp_pow[r] = res.commit_pow_witnesses[r]; /* P1: grind results (0 at pow=0) */
     p->proof.commit_pow_witnesses = p->cp_pow;
     p->proof.num_commit_pow_witnesses = res.num_rounds;
     p->proof.query_proofs = p->query_proofs;
     p->proof.num_query_proofs = A_NUM_QUERIES;
     p->proof.final_poly = p->final_poly;
     p->proof.num_final_poly = res.final_poly_len;
-    p->proof.query_pow_witness = gold_fp_from_u64(0);
+    p->proof.query_pow_witness = res.query_pow_witness; /* P1 (0 at query_pow=0) */
 
     memset(&p->params, 0, sizeof(p->params));
     p->params.log_blowup = A_LOG_BLOWUP;

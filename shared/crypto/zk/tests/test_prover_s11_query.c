@@ -181,7 +181,7 @@ int main(int argc, char **argv) {
             rounds[2 + k] = (dnac_prover_fri_input_round_t){&chunk_ldes[k * CHUNK_LDE_CELLS], LDE_H, CW, 1, &zeta, q_ov[k]};
         }
         if (dnac_prover_fri_reduced_openings(rounds, 2 + NQ, LOG_H, fri_alpha, ro) != DNAC_PROVER_OK ||
-            dnac_prover_fri_commit_phase(ro, LDE_H, 2, 2, 1, NULL, 0, t, &res) != DNAC_PROVER_OK) {
+            dnac_prover_fri_commit_phase(ro, LDE_H, 2, 2, 1, 0, 0, NULL, 0, t, &res) != DNAC_PROVER_OK) {
             fprintf(stderr, "commit phase FAIL\n");
             free(j11); free(j8); free(j7); free(j2);
             return 2;

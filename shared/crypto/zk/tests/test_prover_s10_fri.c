@@ -219,7 +219,7 @@ int main(int argc, char **argv) {
                                              ro) != DNAC_PROVER_OK) {
             fprintf(stderr, "reduced openings FAIL\n");
             failed++;
-        } else if (dnac_prover_fri_commit_phase(ro, LDE_H, 2, 2, 1, NULL, 0, t, &res) !=
+        } else if (dnac_prover_fri_commit_phase(ro, LDE_H, 2, 2, 1, 0, 0, NULL, 0, t, &res) !=
                    DNAC_PROVER_OK) {
             fprintf(stderr, "commit phase FAIL\n");
             failed++;
