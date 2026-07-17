@@ -405,6 +405,9 @@ enum Cmd {
     DumpConfActionAggAirZk {
         #[arg(long)]
         out: PathBuf,
+        /// P4: emit a SALTED (M3b MerkleTreeHidingMmcs) proof instead of plain.
+        #[arg(long)]
+        salted: bool,
     },
     /// DUAL-MODE S4b.6 — TWO-input aggregate KAT (both inputs level-0 siblings
     /// sharing one anchor; N_input=2, slots 0+1 used). num_qc MUST be 8.
@@ -632,8 +635,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             stark_priming::dump_conf_root_air_salted_h16(&out)?
         }
         Cmd::DumpConfActionAirZk { out } => stark_priming::dump_conf_action_air_zk(&out)?,
-        Cmd::DumpConfActionAggAirZk { out } => {
-            stark_priming::dump_conf_action_agg_air_zk(&out)?
+        Cmd::DumpConfActionAggAirZk { out, salted } => {
+            stark_priming::dump_conf_action_agg_air_zk(&out, salted)?
         }
         Cmd::DumpConfActionAggAirZk2in { out } => {
             stark_priming::dump_conf_action_agg_air_zk_2in(&out)?
@@ -14882,6 +14885,7 @@ mod stark_priming {
     /// verify=Ok, GATE3 tampered-reject, num_qc STOP-gate == 8.
     pub fn dump_conf_action_agg_air_zk(
         out_path: &PathBuf,
+        salted: bool,
     ) -> Result<(), Box<dyn std::error::Error>> {
         conf_action_check_domseps()?;
         conf_agg_check_domseps()?;
@@ -14932,21 +14936,36 @@ mod stark_priming {
             core::array::from_fn(|j| Goldilocks::from_u64(AGG_KAT_TXBIND[j]));
         let pis = agg_build_pis(anchor, num_input, nf_slots, num_output, output_commit, fee,
                                 kat_txbind);
-        dump_is_zk_stark(
-            &ConfActionAggAir,
-            trace,
-            pis,
-            "conf_action_agg_air_zk",
-            "DUAL-MODE S4c — REAL is_zk=1 proof of the AGGREGATE Action AIR \
-             (conf_action_agg_air, width 1945, main_next=true, 43 publics = \
-             anchor[4] ‖ num_input ‖ nf_slot[4][4] ‖ num_output ‖ output_commit[4][4] \
-             ‖ fee ‖ tx_binding[4]; C1 reuse + C3 membership + C4 nullifier + nf \
-             routing + OUTPUT-block routing (N_output counter) + fee promotion; \
-             max degree 4, num_qc 8)",
-            "DUAL-MODE S4c — aggregate Action AIR + output/fee promotion (h=128, num_qc=8)",
-            Some(8),
-            out_path,
-        )
+        if salted {
+            dump_is_zk_stark_salted(
+                &ConfActionAggAir,
+                trace,
+                pis,
+                "conf_action_agg_air_zk_salted",
+                "DUAL-MODE P4 — SALTED (M3b MerkleTreeHidingMmcs, SALT_ELEMS=2, seed=1) \
+                 is_zk=1 aggregate proof. Validates the salted VERIFY PLUMBING byte-\
+                 matches; production HIDING needs OS-entropy salts (fixed KAT seed).",
+                "DUAL-MODE P4 — salted aggregate (h=128, num_qc=8)",
+                Some(8),
+                out_path,
+            )
+        } else {
+            dump_is_zk_stark(
+                &ConfActionAggAir,
+                trace,
+                pis,
+                "conf_action_agg_air_zk",
+                "DUAL-MODE S4c — REAL is_zk=1 proof of the AGGREGATE Action AIR \
+                 (conf_action_agg_air, width 1945, main_next=true, 43 publics = \
+                 anchor[4] ‖ num_input ‖ nf_slot[4][4] ‖ num_output ‖ output_commit[4][4] \
+                 ‖ fee ‖ tx_binding[4]; C1 reuse + C3 membership + C4 nullifier + nf \
+                 routing + OUTPUT-block routing (N_output counter) + fee promotion; \
+                 max degree 4, num_qc 8)",
+                "DUAL-MODE S4c — aggregate Action AIR + output/fee promotion (h=128, num_qc=8)",
+                Some(8),
+                out_path,
+            )
+        }
     }
 
     /// Compute an INPUT note's commitment cm = note_commit(value, addr, rcm) with

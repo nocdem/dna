@@ -5,7 +5,8 @@
  * Mirrors the C1 Action prover (stark_prover_action.c) with the aggregate
  * constants and the two AIR-specific stages swapped (S1 trace = the 1946-wide
  * ZK generator agg_zk_generate, S6 quotient = dnac_conf_action_agg_fold_air_eval
- * with the 43 public values). UNSALTED. See stark_prover_agg.h.
+ * with the 43 public values). SALT (P4): optional M3b leaf-salt via
+ * instance.salt_draws (SE=0 when NULL => byte-identical unsalted). See stark_prover_agg.h.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: Apache-2.0
@@ -38,6 +39,7 @@
 #define A_RAND_W (A_W + A_NUM_RANDOM)      /* 1950 */
 #define A_CW ((size_t)2 + A_NUM_RANDOM)    /* 6 */
 #define A_NUM_PUBLICS ((size_t)CONF_AGGZK_NUM_PUBLICS) /* 43 (S4c) */
+#define A_SALT_ELEMS 2u                    /* P4: M3b leaf-salt (128-bit nominal), mirror C_SALT_ELEMS */
 
 struct dnac_agg_prover_proof_s {
     size_t base_degree_bits, degree_bits, log_max_height, lde_h, num_fri_rounds;
@@ -65,6 +67,12 @@ struct dnac_agg_prover_proof_s {
     dnac_fri_commit_phase_proof_step_t *cp_steps;
     gold_fp2_t *cp_step_sib;
     dnac_merkle_digest_t *cp_step_psib;
+
+    /* P4: M3b per-query opening salts (mirror conf). NULL/0 when unsalted. */
+    int        salted;
+    size_t     salt_elems;
+    gold_fp_t *rand_salt, *trace_salt, *quot_salt, *cp_salt;
+    const gold_fp_t **rand_saltp, **trace_saltp, **quot_saltp;
 
     dnac_fri_proof_t proof;
     dnac_fri_params_t params;
@@ -516,6 +524,13 @@ void dnac_agg_prover_proof_free(dnac_agg_prover_proof_t *p) {
     free(p->cp_steps);
     free(p->cp_step_sib);
     free(p->cp_step_psib);
+    free(p->rand_salt);
+    free(p->trace_salt);
+    free(p->quot_salt);
+    free(p->cp_salt);
+    free(p->rand_saltp);
+    free(p->trace_saltp);
+    free(p->quot_saltp);
     free(p);
 }
 
@@ -532,6 +547,11 @@ dnac_prover_status_t dnac_agg_prover_prove(
     const size_t height = (size_t)1 << inst->log_height;
     if (height > STARK_PROVER_MAX_HEIGHT) return DNAC_PROVER_ERR_PARAM;
     if (inst->num_draws != DNAC_AGG_PROVER_TOTAL_DRAWS(height)) {
+        return DNAC_PROVER_ERR_PARAM;
+    }
+    /* P4: if salted, the salt stream must cover >= 160h (mirror conf). */
+    if (inst->salt_draws &&
+        inst->num_salt_draws < DNAC_AGG_PROVER_SALT_DRAWS(height)) {
         return DNAC_PROVER_ERR_PARAM;
     }
 
@@ -603,6 +623,14 @@ dnac_prover_status_t dnac_agg_prover_prove(
     t = dnac_transcript_init_default();
     if (t == NULL) goto cleanup;
     gold_fp2_t alpha, zeta, zeta_next, fri_alpha;
+    /* P4: M3b salt streams. SE=0 (salt_draws==NULL) keeps every commit + root
+     * byte-identical to the unsalted path. Stream A (input mmcs) contiguous
+     * sections: trace @0, quotient @lde_h*SE, random @lde_h*SE*(1+A_NUM_QC);
+     * stream B (FRI mmcs) reuses the buffer from pos 0. */
+    const size_t SE = inst->salt_draws ? (size_t)A_SALT_ELEMS : 0;
+    const uint64_t *sd = inst->salt_draws;
+    const size_t salt_quot_off = lde_h * SE;
+    const size_t salt_rand_off = lde_h * SE * (1 + A_NUM_QC);
     {
         dnac_prover_status_t s;
         s = dnac_prover_randomize_trace(base_c, height, A_W, A_NUM_RANDOM,
@@ -611,7 +639,8 @@ dnac_prover_status_t dnac_agg_prover_prove(
         s = dnac_prover_coset_lde_bitrev(rand_c, 2 * height, A_RAND_W,
                                          A_LOG_BLOWUP, 7, lde_c);
         if (s != DNAC_PROVER_OK) { rc = s; goto cleanup; }
-        s = dnac_prover_commit_matrix(lde_c, lde_h, A_RAND_W, NULL, 0,
+        s = dnac_prover_commit_matrix(lde_c, lde_h, A_RAND_W,
+                                      sd ? &sd[0] : NULL, SE,
                                       p->trace_c.bytes, &ttree);
         if (s != DNAC_PROVER_OK) { rc = s; goto cleanup; }
         s = dnac_prover_fs_to_alpha(t, degree_bits, base_db, 0,
@@ -630,11 +659,13 @@ dnac_prover_status_t dnac_agg_prover_prove(
         if (s != DNAC_PROVER_OK) { rc = s; goto cleanup; }
         s = dnac_prover_quotient_commit(qflat, q_size, A_NUM_QC, A_NUM_RANDOM,
                                         A_LOG_BLOWUP, 7, codeword, blinding,
-                                        NULL, 0, chunk_ldes, p->quot_c.bytes,
+                                        sd ? &sd[salt_quot_off] : NULL, SE,
+                                        chunk_ldes, p->quot_c.bytes,
                                         &qtree);
         if (s != DNAC_PROVER_OK) { rc = s; goto cleanup; }
         s = dnac_prover_random_commit(r_draws, 2 * height, A_CW, A_LOG_BLOWUP,
-                                      NULL, 0, r_lde, p->rand_c.bytes, &rtree);
+                                      sd ? &sd[salt_rand_off] : NULL, SE,
+                                      r_lde, p->rand_c.bytes, &rtree);
         if (s != DNAC_PROVER_OK) { rc = s; goto cleanup; }
         s = dnac_prover_fs_to_zeta(t, p->quot_c.bytes, p->rand_c.bytes,
                                    base_db, &zeta, &zeta_next);
@@ -691,7 +722,9 @@ dnac_prover_status_t dnac_agg_prover_prove(
     if (dnac_prover_fri_commit_phase(ro, lde_h, A_LOG_BLOWUP,
                                      A_LOG_FINAL_POLY_LEN, A_MAX_LOG_ARITY,
                                      0, 0, /* P1 commit/query PoW bits (test params) */
-                                     NULL, 0, t, &res) != DNAC_PROVER_OK) {
+                                     inst->salt_draws, /* P4 stream B from pos 0 */
+                                     inst->salt_draws ? (size_t)A_SALT_ELEMS : 0,
+                                     t, &res) != DNAC_PROVER_OK) {
         goto cleanup;
     }
     have_res = 1;
@@ -751,12 +784,28 @@ dnac_prover_status_t dnac_agg_prover_prove(
         p->cp_step_sib = (gold_fp2_t *)malloc(nq * nr * sizeof(gold_fp2_t));
         p->cp_step_psib = (dnac_merkle_digest_t *)malloc(
             nq * cp_depth_sum * sizeof(dnac_merkle_digest_t));
+        /* P4: M3b per-query opening salts + pointer arrays (mirror conf). */
+        const size_t SE = inst->salt_draws ? (size_t)A_SALT_ELEMS : 0;
+        p->salted = inst->salt_draws != NULL;
+        p->salt_elems = SE;
+        if (SE > 0) {
+            p->rand_salt  = (gold_fp_t *)malloc(nq * SE * sizeof(gold_fp_t));
+            p->trace_salt = (gold_fp_t *)malloc(nq * SE * sizeof(gold_fp_t));
+            p->quot_salt  = (gold_fp_t *)malloc(nq * A_NUM_QC * SE * sizeof(gold_fp_t));
+            p->cp_salt    = (gold_fp_t *)malloc(nq * nr * SE * sizeof(gold_fp_t));
+            p->rand_saltp  = (const gold_fp_t **)malloc(nq * sizeof(gold_fp_t *));
+            p->trace_saltp = (const gold_fp_t **)malloc(nq * sizeof(gold_fp_t *));
+            p->quot_saltp  = (const gold_fp_t **)malloc(nq * A_NUM_QC * sizeof(gold_fp_t *));
+        }
         if (!p->query_proofs || !p->batches || !p->rand_rows ||
             !p->trace_rows || !p->quot_rows || !p->rand_rowptr ||
             !p->trace_rowptr || !p->quot_rowptr || !p->rand_len ||
             !p->trace_len || !p->quot_len || !p->rand_sib || !p->trace_sib ||
             !p->quot_sib || !p->cp_steps || !p->cp_step_sib ||
-            !p->cp_step_psib) {
+            !p->cp_step_psib ||
+            (SE > 0 && (!p->rand_salt || !p->trace_salt || !p->quot_salt ||
+                        !p->cp_salt || !p->rand_saltp || !p->trace_saltp ||
+                        !p->quot_saltp))) {
             goto cleanup;
         }
 
@@ -784,6 +833,15 @@ dnac_prover_status_t dnac_agg_prover_prove(
             B[0].opening_proof.depth = (uint32_t)in_depth;
             B[0].opening_proof.num_matrices = 1;
             B[0].opening_proof.siblings = &p->rand_sib[q * in_depth];
+            if (SE > 0) {
+                /* random salt (stream A random section = draws[lde_h*SE*(1+A_NUM_QC)]) */
+                const size_t off = lde_h * SE * (1 + A_NUM_QC) + (size_t)index * SE;
+                for (size_t s = 0; s < SE; s++)
+                    p->rand_salt[q * SE + s] = gold_fp_from_u64(inst->salt_draws[off + s]);
+                p->rand_saltp[q] = &p->rand_salt[q * SE];
+                B[0].salts = &p->rand_saltp[q];
+                B[0].salt_elems = SE;
+            }
 
             for (size_t i = 0; i < A_RAND_W; i++)
                 p->trace_rows[q * A_RAND_W + i] =
@@ -802,6 +860,15 @@ dnac_prover_status_t dnac_agg_prover_prove(
             B[1].opening_proof.depth = (uint32_t)in_depth;
             B[1].opening_proof.num_matrices = 1;
             B[1].opening_proof.siblings = &p->trace_sib[q * in_depth];
+            if (SE > 0) {
+                /* trace salt (stream A trace section = draws[index*SE]) */
+                const size_t off = (size_t)index * SE;
+                for (size_t s = 0; s < SE; s++)
+                    p->trace_salt[q * SE + s] = gold_fp_from_u64(inst->salt_draws[off + s]);
+                p->trace_saltp[q] = &p->trace_salt[q * SE];
+                B[1].salts = &p->trace_saltp[q];
+                B[1].salt_elems = SE;
+            }
 
             for (size_t m = 0; m < A_NUM_QC; m++) {
                 for (size_t i = 0; i < A_CW; i++)
@@ -827,9 +894,23 @@ dnac_prover_status_t dnac_agg_prover_prove(
             B[2].opening_proof.depth = (uint32_t)in_depth;
             B[2].opening_proof.num_matrices = A_NUM_QC;
             B[2].opening_proof.siblings = &p->quot_sib[q * in_depth];
+            if (SE > 0) {
+                /* quotient salts (stream A quotient = draws[lde_h*SE + m*lde_h*SE
+                 * + index*SE]) per chunk matrix m. */
+                for (size_t m = 0; m < A_NUM_QC; m++) {
+                    const size_t off = lde_h * SE + m * lde_h * SE + (size_t)index * SE;
+                    gold_fp_t *dst = &p->quot_salt[(q * A_NUM_QC + m) * SE];
+                    for (size_t s = 0; s < SE; s++)
+                        dst[s] = gold_fp_from_u64(inst->salt_draws[off + s]);
+                    p->quot_saltp[q * A_NUM_QC + m] = dst;
+                }
+                B[2].salts = &p->quot_saltp[q * A_NUM_QC];
+                B[2].salt_elems = SE;
+            }
 
             uint64_t cur = index;
             size_t psib_off = q * cp_depth_sum;
+            size_t cp_salt_off = 0; /* stream B cumulative offset (layer-major) */
             for (size_t r = 0; r < nr; r++) {
                 const unsigned a = res.layer_log_arities[r];
                 if (a != 1) goto cleanup;
@@ -852,6 +933,17 @@ dnac_prover_status_t dnac_agg_prover_prove(
                 S->opening_proof.depth = (uint32_t)depth;
                 S->opening_proof.num_matrices = 1;
                 S->opening_proof.siblings = &p->cp_step_psib[psib_off];
+                if (SE > 0) {
+                    /* stream B: layer r salt for folded row gid at
+                     * draws[cp_salt_off + gid*SE] (design §3a). */
+                    const size_t off = cp_salt_off + (size_t)gid * SE;
+                    gold_fp_t *dst = &p->cp_salt[(q * nr + r) * SE];
+                    for (size_t s = 0; s < SE; s++)
+                        dst[s] = gold_fp_from_u64(inst->salt_draws[off + s]);
+                    S->salts = dst;
+                    S->salt_elems = SE;
+                }
+                cp_salt_off += res.layer_heights[r] * SE;
                 psib_off += depth;
                 cur = gid;
             }

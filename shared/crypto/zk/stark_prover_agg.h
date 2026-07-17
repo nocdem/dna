@@ -20,7 +20,10 @@
  *   blinding 42h ‖ R 12h  — total (W+94)h = 2040h at W=1946 (only the trace
  *   section grows vs C1; symbolic in A_W so it tracks the width).
  *
- * UNSALTED (M3b leaf-salt hiding deferred to S7/wallet). See stark_prover_action.h.
+ * SALT (P4): optional M3b leaf-salt hiding — set instance.salt_draws (>= 160h) to
+ * emit a SALTED proof (MerkleTreeHidingMmcs, SALT_ELEMS=2); NULL => unsalted,
+ * byte-identical to before. KAT (fixed SmallRng seed) validates the salted verify
+ * plumbing byte-matches; PRODUCTION hiding needs OS-entropy salts (zk_entropy).
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: Apache-2.0
@@ -47,6 +50,11 @@ extern "C" {
 #define DNAC_AGG_PROVER_TOTAL_DRAWS(height) \
     ((size_t)(CONF_AGGZK_WIDTH + 94) * (size_t)(height))
 
+/** P4: M3b salt draws — WIDTH-INDEPENDENT (per Merkle row, SALT_ELEMS=2 over lde_h
+ *  rows): trace 16h + quotient 8*16h + random 16h = 160h. Stream B (FRI-mmcs)
+ *  reuses the same buffer from pos 0 (< 16h). Same value as CONF despite W=1946. */
+#define DNAC_AGG_PROVER_SALT_DRAWS(height) ((size_t)160 * (size_t)(height))
+
 /**
  * An aggregate prove request — one shielded action's notes + the INPUT notes'
  * Merkle-membership siblings. Same conserving/range preconditions as the C1
@@ -66,6 +74,9 @@ typedef struct {
     const uint64_t *tx_binding; /* 4 canonical lanes; FS-observed statement binding.
                                  * Production = conf_txbind_map(sighash_v4) (dnac S5
                                  * sighash → 4 lanes, wired at S6). NULL => zero. */
+    const uint64_t *salt_draws; /* P4: M3b salt stream, or NULL (unsalted). If set,
+                                 * num_salt_draws >= DNAC_AGG_PROVER_SALT_DRAWS(h). */
+    size_t          num_salt_draws;
     unsigned        log_height; /* height = 2^log_height, in [LOG_K, 10] */
     const uint64_t *draws;
     size_t          num_draws;  /* must equal DNAC_AGG_PROVER_TOTAL_DRAWS */

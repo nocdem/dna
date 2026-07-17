@@ -138,6 +138,8 @@ int main(int argc,char **argv){
      * the two-input KAT (dump_conf_action_agg_air_zk_2in) — both at H=128. */
     const int two_in  = (argc >= 4 && strcmp(argv[3], "2in") == 0);
     const int four_in = (argc >= 4 && strcmp(argv[3], "4in") == 0);
+    int salted = 0;
+    for (int ai = 3; ai < argc; ai++) if (strcmp(argv[ai], "--salted") == 0) salted = 1;
     const unsigned log_height = four_in ? 8 : 7;
     const size_t height = (size_t)1 << log_height;
     uint64_t value[5], addr[5*4], rcm[5*2], pos[5], nk[5], ak[5];
@@ -228,6 +230,9 @@ int main(int argc,char **argv){
         0x3333333333333333ULL, 0x4444444444444444ULL };
     inst.tx_binding=kat_txbind;
     inst.log_height=log_height; inst.draws=draws; inst.num_draws=need;
+    /* P4: --salted reuses the same SmallRng(1) draws buffer as the salt stream
+     * (need=2040h >= 160h). Must match the oracle's make_salted_zk_config (seed=1). */
+    if (salted) { inst.salt_draws=draws; inst.num_salt_draws=need; }
 
     int fails=0;
     printf("── aggregate instance (%s): height=%zu num_notes=%zu degree_bits=%zu draws=%zu\n",
