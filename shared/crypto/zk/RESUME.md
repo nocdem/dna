@@ -416,6 +416,43 @@
       0-warn. **NEXT: S4b** real-STARK lift (mirrors S1e): raise
       DNAC_STARK_MAX_MAIN_WIDTH (1024→2048 for WIDTH 1915) → Rust ConfActionAggAir
       oracle + MEASURE num_qc → fp2 fold → pure-C prover byte-match → S4f red-team.
+    - **S4b.1 DONE (2026-07-17) — width caps** (b6863ff6): MAX_MAIN_WIDTH +
+      PROVER_MAX_TRACE_WIDTH 1024→2048, FRI_LEAF_CAP 6656→15488 (1919-wide row).
+      C1 prover still byte-matches.
+    - **⚠ S4b.2 DESIGN FINDING (2026-07-17) — the real-STARK lift is NOT a
+      mechanical S1e-mirror; it has genuine soundness-critical design content the
+      S4a construction gate hid (S4a reads φ + r DIRECTLY in a C loop; the fold is
+      row-local local/next + algebraic selectors). Before writing the oracle:**
+      1. **C1 REUSE is free:** `ConfActionAir.eval(builder)` can be called directly
+         inside `ConfActionAggAir::eval` — it only touches columns [0,813), so it
+         emits the C1 constraints on the wide trace with ZERO duplication. Same for
+         the trace: call `generate_conf_action_trace` (813-wide) then scatter.
+      2. **Phase selectors must be COMMITTED columns** (is_zero(φ−c)), NOT a C
+         `phi==c` branch: per-level `is_lvl[i]=[φ==i]` (i=1..D) + `is_nf=[φ==D+1]`,
+         each an is_zero gadget (indicator+inverse). Layout GROWS by 2(D+1) cols
+         beyond S4a's 1915 (→ ~1923 for D=4). **So S4a's trace is NOT scatter-lifted
+         1:1 — the real-STARK re-lays-out with selector columns.**
+      3. **Membership chaining across φ-transitions (THE hard part):** `next.CUR ==
+         local.MC2.out` must fire ONLY on membership-internal transitions (φ=i−1→i,
+         both in [1,D]); gate by `local.is_lvl[i−1]·next.is_lvl[i]` (a
+         when_transition constraint). The φ=1 leaf (CUR==cm_carry) and φ=D root
+         (MC2.out==anchor) are boundary-gated by is_lvl[1]/is_lvl[D]. POSACC
+         per-level weight 2^(i−1) is a per-selector constant (or a running W_pow
+         column). This local/next phase-transition gating is where a subtle error
+         is silently unsound — needs careful build + the S4f red-team.
+      4. **nf-public routing is NOT row-local:** S4a's per-block `pub_nf[blk]` used
+         the C loop's known `r`; the fold can't index by block. Needs the design's
+         counter-based slot routing (N_input running counter → nf into slot
+         N_input−1 via a per-slot selector, MAX_INPUTS fixed) OR an nf-accumulator
+         public. This is the [PIN@impl] the design deferred to S5 — a real design
+         piece, soundness-critical (nullifier-set completeness). anchor(4) IS
+         row-local (bind at φ=D INPUT rows) and can land first.
+      **S4b build order:** oracle with C1-reuse + per-level selectors + membership
+      (with the §3 chaining gating) + nullifier + anchor public → MEASURE num_qc
+      (expect 8, STOP-gate) → then the nf-public routing → fold → prover. This is a
+      dedicated careful session; the S4a construction gate already PROVED the
+      constraint logic is sound, so S4b is faithful re-expression + the new
+      selector/routing machinery, checked by byte-match + S4f red-team.
       recorded composition obligations (leaf==cm_carry, pin D, nullify iff IS_INPUT).
   - **THEN:** S2 C3 membership (+ M1/M2 goals, + E5 point-read reader), S3 C4
     nullifier, S4 aggregate prover/verifier (+ H2/H3), S5 V4 wire, S6 consensus
