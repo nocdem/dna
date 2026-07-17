@@ -397,9 +397,9 @@ enum Cmd {
         #[arg(long)]
         out: PathBuf,
     },
-    /// DUAL-MODE S4b.2a — the AGGREGATE Action AIR (ConfActionAggAir, width 1927,
-    /// main_next=true, 4 publics=anchor): C1 reuse + C3 membership + C4 nullifier
-    /// at forced φ-phase rows. GATE1 verify=Ok, GATE3 tampered-reject, measured
+    /// DUAL-MODE S4b — the AGGREGATE Action AIR (ConfActionAggAir, width 1936,
+    /// main_next=true, 21 publics=anchor||num_input||nf_slot[4][4]): C1 reuse + C3
+    /// membership + C4 nullifier at forced φ-phase rows. GATE1 verify=Ok, measured
     /// num_qc MUST be 8 (STOP otherwise). h=128 conserving instance.
     #[command(name = "dump-conf-action-agg-air-zk")]
     DumpConfActionAggAirZk {
@@ -14421,6 +14421,17 @@ mod stark_priming {
                     builder.assert_zero(sel.clone() * (nfj - nf_slot_pub[s][j].clone()));
                 }
             }
+            // S4f GAP-1 fix: at every INPUT nullifier row EXACTLY ONE slot must be
+            // selected — gate_nf·(Σ slot_sel[s] − 1) == 0. This forces N_input ∈
+            // [1, MAX_INPUTS] (a >MAX_INPUTS input has all slot_sel[s]=0 ⇒ sum 0 ≠ 1
+            // ⇒ reject), closing the "5th+ input's nf escapes routing → unpublished
+            // nullifier double-spend" gap the S4f red-team found (the generator-side
+            // >MAX_INPUTS refusal is NOT a proven constraint). Degree gate_nf(2)·1 = 3.
+            let mut slot_sum: AB::Expr = AB::Expr::ZERO;
+            for s in 0..AGG_MAX_INPUTS {
+                slot_sum = slot_sum + ls[AGG_SLOTSEL_OFF + s].into();
+            }
+            builder.assert_zero(gate_nf.clone() * (slot_sum - AB::Expr::ONE));
         }
     }
 

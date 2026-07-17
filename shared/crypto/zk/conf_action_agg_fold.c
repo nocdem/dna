@@ -256,6 +256,17 @@ void dnac_conf_action_agg_fold_air_eval(dnac_stark_folder_t *f) {
                 f, gold_fp2_mul(sel, gold_fp2_sub(L[NF + CONF_AGGZK_NF_NF + j], slot)));
         }
     }
+    /* S4f GAP-1 fix: at every INPUT nullifier row EXACTLY ONE slot must be
+     * selected — gate_nf·(Σ slot_sel[s] − 1) == 0 — forcing N_input ∈
+     * [1, MAX_INPUTS] (a >MAX_INPUTS input has all slot_sel[s]=0 ⇒ sum 0 ≠ 1 ⇒
+     * reject). Closes the unpublished-nullifier double-spend the red-team found. */
+    {
+        gold_fp2_t slot_sum = gold_fp2_zero();
+        for (unsigned s = 0; s < CONF_AGGZK_MAX_INPUTS; s++)
+            slot_sum = gold_fp2_add(slot_sum, L[CONF_AGGZK_SLOTSEL_OFF + s]);
+        dnac_stark_folder_assert_zero(
+            f, gold_fp2_mul(gate_nf, gold_fp2_sub(slot_sum, one)));
+    }
 }
 
 const dnac_stark_air_t DNAC_CONF_ACTION_AGG_FOLD_AIR = {

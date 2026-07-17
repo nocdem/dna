@@ -474,8 +474,24 @@
       mis-sized it for the 1919 construction-gate width). smallrng vector regen to
       262144 draws (prefix-stable; existing provers unaffected), hash re-pinned.
       Full `make test` GREEN 0-warn. **S4b COMPLETE: oracle → fold → prover, the
-      aggregate real-STARK is Rust-free byte-matched end-to-end.** **Next: S4b.5**
-      negative KATs (cheat instances fail to prove) + **S4f** 10+ agent red-team.
+      aggregate real-STARK is Rust-free byte-matched end-to-end.**
+    - **🎯 S4b.5 + S4f DONE (2026-07-17) — negative KATs + 10-agent red-team.**
+      S4b.5: `test_prover_agg` T8 — 4 cheat instances fail-close (non-conserving,
+      range overflow, non-canonical addr, NULL siblings). S4f: **10 parallel
+      independent subagents** (KAFADAN-mandated), 8 CLEAN, **1 HIGH gap FOUND +
+      FIXED in-AIR**: `N_input` had no `≤ MAX_INPUTS` proven bound → a ≥5-input tx's
+      5th+ nullifier escaped routing (unpublished-nullifier double-spend). **Fix:**
+      `gate_nf·(Σ slot_sel[s] − 1) == 0` (exactly one slot per INPUT nf-row ⇒
+      N_input ∈ [1,MAX_INPUTS]) in oracle + fold; degree 3, num_qc still 8; vector
+      regen + fold/prover re-byte-match GREEN. CLEAN surfaces: forced selectors,
+      membership chaining, cross-region binding (dm-c2 closed), fold↔oracle parity
+      (24 groups), C1-reuse, generator parity, POSACC double-spend (F6 holds),
+      num_qc/degree/anchor (publics FS-absorbed pre-alpha). Accepted-scope: GAP2 nf
+      unused-slot zeroing = S5 consumer contract (read [0,num_input)); GAP3 tx_binding
+      = S5; GAP4 leaf/internal domsep = deferred (design-flagged). Report (local):
+      `dnac/docs/plans/2026-07-17-dm-s4b-aggregate-realstark-redteam-report.md`.
+      **S4b MERGE-READY (0 deployed-exploitable holes).** **Next: S5** V4 wire
+      (DNAC_TX_V4, tx_binding, nf-set) → S6 consensus (BREAKING, needs approval).
     - **⚠ S4b.2 DESIGN FINDING (2026-07-17) — the real-STARK lift is NOT a
       mechanical S1e-mirror; it has genuine soundness-critical design content the
       S4a construction gate hid (S4a reads φ + r DIRECTLY in a C loop; the fold is
