@@ -372,6 +372,19 @@
       **CLEARED for S4a** (extend construction gate) → S4b-e (width bump, oracle,
       fold, prover, all S1e precedent) → S4f red-team → S5 wire → S6 consensus
       (BREAKING, needs approval) → S7 wallet → S8 Genesis 7/7.
+    - **S4a.1 DONE (2026-07-17) — aggregate scaffold.** `conf_action_agg_air.{c,h}`
+      (WIDTH=1915 = C1 813 + membership 370 + nullifier 730 + is_nf/inv_nf), built
+      like C1's increments. **Zero-risk C1 reuse: generate SCATTERs a standalone
+      conf_action_air_generate into the C1 region; eval GATHERs it back + calls the
+      UNMODIFIED conf_action_air_eval** (C1 byte-identical, its test the net) then
+      adds phase constraints on the wide trace. S4a.1 adds the FORCED
+      `is_nf=[φ==D+1]` selector (is_zero(φ−(D+1)), same gadget as phi_is0 — the
+      red-team-critical "phase selectors must be forced" property). D=CONF_AGG_
+      TREE_DEPTH=4 (test value; consensus-pinned at S6). `test_conf_action_agg_air`:
+      honest eval==0 + C1-BAL tamper caught (reuse) + is_nf forge/drop/inv-tamper
+      caught. Membership+nullifier regions RESERVED (zeroed). **NEXT: S4a.2** C3
+      membership phases (φ=1..D) + the §3 POSACC init/stop/wrap gating (the design
+      red-team F6 double-spend fix); then S4a.3 nullifier + exact-count + publics.
       recorded composition obligations (leaf==cm_carry, pin D, nullify iff IS_INPUT).
   - **THEN:** S2 C3 membership (+ M1/M2 goals, + E5 point-read reader), S3 C4
     nullifier, S4 aggregate prover/verifier (+ H2/H3), S5 V4 wire, S6 consensus

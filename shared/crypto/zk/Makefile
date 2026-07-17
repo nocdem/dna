@@ -123,6 +123,7 @@ TESTS = \
     $(BUILD)/test_shielded_domsep \
     $(BUILD)/test_shielded_fri_params \
     $(BUILD)/test_conf_action_air \
+    $(BUILD)/test_conf_action_agg_air \
     $(BUILD)/test_conf_membership_air \
     $(BUILD)/test_conf_nullifier_air
 
@@ -168,6 +169,10 @@ $(BUILD)/test_shielded_fri_params: tests/test_shielded_fri_params.c shielded_fri
 # sponge (cm byte-match) → links the poseidon2 + sponge stack.
 $(BUILD)/test_conf_action_air: tests/test_conf_action_air.c conf_action_air.c note_commit.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c poseidon2_goldilocks.c field_goldilocks.c conf_action_air.h note_commit.h shielded_domsep.h poseidon2_air.h poseidon2_air_cols.h field_goldilocks.h | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) tests/test_conf_action_air.c conf_action_air.c note_commit.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c poseidon2_goldilocks.c field_goldilocks.c -o $@
+
+# Dual-mode S4a — aggregate Action AIR construction gate (C1 reused + phases).
+$(BUILD)/test_conf_action_agg_air: tests/test_conf_action_agg_air.c conf_action_agg_air.c conf_action_air.c note_commit.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c poseidon2_goldilocks.c field_goldilocks.c conf_action_agg_air.h conf_action_air.h conf_membership_air.h conf_nullifier_air.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_conf_action_agg_air.c conf_action_agg_air.c conf_action_air.c note_commit.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c poseidon2_goldilocks.c field_goldilocks.c -o $@
 
 # S2 dual-mode C3 — Poseidon2 Merkle-path membership construction gate (is_zk=0).
 $(BUILD)/test_conf_membership_air: tests/test_conf_membership_air.c conf_membership_air.c note_commit.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c poseidon2_goldilocks.c field_goldilocks.c conf_membership_air.h note_commit.h poseidon2_air.h poseidon2_air_cols.h field_goldilocks.h | $(BUILD)
@@ -942,6 +947,12 @@ test: all
 	@echo "  in-circuit cm byte-matches S0; §4b MINT + THEFT + non-conservation + all rejected"
 	@echo "============================================================"
 	@$(BUILD)/test_conf_action_air
+	@echo
+	@echo "============================================================"
+	@echo "S4a.1 dual-mode AGGREGATE scaffold — C1 reused (gather/scatter) +"
+	@echo "  forced is_nf=[φ==D+1] phase selector; membership+nullifier: S4a.2/3"
+	@echo "============================================================"
+	@$(BUILD)/test_conf_action_agg_air
 	@echo
 	@echo "============================================================"
 	@echo "S1e.3 dual-mode C1 fold — fp2 verifier-fold vs REAL is_zk=1 proof"
