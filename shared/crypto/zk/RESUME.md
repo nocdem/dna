@@ -434,8 +434,20 @@
       Vector `tools/vectors/conf_action_agg_air_zk.json` byte-identical regen
       (NO-FLAKY), hash pinned in `.expected_hashes`. Layout: [0,813)=C1,
       [813,1183)=MEMB, [1183,1913)=NF, 1913=IS_NF, 1914=INV_NF, [1915,1919)=IS_LVL,
-      [1919,1923)=INV_LVL, [1923,1927)=ACTIVE_LVL. **The anchor is row-local (φ=D
-      INPUT rows); nf-publics NOT yet exposed — that is S4b.2b (counter routing).**
+      [1919,1923)=INV_LVL, [1923,1927)=ACTIVE_LVL.
+    - **🎯 S4b.2b DONE (2026-07-17) — nf-public position-forced slot routing.**
+      Extends the oracle to WIDTH 1936 / 21 publics (anchor[4], num_input,
+      nf_slot[MAX_INPUTS=4][4]). A running `N_input` counter (col 1927) increments
+      at each INPUT block's phi=0 row (`+= PHI0*IS_INPUT`); at an INPUT's phi=D+1
+      row N_input == its 1-based ordinal, so its nullifier routes to public slot
+      `N_input-1` via `slot_sel[s]=is_zero(N_input-1-s)` (cols 1928-1935). Last-row
+      `N_input == num_input` public (EXACT total-count). **Position-forcing closes
+      G-S4-3/4: no DROP (each input's nf forced into its slot), no ADD (slots
+      [0,num_input) bijective to inputs; a spurious nf has no slot).** Routing bind
+      degree gate_nf(2)*slot_sel(1)*1 = 4, so **num_qc still MEASURED == 8.** Real
+      prove->verify=Ok, tampered-reject, byte-identical regen; vector hash re-pinned
+      (be497233). Full `make test` GREEN. **Next: S4b.3** C fp2 fold
+      (conf_action_agg_fold.c) verifying `conf_action_agg_air_zk.json`.
     - **⚠ S4b.2 DESIGN FINDING (2026-07-17) — the real-STARK lift is NOT a
       mechanical S1e-mirror; it has genuine soundness-critical design content the
       S4a construction gate hid (S4a reads φ + r DIRECTLY in a C loop; the fold is

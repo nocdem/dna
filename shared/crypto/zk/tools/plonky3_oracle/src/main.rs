@@ -14012,9 +14012,15 @@ mod stark_priming {
     //   (C1 reuse: max degree 3, poseidon S-box (7,1) register form)
     //   ⇒ AIR max degree = 4 ⇒ num_qc MEASURED must be 8 (STOP otherwise).
     //
-    // S4b.2a (THIS): C1 reuse + selectors + membership + nullifier + anchor[4]
-    //   public (row-local, bound at φ=D INPUT rows). num_qc MEASURED == 8.
-    // S4b.2b (NEXT): the nf-public counter-routing (nullifier-set completeness).
+    // S4b.2a: C1 reuse + selectors + membership + nullifier + anchor[4] public
+    //   (row-local, bound at φ=D INPUT rows). num_qc MEASURED == 8.
+    // S4b.2b: nf-public position-forced slot routing — a running N_input counter
+    //   (increment at each INPUT block's φ=0 row) routes every INPUT's nullifier
+    //   to public slot N_input−1 (slot_sel[s]=is_zero(N_input−1−s)); last-row
+    //   N_input == num_input public. Position-forcing ⇒ no drop (each input's nf
+    //   is forced into its slot), no add (slots [0,num_input) are bijective to
+    //   inputs; a spurious nf has no slot). Publics: anchor[4] ‖ num_input ‖
+    //   nf_slot[MAX_INPUTS][4]. Routing bind degree gate_nf(2)·slot_sel(1)·1 = 4.
     // ════════════════════════════════════════════════════════════════════════
 
     // ── Column offsets — PINNED to conf_membership_air.h:65-71 /
@@ -14048,9 +14054,20 @@ mod stark_priming {
     const AGG_ISLVL_OFF: usize = AGG_INVNF_OFF + 1; // 1915  [.., +D)
     const AGG_INVLVL_OFF: usize = AGG_ISLVL_OFF + AGG_D; // 1919 [.., +D)
     const AGG_ACTLVL_OFF: usize = AGG_INVLVL_OFF + AGG_D; // 1923 [.., +D)
-    const AGG_ZK_WIDTH: usize = AGG_ACTLVL_OFF + AGG_D; // 1927
+    // S4b.2b nf-public routing columns.
+    const AGG_NIN_OFF: usize = AGG_ACTLVL_OFF + AGG_D; // 1927  running INPUT-block counter
+    const AGG_MAX_INPUTS: usize = 4; // MAX_INPUTS — S6-pinned consensus constant (KAT: modest)
+    const AGG_SLOTSEL_OFF: usize = AGG_NIN_OFF + 1; // 1928 [.., +M) slot_sel[s]=is_zero(N_in−1−s)
+    const AGG_INVSLOT_OFF: usize = AGG_SLOTSEL_OFF + AGG_MAX_INPUTS; // 1932 [.., +M)
+    const AGG_ZK_WIDTH: usize = AGG_INVSLOT_OFF + AGG_MAX_INPUTS; // 1936
 
     const AGG_NF_PHI: u64 = (AGG_D + 1) as u64; // D+1 = 5
+
+    // Public-value layout: anchor[4] ‖ num_input ‖ nf_slot[MAX_INPUTS][4].
+    const AGG_PUB_ANCHOR: usize = 0;
+    const AGG_PUB_NUMIN: usize = AGG_PUB_ANCHOR + AGG_MEMB_LANES; // 4
+    const AGG_PUB_NFSLOT: usize = AGG_PUB_NUMIN + 1; // 5
+    const AGG_NUM_PUBLICS: usize = AGG_PUB_NFSLOT + AGG_MAX_INPUTS * AGG_NF_LANES; // 21
 
     // shielded_domsep.h:37,41 — SHA3-512("<string>")[0:8] BE (checked at runtime).
     const AGG_DOMSEP_RHO: u64 = 0x79b6_db2f_d9e0_0ea6; // "DNAC nullifier-rho v1"
@@ -14073,8 +14090,8 @@ mod stark_priming {
     }
 
     /// The aggregate Action AIR (conf_action_agg_air.c real-STARK form). Width
-    /// 1927, main_next=true (C1 + membership chaining read the next row), 4 public
-    /// values (anchor[4]; nf publics added S4b.2b).
+    /// 1936, main_next=true (C1 + membership chaining + N_input counter read the
+    /// next row), 21 public values (anchor[4] ‖ num_input ‖ nf_slot[4][4]).
     pub struct ConfActionAggAir;
 
     impl BaseAir<Goldilocks> for ConfActionAggAir {
@@ -14082,7 +14099,7 @@ mod stark_priming {
             AGG_ZK_WIDTH
         }
         fn num_public_values(&self) -> usize {
-            AGG_MEMB_LANES // anchor[4] (S4b.2a)
+            AGG_NUM_PUBLICS // anchor[4] ‖ num_input ‖ nf_slot[M][4]
         }
         // NO max_constraint_degree override (MEASURED — STOP-gate == 8).
     }
@@ -14097,7 +14114,12 @@ mod stark_priming {
 
             let main = builder.main();
             let pis = builder.public_values();
-            let anchor: [AB::Expr; AGG_MEMB_LANES] = core::array::from_fn(|j| pis[j].into());
+            let anchor: [AB::Expr; AGG_MEMB_LANES] =
+                core::array::from_fn(|j| pis[AGG_PUB_ANCHOR + j].into());
+            let num_input_pub: AB::Expr = pis[AGG_PUB_NUMIN].into();
+            let nf_slot_pub: [[AB::Expr; AGG_NF_LANES]; AGG_MAX_INPUTS] = core::array::from_fn(|s| {
+                core::array::from_fn(|j| pis[AGG_PUB_NFSLOT + s * AGG_NF_LANES + j].into())
+            });
             let ls: &[AB::Var] = main.current_slice();
             let ns: &[AB::Var] = main.next_slice();
 
@@ -14266,7 +14288,7 @@ mod stark_priming {
                 nf2,
             );
             // gate_nf = is_nf·IS_INPUT (degree 2). Fires at φ=D+1 of an INPUT block.
-            let gate_nf: AB::Expr = is_nf * is_input;
+            let gate_nf: AB::Expr = is_nf * is_input.clone();
             // cm/pos/nk cells == C1 frozen carries (cross-region bind — G-S4-3).
             for j in 0..AGG_NF_LANES {
                 builder.when(gate_nf.clone()).assert_eq(
@@ -14339,7 +14361,7 @@ mod stark_priming {
                 );
             }
             // Inert nf (¬gate_nf): CM/POS/NK/NF cells == 0.
-            let ninert = AB::Expr::ONE - gate_nf;
+            let ninert = AB::Expr::ONE - gate_nf.clone();
             for j in 0..AGG_NF_LANES {
                 builder
                     .when(ninert.clone())
@@ -14356,6 +14378,49 @@ mod stark_priming {
                     .when(ninert.clone())
                     .assert_zero(ls[AGG_NF_OFF + AGG_NF_NF + j]);
             }
+
+            // ── S4b.2b: nf-public routing (DET-S4-4 / G-S4-3/4 exact-count). ──
+            // N_input = running count of INPUT blocks (increment once per block at
+            // its φ=0 row: next.PHI0·next.IS_INPUT). At an INPUT block's φ=D+1 row
+            // N_input == the block's 1-based input ordinal, so its nullifier routes
+            // to public slot N_input−1 (position-forced ⇒ no drop, no add).
+            let phi0: AB::Expr = ls[CA_PHI0].into(); // C1 is_zero(φ) column
+            // first row (φ=0): N_input == PHI0·IS_INPUT.
+            builder
+                .when_first_row()
+                .assert_eq(ls[AGG_NIN_OFF], phi0 * is_input);
+            // transition: next.N_input == N_input + next.PHI0·next.IS_INPUT.
+            let nphi0: AB::Expr = ns[CA_PHI0].into();
+            let nisin: AB::Expr = ns[CA_ISIN].into();
+            builder.when_transition().assert_zero(
+                ns[AGG_NIN_OFF].into() - ls[AGG_NIN_OFF].into() - nphi0 * nisin,
+            );
+            // last row: N_input == num_input public (EXACT total-count bind).
+            builder
+                .when_last_row()
+                .assert_eq(ls[AGG_NIN_OFF], num_input_pub);
+            // slot_sel[s] = is_zero(N_input − 1 − s), s ∈ [0, MAX_INPUTS).
+            let n_in: AB::Expr = ls[AGG_NIN_OFF].into();
+            for s in 0..AGG_MAX_INPUTS {
+                let ss = ls[AGG_SLOTSEL_OFF + s];
+                let sse: AB::Expr = ss.into();
+                builder.assert_bool(ss);
+                let e_s = n_in.clone() - AB::Expr::from_u64((s as u64) + 1);
+                builder.assert_eq(
+                    e_s.clone() * ls[AGG_INVSLOT_OFF + s],
+                    AB::Expr::ONE - sse.clone(),
+                );
+                builder.assert_zero(e_s * sse);
+            }
+            // Routing: at an INPUT nf-row (gate_nf) the slot N_input−1 is selected;
+            // its NF cell == that public slot (degree gate_nf(2)·slot_sel(1)·1 = 4).
+            for s in 0..AGG_MAX_INPUTS {
+                let sel: AB::Expr = gate_nf.clone() * ls[AGG_SLOTSEL_OFF + s].into();
+                for j in 0..AGG_NF_LANES {
+                    let nfj: AB::Expr = ls[AGG_NF_OFF + AGG_NF_NF + j].into();
+                    builder.assert_zero(sel.clone() * (nfj - nf_slot_pub[s][j].clone()));
+                }
+            }
         }
     }
 
@@ -14369,7 +14434,12 @@ mod stark_priming {
         log_height: usize,
         notes: &[ActionNote],
         memb_siblings: &[[[u64; AGG_MEMB_LANES]; AGG_D]],
-    ) -> (RowMajorMatrix<Goldilocks>, [Goldilocks; AGG_MEMB_LANES]) {
+    ) -> (
+        RowMajorMatrix<Goldilocks>,
+        [Goldilocks; AGG_MEMB_LANES],
+        u64,
+        [[Goldilocks; AGG_NF_LANES]; AGG_MAX_INPUTS],
+    ) {
         let c1 = generate_conf_action_trace(log_height, notes);
         let rows = 1usize << log_height;
         let k = CA_K;
@@ -14405,6 +14475,7 @@ mod stark_priming {
         let mut v = Goldilocks::zero_vec(rows * AGG_ZK_WIDTH);
 
         // ── Pass 1: scatter C1 + fill selectors + inert poseidon blocks. ──
+        let mut n_in_acc: u64 = 0; // running INPUT-block counter (mirrors the AIR).
         for r in 0..rows {
             let base = r * AGG_ZK_WIDTH;
             v[base..base + CA_W_WIDTH]
@@ -14414,6 +14485,23 @@ mod stark_priming {
             let blk = r / k;
             let is_input =
                 blk < notes.len() && notes[blk].role == CA_ROLE_INPUT;
+
+            // N_input running counter: += PHI0·IS_INPUT (once per INPUT block, φ=0).
+            if phi == 0 && is_input {
+                n_in_acc += 1;
+            }
+            v[base + AGG_NIN_OFF] = Goldilocks::from_u64(n_in_acc);
+            // slot_sel[s] = is_zero(N_input − 1 − s); inv_slot the witness.
+            for s in 0..AGG_MAX_INPUTS {
+                let sel = n_in_acc == (s as u64) + 1;
+                v[base + AGG_SLOTSEL_OFF + s] = Goldilocks::from_u64(sel as u64);
+                let e_s = Goldilocks::from_u64(n_in_acc) - Goldilocks::from_u64((s as u64) + 1);
+                v[base + AGG_INVSLOT_OFF + s] = if sel {
+                    Goldilocks::ZERO
+                } else {
+                    p3_field::Field::inverse(&e_s)
+                };
+            }
 
             // is_nf = is_zero(φ − (D+1)).
             let is_nf = phi == AGG_NF_PHI;
@@ -14453,6 +14541,8 @@ mod stark_priming {
         // ── Pass 2: membership walk + nullifier for each INPUT block. ──
         let mut anchor = [Goldilocks::ZERO; AGG_MEMB_LANES];
         let mut have_anchor = false;
+        let mut nf_slots = [[Goldilocks::ZERO; AGG_NF_LANES]; AGG_MAX_INPUTS];
+        let mut num_input: u64 = 0;
         for (blk, note) in notes.iter().enumerate() {
             if note.role != CA_ROLE_INPUT {
                 continue;
@@ -14549,9 +14639,16 @@ mod stark_priming {
             for j in 0..AGG_NF_LANES {
                 v[no + AGG_NF_NF + j] = nf[j];
             }
+            // Route this INPUT's nf into public slot `num_input` (its 0-based ordinal).
+            assert!(
+                (num_input as usize) < AGG_MAX_INPUTS,
+                "more than MAX_INPUTS inputs"
+            );
+            nf_slots[num_input as usize] = core::array::from_fn(|j| nf[j]);
+            num_input += 1;
         }
 
-        (RowMajorMatrix::new(v, AGG_ZK_WIDTH), anchor)
+        (RowMajorMatrix::new(v, AGG_ZK_WIDTH), anchor, num_input, nf_slots)
     }
 
     /// S4b.2a instance: INPUT 100 = OUTPUT 70 + FEE 30 (conserving) + 1 dummy-last,
@@ -14604,18 +14701,30 @@ mod stark_priming {
             [[0; 4]; AGG_D],
             [[0; 4]; AGG_D],
         ];
-        let (trace, anchor) = generate_conf_action_agg_trace(7, &notes, &memb_siblings); // H=128=4 blocks
-        let pis: Vec<Goldilocks> = anchor.to_vec(); // num_public_values = 4 (anchor)
+        let (trace, anchor, num_input, nf_slots) =
+            generate_conf_action_agg_trace(7, &notes, &memb_siblings); // H=128=4 blocks
+        // pis = anchor[4] ‖ num_input ‖ nf_slot[MAX_INPUTS][4].
+        let mut pis: Vec<Goldilocks> = Vec::with_capacity(AGG_NUM_PUBLICS);
+        pis.extend_from_slice(&anchor);
+        pis.push(Goldilocks::from_u64(num_input));
+        for s in 0..AGG_MAX_INPUTS {
+            for j in 0..AGG_NF_LANES {
+                pis.push(nf_slots[s][j]);
+            }
+        }
+        debug_assert_eq!(pis.len(), AGG_NUM_PUBLICS);
         dump_is_zk_stark(
             &ConfActionAggAir,
             trace,
             pis,
             "conf_action_agg_air_zk",
-            "DUAL-MODE S4b — first REAL is_zk=1 proof of the AGGREGATE Action AIR \
-             (conf_action_agg_air, width 1927, main_next=true, 4 publics=anchor; \
-             C1 reuse + C3 membership + C4 nullifier at forced φ-phase rows via \
-             committed is_zero selectors; max degree 4, num_qc 8)",
-            "DUAL-MODE S4b.2a — aggregate Action AIR real-STARK lift (h=128, num_qc=8)",
+            "DUAL-MODE S4b — REAL is_zk=1 proof of the AGGREGATE Action AIR \
+             (conf_action_agg_air, width 1936, main_next=true, 21 publics = \
+             anchor[4] ‖ num_input ‖ nf_slot[4][4]; C1 reuse + C3 membership + \
+             C4 nullifier at forced φ-phase rows via committed is_zero selectors; \
+             nf-public position-forced slot routing (N_input counter); max degree \
+             4, num_qc 8)",
+            "DUAL-MODE S4b.2 — aggregate Action AIR real-STARK lift + nf routing (h=128, num_qc=8)",
             Some(8),
             out_path,
         )
