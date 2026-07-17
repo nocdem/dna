@@ -490,6 +490,17 @@
       unused-slot zeroing = S5 consumer contract (read [0,num_input)); GAP3 tx_binding
       = S5; GAP4 leaf/internal domsep = deferred (design-flagged). Report (local):
       `dnac/docs/plans/2026-07-17-dm-s4b-aggregate-realstark-redteam-report.md`.
+    - **🎯 S4b.6 DONE (2026-07-17) — multi-input byte-match KATs (red-team #7).**
+      Closes the "multi-input C↔Rust parity inferred, not demonstrated" residual
+      with REAL proofs. `test_prover_agg` now byte-matches at 1, **2 AND 4** inputs.
+      **2-input** (`dump-conf-action-agg-air-zk-2in`, h=128): two INPUTs are level-0
+      siblings of each other (pos 0,1) → one anchor; N_input=2, slots 0+1.
+      **4-input** (`dump-...-4in`, h=256): four INPUTs in ONE depth-4 tree (pos 0..3,
+      internal nodes via `agg_compress`/`note_merkle_compress`) → one anchor;
+      **N_input=MAX_INPUTS=4, all 4 slots — the GAP-1 boundary.** C test recomputes
+      each input's cm (`conf_action_derive_addr`+`note_commit`) to build the shared
+      sibling tree; byte-matches zeta+3 roots+final_poly+21 publics. smallrng
+      extended 262144→524288 (prefix-stable). make test GREEN 0-warn.
       **S4b MERGE-READY (0 deployed-exploitable holes).** **Next: S5** V4 wire
       (DNAC_TX_V4, tx_binding, nf-set) → S6 consensus (BREAKING, needs approval).
     - **⚠ S4b.2 DESIGN FINDING (2026-07-17) — the real-STARK lift is NOT a
