@@ -1,5 +1,6 @@
 [Unit]
 Description=DNA Explorer daemon (scan.cpunk.io indexer + API)
+Wants=network-online.target
 After=network-online.target
 [Service]
 User=dna-explorer

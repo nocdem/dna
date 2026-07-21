@@ -101,8 +101,8 @@ static const char *SET_META_SQL =
     "INSERT INTO meta(key, value) VALUES(?, ?) "
     "ON CONFLICT(key) DO UPDATE SET value = excluded.value";
 
-/* Cursor: strict `height < ?1` — see exp_db.h header comment (genesis is
- * height 0, so 0 cannot be an "unbounded" sentinel; callers pass
+/* Cursor: strict `height < ?1` — see exp_db.h header comment (the strict
+ * `<` makes 0 unusable as an "unbounded" sentinel on its own; callers pass
  * UINT64_MAX for the first page). */
 static const char *QUERY_BLOCKS_SQL =
     "SELECT height, block_hash, tx_root, timestamp, proposer, tx_count "

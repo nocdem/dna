@@ -62,8 +62,8 @@ Usage: dna-explorerd [--config PATH] [--db PATH] [--port N] [--once] [--verify-i
   --db PATH        sqlite index db path (default /var/lib/dna-explorer/index.db)
   --port N         JSON API listen port (default 8390), 127.0.0.1 only
   --once           run a single sync tick and exit (smoke tests)
-  --verify-index   recompute addr_stats from tx_io and diff against the stored
-                    values against --db, print OK/MISMATCH, exit 0/1. No network.
+  --verify-index   recompute addr_stats from tx_io and diff against the
+                    stored values in --db, print OK/MISMATCH, exit 0/1. No network.
   --version        print version and exit
 ```
 
@@ -71,10 +71,12 @@ Usage: dna-explorerd [--config PATH] [--db PATH] [--port N] [--once] [--verify-i
 
 One witness server per line: `<host> <port>`. Blank lines and lines starting
 with `#` (after leading whitespace) are ignored. Malformed lines, an empty
-server list, or an exact duplicate `(host, port)` pair are all load errors
-(the duplicate check exists because the F4 reset FSM's "≥2 distinct server"
-confirmation rule would otherwise be satisfiable by one server listed twice —
-see `exp_chain_config_load` / G6). Example:
+server list, an exact duplicate `(host, port)` pair, or more than 16 servers
+are all load errors — not truncation; a list of 17+ lines fails to load
+entirely, it is not silently cut down to 16 (the duplicate check exists
+because the F4 reset FSM's "≥2 distinct server" confirmation rule would
+otherwise be satisfiable by one server listed twice — see
+`exp_chain_config_load` / G6). Example:
 
 ```
 # scan.cpunk.io witness server list
@@ -108,7 +110,9 @@ all-zero 64-byte `token_id`.
 
 Any endpoint returns `405` (`{"error":"method not allowed"}`) for non-GET
 methods, `400` for malformed identifiers/pagination params, `413` for
-request lines over 8 KB, `500` on an internal query failure.
+request lines over 8 KB, `503` (`{"error":"index unavailable"}`) when the
+index DB is transiently unset (e.g. mid-reset, during an F4-triggered
+reopen), and `500` on an internal query failure.
 
 ## Deploy
 

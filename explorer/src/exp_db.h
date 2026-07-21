@@ -14,9 +14,12 @@
  *     callers that don't need it).
  *   - Cursor pagination (`exp_db_query_blocks` `before_height`,
  *     `exp_db_query_address` `before_seq`): rows returned always satisfy
- *     `key < cursor` (strict), DESC order. Genesis is height 0
- *     (`dnac/include/dnac/block.h`), so 0 is NOT usable as an "unbounded"
- *     sentinel — a walk that reaches genesis and re-queries with cursor=0
+ *     `key < cursor` (strict), DESC order. This witness implementation
+ *     commits genesis at height 1 (the `blocks` table never has a
+ *     height-0 row — confirmed live, see `exp_sync.c`'s backfill-floor
+ *     comment), but the strict `<` comparison makes 0 unusable as an
+ *     "unbounded" sentinel regardless: a walk that reaches the lowest
+ *     indexed height and re-queries with cursor=0 (or cursor=that height)
  *     must legitimately get zero rows back, not wrap to the top. Callers
  *     wanting the most recent page pass `INT64_MAX` (or any value above
  *     the current tip, but at most `INT64_MAX`) as the first cursor, then

@@ -156,9 +156,10 @@ static void test_blocks_ordering(void) {
         return;
     }
 
-    /* genesis-boundary: walking below the lowest indexed height (1) must
-     * terminate with zero rows, never wrap back to the top (0 is NOT an
-     * "unbounded" sentinel — genesis itself is height 0). */
+    /* genesis-boundary: walking below the lowest indexed height (1, this
+     * witness implementation's genesis height) must terminate with zero
+     * rows, never wrap back to the top — the strict `<` comparison makes 0
+     * unusable as an "unbounded" sentinel on its own (see exp_db.h). */
     int count_boundary = -1;
     if (exp_db_query_blocks(db, 1, 10, rows, &count_boundary) != 0 || count_boundary != 0) {
         FAIL("query_blocks should return 0 rows below the lowest height");

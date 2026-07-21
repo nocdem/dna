@@ -350,13 +350,15 @@ static int sync_blocks(exp_chain_t *chain, exp_db_t *db, uint64_t max_height) {
              * permanent failure with an ever-repeated, unbounded re-walk
              * from the old watermark on every retry. */
             QGP_LOG_ERROR(LOG_TAG, "block(%llu) not found — stopping backfill, persisting progress through %llu",
-                          (unsigned long long)h, (unsigned long long)(h > 0 ? h - 1 : 0));
+                          (unsigned long long)h, (unsigned long long)(h - 1));
             nodus_client_free_block_result(&blk);
-            if (h == 0) {
-                /* Nothing committed yet this call (genesis itself not
-                 * found) — no h-1 to persist, no regression risk. */
-                return 0;
-            }
+            /* h is always >= 1 here (loop floor is 1, genesis's height —
+             * see the h-init comment above), so h - 1 never underflows.
+             * h == 1 not-found (nothing committed yet) still falls through
+             * correctly: stop_at = 0, and since have_lbh is false on a
+             * first-ever call, the regression guard below is skipped and
+             * last_block_height=0 is persisted (the documented "no blocks
+             * synced yet" watermark, not a claim that height 0 exists). */
             uint64_t stop_at = h - 1;
             if (have_lbh && stop_at <= last_block_height) {
                 /* Never regress below what's already stored (round 1,
