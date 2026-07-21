@@ -545,6 +545,50 @@ cleanup_gp:
     nodus_storage_close(&store);
 }
 
+/* Regression for the 2026-07-17 name-hijack fix (F1): a different owner MUST NOT
+ * be able to sidestep the EXCLUSIVE lock by choosing a fresh value_id. The pre-fix
+ * guard keyed on (key_hash, value_id) let this through; the whole suite above only
+ * ever used vid=1 for both writers, so it never covered this vector. */
+static void test_exclusive_different_value_id(void) {
+    TEST("exclusive: different value_id cannot hijack");
+
+    nodus_storage_t store;
+    nodus_storage_open(":memory:", &store);
+
+    uint8_t seedA[32]; memset(seedA, 0xAA, sizeof(seedA));
+    nodus_identity_t idA; nodus_identity_from_seed(seedA, &idA);
+    uint8_t seedB[32]; memset(seedB, 0xBB, sizeof(seedB));
+    nodus_identity_t idB; nodus_identity_from_seed(seedB, &idB);
+
+    /* Owner A registers the name, value_id=111 */
+    nodus_value_t *vA = make_exclusive_value("name:lookup", "owner_a_fp", 111, 100, &idA);
+    int rc = nodus_storage_put(&store, vA);
+    if (rc != 0) { FAIL("owner A put failed"); goto cleanup_dv; }
+
+    /* Owner B attacks with a DIFFERENT value_id and a large positive seq */
+    nodus_value_t *vB = make_exclusive_value("name:lookup", "attacker_fp", 222,
+                                             0x7FFFFFFFFFFFFFFFLL, &idB);
+    rc = nodus_storage_put(&store, vB);
+    if (rc != -2) { FAIL("owner B (different value_id) must be rejected with -2"); goto cleanup_dv; }
+
+    /* GET must still resolve to owner A */
+    nodus_value_t *got = NULL;
+    nodus_storage_get(&store, &vA->key_hash, &got);
+    if (got && got->data_len == 10 && memcmp(got->data, "owner_a_fp", 10) == 0) {
+        PASS();
+    } else {
+        FAIL("GET returned attacker after different-value_id put");
+    }
+    nodus_value_free(got);
+
+cleanup_dv:
+    nodus_value_free(vA);
+    nodus_value_free(vB);
+    nodus_identity_clear(&idA);
+    nodus_identity_clear(&idB);
+    nodus_storage_close(&store);
+}
+
 int main(void) {
     printf("=== Nodus Storage Tests ===\n");
     init_test_identity();
@@ -563,6 +607,7 @@ int main(void) {
     test_exclusive_blocks_permanent_bypass();
     test_exclusive_put_if_newer();
     test_exclusive_get_priority();
+    test_exclusive_different_value_id();
 
     printf("\n=== Results: %d passed, %d failed ===\n", passed, failed);
 

@@ -60,9 +60,14 @@ static const char *CLEANUP_SQL =
 static const char *COUNT_SQL =
     "SELECT COUNT(*) FROM nodus_values";
 
+/* Ownership lock is scoped to key_hash ALONE (NOT value_id): the first identity
+ * to store a type=3 value at a key_hash owns the whole namespace entry. Keying on
+ * value_id was a hijack vector — value_id is per-writer (SHA3-512(pk)[0:8]), so a
+ * different owner never collided and the cross-owner reject was dead code
+ * (docs/plans/2026-07-17-dht-name-ownership-fix-design.md, F1). */
 static const char *EXCLUSIVE_OWNER_SQL =
     "SELECT owner_fp FROM nodus_values "
-    "WHERE key_hash = ? AND value_id = ? AND type = 3 LIMIT 1";
+    "WHERE key_hash = ? AND type = 3 LIMIT 1";
 
 static const char *PUT_IF_NEWER_SQL =
     "INSERT OR REPLACE INTO nodus_values "
@@ -313,7 +318,6 @@ int nodus_storage_put(nodus_storage_t *store, const nodus_value_t *val) {
         sqlite3_stmt *ex = store->stmt_exclusive_owner;
         sqlite3_reset(ex);
         sqlite3_bind_blob(ex, 1, val->key_hash.bytes, NODUS_KEY_BYTES, SQLITE_STATIC);
-        sqlite3_bind_int64(ex, 2, (sqlite3_int64)val->value_id);
         int ex_rc = sqlite3_step(ex);
         if (ex_rc == SQLITE_ROW) {
             const void *existing_fp = sqlite3_column_blob(ex, 0);
@@ -526,7 +530,6 @@ int nodus_storage_put_if_newer(nodus_storage_t *store, const nodus_value_t *val)
         sqlite3_stmt *ex = store->stmt_exclusive_owner;
         sqlite3_reset(ex);
         sqlite3_bind_blob(ex, 1, val->key_hash.bytes, NODUS_KEY_BYTES, SQLITE_STATIC);
-        sqlite3_bind_int64(ex, 2, (sqlite3_int64)val->value_id);
         int ex_rc = sqlite3_step(ex);
         if (ex_rc == SQLITE_ROW) {
             const void *existing_fp = sqlite3_column_blob(ex, 0);
