@@ -170,9 +170,114 @@ Internal DNA engine implementation with async task queue.
 | `void dna_handle_dnac_token_create(dna_engine_t*, dna_task_t*)` | Create token handler |
 | `void dna_handle_dnac_token_balance(dna_engine_t*, dna_task_t*)` | Token balance handler |
 
+### Task Handlers - Follow (`dna_engine_follow.c`)
+
+| Function | Description |
+|----------|-------------|
+| `void dna_handle_follow(dna_engine_t*, dna_task_t*)` | Handle follow user |
+| `void dna_handle_unfollow(dna_engine_t*, dna_task_t*)` | Handle unfollow user |
+| `void dna_handle_get_following(dna_engine_t*, dna_task_t*)` | Handle get following list |
+| `void dna_handle_sync_following_to_dht(dna_engine_t*, dna_task_t*)` | Sync following list to DHT |
+| `void dna_handle_sync_following_from_dht(dna_engine_t*, dna_task_t*)` | Restore following list from DHT |
+| `bool dna_engine_is_following(dna_engine_t*, const char *fingerprint)` | Synchronous follow-state check |
+
+### Debug Log Send (`dna_engine_debug_log.c`)
+
+| Function | Description |
+|----------|-------------|
+| `void dna_handle_debug_log_send(dna_engine_t*, dna_task_t*)` | Encrypt (Kyber1024 + AES-256-GCM) and DHT-deliver the app debug log to the developer |
+
+### Backup / Sync (`dna_engine_backup.c`)
+
+The contact/group sync handlers also appear under P2P/Presence above; the backup module additionally provides:
+
+| Function | Description |
+|----------|-------------|
+| `void dna_handle_sync_groups_to_dht(dna_engine_t*, dna_task_t*)` | Push all groups to DHT |
+| `void dna_handle_restore_groups_from_dht(dna_engine_t*, dna_task_t*)` | Restore all groups from DHT |
+| `void dna_handle_sync_group_by_uuid(dna_engine_t*, dna_task_t*)` | Sync a single group by UUID |
+
+Backup/restore run on joinable worker threads joined in `dna_engine_destroy` (thread-safety fix, verified 2026-07-08 — see `messenger/BUGS.md`).
+
+### Address Book (`dna_engine_addressbook.c`)
+
+| Function | Description |
+|----------|-------------|
+| `int dna_engine_add_address(dna_engine_t*, const char *address, const char *label, const char *network, const char *notes)` | Add a saved address (synchronous) |
+| `dna_request_id_t dna_engine_get_addressbook(dna_engine_t*, dna_addressbook_cb, void*)` | Get all saved addresses |
+| `dna_request_id_t dna_engine_get_addressbook_by_network(dna_engine_t*, const char *network, dna_addressbook_cb, void*)` | Filter saved addresses by network |
+| `int dna_engine_remove_address(dna_engine_t*, int id)` | Remove a saved address by id |
+| `int dna_engine_increment_address_usage(dna_engine_t*, int id)` | Bump the usage counter for an address |
+| `void dna_free_addressbook_entries(dna_addressbook_entry_t*, int count)` | Free an addressbook result array |
+
+### Signing (`dna_engine_signing.c`)
+
+| Function | Description |
+|----------|-------------|
+| `int dna_engine_sign_data(dna_engine_t*, const uint8_t *data, size_t data_len, uint8_t *signature_out, size_t *sig_len_out)` | Dilithium5-sign arbitrary data with the loaded identity key. **Note:** `signature_out` has no capacity parameter — callers must supply a ≥4627-byte buffer (ML-DSA-87 fixed size) |
+| `int dna_engine_get_signing_public_key(dna_engine_t*, uint8_t *pubkey_out, size_t pubkey_out_len)` | Export the identity's Dilithium5 public key |
+| `int dna_engine_pubkey_to_fingerprint(const uint8_t *pubkey, size_t pubkey_len, char *out_hex, size_t out_hex_size)` | Derive the hex fingerprint from a Dilithium5 pubkey (pubkey_len hard-bound to Dilithium5) |
+
+### Version (`dna_engine_version.c`)
+
+| Function | Description |
+|----------|-------------|
+| `const char* dna_engine_get_version(void)` | Return the compiled C library version string |
+| `int dna_engine_check_version_dht(dna_engine_t*, dna_version_check_result_t *result_out)` | Read the published version record from DHT (uses the nodus singleton; the engine param is unused) |
+
+### Logging (`dna_engine_logging.c`)
+
+| Function | Description |
+|----------|-------------|
+| `int dna_engine_set_log_level(const char *level)` | Set the global log level |
+| `int dna_engine_set_log_tags(const char *tags)` | Set the enabled log-tag filter |
+| `void dna_engine_debug_log_enable(bool enabled)` | Enable/disable the in-memory debug-log ring |
+| `bool dna_engine_debug_log_is_enabled(void)` | Query debug-log enabled state |
+| `int dna_engine_debug_log_get_entries(dna_debug_log_entry_t*, int max_entries)` | Copy ring-buffer entries out |
+| `int dna_engine_debug_log_count(void)` | Number of buffered log entries |
+| `void dna_engine_debug_log_clear(void)` | Clear the log ring buffer |
+| `void dna_engine_debug_log_message(const char *tag, const char *message)` | Append a log line |
+| `void dna_engine_debug_log_message_level(const char *tag, const char *message, int level)` | Append a log line with an explicit level |
+| `int dna_engine_debug_log_export(const char *filepath)` | Export the log to a file |
+
+### Lifecycle (`dna_engine_lifecycle.c`)
+
+| Function | Description |
+|----------|-------------|
+| `int dna_engine_pause(dna_engine_t*)` | Pause engine (mobile background) |
+| `int dna_engine_resume(dna_engine_t*)` | Resume engine (mobile foreground) |
+| `bool dna_engine_is_paused(dna_engine_t*)` | Query paused state |
+| `void dna_engine_pause_presence(dna_engine_t*)` | Pause the presence heartbeat only |
+| `void dna_engine_resume_presence(dna_engine_t*)` | Resume the presence heartbeat only |
+
+### Listeners (`dna_engine_listeners.c`)
+
+| Function | Description |
+|----------|-------------|
+| `int dna_engine_listen_all_contacts(dna_engine_t*)` | Start outbox listeners for all contacts |
+| `int dna_engine_refresh_listeners(dna_engine_t*)` | Rebuild all DHT listeners (e.g. after a network change) |
+| `void dna_engine_cancel_all_outbox_listeners(dna_engine_t*)` | Cancel all outbox listeners |
+| `void dna_engine_cancel_contact_request_listener(dna_engine_t*)` | Cancel the contact-request listener |
+| `void dna_engine_cancel_ack_listener(dna_engine_t*, const char *contact_fingerprint)` | Cancel one ack listener |
+| `void dna_engine_cancel_all_ack_listeners(dna_engine_t*)` | Cancel all ack listeners |
+| `int dna_engine_subscribe_all_groups(dna_engine_t*)` | Subscribe to all group keys |
+| `void dna_engine_unsubscribe_all_groups(dna_engine_t*)` | Unsubscribe from all groups |
+| `int dna_engine_listen_all_channels(dna_engine_t*)` | Start listeners for all subscribed channels (channels currently DISABLED) |
+| `int dna_engine_start_channel_listener(dna_engine_t*, const char *channel_uuid)` | Start one channel listener |
+| `void dna_engine_cancel_channel_listener(dna_engine_t*, const char *channel_uuid)` | Cancel one channel listener |
+| `void dna_engine_cancel_all_channel_listeners(dna_engine_t*)` | Cancel all channel listeners |
+| `int dna_engine_check_group_day_rotation(dna_engine_t*)` | Rotate group day-bucket listeners |
+| `int dna_engine_check_outbox_day_rotation(dna_engine_t*)` | Rotate outbox day-bucket listeners |
+| `int dna_engine_check_channel_day_rotation(dna_engine_t*)` | Rotate channel day-bucket listeners |
+| `void dna_engine_log_active_listeners(dna_engine_t*)` | Debug: log the current active listeners |
+
 ### Helpers
 
 | Function | Description |
 |----------|-------------|
 | `int dna_scan_identities(const char*, char***, int*)` | Scan for identity files |
 | `void dna_free_task_params(dna_task_t*)` | Free task parameters |
+
+---
+
+*Module coverage: all 22 engine modules in `src/api/engine/` are represented above. Last reconciled against source 2026-07-08.*
