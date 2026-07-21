@@ -27,6 +27,8 @@
 
 #include <stdint.h>
 
+#include <pthread.h>
+
 #include "exp_chain.h"
 #include "exp_db.h"
 #include "exp_json.h"
@@ -37,9 +39,22 @@ extern "C" {
 
 typedef struct {
     exp_db_t     *db;      /* index db (required) */
-    exp_chain_t  *chain;   /* live witness client for ?utxos=1; NULL = degrade gracefully */
+    exp_chain_t  *chain;   /* live witness client for ?utxos=1; NULL = degrade gracefully.
+                             * Dedicated client, never shared with the sync thread (Task 7,
+                             * G-chain-share: a failing utxo query rotating this client must
+                             * never race a nodus_client_t the sync thread is mid-call on). */
     uint16_t      port;
     volatile int *stop;    /* set non-zero to request exp_http_serve to return */
+
+    /* Task 7 (Task 6 security review, db-swap race): guards *db against the
+     * sync thread's confirmed-chain-reset close/rename/reopen swap
+     * (exp_sync.c handle_confirmed_reset) racing an HTTP request mid-query
+     * on the old handle. handle_client takes ctx->db_lock for rdlock for
+     * the span of a request's db access (exp_http_route call), released
+     * before the response is written. NULL db_lock skips locking entirely
+     * — unit tests construct exp_http_ctx_t with `= {0}` and never set
+     * this field, exercising exp_http_route single-threaded. */
+    pthread_rwlock_t *db_lock;
 } exp_http_ctx_t;
 
 /* Blocking poll() accept loop on 127.0.0.1:ctx->port. Returns when

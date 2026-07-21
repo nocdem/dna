@@ -243,12 +243,23 @@ int exp_db_open(const char *path, exp_db_t **db_out) {
     exp_db_t *db = calloc(1, sizeof(*db));
     if (!db) return -1;
 
-    if (sqlite3_open(path, &db->conn) != SQLITE_OK) {
+    /* Task 7: explicit open flags + FULLMUTEX — the sync thread (writer)
+     * and the HTTP thread (reader) share this one sqlite3* handle;
+     * FULLMUTEX serializes their calls into libsqlite3 so concurrent use of
+     * the same connection is safe (WAL still lets readers see a consistent
+     * snapshot without blocking the writer). */
+    if (sqlite3_open_v2(path, &db->conn,
+                         SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX,
+                         NULL) != SQLITE_OK) {
         QGP_LOG_ERROR(LOG_TAG, "open(%s) failed: %s", path, db->conn ? sqlite3_errmsg(db->conn) : "?");
         if (db->conn) sqlite3_close(db->conn);
         free(db);
         return -1;
     }
+
+    /* Bound how long a caller blocks on SQLITE_BUSY (e.g. transient WAL
+     * writer-lock contention) instead of failing immediately. */
+    sqlite3_exec(db->conn, "PRAGMA busy_timeout=5000", NULL, NULL, NULL);
 
     /* WAL mode (no-op/ignored on ":memory:" — SQLite keeps in-memory journaling there). */
     sqlite3_exec(db->conn, "PRAGMA journal_mode=WAL", NULL, NULL, NULL);

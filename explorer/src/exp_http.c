@@ -707,7 +707,14 @@ static void handle_client(exp_http_ctx_t *ctx, int cfd) {
 
     exp_json_t body;
     int status = 500;
+
+    /* Task 7 (db-swap race): rdlock spans exactly the db access — the
+     * exp_http_route call — and is released before send_response's socket
+     * I/O. NULL ctx->db_lock (unit tests) skips locking entirely. */
+    if (ctx->db_lock) pthread_rwlock_rdlock(ctx->db_lock);
     exp_http_route(ctx, method, reqpath, &body, &status);
+    if (ctx->db_lock) pthread_rwlock_unlock(ctx->db_lock);
+
     send_response(cfd, status, body.buf ? body.buf : "{}");
     exp_json_freebuf(&body);
 

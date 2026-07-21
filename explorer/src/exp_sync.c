@@ -74,7 +74,8 @@ void exp_sync_preseed(exp_db_t *db, exp_reset_fsm_t *fsm) {
  * comment: watermark discipline means the caller retries next tick, and a
  * caller dereferencing NULL is guarded by exp_sync_tick's own NULL check
  * at entry. */
-static int handle_confirmed_reset(exp_db_t **db_ptr, const char *db_path, exp_reset_fsm_t *fsm) {
+static int handle_confirmed_reset(exp_db_t **db_ptr, const char *db_path, exp_reset_fsm_t *fsm,
+                                   pthread_rwlock_t *db_lock) {
     if (is_all_zero32(fsm->cand)) {
         /* Rule 2, enforced again defensively: exp_sync_tick never feeds an
          * all-zero observation into the FSM, so this candidate should be
@@ -89,6 +90,16 @@ static int handle_confirmed_reset(exp_db_t **db_ptr, const char *db_path, exp_re
         return -1;
     }
 
+    /* Task 7 (db-swap race): wrlock spans exactly the close->rename->reopen
+     * swap below — the HTTP thread may be mid-query on the old *db_ptr via
+     * its own rdlock (exp_http.c handle_client). Held through every return
+     * path from here on, including the rename-failure reopen (it also
+     * mutates *db_ptr). Normal-tick db use (sync_ledger/sync_blocks, called
+     * from exp_sync_tick before/after this function) takes no lock — the
+     * handle itself doesn't change there, only its contents (FULLMUTEX
+     * covers that). */
+    if (db_lock) pthread_rwlock_wrlock(db_lock);
+
     exp_db_close(*db_ptr);
     *db_ptr = NULL;
 
@@ -100,6 +111,7 @@ static int handle_confirmed_reset(exp_db_t **db_ptr, const char *db_path, exp_re
         if (exp_db_open(db_path, db_ptr) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "failed to reopen original db after failed rename — index unavailable");
         }
+        if (db_lock) pthread_rwlock_unlock(db_lock);
         return -1;
     }
     QGP_LOG_WARN(LOG_TAG, "chain reset CONFIRMED: archived stale index to %s", stale_path);
@@ -107,12 +119,14 @@ static int handle_confirmed_reset(exp_db_t **db_ptr, const char *db_path, exp_re
     exp_db_t *fresh = NULL;
     if (exp_db_open(db_path, &fresh) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "exp_db_open(%s) failed after chain reset — index unavailable", db_path);
+        if (db_lock) pthread_rwlock_unlock(db_lock);
         return -1;
     }
 
     if (exp_db_set_meta_blob(fresh, "chain_id", fsm->cand, 32) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "failed to persist new chain_id after reset");
         exp_db_close(fresh);
+        if (db_lock) pthread_rwlock_unlock(db_lock);
         return -1;
     }
 
@@ -123,6 +137,7 @@ static int handle_confirmed_reset(exp_db_t **db_ptr, const char *db_path, exp_re
     fsm->polls_seen = 0;
 
     *db_ptr = fresh;
+    if (db_lock) pthread_rwlock_unlock(db_lock);
     QGP_LOG_INFO(LOG_TAG, "chain reset complete: fresh index open at %s", db_path);
     return 0;
 }
@@ -375,7 +390,8 @@ static int sync_blocks(exp_chain_t *chain, exp_db_t *db, uint64_t max_height) {
     return 0;
 }
 
-int exp_sync_tick(exp_chain_t *chain, exp_db_t **db_ptr, const char *db_path, exp_reset_fsm_t *fsm) {
+int exp_sync_tick(exp_chain_t *chain, exp_db_t **db_ptr, const char *db_path, exp_reset_fsm_t *fsm,
+                   pthread_rwlock_t *db_lock) {
     if (!chain || !db_ptr || !*db_ptr || !db_path || !fsm) {
         QGP_LOG_ERROR(LOG_TAG, "exp_sync_tick: invalid params");
         return -1;
@@ -427,7 +443,7 @@ int exp_sync_tick(exp_chain_t *chain, exp_db_t **db_ptr, const char *db_path, ex
 
     if (rc == EXP_RESET_CONFIRMED) {
         QGP_LOG_WARN(LOG_TAG, "chain_id mismatch CONFIRMED across >=2 servers/polls — resetting index");
-        if (handle_confirmed_reset(db_ptr, db_path, fsm) != 0) {
+        if (handle_confirmed_reset(db_ptr, db_path, fsm, db_lock) != 0) {
             return -1;
         }
         return 0;
@@ -520,7 +536,7 @@ void *exp_sync_thread(void *arg) {
     QGP_LOG_INFO(LOG_TAG, "sync thread started (poll interval %d s)", EXP_SYNC_POLL_SECONDS);
 
     while (!*a->stop) {
-        if (exp_sync_tick(a->chain, a->db, a->db_path, &fsm) != 0) {
+        if (exp_sync_tick(a->chain, a->db, a->db_path, &fsm, a->db_lock) != 0) {
             QGP_LOG_WARN(LOG_TAG, "sync tick failed — retrying next poll");
         }
 

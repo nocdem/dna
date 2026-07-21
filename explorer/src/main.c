@@ -119,7 +119,9 @@ int main(int argc, char **argv) {
         memset(&fsm, 0, sizeof(fsm));
         exp_sync_preseed(db, &fsm);
 
-        int rc = exp_sync_tick(chain, &db, db_path, &fsm);
+        /* Single-shot, single-threaded: no concurrent HTTP reader exists,
+         * so no db_lock is needed (Task 7). */
+        int rc = exp_sync_tick(chain, &db, db_path, &fsm, NULL);
 
         exp_db_close(db);
         exp_chain_close(chain);
@@ -133,15 +135,44 @@ int main(int argc, char **argv) {
     signal(SIGINT, handle_stop_signal);
     signal(SIGTERM, handle_stop_signal);
 
+    /* Task 7 (chain-client-sharing race): the HTTP thread's ?utxos=1
+     * passthrough gets its OWN exp_chain_t, opened against the same server
+     * list, rather than sharing `chain` with the sync thread. Sharing meant
+     * a failing HTTP utxo query could exp_chain_rotate -> nodus_client_close
+     * a connection the sync thread was mid-call on (remotely triggerable
+     * UAF). A failed open here is non-fatal — the utxos section already has
+     * a "witness-live unavailable" degrade path (exp_http.c route_address)
+     * for ctx->chain == NULL. */
+    exp_chain_t *http_chain = NULL;
+    if (exp_chain_open(&http_chain, servers, server_count) != 0) {
+        QGP_LOG_WARN(LOG_TAG, "failed to open dedicated HTTP chain client — ?utxos=1 will report unavailable");
+        http_chain = NULL;
+    }
+
+    /* Task 7 (db-swap race): guards *db against the sync thread's
+     * confirmed-chain-reset close/rename/reopen swap racing an in-flight
+     * HTTP request on the old handle. */
+    pthread_rwlock_t db_lock;
+    if (pthread_rwlock_init(&db_lock, NULL) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "failed to init db_lock");
+        exp_chain_close(http_chain);
+        exp_db_close(db);
+        exp_chain_close(chain);
+        return 1;
+    }
+
     exp_sync_args_t sync_args;
     sync_args.chain = chain;
     sync_args.db = &db;
     sync_args.db_path = db_path;
     sync_args.stop = &g_stop;
+    sync_args.db_lock = &db_lock;
 
     pthread_t sync_tid;
     if (pthread_create(&sync_tid, NULL, exp_sync_thread, &sync_args) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "failed to spawn sync thread");
+        pthread_rwlock_destroy(&db_lock);
+        exp_chain_close(http_chain);
         exp_db_close(db);
         exp_chain_close(chain);
         return 1;
@@ -149,9 +180,10 @@ int main(int argc, char **argv) {
 
     exp_http_ctx_t http_ctx;
     http_ctx.db = db;
-    http_ctx.chain = chain;
+    http_ctx.chain = http_chain;
     http_ctx.port = (uint16_t)port;
     http_ctx.stop = &g_stop;
+    http_ctx.db_lock = &db_lock;
 
     if (exp_http_serve(&http_ctx) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "exp_http_serve failed — requesting shutdown");
@@ -160,8 +192,10 @@ int main(int argc, char **argv) {
 
     pthread_join(sync_tid, NULL);
 
+    pthread_rwlock_destroy(&db_lock);
     exp_db_close(db);
     exp_chain_close(chain);
+    exp_chain_close(http_chain);
     QGP_LOG_INFO(LOG_TAG, "dna-explorerd shutting down");
     return 0;
 }

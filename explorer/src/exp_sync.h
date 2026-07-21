@@ -55,6 +55,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <pthread.h>
+
 #include "exp_chain.h"
 #include "exp_db.h"
 
@@ -81,12 +83,21 @@ extern "C" {
  *                 it aside and reopen fresh on a confirmed reset)
  * @param fsm      F4 chain-reset FSM state, persisted by the caller
  *                 across ticks
+ * @param db_lock  Task 7 (db-swap race): wrlock taken ONLY around the
+ *                 close->rename->reopen swap inside a CONFIRMED reset
+ *                 (handle_confirmed_reset) — normal-tick inserts on the
+ *                 unchanged *db handle need no app-level lock (FULLMUTEX,
+ *                 see exp_db.c, already serializes same-handle use safely
+ *                 against the HTTP thread's reads). NULL skips locking —
+ *                 the --once single-shot path (main.c) has no concurrent
+ *                 HTTP thread and passes NULL.
  * @return 0 on a tick that completed cleanly (including a no-op PENDING
  *         rotate or a handled CONFIRMED reset), -1 on any failure (already
  *         logged at ERROR) — the caller should just retry on the next
  *         poll, all internal watermarks are crash-safe.
  */
-int exp_sync_tick(exp_chain_t *chain, exp_db_t **db, const char *db_path, exp_reset_fsm_t *fsm);
+int exp_sync_tick(exp_chain_t *chain, exp_db_t **db, const char *db_path, exp_reset_fsm_t *fsm,
+                   pthread_rwlock_t *db_lock);
 
 /* Preseed `fsm`'s ref_chain_id from `db`'s "chain_id" meta blob, if one
  * is present and non-zero (rule 1). If no usable meta chain_id exists,
@@ -124,6 +135,12 @@ typedef struct {
     exp_db_t     **db;        /* pointer to the caller's db handle (rename-aside swap) */
     const char    *db_path;   /* filesystem path *db was opened from */
     volatile int  *stop;      /* set non-zero (e.g. from a signal handler) to request shutdown */
+
+    /* Task 7 (db-swap race): forwarded to every exp_sync_tick() call this
+     * thread makes — see exp_sync_tick's db_lock doc above. Same
+     * pthread_rwlock_t* the caller (main.c) also wires into
+     * exp_http_ctx_t.db_lock; NULL is a valid no-op value. */
+    pthread_rwlock_t *db_lock;
 } exp_sync_args_t;
 
 void *exp_sync_thread(void *arg);
