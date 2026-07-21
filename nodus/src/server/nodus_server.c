@@ -5801,6 +5801,19 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
     if (!srv || !config) return -1;
     memset(srv, 0, sizeof(*srv));
     srv->config = *config;
+    /* 2026-07-21 fd-leak fix: every resource acquired below is released on
+     * ANY later init failure (goto fail). Before this, a mid-init failure
+     * (e.g. a port bind lost to a concurrent process) leaked the already-
+     * bound listen sockets for the life of the process — observed as a test
+     * process holding TCP 15001 hostage after "server init failed". Flags
+     * (not nodus_server_close) because close() on the zeroed structs of
+     * never-initialized members would touch fd 0. */
+    bool have_bf = false, have_storage = false, have_media = false,
+         have_ch = false, have_tcp = false, have_udp = false,
+         have_inter = false, have_wtcp = false;
+#ifndef NODUS_CHANNELS_DISABLED
+    bool have_chsrv = false;
+#endif
 
     /* PR 3 / E5 — H-10 partial-wipe XOR boot gate. MUST run BEFORE
      * nodus_storage_open / nodus_channel_store_open below — those
@@ -5848,6 +5861,7 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
         fprintf(stderr, "Failed to create BF epoll fd\n");
         return -1;
     }
+    have_bf = true;
     for (int i = 0; i < NODUS_BF_FD_TABLE_SIZE; i++) {
         srv->bf_fd_table[i].batch_idx = -1;
         srv->bf_fd_table[i].forward_idx = -1;
@@ -5871,14 +5885,16 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
              config->data_path[0] ? config->data_path : "/tmp");
     if (nodus_storage_open(db_path, &srv->storage) != 0) {
         fprintf(stderr, "Failed to open storage: %s\n", db_path);
-        return -1;
+        goto fail;
     }
+    have_storage = true;
 
     /* Open media storage (shares same DB handle) */
     if (nodus_media_storage_open(srv->storage.db, &srv->media_storage) != 0) {
         fprintf(stderr, "Failed to open media storage\n");
-        return -1;
+        goto fail;
     }
+    have_media = true;
 
     /* Open channel storage */
     char ch_db_path[512];
@@ -5886,8 +5902,9 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
              config->data_path[0] ? config->data_path : "/tmp");
     if (nodus_channel_store_open(ch_db_path, &srv->ch_store) != 0) {
         fprintf(stderr, "Failed to open channel store: %s\n", ch_db_path);
-        return -1;
+        goto fail;
     }
+    have_ch = true;
 
     /* Register default channels (idempotent) */
     nodus_channel_store_register_defaults(&srv->ch_store);
@@ -5912,7 +5929,8 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
 
     /* Init TCP transport (own epoll) */
     if (nodus_tcp_init(&srv->tcp, -1) != 0)
-        return -1;
+        goto fail;
+    have_tcp = true;
     srv->tcp.on_accept = on_tcp_accept;
     srv->tcp.on_frame = on_tcp_frame;
     srv->tcp.on_disconnect = on_tcp_disconnect;
@@ -5920,7 +5938,8 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
 
     /* Init UDP transport (own epoll — udp_poll uses non-blocking recvfrom) */
     if (nodus_udp_init(&srv->udp, -1) != 0)
-        return -1;
+        goto fail;
+    have_udp = true;
     srv->udp.on_recv = handle_udp_message;
     srv->udp.cb_ctx = srv;
 
@@ -5930,10 +5949,11 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
     if (peer_port == config->tcp_port) {
         fprintf(stderr, "ERROR: peer_port (%d) must differ from tcp_port (%d)\n",
                 peer_port, config->tcp_port);
-        return -1;
+        goto fail;
     }
     if (nodus_tcp_init(&srv->inter_tcp, -1) != 0)
-        return -1;
+        goto fail;
+    have_inter = true;
     srv->inter_tcp.on_accept     = on_inter_accept;
     srv->inter_tcp.on_connect    = on_inter_connect;
     srv->inter_tcp.on_frame      = on_inter_frame;
@@ -5947,16 +5967,16 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
 
     /* Bind TCP (client port) */
     if (nodus_tcp_listen(&srv->tcp, config->bind_ip, config->tcp_port) != 0) {
-        fprintf(stderr, "Failed to listen on TCP %s:%d\n",
-                config->bind_ip, config->tcp_port);
-        return -1;
+        fprintf(stderr, "Failed to listen on TCP %s:%d (%s)\n",
+                config->bind_ip, config->tcp_port, strerror(errno));
+        goto fail;
     }
 
     /* Bind inter-node TCP (peer port) */
     if (nodus_tcp_listen(&srv->inter_tcp, config->bind_ip, peer_port) != 0) {
-        fprintf(stderr, "Failed to listen on inter-node TCP %s:%d\n",
-                config->bind_ip, peer_port);
-        return -1;
+        fprintf(stderr, "Failed to listen on inter-node TCP %s:%d (%s)\n",
+                config->bind_ip, peer_port, strerror(errno));
+        goto fail;
     }
 
     /* Channel server (TCP 4003) — DISABLED: heap corruption in ring/replication.
@@ -5964,7 +5984,8 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
      * Disabled until root cause is fixed. See commit history for re-enable. */
 #ifndef NODUS_CHANNELS_DISABLED
     if (nodus_channel_server_init(&srv->ch_server) != 0)
-        return -1;
+        goto fail;
+    have_chsrv = true;
 
     srv->ch_server.ch_store = &srv->ch_store;
     srv->ch_server.ring = &srv->ring;
@@ -5976,12 +5997,12 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
     if (ch_port == config->tcp_port || ch_port == peer_port) {
         fprintf(stderr, "ERROR: ch_port (%d) must differ from tcp_port (%d) and peer_port (%d)\n",
                 ch_port, config->tcp_port, peer_port);
-        return -1;
+        goto fail;
     }
     if (nodus_channel_server_listen(&srv->ch_server, config->bind_ip, ch_port) != 0) {
-        fprintf(stderr, "Failed to listen on channel TCP %s:%d\n",
-                config->bind_ip, ch_port);
-        return -1;
+        fprintf(stderr, "Failed to listen on channel TCP %s:%d (%s)\n",
+                config->bind_ip, ch_port, strerror(errno));
+        goto fail;
     }
 
     nodus_ch_replication_init(&srv->ch_replication, &srv->ch_server);
@@ -6004,18 +6025,19 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
         fprintf(stderr, "ERROR: witness_port (%d) must differ from tcp_port (%d), "
                 "peer_port (%d), and ch_port (%d)\n",
                 witness_port, config->tcp_port, peer_port, ch_port);
-        return -1;
+        goto fail;
     }
 #else
     if (witness_port == config->tcp_port || witness_port == peer_port) {
         fprintf(stderr, "ERROR: witness_port (%d) must differ from tcp_port (%d) "
                 "and peer_port (%d)\n",
                 witness_port, config->tcp_port, peer_port);
-        return -1;
+        goto fail;
     }
 #endif
     if (nodus_tcp_init(&srv->witness_tcp, -1) != 0)
-        return -1;
+        goto fail;
+    have_wtcp = true;
     srv->witness_tcp.on_accept     = on_witness_accept;
     srv->witness_tcp.on_connect    = on_witness_connect;
     srv->witness_tcp.on_frame      = on_witness_frame;
@@ -6026,16 +6048,16 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
     srv->witness_tcp.auth_ctx      = &srv->identity;
 
     if (nodus_tcp_listen(&srv->witness_tcp, config->bind_ip, witness_port) != 0) {
-        fprintf(stderr, "Failed to listen on witness TCP %s:%d\n",
-                config->bind_ip, witness_port);
-        return -1;
+        fprintf(stderr, "Failed to listen on witness TCP %s:%d (%s)\n",
+                config->bind_ip, witness_port, strerror(errno));
+        goto fail;
     }
 
     /* Bind UDP */
     if (nodus_udp_bind(&srv->udp, config->bind_ip, config->udp_port) != 0) {
-        fprintf(stderr, "Failed to bind UDP %s:%d\n",
-                config->bind_ip, config->udp_port);
-        return -1;
+        fprintf(stderr, "Failed to bind UDP %s:%d (%s)\n",
+                config->bind_ip, config->udp_port, strerror(errno));
+        goto fail;
     }
 
     /* Add seed nodes to cluster.
@@ -6056,7 +6078,7 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
     srv->witness = calloc(1, sizeof(nodus_witness_t));
     if (!srv->witness) {
         fprintf(stderr, "Failed to allocate witness context\n");
-        return -1;
+        goto fail;
     }
     srv->witness->tcp = &srv->witness_tcp;  /* Set before init (preserved across memset) */
     if (nodus_witness_init(srv->witness, srv, &config->witness) != 0) {
@@ -6071,6 +6093,28 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
     nodus_server_publish_identity(srv);
 
     return 0;
+
+fail:
+    /* Release everything acquired before the failure — a caller retry (or a
+     * failed test process kept alive by its harness) must not keep ports or
+     * DB handles hostage. Flag-guarded: never touches a member whose _init
+     * did not run (zeroed struct fds would alias fd 0). */
+#ifndef NODUS_CHANNELS_DISABLED
+    if (have_chsrv) nodus_channel_server_close(&srv->ch_server);
+#endif
+    if (have_wtcp) nodus_tcp_close(&srv->witness_tcp);
+    if (have_inter) nodus_tcp_close(&srv->inter_tcp);
+    if (have_udp) nodus_udp_close(&srv->udp);
+    if (have_tcp) nodus_tcp_close(&srv->tcp);
+    if (have_ch) nodus_channel_store_close(&srv->ch_store);
+    if (have_media) nodus_media_storage_close(&srv->media_storage);
+    if (have_storage) nodus_storage_close(&srv->storage);
+    if (have_bf) {
+        close(srv->bf_state.bf_epoll_fd);
+        srv->bf_state.bf_epoll_fd = -1;
+    }
+    nodus_identity_clear(&srv->identity);
+    return -1;
 }
 
 int nodus_server_run(nodus_server_t *srv) {

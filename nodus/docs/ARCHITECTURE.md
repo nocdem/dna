@@ -676,6 +676,27 @@ Identity files on disk:
 - `nodus.sk` — secret key (4,896 bytes, binary)
 - `nodus.fp` — fingerprint (128 hex chars + newline)
 
+### Shielded ZK verify stack (Phase-C C1, 2026-07-21 — linked, not yet called)
+
+The server-side (non-WIN32) build compiles the pinned shielded-pool STARK/FRI
+verify stack from `shared/crypto/zk` into `libnodus.a` (12 files: wire codec
+v2 + FRI verifier + SHA3-512 transcript/sponge + Merkle-MMCS + Goldilocks
+field). Entry point: `dnac_fri_verify_wire_shielded` — verifies a shielded
+proof's WIRE bytes against the consensus-pinned FRI params
+(`shielded_fri_params.h`: log_blowup 2, 100 queries, 16-bit query-PoW →
+216-bit conjectured) and the pinned committed trace height (2^11).
+
+- **Status:** LINKAGE ONLY. No witness code calls it yet — the witness verify
+  hook (admission + wire-recomputed publics + `tx_binding` check) is Phase-C
+  C2 (`dnac/docs/plans/2026-07-17-dm-s6-roadmap.md`). Consensus behavior is
+  unchanged by C1.
+- **M5 gate:** the unpinned `dnac_fri_verify_wire` (trusts wire params —
+  test-only) is compiled ONLY under `DNAC_ZK_ENABLE_TEST_WIRE`, which only
+  the zk standalone Makefile defines; `nm libnodus.a` shows no such symbol.
+- **Test:** `test_zk_link` pulls the full verify chain out of the archive
+  (missing-source = link error) and pins the six shielded params.
+- Prover-side zk sources (client/wallet) are NOT in nodus.
+
 ---
 
 ## 8. Cluster Membership

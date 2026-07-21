@@ -661,6 +661,8 @@ const dnac_fri_commitment_with_opening_points_t *dnac_fri_wire_commitments(
     return pkg->commitments;
 }
 
+#ifdef DNAC_ZK_ENABLE_TEST_WIRE
+/* M5 gate: test-only — see the header. Absent from consensus builds. */
 dnac_fri_codec_status_t dnac_fri_verify_wire(
     const uint8_t        *buf,
     size_t                len,
@@ -679,6 +681,7 @@ dnac_fri_codec_status_t dnac_fri_verify_wire(
     dnac_fri_wire_free(pkg);
     return DNAC_FRI_CODEC_OK;
 }
+#endif /* DNAC_ZK_ENABLE_TEST_WIRE */
 
 dnac_fri_codec_status_t dnac_fri_verify_wire_shielded(
     const uint8_t        *buf,

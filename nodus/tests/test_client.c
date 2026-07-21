@@ -39,9 +39,17 @@ static void *server_thread(void *arg) {
     nodus_server_config_t config;
     memset(&config, 0, sizeof(config));
     snprintf(config.bind_ip, sizeof(config.bind_ip), "127.0.0.1");
-    config.udp_port = 15000;
-    config.tcp_port = 15001;
-    config.ch_port  = 15003;
+    /* 2026-07-21: FULLY explicit + UNIQUE port set. Leaving peer_port/
+     * witness_port at 0 makes nodus_server_init bind the PRODUCTION defaults
+     * (4002/4004) — every server-spawning test that did that collided under
+     * `ctest -j` (test_client vs test_circuit_live vs test_server), and the
+     * loser's init failure turned into a silent infinite hang (see the
+     * bounded wait in main). 151xx is unique to THIS test. */
+    config.udp_port = 15100;
+    config.tcp_port = 15101;
+    config.peer_port = 15102;
+    config.ch_port  = 15103;
+    config.witness_port = 15104;
     snprintf(config.data_path, sizeof(config.data_path),
              "/tmp/nodus_client_test_%d", getpid());
 
@@ -142,7 +150,7 @@ static void test_init(void) {
     nodus_client_config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
     snprintf(cfg.servers[0].ip, sizeof(cfg.servers[0].ip), "127.0.0.1");
-    cfg.servers[0].port = 15001;
+    cfg.servers[0].port = 15101;
     cfg.server_count = 1;
     cfg.auto_reconnect = true;
     cfg.on_value_changed = on_value_changed;
@@ -243,7 +251,7 @@ static void test_listen(void) {
     nodus_client_config_t cfg2;
     memset(&cfg2, 0, sizeof(cfg2));
     snprintf(cfg2.servers[0].ip, sizeof(cfg2.servers[0].ip), "127.0.0.1");
-    cfg2.servers[0].port = 15001;
+    cfg2.servers[0].port = 15101;
     cfg2.server_count = 1;
     nodus_client_init(&client2, &cfg2, &id2);
     nodus_client_connect(&client2);
@@ -284,7 +292,7 @@ static void test_unlisten(void) {
     else FAIL("unlisten failed");
 }
 
-/* ── Channel tests (via nodus_ch_conn_t on TCP 15003) ──────────── */
+/* ── Channel tests (via nodus_ch_conn_t on TCP 15103) ──────────── */
 
 static uint8_t test_ch_uuid[NODUS_UUID_BYTES];
 static nodus_ch_conn_t ch_conn;
@@ -299,7 +307,7 @@ static void on_ch_conn_post(const uint8_t channel_uuid[NODUS_UUID_BYTES],
 
 static void test_ch_connect(void) {
     TEST("ch_conn connects to channel port");
-    int rc = nodus_channel_init(&ch_conn, "127.0.0.1", 15003,
+    int rc = nodus_channel_init(&ch_conn, "127.0.0.1", 15103,
                                  &client_id, on_ch_conn_post, NULL);
     if (rc != 0) { FAIL("ch_conn init failed"); return; }
     rc = nodus_channel_connect(&ch_conn);
@@ -362,7 +370,7 @@ static void test_ch_subscribe_notify(void) {
     nodus_identity_t id2;
     nodus_identity_generate(&id2);
 
-    nodus_channel_init(&ch2, "127.0.0.1", 15003, &id2, NULL, NULL);
+    nodus_channel_init(&ch2, "127.0.0.1", 15103, &id2, NULL, NULL);
     rc = nodus_channel_connect(&ch2);
     if (rc != 0) { FAIL("ch2 connect failed"); nodus_identity_clear(&id2); return; }
 
@@ -425,7 +433,7 @@ static void test_failover_bad_server(void) {
     cfg.servers[0].port = 19999;
     /* Server 1: the real server */
     snprintf(cfg.servers[1].ip, sizeof(cfg.servers[1].ip), "127.0.0.1");
-    cfg.servers[1].port = 15001;
+    cfg.servers[1].port = 15101;
     cfg.server_count = 2;
     cfg.connect_timeout_ms = 1000;
 
@@ -446,10 +454,25 @@ static void test_failover_bad_server(void) {
 int main(void) {
     printf("=== Nodus Client SDK Test ===\n\n");
 
-    /* Start server */
+    /* Start server. BOUNDED wait (2026-07-21): the old unbounded
+     * `while (!server_ready)` loop turned any server-init failure into a
+     * silent infinite hang (observed: 25+ min under `ctest -j` when a port
+     * bind lost a race). Mirror test_circuit_live: 5 s, then FAIL loudly. */
     pthread_t srv_tid;
     pthread_create(&srv_tid, NULL, server_thread, NULL);
-    while (!server_ready) usleep(10000);
+    {
+        int waited_ms = 0;
+        while (!server_ready && waited_ms < 5000) {
+            usleep(10000);
+            waited_ms += 10;
+        }
+        if (!server_ready) {
+            fprintf(stderr,
+                    "FATAL: test server did not come up within 5 s "
+                    "(server init failed — see stderr above)\n");
+            return 1;
+        }
+    }
     usleep(100000);  /* Let server settle */
 
     /* Run tests */

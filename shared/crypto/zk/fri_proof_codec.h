@@ -139,16 +139,25 @@ void dnac_fri_wire_free(dnac_fri_wire_package_t *pkg);
  * Convenience wrapper: decode + dnac_fri_verify + free. Does NOT replace
  * dnac_fri_verify and does NOT touch dnac_fri_status_t.
  *
+ * ⚠ TEST-ONLY (M5 gate, Phase-C C1 2026-07-21): this entry TRUSTS the
+ * wire-decoded FRI params — correct only for the parked B1/test paths at
+ * their own test params. It MUST NOT be reachable from consensus code: it is
+ * compiled ONLY under DNAC_ZK_ENABLE_TEST_WIRE, which only the zk standalone
+ * Makefile defines. Consensus builds (libnodus/libdna) get ONLY the pinned
+ * dnac_fri_verify_wire_shielded below.
+ *
  * Returns the CODEC status. If it is DNAC_FRI_CODEC_OK, *out_fri_status receives
  * the dnac_fri_verify result (computed on the decoded structs with the supplied,
  * externally-primed transcript). If decode fails, *out_fri_status is left
  * unchanged and the caller must inspect the returned codec status.
  * ========================================================================== */
+#ifdef DNAC_ZK_ENABLE_TEST_WIRE
 dnac_fri_codec_status_t dnac_fri_verify_wire(
     const uint8_t        *buf,
     size_t                len,
     dnac_transcript_t    *transcript,
     dnac_fri_status_t    *out_fri_status);
+#endif
 
 /* ============================================================================
  * SHIELDED (consensus) verify — the hardened entry point (S0/C5, EXISTENTIAL).

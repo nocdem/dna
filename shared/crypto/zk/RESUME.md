@@ -32,12 +32,25 @@
   a major future track, aligned with the roadmap's "100 TPS = Cosmos migration
   2027+, not near-term." The C prover perf is NOT the 1-TPS blocker; B1 binding
   + production params are.
-- **Parked, NOT in consensus.** `grep` confirms zero references to
-  `shared/crypto/zk` from any CMakeLists (messenger/nodus/dnac) — it is compiled
-  ONLY by its own standalone `Makefile`, not into `libdna.so`/`nodus-server`.
-  Money conservation on the live chain is enforced by the native cleartext
-  witness check (`verify.c` Check 4); this ZK stack is ADDITIVE (v3 ships
-  transparent, hidden amounts are v4).
+- **LINKED into the nodus build (Phase-C C1, 2026-07-21) — but NOT yet CALLED
+  by consensus.** The Phase-C gate was opened by the user 2026-07-21. C1 added
+  the pinned shielded verify stack (codec v2 + FRI verifier + transcript/
+  sponge + Merkle + field, 12 files) to `nodus/CMakeLists.txt` (the messenger
+  tree inherits it via `add_subdirectory(nodus)` / libnodus.a — single link
+  site, no dup symbols). LINKAGE ONLY: nothing in the witness calls it yet
+  (that is C2), so consensus behavior is unchanged and no version was bumped.
+  Gates: `nodus/tests/test_zk_link.c` (pulls the whole
+  `dnac_fri_verify_wire_shielded` chain out of libnodus.a + pins the six
+  shielded params from the nodus side); **M5 CLOSED** — the unpinned
+  `dnac_fri_verify_wire` is compiled ONLY under `DNAC_ZK_ENABLE_TEST_WIRE`
+  (zk standalone Makefile), `nm libnodus.a` proves the symbol absent.
+  Prover-side sources are deliberately NOT in nodus (client/wallet side, S7).
+  Money conservation on the live chain is still enforced by the native
+  cleartext witness check (`verify.c` Check 4); the ZK stack stays ADDITIVE
+  until C2/C3 (shielded pool, state_root v4 — BREAKING, own approvals).
+  Remaining Phase-C order (user decisions 2026-07-21: ak/nk multi-lane FIRST;
+  prune/heartbeat NOT bundled): **C1 ✅ → F3 ak/nk multi-lane → C2 witness
+  verify → C3 state_root v4 (minimal) → C4 Genesis 7/7.**
 - **B1 CONFIDENTIAL AMOUNTS — 🎯 STAGE-2 (is_zk=1, num_qc=8) COMPLETE (2026-07-15).**
   Design: `dnac/docs/plans/2026-07-14-b1-confidential-amounts-design-v3.md` (v3.1,
   local-only) + memory `project_v3_zk_implementation_progress` (▶ current). Stage-1

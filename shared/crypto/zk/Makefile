@@ -27,6 +27,10 @@
 
 CC      ?= gcc
 CFLAGS  ?= -std=c99 -O2 -Wall -Wextra -Wno-unused-parameter
+# M5 gate (Phase-C C1): the unpinned dnac_fri_verify_wire test entry exists
+# ONLY in this standalone test build — consensus builds (nodus/messenger
+# CMake) do not define this, so the symbol cannot be reached from consensus.
+CFLAGS  += -DDNAC_ZK_ENABLE_TEST_WIRE
 INCLUDES = -I. -I/opt/dna/shared
 LDLIBS   = -lcrypto
 

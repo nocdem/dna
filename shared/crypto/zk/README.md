@@ -16,7 +16,7 @@ v4 plan: `docs/plans/2026-06-09-v4-confidential-northstar-design.md`.
 ### Where we are (one glance)
 - **Built + grounded + audited:** a complete STARK *verifier* stack + range/balance AIR, every public function oracle byte-matched against Plonky3 (pin `82cfad73`), then hardened by a 2026-07 soundness campaign (13+13+4 subagent audits + 18-member council). `make clean && make test` GREEN, **36 gates**, 0 warnings.
 - **Mode = ADDITIVE only:** amounts are **cleartext**; the proof is *redundant* with the witness's native balance check (`nodus/src/witness/nodus_witness_verify.c:672-783` Check 4, native u64, overflow guard `:719`). **No privacy yet.**
-- **Not linked into consensus:** `shared/crypto/zk` is a standalone Makefile — zero references in `nodus/src` / `dnac/src` (grep-confirmed). Nothing here runs in production.
+- **Linked into the nodus build but NOT yet called by consensus (Phase-C C1, 2026-07-21):** the pinned shielded verify stack (`dnac_fri_verify_wire_shielded` chain) is compiled into `libnodus.a` (`nodus/CMakeLists.txt`; messenger inherits via the nodus subtree). No witness code calls it yet — that lands at C2. The unpinned test entry `dnac_fri_verify_wire` is compiled ONLY under `DNAC_ZK_ENABLE_TEST_WIRE` (this Makefile) and is absent from consensus builds (M5 gate, `nm`-proven). Prover sources remain standalone-only (wallet side, S7).
 - **Confidential (hidden amounts) = DEFERRED to v4.**
 
 ### Decisions & WHY (the load-bearing part)

@@ -159,6 +159,32 @@ if(NOT WIN32)
         src/witness/nodus_witness_chain_config.c
         src/witness/nodus_witness_bootstrap.c
     )
+
+    # ── Phase-C C1 (2026-07-21): shielded-pool ZK verify stack ─────────
+    # The pinned consensus verify entry dnac_fri_verify_wire_shielded and
+    # everything it links (wire codec v2, FRI verifier, SHA3-512 transcript/
+    # sponge, Merkle-MMCS, Goldilocks field). LINKAGE ONLY — no consensus
+    # behavior change; the witness starts CALLING it at C2 (S6 roadmap).
+    # The unpinned test entry dnac_fri_verify_wire is compiled OUT here
+    # (M5 gate: it exists only under DNAC_ZK_ENABLE_TEST_WIRE, which only
+    # the zk standalone Makefile defines).
+    # Prover-side sources (stark_prover*.c, zk_entropy.c) are deliberately
+    # NOT here — proving is client-side (wallet, S7) and zk_entropy.c is
+    # Linux-only; the verify stack below is portable C.
+    list(APPEND NODUS_SOURCES
+        ${SHARED_DIR}/crypto/zk/fri_proof_codec.c
+        ${SHARED_DIR}/crypto/zk/shielded_fri_params.c
+        ${SHARED_DIR}/crypto/zk/fri_verifier.c
+        ${SHARED_DIR}/crypto/zk/fri_fold.c
+        ${SHARED_DIR}/crypto/zk/merkle_smt.c
+        ${SHARED_DIR}/crypto/zk/zk_field_helpers.c
+        ${SHARED_DIR}/crypto/zk/field_goldilocks.c
+        ${SHARED_DIR}/crypto/zk/transcript.c
+        ${SHARED_DIR}/crypto/zk/sponge_sha3_512.c
+        ${SHARED_DIR}/crypto/zk/keccak_p3_cols.c
+        ${SHARED_DIR}/crypto/zk/keccak_p3_trace.c
+        ${SHARED_DIR}/crypto/zk/keccak_ref.c
+    )
 endif()
 
 # Log shim — only needed standalone (messenger tree has the real qgp_log.c)
@@ -178,6 +204,12 @@ target_include_directories(nodus PUBLIC
     ${SHARED_DIR}/crypto
     ${MONOREPO_ROOT}/dnac/include
 )
+# Phase-C C1: zk headers use flat same-dir includes ("fri_verifier.h") — keep
+# the dir PRIVATE so generic names (transcript.h, ...) cannot shadow anything
+# for nodus consumers; witness sources include them explicitly at C2.
+if(NOT WIN32)
+    target_include_directories(nodus PRIVATE ${SHARED_DIR}/crypto/zk)
+endif()
 # OpenSSL and SQLite3 include dirs — needed regardless of standalone mode.
 # When standalone, find_package above sets these. When within messenger tree,
 # the parent CMakeLists.txt already called find_package and vars propagate.
@@ -283,6 +315,14 @@ endfunction()
 add_executable(test_cbor tests/test_cbor.c)
 target_link_libraries(test_cbor nodus)
 add_test(NAME test_cbor COMMAND test_cbor)
+
+# Phase-C C1 — shielded ZK verify stack linkage gate (pulls the whole
+# dnac_fri_verify_wire_shielded chain out of libnodus.a; a missing zk
+# source in NODUS_SOURCES is a LINK error here, not a C2 surprise).
+add_executable(test_zk_link tests/test_zk_link.c)
+target_link_libraries(test_zk_link nodus dsa nodus)
+target_include_directories(test_zk_link PRIVATE ${SHARED_DIR}/crypto/zk)
+add_test(NAME test_zk_link COMMAND test_zk_link)
 
 # C2 domain separation test (needs extra nodus for dsa -> qgp_randombytes -> nodus circular dep)
 add_executable(test_sign_domain_separation tests/test_sign_domain_separation.c)
@@ -427,6 +467,19 @@ add_test(NAME test_server COMMAND test_server)
 add_executable(test_client tests/test_client.c)
 target_link_libraries(test_client nodus dsa nodus pthread)
 add_test(NAME test_client COMMAND test_client)
+
+# 2026-07-21 parallel-safety: every server-spawning test now uses a FULLY
+# explicit, test-unique port set (test_server 140xx, test_circuit_live
+# 150xx, test_client 151xx, test_server_init_fail_closes 152xx,
+# test_circuit_cross_live 16xxx/17xxx) — an unset peer/witness port made
+# nodus_server_init bind the production defaults 4002/4004, which collided
+# under `ctest -j`. No shared ports remain, so no RESOURCE_LOCK is needed.
+
+# Regression: nodus_server_init partial-failure must release everything it
+# acquired (fd-leak fix; a leaked LISTEN socket held ports hostage).
+add_executable(test_server_init_fail_closes tests/test_server_init_fail_closes.c)
+target_link_libraries(test_server_init_fail_closes nodus dsa nodus)
+add_test(NAME test_server_init_fail_closes COMMAND test_server_init_fail_closes)
 
 # Presence table + protocol test
 add_executable(test_presence tests/test_presence.c)

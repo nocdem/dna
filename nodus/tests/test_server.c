@@ -42,7 +42,12 @@ static void *server_thread(void *arg) {
     snprintf(config.bind_ip, sizeof(config.bind_ip), "127.0.0.1");
     config.udp_port = 14000;
     config.tcp_port = 14001;
+    /* 2026-07-21: explicit peer/witness ports — unset (0) would bind the
+     * PRODUCTION defaults 4002/4004 and collide with every other
+     * server-spawning test under `ctest -j` (see test_client.c). */
+    config.peer_port = 14002;
     config.ch_port  = 14003;
+    config.witness_port = 14004;
     snprintf(config.data_path, sizeof(config.data_path), "/tmp/nodus_test_%d", getpid());
 
     /* Create data dir */
