@@ -393,20 +393,44 @@
     return tr;
   }
 
+  /* Blocks pagination state: lowest height currently in the table, and
+   * whether the user paged past the first 25 (auto-refresh must not
+   * clobber a deep view — it only refreshes while on page one). */
+  var blocksLowest = null;
+  var blocksPaged = false;
+
+  function appendBlockRows(tbody, blocks) {
+    blocks.forEach(function (b) {
+      tbody.appendChild(blockRow(b));
+      if (blocksLowest === null || b.height < blocksLowest) blocksLowest = b.height;
+    });
+  }
+
+  function updateBlocksMoreBtn(lastPageLen) {
+    var btn = document.getElementById('blocks-more');
+    if (!btn) return;
+    /* Genesis commits at height 1 — nothing below it to load. */
+    var done = lastPageLen < 25 || (blocksLowest !== null && blocksLowest <= 1);
+    btn.classList.toggle('hidden', done);
+    btn.disabled = false;
+    btn.textContent = 'Load more blocks';
+  }
+
   function loadLatestBlocks() {
     var tbody = document.getElementById('blocks-tbody');
     if (!tbody) return Promise.resolve();
+    if (blocksPaged) return Promise.resolve(); /* keep the user's deep view */
     return fetchJson('/api/blocks?limit=25')
       .then(function (body) {
         clear(tbody);
+        blocksLowest = null;
         var blocks = (body && body.blocks) || [];
         if (blocks.length === 0) {
           tbody.appendChild(el('tr', {}, el('td', { colspan: '4', class: 'muted', text: 'No blocks indexed yet.' })));
           return;
         }
-        blocks.forEach(function (b) {
-          tbody.appendChild(blockRow(b));
-        });
+        appendBlockRows(tbody, blocks);
+        updateBlocksMoreBtn(blocks.length);
       })
       .catch(function (err) {
         clear(tbody);
@@ -418,9 +442,31 @@
       });
   }
 
+  function loadMoreBlocks() {
+    var tbody = document.getElementById('blocks-tbody');
+    var btn = document.getElementById('blocks-more');
+    if (!tbody || !btn || blocksLowest === null) return;
+    btn.disabled = true;
+    btn.textContent = 'Loading…';
+    fetchJson('/api/blocks?before=' + blocksLowest + '&limit=25')
+      .then(function (body) {
+        blocksPaged = true;
+        var blocks = (body && body.blocks) || [];
+        appendBlockRows(tbody, blocks);
+        updateBlocksMoreBtn(blocks.length);
+      })
+      .catch(function () {
+        /* transient failure: re-enable so the user can retry */
+        btn.disabled = false;
+        btn.textContent = 'Load more blocks';
+      });
+  }
+
   function initIndexPage() {
     loadStats();
     loadLatestBlocks();
+    var moreBtn = document.getElementById('blocks-more');
+    if (moreBtn) moreBtn.addEventListener('click', loadMoreBlocks);
     setInterval(function () {
       loadStats();
       loadLatestBlocks();
