@@ -32,6 +32,16 @@ static void fill(uint8_t *buf, size_t n, uint8_t v) {
     memset(buf, v, n);
 }
 
+/* fix round 1: exp_extract_tx now rejects owner_fingerprint blobs that
+ * aren't exactly 128 lowercase-hex chars + NUL (see exp_extract.c). Build
+ * valid-format test fingerprints (128 repeats of one hex char + NUL) rather
+ * than hand-typing a 128-char literal, which is easy to miscount. `fp_out`
+ * must have room for 129 bytes. */
+static void set_test_fp(char *fp_out, char hexchar) {
+    memset(fp_out, hexchar, 128);
+    fp_out[128] = '\0';
+}
+
 /* ── t1: open creates schema; meta roundtrip u64 + blob ────────────── */
 
 static void test_meta_roundtrip(void) {
@@ -472,14 +482,21 @@ static void test_extract_basic_mapping(void) {
     tx.inputs[0].amount = 700;
     /* token_id left zero == native DNAC */
 
+    /* fix round 1: owner_fingerprint is now validated as exactly 128
+     * lowercase-hex chars + NUL (see exp_extract.c) — use valid-format
+     * fixtures rather than arbitrary strings. */
+    char fp_one[129], fp_two[129];
+    set_test_fp(fp_one, '1');
+    set_test_fp(fp_two, '2');
+
     tx.output_count = 2;
     tx.outputs[0].version = 1;
-    strcpy(tx.outputs[0].owner_fingerprint, "recipient_fp_one");
+    strcpy(tx.outputs[0].owner_fingerprint, fp_one);
     tx.outputs[0].amount = 300;
     /* token_id left zero == native DNAC */
 
     tx.outputs[1].version = 1;
-    strcpy(tx.outputs[1].owner_fingerprint, "recipient_fp_two");
+    strcpy(tx.outputs[1].owner_fingerprint, fp_two);
     tx.outputs[1].amount = 400;
     fill(tx.outputs[1].token_id, DNAC_TOKEN_ID_SIZE, 0xBB);
 
@@ -532,14 +549,14 @@ static void test_extract_basic_mapping(void) {
         FAIL("ios[1] output0 fields mismatch");
         return;
     }
-    if (strcmp(ios[1].address, "recipient_fp_one") != 0) { FAIL("ios[1] address mismatch"); return; }
+    if (strcmp(ios[1].address, fp_one) != 0) { FAIL("ios[1] address mismatch"); return; }
 
     /* io[2]: output 1 */
     if (ios[2].direction != 1 || ios[2].io_index != 1 || ios[2].amount != 400) {
         FAIL("ios[2] output1 fields mismatch");
         return;
     }
-    if (strcmp(ios[2].address, "recipient_fp_two") != 0) { FAIL("ios[2] address mismatch"); return; }
+    if (strcmp(ios[2].address, fp_two) != 0) { FAIL("ios[2] address mismatch"); return; }
     if (memcmp(ios[2].token_id, tx.outputs[1].token_id, 64) != 0) { FAIL("ios[2] token_id mismatch"); return; }
 
     PASS();
@@ -563,9 +580,14 @@ static void test_extract_multi_signer(void) {
     fill(tx.inputs[1].nullifier, DNAC_NULLIFIER_SIZE, 0x02);
     tx.inputs[1].amount = 222;
 
+    /* fix round 1: owner_fingerprint is now validated as exactly 128
+     * lowercase-hex chars + NUL (see exp_extract.c). */
+    char fp_multi[129];
+    set_test_fp(fp_multi, '3');
+
     tx.output_count = 1;
     tx.outputs[0].version = 1;
-    strcpy(tx.outputs[0].owner_fingerprint, "recipient_fp_multi");
+    strcpy(tx.outputs[0].owner_fingerprint, fp_multi);
     tx.outputs[0].amount = 300;
 
     tx.signer_count = 2;
@@ -690,6 +712,56 @@ static void test_extract_signer_count_zero(void) {
     PASS();
 }
 
+/* ── Fix round 1 regression: hostile owner_fingerprint rejected ────── */
+static void test_extract_rejects_malformed_output_fingerprint(void) {
+    TEST("exp_extract_tx rejects non-hex/unterminated owner_fingerprint");
+
+    dnac_transaction_t tx;
+    memset(&tx, 0, sizeof(tx));
+
+    tx.version = DNAC_PROTOCOL_VERSION;
+    tx.type = DNAC_TX_SPEND;
+    tx.timestamp = 135791113ULL;
+    fill(tx.tx_hash, DNAC_TX_HASH_SIZE, 0xFF);
+    tx.committed_fee = 12345ULL;
+
+    tx.input_count = 1;
+    fill(tx.inputs[0].nullifier, DNAC_NULLIFIER_SIZE, 0x04);
+    tx.inputs[0].amount = 900;
+
+    /* Hostile output: 129 raw bytes, all 'A' — valid length (129) but no
+     * NUL within the field and not lowercase hex. This is the exact shape
+     * dnac_tx_deserialize accepts as an unvalidated blob (see finding:
+     * exp_extract.c pre-fix memcpy'd this straight into row->address,
+     * which exp_db.c then binds with strlen-based sqlite3_bind_text —
+     * OOB read on a hostile TX). */
+    tx.output_count = 1;
+    tx.outputs[0].version = 1;
+    memset(tx.outputs[0].owner_fingerprint, 'A', 129);
+    tx.outputs[0].amount = 50;
+
+    tx.signer_count = 1;
+    fill(tx.signers[0].pubkey, DNAC_PUBKEY_SIZE, 0x11);
+    fill(tx.signers[0].signature, DNAC_SIGNATURE_SIZE, 0x00);
+
+    uint8_t buf[EXP_TEST_TX_BUF_SIZE];
+    size_t written = 0;
+    if (dnac_tx_serialize(&tx, buf, sizeof(buf), &written) != DNAC_SUCCESS) {
+        FAIL("dnac_tx_serialize failed");
+        return;
+    }
+
+    exp_tx_row_t tx_row;
+    exp_io_row_t ios[8];
+    int io_count = -1;
+    if (exp_extract_tx(buf, written, 1, 1, &tx_row, ios, 8, &io_count) == 0) {
+        FAIL("exp_extract_tx should reject malformed owner_fingerprint");
+        return;
+    }
+
+    PASS();
+}
+
 int main(void) {
     printf("=== DNA Explorer exp_db Tests ===\n");
 
@@ -702,6 +774,7 @@ int main(void) {
     test_extract_multi_signer();
     test_signer_fingerprint_kat();
     test_extract_signer_count_zero();
+    test_extract_rejects_malformed_output_fingerprint();
 
     printf("\n=== Results: %d passed, %d failed ===\n", passed, failed);
     return failed > 0 ? 1 : 0;

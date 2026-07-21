@@ -80,7 +80,34 @@ int exp_extract_tx(const uint8_t *raw, size_t raw_len,
         memcpy(row->tx_hash, tx->tx_hash, sizeof(row->tx_hash));
         row->io_index  = i;
         row->direction = 1;
-        memcpy(row->address, tx->outputs[i].owner_fingerprint, sizeof(row->address));
+
+        /* WARNING (fix round 1): owner_fingerprint is a raw 129-byte wire
+         * blob — dnac_tx_deserialize reads it verbatim with no NUL or
+         * charset guarantee. exp_db.c binds row->address with
+         * sqlite3_bind_text(..., -1, ...) (strlen-based); an unterminated
+         * or non-hex blob here is an OOB read + garbage row downstream on a
+         * hostile TX. Reject at this extraction boundary rather than
+         * sanitize: require exactly 128 lowercase-hex chars terminated by
+         * NUL at index 128, matching the project's fingerprint format (see
+         * the accepted-charset loop in dnac/src/wallet/wallet.c:382-388).
+         * The all-zero burn address ("000...0") is valid 128 hex zeros and
+         * is intentionally NOT special-cased here. */
+        const char *fp = tx->outputs[i].owner_fingerprint;
+        if (fp[128] != '\0' || strlen(fp) != 128) {
+            QGP_LOG_ERROR(LOG_TAG, "output[%d] owner_fingerprint not NUL-terminated at 128 or wrong length", i);
+            dnac_tx_free(tx);
+            return -1;
+        }
+        for (int c = 0; c < 128; c++) {
+            char ch = fp[c];
+            if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'))) {
+                QGP_LOG_ERROR(LOG_TAG, "output[%d] owner_fingerprint invalid char '%c' at position %d", i, ch, c);
+                dnac_tx_free(tx);
+                return -1;
+            }
+        }
+        memcpy(row->address, fp, sizeof(row->address));
+
         memcpy(row->token_id, tx->outputs[i].token_id, sizeof(row->token_id));
         row->amount = tx->outputs[i].amount;
     }
