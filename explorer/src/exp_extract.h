@@ -38,7 +38,11 @@ extern "C" {
  *
  * Fails (-1) on: deserialize failure, signer_count == 0 (defensive — a
  * malformed-but-deserializable TX has no signer to attribute inputs to),
- * or input_count + output_count > max_ios.
+ * a malformed output owner_fingerprint (must be exactly 128 lowercase-hex
+ * chars terminated by NUL at index 128 — checked in a pre-pass over all
+ * outputs before any tx_row/ios write, so the untouched-on-failure
+ * guarantee below holds for this case too), or
+ * input_count + output_count > max_ios.
  *
  * @param raw          serialized TX bytes (wire format)
  * @param raw_len      length of raw in bytes

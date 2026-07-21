@@ -762,6 +762,55 @@ static void test_extract_rejects_malformed_output_fingerprint(void) {
     PASS();
 }
 
+/* ── Fix round 2 regression: charset branch specifically ────────────── */
+static void test_extract_rejects_non_hex_charset_output_fingerprint(void) {
+    TEST("exp_extract_tx rejects output fingerprint failing charset check");
+
+    dnac_transaction_t tx;
+    memset(&tx, 0, sizeof(tx));
+
+    tx.version = DNAC_PROTOCOL_VERSION;
+    tx.type = DNAC_TX_SPEND;
+    tx.timestamp = 246813579ULL;
+    fill(tx.tx_hash, DNAC_TX_HASH_SIZE, 0x77);
+    tx.committed_fee = 6789ULL;
+
+    tx.input_count = 1;
+    fill(tx.inputs[0].nullifier, DNAC_NULLIFIER_SIZE, 0x05);
+    tx.inputs[0].amount = 400;
+
+    /* Output fingerprint: 128 x 'A' + NUL at [128] — passes the NUL@128
+     * and strlen==128 checks but fails the lowercase-hex charset loop
+     * ('A' is uppercase, not in [0-9a-f]). This exercises the charset
+     * rejection branch specifically, distinct from the round-1 test's
+     * unterminated/wrong-length 129-byte blob. */
+    tx.output_count = 1;
+    tx.outputs[0].version = 1;
+    set_test_fp(tx.outputs[0].owner_fingerprint, 'A');
+    tx.outputs[0].amount = 25;
+
+    tx.signer_count = 1;
+    fill(tx.signers[0].pubkey, DNAC_PUBKEY_SIZE, 0x22);
+    fill(tx.signers[0].signature, DNAC_SIGNATURE_SIZE, 0x00);
+
+    uint8_t buf[EXP_TEST_TX_BUF_SIZE];
+    size_t written = 0;
+    if (dnac_tx_serialize(&tx, buf, sizeof(buf), &written) != DNAC_SUCCESS) {
+        FAIL("dnac_tx_serialize failed");
+        return;
+    }
+
+    exp_tx_row_t tx_row;
+    exp_io_row_t ios[8];
+    int io_count = -1;
+    if (exp_extract_tx(buf, written, 1, 1, &tx_row, ios, 8, &io_count) == 0) {
+        FAIL("exp_extract_tx should reject non-hex-charset owner_fingerprint");
+        return;
+    }
+
+    PASS();
+}
+
 int main(void) {
     printf("=== DNA Explorer exp_db Tests ===\n");
 
@@ -775,6 +824,7 @@ int main(void) {
     test_signer_fingerprint_kat();
     test_extract_signer_count_zero();
     test_extract_rejects_malformed_output_fingerprint();
+    test_extract_rejects_non_hex_charset_output_fingerprint();
 
     printf("\n=== Results: %d passed, %d failed ===\n", passed, failed);
     return failed > 0 ? 1 : 0;
