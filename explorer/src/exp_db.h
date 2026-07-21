@@ -26,9 +26,12 @@
  *     page by passing the smallest key seen in the previous page as the
  *     next cursor. Cursor values are bound to sqlite as signed 64-bit
  *     (`sqlite3_bind_int64`); heights/seqs are always non-negative and
- *     far below 2^63 in practice, but a caller-supplied cursor at or above
- *     2^63 (e.g. `UINT64_MAX`) wraps to negative and silently matches
- *     nothing — stay at or below `INT64_MAX`.
+ *     far below 2^63 in practice. A caller-supplied cursor at or above
+ *     2^63 is defensively clamped to `INT64_MAX` before binding (see
+ *     `exp_db.c:376` / `exp_db.c:643`) rather than left to wrap negative —
+ *     callers may pass `UINT64_MAX` as the "no cursor" / most-recent-page
+ *     default (`exp_http.c` does) and the clamp makes that start from the
+ *     top instead of matching nothing.
  *
  * Determinism (PRIMARY OBJECTIVE: DETERMINISM): every multi-row query below
  * has an explicit ORDER BY on a total key (height/seq, tie-broken where

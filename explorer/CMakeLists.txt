@@ -26,9 +26,6 @@ target_include_directories(dna-explorerd PRIVATE
 )
 
 target_link_libraries(dna-explorerd dna sqlite3 pthread)
-if(EXISTS "${DNAC_DIR}/build/libdnac.a")
-    target_link_libraries(dna-explorerd ${DNAC_DIR}/build/libdnac.a)
-endif()
 
 # Unit tests
 add_executable(test_explorer
@@ -49,6 +46,3 @@ target_include_directories(test_explorer PRIVATE
     ${NODUS_DIR}/src
 )
 target_link_libraries(test_explorer dna sqlite3 pthread)
-if(EXISTS "${DNAC_DIR}/build/libdnac.a")
-    target_link_libraries(test_explorer ${DNAC_DIR}/build/libdnac.a)
-endif()

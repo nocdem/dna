@@ -18,8 +18,8 @@ summary below is grounded in that doc's §7/§8.
   (`exp_reset_fsm_feed`) that gates destructive index wipes behind
   multi-witness, multi-poll confirmation.
 - `src/exp_sync.{c,h}` — the sync loop: walks the chain by ledger `seq`
-  (`handle_dnac_ledger_range`), fetches each TX (`dnac_tx`), and writes rows
-  into the index DB.
+  (`exp_chain_ledger_range`, served by the witness's `dnac_ledger_range`
+  query), fetches each TX (`dnac_tx`), and writes rows into the index DB.
 - `src/exp_extract.{c,h}` — deserializes raw TX bytes into index rows
   (`exp_tx_row_t` / `exp_io_row_t`), sourcing timestamps only from the
   deserialized TX, never the witness response envelope.
@@ -50,8 +50,9 @@ make -j$(nproc)
 ```
 
 Binary: `messenger/build/explorer/dna-explorerd`
-Tests: `messenger/build/explorer/test_explorer` (also wired into `ctest`
-from the messenger build tree).
+Tests: build via the messenger tree above, then run
+`messenger/build/explorer/test_explorer` directly — it is not wired into
+`ctest` (no `add_test` for it).
 
 ## Running
 
@@ -102,7 +103,7 @@ all-zero 64-byte `token_id`.
 | Endpoint | Method | Description |
 |---|---|---|
 | `/api/stats` | GET | `indexed_seq`, `tip_seq`, `indexed_height`, `chain_id`, `supply_current`, `supply_burned`, `supply_genesis`. Any field not yet known is `null`. |
-| `/api/blocks?before=<seq>&limit=<n>` | GET | Paginated block list, newest first (`limit` 1-100, default 25). |
+| `/api/blocks?before=<height>&limit=<n>` | GET | Paginated block list, newest first (`limit` 1-100, default 25). |
 | `/api/block/<height\|hash>` | GET | One block (accepts a decimal height or a 128-hex block hash) + its tx summaries. 404 if not found. |
 | `/api/tx/<hash>` | GET | One TX by 128-hex hash: summary (`fee` as string), `ios[]` (inputs/outputs, `amount` as string), and `raw` (hex-encoded raw TX bytes). 404 if not found. |
 | `/api/address/<fp>?before=<seq>&limit=<n>&utxos=1` | GET | Native DNAC balance (signed decimal string, credits-minus-debits) + tx_count, paginated tx history. `utxos=1` adds a `"source":"witness-live"` passthrough section (live Nodus query, NOT from the index — explicitly out of the D1 reproducibility claim; reports `{"error":"unavailable"}` if the live witness call fails). |

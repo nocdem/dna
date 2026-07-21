@@ -610,6 +610,6 @@ endif()
 # =============================================================================
 # DNA Explorer Daemon (dna-explorerd)
 # =============================================================================
-if(NOT ANDROID)
+if(NOT ANDROID AND NOT WIN32)
     add_subdirectory(${CMAKE_SOURCE_DIR}/../explorer ${CMAKE_BINARY_DIR}/explorer)
 endif()
