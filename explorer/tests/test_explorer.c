@@ -876,6 +876,55 @@ static void test_chain_config_load_rejects_malformed(void) {
     PASS();
 }
 
+/* ── Fix round 1 regressions: exp_chain_config_load port 0 + dup pair ── */
+
+static void test_chain_config_load_rejects_port_zero(void) {
+    TEST("exp_chain_config_load rejects port 0");
+
+    char path[] = "/tmp/exp_chain_test_port0_XXXXXX";
+    int fd = mkstemp(path);
+    if (fd < 0) { FAIL("mkstemp failed"); return; }
+
+    FILE *f = fdopen(fd, "w");
+    if (!f) { FAIL("fdopen failed"); close(fd); unlink(path); return; }
+    fprintf(f, "127.0.0.1 4001\n");
+    fprintf(f, "127.0.0.2 0\n");
+    fclose(f);
+
+    exp_server_t servers[4];
+    int count = -1;
+    int rc = exp_chain_config_load(path, servers, 4, &count);
+    unlink(path);
+
+    if (rc == 0) { FAIL("expected failure for port 0"); return; }
+
+    PASS();
+}
+
+static void test_chain_config_load_rejects_duplicate(void) {
+    TEST("exp_chain_config_load rejects duplicate (host,port) pair");
+
+    char path[] = "/tmp/exp_chain_test_dup_XXXXXX";
+    int fd = mkstemp(path);
+    if (fd < 0) { FAIL("mkstemp failed"); return; }
+
+    FILE *f = fdopen(fd, "w");
+    if (!f) { FAIL("fdopen failed"); close(fd); unlink(path); return; }
+    fprintf(f, "127.0.0.1 4001\n");
+    fprintf(f, "203.0.113.5 4002\n");
+    fprintf(f, "127.0.0.1 4001\n");   /* exact duplicate of line 1 */
+    fclose(f);
+
+    exp_server_t servers[4];
+    int count = -1;
+    int rc = exp_chain_config_load(path, servers, 4, &count);
+    unlink(path);
+
+    if (rc == 0) { FAIL("expected failure for duplicate (host,port) pair"); return; }
+
+    PASS();
+}
+
 /* ── t14-t19: exp_reset_fsm_feed (Task 4, F4) — pure logic ──────────── */
 
 static void test_reset_fsm_match_is_no(void) {
@@ -999,6 +1048,45 @@ static void test_reset_fsm_candidate_switch_restarts(void) {
     PASS();
 }
 
+/* ── Fix round 1 regression: negative server_index doesn't mutate FSM ── */
+
+static void test_reset_fsm_negative_index_does_not_mutate(void) {
+    TEST("reset FSM: server_index -1 is a no-op (no sentinel collision)");
+
+    exp_reset_fsm_t fsm;
+    memset(&fsm, 0, sizeof(fsm));
+    uint8_t ref[32];  fill(ref, 32, 0x42);
+    uint8_t cand[32]; fill(cand, 32, 0x99);
+
+    exp_reset_fsm_feed(&fsm, ref, 0);   /* establish reference */
+    if (exp_reset_fsm_feed(&fsm, cand, 5) != EXP_RESET_PENDING) {
+        FAIL("first mismatch (server 5) should be PENDING");
+        return;
+    }
+
+    /* Feeding the same candidate with server_index == -1 must NOT mutate
+     * servers_seen/polls_seen (it would otherwise collide with the -1
+     * "empty slot" sentinel and corrupt the distinct-server count) — still
+     * PENDING with only 1 distinct real server recorded. */
+    if (exp_reset_fsm_feed(&fsm, cand, -1) != EXP_RESET_PENDING) {
+        FAIL("server_index -1 feed should report current status (PENDING), not mutate");
+        return;
+    }
+    if (exp_reset_fsm_feed(&fsm, cand, -1) != EXP_RESET_PENDING) {
+        FAIL("repeated server_index -1 feeds should stay PENDING (still a no-op)");
+        return;
+    }
+
+    /* A second REAL distinct server now confirms, per the normal rule —
+     * proving the -1 feeds above contributed nothing toward confirmation. */
+    if (exp_reset_fsm_feed(&fsm, cand, 6) != EXP_RESET_CONFIRMED) {
+        FAIL("second distinct real server should CONFIRM (only 1 real + this one = 2 distinct)");
+        return;
+    }
+
+    PASS();
+}
+
 int main(void) {
     printf("=== DNA Explorer exp_db Tests ===\n");
 
@@ -1015,12 +1103,15 @@ int main(void) {
     test_extract_rejects_non_hex_charset_output_fingerprint();
     test_chain_config_load();
     test_chain_config_load_rejects_malformed();
+    test_chain_config_load_rejects_port_zero();
+    test_chain_config_load_rejects_duplicate();
     test_reset_fsm_match_is_no();
     test_reset_fsm_one_mismatch_pending();
     test_reset_fsm_same_server_twice_still_pending();
     test_reset_fsm_two_servers_two_polls_confirmed();
     test_reset_fsm_mismatch_then_match_back_to_no();
     test_reset_fsm_candidate_switch_restarts();
+    test_reset_fsm_negative_index_does_not_mutate();
 
     printf("\n=== Results: %d passed, %d failed ===\n", passed, failed);
     return failed > 0 ? 1 : 0;

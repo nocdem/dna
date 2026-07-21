@@ -50,8 +50,12 @@ typedef struct exp_chain exp_chain_t;
  * inline comments after a host/port pair).
  *
  * Fails (-1) on: file open failure, a non-blank/non-comment line that
- * doesn't parse as "host port" (host <= 63 chars, port <= 65535), more
- * server lines than `max`, or zero server lines found in the file.
+ * doesn't parse as "host port" (host <= 63 chars, 1 <= port <= 65535 —
+ * port 0 is rejected, it is never a valid listen port), a line whose
+ * (host, port) pair exactly duplicates an earlier line in the same file
+ * (fix round 1, G6: one witness listed twice could otherwise satisfy
+ * exp_reset_fsm_feed's 2-distinct-server confirmation rule on its own),
+ * more server lines than `max`, or zero server lines found in the file.
  * On success, *count_out is the number of entries written to `servers`
  * (servers[0..*count_out) — this is unchanged/partial-content-free: a
  * failing parse does not promise servers[] is left untouched, callers
@@ -150,6 +154,15 @@ int exp_chain_utxos(exp_chain_t *c, const char *owner_fp, nodus_dnac_utxo_result
  *
  * "Poll" == one exp_reset_fsm_feed() call — there is no separate poll
  * counter parameter; each feed call is one observation from one server.
+ *
+ * server_index < 0 (fix round 1): -1 is the "empty slot" sentinel used
+ * internally by servers_seen[] (and exp_chain_current_server()'s NULL-client
+ * return value) — feeding a negative index into the tracking paths above
+ * would collide with that sentinel and corrupt the distinct-server count.
+ * A negative server_index is therefore a no-op: it does not mutate any FSM
+ * field and simply returns the FSM's current status (NO if no candidate is
+ * tracked, else PENDING/CONFIRMED per the existing servers_seen/polls_seen
+ * state).
  */
 
 #define EXP_RESET_NO         0

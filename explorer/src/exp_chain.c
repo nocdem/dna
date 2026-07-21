@@ -26,12 +26,28 @@ struct exp_chain {
     int              count;
     int              current;
     nodus_identity_t identity;
-    nodus_client_t  *nc;   /* heap-allocated — multi-MB struct, never stack */
+    nodus_client_t  *nc;      /* heap-allocated — multi-MB struct, never stack */
+    int              nc_live; /* 1 iff c->nc currently holds a successfully
+                                * nodus_client_init()'d struct (mutexes live,
+                                * tcp allocated) that MUST go through
+                                * nodus_client_close() before reuse/free.
+                                * 0 both before the first init and after any
+                                * close — a client that failed init (or was
+                                * already closed) is never passed to close()
+                                * again (fix round 1: destroyed-mutex reuse). */
 };
 
 /* Tear down (if connected) and (re)connect to servers[idx]. Always updates
  * c->current to idx, even on failure — "next server in list" is a movement,
- * matching exp_chain_rotate's documented contract. */
+ * matching exp_chain_rotate's documented contract.
+ *
+ * Fix round 1: on a connect-stage failure (init succeeded, connect failed)
+ * this function closes c->nc itself before returning -1 — it's the only
+ * place that knows init succeeded, so it's the only place that can safely
+ * decide a close is owed. Every caller can then uniformly just free(c->nc)
+ * without worrying about which stage failed; c->nc_live tracks whether a
+ * close is still owed so a second nodus_client_close() is never issued on
+ * an already-closed or never-initialized client (destroyed mutexes). */
 static int chain_connect(exp_chain_t *c, int idx) {
     nodus_client_config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
@@ -50,10 +66,13 @@ static int chain_connect(exp_chain_t *c, int idx) {
                        c->servers[idx].host, (unsigned)c->servers[idx].port);
         return -1;
     }
+    c->nc_live = 1;
 
     if (nodus_client_connect(c->nc) != 0) {
         QGP_LOG_WARN(LOG_TAG, "connect failed for %s:%u",
                       c->servers[idx].host, (unsigned)c->servers[idx].port);
+        nodus_client_close(c->nc);
+        c->nc_live = 0;
         return -1;
     }
 
@@ -80,7 +99,7 @@ int exp_chain_config_load(const char *path, exp_server_t *servers, int max, int 
 
         char host[64];
         unsigned int port = 0;
-        if (sscanf(p, "%63s %u", host, &port) != 2 || port > 65535) {
+        if (sscanf(p, "%63s %u", host, &port) != 2 || port == 0 || port > 65535) {
             QGP_LOG_ERROR(LOG_TAG, "config_load: malformed line in %s", path);
             rc = -1;
             break;
@@ -90,6 +109,22 @@ int exp_chain_config_load(const char *path, exp_server_t *servers, int max, int 
             rc = -1;
             break;
         }
+
+        /* G6 (promoted): reject an exact duplicate (host, port) pair —
+         * otherwise one malicious/misconfigured witness listed twice would
+         * let a single server satisfy exp_reset_fsm_feed's 2-distinct-
+         * server-index confirmation rule on its own. O(n^2) over already-
+         * parsed entries is fine — server lists are capped at `max`
+         * (EXP_CHAIN_MAX_SERVERS, currently 16). */
+        for (int i = 0; i < count; i++) {
+            if (servers[i].port == (uint16_t)port && strcmp(servers[i].host, host) == 0) {
+                QGP_LOG_ERROR(LOG_TAG, "config_load: duplicate server %s:%u in %s",
+                               host, port, path);
+                rc = -1;
+                break;
+            }
+        }
+        if (rc != 0) break;
 
         memset(&servers[count], 0, sizeof(servers[count]));
         strncpy(servers[count].host, host, sizeof(servers[count].host) - 1);
@@ -137,6 +172,9 @@ int exp_chain_open(exp_chain_t **c_out, const exp_server_t *servers, int count) 
     }
 
     if (chain_connect(c, 0) != 0) {
+        /* chain_connect() has already nodus_client_close()'d c->nc if (and
+         * only if) init succeeded — c->nc_live tracks that, so this is
+         * always a plain free() here, never a second close(). */
         nodus_identity_clear(&c->identity);
         free(c->nc);
         free(c);
@@ -151,7 +189,13 @@ void exp_chain_close(exp_chain_t *c) {
     if (!c) return;
 
     if (c->nc) {
-        nodus_client_close(c->nc);
+        /* Only close a client that's actually live (successfully init'd
+         * and not already closed by a prior chain_connect() failure) —
+         * closing twice hits already-destroyed mutexes. */
+        if (c->nc_live) {
+            nodus_client_close(c->nc);
+            c->nc_live = 0;
+        }
         free(c->nc);
     }
     nodus_identity_clear(&c->identity);
@@ -161,7 +205,10 @@ void exp_chain_close(exp_chain_t *c) {
 int exp_chain_rotate(exp_chain_t *c) {
     if (!c || !c->nc || c->count <= 0) return -1;
 
-    nodus_client_close(c->nc);
+    if (c->nc_live) {
+        nodus_client_close(c->nc);
+        c->nc_live = 0;
+    }
     int next = (c->current + 1) % c->count;
     return chain_connect(c, next);
 }
@@ -251,6 +298,20 @@ static void fsm_reset_tracking(exp_reset_fsm_t *f) {
 
 int exp_reset_fsm_feed(exp_reset_fsm_t *f, const uint8_t chain_id[32], int server_index) {
     if (!f || !chain_id) return EXP_RESET_NO;
+
+    /* -1 is also the sentinel exp_chain_current_server() returns for a NULL
+     * client, and the "empty slot" value in f->servers_seen[]. A caller
+     * that fed server_index == -1 into the mismatch-tracking paths below
+     * would silently collide with that sentinel (e.g. servers_seen[0] set
+     * to -1 reads back as "still empty", corrupting the distinct-server
+     * count). Guard it: report the FSM's current status without touching
+     * any tracking state. */
+    if (server_index < 0) {
+        if (!f->cand_set) return EXP_RESET_NO;
+        int distinct = (f->servers_seen[0] != -1) + (f->servers_seen[1] != -1);
+        if (f->polls_seen >= 2 && distinct >= 2) return EXP_RESET_CONFIRMED;
+        return EXP_RESET_PENDING;
+    }
 
     /* First-ever feed with a zeroed (unset) reference: adopt chain_id as
      * the reference. This observation trivially matches the reference it
