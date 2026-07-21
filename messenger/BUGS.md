@@ -13,17 +13,31 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 
 ## Open Security Bugs (from 2026-03-14 audit)
 
-- [ ] **[CLI] P2 - Contact request auto-approval bypass** — Any attacker can send a contact request with message `"Contact request accepted"` to bypass user approval. `dna_engine_contacts.c:409`. **Fix:** Verify outgoing request exists before auto-approving.
+- [ ] **[CLI] P2 - Contact request auto-approval bypass** — Any attacker can send a contact request with message `"Contact request accepted"` to bypass user approval. `dna_engine_contacts.c:409`. **Fix:** Verify outgoing request exists before auto-approving. **(2026-07-08 review: PARTIAL mitigation present — `contacts_db_has_pending_outgoing()` guard at `dna_engine_contacts.c:562` now gates auto-approve on a real outgoing request. Re-verify this closes the bypass.)**
 
-- [ ] **[CLI] P2 - GEK static KEM keys no thread safety** — `gek_kem_pubkey/privkey` global pointers accessed from worker threads without synchronization. Race between `gek_set_kem_keys()` and `gek_encrypt()/gek_decrypt()`. `gek.c:49-51`. **Fix:** Add pthread_rwlock.
+- [x] **[CLI] P2 - GEK static KEM keys no thread safety** — FIXED (verified 2026-07-08). `gek_lock` (pthread_rwlock, `gek.c:67`) guards `gek_kem_pubkey/privkey`; readers rdlock→memcpy→unlock, writers wrlock.
 
-- [ ] **[CLI] P2 - Detached backup threads use-after-free** — `dna_engine_backup.c:270` spawns detached threads holding raw `dna_engine_t*`. Engine destroy doesn't join. **Fix:** Convert to joinable threads, store handle in engine.
+- [x] **[CLI] P2 - Detached backup threads use-after-free** — FIXED (verified 2026-07-08). Threads now joinable, handles in `engine->backup_thread`/`restore_thread` (`dna_engine_backup.c:292,398`), joined in `dna_engine_destroy` before `messenger_free()` (`dna_engine.c:1980-1995`).
 
-- [ ] **[CLI] P3 - Outbox cache not thread-safe** — `dht_offline_queue.c:38` uses static globals without mutex. Worker threads can corrupt cache. **Fix:** Add static pthread_mutex matching dht_dm_outbox.c pattern.
+- [x] **[CLI] P3 - Outbox cache not thread-safe** — FIXED (verified 2026-07-08). `g_outbox_cache[]` touched only under `g_queue_mutex` (`dht_offline_queue.c:731-769`); the unsynchronized dead helpers were deleted.
 
-- [ ] **[CLI] P3 - nodus_init global state no thread safety** — `nodus_init.c:49` globals without mutex. Concurrent init/reinit corrupts state. **Fix:** Add static pthread_mutex.
+- [x] **[CLI] P3 - nodus_init global state no thread safety** — FIXED (verified 2026-07-08). `g_nodus_init_mutex` + `pthread_once` guard non-atomic globals; `g_initialized`/`g_connect_thread_running` are `_Atomic` (`nodus_init.c:66-72`); init TOCTOU re-checked under mutex.
 
 - [ ] **[CLI] P3 - Signature covers plaintext only** — `messages.c:138` Dilithium5 signature covers plaintext but not timestamp/fingerprint in v0.08 payload. **Fix:** Sign full payload. Breaking change (v0.09).
+
+## Open Concurrency Bugs (from 2026-07-08 review — nodus_ops.c, NOT covered by CONCURRENCY.md)
+
+- [ ] **[CLI] P2(HIGH) - Channel-push callback read/invoked outside its lock** — `g_ch_post_cb`/`g_ch_post_cb_data` are WRITTEN under `ch_pool_lock` but READ+INVOKED without it at `nodus_ops.c:896-897, 1156-1157, 1249-1250` (runs on the nodus network thread). Non-atomic check-then-act: a concurrent `nodus_ops_ch_shutdown`/`_set_post_callback` can NULL the pointer or swap `user_data` mid-call → NULL invocation or use-after-free. Same class as the fixed GEK race. **Fix:** snapshot both pointers under `ch_pool_lock`, release, then invoke the local copy.
+
+- [ ] **[CLI] P3 - Listener-dispatch ABA on slot index** — `nodus_ops.c:519-555` cleanup re-identifies listeners by slot INDEX, not token. If a slot is cancelled and reused between snapshot and re-lock, an unrelated new listener is deactivated with its `user_data`. **Fix:** re-identify by stored token.
+
+## Stale test (from 2026-07-08 review)
+
+- [x] **[CLI] P3 - `test_gek_ratchet` fails to compile** — FIXED 2026-07-13. Test now calls `hkdf_sha3_256()` from `crypto/hash/hkdf_sha3.h` (15 call sites renamed). Full suite 35/35 green.
+
+## Fixed (2026-07-13)
+
+- [x] **[CLI] P2 - Contact list lost on seed-phrase restore after 7 days** — FIXED v0.11.12. `dht_contactlist_fetch()` rejected blobs past the embedded `timestamp + 7d` expiry (`dht_contactlist.c:522-528`) and returned -2 (indistinguishable from "not found"), so restore on a new device found no contacts even though the DHT value is permanent (EXCLUSIVE, ttl=0) and still present. Expiry is now informational (logged, accepted). Note: if the user added a contact after a failed restore, the old list was overwritten (EXCLUSIVE republish) and is unrecoverable.
 
 ---
 
