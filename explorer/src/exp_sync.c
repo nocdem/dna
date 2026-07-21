@@ -154,10 +154,15 @@ static int sync_ledger(exp_chain_t *chain, exp_db_t *db, uint64_t tip,
          * any other chunk failure: don't advance last_indexed_seq past
          * seqs that were never actually returned. */
         uint64_t expected_count = to - from + 1;
-        if ((uint64_t)range.count < expected_count) {
-            QGP_LOG_ERROR(LOG_TAG, "ledger_range(%llu,%llu) under-delivered: got %d of %llu entries — chunk retry",
+        /* fix round 2, R1: a negative range.count would wrap huge when
+         * cast to uint64_t below and silently pass the under-delivery
+         * check (hostile/malformed server response); range.count > 0
+         * with a NULL entries pointer would NULL-deref the loop below.
+         * Both are checked BEFORE the cast-based comparison. */
+        if (range.count < 0 || !range.entries || (uint64_t)range.count < expected_count) {
+            QGP_LOG_ERROR(LOG_TAG, "ledger_range(%llu,%llu) under-delivered/malformed: got count=%d entries=%p of %llu expected — chunk retry",
                           (unsigned long long)from, (unsigned long long)to, range.count,
-                          (unsigned long long)expected_count);
+                          (void *)range.entries, (unsigned long long)expected_count);
             nodus_client_free_range_result(&range);
             return -1;
         }
@@ -233,6 +238,28 @@ static int sync_ledger(exp_chain_t *chain, exp_db_t *db, uint64_t tip,
             return -1;
         }
 
+        /* fix round 2, R2: persist the running max block_height to meta
+         * ("max_tx_height") at the SAME commit point as last_indexed_seq,
+         * not just once at the end of exp_sync_tick. If a LATER chunk in
+         * this same tick fails, sync_ledger returns -1 before
+         * exp_sync_tick's own post-call persist ever runs — and this
+         * chunk's seqs are never re-walked once last_indexed_seq has
+         * moved past them (idempotent-retry only replays the FAILED
+         * chunk). Without this, heights already durably committed here
+         * would never reach meta and their blocks would never get
+         * backfilled. Never regress: max of what's stored and the
+         * running max observed across every chunk processed so far in
+         * this call (including this one). */
+        if (*have_max_height_out) {
+            uint64_t stored_target = 0;
+            int have_stored_target = (exp_db_get_meta_u64(db, "max_tx_height", &stored_target) == 0);
+            uint64_t target = (have_stored_target && stored_target > *max_height_out) ? stored_target : *max_height_out;
+            if (exp_db_set_meta_u64(db, "max_tx_height", target) != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "failed to persist max_tx_height=%llu", (unsigned long long)target);
+                return -1;
+            }
+        }
+
         from = to + 1;
     }
 
@@ -243,8 +270,13 @@ static int sync_ledger(exp_chain_t *chain, exp_db_t *db, uint64_t tip,
  * (last_block_height, max_height]. Each block's tx_root is stored via
  * exp_db_insert_block (has_block_hash=0 — this row doesn't know its own
  * hash yet); the CHILD block's prev_hash backfills the PARENT's
- * block_hash via exp_db_set_block_hash. last_block_height is persisted
- * once, after the whole loop commits (watermark discipline). */
+ * block_hash via exp_db_set_block_hash. On the full-success path,
+ * last_block_height is persisted once, after the whole loop commits
+ * (watermark discipline). fix round 2, R3: a transport/query failure at
+ * height h returns -1 with the watermark untouched (retry next tick); an
+ * AUTHORITATIVE not-found at height h instead persists progress through
+ * h-1 (bounded by the same never-regress guard as the entry check below)
+ * and returns 0 — see the loop body for why. */
 static int sync_blocks(exp_chain_t *chain, exp_db_t *db, uint64_t max_height) {
     uint64_t last_block_height = 0;
     int have_lbh = (exp_db_get_meta_u64(db, "last_block_height", &last_block_height) == 0);
@@ -269,10 +301,44 @@ static int sync_blocks(exp_chain_t *chain, exp_db_t *db, uint64_t max_height) {
     for (; h <= max_height; h++) {
         nodus_dnac_block_result_t blk;
         memset(&blk, 0, sizeof(blk));
-        if (exp_chain_block(chain, h, &blk) != 0 || !blk.found) {
-            QGP_LOG_ERROR(LOG_TAG, "block(%llu) fetch failed", (unsigned long long)h);
+        int block_rc = exp_chain_block(chain, h, &blk);
+        if (block_rc != 0) {
+            /* fix round 2, R3: transport/query FAILURE is not an
+             * authoritative "this height doesn't exist" — retry next
+             * tick from the untouched watermark, same split as sync_ledger's
+             * tx lookup (fix round 1, finding 1). */
+            QGP_LOG_ERROR(LOG_TAG, "block(%llu) fetch FAILED (transport) — retry next tick", (unsigned long long)h);
             nodus_client_free_block_result(&blk);
             return -1;
+        }
+        if (!blk.found) {
+            /* rc==0 && !found: an authoritative not-found at height h.
+             * Heights below h (up through h-1) ARE fully processed —
+             * persist that much progress and return 0 (not a failure), so
+             * a hostile/malformed report of a huge block_height (e.g.
+             * 2^60, driving max_height way out) degrades to exactly ONE
+             * extra block query per tick (this one) instead of a
+             * permanent failure with an ever-repeated, unbounded re-walk
+             * from the old watermark on every retry. */
+            QGP_LOG_ERROR(LOG_TAG, "block(%llu) not found — stopping backfill, persisting progress through %llu",
+                          (unsigned long long)h, (unsigned long long)(h > 0 ? h - 1 : 0));
+            nodus_client_free_block_result(&blk);
+            if (h == 0) {
+                /* Nothing committed yet this call (genesis itself not
+                 * found) — no h-1 to persist, no regression risk. */
+                return 0;
+            }
+            uint64_t stop_at = h - 1;
+            if (have_lbh && stop_at <= last_block_height) {
+                /* Never regress below what's already stored (round 1,
+                 * finding 4's guard, reused here for the same reason). */
+                return 0;
+            }
+            if (exp_db_set_meta_u64(db, "last_block_height", stop_at) != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "failed to persist last_block_height=%llu", (unsigned long long)stop_at);
+                return -1;
+            }
+            return 0;
         }
 
         exp_block_row_t row;
@@ -386,7 +452,16 @@ int exp_sync_tick(exp_chain_t *chain, exp_db_t **db_ptr, const char *db_path, ex
      * on a later tick that happened to see no new TXs of its own — a
      * quiet chain would leave the backfill gap forever. Never regress the
      * stored value: take the max of what's already there and what this
-     * tick observed (mirrors fix 4's regression guard in sync_blocks). */
+     * tick observed (mirrors fix 4's regression guard in sync_blocks).
+     * fix round 2, R2: sync_ledger now ALSO persists max_tx_height at each
+     * chunk commit (same never-regress logic) — sync_ledger only returns 0
+     * here on full success, by which point every chunk it walked already
+     * ran that same persist with the same final accumulated max, so this
+     * block is idempotent on the success path (target == stored value
+     * already). Kept anyway as defense-in-depth per explicit review
+     * guidance rather than deleted, since it's harmless and a single
+     * extra meta read+write per tick is not a cost worth trading
+     * belt-and-suspenders coverage for. */
     if (have_max_height) {
         uint64_t stored_target = 0;
         int have_stored_target = (exp_db_get_meta_u64(db, "max_tx_height", &stored_target) == 0);
