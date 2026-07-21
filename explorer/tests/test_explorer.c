@@ -6,6 +6,10 @@
  */
 
 #include "exp_db.h"
+#include "exp_extract.h"
+#include "dnac/dnac.h"
+#include "dnac/transaction.h"
+#include "crypto/hash/qgp_sha3.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -447,6 +451,245 @@ static void test_address_pagination(void) {
     PASS();
 }
 
+/* ── t6-t9: exp_extract_tx (Task 3) ─────────────────────────────────── */
+
+#define EXP_TEST_TX_BUF_SIZE 32768
+
+static void test_extract_basic_mapping(void) {
+    TEST("exp_extract_tx basic mapping (1 in, 2 out, 1 signer)");
+
+    dnac_transaction_t tx;
+    memset(&tx, 0, sizeof(tx));
+
+    tx.version = DNAC_PROTOCOL_VERSION;
+    tx.type = DNAC_TX_SPEND;
+    tx.timestamp = 999999999ULL;   /* fixed, deliberately not "now" (D4/F6) */
+    fill(tx.tx_hash, DNAC_TX_HASH_SIZE, 0xCC);
+    tx.committed_fee = 555555ULL;
+
+    tx.input_count = 1;
+    fill(tx.inputs[0].nullifier, DNAC_NULLIFIER_SIZE, 0xAA);
+    tx.inputs[0].amount = 700;
+    /* token_id left zero == native DNAC */
+
+    tx.output_count = 2;
+    tx.outputs[0].version = 1;
+    strcpy(tx.outputs[0].owner_fingerprint, "recipient_fp_one");
+    tx.outputs[0].amount = 300;
+    /* token_id left zero == native DNAC */
+
+    tx.outputs[1].version = 1;
+    strcpy(tx.outputs[1].owner_fingerprint, "recipient_fp_two");
+    tx.outputs[1].amount = 400;
+    fill(tx.outputs[1].token_id, DNAC_TOKEN_ID_SIZE, 0xBB);
+
+    tx.witness_count = 0;
+
+    tx.signer_count = 1;
+    fill(tx.signers[0].pubkey, DNAC_PUBKEY_SIZE, 0x11);
+    fill(tx.signers[0].signature, DNAC_SIGNATURE_SIZE, 0x00);
+
+    char expected_fp0[129];
+    if (qgp_sha3_512_hex(tx.signers[0].pubkey, DNAC_PUBKEY_SIZE, expected_fp0, sizeof(expected_fp0)) != 0) {
+        FAIL("qgp_sha3_512_hex for expected fp0 failed");
+        return;
+    }
+
+    uint8_t buf[EXP_TEST_TX_BUF_SIZE];
+    size_t written = 0;
+    if (dnac_tx_serialize(&tx, buf, sizeof(buf), &written) != DNAC_SUCCESS) {
+        FAIL("dnac_tx_serialize failed");
+        return;
+    }
+
+    exp_tx_row_t tx_row;
+    exp_io_row_t ios[8];
+    int io_count = -1;
+    if (exp_extract_tx(buf, written, 42, 7, &tx_row, ios, 8, &io_count) != 0) {
+        FAIL("exp_extract_tx failed");
+        return;
+    }
+
+    if (io_count != 3) { FAIL("io_count mismatch"); return; }
+    if (memcmp(tx_row.hash, tx.tx_hash, 64) != 0) { FAIL("hash mismatch"); return; }
+    if (tx_row.seq != 42 || tx_row.height != 7) { FAIL("seq/height mismatch"); return; }
+    if (tx_row.tx_type != (int)DNAC_TX_SPEND) { FAIL("tx_type mismatch"); return; }
+    if (tx_row.fee != 555555ULL) { FAIL("fee mismatch"); return; }
+    if (tx_row.size != written) { FAIL("size mismatch"); return; }
+    if (tx_row.timestamp != 999999999ULL) { FAIL("timestamp not from deserialized tx (D4/F6)"); return; }
+    if (tx_row.multi_signer != 0) { FAIL("multi_signer should be 0 for 1 signer"); return; }
+
+    /* io[0]: input 0, direction=in, attributed to signer[0] fp */
+    if (ios[0].direction != 0 || ios[0].io_index != 0 || ios[0].amount != 700) {
+        FAIL("ios[0] input fields mismatch");
+        return;
+    }
+    if (strcmp(ios[0].address, expected_fp0) != 0) { FAIL("ios[0] address != signer[0] fp"); return; }
+    if (memcmp(ios[0].tx_hash, tx.tx_hash, 64) != 0) { FAIL("ios[0] tx_hash mismatch"); return; }
+
+    /* io[1]: output 0 */
+    if (ios[1].direction != 1 || ios[1].io_index != 0 || ios[1].amount != 300) {
+        FAIL("ios[1] output0 fields mismatch");
+        return;
+    }
+    if (strcmp(ios[1].address, "recipient_fp_one") != 0) { FAIL("ios[1] address mismatch"); return; }
+
+    /* io[2]: output 1 */
+    if (ios[2].direction != 1 || ios[2].io_index != 1 || ios[2].amount != 400) {
+        FAIL("ios[2] output1 fields mismatch");
+        return;
+    }
+    if (strcmp(ios[2].address, "recipient_fp_two") != 0) { FAIL("ios[2] address mismatch"); return; }
+    if (memcmp(ios[2].token_id, tx.outputs[1].token_id, 64) != 0) { FAIL("ios[2] token_id mismatch"); return; }
+
+    PASS();
+}
+
+static void test_extract_multi_signer(void) {
+    TEST("exp_extract_tx multi_signer flag + both inputs -> signer[0] fp");
+
+    dnac_transaction_t tx;
+    memset(&tx, 0, sizeof(tx));
+
+    tx.version = DNAC_PROTOCOL_VERSION;
+    tx.type = DNAC_TX_SPEND;
+    tx.timestamp = 888888888ULL;
+    fill(tx.tx_hash, DNAC_TX_HASH_SIZE, 0xDD);
+    tx.committed_fee = 20000ULL;
+
+    tx.input_count = 2;
+    fill(tx.inputs[0].nullifier, DNAC_NULLIFIER_SIZE, 0x01);
+    tx.inputs[0].amount = 111;
+    fill(tx.inputs[1].nullifier, DNAC_NULLIFIER_SIZE, 0x02);
+    tx.inputs[1].amount = 222;
+
+    tx.output_count = 1;
+    tx.outputs[0].version = 1;
+    strcpy(tx.outputs[0].owner_fingerprint, "recipient_fp_multi");
+    tx.outputs[0].amount = 300;
+
+    tx.signer_count = 2;
+    fill(tx.signers[0].pubkey, DNAC_PUBKEY_SIZE, 0x11);
+    fill(tx.signers[0].signature, DNAC_SIGNATURE_SIZE, 0x00);
+    fill(tx.signers[1].pubkey, DNAC_PUBKEY_SIZE, 0x22);
+    fill(tx.signers[1].signature, DNAC_SIGNATURE_SIZE, 0x00);
+
+    char expected_fp0[129];
+    if (qgp_sha3_512_hex(tx.signers[0].pubkey, DNAC_PUBKEY_SIZE, expected_fp0, sizeof(expected_fp0)) != 0) {
+        FAIL("qgp_sha3_512_hex for expected fp0 failed");
+        return;
+    }
+
+    uint8_t buf[EXP_TEST_TX_BUF_SIZE];
+    size_t written = 0;
+    if (dnac_tx_serialize(&tx, buf, sizeof(buf), &written) != DNAC_SUCCESS) {
+        FAIL("dnac_tx_serialize failed");
+        return;
+    }
+
+    exp_tx_row_t tx_row;
+    exp_io_row_t ios[8];
+    int io_count = -1;
+    if (exp_extract_tx(buf, written, 99, 12, &tx_row, ios, 8, &io_count) != 0) {
+        FAIL("exp_extract_tx failed");
+        return;
+    }
+
+    if (io_count != 3) { FAIL("io_count mismatch"); return; }
+    if (tx_row.multi_signer != 1) { FAIL("multi_signer should be 1 for 2 signers"); return; }
+
+    if (ios[0].direction != 0 || ios[0].amount != 111 || strcmp(ios[0].address, expected_fp0) != 0) {
+        FAIL("ios[0] not attributed to signer[0]");
+        return;
+    }
+    if (ios[1].direction != 0 || ios[1].amount != 222 || strcmp(ios[1].address, expected_fp0) != 0) {
+        FAIL("ios[1] not attributed to signer[0]");
+        return;
+    }
+    if (ios[2].direction != 1 || ios[2].amount != 300) { FAIL("ios[2] output mismatch"); return; }
+
+    PASS();
+}
+
+static void test_signer_fingerprint_kat(void) {
+    TEST("exp_signer_fingerprint == SHA3-512 hex, lowercase, 128 chars");
+
+    uint8_t buf[64];
+    for (int i = 0; i < 64; i++) buf[i] = (uint8_t)i;
+
+    uint8_t digest[QGP_SHA3_512_DIGEST_LENGTH];
+    if (qgp_sha3_512(buf, sizeof(buf), digest) != 0) {
+        FAIL("qgp_sha3_512 failed");
+        return;
+    }
+    char expected[129];
+    for (int i = 0; i < QGP_SHA3_512_DIGEST_LENGTH; i++) {
+        snprintf(expected + i * 2, 3, "%02x", digest[i]);
+    }
+    expected[128] = '\0';
+
+    char fp_out[129];
+    if (exp_signer_fingerprint(buf, sizeof(buf), fp_out) != 0) {
+        FAIL("exp_signer_fingerprint failed");
+        return;
+    }
+
+    if (strlen(fp_out) != 128) { FAIL("fingerprint length != 128"); return; }
+    if (strcmp(fp_out, expected) != 0) { FAIL("fingerprint != independently-computed SHA3-512 hex"); return; }
+    for (size_t i = 0; i < strlen(fp_out); i++) {
+        char c = fp_out[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) {
+            FAIL("fingerprint not lowercase hex");
+            return;
+        }
+    }
+
+    PASS();
+}
+
+static void test_extract_signer_count_zero(void) {
+    TEST("exp_extract_tx rejects signer_count == 0 (defensive)");
+
+    dnac_transaction_t tx;
+    memset(&tx, 0, sizeof(tx));
+
+    tx.version = DNAC_PROTOCOL_VERSION;
+    tx.type = DNAC_TX_SPEND;
+    tx.timestamp = 123456789ULL;
+    fill(tx.tx_hash, DNAC_TX_HASH_SIZE, 0xEE);
+    tx.committed_fee = 1000ULL;
+
+    tx.input_count = 1;
+    fill(tx.inputs[0].nullifier, DNAC_NULLIFIER_SIZE, 0x03);
+    tx.inputs[0].amount = 50;
+
+    tx.output_count = 1;
+    tx.outputs[0].version = 1;
+    strcpy(tx.outputs[0].owner_fingerprint, "recipient_fp_zero_signer");
+    tx.outputs[0].amount = 50;
+
+    tx.signer_count = 0;  /* malformed but structurally deserializable —
+                            * dnac_tx_deserialize only rejects
+                            * signer_count > DNAC_TX_MAX_SIGNERS. */
+
+    uint8_t buf[EXP_TEST_TX_BUF_SIZE];
+    size_t written = 0;
+    if (dnac_tx_serialize(&tx, buf, sizeof(buf), &written) != DNAC_SUCCESS) {
+        FAIL("dnac_tx_serialize failed");
+        return;
+    }
+
+    exp_tx_row_t tx_row;
+    exp_io_row_t ios[8];
+    int io_count = -1;
+    if (exp_extract_tx(buf, written, 1, 1, &tx_row, ios, 8, &io_count) == 0) {
+        FAIL("exp_extract_tx should reject signer_count == 0");
+        return;
+    }
+
+    PASS();
+}
+
 int main(void) {
     printf("=== DNA Explorer exp_db Tests ===\n");
 
@@ -455,6 +698,10 @@ int main(void) {
     test_tx_insert_and_balance();
     test_duplicate_insert_noop();
     test_address_pagination();
+    test_extract_basic_mapping();
+    test_extract_multi_signer();
+    test_signer_fingerprint_kat();
+    test_extract_signer_count_zero();
 
     printf("\n=== Results: %d passed, %d failed ===\n", passed, failed);
     return failed > 0 ? 1 : 0;
