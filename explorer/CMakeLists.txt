@@ -6,6 +6,7 @@ set(EXPLORER_SOURCES
     src/exp_db.c
     src/exp_extract.c
     src/exp_chain.c
+    src/exp_sync.c
 )
 
 set(DNAC_DIR "${CMAKE_SOURCE_DIR}/../dnac")
@@ -33,6 +34,7 @@ add_executable(test_explorer
     src/exp_db.c
     src/exp_extract.c
     src/exp_chain.c
+    src/exp_sync.c
 )
 target_include_directories(test_explorer PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src

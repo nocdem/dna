@@ -8,6 +8,7 @@
 #include "exp_db.h"
 #include "exp_extract.h"
 #include "exp_chain.h"
+#include "exp_sync.h"
 #include "dnac/dnac.h"
 #include "dnac/transaction.h"
 #include "crypto/hash/qgp_sha3.h"
@@ -1087,6 +1088,45 @@ static void test_reset_fsm_negative_index_does_not_mutate(void) {
     PASS();
 }
 
+/* ── t22: exp_sync_stale_name (Task 5) ──────────────────────────────── */
+
+static void test_sync_stale_name(void) {
+    TEST("exp_sync_stale_name: path+hex8 join, truncation-safe, rejects NULL");
+
+    /* Basic: path join + hex8(chain_id[0..4)), lowercase. */
+    uint8_t chain_id[32];
+    memset(chain_id, 0, sizeof(chain_id));
+    chain_id[0] = 0xDE; chain_id[1] = 0xAD; chain_id[2] = 0xBE; chain_id[3] = 0xEF;
+
+    char out[256];
+    if (exp_sync_stale_name("/var/lib/dna-explorer/index.db", chain_id, out, sizeof(out)) != 0) {
+        FAIL("expected success");
+        return;
+    }
+    if (strcmp(out, "/var/lib/dna-explorer/index.db.stale-deadbeef") != 0) {
+        FAIL("unexpected stale db path");
+        return;
+    }
+
+    /* Truncation-safe: too-small buffer fails rather than writing a
+     * truncated path. */
+    uint8_t chain_id2[32];
+    fill(chain_id2, 32, 0x11);
+    char small[8]; /* nowhere near enough for "/a.stale-11111111" */
+    if (exp_sync_stale_name("/a", chain_id2, small, sizeof(small)) == 0) {
+        FAIL("expected failure on truncation");
+        return;
+    }
+
+    /* Rejects NULL / zero-size params. */
+    if (exp_sync_stale_name(NULL, chain_id2, out, sizeof(out)) == 0) { FAIL("NULL db_path should fail"); return; }
+    if (exp_sync_stale_name("/a", NULL, out, sizeof(out)) == 0) { FAIL("NULL chain_id should fail"); return; }
+    if (exp_sync_stale_name("/a", chain_id2, NULL, sizeof(out)) == 0) { FAIL("NULL out should fail"); return; }
+    if (exp_sync_stale_name("/a", chain_id2, out, 0) == 0) { FAIL("outlen 0 should fail"); return; }
+
+    PASS();
+}
+
 int main(void) {
     printf("=== DNA Explorer exp_db Tests ===\n");
 
@@ -1112,6 +1152,7 @@ int main(void) {
     test_reset_fsm_mismatch_then_match_back_to_no();
     test_reset_fsm_candidate_switch_restarts();
     test_reset_fsm_negative_index_does_not_mutate();
+    test_sync_stale_name();
 
     printf("\n=== Results: %d passed, %d failed ===\n", passed, failed);
     return failed > 0 ? 1 : 0;
