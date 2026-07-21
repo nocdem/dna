@@ -104,6 +104,13 @@ void exp_json_u64(exp_json_t *j, uint64_t v) {
     exp_json_raw(j, buf);
 }
 
+void exp_json_u64_str(exp_json_t *j, uint64_t v) {
+    if (!j) return;
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%llu", (unsigned long long)v);
+    exp_json_str(j, buf);
+}
+
 void exp_json_hex(exp_json_t *j, const uint8_t *b, size_t n) {
     if (!j) return;
 

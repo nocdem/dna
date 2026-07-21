@@ -31,29 +31,22 @@
     11: 'SHIELDED'
   };
 
-  var ZERO_TOKEN_ID =
-    '0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000';
+  /* Computed (not hand-counted) — token_id is 64 bytes / 128 hex chars,
+   * matching exp_json_hex(j, native_token, 64) in exp_http.c's route_address. */
+  var ZERO_TOKEN_ID = '0'.repeat(128);
 
   /* ── fetch helper ─────────────────────────────────────────────────── */
 
-  /* exp_http.c (exp_json_u64/json_i64) emits amount-bearing fields as bare
-   * JSON numbers, not strings. DNAC supply is on the order of 1e17 raw
-   * units (1e9 tokens * 1e8 decimals) — well above Number.MAX_SAFE_INTEGER
-   * (~9.007e15) — so native JSON.parse would silently round these before
-   * fmtDnac ever sees them, no matter how carefully fmtDnac itself does
-   * BigInt math. Wrap only the known amount-bearing keys in quotes at the
-   * text level, before parsing, so their full-precision decimal digits
-   * survive as strings. Height/seq/count/size fields are left as native
-   * numbers (they stay far below 2^53 for the foreseeable life of the
-   * chain) and are never routed through fmtDnac. */
-  var BIGINT_KEYS = ['balance', 'fee', 'amount', 'supply_current', 'supply_burned', 'supply_genesis'];
-  var BIGINT_KEY_RE = new RegExp('"(' + BIGINT_KEYS.join('|') + ')":(-?\\d+)(?=[,}\\]])', 'g');
-
-  function preserveBigIntPrecision(text) {
-    return text.replace(BIGINT_KEY_RE, function (_, key, num) {
-      return '"' + key + '":"' + num + '"';
-    });
-  }
+  /* exp_http.c emits amount-bearing fields (fee, amount, balance,
+   * supply_current, supply_burned, supply_genesis) as JSON strings
+   * (exp_json_u64_str / json_i64), not bare numbers — DNAC supply is on
+   * the order of 1e17 raw units (1e9 tokens * 1e8 decimals), well above
+   * Number.MAX_SAFE_INTEGER (~9.007e15), so a bare JSON number would lose
+   * precision through JSON.parse. Because those fields already arrive as
+   * strings on the wire, plain JSON.parse is precision-safe here — no
+   * pre-parse rewriting needed. fmtDnac() accepts both strings and numbers
+   * (BigInt math internally), so height/seq/count/size fields (still bare
+   * numbers, safely under 2^53) never need special handling either. */
 
   /* Throws an Error whose .message is the API's {"error":"..."} string
    * when present, else a generic "HTTP <status>" — callers show this to
@@ -63,7 +56,7 @@
       return res.text().then(function (text) {
         var body = null;
         try {
-          body = text ? JSON.parse(preserveBigIntPrecision(text)) : null;
+          body = text ? JSON.parse(text) : null;
         } catch (e) {
           body = null;
         }
@@ -143,7 +136,7 @@
   /* Truncated "abcd1234…ef567890" hash/address display: full value goes in
    * the title attribute, and clicking copies the full value to the
    * clipboard (best-effort — clipboard API may be unavailable, silently
-   * no-ops). head/tail char counts default to 8/6. */
+   * no-ops). head/tail char counts default to 10/8. */
   function hashSpan(full, opts) {
     opts = opts || {};
     var head = opts.head || 10;
@@ -260,6 +253,22 @@
       banner.classList.add('hidden');
       clear(banner);
     }
+  }
+
+  /* Fetches /api/stats purely to drive the staleness banner — used by
+   * block/tx/address pages, which have #staleness-banner in their markup
+   * but no #stats-cards (loadStats() early-returns on those pages, so the
+   * banner was never populated there). index.html keeps calling the full
+   * loadStats() instead, which already updates the banner as part of
+   * populating the stat cards — no need to double-fetch there. Best-effort:
+   * a failed fetch just leaves the banner hidden rather than showing an
+   * error on pages where stats are secondary. */
+  function loadStalenessBanner() {
+    return fetchJson('/api/stats')
+      .then(function (stats) {
+        updateStalenessBanner(stats);
+      })
+      .catch(function () {});
   }
 
   /* ── search box (shared by all pages) ────────────────────────────── */
@@ -440,6 +449,7 @@
   }
 
   function initBlockPage() {
+    loadStalenessBanner();
     var ident = qparam('h');
     var content = document.getElementById('block-content');
     if (!ident) {
@@ -493,21 +503,22 @@
 
   /* ── tx.html ──────────────────────────────────────────────────────── */
 
-  function ioRow(io, kind) {
+  /* io.address is the io row's signer[0] fingerprint (exp_http.c's
+   * emit_io) for both directions — there is no nullifier in this shape —
+   * so both input and output rows render it the same way: an address.html
+   * link, like the output rows always did. */
+  function ioRow(io) {
     var tr = el('tr');
-    if (kind === 'in') {
-      tr.appendChild(el('td', { class: 'mono' }, hashSpan(io.address, { head: 16, tail: 10 })));
-    } else {
-      var addrTd = el('td', { class: 'mono' });
-      addrTd.appendChild(hashLink(io.address, 'address.html?fp=' + encodeURIComponent(io.address), { head: 16, tail: 10 }));
-      tr.appendChild(addrTd);
-    }
+    var addrTd = el('td', { class: 'mono' });
+    addrTd.appendChild(hashLink(io.address, 'address.html?fp=' + encodeURIComponent(io.address), { head: 16, tail: 10 }));
+    tr.appendChild(addrTd);
     tr.appendChild(el('td', { class: 'mono', text: fmtDnac(io.amount) + ' DNAC' }));
     tr.appendChild(el('td', {}, tokenNode(io.token_id)));
     return tr;
   }
 
   function initTxPage() {
+    loadStalenessBanner();
     var hash = qparam('hash');
     var content = document.getElementById('tx-content');
     if (!hash) {
@@ -549,12 +560,12 @@
         content.appendChild(el('h2', { text: 'Inputs (' + ins.length + ')' }));
         var inTable = el('table', { class: 'data-table' });
         inTable.appendChild(
-          el('thead', {}, el('tr', {}, [el('th', { text: 'Nullifier' }), el('th', { text: 'Amount' }), el('th', { text: 'Token' })]))
+          el('thead', {}, el('tr', {}, [el('th', { text: 'From address' }), el('th', { text: 'Amount' }), el('th', { text: 'Token' })]))
         );
         var inBody = el('tbody');
         if (ins.length === 0) inBody.appendChild(el('tr', {}, el('td', { colspan: '3', class: 'muted', text: 'None' })));
         ins.forEach(function (io) {
-          inBody.appendChild(ioRow(io, 'in'));
+          inBody.appendChild(ioRow(io));
         });
         inTable.appendChild(inBody);
         content.appendChild(inTable);
@@ -567,7 +578,7 @@
         var outBody = el('tbody');
         if (outs.length === 0) outBody.appendChild(el('tr', {}, el('td', { colspan: '3', class: 'muted', text: 'None' })));
         outs.forEach(function (io) {
-          outBody.appendChild(ioRow(io, 'out'));
+          outBody.appendChild(ioRow(io));
         });
         outTable.appendChild(outBody);
         content.appendChild(outTable);
@@ -635,6 +646,13 @@
         renderError(td, err);
         tr.appendChild(td);
         tbody.appendChild(tr);
+        /* Re-enable/re-show the button so a transient fetch failure
+         * (e.g. a dropped request) doesn't strand the user with a
+         * permanently-disabled "Load more" — they can retry the click. */
+        if (loadMoreBtn) {
+          loadMoreBtn.disabled = false;
+          loadMoreBtn.classList.remove('hidden');
+        }
       })
       .then(function () {
         addressState.loading = false;
@@ -684,6 +702,7 @@
   }
 
   function initAddressPage() {
+    loadStalenessBanner();
     var fp = qparam('fp');
     var content = document.getElementById('address-content');
     if (!fp) {

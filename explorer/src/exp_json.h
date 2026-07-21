@@ -47,6 +47,13 @@ void exp_json_str(exp_json_t *j, const char *s);
 /* Appends an unsigned 64-bit integer in decimal, no quotes. */
 void exp_json_u64(exp_json_t *j, uint64_t v);
 
+/* Appends an unsigned 64-bit integer in decimal, wrapped as a JSON string
+ * (`"123"`, not `123`). For money-bearing fields (fee/amount/supply_*)
+ * whose magnitude can exceed Number.MAX_SAFE_INTEGER (2^53-1) in JS
+ * consumers — a bare JSON number would silently lose precision through
+ * JSON.parse. */
+void exp_json_u64_str(exp_json_t *j, uint64_t v);
+
 /* Appends `"` + lowercase-hex(b[0..n)) + `"`. n == 0 or b == NULL emits an
  * empty string `""`. */
 void exp_json_hex(exp_json_t *j, const uint8_t *b, size_t n);

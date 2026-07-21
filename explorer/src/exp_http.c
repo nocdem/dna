@@ -167,16 +167,19 @@ static void json_error(exp_json_t *j, const char *msg) {
 }
 
 /* Signed balance (addr_stats.balance is a signed credits-minus-debits
- * accumulation, see exp_db.h) formatted as a plain JSON number, not a
- * string — magnitude computed without negating INT64_MIN (UB). */
+ * accumulation, see exp_db.h) formatted as a JSON string (e.g. "-500"),
+ * not a bare number — same precision reasoning as exp_json_u64_str for
+ * the other money fields. Magnitude computed without negating INT64_MIN
+ * (UB). */
 static void json_i64(exp_json_t *j, int64_t v) {
+    char buf[32];
     if (v < 0) {
-        exp_json_raw(j, "-");
         uint64_t mag = (uint64_t)(-(v + 1)) + 1u;
-        exp_json_u64(j, mag);
+        snprintf(buf, sizeof(buf), "-%llu", (unsigned long long)mag);
     } else {
-        exp_json_u64(j, (uint64_t)v);
+        snprintf(buf, sizeof(buf), "%llu", (unsigned long long)v);
     }
+    exp_json_str(j, buf);
 }
 
 /* ── Row -> JSON emitters ────────────────────────────────────────────── */
@@ -208,7 +211,7 @@ static void emit_tx_summary(exp_json_t *j, const exp_tx_row_t *t) {
     exp_json_raw(j, ",\"tx_type\":");
     exp_json_u64(j, (uint64_t)t->tx_type);
     exp_json_raw(j, ",\"fee\":");
-    exp_json_u64(j, t->fee);
+    exp_json_u64_str(j, t->fee);
     exp_json_raw(j, ",\"size\":");
     exp_json_u64(j, t->size);
     exp_json_raw(j, ",\"timestamp\":");
@@ -228,7 +231,7 @@ static void emit_io(exp_json_t *j, const exp_io_row_t *io) {
     exp_json_raw(j, ",\"token_id\":");
     exp_json_hex(j, io->token_id, 64);
     exp_json_raw(j, ",\"amount\":");
-    exp_json_u64(j, io->amount);
+    exp_json_u64_str(j, io->amount);
     exp_json_raw(j, "}");
 }
 
@@ -238,7 +241,7 @@ static void emit_utxo_entry(exp_json_t *j, const nodus_dnac_utxo_entry_t *e) {
     exp_json_raw(j, ",\"owner\":");
     exp_json_str(j, e->owner);
     exp_json_raw(j, ",\"amount\":");
-    exp_json_u64(j, e->amount);
+    exp_json_u64_str(j, e->amount);
     exp_json_raw(j, ",\"token_id\":");
     exp_json_hex(j, e->token_id, sizeof(e->token_id));
     exp_json_raw(j, ",\"tx_hash\":");
@@ -276,11 +279,11 @@ static void route_stats(exp_db_t *db, exp_json_t *j, int *status) {
     exp_json_raw(j, ",\"chain_id\":");
     if (have_chain_id) exp_json_hex(j, chain_id, 32); else exp_json_raw(j, "null");
     exp_json_raw(j, ",\"supply_current\":");
-    if (have_supply_current) exp_json_u64(j, supply_current); else exp_json_raw(j, "null");
+    if (have_supply_current) exp_json_u64_str(j, supply_current); else exp_json_raw(j, "null");
     exp_json_raw(j, ",\"supply_burned\":");
-    if (have_supply_burned) exp_json_u64(j, supply_burned); else exp_json_raw(j, "null");
+    if (have_supply_burned) exp_json_u64_str(j, supply_burned); else exp_json_raw(j, "null");
     exp_json_raw(j, ",\"supply_genesis\":");
-    if (have_supply_genesis) exp_json_u64(j, supply_genesis); else exp_json_raw(j, "null");
+    if (have_supply_genesis) exp_json_u64_str(j, supply_genesis); else exp_json_raw(j, "null");
     exp_json_raw(j, "}");
 
     *status = 200;

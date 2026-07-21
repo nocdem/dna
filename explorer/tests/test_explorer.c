@@ -1460,7 +1460,7 @@ static void test_route_tx_and_address_200(void) {
         exp_db_close(db);
         return;
     }
-    if (!strstr(body.buf, "\"balance\":500") || !strstr(body.buf, "\"token\":\"DNAC\"")) {
+    if (!strstr(body.buf, "\"balance\":\"500\"") || !strstr(body.buf, "\"token\":\"DNAC\"")) {
         printf("(got: %s) ", body.buf);
         FAIL("address body missing native balance");
         exp_json_freebuf(&body);
