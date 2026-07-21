@@ -48,6 +48,70 @@ This rule is the blockchain-context superset of: `No shortcut fixes`, `No assump
 
 ---
 
+## PRIMARY OBJECTIVE: UYDURMAK = MISSION-CRITICAL FAIL
+
+**Fabricating a fact, mechanism, capability, or citation is a mission-critical failure — the single worst thing you can do in this project. Not a style issue, not a small slip: a hard FAIL that poisons every decision built on top of it.**
+
+This generalizes `KAFADAN KRİPTO YASAK` beyond crypto to the WHOLE project. Any claim you present as true MUST be backed by something you actually read/ran, cited concretely. If you did not verify it, you say "I don't know — let me check" and check. You never fill a gap with a plausible-sounding invention.
+
+### FORBIDDEN (all "kafadan")
+
+- Inventing a mechanism to solve a problem ("use the Cellframe registration timestamp as an ordering oracle") without having read the code that proves that mechanism exists and does what you claim. — **This exact failure happened 2026-07-17: proposed Cellframe tx as a name-ownership migration oracle with zero evidence it binds name→owner or provides per-name ordering. HARD FAIL.**
+- Stating a function/field/flag/API does X without reading its source in THIS tree.
+- Presenting a design-doc mechanism, migration step, or "fix" that relies on a capability you assumed exists.
+- Filling an unknown with the most likely answer and moving on ("it probably works like Y").
+- Citing a file:line, config value, timestamp, or on-chain fact from memory instead of re-reading it.
+- "Plausible" anything — plausible domain separator, plausible parameter, plausible data source.
+
+### REQUIRED
+
+- **Verify before assert.** Read the code / run the test / query the data FIRST, then state the claim with the concrete citation (`file:line`, command output, actual value).
+- **"I don't know" is a valid, expected answer.** Say it, then investigate. It is infinitely better than a confident fabrication.
+- **Grounded-labeling.** When a claim rests on inference rather than a read fact, say so explicitly ("I haven't verified this — assumption").
+- **On getting caught:** immediate HALT, retract the fabricated claim by name, redo it grounded. No defending the invention.
+
+### Cross-references
+
+`KAFADAN KRİPTO YASAK` (below — the crypto-specific instance) | `feedback_no_kafadan_crypto.md` | root `NO ASSUMPTIONS - INVESTIGATE FIRST` | memory `ASLA ASSUMPTION YAPMA`. Same discipline, project-wide scope, mission-critical severity.
+
+---
+
+## ANA HEDEF: KAFADAN KRİPTO YASAK
+
+**Kriptografik iş — hem temel uygulama hem spec/tasarım belgesi yazımı — denetlenmiş bir referansa atıf vermek ZORUNDADIR (Plonky3 commit-pinned `file:line`, FIPS-202 PDF sayfa, NIST KAT, vb.). Uydurma kurgu YASAK.**
+
+Kapsam:
+- Kısıt sistemleri (AIR), alan aritmetiği, hash fonksiyonları, sponge yapıları, FRI parametreleri, transcript/Fiat-Shamir kurguları, Merkle ağaç düzeni
+- **AYRICA** yukarıdakileri anlatan tasarım belgesi bölümleri (sütun düzeni, byte offset'leri, domain separator string'leri, parametre seçimleri, F-S binding alanları)
+- **AYRICA** kriptoya değen wire formatları (commitment preimage düzeni, tx_hash preimage, `DNAC_TX_V3\0` gibi domain string'leri)
+
+### Hangi kalıplar kafadan sayılır (YASAK)
+
+- "Plonky3'te eşdeğeri yok, ben uyarlayayım" → DUR, kullanıcıdan onay almadan uyarlama yasak.
+- "Plausible domain separator `DNAC_RP_FOO\0`" — kaynak referans olmadan tam byte/uzunluk yazmak yasak.
+- "FRI parametreleri standart görünüyor: 84 query, 8× blowup" — pin'li commit'te `fri/src/config.rs` defaults'a bakmadan yazmak yasak.
+- Tasarım belgesi maddesi "200 sütun × 512 satır trace düzeni" — Plonky3 `keccak-air/src/columns.rs`'i açıp gerçek genişliği görmeden yazmak yasak.
+- Hash-chain Fiat-Shamir `T_{i+1} = H(T_i ‖ msg)` "Plonky3-uyumlu" iddiası — Plonky3 challenger'ları sponge tabanlı veya whole-buffer-flush, hash-chain DEĞİL.
+- **Aynı yazarın aynı gün hem kodu hem denetim belgesini yazması → CIRCULAR (kendine-onaylama), denetim DEĞİL.**
+- C ↔ Rust oracle byte-match, iki taraf da DNAC'in uydurma spec'ini uyguluyorsa → uygulamaların aynı olduğunu kanıtlar, spec'in sağlam olduğunu DEĞİL. Dürüst etiket: "self-consistent" (kendi içinde tutarlı), "Plonky3 grounded" DEĞİL.
+
+### Kripto denetimi için zorunlu yaklaşım
+
+Aynı gün öz-denetim YASAK. Gerçek denetim için şunlardan biri gereklidir:
+1. **Paralel alt-ajanlar** — 10+ alt-ajan dispatch (Task aracı), her birine dar görev: "DNAC dosyası X'i oku. Referans Y'yi oku. GROUNDED / JUDGMENT / KAFADAN olarak `file:line` atıflarıyla rapor et. Mevcut denetim belgelerine GÜVENME." Yorum eklemeden topla.
+
+⚠ **BU MADDE KAPSAMLIDIR — bkz. `DESIGN DOC STANDARDS > RED-TEAM ÖLÇEĞİ`.** "10+ alt-ajan ZORUNLU" yalnızca **konsensüse veya shipped kriptoya değen, canlı tüketicisi olan** iş için geçerlidir. **Sıfır tüketicili** (henüz kimsenin çağırmadığı) bir tasarımda çok-ajanlı gate **YASAK** — tek ajan, tek tur. Blast radius'u grep ile kanıtla ve gate açmadan önce kullanıcıya yaz. İkinci tur kullanıcı onayı ister; sıfır tüketicili işte üçüncü tur yasaktır.
+2. **Başka oturum / başka gün** — yazar bekler, soğuk gözle döner. 1. seçenekten daha zayıf.
+3. **Harici inceleme** — insan denetçi, denetim firması, VEYA bağımsız ajan sistemi (yazarın kendi oturumu değil).
+
+Genel hafıza kuralı "Alt-ajan — araştırma için KULLANMA" sadece kod tabanı ARAŞTIRMASINA ("ağaçta X'i bul") uygulanır. Kripto DENETİMİ için paralel alt-ajan ZORUNLU; çünkü "kod yazarı = denetim yazarı" circular'ını kıran tek mekanizma odur.
+
+### Çapraz referanslar
+
+`feedback_no_kafadan_crypto.md` (tam kural, 5-sezon geçmiş) | `project_section_4_5_invalidated.md` (2026-05-23'te geçersiz kılınan tasarım belgesi bölümü) | `project_zk_subagent_audit.md` (12 paralel alt-ajan denetim bulguları, 2026-05-23 akşamı).
+
+---
+
 ## DESIGN DOC STANDARDS
 
 **Every design doc** (`docs/plans/YYYY-MM-DD-<topic>-design.md` in nodus / dnac / messenger / shared) MUST contain three required sections, in this exact order, before any implementation begins:
@@ -70,6 +134,31 @@ The pattern is **claim / claim / test** — inside-out (author declares invarian
 - Roadmap / sequencing docs: **may skip** if they're pure prioritization; the per-optimization design docs they reference must comply.
 - Trivial bug-fix design notes (~1 page, single-function-scope): **may collapse** into one combined paragraph block.
 - Pure tooling docs: **Determinism still required**; Threat Model + Red-team may be one-line "out of scope: tooling only" with engineering justification.
+
+### RED-TEAM ÖLÇEĞİ — ZORUNLU SINIR (2026-07-17)
+
+**Bu bölüm `feedback_red_team_every_design.md` ve KAFADAN'ın "10+ alt-ajan ZORUNLU" kuralının KAPSAMINI belirler. O kurallar kapsamsızdı ("her tasarım") ve tek oturumda ~10M token / ~$200 yaktı — sıfır kod karşılığında. Ölçek artık gerekçe ister.**
+
+**1. Önce BLAST RADIUS sor, sonra ölçek seç.** Herhangi bir red-team başlatmadan önce şu tek soruyu cevapla ve cevabı kullanıcıya YAZ:
+
+> *Bu kodun bugün canlı tüketicisi var mı? (grep ile kanıtla — "muhtemelen vardır" yasak.)*
+
+| Blast radius | Zorunlu ölçek |
+|---|---|
+| Konsensüs / shipped kripto / canlı kullanıcı verisi | 10+ paralel alt-ajan (KAFADAN tam kuralı) |
+| Canlı tüketicisi olan ama konsensüse değmeyen kod | 3-5 lens, tek tur |
+| **Sıfır tüketici** (henüz kimse çağırmıyor) | **Tek ajan, tek tur. Çok-ajanlı gate YASAK.** |
+
+**2. İKİNCİ TUR = KULLANICI ONAYI.** Bir gate NOT-GREEN döndüyse, ikinci turu **AÇMADAN ÖNCE** dur ve sor. "Kullanıcı devam et dedi" yetmez — **maliyeti ve alternatifi** sun:
+- kaç ajan, kaç token, tahmini $ (önceki turun `subagent_tokens`'ından türet)
+- ve **park etme seçeneğini eşit ağırlıkta** koy, üç seçenekten biri gibi gömme.
+- **ÜÇÜNCÜ TUR: sıfır tüketicili işte YASAK.** İki tur yakınsamadıysa sorun tasarımda değil, substrattadır veya iş zaten ertelenebilirdir.
+
+**3. Kendi kurgunu denetletme.** Bir gate, **20 dakika önce kendi yazdığın** tasarımın hatalarını buluyorsa bu denetim değil, pahalı bir yazım turu. Gerçeğe değen bulgular (shipped bug, canlı UAF) **kodu okumaktan** çıkar, ajan filosundan değil. Önce oku, sonra gerekiyorsa denetlet.
+
+**4. `ultracode` maliyeti kısıt olmaktan çıkarır — DEĞERSİZLİĞİ değil.** `ultracode` modunun "token cost is not a constraint" talimatı, **değeri kanıtlanmış** işe sınırsız derinlik demektir; sıfır tüketicili bir tasarıma sınırsız harcama izni DEĞİLDİR. Kapsam kararı yine yargıya tabidir ve yargı EXECUTOR'a aittir.
+
+**İhlal tetikleyicisi:** blast radius'u yazmadan çok-ajanlı gate açmak, veya sormadan ikinci tur başlatmak → protokol ihlali. Kullanıcı "1 saat neyi bekledim, 10M token yaktı" derse bu kural gösterilecek.
 
 ### Why both Determinism AND Threat Model
 
@@ -222,10 +311,11 @@ OUTPUT:
 - STATUS: [SUCCESS/FAILED]
 ```
 
-### CHECKPOINT 7: DOCUMENTATION UPDATE
-When changes are made to ANY of the following topics, I MUST update the relevant documentation:
+### CHECKPOINT 7: DOCUMENTATION UPDATE (SAME-COMMIT, ALL PROJECTS)
 
-**Documentation Files & Topics:**
+**HARD RULE: documentation updates land in the SAME commit as the code change.** "Docs later" / "docs in a follow-up commit" is a protocol violation — docs lag is how the project's docs rot. If a change touches code, the affected docs are part of that change's definition of done.
+
+**Messenger — Documentation Files & Topics:**
 | Topic | Documentation File | Update When... |
 |-------|-------------------|----------------|
 | Architecture | `messenger/docs/ARCHITECTURE_DETAILED.md` | Directory structure, components, build system, data flow changes |
@@ -233,18 +323,37 @@ When changes are made to ANY of the following topics, I MUST update the relevant
 | DNA Engine API | `messenger/docs/DNA_ENGINE_API.md` | Public API functions, data types, callbacks, error codes changes |
 | DNA Nodus | `messenger/docs/DNA_NODUS.md` | Bootstrap server, config, deployment changes |
 | Flutter UI | `messenger/docs/FLUTTER_UI.md` | Screens, FFI bindings, providers, widgets changes |
-| Function Reference | `messenger/docs/functions/` | Adding, modifying, or removing any function signatures |
+| Function Reference | `messenger/docs/functions/` | Adding, modifying, or removing ANY function signature (public or internal) |
 | Git Workflow | `messenger/docs/GIT_WORKFLOW.md` | Commit guidelines, branch strategy, repo procedures changes |
 | Message System | `messenger/docs/MESSAGE_SYSTEM.md` | Message format, encryption, GEK, database schema changes |
 | Mobile Porting | `messenger/docs/MOBILE_PORTING.md` | Android SDK, JNI, iOS, platform abstraction changes |
 | Transport Layer | `messenger/docs/P2P_ARCHITECTURE.md` | DHT transport, presence, peer discovery changes |
-| Security | `messenger/docs/MESSENGER_SECURITY_AUDIT.md` | Crypto primitives, vulnerabilities, security fixes |
+| Wire Formats | `messenger/docs/PROTOCOL.md` | Seal, Spillway, Anchor, Atlas, Nexus format changes |
+| Security | `messenger/docs/MESSENGER_SECURITY_AUDIT.md` | Crypto primitives, vulnerabilities, security fixes (file is gitignored — update locally, never commit) |
 
-**Procedure:**
-1. **IDENTIFY** which documentation files are affected by the changes
-2. **UPDATE** each affected documentation file with accurate information
-3. **VERIFY** the documentation matches the actual code changes
-4. **STATE**: "CHECKPOINT 7 COMPLETE - Documentation updated: [list files updated]" OR "CHECKPOINT 7 COMPLETE - No documentation updates required (reason: [reason])"
+**Other projects — Documentation Files & Topics:**
+| Project | Documentation File | Update When... |
+|---------|-------------------|----------------|
+| Nodus | `nodus/docs/ARCHITECTURE.md` | Server layers, protocol tiers, routing, storage changes |
+| Nodus | `nodus/docs/DEPLOY_RUNBOOK.md` | Deploy procedure, health checks, rollback changes |
+| Nodus | `nodus/docs/REPLICATION_DESIGN.md` | Replication factor, listener, republish logic changes |
+| Nodus | `nodus/docs/MEMPOOL_BLOCK_TIME.md` | Mempool, block timing, witness round changes |
+| Nodus | `nodus/CLAUDE.md` + `nodus/README.md` | Nodus rules, version, build/test procedure changes |
+| DNAC | `dnac/README.md` | TX format, CLI commands, wallet behavior changes |
+| DNAC | `dnac/docs/STATUS.md` / `dnac/docs/ROADMAP.md` | Feature completion, roadmap item changes |
+| DNAC | `dnac/CLAUDE.md` | DNAC rules, architecture changes |
+| ZK | `shared/crypto/zk/RESUME.md` | ANY zk change: status, module list, test count, next steps |
+| Root | `README.md` (version table) + `CLAUDE.md` | Component versions on release; architecture/build/test procedure changes |
+| Engine modules | `messenger/src/api/engine/README.md` + `messenger/CLAUDE.md` (module list) | Adding/removing engine modules |
+| Bugs | `messenger/BUGS.md` / `nodus/BUGS.md` / `dnac/BUGS.md` | Fixing a tracked bug (mark fixed with version), discovering a new one |
+
+**Procedure (MANDATORY, per change):**
+1. **IDENTIFY** — from `git diff --stat`, list every affected doc from the tables above. Function signature changed → `docs/functions/` entry, same commit. Wire format touched → PROTOCOL.md + the wire-walker grep (`feedback_wire_format_migration.md`).
+2. **UPDATE** each affected documentation file with the SAME level of detail and effort as the code change itself — not a one-line stub.
+3. **VERIFY** the documentation matches the actual code (signatures, offsets, constants, version numbers copied from source, not from memory).
+4. **STATE**: "CHECKPOINT 7 COMPLETE - Documentation updated: [list files updated]" OR "CHECKPOINT 7 COMPLETE - No documentation updates required (checked: [docs checked], reason: [why unaffected])" — a bare "no updates required" without the checked-list is a protocol violation.
+
+**Drift repair:** If while working you find docs already out of date with the code (stale signature, wrong offset, old version), fix that drift in the same session and report it — don't step around it.
 
 **IMPORTANT:** Documentation is the source of truth. Code changes without documentation updates violate protocol mode.
 
@@ -261,7 +370,8 @@ Before pushing ANY code changes, you MUST verify the build succeeds:
 | Flutter/Dart code (lib/, assets/) | Flutter Linux | `cd messenger/dna_messenger_flutter && flutter build linux` |
 | Flutter/Dart code (lib/, assets/) | Flutter Android | `cd messenger/dna_messenger_flutter && flutter build apk --debug` |
 | Nodus code (nodus/) | Nodus | `cd nodus/build && cmake .. && make -j$(nproc)` |
-| DNAC code (dnac/) | DNAC | `cd dnac/build && cmake .. && make -j$(nproc)` |
+| DNAC code (dnac/) | C Library (dnac compiles into libdna.so) | `cd messenger/build && cmake .. && make -j$(nproc)` |
+| ZK code (shared/crypto/zk/) | ZK test suite | `cd shared/crypto/zk && make test` |
 | Both C and Flutter | All 3 builds | Run C, Flutter Linux, and Flutter Android commands above |
 
 **CRITICAL:**
@@ -430,7 +540,8 @@ These actions are NEVER permitted without explicit request:
 - When uncertain, say "I don't know" and investigate rather than guess
 
 ## BUG TRACKING
-**ALWAYS check `BUGS.md`** at the start of a session for open bugs to fix.
+**ALWAYS check the per-project bug files** at the start of a session for open bugs to fix:
+`messenger/BUGS.md`, `nodus/BUGS.md`, `dnac/BUGS.md` (there is no root `BUGS.md`).
 
 ## RC PROJECT - BREAKING CHANGES FORBIDDEN
 This project is in **RC (Release Candidate)**. Users have real data. Breaking changes are **FORBIDDEN** by default.
@@ -446,13 +557,14 @@ All C projects use CMake. Build from each project's `build/` directory.
 
 | Project | Build | Notes |
 |---------|-------|-------|
-| Messenger (C lib) | `cd messenger/build && cmake .. && make -j$(nproc)` | Must build first (dnac depends on it) |
+| Messenger (C lib) | `cd messenger/build && cmake .. && make -j$(nproc)` | Compiles dnac sources directly into `libdna.so` |
 | Nodus | `cd nodus/build && cmake .. && make -j$(nproc)` | Independent build |
-| DNAC | `cd dnac/build && cmake .. && make -j$(nproc)` | Links against `libdna.so` from messenger |
+| DNAC | **No separate build.** | dnac sources are compiled into `libdna.so` by the messenger build. **NEVER rebuild `/opt/dna/dnac/build`** (memory: `feedback_no_dnac_build`); existing test binaries there are prebuilt. |
+| ZK stack | `cd shared/crypto/zk && make test` | Standalone Makefile, 65 gates GREEN, 0 warnings. Prove+verify complete (pure-C, Plonky3 byte-matched). Phase-C C1 (2026-07-21): verify stack LINKED into the nodus build (not yet called by consensus — C2 pending). Status: `zk/RESUME.md` top block |
 | Flutter app | `cd messenger/dna_messenger_flutter && flutter build linux` | Requires messenger C lib built |
 | Windows cross-compile | `cd messenger && ./build-cross-compile.sh windows-x64` | |
 
-**Build order matters:** Messenger first, then dnac. Nodus is independent.
+**Build order matters:** Messenger build includes dnac sources. Nodus is independent.
 
 **Required dependency:** SQLCipher is required for the messenger C library (database encryption):
 ```bash
@@ -464,10 +576,11 @@ apt install -t bookworm-backports libsqlcipher-dev
 | Project | Unit Tests | Integration Tests |
 |---------|-----------|-------------------|
 | Nodus | `cd nodus/build && ctest` | Genesis Protocol harness: `bash nodus/tests/integration/stagef/stagef_up.sh` (7-node localhost) |
-| Messenger | `cd messenger/build && ctest` | CLI tool: `messenger/build/cli/dna-connect-cli` |
-| DNAC | `cd dnac/build && ./test_real`, `./test_gaps` | `./test_remote` (cross-machine) |
+| Messenger | `cd messenger/tests/build && cmake .. && make -j$(nproc) && ctest` (tests live in their OWN build tree — `messenger/build/ctest` finds NO tests) | CLI tool: `messenger/build/cli/dna-connect-cli` |
+| DNAC | `cd dnac/build && ./test_real`, `./test_gaps` (prebuilt binaries — do NOT re-run cmake/make here) | `./test_remote` (cross-machine) |
+| ZK | `cd shared/crypto/zk && make test` | — |
 
-Run a single test: `cd <project>/build && ./test_<name>` (or `./tests/test_<name>` for messenger).
+Run a single test: `cd <project>/build && ./test_<name>` (or `cd messenger/tests/build && ./test_<name>` for messenger).
 
 ### TEST REQUIREMENTS (MANDATORY)
 
@@ -507,12 +620,14 @@ git push origin main    # GitHub second (mirror)
 
 ```
 /opt/dna/
-├── shared/crypto/     # Post-quantum crypto (sign/, enc/, hash/, key/, utils/)
+├── shared/crypto/     # Post-quantum crypto (sign/, enc/, hash/, key/, utils/, zk/)
 ├── messenger/         # DNA Connect - C library + Flutter app
 ├── nodus/             # Nodus - DHT server + client SDK (pure C)
 ├── dnac/              # DNA Cash - UTXO digital cash over DHT
 ├── explorer/          # DNAC block explorer daemon (scan.cpunk.io) — read-only indexer + JSON API
 ├── cpunk/             # cpunk.io website
+├── scripts/           # Operational scripts (daily summary, etc.)
+├── tasks/             # Session task tracking (todo.md, lessons.md)
 └── docs/              # Top-level project docs (readiness reports)
 ```
 
@@ -526,7 +641,7 @@ git push origin main    # GitHub second (mirror)
            │ FFI (dart:ffi)
 ┌──────────▼───────────────────────────────────────────┐
 │  DNA Engine (C) - messenger/src/api/                 │
-│  17 modular handlers + async task queue              │
+│  22 modular handlers + async task queue              │
 ├──────────────────────────────────────────────────────┤
 │  Domain layers:                                      │
 │  messenger/  dht/  transport/  database/  blockchain/│
@@ -547,7 +662,7 @@ git push origin main    # GitHub second (mirror)
 
 ### Messenger C Library Architecture
 
-The DNA Engine (`messenger/src/api/dna_engine.c`) is a modular async C library with 18 domain modules in `messenger/src/api/engine/`. See `messenger/CLAUDE.md` for module list and details.
+The DNA Engine (`messenger/src/api/dna_engine.c`) is a modular async C library with 22 domain modules in `messenger/src/api/engine/`. See `messenger/CLAUDE.md` for module list and details.
 
 Public API: `messenger/include/dna/dna_engine.h` (async callbacks, opaque `dna_engine_t`).
 
@@ -555,7 +670,7 @@ New features follow the module pattern: add task type in `dna_engine_internal.h`
 
 ### Nodus Architecture
 
-Nodus is a post-quantum Kademlia DHT with BFT witness consensus. Pure C, no C++ dependencies.
+Nodus is a post-quantum Kademlia DHT with BFT witness consensus. Pure C, no C++ dependencies. See `nodus/CLAUDE.md` for Nodus-specific rules and determinism examples.
 
 **Server layers:** UDP (Kademlia peer discovery) + TCP (client connections, replication, channels, witness BFT)
 **Protocol:** CBOR over wire frames (7-byte header: magic `0x4E44` + version + length)
@@ -603,7 +718,11 @@ shared/crypto/
 ├── enc/                     # Encryption (Kyber1024, AES-256-GCM)
 ├── hash/                    # Hashing (SHA3-512, Keccak-256)
 ├── key/                     # Key management (BIP32, BIP39, PBKDF2)
-└── utils/                   # Infra / platform / encoding
+├── utils/                   # Infra / platform / encoding
+└── zk/                      # v3 STARK range-proof stack (Goldilocks field, FRI verifier,
+                             #   Keccak AIR, sponge, transcript) — Plonky3-grounded C ports.
+                             #   Own Makefile (`cd shared/crypto/zk && make test`).
+                             #   Status/handoff: zk/RESUME.md. Rules: ANA HEDEF: KAFADAN KRİPTO YASAK.
 ```
 
 **Include pattern:** `#include "crypto/hash/qgp_sha3.h"` (resolved via `-I /opt/dna/shared`)
@@ -743,6 +862,8 @@ Production Nodus cluster details (IPs, ports, deploy procedures) are maintained 
 - `messenger/docs/FUZZING.md` — Fuzz testing guide
 - `messenger/src/api/engine/README.md` — How to add new engine modules
 - `nodus/docs/` — Nodus deployment documentation
+- `nodus/CLAUDE.md` — Nodus-specific development guidelines
 - `dnac/README.md` — DNAC architecture, CLI commands, transaction format
+- `shared/crypto/zk/RESUME.md` — v3 STARK range-proof stack: status, handoff, next steps
 
 **Priority:** Security, correctness, simplicity. When in doubt, ask.
