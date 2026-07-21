@@ -511,7 +511,7 @@ git push origin main    # GitHub second (mirror)
 ├── messenger/         # DNA Connect - C library + Flutter app
 ├── nodus/             # Nodus - DHT server + client SDK (pure C)
 ├── dnac/              # DNA Cash - UTXO digital cash over DHT
-├── explorer/                # DNAC block explorer daemon (scan.cpunk.io) — read-only indexer + JSON API
+├── explorer/          # DNAC block explorer daemon (scan.cpunk.io) — read-only indexer + JSON API
 ├── cpunk/             # cpunk.io website
 └── docs/              # Top-level project docs (readiness reports)
 ```
