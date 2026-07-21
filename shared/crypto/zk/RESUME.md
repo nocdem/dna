@@ -49,8 +49,32 @@
   cleartext witness check (`verify.c` Check 4); the ZK stack stays ADDITIVE
   until C2/C3 (shielded pool, state_root v4 — BREAKING, own approvals).
   Remaining Phase-C order (user decisions 2026-07-21: ak/nk multi-lane FIRST;
-  prune/heartbeat NOT bundled): **C1 ✅ → F3 ak/nk multi-lane → C2 witness
-  verify → C3 state_root v4 (minimal) → C4 Genesis 7/7.**
+  prune/heartbeat NOT bundled): **C1 ✅ → F3 ak/nk multi-lane (DESIGN DONE) →
+  C2 witness verify → C3 state_root v4 (minimal) → C4 Genesis 7/7.**
+  - **F3 DESIGN DONE (2026-07-21):** `dnac/docs/plans/2026-07-21-f3-aknk-
+    multilane-design.md` (local, 3 sections). Grounded: ak/nk are ONE Goldilocks
+    lane each today → nk alone = 2^32 Grover (nf=PRF(nk,ρ) searchable
+    independent of ak) = BELOW the stack's locked 128-bit PQ target.
+    **User DECIDED A_LANES=N_LANES=4 (128-bit PQ; 8-lane gold-plating
+    rejected).** Build order §4: S-F3.0 layout pin → S-F3.1 C construction gate
+    (widen conf_action_air + conf_nullifier_air + derive_addr, per-lane
+    canonical rejects + carry freeze + tamper KATs) → S-F3.2 oracle + MEASURE
+    num_qc (STOP=8) → S-F3.3 real-STARK lift byte-match → S-F3.4 make test →
+    S-F3.5 SINGLE-agent red-team (zero-consumer scope, grep-proven). **BANKED
+    (user chose to do the code in a FRESH session, not rush the money-AIR in a
+    long one — KAFADAN "don't rush real-STARK in a tired session").** The doc
+    §3b has the exact GROUNDED layout deltas so the code is mechanical.
+    Sponge packing GROUNDED (self-audit corrected 2026-07-21, was mislabeled
+    "KAFADAN watch"): `note_commit.c:18-48` (cites Plonky3 sponge.rs:176-203) —
+    a 12-slot (=3·RATE) input = EXACTLY 3 overwrite-rate/carry-capacity perms,
+    no pad permute (DERIVED, not assumed). The preimage element ORDER
+    (ak-chunk/nk-chunk/DOMSEP-chunk) is OUR pinned DESIGN CHOICE, not a Plonky3
+    fact — the oracle is our own Rust reference, byte-match proves C==Rust of
+    THIS layout, it doesn't discover a hidden order. Threat (nk independently
+    Grover-searchable via public (ρ,nf)), Grover math (4 lanes→2^128), current
+    layout, coupling, num_qc-must-be-measured: all grounded. Coupling: widening
+    breaks real-STARK byte-match tests until S-F3.2 regen → F3 commits as ONE
+    unit (make test RED across increments).
 - **B1 CONFIDENTIAL AMOUNTS — 🎯 STAGE-2 (is_zk=1, num_qc=8) COMPLETE (2026-07-15).**
   Design: `dnac/docs/plans/2026-07-14-b1-confidential-amounts-design-v3.md` (v3.1,
   local-only) + memory `project_v3_zk_implementation_progress` (▶ current). Stage-1
