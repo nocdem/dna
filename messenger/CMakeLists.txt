@@ -606,3 +606,8 @@ option(BUILD_CLI_TOOL "Build dna-connect-cli tool for testing" ON)
 if(BUILD_CLI_TOOL AND NOT ANDROID)
     add_subdirectory(cli)
 endif()
+
+# =============================================================================
+# DNA Explorer Daemon (dna-explorerd)
+# =============================================================================
+add_subdirectory(${CMAKE_SOURCE_DIR}/../explorer ${CMAKE_BINARY_DIR}/explorer)

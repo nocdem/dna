@@ -161,6 +161,7 @@ dna/
 │   ├── src/                   #   Wallet, transactions, witness client, CLI
 │   ├── include/               #   Public headers
 │   └── tests/                 #   Unit tests
+├── explorer/                        # DNAC block explorer daemon (scan.cpunk.io) — read-only indexer + JSON API
 ├── cpunk/                     # cpunk.io web platform
 └── docs/                      # Top-level project documentation
 ```
