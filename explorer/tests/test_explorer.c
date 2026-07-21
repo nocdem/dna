@@ -9,6 +9,8 @@
 #include "exp_extract.h"
 #include "exp_chain.h"
 #include "exp_sync.h"
+#include "exp_json.h"
+#include "exp_http.h"
 #include "dnac/dnac.h"
 #include "dnac/transaction.h"
 #include "crypto/hash/qgp_sha3.h"
@@ -1127,6 +1129,493 @@ static void test_sync_stale_name(void) {
     PASS();
 }
 
+/* ── t23+: exp_json (Task 6) ────────────────────────────────────────── */
+
+static void test_json_str_escaping(void) {
+    TEST("exp_json_str escapes quote/backslash/control chars");
+
+    exp_json_t j;
+    exp_json_init(&j);
+    exp_json_str(&j, "a\"b\\c\nd\te");
+
+    /* NUL is not exercised (exp_json_str is a NUL-terminated-C-string API —
+     * embedded NULs are out of scope); everything else in 0x00-0x1F either
+     * has a named escape (\n \t here) or falls into the \u00XX branch. */
+    const char *expected = "\"a\\\"b\\\\c\\nd\\te\"";
+    if (strcmp(j.buf, expected) != 0) {
+        printf("(got: %s) ", j.buf ? j.buf : "(null)");
+        FAIL("escaped output mismatch");
+        exp_json_freebuf(&j);
+        return;
+    }
+
+    exp_json_freebuf(&j);
+
+    /* A raw control char (0x01, no named escape) goes through \u00XX. */
+    exp_json_t j2;
+    exp_json_init(&j2);
+    char raw_ctrl[2] = { 0x01, '\0' };
+    exp_json_str(&j2, raw_ctrl);
+    if (strcmp(j2.buf, "\"\\u0001\"") != 0) {
+        printf("(got: %s) ", j2.buf ? j2.buf : "(null)");
+        FAIL("\\u00XX escape mismatch");
+        exp_json_freebuf(&j2);
+        return;
+    }
+    exp_json_freebuf(&j2);
+
+    /* NULL input -> empty string literal, not a crash. */
+    exp_json_t j3;
+    exp_json_init(&j3);
+    exp_json_str(&j3, NULL);
+    if (strcmp(j3.buf, "\"\"") != 0) {
+        FAIL("NULL input should emit empty string literal");
+        exp_json_freebuf(&j3);
+        return;
+    }
+    exp_json_freebuf(&j3);
+
+    PASS();
+}
+
+static void test_json_hex_emit(void) {
+    TEST("exp_json_hex emits lowercase hex string");
+
+    uint8_t b[4] = {0xDE, 0xAD, 0xBE, 0xEF};
+    exp_json_t j;
+    exp_json_init(&j);
+    exp_json_hex(&j, b, sizeof(b));
+
+    if (strcmp(j.buf, "\"deadbeef\"") != 0) {
+        printf("(got: %s) ", j.buf ? j.buf : "(null)");
+        FAIL("hex emit mismatch");
+        exp_json_freebuf(&j);
+        return;
+    }
+    exp_json_freebuf(&j);
+
+    /* n==0 / NULL -> empty string literal. */
+    exp_json_t j2;
+    exp_json_init(&j2);
+    exp_json_hex(&j2, NULL, 0);
+    if (strcmp(j2.buf, "\"\"") != 0) {
+        FAIL("zero-length hex should emit empty string literal");
+        exp_json_freebuf(&j2);
+        return;
+    }
+    exp_json_freebuf(&j2);
+
+    PASS();
+}
+
+/* ── t25+: exp_http_route (Task 6) ──────────────────────────────────── */
+
+static void bytes_to_hex128(const uint8_t b[64], char out[129]) {
+    static const char hexchars[] = "0123456789abcdef";
+    for (int i = 0; i < 64; i++) {
+        out[i * 2]     = hexchars[(b[i] >> 4) & 0xF];
+        out[i * 2 + 1] = hexchars[b[i] & 0xF];
+    }
+    out[128] = '\0';
+}
+
+/* Count non-overlapping occurrences of `needle` in `hay`. */
+static int count_substr(const char *hay, const char *needle) {
+    int n = 0;
+    const char *p = hay;
+    size_t nlen = strlen(needle);
+    while ((p = strstr(p, needle)) != NULL) {
+        n++;
+        p += nlen;
+    }
+    return n;
+}
+
+static void test_route_stats_200(void) {
+    TEST("exp_http_route: GET /api/stats -> 200");
+
+    exp_db_t *db = NULL;
+    if (exp_db_open(":memory:", &db) != 0) { FAIL("open failed"); return; }
+    exp_db_set_meta_u64(db, "last_indexed_seq", 42);
+
+    exp_http_ctx_t ctx = {0};
+    ctx.db = db;
+    ctx.chain = NULL;
+    ctx.port = 0;
+    int stop = 0;
+    ctx.stop = &stop;
+
+    exp_json_t body;
+    int status = -1;
+    if (exp_http_route(&ctx, "GET", "/api/stats", &body, &status) != 0 || status != 200) {
+        FAIL("expected 200");
+        exp_json_freebuf(&body);
+        exp_db_close(db);
+        return;
+    }
+    if (!strstr(body.buf, "\"indexed_seq\":42")) {
+        printf("(got: %s) ", body.buf);
+        FAIL("body missing indexed_seq");
+        exp_json_freebuf(&body);
+        exp_db_close(db);
+        return;
+    }
+
+    exp_json_freebuf(&body);
+    exp_db_close(db);
+    PASS();
+}
+
+static void test_route_block_200(void) {
+    TEST("exp_http_route: GET /api/block/1 -> 200");
+
+    exp_db_t *db = NULL;
+    if (exp_db_open(":memory:", &db) != 0) { FAIL("open failed"); return; }
+
+    exp_block_row_t b = {0};
+    b.height = 1;
+    fill(b.tx_root, 64, 0x01);
+    b.timestamp = 1000;
+    fill(b.proposer, 32, 0xA1);
+    b.tx_count = 0;
+    b.has_block_hash = 0;
+    if (exp_db_insert_block(db, &b) != 0) { FAIL("insert_block failed"); exp_db_close(db); return; }
+
+    exp_http_ctx_t ctx = {0};
+    ctx.db = db;
+    int stop = 0;
+    ctx.stop = &stop;
+
+    exp_json_t body;
+    int status = -1;
+    if (exp_http_route(&ctx, "GET", "/api/block/1", &body, &status) != 0 || status != 200) {
+        FAIL("expected 200");
+        exp_json_freebuf(&body);
+        exp_db_close(db);
+        return;
+    }
+    if (!strstr(body.buf, "\"height\":1")) {
+        printf("(got: %s) ", body.buf);
+        FAIL("body missing height");
+        exp_json_freebuf(&body);
+        exp_db_close(db);
+        return;
+    }
+
+    exp_json_freebuf(&body);
+    exp_db_close(db);
+    PASS();
+}
+
+static void test_route_unknown_path_404(void) {
+    TEST("exp_http_route: GET unknown path -> 404");
+
+    exp_db_t *db = NULL;
+    if (exp_db_open(":memory:", &db) != 0) { FAIL("open failed"); return; }
+
+    exp_http_ctx_t ctx = {0};
+    ctx.db = db;
+    int stop = 0;
+    ctx.stop = &stop;
+
+    exp_json_t body;
+    int status = -1;
+    exp_http_route(&ctx, "GET", "/api/nope", &body, &status);
+    if (status != 404) { FAIL("expected 404"); exp_json_freebuf(&body); exp_db_close(db); return; }
+
+    exp_json_freebuf(&body);
+    exp_db_close(db);
+    PASS();
+}
+
+static void test_route_post_405(void) {
+    TEST("exp_http_route: POST any path -> 405");
+
+    exp_db_t *db = NULL;
+    if (exp_db_open(":memory:", &db) != 0) { FAIL("open failed"); return; }
+
+    exp_http_ctx_t ctx = {0};
+    ctx.db = db;
+    int stop = 0;
+    ctx.stop = &stop;
+
+    exp_json_t body;
+    int status = -1;
+    exp_http_route(&ctx, "POST", "/api/stats", &body, &status);
+    if (status != 405) { FAIL("expected 405"); exp_json_freebuf(&body); exp_db_close(db); return; }
+
+    exp_json_freebuf(&body);
+    exp_db_close(db);
+    PASS();
+}
+
+static void test_route_blocks_limit_clamp(void) {
+    TEST("exp_http_route: GET /api/blocks?limit=9999 clamps to 100");
+
+    exp_db_t *db = NULL;
+    if (exp_db_open(":memory:", &db) != 0) { FAIL("open failed"); return; }
+
+    for (uint64_t h = 1; h <= 150; h++) {
+        exp_block_row_t b = {0};
+        b.height = h;
+        fill(b.tx_root, 64, (uint8_t)h);
+        b.timestamp = h * 1000;
+        fill(b.proposer, 32, 0xA0);
+        b.tx_count = 0;
+        b.has_block_hash = 0;
+        if (exp_db_insert_block(db, &b) != 0) { FAIL("seed insert_block failed"); exp_db_close(db); return; }
+    }
+
+    exp_http_ctx_t ctx = {0};
+    ctx.db = db;
+    int stop = 0;
+    ctx.stop = &stop;
+
+    exp_json_t body;
+    int status = -1;
+    if (exp_http_route(&ctx, "GET", "/api/blocks?limit=9999", &body, &status) != 0 || status != 200) {
+        FAIL("expected 200");
+        exp_json_freebuf(&body);
+        exp_db_close(db);
+        return;
+    }
+
+    int n = count_substr(body.buf, "\"height\":");
+    if (n != 100) {
+        printf("(got %d rows) ", n);
+        FAIL("limit=9999 should clamp to 100 rows");
+        exp_json_freebuf(&body);
+        exp_db_close(db);
+        return;
+    }
+
+    exp_json_freebuf(&body);
+    exp_db_close(db);
+    PASS();
+}
+
+static void test_route_tx_and_address_200(void) {
+    TEST("exp_http_route: GET /api/tx/<hash> and /api/address/<fp> -> 200");
+
+    exp_db_t *db = NULL;
+    if (exp_db_open(":memory:", &db) != 0) { FAIL("open failed"); return; }
+
+    uint8_t token_a[64];
+    fill(token_a, 64, 0x00);
+
+    exp_tx_row_t tx = {0};
+    fill(tx.hash, 64, 0x55);
+    tx.seq = 1; tx.height = 1; tx.tx_type = 1; tx.fee = 10; tx.timestamp = 5000;
+
+    char fp[129];
+    set_test_fp(fp, '7');
+
+    exp_io_row_t io = {0};
+    memcpy(io.tx_hash, tx.hash, 64);
+    io.io_index = 0; io.direction = 1;
+    strcpy(io.address, fp);
+    memcpy(io.token_id, token_a, 64);
+    io.amount = 500;
+
+    static const char raw_bytes[] = "raw-bytes-for-http-test";
+    tx.size = (uint32_t)strlen(raw_bytes);
+    if (exp_db_insert_tx(db, &tx, (const uint8_t *)raw_bytes, strlen(raw_bytes), &io, 1) != 0) {
+        FAIL("insert_tx failed");
+        exp_db_close(db);
+        return;
+    }
+
+    char tx_hex[129];
+    bytes_to_hex128(tx.hash, tx_hex);
+
+    exp_http_ctx_t ctx = {0};
+    ctx.db = db;
+    int stop = 0;
+    ctx.stop = &stop;
+
+    char path[256];
+    snprintf(path, sizeof(path), "/api/tx/%s", tx_hex);
+
+    exp_json_t body;
+    int status = -1;
+    if (exp_http_route(&ctx, "GET", path, &body, &status) != 0 || status != 200) {
+        FAIL("tx: expected 200");
+        exp_json_freebuf(&body);
+        exp_db_close(db);
+        return;
+    }
+    if (!strstr(body.buf, "\"raw\":\"7261772d")) { /* "raw-" prefix in hex */
+        printf("(got: %s) ", body.buf);
+        FAIL("tx body missing raw hex");
+        exp_json_freebuf(&body);
+        exp_db_close(db);
+        return;
+    }
+    exp_json_freebuf(&body);
+
+    snprintf(path, sizeof(path), "/api/address/%s", fp);
+    if (exp_http_route(&ctx, "GET", path, &body, &status) != 0 || status != 200) {
+        FAIL("address: expected 200");
+        exp_json_freebuf(&body);
+        exp_db_close(db);
+        return;
+    }
+    if (!strstr(body.buf, "\"balance\":500") || !strstr(body.buf, "\"token\":\"DNAC\"")) {
+        printf("(got: %s) ", body.buf);
+        FAIL("address body missing native balance");
+        exp_json_freebuf(&body);
+        exp_db_close(db);
+        return;
+    }
+
+    exp_json_freebuf(&body);
+    exp_db_close(db);
+    PASS();
+}
+
+static void test_route_address_utxos_unavailable(void) {
+    TEST("exp_http_route: GET /api/address/<fp>?utxos=1 with chain=NULL -> unavailable");
+
+    exp_db_t *db = NULL;
+    if (exp_db_open(":memory:", &db) != 0) { FAIL("open failed"); return; }
+
+    char fp[129];
+    set_test_fp(fp, '8');
+
+    exp_http_ctx_t ctx = {0};
+    ctx.db = db;
+    ctx.chain = NULL; /* no live witness connection in this test */
+    int stop = 0;
+    ctx.stop = &stop;
+
+    char path[256];
+    snprintf(path, sizeof(path), "/api/address/%s?utxos=1", fp);
+
+    exp_json_t body;
+    int status = -1;
+    if (exp_http_route(&ctx, "GET", path, &body, &status) != 0 || status != 200) {
+        FAIL("expected 200");
+        exp_json_freebuf(&body);
+        exp_db_close(db);
+        return;
+    }
+    if (!strstr(body.buf, "\"source\":\"witness-live\"") || !strstr(body.buf, "\"error\":\"unavailable\"")) {
+        printf("(got: %s) ", body.buf);
+        FAIL("expected witness-live unavailable degrade");
+        exp_json_freebuf(&body);
+        exp_db_close(db);
+        return;
+    }
+
+    exp_json_freebuf(&body);
+    exp_db_close(db);
+    PASS();
+}
+
+static void test_route_malformed_hex_400(void) {
+    TEST("exp_http_route: GET /api/tx/<bad-hex> -> 400");
+
+    exp_db_t *db = NULL;
+    if (exp_db_open(":memory:", &db) != 0) { FAIL("open failed"); return; }
+
+    exp_http_ctx_t ctx = {0};
+    ctx.db = db;
+    int stop = 0;
+    ctx.stop = &stop;
+
+    exp_json_t body;
+    int status = -1;
+    exp_http_route(&ctx, "GET", "/api/tx/not-a-valid-hash", &body, &status);
+    if (status != 400) { FAIL("expected 400"); exp_json_freebuf(&body); exp_db_close(db); return; }
+
+    exp_json_freebuf(&body);
+    exp_db_close(db);
+    PASS();
+}
+
+static void test_route_search_precedence(void) {
+    TEST("exp_http_route: GET /api/search?q= precedence tx -> block -> address");
+
+    exp_db_t *db = NULL;
+    if (exp_db_open(":memory:", &db) != 0) { FAIL("open failed"); return; }
+
+    uint8_t H[64];
+    fill(H, 64, 0xAB);
+    char h_hex[129];
+    bytes_to_hex128(H, h_hex);
+
+    /* tx.hash == H, and its one output's address is ALSO the hex string of
+     * H — this deliberately makes tx hash / block hash / address all
+     * resolve to the SAME query string h_hex, so the test proves ordering,
+     * not just "some match exists". */
+    exp_tx_row_t tx = {0};
+    memcpy(tx.hash, H, 64);
+    tx.seq = 500; tx.height = 10; tx.tx_type = 1; tx.fee = 1; tx.timestamp = 123;
+
+    exp_io_row_t io = {0};
+    memcpy(io.tx_hash, H, 64);
+    io.io_index = 0; io.direction = 1;
+    strcpy(io.address, h_hex);
+    io.amount = 1;
+
+    static const char raw_bytes[] = "search-test-raw";
+    tx.size = (uint32_t)strlen(raw_bytes);
+    if (exp_db_insert_tx(db, &tx, (const uint8_t *)raw_bytes, strlen(raw_bytes), &io, 1) != 0) {
+        FAIL("insert_tx failed");
+        exp_db_close(db);
+        return;
+    }
+
+    exp_block_row_t blk = {0};
+    blk.height = 10;
+    fill(blk.tx_root, 64, 0x02);
+    blk.timestamp = 111;
+    fill(blk.proposer, 32, 0x03);
+    blk.tx_count = 1;
+    blk.has_block_hash = 0;
+    if (exp_db_insert_block(db, &blk) != 0) { FAIL("insert_block failed"); exp_db_close(db); return; }
+    if (exp_db_set_block_hash(db, 10, H) != 0) { FAIL("set_block_hash failed"); exp_db_close(db); return; }
+
+    exp_http_ctx_t ctx = {0};
+    ctx.db = db;
+    int stop = 0;
+    ctx.stop = &stop;
+
+    char path[256];
+    snprintf(path, sizeof(path), "/api/search?q=%s", h_hex);
+
+    exp_json_t body;
+    int status = -1;
+    if (exp_http_route(&ctx, "GET", path, &body, &status) != 0 || status != 200) {
+        FAIL("expected 200");
+        exp_json_freebuf(&body);
+        exp_db_close(db);
+        return;
+    }
+
+    const char *tx_pos = strstr(body.buf, "\"type\":\"tx\"");
+    const char *block_pos = strstr(body.buf, "\"type\":\"block\"");
+    const char *addr_pos = strstr(body.buf, "\"type\":\"address\"");
+    if (!tx_pos || !block_pos || !addr_pos) {
+        printf("(got: %s) ", body.buf);
+        FAIL("expected all 3 match types present");
+        exp_json_freebuf(&body);
+        exp_db_close(db);
+        return;
+    }
+    if (!(tx_pos < block_pos && block_pos < addr_pos)) {
+        printf("(got: %s) ", body.buf);
+        FAIL("expected precedence order tx < block < address");
+        exp_json_freebuf(&body);
+        exp_db_close(db);
+        return;
+    }
+
+    exp_json_freebuf(&body);
+    exp_db_close(db);
+    PASS();
+}
+
 int main(void) {
     printf("=== DNA Explorer exp_db Tests ===\n");
 
@@ -1153,6 +1642,17 @@ int main(void) {
     test_reset_fsm_candidate_switch_restarts();
     test_reset_fsm_negative_index_does_not_mutate();
     test_sync_stale_name();
+    test_json_str_escaping();
+    test_json_hex_emit();
+    test_route_stats_200();
+    test_route_block_200();
+    test_route_unknown_path_404();
+    test_route_post_405();
+    test_route_blocks_limit_clamp();
+    test_route_tx_and_address_200();
+    test_route_address_utxos_unavailable();
+    test_route_malformed_hex_400();
+    test_route_search_precedence();
 
     printf("\n=== Results: %d passed, %d failed ===\n", passed, failed);
     return failed > 0 ? 1 : 0;

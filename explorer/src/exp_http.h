@@ -1,0 +1,64 @@
+/* exp_http — DNAC Explorer read-only JSON HTTP API.
+ *
+ * Minimal single-threaded HTTP/1.1 server: GET-only, 6 endpoints, over the
+ * index db (exp_db.h) plus an optional live witness passthrough (exp_chain.h)
+ * for `/api/address/<fp>?utxos=1`. See
+ * docs/plans/2026-07-21-dnac-explorer-design.md §4 for the endpoint table.
+ *
+ * `exp_http_route` is the unit-tested seam: given a method + path (path may
+ * include a "?query=string" suffix — parsed internally), it dispatches to
+ * the matching endpoint handler and fills a JSON body + HTTP status. It does
+ * no socket I/O and needs no live network — tests seed `ctx->db` via the
+ * Task 2 API directly and pass `ctx->chain = NULL` to exercise the
+ * witness-unavailable degrade path.
+ *
+ * `exp_http_serve` is the thin, NOT unit-tested (Task 9 smoke only) blocking
+ * `poll()` accept loop: parses the raw HTTP request line, calls
+ * exp_http_route, writes the JSON response with
+ * `Content-Type: application/json` + `Connection: close`.
+ *
+ * Security (G2, hard rule): binds `127.0.0.1` ONLY — never `INADDR_ANY`.
+ * nginx is the only thing that should ever see this port from outside the
+ * host, and even that is out of this daemon's control — the daemon itself
+ * must never listen on a non-loopback address.
+ */
+#ifndef EXP_HTTP_H
+#define EXP_HTTP_H
+
+#include <stdint.h>
+
+#include "exp_chain.h"
+#include "exp_db.h"
+#include "exp_json.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef struct {
+    exp_db_t     *db;      /* index db (required) */
+    exp_chain_t  *chain;   /* live witness client for ?utxos=1; NULL = degrade gracefully */
+    uint16_t      port;
+    volatile int *stop;    /* set non-zero to request exp_http_serve to return */
+} exp_http_ctx_t;
+
+/* Blocking poll() accept loop on 127.0.0.1:ctx->port. Returns when
+ * *ctx->stop becomes non-zero (checked once per ~1s poll timeout), or -1 on
+ * a setup failure (socket/bind/listen). 0 on a clean stop-requested exit. */
+int exp_http_serve(exp_http_ctx_t *ctx);
+
+/* Router (unit-tested seam, no I/O). `path` is the raw HTTP request-target,
+ * e.g. "/api/blocks?before=100&limit=10" — query string parsing happens
+ * internally. `method` must be exactly "GET"; anything else -> 405.
+ * Always fills *body_out (caller must exp_json_freebuf it) and *status_out
+ * with SOME valid JSON response (including 4xx/5xx error bodies) and
+ * returns 0, EXCEPT when ctx/method/path/body_out/status_out themselves are
+ * NULL, in which case it returns -1 without touching those out-params. */
+int exp_http_route(exp_http_ctx_t *ctx, const char *method, const char *path,
+                    exp_json_t *body_out, int *status_out);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* EXP_HTTP_H */

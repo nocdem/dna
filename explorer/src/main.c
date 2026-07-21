@@ -4,8 +4,7 @@
  *   --config PATH    witness server list, "host port" per line (default
  *                     /etc/dna-explorer.conf; see exp_chain_config_load)
  *   --db PATH        sqlite index db path (default /var/lib/dna-explorer/index.db)
- *   --port N         JSON API listen port (default 8390; HTTP server itself
- *                     is Task 6 — this daemon currently runs sync-only)
+ *   --port N         JSON API listen port (default 8390), 127.0.0.1 only
  *   --once           run a single exp_sync_tick() and exit (smoke tests)
  *   --verify-index   run exp_db_verify_addr_stats() against --db and exit
  *                     0 (OK) / 1 (mismatch), no network involved
@@ -20,6 +19,7 @@
 
 #include "exp_chain.h"
 #include "exp_db.h"
+#include "exp_http.h"
 #include "exp_sync.h"
 
 #include "crypto/utils/qgp_log.h"
@@ -126,8 +126,10 @@ int main(int argc, char **argv) {
         return rc == 0 ? 0 : 1;
     }
 
-    /* Daemon mode: sync thread + signal-driven shutdown.
-     * HTTP server started here in Task 6. */
+    /* Daemon mode: sync thread + JSON API on the main thread + signal-driven
+     * shutdown. Both share g_stop: a SIGINT/SIGTERM sets it once, the sync
+     * thread notices within 1s (its own sleep loop), and exp_http_serve's
+     * poll() loop notices within its own 1s timeout. */
     signal(SIGINT, handle_stop_signal);
     signal(SIGTERM, handle_stop_signal);
 
@@ -143,6 +145,17 @@ int main(int argc, char **argv) {
         exp_db_close(db);
         exp_chain_close(chain);
         return 1;
+    }
+
+    exp_http_ctx_t http_ctx;
+    http_ctx.db = db;
+    http_ctx.chain = chain;
+    http_ctx.port = (uint16_t)port;
+    http_ctx.stop = &g_stop;
+
+    if (exp_http_serve(&http_ctx) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "exp_http_serve failed — requesting shutdown");
+        g_stop = 1;
     }
 
     pthread_join(sync_tid, NULL);
