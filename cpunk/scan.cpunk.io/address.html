@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Address — DNAC Explorer</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="robots" content="noindex, follow" />
+<link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png">
+<link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body data-page="address">
+<div id="staleness-banner" class="staleness-banner hidden"></div>
+
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="index.html">
+      <span class="brand-mark">DNAC</span><span class="brand-sub">Explorer</span>
+    </a>
+    <form id="search-form" class="search-form" autocomplete="off">
+      <input id="search-input" class="search-input" type="text" placeholder="Search by block height, block hash, tx hash, or address" />
+      <button type="submit" class="btn-primary">Search</button>
+    </form>
+  </div>
+</header>
+
+<main class="wrap">
+  <div id="search-results" class="search-results"></div>
+  <div id="address-content"></div>
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">DNAC Explorer — read-only chain index. Not affiliated with any custodial service.</div>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>

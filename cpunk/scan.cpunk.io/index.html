@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>DNAC Explorer — scan.cpunk.io</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="description" content="Block explorer for the DNAC chain — blocks, transactions, and addresses." />
+<meta name="robots" content="index, follow" />
+<link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png">
+<link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body data-page="index">
+<div id="staleness-banner" class="staleness-banner hidden"></div>
+
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="index.html">
+      <span class="brand-mark">DNAC</span><span class="brand-sub">Explorer</span>
+    </a>
+    <form id="search-form" class="search-form" autocomplete="off">
+      <input id="search-input" class="search-input" type="text" placeholder="Search by block height, block hash, tx hash, or address" />
+      <button type="submit" class="btn-primary">Search</button>
+    </form>
+  </div>
+</header>
+
+<main class="wrap">
+  <div id="search-results" class="search-results"></div>
+
+  <section class="stats-grid" id="stats-cards">
+    <div class="stat-card">
+      <div class="stat-label">Block Height</div>
+      <div class="stat-value mono" id="stat-height">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Circulating Supply</div>
+      <div class="stat-value mono" id="stat-supply">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Burned</div>
+      <div class="stat-value mono" id="stat-burned">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Chain ID</div>
+      <div class="stat-value mono" id="stat-chain-id">—</div>
+    </div>
+  </section>
+
+  <section>
+    <h2 class="section-title">Latest Blocks</h2>
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Height</th>
+          <th>Block Hash</th>
+          <th>Time</th>
+          <th>Tx Count</th>
+        </tr>
+      </thead>
+      <tbody id="blocks-tbody">
+        <tr><td colspan="4" class="loading">Loading…</td></tr>
+      </tbody>
+    </table>
+  </section>
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">DNAC Explorer — read-only chain index. Not affiliated with any custodial service.</div>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>
