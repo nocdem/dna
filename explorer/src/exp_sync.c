@@ -147,14 +147,46 @@ static int sync_ledger(exp_chain_t *chain, exp_db_t *db, uint64_t tip,
             return -1;
         }
 
+        /* fix round 1, finding 1 (second clause): `to` is already clamped
+         * to the supply tip by the loop guard above, so a short range
+         * here is never "asked past what exists" — it means the server
+         * under-delivered entries it should have had. Treat exactly like
+         * any other chunk failure: don't advance last_indexed_seq past
+         * seqs that were never actually returned. */
+        uint64_t expected_count = to - from + 1;
+        if ((uint64_t)range.count < expected_count) {
+            QGP_LOG_ERROR(LOG_TAG, "ledger_range(%llu,%llu) under-delivered: got %d of %llu entries — chunk retry",
+                          (unsigned long long)from, (unsigned long long)to, range.count,
+                          (unsigned long long)expected_count);
+            nodus_client_free_range_result(&range);
+            return -1;
+        }
+
         int chunk_ok = 1;
         for (int i = 0; i < range.count; i++) {
             const nodus_dnac_range_entry_t *e = &range.entries[i];
 
             nodus_dnac_tx_result_t txr;
             memset(&txr, 0, sizeof(txr));
-            if (exp_chain_tx(chain, e->tx_hash, &txr) != 0 || !txr.found) {
-                QGP_LOG_ERROR(LOG_TAG, "tx lookup failed/not-found for seq %llu — skipping",
+            int tx_rc = exp_chain_tx(chain, e->tx_hash, &txr);
+            if (tx_rc != 0) {
+                /* fix round 1, finding 1: a transport/query FAILURE is not
+                 * an authoritative "this tx doesn't exist" — the ledger
+                 * range entry we just got proves it does. Treat as a
+                 * chunk failure (do not advance the watermark) so a
+                 * transient outage retries this seq next tick instead of
+                 * skipping it forever. */
+                QGP_LOG_ERROR(LOG_TAG, "tx lookup FAILED (transport) for seq %llu — chunk retry",
+                              (unsigned long long)e->sequence);
+                nodus_client_free_tx_result(&txr);
+                chunk_ok = 0;
+                break;
+            }
+            if (!txr.found) {
+                /* rc==0 && !found: an authoritative not-found from a
+                 * reachable server — keep the existing log+skip policy
+                 * (exp_sync.h "Malformed-TX / not-found policy"). */
+                QGP_LOG_ERROR(LOG_TAG, "tx not found for seq %llu — skipping",
                               (unsigned long long)e->sequence);
                 nodus_client_free_tx_result(&txr);
                 continue;
@@ -216,6 +248,22 @@ static int sync_ledger(exp_chain_t *chain, exp_db_t *db, uint64_t tip,
 static int sync_blocks(exp_chain_t *chain, exp_db_t *db, uint64_t max_height) {
     uint64_t last_block_height = 0;
     int have_lbh = (exp_db_get_meta_u64(db, "last_block_height", &last_block_height) == 0);
+
+    if (have_lbh && max_height <= last_block_height) {
+        /* fix round 1, finding 4: nothing new to backfill — and critically,
+         * do NOT fall through to the trailing exp_db_set_meta_u64 below.
+         * That unconditional persist would otherwise write a
+         * last_block_height SMALLER than what's already stored (e.g. a
+         * hostile/misbehaving witness feeding a TX with a lower
+         * block_height than heights already indexed). A regressed
+         * watermark would make a LATER tick re-walk heights already
+         * fully processed and INSERT OR REPLACE their `blocks` row with
+         * has_block_hash=0 (exp_db.c), wiping the hash already
+         * back-filled from the child block's prev_hash. Only run the
+         * loop/persist when the target actually advances. */
+        return 0;
+    }
+
     uint64_t h = have_lbh ? last_block_height + 1 : 0;
 
     for (; h <= max_height; h++) {
@@ -291,6 +339,15 @@ int exp_sync_tick(exp_chain_t *chain, exp_db_t **db_ptr, const char *db_path, ex
          * persist it now (rule 1, second clause). */
         if (exp_db_set_meta_blob(*db_ptr, "chain_id", supply.chain_id, 32) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "failed to persist adopted chain_id to meta");
+            /* fix round 1, finding 3: exp_reset_fsm_feed already adopted
+             * chain_id into fsm->ref_chain_id in memory (its own
+             * first-feed contract, exp_chain.c) before we got here — only
+             * the db persist failed. Zero ref_chain_id back to "unset" so
+             * was_unset is true again next tick and the whole adoption
+             * (feed + persist) retries cleanly, instead of leaving the
+             * FSM believing a reference is established that the db never
+             * recorded. */
+            memset(fsm->ref_chain_id, 0, 32);
             return -1;
         }
         QGP_LOG_INFO(LOG_TAG, "adopted chain_id reference from first supply observation");
@@ -322,9 +379,33 @@ int exp_sync_tick(exp_chain_t *chain, exp_db_t **db_ptr, const char *db_path, ex
         return -1;
     }
 
+    /* fix round 1, finding 2: persist the highest TX block_height observed
+     * so far to meta ("max_tx_height"), independent of whether THIS tick
+     * saw any new TXs. Without this, a backfill that failed (sync_blocks
+     * returned -1, e.g. a transient block fetch error) was never retried
+     * on a later tick that happened to see no new TXs of its own — a
+     * quiet chain would leave the backfill gap forever. Never regress the
+     * stored value: take the max of what's already there and what this
+     * tick observed (mirrors fix 4's regression guard in sync_blocks). */
     if (have_max_height) {
-        if (sync_blocks(chain, db, max_height) != 0) {
+        uint64_t stored_target = 0;
+        int have_stored_target = (exp_db_get_meta_u64(db, "max_tx_height", &stored_target) == 0);
+        uint64_t target = (have_stored_target && stored_target > max_height) ? stored_target : max_height;
+        if (exp_db_set_meta_u64(db, "max_tx_height", target) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "failed to persist max_tx_height=%llu", (unsigned long long)target);
             return -1;
+        }
+    }
+
+    uint64_t backfill_target = 0;
+    int have_backfill_target = (exp_db_get_meta_u64(db, "max_tx_height", &backfill_target) == 0);
+    if (have_backfill_target) {
+        uint64_t last_block_height = 0;
+        int have_lbh = (exp_db_get_meta_u64(db, "last_block_height", &last_block_height) == 0);
+        if (!have_lbh || last_block_height < backfill_target) {
+            if (sync_blocks(chain, db, backfill_target) != 0) {
+                return -1;
+            }
         }
     }
 
