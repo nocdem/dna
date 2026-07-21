@@ -393,44 +393,53 @@
     return tr;
   }
 
-  /* Blocks pagination state: lowest height currently in the table, and
-   * whether the user paged past the first 25 (auto-refresh must not
-   * clobber a deep view — it only refreshes while on page one). */
-  var blocksLowest = null;
-  var blocksPaged = false;
+  /* Blocks page navigation. Pages are newest-first, 25 per page, anchored
+   * to the freshly fetched tip each navigation: page 1 = tip..tip-24,
+   * page p starts at tip - (p-1)*25. The API cursor `before` is a strict
+   * upper bound (height < before), so page p uses before = start + 1.
+   * Auto-refresh only re-renders while the user is on page 1. */
+  var BLOCKS_PER_PAGE = 25;
+  var blocksPage = 1;
 
-  function appendBlockRows(tbody, blocks) {
-    blocks.forEach(function (b) {
-      tbody.appendChild(blockRow(b));
-      if (blocksLowest === null || b.height < blocksLowest) blocksLowest = b.height;
-    });
+  function pagerEls() {
+    return {
+      bar: document.getElementById('blocks-pager'),
+      first: document.getElementById('pg-first'),
+      prev: document.getElementById('pg-prev'),
+      next: document.getElementById('pg-next'),
+      last: document.getElementById('pg-last'),
+      input: document.getElementById('pg-input'),
+      total: document.getElementById('pg-total')
+    };
   }
 
-  function updateBlocksMoreBtn(lastPageLen) {
-    var btn = document.getElementById('blocks-more');
-    if (!btn) return;
-    /* Genesis commits at height 1 — nothing below it to load. */
-    var done = lastPageLen < 25 || (blocksLowest !== null && blocksLowest <= 1);
-    btn.classList.toggle('hidden', done);
-    btn.disabled = false;
-    btn.textContent = 'Load more blocks';
-  }
-
-  function loadLatestBlocks() {
+  function gotoBlocksPage(p) {
     var tbody = document.getElementById('blocks-tbody');
-    if (!tbody) return Promise.resolve();
-    if (blocksPaged) return Promise.resolve(); /* keep the user's deep view */
-    return fetchJson('/api/blocks?limit=25')
-      .then(function (body) {
-        clear(tbody);
-        blocksLowest = null;
-        var blocks = (body && body.blocks) || [];
-        if (blocks.length === 0) {
+    var pg = pagerEls();
+    if (!tbody || !pg.bar) return Promise.resolve();
+    return fetchJson('/api/stats')
+      .then(function (stats) {
+        var tip = typeof stats.indexed_height === 'number' ? stats.indexed_height : 0;
+        if (tip < 1) {
+          clear(tbody);
           tbody.appendChild(el('tr', {}, el('td', { colspan: '4', class: 'muted', text: 'No blocks indexed yet.' })));
+          pg.bar.classList.add('hidden');
           return;
         }
-        appendBlockRows(tbody, blocks);
-        updateBlocksMoreBtn(blocks.length);
+        var totalPages = Math.max(1, Math.ceil(tip / BLOCKS_PER_PAGE));
+        blocksPage = Math.min(Math.max(1, p), totalPages);
+        var start = tip - (blocksPage - 1) * BLOCKS_PER_PAGE; /* highest height on this page */
+        return fetchJson('/api/blocks?before=' + (start + 1) + '&limit=' + BLOCKS_PER_PAGE)
+          .then(function (body) {
+            clear(tbody);
+            var blocks = (body && body.blocks) || [];
+            blocks.forEach(function (b) { tbody.appendChild(blockRow(b)); });
+            pg.bar.classList.remove('hidden');
+            pg.total.textContent = String(totalPages);
+            pg.input.value = String(blocksPage);
+            pg.first.disabled = pg.prev.disabled = (blocksPage <= 1);
+            pg.next.disabled = pg.last.disabled = (blocksPage >= totalPages);
+          });
       })
       .catch(function (err) {
         clear(tbody);
@@ -442,34 +451,28 @@
       });
   }
 
-  function loadMoreBlocks() {
-    var tbody = document.getElementById('blocks-tbody');
-    var btn = document.getElementById('blocks-more');
-    if (!tbody || !btn || blocksLowest === null) return;
-    btn.disabled = true;
-    btn.textContent = 'Loading…';
-    fetchJson('/api/blocks?before=' + blocksLowest + '&limit=25')
-      .then(function (body) {
-        blocksPaged = true;
-        var blocks = (body && body.blocks) || [];
-        appendBlockRows(tbody, blocks);
-        updateBlocksMoreBtn(blocks.length);
-      })
-      .catch(function () {
-        /* transient failure: re-enable so the user can retry */
-        btn.disabled = false;
-        btn.textContent = 'Load more blocks';
-      });
+  function initBlocksPager() {
+    var pg = pagerEls();
+    if (!pg.bar) return;
+    pg.first.addEventListener('click', function () { gotoBlocksPage(1); });
+    pg.prev.addEventListener('click', function () { gotoBlocksPage(blocksPage - 1); });
+    pg.next.addEventListener('click', function () { gotoBlocksPage(blocksPage + 1); });
+    pg.last.addEventListener('click', function () { gotoBlocksPage(Infinity); });
+    pg.input.addEventListener('keydown', function (ev) {
+      if (ev.key !== 'Enter') return;
+      ev.preventDefault();
+      var v = parseInt(pg.input.value, 10);
+      if (!isNaN(v)) gotoBlocksPage(v);
+    });
   }
 
   function initIndexPage() {
     loadStats();
-    loadLatestBlocks();
-    var moreBtn = document.getElementById('blocks-more');
-    if (moreBtn) moreBtn.addEventListener('click', loadMoreBlocks);
+    initBlocksPager();
+    gotoBlocksPage(1);
     setInterval(function () {
       loadStats();
-      loadLatestBlocks();
+      if (blocksPage === 1) gotoBlocksPage(1); /* never yank a deep view */
     }, 30000);
   }
 

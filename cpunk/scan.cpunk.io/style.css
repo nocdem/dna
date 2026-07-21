@@ -237,6 +237,51 @@ main.wrap h2 {
   word-break: break-all;
 }
 
+/* ── Blocks pager ─────────────────────────────────────────────────── */
+
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+.btn-page {
+  background: var(--panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  color: var(--text-main);
+  font-size: 1rem;
+  line-height: 1;
+  padding: 0.45rem 0.8rem;
+  cursor: pointer;
+  transition: border-color var(--transition-fast);
+}
+.btn-page:hover:not(:disabled) { border-color: var(--teal); }
+.btn-page:disabled { opacity: 0.35; cursor: default; }
+
+.pager-label {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.pager-input {
+  width: 4.5em;
+  background: var(--panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  color: var(--text-main);
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  text-align: center;
+  padding: 0.35rem 0.4rem;
+}
+.pager-input:focus { outline: none; border-color: var(--teal); }
+
 /* ── Search results dropdown-ish block ───────────────────────────── */
 
 .search-results:empty { display: none; }
