@@ -440,7 +440,15 @@ static void route_address(exp_http_ctx_t *ctx, const char *fp, const char *query
     uint8_t native_token[64];
     memset(native_token, 0, sizeof(native_token));
     uint64_t native_balance = 0, native_txc = 0;
-    exp_db_query_balance(ctx->db, fp, native_token, &native_balance, &native_txc);
+    /* fix round 1, finding 3: was previously ignored — a real DB error
+     * (-1) fell through with native_balance/native_txc left at their
+     * zero-initialized values and rendered as a legitimate zero balance
+     * instead of surfacing the failure. */
+    if (exp_db_query_balance(ctx->db, fp, native_token, &native_balance, &native_txc) != 0) {
+        json_error(j, "query failed");
+        *status = 500;
+        return;
+    }
 
     exp_tx_row_t rows[EXP_HTTP_LIMIT_MAX];
     int count = 0;
@@ -650,7 +658,14 @@ static void send_response(int fd, int status, const char *body) {
 }
 
 static void handle_client(exp_http_ctx_t *ctx, int cfd) {
-    static char req[EXP_HTTP_MAX_REQUEST + 1];
+    /* fix round 1, finding 2: was `static`, which made this buffer shared
+     * across every connection handled by this thread — harmless today
+     * (handle_client runs strictly sequentially on the single serve
+     * thread), but Task 7 adds concurrency on this path, and a shared
+     * static buffer across concurrent clients is a guaranteed data race.
+     * 8KB+1 is trivial on the serve thread's stack, so make it a plain
+     * stack array now instead of waiting for Task 7 to hit the bug. */
+    char req[EXP_HTTP_MAX_REQUEST + 1];
     size_t total = 0;
     int got_line = 0;
 

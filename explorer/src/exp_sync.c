@@ -395,19 +395,6 @@ int exp_sync_tick(exp_chain_t *chain, exp_db_t **db_ptr, const char *db_path, ex
         return -1;
     }
 
-    /* Task 6: cache the latest supply/tip observation in meta so /api/stats
-     * (which has no live chain access of its own — it only reads *db_ptr)
-     * can report tip state and staleness (indexed_seq vs tip_seq) without a
-     * network query. Best-effort: a persist failure here is logged but
-     * never aborts the tick — these are display-only staleness fields, not
-     * part of the indexing watermark discipline above. */
-    if (exp_db_set_meta_u64(*db_ptr, "tip_seq", supply.last_sequence) != 0 ||
-        exp_db_set_meta_u64(*db_ptr, "supply_current", supply.current_supply) != 0 ||
-        exp_db_set_meta_u64(*db_ptr, "supply_burned", supply.total_burned) != 0 ||
-        exp_db_set_meta_u64(*db_ptr, "supply_genesis", supply.genesis_supply) != 0) {
-        QGP_LOG_WARN(LOG_TAG, "failed to persist supply/tip meta (stats staleness display only)");
-    }
-
     int server_idx = exp_chain_current_server(chain);
     int was_unset = is_all_zero32(fsm->ref_chain_id);
 
@@ -448,7 +435,26 @@ int exp_sync_tick(exp_chain_t *chain, exp_db_t **db_ptr, const char *db_path, ex
 
     /* rc == EXP_RESET_NO: this observation matches the established
      * reference (whether just adopted or previously known) — proceed with
-     * the normal sync using this tip. */
+     * the normal sync using this tip.
+     *
+     * fix round 1, finding 1: cache the latest supply/tip observation in
+     * meta so /api/stats (which has no live chain access of its own — it
+     * only reads *db_ptr) can report tip state and staleness (indexed_seq
+     * vs tip_seq) without a network query. This MUST happen only after
+     * exp_reset_fsm_feed has confirmed rc == EXP_RESET_NO — persisting
+     * before the feed gate let a lying witness's supply numbers land in
+     * meta (and be served on public /api/stats) even while the FSM was
+     * still refusing the observed chain_id (PENDING). Best-effort: a
+     * persist failure here is logged but never aborts the tick — these are
+     * display-only staleness fields, not part of the indexing watermark
+     * discipline below. */
+    if (exp_db_set_meta_u64(*db_ptr, "tip_seq", supply.last_sequence) != 0 ||
+        exp_db_set_meta_u64(*db_ptr, "supply_current", supply.current_supply) != 0 ||
+        exp_db_set_meta_u64(*db_ptr, "supply_burned", supply.total_burned) != 0 ||
+        exp_db_set_meta_u64(*db_ptr, "supply_genesis", supply.genesis_supply) != 0) {
+        QGP_LOG_WARN(LOG_TAG, "failed to persist supply/tip meta (stats staleness display only)");
+    }
+
     exp_db_t *db = *db_ptr;
     uint64_t tip = supply.last_sequence;
     uint64_t max_height = 0;
