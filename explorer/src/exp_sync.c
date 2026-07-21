@@ -311,7 +311,21 @@ static int sync_blocks(exp_chain_t *chain, exp_db_t *db, uint64_t max_height) {
         return 0;
     }
 
-    uint64_t h = have_lbh ? last_block_height + 1 : 0;
+    /* Genesis is height 1, not 0, on this protocol's actual witness
+     * implementation: nodus_witness_block_height() returns MAX(height)
+     * FROM blocks (0 for an empty table), and nodus_witness_commit_genesis
+     * computes bh = nodus_witness_block_height(w) + 1
+     * (nodus/src/witness/nodus_witness_bft.c:5604-751 with the height
+     * helper at nodus_witness_db.c:759) — so genesis always commits at
+     * height 1, never 0. Confirmed live against a production witness
+     * (2026-07-21 smoke): dnac_block(height=0) is an AUTHORITATIVE
+     * not-found while dnac_block(height=1) returns the genesis block. The
+     * `dnac/block.h` struct doc comment ("sequential from 0") describes the
+     * field's abstract numbering, not this witness implementation's actual
+     * floor — starting the backfill walk at 0 left `blocks` permanently
+     * empty (every tick hit height 0's not-found and returned before ever
+     * trying height 1). */
+    uint64_t h = have_lbh ? last_block_height + 1 : 1;
 
     for (; h <= max_height; h++) {
         nodus_dnac_block_result_t blk;
@@ -371,7 +385,12 @@ static int sync_blocks(exp_chain_t *chain, exp_db_t *db, uint64_t max_height) {
             return -1;
         }
 
-        if (h > 0) {
+        /* h > 1 (not h > 0): height 1 is genesis, the lowest height any
+         * `blocks` row is ever inserted at (see the h-init comment above) —
+         * there is no height-0 parent row to backfill. Height 1's own
+         * block_hash instead gets backfilled when height 2 arrives, exactly
+         * like every other block. */
+        if (h > 1) {
             if (exp_db_set_block_hash(db, h - 1, blk.prev_hash) != 0) {
                 QGP_LOG_ERROR(LOG_TAG, "set_block_hash(%llu) failed", (unsigned long long)(h - 1));
                 nodus_client_free_block_result(&blk);

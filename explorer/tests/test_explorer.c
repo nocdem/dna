@@ -20,10 +20,11 @@
 #include <stdint.h>
 #include <unistd.h>
 
-/* Cursor sentinel for "start from the most recent row" — see exp_db.h:
- * genesis is height 0, so 0 cannot mean "unbounded", and cursors are bound
- * to sqlite as signed 64-bit, so INT64_MAX (not UINT64_MAX) is the usable
- * ceiling. */
+/* Cursor sentinel for "start from the most recent row" — see exp_db.h.
+ * Cursors are bound to sqlite as signed 64-bit, so INT64_MAX (not
+ * UINT64_MAX) is the usable ceiling; production uses UINT64_MAX
+ * (exp_http.c parse_pagination's default) since the HTTP layer never binds
+ * `before` through a signed sqlite column directly. */
 #define EXP_CURSOR_TOP INT64_MAX
 
 #define TEST(name) do { printf("  %-50s", name); } while(0)

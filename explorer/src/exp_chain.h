@@ -2,8 +2,8 @@
  *
  * Read-only wrapper around the Nodus client SDK (nodus/include/nodus/nodus.h)
  * for the explorer's chain-scan path. G1 rule (hard): this module NEVER
- * references a mutating Nodus API (nodus_client_dnac_spend, nodus_client_put,
- * etc.) — read-only DNAC queries only.
+ * calls into any mutating / spend-path Nodus client function — read-only
+ * DNAC queries only (see explorer/README.md G1 for the exact grep gate).
  *
  * exp_chain_t owns one ephemeral Dilithium5 identity (generated at open,
  * never persisted) and one nodus_client_t connection to a single server at

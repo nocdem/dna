@@ -1,0 +1,14 @@
+[Unit]
+Description=DNA Explorer daemon (scan.cpunk.io indexer + API)
+After=network-online.target
+[Service]
+User=dna-explorer
+ExecStart=/opt/dna/messenger/build/explorer/dna-explorerd --config /etc/dna-explorer.conf --db /var/lib/dna-explorer/index.db --port 8390
+Restart=on-failure
+RestartSec=10
+ProtectSystem=strict
+ReadWritePaths=/var/lib/dna-explorer
+PrivateTmp=true
+NoNewPrivileges=true
+[Install]
+WantedBy=multi-user.target
