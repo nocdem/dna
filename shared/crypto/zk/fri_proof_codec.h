@@ -16,10 +16,21 @@
  *   - Plonky3 82cfad73: fri/src/proof.rs, fri/src/two_adic_pcs.rs,
  *     commit/src/mmcs.rs (field/struct order grounding)
  *
- * Wire layout (version 1): see design doc § 3. Header = magic "DZKF" + u16
+ * Wire layout (version 2): see design doc § 3. Header = magic "DZKF" + u16
  * version + u32 total_len; all integers little-endian; Goldilocks = canonical
  * u64-LE (decoder rejects >= p); fp2 = c0 then c1; digest = raw 64 bytes;
  * vectors = u32 count prefix; Merkle opening proof = u32 depth + depth digests.
+ *
+ * Version 2 (Phase-P tail, 2026-07-21) appends the M3b salted-leaf fields the
+ * in-memory verifier structs already carry (fri_verifier.h, hiding_mmcs.rs
+ * grounding): each batch opening ends with u32 salt_elems + (salt_elems per
+ * matrix) canonical base salts; each commit-phase step ends with u32 salt_elems
+ * + salt_elems canonical base salts. salt_elems == 0 encodes an unsalted
+ * proof (salts = NULL). Without these a SALTED (hiding) proof cannot cross the
+ * wire, so the shielded pool (M3b salted is mandatory, dm design §3a) could
+ * never reach dnac_fri_verify_wire_shielded. Version 1 buffers are REJECTED
+ * (BAD_VERSION): the codec has zero live consumers and no persisted wire data
+ * (parked stack), so exactly ONE canonical format is kept.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: Apache-2.0
@@ -45,7 +56,7 @@ extern "C" {
 #define DNAC_FRI_WIRE_MAGIC1 0x5Au /* 'Z' */
 #define DNAC_FRI_WIRE_MAGIC2 0x4Bu /* 'K' */
 #define DNAC_FRI_WIRE_MAGIC3 0x46u /* 'F' */
-#define DNAC_FRI_WIRE_VERSION 1u
+#define DNAC_FRI_WIRE_VERSION 2u
 
 /* Maximum bounds (defense-in-depth; the primary OOM guard is the
  * remaining-bytes check). Generous vs the v3.0 single-TX shape. */
@@ -61,6 +72,9 @@ extern "C" {
 #define DNAC_FRI_WIRE_MAX_POINTS        256u
 #define DNAC_FRI_WIRE_MAX_CLAIMED       65536u
 #define DNAC_FRI_WIRE_MAX_COMMITMENTS   64u
+/* M3b leaf salts: SALT_ELEMS is 2 in every deployed config (hiding_mmcs.rs
+ * SALT×64bit >= 128); 8 is a generous decode ceiling, not a crypto choice. */
+#define DNAC_FRI_WIRE_MAX_SALT_ELEMS    8u
 
 /* ============================================================================
  * Codec status — SEPARATE from dnac_fri_status_t (which is unchanged).

@@ -37,6 +37,7 @@
 
 #include "conf_action_agg_fold.h"
 #include "conf_action_air.h"
+#include "fri_proof_codec.h"
 #include "fri_verifier.h"
 #include "stark_prover.h"
 
@@ -96,6 +97,39 @@ dnac_prover_status_t dnac_agg_prover_prove(
 
 /** Re-verify (priming + FRI + N-chunk constraint check). */
 dnac_fri_status_t dnac_agg_prover_proof_verify(const dnac_agg_prover_proof_t *p);
+
+/**
+ * Phase-P PRODUCTION entry: prove at the PINNED shielded FRI params
+ * (shielded_fri_params.h: num_queries=100, log_final_poly_len=0, query_pow=16
+ * -> 216-bit conjectured soundness) with OS-entropy draws AND leaf salts
+ * (genuinely salted/hiding, M3b mandatory — mirror of
+ * dnac_conf_prover_prove_production). Requires inst->log_height ==
+ * DNAC_SHIELDED_BASE_LOG_HEIGHT (the C1 fixed H=1024 pin; any other height is
+ * rejected by the shielded verifier's committed-height pin). inst->draws /
+ * salt_draws are ignored and filled internally (zeroized before free).
+ * Self-verifies like dnac_agg_prover_prove.
+ */
+dnac_prover_status_t dnac_agg_prover_prove_production(
+    const dnac_agg_prover_instance_t *inst,
+    dnac_agg_prover_proof_t         **out_proof);
+
+/**
+ * Phase-P gate: serialize the proof (params + proof + commitments, wire v2
+ * with M3b salt blocks) and verify the BYTES through the pinned consensus
+ * entry dnac_fri_verify_wire_shielded, on a freshly primed transcript (same
+ * priming as the struct self-verify). Success == DNAC_FRI_CODEC_OK AND
+ * *out_fri_status == DNAC_FRI_OK.
+ *
+ * A TEST-params proof (dnac_agg_prover_prove) FAILS this with
+ * DNAC_FRI_CODEC_ERR_SHIELDED_PARAM_MISMATCH — that rejection is itself a
+ * KAT (the param pin bites). NOTE (honest scope): the transcript here is
+ * primed from the prover's own statement; the consensus caller must instead
+ * recompute the publics from the TX wire (Phase C, roadmap S6/C2). This gate
+ * proves params/height/PoW/salt survive the wire — not statement recompute.
+ */
+dnac_fri_codec_status_t dnac_agg_prover_wire_selfcheck_shielded(
+    const dnac_agg_prover_proof_t *p,
+    dnac_fri_status_t             *out_fri_status);
 
 /** Cross-check accessors (byte-match vs the reference Plonky3 proof). */
 void dnac_agg_prover_proof_zeta(const dnac_agg_prover_proof_t *p,

@@ -575,10 +575,13 @@ void dnac_prover_fri_result_free(dnac_prover_fri_result_t *res);
  * FRI commit phase (Plonky3 82cfad73 fri/src/prover.rs:180-257): while the
  * codeword length exceeds blowup·final_poly_len, reinterpret it as a height×
  * arity matrix, ExtensionMmcs-commit it (SHA3-512 Merkle over flattened fp2
- * rows), observe the root, grind(commit PoW=0), sample beta, fold with beta.
- * Then truncate to final_poly_len, bit-reverse, inverse-NTT to coefficients,
- * and observe them; finally observe each round's log_arity and grind the query
- * PoW (0). PoW bits MUST be 0 (grinding for >0 is unimplemented — fail-close).
+ * rows), observe the root, grind(commit_pow_bits), sample beta, fold with
+ * beta. Then truncate to final_poly_len, bit-reverse, inverse-NTT to
+ * coefficients, and observe them; finally observe each round's log_arity and
+ * grind the query PoW (query_pow_bits). PoW bits are LIVE since P1
+ * (dnac_transcript_grind, grinding_challenger.rs port): 0 = no-op
+ * (byte-identical to the pre-grind path), >0 performs the real grinding
+ * search and records the witnesses in res.
  *
  * @param ro          reduced-opening codeword (2^log_height fp2, consumed).
  * @param ro_len      codeword length (power of two).

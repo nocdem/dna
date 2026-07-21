@@ -422,6 +422,10 @@ enum Cmd {
     DumpConfActionAggAirZk4in {
         #[arg(long)]
         out: PathBuf,
+        /// Phase-P tail (c): emit the h=256 SALTED (M3b) variant instead of
+        /// plain — the salted KAT at the 3-FRI-round / MAX_INPUTS boundary.
+        #[arg(long)]
+        salted: bool,
     },
     /// KAT draw stream (D1-B): the first `count` Goldilocks samples of a fresh
     /// SmallRng::seed_from_u64(1) — the EXACT stream a real HidingFriPcs prove
@@ -641,8 +645,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Cmd::DumpConfActionAggAirZk2in { out } => {
             stark_priming::dump_conf_action_agg_air_zk_2in(&out)?
         }
-        Cmd::DumpConfActionAggAirZk4in { out } => {
-            stark_priming::dump_conf_action_agg_air_zk_4in(&out)?
+        Cmd::DumpConfActionAggAirZk4in { out, salted } => {
+            stark_priming::dump_conf_action_agg_air_zk_4in(&out, salted)?
         }
         Cmd::DumpSmallrngGoldilocks { count, out } => {
             stark_priming::dump_smallrng_goldilocks(count, &out)?
@@ -9445,8 +9449,14 @@ mod stark_priming {
     // single source of truth; `$cfg_ty`/`$pcs_ty` differ only in the MMCS type
     // params. The salts live INSIDE `proof.opening_proof.1` and flow through
     // `serde_json::to_value(&proof.opening_proof)` unchanged.
+    // Per-config metadata strings (Phase-P tail (b) fix): the salted config
+    // previously inherited the plain config's "PLAIN, non-hiding"/"NOT leaf
+    // salts" descriptions — factually wrong for salted vectors (LOW cosmetic,
+    // the C tests never read them, but vectors must not carry false claims).
     macro_rules! define_dump_is_zk_stark {
-        ($fn_name:ident, $cfg_ty:ty, $pcs_ty:ty, $make_cfg:expr) => {
+        ($fn_name:ident, $cfg_ty:ty, $pcs_ty:ty, $make_cfg:expr,
+         $input_mmcs_desc:expr, $fri_mmcs_desc:expr, $pcs_desc:expr,
+         $hiding_note:expr) => {
     pub fn $fn_name<A>(
         air: &A,
         trace: RowMajorMatrix<Goldilocks>,
@@ -9765,10 +9775,10 @@ mod stark_priming {
                 "val": "Goldilocks",
                 "challenge": "BinomialExtensionField<Goldilocks, 2> (fp2)",
                 "hash": "FIPS-202 SHA3-512",
-                "input_mmcs": "MerkleTreeMmcs<[Goldilocks;1], [u64;1], FieldHash, MyCompress, 2, 8> (PLAIN, non-hiding)",
-                "fri_mmcs": "ExtensionMmcs<Goldilocks, fp2, ValMmcs>",
-                "pcs": "HidingFriPcs (ZK=true) over the plain ValMmcs, num_random_codewords=4",
-                "hiding_scope_note": "is_zk=1 hiding here = random-codeword batch blinding + doubled domain (HidingFriPcs::ZK=true), NOT leaf salts. Leaf-level salt hiding (MerkleTreeHidingMmcs, opening proof = (salts,siblings)) is deferred to M3 (real amount-confidentiality), needing a salted-leaf C Merkle verify. This M1/M2 exercises the is_zk verify PLUMBING.",
+                "input_mmcs": $input_mmcs_desc,
+                "fri_mmcs": $fri_mmcs_desc,
+                "pcs": $pcs_desc,
+                "hiding_scope_note": $hiding_note,
                 "rng_seed": "SmallRng::seed_from_u64(1) — byte-stable KAT (C verifier never sees the seed; prod proving uses OS entropy)",
                 "challenger": "SerializingChallenger64<Goldilocks, HashChallenger<u8, FriOracleSha3_512, 64>>",
                 "is_zk": is_zk
@@ -9879,12 +9889,27 @@ mod stark_priming {
     }
 
     // Instantiate the ONE codepath for the plain and salted is_zk=1 configs.
-    define_dump_is_zk_stark!(dump_is_zk_stark, ZkStarkCfg, ZkStarkPcs, make_plain_zk_config());
+    // The plain strings are BYTE-IDENTICAL to the pre-parameterization
+    // hardcoded values (plain vectors must not change).
+    define_dump_is_zk_stark!(
+        dump_is_zk_stark,
+        ZkStarkCfg,
+        ZkStarkPcs,
+        make_plain_zk_config(),
+        "MerkleTreeMmcs<[Goldilocks;1], [u64;1], FieldHash, MyCompress, 2, 8> (PLAIN, non-hiding)",
+        "ExtensionMmcs<Goldilocks, fp2, ValMmcs>",
+        "HidingFriPcs (ZK=true) over the plain ValMmcs, num_random_codewords=4",
+        "is_zk=1 hiding here = random-codeword batch blinding + doubled domain (HidingFriPcs::ZK=true), NOT leaf salts. Leaf-level salt hiding (MerkleTreeHidingMmcs, opening proof = (salts,siblings)) is deferred to M3 (real amount-confidentiality), needing a salted-leaf C Merkle verify. This M1/M2 exercises the is_zk verify PLUMBING."
+    );
     define_dump_is_zk_stark!(
         dump_is_zk_stark_salted,
         SaltedZkStarkCfg,
         SaltedZkStarkPcs,
-        make_salted_zk_config()
+        make_salted_zk_config(),
+        "MerkleTreeHidingMmcs<[Goldilocks;1], [u64;1], FieldHash, MyCompress, SmallRng, 2, 8, SALT_ELEMS=2> (SALTED leaves, M3b; seed=1 KAT streams)",
+        "ExtensionMmcs<Goldilocks, fp2, HidingValMmcs> (commit-phase salts are BASE, appended after the base-flattened fp2 row — extension_mmcs.rs:77-95)",
+        "HidingFriPcs (ZK=true) over the salted HidingValMmcs, num_random_codewords=4",
+        "is_zk=1 hiding = random-codeword batch blinding + doubled domain (HidingFriPcs::ZK=true) PLUS M3b leaf-level salt hiding (MerkleTreeHidingMmcs, opening proof = (salts,siblings), SALT_ELEMS=2 = 128-bit). Fixed seed-1 salt streams make this a byte-stable KAT of the salted verify plumbing; PRODUCTION hiding uses OS-entropy salts."
     );
 
     /// M1/M2: is_zk=1 over the vendored FibonacciAir (verify plumbing).
@@ -15042,6 +15067,7 @@ mod stark_priming {
     /// MAX_INPUTS=4 (all four nf slots used) — the GAP-1 boundary. h=256 (8 blocks).
     pub fn dump_conf_action_agg_air_zk_4in(
         out_path: &PathBuf,
+        salted: bool,
     ) -> Result<(), Box<dyn std::error::Error>> {
         conf_action_check_domseps()?;
         conf_agg_check_domseps()?;
@@ -15081,18 +15107,34 @@ mod stark_priming {
             core::array::from_fn(|j| Goldilocks::from_u64(AGG_KAT_TXBIND[j]));
         let pis = agg_build_pis(anchor, num_input, nf_slots, num_output, output_commit, fee,
                                 kat_txbind);
-        dump_is_zk_stark(
-            &ConfActionAggAir,
-            trace,
-            pis,
-            "conf_action_agg_air_zk_4in",
-            "DUAL-MODE S4b.6 — FOUR-input aggregate Action AIR (all four in one \
-             depth-4 tree → one anchor; N_input=MAX_INPUTS=4, all 4 nf slots used; \
-             the GAP-1 boundary)",
-            "DUAL-MODE S4b.6 — 4-input aggregate real-STARK lift (h=256, num_qc=8)",
-            Some(8),
-            out_path,
-        )
+        if salted {
+            dump_is_zk_stark_salted(
+                &ConfActionAggAir,
+                trace,
+                pis,
+                "conf_action_agg_air_zk_4in_salted",
+                "PHASE-P tail (c) — h=256 SALTED (M3b MerkleTreeHidingMmcs, \
+                 SALT_ELEMS=2, seed=1) FOUR-input aggregate proof: the salted \
+                 byte-match KAT at the 3-FRI-round / N_input=MAX_INPUTS=4 \
+                 boundary (fixed KAT seed; production hiding = OS entropy).",
+                "PHASE-P — salted 4-input aggregate (h=256, num_qc=8)",
+                Some(8),
+                out_path,
+            )
+        } else {
+            dump_is_zk_stark(
+                &ConfActionAggAir,
+                trace,
+                pis,
+                "conf_action_agg_air_zk_4in",
+                "DUAL-MODE S4b.6 — FOUR-input aggregate Action AIR (all four in one \
+                 depth-4 tree → one anchor; N_input=MAX_INPUTS=4, all 4 nf slots used; \
+                 the GAP-1 boundary)",
+                "DUAL-MODE S4b.6 — 4-input aggregate real-STARK lift (h=256, num_qc=8)",
+                Some(8),
+                out_path,
+            )
+        }
     }
 
     /// S4b.6 multi-input KAT: TWO INPUT notes (60 + 40 = OUTPUT 100, fee 0) that

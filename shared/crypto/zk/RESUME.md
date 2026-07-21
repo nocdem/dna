@@ -1,4 +1,4 @@
-# RESUME — DNAC v3 ZK stack (CURRENT STATUS: 2026-07-14)
+# RESUME — DNAC v3 ZK stack (CURRENT STATUS: 2026-07-21)
 
 > **This top block is authoritative and current. Everything under "═══ HISTORICAL
 > BUILD LOG ═══" is the traceable module-by-module history and its numbers
@@ -541,11 +541,37 @@
         `test_prover_agg --salted` BYTE-MATCHES the real Plonky3 salted proof + self-
         verifies. **1-agent red-team: 0 CRIT/0 HIGH** (offsets exact conf mirror,
         unsalted byte-identical, C==real-Plonky3-salted, ASAN+UBSAN clean).
-      - **Phase-P non-blocking tails:** (a) production prover entries (query_pow 16 +
-        num_queries 100 + OS-entropy salts, stream A/B/trace INDEPENDENT); (b) salted
-        vector metadata note inherits the shared macro's plain-config "NOT leaf salts"
-        string (LOW cosmetic, C never reads it; fix when the dump macro/conf vectors
-        next regenerate); (c) h=256 salted oracle vector.
+      - **🎯 Phase-P tails CLOSED (2026-07-21):**
+        - **(a) DONE — production prover entry** `dnac_agg_prover_prove_production`:
+          pinned params (100 queries + lfpl=0 + 16-bit query-PoW = 216-bit
+          conjectured), OS-entropy draws AND salts (genuinely salted, independent
+          streams), height pinned to `DNAC_SHIELDED_BASE_LOG_HEIGHT` (h=1024,
+          fail-close). The prove pipeline became cfg-parametric (test A_* set
+          byte-identical — all KATs re-byte-match). **Wire codec v2** (required
+          discovery: v1 had NO salt fields, so a salted proof could not cross the
+          wire at all): batch openings + commit-phase steps carry optional M3b
+          salt blocks (design doc §8 addendum); `fri_proof_wire.json` +
+          `stark_proof_wire{,_no_next}.json` regenerated (deterministic 2×).
+          **Gate `test_prover_shielded_production` (the roadmap P1 milestone):
+          a REAL 100-query 16-bit-PoW SALTED h=1024 proof serializes (wire v2)
+          and is ACCEPTED by `dnac_fri_verify_wire_shielded`** (~15 s, value-
+          independent = no-flaky); negatives: wrong height → entry ERR_PARAM,
+          TEST-params proof → SHIELDED_PARAM_MISMATCH (the pin bites). CT-asserts
+          tie A_LOG_BLOWUP/arity/is_zk to the DNAC_SHIELDED_* constants.
+          Honest scope: transcript primed from the prover's own statement; the
+          wire-recompute of publics is Phase C (S6/C2).
+        - **(b) DONE — salted vector metadata:** `define_dump_is_zk_stark` now
+          takes per-config mmcs/pcs/hiding-note strings; plain instantiation
+          byte-identical (verified `cmp`), salted vectors regenerated with
+          honest MerkleTreeHidingMmcs descriptions.
+        - **(c) DONE — h=256 salted oracle vector:**
+          `dump-conf-action-agg-air-zk-4in --salted` →
+          `conf_action_agg_air_zk_4in_salted.json` (3 FRI rounds,
+          N_input=MAX_INPUTS=4); `test_prover_agg 4in --salted` BYTE-MATCHES the
+          real Plonky3 salted h=256 proof (zeta+3 roots+final_poly+43 publics).
+        - Independent red-team (zero-consumer scope per
+          feedback_red_team_scope_limit): see the Phase-P-tails red-team note in
+          memory/commit.
     - **⚠ S4b.2 DESIGN FINDING (2026-07-17) — the real-STARK lift is NOT a
       mechanical S1e-mirror; it has genuine soundness-critical design content the
       S4a construction gate hid (S4a reads φ + r DIRECTLY in a C loop; the fold is
@@ -584,9 +610,11 @@
   - **THEN:** S2 C3 membership (+ M1/M2 goals, + E5 point-read reader), S3 C4
     nullifier, S4 aggregate prover/verifier (+ H2/H3), S5 V4 wire, S6 consensus
     (state_root v4), S7 note-enc+wallet, S8 Genesis 7/7.
-- **`make test`: 64 test binaries GREEN, 0 warnings** (`cd shared/crypto/zk && make test`;
+- **`make test`: 65 test binaries GREEN, 0 warnings** (`cd shared/crypto/zk && make test`;
   incl. the 3 S0 dual-mode gates test_note_commit / test_shielded_domsep /
-  test_shielded_fri_params;
+  test_shielded_fri_params and the Phase-P production gate
+  test_prover_shielded_production (pinned 100q/16-bit-PoW salted h=1024 proof
+  accepted on the dnac_fri_verify_wire_shielded path, ~15 s);
   `test_fri_verify_zk` runs on FibonacciAir + is_zk RangeProofAir + 2 conf-root +
   2 SALTED conf-root (`--salted`) instances; `test_prover_conf` runs 2 unsalted +
   2 SALTED conf-prover instances; `test_prover_salted_commit` byte-matches the

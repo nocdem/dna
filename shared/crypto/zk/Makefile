@@ -100,6 +100,7 @@ TESTS = \
     $(BUILD)/test_prover_conf \
     $(BUILD)/test_prover_action \
     $(BUILD)/test_prover_agg \
+    $(BUILD)/test_prover_shielded_production \
     $(BUILD)/test_prover_salted_commit \
     $(BUILD)/test_zk_entropy \
     $(BUILD)/test_prover_trace \
@@ -460,8 +461,13 @@ $(BUILD)/test_prover_action: tests/test_prover_action.c stark_prover_action.h st
 	$(CC) $(CFLAGS) $(INCLUDES) tests/test_prover_action.c stark_prover_action.c conf_action_fold.c poseidon2_fold.c stark_constraints.c zk_entropy.c $(ACTION_AIR_STACK) $(PROVER_STACK) fri_verifier.c stark_priming.c $(SHA3_SRC) $(LDLIBS) -o $@
 
 # Dual-mode S4b.4 — aggregate prover byte-match vs REAL is_zk=1 proof (21 publics).
-$(BUILD)/test_prover_agg: tests/test_prover_agg.c stark_prover_agg.h stark_prover_agg.c conf_action_agg_fold.h conf_action_agg_fold.c conf_action_fold.h conf_action_fold.c conf_action_agg_air.h poseidon2_fold.h poseidon2_fold.c stark_constraints.c $(ACTION_AIR_STACK) $(PROVER_STACK) fri_verifier.c stark_priming.c | $(BUILD)
-	$(CC) $(CFLAGS) $(INCLUDES) tests/test_prover_agg.c stark_prover_agg.c conf_action_agg_fold.c conf_action_fold.c poseidon2_fold.c stark_constraints.c $(ACTION_AIR_STACK) $(PROVER_STACK) fri_verifier.c stark_priming.c $(SHA3_SRC) $(LDLIBS) -o $@
+AGG_PROVER_SRCS = stark_prover_agg.c conf_action_agg_fold.c conf_action_fold.c poseidon2_fold.c stark_constraints.c $(ACTION_AIR_STACK) $(PROVER_STACK) fri_verifier.c fri_proof_codec.c shielded_fri_params.c zk_entropy.c stark_priming.c
+
+$(BUILD)/test_prover_agg: tests/test_prover_agg.c stark_prover_agg.h stark_prover_agg.c conf_action_agg_fold.h conf_action_agg_fold.c conf_action_fold.h conf_action_fold.c conf_action_agg_air.h poseidon2_fold.h poseidon2_fold.c stark_constraints.c $(ACTION_AIR_STACK) $(PROVER_STACK) fri_verifier.c fri_proof_codec.c fri_proof_codec.h shielded_fri_params.c zk_entropy.c stark_priming.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_prover_agg.c $(AGG_PROVER_SRCS) $(SHA3_SRC) $(LDLIBS) -o $@
+
+$(BUILD)/test_prover_shielded_production: tests/test_prover_shielded_production.c stark_prover_agg.h stark_prover_agg.c conf_action_agg_fold.h conf_action_agg_fold.c conf_action_fold.h conf_action_fold.c conf_action_agg_air.h poseidon2_fold.h poseidon2_fold.c stark_constraints.c $(ACTION_AIR_STACK) $(PROVER_STACK) fri_verifier.c fri_proof_codec.c fri_proof_codec.h shielded_fri_params.c shielded_fri_params.h zk_entropy.c stark_priming.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_prover_shielded_production.c $(AGG_PROVER_SRCS) $(SHA3_SRC) $(LDLIBS) -o $@
 
 $(BUILD)/test_prover_salted_commit: tests/test_prover_salted_commit.c stark_prover.h $(CONF_AIR_STACK) $(PROVER_STACK) | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) tests/test_prover_salted_commit.c $(CONF_AIR_STACK) $(PROVER_STACK) $(SHA3_SRC) $(LDLIBS) -o $@
@@ -1012,6 +1018,16 @@ test: all
 	@echo
 	@echo "  P4 SALTED KAT — M3b MerkleTreeHidingMmcs aggregate (salted leaves byte-match):"
 	@$(BUILD)/test_prover_agg tools/vectors/conf_action_agg_air_zk_salted.json tools/vectors/smallrng_goldilocks.json --salted
+	@echo
+	@echo "  Phase-P tail (c) — h=256 SALTED 4-input KAT (3 FRI rounds, N_input=MAX_INPUTS):"
+	@$(BUILD)/test_prover_agg tools/vectors/conf_action_agg_air_zk_4in_salted.json tools/vectors/smallrng_goldilocks.json 4in --salted
+	@echo
+	@echo "============================================================"
+	@echo "Phase-P — PRODUCTION shielded prover gate (pinned params, wire v2)"
+	@echo "  OS-entropy SALTED h=1024 proof, 100 queries + 16-bit query-PoW,"
+	@echo "  serialized and accepted by dnac_fri_verify_wire_shielded"
+	@echo "============================================================"
+	@$(BUILD)/test_prover_shielded_production
 	@echo
 	@echo "============================================================"
 	@echo "S2 dual-mode C3 — Poseidon2 Merkle-path membership (is_zk=0)"

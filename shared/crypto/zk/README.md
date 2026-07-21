@@ -41,7 +41,7 @@ v4 plan: `docs/plans/2026-06-09-v4-confidential-northstar-design.md`.
 - **Range/balance AIR (ADDITIVE):** `range_air` (B/S, **52-bit**), `sum_balance` (I/U/F + N count-bound + P public-bound), combined `range_proof_air` air_eval (**56-col, 61 constraints**: B·52 + S + R + P + I + U + F + CI + CU + CF) — end-to-end C↔Plonky3 byte-matched, then 13-subagent soundness red-team (2026-07-11/12).
 - **B6 (field-wrap) CLOSED (2026-07):** amounts range-checked to **52 bits** (`2^52 < p`; 64-bit was vacuous over Goldilocks → a mint), `N_max=1024` ⇒ `Σ < 2^62 < p`. Plus a public-input bound (`claimed`,`fee` `< 2^62`) closing the fee-term mod-p wraparound the red-team found.
 - **B7 (padding/output-count) CLOSED (2026-07):** `is_real` + `(1−is_real)·amount=0` (P) + `cnt` accumulator binding `Σ is_real` to public `n_real`. `blockers==[B1]` only.
-- **FRI wire-param UB guards (2026-07-12):** `fri_verifier` rejects degenerate/UB params — `num_queries==0` (accept-any downgrade), `log_global_max_height≥64` (shift-count UB → chain-split class), mixed-height batch (was a `-DNDEBUG`-strippable `assert`, now a runtime reject) → `DNAC_FRI_ERR_UNSUPPORTED_PARAMS`. A FULL production `FriParameters` pin remains a before-consensus MUST-FIX (needs a grounded FRI reference; not invented here).
+- **FRI wire-param UB guards (2026-07-12):** `fri_verifier` rejects degenerate/UB params — `num_queries==0` (accept-any downgrade), `log_global_max_height≥64` (shift-count UB → chain-split class), mixed-height batch (was a `-DNDEBUG`-strippable `assert`, now a runtime reject) → `DNAC_FRI_ERR_UNSUPPORTED_PARAMS`. The FULL production `FriParameters` pin landed 2026-07-16/21: `shielded_fri_params.h` (grounded to Plonky3 `new_benchmark_zk`, config.rs:102-113 — log_blowup 2, 100 queries, 16-bit query-PoW → 216-bit conjectured) is substituted, never wire-read, by `dnac_fri_verify_wire_shielded`; the production prover entry `dnac_agg_prover_prove_production` proves at exactly that set (Phase-P gate `test_prover_shielded_production`).
 - **`range_balance_verify()` composed door (2026-07-12):** the single sound money-gating entry (range B/S first, then balance N/P/I/U/F). `sum_balance` alone accepts the mint witness (KAT E2); the composed door rejects it (KAT E6, mutation-verified).
 - **Fix design + full audit trail:** `dnac/docs/plans/2026-07-11-range-balance-soundness-fix-design.md`.
 - **Research verdict** (in-AIR SHA3 sponge does not exist) + **v4 north-star design doc** (3 mandatory sections + crypto-agility + red-team plan).
@@ -97,7 +97,7 @@ A clean-room C implementation of a STARK-based zero-knowledge range proof system
 shared/crypto/zk/
 ├── README.md                  (this file)
 ├── RESUME.md                  per-module status, audit history, rework-owed
-├── Makefile                   build + `make test` harness (~35 binaries)
+├── Makefile                   build + `make test` harness (65 binaries)
 ├── SUBAGENT_AUDIT_2026_05_23.md  evening-of-nuke independent audit record
 │
 ├── field_goldilocks.{c,h}     Plonky3-grounded Goldilocks base + ext (fp2)

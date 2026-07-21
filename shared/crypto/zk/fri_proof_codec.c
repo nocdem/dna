@@ -128,6 +128,14 @@ static void enc_batch_opening(wbuf_t *w, const dnac_fri_batch_opening_t *bo) {
     wb_u32(w, (uint32_t)bo->opening_proof.depth);
     for (uint32_t s = 0; s < bo->opening_proof.depth; ++s)
         wb_digest(w, &bo->opening_proof.siblings[s]);
+    /* v2: M3b leaf salts — salt_elems values PER MATRIX (fri_verifier.h
+     * dnac_fri_batch_opening_t; salts==NULL <=> salt_elems==0). */
+    wb_u32(w, (uint32_t)bo->salt_elems);
+    if (bo->salt_elems > 0) {
+        for (size_t m = 0; m < bo->num_matrices; ++m)
+            for (size_t s = 0; s < bo->salt_elems; ++s)
+                wb_base(w, bo->salts[m][s]);
+    }
 }
 
 static void enc_cpo(wbuf_t *w, const dnac_fri_commit_phase_proof_step_t *step) {
@@ -138,6 +146,11 @@ static void enc_cpo(wbuf_t *w, const dnac_fri_commit_phase_proof_step_t *step) {
     wb_u32(w, (uint32_t)step->opening_proof.depth);
     for (uint32_t s = 0; s < step->opening_proof.depth; ++s)
         wb_digest(w, &step->opening_proof.siblings[s]);
+    /* v2: M3b commit-phase leaf salts (BASE elements, extension_mmcs.rs:77-95
+     * base-flattened convention — see fri_verifier.h). */
+    wb_u32(w, (uint32_t)step->salt_elems);
+    for (size_t s = 0; s < step->salt_elems; ++s)
+        wb_base(w, step->salts[s]);
 }
 
 static void enc_query_proof(wbuf_t *w, const dnac_fri_query_proof_t *qp) {
@@ -387,6 +400,37 @@ static int dec_batch_opening(dctx_t *c, dnac_fri_batch_opening_t *bo) {
     bo->opening_proof.depth = depth;
     bo->opening_proof.num_matrices = m; /* verifier rebuilds; set for consistency */
     bo->opening_proof.siblings = sib;
+
+    /* v2: M3b leaf salts — u32 salt_elems then salt_elems canonical base values
+     * PER MATRIX. 0 => unsalted (salts NULL). The per-matrix count is pinned to
+     * salt_elems by construction (SEC-M3b-1) and rd_base rejects non-canonical
+     * salts (SEC-M3b-2). */
+    {
+        uint32_t se;
+        if (!rd_u32(c, &se)) return 0;
+        if (se > DNAC_FRI_WIRE_MAX_SALT_ELEMS) {
+            c->err = DNAC_FRI_CODEC_ERR_LENGTH_OVERFLOW;
+            return 0;
+        }
+        bo->salt_elems = se;
+        bo->salts = NULL;
+        if (se > 0) {
+            gold_fp_t **saltp =
+                (gold_fp_t **)rd_array(c, m, sizeof(gold_fp_t *));
+            if (c->err) return 0;
+            /* m == 0 with se > 0: no salt values follow; saltp stays NULL and
+             * the verifier sees num_matrices==0 (nothing to salt). */
+            for (uint32_t mi = 0; mi < m; ++mi) {
+                gold_fp_t *sv =
+                    (gold_fp_t *)rd_array(c, se, sizeof(gold_fp_t));
+                if (c->err) return 0;
+                for (uint32_t s = 0; s < se; ++s)
+                    if (!rd_base(c, &sv[s])) return 0;
+                saltp[mi] = sv;
+            }
+            bo->salts = (const gold_fp_t *const *)saltp;
+        }
+    }
     return 1;
 }
 
@@ -415,6 +459,26 @@ static int dec_cpo(dctx_t *c, dnac_fri_commit_phase_proof_step_t *step) {
     step->opening_proof.depth = depth;
     step->opening_proof.num_matrices = 1;
     step->opening_proof.siblings = sib;
+
+    /* v2: M3b commit-phase salts — u32 salt_elems + salt_elems canonical base
+     * values. 0 => unsalted (salts NULL). */
+    {
+        uint32_t se;
+        if (!rd_u32(c, &se)) return 0;
+        if (se > DNAC_FRI_WIRE_MAX_SALT_ELEMS) {
+            c->err = DNAC_FRI_CODEC_ERR_LENGTH_OVERFLOW;
+            return 0;
+        }
+        step->salt_elems = se;
+        step->salts = NULL;
+        if (se > 0) {
+            gold_fp_t *sv = (gold_fp_t *)rd_array(c, se, sizeof(gold_fp_t));
+            if (c->err) return 0;
+            for (uint32_t s = 0; s < se; ++s)
+                if (!rd_base(c, &sv[s])) return 0;
+            step->salts = sv;
+        }
+    }
     return 1;
 }
 

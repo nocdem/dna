@@ -122,12 +122,12 @@
   "dnac_stack": {
     "challenge": "BinomialExtensionField<Goldilocks, 2> (fp2)",
     "challenger": "SerializingChallenger64<Goldilocks, HashChallenger<u8, FriOracleSha3_512, 64>>",
-    "fri_mmcs": "ExtensionMmcs<Goldilocks, fp2, ValMmcs>",
+    "fri_mmcs": "ExtensionMmcs<Goldilocks, fp2, HidingValMmcs> (commit-phase salts are BASE, appended after the base-flattened fp2 row — extension_mmcs.rs:77-95)",
     "hash": "FIPS-202 SHA3-512",
-    "hiding_scope_note": "is_zk=1 hiding here = random-codeword batch blinding + doubled domain (HidingFriPcs::ZK=true), NOT leaf salts. Leaf-level salt hiding (MerkleTreeHidingMmcs, opening proof = (salts,siblings)) is deferred to M3 (real amount-confidentiality), needing a salted-leaf C Merkle verify. This M1/M2 exercises the is_zk verify PLUMBING.",
-    "input_mmcs": "MerkleTreeMmcs<[Goldilocks;1], [u64;1], FieldHash, MyCompress, 2, 8> (PLAIN, non-hiding)",
+    "hiding_scope_note": "is_zk=1 hiding = random-codeword batch blinding + doubled domain (HidingFriPcs::ZK=true) PLUS M3b leaf-level salt hiding (MerkleTreeHidingMmcs, opening proof = (salts,siblings), SALT_ELEMS=2 = 128-bit). Fixed seed-1 salt streams make this a byte-stable KAT of the salted verify plumbing; PRODUCTION hiding uses OS-entropy salts.",
+    "input_mmcs": "MerkleTreeHidingMmcs<[Goldilocks;1], [u64;1], FieldHash, MyCompress, SmallRng, 2, 8, SALT_ELEMS=2> (SALTED leaves, M3b; seed=1 KAT streams)",
     "is_zk": 1,
-    "pcs": "HidingFriPcs (ZK=true) over the plain ValMmcs, num_random_codewords=4",
+    "pcs": "HidingFriPcs (ZK=true) over the salted HidingValMmcs, num_random_codewords=4",
     "rng_seed": "SmallRng::seed_from_u64(1) — byte-stable KAT (C verifier never sees the seed; prod proving uses OS entropy)",
     "val": "Goldilocks"
   },

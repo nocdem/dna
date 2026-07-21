@@ -297,8 +297,9 @@ int main(int argc,char **argv){
     uint8_t neg_trunc[5]={DNAC_FRI_WIRE_MAGIC0,DNAC_FRI_WIRE_MAGIC1,DNAC_FRI_WIRE_MAGIC2,DNAC_FRI_WIRE_MAGIC3,(uint8_t)DNAC_FRI_WIRE_VERSION};
     /* 2. bad magic: V6 copy, byte 0 zeroed -> BAD_MAGIC */
     uint8_t *neg_magic=(uint8_t*)malloc(v6_len); memcpy(neg_magic,v6_wire,v6_len); neg_magic[0]=0x00;
-    /* 3. bad version: V6 copy, version (offset 4..5) = 0x0002 -> BAD_VERSION */
-    uint8_t *neg_ver=(uint8_t*)malloc(v6_len); memcpy(neg_ver,v6_wire,v6_len); neg_ver[4]=0x02; neg_ver[5]=0x00;
+    /* 3. bad version: V6 copy, version (offset 4..5) = 0xFFFF (never a valid
+     * DNAC_FRI_WIRE_VERSION) -> BAD_VERSION */
+    uint8_t *neg_ver=(uint8_t*)malloc(v6_len); memcpy(neg_ver,v6_wire,v6_len); neg_ver[4]=0xFF; neg_ver[5]=0xFF;
     /* 4. noncanonical: synthetic wire, query_pow_witness = p -> NONCANONICAL */
     sb_t s_nc; s_nc.n=0; sb_header(&s_nc); sb_params(&s_nc);
         sb_u32(&s_nc,0); /* commit_phase_commits count */
@@ -331,8 +332,8 @@ int main(int argc,char **argv){
     fprintf(f,"  \"plonky3_commit\": \"82cfad73cd734d37a0d51953094f970c531817ec\",\n");
     fprintf(f,"  \"scope\": \"fri_proof_wire\",\n");
     fprintf(f,"  \"spec_doc\": \"docs/plans/2026-05-29-fri-proof-wire-codec-design.md\",\n");
-    fprintf(f,"  \"note\": \"Wire bytes produced by the C codec dnac_fri_proof_encode from the locked Plonky3-grounded V6 + roll-in fixtures. Correctness anchor: decode(wire) -> dnac_fri_verify -> DNAC_FRI_OK. DNAC wire format (magic DZKF + u16 version + u32 total_len; LE; canonical u64 Goldilocks; fp2 c0|c1; digest 64B; u32 length prefixes).\",\n");
-    fprintf(f,"  \"wire_magic_hex\": \"445a4b46\", \"wire_version\": 1,\n");
+    fprintf(f,"  \"note\": \"Wire bytes produced by the C codec dnac_fri_proof_encode from the locked Plonky3-grounded V6 + roll-in fixtures. Correctness anchor: decode(wire) -> dnac_fri_verify -> DNAC_FRI_OK. DNAC wire format (magic DZKF + u16 version + u32 total_len; LE; canonical u64 Goldilocks; fp2 c0|c1; digest 64B; u32 length prefixes; v2 appends M3b salt blocks — u32 salt_elems + canonical base salts per batch opening (per matrix) and per commit-phase step, 0 = unsalted).\",\n");
+    fprintf(f,"  \"wire_magic_hex\": \"445a4b46\", \"wire_version\": %u,\n", (unsigned)DNAC_FRI_WIRE_VERSION);
 
     fprintf(f,"  \"cases\": [\n");
     /* V6 */

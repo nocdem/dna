@@ -19,12 +19,15 @@
 #include <string.h>
 
 #include "field_goldilocks.h"
+#include "fri_proof_codec.h"      /* Phase-P: shielded wire self-check */
 #include "poseidon2_air_cols.h"
 #include "poseidon2_air_trace.h"
 #include "shielded_domsep.h"
+#include "shielded_fri_params.h"  /* Phase-P: pinned production FRI params */
 #include "stark_constraints.h"
 #include "stark_priming.h"
 #include "transcript.h"
+#include "zk_entropy.h"           /* Phase-P: OS-entropy production draws */
 
 /* Fixed aggregate / is_zk=1 config constants. */
 #define A_IS_ZK 1u
@@ -40,6 +43,41 @@
 #define A_CW ((size_t)2 + A_NUM_RANDOM)    /* 6 */
 #define A_NUM_PUBLICS ((size_t)CONF_AGGZK_NUM_PUBLICS) /* 43 (S4c) */
 #define A_SALT_ELEMS 2u                    /* P4: M3b leaf-salt (128-bit nominal), mirror C_SALT_ELEMS */
+
+/* ── Phase-P: runtime FRI config (the pipeline is parametric over these; the
+ * A_* values above stay the byte-stable KAT/test set). ── */
+#define A_MAX_QUERIES 128u /* proof-struct bound; >= the pinned production 100 */
+typedef struct {
+    unsigned num_queries;
+    unsigned log_final_poly_len;
+    unsigned commit_pow_bits;
+    unsigned query_pow_bits;
+} agg_fri_cfg_t;
+static const agg_fri_cfg_t AGG_CFG_TEST = {
+    A_NUM_QUERIES, A_LOG_FINAL_POLY_LEN, 0u, 0u};
+static const agg_fri_cfg_t AGG_CFG_SHIELDED = {
+    (unsigned)DNAC_SHIELDED_FRI_NUM_QUERIES,
+    (unsigned)DNAC_SHIELDED_FRI_LOG_FINAL_POLY_LEN,
+    (unsigned)DNAC_SHIELDED_FRI_COMMIT_POW_BITS,
+    (unsigned)DNAC_SHIELDED_FRI_QUERY_POW_BITS};
+/* The compile-time half of the pinned set MUST equal the shielded consensus
+ * constants — a drifted A_LOG_BLOWUP would silently change the security level
+ * the production entry claims (mutation-hardening, same pattern as
+ * SB_CT_ASSERT in test_air_column_layout_sum_balance.c). */
+#define AGG_CT_ASSERT(cond, tag) typedef char agg_ct_assert_##tag[(cond) ? 1 : -1]
+AGG_CT_ASSERT(A_LOG_BLOWUP == DNAC_SHIELDED_FRI_LOG_BLOWUP, blowup_pinned);
+AGG_CT_ASSERT(A_MAX_LOG_ARITY == DNAC_SHIELDED_FRI_MAX_LOG_ARITY, arity_pinned);
+AGG_CT_ASSERT(A_IS_ZK == DNAC_SHIELDED_IS_ZK, is_zk_pinned);
+AGG_CT_ASSERT(DNAC_SHIELDED_FRI_NUM_QUERIES <= A_MAX_QUERIES, queries_fit);
+/* The DNAC_AGG_PROVER_SALT_DRAWS coefficient (160 per height unit) is EXACTLY
+ * tight against the max stream-A index used in S12
+ * (SE·lde_h·(1 trace + A_NUM_QC quotient + 1 random) − 1, lde_h =
+ * 2^(blowup+is_zk)·h): any bump to SE/A_NUM_QC/blowup/is_zk without updating
+ * the header macro would be an OOB heap read (Phase-P red-team INFO-3). Pin it. */
+AGG_CT_ASSERT((size_t)A_SALT_ELEMS * ((size_t)1 << (A_LOG_BLOWUP + A_IS_ZK)) *
+                      (2u + A_NUM_QC) ==
+                  DNAC_AGG_PROVER_SALT_DRAWS(1),
+              salt_draws_coeff_tight);
 
 struct dnac_agg_prover_proof_s {
     size_t base_degree_bits, degree_bits, log_max_height, lde_h, num_fri_rounds;
@@ -86,7 +124,7 @@ struct dnac_agg_prover_proof_s {
     size_t qclen[A_NUM_QC];
 
     gold_fp2_t zeta, zeta_next;
-    uint64_t query_indices[64];
+    uint64_t query_indices[A_MAX_QUERIES];
 };
 
 static size_t ilog2_pow2(size_t n) {
@@ -534,9 +572,10 @@ void dnac_agg_prover_proof_free(dnac_agg_prover_proof_t *p) {
     free(p);
 }
 
-dnac_prover_status_t dnac_agg_prover_prove(
+static dnac_prover_status_t agg_prove_cfg(
     const dnac_agg_prover_instance_t *inst,
-    dnac_agg_prover_proof_t         **out_proof) {
+    dnac_agg_prover_proof_t         **out_proof,
+    const agg_fri_cfg_t              *cfg) {
     if (inst == NULL || out_proof == NULL || inst->draws == NULL) {
         return DNAC_PROVER_ERR_PARAM;
     }
@@ -561,7 +600,22 @@ dnac_prover_status_t dnac_agg_prover_prove(
     const size_t lde_h = (size_t)1 << log_max_height;
     const size_t q_size = (size_t)1 << (degree_bits + A_LOG_NUM_QC);
     const size_t next_step = (size_t)1 << (A_IS_ZK + A_LOG_NUM_QC);
-    const size_t num_rounds_expected = base_db - 1;
+    /* Phase-P: fail-close on a cfg the pipeline cannot represent. Round count =
+     * log_max_height - log_blowup - log_final_poly_len (the arity-1 fold from
+     * the largest committed domain down to the final-poly length; matches the
+     * pre-Phase-P constant base_db - 1 at the test lfpl=2). */
+    if (cfg == NULL || cfg->num_queries == 0 ||
+        cfg->num_queries > A_MAX_QUERIES ||
+        (size_t)cfg->log_final_poly_len + A_LOG_BLOWUP > log_max_height) {
+        return DNAC_PROVER_ERR_PARAM;
+    }
+    const size_t nq_cfg = cfg->num_queries;
+    const size_t num_rounds_expected =
+        log_max_height - A_LOG_BLOWUP - cfg->log_final_poly_len;
+    if (num_rounds_expected == 0 ||
+        num_rounds_expected > DNAC_PROVER_MAX_FRI_ROUNDS) {
+        return DNAC_PROVER_ERR_PARAM;
+    }
 
     /* draw slices: trace (A_W+8)h @0, codeword 32h, blinding 42h, R 12h. */
     const uint64_t *trace_draws = inst->draws;
@@ -577,7 +631,7 @@ dnac_prover_status_t dnac_agg_prover_prove(
     p->degree_bits = degree_bits;
     p->log_max_height = log_max_height;
     p->lde_h = lde_h;
-    p->num_queries = A_NUM_QUERIES;
+    p->num_queries = nq_cfg;
 
     uint64_t *base_c = NULL, *rand_c = NULL, *lde_c = NULL, *trace_q = NULL,
              *qflat = NULL, *chunk_ldes = NULL, *r_lde = NULL;
@@ -720,8 +774,8 @@ dnac_prover_status_t dnac_agg_prover_prove(
         }
     }
     if (dnac_prover_fri_commit_phase(ro, lde_h, A_LOG_BLOWUP,
-                                     A_LOG_FINAL_POLY_LEN, A_MAX_LOG_ARITY,
-                                     0, 0, /* P1 commit/query PoW bits (test params) */
+                                     cfg->log_final_poly_len, A_MAX_LOG_ARITY,
+                                     cfg->commit_pow_bits, cfg->query_pow_bits,
                                      inst->salt_draws, /* P4 stream B from pos 0 */
                                      inst->salt_draws ? (size_t)A_SALT_ELEMS : 0,
                                      t, &res) != DNAC_PROVER_OK) {
@@ -744,15 +798,15 @@ dnac_prover_status_t dnac_agg_prover_prove(
            res.final_poly_len * sizeof(gold_fp2_t));
 
     /* ── S11 query indices ── */
-    uint64_t qidx[A_NUM_QUERIES];
-    for (size_t q = 0; q < A_NUM_QUERIES; q++) {
+    uint64_t qidx[A_MAX_QUERIES];
+    for (size_t q = 0; q < nq_cfg; q++) {
         qidx[q] = dnac_transcript_sample_bits(t, (size_t)log_max_height);
         p->query_indices[q] = qidx[q];
     }
 
     /* ── S12 query openings (UNSALTED) ── */
     {
-        const size_t nq = A_NUM_QUERIES, nr = res.num_rounds;
+        const size_t nq = nq_cfg, nr = res.num_rounds;
         const size_t in_depth = log_max_height;
         size_t cp_depth_sum = 0;
         for (size_t r = 0; r < nr; r++)
@@ -965,18 +1019,18 @@ dnac_prover_status_t dnac_agg_prover_prove(
     p->proof.commit_pow_witnesses = p->cp_pow;
     p->proof.num_commit_pow_witnesses = res.num_rounds;
     p->proof.query_proofs = p->query_proofs;
-    p->proof.num_query_proofs = A_NUM_QUERIES;
+    p->proof.num_query_proofs = nq_cfg;
     p->proof.final_poly = p->final_poly;
     p->proof.num_final_poly = res.final_poly_len;
     p->proof.query_pow_witness = res.query_pow_witness; /* P1 (0 at query_pow=0) */
 
     memset(&p->params, 0, sizeof(p->params));
     p->params.log_blowup = A_LOG_BLOWUP;
-    p->params.log_final_poly_len = A_LOG_FINAL_POLY_LEN;
+    p->params.log_final_poly_len = cfg->log_final_poly_len;
     p->params.max_log_arity = A_MAX_LOG_ARITY;
-    p->params.num_queries = A_NUM_QUERIES;
-    p->params.commit_proof_of_work_bits = 0;
-    p->params.query_proof_of_work_bits = 0;
+    p->params.num_queries = nq_cfg;
+    p->params.commit_proof_of_work_bits = cfg->commit_pow_bits;
+    p->params.query_proof_of_work_bits = cfg->query_pow_bits;
 
     dnac_prover_fri_result_free(&res);
     have_res = 0;
@@ -1004,4 +1058,108 @@ cleanup:
     if (qtree) dnac_merkle_batch_tree_free(qtree);
     if (p) dnac_agg_prover_proof_free(p);
     return rc;
+}
+
+dnac_prover_status_t dnac_agg_prover_prove(
+    const dnac_agg_prover_instance_t *inst,
+    dnac_agg_prover_proof_t         **out_proof) {
+    /* The byte-stable KAT/test entry — identical behavior to the pre-Phase-P
+     * function (test FRI params, PoW 0/0). */
+    return agg_prove_cfg(inst, out_proof, &AGG_CFG_TEST);
+}
+
+/* ── Phase-P production entry: pinned shielded FRI params + OS entropy ── */
+dnac_prover_status_t dnac_agg_prover_prove_production(
+    const dnac_agg_prover_instance_t *inst,
+    dnac_agg_prover_proof_t         **out_proof) {
+    if (inst == NULL || out_proof == NULL) return DNAC_PROVER_ERR_PARAM;
+    /* The shielded pool pins the PHYSICAL trace height to 2^10 (C1 fixed
+     * H=1024, shielded_fri_params.h) so the committed is_zk domain equals the
+     * verifier's DNAC_SHIELDED_COMMITTED_LOG_HEIGHT (=11) pin. Any other
+     * height would be rejected by dnac_fri_verify_wire_shielded — fail-close
+     * here instead of producing an unusable proof. */
+    if (inst->log_height != (unsigned)DNAC_SHIELDED_BASE_LOG_HEIGHT) {
+        return DNAC_PROVER_ERR_PARAM;
+    }
+    const size_t height = (size_t)1 << inst->log_height;
+    const size_t nd = DNAC_AGG_PROVER_TOTAL_DRAWS(height);
+    const size_t ns = DNAC_AGG_PROVER_SALT_DRAWS(height);
+    uint64_t *draws = (uint64_t *)malloc(nd * sizeof(uint64_t));
+    uint64_t *salts = (uint64_t *)malloc(ns * sizeof(uint64_t));
+    if (draws == NULL || salts == NULL) {
+        free(draws);
+        free(salts);
+        return DNAC_PROVER_ERR_PARAM;
+    }
+    /* Production MUST be genuinely salted (M3b; mirror of the conf prover
+     * red-team fix): fill BOTH the is_zk codeword stream AND the leaf-salt
+     * stream from OS entropy. The salt streams A/B are independent fresh CSPRNG
+     * streams (design §3a), so a fresh OS-entropy buffer is a valid source.
+     * Fail-close on any entropy error — never a partial/non-hiding proof. */
+    if (dnac_zk_fill_draws(draws, nd) != 0 ||
+        dnac_zk_fill_draws(salts, ns) != 0) {
+        for (volatile uint64_t *z = draws; z < draws + nd; z++) *z = 0;
+        for (volatile uint64_t *z = salts; z < salts + ns; z++) *z = 0;
+        free(draws);
+        free(salts);
+        return DNAC_PROVER_ERR_PARAM;
+    }
+    dnac_agg_prover_instance_t local = *inst;
+    local.draws = draws;
+    local.num_draws = nd;
+    local.salt_draws = salts;
+    local.num_salt_draws = ns;
+    const dnac_prover_status_t rc =
+        agg_prove_cfg(&local, out_proof, &AGG_CFG_SHIELDED);
+    /* Zeroize both secret streams before free (client-side hygiene): the
+     * codeword blinding AND the leaf salts hide the committed trace rows. */
+    for (volatile uint64_t *z = draws; z < draws + nd; z++) *z = 0;
+    for (volatile uint64_t *z = salts; z < salts + ns; z++) *z = 0;
+    free(draws);
+    free(salts);
+    return rc;
+}
+
+/* ── Phase-P: shielded wire self-check ── */
+dnac_fri_codec_status_t dnac_agg_prover_wire_selfcheck_shielded(
+    const dnac_agg_prover_proof_t *cp,
+    dnac_fri_status_t             *out_fri_status) {
+    if (cp == NULL || out_fri_status == NULL) return DNAC_FRI_CODEC_ERR_NULL;
+    *out_fri_status = DNAC_FRI_ERR_INVALID_POW_WITNESS; /* fail-closed default */
+    dnac_agg_prover_proof_t *p = (dnac_agg_prover_proof_t *)cp;
+
+    /* Prime a fresh transcript exactly as the struct-level self-verify does
+     * (publics + roots observed, zeta SAMPLED — H2/H3 satisfied on this path;
+     * the wire-recompute of the publics themselves is Phase-C consensus work). */
+    dnac_transcript_t *vt =
+        dnac_transcript_init((const uint8_t *)"DNAC|ZK|FRI|TRANSCRIPT|V1", 25);
+    if (vt == NULL) return DNAC_FRI_CODEC_ERR_OOM;
+    build_prime_input(p);
+    dnac_stark_priming_out_t out;
+    memset(&out, 0, sizeof(out));
+    if (dnac_stark_prime_transcript(vt, &p->prime_in, &out) !=
+            DNAC_STARK_PRIMING_OK ||
+        gold_fp_to_u64(out.zeta.a) != gold_fp_to_u64(p->zeta.a) ||
+        gold_fp_to_u64(out.zeta.b) != gold_fp_to_u64(p->zeta.b)) {
+        dnac_transcript_free(vt);
+        /* Fail-closed: an inconsistent proof struct never reaches the wire. */
+        return DNAC_FRI_CODEC_ERR_SHIELDED_VERIFY_FAILED;
+    }
+    build_coms(p, out.zeta, out.zeta_next);
+
+    /* Serialize (params + proof + commitments) and run the PINNED consensus
+     * entry on the wire bytes — params equality, committed-height pin, pinned-
+     * param substitution and the 16-bit query-PoW check all bite here. */
+    uint8_t *buf = NULL;
+    size_t len = 0;
+    dnac_fri_codec_status_t cs = dnac_fri_proof_encode(
+        &p->params, &p->proof, p->coms, 3, &buf, &len);
+    if (cs != DNAC_FRI_CODEC_OK) {
+        dnac_transcript_free(vt);
+        return cs;
+    }
+    cs = dnac_fri_verify_wire_shielded(buf, len, vt, out_fri_status);
+    free(buf);
+    dnac_transcript_free(vt);
+    return cs;
 }
