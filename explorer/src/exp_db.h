@@ -107,6 +107,12 @@ int  exp_db_query_tx(exp_db_t *db, const uint8_t hash[64], exp_tx_row_t *tx_out,
                      exp_io_row_t *ios, int max_ios, int *io_count_out, uint8_t **raw_out, size_t *raw_len_out);
 int  exp_db_query_address(exp_db_t *db, const char *fp, uint64_t before_seq, int limit,
                           exp_tx_row_t *rows, int *count_out);
+/* Unknown (address, token_id) — no tx_io activity ever recorded for that
+ * key — is not an error: returns 0 with *balance_out = 0, *txc_out = 0.
+ * A real addr_stats row always has tx_count >= 1 (rows are only created by
+ * exp_db_insert_tx's first-touch upsert, which always increments tx_count),
+ * so txc_out == 0 unambiguously signals "no row" rather than "a row with
+ * zero transactions". */
 int  exp_db_query_balance(exp_db_t *db, const char *fp, const uint8_t token_id[64], uint64_t *balance_out, uint64_t *txc_out);
 
 #ifdef __cplusplus

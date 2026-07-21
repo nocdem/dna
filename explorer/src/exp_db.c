@@ -358,6 +358,12 @@ int exp_db_set_block_hash(exp_db_t *db, uint64_t height, const uint8_t hash[64])
 int exp_db_query_blocks(exp_db_t *db, uint64_t before_height, int limit, exp_block_row_t *rows, int *count_out) {
     if (!db || !db->conn || !rows || !count_out || limit <= 0) return -1;
 
+    /* Defensive clamp: before_height is a user-supplied HTTP cursor
+     * (Task 6). Values at/above 2^63 wrap to negative in sqlite3_bind_int64
+     * and silently match nothing per the header's cursor contract; clamp
+     * to INT64_MAX instead of letting a malformed cursor wrap. */
+    if (before_height > (uint64_t)INT64_MAX) before_height = (uint64_t)INT64_MAX;
+
     sqlite3_stmt *s = db->stmt_query_blocks;
     sqlite3_reset(s);
     sqlite3_bind_int64(s, 1, (sqlite3_int64)before_height);
@@ -461,7 +467,13 @@ int exp_db_insert_tx(exp_db_t *db, const exp_tx_row_t *tx,
 
         sqlite3_stmt *is = db->stmt_insert_io;
         sqlite3_reset(is);
-        sqlite3_bind_blob(is, 1, io->tx_hash, 64, SQLITE_STATIC);
+        /* Bind tx->hash, not io->tx_hash: the row's parent tx is the tx
+         * being inserted in this call, never a caller-supplied io->tx_hash
+         * (which is thereby ignored on insert) — eliminates the
+         * foreign-hash divergence hazard where a caller-populated io row
+         * could point tx_io at a different tx than the one it's nested
+         * under. */
+        sqlite3_bind_blob(is, 1, tx->hash, 64, SQLITE_STATIC);
         sqlite3_bind_int(is, 2, io->io_index);
         sqlite3_bind_int(is, 3, io->direction);
         sqlite3_bind_text(is, 4, io->address, -1, SQLITE_STATIC);
@@ -542,6 +554,15 @@ int exp_db_query_tx(exp_db_t *db, const uint8_t hash[64], exp_tx_row_t *tx_out,
                     exp_io_row_t *ios, int max_ios, int *io_count_out, uint8_t **raw_out, size_t *raw_len_out) {
     if (!db || !db->conn || !hash || !tx_out || !io_count_out) return -1;
 
+    /* Initialize the out-params unconditionally (each guarded on its own
+     * pointer, independent of the other) so the error path below can
+     * safely test/free *raw_out even when a caller passes raw_out != NULL
+     * with raw_len_out == NULL — previously *raw_out was left uninitialized
+     * in that combination, making the error path's free() operate on
+     * garbage. */
+    if (raw_out) *raw_out = NULL;
+    if (raw_len_out) *raw_len_out = 0;
+
     sqlite3_stmt *s = db->stmt_query_tx;
     sqlite3_reset(s);
     sqlite3_bind_blob(s, 1, hash, 64, SQLITE_STATIC);
@@ -603,6 +624,12 @@ int exp_db_query_tx(exp_db_t *db, const uint8_t hash[64], exp_tx_row_t *tx_out,
 int exp_db_query_address(exp_db_t *db, const char *fp, uint64_t before_seq, int limit,
                          exp_tx_row_t *rows, int *count_out) {
     if (!db || !db->conn || !fp || !rows || !count_out || limit <= 0) return -1;
+
+    /* Defensive clamp: before_seq is a user-supplied HTTP cursor (Task 6).
+     * Values at/above 2^63 wrap to negative in sqlite3_bind_int64 and
+     * silently match nothing per the header's cursor contract; clamp to
+     * INT64_MAX instead of letting a malformed cursor wrap. */
+    if (before_seq > (uint64_t)INT64_MAX) before_seq = (uint64_t)INT64_MAX;
 
     sqlite3_stmt *s = db->stmt_query_address;
     sqlite3_reset(s);
