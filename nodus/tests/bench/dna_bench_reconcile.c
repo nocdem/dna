@@ -66,17 +66,10 @@ static int run_capture(const char *const argv[], char *out, size_t n) {
     return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 }
 
-/* "Block:        12345" anywhere in output → block num. -1 = not found. */
-static int64_t parse_block(const char *buf) {
-    const char *p = strstr(buf, "Block:");
-    if (!p) return -1;
-    p += strlen("Block:");
-    while (*p == ' ' || *p == '\t') p++;
-    char *end = NULL;
-    long v = strtol(p, &end, 10);
-    if (end == p) return -1;
-    return v;
-}
+/* In-flight retry pause: one block_interval (NODUS_W_BLOCK_INTERVAL_MS = 5s).
+ * Used when lookup-tx returns exit 1 ("not found") for a hash that may still
+ * be in the BFT-commit → ledger-insert window (red-team F-D3). One retry. */
+#define RETRY_PAUSE_S 5
 
 int cmd_reconcile(int argc, char **argv) {
     if (argc < 2) {
@@ -127,12 +120,18 @@ int dna_bench_reconcile_main(const char *run_json_path) {
     const char *cli = dna_bench_cli_bin();
 
     char hash[HASH_BUF_LEN];
-    int found = 0, dropped = 0, total = 0;
-    int64_t lat_min = -1, lat_max = -1;
-    int64_t lat_sum = 0;
+    int found = 0, dropped = 0, harness_errors = 0, total = 0;
 
-    fprintf(stderr, "[dna-bench] reconcile: querying %s ...\n", tx_path);
+    fprintf(stderr, "[dna-bench] reconcile: querying %s via lookup-tx ...\n",
+            tx_path);
 
+    /* Per-hash query: dna chain lookup-tx <hash>
+     * Distinct exit codes (design 2026-05-09-cli-lookup-tx-design.md §5.2):
+     *   0 = found on chain
+     *   1 = not-found (legitimate; may be in-flight → retry once after 5s)
+     *   2 = usage/hex error (harness bug, should never happen here)
+     *   3 = transport/witness error (witness offline, network drop)
+     */
     while (fgets(hash, sizeof(hash), fh)) {
         size_t hl = strlen(hash);
         while (hl > 0 && (hash[hl-1] == '\n' || hash[hl-1] == '\r' ||
@@ -142,29 +141,45 @@ int dna_bench_reconcile_main(const char *run_json_path) {
         if (hl == 0) continue;
         total++;
 
-        const char *argv[] = {
-            cli, "-q", "dna", "tx", hash, NULL,
+        const char *q_argv[] = {
+            cli, "-q", "dna", "lookup-tx", hash, NULL,
         };
         char out[CLI_OUT_LEN];
         out[0] = '\0';
-        int rc = run_capture(argv, out, sizeof(out));
-        int64_t block = parse_block(out);
-        if (rc == 0 && block >= 0) {
+        int rc = run_capture(q_argv, out, sizeof(out));
+
+        if (rc == 0) {
             found++;
+        } else if (rc == 1) {
+            /* In-flight window retry: sleep one block_interval, re-query. */
+            struct timespec ts = { RETRY_PAUSE_S, 0 };
+            nanosleep(&ts, NULL);
+            out[0] = '\0';
+            int rc2 = run_capture(q_argv, out, sizeof(out));
+            if (rc2 == 0) {
+                found++;
+            } else if (rc2 == 1) {
+                dropped++;
+            } else {
+                harness_errors++;
+                fprintf(stderr,
+                    "[dna-bench] reconcile: harness error rc=%d on hash %.16s... (retry)\n",
+                    rc2, hash);
+            }
         } else {
-            dropped++;
+            harness_errors++;
+            fprintf(stderr,
+                "[dna-bench] reconcile: harness error rc=%d on hash %.16s...\n",
+                rc, hash);
         }
+
         if (total % 10 == 0) {
             fprintf(stderr,
-                "[dna-bench] reconcile: %d/%d (found=%d dropped=%d)\n",
-                total, total, found, dropped);
+                "[dna-bench] reconcile: %d (found=%d dropped=%d errors=%d)\n",
+                total, found, dropped, harness_errors);
         }
     }
     fclose(fh);
-
-    /* Suppress unused warnings: latency tracking deferred to v2 once we
-     * fetch block timestamps (current `dna tx` doesn't print them). */
-    (void)lat_min; (void)lat_max; (void)lat_sum;
 
     /* Write run.reconciled.json next to run.json. */
     char out_path[1280];
@@ -201,21 +216,23 @@ int dna_bench_reconcile_main(const char *run_json_path) {
         fprintf(of,
             "%s,\"reconciled_at\":\"%s\",\"reconciled\":true,"
             "\"actuals\":{\"commit_actual\":%d,"
-            "\"dropped_or_uncommitted\":%d,\"queries\":%d}}\n",
-            orig, ts, found, dropped, total);
+            "\"dropped_or_uncommitted\":%d,\"harness_errors\":%d,"
+            "\"queries\":%d}}\n",
+            orig, ts, found, dropped, harness_errors, total);
     } else {
         fprintf(of,
             "{\"reconciled_at\":\"%s\",\"reconciled\":true,"
             "\"actuals\":{\"commit_actual\":%d,"
-            "\"dropped_or_uncommitted\":%d,\"queries\":%d}}\n",
-            ts, found, dropped, total);
+            "\"dropped_or_uncommitted\":%d,\"harness_errors\":%d,"
+            "\"queries\":%d}}\n",
+            ts, found, dropped, harness_errors, total);
     }
     fclose(of);
     free(orig);
 
     fprintf(stderr,
-        "[dna-bench] reconcile DONE: queries=%d found=%d dropped=%d\n"
+        "[dna-bench] reconcile DONE: queries=%d found=%d dropped=%d errors=%d\n"
         "[dna-bench] wrote %s\n",
-        total, found, dropped, out_path);
-    return 0;
+        total, found, dropped, harness_errors, out_path);
+    return harness_errors > 0 ? 1 : 0;
 }
