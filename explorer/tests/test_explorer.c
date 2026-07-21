@@ -7,6 +7,7 @@
 
 #include "exp_db.h"
 #include "exp_extract.h"
+#include "exp_chain.h"
 #include "dnac/dnac.h"
 #include "dnac/transaction.h"
 #include "crypto/hash/qgp_sha3.h"
@@ -14,6 +15,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <unistd.h>
 
 /* Cursor sentinel for "start from the most recent row" — see exp_db.h:
  * genesis is height 0, so 0 cannot mean "unbounded", and cursors are bound
@@ -811,6 +813,192 @@ static void test_extract_rejects_non_hex_charset_output_fingerprint(void) {
     PASS();
 }
 
+/* ── t12-t13: exp_chain_config_load (Task 4) ────────────────────────
+ * Uses mkstemp — a fixed filename would race under CI parallelism
+ * (forbidden: "tests that pass under low load but fail under CI
+ * parallelism"). Network paths (exp_chain_open/rotate/supply/...) are
+ * NOT unit-tested here per plan Task 4 — no network calls in tests;
+ * they get the live smoke in Task 9. */
+
+static void test_chain_config_load(void) {
+    TEST("exp_chain_config_load (2 servers + comment + blank line)");
+
+    char path[] = "/tmp/exp_chain_test_XXXXXX";
+    int fd = mkstemp(path);
+    if (fd < 0) { FAIL("mkstemp failed"); return; }
+
+    FILE *f = fdopen(fd, "w");
+    if (!f) { FAIL("fdopen failed"); close(fd); unlink(path); return; }
+    fprintf(f, "# comment line, should be skipped\n");
+    fprintf(f, "127.0.0.1 4001\n");
+    fprintf(f, "   \n");                 /* whitespace-only line */
+    fprintf(f, "203.0.113.5 4002\n");
+    fclose(f);
+
+    exp_server_t servers[4];
+    int count = -1;
+    int rc = exp_chain_config_load(path, servers, 4, &count);
+    unlink(path);
+
+    if (rc != 0 || count != 2) { FAIL("config_load count mismatch"); return; }
+    if (strcmp(servers[0].host, "127.0.0.1") != 0 || servers[0].port != 4001) {
+        FAIL("config_load servers[0] mismatch");
+        return;
+    }
+    if (strcmp(servers[1].host, "203.0.113.5") != 0 || servers[1].port != 4002) {
+        FAIL("config_load servers[1] mismatch");
+        return;
+    }
+
+    PASS();
+}
+
+static void test_chain_config_load_rejects_malformed(void) {
+    TEST("exp_chain_config_load rejects a malformed line");
+
+    char path[] = "/tmp/exp_chain_test_bad_XXXXXX";
+    int fd = mkstemp(path);
+    if (fd < 0) { FAIL("mkstemp failed"); return; }
+
+    FILE *f = fdopen(fd, "w");
+    if (!f) { FAIL("fdopen failed"); close(fd); unlink(path); return; }
+    fprintf(f, "127.0.0.1 4001\n");
+    fprintf(f, "this-line-has-no-port\n");
+    fclose(f);
+
+    exp_server_t servers[4];
+    int count = -1;
+    int rc = exp_chain_config_load(path, servers, 4, &count);
+    unlink(path);
+
+    if (rc == 0) { FAIL("expected failure for malformed line"); return; }
+
+    PASS();
+}
+
+/* ── t14-t19: exp_reset_fsm_feed (Task 4, F4) — pure logic ──────────── */
+
+static void test_reset_fsm_match_is_no(void) {
+    TEST("reset FSM: matching chain_id -> NO");
+
+    exp_reset_fsm_t fsm;
+    memset(&fsm, 0, sizeof(fsm));
+
+    uint8_t ref[32];
+    fill(ref, 32, 0x42);
+
+    /* first feed (fsm zero-initialized) adopts ref as the reference */
+    if (exp_reset_fsm_feed(&fsm, ref, 0) != EXP_RESET_NO) { FAIL("first feed should be NO"); return; }
+    /* subsequent matching feeds from any server stay NO */
+    if (exp_reset_fsm_feed(&fsm, ref, 1) != EXP_RESET_NO) { FAIL("matching feed should be NO"); return; }
+
+    PASS();
+}
+
+static void test_reset_fsm_one_mismatch_pending(void) {
+    TEST("reset FSM: one mismatch -> PENDING");
+
+    exp_reset_fsm_t fsm;
+    memset(&fsm, 0, sizeof(fsm));
+    uint8_t ref[32];  fill(ref, 32, 0x42);
+    uint8_t cand[32]; fill(cand, 32, 0x99);
+
+    exp_reset_fsm_feed(&fsm, ref, 0);  /* establish reference */
+    if (exp_reset_fsm_feed(&fsm, cand, 0) != EXP_RESET_PENDING) {
+        FAIL("first mismatch should be PENDING");
+        return;
+    }
+
+    PASS();
+}
+
+static void test_reset_fsm_same_server_twice_still_pending(void) {
+    TEST("reset FSM: same server reporting mismatch twice -> still PENDING");
+
+    exp_reset_fsm_t fsm;
+    memset(&fsm, 0, sizeof(fsm));
+    uint8_t ref[32];  fill(ref, 32, 0x42);
+    uint8_t cand[32]; fill(cand, 32, 0x99);
+
+    exp_reset_fsm_feed(&fsm, ref, 0);
+    exp_reset_fsm_feed(&fsm, cand, 3);
+    if (exp_reset_fsm_feed(&fsm, cand, 3) != EXP_RESET_PENDING) {
+        FAIL("same-server repeat should still be PENDING (only 1 distinct server)");
+        return;
+    }
+
+    PASS();
+}
+
+static void test_reset_fsm_two_servers_two_polls_confirmed(void) {
+    TEST("reset FSM: 2 distinct servers x 2 polls -> CONFIRMED");
+
+    exp_reset_fsm_t fsm;
+    memset(&fsm, 0, sizeof(fsm));
+    uint8_t ref[32];  fill(ref, 32, 0x42);
+    uint8_t cand[32]; fill(cand, 32, 0x99);
+
+    exp_reset_fsm_feed(&fsm, ref, 0);
+    if (exp_reset_fsm_feed(&fsm, cand, 0) != EXP_RESET_PENDING) { FAIL("poll1 should be PENDING"); return; }
+    if (exp_reset_fsm_feed(&fsm, cand, 1) != EXP_RESET_CONFIRMED) {
+        FAIL("poll2 from a distinct server should be CONFIRMED");
+        return;
+    }
+
+    PASS();
+}
+
+static void test_reset_fsm_mismatch_then_match_back_to_no(void) {
+    TEST("reset FSM: mismatch then match -> back to NO");
+
+    exp_reset_fsm_t fsm;
+    memset(&fsm, 0, sizeof(fsm));
+    uint8_t ref[32];  fill(ref, 32, 0x42);
+    uint8_t cand[32]; fill(cand, 32, 0x99);
+
+    exp_reset_fsm_feed(&fsm, ref, 0);
+    exp_reset_fsm_feed(&fsm, cand, 0);   /* PENDING */
+    if (exp_reset_fsm_feed(&fsm, ref, 1) != EXP_RESET_NO) {
+        FAIL("matching feed after a mismatch should return to NO");
+        return;
+    }
+    /* verify tracking state was actually cleared, not just the return
+     * code: a fresh single-server mismatch must restart at PENDING, not
+     * jump straight to CONFIRMED off stale servers_seen/polls_seen. */
+    if (exp_reset_fsm_feed(&fsm, cand, 2) != EXP_RESET_PENDING) {
+        FAIL("post-reset mismatch should restart at PENDING");
+        return;
+    }
+
+    PASS();
+}
+
+static void test_reset_fsm_candidate_switch_restarts(void) {
+    TEST("reset FSM: switching mismatching candidate restarts tracking");
+
+    exp_reset_fsm_t fsm;
+    memset(&fsm, 0, sizeof(fsm));
+    uint8_t ref[32];    fill(ref, 32, 0x42);
+    uint8_t cand_x[32]; fill(cand_x, 32, 0x11);
+    uint8_t cand_y[32]; fill(cand_y, 32, 0x22);
+
+    exp_reset_fsm_feed(&fsm, ref, 0);
+    if (exp_reset_fsm_feed(&fsm, cand_x, 0) != EXP_RESET_PENDING) { FAIL("cand_x poll1 should be PENDING"); return; }
+    /* a DIFFERENT mismatching candidate from a different server must
+     * restart tracking, not carry cand_x's poll count toward cand_y */
+    if (exp_reset_fsm_feed(&fsm, cand_y, 1) != EXP_RESET_PENDING) {
+        FAIL("candidate switch should restart at PENDING, not CONFIRMED");
+        return;
+    }
+    /* one more distinct-server poll of cand_y should now confirm */
+    if (exp_reset_fsm_feed(&fsm, cand_y, 2) != EXP_RESET_CONFIRMED) {
+        FAIL("cand_y poll2 (distinct server) should be CONFIRMED");
+        return;
+    }
+
+    PASS();
+}
+
 int main(void) {
     printf("=== DNA Explorer exp_db Tests ===\n");
 
@@ -825,6 +1013,14 @@ int main(void) {
     test_extract_signer_count_zero();
     test_extract_rejects_malformed_output_fingerprint();
     test_extract_rejects_non_hex_charset_output_fingerprint();
+    test_chain_config_load();
+    test_chain_config_load_rejects_malformed();
+    test_reset_fsm_match_is_no();
+    test_reset_fsm_one_mismatch_pending();
+    test_reset_fsm_same_server_twice_still_pending();
+    test_reset_fsm_two_servers_two_polls_confirmed();
+    test_reset_fsm_mismatch_then_match_back_to_no();
+    test_reset_fsm_candidate_switch_restarts();
 
     printf("\n=== Results: %d passed, %d failed ===\n", passed, failed);
     return failed > 0 ? 1 : 0;
