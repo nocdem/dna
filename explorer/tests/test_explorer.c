@@ -1239,7 +1239,7 @@ static void test_route_stats_200(void) {
     exp_db_set_meta_u64(db, "last_indexed_seq", 42);
 
     exp_http_ctx_t ctx = {0};
-    ctx.db = db;
+    ctx.db = &db;
     ctx.chain = NULL;
     ctx.port = 0;
     int stop = 0;
@@ -1282,7 +1282,7 @@ static void test_route_block_200(void) {
     if (exp_db_insert_block(db, &b) != 0) { FAIL("insert_block failed"); exp_db_close(db); return; }
 
     exp_http_ctx_t ctx = {0};
-    ctx.db = db;
+    ctx.db = &db;
     int stop = 0;
     ctx.stop = &stop;
 
@@ -1314,7 +1314,7 @@ static void test_route_unknown_path_404(void) {
     if (exp_db_open(":memory:", &db) != 0) { FAIL("open failed"); return; }
 
     exp_http_ctx_t ctx = {0};
-    ctx.db = db;
+    ctx.db = &db;
     int stop = 0;
     ctx.stop = &stop;
 
@@ -1335,7 +1335,7 @@ static void test_route_post_405(void) {
     if (exp_db_open(":memory:", &db) != 0) { FAIL("open failed"); return; }
 
     exp_http_ctx_t ctx = {0};
-    ctx.db = db;
+    ctx.db = &db;
     int stop = 0;
     ctx.stop = &stop;
 
@@ -1367,7 +1367,7 @@ static void test_route_blocks_limit_clamp(void) {
     }
 
     exp_http_ctx_t ctx = {0};
-    ctx.db = db;
+    ctx.db = &db;
     int stop = 0;
     ctx.stop = &stop;
 
@@ -1429,7 +1429,7 @@ static void test_route_tx_and_address_200(void) {
     bytes_to_hex128(tx.hash, tx_hex);
 
     exp_http_ctx_t ctx = {0};
-    ctx.db = db;
+    ctx.db = &db;
     int stop = 0;
     ctx.stop = &stop;
 
@@ -1483,7 +1483,7 @@ static void test_route_address_utxos_unavailable(void) {
     set_test_fp(fp, '8');
 
     exp_http_ctx_t ctx = {0};
-    ctx.db = db;
+    ctx.db = &db;
     ctx.chain = NULL; /* no live witness connection in this test */
     int stop = 0;
     ctx.stop = &stop;
@@ -1519,7 +1519,7 @@ static void test_route_malformed_hex_400(void) {
     if (exp_db_open(":memory:", &db) != 0) { FAIL("open failed"); return; }
 
     exp_http_ctx_t ctx = {0};
-    ctx.db = db;
+    ctx.db = &db;
     int stop = 0;
     ctx.stop = &stop;
 
@@ -1577,7 +1577,7 @@ static void test_route_search_precedence(void) {
     if (exp_db_set_block_hash(db, 10, H) != 0) { FAIL("set_block_hash failed"); exp_db_close(db); return; }
 
     exp_http_ctx_t ctx = {0};
-    ctx.db = db;
+    ctx.db = &db;
     int stop = 0;
     ctx.stop = &stop;
 
@@ -1613,6 +1613,40 @@ static void test_route_search_precedence(void) {
 
     exp_json_freebuf(&body);
     exp_db_close(db);
+    PASS();
+}
+
+/* Fix round 1, C1: ctx->db is exp_db_t** so exp_http_route can observe a
+ * confirmed-reset swap; a NULL *ctx->db (handle_confirmed_reset's
+ * reopen/set_meta failure paths can leave it that way) must degrade to a
+ * clean 503 JSON error on every route, never a NULL deref. */
+static void test_route_null_db_503(void) {
+    TEST("exp_http_route: *ctx->db == NULL -> 503 index unavailable");
+
+    exp_db_t *null_db = NULL;
+
+    exp_http_ctx_t ctx = {0};
+    ctx.db = &null_db;
+    ctx.chain = NULL;
+    int stop = 0;
+    ctx.stop = &stop;
+
+    exp_json_t body;
+    int status = -1;
+    if (exp_http_route(&ctx, "GET", "/api/stats", &body, &status) != 0 || status != 503) {
+        printf("(got status %d) ", status);
+        FAIL("expected 503");
+        exp_json_freebuf(&body);
+        return;
+    }
+    if (!strstr(body.buf, "\"error\":")) {
+        printf("(got: %s) ", body.buf);
+        FAIL("expected JSON error body");
+        exp_json_freebuf(&body);
+        return;
+    }
+
+    exp_json_freebuf(&body);
     PASS();
 }
 
@@ -1653,6 +1687,7 @@ int main(void) {
     test_route_address_utxos_unavailable();
     test_route_malformed_hex_400();
     test_route_search_precedence();
+    test_route_null_db_503();
 
     printf("\n=== Results: %d passed, %d failed ===\n", passed, failed);
     return failed > 0 ? 1 : 0;

@@ -252,9 +252,7 @@ static void emit_utxo_entry(exp_json_t *j, const nodus_dnac_utxo_entry_t *e) {
 
 /* ── Endpoint handlers ───────────────────────────────────────────────── */
 
-static void route_stats(exp_http_ctx_t *ctx, exp_json_t *j, int *status) {
-    exp_db_t *db = ctx->db;
-
+static void route_stats(exp_db_t *db, exp_json_t *j, int *status) {
     uint64_t indexed_seq = 0, indexed_height = 0, tip_seq = 0;
     uint64_t supply_current = 0, supply_burned = 0, supply_genesis = 0;
     uint8_t chain_id[32];
@@ -288,7 +286,7 @@ static void route_stats(exp_http_ctx_t *ctx, exp_json_t *j, int *status) {
     *status = 200;
 }
 
-static void route_blocks(exp_http_ctx_t *ctx, const char *query, exp_json_t *j, int *status) {
+static void route_blocks(exp_db_t *db, const char *query, exp_json_t *j, int *status) {
     uint64_t before;
     int limit;
     if (parse_pagination(query, &before, &limit) != 0) {
@@ -299,7 +297,7 @@ static void route_blocks(exp_http_ctx_t *ctx, const char *query, exp_json_t *j, 
 
     exp_block_row_t rows[EXP_HTTP_LIMIT_MAX];
     int count = 0;
-    if (exp_db_query_blocks(ctx->db, before, limit, rows, &count) != 0) {
+    if (exp_db_query_blocks(db, before, limit, rows, &count) != 0) {
         json_error(j, "query failed");
         *status = 500;
         return;
@@ -314,14 +312,14 @@ static void route_blocks(exp_http_ctx_t *ctx, const char *query, exp_json_t *j, 
     *status = 200;
 }
 
-static void route_block(exp_http_ctx_t *ctx, const char *ident, exp_json_t *j, int *status) {
+static void route_block(exp_db_t *db, const char *ident, exp_json_t *j, int *status) {
     exp_block_row_t row;
     int found;
 
     if (is_hash128(ident)) {
         uint8_t hash[64];
         hex128_decode(ident, hash);
-        found = (exp_db_query_block_by_hash(ctx->db, hash, &row) == 0);
+        found = (exp_db_query_block_by_hash(db, hash, &row) == 0);
     } else if (is_all_decimal(ident)) {
         uint64_t height;
         if (!parse_u64_strict(ident, &height)) {
@@ -329,7 +327,7 @@ static void route_block(exp_http_ctx_t *ctx, const char *ident, exp_json_t *j, i
             *status = 400;
             return;
         }
-        found = (exp_db_query_block_by_height(ctx->db, height, &row) == 0);
+        found = (exp_db_query_block_by_height(db, height, &row) == 0);
     } else {
         json_error(j, "invalid block identifier (expected height or 128-hex hash)");
         *status = 400;
@@ -350,7 +348,7 @@ static void route_block(exp_http_ctx_t *ctx, const char *ident, exp_json_t *j, i
     }
 
     int tx_count = 0;
-    if (exp_db_query_txs_by_height(ctx->db, row.height, txs, EXP_HTTP_MAX_BLOCK_TXS, &tx_count) != 0) {
+    if (exp_db_query_txs_by_height(db, row.height, txs, EXP_HTTP_MAX_BLOCK_TXS, &tx_count) != 0) {
         free(txs);
         json_error(j, "query failed");
         *status = 500;
@@ -370,7 +368,7 @@ static void route_block(exp_http_ctx_t *ctx, const char *ident, exp_json_t *j, i
     *status = 200;
 }
 
-static void route_tx(exp_http_ctx_t *ctx, const char *ident, exp_json_t *j, int *status) {
+static void route_tx(exp_db_t *db, const char *ident, exp_json_t *j, int *status) {
     if (!is_hash128(ident)) {
         json_error(j, "invalid tx hash (expected 128-hex)");
         *status = 400;
@@ -386,7 +384,7 @@ static void route_tx(exp_http_ctx_t *ctx, const char *ident, exp_json_t *j, int 
     uint8_t *raw = NULL;
     size_t raw_len = 0;
 
-    if (exp_db_query_tx(ctx->db, hash, &tx, ios, EXP_HTTP_MAX_IOS, &io_count, &raw, &raw_len) != 0) {
+    if (exp_db_query_tx(db, hash, &tx, ios, EXP_HTTP_MAX_IOS, &io_count, &raw, &raw_len) != 0) {
         json_error(j, "tx not found");
         *status = 404;
         return;
@@ -408,7 +406,7 @@ static void route_tx(exp_http_ctx_t *ctx, const char *ident, exp_json_t *j, int 
     *status = 200;
 }
 
-static void route_address(exp_http_ctx_t *ctx, const char *fp, const char *query,
+static void route_address(exp_http_ctx_t *ctx, exp_db_t *db, const char *fp, const char *query,
                            exp_json_t *j, int *status) {
     if (!is_hash128(fp)) {
         json_error(j, "invalid address fingerprint (expected 128-hex)");
@@ -444,7 +442,7 @@ static void route_address(exp_http_ctx_t *ctx, const char *fp, const char *query
      * (-1) fell through with native_balance/native_txc left at their
      * zero-initialized values and rendered as a legitimate zero balance
      * instead of surfacing the failure. */
-    if (exp_db_query_balance(ctx->db, fp, native_token, &native_balance, &native_txc) != 0) {
+    if (exp_db_query_balance(db, fp, native_token, &native_balance, &native_txc) != 0) {
         json_error(j, "query failed");
         *status = 500;
         return;
@@ -452,7 +450,7 @@ static void route_address(exp_http_ctx_t *ctx, const char *fp, const char *query
 
     exp_tx_row_t rows[EXP_HTTP_LIMIT_MAX];
     int count = 0;
-    if (exp_db_query_address(ctx->db, fp, before, limit, rows, &count) != 0) {
+    if (exp_db_query_address(db, fp, before, limit, rows, &count) != 0) {
         json_error(j, "query failed");
         *status = 500;
         return;
@@ -502,7 +500,7 @@ static void route_address(exp_http_ctx_t *ctx, const char *fp, const char *query
 
 /* precedence: tx hash -> block hash -> address (F7). ALL matches are
  * reported, never short-circuited on the first hit. */
-static void route_search(exp_http_ctx_t *ctx, const char *query, exp_json_t *j, int *status) {
+static void route_search(exp_db_t *db, const char *query, exp_json_t *j, int *status) {
     char q[512];
     if (!query_get(query, "q", q, sizeof(q)) || q[0] == '\0') {
         json_error(j, "missing 'q' parameter");
@@ -517,7 +515,7 @@ static void route_search(exp_http_ctx_t *ctx, const char *query, exp_json_t *j, 
         uint64_t height;
         if (parse_u64_strict(q, &height)) {
             exp_block_row_t row;
-            if (exp_db_query_block_by_height(ctx->db, height, &row) == 0) {
+            if (exp_db_query_block_by_height(db, height, &row) == 0) {
                 exp_json_raw(j, "{\"type\":\"block\",\"target\":");
                 exp_json_str(j, q);
                 exp_json_raw(j, "}");
@@ -530,7 +528,7 @@ static void route_search(exp_http_ctx_t *ctx, const char *query, exp_json_t *j, 
 
         exp_tx_row_t tx_row;
         int io_count_tmp = 0;
-        if (exp_db_query_tx(ctx->db, bytes, &tx_row, NULL, 0, &io_count_tmp, NULL, NULL) == 0) {
+        if (exp_db_query_tx(db, bytes, &tx_row, NULL, 0, &io_count_tmp, NULL, NULL) == 0) {
             if (wrote) exp_json_raw(j, ",");
             exp_json_raw(j, "{\"type\":\"tx\",\"target\":");
             exp_json_str(j, q);
@@ -539,7 +537,7 @@ static void route_search(exp_http_ctx_t *ctx, const char *query, exp_json_t *j, 
         }
 
         exp_block_row_t block_row;
-        if (exp_db_query_block_by_hash(ctx->db, bytes, &block_row) == 0) {
+        if (exp_db_query_block_by_hash(db, bytes, &block_row) == 0) {
             if (wrote) exp_json_raw(j, ",");
             exp_json_raw(j, "{\"type\":\"block\",\"target\":");
             exp_json_str(j, q);
@@ -549,7 +547,7 @@ static void route_search(exp_http_ctx_t *ctx, const char *query, exp_json_t *j, 
 
         exp_tx_row_t addr_probe[1];
         int addr_count = 0;
-        if (exp_db_query_address(ctx->db, q, UINT64_MAX, 1, addr_probe, &addr_count) == 0 && addr_count > 0) {
+        if (exp_db_query_address(db, q, UINT64_MAX, 1, addr_probe, &addr_count) == 0 && addr_count > 0) {
             if (wrote) exp_json_raw(j, ",");
             exp_json_raw(j, "{\"type\":\"address\",\"target\":");
             exp_json_str(j, q);
@@ -578,32 +576,49 @@ int exp_http_route(exp_http_ctx_t *ctx, const char *method, const char *path,
         return 0;
     }
 
+    /* Fix round 1, C1: ctx->db is exp_db_t** (points at the SAME location
+     * the sync thread's handle_confirmed_reset swaps, e.g. main.c's `&db`)
+     * — deref exactly once here, under the caller's rdlock span
+     * (handle_client wraps this whole exp_http_route call; unit tests call
+     * this function directly, single-threaded, no lock needed). A NULL
+     * *ctx->db is a real, expected transient state (handle_confirmed_reset
+     * can leave *db_ptr NULL on its reopen/set_meta failure paths) — every
+     * route needs the db, so this single check covers all of them instead
+     * of each handler re-deref'ing ctx->db (and racing the swap) on its
+     * own. */
+    exp_db_t *db = ctx->db ? *ctx->db : NULL;
+    if (!db) {
+        *status_out = 503;
+        json_error(body_out, "index unavailable");
+        return 0;
+    }
+
     char path_only[1024];
     char query[4096];
     split_path_query(path, path_only, sizeof(path_only), query, sizeof(query));
 
     if (strcmp(path_only, "/api/stats") == 0) {
-        route_stats(ctx, body_out, status_out);
+        route_stats(db, body_out, status_out);
         return 0;
     }
     if (strcmp(path_only, "/api/blocks") == 0) {
-        route_blocks(ctx, query, body_out, status_out);
+        route_blocks(db, query, body_out, status_out);
         return 0;
     }
     if (strncmp(path_only, "/api/block/", 11) == 0) {
-        route_block(ctx, path_only + 11, body_out, status_out);
+        route_block(db, path_only + 11, body_out, status_out);
         return 0;
     }
     if (strncmp(path_only, "/api/tx/", 8) == 0) {
-        route_tx(ctx, path_only + 8, body_out, status_out);
+        route_tx(db, path_only + 8, body_out, status_out);
         return 0;
     }
     if (strncmp(path_only, "/api/address/", 13) == 0) {
-        route_address(ctx, path_only + 13, query, body_out, status_out);
+        route_address(ctx, db, path_only + 13, query, body_out, status_out);
         return 0;
     }
     if (strcmp(path_only, "/api/search") == 0) {
-        route_search(ctx, query, body_out, status_out);
+        route_search(db, query, body_out, status_out);
         return 0;
     }
 
@@ -621,6 +636,7 @@ static const char *status_reason(int status) {
     case 404: return "Not Found";
     case 405: return "Method Not Allowed";
     case 413: return "Payload Too Large";
+    case 503: return "Service Unavailable";
     default:  return "Internal Server Error";
     }
 }
@@ -722,6 +738,13 @@ static void handle_client(exp_http_ctx_t *ctx, int cfd) {
 }
 
 int exp_http_serve(exp_http_ctx_t *ctx) {
+    /* ctx->db is exp_db_t** (fix round 1, C1) — this only checks that the
+     * double-pointer itself was wired up (main.c always passes `&db`, a
+     * real stack address, so `!ctx->db` here can only mean a caller bug,
+     * never "index temporarily unavailable"). Whether *ctx->db is non-NULL
+     * *right now* is a legitimately time-varying question (the sync thread
+     * can transiently NULL it across a chain-reset swap) — that's checked
+     * per-request in exp_http_route, not here at startup. */
     if (!ctx || !ctx->db || !ctx->stop) {
         QGP_LOG_ERROR(LOG_TAG, "exp_http_serve: invalid ctx");
         return -1;

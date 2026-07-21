@@ -8,9 +8,11 @@
  * `exp_http_route` is the unit-tested seam: given a method + path (path may
  * include a "?query=string" suffix — parsed internally), it dispatches to
  * the matching endpoint handler and fills a JSON body + HTTP status. It does
- * no socket I/O and needs no live network — tests seed `ctx->db` via the
- * Task 2 API directly and pass `ctx->chain = NULL` to exercise the
- * witness-unavailable degrade path.
+ * no socket I/O and needs no live network — tests seed `ctx->db` (an
+ * `exp_db_t **`, e.g. `ctx.db = &local_db_var;`) via the Task 2 API directly
+ * and pass `ctx->chain = NULL` to exercise the witness-unavailable degrade
+ * path. A `*ctx->db == NULL` (or `ctx->db == NULL`) exercises the 503
+ * "index unavailable" degrade path (fix round 1, C1).
  *
  * `exp_http_serve` is the thin, NOT unit-tested (Task 9 smoke only) blocking
  * `poll()` accept loop: parses the raw HTTP request line, calls
@@ -38,7 +40,19 @@ extern "C" {
 #endif
 
 typedef struct {
-    exp_db_t     *db;      /* index db (required) */
+    /* index db (required). Fix round 1, C1: this is exp_db_t** — a pointer
+     * to the SAME location the sync thread's handle_confirmed_reset swaps
+     * via exp_sync_args_t.db (main.c wires both to `&db`), not a copy of
+     * the handle itself. A plain `exp_db_t *db` copy goes stale the moment
+     * a confirmed chain reset closes/reopens the real handle — the HTTP
+     * thread would then hold a correctly-acquired rdlock guarding a
+     * pointer that already points at freed memory. Deref exactly once,
+     * inside the rdlock span (exp_http_route), never cache the result
+     * across requests. *db may legitimately be NULL (handle_confirmed_reset
+     * can leave *db_ptr NULL on its reopen/set_meta failure paths) — every
+     * route handler must tolerate that by going through exp_http_route's
+     * single NULL check, not by re-deref'ing ctx->db itself. */
+    exp_db_t    **db;
     exp_chain_t  *chain;   /* live witness client for ?utxos=1; NULL = degrade gracefully.
                              * Dedicated client, never shared with the sync thread (Task 7,
                              * G-chain-share: a failing utxo query rotating this client must

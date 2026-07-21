@@ -179,7 +179,11 @@ int main(int argc, char **argv) {
     }
 
     exp_http_ctx_t http_ctx;
-    http_ctx.db = db;
+    /* Fix round 1, C1: &db, not db — the same location sync_args.db points
+     * at, so the HTTP thread observes handle_confirmed_reset's swap
+     * instead of dereferencing a copy that goes stale the moment the swap
+     * happens. */
+    http_ctx.db = &db;
     http_ctx.chain = http_chain;
     http_ctx.port = (uint16_t)port;
     http_ctx.stop = &g_stop;
