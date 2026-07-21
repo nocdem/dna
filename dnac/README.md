@@ -1,6 +1,6 @@
 # DNAC - Post-Quantum Zero-Knowledge Cash over DHT
 
-**Version:** v0.17.6-stake.wip | **TX Wire:** v2 (since v0.17.1) | **Protocol Amounts:** v1 (Transparent)
+**Version:** v0.17.8-stake.wip | **TX Wire:** v2 (since v0.17.1) | **Protocol Amounts:** v1 (Transparent)
 
 DNAC is a privacy-preserving digital cash system built on top of [DNA Connect](https://github.com/nocdem/dna). It lives in the DNA monorepo at `/opt/dna/dnac/`.
 
@@ -17,7 +17,7 @@ DNAC is a privacy-preserving digital cash system built on top of [DNA Connect](h
 - **BFT-Signed Epochs** - Epoch roots signed by BFT consensus (v0.7.1)
 - **Block Hash Linking** - Blocks chained via prev_hash (SHA3-512) for chain integrity (v0.12.0)
 - **Commit Certificates** - 2f+1 PRECOMMIT signatures stored per block for trustless verification (v0.12.0)
-- **Shared UTXO Set** - Validators maintain shared UTXO state, preventing counterfeiting (v0.8.0)
+- **Shared UTXO Set** - Validators maintain shared UTXO state (v0.8.0). Native-DNAC supply is hard-conserved by the witness supply-invariant gate. **Known gap (2026-07-08):** per-token conservation is NOT yet enforced by consensus — custom (TOKEN_CREATE) tokens can be counterfeited by mixing denominations in a SPEND. Tracked as P1 in `dnac/BUGS.md` / `docs/2026-07-08-project-assessment.md` (C1).
 - **Cross-Identity Sends** - Full TX data through BFT consensus for multi-party transfers (v0.8.0)
 - **Fee Burn Model** - Fees burned (removed from circulation) instead of sent to witnesses (v0.8.1)
 - **Genesis System** - Unanimous witness authorization for token creation (v0.5.0)
@@ -301,7 +301,7 @@ All blockchain state is stored on BFT witnesses. DHT inbox delivery was removed 
 
 ## Status
 
-**Development Phase** - v0.17.6-stake.wip. Not for production use. Feature branch `stake-delegation-v1` merged to main; chain wipe required at next deploy. Live testnet chain: `4a68e146` (9 blocks, 7/7 consistent).
+**Testnet** - v0.17.8-stake.wip. Not for production use. `stake-delegation-v1` is merged to main and deployed. Runs on a live 7-witness testnet cluster with real tester balances; the active chain ID has rotated through several wipes (each consensus/block-format change requires a stop-all deploy + chain wipe) — query the cluster for the current chain rather than relying on a hardcoded ID here.
 
 ### Implemented
 

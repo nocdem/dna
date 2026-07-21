@@ -1,10 +1,12 @@
 # DNAC - Development Guidelines
 
-**Last Updated:** 2026-04-24 | **Status:** DESIGN | **Version:** v0.17.6-stake.wip (feature branch `stake-delegation-v1` merged to main)
+**Last Updated:** 2026-07-22 | **Status:** TESTNET (live 7-witness production cluster) | **Version:** v0.17.8-stake.wip
 
 **Note:** Framework rules (checkpoints, identity override, protocol mode, violations) are in root `/opt/dna/CLAUDE.md`. This file contains DNAC-specific guidelines only.
 
-**Active feature branch:** `stake-delegation-v1` — stake-weighted top-7 committee, delegation, per-block reward accrual, pull-based claim. Design doc: `dnac/docs/plans/2026-04-17-witness-stake-delegation-design.md`. Implementation plan: `dnac/docs/plans/2026-04-17-witness-stake-delegation-implementation.md`. Not yet merged to `main`; chain wipe required at deploy time.
+**Stake/delegation v1:** SHIPPED — `stake-delegation-v1` merged to `main` and deployed (stake-weighted top-7 committee, delegation, per-block reward accrual, pull-based claim). Design doc: `dnac/docs/plans/2026-04-17-witness-stake-delegation-design.md` (local-only, gitignored). Sortition v2 (weighted random) is a future follow-up.
+
+**Active workstream:** v3 ZK (STARK range proofs) — see "v3 ZK Workstream" section below.
 
 ---
 
@@ -40,7 +42,7 @@ DNAC is a **Post-Quantum Zero-Knowledge Cash** system built on top of DNA Connec
 | Transport | DHT via Nodus (nodus_ops API) |
 | Double-Spend Prevention | Nodus PBFT Witnessing (dynamic roster) |
 | Database | SQLite |
-| ZK (v2 future) | STARKs (Post-Quantum) |
+| ZK (v3, in progress) | STARK range proofs (Plonky3-grounded C ports in `shared/crypto/zk/`) |
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -266,21 +268,35 @@ formula (`nodus_merkle_combine_state_root_v1_legacy`, retained
 **Design doc:** `dnac/docs/plans/2026-04-19-hard-fork-mechanism-design.md`
 (contains full 29-finding red-team audit).
 
-**Shipped:**
+**Shipped (all stages, 2026-04-19):**
 - Stage A — TX wire format + client verify (commit `69c4e44e`)
 - Stage B — witness apply + DB schema + 5-input state_root (`ca628df1`)
 - Stage C — vote primitives (digest / sign / verify) (`fd1e194e`)
 - Stage D — finalize_block consumer wiring (`08baa4d1`)
+- Stages C.2 / C.3 / E.1-E.3 — tier-2 vote-collect RPC + CLI verbs
+  (`dna chain-config propose/list/history`), 16 commits total, last
+  `6f1b36ab`
+- Stage F (local 3-node harness) — skipped; covered by the 7-node
+  Genesis Protocol harness + deploy-runbook smoke test instead
 
-**Pending:**
-- Stage C.2 — tier-2 vote-collect RPC wire format + peer handler +
-  rate-limit
-- Stage E — CLI verbs (`dna chain-config propose/list/history`)
-- Stage F — local 3-node integration test harness
+---
 
-These three land together once the tier-2 RPC is designed — shipping E
-without C.2 would require the CLI to drive collection via ad-hoc TCP
-calls, which is brittle.
+## v3 ZK Workstream (STARK Range Proofs)
+
+**Architectural identity LOCKED 2026-05-21** (Bitcoin-style v3.0): uniform
+SHA3-512 everywhere, Goldilocks field, within-TX aggregation scope, 1 TPS,
+full-history storage model.
+
+- **Code:** `shared/crypto/zk/` — Plonky3-grounded C ports (Goldilocks field,
+  NTT, Keccak AIR, sponge, transcript, Merkle SMT, FRI fold/verify, STARK
+  transcript priming, proof codecs). Own Makefile: `cd shared/crypto/zk && make test`.
+- **Status / handoff:** `shared/crypto/zk/RESUME.md` — read this FIRST before
+  any ZK work.
+- **HARD RULE:** every cryptographic construct MUST cite a pinned reference
+  (Plonky3 commit `file:line`, FIPS-202, NIST KAT). See root CLAUDE.md
+  `ANA HEDEF: KAFADAN KRİPTO YASAK`. Same-day self-audit is circular and
+  forbidden — crypto audits require 10+ parallel independent subagents.
+- **Design docs:** `dnac/docs/plans/` (local-only, gitignored — never `git add`).
 
 ---
 
@@ -304,9 +320,9 @@ calls, which is brittle.
 
 ## Development Phase Policy
 
-**Current Phase:** DESIGN (pre-alpha)
+**Current Phase:** TESTNET — live 7-witness production cluster with real tester balances.
 
-**Breaking Changes:** ALLOWED — no backward compatibility required. Clean implementations preferred. Legacy code/protocols can be removed without deprecation.
+**Breaking Changes:** ALLOWED but require a **chain wipe** bundled with a stop-all deploy (memory: `feedback_consensus_deploy_stop_all`) — never a rolling deploy for consensus/block-format changes. Clean implementations preferred; legacy code/protocols can be removed without deprecation.
 
 ---
 
