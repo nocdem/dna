@@ -3,8 +3,9 @@
  * @brief Dual-mode S4b.4 — pure-C prover for the AGGREGATE Action AIR.
  *
  * Mirrors the C1 Action prover (stark_prover_action.c) with the aggregate
- * constants and the two AIR-specific stages swapped (S1 trace = the 1946-wide
- * ZK generator agg_zk_generate, S6 quotient = dnac_conf_action_agg_fold_air_eval
+ * constants and the two AIR-specific stages swapped (S1 trace = the
+ * CONF_AGGZK_WIDTH-wide ZK generator agg_zk_generate, S6 quotient =
+ * dnac_conf_action_agg_fold_air_eval
  * with the 43 public values). SALT (P4): optional M3b leaf-salt via
  * instance.salt_draws (SE=0 when NULL => byte-identical unsalted). See stark_prover_agg.h.
  *
@@ -38,7 +39,7 @@
 #define A_NUM_QC 8u
 #define A_LOG_NUM_QC 2u
 #define A_NUM_RANDOM 4u
-#define A_W ((size_t)CONF_AGGZK_WIDTH)     /* 1946 (S4c) */
+#define A_W ((size_t)CONF_AGGZK_WIDTH)     /* 2318 (post-F3) */
 #define A_RAND_W (A_W + A_NUM_RANDOM)      /* 1950 */
 #define A_CW ((size_t)2 + A_NUM_RANDOM)    /* 6 */
 #define A_NUM_PUBLICS ((size_t)CONF_AGGZK_NUM_PUBLICS) /* 43 (S4c) */
@@ -138,7 +139,8 @@ static uint64_t p2out(const uint64_t *blk, unsigned k) {
     return blk[p2air_end_post_off(P2AIR_HALF_FULL_ROUNDS - 1, (size_t)k)];
 }
 
-/* ── S1: the 1946-wide ZK trace — byte-matches generate_conf_action_agg_trace.
+/* ── S1: the CONF_AGGZK_WIDTH-wide (2318 post-F3) ZK trace — byte-matches
+ * generate_conf_action_agg_trace.
  * C1 scatter + membership walk (φ∈[1,D]) + nullifier sponge (φ=D+1) + the
  * is_zero SELECTOR columns (is_nf / is_lvl / active_lvl / N_input / slot_sel).
  * Also computes the 43 public values (anchor / num_input / nf_slots). ── */
@@ -231,6 +233,7 @@ static bool agg_zk_generate(unsigned log_height,
         memcpy(nfr + CONF_AGGZK_NF_RHO2, zero_blk, sizeof zero_blk);
         memcpy(nfr + CONF_AGGZK_NF_NF1, zero_blk, sizeof zero_blk);
         memcpy(nfr + CONF_AGGZK_NF_NF2, zero_blk, sizeof zero_blk);
+        memcpy(nfr + CONF_AGGZK_NF_NF3, zero_blk, sizeof zero_blk);
     }
 
     /* ── Pass 2: membership walk + nullifier + publics. ── */
@@ -291,10 +294,12 @@ static bool agg_zk_generate(unsigned log_height,
 
         const size_t nfrow = blk * K + (size_t)(D + 1);
         uint64_t *nfr = trace_out + nfrow * CONF_AGGZK_WIDTH + CONF_AGGZK_NF_OFF;
-        const uint64_t np = inst->pos[blk], nnk = inst->nk[blk];
+        const uint64_t np = inst->pos[blk];
+        const uint64_t *nnk = inst->nk + blk * CONF_AGGZK_NF_NK_LANES;
         for (unsigned j = 0; j < 4; j++) nfr[CONF_AGGZK_NF_CM + j] = cm0[j];
         nfr[CONF_AGGZK_NF_POS] = np;
-        nfr[CONF_AGGZK_NF_NK] = nnk;
+        for (unsigned j = 0; j < CONF_AGGZK_NF_NK_LANES; j++)
+            nfr[CONF_AGGZK_NF_NK + j] = nnk[j];
         uint64_t rin1[8] = {cm0[0], cm0[1], cm0[2], cm0[3], 0, 0, 0, 0};
         poseidon2_air_generate_row(rin1, nfr + CONF_AGGZK_NF_RHO1);
         uint64_t rs1[8];
@@ -303,14 +308,20 @@ static bool agg_zk_generate(unsigned log_height,
         poseidon2_air_generate_row(rin2, nfr + CONF_AGGZK_NF_RHO2);
         uint64_t rho[4];
         for (unsigned j = 0; j < 4; j++) rho[j] = p2out(nfr + CONF_AGGZK_NF_RHO2, j);
-        uint64_t nin1[8] = {nnk, rho[0], rho[1], rho[2], 0, 0, 0, 0};
+        /* F3 nf sponge: 12-slot [nk0..3, ρ0..3, DOMSEP_NF, 0,0,0] = 3 perms. */
+        uint64_t nin1[8] = {nnk[0], nnk[1], nnk[2], nnk[3], 0, 0, 0, 0};
         poseidon2_air_generate_row(nin1, nfr + CONF_AGGZK_NF_NF1);
         uint64_t ns1[8];
         for (unsigned k = 0; k < 8; k++) ns1[k] = p2out(nfr + CONF_AGGZK_NF_NF1, k);
-        uint64_t nin2[8] = {rho[3], DNAC_DOMSEP_NF, 0, 0, ns1[4], ns1[5], ns1[6], ns1[7]};
+        uint64_t nin2[8] = {rho[0], rho[1], rho[2], rho[3],
+                            ns1[4], ns1[5], ns1[6], ns1[7]};
         poseidon2_air_generate_row(nin2, nfr + CONF_AGGZK_NF_NF2);
+        uint64_t ns2[8];
+        for (unsigned k = 0; k < 8; k++) ns2[k] = p2out(nfr + CONF_AGGZK_NF_NF2, k);
+        uint64_t nin3[8] = {DNAC_DOMSEP_NF, 0, 0, 0, ns2[4], ns2[5], ns2[6], ns2[7]};
+        poseidon2_air_generate_row(nin3, nfr + CONF_AGGZK_NF_NF3);
         uint64_t nf[4];
-        for (unsigned j = 0; j < 4; j++) nf[j] = p2out(nfr + CONF_AGGZK_NF_NF2, j);
+        for (unsigned j = 0; j < 4; j++) nf[j] = p2out(nfr + CONF_AGGZK_NF_NF3, j);
         for (unsigned j = 0; j < 4; j++) nfr[CONF_AGGZK_NF_NF + j] = nf[j];
 
         if (num_input >= CONF_AGGZK_MAX_INPUTS) { free(c1); return false; }
@@ -664,7 +675,7 @@ static dnac_prover_status_t agg_prove_cfg(
         goto cleanup;
     }
 
-    /* ── S1: the 1946-wide ZK trace + the 43 public values ── */
+    /* ── S1: the CONF_AGGZK_WIDTH-wide ZK trace + the 43 public values ── */
     if (!agg_zk_generate(inst->log_height, inst, base_c, p->publics)) {
         rc = DNAC_PROVER_ERR_RANGE;
         goto cleanup;

@@ -1,14 +1,14 @@
 /**
  * @file stark_prover_action.h
  * @brief Dual-mode S1e.4 — pure-C prover for the C1 Action AIR
- *        (conf_action layout, width 813, is_zk=1, num_qc=8, 0 publics).
+ *        (conf_action layout, width 1002 post-F3, is_zk=1, num_qc=8, 0 publics).
  *
  * The conf-AIR sibling of `dnac_conf_prover_prove` (stark_prover_conf.h): same
  * S1→S12 pipeline over the SAME parametric stage library (stark_prover.h), with
  * the C1-specific pieces swapped in:
  *
  *   S1  trace     = conf_action_air_generate (the BUILT construction-gate
- *                   generator, WIDTH 813)
+ *                   generator, WIDTH = CONF_ACTION_WIDTH)
  *   S6  quotient  = the C1 constraint set evaluated domain-wide by REUSING
  *                   dnac_conf_action_fold_air_eval (conf_action_fold.c)
  *                   row-by-row — ONE emission source for prover + verifier
@@ -25,8 +25,8 @@
  * Draws (SmallRng consumption order, D1-B; hiding not soundness) — the
  * codeword/blinding/R lengths match the conf_root prover (same num_qc/C_CW);
  * only the trace section grows with the wider AIR:
- *   trace (813+8)·h = 821h @0 ‖ codeword 8·4·h = 32h @821h ‖
- *   blinding 7·6·h = 42h @853h ‖ R 2h·6 = 12h @895h  — total 907h.
+ *   trace (W+8)·h @0 ‖ codeword 8·4·h = 32h ‖ blinding 7·6·h = 42h ‖
+ *   R 2h·6 = 12h  — total (W+94)h, W = CONF_ACTION_WIDTH (1002 post-F3).
  *
  * UNSALTED (M3b leaf-salt hiding is deferred to S7/wallet): this proves the
  * KAT-stream byte-match vs the REAL Plonky3 proof + self-verify. The confidential
@@ -52,8 +52,12 @@
 extern "C" {
 #endif
 
-/** Total SmallRng draws for an is_zk=1 C1-Action-AIR instance (width 813). */
-#define DNAC_ACTION_PROVER_TOTAL_DRAWS(height) ((size_t)907 * (size_t)(height))
+/** Total SmallRng draws for an is_zk=1 C1-Action-AIR instance: trace (W+8)h ‖
+ *  codeword 32h ‖ blinding 42h ‖ R 12h = (W+94)h. W = CONF_ACTION_WIDTH = 1002
+ *  (post-F3), so 1096h; SYMBOLIC so it tracks any future width change (the
+ *  pre-F3 hand-derived literal 907 = 813+94 silently went stale — never again). */
+#define DNAC_ACTION_PROVER_TOTAL_DRAWS(height) \
+    ((size_t)(CONF_ACTION_WIDTH + 94) * (size_t)(height))
 
 /**
  * A C1 Action prove request — one shielded action's notes. The signed balance
@@ -68,8 +72,8 @@ typedef struct {
     const uint64_t *rcm;        /* num_notes * 2 commitment randomness */
     const uint8_t  *roles;      /* num_notes role tags (CONF_ACTION_ROLE_*) */
     const uint64_t *pos;        /* num_notes tree positions */
-    const uint64_t *nk;         /* num_notes nullifier-key components */
-    const uint64_t *ak;         /* num_notes spend-authority keys */
+    const uint64_t *nk;         /* num_notes × 4 nullifier-key lanes [blk*4+lane] (F3) */
+    const uint64_t *ak;         /* num_notes × 4 spend-authority lanes [blk*4+lane] (F3) */
     size_t          num_notes;  /* real note-blocks; num_notes+1 <= H/K */
     unsigned        log_height; /* height = 2^log_height, in [LOG_K, 10] */
     const uint64_t *draws;

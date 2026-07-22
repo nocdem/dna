@@ -40,8 +40,11 @@ int main(void) {
     const uint8_t roles[3] = {CONF_ACTION_ROLE_INPUT, CONF_ACTION_ROLE_OUTPUT,
                               CONF_ACTION_ROLE_FEE};
     const uint64_t pos[3] = {5, 0, 0}; /* INPUT at tree position 5 = 0b0101 */
-    const uint64_t nk[3] = {0x2222, 0, 0};
-    const uint64_t ak[3] = {0x1111, 0, 0};
+    /* F3: nk/ak are 4-lane-per-block arrays ([blk*4 + lane]). */
+    const uint64_t nk[3 * CONF_ACTION_NK_LANES] = {
+        0x2222, 0x2223, 0x2224, 0x2225, 0, 0, 0, 0, 0, 0, 0, 0};
+    const uint64_t ak[3 * CONF_ACTION_AK_LANES] = {
+        0x1111, 0x1112, 0x1113, 0x1114, 0, 0, 0, 0, 0, 0, 0, 0};
 
     /* Membership siblings for the INPUT note (block 0), D levels × 4 lanes;
      * OUTPUT/FEE blocks unused (arbitrary canonical values). */
@@ -155,7 +158,7 @@ int main(void) {
         trace[off] = s;
     }
 
-    /* ── S4a.3a nullifier: nf cell != NF2.out -> G4 single-source fires ──
+    /* ── S4a.3a nullifier: nf cell != NF3.out -> G4 single-source fires ──
      * The nf-phase row of the INPUT block (block 0) is φ=D+1. */
     {
         const size_t nfrow = (size_t)(D + 1); /* block 0, φ=D+1 */
@@ -163,7 +166,7 @@ int main(void) {
         uint64_t s = trace[off];
         trace[off] = gold_fp_to_u64(gold_fp_add(gold_fp_from_u64(s), gold_fp_one()));
         int t = conf_action_agg_air_eval(trace, rows, anchor, pub_nf);
-        printf("  nf cell != NF2.out -> caught                        %s (%d)\n",
+        printf("  nf cell != NF3.out -> caught                        %s (%d)\n",
                t > 0 ? "PASS" : "FAIL", t);
         if (t == 0) fails++;
         trace[off] = s;

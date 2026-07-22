@@ -66,22 +66,27 @@
  *              next.bal_coeff·next.value; last row BAL = 0 ⇒ Σin = Σout + fee.
  *     The value cell IS the note-commitment preimage value (S1c) AND the balance
  *     summand — completing the E9′ same-row value↔cm↔balance chain.
- *   S1-E15 (THIS increment): the nk/pos/addr FROZEN CARRIES — composition plumbing.
- *     columns: pos_src/nk_src (φ=0 sources), pos_carry, nk_carry, addr_carry[4].
+ *   S1-E15 (+F3 widening): the nk/pos/addr FROZEN CARRIES — composition plumbing.
+ *     columns: pos_src/nk_src[4] (φ=0 sources), pos_carry, nk_carry[4], addr_carry[4].
  *     Each carry uses the SAME S1b freeze pattern (E8′ block-0 init, E4 freeze,
  *     E11 wrap-load, padding-zero) so it holds its block's φ=0 source value
  *     block-wide. addr_carry's source is the note's ADDR[4] cells (already
  *     committed into cm at S1c), so addr_carry == the committed recipient address.
  *     At S4 composition: C3 reads pos_carry, C4 reads cm_carry/pos_carry/nk_carry
  *     — all frozen, all provably one note's fields.
- *   S1-cond3 (THIS increment): SPEND AUTHORITY (parent §1.6 condition-3, D3 hash-
- *   based — no signature). Two poseidon2 blocks AC1/AC2 compute
- *   addr_pub = PaddingFreeSponge(ak, nk, DOMSEP_ADDR, 0,0,0,0,0), and (on INPUT
- *   φ=0 rows) the result MUST equal the note's committed ADDR[4] (S1c, ==
- *   addr_carry). Since ADDR is bound into cm, spending a note requires knowing the
- *   (ak, nk) whose hash is its address — closing the theft vector (present a
- *   victim's public cm + your own nk: addr_pub ≠ the committed addr → reject).
- *   The nk here is the SAME nk_src cell C4 nullifies (one-cell). ak is a witness.
+ *   S1-cond3 (+F3 widening): SPEND AUTHORITY (parent §1.6 condition-3, D3 hash-
+ *   based — no signature). Three poseidon2 blocks AC1/AC2/AC3 compute
+ *   addr_pub = PaddingFreeSponge<8,4,4>([ak0..3, nk0..3, DOMSEP_ADDR, 0,0,0])
+ *   (12-slot = 3·RATE preimage ⇒ exactly 3 permutations, capacity carried,
+ *   no pad permute — note_commit.c:18-48 / Plonky3 sponge.rs:176-203; the
+ *   preimage ORDER is the pinned F3 §3b design choice), and (on INPUT φ=0 rows)
+ *   the result MUST equal the note's committed ADDR[4] (S1c, == addr_carry).
+ *   Since ADDR is bound into cm, spending a note requires knowing the (ak, nk)
+ *   whose hash is its address — closing the theft vector (present a victim's
+ *   public cm + your own nk: addr_pub ≠ the committed addr → reject). The nk
+ *   lanes here are the SAME nk_src cells C4 nullifies (per-lane bind). ak[4] is
+ *   a witness. F3 (2026-07-21, A_LANES=N_LANES=4): ak/nk widened 1→4 lanes so
+ *   nk searched ALONE (via public ρ/nf) costs ≥2^128 Grover (G2/G4).
  *   Scoped OUT (own step): shield/deshield BOUNDARY public binding (C6 turnstile,
  *   needs AIR public inputs).
  *   Later: S1e constraint-eval fold + degree/num_qc, S1f prover + self-verify.
@@ -121,6 +126,12 @@ extern "C" {
 #define CONF_ACTION_LOG_K   5
 /* note-commitment digest width (lanes) — matches S0 note_commit NOTE_COMMIT_LANES. */
 #define CONF_ACTION_CM_LANES 4
+/* F3 ak/nk multi-lane widening (design 2026-07-21-f3-aknk-multilane §3b, user-
+ * locked A_LANES=N_LANES=4): one Goldilocks lane ≈ 2^64 classical / 2^32 Grover
+ * for nk searched ALONE via public (ρ, nf) — below the stack's 128-bit PQ
+ * target. 4 lanes ⇒ ~2^256 classical / ~2^128 Grover on each key. */
+#define CONF_ACTION_AK_LANES 4
+#define CONF_ACTION_NK_LANES 4
 
 /* ── Column layout (S1a+S1b; grows in later increments) ─────────────────────
  * Leads with the phase-counter block, then the freeze-carry block; the B1
@@ -149,17 +160,18 @@ extern "C" {
 #define CONF_ACTION_BALCON_OFF  (CONF_ACTION_INV0_OFF + 1)          /* IS_BAL_CONTRIB */
 #define CONF_ACTION_BALCOEF_OFF (CONF_ACTION_BALCON_OFF + 1)        /* bal_coeff */
 #define CONF_ACTION_BAL_OFF     (CONF_ACTION_BALCOEF_OFF + 1)       /* running signed BAL */
-/* ── E15 frozen carries (composition plumbing for C3/C4) ── */
+/* ── E15 frozen carries (composition plumbing for C3/C4; nk 4-lane since F3) ── */
 #define CONF_ACTION_POSSRC_OFF   (CONF_ACTION_BAL_OFF + 1)          /* pos source (φ=0) */
-#define CONF_ACTION_NKSRC_OFF    (CONF_ACTION_POSSRC_OFF + 1)       /* nk source (φ=0) */
-#define CONF_ACTION_POSCARRY_OFF (CONF_ACTION_NKSRC_OFF + 1)        /* pos_carry (frozen) */
-#define CONF_ACTION_NKCARRY_OFF  (CONF_ACTION_POSCARRY_OFF + 1)     /* nk_carry (frozen) */
-#define CONF_ACTION_ADDRCARRY_OFF (CONF_ACTION_NKCARRY_OFF + 1)     /* addr_carry[4] (frozen) */
-/* ── condition-3 spend authority (addr_pub = Poseidon2(ak,nk)) ── */
-#define CONF_ACTION_AK_OFF      (CONF_ACTION_ADDRCARRY_OFF + CONF_ACTION_ADDR_LANES) /* ak (φ=0, input) */
-#define CONF_ACTION_AC1_OFF     (CONF_ACTION_AK_OFF + 1)            /* poseidon2 block 1 */
+#define CONF_ACTION_NKSRC_OFF    (CONF_ACTION_POSSRC_OFF + 1)       /* nk source[4] (φ=0) */
+#define CONF_ACTION_POSCARRY_OFF (CONF_ACTION_NKSRC_OFF + CONF_ACTION_NK_LANES) /* pos_carry (frozen) */
+#define CONF_ACTION_NKCARRY_OFF  (CONF_ACTION_POSCARRY_OFF + 1)     /* nk_carry[4] (frozen) */
+#define CONF_ACTION_ADDRCARRY_OFF (CONF_ACTION_NKCARRY_OFF + CONF_ACTION_NK_LANES) /* addr_carry[4] (frozen) */
+/* ── condition-3 spend authority (addr_pub = Poseidon2 sponge over (ak[4],nk[4])) ── */
+#define CONF_ACTION_AK_OFF      (CONF_ACTION_ADDRCARRY_OFF + CONF_ACTION_ADDR_LANES) /* ak[4] (φ=0, input) */
+#define CONF_ACTION_AC1_OFF     (CONF_ACTION_AK_OFF + CONF_ACTION_AK_LANES) /* poseidon2 block 1 */
 #define CONF_ACTION_AC2_OFF     (CONF_ACTION_AC1_OFF + P2AIR_NUM_COLS) /* poseidon2 block 2 */
-#define CONF_ACTION_WIDTH       (CONF_ACTION_AC2_OFF + P2AIR_NUM_COLS) /* WIDTH = 813 */
+#define CONF_ACTION_AC3_OFF     (CONF_ACTION_AC2_OFF + P2AIR_NUM_COLS) /* poseidon2 block 3 */
+#define CONF_ACTION_WIDTH       (CONF_ACTION_AC3_OFF + P2AIR_NUM_COLS) /* WIDTH = 1002 */
 
 /* addr_pub / rcm widths (S0 note_commit layout). */
 #define CONF_ACTION_ADDR_LANES  4
@@ -194,10 +206,12 @@ extern "C" {
  * @param roles       num_notes per-block role tags (CONF_ACTION_ROLE_*). The
  *                    signed balance MUST conserve: Σ INPUT − Σ OUTPUT − Σ FEE = 0.
  * @param pos         num_notes tree positions (E15 pos_carry source; C3 reads it).
- * @param nk          num_notes spend-key nullifier components (E15 nk_carry
- *                    source; C4 reads it). May be NULL only if num_notes == 0.
- * @param ak          num_notes spend-authority keys (condition-3). For INPUT
- *                    notes the note ADDRESS is DERIVED as Poseidon2(ak,nk)
+ * @param nk          num_notes × CONF_ACTION_NK_LANES spend-key nullifier lanes,
+ *                    indexed [blk*4 + lane] (E15 nk_carry source; C4 reads it).
+ *                    May be NULL only if num_notes == 0.
+ * @param ak          num_notes × CONF_ACTION_AK_LANES spend-authority key lanes,
+ *                    indexed [blk*4 + lane] (condition-3). For INPUT notes the
+ *                    note ADDRESS is DERIVED as Poseidon2(ak[4],nk[4])
  *                    (overriding `addr` for those blocks — your input notes are
  *                    addressed to YOU); for OUTPUT/FEE `ak` is unused and `addr`
  *                    is the recipient/filler. May be NULL only if num_notes == 0.
@@ -221,15 +235,17 @@ bool conf_action_air_generate(unsigned log_height, const uint64_t *value,
 int conf_action_air_eval(const uint64_t *trace, size_t n_rows);
 
 /**
- * @brief Derive a shielded input-note address addr_pub = Poseidon2(ak, nk)
- *        (condition-3): PaddingFreeSponge<8,4,4>(ak, nk, DOMSEP_ADDR, 0,…). The
- *        same computation the in-circuit AC1/AC2 blocks perform; exposed so a
- *        caller/test can construct a note addressed to (ak, nk).
- * @param ak       spend-authority key (canonical).
- * @param nk       nullifier key (canonical).
+ * @brief Derive a shielded input-note address addr_pub = Poseidon2(ak[4], nk[4])
+ *        (condition-3, F3 4-lane): PaddingFreeSponge<8,4,4> over the 12-slot
+ *        preimage [ak0..3, nk0..3, DOMSEP_ADDR, 0,0,0] (3 permutations). The
+ *        same computation the in-circuit AC1/AC2/AC3 blocks perform; exposed so
+ *        a caller/test can construct a note addressed to (ak, nk).
+ * @param ak       spend-authority key lanes (canonical).
+ * @param nk       nullifier key lanes (canonical).
  * @param addr_out 4-lane derived address.
  */
-void conf_action_derive_addr(uint64_t ak, uint64_t nk,
+void conf_action_derive_addr(const uint64_t ak[CONF_ACTION_AK_LANES],
+                             const uint64_t nk[CONF_ACTION_NK_LANES],
                              uint64_t addr_out[CONF_ACTION_ADDR_LANES]);
 
 #ifdef __cplusplus

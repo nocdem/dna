@@ -6,9 +6,9 @@
  * ConfActionAggAir::eval (tools/plonky3_oracle/src/main.rs) call-for-call —
  * see conf_action_agg_fold.h. The C1 region is folded by REUSING
  * dnac_conf_action_fold_air_eval (the C analog of the oracle's
- * `ConfActionAir.eval(builder)`); the six Poseidon2 sub-blocks (MC1/MC2
- * membership, RHO1/RHO2/NF1/NF2 nullifier) fold through the shared
- * dnac_poseidon2_fold_eval.
+ * `ConfActionAir.eval(builder)`); the seven Poseidon2 sub-blocks (MC1/MC2
+ * membership, RHO1/RHO2/NF1/NF2/NF3 nullifier — F3 4-lane nk) fold through the
+ * shared dnac_poseidon2_fold_eval.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: Apache-2.0
@@ -142,22 +142,26 @@ void dnac_conf_action_agg_fold_air_eval(dnac_stark_folder_t *f) {
         f, L[CONF_AGGZK_ACTLVL_OFF + (CONF_AGGZK_D - 1)],
         gold_fp2_sub(L[M + CONF_AGGZK_MEMB_POSACC], L[CONF_ACTION_POSCARRY_OFF]));
 
-    /* ── C4 nullifier: RHO1/RHO2/NF1/NF2 Poseidon2 always-on + gated pins. ── */
+    /* ── C4 nullifier: RHO1/RHO2/NF1/NF2/NF3 Poseidon2 always-on + gated pins
+     * (F3: nk 4-lane, nf sponge 3 perms). ── */
     dnac_poseidon2_fold_eval(f, NF + CONF_AGGZK_NF_RHO1);
     dnac_poseidon2_fold_eval(f, NF + CONF_AGGZK_NF_RHO2);
     dnac_poseidon2_fold_eval(f, NF + CONF_AGGZK_NF_NF1);
     dnac_poseidon2_fold_eval(f, NF + CONF_AGGZK_NF_NF2);
+    dnac_poseidon2_fold_eval(f, NF + CONF_AGGZK_NF_NF3);
 
     const gold_fp2_t gate_nf = gold_fp2_mul(is_nf, is_input);
-    /* cm/pos/nk cells == C1 frozen carries. */
+    /* cm/pos/nk cells == C1 frozen carries (nk per-lane). */
     for (unsigned j = 0; j < CONF_AGGZK_NF_LANES; j++)
         dnac_stark_folder_when(
             f, gate_nf,
             gold_fp2_sub(L[NF + CONF_AGGZK_NF_CM + j], L[CONF_ACTION_CMCARRY_OFF + j]));
     dnac_stark_folder_when(
         f, gate_nf, gold_fp2_sub(L[NF + CONF_AGGZK_NF_POS], L[CONF_ACTION_POSCARRY_OFF]));
-    dnac_stark_folder_when(
-        f, gate_nf, gold_fp2_sub(L[NF + CONF_AGGZK_NF_NK], L[CONF_ACTION_NKCARRY_OFF]));
+    for (unsigned j = 0; j < CONF_AGGZK_NF_NK_LANES; j++)
+        dnac_stark_folder_when(
+            f, gate_nf,
+            gold_fp2_sub(L[NF + CONF_AGGZK_NF_NK + j], L[CONF_ACTION_NKCARRY_OFF + j]));
     /* ρ = CRH(cm,pos): RHO1.in=[cm,0,0,0,0]; RHO2.in=[pos,DOMSEP_RHO,0,0,cap]. */
     for (unsigned j = 0; j < CONF_AGGZK_NF_LANES; j++)
         dnac_stark_folder_when(
@@ -181,45 +185,50 @@ void dnac_conf_action_agg_fold_air_eval(dnac_stark_folder_t *f) {
             f, gate_nf,
             gold_fp2_sub(L[NF + CONF_AGGZK_NF_RHO2 + p2air_input_off(k)],
                          L[NF + CONF_AGGZK_NF_RHO1 + AGG_END_POST3(k)]));
-    /* nf = PRF(nk,ρ): NF1.in=[nk,ρ0,ρ1,ρ2,0,0,0,0]; NF2.in=[ρ3,DOMSEP_NF,0,0,cap]. */
-    dnac_stark_folder_when(
-        f, gate_nf,
-        gold_fp2_sub(L[NF + CONF_AGGZK_NF_NF1 + p2air_input_off(0)],
-                     L[NF + CONF_AGGZK_NF_NK]));
-    for (unsigned j = 0; j < 3; j++)
+    /* nf = PRF(nk[4],ρ) (F3 12-slot, 3 perms): NF1.in=[nk0..3 (cells)];
+     * NF2.in=[ρ0..3, NF1 cap]; NF3.in=[DOMSEP_NF,0,0,0, NF2 cap]. */
+    for (unsigned j = 0; j < CONF_AGGZK_NF_NK_LANES; j++)
         dnac_stark_folder_when(
             f, gate_nf,
-            gold_fp2_sub(L[NF + CONF_AGGZK_NF_NF1 + p2air_input_off(1 + j)],
-                         L[NF + CONF_AGGZK_NF_RHO2 + AGG_END_POST3(j)]));
+            gold_fp2_sub(L[NF + CONF_AGGZK_NF_NF1 + p2air_input_off(j)],
+                         L[NF + CONF_AGGZK_NF_NK + j]));
     for (size_t k = 4; k < 8; k++)
         dnac_stark_folder_when(f, gate_nf,
                                L[NF + CONF_AGGZK_NF_NF1 + p2air_input_off(k)]);
-    dnac_stark_folder_when(
-        f, gate_nf,
-        gold_fp2_sub(L[NF + CONF_AGGZK_NF_NF2 + p2air_input_off(0)],
-                     L[NF + CONF_AGGZK_NF_RHO2 + AGG_END_POST3(3)]));
-    dnac_stark_folder_when(
-        f, gate_nf,
-        gold_fp2_sub(L[NF + CONF_AGGZK_NF_NF2 + p2air_input_off(1)], fp2u(DNAC_DOMSEP_NF)));
-    dnac_stark_folder_when(f, gate_nf, L[NF + CONF_AGGZK_NF_NF2 + p2air_input_off(2)]);
-    dnac_stark_folder_when(f, gate_nf, L[NF + CONF_AGGZK_NF_NF2 + p2air_input_off(3)]);
+    for (unsigned j = 0; j < CONF_AGGZK_NF_LANES; j++)
+        dnac_stark_folder_when(
+            f, gate_nf,
+            gold_fp2_sub(L[NF + CONF_AGGZK_NF_NF2 + p2air_input_off(j)],
+                         L[NF + CONF_AGGZK_NF_RHO2 + AGG_END_POST3(j)]));
     for (size_t k = 4; k < 8; k++)
         dnac_stark_folder_when(
             f, gate_nf,
             gold_fp2_sub(L[NF + CONF_AGGZK_NF_NF2 + p2air_input_off(k)],
                          L[NF + CONF_AGGZK_NF_NF1 + AGG_END_POST3(k)]));
-    /* NF cell == NF2.out. */
+    dnac_stark_folder_when(
+        f, gate_nf,
+        gold_fp2_sub(L[NF + CONF_AGGZK_NF_NF3 + p2air_input_off(0)], fp2u(DNAC_DOMSEP_NF)));
+    dnac_stark_folder_when(f, gate_nf, L[NF + CONF_AGGZK_NF_NF3 + p2air_input_off(1)]);
+    dnac_stark_folder_when(f, gate_nf, L[NF + CONF_AGGZK_NF_NF3 + p2air_input_off(2)]);
+    dnac_stark_folder_when(f, gate_nf, L[NF + CONF_AGGZK_NF_NF3 + p2air_input_off(3)]);
+    for (size_t k = 4; k < 8; k++)
+        dnac_stark_folder_when(
+            f, gate_nf,
+            gold_fp2_sub(L[NF + CONF_AGGZK_NF_NF3 + p2air_input_off(k)],
+                         L[NF + CONF_AGGZK_NF_NF2 + AGG_END_POST3(k)]));
+    /* NF cell == NF3.out. */
     for (unsigned j = 0; j < CONF_AGGZK_NF_LANES; j++)
         dnac_stark_folder_when(
             f, gate_nf,
             gold_fp2_sub(L[NF + CONF_AGGZK_NF_NF + j],
-                         L[NF + CONF_AGGZK_NF_NF2 + AGG_END_POST3(j)]));
-    /* Inert nf (¬gate_nf): CM/POS/NK/NF cells == 0. */
+                         L[NF + CONF_AGGZK_NF_NF3 + AGG_END_POST3(j)]));
+    /* Inert nf (¬gate_nf): CM/POS/NK/NF cells == 0 (nk per-lane). */
     const gold_fp2_t ninert = gold_fp2_sub(one, gate_nf);
     for (unsigned j = 0; j < CONF_AGGZK_NF_LANES; j++)
         dnac_stark_folder_when(f, ninert, L[NF + CONF_AGGZK_NF_CM + j]);
     dnac_stark_folder_when(f, ninert, L[NF + CONF_AGGZK_NF_POS]);
-    dnac_stark_folder_when(f, ninert, L[NF + CONF_AGGZK_NF_NK]);
+    for (unsigned j = 0; j < CONF_AGGZK_NF_NK_LANES; j++)
+        dnac_stark_folder_when(f, ninert, L[NF + CONF_AGGZK_NF_NK + j]);
     for (unsigned j = 0; j < CONF_AGGZK_NF_LANES; j++)
         dnac_stark_folder_when(f, ninert, L[NF + CONF_AGGZK_NF_NF + j]);
 
@@ -333,7 +342,7 @@ void dnac_conf_action_agg_fold_air_eval(dnac_stark_folder_t *f) {
 }
 
 const dnac_stark_air_t DNAC_CONF_ACTION_AGG_FOLD_AIR = {
-    CONF_AGGZK_WIDTH,        /* main_width = 1946 (S4c: +output routing +fee acc) */
+    CONF_AGGZK_WIDTH,        /* main_width = 2318 (post-F3; S4c routing + fee acc) */
     CONF_AGGZK_NUM_PUBLICS,  /* 43 */
     1,                       /* main_next: C1 counter/freeze + membership chaining + N_input/N_output */
     dnac_conf_action_agg_fold_air_eval,

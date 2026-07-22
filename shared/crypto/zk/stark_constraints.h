@@ -208,12 +208,12 @@ dnac_stark_verify_status_t dnac_stark_final_check(gold_fp2_t folded,
 /** Largest main-trace width the glue's zero-window buffer supports.
  *  Raised 256 -> 640 (2026-07-15) for the B1 Stage-2 combined confidential AIR
  *  (CONF_ROOT_WIDTH = 614), then 640 -> 1024 (2026-07-17) for the dual-mode C1
- *  Action AIR (CONF_ACTION_WIDTH = 813), then 1024 -> 2048 (2026-07-17) for the
- *  S4 AGGREGATE Action AIR (CONF_ACTION_AGG_WIDTH = 1915; the header stays
- *  AIR-agnostic — do not include conf_action_agg_air.h here). Exactly two use
- *  sites, both fail-closed: the shape-guard reject and the zero-window stack
- *  buffer (~32 KB at 2048). */
-#define DNAC_STARK_MAX_MAIN_WIDTH ((size_t)2048)
+ *  Action AIR (813), then 1024 -> 2048 (2026-07-17) for the S4 AGGREGATE Action
+ *  AIR (1946), then 2048 -> 2560 (2026-07-22) for the F3 ak/nk 4-lane widening
+ *  (CONF_AGGZK_WIDTH = 2318; the header stays AIR-agnostic — do not include
+ *  conf_action_agg_fold.h here). Exactly two use sites, both fail-closed: the
+ *  shape-guard reject and the zero-window stack buffer (~40 KB at 2560). */
+#define DNAC_STARK_MAX_MAIN_WIDTH ((size_t)2560)
 
 /** One captured fold step (test instrumentation only). */
 typedef struct {

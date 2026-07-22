@@ -72,11 +72,12 @@ extern "C" {
  *  guard bound, NOT a protocol constant). Raised 2026-07-15 from the
  *  RangeProofAir width (56) to cover the B1 Stage-2 combined conf AIR
  *  (CONF_ROOT_WIDTH = 614), then 2026-07-17 to 1024 for the dual-mode C1 Action
- *  AIR (CONF_ACTION_WIDTH = 813), then to 2048 for the S4 AGGREGATE Action AIR
- *  (CONF_ACTION_AGG_WIDTH = 1915); 2048 matches DNAC_STARK_MAX_MAIN_WIDTH. With
- *  height <= 2^10 and per_row <= 2048 + 2*num_random, every height*per_row
- *  product stays far below SIZE_MAX. */
-#define DNAC_PROVER_MAX_TRACE_WIDTH     ((size_t)2048)
+ *  AIR (813), then to 2048 for the S4 AGGREGATE Action AIR (1946), then
+ *  2026-07-22 to 2560 for the F3 ak/nk 4-lane widening (CONF_AGGZK_WIDTH =
+ *  2318); 2560 matches DNAC_STARK_MAX_MAIN_WIDTH. With height <= 2^10 and
+ *  per_row <= 2560 + 2*num_random, every height*per_row product stays far
+ *  below SIZE_MAX. */
+#define DNAC_PROVER_MAX_TRACE_WIDTH     ((size_t)2560)
 
 /* ============================================================================
  * Status codes (separate from every existing zk status enum)

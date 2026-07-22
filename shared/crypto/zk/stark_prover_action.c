@@ -38,8 +38,8 @@
 #define A_NUM_QC 8u
 #define A_LOG_NUM_QC 2u
 #define A_NUM_RANDOM 4u
-#define A_W ((size_t)CONF_ACTION_WIDTH)   /* 813 */
-#define A_RAND_W (A_W + A_NUM_RANDOM)     /* 817 */
+#define A_W ((size_t)CONF_ACTION_WIDTH)   /* 1002 (post-F3) */
+#define A_RAND_W (A_W + A_NUM_RANDOM)     /* 1006 (post-F3) */
 #define A_CW ((size_t)2 + A_NUM_RANDOM)   /* 6 */
 
 struct dnac_action_prover_proof_s {
@@ -367,8 +367,8 @@ dnac_prover_status_t dnac_action_prover_prove(
     const size_t next_step = (size_t)1 << (A_IS_ZK + A_LOG_NUM_QC);  /* 8 */
     const size_t num_rounds_expected = base_db - 1;
 
-    /* draw slices: trace (813+8)h @0, codeword 32h @821h, blinding 42h @853h,
-     * R 12h @895h (only the trace section grows vs conf_root). */
+    /* draw slices: trace (W+8)h @0, codeword 32h @(W+8)h, blinding 42h, R 12h —
+     * W = CONF_ACTION_WIDTH (1002 post-F3); only the trace section grows. */
     const uint64_t *trace_draws = inst->draws;
     const uint64_t *codeword = inst->draws + (A_W + 8) * height;
     const uint64_t *blinding = inst->draws + (A_W + 8 + 32) * height;

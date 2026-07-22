@@ -56,16 +56,25 @@ int main(void) {
         {0xdead, 0xbeef}, {123, 456}, {777, 888},
     };
     const uint64_t pos[3] = {5, 99, 4096};      /* E15 pos_carry sources */
-    const uint64_t nk[3] = {0xA11CE, 0xB0B, 42}; /* E15 nk_carry sources */
-    const uint64_t ak[3] = {0xACE, 0, 0};        /* condition-3 spend-auth (input only) */
+    /* F3: nk/ak are 4-lane-per-block arrays ([blk*4 + lane], all lanes distinct
+     * nonzero on the blocks that use them so per-lane bugs can't hide). */
+    const uint64_t nk[3 * CONF_ACTION_NK_LANES] = {
+        0xA11CE, 0xA11CF, 0xA11D0, 0xA11D1,  /* block 0 (INPUT) */
+        0xB0B, 0xB0C, 0xB0D, 0xB0E,          /* block 1 */
+        42, 43, 44, 45,                      /* block 2 */
+    };
+    const uint64_t ak[3 * CONF_ACTION_AK_LANES] = {
+        0xACE, 0xACF, 0xAD0, 0xAD1,          /* block 0 (INPUT) */
+        0, 0, 0, 0, 0, 0, 0, 0,              /* OUTPUT/FEE unused */
+    };
 
-    /* The INPUT note (block 0) is addressed to (ak0, nk0): addr = Poseidon2(ak,nk).
-     * generate derives it; the test mirrors that for the cm byte-match target.
-     * OUTPUT/FEE keep their passed addresses. */
+    /* The INPUT note (block 0) is addressed to (ak0[4], nk0[4]): addr =
+     * Poseidon2 sponge. generate derives it; the test mirrors that for the cm
+     * byte-match target. OUTPUT/FEE keep their passed addresses. */
     uint64_t eff_addr[3][CONF_ACTION_ADDR_LANES];
     for (int i = 0; i < 3; i++)
         for (int j = 0; j < CONF_ACTION_ADDR_LANES; j++) eff_addr[i][j] = addr[i][j];
-    conf_action_derive_addr(ak[0], nk[0], eff_addr[0]); /* block 0 is INPUT */
+    conf_action_derive_addr(&ak[0], &nk[0], eff_addr[0]); /* block 0 is INPUT */
 
     /* Expected commitments via the S0 note_commit sponge (byte-match target). */
     uint64_t expect_cm[3][CONF_ACTION_CM_LANES];
@@ -391,12 +400,15 @@ int main(void) {
 
     /* ── E15 frozen-carry attacks (pos/nk/addr) ───────────────────────────── */
 
-    /* Sanity: pos/nk/addr carries hold block-1's sources across its block. */
+    /* Sanity: pos/nk/addr carries hold block-1's sources across its block
+     * (nk per-lane since F3). */
     {
         int ok = 1;
         for (size_t r = 32; r < 64; r++) {
             if (honest[r * CONF_ACTION_WIDTH + CONF_ACTION_POSCARRY_OFF] != pos[1]) ok = 0;
-            if (honest[r * CONF_ACTION_WIDTH + CONF_ACTION_NKCARRY_OFF] != nk[1]) ok = 0;
+            for (unsigned j = 0; j < CONF_ACTION_NK_LANES; j++)
+                if (honest[r * CONF_ACTION_WIDTH + CONF_ACTION_NKCARRY_OFF + j] !=
+                    nk[1 * CONF_ACTION_NK_LANES + j]) ok = 0;
             for (unsigned j = 0; j < CONF_ACTION_ADDR_LANES; j++)
                 if (honest[r * CONF_ACTION_WIDTH + CONF_ACTION_ADDRCARRY_OFF + j] != addr[1][j]) ok = 0;
         }
@@ -409,7 +421,7 @@ int main(void) {
         set(bad, 40, CONF_ACTION_POSCARRY_OFF, 777);
         expect_reject("mutate pos_carry mid-block (E15/E4)", bad);
     }
-    /* REJECT 29: desync nk_carry block-start load (E11). */
+    /* REJECT 29: desync nk_carry block-start load (E11), lane 0. */
     {
         uint64_t bad[ROWS * CONF_ACTION_WIDTH]; memcpy(bad, honest, sizeof bad);
         set(bad, 32, CONF_ACTION_NKCARRY_OFF, 555);
@@ -421,11 +433,27 @@ int main(void) {
         set(bad, 100, CONF_ACTION_ADDRCARRY_OFF + 1, 9);
         expect_reject("inject dummy addr_carry (E15 padding-zero)", bad);
     }
-    /* REJECT 31: block-0 nk_carry != source (E8' init). */
+    /* REJECT 31: block-0 nk_carry != source (E8' init), lane 0. */
     {
         uint64_t bad[ROWS * CONF_ACTION_WIDTH]; memcpy(bad, honest, sizeof bad);
         set(bad, 0, CONF_ACTION_NKCARRY_OFF, 333);
         expect_reject("block-0 nk_carry != src (E15/E8')", bad);
+    }
+    /* REJECT F3-a: EVERY nk_carry lane obeys the E15 freeze — tamper each of the
+     * 3 NEW lanes mid-block independently (a free lane across the φ-seam would be
+     * a theft/double-spend vector; F3 red-team charter item 4). */
+    for (unsigned lane = 1; lane < CONF_ACTION_NK_LANES; lane++) {
+        uint64_t bad[ROWS * CONF_ACTION_WIDTH]; memcpy(bad, honest, sizeof bad);
+        char name[64];
+        snprintf(name, sizeof name, "mutate nk_carry lane %u mid-block (F3)", lane);
+        set(bad, 40, CONF_ACTION_NKCARRY_OFF + lane, 606 + lane);
+        expect_reject(name, bad);
+    }
+    /* REJECT F3-b: per-lane block-start load desync on a NEW lane (E11). */
+    {
+        uint64_t bad[ROWS * CONF_ACTION_WIDTH]; memcpy(bad, honest, sizeof bad);
+        set(bad, 32, CONF_ACTION_NKCARRY_OFF + 3, 556);
+        expect_reject("desync nk_carry lane 3 load (F3/E11)", bad);
     }
 
     /* ── condition-3 spend-authority attacks (block 0 = INPUT) ────────────── */
@@ -438,30 +466,50 @@ int main(void) {
         printf("  [accept] input ADDR == Poseidon2(ak,nk) (cond-3)   %s\n", ok ? "OK" : "FAIL");
         if (!ok) fails++;
     }
-    /* REJECT 32: THEFT — forge ak (AC1.in[0]) so addr_pub != committed ADDR.
-     * A spender who does NOT know the note's (ak,nk) is rejected. */
+    /* REJECT 32: THEFT — forge ak lane 0 (AC1.in[0]) so addr_pub != committed
+     * ADDR. A spender who does NOT know the note's (ak,nk) is rejected. */
     {
         uint64_t bad[ROWS * CONF_ACTION_WIDTH]; memcpy(bad, honest, sizeof bad);
         set(bad, 0, CONF_ACTION_AC1_OFF + p2air_input_off(0), 0xBAD); /* wrong ak */
         expect_reject("THEFT: wrong ak != addr preimage (cond-3)", bad);
     }
-    /* REJECT 33: nk used in cond-3 != nk_src (the nullifier key) — one-cell bind. */
+    /* REJECT F3-c: THEFT via a NEW ak lane (AC1.in[3] — knowing 3 of 4 lanes must
+     * not be enough; every lane is pinned to the AK cells). */
     {
         uint64_t bad[ROWS * CONF_ACTION_WIDTH]; memcpy(bad, honest, sizeof bad);
-        set(bad, 0, CONF_ACTION_AC1_OFF + p2air_input_off(1), nk[0] + 1);
-        expect_reject("cond-3 nk != nk_src (one-cell)", bad);
+        set(bad, 0, CONF_ACTION_AC1_OFF + p2air_input_off(3), 0xBAD3);
+        expect_reject("THEFT: wrong ak lane 3 (F3 cond-3)", bad);
     }
-    /* REJECT 34: wrong DOMSEP_ADDR pad cell (AC1.in[2]). */
+    /* REJECT 33: nk lane used in cond-3 != nk_src lane (per-lane bind, F3:
+     * nk lanes moved to AC2.in[0..4)). */
     {
         uint64_t bad[ROWS * CONF_ACTION_WIDTH]; memcpy(bad, honest, sizeof bad);
-        set(bad, 0, CONF_ACTION_AC1_OFF + p2air_input_off(2), 999);
-        expect_reject("wrong DOMSEP_ADDR (AC1.in[2])", bad);
+        set(bad, 0, CONF_ACTION_AC2_OFF + p2air_input_off(0), nk[0] + 1);
+        expect_reject("cond-3 nk != nk_src (per-lane)", bad);
+    }
+    /* REJECT F3-d: a NEW nk lane diverges from its nk_src cell (AC2.in[3]). */
+    {
+        uint64_t bad[ROWS * CONF_ACTION_WIDTH]; memcpy(bad, honest, sizeof bad);
+        set(bad, 0, CONF_ACTION_AC2_OFF + p2air_input_off(3), nk[3] + 1);
+        expect_reject("cond-3 nk lane 3 != nk_src (F3)", bad);
+    }
+    /* REJECT 34: wrong DOMSEP_ADDR pad cell (F3: moved to AC3.in[0]). */
+    {
+        uint64_t bad[ROWS * CONF_ACTION_WIDTH]; memcpy(bad, honest, sizeof bad);
+        set(bad, 0, CONF_ACTION_AC3_OFF + p2air_input_off(0), 999);
+        expect_reject("wrong DOMSEP_ADDR (AC3.in[0])", bad);
     }
     /* REJECT 35: break AC2 capacity carry (AC2.in[5] != AC1.out[5]). */
     {
         uint64_t bad[ROWS * CONF_ACTION_WIDTH]; memcpy(bad, honest, sizeof bad);
         set(bad, 0, CONF_ACTION_AC2_OFF + p2air_input_off(5), 12345);
         expect_reject("AC2 capacity-carry break (cond-3)", bad);
+    }
+    /* REJECT F3-e: break the NEW AC3 capacity carry (AC3.in[5] != AC2.out[5]). */
+    {
+        uint64_t bad[ROWS * CONF_ACTION_WIDTH]; memcpy(bad, honest, sizeof bad);
+        set(bad, 0, CONF_ACTION_AC3_OFF + p2air_input_off(5), 54321);
+        expect_reject("AC3 capacity-carry break (F3 cond-3)", bad);
     }
     /* REJECT 36: forge the committed ADDR to a different value (addr_pub mismatch).
      * (Also changes cm, but the cond-3 addr_pub==ADDR binding fires directly.) */
@@ -488,6 +536,46 @@ int main(void) {
         set(bad, 0, CONF_ACTION_ISREAL_OFF, GOLDILOCKS_P + 1); /* ≡ 1 field */
         set(bad, 0, CONF_ACTION_CMOUT_OFF + 0, 0xBAD); /* corrupt cm_output */
         expect_reject("MF-1: non-canonical IS_REAL + corrupt cm", bad);
+    }
+
+    /* ── F3 per-lane canonical fail-close (D1): generate must reject when ANY
+     * single ak/nk lane is ≥ p (the S1f-F1 rule, extended per-lane — a p+x lane
+     * would desync the raw cell from the field-reduced poseidon input). ── */
+    {
+        uint64_t scratch[ROWS * CONF_ACTION_WIDTH];
+        int ok = 1;
+        for (unsigned lane = 0; lane < CONF_ACTION_NK_LANES; lane++) {
+            uint64_t nk_bad[3 * CONF_ACTION_NK_LANES];
+            memcpy(nk_bad, nk, sizeof nk_bad);
+            nk_bad[lane] = GOLDILOCKS_P; /* block 0, this lane non-canonical */
+            if (conf_action_air_generate(LOG_H, value, &addr[0][0], &rcm[0][0],
+                                         roles, pos, nk_bad, ak, 3, scratch))
+                ok = 0;
+        }
+        for (unsigned lane = 0; lane < CONF_ACTION_AK_LANES; lane++) {
+            uint64_t ak_bad[3 * CONF_ACTION_AK_LANES];
+            memcpy(ak_bad, ak, sizeof ak_bad);
+            ak_bad[lane] = GOLDILOCKS_P;
+            if (conf_action_air_generate(LOG_H, value, &addr[0][0], &rcm[0][0],
+                                         roles, pos, nk, ak_bad, 3, scratch))
+                ok = 0;
+        }
+        printf("  [accept] F3 per-lane non-canonical ak/nk fail-close (8/8) %s\n",
+               ok ? "OK" : "FAIL");
+        if (!ok) fails++;
+    }
+
+    /* ── F3 lane-order sanity: derive_addr is injective in lane POSITION — the
+     * pinned §3b preimage order means swapping two nk lanes changes the address
+     * (an order-insensitive packing would collapse the keyspace). ── */
+    {
+        uint64_t nk_sw[CONF_ACTION_NK_LANES] = {nk[1], nk[0], nk[2], nk[3]};
+        uint64_t a_sw[CONF_ACTION_ADDR_LANES];
+        conf_action_derive_addr(&ak[0], nk_sw, a_sw);
+        int diff = memcmp(a_sw, eff_addr[0], sizeof a_sw) != 0;
+        printf("  [accept] F3 nk lane-swap changes addr (order pinned)   %s\n",
+               diff ? "OK" : "FAIL");
+        if (!diff) fails++;
     }
 
     printf("------------------------------------------------------------\n");

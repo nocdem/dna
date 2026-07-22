@@ -39,26 +39,50 @@ static void sponge8_blocks(const uint64_t in[8], uint64_t *blk1, uint64_t *blk2,
     for (int k = 0; k < CONF_NF_LANES; k++) out[k] = sp_out(blk2, (size_t)k);
 }
 
+/* Fixed-length PaddingFreeSponge<8,4,4> over in[12] (F3 §3b): 12 = 3·RATE ⇒
+ * EXACTLY 3 overwrite-rate/carry-capacity permutations, no pad permute
+ * (note_commit.c:18-48 / Plonky3 sponge.rs:176-203); digest = block3.out[0..4]. */
+static void sponge12_blocks(const uint64_t in[12], uint64_t *blk1, uint64_t *blk2,
+                            uint64_t *blk3, uint64_t out[CONF_NF_LANES]) {
+    uint64_t in1[8] = {in[0], in[1], in[2], in[3], 0, 0, 0, 0};
+    poseidon2_air_generate_row(in1, blk1);
+    uint64_t s1[8];
+    for (int k = 0; k < 8; k++) s1[k] = sp_out(blk1, (size_t)k);
+
+    uint64_t in2[8] = {in[4], in[5], in[6], in[7], s1[4], s1[5], s1[6], s1[7]};
+    poseidon2_air_generate_row(in2, blk2);
+    uint64_t s2[8];
+    for (int k = 0; k < 8; k++) s2[k] = sp_out(blk2, (size_t)k);
+
+    uint64_t in3[8] = {in[8], in[9], in[10], in[11], s2[4], s2[5], s2[6], s2[7]};
+    poseidon2_air_generate_row(in3, blk3);
+    for (int k = 0; k < CONF_NF_LANES; k++) out[k] = sp_out(blk3, (size_t)k);
+}
+
 bool conf_nullifier_air_generate(const uint64_t cm[CONF_NF_LANES], uint64_t pos,
-                                 uint64_t nk, uint64_t *trace_out,
+                                 const uint64_t nk[CONF_NF_NK_LANES],
+                                 uint64_t *trace_out,
                                  uint64_t nf_out[CONF_NF_LANES]) {
-    if (!cm || !trace_out || !nf_out) return false;
+    if (!cm || !nk || !trace_out || !nf_out) return false;
     for (size_t i = 0; i < CONF_NF_WIDTH; i++) trace_out[i] = 0;
 
     for (int j = 0; j < CONF_NF_LANES; j++) trace_out[CONF_NF_CM_OFF + j] = cm[j];
     trace_out[CONF_NF_POS_OFF] = pos;
-    trace_out[CONF_NF_NK_OFF] = nk;
+    for (int j = 0; j < CONF_NF_NK_LANES; j++)
+        trace_out[CONF_NF_NK_OFF + j] = nk[j];
 
-    /* ρ = CRH(cm, pos): preimage [cm0..3, pos, DOMSEP_RHO, 0, 0]. */
+    /* ρ = CRH(cm, pos): preimage [cm0..3, pos, DOMSEP_RHO, 0, 0] (unchanged). */
     uint64_t rho_in[8] = {cm[0], cm[1], cm[2], cm[3], pos, DNAC_DOMSEP_RHO, 0, 0};
     uint64_t rho[CONF_NF_LANES];
     sponge8_blocks(rho_in, trace_out + CONF_NF_RHO1_OFF, trace_out + CONF_NF_RHO2_OFF,
                    rho);
 
-    /* nf = PRF(nk, ρ): preimage [nk, ρ0..3, DOMSEP_NF, 0, 0]. */
-    uint64_t nf_in[8] = {nk, rho[0], rho[1], rho[2], rho[3], DNAC_DOMSEP_NF, 0, 0};
+    /* nf = PRF(nk[4], ρ): preimage [nk0..3, ρ0..3, DOMSEP_NF, 0, 0, 0] (F3). */
+    uint64_t nf_in[12] = {nk[0], nk[1], nk[2], nk[3], rho[0], rho[1], rho[2], rho[3],
+                          DNAC_DOMSEP_NF, 0, 0, 0};
     uint64_t nf[CONF_NF_LANES];
-    sponge8_blocks(nf_in, trace_out + CONF_NF_NF1_OFF, trace_out + CONF_NF_NF2_OFF, nf);
+    sponge12_blocks(nf_in, trace_out + CONF_NF_NF1_OFF, trace_out + CONF_NF_NF2_OFF,
+                    trace_out + CONF_NF_NF3_OFF, nf);
 
     for (int j = 0; j < CONF_NF_LANES; j++) {
         trace_out[CONF_NF_NF_OFF + j] = nf[j];
@@ -76,12 +100,14 @@ int conf_nullifier_air_eval(const uint64_t *trace, const uint64_t cm[CONF_NF_LAN
     const uint64_t *rho2 = trace + CONF_NF_RHO2_OFF;
     const uint64_t *nf1 = trace + CONF_NF_NF1_OFF;
     const uint64_t *nf2 = trace + CONF_NF_NF2_OFF;
+    const uint64_t *nf3 = trace + CONF_NF_NF3_OFF;
 
-    /* All four permutations internally consistent. */
+    /* All five permutations internally consistent. */
     viol += poseidon2_air_eval_row(rho1);
     viol += poseidon2_air_eval_row(rho2);
     viol += poseidon2_air_eval_row(nf1);
     viol += poseidon2_air_eval_row(nf2);
+    viol += poseidon2_air_eval_row(nf3);
 
     /* ── ρ = CRH(cm, pos) ──────────────────────────────────────────────────
      * G2 (red-team MF-1): the ρ-input MUST read the frozen-carry TRACE CELLS
@@ -108,28 +134,30 @@ int conf_nullifier_air_eval(const uint64_t *trace, const uint64_t cm[CONF_NF_LAN
     uint64_t rho[CONF_NF_LANES];
     for (size_t j = 0; j < CONF_NF_LANES; j++) rho[j] = sp_out(rho2, j);
 
-    /* ── nf = PRF(nk, ρ) ───────────────────────────────────────────────────
-     * NF1.in[0] == nk (the SAME nk cell); NF1.in[1..4] == ρ[0..3]; NF2.in[0] ==
-     * ρ[3]; NF2.in[1] == DOMSEP_NF; pads + capacity carry. */
-    if (nf1[p2air_input_off(0)] != trace[CONF_NF_NK_OFF]) viol++;
-    if (nf1[p2air_input_off(1)] != rho[0]) viol++;
-    if (nf1[p2air_input_off(2)] != rho[1]) viol++;
-    if (nf1[p2air_input_off(3)] != rho[2]) viol++;
+    /* ── nf = PRF(nk[4], ρ) (F3 12-slot preimage, 3 perms) ─────────────────
+     * NF1.in[0..4) == nk lanes (the SAME nk cells, per-lane bind); NF2.in[0..4)
+     * == ρ[0..3]; NF3.in == [DOMSEP_NF, 0, 0, 0]; capacity carries NF1→NF2→NF3. */
+    for (size_t j = 0; j < CONF_NF_NK_LANES; j++)
+        if (nf1[p2air_input_off(j)] != trace[CONF_NF_NK_OFF + j]) viol++;
     for (size_t k = 4; k < 8; k++)
         if (nf1[p2air_input_off(k)] != 0) viol++;           /* zero-cap IV */
-    if (nf2[p2air_input_off(0)] != rho[3]) viol++;
-    if (nf2[p2air_input_off(1)] != DNAC_DOMSEP_NF) viol++;
-    if (nf2[p2air_input_off(2)] != 0) viol++;
-    if (nf2[p2air_input_off(3)] != 0) viol++;
+    for (size_t j = 0; j < CONF_NF_LANES; j++)
+        if (nf2[p2air_input_off(j)] != rho[j]) viol++;
     for (size_t k = 4; k < 8; k++)
         if (nf2[p2air_input_off(k)] != sp_out(nf1, k)) viol++; /* capacity carry */
+    if (nf3[p2air_input_off(0)] != DNAC_DOMSEP_NF) viol++;
+    if (nf3[p2air_input_off(1)] != 0) viol++;
+    if (nf3[p2air_input_off(2)] != 0) viol++;
+    if (nf3[p2air_input_off(3)] != 0) viol++;
+    for (size_t k = 4; k < 8; k++)
+        if (nf3[p2air_input_off(k)] != sp_out(nf2, k)) viol++; /* capacity carry */
 
-    /* G4 nf single-source: the public NF column == NF2.out[0..4], and it equals
+    /* G4 nf single-source: the public NF column == NF3.out[0..4], and it equals
      * the verifier-supplied public nf. The global shielded-nullifier-set double-
      * spend check+insert is owned by parent §1.8 / S4 (seen_shielded_nf, tag 0x08)
      * — NOT C6 (C6 is the transparent turnstile only; red-team MF-2 / dm-c4 G3). */
     for (size_t j = 0; j < CONF_NF_LANES; j++) {
-        if (trace[CONF_NF_NF_OFF + j] != sp_out(nf2, j)) viol++;
+        if (trace[CONF_NF_NF_OFF + j] != sp_out(nf3, j)) viol++;
         if (trace[CONF_NF_NF_OFF + j] != nf[j]) viol++;
     }
     return viol;

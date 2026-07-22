@@ -10,24 +10,24 @@
  * (tools/plonky3_oracle/src/main.rs), which itself is proven by a REAL is_zk=1
  * p3_uni_stark proof (tools/vectors/conf_action_agg_air_zk.json).
  *
- * ── ZK trace layout (WIDTH 1946 — DIFFERENT from the 1915-wide construction
- *    gate: the real-STARK adds committed is_zero SELECTOR columns the C
- *    construction gate replaced with runtime phi-branches). ──
- *   [0,813)         C1 region (conf_action_air, offsets unchanged)
- *   [813,1183)      C3 membership region
- *   [1183,1913)     C4 nullifier region
- *   1913            IS_NF   = [phi==D+1]
- *   1914            INV_NF
- *   [1915,1919)     IS_LVL[1..D]   = [phi==i]
- *   [1919,1923)     INV_LVL[1..D]
- *   [1923,1927)     ACTIVE_LVL[1..D] = IS_LVL[i]*IS_INPUT
- *   1927            N_INPUT (running INPUT-block counter)
- *   [1928,1932)     SLOT_SEL[MAX_INPUTS] = is_zero(N_INPUT-1-s)
- *   [1932,1936)     INV_SLOT[MAX_INPUTS]
- *   1936            N_OUTPUT (running OUTPUT-block counter, S4c)
- *   [1937,1941)     OSLOT_SEL[MAX_OUTPUTS] = is_zero(N_OUTPUT-1-s)
- *   [1941,1945)     INV_OSLOT[MAX_OUTPUTS]
- *   1945            FEE_ACC (Σ IS_FEE·value accumulator)
+ * ── ZK trace layout (WIDTH 2318 post-F3 — DIFFERENT from the 2287-wide
+ *    construction gate: the real-STARK adds committed is_zero SELECTOR columns
+ *    the C construction gate replaced with runtime phi-branches). ──
+ *   [0,1002)        C1 region (conf_action_air, offsets unchanged)
+ *   [1002,1372)     C3 membership region
+ *   [1372,2285)     C4 nullifier region (nk[4] + NF1/NF2/NF3, F3)
+ *   2285            IS_NF   = [phi==D+1]
+ *   2286            INV_NF
+ *   [2287,2291)     IS_LVL[1..D]   = [phi==i]
+ *   [2291,2295)     INV_LVL[1..D]
+ *   [2295,2299)     ACTIVE_LVL[1..D] = IS_LVL[i]*IS_INPUT
+ *   2299            N_INPUT (running INPUT-block counter)
+ *   [2300,2304)     SLOT_SEL[MAX_INPUTS] = is_zero(N_INPUT-1-s)
+ *   [2304,2308)     INV_SLOT[MAX_INPUTS]
+ *   2308            N_OUTPUT (running OUTPUT-block counter, S4c)
+ *   [2309,2313)     OSLOT_SEL[MAX_OUTPUTS] = is_zero(N_OUTPUT-1-s)
+ *   [2313,2317)     INV_OSLOT[MAX_OUTPUTS]
+ *   2317            FEE_ACC (Σ IS_FEE·value accumulator)
  *
  * ── Publics (43, S4c): anchor[4] || num_input || nf_slot[MI][4] || num_output ||
  *    output_commit[MO][4] || fee || tx_binding[4] (tx_binding FS-observed). ──
@@ -51,7 +51,7 @@
 #define DNAC_ZK_CONF_ACTION_AGG_FOLD_H
 
 #include "conf_action_agg_air.h" /* CONF_AGG_TREE_DEPTH + region params */
-#include "conf_action_air.h"     /* CONF_ACTION_* C1 offsets (width 813) */
+#include "conf_action_air.h"     /* CONF_ACTION_* C1 offsets (width = CONF_ACTION_WIDTH) */
 #include "poseidon2_air_cols.h"  /* P2AIR_NUM_COLS */
 #include "stark_constraints.h"   /* dnac_stark_air_t / folder */
 
@@ -76,35 +76,39 @@ extern "C" {
 #define CONF_AGGZK_MEMB_WIDTH (CONF_AGGZK_MEMB_POSACC + 1)            /* 370 */
 
 /* nullifier sub-offsets (within the NF region) */
+/* F3: nk 4-lane + third nf-sponge perm (NF3) — 12-slot PRF preimage
+ * [nk0..3, ρ0..3, DOMSEP_NF, 0,0,0], §3b pinned order. */
+#define CONF_AGGZK_NF_NK_LANES 4 /* CONF_NF_NK_LANES */
 #define CONF_AGGZK_NF_CM 0
 #define CONF_AGGZK_NF_POS 4
-#define CONF_AGGZK_NF_NK 5
-#define CONF_AGGZK_NF_RHO1 6
+#define CONF_AGGZK_NF_NK 5 /* [5,9) */
+#define CONF_AGGZK_NF_RHO1 (CONF_AGGZK_NF_NK + CONF_AGGZK_NF_NK_LANES) /* 9 */
 #define CONF_AGGZK_NF_RHO2 (CONF_AGGZK_NF_RHO1 + P2AIR_NUM_COLS)
 #define CONF_AGGZK_NF_NF1 (CONF_AGGZK_NF_RHO2 + P2AIR_NUM_COLS)
 #define CONF_AGGZK_NF_NF2 (CONF_AGGZK_NF_NF1 + P2AIR_NUM_COLS)
-#define CONF_AGGZK_NF_NF (CONF_AGGZK_NF_NF2 + P2AIR_NUM_COLS)
-#define CONF_AGGZK_NF_WIDTH (CONF_AGGZK_NF_NF + CONF_AGGZK_NF_LANES) /* 730 */
+#define CONF_AGGZK_NF_NF3 (CONF_AGGZK_NF_NF2 + P2AIR_NUM_COLS)
+#define CONF_AGGZK_NF_NF (CONF_AGGZK_NF_NF3 + P2AIR_NUM_COLS)
+#define CONF_AGGZK_NF_WIDTH (CONF_AGGZK_NF_NF + CONF_AGGZK_NF_LANES) /* 913 */
 
 /* region offsets within the wide row */
 #define CONF_AGGZK_C1_OFF 0
-#define CONF_AGGZK_MEMB_OFF CONF_ACTION_WIDTH                              /* 813 */
-#define CONF_AGGZK_NF_OFF (CONF_AGGZK_MEMB_OFF + CONF_AGGZK_MEMB_WIDTH)    /* 1183 */
-#define CONF_AGGZK_ISNF_OFF (CONF_AGGZK_NF_OFF + CONF_AGGZK_NF_WIDTH)      /* 1913 */
-#define CONF_AGGZK_INVNF_OFF (CONF_AGGZK_ISNF_OFF + 1)                     /* 1914 */
-#define CONF_AGGZK_ISLVL_OFF (CONF_AGGZK_INVNF_OFF + 1)                    /* 1915 */
-#define CONF_AGGZK_INVLVL_OFF (CONF_AGGZK_ISLVL_OFF + CONF_AGGZK_D)        /* 1919 */
-#define CONF_AGGZK_ACTLVL_OFF (CONF_AGGZK_INVLVL_OFF + CONF_AGGZK_D)       /* 1923 */
-#define CONF_AGGZK_NIN_OFF (CONF_AGGZK_ACTLVL_OFF + CONF_AGGZK_D)          /* 1927 */
-#define CONF_AGGZK_SLOTSEL_OFF (CONF_AGGZK_NIN_OFF + 1)                    /* 1928 */
-#define CONF_AGGZK_INVSLOT_OFF (CONF_AGGZK_SLOTSEL_OFF + CONF_AGGZK_MAX_INPUTS) /* 1932 */
+#define CONF_AGGZK_MEMB_OFF CONF_ACTION_WIDTH                              /* 1002 */
+#define CONF_AGGZK_NF_OFF (CONF_AGGZK_MEMB_OFF + CONF_AGGZK_MEMB_WIDTH)    /* 1372 */
+#define CONF_AGGZK_ISNF_OFF (CONF_AGGZK_NF_OFF + CONF_AGGZK_NF_WIDTH)      /* 2285 */
+#define CONF_AGGZK_INVNF_OFF (CONF_AGGZK_ISNF_OFF + 1)                     /* 2286 */
+#define CONF_AGGZK_ISLVL_OFF (CONF_AGGZK_INVNF_OFF + 1)                    /* 2287 */
+#define CONF_AGGZK_INVLVL_OFF (CONF_AGGZK_ISLVL_OFF + CONF_AGGZK_D)        /* 2291 */
+#define CONF_AGGZK_ACTLVL_OFF (CONF_AGGZK_INVLVL_OFF + CONF_AGGZK_D)       /* 2295 */
+#define CONF_AGGZK_NIN_OFF (CONF_AGGZK_ACTLVL_OFF + CONF_AGGZK_D)          /* 2299 */
+#define CONF_AGGZK_SLOTSEL_OFF (CONF_AGGZK_NIN_OFF + 1)                    /* 2300 */
+#define CONF_AGGZK_INVSLOT_OFF (CONF_AGGZK_SLOTSEL_OFF + CONF_AGGZK_MAX_INPUTS) /* 2304 */
 /* S4c output routing columns (OUTPUT analog of the N_input machinery) + fee acc. */
 #define CONF_AGGZK_MAX_OUTPUTS 4 /* MAX_OUTPUTS — S6-pinned (mirrors MAX_INPUTS) */
-#define CONF_AGGZK_NOUT_OFF (CONF_AGGZK_INVSLOT_OFF + CONF_AGGZK_MAX_INPUTS)    /* 1936 */
-#define CONF_AGGZK_OSLOTSEL_OFF (CONF_AGGZK_NOUT_OFF + 1)                       /* 1937 */
-#define CONF_AGGZK_INVOSLOT_OFF (CONF_AGGZK_OSLOTSEL_OFF + CONF_AGGZK_MAX_OUTPUTS) /* 1941 */
-#define CONF_AGGZK_FEEACC_OFF (CONF_AGGZK_INVOSLOT_OFF + CONF_AGGZK_MAX_OUTPUTS)    /* 1945 */
-#define CONF_AGGZK_WIDTH (CONF_AGGZK_FEEACC_OFF + 1)                            /* 1946 */
+#define CONF_AGGZK_NOUT_OFF (CONF_AGGZK_INVSLOT_OFF + CONF_AGGZK_MAX_INPUTS)    /* 2308 */
+#define CONF_AGGZK_OSLOTSEL_OFF (CONF_AGGZK_NOUT_OFF + 1)                       /* 2309 */
+#define CONF_AGGZK_INVOSLOT_OFF (CONF_AGGZK_OSLOTSEL_OFF + CONF_AGGZK_MAX_OUTPUTS) /* 2313 */
+#define CONF_AGGZK_FEEACC_OFF (CONF_AGGZK_INVOSLOT_OFF + CONF_AGGZK_MAX_OUTPUTS)    /* 2317 */
+#define CONF_AGGZK_WIDTH (CONF_AGGZK_FEEACC_OFF + 1)                            /* 2318 */
 
 #define CONF_AGGZK_NF_PHI (CONF_AGGZK_D + 1) /* D+1 = 5 */
 
@@ -130,7 +134,7 @@ extern "C" {
  */
 void dnac_conf_action_agg_fold_air_eval(dnac_stark_folder_t *folder);
 
-/** AIR descriptor for dnac_stark_verify_constraints_nchunk (width 1946,
+/** AIR descriptor for dnac_stark_verify_constraints_nchunk (width 2318 post-F3,
  *  43 publics, main_next=1). */
 extern const dnac_stark_air_t DNAC_CONF_ACTION_AGG_FOLD_AIR;
 

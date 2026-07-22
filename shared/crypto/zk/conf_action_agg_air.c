@@ -52,6 +52,25 @@ static void agg_sponge8(const uint64_t in[8], uint64_t *blk1, uint64_t *blk2,
     for (unsigned k = 0; k < CONF_NF_LANES; k++) out[k] = p2_out(blk2, (size_t)k);
 }
 
+/* Fixed-length PaddingFreeSponge<8,4,4> over in[12] (F3 §3b): 12 = 3·RATE ⇒
+ * EXACTLY 3 overwrite-rate/carry-capacity permutations, no pad permute
+ * (note_commit.c:18-48 / Plonky3 sponge.rs:176-203). Used for the widened C4
+ * nf = PRF(nk[4], ρ) preimage [nk0..3, ρ0..3, DOMSEP_NF, 0,0,0]. */
+static void agg_sponge12(const uint64_t in[12], uint64_t *blk1, uint64_t *blk2,
+                         uint64_t *blk3, uint64_t out[CONF_NF_LANES]) {
+    uint64_t in1[8] = {in[0], in[1], in[2], in[3], 0, 0, 0, 0};
+    poseidon2_air_generate_row(in1, blk1);
+    uint64_t s1[8];
+    for (unsigned k = 0; k < 8; k++) s1[k] = p2_out(blk1, (size_t)k);
+    uint64_t in2[8] = {in[4], in[5], in[6], in[7], s1[4], s1[5], s1[6], s1[7]};
+    poseidon2_air_generate_row(in2, blk2);
+    uint64_t s2[8];
+    for (unsigned k = 0; k < 8; k++) s2[k] = p2_out(blk2, (size_t)k);
+    uint64_t in3[8] = {in[8], in[9], in[10], in[11], s2[4], s2[5], s2[6], s2[7]};
+    poseidon2_air_generate_row(in3, blk3);
+    for (unsigned k = 0; k < CONF_NF_LANES; k++) out[k] = p2_out(blk3, (size_t)k);
+}
+
 /* Within-row pointer to the nullifier region of a wide row. */
 #define NFR(row) ((row) + CONF_AGG_NF_OFF)
 
@@ -84,7 +103,7 @@ bool conf_action_agg_air_generate(unsigned log_height, const uint64_t *value,
     /* Zero the whole aggregate trace (nullifier region stays 0). */
     for (size_t i = 0; i < rows * CONF_AGG_WIDTH; i++) trace_out[i] = 0;
 
-    /* Generate the standalone C1 trace into an 813-wide scratch buffer. */
+    /* Generate the standalone C1 trace into a CONF_ACTION_WIDTH-wide scratch. */
     uint64_t *c1 = (uint64_t *)calloc(rows * CONF_ACTION_WIDTH, sizeof(uint64_t));
     if (!c1) return false;
     if (!conf_action_air_generate(log_height, value, addr, rcm, roles, pos, nk,
@@ -121,6 +140,7 @@ bool conf_action_agg_air_generate(unsigned log_height, const uint64_t *value,
         memcpy(nfr + CONF_NF_RHO2_OFF, zero_blk, sizeof zero_blk);
         memcpy(nfr + CONF_NF_NF1_OFF, zero_blk, sizeof zero_blk);
         memcpy(nfr + CONF_NF_NF2_OFF, zero_blk, sizeof zero_blk);
+        memcpy(nfr + CONF_NF_NF3_OFF, zero_blk, sizeof zero_blk);
     }
 
     /* nf outputs zeroed (OUTPUT/FEE/dummy slots stay 0). */
@@ -186,27 +206,31 @@ bool conf_action_agg_air_generate(unsigned log_height, const uint64_t *value,
                 if (cur[j] != anchor_out[j]) { free(c1); return false; }
         }
 
-        /* ── S4a.3a: C4 nullifier at φ=D+1 — nf = PRF(nk_carry, CRH(cm_carry,
+        /* ── S4a.3a: C4 nullifier at φ=D+1 — nf = PRF(nk_carry[4], CRH(cm_carry,
          * pos_carry)). cm/pos/nk are the block's frozen carries (== pos[blk]/
-         * nk[blk], which C1 froze into pos_carry/nk_carry). ── */
+         * nk[blk·4..], which C1 froze into pos_carry/nk_carry[4]). ── */
         {
             const size_t nfrow = blk * K + (size_t)(D_DEPTH + 1); /* φ=D+1 */
             uint64_t *nfr = NFR(trace_out + nfrow * CONF_AGG_WIDTH);
-            const uint64_t np = pos[blk], nnk = nk[blk];
+            const uint64_t np = pos[blk];
+            const uint64_t *nnk = nk + blk * CONF_NF_NK_LANES;
             for (unsigned j = 0; j < CONF_NF_LANES; j++)
                 nfr[CONF_NF_CM_OFF + j] = cm0[j];
             nfr[CONF_NF_POS_OFF] = np;
-            nfr[CONF_NF_NK_OFF] = nnk;
+            for (unsigned j = 0; j < CONF_NF_NK_LANES; j++)
+                nfr[CONF_NF_NK_OFF + j] = nnk[j];
 
             uint64_t rho_in[8] = {cm0[0], cm0[1], cm0[2], cm0[3], np,
                                   DNAC_DOMSEP_RHO, 0, 0};
             uint64_t rho[CONF_NF_LANES];
             agg_sponge8(rho_in, nfr + CONF_NF_RHO1_OFF, nfr + CONF_NF_RHO2_OFF, rho);
 
-            uint64_t nf_in[8] = {nnk, rho[0], rho[1], rho[2], rho[3],
-                                 DNAC_DOMSEP_NF, 0, 0};
+            uint64_t nf_in[12] = {nnk[0], nnk[1], nnk[2], nnk[3],
+                                  rho[0], rho[1], rho[2], rho[3],
+                                  DNAC_DOMSEP_NF, 0, 0, 0};
             uint64_t nf[CONF_NF_LANES];
-            agg_sponge8(nf_in, nfr + CONF_NF_NF1_OFF, nfr + CONF_NF_NF2_OFF, nf);
+            agg_sponge12(nf_in, nfr + CONF_NF_NF1_OFF, nfr + CONF_NF_NF2_OFF,
+                         nfr + CONF_NF_NF3_OFF, nf);
 
             for (unsigned j = 0; j < CONF_NF_LANES; j++) {
                 nfr[CONF_NF_NF_OFF + j] = nf[j];
@@ -261,7 +285,13 @@ int conf_action_agg_air_eval(const uint64_t *trace, size_t n_rows,
         const uint64_t *mc1 = m + CONF_MEMB_MC1_OFF;
         const uint64_t *mc2 = m + CONF_MEMB_MC2_OFF;
 
-        const uint64_t phi = row[CONF_AGG_C1_OFF + CONF_ACTION_PHI_OFF]; /* canonical 0..K−1 */
+        /* NOTE (2026-07-22 F3 red-team, LOW/hypothetical): raw u64 φ read — a
+         * p+k cell (field-equal k) would SKIP this gate's runtime phi-branches.
+         * Acceptable ONLY because this is the zero-consumer CONSTRUCTION gate;
+         * the AUTHORITATIVE proven AIR (conf_action_agg_fold.c + oracle) uses
+         * committed is_zero selectors in pure field arithmetic. C1 forces the
+         * FIELD value of φ, not its u64 representation. */
+        const uint64_t phi = row[CONF_AGG_C1_OFF + CONF_ACTION_PHI_OFF];
         const gold_fp_t is_nf = fp(row[CONF_AGG_ISNF_OFF]);
         const gold_fp_t inv = fp(row[CONF_AGG_INVNF_OFF]);
 
@@ -346,19 +376,21 @@ int conf_action_agg_air_eval(const uint64_t *trace, size_t n_rows,
         } /* end membership-active else */
 
         /* ── S4a.3a: C4 nullifier (always-on poseidon; pins gated on
-         * is_nf·IS_INPUT). At φ=D+1 of an INPUT block, nf = PRF(nk_carry,
+         * is_nf·IS_INPUT). At φ=D+1 of an INPUT block, nf = PRF(nk_carry[4],
          * CRH(cm_carry, pos_carry)) — the cm/pos/nk cells wired to the C1 frozen
-         * carries (G-S4-3 cross-region bind). ── */
+         * carries (G-S4-3 cross-region bind). F3: nk 4-lane, nf sponge 3-perm. ── */
         {
             const uint64_t *nfr = NFR(row);
             const uint64_t *rho1 = nfr + CONF_NF_RHO1_OFF;
             const uint64_t *rho2 = nfr + CONF_NF_RHO2_OFF;
             const uint64_t *nf1 = nfr + CONF_NF_NF1_OFF;
             const uint64_t *nf2 = nfr + CONF_NF_NF2_OFF;
+            const uint64_t *nf3 = nfr + CONF_NF_NF3_OFF;
             viol += poseidon2_air_eval_row(rho1);
             viol += poseidon2_air_eval_row(rho2);
             viol += poseidon2_air_eval_row(nf1);
             viol += poseidon2_air_eval_row(nf2);
+            viol += poseidon2_air_eval_row(nf3);
 
             const int active_nf = gold_fp_eq(is_nf, one) && is_input;
             if (active_nf) {
@@ -368,8 +400,9 @@ int conf_action_agg_air_eval(const uint64_t *trace, size_t n_rows,
                         C1CELL(row, CONF_ACTION_CMCARRY_OFF + j)) viol++;
                 if (nfr[CONF_NF_POS_OFF] != C1CELL(row, CONF_ACTION_POSCARRY_OFF))
                     viol++;
-                if (nfr[CONF_NF_NK_OFF] != C1CELL(row, CONF_ACTION_NKCARRY_OFF))
-                    viol++;
+                for (unsigned j = 0; j < CONF_NF_NK_LANES; j++)
+                    if (nfr[CONF_NF_NK_OFF + j] !=
+                        C1CELL(row, CONF_ACTION_NKCARRY_OFF + j)) viol++;
                 /* ρ = CRH(cm, pos): RHO1.in = [cm(cells), 0,0,0,0];
                  * RHO2.in = [pos(cell), DOMSEP_RHO, 0, 0, RHO1 cap carry]. */
                 for (unsigned j = 0; j < CONF_NF_LANES; j++)
@@ -386,29 +419,34 @@ int conf_action_agg_air_eval(const uint64_t *trace, size_t n_rows,
                 uint64_t rho[CONF_NF_LANES];
                 for (unsigned j = 0; j < CONF_NF_LANES; j++)
                     rho[j] = p2_out(rho2, (size_t)j);
-                /* nf = PRF(nk, ρ): NF1.in = [nk(cell), ρ0..2, 0,0,0,0];
-                 * NF2.in = [ρ3, DOMSEP_NF, 0, 0, NF1 cap carry]. */
-                if (nf1[p2air_input_off(0)] != nfr[CONF_NF_NK_OFF]) viol++;
-                if (nf1[p2air_input_off(1)] != rho[0]) viol++;
-                if (nf1[p2air_input_off(2)] != rho[1]) viol++;
-                if (nf1[p2air_input_off(3)] != rho[2]) viol++;
+                /* nf = PRF(nk[4], ρ) (F3 3-perm): NF1.in = [nk lanes (cells)];
+                 * NF2.in = [ρ0..3, NF1 cap carry]; NF3.in = [DOMSEP_NF, 0, 0, 0,
+                 * NF2 cap carry]. */
+                for (unsigned j = 0; j < CONF_NF_NK_LANES; j++)
+                    if (nf1[p2air_input_off((size_t)j)] != nfr[CONF_NF_NK_OFF + j])
+                        viol++;
                 for (size_t k = 4; k < 8; k++)
                     if (nf1[p2air_input_off(k)] != 0) viol++;
-                if (nf2[p2air_input_off(0)] != rho[3]) viol++;
-                if (nf2[p2air_input_off(1)] != DNAC_DOMSEP_NF) viol++;
-                if (nf2[p2air_input_off(2)] != 0) viol++;
-                if (nf2[p2air_input_off(3)] != 0) viol++;
+                for (unsigned j = 0; j < CONF_NF_LANES; j++)
+                    if (nf2[p2air_input_off((size_t)j)] != rho[j]) viol++;
                 for (size_t k = 4; k < 8; k++)
                     if (nf2[p2air_input_off(k)] != p2_out(nf1, k)) viol++;
-                /* nf cell == NF2.out (G4 single-source). */
+                if (nf3[p2air_input_off(0)] != DNAC_DOMSEP_NF) viol++;
+                if (nf3[p2air_input_off(1)] != 0) viol++;
+                if (nf3[p2air_input_off(2)] != 0) viol++;
+                if (nf3[p2air_input_off(3)] != 0) viol++;
+                for (size_t k = 4; k < 8; k++)
+                    if (nf3[p2air_input_off(k)] != p2_out(nf2, k)) viol++;
+                /* nf cell == NF3.out (G4 single-source). */
                 for (unsigned j = 0; j < CONF_NF_LANES; j++)
-                    if (nfr[CONF_NF_NF_OFF + j] != p2_out(nf2, (size_t)j)) viol++;
+                    if (nfr[CONF_NF_NF_OFF + j] != p2_out(nf3, (size_t)j)) viol++;
             } else {
                 /* inert nf row: the input/output cells carry nothing. */
                 for (unsigned j = 0; j < CONF_NF_LANES; j++)
                     if (nfr[CONF_NF_CM_OFF + j] != 0) viol++;
                 if (nfr[CONF_NF_POS_OFF] != 0) viol++;
-                if (nfr[CONF_NF_NK_OFF] != 0) viol++;
+                for (unsigned j = 0; j < CONF_NF_NK_LANES; j++)
+                    if (nfr[CONF_NF_NK_OFF + j] != 0) viol++;
                 for (unsigned j = 0; j < CONF_NF_LANES; j++)
                     if (nfr[CONF_NF_NF_OFF + j] != 0) viol++;
             }

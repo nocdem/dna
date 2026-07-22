@@ -1,13 +1,14 @@
 /**
  * @file stark_prover_agg.h
  * @brief Dual-mode S4b.4 — pure-C prover for the AGGREGATE Action AIR
- *        (ConfActionAggAir ZK layout, width 1946, is_zk=1, num_qc=8, 43 publics).
+ *        (ConfActionAggAir ZK layout, width 2318 post-F3, is_zk=1, num_qc=8,
+ *        43 publics).
  *
  * The aggregate sibling of dnac_action_prover_prove (stark_prover_action.h):
  * the SAME S1→S12 pipeline over the parametric stage library (stark_prover.h),
  * with the aggregate-specific pieces swapped in:
  *
- *   S1  trace     = the 1946-wide ZK trace (C1 scatter + membership walk +
+ *   S1  trace     = the CONF_AGGZK_WIDTH-wide ZK trace (C1 scatter + membership walk +
  *                   nullifier sponge + is_zero SELECTOR columns + S4c output
  *                   routing/fee-acc), byte-matching Rust generate_conf_action_agg_trace
  *   S6  quotient  = the aggregate constraint set evaluated domain-wide by
@@ -17,8 +18,8 @@
  *                   output_commit[MO][4] || fee || tx_binding[4]  (43, S4c)
  *
  * Draw layout (SmallRng order, D1-B): trace (W+8)·h @0 ‖ codeword 32h ‖
- *   blinding 42h ‖ R 12h  — total (W+94)h = 2040h at W=1946 (only the trace
- *   section grows vs C1; symbolic in A_W so it tracks the width).
+ *   blinding 42h ‖ R 12h  — total (W+94)h = 2412h at W=2318 post-F3 (only the
+ *   trace section grows vs C1; symbolic in A_W so it tracks the width).
  *
  * SALT (P4): optional M3b leaf-salt hiding — set instance.salt_draws (>= 160h) to
  * emit a SALTED proof (MerkleTreeHidingMmcs, SALT_ELEMS=2); NULL => unsalted,
@@ -46,14 +47,14 @@ extern "C" {
 #endif
 
 /** Total SmallRng draws for an is_zk=1 aggregate instance: trace (W+8)h ‖
- *  codeword 32h ‖ blinding 42h ‖ R 12h = (W+94)h. W = CONF_AGGZK_WIDTH = 1946
- *  (S4c), so 2040h; symbolic so it tracks any future width change. */
+ *  codeword 32h ‖ blinding 42h ‖ R 12h = (W+94)h. W = CONF_AGGZK_WIDTH = 2318
+ *  (post-F3), so 2412h; symbolic so it tracks any future width change. */
 #define DNAC_AGG_PROVER_TOTAL_DRAWS(height) \
     ((size_t)(CONF_AGGZK_WIDTH + 94) * (size_t)(height))
 
 /** P4: M3b salt draws — WIDTH-INDEPENDENT (per Merkle row, SALT_ELEMS=2 over lde_h
  *  rows): trace 16h + quotient 8*16h + random 16h = 160h. Stream B (FRI-mmcs)
- *  reuses the same buffer from pos 0 (< 16h). Same value as CONF despite W=1946. */
+ *  reuses the same buffer from pos 0 (< 16h). WIDTH-INDEPENDENT (same at W=2318). */
 #define DNAC_AGG_PROVER_SALT_DRAWS(height) ((size_t)160 * (size_t)(height))
 
 /**
@@ -68,8 +69,8 @@ typedef struct {
     const uint64_t *rcm;        /* num_notes * 2 commitment randomness */
     const uint8_t  *roles;      /* num_notes role tags (CONF_ACTION_ROLE_*) */
     const uint64_t *pos;        /* num_notes tree positions */
-    const uint64_t *nk;         /* num_notes nullifier-key components */
-    const uint64_t *ak;         /* num_notes spend-authority keys */
+    const uint64_t *nk;         /* num_notes × 4 nullifier-key lanes [blk*4+lane] (F3) */
+    const uint64_t *ak;         /* num_notes × 4 spend-authority lanes [blk*4+lane] (F3) */
     size_t          num_notes;  /* real note-blocks; num_notes+1 <= H/K */
     const uint64_t *memb_siblings; /* num_notes * D * 4 (INPUT blocks consumed) */
     const uint64_t *tx_binding; /* 4 canonical lanes; FS-observed statement binding.

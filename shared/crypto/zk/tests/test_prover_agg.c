@@ -142,7 +142,8 @@ int main(int argc,char **argv){
     for (int ai = 3; ai < argc; ai++) if (strcmp(argv[ai], "--salted") == 0) salted = 1;
     const unsigned log_height = four_in ? 8 : 7;
     const size_t height = (size_t)1 << log_height;
-    uint64_t value[5], addr[5*4], rcm[5*2], pos[5], nk[5], ak[5];
+    /* F3: nk/ak are 4-lane-per-block arrays ([blk*4 + lane]). */
+    uint64_t value[5], addr[5*4], rcm[5*2], pos[5], nk[5*4], ak[5*4];
     uint8_t roles[5];
     uint64_t memb_siblings[5*4*4];
     size_t num_notes = 3;
@@ -154,14 +155,22 @@ int main(int argc,char **argv){
         num_notes = 5;
         for(int i=0;i<4;i++){ value[i]=25; roles[i]=CONF_ACTION_ROLE_INPUT; pos[i]=(uint64_t)i; }
         value[4]=100; roles[4]=CONF_ACTION_ROLE_OUTPUT; pos[4]=0;
-        const uint64_t k[5]={0x22222222ULL,0x33333333ULL,0x44444444ULL,0x55555555ULL,0}; memcpy(nk,k,sizeof k);
-        const uint64_t a[5]={0x11111111ULL,0x12121212ULL,0x13131313ULL,0x14141414ULL,0}; memcpy(ak,a,sizeof a);
+        const uint64_t k[5*4]={0x22222222ULL,0x22222223ULL,0x22222224ULL,0x22222225ULL,
+                               0x33333333ULL,0x33333334ULL,0x33333335ULL,0x33333336ULL,
+                               0x44444444ULL,0x44444445ULL,0x44444446ULL,0x44444447ULL,
+                               0x55555555ULL,0x55555556ULL,0x55555557ULL,0x55555558ULL,
+                               0,0,0,0}; memcpy(nk,k,sizeof k);
+        const uint64_t a[5*4]={0x11111111ULL,0x11111112ULL,0x11111113ULL,0x11111114ULL,
+                               0x12121212ULL,0x12121213ULL,0x12121214ULL,0x12121215ULL,
+                               0x13131313ULL,0x13131314ULL,0x13131315ULL,0x13131316ULL,
+                               0x14141414ULL,0x14141415ULL,0x14141416ULL,0x14141417ULL,
+                               0,0,0,0}; memcpy(ak,a,sizeof a);
         const uint64_t rc[5*2]={0x11,0x12, 0x13,0x14, 0x15,0x16, 0x17,0x18, 0x21,0x22}; memcpy(rcm,rc,sizeof rc);
         uint64_t ad[5*4]; memset(ad,0,sizeof ad);
         ad[4*4+0]=0xAA01; ad[4*4+1]=0xAA02; ad[4*4+2]=0xAA03; ad[4*4+3]=0xAA04; memcpy(addr,ad,sizeof ad);
         /* cm0..3 + internal nodes N01=compress(cm0,cm1), N23=compress(cm2,cm3). */
         uint64_t cm[4][4], adr[4];
-        for(int i=0;i<4;i++){ conf_action_derive_addr(ak[i],nk[i],adr); note_commit(25,adr,&rcm[i*2],cm[i]); }
+        for(int i=0;i<4;i++){ conf_action_derive_addr(&ak[i*4],&nk[i*4],adr); note_commit(25,adr,&rcm[i*2],cm[i]); }
         uint64_t n01[4], n23[4];
         note_merkle_compress(cm[0],cm[1],n01);
         note_merkle_compress(cm[2],cm[3],n23);
@@ -179,14 +188,18 @@ int main(int argc,char **argv){
         const uint64_t v[3]={60,40,100};       memcpy(value,v,sizeof v);
         const uint8_t  r[3]={CONF_ACTION_ROLE_INPUT,CONF_ACTION_ROLE_INPUT,CONF_ACTION_ROLE_OUTPUT}; memcpy(roles,r,sizeof r);
         const uint64_t p[3]={0,1,0};           memcpy(pos,p,sizeof p);
-        const uint64_t k[3]={0x22222222ULL,0x33333333ULL,0}; memcpy(nk,k,sizeof k);
-        const uint64_t a[3]={0x11111111ULL,0x12121212ULL,0}; memcpy(ak,a,sizeof a);
+        const uint64_t k[3*4]={0x22222222ULL,0x22222223ULL,0x22222224ULL,0x22222225ULL,
+                               0x33333333ULL,0x33333334ULL,0x33333335ULL,0x33333336ULL,
+                               0,0,0,0}; memcpy(nk,k,sizeof k);
+        const uint64_t a[3*4]={0x11111111ULL,0x11111112ULL,0x11111113ULL,0x11111114ULL,
+                               0x12121212ULL,0x12121213ULL,0x12121214ULL,0x12121215ULL,
+                               0,0,0,0}; memcpy(ak,a,sizeof a);
         const uint64_t ad[3*4]={0,0,0,0, 0,0,0,0, 0xAA01,0xAA02,0xAA03,0xAA04}; memcpy(addr,ad,sizeof ad);
         const uint64_t rc[3*2]={0x11,0x12, 0x13,0x14, 0x21,0x22}; memcpy(rcm,rc,sizeof rc);
         /* compute the two inputs' cm and build sibling-of-each-other + shared upper. */
         uint64_t addr0[4],addr1[4],cm0[4],cm1[4];
-        conf_action_derive_addr(ak[0],nk[0],addr0);  note_commit(value[0],addr0,&rcm[0],cm0);
-        conf_action_derive_addr(ak[1],nk[1],addr1);  note_commit(value[1],addr1,&rcm[2],cm1);
+        conf_action_derive_addr(&ak[0],&nk[0],addr0);  note_commit(value[0],addr0,&rcm[0],cm0);
+        conf_action_derive_addr(&ak[4],&nk[4],addr1);  note_commit(value[1],addr1,&rcm[2],cm1);
         const uint64_t up[3][4]={{0x2001,0x2002,0x2003,0x2004},{0x3001,0x3002,0x3003,0x3004},{0x4001,0x4002,0x4003,0x4004}};
         for(int j=0;j<4;j++){ memb_siblings[0*16+0*4+j]=cm1[j]; memb_siblings[1*16+0*4+j]=cm0[j]; }
         for(int l=0;l<3;l++) for(int j=0;j<4;j++){ memb_siblings[0*16+(l+1)*4+j]=up[l][j]; memb_siblings[1*16+(l+1)*4+j]=up[l][j]; }
@@ -195,8 +208,10 @@ int main(int argc,char **argv){
         const uint64_t v[3]={100,70,30};       memcpy(value,v,sizeof v);
         const uint8_t  r[3]={CONF_ACTION_ROLE_INPUT,CONF_ACTION_ROLE_OUTPUT,CONF_ACTION_ROLE_FEE}; memcpy(roles,r,sizeof r);
         const uint64_t p[3]={5,0,0};           memcpy(pos,p,sizeof p);
-        const uint64_t k[3]={0x22222222ULL,0,0}; memcpy(nk,k,sizeof k);
-        const uint64_t a[3]={0x11111111ULL,0,0}; memcpy(ak,a,sizeof a);
+        const uint64_t k[3*4]={0x22222222ULL,0x22222223ULL,0x22222224ULL,0x22222225ULL,
+                               0,0,0,0, 0,0,0,0}; memcpy(nk,k,sizeof k);
+        const uint64_t a[3*4]={0x11111111ULL,0x11111112ULL,0x11111113ULL,0x11111114ULL,
+                               0,0,0,0, 0,0,0,0}; memcpy(ak,a,sizeof a);
         const uint64_t ad[3*4]={0,0,0,0, 0xAA01,0xAA02,0xAA03,0xAA04, 0xFEE1,0xFEE2,0xFEE3,0xFEE4}; memcpy(addr,ad,sizeof ad);
         const uint64_t rc[3*2]={0x11,0x12, 0x21,0x22, 0x31,0x32}; memcpy(rcm,rc,sizeof rc);
         const uint64_t sib[3*4*4]={
@@ -316,7 +331,8 @@ int main(int argc,char **argv){
     free(draws);
     if(fails){ printf("test_prover_agg: FAIL (%d)\n",fails); free(fx); return 1; }
     printf("test_prover_agg: PASS\n");
-    printf("  pure-C AGGREGATE prove (width 1946, num_qc=8, 43 publics) byte-matches\n");
+    printf("  pure-C AGGREGATE prove (width %d, num_qc=8, 43 publics) byte-matches\n",
+           (int)CONF_AGGZK_WIDTH);
     printf("  the REAL Plonky3 is_zk=1 proof (zeta+roots+final_poly+publics) and\n");
     printf("  self-verifies (FRI + N-chunk constraint check). Rust-free end-to-end.\n");
     free(fx);

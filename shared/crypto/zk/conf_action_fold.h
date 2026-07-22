@@ -35,7 +35,7 @@
 #ifndef DNAC_ZK_CONF_ACTION_FOLD_H
 #define DNAC_ZK_CONF_ACTION_FOLD_H
 
-#include "conf_action_air.h"   /* CONF_ACTION_* offsets (width 813) */
+#include "conf_action_air.h"   /* CONF_ACTION_* offsets (width = CONF_ACTION_WIDTH) */
 #include "stark_constraints.h" /* dnac_stark_air_t / folder */
 
 #ifdef __cplusplus
@@ -53,7 +53,7 @@ extern "C" {
  */
 void dnac_conf_action_fold_air_eval(dnac_stark_folder_t *folder);
 
-/** AIR descriptor for dnac_stark_verify_constraints_nchunk (width 813,
+/** AIR descriptor for dnac_stark_verify_constraints_nchunk (width 1002 post-F3,
  *  0 publics, main_next=1 — the counter/freeze/carry/BAL read the next row). */
 extern const dnac_stark_air_t DNAC_CONF_ACTION_FOLD_AIR;
 

@@ -4,8 +4,9 @@
  *
  * EMISSION ORDER is the contract: it mirrors the Rust-oracle
  * ConfActionAir::eval (tools/plonky3_oracle/src/main.rs) line for line — see
- * conf_action_fold.h. The four Poseidon2 sub-blocks (NC1/NC2 note-commitment,
- * AC1/AC2 spend-auth) fold through the shared dnac_poseidon2_fold_eval.
+ * conf_action_fold.h. The five Poseidon2 sub-blocks (NC1/NC2 note-commitment,
+ * AC1/AC2/AC3 spend-auth — F3 4-lane ak/nk, 12-slot preimage) fold through the
+ * shared dnac_poseidon2_fold_eval.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: Apache-2.0
@@ -103,7 +104,8 @@ void dnac_conf_action_fold_air_eval(dnac_stark_folder_t *f) {
                                      CONF_ACTION_ADDRCARRY_OFF};
         const size_t src_off[3] = {CONF_ACTION_POSSRC_OFF, CONF_ACTION_NKSRC_OFF,
                                    CONF_ACTION_ADDR_OFF};
-        const unsigned lanes[3] = {1, 1, CONF_ACTION_ADDR_LANES};
+        /* F3: nk per-lane freeze (mirrors the oracle's carries tuple). */
+        const unsigned lanes[3] = {1, CONF_ACTION_NK_LANES, CONF_ACTION_ADDR_LANES};
         for (unsigned c = 0; c < 3; c++) {
             for (unsigned j = 0; j < lanes[c]; j++) {
                 const gold_fp2_t carry = L[carry_off[c] + j];
@@ -182,45 +184,55 @@ void dnac_conf_action_fold_air_eval(dnac_stark_folder_t *f) {
                              L[CONF_ACTION_NC2_OFF + CA_END_POST3(j)]));
     }
 
-    /* ── condition-3 spend-auth: AC1/AC2 Poseidon2 + gated pins. ── */
+    /* ── condition-3 spend-auth: AC1/AC2/AC3 Poseidon2 + gated pins (F3 12-slot
+     * [ak0..3, nk0..3, DOMSEP_ADDR, 0,0,0] = 3 perms, §3b pinned order).
+     * EMISSION ORDER mirrors the oracle's widened ConfActionAir::eval. ── */
     dnac_poseidon2_fold_eval(f, CONF_ACTION_AC1_OFF);
     dnac_poseidon2_fold_eval(f, CONF_ACTION_AC2_OFF);
+    dnac_poseidon2_fold_eval(f, CONF_ACTION_AC3_OFF);
     {
         const gold_fp2_t ac_gate =
             gold_fp2_mul(L[CONF_ACTION_PHI0_OFF], L[CONF_ACTION_ISIN_OFF]);
-        /* AC1.in = [ak, nk, DOMSEP_ADDR, 0, 0,0,0,0]. */
-        dnac_stark_folder_when(
-            f, ac_gate,
-            gold_fp2_sub(L[CONF_ACTION_AC1_OFF + p2air_input_off(0)],
-                         L[CONF_ACTION_AK_OFF]));
-        dnac_stark_folder_when(
-            f, ac_gate,
-            gold_fp2_sub(L[CONF_ACTION_AC1_OFF + p2air_input_off(1)],
-                         L[CONF_ACTION_NKSRC_OFF]));
-        dnac_stark_folder_when(
-            f, ac_gate,
-            gold_fp2_sub(L[CONF_ACTION_AC1_OFF + p2air_input_off(2)],
-                         fp2u(DNAC_DOMSEP_ADDR)));
-        dnac_stark_folder_when(f, ac_gate,
-                               L[CONF_ACTION_AC1_OFF + p2air_input_off(3)]);
+        /* AC1.in[0..4) = ak lanes (zero-cap IV). */
+        for (size_t k = 0; k < CONF_ACTION_AK_LANES; k++)
+            dnac_stark_folder_when(
+                f, ac_gate,
+                gold_fp2_sub(L[CONF_ACTION_AC1_OFF + p2air_input_off(k)],
+                             L[CONF_ACTION_AK_OFF + k]));
         for (size_t k = 4; k < 8; k++)
             dnac_stark_folder_when(f, ac_gate,
                                    L[CONF_ACTION_AC1_OFF + p2air_input_off(k)]);
-        /* AC2.in[0..4] = 0 (pad); AC2.in[4..8] = AC1.end_post(3, 4..8). */
-        for (size_t k = 0; k < 4; k++)
-            dnac_stark_folder_when(f, ac_gate,
-                                   L[CONF_ACTION_AC2_OFF + p2air_input_off(k)]);
+        /* AC2.in[0..4) = nk_src lanes (the SAME nk_src cells C4 nullifies);
+         * AC2.in[4..8] = AC1.end_post(3, 4..8) (capacity). */
+        for (size_t k = 0; k < CONF_ACTION_NK_LANES; k++)
+            dnac_stark_folder_when(
+                f, ac_gate,
+                gold_fp2_sub(L[CONF_ACTION_AC2_OFF + p2air_input_off(k)],
+                             L[CONF_ACTION_NKSRC_OFF + k]));
         for (size_t k = 4; k < 8; k++)
             dnac_stark_folder_when(
                 f, ac_gate,
                 gold_fp2_sub(L[CONF_ACTION_AC2_OFF + p2air_input_off(k)],
                              L[CONF_ACTION_AC1_OFF + CA_END_POST3(k)]));
-        /* addr_pub (AC2.end_post) == the committed note ADDR[4]. */
+        /* AC3.in = [DOMSEP_ADDR, 0, 0, 0]; AC3.in[4..8] = AC2.end_post capacity. */
+        dnac_stark_folder_when(
+            f, ac_gate,
+            gold_fp2_sub(L[CONF_ACTION_AC3_OFF + p2air_input_off(0)],
+                         fp2u(DNAC_DOMSEP_ADDR)));
+        for (size_t k = 1; k < 4; k++)
+            dnac_stark_folder_when(f, ac_gate,
+                                   L[CONF_ACTION_AC3_OFF + p2air_input_off(k)]);
+        for (size_t k = 4; k < 8; k++)
+            dnac_stark_folder_when(
+                f, ac_gate,
+                gold_fp2_sub(L[CONF_ACTION_AC3_OFF + p2air_input_off(k)],
+                             L[CONF_ACTION_AC2_OFF + CA_END_POST3(k)]));
+        /* addr_pub (AC3.end_post) == the committed note ADDR[4]. */
         for (size_t j = 0; j < CONF_ACTION_ADDR_LANES; j++)
             dnac_stark_folder_when(
                 f, ac_gate,
                 gold_fp2_sub(L[CONF_ACTION_ADDR_OFF + j],
-                             L[CONF_ACTION_AC2_OFF + CA_END_POST3(j)]));
+                             L[CONF_ACTION_AC3_OFF + CA_END_POST3(j)]));
     }
 
     /* ── S1d balance conservation ── */
@@ -294,7 +306,7 @@ void dnac_conf_action_fold_air_eval(dnac_stark_folder_t *f) {
 }
 
 const dnac_stark_air_t DNAC_CONF_ACTION_FOLD_AIR = {
-    CONF_ACTION_WIDTH,            /* main_width = 813 */
+    CONF_ACTION_WIDTH,            /* main_width = 1002 (post-F3) */
     CONF_ACTION_FOLD_NUM_PUBLICS, /* 0 */
     1,                           /* main_next: counter/freeze/carry/BAL read next */
     dnac_conf_action_fold_air_eval,

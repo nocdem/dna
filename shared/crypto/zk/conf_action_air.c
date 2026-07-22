@@ -35,18 +35,25 @@ static uint64_t nc_out(const uint64_t *blk, size_t k) {
     return blk[p2air_end_post_off(P2AIR_HALF_FULL_ROUNDS - 1, k)];
 }
 
-/* Generic fixed-length PaddingFreeSponge<8,4,4> over in[8] (== S0 sponge): block1
- * absorbs in[0..4] zero-cap, block2 absorbs in[4..8] with block1 capacity carry;
- * digest = block2.out[0..4]. Used for condition-3 (addr_pub). */
-static void action_sponge8(const uint64_t in[8], uint64_t *blk1, uint64_t *blk2,
-                           uint64_t out[CONF_ACTION_CM_LANES]) {
+/* Generic fixed-length PaddingFreeSponge<8,4,4> over in[12] (F3 §3b): a 12-slot
+ * (= 3·RATE) input runs EXACTLY 3 overwrite-rate/carry-capacity permutations, no
+ * trailing pad permute (note_commit.c:18-48, citing Plonky3 sponge.rs:176-203):
+ * block_i overwrites state[0..4) with in[4i..4(i+1)) then permutes; the capacity
+ * state[4..8) carries block-to-block; digest = block3.out[0..4]. Used for
+ * condition-3 (addr_pub over [ak0..3, nk0..3, DOMSEP_ADDR, 0,0,0]). */
+static void action_sponge12(const uint64_t in[12], uint64_t *blk1, uint64_t *blk2,
+                            uint64_t *blk3, uint64_t out[CONF_ACTION_CM_LANES]) {
     uint64_t in1[8] = {in[0], in[1], in[2], in[3], 0, 0, 0, 0};
     poseidon2_air_generate_row(in1, blk1);
     uint64_t s1[8];
     for (int k = 0; k < 8; k++) s1[k] = nc_out(blk1, (size_t)k);
     uint64_t in2[8] = {in[4], in[5], in[6], in[7], s1[4], s1[5], s1[6], s1[7]};
     poseidon2_air_generate_row(in2, blk2);
-    for (int k = 0; k < CONF_ACTION_CM_LANES; k++) out[k] = nc_out(blk2, (size_t)k);
+    uint64_t s2[8];
+    for (int k = 0; k < 8; k++) s2[k] = nc_out(blk2, (size_t)k);
+    uint64_t in3[8] = {in[8], in[9], in[10], in[11], s2[4], s2[5], s2[6], s2[7]};
+    poseidon2_air_generate_row(in3, blk3);
+    for (int k = 0; k < CONF_ACTION_CM_LANES; k++) out[k] = nc_out(blk3, (size_t)k);
 }
 
 /* Compute the in-circuit note-commitment (E9′): two poseidon2 blocks realising
@@ -70,11 +77,13 @@ static void note_commit_blocks(uint64_t value, const uint64_t addr[4],
         cm_out[k] = nc_out(nc2_out, (size_t)k);
 }
 
-void conf_action_derive_addr(uint64_t ak, uint64_t nk,
+void conf_action_derive_addr(const uint64_t ak[CONF_ACTION_AK_LANES],
+                             const uint64_t nk[CONF_ACTION_NK_LANES],
                              uint64_t addr_out[CONF_ACTION_ADDR_LANES]) {
-    uint64_t in[8] = {ak, nk, DNAC_DOMSEP_ADDR, 0, 0, 0, 0, 0};
-    uint64_t b1[P2AIR_NUM_COLS], b2[P2AIR_NUM_COLS];
-    action_sponge8(in, b1, b2, addr_out);
+    uint64_t in[12] = {ak[0], ak[1], ak[2], ak[3], nk[0], nk[1], nk[2], nk[3],
+                       DNAC_DOMSEP_ADDR, 0, 0, 0};
+    uint64_t b1[P2AIR_NUM_COLS], b2[P2AIR_NUM_COLS], b3[P2AIR_NUM_COLS];
+    action_sponge12(in, b1, b2, b3, addr_out);
 }
 
 bool conf_action_air_generate(unsigned log_height, const uint64_t *value,
@@ -118,8 +127,13 @@ bool conf_action_air_generate(unsigned log_height, const uint64_t *value,
                 if (rcm[i * CONF_ACTION_RCM_LANES + j] >= GOLDILOCKS_P)
                     return false;
             if (pos[i] >= GOLDILOCKS_P) return false;
-            if (nk[i] >= GOLDILOCKS_P) return false;
-            if (ak[i] >= GOLDILOCKS_P) return false;
+            /* F3: per-lane canonical fail-close on EVERY ak/nk lane (D1). */
+            for (unsigned j = 0; j < CONF_ACTION_NK_LANES; j++)
+                if (nk[i * CONF_ACTION_NK_LANES + j] >= GOLDILOCKS_P)
+                    return false;
+            for (unsigned j = 0; j < CONF_ACTION_AK_LANES; j++)
+                if (ak[i * CONF_ACTION_AK_LANES + j] >= GOLDILOCKS_P)
+                    return false;
             gold_fp_t sign = (roles[i] == CONF_ACTION_ROLE_INPUT)
                                  ? gold_fp_one()
                                  : gold_fp_neg(gold_fp_one());
@@ -166,21 +180,29 @@ bool conf_action_air_generate(unsigned log_height, const uint64_t *value,
         memcpy(row + CONF_ACTION_NC2_OFF, zero_blk, sizeof zero_blk);
         memcpy(row + CONF_ACTION_AC1_OFF, zero_blk, sizeof zero_blk);
         memcpy(row + CONF_ACTION_AC2_OFF, zero_blk, sizeof zero_blk);
+        memcpy(row + CONF_ACTION_AC3_OFF, zero_blk, sizeof zero_blk);
 
         if (is_real && phi == 0) {
             /* S1c single-row note-commitment at the block-start φ=0 row. */
             const uint64_t *nv = value + blk;
             const uint64_t *nr = rcm + blk * CONF_ACTION_RCM_LANES;
 
-            /* condition-3 (INPUT notes): the note address IS Poseidon2(ak,nk) — an
-             * input note is addressed to the spender's own keys, and this is what
-             * spend authority proves. OUTPUT/FEE use the passed recipient address. */
+            /* condition-3 (INPUT notes): the note address IS Poseidon2(ak[4],nk[4])
+             * — an input note is addressed to the spender's own keys, and this is
+             * what spend authority proves. OUTPUT/FEE use the passed recipient
+             * address. F3 12-slot preimage, pinned order §3b. */
             uint64_t na[CONF_ACTION_ADDR_LANES];
             if (roles[blk] == CONF_ACTION_ROLE_INPUT) {
-                uint64_t ac_in[8] = {ak[blk], nk[blk], DNAC_DOMSEP_ADDR, 0, 0, 0, 0, 0};
-                action_sponge8(ac_in, row + CONF_ACTION_AC1_OFF,
-                               row + CONF_ACTION_AC2_OFF, na);
-                row[CONF_ACTION_AK_OFF] = ak[blk];
+                const uint64_t *bak = ak + blk * CONF_ACTION_AK_LANES;
+                const uint64_t *bnk = nk + blk * CONF_ACTION_NK_LANES;
+                uint64_t ac_in[12] = {bak[0], bak[1], bak[2], bak[3],
+                                      bnk[0], bnk[1], bnk[2], bnk[3],
+                                      DNAC_DOMSEP_ADDR, 0, 0, 0};
+                action_sponge12(ac_in, row + CONF_ACTION_AC1_OFF,
+                                row + CONF_ACTION_AC2_OFF,
+                                row + CONF_ACTION_AC3_OFF, na);
+                for (unsigned j = 0; j < CONF_ACTION_AK_LANES; j++)
+                    row[CONF_ACTION_AK_OFF + j] = bak[j];
             } else {
                 const uint64_t *pa = addr + blk * CONF_ACTION_ADDR_LANES;
                 for (unsigned j = 0; j < CONF_ACTION_ADDR_LANES; j++) na[j] = pa[j];
@@ -199,9 +221,10 @@ bool conf_action_air_generate(unsigned log_height, const uint64_t *value,
             for (unsigned j = 0; j < CONF_ACTION_CM_LANES; j++)
                 row[CONF_ACTION_CMOUT_OFF + j] = cm[j];
 
-            /* E15 sources at φ=0: pos, nk (new witnesses); addr source = ADDR[4]. */
+            /* E15 sources at φ=0: pos, nk[4] (new witnesses); addr source = ADDR[4]. */
             row[CONF_ACTION_POSSRC_OFF] = pos[blk];
-            row[CONF_ACTION_NKSRC_OFF] = nk[blk];
+            for (unsigned j = 0; j < CONF_ACTION_NK_LANES; j++)
+                row[CONF_ACTION_NKSRC_OFF + j] = nk[blk * CONF_ACTION_NK_LANES + j];
         }
 
         /* S1b + E15: the frozen carries hold the block's φ=0 source values (0 for
@@ -213,7 +236,8 @@ bool conf_action_air_generate(unsigned log_height, const uint64_t *value,
             for (unsigned j = 0; j < CONF_ACTION_CM_LANES; j++)
                 row[CONF_ACTION_CMCARRY_OFF + j] = blk0[CONF_ACTION_CMOUT_OFF + j];
             row[CONF_ACTION_POSCARRY_OFF] = blk0[CONF_ACTION_POSSRC_OFF];
-            row[CONF_ACTION_NKCARRY_OFF] = blk0[CONF_ACTION_NKSRC_OFF];
+            for (unsigned j = 0; j < CONF_ACTION_NK_LANES; j++)
+                row[CONF_ACTION_NKCARRY_OFF + j] = blk0[CONF_ACTION_NKSRC_OFF + j];
             for (unsigned j = 0; j < CONF_ACTION_ADDR_LANES; j++)
                 row[CONF_ACTION_ADDRCARRY_OFF + j] = blk0[CONF_ACTION_ADDR_OFF + j];
         }
@@ -407,7 +431,7 @@ int conf_action_air_eval(const uint64_t *trace, size_t n_rows) {
         viol += e15_freeze_check(trace, r, CONF_ACTION_POSCARRY_OFF,
                                  CONF_ACTION_POSSRC_OFF, 1);
         viol += e15_freeze_check(trace, r, CONF_ACTION_NKCARRY_OFF,
-                                 CONF_ACTION_NKSRC_OFF, 1);
+                                 CONF_ACTION_NKSRC_OFF, CONF_ACTION_NK_LANES);
         viol += e15_freeze_check(trace, r, CONF_ACTION_ADDRCARRY_OFF,
                                  CONF_ACTION_ADDR_OFF, CONF_ACTION_ADDR_LANES);
 
@@ -459,34 +483,41 @@ int conf_action_air_eval(const uint64_t *trace, size_t n_rows) {
                 if (row[CONF_ACTION_CMOUT_OFF + j] != nc_out(nc2, j)) viol++;
         }
 
-        /* ── condition-3 spend authority: addr_pub == Poseidon2(ak, nk) ───────
-         * The AC1/AC2 poseidon2 blocks are valid perms every row (always-on); the
-         * spend-auth binding fires on INPUT-note block-start rows. It forces the
-         * committed ADDR to be the hash of (ak, nk) — so a spender must know the
-         * keys behind the note's address (closes theft: a victim's public cm has
-         * the victim's ADDR, which ≠ Poseidon2(attacker_ak, attacker_nk)). */
+        /* ── condition-3 spend authority: addr_pub == Poseidon2(ak[4], nk[4]) ──
+         * The AC1/AC2/AC3 poseidon2 blocks are valid perms every row (always-on);
+         * the spend-auth binding fires on INPUT-note block-start rows. It forces
+         * the committed ADDR to be the hash of (ak, nk) — so a spender must know
+         * the keys behind the note's address (closes theft: a victim's public cm
+         * has the victim's ADDR, which ≠ Poseidon2(attacker_ak, attacker_nk)).
+         * F3 12-slot preimage [ak0..3, nk0..3, DOMSEP_ADDR, 0,0,0] (§3b). */
         const uint64_t *ac1 = row + CONF_ACTION_AC1_OFF;
         const uint64_t *ac2 = row + CONF_ACTION_AC2_OFF;
+        const uint64_t *ac3 = row + CONF_ACTION_AC3_OFF;
         viol += poseidon2_air_eval_row(ac1);
         viol += poseidon2_air_eval_row(ac2);
+        viol += poseidon2_air_eval_row(ac3);
         /* Field-value gate (MF-1): IS_INPUT via fp()/gold_fp_eq, not raw `==1`. */
         if (block_start && gold_fp_eq(fp(row[CONF_ACTION_ISIN_OFF]), one)) {
-            /* AC1.in = [ak, nk, DOMSEP_ADDR, 0, 0,0,0,0]; nk is the SAME nk_src
-             * cell C4 nullifies (one-cell binding). */
-            if (ac1[p2air_input_off(0)] != row[CONF_ACTION_AK_OFF]) viol++;
-            if (ac1[p2air_input_off(1)] != row[CONF_ACTION_NKSRC_OFF]) viol++;
-            if (ac1[p2air_input_off(2)] != DNAC_DOMSEP_ADDR) viol++;
-            if (ac1[p2air_input_off(3)] != 0) viol++;
+            /* AC1.in[0..4) = ak[0..4) (zero-cap IV). */
+            for (size_t k = 0; k < CONF_ACTION_AK_LANES; k++)
+                if (ac1[p2air_input_off(k)] != row[CONF_ACTION_AK_OFF + k]) viol++;
             for (size_t k = 4; k < 8; k++)
                 if (ac1[p2air_input_off(k)] != 0) viol++;
-            /* AC2.in[0..4] = 0 (pad); AC2.in[4..8] = AC1.out[4..8] (capacity). */
-            for (size_t k = 0; k < 4; k++)
-                if (ac2[p2air_input_off(k)] != 0) viol++;
+            /* AC2.in[0..4) = nk_src[0..4) — the SAME nk_src cells C4 nullifies
+             * (per-lane binding); AC2.in[4..8] = AC1.out[4..8] (capacity). */
+            for (size_t k = 0; k < CONF_ACTION_NK_LANES; k++)
+                if (ac2[p2air_input_off(k)] != row[CONF_ACTION_NKSRC_OFF + k]) viol++;
             for (size_t k = 4; k < 8; k++)
                 if (ac2[p2air_input_off(k)] != nc_out(ac1, k)) viol++;
-            /* addr_pub (AC2.out) == the committed note ADDR[4]. */
+            /* AC3.in = [DOMSEP_ADDR, 0, 0, 0]; AC3.in[4..8] = AC2.out[4..8]. */
+            if (ac3[p2air_input_off(0)] != DNAC_DOMSEP_ADDR) viol++;
+            for (size_t k = 1; k < 4; k++)
+                if (ac3[p2air_input_off(k)] != 0) viol++;
+            for (size_t k = 4; k < 8; k++)
+                if (ac3[p2air_input_off(k)] != nc_out(ac2, k)) viol++;
+            /* addr_pub (AC3.out) == the committed note ADDR[4]. */
             for (size_t j = 0; j < CONF_ACTION_ADDR_LANES; j++)
-                if (row[CONF_ACTION_ADDR_OFF + j] != nc_out(ac2, j)) viol++;
+                if (row[CONF_ACTION_ADDR_OFF + j] != nc_out(ac3, j)) viol++;
         }
 
         /* ── S1d balance conservation ─────────────────────────────────────── */

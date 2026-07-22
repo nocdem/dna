@@ -1,7 +1,7 @@
 /**
  * @file test_prover_action.c
  * @brief Dual-mode S1e.4 — pure-C C1 Action prover byte-match vs the REAL
- *        Plonky3 proof (width 813, is_zk=1, num_qc=8, 0 publics).
+ *        Plonky3 proof (width 1002 post-F3, is_zk=1, num_qc=8, 0 publics).
  *
  * Rebuilds the oracle instance (dump_conf_action_air_zk: INPUT 100 = OUTPUT 70
  * + FEE 30 + dummy-last, log_height=7) and the SmallRng(1) draw stream
@@ -141,8 +141,11 @@ int main(int argc,char **argv){
     const uint64_t rcm[3*2] = {0x11,0x12, 0x21,0x22, 0x31,0x32};
     const uint8_t  roles[3] = {CONF_ACTION_ROLE_INPUT, CONF_ACTION_ROLE_OUTPUT, CONF_ACTION_ROLE_FEE};
     const uint64_t pos[3]   = {5, 0, 0};
-    const uint64_t nk[3]    = {0x22222222ULL, 0, 0};
-    const uint64_t ak[3]    = {0x11111111ULL, 0, 0};
+    /* F3: nk/ak are 4-lane-per-block arrays ([blk*4 + lane]). */
+    const uint64_t nk[3*4]  = {0x22222222ULL, 0x22222223ULL, 0x22222224ULL,
+                               0x22222225ULL, 0, 0, 0, 0, 0, 0, 0, 0};
+    const uint64_t ak[3*4]  = {0x11111111ULL, 0x11111112ULL, 0x11111113ULL,
+                               0x11111114ULL, 0, 0, 0, 0, 0, 0, 0, 0};
 
     /* draws: first 907*height of the SmallRng(1) stream */
     const size_t need = DNAC_ACTION_PROVER_TOTAL_DRAWS(height);
@@ -244,7 +247,9 @@ int main(int argc,char **argv){
         const uint64_t r4[4*2]={1,2,3,4,5,6,7,8};
         const uint8_t  ro4[4]={CONF_ACTION_ROLE_INPUT,CONF_ACTION_ROLE_OUTPUT,
                                CONF_ACTION_ROLE_FEE,CONF_ACTION_ROLE_FEE};
-        const uint64_t p4[4]={1,2,3,4}, nk4[4]={9,0,0,0}, ak4[4]={8,0,0,0};
+        const uint64_t p4[4]={1,2,3,4};
+        const uint64_t nk4[4*4]={9,10,11,12, 0,0,0,0, 0,0,0,0, 0,0,0,0};
+        const uint64_t ak4[4*4]={8,9,10,11, 0,0,0,0, 0,0,0,0, 0,0,0,0};
         ci=inst; ci.value=v4; ci.addr=a4; ci.rcm=r4; ci.roles=ro4;
         ci.pos=p4; ci.nk=nk4; ci.ak=ak4; ci.num_notes=4; /* +1 dummy > 4 blocks */
         if(dnac_action_prover_prove(&ci,&bad)!=DNAC_PROVER_ERR_RANGE)ok=0;
@@ -264,7 +269,8 @@ int main(int argc,char **argv){
     free(draws);
     if(fails){ printf("test_prover_action: FAIL (%d)\n",fails); free(fx); return 1; }
     printf("test_prover_action: PASS\n");
-    printf("  pure-C C1 Action prove (width 813, num_qc=8, 0 publics) byte-matches\n");
+    printf("  pure-C C1 Action prove (width %d, num_qc=8, 0 publics) byte-matches\n",
+           (int)CONF_ACTION_WIDTH);
     printf("  the REAL Plonky3 is_zk=1 proof (zeta+roots+final_poly) and self-verifies\n");
     printf("  (FRI DNAC_FRI_OK + N-chunk constraint check). Rust-free end-to-end.\n");
     free(fx);

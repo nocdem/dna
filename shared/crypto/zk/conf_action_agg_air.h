@@ -3,23 +3,28 @@
  * @brief Dual-mode S4 — AGGREGATE Action AIR (C1 ⊕ C3 ⊕ C4), is_zk=0 gate.
  *
  * ⚠ AUTHORITATIVE-OBJECT NOTE (P3, 2026-07-17). Two formulations of this AIR exist:
- *   (1) THIS is_zk=0 CONSTRUCTION gate — WIDTH 1915, runtime φ-branches, filled by
- *       a C scatter/gather. Used ONLY by test_conf_action_agg_air.c. It verifies
- *       the constraint LOGIC by construction.
- *   (2) The is_zk=1 PROVEN AIR — WIDTH 1946, committed is_zero SELECTOR columns
- *       (conf_action_agg_fold.{c,h} + the Rust oracle + stark_prover_agg.c). This is
- *       what a REAL Plonky3 is_zk=1 proof commits; the C fold+prover BYTE-MATCH it
- *       (test_conf_action_agg_verify / test_prover_agg) and it was RED-TEAMED
- *       (S4f 10-agent + the 2026-07-17 re-audit, 0 CRITICAL).
- * The PROVEN 1946 AIR (2) is the AUTHORITATIVE object and is independently audited;
- * this 1915 construction gate (1) is ADDITIONAL independent-formulation coverage of
+ *   (1) THIS is_zk=0 CONSTRUCTION gate — WIDTH 2287 (was 1915 pre-F3), runtime
+ *       φ-branches, filled by a C scatter/gather. Used ONLY by
+ *       test_conf_action_agg_air.c. It verifies the constraint LOGIC by
+ *       construction.
+ *   (2) The is_zk=1 PROVEN AIR — WIDTH 1946 (pre-F3), committed is_zero SELECTOR
+ *       columns (conf_action_agg_fold.{c,h} + the Rust oracle + stark_prover_agg.c).
+ *       This is what a REAL Plonky3 is_zk=1 proof commits; the C fold+prover
+ *       BYTE-MATCH it (test_conf_action_agg_verify / test_prover_agg) and it was
+ *       RED-TEAMED (S4f 10-agent + the 2026-07-17 re-audit, 0 CRITICAL).
+ * The PROVEN AIR (2) is the AUTHORITATIVE object and is independently audited;
+ * this construction gate (1) is ADDITIONAL independent-formulation coverage of
  * the same constraint system, NOT the proven object. They are hand-corresponded
- * (the 1946 re-lays-out (1)'s runtime φ-branches as committed selectors) — so when
- * changing the constraint system, edit BOTH or the byte-match/fold tests will catch
- * the drift. (Full single-object consolidation = retire (1); deferred.)
+ * (the proven AIR re-lays-out (1)'s runtime φ-branches as committed selectors) — so
+ * when changing the constraint system, edit BOTH or the byte-match/fold tests will
+ * catch the drift. (Full single-object consolidation = retire (1); deferred.)
+ * ⚠ F3 TRANSIENT (S-F3.1, 2026-07-22): THIS construction gate is widened to the
+ * F3 ak/nk 4-lane layout; the PROVEN AIR (2) + oracle + fold/prover are re-lifted
+ * at S-F3.2/S-F3.3 — until then the (2)-side byte-match tests are EXPECTED RED
+ * and F3 commits as ONE unit (design 2026-07-21-f3 §3b coupling).
  *
  * The full shielded-spend AIR: the C1 balance/note-commitment/spend-auth AIR
- * (conf_action_air, WIDTH 813) with the C3 Merkle-membership and C4 nullifier
+ * (conf_action_air, WIDTH 1002) with the C3 Merkle-membership and C4 nullifier
  * sub-proofs embedded as PHASES inside each K=32 note-block, consuming C1's
  * frozen carries (cm_carry / pos_carry / nk_carry). Built INCREMENTALLY
  * (S4a.1 → S4a.f) exactly like C1 was (S1a → cond3).
@@ -30,9 +35,10 @@
  * FORCED phase-counter (φ) that replaces dm-c2's fatal FREE `same_note`.
  *
  * ── Aggregation strategy (zero-risk C1 reuse) ───────────────────────────────
- * The C1 columns occupy [0, CONF_ACTION_WIDTH) of every 1915-wide row. generate
- * fills them via a SCATTER from a standalone conf_action_air_generate (813-wide
- * scratch); eval GATHERS them back and calls the UNMODIFIED conf_action_air_eval
+ * The C1 columns occupy [0, CONF_ACTION_WIDTH) of every CONF_AGG_WIDTH-wide row.
+ * generate fills them via a SCATTER from a standalone conf_action_air_generate
+ * (CONF_ACTION_WIDTH-wide scratch); eval GATHERS them back and calls the
+ * UNMODIFIED conf_action_air_eval
  * (C1 stays byte-identical, its test the safety net), then adds the phase
  * constraints reading the wide trace directly.
  *
@@ -86,9 +92,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "conf_action_air.h"     /* C1 region (WIDTH 813) + params */
+#include "conf_action_air.h"     /* C1 region (WIDTH 1002) + params */
 #include "conf_membership_air.h" /* CONF_MEMB_WIDTH (370) */
-#include "conf_nullifier_air.h"  /* CONF_NF_WIDTH (730) */
+#include "conf_nullifier_air.h"  /* CONF_NF_WIDTH (913) */
 
 #ifdef __cplusplus
 extern "C" {
@@ -99,19 +105,19 @@ extern "C" {
  * S6 with the real note-commitment tree. */
 #define CONF_AGG_TREE_DEPTH 4
 
-/* ── Column layout ──────────────────────────────────────────────────────────
- * [0, 813)          C1 region (conf_action_air, offsets unchanged)
- * [813, 1183)       C3 membership region (conf_membership offsets, +CONF_AGG_MEMB_OFF)
- * [1183, 1913)      C4 nullifier region  (conf_nullifier offsets, +CONF_AGG_NF_OFF)
- * 1913              IS_NF   = [φ==D+1] indicator (forced phase selector)
- * 1914              INV_NF  = is_zero(φ−(D+1)) witness
+/* ── Column layout (post-F3 numbers) ────────────────────────────────────────
+ * [0, 1002)         C1 region (conf_action_air, offsets unchanged)
+ * [1002, 1372)      C3 membership region (conf_membership offsets, +CONF_AGG_MEMB_OFF)
+ * [1372, 2285)      C4 nullifier region  (conf_nullifier offsets, +CONF_AGG_NF_OFF)
+ * 2285              IS_NF   = [φ==D+1] indicator (forced phase selector)
+ * 2286              INV_NF  = is_zero(φ−(D+1)) witness
  */
 #define CONF_AGG_C1_OFF    0
-#define CONF_AGG_MEMB_OFF  CONF_ACTION_WIDTH                       /* 813 */
-#define CONF_AGG_NF_OFF    (CONF_AGG_MEMB_OFF + CONF_MEMB_WIDTH)   /* 1183 */
-#define CONF_AGG_ISNF_OFF  (CONF_AGG_NF_OFF + CONF_NF_WIDTH)       /* 1913 */
-#define CONF_AGG_INVNF_OFF (CONF_AGG_ISNF_OFF + 1)                 /* 1914 */
-#define CONF_AGG_WIDTH     (CONF_AGG_INVNF_OFF + 1)                /* 1915 */
+#define CONF_AGG_MEMB_OFF  CONF_ACTION_WIDTH                       /* 1002 */
+#define CONF_AGG_NF_OFF    (CONF_AGG_MEMB_OFF + CONF_MEMB_WIDTH)   /* 1372 */
+#define CONF_AGG_ISNF_OFF  (CONF_AGG_NF_OFF + CONF_NF_WIDTH)       /* 2285 */
+#define CONF_AGG_INVNF_OFF (CONF_AGG_ISNF_OFF + 1)                 /* 2286 */
+#define CONF_AGG_WIDTH     (CONF_AGG_INVNF_OFF + 1)                /* 2287 */
 
 /**
  * @brief Honest-prover aggregate trace generation (S4a.1 C1+is_nf; S4a.2
@@ -121,7 +127,8 @@ extern "C" {
  *        siblings. Inert membership rows carry a valid zero-perm (poseidon is
  *        always-on). The nullifier region stays zeroed (RESERVED for S4a.3).
  * @param log_height  trace height = 2^log_height, ∈ [LOG_K, MAX_LOG_HEIGHT].
- * @param value,addr,rcm,roles,pos,nk,ak,num_notes  the C1 note-block inputs.
+ * @param value,addr,rcm,roles,pos,nk,ak,num_notes  the C1 note-block inputs
+ *                    (F3: nk/ak are num_notes × 4 lane arrays, [blk*4 + lane]).
  * @param memb_siblings  num_notes × CONF_AGG_TREE_DEPTH × CONF_MEMB_LANES sibling
  *                       digests (level-0 first); only INPUT blocks are consumed.
  *                       May be NULL only if there are no INPUT notes.

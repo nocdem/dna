@@ -386,21 +386,22 @@ enum Cmd {
         #[arg(long)]
         out: PathBuf,
     },
-    /// DUAL-MODE S1e — is_zk=1 proof of the C1 Action AIR (conf_action_air,
-    /// width 813, main_next=true, 0 publics: forced phase-counter + freeze-carry
-    /// + single-row note-commitment + condition-3 spend-auth + balance
-    /// conservation). GATE1 verify=Ok, GATE3 tampered-reject, measured num_qc
-    /// MUST be 8 (STOP otherwise). h=128 conserving instance (INPUT 100 = OUTPUT
-    /// 70 + FEE 30 + dummy-last).
+    /// DUAL-MODE S1e (+F3 ak/nk 4-lane) — is_zk=1 proof of the C1 Action AIR
+    /// (conf_action_air, width 1002, main_next=true, 0 publics: forced
+    /// phase-counter + freeze-carry + single-row note-commitment + condition-3
+    /// spend-auth (AC1/AC2/AC3) + balance conservation). GATE1 verify=Ok, GATE3
+    /// tampered-reject, measured num_qc MUST be 8 (STOP otherwise). h=128
+    /// conserving instance (INPUT 100 = OUTPUT 70 + FEE 30 + dummy-last).
     #[command(name = "dump-conf-action-air-zk")]
     DumpConfActionAirZk {
         #[arg(long)]
         out: PathBuf,
     },
-    /// DUAL-MODE S4b — the AGGREGATE Action AIR (ConfActionAggAir, width 1936,
-    /// main_next=true, 21 publics=anchor||num_input||nf_slot[4][4]): C1 reuse + C3
-    /// membership + C4 nullifier at forced φ-phase rows. GATE1 verify=Ok, measured
-    /// num_qc MUST be 8 (STOP otherwise). h=128 conserving instance.
+    /// DUAL-MODE S4b (+F3 ak/nk 4-lane) — the AGGREGATE Action AIR
+    /// (ConfActionAggAir, width 2318, main_next=true, 43 publics): C1 reuse + C3
+    /// membership + C4 nullifier (NF1/NF2/NF3) at forced φ-phase rows. GATE1
+    /// verify=Ok, measured num_qc MUST be 8 (STOP otherwise). h=128 conserving
+    /// instance.
     #[command(name = "dump-conf-action-agg-air-zk")]
     DumpConfActionAggAirZk {
         #[arg(long)]
@@ -13431,15 +13432,20 @@ mod stark_priming {
     const CA_BALCON: usize = CA_INV0 + 1; // 441
     const CA_BALCOEF: usize = CA_BALCON + 1; // 442
     const CA_BAL: usize = CA_BALCOEF + 1; // 443
+    // F3 (2026-07-22, design 2026-07-21-f3 §3b, user-locked A_LANES=N_LANES=4):
+    // ak/nk widened 1→4 Goldilocks lanes (128-bit PQ Grover target on nk alone).
+    const CA_AK_LANES: usize = 4; // CONF_ACTION_AK_LANES
+    const CA_NK_LANES: usize = 4; // CONF_ACTION_NK_LANES
     const CA_POSSRC: usize = CA_BAL + 1; // 444
-    const CA_NKSRC: usize = CA_POSSRC + 1; // 445
-    const CA_POSCARRY: usize = CA_NKSRC + 1; // 446
-    const CA_NKCARRY: usize = CA_POSCARRY + 1; // 447
-    const CA_ADDRCARRY: usize = CA_NKCARRY + 1; // 448 [448,452)
-    const CA_AK: usize = CA_ADDRCARRY + CA_ADDR_LANES; // 452
-    const CA_AC1: usize = CA_AK + 1; // 453
-    const CA_AC2: usize = CA_AC1 + P2_NCOLS; // 633
-    const CA_W_WIDTH: usize = CA_AC2 + P2_NCOLS; // 813  (CONF_ACTION_WIDTH)
+    const CA_NKSRC: usize = CA_POSSRC + 1; // 445 [445,449)
+    const CA_POSCARRY: usize = CA_NKSRC + CA_NK_LANES; // 449
+    const CA_NKCARRY: usize = CA_POSCARRY + 1; // 450 [450,454)
+    const CA_ADDRCARRY: usize = CA_NKCARRY + CA_NK_LANES; // 454 [454,458)
+    const CA_AK: usize = CA_ADDRCARRY + CA_ADDR_LANES; // 458 [458,462)
+    const CA_AC1: usize = CA_AK + CA_AK_LANES; // 462
+    const CA_AC2: usize = CA_AC1 + P2_NCOLS; // 642
+    const CA_AC3: usize = CA_AC2 + P2_NCOLS; // 822
+    const CA_W_WIDTH: usize = CA_AC3 + P2_NCOLS; // 1002  (CONF_ACTION_WIDTH)
 
     const CA_ROLE_INPUT: u8 = 0;
     const CA_ROLE_OUTPUT: u8 = 1;
@@ -13450,6 +13456,7 @@ mod stark_priming {
     const CA_DOMSEP_ADDR: u64 = 0x15ff_bd84_5695_fb2d; // "DNAC shielded-address v1"
 
     /// One shielded note-block input (conf_action_air_generate params).
+    /// F3: nk/ak are 4-lane arrays (CONF_ACTION_NK_LANES / _AK_LANES).
     #[derive(Clone, Copy)]
     struct ActionNote {
         role: u8,
@@ -13457,8 +13464,8 @@ mod stark_priming {
         addr: [u64; 4], // recipient (OUTPUT/FEE); OVERRIDDEN for INPUT (derived)
         rcm: [u64; 2],
         pos: u64,
-        nk: u64,
-        ak: u64,
+        nk: [u64; CA_NK_LANES],
+        ak: [u64; CA_AK_LANES],
     }
 
     /// Reproducible-derivation gate for the two DOMSEPs this AIR pins
@@ -13563,7 +13570,7 @@ mod stark_priming {
             // (carry_off, src_off, lanes). addr's source is the note ADDR[4] cells.
             let carries: [(usize, usize, usize); 3] = [
                 (CA_POSCARRY, CA_POSSRC, 1),
-                (CA_NKCARRY, CA_NKSRC, 1),
+                (CA_NKCARRY, CA_NKSRC, CA_NK_LANES), // F3: per-lane freeze
                 (CA_ADDRCARRY, CA_ADDR, CA_ADDR_LANES),
             ];
             for (carry_off, src_off, lanes) in carries {
@@ -13630,7 +13637,10 @@ mod stark_priming {
                     .assert_eq(ls[CA_CMOUT + j], ls[CA_NC2 + P2_END_POST3 + j]);
             }
 
-            // ── condition-3 spend-auth: AC1/AC2 poseidon2 (always-on) + gated. ──
+            // ── condition-3 spend-auth: AC1/AC2/AC3 poseidon2 (always-on) + gated.
+            // F3 12-slot preimage [ak0..3, nk0..3, DOMSEP_ADDR, 0,0,0] = exactly
+            // 3 permutations (12 = 3·RATE; note_commit.c:18-48 / sponge.rs:176-203);
+            // the preimage ORDER is the pinned §3b design choice. ──
             let ac1: &Poseidon2Cols<AB::Var, 8, 7, 1, 4, 22> =
                 ls[CA_AC1..CA_AC1 + P2_NCOLS].borrow();
             p2v_eval::<AB, GenericPoseidon2LinearLayersGoldilocks, 8, 7, 1, 4, 22>(
@@ -13649,32 +13659,53 @@ mod stark_priming {
                 builder,
                 ac2,
             );
+            let ac3: &Poseidon2Cols<AB::Var, 8, 7, 1, 4, 22> =
+                ls[CA_AC3..CA_AC3 + P2_NCOLS].borrow();
+            p2v_eval::<AB, GenericPoseidon2LinearLayersGoldilocks, 8, 7, 1, 4, 22>(
+                &GOLDILOCKS_POSEIDON2_RC_8_EXTERNAL_INITIAL,
+                &GOLDILOCKS_POSEIDON2_RC_8_INTERNAL,
+                &GOLDILOCKS_POSEIDON2_RC_8_EXTERNAL_FINAL,
+                builder,
+                ac3,
+            );
             // Block-start ∧ IS_INPUT (field value — MF-1). Degree 2.
             let ac_gate: AB::Expr = ls[CA_PHI0].into() * ls[CA_ISIN].into();
-            // AC1.in = [ak, nk, DOMSEP_ADDR, 0, 0,0,0,0]; nk == nk_src (one-cell).
-            builder.when(ac_gate.clone()).assert_eq(ac1.inputs[0], ls[CA_AK]);
-            builder.when(ac_gate.clone()).assert_eq(ac1.inputs[1], ls[CA_NKSRC]);
-            builder
-                .when(ac_gate.clone())
-                .assert_eq(ac1.inputs[2], AB::Expr::from_u64(CA_DOMSEP_ADDR));
-            builder.when(ac_gate.clone()).assert_zero(ac1.inputs[3]);
+            // AC1.in[0..4) = ak lanes (zero-cap IV).
+            for k in 0..CA_AK_LANES {
+                builder.when(ac_gate.clone()).assert_eq(ac1.inputs[k], ls[CA_AK + k]);
+            }
             for k in 4..8 {
                 builder.when(ac_gate.clone()).assert_zero(ac1.inputs[k]);
             }
-            // AC2.in[0..4] = 0 (pad); AC2.in[4..8] = AC1.end_post(3, 4..8).
-            for k in 0..4 {
-                builder.when(ac_gate.clone()).assert_zero(ac2.inputs[k]);
+            // AC2.in[0..4) = nk_src lanes (the SAME nk_src cells C4 nullifies —
+            // per-lane bind); AC2.in[4..8] = AC1.end_post(3, 4..8) (capacity).
+            for k in 0..CA_NK_LANES {
+                builder
+                    .when(ac_gate.clone())
+                    .assert_eq(ac2.inputs[k], ls[CA_NKSRC + k]);
             }
             for k in 4..8 {
                 builder
                     .when(ac_gate.clone())
                     .assert_eq(ac2.inputs[k], ls[CA_AC1 + P2_END_POST3 + k]);
             }
-            // addr_pub (AC2.end_post) == the committed note ADDR[4].
+            // AC3.in = [DOMSEP_ADDR, 0, 0, 0]; AC3.in[4..8] = AC2.end_post capacity.
+            builder
+                .when(ac_gate.clone())
+                .assert_eq(ac3.inputs[0], AB::Expr::from_u64(CA_DOMSEP_ADDR));
+            for k in 1..4 {
+                builder.when(ac_gate.clone()).assert_zero(ac3.inputs[k]);
+            }
+            for k in 4..8 {
+                builder
+                    .when(ac_gate.clone())
+                    .assert_eq(ac3.inputs[k], ls[CA_AC2 + P2_END_POST3 + k]);
+            }
+            // addr_pub (AC3.end_post) == the committed note ADDR[4].
             for j in 0..CA_ADDR_LANES {
                 builder
                     .when(ac_gate.clone())
-                    .assert_eq(ls[CA_ADDR + j], ls[CA_AC2 + P2_END_POST3 + j]);
+                    .assert_eq(ls[CA_ADDR + j], ls[CA_AC3 + P2_END_POST3 + j]);
             }
 
             // ── S1d balance conservation ─────────────────────────────────────
@@ -13839,6 +13870,7 @@ mod stark_priming {
             v[base + CA_NC2..base + CA_NC2 + P2_NCOLS].copy_from_slice(&zero_blk);
             v[base + CA_AC1..base + CA_AC1 + P2_NCOLS].copy_from_slice(&zero_blk);
             v[base + CA_AC2..base + CA_AC2 + P2_NCOLS].copy_from_slice(&zero_blk);
+            v[base + CA_AC3..base + CA_AC3 + P2_NCOLS].copy_from_slice(&zero_blk);
 
             let vval: u64 = if is_real && phi == 0 {
                 notes[blk].value
@@ -13848,13 +13880,15 @@ mod stark_priming {
 
             if is_real && phi == 0 {
                 let note = &notes[blk];
-                // condition-3: INPUT notes derive addr = Poseidon2(ak, nk).
+                // condition-3 (F3): INPUT notes derive addr = Poseidon2 sponge over
+                // the 12-slot [ak0..3, nk0..3, DOMSEP_ADDR, 0,0,0] (3 permutations,
+                // capacity carried — §3b pinned order).
                 let na: [Goldilocks; 4] = if note.role == CA_ROLE_INPUT {
                     let in1 = [
-                        Goldilocks::from_u64(note.ak),
-                        Goldilocks::from_u64(note.nk),
-                        Goldilocks::from_u64(CA_DOMSEP_ADDR),
-                        Goldilocks::ZERO,
+                        Goldilocks::from_u64(note.ak[0]),
+                        Goldilocks::from_u64(note.ak[1]),
+                        Goldilocks::from_u64(note.ak[2]),
+                        Goldilocks::from_u64(note.ak[3]),
                         Goldilocks::ZERO,
                         Goldilocks::ZERO,
                         Goldilocks::ZERO,
@@ -13863,21 +13897,36 @@ mod stark_priming {
                     let b1 = p2row(in1);
                     let s1 = post(&b1);
                     let in2 = [
-                        Goldilocks::ZERO,
-                        Goldilocks::ZERO,
-                        Goldilocks::ZERO,
-                        Goldilocks::ZERO,
+                        Goldilocks::from_u64(note.nk[0]),
+                        Goldilocks::from_u64(note.nk[1]),
+                        Goldilocks::from_u64(note.nk[2]),
+                        Goldilocks::from_u64(note.nk[3]),
                         s1[4],
                         s1[5],
                         s1[6],
                         s1[7],
                     ];
                     let b2 = p2row(in2);
+                    let s2 = post(&b2);
+                    let in3 = [
+                        Goldilocks::from_u64(CA_DOMSEP_ADDR),
+                        Goldilocks::ZERO,
+                        Goldilocks::ZERO,
+                        Goldilocks::ZERO,
+                        s2[4],
+                        s2[5],
+                        s2[6],
+                        s2[7],
+                    ];
+                    let b3 = p2row(in3);
                     v[base + CA_AC1..base + CA_AC1 + P2_NCOLS].copy_from_slice(&b1);
                     v[base + CA_AC2..base + CA_AC2 + P2_NCOLS].copy_from_slice(&b2);
-                    v[base + CA_AK] = Goldilocks::from_u64(note.ak);
-                    let p2 = post(&b2);
-                    [p2[0], p2[1], p2[2], p2[3]]
+                    v[base + CA_AC3..base + CA_AC3 + P2_NCOLS].copy_from_slice(&b3);
+                    for j in 0..CA_AK_LANES {
+                        v[base + CA_AK + j] = Goldilocks::from_u64(note.ak[j]);
+                    }
+                    let p3 = post(&b3);
+                    [p3[0], p3[1], p3[2], p3[3]]
                 } else {
                     core::array::from_fn(|j| Goldilocks::from_u64(note.addr[j]))
                 };
@@ -13922,7 +13971,9 @@ mod stark_priming {
                 }
 
                 v[base + CA_POSSRC] = Goldilocks::from_u64(note.pos);
-                v[base + CA_NKSRC] = Goldilocks::from_u64(note.nk);
+                for j in 0..CA_NK_LANES {
+                    v[base + CA_NKSRC + j] = Goldilocks::from_u64(note.nk[j]);
+                }
             }
 
             // S1b + E15 frozen carries: hold the block's φ=0 source values.
@@ -13932,7 +13983,9 @@ mod stark_priming {
                     v[base + CA_CMCARRY + j] = v[blk0 + CA_CMOUT + j];
                 }
                 v[base + CA_POSCARRY] = v[blk0 + CA_POSSRC];
-                v[base + CA_NKCARRY] = v[blk0 + CA_NKSRC];
+                for j in 0..CA_NK_LANES {
+                    v[base + CA_NKCARRY + j] = v[blk0 + CA_NKSRC + j];
+                }
                 for j in 0..CA_ADDR_LANES {
                     v[base + CA_ADDRCARRY + j] = v[blk0 + CA_ADDR + j];
                 }
@@ -13993,8 +14046,9 @@ mod stark_priming {
                 addr: [0; 4], // overridden (derived from ak,nk)
                 rcm: [0x11, 0x12],
                 pos: 5,
-                nk: 0x2222_2222,
-                ak: 0x1111_1111,
+                // F3 4-lane keys — MUST match test_prover_action.c's instance.
+                nk: [0x2222_2222, 0x2222_2223, 0x2222_2224, 0x2222_2225],
+                ak: [0x1111_1111, 0x1111_1112, 0x1111_1113, 0x1111_1114],
             },
             ActionNote {
                 role: CA_ROLE_OUTPUT,
@@ -14002,8 +14056,8 @@ mod stark_priming {
                 addr: [0xAA01, 0xAA02, 0xAA03, 0xAA04],
                 rcm: [0x21, 0x22],
                 pos: 0,
-                nk: 0,
-                ak: 0,
+                nk: [0; 4],
+                ak: [0; 4],
             },
             ActionNote {
                 role: CA_ROLE_FEE,
@@ -14011,8 +14065,8 @@ mod stark_priming {
                 addr: [0xFEE1, 0xFEE2, 0xFEE3, 0xFEE4],
                 rcm: [0x31, 0x32],
                 pos: 0,
-                nk: 0,
-                ak: 0,
+                nk: [0; 4],
+                ak: [0; 4],
             },
         ];
         let trace = generate_conf_action_trace(7, &notes); // H = 128 = 4 blocks
@@ -14022,11 +14076,12 @@ mod stark_priming {
             trace,
             pis,
             "conf_action_air_zk",
-            "DUAL-MODE S1e — first REAL is_zk=1 proof of the C1 Action AIR \
-             (conf_action_air, width 813, main_next=true, 0 publics; forced \
+            "DUAL-MODE S1e (+F3 ak/nk 4-lane) — REAL is_zk=1 proof of the C1 Action \
+             AIR (conf_action_air, width 1002, main_next=true, 0 publics; forced \
              phase-counter + freeze-carry + note-commitment + condition-3 \
-             spend-auth + balance conservation; max degree 3, num_qc 8)",
-            "DUAL-MODE S1e.1/2 — C1 Action AIR real-STARK lift (h=128, num_qc=8)",
+             spend-auth (AC1/AC2/AC3, 12-slot preimage) + balance conservation; \
+             max degree 3, num_qc 8)",
+            "DUAL-MODE S1e+F3 — C1 Action AIR real-STARK lift (h=128, num_qc=8)",
             Some(8),
             out_path,
         )
@@ -14084,36 +14139,38 @@ mod stark_priming {
     const AGG_MEMB_WIDTH: usize = AGG_MEMB_POSACC + 1; // 370
 
     const AGG_NF_LANES: usize = 4; // CONF_NF_LANES
+    const AGG_NF_NK_LANES: usize = 4; // CONF_NF_NK_LANES (F3)
     const AGG_NF_CM: usize = 0;
     const AGG_NF_POS: usize = 4;
-    const AGG_NF_NK: usize = 5;
-    const AGG_NF_RHO1: usize = 6;
+    const AGG_NF_NK: usize = 5; // [5,9) — F3 4-lane
+    const AGG_NF_RHO1: usize = AGG_NF_NK + AGG_NF_NK_LANES; // 9
     const AGG_NF_RHO2: usize = AGG_NF_RHO1 + P2_NCOLS;
     const AGG_NF_NF1: usize = AGG_NF_RHO2 + P2_NCOLS;
     const AGG_NF_NF2: usize = AGG_NF_NF1 + P2_NCOLS;
-    const AGG_NF_NF: usize = AGG_NF_NF2 + P2_NCOLS;
-    const AGG_NF_WIDTH: usize = AGG_NF_NF + AGG_NF_LANES;
+    const AGG_NF_NF3: usize = AGG_NF_NF2 + P2_NCOLS; // F3 3rd nf-sponge perm
+    const AGG_NF_NF: usize = AGG_NF_NF3 + P2_NCOLS;
+    const AGG_NF_WIDTH: usize = AGG_NF_NF + AGG_NF_LANES; // 913
 
     const AGG_D: usize = 4; // CONF_AGG_TREE_DEPTH
-    const AGG_MEMB_OFF: usize = CA_W_WIDTH; // 813  (CONF_AGG_MEMB_OFF)
-    const AGG_NF_OFF: usize = AGG_MEMB_OFF + AGG_MEMB_WIDTH; // 1183
-    const AGG_ISNF_OFF: usize = AGG_NF_OFF + AGG_NF_WIDTH; // 1913
-    const AGG_INVNF_OFF: usize = AGG_ISNF_OFF + 1; // 1914
-    const AGG_ISLVL_OFF: usize = AGG_INVNF_OFF + 1; // 1915  [.., +D)
-    const AGG_INVLVL_OFF: usize = AGG_ISLVL_OFF + AGG_D; // 1919 [.., +D)
-    const AGG_ACTLVL_OFF: usize = AGG_INVLVL_OFF + AGG_D; // 1923 [.., +D)
+    const AGG_MEMB_OFF: usize = CA_W_WIDTH; // 1002 (CONF_AGG_MEMB_OFF)
+    const AGG_NF_OFF: usize = AGG_MEMB_OFF + AGG_MEMB_WIDTH; // 1372
+    const AGG_ISNF_OFF: usize = AGG_NF_OFF + AGG_NF_WIDTH; // 2285
+    const AGG_INVNF_OFF: usize = AGG_ISNF_OFF + 1; // 2286
+    const AGG_ISLVL_OFF: usize = AGG_INVNF_OFF + 1; // 2287  [.., +D)
+    const AGG_INVLVL_OFF: usize = AGG_ISLVL_OFF + AGG_D; // 2291 [.., +D)
+    const AGG_ACTLVL_OFF: usize = AGG_INVLVL_OFF + AGG_D; // 2295 [.., +D)
     // S4b.2b nf-public routing columns.
-    const AGG_NIN_OFF: usize = AGG_ACTLVL_OFF + AGG_D; // 1927  running INPUT-block counter
+    const AGG_NIN_OFF: usize = AGG_ACTLVL_OFF + AGG_D; // 2299  running INPUT-block counter
     const AGG_MAX_INPUTS: usize = 4; // MAX_INPUTS — S6-pinned consensus constant (KAT: modest)
-    const AGG_SLOTSEL_OFF: usize = AGG_NIN_OFF + 1; // 1928 [.., +M) slot_sel[s]=is_zero(N_in−1−s)
-    const AGG_INVSLOT_OFF: usize = AGG_SLOTSEL_OFF + AGG_MAX_INPUTS; // 1932 [.., +M)
+    const AGG_SLOTSEL_OFF: usize = AGG_NIN_OFF + 1; // 2300 [.., +M) slot_sel[s]=is_zero(N_in−1−s)
+    const AGG_INVSLOT_OFF: usize = AGG_SLOTSEL_OFF + AGG_MAX_INPUTS; // 2304 [.., +M)
     // ── S4c output routing columns (OUTPUT analog of the N_input machinery). ──
     const AGG_MAX_OUTPUTS: usize = 4; // MAX_OUTPUTS — S6-pinned (mirrors MAX_INPUTS; 8in+8out height-budget OK)
-    const AGG_NOUT_OFF: usize = AGG_INVSLOT_OFF + AGG_MAX_INPUTS; // 1936 running OUTPUT-block counter
-    const AGG_OSLOTSEL_OFF: usize = AGG_NOUT_OFF + 1; // 1937 [.., +MO) oslot_sel[s]=is_zero(N_out−1−s)
-    const AGG_INVOSLOT_OFF: usize = AGG_OSLOTSEL_OFF + AGG_MAX_OUTPUTS; // 1941 [.., +MO)
-    const AGG_FEEACC_OFF: usize = AGG_INVOSLOT_OFF + AGG_MAX_OUTPUTS; // 1945 Σ IS_FEE·value accumulator
-    const AGG_ZK_WIDTH: usize = AGG_FEEACC_OFF + 1; // 1946
+    const AGG_NOUT_OFF: usize = AGG_INVSLOT_OFF + AGG_MAX_INPUTS; // 2308 running OUTPUT-block counter
+    const AGG_OSLOTSEL_OFF: usize = AGG_NOUT_OFF + 1; // 2309 [.., +MO) oslot_sel[s]=is_zero(N_out−1−s)
+    const AGG_INVOSLOT_OFF: usize = AGG_OSLOTSEL_OFF + AGG_MAX_OUTPUTS; // 2313 [.., +MO)
+    const AGG_FEEACC_OFF: usize = AGG_INVOSLOT_OFF + AGG_MAX_OUTPUTS; // 2317 Σ IS_FEE·value accumulator
+    const AGG_ZK_WIDTH: usize = AGG_FEEACC_OFF + 1; // 2318
 
     const AGG_NF_PHI: u64 = (AGG_D + 1) as u64; // D+1 = 5
 
@@ -14162,8 +14219,9 @@ mod stark_priming {
     }
 
     /// The aggregate Action AIR (conf_action_agg_air.c real-STARK form). Width
-    /// 1936, main_next=true (C1 + membership chaining + N_input counter read the
-    /// next row), 21 public values (anchor[4] ‖ num_input ‖ nf_slot[4][4]).
+    /// 2318 (post-F3), main_next=true (C1 + membership chaining + N_input counter
+    /// read the next row), 43 public values (anchor[4] ‖ num_input ‖ nf_slot[4][4]
+    /// ‖ num_output ‖ output_commit[4][4] ‖ fee ‖ tx_binding[4]).
     pub struct ConfActionAggAir;
 
     impl BaseAir<Goldilocks> for ConfActionAggAir {
@@ -14366,9 +14424,19 @@ mod stark_priming {
                 builder,
                 nf2,
             );
+            let nf3: &Poseidon2Cols<AB::Var, 8, 7, 1, 4, 22> =
+                ls[AGG_NF_OFF + AGG_NF_NF3..AGG_NF_OFF + AGG_NF_NF3 + P2_NCOLS].borrow();
+            p2v_eval::<AB, GenericPoseidon2LinearLayersGoldilocks, 8, 7, 1, 4, 22>(
+                &GOLDILOCKS_POSEIDON2_RC_8_EXTERNAL_INITIAL,
+                &GOLDILOCKS_POSEIDON2_RC_8_INTERNAL,
+                &GOLDILOCKS_POSEIDON2_RC_8_EXTERNAL_FINAL,
+                builder,
+                nf3,
+            );
             // gate_nf = is_nf·IS_INPUT (degree 2). Fires at φ=D+1 of an INPUT block.
             let gate_nf: AB::Expr = is_nf * is_input.clone();
-            // cm/pos/nk cells == C1 frozen carries (cross-region bind — G-S4-3).
+            // cm/pos/nk cells == C1 frozen carries (cross-region bind — G-S4-3;
+            // F3: nk per-lane).
             for j in 0..AGG_NF_LANES {
                 builder.when(gate_nf.clone()).assert_eq(
                     ls[AGG_NF_OFF + AGG_NF_CM + j],
@@ -14378,9 +14446,12 @@ mod stark_priming {
             builder
                 .when(gate_nf.clone())
                 .assert_eq(ls[AGG_NF_OFF + AGG_NF_POS], ls[CA_POSCARRY]);
-            builder
-                .when(gate_nf.clone())
-                .assert_eq(ls[AGG_NF_OFF + AGG_NF_NK], ls[CA_NKCARRY]);
+            for j in 0..AGG_NF_NK_LANES {
+                builder.when(gate_nf.clone()).assert_eq(
+                    ls[AGG_NF_OFF + AGG_NF_NK + j],
+                    ls[CA_NKCARRY + j],
+                );
+            }
             // ρ = CRH(cm,pos): RHO1.in=[cm,0,0,0,0]; RHO2.in=[pos,DOMSEP_RHO,0,0,cap].
             for j in 0..AGG_NF_LANES {
                 builder
@@ -14404,42 +14475,48 @@ mod stark_priming {
                     ls[AGG_NF_OFF + AGG_NF_RHO1 + P2_END_POST3 + k],
                 );
             }
-            // nf = PRF(nk,ρ): NF1.in=[nk,ρ0,ρ1,ρ2,0,0,0,0]; NF2.in=[ρ3,DOMSEP_NF,0,0,cap].
-            builder
-                .when(gate_nf.clone())
-                .assert_eq(nf1.inputs[0], ls[AGG_NF_OFF + AGG_NF_NK]);
-            for j in 0..3 {
-                builder.when(gate_nf.clone()).assert_eq(
-                    nf1.inputs[1 + j],
-                    ls[AGG_NF_OFF + AGG_NF_RHO2 + P2_END_POST3 + j],
-                );
+            // nf = PRF(nk[4],ρ) (F3 12-slot, 3 perms): NF1.in=[nk0..3 (cells)];
+            // NF2.in=[ρ0..3, NF1 cap]; NF3.in=[DOMSEP_NF,0,0,0, NF2 cap].
+            for j in 0..AGG_NF_NK_LANES {
+                builder
+                    .when(gate_nf.clone())
+                    .assert_eq(nf1.inputs[j], ls[AGG_NF_OFF + AGG_NF_NK + j]);
             }
             for k in 4..8 {
                 builder.when(gate_nf.clone()).assert_zero(nf1.inputs[k]);
             }
-            builder.when(gate_nf.clone()).assert_eq(
-                nf2.inputs[0],
-                ls[AGG_NF_OFF + AGG_NF_RHO2 + P2_END_POST3 + 3],
-            );
-            builder
-                .when(gate_nf.clone())
-                .assert_eq(nf2.inputs[1], AB::Expr::from_u64(AGG_DOMSEP_NF));
-            builder.when(gate_nf.clone()).assert_zero(nf2.inputs[2]);
-            builder.when(gate_nf.clone()).assert_zero(nf2.inputs[3]);
+            for j in 0..AGG_NF_LANES {
+                builder.when(gate_nf.clone()).assert_eq(
+                    nf2.inputs[j],
+                    ls[AGG_NF_OFF + AGG_NF_RHO2 + P2_END_POST3 + j],
+                );
+            }
             for k in 4..8 {
                 builder.when(gate_nf.clone()).assert_eq(
                     nf2.inputs[k],
                     ls[AGG_NF_OFF + AGG_NF_NF1 + P2_END_POST3 + k],
                 );
             }
-            // NF cell == NF2.out (G4 single-source).
+            builder
+                .when(gate_nf.clone())
+                .assert_eq(nf3.inputs[0], AB::Expr::from_u64(AGG_DOMSEP_NF));
+            builder.when(gate_nf.clone()).assert_zero(nf3.inputs[1]);
+            builder.when(gate_nf.clone()).assert_zero(nf3.inputs[2]);
+            builder.when(gate_nf.clone()).assert_zero(nf3.inputs[3]);
+            for k in 4..8 {
+                builder.when(gate_nf.clone()).assert_eq(
+                    nf3.inputs[k],
+                    ls[AGG_NF_OFF + AGG_NF_NF2 + P2_END_POST3 + k],
+                );
+            }
+            // NF cell == NF3.out (G4 single-source).
             for j in 0..AGG_NF_LANES {
                 builder.when(gate_nf.clone()).assert_eq(
                     ls[AGG_NF_OFF + AGG_NF_NF + j],
-                    ls[AGG_NF_OFF + AGG_NF_NF2 + P2_END_POST3 + j],
+                    ls[AGG_NF_OFF + AGG_NF_NF3 + P2_END_POST3 + j],
                 );
             }
-            // Inert nf (¬gate_nf): CM/POS/NK/NF cells == 0.
+            // Inert nf (¬gate_nf): CM/POS/NK/NF cells == 0 (nk per-lane).
             let ninert = AB::Expr::ONE - gate_nf.clone();
             for j in 0..AGG_NF_LANES {
                 builder
@@ -14449,9 +14526,11 @@ mod stark_priming {
             builder
                 .when(ninert.clone())
                 .assert_zero(ls[AGG_NF_OFF + AGG_NF_POS]);
-            builder
-                .when(ninert.clone())
-                .assert_zero(ls[AGG_NF_OFF + AGG_NF_NK]);
+            for j in 0..AGG_NF_NK_LANES {
+                builder
+                    .when(ninert.clone())
+                    .assert_zero(ls[AGG_NF_OFF + AGG_NF_NK + j]);
+            }
             for j in 0..AGG_NF_LANES {
                 builder
                     .when(ninert.clone())
@@ -14726,6 +14805,7 @@ mod stark_priming {
             v[no + AGG_NF_RHO2..no + AGG_NF_RHO2 + P2_NCOLS].copy_from_slice(&zero_blk);
             v[no + AGG_NF_NF1..no + AGG_NF_NF1 + P2_NCOLS].copy_from_slice(&zero_blk);
             v[no + AGG_NF_NF2..no + AGG_NF_NF2 + P2_NCOLS].copy_from_slice(&zero_blk);
+            v[no + AGG_NF_NF3..no + AGG_NF_NF3 + P2_NCOLS].copy_from_slice(&zero_blk);
         }
 
         // ── Pass 2: membership walk + nullifier for each INPUT block. ──
@@ -14780,16 +14860,19 @@ mod stark_priming {
                 assert_eq!(cur, anchor, "INPUT notes must share ONE anchor");
             }
 
-            // Nullifier at φ=D+1: ρ=CRH(cm,pos), nf=PRF(nk,ρ).
+            // Nullifier at φ=D+1: ρ=CRH(cm,pos), nf=PRF(nk[4],ρ) (F3 3-perm).
             let r = blk * k + (AGG_D + 1);
             let no = r * AGG_ZK_WIDTH + AGG_NF_OFF;
             let np = Goldilocks::from_u64(note.pos);
-            let nnk = Goldilocks::from_u64(note.nk);
+            let nnk: [Goldilocks; AGG_NF_NK_LANES] =
+                core::array::from_fn(|j| Goldilocks::from_u64(note.nk[j]));
             for j in 0..AGG_NF_LANES {
                 v[no + AGG_NF_CM + j] = cm0[j];
             }
             v[no + AGG_NF_POS] = np;
-            v[no + AGG_NF_NK] = nnk;
+            for j in 0..AGG_NF_NK_LANES {
+                v[no + AGG_NF_NK + j] = nnk[j];
+            }
             // ρ sponge.
             let rho1_in = [
                 cm0[0], cm0[1], cm0[2], cm0[3],
@@ -14808,24 +14891,28 @@ mod stark_priming {
             let rho = post(&rho2);
             v[no + AGG_NF_RHO1..no + AGG_NF_RHO1 + P2_NCOLS].copy_from_slice(&rho1);
             v[no + AGG_NF_RHO2..no + AGG_NF_RHO2 + P2_NCOLS].copy_from_slice(&rho2);
-            // nf sponge.
+            // nf sponge (F3 12-slot [nk0..3, ρ0..3, DOMSEP_NF, 0,0,0] = 3 perms).
             let nf1_in = [
-                nnk, rho[0], rho[1], rho[2],
+                nnk[0], nnk[1], nnk[2], nnk[3],
                 Goldilocks::ZERO, Goldilocks::ZERO, Goldilocks::ZERO, Goldilocks::ZERO,
             ];
             let nf1 = p2row(nf1_in);
             let ns1 = post(&nf1);
-            let nf2_in = [
-                rho[3],
+            let nf2_in = [rho[0], rho[1], rho[2], rho[3], ns1[4], ns1[5], ns1[6], ns1[7]];
+            let nf2 = p2row(nf2_in);
+            let ns2 = post(&nf2);
+            let nf3_in = [
                 Goldilocks::from_u64(AGG_DOMSEP_NF),
                 Goldilocks::ZERO,
                 Goldilocks::ZERO,
-                ns1[4], ns1[5], ns1[6], ns1[7],
+                Goldilocks::ZERO,
+                ns2[4], ns2[5], ns2[6], ns2[7],
             ];
-            let nf2 = p2row(nf2_in);
-            let nf = post(&nf2);
+            let nf3 = p2row(nf3_in);
+            let nf = post(&nf3);
             v[no + AGG_NF_NF1..no + AGG_NF_NF1 + P2_NCOLS].copy_from_slice(&nf1);
             v[no + AGG_NF_NF2..no + AGG_NF_NF2 + P2_NCOLS].copy_from_slice(&nf2);
+            v[no + AGG_NF_NF3..no + AGG_NF_NF3 + P2_NCOLS].copy_from_slice(&nf3);
             for j in 0..AGG_NF_LANES {
                 v[no + AGG_NF_NF + j] = nf[j];
             }
@@ -14921,8 +15008,9 @@ mod stark_priming {
                 addr: [0; 4], // overridden (derived from ak,nk)
                 rcm: [0x11, 0x12],
                 pos: 5, // bits LSB-first over D=4: [1,0,1,0]
-                nk: 0x2222_2222,
-                ak: 0x1111_1111,
+                // F3 4-lane keys — MUST match test_prover_agg.c's 1-input instance.
+                nk: [0x2222_2222, 0x2222_2223, 0x2222_2224, 0x2222_2225],
+                ak: [0x1111_1111, 0x1111_1112, 0x1111_1113, 0x1111_1114],
             },
             ActionNote {
                 role: CA_ROLE_OUTPUT,
@@ -14930,8 +15018,8 @@ mod stark_priming {
                 addr: [0xAA01, 0xAA02, 0xAA03, 0xAA04],
                 rcm: [0x21, 0x22],
                 pos: 0,
-                nk: 0,
-                ak: 0,
+                nk: [0; 4],
+                ak: [0; 4],
             },
             ActionNote {
                 role: CA_ROLE_FEE,
@@ -14939,8 +15027,8 @@ mod stark_priming {
                 addr: [0xFEE1, 0xFEE2, 0xFEE3, 0xFEE4],
                 rcm: [0x31, 0x32],
                 pos: 0,
-                nk: 0,
-                ak: 0,
+                nk: [0; 4],
+                ak: [0; 4],
             },
         ];
         // Arbitrary but fixed sibling digests for the INPUT's D=4 path (only the
@@ -14980,13 +15068,14 @@ mod stark_priming {
                 trace,
                 pis,
                 "conf_action_agg_air_zk",
-                "DUAL-MODE S4c — REAL is_zk=1 proof of the AGGREGATE Action AIR \
-                 (conf_action_agg_air, width 1945, main_next=true, 43 publics = \
-                 anchor[4] ‖ num_input ‖ nf_slot[4][4] ‖ num_output ‖ output_commit[4][4] \
-                 ‖ fee ‖ tx_binding[4]; C1 reuse + C3 membership + C4 nullifier + nf \
-                 routing + OUTPUT-block routing (N_output counter) + fee promotion; \
+                "DUAL-MODE S4c (+F3 ak/nk 4-lane) — REAL is_zk=1 proof of the \
+                 AGGREGATE Action AIR (conf_action_agg_air, width 2318, \
+                 main_next=true, 43 publics = anchor[4] ‖ num_input ‖ nf_slot[4][4] \
+                 ‖ num_output ‖ output_commit[4][4] ‖ fee ‖ tx_binding[4]; C1 reuse \
+                 + C3 membership + C4 nullifier (NF1/NF2/NF3) + nf routing + \
+                 OUTPUT-block routing (N_output counter) + fee promotion; \
                  max degree 4, num_qc 8)",
-                "DUAL-MODE S4c — aggregate Action AIR + output/fee promotion (h=128, num_qc=8)",
+                "DUAL-MODE S4c+F3 — aggregate Action AIR + output/fee promotion (h=128, num_qc=8)",
                 Some(8),
                 out_path,
             )
@@ -14997,7 +15086,12 @@ mod stark_priming {
     /// addr = Poseidon2(ak, nk, DOMSEP_ADDR) (condition-3) — cell-for-cell the C1
     /// INPUT cm (generate_conf_action_trace). Used to build multi-input Merkle
     /// instances whose leaves must converge to ONE anchor (S4b.6 KATs).
-    fn agg_input_note_cm(ak: u64, nk: u64, value: u64, rcm: [u64; 2]) -> [Goldilocks; 4] {
+    fn agg_input_note_cm(
+        ak: [u64; CA_AK_LANES],
+        nk: [u64; CA_NK_LANES],
+        value: u64,
+        rcm: [u64; 2],
+    ) -> [Goldilocks; 4] {
         let rc = RoundConstants::<Goldilocks, 8, 4, 22>::new(
             GOLDILOCKS_POSEIDON2_RC_8_EXTERNAL_INITIAL,
             GOLDILOCKS_POSEIDON2_RC_8_INTERNAL,
@@ -15014,15 +15108,22 @@ mod stark_priming {
             perm.permute_mut(&mut expect);
             core::array::from_fn(|k| m.values[P2_END_POST3 + k])
         };
-        // addr = Poseidon2(ak, nk, DOMSEP_ADDR) via the two spend-auth blocks.
+        // addr = Poseidon2 sponge over [ak0..3, nk0..3, DOMSEP_ADDR, 0,0,0]
+        // (F3 3-perm spend-auth blocks, §3b pinned order).
         let s1 = p2([
-            Goldilocks::from_u64(ak), Goldilocks::from_u64(nk),
-            Goldilocks::from_u64(CA_DOMSEP_ADDR), Goldilocks::ZERO,
+            Goldilocks::from_u64(ak[0]), Goldilocks::from_u64(ak[1]),
+            Goldilocks::from_u64(ak[2]), Goldilocks::from_u64(ak[3]),
             Goldilocks::ZERO, Goldilocks::ZERO, Goldilocks::ZERO, Goldilocks::ZERO,
         ]);
-        let a = p2([
-            Goldilocks::ZERO, Goldilocks::ZERO, Goldilocks::ZERO, Goldilocks::ZERO,
+        let s2 = p2([
+            Goldilocks::from_u64(nk[0]), Goldilocks::from_u64(nk[1]),
+            Goldilocks::from_u64(nk[2]), Goldilocks::from_u64(nk[3]),
             s1[4], s1[5], s1[6], s1[7],
+        ]);
+        let a = p2([
+            Goldilocks::from_u64(CA_DOMSEP_ADDR), Goldilocks::ZERO,
+            Goldilocks::ZERO, Goldilocks::ZERO,
+            s2[4], s2[5], s2[6], s2[7],
         ]);
         let addr = [a[0], a[1], a[2], a[3]];
         // cm = note_commit(value, addr, rcm) via NC1/NC2.
@@ -15071,16 +15172,19 @@ mod stark_priming {
     ) -> Result<(), Box<dyn std::error::Error>> {
         conf_action_check_domseps()?;
         conf_agg_check_domseps()?;
-        let mk = |ak, nk, rcm: [u64; 2]| ActionNote {
+        // F3 4-lane keys — MUST match test_prover_agg.c's 4-input instance
+        // (lane j = base + j).
+        let lanes = |base: u64| -> [u64; 4] { core::array::from_fn(|j| base + j as u64) };
+        let mk = |ak: [u64; 4], nk: [u64; 4], rcm: [u64; 2]| ActionNote {
             role: CA_ROLE_INPUT, value: 25, addr: [0; 4], rcm, pos: 0, nk, ak };
         let mut notes = [
-            mk(0x1111_1111, 0x2222_2222, [0x11, 0x12]),
-            mk(0x1212_1212, 0x3333_3333, [0x13, 0x14]),
-            mk(0x1313_1313, 0x4444_4444, [0x15, 0x16]),
-            mk(0x1414_1414, 0x5555_5555, [0x17, 0x18]),
+            mk(lanes(0x1111_1111), lanes(0x2222_2222), [0x11, 0x12]),
+            mk(lanes(0x1212_1212), lanes(0x3333_3333), [0x13, 0x14]),
+            mk(lanes(0x1313_1313), lanes(0x4444_4444), [0x15, 0x16]),
+            mk(lanes(0x1414_1414), lanes(0x5555_5555), [0x17, 0x18]),
             ActionNote { role: CA_ROLE_OUTPUT, value: 100,
                          addr: [0xAA01, 0xAA02, 0xAA03, 0xAA04],
-                         rcm: [0x21, 0x22], pos: 0, nk: 0, ak: 0 },
+                         rcm: [0x21, 0x22], pos: 0, nk: [0; 4], ak: [0; 4] },
         ];
         notes[0].pos = 0; notes[1].pos = 1; notes[2].pos = 2; notes[3].pos = 3;
         let cm: [[Goldilocks; 4]; 4] =
@@ -15148,14 +15252,19 @@ mod stark_priming {
     ) -> Result<(), Box<dyn std::error::Error>> {
         conf_action_check_domseps()?;
         conf_agg_check_domseps()?;
+        // F3 4-lane keys — MUST match test_prover_agg.c's 2-input instance.
         let notes = [
             ActionNote { role: CA_ROLE_INPUT, value: 60, addr: [0; 4],
-                         rcm: [0x11, 0x12], pos: 0, nk: 0x2222_2222, ak: 0x1111_1111 },
+                         rcm: [0x11, 0x12], pos: 0,
+                         nk: [0x2222_2222, 0x2222_2223, 0x2222_2224, 0x2222_2225],
+                         ak: [0x1111_1111, 0x1111_1112, 0x1111_1113, 0x1111_1114] },
             ActionNote { role: CA_ROLE_INPUT, value: 40, addr: [0; 4],
-                         rcm: [0x13, 0x14], pos: 1, nk: 0x3333_3333, ak: 0x1212_1212 },
+                         rcm: [0x13, 0x14], pos: 1,
+                         nk: [0x3333_3333, 0x3333_3334, 0x3333_3335, 0x3333_3336],
+                         ak: [0x1212_1212, 0x1212_1213, 0x1212_1214, 0x1212_1215] },
             ActionNote { role: CA_ROLE_OUTPUT, value: 100,
                          addr: [0xAA01, 0xAA02, 0xAA03, 0xAA04],
-                         rcm: [0x21, 0x22], pos: 0, nk: 0, ak: 0 },
+                         rcm: [0x21, 0x22], pos: 0, nk: [0; 4], ak: [0; 4] },
         ];
         // cm of the two inputs (level-0 siblings of each other).
         let cm0 = agg_input_note_cm(notes[0].ak, notes[0].nk, notes[0].value, notes[0].rcm);

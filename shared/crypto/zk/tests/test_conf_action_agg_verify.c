@@ -75,8 +75,9 @@ static size_t parse_fp2_decimal_array(js_t *s,gold_fp2_t *out,size_t cap){
     return n;
 }
 
-/* ===== fixture (CV_W covers 1946 + 4 random merged; CV_PUB covers 43) ===== */
-#define CV_W 2048
+/* ===== fixture (CV_W covers CONF_AGGZK_WIDTH + 4 random merged — macro-derived
+ * so F3-class width changes can't silently overflow; CV_PUB covers 43) ===== */
+#define CV_W (CONF_AGGZK_WIDTH + 4)
 #define CV_QC 8
 #define CV_PUB 48
 

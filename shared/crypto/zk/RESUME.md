@@ -1,4 +1,4 @@
-# RESUME — DNAC v3 ZK stack (CURRENT STATUS: 2026-07-21)
+# RESUME — DNAC v3 ZK stack (CURRENT STATUS: 2026-07-22)
 
 > **This top block is authoritative and current. Everything under "═══ HISTORICAL
 > BUILD LOG ═══" is the traceable module-by-module history and its numbers
@@ -49,32 +49,39 @@
   cleartext witness check (`verify.c` Check 4); the ZK stack stays ADDITIVE
   until C2/C3 (shielded pool, state_root v4 — BREAKING, own approvals).
   Remaining Phase-C order (user decisions 2026-07-21: ak/nk multi-lane FIRST;
-  prune/heartbeat NOT bundled): **C1 ✅ → F3 ak/nk multi-lane (DESIGN DONE) →
+  prune/heartbeat NOT bundled): **C1 ✅ → F3 ak/nk multi-lane ✅ (2026-07-22) →
   C2 witness verify → C3 state_root v4 (minimal) → C4 Genesis 7/7.**
-  - **F3 DESIGN DONE (2026-07-21):** `dnac/docs/plans/2026-07-21-f3-aknk-
-    multilane-design.md` (local, 3 sections). Grounded: ak/nk are ONE Goldilocks
-    lane each today → nk alone = 2^32 Grover (nf=PRF(nk,ρ) searchable
-    independent of ak) = BELOW the stack's locked 128-bit PQ target.
-    **User DECIDED A_LANES=N_LANES=4 (128-bit PQ; 8-lane gold-plating
-    rejected).** Build order §4: S-F3.0 layout pin → S-F3.1 C construction gate
-    (widen conf_action_air + conf_nullifier_air + derive_addr, per-lane
-    canonical rejects + carry freeze + tamper KATs) → S-F3.2 oracle + MEASURE
-    num_qc (STOP=8) → S-F3.3 real-STARK lift byte-match → S-F3.4 make test →
-    S-F3.5 SINGLE-agent red-team (zero-consumer scope, grep-proven). **BANKED
-    (user chose to do the code in a FRESH session, not rush the money-AIR in a
-    long one — KAFADAN "don't rush real-STARK in a tired session").** The doc
-    §3b has the exact GROUNDED layout deltas so the code is mechanical.
-    Sponge packing GROUNDED (self-audit corrected 2026-07-21, was mislabeled
-    "KAFADAN watch"): `note_commit.c:18-48` (cites Plonky3 sponge.rs:176-203) —
-    a 12-slot (=3·RATE) input = EXACTLY 3 overwrite-rate/carry-capacity perms,
-    no pad permute (DERIVED, not assumed). The preimage element ORDER
-    (ak-chunk/nk-chunk/DOMSEP-chunk) is OUR pinned DESIGN CHOICE, not a Plonky3
-    fact — the oracle is our own Rust reference, byte-match proves C==Rust of
-    THIS layout, it doesn't discover a hidden order. Threat (nk independently
-    Grover-searchable via public (ρ,nf)), Grover math (4 lanes→2^128), current
-    layout, coupling, num_qc-must-be-measured: all grounded. Coupling: widening
-    breaks real-STARK byte-match tests until S-F3.2 regen → F3 commits as ONE
-    unit (make test RED across increments).
+  - **🎯 F3 DONE (2026-07-22, S-F3.0→S-F3.5 one session, single commit):**
+    ak/nk widened 1→4 Goldilocks lanes (user-locked A_LANES=N_LANES=4; nk alone
+    was ~2^32 Grover via public (ρ,nf) → now ~2^128, matching the stack's
+    128-bit PQ target). Design: `dnac/docs/plans/2026-07-21-f3-aknk-multilane-
+    design.md` (local, status IMPLEMENTED + §3 run record).
+    - **Widths:** conf_action 813→1002 (ak[4]/nk_src[4]/nk_carry[4], addr
+      sponge AC1/AC2/AC3 over 12-slot `[ak0..3, nk0..3, DOMSEP_ADDR, 0,0,0]`);
+      conf_nullifier 730→913 (nk[4], nf sponge NF1/NF2/NF3 over `[nk0..3,
+      ρ0..3, DOMSEP_NF, 0,0,0]`; ρ unchanged); agg construction 1915→2287;
+      proven CONF_AGGZK 1946→2318. Sponge = EXACTLY 3 perms (12=3·RATE, no pad
+      permute — note_commit.c:18-48 / Plonky3 sponge.rs:176-203); preimage
+      ORDER is our pinned §3b design choice.
+    - **Oracle:** Rust ConfActionAir/ConfActionAggAir + builders widened;
+      instances lane-matched to the C tests; **num_qc MEASURED=8 on all 6
+      vectors (STOP gate)**; every vector regen 2× byte-identical; SmallRng KAT
+      stream 524288→655360 draws (old stream proven a strict PREFIX).
+    - **Caps (fail-close, all raised for W=2318):** DNAC_STARK_MAX_MAIN_WIDTH &
+      DNAC_PROVER_MAX_TRACE_WIDTH 2048→2560; FRI_LEAF_CAP 16384→20480 (root
+      cause of agg self-verify InputError(17): merged row 2322 cols = 18576 B).
+      Action draw budget made SYMBOLIC `(CONF_ACTION_WIDTH+94)·h` (was literal
+      907 — went silently stale).
+    - **Gates:** construction 3/3 GREEN (+ per-lane tamper/canonical/lane-swap
+      KATs); byte-match GREEN (test_prover_action T2-T8; test_prover_agg 5/5
+      variants zeta+roots+final_poly+43 publics; production h=1024 salted wire
+      accept); **`make test` 65/65 GREEN, 0 warnings; nodus ctest 132/132.**
+    - **Red-team (S-F3.5): single independent agent, GREEN — 6/6 SOUND,
+      0 CRIT/HIGH/MED**; 1 LOW (agg construction-gate raw-u64 φ branch,
+      pre-F3 shape, zero consumers, documented in-code) + INFO hygiene all
+      fixed same-commit. Carried forward: S7 wallet keygen MUST sample all 4
+      nk lanes with full entropy (G2 depends on it); C1 action prover unsalted
+      (M3b at S7).
 - **B1 CONFIDENTIAL AMOUNTS — 🎯 STAGE-2 (is_zk=1, num_qc=8) COMPLETE (2026-07-15).**
   Design: `dnac/docs/plans/2026-07-14-b1-confidential-amounts-design-v3.md` (v3.1,
   local-only) + memory `project_v3_zk_implementation_progress` (▶ current). Stage-1
