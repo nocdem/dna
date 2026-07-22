@@ -97,6 +97,13 @@ typedef struct {
  * Left as a gap so VALIDATOR_UPDATE / CHAIN_CONFIG keep their wire values. */
 #define NODUS_W_TX_VALIDATOR_UPDATE  9
 #define NODUS_W_TX_CHAIN_CONFIG     10   /* Hard-Fork v1 parameter change */
+/* Phase-C C2.2 — shielded pool TX (dual-mode V4). MUST equal
+ * DNAC_TX_SHIELDED = 11 (dnac/include/dnac/dnac.h:323). Through all of C2
+ * the witness admission path REJECTS this type unconditionally
+ * (nodus_witness_verify.c verify_shielded_tx) — the reject→accept flip is
+ * C3's first commit, atomically with the shielded apply case + state_root
+ * v4 (C2 design v2 CRIT-2/G-SEC-7/G-SEC-9). */
+#define NODUS_W_TX_SHIELDED         11
 
 /* ── Vote types ──────────────────────────────────────────────────── */
 

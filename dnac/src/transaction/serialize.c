@@ -30,6 +30,21 @@
 #include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
 #include "crypto/hash/qgp_sha3.h"           /* dual-mode S5: sighash_v4 (SHA3-512) */
 
+/* STAKE TX purpose-tag constant (design §2.3, F-CRYPTO-05) — moved here from
+ * transaction.c (Phase-C C2.1) so the wire layer that reads/writes the tag is
+ * standalone-linkable (the zk shielded-verify KAT links serialize.c without
+ * transaction.c's Dilithium/EVP dependencies).
+ *
+ * 17-byte literal. The design spec text says "purpose_tag[16]" but the
+ * literal value "DNAC_VALIDATOR_v1" is 17 ASCII characters and cannot
+ * fit in a 16-byte field. We preserve the literal identifier verbatim
+ * at its natural length (17 bytes, no NUL terminator, no padding) —
+ * the cryptographic purpose of the tag is the unique byte sequence,
+ * not the array size. Flagged as a design-doc inconsistency. */
+const uint8_t DNAC_STAKE_PURPOSE_TAG[DNAC_STAKE_PURPOSE_TAG_LEN] = {
+    'D','N','A','C','_','V','A','L','I','D','A','T','O','R','_','v','1'
+};
+
 /* Pin shared wire constants against dnac's authoritative values — any
  * drift between libnodus and libdna would silently break consensus. */
 _Static_assert(DNAC_CC_WIRE_SIGNATURE_SIZE == DNAC_SIGNATURE_SIZE,

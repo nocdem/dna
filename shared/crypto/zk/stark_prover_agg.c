@@ -583,10 +583,19 @@ void dnac_agg_prover_proof_free(dnac_agg_prover_proof_t *p) {
     free(p);
 }
 
+/* fs_publics_override / skip_self_verify exist ONLY for the C2.1 negative-KAT
+ * forge entry below (DNAC_ZK_ENABLE_TEST_WIRE — absent from consensus builds):
+ * they let a TEST build produce the CRIT-1 isolating vector "FRI passes but the
+ * publics don't match the trace" (an honest Fiat-Shamir transcript over a
+ * forged statement: FS observes the FORGED publics, the quotient is built from
+ * the TRUE trace publics). Both production callers pass NULL/0 — byte-identical
+ * behavior. */
 static dnac_prover_status_t agg_prove_cfg(
     const dnac_agg_prover_instance_t *inst,
     dnac_agg_prover_proof_t         **out_proof,
-    const agg_fri_cfg_t              *cfg) {
+    const agg_fri_cfg_t              *cfg,
+    const uint64_t                   *fs_publics_override,
+    int                               skip_self_verify) {
     if (inst == NULL || out_proof == NULL || inst->draws == NULL) {
         return DNAC_PROVER_ERR_PARAM;
     }
@@ -683,6 +692,14 @@ static dnac_prover_status_t agg_prove_cfg(
     uint64_t publics_u[A_NUM_PUBLICS];
     for (size_t i = 0; i < A_NUM_PUBLICS; i++)
         publics_u[i] = gold_fp_to_u64(p->publics[i]);
+    /* Test-only forge (see the parameter comment): the FS transcript observes
+     * the OVERRIDE publics while agg_quotient_values below keeps folding the
+     * TRUE trace publics — the malicious-prover shape the C2.1 constraint-check
+     * KAT must reject. NULL on every production path. */
+    if (fs_publics_override != NULL) {
+        for (size_t i = 0; i < A_NUM_PUBLICS; i++)
+            publics_u[i] = fs_publics_override[i];
+    }
 
     /* ── S2-S8 (parametric stages; UNSALTED SE=0) ── */
     t = dnac_transcript_init_default();
@@ -1049,7 +1066,17 @@ static dnac_prover_status_t agg_prove_cfg(
     dnac_merkle_tree_free(rtree); rtree = NULL;
     dnac_merkle_batch_tree_free(qtree); qtree = NULL;
 
-    if (dnac_agg_prover_proof_verify(p) != DNAC_FRI_OK) {
+    /* Test-only forge: from here on the proof struct carries the FORGED
+     * publics (they are what the transcript was primed with, so priming-based
+     * consumers — wire encode, selfcheck — reproduce the proof's zeta). The
+     * TRUE publics were consumed by the quotient above. Self-verify is skipped
+     * because it MUST fail (its constraint check is exactly what the KAT
+     * exercises verifier-side). */
+    if (fs_publics_override != NULL) {
+        for (size_t i = 0; i < A_NUM_PUBLICS; i++)
+            p->publics[i] = gold_fp_from_u64(fs_publics_override[i]);
+    }
+    if (!skip_self_verify && dnac_agg_prover_proof_verify(p) != DNAC_FRI_OK) {
         rc = DNAC_PROVER_ERR_VERIFY;
         goto cleanup;
     }
@@ -1076,7 +1103,7 @@ dnac_prover_status_t dnac_agg_prover_prove(
     dnac_agg_prover_proof_t         **out_proof) {
     /* The byte-stable KAT/test entry — identical behavior to the pre-Phase-P
      * function (test FRI params, PoW 0/0). */
-    return agg_prove_cfg(inst, out_proof, &AGG_CFG_TEST);
+    return agg_prove_cfg(inst, out_proof, &AGG_CFG_TEST, NULL, 0);
 }
 
 /* ── Phase-P production entry: pinned shielded FRI params + OS entropy ── */
@@ -1121,7 +1148,7 @@ dnac_prover_status_t dnac_agg_prover_prove_production(
     local.salt_draws = salts;
     local.num_salt_draws = ns;
     const dnac_prover_status_t rc =
-        agg_prove_cfg(&local, out_proof, &AGG_CFG_SHIELDED);
+        agg_prove_cfg(&local, out_proof, &AGG_CFG_SHIELDED, NULL, 0);
     /* Zeroize both secret streams before free (client-side hygiene): the
      * codeword blinding AND the leaf salts hide the committed trace rows. */
     for (volatile uint64_t *z = draws; z < draws + nd; z++) *z = 0;
@@ -1174,3 +1201,75 @@ dnac_fri_codec_status_t dnac_agg_prover_wire_selfcheck_shielded(
     dnac_transcript_free(vt);
     return cs;
 }
+
+#ifdef DNAC_ZK_ENABLE_TEST_WIRE
+/* ── C2.1 test-only exports (M5-gated: only the zk standalone Makefile defines
+ * DNAC_ZK_ENABLE_TEST_WIRE, so neither symbol exists in libnodus/libdna). ── */
+
+/* Serialize a produced aggregate proof to the DZKF wire (the byte form the
+ * consensus entry consumes). Same priming + zeta cross-check as the selfcheck
+ * above, WITHOUT running the verify — the caller (a KAT) feeds the bytes to
+ * dnac_shielded_verify_statement instead. */
+dnac_fri_codec_status_t dnac_agg_prover_proof_wire_encode_testonly(
+    const dnac_agg_prover_proof_t *cp, uint8_t **out_buf, size_t *out_len) {
+    if (cp == NULL || out_buf == NULL || out_len == NULL)
+        return DNAC_FRI_CODEC_ERR_NULL;
+    *out_buf = NULL;
+    *out_len = 0;
+    dnac_agg_prover_proof_t *p = (dnac_agg_prover_proof_t *)cp;
+    dnac_transcript_t *vt = dnac_transcript_init_default();
+    if (vt == NULL) return DNAC_FRI_CODEC_ERR_OOM;
+    build_prime_input(p);
+    dnac_stark_priming_out_t out;
+    memset(&out, 0, sizeof(out));
+    if (dnac_stark_prime_transcript(vt, &p->prime_in, &out) !=
+            DNAC_STARK_PRIMING_OK ||
+        gold_fp_to_u64(out.zeta.a) != gold_fp_to_u64(p->zeta.a) ||
+        gold_fp_to_u64(out.zeta.b) != gold_fp_to_u64(p->zeta.b)) {
+        dnac_transcript_free(vt);
+        return DNAC_FRI_CODEC_ERR_SHIELDED_VERIFY_FAILED;
+    }
+    build_coms(p, out.zeta, out.zeta_next);
+    dnac_transcript_free(vt);
+    return dnac_fri_proof_encode(&p->params, &p->proof, p->coms, 3, out_buf,
+                                 out_len);
+}
+
+/* Produce the CRIT-1 isolating negative vector: a PRODUCTION-params proof whose
+ * Fiat-Shamir transcript (and openings) are honest for the FORGED publics while
+ * the committed quotient was built from the TRUE trace publics. FRI accepts it
+ * (low-degreeness + opening consistency hold); ONLY the N-chunk constraint
+ * check can reject it — which is exactly what the C2.1 KAT asserts. */
+dnac_prover_status_t dnac_agg_prover_prove_production_forged_publics_testonly(
+    const dnac_agg_prover_instance_t *inst,
+    const uint64_t                    forged_publics[CONF_AGGZK_NUM_PUBLICS],
+    dnac_agg_prover_proof_t         **out_proof) {
+    if (inst == NULL || forged_publics == NULL || out_proof == NULL)
+        return DNAC_PROVER_ERR_PARAM;
+    if (inst->log_height != (unsigned)DNAC_SHIELDED_BASE_LOG_HEIGHT)
+        return DNAC_PROVER_ERR_PARAM;
+    for (size_t i = 0; i < A_NUM_PUBLICS; i++)
+        if (forged_publics[i] >= GOLDILOCKS_P) return DNAC_PROVER_ERR_PARAM;
+    const size_t height = (size_t)1 << inst->log_height;
+    const size_t nd = DNAC_AGG_PROVER_TOTAL_DRAWS(height);
+    const size_t ns = DNAC_AGG_PROVER_SALT_DRAWS(height);
+    uint64_t *draws = (uint64_t *)malloc(nd * sizeof(uint64_t));
+    uint64_t *salts = (uint64_t *)malloc(ns * sizeof(uint64_t));
+    if (draws == NULL || salts == NULL || dnac_zk_fill_draws(draws, nd) != 0 ||
+        dnac_zk_fill_draws(salts, ns) != 0) {
+        free(draws);
+        free(salts);
+        return DNAC_PROVER_ERR_PARAM;
+    }
+    dnac_agg_prover_instance_t local = *inst;
+    local.draws = draws;
+    local.num_draws = nd;
+    local.salt_draws = salts;
+    local.num_salt_draws = ns;
+    const dnac_prover_status_t rc = agg_prove_cfg(
+        &local, out_proof, &AGG_CFG_SHIELDED, forged_publics, /*skip sv*/ 1);
+    free(draws);
+    free(salts);
+    return rc;
+}
+#endif /* DNAC_ZK_ENABLE_TEST_WIRE */

@@ -736,6 +736,146 @@ static void test_double_spend(void) {
 
 /* ══════════════════════════════════════════════════════════════════ */
 
+/* ══════════════════════════════════════════════════════════════════
+ * Phase-C C2.2 — shielded (type-11) admission tests
+ *
+ * The witness MUST reject every DNAC_TX_SHIELDED through all of C2
+ * (unconditional-reject branch; accept-flip is C3). These tests build
+ * self-consistent type-11 wires (correct V4 tx_hash so Check 2 passes and
+ * the dispatch seam is what fires) and assert the PRECISE reject reason —
+ * proving the branch replaced Checks 3-6 rather than tripping an earlier
+ * generic reject.
+ * ══════════════════════════════════════════════════════════════════ */
+
+#define SHIELDED_STMT_LEN (DNAC_TX_SHIELDED_FIXED_SIZE - 4) /* 330 */
+
+static void be64_put(uint64_t v, uint8_t *out) {
+    for (int i = 7; i >= 0; i--) { out[i] = (uint8_t)(v & 0xff); v >>= 8; }
+}
+
+/* Build a type-11 wire with tunable malformations. Blob = 8 dummy bytes. */
+static uint8_t *build_shielded_tx(uint64_t committed_fee, uint64_t sf_fee,
+                                  int transparent_inputs, int signer_count,
+                                  int nonzero_unused_slot, uint32_t *out_len) {
+    size_t size = 82;                       /* v2 header */
+    size += 1 + (size_t)transparent_inputs * 136;
+    size += 1;                              /* output_count = 0 */
+    size += 1;                              /* witness_count = 0 */
+    size += 1 + (size_t)signer_count * (NODUS_PK_BYTES + NODUS_SIG_BYTES);
+    size += (size_t)SHIELDED_STMT_LEN + 4 + 8;
+    uint8_t *buf = calloc(1, size);
+    if (!buf) return NULL;
+    uint8_t *p = buf;
+
+    p[0] = DNAC_PROTOCOL_VERSION;
+    p[1] = NODUS_W_TX_SHIELDED;
+    uint64_t ts = 0x1122334455667788ULL;
+    memcpy(p + 2, &ts, 8);                  /* wire timestamp = native LE */
+    be64_put(committed_fee, p + 74);
+    p += 82;
+
+    *p++ = (uint8_t)transparent_inputs;     /* D7.1 violation when > 0 */
+    for (int i = 0; i < transparent_inputs; i++) p += 136; /* zeroed input */
+    *p++ = 0;                               /* output_count */
+    *p++ = 0;                               /* witness_count */
+    *p++ = (uint8_t)signer_count;           /* C2 pin violation when > 0 */
+    for (int i = 0; i < signer_count; i++)
+        p += NODUS_PK_BYTES + NODUS_SIG_BYTES; /* zeroed signer */
+
+    /* Shielded statement (330 B, all BE, canonical). */
+    for (int j = 0; j < 4; j++) { be64_put(0x1000 + j, p); p += 8; } /* anchor */
+    *p++ = 1;                                                /* num_input */
+    for (int s = 0; s < 4; s++)
+        for (int j = 0; j < 4; j++) {
+            uint64_t v = (s == 0) ? (0x2000u + (unsigned)j) : 0;
+            if (s == 3 && j == 0 && nonzero_unused_slot) v = 1; /* DET-S5-3 */
+            be64_put(v, p); p += 8;
+        }
+    *p++ = 1;                                                /* num_output */
+    for (int s = 0; s < 4; s++)
+        for (int j = 0; j < 4; j++) {
+            be64_put((s == 0) ? (0x3000u + (unsigned)j) : 0, p); p += 8;
+        }
+    be64_put(sf_fee, p); p += 8;                             /* fee */
+    for (int j = 0; j < 4; j++) { be64_put(0x4000 + j, p); p += 8; } /* txbind */
+    p[0] = 0; p[1] = 0; p[2] = 0; p[3] = 8; p += 4;          /* fri_len */
+    memset(p, 0xAB, 8); p += 8;                              /* blob */
+
+    *out_len = (uint32_t)(p - buf);
+
+    /* Correct V4 tx_hash so Check 2 passes and the DISPATCH is what fires. */
+    uint8_t zero_chain_id[32] = {0};
+    uint8_t pks[4 * NODUS_PK_BYTES]; /* NODUS_T3_MAX_TX_SIGNERS = 4 (local
+                                      * to nodus_witness_verify.c) */
+    memset(pks, 0, sizeof pks);
+    uint8_t h[64];
+    if (nodus_witness_recompute_tx_hash(zero_chain_id, buf, *out_len,
+                                        signer_count > 0 ? pks : NULL,
+                                        (uint8_t)signer_count, h) != 0) {
+        free(buf);
+        return NULL;
+    }
+    memcpy(buf + 10, h, 64);
+    return buf;
+}
+
+static void run_shielded_case(const char *name, uint64_t committed_fee,
+                              uint64_t sf_fee, int transparent_inputs,
+                              int signer_count, int nonzero_unused_slot,
+                              const char *want_reason_substr) {
+    TEST(name);
+    nodus_witness_t w;
+    if (setup_witness(&w) != 0) { FAIL("setup"); return; }
+
+    uint32_t tx_len = 0;
+    uint8_t *tx = build_shielded_tx(committed_fee, sf_fee, transparent_inputs,
+                                    signer_count, nonzero_unused_slot, &tx_len);
+    if (!tx) { FAIL("build"); cleanup_witness(&w); return; }
+
+    uint8_t tx_hash[64];
+    memcpy(tx_hash, tx + 10, 64);
+    char reason[256] = {0};
+    int rc = nodus_witness_verify_transaction(&w, tx, tx_len, tx_hash,
+                  NODUS_W_TX_SHIELDED, NULL, 0, NULL, NULL, committed_fee,
+                  reason, sizeof(reason));
+
+    /* rc MUST be reject; the reason MUST be the shielded branch's (never a
+     * Check-2 "tx_hash mismatch" or a transparent-path reason). */
+    if (rc != 0 && strstr(reason, want_reason_substr) != NULL) {
+        PASS();
+    } else {
+        printf("FAIL: rc=%d reason='%s' (want substr '%s')\n",
+               rc, reason, want_reason_substr);
+        failed++;
+    }
+    free(tx);
+    cleanup_witness(&w);
+}
+
+static void test_shielded_admission(void) {
+    /* Well-formed type-11: passes every shape check, still REJECTED —
+     * the C2 unconditional-reject bar (CRIT-2/G-SEC-7). */
+    run_shielded_case("shielded: well-formed REJECTED until C3",
+                      DNAC_MIN_FEE_RAW, DNAC_MIN_FEE_RAW, 0, 0, 0,
+                      "disabled until C3");
+    /* D7.1 — transparent body must be empty. */
+    run_shielded_case("shielded: transparent input rejected (D7.1)",
+                      DNAC_MIN_FEE_RAW, DNAC_MIN_FEE_RAW, 1, 0, 0,
+                      "transparent body not empty");
+    /* C2 signer pin — signer_count MUST be 0. */
+    run_shielded_case("shielded: signer_count != 0 rejected",
+                      DNAC_MIN_FEE_RAW, DNAC_MIN_FEE_RAW, 0, 1, 0,
+                      "signer_count");
+    /* D7.2 — shielded fee must equal header committed_fee. */
+    run_shielded_case("shielded: fee != committed_fee rejected (D7.2)",
+                      DNAC_MIN_FEE_RAW, DNAC_MIN_FEE_RAW + 1, 0, 0, 0,
+                      "D7.2");
+    /* DET-S5-3 — unused nf slot must be zero. */
+    run_shielded_case("shielded: non-zero unused nf slot rejected",
+                      DNAC_MIN_FEE_RAW, DNAC_MIN_FEE_RAW, 0, 0, 1,
+                      "not zero");
+}
+
 int main(void) {
     printf("=== Witness Transaction Verification Tests ===\n");
 
@@ -748,6 +888,7 @@ int main(void) {
     test_genesis_skips_checks();
     test_truncated_tx_data();
     test_double_spend();
+    test_shielded_admission();
 
     printf("\n=== Results: %d passed, %d failed ===\n", passed, failed);
     return failed > 0 ? 1 : 0;

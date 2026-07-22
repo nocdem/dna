@@ -24,17 +24,10 @@
 
 #define LOG_TAG "DNAC_TX"
 
-/* STAKE TX purpose-tag constant (design §2.3, F-CRYPTO-05).
- *
- * 17-byte literal. The design spec text says "purpose_tag[16]" but the
- * literal value "DNAC_VALIDATOR_v1" is 17 ASCII characters and cannot
- * fit in a 16-byte field. We preserve the literal identifier verbatim
- * at its natural length (17 bytes, no NUL terminator, no padding) —
- * the cryptographic purpose of the tag is the unique byte sequence,
- * not the array size. Flagged as a design-doc inconsistency. */
-const uint8_t DNAC_STAKE_PURPOSE_TAG[DNAC_STAKE_PURPOSE_TAG_LEN] = {
-    'D','N','A','C','_','V','A','L','I','D','A','T','O','R','_','v','1'
-};
+/* DNAC_STAKE_PURPOSE_TAG lives in serialize.c (the wire layer that owns the
+ * on-wire tag bytes) so serialize.c stays standalone-linkable without this
+ * file's Dilithium/EVP dependencies — see the definition there. Both files
+ * are compiled together at every real link site (libdna, nodus-cli). */
 
 /* CHAIN_CONFIG TX purpose-tag constant (design §5.3, Hard-Fork v1).
  *

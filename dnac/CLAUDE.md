@@ -177,6 +177,27 @@ type_specific_appended_fields
 **Min-fee gate:** non-GENESIS TXs must have `committed_fee >= DNAC_MIN_FEE_RAW`.
 Witness `verify.c::Check 0` rejects before expensive Dilithium5 sig verify.
 
+### Shielded TX (type 11, dual-mode V4 — Phase-C, NOT live)
+
+`DNAC_TX_SHIELDED = 11` (S5, 2026-07-17) keeps the 82-byte header but: the
+tx-hash preimage uses its OWN domain tag `"DNAC_TX_V4\0"`; transparent
+`input_count`/`output_count` MUST be 0 (D7.1); `signer_count` MUST be 0 (spend
+authority is the STARK proof's ak/nk binding); the body carries a shielded
+section after the (empty) signers section: `anchor[4] ‖ num_input ‖
+nf_set[4][4] ‖ num_output ‖ output_commit[4][4] ‖ fee ‖ tx_binding[4]` (330 B,
+all lanes u64 **BIG-ENDIAN**, canonical `< p`, unused slots zero) +
+`fri_proof_len(u32 BE)` + the opaque proof blob (blob is NOT in the tx-hash
+preimage). `fee` MUST equal header `committed_fee@74` (D7.2). Statement
+binding: `tx_binding = conf_txbind_map(sighash_v4)` where `sighash_v4 =
+SHA3-512("DNAC_SIGHASH_V4\0" ‖ chain_id ‖ counts/slots ‖ fee ‖ anchor)`
+(`dnac_tx_shielded_sighash`, serialize.c). Verify entry (C2.1, consensus-
+linked): `dnac_shielded_verify_statement` (`shared/crypto/zk/shielded_verify.h`).
+**Admission: the witness REJECTS type-11 unconditionally through all of C2**
+(`nodus_witness_verify.c::verify_shielded_tx`) — the accept-flip lands at C3
+atomically with the shielded apply case + state_root v4. Full design:
+`dnac/docs/plans/2026-07-17-dm-s5-v4-wire-design.md` + `2026-07-22-c2-*.md`
+(local-only).
+
 **When bumping header size again:** grep every `\b<old_size>\b` and
 `tx_len [<>] <old_size>` literal across `dnac/src/transaction/` AND
 `nodus/src/witness/`. The v1→v2 migration missed ~10 sites in nodus

@@ -105,6 +105,7 @@ TESTS = \
     $(BUILD)/test_prover_action \
     $(BUILD)/test_prover_agg \
     $(BUILD)/test_prover_shielded_production \
+    $(BUILD)/test_shielded_verify \
     $(BUILD)/test_prover_salted_commit \
     $(BUILD)/test_zk_entropy \
     $(BUILD)/test_prover_trace \
@@ -472,6 +473,23 @@ $(BUILD)/test_prover_agg: tests/test_prover_agg.c stark_prover_agg.h stark_prove
 
 $(BUILD)/test_prover_shielded_production: tests/test_prover_shielded_production.c stark_prover_agg.h stark_prover_agg.c conf_action_agg_fold.h conf_action_agg_fold.c conf_action_fold.h conf_action_fold.c conf_action_agg_air.h poseidon2_fold.h poseidon2_fold.c stark_constraints.c $(ACTION_AIR_STACK) $(PROVER_STACK) fri_verifier.c fri_proof_codec.c fri_proof_codec.h shielded_fri_params.c shielded_fri_params.h zk_entropy.c stark_priming.c | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) tests/test_prover_shielded_production.c $(AGG_PROVER_SRCS) $(SHA3_SRC) $(LDLIBS) -o $@
+
+# ── Phase-C C2.1: consensus shielded verify (wire-recomputed statement). ──
+# Links the LIBDNA sighash source (dnac/src/transaction/serialize.c — the
+# single dnac_tx_shielded_sighash source of truth, G-DET-2; same standalone-
+# compile precedent as nodus-cli, nodus/CMakeLists.txt:806-822) — never a
+# re-implementation.
+DNAC_INCLUDES = -I/opt/dna/dnac/include
+DNAC_SIGHASH_SRCS = /opt/dna/dnac/src/transaction/serialize.c \
+                    /opt/dna/dnac/src/ledger/chain_def_codec.c \
+                    /opt/dna/shared/dnac/chain_config_wire.c
+
+# conf_txbind.c pulls conf_root_air (bound-root fold); keccak_ref comes via
+# the transcript stack already in AGG_PROVER_SRCS.
+CONF_TXBIND_DEPS = conf_root_air.c conf_commit_air.c conf_balance_air.c
+
+$(BUILD)/test_shielded_verify: tests/test_shielded_verify.c shielded_verify.c shielded_verify.h conf_txbind.c conf_txbind.h $(CONF_TXBIND_DEPS) stark_prover_agg.h stark_prover_agg.c conf_action_agg_fold.h conf_action_agg_fold.c conf_action_fold.c poseidon2_fold.c stark_constraints.c $(ACTION_AIR_STACK) $(PROVER_STACK) fri_verifier.c fri_proof_codec.c shielded_fri_params.c zk_entropy.c stark_priming.c $(DNAC_SIGHASH_SRCS) | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) $(DNAC_INCLUDES) tests/test_shielded_verify.c shielded_verify.c conf_txbind.c $(CONF_TXBIND_DEPS) $(AGG_PROVER_SRCS) $(DNAC_SIGHASH_SRCS) $(SHA3_SRC) $(LDLIBS) -o $@
 
 $(BUILD)/test_prover_salted_commit: tests/test_prover_salted_commit.c stark_prover.h $(CONF_AIR_STACK) $(PROVER_STACK) | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) tests/test_prover_salted_commit.c $(CONF_AIR_STACK) $(PROVER_STACK) $(SHA3_SRC) $(LDLIBS) -o $@
@@ -1032,6 +1050,13 @@ test: all
 	@echo "  serialized and accepted by dnac_fri_verify_wire_shielded"
 	@echo "============================================================"
 	@$(BUILD)/test_prover_shielded_production
+	@echo
+	@echo "============================================================"
+	@echo "Phase-C C2.1 — CONSENSUS shielded verify (wire-recomputed statement)"
+	@echo "  production proof ACCEPT + 13 distinct fail-close rejects incl. the"
+	@echo "  CRIT-1 FRI-passes-but-constraint-fails isolator"
+	@echo "============================================================"
+	@$(BUILD)/test_shielded_verify
 	@echo
 	@echo "============================================================"
 	@echo "S2 dual-mode C3 — Poseidon2 Merkle-path membership (is_zk=0)"

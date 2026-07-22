@@ -185,6 +185,33 @@ if(NOT WIN32)
         ${SHARED_DIR}/crypto/zk/keccak_p3_trace.c
         ${SHARED_DIR}/crypto/zk/keccak_ref.c
     )
+    # ── Phase-C C2.1 (2026-07-22): consensus shielded-statement verify ──
+    # dnac_shielded_verify_statement (shielded_verify.c) = wire-recomputed
+    # publics + fresh-primed transcript (SAMPLED zeta, H2/H3 closed) + pinned
+    # FRI verify AND the N-chunk AIR constraint check (CRIT-1 — FRI alone is
+    # soundness-vacuous). Pulls: priming, constraint glue, the aggregate fold
+    # AIR (constraint-EVAL only, no prover), and the tx_binding map chain.
+    # dnac_tx_shielded_sighash stays in dnac/src/transaction/serialize.c —
+    # consumers (test_zk_link now, the witness at C2.2) compile it alongside,
+    # exactly the nodus-cli DNAC_TX_WIRE_SOURCES precedent (single source,
+    # design v2 G-DET-2). Still NOT called by consensus: witness admission
+    # REJECTS type-11 unconditionally through all of C2 (accept-flip = C3).
+    list(APPEND NODUS_SOURCES
+        ${SHARED_DIR}/crypto/zk/shielded_verify.c
+        ${SHARED_DIR}/crypto/zk/stark_priming.c
+        ${SHARED_DIR}/crypto/zk/stark_constraints.c
+        ${SHARED_DIR}/crypto/zk/conf_action_agg_fold.c
+        ${SHARED_DIR}/crypto/zk/conf_action_fold.c
+        ${SHARED_DIR}/crypto/zk/poseidon2_fold.c
+        ${SHARED_DIR}/crypto/zk/conf_txbind.c
+        ${SHARED_DIR}/crypto/zk/conf_root_air.c
+        ${SHARED_DIR}/crypto/zk/conf_commit_air.c
+        ${SHARED_DIR}/crypto/zk/conf_balance_air.c
+        ${SHARED_DIR}/crypto/zk/poseidon2_air.c
+        ${SHARED_DIR}/crypto/zk/poseidon2_air_trace.c
+        ${SHARED_DIR}/crypto/zk/poseidon2_air_cols.c
+        ${SHARED_DIR}/crypto/zk/poseidon2_goldilocks.c
+    )
 endif()
 
 # Log shim — only needed standalone (messenger tree has the real qgp_log.c)
@@ -319,7 +346,13 @@ add_test(NAME test_cbor COMMAND test_cbor)
 # Phase-C C1 — shielded ZK verify stack linkage gate (pulls the whole
 # dnac_fri_verify_wire_shielded chain out of libnodus.a; a missing zk
 # source in NODUS_SOURCES is a LINK error here, not a C2 surprise).
-add_executable(test_zk_link tests/test_zk_link.c)
+# C2.1: also pulls dnac_shielded_verify_statement + the linked libdna
+# sighash (serialize.c compiled alongside, nodus-cli precedent) so the
+# COMPLETE consensus verify chain is link-proven from libnodus.a.
+add_executable(test_zk_link tests/test_zk_link.c
+    ${MONOREPO_ROOT}/dnac/src/transaction/serialize.c
+    ${MONOREPO_ROOT}/dnac/src/ledger/chain_def_codec.c
+    ${MONOREPO_ROOT}/shared/dnac/chain_config_wire.c)
 target_link_libraries(test_zk_link nodus dsa nodus)
 target_include_directories(test_zk_link PRIVATE ${SHARED_DIR}/crypto/zk)
 add_test(NAME test_zk_link COMMAND test_zk_link)

@@ -147,6 +147,27 @@ const gold_fp_t *dnac_agg_prover_proof_publics(const dnac_agg_prover_proof_t *p,
 
 void dnac_agg_prover_proof_free(dnac_agg_prover_proof_t *p);
 
+#ifdef DNAC_ZK_ENABLE_TEST_WIRE
+/* ── C2.1 KAT-only exports (M5-gated like dnac_fri_verify_wire: only the zk
+ * standalone Makefile defines DNAC_ZK_ENABLE_TEST_WIRE — absent from
+ * libnodus/libdna, `nm`-provable). ── */
+
+/** Serialize a produced aggregate proof to the DZKF wire bytes the consensus
+ *  verify consumes (priming + zeta cross-check, NO verify — the KAT feeds the
+ *  bytes to dnac_shielded_verify_statement). Caller frees *out_buf. */
+dnac_fri_codec_status_t dnac_agg_prover_proof_wire_encode_testonly(
+    const dnac_agg_prover_proof_t *p, uint8_t **out_buf, size_t *out_len);
+
+/** CRIT-1 isolating forge: a production-params proof with an HONEST transcript
+ *  over FORGED publics (quotient built from the TRUE trace publics). FRI
+ *  accepts it; only the N-chunk constraint check rejects it. Self-verify is
+ *  skipped (it would — correctly — fail). NEVER a production entry. */
+dnac_prover_status_t dnac_agg_prover_prove_production_forged_publics_testonly(
+    const dnac_agg_prover_instance_t *inst,
+    const uint64_t                    forged_publics[CONF_AGGZK_NUM_PUBLICS],
+    dnac_agg_prover_proof_t         **out_proof);
+#endif /* DNAC_ZK_ENABLE_TEST_WIRE */
+
 #ifdef __cplusplus
 }
 #endif

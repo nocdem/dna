@@ -43,14 +43,20 @@
 /* The 1-input action instance (== dump_conf_action_agg_air_zk note set): the
  * witness data is height-independent; only the padding grows to H=1024. */
 static void build_notes(uint64_t value[3], uint8_t roles[3], uint64_t pos[3],
-                        uint64_t nk[3], uint64_t ak[3], uint64_t addr[12],
+                        uint64_t nk[12], uint64_t ak[12], uint64_t addr[12],
                         uint64_t rcm[6], uint64_t memb_siblings[48]) {
     const uint64_t v[3] = {100, 70, 30};
     const uint8_t r[3] = {CONF_ACTION_ROLE_INPUT, CONF_ACTION_ROLE_OUTPUT,
                           CONF_ACTION_ROLE_FEE};
     const uint64_t p[3] = {5, 0, 0};
-    const uint64_t k[3] = {0x22222222ULL, 0, 0};
-    const uint64_t a[3] = {0x11111111ULL, 0, 0};
+    /* F3: nk/ak are 4 Goldilocks lanes PER NOTE ([blk*4+lane], instance doc
+     * stark_prover_agg.h:72-73; generate reads nk[i*4+j] for EVERY note,
+     * conf_action_air.c:131-135). The pre-F3 [3] scalar arrays here were a
+     * 9-element stack OOB read — fixed to the full 3x4 lane layout. */
+    const uint64_t k[12] = {0x22221111ULL, 0x22222222ULL, 0x22223333ULL,
+                            0x22224444ULL, 0, 0, 0, 0, 0, 0, 0, 0};
+    const uint64_t a[12] = {0x11111111ULL, 0x11112222ULL, 0x11113333ULL,
+                            0x11114444ULL, 0, 0, 0, 0, 0, 0, 0, 0};
     const uint64_t ad[12] = {0, 0, 0, 0, 0xAA01, 0xAA02, 0xAA03, 0xAA04,
                              0xFEE1, 0xFEE2, 0xFEE3, 0xFEE4};
     const uint64_t rc[6] = {0x11, 0x12, 0x21, 0x22, 0x31, 0x32};
@@ -82,7 +88,7 @@ int main(void) {
 
     int fails = 0;
 
-    uint64_t value[3], pos[3], nk[3], ak[3], addr[12], rcm[6],
+    uint64_t value[3], pos[3], nk[12], ak[12], addr[12], rcm[6],
         memb_siblings[48];
     uint8_t roles[3];
     build_notes(value, roles, pos, nk, ak, addr, rcm, memb_siblings);

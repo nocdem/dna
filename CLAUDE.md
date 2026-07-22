@@ -560,7 +560,7 @@ All C projects use CMake. Build from each project's `build/` directory.
 | Messenger (C lib) | `cd messenger/build && cmake .. && make -j$(nproc)` | Compiles dnac sources directly into `libdna.so` |
 | Nodus | `cd nodus/build && cmake .. && make -j$(nproc)` | Independent build |
 | DNAC | **No separate build.** | dnac sources are compiled into `libdna.so` by the messenger build. **NEVER rebuild `/opt/dna/dnac/build`** (memory: `feedback_no_dnac_build`); existing test binaries there are prebuilt. |
-| ZK stack | `cd shared/crypto/zk && make test` | Standalone Makefile, 65 gates GREEN, 0 warnings. Prove+verify complete (pure-C, Plonky3 byte-matched). Phase-C C1 (2026-07-21): verify stack LINKED into the nodus build (not yet called by consensus — C2 pending). Status: `zk/RESUME.md` top block |
+| ZK stack | `cd shared/crypto/zk && make test` | Standalone Makefile, 66 gates GREEN, 0 warnings. Prove+verify complete (pure-C, Plonky3 byte-matched). Phase-C C1 (2026-07-21): verify stack LINKED into the nodus build; C2.1 (2026-07-22): consensus statement-verify entry `dnac_shielded_verify_statement` built + KAT'd (not yet called by consensus — C2.2 admission pending). Status: `zk/RESUME.md` top block |
 | Flutter app | `cd messenger/dna_messenger_flutter && flutter build linux` | Requires messenger C lib built |
 | Windows cross-compile | `cd messenger && ./build-cross-compile.sh windows-x64` | |
 

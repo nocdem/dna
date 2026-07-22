@@ -50,7 +50,79 @@
   until C2/C3 (shielded pool, state_root v4 — BREAKING, own approvals).
   Remaining Phase-C order (user decisions 2026-07-21: ak/nk multi-lane FIRST;
   prune/heartbeat NOT bundled): **C1 ✅ → F3 ak/nk multi-lane ✅ (2026-07-22) →
-  C2 witness verify → C3 state_root v4 (minimal) → C4 Genesis 7/7.**
+  C2 witness verify ✅ (C2.1+C2.2+C2.3+C2.4 all 2026-07-22 — records below;
+  C2.4 red-team GREEN, 0 confirmed defect) → C3 state_root v4 (minimal) →
+  C4 Genesis 7/7.**
+  - **C2 DESIGN v2 (2026-07-22):** `dnac/docs/plans/2026-07-22-c2-witness-
+    shielded-verify-design.md` (local, 3 sections). Design red-team returned
+    NOT-GREEN (2 CRIT + 2 HIGH, all confirmed against the tree); doc REVISED:
+    (CRIT-2) C2 does NOT flip admission to accept — an admitted type-11 TX
+    pre-C3 mints fee-pool credit with no debit (`bft.c:1907`→route_tx_fee) +
+    records no nullifier (double-spend); the accept-flip MOVES to C3's first
+    commit. C2 ships the verify FUNCTION + KATs behind an UNCONDITIONAL type-11
+    REJECT. (CRIT-1) verify chain MUST include `dnac_stark_verify_constraints_
+    nchunk` — FRI-verify alone is soundness-vacuous (mint). (HIGH-1) hook seam
+    is AFTER Check 2 (extended for V4 tag + shielded section), dispatch to
+    verify_shielded_tx() replacing Checks 3-6 (signer_count==0 for shielded);
+    "between Check3↔Check4" was wrong (Check2 V2-only + Check3 no-signers both
+    reject type-11 first). (HIGH-2) anchor is attacker-chosen → root-set
+    membership deferred to C3 = 2nd reason no-accept-in-C2. Build order:
+    C2.1 zk-side verify entry + KATs → C2.2 witness admission (REJECT-only) →
+    C2.3 ctest/regression → C2.4 **10+-agent CODE red-team (cost-gate: consensus
+    /shipped-crypto scale, needs user cost+park approval before opening)**.
+  - **🎯 C2.1 DONE (2026-07-22, uncommitted — commits with the rest of C2):**
+    `dnac_shielded_verify_statement(sf, chain_id, committed_fee)` in NEW
+    `shielded_verify.{c,h}` (consensus-linked into libnodus, nodus CMake).
+    Chain (all fail-close, distinct status per branch): wire canonicalization
+    (counts, DET-S5-3 slot-zero, per-lane < p, fee==committed_fee) → sighash_v4
+    via the LINKED libdna `dnac_tx_shielded_sighash` (G-DET-2, no re-impl) →
+    `conf_txbind_map` == wire tx_binding → 43 publics recomputed FROM WIRE →
+    decode + shape-pin (3 coms random/trace/quotient, widths 6/2322/6, num_qc=8,
+    every domain == pinned height 11) → fresh transcript prime, zeta/zeta_next
+    SAMPLED, every wire opening coordinate MUST equal the sampled point (H2/H3
+    CLOSED) → `dnac_fri_verify_wire_shielded` **AND**
+    `dnac_stark_verify_constraints_nchunk` (CRIT-1). Gates:
+    - `tests/test_shielded_verify.c` (in `make test`, now **66 GREEN 0 warn**):
+      production-proof ACCEPT + 13 distinct fail-close rejects incl. the
+      **CRIT-1 isolator T-R9** — a forged-publics proof (honest FS over fee+1,
+      quotient from true publics) that FRI ACCEPTS and only the constraint
+      check rejects. Forge + wire-encode are `DNAC_ZK_ENABLE_TEST_WIRE`-gated
+      test-only exports in stark_prover_agg (M5 pattern, absent from libnodus).
+    - nodus `test_zk_link` T5: the whole C2.1 chain (verify entry + linked
+      sighash) links out of libnodus.a; cheap fail-close branches fire.
+      **nodus ctest 132/132; messenger/libdna build clean.**
+    - Fix landed with C2.1: `DNAC_STAKE_PURPOSE_TAG` definition moved
+      transaction.c → serialize.c (wire layer owns it; serialize.c now
+      standalone-linkable — byte-identical constant, extern decl unchanged).
+      Also fixed a committed F3 miss: test_prover_shielded_production nk[3]/
+      ak[3] → nk[12]/ak[12] (9-u64 stack OOB read, UB — test was green by
+      accident).
+  - **🎯 C2.2 + C2.3 DONE (2026-07-22, uncommitted — one C2 commit):**
+    witness admission, REJECT-only (design v2 §4.3, HIGH-1 seam):
+    - `NODUS_W_TX_SHIELDED 11` (nodus_witness.h, == DNAC_TX_SHIELDED);
+      `nodus_witness_recompute_tx_hash` gained the V4 arm (own domain tag +
+      the 330-B shielded statement hashed VERBATIM, fri blob NOT hashed —
+      byte-order-matched to libdna transaction.c:341-367); dispatch right
+      after Check 2 to `verify_shielded_tx()` which REPLACES-and-RETURNS
+      Checks 3-6: D7.1 empty transparent body, signer_count==0 pin, canonical
+      shielded-section parse (lane<p, counts, slot-zero), fee==committed_fee
+      (D7.2) — then **UNCONDITIONAL REJECT** ("disabled until C3"); the C3
+      accept-flip insertion point is marked in-code. Check-5 mempool read is
+      structurally unreachable for type-11 (G-DET-1). nodus v0.18.15→0.18.16.
+    - Gates: test_witness_tx_hash_parity +SHIELDED V4 parity + blob-not-
+      hashed/statement-hashed KATs; test_witness_verify +5 shielded admission
+      rejects (well-formed/transparent-body/signer/fee/slot — each on its
+      precise reason). nodus ctest 132/132; messenger build clean.
+    - **C2.3 Genesis Protocol harness (STAGEF_EPOCH_LENGTH=3, 17 scripts):
+      15 PASS, 2 documented SKIP stubs (halving_boundaries, supply_invariant_
+      halt), every state_root assertion 7/7 IDENTICAL** (…19|E38C, 20|CB6A,
+      21|9336 incl. post-pause-resume convergence). `test_view_change_fork`
+      Phase B failed twice on a PRE-EXISTING liveness-recovery issue
+      (SIGSTOP'd leader → 0/6 view-change quorum → commit stalls minutes;
+      SAFETY intact both runs; type-11-gated C2 diff can't touch it) — root-
+      caused + recorded in nodus/BUGS.md 2026-07-22 entry; harness helper
+      `stagef_mk_funded_user` fixed to poll CHAIN truth after CLI timeout
+      (kills the known project_genesis_client_false_error false-negative).
   - **🎯 F3 DONE (2026-07-22, S-F3.0→S-F3.5 one session, single commit):**
     ak/nk widened 1→4 Goldilocks lanes (user-locked A_LANES=N_LANES=4; nk alone
     was ~2^32 Grover via public (ρ,nf) → now ~2^128, matching the stack's

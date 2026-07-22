@@ -174,7 +174,7 @@ dna/
 |-----------|---------|
 | Messenger C Library | v0.11.13 |
 | Flutter App | v1.0.0-rc240 |
-| Nodus | v0.18.15 |
+| Nodus | v0.18.16 |
 | DNAC | v0.17.8-stake.wip |
 
 ---

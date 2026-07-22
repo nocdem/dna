@@ -57,6 +57,13 @@
 #define TX_UNDELEGATE           7
 /* 8 was TX_CLAIM_REWARD — removed in v0.16 reward redesign. */
 #define TX_VALIDATOR_UPDATE     9
+#define TX_SHIELDED             11  /* Phase-C C2.2 — dual-mode V4 shielded */
+
+/* Shielded statement length on the wire/preimage: anchor(32) + num_input(1)
+ * + nf_set(128) + num_output(1) + output_commit(128) + fee(8) +
+ * tx_binding(32) = 330 (= DNAC_TX_SHIELDED_FIXED_SIZE - 4; the trailing
+ * fri_proof_len(4) + blob are wire-only, NOT hashed). */
+#define TX_SHIELDED_STMT_LEN    (DNAC_TX_SHIELDED_FIXED_SIZE - 4)
 
 /* Purpose tag used by STAKE (matches DNAC_STAKE_PURPOSE_TAG). */
 static const uint8_t PURPOSE_TAG[17] = "DNAC_VALIDATOR_v1";
@@ -191,8 +198,14 @@ static int reference_hash(const tx_t *t, const uint8_t chain_id[CHAIN_ID_LEN],
     uint8_t be8[8];
     uint8_t be2[2];
 
-    /* Domain separator (SEC-06, v0.17.1+) — prevents cross-version preimage collision */
-    PUT(DNAC_TX_PREIMAGE_DOMAIN_V2, DNAC_TX_PREIMAGE_DOMAIN_V2_LEN);
+    /* Domain separator (SEC-06, v0.17.1+) — prevents cross-version preimage
+     * collision. Shielded (V4) TXs hash under their OWN tag
+     * (transaction.c:212-220, re-audit Finding 5). */
+    if (t->type == TX_SHIELDED) {
+        PUT(DNAC_TX_PREIMAGE_DOMAIN_V4, DNAC_TX_PREIMAGE_DOMAIN_V4_LEN);
+    } else {
+        PUT(DNAC_TX_PREIMAGE_DOMAIN_V2, DNAC_TX_PREIMAGE_DOMAIN_V2_LEN);
+    }
 
     /* header */
     u8 = DNAC_PROTOCOL_VERSION; PUT(&u8, 1);   /* v2 */
@@ -239,6 +252,11 @@ static int reference_hash(const tx_t *t, const uint8_t chain_id[CHAIN_ID_LEN],
         PUT(t->tail, t->tail_len);  /* pubkey(2592) + amount(u64 BE) */
     } else if (t->type == TX_VALIDATOR_UPDATE) {
         PUT(t->tail, t->tail_len);  /* new_bps(u16 BE) + signed_at(u64 BE) */
+    } else if (t->type == TX_SHIELDED) {
+        /* V4 shielded statement fields VERBATIM (all BE, wire order ==
+         * preimage order); fri_proof_len + blob NOT hashed
+         * (transaction.c:341-367). */
+        PUT(t->tail, TX_SHIELDED_STMT_LEN);
     }
     /* SPEND, UNSTAKE, GENESIS, BURN, TOKEN_CREATE: no type-specific tail. */
 
@@ -390,6 +408,68 @@ int main(void) {
         memcpy(tp, be8, 8); tp += 8;
         t.tail_len = (size_t)(tp - t.tail);
         if (run_scenario("VALIDATOR_UPDATE parity", &t, chain_id) != 0) failed++;
+    }
+
+    /* Scenario S1 (C2.2): SHIELDED (type-11) V4 parity — empty transparent
+     * body, 0 signers, shielded statement + proof blob tail. */
+    {
+        tx_t t;
+        memset(&t, 0, sizeof(t));
+        t.type = TX_SHIELDED;
+        t.timestamp = 0x1122334455667788ULL;
+        t.committed_fee = DNAC_MIN_FEE_RAW;
+        t.input_count = 0;
+        t.output_count = 0;
+        t.signer_count = 0;
+
+        /* Statement (330 B, all BE, canonical lanes < p): anchor ‖
+         * num_input=1 ‖ nf_set (slot 0 real, 1..3 zero) ‖ num_output=1 ‖
+         * output_commit (slot 0 real) ‖ fee ‖ tx_binding. */
+        uint8_t *tp = t.tail;
+        uint8_t be8[8];
+        for (int j = 0; j < 4; j++) { be64_into(0x1000 + j, be8); memcpy(tp, be8, 8); tp += 8; }
+        *tp++ = 1; /* num_input */
+        for (int s = 0; s < 4; s++)
+            for (int j = 0; j < 4; j++) {
+                be64_into(s == 0 ? (0x2000u + (unsigned)j) : 0, be8);
+                memcpy(tp, be8, 8); tp += 8;
+            }
+        *tp++ = 1; /* num_output */
+        for (int s = 0; s < 4; s++)
+            for (int j = 0; j < 4; j++) {
+                be64_into(s == 0 ? (0x3000u + (unsigned)j) : 0, be8);
+                memcpy(tp, be8, 8); tp += 8;
+            }
+        be64_into(DNAC_MIN_FEE_RAW, be8); memcpy(tp, be8, 8); tp += 8; /* fee */
+        for (int j = 0; j < 4; j++) { be64_into(0x4000 + j, be8); memcpy(tp, be8, 8); tp += 8; }
+        /* fri_proof_len(4 BE) + 8-byte dummy blob (wire-only, NOT hashed) */
+        *tp++ = 0; *tp++ = 0; *tp++ = 0; *tp++ = 8;
+        for (int j = 0; j < 8; j++) *tp++ = 0xAB;
+        t.tail_len = (size_t)(tp - t.tail);
+
+        if (run_scenario("SHIELDED (V4) parity", &t, chain_id) != 0) failed++;
+
+        /* S2: blob byte NOT hashed (same statement, different proof bytes ⇒
+         * SAME hash) but a statement lane IS (different anchor ⇒ different
+         * hash). */
+        uint32_t l1 = 0, l2 = 0, l3 = 0;
+        uint8_t *w1 = build_wire(&t, &l1);
+        t.tail[TX_SHIELDED_STMT_LEN + 4] ^= 0xFF; /* blob byte */
+        uint8_t *w2 = build_wire(&t, &l2);
+        t.tail[TX_SHIELDED_STMT_LEN + 4] ^= 0xFF; /* restore */
+        t.tail[7] ^= 0x01;                        /* anchor lane low byte */
+        uint8_t *w3 = build_wire(&t, &l3);
+        uint8_t h1[TX_HASH_LEN], h2[TX_HASH_LEN], h3[TX_HASH_LEN];
+        int ok = w1 && w2 && w3 &&
+                 nodus_witness_recompute_tx_hash(chain_id, w1, l1, NULL, 0, h1) == 0 &&
+                 nodus_witness_recompute_tx_hash(chain_id, w2, l2, NULL, 0, h2) == 0 &&
+                 nodus_witness_recompute_tx_hash(chain_id, w3, l3, NULL, 0, h3) == 0 &&
+                 memcmp(h1, h2, TX_HASH_LEN) == 0 &&
+                 memcmp(h1, h3, TX_HASH_LEN) != 0;
+        free(w1); free(w2); free(w3);
+        printf("  %-50s %s\n", "SHIELDED blob-not-hashed / statement-hashed",
+               ok ? "PASS" : "FAIL");
+        if (!ok) failed++;
     }
 
     /* Scenario 8: chain_id binding — same TX, different chain_id ⇒ different hash */

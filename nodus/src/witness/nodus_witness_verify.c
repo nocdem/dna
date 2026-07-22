@@ -100,6 +100,7 @@
 /* 8 was CLAIM_REWARD — removed in v0.16 reward redesign. */
 #define TX_TYPE_VALIDATOR_UPDATE     NODUS_W_TX_VALIDATOR_UPDATE   /* 9 */
 #define TX_TYPE_CHAIN_CONFIG         NODUS_W_TX_CHAIN_CONFIG       /* 10 */
+#define TX_TYPE_SHIELDED             NODUS_W_TX_SHIELDED           /* 11 */
 
 /* F-CRYPTO-05: "DNAC_VALIDATOR_v1" — 17 bytes, no padding. Matches
  * dnac/include/dnac/transaction.h DNAC_STAKE_PURPOSE_TAG_LEN = 17. */
@@ -152,10 +153,21 @@ int nodus_witness_recompute_tx_hash(const uint8_t *chain_id,
     const uint8_t *p = tx_data;
     size_t remaining = tx_len;
 
-    /* ── Domain separator "DNAC_TX_V2\0" (SEC-06, 11 bytes) ────── */
-    memcpy(buf + buf_pos, DNAC_TX_PREIMAGE_DOMAIN_V2,
-           DNAC_TX_PREIMAGE_DOMAIN_V2_LEN);
-    buf_pos += DNAC_TX_PREIMAGE_DOMAIN_V2_LEN;
+    /* ── Domain separator (SEC-06, 11 bytes each). A shielded (type-11) TX
+     * hashes under its OWN tag "DNAC_TX_V4\0" so a shielded preimage can
+     * never collide with a V2 preimage — byte-match of libdna
+     * dnac_tx_compute_hash (transaction.c:212-220, re-audit Finding 5).
+     * The type byte is peeked from the wire (entry check guarantees
+     * tx_len >= TX_HEADER_SIZE + 1 > 2). ────────────────────────────── */
+    if (tx_data[1] == TX_TYPE_SHIELDED) {
+        memcpy(buf + buf_pos, DNAC_TX_PREIMAGE_DOMAIN_V4,
+               DNAC_TX_PREIMAGE_DOMAIN_V4_LEN);
+        buf_pos += DNAC_TX_PREIMAGE_DOMAIN_V4_LEN;
+    } else {
+        memcpy(buf + buf_pos, DNAC_TX_PREIMAGE_DOMAIN_V2,
+               DNAC_TX_PREIMAGE_DOMAIN_V2_LEN);
+        buf_pos += DNAC_TX_PREIMAGE_DOMAIN_V2_LEN;
+    }
 
     /* ── Header: version(u8) || type(u8) || timestamp(u64 BE) || chain_id[32] ── */
     if (remaining < 10) goto fail;
@@ -349,6 +361,30 @@ int nodus_witness_recompute_tx_hash(const uint8_t *chain_id,
             p += votes_total;
             remaining -= votes_total;
         }
+    } else if (type_byte == TX_TYPE_SHIELDED) {
+        /* Phase-C C2.2 — V4 shielded statement. The wire section's statement
+         * fields (anchor[4] ‖ num_input ‖ nf_set[4][4] ‖ num_output ‖
+         * output_commit[4][4] ‖ fee ‖ tx_binding[4] — 330 B, all BE, SAME
+         * field order as the preimage) are hashed VERBATIM; fri_proof_len(4)
+         * + the proof blob are NOT hashed (a re-randomized proof of the same
+         * statement is the same TX). Byte-match of libdna
+         * dnac_tx_compute_hash's shielded arm (transaction.c:341-367) over
+         * the serialize.c wire layout (write_shielded_section:166-193). */
+        const size_t stmt_len = (size_t)DNAC_TX_SHIELDED_FIXED_SIZE - 4;
+        if (remaining < (size_t)DNAC_TX_SHIELDED_FIXED_SIZE) goto fail;
+        memcpy(buf + buf_pos, p, stmt_len);
+        buf_pos += stmt_len;
+        uint32_t fri_len = ((uint32_t)p[stmt_len] << 24)
+                         | ((uint32_t)p[stmt_len + 1] << 16)
+                         | ((uint32_t)p[stmt_len + 2] << 8)
+                         |  (uint32_t)p[stmt_len + 3];
+        p += DNAC_TX_SHIELDED_FIXED_SIZE;
+        remaining -= DNAC_TX_SHIELDED_FIXED_SIZE;
+        /* Blob bounds: a truncated shielded TX fails the recompute
+         * (fail-close) instead of silently hashing a malformed wire. */
+        if (remaining < fri_len) goto fail;
+        p += fri_len;
+        remaining -= fri_len;
     }
     /* UNSTAKE, GENESIS, SPEND, BURN, TOKEN_CREATE: no appended fields. */
 
@@ -502,6 +538,221 @@ static int parse_signers_from_tx_data(const uint8_t *tx_data, uint32_t tx_len,
 }
 
 /* ════════════════════════════════════════════════════════════════════
+ * Phase-C C2.2 — shielded (type-11) admission branch
+ * ════════════════════════════════════════════════════════════════════ */
+
+/* Goldilocks modulus 2^64 - 2^32 + 1 — per-lane canonical bound (A-9 /
+ * G-DET-5). Mirrors DNAC_SHIELDED_GOLDILOCKS_P in dnac serialize.c:164
+ * (kept local like the other dnac wire mirrors in this file). */
+#define TX_SHIELDED_GOLDILOCKS_P 0xFFFFFFFF00000001ULL
+
+/* BE u64 reader (shielded section lanes are BIG-ENDIAN on the wire,
+ * DET-S5-1 — unlike the LE transparent amounts). */
+static uint64_t be64_read(const uint8_t *p) {
+    uint64_t v = 0;
+    for (int i = 0; i < 8; i++) v = (v << 8) | (uint64_t)p[i];
+    return v;
+}
+
+/**
+ * Phase-C C2.2 — dedicated verify branch for DNAC_TX_SHIELDED (type 11).
+ *
+ * Dispatched from nodus_witness_verify_transaction right after Check 2
+ * (tx-hash integrity, V4 domain) and REPLACES-and-RETURNS Checks 3-6
+ * (C2 design v2 HIGH-1): a shielded TX has NO transparent inputs/outputs
+ * (D7.1), NO signers (spend authority IS the proof's ak/nk binding —
+ * signer_count pinned 0), and its nullifiers live in the shielded section
+ * only (G-SEC-8 — never routed through the transparent Check-4 walk).
+ * Returning here also structurally guarantees the per-node mempool-dependent
+ * Check 5 never runs for type-11 (G-DET-1 / MED-1).
+ *
+ * ⚠ ADMISSION IS UNCONDITIONALLY REJECT THROUGH ALL OF C2 (CRIT-2/G-SEC-7/
+ * G-SEC-9): even a fully-VALID proof cannot be admitted pre-C3 — the apply
+ * chain (bft.c update_utxo_set → route_tx_fee) would move committed_fee with
+ * no debit (supply-invariant break) and record no nullifier (double-spend),
+ * and the wire anchor is not yet checkable against any on-chain root set.
+ * C3 flips this branch to accept-on-valid ATOMICALLY with the shielded
+ * apply case + anchor-root check + state_root v4. The verify machinery is
+ * already built + KAT'd (C2.1: dnac_shielded_verify_statement,
+ * shared/crypto/zk/shielded_verify.h — linked into libnodus) — C3 inserts
+ * the call where marked below.
+ *
+ * The wire-shape checks BEFORE the final reject exist so a malformed
+ * type-11 TX gets a PRECISE reject reason (and so C3's flip changes one
+ * line, not the parse) — every path returns reject in C2.
+ */
+static int verify_shielded_tx(nodus_witness_t *w,
+                              const uint8_t *tx_data, uint32_t tx_len,
+                              char *reject_reason, size_t reason_size) {
+    (void)w;
+    const uint8_t *p = tx_data + TX_INPUTS_OFF;
+    size_t remaining = tx_len - TX_INPUTS_OFF;
+
+    /* D7.1 — transparent body MUST be empty (no plaintext value smuggling,
+     * G8): input_count == 0 AND output_count == 0. */
+    if (remaining < 2) {
+        snprintf(reject_reason, reason_size, "shielded: truncated body");
+        return -1;
+    }
+    uint8_t input_count = *p++;
+    remaining--;
+    uint8_t output_count = *p++;
+    remaining--;
+    if (input_count != 0 || output_count != 0) {
+        snprintf(reject_reason, reason_size,
+                 "shielded: transparent body not empty (in=%u out=%u, D7.1)",
+                 (unsigned)input_count, (unsigned)output_count);
+        return -1;
+    }
+
+    /* Skip witnesses (same wire walk as the tx-hash recompute). */
+    if (remaining < 1) {
+        snprintf(reject_reason, reason_size, "shielded: truncated witnesses");
+        return -1;
+    }
+    uint8_t witness_count = *p++;
+    remaining--;
+    {
+        size_t witness_size = 32 + NODUS_SIG_BYTES + 8 + NODUS_PK_BYTES;
+        size_t witnesses_total = (size_t)witness_count * witness_size;
+        if (remaining < witnesses_total) {
+            snprintf(reject_reason, reason_size, "shielded: truncated witnesses");
+            return -1;
+        }
+        p += witnesses_total;
+        remaining -= witnesses_total;
+    }
+
+    /* C2 signer policy: signer_count MUST be 0 — spend authority is the
+     * proof (condition-3 ak/nk), not a transparent key. The V4 tx-hash
+     * (Check 2, already passed) binds the full shielded statement, so there
+     * is no unsigned-malleability window. */
+    if (remaining < 1) {
+        snprintf(reject_reason, reason_size, "shielded: truncated signers");
+        return -1;
+    }
+    uint8_t signer_count = *p++;
+    remaining--;
+    if (signer_count != 0) {
+        snprintf(reject_reason, reason_size,
+                 "shielded: signer_count %u != 0 (spend authority is the proof)",
+                 (unsigned)signer_count);
+        return -1;
+    }
+
+    /* Shielded section — the witness's OWN parse (it never runs libdna
+     * deserialize): canonical lanes (< p), counts in range, unused slots
+     * zero (DET-S5-3), fee == header committed_fee (D7.2/G-SEC-6). Field
+     * order/widths: serialize.c write_shielded_section:166-193. */
+    if (remaining < (size_t)DNAC_TX_SHIELDED_FIXED_SIZE) {
+        snprintf(reject_reason, reason_size, "shielded: truncated section");
+        return -1;
+    }
+    const uint8_t *s = p;
+    for (unsigned j = 0; j < DNAC_SHIELDED_LANES; j++) {         /* anchor */
+        if (be64_read(s) >= TX_SHIELDED_GOLDILOCKS_P) {
+            snprintf(reject_reason, reason_size,
+                     "shielded: non-canonical anchor lane %u", j);
+            return -1;
+        }
+        s += 8;
+    }
+    uint8_t num_input = *s++;
+    if (num_input < 1 || num_input > DNAC_SHIELDED_MAX_INPUTS) {
+        snprintf(reject_reason, reason_size,
+                 "shielded: num_input %u out of range [1,%u]",
+                 (unsigned)num_input, (unsigned)DNAC_SHIELDED_MAX_INPUTS);
+        return -1;
+    }
+    for (unsigned si = 0; si < DNAC_SHIELDED_MAX_INPUTS; si++)
+        for (unsigned j = 0; j < DNAC_SHIELDED_LANES; j++) {
+            uint64_t v = be64_read(s);
+            s += 8;
+            if (v >= TX_SHIELDED_GOLDILOCKS_P) {
+                snprintf(reject_reason, reason_size,
+                         "shielded: non-canonical nf lane [%u][%u]", si, j);
+                return -1;
+            }
+            if (si >= num_input && v != 0) {
+                snprintf(reject_reason, reason_size,
+                         "shielded: unused nf slot %u not zero (DET-S5-3)", si);
+                return -1;
+            }
+        }
+    uint8_t num_output = *s++;
+    if (num_output > DNAC_SHIELDED_MAX_OUTPUTS) {
+        snprintf(reject_reason, reason_size,
+                 "shielded: num_output %u out of range [0,%u]",
+                 (unsigned)num_output, (unsigned)DNAC_SHIELDED_MAX_OUTPUTS);
+        return -1;
+    }
+    for (unsigned so = 0; so < DNAC_SHIELDED_MAX_OUTPUTS; so++)
+        for (unsigned j = 0; j < DNAC_SHIELDED_LANES; j++) {
+            uint64_t v = be64_read(s);
+            s += 8;
+            if (v >= TX_SHIELDED_GOLDILOCKS_P) {
+                snprintf(reject_reason, reason_size,
+                         "shielded: non-canonical output lane [%u][%u]", so, j);
+                return -1;
+            }
+            if (so >= num_output && v != 0) {
+                snprintf(reject_reason, reason_size,
+                         "shielded: unused output slot %u not zero (DET-S5-3)",
+                         so);
+                return -1;
+            }
+        }
+    uint64_t sf_fee = be64_read(s);
+    s += 8;
+    if (sf_fee >= TX_SHIELDED_GOLDILOCKS_P) {
+        snprintf(reject_reason, reason_size, "shielded: non-canonical fee");
+        return -1;
+    }
+    for (unsigned j = 0; j < DNAC_SHIELDED_LANES; j++) {      /* tx_binding */
+        if (be64_read(s) >= TX_SHIELDED_GOLDILOCKS_P) {
+            snprintf(reject_reason, reason_size,
+                     "shielded: non-canonical tx_binding lane %u", j);
+            return -1;
+        }
+        s += 8;
+    }
+    uint32_t fri_len = ((uint32_t)s[0] << 24) | ((uint32_t)s[1] << 16)
+                     | ((uint32_t)s[2] << 8)  |  (uint32_t)s[3];
+    s += 4;
+    remaining -= (size_t)DNAC_TX_SHIELDED_FIXED_SIZE;
+    if (remaining < fri_len || fri_len == 0) {
+        snprintf(reject_reason, reason_size,
+                 "shielded: fri_proof truncated/empty (len=%u, have=%zu)",
+                 (unsigned)fri_len, remaining);
+        return -1;
+    }
+
+    /* D7.2 / G-SEC-6 — single fee authority: shielded fee == header
+     * committed_fee@74 (re-enforced witness-side; Check 0's min-fee gate on
+     * committed_fee already ran). */
+    uint64_t committed_fee = 0;
+    if (dnac_tx_read_committed_fee(tx_data, tx_len, &committed_fee) != 0 ||
+        sf_fee != committed_fee) {
+        snprintf(reject_reason, reason_size,
+                 "shielded: fee %llu != committed_fee %llu (D7.2)",
+                 (unsigned long long)sf_fee,
+                 (unsigned long long)committed_fee);
+        return -1;
+    }
+
+    /* ── C3 INSERTION POINT (accept-flip, NOT C2): ─────────────────────
+     *   dnac_shielded_verify_statement(&sf, w->chain_id, committed_fee)
+     *   == DNAC_SHIELDED_VERIFY_OK  AND  anchor ∈ chain root set (G-SEC-9)
+     *   AND nullifier-set non-membership — then return 0. Lands atomically
+     *   with the bft.c shielded apply case (nullifier insert, DET-S5-4
+     *   sorted; fee reconciliation) + state_root v4. ──────────────────── */
+    snprintf(reject_reason, reason_size,
+             "shielded admission disabled until C3 (state_root v4 + "
+             "nullifier set + anchor root; C2 = verify machinery only)");
+    return -1;
+}
+
+/* ════════════════════════════════════════════════════════════════════
  * Full transaction verification
  * ════════════════════════════════════════════════════════════════════ */
 
@@ -603,6 +854,23 @@ int nodus_witness_verify_transaction(nodus_witness_t *w,
     if (memcmp(computed_hash, tx_hash, NODUS_T3_TX_HASH_LEN) != 0) {
         snprintf(reject_reason, reason_size, "tx_hash mismatch (data tampered)");
         return -1;
+    }
+
+    /* ── Phase-C C2.2: shielded (type-11) dispatch ───────────────
+     * Right after Check 2 (the V4 tx-hash bound the full shielded
+     * statement above); REPLACES-and-RETURNS Checks 3-6 (design v2
+     * HIGH-1). Dispatch fires on EITHER the caller-declared type or the
+     * WIRE type byte, and sits BEFORE the is_genesis early-return so a
+     * forged (caller-type=GENESIS / wire-byte=11) pair can never reach the
+     * genesis accept path — a real genesis carries wire byte 0, disjoint
+     * from 11, so this reorder cannot capture a genuine genesis (C2.4
+     * red-team, 2026-07-22: closes the ordering wart the fail-close comment
+     * had overclaimed). In C2 every shielded path rejects unconditionally.
+     * Returning here also guarantees the per-node mempool read in Check 5
+     * never touches a type-11 verdict (G-DET-1). */
+    if (tx_type == NODUS_W_TX_SHIELDED || tx_data[1] == NODUS_W_TX_SHIELDED) {
+        return verify_shielded_tx(w, tx_data, tx_len,
+                                  reject_reason, reason_size);
     }
 
     /* Genesis transactions skip signature, balance, and fee checks.

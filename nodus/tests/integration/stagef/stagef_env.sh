@@ -139,8 +139,26 @@ stagef_mk_funded_user() {
     # Fund TX retry — CLI's commit-wait can race with cluster timing
     # in the moments after stagef_up returns (peer mesh + leader
     # election still settling, view-change rotations under load).
-    # Three attempts with 5 s backoff covers the common transient
-    # window without masking real consensus failures.
+    #
+    # ⚠ The CLI exit code is NOT the source of truth for commit: the
+    # cluster can commit the spend AFTER the CLI's ~30 s wait expires
+    # (known pattern, memory project_genesis_client_false_error — seen
+    # live 2026-07-22 in test_view_change_fork: leader paused → view
+    # change latency → CLI timeout, yet the TX committed at the next
+    # height with 7/7 state_root identity). So after ANY failed CLI
+    # attempt, poll the CHAIN (node1 witness DB, read-only) for the
+    # funded UTXO before declaring failure or re-sending — this both
+    # kills the false negative and avoids duplicate fund spends.
+    stagef_fund_on_chain() {
+        local owner_fp="$1" db
+        db=$(ls "$BASE_DIR"/node1/data/witness_*.db 2>/dev/null | head -1)
+        [ -n "$db" ] || return 1
+        local n
+        n=$(sqlite3 -readonly "$db" \
+            "SELECT COUNT(*) FROM utxo_set WHERE owner = '$owner_fp';" \
+            2>/dev/null) || return 1
+        [ "${n:-0}" -ge 1 ]
+    }
     fund_ok=0
     for attempt in 1 2 3; do
         if stagef_dna -q dna send "$fp" "$fund_raw" "stagef_fund_$label" \
@@ -148,14 +166,26 @@ stagef_mk_funded_user() {
             fund_ok=1
             break
         fi
+        # CLI said failure — ask the chain before believing it. Poll up
+        # to 45 s (covers round timeout + view change + commit lag).
+        chain_deadline=$(( SECONDS + 45 ))
+        while [ $SECONDS -lt $chain_deadline ]; do
+            if stagef_fund_on_chain "$fp"; then
+                echo "[info] stagef_mk_funded_user: CLI timed out but fund TX COMMITTED on chain for $label (attempt $attempt)" >&2
+                fund_ok=1
+                break
+            fi
+            sleep 2
+        done
+        [ "$fund_ok" -eq 1 ] && break
         if [ "$attempt" -lt 3 ]; then
-            echo "[info] stagef_mk_funded_user: fund attempt $attempt failed for $label, retrying in 5s..." >&2
+            echo "[info] stagef_mk_funded_user: fund attempt $attempt failed for $label (chain checked), retrying in 5s..." >&2
             tail -3 "$test_home/fund.log" >&2
             sleep 5
         fi
     done
     if [ "$fund_ok" -eq 0 ]; then
-        echo "[FAIL] stagef_mk_funded_user: fund failed for $label after 3 attempts" >&2
+        echo "[FAIL] stagef_mk_funded_user: fund failed for $label after 3 attempts (chain verified empty)" >&2
         tail -10 "$test_home/fund.log" >&2
         return 1
     fi
