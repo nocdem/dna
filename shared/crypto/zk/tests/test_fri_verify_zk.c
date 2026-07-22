@@ -78,16 +78,25 @@ static size_t hex_decode(const char *hex,uint8_t *buf,size_t cap){
     size_t hl=strlen(hex); if(hl%2)return (size_t)-1; size_t n=hl/2; if(n>cap)return (size_t)-1;
     for(size_t i=0;i<n;i++){ int hi=hexnib(hex[2*i]),lo=hexnib(hex[2*i+1]); if(hi<0||lo<0)return (size_t)-1; buf[i]=(uint8_t)((hi<<4)|lo); } return n;
 }
-static void put_u64_le(uint8_t *p,uint64_t v){ for(int i=0;i<8;i++)p[i]=(uint8_t)(v>>(8*i)); }
-/* Anti-spin (red-team M3b DEFECT-2A): if the next token is NOT a number (e.g. a
- * salted (salts,siblings) tuple fed to the unsalted parser, or a shape mismatch),
- * js_read_u64 does not advance the cursor. Skip that value so the enclosing
- * while(!']') always makes progress — a malformed vector is a clean parse, not a
- * CPU-spin hang. Backstop `before==pos` -> s->pos++ guarantees termination even
- * if js_skip_value itself stalls. Test-harness only (not the verifier engine). */
-static int read_u64_array(js_t *s,uint64_t *out,int cap){ int n=0; js_match(s,'['); while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;} size_t before=s->pos; uint64_t v; if(js_read_u64(s,&v)){ if(n<cap)out[n]=v; n++; } else { js_skip_value(s); } if(s->pos==before) s->pos++; } return n; }
-static void parse_lanes_digest(js_t *s,uint8_t out[64]){ uint64_t l[8]={0}; read_u64_array(s,l,8); for(int i=0;i<8;i++)put_u64_le(out+i*8,l[i]); }
-static void parse_commit_digest(js_t *s,uint8_t out[64]){
+/* P1c: digest = 4 Goldilocks lanes; 64-hex-char roots -> 4 LE lanes. */
+static int hex_to_p2_digest(const char *h, dnac_p2_digest_t *d){
+    uint8_t b[32];
+    if (hex_decode(h, b, sizeof b) != sizeof b) return 0;
+    for (int i = 0; i < 4; i++){
+        uint64_t v = 0;
+        for (int j = 0; j < 8; j++) v |= (uint64_t)b[i*8+j] << (8*j);
+        d->lanes[i] = v;
+    }
+    return 1;
+}
+/* P1c tolerant reader: up to 8 entries, first 4 used (P1c-TODO reconcile). */
+/* P1c (regen-reconciled): serde digest = `[ {"value": N} x4 ]`. */
+static uint64_t parse_base_obj(js_t *s); /* fwd */
+static void parse_lanes_digest(js_t *s,dnac_p2_digest_t *out){
+    int n=0; js_match(s,'[');
+    while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;} uint64_t v=parse_base_obj(s); if(n<4)out->lanes[n]=v; n++; }
+}
+static void parse_commit_digest(js_t *s,dnac_p2_digest_t *out){
     js_match(s,'{'); while(!js_match(s,'}')){ if(js_peek(s,',')){s->pos++;continue;} char*k=js_read_string(s); js_match(s,':');
         if(k&&strcmp(k,"cap")==0){ js_match(s,'['); parse_lanes_digest(s,out); while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;} js_skip_value(s);} } else { js_skip_value(s); } free(k); }
 }
@@ -126,7 +135,7 @@ static size_t parse_fp2_decimal_array(js_t *s,gold_fp2_t *out,size_t cap){
 typedef struct {
     dnac_fri_params_t params;
     /* inner FriProof (proof_serde[1]) */
-    dnac_merkle_digest_t commits[GXR]; size_t num_commits;
+    dnac_p2_digest_t commits[GXR]; size_t num_commits;
     gold_fp_t  witnesses[GXR];
     gold_fp2_t final_poly[GXCOL]; size_t num_final_poly;
     gold_fp_t  qpow;
@@ -135,10 +144,10 @@ typedef struct {
     const gold_fp_t     *inp_rowptr[GXQ][GXB][GXMAT];
     size_t               inp_lens[GXQ][GXB][GXMAT];
     size_t               inp_nmat[GXQ][GXB];
-    dnac_merkle_digest_t inp_sib[GXQ][GXB][GXSIB];
+    dnac_p2_digest_t inp_sib[GXQ][GXB][GXSIB];
     dnac_fri_batch_opening_t bo[GXQ][GXB]; size_t num_batches[GXQ];
     gold_fp2_t           cpo_sib[GXQ][GXR][GXSIB];
-    dnac_merkle_digest_t cpo_psib[GXQ][GXR][GXSIB];
+    dnac_p2_digest_t cpo_psib[GXQ][GXR][GXSIB];
     dnac_fri_commit_phase_proof_step_t cpo[GXQ][GXR]; size_t cpo_n[GXQ];
     dnac_fri_query_proof_t qp[GXQ]; size_t num_queries;
     dnac_fri_proof_t proof;
@@ -151,7 +160,7 @@ typedef struct {
 
     /* stark scalars + commitments */
     size_t degree_bits, num_quotient_chunks;
-    dnac_merkle_digest_t trace_commit, quotient_commit, random_commit;
+    dnac_p2_digest_t trace_commit, quotient_commit, random_commit;
     gold_fp_t public_values[GXCOL]; size_t num_public_values;
     gold_fp2_t alpha_exp, zeta_exp, zeta_next_exp;
     /* MERGED opened values (base ++ rand) */
@@ -189,10 +198,10 @@ static void parse_cpo(js_t *s,gx_t *fx,size_t q,size_t r){
                 }
                 if(js_peek(s,',')) s->pos++;
                 js_match(s,'[');
-                while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;} if(npsib<GXSIB)parse_lanes_digest(s,fx->cpo_psib[q][r][npsib].bytes); else js_skip_value(s); npsib++; }
+                while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;} if(npsib<GXSIB)parse_lanes_digest(s,&fx->cpo_psib[q][r][npsib]); else js_skip_value(s); npsib++; }
                 while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;} js_skip_value(s); }
             } else {
-                js_match(s,'['); while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;} if(npsib<GXSIB)parse_lanes_digest(s,fx->cpo_psib[q][r][npsib].bytes); else js_skip_value(s); npsib++; }
+                js_match(s,'['); while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;} if(npsib<GXSIB)parse_lanes_digest(s,&fx->cpo_psib[q][r][npsib]); else js_skip_value(s); npsib++; }
             }
         }
         else { js_skip_value(s); }
@@ -234,10 +243,10 @@ static void parse_input_batch(js_t *s,gx_t *fx,size_t q,size_t b){
                 if(js_peek(s,',')) s->pos++;
                 /* element 1: siblings */
                 js_match(s,'[');
-                while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;} if(nsib<GXSIB)parse_lanes_digest(s,fx->inp_sib[q][b][nsib].bytes); else js_skip_value(s); nsib++; }
+                while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;} if(nsib<GXSIB)parse_lanes_digest(s,&fx->inp_sib[q][b][nsib]); else js_skip_value(s); nsib++; }
                 while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;} js_skip_value(s); }
             } else {
-                js_match(s,'['); while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;} if(nsib<GXSIB)parse_lanes_digest(s,fx->inp_sib[q][b][nsib].bytes); else js_skip_value(s); nsib++; }
+                js_match(s,'['); while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;} if(nsib<GXSIB)parse_lanes_digest(s,&fx->inp_sib[q][b][nsib]); else js_skip_value(s); nsib++; }
             }
         }
         else { js_skip_value(s); }
@@ -261,7 +270,7 @@ static void parse_query_proof(js_t *s,gx_t *fx,size_t q){
 }
 static void parse_inner_fri_proof(js_t *s,gx_t *fx){
     js_match(s,'{'); while(!js_match(s,'}')){ if(js_peek(s,',')){s->pos++;continue;} char*k=js_read_string(s); js_match(s,':');
-        if(k&&strcmp(k,"commit_phase_commits")==0){ size_t n=0; js_match(s,'['); while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;} if(n<GXR)parse_commit_digest(s,fx->commits[n].bytes); else js_skip_value(s); n++; } fx->num_commits=n; }
+        if(k&&strcmp(k,"commit_phase_commits")==0){ size_t n=0; js_match(s,'['); while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;} if(n<GXR)parse_commit_digest(s,&fx->commits[n]); else js_skip_value(s); n++; } fx->num_commits=n; }
         else if(k&&strcmp(k,"commit_pow_witnesses")==0){ size_t n=0; js_match(s,'['); while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;} uint64_t bv=parse_base_obj(s); if(n<GXR)fx->witnesses[n]=gold_fp_from_u64(bv); n++; } }
         else if(k&&strcmp(k,"final_poly")==0){ size_t n=0; js_match(s,'['); while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;} gold_fp2_t fv=parse_fp2_wrapped(s); if(n<GXCOL)fx->final_poly[n]=fv; n++; } fx->num_final_poly=n; }
         else if(k&&strcmp(k,"query_pow_witness")==0){ fx->qpow=gold_fp_from_u64(parse_base_obj(s)); }
@@ -288,9 +297,9 @@ static void parse_instance(js_t *s,gx_t *fx){
 }
 static void parse_commitments(js_t *s,gx_t *fx){
     js_match(s,'{'); while(!js_match(s,'}')){ if(js_peek(s,',')){s->pos++;continue;} char*k=js_read_string(s); js_match(s,':');
-        if(k&&strcmp(k,"trace_commit_root_hex")==0){ char*h=js_read_string(s); hex_decode(h,fx->trace_commit.bytes,DNAC_MERKLE_DIGEST_BYTES); free(h); }
-        else if(k&&strcmp(k,"quotient_commit_root_hex")==0){ char*h=js_read_string(s); hex_decode(h,fx->quotient_commit.bytes,DNAC_MERKLE_DIGEST_BYTES); free(h); }
-        else if(k&&strcmp(k,"random_commit_root_hex")==0){ char*h=js_read_string(s); hex_decode(h,fx->random_commit.bytes,DNAC_MERKLE_DIGEST_BYTES); free(h); }
+        if(k&&strcmp(k,"trace_commit_root_hex")==0){ char*h=js_read_string(s); if(h)hex_to_p2_digest(h,&fx->trace_commit); free(h); }
+        else if(k&&strcmp(k,"quotient_commit_root_hex")==0){ char*h=js_read_string(s); if(h)hex_to_p2_digest(h,&fx->quotient_commit); free(h); }
+        else if(k&&strcmp(k,"random_commit_root_hex")==0){ char*h=js_read_string(s); if(h)hex_to_p2_digest(h,&fx->random_commit); free(h); }
         else { js_skip_value(s); } free(k); }
 }
 static void parse_public_values(js_t *s,gx_t *fx){
@@ -386,7 +395,8 @@ int main(int argc,char **argv){
     for(size_t c=0;c<fx->num_quot_chunks_parsed;c++){ qcptr[c]=fx->quot_chunk[c]; qclen[c]=fx->quot_chunk_len[c]; }
     in.quotient_chunks=qcptr; in.quotient_chunk_lens=qclen; in.num_quotient_chunks=fx->num_quot_chunks_parsed;
 
-    dnac_transcript_t *t=dnac_transcript_init(fx->init_state,fx->init_state_len);
+    /* P1c: vectors regen with the prod DS prefix (byte seeds retired). */
+    dnac_transcript_t *t=dnac_transcript_init_default();
     if(!t){ fprintf(stderr,"transcript init failed\n"); free(fx); return 1; }
     dnac_stark_priming_out_t out; memset(&out,0,sizeof out);
     if(dnac_stark_prime_transcript(t,&in,&out)!=DNAC_STARK_PRIMING_OK){ fprintf(stderr,"priming failed\n"); return 1; }
@@ -418,7 +428,7 @@ int main(int argc,char **argv){
         dnac_stark_priming_out_t o2;
         /* (a) tampered tx_binding[0] */
         fx->public_values[13] = gold_fp_from_u64(gold_fp_to_u64(saved13) ^ 1u);
-        dnac_transcript_t *t2 = dnac_transcript_init(fx->init_state, fx->init_state_len);
+        dnac_transcript_t *t2 = dnac_transcript_init_default(); /* P1c */
         memset(&o2, 0, sizeof o2);
         if (!t2 || dnac_stark_prime_transcript(t2, &in, &o2) != DNAC_STARK_PRIMING_OK ||
             gold_fp2_eq(o2.zeta, fx->zeta_exp) || gold_fp2_eq(o2.alpha, fx->alpha_exp)) {
@@ -430,7 +440,7 @@ int main(int argc,char **argv){
         fx->public_values[13] = saved13;
         /* (b) swapped positions 12 <-> 13 */
         fx->public_values[12] = saved13; fx->public_values[13] = saved12;
-        t2 = dnac_transcript_init(fx->init_state, fx->init_state_len);
+        t2 = dnac_transcript_init_default(); /* P1c */
         memset(&o2, 0, sizeof o2);
         if (!t2 || dnac_stark_prime_transcript(t2, &in, &o2) != DNAC_STARK_PRIMING_OK ||
             gold_fp2_eq(o2.zeta, fx->zeta_exp)) {
@@ -449,7 +459,7 @@ int main(int argc,char **argv){
      * reprime + dnac_fri_verify, returns the status. */
     if (fx->salted) {
         #define RESALT_VERIFY() ({                                            \
-            dnac_transcript_t *_rt = dnac_transcript_init(fx->init_state, fx->init_state_len); \
+            dnac_transcript_t *_rt = dnac_transcript_init_default(); /* P1c */ \
             dnac_stark_priming_out_t _ro; memset(&_ro,0,sizeof _ro);           \
             dnac_fri_status_t _rs = DNAC_FRI_ERR_INPUT_ERROR;                  \
             if(_rt && dnac_stark_prime_transcript(_rt,&in,&_ro)==DNAC_STARK_PRIMING_OK){ \

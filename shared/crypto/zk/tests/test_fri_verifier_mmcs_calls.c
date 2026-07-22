@@ -6,8 +6,9 @@
  *
  * Loads tools/vectors/fri_verifier_mmcs_calls.json (8 verify_batch calls Plonky3
  * issued while verifying the V6 proof) and replays each through DNAC's stateless
- * single-matrix merkle verify (dnac_fri_test_mmcs_verify_single -> dnac_merkle_verify).
- * Each call must ACCEPT (DNAC_MERKLE_OK), proving DNAC's independently-M3-grounded
+ * single-matrix merkle verify (dnac_fri_test_mmcs_verify_single ->
+ * dnac_p2_mmcs_verify, P1c Poseidon2).
+ * Each call must ACCEPT (DNAC_P2M_OK), proving DNAC's independently-grounded
  * SHA3-512 merkle agrees with Plonky3's MMCS on every captured opening.
  *
  * Load-bearing asserts (guard against false-green on this nested input):
@@ -33,7 +34,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "fri_verifier.h"   /* pulls merkle_smt.h */
+#include "fri_verifier.h"   /* pulls poseidon2_mmcs.h (P1c) */
 
 /* ===== Minimal JSON scanner (same idiom as tests/test_merkle_mmcs.c) ===== */
 typedef struct { const char *src; size_t pos; size_t len; } js_t;
@@ -153,15 +154,27 @@ static int ilog2_u64(uint64_t h) {
     return l;
 }
 
+/* P1c: 64-hex-char digest -> 4 LE lanes (32-byte Poseidon2 digest). */
+static bool hex_to_p2_digest(const char *h, dnac_p2_digest_t *d) {
+    uint8_t b[32];
+    if (hex_decode(h, b, sizeof b) != sizeof b) return false;
+    for (int i = 0; i < 4; i++) {
+        uint64_t v = 0;
+        for (int j = 0; j < 8; j++) v |= (uint64_t)b[i * 8 + j] << (8 * j);
+        d->lanes[i] = v;
+    }
+    return true;
+}
+
 /* ===== Per-call parsed data ===== */
 #define MAX_SIB 16
 typedef struct {
     char     call_site[40];
     char     api_target[40];
     char     expected_result[16];
-    uint8_t  root[DNAC_MERKLE_DIGEST_BYTES];
-    uint8_t  leaf[64];        size_t leaf_len;
-    dnac_merkle_digest_t sib[MAX_SIB]; size_t nsib;
+    dnac_p2_digest_t root;
+    uint8_t  leaf[64];        size_t leaf_len; /* raw bytes; converted to lanes at call */
+    dnac_p2_digest_t sib[MAX_SIB]; size_t nsib;
     uint64_t index;
     uint64_t height, width;
 } call_t;
@@ -197,8 +210,8 @@ static bool parse_siblings(js_t *s, call_t *c) {
         if (js_peek(s, ',')) { s->pos++; continue; }
         char *h = js_read_string(s); if (!h) return false;
         if (c->nsib >= MAX_SIB) { free(h); return false; }
-        size_t n = hex_decode(h, c->sib[c->nsib].bytes, DNAC_MERKLE_DIGEST_BYTES); free(h);
-        if (n != DNAC_MERKLE_DIGEST_BYTES) return false;
+        bool okd = hex_to_p2_digest(h, &c->sib[c->nsib]); free(h);
+        if (!okd) return false;
         c->nsib++;
     }
 }
@@ -230,7 +243,7 @@ static bool parse_call(js_t *s, call_t *c) {
         if (strcmp(k, "call_site") == 0) { char *v = js_read_string(s); if (v){ strncpy(c->call_site, v, sizeof(c->call_site)-1); free(v);} }
         else if (strcmp(k, "dnac_api_target") == 0) { char *v = js_read_string(s); if (v){ strncpy(c->api_target, v, sizeof(c->api_target)-1); free(v);} }
         else if (strcmp(k, "expected_result") == 0) { char *v = js_read_string(s); if (v){ strncpy(c->expected_result, v, sizeof(c->expected_result)-1); free(v);} }
-        else if (strcmp(k, "commit_hex") == 0) { char *v = js_read_string(s); if (v){ hex_decode(v, c->root, DNAC_MERKLE_DIGEST_BYTES); free(v);} }
+        else if (strcmp(k, "commit_hex") == 0) { char *v = js_read_string(s); if (v){ hex_to_p2_digest(v, &c->root); free(v);} }
         else if (strcmp(k, "index") == 0) { js_read_u64(s, &c->index); }
         else if (strcmp(k, "dimensions") == 0) { if (!parse_dimensions(s, c)) { free(k); return false; } }
         else if (strcmp(k, "opened_values_hex") == 0) { if (!parse_opened_values(s, c)) { free(k); return false; } }
@@ -276,22 +289,33 @@ int main(int argc, char **argv) {
 
                 /* load-bearing structural asserts */
                 if ((int)c.nsib != exp_depth) { fail++; printf("  [FAIL] %-26s depth=%zu != log2(height=%llu)=%d\n", c.call_site, c.nsib, (unsigned long long)c.height, exp_depth); continue; }
-                if (strcmp(c.api_target, "dnac_merkle_verify") != 0) { fail++; printf("  [FAIL] %-26s api_target=%s\n", c.call_site, c.api_target); continue; }
+                /* P1c-TODO: oracle regen may emit the new api target name;
+                 * accept both until the vector format is confirmed. */
+                if (strcmp(c.api_target, "dnac_merkle_verify") != 0 &&
+                    strcmp(c.api_target, "dnac_p2_mmcs_verify") != 0) { fail++; printf("  [FAIL] %-26s api_target=%s\n", c.call_site, c.api_target); continue; }
                 if (c.width != exp_width) { fail++; printf("  [FAIL] %-26s width=%llu != expected %llu\n", c.call_site, (unsigned long long)c.width, (unsigned long long)exp_width); continue; }
                 if (strcmp(c.expected_result, "OK") != 0) { fail++; printf("  [FAIL] %-26s expected_result=%s (only OK supported in F5)\n", c.call_site, c.expected_result); continue; }
 
-                dnac_merkle_digest_t root; memcpy(root.bytes, c.root, DNAC_MERKLE_DIGEST_BYTES);
-                dnac_merkle_status_t st = dnac_fri_test_mmcs_verify_single(
-                    &root, c.leaf, c.leaf_len, c.index, (uint32_t)c.nsib, c.sib);
+                /* P1c: leaf bytes -> canonical LE lanes for the Poseidon2 MMCS. */
+                if (c.leaf_len % 8 != 0) { fail++; printf("  [FAIL] %-26s leaf_len=%zu not lane-aligned\n", c.call_site, c.leaf_len); continue; }
+                uint64_t leaf_lanes[8]; size_t nlanes = c.leaf_len / 8;
+                if (nlanes > 8) { fail++; printf("  [FAIL] %-26s too many lanes\n", c.call_site); continue; }
+                for (size_t li = 0; li < nlanes; li++) {
+                    uint64_t v = 0;
+                    for (int j = 0; j < 8; j++) v |= (uint64_t)c.leaf[li * 8 + j] << (8 * j);
+                    leaf_lanes[li] = v;
+                }
+                dnac_p2_mmcs_status_t st = dnac_fri_test_mmcs_verify_single(
+                    &c.root, leaf_lanes, nlanes, c.index, (uint32_t)c.nsib, c.sib);
 
-                if (st == DNAC_MERKLE_OK) {
+                if (st == DNAC_P2M_OK) {
                     ok++;
-                    printf("  [OK ] %-26s h=%2llu w=%llu idx=%2llu leaf=%2zuB depth=%zu\n",
+                    printf("  [OK ] %-26s h=%2llu w=%llu idx=%2llu leaf=%2zu lanes depth=%zu\n",
                            c.call_site, (unsigned long long)c.height, (unsigned long long)c.width,
-                           (unsigned long long)c.index, c.leaf_len, c.nsib);
+                           (unsigned long long)c.index, nlanes, c.nsib);
                 } else {
                     fail++;
-                    printf("  [FAIL] %-26s dnac_merkle_verify -> %d (want DNAC_MERKLE_OK)\n", c.call_site, (int)st);
+                    printf("  [FAIL] %-26s dnac_p2_mmcs_verify -> %d (want DNAC_P2M_OK)\n", c.call_site, (int)st);
                 }
             }
         } else js_skip_value(&s);

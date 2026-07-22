@@ -165,7 +165,7 @@ static char *slurp(const char *path, size_t *out_len) {
 #define CAP 8
 
 typedef struct {
-    dnac_merkle_digest_t               commits[CAP];
+    dnac_p2_digest_t               commits[CAP];
     gold_fp_t                          witnesses[CAP];
     gold_fp2_t                         final_poly[CAP];
     dnac_fri_commit_phase_proof_step_t openings[Q_QUERIES][CAP];

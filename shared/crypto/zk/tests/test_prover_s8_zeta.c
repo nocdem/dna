@@ -169,11 +169,13 @@ int main(int argc, char **argv) {
     static uint64_t trace_draws[S8_TRACE_DRAWS];
     static uint64_t codeword[S8_CODEWORD];
     static uint64_t blinding[S8_BLINDING];
-    uint8_t random_root_v[DNAC_MERKLE_DIGEST_BYTES];
+    /* P1c: root = 32-byte hex -> 4 LE lanes */
+    uint8_t random_root_bytes[32];
+    dnac_p2_digest_t random_root_v;
     uint64_t zeta_c0 = 0, zeta_c1 = 0, zn_c0 = 0, zn_c1 = 0;
     if (!parse_u64_array(s8, "r_draws", r_draws, S8_RD) ||
-        !parse_hex_bytes(s8, "random_commit_root_hex", random_root_v,
-                         DNAC_MERKLE_DIGEST_BYTES) ||
+        !parse_hex_bytes(s8, "random_commit_root_hex", random_root_bytes,
+                         sizeof random_root_bytes) ||
         !parse_u64_array(s7, "codeword_rand", codeword, S8_CODEWORD) ||
         !parse_u64_array(s7, "blinding_rand", blinding, S8_BLINDING) ||
         !parse_u64_array(s2, "random_draws", trace_draws, S8_TRACE_DRAWS) ||
@@ -187,19 +189,26 @@ int main(int argc, char **argv) {
         return 2;
     }
 
+    for (int i = 0; i < 4; i++) {
+        uint64_t v = 0;
+        for (int j = 0; j < 8; j++)
+            v |= (uint64_t)random_root_bytes[i * 8 + j] << (8 * j);
+        random_root_v.lanes[i] = v;
+    }
+
     int failed = 0;
 
     /* ---- T1: R commit == proof.commitments.random ---- */
     static uint64_t r_lde[S8_R_LDE_CELLS];
-    uint8_t r_root[DNAC_MERKLE_DIGEST_BYTES];
+    dnac_p2_digest_t r_root;
     {
-        dnac_merkle_tree_t *rt = NULL;
+        dnac_p2_mmcs_tree_t *rt = NULL;
         int bad = 1;
-        if (dnac_prover_random_commit(r_draws, 8, S8_CW, 2, NULL, 0, r_lde, r_root,
+        if (dnac_prover_random_commit(r_draws, 8, S8_CW, 2, NULL, 0, r_lde, &r_root,
                                       &rt) == DNAC_PROVER_OK) {
-            bad = memcmp(r_root, random_root_v, sizeof(r_root)) != 0;
+            bad = memcmp(&r_root, &random_root_v, sizeof(r_root)) != 0;
         }
-        dnac_merkle_tree_free(rt);
+        dnac_p2_mmcs_tree_free(rt);
         if (bad) failed++;
         printf("T1 R commit(48 draws) == proof.commitments.random       %s\n",
                bad ? "FAIL" : "PASS");
@@ -214,10 +223,10 @@ int main(int argc, char **argv) {
         static uint64_t sf[S8_QS], sl[S8_QS], st[S8_QS], iv[S8_QS];
         static uint64_t qflat[2 * S8_QS];
         static uint64_t chunk_ldes[S8_NQ * S8_LDE_H * S8_CW];
-        uint8_t troot[DNAC_MERKLE_DIGEST_BYTES];
-        uint8_t qroot[DNAC_MERKLE_DIGEST_BYTES];
-        dnac_merkle_tree_t *ttree = NULL;
-        dnac_merkle_batch_tree_t *qtree = NULL;
+        dnac_p2_digest_t troot;
+        dnac_p2_digest_t qroot;
+        dnac_p2_mmcs_tree_t *ttree = NULL;
+        dnac_p2_mmcs_tree_t *qtree = NULL;
         gold_fp2_t alpha, zeta, zeta_next;
         dnac_transcript_t *t = dnac_transcript_init_default();
         const uint64_t amounts[4] = {10, 20, 30, 40};
@@ -230,9 +239,9 @@ int main(int argc, char **argv) {
                                         randomized_c) == DNAC_PROVER_OK &&
             dnac_prover_coset_lde_bitrev(randomized_c, 2 * S8_H, S8_RAND_W, 2,
                                          7, lde_c) == DNAC_PROVER_OK &&
-            dnac_prover_commit_matrix(lde_c, S8_LDE_H, S8_RAND_W, NULL, 0, troot,
+            dnac_prover_commit_matrix(lde_c, S8_LDE_H, S8_RAND_W, NULL, 0, &troot,
                                       &ttree) == DNAC_PROVER_OK &&
-            dnac_prover_fs_to_alpha(t, 3, 2, 0, troot, publics, 3, &alpha) ==
+            dnac_prover_fs_to_alpha(t, 3, 2, 0, &troot, publics, 3, &alpha) ==
                 DNAC_PROVER_OK &&
             dnac_prover_quotient_selectors(2, 4, 7, sf, sl, st, iv) ==
                 DNAC_PROVER_OK &&
@@ -243,9 +252,9 @@ int main(int argc, char **argv) {
                                                  alpha, sf, sl, st, iv,
                                                  qflat) == DNAC_PROVER_OK &&
             dnac_prover_quotient_commit(qflat, S8_QS, S8_NQ, 4, 2, 7, codeword,
-                                        blinding, NULL, 0, chunk_ldes, qroot,
+                                        blinding, NULL, 0, chunk_ldes, &qroot,
                                         &qtree) == DNAC_PROVER_OK &&
-            dnac_prover_fs_to_zeta(t, qroot, r_root, 2, &zeta, &zeta_next) ==
+            dnac_prover_fs_to_zeta(t, &qroot, &r_root, 2, &zeta, &zeta_next) ==
                 DNAC_PROVER_OK) {
             bad = !(gold_fp_to_u64(zeta.a) == zeta_c0 &&
                     gold_fp_to_u64(zeta.b) == zeta_c1 &&
@@ -260,8 +269,8 @@ int main(int argc, char **argv) {
             }
         }
         dnac_transcript_free(t);
-        dnac_merkle_tree_free(ttree);
-        dnac_merkle_batch_tree_free(qtree);
+        dnac_p2_mmcs_tree_free(ttree);
+        dnac_p2_mmcs_tree_free(qtree);
         if (bad) failed++;
         printf("T2 FULL CHAIN S1->S8: zeta + zeta_next == REAL values   %s\n",
                bad ? "FAIL" : "PASS");
@@ -280,13 +289,13 @@ int main(int argc, char **argv) {
         dnac_transcript_t *tb = dnac_transcript_init_default();
         int bad = 1;
         if (ta && tb &&
-            dnac_prover_fs_to_alpha(ta, 3, 2, 0, random_root_v, publics, 3,
+            dnac_prover_fs_to_alpha(ta, 3, 2, 0, &random_root_v, publics, 3,
                                     &a1) == DNAC_PROVER_OK &&
-            dnac_prover_fs_to_alpha(tb, 3, 2, 0, random_root_v, publics, 3,
+            dnac_prover_fs_to_alpha(tb, 3, 2, 0, &random_root_v, publics, 3,
                                     &a1) == DNAC_PROVER_OK &&
-            dnac_prover_fs_to_zeta(ta, random_root_v, r_root, 2, &z_with,
+            dnac_prover_fs_to_zeta(ta, &random_root_v, &r_root, 2, &z_with,
                                    &zn) == DNAC_PROVER_OK &&
-            dnac_prover_fs_to_zeta(tb, random_root_v, NULL, 2, &z_without,
+            dnac_prover_fs_to_zeta(tb, &random_root_v, NULL, 2, &z_without,
                                    &zn) == DNAC_PROVER_OK) {
             bad = (gold_fp_to_u64(z_with.a) == gold_fp_to_u64(z_without.a) &&
                    gold_fp_to_u64(z_with.b) == gold_fp_to_u64(z_without.b));
@@ -302,19 +311,19 @@ int main(int argc, char **argv) {
     {
         static uint64_t bad_draws[S8_RD];
         static uint64_t lde_t[S8_R_LDE_CELLS];
-        uint8_t root_t[DNAC_MERKLE_DIGEST_BYTES];
-        dnac_merkle_tree_t *rt = NULL;
+        dnac_p2_digest_t root_t;
+        dnac_p2_mmcs_tree_t *rt = NULL;
         gold_fp2_t z, zn;
         int bad = 0;
         memcpy(bad_draws, r_draws, sizeof(bad_draws));
         bad_draws[5] = GOLDILOCKS_P;
-        if (dnac_prover_random_commit(bad_draws, 8, S8_CW, 2, NULL, 0, lde_t, root_t,
+        if (dnac_prover_random_commit(bad_draws, 8, S8_CW, 2, NULL, 0, lde_t, &root_t,
                                       &rt) != DNAC_PROVER_ERR_NONCANONICAL)
             bad++;
-        if (dnac_prover_random_commit(r_draws, 6, S8_CW, 2, NULL, 0, lde_t, root_t,
+        if (dnac_prover_random_commit(r_draws, 6, S8_CW, 2, NULL, 0, lde_t, &root_t,
                                       &rt) != DNAC_PROVER_ERR_PARAM)
             bad++; /* non-power-of-two height */
-        if (dnac_prover_fs_to_zeta(NULL, random_root_v, NULL, 2, &z, &zn) !=
+        if (dnac_prover_fs_to_zeta(NULL, &random_root_v, NULL, 2, &z, &zn) !=
             DNAC_PROVER_ERR_PARAM)
             bad++;
         if (bad) failed++;

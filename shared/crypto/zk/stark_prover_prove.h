@@ -92,9 +92,9 @@ size_t dnac_prover_proof_log_max_height(const dnac_prover_proof_t *p);
 void dnac_prover_proof_zeta(const dnac_prover_proof_t *p, gold_fp2_t *zeta,
                             gold_fp2_t *zeta_next);
 void dnac_prover_proof_roots(const dnac_prover_proof_t *p,
-                             uint8_t trace_root[DNAC_MERKLE_DIGEST_BYTES],
-                             uint8_t quot_root[DNAC_MERKLE_DIGEST_BYTES],
-                             uint8_t rand_root[DNAC_MERKLE_DIGEST_BYTES]);
+                             dnac_p2_digest_t *trace_root,
+                             dnac_p2_digest_t *quot_root,
+                             dnac_p2_digest_t *rand_root);
 /** The final_poly coefficients (final_poly_len fp2 values, borrowed). */
 const gold_fp2_t *dnac_prover_proof_final_poly(const dnac_prover_proof_t *p,
                                                size_t *out_len);

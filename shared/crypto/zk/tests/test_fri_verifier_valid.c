@@ -11,10 +11,10 @@
  * caller's job, out of FRI scope), then runs the full integrated verifier via
  * dnac_fri_test_verify_capture and asserts:
  *   - dnac_fri_verify returns DNAC_FRI_OK (V6 verifies end-to-end);
- *   - query indices == {3, 12}        (F4 milestones / sample_bits)
- *   - reduced_index == {3, 12}        (F5 mmcs_calls input entries)
- *   - folded_eval[q] == {1177090699887663533, 15646686859640359525}
- *                                     (F6 honest eval == folded_eval)
+ *   - query indices == {8, 8}         (F4 milestones / sample_bits, P1c regen)
+ *   - reduced_index == {8, 8}         (F5 mmcs_calls input entries)
+ *   - folded_eval[q] == {8156482088767687706, 17830249650025010991}
+ *                                     (F6 honest eval == folded_eval, P1c)
  * The intermediate cross-checks decompose a failure to a single stage.
  *
  * Copyright (c) 2026 nocdem
@@ -65,10 +65,15 @@ static char *js_read_string(js_t *s) {
 static bool js_read_u64(js_t *s, uint64_t *out) {
     js_skip_ws(s);
     if (s->pos >= s->len) return false;
+    /* P1c: oracle snapshot/lane values are DECIMAL STRINGS — accept both
+     * quoted and bare u64s. */
+    bool quoted = (s->src[s->pos] == '"');
+    if (quoted) s->pos++;
     char *endp = NULL;
     unsigned long long v = strtoull(s->src + s->pos, &endp, 10);
-    if (endp == s->src + s->pos) return false;
+    if (endp == s->src + s->pos) { if (quoted) s->pos--; return false; }
     s->pos = (size_t)(endp - s->src);
+    if (quoted) { if (s->pos < s->len && s->src[s->pos] == '"') s->pos++; else return false; }
     *out = (uint64_t)v;
     return true;
 }
@@ -125,27 +130,9 @@ static char *slurp(const char *path, size_t *out_len) {
     *out_len = got;
     return buf;
 }
-static int hexnib(char c) {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    return -1;
-}
-static size_t hex_decode(const char *hex, uint8_t *buf, size_t cap) {
-    size_t hl = strlen(hex);
-    if (hl % 2) return (size_t)-1;
-    size_t n = hl / 2;
-    if (n > cap) return (size_t)-1;
-    for (size_t i = 0; i < n; i++) {
-        int hi = hexnib(hex[2*i]), lo = hexnib(hex[2*i+1]);
-        if (hi < 0 || lo < 0) return (size_t)-1;
-        buf[i] = (uint8_t)((hi << 4) | lo);
-    }
-    return n;
-}
+/* (P1c: byte-hex helpers hexnib/hex_decode retired with the SHA3 seed format.) */
 
 /* ===== value parsers for V6 serde shapes ===== */
-static void put_u64_le(uint8_t *p, uint64_t v) { for (int i = 0; i < 8; ++i) p[i] = (uint8_t)(v >> (8 * i)); }
 
 /* read a bare [u64, ...] array into out[], return count */
 static int read_u64_array(js_t *s, uint64_t *out, int cap) {
@@ -160,22 +147,30 @@ static int read_u64_array(js_t *s, uint64_t *out, int cap) {
     }
     return n;
 }
-/* bare [8 u64] digest -> 64 LE bytes */
-static void parse_lanes_digest(js_t *s, uint8_t out[64]) {
-    uint64_t lanes[8] = {0};
-    read_u64_array(s, lanes, 8);
-    for (int i = 0; i < 8; ++i) put_u64_le(out + i * 8, lanes[i]);
+/* P1c (regen-reconciled): a serde digest is `[ {"value": N} x4 ]` — each
+ * lane a Goldilocks struct, NOT a bare u64. */
+static uint64_t parse_base_obj(js_t *s); /* fwd */
+static void parse_lanes_digest(js_t *s, dnac_p2_digest_t *out) {
+    int n = 0;
+    js_match(s, '[');
+    while (!js_match(s, ']')) {
+        if (js_peek(s, ',')) { s->pos++; continue; }
+        uint64_t v = parse_base_obj(s);
+        if (n < 4) out->lanes[n] = v;
+        n++;
+    }
 }
-/* {_marker, cap:[[8 u64]]} -> 64 LE bytes */
-static void parse_commit_digest(js_t *s, uint8_t out[64]) {
+/* {_marker, cap:[[4 u64]]} -> 4-lane digest */
+static void parse_commit_digest(js_t *s, dnac_p2_digest_t *out) {
     js_match(s, '{');
     while (!js_match(s, '}')) {
         if (js_peek(s, ',')) { s->pos++; continue; }
         char *k = js_read_string(s);
+        if (!k) return; /* fail-close on desync, never strcmp(NULL) */
         js_match(s, ':');
         if (strcmp(k, "cap") == 0) {
             js_match(s, '[');               /* outer cap array */
-            parse_lanes_digest(s, out);     /* first row [8 u64] */
+            parse_lanes_digest(s, out);     /* one digest (cap_height 0) */
             while (!js_match(s, ']')) { if (js_peek(s, ',')) { s->pos++; continue; } js_skip_value(s); }
         } else {
             js_skip_value(s);
@@ -246,7 +241,7 @@ static gold_fp2_t parse_fp2_decimal(js_t *s) {
 #define MAXSIB 8
 typedef struct {
     dnac_fri_params_t params;
-    dnac_merkle_digest_t commits[MAXR];
+    dnac_p2_digest_t commits[MAXR];
     gold_fp_t  witnesses[MAXR];
     gold_fp2_t final_poly[MAXCOL];
     size_t     num_final_poly;
@@ -256,11 +251,11 @@ typedef struct {
     gold_fp_t  inp_row[MAXQ][MAXCOL];
     const gold_fp_t *inp_rowptr[MAXQ][1];
     size_t     inp_lens[MAXQ][1];
-    dnac_merkle_digest_t inp_sib[MAXQ][MAXSIB];
+    dnac_p2_digest_t inp_sib[MAXQ][MAXSIB];
     dnac_fri_batch_opening_t bo[MAXQ];
 
     gold_fp2_t cpo_sib[MAXQ][MAXR][MAXSIB];
-    dnac_merkle_digest_t cpo_psib[MAXQ][MAXR][MAXSIB];
+    dnac_p2_digest_t cpo_psib[MAXQ][MAXR][MAXSIB];
     dnac_fri_commit_phase_proof_step_t cpo[MAXQ][MAXR];
     dnac_fri_query_proof_t qp[MAXQ];
     size_t num_queries;
@@ -273,8 +268,22 @@ typedef struct {
     dnac_fri_commitment_with_opening_points_t cwop;
     uint64_t domain_log_size;
 
-    uint8_t seed[256]; size_t seed_len;
+    /* P1c: milestone-0 primed DuplexChallenger state from the vector */
+    dnac_duplex_t primed; int have_primed;
 } fx_t;
+
+/* P1c: rebuild a transcript at milestone 0. Requires the TESTING accessor —
+ * the Makefile rule MUST define DNAC_TRANSCRIPT_TESTING (P1c-TODO). */
+#ifdef DNAC_TRANSCRIPT_TESTING
+static dnac_transcript_t *mk_primed(const fx_t *fx) {
+    dnac_transcript_t *t = dnac_transcript_init_empty();
+    if (!t) return NULL;
+    *(dnac_duplex_t *)dnac_transcript_test_duplex(t) = fx->primed;
+    return t;
+}
+#else
+#error "P1c: test_fri_verifier_valid requires -DDNAC_TRANSCRIPT_TESTING=1 (primed-state injection)"
+#endif
 
 /* parse one commit_phase_opening object into fx->cpo[q][r] */
 static void parse_cpo(js_t *s, fx_t *fx, size_t q, size_t r) {
@@ -298,7 +307,7 @@ static void parse_cpo(js_t *s, fx_t *fx, size_t q, size_t r) {
             js_match(s, '[');
             while (!js_match(s, ']')) {
                 if (js_peek(s, ',')) { s->pos++; continue; }
-                if (npsib < MAXSIB) parse_lanes_digest(s, fx->cpo_psib[q][r][npsib].bytes);
+                if (npsib < MAXSIB) parse_lanes_digest(s, &fx->cpo_psib[q][r][npsib]);
                 else js_skip_value(s);
                 npsib++;
             }
@@ -347,7 +356,7 @@ static void parse_query_proof(js_t *s, fx_t *fx, size_t q) {
                     js_match(s, '[');
                     while (!js_match(s, ']')) {
                         if (js_peek(s, ',')) { s->pos++; continue; }
-                        if (nsib < MAXSIB) parse_lanes_digest(s, fx->inp_sib[q][nsib].bytes);
+                        if (nsib < MAXSIB) parse_lanes_digest(s, &fx->inp_sib[q][nsib]);
                         else js_skip_value(s);
                         nsib++;
                     }
@@ -410,7 +419,7 @@ static void parse_proof(js_t *s, fx_t *fx) {
         if (strcmp(k, "commit_phase_commits") == 0) {
             size_t n = 0; js_match(s, '[');
             while (!js_match(s, ']')) { if (js_peek(s, ',')) { s->pos++; continue; }
-                if (n < MAXR) parse_commit_digest(s, fx->commits[n].bytes); else js_skip_value(s); n++; }
+                if (n < MAXR) parse_commit_digest(s, &fx->commits[n]); else js_skip_value(s); n++; }
             fx->num_commits = n;
         } else if (strcmp(k, "commit_pow_witnesses") == 0) {
             size_t n = 0; js_match(s, '[');
@@ -466,13 +475,31 @@ static void load_seed(const char *path, fx_t *fx) {
                 if (js_peek(&s, ',')) { s.pos++; continue; }
                 char *mk = js_read_string(&s); js_match(&s, ':');
                 if (strcmp(mk, "transcript") == 0) {
+                    /* P1c: duplex state triple (old byte-hex keys skipped). */
                     js_match(&s, '{');
                     while (!js_match(&s, '}')) {
                         if (js_peek(&s, ',')) { s.pos++; continue; }
                         char *tk = js_read_string(&s); js_match(&s, ':');
-                        if (strcmp(tk, "input_buf_hex") == 0) {
-                            char *h = js_read_string(&s);
-                            if (h) { fx->seed_len = hex_decode(h, fx->seed, sizeof fx->seed); free(h); }
+                        if (strcmp(tk, "sponge_state") == 0) {
+                            uint64_t st[8] = {0};
+                            if (read_u64_array(&s, st, 8) == 8) {
+                                for (int i = 0; i < 8; ++i) fx->primed.sponge_state[i] = st[i];
+                                fx->have_primed = 1;
+                            }
+                        } else if (strcmp(tk, "input_buffer") == 0) {
+                            uint64_t ib[4] = {0};
+                            int n = read_u64_array(&s, ib, 4);
+                            if (n >= 0 && n <= 4) {
+                                for (int i = 0; i < n; ++i) fx->primed.input_buffer[i] = ib[i];
+                                fx->primed.input_len = (size_t)n;
+                            }
+                        } else if (strcmp(tk, "output_buffer") == 0) {
+                            uint64_t ob[4] = {0};
+                            int n = read_u64_array(&s, ob, 4);
+                            if (n >= 0 && n <= 4) {
+                                for (int i = 0; i < n; ++i) fx->primed.output_buffer[i] = ob[i];
+                                fx->primed.output_len = (size_t)n;
+                            }
                         } else js_skip_value(&s);
                         free(tk);
                     }
@@ -489,7 +516,7 @@ static void load_seed(const char *path, fx_t *fx) {
 
 /* Run the integrated verifier on fx with a fresh transcript seeded to milestone-0. */
 static dnac_fri_status_t run_verify(fx_t *fx) {
-    dnac_transcript_t *t = dnac_transcript_init(fx->seed, fx->seed_len);
+    dnac_transcript_t *t = mk_primed(fx);
     if (!t) return (dnac_fri_status_t)0xBEEF;
     dnac_fri_status_t st = dnac_fri_verify(&fx->params, &fx->proof, t, &fx->cwop, 1);
     dnac_transcript_free(t);
@@ -519,7 +546,7 @@ int main(int argc, char **argv) {
         char *k = js_read_string(&s); js_match(&s, ':');
         if (strcmp(k, "fri_params") == 0) parse_params(&s, fx);
         else if (strcmp(k, "proof") == 0) parse_proof(&s, fx);
-        else if (strcmp(k, "commitment_serde") == 0) parse_commit_digest(&s, fx->cwop.commitment.bytes);
+        else if (strcmp(k, "commitment_serde") == 0) parse_commit_digest(&s, &fx->cwop.commitment);
         else if (strcmp(k, "opened_values_serde") == 0) parse_opened_values_serde(&s, fx);
         else if (strcmp(k, "transcript_zeta_fp2") == 0) fx->point0.point = parse_fp2_decimal(&s);
         else if (strcmp(k, "fixture") == 0) {
@@ -560,15 +587,15 @@ int main(int argc, char **argv) {
 
     /* sanity on parse */
     if (fx->num_commits != 3 || fx->num_queries != 2 || fx->num_final_poly != 1 ||
-        fx->num_claimed != 2 || fx->seed_len != 96 || fx->domain_log_size != 3) {
-        printf("FAIL parse: commits=%zu queries=%zu final_poly=%zu claimed=%zu seed=%zu domain_log=%llu\n",
+        fx->num_claimed != 2 || !fx->have_primed || fx->domain_log_size != 3) {
+        printf("FAIL parse: commits=%zu queries=%zu final_poly=%zu claimed=%zu primed=%d domain_log=%llu\n",
                fx->num_commits, fx->num_queries, fx->num_final_poly, fx->num_claimed,
-               fx->seed_len, (unsigned long long)fx->domain_log_size);
+               fx->have_primed, (unsigned long long)fx->domain_log_size);
         free(fx); return 1;
     }
 
     /* seed transcript to milestone-0 primed state, run integrated verify */
-    dnac_transcript_t *t = dnac_transcript_init(fx->seed, fx->seed_len);
+    dnac_transcript_t *t = mk_primed(fx);
     if (!t) { printf("FAIL transcript init\n"); free(fx); return 1; }
 
     dnac_fri_debug_t dbg;
@@ -577,21 +604,24 @@ int main(int argc, char **argv) {
                                                         &fx->cwop, 1, &dbg);
     dnac_transcript_free(t);
 
-    gold_fp2_t want_folded = gold_fp2_new(gold_fp_from_u64(1177090699887663533ULL),
-                                          gold_fp_from_u64(15646686859640359525ULL));
+    /* P1c vector-grounded pins: sampled_index = {8, 8} (milestones fixture
+     * result.sampled_index) and the honest folded eval from the regenerated
+     * terminal-horner fixture's v6_honest_query_0 eval_fp2. */
+    gold_fp2_t want_folded = gold_fp2_new(gold_fp_from_u64(8156482088767687706ULL),
+                                          gold_fp_from_u64(17830249650025010991ULL));
 
     printf("  dnac_fri_verify -> %d (want %d=DNAC_FRI_OK)\n", (int)st, (int)DNAC_FRI_OK);
-    printf("  query_index   = {%llu, %llu} (want {3, 12})\n",
+    printf("  query_index   = {%llu, %llu} (want {8, 8})\n",
            (unsigned long long)dbg.query_index[0], (unsigned long long)dbg.query_index[1]);
-    printf("  reduced_index = {%llu, %llu} (want {3, 12})\n",
+    printf("  reduced_index = {%llu, %llu} (want {8, 8})\n",
            (unsigned long long)dbg.reduced_index[0], (unsigned long long)dbg.reduced_index[1]);
     printf("  folded_eval[0]==folded_eval[1]==honest: %s / %s\n",
            gold_fp2_eq(dbg.folded_eval[0], want_folded) ? "yes" : "no",
            gold_fp2_eq(dbg.folded_eval[1], want_folded) ? "yes" : "no");
 
     int v6_ok = (st == DNAC_FRI_OK)
-          && (dbg.query_index[0] == 3) && (dbg.query_index[1] == 12)
-          && (dbg.reduced_index[0] == 3) && (dbg.reduced_index[1] == 12)
+          && (dbg.query_index[0] == 8) && (dbg.query_index[1] == 8)
+          && (dbg.reduced_index[0] == 8) && (dbg.reduced_index[1] == 8)
           && gold_fp2_eq(dbg.folded_eval[0], want_folded)
           && gold_fp2_eq(dbg.folded_eval[1], want_folded);
 
@@ -619,10 +649,10 @@ int main(int argc, char **argv) {
            fx->cpo[0][0].num_sibling_values = 2, fx->cpo[0][0].num_sibling_values = 1,
            DNAC_FRI_ERR_SIBLING_VALUES_LENGTH_MISMATCH);
     ERRCHK("CommitPhaseMmcsError",
-           fx->cpo_psib[0][0][0].bytes[0] ^= 1, fx->cpo_psib[0][0][0].bytes[0] ^= 1,
+           fx->cpo_psib[0][0][0].lanes[0] ^= 1, fx->cpo_psib[0][0][0].lanes[0] ^= 1,
            DNAC_FRI_ERR_COMMIT_PHASE_MMCS_ERROR);
     ERRCHK("InputError",
-           fx->inp_sib[0][0].bytes[0] ^= 1, fx->inp_sib[0][0].bytes[0] ^= 1,
+           fx->inp_sib[0][0].lanes[0] ^= 1, fx->inp_sib[0][0].lanes[0] ^= 1,
            DNAC_FRI_ERR_INPUT_ERROR);
     #undef ERRCHK
 

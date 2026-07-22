@@ -114,8 +114,10 @@ static void wb_u64(wbuf_t *w, uint64_t v) {
 }
 static void wb_base(wbuf_t *w, gold_fp_t x) { wb_u64(w, gold_fp_to_u64(x)); }
 static void wb_fp2(wbuf_t *w, gold_fp2_t x) { wb_base(w, x.a); wb_base(w, x.b); }
-static void wb_digest(wbuf_t *w, const dnac_merkle_digest_t *d) {
-    wb_bytes(w, d->bytes, DNAC_MERKLE_DIGEST_BYTES);
+/* P1c: a digest is 4 canonical Goldilocks lanes = 32 bytes on the wire,
+ * each lane u64-LE (wire v3). */
+static void wb_digest(wbuf_t *w, const dnac_p2_digest_t *d) {
+    for (size_t i = 0; i < DNAC_P2M_DIGEST_LANES; ++i) wb_u64(w, d->lanes[i]);
 }
 
 static void enc_batch_opening(wbuf_t *w, const dnac_fri_batch_opening_t *bo) {
@@ -303,10 +305,17 @@ static int rd_fp2(dctx_t *c, gold_fp2_t *v) {
     *v = gold_fp2_new(a, b);
     return 1;
 }
-static int rd_digest(dctx_t *c, dnac_merkle_digest_t *d) {
-    if (!rd_avail(c, DNAC_MERKLE_DIGEST_BYTES)) { c->err = DNAC_FRI_CODEC_ERR_TRUNCATED; return 0; }
-    memcpy(d->bytes, c->buf + c->pos, DNAC_MERKLE_DIGEST_BYTES);
-    c->pos += DNAC_MERKLE_DIGEST_BYTES;
+/* P1c: digest = 4 u64-LE lanes; every lane MUST be canonical (< p) — the NEW
+ * G-DET-P1-5 guard (P1.0 F6). Poseidon2 digests are observed into the
+ * DuplexChallenger as field elements, so a non-canonical lane has no defined
+ * observation and is REJECTED at decode, fail-close (same rd_base policy as
+ * every other field). */
+static int rd_digest(dctx_t *c, dnac_p2_digest_t *d) {
+    for (size_t i = 0; i < DNAC_P2M_DIGEST_LANES; ++i) {
+        gold_fp_t lane;
+        if (!rd_base(c, &lane)) return 0; /* rd_base: TRUNCATED / >= p reject */
+        d->lanes[i] = gold_fp_to_u64(lane);
+    }
     return 1;
 }
 
@@ -338,7 +347,7 @@ static int rd_depth(dctx_t *c, uint32_t *out) {
     uint32_t n;
     if (!rd_u32(c, &n)) return 0;
     if (n > DNAC_FRI_WIRE_MAX_SIBLINGS) { c->err = DNAC_FRI_CODEC_ERR_BAD_DEPTH; return 0; }
-    uint64_t need = (uint64_t)n * (uint64_t)DNAC_MERKLE_DIGEST_BYTES;
+    uint64_t need = (uint64_t)n * (uint64_t)(DNAC_P2M_DIGEST_LANES * 8u);
     if (need > (uint64_t)(c->len - c->pos)) { c->err = DNAC_FRI_CODEC_ERR_BAD_DEPTH; return 0; }
     *out = n;
     return 1;
@@ -392,7 +401,7 @@ static int dec_batch_opening(dctx_t *c, dnac_fri_batch_opening_t *bo) {
 
     uint32_t depth;
     if (!rd_depth(c, &depth)) return 0;
-    dnac_merkle_digest_t *sib = (dnac_merkle_digest_t *)rd_array(c, depth, sizeof(dnac_merkle_digest_t));
+    dnac_p2_digest_t *sib = (dnac_p2_digest_t *)rd_array(c, depth, sizeof(dnac_p2_digest_t));
     if (c->err) return 0;
     for (uint32_t s = 0; s < depth; ++s)
         if (!rd_digest(c, &sib[s])) return 0;
@@ -451,7 +460,7 @@ static int dec_cpo(dctx_t *c, dnac_fri_commit_phase_proof_step_t *step) {
 
     uint32_t depth;
     if (!rd_depth(c, &depth)) return 0;
-    dnac_merkle_digest_t *sib = (dnac_merkle_digest_t *)rd_array(c, depth, sizeof(dnac_merkle_digest_t));
+    dnac_p2_digest_t *sib = (dnac_p2_digest_t *)rd_array(c, depth, sizeof(dnac_p2_digest_t));
     if (c->err) return 0;
     for (uint32_t s = 0; s < depth; ++s)
         if (!rd_digest(c, &sib[s])) return 0;
@@ -506,8 +515,8 @@ static int dec_query_proof(dctx_t *c, dnac_fri_query_proof_t *qp) {
 static int dec_proof(dctx_t *c, dnac_fri_proof_t *p) {
     uint32_t n;
     /* commit_phase_commits */
-    if (!rd_count_fixed(c, DNAC_FRI_WIRE_MAX_ROUNDS, sizeof(dnac_merkle_digest_t), &n)) return 0;
-    dnac_merkle_digest_t *commits = (dnac_merkle_digest_t *)rd_array(c, n, sizeof(dnac_merkle_digest_t));
+    if (!rd_count_fixed(c, DNAC_FRI_WIRE_MAX_ROUNDS, sizeof(dnac_p2_digest_t), &n)) return 0;
+    dnac_p2_digest_t *commits = (dnac_p2_digest_t *)rd_array(c, n, sizeof(dnac_p2_digest_t));
     if (c->err) return 0;
     for (uint32_t i = 0; i < n; ++i)
         if (!rd_digest(c, &commits[i])) return 0;
@@ -725,6 +734,31 @@ dnac_fri_codec_status_t dnac_fri_verify_wire_shielded(
     if (max_log_height != DNAC_SHIELDED_COMMITTED_LOG_HEIGHT) {
         dnac_fri_wire_free(pkg);
         return DNAC_FRI_CODEC_ERR_SHIELDED_HEIGHT_MISMATCH;
+    }
+
+    /* (2b) salt_elems PIN (G-SEC-P1-6, P1c): every input batch opening AND
+     * every commit-phase step must carry EXACTLY the consensus salt count.
+     * Under PaddingFreeSponge a wire-chosen salt count = attacker-controlled
+     * leaf preimage length = the documented collision construction
+     * (sponge.rs:36-88). Fail-close on any mismatch. */
+    {
+        const dnac_fri_proof_t *pf = dnac_fri_wire_proof(pkg);
+        for (size_t q = 0; q < pf->num_query_proofs; q++) {
+            const dnac_fri_query_proof_t *qp = &pf->query_proofs[q];
+            for (size_t b = 0; b < qp->num_input_batches; b++) {
+                if (qp->input_proof[b].salt_elems != DNAC_SHIELDED_SALT_ELEMS) {
+                    dnac_fri_wire_free(pkg);
+                    return DNAC_FRI_CODEC_ERR_SHIELDED_PARAM_MISMATCH;
+                }
+            }
+            for (size_t r = 0; r < qp->num_commit_phase_openings; r++) {
+                if (qp->commit_phase_openings[r].salt_elems !=
+                    DNAC_SHIELDED_SALT_ELEMS) {
+                    dnac_fri_wire_free(pkg);
+                    return DNAC_FRI_CODEC_ERR_SHIELDED_PARAM_MISMATCH;
+                }
+            }
+        }
     }
 
     /* (3) SUBSTITUTE the pinned params — the verifier's own constant sets the

@@ -82,6 +82,16 @@ extern "C" {
 /* is_zk hiding is ON for every shielded proof (M3b salted). */
 #define DNAC_SHIELDED_IS_ZK                    ((size_t)1)
 
+/* G-SEC-P1-6 (P1c, 2026-07-22): the hiding-MMCS salt count is a CONSENSUS
+ * CONSTANT, never proof data — in Plonky3 SALT_ELEMS is a const generic
+ * (hiding_mmcs.rs:39-51). Under the Poseidon2 PaddingFreeSponge leaf hash a
+ * wire-controlled preimage length is the documented overwrite-mode collision
+ * construction (sponge.rs:27-30,36-88), so `dnac_fri_verify_wire_shielded`
+ * REJECTS any decoded salt_elems (every batch opening AND every commit-phase
+ * step) != this pin, fail-close. Mirrors the prover's A_SALT_ELEMS
+ * (stark_prover_agg.c CT-asserts the equality). */
+#define DNAC_SHIELDED_SALT_ELEMS               ((size_t)2)
+
 /* Pinned PHYSICAL shielded-AIR trace height, log2 (C1 fixed H=1024=2^10). This is
  * the base_degree_bits, NOT what the verifier sees on the wire. */
 #define DNAC_SHIELDED_BASE_LOG_HEIGHT          ((size_t)10)

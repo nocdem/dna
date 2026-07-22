@@ -37,15 +37,14 @@ LDLIBS   = -lcrypto
 # DNAC's qgp_sha3 (linked directly rather than via libdna).
 SHA3_SRC = /opt/dna/shared/crypto/hash/qgp_sha3.c
 
-# Transcript + its SHA3-512-over-keccak_p3 backend. fri_verifier.c calls the
-# oracle-grounded dnac_transcript_* primitives once the F4 transcript flow is
-# present, so any target linking fri_verifier.c must also link this stack.
-TRANSCRIPT_STACK = transcript.c sponge_sha3_512.c keccak_p3_cols.c keccak_p3_trace.c keccak_ref.c field_goldilocks.c
+# Transcript — P1c Poseidon2 DuplexChallenger backend (SHA3 HashChallenger +
+# sponge_sha3_512 RETIRED at the P1c clean cutover, G-SEC-P1-5). Any target
+# linking fri_verifier.c / a prover must link this stack.
+TRANSCRIPT_STACK = transcript.c duplex_challenger.c poseidon2_goldilocks.c field_goldilocks.c
 
-# Everything fri_verifier.c links against. As of F5 it also calls dnac_merkle_*
-# (MMCS verify), so merkle_smt.c (+ its qgp_sha3/OpenSSL backend via _LDADD) is
-# part of every fri_verifier test target.
-FRI_VERIFIER_STACK = fri_verifier.c $(TRANSCRIPT_STACK) merkle_smt.c zk_field_helpers.c fri_fold.c
+# Everything fri_verifier.c links against. P1c: the MMCS is the Poseidon2
+# poseidon2_mmcs.c (SHA3 merkle_smt RETIRED).
+FRI_VERIFIER_STACK = fri_verifier.c $(TRANSCRIPT_STACK) poseidon2_mmcs.c zk_field_helpers.c fri_fold.c
 FRI_VERIFIER_LDADD = $(SHA3_SRC) $(LDLIBS)
 
 # Proof wire codec links the full FRI verifier stack (dnac_fri_verify_wire calls
@@ -55,7 +54,7 @@ FRI_PROOF_CODEC_STACK = fri_proof_codec.c shielded_fri_params.c $(FRI_VERIFIER_S
 # Everything the C prover (stark_prover.c) links against: trace builders
 # (range_air/sum_balance), NTT + helpers (S2 LDE), Merkle build (S3), and the
 # transcript stack (S5+ Fiat-Shamir; TRANSCRIPT_STACK carries field_goldilocks).
-PROVER_STACK = stark_prover.c sum_balance.c range_air.c ntt_goldilocks.c zk_field_helpers.c merkle_smt.c fri_fold.c $(TRANSCRIPT_STACK)
+PROVER_STACK = stark_prover.c sum_balance.c range_air.c ntt_goldilocks.c zk_field_helpers.c poseidon2_mmcs.c fri_fold.c $(TRANSCRIPT_STACK)
 
 BUILD = build
 
@@ -71,17 +70,12 @@ TESTS = \
     $(BUILD)/test_sum_balance \
     $(BUILD)/test_air_column_layout_sum_balance \
     $(BUILD)/test_ntt_goldilocks_oracle \
-    $(BUILD)/test_sponge_sha3_512 \
     $(BUILD)/test_zk_field_helpers \
     $(BUILD)/test_primitive_oracle \
     $(BUILD)/test_fri_fold \
     $(BUILD)/test_fri_fold_row_oracle \
     $(BUILD)/test_fri_fold_matrix_loga1_oracle \
     $(BUILD)/test_fri_fold_matrix_oracle \
-    $(BUILD)/test_transcript_oracle \
-    $(BUILD)/test_transcript_grind \
-    $(BUILD)/test_merkle_mmcs \
-    $(BUILD)/test_merkle_mmcs_batch \
     $(BUILD)/test_fri_verifier_shape \
     $(BUILD)/test_fri_verifier_transcript \
     $(BUILD)/test_fri_verifier_mmcs_calls \
@@ -121,6 +115,8 @@ TESTS = \
     $(BUILD)/test_prover_s13_verify \
     $(BUILD)/test_prover_prove \
     $(BUILD)/test_poseidon2_goldilocks \
+    $(BUILD)/test_duplex_challenger \
+    $(BUILD)/test_poseidon2_mmcs \
     $(BUILD)/test_poseidon2_air_cols \
     $(BUILD)/test_poseidon2_air_trace \
     $(BUILD)/test_poseidon2_air \
@@ -159,6 +155,15 @@ $(BUILD)/test_two_adic_gens: tests/test_two_adic_gens.c field_goldilocks.c field
 # default_goldilocks_poseidon2_8().permute (Plonky3 82cfad73). Grounded port.
 $(BUILD)/test_poseidon2_goldilocks: tests/test_poseidon2_goldilocks.c poseidon2_goldilocks.c field_goldilocks.c poseidon2_goldilocks.h field_goldilocks.h | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) tests/test_poseidon2_goldilocks.c poseidon2_goldilocks.c field_goldilocks.c -o $@
+
+# P1a — Poseidon2 DuplexChallenger byte-match (oracle scenario replay).
+$(BUILD)/test_duplex_challenger: tests/test_duplex_challenger.c duplex_challenger.c poseidon2_goldilocks.c field_goldilocks.c duplex_challenger.h poseidon2_goldilocks.h field_goldilocks.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_duplex_challenger.c duplex_challenger.c poseidon2_goldilocks.c field_goldilocks.c -o $@
+
+# P1b — Poseidon2 MMCS byte-match (plain + hiding trees, oracle replay;
+# note_commit.c linked for the note_sponge_hash8 bridge KAT).
+$(BUILD)/test_poseidon2_mmcs: tests/test_poseidon2_mmcs.c poseidon2_mmcs.c note_commit.c poseidon2_goldilocks.c field_goldilocks.c poseidon2_mmcs.h note_commit.h poseidon2_goldilocks.h field_goldilocks.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_poseidon2_mmcs.c poseidon2_mmcs.c note_commit.c poseidon2_goldilocks.c field_goldilocks.c -o $@
 
 # S0 dual-mode — note-commitment + Merkle-compress PaddingFreeSponge<8,4,4>
 # byte-match vs Plonky3 (tools/vectors/note_commit_sponge.json).
@@ -262,8 +267,7 @@ $(BUILD)/test_ntt_goldilocks_oracle: tests/test_ntt_goldilocks_oracle.c ntt_gold
 	$(CC) $(CFLAGS) $(INCLUDES) tests/test_ntt_goldilocks_oracle.c ntt_goldilocks.c field_goldilocks.c -o $@
 
 # FIPS-202 SHA3-512 sponge over keccak_p3 backend (Sprint 3.3b.7 rework — Option B).
-$(BUILD)/test_sponge_sha3_512: tests/test_sponge_sha3_512.c sponge_sha3_512.c keccak_p3_cols.c keccak_p3_trace.c keccak_ref.c field_goldilocks.c sponge_sha3_512.h keccak_p3_cols.h keccak_p3_trace.h keccak_ref.h field_goldilocks.h | $(BUILD)
-	$(CC) $(CFLAGS) $(INCLUDES) tests/test_sponge_sha3_512.c sponge_sha3_512.c keccak_p3_cols.c keccak_p3_trace.c keccak_ref.c field_goldilocks.c $(SHA3_SRC) $(LDLIBS) -o $@
+# (P1c: test_sponge_sha3_512 RETIRED with the SHA3 transcript backend.)
 
 # Phase A — zk_field_helpers (bits_u64, log2_strict_usize, reverse_bits_len_u64,
 # gold_fp_halve, gold_fp2_halve, gold_fp_from_usize). Plonky3 commit 82cfad73.
@@ -296,27 +300,23 @@ $(BUILD)/test_fri_fold_matrix_oracle: tests/test_fri_fold_matrix_oracle.c fri_fo
 # helpers in transcript.h. Links against sponge_sha3_512 (+ its keccak_p3
 # permutation backend) for SHA3-512 one-shot, plus field_goldilocks for
 # canonicalization. See docs/plans/2026-05-26-transcript-design.md § 15.
-$(BUILD)/test_transcript_oracle: tests/test_transcript_oracle.c transcript.c sponge_sha3_512.c keccak_p3_cols.c keccak_p3_trace.c keccak_ref.c field_goldilocks.c transcript.h sponge_sha3_512.h keccak_p3_cols.h keccak_p3_trace.h keccak_ref.h field_goldilocks.h | $(BUILD)
-	$(CC) $(CFLAGS) -DDNAC_TRANSCRIPT_TESTING=1 $(INCLUDES) tests/test_transcript_oracle.c transcript.c sponge_sha3_512.c keccak_p3_cols.c keccak_p3_trace.c keccak_ref.c field_goldilocks.c -o $@
+# (P1c: test_transcript_oracle RETIRED — successor: test_duplex_challenger.)
 
 # P1 — query-PoW grind unit test (dnac_transcript_grind, Plonky3 grinding_challenger).
-$(BUILD)/test_transcript_grind: tests/test_transcript_grind.c transcript.c sponge_sha3_512.c keccak_p3_cols.c keccak_p3_trace.c keccak_ref.c field_goldilocks.c transcript.h field_goldilocks.h | $(BUILD)
-	$(CC) $(CFLAGS) $(INCLUDES) tests/test_transcript_grind.c transcript.c sponge_sha3_512.c keccak_p3_cols.c keccak_p3_trace.c keccak_ref.c field_goldilocks.c -o $@
+# (P1c: test_transcript_grind RETIRED — grind covered by test_duplex_challenger.)
 
 # Stage M3 — Merkle/MMCS C oracle replay against tools/vectors/merkle_mmcs.json.
 # Links merkle_smt.c plus the OpenSSL-backed qgp_sha3_512 one-shot for both the
 # leaf and parent hash. Per design doc § 6 and the post-2026-05-27 Strategy C
 # resolution; oracle vectors produced by plonky3_oracle/src/main.rs (PW=[u64;1],
 # DIGEST_ELEMS=8) and wire-byte-identical to the C-side uint8_t[64] format.
-$(BUILD)/test_merkle_mmcs: tests/test_merkle_mmcs.c merkle_smt.c merkle_smt.h | $(BUILD)
-	$(CC) $(CFLAGS) $(INCLUDES) tests/test_merkle_mmcs.c merkle_smt.c $(SHA3_SRC) $(LDLIBS) -o $@
+# (P1c: test_merkle_mmcs RETIRED with merkle_smt — successor: test_poseidon2_mmcs.)
 
 # Phase 2A — same-height multi-matrix batch oracle replay against
 # tools/vectors/merkle_mmcs_batch_same_height.json. Exercises the new
 # dnac_merkle_batch_commit/open/verify additive API alongside an in-test
 # regression against the existing single-matrix path for num_matrices == 1.
-$(BUILD)/test_merkle_mmcs_batch: tests/test_merkle_mmcs_batch.c merkle_smt.c merkle_smt.h | $(BUILD)
-	$(CC) $(CFLAGS) $(INCLUDES) tests/test_merkle_mmcs_batch.c merkle_smt.c $(SHA3_SRC) $(LDLIBS) -o $@
+# (P1c: test_merkle_mmcs_batch RETIRED with merkle_smt.)
 
 # Phase F3 — FRI verifier pre-transcript shape-check prefix. Replays the
 # applicable shape cases from tools/vectors/fri_verifier_errors.json (6 run,
@@ -357,7 +357,7 @@ $(BUILD)/test_fri_verifier_terminal_horner: tests/test_fri_verifier_terminal_hor
 # Takes both the valid proof and the milestone vector (the latter supplies the
 # primed "top of verify_fri" transcript seed).
 $(BUILD)/test_fri_verifier_valid: tests/test_fri_verifier_valid.c fri_verifier.h $(FRI_VERIFIER_STACK) | $(BUILD)
-	$(CC) $(CFLAGS) -DDNAC_FRI_TESTING=1 $(INCLUDES) tests/test_fri_verifier_valid.c $(FRI_VERIFIER_STACK) $(FRI_VERIFIER_LDADD) -o $@
+	$(CC) $(CFLAGS) -DDNAC_FRI_TESTING=1 -DDNAC_TRANSCRIPT_TESTING=1 $(INCLUDES) tests/test_fri_verifier_valid.c $(FRI_VERIFIER_STACK) $(FRI_VERIFIER_LDADD) -o $@
 
 # Phase F1.6 — multi-reduced-opening ROLL-IN. Verifies a 2-commitment (heights
 # 2^4 + 2^2) proof end-to-end (DNAC_FRI_OK), then proves the verify_query roll-in
@@ -365,12 +365,12 @@ $(BUILD)/test_fri_verifier_valid: tests/test_fri_verifier_valid.c fri_verifier.h
 # recomputes folded_before/after and matches the Plonky3-anchored vector. The
 # vector carries its own primed transcript seed, so only one file is needed.
 $(BUILD)/test_fri_verifier_rollin: tests/test_fri_verifier_rollin.c fri_verifier.h $(FRI_VERIFIER_STACK) | $(BUILD)
-	$(CC) $(CFLAGS) -DDNAC_FRI_TESTING=1 $(INCLUDES) tests/test_fri_verifier_rollin.c $(FRI_VERIFIER_STACK) $(FRI_VERIFIER_LDADD) -o $@
+	$(CC) $(CFLAGS) -DDNAC_FRI_TESTING=1 -DDNAC_TRANSCRIPT_TESTING=1 $(INCLUDES) tests/test_fri_verifier_rollin.c $(FRI_VERIFIER_STACK) $(FRI_VERIFIER_LDADD) -o $@
 
 # Proof wire codec — roundtrip (decode->verify->encode==wire) + negative cases.
 # Uses only the production codec + verifier APIs (no DNAC_FRI_TESTING hooks).
 $(BUILD)/test_fri_proof_codec: tests/test_fri_proof_codec.c fri_proof_codec.h fri_proof_codec.c shielded_fri_params.c shielded_fri_params.h $(FRI_VERIFIER_STACK) | $(BUILD)
-	$(CC) $(CFLAGS) $(INCLUDES) tests/test_fri_proof_codec.c $(FRI_PROOF_CODEC_STACK) $(FRI_VERIFIER_LDADD) -o $@
+	$(CC) $(CFLAGS) -DDNAC_TRANSCRIPT_TESTING=1 $(INCLUDES) tests/test_fri_proof_codec.c $(FRI_PROOF_CODEC_STACK) $(FRI_VERIFIER_LDADD) -o $@
 
 # P3/P4 — STARK/PCS transcript priming helper replay. Primes a transcript through
 # uni-stark verifier.rs:360-391 + two_adic_pcs.rs:687-693 from the REAL
@@ -379,16 +379,16 @@ $(BUILD)/test_fri_proof_codec: tests/test_fri_proof_codec.c fri_proof_codec.h fr
 # exposes the input_buf/output_buf snapshot accessors. Production helper uses only
 # the public transcript API; no FRI verifier / constraint code. Per
 # docs/plans/2026-05-30-pcs-transcript-priming-design.md.
-$(BUILD)/test_stark_priming: tests/test_stark_priming.c stark_priming.h stark_priming.c transcript.h transcript.c field_goldilocks.h field_goldilocks.c merkle_smt.h | $(BUILD)
-	$(CC) $(CFLAGS) -DDNAC_TRANSCRIPT_TESTING=1 $(INCLUDES) tests/test_stark_priming.c stark_priming.c transcript.c sponge_sha3_512.c keccak_p3_cols.c keccak_p3_trace.c keccak_ref.c field_goldilocks.c -o $@
+$(BUILD)/test_stark_priming: tests/test_stark_priming.c stark_priming.h stark_priming.c transcript.h poseidon2_mmcs.h $(TRANSCRIPT_STACK) | $(BUILD)
+	$(CC) $(CFLAGS) -DDNAC_TRANSCRIPT_TESTING=1 $(INCLUDES) tests/test_stark_priming.c stark_priming.c $(TRANSCRIPT_STACK) -o $@
 
 # M2 — is_zk=1 (hiding) STARK/PCS transcript priming replay. Same helper +
 # stack as the non-ZK test, driven by the M1 sandbox confidential vector
 # (stark_priming_zk.json) — a REAL is_zk=1 p3_uni_stark::prove over HidingFriPcs.
 # Byte-matches the primed transcript (288 B) + alpha/zeta/zeta_next through the
 # is_zk augmentation (random-commit observe + random opened round first).
-$(BUILD)/test_stark_priming_zk: tests/test_stark_priming_zk.c stark_priming.h stark_priming.c transcript.h transcript.c field_goldilocks.h field_goldilocks.c merkle_smt.h | $(BUILD)
-	$(CC) $(CFLAGS) -DDNAC_TRANSCRIPT_TESTING=1 $(INCLUDES) tests/test_stark_priming_zk.c stark_priming.c transcript.c sponge_sha3_512.c keccak_p3_cols.c keccak_p3_trace.c keccak_ref.c field_goldilocks.c -o $@
+$(BUILD)/test_stark_priming_zk: tests/test_stark_priming_zk.c stark_priming.h stark_priming.c transcript.h poseidon2_mmcs.h $(TRANSCRIPT_STACK) | $(BUILD)
+	$(CC) $(CFLAGS) -DDNAC_TRANSCRIPT_TESTING=1 $(INCLUDES) tests/test_stark_priming_zk.c stark_priming.c $(TRANSCRIPT_STACK) -o $@
 
 # M2b — end-to-end is_zk=1 FRI verification. Builds dnac_fri_proof_t + 3-round
 # coms (random/trace/quotient, merged opened values) from stark_priming_zk.json
@@ -449,7 +449,11 @@ $(BUILD)/test_conf_action_verify: tests/test_conf_action_verify.c stark_constrai
 $(BUILD)/test_conf_action_agg_verify: tests/test_conf_action_agg_verify.c stark_constraints.h stark_constraints.c conf_action_agg_fold.h conf_action_agg_fold.c conf_action_fold.h conf_action_fold.c conf_action_agg_air.h conf_action_air.h conf_membership_air.h conf_nullifier_air.h poseidon2_fold.h poseidon2_fold.c poseidon2_goldilocks.h poseidon2_goldilocks.c field_goldilocks.h field_goldilocks.c shielded_domsep.h | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) tests/test_conf_action_agg_verify.c stark_constraints.c conf_action_agg_fold.c conf_action_fold.c poseidon2_fold.c poseidon2_goldilocks.c field_goldilocks.c -o $@
 
-CONF_AIR_STACK = conf_root_air.c conf_commit_air.c conf_balance_air.c conf_txbind.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c poseidon2_goldilocks.c
+# P1c: poseidon2_goldilocks.c REMOVED (now carried by TRANSCRIPT_STACK — every
+# user of this stack also links PROVER_STACK ⊃ TRANSCRIPT_STACK; double-listing
+# is a duplicate-symbol link error). keccak_ref.c ADDED (conf_txbind consumer;
+# it used to arrive via the retired SHA3 TRANSCRIPT_STACK).
+CONF_AIR_STACK = conf_root_air.c conf_commit_air.c conf_balance_air.c conf_txbind.c keccak_ref.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c
 
 # Production CSPRNG (G2): self-contained getrandom(2)/urandom, dependency-free
 # (the parked zk stack must not drag in the platform logging chain). PROVER-side
@@ -461,7 +465,8 @@ $(BUILD)/test_prover_conf: tests/test_prover_conf.c stark_prover_conf.h stark_pr
 	$(CC) $(CFLAGS) $(INCLUDES) tests/test_prover_conf.c stark_prover_conf.c conf_root_fold.c poseidon2_fold.c stark_constraints.c zk_entropy.c $(CONF_AIR_STACK) $(PROVER_STACK) fri_verifier.c stark_priming.c $(SHA3_SRC) $(LDLIBS) -o $@
 
 # Dual-mode S1e.4 — pure-C C1 Action prover byte-match vs the REAL Plonky3 proof.
-ACTION_AIR_STACK = conf_action_air.c note_commit.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c poseidon2_goldilocks.c
+# P1c: poseidon2_goldilocks.c removed (TRANSCRIPT_STACK carries it — see CONF_AIR_STACK note).
+ACTION_AIR_STACK = conf_action_air.c note_commit.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c
 $(BUILD)/test_prover_action: tests/test_prover_action.c stark_prover_action.h stark_prover_action.c conf_action_fold.h conf_action_fold.c poseidon2_fold.h poseidon2_fold.c stark_constraints.c zk_entropy.c $(ACTION_AIR_STACK) $(PROVER_STACK) fri_verifier.c stark_priming.c | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) tests/test_prover_action.c stark_prover_action.c conf_action_fold.c poseidon2_fold.c stark_constraints.c zk_entropy.c $(ACTION_AIR_STACK) $(PROVER_STACK) fri_verifier.c stark_priming.c $(SHA3_SRC) $(LDLIBS) -o $@
 
@@ -486,7 +491,8 @@ DNAC_SIGHASH_SRCS = /opt/dna/dnac/src/transaction/serialize.c \
 
 # conf_txbind.c pulls conf_root_air (bound-root fold); keccak_ref comes via
 # the transcript stack already in AGG_PROVER_SRCS.
-CONF_TXBIND_DEPS = conf_root_air.c conf_commit_air.c conf_balance_air.c
+# P1c: + keccak_ref.c (conf_txbind's SHA3; used to arrive via the retired SHA3 transcript stack).
+CONF_TXBIND_DEPS = conf_root_air.c conf_commit_air.c conf_balance_air.c keccak_ref.c
 
 $(BUILD)/test_shielded_verify: tests/test_shielded_verify.c shielded_verify.c shielded_verify.h conf_txbind.c conf_txbind.h $(CONF_TXBIND_DEPS) stark_prover_agg.h stark_prover_agg.c conf_action_agg_fold.h conf_action_agg_fold.c conf_action_fold.c poseidon2_fold.c stark_constraints.c $(ACTION_AIR_STACK) $(PROVER_STACK) fri_verifier.c fri_proof_codec.c shielded_fri_params.c zk_entropy.c stark_priming.c $(DNAC_SIGHASH_SRCS) | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) $(DNAC_INCLUDES) tests/test_shielded_verify.c shielded_verify.c conf_txbind.c $(CONF_TXBIND_DEPS) $(AGG_PROVER_SRCS) $(DNAC_SIGHASH_SRCS) $(SHA3_SRC) $(LDLIBS) -o $@
@@ -676,14 +682,14 @@ test: all
 	@$(BUILD)/test_ntt_goldilocks_oracle tools/vectors/ntt_goldilocks.json
 	@echo
 	@echo "============================================================"
-	@echo "Sub-sprint 3.3b.7 (rework) — SHA3-512 sponge over keccak_p3"
-	@echo "============================================================"
-	@$(BUILD)/test_sponge_sha3_512 tools/vectors/sha3_512_sponge.json
-	@echo
-	@echo "============================================================"
 	@echo "Phase A — zk_field_helpers (Plonky3 commit 82cfad73)"
 	@echo "============================================================"
 	@$(BUILD)/test_zk_field_helpers
+	@echo
+	@echo "============================================================"
+	@echo "Phase A.2 — zk_entropy (G2 prover CSPRNG, rejection-sampled canonical)"
+	@echo "============================================================"
+	@$(BUILD)/test_zk_entropy
 	@echo
 	@echo "============================================================"
 	@echo "Phase C — primitive oracle (reverse_slice_index_bits + extended_pow)"
@@ -709,27 +715,6 @@ test: all
 	@echo "Phase D.4 — fri_fold_matrix log_arity>1 generic oracle byte-match"
 	@echo "============================================================"
 	@$(BUILD)/test_fri_fold_matrix_oracle tools/vectors/fri_fold_matrix.json
-	@echo
-	@echo "============================================================"
-	@echo "Phase T3 — DNAC transcript C oracle replay (Plonky3 commit 82cfad73)"
-	@echo "============================================================"
-	@$(BUILD)/test_transcript_oracle tools/vectors/transcript.json
-	@echo
-	@echo "============================================================"
-	@echo "P1 — query-PoW grind (dnac_transcript_grind)"
-	@echo "============================================================"
-	@$(BUILD)/test_transcript_grind
-	@echo
-	@echo "============================================================"
-	@echo "Stage M3 — DNAC Merkle/MMCS C oracle replay (Strategy C, Plonky3 82cfad73)"
-	@echo "============================================================"
-	@$(BUILD)/test_merkle_mmcs tools/vectors/merkle_mmcs.json
-	@echo
-	@echo "============================================================"
-	@echo "Phase 2A — DNAC Merkle/MMCS same-height multi-matrix batch"
-	@echo "(Plonky3 commit 82cfad73, design § 1.4)"
-	@echo "============================================================"
-	@$(BUILD)/test_merkle_mmcs_batch tools/vectors/merkle_mmcs_batch_same_height.json
 	@echo
 	@echo "============================================================"
 	@echo "Phase F3 — FRI verifier shape-check prefix (Plonky3 82cfad73)"
@@ -942,6 +927,18 @@ test: all
 	@$(BUILD)/test_poseidon2_goldilocks tools/vectors/poseidon2_goldilocks.json
 	@echo
 	@echo "============================================================"
+	@echo "P1a — Poseidon2 DuplexChallenger<Gold,Perm,8,4> (grounded port)"
+	@echo "  byte-match vs real DuplexChallenger over default_goldilocks_poseidon2_8 (82cfad73)"
+	@echo "============================================================"
+	@$(BUILD)/test_duplex_challenger tools/vectors/duplex_challenger.json
+	@echo
+	@echo "============================================================"
+	@echo "P1b — Poseidon2 MMCS (PaddingFreeSponge hasher + TruncatedPermutation compressor)"
+	@echo "  byte-match vs real MerkleTreeMmcs + MerkleTreeHidingMmcs (82cfad73, cap 0)"
+	@echo "============================================================"
+	@$(BUILD)/test_poseidon2_mmcs tools/vectors/poseidon2_mmcs.json
+	@echo
+	@echo "============================================================"
 	@echo "FP1c.1 — Poseidon2 AIR column layout binding (Poseidon2Cols<8,7,1,4,22>)"
 	@echo "============================================================"
 	@$(BUILD)/test_poseidon2_air_cols
@@ -1071,12 +1068,10 @@ test: all
 	@$(BUILD)/test_conf_nullifier_air
 	@echo
 	@echo "============================================================"
-	@echo "ALL REMAINING (grounded) GATES: GREEN"
-	@echo "Modules verified by SUBAGENT_AUDIT_2026_05_23.md (12 parallel"
-	@echo "independent audit). fri_fold + transcript + merkle_smt ports"
-	@echo "active and oracle-grounded against Plonky3 82cfad73."
-	@echo "fri_verifier still pending; fri_commit/fri_query split"
-	@echo "rejected/deleted (replaced by the upcoming fri_verifier port)."
+	@echo "ALL GATES: GREEN"
+	@echo "P1c (2026-07-22): proof-internal hash = Poseidon2 (DuplexChallenger"
+	@echo "transcript + PaddingFreeSponge/TruncatedPermutation MMCS), all"
+	@echo "vectors regenerated + byte-matched against Plonky3 82cfad73."
 	@echo "============================================================"
 
 clean:

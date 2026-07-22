@@ -52,10 +52,21 @@ extern "C" {
 #define DNAC_AGG_PROVER_TOTAL_DRAWS(height) \
     ((size_t)(CONF_AGGZK_WIDTH + 94) * (size_t)(height))
 
-/** P4: M3b salt draws — WIDTH-INDEPENDENT (per Merkle row, SALT_ELEMS=2 over lde_h
- *  rows): trace 16h + quotient 8*16h + random 16h = 160h. Stream B (FRI-mmcs)
- *  reuses the same buffer from pos 0 (< 16h). WIDTH-INDEPENDENT (same at W=2318). */
+/** P4: M3b salt draws for the INPUT MMCS (stream A) — WIDTH-INDEPENDENT (per
+ *  Merkle row, SALT_ELEMS=2 over lde_h=8h rows): trace 16h + quotient 8*16h +
+ *  random 16h = 160h. This is stream A ONLY. WIDTH-INDEPENDENT (same at W=2318). */
 #define DNAC_AGG_PROVER_SALT_DRAWS(height) ((size_t)160 * (size_t)(height))
+
+/** P1e-HIGH1: M3b salt draws for the FRI-challenge MMCS (stream B) — a SEPARATE
+ *  stream from A. The commit-phase consumes Σ(layer rows)·SALT_ELEMS < lde_h·SE =
+ *  8h·2 = 16h draws (Σ rows < ro_len = lde_h). In Plonky3 the FRI mmcs is an
+ *  INDEPENDENT hiding-mmcs (make_salted_zk_config: HidingChallengeMmcs over a
+ *  CLONED rng, hiding_mmcs.rs:84-89) — production MUST give stream B its own
+ *  entropy, never an alias of stream A (which would reveal an unopened trace
+ *  leaf's salt via a FRI-layer opening). KAT byte-match is preserved by leaving
+ *  instance.fri_salt_draws NULL (the plumbing then falls back to salt_draws@0,
+ *  reproducing the oracle's same-seed clone). */
+#define DNAC_AGG_PROVER_FRI_SALT_DRAWS(height) ((size_t)16 * (size_t)(height))
 
 /**
  * An aggregate prove request — one shielded action's notes + the INPUT notes'
@@ -76,9 +87,16 @@ typedef struct {
     const uint64_t *tx_binding; /* 4 canonical lanes; FS-observed statement binding.
                                  * Production = conf_txbind_map(sighash_v4) (dnac S5
                                  * sighash → 4 lanes, wired at S6). NULL => zero. */
-    const uint64_t *salt_draws; /* P4: M3b salt stream, or NULL (unsalted). If set,
-                                 * num_salt_draws >= DNAC_AGG_PROVER_SALT_DRAWS(h). */
+    const uint64_t *salt_draws; /* P4: M3b INPUT-mmcs salt stream A, or NULL
+                                 * (unsalted). If set, num_salt_draws >=
+                                 * DNAC_AGG_PROVER_SALT_DRAWS(h). */
     size_t          num_salt_draws;
+    const uint64_t *fri_salt_draws; /* P1e-HIGH1: FRI-mmcs salt stream B (>=
+                                 * DNAC_AGG_PROVER_FRI_SALT_DRAWS(h)). NULL =>
+                                 * fall back to salt_draws@0 (KAT clone-seed
+                                 * parity). Production MUST set this to an
+                                 * INDEPENDENT entropy region. */
+    size_t          num_fri_salt_draws;
     unsigned        log_height; /* height = 2^log_height, in [LOG_K, 10] */
     const uint64_t *draws;
     size_t          num_draws;  /* must equal DNAC_AGG_PROVER_TOTAL_DRAWS */
@@ -136,9 +154,9 @@ dnac_fri_codec_status_t dnac_agg_prover_wire_selfcheck_shielded(
 void dnac_agg_prover_proof_zeta(const dnac_agg_prover_proof_t *p,
                                 gold_fp2_t *zeta, gold_fp2_t *zeta_next);
 void dnac_agg_prover_proof_roots(const dnac_agg_prover_proof_t *p,
-                                 uint8_t trace_root[DNAC_MERKLE_DIGEST_BYTES],
-                                 uint8_t quot_root[DNAC_MERKLE_DIGEST_BYTES],
-                                 uint8_t rand_root[DNAC_MERKLE_DIGEST_BYTES]);
+                                 dnac_p2_digest_t *trace_root,
+                                 dnac_p2_digest_t *quot_root,
+                                 dnac_p2_digest_t *rand_root);
 const gold_fp2_t *dnac_agg_prover_proof_final_poly(
     const dnac_agg_prover_proof_t *p, size_t *out_len);
 /** The computed public values (anchor[4] || num_input || nf_slot[M][4]). */

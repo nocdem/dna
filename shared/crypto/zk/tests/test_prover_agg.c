@@ -68,6 +68,10 @@ static size_t hex_decode(const char *hex,uint8_t *buf,size_t cap){
     size_t hl=strlen(hex); if(hl%2)return (size_t)-1; size_t n=hl/2; if(n>cap)return (size_t)-1;
     for(size_t i=0;i<n;i++){ int hi=hexnib(hex[2*i]),lo=hexnib(hex[2*i+1]); if(hi<0||lo<0)return (size_t)-1; buf[i]=(uint8_t)((hi<<4)|lo); } return n;
 }
+/* P1c: 32 wire bytes -> 4 LE u64 lanes (endian-explicit, no memcpy punning). */
+static void p2_digest_from_le_bytes(const uint8_t b[32], dnac_p2_digest_t *d){
+    for(size_t l=0;l<4;l++){ uint64_t v=0; for(size_t i=0;i<8;i++) v|=(uint64_t)b[l*8+i]<<(8*i); d->lanes[l]=v; }
+}
 static gold_fp2_t parse_fp2_decimal(js_t *s){
     uint64_t c0=0,c1=0; js_match(s,'{');
     while(!js_match(s,'}')){ if(js_peek(s,',')){s->pos++;continue;} char*k=js_read_string(s); js_match(s,':'); char*v=js_peek(s,'"')?js_read_string(s):NULL;
@@ -88,7 +92,7 @@ static gold_fp2_t parse_fp2_wrapped(js_t *s){
 typedef struct {
     size_t degree_bits;
     gold_fp2_t zeta, zeta_next;
-    uint8_t trace_root[64], quot_root[64], rand_root[64];
+    dnac_p2_digest_t trace_root, quot_root, rand_root; /* P1c: 4-lane */
     gold_fp2_t final_poly[TP_FP]; size_t num_final_poly;
     uint64_t publics[TP_PUB]; size_t num_publics;
 } tp_t;
@@ -108,9 +112,9 @@ static void parse_vector(js_t *s, tp_t *fx){
                 free(ck); }
         } else if(strcmp(k,"commitments")==0){
             js_match(s,'{'); while(!js_match(s,'}')){ if(js_peek(s,',')){s->pos++;continue;} char*ck=js_read_string(s); js_match(s,':');
-                if(ck&&strcmp(ck,"trace_commit_root_hex")==0){ char*h=js_read_string(s); hex_decode(h,fx->trace_root,64); free(h); }
-                else if(ck&&strcmp(ck,"quotient_commit_root_hex")==0){ char*h=js_read_string(s); hex_decode(h,fx->quot_root,64); free(h); }
-                else if(ck&&strcmp(ck,"random_commit_root_hex")==0){ char*h=js_read_string(s); hex_decode(h,fx->rand_root,64); free(h); }
+                if(ck&&strcmp(ck,"trace_commit_root_hex")==0){ char*h=js_read_string(s); uint8_t b[32]; hex_decode(h,b,32); p2_digest_from_le_bytes(b,&fx->trace_root); free(h); }
+                else if(ck&&strcmp(ck,"quotient_commit_root_hex")==0){ char*h=js_read_string(s); uint8_t b[32]; hex_decode(h,b,32); p2_digest_from_le_bytes(b,&fx->quot_root); free(h); }
+                else if(ck&&strcmp(ck,"random_commit_root_hex")==0){ char*h=js_read_string(s); uint8_t b[32]; hex_decode(h,b,32); p2_digest_from_le_bytes(b,&fx->rand_root); free(h); }
                 else js_skip_value(s);
                 free(ck); }
         } else if(strcmp(k,"public_values")==0){
@@ -266,9 +270,9 @@ int main(int argc,char **argv){
         if(!ok)fails++;
     }
     {
-        uint8_t tr[64],qr[64],rr[64];
-        dnac_agg_prover_proof_roots(pf,tr,qr,rr);
-        int ok=!memcmp(tr,fx->trace_root,64)&&!memcmp(qr,fx->quot_root,64)&&!memcmp(rr,fx->rand_root,64);
+        dnac_p2_digest_t tr,qr,rr;
+        dnac_agg_prover_proof_roots(pf,&tr,&qr,&rr);
+        int ok=!memcmp(&tr,&fx->trace_root,sizeof tr)&&!memcmp(&qr,&fx->quot_root,sizeof qr)&&!memcmp(&rr,&fx->rand_root,sizeof rr);
         printf("  T4 trace/quotient/random roots == REAL commitments    %s\n", ok?"PASS":"FAIL");
         if(!ok)fails++;
     }

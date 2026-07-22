@@ -7,127 +7,127 @@
   "cases": [
     {
       "category": "v6_honest",
-      "domain_index": 3,
+      "domain_index": 8,
       "eval_fp2": {
-        "c0_decimal": "1177090699887663533",
-        "c1_decimal": "15646686859640359525"
+        "c0_decimal": "8156482088767687706",
+        "c1_decimal": "17830249650025010991"
       },
       "final_poly_fp2": [
         {
-          "c0_decimal": "1177090699887663533",
-          "c1_decimal": "15646686859640359525"
+          "c0_decimal": "8156482088767687706",
+          "c1_decimal": "17830249650025010991"
         }
       ],
       "final_poly_len": 1,
       "horner_step_evals_fp2": [
         {
-          "c0_decimal": "1177090699887663533",
-          "c1_decimal": "15646686859640359525"
+          "c0_decimal": "8156482088767687706",
+          "c1_decimal": "17830249650025010991"
         }
       ],
       "log_global_max_height": 4,
       "name": "v6_honest_query_0",
       "notes": "V6 final_poly has length 1 (log_final_poly_len=0) so Horner eval = final_poly[0] independent of x. Plonky3 verify_fri returned Ok(()) on V6 ⇒ this eval equals the folded_eval the verifier carries out of verify_query (folded_eval is not exposed by the public API and is not emitted here).",
-      "reverse_bits_len_result": 12,
+      "reverse_bits_len_result": 1,
       "verify_fri_acceptance_implies_eval_equals_folded_eval": true,
-      "x_decimal": "18446462594437873665"
+      "x_decimal": "17293822564807737345"
     },
     {
       "category": "v6_honest",
-      "domain_index": 12,
+      "domain_index": 8,
       "eval_fp2": {
-        "c0_decimal": "1177090699887663533",
-        "c1_decimal": "15646686859640359525"
+        "c0_decimal": "8156482088767687706",
+        "c1_decimal": "17830249650025010991"
       },
       "final_poly_fp2": [
         {
-          "c0_decimal": "1177090699887663533",
-          "c1_decimal": "15646686859640359525"
+          "c0_decimal": "8156482088767687706",
+          "c1_decimal": "17830249650025010991"
         }
       ],
       "final_poly_len": 1,
       "horner_step_evals_fp2": [
         {
-          "c0_decimal": "1177090699887663533",
-          "c1_decimal": "15646686859640359525"
+          "c0_decimal": "8156482088767687706",
+          "c1_decimal": "17830249650025010991"
         }
       ],
       "log_global_max_height": 4,
       "name": "v6_honest_query_1",
       "notes": "V6 final_poly has length 1 (log_final_poly_len=0) so Horner eval = final_poly[0] independent of x. Plonky3 verify_fri returned Ok(()) on V6 ⇒ this eval equals the folded_eval the verifier carries out of verify_query (folded_eval is not exposed by the public API and is not emitted here).",
-      "reverse_bits_len_result": 3,
+      "reverse_bits_len_result": 1,
       "verify_fri_acceptance_implies_eval_equals_folded_eval": true,
-      "x_decimal": "4503599626321920"
+      "x_decimal": "17293822564807737345"
     },
     {
       "category": "v6_corrupted_final_poly_0",
       "corrupted_eval_fp2": {
-        "c0_decimal": "1177090699887663534",
-        "c1_decimal": "15646686859640359525"
+        "c0_decimal": "8156482088767687707",
+        "c1_decimal": "17830249650025010991"
       },
-      "domain_index": 3,
+      "domain_index": 8,
       "eval_differs": true,
       "eval_fp2": {
-        "c0_decimal": "1177090699887663534",
-        "c1_decimal": "15646686859640359525"
+        "c0_decimal": "8156482088767687707",
+        "c1_decimal": "17830249650025010991"
       },
       "final_poly_fp2": [
         {
-          "c0_decimal": "1177090699887663534",
-          "c1_decimal": "15646686859640359525"
+          "c0_decimal": "8156482088767687707",
+          "c1_decimal": "17830249650025010991"
         }
       ],
       "final_poly_len": 1,
       "honest_eval_fp2": {
-        "c0_decimal": "1177090699887663533",
-        "c1_decimal": "15646686859640359525"
+        "c0_decimal": "8156482088767687706",
+        "c1_decimal": "17830249650025010991"
       },
       "horner_step_evals_fp2": [
         {
-          "c0_decimal": "1177090699887663534",
-          "c1_decimal": "15646686859640359525"
+          "c0_decimal": "8156482088767687707",
+          "c1_decimal": "17830249650025010991"
         }
       ],
       "log_global_max_height": 4,
       "name": "v6_corrupted_final_poly_0_query_0",
       "notes": "F1.1 FinalPolyMismatch mirror: V6 final_poly with [0] += GoldFp2::ONE. Plonky3 test at verifier.rs:1569 acknowledges this error cannot be reached via verify_fri (transcript desync occurs first); the C verifier MUST still implement the comparison as defense in depth (design § 8 G5).",
-      "reverse_bits_len_result": 12,
-      "x_decimal": "18446462594437873665"
+      "reverse_bits_len_result": 1,
+      "x_decimal": "17293822564807737345"
     },
     {
       "category": "v6_corrupted_final_poly_0",
       "corrupted_eval_fp2": {
-        "c0_decimal": "1177090699887663534",
-        "c1_decimal": "15646686859640359525"
+        "c0_decimal": "8156482088767687707",
+        "c1_decimal": "17830249650025010991"
       },
-      "domain_index": 12,
+      "domain_index": 8,
       "eval_differs": true,
       "eval_fp2": {
-        "c0_decimal": "1177090699887663534",
-        "c1_decimal": "15646686859640359525"
+        "c0_decimal": "8156482088767687707",
+        "c1_decimal": "17830249650025010991"
       },
       "final_poly_fp2": [
         {
-          "c0_decimal": "1177090699887663534",
-          "c1_decimal": "15646686859640359525"
+          "c0_decimal": "8156482088767687707",
+          "c1_decimal": "17830249650025010991"
         }
       ],
       "final_poly_len": 1,
       "honest_eval_fp2": {
-        "c0_decimal": "1177090699887663533",
-        "c1_decimal": "15646686859640359525"
+        "c0_decimal": "8156482088767687706",
+        "c1_decimal": "17830249650025010991"
       },
       "horner_step_evals_fp2": [
         {
-          "c0_decimal": "1177090699887663534",
-          "c1_decimal": "15646686859640359525"
+          "c0_decimal": "8156482088767687707",
+          "c1_decimal": "17830249650025010991"
         }
       ],
       "log_global_max_height": 4,
       "name": "v6_corrupted_final_poly_0_query_1",
       "notes": "F1.1 FinalPolyMismatch mirror: V6 final_poly with [0] += GoldFp2::ONE. Plonky3 test at verifier.rs:1569 acknowledges this error cannot be reached via verify_fri (transcript desync occurs first); the C verifier MUST still implement the comparison as defense in depth (design § 8 G5).",
-      "reverse_bits_len_result": 3,
-      "x_decimal": "4503599626321920"
+      "reverse_bits_len_result": 1,
+      "x_decimal": "17293822564807737345"
     },
     {
       "category": "d7_trap_synthetic",
@@ -6185,7 +6185,7 @@
     "challenge": "BinomialExtensionField<Goldilocks, 2> (fp2)",
     "extra_query_index_bits": 0,
     "folding": "TwoAdicFriFolding",
-    "hash": "FIPS-202 SHA3-512",
+    "hash": "Poseidon2 width-8 (default_goldilocks_poseidon2_8, P1c)",
     "val": "Goldilocks"
   },
   "errors_vector_reference": "fri_verifier_errors.json",
@@ -6206,14 +6206,14 @@
   "v6_context": {
     "v6_corrupted_final_poly_fp2": [
       {
-        "c0_decimal": "1177090699887663534",
-        "c1_decimal": "15646686859640359525"
+        "c0_decimal": "8156482088767687707",
+        "c1_decimal": "17830249650025010991"
       }
     ],
     "v6_final_poly_fp2": [
       {
-        "c0_decimal": "1177090699887663533",
-        "c1_decimal": "15646686859640359525"
+        "c0_decimal": "8156482088767687706",
+        "c1_decimal": "17830249650025010991"
       }
     ],
     "v6_final_poly_len": 1,
@@ -6221,8 +6221,8 @@
     "v6_log_final_height": 1,
     "v6_log_global_max_height": 4,
     "v6_query_indices_extracted_from_input_mmcs_calls": [
-      3,
-      12
+      8,
+      8
     ],
     "v6_verify_fri_gate_result": "Ok(())"
   },

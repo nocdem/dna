@@ -229,8 +229,8 @@ dnac_prover_status_t dnac_prover_commit_matrix(
     size_t width,
     const uint64_t *salts,
     size_t salt_elems,
-    uint8_t out_root[DNAC_MERKLE_DIGEST_BYTES],
-    dnac_merkle_tree_t **out_tree) {
+    dnac_p2_digest_t *out_root,
+    dnac_p2_mmcs_tree_t **out_tree) {
     if (mat == NULL || out_root == NULL || out_tree == NULL || width == 0 ||
         height < 2 || (height & (height - 1)) != 0) {
         return DNAC_PROVER_ERR_PARAM;
@@ -240,41 +240,52 @@ dnac_prover_status_t dnac_prover_commit_matrix(
      * height*salt_elems array; row i's salts are salts[i*salt_elems ..]. */
     if (salt_elems > 0 && salts == NULL) return DNAC_PROVER_ERR_PARAM;
 
+    /* P1c: the Poseidon2 MMCS consumes canonical LANES directly — no byte
+     * serialization. Leaf = row lanes ‖ salt lanes (same order as the old
+     * byte layout, /8 offsets). Non-canonical lanes are fail-close rejected
+     * by dnac_p2_mmcs_commit itself (G-DET-P1-5); the pre-checks here keep
+     * the prover's own NONCANONICAL status for its callers. */
     const size_t cols = width + salt_elems;
-    const size_t row_bytes = cols * 8;
-    uint8_t *buf = (uint8_t *)malloc(height * row_bytes);
+    uint64_t *buf;
+    const uint64_t *mats1[1];
+    size_t w1[1];
+    dnac_p2_mmcs_status_t st;
+
+    if (salt_elems == 0) {
+        for (size_t i = 0; i < height * width; i++) {
+            if (mat[i] >= GOLDILOCKS_P) return DNAC_PROVER_ERR_NONCANONICAL;
+        }
+        mats1[0] = mat;
+        w1[0] = width;
+        st = dnac_p2_mmcs_commit(mats1, w1, 1, height, out_root, out_tree);
+        if (st != DNAC_P2M_OK) return DNAC_PROVER_ERR_PARAM;
+        return DNAC_PROVER_OK;
+    }
+
+    buf = (uint64_t *)malloc(height * cols * sizeof(uint64_t));
     if (buf == NULL) {
         return DNAC_PROVER_ERR_PARAM;
     }
-
-    /* Canonical u64 LE per element, columns left-to-right (the u8-serializing
-     * hasher wire form: integers.rs:562-578 + goldilocks.rs:516-523). Reject
-     * non-canonical input — Plonky3 matrices are always canonical. */
     for (size_t i = 0; i < height; i++) {
         for (size_t c = 0; c < width; c++) {
             const uint64_t v = mat[i * width + c];
             if (v >= GOLDILOCKS_P) { free(buf); return DNAC_PROVER_ERR_NONCANONICAL; }
-            uint8_t *b = &buf[(i * cols + c) * 8];
-            b[0]=(uint8_t)v; b[1]=(uint8_t)(v>>8); b[2]=(uint8_t)(v>>16); b[3]=(uint8_t)(v>>24);
-            b[4]=(uint8_t)(v>>32); b[5]=(uint8_t)(v>>40); b[6]=(uint8_t)(v>>48); b[7]=(uint8_t)(v>>56);
+            buf[i * cols + c] = v;
         }
         for (size_t s = 0; s < salt_elems; s++) {
             const uint64_t v = salts[i * salt_elems + s];
             if (v >= GOLDILOCKS_P) { free(buf); return DNAC_PROVER_ERR_NONCANONICAL; }
-            uint8_t *b = &buf[(i * cols + width + s) * 8];
-            b[0]=(uint8_t)v; b[1]=(uint8_t)(v>>8); b[2]=(uint8_t)(v>>16); b[3]=(uint8_t)(v>>24);
-            b[4]=(uint8_t)(v>>32); b[5]=(uint8_t)(v>>40); b[6]=(uint8_t)(v>>48); b[7]=(uint8_t)(v>>56);
+            buf[i * cols + width + s] = v;
         }
     }
 
-    dnac_merkle_digest_t root;
-    dnac_merkle_status_t st =
-        dnac_merkle_commit(buf, row_bytes, height, &root, out_tree);
+    mats1[0] = buf;
+    w1[0] = cols;
+    st = dnac_p2_mmcs_commit(mats1, w1, 1, height, out_root, out_tree);
     free(buf);
-    if (st != DNAC_MERKLE_OK) {
+    if (st != DNAC_P2M_OK) {
         return DNAC_PROVER_ERR_PARAM;
     }
-    memcpy(out_root, root.bytes, DNAC_MERKLE_DIGEST_BYTES);
     return DNAC_PROVER_OK;
 }
 
@@ -287,7 +298,7 @@ dnac_prover_status_t dnac_prover_fs_to_alpha(
     uint64_t log_ext_degree,
     uint64_t log_degree,
     uint64_t preprocessed_width,
-    const uint8_t trace_root[DNAC_MERKLE_DIGEST_BYTES],
+    const dnac_p2_digest_t *trace_root,
     const uint64_t *publics,
     size_t n_publics,
     gold_fp2_t *out_alpha) {
@@ -312,10 +323,10 @@ dnac_prover_status_t dnac_prover_fs_to_alpha(
     dnac_transcript_observe_fp(t, gold_fp_from_u64(log_ext_degree));
     dnac_transcript_observe_fp(t, gold_fp_from_u64(log_degree));
     dnac_transcript_observe_fp(t, gold_fp_from_u64(preprocessed_width));
-    /* prover.rs:167 — trace commitment (cap_height=0: 64 raw bytes,
-     * serializing_challenger.rs:301-311). Preprocessed commit skipped:
-     * width 0 (prover.rs:168-170). */
-    dnac_transcript_observe_bytes(t, trace_root, DNAC_MERKLE_DIGEST_BYTES);
+    /* prover.rs:167 — trace commitment (cap_height=0: one 4-lane digest,
+     * lane-by-lane field observes — duplex_challenger.rs:186-210, P1c).
+     * Preprocessed commit skipped: width 0 (prover.rs:168-170). */
+    dnac_transcript_observe_digest(t, trace_root);
     /* prover.rs:173 — public values, element-wise, AIR order. */
     for (size_t i = 0; i < n_publics; i++) {
         dnac_transcript_observe_fp(t, gold_fp_from_u64(publics[i]));
@@ -603,8 +614,8 @@ dnac_prover_status_t dnac_prover_quotient_commit(
     const uint64_t *salts,      /* M3b: [num_chunks*lde_h*salt_elems] or NULL */
     size_t          salt_elems,
     uint64_t *out_chunk_ldes,
-    uint8_t out_root[DNAC_MERKLE_DIGEST_BYTES],
-    dnac_merkle_batch_tree_t **out_tree) {
+    dnac_p2_digest_t *out_root,
+    dnac_p2_mmcs_tree_t **out_tree) {
     if (quotient_flat == NULL || codeword_rand == NULL ||
         blinding_rand == NULL || out_chunk_ldes == NULL || out_root == NULL ||
         out_tree == NULL || num_chunks < 2 || num_random == 0 ||
@@ -648,13 +659,14 @@ dnac_prover_status_t dnac_prover_quotient_commit(
     uint64_t *widened = (uint64_t *)malloc(h * w * 8);
     uint64_t *lde_nat = (uint64_t *)malloc(lde_h * w * 8);
     gold_fp_t *vcoef = (gold_fp_t *)malloc(lde_h * w * sizeof(gold_fp_t));
-    const size_t cw = w + salt_elems;  /* salted chunk row width */
-    uint8_t *bytes = (uint8_t *)malloc(num_chunks * lde_h * cw * 8);
-    const uint8_t **mat_ptrs =
-        (const uint8_t **)malloc(num_chunks * sizeof(uint8_t *));
-    size_t *row_lens = (size_t *)malloc(num_chunks * sizeof(size_t));
+    const size_t cw = w + salt_elems;  /* salted chunk row width (lanes) */
+    /* P1c: lane matrices (row lanes ‖ salt lanes), no byte serialization. */
+    uint64_t *lanes = (uint64_t *)malloc(num_chunks * lde_h * cw * sizeof(uint64_t));
+    const uint64_t **mat_ptrs =
+        (const uint64_t **)malloc(num_chunks * sizeof(uint64_t *));
+    size_t *lane_widths = (size_t *)malloc(num_chunks * sizeof(size_t));
     if (!shifts || !cis_raw || !cis || !all_random || !widened || !lde_nat ||
-        !vcoef || !bytes || !mat_ptrs || !row_lens) {
+        !vcoef || !lanes || !mat_ptrs || !lane_widths) {
         goto out;
     }
 
@@ -745,7 +757,7 @@ dnac_prover_status_t dnac_prover_quotient_commit(
             }
             free(col);
         }
-        /* bit-reverse rows (hiding_pcs.rs:254) into the output + byte buffer. */
+        /* bit-reverse rows (hiding_pcs.rs:254) into the output + lane buffer. */
         {
             const unsigned log_lde = (unsigned)log2_strict_usize(lde_h);
             uint64_t *dst = &out_chunk_ldes[c * lde_h * w];
@@ -754,37 +766,26 @@ dnac_prover_status_t dnac_prover_quotient_commit(
                     (size_t)reverse_bits_len_u64((uint64_t)r, log_lde);
                 memcpy(&dst[r * w], &lde_nat[src * w], w * 8);
             }
-            uint8_t *bm = &bytes[c * lde_h * cw * 8];
+            uint64_t *lm = &lanes[c * lde_h * cw];
             for (size_t r = 0; r < lde_h; r++) {
-                for (size_t col = 0; col < w; col++) {
-                    const uint64_t v = dst[r * w + col];
-                    uint8_t *b = &bm[(r * cw + col) * 8];
-                    b[0]=(uint8_t)v; b[1]=(uint8_t)(v>>8); b[2]=(uint8_t)(v>>16); b[3]=(uint8_t)(v>>24);
-                    b[4]=(uint8_t)(v>>32); b[5]=(uint8_t)(v>>40); b[6]=(uint8_t)(v>>48); b[7]=(uint8_t)(v>>56);
-                }
+                memcpy(&lm[r * cw], &dst[r * w], w * sizeof(uint64_t));
                 for (size_t s = 0; s < salt_elems; s++) {
                     /* stream A quotient section: chunk c, row r salt. */
                     const uint64_t sv = salts[(c * lde_h + r) * salt_elems + s];
                     if (sv >= GOLDILOCKS_P) { rc = DNAC_PROVER_ERR_NONCANONICAL; goto out; }
-                    uint8_t *b = &bm[(r * cw + w + s) * 8];
-                    b[0]=(uint8_t)sv; b[1]=(uint8_t)(sv>>8); b[2]=(uint8_t)(sv>>16); b[3]=(uint8_t)(sv>>24);
-                    b[4]=(uint8_t)(sv>>32); b[5]=(uint8_t)(sv>>40); b[6]=(uint8_t)(sv>>48); b[7]=(uint8_t)(sv>>56);
+                    lm[r * cw + w + s] = sv;
                 }
             }
-            mat_ptrs[c] = bm;
-            row_lens[c] = cw * 8;
+            mat_ptrs[c] = lm;
+            lane_widths[c] = cw;
         }
     }
 
     /* ONE multi-matrix commit (equal heights; univariate commit_quotient ->
-     * commit_ldes -> mmcs.commit; Phase 2A batch == MerkleTreeMmcs). */
-    {
-        dnac_merkle_digest_t root;
-        if (dnac_merkle_batch_commit(mat_ptrs, row_lens, num_chunks, lde_h,
-                                     &root, out_tree) != DNAC_MERKLE_OK) {
-            goto out;
-        }
-        memcpy(out_root, root.bytes, DNAC_MERKLE_DIGEST_BYTES);
+     * commit_ldes -> mmcs.commit; Poseidon2 batch == MerkleTreeMmcs, P1c). */
+    if (dnac_p2_mmcs_commit(mat_ptrs, lane_widths, num_chunks, lde_h,
+                            out_root, out_tree) != DNAC_P2M_OK) {
+        goto out;
     }
     rc = DNAC_PROVER_OK;
 
@@ -796,9 +797,9 @@ out:
     free(widened);
     free(lde_nat);
     free(vcoef);
-    free(bytes);
+    free(lanes);
     free(mat_ptrs);
-    free(row_lens);
+    free(lane_widths);
     return rc;
 }
 
@@ -814,8 +815,8 @@ dnac_prover_status_t dnac_prover_random_commit(
     const uint64_t *salts,
     size_t salt_elems,
     uint64_t *out_lde,
-    uint8_t out_root[DNAC_MERKLE_DIGEST_BYTES],
-    dnac_merkle_tree_t **out_tree) {
+    dnac_p2_digest_t *out_root,
+    dnac_p2_mmcs_tree_t **out_tree) {
     if (r_draws == NULL || out_lde == NULL || out_root == NULL ||
         out_tree == NULL || width == 0 || height < 2 ||
         (height & (height - 1)) != 0 || log_blowup == 0) {
@@ -841,8 +842,8 @@ dnac_prover_status_t dnac_prover_random_commit(
 
 dnac_prover_status_t dnac_prover_fs_to_zeta(
     dnac_transcript_t *t,
-    const uint8_t quotient_root[DNAC_MERKLE_DIGEST_BYTES],
-    const uint8_t *random_root,
+    const dnac_p2_digest_t *quotient_root,
+    const dnac_p2_digest_t *random_root,
     uint64_t base_degree_bits,
     gold_fp2_t *out_zeta,
     gold_fp2_t *out_zeta_next) {
@@ -850,13 +851,12 @@ dnac_prover_status_t dnac_prover_fs_to_zeta(
         out_zeta_next == NULL || base_degree_bits > GOLDILOCKS_TWO_ADICITY) {
         return DNAC_PROVER_ERR_PARAM;
     }
-    /* prover.rs:257 — observe quotient commitment. */
-    dnac_transcript_observe_bytes(t, quotient_root, DNAC_MERKLE_DIGEST_BYTES);
+    /* prover.rs:257 — observe quotient commitment (4-lane digest, P1c). */
+    dnac_transcript_observe_digest(t, quotient_root);
     /* prover.rs:284-286 — observe random commitment (is_zk only), strictly
      * AFTER quotient, BEFORE zeta. */
     if (random_root != NULL) {
-        dnac_transcript_observe_bytes(t, random_root,
-                                      DNAC_MERKLE_DIGEST_BYTES);
+        dnac_transcript_observe_digest(t, random_root);
     }
     /* prover.rs:299 — sample zeta; :300-302 zeta_next = zeta * g of the
      * INITIAL trace subgroup (size 2^base_degree_bits). */
@@ -1022,7 +1022,7 @@ void dnac_prover_fri_result_free(dnac_prover_fri_result_t *res) {
     for (size_t r = 0; r < res->num_rounds; r++) {
         free(res->layer_leaves[r]);
         res->layer_leaves[r] = NULL;
-        dnac_merkle_tree_free(res->layer_trees[r]);
+        dnac_p2_mmcs_tree_free(res->layer_trees[r]);
         res->layer_trees[r] = NULL;
     }
     res->num_rounds = 0;
@@ -1107,14 +1107,15 @@ dnac_prover_status_t dnac_prover_fri_commit_phase(
         }
         memcpy(leaves, folded, len * sizeof(gold_fp2_t));
 
-        /* ExtensionMmcs commit: leaf row = arity fp2 flattened to 2*arity base
-         * u64 LE (extension_mmcs.rs:44-47). M3b: the hiding FRI-mmcs appends
-         * salt_elems BASE salts after the flattened row (hiding_mmcs.rs:169-170;
-         * extension_mmcs passes the proof through unflattened). */
+        /* ExtensionMmcs commit: leaf row = arity fp2 base-flattened to 2*arity
+         * LANES [c0,c1]×arity (extension_mmcs.rs:44-47). M3b: the hiding
+         * FRI-mmcs appends salt_elems BASE salt lanes after the flattened row
+         * (hiding_mmcs.rs:169-170; extension_mmcs passes the proof through
+         * unflattened). P1c: lanes direct, no byte serialization. */
         const size_t leaf_u64 = arity * 2;
         const size_t leaf_cols = leaf_u64 + salt_elems;
-        uint8_t *bytes = (uint8_t *)malloc(rows * leaf_cols * 8);
-        if (bytes == NULL) {
+        uint64_t *lanebuf = (uint64_t *)malloc(rows * leaf_cols * sizeof(uint64_t));
+        if (lanebuf == NULL) {
             free(leaves);
             free(folded);
             dnac_prover_fri_result_free(res);
@@ -1123,30 +1124,28 @@ dnac_prover_status_t dnac_prover_fri_commit_phase(
         for (size_t rr = 0; rr < rows; rr++) {
             for (size_t j = 0; j < arity; j++) {
                 const gold_fp2_t v = leaves[rr * arity + j];
-                const uint64_t c0 = gold_fp_to_u64(v.a);
-                const uint64_t c1 = gold_fp_to_u64(v.b);
-                uint8_t *b = &bytes[(rr * leaf_cols + j * 2) * 8];
-                for (int k = 0; k < 8; k++) b[k] = (uint8_t)(c0 >> (8 * k));
-                for (int k = 0; k < 8; k++) b[8 + k] = (uint8_t)(c1 >> (8 * k));
+                lanebuf[rr * leaf_cols + j * 2]     = gold_fp_to_u64(v.a);
+                lanebuf[rr * leaf_cols + j * 2 + 1] = gold_fp_to_u64(v.b);
             }
             for (size_t s = 0; s < salt_elems; s++) {
                 const uint64_t sv = salt_draws[salt_off + rr * salt_elems + s];
                 if (sv >= GOLDILOCKS_P) {
-                    free(bytes); free(leaves); free(folded);
+                    free(lanebuf); free(leaves); free(folded);
                     dnac_prover_fri_result_free(res);
                     return DNAC_PROVER_ERR_NONCANONICAL;
                 }
-                uint8_t *b = &bytes[(rr * leaf_cols + leaf_u64 + s) * 8];
-                for (int k = 0; k < 8; k++) b[k] = (uint8_t)(sv >> (8 * k));
+                lanebuf[rr * leaf_cols + leaf_u64 + s] = sv;
             }
         }
         salt_off += rows * salt_elems;
-        dnac_merkle_digest_t root;
-        dnac_merkle_tree_t *tree = NULL;
-        dnac_merkle_status_t mst =
-            dnac_merkle_commit(bytes, leaf_cols * 8, rows, &root, &tree);
-        free(bytes);
-        if (mst != DNAC_MERKLE_OK) {
+        dnac_p2_digest_t root;
+        dnac_p2_mmcs_tree_t *tree = NULL;
+        const uint64_t *lmats[1] = { lanebuf };
+        const size_t lws[1] = { leaf_cols };
+        dnac_p2_mmcs_status_t mst =
+            dnac_p2_mmcs_commit(lmats, lws, 1, rows, &root, &tree);
+        free(lanebuf);
+        if (mst != DNAC_P2M_OK) {
             free(leaves);
             free(folded);
             dnac_prover_fri_result_free(res);
@@ -1154,7 +1153,7 @@ dnac_prover_status_t dnac_prover_fri_commit_phase(
         }
 
         /* observe root, grind commit PoW, sample beta (prover.rs:218-228). */
-        dnac_transcript_observe_bytes(t, root.bytes, DNAC_MERKLE_DIGEST_BYTES);
+        dnac_transcript_observe_digest(t, &root);
         res->commit_pow_witnesses[round] =
             dnac_transcript_grind(t, commit_pow_bits); /* no-op at 0 */
         const gold_fp2_t beta = dnac_transcript_sample_fp2(t);
@@ -1164,13 +1163,13 @@ dnac_prover_status_t dnac_prover_fri_commit_phase(
         if (next == NULL) {
             free(leaves);
             free(folded);
-            dnac_merkle_tree_free(tree);
+            dnac_p2_mmcs_tree_free(tree);
             dnac_prover_fri_result_free(res);
             return DNAC_PROVER_ERR_PARAM;
         }
         fri_fold_matrix_fp2(beta, log_arity, rows, leaves, next);
 
-        memcpy(res->roots[round], root.bytes, DNAC_MERKLE_DIGEST_BYTES);
+        res->roots[round] = root;
         res->betas[round] = beta;
         res->log_arities[round] = log_arity;
         res->layer_leaves[round] = leaves;

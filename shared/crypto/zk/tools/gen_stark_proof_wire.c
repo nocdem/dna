@@ -77,15 +77,21 @@ static size_t hex_decode(const char *hex,uint8_t *buf,size_t cap){
     for(size_t i=0;i<n;i++){ int hi=hexnib(hex[2*i]),lo=hexnib(hex[2*i+1]); if(hi<0||lo<0)return (size_t)-1; buf[i]=(uint8_t)((hi<<4)|lo); } return n;
 }
 static void fput_hex(FILE *f,const uint8_t *b,size_t n){ static const char *H="0123456789abcdef"; for(size_t i=0;i<n;i++){ fputc(H[b[i]>>4],f); fputc(H[b[i]&0xF],f);} }
-static void put_u64_le(uint8_t *p,uint64_t v){ for(int i=0;i<8;i++)p[i]=(uint8_t)(v>>(8*i)); }
+/* (P1c: put_u64_le retired — digests are lanes, no byte serialization left.) */
 
 static int read_u64_array(js_t *s,uint64_t *out,int cap){ int n=0; js_match(s,'['); while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;} uint64_t v; if(!js_read_u64(s,&v))return -1; if(n<cap)out[n]=v; n++; } return n; }
-static void parse_lanes_digest(js_t *s,uint8_t out[64]){ uint64_t l[8]={0}; read_u64_array(s,l,8); for(int i=0;i<8;i++)put_u64_le(out+i*8,l[i]); }
-static void parse_commit_digest(js_t *s,uint8_t out[64]){
+static uint64_t parse_base_obj(js_t *s){ uint64_t r=0; js_match(s,'{'); while(!js_match(s,'}')){ if(js_peek(s,',')){s->pos++;continue;} char*k=js_read_string(s); js_match(s,':'); if(k&&strcmp(k,"value")==0)js_read_u64(s,&r); else js_skip_value(s); free(k);} return r; }
+/* P1c: a serde digest is `[ {"value": N} x4 ]` ([Goldilocks;4] — each lane a
+ * Goldilocks struct). Parsed into dnac_p2_digest_t.lanes. */
+static void parse_lanes_digest(js_t *s,uint64_t out[4]){
+    int n=0; js_match(s,'[');
+    while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;} uint64_t v=parse_base_obj(s); if(n<4)out[n]=v; n++; }
+}
+/* MerkleCap serde: {"cap": [ <digest> ]} (cap_height 0 => exactly one digest). */
+static void parse_commit_digest(js_t *s,uint64_t out[4]){
     js_match(s,'{'); while(!js_match(s,'}')){ if(js_peek(s,',')){s->pos++;continue;} char*k=js_read_string(s); js_match(s,':');
         if(k&&strcmp(k,"cap")==0){ js_match(s,'['); parse_lanes_digest(s,out); while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;} js_skip_value(s);} } else { js_skip_value(s); } free(k); }
 }
-static uint64_t parse_base_obj(js_t *s){ uint64_t r=0; js_match(s,'{'); while(!js_match(s,'}')){ if(js_peek(s,',')){s->pos++;continue;} char*k=js_read_string(s); js_match(s,':'); if(k&&strcmp(k,"value")==0)js_read_u64(s,&r); else js_skip_value(s); free(k);} return r; }
 static gold_fp2_t parse_fp2_wrapped(js_t *s){
     uint64_t comps[2]={0,0}; int n=0; js_match(s,'{');
     while(!js_match(s,'}')){ if(js_peek(s,',')){s->pos++;continue;} char*k=js_read_string(s); js_match(s,':');
@@ -115,31 +121,32 @@ static size_t parse_fp2_decimal_array(js_t *s,gold_fp2_t *out,size_t cap){
 typedef struct {
     dnac_fri_params_t params;
     /* proof_serde */
-    dnac_merkle_digest_t commits[GXR]; size_t num_commits;
+    dnac_p2_digest_t commits[GXR]; size_t num_commits;
     gold_fp_t  witnesses[GXR];
     gold_fp2_t final_poly[GXCOL]; size_t num_final_poly;
     gold_fp_t  qpow;
     gold_fp_t            inp_row[GXQ][GXB][GXCOL];
     const gold_fp_t     *inp_rowptr[GXQ][GXB][1];
     size_t               inp_lens[GXQ][GXB][1];
-    dnac_merkle_digest_t inp_sib[GXQ][GXB][GXSIB]; size_t inp_depth[GXQ][GXB];
+    dnac_p2_digest_t inp_sib[GXQ][GXB][GXSIB]; size_t inp_depth[GXQ][GXB];
     dnac_fri_batch_opening_t bo[GXQ][GXB]; size_t num_batches[GXQ];
     gold_fp2_t           cpo_sib[GXQ][GXR][GXSIB]; size_t cpo_nsib[GXQ][GXR];
-    dnac_merkle_digest_t cpo_psib[GXQ][GXR][GXSIB]; size_t cpo_pdepth[GXQ][GXR];
+    dnac_p2_digest_t cpo_psib[GXQ][GXR][GXSIB]; size_t cpo_pdepth[GXQ][GXR];
     dnac_fri_commit_phase_proof_step_t cpo[GXQ][GXR]; size_t cpo_n[GXQ];
     dnac_fri_query_proof_t qp[GXQ]; size_t num_queries;
     dnac_fri_proof_t proof;
 
     /* stark_priming-specific */
     size_t degree_bits, num_quotient_chunks;
-    dnac_merkle_digest_t trace_commit, quotient_commit;
+    dnac_p2_digest_t trace_commit, quotient_commit;
     gold_fp_t public_values[GXCOL]; size_t num_public_values;
     gold_fp2_t alpha_exp, zeta_exp, zeta_next_exp;
     gold_fp2_t trace_local[GXCOL]; size_t trace_local_len;
     gold_fp2_t trace_next[GXCOL];  size_t trace_next_len; int has_trace_next;
     gold_fp2_t quot_chunk[GXCHUNK][GXCOL]; size_t quot_chunk_len[GXCHUNK]; size_t num_quot_chunks_parsed;
-    uint8_t input_buf_exp[1024]; size_t input_buf_exp_len;
-    uint8_t init_state[256]; size_t init_state_len;
+    /* (P1c: SHA3-era input_buf_exp/init_state fields removed — the snapshot is
+     * informational; the real gate is the alpha/zeta/zeta_next challenge match
+     * from the DS-prefixed init_default transcript.) */
 
     /* built coms */
     dnac_fri_opening_point_t trace_points[2];
@@ -154,7 +161,7 @@ static void parse_cpo(js_t *s,gx_t *fx,size_t q,size_t r){
     while(!js_match(s,'}')){ if(js_peek(s,',')){s->pos++;continue;} char*k=js_read_string(s); js_match(s,':');
         if(k&&strcmp(k,"log_arity")==0){ uint64_t v; js_read_u64(s,&v); la=(uint8_t)v; }
         else if(k&&strcmp(k,"sibling_values")==0){ js_match(s,'['); while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;} gold_fp2_t fv=parse_fp2_wrapped(s); if(nsib<GXSIB)fx->cpo_sib[q][r][nsib]=fv; nsib++; } }
-        else if(k&&strcmp(k,"opening_proof")==0){ js_match(s,'['); while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;} if(npsib<GXSIB)parse_lanes_digest(s,fx->cpo_psib[q][r][npsib].bytes); else js_skip_value(s); npsib++; } }
+        else if(k&&strcmp(k,"opening_proof")==0){ js_match(s,'['); while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;} if(npsib<GXSIB)parse_lanes_digest(s,fx->cpo_psib[q][r][npsib].lanes); else js_skip_value(s); npsib++; } }
         else { js_skip_value(s); }
         free(k);
     }
@@ -166,7 +173,7 @@ static void parse_input_batch(js_t *s,gx_t *fx,size_t q,size_t b){
     size_t ncols=0,nsib=0; js_match(s,'{');
     while(!js_match(s,'}')){ if(js_peek(s,',')){s->pos++;continue;} char*bk=js_read_string(s); js_match(s,':');
         if(bk&&strcmp(bk,"opened_values")==0){ js_match(s,'['); js_match(s,'['); while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;} uint64_t bv=parse_base_obj(s); if(ncols<GXCOL)fx->inp_row[q][b][ncols]=gold_fp_from_u64(bv); ncols++; } while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;} js_skip_value(s);} }
-        else if(bk&&strcmp(bk,"opening_proof")==0){ js_match(s,'['); while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;} if(nsib<GXSIB)parse_lanes_digest(s,fx->inp_sib[q][b][nsib].bytes); else js_skip_value(s); nsib++; } }
+        else if(bk&&strcmp(bk,"opening_proof")==0){ js_match(s,'['); while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;} if(nsib<GXSIB)parse_lanes_digest(s,fx->inp_sib[q][b][nsib].lanes); else js_skip_value(s); nsib++; } }
         else { js_skip_value(s); }
         free(bk);
     }
@@ -191,7 +198,7 @@ static void parse_params(js_t *s,gx_t *fx){
 }
 static void parse_proof(js_t *s,gx_t *fx){
     js_match(s,'{'); while(!js_match(s,'}')){ if(js_peek(s,',')){s->pos++;continue;} char*k=js_read_string(s); js_match(s,':');
-        if(k&&strcmp(k,"commit_phase_commits")==0){ size_t n=0; js_match(s,'['); while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;} if(n<GXR)parse_commit_digest(s,fx->commits[n].bytes); else js_skip_value(s); n++; } fx->num_commits=n; }
+        if(k&&strcmp(k,"commit_phase_commits")==0){ size_t n=0; js_match(s,'['); while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;} if(n<GXR)parse_commit_digest(s,fx->commits[n].lanes); else js_skip_value(s); n++; } fx->num_commits=n; }
         else if(k&&strcmp(k,"commit_pow_witnesses")==0){ size_t n=0; js_match(s,'['); while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;} uint64_t bv=parse_base_obj(s); if(n<GXR)fx->witnesses[n]=gold_fp_from_u64(bv); n++; } }
         else if(k&&strcmp(k,"final_poly")==0){ size_t n=0; js_match(s,'['); while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;} gold_fp2_t fv=parse_fp2_wrapped(s); if(n<GXCOL)fx->final_poly[n]=fv; n++; } fx->num_final_poly=n; }
         else if(k&&strcmp(k,"query_pow_witness")==0){ fx->qpow=gold_fp_from_u64(parse_base_obj(s)); }
@@ -206,8 +213,10 @@ static void parse_instance(js_t *s,gx_t *fx){
 }
 static void parse_commitments(js_t *s,gx_t *fx){
     js_match(s,'{'); while(!js_match(s,'}')){ if(js_peek(s,',')){s->pos++;continue;} char*k=js_read_string(s); js_match(s,':');
-        if(k&&strcmp(k,"trace_commit_root_hex")==0){ char*h=js_read_string(s); hex_decode(h,fx->trace_commit.bytes,DNAC_MERKLE_DIGEST_BYTES); free(h); }
-        else if(k&&strcmp(k,"quotient_commit_root_hex")==0){ char*h=js_read_string(s); hex_decode(h,fx->quotient_commit.bytes,DNAC_MERKLE_DIGEST_BYTES); free(h); }
+        /* P1c: root hex = 32 bytes = 4 LE u64 lanes (oracle emits the 4-lane
+         * Poseidon2 digest as lane-LE hex). */
+        if(k&&strcmp(k,"trace_commit_root_hex")==0){ char*h=js_read_string(s); uint8_t b[32]; if(hex_decode(h,b,32)==32){ for(int i=0;i<4;i++){ uint64_t v=0; for(int j=0;j<8;j++)v|=(uint64_t)b[i*8+j]<<(8*j); fx->trace_commit.lanes[i]=v; } } free(h); }
+        else if(k&&strcmp(k,"quotient_commit_root_hex")==0){ char*h=js_read_string(s); uint8_t b[32]; if(hex_decode(h,b,32)==32){ for(int i=0;i<4;i++){ uint64_t v=0; for(int j=0;j<8;j++)v|=(uint64_t)b[i*8+j]<<(8*j); fx->quotient_commit.lanes[i]=v; } } free(h); }
         else { js_skip_value(s); } free(k); }
 }
 static void parse_public_values(js_t *s,gx_t *fx){
@@ -224,10 +233,8 @@ static void parse_opened(js_t *s,gx_t *fx){
         else if(k&&strcmp(k,"quotient_chunks")==0){ size_t c=0; js_match(s,'['); while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;} if(c<GXCHUNK)fx->quot_chunk_len[c]=parse_fp2_decimal_array(s,fx->quot_chunk[c],GXCOL); else js_skip_value(s); c++; } fx->num_quot_chunks_parsed=c; }
         else { js_skip_value(s); } free(k); }
 }
-static void parse_snapshot(js_t *s,gx_t *fx){
-    js_match(s,'{'); while(!js_match(s,'}')){ if(js_peek(s,',')){s->pos++;continue;} char*k=js_read_string(s); js_match(s,':');
-        if(k&&strcmp(k,"input_buf_hex")==0){ char*h=js_read_string(s); fx->input_buf_exp_len=hex_decode(h,fx->input_buf_exp,sizeof fx->input_buf_exp); free(h); } else { js_skip_value(s); } free(k); }
-}
+/* (P1c: parse_snapshot removed — the duplex-triple snapshot is informational
+ * here; the challenge-match gate below is the real check.) */
 
 static void wire_proof(gx_t *fx){
     fx->proof.commit_phase_commits=fx->commits; fx->proof.num_commit_phase_commits=fx->num_commits;
@@ -279,8 +286,6 @@ int main(int argc,char **argv){
         else if(k&&strcmp(k,"public_values")==0)parse_public_values(&s,fx);
         else if(k&&strcmp(k,"challenges")==0)parse_challenges(&s,fx);
         else if(k&&strcmp(k,"opened_values")==0)parse_opened(&s,fx);
-        else if(k&&strcmp(k,"transcript_snapshot_at_verify_fri_entry")==0)parse_snapshot(&s,fx);
-        else if(k&&strcmp(k,"init_state_hex")==0){ char*h=js_read_string(&s); fx->init_state_len=hex_decode(h,fx->init_state,sizeof fx->init_state); free(h); }
         else js_skip_value(&s);
         free(k);
     }
@@ -298,7 +303,11 @@ int main(int argc,char **argv){
     for(size_t c=0;c<fx->num_quot_chunks_parsed;c++){ qcptr[c]=fx->quot_chunk[c]; qclen[c]=fx->quot_chunk_len[c]; }
     in.quotient_chunks=qcptr; in.quotient_chunk_lens=qclen; in.num_quotient_chunks=fx->num_quot_chunks_parsed;
 
-    dnac_transcript_t *t=dnac_transcript_init(fx->init_state,fx->init_state_len);
+    /* P1c (TODO resolved at the P1d regen): the oracle primes from the
+     * DS-prefixed production transcript (vector metadata "init":
+     * init_state_ascii documents the prefix) => init_default here; the
+     * alpha/zeta/zeta_next gate below proves the replay matches. */
+    dnac_transcript_t *t=dnac_transcript_init_default();
     if(!t){ fprintf(stderr,"transcript init failed\n"); return 1; }
     dnac_stark_priming_out_t out; memset(&out,0,sizeof out);
     if(dnac_stark_prime_transcript(t,&in,&out)!=DNAC_STARK_PRIMING_OK){ fprintf(stderr,"priming failed\n"); return 1; }

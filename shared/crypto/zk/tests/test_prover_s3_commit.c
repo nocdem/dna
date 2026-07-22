@@ -121,26 +121,33 @@ int main(int argc, char **argv) {
 
     static uint64_t lde_vec[S3_LDE_CELLS];
     static uint64_t draws[S3_DRAWS];
-    uint8_t root_expect[DNAC_MERKLE_DIGEST_BYTES];
+    /* P1c: root = 32-byte hex -> 4 LE lanes */
+    uint8_t root_bytes[32];
+    dnac_p2_digest_t root_expect;
     if (!parse_u64_array(src, "lde_bitrev", lde_vec, S3_LDE_CELLS) ||
         !parse_u64_array(src, "random_draws", draws, S3_DRAWS) ||
-        !parse_hex_bytes(src, "trace_commit_root_hex", root_expect,
-                         DNAC_MERKLE_DIGEST_BYTES)) {
+        !parse_hex_bytes(src, "trace_commit_root_hex", root_bytes,
+                         sizeof root_bytes)) {
         fprintf(stderr, "vector parse FAIL\n");
         free(src);
         return 2;
+    }
+    for (int i = 0; i < 4; i++) {
+        uint64_t v = 0;
+        for (int j = 0; j < 8; j++) v |= (uint64_t)root_bytes[i * 8 + j] << (8 * j);
+        root_expect.lanes[i] = v;
     }
 
     int failed = 0;
 
     /* ---- T1: isolated S3 — commit the oracle's committed matrix ---- */
-    dnac_merkle_tree_t *tree = NULL;
+    dnac_p2_mmcs_tree_t *tree = NULL;
     {
-        uint8_t root[DNAC_MERKLE_DIGEST_BYTES];
+        dnac_p2_digest_t root;
         int bad = 1;
-        if (dnac_prover_commit_matrix(lde_vec, S3_LDE_H, S3_RAND_W, NULL, 0, root,
+        if (dnac_prover_commit_matrix(lde_vec, S3_LDE_H, S3_RAND_W, NULL, 0, &root,
                                       &tree) == DNAC_PROVER_OK) {
-            bad = memcmp(root, root_expect, sizeof(root)) != 0;
+            bad = memcmp(&root, &root_expect, sizeof(root)) != 0;
         }
         if (bad) failed++;
         printf("T1 S3 commit(lde_bitrev) == proof.commitments.trace     %s\n",
@@ -152,8 +159,8 @@ int main(int argc, char **argv) {
         static uint64_t base_c[S3_H * S3_W];
         static uint64_t randomized_c[2u * S3_H * S3_RAND_W];
         static uint64_t lde_c[S3_LDE_CELLS];
-        uint8_t root[DNAC_MERKLE_DIGEST_BYTES];
-        dnac_merkle_tree_t *chain_tree = NULL;
+        dnac_p2_digest_t root;
+        dnac_p2_mmcs_tree_t *chain_tree = NULL;
         const uint64_t amounts[4] = {10, 20, 30, 40};
         int bad = 1;
         if (dnac_prover_build_range_proof_trace(amounts, 4, 4, base_c, NULL) ==
@@ -162,11 +169,11 @@ int main(int argc, char **argv) {
                                         randomized_c) == DNAC_PROVER_OK &&
             dnac_prover_coset_lde_bitrev(randomized_c, 2 * S3_H, S3_RAND_W, 2,
                                          7, lde_c) == DNAC_PROVER_OK &&
-            dnac_prover_commit_matrix(lde_c, S3_LDE_H, S3_RAND_W, NULL, 0, root,
+            dnac_prover_commit_matrix(lde_c, S3_LDE_H, S3_RAND_W, NULL, 0, &root,
                                       &chain_tree) == DNAC_PROVER_OK) {
-            bad = memcmp(root, root_expect, sizeof(root)) != 0;
+            bad = memcmp(&root, &root_expect, sizeof(root)) != 0;
         }
-        dnac_merkle_tree_free(chain_tree);
+        dnac_p2_mmcs_tree_free(chain_tree);
         if (bad) failed++;
         printf("T2 full chain S1->S2->S3 root == real trace commitment  %s\n",
                bad ? "FAIL" : "PASS");
@@ -177,23 +184,21 @@ int main(int argc, char **argv) {
         int bad = 0;
         const uint64_t idx[2] = {0, 31};
         for (size_t k = 0; k < 2 && tree != NULL; k++) {
-            dnac_merkle_digest_t sib[5]; /* depth = log2(32) */
-            dnac_merkle_proof_t proof;
+            dnac_p2_digest_t sib[5]; /* depth = log2(32) */
+            dnac_p2_proof_t proof;
             memset(&proof, 0, sizeof(proof));
             proof.siblings = sib;
-            proof.depth = 5;
-            const uint8_t *leaf = NULL;
-            size_t leaf_len = 0;
-            if (dnac_merkle_open(tree, idx[k], &leaf, &leaf_len, &proof) !=
-                    DNAC_MERKLE_OK ||
-                leaf_len != S3_RAND_W * 8) {
+            const uint64_t *rows[1] = {NULL};
+            if (dnac_p2_mmcs_open_batch(tree, idx[k], rows, &proof) !=
+                    DNAC_P2M_OK ||
+                proof.depth != 5 ||
+                dnac_p2_mmcs_tree_width(tree, 0) != S3_RAND_W) {
                 bad++;
                 continue;
             }
-            dnac_merkle_digest_t root_d;
-            memcpy(root_d.bytes, root_expect, sizeof(root_d.bytes));
-            if (dnac_merkle_verify(&root_d, leaf, leaf_len, &proof) !=
-                DNAC_MERKLE_OK) {
+            const size_t widths[1] = {S3_RAND_W};
+            if (dnac_p2_mmcs_verify(&root_expect, rows, widths, 1, S3_LDE_H,
+                                    idx[k], sib, 5) != DNAC_P2M_OK) {
                 bad++;
             }
         }
@@ -202,27 +207,27 @@ int main(int argc, char **argv) {
         printf("T3 open(0,31) + verify vs real root (S12 prep)          %s\n",
                bad ? "FAIL" : "PASS");
     }
-    dnac_merkle_tree_free(tree);
+    dnac_p2_mmcs_tree_free(tree);
 
     /* ---- T4: fail-close guards ---- */
     {
         static uint64_t bad_mat[S3_LDE_CELLS];
-        uint8_t root[DNAC_MERKLE_DIGEST_BYTES];
-        dnac_merkle_tree_t *t = NULL;
+        dnac_p2_digest_t root;
+        dnac_p2_mmcs_tree_t *t = NULL;
         int bad = 0;
         memcpy(bad_mat, lde_vec, sizeof(bad_mat));
         bad_mat[7] = GOLDILOCKS_P; /* non-canonical cell */
-        if (dnac_prover_commit_matrix(bad_mat, S3_LDE_H, S3_RAND_W, NULL, 0, root, &t) !=
+        if (dnac_prover_commit_matrix(bad_mat, S3_LDE_H, S3_RAND_W, NULL, 0, &root, &t) !=
                 DNAC_PROVER_ERR_NONCANONICAL ||
             t != NULL)
             bad++;
         t = NULL;
-        if (dnac_prover_commit_matrix(lde_vec, 24, S3_RAND_W, NULL, 0, root, &t) !=
+        if (dnac_prover_commit_matrix(lde_vec, 24, S3_RAND_W, NULL, 0, &root, &t) !=
                 DNAC_PROVER_ERR_PARAM /* non-power-of-two height */
             || t != NULL)
             bad++;
         t = NULL;
-        if (dnac_prover_commit_matrix(lde_vec, S3_LDE_H, 0, NULL, 0, root, &t) !=
+        if (dnac_prover_commit_matrix(lde_vec, S3_LDE_H, 0, NULL, 0, &root, &t) !=
                 DNAC_PROVER_ERR_PARAM ||
             t != NULL)
             bad++;

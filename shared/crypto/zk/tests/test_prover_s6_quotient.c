@@ -197,9 +197,9 @@ int main(int argc, char **argv) {
     static uint64_t base_c[S6_H * S6_W];
     static uint64_t randomized_c[2u * S6_H * S6_RAND_W];
     static uint64_t lde_c[S6_LDE_CELLS];
-    uint8_t root_c[DNAC_MERKLE_DIGEST_BYTES];
+    dnac_p2_digest_t root_c;
     {
-        dnac_merkle_tree_t *tree = NULL;
+        dnac_p2_mmcs_tree_t *tree = NULL;
         const uint64_t amounts[4] = {10, 20, 30, 40};
         if (dnac_prover_build_range_proof_trace(amounts, 4, 4, base_c, NULL) !=
                 DNAC_PROVER_OK ||
@@ -207,14 +207,14 @@ int main(int argc, char **argv) {
                                         randomized_c) != DNAC_PROVER_OK ||
             dnac_prover_coset_lde_bitrev(randomized_c, 2 * S6_H, S6_RAND_W, 2,
                                          7, lde_c) != DNAC_PROVER_OK ||
-            dnac_prover_commit_matrix(lde_c, S6_LDE_H, S6_RAND_W, NULL, 0, root_c,
+            dnac_prover_commit_matrix(lde_c, S6_LDE_H, S6_RAND_W, NULL, 0, &root_c,
                                       &tree) != DNAC_PROVER_OK) {
             fprintf(stderr, "chain rebuild FAIL\n");
             free(s6);
             free(s2);
             return 2;
         }
-        dnac_merkle_tree_free(tree);
+        dnac_p2_mmcs_tree_free(tree);
     }
 
     /* ---- T1: chain alpha == the REAL vector alpha ---- */
@@ -224,7 +224,7 @@ int main(int argc, char **argv) {
         dnac_transcript_t *t = dnac_transcript_init_default();
         int bad = 1;
         if (t != NULL &&
-            dnac_prover_fs_to_alpha(t, 3, 2, 0, root_c, publics, 3, &alpha) ==
+            dnac_prover_fs_to_alpha(t, 3, 2, 0, &root_c, publics, 3, &alpha) ==
                 DNAC_PROVER_OK) {
             bad = !(gold_fp_to_u64(alpha.a) == alpha_vec[0] &&
                     gold_fp_to_u64(alpha.b) == alpha_vec[1]);

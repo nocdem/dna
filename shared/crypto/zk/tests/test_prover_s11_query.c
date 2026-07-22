@@ -130,10 +130,9 @@ int main(int argc, char **argv) {
     static uint64_t sf[QS], sl[QS], st[QS], iv[QS];
     static gold_fp2_t r_open[CW], t_open[RAND_W], t_open_n[RAND_W], q_open[NQ * CW];
     static gold_fp2_t ro[LDE_H];
-    uint8_t troot[DNAC_MERKLE_DIGEST_BYTES], qroot[DNAC_MERKLE_DIGEST_BYTES],
-        rroot[DNAC_MERKLE_DIGEST_BYTES];
-    dnac_merkle_tree_t *ttree = NULL, *rtree = NULL;
-    dnac_merkle_batch_tree_t *qtree = NULL;
+    dnac_p2_digest_t troot, qroot, rroot;
+    dnac_p2_mmcs_tree_t *ttree = NULL, *rtree = NULL;
+    dnac_p2_mmcs_tree_t *qtree = NULL;
     dnac_transcript_t *t = dnac_transcript_init_default();
     dnac_prover_fri_result_t res;
     memset(&res, 0, sizeof(res));
@@ -145,14 +144,14 @@ int main(int argc, char **argv) {
               dnac_prover_build_range_proof_trace(amounts, 4, 4, base_c, NULL) == DNAC_PROVER_OK &&
               dnac_prover_randomize_trace(base_c, H, W, R, trace_draws, randomized_c) == DNAC_PROVER_OK &&
               dnac_prover_coset_lde_bitrev(randomized_c, 2 * H, RAND_W, 2, 7, lde_c) == DNAC_PROVER_OK &&
-              dnac_prover_commit_matrix(lde_c, LDE_H, RAND_W, NULL, 0, troot, &ttree) == DNAC_PROVER_OK &&
-              dnac_prover_fs_to_alpha(t, 3, 2, 0, troot, publics, 3, &alpha) == DNAC_PROVER_OK &&
+              dnac_prover_commit_matrix(lde_c, LDE_H, RAND_W, NULL, 0, &troot, &ttree) == DNAC_PROVER_OK &&
+              dnac_prover_fs_to_alpha(t, 3, 2, 0, &troot, publics, 3, &alpha) == DNAC_PROVER_OK &&
               dnac_prover_quotient_selectors(2, 4, 7, sf, sl, st, iv) == DNAC_PROVER_OK &&
               dnac_prover_trace_on_quotient_domain(lde_c, LDE_H, RAND_W, QS, W, trace_q) == DNAC_PROVER_OK &&
               dnac_prover_quotient_values_range_zk(trace_q, QS, 4, publics, alpha, sf, sl, st, iv, qflat) == DNAC_PROVER_OK &&
-              dnac_prover_quotient_commit(qflat, QS, NQ, 4, 2, 7, codeword, blinding, NULL, 0, chunk_ldes, qroot, &qtree) == DNAC_PROVER_OK &&
-              dnac_prover_random_commit(r_draws, 8, CW, 2, NULL, 0, r_lde, rroot, &rtree) == DNAC_PROVER_OK &&
-              dnac_prover_fs_to_zeta(t, qroot, rroot, 2, &zeta, &zeta_next) == DNAC_PROVER_OK &&
+              dnac_prover_quotient_commit(qflat, QS, NQ, 4, 2, 7, codeword, blinding, NULL, 0, chunk_ldes, &qroot, &qtree) == DNAC_PROVER_OK &&
+              dnac_prover_random_commit(r_draws, 8, CW, 2, NULL, 0, r_lde, &rroot, &rtree) == DNAC_PROVER_OK &&
+              dnac_prover_fs_to_zeta(t, &qroot, &rroot, 2, &zeta, &zeta_next) == DNAC_PROVER_OK &&
               dnac_prover_open_matrix_at(r_lde, LDE_H, CW, 2, zeta, r_open) == DNAC_PROVER_OK &&
               dnac_prover_open_matrix_at(lde_c, LDE_H, RAND_W, 2, zeta, t_open) == DNAC_PROVER_OK &&
               dnac_prover_open_matrix_at(lde_c, LDE_H, RAND_W, 2, zeta_next, t_open_n) == DNAC_PROVER_OK)) {
@@ -208,38 +207,45 @@ int main(int argc, char **argv) {
     /* ---- T2: S12 input openings — open + verify each tree at each index ---- */
     {
         int bad = 0;
-        dnac_merkle_digest_t troot_d, rroot_d, qroot_d;
-        memcpy(troot_d.bytes, troot, 64);
-        memcpy(rroot_d.bytes, rroot, 64);
-        memcpy(qroot_d.bytes, qroot, 64);
         for (size_t q = 0; q < NUM_QUERIES; q++) {
             uint64_t index = idx_c[q];
-            dnac_merkle_digest_t sib[5];
-            dnac_merkle_proof_t pr;
-            const uint8_t *leaf = NULL;
-            size_t leaf_len = 0;
+            dnac_p2_digest_t sib[5];
+            dnac_p2_proof_t pr;
             /* random tree */
-            memset(&pr, 0, sizeof(pr)); pr.siblings = sib; pr.depth = 5;
-            if (dnac_merkle_open(rtree, index, &leaf, &leaf_len, &pr) != DNAC_MERKLE_OK ||
-                leaf_len != CW * 8 ||
-                dnac_merkle_verify(&rroot_d, leaf, leaf_len, &pr) != DNAC_MERKLE_OK)
-                bad++;
-            /* trace tree */
-            memset(&pr, 0, sizeof(pr)); pr.siblings = sib; pr.depth = 5;
-            if (dnac_merkle_open(ttree, index, &leaf, &leaf_len, &pr) != DNAC_MERKLE_OK ||
-                leaf_len != RAND_W * 8 ||
-                dnac_merkle_verify(&troot_d, leaf, leaf_len, &pr) != DNAC_MERKLE_OK)
-                bad++;
-            /* quotient batch tree (4 matrices) */
-            memset(&pr, 0, sizeof(pr)); pr.siblings = sib; pr.depth = 5;
-            const uint8_t *rows[NQ];
-            size_t row_lens[NQ];
-            if (dnac_merkle_batch_open(qtree, index, rows, &pr) != DNAC_MERKLE_OK)
-                bad++;
-            else {
-                for (size_t m = 0; m < NQ; m++) row_lens[m] = CW * 8;
-                if (dnac_merkle_batch_verify(&qroot_d, rows, row_lens, NQ, LDE_H, &pr) != DNAC_MERKLE_OK)
+            memset(&pr, 0, sizeof(pr)); pr.siblings = sib;
+            {
+                const uint64_t *rows1[1] = {NULL};
+                const size_t w1[1] = {CW};
+                if (dnac_p2_mmcs_open_batch(rtree, index, rows1, &pr) != DNAC_P2M_OK ||
+                    dnac_p2_mmcs_tree_width(rtree, 0) != CW ||
+                    dnac_p2_mmcs_verify(&rroot, rows1, w1, 1, LDE_H, index, sib,
+                                        pr.depth) != DNAC_P2M_OK)
                     bad++;
+            }
+            /* trace tree */
+            memset(&pr, 0, sizeof(pr)); pr.siblings = sib;
+            {
+                const uint64_t *rows1[1] = {NULL};
+                const size_t w1[1] = {RAND_W};
+                if (dnac_p2_mmcs_open_batch(ttree, index, rows1, &pr) != DNAC_P2M_OK ||
+                    dnac_p2_mmcs_tree_width(ttree, 0) != RAND_W ||
+                    dnac_p2_mmcs_verify(&troot, rows1, w1, 1, LDE_H, index, sib,
+                                        pr.depth) != DNAC_P2M_OK)
+                    bad++;
+            }
+            /* quotient batch tree (4 matrices) */
+            memset(&pr, 0, sizeof(pr)); pr.siblings = sib;
+            {
+                const uint64_t *rows[NQ];
+                size_t row_lens[NQ];
+                if (dnac_p2_mmcs_open_batch(qtree, index, rows, &pr) != DNAC_P2M_OK)
+                    bad++;
+                else {
+                    for (size_t m = 0; m < NQ; m++) row_lens[m] = CW;
+                    if (dnac_p2_mmcs_verify(&qroot, rows, row_lens, NQ, LDE_H,
+                                            index, sib, pr.depth) != DNAC_P2M_OK)
+                        bad++;
+                }
             }
         }
         if (bad) failed++;
@@ -250,18 +256,17 @@ int main(int argc, char **argv) {
     /* ---- T3: S12 commit-phase openings — layer tree at group_index ---- */
     {
         int bad = 0;
-        dnac_merkle_digest_t cproot_d;
-        memcpy(cproot_d.bytes, res.roots[0], 64);
         for (size_t q = 0; q < NUM_QUERIES; q++) {
             uint64_t group_index = idx_c[q] >> 1; /* log_arity 1 */
-            dnac_merkle_digest_t sib[4]; /* height-16 tree depth 4 */
-            dnac_merkle_proof_t pr;
-            memset(&pr, 0, sizeof(pr)); pr.siblings = sib; pr.depth = 4;
-            const uint8_t *leaf = NULL;
-            size_t leaf_len = 0;
-            if (dnac_merkle_open(res.layer_trees[0], group_index, &leaf, &leaf_len, &pr) != DNAC_MERKLE_OK ||
-                leaf_len != 4 * 8 || /* arity 2 fp2 = 4 base u64 */
-                dnac_merkle_verify(&cproot_d, leaf, leaf_len, &pr) != DNAC_MERKLE_OK)
+            dnac_p2_digest_t sib[4]; /* height-16 tree depth 4 */
+            dnac_p2_proof_t pr;
+            memset(&pr, 0, sizeof(pr)); pr.siblings = sib;
+            const uint64_t *rows1[1] = {NULL};
+            const size_t w1[1] = {4}; /* arity 2 fp2 = 4 base lanes */
+            if (dnac_p2_mmcs_open_batch(res.layer_trees[0], group_index, rows1, &pr) != DNAC_P2M_OK ||
+                dnac_p2_mmcs_tree_width(res.layer_trees[0], 0) != 4 ||
+                dnac_p2_mmcs_verify(&res.roots[0], rows1, w1, 1, 16, group_index,
+                                    sib, pr.depth) != DNAC_P2M_OK)
                 bad++;
         }
         if (bad) failed++;
@@ -271,9 +276,9 @@ int main(int argc, char **argv) {
 
     dnac_prover_fri_result_free(&res);
     dnac_transcript_free(t);
-    dnac_merkle_tree_free(ttree);
-    dnac_merkle_tree_free(rtree);
-    dnac_merkle_batch_tree_free(qtree);
+    dnac_p2_mmcs_tree_free(ttree);
+    dnac_p2_mmcs_tree_free(rtree);
+    dnac_p2_mmcs_tree_free(qtree);
     free(j11); free(j8); free(j7); free(j2);
     if (failed == 0) {
         printf("test_prover_s11_query: PASS\n");

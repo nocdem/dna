@@ -42,7 +42,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "merkle_smt.h"
+#include "poseidon2_mmcs.h" /* P1c: Poseidon2 MMCS (SHA3 merkle_smt retired) */
 #include "range_air.h"
 #include "sum_balance.h"
 #include "transcript.h"
@@ -202,24 +202,22 @@ dnac_prover_status_t dnac_prover_coset_lde_bitrev(
  * ========================================================================== */
 
 /**
- * Commit a row-major field matrix: serialize each row as canonical u64 LE
- * (8 bytes/element, columns left-to-right — Plonky3 82cfad73
- * merkle-tree/src/merkle_tree.rs:302-322 leaf hashing over the row via the
- * u8-serializing SHA3-512 hasher) and build the binary SHA3-512 Merkle tree
- * via the existing oracle-byte-matched dnac_merkle_commit (leaf =
- * SHA3-512(row bytes), parent = SHA3-512(left ‖ right), cap_height=0 ⇒
- * commitment = single 64-byte root). The matrix must arrive ALREADY
+ * Commit a row-major field matrix (P1c Poseidon2): leaf = the row's canonical
+ * LANES (‖ salt lanes when salted) hashed with PaddingFreeSponge<8,4,4>,
+ * parent = TruncatedPermutation<2,4,8>, cap_height=0 ⇒ one 4-lane root
+ * (merkle-tree/src/merkle_tree.rs first_digest_layer over the flattened row
+ * stream; poseidon2_mmcs.h contract). The matrix must arrive ALREADY
  * bit-reversed (S2 output) — no reordering happens here
  * (two_adic_pcs.rs:317-324: bit_reverse_rows precedes mmcs.commit).
  *
  * On success *out_tree owns the tree (keep it: the FRI query stage opens
- * rows/paths from it); free with dnac_merkle_tree_free. out_root receives
- * the 64-byte commitment (== proof.commitments.trace for the trace commit).
+ * rows/paths from it); free with dnac_p2_mmcs_tree_free. out_root receives
+ * the 4-lane commitment (== proof.commitments.trace for the trace commit).
  *
  * @param mat      height x width row-major canonical field elements.
  * @param height   power of two, >= 2 (Merkle build requirement).
  * @param width    >= 1.
- * @param out_root 64-byte commitment digest.
+ * @param out_root 4-lane commitment digest.
  * @param out_tree owned tree handle (required — the prover must retain it).
  */
 dnac_prover_status_t dnac_prover_commit_matrix(
@@ -228,8 +226,8 @@ dnac_prover_status_t dnac_prover_commit_matrix(
     size_t width,
     const uint64_t *salts,     /* M3b: [height*salt_elems] or NULL (unsalted) */
     size_t          salt_elems,/* 0 = plain leaf; >0 = salted leaf row‖salts */
-    uint8_t out_root[DNAC_MERKLE_DIGEST_BYTES],
-    dnac_merkle_tree_t **out_tree);
+    dnac_p2_digest_t *out_root,
+    dnac_p2_mmcs_tree_t **out_tree);
 
 /* ============================================================================
  * S5 — Fiat-Shamir to alpha (prover-side transcript sequencer)
@@ -268,7 +266,7 @@ dnac_prover_status_t dnac_prover_fs_to_alpha(
     uint64_t log_ext_degree,
     uint64_t log_degree,
     uint64_t preprocessed_width,
-    const uint8_t trace_root[DNAC_MERKLE_DIGEST_BYTES],
+    const dnac_p2_digest_t *trace_root,
     const uint64_t *publics,
     size_t n_publics,
     gold_fp2_t *out_alpha);
@@ -386,9 +384,9 @@ dnac_prover_status_t dnac_prover_quotient_split(
  *      v_H(X)*t_c(X) built from the blinding block (vanishing-poly coeff
  *      trick, hiding_pcs.rs:229-247: coeff[r] = −7^r·t, coeff[h+r] = p·7^r·t,
  *      p = lde_shift^h; plain forward DFT), elementwise add, bit-reverse rows;
- *   6. ONE SHA3-512 multi-matrix commit over the num_chunks 32x6 matrices
- *      (equal height ⇒ leaf = concatenated rows; existing Phase 2A
- *      dnac_merkle_batch_commit, byte-matched to MerkleTreeMmcs).
+ *   6. ONE Poseidon2 multi-matrix commit over the num_chunks 32x6 matrices
+ *      (equal height ⇒ leaf = concatenated rows' lanes;
+ *      dnac_p2_mmcs_commit, byte-matched to MerkleTreeMmcs — P1c).
  *
  * codeword_rand: num_chunks * rows_per_chunk * num_random values (M3a: 64).
  * blinding_rand: (num_chunks−1) * rows_per_chunk * (2+num_random) (M3a: 72).
@@ -398,7 +396,7 @@ dnac_prover_status_t dnac_prover_quotient_split(
  * out_chunk_ldes (required): num_chunks * lde_height * (2+num_random) cells —
  * the final bit-reversed blinded LDEs (also the S12 open source).
  * out_tree: the batch tree (keep for FRI query openings; free with
- * dnac_merkle_batch_tree_free).
+ * dnac_p2_mmcs_tree_free).
  */
 dnac_prover_status_t dnac_prover_quotient_commit(
     const uint64_t *quotient_flat,
@@ -412,8 +410,8 @@ dnac_prover_status_t dnac_prover_quotient_commit(
     const uint64_t *salts,      /* M3b: [num_chunks*lde_h*salt_elems] or NULL */
     size_t          salt_elems,
     uint64_t *out_chunk_ldes,
-    uint8_t out_root[DNAC_MERKLE_DIGEST_BYTES],
-    dnac_merkle_batch_tree_t **out_tree);
+    dnac_p2_digest_t *out_root,
+    dnac_p2_mmcs_tree_t **out_tree);
 
 /* ============================================================================
  * S8 — randomization-poly commit + Fiat-Shamir to zeta
@@ -426,7 +424,7 @@ dnac_prover_status_t dnac_prover_quotient_commit(
  * 48 values, row-major draw order per DenseMatrix::rand, dense.rs:527-533;
  * width = num_random_codewords + 2), committed via the PLAIN inner PCS —
  * coset LDE (blowup log_blowup, shift GENERATOR=7 on the natural
- * ext-trace domain) + bit-reversed rows + single-matrix SHA3-512 Merkle.
+ * ext-trace domain) + bit-reversed rows + single-matrix Poseidon2 Merkle (P1c).
  * Pure reuse of the S2 LDE + S3 commit machinery; its generation touches the
  * transcript nowhere (the ROOT is observed later, in fs_to_zeta).
  *
@@ -441,8 +439,8 @@ dnac_prover_status_t dnac_prover_random_commit(
     const uint64_t *salts,     /* M3b: [(height<<log_blowup)*salt_elems] or NULL */
     size_t          salt_elems,
     uint64_t *out_lde,
-    uint8_t out_root[DNAC_MERKLE_DIGEST_BYTES],
-    dnac_merkle_tree_t **out_tree);
+    dnac_p2_digest_t *out_root,
+    dnac_p2_mmcs_tree_t **out_tree);
 
 /**
  * Drive the prover transcript from the post-alpha state to zeta (Plonky3
@@ -456,8 +454,8 @@ dnac_prover_status_t dnac_prover_random_commit(
  */
 dnac_prover_status_t dnac_prover_fs_to_zeta(
     dnac_transcript_t *t,
-    const uint8_t quotient_root[DNAC_MERKLE_DIGEST_BYTES],
-    const uint8_t *random_root,
+    const dnac_p2_digest_t *quotient_root,
+    const dnac_p2_digest_t *random_root, /* NULL for is_zk=0 (observe skipped) */
     uint64_t base_degree_bits,
     gold_fp2_t *out_zeta,
     gold_fp2_t *out_zeta_next);
@@ -553,14 +551,14 @@ dnac_prover_status_t dnac_prover_fri_reduced_openings(
  *  retained per-layer leaf matrices + trees (for the S12 query openings). */
 typedef struct {
     size_t num_rounds;
-    uint8_t roots[DNAC_PROVER_MAX_FRI_ROUNDS][DNAC_MERKLE_DIGEST_BYTES];
+    dnac_p2_digest_t roots[DNAC_PROVER_MAX_FRI_ROUNDS];
     gold_fp2_t betas[DNAC_PROVER_MAX_FRI_ROUNDS];
     unsigned log_arities[DNAC_PROVER_MAX_FRI_ROUNDS];
     /* retained for S12: pre-fold layer matrix (height_r x arity fp2) + tree */
     gold_fp2_t *layer_leaves[DNAC_PROVER_MAX_FRI_ROUNDS];
     size_t layer_heights[DNAC_PROVER_MAX_FRI_ROUNDS]; /* rows */
     unsigned layer_log_arities[DNAC_PROVER_MAX_FRI_ROUNDS];
-    dnac_merkle_tree_t *layer_trees[DNAC_PROVER_MAX_FRI_ROUNDS];
+    dnac_p2_mmcs_tree_t *layer_trees[DNAC_PROVER_MAX_FRI_ROUNDS];
     size_t final_poly_len;
     gold_fp2_t final_poly[DNAC_PROVER_MAX_FINAL_POLY];
     /* P1: PoW grinding witnesses (per-round commit PoW + one query PoW). All 0
@@ -575,7 +573,7 @@ void dnac_prover_fri_result_free(dnac_prover_fri_result_t *res);
 /**
  * FRI commit phase (Plonky3 82cfad73 fri/src/prover.rs:180-257): while the
  * codeword length exceeds blowup·final_poly_len, reinterpret it as a height×
- * arity matrix, ExtensionMmcs-commit it (SHA3-512 Merkle over flattened fp2
+ * arity matrix, ExtensionMmcs-commit it (Poseidon2 Merkle over flattened fp2
  * rows), observe the root, grind(commit_pow_bits), sample beta, fold with
  * beta. Then truncate to final_poly_len, bit-reverse, inverse-NTT to
  * coefficients, and observe them; finally observe each round's log_arity and

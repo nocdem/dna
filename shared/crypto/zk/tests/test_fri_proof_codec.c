@@ -33,6 +33,28 @@
 
 #include "fri_proof_codec.h"
 
+/* P1c: the wire vector's seed_hex is the primed duplex triple as a FIXED
+ * 144-byte blob (18 u64-LE: sponge[8] ‖ input_len ‖ input[4] ‖ output_len ‖
+ * output[4]). Injected via the DNAC_TRANSCRIPT_TESTING accessor. */
+#ifndef DNAC_TRANSCRIPT_TESTING
+#error "test_fri_proof_codec requires -DDNAC_TRANSCRIPT_TESTING=1 (seed injection)"
+#endif
+static uint64_t seed_get_u64(const uint8_t *p){ uint64_t v=0; for(int i=0;i<8;i++)v|=(uint64_t)p[i]<<(8*i); return v; }
+static dnac_transcript_t *mk_seeded(const uint8_t *seed,size_t seed_len){
+    dnac_transcript_t *t=dnac_transcript_init_empty();
+    if(!t)return NULL;
+    if(seed_len==144){
+        dnac_duplex_t *d=(dnac_duplex_t*)dnac_transcript_test_duplex(t);
+        const uint8_t *p=seed;
+        for(int i=0;i<8;i++){ d->sponge_state[i]=seed_get_u64(p); p+=8; }
+        d->input_len=(size_t)seed_get_u64(p); p+=8;
+        for(int i=0;i<4;i++){ d->input_buffer[i]=seed_get_u64(p); p+=8; }
+        d->output_len=(size_t)seed_get_u64(p); p+=8;
+        for(int i=0;i<4;i++){ d->output_buffer[i]=seed_get_u64(p); p+=8; }
+    }
+    return t;
+}
+
 /* ===== minimal JSON scanner ===== */
 typedef struct { const char *src; size_t pos; size_t len; } js_t;
 static void js_skip_ws(js_t *s){ while(s->pos<s->len){ char c=s->src[s->pos]; if(c==' '||c=='\t'||c=='\n'||c=='\r')s->pos++; else return; } }
@@ -183,7 +205,8 @@ int main(int argc,char **argv){
         /* verify the decoded structs with a transcript primed from the seed */
         size_t ncom=0;
         const dnac_fri_commitment_with_opening_points_t *com=dnac_fri_wire_commitments(pkg,&ncom);
-        dnac_transcript_t *t=dnac_transcript_init(c->seed,c->seed_len);
+        /* P1c: prime from the vector's duplex-triple seed (verify_fri entry). */
+        dnac_transcript_t *t=mk_seeded(c->seed,c->seed_len);
         if(!t){ printf("  [FAIL] %s: transcript init\n",c->name); fails++; dnac_fri_wire_free(pkg); continue; }
         dnac_fri_status_t fs=dnac_fri_verify(dnac_fri_wire_params(pkg),dnac_fri_wire_proof(pkg),t,com,ncom);
         dnac_transcript_free(t);
@@ -206,7 +229,7 @@ int main(int argc,char **argv){
 
         /* wrapper: dnac_fri_verify_wire decode+verify+free in one call */
         dnac_fri_status_t wf=(dnac_fri_status_t)-1;
-        dnac_transcript_t *t2=dnac_transcript_init(c->seed,c->seed_len);
+        dnac_transcript_t *t2=mk_seeded(c->seed,c->seed_len);
         dnac_fri_codec_status_t wcs=dnac_fri_verify_wire(c->wire,c->wire_len,t2,&wf);
         dnac_transcript_free(t2);
         int wrap_ok = (wcs==DNAC_FRI_CODEC_OK) && (wf==(dnac_fri_status_t)c->expect_fri);

@@ -162,27 +162,31 @@ if(NOT WIN32)
 
     # ── Phase-C C1 (2026-07-21): shielded-pool ZK verify stack ─────────
     # The pinned consensus verify entry dnac_fri_verify_wire_shielded and
-    # everything it links (wire codec v2, FRI verifier, SHA3-512 transcript/
-    # sponge, Merkle-MMCS, Goldilocks field). LINKAGE ONLY — no consensus
-    # behavior change; the witness starts CALLING it at C2 (S6 roadmap).
+    # everything it links (wire codec v3, FRI verifier, Poseidon2
+    # DuplexChallenger transcript + Poseidon2 MMCS, Goldilocks field; P1c
+    # cutover — SHA3 transcript/sponge/merkle_smt retired). LINKAGE ONLY — no
+    # consensus behavior change; the witness starts CALLING it at C2 (S6 roadmap).
     # The unpinned test entry dnac_fri_verify_wire is compiled OUT here
     # (M5 gate: it exists only under DNAC_ZK_ENABLE_TEST_WIRE, which only
     # the zk standalone Makefile defines).
     # Prover-side sources (stark_prover*.c, zk_entropy.c) are deliberately
     # NOT here — proving is client-side (wallet, S7) and zk_entropy.c is
     # Linux-only; the verify stack below is portable C.
+    # P1c (2026-07-22): proof-internal hash cutover SHA3→Poseidon2 — the
+    # transcript is the DuplexChallenger (duplex_challenger.c over
+    # poseidon2_goldilocks.c, appended in the C2.1 block below) and the MMCS
+    # is poseidon2_mmcs.c; merkle_smt/sponge_sha3_512/keccak_p3 are RETIRED
+    # from the proof path (keccak_ref stays: conf_txbind consumer).
     list(APPEND NODUS_SOURCES
         ${SHARED_DIR}/crypto/zk/fri_proof_codec.c
         ${SHARED_DIR}/crypto/zk/shielded_fri_params.c
         ${SHARED_DIR}/crypto/zk/fri_verifier.c
         ${SHARED_DIR}/crypto/zk/fri_fold.c
-        ${SHARED_DIR}/crypto/zk/merkle_smt.c
+        ${SHARED_DIR}/crypto/zk/poseidon2_mmcs.c
+        ${SHARED_DIR}/crypto/zk/duplex_challenger.c
         ${SHARED_DIR}/crypto/zk/zk_field_helpers.c
         ${SHARED_DIR}/crypto/zk/field_goldilocks.c
         ${SHARED_DIR}/crypto/zk/transcript.c
-        ${SHARED_DIR}/crypto/zk/sponge_sha3_512.c
-        ${SHARED_DIR}/crypto/zk/keccak_p3_cols.c
-        ${SHARED_DIR}/crypto/zk/keccak_p3_trace.c
         ${SHARED_DIR}/crypto/zk/keccak_ref.c
     )
     # ── Phase-C C2.1 (2026-07-22): consensus shielded-statement verify ──

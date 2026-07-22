@@ -16,10 +16,11 @@
  *   - Plonky3 82cfad73: fri/src/proof.rs, fri/src/two_adic_pcs.rs,
  *     commit/src/mmcs.rs (field/struct order grounding)
  *
- * Wire layout (version 2): see design doc § 3. Header = magic "DZKF" + u16
+ * Wire layout (version 3, P1c): see design doc § 3. Header = magic "DZKF" + u16
  * version + u32 total_len; all integers little-endian; Goldilocks = canonical
- * u64-LE (decoder rejects >= p); fp2 = c0 then c1; digest = raw 64 bytes;
- * vectors = u32 count prefix; Merkle opening proof = u32 depth + depth digests.
+ * u64-LE (decoder rejects >= p); fp2 = c0 then c1; digest = 4 Goldilocks lanes
+ * = 32 bytes (each lane canonical, rejected >= p — G-DET-P1-5); vectors = u32
+ * count prefix; Merkle opening proof = u32 depth + depth digests.
  *
  * Version 2 (Phase-P tail, 2026-07-21) appends the M3b salted-leaf fields the
  * in-memory verifier structs already carry (fri_verifier.h, hiding_mmcs.rs
@@ -56,7 +57,11 @@ extern "C" {
 #define DNAC_FRI_WIRE_MAGIC1 0x5Au /* 'Z' */
 #define DNAC_FRI_WIRE_MAGIC2 0x4Bu /* 'K' */
 #define DNAC_FRI_WIRE_MAGIC3 0x46u /* 'F' */
-#define DNAC_FRI_WIRE_VERSION 2u
+/* P1c (2026-07-22): version 2 → 3 — Poseidon2 cutover changes the digest wire
+ * width 64 → 32 bytes (4 canonical Goldilocks lanes, per-lane `< p` REJECTED
+ * at decode, G-DET-P1-5). An old 64-byte-digest blob fails on VERSION, never
+ * on a shape coincidence (P1.0 F8). Clean cutover: no live proofs existed. */
+#define DNAC_FRI_WIRE_VERSION 3u
 
 /* Maximum bounds (defense-in-depth; the primary OOM guard is the
  * remaining-bytes check). Generous vs the v3.0 single-TX shape. */

@@ -65,21 +65,31 @@ typedef struct {
     uint64_t        tx_binding[4];
     const uint64_t *draws;
     size_t          num_draws;   /* must equal DNAC_CONF_PROVER_TOTAL_DRAWS */
-    /* M3b salted-leaf hiding: a fresh-SmallRng(1) salt sequence (both the
-     * input-mmcs stream A and the FRI-mmcs stream B slice this ONE buffer from
-     * their own offsets; design §3a). NULL -> unsalted (plain leaves). Length
-     * must be >= DNAC_CONF_PROVER_SALT_DRAWS(height). */
+    /* M3b salted-leaf hiding for the INPUT MMCS (stream A): a fresh-SmallRng(1)
+     * salt sequence. NULL -> unsalted (plain leaves). Length must be >=
+     * DNAC_CONF_PROVER_SALT_DRAWS(height). */
     const uint64_t *salt_draws;
     size_t          num_salt_draws;
+    /* P1e-HIGH1: FRI-mmcs salt stream B (>= DNAC_CONF_PROVER_FRI_SALT_DRAWS(h)).
+     * NULL => fall back to salt_draws@0 (KAT clone-seed parity). Production MUST
+     * set this to an INDEPENDENT entropy region — never an alias of stream A. */
+    const uint64_t *fri_salt_draws;
+    size_t          num_fri_salt_draws;
 } dnac_conf_prover_instance_t;
 
 /** SALT_ELEMS for the M3b hiding MMCS (Goldilocks 64-bit x 2 = 128-bit). */
 #define C_SALT_ELEMS 2u
 
-/** Salt draws needed: input stream A = 160h (trace 16h + quotient 128h +
- *  random 16h) is the max; the FRI stream B (< 2*sum of layer heights <
- *  2*lde_h) reuses the SAME buffer from position 0. lde_h = 8h. */
+/** Salt draws for the INPUT MMCS (stream A): trace 16h + quotient 128h +
+ *  random 16h = 160h. lde_h = 8h, SALT_ELEMS=2. Stream A ONLY. */
 #define DNAC_CONF_PROVER_SALT_DRAWS(height) ((size_t)160 * (size_t)(height))
+
+/** P1e-HIGH1: FRI-mmcs salt draws (stream B) — a SEPARATE stream from A.
+ *  Commit-phase consumes Σ(layer rows)·SE < lde_h·SE = 8h·2 = 16h. Plonky3's
+ *  FRI mmcs is an independent hiding-mmcs (make_salted_zk_config); production
+ *  must give stream B its own entropy. NULL fri_salt_draws => KAT fallback to
+ *  salt_draws@0 (byte-identical to the same-seed clone the oracle uses). */
+#define DNAC_CONF_PROVER_FRI_SALT_DRAWS(height) ((size_t)16 * (size_t)(height))
 
 /** Opaque produced proof; free with dnac_conf_prover_proof_free. */
 typedef struct dnac_conf_prover_proof_s dnac_conf_prover_proof_t;
@@ -95,18 +105,24 @@ dnac_prover_status_t dnac_conf_prover_prove(
     dnac_conf_prover_proof_t         **out_proof);
 
 /**
- * PRODUCTION entry point (G2): fills BOTH secret streams from OS entropy and
- * proves a GENUINELY SALTED (M3b leaf-hiding) proof —
- *   - the is_zk codeword/blinding stream (`draws`, 708h), AND
- *   - the salted-leaf MMCS salt stream (`salt_draws`, 160h)
- * via dnac_zk_fill_draws (rejection-sampled canonical Goldilocks, fail-close).
- * Same instance fields as dnac_conf_prover_prove EXCEPT `draws`/`num_draws` AND
- * `salt_draws`/`num_salt_draws` are IGNORED (filled internally). Use this in a
- * wallet — it delivers BOTH the is_zk randomization AND the leaf-salt hiding
- * that keeps the committed trace rows (confidential amounts/blinds) hidden at
- * the FRI query openings. Use dnac_conf_prover_prove with fixed streams only for
- * byte-stable KATs. Returns DNAC_PROVER_ERR_PARAM if the instance shape is
- * invalid or entropy fails (fail-close — never a partial or non-hiding proof).
+ * G2 entry: fills BOTH secret streams from OS entropy (the is_zk
+ * codeword/blinding stream `draws`, 708h, AND the salted-leaf MMCS salt stream
+ * `salt_draws`, 160h, plus the independent FRI-salt stream B, P1e-HIGH1) via
+ * dnac_zk_fill_draws (rejection-sampled canonical Goldilocks, fail-close). Same
+ * instance fields as dnac_conf_prover_prove EXCEPT the draw/salt streams are
+ * IGNORED (filled internally). Returns DNAC_PROVER_ERR_PARAM on invalid shape or
+ * entropy failure (fail-close — never a partial or non-hiding proof).
+ *
+ * ⚠ WARNING — NOT CONSENSUS-STRENGTH (P1e-F / S7-MED2). Despite the
+ * "production" name this proves at the conf leaf-AIR's KAT parameters
+ * (C_NUM_QUERIES=2, log_final_poly_len=2, PoW 0/0 ⇒ ~4-bit query soundness),
+ * NOT the pinned shielded params. It provides genuine hiding (OS entropy +
+ * independent salt streams) but MUST NOT gate real value. The shielded
+ * consensus prover is dnac_agg_prover_prove_production (AGG_CFG_SHIELDED:
+ * 100 queries + 16-bit query-PoW ⇒ 216-bit conjectured), which is the only
+ * proof dnac_fri_verify_wire_shielded accepts (its param pin rejects this
+ * conf proof outright). Making conf itself consensus-strength requires a
+ * cfg-parametrized conf prove (mirror of agg_prove_cfg) — a separate task.
  */
 dnac_prover_status_t dnac_conf_prover_prove_production(
     const dnac_conf_prover_instance_t *inst,
@@ -119,9 +135,9 @@ dnac_fri_status_t dnac_conf_prover_proof_verify(const dnac_conf_prover_proof_t *
 void dnac_conf_prover_proof_zeta(const dnac_conf_prover_proof_t *p,
                                  gold_fp2_t *zeta, gold_fp2_t *zeta_next);
 void dnac_conf_prover_proof_roots(const dnac_conf_prover_proof_t *p,
-                                  uint8_t trace_root[DNAC_MERKLE_DIGEST_BYTES],
-                                  uint8_t quot_root[DNAC_MERKLE_DIGEST_BYTES],
-                                  uint8_t rand_root[DNAC_MERKLE_DIGEST_BYTES]);
+                                  dnac_p2_digest_t *trace_root,
+                                  dnac_p2_digest_t *quot_root,
+                                  dnac_p2_digest_t *rand_root);
 const gold_fp2_t *dnac_conf_prover_proof_final_poly(
     const dnac_conf_prover_proof_t *p, size_t *out_len);
 /** The 17 public values (base field, §4b flat order), borrowed. */

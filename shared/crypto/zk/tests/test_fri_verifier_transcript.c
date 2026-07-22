@@ -9,13 +9,15 @@
  * dnac_fri_test_transcript_flow() and byte-compares the transcript buffer state
  * after every one of the 18 milestones (verifier.rs:143-268 Fiat-Shamir
  * sequence). The sampled-VALUE correctness of each primitive (sample_fp2,
- * sample_bits, observe_*) is already pinned by test_transcript_oracle; this test
- * pins the verify_fri SEQUENCE (which op, in what order, with what argument).
+ * sample_bits, observe_*) is already pinned by test_duplex_challenger (P1c);
+ * this test pins the verify_fri SEQUENCE (which op, in what order, with what
+ * argument).
  *
  * Buffer-state alone cannot distinguish sample_bits(3) from sample_bits(4)
  * (same byte consumption, different mask), so we ALSO assert the flow's
- * log_global_max_height (== 4) and the masked query indices (== {3, 12}) — the
- * one value F5's open_input will consume.
+ * log_global_max_height (== 4) and the masked query indices (== {8, 8} under
+ * the P1c Poseidon2 config — the regenerated vector's oracle-gated
+ * result.sampled_index values) — the one value F5's open_input will consume.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: Apache-2.0
@@ -30,7 +32,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "fri_verifier.h"   /* pulls transcript.h, field_goldilocks.h, merkle_smt.h */
+#include "fri_verifier.h"   /* pulls transcript.h, field_goldilocks.h, poseidon2_mmcs.h */
 
 /* ============================================================================
  * Minimal JSON scanner — same idiom as tests/test_merkle_mmcs.c.
@@ -142,27 +144,51 @@ static size_t hex_decode(const char *hex, uint8_t *buf, size_t cap) {
     }
     return n;
 }
-static void hex_print(const uint8_t *b, size_t n) {
-    for (size_t i = 0; i < n; ++i) printf("%02x", b[i]);
+/* P1c helpers: 64-hex-char digest -> 4 LE lanes; u64 array reader; lane dump. */
+static bool hex_to_p2_digest(const char *h, dnac_p2_digest_t *d) {
+    uint8_t b[32];
+    if (hex_decode(h, b, sizeof b) != sizeof b) return false;
+    for (int i = 0; i < 4; i++) {
+        uint64_t v = 0;
+        for (int j = 0; j < 8; j++) v |= (uint64_t)b[i * 8 + j] << (8 * j);
+        d->lanes[i] = v;
+    }
+    return true;
+}
+static int read_u64_arr(js_t *s, uint64_t *out, int cap) {
+    int n = 0;
+    if (!js_match(s, '[')) return -1;
+    while (!js_match(s, ']')) {
+        if (js_peek(s, ',')) { s->pos++; continue; }
+        uint64_t v = 0;
+        if (js_peek(s, '"')) { char *q = js_read_string(s); if (!q) return -1; v = strtoull(q, NULL, 10); free(q); }
+        else if (!js_read_u64(s, &v)) return -1;
+        if (n < cap) out[n] = v;
+        n++;
+    }
+    return n;
+}
+static void lanes_print(const uint64_t *v, size_t n) {
+    for (size_t i = 0; i < n; ++i) printf("%llu ", (unsigned long long)v[i]);
 }
 
 /* ============================================================================
  * Parsed milestone + fixture data.
  * ========================================================================== */
 
-#define BUFCAP 256
+/* P1c: a milestone snapshot is the DuplexChallenger state triple. */
 typedef struct {
-    int     op_index;
-    char    op_kind[48];
-    uint8_t in[BUFCAP];  size_t in_len;
-    uint8_t out[BUFCAP]; size_t out_len;
+    int           op_index;
+    char          op_kind[48];
+    dnac_duplex_t st;
+    int           have_st;
 } ms_t;
 
 #define MAX_COMMITS 8
 typedef struct {
     ms_t     ms[18];
     int      ms_n;
-    uint8_t  commits[MAX_COMMITS][DNAC_MERKLE_DIGEST_BYTES];
+    dnac_p2_digest_t commits[MAX_COMMITS];
     int      commit_n;
     uint64_t fp_c0, fp_c1; int have_fp;
     /* fri_params */
@@ -180,8 +206,8 @@ static bool parse_ivs(js_t *s, world_t *w) {
         if (!js_match(s, ':')) { free(k); return false; }
         if (strcmp(k, "commitment_bytes_hex") == 0) {
             char *h = js_read_string(s);
-            if (h && w->commit_n < MAX_COMMITS) {
-                hex_decode(h, w->commits[w->commit_n], DNAC_MERKLE_DIGEST_BYTES);
+            if (h && w->commit_n < MAX_COMMITS &&
+                hex_to_p2_digest(h, &w->commits[w->commit_n])) {
                 w->commit_n++;
             }
             free(h);
@@ -205,7 +231,9 @@ static bool parse_ivs(js_t *s, world_t *w) {
     }
 }
 
-/* Parse transcript object: pull input_buf_hex / output_buf_remaining_hex. */
+/* P1c: transcript object = { sponge_state:[8], input_buffer:[..],
+ * output_buffer:[..] } (storage order; LIFO pop from END). Old byte-hex keys
+ * are skipped tolerantly. */
 static bool parse_transcript(js_t *s, ms_t *m) {
     if (!js_match(s, '{')) return false;
     while (1) {
@@ -213,14 +241,26 @@ static bool parse_transcript(js_t *s, ms_t *m) {
         if (js_peek(s, ',')) { s->pos++; continue; }
         char *k = js_read_string(s); if (!k) return false;
         if (!js_match(s, ':')) { free(k); return false; }
-        if (strcmp(k, "input_buf_hex") == 0) {
-            char *h = js_read_string(s);
-            m->in_len = h ? hex_decode(h, m->in, BUFCAP) : 0;
-            free(h);
-        } else if (strcmp(k, "output_buf_remaining_hex") == 0) {
-            char *h = js_read_string(s);
-            m->out_len = h ? hex_decode(h, m->out, BUFCAP) : 0;
-            free(h);
+        if (strcmp(k, "sponge_state") == 0) {
+            uint64_t st[8] = {0};
+            if (read_u64_arr(s, st, 8) == 8) {
+                for (int i = 0; i < 8; ++i) m->st.sponge_state[i] = st[i];
+                m->have_st = 1;
+            }
+        } else if (strcmp(k, "input_buffer") == 0) {
+            uint64_t ib[4] = {0};
+            int n = read_u64_arr(s, ib, 4);
+            if (n >= 0 && n <= 4) {
+                for (int i = 0; i < n; ++i) m->st.input_buffer[i] = ib[i];
+                m->st.input_len = (size_t)n;
+            }
+        } else if (strcmp(k, "output_buffer") == 0) {
+            uint64_t ob[4] = {0};
+            int n = read_u64_arr(s, ob, 4);
+            if (n >= 0 && n <= 4) {
+                for (int i = 0; i < n; ++i) m->st.output_buffer[i] = ob[i];
+                m->st.output_len = (size_t)n;
+            }
         } else {
             js_skip_value(s);
         }
@@ -277,24 +317,32 @@ typedef struct {
     int failed;
 } cb_ctx_t;
 
-static void check_snapshot(world_t *w, int i, const uint8_t *ib, size_t il,
-                           const uint8_t *ob, size_t ol, int *passed, int *failed) {
+static void check_snapshot(world_t *w, int i, const dnac_duplex_t *d,
+                           int *passed, int *failed) {
     ms_t *m = &w->ms[i];
-    bool ok = (il == m->in_len && memcmp(ib, m->in, il) == 0 &&
-               ol == m->out_len && memcmp(ob, m->out, ol) == 0);
-    if (ok) {
+    bool st_ok = m->have_st &&
+        memcmp(d->sponge_state, m->st.sponge_state, sizeof d->sponge_state) == 0;
+    bool ib_ok = (d->input_len == m->st.input_len) &&
+        memcmp(d->input_buffer, m->st.input_buffer,
+               d->input_len * sizeof(uint64_t)) == 0;
+    bool ob_ok = (d->output_len == m->st.output_len) &&
+        memcmp(d->output_buffer, m->st.output_buffer,
+               d->output_len * sizeof(uint64_t)) == 0;
+    if (st_ok && ib_ok && ob_ok) {
         (*passed)++;
         printf("  [%2d] %-34s OK\n", i, m->op_kind);
     } else {
         (*failed)++;
-        const char *kind = (il != m->in_len || memcmp(ib, m->in, il < m->in_len ? il : m->in_len) != 0)
-                           ? "input_buf (observe order/serialization)"
-                           : "output_buf (sample order/consumption)";
+        const char *kind = !st_ok ? "sponge_state"
+                         : (!ib_ok ? "input_buffer (observe order)"
+                                   : "output_buffer (sample order/consumption)");
         printf("  [%2d] %-34s MISMATCH (%s)\n", i, m->op_kind, kind);
-        printf("       expected in[%zu]=", m->in_len); hex_print(m->in, m->in_len); printf("\n");
-        printf("       actual   in[%zu]=", il);        hex_print(ib, il);          printf("\n");
-        printf("       expected out[%zu]=", m->out_len); hex_print(m->out, m->out_len); printf("\n");
-        printf("       actual   out[%zu]=", ol);          hex_print(ob, ol);            printf("\n");
+        printf("       expected st="); lanes_print(m->st.sponge_state, 8); printf("\n");
+        printf("       actual   st="); lanes_print(d->sponge_state, 8);   printf("\n");
+        printf("       expected in[%zu]=", m->st.input_len); lanes_print(m->st.input_buffer, m->st.input_len); printf("\n");
+        printf("       actual   in[%zu]=", d->input_len);    lanes_print(d->input_buffer, d->input_len);      printf("\n");
+        printf("       expected out[%zu]=", m->st.output_len); lanes_print(m->st.output_buffer, m->st.output_len); printf("\n");
+        printf("       actual   out[%zu]=", d->output_len);    lanes_print(d->output_buffer, d->output_len);      printf("\n");
     }
 }
 
@@ -303,11 +351,7 @@ static void milestone_cb(void *vctx, dnac_transcript_t *t) {
     c->fires++;
     int i = c->next++;
     if (i >= c->w->ms_n) { c->failed++; return; }
-    check_snapshot(c->w, i,
-                   dnac_transcript_test_input_buf_ptr(t),
-                   dnac_transcript_test_input_buf_len(t),
-                   dnac_transcript_test_output_buf_ptr(t),
-                   dnac_transcript_test_output_buf_remaining(t),
+    check_snapshot(c->w, i, dnac_transcript_test_duplex(t),
                    &c->passed, &c->failed);
 }
 
@@ -370,12 +414,12 @@ int main(int argc, char **argv) {
     params.commit_proof_of_work_bits = (size_t)w->commit_pow;
     params.query_proof_of_work_bits = (size_t)w->query_pow;
 
-    dnac_merkle_digest_t commits[MAX_COMMITS];
+    dnac_p2_digest_t commits[MAX_COMMITS];
     gold_fp_t witnesses[MAX_COMMITS];
     memset(commits, 0, sizeof commits);
     memset(witnesses, 0, sizeof witnesses);
     for (int r = 0; r < w->commit_n; ++r)
-        memcpy(commits[r].bytes, w->commits[r], DNAC_MERKLE_DIGEST_BYTES);
+        commits[r] = w->commits[r];
 
     gold_fp2_t final_poly[1];
     final_poly[0] = gold_fp2_new(gold_fp_from_u64(w->fp_c0), gold_fp_from_u64(w->fp_c1));
@@ -402,18 +446,15 @@ int main(int argc, char **argv) {
     proof.final_poly = final_poly;
     proof.num_final_poly = 1;
 
-    /* Seed the transcript to the pre-primed milestone-0 state. */
-    dnac_transcript_t *t = dnac_transcript_init(w->ms[0].in, w->ms[0].in_len);
+    /* P1c: seed the transcript to the milestone-0 duplex state (injection via
+     * the TESTING accessor — this file defines DNAC_TRANSCRIPT_TESTING). */
+    dnac_transcript_t *t = dnac_transcript_init_empty();
     if (!t) { printf("FAIL: transcript init\n"); return 1; }
+    *(dnac_duplex_t *)dnac_transcript_test_duplex(t) = w->ms[0].st;
 
     int passed = 0, failed = 0;
     /* Milestone 0 — verify the seed reproduces the primed state exactly. */
-    check_snapshot(w, 0,
-                   dnac_transcript_test_input_buf_ptr(t),
-                   dnac_transcript_test_input_buf_len(t),
-                   dnac_transcript_test_output_buf_ptr(t),
-                   dnac_transcript_test_output_buf_remaining(t),
-                   &passed, &failed);
+    check_snapshot(w, 0, dnac_transcript_test_duplex(t), &passed, &failed);
 
     /* Run the verify_fri transcript flow; milestones 1..17 checked via callback. */
     cb_ctx_t ctx = { w, 1, 0, 0, 0 };
@@ -434,7 +475,7 @@ int main(int argc, char **argv) {
            completed ? "yes" : "no", out.log_global_max_height);
     printf("  query indices: ");
     for (size_t i = 0; i < out.num_query_indices; ++i) printf("%llu ", (unsigned long long)out.query_indices[i]);
-    printf("(want 3 12)\n");
+    printf("(want 8 8)\n");
 
     int ok = (failed == 0)
           && (passed == 18)
@@ -443,8 +484,8 @@ int main(int argc, char **argv) {
           && (err == (dnac_fri_status_t)0xDEAD)            /* no error path taken */
           && (out.log_global_max_height == 4)
           && (out.num_query_indices == 2)
-          && (out.query_indices[0] == 3)
-          && (out.query_indices[1] == 12);
+          && (out.query_indices[0] == 8)   /* P1c vector sampled_index */
+          && (out.query_indices[1] == 8);
 
     free(w);
 

@@ -19,10 +19,13 @@
  * real `default_goldilocks_poseidon2_8().permute(...)` for a fixed input set
  * (see tools/vectors/poseidon2_goldilocks.json + test_poseidon2_goldilocks.c).
  *
- * NOT wired into any consensus / proof-internal / AIR path — this is the
- * standalone primitive from phase FP1.2 of the SHA3->Poseidon2 decision
- * (dnac/docs/plans/2026-07-14-sha3-to-poseidon2-decision.md). In-AIR use (M3b)
- * and the poseidon2-air constraint system are separate later phases.
+ * WIRED (P1c, 2026-07-22): this width-8 permutation is the LIVE proof-internal
+ * primitive under the DuplexChallenger transcript AND the Poseidon2 MMCS
+ * (duplex_challenger.c, poseidon2_mmcs.c). It originated as the standalone
+ * primitive from phase FP1.2 of the SHA3->Poseidon2 decision
+ * (dnac/docs/plans/2026-07-14-sha3-to-poseidon2-decision.md); P1c rewired the
+ * proof path onto it. The poseidon2-air constraint system (in-AIR use) remains
+ * a separate consumer.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: Apache-2.0

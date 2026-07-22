@@ -9,8 +9,9 @@
  * construction on its own, then composed at S4.
  *
  * ── Construction (grounded) ─────────────────────────────────────────────────
- * Tree walk (adopt merkle_smt.h:28-30 order, SHA3→Poseidon2): index bits
- * LSB-first, bit i selects at level i; sibling level-0 first. Per level i:
+ * Tree walk (the MerkleTreeMmcs order, mmcs.rs:1118-1141 — the SAME LSB-first
+ * walk poseidon2_mmcs.c dnac_p2_mmcs_verify implements; P1c SHA3→Poseidon2):
+ * index bits LSB-first, bit i selects at level i; sibling level-0 first. Per level i:
  *     (left, right) = bit_i==0 ? (cur_i, sib_i) : (sib_i, cur_i)
  *     cur_{i+1}     = note_merkle_compress(left, right)   [S0, capacity-preserving]
  * The compress is the S0 PaddingFreeSponge<8,4,4> over (left‖right) = TWO
@@ -40,7 +41,8 @@
  *
  * Determinism: pure function of (leaf, pos, siblings); Poseidon2 deterministic;
  * LSB-first order pinned. Grounding: dm-c3 §0-§4, S0 note_merkle_compress,
- * poseidon2_air (byte-matched Plonky3 82cfad73), merkle_smt.h:28-30 walk order.
+ * poseidon2_air (byte-matched Plonky3 82cfad73), Plonky3 mmcs.rs:1118-1141 walk
+ * order (poseidon2_mmcs.c dnac_p2_mmcs_verify).
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: Apache-2.0

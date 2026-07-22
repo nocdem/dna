@@ -109,9 +109,9 @@ dnac_fri_status_t dnac_action_prover_proof_verify(const dnac_action_prover_proof
 void dnac_action_prover_proof_zeta(const dnac_action_prover_proof_t *p,
                                    gold_fp2_t *zeta, gold_fp2_t *zeta_next);
 void dnac_action_prover_proof_roots(const dnac_action_prover_proof_t *p,
-                                    uint8_t trace_root[DNAC_MERKLE_DIGEST_BYTES],
-                                    uint8_t quot_root[DNAC_MERKLE_DIGEST_BYTES],
-                                    uint8_t rand_root[DNAC_MERKLE_DIGEST_BYTES]);
+                                    dnac_p2_digest_t *trace_root,
+                                    dnac_p2_digest_t *quot_root,
+                                    dnac_p2_digest_t *rand_root);
 const gold_fp2_t *dnac_action_prover_proof_final_poly(
     const dnac_action_prover_proof_t *p, size_t *out_len);
 

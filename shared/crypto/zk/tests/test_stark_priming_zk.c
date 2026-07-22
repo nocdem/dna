@@ -63,10 +63,14 @@ static char *js_read_string(js_t *s) {
 static bool js_read_u64(js_t *s, uint64_t *out) {
     js_skip_ws(s);
     if (s->pos >= s->len) return false;
+    /* P1c: snapshot/lane values are DECIMAL STRINGS — accept quoted + bare. */
+    bool quoted = (s->src[s->pos] == '"');
+    if (quoted) s->pos++;
     char *endp = NULL;
     unsigned long long v = strtoull(s->src + s->pos, &endp, 10);
-    if (endp == s->src + s->pos) return false;
+    if (endp == s->src + s->pos) { if (quoted) s->pos--; return false; }
     s->pos = (size_t)(endp - s->src);
+    if (quoted) { if (s->pos < s->len && s->src[s->pos] == '"') s->pos++; else return false; }
     *out = (uint64_t)v;
     return true;
 }
@@ -180,8 +184,8 @@ typedef struct {
     uint64_t degree_bits, base_degree_bits, preprocessed_width, num_quotient_chunks;
     uint8_t init_state[256];
     size_t init_state_len;
-    dnac_merkle_digest_t trace_commit, quotient_commit;
-    dnac_merkle_digest_t random_commit;      /* is_zk=1 */
+    dnac_p2_digest_t trace_commit, quotient_commit;
+    dnac_p2_digest_t random_commit;      /* is_zk=1 */
     bool has_random_commit;
     gold_fp2_t random_local[SP_MAXEVAL];     /* is_zk=1 random opened round */
     size_t random_local_len;
@@ -196,13 +200,36 @@ typedef struct {
     gold_fp2_t quotient_chunks[SP_MAXCHUNK][SP_MAXEVAL];
     size_t quotient_chunk_lens[SP_MAXCHUNK];
     size_t num_quotient_chunks_parsed;
-    uint8_t input_buf[SP_MAXBUF];
-    size_t input_buf_len;
-    uint64_t input_buf_len_field;
-    uint8_t output_buf[SP_MAXBUF];
-    size_t output_buf_len;
-    uint64_t output_buf_len_field;
+    /* P1c: verify_fri-entry transcript state = DuplexChallenger triple */
+    dnac_duplex_t end_state;
+    int have_end;
 } sp_fixture_t;
+
+/* P1c: 64-hex-char digest -> 4 LE lanes. */
+static bool hex_to_p2_digest(const char *h, dnac_p2_digest_t *d) {
+    uint8_t b[32];
+    if (hex_decode(h, b, sizeof b) != sizeof b) return false;
+    for (int i = 0; i < 4; i++) {
+        uint64_t v = 0;
+        for (int j = 0; j < 8; j++) v |= (uint64_t)b[i * 8 + j] << (8 * j);
+        d->lanes[i] = v;
+    }
+    return true;
+}
+/* P1c: read [u64...] (bare or quoted decimals). */
+static int read_u64_arr(js_t *s, uint64_t *out, int cap) {
+    int n = 0;
+    if (!js_match(s, '[')) return -1;
+    while (!js_match(s, ']')) {
+        if (js_peek(s, ',')) { s->pos++; continue; }
+        uint64_t v = 0;
+        if (js_peek(s, '"')) { char *q = js_read_string(s); if (!q) return -1; v = strtoull(q, NULL, 10); free(q); }
+        else if (!js_read_u64(s, &v)) return -1;
+        if (n < cap) out[n] = v;
+        n++;
+    }
+    return n;
+}
 
 static void parse_instance(js_t *s, sp_fixture_t *fx) {
     js_match(s, '{');
@@ -225,15 +252,15 @@ static void parse_commitments(js_t *s, sp_fixture_t *fx) {
         char *k = js_read_string(s); js_match(s, ':');
         if (strcmp(k, "trace_commit_root_hex") == 0) {
             char *v = js_read_string(s);
-            hex_decode(v, fx->trace_commit.bytes, DNAC_MERKLE_DIGEST_BYTES);
+            if (v) hex_to_p2_digest(v, &fx->trace_commit);
             free(v);
         } else if (strcmp(k, "quotient_commit_root_hex") == 0) {
             char *v = js_read_string(s);
-            hex_decode(v, fx->quotient_commit.bytes, DNAC_MERKLE_DIGEST_BYTES);
+            if (v) hex_to_p2_digest(v, &fx->quotient_commit);
             free(v);
         } else if (strcmp(k, "random_commit_root_hex") == 0) {
             char *v = js_read_string(s);
-            hex_decode(v, fx->random_commit.bytes, DNAC_MERKLE_DIGEST_BYTES);
+            if (v) hex_to_p2_digest(v, &fx->random_commit);
             fx->has_random_commit = true;
             free(v);
         } else {
@@ -302,23 +329,43 @@ static void parse_opened_values(js_t *s, sp_fixture_t *fx) {
         free(k);
     }
 }
+static void parse_snapshot_state(js_t *s, sp_fixture_t *fx);
+/* vector shape: {"description":…, "pending_input_len":…, "state": {triple}} */
 static void parse_snapshot(js_t *s, sp_fixture_t *fx) {
     js_match(s, '{');
     while (!js_match(s, '}')) {
         if (js_peek(s, ',')) { s->pos++; continue; }
         char *k = js_read_string(s); js_match(s, ':');
-        if (strcmp(k, "input_buf_hex") == 0) {
-            char *v = js_read_string(s);
-            fx->input_buf_len = hex_decode(v, fx->input_buf, SP_MAXBUF);
-            free(v);
-        } else if (strcmp(k, "output_buf_remaining_hex") == 0) {
-            char *v = js_read_string(s);
-            fx->output_buf_len = hex_decode(v, fx->output_buf, SP_MAXBUF);
-            free(v);
-        } else if (strcmp(k, "input_buf_len") == 0) {
-            js_read_u64(s, &fx->input_buf_len_field);
-        } else if (strcmp(k, "output_buf_remaining_len") == 0) {
-            js_read_u64(s, &fx->output_buf_len_field);
+        if (k && strcmp(k, "state") == 0) parse_snapshot_state(s, fx);
+        else js_skip_value(s);
+        free(k);
+    }
+}
+static void parse_snapshot_state(js_t *s, sp_fixture_t *fx) {
+    js_match(s, '{');
+    while (!js_match(s, '}')) {
+        if (js_peek(s, ',')) { s->pos++; continue; }
+        char *k = js_read_string(s); js_match(s, ':');
+        if (strcmp(k, "sponge_state") == 0) {
+            uint64_t st[8] = {0};
+            if (read_u64_arr(s, st, 8) == 8) {
+                for (int i = 0; i < 8; ++i) fx->end_state.sponge_state[i] = st[i];
+                fx->have_end = 1;
+            }
+        } else if (strcmp(k, "input_buffer") == 0) {
+            uint64_t ib[4] = {0};
+            int n = read_u64_arr(s, ib, 4);
+            if (n >= 0 && n <= 4) {
+                for (int i = 0; i < n; ++i) fx->end_state.input_buffer[i] = ib[i];
+                fx->end_state.input_len = (size_t)n;
+            }
+        } else if (strcmp(k, "output_buffer") == 0) {
+            uint64_t ob[4] = {0};
+            int n = read_u64_arr(s, ob, 4);
+            if (n >= 0 && n <= 4) {
+                for (int i = 0; i < n; ++i) fx->end_state.output_buffer[i] = ob[i];
+                fx->end_state.output_len = (size_t)n;
+            }
         } else {
             js_skip_value(s);
         }
@@ -349,11 +396,7 @@ static bool parse_top(js_t *s, sp_fixture_t *fx) {
 }
 
 /* ===== diagnostics ===== */
-static void print_hex(const char *label, const uint8_t *b, size_t n) {
-    fprintf(stderr, "    %s (%zu bytes): ", label, n);
-    for (size_t i = 0; i < n; i++) fprintf(stderr, "%02x", b[i]);
-    fprintf(stderr, "\n");
-}
+/* (P1c: print_hex retired with check_bytes.) */
 static int check_fp2(const char *field, gold_fp2_t got, gold_fp2_t exp,
                      const char *p3line, const char *cause) {
     if (gold_fp2_eq(got, exp)) return 0;
@@ -366,16 +409,7 @@ static int check_fp2(const char *field, gold_fp2_t got, gold_fp2_t exp,
     fprintf(stderr, "    suspected cause: %s\n", cause);
     return 1;
 }
-static int check_bytes(const char *field, const uint8_t *got, size_t gotn,
-                       const uint8_t *exp, size_t expn, const char *p3line, const char *cause) {
-    if (gotn == expn && (expn == 0 || memcmp(got, exp, expn) == 0)) return 0;
-    fprintf(stderr, "MISMATCH field=%s (got_len=%zu expected_len=%zu)\n", field, gotn, expn);
-    print_hex("expected (stark_priming.json)", exp, expn);
-    print_hex("actual   (primed transcript) ", got, gotn);
-    fprintf(stderr, "    Plonky3 source: %s\n", p3line);
-    fprintf(stderr, "    suspected cause: %s\n", cause);
-    return 1;
-}
+/* (P1c: check_bytes retired — end-state compares are duplex triples now.) */
 
 int main(int argc, char **argv) {
     if (argc < 2) { fprintf(stderr, "usage: %s <stark_priming.json>\n", argv[0]); return 2; }
@@ -388,8 +422,8 @@ int main(int argc, char **argv) {
     if (!parse_top(&s, &fx)) { fprintf(stderr, "JSON parse failed\n"); free(src); return 2; }
     free(src);
 
-    /* Init transcript from the vector's init_state (= DNAC production seed). */
-    dnac_transcript_t *t = dnac_transcript_init(fx.init_state, fx.init_state_len);
+    /* P1c: production transcript (DS prefix pre-absorbed; byte seeds retired). */
+    dnac_transcript_t *t = dnac_transcript_init_default();
     if (!t) { fprintf(stderr, "transcript init failed\n"); return 2; }
 
     /* Assemble the priming input. is_zk / preprocessed_width are CONFIG (not wire). */
@@ -436,27 +470,33 @@ int main(int argc, char **argv) {
     fails += check_fp2("zeta_next_fp2", out.zeta_next, fx.zeta_next, "verifier.rs:398 / coset.rs:92",
                        "zeta_next generator (must be two_adic_generator(base_degree_bits), shift=ONE)");
 
-    /* 6-7. transcript state at verify_fri entry */
-    const uint8_t *ib = dnac_transcript_test_input_buf_ptr(t);
-    size_t ibl = dnac_transcript_test_input_buf_len(t);
-    fails += check_bytes("input_buf", ib, ibl, fx.input_buf, fx.input_buf_len,
-                         "two_adic_pcs.rs:687-693 / verifier.rs:360-391",
-                         "observe order / fp|fp2|commitment serialization / sampling positions");
-    const uint8_t *ob = dnac_transcript_test_output_buf_ptr(t);
-    size_t obl = dnac_transcript_test_output_buf_remaining(t);
-    fails += check_bytes("output_buf_remaining", ob, obl, fx.output_buf, fx.output_buf_len,
-                         "hash_challenger.rs flush", "sampling / final observe must clear output_buf");
-
-    /* 8-9. exact lengths */
-    if (ibl != 736 || (uint64_t)ibl != fx.input_buf_len_field) {
-        fprintf(stderr, "MISMATCH field=input_buf_len: got %zu, expected 736 (vector field %llu)\n",
-                ibl, (unsigned long long)fx.input_buf_len_field);
-        fails++;
-    }
-    if (obl != 0 || (uint64_t)obl != fx.output_buf_len_field) {
-        fprintf(stderr, "MISMATCH field=output_buf_remaining_len: got %zu, expected 0 (vector field %llu)\n",
-                obl, (unsigned long long)fx.output_buf_len_field);
-        fails++;
+    /* 6-7. transcript state at verify_fri entry (P1c: duplex triple compare) */
+    {
+        const dnac_duplex_t *d = dnac_transcript_test_duplex(t);
+        if (!fx.have_end) {
+            fprintf(stderr, "MISMATCH field=end_state: vector missing sponge_state triple\n");
+            fails++;
+        } else {
+            if (memcmp(d->sponge_state, fx.end_state.sponge_state,
+                       sizeof d->sponge_state) != 0) {
+                fprintf(stderr, "MISMATCH field=sponge_state (observe order / granularity)\n");
+                fails++;
+            }
+            if (d->input_len != fx.end_state.input_len ||
+                memcmp(d->input_buffer, fx.end_state.input_buffer,
+                       d->input_len * sizeof(uint64_t)) != 0) {
+                fprintf(stderr, "MISMATCH field=input_buffer (got_len=%zu want_len=%zu)\n",
+                        d->input_len, fx.end_state.input_len);
+                fails++;
+            }
+            if (d->output_len != fx.end_state.output_len ||
+                memcmp(d->output_buffer, fx.end_state.output_buffer,
+                       d->output_len * sizeof(uint64_t)) != 0) {
+                fprintf(stderr, "MISMATCH field=output_buffer (got_len=%zu want_len=%zu)\n",
+                        d->output_len, fx.end_state.output_len);
+                fails++;
+            }
+        }
     }
 
     /* 10-12. config-branch confirmations */
@@ -492,8 +532,7 @@ int main(int argc, char **argv) {
      * byte-match above; this is the human-readable confirmation of §5/§7 shape). */
     printf("test_stark_priming_zk: PASS\n");
     printf("  GATE: dnac_stark_prime_transcript = OK; alpha/zeta/zeta_next byte-match vector.\n");
-    printf("  transcript primed to verify_fri entry: input_buf=%zu bytes, output_buf_remaining=%zu.\n",
-           ibl, obl);
+    printf("  transcript primed to verify_fri entry: duplex state triple byte-matched.\n");
     printf("  is_zk=1 (hiding), random round first (len=%zu), preprocessed_width=0, trace_next present (len=%zu), base_degree_bits=%zu.\n",
            fx.random_local_len,
            fx.trace_next_len, out.base_degree_bits);

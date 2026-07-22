@@ -7,6 +7,112 @@
 
 ## WHERE WE ARE
 
+- **🔀 PQ ROLLUP PIVOT + P1a SHIPPED (2026-07-22, this working tree).** The
+  1-TPS lock was REOPENED by the user → native pure-C PQ zk-rollup program
+  P1-P6 (memory `pq-rollup-pivot`). P1 = proof-internal SHA3→Poseidon2
+  (design doc `dnac/docs/plans/2026-07-22-p1-proof-hash-poseidon2-design.md`
+  **v2 GATE GREEN**: round-1 NOT-GREEN 1 CRIT/2 HIGH §3.1 → revised → round-2
+  GREEN §3.2; F3 = DS pre-absorb user-locked). **P1a DONE:**
+  `duplex_challenger.{c,h}` — Poseidon2 `DuplexChallenger<Gold,Perm,8,4>`
+  FULL-surface port (observe/duplex/sample + sample_bits/check_witness/grind
+  + 4-limb DS prefix G-SEC-P1-7; least-witness grind determinization), oracle
+  `dump-duplex-challenger` (12 scenarios / 76 steps, full state snapshots,
+  regen 2× byte-identical, hash-pinned) + `test_duplex_challenger` KAT
+  (byte-match + DS-derivation + init_default gates). `make test`: **all 76
+  test binaries GREEN, 0 warn** (75 + the new KAT; NOTE the older "65/66
+  GREEN" counters below were STALE — the committed pre-P1a TESTS list already
+  had 75 binaries, grep-proven `awk '/^TESTS/,/^$/' | grep -o 'test_...' |
+  sort -u | wc -l`; binary count is the counter from now on). STANDALONE at
+  P1a — the SHA3 transcript was still the live challenger then; P1c (below)
+  rewired the proof path onto the DuplexChallenger and deleted the SHA3 one.
+- **P1b DONE (2026-07-22, same working tree):** `poseidon2_mmcs.{c,h}` —
+  Poseidon2 MMCS port: `dnac_p2_mmcs_hash_iter` (PaddingFreeSponge<8,4,4>,
+  arbitrary length, == note_sponge_hash8 at len 8, KAT-bridged) +
+  `dnac_p2_mmcs_compress` (TruncatedPermutation<2,4,8>, ONE permutation —
+  structurally distinct from note_merkle_compress) + lane-based batch
+  commit/open/verify (N=2, same-height pow2, cap 0, 4-lane/32-byte digests,
+  lane<p fail-close). SALT-AGNOSTIC core: hiding form = caller assembles
+  `row ‖ salt` (the fri_verifier consumption shape; `salt_elems` stays a
+  consensus pin per G-SEC-P1-6). Oracle `dump-poseidon2-mmcs`: REAL
+  MerkleTreeMmcs + MerkleTreeHidingMmcs(SmallRng(1), SALT_ELEMS=2), 9 trees
+  (6 plain / 3 salted), openings at EVERY index (all in-oracle
+  verify_batch-checked), regen 2× byte-identical, hash-pinned.
+  `test_poseidon2_mmcs`: 10 sponge + 6 compress KATs, 9 roots + 65 openings
+  byte-matched, negatives (tamper/index/depth/non-canonical).
+- **P1c + P1d DONE (2026-07-22, same working tree) — THE POSEIDON2 CUTOVER
+  IS COMPLETE.** The ENTIRE proof-internal hash layer is now Poseidon2:
+  - `transcript.{c,h}` REWRITTEN as a thin heap wrapper over `dnac_duplex_t`
+    (byte observe surface GONE — `init_empty`/`init_default(DS prefix)`,
+    `observe_digest` = 4 lane observes; SHA3 HashChallenger deleted).
+  - `fri_verifier`/`stark_priming`/codec/all provers + gen tools swept to
+    `dnac_p2_digest_t` (32 B) + lane leaves (input row ‖ salts; commit-phase
+    `[c0,c1]×arity ‖ BASE salts`); `merkle_smt.{c,h}` + `sponge_sha3_512.{c,h}`
+    + 5 SHA3-era tests + 4 vectors DELETED (G-SEC-P1-5 clean cutover;
+    keccak_p3/keccak_ref stay — own gates + conf_txbind consumer).
+  - DZKF wire v2→3: digest 64→32 B, per-lane `< p` decode guard (G-DET-P1-5
+    NEW); `DNAC_SHIELDED_SALT_ELEMS=2` pin enforced fail-close in
+    `dnac_fri_verify_wire_shielded` on EVERY batch opening + commit-phase step
+    (G-SEC-P1-6), CT-asserted == A_SALT_ELEMS.
+  - Rust oracle cut over (DuplexChallenger + Poseidon2 plain+hiding MMCS +
+    DS-prefix `mk_prod_challenger`; SHA3 shadow/recorder machinery deleted;
+    milestone snapshots = duplex triples; `dump-transcript` retired;
+    digest JSON = 32-byte hex / serde `[{"value":N}×4]`).
+  - P1d full re-ground: ALL 52 oracle vectors + 3 gen-tool wire vectors
+    regenerated (each 2× byte-identical, every in-dump Plonky3 verify gate
+    GREEN); **num_qc RE-MEASURED — STOP gate NOT triggered** (shielded agg=8
+    == pin; conf=8, range/priming-zk=4, fib/square=1); `.expected_hashes`
+    rebuilt.
+  - **Verification: zk `make test` all 72 test binaries GREEN 0 warn; nodus
+    build clean + ctest 132/132 PASS (test_zk_link chain incl.); messenger/
+    libdna build clean.** Wire-format change is consensus-inert: type-11 is
+    still REJECT-unconditional (C2) and `dnac_shielded_verify_statement` is
+    not yet called by consensus — no nodus version bump (C1 linkage-only
+    precedent).
+- **P1e ✅ DONE (2026-07-22, same working tree) — CODE red-team GREEN + fixes
+  applied.** 13 agents (Phase-0 AS-WIRED map + 12 REFUTE surfaces), ~2.05M
+  tokens, user cost-gate approved. **VERDICT: GREEN on the verify/consensus
+  surface — 0 CRITICAL, 0 soundness/determinism defect.** Every CRIT/HIGH
+  candidate executor-verified vs the tree. One HIGH (prover-side ZK/hiding only,
+  no live consumer) + several MED/LOW; fixes folded THIS commit (full record:
+  P1 doc §3.3):
+  - **HIGH-1 salt-stream reuse (FIXED):** the shielded production provers (agg +
+    conf) reused ONE OS-entropy salt buffer for both the input-mmcs (stream A)
+    and FRI-mmcs (stream B), aliasing trace and FRI-layer-0 leaf salts
+    (contradicting the code's "independent streams" comment; Plonky3 uses a
+    cloned-rng independent hiding-mmcs, main.rs:8757-8773). Added an independent
+    `fri_salt_draws` (stream B); production fills it from its own entropy; KATs
+    leave it NULL → fallback to `salt_draws@0` → **all salted vectors
+    byte-identical**. S12 opening reads commit-phase salts from the same buffer
+    commit used. ZK/hiding only — soundness/determinism untouched.
+  - **[E]** consensus-linked `assert()`s (fri_verifier / zk_field_helpers
+    log2_strict_usize / fri_fold / stark_priming) → ALWAYS-ON fail-close
+    (survive `-DNDEBUG`): channel-bearing return an error, channel-less abort
+    deterministically (mirror Plonky3 panic; new `DNAC_STARK_PRIMING_ERR_NULL`).
+  - **[C]** `test_zk_entropy` (G2 CSPRNG) was built but never run by `make
+    test` — added to the recipe.
+  - **[D]** the LIVE 16-bit query-PoW grind had no Plonky3 cross-vector (all FRI
+    vectors pow=0) — added a real Plonky3 `grind16` case to
+    `dump-duplex-challenger`, regenerated `duplex_challenger.json` (2×
+    byte-identical, re-pinned; 13 cases / 80 steps); hardened the KAT
+    degenerate-vector floor.
+  - **[F]** `dnac_conf_prover_prove_production` (~4-bit soundness under a
+    "production" name) — WARNING added (NOT consensus-strength; use the agg
+    shielded prover).
+  - **Docs same-commit (S6 drift):** README top note + verifier-stack list,
+    `conf_membership_air.h` dead-file pin re-pinned, `fri_proof_codec.h`
+    "v2/64B"→v3/32B, the "NOT wired" headers (duplex / poseidon2_mmcs /
+    poseidon2_goldilocks) → WIRED, stark_priming.h / fri_verifier.h "SHA3-512"→
+    Poseidon2, nodus/CMakeLists.txt C1 comment.
+  - **Verification: zk `make test` 72 binaries GREEN 0 warn (+grind16); nodus
+    build clean + ctest 132/132; messenger/libdna clean.** Consensus-inert
+    (type-11 still REJECT-only) → no version bump.
+  - **Tracked follow-ups (NOT this commit):** commit-PoW-witness blob
+    malleability (C3 dedup check), type-11 trailing-byte exact-length (C3),
+    unpinned `dnac_fri_verify` footgun WARNING, poseidon2_mmcs sibling/root
+    canonicality sweep (today closed by rd_digest).
+  NEXT: **P2 — verifier-in-circuit** (now unblocked; the FRI + constraint +
+  transcript verify can be expressed as an AIR at ~351× lower cost than
+  SHA3-in-AIR — the recursion core the L2→L1 rollup needs).
 - **What it is:** a **prove + verify** STARK range/balance-proof stack over the
   Goldilocks field — Plonky3-grounded C ports of the verifier engine (field,
   NTT, Keccak-AIR, SHA3 sponge, transcript, Merkle-MMCS, FRI fold + verifier,

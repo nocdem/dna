@@ -168,10 +168,9 @@ int main(int argc, char **argv) {
         trace_q[QS * W], qflat[2 * QS], chunk_ldes[NQ * CHUNK_LDE_CELLS],
         r_lde[R_LDE_CELLS];
     static uint64_t sf[QS], sl[QS], st[QS], iv[QS];
-    uint8_t troot[DNAC_MERKLE_DIGEST_BYTES], qroot[DNAC_MERKLE_DIGEST_BYTES],
-        rroot[DNAC_MERKLE_DIGEST_BYTES];
-    dnac_merkle_tree_t *ttree = NULL, *rtree = NULL;
-    dnac_merkle_batch_tree_t *qtree = NULL;
+    dnac_p2_digest_t troot, qroot, rroot;
+    dnac_p2_mmcs_tree_t *ttree = NULL, *rtree = NULL;
+    dnac_p2_mmcs_tree_t *qtree = NULL;
     dnac_transcript_t *t = dnac_transcript_init_default();
     gold_fp2_t alpha, zeta, zeta_next;
     {
@@ -181,14 +180,14 @@ int main(int argc, char **argv) {
               dnac_prover_build_range_proof_trace(amounts, 4, 4, base_c, NULL) == DNAC_PROVER_OK &&
               dnac_prover_randomize_trace(base_c, H, W, R, trace_draws, randomized_c) == DNAC_PROVER_OK &&
               dnac_prover_coset_lde_bitrev(randomized_c, 2 * H, RAND_W, 2, 7, lde_c) == DNAC_PROVER_OK &&
-              dnac_prover_commit_matrix(lde_c, LDE_H, RAND_W, NULL, 0, troot, &ttree) == DNAC_PROVER_OK &&
-              dnac_prover_fs_to_alpha(t, 3, 2, 0, troot, publics, 3, &alpha) == DNAC_PROVER_OK &&
+              dnac_prover_commit_matrix(lde_c, LDE_H, RAND_W, NULL, 0, &troot, &ttree) == DNAC_PROVER_OK &&
+              dnac_prover_fs_to_alpha(t, 3, 2, 0, &troot, publics, 3, &alpha) == DNAC_PROVER_OK &&
               dnac_prover_quotient_selectors(2, 4, 7, sf, sl, st, iv) == DNAC_PROVER_OK &&
               dnac_prover_trace_on_quotient_domain(lde_c, LDE_H, RAND_W, QS, W, trace_q) == DNAC_PROVER_OK &&
               dnac_prover_quotient_values_range_zk(trace_q, QS, 4, publics, alpha, sf, sl, st, iv, qflat) == DNAC_PROVER_OK &&
-              dnac_prover_quotient_commit(qflat, QS, NQ, 4, 2, 7, codeword, blinding, NULL, 0, chunk_ldes, qroot, &qtree) == DNAC_PROVER_OK &&
-              dnac_prover_random_commit(r_draws, 8, CW, 2, NULL, 0, r_lde, rroot, &rtree) == DNAC_PROVER_OK &&
-              dnac_prover_fs_to_zeta(t, qroot, rroot, 2, &zeta, &zeta_next) == DNAC_PROVER_OK)) {
+              dnac_prover_quotient_commit(qflat, QS, NQ, 4, 2, 7, codeword, blinding, NULL, 0, chunk_ldes, &qroot, &qtree) == DNAC_PROVER_OK &&
+              dnac_prover_random_commit(r_draws, 8, CW, 2, NULL, 0, r_lde, &rroot, &rtree) == DNAC_PROVER_OK &&
+              dnac_prover_fs_to_zeta(t, &qroot, &rroot, 2, &zeta, &zeta_next) == DNAC_PROVER_OK)) {
             fprintf(stderr, "chain S1->S8 FAIL\n");
             free(j9); free(j8); free(j7); free(j2); free(jm);
             return 2;
@@ -260,9 +259,9 @@ int main(int argc, char **argv) {
     }
 
     dnac_transcript_free(t);
-    dnac_merkle_tree_free(ttree);
-    dnac_merkle_tree_free(rtree);
-    dnac_merkle_batch_tree_free(qtree);
+    dnac_p2_mmcs_tree_free(ttree);
+    dnac_p2_mmcs_tree_free(rtree);
+    dnac_p2_mmcs_tree_free(qtree);
     free(j9); free(j8); free(j7); free(j2); free(jm);
     if (failed == 0) {
         printf("test_prover_s9_open: PASS\n");

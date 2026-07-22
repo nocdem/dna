@@ -41,7 +41,7 @@
 #include "conf_root_air.h"
 #include "conf_commit_air.h"
 #include "field_goldilocks.h"
-#include "merkle_smt.h"
+#include "poseidon2_mmcs.h" /* P1c: Poseidon2 MMCS (SHA3 merkle_smt retired) */
 #include "stark_prover.h"
 
 /* ---- minimal JSON helpers (hex root + draws array) ---- */
@@ -80,7 +80,6 @@ static size_t parse_draws(const char *j, uint64_t *out, size_t cap) {
     }
     return n;
 }
-static void put_u64_le(uint8_t *b, uint64_t v){ for (int i=0;i<8;i++) b[i]=(uint8_t)(v>>(8*i)); }
 
 /* splitmix64 blind gen — mirror of the oracle dump_conf_root_air_common. */
 static uint64_t sm_next(uint64_t *x){
@@ -135,33 +134,43 @@ int main(int argc, char **argv) {
         fprintf(stderr, "randomize/LDE failed\n"); return 1;
     }
 
-    /* ---- SALTED leaves: committed row i ‖ salt draws[2i],draws[2i+1] ---- */
-    const size_t salted_row_bytes = (RW + SALT) * 8;   /* (618+2)*8 = 4960 */
-    uint8_t *salted = malloc(lde_h * salted_row_bytes);
+    /* ---- SALTED leaves (P1c: LANES): row i ‖ salt draws[2i],draws[2i+1] ---- */
+    const size_t salted_row_lanes = RW + SALT;   /* 618+2 = 620 lanes */
+    uint64_t *salted = malloc(lde_h * salted_row_lanes * sizeof(uint64_t));
     for (size_t i = 0; i < lde_h; i++) {
-        uint8_t *o = salted + i * salted_row_bytes;
-        for (size_t c = 0; c < RW; c++) put_u64_le(o + c * 8, lde[i * RW + c]);
-        put_u64_le(o + RW * 8,       draws[2 * i]);       /* salt 0 (row-major) */
-        put_u64_le(o + (RW + 1) * 8, draws[2 * i + 1]);   /* salt 1 */
+        uint64_t *o = salted + i * salted_row_lanes;
+        for (size_t c = 0; c < RW; c++) o[c] = lde[i * RW + c];
+        o[RW]     = draws[2 * i];       /* salt 0 (row-major) */
+        o[RW + 1] = draws[2 * i + 1];   /* salt 1 */
     }
-    dnac_merkle_digest_t root; dnac_merkle_tree_t *tree = NULL;
-    if (dnac_merkle_commit(salted, salted_row_bytes, lde_h, &root, &tree) != DNAC_MERKLE_OK) {
-        fprintf(stderr, "salted merkle commit failed\n"); return 1;
+    dnac_p2_digest_t root; dnac_p2_mmcs_tree_t *tree = NULL;
+    {
+        const uint64_t *mats1[1] = { salted };
+        const size_t w1[1] = { salted_row_lanes };
+        if (dnac_p2_mmcs_commit(mats1, w1, 1, lde_h, &root, &tree) != DNAC_P2M_OK) {
+            fprintf(stderr, "salted mmcs commit failed\n"); return 1;
+        }
     }
-    dnac_merkle_tree_free(tree);
+    dnac_p2_mmcs_tree_free(tree);
 
-    /* ---- byte-match the REAL salted proof's trace commitment ---- */
+    /* ---- byte-match the REAL salted proof's trace commitment (32B hex) ---- */
     size_t vn = 0; char *vj = slurp(argv[1], &vn);
     if (!vj) { fprintf(stderr, "cannot read %s\n", argv[1]); return 2; }
-    uint8_t vroot[DNAC_MERKLE_DIGEST_BYTES];
-    if (find_hex(vj, "trace_commit_root_hex", vroot, sizeof vroot) != (int)DNAC_MERKLE_DIGEST_BYTES) {
+    uint8_t vroot_b[32];
+    dnac_p2_digest_t vroot;
+    if (find_hex(vj, "trace_commit_root_hex", vroot_b, sizeof vroot_b) != (int)sizeof vroot_b) {
         fprintf(stderr, "trace_commit_root_hex not found\n"); free(vj); return 1;
     }
     free(vj);
+    for (int i = 0; i < 4; i++) {
+        uint64_t v = 0;
+        for (int j = 0; j < 8; j++) v |= (uint64_t)vroot_b[i * 8 + j] << (8 * j);
+        vroot.lanes[i] = v;
+    }
 
-    int ok = memcmp(root.bytes, vroot, DNAC_MERKLE_DIGEST_BYTES) == 0;
+    int ok = memcmp(&root, &vroot, sizeof root) == 0;
     printf("  T1 conf trace LDE reconstructed (64x618, bit-reversed)   %s\n", "PASS");
-    printf("  T2 SALTED leaf = row(618) || salt(2) = 4960 B, 64 leaves  %s\n", "PASS");
+    printf("  T2 SALTED leaf = row(618) || salt(2) = 620 lanes, 64 leaves %s\n", "PASS");
     printf("  T3 C salted TRACE root == REAL Plonky3 salted proof       %s\n", ok ? "PASS" : "FAIL");
 
     /* ---- SALTED RANDOM commit byte-match ----
@@ -182,25 +191,35 @@ int main(int argc, char **argv) {
             const size_t CW = 6;
             const uint64_t *r_draws = d2 + 696 * height; /* stream C R section */
             uint64_t *r_lde = malloc(lde_h * CW * sizeof(uint64_t));
-            dnac_merkle_digest_t rr; dnac_merkle_tree_t *rt = NULL;
-            if (dnac_prover_random_commit(r_draws, 2 * height, CW, 2, NULL, 0, r_lde, rr.bytes, &rt) == DNAC_PROVER_OK) {
-                dnac_merkle_tree_free(rt);
-                /* salted commit: leaf i = r_lde row i (CW*8) || salt draws[1152+2i] */
-                const size_t rsb = (CW + SALT) * 8;
-                uint8_t *rsalted = malloc(lde_h * rsb);
+            dnac_p2_digest_t rr; dnac_p2_mmcs_tree_t *rt = NULL;
+            if (dnac_prover_random_commit(r_draws, 2 * height, CW, 2, NULL, 0, r_lde, &rr, &rt) == DNAC_PROVER_OK) {
+                dnac_p2_mmcs_tree_free(rt);
+                /* salted commit (P1c lanes): leaf i = r_lde row i ‖ salts */
+                const size_t rsl = CW + SALT;
+                uint64_t *rsalted = malloc(lde_h * rsl * sizeof(uint64_t));
                 for (size_t i = 0; i < lde_h; i++) {
-                    uint8_t *o = rsalted + i * rsb;
-                    for (size_t c = 0; c < CW; c++) put_u64_le(o + c * 8, r_lde[i * CW + c]);
-                    put_u64_le(o + CW * 8,       d2[1152 + 2 * i]);
-                    put_u64_le(o + (CW + 1) * 8, d2[1152 + 2 * i + 1]);
+                    uint64_t *o = rsalted + i * rsl;
+                    for (size_t c = 0; c < CW; c++) o[c] = r_lde[i * CW + c];
+                    o[CW]     = d2[1152 + 2 * i];
+                    o[CW + 1] = d2[1152 + 2 * i + 1];
                 }
-                dnac_merkle_digest_t rs; dnac_merkle_tree_t *rst = NULL;
-                dnac_merkle_commit(rsalted, rsb, lde_h, &rs, &rst);
-                dnac_merkle_tree_free(rst);
-                uint8_t vrr[DNAC_MERKLE_DIGEST_BYTES];
+                dnac_p2_digest_t rs; dnac_p2_mmcs_tree_t *rst = NULL;
+                {
+                    const uint64_t *m1[1] = { rsalted };
+                    const size_t w1[1] = { rsl };
+                    dnac_p2_mmcs_commit(m1, w1, 1, lde_h, &rs, &rst);
+                }
+                dnac_p2_mmcs_tree_free(rst);
+                uint8_t vrr_b[32];
                 size_t vn2 = 0; char *vj2 = slurp(argv[1], &vn2);
-                if (vj2 && find_hex(vj2, "random_commit_root_hex", vrr, sizeof vrr) == (int)DNAC_MERKLE_DIGEST_BYTES) {
-                    rok = memcmp(rs.bytes, vrr, DNAC_MERKLE_DIGEST_BYTES) == 0;
+                if (vj2 && find_hex(vj2, "random_commit_root_hex", vrr_b, sizeof vrr_b) == (int)sizeof vrr_b) {
+                    dnac_p2_digest_t vrr;
+                    for (int i = 0; i < 4; i++) {
+                        uint64_t v = 0;
+                        for (int j = 0; j < 8; j++) v |= (uint64_t)vrr_b[i * 8 + j] << (8 * j);
+                        vrr.lanes[i] = v;
+                    }
+                    rok = memcmp(&rs, &vrr, sizeof rs) == 0;
                 }
                 free(vj2); free(rsalted);
             }
@@ -213,12 +232,14 @@ int main(int argc, char **argv) {
     /* teeth: a tampered salt must change the root */
     int teeth = 1;
     {
-        uint8_t *o = salted + 5 * salted_row_bytes;
-        uint64_t sv; memcpy(&sv, o + RW * 8, 8); sv ^= 1; memcpy(o + RW * 8, &sv, 8);
-        dnac_merkle_digest_t r2; dnac_merkle_tree_t *t2 = NULL;
-        dnac_merkle_commit(salted, salted_row_bytes, lde_h, &r2, &t2);
-        dnac_merkle_tree_free(t2);
-        if (memcmp(r2.bytes, root.bytes, DNAC_MERKLE_DIGEST_BYTES) == 0) teeth = 0;
+        uint64_t *o = salted + 5 * salted_row_lanes;
+        o[RW] ^= 1;
+        dnac_p2_digest_t r2; dnac_p2_mmcs_tree_t *t2 = NULL;
+        const uint64_t *m1[1] = { salted };
+        const size_t w1[1] = { salted_row_lanes };
+        dnac_p2_mmcs_commit(m1, w1, 1, lde_h, &r2, &t2);
+        dnac_p2_mmcs_tree_free(t2);
+        if (memcmp(&r2, &root, sizeof r2) == 0) teeth = 0;
     }
     printf("  T4 teeth: tampered salt -> different root                 %s\n", teeth ? "PASS" : "FAIL");
 

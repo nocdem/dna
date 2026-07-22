@@ -162,17 +162,24 @@ int main(int argc, char **argv) {
     static uint64_t blinding[S7_BLINDING];
     static uint64_t chunk_ldes_v[S7_NQ * S7_CHUNK_LDE_CELLS];
     static uint64_t trace_draws[S7_DRAWS];
-    uint8_t root_v[DNAC_MERKLE_DIGEST_BYTES];
+    /* P1c: root = 32-byte hex -> 4 LE lanes */
+    uint8_t root_v_bytes[32];
+    dnac_p2_digest_t root_v;
     if (!parse_u64_array(s7, "quotient_flat", qflat_v, 2 * S7_QS) ||
         !parse_u64_array(s7, "codeword_rand", codeword, S7_CODEWORD) ||
         !parse_u64_array(s7, "blinding_rand", blinding, S7_BLINDING) ||
-        !parse_hex_bytes(s7, "quotient_commit_root_hex", root_v,
-                         DNAC_MERKLE_DIGEST_BYTES) ||
+        !parse_hex_bytes(s7, "quotient_commit_root_hex", root_v_bytes,
+                         sizeof root_v_bytes) ||
         !parse_u64_array(s2, "random_draws", trace_draws, S7_DRAWS)) {
         fprintf(stderr, "vector parse FAIL\n");
         free(s7);
         free(s2);
         return 2;
+    }
+    for (int i = 0; i < 4; i++) {
+        uint64_t v = 0;
+        for (int j = 0; j < 8; j++) v |= (uint64_t)root_v_bytes[i * 8 + j] << (8 * j);
+        root_v.lanes[i] = v;
     }
     {
         const char *p = find_value(s7, "chunk_ldes");
@@ -209,8 +216,8 @@ int main(int argc, char **argv) {
         static uint64_t lde_c[S7_LDE_CELLS];
         static uint64_t trace_q[S7_QS * S7_W];
         static uint64_t sf[S7_QS], sl[S7_QS], st[S7_QS], iv[S7_QS];
-        uint8_t root_t[DNAC_MERKLE_DIGEST_BYTES];
-        dnac_merkle_tree_t *tree = NULL;
+        dnac_p2_digest_t root_t;
+        dnac_p2_mmcs_tree_t *tree = NULL;
         gold_fp2_t alpha;
         dnac_transcript_t *t = dnac_transcript_init_default();
         const uint64_t amounts[4] = {10, 20, 30, 40};
@@ -223,9 +230,9 @@ int main(int argc, char **argv) {
                                         randomized_c) == DNAC_PROVER_OK &&
             dnac_prover_coset_lde_bitrev(randomized_c, 2 * S7_H, S7_RAND_W, 2,
                                          7, lde_c) == DNAC_PROVER_OK &&
-            dnac_prover_commit_matrix(lde_c, S7_LDE_H, S7_RAND_W, NULL, 0, root_t,
+            dnac_prover_commit_matrix(lde_c, S7_LDE_H, S7_RAND_W, NULL, 0, &root_t,
                                       &tree) == DNAC_PROVER_OK &&
-            dnac_prover_fs_to_alpha(t, 3, 2, 0, root_t, publics, 3, &alpha) ==
+            dnac_prover_fs_to_alpha(t, 3, 2, 0, &root_t, publics, 3, &alpha) ==
                 DNAC_PROVER_OK &&
             dnac_prover_quotient_selectors(2, 4, 7, sf, sl, st, iv) ==
                 DNAC_PROVER_OK &&
@@ -238,7 +245,7 @@ int main(int argc, char **argv) {
             bad = compare_cells("T1", qflat_c, qflat_v, 2 * S7_QS, 2);
         }
         dnac_transcript_free(t);
-        dnac_merkle_tree_free(tree);
+        dnac_p2_mmcs_tree_free(tree);
         if (bad) failed++;
         printf("T1 full chain S1->S6 quotient == vector quotient_flat  %s\n",
                bad ? "FAIL" : "PASS");
@@ -247,17 +254,17 @@ int main(int argc, char **argv) {
     /* ---- T2+T3: S7 commit — chunk LDEs + the REAL quotient root ---- */
     {
         static uint64_t chunk_ldes_c[S7_NQ * S7_CHUNK_LDE_CELLS];
-        uint8_t root_c[DNAC_MERKLE_DIGEST_BYTES];
-        dnac_merkle_batch_tree_t *btree = NULL;
+        dnac_p2_digest_t root_c;
+        dnac_p2_mmcs_tree_t *btree = NULL;
         int bad_ldes = 1, bad_root = 1;
         if (dnac_prover_quotient_commit(qflat_c, S7_QS, S7_NQ, 4, 2, 7,
                                         codeword, blinding, NULL, 0, chunk_ldes_c,
-                                        root_c, &btree) == DNAC_PROVER_OK) {
+                                        &root_c, &btree) == DNAC_PROVER_OK) {
             bad_ldes = compare_cells("T2", chunk_ldes_c, chunk_ldes_v,
                                      S7_NQ * S7_CHUNK_LDE_CELLS, S7_CW);
-            bad_root = memcmp(root_c, root_v, sizeof(root_c)) != 0;
+            bad_root = memcmp(&root_c, &root_v, sizeof(root_c)) != 0;
         }
-        dnac_merkle_batch_tree_free(btree);
+        dnac_p2_mmcs_tree_free(btree);
         if (bad_ldes) failed++;
         if (bad_root) failed++;
         printf("T2 blinded chunk LDEs 4x(32x6) byte-match               %s\n",
@@ -270,23 +277,23 @@ int main(int argc, char **argv) {
     {
         static uint64_t chunk_ldes_c[S7_NQ * S7_CHUNK_LDE_CELLS];
         static uint64_t bad_rand[S7_CODEWORD];
-        uint8_t root_c[DNAC_MERKLE_DIGEST_BYTES];
-        dnac_merkle_batch_tree_t *btree = NULL;
+        dnac_p2_digest_t root_c;
+        dnac_p2_mmcs_tree_t *btree = NULL;
         int bad = 0;
         memcpy(bad_rand, codeword, sizeof(bad_rand));
         bad_rand[10] = GOLDILOCKS_P;
         if (dnac_prover_quotient_commit(qflat_c, S7_QS, S7_NQ, 4, 2, 7,
                                         bad_rand, blinding, NULL, 0, chunk_ldes_c,
-                                        root_c, &btree) !=
+                                        &root_c, &btree) !=
             DNAC_PROVER_ERR_NONCANONICAL)
             bad++;
         if (dnac_prover_quotient_commit(qflat_c, S7_QS, 1, 4, 2, 7, codeword,
-                                        blinding, NULL, 0, chunk_ldes_c, root_c,
+                                        blinding, NULL, 0, chunk_ldes_c, &root_c,
                                         &btree) != DNAC_PROVER_ERR_PARAM)
             bad++; /* num_chunks < 2 breaks hiding */
         if (dnac_prover_quotient_commit(qflat_c, S7_QS, S7_NQ, 4, 0, 7,
                                         codeword, blinding, NULL, 0, chunk_ldes_c,
-                                        root_c, &btree) !=
+                                        &root_c, &btree) !=
             DNAC_PROVER_ERR_PARAM)
             bad++;
         if (bad) failed++;

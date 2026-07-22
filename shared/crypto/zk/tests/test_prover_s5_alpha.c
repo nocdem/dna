@@ -142,13 +142,15 @@ int main(int argc, char **argv) {
 
     /* M3a vector: real trace root + real alpha (anchored under
      * "stark_alpha_fp2" — c0_decimal recurs across the file). */
-    uint8_t root_m3a[DNAC_MERKLE_DIGEST_BYTES];
+    /* P1c: root = 32-byte hex -> 4 LE lanes */
+    uint8_t root_m3a_bytes[32];
+    dnac_p2_digest_t root_m3a;
     uint64_t alpha_c0 = 0, alpha_c1 = 0;
     {
         const char *root_p = find_value(m3a, "trace_commit_root_hex");
         const char *anchor = strstr(m3a, "\"stark_alpha_fp2\"");
         if (!root_p ||
-            !parse_hex_bytes_at(root_p, root_m3a, sizeof(root_m3a)) ||
+            !parse_hex_bytes_at(root_p, root_m3a_bytes, sizeof(root_m3a_bytes)) ||
             !anchor) {
             fprintf(stderr, "M3a vector parse FAIL (root/alpha anchor)\n");
             free(s2);
@@ -164,16 +166,22 @@ int main(int argc, char **argv) {
             free(m3a);
             return 2;
         }
+        for (int i = 0; i < 4; i++) {
+            uint64_t v = 0;
+            for (int j = 0; j < 8; j++)
+                v |= (uint64_t)root_m3a_bytes[i * 8 + j] << (8 * j);
+            root_m3a.lanes[i] = v;
+        }
     }
 
     /* ---- T1: C chain S1->S2->S3 root == the M3a proof's trace root ---- */
-    uint8_t root_c[DNAC_MERKLE_DIGEST_BYTES];
+    dnac_p2_digest_t root_c;
     {
         static uint64_t draws[S5_DRAWS];
         static uint64_t base_c[S5_H * S5_W];
         static uint64_t randomized_c[2u * S5_H * S5_RAND_W];
         static uint64_t lde_c[S5_LDE_CELLS];
-        dnac_merkle_tree_t *tree = NULL;
+        dnac_p2_mmcs_tree_t *tree = NULL;
         const uint64_t amounts[4] = {10, 20, 30, 40};
         int bad = 1;
         if (parse_u64_array(s2, "random_draws", draws, S5_DRAWS) &&
@@ -183,11 +191,11 @@ int main(int argc, char **argv) {
                                         randomized_c) == DNAC_PROVER_OK &&
             dnac_prover_coset_lde_bitrev(randomized_c, 2 * S5_H, S5_RAND_W, 2,
                                          7, lde_c) == DNAC_PROVER_OK &&
-            dnac_prover_commit_matrix(lde_c, S5_LDE_H, S5_RAND_W, NULL, 0, root_c,
+            dnac_prover_commit_matrix(lde_c, S5_LDE_H, S5_RAND_W, NULL, 0, &root_c,
                                       &tree) == DNAC_PROVER_OK) {
-            bad = memcmp(root_c, root_m3a, sizeof(root_c)) != 0;
+            bad = memcmp(&root_c, &root_m3a, sizeof(root_c)) != 0;
         }
-        dnac_merkle_tree_free(tree);
+        dnac_p2_mmcs_tree_free(tree);
         if (bad) failed++;
         printf("T1 chain root == M3a proof trace root (cross-vector)   %s\n",
                bad ? "FAIL" : "PASS");
@@ -200,7 +208,7 @@ int main(int argc, char **argv) {
         dnac_transcript_t *t = dnac_transcript_init_default();
         int bad = 1;
         if (t != NULL &&
-            dnac_prover_fs_to_alpha(t, 3, 2, 0, root_m3a, publics, 3,
+            dnac_prover_fs_to_alpha(t, 3, 2, 0, &root_m3a, publics, 3,
                                     &alpha) == DNAC_PROVER_OK) {
             bad = !(gold_fp_to_u64(alpha.a) == alpha_c0 &&
                     gold_fp_to_u64(alpha.b) == alpha_c1);
@@ -226,13 +234,13 @@ int main(int argc, char **argv) {
         dnac_transcript_t *t = dnac_transcript_init_default();
         int bad = 0;
         if (t == NULL) bad++;
-        if (dnac_prover_fs_to_alpha(t, 3, 2, 0, root_m3a, publics_bad, 3,
+        if (dnac_prover_fs_to_alpha(t, 3, 2, 0, &root_m3a, publics_bad, 3,
                                     &alpha) != DNAC_PROVER_ERR_NONCANONICAL)
             bad++;
         if (dnac_prover_fs_to_alpha(t, 3, 2, 0, NULL, publics, 3, &alpha) !=
             DNAC_PROVER_ERR_PARAM)
             bad++;
-        if (dnac_prover_fs_to_alpha(t, 3, 2, 0, root_m3a, NULL, 3, &alpha) !=
+        if (dnac_prover_fs_to_alpha(t, 3, 2, 0, &root_m3a, NULL, 3, &alpha) !=
             DNAC_PROVER_ERR_PARAM)
             bad++;
         dnac_transcript_free(t);

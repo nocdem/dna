@@ -16,6 +16,7 @@
 
 #include "fri_fold.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <assert.h>
 
@@ -201,8 +202,15 @@ gold_fp2_t fri_fold_row_fp2(
     /* Plonky3 line 117: let arity = 1 << log_arity; */
     size_t arity = (size_t)1u << log_arity;
 
-    /* Plonky3 line 119: assert_eq!(evals.len(), arity, "Expected {} evaluations", arity); */
-    assert(evals_len == arity && "fri_fold_row_fp2: evals_len must equal 1u << log_arity");
+    /* Plonky3 line 119: assert_eq!(evals.len(), arity, ...). P1e-E (S8-MED1):
+     * ALWAYS-ON fail-close (survives -DNDEBUG); this fn returns gold_fp2_t with
+     * no error channel, so mirror Plonky3's panic deterministically. Guards a
+     * code invariant (evals built from pinned-arity params), not attacker input. */
+    if (evals_len != arity) {
+        fprintf(stderr, "fri_fold_row_fp2: evals_len %zu != arity %zu\n",
+                evals_len, arity);
+        abort();
+    }
 
     /* Plonky3 lines 122-123:
          let subgroup_start = F::two_adic_generator(log_height + log_arity)
@@ -268,8 +276,13 @@ void fri_fold_matrix_fp2(
     const gold_fp2_t *matrix,
     gold_fp2_t       *out_vec)
 {
-    /* Plonky3 fri/src/two_adic_pcs.rs:135 expects log_arity >= 1. */
-    assert(log_arity >= 1 && "fri_fold_matrix_fp2: log_arity must be >= 1");
+    /* Plonky3 fri/src/two_adic_pcs.rs:135 expects log_arity >= 1. P1e-E
+     * (S8-MED1): ALWAYS-ON fail-close (void fn, no channel) — mirror Plonky3's
+     * panic deterministically. log_arity comes from pinned params (arity 2). */
+    if (log_arity < 1) {
+        fprintf(stderr, "fri_fold_matrix_fp2: log_arity %u < 1\n", log_arity);
+        abort();
+    }
 
     /* Height == 0 would produce an empty output; Plonky3 par_rows on an
        empty matrix yields an empty Vec. Match that semantics. */
@@ -455,8 +468,14 @@ void fri_fold_matrix_fp2(
     }
 
     /* Plonky3 line 212: data (returned as Vec<EF>).
-       After log_arity iterations the active length equals m.height(). */
-    assert(current_len == height && "fri_fold_matrix_fp2: invariant violation: final data length != height");
+       After log_arity iterations the active length equals m.height(). P1e-E
+       (S8-MED1): ALWAYS-ON fail-close (void fn) — a violated fold invariant
+       must never silently emit a wrong-length codeword under -DNDEBUG. */
+    if (current_len != height) {
+        fprintf(stderr, "fri_fold_matrix_fp2: final len %zu != height %zu\n",
+                current_len, height);
+        abort();
+    }
     for (size_t i = 0; i < height; i++) out_vec[i] = data[i];
 
     free(next_data);

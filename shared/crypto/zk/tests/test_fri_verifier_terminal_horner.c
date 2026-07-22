@@ -270,9 +270,12 @@ int main(int argc, char **argv) {
                         gold_fp2_eq(ev, c.eval);
                     if (ok) {
                         passed++;
-                        /* capture query_0 (domain_index 3) honest + corrupted evals for Part B */
-                        if (strcmp(c.category, "v6_honest") == 0 && c.domain_index == 3) { honest_q0_eval = ev; have_honest = 1; }
-                        if (strcmp(c.category, "v6_corrupted_final_poly_0") == 0 && c.domain_index == 3) { corrupt_q0_eval = ev; have_corrupt = 1; }
+                        /* capture query_0 honest + corrupted evals for Part B.
+                         * P1c: select by NAME (query_0), not a hardcoded
+                         * domain_index — the sampled index is transcript-
+                         * dependent and changed at the Poseidon2 cutover. */
+                        if (strcmp(c.category, "v6_honest") == 0 && strstr(c.name, "query_0")) { honest_q0_eval = ev; have_honest = 1; }
+                        if (strcmp(c.category, "v6_corrupted_final_poly_0") == 0 && strstr(c.name, "query_0")) { corrupt_q0_eval = ev; have_corrupt = 1; }
                     } else {
                         failed++;
                         printf("  [FAIL] %-34s rbl/x/eval mismatch (lgmh=%llu didx=%llu)\n",

@@ -98,7 +98,7 @@
     "challenge": "BinomialExtensionField<Goldilocks, 2> (fp2)",
     "extra_query_index_bits": 0,
     "folding": "TwoAdicFriFolding",
-    "hash": "FIPS-202 SHA3-512",
+    "hash": "Poseidon2 width-8 (default_goldilocks_poseidon2_8, P1c)",
     "val": "Goldilocks"
   },
   "errors_vector_reference": "fri_verifier_errors.json",

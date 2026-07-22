@@ -40,14 +40,15 @@
 #define FRI_MAX_ROUNDS 64
 #define FRI_MAX_RO     64
 #define FRI_MAX_ARITY  256
-/* Leaf byte capacity: max over (a) an INPUT-mmcs row = width*8 + salt*8 and
- * (b) a commit-phase leaf = arity*16 + salt*8. Sized for the widest AIR: the F3
- * AGGREGATE Action ZK trace is 2318 wide (ak/nk 4-lane, 2026-07-22), merged with
- * 4 random codewords → 2322 cols = 18576 B; +2 salts → 18592 B. Capped at 2560
- * cols = 20480 B (== DNAC_STARK_MAX_MAIN_WIDTH) for headroom. (History: 15488 →
- * 16384 on 2026-07-17 for the 1940-col S4b row; → 20480 on 2026-07-22 for F3.
- * rowbuf[64][CAP] = 64*20480 = 1.25 MB stack, within the 8 MB default.) */
-#define FRI_LEAF_CAP   20480
+/* Leaf LANE capacity (P1c: leaves are Goldilocks lanes, not bytes): max over
+ * (a) an INPUT-mmcs row = width + salt lanes and (b) a commit-phase leaf =
+ * arity*2 (fp2 base-flattened) + salt lanes. Sized for the widest AIR: the F3
+ * AGGREGATE Action ZK trace is 2318 wide (ak/nk 4-lane, 2026-07-22), merged
+ * with 4 random codewords → 2322 lanes; +2 salts → 2324. Capped at 2560 lanes
+ * (== DNAC_STARK_MAX_MAIN_WIDTH) for headroom. (History as bytes: 15488 →
+ * 16384 → 20480 B; converted to 2560 LANES at the P1c Poseidon2 cutover —
+ * same memory footprint, rowbuf[64][2560]·8 = 1.25 MB stack.) */
+#define FRI_LEAF_CAP   2560
 
 /* ============================================================================
  * Always-compiled internal helpers (shared by dnac_fri_verify AND test hooks).
@@ -69,8 +70,8 @@ static dnac_fri_status_t fri_shape_prefix(
     const dnac_fri_params_t *params,
     const dnac_fri_proof_t  *proof)
 {
-    assert(params != NULL);
-    assert(proof != NULL);
+    /* P1e-E (S8-MED1): ALWAYS-ON fail-close (survives -DNDEBUG). */
+    if (params == NULL || proof == NULL) return DNAC_FRI_ERR_INPUT_ERROR;
 
     const size_t rounds = proof->num_commit_phase_commits;
 
@@ -148,20 +149,18 @@ static dnac_fri_status_t fri_terminal_horner_check(gold_fp2_t computed_eval, gol
     return DNAC_FRI_OK;
 }
 
-/* Serialize n fp2 elements as the MMCS leaf wire form: per element, c0 then c1,
- * each a canonical u64 little-endian (ExtensionMmcs flatten fp2 -> base). */
-static void fri_put_u64_le(uint8_t *p, uint64_t v) {
-    for (int i = 0; i < 8; ++i) p[i] = (uint8_t)(v >> (8 * i));
-}
-static void fri_serialize_fp2_row(const gold_fp2_t *evals, size_t n, uint8_t *out) {
+/* Lay out n fp2 elements as MMCS leaf LANES: per element c0 then c1
+ * (ExtensionMmcs base-flatten order, extension_mmcs.rs:77-95). P1c: the
+ * Poseidon2 MMCS consumes canonical lanes directly — no byte serialization. */
+static void fri_lanes_fp2_row(const gold_fp2_t *evals, size_t n, uint64_t *out) {
     for (size_t i = 0; i < n; ++i) {
-        fri_put_u64_le(out + i * 16,     gold_fp_to_u64(evals[i].a));
-        fri_put_u64_le(out + i * 16 + 8, gold_fp_to_u64(evals[i].b));
+        out[i * 2]     = gold_fp_to_u64(evals[i].a);
+        out[i * 2 + 1] = gold_fp_to_u64(evals[i].b);
     }
 }
-static void fri_serialize_base_row(const gold_fp_t *vals, size_t n, uint8_t *out) {
+static void fri_lanes_base_row(const gold_fp_t *vals, size_t n, uint64_t *out) {
     for (size_t i = 0; i < n; ++i) {
-        fri_put_u64_le(out + i * 8, gold_fp_to_u64(vals[i]));
+        out[i] = gold_fp_to_u64(vals[i]);
     }
 }
 
@@ -242,19 +241,23 @@ static dnac_fri_status_t fri_open_input(
             return DNAC_FRI_ERR_BATCH_OPENED_VALUES_COUNT_MISMATCH;
         }
 
-        /* Input MMCS verify_batch (verifier.rs:590-597) via DNAC same-height batch
-         * merkle. Leaf = each matrix's opened row serialized canonical u64-LE. */
-        const uint8_t *opened_rows[FRI_MAX_RO];
-        size_t         row_byte_lens[FRI_MAX_RO];
-        uint8_t        rowbuf[FRI_MAX_RO][FRI_LEAF_CAP];
+        /* Input MMCS verify_batch (verifier.rs:590-597) via the Poseidon2 batch
+         * MMCS (P1c). Leaf = each matrix's opened row as canonical LANES. */
+        const uint64_t *opened_rows[FRI_MAX_RO];
+        size_t          row_lane_lens[FRI_MAX_RO];
+        uint64_t        rowbuf[FRI_MAX_RO][FRI_LEAF_CAP];
         if (cw->num_matrices > FRI_MAX_RO) return DNAC_FRI_ERR_INPUT_ERROR;
         for (size_t m = 0; m < cw->num_matrices; ++m) {
             size_t cols = bo->opened_values_lens[m];
             /* M3b: salted leaf = opened row ‖ salt_elems base salts
-             * (hiding_mmcs.rs:169-170). salt_elems==0 -> plain (backward-compat). */
+             * (hiding_mmcs.rs:169-170). salt_elems==0 -> plain. Under the
+             * Poseidon2 PaddingFreeSponge leaf hash this length MUST be
+             * protocol-fixed (G-SEC-P1-6): salt_elems is pinned upstream
+             * (shielded wire pin, fri_proof_codec.c) and cols is pinned by the
+             * shape checks + PointEvaluationCountMismatch below. */
             const size_t se = bo->salt_elems;
-            if ((cols + se) * 8 > FRI_LEAF_CAP) return DNAC_FRI_ERR_INPUT_ERROR;
-            fri_serialize_base_row(bo->opened_values[m], cols, rowbuf[m]);
+            if (cols + se > FRI_LEAF_CAP) return DNAC_FRI_ERR_INPUT_ERROR;
+            fri_lanes_base_row(bo->opened_values[m], cols, rowbuf[m]);
             if (se > 0) {
                 /* SEC-M3b-1: salts[m] present, per matrix. A missing salts row is
                  * a malformed proof (fail-close). */
@@ -262,35 +265,25 @@ static dnac_fri_status_t fri_open_input(
                     return DNAC_FRI_ERR_INPUT_ERROR;
                 }
                 /* SEC-M3b-2 canonicality is a `gold_fp_t` TYPE INVARIANT — every
-                 * field element is canonical-by-construction (gold_fp_from_u64 =
-                 * canonicalize_u64, field_goldilocks.c:39-56), so gold_fp_to_u64
-                 * here is already in [0,p). Canonicality of RAW wire bytes is
-                 * enforced at DECODE by rd_base's `>= p` reject (fri_proof_codec.c),
-                 * exactly like every other proof field; the salt wire codec is the
-                 * next increment (M3b-prover), so no raw-salt path reaches here yet.
-                 * (Red-team M3b: an in-struct `gold_fp_to_u64 >= p` guard would be
-                 * DEAD CODE — canonicalize_u64 can never return >= p — so it is
-                 * NOT written here; the honest invariant is stated instead.) */
+                 * field element is canonical-by-construction; raw wire lanes are
+                 * `>= p`-rejected at DECODE (rd_base, fri_proof_codec.c). The
+                 * Poseidon2 MMCS re-checks lanes fail-close (G-DET-P1-5). */
                 for (size_t s = 0; s < se; ++s) {
-                    fri_put_u64_le(rowbuf[m] + (cols + s) * 8,
-                                   gold_fp_to_u64(bo->salts[m][s]));
+                    rowbuf[m][cols + s] = gold_fp_to_u64(bo->salts[m][s]);
                 }
             }
             opened_rows[m] = rowbuf[m];
-            row_byte_lens[m] = (cols + se) * 8;
+            row_lane_lens[m] = cols + se;
         }
         if (have_height) {
             /* The verifier supplies the computed reduced_index + height; only the
              * sibling path comes from the proof (verifier.rs:590-597). */
-            dnac_merkle_proof_t iproof;
-            iproof.leaf_index   = reduced_index;
-            iproof.depth        = (uint32_t)max_log_height;
-            iproof.num_matrices = cw->num_matrices;
-            iproof.siblings     = bo->opening_proof.siblings;
-            dnac_merkle_status_t ms = dnac_merkle_batch_verify(
-                &cw->commitment, opened_rows, row_byte_lens,
-                cw->num_matrices, (size_t)1u << max_log_height, &iproof);
-            if (ms != DNAC_MERKLE_OK) return DNAC_FRI_ERR_INPUT_ERROR;
+            dnac_p2_mmcs_status_t ms = dnac_p2_mmcs_verify(
+                &cw->commitment, opened_rows, row_lane_lens,
+                cw->num_matrices, (size_t)1u << max_log_height,
+                reduced_index, bo->opening_proof.siblings,
+                (size_t)max_log_height);
+            if (ms != DNAC_P2M_OK) return DNAC_FRI_ERR_INPUT_ERROR;
         }
 
         /* Per-matrix reduced-opening accumulation (verifier.rs:599-642). */
@@ -358,7 +351,7 @@ static dnac_fri_status_t fri_verify_query(
     const dnac_fri_params_t      *params,
     uint64_t                      start_index,
     const dnac_fri_query_proof_t *qp,
-    const dnac_merkle_digest_t   *commit_phase_commits,
+    const dnac_p2_digest_t       *commit_phase_commits,
     size_t                        num_commits,
     const gold_fp2_t             *betas,
     size_t                        num_betas,
@@ -411,28 +404,30 @@ static dnac_fri_status_t fri_verify_query(
          * at the post-shift index, depth = log_folded_height. M3b: when the FRI
          * mmcs is hiding, ExtensionMmcs BASE-flattens the fp2 evals then the
          * hiding mmcs appends salt_elems BASE salts (extension_mmcs.rs:77-95 +
-         * hiding_mmcs.rs:169-170): leaf = fp2 row (arity*16 B) ‖ salts (se*8 B). */
+         * hiding_mmcs.rs:169-170): leaf LANES = [c0,c1]×arity ‖ salts (P1c). */
         const size_t cse = step->salt_elems;
-        if (arity * 16 + cse * 8 > FRI_LEAF_CAP) return DNAC_FRI_ERR_COMMIT_PHASE_MMCS_ERROR;
-        uint8_t leaf[FRI_LEAF_CAP];
-        fri_serialize_fp2_row(evals, arity, leaf);
+        if (arity * 2 + cse > FRI_LEAF_CAP) return DNAC_FRI_ERR_COMMIT_PHASE_MMCS_ERROR;
+        uint64_t leaf[FRI_LEAF_CAP];
+        fri_lanes_fp2_row(evals, arity, leaf);
         if (cse > 0) {
             if (step->salts == NULL) return DNAC_FRI_ERR_COMMIT_PHASE_MMCS_ERROR;
             /* Salt canonicality is the gold_fp_t type invariant (see the input-open
-             * salt block above); enforced at wire-decode by rd_base, not by a dead
-             * in-struct `>= p` guard (red-team M3b). */
+             * salt block above); wire lanes are rd_base `>= p`-rejected at decode;
+             * the Poseidon2 MMCS re-checks fail-close (G-DET-P1-5). */
             for (size_t s = 0; s < cse; ++s) {
-                fri_put_u64_le(leaf + arity * 16 + s * 8,
-                               gold_fp_to_u64(step->salts[s]));
+                leaf[arity * 2 + s] = gold_fp_to_u64(step->salts[s]);
             }
         }
-        dnac_merkle_proof_t mproof;
-        mproof.leaf_index   = idx;
-        mproof.depth        = (uint32_t)log_folded_height;
-        mproof.num_matrices = 1;
-        mproof.siblings     = step->opening_proof.siblings;
-        if (dnac_merkle_verify(&commit_phase_commits[round], leaf, arity * 16 + cse * 8, &mproof) != DNAC_MERKLE_OK) {
-            return DNAC_FRI_ERR_COMMIT_PHASE_MMCS_ERROR;
+        {
+            const uint64_t *leaf_rows[1] = { leaf };
+            const size_t    leaf_lens[1] = { arity * 2 + cse };
+            if (dnac_p2_mmcs_verify(&commit_phase_commits[round], leaf_rows,
+                                    leaf_lens, 1,
+                                    (size_t)1u << log_folded_height, idx,
+                                    step->opening_proof.siblings,
+                                    log_folded_height) != DNAC_P2M_OK) {
+                return DNAC_FRI_ERR_COMMIT_PHASE_MMCS_ERROR;
+            }
         }
 
         /* Fold (verifier.rs:458-464). */
@@ -474,10 +469,10 @@ static dnac_fri_status_t fri_verify_impl(
     size_t                                           num_commitments,
     dnac_fri_debug_t                                *dbg)
 {
-    /* Null/invalid C input is a caller precondition (pure-mirror enum decision). */
-    assert(params != NULL);
-    assert(proof != NULL);
-    assert(transcript != NULL);
+    /* Null/invalid C input is a caller precondition. P1e-E (S8-MED1): ALWAYS-ON
+     * fail-close (survives -DNDEBUG) instead of a debug-only assert. */
+    if (params == NULL || proof == NULL || transcript == NULL)
+        return DNAC_FRI_ERR_INPUT_ERROR;
 
     dnac_fri_status_t st = fri_shape_prefix(params, proof);
     if (st != DNAC_FRI_OK) return st;
@@ -516,8 +511,8 @@ static dnac_fri_status_t fri_verify_impl(
     size_t num_betas = proof->num_commit_phase_commits;
     if (num_betas > FRI_MAX_ROUNDS) return DNAC_FRI_ERR_INVALID_PROOF_SHAPE;
     for (size_t round = 0; round < num_betas; ++round) {
-        dnac_transcript_observe_bytes(transcript, proof->commit_phase_commits[round].bytes,
-                                      DNAC_MERKLE_DIGEST_BYTES);
+        /* P1c: 4-lane digest observed as field elements (MerkleCap observe). */
+        dnac_transcript_observe_digest(transcript, &proof->commit_phase_commits[round]);
         if (!dnac_transcript_check_witness(transcript, params->commit_proof_of_work_bits,
                                            proof->commit_pow_witnesses[round])) {
             return DNAC_FRI_ERR_INVALID_POW_WITNESS;
@@ -657,7 +652,7 @@ bool dnac_fri_test_transcript_flow(
     if (after_op) after_op(ctx, t);
 
     for (size_t round = 0; round < proof->num_commit_phase_commits; ++round) {
-        dnac_transcript_observe_bytes(t, proof->commit_phase_commits[round].bytes, DNAC_MERKLE_DIGEST_BYTES);
+        dnac_transcript_observe_digest(t, &proof->commit_phase_commits[round]);
         if (after_op) after_op(ctx, t);
         if (!dnac_transcript_check_witness(t, params->commit_proof_of_work_bits,
                                            proof->commit_pow_witnesses[round])) {
@@ -699,23 +694,22 @@ bool dnac_fri_test_transcript_flow(
     return true;
 }
 
-dnac_merkle_status_t dnac_fri_test_mmcs_verify_single(
-    const dnac_merkle_digest_t *root,
-    const uint8_t              *leaf_bytes,
-    size_t                      leaf_byte_len,
-    uint64_t                    leaf_index,
-    uint32_t                    depth,
-    const dnac_merkle_digest_t *siblings)
+dnac_p2_mmcs_status_t dnac_fri_test_mmcs_verify_single(
+    const dnac_p2_digest_t *root,
+    const uint64_t         *leaf_lanes,
+    size_t                  leaf_lane_len,
+    uint64_t                leaf_index,
+    uint32_t                depth,
+    const dnac_p2_digest_t *siblings)
 {
     assert(root != NULL);
-    assert(leaf_bytes != NULL);
+    assert(leaf_lanes != NULL);
     assert(depth == 0 || siblings != NULL);
-    dnac_merkle_proof_t proof;
-    proof.leaf_index   = leaf_index;
-    proof.depth        = depth;
-    proof.num_matrices = 1;
-    proof.siblings     = (dnac_merkle_digest_t *)siblings;
-    return dnac_merkle_verify(root, leaf_bytes, leaf_byte_len, &proof);
+    const uint64_t *rows[1] = { leaf_lanes };
+    const size_t    lens[1] = { leaf_lane_len };
+    return dnac_p2_mmcs_verify(root, rows, lens, 1,
+                               (size_t)1u << depth, leaf_index,
+                               siblings, (size_t)depth);
 }
 
 dnac_fri_status_t dnac_fri_test_verify_query_shape(

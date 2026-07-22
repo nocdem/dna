@@ -33,7 +33,7 @@ use p3_goldilocks::{
     default_goldilocks_poseidon2_8,
 };
 use p3_poseidon2_air::{RoundConstants, generate_trace_rows};
-use p3_symmetric::{PaddingFreeSponge, Permutation};
+use p3_symmetric::{PaddingFreeSponge, Permutation, TruncatedPermutation};
 use sha3::{Digest, Sha3_512};
 
 /// Type alias for Goldilocks² extension field (degree-2 binomial extension).
@@ -594,6 +594,25 @@ enum Cmd {
         #[arg(long)]
         out: PathBuf,
     },
+    /// P1a — DuplexChallenger<Goldilocks, Poseidon2Goldilocks<8>, 8, 4> replay
+    /// scenarios over the REAL default_goldilocks_poseidon2_8() permutation
+    /// (challenger/src/duplex_challenger.rs + grinding_challenger.rs). Ground
+    /// truth for the C duplex_challenger.c byte-match (P1 design doc §4.2 v2).
+    #[command(name = "dump-duplex-challenger")]
+    DumpDuplexChallenger {
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// P1b — Poseidon2 MMCS: REAL MerkleTreeMmcs (+ MerkleTreeHidingMmcs,
+    /// SALT_ELEMS=2) over PaddingFreeSponge<Perm,8,4,4> hasher +
+    /// TruncatedPermutation<Perm,2,4,8> compressor, cap_height 0, 4-lane
+    /// digests. Ground truth for the C poseidon2_mmcs.c byte-match
+    /// (P1 design doc §4.3 v2, plain + hiding forms).
+    #[command(name = "dump-poseidon2-mmcs")]
+    DumpPoseidon2Mmcs {
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// Dump all (runs all subcommands; ones not yet implemented are skipped).
     DumpAll {
         #[arg(long)]
@@ -618,7 +637,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Cmd::DumpFriFoldRow { out } => dump_fri_fold_row(&out)?,
         Cmd::DumpFriFoldMatrixLogA1 { out } => dump_fri_fold_matrix_loga1(&out)?,
         Cmd::DumpFriFoldMatrix { out } => dump_fri_fold_matrix(&out)?,
-        Cmd::DumpTranscript { out } => dump_transcript(&out)?,
+        Cmd::DumpTranscript { out: _ } => {
+            eprintln!(
+                "dump-transcript: retired at P1c (Poseidon2 DuplexChallenger; \
+                 see dump-duplex-challenger)"
+            );
+        }
         Cmd::DumpMerkleMmcs { out } => dump_merkle_mmcs(&out)?,
         Cmd::DumpMerkleMmcsBatchSameHeight { out } => dump_merkle_mmcs_batch_same_height(&out)?,
         Cmd::DumpFriVerifierValidProof { out } => dump_fri_verifier_valid_proof(&out)?,
@@ -679,6 +703,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Cmd::DumpPoseidon2Goldilocks { out } => dump_poseidon2_goldilocks(&out)?,
         Cmd::DumpPoseidon2AirTrace { out } => dump_poseidon2_air_trace(&out)?,
         Cmd::DumpNoteCommitSponge { out } => dump_note_commit_sponge(&out)?,
+        Cmd::DumpDuplexChallenger { out } => dump_duplex_challenger(&out)?,
+        Cmd::DumpPoseidon2Mmcs { out } => dump_poseidon2_mmcs(&out)?,
         Cmd::DumpAll { out_dir } => {
             std::fs::create_dir_all(&out_dir)?;
             dump_field_ops(&out_dir.join("field_ops.json"))?;
@@ -692,11 +718,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             dump_fri_fold_row(&out_dir.join("fri_fold_row.json"))?;
             dump_fri_fold_matrix_loga1(&out_dir.join("fri_fold_matrix_loga1.json"))?;
             dump_fri_fold_matrix(&out_dir.join("fri_fold_matrix.json"))?;
-            dump_transcript(&out_dir.join("transcript.json"))?;
-            dump_merkle_mmcs(&out_dir.join("merkle_mmcs.json"))?;
-            dump_merkle_mmcs_batch_same_height(
-                &out_dir.join("merkle_mmcs_batch_same_height.json"),
-            )?;
+            // dump-transcript retired at P1c (Poseidon2 DuplexChallenger).
+            // P1c: dump_merkle_mmcs{,_batch_same_height} dropped from DumpAll —
+            // their SHA3 C consumers (merkle_smt) are retired; the commands
+            // remain callable standalone as historical SHA3 references.
         }
     }
     Ok(())
@@ -1098,6 +1123,678 @@ fn dump_note_commit_sponge(out_path: &PathBuf) -> Result<(), Box<dyn std::error:
         out: 4,
         domsep_note: ds.to_string(),
         cases,
+    };
+    if let Some(parent) = out_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut f = File::create(out_path)?;
+    f.write_all(serde_json::to_string_pretty(&file)?.as_bytes())?;
+    f.write_all(b"\n")?;
+    eprintln!("wrote {}", out_path.display());
+    Ok(())
+}
+
+// ============================================================================
+// P1a — DuplexChallenger replay oracle (dump-duplex-challenger, 2026-07-22)
+//
+// Scenario vectors for the C DuplexChallenger port (duplex_challenger.c):
+// every step records the op, its inputs/outputs, and the FULL post-op state
+// (sponge_state / input_buffer / output_buffer, storage order — LIFO pop is
+// from the END of `output`). Challenger is the REAL
+// DuplexChallenger<Goldilocks, Poseidon2Goldilocks<8>, 8, 4> over
+// default_goldilocks_poseidon2_8() (P1 design doc §0: config = example TYPES,
+// instance = default_ — NOT the example's SmallRng permutation).
+//
+// grind steps use a SERIAL least-witness search (clone + Plonky3
+// check_witness, w = 0,1,2,...) — the DNAC determinization already contracted
+// by the SHA3 transcript (transcript.h dnac_transcript_grind "least witness");
+// Plonky3's own rayon find_map_any returns ANY witness and is not
+// regen-deterministic. Semantics per witness are pure Plonky3 check_witness.
+//
+// DS prefix: the 25-byte "DNAC|ZK|FRI|TRANSCRIPT|V1" as 4 LE u64 limbs
+// (zero-padded), observed as the first 4 field elements (P1 §0, G-SEC-P1-7).
+// ============================================================================
+
+#[derive(Serialize)]
+struct DuplexStep {
+    op: &'static str,
+    a0: String,          // arg 0 (op-dependent; "0" if unused)
+    a1: String,          // arg 1
+    r0: String,          // result 0
+    r1: String,          // result 1
+    state: Vec<String>,  // sponge_state[8] post-op (canonical u64 strings)
+    input: Vec<String>,  // input_buffer post-op
+    output: Vec<String>, // output_buffer post-op (storage order; pop from END)
+}
+
+#[derive(Serialize)]
+struct DuplexCase {
+    name: &'static str,
+    steps: Vec<DuplexStep>,
+}
+
+#[derive(Serialize)]
+struct DuplexFile {
+    format_version: &'static str,
+    plonky3_commit: &'static str,
+    constructor: &'static str,
+    permutation: &'static str,
+    width: usize,
+    rate: usize,
+    ds_prefix: Vec<String>,
+    cases: Vec<DuplexCase>,
+}
+
+fn dump_duplex_challenger(out_path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    use p3_challenger::{
+        CanObserve, CanSample, CanSampleBits, DuplexChallenger, FieldChallenger,
+        GrindingChallenger,
+    };
+    use p3_goldilocks::Poseidon2Goldilocks;
+    type Ch = DuplexChallenger<Goldilocks, Poseidon2Goldilocks<8>, 8, 4>;
+
+    fn g(v: u64) -> Goldilocks {
+        Goldilocks::from_u64(v)
+    }
+    fn snap_vec(xs: &[Goldilocks]) -> Vec<String> {
+        xs.iter().map(|x| x.as_canonical_u64().to_string()).collect()
+    }
+    fn mk(op: &'static str, a0: u64, a1: u64, r0: u64, r1: u64, ch: &Ch) -> DuplexStep {
+        DuplexStep {
+            op,
+            a0: a0.to_string(),
+            a1: a1.to_string(),
+            r0: r0.to_string(),
+            r1: r1.to_string(),
+            state: snap_vec(&ch.sponge_state),
+            input: snap_vec(&ch.input_buffer),
+            output: snap_vec(&ch.output_buffer),
+        }
+    }
+    fn sm64(x: &mut u64) -> u64 {
+        *x = x.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut z = *x;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
+    }
+    fn rv(seed: &mut u64) -> u64 {
+        sm64(seed) % GOLDILOCKS_P
+    }
+    /// Serial least-witness grind: w = 0,1,2,... first w with Plonky3
+    /// check_witness(bits, w) == true; applies the winning check to `ch`.
+    /// bits == 0: witness 0, state untouched (matches dnac_transcript_grind).
+    fn serial_least_grind(ch: &mut Ch, bits: usize) -> u64 {
+        if bits == 0 {
+            return 0;
+        }
+        let mut w: u64 = 0;
+        loop {
+            let mut c = ch.clone();
+            if c.check_witness(bits, g(w)) {
+                *ch = c;
+                return w;
+            }
+            w += 1;
+        }
+    }
+    /// First FAILING witness candidate (w = 0,1,2,...); applies the failing
+    /// check to `ch` (check_witness advances state on failure too).
+    fn first_failing_witness(ch: &mut Ch, bits: usize) -> u64 {
+        let mut w: u64 = 0;
+        loop {
+            let mut c = ch.clone();
+            if !c.check_witness(bits, g(w)) {
+                *ch = c;
+                return w;
+            }
+            w += 1;
+        }
+    }
+
+    // DS prefix limbs: 25 ASCII bytes -> 8-byte LE chunks, last zero-padded.
+    let ds_bytes: &[u8] = b"DNAC|ZK|FRI|TRANSCRIPT|V1";
+    assert_eq!(ds_bytes.len(), 25);
+    let mut ds_limbs = [0u64; 4];
+    for (i, b) in ds_bytes.iter().enumerate() {
+        ds_limbs[i / 8] |= (*b as u64) << (8 * (i % 8));
+    }
+    for l in ds_limbs {
+        assert!(l < GOLDILOCKS_P, "DS limb must be canonical");
+    }
+
+    let fresh = || Ch::new(default_goldilocks_poseidon2_8());
+    let mut seed: u64 = 0x0123_4567_89ab_cdef;
+    let mut cases: Vec<DuplexCase> = Vec::new();
+
+    // 1. observe_partial — 3 observes, no duplex fires (input fills, state 0).
+    {
+        let mut ch = fresh();
+        let mut steps = Vec::new();
+        for _ in 0..3 {
+            let v = rv(&mut seed);
+            ch.observe(g(v));
+            steps.push(mk("observe", v, 0, 0, 0, &ch));
+        }
+        cases.push(DuplexCase { name: "observe_partial", steps });
+    }
+
+    // 2. observe_rate_boundary — 5 observes: eager duplex at the 4th, 5th buffers.
+    {
+        let mut ch = fresh();
+        let mut steps = Vec::new();
+        for _ in 0..5 {
+            let v = rv(&mut seed);
+            ch.observe(g(v));
+            steps.push(mk("observe", v, 0, 0, 0, &ch));
+        }
+        cases.push(DuplexCase { name: "observe_rate_boundary", steps });
+    }
+
+    // 3. sample_pending_input — 2 observes then 7 samples (pending-input duplex,
+    //    LIFO drain of 4 outputs, then squeeze-only duplex refill).
+    {
+        let mut ch = fresh();
+        let mut steps = Vec::new();
+        for _ in 0..2 {
+            let v = rv(&mut seed);
+            ch.observe(g(v));
+            steps.push(mk("observe", v, 0, 0, 0, &ch));
+        }
+        for _ in 0..7 {
+            let s: Goldilocks = ch.sample();
+            steps.push(mk("sample", 0, 0, s.as_canonical_u64(), 0, &ch));
+        }
+        cases.push(DuplexCase { name: "sample_pending_input", steps });
+    }
+
+    // 4. observe_invalidates_output — observe clears unread squeezed output.
+    {
+        let mut ch = fresh();
+        let mut steps = Vec::new();
+        for _ in 0..2 {
+            let v = rv(&mut seed);
+            ch.observe(g(v));
+            steps.push(mk("observe", v, 0, 0, 0, &ch));
+            let s: Goldilocks = ch.sample();
+            steps.push(mk("sample", 0, 0, s.as_canonical_u64(), 0, &ch));
+        }
+        cases.push(DuplexCase { name: "observe_invalidates_output", steps });
+    }
+
+    // 5. sample_fp2 — extension sample = two base pops, c0 first
+    //    (EF::from_basis_coefficients_fn, duplex_challenger.rs:235-247).
+    {
+        let mut ch = fresh();
+        let mut steps = Vec::new();
+        for _ in 0..3 {
+            let v = rv(&mut seed);
+            ch.observe(g(v));
+            steps.push(mk("observe", v, 0, 0, 0, &ch));
+        }
+        for _ in 0..2 {
+            let s: GoldFp2 = ch.sample();
+            let c: &[Goldilocks] = s.as_basis_coefficients_slice();
+            steps.push(mk(
+                "sample_fp2",
+                0,
+                0,
+                c[0].as_canonical_u64(),
+                c[1].as_canonical_u64(),
+                &ch,
+            ));
+        }
+        cases.push(DuplexCase { name: "sample_fp2", steps });
+    }
+
+    // 6. observe_fp2 — observe_algebra_element = c0 then c1 (challenger/src/
+    //    lib.rs:106-108); 3 fp2 observes = 6 elems (duplex at 4, 2 buffered).
+    {
+        let mut ch = fresh();
+        let mut steps = Vec::new();
+        for _ in 0..3 {
+            let c0 = rv(&mut seed);
+            let c1 = rv(&mut seed);
+            let x = GoldFp2::from_basis_coefficients_slice(&[g(c0), g(c1)]).unwrap();
+            ch.observe_algebra_element(x);
+            steps.push(mk("observe_fp2", c0, c1, 0, 0, &ch));
+        }
+        let s: Goldilocks = ch.sample();
+        steps.push(mk("sample", 0, 0, s.as_canonical_u64(), 0, &ch));
+        cases.push(DuplexCase { name: "observe_fp2", steps });
+    }
+
+    // 7. sample_bits — field sample -> canonical u64 -> low-bit mask
+    //    (duplex_challenger.rs:264-270). bits = 16, 1, 20, 0.
+    {
+        let mut ch = fresh();
+        let mut steps = Vec::new();
+        for _ in 0..2 {
+            let v = rv(&mut seed);
+            ch.observe(g(v));
+            steps.push(mk("observe", v, 0, 0, 0, &ch));
+        }
+        for bits in [16usize, 1, 20, 0] {
+            let r = ch.sample_bits(bits) as u64;
+            steps.push(mk("sample_bits", bits as u64, 0, r, 0, &ch));
+        }
+        cases.push(DuplexCase { name: "sample_bits", steps });
+    }
+
+    // 8. check_witness — bits=8 fail then pass (grinding_challenger.rs:40-46:
+    //    observe witness-as-field, sample_bits == 0; state advances on failure
+    //    too), then bits=0 no-op (early true, NO observe, NO sample).
+    {
+        let mut ch = fresh();
+        let mut steps = Vec::new();
+        for _ in 0..3 {
+            let v = rv(&mut seed);
+            ch.observe(g(v));
+            steps.push(mk("observe", v, 0, 0, 0, &ch));
+        }
+        let wf = first_failing_witness(&mut ch, 8);
+        steps.push(mk("check_witness", 8, wf, 0, 0, &ch));
+        let wp = serial_least_grind(&mut ch, 8);
+        steps.push(mk("check_witness", 8, wp, 1, 0, &ch));
+        let ok0 = {
+            let mut c = ch.clone();
+            let r = c.check_witness(0, g(12345));
+            assert_eq!(
+                snap_vec(&c.sponge_state),
+                snap_vec(&ch.sponge_state),
+                "check_witness(0,_) must not touch state"
+            );
+            assert_eq!(c.input_buffer.len(), ch.input_buffer.len());
+            assert_eq!(c.output_buffer.len(), ch.output_buffer.len());
+            r
+        };
+        let _ = ch.check_witness(0, g(12345));
+        steps.push(mk("check_witness", 0, 12345, ok0 as u64, 0, &ch));
+        cases.push(DuplexCase { name: "check_witness", steps });
+    }
+
+    // 9. grind — least-witness PoW at bits=8, then a post-grind sample.
+    {
+        let mut ch = fresh();
+        let mut steps = Vec::new();
+        for _ in 0..2 {
+            let v = rv(&mut seed);
+            ch.observe(g(v));
+            steps.push(mk("observe", v, 0, 0, 0, &ch));
+        }
+        let w = serial_least_grind(&mut ch, 8);
+        steps.push(mk("grind", 8, 0, w, 0, &ch));
+        let s: Goldilocks = ch.sample();
+        steps.push(mk("sample", 0, 0, s.as_canonical_u64(), 0, &ch));
+        cases.push(DuplexCase { name: "grind", steps });
+    }
+
+    // 10. grind_zero — bits=0: witness 0, state untouched, then sample.
+    {
+        let mut ch = fresh();
+        let mut steps = Vec::new();
+        let v = rv(&mut seed);
+        ch.observe(g(v));
+        steps.push(mk("observe", v, 0, 0, 0, &ch));
+        let w = serial_least_grind(&mut ch, 0);
+        steps.push(mk("grind", 0, 0, w, 0, &ch));
+        let s: Goldilocks = ch.sample();
+        steps.push(mk("sample", 0, 0, s.as_canonical_u64(), 0, &ch));
+        cases.push(DuplexCase { name: "grind_zero", steps });
+    }
+
+    // 11. grind16 — least-witness PoW at bits=16, the LIVE shielded query-PoW
+    //     strength (shielded_fri_params.h DNAC_SHIELDED_FRI_QUERY_POW_BITS=16,
+    //     fri_verifier.c:536 / stark_prover.c:1203). Grinds a real 16-bit witness
+    //     against Plonky3 check_witness, then samples. Closes P1e-D: the 16-bit
+    //     grind primitive is now byte-matched to Plonky3, not only the bits=8
+    //     case. (The transcript POSITION of the query PoW is separately pinned by
+    //     the pow=0 FRI milestone vectors; grind(0) is a no-op at that slot.)
+    {
+        let mut ch = fresh();
+        let mut steps = Vec::new();
+        for _ in 0..2 {
+            let v = rv(&mut seed);
+            ch.observe(g(v));
+            steps.push(mk("observe", v, 0, 0, 0, &ch));
+        }
+        let w = serial_least_grind(&mut ch, 16);
+        steps.push(mk("grind", 16, 0, w, 0, &ch));
+        let s: Goldilocks = ch.sample();
+        steps.push(mk("sample", 0, 0, s.as_canonical_u64(), 0, &ch));
+        cases.push(DuplexCase { name: "grind16", steps });
+    }
+
+    // 11. ds_prefix — the 4 DS limbs as first observes (init_default state pin),
+    //     then an IMMEDIATE sample (round-2 N5), then normal flow.
+    {
+        let mut ch = fresh();
+        let mut steps = Vec::new();
+        for l in ds_limbs {
+            ch.observe(g(l));
+            steps.push(mk("observe", l, 0, 0, 0, &ch));
+        }
+        let s: Goldilocks = ch.sample();
+        steps.push(mk("sample", 0, 0, s.as_canonical_u64(), 0, &ch));
+        let v = rv(&mut seed);
+        ch.observe(g(v));
+        steps.push(mk("observe", v, 0, 0, 0, &ch));
+        let s2: Goldilocks = ch.sample();
+        steps.push(mk("sample", 0, 0, s2.as_canonical_u64(), 0, &ch));
+        cases.push(DuplexCase { name: "ds_prefix", steps });
+    }
+
+    // 12. mixed_long — fixed op walk exercising the full state machine.
+    {
+        let mut ch = fresh();
+        let mut steps = Vec::new();
+        let script: &[&str] = &[
+            "o", "o", "s", "o", "o", "o", "o", "s", "s", "b", "f2o", "f2s", "o", "cw",
+            "s", "gr", "o", "s", "b", "s",
+        ];
+        for tag in script {
+            match *tag {
+                "o" => {
+                    let v = rv(&mut seed);
+                    ch.observe(g(v));
+                    steps.push(mk("observe", v, 0, 0, 0, &ch));
+                }
+                "s" => {
+                    let s: Goldilocks = ch.sample();
+                    steps.push(mk("sample", 0, 0, s.as_canonical_u64(), 0, &ch));
+                }
+                "b" => {
+                    let r = ch.sample_bits(16) as u64;
+                    steps.push(mk("sample_bits", 16, 0, r, 0, &ch));
+                }
+                "f2o" => {
+                    let c0 = rv(&mut seed);
+                    let c1 = rv(&mut seed);
+                    let x = GoldFp2::from_basis_coefficients_slice(&[g(c0), g(c1)]).unwrap();
+                    ch.observe_algebra_element(x);
+                    steps.push(mk("observe_fp2", c0, c1, 0, 0, &ch));
+                }
+                "f2s" => {
+                    let s: GoldFp2 = ch.sample();
+                    let c: &[Goldilocks] = s.as_basis_coefficients_slice();
+                    steps.push(mk(
+                        "sample_fp2",
+                        0,
+                        0,
+                        c[0].as_canonical_u64(),
+                        c[1].as_canonical_u64(),
+                        &ch,
+                    ));
+                }
+                "cw" => {
+                    let wp = serial_least_grind(&mut ch, 8);
+                    steps.push(mk("check_witness", 8, wp, 1, 0, &ch));
+                }
+                "gr" => {
+                    let w = serial_least_grind(&mut ch, 8);
+                    steps.push(mk("grind", 8, 0, w, 0, &ch));
+                }
+                _ => unreachable!(),
+            }
+        }
+        cases.push(DuplexCase { name: "mixed_long", steps });
+    }
+
+    let file = DuplexFile {
+        format_version: ORACLE_FORMAT_VERSION,
+        plonky3_commit: PLONKY3_COMMIT,
+        constructor: "DuplexChallenger::<Goldilocks, Poseidon2Goldilocks<8>, 8, 4>::new(default_goldilocks_poseidon2_8()) (challenger/src/duplex_challenger.rs:71-84; types per keccak-air/examples/prove_goldilocks_poseidon2.rs:57, instance per P1 design §0 F4 pin)",
+        permutation: "default_goldilocks_poseidon2_8 (goldilocks/src/poseidon2.rs:570)",
+        width: 8,
+        rate: 4,
+        ds_prefix: ds_limbs.iter().map(|l| l.to_string()).collect(),
+        cases,
+    };
+    if let Some(parent) = out_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut f = File::create(out_path)?;
+    f.write_all(serde_json::to_string_pretty(&file)?.as_bytes())?;
+    f.write_all(b"\n")?;
+    eprintln!("wrote {}", out_path.display());
+    Ok(())
+}
+
+// ============================================================================
+// P1b — Poseidon2 MMCS oracle (dump-poseidon2-mmcs, 2026-07-22)
+//
+// REAL Plonky3 MerkleTreeMmcs<ValPacking, ValPacking, PaddingFreeSponge<Perm,
+// 8,4,4>, TruncatedPermutation<Perm,2,4,8>, 2, 4> and its HIDING form
+// MerkleTreeHidingMmcs<..., SmallRng, 2, 4, SALT_ELEMS=2>, both over
+// default_goldilocks_poseidon2_8(), cap_height 0 (single 4-lane root).
+//
+// Dumped per tree: the full matrices (row-major u64 strings), the root, and
+// an opening at EVERY index (opened rows, per-matrix salts for the hiding
+// form, sibling digests leaf-level-first). Dumping all indices gives the C
+// side every salt row, so it can rebuild the salted commit as row‖salt wider
+// matrices (exactly what HidingMmcs::commit does internally via
+// HorizontalPair, hiding_mmcs.rs:121-134) and byte-match the root.
+// Every opening is verify_batch-checked in-oracle before being written.
+//
+// Also dumps standalone sponge (hash_iter, lengths around the RATE boundary)
+// and compressor KATs for the two primitives.
+// ============================================================================
+
+#[derive(Serialize)]
+struct P2mSpongeCase {
+    input: Vec<String>,
+    out: Vec<String>, // 4
+}
+
+#[derive(Serialize)]
+struct P2mCompressCase {
+    left: Vec<String>,  // 4
+    right: Vec<String>, // 4
+    out: Vec<String>,   // 4
+}
+
+#[derive(Serialize)]
+struct P2mOpening {
+    index: String,
+    opened: Vec<Vec<String>>,   // per matrix: width values
+    salts: Vec<Vec<String>>,    // per matrix: SALT_ELEMS values (empty if plain)
+    siblings: Vec<Vec<String>>, // per level (leaf-first): 4 lanes
+}
+
+#[derive(Serialize)]
+struct P2mTree {
+    name: &'static str,
+    salted: String, // "1" / "0"
+    num_rows: String,
+    widths: Vec<String>,        // per matrix, EXCLUDING salts
+    matrices: Vec<Vec<String>>, // per matrix: row-major num_rows*width values
+    root: Vec<String>,          // 4
+    openings: Vec<P2mOpening>,
+}
+
+#[derive(Serialize)]
+struct P2mFile {
+    format_version: &'static str,
+    plonky3_commit: &'static str,
+    constructor: &'static str,
+    permutation: &'static str,
+    width: usize,
+    rate: usize,
+    digest_lanes: usize,
+    salt_elems: usize,
+    sponge_cases: Vec<P2mSpongeCase>,
+    compress_cases: Vec<P2mCompressCase>,
+    trees: Vec<P2mTree>,
+}
+
+fn dump_poseidon2_mmcs(out_path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    use p3_commit::{BatchOpeningRef, Mmcs};
+    use p3_goldilocks::Poseidon2Goldilocks;
+    use p3_matrix::Dimensions;
+    use p3_matrix::dense::RowMajorMatrix;
+    use p3_merkle_tree::{MerkleTreeHidingMmcs, MerkleTreeMmcs};
+    use p3_symmetric::{CryptographicHasher, PseudoCompressionFunction, TruncatedPermutation};
+    use rand::SeedableRng;
+    use rand::rngs::SmallRng;
+
+    type Perm = Poseidon2Goldilocks<8>;
+    type MyHash = PaddingFreeSponge<Perm, 8, 4, 4>;
+    type MyCompress = TruncatedPermutation<Perm, 2, 4, 8>;
+    type ValPacking = <Goldilocks as Field>::Packing;
+    type ValMmcs = MerkleTreeMmcs<ValPacking, ValPacking, MyHash, MyCompress, 2, 4>;
+    type HidingMmcs =
+        MerkleTreeHidingMmcs<ValPacking, ValPacking, MyHash, MyCompress, SmallRng, 2, 4, 2>;
+
+    fn sm64(x: &mut u64) -> u64 {
+        *x = x.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut z = *x;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
+    }
+    fn strs(xs: &[Goldilocks]) -> Vec<String> {
+        xs.iter().map(|x| x.as_canonical_u64().to_string()).collect()
+    }
+
+    let perm = default_goldilocks_poseidon2_8();
+    let hash = MyHash::new(perm.clone());
+    let compress = MyCompress::new(perm.clone());
+    let mut seed: u64 = 0x0DDC_0FFE_E000_0001;
+
+    // --- Primitive KATs: sponge over lengths 1..=10 (RATE boundary coverage:
+    //     3 = mid-block, 4 = exact block, 8 = two blocks, 9/10 = tail). ---
+    let mut sponge_cases = Vec::new();
+    for n in 1..=10usize {
+        let input: Vec<Goldilocks> = (0..n)
+            .map(|_| Goldilocks::from_u64(sm64(&mut seed) % GOLDILOCKS_P))
+            .collect();
+        let out: [Goldilocks; 4] = hash.hash_iter(input.iter().copied());
+        sponge_cases.push(P2mSpongeCase { input: strs(&input), out: strs(&out) });
+    }
+
+    // --- Primitive KATs: TruncatedPermutation<2,4,8> compress (ONE permute,
+    //     left‖right fills the full width, truncate to 4). ---
+    let mut compress_cases = Vec::new();
+    for _ in 0..6 {
+        let l: [Goldilocks; 4] =
+            core::array::from_fn(|_| Goldilocks::from_u64(sm64(&mut seed) % GOLDILOCKS_P));
+        let r: [Goldilocks; 4] =
+            core::array::from_fn(|_| Goldilocks::from_u64(sm64(&mut seed) % GOLDILOCKS_P));
+        let out: [Goldilocks; 4] = compress.compress([l, r]);
+        compress_cases.push(P2mCompressCase {
+            left: strs(&l),
+            right: strs(&r),
+            out: strs(&out),
+        });
+    }
+
+    // --- Trees: (name, salted, num_rows, widths) ---
+    let specs: &[(&'static str, bool, usize, &[usize])] = &[
+        ("plain_h1_w3", false, 1, &[3]),
+        ("plain_h2_w4", false, 2, &[4]),
+        ("plain_h8_w5", false, 8, &[5]),
+        ("plain_h16_w9", false, 16, &[9]),
+        ("plain_h8_multi_w3_w6", false, 8, &[3, 6]),
+        ("plain_h4_multi_w1_w4_w2", false, 4, &[1, 4, 2]),
+        ("salted_h8_w5", true, 8, &[5]),
+        ("salted_h16_multi_w3_w6", true, 16, &[3, 6]),
+        ("salted_h2_w2", true, 2, &[2]),
+    ];
+
+    let mut trees = Vec::new();
+    for &(name, salted, num_rows, widths) in specs {
+        // Deterministic matrix content.
+        let mats: Vec<RowMajorMatrix<Goldilocks>> = widths
+            .iter()
+            .map(|&w| {
+                let vals: Vec<Goldilocks> = (0..num_rows * w)
+                    .map(|_| Goldilocks::from_u64(sm64(&mut seed) % GOLDILOCKS_P))
+                    .collect();
+                RowMajorMatrix::new(vals, w)
+            })
+            .collect();
+        let dims: Vec<Dimensions> = widths
+            .iter()
+            .map(|&w| Dimensions { width: w, height: num_rows })
+            .collect();
+        let matrices_json: Vec<Vec<String>> =
+            mats.iter().map(|m| strs(&m.values)).collect();
+
+        let (root_lanes, openings) = if salted {
+            let mmcs = HidingMmcs::new(
+                hash.clone(),
+                compress.clone(),
+                0,
+                SmallRng::seed_from_u64(1),
+            );
+            let (cap, tree) = mmcs.commit(mats.clone().into_iter().map(|m| m.clone()).collect());
+            let root: [Goldilocks; 4] = cap[0];
+            let mut ops = Vec::new();
+            for idx in 0..num_rows {
+                let opening = mmcs.open_batch(idx, &tree);
+                mmcs.verify_batch(
+                    &cap,
+                    &dims,
+                    idx,
+                    BatchOpeningRef::new(&opening.opened_values, &opening.opening_proof),
+                )
+                .map_err(|e| format!("salted verify_batch({name},{idx}): {e:?}"))?;
+                let (salts, siblings) = &opening.opening_proof;
+                ops.push(P2mOpening {
+                    index: idx.to_string(),
+                    opened: opening.opened_values.iter().map(|r| strs(r)).collect(),
+                    salts: salts.iter().map(|s| strs(s)).collect(),
+                    siblings: siblings.iter().map(|d| strs(d)).collect(),
+                });
+            }
+            (root, ops)
+        } else {
+            let mmcs = ValMmcs::new(hash.clone(), compress.clone(), 0);
+            let (cap, tree) = mmcs.commit(mats.clone());
+            let root: [Goldilocks; 4] = cap[0];
+            let mut ops = Vec::new();
+            for idx in 0..num_rows {
+                let opening = mmcs.open_batch(idx, &tree);
+                mmcs.verify_batch(
+                    &cap,
+                    &dims,
+                    idx,
+                    BatchOpeningRef::new(&opening.opened_values, &opening.opening_proof),
+                )
+                .map_err(|e| format!("plain verify_batch({name},{idx}): {e:?}"))?;
+                ops.push(P2mOpening {
+                    index: idx.to_string(),
+                    opened: opening.opened_values.iter().map(|r| strs(r)).collect(),
+                    salts: Vec::new(),
+                    siblings: opening.opening_proof.iter().map(|d| strs(d)).collect(),
+                });
+            }
+            (root, ops)
+        };
+
+        trees.push(P2mTree {
+            name,
+            salted: if salted { "1" } else { "0" }.to_string(),
+            num_rows: num_rows.to_string(),
+            widths: widths.iter().map(|w| w.to_string()).collect(),
+            matrices: matrices_json,
+            root: strs(&root_lanes),
+            openings,
+        });
+    }
+
+    let file = P2mFile {
+        format_version: ORACLE_FORMAT_VERSION,
+        plonky3_commit: PLONKY3_COMMIT,
+        constructor: "MerkleTreeMmcs<ValPacking,ValPacking,PaddingFreeSponge<Perm,8,4,4>,TruncatedPermutation<Perm,2,4,8>,2,4> cap 0 (+ MerkleTreeHidingMmcs<...,SmallRng(1),2,4,SALT_ELEMS=2>) — types per prove_goldilocks_poseidon2.rs:41-48, hiding per hiding_mmcs.rs:39-51",
+        permutation: "default_goldilocks_poseidon2_8 (goldilocks/src/poseidon2.rs:570)",
+        width: 8,
+        rate: 4,
+        digest_lanes: 4,
+        salt_elems: 2,
+        sponge_cases,
+        compress_cases,
+        trees,
     };
     if let Some(parent) = out_path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -2893,878 +3590,24 @@ fn dump_fri_fold_matrix(out_path: &PathBuf) -> Result<(), Box<dyn std::error::Er
 //   immediately. The shadow is NEVER the source of truth.
 // ============================================================================
 
-use std::cell::RefCell;
-use std::collections::VecDeque;
-use std::rc::Rc;
-
-use p3_challenger::{
-    CanObserve, CanSample, CanSampleBits, HashChallenger, SerializingChallenger64,
-};
+use p3_challenger::{CanObserve, CanSample, CanSampleBits};
 use p3_symmetric::CryptographicHasher;
 
-/// Goldilocks prime exposed as a typed constant for the rejection-band check.
-const TRANSCRIPT_P: u64 = GOLDILOCKS_P;
+/* P1c: TRANSCRIPT_P / PROD_INIT_STATE / HashEvent / HashRecorder /
+ * DnacSha3_512Hasher retired with the SHA3 transcript oracle. */
 
-/// Production / default initial_state per Q1 decision (ASCII bytes; no NUL).
-const PROD_INIT_STATE: &[u8] = b"DNAC|ZK|FRI|TRANSCRIPT|V1";
+/* P1c: the Shadow byte-state tracker retired — DuplexChallenger state is
+ * public; snapshots read the real challenger directly. */
 
-/// One record of a hasher invocation. Captured in flush order.
-#[derive(Clone)]
-struct HashEvent {
-    input: Vec<u8>,
-    output: [u8; 64],
-}
+/* P1c: the Transcript* JSON schema + case driver retired — see
+ * dump-duplex-challenger for the Poseidon2 gate. */
 
-/// Shared recorder, populated by `DnacSha3_512Hasher::hash_iter` and drained
-/// by the shadow tracker on each flush prediction.
-type HashRecorder = Rc<RefCell<VecDeque<HashEvent>>>;
+/* P1c: the crafted-vector brute-force helpers (FORCED_REJECTION_COUNTER,
+ * find_rejection_suffix, find_witness_for_check) retired with the SHA3
+ * transcript vectors. */
 
-/// Thin adapter implementing Plonky3's `CryptographicHasher<u8, [u8; 64]>`
-/// via the `sha3` crate's `Sha3_512`. The recorder field captures every
-/// invocation so the shadow tracker can cross-check predicted flushes.
-#[derive(Clone)]
-struct DnacSha3_512Hasher {
-    recorder: HashRecorder,
-}
 
-impl CryptographicHasher<u8, [u8; 64]> for DnacSha3_512Hasher {
-    fn hash_iter<I>(&self, input: I) -> [u8; 64]
-    where
-        I: IntoIterator<Item = u8>,
-    {
-        let input: Vec<u8> = input.into_iter().collect();
-        let mut h = Sha3_512::new();
-        h.update(&input);
-        let digest = h.finalize();
-        let mut out = [0u8; 64];
-        out.copy_from_slice(&digest);
-        self.recorder
-            .borrow_mut()
-            .push_back(HashEvent { input, output: out });
-        out
-    }
-}
 
-/// Shadow state machine that mirrors HashChallenger's `input_buffer` and
-/// `output_buffer` for snapshot purposes. Cross-checked against the recorded
-/// hash events on every flush; any divergence panics.
-struct Shadow {
-    input_buf: Vec<u8>,
-    /// In digest storage order. LIFO pop = last element. So a fresh post-flush
-    /// buffer contains [d0, d1, ..., d63], and the next sample pops d63.
-    output_buf: Vec<u8>,
-}
-
-impl Shadow {
-    fn new(initial_state: &[u8]) -> Self {
-        Self {
-            input_buf: initial_state.to_vec(),
-            output_buf: Vec::new(),
-        }
-    }
-
-    fn observe_bytes(&mut self, bytes: &[u8]) {
-        // Mirrors Plonky3's `CanObserve::observe_slice` default loop
-        // (challenger/src/lib.rs:32-39): per-byte observes are driven by a
-        // `for value in values` loop that has ZERO iterations for an empty
-        // slice. So for `len == 0` there is NO output_buffer clear and NO
-        // input_buffer append. This matches the C transcript's
-        // `dnac_transcript_observe_bytes` len==0 short-circuit and the
-        // T2-audit / T3 fix-up resolution.
-        if bytes.is_empty() {
-            return;
-        }
-        // For non-empty input the single-byte observe (hash_challenger.rs:51-57)
-        // always clears output and pushes the byte; over multiple bytes, the
-        // net effect is "clear once, append all" — identical to this body.
-        self.output_buf.clear();
-        self.input_buf.extend_from_slice(bytes);
-    }
-
-    /// Pop one byte (LIFO). If the output buffer is empty, consume one
-    /// hash event from the recorder, verify it matches our predicted
-    /// flush input, and refill from the digest. Mirrors
-    /// hash_challenger.rs:36-43 (flush) + 80-87 (sample).
-    fn sample_byte(&mut self, recorder: &HashRecorder) -> u8 {
-        if self.output_buf.is_empty() {
-            let event = recorder
-                .borrow_mut()
-                .pop_front()
-                .expect("shadow: expected a hash event but recorder is empty");
-            assert_eq!(
-                event.input, self.input_buf,
-                "shadow/Plonky3 flush input divergence — shadow tracking is broken"
-            );
-            // Plonky3 flush sequence: drain input_buffer; hash; extend
-            // input_buffer with digest; assign output_buffer from digest.
-            // Net: input_buffer becomes the digest in order; output_buffer
-            // becomes the digest in order.
-            self.input_buf.clear();
-            self.input_buf.extend_from_slice(&event.output);
-            self.output_buf.clear();
-            self.output_buf.extend_from_slice(&event.output);
-        }
-        self.output_buf.pop().unwrap()
-    }
-
-    fn sample_u64(&mut self, recorder: &HashRecorder) -> u64 {
-        let mut bytes = [0u8; 8];
-        for byte in bytes.iter_mut() {
-            *byte = self.sample_byte(recorder);
-        }
-        u64::from_le_bytes(bytes)
-    }
-
-    /// Shadow's prediction of sample_fp. The rejection loop is identical
-    /// to SerializingChallenger64::sample for Goldilocks
-    /// (serializing_challenger.rs:333-344): repeatedly read u64, accept
-    /// iff < P. Returns the accepted u64.
-    ///
-    /// CALLER MUST cross-check against Plonky3's actual return. The shadow's
-    /// rejection model is part of its state-machine job; its correctness is
-    /// continuously validated by the cross-check.
-    fn predict_sample_fp(&mut self, recorder: &HashRecorder) -> u64 {
-        loop {
-            let v = self.sample_u64(recorder);
-            // Mask is no-op for Goldilocks (log2_ceil_u64(P) = 64).
-            if v < TRANSCRIPT_P {
-                return v;
-            }
-        }
-    }
-}
-
-// ----------------------------------------------------------------------------
-// JSON schema (read also by the future C oracle replay test).
-// ----------------------------------------------------------------------------
-
-#[derive(Serialize)]
-#[serde(tag = "op")]
-#[serde(rename_all = "snake_case")]
-enum TranscriptOp {
-    ObserveBytes {
-        bytes: String, // hex
-    },
-    ObserveFp {
-        value_u64: String, // decimal
-    },
-    ObserveFp2 {
-        c0_u64: String,
-        c1_u64: String,
-    },
-    SampleFp,
-    SampleFp2,
-    SampleBits {
-        bits: u8,
-    },
-    CheckWitness {
-        bits: u8,
-        witness_u64: String,
-    },
-}
-
-#[derive(Serialize)]
-#[serde(tag = "kind")]
-#[serde(rename_all = "snake_case")]
-enum TranscriptResult {
-    Fp { u64_value: String },
-    Fp2 { c0_u64: String, c1_u64: String },
-    Bits { u64_value: String },
-    Bool { value: bool },
-}
-
-#[derive(Serialize)]
-struct TranscriptSnapshot {
-    after_op: usize,
-    /// Full content of HashChallenger.input_buffer, hex.
-    input_buf: String,
-    /// HashChallenger.output_buffer in STORAGE order (LIFO pop = last byte
-    /// of this hex string). Empty if no pop is currently possible.
-    output_buf_remaining: String,
-    /// Result returned by the op at index `after_op`. `null` for observes.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    result: Option<TranscriptResult>,
-}
-
-#[derive(Serialize)]
-struct TranscriptCase {
-    name: String,
-    description: String,
-    /// Initial state bytes for HashChallenger::new (hex). May be empty.
-    init_state: String,
-    ops: Vec<TranscriptOp>,
-    snapshots: Vec<TranscriptSnapshot>,
-    final_input_buf: String,
-    final_output_buf_remaining: String,
-}
-
-#[derive(Serialize)]
-struct TranscriptFile {
-    format_version: &'static str,
-    plonky3_commit: &'static str,
-    field_p: String,
-    construction: &'static str,
-    hasher: &'static str,
-    out_len: usize,
-    prod_init_state_ascii: String,
-    prod_init_state_hex: String,
-    cases: Vec<TranscriptCase>,
-}
-
-// ----------------------------------------------------------------------------
-// Driver: execute an op sequence against a live Plonky3 challenger + a
-// parallel shadow tracker. Emits snapshots and cross-checks every sample.
-// ----------------------------------------------------------------------------
-
-fn run_transcript_case(
-    name: &str,
-    description: &str,
-    init_state: Vec<u8>,
-    ops: Vec<TranscriptOp>,
-) -> TranscriptCase {
-    let recorder: HashRecorder = Rc::new(RefCell::new(VecDeque::new()));
-    let hasher = DnacSha3_512Hasher {
-        recorder: recorder.clone(),
-    };
-
-    // Live challenger: long-lived HashChallenger. A fresh
-    // SerializingChallenger64 wrapper from `&mut hash_chal` per field-level
-    // op (needs no Clone on the inner because we only use CanObserve /
-    // CanSample / CanSampleBits, not GrindingChallenger or FieldChallenger
-    // which would require Clone).
-    let mut hash_chal =
-        HashChallenger::<u8, DnacSha3_512Hasher, 64>::new(init_state.clone(), hasher);
-
-    let mut shadow = Shadow::new(&init_state);
-    let mut snapshots = Vec::with_capacity(ops.len());
-
-    for (op_idx, op) in ops.iter().enumerate() {
-        let result: Option<TranscriptResult> = match op {
-            TranscriptOp::ObserveBytes { bytes } => {
-                let raw = hex_decode(bytes);
-                // Plonky3 method: HashChallenger.observe_slice on u8.
-                <HashChallenger<u8, DnacSha3_512Hasher, 64> as CanObserve<u8>>::observe_slice(
-                    &mut hash_chal,
-                    &raw,
-                );
-                shadow.observe_bytes(&raw);
-                None
-            }
-            TranscriptOp::ObserveFp { value_u64 } => {
-                let v: u64 = value_u64.parse().expect("parse fp value_u64");
-                let g = Goldilocks::from_u64(v);
-                // SerializingChallenger64::observe(F) per
-                // serializing_challenger.rs:254-259. Wrap with &mut borrow.
-                {
-                    let mut wrapped =
-                        SerializingChallenger64::<Goldilocks, _>::new(&mut hash_chal);
-                    <SerializingChallenger64<Goldilocks, _> as CanObserve<Goldilocks>>::observe(
-                        &mut wrapped,
-                        g,
-                    );
-                }
-                // Mirror: observe 8 LE bytes of canonical value.
-                shadow.observe_bytes(&g.as_canonical_u64().to_le_bytes());
-                None
-            }
-            TranscriptOp::ObserveFp2 { c0_u64, c1_u64 } => {
-                let c0: u64 = c0_u64.parse().expect("parse c0");
-                let c1: u64 = c1_u64.parse().expect("parse c1");
-                let g0 = Goldilocks::from_u64(c0);
-                let g1 = Goldilocks::from_u64(c1);
-                // Two observes in basis order (lib.rs:106-108 defines
-                // observe_algebra_element this way). We call CanObserve<F>
-                // twice rather than the FieldChallenger trait (which would
-                // require Clone).
-                {
-                    let mut wrapped =
-                        SerializingChallenger64::<Goldilocks, _>::new(&mut hash_chal);
-                    <SerializingChallenger64<Goldilocks, _> as CanObserve<Goldilocks>>::observe(
-                        &mut wrapped,
-                        g0,
-                    );
-                    <SerializingChallenger64<Goldilocks, _> as CanObserve<Goldilocks>>::observe(
-                        &mut wrapped,
-                        g1,
-                    );
-                }
-                shadow.observe_bytes(&g0.as_canonical_u64().to_le_bytes());
-                shadow.observe_bytes(&g1.as_canonical_u64().to_le_bytes());
-                None
-            }
-            TranscriptOp::SampleFp => {
-                let plonky_value: Goldilocks = {
-                    let mut wrapped =
-                        SerializingChallenger64::<Goldilocks, _>::new(&mut hash_chal);
-                    <SerializingChallenger64<Goldilocks, _> as CanSample<Goldilocks>>::sample(
-                        &mut wrapped,
-                    )
-                };
-                let plonky_u64 = plonky_value.as_canonical_u64();
-                let shadow_u64 = shadow.predict_sample_fp(&recorder);
-                assert_eq!(
-                    shadow_u64, plonky_u64,
-                    "case {}: shadow sample_fp prediction diverged from Plonky3 (op {})",
-                    name, op_idx
-                );
-                Some(TranscriptResult::Fp {
-                    u64_value: plonky_u64.to_string(),
-                })
-            }
-            TranscriptOp::SampleFp2 => {
-                let plonky_value: GoldFp2 = {
-                    let mut wrapped =
-                        SerializingChallenger64::<Goldilocks, _>::new(&mut hash_chal);
-                    <SerializingChallenger64<Goldilocks, _> as CanSample<GoldFp2>>::sample(
-                        &mut wrapped,
-                    )
-                };
-                let coords: &[Goldilocks] = plonky_value.as_basis_coefficients_slice();
-                let plonky_c0 = coords[0].as_canonical_u64();
-                let plonky_c1 = coords[1].as_canonical_u64();
-                let shadow_c0 = shadow.predict_sample_fp(&recorder);
-                let shadow_c1 = shadow.predict_sample_fp(&recorder);
-                assert_eq!(
-                    (shadow_c0, shadow_c1),
-                    (plonky_c0, plonky_c1),
-                    "case {}: shadow sample_fp2 prediction diverged from Plonky3 (op {})",
-                    name, op_idx
-                );
-                Some(TranscriptResult::Fp2 {
-                    c0_u64: plonky_c0.to_string(),
-                    c1_u64: plonky_c1.to_string(),
-                })
-            }
-            TranscriptOp::SampleBits { bits } => {
-                let bits_usize = *bits as usize;
-                let plonky_v: usize = {
-                    let mut wrapped =
-                        SerializingChallenger64::<Goldilocks, _>::new(&mut hash_chal);
-                    <SerializingChallenger64<Goldilocks, _> as CanSampleBits<usize>>::sample_bits(
-                        &mut wrapped,
-                        bits_usize,
-                    )
-                };
-                // Shadow: read 8 bytes (no rejection) and mask low bits.
-                let raw_u64 = shadow.sample_u64(&recorder);
-                let masked = if bits_usize == 0 {
-                    0u64
-                } else {
-                    raw_u64 & ((1u64 << bits_usize) - 1)
-                };
-                assert_eq!(
-                    masked as usize, plonky_v,
-                    "case {}: shadow sample_bits prediction diverged (op {})",
-                    name, op_idx
-                );
-                Some(TranscriptResult::Bits {
-                    u64_value: (plonky_v as u64).to_string(),
-                })
-            }
-            TranscriptOp::CheckWitness { bits, witness_u64 } => {
-                let w: u64 = witness_u64.parse().expect("parse witness_u64");
-                let bits_usize = *bits as usize;
-                // Inline GrindingChallenger::check_witness default
-                // (grinding_challenger.rs:40-46). We do NOT use the
-                // GrindingChallenger trait directly because it requires
-                // Inner: Clone, which &mut HashChallenger doesn't satisfy.
-                // The inlined 2-line body calls Plonky3 methods only.
-                let pass: bool = if bits_usize == 0 {
-                    true
-                } else {
-                    let g = Goldilocks::from_u64(w);
-                    let mut wrapped =
-                        SerializingChallenger64::<Goldilocks, _>::new(&mut hash_chal);
-                    <SerializingChallenger64<Goldilocks, _> as CanObserve<Goldilocks>>::observe(
-                        &mut wrapped,
-                        g,
-                    );
-                    let v: usize = <SerializingChallenger64<Goldilocks, _> as CanSampleBits<
-                        usize,
-                    >>::sample_bits(&mut wrapped, bits_usize);
-                    v == 0
-                };
-                // Shadow mirror.
-                if bits_usize == 0 {
-                    // No state change at all.
-                } else {
-                    let g = Goldilocks::from_u64(w);
-                    shadow.observe_bytes(&g.as_canonical_u64().to_le_bytes());
-                    let raw_u64 = shadow.sample_u64(&recorder);
-                    let masked = raw_u64 & ((1u64 << bits_usize) - 1);
-                    let shadow_pass = masked == 0;
-                    assert_eq!(
-                        shadow_pass, pass,
-                        "case {}: shadow check_witness prediction diverged (op {})",
-                        name, op_idx
-                    );
-                }
-                Some(TranscriptResult::Bool { value: pass })
-            }
-        };
-
-        snapshots.push(TranscriptSnapshot {
-            after_op: op_idx,
-            input_buf: to_hex(&shadow.input_buf),
-            output_buf_remaining: to_hex(&shadow.output_buf),
-            result,
-        });
-    }
-
-    // After all ops, the recorder should have no leftover events (every
-    // flush was consumed by a sample). If not, something is off.
-    assert!(
-        recorder.borrow().is_empty(),
-        "case {}: unconsumed hash events at end of case",
-        name
-    );
-
-    TranscriptCase {
-        name: name.to_string(),
-        description: description.to_string(),
-        init_state: to_hex(&init_state),
-        ops,
-        snapshots,
-        final_input_buf: to_hex(&shadow.input_buf),
-        final_output_buf_remaining: to_hex(&shadow.output_buf),
-    }
-}
-
-fn hex_decode(s: &str) -> Vec<u8> {
-    assert!(s.len() % 2 == 0, "odd-length hex string");
-    let mut out = Vec::with_capacity(s.len() / 2);
-    let bytes = s.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        let h = u8::from_str_radix(std::str::from_utf8(&bytes[i..i + 2]).unwrap(), 16)
-            .expect("hex decode");
-        out.push(h);
-        i += 2;
-    }
-    out
-}
-
-// ----------------------------------------------------------------------------
-// Brute-force searches for crafted vectors.
-// ----------------------------------------------------------------------------
-
-/// Find a single-block suffix such that SHA3-512(prod_init || suffix) has
-/// its LAST 8 bytes form a u64 >= P when interpreted via the LIFO+LE rule.
-///
-/// LIFO+LE assembly from § 5.5 of the design doc:
-///   first 8 popped bytes b[0..8] = [d63, d62, d61, d60, d59, d58, d57, d56]
-///   u64 = b[0] | b[1]<<8 | ... | b[7]<<56
-///   ⟹ b[4..8] = [d59, d58, d57, d56] form the high 32 bits of u64.
-///
-/// u64 ≥ P (P = 0xFFFFFFFF_00000001) iff:
-///   - all of d56, d57, d58, d59 == 0xFF, AND
-///   - at least one of d60, d61, d62, d63 != 0.
-///
-/// Hardcoded counter discovered via offline parallel brute-force on
-/// 2026-05-26 (4 cores, ~20 min wall, ~6.5e9 attempts). For init bytes
-/// `DNAC|ZK|FRI|TRANSCRIPT|V1` followed by `counter.to_le_bytes()`, the
-/// SHA3-512 digest satisfies the rejection criterion:
-///   digest[56..60] = [0xFF, 0xFF, 0xFF, 0xFF]
-///   digest[60..64] not all zero
-/// This makes the first 8 LIFO-popped bytes form a u64 >= P, triggering
-/// the SerializingChallenger64 rejection loop on the very first sample_fp.
-///
-/// Hardcoding eliminates brute-force at gen time (≥20 min → milliseconds)
-/// and makes transcript.json byte-reproducible per `feedback_no_flaky_blockchain`.
-/// The runtime verification below catches any future drift if `prod_init`
-/// or the rejection criterion ever changes — vector generation will panic.
-const FORCED_REJECTION_COUNTER: u64 = 6_563_649_003;
-
-fn find_rejection_suffix(prod_init: &[u8]) -> Vec<u8> {
-    let counter = FORCED_REJECTION_COUNTER;
-    let suffix = counter.to_le_bytes();
-
-    // Verify the hardcoded counter still satisfies the rejection criterion
-    // for the current prod_init. If init or criterion ever changes, this
-    // panics loudly instead of silently producing a non-rejecting vector.
-    let mut probe = Vec::with_capacity(prod_init.len() + 8);
-    probe.extend_from_slice(prod_init);
-    probe.extend_from_slice(&suffix);
-    let mut h = Sha3_512::new();
-    h.update(&probe);
-    let digest = h.finalize();
-    assert!(
-        digest[56] == 0xFF
-            && digest[57] == 0xFF
-            && digest[58] == 0xFF
-            && digest[59] == 0xFF
-            && (digest[60] != 0
-                || digest[61] != 0
-                || digest[62] != 0
-                || digest[63] != 0),
-        "hardcoded FORCED_REJECTION_COUNTER no longer satisfies rejection criterion for prod_init={:?}; re-run brute force and update the constant",
-        std::str::from_utf8(prod_init).unwrap_or("<non-utf8>")
-    );
-
-    eprintln!(
-        "find_rejection_suffix: using hardcoded counter={} (verified)",
-        counter
-    );
-    suffix.to_vec()
-}
-
-/// Find a witness `w` in 0..max_search such that check_witness(bits, w) on a
-/// fresh challenger (with `prod_init` initial_state) returns the desired
-/// outcome (`want_pass`). Returns the first matching witness.
-///
-/// Runs a fresh Plonky3 challenger per attempt so the underlying semantics
-/// are the real ones, not a shadow prediction.
-fn find_witness_for_check(prod_init: &[u8], bits: u8, want_pass: bool, max_search: u64) -> u64 {
-    for w in 0..max_search {
-        let recorder: HashRecorder = Rc::new(RefCell::new(VecDeque::new()));
-        let hasher = DnacSha3_512Hasher { recorder };
-        let mut hash_chal =
-            HashChallenger::<u8, DnacSha3_512Hasher, 64>::new(prod_init.to_vec(), hasher);
-        let g = Goldilocks::from_u64(w);
-        let pass: bool = {
-            let mut wrapped =
-                SerializingChallenger64::<Goldilocks, _>::new(&mut hash_chal);
-            <SerializingChallenger64<Goldilocks, _> as CanObserve<Goldilocks>>::observe(
-                &mut wrapped,
-                g,
-            );
-            let v: usize = <SerializingChallenger64<Goldilocks, _> as CanSampleBits<usize>>::sample_bits(
-                &mut wrapped,
-                bits as usize,
-            );
-            v == 0
-        };
-        if pass == want_pass {
-            return w;
-        }
-    }
-    panic!(
-        "find_witness_for_check: no witness in 0..{} satisfies bits={} want_pass={}",
-        max_search, bits, want_pass
-    );
-}
-
-// ----------------------------------------------------------------------------
-// Test case builders — V1..V13 per design doc § 13.3.
-// ----------------------------------------------------------------------------
-
-fn build_transcript_cases() -> Vec<TranscriptCase> {
-    let mut cases = Vec::new();
-
-    // ---------------- V1: empty_init_then_observe_then_sample ----------------
-    {
-        let ops = vec![
-            TranscriptOp::ObserveBytes {
-                bytes: to_hex(b"hello"),
-            },
-            TranscriptOp::SampleFp,
-            TranscriptOp::SampleFp,
-        ];
-        cases.push(run_transcript_case(
-            "empty_init_then_observe_then_sample",
-            "init=empty; observe 5 bytes; sample_fp twice; first sample triggers flush over the 5 observed bytes only.",
-            Vec::new(),
-            ops,
-        ));
-    }
-
-    // ---------------- V2: nonempty_init_then_sample ----------------
-    {
-        let ops = vec![TranscriptOp::SampleFp];
-        cases.push(run_transcript_case(
-            "nonempty_init_then_sample",
-            "init=prod string; sample_fp; first sample triggers flush over the 25-byte init prefix.",
-            PROD_INIT_STATE.to_vec(),
-            ops,
-        ));
-    }
-
-    // ---------------- V3: nine_consecutive_sample_fp ----------------
-    {
-        let mut ops = Vec::with_capacity(9);
-        for _ in 0..9 {
-            ops.push(TranscriptOp::SampleFp);
-        }
-        cases.push(run_transcript_case(
-            "nine_consecutive_sample_fp",
-            "init=prod string; sample_fp x9; 8 samples consume the 64-byte digest (assuming no rejection), 9th triggers a second flush over input_buf == previous digest.",
-            PROD_INIT_STATE.to_vec(),
-            ops,
-        ));
-    }
-
-    // ---------------- V4: observe_between_samples ----------------
-    {
-        let ops = vec![
-            TranscriptOp::SampleFp,
-            TranscriptOp::ObserveBytes {
-                bytes: to_hex(b"extra"),
-            },
-            TranscriptOp::SampleFp,
-        ];
-        cases.push(run_transcript_case(
-            "observe_between_samples",
-            "init=prod string; sample_fp (partial output_buf consume); observe 5 bytes (must clear output_buf); sample_fp (forces re-flush over digest||extra).",
-            PROD_INIT_STATE.to_vec(),
-            ops,
-        ));
-    }
-
-    // ---------------- V5: sample_bits_zero ----------------
-    {
-        let ops = vec![TranscriptOp::SampleBits { bits: 0 }];
-        cases.push(run_transcript_case(
-            "sample_bits_zero",
-            "init=prod string; sample_bits(0); consumes 8 bytes but returns 0; distinguishes from check_witness(0) which is a no-op.",
-            PROD_INIT_STATE.to_vec(),
-            ops,
-        ));
-    }
-
-    // ---------------- V6: check_witness_zero ----------------
-    {
-        let ops = vec![
-            TranscriptOp::CheckWitness {
-                bits: 0,
-                witness_u64: "12345".to_string(),
-            },
-            TranscriptOp::SampleFp,
-        ];
-        cases.push(run_transcript_case(
-            "check_witness_zero",
-            "init=prod string; check_witness(0, 12345) MUST return true and leave state untouched; following sample_fp's flush MUST hash the prod init bytes only.",
-            PROD_INIT_STATE.to_vec(),
-            ops,
-        ));
-    }
-
-    // ---------------- V7: check_witness_nonzero_pass ----------------
-    {
-        let w_pass = find_witness_for_check(PROD_INIT_STATE, 4, true, 1024);
-        eprintln!("V7 witness_pass: w={}", w_pass);
-        let ops = vec![TranscriptOp::CheckWitness {
-            bits: 4,
-            witness_u64: w_pass.to_string(),
-        }];
-        cases.push(run_transcript_case(
-            "check_witness_nonzero_pass",
-            "init=prod string; check_witness(4, w) where w was brute-force-found so sample_bits(4)==0 returns true.",
-            PROD_INIT_STATE.to_vec(),
-            ops,
-        ));
-    }
-
-    // ---------------- V8: check_witness_nonzero_fail ----------------
-    {
-        let w_fail = find_witness_for_check(PROD_INIT_STATE, 4, false, 1024);
-        eprintln!("V8 witness_fail: w={}", w_fail);
-        let ops = vec![TranscriptOp::CheckWitness {
-            bits: 4,
-            witness_u64: w_fail.to_string(),
-        }];
-        cases.push(run_transcript_case(
-            "check_witness_nonzero_fail",
-            "init=prod string; check_witness(4, w) where w was brute-force-found so sample_bits(4)!=0 returns false.",
-            PROD_INIT_STATE.to_vec(),
-            ops,
-        ));
-    }
-
-    // ---------------- V9: forced_rejection_sample_fp ----------------
-    {
-        let suffix = find_rejection_suffix(PROD_INIT_STATE);
-        eprintln!(
-            "V9 rejection suffix: {} bytes ({})",
-            suffix.len(),
-            to_hex(&suffix)
-        );
-        let ops = vec![
-            TranscriptOp::ObserveBytes {
-                bytes: to_hex(&suffix),
-            },
-            TranscriptOp::SampleFp,
-        ];
-        cases.push(run_transcript_case(
-            "forced_rejection_sample_fp",
-            "init=prod string; observe brute-force-found suffix so SHA3-512(init||suffix) has its LIFO-popped first u64 >= P; sample_fp MUST rejection-retry at least once before accepting.",
-            PROD_INIT_STATE.to_vec(),
-            ops,
-        ));
-    }
-
-    // ---------------- V10: large_observe_then_sample ----------------
-    {
-        let blob = det_bytes(0xDDAACC10, 1024);
-        let ops = vec![
-            TranscriptOp::ObserveBytes {
-                bytes: to_hex(&blob),
-            },
-            TranscriptOp::SampleFp,
-        ];
-        cases.push(run_transcript_case(
-            "large_observe_then_sample",
-            "init=prod string; observe 1024 deterministic bytes; sample_fp; exercises growable input_buf and the large-input one-shot SHA3 path.",
-            PROD_INIT_STATE.to_vec(),
-            ops,
-        ));
-    }
-
-    // ---------------- V11: sample_fp2_round ----------------
-    {
-        let ops = vec![TranscriptOp::SampleFp2];
-        cases.push(run_transcript_case(
-            "sample_fp2_round",
-            "init=prod string; sample_fp2; two consecutive base-field samples, basis order c0 then c1.",
-            PROD_INIT_STATE.to_vec(),
-            ops,
-        ));
-    }
-
-    // ---------------- V12: observe_fp2_round ----------------
-    {
-        let ops = vec![
-            TranscriptOp::ObserveFp2 {
-                c0_u64: "1234567890".to_string(),
-                c1_u64: "9876543210".to_string(),
-            },
-            TranscriptOp::SampleFp,
-        ];
-        cases.push(run_transcript_case(
-            "observe_fp2_round",
-            "init=prod string; observe_fp2 (16 bytes = two LE u64 in basis order); sample_fp to make the resulting state observable.",
-            PROD_INIT_STATE.to_vec(),
-            ops,
-        ));
-    }
-
-    // ---------------- V13: mixed_observe_sample_check_sequence ----------------
-    {
-        let commit1 = det_bytes(0xC0011, 64);
-        let commit2 = det_bytes(0xC0022, 64);
-        let ops = vec![
-            // alpha
-            TranscriptOp::SampleFp2,
-            // round 1
-            TranscriptOp::ObserveBytes {
-                bytes: to_hex(&commit1),
-            },
-            TranscriptOp::CheckWitness {
-                bits: 0,
-                witness_u64: "0".to_string(),
-            },
-            TranscriptOp::SampleFp2,
-            // round 2
-            TranscriptOp::ObserveBytes {
-                bytes: to_hex(&commit2),
-            },
-            TranscriptOp::CheckWitness {
-                bits: 0,
-                witness_u64: "0".to_string(),
-            },
-            TranscriptOp::SampleFp2,
-            // final poly (2 fp2 coefficients)
-            TranscriptOp::ObserveFp2 {
-                c0_u64: "42".to_string(),
-                c1_u64: "43".to_string(),
-            },
-            TranscriptOp::ObserveFp2 {
-                c0_u64: "44".to_string(),
-                c1_u64: "45".to_string(),
-            },
-            // log_arity schedule — verify_fri:249-251 does
-            //   for &log_arity in &log_arities:
-            //     challenger.observe(Val::from_usize(log_arity))
-            // i.e., three observe_fp calls. Use the typed op.
-            TranscriptOp::ObserveFp {
-                value_u64: "2".to_string(),
-            },
-            TranscriptOp::ObserveFp {
-                value_u64: "2".to_string(),
-            },
-            TranscriptOp::ObserveFp {
-                value_u64: "1".to_string(),
-            },
-            // query PoW (0 bits to avoid grind)
-            TranscriptOp::CheckWitness {
-                bits: 0,
-                witness_u64: "0".to_string(),
-            },
-            // 4 query indices
-            TranscriptOp::SampleBits { bits: 8 },
-            TranscriptOp::SampleBits { bits: 8 },
-            TranscriptOp::SampleBits { bits: 8 },
-            TranscriptOp::SampleBits { bits: 8 },
-        ];
-        cases.push(run_transcript_case(
-            "mixed_observe_sample_check_sequence",
-            "init=prod string; canned FRI verifier flow: alpha, 2 commit-phase rounds (observe commit + check_witness(0) + sample beta), final_poly (2 fp2), log_arity schedule, query PoW (0), 4 query indices. Regression sentinel for the whole transcript flow.",
-            PROD_INIT_STATE.to_vec(),
-            ops,
-        ));
-    }
-
-    // ---------------- V14: observe_empty_bytes_noop ----------------
-    // Regression for the latent shadow bug fixed 2026-05-26 (T3 Part A) and
-    // for the C transcript's `len == 0` short-circuit. Plonky3's
-    // `CanObserve::observe_slice` default (challenger/src/lib.rs:32-39) loops
-    // over the input; an empty slice → zero iterations → NO state change.
-    // The shadow tracker previously cleared output_buf unconditionally,
-    // which would have made V14 diverge from Plonky3.
-    //
-    // Behavior:
-    //   1. init = prod
-    //   2. sample_fp → triggers first flush, pops 8 LIFO bytes
-    //   3. observe_bytes(empty) → MUST be a no-op (no clear, no append)
-    //   4. sample_fp → continues popping from the SAME post-flush
-    //      output_buf, consuming 8 more bytes
-    //
-    // After step 4, the output_buf_remaining length should be 48 (= 64 - 16),
-    // proving that step 3 did NOT clear the buffer (a clear would have
-    // forced a re-flush and reset output_buf_remaining to 56 after the
-    // single 8-byte pop in step 4).
-    {
-        let ops = vec![
-            TranscriptOp::SampleFp,
-            TranscriptOp::ObserveBytes {
-                bytes: String::new(), // empty hex → 0 bytes
-            },
-            TranscriptOp::SampleFp,
-        ];
-        cases.push(run_transcript_case(
-            "observe_empty_bytes_noop",
-            "init=prod string; sample_fp; observe_bytes(empty) MUST be a no-op (matches Plonky3 observe_slice default, lib.rs:32-39); sample_fp again. Verifies that empty observe does NOT clear output_buf nor trigger a re-flush.",
-            PROD_INIT_STATE.to_vec(),
-            ops,
-        ));
-    }
-
-    cases
-}
-
-fn dump_transcript(out_path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    let cases = build_transcript_cases();
-    let file = TranscriptFile {
-        format_version: ORACLE_FORMAT_VERSION,
-        plonky3_commit: PLONKY3_COMMIT,
-        field_p: GOLDILOCKS_P.to_string(),
-        construction:
-            "SerializingChallenger64<Goldilocks, HashChallenger<u8, DnacSha3_512Hasher, 64>>",
-        hasher: "DnacSha3_512Hasher (sha3::Sha3_512 wrapped in CryptographicHasher<u8, [u8; 64]>)",
-        out_len: 64,
-        prod_init_state_ascii: std::str::from_utf8(PROD_INIT_STATE).unwrap().to_string(),
-        prod_init_state_hex: to_hex(PROD_INIT_STATE),
-        cases,
-    };
-
-    if let Some(parent) = out_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let mut f = File::create(out_path)?;
-    f.write_all(serde_json::to_string_pretty(&file)?.as_bytes())?;
-    f.write_all(b"\n")?;
-    eprintln!("wrote {} ({} cases)", out_path.display(), file.cases.len());
-    Ok(())
-}
 
 // ============================================================================
 // Merkle / MMCS dump (Stage M1, 2026-05-27)
@@ -3869,30 +3712,30 @@ fn make_mmcs() -> ValMmcs {
     ValMmcs::new(FieldHash::new(Sha3_512Hash), MyCompress::new(Sha3_512Hash), 0)
 }
 
-// B1 Stage-2 M3b (2026-07-15) — SALTED-leaf hiding MMCS. Same SHA3-512
-// hash/compress (N=2, DIGEST_ELEMS=8, cap_height 0) as the plain ValMmcs, PLUS
-// SALT_ELEMS=2 (Goldilocks 64-bit × 2 = 128-bit salt) + a CSPRNG for blinding
-// leaves (hiding_mmcs.rs:39-51,121-134). Commitment type is IDENTICAL to the
-// plain ValMmcs (MerkleCap<Goldilocks,[u64;8]>), so the generic dump helper's
-// commitment serialization is unchanged.
+// B1 Stage-2 M3b — SALTED-leaf hiding MMCS. P1c (2026-07-22): converted to
+// the Poseidon2 config (same P2Hash/P2Compress as the plain P2ValMmcs, N=2,
+// DIGEST_ELEMS=4, cap_height 0) with SALT_ELEMS=2 (hiding_mmcs.rs:39-51,
+// 121-134). Commitment type identical to the plain P2ValMmcs
+// (MerkleCap<Goldilocks,[Goldilocks;4]>).
 const M3B_SALT_ELEMS: usize = 2;
 type HidingValMmcs = p3_merkle_tree::MerkleTreeHidingMmcs<
-    [Goldilocks; 1],
-    [u64; 1],
-    FieldHash,
-    MyCompress,
+    P2Packing,
+    P2Packing,
+    P2Hash,
+    P2Compress,
     rand::rngs::SmallRng,
     2,
-    8,
+    4,
     M3B_SALT_ELEMS,
 >;
 type HidingChallengeMmcs = p3_commit::ExtensionMmcs<Goldilocks, GoldFp2, HidingValMmcs>;
 
 fn make_hiding_mmcs(seed: u64) -> HidingValMmcs {
     use rand::SeedableRng;
+    let perm = default_goldilocks_poseidon2_8();
     HidingValMmcs::new(
-        FieldHash::new(Sha3_512Hash),
-        MyCompress::new(Sha3_512Hash),
+        P2Hash::new(perm.clone()),
+        P2Compress::new(perm),
         0,
         rand::rngs::SmallRng::seed_from_u64(seed),
     )
@@ -4906,37 +4749,36 @@ use p3_field::coset::TwoAdicMultiplicativeCoset;
 use p3_fri::verifier::verify_fri as p3_verify_fri;
 use p3_fri::{FriParameters, FriProof, TwoAdicFriFoldingForMmcs, TwoAdicFriPcs};
 
-/// SHA3-512 hasher exposed as `CryptographicHasher<u8, [u8; 64]>`. Distinct
-/// from `Sha3_512Hash` (which is `CryptographicHasher<u64, [u64; 8]>` for the
-/// MerkleTreeMmcs side) and from `DnacSha3_512Hasher` (which carries a
-/// transcript-recorder shadow). This is a pure unit-struct adapter — exactly
-/// what `HashChallenger<u8, _, 64>` needs.
-#[derive(Clone)]
-struct FriOracleSha3_512;
+/* P1c: FriOracleSha3_512 (the byte SHA3 challenger hasher) retired — the FRI
+ * stack challenger is the Poseidon2 DuplexChallenger below. */
 
-impl CryptographicHasher<u8, [u8; 64]> for FriOracleSha3_512 {
-    fn hash_iter<I>(&self, input: I) -> [u8; 64]
-    where
-        I: IntoIterator<Item = u8>,
-    {
-        let input: Vec<u8> = input.into_iter().collect();
-        let mut h = Sha3_512::new();
-        h.update(&input);
-        let digest = h.finalize();
-        let mut out = [0u8; 64];
-        out.copy_from_slice(&digest);
-        out
-    }
+// ============================================================================
+// P1c (2026-07-22) — Poseidon2 config for the WHOLE DNAC FRI/STARK stack.
+//
+// Per P1 design doc v2 (GATE GREEN): the proof-internal hash moves SHA3-512 →
+// Poseidon2. Types = the canonical Goldilocks Poseidon2 STARK config
+// (keccak-air/examples/prove_goldilocks_poseidon2.rs:41-57); permutation
+// INSTANCE = default_goldilocks_poseidon2_8() (goldilocks/src/poseidon2.rs:570)
+// — NEVER the example's SmallRng instance (P1.0 F4 pin). Digests = 4 Goldilocks
+// lanes (32 bytes). Challenger = DuplexChallenger (overwrite-absorb, RATE 4).
+// The SHA3 ValMmcs/make_mmcs above remain ONLY for the retired-from-proof-path
+// merkle_smt ground-truth dumps (dump-merkle-mmcs*).
+// ============================================================================
+type P2Perm = p3_goldilocks::Poseidon2Goldilocks<8>;
+type P2Hash = PaddingFreeSponge<P2Perm, 8, 4, 4>;
+type P2Compress = TruncatedPermutation<P2Perm, 2, 4, 8>;
+type P2Packing = <Goldilocks as Field>::Packing;
+type P2ValMmcs = MerkleTreeMmcs<P2Packing, P2Packing, P2Hash, P2Compress, 2, 4>;
+
+fn make_p2_mmcs() -> P2ValMmcs {
+    let perm = default_goldilocks_poseidon2_8();
+    P2ValMmcs::new(P2Hash::new(perm.clone()), P2Compress::new(perm), 0)
 }
 
-// Type aliases for the DNAC FRI stack. `ValMmcs`, `Sha3_512Hash`, `make_mmcs`
-// are already defined above (Stage M3 merkle oracle module); reused here
-// unchanged per the F1 "no refactor existing dump_* functions" rule.
-type FriValMmcs = ValMmcs;
+type FriValMmcs = P2ValMmcs;
 type FriChallengeMmcs = ExtensionMmcs<Goldilocks, GoldFp2, FriValMmcs>;
 type FriFolding = TwoAdicFriFoldingForMmcs<Goldilocks, FriValMmcs>;
-type FriHashChal = HashChallenger<u8, FriOracleSha3_512, 64>;
-type FriChallenger = SerializingChallenger64<Goldilocks, FriHashChal>;
+type FriChallenger = p3_challenger::DuplexChallenger<Goldilocks, P2Perm, 8, 4>;
 type FriProofConcrete = FriProof<
     GoldFp2,
     FriChallengeMmcs,
@@ -4944,8 +4786,56 @@ type FriProofConcrete = FriProof<
     Vec<p3_commit::BatchOpening<Goldilocks, FriValMmcs>>,
 >;
 
-/// DNAC production transcript initial state (matches `transcript.h`).
+/// DNAC production DS bytes (Q1) — absorbed as 4 LE u64 limbs (G-SEC-P1-7).
 const FRI_INIT_STATE: &[u8] = b"DNAC|ZK|FRI|TRANSCRIPT|V1";
+
+/// The 4-limb LE encoding of FRI_INIT_STATE (last chunk zero-padded), each
+/// canonical. Derivation asserted at runtime against the pinned values.
+fn fri_ds_prefix_limbs() -> [u64; 4] {
+    let mut limbs = [0u64; 4];
+    for (i, b) in FRI_INIT_STATE.iter().enumerate() {
+        limbs[i / 8] |= (*b as u64) << (8 * (i % 8));
+    }
+    assert_eq!(
+        limbs,
+        [
+            0x7C4B_5A7C_4341_4E44,
+            0x4E41_5254_7C49_5246,
+            0x567C_5450_4952_4353,
+            0x0000_0000_0000_0031
+        ],
+        "DS prefix limb derivation drifted from the P1 design pin"
+    );
+    for l in limbs {
+        assert!(l < GOLDILOCKS_P);
+    }
+    limbs
+}
+
+/// Production challenger: DuplexChallenger::new + the 4-limb DS prefix
+/// pre-absorb (exactly one RATE block => one permutation). Mirrors the C
+/// `dnac_transcript_init_default`.
+fn mk_prod_challenger() -> FriChallenger {
+    let mut ch = FriChallenger::new(default_goldilocks_poseidon2_8());
+    for l in fri_ds_prefix_limbs() {
+        ch.observe(Goldilocks::from_u64(l));
+    }
+    ch
+}
+
+/// 4-lane Poseidon2 digest → 32-byte wire form (per lane u64-LE).
+/// Snapshot a DuplexChallenger's public state for milestone JSON: canonical
+/// u64 decimal strings, storage order (LIFO pop = END of output_buffer).
+fn duplex_snapshot_json(ch: &FriChallenger) -> serde_json::Value {
+    let f = |xs: &[Goldilocks]| -> Vec<String> {
+        xs.iter().map(|x| x.as_canonical_u64().to_string()).collect()
+    };
+    serde_json::json!({
+        "sponge_state": f(&ch.sponge_state),
+        "input_buffer": f(&ch.input_buffer),
+        "output_buffer": f(&ch.output_buffer),
+    })
+}
 
 /// Deterministic LCG → Goldilocks element. Seed 42 per Plonky3 test
 /// convention; LCG constants are the classic Numerical Recipes set (no
@@ -5007,8 +4897,8 @@ fn dump_fri_verifier_valid_proof(out_path: &PathBuf) -> Result<(), Box<dyn std::
     // -----------------------------------------------------------------------
     // MMCS + FRI params + PCS
     // -----------------------------------------------------------------------
-    let input_mmcs = make_mmcs();
-    let challenge_mmcs = FriChallengeMmcs::new(make_mmcs());
+    let input_mmcs = make_p2_mmcs();
+    let challenge_mmcs = FriChallengeMmcs::new(make_p2_mmcs());
     let fri_params = FriParameters {
         log_blowup: 1,
         log_final_poly_len: 0,
@@ -5046,11 +4936,7 @@ fn dump_fri_verifier_valid_proof(out_path: &PathBuf) -> Result<(), Box<dyn std::
     // -----------------------------------------------------------------------
     // Prover challenger — observe commitment, sample zeta, open
     // -----------------------------------------------------------------------
-    let init_state: Vec<u8> = FRI_INIT_STATE.to_vec();
-    let mut p_challenger = FriChallenger::new(FriHashChal::new(
-        init_state.clone(),
-        FriOracleSha3_512,
-    ));
+    let mut p_challenger = mk_prod_challenger();
     p_challenger.observe(commitment.clone());
     let zeta: GoldFp2 = p_challenger.sample_algebra_element();
 
@@ -5068,10 +4954,7 @@ fn dump_fri_verifier_valid_proof(out_path: &PathBuf) -> Result<(), Box<dyn std::
     // -----------------------------------------------------------------------
     // Verifier challenger — replay observe/sample/observe-opened
     // -----------------------------------------------------------------------
-    let mut v_challenger = FriChallenger::new(FriHashChal::new(
-        init_state.clone(),
-        FriOracleSha3_512,
-    ));
+    let mut v_challenger = mk_prod_challenger();
     v_challenger.observe(commitment.clone());
     let v_zeta: GoldFp2 = v_challenger.sample_algebra_element();
     assert_eq!(
@@ -5125,12 +5008,12 @@ fn dump_fri_verifier_valid_proof(out_path: &PathBuf) -> Result<(), Box<dyn std::
         "dnac_stack": {
             "val": "Goldilocks",
             "challenge": "BinomialExtensionField<Goldilocks, 2> (fp2)",
-            "hash": "FIPS-202 SHA3-512",
-            "input_mmcs": "MerkleTreeMmcs<[Goldilocks;1], [u64;1], FieldHash, MyCompress, 2, 8>",
+            "hash": "Poseidon2 width-8 (default_goldilocks_poseidon2_8, P1c)",
+            "input_mmcs": "MerkleTreeMmcs<Packing, Packing, PaddingFreeSponge<Perm,8,4,4>, TruncatedPermutation<Perm,2,4,8>, 2, 4> cap 0 (P1c)",
             "fri_mmcs": "ExtensionMmcs<Goldilocks, fp2, ValMmcs>",
             "folding": "TwoAdicFriFolding",
             "extra_query_index_bits": 0,
-            "challenger": "SerializingChallenger64<Goldilocks, HashChallenger<u8, FriOracleSha3_512, 64>>",
+            "challenger": "DuplexChallenger<Goldilocks, Poseidon2Goldilocks<8>, 8, 4> + DNAC 4-limb DS prefix (P1c)",
             "challenger_witness_type": "Goldilocks",
             "input_proof_type": "Vec<BatchOpening<Goldilocks, ValMmcs>>"
         },
@@ -5147,8 +5030,8 @@ fn dump_fri_verifier_valid_proof(out_path: &PathBuf) -> Result<(), Box<dyn std::
             "trace_rows": num_rows,
             "trace_cols": width,
             "trace_seed": trace_seed,
-            "init_state_hex": to_hex(&init_state),
-            "init_state_ascii": String::from_utf8_lossy(&init_state).into_owned(),
+            "init_state_hex": to_hex(FRI_INIT_STATE),
+            "init_state_ascii": String::from_utf8_lossy(FRI_INIT_STATE).into_owned(),
             "trace_rows_decimal": trace_rows_decimal
         },
         "transcript_zeta_fp2": {
@@ -5263,8 +5146,8 @@ fn dump_fri_verifier_errors(out_path: &PathBuf) -> Result<(), Box<dyn std::error
         .collect();
     let trace_for_pcs = RowMajorMatrix::<Goldilocks>::new(trace_values.clone(), width);
 
-    let input_mmcs = make_mmcs();
-    let challenge_mmcs = FriChallengeMmcs::new(make_mmcs());
+    let input_mmcs = make_p2_mmcs();
+    let challenge_mmcs = FriChallengeMmcs::new(make_p2_mmcs());
     let base_fri_params = FriParameters {
         log_blowup: 1,
         log_final_poly_len: 0,
@@ -5296,11 +5179,7 @@ fn dump_fri_verifier_errors(out_path: &PathBuf) -> Result<(), Box<dyn std::error
         vec![(domain, trace_for_pcs)],
     );
 
-    let init_state: Vec<u8> = FRI_INIT_STATE.to_vec();
-    let mut p_challenger = FriChallenger::new(FriHashChal::new(
-        init_state.clone(),
-        FriOracleSha3_512,
-    ));
+    let mut p_challenger = mk_prod_challenger();
     p_challenger.observe(commitment.clone());
     let zeta: GoldFp2 = p_challenger.sample_algebra_element();
     let (opened_values, base_proof): (_, FriProofConcrete) = <TwoAdicFriPcs<
@@ -5335,10 +5214,7 @@ fn dump_fri_verifier_errors(out_path: &PathBuf) -> Result<(), Box<dyn std::error
     // wrong number of evaluations against the same on-transcript opened
     // values).
     let build_v_challenger = || -> FriChallenger {
-        let mut v_chal = FriChallenger::new(FriHashChal::new(
-            init_state.clone(),
-            FriOracleSha3_512,
-        ));
+        let mut v_chal = mk_prod_challenger();
         v_chal.observe(commitment.clone());
         let _zeta_v: GoldFp2 = v_chal.sample_algebra_element();
         for (_, round) in base_cwop.iter() {
@@ -5889,12 +5765,12 @@ fn dump_fri_verifier_errors(out_path: &PathBuf) -> Result<(), Box<dyn std::error
         "dnac_stack": {
             "val": "Goldilocks",
             "challenge": "BinomialExtensionField<Goldilocks, 2> (fp2)",
-            "hash": "FIPS-202 SHA3-512",
-            "input_mmcs": "MerkleTreeMmcs<[Goldilocks;1], [u64;1], FieldHash, MyCompress, 2, 8>",
+            "hash": "Poseidon2 width-8 (default_goldilocks_poseidon2_8, P1c)",
+            "input_mmcs": "MerkleTreeMmcs<Packing, Packing, PaddingFreeSponge<Perm,8,4,4>, TruncatedPermutation<Perm,2,4,8>, 2, 4> cap 0 (P1c)",
             "fri_mmcs": "ExtensionMmcs<Goldilocks, fp2, ValMmcs>",
             "folding": "TwoAdicFriFolding",
             "extra_query_index_bits": 0,
-            "challenger": "SerializingChallenger64<Goldilocks, HashChallenger<u8, FriOracleSha3_512, 64>>"
+            "challenger": "DuplexChallenger<Goldilocks, Poseidon2Goldilocks<8>, 8, 4> + DNAC 4-limb DS prefix (P1c)"
         },
         "base_fri_params": {
             "log_blowup": base_fri_params.log_blowup,
@@ -5909,8 +5785,8 @@ fn dump_fri_verifier_errors(out_path: &PathBuf) -> Result<(), Box<dyn std::error
             "trace_rows": num_rows,
             "trace_cols": width,
             "trace_seed": trace_seed,
-            "init_state_hex": to_hex(&init_state),
-            "init_state_ascii": String::from_utf8_lossy(&init_state).into_owned()
+            "init_state_hex": to_hex(FRI_INIT_STATE),
+            "init_state_ascii": String::from_utf8_lossy(FRI_INIT_STATE).into_owned()
         },
         "case_count_total": total_cases,
         "case_count_public_verify_fri": count_public,
@@ -6008,70 +5884,62 @@ fn fri_milestone_serialize_fp2(v: GoldFp2) -> [u8; 16] {
 
 /// Serialize a MerkleCap<Goldilocks, [u64; 8]> commitment to bytes — mirror
 /// of Plonky3 `CanObserve<MerkleCap<F, [u64; N]>>` at
-/// serializing_challenger.rs:301-307: for each root, for each lane, push
-/// `lane.to_le_bytes()`. For our cap_height=0 single-root MerkleCap the
-/// output is exactly 64 bytes (1 root × 8 lanes × 8 bytes).
+/// P1c: for each root, for each of the 4 Goldilocks lanes, push the
+/// canonical-u64 LE bytes (32 bytes for the cap_height=0 single-root cap) —
+/// the JSON wire form of a Poseidon2 digest. The CHALLENGER absorbs the lanes
+/// as FIELD ELEMENTS (duplex_challenger.rs:186-210), not these bytes; this
+/// helper only feeds vector serialization.
 fn fri_milestone_serialize_commitment(
     commitment: &<FriValMmcs as p3_commit::Mmcs<Goldilocks>>::Commitment,
 ) -> Vec<u8> {
     let mut out: Vec<u8> = Vec::new();
     for root in commitment.roots() {
         for lane in root.iter() {
-            out.extend_from_slice(&lane.to_le_bytes());
+            out.extend_from_slice(&lane.as_canonical_u64().to_le_bytes());
         }
     }
     out
 }
 
-/// Cross-check the commitment-serialization helper against Plonky3's actual
-/// `SerializingChallenger64::observe(MerkleCap)` byte stream. Run on the V6
-/// commitment at startup; if our hand-rolled serializer drifts from
-/// Plonky3, abort before any milestone is emitted.
+/// Cross-check the commitment-observe path against Plonky3's actual
+/// `DuplexChallenger::observe(MerkleCap)`: observing the cap must equal
+/// observing the 4 lanes individually (duplex_challenger.rs:186-210). Run on
+/// the V6 commitment at startup; drift aborts before any milestone is
+/// emitted. Returns the 32-byte JSON wire form.
 fn fri_milestone_cross_check_commitment_bytes(
     commitment: &<FriValMmcs as p3_commit::Mmcs<Goldilocks>>::Commitment,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let mine = fri_milestone_serialize_commitment(commitment);
 
-    // Drive Plonky3's actual observe + force one flush, then read the input
-    // bytes off the recorder. init_state = empty so input_buf at flush ==
-    // exactly the bytes that observe pushed.
-    let recorder: HashRecorder = Rc::new(RefCell::new(VecDeque::new()));
-    let hasher = DnacSha3_512Hasher { recorder: recorder.clone() };
-    let mut hc = HashChallenger::<u8, DnacSha3_512Hasher, 64>::new(Vec::new(), hasher);
-    {
-        let mut wrap = SerializingChallenger64::<Goldilocks, _>::new(&mut hc);
-        wrap.observe(commitment.clone());
+    let mut ch_cap = FriChallenger::new(default_goldilocks_poseidon2_8());
+    ch_cap.observe(commitment.clone());
+    let mut ch_lanes = FriChallenger::new(default_goldilocks_poseidon2_8());
+    for root in commitment.roots() {
+        for lane in root.iter() {
+            ch_lanes.observe(*lane);
+        }
     }
-    // Force a flush by sampling one byte; the recorder receives the event.
-    let _: u8 = <HashChallenger<u8, DnacSha3_512Hasher, 64> as CanSample<u8>>::sample(&mut hc);
-    let event = recorder
-        .borrow()
-        .front()
-        .cloned()
-        .ok_or("cross-check: no hash event produced")?;
-    if event.input != mine {
-        return Err(format!(
-            "fri_milestone serialize_commitment mismatch: mine={} bytes, plonky3={} bytes; \
-             mine_hex={}, plonky3_hex={}",
-            mine.len(),
-            event.input.len(),
-            to_hex(&mine),
-            to_hex(&event.input)
-        )
-        .into());
+    if ch_cap.sponge_state != ch_lanes.sponge_state
+        || ch_cap.input_buffer != ch_lanes.input_buffer
+        || ch_cap.output_buffer != ch_lanes.output_buffer
+    {
+        return Err("cross-check: MerkleCap observe != lane-by-lane observe".into());
     }
     Ok(mine)
 }
 
-/// Single milestone record. Schema parallels the existing transcript.json
-/// op snapshots so future audits can cross-reference.
+/// Single milestone record. P1c: the transcript state is the REAL
+/// DuplexChallenger's public fields (sponge_state / input_buffer /
+/// output_buffer as canonical-u64 decimal strings, storage order — LIFO pop
+/// from the END of output_buffer). The SHA3 Shadow tracker is retired: the
+/// challenger itself is the source of truth.
 fn fri_milestone_make_record(
     op_index: usize,
     name: &str,
     operation_kind: &str,
     input_summary: serde_json::Value,
     result: serde_json::Value,
-    shadow: &Shadow,
+    ch: &FriChallenger,
 ) -> serde_json::Value {
     serde_json::json!({
         "op_index": op_index,
@@ -6079,12 +5947,7 @@ fn fri_milestone_make_record(
         "operation_kind": operation_kind,
         "input_value_summary": input_summary,
         "result": result,
-        "transcript": {
-            "input_buf_hex": to_hex(&shadow.input_buf),
-            "input_buf_len": shadow.input_buf.len(),
-            "output_buf_remaining_hex": to_hex(&shadow.output_buf),
-            "output_buf_remaining_len": shadow.output_buf.len()
-        }
+        "transcript": duplex_snapshot_json(ch)
     })
 }
 
@@ -6104,8 +5967,8 @@ fn dump_fri_verifier_transcript_milestones(
         .collect();
     let trace_for_pcs = RowMajorMatrix::<Goldilocks>::new(trace_values.clone(), width);
 
-    let input_mmcs = make_mmcs();
-    let challenge_mmcs = FriChallengeMmcs::new(make_mmcs());
+    let input_mmcs = make_p2_mmcs();
+    let challenge_mmcs = FriChallengeMmcs::new(make_p2_mmcs());
     let fri_params = FriParameters {
         log_blowup: 1,
         log_final_poly_len: 0,
@@ -6137,11 +6000,7 @@ fn dump_fri_verifier_transcript_milestones(
         vec![(domain, trace_for_pcs)],
     );
 
-    let init_state: Vec<u8> = FRI_INIT_STATE.to_vec();
-    let mut p_challenger = FriChallenger::new(FriHashChal::new(
-        init_state.clone(),
-        FriOracleSha3_512,
-    ));
+    let mut p_challenger = mk_prod_challenger();
     p_challenger.observe(commitment.clone());
     let zeta: GoldFp2 = p_challenger.sample_algebra_element();
     let (opened_values, proof): (_, FriProofConcrete) = <TwoAdicFriPcs<
@@ -6165,10 +6024,7 @@ fn dump_fri_verifier_transcript_milestones(
     // -----------------------------------------------------------------------
     let folding: FriFolding = TwoAdicFriFolding(core::marker::PhantomData);
     {
-        let mut chal = FriChallenger::new(FriHashChal::new(
-            init_state.clone(),
-            FriOracleSha3_512,
-        ));
+        let mut chal = mk_prod_challenger();
         chal.observe(commitment.clone());
         let _: GoldFp2 = chal.sample_algebra_element();
         for (_, round) in base_cwop.iter() {
@@ -6193,64 +6049,27 @@ fn dump_fri_verifier_transcript_milestones(
     let _validated_commitment_bytes = fri_milestone_cross_check_commitment_bytes(&commitment)?;
 
     // -----------------------------------------------------------------------
-    // Replay setup: ONE HashChallenger with DnacSha3_512Hasher (recording)
-    // + Shadow state machine. Both consume the same byte stream in lockstep.
+    // P1c replay setup: ONE real DuplexChallenger — its public state is the
+    // milestone truth (SHA3 Shadow/recorder cross-check machinery retired;
+    // GATE (a) above already proved this exact op sequence verifies).
     // -----------------------------------------------------------------------
-    let recorder: HashRecorder = Rc::new(RefCell::new(VecDeque::new()));
-    let hasher = DnacSha3_512Hasher { recorder: recorder.clone() };
-    let mut hash_chal =
-        HashChallenger::<u8, DnacSha3_512Hasher, 64>::new(init_state.clone(), hasher);
-    let mut shadow = Shadow::new(&init_state);
+    let mut mil_chal = mk_prod_challenger();
 
-    // Convenience: push n bytes to both real challenger and shadow.
-    let observe_into_both =
-        |hc: &mut HashChallenger<u8, DnacSha3_512Hasher, 64>, sh: &mut Shadow, bytes: &[u8]| {
-            <HashChallenger<u8, DnacSha3_512Hasher, 64> as CanObserve<u8>>::observe_slice(
-                hc, bytes,
-            );
-            sh.observe_bytes(bytes);
-        };
-
-    // Convenience: do a Plonky3 sample_fp + shadow prediction + cross-check.
-    let sample_fp_with_check =
-        |hc: &mut HashChallenger<u8, DnacSha3_512Hasher, 64>,
-         sh: &mut Shadow,
-         rec: &HashRecorder|
-         -> u64 {
-            let plonky3_val: Goldilocks =
-                SerializingChallenger64::<Goldilocks, _>::new(hc).sample();
-            let shadow_val = sh.predict_sample_fp(rec);
-            assert_eq!(
-                plonky3_val.as_canonical_u64(),
-                shadow_val,
-                "F1.2: shadow/Plonky3 sample_fp divergence"
-            );
-            shadow_val
-        };
-
-    // Convenience: do a Plonky3 sample_fp2 + shadow prediction (two sample_fp
-    // calls per fp2, basis order c0 then c1) + cross-check.
-    let sample_fp2_with_check =
-        |hc: &mut HashChallenger<u8, DnacSha3_512Hasher, 64>,
-         sh: &mut Shadow,
-         rec: &HashRecorder|
-         -> (u64, u64) {
-            let c0 = sample_fp_with_check(hc, sh, rec);
-            let c1 = sample_fp_with_check(hc, sh, rec);
-            (c0, c1)
-        };
+    // Helper: sample one fp2 and return the canonical (c0, c1) pair.
+    fn mil_sample_fp2(ch: &mut FriChallenger) -> (u64, u64) {
+        let v: GoldFp2 = ch.sample_algebra_element();
+        let c: &[Goldilocks] = v.as_basis_coefficients_slice();
+        (c[0].as_canonical_u64(), c[1].as_canonical_u64())
+    }
 
     // -----------------------------------------------------------------------
     // PRE-PRIMING (replicate the verifier's pre-verify_fri sequence):
     //   observe(commitment) + sample(zeta_v): fp2 + observe_algebra_slice(opened_values[0][0][0])
     // -----------------------------------------------------------------------
-    {
-        let commit_bytes = fri_milestone_serialize_commitment(&commitment);
-        observe_into_both(&mut hash_chal, &mut shadow, &commit_bytes);
-    }
+    mil_chal.observe(commitment.clone());
     {
         // Cross-check zeta against the prover's zeta (already recorded during fixture build).
-        let (zeta_v_c0, zeta_v_c1) = sample_fp2_with_check(&mut hash_chal, &mut shadow, &recorder);
+        let (zeta_v_c0, zeta_v_c1) = mil_sample_fp2(&mut mil_chal);
         let zeta_coeffs: &[Goldilocks] = zeta.as_basis_coefficients_slice();
         assert_eq!(
             zeta_v_c0,
@@ -6267,8 +6086,7 @@ fn dump_fri_verifier_transcript_milestones(
         // opened_values[0][0][0] is Vec<GoldFp2> (per-point evaluations); len = 1 here.
         let opened_pt: &Vec<GoldFp2> = &opened_values[0][0][0];
         for fp2 in opened_pt.iter() {
-            let bytes = fri_milestone_serialize_fp2(*fp2);
-            observe_into_both(&mut hash_chal, &mut shadow, &bytes);
+            mil_chal.observe_algebra_element(*fp2);
         }
     }
 
@@ -6285,14 +6103,14 @@ fn dump_fri_verifier_transcript_milestones(
             "description": "Verifier challenger primed: observe(commitment) + sample(zeta_v: fp2) + observe_algebra_slice(opened_values[0][0][0]). State at the top of verify_fri (verifier.rs:113)."
         }),
         serde_json::Value::Null,
-        &shadow,
+        &mil_chal,
     ));
     op_index += 1;
 
     // -----------------------------------------------------------------------
     // T1: sample alpha (fp2). verifier.rs:143.
     // -----------------------------------------------------------------------
-    let (alpha_c0, alpha_c1) = sample_fp2_with_check(&mut hash_chal, &mut shadow, &recorder);
+    let (alpha_c0, alpha_c1) = mil_sample_fp2(&mut mil_chal);
     milestones.push(fri_milestone_make_record(
         op_index,
         "after_alpha_sample",
@@ -6301,7 +6119,7 @@ fn dump_fri_verifier_transcript_milestones(
         serde_json::json!({
             "sampled_fp2": {"c0_decimal": alpha_c0.to_string(), "c1_decimal": alpha_c1.to_string()}
         }),
-        &shadow,
+        &mil_chal,
     ));
     op_index += 1;
 
@@ -6316,9 +6134,9 @@ fn dump_fri_verifier_transcript_milestones(
     // -----------------------------------------------------------------------
     let num_rounds = proof.commit_phase_commits.len();
     for round in 0..num_rounds {
-        // T2.round — observe(commit_phase_commits[round])
+        // T2.round — observe(commit_phase_commits[round]) — 4-lane cap observe
         let commit_bytes = fri_milestone_serialize_commitment(&proof.commit_phase_commits[round]);
-        observe_into_both(&mut hash_chal, &mut shadow, &commit_bytes);
+        mil_chal.observe(proof.commit_phase_commits[round].clone());
         milestones.push(fri_milestone_make_record(
             op_index,
             &format!("after_commit_observe_round_{round}"),
@@ -6330,7 +6148,7 @@ fn dump_fri_verifier_transcript_milestones(
                 "verifier_rs_line": 221
             }),
             serde_json::Value::Null,
-            &shadow,
+            &mil_chal,
         ));
         op_index += 1;
 
@@ -6349,12 +6167,12 @@ fn dump_fri_verifier_transcript_milestones(
                 "verifier_rs_line": 222
             }),
             serde_json::json!({"check_witness_result": true}),
-            &shadow,
+            &mil_chal,
         ));
         op_index += 1;
 
         // T5.round — sample beta_round (fp2)
-        let (beta_c0, beta_c1) = sample_fp2_with_check(&mut hash_chal, &mut shadow, &recorder);
+        let (beta_c0, beta_c1) = mil_sample_fp2(&mut mil_chal);
         milestones.push(fri_milestone_make_record(
             op_index,
             &format!("after_beta_sample_round_{round}"),
@@ -6363,7 +6181,7 @@ fn dump_fri_verifier_transcript_milestones(
             serde_json::json!({
                 "sampled_fp2": {"c0_decimal": beta_c0.to_string(), "c1_decimal": beta_c1.to_string()}
             }),
-            &shadow,
+            &mil_chal,
         ));
         op_index += 1;
     }
@@ -6376,7 +6194,7 @@ fn dump_fri_verifier_transcript_milestones(
         let mut total_bytes = 0usize;
         for fp2 in proof.final_poly.iter() {
             let bytes = fri_milestone_serialize_fp2(*fp2);
-            observe_into_both(&mut hash_chal, &mut shadow, &bytes);
+            mil_chal.observe_algebra_element(*fp2);
             total_bytes += bytes.len();
         }
         let final_poly_summary: Vec<serde_json::Value> = proof
@@ -6398,7 +6216,7 @@ fn dump_fri_verifier_transcript_milestones(
                 "verifier_rs_line": 238
             }),
             serde_json::Value::Null,
-            &shadow,
+            &mil_chal,
         ));
         op_index += 1;
     }
@@ -6415,7 +6233,7 @@ fn dump_fri_verifier_transcript_milestones(
     for (i, &la) in log_arities.iter().enumerate() {
         let g = Goldilocks::from_usize(la);
         let bytes = fri_milestone_serialize_fp(g);
-        observe_into_both(&mut hash_chal, &mut shadow, &bytes);
+        mil_chal.observe(g);
         milestones.push(fri_milestone_make_record(
             op_index,
             &format!("after_log_arity_observe_{i}"),
@@ -6428,7 +6246,7 @@ fn dump_fri_verifier_transcript_milestones(
                 "verifier_rs_line": 250
             }),
             serde_json::Value::Null,
-            &shadow,
+            &mil_chal,
         ));
         op_index += 1;
     }
@@ -6450,7 +6268,7 @@ fn dump_fri_verifier_transcript_milestones(
                 "verifier_rs_line": 254
             }),
             serde_json::json!({"check_witness_result": true}),
-            &shadow,
+            &mil_chal,
         ));
         op_index += 1;
     }
@@ -6465,18 +6283,20 @@ fn dump_fri_verifier_transcript_milestones(
         log_arities.iter().sum::<usize>() + fri_params.log_blowup + fri_params.log_final_poly_len;
     let bits = log_global_max_height; // extra_query_index_bits = 0
     for q in 0..fri_params.num_queries {
-        // Plonky3 sample_bits via SerializingChallenger64.
-        let plonky3_qi: usize = {
-            let mut wrap = SerializingChallenger64::<Goldilocks, _>::new(&mut hash_chal);
-            wrap.sample_bits(bits)
+        // P1c cross-check: sample_bits = one field sample masked
+        // (duplex_challenger.rs:264-270). Predict via a clone's raw sample,
+        // then let the real sample_bits advance the state.
+        let raw = {
+            let mut probe = mil_chal.clone();
+            let f: Goldilocks = probe.sample();
+            f.as_canonical_u64()
         };
-        // Shadow prediction: consume 8 bytes LIFO, build LE u64, mask.
-        let raw = shadow.sample_u64(&recorder);
+        let plonky3_qi: usize = mil_chal.sample_bits(bits);
         let mask = if bits == 0 { 0u64 } else { (1u64 << bits) - 1 };
         let predicted_qi: usize = (raw & mask) as usize;
         assert_eq!(
             plonky3_qi, predicted_qi,
-            "F1.2: shadow/Plonky3 sample_bits divergence at query {q}"
+            "F1.2: clone-probe/Plonky3 sample_bits divergence at query {q}"
         );
 
         milestones.push(fri_milestone_make_record(
@@ -6495,7 +6315,7 @@ fn dump_fri_verifier_transcript_milestones(
                 "raw_u64_before_mask_decimal": raw.to_string(),
                 "mask_hex": format!("{:016x}", mask)
             }),
-            &shadow,
+            &mil_chal,
         ));
         op_index += 1;
     }
@@ -6512,12 +6332,12 @@ fn dump_fri_verifier_transcript_milestones(
         "dnac_stack": {
             "val": "Goldilocks",
             "challenge": "BinomialExtensionField<Goldilocks, 2> (fp2)",
-            "hash": "FIPS-202 SHA3-512",
-            "input_mmcs": "MerkleTreeMmcs<[Goldilocks;1], [u64;1], FieldHash, MyCompress, 2, 8>",
+            "hash": "Poseidon2 width-8 (default_goldilocks_poseidon2_8, P1c)",
+            "input_mmcs": "MerkleTreeMmcs<Packing, Packing, PaddingFreeSponge<Perm,8,4,4>, TruncatedPermutation<Perm,2,4,8>, 2, 4> cap 0 (P1c)",
             "fri_mmcs": "ExtensionMmcs<Goldilocks, fp2, ValMmcs>",
             "folding": "TwoAdicFriFolding",
             "extra_query_index_bits": 0,
-            "challenger": "SerializingChallenger64<Goldilocks, HashChallenger<u8, DnacSha3_512Hasher, 64>>"
+            "challenger": "DuplexChallenger<Goldilocks, Poseidon2Goldilocks<8>, 8, 4> + DNAC 4-limb DS prefix (P1c)"
         },
         "fri_params": {
             "log_blowup": fri_params.log_blowup,
@@ -6532,8 +6352,8 @@ fn dump_fri_verifier_transcript_milestones(
             "trace_rows": num_rows,
             "trace_cols": width,
             "trace_seed": trace_seed,
-            "init_state_hex": to_hex(&init_state),
-            "init_state_ascii": String::from_utf8_lossy(&init_state).into_owned(),
+            "init_state_hex": to_hex(FRI_INIT_STATE),
+            "init_state_ascii": String::from_utf8_lossy(FRI_INIT_STATE).into_owned(),
             "num_commit_rounds": num_rounds,
             "log_arities": log_arities,
             "log_global_max_height": log_global_max_height,
@@ -6643,9 +6463,16 @@ impl FriF13FieldHex for GoldFp2 {
 /// Serialize a MerkleCap<Goldilocks, [u64; 8]> (or other serde-Serialize
 /// commitment) to canonical lane-LE bytes via serde introspection. Mirrors
 /// the V6 / F1.1 / F1.2 lane-LE convention.
+/// One serde "lane" to u64. P1c: a Goldilocks lane serializes as
+/// {"value": N} (struct), not a bare u64 — accept both.
+fn fri_f13_lane_u64(lane: &serde_json::Value) -> Option<u64> {
+    lane.as_u64()
+        .or_else(|| lane.get("value").and_then(|v| v.as_u64()))
+}
+
 fn fri_f13_commit_to_hex<C: Serialize>(commit: &C) -> String {
     let v = serde_json::to_value(commit).unwrap_or(serde_json::Value::Null);
-    // MerkleCap serde shape: {"_marker": null, "cap": [[lane0, lane1, ...]]}
+    // MerkleCap serde shape: {"_marker": null, "cap": [[{"value":lane0}, ...]]}
     let lanes_arrays = v
         .get("cap")
         .and_then(|c| c.as_array())
@@ -6655,7 +6482,7 @@ fn fri_f13_commit_to_hex<C: Serialize>(commit: &C) -> String {
     for cap_root in &lanes_arrays {
         if let Some(lanes) = cap_root.as_array() {
             for lane in lanes {
-                if let Some(u) = lane.as_u64() {
+                if let Some(u) = fri_f13_lane_u64(lane) {
                     bytes.extend_from_slice(&u.to_le_bytes());
                 }
             }
@@ -6672,9 +6499,9 @@ fn fri_f13_proof_to_hex_vec<P: Serialize>(proof: &P) -> Vec<String> {
     if let Some(siblings) = v.as_array() {
         for sibling in siblings {
             if let Some(lanes) = sibling.as_array() {
-                let mut bytes = Vec::with_capacity(64);
+                let mut bytes = Vec::with_capacity(32);
                 for lane in lanes {
-                    if let Some(u) = lane.as_u64() {
+                    if let Some(u) = fri_f13_lane_u64(lane) {
                         bytes.extend_from_slice(&u.to_le_bytes());
                     }
                 }
@@ -6824,8 +6651,8 @@ fn dump_fri_verifier_mmcs_calls(
 
     let recorder: MmcsRecorderF13 = Arc::new(Mutex::new(Vec::new()));
 
-    let inner_input_mmcs = make_mmcs();
-    let inner_challenge_mmcs = FriChallengeMmcs::new(make_mmcs());
+    let inner_input_mmcs = make_p2_mmcs();
+    let inner_challenge_mmcs = FriChallengeMmcs::new(make_p2_mmcs());
 
     let traced_input_mmcs = TraceMmcs::new(
         inner_input_mmcs.clone(),
@@ -6841,7 +6668,7 @@ fn dump_fri_verifier_mmcs_calls(
     type TracedInputMmcs = TraceMmcs<Goldilocks, FriValMmcs>;
     type TracedChallengeMmcs = TraceMmcs<GoldFp2, FriChallengeMmcs>;
     type TracedFolding = TwoAdicFriFoldingForMmcs<Goldilocks, TracedInputMmcs>;
-    type TracedFriChallenger = SerializingChallenger64<Goldilocks, FriHashChal>;
+    type TracedFriChallenger = FriChallenger; /* P1c: same DuplexChallenger; only the MMCS is traced */
     type TracedFriProof = FriProof<
         GoldFp2,
         TracedChallengeMmcs,
@@ -6886,9 +6713,8 @@ fn dump_fri_verifier_mmcs_calls(
         vec![(domain, trace_for_pcs)],
     );
 
-    let init_state: Vec<u8> = FRI_INIT_STATE.to_vec();
     let mut p_challenger =
-        TracedFriChallenger::new(FriHashChal::new(init_state.clone(), FriOracleSha3_512));
+        mk_prod_challenger();
     p_challenger.observe(commitment.clone());
     let zeta: GoldFp2 = p_challenger.sample_algebra_element();
 
@@ -6929,7 +6755,7 @@ fn dump_fri_verifier_mmcs_calls(
     )];
 
     let mut v_challenger =
-        TracedFriChallenger::new(FriHashChal::new(init_state.clone(), FriOracleSha3_512));
+        mk_prod_challenger();
     v_challenger.observe(commitment.clone());
     let _v_zeta: GoldFp2 = v_challenger.sample_algebra_element();
     for (_, round) in base_cwop.iter() {
@@ -7082,12 +6908,12 @@ fn dump_fri_verifier_mmcs_calls(
         "dnac_stack": {
             "val": "Goldilocks",
             "challenge": "BinomialExtensionField<Goldilocks, 2> (fp2)",
-            "hash": "FIPS-202 SHA3-512",
-            "input_mmcs": "MerkleTreeMmcs<[Goldilocks;1], [u64;1], FieldHash, MyCompress, 2, 8>",
+            "hash": "Poseidon2 width-8 (default_goldilocks_poseidon2_8, P1c)",
+            "input_mmcs": "MerkleTreeMmcs<Packing, Packing, PaddingFreeSponge<Perm,8,4,4>, TruncatedPermutation<Perm,2,4,8>, 2, 4> cap 0 (P1c)",
             "fri_mmcs": "ExtensionMmcs<Goldilocks, fp2, ValMmcs>",
             "folding": "TwoAdicFriFolding",
             "extra_query_index_bits": 0,
-            "challenger": "SerializingChallenger64<Goldilocks, HashChallenger<u8, FriOracleSha3_512, 64>>"
+            "challenger": "DuplexChallenger<Goldilocks, Poseidon2Goldilocks<8>, 8, 4> + DNAC 4-limb DS prefix (P1c)"
         },
         "instrumentation": {
             "wrapper_type": "TraceMmcs<T, Inner> — transparent Mmcs<T> newtype that captures every verify_batch call (commit/dims/index/opened/proof/result) before delegating to the inner MMCS unchanged.",
@@ -7360,16 +7186,16 @@ fn dump_fri_verifier_terminal_horner(
 
     let recorder: MmcsRecorderF13 = Arc::new(Mutex::new(Vec::new()));
     let traced_input_mmcs =
-        TraceMmcs::new(make_mmcs(), recorder.clone(), "input_mmcs.verify_batch");
+        TraceMmcs::new(make_p2_mmcs(), recorder.clone(), "input_mmcs.verify_batch");
     let traced_challenge_mmcs = TraceMmcs::new(
-        FriChallengeMmcs::new(make_mmcs()),
+        FriChallengeMmcs::new(make_p2_mmcs()),
         recorder.clone(),
         "params.mmcs.verify_batch",
     );
     type TracedInputMmcs = TraceMmcs<Goldilocks, FriValMmcs>;
     type TracedChallengeMmcs = TraceMmcs<GoldFp2, FriChallengeMmcs>;
     type TracedFolding = TwoAdicFriFoldingForMmcs<Goldilocks, TracedInputMmcs>;
-    type TracedFriChallenger = SerializingChallenger64<Goldilocks, FriHashChal>;
+    type TracedFriChallenger = FriChallenger; /* P1c: same DuplexChallenger; only the MMCS is traced */
     let fri_params_traced: FriParameters<TracedChallengeMmcs> = FriParameters {
         log_blowup: 1,
         log_final_poly_len: 0,
@@ -7405,9 +7231,8 @@ fn dump_fri_verifier_terminal_horner(
         vec![(domain, trace_for_pcs)],
     );
 
-    let init_state: Vec<u8> = FRI_INIT_STATE.to_vec();
     let mut p_challenger =
-        TracedFriChallenger::new(FriHashChal::new(init_state.clone(), FriOracleSha3_512));
+        mk_prod_challenger();
     p_challenger.observe(commitment.clone());
     let zeta: GoldFp2 = p_challenger.sample_algebra_element();
     recorder.lock().unwrap().clear();
@@ -7436,7 +7261,7 @@ fn dump_fri_verifier_terminal_horner(
     )];
 
     let mut v_challenger =
-        TracedFriChallenger::new(FriHashChal::new(init_state.clone(), FriOracleSha3_512));
+        mk_prod_challenger();
     v_challenger.observe(commitment.clone());
     let _v_zeta: GoldFp2 = v_challenger.sample_algebra_element();
     for (_, round) in base_cwop.iter() {
@@ -7682,7 +7507,7 @@ fn dump_fri_verifier_terminal_horner(
         "dnac_stack": {
             "val": "Goldilocks",
             "challenge": "BinomialExtensionField<Goldilocks, 2> (fp2)",
-            "hash": "FIPS-202 SHA3-512",
+            "hash": "Poseidon2 width-8 (default_goldilocks_poseidon2_8, P1c)",
             "folding": "TwoAdicFriFolding",
             "extra_query_index_bits": 0
         },
@@ -8044,7 +7869,7 @@ fn dump_fri_verifier_verify_query(
         "dnac_stack": {
             "val": "Goldilocks",
             "challenge": "BinomialExtensionField<Goldilocks, 2> (fp2)",
-            "hash": "FIPS-202 SHA3-512",
+            "hash": "Poseidon2 width-8 (default_goldilocks_poseidon2_8, P1c)",
             "folding": "TwoAdicFriFolding",
             "extra_query_index_bits": 0
         },
@@ -8136,54 +7961,8 @@ struct FriRollinRound {
     folded_after: GoldFp2,
 }
 
-/// Observe `bytes` into both the real HashChallenger and the shadow tracker.
-fn fri_rollin_observe(
-    hc: &mut HashChallenger<u8, DnacSha3_512Hasher, 64>,
-    sh: &mut Shadow,
-    bytes: &[u8],
-) {
-    <HashChallenger<u8, DnacSha3_512Hasher, 64> as CanObserve<u8>>::observe_slice(hc, bytes);
-    sh.observe_bytes(bytes);
-}
-
-/// Plonky3 sample_fp + shadow prediction + cross-check (mirrors F1.2).
-fn fri_rollin_sample_fp(
-    hc: &mut HashChallenger<u8, DnacSha3_512Hasher, 64>,
-    sh: &mut Shadow,
-    rec: &HashRecorder,
-) -> u64 {
-    let p: Goldilocks = SerializingChallenger64::<Goldilocks, _>::new(hc).sample();
-    let s = sh.predict_sample_fp(rec);
-    assert_eq!(p.as_canonical_u64(), s, "F1.6: shadow/Plonky3 sample_fp divergence");
-    s
-}
-
-/// Plonky3 sample_fp2 (two sample_fp in basis order) + cross-check.
-fn fri_rollin_sample_fp2(
-    hc: &mut HashChallenger<u8, DnacSha3_512Hasher, 64>,
-    sh: &mut Shadow,
-    rec: &HashRecorder,
-) -> GoldFp2 {
-    let c0 = fri_rollin_sample_fp(hc, sh, rec);
-    let c1 = fri_rollin_sample_fp(hc, sh, rec);
-    GoldFp2::from_basis_coefficients_slice(&[Goldilocks::from_u64(c0), Goldilocks::from_u64(c1)])
-        .expect("fp2 reconstruction")
-}
-
-/// Plonky3 sample_bits + shadow prediction + cross-check (mirrors F1.2).
-fn fri_rollin_sample_bits(
-    hc: &mut HashChallenger<u8, DnacSha3_512Hasher, 64>,
-    sh: &mut Shadow,
-    rec: &HashRecorder,
-    bits: usize,
-) -> u64 {
-    let plonky3_v: usize = SerializingChallenger64::<Goldilocks, _>::new(hc).sample_bits(bits);
-    let raw = sh.sample_u64(rec);
-    let mask = if bits == 0 { 0u64 } else { (1u64 << bits) - 1 };
-    let predicted = (raw & mask) as usize;
-    assert_eq!(plonky3_v, predicted, "F1.6: shadow/Plonky3 sample_bits divergence");
-    plonky3_v as u64
-}
+/* P1c: the fri_rollin_* SHA3 shadow/cross-check helper family is retired —
+ * replays run directly on the real DuplexChallenger (pub state). */
 
 /// open_input mirror (verifier.rs:543-660) for single-matrix batches over the
 /// DNAC stack. Returns reduced openings DESCENDING by log_height. `batches[i]`
@@ -8357,8 +8136,8 @@ fn dump_fri_verifier_rollin(out_path: &PathBuf) -> Result<(), Box<dyn std::error
     // -----------------------------------------------------------------------
     // MMCS + FRI params + PCS.
     // -----------------------------------------------------------------------
-    let input_mmcs = make_mmcs();
-    let challenge_mmcs = FriChallengeMmcs::new(make_mmcs());
+    let input_mmcs = make_p2_mmcs();
+    let challenge_mmcs = FriChallengeMmcs::new(make_p2_mmcs());
     let fri_params = FriParameters {
         log_blowup,
         log_final_poly_len: 0,
@@ -8413,9 +8192,8 @@ fn dump_fri_verifier_rollin(out_path: &PathBuf) -> Result<(), Box<dyn std::error
     // -----------------------------------------------------------------------
     // Prover challenger: observe A, observe B, sample zeta, open BOTH at zeta.
     // -----------------------------------------------------------------------
-    let init_state: Vec<u8> = FRI_INIT_STATE.to_vec();
     let mut p_challenger =
-        FriChallenger::new(FriHashChal::new(init_state.clone(), FriOracleSha3_512));
+        mk_prod_challenger();
     p_challenger.observe(commit_a.clone());
     p_challenger.observe(commit_b.clone());
     let zeta: GoldFp2 = p_challenger.sample_algebra_element();
@@ -8446,7 +8224,7 @@ fn dump_fri_verifier_rollin(out_path: &PathBuf) -> Result<(), Box<dyn std::error
     // -----------------------------------------------------------------------
     let folding: FriFolding = TwoAdicFriFolding(core::marker::PhantomData);
     {
-        let mut v = FriChallenger::new(FriHashChal::new(init_state.clone(), FriOracleSha3_512));
+        let mut v = mk_prod_challenger();
         v.observe(commit_a.clone());
         v.observe(commit_b.clone());
         let v_zeta: GoldFp2 = v.sample_algebra_element();
@@ -8478,52 +8256,47 @@ fn dump_fri_verifier_rollin(out_path: &PathBuf) -> Result<(), Box<dyn std::error
     }
 
     // -----------------------------------------------------------------------
-    // Shadow-tracked priming + sampling (seed capture + alpha/betas/indices).
+    // P1c duplex replay (seed capture + alpha/betas/indices) on the REAL
+    // DuplexChallenger — its public state IS the milestone truth (the SHA3
+    // Shadow/recorder cross-check machinery is retired with the byte path).
     // -----------------------------------------------------------------------
-    let recorder: HashRecorder = Rc::new(RefCell::new(VecDeque::new()));
-    let hasher = DnacSha3_512Hasher { recorder: recorder.clone() };
-    let mut hc = HashChallenger::<u8, DnacSha3_512Hasher, 64>::new(init_state.clone(), hasher);
-    let mut shadow = Shadow::new(&init_state);
+    let mut hc = mk_prod_challenger();
 
     // Priming: observe(commit_a) + observe(commit_b) + sample(zeta_v) +
     // observe(opened_a) + observe(opened_b). State at the top of verify_fri.
-    fri_rollin_observe(&mut hc, &mut shadow, &fri_milestone_serialize_commitment(&commit_a));
-    fri_rollin_observe(&mut hc, &mut shadow, &fri_milestone_serialize_commitment(&commit_b));
-    let zeta_v = fri_rollin_sample_fp2(&mut hc, &mut shadow, &recorder);
+    hc.observe(commit_a.clone());
+    hc.observe(commit_b.clone());
+    let zeta_v: GoldFp2 = hc.sample_algebra_element();
     if zeta_v != zeta {
-        return Err("F1.6: shadow zeta_v != prover zeta".into());
+        return Err("F1.6: replay zeta_v != prover zeta".into());
     }
     for fp2 in opened_values[0][0][0].iter() {
-        fri_rollin_observe(&mut hc, &mut shadow, &fri_milestone_serialize_fp2(*fp2));
+        hc.observe_algebra_element(*fp2);
     }
     for fp2 in opened_values[1][0][0].iter() {
-        fri_rollin_observe(&mut hc, &mut shadow, &fri_milestone_serialize_fp2(*fp2));
+        hc.observe_algebra_element(*fp2);
     }
-    // Seed = primed input_buffer; output_buffer must be empty (last op was observe).
-    if !shadow.output_buf.is_empty() {
-        return Err("F1.6: primed output_buffer non-empty — seed invariant broken".into());
-    }
-    let primed_seed_hex = to_hex(&shadow.input_buf);
-    let primed_seed_len = shadow.input_buf.len();
+    // P1c note: the SHA3-era "output empty after observe" invariant does NOT
+    // hold for the duplex sponge — an observe landing on the RATE boundary
+    // eagerly duplexes and REFILLS output_buffer (duplex_challenger.rs:154-156).
+    // The seed is the FULL public state (all three fields).
+    let primed_seed = duplex_snapshot_json(&hc);
+    let primed_seed_len = hc.input_buffer.len();
 
     // alpha (verifier.rs:143).
-    let alpha = fri_rollin_sample_fp2(&mut hc, &mut shadow, &recorder);
+    let alpha: GoldFp2 = hc.sample_algebra_element();
 
     // Commit-phase loop (verifier.rs:213-227): observe(comm) + PoW-noop + beta.
     let num_rounds = proof.commit_phase_commits.len();
     let mut betas: Vec<GoldFp2> = Vec::with_capacity(num_rounds);
     for round in 0..num_rounds {
-        fri_rollin_observe(
-            &mut hc,
-            &mut shadow,
-            &fri_milestone_serialize_commitment(&proof.commit_phase_commits[round]),
-        );
+        hc.observe(proof.commit_phase_commits[round].clone());
         // commit_proof_of_work_bits == 0 -> check_witness short-circuit (no state change).
-        betas.push(fri_rollin_sample_fp2(&mut hc, &mut shadow, &recorder));
+        betas.push(hc.sample_algebra_element());
     }
     // observe final_poly (verifier.rs:238).
     for fp2 in proof.final_poly.iter() {
-        fri_rollin_observe(&mut hc, &mut shadow, &fri_milestone_serialize_fp2(*fp2));
+        hc.observe_algebra_element(*fp2);
     }
     // observe log_arities (verifier.rs:249-251).
     let log_arities: Vec<usize> = proof.query_proofs[0]
@@ -8532,7 +8305,7 @@ fn dump_fri_verifier_rollin(out_path: &PathBuf) -> Result<(), Box<dyn std::error
         .map(|o| o.log_arity as usize)
         .collect();
     for &la in &log_arities {
-        fri_rollin_observe(&mut hc, &mut shadow, &fri_milestone_serialize_fp(Goldilocks::from_usize(la)));
+        hc.observe(Goldilocks::from_usize(la));
     }
     // query_proof_of_work_bits == 0 -> short-circuit (no state change).
     let log_global_max_height: usize =
@@ -8540,9 +8313,8 @@ fn dump_fri_verifier_rollin(out_path: &PathBuf) -> Result<(), Box<dyn std::error
     let log_final_height: usize = fri_params.log_blowup + fri_params.log_final_poly_len;
     let mut query_indices: Vec<u64> = Vec::with_capacity(fri_params.num_queries);
     for _q in 0..fri_params.num_queries {
-        query_indices.push(fri_rollin_sample_bits(&mut hc, &mut shadow, &recorder, log_global_max_height));
+        query_indices.push(hc.sample_bits(log_global_max_height) as u64);
     }
-    assert!(recorder.borrow().is_empty(), "F1.6: unconsumed hash events after sampling");
 
     // -----------------------------------------------------------------------
     // Per-query open_input + verify_query re-derivation (DNAC trace, Plonky3
@@ -8685,12 +8457,12 @@ fn dump_fri_verifier_rollin(out_path: &PathBuf) -> Result<(), Box<dyn std::error
         "dnac_stack": {
             "val": "Goldilocks",
             "challenge": "BinomialExtensionField<Goldilocks, 2> (fp2)",
-            "hash": "FIPS-202 SHA3-512",
-            "input_mmcs": "MerkleTreeMmcs<[Goldilocks;1], [u64;1], FieldHash, MyCompress, 2, 8>",
+            "hash": "Poseidon2 width-8 (default_goldilocks_poseidon2_8, P1c)",
+            "input_mmcs": "MerkleTreeMmcs<Packing, Packing, PaddingFreeSponge<Perm,8,4,4>, TruncatedPermutation<Perm,2,4,8>, 2, 4> cap 0 (P1c)",
             "fri_mmcs": "ExtensionMmcs<Goldilocks, fp2, ValMmcs>",
             "folding": "TwoAdicFriFolding",
             "extra_query_index_bits": 0,
-            "challenger": "SerializingChallenger64<Goldilocks, HashChallenger<u8, FriOracleSha3_512, 64>>"
+            "challenger": "DuplexChallenger<Goldilocks, Poseidon2Goldilocks<8>, 8, 4> + DNAC 4-limb DS prefix (P1c)"
         },
         "fri_params": {
             "log_blowup": fri_params.log_blowup,
@@ -8703,8 +8475,8 @@ fn dump_fri_verifier_rollin(out_path: &PathBuf) -> Result<(), Box<dyn std::error
         "fixture": {
             "log_global_max_height": log_global_max_height,
             "log_final_height": log_final_height,
-            "init_state_hex": to_hex(&init_state),
-            "init_state_ascii": String::from_utf8_lossy(&init_state).into_owned(),
+            "init_state_hex": to_hex(FRI_INIT_STATE),
+            "init_state_ascii": String::from_utf8_lossy(FRI_INIT_STATE).into_owned(),
             "matrices": [
                 {"commitment_index": 0, "log_degree": log_degree_a, "log_height": log_degree_a + log_blowup, "rows": rows_a, "cols": width, "seed": seed_a, "trace_rows_decimal": trace_a_dec},
                 {"commitment_index": 1, "log_degree": log_degree_b, "log_height": log_degree_b + log_blowup, "rows": rows_b, "cols": width, "seed": seed_b, "trace_rows_decimal": trace_b_dec}
@@ -8713,9 +8485,9 @@ fn dump_fri_verifier_rollin(out_path: &PathBuf) -> Result<(), Box<dyn std::error
         "transcript_zeta_fp2": {"c0_decimal": zeta_pair.0, "c1_decimal": zeta_pair.1},
         "alpha_fp2": {"c0_decimal": alpha_pair.0, "c1_decimal": alpha_pair.1},
         "primed_transcript": {
-            "description": "Verifier challenger primed: observe(commit_a)+observe(commit_b)+sample(zeta_v: fp2)+observe_algebra_slice(opened_a)+observe_algebra_slice(opened_b). State at the top of verify_fri (verifier.rs:113). Load via dnac_transcript_init(input_buf_hex).",
-            "input_buf_hex": primed_seed_hex,
-            "input_buf_len": primed_seed_len
+            "description": "P1c: DuplexChallenger state (prod DS prefix + observe(commit_a)+observe(commit_b)+sample(zeta_v: fp2)+observe_algebra_slice(opened_a)+observe_algebra_slice(opened_b)) at the top of verify_fri (verifier.rs:113). Replay in C: dnac_transcript_init_default + the same field-element ops; compare against `state`.",
+            "state": primed_seed,
+            "pending_input_len": primed_seed_len
         },
         "query_indices": query_indices,
         "multi_reduced_opening_rollin_exercised": true,
@@ -8770,23 +8542,19 @@ fn dump_fri_verifier_rollin(out_path: &PathBuf) -> Result<(), Box<dyn std::error
 // ============================================================================
 mod stark_priming {
     use super::{
-        fri_fp2_to_pair, fri_milestone_serialize_commitment, fri_milestone_serialize_fp,
-        fri_milestone_serialize_fp2, fri_rollin_observe, fri_rollin_sample_fp2, make_mmcs, to_hex,
-        DnacSha3_512Hasher, FriChallengeMmcs, FriChallenger, FriFolding, FriHashChal,
-        FriOracleSha3_512, FriValMmcs, GoldFp2, HashRecorder, Shadow, FRI_INIT_STATE,
-        ORACLE_FORMAT_VERSION, PLONKY3_COMMIT, RANGE_AIR_BITS,
+        duplex_snapshot_json, fri_fp2_to_pair, fri_milestone_serialize_commitment,
+        make_p2_mmcs as make_mmcs, mk_prod_challenger, to_hex, FriChallengeMmcs, FriChallenger,
+        FriFolding, FriValMmcs, GoldFp2, FRI_INIT_STATE, ORACLE_FORMAT_VERSION, PLONKY3_COMMIT,
+        RANGE_AIR_BITS,
     };
     use core::borrow::Borrow;
     use core::marker::PhantomData;
-    use std::cell::RefCell;
-    use std::collections::VecDeque;
     use std::fs::File;
     use std::io::Write;
     use std::path::PathBuf;
-    use std::rc::Rc;
 
     use p3_air::{Air, AirBuilder, BaseAir, RowWindow, WindowAccess};
-    use p3_challenger::{CanObserve, FieldChallenger, HashChallenger};
+    use p3_challenger::{CanObserve, FieldChallenger};
     use p3_commit::{Mmcs, Pcs, PolynomialSpace};
     use p3_dft::Radix2Dit;
     use p3_field::coset::TwoAdicMultiplicativeCoset;
@@ -9000,7 +8768,7 @@ mod stark_priming {
             SmallRng::seed_from_u64(1),
         );
         let challenger =
-            FriChallenger::new(FriHashChal::new(FRI_INIT_STATE.to_vec(), FriOracleSha3_512));
+            mk_prod_challenger();
         StarkConfig::new(pcs, challenger)
     }
 
@@ -9022,7 +8790,7 @@ mod stark_priming {
             SmallRng::seed_from_u64(1),
         );
         let challenger =
-            FriChallenger::new(FriHashChal::new(FRI_INIT_STATE.to_vec(), FriOracleSha3_512));
+            mk_prod_challenger();
         StarkConfig::new(pcs, challenger)
     }
 
@@ -9050,10 +8818,9 @@ mod stark_priming {
             query_proof_of_work_bits: 0,
             mmcs: challenge_mmcs,
         };
-        let init_state: Vec<u8> = FRI_INIT_STATE.to_vec();
         let pcs: StarkPcs =
             TwoAdicFriPcs::new(Radix2Dit::default(), input_mmcs.clone(), fri_params.clone());
-        let challenger = FriChallenger::new(FriHashChal::new(init_state.clone(), FriOracleSha3_512));
+        let challenger = mk_prod_challenger();
         let config: StarkCfg = StarkConfig::new(pcs, challenger);
 
         // -------------------------------------------------------------------
@@ -9099,6 +8866,7 @@ mod stark_priming {
             .ok_or("FibonacciAir: trace_next expected (main_next path)")?;
         let quotient_chunks = proof.opened_values.quotient_chunks.clone();
         let num_qc = quotient_chunks.len();
+        eprintln!("num_qc(stark_priming FibonacciAir) = {num_qc} (MEASURED)");
 
         // -------------------------------------------------------------------
         // 5. Reconstruct domains (verifier.rs:268-317) via pub trait methods on
@@ -9131,52 +8899,28 @@ mod stark_priming {
         //    two_adic_pcs.rs:687-693). Recording challenger + Shadow; every
         //    sample is cross-checked Shadow-vs-Plonky3 inside the helpers.
         // -------------------------------------------------------------------
-        let recorder: HashRecorder = Rc::new(RefCell::new(VecDeque::new()));
-        let hasher = DnacSha3_512Hasher {
-            recorder: recorder.clone(),
-        };
-        let mut hc =
-            HashChallenger::<u8, DnacSha3_512Hasher, 64>::new(init_state.clone(), hasher);
-        let mut shadow = Shadow::new(&init_state);
+        // P1c: replay the priming on the REAL DuplexChallenger; its public
+        // state is the milestone-0 seed (SHA3 Shadow/recorder retired).
+        let mut hc = mk_prod_challenger();
 
         // (1)-(3) instance scalars as base field (verifier.rs:361-363).
-        fri_rollin_observe(
-            &mut hc,
-            &mut shadow,
-            &fri_milestone_serialize_fp(Goldilocks::from_usize(degree_bits)),
-        );
-        fri_rollin_observe(
-            &mut hc,
-            &mut shadow,
-            &fri_milestone_serialize_fp(Goldilocks::from_usize(base_degree_bits)),
-        );
-        fri_rollin_observe(
-            &mut hc,
-            &mut shadow,
-            &fri_milestone_serialize_fp(Goldilocks::from_usize(preprocessed_width)),
-        );
-        // (4) trace commitment (verifier.rs:369).
-        fri_rollin_observe(
-            &mut hc,
-            &mut shadow,
-            &fri_milestone_serialize_commitment(&proof.commitments.trace),
-        );
+        hc.observe(Goldilocks::from_usize(degree_bits));
+        hc.observe(Goldilocks::from_usize(base_degree_bits));
+        hc.observe(Goldilocks::from_usize(preprocessed_width));
+        // (4) trace commitment (verifier.rs:369) — 4-lane MerkleCap observe.
+        hc.observe(proof.commitments.trace.clone());
         // (5) preprocessed_width == 0 -> skip (verifier.rs:370-372).
         // (6) public values, base field (verifier.rs:373).
         for pv in &pis {
-            fri_rollin_observe(&mut hc, &mut shadow, &fri_milestone_serialize_fp(*pv));
+            hc.observe(*pv);
         }
         // (7) sample STARK alpha (verifier.rs:379).
-        let alpha = fri_rollin_sample_fp2(&mut hc, &mut shadow, &recorder);
+        let alpha: GoldFp2 = hc.sample_algebra_element();
         // (8) quotient_chunks commitment (verifier.rs:380).
-        fri_rollin_observe(
-            &mut hc,
-            &mut shadow,
-            &fri_milestone_serialize_commitment(&proof.commitments.quotient_chunks),
-        );
+        hc.observe(proof.commitments.quotient_chunks.clone());
         // (9) non-ZK -> no random commitment (verifier.rs:384).
         // (10) sample zeta (verifier.rs:391).
-        let zeta = fri_rollin_sample_fp2(&mut hc, &mut shadow, &recorder);
+        let zeta: GoldFp2 = hc.sample_algebra_element();
         // (11) zeta_next = init_trace_domain.next_point(zeta) (verifier.rs:398).
         let zeta_next = init_trace_domain
             .next_point(zeta)
@@ -9185,29 +8929,22 @@ mod stark_priming {
         //      order: trace_local @ zeta, trace_next @ zeta_next, then quotient
         //      chunks @ zeta. Only the eval vectors are observed (not z).
         for f in &trace_local {
-            fri_rollin_observe(&mut hc, &mut shadow, &fri_milestone_serialize_fp2(*f));
+            hc.observe_algebra_element(*f);
         }
         for f in &trace_next {
-            fri_rollin_observe(&mut hc, &mut shadow, &fri_milestone_serialize_fp2(*f));
+            hc.observe_algebra_element(*f);
         }
         for chunk in &quotient_chunks {
             for f in chunk {
-                fri_rollin_observe(&mut hc, &mut shadow, &fri_milestone_serialize_fp2(*f));
+                hc.observe_algebra_element(*f);
             }
         }
 
-        // ---- SEED captured: transcript state at verify_fri entry. ----
-        if !shadow.output_buf.is_empty() {
-            return Err("priming: output_buffer must be empty at seed capture (last op = observe)".into());
-        }
-        // RefCell::borrow disambiguated from the in-scope core::borrow::Borrow trait
-        // (needed for the FibonacciRow impl) via explicit deref + associated-fn call.
-        if !RefCell::borrow(&*recorder).is_empty() {
-            return Err("priming: unconsumed hash events after the two priming samples".into());
-        }
-        let primed_seed_hex = to_hex(&shadow.input_buf);
-        let primed_seed_len = shadow.input_buf.len();
-        let output_buf_remaining_hex = to_hex(&shadow.output_buf);
+        // ---- SEED captured: transcript state at verify_fri entry (full
+        // duplex public state; a RATE-boundary observe legitimately leaves
+        // output_buffer refilled — duplex_challenger.rs:154-156). ----
+        let primed_seed = duplex_snapshot_json(&hc);
+        let primed_seed_len = hc.input_buffer.len();
 
         // -------------------------------------------------------------------
         // 7. GATE 2 — replicate the SAME priming on a CLEAN owned challenger and
@@ -9221,7 +8958,7 @@ mod stark_priming {
         //    — together that proves the captured seed IS the real verify_fri-entry
         //    transcript state. coms assembled per verifier.rs:403-458.
         // -------------------------------------------------------------------
-        let mut v = FriChallenger::new(FriHashChal::new(init_state.clone(), FriOracleSha3_512));
+        let mut v = mk_prod_challenger();
         v.observe(Goldilocks::from_usize(degree_bits)); // verifier.rs:361
         v.observe(Goldilocks::from_usize(base_degree_bits)); // verifier.rs:362
         v.observe(Goldilocks::from_usize(preprocessed_width)); // verifier.rs:363
@@ -9303,11 +9040,11 @@ mod stark_priming {
             "dnac_stack": {
                 "val": "Goldilocks",
                 "challenge": "BinomialExtensionField<Goldilocks, 2> (fp2)",
-                "hash": "FIPS-202 SHA3-512",
-                "input_mmcs": "MerkleTreeMmcs<[Goldilocks;1], [u64;1], FieldHash, MyCompress, 2, 8>",
+                "hash": "Poseidon2 width-8 (default_goldilocks_poseidon2_8, P1c)",
+                "input_mmcs": "MerkleTreeMmcs<Packing, Packing, PaddingFreeSponge<Perm,8,4,4>, TruncatedPermutation<Perm,2,4,8>, 2, 4> cap 0 (P1c)",
                 "fri_mmcs": "ExtensionMmcs<Goldilocks, fp2, ValMmcs>",
                 "pcs": "TwoAdicFriPcs (non-ZK)",
-                "challenger": "SerializingChallenger64<Goldilocks, HashChallenger<u8, FriOracleSha3_512, 64>>",
+                "challenger": "DuplexChallenger<Goldilocks, Poseidon2Goldilocks<8>, 8, 4> + DNAC 4-limb DS prefix (P1c)",
                 "is_zk": is_zk
             },
             "fri_params": {
@@ -9324,8 +9061,8 @@ mod stark_priming {
                 "preprocessed_width": preprocessed_width,
                 "num_quotient_chunks": num_qc
             },
-            "init_state_hex": to_hex(&init_state),
-            "init_state_ascii": String::from_utf8_lossy(&init_state).into_owned(),
+            "init_state_hex": to_hex(FRI_INIT_STATE),
+            "init_state_ascii": String::from_utf8_lossy(FRI_INIT_STATE).into_owned(),
             "commitments": {
                 "trace_commit_root_hex": to_hex(&fri_milestone_serialize_commitment(&proof.commitments.trace)),
                 "quotient_commit_root_hex": to_hex(&fri_milestone_serialize_commitment(&proof.commitments.quotient_chunks)),
@@ -9360,11 +9097,9 @@ mod stark_priming {
                 }
             },
             "transcript_snapshot_at_verify_fri_entry": {
-                "description": "Verifier challenger primed through verifier.rs:360-391 + two_adic_pcs.rs:687-693. Load via dnac_transcript_init(input_buf_hex). output_buf empty (last op was observe).",
-                "input_buf_hex": primed_seed_hex,
-                "input_buf_len": primed_seed_len,
-                "output_buf_remaining_hex": output_buf_remaining_hex,
-                "output_buf_remaining_len": shadow.output_buf.len()
+                "description": "P1c: DuplexChallenger state primed through verifier.rs:360-391 + two_adic_pcs.rs:687-693 (prod DS prefix first). Replay in C: dnac_transcript_init_default + dnac_stark_prime_transcript; compare against `state`. output_buffer empty (last op was observe).",
+                "state": primed_seed,
+                "pending_input_len": primed_seed_len
             },
             "confirmations": {
                 "non_zk": true,
@@ -9373,7 +9108,7 @@ mod stark_priming {
                 "trace_next_coverage_note": "FibonacciAir has transition constraints -> main_next=true. DNAC range_air is single-row (main_next=false); the P6 integrated vector must cover that path.",
                 "quotient_opening_domain_shift": "ONE (natural_domain_for_degree(chunk_size)); recompose-only split/disjoint domains NOT used for openings",
                 "opening_coordinate_z_verifier_derived": "zeta is SAMPLED from the transcript (verifier.rs:391), never wire-supplied; only eval vectors observed (two_adic_pcs.rs:689)",
-                "commitment_observe_path": "CanObserve<MerkleCap<Goldilocks,[u64;8]>> cap_height=0 (serializing_challenger.rs:313-318->301-311); validated by fri_milestone_cross_check_commitment_bytes"
+                "commitment_observe_path": "CanObserve<MerkleCap<Goldilocks,[Goldilocks;4]>> cap_height=0, lane-by-lane field observes (duplex_challenger.rs:186-210); validated by fri_milestone_cross_check_commitment_bytes"
             },
             "proof_verification_result": "Ok",
             "proof_serde": serde_json::to_value(&proof.opening_proof)?
@@ -9481,7 +9216,6 @@ mod stark_priming {
         let config: $cfg_ty = $make_cfg;
         let log_blowup = 2usize;
         let log_final_poly_len = 2usize;
-        let init_state: Vec<u8> = FRI_INIT_STATE.to_vec();
 
         // ------------------------------------------------------------------
         // 2. GATE 1 (AUTHORITATIVE) — real is_zk=1 prove + verify of `air`.
@@ -9541,6 +9275,7 @@ mod stark_priming {
             .ok_or("main_next=true AIR: trace_next expected")?;
         let quotient_chunks = proof.opened_values.quotient_chunks.clone();
         let num_qc = quotient_chunks.len(); // MEASURED, not derived (finding #3 discipline)
+        eprintln!("num_qc(is_zk_stark dump) = {num_qc} (MEASURED)");
         // GATE num_qc (2026-07-15): STOP — do NOT emit a vector — if the measured
         // chunk count differs from the caller's expectation. For the combined
         // conf AIR the cliff is real: inheriting poseidon2-air's Some(7) degree
@@ -9581,108 +9316,48 @@ mod stark_priming {
             .collect();
 
         // ------------------------------------------------------------------
-        // 5. Priming replay WITH the is_zk augmentation (verifier.rs:361-411).
-        //    Recording challenger + Shadow; every sample cross-checked.
+        // 5+6 (P1c merged). Priming replay WITH the is_zk augmentation
+        // (verifier.rs:361-411) on the REAL DuplexChallenger — its public
+        // state is the milestone-0 seed (SHA3 Shadow/recorder retired; a
+        // wrong observe order here yields a seed the C-side FULL verify
+        // replay rejects, so the C gates keep the independent check).
         // ------------------------------------------------------------------
-        let recorder: HashRecorder = Rc::new(RefCell::new(VecDeque::new()));
-        let hasher = DnacSha3_512Hasher {
-            recorder: recorder.clone(),
-        };
-        let mut hc = HashChallenger::<u8, DnacSha3_512Hasher, 64>::new(init_state.clone(), hasher);
-        let mut shadow = Shadow::new(&init_state);
-
-        // (1)-(3) instance scalars (verifier.rs:361-363).
-        fri_rollin_observe(
-            &mut hc,
-            &mut shadow,
-            &fri_milestone_serialize_fp(Goldilocks::from_usize(degree_bits)),
-        );
-        fri_rollin_observe(
-            &mut hc,
-            &mut shadow,
-            &fri_milestone_serialize_fp(Goldilocks::from_usize(base_degree_bits)),
-        );
-        fri_rollin_observe(
-            &mut hc,
-            &mut shadow,
-            &fri_milestone_serialize_fp(Goldilocks::from_usize(preprocessed_width)),
-        );
-        // (4) trace commitment (verifier.rs:369).
-        fri_rollin_observe(
-            &mut hc,
-            &mut shadow,
-            &fri_milestone_serialize_commitment(&proof.commitments.trace),
-        );
-        // (5) preprocessed_width == 0 -> skip (verifier.rs:370-372).
-        // (6) public values (verifier.rs:373).
-        for pv in &pis {
-            fri_rollin_observe(&mut hc, &mut shadow, &fri_milestone_serialize_fp(*pv));
-        }
-        // (7) sample alpha (verifier.rs:379).
-        let alpha = fri_rollin_sample_fp2(&mut hc, &mut shadow, &recorder);
-        // (8) quotient_chunks commitment (verifier.rs:380).
-        fri_rollin_observe(
-            &mut hc,
-            &mut shadow,
-            &fri_milestone_serialize_commitment(&proof.commitments.quotient_chunks),
-        );
-        // (9') is_zk: observe the random commitment (verifier.rs:383-385).
-        fri_rollin_observe(
-            &mut hc,
-            &mut shadow,
-            &fri_milestone_serialize_commitment(&random_commit),
-        );
-        // (10) sample zeta (verifier.rs:391).
-        let zeta = fri_rollin_sample_fp2(&mut hc, &mut shadow, &recorder);
-        // (12') PCS observe opened values in coms_to_verify order (verifier.rs:403-457
-        //       + two_adic_pcs.rs:689): RANDOM round FIRST, then trace_local @ zeta,
-        //       trace_next @ zeta_next, then quotient chunks @ zeta. Values are the
-        //       MERGED (base ++ rand codewords) vectors — the inner PCS observes
-        //       after HidingFriPcs::verify merges. Only eval vectors observed.
-        for f in &random_merged {
-            fri_rollin_observe(&mut hc, &mut shadow, &fri_milestone_serialize_fp2(*f));
-        }
-        for f in &trace_local_merged {
-            fri_rollin_observe(&mut hc, &mut shadow, &fri_milestone_serialize_fp2(*f));
-        }
-        for f in &trace_next_merged {
-            fri_rollin_observe(&mut hc, &mut shadow, &fri_milestone_serialize_fp2(*f));
-        }
-        for chunk in &quotient_merged {
-            for f in chunk {
-                fri_rollin_observe(&mut hc, &mut shadow, &fri_milestone_serialize_fp2(*f));
-            }
-        }
-
-        if !shadow.output_buf.is_empty() {
-            return Err("zk priming: output_buffer must be empty at seed capture".into());
-        }
-        if !RefCell::borrow(&*recorder).is_empty() {
-            return Err("zk priming: unconsumed hash events after the priming samples".into());
-        }
-        let primed_seed_hex = to_hex(&shadow.input_buf);
-        let primed_seed_len = shadow.input_buf.len();
-
-        // ------------------------------------------------------------------
-        // 6. GATE 2 (priming-divergence) — replay the is_zk observe order up to
-        //    zeta on a CLEAN challenger; alpha/zeta MUST match the Shadow path.
-        //    A wrong is_zk augmentation (missing random-commit observe, wrong
-        //    position) diverges here. Full p3_verify_fri replay (HidingFriPcs
-        //    proof-tuple unpack) is M2's C-side job.
-        // ------------------------------------------------------------------
-        let mut v = FriChallenger::new(FriHashChal::new(init_state.clone(), FriOracleSha3_512));
+        let mut v = mk_prod_challenger();
         v.observe(Goldilocks::from_usize(degree_bits)); // verifier.rs:361
         v.observe(Goldilocks::from_usize(base_degree_bits)); // verifier.rs:362
         v.observe(Goldilocks::from_usize(preprocessed_width)); // verifier.rs:363
         v.observe(proof.commitments.trace.clone()); // verifier.rs:369
+        // (5) preprocessed_width == 0 -> skip (verifier.rs:370-372).
         v.observe_slice(&pis); // verifier.rs:373
-        let alpha_v: GoldFp2 = v.sample_algebra_element(); // verifier.rs:379
+        let alpha: GoldFp2 = v.sample_algebra_element(); // verifier.rs:379
         v.observe(proof.commitments.quotient_chunks.clone()); // verifier.rs:380
         v.observe(random_commit.clone()); // verifier.rs:384 (is_zk)
-        let zeta_v: GoldFp2 = v.sample_algebra_element(); // verifier.rs:391
-        if alpha_v != alpha || zeta_v != zeta {
-            return Err("zk priming divergence: clean challenger vs Shadow (alpha/zeta)".into());
+        let zeta: GoldFp2 = v.sample_algebra_element(); // verifier.rs:391
+        // (12') PCS observe opened values in coms_to_verify order (verifier.rs:
+        //       403-457 + two_adic_pcs.rs:689): RANDOM round FIRST, then
+        //       trace_local @ zeta, trace_next @ zeta_next, then quotient
+        //       chunks @ zeta. Values are the MERGED (base ++ rand codewords)
+        //       vectors — the inner PCS observes after HidingFriPcs::verify
+        //       merges. Only eval vectors observed.
+        for f in &random_merged {
+            v.observe_algebra_element(*f);
         }
+        for f in &trace_local_merged {
+            v.observe_algebra_element(*f);
+        }
+        for f in &trace_next_merged {
+            v.observe_algebra_element(*f);
+        }
+        for chunk in &quotient_merged {
+            for f in chunk {
+                v.observe_algebra_element(*f);
+            }
+        }
+
+        // Full duplex public state is the seed (RATE-boundary observes
+        // legitimately refill output_buffer — duplex_challenger.rs:154-156).
+        let primed_seed = duplex_snapshot_json(&v);
+        let primed_seed_len = v.input_buffer.len();
 
         // ------------------------------------------------------------------
         // 6b. CONSTRAINT-CHECK GROUND TRUTH (2026-07-15, B1 Stage-2 Faz 2/3).
@@ -9737,7 +9412,6 @@ mod stark_priming {
             use p3_field::TwoAdicField;
             zeta * GoldFp2::from(Goldilocks::two_adic_generator(base_degree_bits))
         };
-        let output_buf_remaining_hex = to_hex(&shadow.output_buf);
 
         let fp2_json = |x: GoldFp2| -> serde_json::Value {
             let (c0, c1) = fri_fp2_to_pair(x);
@@ -9775,17 +9449,17 @@ mod stark_priming {
             "dnac_stack": {
                 "val": "Goldilocks",
                 "challenge": "BinomialExtensionField<Goldilocks, 2> (fp2)",
-                "hash": "FIPS-202 SHA3-512",
+                "hash": "Poseidon2 width-8 (default_goldilocks_poseidon2_8, P1c)",
                 "input_mmcs": $input_mmcs_desc,
                 "fri_mmcs": $fri_mmcs_desc,
                 "pcs": $pcs_desc,
                 "hiding_scope_note": $hiding_note,
                 "rng_seed": "SmallRng::seed_from_u64(1) — byte-stable KAT (C verifier never sees the seed; prod proving uses OS entropy)",
-                "challenger": "SerializingChallenger64<Goldilocks, HashChallenger<u8, FriOracleSha3_512, 64>>",
+                "challenger": "DuplexChallenger<Goldilocks, Poseidon2Goldilocks<8>, 8, 4> + DNAC 4-limb DS prefix (P1c)",
                 "is_zk": is_zk
             },
-            "init_state_hex": to_hex(&init_state),
-            "init_state_ascii": String::from_utf8_lossy(&init_state).into_owned(),
+            "init_state_hex": to_hex(FRI_INIT_STATE),
+            "init_state_ascii": String::from_utf8_lossy(FRI_INIT_STATE).into_owned(),
             "commitments": {
                 "trace_commit_root_hex": to_hex(&fri_milestone_serialize_commitment(&proof.commitments.trace)),
                 "quotient_commit_root_hex": to_hex(&fri_milestone_serialize_commitment(&proof.commitments.quotient_chunks)),
@@ -9857,11 +9531,9 @@ mod stark_priming {
                 }
             },
             "transcript_snapshot_at_verify_fri_entry": {
-                "description": "Verifier challenger primed through verifier.rs:360-411 (is_zk) + PCS observe. Load via dnac_transcript_init(input_buf_hex). output_buf empty (last op was observe).",
-                "input_buf_hex": primed_seed_hex,
-                "input_buf_len": primed_seed_len,
-                "output_buf_remaining_hex": output_buf_remaining_hex,
-                "output_buf_remaining_len": shadow.output_buf.len()
+                "description": "P1c: DuplexChallenger state primed through verifier.rs:360-411 (is_zk) + PCS observe (prod DS prefix first). Replay in C: dnac_transcript_init_default + priming; compare against `state`. output_buffer empty (last op was observe).",
+                "state": primed_seed,
+                "pending_input_len": primed_seed_len
             },
             // M2b: HidingFriPcs::Proof is the TUPLE (opened_values_for_rand_cws,
             // inner_fri_proof) — hiding_pcs.rs Proof type. serde emits a 2-element
@@ -10103,7 +9775,7 @@ mod stark_priming {
 
         // ---- GATE 1: real is_zk=1 prove + verify (fresh SmallRng(1)). ----
         let challenger =
-            FriChallenger::new(FriHashChal::new(FRI_INIT_STATE.to_vec(), FriOracleSha3_512));
+            mk_prod_challenger();
         let config: ZkStarkCfg = StarkConfig::new(make_zk_pcs(), challenger);
         let proof = prove(&config, &RangeProofAir, trace.clone(), &pis);
         verify(&config, &RangeProofAir, &proof, &pis).map_err(|e| {
@@ -10303,7 +9975,7 @@ mod stark_priming {
 
         // ---- GATE 1: real prove + verify. ----
         let challenger =
-            FriChallenger::new(FriHashChal::new(FRI_INIT_STATE.to_vec(), FriOracleSha3_512));
+            mk_prod_challenger();
         let config: ZkStarkCfg = StarkConfig::new(make_zk_pcs(), challenger);
         let proof = prove(&config, &RangeProofAir, trace.clone(), &pis);
         verify(&config, &RangeProofAir, &proof, &pis).map_err(|e| {
@@ -10345,10 +10017,7 @@ mod stark_priming {
         }
 
         // Challenger to alpha (prover.rs:158-195).
-        let mut ch = FriChallenger::new(FriHashChal::new(
-            FRI_INIT_STATE.to_vec(),
-            FriOracleSha3_512,
-        ));
+        let mut ch = mk_prod_challenger();
         ch.observe(Goldilocks::from_u64(log_ext_degree as u64));
         ch.observe(Goldilocks::from_u64(log_degree as u64));
         ch.observe(Goldilocks::from_u64(0)); // preprocessed_width
@@ -10516,7 +10185,7 @@ mod stark_priming {
 
         // ---- GATE 1: real prove + verify. ----
         let challenger =
-            FriChallenger::new(FriHashChal::new(FRI_INIT_STATE.to_vec(), FriOracleSha3_512));
+            mk_prod_challenger();
         let config: ZkStarkCfg = StarkConfig::new(make_zk_pcs(), challenger);
         let proof = prove(&config, &RangeProofAir, trace.clone(), &pis);
         verify(&config, &RangeProofAir, &proof, &pis).map_err(|e| {
@@ -10549,10 +10218,7 @@ mod stark_priming {
             &pcs2,
             [(ext_trace_domain, trace.clone())],
         );
-        let mut ch = FriChallenger::new(FriHashChal::new(
-            FRI_INIT_STATE.to_vec(),
-            FriOracleSha3_512,
-        ));
+        let mut ch = mk_prod_challenger();
         ch.observe(Goldilocks::from_u64(log_ext_degree as u64));
         ch.observe(Goldilocks::from_u64(log_degree as u64));
         ch.observe(Goldilocks::from_u64(0));
@@ -10711,7 +10377,7 @@ mod stark_priming {
 
         // GATE 1: real prove + verify.
         let challenger =
-            FriChallenger::new(FriHashChal::new(FRI_INIT_STATE.to_vec(), FriOracleSha3_512));
+            mk_prod_challenger();
         let config: ZkStarkCfg = StarkConfig::new(make_zk_pcs(), challenger);
         let proof = prove(&config, &RangeProofAir, trace.clone(), &pis);
         verify(&config, &RangeProofAir, &proof, &pis).map_err(|e| {
@@ -10857,7 +10523,7 @@ mod stark_priming {
 
         // GATE 1: real prove + verify.
         let challenger =
-            FriChallenger::new(FriHashChal::new(FRI_INIT_STATE.to_vec(), FriOracleSha3_512));
+            mk_prod_challenger();
         let config: ZkStarkCfg = StarkConfig::new(make_zk_pcs(), challenger);
         let proof = prove(&config, &RangeProofAir, trace.clone(), &pis);
         verify(&config, &RangeProofAir, &proof, &pis).map_err(|e| {
@@ -10888,10 +10554,7 @@ mod stark_priming {
 
         // Replay the challenger to zeta, observe the merged opened vectors in
         // order, sample the FRI batch alpha (two_adic_pcs.rs:546 + 564).
-        let mut ch = FriChallenger::new(FriHashChal::new(
-            FRI_INIT_STATE.to_vec(),
-            FriOracleSha3_512,
-        ));
+        let mut ch = mk_prod_challenger();
         ch.observe(Goldilocks::from_u64(3)); // log_ext_degree
         ch.observe(Goldilocks::from_u64(2)); // log_degree
         ch.observe(Goldilocks::from_u64(0)); // preprocessed_width
@@ -11005,7 +10668,7 @@ mod stark_priming {
                               SmallRng::seed_from_u64(1))
         };
         let challenger =
-            FriChallenger::new(FriHashChal::new(FRI_INIT_STATE.to_vec(), FriOracleSha3_512));
+            mk_prod_challenger();
         let config: ZkStarkCfg = StarkConfig::new(make_zk_pcs(), challenger);
         let proof = prove(&config, &RangeProofAir, trace.clone(), &pis);
         verify(&config, &RangeProofAir, &proof, &pis).map_err(|e| {
@@ -11042,10 +10705,7 @@ mod stark_priming {
 
         // Replay to FRI batch alpha (S9 end state), then per round observe the
         // layer commit, grind(0), sample beta.
-        let mut ch = FriChallenger::new(FriHashChal::new(
-            FRI_INIT_STATE.to_vec(),
-            FriOracleSha3_512,
-        ));
+        let mut ch = mk_prod_challenger();
         ch.observe(Goldilocks::from_u64(3));
         ch.observe(Goldilocks::from_u64(2));
         ch.observe(Goldilocks::from_u64(0));
@@ -11173,7 +10833,7 @@ mod stark_priming {
             )
         };
         let challenger =
-            FriChallenger::new(FriHashChal::new(FRI_INIT_STATE.to_vec(), FriOracleSha3_512));
+            mk_prod_challenger();
         let config: ZkStarkCfg = StarkConfig::new(make_zk_pcs(), challenger);
         let proof = prove(&config, &RangeProofAir, trace.clone(), &pis);
         verify(&config, &RangeProofAir, &proof, &pis).map_err(|e| {
@@ -11201,10 +10861,7 @@ mod stark_priming {
             .map(|(c, chunk)| merge(chunk, &rand_ov[2][c][0]))
             .collect();
 
-        let mut ch = FriChallenger::new(FriHashChal::new(
-            FRI_INIT_STATE.to_vec(),
-            FriOracleSha3_512,
-        ));
+        let mut ch = mk_prod_challenger();
         ch.observe(Goldilocks::from_u64(3));
         ch.observe(Goldilocks::from_u64(2));
         ch.observe(Goldilocks::from_u64(0));
@@ -11336,7 +10993,7 @@ mod stark_priming {
         };
         // GATE 1: real prove + verify.
         let challenger =
-            FriChallenger::new(FriHashChal::new(FRI_INIT_STATE.to_vec(), FriOracleSha3_512));
+            mk_prod_challenger();
         let config: ZkStarkCfg = StarkConfig::new(make_zk_pcs(), challenger);
         let proof = prove(&config, &RangeProofAir, trace.clone(), &pis);
         verify(&config, &RangeProofAir, &proof, &pis)
@@ -11376,10 +11033,7 @@ mod stark_priming {
                 .map(|(c, ch)| merge(ch, &rand_ov[2][c][0]))
                 .collect();
             let base_db = degree_bits - 1;
-            let mut ch = FriChallenger::new(FriHashChal::new(
-                FRI_INIT_STATE.to_vec(),
-                FriOracleSha3_512,
-            ));
+            let mut ch = mk_prod_challenger();
             ch.observe(Goldilocks::from_u64(degree_bits as u64));
             ch.observe(Goldilocks::from_u64(base_db as u64));
             ch.observe(Goldilocks::from_u64(0));
@@ -11529,10 +11183,9 @@ mod stark_priming {
             query_proof_of_work_bits: 0,
             mmcs: challenge_mmcs,
         };
-        let init_state: Vec<u8> = FRI_INIT_STATE.to_vec();
         let pcs: StarkPcs =
             TwoAdicFriPcs::new(Radix2Dit::default(), input_mmcs.clone(), fri_params.clone());
-        let challenger = FriChallenger::new(FriHashChal::new(init_state.clone(), FriOracleSha3_512));
+        let challenger = mk_prod_challenger();
         let config: StarkCfg = StarkConfig::new(pcs, challenger);
 
         // 2. Vendored SquareAir; n=8 trace (degree_bits=3); NO public values.
@@ -11576,6 +11229,7 @@ mod stark_priming {
         let trace_local = proof.opened_values.trace_local.clone();
         let quotient_chunks = proof.opened_values.quotient_chunks.clone();
         let num_qc = quotient_chunks.len();
+        eprintln!("num_qc(stark_priming SquareAir no_next) = {num_qc} (MEASURED)");
 
         // 5. Reconstruct domains (verifier.rs:268-317), same as the main path.
         let pcs_ref = config.pcs();
@@ -11599,99 +11253,26 @@ mod stark_priming {
             })
             .collect();
 
-        // 6. Shadow-tracked priming replay (verifier.rs:360-391 +
-        //    two_adic_pcs.rs:687-693). main_next=false: NO trace_next observe.
-        let recorder: HashRecorder = Rc::new(RefCell::new(VecDeque::new()));
-        let hasher = DnacSha3_512Hasher {
-            recorder: recorder.clone(),
-        };
-        let mut hc =
-            HashChallenger::<u8, DnacSha3_512Hasher, 64>::new(init_state.clone(), hasher);
-        let mut shadow = Shadow::new(&init_state);
-
-        // (1)-(3) instance scalars as base field (verifier.rs:361-363).
-        fri_rollin_observe(
-            &mut hc,
-            &mut shadow,
-            &fri_milestone_serialize_fp(Goldilocks::from_usize(degree_bits)),
-        );
-        fri_rollin_observe(
-            &mut hc,
-            &mut shadow,
-            &fri_milestone_serialize_fp(Goldilocks::from_usize(base_degree_bits)),
-        );
-        fri_rollin_observe(
-            &mut hc,
-            &mut shadow,
-            &fri_milestone_serialize_fp(Goldilocks::from_usize(preprocessed_width)),
-        );
-        // (4) trace commitment (verifier.rs:369).
-        fri_rollin_observe(
-            &mut hc,
-            &mut shadow,
-            &fri_milestone_serialize_commitment(&proof.commitments.trace),
-        );
-        // (5) preprocessed_width == 0 -> skip (verifier.rs:370-372).
-        // (6) public values (verifier.rs:373): pis is empty -> no observe.
-        for pv in &pis {
-            fri_rollin_observe(&mut hc, &mut shadow, &fri_milestone_serialize_fp(*pv));
-        }
-        // (7) sample STARK alpha (verifier.rs:379).
-        let alpha = fri_rollin_sample_fp2(&mut hc, &mut shadow, &recorder);
-        // (8) quotient_chunks commitment (verifier.rs:380).
-        fri_rollin_observe(
-            &mut hc,
-            &mut shadow,
-            &fri_milestone_serialize_commitment(&proof.commitments.quotient_chunks),
-        );
-        // (9) non-ZK -> no random commitment (verifier.rs:384).
-        // (10) sample zeta (verifier.rs:391).
-        let zeta = fri_rollin_sample_fp2(&mut hc, &mut shadow, &recorder);
-        // (11) zeta_next computed unconditionally (verifier.rs:398) — derived &
-        //      emitted, but NOT observed and NOT a trace opening point here.
-        let zeta_next = init_trace_domain
-            .next_point(zeta)
-            .ok_or("next_point unavailable")?;
-        // (12) PCS observe opened values (two_adic_pcs.rs:687-693): trace round
-        //      has a SINGLE point (zeta) for main_next=false -> observe trace_local
-        //      only, then quotient chunks @ zeta. NO trace_next observe.
-        for f in &trace_local {
-            fri_rollin_observe(&mut hc, &mut shadow, &fri_milestone_serialize_fp2(*f));
-        }
-        for chunk in &quotient_chunks {
-            for f in chunk {
-                fri_rollin_observe(&mut hc, &mut shadow, &fri_milestone_serialize_fp2(*f));
-            }
-        }
-
-        // ---- SEED captured: transcript state at verify_fri entry. ----
-        if !shadow.output_buf.is_empty() {
-            return Err(
-                "priming: output_buffer must be empty at seed capture (last op = observe)".into(),
-            );
-        }
-        if !RefCell::borrow(&*recorder).is_empty() {
-            return Err("priming: unconsumed hash events after the two priming samples".into());
-        }
-        let primed_seed_hex = to_hex(&shadow.input_buf);
-        let primed_seed_len = shadow.input_buf.len();
-        let output_buf_remaining_hex = to_hex(&shadow.output_buf);
-
-        // 7. GATE 2 — clean owned challenger replicates the SAME priming, then
-        //    p3_verify_fri on the 1-trace-point coms (verifier.rs:420-428,
-        //    main_next=false -> trace_points = [(zeta, trace_local)]).
-        let mut v = FriChallenger::new(FriHashChal::new(init_state.clone(), FriOracleSha3_512));
+        // 6+7 (P1c merged). Priming replay on the REAL DuplexChallenger
+        // (verifier.rs:360-391 + two_adic_pcs.rs:687-693; main_next=false:
+        // NO trace_next observe). The challenger's public state is the seed;
+        // GATE 2 then feeds the SAME challenger into p3_verify_fri, so a
+        // priming desync still rejects (Shadow/recorder retired).
+        let mut v = mk_prod_challenger();
         v.observe(Goldilocks::from_usize(degree_bits)); // verifier.rs:361
         v.observe(Goldilocks::from_usize(base_degree_bits)); // verifier.rs:362
         v.observe(Goldilocks::from_usize(preprocessed_width)); // verifier.rs:363
         v.observe(proof.commitments.trace.clone()); // verifier.rs:369
         v.observe_slice(&pis); // verifier.rs:373 — empty slice, no-op
-        let alpha_v: GoldFp2 = v.sample_algebra_element(); // verifier.rs:379
+        let alpha: GoldFp2 = v.sample_algebra_element(); // verifier.rs:379
         v.observe(proof.commitments.quotient_chunks.clone()); // verifier.rs:380
-        let zeta_v: GoldFp2 = v.sample_algebra_element(); // verifier.rs:391
-        if alpha_v != alpha || zeta_v != zeta {
-            return Err("priming divergence: clean challenger vs Shadow (alpha/zeta)".into());
-        }
+        // (9) non-ZK -> no random commitment (verifier.rs:384).
+        let zeta: GoldFp2 = v.sample_algebra_element(); // verifier.rs:391
+        // (11) zeta_next computed unconditionally (verifier.rs:398) — derived &
+        //      emitted, but NOT observed and NOT a trace opening point here.
+        let zeta_next = init_trace_domain
+            .next_point(zeta)
+            .ok_or("next_point unavailable")?;
 
         type Cwop = (
             <FriValMmcs as Mmcs<Goldilocks>>::Commitment,
@@ -11718,6 +11299,10 @@ mod stark_priming {
                 }
             }
         }
+        // ---- SEED captured: transcript state at verify_fri entry (full
+        // duplex public state — see the RATE-boundary note above). ----
+        let primed_seed = duplex_snapshot_json(&v);
+        let primed_seed_len = v.input_buffer.len();
         let folding: FriFolding = TwoAdicFriFolding(PhantomData);
         p3_verify_fri(
             &folding,
@@ -11759,11 +11344,11 @@ mod stark_priming {
             "dnac_stack": {
                 "val": "Goldilocks",
                 "challenge": "BinomialExtensionField<Goldilocks, 2> (fp2)",
-                "hash": "FIPS-202 SHA3-512",
-                "input_mmcs": "MerkleTreeMmcs<[Goldilocks;1], [u64;1], FieldHash, MyCompress, 2, 8>",
+                "hash": "Poseidon2 width-8 (default_goldilocks_poseidon2_8, P1c)",
+                "input_mmcs": "MerkleTreeMmcs<Packing, Packing, PaddingFreeSponge<Perm,8,4,4>, TruncatedPermutation<Perm,2,4,8>, 2, 4> cap 0 (P1c)",
                 "fri_mmcs": "ExtensionMmcs<Goldilocks, fp2, ValMmcs>",
                 "pcs": "TwoAdicFriPcs (non-ZK)",
-                "challenger": "SerializingChallenger64<Goldilocks, HashChallenger<u8, FriOracleSha3_512, 64>>",
+                "challenger": "DuplexChallenger<Goldilocks, Poseidon2Goldilocks<8>, 8, 4> + DNAC 4-limb DS prefix (P1c)",
                 "is_zk": is_zk
             },
             "fri_params": {
@@ -11780,8 +11365,8 @@ mod stark_priming {
                 "preprocessed_width": preprocessed_width,
                 "num_quotient_chunks": num_qc
             },
-            "init_state_hex": to_hex(&init_state),
-            "init_state_ascii": String::from_utf8_lossy(&init_state).into_owned(),
+            "init_state_hex": to_hex(FRI_INIT_STATE),
+            "init_state_ascii": String::from_utf8_lossy(FRI_INIT_STATE).into_owned(),
             "commitments": {
                 "trace_commit_root_hex": to_hex(&fri_milestone_serialize_commitment(&proof.commitments.trace)),
                 "quotient_commit_root_hex": to_hex(&fri_milestone_serialize_commitment(&proof.commitments.quotient_chunks)),
@@ -11815,11 +11400,9 @@ mod stark_priming {
                 }
             },
             "transcript_snapshot_at_verify_fri_entry": {
-                "description": "Verifier challenger primed through verifier.rs:360-391 + two_adic_pcs.rs:687-693 (single-point trace round). Load via dnac_transcript_init(input_buf_hex). output_buf empty (last op was observe).",
-                "input_buf_hex": primed_seed_hex,
-                "input_buf_len": primed_seed_len,
-                "output_buf_remaining_hex": output_buf_remaining_hex,
-                "output_buf_remaining_len": shadow.output_buf.len()
+                "description": "P1c: DuplexChallenger state primed through verifier.rs:360-391 + two_adic_pcs.rs:687-693 (single-point trace round; prod DS prefix first). Replay in C: dnac_transcript_init_default + priming; compare against `state`. output_buffer empty (last op was observe).",
+                "state": primed_seed,
+                "pending_input_len": primed_seed_len
             },
             "confirmations": {
                 "non_zk": true,
@@ -11959,10 +11542,9 @@ mod stark_priming {
             query_proof_of_work_bits: 0,
             mmcs: challenge_mmcs,
         };
-        let init_state: Vec<u8> = FRI_INIT_STATE.to_vec();
         let pcs: StarkPcs =
             TwoAdicFriPcs::new(Radix2Dit::default(), input_mmcs, fri_params);
-        let challenger = FriChallenger::new(FriHashChal::new(init_state, FriOracleSha3_512));
+        let challenger = mk_prod_challenger();
         StarkConfig::new(pcs, challenger)
     }
 
@@ -12045,8 +11627,7 @@ mod stark_priming {
         let quotient_chunks_domains = quotient_domain.split_domains(num_qc);
 
         // alpha, zeta — clean-challenger priming replay (verifier.rs:361-391).
-        let init_state: Vec<u8> = FRI_INIT_STATE.to_vec();
-        let mut v = FriChallenger::new(FriHashChal::new(init_state, FriOracleSha3_512));
+        let mut v = mk_prod_challenger();
         v.observe(Goldilocks::from_usize(degree_bits));
         v.observe(Goldilocks::from_usize(base_degree_bits));
         v.observe(Goldilocks::from_usize(0)); // preprocessed_width
@@ -15317,9 +14898,8 @@ mod stark_priming {
             query_proof_of_work_bits: 0,
             mmcs: challenge_mmcs,
         };
-        let init_state: Vec<u8> = FRI_INIT_STATE.to_vec();
         let pcs: StarkPcs = TwoAdicFriPcs::new(Radix2Dit::default(), input_mmcs, fri_params);
-        let challenger = FriChallenger::new(FriHashChal::new(init_state, FriOracleSha3_512));
+        let challenger = mk_prod_challenger();
         StarkConfig::new(pcs, challenger)
     }
 

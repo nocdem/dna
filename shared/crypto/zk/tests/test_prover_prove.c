@@ -227,13 +227,26 @@ static int cross_check(const char *tag, const char *path) {
     }
     /* commit roots */
     {
-        uint8_t tr[64], qr[64], rr[64], vtr[64], vqr[64], vrr[64];
-        dnac_prover_proof_roots(proof, tr, qr, rr);
-        if (!parse_hex(j, "trace_commit_root_hex", vtr, 64) ||
-            !parse_hex(j, "quotient_commit_root_hex", vqr, 64) ||
-            !parse_hex(j, "random_commit_root_hex", vrr, 64) ||
-            memcmp(tr, vtr, 64) || memcmp(qr, vqr, 64) || memcmp(rr, vrr, 64))
-            bad++;
+        /* P1c: 4-lane digests; wire hex = 32 bytes = 4 LE u64 lanes. */
+        dnac_p2_digest_t tr, qr, rr;
+        uint8_t vtr[32], vqr[32], vrr[32];
+        dnac_prover_proof_roots(proof, &tr, &qr, &rr);
+        int okp = parse_hex(j, "trace_commit_root_hex", vtr, 32) &&
+                  parse_hex(j, "quotient_commit_root_hex", vqr, 32) &&
+                  parse_hex(j, "random_commit_root_hex", vrr, 32);
+        if (okp) {
+            for (size_t l = 0; l < 4 && okp; l++) {
+                uint64_t a = 0, b = 0, c = 0;
+                for (size_t i = 0; i < 8; i++) {
+                    a |= (uint64_t)vtr[l * 8 + i] << (8 * i);
+                    b |= (uint64_t)vqr[l * 8 + i] << (8 * i);
+                    c |= (uint64_t)vrr[l * 8 + i] << (8 * i);
+                }
+                if (tr.lanes[l] != a || qr.lanes[l] != b || rr.lanes[l] != c)
+                    okp = 0;
+            }
+        }
+        if (!okp) bad++;
     }
     /* final_poly */
     {

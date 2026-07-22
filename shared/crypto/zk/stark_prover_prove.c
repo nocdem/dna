@@ -47,7 +47,7 @@ struct dnac_prover_proof_s {
     size_t num_queries;
 
     /* commit roots + merged opened values (coms claimed_evals + priming) */
-    dnac_merkle_digest_t trace_c, quot_c, rand_c;
+    dnac_p2_digest_t trace_c, quot_c, rand_c;
     gold_fp2_t r_open[P_CW];
     gold_fp2_t *t_open;      /* P_RAND_W */
     gold_fp2_t *t_open_n;    /* P_RAND_W */
@@ -55,7 +55,7 @@ struct dnac_prover_proof_s {
     gold_fp_t  publics[3];
 
     /* FRI commit-phase proof pieces */
-    dnac_merkle_digest_t *cp_commits;   /* num_fri_rounds */
+    dnac_p2_digest_t *cp_commits;   /* num_fri_rounds */
     gold_fp_t            *cp_pow;        /* num_fri_rounds (all 0) */
     gold_fp2_t           *final_poly;    /* final_poly_len */
     size_t                final_poly_len;
@@ -69,11 +69,11 @@ struct dnac_prover_proof_s {
     gold_fp_t  *quot_rows;   /* num_queries * P_NUM_QC * P_CW */
     const gold_fp_t **rand_rowptr, **trace_rowptr, **quot_rowptr;
     size_t *rand_len, *trace_len, *quot_len;
-    dnac_merkle_digest_t *rand_sib, *trace_sib, *quot_sib; /* q * depth each */
+    dnac_p2_digest_t *rand_sib, *trace_sib, *quot_sib; /* q * depth each */
     /* commit-phase steps */
     dnac_fri_commit_phase_proof_step_t *cp_steps; /* num_queries * num_fri_rounds */
     gold_fp2_t *cp_step_sib;   /* num_queries * num_fri_rounds * (arity-1)=1 */
-    dnac_merkle_digest_t *cp_step_psib; /* num_queries * sum(depths) */
+    dnac_p2_digest_t *cp_step_psib; /* num_queries * sum(depths) */
 
     /* assembled proof + coms + priming */
     dnac_fri_proof_t proof;
@@ -171,8 +171,7 @@ static void build_coms(dnac_prover_proof_t *p, gold_fp2_t zeta,
 
 dnac_fri_status_t dnac_prover_proof_verify(const dnac_prover_proof_t *cp) {
     dnac_prover_proof_t *p = (dnac_prover_proof_t *)cp;
-    dnac_transcript_t *vt =
-        dnac_transcript_init((const uint8_t *)"DNAC|ZK|FRI|TRANSCRIPT|V1", 25);
+    dnac_transcript_t *vt = dnac_transcript_init_default();
     if (vt == NULL) return DNAC_FRI_ERR_INVALID_PROOF_SHAPE;
     build_prime_input(p);
     dnac_stark_priming_out_t out;
@@ -215,12 +214,12 @@ void dnac_prover_proof_zeta(const dnac_prover_proof_t *p, gold_fp2_t *zeta,
 }
 
 void dnac_prover_proof_roots(const dnac_prover_proof_t *p,
-                             uint8_t trace_root[DNAC_MERKLE_DIGEST_BYTES],
-                             uint8_t quot_root[DNAC_MERKLE_DIGEST_BYTES],
-                             uint8_t rand_root[DNAC_MERKLE_DIGEST_BYTES]) {
-    if (trace_root) memcpy(trace_root, p->trace_c.bytes, DNAC_MERKLE_DIGEST_BYTES);
-    if (quot_root) memcpy(quot_root, p->quot_c.bytes, DNAC_MERKLE_DIGEST_BYTES);
-    if (rand_root) memcpy(rand_root, p->rand_c.bytes, DNAC_MERKLE_DIGEST_BYTES);
+                             dnac_p2_digest_t *trace_root,
+                             dnac_p2_digest_t *quot_root,
+                             dnac_p2_digest_t *rand_root) {
+    if (trace_root) *trace_root = p->trace_c;
+    if (quot_root) *quot_root = p->quot_c;
+    if (rand_root) *rand_root = p->rand_c;
 }
 
 const gold_fp2_t *dnac_prover_proof_final_poly(const dnac_prover_proof_t *p,
@@ -351,8 +350,8 @@ dnac_prover_status_t dnac_prover_prove(
              *qflat = NULL, *chunk_ldes = NULL, *r_lde = NULL;
     uint64_t *sf = NULL, *sl = NULL, *st = NULL, *iv = NULL;
     gold_fp2_t *ro = NULL;
-    dnac_merkle_tree_t *ttree = NULL, *rtree = NULL;
-    dnac_merkle_batch_tree_t *qtree = NULL;
+    dnac_p2_mmcs_tree_t *ttree = NULL, *rtree = NULL;
+    dnac_p2_mmcs_tree_t *qtree = NULL;
     dnac_transcript_t *t = NULL;
     dnac_prover_fri_result_t res;
     memset(&res, 0, sizeof(res));
@@ -408,9 +407,9 @@ dnac_prover_status_t dnac_prover_prove(
                                          P_LOG_BLOWUP, 7, lde_c);
         if (s != DNAC_PROVER_OK) { rc = s; goto cleanup; }
         s = dnac_prover_commit_matrix(lde_c, lde_h, P_RAND_W, NULL, 0,
-                                      p->trace_c.bytes, &ttree);
+                                      &p->trace_c, &ttree);
         if (s != DNAC_PROVER_OK) { rc = s; goto cleanup; }
-        s = dnac_prover_fs_to_alpha(t, degree_bits, base_db, 0, p->trace_c.bytes,
+        s = dnac_prover_fs_to_alpha(t, degree_bits, base_db, 0, &p->trace_c,
                                     publics_u, 3, &alpha);
         if (s != DNAC_PROVER_OK) { rc = s; goto cleanup; }
         s = dnac_prover_quotient_selectors((unsigned)base_db,
@@ -426,13 +425,13 @@ dnac_prover_status_t dnac_prover_prove(
         s = dnac_prover_quotient_commit(qflat, q_size, P_NUM_QC, P_NUM_RANDOM,
                                         P_LOG_BLOWUP, 7, codeword, blinding,
                                         NULL, 0,
-                                        chunk_ldes, p->quot_c.bytes, &qtree);
+                                        chunk_ldes, &p->quot_c, &qtree);
         if (s != DNAC_PROVER_OK) { rc = s; goto cleanup; }
         s = dnac_prover_random_commit(r_draws, 2 * height, P_CW, P_LOG_BLOWUP,
                                       NULL, 0,
-                                      r_lde, p->rand_c.bytes, &rtree);
+                                      r_lde, &p->rand_c, &rtree);
         if (s != DNAC_PROVER_OK) { rc = s; goto cleanup; }
-        s = dnac_prover_fs_to_zeta(t, p->quot_c.bytes, p->rand_c.bytes,
+        s = dnac_prover_fs_to_zeta(t, &p->quot_c, &p->rand_c,
                                    base_db, &zeta, &zeta_next);
         if (s != DNAC_PROVER_OK) { rc = s; goto cleanup; }
     }
@@ -495,12 +494,12 @@ dnac_prover_status_t dnac_prover_prove(
     p->final_poly_len = res.final_poly_len;
 
     /* copy commit-phase scalars into owned storage */
-    p->cp_commits = (dnac_merkle_digest_t *)malloc(res.num_rounds * sizeof(dnac_merkle_digest_t));
+    p->cp_commits = (dnac_p2_digest_t *)malloc(res.num_rounds * sizeof(dnac_p2_digest_t));
     p->cp_pow = (gold_fp_t *)calloc(res.num_rounds, sizeof(gold_fp_t));
     p->final_poly = (gold_fp2_t *)malloc(res.final_poly_len * sizeof(gold_fp2_t));
     if (!p->cp_commits || !p->cp_pow || !p->final_poly) goto cleanup;
     for (size_t r = 0; r < res.num_rounds; r++)
-        p->cp_commits[r] = *(dnac_merkle_digest_t *)res.roots[r];
+        p->cp_commits[r] = res.roots[r];
     memcpy(p->final_poly, res.final_poly, res.final_poly_len * sizeof(gold_fp2_t));
 
     /* ── S11 sample query indices ── */
@@ -531,12 +530,12 @@ dnac_prover_status_t dnac_prover_prove(
         p->rand_len = (size_t *)malloc(nq * sizeof(size_t));
         p->trace_len = (size_t *)malloc(nq * sizeof(size_t));
         p->quot_len = (size_t *)malloc(nq * P_NUM_QC * sizeof(size_t));
-        p->rand_sib = (dnac_merkle_digest_t *)malloc(nq * in_depth * sizeof(dnac_merkle_digest_t));
-        p->trace_sib = (dnac_merkle_digest_t *)malloc(nq * in_depth * sizeof(dnac_merkle_digest_t));
-        p->quot_sib = (dnac_merkle_digest_t *)malloc(nq * in_depth * sizeof(dnac_merkle_digest_t));
+        p->rand_sib = (dnac_p2_digest_t *)malloc(nq * in_depth * sizeof(dnac_p2_digest_t));
+        p->trace_sib = (dnac_p2_digest_t *)malloc(nq * in_depth * sizeof(dnac_p2_digest_t));
+        p->quot_sib = (dnac_p2_digest_t *)malloc(nq * in_depth * sizeof(dnac_p2_digest_t));
         p->cp_steps = (dnac_fri_commit_phase_proof_step_t *)calloc(nq * nr, sizeof(dnac_fri_commit_phase_proof_step_t));
         p->cp_step_sib = (gold_fp2_t *)malloc(nq * nr * sizeof(gold_fp2_t)); /* arity-2: 1 each */
-        p->cp_step_psib = (dnac_merkle_digest_t *)malloc(nq * cp_depth_sum * sizeof(dnac_merkle_digest_t));
+        p->cp_step_psib = (dnac_p2_digest_t *)malloc(nq * cp_depth_sum * sizeof(dnac_p2_digest_t));
         if (!p->query_proofs || !p->batches || !p->rand_rows || !p->trace_rows ||
             !p->quot_rows || !p->rand_rowptr || !p->trace_rowptr ||
             !p->quot_rowptr || !p->rand_len || !p->trace_len || !p->quot_len ||
@@ -549,9 +548,9 @@ dnac_prover_status_t dnac_prover_prove(
         for (size_t q = 0; q < nq; q++) {
             const uint64_t index = qidx[q];
             dnac_fri_batch_opening_t *B = &p->batches[q * 3];
-            dnac_merkle_proof_t pr;
-            const uint8_t *leaf = NULL;
-            size_t leaf_len = 0;
+            dnac_p2_proof_t pr;
+            const uint64_t *orow[1] = { NULL }; /* borrowed row, unused (rows
+                                                 * come from the LDE copies) */
 
             /* reduced_index = index >> (log_gmh - log_batch_height); all batches
              * share log_gmh ⇒ shift 0 (assert). */
@@ -564,8 +563,8 @@ dnac_prover_status_t dnac_prover_prove(
             memset(&pr, 0, sizeof(pr));
             pr.siblings = &p->rand_sib[q * in_depth];
             pr.depth = (uint32_t)in_depth;
-            if (dnac_merkle_open(rtree, index, &leaf, &leaf_len, &pr) !=
-                DNAC_MERKLE_OK) { free(qidx); goto cleanup; }
+            if (dnac_p2_mmcs_open_batch(rtree, index, orow, &pr) !=
+                DNAC_P2M_OK) { free(qidx); goto cleanup; }
             B[0].opened_values = &p->rand_rowptr[q];
             B[0].opened_values_lens = &p->rand_len[q];
             B[0].num_matrices = 1;
@@ -583,8 +582,8 @@ dnac_prover_status_t dnac_prover_prove(
             memset(&pr, 0, sizeof(pr));
             pr.siblings = &p->trace_sib[q * in_depth];
             pr.depth = (uint32_t)in_depth;
-            if (dnac_merkle_open(ttree, index, &leaf, &leaf_len, &pr) !=
-                DNAC_MERKLE_OK) { free(qidx); goto cleanup; }
+            if (dnac_p2_mmcs_open_batch(ttree, index, orow, &pr) !=
+                DNAC_P2M_OK) { free(qidx); goto cleanup; }
             B[1].opened_values = &p->trace_rowptr[q];
             B[1].opened_values_lens = &p->trace_len[q];
             B[1].num_matrices = 1;
@@ -603,12 +602,12 @@ dnac_prover_status_t dnac_prover_prove(
                 p->quot_len[q * P_NUM_QC + m] = P_CW;
             }
             {
-                const uint8_t *rows[P_NUM_QC];
+                const uint64_t *rows[P_NUM_QC];
                 memset(&pr, 0, sizeof(pr));
                 pr.siblings = &p->quot_sib[q * in_depth];
                 pr.depth = (uint32_t)in_depth;
-                if (dnac_merkle_batch_open(qtree, index, rows, &pr) !=
-                    DNAC_MERKLE_OK) { free(qidx); goto cleanup; }
+                if (dnac_p2_mmcs_open_batch(qtree, index, rows, &pr) !=
+                    DNAC_P2M_OK) { free(qidx); goto cleanup; }
             }
             B[2].opened_values = &p->quot_rowptr[q * P_NUM_QC];
             B[2].opened_values_lens = &p->quot_len[q * P_NUM_QC];
@@ -638,8 +637,8 @@ dnac_prover_status_t dnac_prover_prove(
                 memset(&pr, 0, sizeof(pr));
                 pr.siblings = &p->cp_step_psib[psib_off];
                 pr.depth = (uint32_t)depth;
-                if (dnac_merkle_open(res.layer_trees[r], gid, &leaf, &leaf_len,
-                                     &pr) != DNAC_MERKLE_OK) {
+                if (dnac_p2_mmcs_open_batch(res.layer_trees[r], gid, orow,
+                                            &pr) != DNAC_P2M_OK) {
                     free(qidx);
                     goto cleanup;
                 }
@@ -689,9 +688,9 @@ dnac_prover_status_t dnac_prover_prove(
     /* trees + working buffers no longer needed (all proof data is copied) */
     dnac_prover_fri_result_free(&res);
     have_res = 0;
-    dnac_merkle_tree_free(ttree); ttree = NULL;
-    dnac_merkle_tree_free(rtree); rtree = NULL;
-    dnac_merkle_batch_tree_free(qtree); qtree = NULL;
+    dnac_p2_mmcs_tree_free(ttree); ttree = NULL;
+    dnac_p2_mmcs_tree_free(rtree); rtree = NULL;
+    dnac_p2_mmcs_tree_free(qtree); qtree = NULL;
 
     /* ── self-verify (fail-close) ── */
     if (dnac_prover_proof_verify(p) != DNAC_FRI_OK) {
@@ -709,9 +708,9 @@ cleanup:
     free(ro);
     if (have_res) dnac_prover_fri_result_free(&res);
     if (t) dnac_transcript_free(t);
-    if (ttree) dnac_merkle_tree_free(ttree);
-    if (rtree) dnac_merkle_tree_free(rtree);
-    if (qtree) dnac_merkle_batch_tree_free(qtree);
+    if (ttree) dnac_p2_mmcs_tree_free(ttree);
+    if (rtree) dnac_p2_mmcs_tree_free(rtree);
+    if (qtree) dnac_p2_mmcs_tree_free(qtree);
     if (p) dnac_prover_proof_free(p);
     return rc;
 }

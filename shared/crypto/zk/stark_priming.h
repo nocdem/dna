@@ -25,8 +25,10 @@
  * Source of truth: docs/plans/2026-05-30-pcs-transcript-priming-design.md.
  *
  * Field choice (LOCKED, project_v3_zk_bitcoin_style): Val = Goldilocks,
- * Challenge = Goldilocks², hash/transcript = SHA3-512. DNAC v3.0 is NON-ZK
- * (TwoAdicFriPcs::ZK = false, two_adic_pcs.rs:279).
+ * Challenge = Goldilocks². Proof-internal hash/transcript = Poseidon2
+ * (P1c, 2026-07-22: DuplexChallenger + Poseidon2 MMCS; the old SHA3-512
+ * transcript was retired). The shielded pool is is_zk=1 (HidingFriPcs);
+ * legacy transparent v3.0 was NON-ZK (TwoAdicFriPcs::ZK=false).
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: Apache-2.0
@@ -39,7 +41,7 @@
 #include <stdint.h>
 
 #include "field_goldilocks.h" /* gold_fp_t (Val), gold_fp2_t (Challenge) */
-#include "merkle_smt.h"       /* dnac_merkle_digest_t (MerkleCap root)   */
+#include "poseidon2_mmcs.h"   /* dnac_p2_digest_t (MerkleCap root) — P1c */
 #include "transcript.h"       /* dnac_transcript_t (Fiat-Shamir state)   */
 
 #ifdef __cplusplus
@@ -61,7 +63,11 @@ typedef enum {
      * is_zk==1 enables the hiding branch (random commitment observe +
      * random opened round first); validated by the M1 sandbox vector
      * stark_priming_zk.json. */
-    DNAC_STARK_PRIMING_ERR_ZK_UNSUPPORTED = 1
+    DNAC_STARK_PRIMING_ERR_ZK_UNSUPPORTED = 1,
+    /* P1e-E (S8-MED1): a required pointer (transcript/input/out, or a
+     * commitment the shape says must be present) was NULL. ALWAYS-ON fail-close
+     * (survives -DNDEBUG) — the caller rejects on any non-OK status. */
+    DNAC_STARK_PRIMING_ERR_NULL = 2
 } dnac_stark_priming_status_t;
 
 /* ============================================================================
@@ -84,12 +90,12 @@ typedef struct {
 
     /* Commitments — MerkleCap roots; cap_height=0 ⇒ observed as raw 64 bytes
      * (CanObserve<MerkleCap<F,[u64;8]>>, serializing_challenger.rs:301-311). */
-    dnac_merkle_digest_t        trace_commit;     /* verifier.rs:369 */
-    dnac_merkle_digest_t        quotient_commit;  /* verifier.rs:380 */
-    const dnac_merkle_digest_t *preprocessed_commit; /* non-NULL iff preprocessed_width>0 */
+    dnac_p2_digest_t        trace_commit;     /* verifier.rs:369 */
+    dnac_p2_digest_t        quotient_commit;  /* verifier.rs:380 */
+    const dnac_p2_digest_t *preprocessed_commit; /* non-NULL iff preprocessed_width>0 */
     /* ZK random commitment — non-NULL iff is_zk==1. Observed AFTER quotient_commit,
      * BEFORE zeta (verifier.rs:383-385). Wire-carried (commitments.random). */
-    const dnac_merkle_digest_t *random_commit;
+    const dnac_p2_digest_t *random_commit;
 
     /* Public values — base-field Goldilocks, fixed AIR public-input order
      * (verifier.rs:373). NOT extension elements. */

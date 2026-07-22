@@ -16,6 +16,8 @@
 
 #include <assert.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 /* ============================================================================
  * bits_u64
@@ -45,11 +47,18 @@ size_t bits_u64(uint64_t n) {
  * to 0, assert fails). We mirror with C assert on n == 0.
  */
 size_t log2_strict_usize(size_t n) {
-    assert(n != 0 && "log2_strict_usize: n must be nonzero");
-    unsigned res = (unsigned)__builtin_ctzll((unsigned long long)n);
-    /* Confirm n is a power of two: n >> res must equal 1. */
-    assert(((unsigned long long)n >> res) == 1ULL && "log2_strict_usize: Not a power of two");
-    return (size_t)res;
+    /* P1e-E (S8-MED1): ALWAYS-ON fail-close — survives -DNDEBUG. Plonky3 PANICS
+     * here (log2_strict_usize) on n==0 or non-power-of-two; a bare __builtin_ctzll
+     * on n==0 is UB (would silently return a garbage log that could skew the
+     * verify height). This guards a code invariant, not attacker wire data (the
+     * shielded decode pins committed height before any caller reaches here), so
+     * the abort mirrors Plonky3's panic deterministically (every witness aborts
+     * identically on the same malformed input — no chain split). */
+    if (n == 0 || (n & (n - 1)) != 0) {
+        fprintf(stderr, "log2_strict_usize: n=%zu not a nonzero power of two\n", n);
+        abort();
+    }
+    return (size_t)__builtin_ctzll((unsigned long long)n);
 }
 
 /* ============================================================================

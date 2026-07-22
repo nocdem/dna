@@ -12,8 +12,8 @@
  *     IMPLEMENTATION IS NOT YET PRESENT: there is no `fri_verifier.c` and no
  *     verification logic anywhere in the DNAC tree as of this header.
  *     `dnac_fri_verify` is a forward prototype only — it has no definition.
- *   - Current Merkle / MMCS support is Phase 2A same-height multi-matrix batch
- *     (`merkle_smt.h` :: `dnac_merkle_batch_verify`, design §13 B2).
+ *   - Current Merkle / MMCS support is same-height multi-matrix batch
+ *     (`poseidon2_mmcs.h` :: `dnac_p2_mmcs_verify` — P1c Poseidon2 cutover).
  *   - Phase 2B mixed-height multi-matrix MMCS is DEFERRED and out of v3.0
  *     scope (design §13 B4). The FRI verifier will pre-check that all matrices
  *     in an input batch share the same `num_rows` before delegating to the
@@ -52,7 +52,8 @@
  *
  * Field choice (design §11 C1/C4, LOCKED by project_v3_zk_bitcoin_style):
  *   Val = Goldilocks (gold_fp_t), Challenge = Goldilocks² (gold_fp2_t),
- *   hash/transcript = SHA3-512.
+ *   proof-internal hash/transcript = Poseidon2 (P1c, 2026-07-22:
+ *   DuplexChallenger + Poseidon2 MMCS; SHA3-512 transcript retired).
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: Apache-2.0
@@ -65,8 +66,10 @@
 #include <stdint.h>
 
 #include "field_goldilocks.h"  /* gold_fp_t (Val), gold_fp2_t (Challenge) */
-#include "merkle_smt.h"        /* dnac_merkle_digest_t (commitment/root),
-                                  dnac_merkle_proof_t (MMCS opening proof) */
+#include "poseidon2_mmcs.h"    /* dnac_p2_digest_t (commitment/root),
+                                  dnac_p2_proof_t (MMCS opening proof) — P1c
+                                  Poseidon2 cutover (SHA3 merkle_smt retired
+                                  from the proof path, G-SEC-P1-5) */
 #include "transcript.h"        /* dnac_transcript_t (Fiat-Shamir challenger) */
 
 #ifdef __cplusplus
@@ -81,7 +84,7 @@ extern "C" {
  * errors (design §3 S7, §10).
  *
  * Naming: `DNAC_FRI_*` follows the in-directory convention (cf.
- * `DNAC_MERKLE_OK` / `DNAC_MERKLE_ERR_*` in merkle_smt.h). The design-doc
+ * `DNAC_P2M_OK` / `DNAC_P2M_ERR_*` in poseidon2_mmcs.h). The design-doc
  * sketch (§3 S7) used `FRI_OK` / `FRI_ERR_*`; the `DNAC_FRI_` prefix supersedes
  * it for codebase consistency. Each value lists its Plonky3 `FriError` variant.
  * ========================================================================== */
@@ -130,8 +133,8 @@ typedef enum {
  *
  * NOTE on the omitted `mmcs` field: Plonky3's `FriParameters.mmcs` (config.rs:21)
  * is the commit-phase MMCS instance, used as `params.mmcs.verify_batch(...)`.
- * DNAC's Merkle verify is STATELESS — `dnac_merkle_batch_verify(root, ...)`
- * takes the root directly (merkle_smt.h), with the root coming from
+ * DNAC's Merkle verify is STATELESS — `dnac_p2_mmcs_verify(root, ...)`
+ * takes the root directly (poseidon2_mmcs.h), with the root coming from
  * `commit_phase_commits[]`. There is therefore no per-instance MMCS handle to
  * store at verify time. The user's F2 field spec also lists exactly these six
  * scalar fields and no handle. (Deviation from design §3 S6 sketch, which named
@@ -209,7 +212,7 @@ typedef struct {
  * Mirrors `CommitmentWithOpeningPoints` (two_adic_pcs.rs:83-92).
  */
 typedef struct {
-    dnac_merkle_digest_t              commitment;  /* InputMmcs::Commitment (root) */
+    dnac_p2_digest_t              commitment;  /* InputMmcs::Commitment (root) */
     const dnac_fri_matrix_openings_t *matrices;    /* per-matrix (domain, openings) */
     size_t                            num_matrices;
 } dnac_fri_commitment_with_opening_points_t;
@@ -224,7 +227,7 @@ typedef struct {
  *   - `opened_values`  elements are Val (base) => gold_fp_t  (BatchOpening<Val,_>)
  *   - PoW `Witness`    = base field            => gold_fp_t
  *     (Challenger::Witness; cf. dnac_transcript_check_witness(t, bits, fp_t))
- *   - MMCS commitments / opening proofs => dnac_merkle_digest_t / dnac_merkle_proof_t
+ *   - MMCS commitments / opening proofs => dnac_p2_digest_t / dnac_p2_proof_t
  * ========================================================================== */
 
 /**
@@ -237,7 +240,7 @@ typedef struct {
     uint8_t             log_arity;       /* proof.rs:36 (u8)              */
     const gold_fp2_t   *sibling_values;  /* proof.rs:39 (Vec<F>=Challenge) */
     size_t              num_sibling_values;
-    dnac_merkle_proof_t opening_proof;   /* proof.rs:41 (M::Proof)        */
+    dnac_p2_proof_t opening_proof;   /* proof.rs:41 (M::Proof)        */
     /* M3b salted-leaf hiding (0 = unsalted / plain MMCS, backward-compatible).
      * When the FRI challenge mmcs is a MerkleTreeHidingMmcs, the leaf preimage is
      * the arity fp2 evals (BASE-flattened by ExtensionMmcs, extension_mmcs.rs:
@@ -258,7 +261,7 @@ typedef struct {
     const gold_fp_t * const *opened_values;       /* [matrix][col] (Vec<Vec<Val>>) */
     const size_t            *opened_values_lens;  /* per-matrix column count        */
     size_t                   num_matrices;
-    dnac_merkle_proof_t      opening_proof;        /* InputMmcs::Proof               */
+    dnac_p2_proof_t      opening_proof;        /* InputMmcs::Proof               */
     /* M3b salted-leaf hiding (0 = unsalted, backward-compatible). Per matrix, the
      * leaf preimage is opened_values[m] (canonical u64-LE) followed by
      * `salt_elems` BASE salt elements salts[m][0..salt_elems) (hiding_mmcs.rs:
@@ -289,7 +292,7 @@ typedef struct {
  * single query-phase PoW witness.
  */
 typedef struct {
-    const dnac_merkle_digest_t   *commit_phase_commits;     /* proof.rs:13 (Vec<M::Commitment>) */
+    const dnac_p2_digest_t   *commit_phase_commits;     /* proof.rs:13 (Vec<M::Commitment>) */
     size_t                        num_commit_phase_commits;
     const gold_fp_t              *commit_pow_witnesses;     /* proof.rs:14 (Vec<Witness>)       */
     size_t                        num_commit_pow_witnesses;
@@ -423,13 +426,13 @@ bool dnac_fri_test_transcript_flow(
  * depth, index via leaf_index, opening via the siblings. Returns the
  * dnac_merkle_status_t (DNAC_MERKLE_OK on accept). Accept-only: rejection
  * soundness is covered independently by the merkle_mmcs reject cases. */
-dnac_merkle_status_t dnac_fri_test_mmcs_verify_single(
-    const dnac_merkle_digest_t *root,
-    const uint8_t              *leaf_bytes,
-    size_t                      leaf_byte_len,
-    uint64_t                    leaf_index,
-    uint32_t                    depth,
-    const dnac_merkle_digest_t *siblings);
+dnac_p2_mmcs_status_t dnac_fri_test_mmcs_verify_single(
+    const dnac_p2_digest_t *root,
+    const uint64_t         *leaf_lanes,
+    size_t                  leaf_lane_len,
+    uint64_t                leaf_index,
+    uint32_t                depth,
+    const dnac_p2_digest_t *siblings);
 
 /* F5 Part B — verify_query shape checks for the ZERO-fold-round case
  * (verifier.rs:378-398 + 483-497; the fold loop body 402-481 is NOT executed).

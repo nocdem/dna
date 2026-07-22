@@ -79,6 +79,11 @@ AGG_CT_ASSERT((size_t)A_SALT_ELEMS * ((size_t)1 << (A_LOG_BLOWUP + A_IS_ZK)) *
                       (2u + A_NUM_QC) ==
                   DNAC_AGG_PROVER_SALT_DRAWS(1),
               salt_draws_coeff_tight);
+/* G-SEC-P1-6 (P1c): the prover's salt count IS the consensus pin — the
+ * shielded wire entry rejects any other value fail-close. A drift here would
+ * make every honest proof unverifiable (liveness), never unsound. */
+AGG_CT_ASSERT((size_t)A_SALT_ELEMS == DNAC_SHIELDED_SALT_ELEMS,
+              salt_elems_matches_consensus_pin);
 
 struct dnac_agg_prover_proof_s {
     size_t base_degree_bits, degree_bits, log_max_height, lde_h, num_fri_rounds;
@@ -86,13 +91,13 @@ struct dnac_agg_prover_proof_s {
 
     gold_fp_t publics[A_NUM_PUBLICS];
 
-    dnac_merkle_digest_t trace_c, quot_c, rand_c;
+    dnac_p2_digest_t trace_c, quot_c, rand_c;
     gold_fp2_t r_open[A_CW];
     gold_fp2_t *t_open;      /* A_RAND_W */
     gold_fp2_t *t_open_n;    /* A_RAND_W */
     gold_fp2_t q_open[A_NUM_QC * A_CW];
 
-    dnac_merkle_digest_t *cp_commits;
+    dnac_p2_digest_t *cp_commits;
     gold_fp_t            *cp_pow;
     gold_fp2_t           *final_poly;
     size_t                final_poly_len;
@@ -102,10 +107,10 @@ struct dnac_agg_prover_proof_s {
     gold_fp_t  *rand_rows, *trace_rows, *quot_rows;
     const gold_fp_t **rand_rowptr, **trace_rowptr, **quot_rowptr;
     size_t *rand_len, *trace_len, *quot_len;
-    dnac_merkle_digest_t *rand_sib, *trace_sib, *quot_sib;
+    dnac_p2_digest_t *rand_sib, *trace_sib, *quot_sib;
     dnac_fri_commit_phase_proof_step_t *cp_steps;
     gold_fp2_t *cp_step_sib;
-    dnac_merkle_digest_t *cp_step_psib;
+    dnac_p2_digest_t *cp_step_psib;
 
     /* P4: M3b per-query opening salts (mirror conf). NULL/0 when unsalted. */
     int        salted;
@@ -478,7 +483,7 @@ static void build_coms(dnac_agg_prover_proof_t *p, gold_fp2_t zeta,
 dnac_fri_status_t dnac_agg_prover_proof_verify(const dnac_agg_prover_proof_t *cp) {
     dnac_agg_prover_proof_t *p = (dnac_agg_prover_proof_t *)cp;
     dnac_transcript_t *vt =
-        dnac_transcript_init((const uint8_t *)"DNAC|ZK|FRI|TRANSCRIPT|V1", 25);
+        dnac_transcript_init_default();
     if (vt == NULL) return DNAC_FRI_ERR_INVALID_PROOF_SHAPE;
     build_prime_input(p);
     dnac_stark_priming_out_t out;
@@ -529,12 +534,12 @@ void dnac_agg_prover_proof_zeta(const dnac_agg_prover_proof_t *p,
 }
 
 void dnac_agg_prover_proof_roots(const dnac_agg_prover_proof_t *p,
-                                 uint8_t trace_root[DNAC_MERKLE_DIGEST_BYTES],
-                                 uint8_t quot_root[DNAC_MERKLE_DIGEST_BYTES],
-                                 uint8_t rand_root[DNAC_MERKLE_DIGEST_BYTES]) {
-    if (trace_root) memcpy(trace_root, p->trace_c.bytes, DNAC_MERKLE_DIGEST_BYTES);
-    if (quot_root) memcpy(quot_root, p->quot_c.bytes, DNAC_MERKLE_DIGEST_BYTES);
-    if (rand_root) memcpy(rand_root, p->rand_c.bytes, DNAC_MERKLE_DIGEST_BYTES);
+                                 dnac_p2_digest_t *trace_root,
+                                 dnac_p2_digest_t *quot_root,
+                                 dnac_p2_digest_t *rand_root) {
+    if (trace_root) *trace_root = p->trace_c;
+    if (quot_root) *quot_root = p->quot_c;
+    if (rand_root) *rand_root = p->rand_c;
 }
 
 const gold_fp2_t *dnac_agg_prover_proof_final_poly(
@@ -657,8 +662,8 @@ static dnac_prover_status_t agg_prove_cfg(
              *qflat = NULL, *chunk_ldes = NULL, *r_lde = NULL;
     uint64_t *sf = NULL, *sl = NULL, *st = NULL, *iv = NULL;
     gold_fp2_t *ro = NULL;
-    dnac_merkle_tree_t *ttree = NULL, *rtree = NULL;
-    dnac_merkle_batch_tree_t *qtree = NULL;
+    dnac_p2_mmcs_tree_t *ttree = NULL, *rtree = NULL;
+    dnac_p2_mmcs_tree_t *qtree = NULL;
     dnac_transcript_t *t = NULL;
     dnac_prover_fri_result_t res;
     memset(&res, 0, sizeof(res));
@@ -723,10 +728,10 @@ static dnac_prover_status_t agg_prove_cfg(
         if (s != DNAC_PROVER_OK) { rc = s; goto cleanup; }
         s = dnac_prover_commit_matrix(lde_c, lde_h, A_RAND_W,
                                       sd ? &sd[0] : NULL, SE,
-                                      p->trace_c.bytes, &ttree);
+                                      &p->trace_c, &ttree);
         if (s != DNAC_PROVER_OK) { rc = s; goto cleanup; }
         s = dnac_prover_fs_to_alpha(t, degree_bits, base_db, 0,
-                                    p->trace_c.bytes, publics_u, A_NUM_PUBLICS,
+                                    &p->trace_c, publics_u, A_NUM_PUBLICS,
                                     &alpha);
         if (s != DNAC_PROVER_OK) { rc = s; goto cleanup; }
         s = dnac_prover_quotient_selectors(
@@ -742,14 +747,14 @@ static dnac_prover_status_t agg_prove_cfg(
         s = dnac_prover_quotient_commit(qflat, q_size, A_NUM_QC, A_NUM_RANDOM,
                                         A_LOG_BLOWUP, 7, codeword, blinding,
                                         sd ? &sd[salt_quot_off] : NULL, SE,
-                                        chunk_ldes, p->quot_c.bytes,
+                                        chunk_ldes, &p->quot_c,
                                         &qtree);
         if (s != DNAC_PROVER_OK) { rc = s; goto cleanup; }
         s = dnac_prover_random_commit(r_draws, 2 * height, A_CW, A_LOG_BLOWUP,
                                       sd ? &sd[salt_rand_off] : NULL, SE,
-                                      r_lde, p->rand_c.bytes, &rtree);
+                                      r_lde, &p->rand_c, &rtree);
         if (s != DNAC_PROVER_OK) { rc = s; goto cleanup; }
-        s = dnac_prover_fs_to_zeta(t, p->quot_c.bytes, p->rand_c.bytes,
+        s = dnac_prover_fs_to_zeta(t, &p->quot_c, &p->rand_c,
                                    base_db, &zeta, &zeta_next);
         if (s != DNAC_PROVER_OK) { rc = s; goto cleanup; }
     }
@@ -801,10 +806,16 @@ static dnac_prover_status_t agg_prove_cfg(
             goto cleanup;
         }
     }
+    /* P1e-HIGH1: stream B (FRI-mmcs) = the INDEPENDENT fri_salt_draws region when
+     * set; NULL falls back to salt_draws@0 (KAT clone-seed parity — see the
+     * DNAC_AGG_PROVER_FRI_SALT_DRAWS comment). Only meaningful when salted. */
+    const uint64_t *fri_sd = inst->salt_draws
+        ? (inst->fri_salt_draws ? inst->fri_salt_draws : inst->salt_draws)
+        : NULL;
     if (dnac_prover_fri_commit_phase(ro, lde_h, A_LOG_BLOWUP,
                                      cfg->log_final_poly_len, A_MAX_LOG_ARITY,
                                      cfg->commit_pow_bits, cfg->query_pow_bits,
-                                     inst->salt_draws, /* P4 stream B from pos 0 */
+                                     fri_sd,
                                      inst->salt_draws ? (size_t)A_SALT_ELEMS : 0,
                                      t, &res) != DNAC_PROVER_OK) {
         goto cleanup;
@@ -814,14 +825,14 @@ static dnac_prover_status_t agg_prove_cfg(
     p->num_fri_rounds = res.num_rounds;
     p->final_poly_len = res.final_poly_len;
 
-    p->cp_commits = (dnac_merkle_digest_t *)malloc(
-        res.num_rounds * sizeof(dnac_merkle_digest_t));
+    p->cp_commits = (dnac_p2_digest_t *)malloc(
+        res.num_rounds * sizeof(dnac_p2_digest_t));
     p->cp_pow = (gold_fp_t *)calloc(res.num_rounds, sizeof(gold_fp_t));
     p->final_poly =
         (gold_fp2_t *)malloc(res.final_poly_len * sizeof(gold_fp2_t));
     if (!p->cp_commits || !p->cp_pow || !p->final_poly) goto cleanup;
     for (size_t r = 0; r < res.num_rounds; r++)
-        p->cp_commits[r] = *(dnac_merkle_digest_t *)res.roots[r];
+        p->cp_commits[r] = res.roots[r];
     memcpy(p->final_poly, res.final_poly,
            res.final_poly_len * sizeof(gold_fp2_t));
 
@@ -855,17 +866,17 @@ static dnac_prover_status_t agg_prove_cfg(
         p->rand_len = (size_t *)malloc(nq * sizeof(size_t));
         p->trace_len = (size_t *)malloc(nq * sizeof(size_t));
         p->quot_len = (size_t *)malloc(nq * A_NUM_QC * sizeof(size_t));
-        p->rand_sib = (dnac_merkle_digest_t *)malloc(
-            nq * in_depth * sizeof(dnac_merkle_digest_t));
-        p->trace_sib = (dnac_merkle_digest_t *)malloc(
-            nq * in_depth * sizeof(dnac_merkle_digest_t));
-        p->quot_sib = (dnac_merkle_digest_t *)malloc(
-            nq * in_depth * sizeof(dnac_merkle_digest_t));
+        p->rand_sib = (dnac_p2_digest_t *)malloc(
+            nq * in_depth * sizeof(dnac_p2_digest_t));
+        p->trace_sib = (dnac_p2_digest_t *)malloc(
+            nq * in_depth * sizeof(dnac_p2_digest_t));
+        p->quot_sib = (dnac_p2_digest_t *)malloc(
+            nq * in_depth * sizeof(dnac_p2_digest_t));
         p->cp_steps = (dnac_fri_commit_phase_proof_step_t *)calloc(
             nq * nr, sizeof(dnac_fri_commit_phase_proof_step_t));
         p->cp_step_sib = (gold_fp2_t *)malloc(nq * nr * sizeof(gold_fp2_t));
-        p->cp_step_psib = (dnac_merkle_digest_t *)malloc(
-            nq * cp_depth_sum * sizeof(dnac_merkle_digest_t));
+        p->cp_step_psib = (dnac_p2_digest_t *)malloc(
+            nq * cp_depth_sum * sizeof(dnac_p2_digest_t));
         /* P4: M3b per-query opening salts + pointer arrays (mirror conf). */
         const size_t SE = inst->salt_draws ? (size_t)A_SALT_ELEMS : 0;
         p->salted = inst->salt_draws != NULL;
@@ -894,9 +905,8 @@ static dnac_prover_status_t agg_prove_cfg(
         for (size_t q = 0; q < nq; q++) {
             const uint64_t index = qidx[q];
             dnac_fri_batch_opening_t *B = &p->batches[q * 3];
-            dnac_merkle_proof_t pr;
-            const uint8_t *leaf = NULL;
-            size_t leaf_len = 0;
+            dnac_p2_proof_t pr;
+            const uint64_t *orow[1] = { NULL }; /* borrowed row, unused */
 
             for (size_t i = 0; i < A_CW; i++)
                 p->rand_rows[q * A_CW + i] =
@@ -906,8 +916,8 @@ static dnac_prover_status_t agg_prove_cfg(
             memset(&pr, 0, sizeof(pr));
             pr.siblings = &p->rand_sib[q * in_depth];
             pr.depth = (uint32_t)in_depth;
-            if (dnac_merkle_open(rtree, index, &leaf, &leaf_len, &pr) !=
-                DNAC_MERKLE_OK) goto cleanup;
+            if (dnac_p2_mmcs_open_batch(rtree, index, orow, &pr) !=
+                DNAC_P2M_OK) goto cleanup;
             B[0].opened_values = &p->rand_rowptr[q];
             B[0].opened_values_lens = &p->rand_len[q];
             B[0].num_matrices = 1;
@@ -933,8 +943,8 @@ static dnac_prover_status_t agg_prove_cfg(
             memset(&pr, 0, sizeof(pr));
             pr.siblings = &p->trace_sib[q * in_depth];
             pr.depth = (uint32_t)in_depth;
-            if (dnac_merkle_open(ttree, index, &leaf, &leaf_len, &pr) !=
-                DNAC_MERKLE_OK) goto cleanup;
+            if (dnac_p2_mmcs_open_batch(ttree, index, orow, &pr) !=
+                DNAC_P2M_OK) goto cleanup;
             B[1].opened_values = &p->trace_rowptr[q];
             B[1].opened_values_lens = &p->trace_len[q];
             B[1].num_matrices = 1;
@@ -962,12 +972,12 @@ static dnac_prover_status_t agg_prove_cfg(
                 p->quot_len[q * A_NUM_QC + m] = A_CW;
             }
             {
-                const uint8_t *rows[A_NUM_QC];
+                const uint64_t *rows[A_NUM_QC];
                 memset(&pr, 0, sizeof(pr));
                 pr.siblings = &p->quot_sib[q * in_depth];
                 pr.depth = (uint32_t)in_depth;
-                if (dnac_merkle_batch_open(qtree, index, rows, &pr) !=
-                    DNAC_MERKLE_OK) goto cleanup;
+                if (dnac_p2_mmcs_open_batch(qtree, index, rows, &pr) !=
+                    DNAC_P2M_OK) goto cleanup;
             }
             B[2].opened_values = &p->quot_rowptr[q * A_NUM_QC];
             B[2].opened_values_lens = &p->quot_len[q * A_NUM_QC];
@@ -1006,8 +1016,8 @@ static dnac_prover_status_t agg_prove_cfg(
                 memset(&pr, 0, sizeof(pr));
                 pr.siblings = &p->cp_step_psib[psib_off];
                 pr.depth = (uint32_t)depth;
-                if (dnac_merkle_open(res.layer_trees[r], gid, &leaf, &leaf_len,
-                                     &pr) != DNAC_MERKLE_OK) goto cleanup;
+                if (dnac_p2_mmcs_open_batch(res.layer_trees[r], gid, orow,
+                                            &pr) != DNAC_P2M_OK) goto cleanup;
                 S->log_arity = (uint8_t)a;
                 S->sibling_values = &p->cp_step_sib[q * nr + r];
                 S->num_sibling_values = arity - 1;
@@ -1017,11 +1027,13 @@ static dnac_prover_status_t agg_prove_cfg(
                 S->opening_proof.siblings = &p->cp_step_psib[psib_off];
                 if (SE > 0) {
                     /* stream B: layer r salt for folded row gid at
-                     * draws[cp_salt_off + gid*SE] (design §3a). */
+                     * fri_sd[cp_salt_off + gid*SE] — MUST read the SAME buffer the
+                     * commit phase used (P1e-HIGH1: fri_salt_draws when set, else
+                     * salt_draws@0), never inst->salt_draws directly. */
                     const size_t off = cp_salt_off + (size_t)gid * SE;
                     gold_fp_t *dst = &p->cp_salt[(q * nr + r) * SE];
                     for (size_t s = 0; s < SE; s++)
-                        dst[s] = gold_fp_from_u64(inst->salt_draws[off + s]);
+                        dst[s] = gold_fp_from_u64(fri_sd[off + s]);
                     S->salts = dst;
                     S->salt_elems = SE;
                 }
@@ -1062,9 +1074,9 @@ static dnac_prover_status_t agg_prove_cfg(
 
     dnac_prover_fri_result_free(&res);
     have_res = 0;
-    dnac_merkle_tree_free(ttree); ttree = NULL;
-    dnac_merkle_tree_free(rtree); rtree = NULL;
-    dnac_merkle_batch_tree_free(qtree); qtree = NULL;
+    dnac_p2_mmcs_tree_free(ttree); ttree = NULL;
+    dnac_p2_mmcs_tree_free(rtree); rtree = NULL;
+    dnac_p2_mmcs_tree_free(qtree); qtree = NULL;
 
     /* Test-only forge: from here on the proof struct carries the FORGED
      * publics (they are what the transcript was primed with, so priming-based
@@ -1091,9 +1103,9 @@ cleanup:
     free(ro);
     if (have_res) dnac_prover_fri_result_free(&res);
     if (t) dnac_transcript_free(t);
-    if (ttree) dnac_merkle_tree_free(ttree);
-    if (rtree) dnac_merkle_tree_free(rtree);
-    if (qtree) dnac_merkle_batch_tree_free(qtree);
+    if (ttree) dnac_p2_mmcs_tree_free(ttree);
+    if (rtree) dnac_p2_mmcs_tree_free(rtree);
+    if (qtree) dnac_p2_mmcs_tree_free(qtree);
     if (p) dnac_agg_prover_proof_free(p);
     return rc;
 }
@@ -1122,24 +1134,31 @@ dnac_prover_status_t dnac_agg_prover_prove_production(
     const size_t height = (size_t)1 << inst->log_height;
     const size_t nd = DNAC_AGG_PROVER_TOTAL_DRAWS(height);
     const size_t ns = DNAC_AGG_PROVER_SALT_DRAWS(height);
+    const size_t nfs = DNAC_AGG_PROVER_FRI_SALT_DRAWS(height);
     uint64_t *draws = (uint64_t *)malloc(nd * sizeof(uint64_t));
     uint64_t *salts = (uint64_t *)malloc(ns * sizeof(uint64_t));
-    if (draws == NULL || salts == NULL) {
+    uint64_t *fri_salts = (uint64_t *)malloc(nfs * sizeof(uint64_t));
+    if (draws == NULL || salts == NULL || fri_salts == NULL) {
         free(draws);
         free(salts);
+        free(fri_salts);
         return DNAC_PROVER_ERR_PARAM;
     }
-    /* Production MUST be genuinely salted (M3b; mirror of the conf prover
-     * red-team fix): fill BOTH the is_zk codeword stream AND the leaf-salt
-     * stream from OS entropy. The salt streams A/B are independent fresh CSPRNG
-     * streams (design §3a), so a fresh OS-entropy buffer is a valid source.
+    /* Production MUST be genuinely salted (M3b) with INDEPENDENT salt streams
+     * (P1e-HIGH1 fix): fill the is_zk codeword stream AND the input-mmcs salt
+     * stream A AND the FRI-mmcs salt stream B, each from its OWN OS-entropy fill
+     * so no FRI-layer opening leaks an unopened trace leaf's salt. Stream B
+     * aliasing stream A (the pre-fix bug) is what the P1e code red-team flagged.
      * Fail-close on any entropy error — never a partial/non-hiding proof. */
     if (dnac_zk_fill_draws(draws, nd) != 0 ||
-        dnac_zk_fill_draws(salts, ns) != 0) {
+        dnac_zk_fill_draws(salts, ns) != 0 ||
+        dnac_zk_fill_draws(fri_salts, nfs) != 0) {
         for (volatile uint64_t *z = draws; z < draws + nd; z++) *z = 0;
         for (volatile uint64_t *z = salts; z < salts + ns; z++) *z = 0;
+        for (volatile uint64_t *z = fri_salts; z < fri_salts + nfs; z++) *z = 0;
         free(draws);
         free(salts);
+        free(fri_salts);
         return DNAC_PROVER_ERR_PARAM;
     }
     dnac_agg_prover_instance_t local = *inst;
@@ -1147,14 +1166,18 @@ dnac_prover_status_t dnac_agg_prover_prove_production(
     local.num_draws = nd;
     local.salt_draws = salts;
     local.num_salt_draws = ns;
+    local.fri_salt_draws = fri_salts;
+    local.num_fri_salt_draws = nfs;
     const dnac_prover_status_t rc =
         agg_prove_cfg(&local, out_proof, &AGG_CFG_SHIELDED, NULL, 0);
-    /* Zeroize both secret streams before free (client-side hygiene): the
-     * codeword blinding AND the leaf salts hide the committed trace rows. */
+    /* Zeroize all three secret streams before free (client-side hygiene): the
+     * codeword blinding AND both leaf-salt streams hide the committed trace. */
     for (volatile uint64_t *z = draws; z < draws + nd; z++) *z = 0;
     for (volatile uint64_t *z = salts; z < salts + ns; z++) *z = 0;
+    for (volatile uint64_t *z = fri_salts; z < fri_salts + nfs; z++) *z = 0;
     free(draws);
     free(salts);
+    free(fri_salts);
     return rc;
 }
 
@@ -1170,7 +1193,7 @@ dnac_fri_codec_status_t dnac_agg_prover_wire_selfcheck_shielded(
      * (publics + roots observed, zeta SAMPLED — H2/H3 satisfied on this path;
      * the wire-recompute of the publics themselves is Phase-C consensus work). */
     dnac_transcript_t *vt =
-        dnac_transcript_init((const uint8_t *)"DNAC|ZK|FRI|TRANSCRIPT|V1", 25);
+        dnac_transcript_init_default();
     if (vt == NULL) return DNAC_FRI_CODEC_ERR_OOM;
     build_prime_input(p);
     dnac_stark_priming_out_t out;

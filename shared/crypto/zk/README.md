@@ -37,7 +37,13 @@ v4 plan: `docs/plans/2026-06-09-v4-confidential-northstar-design.md`.
 *Why:* in confidential mode a soundness break (hash / AIR / proof) → **invisible, unprovable inflation** (hidden amounts can't be summed; no homomorphic supply audit; cf. Monero's inflation-bug class). Mitigation: `hash_id` versioning + a **cleartext fallback switch** (via `DNAC_TX_CHAIN_CONFIG`) that degrades to ADDITIVE so the native Check 4 resumes enforcing visible balance. Base chain (Dilithium5 sigs, SHA3 nullifiers/state_root) is unaffected. Honest limit: fallback stops *future* inflation, not past silent inflation. Detail: v4 north-star §3.
 
 ### What we DID (done, grounded)
-- **STARK verifier stack (C, pure, no Rust at runtime):** `field_goldilocks`, `zk_field_helpers`, `ntt_goldilocks`, `keccak_ref`, `keccak_p3_{cols,trace,air}`, `sponge_sha3_512`, `transcript`, `merkle_smt`, `fri_fold`, `fri_verifier` (incl. the FRI terminal-index **P0 fix** + its regression guard), `fri_proof_codec`, `stark_priming`, `stark_proof_codec`, `stark_constraints`.
+> **⚠ This README is a historical planning doc. For the AUTHORITATIVE current
+> state read `RESUME.md`. NOTE (P1c, 2026-07-22): the proof-internal hash was cut
+> over SHA3-512 → Poseidon2 — `sponge_sha3_512` and `merkle_smt` are DELETED;
+> the live transcript is `duplex_challenger` (+`transcript` wrapper) and the live
+> FRI/STARK MMCS is `poseidon2_mmcs` (over `poseidon2_goldilocks`). References
+> below to the SHA3 modules are historical.**
+- **STARK verifier stack (C, pure, no Rust at runtime):** `field_goldilocks`, `zk_field_helpers`, `ntt_goldilocks`, `keccak_ref`, `keccak_p3_{cols,trace,air}`, `duplex_challenger` + `transcript` (P1c: Poseidon2 DuplexChallenger; was `sponge_sha3_512`), `poseidon2_mmcs` (P1c; was `merkle_smt`), `fri_fold`, `fri_verifier` (incl. the FRI terminal-index **P0 fix** + its regression guard), `fri_proof_codec`, `stark_priming`, `stark_proof_codec`, `stark_constraints`.
 - **Range/balance AIR (ADDITIVE):** `range_air` (B/S, **52-bit**), `sum_balance` (I/U/F + N count-bound + P public-bound), combined `range_proof_air` air_eval (**56-col, 61 constraints**: B·52 + S + R + P + I + U + F + CI + CU + CF) — end-to-end C↔Plonky3 byte-matched, then 13-subagent soundness red-team (2026-07-11/12).
 - **B6 (field-wrap) CLOSED (2026-07):** amounts range-checked to **52 bits** (`2^52 < p`; 64-bit was vacuous over Goldilocks → a mint), `N_max=1024` ⇒ `Σ < 2^62 < p`. Plus a public-input bound (`claimed`,`fee` `< 2^62`) closing the fee-term mod-p wraparound the red-team found.
 - **B7 (padding/output-count) CLOSED (2026-07):** `is_real` + `(1−is_real)·amount=0` (P) + `cnt` accumulator binding `Σ is_real` to public `n_real`. `blockers==[B1]` only.
@@ -47,7 +53,7 @@ v4 plan: `docs/plans/2026-06-09-v4-confidential-northstar-design.md`.
 - **Research verdict** (in-AIR SHA3 sponge does not exist) + **v4 north-star design doc** (3 mandatory sections + crypto-agility + red-team plan).
 
 ### What's MISSING (v4 work items)
-- **Prover** — FFT/LDE (reuse `ntt_goldilocks`), FRI commit loop (reuse `fri_fold`), quotient computation, trace Merkle (reuse `merkle_smt`), query opening. Orchestration unwritten. **[MISSING]**
+- **Prover** — SHIPPED (this line is historical). FFT/LDE (`ntt_goldilocks`), FRI commit loop (`fri_fold`), quotient computation, trace Merkle (`poseidon2_mmcs`; P1c, was `merkle_smt`), query opening — see `stark_prover*.c` and `RESUME.md`.
 - **2-chunk quotient recompose** (`uni-stark/verifier.rs:59-96`) — shipped API is 1-chunk only (`stark_constraints.h:88-100`). Poseidon2 degree-3 needs it. **[MISSING]**
 - **B1 commitment preimage layout** (fields, rate/capacity, domain-sep, output truncation, `hash_id`) — the old §6.2 draft is INVALIDATED; ground to eprint 2023/323. **[OPEN]**
 - **Full-shield input hiding** (note-commitment tree + nullifier relation). **[OPEN]**

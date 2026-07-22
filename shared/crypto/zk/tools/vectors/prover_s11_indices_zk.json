@@ -8,8 +8,8 @@
   },
   "plonky3_commit": "82cfad73cd734d37a0d51953094f970c531817ec",
   "query_indices": [
-    "4",
-    "23"
+    "23",
+    "24"
   ],
   "scope": "prover_s11_indices_zk"
 }
