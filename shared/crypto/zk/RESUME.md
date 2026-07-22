@@ -123,6 +123,33 @@
       caused + recorded in nodus/BUGS.md 2026-07-22 entry; harness helper
       `stagef_mk_funded_user` fixed to poll CHAIN truth after CLI timeout
       (kills the known project_genesis_client_false_error false-negative).
+    - **C2.4 CODE RED-TEAM GREEN (~11 agents, wf_731fd475): 0 confirmed defect**
+      (Phase-0 6/6 non-issue; 8/9 finders empty; 1 INFO refuted → cosmetic
+      shielded-dispatch reorder above the is_genesis return). **C2 COMMITTED
+      `06a1ecde`** (nodus+zk+dnac, tag YOK, push YOK).
+  - **🛑 C3 DESIGN NOT-GREEN — BLOCKED (2026-07-22).** `dnac/docs/plans/
+    2026-07-22-c3-state-root-v4-design.md`; single-agent design red-team =
+    **2 CRIT + 1 HIGH** (§0 facts all correct). CRITs are UPSTREAM of C3, not
+    doc revisions:
+    - **F1 (note-tree agreement):** consensus note-tree ↔ prover
+      `conf_membership_air` UNRESOLVED. `CONF_AGG_TREE_DEPTH=4` = a KAT
+      placeholder ("production depth pinned at S6", conf_action_agg_air.h:104-105;
+      depth-4 = permanent 16-note cap); production depth = a separate S6 CIRCUIT
+      re-grounding (oracle vectors + num_qc + byte-match, 10+-agent KAFADAN
+      gate). Hash primitive mis-mapped: proof uses Poseidon2 `note_merkle_compress`
+      (note_commit.c:66-80), NOT SHA3 `compute_*_root` → SHA3 consensus root ≠
+      Poseidon2 anchor = liveness break. Empty-leaf + leaf/internal domsep open.
+    - **F2 (supply invariant):** "fee reconciliation keeps the invariant" FALSE
+      vs `check_supply_invariant_v016` (bft.c:896-990, observed = plaintext sums,
+      confidential pool invisible; committed_fee burn → block REJECT). No
+      confidential-pool accounting model.
+    - **F3 (HIGH, plan-fixable, folded into doc G-SEC-C3-2):** intra-TX
+      `nf_set[i]!=nf_set[j]` + in-batch seen-shielded-nf guards were missing.
+    - **REAL NEXT WORK (each its own grounded doc + red-team):** (1) production
+      note-commitment tree (depth pin + Poseidon2 incremental-Merkle byte-matched
+      to conf_membership_air + empty-leaf/domsep) [S6 crypto, KAFADAN 10+-agent];
+      (2) confidential-pool supply-accounting model. **C3 CODE DOES NOT START
+      until both land.** Push YOK, deploy YOK.
   - **🎯 F3 DONE (2026-07-22, S-F3.0→S-F3.5 one session, single commit):**
     ak/nk widened 1→4 Goldilocks lanes (user-locked A_LANES=N_LANES=4; nk alone
     was ~2^32 Grover via public (ρ,nf) → now ~2^128, matching the stack's
