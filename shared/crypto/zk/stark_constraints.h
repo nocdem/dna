@@ -245,6 +245,14 @@ typedef struct {
     dnac_stark_fold_step_t *capture;
     size_t                  capture_cap;
     size_t                  capture_len;
+    /* P2L-d d2 (ADDITIVE): preprocessed window @ zeta for AIRs with
+     * preprocessed columns (batch-stark verifier/mod.rs:571-581 — empty
+     * slice when absent, zero-window for next when the AIR doesn't read
+     * it). The v3 glue functions initialize these to NULL/0; pre-P2L-d
+     * AIR evals never read them (KATs frozen). */
+    const gold_fp2_t *preprocessed_local; /**< [prep_width] @ zeta or NULL  */
+    const gold_fp2_t *preprocessed_next;  /**< [prep_width] @ g*zeta or NULL */
+    size_t            prep_width;
 } dnac_stark_folder_t;
 
 /** An AIR for the constraint check: shape metadata + the eval callback. */

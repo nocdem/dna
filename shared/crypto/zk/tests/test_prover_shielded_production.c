@@ -140,7 +140,7 @@ int main(void) {
         dnac_fri_codec_status_t cs =
             dnac_agg_prover_wire_selfcheck_shielded(pf, &fs);
         int ok = (cs == DNAC_FRI_CODEC_OK) && (fs == DNAC_FRI_OK);
-        printf("  T3 dnac_fri_verify_wire_shielded on the WIRE bytes    %s\n",
+        printf("  T3 agg_prover_wire_selfcheck_shielded on WIRE bytes   %s\n",
                ok ? "PASS" : "FAIL");
         if (!ok) {
             printf("     codec=%d fri=%d\n", (int)cs, (int)fs);

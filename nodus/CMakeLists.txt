@@ -161,14 +161,23 @@ if(NOT WIN32)
     )
 
     # ── Phase-C C1 (2026-07-21): shielded-pool ZK verify stack ─────────
-    # The pinned consensus verify entry dnac_fri_verify_wire_shielded and
-    # everything it links (wire codec v3, FRI verifier, Poseidon2
-    # DuplexChallenger transcript + Poseidon2 MMCS, Goldilocks field; P1c
-    # cutover — SHA3 transcript/sponge/merkle_smt retired). LINKAGE ONLY — no
-    # consensus behavior change; the witness starts CALLING it at C2 (S6 roadmap).
-    # The unpinned test entry dnac_fri_verify_wire is compiled OUT here
-    # (M5 gate: it exists only under DNAC_ZK_ENABLE_TEST_WIRE, which only
-    # the zk standalone Makefile defines).
+    # Everything the consensus verify entry links: the DZKF wire codec, the
+    # FRI verifier, the Poseidon2 DuplexChallenger transcript + Poseidon2
+    # MMCS, and the Goldilocks field. LINKAGE ONLY — no consensus behavior
+    # change; the witness starts CALLING it at C3 (S6 roadmap).
+    #
+    # M5 gate (restated at d4.d, 2026-07-26 — the previous wording described a
+    # world that no longer exists): the two unpinned/params-trusting v3 entries
+    # dnac_fri_verify_wire and dnac_fri_verify_wire_shielded are no longer
+    # "compiled out here" — they are DELETED FROM THE TREE, so no build of any
+    # kind can define them. What DNAC_ZK_ENABLE_TEST_WIRE still gates (and this
+    # build still does NOT define) are the KAT-only prover exports in
+    # stark_prover_agg.c / batch_prover.c, none of which is in NODUS_SOURCES
+    # anyway. The ONLY verify entry reachable from libnodus is the pinned
+    # dnac_shielded_verify_statement in the C2.1 block below, and the ONLY wire
+    # fri_proof_codec.c still speaks is DZKF v4 — the v3 decoder went with the
+    # rest of the v3 surface, so no version-3 buffer can be parsed at all.
+    #
     # Prover-side sources (stark_prover*.c, zk_entropy.c) are deliberately
     # NOT here — proving is client-side (wallet, S7) and zk_entropy.c is
     # Linux-only; the verify stack below is portable C.
@@ -200,9 +209,21 @@ if(NOT WIN32)
     # exactly the nodus-cli DNAC_TX_WIRE_SOURCES precedent (single source,
     # design v2 G-DET-2). Still NOT called by consensus: witness admission
     # REJECTS type-11 unconditionally through all of C2 (accept-flip = C3).
+    # d4.c-3 (2026-07-26): shielded_verify.c re-based onto the DZKF v4 BATCHED
+    # wire + dnac_batch_verify (verify_batch mirror) — the v3 single-instance
+    # uni-stark path retired. dnac_batch_wire_decode lives in fri_proof_codec.c
+    # (already in the C1 block); dnac_batch_verify + its batched priming + the
+    # LogUp gadget/bus (vacuous here — the agg AIR has no lookups) are pulled in
+    # below. Consensus-inert (type-11 still REJECT-unconditional through C2).
+    # d4.d (2026-07-26): stark_priming.c DROPPED from this list — the v3
+    # uni-stark priming module is deleted; nothing in the nodus source set ever
+    # called it (the batched path primes inside batch_priming.c).
     list(APPEND NODUS_SOURCES
         ${SHARED_DIR}/crypto/zk/shielded_verify.c
-        ${SHARED_DIR}/crypto/zk/stark_priming.c
+        ${SHARED_DIR}/crypto/zk/batch_verify.c
+        ${SHARED_DIR}/crypto/zk/batch_priming.c
+        ${SHARED_DIR}/crypto/zk/logup_bus.c
+        ${SHARED_DIR}/crypto/zk/logup.c
         ${SHARED_DIR}/crypto/zk/stark_constraints.c
         ${SHARED_DIR}/crypto/zk/conf_action_agg_fold.c
         ${SHARED_DIR}/crypto/zk/conf_action_fold.c
@@ -348,11 +369,13 @@ target_link_libraries(test_cbor nodus)
 add_test(NAME test_cbor COMMAND test_cbor)
 
 # Phase-C C1 — shielded ZK verify stack linkage gate (pulls the whole
-# dnac_fri_verify_wire_shielded chain out of libnodus.a; a missing zk
-# source in NODUS_SOURCES is a LINK error here, not a C2 surprise).
-# C2.1: also pulls dnac_shielded_verify_statement + the linked libdna
-# sighash (serialize.c compiled alongside, nodus-cli precedent) so the
-# COMPLETE consensus verify chain is link-proven from libnodus.a.
+# consensus verify chain out of libnodus.a; a missing zk source in
+# NODUS_SOURCES is a LINK error here, not a C2/C3 surprise).
+# C2.1: the chain is rooted at dnac_shielded_verify_statement + the linked
+# libdna sighash (serialize.c compiled alongside, nodus-cli precedent).
+# d4.d: the test's three v3 cases were re-anchored onto that same entry when
+# dnac_fri_verify_wire_shielded was deleted, so the gate now exercises the
+# DZKF v4 decode + dnac_batch_verify chain it is meant to protect.
 add_executable(test_zk_link tests/test_zk_link.c
     ${MONOREPO_ROOT}/dnac/src/transaction/serialize.c
     ${MONOREPO_ROOT}/dnac/src/ledger/chain_def_codec.c

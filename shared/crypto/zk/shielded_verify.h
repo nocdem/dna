@@ -21,20 +21,27 @@
  *      REQUIRED to equal the wire tx_binding lanes.
  *   3. The 43 public values (CONF_AGGZK_PUB_* layout, conf_action_agg_fold.h:
  *      115-127) are recomputed FROM THE WIRE — never read from the proof.
- *   4. Transcript priming from the DECODED proof's opened values + the
- *      recomputed publics (dnac_stark_prime_transcript, stark_priming.h:157);
- *      zeta / zeta_next are SAMPLED and every wire opening coordinate MUST
- *      equal the sampled point (G-DET-4 / G-SEC-5, closes H2 — a wire-chosen
- *      opening point is never trusted).
- *   5. dnac_fri_verify_wire_shielded (fri_proof_codec.h:198 — pinned params,
- *      pinned committed height 11, 16-bit query PoW; G-SEC-4)
- *      **AND**
- *      dnac_stark_verify_constraints_nchunk (stark_constraints.h:302) over the
- *      recomputed publics + decoded quotient chunks at the SAMPLED zeta/alpha
- *      with DNAC_CONF_ACTION_AGG_FOLD_AIR. FRI alone is soundness-vacuous
- *      (CRIT-1): it proves only low-degreeness + opening consistency — the
- *      constraint check is the ONLY step binding the publics to the trace
- *      (balance, 52-bit range, output routing, count binds). BOTH must pass.
+ *   4. DZKF v4 decode (dnac_batch_wire_decode, fri_proof_codec.h) + the
+ *      STRUCTURAL pins applied to the decoded package before any verify work:
+ *      is_zk==1 and exactly ONE instance, wire FRI params equal to the pinned
+ *      consensus set and then SUBSTITUTED by it, the opened-value shape, and
+ *      SALT_ELEMS==2 on every FRI opening (G-SEC-P1-6).
+ *      NOTE (d4.c-3 / d4.d): the v4 wire carries NO opening points — the
+ *      verifier assembles the N2 rounds around the ζ it SAMPLES itself, so the
+ *      v3 "wire coordinate must equal the sampled point" check (G-DET-4 /
+ *      G-SEC-5, H2) closes STRUCTURALLY: a wire buffer cannot express a
+ *      foreign opening point at all.
+ *   5. dnac_batch_verify (batch_verify.h — the p3-batch-stark verify_batch
+ *      mirror) over the pinned 1-instance descriptor: it runs the batched
+ *      transcript priming (which SAMPLES ζ and α), the FRI verify at the
+ *      pinned params + compile-time pinned degree_bits 11 with 16-bit query
+ *      PoW (G-SEC-4), **AND** the N-chunk AIR constraint check over the
+ *      recomputed publics with DNAC_CONF_ACTION_AGG_FOLD_AIR, plus the per-bus
+ *      lookup sums (vacuous — the aggregate AIR has no lookups). FRI alone is
+ *      soundness-vacuous (CRIT-1): it proves only low-degreeness + opening
+ *      consistency — the constraint check is the ONLY step binding the publics
+ *      to the trace (balance, 52-bit range, output routing, count binds). ALL
+ *      of them must pass.
  *
  * What this function does NOT do (C3 scope, design v2 G-SEC-7/9): anchor
  * root-set membership (the wire anchor is attacker-chosen pre-C3), nullifier
@@ -80,15 +87,22 @@ typedef enum {
                                                  (G-SEC-6, D7.2 single fee)       */
     DNAC_SHIELDED_VERIFY_ERR_TXBIND = 7,      /* conf_txbind_map(sighash_v4) !=
                                                  wire tx_binding (G-SEC-3)        */
-    DNAC_SHIELDED_VERIFY_ERR_DECODE = 8,      /* dnac_fri_proof_decode failed     */
+    DNAC_SHIELDED_VERIFY_ERR_DECODE = 8,      /* dnac_batch_wire_decode failed
+                                                 (DZKF v4; every codec status is
+                                                 folded into this one class)     */
     DNAC_SHIELDED_VERIFY_ERR_SHAPE = 9,       /* commitment/matrix/eval shape !=
                                                  the pinned aggregate proof shape */
-    DNAC_SHIELDED_VERIFY_ERR_HEIGHT = 10,     /* committed domain != pinned 11
-                                                 (G-SEC-4)                        */
-    DNAC_SHIELDED_VERIFY_ERR_PRIMING = 11,    /* transcript priming failed        */
-    DNAC_SHIELDED_VERIFY_ERR_OPENING_POINT = 12, /* a wire opening coordinate !=
-                                                 the SAMPLED zeta/zeta_next
-                                                 (G-SEC-5, closes H2)             */
+    /* 10 / 11 / 12 are RETIRED as live verdicts (d4.c-3 v4 re-base; comment
+     * corrected at d4.d). They are never assigned any more — the checks they
+     * named closed STRUCTURALLY when the wire stopped carrying opening points
+     * and heights: the height is a compile-time verifier pin (.c:243), priming
+     * happens inside dnac_batch_verify (its failures surface as SHAPE/FRI), and
+     * a foreign opening coordinate is inexpressible on the v4 wire. The values
+     * are kept unassigned rather than reused, so an old log line cannot be
+     * misread as a new verdict. */
+    DNAC_SHIELDED_VERIFY_ERR_HEIGHT = 10,        /* RETIRED — never assigned */
+    DNAC_SHIELDED_VERIFY_ERR_PRIMING = 11,       /* RETIRED — never assigned */
+    DNAC_SHIELDED_VERIFY_ERR_OPENING_POINT = 12, /* RETIRED — never assigned */
     DNAC_SHIELDED_VERIFY_ERR_FRI = 13,        /* pinned FRI verify rejected
                                                  (params/height/PoW/openings)     */
     DNAC_SHIELDED_VERIFY_ERR_CONSTRAINTS = 14 /* N-chunk AIR constraint check

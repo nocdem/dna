@@ -341,6 +341,9 @@ static dnac_stark_verify_status_t stark_verify_constraints_core(
     folder.capture = NULL;
     folder.capture_cap = 0;
     folder.capture_len = 0;
+    folder.preprocessed_local = NULL; /* v3 path: no preprocessed columns */
+    folder.preprocessed_next = NULL;
+    folder.prep_width = 0;
     air->air_eval(&folder);
 
     /* 6. final OOD check (verifier.rs:157-159). */

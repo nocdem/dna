@@ -613,6 +613,79 @@ enum Cmd {
         #[arg(long)]
         out: PathBuf,
     },
+    /// P2L-a — LogUp lookup gadget: aux (permutation) traces from the REAL
+    /// p3_lookup::logup::LogUpGadget::generate_permutation (logup.rs:370-646),
+    /// per-row constraint residuals from the REAL eval_local/eval_global
+    /// (logup.rs:158-265) via a concrete recording builder (tests.rs
+    /// MockAirBuilder pattern, Goldilocks + WRAP next-row), cumulative sums,
+    /// verify_global_sum verdicts, and constraint degrees. Ground truth for
+    /// the C logup.c byte-match (P2-lookup design §4 P2L-a).
+    #[command(name = "dump-logup")]
+    DumpLogup {
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// P2L-b — interaction/bus layer: column assignment (Lookups::from_air,
+    /// locals first then globals in push order), per-bus challenge memo from
+    /// the REAL BatchTranscript::sample_perm_challenges (batch-stark
+    /// transcript.rs:74-102) over the production DuplexChallenger, per-bus
+    /// global-sum grouping verdicts (verifier/mod.rs:623-643 semantics) incl.
+    /// the cross-bus-cancellation trap (F3). Ground truth for the C
+    /// logup_bus.c byte-match (P2-lookup design §4 P2L-b).
+    #[command(name = "dump-logup-bus")]
+    DumpLogupBus {
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// P2L-c — batch-stark proof shape + FULL batched priming order: REAL
+    /// prove_batch + verify_batch (Ok-gated) over the DNAC Goldilocks config;
+    /// the verifier-order transcript replayed with duplex milestone snapshots
+    /// after every phase (instance count/bindings -> main+publics ->
+    /// preprocessed -> perm challenges -> perm+cums+alpha -> quotient ->
+    /// random -> zeta), plus the proof-shape fields the C
+    /// dnac_batch_proof_shape_check mirrors. Ground truth for the C
+    /// batch_priming.c byte-match (P2-lookup design §4 P2L-c, round-2 N1).
+    #[command(name = "dump-batch-priming")]
+    DumpBatchPriming {
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// P2L-d d1a — MIXED-height Poseidon2 MMCS: REAL MerkleTreeMmcs +
+    /// MerkleTreeHidingMmcs over matrices of different power-of-two heights
+    /// (layer injection, merkle_tree.rs:127-176); roots + openings at every
+    /// index, each verify_batch-checked in-oracle. Ground truth for the C
+    /// dnac_p2_mmcs_{commit,open,verify}_mixed byte-match.
+    #[command(name = "dump-poseidon2-mmcs-mixed")]
+    DumpPoseidon2MmcsMixed {
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// P2L-d d1b — FULL batch proof: the complete REAL prove_batch output
+    /// serialized whole (commitments incl. permutation/random, per-instance
+    /// opened values incl. permutation_local/next, global_lookup_data,
+    /// degree_bits, and the entire FRI opening proof: commit_phase_commits,
+    /// commit/query PoW witnesses, query proofs with input BatchOpenings +
+    /// commit-phase steps, final_poly), plus the N2 opening-round schedule
+    /// (prover.rs:450-537). EVERY scenario is verify_batch == Ok gated.
+    /// Ground truth for the C d2 batched verify + d3 batched prover.
+    #[command(name = "dump-batch-proof")]
+    DumpBatchProof {
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// P2L-d d4.c — BATCHED shielded aggregate vectors: the agg Action AIR
+    /// fixtures (1in / 1in salted / 2in / 4in / 4in salted) re-proved via the
+    /// REAL prove_batch as 1-instance is_zk=1 batches — the salted ones over
+    /// MerkleTreeHidingMmcs(SmallRng(1), SALT_ELEMS=2) for BOTH the input and
+    /// the FRI challenge mmcs (make_salted_zk_config parity). Every scenario
+    /// verify_batch == Ok gated + num_qc STOP gate (== 8) + DZKF v4 wire
+    /// bytes. Draw/salt streams for the C KAT = smallrng_goldilocks.json
+    /// (three same-seed SmallRng(1) streams, the v3 parity).
+    #[command(name = "dump-batch-shielded-agg")]
+    DumpBatchShieldedAgg {
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// Dump all (runs all subcommands; ones not yet implemented are skipped).
     DumpAll {
         #[arg(long)]
@@ -705,6 +778,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Cmd::DumpNoteCommitSponge { out } => dump_note_commit_sponge(&out)?,
         Cmd::DumpDuplexChallenger { out } => dump_duplex_challenger(&out)?,
         Cmd::DumpPoseidon2Mmcs { out } => dump_poseidon2_mmcs(&out)?,
+        Cmd::DumpPoseidon2MmcsMixed { out } => dump_poseidon2_mmcs_mixed(&out)?,
+        Cmd::DumpLogup { out } => stark_priming::dump_logup(&out)?,
+        Cmd::DumpLogupBus { out } => stark_priming::dump_logup_bus(&out)?,
+        Cmd::DumpBatchPriming { out } => stark_priming::dump_batch_priming(&out)?,
+        Cmd::DumpBatchProof { out } => stark_priming::dump_batch_proof(&out)?,
+        Cmd::DumpBatchShieldedAgg { out } => {
+            stark_priming::dump_batch_shielded_agg(&out)?
+        }
         Cmd::DumpAll { out_dir } => {
             std::fs::create_dir_all(&out_dir)?;
             dump_field_ops(&out_dir.join("field_ops.json"))?;
@@ -1794,6 +1875,181 @@ fn dump_poseidon2_mmcs(out_path: &PathBuf) -> Result<(), Box<dyn std::error::Err
         salt_elems: 2,
         sponge_cases,
         compress_cases,
+        trees,
+    };
+    if let Some(parent) = out_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut f = File::create(out_path)?;
+    f.write_all(serde_json::to_string_pretty(&file)?.as_bytes())?;
+    f.write_all(b"\n")?;
+    eprintln!("wrote {}", out_path.display());
+    Ok(())
+}
+
+// ============================================================================
+// P2L-d d1a — MIXED-height Poseidon2 MMCS dump (dump-poseidon2-mmcs-mixed)
+// ============================================================================
+
+#[derive(Serialize)]
+struct P2mmTree {
+    name: &'static str,
+    salted: String,
+    heights: Vec<String>, /* per ORIGINAL matrix index */
+    widths: Vec<String>,
+    matrices: Vec<Vec<String>>,
+    root: Vec<String>,
+    openings: Vec<P2mOpening>,
+}
+
+#[derive(Serialize)]
+struct P2mmFile {
+    format_version: &'static str,
+    plonky3_commit: &'static str,
+    constructor: &'static str,
+    salt_elems: usize,
+    trees: Vec<P2mmTree>,
+}
+
+/// MIXED-height Poseidon2 MMCS vectors: REAL MerkleTreeMmcs +
+/// MerkleTreeHidingMmcs over matrices of different power-of-two heights
+/// (layer injection, merkle_tree.rs:127-176; N=2 so the arity schedule is
+/// all 2s). Openings at EVERY index of the max height, each
+/// verify_batch-checked in-oracle. Insertion order deliberately differs
+/// from height order in some trees (stable-grouping proof).
+fn dump_poseidon2_mmcs_mixed(out_path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    use p3_commit::{BatchOpeningRef, Mmcs};
+    use p3_goldilocks::Poseidon2Goldilocks;
+    use p3_matrix::Dimensions;
+    use p3_matrix::dense::RowMajorMatrix;
+    use p3_merkle_tree::{MerkleTreeHidingMmcs, MerkleTreeMmcs};
+    use p3_symmetric::{PseudoCompressionFunction, TruncatedPermutation};
+    use rand::SeedableRng;
+    use rand::rngs::SmallRng;
+
+    type Perm = Poseidon2Goldilocks<8>;
+    type MyHash = PaddingFreeSponge<Perm, 8, 4, 4>;
+    type MyCompress = TruncatedPermutation<Perm, 2, 4, 8>;
+    type ValPacking = <Goldilocks as Field>::Packing;
+    type ValMmcs = MerkleTreeMmcs<ValPacking, ValPacking, MyHash, MyCompress, 2, 4>;
+    type HidingMmcs =
+        MerkleTreeHidingMmcs<ValPacking, ValPacking, MyHash, MyCompress, SmallRng, 2, 4, 2>;
+    let _ = |c: &MyCompress, x: [[Goldilocks; 4]; 2]| -> [Goldilocks; 4] { c.compress(x) };
+
+    fn sm64(x: &mut u64) -> u64 {
+        *x = x.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut z = *x;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
+    }
+    fn strs(xs: &[Goldilocks]) -> Vec<String> {
+        xs.iter().map(|x| x.as_canonical_u64().to_string()).collect()
+    }
+
+    let perm = default_goldilocks_poseidon2_8();
+    let hash = MyHash::new(perm.clone());
+    let compress = MyCompress::new(perm.clone());
+    let mut seed: u64 = 0x0DDC_0FFE_E000_0002;
+
+    /* (name, salted, per-matrix (height, width) in INSERTION order) */
+    let specs: &[(&'static str, bool, &[(usize, usize)])] = &[
+        ("mixed_h8_h2", false, &[(8, 3), (2, 4)]),
+        ("mixed_h16_h8_h2", false, &[(16, 2), (8, 5), (2, 3)]),
+        ("mixed_h4_h4_h1", false, &[(4, 3), (4, 2), (1, 4)]),
+        /* insertion order != height order — stable-grouping proof */
+        ("mixed_scramble_h2_h8_h4", false, &[(2, 4), (8, 3), (4, 2)]),
+        ("mixed_h8_h8", false, &[(8, 2), (8, 3)]), /* degenerate: same-height pair via the mixed path */
+        ("mixed_salted_h8_h2", true, &[(8, 3), (2, 2)]),
+        ("mixed_salted_h16_h4_h4", true, &[(16, 2), (4, 3), (4, 1)]),
+    ];
+
+    let mut trees = Vec::new();
+    for &(name, salted, shapes) in specs {
+        let mats: Vec<RowMajorMatrix<Goldilocks>> = shapes
+            .iter()
+            .map(|&(h, w)| {
+                let vals: Vec<Goldilocks> = (0..h * w)
+                    .map(|_| Goldilocks::from_u64(sm64(&mut seed) % GOLDILOCKS_P))
+                    .collect();
+                RowMajorMatrix::new(vals, w)
+            })
+            .collect();
+        let dims: Vec<Dimensions> = shapes
+            .iter()
+            .map(|&(h, w)| Dimensions { width: w, height: h })
+            .collect();
+        let max_h = shapes.iter().map(|&(h, _)| h).max().unwrap();
+        let matrices_json: Vec<Vec<String>> = mats.iter().map(|m| strs(&m.values)).collect();
+
+        let (root_lanes, openings) = if salted {
+            let mmcs = HidingMmcs::new(
+                hash.clone(),
+                compress.clone(),
+                0,
+                SmallRng::seed_from_u64(1),
+            );
+            let (cap, tree) = mmcs.commit(mats.clone());
+            let root: [Goldilocks; 4] = cap[0];
+            let mut ops = Vec::new();
+            for idx in 0..max_h {
+                let opening = mmcs.open_batch(idx, &tree);
+                mmcs.verify_batch(
+                    &cap,
+                    &dims,
+                    idx,
+                    BatchOpeningRef::new(&opening.opened_values, &opening.opening_proof),
+                )
+                .map_err(|e| format!("mixed salted verify_batch({name},{idx}): {e:?}"))?;
+                let (salts, siblings) = &opening.opening_proof;
+                ops.push(P2mOpening {
+                    index: idx.to_string(),
+                    opened: opening.opened_values.iter().map(|r| strs(r)).collect(),
+                    salts: salts.iter().map(|s| strs(s)).collect(),
+                    siblings: siblings.iter().map(|d| strs(d)).collect(),
+                });
+            }
+            (root, ops)
+        } else {
+            let mmcs = ValMmcs::new(hash.clone(), compress.clone(), 0);
+            let (cap, tree) = mmcs.commit(mats.clone());
+            let root: [Goldilocks; 4] = cap[0];
+            let mut ops = Vec::new();
+            for idx in 0..max_h {
+                let opening = mmcs.open_batch(idx, &tree);
+                mmcs.verify_batch(
+                    &cap,
+                    &dims,
+                    idx,
+                    BatchOpeningRef::new(&opening.opened_values, &opening.opening_proof),
+                )
+                .map_err(|e| format!("mixed plain verify_batch({name},{idx}): {e:?}"))?;
+                ops.push(P2mOpening {
+                    index: idx.to_string(),
+                    opened: opening.opened_values.iter().map(|r| strs(r)).collect(),
+                    salts: Vec::new(),
+                    siblings: opening.opening_proof.iter().map(|d| strs(d)).collect(),
+                });
+            }
+            (root, ops)
+        };
+
+        trees.push(P2mmTree {
+            name,
+            salted: if salted { "1" } else { "0" }.to_string(),
+            heights: shapes.iter().map(|&(h, _)| h.to_string()).collect(),
+            widths: shapes.iter().map(|&(_, w)| w.to_string()).collect(),
+            matrices: matrices_json,
+            root: strs(&root_lanes),
+            openings,
+        });
+    }
+
+    let file = P2mmFile {
+        format_version: ORACLE_FORMAT_VERSION,
+        plonky3_commit: PLONKY3_COMMIT,
+        constructor: "MIXED-height MerkleTreeMmcs / MerkleTreeHidingMmcs (SmallRng(1), SALT_ELEMS=2), N=2 cap 0 — layer injection per merkle_tree.rs:127-176; openings per mmcs.rs:976-1180",
+        salt_elems: 2,
         trees,
     };
     if let Some(parent) = out_path.parent() {
@@ -8582,6 +8838,9 @@ mod stark_priming {
     const NUM_FIBONACCI_COLS: usize = 2; // fib_air.rs:94
 
     /// fib_air.rs:25 — "For testing the public values feature"
+    /// (Clone derive added for the P2L-c batch prover: prove_batch requires
+    /// A: Clone, prover.rs:93/96 — non-semantic addition to the verbatim vendor.)
+    #[derive(Clone)]
     pub struct FibonacciAir {}
 
     impl<F> BaseAir<F> for FibonacciAir {
@@ -13803,6 +14062,7 @@ mod stark_priming {
     /// 2318 (post-F3), main_next=true (C1 + membership chaining + N_input counter
     /// read the next row), 43 public values (anchor[4] ‖ num_input ‖ nf_slot[4][4]
     /// ‖ num_output ‖ output_commit[4][4] ‖ fee ‖ tx_binding[4]).
+    #[derive(Clone)] /* d4.c: run_batch_proof_scenario's A: Clone bound */
     pub struct ConfActionAggAir;
 
     impl BaseAir<Goldilocks> for ConfActionAggAir {
@@ -15141,6 +15401,3265 @@ mod stark_priming {
         }
         write_cases(out_path, "RangeProofAir (range B+S + R/P is_real + balance I+U+F + count CI/CU/CF, width 56, main_next=true, 3 public; ADDITIVE)", cases)?;
         eprintln!("wrote {} (RangeProofAir: 2 cases db2-full + db3-padded; 61 constraints each; num_qc=1; ADDITIVE-only; CONFIDENTIAL BLOCKED on B1)", out_path.display());
+        Ok(())
+    }
+
+    // ========================================================================
+    // P2L-a — LogUp gadget oracle (dump-logup, 2026-07-23)
+    //
+    // Ground truth for the C logup.c byte-match (P2-lookup design §4 P2L-a).
+    // Sources (Plonky3 82cfad73):
+    //   - aux traces + cumulative sums: the REAL p3_lookup::logup::LogUpGadget::
+    //     generate_permutation::<StarkCfg> (lookup/src/logup.rs:370-646).
+    //   - per-row constraint residuals: the REAL eval_local / eval_global
+    //     (logup.rs:158-265) on LogupEvalBuilder below — a concrete recording
+    //     PermutationAirBuilder (pattern: lookup/src/tests.rs:113-248
+    //     MockAirBuilder), Goldilocks Val / Goldilocks² Challenge, with the
+    //     WRAP next-row convention: next = (row+1) % height. That matches BOTH
+    //     generate_permutation's own window (logup.rs:474) and the cyclic
+    //     constraint-domain argument (logup.rs:259-263); tests.rs's Mock
+    //     zero-pads the final next-row instead — wrap is the semantics the
+    //     real quotient domain uses. PINNED here; the C side must match.
+    //   - verify_global_sum verdicts: the REAL LookupProtocol::verify_global_sum
+    //     (logup.rs:314-324). NOTE: it is a FLAT sum over the given list; the
+    //     per-bus-name grouping is the CALLER's job (batch-stark
+    //     verifier/mod.rs:623-643 — red-team F3 / G-DET-L4). Both global
+    //     checks here are single-bus ("LUT"), so the flat sum over the group
+    //     IS the per-bus check.
+    //   - constraint_degree: the REAL LookupProtocol::constraint_degree
+    //     (logup.rs:339-367).
+    //
+    // Determinism: fixed constants only (no RNG, no time); p3-maybe-rayon has
+    // no `parallel` feature here, so generate_permutation runs serial.
+    // Regenerate-and-diff must be byte-identical.
+    // ========================================================================
+
+    use p3_air::{
+        BaseEntry, BaseLeaf, ExtensionBuilder, PermutationAirBuilder, SymbolicExpression,
+    };
+    use p3_lookup::builder::InteractionBuilder;
+    use p3_lookup::logup::LogUpGadget;
+    use p3_lookup::protocol::LookupProtocol;
+    use p3_lookup::{Kind, Lookup, LookupData, Lookups};
+
+    /// Concrete recording builder for LogUp constraint evaluation
+    /// (lookup/src/tests.rs:113-248 MockAirBuilder pattern; assert_zero_ext
+    /// RECORDS instead of asserting, and windows WRAP).
+    struct LogupEvalBuilder {
+        main_full: RowMajorMatrix<Goldilocks>,
+        prep_full: RowMajorMatrix<Goldilocks>,
+        prep_window: RowMajorMatrix<Goldilocks>,
+        perm_full: RowMajorMatrix<GoldFp2>,
+        publics: Vec<Goldilocks>,
+        challenges: Vec<GoldFp2>,
+        row: usize,
+        height: usize,
+        /// assert_zero_ext values in call order — the residual stream.
+        recorded_ext: Vec<GoldFp2>,
+        /// Base-field assert_zero values. eval_update never emits these; the
+        /// runner fail-closes if any appear.
+        recorded_base: Vec<Goldilocks>,
+    }
+
+    impl LogupEvalBuilder {
+        fn new(
+            main_full: RowMajorMatrix<Goldilocks>,
+            prep_full: RowMajorMatrix<Goldilocks>,
+            perm_full: RowMajorMatrix<GoldFp2>,
+            publics: Vec<Goldilocks>,
+            challenges: Vec<GoldFp2>,
+        ) -> Self {
+            use p3_matrix::Matrix;
+            let height = main_full.height();
+            let mut b = Self {
+                main_full,
+                prep_full,
+                prep_window: RowMajorMatrix::new(vec![], 0),
+                perm_full,
+                publics,
+                challenges,
+                row: 0,
+                height,
+                recorded_ext: Vec::new(),
+                recorded_base: Vec::new(),
+            };
+            b.for_row(0);
+            b
+        }
+
+        /// Two-row window (current, next) with WRAP: next = (row+1) % height
+        /// (logup.rs:474 convention).
+        fn window<T: Clone + Send + Sync>(&self, trace: &RowMajorMatrix<T>) -> RowMajorMatrix<T> {
+            use p3_matrix::Matrix;
+            let w = trace.width();
+            if w == 0 {
+                return RowMajorMatrix::new(vec![], 0);
+            }
+            let mut v: Vec<T> = Vec::with_capacity(2 * w);
+            v.extend(trace.row(self.row).unwrap().into_iter());
+            v.extend(trace.row((self.row + 1) % self.height).unwrap().into_iter());
+            RowMajorMatrix::new(v, w)
+        }
+
+        fn for_row(&mut self, r: usize) {
+            self.row = r;
+            let w = self.window(&self.prep_full);
+            self.prep_window = w;
+        }
+    }
+
+    impl AirBuilder for LogupEvalBuilder {
+        type F = Goldilocks;
+        type Expr = Goldilocks;
+        type Var = Goldilocks;
+        type PreprocessedWindow = RowMajorMatrix<Goldilocks>;
+        type MainWindow = RowMajorMatrix<Goldilocks>;
+        type PublicVar = Goldilocks;
+        type PeriodicVar = Goldilocks;
+
+        fn main(&self) -> Self::MainWindow {
+            self.window(&self.main_full)
+        }
+        fn preprocessed(&self) -> &Self::PreprocessedWindow {
+            &self.prep_window
+        }
+        fn is_first_row(&self) -> Self::Expr {
+            Goldilocks::from_bool(self.row == 0)
+        }
+        fn is_last_row(&self) -> Self::Expr {
+            Goldilocks::from_bool(self.row + 1 == self.height)
+        }
+        fn is_transition_window(&self, size: usize) -> Self::Expr {
+            assert!(size <= 2, "only two-row windows are supported, got {size}");
+            Goldilocks::from_bool(self.row + 1 < self.height)
+        }
+        fn assert_zero<I: Into<Self::Expr>>(&mut self, x: I) {
+            self.recorded_base.push(x.into());
+        }
+        fn public_values(&self) -> &[Self::PublicVar] {
+            &self.publics
+        }
+    }
+
+    impl ExtensionBuilder for LogupEvalBuilder {
+        type EF = GoldFp2;
+        type ExprEF = GoldFp2;
+        type VarEF = GoldFp2;
+
+        fn assert_zero_ext<I>(&mut self, x: I)
+        where
+            I: Into<Self::ExprEF>,
+        {
+            self.recorded_ext.push(x.into());
+        }
+    }
+
+    impl PermutationAirBuilder for LogupEvalBuilder {
+        type MP = RowMajorMatrix<GoldFp2>;
+        type RandomVar = GoldFp2;
+        type PermutationVar = GoldFp2;
+
+        fn permutation(&self) -> Self::MP {
+            self.window(&self.perm_full)
+        }
+        fn permutation_randomness(&self) -> &[GoldFp2] {
+            &self.challenges
+        }
+        fn permutation_values(&self) -> &[GoldFp2] {
+            &[]
+        }
+    }
+
+    /// VERBATIM (field-generic) from lookup/src/tests.rs:257-298 RangeCheckAir.
+    /// Main trace per lookup i: [read, provide, mult] at columns 3i..3i+2.
+    struct LogupRangeCheckAir {
+        num_lookups: usize,
+    }
+
+    impl<F: p3_field::Field> BaseAir<F> for LogupRangeCheckAir {
+        fn width(&self) -> usize {
+            3 * self.num_lookups
+        }
+    }
+
+    impl<AB> Air<AB> for LogupRangeCheckAir
+    where
+        AB: AirBuilder<F: p3_field::Field> + InteractionBuilder,
+    {
+        fn eval(&self, builder: &mut AB) {
+            let main = builder.main();
+            let local = main.current_slice();
+            for i in 0..self.num_lookups {
+                let offset = i * 3;
+                let val = local[offset];
+                let table_val = local[offset + 1];
+                let mult = local[offset + 2];
+                builder.push_local_interaction(vec![
+                    (vec![val.into()], AB::Expr::ONE),
+                    (vec![table_val.into()], -(mult.into())),
+                ]);
+            }
+        }
+    }
+
+    /// VERBATIM (field-generic) from lookup/src/tests.rs:1100-1169 AddAir.
+    /// 7 columns: (inp1, inp2, sum, table_inp1, table_inp2, table_sum, mult);
+    /// local tuple lookup + optional global interaction on bus "LUT"
+    /// (send = count −1, receive = count +1).
+    /// (Clone derive added for the P2L-c batch prover, prover.rs:93/96.)
+    #[derive(Clone)]
+    struct LogupAddAir {
+        global_send: Option<bool>,
+    }
+
+    impl<F: p3_field::Field> BaseAir<F> for LogupAddAir {
+        fn width(&self) -> usize {
+            7
+        }
+    }
+
+    impl<AB> Air<AB> for LogupAddAir
+    where
+        AB: AirBuilder<F: p3_field::Field> + InteractionBuilder,
+    {
+        fn eval(&self, builder: &mut AB) {
+            let main = builder.main();
+            let local = main.current_slice();
+
+            let inp1 = local[0];
+            let inp2 = local[1];
+            let sum = local[2];
+            let table_inp1 = local[3];
+            let table_inp2 = local[4];
+            let table_sum = local[5];
+            let mult = local[6];
+
+            builder.push_local_interaction(vec![
+                (vec![inp1.into(), inp2.into(), sum.into()], AB::Expr::ONE),
+                (
+                    vec![table_inp1.into(), table_inp2.into(), table_sum.into()],
+                    -(mult.into()),
+                ),
+            ]);
+
+            if let Some(is_send) = self.global_send {
+                let count = if is_send {
+                    -AB::Expr::ONE // send = negative
+                } else {
+                    AB::Expr::ONE // receive = positive
+                };
+                builder.push_interaction(
+                    "LUT",
+                    [table_inp1.into(), table_inp2.into(), table_sum.into()],
+                    count,
+                    1,
+                );
+            }
+        }
+    }
+
+    /// Serialize a lookup element/multiplicity expression tree for the C
+    /// parser. P2L-a scope: main/prep/public leaves, constants, add/sub/mul/neg.
+    fn logup_expr_json(e: &SymbolicExpression<Goldilocks>) -> serde_json::Value {
+        match e {
+            SymbolicExpression::Leaf(leaf) => match leaf {
+                BaseLeaf::Variable(v) => match v.entry {
+                    BaseEntry::Main { offset } => {
+                        serde_json::json!({ "op": "main", "col": v.index, "next": offset })
+                    }
+                    BaseEntry::Preprocessed { offset } => {
+                        serde_json::json!({ "op": "prep", "col": v.index, "next": offset })
+                    }
+                    BaseEntry::Public => serde_json::json!({ "op": "public", "idx": v.index }),
+                    BaseEntry::Periodic => panic!("periodic leaf not in P2L-a scope"),
+                },
+                BaseLeaf::Constant(c) => {
+                    serde_json::json!({ "op": "const", "val": c.as_canonical_u64().to_string() })
+                }
+                _ => panic!("selector leaf not expected in P2L-a lookup expressions"),
+            },
+            SymbolicExpression::Add { x, y, .. } => {
+                serde_json::json!({ "op": "add", "x": logup_expr_json(x), "y": logup_expr_json(y) })
+            }
+            SymbolicExpression::Sub { x, y, .. } => {
+                serde_json::json!({ "op": "sub", "x": logup_expr_json(x), "y": logup_expr_json(y) })
+            }
+            SymbolicExpression::Neg { x, .. } => {
+                serde_json::json!({ "op": "neg", "x": logup_expr_json(x) })
+            }
+            SymbolicExpression::Mul { x, y, .. } => {
+                serde_json::json!({ "op": "mul", "x": logup_expr_json(x), "y": logup_expr_json(y) })
+            }
+        }
+    }
+
+    /// One oracle instance: a (trace, lookups, challenges) tuple run through
+    /// the REAL gadget.
+    struct LogupInstanceSpec {
+        name: &'static str,
+        comment: &'static str,
+        main: RowMajorMatrix<Goldilocks>,
+        prep: Option<RowMajorMatrix<Goldilocks>>,
+        publics: Vec<Goldilocks>,
+        lookups: Vec<Lookup<Goldilocks>>,
+        /// Flat challenge array, indexed challenges[2·column] = α,
+        /// challenges[2·column+1] = β (logup.rs:207-209, 421-425).
+        challenges: Vec<GoldFp2>,
+        /// Overwrite aux[row][col] with a garbage value AFTER generation —
+        /// the recomputed residuals are then non-zero and byte-matched.
+        corrupt_aux: Option<(usize, usize, GoldFp2)>,
+    }
+
+    /// Run one instance: REAL generate_permutation + REAL eval_local/eval_global
+    /// residual replay. Returns (case JSON, global cumulative sums).
+    fn logup_run_instance(
+        spec: &LogupInstanceSpec,
+    ) -> Result<(serde_json::Value, Vec<(String, usize, GoldFp2)>), Box<dyn std::error::Error>>
+    {
+        use p3_matrix::Matrix;
+
+        let gadget = LogUpGadget::new();
+        let height = spec.main.height();
+
+        // Prefill LookupData (name + aux_column) in global-lookup order;
+        // generate_permutation fills cumulative_sum (logup.rs:636-640).
+        let mut lookup_data: Vec<LookupData<GoldFp2>> = spec
+            .lookups
+            .iter()
+            .filter_map(|l| match &l.kind {
+                Kind::Global(name) => Some(LookupData {
+                    name: name.clone(),
+                    aux_column: l.column,
+                    cumulative_sum: GoldFp2::ZERO,
+                }),
+                Kind::Local => None,
+            })
+            .collect();
+
+        // REAL aux-trace generation (logup.rs:370-646).
+        let mut aux: RowMajorMatrix<GoldFp2> = gadget.generate_permutation::<StarkCfg>(
+            &spec.main,
+            &spec.prep,
+            &spec.publics,
+            &spec.lookups,
+            &mut lookup_data,
+            &spec.challenges,
+        );
+
+        // Optional witness corruption AFTER generation.
+        if let Some((r, c, v)) = spec.corrupt_aux {
+            let w = aux.width();
+            aux.values[r * w + c] = v;
+        }
+
+        // Residual replay with the REAL eval_local / eval_global.
+        let prep_or_empty = spec
+            .prep
+            .clone()
+            .unwrap_or_else(|| RowMajorMatrix::new(vec![], 0));
+        let mut builder = LogupEvalBuilder::new(
+            spec.main.clone(),
+            prep_or_empty,
+            aux.clone(),
+            spec.publics.clone(),
+            spec.challenges.clone(),
+        );
+
+        let mut residuals_rows: Vec<serde_json::Value> = Vec::new();
+        for row in 0..height {
+            builder.for_row(row);
+            let mut per_lookup: Vec<serde_json::Value> = Vec::new();
+            for lookup in &spec.lookups {
+                builder.recorded_ext.clear();
+                builder.recorded_base.clear();
+                match &lookup.kind {
+                    Kind::Local => gadget.eval_local(&mut builder, lookup),
+                    Kind::Global(_) => {
+                        let cum = lookup_data
+                            .iter()
+                            .find(|d| d.aux_column == lookup.column)
+                            .expect("global lookup must have a LookupData entry")
+                            .cumulative_sum;
+                        gadget.eval_global(&mut builder, lookup, cum);
+                    }
+                }
+                assert!(
+                    builder.recorded_base.is_empty(),
+                    "eval_update must not emit base-field constraints"
+                );
+                per_lookup.push(serde_json::Value::Array(
+                    builder.recorded_ext.iter().map(|&v| fp2_json(v)).collect(),
+                ));
+            }
+            residuals_rows.push(serde_json::Value::Array(per_lookup));
+        }
+
+        // ---- serialize ----
+        let row_json = |m: &RowMajorMatrix<Goldilocks>, r: usize| -> serde_json::Value {
+            serde_json::Value::Array(
+                m.row(r)
+                    .unwrap()
+                    .into_iter()
+                    .map(|v: Goldilocks| {
+                        serde_json::Value::String(v.as_canonical_u64().to_string())
+                    })
+                    .collect(),
+            )
+        };
+        let main_json: Vec<serde_json::Value> =
+            (0..height).map(|r| row_json(&spec.main, r)).collect();
+        let prep_json = match &spec.prep {
+            Some(p) => serde_json::json!({
+                "width": p.width(),
+                "rows": (0..p.height()).map(|r| row_json(p, r)).collect::<Vec<_>>(),
+            }),
+            None => serde_json::Value::Null,
+        };
+        let publics_json: Vec<serde_json::Value> = spec
+            .publics
+            .iter()
+            .map(|v| serde_json::Value::String(v.as_canonical_u64().to_string()))
+            .collect();
+        let lookups_json: Vec<serde_json::Value> = spec
+            .lookups
+            .iter()
+            .map(|l| {
+                let (kind, bus) = match &l.kind {
+                    Kind::Local => ("local", String::new()),
+                    Kind::Global(n) => ("global", n.clone()),
+                };
+                serde_json::json!({
+                    "kind": kind,
+                    "bus_name": bus,
+                    "column": l.column,
+                    "constraint_degree": gadget.constraint_degree(l),
+                    "tuples": l.elements.iter().zip(l.multiplicities.iter()).map(|(elts, m)| {
+                        serde_json::json!({
+                            "elements": elts.iter().map(logup_expr_json).collect::<Vec<_>>(),
+                            "multiplicity": logup_expr_json(m),
+                        })
+                    }).collect::<Vec<_>>(),
+                })
+            })
+            .collect();
+        let challenges_json: Vec<serde_json::Value> =
+            spec.challenges.iter().map(|&c| fp2_json(c)).collect();
+        let aux_json: Vec<serde_json::Value> = (0..height)
+            .map(|r| {
+                serde_json::Value::Array(
+                    aux.row(r)
+                        .unwrap()
+                        .into_iter()
+                        .map(|v: GoldFp2| fp2_json(v))
+                        .collect(),
+                )
+            })
+            .collect();
+        let cum_json: Vec<serde_json::Value> = lookup_data
+            .iter()
+            .map(|d| {
+                serde_json::json!({
+                    "bus_name": d.name,
+                    "aux_column": d.aux_column,
+                    "sum": fp2_json(d.cumulative_sum),
+                })
+            })
+            .collect();
+
+        let case = serde_json::json!({
+            "name": spec.name,
+            "comment": spec.comment,
+            "height": height,
+            "main_width": spec.main.width(),
+            "main": main_json,
+            "preprocessed": prep_json,
+            "public_values": publics_json,
+            "lookups": lookups_json,
+            "challenges": challenges_json,
+            "num_aux_cols": spec.lookups.len(),
+            "aux_corrupted": spec.corrupt_aux.is_some(),
+            "aux": aux_json,
+            "cumulative_sums": cum_json,
+            "residuals": residuals_rows,
+        });
+
+        let sums_out: Vec<(String, usize, GoldFp2)> = lookup_data
+            .into_iter()
+            .map(|d| (d.name, d.aux_column, d.cumulative_sum))
+            .collect();
+        Ok((case, sums_out))
+    }
+
+    pub fn dump_logup(out_path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+        let ch = |a: u64, b: u64| {
+            super::mk_fp2(a % super::GOLDILOCKS_P, b % super::GOLDILOCKS_P)
+        };
+        let mk_main = |rows: &[&[u64]]| -> RowMajorMatrix<Goldilocks> {
+            let w = rows[0].len();
+            let flat: Vec<Goldilocks> = rows
+                .iter()
+                .flat_map(|r| {
+                    assert_eq!(r.len(), w, "ragged main-trace row");
+                    r.iter().map(|&v| Goldilocks::from_u64(v))
+                })
+                .collect();
+            RowMajorMatrix::new(flat, w)
+        };
+        let leaf_const_one =
+            || SymbolicExpression::Leaf(BaseLeaf::Constant(Goldilocks::ONE));
+
+        // Fixed full-2-limb challenges (deterministic; NOT base-embedded).
+        let l1a = ch(0xA1B2_C3D4_E5F6_0718, 0x1122_3344_5566_7788);
+        let l1b = ch(0x0F1E_2D3C_4B5A_6978, 0x8899_AABB_CCDD_EEFF);
+        let l2a = ch(0x1357_9BDF_0246_8ACE, 0xFEDC_BA98_7654_3210);
+        let l2b = ch(0x0011_2233_4455_6677, 0x8091_A2B3_C4D5_E6F7);
+        let ga = ch(0xDEAD_BEEF_CAFE_F00D, 0x0123_4567_89AB_CDEF);
+        let gb = ch(0x0BAD_F00D_DEAD_C0DE, 0x7654_3210_FEDC_BA98);
+
+        // Lookups extracted through the REAL symbolic pipeline
+        // (Lookups::from_air — locals first, then globals; types.rs:59-89).
+        let rc1: Vec<Lookup<Goldilocks>> =
+            Lookups::from_air::<GoldFp2, _>(&LogupRangeCheckAir { num_lookups: 1 })
+                .as_ref()
+                .to_vec();
+        let rc2: Vec<Lookup<Goldilocks>> =
+            Lookups::from_air::<GoldFp2, _>(&LogupRangeCheckAir { num_lookups: 2 })
+                .as_ref()
+                .to_vec();
+        let add_local: Vec<Lookup<Goldilocks>> =
+            Lookups::from_air::<GoldFp2, _>(&LogupAddAir { global_send: None })
+                .as_ref()
+                .to_vec();
+        let add_recv: Vec<Lookup<Goldilocks>> =
+            Lookups::from_air::<GoldFp2, _>(&LogupAddAir { global_send: Some(false) })
+                .as_ref()
+                .to_vec();
+        let add_send: Vec<Lookup<Goldilocks>> =
+            Lookups::from_air::<GoldFp2, _>(&LogupAddAir { global_send: Some(true) })
+                .as_ref()
+                .to_vec();
+
+        // Manual lookups exercising the remaining expression leaves.
+        // local_preprocessed: main [read]; prep [table_val, table_mult].
+        let prep_lookup: Vec<Lookup<Goldilocks>> = {
+            let sb = SymbolicAirBuilder::<Goldilocks>::new(AirLayout {
+                main_width: 1,
+                preprocessed_width: 2,
+                ..Default::default()
+            });
+            let read = SymbolicExpression::Leaf(BaseLeaf::Variable(
+                sb.main().current(0).unwrap(),
+            ));
+            let tval = SymbolicExpression::Leaf(BaseLeaf::Variable(
+                sb.preprocessed().current(0).unwrap(),
+            ));
+            let tmult = SymbolicExpression::Leaf(BaseLeaf::Variable(
+                sb.preprocessed().current(1).unwrap(),
+            ));
+            vec![Lookup {
+                kind: Kind::Local,
+                elements: vec![vec![read], vec![tval]],
+                multiplicities: vec![leaf_const_one(), -tmult],
+                column: 0,
+            }]
+        };
+        // local_next_row: main [v, t] with t = cyclic shift of v; the read
+        // element references the NEXT row (offset 1).
+        let next_lookup: Vec<Lookup<Goldilocks>> = {
+            let sb = SymbolicAirBuilder::<Goldilocks>::new(AirLayout {
+                main_width: 2,
+                ..Default::default()
+            });
+            let v_next = SymbolicExpression::Leaf(BaseLeaf::Variable(
+                sb.main().next(0).unwrap(),
+            ));
+            let t_cur = SymbolicExpression::Leaf(BaseLeaf::Variable(
+                sb.main().current(1).unwrap(),
+            ));
+            vec![Lookup {
+                kind: Kind::Local,
+                elements: vec![vec![v_next], vec![t_cur]],
+                multiplicities: vec![leaf_const_one(), -leaf_const_one()],
+                column: 0,
+            }]
+        };
+        // public_mult_expr: main [read, provide, multsel], public [m]; the
+        // provide multiplicity is −(public0 · multsel) and the read element is
+        // ((read + 1) − 1) — exercises PUBLIC, MUL, ADD, SUB, NEG nodes.
+        let pub_lookup: Vec<Lookup<Goldilocks>> = {
+            let sb = SymbolicAirBuilder::<Goldilocks>::new(AirLayout {
+                main_width: 3,
+                num_public_values: 1,
+                ..Default::default()
+            });
+            let read = SymbolicExpression::Leaf(BaseLeaf::Variable(
+                sb.main().current(0).unwrap(),
+            ));
+            let prov = SymbolicExpression::Leaf(BaseLeaf::Variable(
+                sb.main().current(1).unwrap(),
+            ));
+            let msel = SymbolicExpression::Leaf(BaseLeaf::Variable(
+                sb.main().current(2).unwrap(),
+            ));
+            let pub0 =
+                SymbolicExpression::Leaf(BaseLeaf::Variable(sb.public_values()[0]));
+            let read_expr = (read + leaf_const_one()) - leaf_const_one();
+            vec![Lookup {
+                kind: Kind::Local,
+                elements: vec![vec![read_expr], vec![prov]],
+                multiplicities: vec![leaf_const_one(), -(pub0 * msel)],
+                column: 0,
+            }]
+        };
+
+        let instances: Vec<LogupInstanceSpec> = vec![
+            LogupInstanceSpec {
+                name: "local_single",
+                comment: "tests.rs:887-924 nontrivial-permutation pattern; balanced",
+                main: mk_main(&[
+                    &[7, 3, 2], &[3, 5, 4], &[5, 7, 2], &[3, 3, 0],
+                    &[7, 5, 0], &[5, 5, 0], &[5, 7, 0], &[5, 5, 0],
+                ]),
+                prep: None,
+                publics: vec![],
+                lookups: rc1.clone(),
+                challenges: vec![l1a, l1b],
+                corrupt_aux: None,
+            },
+            LogupInstanceSpec {
+                name: "local_tuple",
+                comment: "tests.rs:1172-1226 3-wide tuple lookup; balanced",
+                main: mk_main(&[
+                    &[0, 1, 1, 0, 1, 1, 2],
+                    &[0, 1, 1, 0, 0, 0, 1],
+                    &[1, 1, 2, 1, 0, 1, 0],
+                    &[0, 0, 0, 1, 1, 2, 1],
+                ]),
+                prep: None,
+                publics: vec![],
+                lookups: add_local,
+                challenges: vec![l2a, l2b],
+                corrupt_aux: None,
+            },
+            LogupInstanceSpec {
+                name: "local_two_lookups",
+                comment: "tests.rs:969-1095 two independent lookups, two aux columns",
+                main: mk_main(&[
+                    &[10, 10, 1, 5, 5, 1],
+                    &[20, 20, 1, 15, 15, 1],
+                    &[30, 30, 1, 25, 25, 1],
+                    &[40, 40, 1, 35, 35, 1],
+                ]),
+                prep: None,
+                publics: vec![],
+                lookups: rc2,
+                challenges: vec![l1a, l1b, l2a, l2b],
+                corrupt_aux: None,
+            },
+            LogupInstanceSpec {
+                name: "global_receiver",
+                comment: "tests.rs:1229-1391 LUT receiver (count +1); shared (ga,gb) with global_sender",
+                main: mk_main(&[
+                    &[0, 1, 1, 0, 0, 0, 1],
+                    &[0, 1, 1, 0, 1, 1, 2],
+                    &[1, 1, 2, 1, 1, 2, 1],
+                    &[0, 0, 0, 1, 0, 1, 0],
+                ]),
+                prep: None,
+                publics: vec![],
+                lookups: add_recv.clone(),
+                challenges: vec![l1a, l1b, ga, gb],
+                corrupt_aux: None,
+            },
+            LogupInstanceSpec {
+                name: "global_sender",
+                comment: "tests.rs:1229-1391 LUT sender (count -1); same LUT multiset, different order",
+                main: mk_main(&[
+                    &[0, 1, 1, 0, 1, 1, 2],
+                    &[0, 1, 1, 0, 0, 0, 1],
+                    &[1, 1, 2, 1, 0, 1, 0],
+                    &[0, 0, 0, 1, 1, 2, 1],
+                ]),
+                prep: None,
+                publics: vec![],
+                lookups: add_send.clone(),
+                challenges: vec![l2a, l2b, ga, gb],
+                corrupt_aux: None,
+            },
+            LogupInstanceSpec {
+                name: "global_receiver_t",
+                comment: "tampered pair: receiver unchanged",
+                main: mk_main(&[
+                    &[0, 1, 1, 0, 0, 0, 1],
+                    &[0, 1, 1, 0, 1, 1, 2],
+                    &[1, 1, 2, 1, 1, 2, 1],
+                    &[0, 0, 0, 1, 0, 1, 0],
+                ]),
+                prep: None,
+                publics: vec![],
+                lookups: add_recv,
+                challenges: vec![l1a, l1b, ga, gb],
+                corrupt_aux: None,
+            },
+            LogupInstanceSpec {
+                name: "global_sender_t",
+                comment: "tampered pair: sender LUT row2 (1,0,1)->(1,0,2); local still balanced (mult 0), global group must NOT cancel",
+                main: mk_main(&[
+                    &[0, 1, 1, 0, 1, 1, 2],
+                    &[0, 1, 1, 0, 0, 0, 1],
+                    &[1, 1, 2, 1, 0, 2, 0],
+                    &[0, 0, 0, 1, 1, 2, 1],
+                ]),
+                prep: None,
+                publics: vec![],
+                lookups: add_send,
+                challenges: vec![l2a, l2b, ga, gb],
+                corrupt_aux: None,
+            },
+            LogupInstanceSpec {
+                name: "corrupted_aux",
+                comment: "local_single trace with aux[2][0] overwritten post-generation; residual stream non-zero at rows 1-2 (tests.rs:763-797 pattern)",
+                main: mk_main(&[
+                    &[7, 3, 2], &[3, 5, 4], &[5, 7, 2], &[3, 3, 0],
+                    &[7, 5, 0], &[5, 5, 0], &[5, 7, 0], &[5, 5, 0],
+                ]),
+                prep: None,
+                publics: vec![],
+                lookups: rc1,
+                challenges: vec![l1a, l1b],
+                corrupt_aux: Some((2, 0, ch(99, 7))),
+            },
+            LogupInstanceSpec {
+                name: "local_preprocessed",
+                comment: "manual lookup over a preprocessed table [table_val, table_mult]; balanced",
+                main: mk_main(&[&[11], &[22], &[22], &[11]]),
+                prep: Some(mk_main(&[&[11, 2], &[22, 2], &[33, 0], &[44, 0]])),
+                publics: vec![],
+                lookups: prep_lookup,
+                challenges: vec![l1a, l1b],
+                corrupt_aux: None,
+            },
+            LogupInstanceSpec {
+                name: "local_next_row",
+                comment: "read element at next-row offset; t = cyclic shift of v so the WRAP multiset balances",
+                main: mk_main(&[&[3, 1], &[1, 4], &[4, 1], &[1, 3]]),
+                prep: None,
+                publics: vec![],
+                lookups: next_lookup,
+                challenges: vec![l2a, l2b],
+                corrupt_aux: None,
+            },
+            LogupInstanceSpec {
+                name: "public_mult_expr",
+                comment: "multiplicity -(public0*multsel), read ((r+1)-1); public0=2; balanced",
+                main: mk_main(&[&[9, 9, 1], &[9, 3, 0]]),
+                prep: None,
+                publics: vec![Goldilocks::from_u64(2)],
+                lookups: pub_lookup,
+                challenges: vec![ga, gb],
+                corrupt_aux: None,
+            },
+        ];
+
+        let mut cases: Vec<serde_json::Value> = Vec::new();
+        // (instance name, bus name, aux column, cumulative sum)
+        let mut all_sums: Vec<(String, String, usize, GoldFp2)> = Vec::new();
+        for spec in &instances {
+            let (case, sums) = logup_run_instance(spec)?;
+            for (bus, col, s) in sums {
+                all_sums.push((spec.name.to_string(), bus, col, s));
+            }
+            cases.push(case);
+        }
+
+        // Cross-instance global checks (single-bus groups — flat sum == the
+        // per-bus check; see the header note / F3).
+        let gadget = LogUpGadget::new();
+        let mut global_checks: Vec<serde_json::Value> = Vec::new();
+        for (check_name, insts, expect_ok) in [
+            ("lut_balanced", ["global_receiver", "global_sender"], true),
+            ("lut_tampered", ["global_receiver_t", "global_sender_t"], false),
+        ] {
+            let sums: Vec<GoldFp2> = insts
+                .iter()
+                .flat_map(|iname| {
+                    all_sums
+                        .iter()
+                        .filter(move |(i, bus, _, _)| i == iname && bus == "LUT")
+                        .map(|&(_, _, _, s)| s)
+                })
+                .collect();
+            assert_eq!(sums.len(), 2, "each LUT check spans exactly two instances");
+            let total: GoldFp2 = sums.iter().copied().sum();
+            let ok = gadget.verify_global_sum(&sums).is_ok();
+            assert_eq!(ok, expect_ok, "global check {check_name} verdict");
+            global_checks.push(serde_json::json!({
+                "name": check_name,
+                "bus_name": "LUT",
+                "instances": insts,
+                "sums": sums.iter().map(|&s| fp2_json(s)).collect::<Vec<_>>(),
+                "total": fp2_json(total),
+                "ok": ok,
+            }));
+        }
+
+        let doc = serde_json::json!({
+            "format_version": ORACLE_FORMAT_VERSION,
+            "plonky3_commit": PLONKY3_COMMIT,
+            "description": "P2L-a LogUp gadget vectors — REAL p3_lookup LogUpGadget over Goldilocks/Goldilocks²: generate_permutation aux traces (logup.rs:370-646), eval_local/eval_global residual streams (logup.rs:158-265; entries are selector-multiplied), cumulative sums, verify_global_sum verdicts, constraint degrees (logup.rs:339-367). next_row convention = WRAP ((row+1) % height, logup.rs:474). Residual stream order per (row, lookup): local = [is_first*s_local, full-domain transition]; global = [is_first*s_local, is_transition*((s_next-s_local)*D - N), is_last*((cum-s_local)*D - N)]. verify_global_sum is a FLAT sum — per-bus grouping is the caller's job (batch-stark verifier/mod.rs:623-643).",
+            "next_row_convention": "wrap",
+            "num_challenges_per_lookup": 2,
+            "cases": cases,
+            "global_checks": global_checks,
+        });
+
+        let mut f = File::create(out_path)?;
+        f.write_all(serde_json::to_string_pretty(&doc)?.as_bytes())?;
+        f.write_all(b"\n")?;
+        eprintln!(
+            "wrote {} ({} instances + 2 global checks)",
+            out_path.display(),
+            instances.len()
+        );
+        Ok(())
+    }
+
+    // ========================================================================
+    // P2L-b — interaction/bus oracle (dump-logup-bus, 2026-07-23)
+    //
+    // Ground truth for the C logup_bus.c byte-match (P2-lookup design §4
+    // P2L-b). Sources (Plonky3 82cfad73):
+    //   - column assignment: the REAL Lookups::from_air — locals FIRST, then
+    //     globals, each in push order (lookup/src/types.rs:59-89), regardless
+    //     of the interleaved push order inside the AIR eval.
+    //   - per-bus challenge memo: the REAL BatchTranscript::
+    //     sample_perm_challenges (batch-stark/src/transcript.rs:74-102) over
+    //     the production DuplexChallenger — globals sharing a bus name share
+    //     one (α,β) pair memoized at FIRST occurrence (instance order, then
+    //     column order); locals always draw fresh. The independent draw
+    //     stream is replayed from a second identical challenger (a FRESH
+    //     mk_prod_challenger with no observes — the full priming order is
+    //     P2L-c scope, documented).
+    //   - per-bus global-sum grouping: batch-stark verifier/mod.rs:623-643
+    //     semantics — group cumulative sums BY BUS NAME,每 group must sum to
+    //     zero via the REAL gadget verify_global_sum. Includes the
+    //     cross-bus-cancellation trap (red-team F3): two buses whose sums
+    //     cancel FLAT but each group is non-zero — per-bus must FAIL both.
+    //   - bus conventions (lookup/src/bus.rs): LookupBus query = +count /
+    //     weight 1, table = −count / weight 0; PermutationCheckBus send =
+    //     +count, receive = −count, both weight 1. count_weight is stored
+    //     (builder.rs:38) and NEVER computed anywhere in Plonky3 — the
+    //     Σ weight·height < p bound is a documented OFFLINE precondition
+    //     (builder.rs:33-38, red-team F4); its C checker is unit-tested
+    //     C-side (no Plonky3 vector exists).
+    //
+    // Determinism: fixed constants + the deterministic production challenger;
+    // regenerate-and-diff must be byte-identical.
+    // ========================================================================
+
+    /// Dedup table of serialized expressions, so the push script and the
+    /// expected lookups reference the SAME integer expr ids (the C test
+    /// builds one pool from the table and compares ids structurally).
+    #[derive(Default)]
+    struct LogupExprTable {
+        entries: Vec<serde_json::Value>,
+    }
+
+    impl LogupExprTable {
+        fn intern(&mut self, e: &SymbolicExpression<Goldilocks>) -> usize {
+            let j = logup_expr_json(e);
+            if let Some(i) = self.entries.iter().position(|x| x == &j) {
+                i
+            } else {
+                self.entries.push(j);
+                self.entries.len() - 1
+            }
+        }
+    }
+
+    /// Mixed-push-order bus AIR (width 3) proving the locals-first column
+    /// assignment. Variants pin three push scripts (see dump_logup_bus).
+    struct BusMixAir {
+        variant: u8,
+    }
+
+    impl<F: p3_field::Field> BaseAir<F> for BusMixAir {
+        fn width(&self) -> usize {
+            3
+        }
+    }
+
+    impl<AB> Air<AB> for BusMixAir
+    where
+        AB: AirBuilder<F: p3_field::Field> + InteractionBuilder,
+    {
+        fn eval(&self, builder: &mut AB) {
+            let main = builder.main();
+            let local = main.current_slice();
+            let c0 = local[0];
+            let c1 = local[1];
+            let c2 = local[2];
+            match self.variant {
+                0 => {
+                    // global BEFORE local — from_air must still put the local
+                    // at column 0 (types.rs:59-89).
+                    builder.push_interaction("mem", [c0.into()], c1, 1);
+                    builder.push_local_interaction(vec![
+                        (vec![c0.into()], AB::Expr::ONE),
+                        (vec![c1.into()], -(c2.into())),
+                    ]);
+                    builder.push_interaction("rc", [c2.into()], AB::Expr::ONE, 1);
+                }
+                1 => {
+                    // table side of the "mem" bus (LookupBus::table_entry
+                    // convention: −count, weight 0; bus.rs:66-76).
+                    builder.push_interaction("mem", [c0.into()], -(c1.into()), 0);
+                }
+                _ => {
+                    builder.push_local_interaction(vec![
+                        (vec![c1.into()], AB::Expr::ONE),
+                        (vec![c0.into()], -(c2.into())),
+                    ]);
+                    builder.push_interaction("rc", [c0.into()], AB::Expr::ONE, 1);
+                    builder.push_interaction("mem", [c1.into()], -AB::Expr::ONE, 0);
+                }
+            }
+        }
+    }
+
+    /// Two global lookups on ONE bus inside one AIR (width 3: v, m_send,
+    /// m_recv) — the same-bus memo shares (α,β), so equal send/receive
+    /// multiplicities cancel within the bus group.
+    struct BusPairAir;
+
+    impl<F: p3_field::Field> BaseAir<F> for BusPairAir {
+        fn width(&self) -> usize {
+            3
+        }
+    }
+
+    impl<AB> Air<AB> for BusPairAir
+    where
+        AB: AirBuilder<F: p3_field::Field> + InteractionBuilder,
+    {
+        fn eval(&self, builder: &mut AB) {
+            let main = builder.main();
+            let local = main.current_slice();
+            builder.push_interaction("aux", [local[0].into()], local[1], 1);
+            builder.push_interaction("aux", [local[0].into()], -(local[2].into()), 0);
+        }
+    }
+
+    /// Single global interaction on a named bus (width 1), count ±1 —
+    /// the cross-bus-cancellation attack construction (F3).
+    struct BusSignAir {
+        bus: &'static str,
+        send: bool,
+    }
+
+    impl<F: p3_field::Field> BaseAir<F> for BusSignAir {
+        fn width(&self) -> usize {
+            1
+        }
+    }
+
+    impl<AB> Air<AB> for BusSignAir
+    where
+        AB: AirBuilder<F: p3_field::Field> + InteractionBuilder,
+    {
+        fn eval(&self, builder: &mut AB) {
+            let main = builder.main();
+            let local = main.current_slice();
+            let count = if self.send {
+                AB::Expr::ONE
+            } else {
+                -AB::Expr::ONE
+            };
+            builder.push_interaction(self.bus, [local[0].into()], count, 1);
+        }
+    }
+
+    pub fn dump_logup_bus(out_path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+        use p3_batch_stark::BatchTranscript;
+
+        let gadget = LogUpGadget::new();
+
+        // ------------------------------------------------------------------
+        // Group 1+2 — column assignment + per-bus challenge memo
+        // ------------------------------------------------------------------
+        let lk_i0: Vec<Lookup<Goldilocks>> =
+            Lookups::from_air::<GoldFp2, _>(&BusMixAir { variant: 0 })
+                .as_ref()
+                .to_vec();
+        let lk_i1: Vec<Lookup<Goldilocks>> =
+            Lookups::from_air::<GoldFp2, _>(&BusMixAir { variant: 1 })
+                .as_ref()
+                .to_vec();
+        let lk_i2: Vec<Lookup<Goldilocks>> =
+            Lookups::from_air::<GoldFp2, _>(&BusMixAir { variant: 2 })
+                .as_ref()
+                .to_vec();
+
+        // Locals-first assignment self-check (types.rs:59-89).
+        assert!(matches!(lk_i0[0].kind, Kind::Local) && lk_i0[0].column == 0);
+        assert!(matches!(&lk_i0[1].kind, Kind::Global(n) if n == "mem") && lk_i0[1].column == 1);
+        assert!(matches!(&lk_i0[2].kind, Kind::Global(n) if n == "rc") && lk_i0[2].column == 2);
+        assert!(matches!(&lk_i1[0].kind, Kind::Global(n) if n == "mem"));
+        assert!(matches!(lk_i2[0].kind, Kind::Local));
+        assert!(matches!(&lk_i2[1].kind, Kind::Global(n) if n == "rc"));
+        assert!(matches!(&lk_i2[2].kind, Kind::Global(n) if n == "mem"));
+
+        // REAL per-bus challenge memo (transcript.rs:74-102) over the
+        // production challenger.
+        let mut bt: BatchTranscript<StarkCfg> = BatchTranscript::new(mk_prod_challenger());
+        let per_inst: Vec<Vec<GoldFp2>> = bt.sample_perm_challenges(
+            &[lk_i0.clone(), lk_i1.clone(), lk_i2.clone()],
+            &gadget,
+        );
+
+        // Independent draw replay: a fresh identical challenger sampling the
+        // same number of algebra elements in draw order (4 pairs = 8 elems).
+        let mut ch2 = mk_prod_challenger();
+        let draws: Vec<GoldFp2> = (0..8).map(|_| ch2.sample_algebra_element()).collect();
+
+        // Expected memo mapping (executor-derived, oracle-asserted):
+        //   I0: local=d0, mem(first)=d1, rc(first)=d2
+        //   I1: mem(memo)=d1
+        //   I2: local=d3, rc(memo)=d2, mem(memo)=d1
+        assert_eq!(per_inst[0], draws[0..6].to_vec(), "I0 challenge layout");
+        assert_eq!(per_inst[1], draws[2..4].to_vec(), "I1 memo reuse");
+        assert_eq!(per_inst[2][0..2], draws[6..8], "I2 fresh local");
+        assert_eq!(per_inst[2][2..4], draws[4..6], "I2 rc memo");
+        assert_eq!(per_inst[2][4..6], draws[2..4], "I2 mem memo");
+
+        // Interned expr table + push scripts (mirroring the AIR evals above,
+        // byte-for-byte the same expression trees).
+        let mut table = LogupExprTable::default();
+        let (c0, c1, c2, one) = {
+            let sb = SymbolicAirBuilder::<Goldilocks>::new(AirLayout {
+                main_width: 3,
+                ..Default::default()
+            });
+            let m = sb.main();
+            let c0 = SymbolicExpression::Leaf(BaseLeaf::Variable(m.current(0).unwrap()));
+            let c1 = SymbolicExpression::Leaf(BaseLeaf::Variable(m.current(1).unwrap()));
+            let c2 = SymbolicExpression::Leaf(BaseLeaf::Variable(m.current(2).unwrap()));
+            let one = SymbolicExpression::Leaf(BaseLeaf::Constant(Goldilocks::ONE));
+            (c0, c1, c2, one)
+        };
+        let e_c0 = table.intern(&c0);
+        let e_c1 = table.intern(&c1);
+        let e_c2 = table.intern(&c2);
+        let e_one = table.intern(&one);
+        let e_neg_c2 = table.intern(&(-c2.clone()));
+        let e_neg_c1 = table.intern(&(-c1.clone()));
+        let e_neg_one = table.intern(&(-one.clone()));
+
+        let script_i0 = serde_json::json!([
+            { "type": "global", "bus": "mem", "fields": [e_c0], "count": e_c1, "weight": 1 },
+            { "type": "local", "tuples": [
+                { "elements": [e_c0], "multiplicity": e_one },
+                { "elements": [e_c1], "multiplicity": e_neg_c2 } ] },
+            { "type": "global", "bus": "rc", "fields": [e_c2], "count": e_one, "weight": 1 },
+        ]);
+        let script_i1 = serde_json::json!([
+            { "type": "global", "bus": "mem", "fields": [e_c0], "count": e_neg_c1, "weight": 0 },
+        ]);
+        let script_i2 = serde_json::json!([
+            { "type": "local", "tuples": [
+                { "elements": [e_c1], "multiplicity": e_one },
+                { "elements": [e_c0], "multiplicity": e_neg_c2 } ] },
+            { "type": "global", "bus": "rc", "fields": [e_c0], "count": e_one, "weight": 1 },
+            { "type": "global", "bus": "mem", "fields": [e_c1], "count": e_neg_one, "weight": 0 },
+        ]);
+
+        // Expected lookups in interned form (from the REAL from_air output).
+        let interned_lookups = |table: &mut LogupExprTable,
+                                lks: &[Lookup<Goldilocks>]|
+         -> Vec<serde_json::Value> {
+            lks.iter()
+                .map(|l| {
+                    let (kind, bus) = match &l.kind {
+                        Kind::Local => ("local", String::new()),
+                        Kind::Global(n) => ("global", n.clone()),
+                    };
+                    serde_json::json!({
+                        "kind": kind,
+                        "bus_name": bus,
+                        "column": l.column,
+                        "tuples": l.elements.iter().zip(l.multiplicities.iter()).map(|(elts, m)| {
+                            serde_json::json!({
+                                "elements": elts.iter().map(|e| table.intern(e)).collect::<Vec<_>>(),
+                                "multiplicity": table.intern(m),
+                            })
+                        }).collect::<Vec<_>>(),
+                    })
+                })
+                .collect()
+        };
+        let exp_i0 = interned_lookups(&mut table, &lk_i0);
+        let exp_i1 = interned_lookups(&mut table, &lk_i1);
+        let exp_i2 = interned_lookups(&mut table, &lk_i2);
+
+        let assignment_case = serde_json::json!({
+            "name": "memo_three_instances",
+            "comment": "I0 pushes mem BEFORE its local (locals-first proof); I1 reuses mem; I2 reuses rc+mem after a fresh local. Draws = fresh production challenger, 4 pairs.",
+            "exprs": table.entries,
+            "instances": [
+                { "name": "mix0", "num_locals": 1, "num_globals": 2,
+                  "push_script": script_i0, "expected_lookups": exp_i0 },
+                { "name": "mix1", "num_locals": 0, "num_globals": 1,
+                  "push_script": script_i1, "expected_lookups": exp_i1 },
+                { "name": "mix2", "num_locals": 1, "num_globals": 2,
+                  "push_script": script_i2, "expected_lookups": exp_i2 },
+            ],
+            "draws": draws.iter().map(|&d| fp2_json(d)).collect::<Vec<_>>(),
+            "draws_used_pairs": 4,
+            "per_instance_challenges": per_inst.iter()
+                .map(|v| v.iter().map(|&c| fp2_json(c)).collect::<Vec<_>>())
+                .collect::<Vec<_>>(),
+        });
+
+        // ------------------------------------------------------------------
+        // Group 3 — per-bus global-sum grouping (real traces + real
+        // generate_permutation via logup_run_instance)
+        // ------------------------------------------------------------------
+        let ch = |a: u64, b: u64| {
+            super::mk_fp2(a % super::GOLDILOCKS_P, b % super::GOLDILOCKS_P)
+        };
+        let mk_main = |rows: &[&[u64]]| -> RowMajorMatrix<Goldilocks> {
+            let w = rows[0].len();
+            let flat: Vec<Goldilocks> = rows
+                .iter()
+                .flat_map(|r| {
+                    assert_eq!(r.len(), w, "ragged main-trace row");
+                    r.iter().map(|&v| Goldilocks::from_u64(v))
+                })
+                .collect();
+            RowMajorMatrix::new(flat, w)
+        };
+
+        let l1a = ch(0xA1B2_C3D4_E5F6_0718, 0x1122_3344_5566_7788);
+        let l1b = ch(0x0F1E_2D3C_4B5A_6978, 0x8899_AABB_CCDD_EEFF);
+        let l2a = ch(0x1357_9BDF_0246_8ACE, 0xFEDC_BA98_7654_3210);
+        let l2b = ch(0x0011_2233_4455_6677, 0x8091_A2B3_C4D5_E6F7);
+        let ga = ch(0xDEAD_BEEF_CAFE_F00D, 0x0123_4567_89AB_CDEF);
+        let gb = ch(0x0BAD_F00D_DEAD_C0DE, 0x7654_3210_FEDC_BA98);
+        let xa = ch(0x1111_2222_3333_4444, 0x5555_6666_7777_8888);
+        let xb = ch(0x9999_AAAA_BBBB_CCCC, 0xDDDD_EEEE_FFFF_0001);
+        let ca = ch(0x2468_ACE0_1357_9BDF, 0x0F0F_1E1E_2D2D_3C3C);
+        let cb = ch(0x4B4B_5A5A_6969_7878, 0x8787_9696_A5A5_B4B4);
+
+        let add_recv: Vec<Lookup<Goldilocks>> =
+            Lookups::from_air::<GoldFp2, _>(&LogupAddAir { global_send: Some(false) })
+                .as_ref()
+                .to_vec();
+        let add_send: Vec<Lookup<Goldilocks>> =
+            Lookups::from_air::<GoldFp2, _>(&LogupAddAir { global_send: Some(true) })
+                .as_ref()
+                .to_vec();
+        let pair_lookups: Vec<Lookup<Goldilocks>> =
+            Lookups::from_air::<GoldFp2, _>(&BusPairAir).as_ref().to_vec();
+        let busx_lookups: Vec<Lookup<Goldilocks>> = Lookups::from_air::<GoldFp2, _>(
+            &BusSignAir { bus: "busX", send: true },
+        )
+        .as_ref()
+        .to_vec();
+        let busy_lookups: Vec<Lookup<Goldilocks>> = Lookups::from_air::<GoldFp2, _>(
+            &BusSignAir { bus: "busY", send: false },
+        )
+        .as_ref()
+        .to_vec();
+
+        let sender_main = || {
+            mk_main(&[
+                &[0, 1, 1, 0, 1, 1, 2],
+                &[0, 1, 1, 0, 0, 0, 1],
+                &[1, 1, 2, 1, 0, 1, 0],
+                &[0, 0, 0, 1, 1, 2, 1],
+            ])
+        };
+        let receiver_main = || {
+            mk_main(&[
+                &[0, 1, 1, 0, 0, 0, 1],
+                &[0, 1, 1, 0, 1, 1, 2],
+                &[1, 1, 2, 1, 1, 2, 1],
+                &[0, 0, 0, 1, 0, 1, 0],
+            ])
+        };
+        let sign_main = || mk_main(&[&[3], &[5], &[7], &[11]]);
+
+        let sum_instances: Vec<LogupInstanceSpec> = vec![
+            LogupInstanceSpec {
+                name: "bus_lut_sender",
+                comment: "AddAir LUT sender; shares (ga,gb) with bus_lut_receiver",
+                main: sender_main(),
+                prep: None,
+                publics: vec![],
+                lookups: add_send.clone(),
+                challenges: vec![l2a, l2b, ga, gb],
+                corrupt_aux: None,
+            },
+            LogupInstanceSpec {
+                name: "bus_lut_receiver",
+                comment: "AddAir LUT receiver; shares (ga,gb) with bus_lut_sender",
+                main: receiver_main(),
+                prep: None,
+                publics: vec![],
+                lookups: add_recv,
+                challenges: vec![l1a, l1b, ga, gb],
+                corrupt_aux: None,
+            },
+            LogupInstanceSpec {
+                name: "bus_aux_pair",
+                comment: "TWO global lookups on ONE bus in one AIR (same-bus memo => both columns share (xa,xb)); send==recv per row so the aux group cancels within the instance pair",
+                main: mk_main(&[&[5, 1, 1], &[9, 2, 2], &[13, 0, 0], &[21, 3, 3]]),
+                prep: None,
+                publics: vec![],
+                lookups: pair_lookups,
+                challenges: vec![xa, xb, xa, xb],
+                corrupt_aux: None,
+            },
+            LogupInstanceSpec {
+                name: "bus_lut_sender_bad",
+                comment: "sender with LUT row2 (1,0,1)->(1,0,2): local stays balanced (mult 0), the LUT group must NOT cancel",
+                main: mk_main(&[
+                    &[0, 1, 1, 0, 1, 1, 2],
+                    &[0, 1, 1, 0, 0, 0, 1],
+                    &[1, 1, 2, 1, 0, 2, 0],
+                    &[0, 0, 0, 1, 1, 2, 1],
+                ]),
+                prep: None,
+                publics: vec![],
+                lookups: add_send,
+                challenges: vec![l2a, l2b, ga, gb],
+                corrupt_aux: None,
+            },
+            LogupInstanceSpec {
+                name: "bus_x_send",
+                comment: "cross-bus-cancellation construction (F3): busX sends v with +1; (ca,cb) DELIBERATELY equals bus_y_recv's pair (manual assignment, NOT memo output)",
+                main: sign_main(),
+                prep: None,
+                publics: vec![],
+                lookups: busx_lookups,
+                challenges: vec![ca, cb],
+                corrupt_aux: None,
+            },
+            LogupInstanceSpec {
+                name: "bus_y_recv",
+                comment: "cross-bus-cancellation construction (F3): busY receives the same v with -1 under the SAME (ca,cb) => sums negate exactly",
+                main: sign_main(),
+                prep: None,
+                publics: vec![],
+                lookups: busy_lookups,
+                challenges: vec![ca, cb],
+                corrupt_aux: None,
+            },
+        ];
+
+        let mut sum_cases: Vec<serde_json::Value> = Vec::new();
+        // (instance name, bus, aux column, sum)
+        let mut bus_sums: Vec<(String, String, usize, GoldFp2)> = Vec::new();
+        for spec in &sum_instances {
+            let (case, sums) = logup_run_instance(spec)?;
+            for (bus, col, s) in sums {
+                bus_sums.push((spec.name.to_string(), bus, col, s));
+            }
+            sum_cases.push(case);
+        }
+
+        // Per-bus grouping scenarios (verifier/mod.rs:623-643 semantics;
+        // first-occurrence bus order is deterministic — the HashMap order in
+        // the reference does not affect the conjunction verdict, G-DET-L4).
+        let mut scenarios: Vec<serde_json::Value> = Vec::new();
+        let scenario_specs: [(&str, &[&str], &[(&str, bool)], Option<&str>, bool); 3] = [
+            (
+                "two_bus_balanced",
+                &["bus_lut_sender", "bus_lut_receiver", "bus_aux_pair"],
+                &[("LUT", true), ("aux", true)],
+                None,
+                true,
+            ),
+            (
+                "lut_dropped",
+                &["bus_lut_sender_bad", "bus_lut_receiver"],
+                &[("LUT", false)],
+                Some("LUT"),
+                false,
+            ),
+            (
+                "cross_bus_cancel",
+                &["bus_x_send", "bus_y_recv"],
+                &[("busX", false), ("busY", false)],
+                Some("busX"),
+                true, // FLAT total cancels to zero — the F3 trap
+            ),
+        ];
+        for (name, inst_names, expected_buses, expect_fail, expect_flat_zero) in scenario_specs
+        {
+            let mut checks: Vec<serde_json::Value> = Vec::new();
+            let mut flat_total = GoldFp2::ZERO;
+            for &(bus, expect_ok) in expected_buses {
+                let sums: Vec<GoldFp2> = inst_names
+                    .iter()
+                    .flat_map(|iname| {
+                        bus_sums
+                            .iter()
+                            .filter(move |(i, b, _, _)| i == iname && b == bus)
+                            .map(|&(_, _, _, s)| s)
+                    })
+                    .collect();
+                assert!(!sums.is_empty(), "scenario {name}: bus {bus} has sums");
+                for &s in &sums {
+                    flat_total += s;
+                }
+                let ok = gadget.verify_global_sum(&sums).is_ok();
+                assert_eq!(ok, expect_ok, "scenario {name}: bus {bus} verdict");
+                checks.push(serde_json::json!({
+                    "bus_name": bus,
+                    "sums": sums.iter().map(|&s| fp2_json(s)).collect::<Vec<_>>(),
+                    "ok": ok,
+                }));
+            }
+            let flat_zero = flat_total == GoldFp2::ZERO;
+            assert_eq!(flat_zero, expect_flat_zero, "scenario {name}: flat total");
+            scenarios.push(serde_json::json!({
+                "name": name,
+                "instances": inst_names,
+                "bus_checks": checks,
+                "flat_total": fp2_json(flat_total),
+                "flat_zero": flat_zero,
+                "expect_fail_bus": expect_fail,
+            }));
+        }
+
+        let doc = serde_json::json!({
+            "format_version": ORACLE_FORMAT_VERSION,
+            "plonky3_commit": PLONKY3_COMMIT,
+            "description": "P2L-b interaction/bus vectors — column assignment (Lookups::from_air, locals first then globals in push order, types.rs:59-89), per-bus challenge memo (REAL BatchTranscript::sample_perm_challenges over the production DuplexChallenger with NO prior observes — full priming order is P2L-c; draws replayed from an identical fresh challenger), per-bus global-sum grouping incl. the cross-bus-cancellation F3 trap (flat total zero, each bus group non-zero). Bus conventions per bus.rs: query/send=+count, table/receive=-count; weight 1 query / 0 table. count_weight is never computed in Plonky3 (offline precondition, builder.rs:33-38).",
+            "assignment_cases": [assignment_case],
+            "sum_instances": sum_cases,
+            "scenarios": scenarios,
+        });
+
+        let mut f = File::create(out_path)?;
+        f.write_all(serde_json::to_string_pretty(&doc)?.as_bytes())?;
+        f.write_all(b"\n")?;
+        eprintln!(
+            "wrote {} (1 assignment case + {} sum instances + {} scenarios)",
+            out_path.display(),
+            sum_instances.len(),
+            3
+        );
+        Ok(())
+    }
+
+    // ========================================================================
+    // P2L-c — batch-stark proof shape + priming oracle (dump-batch-priming,
+    // 2026-07-23)
+    //
+    // Ground truth for the C batch_priming.c byte-match (P2-lookup design §4
+    // P2L-c, round-2 N1). Sources (Plonky3 82cfad73):
+    //   - the REAL prove_batch (batch-stark/src/prover.rs:88-670) + REAL
+    //     verify_batch (verifier/mod.rs:29-646) over the DNAC Goldilocks
+    //     config — JSON is written ONLY if verify_batch == Ok (the P2
+    //     stark-priming gate precedent);
+    //   - the transcript replay follows the VERIFIER's order 1:1
+    //     (verifier/mod.rs:143-144 observe_instance_count, :269-274
+    //     per-instance observe_instance_binding, :277-279 observe_main +
+    //     observe_preprocessed, :289 sample_perm_challenges, :290-291
+    //     observe_perm_and_sample_alpha, :294 observe_quotient_commitment,
+    //     :295-297 observe_random_commitment, :300 sample_zeta), with a
+    //     duplex snapshot after every phase;
+    //   - observe granularity (challenger/src/lib.rs): observe_usize =
+    //     observe_base_as_algebra_element::<Gold²> = 2 base observes (v, 0)
+    //     (:141-147 via :106-108); observe_algebra_element(fp2) = 2 basis
+    //     coefficients; a commitment = 4 digest lanes; sample fp2 = 2 base
+    //     samples c0-first;
+    //   - proof shape (proof.rs:12-55 + verifier checks): trace_local ==
+    //     width, trace_next iff main_next_row_columns non-empty
+    //     (:170-180), quotient chunk count per instance with chunk dim ==
+    //     DIMENSION == 2 (:183-199), random len == 2 iff ZK (:74-84,
+    //     :201-209), preprocessed lens vs width (:211-231), permutation
+    //     local/next len == aux_width·2 (:524-541), global_lookup_data
+    //     metadata == expected (name, aux_column) list (:233-267).
+    //
+    // Determinism: fixed traces + mk_prod_challenger + SmallRng(1) for the
+    // is_zk config. Regenerate-and-diff must be byte-identical.
+    // ========================================================================
+
+    /// P2L-c preprocessed fixture: main [v], preprocessed [t], constraint
+    /// v − t = 0 (degree 1). Exercises the preprocessed commit + widths path.
+    #[derive(Clone)]
+    struct PrepEqAir {
+        height: usize,
+    }
+
+    impl BaseAir<Goldilocks> for PrepEqAir {
+        fn width(&self) -> usize {
+            1
+        }
+        fn preprocessed_width(&self) -> usize {
+            1
+        }
+        fn preprocessed_trace(&self) -> Option<RowMajorMatrix<Goldilocks>> {
+            Some(RowMajorMatrix::new(
+                (0..self.height)
+                    .map(|i| Goldilocks::from_u64(7 + 3 * i as u64))
+                    .collect(),
+                1,
+            ))
+        }
+    }
+
+    impl<AB> Air<AB> for PrepEqAir
+    where
+        AB: AirBuilder<F = Goldilocks>,
+    {
+        fn eval(&self, builder: &mut AB) {
+            let main = builder.main();
+            let v = main.current(0).unwrap();
+            let prep = builder.preprocessed();
+            let t = prep.current(0).unwrap();
+            let diff = v.into() - t.into();
+            builder.assert_zero(diff);
+        }
+    }
+
+    /// Run one batch scenario: REAL prove + verify (gate), then replay the
+    /// verifier-order transcript with milestone snapshots and dump the shape.
+    fn run_batch_scenario<SC, A>(
+        config: &SC,
+        name: &str,
+        comment: &str,
+        airs: &[A],
+        traces: &[RowMajorMatrix<Goldilocks>],
+        publics: &[Vec<Goldilocks>],
+        prover_data: &p3_batch_stark::ProverData<SC>,
+    ) -> Result<serde_json::Value, Box<dyn std::error::Error>>
+    where
+        SC: p3_batch_stark::StarkGenericConfig<Challenge = GoldFp2, Challenger = FriChallenger>,
+        p3_batch_stark::Domain<SC>: p3_commit::PolynomialSpace<Val = Goldilocks>,
+        SC::Pcs: p3_commit::Pcs<
+            GoldFp2,
+            FriChallenger,
+            Commitment = <FriValMmcs as p3_commit::Mmcs<Goldilocks>>::Commitment,
+        >,
+        A: for<'a> Air<p3_air::DebugConstraintBuilder<'a, Goldilocks, GoldFp2>>
+            + Air<p3_lookup::InteractionSymbolicBuilder<Goldilocks, GoldFp2>>
+            + for<'a> Air<p3_lookup::folder::ProverConstraintFolderWithLookups<'a, SC>>
+            + for<'a> Air<p3_lookup::folder::VerifierConstraintFolderWithLookups<'a, SC>>
+            + Clone,
+        p3_air::symbolic::SymbolicExpressionExt<Goldilocks, GoldFp2>:
+            p3_field::Algebra<GoldFp2>,
+    {
+        use p3_batch_stark::{prove_batch, verify_batch, BatchTranscript, StarkInstance};
+
+        let common = &prover_data.common;
+        let n = airs.len();
+        assert!(n == traces.len() && n == publics.len());
+
+        let instances: Vec<StarkInstance<'_, SC, A>> = airs
+            .iter()
+            .zip(traces.iter())
+            .zip(publics.iter())
+            .map(|((air, trace), pv)| StarkInstance {
+                air,
+                trace,
+                public_values: pv.clone(),
+            })
+            .collect();
+
+        // REAL prove + GATE: real verify must accept before anything is dumped.
+        let proof = prove_batch(config, &instances, prover_data);
+        verify_batch(config, airs, &proof, publics, common)
+            .map_err(|e| format!("scenario {name}: verify_batch rejected: {e:?}"))?;
+
+        // Derived per-instance data (verifier/mod.rs:96-141 equivalents; the
+        // quotient-chunk count is read from the verified proof shape).
+        let is_zk = config.is_zk();
+        let pre_widths: Vec<usize> = (0..n)
+            .map(|i| {
+                common
+                    .preprocessed
+                    .as_ref()
+                    .and_then(|g| g.instances[i].as_ref().map(|m| m.width))
+                    .unwrap_or(0)
+            })
+            .collect();
+        let widths: Vec<usize> = airs.iter().map(|a| BaseAir::<Goldilocks>::width(a)).collect();
+        let n_chunks: Vec<usize> = proof
+            .opened_values
+            .instances
+            .iter()
+            .map(|ov| ov.base_opened_values.quotient_chunks.len())
+            .collect();
+
+        // Transcript replay in the VERIFIER order with milestone snapshots.
+        let mut t: BatchTranscript<SC> = BatchTranscript::new(config.initialise_challenger());
+        let mut milestones: Vec<serde_json::Value> = Vec::new();
+        let mut snap = |label: &str, t: &BatchTranscript<SC>| {
+            milestones.push(serde_json::json!({
+                "label": label,
+                "state": duplex_snapshot_json(&t.challenger),
+            }));
+        };
+
+        snap("initial", &t);
+        t.observe_instance_count(n); // verifier/mod.rs:144
+        for i in 0..n {
+            // verifier/mod.rs:269-274 (== prover.rs:201-209 values)
+            t.observe_instance_binding(
+                proof.degree_bits[i],
+                proof.degree_bits[i] - is_zk,
+                widths[i],
+                n_chunks[i],
+            );
+        }
+        snap("after_count_bindings", &t);
+        t.observe_main(&proof.commitments.main, publics); // :278
+        snap("after_main_publics", &t);
+        t.observe_preprocessed(&pre_widths, common.preprocessed.as_ref()); // :279
+        snap("after_preprocessed", &t);
+        let perm_challenges =
+            t.sample_perm_challenges(&common.lookups, &LogUpGadget::new()); // :289
+        snap("after_perm_challenges", &t);
+        let alpha: GoldFp2 = t.observe_perm_and_sample_alpha(
+            proof.commitments.permutation.as_ref(),
+            &proof.global_lookup_data,
+        ); // :290-291
+        snap("after_alpha", &t);
+        t.observe_quotient_commitment(&proof.commitments.quotient_chunks); // :294
+        snap("after_quotient", &t);
+        if let Some(r) = &proof.commitments.random {
+            t.observe_random_commitment(r); // :295-297
+        }
+        snap("after_random", &t);
+        let zeta: GoldFp2 = t.sample_zeta(); // :300
+        snap("after_zeta", &t);
+
+        // Serialize commitments as 4-lane hex (32 bytes each, asserted).
+        let commit_hex = |c: &<FriValMmcs as p3_commit::Mmcs<Goldilocks>>::Commitment| {
+            let bytes = fri_milestone_serialize_commitment(c);
+            assert_eq!(bytes.len(), 32, "commitment must be a single 4-lane digest");
+            to_hex(&bytes)
+        };
+
+        // Per-instance dump: bindings, lookups view, shape, cumulative sums,
+        // perm challenges.
+        let inst_json: Vec<serde_json::Value> = (0..n)
+            .map(|i| {
+                let ov = &proof.opened_values.instances[i];
+                let base = &ov.base_opened_values;
+                let lookups = &common.lookups[i];
+                let num_locals =
+                    lookups.iter().filter(|l| matches!(l.kind, Kind::Local)).count();
+                let buses: Vec<&String> = lookups
+                    .iter()
+                    .filter_map(|l| match &l.kind {
+                        Kind::Global(nm) => Some(nm),
+                        Kind::Local => None,
+                    })
+                    .collect();
+                // Shape sanity (mirrors the verifier checks, already Ok-gated).
+                for ch in &base.quotient_chunks {
+                    assert_eq!(ch.len(), 2, "quotient chunk dim (DIMENSION)");
+                }
+                serde_json::json!({
+                    "log_ext_degree": proof.degree_bits[i],
+                    "log_degree": proof.degree_bits[i] - is_zk,
+                    "width": widths[i],
+                    "num_quotient_chunks": n_chunks[i],
+                    "public_values": publics[i]
+                        .iter()
+                        .map(|v| v.as_canonical_u64().to_string())
+                        .collect::<Vec<_>>(),
+                    "preprocessed_width": pre_widths[i],
+                    "main_next_used":
+                        !BaseAir::<Goldilocks>::main_next_row_columns(&airs[i]).is_empty(),
+                    "prep_next_used":
+                        !BaseAir::<Goldilocks>::preprocessed_next_row_columns(&airs[i]).is_empty(),
+                    "num_locals": num_locals,
+                    "global_buses": buses,
+                    "trace_local_len": base.trace_local.len(),
+                    "trace_next_len": base.trace_next.as_ref().map_or(0, |v| v.len()),
+                    "preprocessed_local_len":
+                        base.preprocessed_local.as_ref().map_or(0, |v| v.len()),
+                    "preprocessed_next_len":
+                        base.preprocessed_next.as_ref().map_or(0, |v| v.len()),
+                    "quotient_chunk_dim": 2,
+                    "permutation_local_len": ov.permutation_local.len(),
+                    "permutation_next_len": ov.permutation_next.len(),
+                    "random_len": base.random.as_ref().map_or(0, |v| v.len()),
+                    "cumulative_sums": proof.global_lookup_data[i]
+                        .iter()
+                        .map(|d| serde_json::json!({
+                            "bus_name": d.name,
+                            "aux_column": d.aux_column,
+                            "sum": fp2_json(d.cumulative_sum),
+                        }))
+                        .collect::<Vec<_>>(),
+                    "perm_challenges": perm_challenges[i]
+                        .iter()
+                        .map(|&c| fp2_json(c))
+                        .collect::<Vec<_>>(),
+                })
+            })
+            .collect();
+
+        Ok(serde_json::json!({
+            "name": name,
+            "comment": comment,
+            "is_zk": is_zk,
+            "num_instances": n,
+            "instances": inst_json,
+            "commits": {
+                "main": commit_hex(&proof.commitments.main),
+                "preprocessed": common.preprocessed.as_ref()
+                    .map(|g| commit_hex(&g.commitment)),
+                "permutation": proof.commitments.permutation.as_ref().map(commit_hex),
+                "quotient": commit_hex(&proof.commitments.quotient_chunks),
+                "random": proof.commitments.random.as_ref().map(commit_hex),
+            },
+            "milestones": milestones,
+            "alpha": fp2_json(alpha),
+            "zeta": fp2_json(zeta),
+        }))
+    }
+
+    pub fn dump_batch_priming(out_path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+        use p3_batch_stark::{CommonData, ProverData, ProverOnlyData};
+        use p3_lookup::Lookups;
+
+        // DNAC-stack plain config. log_final_poly_len=0 (the
+        // dnac_stark_config_lfp0 precedent) so the h=4 instances satisfy the
+        // FRI prover's `log_min_height > log_final + log_blowup` assertion
+        // (fri/src/prover.rs:81); log_blowup=2, 2 queries, pow=0,
+        // mk_prod_challenger — otherwise identical to dump_stark_priming.
+        let mk_plain = || -> StarkCfg {
+            let input_mmcs: FriValMmcs = make_mmcs();
+            let challenge_mmcs = FriChallengeMmcs::new(make_mmcs());
+            let fri_params = FriParameters {
+                log_blowup: 2,
+                log_final_poly_len: 0,
+                max_log_arity: 1,
+                num_queries: 2,
+                commit_proof_of_work_bits: 0,
+                query_proof_of_work_bits: 0,
+                mmcs: challenge_mmcs,
+            };
+            let pcs: StarkPcs =
+                TwoAdicFriPcs::new(Radix2Dit::default(), input_mmcs, fri_params);
+            StarkConfig::new(pcs, mk_prod_challenger())
+        };
+
+        let mk_main = |rows: &[&[u64]]| -> RowMajorMatrix<Goldilocks> {
+            let w = rows[0].len();
+            let flat: Vec<Goldilocks> = rows
+                .iter()
+                .flat_map(|r| {
+                    assert_eq!(r.len(), w, "ragged main-trace row");
+                    r.iter().map(|&v| Goldilocks::from_u64(v))
+                })
+                .collect();
+            RowMajorMatrix::new(flat, w)
+        };
+
+        let mut scenarios: Vec<serde_json::Value> = Vec::new();
+
+        // ---- S1: fib_pair — 2 lookup-free instances, different heights ----
+        {
+            let cfg = mk_plain();
+            let airs = [FibonacciAir {}, FibonacciAir {}];
+            let t8 = generate_trace_rows::<Goldilocks>(0, 1, 8);
+            let t16 = generate_trace_rows::<Goldilocks>(0, 1, 16);
+            // pis = [a, b, x] with x = final right value (fib_air.rs).
+            let x8 = t8.values[t8.values.len() - 1];
+            let x16 = t16.values[t16.values.len() - 1];
+            let publics = vec![
+                vec![Goldilocks::ZERO, Goldilocks::ONE, x8],
+                vec![Goldilocks::ZERO, Goldilocks::ONE, x16],
+            ];
+            let pd: ProverData<StarkCfg> = ProverData::empty(2);
+            scenarios.push(run_batch_scenario(
+                &cfg,
+                "fib_pair",
+                "two lookup-free FibonacciAir instances (h=8, h=16); no permutation commit; the 0-lookup batched preamble that does NOT byte-match v3 uni-stark priming (F2)",
+                &airs,
+                &[t8, t16],
+                &publics,
+                &pd,
+            )?);
+        }
+
+        // ---- S2: lut_pair — lookups (local + global LUT bus) ----
+        {
+            let cfg = mk_plain();
+            let airs = [
+                LogupAddAir { global_send: Some(true) },
+                LogupAddAir { global_send: Some(false) },
+            ];
+            let sender = mk_main(&[
+                &[0, 1, 1, 0, 1, 1, 2],
+                &[0, 1, 1, 0, 0, 0, 1],
+                &[1, 1, 2, 1, 0, 1, 0],
+                &[0, 0, 0, 1, 1, 2, 1],
+            ]);
+            let receiver = mk_main(&[
+                &[0, 1, 1, 0, 0, 0, 1],
+                &[0, 1, 1, 0, 1, 1, 2],
+                &[1, 1, 2, 1, 1, 2, 1],
+                &[0, 0, 0, 1, 0, 1, 0],
+            ]);
+            let publics = vec![vec![], vec![]];
+            let common = CommonData::new(
+                None,
+                vec![
+                    Lookups::from_air::<GoldFp2, _>(&airs[0]),
+                    Lookups::from_air::<GoldFp2, _>(&airs[1]),
+                ],
+            );
+            let pd = ProverData::<StarkCfg> {
+                common,
+                prover_only: ProverOnlyData::empty(),
+            };
+            scenarios.push(run_batch_scenario(
+                &cfg,
+                "lut_pair",
+                "AddAir LUT sender + receiver (P2L-b traces): permutation commit present, one shared-bus (alpha,beta) via the memo, cumulative sums observed before constraint-alpha",
+                &airs,
+                &[sender, receiver],
+                &publics,
+                &pd,
+            )?);
+        }
+
+        // ---- S3: prep_pair — preprocessed commit + widths ----
+        {
+            let cfg = mk_plain();
+            let airs = [PrepEqAir { height: 8 }, PrepEqAir { height: 4 }];
+            let tr8 = RowMajorMatrix::new(
+                (0..8).map(|i| Goldilocks::from_u64(7 + 3 * i as u64)).collect(),
+                1,
+            );
+            let tr4 = RowMajorMatrix::new(
+                (0..4).map(|i| Goldilocks::from_u64(7 + 3 * i as u64)).collect(),
+                1,
+            );
+            let publics = vec![vec![], vec![]];
+            let trace_refs = [&tr8, &tr4];
+            let instances = p3_batch_stark::StarkInstance::<StarkCfg, PrepEqAir>::new_multiple(
+                &airs,
+                &trace_refs,
+                &publics,
+            );
+            let pd: ProverData<StarkCfg> = ProverData::from_instances(&cfg, &instances);
+            scenarios.push(run_batch_scenario(
+                &cfg,
+                "prep_pair",
+                "two PrepEqAir instances (h=8, h=4) with preprocessed columns: global preprocessed commitment observed AFTER main (v3 observed preprocessed first — F2/N3 delta)",
+                &airs,
+                &[tr8, tr4],
+                &publics,
+                &pd,
+            )?);
+        }
+
+        // ---- S4: fib_zk — is_zk=1 (random commitment before zeta) ----
+        {
+            let cfg = make_plain_zk_config();
+            let airs = [FibonacciAir {}, FibonacciAir {}];
+            let t8 = generate_trace_rows::<Goldilocks>(0, 1, 8);
+            let t16 = generate_trace_rows::<Goldilocks>(0, 1, 16);
+            let x8 = t8.values[t8.values.len() - 1];
+            let x16 = t16.values[t16.values.len() - 1];
+            let publics = vec![
+                vec![Goldilocks::ZERO, Goldilocks::ONE, x8],
+                vec![Goldilocks::ZERO, Goldilocks::ONE, x16],
+            ];
+            let pd: ProverData<ZkStarkCfg> = ProverData::empty(2);
+            scenarios.push(run_batch_scenario(
+                &cfg,
+                "fib_zk",
+                "is_zk=1 (HidingFriPcs, SmallRng(1)): random commitment observed after quotient, before zeta; random opened values dim 2; degree_bits include the ZK +1",
+                &airs,
+                &[t8, t16],
+                &publics,
+                &pd,
+            )?);
+        }
+
+        let doc = serde_json::json!({
+            "format_version": ORACLE_FORMAT_VERSION,
+            "plonky3_commit": PLONKY3_COMMIT,
+            "description": "P2L-c batch-stark priming + proof-shape vectors — REAL prove_batch/verify_batch (Ok-gated) over Goldilocks/Goldilocks²; verifier-order transcript replay (verifier/mod.rs:143-300) with duplex milestones after every phase; observe granularity: usize = 2 base observes (v,0), fp2 = 2 coefficients, commitment = 4 lanes, sample fp2 = 2 base samples c0-first. Shape fields mirror the verifier checks incl. permutation lens = aux_width*2 (verifier/mod.rs:524-541).",
+            "scenarios": scenarios,
+        });
+
+        let mut f = File::create(out_path)?;
+        f.write_all(serde_json::to_string_pretty(&doc)?.as_bytes())?;
+        f.write_all(b"\n")?;
+        eprintln!(
+            "wrote {} ({} scenarios, all verify_batch-gated)",
+            out_path.display(),
+            doc["scenarios"].as_array().unwrap().len()
+        );
+        Ok(())
+    }
+
+    // ========================================================================
+    // P2L-d d1b — FULL batch proof oracle (dump-batch-proof, 2026-07-23)
+    //
+    // Ground truth for the C d2 batched verify + d3 batched prover (P2-lookup
+    // design §4 P2L-d). Sources (Plonky3 82cfad73):
+    //   - the REAL prove_batch (batch-stark/src/prover.rs:88-670) + REAL
+    //     verify_batch (verifier/mod.rs:29-646); JSON is written ONLY if
+    //     verify_batch == Ok (the P2L-c gate precedent);
+    //   - the COMPLETE BatchProof (proof.rs:12-55) is serialized via serde in
+    //     `proof_serde`: commitments {main, permutation, quotient_chunks,
+    //     random}, per-instance opened values {base, permutation_local,
+    //     permutation_next}, global_lookup_data, degree_bits, and the whole
+    //     PCS opening proof. For the plain config that is
+    //     FriProof {commit_phase_commits, commit_pow_witnesses, query_proofs
+    //     [{input_proof: Vec<BatchOpening>, commit_phase_openings:
+    //     [{log_arity, sibling_values, opening_proof}]}], final_poly,
+    //     query_pow_witness} (fri/src/proof.rs:12-42); for the is_zk config
+    //     the opening proof is the HidingFriPcs tuple (random-poly
+    //     OpenedValues, FriProof) (fri/src/hiding_pcs.rs:88-91);
+    //   - the N2 opening-round schedule is emitted explicitly and
+    //     length-asserted against the opened values (prover.rs:450-537 ==
+    //     verifier/mod.rs:325-475): Round 0 random iff is_zk (each instance
+    //     at zeta) -> Round 1 main (zeta, + zeta_next iff
+    //     main_next_row_columns non-empty) -> Round 2 quotient chunks (each
+    //     at zeta) -> Round 3 preprocessed iff present (zeta, + zeta_next iff
+    //     preprocessed_next_row_columns non-empty; matrix order =
+    //     matrix_to_instance) -> Round 4 permutation iff lookups (ALWAYS
+    //     zeta AND zeta_next);
+    //   - zeta_next is per-instance: trace_domains[i].next_point(zeta) over
+    //     the BASE trace domain natural_domain_for_degree(ext_size >> is_zk)
+    //     (verifier/mod.rs:306-310, :341-343).
+    //
+    // Determinism: fixed traces + mk_prod_challenger + SmallRng(1) for the
+    // is_zk config. Regenerate-and-diff must be byte-identical.
+    // ========================================================================
+
+    /// Run one d1b scenario: REAL prove + verify (gate), replay the priming
+    /// for (perm_challenges, alpha, zeta), then dump the FULL proof + the N2
+    /// opening-round schedule.
+    fn run_batch_proof_scenario<SC, A>(
+        config: &SC,
+        name: &str,
+        comment: &str,
+        airs: &[A],
+        traces: &[RowMajorMatrix<Goldilocks>],
+        publics: &[Vec<Goldilocks>],
+        prover_data: &p3_batch_stark::ProverData<SC>,
+        fri_params_json: serde_json::Value,
+    ) -> Result<serde_json::Value, Box<dyn std::error::Error>>
+    where
+        SC: p3_batch_stark::StarkGenericConfig<Challenge = GoldFp2, Challenger = FriChallenger>,
+        p3_batch_stark::Domain<SC>: p3_commit::PolynomialSpace<Val = Goldilocks>,
+        SC::Pcs: p3_commit::Pcs<
+            GoldFp2,
+            FriChallenger,
+            Commitment = <FriValMmcs as p3_commit::Mmcs<Goldilocks>>::Commitment,
+        >,
+        p3_batch_stark::BatchProof<SC>: serde::Serialize,
+        A: for<'a> Air<p3_air::DebugConstraintBuilder<'a, Goldilocks, GoldFp2>>
+            + Air<p3_lookup::InteractionSymbolicBuilder<Goldilocks, GoldFp2>>
+            + for<'a> Air<p3_lookup::folder::ProverConstraintFolderWithLookups<'a, SC>>
+            + for<'a> Air<p3_lookup::folder::VerifierConstraintFolderWithLookups<'a, SC>>
+            + Clone,
+        p3_air::symbolic::SymbolicExpressionExt<Goldilocks, GoldFp2>:
+            p3_field::Algebra<GoldFp2>,
+    {
+        use p3_batch_stark::{prove_batch, verify_batch, BatchTranscript, StarkInstance};
+
+        let common = &prover_data.common;
+        let n = airs.len();
+        assert!(n == traces.len() && n == publics.len());
+
+        let instances: Vec<StarkInstance<'_, SC, A>> = airs
+            .iter()
+            .zip(traces.iter())
+            .zip(publics.iter())
+            .map(|((air, trace), pv)| StarkInstance {
+                air,
+                trace,
+                public_values: pv.clone(),
+            })
+            .collect();
+
+        // REAL prove + GATE: real verify must accept before anything is dumped.
+        let proof = prove_batch(config, &instances, prover_data);
+        verify_batch(config, airs, &proof, publics, common)
+            .map_err(|e| format!("scenario {name}: verify_batch rejected: {e:?}"))?;
+
+        let is_zk = config.is_zk();
+        let pre_widths: Vec<usize> = (0..n)
+            .map(|i| {
+                common
+                    .preprocessed
+                    .as_ref()
+                    .and_then(|g| g.instances[i].as_ref().map(|m| m.width))
+                    .unwrap_or(0)
+            })
+            .collect();
+        let widths: Vec<usize> = airs.iter().map(|a| BaseAir::<Goldilocks>::width(a)).collect();
+        let n_chunks: Vec<usize> = proof
+            .opened_values
+            .instances
+            .iter()
+            .map(|ov| ov.base_opened_values.quotient_chunks.len())
+            .collect();
+        let main_next_used: Vec<bool> = airs
+            .iter()
+            .map(|a| !BaseAir::<Goldilocks>::main_next_row_columns(a).is_empty())
+            .collect();
+        let prep_next_used: Vec<bool> = airs
+            .iter()
+            .map(|a| !BaseAir::<Goldilocks>::preprocessed_next_row_columns(a).is_empty())
+            .collect();
+
+        // Priming replay in the VERIFIER order (verifier/mod.rs:143-300; the
+        // per-phase milestones live in batch_priming.json — here only the
+        // sampled challenges are needed).
+        let mut t: BatchTranscript<SC> = BatchTranscript::new(config.initialise_challenger());
+        t.observe_instance_count(n);
+        for i in 0..n {
+            t.observe_instance_binding(
+                proof.degree_bits[i],
+                proof.degree_bits[i] - is_zk,
+                widths[i],
+                n_chunks[i],
+            );
+        }
+        t.observe_main(&proof.commitments.main, publics);
+        t.observe_preprocessed(&pre_widths, common.preprocessed.as_ref());
+        let perm_challenges = t.sample_perm_challenges(&common.lookups, &LogUpGadget::new());
+        let alpha: GoldFp2 = t.observe_perm_and_sample_alpha(
+            proof.commitments.permutation.as_ref(),
+            &proof.global_lookup_data,
+        );
+        t.observe_quotient_commitment(&proof.commitments.quotient_chunks);
+        if let Some(r) = &proof.commitments.random {
+            t.observe_random_commitment(r);
+        }
+        let zeta: GoldFp2 = t.sample_zeta();
+
+        // Per-instance zeta_next over the BASE trace domain
+        // (verifier/mod.rs:306-310 natural_domain_for_degree(ext >> is_zk),
+        // :341-343 next_point).
+        let pcs = config.pcs();
+        let zeta_nexts: Vec<GoldFp2> = (0..n)
+            .map(|i| {
+                let dom = pcs.natural_domain_for_degree(1usize << (proof.degree_bits[i] - is_zk));
+                dom.next_point(zeta).expect("domain must support next_point")
+            })
+            .collect();
+
+        // N2 opening-round schedule (prover.rs:450-537), length-asserted
+        // against the proof's opened values.
+        let has_perm = proof.commitments.permutation.is_some();
+        let mut rounds: Vec<serde_json::Value> = Vec::new();
+        if is_zk == 1 {
+            assert!(proof.commitments.random.is_some(), "is_zk=1 needs random commit");
+            rounds.push(serde_json::json!({
+                "round": "random",
+                "source": "prover.rs:453-458",
+                "matrices": (0..n)
+                    .map(|i| serde_json::json!({ "instance": i, "points": ["zeta"] }))
+                    .collect::<Vec<_>>(),
+            }));
+        } else {
+            assert!(proof.commitments.random.is_none(), "non-ZK must not carry random");
+        }
+        rounds.push(serde_json::json!({
+            "round": "main",
+            "source": "prover.rs:460-477",
+            "matrices": (0..n)
+                .map(|i| {
+                    let pts: Vec<&str> = if main_next_used[i] {
+                        vec!["zeta", "zeta_next"]
+                    } else {
+                        vec!["zeta"]
+                    };
+                    serde_json::json!({ "instance": i, "points": pts })
+                })
+                .collect::<Vec<_>>(),
+        }));
+        rounds.push(serde_json::json!({
+            "round": "quotient",
+            "source": "prover.rs:479-485",
+            "matrices": (0..n)
+                .flat_map(|i| {
+                    (0..n_chunks[i]).map(move |c| {
+                        serde_json::json!({ "instance": i, "chunk": c, "points": ["zeta"] })
+                    })
+                })
+                .collect::<Vec<_>>(),
+        }));
+        if let Some(g) = &common.preprocessed {
+            rounds.push(serde_json::json!({
+                "round": "preprocessed",
+                "source": "prover.rs:487-510",
+                "matrices": g
+                    .matrix_to_instance
+                    .iter()
+                    .map(|&ii| {
+                        let pts: Vec<&str> = if prep_next_used[ii] {
+                            vec!["zeta", "zeta_next"]
+                        } else {
+                            vec!["zeta"]
+                        };
+                        serde_json::json!({ "instance": ii, "points": pts })
+                    })
+                    .collect::<Vec<_>>(),
+            }));
+        }
+        if has_perm {
+            rounds.push(serde_json::json!({
+                "round": "permutation",
+                "source": "prover.rs:512-530 (ALWAYS zeta AND zeta_next)",
+                "matrices": (0..n)
+                    .filter(|&i| !common.lookups[i].is_empty())
+                    .map(|i| serde_json::json!({ "instance": i, "points": ["zeta", "zeta_next"] }))
+                    .collect::<Vec<_>>(),
+            }));
+        }
+
+        let fp2_vec = |v: &[GoldFp2]| -> Vec<serde_json::Value> {
+            v.iter().map(|&x| fp2_json(x)).collect()
+        };
+        let fp2_opt = |v: &Option<Vec<GoldFp2>>| -> serde_json::Value {
+            v.as_ref()
+                .map(|vv| serde_json::json!(fp2_vec(vv)))
+                .unwrap_or(serde_json::Value::Null)
+        };
+
+        // Per-instance dump: bindings + shape + the FULL opened values.
+        let inst_json: Vec<serde_json::Value> = (0..n)
+            .map(|i| {
+                let ov = &proof.opened_values.instances[i];
+                let base = &ov.base_opened_values;
+                let lookups = &common.lookups[i];
+                let num_locals =
+                    lookups.iter().filter(|l| matches!(l.kind, Kind::Local)).count();
+                let buses: Vec<&String> = lookups
+                    .iter()
+                    .filter_map(|l| match &l.kind {
+                        Kind::Global(nm) => Some(nm),
+                        Kind::Local => None,
+                    })
+                    .collect();
+                // Shape gates (mirror the verifier checks, already Ok-gated).
+                assert_eq!(base.trace_local.len(), widths[i], "trace_local == width");
+                assert_eq!(base.trace_next.is_some(), main_next_used[i], "trace_next iff main_next");
+                for ch in &base.quotient_chunks {
+                    assert_eq!(ch.len(), 2, "quotient chunk dim (DIMENSION)");
+                }
+                if is_zk == 1 {
+                    assert_eq!(
+                        base.random.as_ref().map_or(0, |v| v.len()),
+                        2,
+                        "random opened len == 2 iff ZK (verifier/mod.rs:201-209)"
+                    );
+                } else {
+                    assert!(base.random.is_none(), "non-ZK: no random opens");
+                }
+                // aux_width EF columns == lookup count; opened perm lens ==
+                // aux_width * DIMENSION (verifier/mod.rs:524-541).
+                assert_eq!(
+                    ov.permutation_local.len(),
+                    lookups.len() * 2,
+                    "permutation_local len == aux_width*2"
+                );
+                assert_eq!(
+                    ov.permutation_next.len(),
+                    lookups.len() * 2,
+                    "permutation_next len == aux_width*2"
+                );
+                serde_json::json!({
+                    "log_ext_degree": proof.degree_bits[i],
+                    "log_degree": proof.degree_bits[i] - is_zk,
+                    "width": widths[i],
+                    "num_quotient_chunks": n_chunks[i],
+                    "preprocessed_width": pre_widths[i],
+                    "main_next_used": main_next_used[i],
+                    "prep_next_used": prep_next_used[i],
+                    "num_locals": num_locals,
+                    "num_lookups": lookups.len(),
+                    "global_buses": buses,
+                    "public_values": publics[i]
+                        .iter()
+                        .map(|v| v.as_canonical_u64().to_string())
+                        .collect::<Vec<_>>(),
+                    "zeta_next": fp2_json(zeta_nexts[i]),
+                    "opened": {
+                        "trace_local": fp2_vec(&base.trace_local),
+                        "trace_next": fp2_opt(&base.trace_next),
+                        "preprocessed_local": fp2_opt(&base.preprocessed_local),
+                        "preprocessed_next": fp2_opt(&base.preprocessed_next),
+                        "quotient_chunks": base.quotient_chunks
+                            .iter()
+                            .map(|c| serde_json::json!(fp2_vec(c)))
+                            .collect::<Vec<_>>(),
+                        "random": fp2_opt(&base.random),
+                        "permutation_local": fp2_vec(&ov.permutation_local),
+                        "permutation_next": fp2_vec(&ov.permutation_next),
+                    },
+                    "cumulative_sums": proof.global_lookup_data[i]
+                        .iter()
+                        .map(|d| serde_json::json!({
+                            "bus_name": d.name,
+                            "aux_column": d.aux_column,
+                            "sum": fp2_json(d.cumulative_sum),
+                        }))
+                        .collect::<Vec<_>>(),
+                    "perm_challenges": perm_challenges[i]
+                        .iter()
+                        .map(|&c| fp2_json(c))
+                        .collect::<Vec<_>>(),
+                })
+            })
+            .collect();
+
+        let commit_hex = |c: &<FriValMmcs as p3_commit::Mmcs<Goldilocks>>::Commitment| {
+            let bytes = fri_milestone_serialize_commitment(c);
+            assert_eq!(bytes.len(), 32, "commitment must be a single 4-lane digest");
+            to_hex(&bytes)
+        };
+
+        Ok(serde_json::json!({
+            "name": name,
+            "comment": comment,
+            "is_zk": is_zk,
+            "num_instances": n,
+            "fri_params": fri_params_json,
+            "degree_bits": proof.degree_bits,
+            "instances": inst_json,
+            "commits": {
+                "main": commit_hex(&proof.commitments.main),
+                "preprocessed": common.preprocessed.as_ref()
+                    .map(|g| commit_hex(&g.commitment)),
+                "permutation": proof.commitments.permutation.as_ref().map(commit_hex),
+                "quotient": commit_hex(&proof.commitments.quotient_chunks),
+                "random": proof.commitments.random.as_ref().map(commit_hex),
+            },
+            "alpha": fp2_json(alpha),
+            "zeta": fp2_json(zeta),
+            "opening_rounds": rounds,
+            "proof_serde": serde_json::to_value(&proof)?,
+        }))
+    }
+
+    // --------------------------------------------------------------------
+    // d4.b — DZKF v4 wire builder: a byte-exact SECOND implementation of
+    // the C `dnac_batch_wire_encode` layout (fri_proof_codec.c d4.a),
+    // built by walking the scenario JSON this dumper just produced (all
+    // verify_batch-gated). The C KAT decodes these bytes, verifies them
+    // end-to-end, re-encodes, and byte-matches — proving the two encoders
+    // agree; the C prover output is encoded and byte-matched against these
+    // bytes too.
+    //
+    // Layout (all LE; base fields canonical u64; fp2 = c0‖c1; digests =
+    // 4 u64 lanes): "DZKF" ‖ u16 4 ‖ u32 total_len ‖ u32 is_zk ‖ u32 n ‖
+    // main(4 lanes) ‖ u32 has_prep ‖ [prep] ‖ u32 has_perm ‖ [perm] ‖
+    // quotient ‖ u32 has_random ‖ [random] ‖ per instance {fp2vec
+    // trace_local ‖ fp2vec trace_next ‖ fp2vec prep_local ‖ fp2vec
+    // prep_next ‖ u32 num_qc ‖ 2·num_qc fp2 ‖ fp2vec random ‖ u32 perm_len
+    // ‖ perm_local ‖ perm_next ‖ u32 num_globals ‖ per entry {u32 name_len
+    // ‖ name ‖ u32 aux_column ‖ fp2 sum}} ‖ [zk: u32 num_entries ‖ per
+    // entry fp2vec] ‖ 6×u32 fri params ‖ FriProof (v3 field conventions,
+    // salt_elems=0 — the plain-MMCS fixtures). NO opening points on the
+    // wire (the verifier samples ζ itself — the H2 structural closure).
+    // --------------------------------------------------------------------
+    fn v4_ju64(v: &serde_json::Value) -> Result<u64, Box<dyn std::error::Error>> {
+        let v = if v.is_object() { &v["value"] } else { v };
+        if let Some(n) = v.as_u64() {
+            return Ok(n);
+        }
+        if let Some(s) = v.as_str() {
+            return Ok(s.parse::<u64>()?);
+        }
+        Err(format!("v4 wire: not a u64: {v}").into())
+    }
+    fn v4_pu16(w: &mut Vec<u8>, v: u16) {
+        w.extend_from_slice(&v.to_le_bytes());
+    }
+    fn v4_pu32(w: &mut Vec<u8>, v: u32) {
+        w.extend_from_slice(&v.to_le_bytes());
+    }
+    fn v4_pu64(w: &mut Vec<u8>, v: u64) {
+        w.extend_from_slice(&v.to_le_bytes());
+    }
+    /// Base-field element from JSON, CANONICALIZED. The Goldilocks serde
+    /// derive emits the raw internal `value: u64` which is "Not necessarily
+    /// canonical" (goldilocks.rs:32-38) — the v4 wire is canonical-only
+    /// (decoder rejects >= p), so reduce here. Any u64 is < 2p, so `% p`
+    /// == as_canonical_u64.
+    fn v4_jfp(v: &serde_json::Value) -> Result<u64, Box<dyn std::error::Error>> {
+        const P: u64 = 0xFFFF_FFFF_0000_0001;
+        Ok(v4_ju64(v)? % P)
+    }
+    /// friendly fp2 {"c0_decimal","c1_decimal"} (fp2_json output —
+    /// as_canonical by construction; v4_jfp kept for uniformity)
+    fn v4_pfp2_friendly(
+        w: &mut Vec<u8>,
+        v: &serde_json::Value,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        v4_pu64(w, v4_jfp(&v["c0_decimal"])?);
+        v4_pu64(w, v4_jfp(&v["c1_decimal"])?);
+        Ok(())
+    }
+    /// serde fp2 {"value":[c0,c1]}
+    fn v4_pfp2_serde(
+        w: &mut Vec<u8>,
+        v: &serde_json::Value,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let arr = v["value"]
+            .as_array()
+            .ok_or("v4 wire: serde fp2 missing value array")?;
+        if arr.len() != 2 {
+            return Err("v4 wire: serde fp2 arity != 2".into());
+        }
+        v4_pu64(w, v4_jfp(&arr[0])?);
+        v4_pu64(w, v4_jfp(&arr[1])?);
+        Ok(())
+    }
+    /// fp2vec := u32 len ‖ len fp2 (friendly form; Null == empty)
+    fn v4_pfp2_vec_friendly(
+        w: &mut Vec<u8>,
+        v: &serde_json::Value,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        if v.is_null() {
+            v4_pu32(w, 0);
+            return Ok(());
+        }
+        let arr = v.as_array().ok_or("v4 wire: fp2vec not an array")?;
+        v4_pu32(w, arr.len() as u32);
+        for e in arr {
+            v4_pfp2_friendly(w, e)?;
+        }
+        Ok(())
+    }
+    /// 64-hex-char commitment (LE lane bytes) → 32 raw bytes
+    fn v4_phex32(
+        w: &mut Vec<u8>,
+        v: &serde_json::Value,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let s = v.as_str().ok_or("v4 wire: commit not a hex string")?;
+        if s.len() != 64 {
+            return Err("v4 wire: commit hex length != 64".into());
+        }
+        let b = s.as_bytes();
+        for k in 0..32 {
+            let hi = (b[2 * k] as char)
+                .to_digit(16)
+                .ok_or("v4 wire: bad hex digit")?;
+            let lo = (b[2 * k + 1] as char)
+                .to_digit(16)
+                .ok_or("v4 wire: bad hex digit")?;
+            w.push((hi * 16 + lo) as u8);
+        }
+        Ok(())
+    }
+    /// 4-lane digest from serde ([[l0,l1,l2,l3]] entries)
+    fn v4_pdigest_serde(
+        w: &mut Vec<u8>,
+        v: &serde_json::Value,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let lanes = v.as_array().ok_or("v4 wire: digest not an array")?;
+        if lanes.len() != 4 {
+            return Err("v4 wire: digest lane count != 4".into());
+        }
+        for l in lanes {
+            v4_pu64(w, v4_jfp(l)?);
+        }
+        Ok(())
+    }
+    /// FriProof in the v3 enc_proof field order (fri_proof_codec.c):
+    /// cpc ‖ cpw ‖ final_poly ‖ query_pow_witness ‖ query_proofs; batch
+    /// openings and commit-phase steps each end with u32 salt_elems + the
+    /// salts. salt_elems == 0 for the plain-MMCS fixtures; for SALTED
+    /// configs (d4.c) the serde `opening_proof` is the hiding-mmcs Proof
+    /// TUPLE (salts, siblings) — hiding_mmcs.rs:118 — and the C wire order
+    /// is opened_values ‖ siblings ‖ salt_elems ‖ salts.
+    fn v4_push_friproof(
+        w: &mut Vec<u8>,
+        fri: &serde_json::Value,
+        salt_elems: u32,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let cpc = fri["commit_phase_commits"]
+            .as_array()
+            .ok_or("v4 wire: no commit_phase_commits")?;
+        v4_pu32(w, cpc.len() as u32);
+        for c in cpc {
+            let cap = c["cap"].as_array().ok_or("v4 wire: cpc missing cap")?;
+            if cap.len() != 1 {
+                return Err("v4 wire: cpc cap arity != 1".into());
+            }
+            v4_pdigest_serde(w, &cap[0])?;
+        }
+        let cpw = fri["commit_pow_witnesses"]
+            .as_array()
+            .ok_or("v4 wire: no commit_pow_witnesses")?;
+        v4_pu32(w, cpw.len() as u32);
+        for v in cpw {
+            v4_pu64(w, v4_jfp(v)?);
+        }
+        let fpoly = fri["final_poly"]
+            .as_array()
+            .ok_or("v4 wire: no final_poly")?;
+        v4_pu32(w, fpoly.len() as u32);
+        for v in fpoly {
+            v4_pfp2_serde(w, v)?;
+        }
+        v4_pu64(w, v4_jfp(&fri["query_pow_witness"])?);
+        let qps = fri["query_proofs"]
+            .as_array()
+            .ok_or("v4 wire: no query_proofs")?;
+        v4_pu32(w, qps.len() as u32);
+        for q in qps {
+            let ip = q["input_proof"]
+                .as_array()
+                .ok_or("v4 wire: no input_proof")?;
+            v4_pu32(w, ip.len() as u32);
+            for b in ip {
+                let ovs = b["opened_values"]
+                    .as_array()
+                    .ok_or("v4 wire: no opened_values")?;
+                v4_pu32(w, ovs.len() as u32);
+                for m in ovs {
+                    let row = m.as_array().ok_or("v4 wire: row not array")?;
+                    v4_pu32(w, row.len() as u32);
+                    for c in row {
+                        v4_pu64(w, v4_jfp(c)?);
+                    }
+                }
+                let opj = &b["opening_proof"];
+                let (salts_j, sibs_j) = if salt_elems > 0 {
+                    let tup = opj
+                        .as_array()
+                        .ok_or("v4 wire: salted opening_proof not a tuple")?;
+                    if tup.len() != 2 {
+                        return Err(
+                            "v4 wire: salted opening_proof tuple arity != 2"
+                                .into(),
+                        );
+                    }
+                    (Some(&tup[0]), &tup[1])
+                } else {
+                    (None, opj)
+                };
+                let sibs = sibs_j
+                    .as_array()
+                    .ok_or("v4 wire: no opening_proof siblings")?;
+                v4_pu32(w, sibs.len() as u32);
+                for d in sibs {
+                    v4_pdigest_serde(w, d)?;
+                }
+                v4_pu32(w, salt_elems);
+                if let Some(sj) = salts_j {
+                    let per_mat =
+                        sj.as_array().ok_or("v4 wire: salts not array")?;
+                    if per_mat.len() != ovs.len() {
+                        return Err("v4 wire: salts per-matrix count".into());
+                    }
+                    for ms in per_mat {
+                        let row =
+                            ms.as_array().ok_or("v4 wire: salt row")?;
+                        if row.len() != salt_elems as usize {
+                            return Err("v4 wire: salt row len".into());
+                        }
+                        for v in row {
+                            v4_pu64(w, v4_jfp(v)?);
+                        }
+                    }
+                }
+            }
+            let cpo = q["commit_phase_openings"]
+                .as_array()
+                .ok_or("v4 wire: no commit_phase_openings")?;
+            v4_pu32(w, cpo.len() as u32);
+            for s in cpo {
+                v4_pu32(w, v4_ju64(&s["log_arity"])? as u32);
+                let sv = s["sibling_values"]
+                    .as_array()
+                    .ok_or("v4 wire: no sibling_values")?;
+                v4_pu32(w, sv.len() as u32);
+                for v in sv {
+                    v4_pfp2_serde(w, v)?;
+                }
+                let opj = &s["opening_proof"];
+                let (salts_j, sibs_j) = if salt_elems > 0 {
+                    let tup = opj
+                        .as_array()
+                        .ok_or("v4 wire: salted step proof not a tuple")?;
+                    if tup.len() != 2 {
+                        return Err(
+                            "v4 wire: salted step tuple arity != 2".into()
+                        );
+                    }
+                    (Some(&tup[0]), &tup[1])
+                } else {
+                    (None, opj)
+                };
+                let sibs = sibs_j
+                    .as_array()
+                    .ok_or("v4 wire: no step opening_proof")?;
+                v4_pu32(w, sibs.len() as u32);
+                for d in sibs {
+                    v4_pdigest_serde(w, d)?;
+                }
+                v4_pu32(w, salt_elems);
+                if let Some(sj) = salts_j {
+                    /* ONE matrix per commit-phase step — flat SE salts. */
+                    let per_mat =
+                        sj.as_array().ok_or("v4 wire: step salts")?;
+                    if per_mat.len() != 1 {
+                        return Err("v4 wire: step salt matrix count".into());
+                    }
+                    let row = per_mat[0]
+                        .as_array()
+                        .ok_or("v4 wire: step salt row")?;
+                    if row.len() != salt_elems as usize {
+                        return Err("v4 wire: step salt row len".into());
+                    }
+                    for v in row {
+                        v4_pu64(w, v4_jfp(v)?);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn v4_wire_bytes(
+        scen: &serde_json::Value,
+    ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let mut w: Vec<u8> = Vec::new();
+        w.extend_from_slice(b"DZKF");
+        v4_pu16(&mut w, 4);
+        let total_off = w.len();
+        v4_pu32(&mut w, 0); /* total_len placeholder */
+
+        let is_zk = v4_ju64(&scen["is_zk"])? as u32;
+        let n = v4_ju64(&scen["num_instances"])? as u32;
+        v4_pu32(&mut w, is_zk);
+        v4_pu32(&mut w, n);
+
+        /* commits */
+        let cm = &scen["commits"];
+        v4_phex32(&mut w, &cm["main"])?;
+        for key in ["preprocessed", "permutation"] {
+            if cm[key].is_string() {
+                v4_pu32(&mut w, 1);
+                v4_phex32(&mut w, &cm[key])?;
+            } else {
+                v4_pu32(&mut w, 0);
+            }
+        }
+        v4_phex32(&mut w, &cm["quotient"])?;
+        if cm["random"].is_string() {
+            v4_pu32(&mut w, 1);
+            v4_phex32(&mut w, &cm["random"])?;
+        } else {
+            v4_pu32(&mut w, 0);
+        }
+
+        /* per-instance opened + global_lookup_data */
+        let insts = scen["instances"]
+            .as_array()
+            .ok_or("v4 wire: no instances")?;
+        if insts.len() != n as usize {
+            return Err("v4 wire: instance count mismatch".into());
+        }
+        for inst in insts {
+            let op = &inst["opened"];
+            v4_pfp2_vec_friendly(&mut w, &op["trace_local"])?;
+            v4_pfp2_vec_friendly(&mut w, &op["trace_next"])?;
+            v4_pfp2_vec_friendly(&mut w, &op["preprocessed_local"])?;
+            v4_pfp2_vec_friendly(&mut w, &op["preprocessed_next"])?;
+            let qcs = op["quotient_chunks"]
+                .as_array()
+                .ok_or("v4 wire: no quotient_chunks")?;
+            v4_pu32(&mut w, qcs.len() as u32);
+            for ch in qcs {
+                let pair = ch.as_array().ok_or("v4 wire: chunk not array")?;
+                if pair.len() != 2 {
+                    return Err("v4 wire: quotient chunk dim != 2".into());
+                }
+                v4_pfp2_friendly(&mut w, &pair[0])?;
+                v4_pfp2_friendly(&mut w, &pair[1])?;
+            }
+            v4_pfp2_vec_friendly(&mut w, &op["random"])?;
+            let pl = op["permutation_local"]
+                .as_array()
+                .ok_or("v4 wire: no permutation_local")?;
+            let pn = op["permutation_next"]
+                .as_array()
+                .ok_or("v4 wire: no permutation_next")?;
+            if pl.len() != pn.len() {
+                return Err("v4 wire: permutation local/next len mismatch".into());
+            }
+            v4_pu32(&mut w, pl.len() as u32);
+            for e in pl {
+                v4_pfp2_friendly(&mut w, e)?;
+            }
+            for e in pn {
+                v4_pfp2_friendly(&mut w, e)?;
+            }
+            let cums = inst["cumulative_sums"]
+                .as_array()
+                .ok_or("v4 wire: no cumulative_sums")?;
+            v4_pu32(&mut w, cums.len() as u32);
+            for e in cums {
+                let name = e["bus_name"]
+                    .as_str()
+                    .ok_or("v4 wire: bus_name not a string")?;
+                v4_pu32(&mut w, name.len() as u32);
+                w.extend_from_slice(name.as_bytes());
+                v4_pu32(&mut w, v4_ju64(&e["aux_column"])? as u32);
+                v4_pfp2_friendly(&mut w, &e["sum"])?;
+            }
+        }
+
+        /* random-codeword openings iff is_zk — flattened round-major from
+         * proof_serde.opening_proof.0 ([round][mat][point][vals]). */
+        if is_zk == 1 {
+            let ro = &scen["proof_serde"]["opening_proof"][0];
+            let rounds = ro.as_array().ok_or("v4 wire: no rand openings")?;
+            let mut entries: Vec<&Vec<serde_json::Value>> = Vec::new();
+            for round in rounds {
+                for mat in round.as_array().ok_or("v4 wire: rand round")? {
+                    for pt in mat.as_array().ok_or("v4 wire: rand mat")? {
+                        entries.push(pt.as_array().ok_or("v4 wire: rand point")?);
+                    }
+                }
+            }
+            v4_pu32(&mut w, entries.len() as u32);
+            for e in entries {
+                v4_pu32(&mut w, e.len() as u32);
+                for v in e.iter() {
+                    v4_pfp2_serde(&mut w, v)?;
+                }
+            }
+        }
+
+        /* fri params (v3 order) */
+        let fp = &scen["fri_params"];
+        for key in [
+            "log_blowup",
+            "log_final_poly_len",
+            "max_log_arity",
+            "num_queries",
+            "commit_proof_of_work_bits",
+            "query_proof_of_work_bits",
+        ] {
+            v4_pu32(&mut w, v4_ju64(&fp[key])? as u32);
+        }
+
+        /* FriProof (salted scenarios set scen["salted"] = SALT_ELEMS). */
+        let salt_elems = scen["salted"].as_u64().unwrap_or(0) as u32;
+        let fri = if is_zk == 1 {
+            &scen["proof_serde"]["opening_proof"][1]
+        } else {
+            &scen["proof_serde"]["opening_proof"]
+        };
+        v4_push_friproof(&mut w, fri, salt_elems)?;
+
+        let total = w.len() as u32;
+        w[total_off..total_off + 4].copy_from_slice(&total.to_le_bytes());
+        Ok(w)
+    }
+
+    /// d4.c — one BATCHED agg scenario: 1-instance prove_batch (is_zk=1),
+    /// verify_batch-gated, num_qc STOP gate (== the pinned 8), scen["salted"]
+    /// stamped for the v4 wire builder. SC generic: the plain-mmcs zk config
+    /// or the SALTED MerkleTreeHidingMmcs one.
+    fn run_agg_batch_scenario<SC>(
+        config: &SC,
+        name: &str,
+        comment: &str,
+        trace: RowMajorMatrix<Goldilocks>,
+        pis: Vec<Goldilocks>,
+        fri_params_json: serde_json::Value,
+        salted: u64,
+    ) -> Result<serde_json::Value, Box<dyn std::error::Error>>
+    where
+        SC: p3_batch_stark::StarkGenericConfig<Challenge = GoldFp2, Challenger = FriChallenger>,
+        p3_batch_stark::Domain<SC>: p3_commit::PolynomialSpace<Val = Goldilocks>,
+        SC::Pcs: p3_commit::Pcs<
+            GoldFp2,
+            FriChallenger,
+            Commitment = <FriValMmcs as p3_commit::Mmcs<Goldilocks>>::Commitment,
+        >,
+        p3_batch_stark::BatchProof<SC>: serde::Serialize,
+        p3_air::symbolic::SymbolicExpressionExt<Goldilocks, GoldFp2>:
+            p3_field::Algebra<GoldFp2>,
+    {
+        use p3_batch_stark::ProverData;
+        let airs = [ConfActionAggAir];
+        let publics = vec![pis];
+        let pd: ProverData<SC> = ProverData::empty(1);
+        let mut scen = run_batch_proof_scenario(
+            config, name, comment, &airs, &[trace], &publics, &pd,
+            fri_params_json,
+        )?;
+        /* num_qc STOP gate (P1d precedent): the batched symbolic analysis
+         * must land on the SAME pinned chunk count the v3 pipeline measured.
+         * A deviation is a HALT — the C shape pins (SV_NUM_QC) would be
+         * silently wrong otherwise. */
+        let nqc = scen["instances"][0]["num_quotient_chunks"]
+            .as_u64()
+            .unwrap_or(0);
+        if nqc != 8 {
+            return Err(format!(
+                "{name}: num_qc STOP GATE — measured {nqc} != pinned 8 (HALT)"
+            )
+            .into());
+        }
+        scen["salted"] = serde_json::json!(salted);
+        Ok(scen)
+    }
+
+    /// d4.c — BATCHED shielded aggregate vectors (see the CLI doc). Fixtures
+    /// are VERBATIM the v3 agg dump instances (1in / 2in / 4in) so the C
+    /// re-based agg prover keeps its witness builders; only the PIPELINE
+    /// changes (prove_batch, batched transcript, mixed commits, salted
+    /// hiding leaves for the *_salted scenarios).
+    pub fn dump_batch_shielded_agg(
+        out_path: &PathBuf,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        conf_action_check_domseps()?;
+        conf_agg_check_domseps()?;
+
+        let kat_txbind = || -> [Goldilocks; AGG_MEMB_LANES] {
+            core::array::from_fn(|j| Goldilocks::from_u64(AGG_KAT_TXBIND[j]))
+        };
+
+        /* ── fixture 1in (== dump_conf_action_agg_air_zk) ── */
+        let fixture_1in = || -> (RowMajorMatrix<Goldilocks>, Vec<Goldilocks>) {
+            let notes = [
+                ActionNote {
+                    role: CA_ROLE_INPUT,
+                    value: 100,
+                    addr: [0; 4],
+                    rcm: [0x11, 0x12],
+                    pos: 5,
+                    nk: [0x2222_2222, 0x2222_2223, 0x2222_2224, 0x2222_2225],
+                    ak: [0x1111_1111, 0x1111_1112, 0x1111_1113, 0x1111_1114],
+                },
+                ActionNote {
+                    role: CA_ROLE_OUTPUT,
+                    value: 70,
+                    addr: [0xAA01, 0xAA02, 0xAA03, 0xAA04],
+                    rcm: [0x21, 0x22],
+                    pos: 0,
+                    nk: [0; 4],
+                    ak: [0; 4],
+                },
+                ActionNote {
+                    role: CA_ROLE_FEE,
+                    value: 30,
+                    addr: [0xFEE1, 0xFEE2, 0xFEE3, 0xFEE4],
+                    rcm: [0x31, 0x32],
+                    pos: 0,
+                    nk: [0; 4],
+                    ak: [0; 4],
+                },
+            ];
+            let memb_siblings: [[[u64; AGG_MEMB_LANES]; AGG_D]; 3] = [
+                [
+                    [0x1001, 0x1002, 0x1003, 0x1004],
+                    [0x2001, 0x2002, 0x2003, 0x2004],
+                    [0x3001, 0x3002, 0x3003, 0x3004],
+                    [0x4001, 0x4002, 0x4003, 0x4004],
+                ],
+                [[0; 4]; AGG_D],
+                [[0; 4]; AGG_D],
+            ];
+            let (trace, anchor, num_input, nf_slots, num_output, output_commit, fee) =
+                generate_conf_action_agg_trace(7, &notes, &memb_siblings);
+            let pis = agg_build_pis(anchor, num_input, nf_slots, num_output,
+                                    output_commit, fee, kat_txbind());
+            (trace, pis)
+        };
+
+        /* ── fixture 2in (== dump_conf_action_agg_air_zk_2in) ── */
+        let fixture_2in = || -> (RowMajorMatrix<Goldilocks>, Vec<Goldilocks>) {
+            let notes = [
+                ActionNote { role: CA_ROLE_INPUT, value: 60, addr: [0; 4],
+                             rcm: [0x11, 0x12], pos: 0,
+                             nk: [0x2222_2222, 0x2222_2223, 0x2222_2224, 0x2222_2225],
+                             ak: [0x1111_1111, 0x1111_1112, 0x1111_1113, 0x1111_1114] },
+                ActionNote { role: CA_ROLE_INPUT, value: 40, addr: [0; 4],
+                             rcm: [0x13, 0x14], pos: 1,
+                             nk: [0x3333_3333, 0x3333_3334, 0x3333_3335, 0x3333_3336],
+                             ak: [0x1212_1212, 0x1212_1213, 0x1212_1214, 0x1212_1215] },
+                ActionNote { role: CA_ROLE_OUTPUT, value: 100,
+                             addr: [0xAA01, 0xAA02, 0xAA03, 0xAA04],
+                             rcm: [0x21, 0x22], pos: 0, nk: [0; 4], ak: [0; 4] },
+            ];
+            let cm0 = agg_input_note_cm(notes[0].ak, notes[0].nk, notes[0].value, notes[0].rcm);
+            let cm1 = agg_input_note_cm(notes[1].ak, notes[1].nk, notes[1].value, notes[1].rcm);
+            let cm0u: [u64; 4] = core::array::from_fn(|j| p3_field::PrimeField64::as_canonical_u64(&cm0[j]));
+            let cm1u: [u64; 4] = core::array::from_fn(|j| p3_field::PrimeField64::as_canonical_u64(&cm1[j]));
+            let up: [[u64; AGG_MEMB_LANES]; 3] = [
+                [0x2001, 0x2002, 0x2003, 0x2004],
+                [0x3001, 0x3002, 0x3003, 0x3004],
+                [0x4001, 0x4002, 0x4003, 0x4004],
+            ];
+            let memb_siblings: [[[u64; AGG_MEMB_LANES]; AGG_D]; 3] = [
+                [cm1u, up[0], up[1], up[2]],
+                [cm0u, up[0], up[1], up[2]],
+                [[0; 4]; AGG_D],
+            ];
+            let (trace, anchor, num_input, nf_slots, num_output, output_commit, fee) =
+                generate_conf_action_agg_trace(7, &notes, &memb_siblings);
+            let pis = agg_build_pis(anchor, num_input, nf_slots, num_output,
+                                    output_commit, fee, kat_txbind());
+            (trace, pis)
+        };
+
+        /* ── fixture 4in (== dump_conf_action_agg_air_zk_4in) ── */
+        let fixture_4in = || -> (RowMajorMatrix<Goldilocks>, Vec<Goldilocks>) {
+            let lanes = |base: u64| -> [u64; 4] { core::array::from_fn(|j| base + j as u64) };
+            let mk = |ak: [u64; 4], nk: [u64; 4], rcm: [u64; 2]| ActionNote {
+                role: CA_ROLE_INPUT, value: 25, addr: [0; 4], rcm, pos: 0, nk, ak };
+            let mut notes = [
+                mk(lanes(0x1111_1111), lanes(0x2222_2222), [0x11, 0x12]),
+                mk(lanes(0x1212_1212), lanes(0x3333_3333), [0x13, 0x14]),
+                mk(lanes(0x1313_1313), lanes(0x4444_4444), [0x15, 0x16]),
+                mk(lanes(0x1414_1414), lanes(0x5555_5555), [0x17, 0x18]),
+                ActionNote { role: CA_ROLE_OUTPUT, value: 100,
+                             addr: [0xAA01, 0xAA02, 0xAA03, 0xAA04],
+                             rcm: [0x21, 0x22], pos: 0, nk: [0; 4], ak: [0; 4] },
+            ];
+            notes[0].pos = 0; notes[1].pos = 1; notes[2].pos = 2; notes[3].pos = 3;
+            let cm: [[Goldilocks; 4]; 4] =
+                core::array::from_fn(|i| agg_input_note_cm(notes[i].ak, notes[i].nk, 25, notes[i].rcm));
+            let u = |g: [Goldilocks; 4]| -> [u64; 4] {
+                core::array::from_fn(|j| p3_field::PrimeField64::as_canonical_u64(&g[j]))
+            };
+            let n01 = u(agg_compress(cm[0], cm[1]));
+            let n23 = u(agg_compress(cm[2], cm[3]));
+            let (c0, c1, c2, c3) = (u(cm[0]), u(cm[1]), u(cm[2]), u(cm[3]));
+            let e2: [u64; 4] = [0x3001, 0x3002, 0x3003, 0x3004];
+            let e3: [u64; 4] = [0x4001, 0x4002, 0x4003, 0x4004];
+            let memb_siblings: [[[u64; AGG_MEMB_LANES]; AGG_D]; 5] = [
+                [c1, n23, e2, e3],
+                [c0, n23, e2, e3],
+                [c3, n01, e2, e3],
+                [c2, n01, e2, e3],
+                [[0; 4]; AGG_D],
+            ];
+            let (trace, anchor, num_input, nf_slots, num_output, output_commit, fee) =
+                generate_conf_action_agg_trace(8, &notes, &memb_siblings);
+            let pis = agg_build_pis(anchor, num_input, nf_slots, num_output,
+                                    output_commit, fee, kat_txbind());
+            (trace, pis)
+        };
+
+        let zk_params_json = serde_json::json!({
+            "log_blowup": 2, "log_final_poly_len": 2, "max_log_arity": 1,
+            "num_queries": 2, "commit_proof_of_work_bits": 0,
+            "query_proof_of_work_bits": 0, "num_random_codewords": 4,
+            "rng": "SmallRng(1)",
+        });
+
+        let mut scenarios: Vec<serde_json::Value> = Vec::new();
+        {
+            let (trace, pis) = fixture_1in();
+            scenarios.push(run_agg_batch_scenario(
+                &make_plain_zk_config(), "agg_1in",
+                "BATCHED 1-input aggregate (h=128, is_zk=1, plain input mmcs): the v3 conf_action_agg_air_zk fixture re-proved via prove_batch as a 1-instance batch",
+                trace, pis, zk_params_json.clone(), 0,
+            )?);
+        }
+        {
+            let (trace, pis) = fixture_1in();
+            scenarios.push(run_agg_batch_scenario(
+                &make_salted_zk_config(), "agg_1in_salted",
+                "BATCHED SALTED 1-input aggregate (h=128, is_zk=1, MerkleTreeHidingMmcs SALT_ELEMS=2 seed=1 input AND FRI mmcs): the hiding leaf form through the batched pipeline — the consensus shielded shape",
+                trace, pis, zk_params_json.clone(), 2,
+            )?);
+        }
+        {
+            let (trace, pis) = fixture_2in();
+            scenarios.push(run_agg_batch_scenario(
+                &make_plain_zk_config(), "agg_2in",
+                "BATCHED 2-input aggregate (h=128): the v3 conf_action_agg_air_zk_2in fixture via prove_batch",
+                trace, pis, zk_params_json.clone(), 0,
+            )?);
+        }
+        {
+            let (trace, pis) = fixture_4in();
+            scenarios.push(run_agg_batch_scenario(
+                &make_plain_zk_config(), "agg_4in",
+                "BATCHED 4-input aggregate (h=256, N_input=MAX): the v3 conf_action_agg_air_zk_4in fixture via prove_batch",
+                trace, pis, zk_params_json.clone(), 0,
+            )?);
+        }
+        {
+            let (trace, pis) = fixture_4in();
+            scenarios.push(run_agg_batch_scenario(
+                &make_salted_zk_config(), "agg_4in_salted",
+                "BATCHED SALTED 4-input aggregate (h=256, 3 FRI rounds): the salted boundary case via prove_batch",
+                trace, pis, zk_params_json.clone(), 2,
+            )?);
+        }
+
+        // DZKF v4 wire bytes per scenario (salt-aware — scen[\"salted\"]).
+        for scen in scenarios.iter_mut() {
+            let wire = v4_wire_bytes(scen)?;
+            scen["wire_v4_len"] = serde_json::json!(wire.len());
+            scen["wire_v4"] = serde_json::json!(to_hex(&wire));
+        }
+
+        let doc = serde_json::json!({
+            "format_version": ORACLE_FORMAT_VERSION,
+            "plonky3_commit": PLONKY3_COMMIT,
+            "description": "P2L-d d4.c BATCHED shielded aggregate vectors — the v3 agg Action AIR fixtures (1in / 1in salted / 2in / 4in / 4in salted) re-proved via the REAL prove_batch as 1-instance is_zk=1 batches; salted scenarios use MerkleTreeHidingMmcs(SmallRng(1), SALT_ELEMS=2) for BOTH the input and the FRI challenge mmcs (make_salted_zk_config). Every scenario verify_batch == Ok gated; num_qc STOP gate == 8 on each; wire_v4 = the DZKF v4 bytes (salt tails included). C draw/salt streams = smallrng_goldilocks.json: three same-seed SmallRng(1) streams (pcs zk rng, input-mmcs salt rng, FRI-mmcs clone) — the v3 parity, so the C prover reuses ONE dumped stream for draws, stream A, and the stream-B fallback.",
+            "scenarios": scenarios,
+        });
+
+        let mut f = File::create(out_path)?;
+        f.write_all(serde_json::to_string_pretty(&doc)?.as_bytes())?;
+        f.write_all(b"\n")?;
+        eprintln!(
+            "wrote {} ({} scenarios, all verify_batch-gated, num_qc==8 gated)",
+            out_path.display(),
+            doc["scenarios"].as_array().unwrap().len()
+        );
+        Ok(())
+    }
+
+    pub fn dump_batch_proof(out_path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+        use p3_batch_stark::{CommonData, ProverData, ProverOnlyData};
+        use p3_lookup::Lookups;
+
+        // Same plain config as dump_batch_priming (byte-stable precedent):
+        // log_blowup=2, log_final_poly_len=0 (h=4 min-height, fri/src/
+        // prover.rs:81), max_log_arity=1, 2 queries, pow=0, mk_prod_challenger.
+        let mk_plain = || -> StarkCfg {
+            let input_mmcs: FriValMmcs = make_mmcs();
+            let challenge_mmcs = FriChallengeMmcs::new(make_mmcs());
+            let fri_params = FriParameters {
+                log_blowup: 2,
+                log_final_poly_len: 0,
+                max_log_arity: 1,
+                num_queries: 2,
+                commit_proof_of_work_bits: 0,
+                query_proof_of_work_bits: 0,
+                mmcs: challenge_mmcs,
+            };
+            let pcs: StarkPcs =
+                TwoAdicFriPcs::new(Radix2Dit::default(), input_mmcs, fri_params);
+            StarkConfig::new(pcs, mk_prod_challenger())
+        };
+        let plain_params = serde_json::json!({
+            "log_blowup": 2, "log_final_poly_len": 0, "max_log_arity": 1,
+            "num_queries": 2, "commit_proof_of_work_bits": 0,
+            "query_proof_of_work_bits": 0,
+        });
+        // make_plain_zk_config: zk_fri_params = log_blowup=2, log_final=2,
+        // arity 1, 2 queries, pow=0; HidingFriPcs(num_random_codewords=4,
+        // SmallRng(1)).
+        let zk_params = serde_json::json!({
+            "log_blowup": 2, "log_final_poly_len": 2, "max_log_arity": 1,
+            "num_queries": 2, "commit_proof_of_work_bits": 0,
+            "query_proof_of_work_bits": 0, "num_random_codewords": 4,
+            "rng": "SmallRng(1)",
+        });
+
+        let mk_main = |rows: &[&[u64]]| -> RowMajorMatrix<Goldilocks> {
+            let w = rows[0].len();
+            let flat: Vec<Goldilocks> = rows
+                .iter()
+                .flat_map(|r| {
+                    assert_eq!(r.len(), w, "ragged main-trace row");
+                    r.iter().map(|&v| Goldilocks::from_u64(v))
+                })
+                .collect();
+            RowMajorMatrix::new(flat, w)
+        };
+
+        // LUT fixtures (P2L-b/c traces; tests.rs:1229-1391 multisets).
+        let sender_rows: [&[u64]; 4] = [
+            &[0, 1, 1, 0, 1, 1, 2],
+            &[0, 1, 1, 0, 0, 0, 1],
+            &[1, 1, 2, 1, 0, 1, 0],
+            &[0, 0, 0, 1, 1, 2, 1],
+        ];
+        let receiver_rows: [&[u64]; 4] = [
+            &[0, 1, 1, 0, 0, 0, 1],
+            &[0, 1, 1, 0, 1, 1, 2],
+            &[1, 1, 2, 1, 1, 2, 1],
+            &[0, 0, 0, 1, 0, 1, 0],
+        ];
+
+        let mut scenarios: Vec<serde_json::Value> = Vec::new();
+
+        // ---- S1: fib_single — SINGLE-instance 0-lookup batch ----
+        {
+            let cfg = mk_plain();
+            let airs = [FibonacciAir {}];
+            let t8 = generate_trace_rows::<Goldilocks>(0, 1, 8);
+            let x8 = t8.values[t8.values.len() - 1];
+            let publics = vec![vec![Goldilocks::ZERO, Goldilocks::ONE, x8]];
+            let pd: ProverData<StarkCfg> = ProverData::empty(1);
+            scenarios.push(run_batch_proof_scenario(
+                &cfg,
+                "fib_single",
+                "single FibonacciAir instance (h=8): the 0-lookup single-instance batch proof (batched preamble, no permutation/preprocessed/random rounds; main opened at zeta + zeta_next)",
+                &airs,
+                &[t8],
+                &publics,
+                &pd,
+                plain_params.clone(),
+            )?);
+        }
+
+        // ---- S2: lut_pair — lookups, same heights (P2L-c fixture) ----
+        {
+            let cfg = mk_plain();
+            let airs = [
+                LogupAddAir { global_send: Some(true) },
+                LogupAddAir { global_send: Some(false) },
+            ];
+            let sender = mk_main(&sender_rows);
+            let receiver = mk_main(&receiver_rows);
+            let publics = vec![vec![], vec![]];
+            let common = CommonData::new(
+                None,
+                vec![
+                    Lookups::from_air::<GoldFp2, _>(&airs[0]),
+                    Lookups::from_air::<GoldFp2, _>(&airs[1]),
+                ],
+            );
+            let pd = ProverData::<StarkCfg> {
+                common,
+                prover_only: ProverOnlyData::empty(),
+            };
+            scenarios.push(run_batch_proof_scenario(
+                &cfg,
+                "lut_pair",
+                "AddAir LUT sender + receiver (h=4 each): permutation commit + Round-4 openings at zeta AND zeta_next; shared-bus (alpha,beta) memo; single-row AIR => main opened at zeta only",
+                &airs,
+                &[sender, receiver],
+                &publics,
+                &pd,
+                plain_params.clone(),
+            )?);
+        }
+
+        // ---- S3: prep_pair — preprocessed round + MIXED heights ----
+        {
+            let cfg = mk_plain();
+            let airs = [PrepEqAir { height: 8 }, PrepEqAir { height: 4 }];
+            let tr8 = RowMajorMatrix::new(
+                (0..8).map(|i| Goldilocks::from_u64(7 + 3 * i as u64)).collect(),
+                1,
+            );
+            let tr4 = RowMajorMatrix::new(
+                (0..4).map(|i| Goldilocks::from_u64(7 + 3 * i as u64)).collect(),
+                1,
+            );
+            let publics = vec![vec![], vec![]];
+            let trace_refs = [&tr8, &tr4];
+            let instances = p3_batch_stark::StarkInstance::<StarkCfg, PrepEqAir>::new_multiple(
+                &airs,
+                &trace_refs,
+                &publics,
+            );
+            let pd: ProverData<StarkCfg> = ProverData::from_instances(&cfg, &instances);
+            scenarios.push(run_batch_proof_scenario(
+                &cfg,
+                "prep_pair",
+                "two PrepEqAir instances (h=8, h=4): MIXED-height main + preprocessed commits (d1a consumer), Round-3 preprocessed openings at zeta only (no prep next-row); no-next main path",
+                &airs,
+                &[tr8, tr4],
+                &publics,
+                &pd,
+                plain_params.clone(),
+            )?);
+        }
+
+        // ---- S4: lut_mixed_trio — MIXED heights WITH lookups ----
+        // Sender h=8 = the 4-row block twice (doubling preserves the local
+        // in-instance balance and sends each LUT tuple with total count -2);
+        // TWO h=4 receivers each receive every tuple +1 => the LUT bus group
+        // sums to zero. Mixed heights hit BOTH the main commit (8,4,4) and
+        // the permutation commit (aux traces at 8,4,4) — the full-proof
+        // consumer of the d1a mixed-height MMCS.
+        {
+            let cfg = mk_plain();
+            let airs = [
+                LogupAddAir { global_send: Some(true) },
+                LogupAddAir { global_send: Some(false) },
+                LogupAddAir { global_send: Some(false) },
+            ];
+            let sender8 = mk_main(&[
+                sender_rows[0], sender_rows[1], sender_rows[2], sender_rows[3],
+                sender_rows[0], sender_rows[1], sender_rows[2], sender_rows[3],
+            ]);
+            let recv_a = mk_main(&receiver_rows);
+            let recv_b = mk_main(&receiver_rows);
+            let publics = vec![vec![], vec![], vec![]];
+            let common = CommonData::new(
+                None,
+                vec![
+                    Lookups::from_air::<GoldFp2, _>(&airs[0]),
+                    Lookups::from_air::<GoldFp2, _>(&airs[1]),
+                    Lookups::from_air::<GoldFp2, _>(&airs[2]),
+                ],
+            );
+            let pd = ProverData::<StarkCfg> {
+                common,
+                prover_only: ProverOnlyData::empty(),
+            };
+            scenarios.push(run_batch_proof_scenario(
+                &cfg,
+                "lut_mixed_trio",
+                "MIXED-height lookup batch (d1a consumer): AddAir sender h=8 (4-row block x2, LUT sends -2 per tuple) + two h=4 receivers (+1 each) => LUT group zero; main AND permutation commits are mixed-height (8,4,4)",
+                &airs,
+                &[sender8, recv_a, recv_b],
+                &publics,
+                &pd,
+                plain_params.clone(),
+            )?);
+        }
+
+        // ---- S5: fib_zk — is_zk=1 (HidingFriPcs), mixed heights ----
+        {
+            let cfg = make_plain_zk_config();
+            let airs = [FibonacciAir {}, FibonacciAir {}];
+            let t8 = generate_trace_rows::<Goldilocks>(0, 1, 8);
+            let t16 = generate_trace_rows::<Goldilocks>(0, 1, 16);
+            let x8 = t8.values[t8.values.len() - 1];
+            let x16 = t16.values[t16.values.len() - 1];
+            let publics = vec![
+                vec![Goldilocks::ZERO, Goldilocks::ONE, x8],
+                vec![Goldilocks::ZERO, Goldilocks::ONE, x16],
+            ];
+            let pd: ProverData<ZkStarkCfg> = ProverData::empty(2);
+            let mut scen = run_batch_proof_scenario(
+                &cfg,
+                "fib_zk",
+                "is_zk=1 (HidingFriPcs, SmallRng(1)) mixed heights (h=8, h=16): Round-0 random openings at zeta; opening proof = (random-poly OpenedValues, FriProof) tuple (hiding_pcs.rs:88-91); qc doubling; degree_bits include the ZK +1",
+                &airs,
+                &[t8.clone(), t16.clone()],
+                &publics,
+                &pd,
+                zk_params.clone(),
+            )?;
+
+            // -----------------------------------------------------------------
+            // d3 ENTRY PREREQ — the SmallRng(1) draw stream for the BATCHED
+            // hiding prove (v3 G6 draw-slice precedent). Consumption order
+            // pinned AT SOURCE (batch-stark prover.rs x hiding_pcs.rs), ONE
+            // stream, first consumer = the main commit:
+            //   B1 main commit (prover.rs:214-219 -> hiding_pcs.rs:110-129):
+            //      per instance IN ORDER, with_random_cols(w + 2*nrc) on the
+            //      RAW h-row trace = h*(w+2*nrc) draws row-major
+            //      (dense.rs:573-597); then reshape width := w+nrc (row 2i =
+            //      base row i ++ first nrc draws; row 2i+1 = remaining w+nrc).
+            //   (a permutation commit would draw NEXT, prover.rs:298-299 —
+            //    fib_zk has no lookups, so zero draws here)
+            //   B2 quotient loop (prover.rs:319-417): per instance IN ORDER,
+            //      get_quotient_ldes (hiding_pcs.rs:169-257) draws (a) per
+            //      chunk IN ORDER with_random_cols(nrc) = n_chunks*h_chunk*nrc
+            //      (hiding_pcs.rs:186-190), then (b) all_random_values =
+            //      (n_chunks-1)*h_chunk*(DIM+nrc) (hiding_pcs.rs:194-199; the
+            //      LAST chunk's values are DERIVED via mul_coeffs, zero draws,
+            //      hiding_pcs.rs:202-208).
+            //   B3 randomization poly R (prover.rs:431-434 ->
+            //      hiding_pcs.rs:404-424): per instance IN ORDER,
+            //      DenseMatrix::rand(ext_h, nrc+DIM) = ext_h*(nrc+DIM) draws
+            //      row-major (sample_iter, dense.rs:527-533).
+            // GATE Z1 replays B1 into the inner batch commit == commits.main.
+            // GATE Z2 replays B3 at the post-B2 stream offset ==
+            // commits.random — transitively pinning the B2 draw COUNT. B2's
+            // INTERNAL order is source-pinned above and byte-gated by the C
+            // prover KAT (quotient-commit match, d3.4).
+            {
+                use p3_matrix::Matrix as _;
+                use rand::rngs::SmallRng;
+                use rand::{RngExt as _, SeedableRng};
+
+                const NRC: usize = 4; // num_random_codewords (zk config)
+                const DIM: usize = 2; // GoldFp2 DIMENSION
+                let w = t8.width();
+                let heights = [t8.height(), t16.height()];
+                let n_chunks: Vec<usize> = scen["instances"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|i| i["num_quotient_chunks"].as_u64().unwrap() as usize)
+                    .collect();
+                let log_exts: Vec<usize> = scen["degree_bits"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|v| v.as_u64().unwrap() as usize)
+                    .collect();
+
+                // Per-block draw counts (is_zk=1: lq_chunks = log2(nc) - 1).
+                let b1: Vec<usize> = heights.iter().map(|h| h * (w + 2 * NRC)).collect();
+                let b2: Vec<(usize, usize)> = (0..2)
+                    .map(|i| {
+                        let lq = n_chunks[i].trailing_zeros() as usize - 1;
+                        let h_chunk = (1usize << (log_exts[i] + lq)) / n_chunks[i];
+                        (
+                            n_chunks[i] * h_chunk * NRC,
+                            (n_chunks[i] - 1) * h_chunk * (DIM + NRC),
+                        )
+                    })
+                    .collect();
+                let b3: Vec<usize> =
+                    (0..2).map(|i| (1usize << log_exts[i]) * (NRC + DIM)).collect();
+                let total: usize = b1.iter().sum::<usize>()
+                    + b2.iter().map(|(a, b)| a + b).sum::<usize>()
+                    + b3.iter().sum::<usize>();
+
+                // Full stream: fresh SmallRng(1) == the config's rng.
+                let mut rng_all = SmallRng::seed_from_u64(1);
+                let draws: Vec<Goldilocks> = (0..total).map(|_| rng_all.random()).collect();
+
+                // Inner (non-hiding) PCS with the SAME zk fri params — the
+                // exact object hiding commit delegates to (hiding_pcs.rs:131).
+                let inner: StarkPcs = TwoAdicFriPcs::new(
+                    Radix2Dit::default(),
+                    make_mmcs(),
+                    zk_fri_params(FriChallengeMmcs::new(make_mmcs())),
+                );
+                let commit_hex = |c: &<FriValMmcs as Mmcs<Goldilocks>>::Commitment| {
+                    to_hex(&fri_milestone_serialize_commitment(c))
+                };
+
+                // ---- GATE Z1: B1 replay -> inner batch commit == main. ----
+                let mut rng = SmallRng::seed_from_u64(1);
+                let mut rand_mats: Vec<(Dom, RowMajorMatrix<Goldilocks>)> = Vec::new();
+                for (t, &h) in [&t8, &t16].iter().zip(heights.iter()) {
+                    let mut m = t.with_random_cols(w + 2 * NRC, &mut rng);
+                    m.width = w + NRC;
+                    assert_eq!(m.height(), 2 * h);
+                    let dom: Dom = <StarkPcs as Pcs<GoldFp2, FriChallenger>>::
+                        natural_domain_for_degree(&inner, 2 * h);
+                    rand_mats.push((dom, m));
+                }
+                let (z1_commit, _z1_data) =
+                    <StarkPcs as Pcs<GoldFp2, FriChallenger>>::commit(&inner, rand_mats);
+                if commit_hex(&z1_commit) != scen["commits"]["main"].as_str().unwrap() {
+                    return Err("fib_zk GATE Z1 FAILED: B1 main-commit replay root != \
+                                proof.commitments.main (draw order or layout wrong)"
+                        .into());
+                }
+
+                // ---- skip B2 (count pinned by GATE Z2's offset). ----
+                let skip: usize = b2.iter().map(|(a, b)| a + b).sum();
+                for _ in 0..skip {
+                    let _: Goldilocks = rng.random();
+                }
+
+                // ---- GATE Z2: B3 replay -> inner batch commit == random. ----
+                let mut r_mats: Vec<(Dom, RowMajorMatrix<Goldilocks>)> = Vec::new();
+                for (i, &h) in heights.iter().enumerate() {
+                    let ext_h = 1usize << log_exts[i];
+                    assert_eq!(ext_h, 2 * h);
+                    let m = RowMajorMatrix::rand(&mut rng, ext_h, NRC + DIM);
+                    let dom: Dom = <StarkPcs as Pcs<GoldFp2, FriChallenger>>::
+                        natural_domain_for_degree(&inner, ext_h);
+                    r_mats.push((dom, m));
+                }
+                let (z2_commit, _z2_data) =
+                    <StarkPcs as Pcs<GoldFp2, FriChallenger>>::commit(&inner, r_mats);
+                if commit_hex(&z2_commit) != scen["commits"]["random"].as_str().unwrap() {
+                    return Err("fib_zk GATE Z2 FAILED: B3 random-commit replay at the \
+                                post-B2 offset != proof.commitments.random (B2 draw \
+                                count or B3 layout wrong)"
+                        .into());
+                }
+
+                // ---- emit the labeled block map + the full stream. ----
+                let mut off = 0usize;
+                let mut blocks: Vec<serde_json::Value> = Vec::new();
+                for i in 0..2 {
+                    blocks.push(serde_json::json!({
+                        "label": format!("main_rand_inst{i}"),
+                        "offset": off, "count": b1[i],
+                        "layout": "h rows x (w+2*nrc) draws row-major; reshape width := w+nrc (row 2i = base row i ++ first nrc draws; row 2i+1 = remaining w+nrc)",
+                        "source": "prover.rs:214-219 + hiding_pcs.rs:110-129 + dense.rs:573-597",
+                    }));
+                    off += b1[i];
+                }
+                for i in 0..2 {
+                    blocks.push(serde_json::json!({
+                        "label": format!("quotient_chunk_rand_inst{i}"),
+                        "offset": off, "count": b2[i].0,
+                        "layout": "per chunk IN ORDER: h_chunk rows x nrc draws row-major (columns appended on the right of the DIM-wide chunk)",
+                        "source": "prover.rs:409 + hiding_pcs.rs:186-190 + dense.rs:573-597",
+                    }));
+                    off += b2[i].0;
+                    blocks.push(serde_json::json!({
+                        "label": format!("quotient_tail_rand_inst{i}"),
+                        "offset": off, "count": b2[i].1,
+                        "layout": "(n_chunks-1) blocks of h_chunk*(DIM+nrc) draws row-major; the LAST chunk's tail values are DERIVED via mul_coeffs (hiding_pcs.rs:202-208), zero draws",
+                        "source": "hiding_pcs.rs:194-199",
+                    }));
+                    off += b2[i].1;
+                }
+                for i in 0..2 {
+                    blocks.push(serde_json::json!({
+                        "label": format!("random_poly_inst{i}"),
+                        "offset": off, "count": b3[i],
+                        "layout": "ext_h rows x (nrc+DIM) draws row-major",
+                        "source": "prover.rs:431-434 + hiding_pcs.rs:404-424 + dense.rs:527-533",
+                    }));
+                    off += b3[i];
+                }
+                assert_eq!(off, total);
+                scen["zk_rng"] = serde_json::json!({
+                    "rng": "SmallRng(1) — ONE stream; first consumer = the main commit (hiding_pcs commit path)",
+                    "num_random_codewords": NRC,
+                    "challenge_dimension": DIM,
+                    "total_draws": total,
+                    "gates": "Z1 main-commit replay == commits.main; Z2 random-commit replay at the post-B2 offset == commits.random (pins the B2 draw COUNT); B2 internal order source-pinned (hiding_pcs.rs:186-199) and byte-gated by the C prover KAT quotient-commit match (d3.4)",
+                    "blocks": blocks,
+                    "draws": draws
+                        .iter()
+                        .map(|v| v.as_canonical_u64().to_string())
+                        .collect::<Vec<_>>(),
+                });
+            }
+            scenarios.push(scen);
+        }
+
+        // d4.b: DZKF v4 wire bytes per scenario (byte-exact second encoder —
+        // the C KAT decode/verify/re-encode byte-match gate).
+        for scen in scenarios.iter_mut() {
+            let wire = v4_wire_bytes(scen)?;
+            scen["wire_v4_len"] = serde_json::json!(wire.len());
+            scen["wire_v4"] = serde_json::json!(to_hex(&wire));
+        }
+
+        let doc = serde_json::json!({
+            "format_version": ORACLE_FORMAT_VERSION,
+            "plonky3_commit": PLONKY3_COMMIT,
+            "description": "P2L-d d1b FULL batch-proof vectors — the complete REAL prove_batch output (verify_batch == Ok gated): commitments (4-lane, 32-byte hex + serde), per-instance opened values incl. permutation_local/next (= aux_width*2, verifier/mod.rs:524-541), global_lookup_data, degree_bits, and the ENTIRE FRI opening proof in proof_serde (FriProof {commit_phase_commits, commit_pow_witnesses, query_proofs [{input_proof: Vec<BatchOpening>, commit_phase_openings [{log_arity, sibling_values, opening_proof}]}], final_poly, query_pow_witness}, fri/src/proof.rs:12-42; is_zk opening proof = (random OpenedValues, FriProof) tuple, hiding_pcs.rs:88-91). opening_rounds pins the N2 schedule (prover.rs:450-537): [random iff is_zk] -> main (zeta,+next iff used) -> quotient (zeta) -> [preprocessed] -> [permutation (zeta AND next, always)]. zeta_next per instance = base trace domain next_point (verifier/mod.rs:306-310,:341-343). serde value encoding: Goldilocks = {\"value\": N}, fp2 = [{\"value\":c0},{\"value\":c1}], commitment = 4 lanes. fib_zk additionally carries zk_rng (d3 entry prereq): the full SmallRng(1) draw stream in BATCHED-prove consumption order with a labeled block map (B1 main / B2 quotient / B3 random-poly), gates Z1+Z2 replay-checked against the proof's main/random commitments. d4.b: every scenario also carries wire_v4 (+wire_v4_len) — the DZKF v4 wire bytes (hex), a byte-exact second implementation of the C dnac_batch_wire_encode layout (magic DZKF, u16 version 4, u32 total_len, is_zk, n, 5 presence-flagged commits, per-instance unmerged opened values + global_lookup_data (len-prefixed bus name, aux_column, sum), rand openings iff is_zk, 6xu32 fri params, FriProof in the v3 field conventions with salt_elems=0; NO opening points on the wire — the verifier samples zeta itself).",
+            "scenarios": scenarios,
+        });
+
+        let mut f = File::create(out_path)?;
+        f.write_all(serde_json::to_string_pretty(&doc)?.as_bytes())?;
+        f.write_all(b"\n")?;
+        eprintln!(
+            "wrote {} ({} scenarios, all verify_batch-gated)",
+            out_path.display(),
+            doc["scenarios"].as_array().unwrap().len()
+        );
         Ok(())
     }
 }

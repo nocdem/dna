@@ -1,9 +1,15 @@
 /**
  * @file fri_proof_codec.c
- * @brief Deterministic FRI proof wire codec — implementation.
+ * @brief Deterministic batched-proof wire codec (DZKF v4) — implementation.
  *
  * Source of truth: docs/plans/2026-05-29-fri-proof-wire-codec-design.md,
- * fri_verifier.h, Plonky3 82cfad73 (fri/src/proof.rs field/struct order).
+ * fri_verifier.h, batch_verify.h, Plonky3 82cfad73 (fri/src/proof.rs,
+ * batch-stark/src/proof.rs, lookup/src/types.rs field/struct order).
+ *
+ * d4.d (2026-07-26): v3 uni-stark retirement. The live surface is v4 ONLY
+ * (dnac_batch_wire_{encode,decode} + accessors). The ENTIRE v3 surface is gone
+ * — encoder, decoder, read accessors, opening-point structures and BOTH verify
+ * wrappers; see the retirement note below dec_proof.
  *
  * Safety (design § M2):
  *   - every integer is byte-assembled little-endian (NO unaligned native casts;
@@ -26,49 +32,60 @@
 #include <string.h>
 
 #include "field_goldilocks.h" /* GOLDILOCKS_P, gold_fp_to_u64/from_u64, gold_fp2_new */
-#include "shielded_fri_params.h" /* pinned consensus FRI params (S0/C5) */
 
 /* ============================================================================
  * Decoded package — owns all allocations via a registry.
  * ========================================================================== */
-struct dnac_fri_wire_package_s {
+typedef struct {
     void   **allocs;
     size_t   n_allocs;
     size_t   cap_allocs;
-    dnac_fri_params_t                          params;       /* embedded */
-    dnac_fri_proof_t                           proof;        /* embedded */
-    dnac_fri_commitment_with_opening_points_t *commitments;  /* registered */
-    size_t                                     num_commitments;
+} codec_reg_t;
+
+/* v4 batched package — the decoded dnac_batch_verify input set. */
+struct dnac_batch_wire_package_s {
+    codec_reg_t reg;
+    int                        is_zk;
+    uint32_t                   num_instances;
+    dnac_batch_vcommits_t      commits;       /* lane arrays registered      */
+    dnac_batch_vopened_t      *opened;        /* [num_instances], registered */
+    dnac_batch_rand_openings_t rand;          /* arrays registered           */
+    dnac_fri_params_t          params;        /* embedded */
+    dnac_fri_proof_t           proof;         /* embedded */
 };
 
 /* Allocate (zeroed) and register; returns NULL for size==0 (a valid empty
  * vector) AND for OOM — callers distinguish via the dctx error field. */
-static void *pkg_alloc(dnac_fri_wire_package_t *pkg, size_t size) {
+static void *reg_alloc(codec_reg_t *reg, size_t size) {
     if (size == 0) return NULL;
     void *p = calloc(1, size);
     if (!p) return NULL;
-    if (pkg->n_allocs == pkg->cap_allocs) {
+    if (reg->n_allocs == reg->cap_allocs) {
         /* Registry-growth overflow guard (symmetry with wb_ensure). Unreachable
          * in practice — n_allocs <= len/4 <= 16M — but kept for defense. */
-        if (pkg->cap_allocs > ((size_t)-1) / 2 ||
-            (pkg->cap_allocs ? pkg->cap_allocs * 2 : 32) > ((size_t)-1) / sizeof(void *)) {
+        if (reg->cap_allocs > ((size_t)-1) / 2 ||
+            (reg->cap_allocs ? reg->cap_allocs * 2 : 32) > ((size_t)-1) / sizeof(void *)) {
             free(p);
             return NULL;
         }
-        size_t ncap = pkg->cap_allocs ? pkg->cap_allocs * 2 : 32;
-        void **na = (void **)realloc(pkg->allocs, ncap * sizeof(void *));
+        size_t ncap = reg->cap_allocs ? reg->cap_allocs * 2 : 32;
+        void **na = (void **)realloc(reg->allocs, ncap * sizeof(void *));
         if (!na) { free(p); return NULL; }
-        pkg->allocs = na;
-        pkg->cap_allocs = ncap;
+        reg->allocs = na;
+        reg->cap_allocs = ncap;
     }
-    pkg->allocs[pkg->n_allocs++] = p;
+    reg->allocs[reg->n_allocs++] = p;
     return p;
 }
 
-void dnac_fri_wire_free(dnac_fri_wire_package_t *pkg) {
+static void reg_release(codec_reg_t *reg) {
+    for (size_t i = 0; i < reg->n_allocs; ++i) free(reg->allocs[i]);
+    free(reg->allocs);
+}
+
+void dnac_batch_wire_free(dnac_batch_wire_package_t *pkg) {
     if (!pkg) return;
-    for (size_t i = 0; i < pkg->n_allocs; ++i) free(pkg->allocs[i]);
-    free(pkg->allocs);
+    reg_release(&pkg->reg);
     free(pkg);
 }
 
@@ -180,78 +197,10 @@ static void enc_proof(wbuf_t *w, const dnac_fri_proof_t *p) {
         enc_query_proof(w, &p->query_proofs[i]);
 }
 
-static void enc_point(wbuf_t *w, const dnac_fri_opening_point_t *pt) {
-    wb_fp2(w, pt->point);
-    wb_u32(w, (uint32_t)pt->num_claimed_evals);
-    for (size_t e = 0; e < pt->num_claimed_evals; ++e)
-        wb_fp2(w, pt->claimed_evals[e]);
-}
-
-static void enc_matrix(wbuf_t *w, const dnac_fri_matrix_openings_t *mo) {
-    wb_base(w, mo->domain.shift);
-    wb_base(w, mo->domain.shift_inverse);
-    wb_u32(w, (uint32_t)mo->domain.log_size);
-    wb_u32(w, (uint32_t)mo->num_points);
-    for (size_t p = 0; p < mo->num_points; ++p)
-        enc_point(w, &mo->points[p]);
-}
-
-static void enc_commitment(wbuf_t *w, const dnac_fri_commitment_with_opening_points_t *cw) {
-    wb_digest(w, &cw->commitment);
-    wb_u32(w, (uint32_t)cw->num_matrices);
-    for (size_t m = 0; m < cw->num_matrices; ++m)
-        enc_matrix(w, &cw->matrices[m]);
-}
-
-dnac_fri_codec_status_t dnac_fri_proof_encode(
-    const dnac_fri_params_t                         *params,
-    const dnac_fri_proof_t                          *proof,
-    const dnac_fri_commitment_with_opening_points_t *commitments,
-    size_t                                           num_commitments,
-    uint8_t                                        **out_buf,
-    size_t                                          *out_len)
-{
-    if (!params || !proof || !out_buf || !out_len) return DNAC_FRI_CODEC_ERR_NULL;
-    if (num_commitments > 0 && !commitments) return DNAC_FRI_CODEC_ERR_NULL;
-    *out_buf = NULL;
-
-    wbuf_t w; w.buf = NULL; w.len = 0; w.cap = 0; w.oom = 0;
-
-    /* header */
-    const uint8_t magic[4] = {
-        DNAC_FRI_WIRE_MAGIC0, DNAC_FRI_WIRE_MAGIC1,
-        DNAC_FRI_WIRE_MAGIC2, DNAC_FRI_WIRE_MAGIC3
-    };
-    wb_bytes(&w, magic, 4);
-    wb_u16(&w, (uint16_t)DNAC_FRI_WIRE_VERSION);
-    size_t total_len_off = w.len;
-    wb_u32(&w, 0); /* total_len placeholder */
-
-    /* params */
-    wb_u32(&w, (uint32_t)params->log_blowup);
-    wb_u32(&w, (uint32_t)params->log_final_poly_len);
-    wb_u32(&w, (uint32_t)params->max_log_arity);
-    wb_u32(&w, (uint32_t)params->num_queries);
-    wb_u32(&w, (uint32_t)params->commit_proof_of_work_bits);
-    wb_u32(&w, (uint32_t)params->query_proof_of_work_bits);
-
-    /* proof + commitments */
-    enc_proof(&w, proof);
-    wb_u32(&w, (uint32_t)num_commitments);
-    for (size_t i = 0; i < num_commitments; ++i)
-        enc_commitment(&w, &commitments[i]);
-
-    if (w.oom) { free(w.buf); return DNAC_FRI_CODEC_ERR_OOM; }
-    if (w.len > DNAC_FRI_WIRE_MAX_TOTAL_LEN) { free(w.buf); return DNAC_FRI_CODEC_ERR_TOO_LARGE; }
-
-    /* patch total_len */
-    uint32_t tl = (uint32_t)w.len;
-    for (int i = 0; i < 4; ++i) w.buf[total_len_off + i] = (uint8_t)(tl >> (8 * i));
-
-    *out_buf = w.buf;
-    *out_len = w.len;
-    return DNAC_FRI_CODEC_OK;
-}
+/* d4.d: the v3 ENCODER (dnac_fri_proof_encode) and its opening-point-only
+ * helpers (enc_point / enc_matrix / enc_commitment) are RETIRED — nothing in
+ * the tree produces a version-3 buffer. enc_proof above is retained: the v4
+ * encoder reuses it verbatim for the FriProof section. */
 
 /* ============================================================================
  * Reader (decode).
@@ -260,7 +209,7 @@ typedef struct {
     const uint8_t          *buf;
     size_t                  len;
     size_t                  pos;
-    dnac_fri_wire_package_t *pkg;
+    codec_reg_t            *reg;
     dnac_fri_codec_status_t err;
 } dctx_t;
 
@@ -356,7 +305,7 @@ static int rd_depth(dctx_t *c, uint32_t *out) {
  * when count>0 and allocation fails. */
 static void *rd_array(dctx_t *c, uint32_t count, size_t elem) {
     if (count == 0) return NULL;
-    void *p = pkg_alloc(c->pkg, (size_t)count * elem);
+    void *p = reg_alloc(c->reg, (size_t)count * elem);
     if (!p) c->err = DNAC_FRI_CODEC_ERR_OOM;
     return p;
 }
@@ -555,65 +504,350 @@ static int dec_proof(dctx_t *c, dnac_fri_proof_t *p) {
     return 1;
 }
 
-static int dec_point(dctx_t *c, dnac_fri_opening_point_t *pt) {
-    if (!rd_fp2(c, &pt->point)) return 0;
-    uint32_t n;
-    if (!rd_count_fixed(c, DNAC_FRI_WIRE_MAX_CLAIMED, 16, &n)) return 0;
-    gold_fp2_t *ev = (gold_fp2_t *)rd_array(c, n, sizeof(gold_fp2_t));
-    if (c->err) return 0;
-    for (uint32_t i = 0; i < n; ++i)
-        if (!rd_fp2(c, &ev[i])) return 0;
-    pt->claimed_evals = ev;
-    pt->num_claimed_evals = n;
+/* d4.d (2026-07-26): the ENTIRE v3 single-instance wire is RETIRED — encoder,
+ * decoder, read accessors, opening-point structures and BOTH verify wrappers.
+ * Nothing in the tree produces or consumes a version-3 buffer.
+ *
+ *   - dnac_fri_verify_wire        — the unpinned, params-trusting TEST entry
+ *                                   (M5 gate). No longer exists in ANY build,
+ *                                   which is strictly stronger than the old
+ *                                   "compiled out of consensus" guarantee.
+ *   - dnac_fri_verify_wire_shielded — the pinned v3 consensus wrapper. Every
+ *                                   pin it held now lives on the v4 path in
+ *                                   dnac_shielded_verify_statement
+ *                                   (shielded_verify.c: params-eq+substitute
+ *                                   :188-204/:252, SALT_ELEMS :91-103/:221,
+ *                                   height :243, is_zk/n :179-182, opened
+ *                                   shape :210-216).
+ *   - dnac_fri_proof_decode / dnac_fri_wire_free / dec_point / dec_matrix /
+ *     dec_commitment — the v3 decode path. The opening-point encoding it read
+ *     does not exist on the v4 wire at all (structural H2 closure), so the
+ *     cross-version guard that matters is the LIVE one: the v4 decoder pins
+ *     DNAC_BATCH_WIRE_VERSION and rejects a version-3 buffer
+ *     (tests/test_batch_wire.c N2b).
+ * ========================================================================== */
+
+/* ============================================================================
+ * DZKF v4 — batched proof wire (P2L-d d4.a).
+ *
+ * Layout (all integers LE; field conventions identical to v3 — canonical
+ * u64-LE fail-close, fp2 c0‖c1, 4-lane digests, u32 counts, salt tails
+ * inside the FriProof):
+ *
+ *   "DZKF" ‖ u16 version=4 ‖ u32 total_len ‖
+ *   u32 is_zk (0/1) ‖ u32 num_instances ‖
+ *   main_commit(4 lanes) ‖
+ *   u32 has_prep ‖ [prep_commit] ‖ u32 has_perm ‖ [perm_commit] ‖
+ *   quotient_commit(4 lanes) ‖ u32 has_random ‖ [random_commit] ‖
+ *   per instance:
+ *     fp2vec trace_local ‖ fp2vec trace_next ‖
+ *     fp2vec preprocessed_local ‖ fp2vec preprocessed_next ‖
+ *     u32 num_qc ‖ 2·num_qc fp2 (chunk pairs, stride 2) ‖
+ *     fp2vec random ‖
+ *     u32 permutation_len ‖ permutation_len fp2 (local) ‖
+ *                           permutation_len fp2 (next) ‖
+ *     u32 num_globals ‖ per entry: u32 name_len ‖ name bytes (1..64, no NUL)
+ *                       ‖ u32 aux_column ‖ fp2 cumulative_sum ‖
+ *   [iff is_zk] u32 num_rand_entries ‖ per entry: fp2vec vals ‖
+ *   fri params (6 × u32, v3 order) ‖
+ *   FriProof (v3 enc_proof encoding, incl. salt tails)
+ *
+ *   fp2vec := u32 len ‖ len fp2 values.
+ *
+ * NO opening points on the wire (structural H2 closure — see the header).
+ * Presence flags are structural; the semantic gates (random iff is_zk,
+ * perm-commit iff lookups, len-vs-width) belong to dnac_batch_verify.
+ * ========================================================================== */
+
+static void wb_lanes4(wbuf_t *w, const gold_fp_t *lanes) {
+    for (size_t i = 0; i < DNAC_P2M_DIGEST_LANES; ++i) wb_base(w, lanes[i]);
+}
+/* len > 0 requires a non-NULL vector (encode-side fail-close). */
+static int wb_fp2_vec(wbuf_t *w, const gold_fp2_t *v, uint32_t len) {
+    if (len > 0 && !v) return 0;
+    wb_u32(w, len);
+    for (uint32_t i = 0; i < len; ++i) wb_fp2(w, v[i]);
     return 1;
 }
 
-static int dec_matrix(dctx_t *c, dnac_fri_matrix_openings_t *mo) {
-    if (!rd_base(c, &mo->domain.shift)) return 0;
-    if (!rd_base(c, &mo->domain.shift_inverse)) return 0;
-    uint32_t ls;
-    if (!rd_u32(c, &ls)) return 0;
-    mo->domain.log_size = ls;
-    uint32_t n;
-    if (!rd_count_var(c, DNAC_FRI_WIRE_MAX_POINTS, &n)) return 0;
-    dnac_fri_opening_point_t *pts = (dnac_fri_opening_point_t *)rd_array(c, n, sizeof(*pts));
+dnac_fri_codec_status_t dnac_batch_wire_encode(
+    int                               is_zk,
+    uint32_t                          num_instances,
+    const dnac_batch_vcommits_t      *commits,
+    const dnac_batch_vopened_t       *opened,
+    const dnac_batch_rand_openings_t *rand_openings,
+    const dnac_fri_params_t          *params,
+    const dnac_fri_proof_t           *proof,
+    uint8_t                         **out_buf,
+    size_t                           *out_len)
+{
+    if (!commits || !opened || !params || !proof || !out_buf || !out_len)
+        return DNAC_FRI_CODEC_ERR_NULL;
+    *out_buf = NULL;
+    if (is_zk != 0 && is_zk != 1) return DNAC_FRI_CODEC_ERR_NONCANONICAL;
+    if (num_instances == 0 || num_instances > DNAC_BATCH_WIRE_MAX_INSTANCES)
+        return DNAC_FRI_CODEC_ERR_LENGTH_OVERFLOW;
+    if (!commits->main_commit || !commits->quotient_commit)
+        return DNAC_FRI_CODEC_ERR_NULL;
+    /* rand-openings iff is_zk — mirror of the dnac_batch_verify contract. */
+    if ((rand_openings != NULL) != (is_zk == 1)) return DNAC_FRI_CODEC_ERR_NULL;
+
+    wbuf_t w; w.buf = NULL; w.len = 0; w.cap = 0; w.oom = 0;
+
+    const uint8_t magic[4] = {
+        DNAC_FRI_WIRE_MAGIC0, DNAC_FRI_WIRE_MAGIC1,
+        DNAC_FRI_WIRE_MAGIC2, DNAC_FRI_WIRE_MAGIC3
+    };
+    wb_bytes(&w, magic, 4);
+    wb_u16(&w, (uint16_t)DNAC_BATCH_WIRE_VERSION);
+    size_t total_len_off = w.len;
+    wb_u32(&w, 0); /* total_len placeholder */
+
+    wb_u32(&w, (uint32_t)is_zk);
+    wb_u32(&w, num_instances);
+
+    /* commits */
+    wb_lanes4(&w, commits->main_commit);
+    wb_u32(&w, commits->preprocessed_commit ? 1u : 0u);
+    if (commits->preprocessed_commit) wb_lanes4(&w, commits->preprocessed_commit);
+    wb_u32(&w, commits->permutation_commit ? 1u : 0u);
+    if (commits->permutation_commit) wb_lanes4(&w, commits->permutation_commit);
+    wb_lanes4(&w, commits->quotient_commit);
+    wb_u32(&w, commits->random_commit ? 1u : 0u);
+    if (commits->random_commit) wb_lanes4(&w, commits->random_commit);
+
+    /* per-instance opened values + global_lookup_data */
+    for (uint32_t i = 0; i < num_instances; ++i) {
+        const dnac_batch_vopened_t *o = &opened[i];
+        if (!wb_fp2_vec(&w, o->trace_local, o->trace_local_len) ||
+            !wb_fp2_vec(&w, o->trace_next, o->trace_next_len) ||
+            !wb_fp2_vec(&w, o->preprocessed_local, o->preprocessed_local_len) ||
+            !wb_fp2_vec(&w, o->preprocessed_next, o->preprocessed_next_len)) {
+            free(w.buf);
+            return DNAC_FRI_CODEC_ERR_NULL;
+        }
+        if (o->num_quotient_chunks > 0 && !o->quotient_chunks) {
+            free(w.buf);
+            return DNAC_FRI_CODEC_ERR_NULL;
+        }
+        if (o->num_quotient_chunks > DNAC_BATCH_WIRE_MAX_QC) {
+            free(w.buf);
+            return DNAC_FRI_CODEC_ERR_LENGTH_OVERFLOW;
+        }
+        wb_u32(&w, o->num_quotient_chunks);
+        for (uint32_t k = 0; k < o->num_quotient_chunks * 2u; ++k)
+            wb_fp2(&w, o->quotient_chunks[k]);
+        if (!wb_fp2_vec(&w, o->random, o->random_len)) {
+            free(w.buf);
+            return DNAC_FRI_CODEC_ERR_NULL;
+        }
+        if (o->permutation_len > 0 &&
+            (!o->permutation_local || !o->permutation_next)) {
+            free(w.buf);
+            return DNAC_FRI_CODEC_ERR_NULL;
+        }
+        wb_u32(&w, o->permutation_len);
+        for (uint32_t k = 0; k < o->permutation_len; ++k)
+            wb_fp2(&w, o->permutation_local[k]);
+        for (uint32_t k = 0; k < o->permutation_len; ++k)
+            wb_fp2(&w, o->permutation_next[k]);
+        if (o->num_globals > 0 &&
+            (!o->entry_names || !o->entry_aux_columns || !o->cumulative_sums)) {
+            free(w.buf);
+            return DNAC_FRI_CODEC_ERR_NULL;
+        }
+        if (o->num_globals > DNAC_BATCH_WIRE_MAX_GLOBALS) {
+            free(w.buf);
+            return DNAC_FRI_CODEC_ERR_LENGTH_OVERFLOW;
+        }
+        wb_u32(&w, o->num_globals);
+        for (uint32_t g = 0; g < o->num_globals; ++g) {
+            const char *nm = o->entry_names[g];
+            size_t nl = nm ? strlen(nm) : 0;
+            if (nl == 0 || nl > DNAC_BATCH_WIRE_MAX_BUS_NAME) {
+                free(w.buf);
+                return DNAC_FRI_CODEC_ERR_LENGTH_OVERFLOW;
+            }
+            wb_u32(&w, (uint32_t)nl);
+            wb_bytes(&w, (const uint8_t *)nm, nl);
+            wb_u32(&w, o->entry_aux_columns[g]);
+            wb_fp2(&w, o->cumulative_sums[g]);
+        }
+    }
+
+    /* random-codeword openings iff is_zk */
+    if (is_zk) {
+        if (rand_openings->num_entries > DNAC_BATCH_WIRE_MAX_RAND_ENTRIES) {
+            free(w.buf);
+            return DNAC_FRI_CODEC_ERR_LENGTH_OVERFLOW;
+        }
+        wb_u32(&w, rand_openings->num_entries);
+        for (uint32_t k = 0; k < rand_openings->num_entries; ++k) {
+            if (!wb_fp2_vec(&w, rand_openings->vals[k],
+                            rand_openings->lens[k])) {
+                free(w.buf);
+                return DNAC_FRI_CODEC_ERR_NULL;
+            }
+        }
+    }
+
+    /* params (v3 order) + FriProof (v3 encoding) */
+    wb_u32(&w, (uint32_t)params->log_blowup);
+    wb_u32(&w, (uint32_t)params->log_final_poly_len);
+    wb_u32(&w, (uint32_t)params->max_log_arity);
+    wb_u32(&w, (uint32_t)params->num_queries);
+    wb_u32(&w, (uint32_t)params->commit_proof_of_work_bits);
+    wb_u32(&w, (uint32_t)params->query_proof_of_work_bits);
+    enc_proof(&w, proof);
+
+    if (w.oom) { free(w.buf); return DNAC_FRI_CODEC_ERR_OOM; }
+    if (w.len > DNAC_FRI_WIRE_MAX_TOTAL_LEN) {
+        free(w.buf);
+        return DNAC_FRI_CODEC_ERR_TOO_LARGE;
+    }
+
+    uint32_t tl = (uint32_t)w.len;
+    for (int i = 0; i < 4; ++i) w.buf[total_len_off + i] = (uint8_t)(tl >> (8 * i));
+
+    *out_buf = w.buf;
+    *out_len = w.len;
+    return DNAC_FRI_CODEC_OK;
+}
+
+/* 4 canonical lanes into a registered gold_fp_t[4]. */
+static int rd_lanes4(dctx_t *c, const gold_fp_t **out) {
+    gold_fp_t *l = (gold_fp_t *)rd_array(c, DNAC_P2M_DIGEST_LANES,
+                                         sizeof(gold_fp_t));
     if (c->err) return 0;
-    for (uint32_t i = 0; i < n; ++i)
-        if (!dec_point(c, &pts[i])) return 0;
-    mo->points = pts;
-    mo->num_points = n;
+    for (size_t i = 0; i < DNAC_P2M_DIGEST_LANES; ++i)
+        if (!rd_base(c, &l[i])) return 0;
+    *out = l;
+    return 1;
+}
+/* presence flag: 0 or 1 only (canonical wire — no third encoding of "absent"). */
+static int rd_flag(dctx_t *c, uint32_t *out) {
+    if (!rd_u32(c, out)) return 0;
+    if (*out > 1u) { c->err = DNAC_FRI_CODEC_ERR_NONCANONICAL; return 0; }
+    return 1;
+}
+/* fp2vec := u32 len + len fp2; len==0 -> NULL (the dnac_batch_vopened_t
+ * absent-section convention). */
+static int rd_fp2_vec(dctx_t *c, const gold_fp2_t **out, uint32_t *out_len,
+                      uint32_t max) {
+    uint32_t l;
+    if (!rd_count_fixed(c, max, 16, &l)) return 0;
+    gold_fp2_t *v = (gold_fp2_t *)rd_array(c, l, sizeof(gold_fp2_t));
+    if (c->err) return 0;
+    for (uint32_t i = 0; i < l; ++i)
+        if (!rd_fp2(c, &v[i])) return 0;
+    *out = v;
+    *out_len = l;
     return 1;
 }
 
-static int dec_commitment(dctx_t *c, dnac_fri_commitment_with_opening_points_t *cw) {
-    if (!rd_digest(c, &cw->commitment)) return 0;
-    uint32_t n;
-    if (!rd_count_var(c, DNAC_FRI_WIRE_MAX_MATRICES, &n)) return 0;
-    dnac_fri_matrix_openings_t *mo = (dnac_fri_matrix_openings_t *)rd_array(c, n, sizeof(*mo));
+static int dec_batch_opened(dctx_t *c, dnac_batch_vopened_t *o) {
+    if (!rd_fp2_vec(c, &o->trace_local, &o->trace_local_len,
+                    DNAC_BATCH_WIRE_MAX_OPENED_VALS) ||
+        !rd_fp2_vec(c, &o->trace_next, &o->trace_next_len,
+                    DNAC_BATCH_WIRE_MAX_OPENED_VALS) ||
+        !rd_fp2_vec(c, &o->preprocessed_local, &o->preprocessed_local_len,
+                    DNAC_BATCH_WIRE_MAX_OPENED_VALS) ||
+        !rd_fp2_vec(c, &o->preprocessed_next, &o->preprocessed_next_len,
+                    DNAC_BATCH_WIRE_MAX_OPENED_VALS)) {
+        return 0;
+    }
+
+    /* quotient chunk pairs: u32 num_qc + 2·num_qc fp2 (32 B per chunk). */
+    uint32_t nqc;
+    if (!rd_count_fixed(c, DNAC_BATCH_WIRE_MAX_QC, 32, &nqc)) return 0;
+    gold_fp2_t *qc =
+        (gold_fp2_t *)rd_array(c, nqc * 2u, sizeof(gold_fp2_t));
     if (c->err) return 0;
-    for (uint32_t i = 0; i < n; ++i)
-        if (!dec_matrix(c, &mo[i])) return 0;
-    cw->matrices = mo;
-    cw->num_matrices = n;
+    for (uint32_t k = 0; k < nqc * 2u; ++k)
+        if (!rd_fp2(c, &qc[k])) return 0;
+    o->quotient_chunks = qc;
+    o->num_quotient_chunks = nqc;
+
+    if (!rd_fp2_vec(c, &o->random, &o->random_len,
+                    DNAC_BATCH_WIRE_MAX_OPENED_VALS)) {
+        return 0;
+    }
+
+    /* permutation: ONE len, then local then next (each len fp2 = 32 B/pair). */
+    uint32_t plen;
+    if (!rd_count_fixed(c, DNAC_BATCH_WIRE_MAX_OPENED_VALS, 32, &plen)) return 0;
+    gold_fp2_t *pl = (gold_fp2_t *)rd_array(c, plen, sizeof(gold_fp2_t));
+    if (c->err) return 0;
+    gold_fp2_t *pn = (gold_fp2_t *)rd_array(c, plen, sizeof(gold_fp2_t));
+    if (c->err) return 0;
+    for (uint32_t k = 0; k < plen; ++k)
+        if (!rd_fp2(c, &pl[k])) return 0;
+    for (uint32_t k = 0; k < plen; ++k)
+        if (!rd_fp2(c, &pn[k])) return 0;
+    o->permutation_local = pl;
+    o->permutation_next = pn;
+    o->permutation_len = plen;
+
+    /* global_lookup_data entries (types.rs:108-115 field order). */
+    uint32_t ng;
+    if (!rd_count_var(c, DNAC_BATCH_WIRE_MAX_GLOBALS, &ng)) return 0;
+    gold_fp2_t  *cums = (gold_fp2_t *)rd_array(c, ng, sizeof(gold_fp2_t));
+    if (c->err) return 0;
+    const char **names = (const char **)rd_array(c, ng, sizeof(char *));
+    if (c->err) return 0;
+    uint32_t *auxcols = (uint32_t *)rd_array(c, ng, sizeof(uint32_t));
+    if (c->err) return 0;
+    for (uint32_t g = 0; g < ng; ++g) {
+        uint32_t nl;
+        if (!rd_u32(c, &nl)) return 0;
+        if (nl == 0 || nl > DNAC_BATCH_WIRE_MAX_BUS_NAME) {
+            c->err = DNAC_FRI_CODEC_ERR_LENGTH_OVERFLOW;
+            return 0;
+        }
+        if (!rd_avail(c, nl)) {
+            c->err = DNAC_FRI_CODEC_ERR_TRUNCATED;
+            return 0;
+        }
+        char *nm = (char *)reg_alloc(c->reg, (size_t)nl + 1);
+        if (!nm) { c->err = DNAC_FRI_CODEC_ERR_OOM; return 0; }
+        for (uint32_t b = 0; b < nl; ++b) {
+            uint8_t ch = c->buf[c->pos + b];
+            /* a NUL byte inside a length-prefixed name has no C-string
+             * representation — reject (canonical wire). */
+            if (ch == 0) { c->err = DNAC_FRI_CODEC_ERR_NONCANONICAL; return 0; }
+            nm[b] = (char)ch;
+        }
+        nm[nl] = '\0';
+        c->pos += nl;
+        names[g] = nm;
+        if (!rd_u32(c, &auxcols[g])) return 0;
+        if (!rd_fp2(c, &cums[g])) return 0;
+    }
+    o->cumulative_sums = cums;
+    o->entry_names = names;
+    o->entry_aux_columns = auxcols;
+    o->num_globals = ng;
     return 1;
 }
 
-dnac_fri_codec_status_t dnac_fri_proof_decode(
-    const uint8_t            *buf,
-    size_t                    len,
-    dnac_fri_wire_package_t **out_pkg)
+dnac_fri_codec_status_t dnac_batch_wire_decode(
+    const uint8_t              *buf,
+    size_t                      len,
+    dnac_batch_wire_package_t **out_pkg)
 {
     if (!buf || !out_pkg) return DNAC_FRI_CODEC_ERR_NULL;
     *out_pkg = NULL;
     if (len > DNAC_FRI_WIRE_MAX_TOTAL_LEN) return DNAC_FRI_CODEC_ERR_TOO_LARGE;
 
-    dnac_fri_wire_package_t *pkg = (dnac_fri_wire_package_t *)calloc(1, sizeof *pkg);
+    dnac_batch_wire_package_t *pkg =
+        (dnac_batch_wire_package_t *)calloc(1, sizeof *pkg);
     if (!pkg) return DNAC_FRI_CODEC_ERR_OOM;
 
     dctx_t c;
-    c.buf = buf; c.len = len; c.pos = 0; c.pkg = pkg; c.err = DNAC_FRI_CODEC_OK;
+    c.buf = buf; c.len = len; c.pos = 0; c.reg = &pkg->reg;
+    c.err = DNAC_FRI_CODEC_OK;
 
-    /* header: magic + version + total_len */
+    /* header: magic + version(=4) + total_len */
     if (!rd_avail(&c, 6)) { c.err = DNAC_FRI_CODEC_ERR_TRUNCATED; goto fail; }
     if (buf[0] != DNAC_FRI_WIRE_MAGIC0 || buf[1] != DNAC_FRI_WIRE_MAGIC1 ||
         buf[2] != DNAC_FRI_WIRE_MAGIC2 || buf[3] != DNAC_FRI_WIRE_MAGIC3) {
@@ -623,25 +857,71 @@ dnac_fri_codec_status_t dnac_fri_proof_decode(
     {
         uint16_t ver;
         if (!rd_u16(&c, &ver)) goto fail;
-        if (ver != DNAC_FRI_WIRE_VERSION) { c.err = DNAC_FRI_CODEC_ERR_BAD_VERSION; goto fail; }
+        if (ver != DNAC_BATCH_WIRE_VERSION) {
+            c.err = DNAC_FRI_CODEC_ERR_BAD_VERSION; goto fail;
+        }
         uint32_t total_len;
         if (!rd_u32(&c, &total_len)) goto fail;
-        if ((size_t)total_len != len) { c.err = DNAC_FRI_CODEC_ERR_INCONSISTENT_LENGTH; goto fail; }
+        if ((size_t)total_len != len) {
+            c.err = DNAC_FRI_CODEC_ERR_INCONSISTENT_LENGTH; goto fail;
+        }
+    }
+
+    {
+        uint32_t zk;
+        if (!rd_flag(&c, &zk)) goto fail;
+        pkg->is_zk = (int)zk;
+    }
+    {
+        uint32_t n;
+        if (!rd_u32(&c, &n)) goto fail;
+        if (n == 0 || n > DNAC_BATCH_WIRE_MAX_INSTANCES) {
+            c.err = DNAC_FRI_CODEC_ERR_LENGTH_OVERFLOW; goto fail;
+        }
+        pkg->num_instances = n;
+    }
+
+    /* commits */
+    if (!rd_lanes4(&c, &pkg->commits.main_commit)) goto fail;
+    {
+        uint32_t f;
+        if (!rd_flag(&c, &f)) goto fail;
+        if (f && !rd_lanes4(&c, &pkg->commits.preprocessed_commit)) goto fail;
+        if (!rd_flag(&c, &f)) goto fail;
+        if (f && !rd_lanes4(&c, &pkg->commits.permutation_commit)) goto fail;
+        if (!rd_lanes4(&c, &pkg->commits.quotient_commit)) goto fail;
+        if (!rd_flag(&c, &f)) goto fail;
+        if (f && !rd_lanes4(&c, &pkg->commits.random_commit)) goto fail;
+    }
+
+    /* per-instance opened values */
+    pkg->opened = (dnac_batch_vopened_t *)rd_array(
+        &c, pkg->num_instances, sizeof(dnac_batch_vopened_t));
+    if (c.err) goto fail;
+    for (uint32_t i = 0; i < pkg->num_instances; ++i)
+        if (!dec_batch_opened(&c, &pkg->opened[i])) goto fail;
+
+    /* random-codeword openings iff is_zk */
+    if (pkg->is_zk) {
+        uint32_t ne;
+        if (!rd_count_var(&c, DNAC_BATCH_WIRE_MAX_RAND_ENTRIES, &ne)) goto fail;
+        const gold_fp2_t **vals =
+            (const gold_fp2_t **)rd_array(&c, ne, sizeof(gold_fp2_t *));
+        if (c.err) goto fail;
+        uint32_t *lens = (uint32_t *)rd_array(&c, ne, sizeof(uint32_t));
+        if (c.err) goto fail;
+        for (uint32_t k = 0; k < ne; ++k)
+            if (!rd_fp2_vec(&c, &vals[k], &lens[k],
+                            DNAC_BATCH_WIRE_MAX_OPENED_VALS)) {
+                goto fail;
+            }
+        pkg->rand.vals = vals;
+        pkg->rand.lens = lens;
+        pkg->rand.num_entries = ne;
     }
 
     if (!dec_params(&c, &pkg->params)) goto fail;
     if (!dec_proof(&c, &pkg->proof)) goto fail;
-
-    {
-        uint32_t ncom;
-        if (!rd_count_var(&c, DNAC_FRI_WIRE_MAX_COMMITMENTS, &ncom)) goto fail;
-        pkg->commitments = (dnac_fri_commitment_with_opening_points_t *)
-            rd_array(&c, ncom, sizeof(*pkg->commitments));
-        if (c.err) goto fail;
-        for (uint32_t i = 0; i < ncom; ++i)
-            if (!dec_commitment(&c, &pkg->commitments[i])) goto fail;
-        pkg->num_commitments = ncom;
-    }
 
     if (c.pos != len) { c.err = DNAC_FRI_CODEC_ERR_TRAILING; goto fail; }
 
@@ -649,126 +929,38 @@ dnac_fri_codec_status_t dnac_fri_proof_decode(
     return DNAC_FRI_CODEC_OK;
 
 fail:
-    dnac_fri_wire_free(pkg);
+    dnac_batch_wire_free(pkg);
     return c.err;
 }
 
-/* ============================================================================
- * Accessors + verify wrapper.
- * ========================================================================== */
-const dnac_fri_params_t *dnac_fri_wire_params(const dnac_fri_wire_package_t *pkg) {
+/* ── v4 accessors (borrowed) ── */
+int dnac_batch_wire_is_zk(const dnac_batch_wire_package_t *pkg) {
+    return pkg ? pkg->is_zk : 0;
+}
+uint32_t dnac_batch_wire_num_instances(const dnac_batch_wire_package_t *pkg) {
+    return pkg ? pkg->num_instances : 0;
+}
+const dnac_batch_vcommits_t *dnac_batch_wire_commits(
+    const dnac_batch_wire_package_t *pkg) {
+    return pkg ? &pkg->commits : NULL;
+}
+const dnac_batch_vopened_t *dnac_batch_wire_opened(
+    const dnac_batch_wire_package_t *pkg) {
+    return pkg ? pkg->opened : NULL;
+}
+const dnac_batch_rand_openings_t *dnac_batch_wire_rand_openings(
+    const dnac_batch_wire_package_t *pkg) {
+    return (pkg && pkg->is_zk) ? &pkg->rand : NULL;
+}
+const dnac_fri_params_t *dnac_batch_wire_params(
+    const dnac_batch_wire_package_t *pkg) {
     return pkg ? &pkg->params : NULL;
 }
-const dnac_fri_proof_t *dnac_fri_wire_proof(const dnac_fri_wire_package_t *pkg) {
+const dnac_fri_proof_t *dnac_batch_wire_proof(
+    const dnac_batch_wire_package_t *pkg) {
     return pkg ? &pkg->proof : NULL;
 }
-const dnac_fri_commitment_with_opening_points_t *dnac_fri_wire_commitments(
-    const dnac_fri_wire_package_t *pkg, size_t *out_num_commitments)
-{
-    if (!pkg) { if (out_num_commitments) *out_num_commitments = 0; return NULL; }
-    if (out_num_commitments) *out_num_commitments = pkg->num_commitments;
-    return pkg->commitments;
-}
 
-#ifdef DNAC_ZK_ENABLE_TEST_WIRE
-/* M5 gate: test-only — see the header. Absent from consensus builds. */
-dnac_fri_codec_status_t dnac_fri_verify_wire(
-    const uint8_t        *buf,
-    size_t                len,
-    dnac_transcript_t    *transcript,
-    dnac_fri_status_t    *out_fri_status)
-{
-    dnac_fri_wire_package_t *pkg = NULL;
-    dnac_fri_codec_status_t cs = dnac_fri_proof_decode(buf, len, &pkg);
-    if (cs != DNAC_FRI_CODEC_OK) return cs;
-
-    size_t n = 0;
-    const dnac_fri_commitment_with_opening_points_t *com = dnac_fri_wire_commitments(pkg, &n);
-    dnac_fri_status_t fs = dnac_fri_verify(dnac_fri_wire_params(pkg), dnac_fri_wire_proof(pkg),
-                                           transcript, com, n);
-    if (out_fri_status) *out_fri_status = fs;
-    dnac_fri_wire_free(pkg);
-    return DNAC_FRI_CODEC_OK;
-}
-#endif /* DNAC_ZK_ENABLE_TEST_WIRE */
-
-dnac_fri_codec_status_t dnac_fri_verify_wire_shielded(
-    const uint8_t        *buf,
-    size_t                len,
-    dnac_transcript_t    *transcript,
-    dnac_fri_status_t    *out_fri_status)
-{
-    /* (0) Fail-closed contract (red-team S0-M4): a consensus caller MUST receive
-     * the verdict — a NULL out slot would swallow it. Reject up front. */
-    if (!out_fri_status) return DNAC_FRI_CODEC_ERR_NULL;
-    *out_fri_status = DNAC_FRI_ERR_INVALID_POW_WITNESS; /* fail-closed default */
-
-    dnac_fri_wire_package_t *pkg = NULL;
-    dnac_fri_codec_status_t cs = dnac_fri_proof_decode(buf, len, &pkg);
-    if (cs != DNAC_FRI_CODEC_OK) return cs;
-
-    /* (1) Tamper detection: wire params MUST equal the pinned consensus set.
-     * A shielded proof carrying anything else is rejected outright. */
-    const dnac_fri_params_t *pinned = dnac_shielded_fri_params();
-    if (!dnac_fri_params_eq(dnac_fri_wire_params(pkg), pinned)) {
-        dnac_fri_wire_free(pkg);
-        return DNAC_FRI_CODEC_ERR_SHIELDED_PARAM_MISMATCH;
-    }
-
-    /* (2) Trace-height pin (dm-c5 C5e): the largest committed matrix domain
-     * height must equal the pinned shielded COMMITTED height, so a prover cannot
-     * slide lgmh to weaken the low-degree test. The committed domain log_size is
-     * base_degree_bits + is_zk (the is_zk hiding transform commits at base+1 — see
-     * shielded_fri_params.h; grounded to conf_root_air_zk.json base_degree_bits+1),
-     * so the pin is DNAC_SHIELDED_COMMITTED_LOG_HEIGHT == 11, NOT the physical 10. */
-    size_t n = 0;
-    const dnac_fri_commitment_with_opening_points_t *com =
-        dnac_fri_wire_commitments(pkg, &n);
-    size_t max_log_height = 0;
-    for (size_t i = 0; i < n; i++) {
-        for (size_t j = 0; j < com[i].num_matrices; j++) {
-            size_t lh = com[i].matrices[j].domain.log_size;
-            if (lh > max_log_height) max_log_height = lh;
-        }
-    }
-    if (max_log_height != DNAC_SHIELDED_COMMITTED_LOG_HEIGHT) {
-        dnac_fri_wire_free(pkg);
-        return DNAC_FRI_CODEC_ERR_SHIELDED_HEIGHT_MISMATCH;
-    }
-
-    /* (2b) salt_elems PIN (G-SEC-P1-6, P1c): every input batch opening AND
-     * every commit-phase step must carry EXACTLY the consensus salt count.
-     * Under PaddingFreeSponge a wire-chosen salt count = attacker-controlled
-     * leaf preimage length = the documented collision construction
-     * (sponge.rs:36-88). Fail-close on any mismatch. */
-    {
-        const dnac_fri_proof_t *pf = dnac_fri_wire_proof(pkg);
-        for (size_t q = 0; q < pf->num_query_proofs; q++) {
-            const dnac_fri_query_proof_t *qp = &pf->query_proofs[q];
-            for (size_t b = 0; b < qp->num_input_batches; b++) {
-                if (qp->input_proof[b].salt_elems != DNAC_SHIELDED_SALT_ELEMS) {
-                    dnac_fri_wire_free(pkg);
-                    return DNAC_FRI_CODEC_ERR_SHIELDED_PARAM_MISMATCH;
-                }
-            }
-            for (size_t r = 0; r < qp->num_commit_phase_openings; r++) {
-                if (qp->commit_phase_openings[r].salt_elems !=
-                    DNAC_SHIELDED_SALT_ELEMS) {
-                    dnac_fri_wire_free(pkg);
-                    return DNAC_FRI_CODEC_ERR_SHIELDED_PARAM_MISMATCH;
-                }
-            }
-        }
-    }
-
-    /* (3) SUBSTITUTE the pinned params — the verifier's own constant sets the
-     * security level, never the wire pointer. */
-    dnac_fri_status_t fs = dnac_fri_verify(pinned, dnac_fri_wire_proof(pkg),
-                                           transcript, com, n);
-    *out_fri_status = fs;
-    dnac_fri_wire_free(pkg);
-    /* (4) Fail-closed (M4): a non-OK verdict is a codec-level rejection, not a
-     * silent CODEC_OK the caller might ignore. */
-    if (fs != DNAC_FRI_OK) return DNAC_FRI_CODEC_ERR_SHIELDED_VERIFY_FAILED;
-    return DNAC_FRI_CODEC_OK;
-}
+/* d4.d: dnac_fri_verify_wire_shielded lived here. Retired with the v3 wire —
+ * its pins are enumerated in the retirement note above and are all enforced by
+ * dnac_shielded_verify_statement (shielded_verify.c) on the v4 path. */

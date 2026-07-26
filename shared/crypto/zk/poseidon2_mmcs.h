@@ -32,9 +32,22 @@
  *     1118-1141); root compare at the end (cap 0 => commit[0],
  *     mmcs.rs:1172-1179).
  *
- * Scope (mirrors the SHA3 merkle_smt.c scope the shielded proof shape needs):
- *   binary arity N=2 only; same-height matrices only (no mixed-height
- *   injection); height an exact power of two >= 1; cap_height 0.
+ * Scope: binary arity N=2 only; cap_height 0; heights exact powers of two
+ *   >= 1. Same-height batches via dnac_p2_mmcs_commit/open/verify (P1b,
+ *   KAT-frozen), MIXED-height batches via the *_mixed entries (P2L-d d1a):
+ *   the tallest group forms the leaf layer and every shorter group is
+ *   injected at the layer whose length equals its height —
+ *   next[i] = C(C(prev[2i], prev[2i+1]), H(concat injected rows at i))
+ *   (merkle_tree.rs:127-176, 337-440 with N=2 so the arity schedule is all
+ *   2s — select_arity_step returns 2 when N==2, merkle_tree.rs:227-242).
+ *   Grouping is STABLE: matrices sort tallest-first but keep insertion
+ *   order within a height group (sorted_by_key stability,
+ *   merkle_tree.rs:113-116) — the concat order inside H depends on it.
+ *   Opened rows stay indexed by ORIGINAL matrix position; matrix m opens
+ *   row `index >> (log_max_height - log2(heights[m]))`
+ *   (mmcs.rs:989-998, 1044-1046). The sibling path has exactly
+ *   log2(max_height) digests (one per binary step; injection combines use
+ *   opened rows, not siblings — mmcs.rs:1109-1116, 1120-1170).
  *
  * SALT-AGNOSTIC CORE: the hiding form (MerkleTreeHidingMmcs, G-SEC-P1-6)
  * hashes leaf = row ‖ salt — the CALLER assembles that concatenation (exactly
@@ -199,6 +212,59 @@ dnac_p2_mmcs_status_t dnac_p2_mmcs_verify(
     size_t                  num_matrices,
     size_t                  num_rows,
     uint64_t                leaf_index,
+    const dnac_p2_digest_t *siblings,
+    size_t                  depth);
+
+/* --------------------------------------------------------------------------
+ * MIXED-height batch commit / open / verify (P2L-d d1a; N=2, cap 0,
+ * power-of-two heights — see the header Scope note for the injection
+ * layout pins)
+ * ------------------------------------------------------------------------ */
+
+/**
+ * Commit to matrices of (possibly) different power-of-two heights.
+ * heights[m] rows of widths[m] lanes each; the tallest group hashes into
+ * the leaf layer, shorter groups inject at their matching layer
+ * (merkle_tree.rs:127-176). Same salt-agnostic contract as the same-height
+ * form: for the hiding tree the caller appends the salt lanes as extra
+ * columns of each matrix.
+ */
+dnac_p2_mmcs_status_t dnac_p2_mmcs_commit_mixed(
+    const uint64_t *const *matrices,
+    const size_t          *widths,
+    const size_t          *heights,
+    size_t                 num_matrices,
+    dnac_p2_digest_t      *out_root,
+    dnac_p2_mmcs_tree_t  **out_tree);
+
+/**
+ * Open `index` (< max height) of a mixed tree: out_rows[m] receives a
+ * BORROWED pointer to matrix m's row at its reduced index
+ * `index >> (log_max - log2(heights[m]))` (mmcs.rs:989-998); out_proof
+ * gets log2(max_height) siblings, leaf-level-first (mmcs.rs:1007-1019).
+ */
+dnac_p2_mmcs_status_t dnac_p2_mmcs_open_mixed(
+    const dnac_p2_mmcs_tree_t *tree,
+    uint64_t                   index,
+    const uint64_t           **out_rows,
+    dnac_p2_proof_t           *out_proof);
+
+/**
+ * Verify a mixed-height opening (mmcs.rs:1052-1180 walk, N=2/cap 0/pow2):
+ * digest = H(concat tallest-group opened rows); per level compress with the
+ * sibling (LSB-first bit order), then, when a group's height equals the new
+ * layer length, digest = C(digest, H(concat that group's opened rows)).
+ * depth MUST equal log2(max height) (proof length rule mmcs.rs:1109-1116).
+ * Opened rows are indexed by ORIGINAL matrix position and carry any hiding
+ * salts already appended (widths[m] = row lanes incl. salts).
+ */
+dnac_p2_mmcs_status_t dnac_p2_mmcs_verify_mixed(
+    const dnac_p2_digest_t *root,
+    const uint64_t *const  *opened_rows,
+    const size_t           *widths,
+    const size_t           *heights,
+    size_t                  num_matrices,
+    uint64_t                index,
     const dnac_p2_digest_t *siblings,
     size_t                  depth);
 

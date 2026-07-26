@@ -2,23 +2,30 @@
  * @file shielded_verify.c
  * @brief Phase-C C2.1 — consensus shielded-statement verify (see header).
  *
- * Grounding map (KAFADAN YASAK — every constant cites its source):
- *   - 43-public layout ......... conf_action_agg_fold.h:115-127 (CONF_AGGZK_PUB_*)
- *   - proof shape (3 coms: random/trace/quotient, widths 6/2322/6, num_qc=8)
- *     ........................... stark_prover_agg.c build_coms():433-476 +
- *                                 A_* pins :34-45 (A_CW=6, A_RAND_W=W+4,
- *                                 A_NUM_QC=8 MEASURED oracle STOP gate)
- *   - priming order ............ stark_priming.h:80-116 (dnac_stark_priming_input_t)
- *   - pinned params/height ..... shielded_fri_params.h:68-93
- *   - sighash_v4 ............... dnac_tx_shielded_sighash, serialize.c:673-707
- *                                 (LINKED, not re-implemented — G-DET-2)
- *   - tx_binding map ........... conf_txbind_map, conf_txbind.h:45-56
- *   - N-chunk constraint check . stark_constraints.h:288-312 + the AIR
- *                                 descriptor DNAC_CONF_ACTION_AGG_FOLD_AIR
- *   - self-verify template ..... stark_prover_agg.c:478-523 (the struct-level
- *                                 FRI + N-chunk sequence this mirrors, with the
- *                                 publics recomputed from the WIRE instead of
- *                                 read from the prover struct)
+ * d4.c-3 (2026-07-26): re-based onto the DZKF v4 BATCHED wire + dnac_batch_verify
+ * (the v3 single-instance uni-stark path is retired). Steps 1-3 (wire
+ * canonicalization, sighash_v4 -> txbind, publics recompute) are UNCHANGED; the
+ * proof is decoded as a 1-instance batched proof and verified by dnac_batch_verify
+ * (which does the FRI verify AND the N-chunk constraint check AND — vacuously
+ * here — the per-bus lookup sums). The v3 wire opening-coordinate check
+ * (H2/G-SEC-5) is GONE by construction: the v4 wire carries NO opening points,
+ * so the verifier samples ζ itself and assembles the N2 rounds — a wire-chosen
+ * opening point can no longer exist. The publics-from-wire binding is now
+ * enforced by Fiat-Shamir divergence inside dnac_batch_verify (recomputed
+ * publics feed the priming → a tampered statement yields a different ζ/α → the
+ * committed openings no longer match → FRI reject).
+ *
+ * Grounding map (KAFADAN YASAK):
+ *   - 43-public layout ......... conf_action_agg_fold.h (CONF_AGGZK_PUB_*)
+ *   - batched proof shape (1 inst, is_zk=1, trace 2318, num_qc=8, random 2)
+ *     ........................... stark_prover_agg.c agg_fill_vinstance + the
+ *                                 batch_shielded_agg oracle (num_qc STOP gate)
+ *   - pinned params/height/salt  shielded_fri_params.h
+ *   - sighash_v4 ............... dnac_tx_shielded_sighash, serialize.c (LINKED)
+ *   - tx_binding map ........... conf_txbind_map, conf_txbind.h
+ *   - batched verify ........... dnac_batch_verify (batch_verify.h) — the FRI +
+ *                                 N-chunk constraint + per-bus sum, 1:1 with
+ *                                 Plonky3 batch-stark verify_batch (82cfad73)
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: Apache-2.0
@@ -28,28 +35,19 @@
 
 #include <string.h>
 
+#include "batch_verify.h"
 #include "conf_action_agg_fold.h"
 #include "conf_txbind.h"
 #include "field_goldilocks.h"
 #include "fri_proof_codec.h"
 #include "shielded_fri_params.h"
-#include "stark_constraints.h"
-#include "stark_priming.h"
-#include "transcript.h"
 
-/* ── Pinned aggregate proof shape (verifier-side consensus constants). ──
- * These MUST equal the prover's A_* pins (stark_prover_agg.c:34-45); the
- * accept-KAT (a real production proof through this entry) is the byte-level
- * cross-check that the two sets agree. */
-#define SV_W ((size_t)CONF_AGGZK_WIDTH)      /* 2318 — main trace width        */
-#define SV_NUM_RANDOM ((size_t)4)            /* A_NUM_RANDOM: randomize_trace
-                                              * appends 4 random columns       */
-#define SV_TRACE_OPEN_W (SV_W + SV_NUM_RANDOM) /* 2322 — committed/opened width */
-#define SV_CHUNK_W ((size_t)2 + SV_NUM_RANDOM) /* 6 — quotient chunk / random
-                                              * poly width (A_CW)              */
-#define SV_NUM_QC ((size_t)8)                /* MEASURED (oracle STOP gate)    */
-#define SV_LOG_NUM_QC ((size_t)2)            /* A_LOG_NUM_QC                   */
-#define SV_NUM_PUBLICS ((size_t)CONF_AGGZK_NUM_PUBLICS) /* 43                  */
+/* ── Pinned aggregate proof shape (verifier-side consensus constants). ── */
+#define SV_W ((size_t)CONF_AGGZK_WIDTH)                 /* 2318 — AIR trace width */
+#define SV_NUM_QC ((size_t)8)                           /* MEASURED (STOP gate)   */
+#define SV_LOG_NUM_QC ((size_t)2)                       /* A_LOG_NUM_QC           */
+#define SV_NUM_PUBLICS ((size_t)CONF_AGGZK_NUM_PUBLICS) /* 43                     */
+#define SV_RANDOM_LEN ((size_t)2)                       /* is_zk random opened    */
 
 /* num_qc == 1 << (log_num_qc + is_zk) — verifier.rs:294-296 invariant. */
 _Static_assert(SV_NUM_QC ==
@@ -61,16 +59,11 @@ _Static_assert(DNAC_SHIELDED_LANES == CONF_AGGZK_MEMB_LANES &&
                    DNAC_SHIELDED_MAX_OUTPUTS == CONF_AGGZK_MAX_OUTPUTS,
                "wire shielded-field shape != AIR public shape");
 
-static int fp2_eq(gold_fp2_t a, gold_fp2_t b) {
-    return gold_fp_to_u64(a.a) == gold_fp_to_u64(b.a) &&
-           gold_fp_to_u64(a.b) == gold_fp_to_u64(b.b);
-}
-
 /* Recompute the 43 publics from the WIRE fields (never from the proof).
- * Layout = CONF_AGGZK_PUB_* (conf_action_agg_fold.h:115-127), value source =
- * the wire struct whose slots the caller has already canonicalized. Unused
- * slots are zero on the wire (checked) and zero in the publics (the prover
- * zero-fills them the same way, stark_prover_agg.c:243-244,349-352). */
+ * Layout = CONF_AGGZK_PUB_* (conf_action_agg_fold.h), value source = the wire
+ * struct whose slots the caller has already canonicalized. Unused slots are
+ * zero on the wire (checked) and zero in the publics (the prover zero-fills them
+ * the same way, agg_zk_generate). */
 static void sv_build_publics(const dnac_tx_shielded_fields_t *sf,
                              const uint64_t txbind[CONF_TXBIND_LANES],
                              gold_fp_t out[SV_NUM_PUBLICS]) {
@@ -91,6 +84,24 @@ static void sv_build_publics(const dnac_tx_shielded_fields_t *sf,
         out[CONF_AGGZK_PUB_TXBIND + j] = gold_fp_from_u64(txbind[j]);
 }
 
+/* Every input-batch opening AND commit-phase step of the FRI proof MUST carry
+ * exactly DNAC_SHIELDED_SALT_ELEMS salt lanes (G-SEC-P1-6, the hiding leaf
+ * pin). A mismatch would fail the FRI verify anyway (the committed leaf hash
+ * differs), but the explicit pin fail-closes it here. */
+static int sv_salt_elems_pinned(const dnac_fri_proof_t *proof) {
+    for (size_t q = 0; q < proof->num_query_proofs; q++) {
+        const dnac_fri_query_proof_t *qp = &proof->query_proofs[q];
+        for (size_t b = 0; b < qp->num_input_batches; b++)
+            if (qp->input_proof[b].salt_elems != DNAC_SHIELDED_SALT_ELEMS)
+                return 0;
+        for (size_t r = 0; r < qp->num_commit_phase_openings; r++)
+            if (qp->commit_phase_openings[r].salt_elems !=
+                DNAC_SHIELDED_SALT_ELEMS)
+                return 0;
+    }
+    return 1;
+}
+
 dnac_shielded_verify_status_t dnac_shielded_verify_statement(
     const dnac_tx_shielded_fields_t *sf,
     const uint8_t                    chain_id[32],
@@ -100,18 +111,12 @@ dnac_shielded_verify_status_t dnac_shielded_verify_statement(
         return DNAC_SHIELDED_VERIFY_ERR_NULL;
     }
     /* Oversize fail-close (design §0: never assume the transport cap, never
-     * crash/OOM). The codec's own cap is the wire bound; anything above it can
-     * be rejected without touching the blob. */
+     * crash/OOM). */
     if (sf->fri_proof_len > DNAC_FRI_WIRE_MAX_TOTAL_LEN) {
         return DNAC_SHIELDED_VERIFY_ERR_OVERSIZE;
     }
 
     /* ── 1. Wire canonicalization (DET-S5-3 / G-DET-5 / G-SEC-2 / G-SEC-6) ── */
-    /* num_input in [1, MAX]: GAP-1 proves any INPUT row forces num_input >= 1
-     * (conf_action_agg_fold constraint set); a 0-input statement has no
-     * membership anchor and no spend — fail-close. num_output in [0, MAX]
-     * (an all-fee spend has no OUTPUT block; the prover emits num_output=0,
-     * stark_prover_agg.c:343-353). */
     if (sf->num_input < 1 || sf->num_input > DNAC_SHIELDED_MAX_INPUTS ||
         sf->num_output > DNAC_SHIELDED_MAX_OUTPUTS) {
         return DNAC_SHIELDED_VERIFY_ERR_COUNT;
@@ -136,8 +141,7 @@ dnac_shielded_verify_status_t dnac_shielded_verify_statement(
             return DNAC_SHIELDED_VERIFY_ERR_NONCANONICAL;
     }
     if (sf->fee >= GOLDILOCKS_P) return DNAC_SHIELDED_VERIFY_ERR_NONCANONICAL;
-    /* Single fee authority (D7.2): the header committed_fee the fee-pool logic
-     * reads MUST equal the balance-bound shielded fee public. */
+    /* Single fee authority (D7.2). */
     if (sf->fee != committed_fee) return DNAC_SHIELDED_VERIFY_ERR_FEE;
 
     /* ── 2. Statement binding (G-SEC-3): sighash_v4 -> txbind map -> wire ── */
@@ -147,8 +151,6 @@ dnac_shielded_verify_status_t dnac_shielded_verify_statement(
         return DNAC_SHIELDED_VERIFY_ERR_TXBIND;
     }
     if (!conf_txbind_map(sighash, txbind)) {
-        /* < 4 canonical groups in the digest (prob << 2^-100) — fail-close,
-         * never reduce-mod-p (conf_txbind.h:12). */
         return DNAC_SHIELDED_VERIFY_ERR_TXBIND;
     }
     for (unsigned j = 0; j < CONF_TXBIND_LANES; j++) {
@@ -160,152 +162,112 @@ dnac_shielded_verify_status_t dnac_shielded_verify_statement(
     gold_fp_t publics[SV_NUM_PUBLICS];
     sv_build_publics(sf, txbind, publics);
 
-    /* ── 4. Decode the proof blob (canonicality of every proof field is
-     *       enforced by the codec — NONCANONICAL/TRUNCATED/... all reject). ── */
-    dnac_fri_wire_package_t *pkg = NULL;
-    if (dnac_fri_proof_decode(sf->fri_proof, sf->fri_proof_len, &pkg) !=
+    /* ── 4. Decode the DZKF v4 batched proof blob (canonicality of every field
+     *       is enforced by the codec — NONCANONICAL/TRUNCATED/... all reject;
+     *       v3 buffers reject on VERSION). ── */
+    dnac_batch_wire_package_t *pkg = NULL;
+    if (dnac_batch_wire_decode(sf->fri_proof, sf->fri_proof_len, &pkg) !=
         DNAC_FRI_CODEC_OK) {
         return DNAC_SHIELDED_VERIFY_ERR_DECODE;
     }
 
     dnac_shielded_verify_status_t rc = DNAC_SHIELDED_VERIFY_ERR_SHAPE;
-    dnac_transcript_t            *vt = NULL;
 
-    /* ── 5. Shape pin: exactly the aggregate proof's commitment layout
-     *       (build_coms, stark_prover_agg.c:433-476):
-     *         com[0] random   — 1 matrix, 1 point (zeta),        6 evals
-     *         com[1] trace    — 1 matrix, 2 points (zeta, next), 2322 evals
-     *         com[2] quotient — 8 matrices, 1 point (zeta) each, 6 evals
-     *       every committed domain log_size == the pinned height 11. ── */
-    size_t num_coms = 0;
-    const dnac_fri_commitment_with_opening_points_t *coms =
-        dnac_fri_wire_commitments(pkg, &num_coms);
-    if (coms == NULL || num_coms != 3) goto out;
-    if (coms[0].num_matrices != 1 || coms[1].num_matrices != 1 ||
-        coms[2].num_matrices != SV_NUM_QC)
-        goto out;
-    const dnac_fri_matrix_openings_t *rand_mx = &coms[0].matrices[0];
-    const dnac_fri_matrix_openings_t *trace_mx = &coms[1].matrices[0];
-    if (rand_mx->num_points != 1 || trace_mx->num_points != 2) goto out;
-    if (rand_mx->points[0].num_claimed_evals != SV_CHUNK_W ||
-        trace_mx->points[0].num_claimed_evals != SV_TRACE_OPEN_W ||
-        trace_mx->points[1].num_claimed_evals != SV_TRACE_OPEN_W)
-        goto out;
-    for (size_t k = 0; k < SV_NUM_QC; k++) {
-        const dnac_fri_matrix_openings_t *m = &coms[2].matrices[k];
-        if (m->num_points != 1 ||
-            m->points[0].num_claimed_evals != SV_CHUNK_W)
-            goto out;
-        if (m->domain.log_size != DNAC_SHIELDED_COMMITTED_LOG_HEIGHT) {
-            rc = DNAC_SHIELDED_VERIFY_ERR_HEIGHT;
-            goto out;
-        }
-    }
-    if (rand_mx->domain.log_size != DNAC_SHIELDED_COMMITTED_LOG_HEIGHT ||
-        trace_mx->domain.log_size != DNAC_SHIELDED_COMMITTED_LOG_HEIGHT) {
-        /* The pinned entry re-checks this (max over all matrices); pinning it
-         * here too keeps the priming input trustworthy (G-SEC-4). */
-        rc = DNAC_SHIELDED_VERIFY_ERR_HEIGHT;
+    /* ── 5. Structural pins (fail-close). The wire has no opening points and no
+     *       degree/height field — the verifier PINS is_zk / height / num_qc /
+     *       params, so a mismatched-height proof fails the FRI verify below. ── */
+    if (dnac_batch_wire_is_zk(pkg) != DNAC_SHIELDED_IS_ZK ||
+        dnac_batch_wire_num_instances(pkg) != 1) {
         goto out;
     }
 
-    /* ── 6. Prime a FRESH transcript from decoded opened values + recomputed
-     *       publics; SAMPLE zeta/zeta_next (H2/H3 closed on this path). ── */
+    /* Param equality (tamper-detect) then SUBSTITUTE the pinned params — the
+     * verify runs on the canonical consensus params, never the wire's. */
+    const dnac_fri_params_t *wp = dnac_batch_wire_params(pkg);
+    if (wp == NULL) goto out;
+    if (wp->log_blowup != DNAC_SHIELDED_FRI_LOG_BLOWUP ||
+        wp->log_final_poly_len != DNAC_SHIELDED_FRI_LOG_FINAL_POLY_LEN ||
+        wp->max_log_arity != DNAC_SHIELDED_FRI_MAX_LOG_ARITY ||
+        wp->num_queries != DNAC_SHIELDED_FRI_NUM_QUERIES ||
+        wp->commit_proof_of_work_bits != DNAC_SHIELDED_FRI_COMMIT_POW_BITS ||
+        wp->query_proof_of_work_bits != DNAC_SHIELDED_FRI_QUERY_POW_BITS) {
+        rc = DNAC_SHIELDED_VERIFY_ERR_FRI;
+        goto out;
+    }
+    dnac_fri_params_t pinned;
+    memset(&pinned, 0, sizeof(pinned));
+    pinned.log_blowup = DNAC_SHIELDED_FRI_LOG_BLOWUP;
+    pinned.log_final_poly_len = DNAC_SHIELDED_FRI_LOG_FINAL_POLY_LEN;
+    pinned.max_log_arity = DNAC_SHIELDED_FRI_MAX_LOG_ARITY;
+    pinned.num_queries = DNAC_SHIELDED_FRI_NUM_QUERIES;
+    pinned.commit_proof_of_work_bits = DNAC_SHIELDED_FRI_COMMIT_POW_BITS;
+    pinned.query_proof_of_work_bits = DNAC_SHIELDED_FRI_QUERY_POW_BITS;
+
+    /* Opened-value shape pin (v4: trace 2318 — the 4 zk codewords live in the
+     * rand-openings, NOT the 2322-wide v3 opened trace). */
+    const dnac_batch_vopened_t *opened = dnac_batch_wire_opened(pkg);
+    if (opened == NULL) goto out;
+    if (opened->trace_local_len != SV_W || opened->trace_next_len != SV_W ||
+        opened->num_quotient_chunks != SV_NUM_QC ||
+        opened->random_len != SV_RANDOM_LEN ||
+        opened->preprocessed_local != NULL || opened->preprocessed_next != NULL ||
+        opened->permutation_len != 0 || opened->num_globals != 0) {
+        goto out;
+    }
+
+    /* SALT_ELEMS pin (G-SEC-P1-6): every FRI opening carries exactly 2 salts. */
+    const dnac_fri_proof_t *proof = dnac_batch_wire_proof(pkg);
+    if (proof == NULL) goto out;
+    if (!sv_salt_elems_pinned(proof)) {
+        rc = DNAC_SHIELDED_VERIFY_ERR_FRI;
+        goto out;
+    }
+
+    /* ── 6. Build the pinned 1-instance aggregate descriptor + the recomputed
+     *       publics, and run the batched verify. degree_bits is PINNED to 11
+     *       (the committed is_zk ext domain, C1 fixed H=1024); a proof at any
+     *       other height fails the FRI verify (its query depths / opened counts
+     *       won't match). dnac_batch_verify does the FRI verify AND the N-chunk
+     *       AIR constraint check (CRIT-1: the ONLY step binding publics to the
+     *       trace) AND the per-bus lookup sums (vacuous — no lookups). ── */
     {
-        const gold_fp2_t *qc_ptr[SV_NUM_QC];
-        size_t            qc_len[SV_NUM_QC];
-        for (size_t k = 0; k < SV_NUM_QC; k++) {
-            qc_ptr[k] = coms[2].matrices[k].points[0].claimed_evals;
-            qc_len[k] = SV_CHUNK_W;
-        }
-        dnac_stark_priming_input_t pin;
-        memset(&pin, 0, sizeof(pin));
-        pin.degree_bits = DNAC_SHIELDED_COMMITTED_LOG_HEIGHT; /* == decoded, pinned */
-        pin.is_zk = DNAC_SHIELDED_IS_ZK; /* config constant, NEVER wire-read
-                                          * (stark_priming.h:72-78)            */
-        pin.preprocessed_width = 0;
-        pin.trace_commit = coms[1].commitment;
-        pin.quotient_commit = coms[2].commitment;
-        pin.random_commit = &coms[0].commitment;
-        pin.random_local = rand_mx->points[0].claimed_evals;
-        pin.random_local_len = SV_CHUNK_W;
-        pin.public_values = publics;
-        pin.num_public_values = SV_NUM_PUBLICS;
-        pin.trace_local = trace_mx->points[0].claimed_evals;
-        pin.trace_local_len = SV_TRACE_OPEN_W;
-        pin.trace_next = trace_mx->points[1].claimed_evals;
-        pin.trace_next_len = SV_TRACE_OPEN_W;
-        pin.quotient_chunks = qc_ptr;
-        pin.quotient_chunk_lens = qc_len;
-        pin.num_quotient_chunks = SV_NUM_QC;
+        dnac_batch_vinstance_t vi;
+        memset(&vi, 0, sizeof(vi));
+        vi.air = DNAC_CONF_ACTION_AGG_FOLD_AIR;
+        vi.preprocessed_width = 0;
+        vi.prep_next = 0;
+        vi.pool = NULL;
+        vi.pool_len = 0;
+        vi.lookups = NULL;
+        vi.num_lookups = 0;
+        vi.degree_bits = (uint32_t)DNAC_SHIELDED_COMMITTED_LOG_HEIGHT; /* 11 */
+        vi.log_num_qc = (uint32_t)SV_LOG_NUM_QC;                       /* 2  */
+        vi.public_values = publics;
+        vi.num_publics = (uint32_t)SV_NUM_PUBLICS;
 
-        vt = dnac_transcript_init_default();
-        if (vt == NULL) {
-            rc = DNAC_SHIELDED_VERIFY_ERR_PRIMING;
-            goto out;
-        }
-        dnac_stark_priming_out_t pout;
-        memset(&pout, 0, sizeof(pout));
-        if (dnac_stark_prime_transcript(vt, &pin, &pout) !=
-            DNAC_STARK_PRIMING_OK) {
-            rc = DNAC_SHIELDED_VERIFY_ERR_PRIMING;
-            goto out;
-        }
-
-        /* ── 7. Wire opening coordinates MUST equal the SAMPLED points
-         *       (G-DET-4 / G-SEC-5; closes H2 — the pinned FRI entry verifies
-         *       at the wire coordinates, so they must BE the derived ones). ── */
-        if (!fp2_eq(rand_mx->points[0].point, pout.zeta) ||
-            !fp2_eq(trace_mx->points[0].point, pout.zeta) ||
-            !fp2_eq(trace_mx->points[1].point, pout.zeta_next)) {
-            rc = DNAC_SHIELDED_VERIFY_ERR_OPENING_POINT;
-            goto out;
-        }
-        for (size_t k = 0; k < SV_NUM_QC; k++) {
-            if (!fp2_eq(coms[2].matrices[k].points[0].point, pout.zeta)) {
-                rc = DNAC_SHIELDED_VERIFY_ERR_OPENING_POINT;
-                goto out;
-            }
-        }
-
-        /* ── 8. Pinned FRI/PCS verify on the wire bytes (params equality +
-         *       pinned-param substitution + height pin + query PoW). ── */
-        dnac_fri_status_t fs = DNAC_FRI_ERR_INVALID_POW_WITNESS;
-        if (dnac_fri_verify_wire_shielded(sf->fri_proof, sf->fri_proof_len, vt,
-                                          &fs) != DNAC_FRI_CODEC_OK ||
-            fs != DNAC_FRI_OK) {
+        dnac_batch_verify_out_t vo;
+        memset(&vo, 0, sizeof(vo));
+        dnac_batch_verify_status_t bst = dnac_batch_verify(
+            &vi, opened, 1, DNAC_SHIELDED_IS_ZK, dnac_batch_wire_commits(pkg),
+            NULL, 0, &pinned, proof, dnac_batch_wire_rand_openings(pkg), &vo);
+        switch (bst) {
+        case DNAC_BV_OK:
+            rc = DNAC_SHIELDED_VERIFY_OK;
+            break;
+        case DNAC_BV_ERR_FRI:
             rc = DNAC_SHIELDED_VERIFY_ERR_FRI;
-            goto out;
-        }
-
-        /* ── 9. CRIT-1: the N-chunk AIR constraint check — recomputed publics
-         *       + decoded openings at the SAMPLED zeta/alpha. FRI_OK alone is
-         *       soundness-vacuous; BOTH must pass (self-verify template,
-         *       stark_prover_agg.c:508-521). Only the first SV_W of the 2322
-         *       opened trace columns are AIR columns (the +4 random tail is
-         *       ignored, ditto the chunk tails via stride). ── */
-        gold_fp2_t chunks[SV_NUM_QC * 2];
-        for (size_t k = 0; k < SV_NUM_QC; k++) {
-            chunks[k * 2 + 0] = qc_ptr[k][0];
-            chunks[k * 2 + 1] = qc_ptr[k][1];
-        }
-        if (dnac_stark_verify_constraints_nchunk(
-                &DNAC_CONF_ACTION_AGG_FOLD_AIR,
-                trace_mx->points[0].claimed_evals, SV_W,
-                trace_mx->points[1].claimed_evals, SV_W,
-                publics, SV_NUM_PUBLICS,
-                pout.zeta, DNAC_SHIELDED_COMMITTED_LOG_HEIGHT, SV_LOG_NUM_QC,
-                DNAC_SHIELDED_IS_ZK, pout.alpha,
-                chunks, SV_NUM_QC, 2) != DNAC_STARK_VERIFY_OK) {
+            break;
+        case DNAC_BV_ERR_OOD:
+        case DNAC_BV_ERR_LOOKUP_SUM: /* no lookups — cannot fire, map defensively */
             rc = DNAC_SHIELDED_VERIFY_ERR_CONSTRAINTS;
-            goto out;
+            break;
+        default: /* SHAPE / RANDOMIZATION / PARAM / OOM / NULL */
+            rc = DNAC_SHIELDED_VERIFY_ERR_SHAPE;
+            break;
         }
     }
-
-    rc = DNAC_SHIELDED_VERIFY_OK;
 
 out:
-    if (vt) dnac_transcript_free(vt);
-    dnac_fri_wire_free(pkg);
+    dnac_batch_wire_free(pkg);
     return rc;
 }

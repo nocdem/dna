@@ -184,6 +184,18 @@ dnac_prover_status_t dnac_agg_prover_prove_production_forged_publics_testonly(
     const dnac_agg_prover_instance_t *inst,
     const uint64_t                    forged_publics[CONF_AGGZK_NUM_PUBLICS],
     dnac_agg_prover_proof_t         **out_proof);
+
+/** d4.c KAT-only: run the aggregate S1 generator (agg_zk_generate) to produce
+ *  the RAW CONF_AGGZK_WIDTH-wide base trace (PRE-randomization, row-major
+ *  canonical u64) + the 43 public values, so the batched-prover KAT
+ *  (test_batch_shielded_agg) can feed the SAME witness to dnac_batch_prove as a
+ *  1-instance is_zk=1 batch. trace_out = [(1<<log_height)*CONF_AGGZK_WIDTH],
+ *  pub_out = [CONF_AGGZK_NUM_PUBLICS]. Returns 0 on an inconsistent instance
+ *  (non-conserving / OOB / NULL siblings), 1 on success. NOT a production
+ *  entry — the re-based prover calls agg_zk_generate directly at d4.c-2. */
+int dnac_agg_zk_generate_trace_testonly(
+    unsigned log_height, const dnac_agg_prover_instance_t *inst,
+    uint64_t *trace_out, gold_fp_t *pub_out);
 #endif /* DNAC_ZK_ENABLE_TEST_WIRE */
 
 #ifdef __cplusplus

@@ -32,7 +32,10 @@ struct dnac_p2_mmcs_tree_s {
      * open_batch can hand out borrowed row pointers. */
     size_t     num_matrices;
     size_t    *widths;   /* [num_matrices] lane widths */
-    uint64_t **mats;     /* [num_matrices][num_rows * widths[m]] */
+    uint64_t **mats;     /* [num_matrices][heights[m] * widths[m]] */
+    /* MIXED-height trees only (P2L-d d1a): per-matrix heights; NULL for the
+     * same-height form (all its paths unchanged). num_rows = max height. */
+    size_t    *heights;
 };
 
 /* PaddingFreeSponge<Perm,8,4,4> hash_iter (sponge.rs:172-203): zero state;
@@ -275,7 +278,250 @@ void dnac_p2_mmcs_tree_free(dnac_p2_mmcs_tree_t *tree) {
         free(tree->mats);
     }
     free(tree->widths);
+    free(tree->heights);
     free(tree);
+}
+
+/* ============================================================================
+ * MIXED-height batch (P2L-d d1a) — merkle_tree.rs:127-176 build with N=2
+ * (arity schedule all 2s, select_arity_step:227-242) + the mmcs.rs:1052-1180
+ * verify walk. Power-of-two heights only (the DNAC batch shapes; the Rust
+ * "heights rounding to the same pow2 must be equal" rule is then trivial).
+ * ========================================================================== */
+
+/* Hash the concatenation of rows at `row` from every matrix whose height is
+ * `group_h`, in ORIGINAL insertion order (stable grouping,
+ * merkle_tree.rs:113-116 / mmcs.rs:1098-1104). Returns the number of lanes
+ * consumed (0 => no matrix of that height). */
+static size_t p2m_group_row_concat(const uint64_t *const *matrices,
+                                   const size_t *widths, const size_t *heights,
+                                   size_t num_matrices, size_t group_h,
+                                   size_t row, uint64_t *scratch)
+{
+    size_t off = 0;
+    for (size_t m = 0; m < num_matrices; m++) {
+        if (heights[m] == group_h) {
+            memcpy(scratch + off, matrices[m] + row * widths[m],
+                   widths[m] * sizeof(uint64_t));
+            off += widths[m];
+        }
+    }
+    return off;
+}
+
+dnac_p2_mmcs_status_t dnac_p2_mmcs_commit_mixed(
+    const uint64_t *const *matrices,
+    const size_t          *widths,
+    const size_t          *heights,
+    size_t                 num_matrices,
+    dnac_p2_digest_t      *out_root,
+    dnac_p2_mmcs_tree_t  **out_tree)
+{
+    if (!matrices || !widths || !heights || !out_root || num_matrices == 0)
+        return DNAC_P2M_ERR_PARAM;
+
+    size_t max_h = 0, total_width = 0;
+    for (size_t m = 0; m < num_matrices; m++) {
+        if (widths[m] == 0 || !matrices[m] || !p2m_is_pow2(heights[m]))
+            return DNAC_P2M_ERR_PARAM;
+        if (!p2m_all_canonical(matrices[m], heights[m] * widths[m]))
+            return DNAC_P2M_ERR_NONCANONICAL;
+        if (heights[m] > max_h) max_h = heights[m];
+        total_width += widths[m];
+    }
+    const size_t depth = p2m_log2(max_h);
+
+    dnac_p2_mmcs_tree_t *t = (dnac_p2_mmcs_tree_t *)calloc(1, sizeof(*t));
+    if (!t) return DNAC_P2M_ERR_ALLOC;
+    t->num_rows = max_h;
+    t->depth = depth;
+    t->layers =
+        (dnac_p2_digest_t **)calloc(depth + 1, sizeof(dnac_p2_digest_t *));
+    uint64_t *scratch = (uint64_t *)malloc(total_width * sizeof(uint64_t));
+    if (!t->layers || !scratch) {
+        free(scratch);
+        dnac_p2_mmcs_tree_free(t);
+        return DNAC_P2M_ERR_ALLOC;
+    }
+
+    /* Leaf layer: the tallest group only (first_digest_layer,
+     * merkle_tree.rs:129-136). */
+    t->layers[0] =
+        (dnac_p2_digest_t *)malloc(max_h * sizeof(dnac_p2_digest_t));
+    if (!t->layers[0]) {
+        free(scratch);
+        dnac_p2_mmcs_tree_free(t);
+        return DNAC_P2M_ERR_ALLOC;
+    }
+    for (size_t r = 0; r < max_h; r++) {
+        size_t n = p2m_group_row_concat(matrices, widths, heights,
+                                        num_matrices, max_h, r, scratch);
+        dnac_p2_mmcs_hash_iter(scratch, n, t->layers[0][r].lanes);
+    }
+
+    /* Internal layers: binary compress + injection when a group's height
+     * equals the new layer length (compress_and_inject with N=2,
+     * merkle_tree.rs:139-168, 337-440: next[i] = C(C(prev[2i], prev[2i+1]),
+     * H(injected rows at i)) when an injection group exists). */
+    for (size_t l = 1; l <= depth; l++) {
+        const size_t n = max_h >> l;
+        int inject = 0;
+        for (size_t m = 0; m < num_matrices; m++) {
+            if (heights[m] == n && n != max_h) inject = 1;
+        }
+        t->layers[l] = (dnac_p2_digest_t *)malloc(n * sizeof(dnac_p2_digest_t));
+        if (!t->layers[l]) {
+            free(scratch);
+            dnac_p2_mmcs_tree_free(t);
+            return DNAC_P2M_ERR_ALLOC;
+        }
+        for (size_t i = 0; i < n; i++) {
+            uint64_t d[P2M_OUT];
+            dnac_p2_mmcs_compress(t->layers[l - 1][2 * i].lanes,
+                                  t->layers[l - 1][2 * i + 1].lanes, d);
+            if (inject) {
+                size_t cnt = p2m_group_row_concat(matrices, widths, heights,
+                                                  num_matrices, n, i, scratch);
+                uint64_t rows_digest[P2M_OUT];
+                dnac_p2_mmcs_hash_iter(scratch, cnt, rows_digest);
+                dnac_p2_mmcs_compress(d, rows_digest, t->layers[l][i].lanes);
+            } else {
+                memcpy(t->layers[l][i].lanes, d, sizeof(d));
+            }
+        }
+    }
+    free(scratch);
+
+    *out_root = t->layers[depth][0];
+    if (out_tree) {
+        t->num_matrices = num_matrices;
+        t->widths = (size_t *)malloc(num_matrices * sizeof(size_t));
+        t->heights = (size_t *)malloc(num_matrices * sizeof(size_t));
+        t->mats = (uint64_t **)calloc(num_matrices, sizeof(uint64_t *));
+        if (!t->widths || !t->heights || !t->mats) {
+            dnac_p2_mmcs_tree_free(t);
+            return DNAC_P2M_ERR_ALLOC;
+        }
+        for (size_t m = 0; m < num_matrices; m++) {
+            size_t n = heights[m] * widths[m];
+            t->widths[m] = widths[m];
+            t->heights[m] = heights[m];
+            t->mats[m] = (uint64_t *)malloc(n * sizeof(uint64_t));
+            if (!t->mats[m]) {
+                dnac_p2_mmcs_tree_free(t);
+                return DNAC_P2M_ERR_ALLOC;
+            }
+            memcpy(t->mats[m], matrices[m], n * sizeof(uint64_t));
+        }
+        *out_tree = t;
+    } else {
+        dnac_p2_mmcs_tree_free(t);
+    }
+    return DNAC_P2M_OK;
+}
+
+dnac_p2_mmcs_status_t dnac_p2_mmcs_open_mixed(
+    const dnac_p2_mmcs_tree_t *tree,
+    uint64_t                   index,
+    const uint64_t           **out_rows,
+    dnac_p2_proof_t           *out_proof)
+{
+    if (!tree || !out_rows || !out_proof || !tree->mats || !tree->heights)
+        return DNAC_P2M_ERR_PARAM;
+    if (index >= tree->num_rows) return DNAC_P2M_ERR_BAD_INDEX;
+    if (tree->depth > 0 && !out_proof->siblings) return DNAC_P2M_ERR_PARAM;
+
+    /* Per-matrix reduced index (mmcs.rs:989-998):
+     * index >> (log_max - log2(height_m)). */
+    for (size_t m = 0; m < tree->num_matrices; m++) {
+        size_t shift = tree->depth - p2m_log2(tree->heights[m]);
+        size_t reduced = (size_t)(index >> shift);
+        out_rows[m] = tree->mats[m] + reduced * tree->widths[m];
+    }
+    /* Sibling walk is height-agnostic (one sibling per binary level,
+     * mmcs.rs:1007-1019; injection combines carry no siblings). */
+    uint64_t idx = index;
+    for (size_t l = 0; l < tree->depth; l++) {
+        out_proof->siblings[l] = tree->layers[l][idx ^ 1];
+        idx >>= 1;
+    }
+    out_proof->leaf_index = index;
+    out_proof->depth = (uint32_t)tree->depth;
+    out_proof->num_matrices = (uint32_t)tree->num_matrices;
+    return DNAC_P2M_OK;
+}
+
+dnac_p2_mmcs_status_t dnac_p2_mmcs_verify_mixed(
+    const dnac_p2_digest_t *root,
+    const uint64_t *const  *opened_rows,
+    const size_t           *widths,
+    const size_t           *heights,
+    size_t                  num_matrices,
+    uint64_t                index,
+    const dnac_p2_digest_t *siblings,
+    size_t                  depth)
+{
+    if (!root || !opened_rows || !widths || !heights || num_matrices == 0 ||
+        (depth > 0 && !siblings))
+        return DNAC_P2M_ERR_PARAM;
+
+    size_t max_h = 0, total_width = 0;
+    for (size_t m = 0; m < num_matrices; m++) {
+        if (widths[m] == 0 || !opened_rows[m] || !p2m_is_pow2(heights[m]))
+            return DNAC_P2M_ERR_PARAM;
+        if (!p2m_all_canonical(opened_rows[m], widths[m]))
+            return DNAC_P2M_ERR_NONCANONICAL;
+        if (heights[m] > max_h) max_h = heights[m];
+        total_width += widths[m];
+    }
+    if (index >= max_h) return DNAC_P2M_ERR_BAD_INDEX; /* mmcs.rs:1094-1096 */
+    if (depth != p2m_log2(max_h))
+        return DNAC_P2M_ERR_BAD_DEPTH; /* WrongHeight, mmcs.rs:1109-1116 */
+
+    uint64_t *scratch = (uint64_t *)malloc(total_width * sizeof(uint64_t));
+    if (!scratch) return DNAC_P2M_ERR_ALLOC;
+
+    /* digest = H(concat tallest-group opened rows) (mmcs.rs:1098-1104). */
+    uint64_t digest[P2M_OUT];
+    {
+        size_t n = p2m_group_row_concat(opened_rows, widths, heights,
+                                        num_matrices, max_h, 0, scratch);
+        /* opened rows are single rows: row index 0 within each opened slice */
+        dnac_p2_mmcs_hash_iter(scratch, n, digest);
+    }
+
+    /* Walk (mmcs.rs:1120-1170): compress with the sibling (bit order), then
+     * inject any group whose height equals the halved layer length. */
+    uint64_t idx = index;
+    size_t cur = max_h;
+    for (size_t l = 0; l < depth; l++) {
+        uint64_t next[P2M_OUT];
+        if ((idx & 1) == 0)
+            dnac_p2_mmcs_compress(digest, siblings[l].lanes, next);
+        else
+            dnac_p2_mmcs_compress(siblings[l].lanes, digest, next);
+        memcpy(digest, next, sizeof(next));
+        idx >>= 1;
+        cur >>= 1;
+
+        int has_group = 0;
+        for (size_t m = 0; m < num_matrices; m++) {
+            if (heights[m] == cur) has_group = 1;
+        }
+        if (has_group) {
+            size_t n = p2m_group_row_concat(opened_rows, widths, heights,
+                                            num_matrices, cur, 0, scratch);
+            uint64_t rows_digest[P2M_OUT];
+            dnac_p2_mmcs_hash_iter(scratch, n, rows_digest);
+            dnac_p2_mmcs_compress(digest, rows_digest, next);
+            memcpy(digest, next, sizeof(next));
+        }
+    }
+    free(scratch);
+
+    if (memcmp(digest, root->lanes, sizeof(digest)) != 0)
+        return DNAC_P2M_ERR_ROOT_MISMATCH;
+    return DNAC_P2M_OK;
 }
 
 dnac_p2_mmcs_status_t dnac_p2_mmcs_verify(

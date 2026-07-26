@@ -1,0 +1,2745 @@
+{
+  "cases": [
+    {
+      "aux": [
+        [
+          {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        ],
+        [
+          {
+            "c0_decimal": "10600781794601429163",
+            "c1_decimal": "5949513567664701630"
+          }
+        ],
+        [
+          {
+            "c0_decimal": "7205517278031077638",
+            "c1_decimal": "13941526401213571772"
+          }
+        ],
+        [
+          {
+            "c0_decimal": "10643222076966439593",
+            "c1_decimal": "16480558995370494796"
+          }
+        ],
+        [
+          {
+            "c0_decimal": "15367147916216354879",
+            "c1_decimal": "9638043002682271868"
+          }
+        ],
+        [
+          {
+            "c0_decimal": "16969037319903030293",
+            "c1_decimal": "1902524584970527642"
+          }
+        ],
+        [
+          {
+            "c0_decimal": "5163776856797158755",
+            "c1_decimal": "7417264413118546535"
+          }
+        ],
+        [
+          {
+            "c0_decimal": "11805260463105871538",
+            "c1_decimal": "12932004241266565428"
+          }
+        ]
+      ],
+      "aux_corrupted": false,
+      "challenges": [
+        {
+          "c0_decimal": "11651590505119483672",
+          "c1_decimal": "1234605616436508552"
+        },
+        {
+          "c0_decimal": "1089357896855742840",
+          "c1_decimal": "9843086184167632639"
+        }
+      ],
+      "comment": "tests.rs:887-924 nontrivial-permutation pattern; balanced",
+      "cumulative_sums": [],
+      "height": 8,
+      "lookups": [
+        {
+          "bus_name": "",
+          "column": 0,
+          "constraint_degree": 3,
+          "kind": "local",
+          "tuples": [
+            {
+              "elements": [
+                {
+                  "col": 0,
+                  "next": 0,
+                  "op": "main"
+                }
+              ],
+              "multiplicity": {
+                "op": "const",
+                "val": "1"
+              }
+            },
+            {
+              "elements": [
+                {
+                  "col": 1,
+                  "next": 0,
+                  "op": "main"
+                }
+              ],
+              "multiplicity": {
+                "op": "neg",
+                "x": {
+                  "col": 2,
+                  "next": 0,
+                  "op": "main"
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "main": [
+        [
+          "7",
+          "3",
+          "2"
+        ],
+        [
+          "3",
+          "5",
+          "4"
+        ],
+        [
+          "5",
+          "7",
+          "2"
+        ],
+        [
+          "3",
+          "3",
+          "0"
+        ],
+        [
+          "7",
+          "5",
+          "0"
+        ],
+        [
+          "5",
+          "5",
+          "0"
+        ],
+        [
+          "5",
+          "7",
+          "0"
+        ],
+        [
+          "5",
+          "5",
+          "0"
+        ]
+      ],
+      "main_width": 3,
+      "name": "local_single",
+      "num_aux_cols": 1,
+      "preprocessed": null,
+      "public_values": [],
+      "residuals": [
+        [
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ]
+        ],
+        [
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ]
+        ],
+        [
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ]
+        ],
+        [
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ]
+        ],
+        [
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ]
+        ],
+        [
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ]
+        ],
+        [
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ]
+        ],
+        [
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ]
+        ]
+      ]
+    },
+    {
+      "aux": [
+        [
+          {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        ],
+        [
+          {
+            "c0_decimal": "11147545694312017118",
+            "c1_decimal": "8934732751133386313"
+          }
+        ],
+        [
+          {
+            "c0_decimal": "3035331524685530946",
+            "c1_decimal": "11836082059821265903"
+          }
+        ],
+        [
+          {
+            "c0_decimal": "12908890922027241446",
+            "c1_decimal": "11643803783670179516"
+          }
+        ]
+      ],
+      "aux_corrupted": false,
+      "challenges": [
+        {
+          "c0_decimal": "1393753991812647630",
+          "c1_decimal": "18364758544493064720"
+        },
+        {
+          "c0_decimal": "4822678189205111",
+          "c1_decimal": "9264364801463019255"
+        }
+      ],
+      "comment": "tests.rs:1172-1226 3-wide tuple lookup; balanced",
+      "cumulative_sums": [],
+      "height": 4,
+      "lookups": [
+        {
+          "bus_name": "",
+          "column": 0,
+          "constraint_degree": 3,
+          "kind": "local",
+          "tuples": [
+            {
+              "elements": [
+                {
+                  "col": 0,
+                  "next": 0,
+                  "op": "main"
+                },
+                {
+                  "col": 1,
+                  "next": 0,
+                  "op": "main"
+                },
+                {
+                  "col": 2,
+                  "next": 0,
+                  "op": "main"
+                }
+              ],
+              "multiplicity": {
+                "op": "const",
+                "val": "1"
+              }
+            },
+            {
+              "elements": [
+                {
+                  "col": 3,
+                  "next": 0,
+                  "op": "main"
+                },
+                {
+                  "col": 4,
+                  "next": 0,
+                  "op": "main"
+                },
+                {
+                  "col": 5,
+                  "next": 0,
+                  "op": "main"
+                }
+              ],
+              "multiplicity": {
+                "op": "neg",
+                "x": {
+                  "col": 6,
+                  "next": 0,
+                  "op": "main"
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "main": [
+        [
+          "0",
+          "1",
+          "1",
+          "0",
+          "1",
+          "1",
+          "2"
+        ],
+        [
+          "0",
+          "1",
+          "1",
+          "0",
+          "0",
+          "0",
+          "1"
+        ],
+        [
+          "1",
+          "1",
+          "2",
+          "1",
+          "0",
+          "1",
+          "0"
+        ],
+        [
+          "0",
+          "0",
+          "0",
+          "1",
+          "1",
+          "2",
+          "1"
+        ]
+      ],
+      "main_width": 7,
+      "name": "local_tuple",
+      "num_aux_cols": 1,
+      "preprocessed": null,
+      "public_values": [],
+      "residuals": [
+        [
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ]
+        ],
+        [
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ]
+        ],
+        [
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ]
+        ],
+        [
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ]
+        ]
+      ]
+    },
+    {
+      "aux": [
+        [
+          {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        ],
+        [
+          {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        ],
+        [
+          {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        ],
+        [
+          {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        ]
+      ],
+      "aux_corrupted": false,
+      "challenges": [
+        {
+          "c0_decimal": "11651590505119483672",
+          "c1_decimal": "1234605616436508552"
+        },
+        {
+          "c0_decimal": "1089357896855742840",
+          "c1_decimal": "9843086184167632639"
+        },
+        {
+          "c0_decimal": "1393753991812647630",
+          "c1_decimal": "18364758544493064720"
+        },
+        {
+          "c0_decimal": "4822678189205111",
+          "c1_decimal": "9264364801463019255"
+        }
+      ],
+      "comment": "tests.rs:969-1095 two independent lookups, two aux columns",
+      "cumulative_sums": [],
+      "height": 4,
+      "lookups": [
+        {
+          "bus_name": "",
+          "column": 0,
+          "constraint_degree": 3,
+          "kind": "local",
+          "tuples": [
+            {
+              "elements": [
+                {
+                  "col": 0,
+                  "next": 0,
+                  "op": "main"
+                }
+              ],
+              "multiplicity": {
+                "op": "const",
+                "val": "1"
+              }
+            },
+            {
+              "elements": [
+                {
+                  "col": 1,
+                  "next": 0,
+                  "op": "main"
+                }
+              ],
+              "multiplicity": {
+                "op": "neg",
+                "x": {
+                  "col": 2,
+                  "next": 0,
+                  "op": "main"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "bus_name": "",
+          "column": 1,
+          "constraint_degree": 3,
+          "kind": "local",
+          "tuples": [
+            {
+              "elements": [
+                {
+                  "col": 3,
+                  "next": 0,
+                  "op": "main"
+                }
+              ],
+              "multiplicity": {
+                "op": "const",
+                "val": "1"
+              }
+            },
+            {
+              "elements": [
+                {
+                  "col": 4,
+                  "next": 0,
+                  "op": "main"
+                }
+              ],
+              "multiplicity": {
+                "op": "neg",
+                "x": {
+                  "col": 5,
+                  "next": 0,
+                  "op": "main"
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "main": [
+        [
+          "10",
+          "10",
+          "1",
+          "5",
+          "5",
+          "1"
+        ],
+        [
+          "20",
+          "20",
+          "1",
+          "15",
+          "15",
+          "1"
+        ],
+        [
+          "30",
+          "30",
+          "1",
+          "25",
+          "25",
+          "1"
+        ],
+        [
+          "40",
+          "40",
+          "1",
+          "35",
+          "35",
+          "1"
+        ]
+      ],
+      "main_width": 6,
+      "name": "local_two_lookups",
+      "num_aux_cols": 2,
+      "preprocessed": null,
+      "public_values": [],
+      "residuals": [
+        [
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ],
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ]
+        ],
+        [
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ],
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ]
+        ],
+        [
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ],
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ]
+        ],
+        [
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ],
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ]
+        ]
+      ]
+    },
+    {
+      "aux": [
+        [
+          {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        ],
+        [
+          {
+            "c0_decimal": "457844259677731296",
+            "c1_decimal": "2856279094161041648"
+          },
+          {
+            "c0_decimal": "18139589908833049312",
+            "c1_decimal": "3843851571974681392"
+          }
+        ],
+        [
+          {
+            "c0_decimal": "6096275398442509819",
+            "c1_decimal": "2582855848548752846"
+          },
+          {
+            "c0_decimal": "12377119498106421103",
+            "c1_decimal": "5498420762915589223"
+          }
+        ],
+        [
+          {
+            "c0_decimal": "6096275398442509819",
+            "c1_decimal": "2582855848548752846"
+          },
+          {
+            "c0_decimal": "11037353616317612966",
+            "c1_decimal": "13598326917347655968"
+          }
+        ]
+      ],
+      "aux_corrupted": false,
+      "challenges": [
+        {
+          "c0_decimal": "11651590505119483672",
+          "c1_decimal": "1234605616436508552"
+        },
+        {
+          "c0_decimal": "1089357896855742840",
+          "c1_decimal": "9843086184167632639"
+        },
+        {
+          "c0_decimal": "16045690984503111693",
+          "c1_decimal": "81985529216486895"
+        },
+        {
+          "c0_decimal": "841592647749320926",
+          "c1_decimal": "8526495043095935640"
+        }
+      ],
+      "comment": "tests.rs:1229-1391 LUT receiver (count +1); shared (ga,gb) with global_sender",
+      "cumulative_sums": [
+        {
+          "aux_column": 1,
+          "bus_name": "LUT",
+          "sum": {
+            "c0_decimal": "13870835878717380993",
+            "c1_decimal": "2562014965727276006"
+          }
+        }
+      ],
+      "height": 4,
+      "lookups": [
+        {
+          "bus_name": "",
+          "column": 0,
+          "constraint_degree": 3,
+          "kind": "local",
+          "tuples": [
+            {
+              "elements": [
+                {
+                  "col": 0,
+                  "next": 0,
+                  "op": "main"
+                },
+                {
+                  "col": 1,
+                  "next": 0,
+                  "op": "main"
+                },
+                {
+                  "col": 2,
+                  "next": 0,
+                  "op": "main"
+                }
+              ],
+              "multiplicity": {
+                "op": "const",
+                "val": "1"
+              }
+            },
+            {
+              "elements": [
+                {
+                  "col": 3,
+                  "next": 0,
+                  "op": "main"
+                },
+                {
+                  "col": 4,
+                  "next": 0,
+                  "op": "main"
+                },
+                {
+                  "col": 5,
+                  "next": 0,
+                  "op": "main"
+                }
+              ],
+              "multiplicity": {
+                "op": "neg",
+                "x": {
+                  "col": 6,
+                  "next": 0,
+                  "op": "main"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "bus_name": "LUT",
+          "column": 1,
+          "constraint_degree": 2,
+          "kind": "global",
+          "tuples": [
+            {
+              "elements": [
+                {
+                  "col": 3,
+                  "next": 0,
+                  "op": "main"
+                },
+                {
+                  "col": 4,
+                  "next": 0,
+                  "op": "main"
+                },
+                {
+                  "col": 5,
+                  "next": 0,
+                  "op": "main"
+                }
+              ],
+              "multiplicity": {
+                "op": "const",
+                "val": "1"
+              }
+            }
+          ]
+        }
+      ],
+      "main": [
+        [
+          "0",
+          "1",
+          "1",
+          "0",
+          "0",
+          "0",
+          "1"
+        ],
+        [
+          "0",
+          "1",
+          "1",
+          "0",
+          "1",
+          "1",
+          "2"
+        ],
+        [
+          "1",
+          "1",
+          "2",
+          "1",
+          "1",
+          "2",
+          "1"
+        ],
+        [
+          "0",
+          "0",
+          "0",
+          "1",
+          "0",
+          "1",
+          "0"
+        ]
+      ],
+      "main_width": 7,
+      "name": "global_receiver",
+      "num_aux_cols": 2,
+      "preprocessed": null,
+      "public_values": [],
+      "residuals": [
+        [
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ],
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ]
+        ],
+        [
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ],
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ]
+        ],
+        [
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ],
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ]
+        ],
+        [
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ],
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ]
+        ]
+      ]
+    },
+    {
+      "aux": [
+        [
+          {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        ],
+        [
+          {
+            "c0_decimal": "11147545694312017118",
+            "c1_decimal": "8934732751133386313"
+          },
+          {
+            "c0_decimal": "5762470410726628209",
+            "c1_decimal": "16792174878473676490"
+          }
+        ],
+        [
+          {
+            "c0_decimal": "3035331524685530946",
+            "c1_decimal": "11836082059821265903"
+          },
+          {
+            "c0_decimal": "6069624571308163218",
+            "c1_decimal": "12948323306498995098"
+          }
+        ],
+        [
+          {
+            "c0_decimal": "12908890922027241446",
+            "c1_decimal": "11643803783670179516"
+          },
+          {
+            "c0_decimal": "3236142308908395191",
+            "c1_decimal": "5537891188704790739"
+          }
+        ]
+      ],
+      "aux_corrupted": false,
+      "challenges": [
+        {
+          "c0_decimal": "1393753991812647630",
+          "c1_decimal": "18364758544493064720"
+        },
+        {
+          "c0_decimal": "4822678189205111",
+          "c1_decimal": "9264364801463019255"
+        },
+        {
+          "c0_decimal": "16045690984503111693",
+          "c1_decimal": "81985529216486895"
+        },
+        {
+          "c0_decimal": "841592647749320926",
+          "c1_decimal": "8526495043095935640"
+        }
+      ],
+      "comment": "tests.rs:1229-1391 LUT sender (count -1); same LUT multiset, different order",
+      "cumulative_sums": [
+        {
+          "aux_column": 1,
+          "bus_name": "LUT",
+          "sum": {
+            "c0_decimal": "4575908190697203328",
+            "c1_decimal": "15884729103687308315"
+          }
+        }
+      ],
+      "height": 4,
+      "lookups": [
+        {
+          "bus_name": "",
+          "column": 0,
+          "constraint_degree": 3,
+          "kind": "local",
+          "tuples": [
+            {
+              "elements": [
+                {
+                  "col": 0,
+                  "next": 0,
+                  "op": "main"
+                },
+                {
+                  "col": 1,
+                  "next": 0,
+                  "op": "main"
+                },
+                {
+                  "col": 2,
+                  "next": 0,
+                  "op": "main"
+                }
+              ],
+              "multiplicity": {
+                "op": "const",
+                "val": "1"
+              }
+            },
+            {
+              "elements": [
+                {
+                  "col": 3,
+                  "next": 0,
+                  "op": "main"
+                },
+                {
+                  "col": 4,
+                  "next": 0,
+                  "op": "main"
+                },
+                {
+                  "col": 5,
+                  "next": 0,
+                  "op": "main"
+                }
+              ],
+              "multiplicity": {
+                "op": "neg",
+                "x": {
+                  "col": 6,
+                  "next": 0,
+                  "op": "main"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "bus_name": "LUT",
+          "column": 1,
+          "constraint_degree": 2,
+          "kind": "global",
+          "tuples": [
+            {
+              "elements": [
+                {
+                  "col": 3,
+                  "next": 0,
+                  "op": "main"
+                },
+                {
+                  "col": 4,
+                  "next": 0,
+                  "op": "main"
+                },
+                {
+                  "col": 5,
+                  "next": 0,
+                  "op": "main"
+                }
+              ],
+              "multiplicity": {
+                "op": "const",
+                "val": "18446744069414584320"
+              }
+            }
+          ]
+        }
+      ],
+      "main": [
+        [
+          "0",
+          "1",
+          "1",
+          "0",
+          "1",
+          "1",
+          "2"
+        ],
+        [
+          "0",
+          "1",
+          "1",
+          "0",
+          "0",
+          "0",
+          "1"
+        ],
+        [
+          "1",
+          "1",
+          "2",
+          "1",
+          "0",
+          "1",
+          "0"
+        ],
+        [
+          "0",
+          "0",
+          "0",
+          "1",
+          "1",
+          "2",
+          "1"
+        ]
+      ],
+      "main_width": 7,
+      "name": "global_sender",
+      "num_aux_cols": 2,
+      "preprocessed": null,
+      "public_values": [],
+      "residuals": [
+        [
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ],
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ]
+        ],
+        [
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ],
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ]
+        ],
+        [
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ],
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ]
+        ],
+        [
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ],
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ]
+        ]
+      ]
+    },
+    {
+      "aux": [
+        [
+          {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        ],
+        [
+          {
+            "c0_decimal": "457844259677731296",
+            "c1_decimal": "2856279094161041648"
+          },
+          {
+            "c0_decimal": "18139589908833049312",
+            "c1_decimal": "3843851571974681392"
+          }
+        ],
+        [
+          {
+            "c0_decimal": "6096275398442509819",
+            "c1_decimal": "2582855848548752846"
+          },
+          {
+            "c0_decimal": "12377119498106421103",
+            "c1_decimal": "5498420762915589223"
+          }
+        ],
+        [
+          {
+            "c0_decimal": "6096275398442509819",
+            "c1_decimal": "2582855848548752846"
+          },
+          {
+            "c0_decimal": "11037353616317612966",
+            "c1_decimal": "13598326917347655968"
+          }
+        ]
+      ],
+      "aux_corrupted": false,
+      "challenges": [
+        {
+          "c0_decimal": "11651590505119483672",
+          "c1_decimal": "1234605616436508552"
+        },
+        {
+          "c0_decimal": "1089357896855742840",
+          "c1_decimal": "9843086184167632639"
+        },
+        {
+          "c0_decimal": "16045690984503111693",
+          "c1_decimal": "81985529216486895"
+        },
+        {
+          "c0_decimal": "841592647749320926",
+          "c1_decimal": "8526495043095935640"
+        }
+      ],
+      "comment": "tampered pair: receiver unchanged",
+      "cumulative_sums": [
+        {
+          "aux_column": 1,
+          "bus_name": "LUT",
+          "sum": {
+            "c0_decimal": "13870835878717380993",
+            "c1_decimal": "2562014965727276006"
+          }
+        }
+      ],
+      "height": 4,
+      "lookups": [
+        {
+          "bus_name": "",
+          "column": 0,
+          "constraint_degree": 3,
+          "kind": "local",
+          "tuples": [
+            {
+              "elements": [
+                {
+                  "col": 0,
+                  "next": 0,
+                  "op": "main"
+                },
+                {
+                  "col": 1,
+                  "next": 0,
+                  "op": "main"
+                },
+                {
+                  "col": 2,
+                  "next": 0,
+                  "op": "main"
+                }
+              ],
+              "multiplicity": {
+                "op": "const",
+                "val": "1"
+              }
+            },
+            {
+              "elements": [
+                {
+                  "col": 3,
+                  "next": 0,
+                  "op": "main"
+                },
+                {
+                  "col": 4,
+                  "next": 0,
+                  "op": "main"
+                },
+                {
+                  "col": 5,
+                  "next": 0,
+                  "op": "main"
+                }
+              ],
+              "multiplicity": {
+                "op": "neg",
+                "x": {
+                  "col": 6,
+                  "next": 0,
+                  "op": "main"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "bus_name": "LUT",
+          "column": 1,
+          "constraint_degree": 2,
+          "kind": "global",
+          "tuples": [
+            {
+              "elements": [
+                {
+                  "col": 3,
+                  "next": 0,
+                  "op": "main"
+                },
+                {
+                  "col": 4,
+                  "next": 0,
+                  "op": "main"
+                },
+                {
+                  "col": 5,
+                  "next": 0,
+                  "op": "main"
+                }
+              ],
+              "multiplicity": {
+                "op": "const",
+                "val": "1"
+              }
+            }
+          ]
+        }
+      ],
+      "main": [
+        [
+          "0",
+          "1",
+          "1",
+          "0",
+          "0",
+          "0",
+          "1"
+        ],
+        [
+          "0",
+          "1",
+          "1",
+          "0",
+          "1",
+          "1",
+          "2"
+        ],
+        [
+          "1",
+          "1",
+          "2",
+          "1",
+          "1",
+          "2",
+          "1"
+        ],
+        [
+          "0",
+          "0",
+          "0",
+          "1",
+          "0",
+          "1",
+          "0"
+        ]
+      ],
+      "main_width": 7,
+      "name": "global_receiver_t",
+      "num_aux_cols": 2,
+      "preprocessed": null,
+      "public_values": [],
+      "residuals": [
+        [
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ],
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ]
+        ],
+        [
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ],
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ]
+        ],
+        [
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ],
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ]
+        ],
+        [
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ],
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ]
+        ]
+      ]
+    },
+    {
+      "aux": [
+        [
+          {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        ],
+        [
+          {
+            "c0_decimal": "11147545694312017118",
+            "c1_decimal": "8934732751133386313"
+          },
+          {
+            "c0_decimal": "5762470410726628209",
+            "c1_decimal": "16792174878473676490"
+          }
+        ],
+        [
+          {
+            "c0_decimal": "3035331524685530946",
+            "c1_decimal": "11836082059821265903"
+          },
+          {
+            "c0_decimal": "6069624571308163218",
+            "c1_decimal": "12948323306498995098"
+          }
+        ],
+        [
+          {
+            "c0_decimal": "12908890922027241446",
+            "c1_decimal": "11643803783670179516"
+          },
+          {
+            "c0_decimal": "5496168086671107512",
+            "c1_decimal": "5811315458341102248"
+          }
+        ]
+      ],
+      "aux_corrupted": false,
+      "challenges": [
+        {
+          "c0_decimal": "1393753991812647630",
+          "c1_decimal": "18364758544493064720"
+        },
+        {
+          "c0_decimal": "4822678189205111",
+          "c1_decimal": "9264364801463019255"
+        },
+        {
+          "c0_decimal": "16045690984503111693",
+          "c1_decimal": "81985529216486895"
+        },
+        {
+          "c0_decimal": "841592647749320926",
+          "c1_decimal": "8526495043095935640"
+        }
+      ],
+      "comment": "tampered pair: sender LUT row2 (1,0,1)->(1,0,2); local still balanced (mult 0), global group must NOT cancel",
+      "cumulative_sums": [
+        {
+          "aux_column": 1,
+          "bus_name": "LUT",
+          "sum": {
+            "c0_decimal": "6835933968459915649",
+            "c1_decimal": "16158153373323619824"
+          }
+        }
+      ],
+      "height": 4,
+      "lookups": [
+        {
+          "bus_name": "",
+          "column": 0,
+          "constraint_degree": 3,
+          "kind": "local",
+          "tuples": [
+            {
+              "elements": [
+                {
+                  "col": 0,
+                  "next": 0,
+                  "op": "main"
+                },
+                {
+                  "col": 1,
+                  "next": 0,
+                  "op": "main"
+                },
+                {
+                  "col": 2,
+                  "next": 0,
+                  "op": "main"
+                }
+              ],
+              "multiplicity": {
+                "op": "const",
+                "val": "1"
+              }
+            },
+            {
+              "elements": [
+                {
+                  "col": 3,
+                  "next": 0,
+                  "op": "main"
+                },
+                {
+                  "col": 4,
+                  "next": 0,
+                  "op": "main"
+                },
+                {
+                  "col": 5,
+                  "next": 0,
+                  "op": "main"
+                }
+              ],
+              "multiplicity": {
+                "op": "neg",
+                "x": {
+                  "col": 6,
+                  "next": 0,
+                  "op": "main"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "bus_name": "LUT",
+          "column": 1,
+          "constraint_degree": 2,
+          "kind": "global",
+          "tuples": [
+            {
+              "elements": [
+                {
+                  "col": 3,
+                  "next": 0,
+                  "op": "main"
+                },
+                {
+                  "col": 4,
+                  "next": 0,
+                  "op": "main"
+                },
+                {
+                  "col": 5,
+                  "next": 0,
+                  "op": "main"
+                }
+              ],
+              "multiplicity": {
+                "op": "const",
+                "val": "18446744069414584320"
+              }
+            }
+          ]
+        }
+      ],
+      "main": [
+        [
+          "0",
+          "1",
+          "1",
+          "0",
+          "1",
+          "1",
+          "2"
+        ],
+        [
+          "0",
+          "1",
+          "1",
+          "0",
+          "0",
+          "0",
+          "1"
+        ],
+        [
+          "1",
+          "1",
+          "2",
+          "1",
+          "0",
+          "2",
+          "0"
+        ],
+        [
+          "0",
+          "0",
+          "0",
+          "1",
+          "1",
+          "2",
+          "1"
+        ]
+      ],
+      "main_width": 7,
+      "name": "global_sender_t",
+      "num_aux_cols": 2,
+      "preprocessed": null,
+      "public_values": [],
+      "residuals": [
+        [
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ],
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ]
+        ],
+        [
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ],
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ]
+        ],
+        [
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ],
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ]
+        ],
+        [
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ],
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ]
+        ]
+      ]
+    },
+    {
+      "aux": [
+        [
+          {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        ],
+        [
+          {
+            "c0_decimal": "10600781794601429163",
+            "c1_decimal": "5949513567664701630"
+          }
+        ],
+        [
+          {
+            "c0_decimal": "99",
+            "c1_decimal": "7"
+          }
+        ],
+        [
+          {
+            "c0_decimal": "10643222076966439593",
+            "c1_decimal": "16480558995370494796"
+          }
+        ],
+        [
+          {
+            "c0_decimal": "15367147916216354879",
+            "c1_decimal": "9638043002682271868"
+          }
+        ],
+        [
+          {
+            "c0_decimal": "16969037319903030293",
+            "c1_decimal": "1902524584970527642"
+          }
+        ],
+        [
+          {
+            "c0_decimal": "5163776856797158755",
+            "c1_decimal": "7417264413118546535"
+          }
+        ],
+        [
+          {
+            "c0_decimal": "11805260463105871538",
+            "c1_decimal": "12932004241266565428"
+          }
+        ]
+      ],
+      "aux_corrupted": true,
+      "challenges": [
+        {
+          "c0_decimal": "11651590505119483672",
+          "c1_decimal": "1234605616436508552"
+        },
+        {
+          "c0_decimal": "1089357896855742840",
+          "c1_decimal": "9843086184167632639"
+        }
+      ],
+      "comment": "local_single trace with aux[2][0] overwritten post-generation; residual stream non-zero at rows 1-2 (tests.rs:763-797 pattern)",
+      "cumulative_sums": [],
+      "height": 8,
+      "lookups": [
+        {
+          "bus_name": "",
+          "column": 0,
+          "constraint_degree": 3,
+          "kind": "local",
+          "tuples": [
+            {
+              "elements": [
+                {
+                  "col": 0,
+                  "next": 0,
+                  "op": "main"
+                }
+              ],
+              "multiplicity": {
+                "op": "const",
+                "val": "1"
+              }
+            },
+            {
+              "elements": [
+                {
+                  "col": 1,
+                  "next": 0,
+                  "op": "main"
+                }
+              ],
+              "multiplicity": {
+                "op": "neg",
+                "x": {
+                  "col": 2,
+                  "next": 0,
+                  "op": "main"
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "main": [
+        [
+          "7",
+          "3",
+          "2"
+        ],
+        [
+          "3",
+          "5",
+          "4"
+        ],
+        [
+          "5",
+          "7",
+          "2"
+        ],
+        [
+          "3",
+          "3",
+          "0"
+        ],
+        [
+          "7",
+          "5",
+          "0"
+        ],
+        [
+          "5",
+          "5",
+          "0"
+        ],
+        [
+          "5",
+          "7",
+          "0"
+        ],
+        [
+          "5",
+          "5",
+          "0"
+        ]
+      ],
+      "main_width": 3,
+      "name": "corrupted_aux",
+      "num_aux_cols": 1,
+      "preprocessed": null,
+      "public_values": [],
+      "residuals": [
+        [
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ]
+        ],
+        [
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "15464847295685923778",
+              "c1_decimal": "3510315050217315934"
+            }
+          ]
+        ],
+        [
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "12234457631315219823",
+              "c1_decimal": "5925115014456134516"
+            }
+          ]
+        ],
+        [
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ]
+        ],
+        [
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ]
+        ],
+        [
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ]
+        ],
+        [
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ]
+        ],
+        [
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ]
+        ]
+      ]
+    },
+    {
+      "aux": [
+        [
+          {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        ],
+        [
+          {
+            "c0_decimal": "2837202231949709879",
+            "c1_decimal": "558321830465143475"
+          }
+        ],
+        [
+          {
+            "c0_decimal": "13053822516269049597",
+            "c1_decimal": "7855953130071779037"
+          }
+        ],
+        [
+          {
+            "c0_decimal": "2837202231949709879",
+            "c1_decimal": "558321830465143475"
+          }
+        ]
+      ],
+      "aux_corrupted": false,
+      "challenges": [
+        {
+          "c0_decimal": "11651590505119483672",
+          "c1_decimal": "1234605616436508552"
+        },
+        {
+          "c0_decimal": "1089357896855742840",
+          "c1_decimal": "9843086184167632639"
+        }
+      ],
+      "comment": "manual lookup over a preprocessed table [table_val, table_mult]; balanced",
+      "cumulative_sums": [],
+      "height": 4,
+      "lookups": [
+        {
+          "bus_name": "",
+          "column": 0,
+          "constraint_degree": 3,
+          "kind": "local",
+          "tuples": [
+            {
+              "elements": [
+                {
+                  "col": 0,
+                  "next": 0,
+                  "op": "main"
+                }
+              ],
+              "multiplicity": {
+                "op": "const",
+                "val": "1"
+              }
+            },
+            {
+              "elements": [
+                {
+                  "col": 0,
+                  "next": 0,
+                  "op": "prep"
+                }
+              ],
+              "multiplicity": {
+                "op": "neg",
+                "x": {
+                  "col": 1,
+                  "next": 0,
+                  "op": "prep"
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "main": [
+        [
+          "11"
+        ],
+        [
+          "22"
+        ],
+        [
+          "22"
+        ],
+        [
+          "11"
+        ]
+      ],
+      "main_width": 1,
+      "name": "local_preprocessed",
+      "num_aux_cols": 1,
+      "preprocessed": {
+        "rows": [
+          [
+            "11",
+            "2"
+          ],
+          [
+            "22",
+            "2"
+          ],
+          [
+            "33",
+            "0"
+          ],
+          [
+            "44",
+            "0"
+          ]
+        ],
+        "width": 2
+      },
+      "public_values": [],
+      "residuals": [
+        [
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ]
+        ],
+        [
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ]
+        ],
+        [
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ]
+        ],
+        [
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ]
+        ]
+      ]
+    },
+    {
+      "aux": [
+        [
+          {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        ],
+        [
+          {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        ],
+        [
+          {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        ],
+        [
+          {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        ]
+      ],
+      "aux_corrupted": false,
+      "challenges": [
+        {
+          "c0_decimal": "1393753991812647630",
+          "c1_decimal": "18364758544493064720"
+        },
+        {
+          "c0_decimal": "4822678189205111",
+          "c1_decimal": "9264364801463019255"
+        }
+      ],
+      "comment": "read element at next-row offset; t = cyclic shift of v so the WRAP multiset balances",
+      "cumulative_sums": [],
+      "height": 4,
+      "lookups": [
+        {
+          "bus_name": "",
+          "column": 0,
+          "constraint_degree": 3,
+          "kind": "local",
+          "tuples": [
+            {
+              "elements": [
+                {
+                  "col": 0,
+                  "next": 1,
+                  "op": "main"
+                }
+              ],
+              "multiplicity": {
+                "op": "const",
+                "val": "1"
+              }
+            },
+            {
+              "elements": [
+                {
+                  "col": 1,
+                  "next": 0,
+                  "op": "main"
+                }
+              ],
+              "multiplicity": {
+                "op": "const",
+                "val": "18446744069414584320"
+              }
+            }
+          ]
+        }
+      ],
+      "main": [
+        [
+          "3",
+          "1"
+        ],
+        [
+          "1",
+          "4"
+        ],
+        [
+          "4",
+          "1"
+        ],
+        [
+          "1",
+          "3"
+        ]
+      ],
+      "main_width": 2,
+      "name": "local_next_row",
+      "num_aux_cols": 1,
+      "preprocessed": null,
+      "public_values": [],
+      "residuals": [
+        [
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ]
+        ],
+        [
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ]
+        ],
+        [
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ]
+        ],
+        [
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ]
+        ]
+      ]
+    },
+    {
+      "aux": [
+        [
+          {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        ],
+        [
+          {
+            "c0_decimal": "3447251874798017288",
+            "c1_decimal": "17328450803970762295"
+          }
+        ]
+      ],
+      "aux_corrupted": false,
+      "challenges": [
+        {
+          "c0_decimal": "16045690984503111693",
+          "c1_decimal": "81985529216486895"
+        },
+        {
+          "c0_decimal": "841592647749320926",
+          "c1_decimal": "8526495043095935640"
+        }
+      ],
+      "comment": "multiplicity -(public0*multsel), read ((r+1)-1); public0=2; balanced",
+      "cumulative_sums": [],
+      "height": 2,
+      "lookups": [
+        {
+          "bus_name": "",
+          "column": 0,
+          "constraint_degree": 3,
+          "kind": "local",
+          "tuples": [
+            {
+              "elements": [
+                {
+                  "op": "sub",
+                  "x": {
+                    "op": "add",
+                    "x": {
+                      "col": 0,
+                      "next": 0,
+                      "op": "main"
+                    },
+                    "y": {
+                      "op": "const",
+                      "val": "1"
+                    }
+                  },
+                  "y": {
+                    "op": "const",
+                    "val": "1"
+                  }
+                }
+              ],
+              "multiplicity": {
+                "op": "const",
+                "val": "1"
+              }
+            },
+            {
+              "elements": [
+                {
+                  "col": 1,
+                  "next": 0,
+                  "op": "main"
+                }
+              ],
+              "multiplicity": {
+                "op": "neg",
+                "x": {
+                  "op": "mul",
+                  "x": {
+                    "idx": 0,
+                    "op": "public"
+                  },
+                  "y": {
+                    "col": 2,
+                    "next": 0,
+                    "op": "main"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "main": [
+        [
+          "9",
+          "9",
+          "1"
+        ],
+        [
+          "9",
+          "3",
+          "0"
+        ]
+      ],
+      "main_width": 3,
+      "name": "public_mult_expr",
+      "num_aux_cols": 1,
+      "preprocessed": null,
+      "public_values": [
+        "2"
+      ],
+      "residuals": [
+        [
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ]
+        ],
+        [
+          [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ]
+        ]
+      ]
+    }
+  ],
+  "description": "P2L-a LogUp gadget vectors — REAL p3_lookup LogUpGadget over Goldilocks/Goldilocks²: generate_permutation aux traces (logup.rs:370-646), eval_local/eval_global residual streams (logup.rs:158-265; entries are selector-multiplied), cumulative sums, verify_global_sum verdicts, constraint degrees (logup.rs:339-367). next_row convention = WRAP ((row+1) % height, logup.rs:474). Residual stream order per (row, lookup): local = [is_first*s_local, full-domain transition]; global = [is_first*s_local, is_transition*((s_next-s_local)*D - N), is_last*((cum-s_local)*D - N)]. verify_global_sum is a FLAT sum — per-bus grouping is the caller's job (batch-stark verifier/mod.rs:623-643).",
+  "format_version": "1",
+  "global_checks": [
+    {
+      "bus_name": "LUT",
+      "instances": [
+        "global_receiver",
+        "global_sender"
+      ],
+      "name": "lut_balanced",
+      "ok": true,
+      "sums": [
+        {
+          "c0_decimal": "13870835878717380993",
+          "c1_decimal": "2562014965727276006"
+        },
+        {
+          "c0_decimal": "4575908190697203328",
+          "c1_decimal": "15884729103687308315"
+        }
+      ],
+      "total": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      }
+    },
+    {
+      "bus_name": "LUT",
+      "instances": [
+        "global_receiver_t",
+        "global_sender_t"
+      ],
+      "name": "lut_tampered",
+      "ok": false,
+      "sums": [
+        {
+          "c0_decimal": "13870835878717380993",
+          "c1_decimal": "2562014965727276006"
+        },
+        {
+          "c0_decimal": "6835933968459915649",
+          "c1_decimal": "16158153373323619824"
+        }
+      ],
+      "total": {
+        "c0_decimal": "2260025777762712321",
+        "c1_decimal": "273424269636311509"
+      }
+    }
+  ],
+  "next_row_convention": "wrap",
+  "num_challenges_per_lookup": 2,
+  "plonky3_commit": "82cfad73cd734d37a0d51953094f970c531817ec"
+}

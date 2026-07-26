@@ -1,18 +1,37 @@
 /**
  * @file bench_prover.c
- * @brief P2 — perf bench for the C STARK prover (dnac_prover_prove).
+ * @brief P2 — perf bench for the BATCHED C STARK pipeline (dnac_batch_prove /
+ *        dnac_batch_verify).
  *
  * Measures, per instance height, the WALL-CLOCK prove time, the verify time
- * (dnac_prover_proof_verify = prime + dnac_fri_verify — the chain-side cost),
- * and the on-chain wire proof size (DZKS bytes). Used to judge the confidential
+ * (dnac_batch_verify — the chain-side cost), and the on-chain wire proof size
+ * (DZKF v4 bytes from dnac_batch_wire_encode). Used to judge the confidential
  * track's viability at 1 TPS today and against the 100-TPS future target:
  *
  *   - verify_ms  → chain throughput bottleneck (committee verifies every TX).
  *   - proof_bytes → full-history storage growth (TPS × bytes).
  *   - prove_ms   → wallet UX (client-side; NOT the chain TPS bound).
  *
- * NOT a correctness/byte-match test (uses arbitrary canonical draws, which
- * still self-verify) and NOT part of `make test`. Manual perf tool:
+ * d4.d (2026-07-26): re-based off the retired v3 uni-stark entry
+ * (dnac_prover_prove / stark_prover_prove.c) onto the batched pipeline that
+ * actually ships — the same dnac_batch_prove the shielded aggregate prover
+ * delegates to (stark_prover_agg.c) and the same dnac_batch_verify the
+ * consensus entry runs (shielded_verify.c).
+ *
+ * FIXTURE (deliberate, and NOT a byte-match KAT): a ONE-instance is_zk=1
+ * FibonacciAir batch, reusing the in-tree AIR + witness builders from
+ * tests/batch_test_util.h (fib_air_eval / fib_trace) so no new oracle vector is
+ * needed. The geometry mirrors the oracle's `fib_zk` scenario in
+ * tools/vectors/batch_proof.json — log_num_qc = 1 (num_qc = 1<<(1+is_zk) = 4),
+ * num_random_codewords = 4, log_blowup 2, log_final_poly_len 2, 2 queries, no
+ * PoW — swept over base heights instead of the vector's fixed 8/16. Leaves are
+ * UNSALTED (salt_elems = 0), matching that scenario; the shielded consensus
+ * profile (100 queries, 16-bit query PoW, SALT_ELEMS = 2, h = 1024) is
+ * measured end-to-end by tests/test_prover_shielded_production.c instead.
+ *
+ * Randomness is an arbitrary canonical stream: any canonical draws produce a
+ * proof that self-verifies; only a byte-match against Plonky3 needs the real
+ * SmallRng stream. NOT part of `make test`. Manual perf tool:
  *   make bench-prover && ./build/bench_prover
  *
  * Timing wall-clock is fine here: the prover is client-side, never in a
@@ -24,15 +43,22 @@
 
 #define _POSIX_C_SOURCE 199309L /* clock_gettime / CLOCK_MONOTONIC under -std=c99 */
 
-#include <inttypes.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
+#include "../batch_prover.h"
+#include "../batch_verify.h"
 #include "../field_goldilocks.h"
-#include "../stark_prover_prove.h"
+#include "../fri_proof_codec.h"
+#include "../tests/batch_test_util.h" /* fib_air_eval + fib_trace fixtures */
+
+/* The oracle fib_zk geometry (tools/vectors/batch_proof.json). */
+#define BP_IS_ZK      1
+#define BP_LOG_NUM_QC 1u /* num_qc = 1 << (log_num_qc + is_zk) = 4 */
+#define BP_NRC        4u /* num_random_codewords                   */
 
 static double now_ms(void) {
     struct timespec ts;
@@ -54,68 +80,159 @@ static void fill_draws(uint64_t *draws, size_t n) {
     }
 }
 
-int main(void) {
-    const size_t heights[] = {4, 8, 16, 32, 64, 128, 256, 512, 1024};
-    const size_t nh = sizeof(heights) / sizeof(heights[0]);
-    const int reps = 3; /* median of a few reps for stable timing */
+/* Fill the 1-instance FibonacciAir descriptor for a base height of 1<<log_h. */
+static void bp_fill_instance(dnac_batch_vinstance_t *vi, unsigned log_h,
+                             const gold_fp_t *publics) {
+    memset(vi, 0, sizeof(*vi));
+    vi->air.main_width = 2;
+    vi->air.num_public_values = 3;
+    vi->air.main_next = 1;
+    vi->air.air_eval = fib_air_eval;
+    vi->preprocessed_width = 0;
+    vi->prep_next = 0;
+    vi->pool = NULL;
+    vi->pool_len = 0;
+    vi->lookups = NULL;
+    vi->num_lookups = 0;
+    /* degree_bits INCLUDES the is_zk +1 (batch_verify.h). */
+    vi->degree_bits = (uint32_t)log_h + (uint32_t)BP_IS_ZK;
+    vi->log_num_qc = BP_LOG_NUM_QC;
+    vi->public_values = publics;
+    vi->num_publics = 3;
+}
 
-    printf("DNAC v3 ZK — C prover perf bench (dnac_prover_prove)\n");
-    printf("wall-clock, best-of-%d; prove=wallet UX, verify=chain cost, "
-           "bytes=storage\n\n", reps);
+int main(void) {
+    const unsigned log_heights[] = {3, 4, 5, 6, 7, 8, 9, 10};
+    const size_t nh = sizeof(log_heights) / sizeof(log_heights[0]);
+    const int reps = 3; /* best-of a few reps for stable timing */
+    int failures = 0;
+
+    dnac_fri_params_t params;
+    memset(&params, 0, sizeof(params));
+    params.log_blowup = 2;
+    params.log_final_poly_len = 2;
+    params.max_log_arity = 1;
+    params.num_queries = 2;
+    params.commit_proof_of_work_bits = 0;
+    params.query_proof_of_work_bits = 0;
+
+    printf("DNAC ZK — batched C prover perf bench "
+           "(dnac_batch_prove / dnac_batch_verify)\n");
+    printf("1 instance, FibonacciAir, is_zk=1, unsalted, %d-query test params; "
+           "best-of-%d\n", (int)params.num_queries, reps);
+    printf("prove=wallet UX, verify=chain cost, bytes=DZKF v4 storage\n\n");
     printf("%6s %5s %6s %11s %11s %11s\n", "height", "db", "rounds",
            "prove_ms", "verify_ms", "proof_B");
     printf("%6s %5s %6s %11s %11s %11s\n", "------", "--", "------",
            "--------", "---------", "-------");
 
     for (size_t h = 0; h < nh; h++) {
-        const size_t height = heights[h];
-        const size_t n_real = height;               /* fully populated */
-        const size_t ndraws = DNAC_PROVER_TOTAL_DRAWS(height);
+        const unsigned log_h = log_heights[h];
+        const size_t   base_h = (size_t)1 << log_h;
 
-        uint64_t *amounts = (uint64_t *)malloc(n_real * sizeof(uint64_t));
+        uint64_t *trace = (uint64_t *)malloc(base_h * 2 * sizeof(uint64_t));
+        if (!trace) return 2;
+        fib_trace(0, 1, base_h, trace);
+
+        gold_fp_t publics[3];
+        publics[0] = gold_fp_from_u64(0);
+        publics[1] = gold_fp_from_u64(1);
+        publics[2] = gold_fp_from_u64(trace[2 * base_h - 1]);
+
+        dnac_batch_vinstance_t vi;
+        bp_fill_instance(&vi, log_h, publics);
+        dnac_batch_pwitness_t wit;
+        wit.main_trace = trace;
+        wit.prep_trace = NULL;
+
+        const size_t ndraws = dnac_batch_prove_num_draws(&vi, 1, BP_IS_ZK, BP_NRC);
+        if (ndraws == SIZE_MAX) {
+            printf("%6zu   (draw-count derivation FAILED)\n", base_h);
+            free(trace);
+            failures++;
+            continue;
+        }
         uint64_t *draws = (uint64_t *)malloc(ndraws * sizeof(uint64_t));
-        if (!amounts || !draws) { free(amounts); free(draws); return 2; }
-        for (size_t i = 0; i < n_real; i++) amounts[i] = (uint64_t)(i + 1);
+        if (!draws) { free(trace); return 2; }
         fill_draws(draws, ndraws);
 
-        dnac_prover_instance_t inst = {amounts, n_real, height, 7, draws, ndraws};
-
         double best_prove = 1e18, best_verify = 1e18;
-        size_t proof_bytes = 0, db = 0, rounds = 0;
+        size_t proof_bytes = 0, rounds = 0;
         int ok = 1;
         for (int r = 0; r < reps; r++) {
-            dnac_prover_proof_t *proof = NULL;
+            dnac_batch_proof_t *bp = NULL;
             double t0 = now_ms();
-            dnac_prover_status_t st = dnac_prover_prove(&inst, &proof);
+            dnac_prover_status_t st =
+                dnac_batch_prove(&vi, &wit, 1, BP_IS_ZK, &params, BP_NRC,
+                                 draws, ndraws, NULL, 0, NULL, 0, 0, &bp);
             double t1 = now_ms();
-            if (st != DNAC_PROVER_OK || !proof) { ok = 0; break; }
+            if (st != DNAC_PROVER_OK || bp == NULL) {
+                printf("%6zu   (prove FAILED, status=%d)\n", base_h, (int)st);
+                ok = 0;
+                break;
+            }
+
+            dnac_batch_vcommits_t commits;
+            dnac_batch_proof_commits(bp, &commits);
+            const dnac_batch_vopened_t *opened = dnac_batch_proof_opened(bp, 0);
+            const dnac_fri_proof_t     *fri = dnac_batch_proof_fri(bp);
+            const dnac_batch_rand_openings_t *ro =
+                dnac_batch_proof_rand_openings(bp);
+
+            dnac_batch_verify_out_t vo;
+            memset(&vo, 0, sizeof(vo));
             double v0 = now_ms();
-            dnac_fri_status_t vs = dnac_prover_proof_verify(proof);
+            dnac_batch_verify_status_t vs =
+                dnac_batch_verify(&vi, opened, 1, BP_IS_ZK, &commits, NULL, 0,
+                                  &params, fri, ro, &vo);
             double v1 = now_ms();
-            if (vs != 0) { dnac_prover_proof_free(proof); ok = 0; break; }
+            if (vs != DNAC_BV_OK) {
+                printf("%6zu   (verify FAILED, status=%d fri=%d)\n", base_h,
+                       (int)vs, (int)vo.fri_status);
+                dnac_batch_proof_free(bp);
+                ok = 0;
+                break;
+            }
+
+            uint8_t *wire = NULL;
+            size_t   wire_len = 0;
+            dnac_fri_codec_status_t cs =
+                dnac_batch_wire_encode(BP_IS_ZK, 1, &commits, opened, ro,
+                                       &params, fri, &wire, &wire_len);
+            if (cs != DNAC_FRI_CODEC_OK) {
+                printf("%6zu   (wire encode FAILED, codec=%d)\n", base_h,
+                       (int)cs);
+                dnac_batch_proof_free(bp);
+                ok = 0;
+                break;
+            }
+            proof_bytes = wire_len;
+            free(wire);
+
+            rounds = fri->num_commit_phase_commits;
             if (t1 - t0 < best_prove) best_prove = t1 - t0;
             if (v1 - v0 < best_verify) best_verify = v1 - v0;
-            proof_bytes = dnac_prover_proof_wire_size(proof);
-            db = dnac_prover_proof_degree_bits(proof);
-            rounds = dnac_prover_proof_num_fri_rounds(proof);
-            dnac_prover_proof_free(proof);
+            dnac_batch_proof_free(bp);
         }
-        free(amounts);
         free(draws);
-        if (!ok) {
-            printf("%6zu   (prove/verify FAILED)\n", height);
-            return 1;
-        }
-        printf("%6zu %5zu %6zu %11.2f %11.2f %11zu\n", height, db, rounds,
-               best_prove, best_verify, proof_bytes);
+        free(trace);
+        if (!ok) { failures++; continue; }
+
+        printf("%6zu %5u %6zu %11.2f %11.2f %11zu\n", base_h, vi.degree_bits,
+               rounds, best_prove, best_verify, proof_bytes);
     }
 
     printf("\nNotes:\n");
-    printf("  - proof size is fixed-ish (num_queries=2, final_poly=4) — it grows\n");
-    printf("    with FRI rounds (commit-phase steps) + degree_bits, NOT n_real.\n");
-    printf("  - verify_ms is the per-TX chain cost; 100 TPS budget = block_time /\n");
+    printf("  - prove_ms INCLUDES dnac_batch_prove's own self-verify "
+           "(batch_prover.h step 11);\n");
+    printf("    verify_ms is a second, isolated dnac_batch_verify — that one is\n");
+    printf("    the per-TX chain cost. 100 TPS budget = block_time /\n");
     printf("    txs_per_block per witness (serial). prove_ms is wallet-only.\n");
-    printf("  - test-grade FRI params (num_queries=2, pow=0, ~4-bit soundness).\n");
-    printf("    Production params (more queries) grow proof size + verify time.\n");
-    return 0;
+    printf("  - proof_B is the DZKF v4 wire size; it grows with FRI rounds\n");
+    printf("    (commit-phase steps) + degree_bits, NOT with the witness count.\n");
+    printf("  - TEST-grade FRI params (2 queries, no PoW, ~4-bit soundness) and\n");
+    printf("    UNSALTED leaves. The pinned shielded consensus set (100 queries,\n");
+    printf("    16-bit query PoW, SALT_ELEMS=2) is materially slower and larger —\n");
+    printf("    see tests/test_prover_shielded_production.c for that profile.\n");
+    return failures ? 1 : 0;
 }

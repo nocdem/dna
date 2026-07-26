@@ -1,12 +1,19 @@
 /**
  * @file test_prover_agg.c
  * @brief Dual-mode S4b.4 — pure-C AGGREGATE prover byte-match vs the REAL
- *        Plonky3 proof (width 1936, is_zk=1, num_qc=8, 21 publics).
+ *        Plonky3 proof (width 2318 post-F3, is_zk=1, num_qc=8, 43 publics).
  *
- * Rebuilds the oracle instance (dump_conf_action_agg_air_zk: INPUT 100 = OUTPUT
- * 70 + FEE 30 + dummy-last, D=4 membership, log_height=7) + the SmallRng(1) draw
- * stream, runs dnac_agg_prover_prove, and byte-matches against
- * tools/vectors/conf_action_agg_air_zk.json:
+ * d4.c-2 (2026-07-26): dnac_agg_prover_prove now DELEGATES to dnac_batch_prove
+ * (1-instance is_zk=1 batch) — the v3 uni-stark pipeline retired. This test
+ * re-anchored onto tools/vectors/batch_shielded_agg.json (the BATCHED agg
+ * vectors: agg_1in / 2in / 4in plain + *_salted); it checks the delegation
+ * wrapper's accessors (zeta/roots/final_poly/publics) byte-match the oracle —
+ * the FULL proof byte-match lives in test_batch_shielded_agg (d4.c-1).
+ *
+ * Rebuilds the oracle instance (1-input: INPUT 100 = OUTPUT 70 + FEE 30, D=4
+ * membership, log_height=7; 2in/4in variants) + the SmallRng(1) draw stream,
+ * runs dnac_agg_prover_prove, and byte-matches against the named scenario in
+ * tools/vectors/batch_shielded_agg.json:
  *
  *   T2  prove == OK (self-verify: priming zeta + FRI + N-chunk constraint check)
  *   T3  zeta + zeta_next == the REAL proof's challenges
@@ -90,6 +97,7 @@ static gold_fp2_t parse_fp2_wrapped(js_t *s){
 #define TP_PUB 48  /* covers the 43 S4c publics (anchor||num_in||nf||num_out||ocommit||fee||txbind) */
 
 typedef struct {
+    char name[64];
     size_t degree_bits;
     gold_fp2_t zeta, zeta_next;
     dnac_p2_digest_t trace_root, quot_root, rand_root; /* P1c: 4-lane */
@@ -97,53 +105,91 @@ typedef struct {
     uint64_t publics[TP_PUB]; size_t num_publics;
 } tp_t;
 
-static void parse_vector(js_t *s, tp_t *fx){
+/* d4.c-2: the agg prover now DELEGATES to dnac_batch_prove, so test_prover_agg
+ * byte-matches the wrapper accessors (zeta/zeta_next/roots/final_poly/publics)
+ * against the BATCHED shielded-agg oracle (tools/vectors/batch_shielded_agg.json,
+ * scenarios agg_1in / agg_2in / agg_4in — the PLAIN unsalted ones dnac_agg_
+ * prover_prove reproduces; the full byte-match lives in test_batch_shielded_agg). */
+
+/* Read the fields from ONE scenario object (js_t at its opening '{'). */
+static void parse_scenario_fields(js_t *s, tp_t *fx){
     js_match(s,'{');
     while(!js_match(s,'}')){ if(js_peek(s,',')){s->pos++;continue;} char*k=js_read_string(s); if(!k)break; js_match(s,':');
-        if(strcmp(k,"instance")==0){
-            js_match(s,'{'); while(!js_match(s,'}')){ if(js_peek(s,',')){s->pos++;continue;} char*ik=js_read_string(s); js_match(s,':'); uint64_t v=0; js_read_u64(s,&v);
-                if(ik&&strcmp(ik,"degree_bits")==0){fx->degree_bits=(size_t)v;}
+        if(strcmp(k,"name")==0){ char*v=js_peek(s,'"')?js_read_string(s):NULL; if(v){ strncpy(fx->name,v,sizeof fx->name-1); free(v);} else js_skip_value(s); }
+        else if(strcmp(k,"degree_bits")==0){ uint64_t v=0; js_match(s,'['); if(!js_match(s,']')){ js_read_u64(s,&v); while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;} js_skip_value(s);} } fx->degree_bits=(size_t)v; }
+        else if(strcmp(k,"zeta")==0){ fx->zeta=parse_fp2_decimal(s); }
+        else if(strcmp(k,"commits")==0){
+            js_match(s,'{'); while(!js_match(s,'}')){ if(js_peek(s,',')){s->pos++;continue;} char*ck=js_read_string(s); js_match(s,':');
+                if(ck&&strcmp(ck,"main")==0){ char*h=js_peek(s,'"')?js_read_string(s):NULL; if(h){uint8_t b[32]; hex_decode(h,b,32); p2_digest_from_le_bytes(b,&fx->trace_root); free(h);} else js_skip_value(s); }
+                else if(ck&&strcmp(ck,"quotient")==0){ char*h=js_peek(s,'"')?js_read_string(s):NULL; if(h){uint8_t b[32]; hex_decode(h,b,32); p2_digest_from_le_bytes(b,&fx->quot_root); free(h);} else js_skip_value(s); }
+                else if(ck&&strcmp(ck,"random")==0){ char*h=js_peek(s,'"')?js_read_string(s):NULL; if(h){uint8_t b[32]; hex_decode(h,b,32); p2_digest_from_le_bytes(b,&fx->rand_root); free(h);} else js_skip_value(s); }
+                else js_skip_value(s);
+                free(ck); }
+        }
+        else if(strcmp(k,"instances")==0){
+            js_match(s,'['); js_match(s,'{'); /* instances[0] */
+            while(!js_match(s,'}')){ if(js_peek(s,',')){s->pos++;continue;} char*ik=js_read_string(s); js_match(s,':');
+                if(ik&&strcmp(ik,"zeta_next")==0)fx->zeta_next=parse_fp2_decimal(s);
+                else if(ik&&strcmp(ik,"public_values")==0){ size_t n=0; js_match(s,'['); while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;} char*v=js_read_string(s); if(v){ if(n<TP_PUB)fx->publics[n]=strtoull(v,NULL,10); free(v); n++; } else { js_skip_value(s); } } fx->num_publics=n; }
+                else js_skip_value(s);
                 free(ik); }
-        } else if(strcmp(k,"challenges")==0){
-            js_match(s,'{'); while(!js_match(s,'}')){ if(js_peek(s,',')){s->pos++;continue;} char*ck=js_read_string(s); js_match(s,':');
-                if(ck&&strcmp(ck,"zeta_fp2")==0)fx->zeta=parse_fp2_decimal(s);
-                else if(ck&&strcmp(ck,"zeta_next_fp2")==0)fx->zeta_next=parse_fp2_decimal(s);
-                else js_skip_value(s);
-                free(ck); }
-        } else if(strcmp(k,"commitments")==0){
-            js_match(s,'{'); while(!js_match(s,'}')){ if(js_peek(s,',')){s->pos++;continue;} char*ck=js_read_string(s); js_match(s,':');
-                if(ck&&strcmp(ck,"trace_commit_root_hex")==0){ char*h=js_read_string(s); uint8_t b[32]; hex_decode(h,b,32); p2_digest_from_le_bytes(b,&fx->trace_root); free(h); }
-                else if(ck&&strcmp(ck,"quotient_commit_root_hex")==0){ char*h=js_read_string(s); uint8_t b[32]; hex_decode(h,b,32); p2_digest_from_le_bytes(b,&fx->quot_root); free(h); }
-                else if(ck&&strcmp(ck,"random_commit_root_hex")==0){ char*h=js_read_string(s); uint8_t b[32]; hex_decode(h,b,32); p2_digest_from_le_bytes(b,&fx->rand_root); free(h); }
-                else js_skip_value(s);
-                free(ck); }
-        } else if(strcmp(k,"public_values")==0){
-            size_t n=0; js_match(s,'['); while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;} char*v=js_read_string(s); if(v&&n<TP_PUB)fx->publics[n]=strtoull(v,NULL,10); free(v); n++; } fx->num_publics=n;
-        } else if(strcmp(k,"proof_serde")==0){
-            js_match(s,'['); js_skip_value(s); if(js_peek(s,',')) s->pos++;
-            js_match(s,'{');
-            while(!js_match(s,'}')){ if(js_peek(s,',')){s->pos++;continue;} char*pk=js_read_string(s); js_match(s,':');
-                if(pk&&strcmp(pk,"final_poly")==0){ size_t n=0; js_match(s,'['); while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;} gold_fp2_t fv=parse_fp2_wrapped(s); if(n<TP_FP)fx->final_poly[n]=fv; n++; } fx->num_final_poly=n; }
-                else js_skip_value(s);
-                free(pk); }
             while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;} js_skip_value(s);}
-        } else js_skip_value(s);
+        }
+        else if(strcmp(k,"proof_serde")==0){
+            js_match(s,'{'); while(!js_match(s,'}')){ if(js_peek(s,',')){s->pos++;continue;} char*pk=js_read_string(s); js_match(s,':');
+                if(pk&&strcmp(pk,"opening_proof")==0){
+                    js_match(s,'['); js_skip_value(s); if(js_peek(s,',')) s->pos++; /* skip rand_openings */
+                    js_match(s,'{'); /* friproof */
+                    while(!js_match(s,'}')){ if(js_peek(s,',')){s->pos++;continue;} char*fk=js_read_string(s); js_match(s,':');
+                        if(fk&&strcmp(fk,"final_poly")==0){ size_t n=0; js_match(s,'['); while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;} gold_fp2_t fv=parse_fp2_wrapped(s); if(n<TP_FP)fx->final_poly[n]=fv; n++; } fx->num_final_poly=n; }
+                        else js_skip_value(s);
+                        free(fk); }
+                    while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;} js_skip_value(s);}
+                } else js_skip_value(s);
+                free(pk); }
+        }
+        else js_skip_value(s);
         free(k);
     }
 }
 
-int main(int argc,char **argv){
-    if(argc<3){ fprintf(stderr,"usage: %s <conf_action_agg_air_zk.json> <smallrng_goldilocks.json>\n",argv[0]); return 2; }
-    tp_t *fx=(tp_t*)calloc(1,sizeof *fx); if(!fx)return 2;
-    { size_t bl=0; char *blob=slurp(argv[1],&bl); if(!blob){ fprintf(stderr,"cannot read %s\n",argv[1]); return 2; }
-      js_t s={blob,0,bl}; parse_vector(&s,fx); free(blob); }
+/* Find the named scenario in batch_shielded_agg.json + extract its fields. */
+static int parse_vector(js_t *s, tp_t *fx, const char *scen_name){
+    js_match(s,'{');
+    while(!js_match(s,'}')){ if(js_peek(s,',')){s->pos++;continue;} char*k=js_read_string(s); if(!k)break; js_match(s,':');
+        if(strcmp(k,"scenarios")==0){
+            js_match(s,'[');
+            while(!js_match(s,']')){ if(js_peek(s,',')){s->pos++;continue;}
+                tp_t tmp; memset(&tmp,0,sizeof tmp);
+                parse_scenario_fields(s,&tmp);
+                if(strcmp(tmp.name,scen_name)==0){ *fx=tmp; free(k); return 1; }
+            }
+            free(k); return 0;
+        } else js_skip_value(s);
+        free(k);
+    }
+    return 0;
+}
 
-    /* Instance selector: default 1-input (dump_conf_action_agg_air_zk); "2in" =
-     * the two-input KAT (dump_conf_action_agg_air_zk_2in) — both at H=128. */
+int main(int argc,char **argv){
+    if(argc<3){ fprintf(stderr,"usage: %s <batch_shielded_agg.json> <smallrng_goldilocks.json> [2in|4in] [--salted]\n",argv[0]); return 2; }
+    tp_t *fx=(tp_t*)calloc(1,sizeof *fx); if(!fx)return 2;
+
+    /* Instance selector: default 1-input; "2in"/"4in" select the batched
+     * shielded-agg oracle scenario of the same shape (all at the plain 2-query
+     * TEST params dnac_agg_prover_prove uses). */
     const int two_in  = (argc >= 4 && strcmp(argv[3], "2in") == 0);
     const int four_in = (argc >= 4 && strcmp(argv[3], "4in") == 0);
     int salted = 0;
     for (int ai = 3; ai < argc; ai++) if (strcmp(argv[ai], "--salted") == 0) salted = 1;
+    const char *scen_name =
+        salted ? (four_in ? "agg_4in_salted" : "agg_1in_salted")
+               : (four_in ? "agg_4in" : two_in ? "agg_2in" : "agg_1in");
+    { size_t bl=0; char *blob=slurp(argv[1],&bl); if(!blob){ fprintf(stderr,"cannot read %s\n",argv[1]); return 2; }
+      js_t s={blob,0,bl}; if(!parse_vector(&s,fx,scen_name)){ fprintf(stderr,"scenario %s not found in %s\n",scen_name,argv[1]); free(blob); free(fx); return 2; } free(blob); }
+    printf("── oracle scenario: %s (degree_bits=%zu, %zu publics, %zu final_poly)\n",
+           scen_name, fx->degree_bits, fx->num_publics, fx->num_final_poly);
+
     const unsigned log_height = four_in ? 8 : 7;
     const size_t height = (size_t)1 << log_height;
     /* F3: nk/ak are 4-lane-per-block arrays ([blk*4 + lane]). */

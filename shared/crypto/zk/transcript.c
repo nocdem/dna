@@ -40,6 +40,15 @@ dnac_transcript_t *dnac_transcript_init_empty(void)
     return t;
 }
 
+dnac_transcript_t *dnac_transcript_init_from_duplex(const dnac_duplex_t *d)
+{
+    if (!d) return NULL;
+    dnac_transcript_t *t = (dnac_transcript_t *)malloc(sizeof(*t));
+    if (!t) return NULL;
+    t->d = *d; /* verbatim state copy — the primed state IS the seed */
+    return t;
+}
+
 dnac_transcript_t *dnac_transcript_init_default(void)
 {
     dnac_transcript_t *t = (dnac_transcript_t *)malloc(sizeof(*t));

@@ -6,18 +6,16 @@
  *   82cfad73cd734d37a0d51953094f970c531817ec.
  *
  * ---------------------------------------------------------------------------
- * STATUS (read first)
+ * STATUS
  * ---------------------------------------------------------------------------
- *   - This header is F2 (structure / ABI only). The FRI verifier
- *     IMPLEMENTATION IS NOT YET PRESENT: there is no `fri_verifier.c` and no
- *     verification logic anywhere in the DNAC tree as of this header.
- *     `dnac_fri_verify` is a forward prototype only — it has no definition.
- *   - Current Merkle / MMCS support is same-height multi-matrix batch
- *     (`poseidon2_mmcs.h` :: `dnac_p2_mmcs_verify` — P1c Poseidon2 cutover).
- *   - Phase 2B mixed-height multi-matrix MMCS is DEFERRED and out of v3.0
- *     scope (design §13 B4). The FRI verifier will pre-check that all matrices
- *     in an input batch share the same `num_rows` before delegating to the
- *     same-height batch verify.
+ *   - `dnac_fri_verify` is IMPLEMENTED in fri_verifier.c (F7 consolidation):
+ *     shape prefix, Fiat-Shamir flow, open_input + verify_query per query,
+ *     terminal Horner. (The F2-era "structure only" note is historical.)
+ *   - MMCS support: same-height batches via `dnac_p2_mmcs_verify` (P1c
+ *     Poseidon2 cutover) AND mixed-height batches via
+ *     `dnac_p2_mmcs_verify_mixed` (P2L-d d1a/d2 — batch-stark mixed commits,
+ *     merkle_tree.rs:127-176 layer injection). The former Phase-2A
+ *     same-height-only reject in open_input is superseded.
  *
  * F2 carry-over notes (from the F1 oracle source-lock audit, APPROVED — no
  * KAFADAN / BLOCKER):
@@ -119,8 +117,9 @@ typedef enum {
      * level: num_queries == 0 (the low-degree test never runs — an accept-any-
      * garbage downgrade), or log_global_max_height >= 64 (shift-count UB feeding
      * transcript sample_bits / domain_index >>= sum_la → nondeterministic verdict
-     * across builds = chain-split class), or a mixed-height input batch (Phase 2B,
-     * unsupported). A FULL production param pin (exact-match to a grounded secure
+     * across builds = chain-split class). (Mixed-height input batches verify via
+     * the d1a mixed MMCS since P2L-d d2 — no longer rejected here.)
+     * A FULL production param pin (exact-match to a grounded secure
      * FriParameters set) remains a MUST-FIX before consensus wiring — see
      * dnac/docs/plans/2026-07-11-...-design.md §5.4. */
     DNAC_FRI_ERR_UNSUPPORTED_PARAMS = 20

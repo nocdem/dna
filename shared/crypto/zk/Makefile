@@ -27,9 +27,12 @@
 
 CC      ?= gcc
 CFLAGS  ?= -std=c99 -O2 -Wall -Wextra -Wno-unused-parameter
-# M5 gate (Phase-C C1): the unpinned dnac_fri_verify_wire test entry exists
-# ONLY in this standalone test build — consensus builds (nodus/messenger
-# CMake) do not define this, so the symbol cannot be reached from consensus.
+# M5 gate: the KAT-only test exports (dnac_batch_prove_forged_fs_testonly,
+# dnac_agg_prover_proof_wire_encode_testonly, ...) exist ONLY in this
+# standalone test build — consensus builds (nodus/messenger CMake) do not
+# define this, so those symbols cannot be reached from consensus. d4.d: the
+# unpinned dnac_fri_verify_wire entry this flag used to gate is DELETED, not
+# merely compiled out.
 CFLAGS  += -DDNAC_ZK_ENABLE_TEST_WIRE
 INCLUDES = -I. -I/opt/dna/shared
 LDLIBS   = -lcrypto
@@ -47,14 +50,31 @@ TRANSCRIPT_STACK = transcript.c duplex_challenger.c poseidon2_goldilocks.c field
 FRI_VERIFIER_STACK = fri_verifier.c $(TRANSCRIPT_STACK) poseidon2_mmcs.c zk_field_helpers.c fri_fold.c
 FRI_VERIFIER_LDADD = $(SHA3_SRC) $(LDLIBS)
 
-# Proof wire codec links the full FRI verifier stack (dnac_fri_verify_wire calls
-# dnac_fri_verify; the codec test verifies decoded proofs end-to-end).
-FRI_PROOF_CODEC_STACK = fri_proof_codec.c shielded_fri_params.c $(FRI_VERIFIER_STACK)
+# (d4.d: FRI_PROOF_CODEC_STACK RETIRED — its only consumers were the v3 codec /
+# priming / DZKS tests, all deleted with the v3 uni-stark pipeline. The v4
+# codec is linked directly by the recipes that need it.)
 
 # Everything the C prover (stark_prover.c) links against: trace builders
 # (range_air/sum_balance), NTT + helpers (S2 LDE), Merkle build (S3), and the
 # transcript stack (S5+ Fiat-Shamir; TRANSCRIPT_STACK carries field_goldilocks).
 PROVER_STACK = stark_prover.c sum_balance.c range_air.c ntt_goldilocks.c zk_field_helpers.c poseidon2_mmcs.c fri_fold.c $(TRANSCRIPT_STACK)
+
+# P1c: poseidon2_goldilocks.c removed (TRANSCRIPT_STACK carries it — see the
+# CONF_AIR_STACK note further down).
+ACTION_AIR_STACK = conf_action_air.c note_commit.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c
+
+# Dual-mode S4b.4 — the aggregate prover's full link set.
+# d4.c-2: the agg prover DELEGATES to dnac_batch_prove, so the batched
+# prover/verify/priming + LogUp stack link into every AGG_PROVER_SRCS consumer.
+# d4.d: stark_priming.c DROPPED (the v3 uni-stark priming has no caller left —
+# the batched pipeline primes through batch_priming.c), and the definition MOVED
+# UP HERE from its old home below test_prover_agg. Reason: make expands a
+# prerequisite list when it READS the rule, so a recipe that names
+# $(AGG_PROVER_SRCS) as a prerequisite while the variable is still undefined
+# gets an EMPTY prerequisite list — silently. test_batch_shielded_agg (defined
+# ~300 lines above the old definition) hit exactly that, which is why it used to
+# name 5 sources by hand and miss the other 25.
+AGG_PROVER_SRCS = stark_prover_agg.c conf_action_agg_fold.c conf_action_fold.c poseidon2_fold.c stark_constraints.c $(ACTION_AIR_STACK) $(PROVER_STACK) fri_verifier.c fri_proof_codec.c shielded_fri_params.c zk_entropy.c batch_prover.c batch_verify.c batch_priming.c logup_bus.c logup.c
 
 BUILD = build
 
@@ -83,20 +103,12 @@ TESTS = \
     $(BUILD)/test_fri_verifier_terminal_horner \
     $(BUILD)/test_fri_verifier_valid \
     $(BUILD)/test_fri_verifier_rollin \
-    $(BUILD)/test_fri_proof_codec \
-    $(BUILD)/test_stark_priming \
-    $(BUILD)/test_stark_priming_zk \
-    $(BUILD)/test_fri_verify_zk \
-    $(BUILD)/test_stark_proof_codec \
-    $(BUILD)/test_stark_priming_integrated \
     $(BUILD)/test_stark_constraints_primitives \
     $(BUILD)/test_stark_verify_constraints \
     $(BUILD)/test_range_proof_air \
     $(BUILD)/test_conf_root_verify \
     $(BUILD)/test_conf_action_verify \
     $(BUILD)/test_conf_action_agg_verify \
-    $(BUILD)/test_prover_conf \
-    $(BUILD)/test_prover_action \
     $(BUILD)/test_prover_agg \
     $(BUILD)/test_prover_shielded_production \
     $(BUILD)/test_shielded_verify \
@@ -112,8 +124,6 @@ TESTS = \
     $(BUILD)/test_prover_s9_open \
     $(BUILD)/test_prover_s10_fri \
     $(BUILD)/test_prover_s11_query \
-    $(BUILD)/test_prover_s13_verify \
-    $(BUILD)/test_prover_prove \
     $(BUILD)/test_poseidon2_goldilocks \
     $(BUILD)/test_duplex_challenger \
     $(BUILD)/test_poseidon2_mmcs \
@@ -130,9 +140,29 @@ TESTS = \
     $(BUILD)/test_conf_action_air \
     $(BUILD)/test_conf_action_agg_air \
     $(BUILD)/test_conf_membership_air \
-    $(BUILD)/test_conf_nullifier_air
+    $(BUILD)/test_conf_nullifier_air \
+    $(BUILD)/test_logup \
+    $(BUILD)/test_logup_bus \
+    $(BUILD)/test_batch_priming \
+    $(BUILD)/test_poseidon2_mmcs_mixed \
+    $(BUILD)/test_batch_verify \
+    $(BUILD)/test_batch_prover \
+    $(BUILD)/test_batch_wire \
+    $(BUILD)/test_batch_shielded_agg
 
-.PHONY: all test clean gen-fri-proof-wire gen-stark-proof-wire bench-prover
+# ── PREREQ HYGIENE (d4.d, 2026-07-26) ───────────────────────────────────────
+# A source on a recipe's command line that is NOT among its prerequisites means
+# `make` will not relink when that source changes: the incremental build then
+# runs a STALE binary — i.e. old code silently passing as green. That is the
+# forbidden non-determinism class in root CLAUDE.md, and it has bitten this
+# tree before (d4.c: three AGG_PROVER_SRCS consumers had no batch_*.c prereqs).
+#
+# $(SHA3_SRC) is on 18 recipe command lines and was in none of their
+# prerequisite lists. One global line fixes every current AND future test
+# binary, instead of 18 edits that the next recipe would forget:
+$(TESTS): $(SHA3_SRC)
+
+.PHONY: all test clean bench-prover
 
 all: $(BUILD) $(TESTS)
 
@@ -160,6 +190,71 @@ $(BUILD)/test_poseidon2_goldilocks: tests/test_poseidon2_goldilocks.c poseidon2_
 $(BUILD)/test_duplex_challenger: tests/test_duplex_challenger.c duplex_challenger.c poseidon2_goldilocks.c field_goldilocks.c duplex_challenger.h poseidon2_goldilocks.h field_goldilocks.h | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) tests/test_duplex_challenger.c duplex_challenger.c poseidon2_goldilocks.c field_goldilocks.c -o $@
 
+# P2L-a — LogUp lookup gadget byte-match (aux traces, residual streams,
+# cumulative sums, global-sum verdicts, constraint degrees vs the REAL
+# p3-lookup LogUpGadget; tools/vectors/logup.json).
+$(BUILD)/test_logup: tests/test_logup.c tests/logup_test_util.h logup.c field_goldilocks.c logup.h field_goldilocks.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_logup.c logup.c field_goldilocks.c -o $@
+
+# P2L-b — interaction/bus layer byte-match (builder replay -> column
+# assignment, per-bus challenge memo vs the REAL sample_perm_challenges +
+# duplex draw replay, per-bus global-sum grouping incl. the F3 cross-bus
+# cancellation trap; tools/vectors/logup_bus.json).
+$(BUILD)/test_logup_bus: tests/test_logup_bus.c tests/logup_test_util.h logup_bus.c logup.c duplex_challenger.c poseidon2_goldilocks.c field_goldilocks.c logup_bus.h logup.h duplex_challenger.h poseidon2_goldilocks.h field_goldilocks.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_logup_bus.c logup_bus.c logup.c duplex_challenger.c poseidon2_goldilocks.c field_goldilocks.c -o $@
+
+# P2L-c — batch-stark priming + proof-shape byte-match (verifier-order
+# transcript milestones on the C duplex, memo challenges, alpha/zeta, shape
+# accept + mutation rejects; tools/vectors/batch_priming.json).
+$(BUILD)/test_batch_priming: tests/test_batch_priming.c tests/logup_test_util.h batch_priming.c logup_bus.c logup.c duplex_challenger.c poseidon2_goldilocks.c field_goldilocks.c batch_priming.h logup_bus.h logup.h duplex_challenger.h poseidon2_goldilocks.h field_goldilocks.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_batch_priming.c batch_priming.c logup_bus.c logup.c duplex_challenger.c poseidon2_goldilocks.c field_goldilocks.c -o $@
+
+# P2L-d d1a — MIXED-height Poseidon2 MMCS byte-match (layer injection vs the
+# REAL MerkleTreeMmcs/HidingMmcs; tools/vectors/poseidon2_mmcs_mixed.json).
+$(BUILD)/test_poseidon2_mmcs_mixed: tests/test_poseidon2_mmcs_mixed.c tests/logup_test_util.h poseidon2_mmcs.c logup.c poseidon2_goldilocks.c field_goldilocks.c poseidon2_mmcs.h logup.h poseidon2_goldilocks.h field_goldilocks.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_poseidon2_mmcs_mixed.c poseidon2_mmcs.c logup.c poseidon2_goldilocks.c field_goldilocks.c -o $@
+
+# P2L-d d2 — batched STARK verify end-to-end vs the REAL prove_batch
+# vectors (batch priming + N2 round assembly + hiding merge + PCS observe +
+# dnac_fri_verify incl. mixed-height batches + constraint check at zeta with
+# LogUp residual folds + per-bus sums; tools/vectors/batch_proof.json).
+$(BUILD)/test_batch_verify: tests/test_batch_verify.c tests/batch_test_util.h tests/logup_test_util.h batch_verify.c batch_priming.c logup_bus.c logup.c stark_constraints.c $(FRI_VERIFIER_STACK) batch_verify.h batch_priming.h logup_bus.h logup.h stark_constraints.h fri_verifier.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_batch_verify.c batch_verify.c batch_priming.c logup_bus.c logup.c stark_constraints.c $(FRI_VERIFIER_STACK) -o $@
+
+# P2L-d d3 — batched STARK prover byte-match vs the REAL prove_batch vectors
+# (mixed-height commits, aux traces, lookup'd quotient via serial Horner,
+# N2 opening rounds, per-height FRI reduced openings + roll-in commit phase,
+# query openings; self-verify = dnac_batch_verify; the fib_zk scenario
+# consumes the oracle's SmallRng(1) zk_rng stream; batch_proof.json).
+$(BUILD)/test_batch_prover: tests/test_batch_prover.c tests/batch_test_util.h tests/logup_test_util.h batch_prover.c batch_verify.c batch_priming.c logup_bus.c logup.c stark_constraints.c fri_verifier.c $(PROVER_STACK) batch_prover.h batch_verify.h batch_priming.h logup_bus.h logup.h stark_constraints.h fri_verifier.h stark_prover.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_batch_prover.c batch_prover.c batch_verify.c batch_priming.c logup_bus.c logup.c stark_constraints.c fri_verifier.c $(PROVER_STACK) -o $@
+
+# P2L-d d4.b — the DZKF v4 batched-proof wire codec: decode the oracle's
+# wire_v4 bytes, verify the DECODED package end-to-end (dnac_batch_verify —
+# NO opening points on the wire, zeta is sampled), re-encode byte-match
+# (C encoder == the oracle's independent second encoder), prove-from-scratch
+# -> encode -> oracle byte-match, + fail-close decode negatives
+# (magic/version/truncation/noncanonical/flag/length/trailing).
+$(BUILD)/test_batch_wire: tests/test_batch_wire.c tests/batch_test_util.h tests/logup_test_util.h fri_proof_codec.c fri_proof_codec.h shielded_fri_params.c batch_prover.c batch_verify.c batch_priming.c logup_bus.c logup.c stark_constraints.c fri_verifier.c $(PROVER_STACK) batch_prover.h batch_verify.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_batch_wire.c fri_proof_codec.c shielded_fri_params.c batch_prover.c batch_verify.c batch_priming.c logup_bus.c logup.c stark_constraints.c fri_verifier.c $(PROVER_STACK) -o $@
+
+# P2L-d d4.c-1 — the FIRST validation of the SALTED batched prover: the v3
+# aggregate Action AIR fixtures re-proved via dnac_batch_prove (salt_elems=2)
+# byte-matched against the REAL Plonky3 prove_batch shielded-agg vectors
+# (tools/vectors/batch_shielded_agg.json + smallrng_goldilocks.json draw stream).
+# Links via AGG_PROVER_SRCS, which carries stark_prover_agg.c + the
+# ACTION/PROVER stacks + fri_verifier/codec/shielded_fri_params/zk_entropy AND
+# (since d4.c-2) the batched prover/verify/priming + LogUp stack.
+# d4.d PREREQ FIX: the prerequisite list used to name only 5 of those sources
+# while the command line linked all of them, so edits to stark_prover_agg.c /
+# fri_verifier.c / fri_proof_codec.c / batch_verify.c … did NOT relink this
+# binary (stale-binary hazard — the same defect class d4.c fixed on the other
+# three AGG_PROVER_SRCS consumers, which spell their sources out via the
+# expanded stacks). The prerequisite is now the SAME variable the command uses,
+# so the two can no longer drift apart.
+$(BUILD)/test_batch_shielded_agg: tests/test_batch_shielded_agg.c $(AGG_PROVER_SRCS) stark_prover_agg.h batch_prover.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_batch_shielded_agg.c $(AGG_PROVER_SRCS) $(SHA3_SRC) $(LDLIBS) -o $@
+
 # P1b — Poseidon2 MMCS byte-match (plain + hiding trees, oracle replay;
 # note_commit.c linked for the note_sponge_hash8 bridge KAT).
 $(BUILD)/test_poseidon2_mmcs: tests/test_poseidon2_mmcs.c poseidon2_mmcs.c note_commit.c poseidon2_goldilocks.c field_goldilocks.c poseidon2_mmcs.h note_commit.h poseidon2_goldilocks.h field_goldilocks.h | $(BUILD)
@@ -174,9 +269,12 @@ $(BUILD)/test_note_commit: tests/test_note_commit.c note_commit.c poseidon2_gold
 $(BUILD)/test_shielded_domsep: tests/test_shielded_domsep.c field_goldilocks.c shielded_domsep.h conf_commit_air.h conf_root_air.h field_goldilocks.h | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) tests/test_shielded_domsep.c field_goldilocks.c $(SHA3_SRC) $(LDLIBS) -o $@
 
-# S0 dual-mode — pinned consensus FRI params + hardened verify substitution/reject.
-$(BUILD)/test_shielded_fri_params: tests/test_shielded_fri_params.c shielded_fri_params.h fri_proof_codec.h $(FRI_PROOF_CODEC_STACK) | $(BUILD)
-	$(CC) $(CFLAGS) $(INCLUDES) tests/test_shielded_fri_params.c $(FRI_PROOF_CODEC_STACK) $(FRI_VERIFIER_LDADD) -o $@
+# S0 dual-mode — the pinned consensus FRI parameter set + exact params_eq.
+# d4.d: the third assertion (v3 wire substitution-guard reject) retired with
+# dnac_fri_verify_wire_shielded; that guard is covered on the v4 path by
+# test_shielded_verify T-R6. The test now needs ONLY the pinned params TU.
+$(BUILD)/test_shielded_fri_params: tests/test_shielded_fri_params.c shielded_fri_params.h shielded_fri_params.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_shielded_fri_params.c shielded_fri_params.c -o $@
 
 # S1a/S1b/S1c dual-mode C1 — phase-counter + freeze-carry + note-commitment
 # (is_zk=0 construction gate). S1c composes poseidon2-air + the S0 note_commit
@@ -367,52 +465,13 @@ $(BUILD)/test_fri_verifier_valid: tests/test_fri_verifier_valid.c fri_verifier.h
 $(BUILD)/test_fri_verifier_rollin: tests/test_fri_verifier_rollin.c fri_verifier.h $(FRI_VERIFIER_STACK) | $(BUILD)
 	$(CC) $(CFLAGS) -DDNAC_FRI_TESTING=1 -DDNAC_TRANSCRIPT_TESTING=1 $(INCLUDES) tests/test_fri_verifier_rollin.c $(FRI_VERIFIER_STACK) $(FRI_VERIFIER_LDADD) -o $@
 
-# Proof wire codec — roundtrip (decode->verify->encode==wire) + negative cases.
-# Uses only the production codec + verifier APIs (no DNAC_FRI_TESTING hooks).
-$(BUILD)/test_fri_proof_codec: tests/test_fri_proof_codec.c fri_proof_codec.h fri_proof_codec.c shielded_fri_params.c shielded_fri_params.h $(FRI_VERIFIER_STACK) | $(BUILD)
-	$(CC) $(CFLAGS) -DDNAC_TRANSCRIPT_TESTING=1 $(INCLUDES) tests/test_fri_proof_codec.c $(FRI_PROOF_CODEC_STACK) $(FRI_VERIFIER_LDADD) -o $@
-
-# P3/P4 — STARK/PCS transcript priming helper replay. Primes a transcript through
-# uni-stark verifier.rs:360-391 + two_adic_pcs.rs:687-693 from the REAL
-# p3_uni_stark::prove vector (stark_priming.json) and byte-matches the
-# verify_fri-entry seed + sampled alpha/zeta/zeta_next. -DDNAC_TRANSCRIPT_TESTING=1
-# exposes the input_buf/output_buf snapshot accessors. Production helper uses only
-# the public transcript API; no FRI verifier / constraint code. Per
-# docs/plans/2026-05-30-pcs-transcript-priming-design.md.
-$(BUILD)/test_stark_priming: tests/test_stark_priming.c stark_priming.h stark_priming.c transcript.h poseidon2_mmcs.h $(TRANSCRIPT_STACK) | $(BUILD)
-	$(CC) $(CFLAGS) -DDNAC_TRANSCRIPT_TESTING=1 $(INCLUDES) tests/test_stark_priming.c stark_priming.c $(TRANSCRIPT_STACK) -o $@
-
-# M2 — is_zk=1 (hiding) STARK/PCS transcript priming replay. Same helper +
-# stack as the non-ZK test, driven by the M1 sandbox confidential vector
-# (stark_priming_zk.json) — a REAL is_zk=1 p3_uni_stark::prove over HidingFriPcs.
-# Byte-matches the primed transcript (288 B) + alpha/zeta/zeta_next through the
-# is_zk augmentation (random-commit observe + random opened round first).
-$(BUILD)/test_stark_priming_zk: tests/test_stark_priming_zk.c stark_priming.h stark_priming.c transcript.h poseidon2_mmcs.h $(TRANSCRIPT_STACK) | $(BUILD)
-	$(CC) $(CFLAGS) -DDNAC_TRANSCRIPT_TESTING=1 $(INCLUDES) tests/test_stark_priming_zk.c stark_priming.c $(TRANSCRIPT_STACK) -o $@
-
-# M2b — end-to-end is_zk=1 FRI verification. Builds dnac_fri_proof_t + 3-round
-# coms (random/trace/quotient, merged opened values) from stark_priming_zk.json
-# and runs dnac_stark_prime_transcript(is_zk=1) -> dnac_fri_verify == DNAC_FRI_OK.
-# Ground-truth gate: validates the is_zk transcript + merge against the REAL
-# Plonky3 HidingFriPcs verifier (not just the oracle's own Shadow).
-$(BUILD)/test_fri_verify_zk: tests/test_fri_verify_zk.c fri_verifier.h stark_priming.h stark_priming.c $(FRI_VERIFIER_STACK) | $(BUILD)
-	$(CC) $(CFLAGS) $(INCLUDES) tests/test_fri_verify_zk.c stark_priming.c $(FRI_VERIFIER_STACK) $(FRI_VERIFIER_LDADD) -o $@
-
-# P5 — additive DZKS STARK/PCS wire wrapper around the EXISTING DZKF FRI wire.
-# Roundtrip (decode -> field checks -> re-encode == wire) + the inner DZKF decodes
-# via the existing fri_proof_codec (unchanged) + 8 malformed-reject cases. Links
-# both codecs. Per docs/plans/2026-05-30-pcs-transcript-priming-design.md § 8.
-$(BUILD)/test_stark_proof_codec: tests/test_stark_proof_codec.c stark_proof_codec.h stark_proof_codec.c fri_proof_codec.h $(FRI_PROOF_CODEC_STACK) | $(BUILD)
-	$(CC) $(CFLAGS) $(INCLUDES) tests/test_stark_proof_codec.c stark_proof_codec.c $(FRI_PROOF_CODEC_STACK) $(FRI_VERIFIER_LDADD) -o $@
-
-# P6 — integrated guard: DZKS -> inner DZKF -> dnac_stark_prime_transcript ->
-# dnac_fri_verify, end-to-end on the production stack (priming + FRI only; no
-# STARK constraint check). Permanent regression guard for the FRI terminal
-# domain_index fix: REQUIRES a log_final_poly_len>0 vector (FibonacciAir) to
-# reach DNAC_FRI_OK. Production APIs only — no DNAC_*_TESTING hooks. Per
-# docs/plans/2026-05-30-pcs-transcript-priming-design.md (P6).
-$(BUILD)/test_stark_priming_integrated: tests/test_stark_priming_integrated.c stark_proof_codec.h stark_proof_codec.c stark_priming.h stark_priming.c fri_proof_codec.h $(FRI_PROOF_CODEC_STACK) | $(BUILD)
-	$(CC) $(CFLAGS) $(INCLUDES) tests/test_stark_priming_integrated.c stark_proof_codec.c stark_priming.c $(FRI_PROOF_CODEC_STACK) $(FRI_VERIFIER_LDADD) -o $@
+# (d4.d: test_fri_proof_codec / test_stark_priming / test_stark_priming_zk /
+# test_fri_verify_zk / test_stark_proof_codec / test_stark_priming_integrated
+# RETIRED with the v3 uni-stark pipeline they exercised. The DZKF wire is now
+# covered by test_batch_wire (v4 codec, incl. the v3/v4 cross-version
+# rejects), the transcript by test_batch_priming, and the end-to-end
+# prove->verify chain by test_batch_prover / test_batch_shielded_agg /
+# test_shielded_verify.)
 
 # S3 — generic STARK constraint-check primitives (selectors_at_point + recompose
 # num_qc=1 + alpha-fold ops + final OOD check). AIR-INDEPENDENT; no AIR eval, no
@@ -461,22 +520,20 @@ CONF_AIR_STACK = conf_root_air.c conf_commit_air.c conf_balance_air.c conf_txbin
 $(BUILD)/test_zk_entropy: tests/test_zk_entropy.c zk_entropy.h zk_entropy.c field_goldilocks.h field_goldilocks.c | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) tests/test_zk_entropy.c zk_entropy.c field_goldilocks.c -o $@
 
-$(BUILD)/test_prover_conf: tests/test_prover_conf.c stark_prover_conf.h stark_prover_conf.c conf_root_fold.h conf_root_fold.c poseidon2_fold.h poseidon2_fold.c stark_constraints.c zk_entropy.c $(CONF_AIR_STACK) $(PROVER_STACK) fri_verifier.c stark_priming.c | $(BUILD)
-	$(CC) $(CFLAGS) $(INCLUDES) tests/test_prover_conf.c stark_prover_conf.c conf_root_fold.c poseidon2_fold.c stark_constraints.c zk_entropy.c $(CONF_AIR_STACK) $(PROVER_STACK) fri_verifier.c stark_priming.c $(SHA3_SRC) $(LDLIBS) -o $@
+# (d4.d: test_prover_conf / test_prover_action RETIRED with the v3
+# single-instance provers stark_prover_conf.c / stark_prover_action.c. The
+# aggregate prover — the only one with a live consumer — survives below and
+# now delegates to dnac_batch_prove.)
 
-# Dual-mode S1e.4 — pure-C C1 Action prover byte-match vs the REAL Plonky3 proof.
-# P1c: poseidon2_goldilocks.c removed (TRANSCRIPT_STACK carries it — see CONF_AIR_STACK note).
-ACTION_AIR_STACK = conf_action_air.c note_commit.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c
-$(BUILD)/test_prover_action: tests/test_prover_action.c stark_prover_action.h stark_prover_action.c conf_action_fold.h conf_action_fold.c poseidon2_fold.h poseidon2_fold.c stark_constraints.c zk_entropy.c $(ACTION_AIR_STACK) $(PROVER_STACK) fri_verifier.c stark_priming.c | $(BUILD)
-	$(CC) $(CFLAGS) $(INCLUDES) tests/test_prover_action.c stark_prover_action.c conf_action_fold.c poseidon2_fold.c stark_constraints.c zk_entropy.c $(ACTION_AIR_STACK) $(PROVER_STACK) fri_verifier.c stark_priming.c $(SHA3_SRC) $(LDLIBS) -o $@
+# ACTION_AIR_STACK and AGG_PROVER_SRCS are defined at the top of this file (with
+# the other stacks) — they must exist before the FIRST rule that names them as a
+# prerequisite, and test_batch_shielded_agg sits well above this point.
 
 # Dual-mode S4b.4 — aggregate prover byte-match vs REAL is_zk=1 proof (21 publics).
-AGG_PROVER_SRCS = stark_prover_agg.c conf_action_agg_fold.c conf_action_fold.c poseidon2_fold.c stark_constraints.c $(ACTION_AIR_STACK) $(PROVER_STACK) fri_verifier.c fri_proof_codec.c shielded_fri_params.c zk_entropy.c stark_priming.c
-
-$(BUILD)/test_prover_agg: tests/test_prover_agg.c stark_prover_agg.h stark_prover_agg.c conf_action_agg_fold.h conf_action_agg_fold.c conf_action_fold.h conf_action_fold.c conf_action_agg_air.h poseidon2_fold.h poseidon2_fold.c stark_constraints.c $(ACTION_AIR_STACK) $(PROVER_STACK) fri_verifier.c fri_proof_codec.c fri_proof_codec.h shielded_fri_params.c zk_entropy.c stark_priming.c | $(BUILD)
+$(BUILD)/test_prover_agg: tests/test_prover_agg.c stark_prover_agg.h stark_prover_agg.c conf_action_agg_fold.h conf_action_agg_fold.c conf_action_fold.h conf_action_fold.c conf_action_agg_air.h poseidon2_fold.h poseidon2_fold.c stark_constraints.c $(ACTION_AIR_STACK) $(PROVER_STACK) fri_verifier.c fri_proof_codec.c fri_proof_codec.h shielded_fri_params.c zk_entropy.c batch_prover.c batch_verify.c batch_priming.c logup_bus.c logup.c | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) tests/test_prover_agg.c $(AGG_PROVER_SRCS) $(SHA3_SRC) $(LDLIBS) -o $@
 
-$(BUILD)/test_prover_shielded_production: tests/test_prover_shielded_production.c stark_prover_agg.h stark_prover_agg.c conf_action_agg_fold.h conf_action_agg_fold.c conf_action_fold.h conf_action_fold.c conf_action_agg_air.h poseidon2_fold.h poseidon2_fold.c stark_constraints.c $(ACTION_AIR_STACK) $(PROVER_STACK) fri_verifier.c fri_proof_codec.c fri_proof_codec.h shielded_fri_params.c shielded_fri_params.h zk_entropy.c stark_priming.c | $(BUILD)
+$(BUILD)/test_prover_shielded_production: tests/test_prover_shielded_production.c stark_prover_agg.h stark_prover_agg.c conf_action_agg_fold.h conf_action_agg_fold.c conf_action_fold.h conf_action_fold.c conf_action_agg_air.h poseidon2_fold.h poseidon2_fold.c stark_constraints.c $(ACTION_AIR_STACK) $(PROVER_STACK) fri_verifier.c fri_proof_codec.c fri_proof_codec.h shielded_fri_params.c shielded_fri_params.h zk_entropy.c batch_prover.c batch_verify.c batch_priming.c logup_bus.c logup.c | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) tests/test_prover_shielded_production.c $(AGG_PROVER_SRCS) $(SHA3_SRC) $(LDLIBS) -o $@
 
 # ── Phase-C C2.1: consensus shielded verify (wire-recomputed statement). ──
@@ -494,7 +551,7 @@ DNAC_SIGHASH_SRCS = /opt/dna/dnac/src/transaction/serialize.c \
 # P1c: + keccak_ref.c (conf_txbind's SHA3; used to arrive via the retired SHA3 transcript stack).
 CONF_TXBIND_DEPS = conf_root_air.c conf_commit_air.c conf_balance_air.c keccak_ref.c
 
-$(BUILD)/test_shielded_verify: tests/test_shielded_verify.c shielded_verify.c shielded_verify.h conf_txbind.c conf_txbind.h $(CONF_TXBIND_DEPS) stark_prover_agg.h stark_prover_agg.c conf_action_agg_fold.h conf_action_agg_fold.c conf_action_fold.c poseidon2_fold.c stark_constraints.c $(ACTION_AIR_STACK) $(PROVER_STACK) fri_verifier.c fri_proof_codec.c shielded_fri_params.c zk_entropy.c stark_priming.c $(DNAC_SIGHASH_SRCS) | $(BUILD)
+$(BUILD)/test_shielded_verify: tests/test_shielded_verify.c shielded_verify.c shielded_verify.h conf_txbind.c conf_txbind.h $(CONF_TXBIND_DEPS) stark_prover_agg.h stark_prover_agg.c conf_action_agg_fold.h conf_action_agg_fold.c conf_action_fold.c poseidon2_fold.c stark_constraints.c $(ACTION_AIR_STACK) $(PROVER_STACK) fri_verifier.c fri_proof_codec.c shielded_fri_params.c zk_entropy.c batch_prover.c batch_verify.c batch_priming.c logup_bus.c logup.c $(DNAC_SIGHASH_SRCS) | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) $(DNAC_INCLUDES) tests/test_shielded_verify.c shielded_verify.c conf_txbind.c $(CONF_TXBIND_DEPS) $(AGG_PROVER_SRCS) $(DNAC_SIGHASH_SRCS) $(SHA3_SRC) $(LDLIBS) -o $@
 
 $(BUILD)/test_prover_salted_commit: tests/test_prover_salted_commit.c stark_prover.h $(CONF_AIR_STACK) $(PROVER_STACK) | $(BUILD)
@@ -526,8 +583,9 @@ $(BUILD)/test_prover_s3_commit: tests/test_prover_s3_commit.c stark_prover.h $(P
 # S5 (C prover) — prover-side Fiat-Shamir to alpha: drives the EXISTING
 # transcript.c with the prover.rs:161-195 observe/sample sequence and
 # byte-matches the REAL p3 alpha from range_proof_air_zk.json, on the trace
-# root rebuilt by the C S1->S2->S3 chain (cross-vector tie). Pin D4: the
-# audited verifier-side stark_priming.c is NOT touched.
+# root rebuilt by the C S1->S2->S3 chain (cross-vector tie). Pin D4 (the
+# then-separate verifier-side priming was not touched by this stage; that v3
+# priming module is retired as of d4.d).
 $(BUILD)/test_prover_s5_alpha: tests/test_prover_s5_alpha.c stark_prover.h $(PROVER_STACK) | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) tests/test_prover_s5_alpha.c $(PROVER_STACK) $(SHA3_SRC) $(LDLIBS) -o $@
 
@@ -581,42 +639,23 @@ $(BUILD)/test_prover_s10_fri: tests/test_prover_s10_fri.c stark_prover.h $(PROVE
 $(BUILD)/test_prover_s11_query: tests/test_prover_s11_query.c stark_prover.h $(PROVER_STACK) | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) tests/test_prover_s11_query.c $(PROVER_STACK) $(SHA3_SRC) $(LDLIBS) -o $@
 
-# S13 (C prover) — MILESTONE: the full C prover S1->S12 assembles its own
-# priming input + 3-round coms + dnac_fri_proof_t, then dnac_stark_prime_transcript
-# + dnac_fri_verify == DNAC_FRI_OK. Rust-free, end-to-end. Links the prover stack
-# PLUS the verifier + priming (fri_verifier.c, stark_priming.c) as the consumer.
-$(BUILD)/test_prover_s13_verify: tests/test_prover_s13_verify.c stark_prover.h fri_verifier.h stark_priming.h $(PROVER_STACK) fri_verifier.c stark_priming.c | $(BUILD)
-	$(CC) $(CFLAGS) $(INCLUDES) tests/test_prover_s13_verify.c $(PROVER_STACK) fri_verifier.c stark_priming.c $(SHA3_SRC) $(LDLIBS) -o $@
+# (d4.d: test_prover_s13_verify and test_prover_prove RETIRED — both drove the
+# v3 uni-stark assemble+verify chain through stark_priming.c /
+# stark_prover_prove.c. The equivalent end-to-end pure-C prove -> verify
+# milestone on the shipping pipeline is test_batch_prover (self-verify inside
+# dnac_batch_prove) and test_batch_shielded_agg.
+#
+# The gen-stark-proof-wire / gen-fri-proof-wire vector generators are gone with
+# the v3 wire they emitted; their outputs — stark_proof_wire{,_no_next}.json and
+# fri_proof_wire.json — were deleted with their last consumers.)
 
-# P1 (C prover) — library-level dnac_prover_prove on ARBITRARY instances: the
-# instance-generic prove + assemble + self-verify (stark_prover_prove.c). Proves
-# both M3a (1 FRI round) and a height-8 instance (2 FRI rounds, 6-bit indices),
-# exercising the multi-round FRI commit phase + generalized answer_query.
-$(BUILD)/test_prover_prove: tests/test_prover_prove.c stark_prover_prove.h stark_prover_prove.c stark_prover.h fri_verifier.h stark_priming.h fri_proof_codec.h stark_proof_codec.h $(PROVER_STACK) fri_verifier.c stark_priming.c fri_proof_codec.c shielded_fri_params.c shielded_fri_params.h stark_proof_codec.c | $(BUILD)
-	$(CC) $(CFLAGS) $(INCLUDES) tests/test_prover_prove.c stark_prover_prove.c $(PROVER_STACK) fri_verifier.c stark_priming.c fri_proof_codec.c shielded_fri_params.c stark_proof_codec.c $(SHA3_SRC) $(LDLIBS) -o $@
-
-# Regenerate the DZKS wrapper vectors from their priming vectors via the C codec
-# (the generator is polymorphic on has_trace_next, driven by the JSON's trace_next
-# being an array vs null). Manual (vectors committed + hash-pinned); run after a
-# wrapper/wire change. Each run GATEs dnac_fri_verify==DNAC_FRI_OK before writing.
-#   stark_proof_wire.json          <- FibonacciAir (main_next=true, 2 trace points)
-#   stark_proof_wire_no_next.json  <- SquareAir    (main_next=false, 1 trace point)
-gen-stark-proof-wire: | $(BUILD)
-	$(CC) $(CFLAGS) $(INCLUDES) tools/gen_stark_proof_wire.c stark_proof_codec.c stark_priming.c $(FRI_PROOF_CODEC_STACK) $(FRI_VERIFIER_LDADD) -o $(BUILD)/gen_stark_proof_wire
-	$(BUILD)/gen_stark_proof_wire tools/vectors/stark_priming.json tools/vectors/stark_proof_wire.json
-	$(BUILD)/gen_stark_proof_wire tools/vectors/stark_priming_no_next.json tools/vectors/stark_proof_wire_no_next.json
-
-# Regenerate tools/vectors/fri_proof_wire.json from the locked FRI vectors via
-# the C codec. Manual (vector is committed); run after a codec/wire change.
-gen-fri-proof-wire: | $(BUILD)
-	$(CC) $(CFLAGS) $(INCLUDES) tools/gen_fri_proof_wire.c $(FRI_PROOF_CODEC_STACK) $(FRI_VERIFIER_LDADD) -o $(BUILD)/gen_fri_proof_wire
-	$(BUILD)/gen_fri_proof_wire tools/vectors/fri_verifier_valid.json tools/vectors/fri_verifier_transcript_milestones.json tools/vectors/fri_verifier_rollin.json tools/vectors/fri_proof_wire.json
-
-# P2 — prover perf bench (manual, NOT in `make test`; like the gen-* targets).
-# Measures prove_ms + verify_ms + wire proof size across instance heights.
+# P2 — prover perf bench (manual, NOT in `make test`).
+# Measures prove_ms + verify_ms + DZKF v4 wire size across instance heights on
+# the BATCHED pipeline (dnac_batch_prove / dnac_batch_verify).
 #   make bench-prover && ./build/bench_prover
-bench-prover: | $(BUILD)
-	$(CC) $(CFLAGS) $(INCLUDES) tools/bench_prover.c stark_prover_prove.c $(PROVER_STACK) fri_verifier.c stark_priming.c fri_proof_codec.c shielded_fri_params.c stark_proof_codec.c $(SHA3_SRC) $(LDLIBS) -o $(BUILD)/bench_prover
+BENCH_PROVER_SRCS = batch_prover.c batch_verify.c batch_priming.c logup_bus.c logup.c stark_constraints.c fri_verifier.c fri_proof_codec.c $(PROVER_STACK)
+bench-prover: tools/bench_prover.c tests/batch_test_util.h tests/logup_test_util.h $(BENCH_PROVER_SRCS) | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tools/bench_prover.c $(BENCH_PROVER_SRCS) -o $(BUILD)/bench_prover
 	$(BUILD)/bench_prover
 
 test: all
@@ -752,61 +791,10 @@ test: all
 	@$(BUILD)/test_fri_verifier_rollin tools/vectors/fri_verifier_rollin.json
 	@echo
 	@echo "============================================================"
-	@echo "Proof wire codec — roundtrip + negative malformed cases"
-	@echo "============================================================"
-	@$(BUILD)/test_fri_proof_codec tools/vectors/fri_proof_wire.json
-	@echo
-	@echo "============================================================"
-	@echo "Phase B8 P3/P4 — STARK/PCS transcript priming replay (real p3_uni_stark::prove, 82cfad73)"
-	@echo "============================================================"
-	@$(BUILD)/test_stark_priming tools/vectors/stark_priming.json
-	@echo
-	@echo "============================================================"
-	@echo "M2 — is_zk=1 (hiding) STARK/PCS priming replay (real HidingFriPcs prove, 82cfad73)"
-	@echo "============================================================"
-	@$(BUILD)/test_stark_priming_zk tools/vectors/stark_priming_zk.json
-	@echo
-	@echo "============================================================"
-	@echo "M2b — end-to-end is_zk=1 FRI verify (dnac_fri_verify on HidingFriPcs proof, 82cfad73)"
-	@echo "============================================================"
-	@$(BUILD)/test_fri_verify_zk tools/vectors/stark_priming_zk.json
-	@echo
-	@echo "============================================================"
-	@echo "M3a — is_zk=1 over the AUDITED RangeProofAir (hidden amounts), end-to-end FRI verify"
-	@echo "============================================================"
-	@$(BUILD)/test_fri_verify_zk tools/vectors/range_proof_air_zk.json
-	@echo
-	@echo "============================================================"
-	@echo "B1 Stage-2 — COMBINED conf AIR is_zk=1 end-to-end FRI verify (width 614, num_qc=8)"
-	@echo "  h=8 full + h=16 padded instances (real p3 prove, 82cfad73)"
-	@echo "============================================================"
-	@$(BUILD)/test_fri_verify_zk tools/vectors/conf_root_air_zk.json
-	@$(BUILD)/test_fri_verify_zk tools/vectors/conf_root_air_zk_h16.json
-	@echo
-	@echo "============================================================"
-	@echo "B1 Stage-2 M3b — SALTED-leaf hiding MMCS end-to-end FRI verify"
-	@echo "  (salts,siblings) opening tuple; leaf = row||salt; SEC-M3b negatives"
-	@echo "============================================================"
-	@$(BUILD)/test_fri_verify_zk tools/vectors/conf_root_air_salted.json --salted
-	@$(BUILD)/test_fri_verify_zk tools/vectors/conf_root_air_salted_h16.json --salted
-	@echo
-	@echo "============================================================"
 	@echo "B1 Stage-2 M3b — pure-C SALTED trace-commit byte-match vs REAL proof"
 	@echo "  leaf = committed row || SALT_ELEMS salts; the salted-prover primitive"
 	@echo "============================================================"
 	@$(BUILD)/test_prover_salted_commit tools/vectors/conf_root_air_salted.json tools/vectors/smallrng_goldilocks.json
-	@echo
-	@echo "============================================================"
-	@echo "Phase B8 P5 — additive DZKS STARK/PCS wire wrapper (around existing DZKF, 82cfad73)"
-	@echo "============================================================"
-	@$(BUILD)/test_stark_proof_codec tools/vectors/stark_proof_wire.json
-	@echo
-	@echo "============================================================"
-	@echo "Phase B8 P6 — integrated DZKS->DZKF->priming->dnac_fri_verify (82cfad73)"
-	@echo "  FibonacciAir (main_next=true): log_final_poly_len>0 terminal-index guard"
-	@echo "  SquareAir    (main_next=false): trace_next-absent / 1-trace-point path"
-	@echo "============================================================"
-	@$(BUILD)/test_stark_priming_integrated tools/vectors/stark_proof_wire.json tools/vectors/stark_proof_wire_no_next.json
 	@echo
 	@echo "============================================================"
 	@echo "Phase B8 S3 — generic STARK constraint-check primitives (82cfad73)"
@@ -837,17 +825,6 @@ test: all
 	@$(BUILD)/test_conf_root_verify tools/vectors/conf_root_air_zk.json
 	@echo "-- h=16 padded instance --"
 	@$(BUILD)/test_conf_root_verify tools/vectors/conf_root_air_zk_h16.json
-	@echo
-	@echo "============================================================"
-	@echo "B1 Stage-2 — pure-C conf PROVER byte-match vs the REAL Plonky3 proof"
-	@echo "  S1-S12 over the combined AIR (width 614, num_qc=8, 17 publics);"
-	@echo "  zeta + 3 roots + final_poly byte-match + self-verify (FRI + N-chunk)"
-	@echo "============================================================"
-	@$(BUILD)/test_prover_conf tools/vectors/conf_root_air_zk.json tools/vectors/smallrng_goldilocks.json
-	@$(BUILD)/test_prover_conf tools/vectors/conf_root_air_zk_h16.json tools/vectors/smallrng_goldilocks.json
-	@echo "  -- M3b: SALTED conf prover (every commit+opening salted) --"
-	@$(BUILD)/test_prover_conf tools/vectors/conf_root_air_salted.json tools/vectors/smallrng_goldilocks.json --salted
-	@$(BUILD)/test_prover_conf tools/vectors/conf_root_air_salted_h16.json tools/vectors/smallrng_goldilocks.json --salted
 	@echo
 	@echo "============================================================"
 	@echo "S1 (C prover) — RangeProofAir witness-trace builder byte-match KAT"
@@ -908,17 +885,6 @@ test: all
 	@echo "  indices == REAL [4,23]; openings verify vs retained roots (82cfad73)"
 	@echo "============================================================"
 	@$(BUILD)/test_prover_s11_query tools/vectors/prover_s11_indices_zk.json tools/vectors/prover_s8_random_zk.json tools/vectors/prover_s7_quotient_commit_zk.json tools/vectors/prover_s2_lde_zk.json
-	@echo
-	@echo "============================================================"
-	@echo "S13 (C prover) — MILESTONE: pure-C prove -> dnac_fri_verify == DNAC_FRI_OK"
-	@echo "============================================================"
-	@$(BUILD)/test_prover_s13_verify tools/vectors/prover_s8_random_zk.json tools/vectors/prover_s7_quotient_commit_zk.json tools/vectors/prover_s2_lde_zk.json
-	@echo
-	@echo "============================================================"
-	@echo "P1 (C prover) — dnac_prover_prove on ARBITRARY instances"
-	@echo "  M3a (1 FRI round) + height-8 (2 FRI rounds, 6-bit indices) -> C verify OK"
-	@echo "============================================================"
-	@$(BUILD)/test_prover_prove tools/vectors/prover_full_a.json tools/vectors/prover_full_b.json tools/vectors/prover_full_c.json
 	@echo
 	@echo "============================================================"
 	@echo "FP1.2 — Poseidon2-Goldilocks width-8 permutation (grounded port)"
@@ -982,10 +948,11 @@ test: all
 	@$(BUILD)/test_shielded_domsep
 	@echo
 	@echo "============================================================"
-	@echo "S0 dual-mode — pinned consensus FRI params (216-bit) + substitution guard"
-	@echo "  wire params ignored/rejected; verifier uses DNAC_SHIELDED_FRI_PARAMS"
+	@echo "S0 dual-mode — pinned consensus FRI params (216-bit) + exact params_eq"
+	@echo "  the substitution guard itself is gated on the v4 path by"
+	@echo "  test_shielded_verify T-R6 (TEST-params proof -> ERR_FRI)"
 	@echo "============================================================"
-	@$(BUILD)/test_shielded_fri_params tools/vectors/fri_proof_wire.json
+	@$(BUILD)/test_shielded_fri_params
 	@echo
 	@echo "============================================================"
 	@echo "S0 dual-mode — note-commitment + Merkle-compress PaddingFreeSponge<8,4,4>"
@@ -1018,33 +985,28 @@ test: all
 	@$(BUILD)/test_conf_action_agg_verify tools/vectors/conf_action_agg_air_zk.json
 	@echo
 	@echo "============================================================"
-	@echo "S1e.4 dual-mode C1 PROVER — pure-C prove byte-match vs REAL Plonky3"
-	@echo "  zeta + 3 roots + final_poly byte-match + self-verify (FRI + N-chunk)"
-	@echo "============================================================"
-	@$(BUILD)/test_prover_action tools/vectors/conf_action_air_zk.json tools/vectors/smallrng_goldilocks.json
-	@echo
-	@echo "============================================================"
 	@echo "S4b.4 dual-mode AGGREGATE PROVER — pure-C prove byte-match vs REAL Plonky3"
 	@echo "  zeta + 3 roots + final_poly + 21 publics byte-match + self-verify"
 	@echo "============================================================"
-	@$(BUILD)/test_prover_agg tools/vectors/conf_action_agg_air_zk.json tools/vectors/smallrng_goldilocks.json
+	@$(BUILD)/test_prover_agg tools/vectors/batch_shielded_agg.json tools/vectors/smallrng_goldilocks.json
 	@echo
 	@echo "  S4b.6 multi-input KAT — 2 INPUT notes (level-0 siblings, one anchor):"
-	@$(BUILD)/test_prover_agg tools/vectors/conf_action_agg_air_zk_2in.json tools/vectors/smallrng_goldilocks.json 2in
+	@$(BUILD)/test_prover_agg tools/vectors/batch_shielded_agg.json tools/vectors/smallrng_goldilocks.json 2in
 	@echo
 	@echo "  S4b.6 boundary KAT — 4 INPUT notes (one depth-4 tree, N_input=MAX_INPUTS=4):"
-	@$(BUILD)/test_prover_agg tools/vectors/conf_action_agg_air_zk_4in.json tools/vectors/smallrng_goldilocks.json 4in
+	@$(BUILD)/test_prover_agg tools/vectors/batch_shielded_agg.json tools/vectors/smallrng_goldilocks.json 4in
 	@echo
 	@echo "  P4 SALTED KAT — M3b MerkleTreeHidingMmcs aggregate (salted leaves byte-match):"
-	@$(BUILD)/test_prover_agg tools/vectors/conf_action_agg_air_zk_salted.json tools/vectors/smallrng_goldilocks.json --salted
+	@$(BUILD)/test_prover_agg tools/vectors/batch_shielded_agg.json tools/vectors/smallrng_goldilocks.json --salted
 	@echo
 	@echo "  Phase-P tail (c) — h=256 SALTED 4-input KAT (3 FRI rounds, N_input=MAX_INPUTS):"
-	@$(BUILD)/test_prover_agg tools/vectors/conf_action_agg_air_zk_4in_salted.json tools/vectors/smallrng_goldilocks.json 4in --salted
+	@$(BUILD)/test_prover_agg tools/vectors/batch_shielded_agg.json tools/vectors/smallrng_goldilocks.json 4in --salted
 	@echo
 	@echo "============================================================"
-	@echo "Phase-P — PRODUCTION shielded prover gate (pinned params, wire v2)"
+	@echo "Phase-P — PRODUCTION shielded prover gate (pinned params, DZKF v4)"
 	@echo "  OS-entropy SALTED h=1024 proof, 100 queries + 16-bit query-PoW,"
-	@echo "  serialized and accepted by dnac_fri_verify_wire_shielded"
+	@echo "  serialized and accepted by dnac_agg_prover_wire_selfcheck_shielded"
+	@echo "  (v4 encode -> decode -> param pin -> dnac_batch_verify)"
 	@echo "============================================================"
 	@$(BUILD)/test_prover_shielded_production
 	@echo
@@ -1066,6 +1028,64 @@ test: all
 	@echo "  honest accepted + Faerie-Gold/key-binding soundness + 9 attacks rejected"
 	@echo "============================================================"
 	@$(BUILD)/test_conf_nullifier_air
+	@echo
+	@echo "============================================================"
+	@echo "P2L-a — LogUp lookup gadget (p3-lookup LogUpGadget grounded port)"
+	@echo "  aux traces + residual streams + cumulative sums + global-sum"
+	@echo "  verdicts + degrees byte-matched vs Plonky3 82cfad73 (logup.json)"
+	@echo "============================================================"
+	@$(BUILD)/test_logup tools/vectors/logup.json
+	@echo
+	@echo "============================================================"
+	@echo "P2L-b — LogUp interaction/bus layer (builder + memo + per-bus grouping)"
+	@echo "  column assignment + challenge memo (real sample_perm_challenges) +"
+	@echo "  per-bus global sums incl. the F3 cross-bus trap (logup_bus.json)"
+	@echo "============================================================"
+	@$(BUILD)/test_logup_bus tools/vectors/logup_bus.json
+	@echo
+	@echo "============================================================"
+	@echo "P2L-c — batch-stark priming + proof shape (verifier-order transcript)"
+	@echo "  full N1 order milestones on the C duplex vs real prove/verify_batch"
+	@echo "  runs + shape accept/mutation gates (batch_priming.json)"
+	@echo "============================================================"
+	@$(BUILD)/test_batch_priming tools/vectors/batch_priming.json
+	@echo
+	@echo "============================================================"
+	@echo "P2L-d d1a — MIXED-height Poseidon2 MMCS (layer injection)"
+	@echo "  commit/open/verify byte-match vs real MerkleTreeMmcs/HidingMmcs"
+	@echo "  incl. scrambled insertion order (poseidon2_mmcs_mixed.json)"
+	@echo "============================================================"
+	@$(BUILD)/test_poseidon2_mmcs_mixed tools/vectors/poseidon2_mmcs_mixed.json
+	@echo
+	@echo "============================================================"
+	@echo "P2L-d d2 — batched STARK verify (end-to-end vs real prove_batch)"
+	@echo "  batch priming + N2 rounds + hiding merge + FRI (mixed-height) +"
+	@echo "  constraints at zeta with LogUp folds + per-bus sums (batch_proof.json)"
+	@echo "============================================================"
+	@$(BUILD)/test_batch_verify tools/vectors/batch_proof.json
+	@echo
+	@echo "============================================================"
+	@echo "P2L-d d3 — batched STARK prover (byte-match vs real prove_batch)"
+	@echo "  mixed-height commits + aux traces + lookup'd quotient + N2 opens"
+	@echo "  + per-height FRI reduced openings/roll-in + query openings +"
+	@echo "  self-verify; fib_zk = SmallRng(1) zk_rng stream (batch_proof.json)"
+	@echo "============================================================"
+	@$(BUILD)/test_batch_prover tools/vectors/batch_proof.json
+	@echo
+	@echo "============================================================"
+	@echo "P2L-d d4.b — DZKF v4 batched-proof wire codec"
+	@echo "  decode + verify(decoded) + re-encode byte-match + prove->encode"
+	@echo "  byte-match vs the oracle's wire_v4 + decode negatives"
+	@echo "============================================================"
+	@$(BUILD)/test_batch_wire tools/vectors/batch_proof.json
+	@echo
+	@echo "============================================================"
+	@echo "P2L-d d4.c-1 — SALTED batched prover (dnac_batch_prove, SE=2)"
+	@echo "  the v3 agg fixtures re-proved via prove_batch as 1-instance"
+	@echo "  is_zk=1 batches; byte-match commits+alpha/zeta+opened+FRI+SALTS"
+	@echo "  vs the REAL Plonky3 shielded-aggregate vectors"
+	@echo "============================================================"
+	@$(BUILD)/test_batch_shielded_agg tools/vectors/batch_shielded_agg.json tools/vectors/smallrng_goldilocks.json
 	@echo
 	@echo "============================================================"
 	@echo "ALL GATES: GREEN"

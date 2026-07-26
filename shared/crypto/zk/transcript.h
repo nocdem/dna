@@ -96,6 +96,15 @@ dnac_transcript_t *dnac_transcript_init_empty(void);
  */
 dnac_transcript_t *dnac_transcript_init_default(void);
 
+/**
+ * @brief Heap transcript seeded from an EXISTING duplex state (P2L-d d2).
+ *        Copies `d` verbatim — used by the batched verify to hand a
+ *        batch-primed duplex (batch_priming.h ops) to dnac_fri_verify,
+ *        which takes the dnac_transcript_t wrapper. No re-init, no DS
+ *        prefix re-absorb: the state IS the primed state.
+ */
+dnac_transcript_t *dnac_transcript_init_from_duplex(const dnac_duplex_t *d);
+
 /** Deep-copy (independent state). Used by the grinding search and codec
  *  probe paths. NULL on allocation failure. */
 dnac_transcript_t *dnac_transcript_clone(const dnac_transcript_t *src);

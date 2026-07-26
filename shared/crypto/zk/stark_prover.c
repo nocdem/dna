@@ -107,7 +107,14 @@ dnac_prover_status_t dnac_prover_randomize_trace(
      * DNAC_PROVER_MAX_TRACE_WIDTH = 640, raised 2026-07-15 for the width-614
      * combined conf AIR); reject anything that could overflow the
      * per_row / height*per_row products. */
-    if (width > DNAC_PROVER_MAX_TRACE_WIDTH || num_random > width ||
+    /* num_random is bounded INDEPENDENTLY of width (d3): Plonky3's
+     * with_random_cols has no num_random <= width constraint (dense.rs:
+     * 573-597 just appends columns) — the batched fib trace is width 2 with
+     * 4 random codewords. The pre-d3 `num_random > width` reject was a v3
+     * artifact (every v3 caller had width >= 56); the overflow bound only
+     * needs both factors capped. */
+    if (width > DNAC_PROVER_MAX_TRACE_WIDTH ||
+        num_random > DNAC_PROVER_MAX_TRACE_WIDTH ||
         height > STARK_PROVER_MAX_HEIGHT) {
         return DNAC_PROVER_ERR_PARAM;
     }
@@ -348,9 +355,14 @@ dnac_prover_status_t dnac_prover_quotient_selectors(
     uint64_t *is_last_row,
     uint64_t *is_transition,
     uint64_t *inv_vanishing) {
+    /* Reference bounds (domain.rs:278-281): trace domain shift ONE, coset
+     * shift != ONE, coset size >= trace size — EQUAL sizes are legal
+     * (rate_bits = 0, the num_qc=1 batched case; the pre-d3 `log_coset <=
+     * log_n` guard was stricter than the source). shift==1 stays rejected
+     * (assert_ne!(coset.shift, ONE)). */
     if (is_first_row == NULL || is_last_row == NULL || is_transition == NULL ||
-        inv_vanishing == NULL || log_coset <= log_n ||
-        log_coset > GOLDILOCKS_TWO_ADICITY || shift == 0 ||
+        inv_vanishing == NULL || log_coset < log_n ||
+        log_coset > GOLDILOCKS_TWO_ADICITY || shift <= 1 ||
         shift >= GOLDILOCKS_P) {
         return DNAC_PROVER_ERR_PARAM;
     }
@@ -1017,6 +1029,105 @@ dnac_prover_status_t dnac_prover_fri_reduced_openings(
     return DNAC_PROVER_OK;
 }
 
+void dnac_prover_fri_ro_mixed_free(dnac_prover_fri_ro_mixed_t *ro) {
+    if (ro == NULL) return;
+    for (unsigned lh = 0; lh <= GOLDILOCKS_TWO_ADICITY; lh++) {
+        free(ro->ro[lh]);
+        ro->ro[lh] = NULL;
+        ro->num_reduced[lh] = 0;
+    }
+}
+
+dnac_prover_status_t dnac_prover_fri_reduced_openings_mixed(
+    const dnac_prover_fri_input_round_t *rounds,
+    size_t n_rounds,
+    gold_fp2_t alpha,
+    dnac_prover_fri_ro_mixed_t *out) {
+    if (rounds == NULL || out == NULL || n_rounds == 0) {
+        return DNAC_PROVER_ERR_PARAM;
+    }
+    memset(out, 0, sizeof(*out));
+
+    /* Validate + size the scratch: every entry a pow2 height >= 2, width > 0. */
+    size_t max_w = 0, max_h = 0;
+    for (size_t r = 0; r < n_rounds; r++) {
+        const size_t h = rounds[r].height;
+        if (rounds[r].lde_bitrev == NULL || rounds[r].width == 0 || h < 2 ||
+            (h & (h - 1)) != 0 || rounds[r].num_points == 0 ||
+            rounds[r].points == NULL || rounds[r].opened == NULL) {
+            return DNAC_PROVER_ERR_PARAM;
+        }
+        if ((size_t)log2_strict_usize(h) > GOLDILOCKS_TWO_ADICITY) {
+            return DNAC_PROVER_ERR_PARAM;
+        }
+        if (rounds[r].width > max_w) max_w = rounds[r].width;
+        if (h > max_h) max_h = h;
+    }
+
+    gold_fp2_t *apow = (gold_fp2_t *)malloc((max_w + 1) * sizeof(gold_fp2_t));
+    gold_fp_t *coset = (gold_fp_t *)malloc(max_h * sizeof(gold_fp_t));
+    gold_fp2_t *den = (gold_fp2_t *)malloc(max_h * sizeof(gold_fp2_t));
+    gold_fp2_t *inv = (gold_fp2_t *)malloc(max_h * sizeof(gold_fp2_t));
+    /* per-height running alpha offset = alpha^{num_reduced[lh]} (:628). */
+    gold_fp2_t offsets[GOLDILOCKS_TWO_ADICITY + 1];
+    for (unsigned lh = 0; lh <= GOLDILOCKS_TWO_ADICITY; lh++) {
+        offsets[lh] = gold_fp2_from_base(gold_fp_from_u64(1));
+    }
+    if (!apow || !coset || !den || !inv) {
+        free(apow); free(coset); free(den); free(inv);
+        return DNAC_PROVER_ERR_PARAM;
+    }
+    gold_fp2_shifted_powers(gold_fp2_from_base(gold_fp_from_u64(1)), alpha,
+                            apow, max_w + 1);
+
+    dnac_prover_status_t rc = DNAC_PROVER_ERR_PARAM;
+    for (size_t r = 0; r < n_rounds; r++) {
+        const dnac_prover_fri_input_round_t *rd = &rounds[r];
+        const size_t hgt = rd->height;
+        const unsigned lh = (unsigned)log2_strict_usize(hgt);
+
+        if (out->ro[lh] == NULL) {
+            out->ro[lh] = (gold_fp2_t *)calloc(hgt, sizeof(gold_fp2_t));
+            if (out->ro[lh] == NULL) goto fail;
+        }
+        gold_fp2_t *ro_h = out->ro[lh];
+
+        /* coset[x] = GENERATOR · w_H^x bit-reversed — the size-h prefix
+         * property of the global coset (two_adic_pcs.rs:485-491) makes the
+         * per-height recomputation value-identical. */
+        gold_fp_shifted_powers(gold_fp_from_u64(7),
+                               gold_fp_two_adic_generator(lh), coset, hgt);
+        reverse_slice_index_bits_fp(coset, hgt);
+
+        for (size_t p = 0; p < rd->num_points; p++) {
+            const gold_fp2_t z = rd->points[p];
+            for (size_t x = 0; x < hgt; x++) {
+                den[x] = gold_fp2_sub(z, gold_fp2_from_base(coset[x]));
+            }
+            gold_fp2_batch_inv_general(den, inv, hgt);
+            const gold_fp2_t mred_z =
+                alpha_dot_fp2(apow, rd->opened[p], rd->width);
+            for (size_t x = 0; x < hgt; x++) {
+                const gold_fp2_t mred_x = alpha_dot_base(
+                    apow, &rd->lde_bitrev[x * rd->width], rd->width);
+                const gold_fp2_t term = gold_fp2_mul(
+                    offsets[lh],
+                    gold_fp2_mul(gold_fp2_sub(mred_z, mred_x), inv[x]));
+                ro_h[x] = gold_fp2_add(ro_h[x], term);
+            }
+            /* num_reduced[lh] += width ⇒ offset[lh] *= alpha^width (:651). */
+            offsets[lh] = gold_fp2_mul(offsets[lh], apow[rd->width]);
+            out->num_reduced[lh] += rd->width;
+        }
+    }
+    rc = DNAC_PROVER_OK;
+
+fail:
+    if (rc != DNAC_PROVER_OK) dnac_prover_fri_ro_mixed_free(out);
+    free(apow); free(coset); free(den); free(inv);
+    return rc;
+}
+
 void dnac_prover_fri_result_free(dnac_prover_fri_result_t *res) {
     if (res == NULL) return;
     for (size_t r = 0; r < res->num_rounds; r++) {
@@ -1052,9 +1163,44 @@ dnac_prover_status_t dnac_prover_fri_commit_phase(
     size_t          salt_elems,
     dnac_transcript_t *t,
     dnac_prover_fri_result_t *res) {
-    if (ro == NULL || t == NULL || res == NULL || max_log_arity == 0 ||
-        ro_len == 0 || (ro_len & (ro_len - 1)) != 0) {
+    /* P2L-d d3: thin wrapper over the mixed-height general form. A single
+     * input means the roll-in branch never fires, so the transcript/commit
+     * sequence is byte-identical to the pre-d3 body (v3 KATs frozen). */
+    if (ro == NULL) return DNAC_PROVER_ERR_PARAM;
+    const gold_fp2_t *inputs[1] = { ro };
+    const size_t lens[1] = { ro_len };
+    return dnac_prover_fri_commit_phase_mixed(
+        inputs, lens, 1, log_blowup, log_final_poly_len, max_log_arity,
+        commit_pow_bits, query_pow_bits, salt_draws, salt_elems, t, res);
+}
+
+dnac_prover_status_t dnac_prover_fri_commit_phase_mixed(
+    const gold_fp2_t *const *inputs,  /* descending heights */
+    const size_t            *input_lens,
+    size_t                   num_inputs,
+    unsigned log_blowup,
+    unsigned log_final_poly_len,
+    unsigned max_log_arity,
+    unsigned commit_pow_bits,
+    unsigned query_pow_bits,
+    const uint64_t *salt_draws,
+    size_t          salt_elems,
+    dnac_transcript_t *t,
+    dnac_prover_fri_result_t *res) {
+    if (inputs == NULL || input_lens == NULL || num_inputs == 0 ||
+        t == NULL || res == NULL || max_log_arity == 0) {
         return DNAC_PROVER_ERR_PARAM;
+    }
+    for (size_t i = 0; i < num_inputs; i++) {
+        if (inputs[i] == NULL || input_lens[i] == 0 ||
+            (input_lens[i] & (input_lens[i] - 1)) != 0) {
+            return DNAC_PROVER_ERR_PARAM;
+        }
+        /* strictly descending (prover.rs:69-75 sorted assert; equal heights
+         * were already summed into ONE reduced opening upstream). */
+        if (i > 0 && input_lens[i] >= input_lens[i - 1]) {
+            return DNAC_PROVER_ERR_PARAM;
+        }
     }
     if (salt_elems > 0 && salt_draws == NULL) return DNAC_PROVER_ERR_PARAM;
     /* running offset into salt_draws (stream B): layer r consumes rows*salt_elems
@@ -1066,24 +1212,27 @@ dnac_prover_status_t dnac_prover_fri_commit_phase(
     if (final_poly_len > DNAC_PROVER_MAX_FINAL_POLY) {
         return DNAC_PROVER_ERR_PARAM;
     }
-    /* Reject ro_len <= stop_len (red-team S10 + completeness-critic C3):
-     *  - ro_len < stop_len: the final-poly truncate reads past `folded` (heap
+    /* Reject len <= stop_len (red-team S10 + completeness-critic C3):
+     *  - len < stop_len: the final-poly truncate reads past `folded` (heap
      *    overread).
-     *  - ro_len == stop_len: the fold loop `while(len > stop_len)` never runs
+     *  - len == stop_len: the fold loop `while(len > stop_len)` never runs
      *    ⇒ 0 FRI commit-phase rounds ⇒ no folding low-degree binding, which
      *    Plonky3 PANICS on (strict assert log_min_height > log_final_poly_len +
      *    log_blowup, fri/prover.rs:79-81). Fail-close, symmetric with the S2
-     *    log_lde>= guard and the P1 height<4 guard. */
-    if (ro_len <= stop_len) {
+     *    log_lde>= guard and the P1 height<4 guard.
+     * Mixed form: the SMALLEST input must still be foldable-into, else it
+     * would silently never roll in (unsound drop) — same fail-close bar. */
+    if (input_lens[num_inputs - 1] <= stop_len) {
         return DNAC_PROVER_ERR_PARAM;
     }
     const unsigned log_final_height = log_blowup + log_final_poly_len;
 
-    /* working codeword (owned copy so ro can be freed by the caller). */
-    size_t len = ro_len;
+    /* working codeword (owned copy so inputs stay caller-owned). */
+    size_t len = input_lens[0];
+    size_t next_in = 1; /* roll-in cursor (inputs_iter, prover.rs:190) */
     gold_fp2_t *folded = (gold_fp2_t *)malloc(len * sizeof(gold_fp2_t));
     if (folded == NULL) return DNAC_PROVER_ERR_PARAM;
-    memcpy(folded, ro, len * sizeof(gold_fp2_t));
+    memcpy(folded, inputs[0], len * sizeof(gold_fp2_t));
 
     size_t round = 0;
     while (len > stop_len) {
@@ -1093,8 +1242,11 @@ dnac_prover_status_t dnac_prover_fri_commit_phase(
             return DNAC_PROVER_ERR_PARAM;
         }
         const unsigned log_current = (unsigned)log2_strict_usize(len);
-        const unsigned log_arity =
-            fri_log_arity(log_current, 0, 0, log_final_height, max_log_arity);
+        const int has_next = next_in < num_inputs;
+        const unsigned next_lh =
+            has_next ? (unsigned)log2_strict_usize(input_lens[next_in]) : 0;
+        const unsigned log_arity = fri_log_arity(
+            log_current, has_next, next_lh, log_final_height, max_log_arity);
         const size_t arity = (size_t)1 << log_arity;
         const size_t rows = len >> log_arity;
 
@@ -1182,7 +1334,30 @@ dnac_prover_status_t dnac_prover_fri_commit_phase(
         folded = next;
         len = rows;
         round++;
-        /* M3a: single input ⇒ no roll-in. */
+
+        /* ROLL-IN (prover.rs:238-245 next_if): if the next reduced-opening
+         * codeword has reached the folded length, add it in scaled by
+         * beta^{2^log_arity} (beta.exp_power_of_2(log_arity) — independence
+         * factor; the fri_verifier.c:477-480 verify-side mirror). */
+        if (next_in < num_inputs && input_lens[next_in] == len) {
+            gold_fp2_t beta_pow = beta;
+            for (unsigned s = 0; s < log_arity; s++) {
+                beta_pow = gold_fp2_mul(beta_pow, beta_pow);
+            }
+            const gold_fp2_t *in = inputs[next_in];
+            for (size_t j = 0; j < len; j++) {
+                folded[j] =
+                    gold_fp2_add(folded[j], gold_fp2_mul(beta_pow, in[j]));
+            }
+            next_in++;
+        }
+    }
+    /* every input must have been consumed (fail-close: a never-rolled-in
+     * codeword would drop its openings from the low-degree binding). */
+    if (next_in != num_inputs) {
+        free(folded);
+        dnac_prover_fri_result_free(res);
+        return DNAC_PROVER_ERR_PARAM;
     }
 
     /* final poly: truncate, bit-reverse, inverse-NTT (prover.rs:248-254). */

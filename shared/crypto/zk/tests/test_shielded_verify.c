@@ -10,14 +10,21 @@
  *   T-A   ACCEPT: real production proof (h=1024, 100-query, salted) whose
  *         wire fields equal its publics and whose tx_binding =
  *         conf_txbind_map(sighash_v4).                      -> OK
- *   T-R1  tampered public (nf lane, txbind re-mapped)       -> OPENING_POINT
+ * d4.c-3 (2026-07-26): shielded_verify.c re-based onto DZKF v4 + dnac_batch_verify.
+ * The v4 wire carries NO opening points (the verifier samples zeta), so the v3
+ * OPENING_POINT class is structurally closed: T-R1/R4/R5 (tampered publics/counts)
+ * now reject via Fiat-Shamir divergence inside dnac_batch_verify -> FRI; T-R7/R8
+ * are RETIRED (no wire height/opening-point field to tamper; degree_bits is a
+ * compile-time pin, so a wrong-height proof simply fails FRI).
+ *
+ *   T-R1  tampered public (nf lane, txbind re-mapped)       -> FRI (FS-divergence)
  *   T-R2  tampered proof byte (last blob byte)              -> any non-OK
  *   T-R3  wrong tx_binding                                  -> TXBIND
- *   T-R4  count forgery num_input (1 -> 2, txbind re-mapped)-> OPENING_POINT
- *   T-R5  count forgery num_output (1 -> 0, txbind re-mapped)-> OPENING_POINT
+ *   T-R4  count forgery num_input (1 -> 2, txbind re-mapped)-> FRI (FS-divergence)
+ *   T-R5  count forgery num_output (1 -> 0, txbind re-mapped)-> FRI (FS-divergence)
  *   T-R6  wrong params (TEST 2-query proof @ h=1024)        -> FRI (param pin)
- *   T-R7  wrong height (re-encoded, domains 11 -> 10)       -> HEIGHT
- *   T-R8  wire-zeta (re-encoded, trace opening point +1)    -> OPENING_POINT
+ *   T-R7  RETIRED (v4 has no wire height field; degree_bits pinned)
+ *   T-R8  RETIRED (v4 carries no opening points -> not constructible)
  *   T-R9  FRI-passes-but-constraint-fails (forged publics:
  *         honest FS over fee+1, quotient from true publics) -> CONSTRAINTS
  *         ** the CRIT-1 isolating vector: FRI alone accepts this proof **
@@ -266,8 +273,11 @@ int main(void) {
         if (!bind_sf(&t, chain_id)) { g_fails++; }
         dnac_shielded_verify_status_t st =
             dnac_shielded_verify_statement(&t, chain_id, committed_fee);
-        check("T-R1  tampered nf public -> OPENING_POINT",
-              st == DNAC_SHIELDED_VERIFY_ERR_OPENING_POINT, (int)st);
+        /* v4: no wire opening point — the recomputed (tampered) publics feed
+         * the priming, so ζ/α diverge and the FRI verify rejects (FS-divergence,
+         * the v3 OPENING_POINT class closes structurally). */
+        check("T-R1  tampered nf public -> FRI (FS-divergence)",
+              st == DNAC_SHIELDED_VERIFY_ERR_FRI, (int)st);
     }
 
     /* ── T-R2: tampered proof byte (fail-close, any rejecting code). ── */
@@ -304,8 +314,8 @@ int main(void) {
         if (!bind_sf(&t, chain_id)) { g_fails++; }
         dnac_shielded_verify_status_t st =
             dnac_shielded_verify_statement(&t, chain_id, committed_fee);
-        check("T-R4  count forgery num_input -> OPENING_POINT",
-              st == DNAC_SHIELDED_VERIFY_ERR_OPENING_POINT, (int)st);
+        check("T-R4  count forgery num_input -> FRI (FS-divergence)",
+              st == DNAC_SHIELDED_VERIFY_ERR_FRI, (int)st);
     }
 
     /* ── T-R5: count forgery — wire num_output=0 vs proven 1. ── */
@@ -316,8 +326,8 @@ int main(void) {
         if (!bind_sf(&t, chain_id)) { g_fails++; }
         dnac_shielded_verify_status_t st =
             dnac_shielded_verify_statement(&t, chain_id, committed_fee);
-        check("T-R5  count forgery num_output -> OPENING_POINT",
-              st == DNAC_SHIELDED_VERIFY_ERR_OPENING_POINT, (int)st);
+        check("T-R5  count forgery num_output -> FRI (FS-divergence)",
+              st == DNAC_SHIELDED_VERIFY_ERR_FRI, (int)st);
     }
 
     /* ── T-R6: wrong params — the TEST 2-query proof at the pinned height;
@@ -332,79 +342,16 @@ int main(void) {
               st == DNAC_SHIELDED_VERIFY_ERR_FRI, (int)st);
     }
 
-    /* ── T-R7/T-R8: re-encoded wire tampers — decode the honest package, copy
-     * the commitment metadata, patch, re-encode. ── */
-    {
-        dnac_fri_wire_package_t *pkg = NULL;
-        if (dnac_fri_proof_decode(buf, len, &pkg) != DNAC_FRI_CODEC_OK) {
-            printf("  T-R7/8 decode FAILED\n");
-            g_fails += 2;
-        } else {
-            size_t n = 0;
-            const dnac_fri_commitment_with_opening_points_t *coms =
-                dnac_fri_wire_commitments(pkg, &n);
-            /* mutable copies of the 3 coms + their matrix arrays */
-            dnac_fri_commitment_with_opening_points_t c2[3];
-            dnac_fri_matrix_openings_t m0[1], m1[1], m2[8];
-            memcpy(c2, coms, sizeof c2);
-            memcpy(m0, coms[0].matrices, sizeof m0);
-            memcpy(m1, coms[1].matrices, sizeof m1);
-            memcpy(m2, coms[2].matrices, sizeof m2);
-            c2[0].matrices = m0;
-            c2[1].matrices = m1;
-            c2[2].matrices = m2;
-
-            /* T-R7: every committed domain 11 -> 10 (height pin, G-SEC-4). */
-            m0[0].domain.log_size = 10;
-            m1[0].domain.log_size = 10;
-            for (unsigned k = 0; k < 8; k++) m2[k].domain.log_size = 10;
-            uint8_t *b7 = NULL;
-            size_t l7 = 0;
-            if (dnac_fri_proof_encode(dnac_fri_wire_params(pkg),
-                                      dnac_fri_wire_proof(pkg), c2, 3, &b7,
-                                      &l7) == DNAC_FRI_CODEC_OK) {
-                dnac_tx_shielded_fields_t t = sf;
-                t.fri_proof = b7;
-                t.fri_proof_len = (uint32_t)l7;
-                dnac_shielded_verify_status_t st =
-                    dnac_shielded_verify_statement(&t, chain_id, committed_fee);
-                check("T-R7  wire height 11->10 -> HEIGHT",
-                      st == DNAC_SHIELDED_VERIFY_ERR_HEIGHT, (int)st);
-                free(b7);
-            } else {
-                printf("  T-R7 re-encode FAILED\n");
-                g_fails++;
-            }
-
-            /* T-R8: restore heights; move the trace opening coordinate off the
-             * derived zeta (H2: a wire-chosen opening point is never trusted). */
-            m0[0].domain.log_size = 11;
-            m1[0].domain.log_size = 11;
-            for (unsigned k = 0; k < 8; k++) m2[k].domain.log_size = 11;
-            dnac_fri_opening_point_t tpts[2];
-            memcpy(tpts, m1[0].points, sizeof tpts);
-            tpts[0].point.a = gold_fp_add(tpts[0].point.a, gold_fp_one());
-            m1[0].points = tpts;
-            uint8_t *b8 = NULL;
-            size_t l8 = 0;
-            if (dnac_fri_proof_encode(dnac_fri_wire_params(pkg),
-                                      dnac_fri_wire_proof(pkg), c2, 3, &b8,
-                                      &l8) == DNAC_FRI_CODEC_OK) {
-                dnac_tx_shielded_fields_t t = sf;
-                t.fri_proof = b8;
-                t.fri_proof_len = (uint32_t)l8;
-                dnac_shielded_verify_status_t st =
-                    dnac_shielded_verify_statement(&t, chain_id, committed_fee);
-                check("T-R8  wire-zeta opening point -> OPENING_POINT",
-                      st == DNAC_SHIELDED_VERIFY_ERR_OPENING_POINT, (int)st);
-                free(b8);
-            } else {
-                printf("  T-R8 re-encode FAILED\n");
-                g_fails++;
-            }
-            dnac_fri_wire_free(pkg);
-        }
-    }
+    /* ── T-R7 / T-R8 RETIRED (d4.c-3, DZKF v4 structural closure). The v3 wire
+     * carried per-matrix opening COORDINATES and committed domain LOG_SIZEs that
+     * an attacker could patch; the v4 batched wire carries NEITHER — the verifier
+     * SAMPLES ζ itself (so a wire-chosen opening point cannot exist: the v3
+     * OPENING_POINT / T-R8 class is closed by construction) and PINS degree_bits
+     * = 11 (so there is no wire height field to move 11->10: a proof made at any
+     * other height fails the FRI verify, exercised transitively — the v3 HEIGHT /
+     * T-R7 class collapses into the FS/FRI path). Both attack surfaces are gone,
+     * not merely untested; ERR_OPENING_POINT and ERR_HEIGHT are now unreachable
+     * by construction. ── */
 
     /* ── T-R9: the CRIT-1 isolating vector — an honest-FS proof over FORGED
      * publics (fee+1, binding re-mapped) whose quotient came from the TRUE
@@ -502,8 +449,9 @@ int main(void) {
 
     printf("------------------------------------------------------------\n");
     if (g_fails == 0) {
-        printf("C2.1 SHIELDED VERIFY GATE: GREEN — accept + 13 fail-close\n");
-        printf("  rejects incl. the CRIT-1 constraint-check isolator.\n");
+        printf("C2.1 SHIELDED VERIFY GATE: GREEN — accept + 12 fail-close\n");
+        printf("  rejects incl. the CRIT-1 constraint-check isolator (T-R9);\n");
+        printf("  T-R7/R8 retired — v4 has no wire height/opening-point field.\n");
         printf("============================================================\n");
         return 0;
     }

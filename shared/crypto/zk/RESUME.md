@@ -113,6 +113,507 @@
   NEXT: **P2 — verifier-in-circuit** (now unblocked; the FRI + constraint +
   transcript verify can be expressed as an AIR at ~351× lower cost than
   SHA3-in-AIR — the recursion core the L2→L1 rollup needs).
+- **P2 FOUNDATION (2026-07-23, design-only session): posture A + recursion
+  architecture + P2-lookup design — all GREEN.** Soundness posture = A
+  (CONJECTURED over Goldilocks²; proven-128 is a field-wall, memory
+  `fri-proven-soundness-regate`). Recursion architecture v3 (proof-tree,
+  WRAP+NODE, K=4, aggregate accumulators) UN-PARKED. Delegation = shared
+  Poseidon2 table + lookup → P2-lookup design v3 GREEN (2 rounds;
+  `dnac/docs/plans/2026-07-23-p2-lookup-{grounding-note,design}.md`).
+- **P2L-a ✅ DONE (2026-07-23, this working tree, UNCOMMITTED): LogUp gadget
+  byte-matched port.** `logup.{c,h}` — the pure p3-lookup `LogUpGadget`
+  (Plonky3 82cfad73 `lookup/src/logup.rs`): β-combine, numerator/common-
+  denominator via prefix/suffix products (ONE ext-field inversion per
+  (row,lookup); serial port of the chunked-parallel reference —
+  output-invariant, G-DET-L1), aux-trace `generate_permutation` (exclusive
+  running sum, WRAP next-row pinned = logup.rs:474), eval_local/eval_global
+  residual streams (selector-multiplied per filtered.rs:78-86),
+  `verify_global_sum` (FLAT — per-bus grouping is the P2L-b/d caller's job,
+  G-DET-L4/F3), `constraint_degree`. Fail-close always-on: zero denominator
+  (mirror of the Plonky3 batch-inversion panic), duplicate aux column,
+  challenge-count, kind/cum mismatch. Oracle `dump-logup` (+`p3-lookup` dep,
+  same pin; +hashbrown in Cargo.lock): 11 Goldilocks/Gold² instances
+  (local/tuple/two-lookup/global send+recv/tampered-global/corrupted-aux/
+  preprocessed/next-row/public-mult-expr) + 2 cross-instance global checks,
+  regen 2× byte-identical, hash-pinned. `test_logup`: 347 checks GREEN
+  (aux byte-match, cumulative sums, full residual streams incl. the
+  corrupted-witness non-zero values, degrees, global verdicts, negatives).
+  **`make test`: 73 test binaries ALL GREEN, 0 warn** (72 + test_logup).
+  STANDALONE — no consumer yet; batch-stark shape/priming/wire = P2L-c/d.
+- **P2L-b ✅ DONE (2026-07-23, same working tree, UNCOMMITTED): interaction/
+  bus layer byte-matched port.** `logup_bus.{c,h}` — builder recording
+  (`push_interaction`/`push_local_interaction`, builder.rs:59-94) +
+  finalize column assignment (locals FIRST then globals, push order,
+  types.rs:59-89; a global = single-tuple lookup) + per-bus challenge
+  assignment (memo by bus name at first occurrence, locals fresh —
+  batch-stark transcript.rs:74-102) + PER-BUS global-sum verification
+  (each name-group == 0, verifier/mod.rs:623-643; grouping-key ≡ memo-key
+  by construction, N4) + the height-bound OFFLINE precondition checker
+  `Σ weight·height < p` (builder.rs:33-38 doc contract; F4 re-verified:
+  count_weight is NEVER computed anywhere in Plonky3 — the runtime
+  verifier won't catch it, configs must call the checker at param freeze).
+  Bus conventions pinned per bus.rs (query/send +count w1, table −count w0,
+  receive −count w1). Oracle `dump-logup-bus` (+`p3-batch-stark` dep, same
+  pin): REAL `Lookups::from_air` mixed-push-order instances + REAL
+  `BatchTranscript::sample_perm_challenges` over the production
+  DuplexChallenger (draw stream independently replayed and byte-matched on
+  the C duplex — binds P2L-b to the P1a surface) + 6 sum instances /
+  3 grouping scenarios incl. the **F3 cross-bus-cancellation trap** (flat
+  total == 0 while BOTH bus groups fail — per-bus grouping proven
+  load-bearing); regen 2× byte-identical, hash-pinned. `test_logup_bus`:
+  140 checks GREEN (builder-replay column assignment as interned expr ids,
+  memo challenges, per-bus sums + verdicts + failed-bus name, height-bound
+  exact p−1/p boundaries overflow-safe, fail-close negatives). Shared
+  test JSON-DOM extracted to `tests/logup_test_util.h` (test_logup
+  refactored, still GREEN). **`make test`: 74 test binaries ALL GREEN,
+  0 warn** (73 + test_logup_bus). STANDALONE — no consumer yet.
+- **P2L-c ✅ DONE (2026-07-23, same working tree, UNCOMMITTED): batch-stark
+  proof shape + FULL batched priming, byte-matched.** `batch_priming.{c,h}`
+  — the complete N1 transcript order over the P1 duplex (phase primitives
+  1:1 with BatchTranscript, transcript.rs:27-146, in the verifier's call
+  sequence verifier/mod.rs:143-300): instance-count → per-instance binding
+  (log_ext, log_base, width, num_qc; each usize = TWO base observes (v,0)
+  per challenger lib.rs:141-147) → main commit + publics → preprocessed
+  widths + commit (AFTER main — the F2/N3 delta vs v3) → (α,β) via the
+  P2L-b memo fed by pre-counted challenger draws (byte-identical to lazy
+  sampling — no observes interleave) → perm commit + EVERY cumulative sum +
+  constraint-alpha → quotient commit → random commit iff is_zk → ζ. Plus
+  `dnac_batch_proof_shape_check` mirroring the verifier's structural gates
+  (trace widths :162-180, qc count + dim==2 :183-199, random iff ZK
+  :74-84/:201-209, preprocessed lens :211-231, perm lens = aux_width·2
+  :482-484/:524-541, global_lookup_data metadata + locals-first columns
+  :233-267) and a composed fail-close `dnac_batch_priming_run`. Oracle
+  `dump-batch-priming` (+`p3-batch-stark` prove/verify): 4 scenarios —
+  fib_pair (0-lookup batched preamble ≠ v3), lut_pair (perm commit + memo +
+  cums-before-alpha), prep_pair (preprocessed commit, new PrepEqAir
+  fixture), fib_zk (HidingFriPcs random commit; qc doubling; degree_bits+1)
+  — EVERY scenario gated on a REAL `prove_batch`+`verify_batch == Ok`
+  before dumping; duplex milestones after all 9 phases; regen 2×
+  byte-identical, hash-pinned. `test_batch_priming`: 547 checks GREEN
+  (all milestones + memo challenges + alpha/zeta + composed run + shape
+  accept/mutation rejects + zk-flip negative). **`make test`: 75 test
+  binaries ALL GREEN, 0 warn** (74 + test_batch_priming). v3
+  `stark_priming.{c,h}` UNTOUCHED (stays live until the P2L-d cutover).
+- **P2L-d ✅ COMPLETE (d0…d4.d + d5 green sweep, 2026-07-26, UNCOMMITTED) —
+  70 binaries GREEN, 0 warn; nodus ctest 132/132; messenger/libdna clean.**
+  (The per-stage records below were written as the stages landed; the final
+  state is the d4.d + d5 block further down. Binary counts inside the older
+  stage entries are historical — the v3 retirement took the total 80 → 70.)
+  Original approved decomposition (user picked
+  "continue stage-by-stage"): d1a mixed-MMCS → d1b full-proof oracle → d2
+  batched verify → d3 batched prover → d4 DZKF v4 + regen + v3 RETIRE +
+  num_qc STOP gate → d5 green sweep (zk+nodus ctest 132+messenger) → d6 docs.
+  - **d0 (substrate) DONE — the load-bearing pins:** verifier constraint
+    fold rule `acc = acc·α + x`, base+ext ONE stream, call order = fold
+    order (lookup folder.rs:169-181); order = air.eval FIRST then lookups
+    (protocol.rs:64-81); at ζ the permutation window is the RECOMPOSED EF
+    matrix (aux_width wide; verifier/mod.rs:543-559; opened lens =
+    aux_width·2, :524-541); final check `acc·inv_vanishing == quotient`
+    (verifier/data.rs:99-103); C `dnac_fri_verify` is ALREADY fully generic
+    over CommitmentWithOpeningPoints — the N2 batched rounds need only new
+    round-assembly code, no FRI-core change; existing
+    `dnac_stark_verify_constraints_nchunk` + P2L-a `sum_terms` cover most of
+    the ζ-side lookup eval (missing piece: EF-window pool evaluation);
+    DZKS v3 is a single-instance wrapper → v4 re-shape expected.
+    **DISCOVERED GAP (user-approved scope add):** C poseidon2_mmcs was
+    same-height-only, but batched commits need MIXED heights.
+  - **d1a ✅ DONE: mixed-height Poseidon2 MMCS.**
+    `dnac_p2_mmcs_{commit,open,verify}_mixed` — layer injection per
+    merkle_tree.rs:127-176 (N=2 ⇒ arity schedule all 2s,
+    select_arity_step:227-242): tallest group = leaf layer, shorter groups
+    inject at the layer whose length equals their height via
+    `C(C(prev2i,prev2i+1), H(rows))`; STABLE tallest-first grouping
+    (insertion order within a height group — concat order inside H depends
+    on it); per-matrix reduced index `index >> (log_max − log_h)`
+    (mmcs.rs:989-998); sibling path = log2(max_height) digests (injection
+    combines carry NO siblings, mmcs.rs:1109-1116); pow2 heights only
+    (fail-close; the DNAC batch shapes). Same-height P1b paths untouched
+    (KATs frozen). Salt-agnostic contract preserved (caller appends salt
+    lanes). Oracle `dump-poseidon2-mmcs-mixed`: 7 REAL
+    MerkleTreeMmcs/HidingMmcs trees incl. a scrambled-insertion-order tree
+    + a degenerate same-height pair, openings at EVERY index all
+    verify_batch-checked in-oracle, regen 2× byte-identical, hash-pinned.
+    `test_poseidon2_mmcs_mixed`: 424 checks GREEN (plain roots byte-match,
+    open replay = rows+siblings exact, salted verifies, 6 fail-close
+    negative classes). **make test: 76 binaries GREEN 0 warn.**
+  - **d1b ✅ DONE: full-proof oracle `dump-batch-proof`.** The COMPLETE
+    REAL `prove_batch` output, EVERY scenario `verify_batch == Ok`-gated:
+    commitments (hex + serde), per-instance opened values incl.
+    permutation_local/next (asserted == aux_width·2, verifier/mod.rs
+    :524-541), global_lookup_data, degree_bits, and the ENTIRE FRI opening
+    proof in `proof_serde` (FriProof {commit_phase_commits,
+    commit_pow_witnesses, query_proofs [{input_proof: Vec<BatchOpening>,
+    commit_phase_openings [{log_arity, sibling_values, opening_proof}]}],
+    final_poly, query_pow_witness}, fri/src/proof.rs:12-42; is_zk opening
+    proof = (random OpenedValues, FriProof) tuple, hiding_pcs.rs:88-91).
+    Emits the N2 opening-round schedule explicitly, length-asserted vs the
+    proof (prover.rs:450-537): [random iff is_zk] → main (ζ, +g·ζ iff
+    main_next) → quotient (ζ) → [preprocessed] → [permutation (ζ AND g·ζ,
+    always)]; per-instance ζ_next = base trace domain next_point
+    (verifier/mod.rs:306-310,:341-343). 5 scenarios: fib_single (0-lookup
+    SINGLE-instance batch), lut_pair (Round-4 perm), prep_pair
+    (Round-3 preprocessed + mixed heights 8/4), **lut_mixed_trio (the d1a
+    full-proof consumer: sender h=8 = 4-row block ×2 (local balance
+    preserved, LUT sends −2/tuple) + two h=4 receivers (+1 each) → LUT
+    group zero; main AND permutation commits mixed-height 8/4/4)**, fib_zk
+    (HidingFriPcs SmallRng(1), mixed 8/16, qc doubling).
+    `vectors/batch_proof.json` (327858 B) regen 2× byte-identical,
+    hash-pinned. **make test: EXIT 0, ALL GATES GREEN, 0 warn, 76
+    binaries** (oracle-only slice — the C consumer KAT lands at d2).
+  - **d2 ✅ DONE: C batched verify — `batch_verify.{c,h}`
+    (`dnac_batch_verify`), full `verify_batch` mirror
+    (verifier/mod.rs:29-646), END-TO-END GREEN against every d1b vector.**
+    Pipeline: shape gates (dnac_batch_proof_shape_check + random-vs-ZK
+    :74-84/:201-209 + perm-commit-iff-lookups :282-286) → full batched
+    priming (dnac_batch_priming_run) → N2 round assembly (every matrix
+    domain log_size = degree_bits[i]; ζ_next(i) = ζ·g(base_db) per
+    :306-310/:341-343) → hiding merge iff is_zk (opening_proof.0 appended
+    per (round,mat,point), zip_eq mirrored fail-close; preprocessed round
+    carries len-0 entries, hiding_pcs.rs:343-348/:382-401) → PCS observe
+    (two_adic_pcs.rs:687-693) + dnac_fri_verify → per-instance constraint
+    check at ζ (nchunk recompose → selectors on base domain → air.eval
+    FIRST then lookups per protocol.rs:64-81, ONE fold stream acc·α+x
+    folder.rs:169-181; perm window RECOMPOSED EF :543-559; LogUp residuals
+    = the P2L-a stream selector-multiplied, cum = permutation_values[pv_idx++];
+    final acc·inv_vanishing == quotient data.rs:99-103) → per-bus global
+    sums (dnac_logup_bus_verify_global_sums, :623-643). Substrate adds:
+    `dnac_logup_eval_pool_window` (EF-window pool eval, logup.c),
+    `dnac_transcript_init_from_duplex` (batch-primed duplex →
+    dnac_fri_verify bridge), dnac_stark_folder_t + preprocessed window
+    (ADDITIVE; v3 glue zero-inits, KATs frozen), and **fri_verifier.c
+    open_input MIXED-HEIGHT batches** (same-height gate superseded:
+    per-matrix heights, max drives reduced_index per verifier.rs:563-580,
+    mixed batches verify via the d1a `dnac_p2_mmcs_verify_mixed`;
+    same-height path byte-stable). **KAT `test_batch_verify`: all 5
+    scenarios verify end-to-end with (α,ζ) byte-match — incl.
+    lut_mixed_trio (mixed-height main+perm commits through the REAL FRI
+    proof) and fib_zk (hiding merge + tuple proof) — + 8 fail-close
+    negatives; 36 checks GREEN. Grounding catch: AddAir/PrepEqAir do NOT
+    override main_next_row_columns → the default is ALL columns
+    (air/src/air.rs:122-137), so their real proofs open main (and prep) at
+    ζ AND g·ζ — fixture descs pin main_next=1.** `make test`: **77
+    binaries ALL GREEN, 0 warn** (76 + test_batch_verify).
+    **SCOPING NOTE (deviation surfaced): the todo's d2 line included
+    "shielded_verify re-base" — moved to d4**, atomic with the DZKF v4
+    codec + vector regen: re-basing shielded_verify before the v4 wire
+    exists would break the live v3 KATs mid-slice ("tree stays GREEN
+    between stages", design §4 header).
+  - **d3 ✅ DONE: C batched prover — `batch_prover.{c,h}`
+    (`dnac_batch_prove`), full `prove_batch` mirror (prover.rs:96-670),
+    EVERY output byte-matched against the d1b vectors.**
+    - d3.0 entry prereq: the oracle `dump-batch-proof` fib_zk scenario now
+      dumps `zk_rng` — the FULL SmallRng(1) stream in BATCHED consumption
+      order with a labeled block map (B1 main `with_random_cols` per
+      instance, dense.rs:573-597 → B2 per-instance quotient chunk cols +
+      blinding tail, hiding_pcs.rs:186-199 → B3 R matrices, dense.rs:
+      527-533 / hiding_pcs.rs:404-424), replay-GATED in-oracle: Z1 (B1 →
+      inner batch commit == commits.main) and Z2 (B3 at the post-B2 offset
+      == commits.random — transitively pinning the B2 draw COUNT).
+      `batch_proof.json` 376201 B, regen 2× byte-identical, re-pinned.
+    - d3.2 substrate: `dnac_prover_fri_reduced_openings_mixed` (per-height
+      codewords with INDEPENDENT alpha counters — the verifier fri_ro_t
+      mirror, two_adic_pcs.rs:588-658) + `dnac_prover_fri_commit_phase_mixed`
+      (descending-height inputs + ROLL-IN after the fold, prover.rs:238-245
+      `next_if`, beta^{2^log_arity}; arity peeks the next input,
+      config.rs:152-179). The single-input v3 `dnac_prover_fri_commit_phase`
+      is now a thin wrapper over the mixed form — byte-identical sequence
+      (no roll-in ever fires), proven by the untouched v3 KATs.
+    - d3.3 pipeline: priming PHASE PRIMITIVES interleaved with the commits
+      (the composed dnac_batch_priming_run wants every commit upfront —
+      unusable prover-side); mixed-height Poseidon2 commits for
+      main/preprocessed/permutation/quotient/random (d1a commit_mixed);
+      aux traces = logup generate_permutation → flatten_to_base → LDE;
+      quotient = at EVERY quotient-domain point the d2 constraint chain
+      (EF-promoted windows + air.eval → LogUp residuals) folded through ONE
+      serial Horner stream — VALUE-EQUAL to decompose_alpha's α^{K−1−i}
+      emission weights (air/symbolic/builder.rs:401-423; SIMD base/ext
+      split is performance-only); perm window rows (i, i+next_step) mod
+      q_rows (prover.rs:850-868); zk chunk LDEs reuse the frozen S7
+      pipeline (its same-height root is a throwaway; the REAL commit is
+      the mixed one); N2 opens observe the FULL committed width then split
+      the hiding tails (hiding_pcs.rs:333-358; preprocessed splits 0);
+      query openings via open_mixed at per-batch reduced indices;
+      SELF-VERIFY = dnac_batch_verify (fail-close) + (α,ζ) cross-check.
+    - d3.4 KAT `test_batch_prover`: all 5 scenarios PROVED FROM SCRATCH in
+      C (witness traces rebuilt: fib ramp, LUT tables, PrepEq 7+3i) and
+      byte-matched on EVERYTHING — 5 commits, α/ζ, every opened value +
+      cums + metadata, the ENTIRE FRI proof (commit-phase commits, PoW,
+      final poly, per-query input rows/paths/steps), the fib_zk hiding
+      rand-openings — + 5 fail-close negatives; 376 checks GREEN. Shared
+      fixtures extracted to `tests/batch_test_util.h` (VERBATIM copy of
+      the d2 fixtures; test_batch_verify.c deliberately untouched
+      mid-slice — consolidation lands at d4). **`make test`: 78 binaries
+      ALL GREEN, 0 warn.**
+    - Guard fixes surfaced by d3 (source-grounded; every v3 KAT stayed
+      GREEN): `dnac_prover_quotient_selectors` now accepts log_coset ==
+      log_n (domain.rs:281 is `>=` — the num_qc=1 batched case; shift==1
+      now REJECTED per the assert_ne, domain.rs:280);
+      `dnac_prover_randomize_trace` dropped the v3-artifact
+      `num_random <= width` reject (dense.rs has no such bound; the
+      batched fib trace is width 2 with 4 codewords).
+  - **d4.a + d4.b ✅ DONE (2026-07-23, same working tree): DZKF v4 codec +
+    oracle wire + KAT — `make test` 79 binaries GREEN 0 warn.**
+    - **d4.a codec:** `dnac_batch_wire_encode/decode` + package accessors in
+      `fri_proof_codec.{c,h}` (allocation registry generalized `codec_reg_t`,
+      shared with the v3 package; v3 paths untouched). Wire = the BatchProof
+      tuple: is_zk, num_instances, the 5 commits (main/prep/perm/quotient/
+      random — prep/perm/random presence-flagged 0/1 fail-close), per-instance
+      UNMERGED opened values (dnac_batch_vopened_t shape: fp2vecs, u32 num_qc
+      + chunk pairs, ONE permutation_len + local + next) + global_lookup_data
+      entries (len-prefixed bus name 1..64 no-NUL, aux_column, fp2 sum —
+      types.rs:108-115 field order), rand-openings iff is_zk, 6×u32 fri
+      params, FriProof (v3 field conventions: u32 counts, canonical u64-LE
+      fail-close, fp2 c0‖c1, 4-lane digests, salt tails). STRUCTURAL WIN vs
+      v3: the v4 wire carries NO opening points — the verifier assembles the
+      N2 rounds itself around the SAMPLED ζ (dnac_batch_verify), so the v3 H2
+      class closes by construction. Version=4 under the DZKF magic; v3
+      buffers REJECTED on VERSION (and v4 buffers on the v3 decoder —
+      KAT-gated both ways).
+    - **d4.b oracle+KAT:** oracle `dump-batch-proof` emits `wire_v4`
+      (+`wire_v4_len`) per scenario — an INDEPENDENT second encoder (JSON
+      walker over the same verify_batch-gated dump). **Grounding catch:** the
+      Goldilocks serde derive emits the RAW internal `value: u64`, "Not
+      necessarily canonical" (goldilocks.rs:32-38) — the oracle encoder
+      canonicalizes (`% p` ≡ as_canonical for any u64 < 2p) before writing;
+      caught by a real lut_pair FriProof value `p + 0xb0` on the wire.
+      `batch_proof.json` (412172 B) regen 2× byte-identical, re-pinned. C KAT
+      `test_batch_wire` (73 checks GREEN): per scenario decode == OK +
+      is_zk/n cross-check + **the DECODED package verifies end-to-end**
+      (dnac_batch_verify accept + (α,ζ) byte-match) + re-encode byte-match +
+      **dnac_batch_prove from scratch → encode → oracle wire byte-match** +
+      7 fail-close decode negatives (magic / v4-on-v3-decoder AND
+      version-3-patch-on-v4-decoder / truncation / lane ≥ p / is_zk flag 2 /
+      total_len mismatch / trailing byte). Fixture consolidation (partial,
+      logup_test_util precedent): `pscenario_t`/`load_pscenario` + witness
+      builders moved VERBATIM test_batch_prover.c → tests/batch_test_util.h
+      (shared with the wire KAT; test_batch_verify.c still untouched — full
+      consolidation stays d4.d).
+  Remaining d4 decomposition:
+  - **d4.c shielded re-base (ATOMIC, consensus-linked surface):** oracle
+    shielded agg vectors re-proved via prove_batch (1-instance batch,
+    is_zk=1, salted MMCS — the hiding input-MMCS leaf form enters the
+    batched C path here); num_qc STOP gate re-measure (P1d precedent:
+    deviation from the pin → HALT + report); stark_prover_agg
+    production+KAT paths re-based onto the batched pipeline;
+    shielded_verify.c re-bases onto v4 decode + dnac_batch_verify (pins
+    UNCHANGED: params + height + SALT_ELEMS=2 + shape/publics);
+    DZKS v4 outer wrapper; test_shielded_verify rejects re-anchored
+    (T-R9 forge included). Consensus-inert (type-11 still
+    REJECT-unconditional) → no nodus version bump (C1 precedent), but
+    d5 MUST re-run nodus ctest 132 (test_zk_link chain).
+    **d4.c IMPLEMENTATION SURVEY (banked 2026-07-23 after d4.a+b — grounded
+    pins so the build doesn't re-derive them):**
+    - **Draw-stream identity:** for the 1-instance agg batch the BATCHED zk
+      draw order (B1 main h(W+2nrc) → B2 quotient nqc·h_chunk·nrc +
+      (nqc−1)·h_chunk·(DIM+nrc) → B3 R ext_h·(nrc+DIM)) numerically EQUALS
+      the v3 agg layout trace (W+8)h ‖ codeword 32h ‖ blinding 42h ‖ R 12h
+      (h_chunk = 2^13/8 = h at ext_db=11, lq=2) — total (W+94)h unchanged,
+      so DNAC_AGG_PROVER_TOTAL_DRAWS stays.
+    - **Salt stream A identity:** v3 layout (stark_prover_agg.c:713-720) =
+      trace 16h ‖ quotient 8×16h ‖ random 16h (offsets lde_h·SE,
+      lde_h·SE·(1+8)) == the batched commit call order main → quotient →
+      random (per-commit, per-matrix in order, lde rows × SE row-major) —
+      DNAC_AGG_PROVER_SALT_DRAWS(h)=160h stays. Stream B: commit-phase
+      mixed ALREADY takes salt_draws/salt_elems (stark_prover.h:651-663);
+      NULL→salt_draws@0 fallback keeps the KAT clone-seed parity
+      (P1e-HIGH1 precedent).
+    - **Verify side is salt-ready:** fri_open_input appends bo->salts per
+      matrix BEFORE the MMCS call on BOTH the same-height and the d1a mixed
+      path (fri_verifier.c:256-308) — no verify change needed;
+      dnac_batch_verify passes salts through the FriProof untouched.
+    - **batch_prover salted mode (to build):** extend dnac_batch_prove with
+      (salt_draws A, num, fri_salt_draws B, num, salt_elems); FAIL-CLOSE
+      salted+preprocessed (prep commit is SETUP-time in the reference —
+      stream order would be invented) AND salted+lookups (no byte-match
+      vector yet; lift when a salted+perm vector lands); salted commits =
+      widened matrices (row ‖ SE salt lanes) through commit_mixed, query
+      opens return width+SE rows → split into opened_values (width) +
+      bo->salts (SE per matrix); commit-phase steps get salts from the
+      fres (stream B consumed inside the commit phase — mirror v3 S12
+      "salts from the same buffer commit used").
+    - **Oracle:** batch-stark over the EXISTING SaltedZkStarkCfg
+      (HidingFriPcs + MerkleTreeHidingMmcs(SmallRng(1), SE=2) input AND
+      HidingChallengeMmcs cloned rng — main.rs make_salted_zk_config);
+      ConfActionAggAir needs a Clone derive (unit struct) for
+      run_batch_proof_scenario's A: Clone bound; reuse the SAME notes/
+      trace fixture as dump_conf_action_agg_air_zk (h=128, log_height 7)
+      and the v4_wire_bytes builder (extend for salt tails — serde
+      BatchOpening of the hiding mmcs carries salts; walk + canonicalize).
+    - **Wire:** the shielded TX blob stays RAW DZKF (v4) — TODAY's
+      consensus path decodes sf->fri_proof directly (shielded_verify.c:166,
+      no DZKS layer); introducing DZKS there would be a NEW wire layer
+      (not in scope). DZKS itself has only B1/test consumers
+      (stark_prover_prove self-check + 2 tests + gen tool) → its re-base
+      moves to d4.d with stark_prover_prove.
+    - **T-R9 forge knob:** batched pipeline folds publics into BOTH priming
+      and quotient from insts[].public_values — the forge (FS over forged,
+      quotient over true) needs a DNAC_ZK_ENABLE_TEST_WIRE-gated
+      dnac_batch_prove variant with an fs-publics override + self-verify
+      skip (v3 precedent: dnac_agg_prover_prove_production_forged_publics_
+      testonly).
+    - **Shielded verify re-base shape:** v4 package pins = is_zk==1, n==1,
+      params eq (tamper-detect) + pinned set SUBSTITUTED, every FriProof
+      salt_elems == 2, insts[0] = {air DNAC_CONF_ACTION_AGG_FOLD_AIR,
+      degree_bits 11, log_num_qc 2, publics 43 recomputed from wire};
+      opened trace_local len == 2318 (air width — the 4 zk-codeword lanes
+      live in rand_openings now, UNLIKE v3's 2322-wide opened trace);
+      quotient chunks = 8 PAIRS (tails in rand_openings); random opened
+      len == 2; no prep/perm commits (fail-close). N2 rounds are ASSEMBLED
+      (no wire opening points) — the v3 step-7 wire-coordinate checks
+      DISAPPEAR by construction.
+    - **d4.c-1 ✅ DONE — SALTED batch_prover VALIDATED (2026-07-23, uncommitted):**
+      `test_batch_shielded_agg.c` (heap streaming JSON scanner, reusing the
+      test_prover_agg 1in/2in/4in note/sibling fixture builders) feeds the RAW
+      agg witness to `dnac_batch_prove` as a 1-instance is_zk=1 batch — via the
+      new gated export `dnac_agg_zk_generate_trace_testonly` (DNAC_ZK_ENABLE_
+      TEST_WIRE only, stark_prover_agg.{h,c}; absent from consensus builds) — and
+      **byte-matches all 5 scenarios** (agg_1in/1in_salted/2in/4in/4in_salted):
+      commits, α/ζ, opened trace_local[2318]/next/quotient[8]/random, the ENTIRE
+      FRI proof, the hiding rand-openings, AND the **M3b leaf salts** (input-batch
+      per-matrix + commit-phase step) on the salted scenarios. Vector
+      `tools/vectors/batch_shielded_agg.json` (15,395,223 B, regen 2× byte-
+      identical, `.expected_hashes`-pinned). **549 checks, 0 fail; `make test` 80
+      binaries GREEN 0 warn.** ⇒ **`batch_prover.c` UNCHANGED** — the staged salted
+      path (grounded hiding_mmcs.rs:118-131) was byte-correct as banked; the only
+      defect was a TEST bug (uninitialized `pubs`: agg_zk_generate writes only the
+      USED output_commit/nf slots, production uses a calloc'd struct → calloc fix;
+      the signature — main+random roots match while α + downstream diverge —
+      confirmed independently via a Plonky3 DuplexChallenger replay that reproduced
+      the vector's α from the exact observe sequence). Regressions clean:
+      test_batch_prover + test_batch_wire stayed GREEN.
+    - **d4.c STAGED prereq (banked, unchanged):**
+      (1) `dnac_batch_prove` extended with SALTED mode (salt_elems,
+      salt_draws A, fri_salt_draws B) — `bp_commit_mixed_salted` widens each
+      committed matrix to `row ‖ SE salt lanes` and commits via commit_mixed;
+      query opens split `width` (opened) + `SE` (bo->salts); commit-phase
+      steps salt from stream B. **Salt order GROUNDED to hiding_mmcs.rs:
+      118-131:** `commit` locks ONE persistent rng and draws
+      `RowMajorMatrix::rand(rng, mat.height()=lde_h, SALT_ELEMS)` per matrix
+      in input order, CONTINUOUS across the main→quotient→random commit
+      calls == the single `salt_cur` cursor. Stream B = the FRI
+      HidingChallengeMmcs's CLONED rng (make_salted_zk_config), a fresh
+      SmallRng(1) → NULL fri_salt_draws falls back to salt_draws@0
+      (same-seed parity). FAIL-CLOSE salted+preprocessed AND salted+lookups
+      (no byte-match vector; the reference commits prep at setup-time —
+      its stream position is un-exercised). Draw/salt totals verified ==
+      the v3 agg 160h at h=128 (`dnac_batch_prove_num_salt_draws`).
+      **Unsalted path byte-identical: test_batch_prover/wire GREEN.**
+      (SALTED path now VALIDATED — see d4.c-1 above.)
+      (2) Oracle `dump-batch-shielded-agg` (CLI wired, `ConfActionAggAir`
+      got a `#[derive(Clone)]`): 5 scenarios (agg_1in / agg_1in_salted /
+      agg_2in / agg_4in / agg_4in_salted) — the v3 agg fixtures re-proved
+      via REAL prove_batch as 1-instance is_zk=1 batches over
+      make_plain/salted_zk_config; every verify_batch==Ok + **num_qc STOP
+      gate == 8 PASSED on all 5** (no pin deviation → no HALT); v4 wire
+      bytes emitted (salt-aware `v4_push_friproof(salt_elems)` walks the
+      hiding-mmcs Proof TUPLE (salts, siblings), hiding_mmcs.rs:118).
+      Regen 2× byte-identical, ~15 MB. **NOT copied to tools/vectors (no C
+      consumer yet)** — regen: `plonky3_oracle dump-batch-shielded-agg
+      --out tools/vectors/batch_shielded_agg.json`.
+    - **d4.c-2+3+4 ✅ DONE (2026-07-26, ORCHESTRATOR-verified) — v3→v4 agg-surface
+      flip, GREEN.** `dnac_agg_prover_prove`/`_prove_production` re-based to a
+      THIN WRAPPER delegating to `dnac_batch_prove` (agg trace via
+      `agg_zk_generate` → 1-instance is_zk=1 batch; production=salted SE=2 + OS
+      entropy; the v3 S1-S13 uni-stark pipeline retired). `shielded_verify.c`
+      re-based onto `dnac_batch_wire_decode` (DZKF v4) + `dnac_batch_verify`
+      (pins HELD: is_zk==1, n==1, params-eq→SUBSTITUTE pinned, opened shape
+      trace 2318/trace_next 2318/8 qc/random 2/no prep-perm/0 globals,
+      SALT_ELEMS==2 on every FRI opening, degree_bits==11 COMPILE-TIME pin).
+      The v3 wire opening-coordinate check is GONE by construction (v4 carries
+      no opening points → the verifier samples ζ; the v3 H2/OPENING_POINT class
+      closes structurally). Tests re-anchored: test_prover_agg (delegation
+      accessors, 5 invocations incl. salted), test_prover_shielded_production
+      (PHASE-P GREEN), test_shielded_verify (T-A accept + 12 fail-close;
+      T-R1/R4/R5 OPENING_POINT→FRI via FS-divergence, T-R7/R8 RETIRED, T-R9
+      forge via a DNAC_ZK_ENABLE_TEST_WIRE-gated `dnac_batch_prove_forged_fs_
+      testonly`).
+      **5 defects the fork left (all surfaced by ORCHESTRATOR running every
+      build/test — new-model validation): (1) Makefile dup-link
+      test_batch_shielded_agg; (2) test_prover_agg `public_values` string-parse
+      INFINITE LOOP (JSON emits u64 as strings; js_read_u64 stalled); (3)
+      batch_prover.c query cap `query_indices[64]` < production 100 → PARAM,
+      bumped BP_MAX_QUERIES=128; (4) Makefile prereqs missing batch_*.c →
+      STALE-BINARY (incremental make ran old code) — added to all 3
+      AGG_PROVER_SRCS consumers; (5) nodus/CMakeLists.txt missing
+      batch_verify/priming/logup_bus/logup for the re-based shielded_verify →
+      test_zk_link undefined-ref, added.**
+      Verified GREEN: `make clean && make test` 80 binaries 0 warn (ALL GATES
+      + C2.1 SHIELDED VERIFY + PHASE-P PRODUCTION + d4.c-1 SALTED), nodus build
+      clean + `ctest` 132/132 (test_zk_link links the batched-verify chain).
+      Consensus-inert (type-11 REJECT) → no nodus version bump. Commit/push YOK.
+  - **d4.d ✅ DONE (2026-07-26) — v3 UNI-STARK RETIRED, P2L-d COMPLETE.**
+    User scope decisions: D1=A (full retirement, not a re-base), D2=a (delete
+    the v3 DZKF surface + DZKS and re-anchor the nodus pin), D3 (drop
+    stark_priming.c from nodus/CMakeLists.txt).
+    - **DELETED (31 files):** `stark_priming.{c,h}`, `stark_proof_codec.{c,h}`
+      (DZKS), `stark_prover_{prove,conf,action}.{c,h}`; 10 tests
+      (test_stark_priming{,_zk,_integrated}, test_fri_verify_zk,
+      test_prover_s13_verify, test_prover_{prove,conf,action},
+      test_stark_proof_codec, test_fri_proof_codec); 2 gen tools
+      (gen_stark_proof_wire, gen_fri_proof_wire); 9 orphaned vectors
+      (stark_priming*, stark_proof_wire*, fri_proof_wire, prover_full_{a,b,c}).
+      NOTE vs the old plan: **nothing was regenerated under the batched shape** —
+      D1=A retires these vectors outright, so no oracle run was needed.
+    - **v3 codec surface GONE ENTIRELY** — `dnac_fri_proof_encode`/`_decode`,
+      `dnac_fri_verify_wire`, `dnac_fri_verify_wire_shielded`, the read
+      accessors, `dnac_fri_wire_{package_t,free}`, `enc/dec_{point,matrix,
+      commitment}`, `DNAC_FRI_WIRE_VERSION` and the v3-only bounds. The shared
+      static primitives the v4 codec uses were kept (grep-proven).
+      PIN PRESERVATION checked line-by-line before deleting the shielded
+      wrapper: every pin lives on the v4 path — is_zk/n==1 (shielded_verify.c
+      :179-182), params-eq :188-196 → **SUBSTITUTE** pinned :197-204 passed at
+      :252, opened shape :210-216, SALT_ELEMS==2 :91-103/:221, degree_bits==11
+      compile-time :243, fail-close default :174.
+    - **nodus:** `stark_priming.c` dropped from `NODUS_SOURCES`; the C1/M5
+      comment restated (the unpinned v3 entries are no longer "compiled out" —
+      they do not exist); `tests/test_zk_link.c` T2/T3/T4 re-anchored onto
+      `dnac_shielded_verify_statement`. T3/T4 build a statement whose
+      tx_binding is derived from its own sighash_v4 (via the LINKED
+      `dnac_tx_shielded_sighash` + `conf_txbind_map`), so they run past
+      canonicalization/fee/txbind and actually reach the DZKF v4 decode.
+    - **bench_prover REWRITTEN** onto `dnac_batch_prove` + `dnac_batch_verify`
+      (user chose keep-and-re-base over delete). The v3 uni-stark perf numbers
+      in the PERF block below are therefore **historical** — they measure a
+      pipeline that no longer exists.
+    - **O6 dual verification** (executor + an independent `verifier` that never
+      saw the ORCHESTRATOR verdict) returned 3 CONFIRMED / 3 REFUTED. All three
+      refutations were re-confirmed at their file:line and fixed:
+      1. `fri_proof_codec.c:9` claimed the v3 decoder survived — stale.
+      2. `test_zk_link.c:15` claimed the re-anchored gate pulls a "STRICTLY
+         LARGER" object set — **FALSE**: BEFORE's T5 already called the same
+         entry, so the set SHRINKS. (Fabricated-strength claim in a comment;
+         only the second pair of eyes caught it.)
+      3. **COVERAGE HOLE:** `ERR_LENGTH_OVERFLOW` (rd_count_fixed/rd_count_var)
+         and `ERR_BAD_DEPTH` (rd_depth) lost their only tests with
+         `test_fri_proof_codec` while staying LIVE on the consensus-linked v4
+         decode path. CLOSED in-slice: `test_batch_wire` N8/N9, a deterministic
+         mutation sweep (every u32 field offset ≡ 10 mod 4 patched to
+         0xFFFFFFFF; both guard classes MUST be observed). batch_wire checks
+         73 → 74 (−N2a, +N8, +N9).
+    - **Makefile prereq/stale-binary hygiene (pre-existing defect, fixed on
+      user approval):** 19 recipes linked a source that was not a prerequisite,
+      so an incremental build silently ran a STALE binary. The root cause was
+      deeper than a missing name — `AGG_PROVER_SRCS` was defined ~300 lines
+      AFTER `test_batch_shielded_agg`, and make expands prerequisites when it
+      READS the rule, so naming the variable would have expanded to EMPTY.
+      Definition moved into the top stack block + one global
+      `$(TESTS): $(SHA3_SRC)`. Re-verified against the `make -pn` database:
+      **70 recipes checked, 0 offending.**
+    - Fixture consolidation done: `tests/batch_test_util.h` is the single
+      definition (all `static inline`); `test_batch_verify.c` includes it.
+    - Comment drift repaired: `shielded_verify.h` steps 4/5 (they still
+      described the deleted v3 chain as the consensus path), `ERR_DECODE`,
+      the three RETIRED verdicts 10/11/12 (never assigned since d4.c-3).
+  - **d5 ✅ GREEN (ORCHESTRATOR-run, 2026-07-26):** zk `make clean && make test`
+    → **70 binaries, ALL GATES GREEN, 0 compiler warnings** (`grep -c
+    'warning:|error:'` = 0); nodus `cmake && make` 0 warnings + `ctest`
+    **132/132** with `test_zk_link` PASSED (empirically confirming the
+    re-anchored T2/T3/T4 reach the decoder); messenger/libdna build clean
+    (`libdna`, `dna-connect-cli`, `dna-explorerd`). All 52 surviving vector
+    hash pins verify. Consensus-inert (type-11 still REJECT-unconditional) →
+    **no nodus version bump** (C1 linkage-only precedent).
+  → d6 docs/memory (this block, design doc §4/§5, root CLAUDE.md, zk README,
+  memory + ledger). **Commit YOK — kullanıcı kararı.**
 - **What it is:** a **prove + verify** STARK range/balance-proof stack over the
   Goldilocks field — Plonky3-grounded C ports of the verifier engine (field,
   NTT, Keccak-AIR, SHA3 sponge, transcript, Merkle-MMCS, FRI fold + verifier,

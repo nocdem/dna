@@ -209,18 +209,25 @@ static dnac_fri_status_t fri_open_input(
         const dnac_fri_commitment_with_opening_points_t *cw = &commitments[batch];
 
         /* batch heights = domain.size() << log_blowup (verifier.rs:563-566).
-         * All matrices in a batch must share one height (Phase 2A same-height);
-         * mixed-height injection is Phase 2B and out of v3.0 scope. */
+         * P2L-d d2: matrices in a batch MAY have different heights — the
+         * batch-stark mixed commit (merkle_tree.rs:127-176 layer injection).
+         * The max height drives the reduced index (verifier.rs:567-580); a
+         * mixed batch verifies through the d1a mixed MMCS below. (The
+         * pre-P2L-d same-height reject — Phase 2A, 2026-07-12 council
+         * red-team — is superseded by the byte-matched mixed verify.) */
+        if (cw->num_matrices > FRI_MAX_RO) return DNAC_FRI_ERR_INPUT_ERROR;
         size_t max_log_height = 0;
         bool have_height = false;
+        bool mixed_heights = false;
+        size_t mat_log_heights[FRI_MAX_RO];
         for (size_t m = 0; m < cw->num_matrices; ++m) {
             size_t lh = (size_t)cw->matrices[m].domain.log_size + params->log_blowup;
+            mat_log_heights[m] = lh;
             if (!have_height) { max_log_height = lh; have_height = true; }
-            /* Mixed-height (Phase 2B) is unsupported. This was a debug-only
-             * assert() — stripped under -DNDEBUG, which the messenger Release
-             * build defines — so a release verifier silently accepted mixed
-             * heights. Reject at runtime instead (2026-07-12 council red-team). */
-            else if (lh != max_log_height) { return DNAC_FRI_ERR_UNSUPPORTED_PARAMS; }
+            else if (lh != max_log_height) {
+                mixed_heights = true;
+                if (lh > max_log_height) max_log_height = lh;
+            }
         }
 
         /* Guard the shift below: max_log_height > log_global_max_height would make
@@ -246,7 +253,6 @@ static dnac_fri_status_t fri_open_input(
         const uint64_t *opened_rows[FRI_MAX_RO];
         size_t          row_lane_lens[FRI_MAX_RO];
         uint64_t        rowbuf[FRI_MAX_RO][FRI_LEAF_CAP];
-        if (cw->num_matrices > FRI_MAX_RO) return DNAC_FRI_ERR_INPUT_ERROR;
         for (size_t m = 0; m < cw->num_matrices; ++m) {
             size_t cols = bo->opened_values_lens[m];
             /* M3b: salted leaf = opened row ‖ salt_elems base salts
@@ -277,12 +283,27 @@ static dnac_fri_status_t fri_open_input(
         }
         if (have_height) {
             /* The verifier supplies the computed reduced_index + height; only the
-             * sibling path comes from the proof (verifier.rs:590-597). */
-            dnac_p2_mmcs_status_t ms = dnac_p2_mmcs_verify(
-                &cw->commitment, opened_rows, row_lane_lens,
-                cw->num_matrices, (size_t)1u << max_log_height,
-                reduced_index, bo->opening_proof.siblings,
-                (size_t)max_log_height);
+             * sibling path comes from the proof (verifier.rs:590-597). Same-height
+             * batches keep the P1b path (KATs frozen); mixed batches go through
+             * the d1a mixed MMCS (per-matrix reduced indices + layer injection,
+             * mmcs.rs:1052-1180 / merkle_tree.rs:127-176). */
+            dnac_p2_mmcs_status_t ms;
+            if (!mixed_heights) {
+                ms = dnac_p2_mmcs_verify(
+                    &cw->commitment, opened_rows, row_lane_lens,
+                    cw->num_matrices, (size_t)1u << max_log_height,
+                    reduced_index, bo->opening_proof.siblings,
+                    (size_t)max_log_height);
+            } else {
+                size_t mat_heights[FRI_MAX_RO];
+                for (size_t m = 0; m < cw->num_matrices; ++m) {
+                    mat_heights[m] = (size_t)1u << mat_log_heights[m];
+                }
+                ms = dnac_p2_mmcs_verify_mixed(
+                    &cw->commitment, opened_rows, row_lane_lens, mat_heights,
+                    cw->num_matrices, reduced_index,
+                    bo->opening_proof.siblings, (size_t)max_log_height);
+            }
             if (ms != DNAC_P2M_OK) return DNAC_FRI_ERR_INPUT_ERROR;
         }
 

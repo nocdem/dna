@@ -288,8 +288,9 @@ dnac_prover_status_t dnac_prover_fs_to_alpha(
  *   inv_vanishing[i] = 1 / zh[i%]
  *
  * All outputs length 2^log_coset, base-field canonical. Requires
- * log_coset > log_n (coset shift != ONE, domain.rs:278-280) and a canonical
- * nonzero shift.
+ * log_coset >= log_n (EQUAL is legal — rate_bits 0, the num_qc=1 batched
+ * case; domain.rs:281) and a canonical shift != 0, != 1 (assert_ne!(coset
+ * shift, ONE), domain.rs:280).
  */
 dnac_prover_status_t dnac_prover_quotient_selectors(
     unsigned log_n,
@@ -547,6 +548,33 @@ dnac_prover_status_t dnac_prover_fri_reduced_openings(
     gold_fp2_t alpha,
     gold_fp2_t *out_ro);
 
+/**
+ * MIXED-height reduced openings (P2L-d d3; two_adic_pcs.rs:588-658 full
+ * generality). Accumulates per-log-height codewords exactly as the reference:
+ * `num_reduced[log_height]` counts (matrix,point) widths PER HEIGHT and the
+ * alpha offset for each accumulation is alpha^{num_reduced[log_height]}
+ * (:628-651) — matrices of different heights accumulate into different
+ * codewords with INDEPENDENT alpha counters (the d2 fri_ro_t mirror).
+ * Rounds are supplied flattened (round-major, matrix-major) in the N2
+ * assembly order; each entry keeps its own height.
+ *
+ * Output: out->ro[lh] is a malloc'd 2^lh codeword for every height present,
+ * NULL otherwise. Free with dnac_prover_fri_ro_mixed_free. The FRI input
+ * list is the non-NULL codewords in DESCENDING height order (:658 rev).
+ */
+typedef struct {
+    gold_fp2_t *ro[GOLDILOCKS_TWO_ADICITY + 1]; /* per log_height or NULL */
+    size_t      num_reduced[GOLDILOCKS_TWO_ADICITY + 1];
+} dnac_prover_fri_ro_mixed_t;
+
+void dnac_prover_fri_ro_mixed_free(dnac_prover_fri_ro_mixed_t *ro);
+
+dnac_prover_status_t dnac_prover_fri_reduced_openings_mixed(
+    const dnac_prover_fri_input_round_t *rounds,
+    size_t n_rounds,
+    gold_fp2_t alpha,
+    dnac_prover_fri_ro_mixed_t *out);
+
 /** Result of the commit phase: layer roots + betas + final poly, plus the
  *  retained per-layer leaf matrices + trees (for the S12 query openings). */
 typedef struct {
@@ -600,6 +628,36 @@ dnac_prover_status_t dnac_prover_fri_commit_phase(
     unsigned commit_pow_bits,   /* P1: per-round commit PoW (0 = grind no-op) */
     unsigned query_pow_bits,    /* P1: query PoW (0 = grind no-op) */
     const uint64_t *salt_draws, /* M3b: FRI-mmcs stream B, or NULL (unsalted) */
+    size_t          salt_elems,
+    dnac_transcript_t *t,
+    dnac_prover_fri_result_t *res);
+
+/**
+ * MIXED-height FRI commit phase (P2L-d d3; fri/src/prover.rs:184-266 full
+ * generality). `inputs` are the reduced-opening codewords in DESCENDING
+ * height order (two_adic_pcs.rs:658 `.rev().flatten()`); each is consumed
+ * (copied internally). The fold loop is the single-input one PLUS:
+ *   - the round arity = compute_log_arity_for_round with the NEXT input's
+ *     height as the peek bound (config.rs:152-179; always 1 while
+ *     max_log_arity == 1);
+ *   - ROLL-IN (prover.rs:238-245): AFTER the fold, if the next input's length
+ *     equals the folded length, `folded[j] += beta^{2^log_arity} · input[j]`
+ *     (`next_if`; beta_pow = beta.exp_power_of_2(log_arity)) — the
+ *     fri_verifier.c:477-480 verify-side mirror.
+ * Heights must be strictly descending powers of two (prover.rs:69-75 sorted
+ * assert + log2_strict). The single-input entry above is now a thin wrapper
+ * over this function (byte-identical sequence: no roll-in ever fires).
+ */
+dnac_prover_status_t dnac_prover_fri_commit_phase_mixed(
+    const gold_fp2_t *const *inputs,  /* [num_inputs] descending heights */
+    const size_t            *input_lens,
+    size_t                   num_inputs,
+    unsigned log_blowup,
+    unsigned log_final_poly_len,
+    unsigned max_log_arity,
+    unsigned commit_pow_bits,
+    unsigned query_pow_bits,
+    const uint64_t *salt_draws,
     size_t          salt_elems,
     dnac_transcript_t *t,
     dnac_prover_fri_result_t *res);

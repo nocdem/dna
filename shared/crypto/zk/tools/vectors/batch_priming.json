@@ -1,0 +1,1108 @@
+{
+  "description": "P2L-c batch-stark priming + proof-shape vectors — REAL prove_batch/verify_batch (Ok-gated) over Goldilocks/Goldilocks²; verifier-order transcript replay (verifier/mod.rs:143-300) with duplex milestones after every phase; observe granularity: usize = 2 base observes (v,0), fp2 = 2 coefficients, commitment = 4 lanes, sample fp2 = 2 base samples c0-first. Shape fields mirror the verifier checks incl. permutation lens = aux_width*2 (verifier/mod.rs:524-541).",
+  "format_version": "1",
+  "plonky3_commit": "82cfad73cd734d37a0d51953094f970c531817ec",
+  "scenarios": [
+    {
+      "alpha": {
+        "c0_decimal": "286823386190756267",
+        "c1_decimal": "3267471423562148736"
+      },
+      "comment": "two lookup-free FibonacciAir instances (h=8, h=16); no permutation commit; the 0-lookup batched preamble that does NOT byte-match v3 uni-stark priming (F2)",
+      "commits": {
+        "main": "ec34fdb4b0728bc61a3097a4cd0cdcf7c3b7239840ceb385d121d1bb1ddc3dd1",
+        "permutation": null,
+        "preprocessed": null,
+        "quotient": "10249f8c747fafb4f0ece47ebd37c7dc1f9b34f50182f5d4232fb6936d8c04ef",
+        "random": null
+      },
+      "instances": [
+        {
+          "cumulative_sums": [],
+          "global_buses": [],
+          "log_degree": 3,
+          "log_ext_degree": 3,
+          "main_next_used": true,
+          "num_locals": 0,
+          "num_quotient_chunks": 1,
+          "perm_challenges": [],
+          "permutation_local_len": 0,
+          "permutation_next_len": 0,
+          "prep_next_used": false,
+          "preprocessed_local_len": 0,
+          "preprocessed_next_len": 0,
+          "preprocessed_width": 0,
+          "public_values": [
+            "0",
+            "1",
+            "21"
+          ],
+          "quotient_chunk_dim": 2,
+          "random_len": 0,
+          "trace_local_len": 2,
+          "trace_next_len": 2,
+          "width": 2
+        },
+        {
+          "cumulative_sums": [],
+          "global_buses": [],
+          "log_degree": 4,
+          "log_ext_degree": 4,
+          "main_next_used": true,
+          "num_locals": 0,
+          "num_quotient_chunks": 1,
+          "perm_challenges": [],
+          "permutation_local_len": 0,
+          "permutation_next_len": 0,
+          "prep_next_used": false,
+          "preprocessed_local_len": 0,
+          "preprocessed_next_len": 0,
+          "preprocessed_width": 0,
+          "public_values": [
+            "0",
+            "1",
+            "987"
+          ],
+          "quotient_chunk_dim": 2,
+          "random_len": 0,
+          "trace_local_len": 2,
+          "trace_next_len": 2,
+          "width": 2
+        }
+      ],
+      "is_zk": 0,
+      "milestones": [
+        {
+          "label": "initial",
+          "state": {
+            "input_buffer": [],
+            "output_buffer": [
+              "8122443742893029123",
+              "1712562873921952301",
+              "1338653381843625503",
+              "11582333702292144329"
+            ],
+            "sponge_state": [
+              "8122443742893029123",
+              "1712562873921952301",
+              "1338653381843625503",
+              "11582333702292144329",
+              "11321426442848935021",
+              "6030113329745424422",
+              "3598390853696070029",
+              "14157727861574636202"
+            ]
+          }
+        },
+        {
+          "label": "after_count_bindings",
+          "state": {
+            "input_buffer": [
+              "1",
+              "0"
+            ],
+            "output_buffer": [],
+            "sponge_state": [
+              "1003927883917342892",
+              "6205352808291444971",
+              "12636071002689235373",
+              "13048884908733510493",
+              "8736706861997611228",
+              "520568169036020404",
+              "4387978202952106507",
+              "16787990319893573345"
+            ]
+          }
+        },
+        {
+          "label": "after_main_publics",
+          "state": {
+            "input_buffer": [],
+            "output_buffer": [
+              "4632530608510367132",
+              "15802658939714238342",
+              "9124921258341247410",
+              "16632478716706074548"
+            ],
+            "sponge_state": [
+              "4632530608510367132",
+              "15802658939714238342",
+              "9124921258341247410",
+              "16632478716706074548",
+              "10172958775222961878",
+              "6267017542009063151",
+              "11401235151510133817",
+              "938411527586520957"
+            ]
+          }
+        },
+        {
+          "label": "after_preprocessed",
+          "state": {
+            "input_buffer": [],
+            "output_buffer": [
+              "13445543763957419578",
+              "667322773728119870",
+              "3267471423562148736",
+              "286823386190756267"
+            ],
+            "sponge_state": [
+              "13445543763957419578",
+              "667322773728119870",
+              "3267471423562148736",
+              "286823386190756267",
+              "758330089170349577",
+              "8630330196279679313",
+              "15837529739390560417",
+              "13501232835241351961"
+            ]
+          }
+        },
+        {
+          "label": "after_perm_challenges",
+          "state": {
+            "input_buffer": [],
+            "output_buffer": [
+              "13445543763957419578",
+              "667322773728119870",
+              "3267471423562148736",
+              "286823386190756267"
+            ],
+            "sponge_state": [
+              "13445543763957419578",
+              "667322773728119870",
+              "3267471423562148736",
+              "286823386190756267",
+              "758330089170349577",
+              "8630330196279679313",
+              "15837529739390560417",
+              "13501232835241351961"
+            ]
+          }
+        },
+        {
+          "label": "after_alpha",
+          "state": {
+            "input_buffer": [],
+            "output_buffer": [
+              "13445543763957419578",
+              "667322773728119870"
+            ],
+            "sponge_state": [
+              "13445543763957419578",
+              "667322773728119870",
+              "3267471423562148736",
+              "286823386190756267",
+              "758330089170349577",
+              "8630330196279679313",
+              "15837529739390560417",
+              "13501232835241351961"
+            ]
+          }
+        },
+        {
+          "label": "after_quotient",
+          "state": {
+            "input_buffer": [],
+            "output_buffer": [
+              "10799392684139766772",
+              "17449859514517726255",
+              "14883909147246549012",
+              "570135535170731374"
+            ],
+            "sponge_state": [
+              "10799392684139766772",
+              "17449859514517726255",
+              "14883909147246549012",
+              "570135535170731374",
+              "17554919963509953497",
+              "9005384977577243968",
+              "10959053207919682888",
+              "1176698670436118071"
+            ]
+          }
+        },
+        {
+          "label": "after_random",
+          "state": {
+            "input_buffer": [],
+            "output_buffer": [
+              "10799392684139766772",
+              "17449859514517726255",
+              "14883909147246549012",
+              "570135535170731374"
+            ],
+            "sponge_state": [
+              "10799392684139766772",
+              "17449859514517726255",
+              "14883909147246549012",
+              "570135535170731374",
+              "17554919963509953497",
+              "9005384977577243968",
+              "10959053207919682888",
+              "1176698670436118071"
+            ]
+          }
+        },
+        {
+          "label": "after_zeta",
+          "state": {
+            "input_buffer": [],
+            "output_buffer": [
+              "10799392684139766772",
+              "17449859514517726255"
+            ],
+            "sponge_state": [
+              "10799392684139766772",
+              "17449859514517726255",
+              "14883909147246549012",
+              "570135535170731374",
+              "17554919963509953497",
+              "9005384977577243968",
+              "10959053207919682888",
+              "1176698670436118071"
+            ]
+          }
+        }
+      ],
+      "name": "fib_pair",
+      "num_instances": 2,
+      "zeta": {
+        "c0_decimal": "570135535170731374",
+        "c1_decimal": "14883909147246549012"
+      }
+    },
+    {
+      "alpha": {
+        "c0_decimal": "17989876203911497441",
+        "c1_decimal": "472882102110648696"
+      },
+      "comment": "AddAir LUT sender + receiver (P2L-b traces): permutation commit present, one shared-bus (alpha,beta) via the memo, cumulative sums observed before constraint-alpha",
+      "commits": {
+        "main": "536a0ed4e66d998ff5060af4b5d4009e59fd105d088d9d501466718e12a45bd6",
+        "permutation": "6ed0d12288e4461e8071253824bd2dd5f46b7549a67c594d566b6edd1561df56",
+        "preprocessed": null,
+        "quotient": "9ba0e11ea4e77aad52ac8299539094ebc267cea78ab173d71c237c9bf97e7977",
+        "random": null
+      },
+      "instances": [
+        {
+          "cumulative_sums": [
+            {
+              "aux_column": 1,
+              "bus_name": "LUT",
+              "sum": {
+                "c0_decimal": "9952163538671624251",
+                "c1_decimal": "11348795549688352858"
+              }
+            }
+          ],
+          "global_buses": [
+            "LUT"
+          ],
+          "log_degree": 2,
+          "log_ext_degree": 2,
+          "main_next_used": true,
+          "num_locals": 1,
+          "num_quotient_chunks": 2,
+          "perm_challenges": [
+            {
+              "c0_decimal": "15159298290618015726",
+              "c1_decimal": "13368535016449766925"
+            },
+            {
+              "c0_decimal": "6939140969183451499",
+              "c1_decimal": "12434050607427950772"
+            },
+            {
+              "c0_decimal": "3698154373758980952",
+              "c1_decimal": "6684489908308234714"
+            },
+            {
+              "c0_decimal": "13405273204543501529",
+              "c1_decimal": "961349092023374423"
+            }
+          ],
+          "permutation_local_len": 4,
+          "permutation_next_len": 4,
+          "prep_next_used": false,
+          "preprocessed_local_len": 0,
+          "preprocessed_next_len": 0,
+          "preprocessed_width": 0,
+          "public_values": [],
+          "quotient_chunk_dim": 2,
+          "random_len": 0,
+          "trace_local_len": 7,
+          "trace_next_len": 7,
+          "width": 7
+        },
+        {
+          "cumulative_sums": [
+            {
+              "aux_column": 1,
+              "bus_name": "LUT",
+              "sum": {
+                "c0_decimal": "8494580530742960070",
+                "c1_decimal": "7097948519726231463"
+              }
+            }
+          ],
+          "global_buses": [
+            "LUT"
+          ],
+          "log_degree": 2,
+          "log_ext_degree": 2,
+          "main_next_used": true,
+          "num_locals": 1,
+          "num_quotient_chunks": 2,
+          "perm_challenges": [
+            {
+              "c0_decimal": "16843417374011105751",
+              "c1_decimal": "12202402021290001340"
+            },
+            {
+              "c0_decimal": "9320716922092625420",
+              "c1_decimal": "9068067140942366432"
+            },
+            {
+              "c0_decimal": "3698154373758980952",
+              "c1_decimal": "6684489908308234714"
+            },
+            {
+              "c0_decimal": "13405273204543501529",
+              "c1_decimal": "961349092023374423"
+            }
+          ],
+          "permutation_local_len": 4,
+          "permutation_next_len": 4,
+          "prep_next_used": false,
+          "preprocessed_local_len": 0,
+          "preprocessed_next_len": 0,
+          "preprocessed_width": 0,
+          "public_values": [],
+          "quotient_chunk_dim": 2,
+          "random_len": 0,
+          "trace_local_len": 7,
+          "trace_next_len": 7,
+          "width": 7
+        }
+      ],
+      "is_zk": 0,
+      "milestones": [
+        {
+          "label": "initial",
+          "state": {
+            "input_buffer": [],
+            "output_buffer": [
+              "8122443742893029123",
+              "1712562873921952301",
+              "1338653381843625503",
+              "11582333702292144329"
+            ],
+            "sponge_state": [
+              "8122443742893029123",
+              "1712562873921952301",
+              "1338653381843625503",
+              "11582333702292144329",
+              "11321426442848935021",
+              "6030113329745424422",
+              "3598390853696070029",
+              "14157727861574636202"
+            ]
+          }
+        },
+        {
+          "label": "after_count_bindings",
+          "state": {
+            "input_buffer": [
+              "2",
+              "0"
+            ],
+            "output_buffer": [],
+            "sponge_state": [
+              "8568633362031545716",
+              "2084619319292159493",
+              "5230593076065326501",
+              "5195166823058895775",
+              "15830932257309076348",
+              "13214858734027782663",
+              "11045078281840121991",
+              "15987770048564040055"
+            ]
+          }
+        },
+        {
+          "label": "after_main_publics",
+          "state": {
+            "input_buffer": [
+              "5808954161438457177",
+              "15446119746603410964"
+            ],
+            "output_buffer": [],
+            "sponge_state": [
+              "5940352110774532410",
+              "14215669010245646172",
+              "12861396841476557223",
+              "488156836945013044",
+              "15831285736097224392",
+              "1524999020606761241",
+              "701674703892938774",
+              "939655461571183107"
+            ]
+          }
+        },
+        {
+          "label": "after_preprocessed",
+          "state": {
+            "input_buffer": [
+              "0",
+              "0"
+            ],
+            "output_buffer": [],
+            "sponge_state": [
+              "5480859238342287033",
+              "18367573058796373924",
+              "16772910160768030684",
+              "2419218283400237004",
+              "5629856612628126318",
+              "11444765720648498296",
+              "17632267962263289981",
+              "9653988516245908119"
+            ]
+          }
+        },
+        {
+          "label": "after_perm_challenges",
+          "state": {
+            "input_buffer": [],
+            "output_buffer": [],
+            "sponge_state": [
+              "9068067140942366432",
+              "9320716922092625420",
+              "12202402021290001340",
+              "16843417374011105751",
+              "11572825883504640726",
+              "15817038998840415800",
+              "14579125483902105602",
+              "2321171380296239078"
+            ]
+          }
+        },
+        {
+          "label": "after_alpha",
+          "state": {
+            "input_buffer": [],
+            "output_buffer": [
+              "10344982269819660749",
+              "13028722555775900713"
+            ],
+            "sponge_state": [
+              "10344982269819660749",
+              "13028722555775900713",
+              "472882102110648696",
+              "17989876203911497441",
+              "463427179925549002",
+              "18311605520171562082",
+              "12273703943207718499",
+              "1599125786095239833"
+            ]
+          }
+        },
+        {
+          "label": "after_quotient",
+          "state": {
+            "input_buffer": [],
+            "output_buffer": [
+              "9176496467632444524",
+              "3502852440840948159",
+              "862619451844883540",
+              "5233481220285556446"
+            ],
+            "sponge_state": [
+              "9176496467632444524",
+              "3502852440840948159",
+              "862619451844883540",
+              "5233481220285556446",
+              "16819869379838549488",
+              "3596870685708300875",
+              "8548951035257983584",
+              "3403216158791631766"
+            ]
+          }
+        },
+        {
+          "label": "after_random",
+          "state": {
+            "input_buffer": [],
+            "output_buffer": [
+              "9176496467632444524",
+              "3502852440840948159",
+              "862619451844883540",
+              "5233481220285556446"
+            ],
+            "sponge_state": [
+              "9176496467632444524",
+              "3502852440840948159",
+              "862619451844883540",
+              "5233481220285556446",
+              "16819869379838549488",
+              "3596870685708300875",
+              "8548951035257983584",
+              "3403216158791631766"
+            ]
+          }
+        },
+        {
+          "label": "after_zeta",
+          "state": {
+            "input_buffer": [],
+            "output_buffer": [
+              "9176496467632444524",
+              "3502852440840948159"
+            ],
+            "sponge_state": [
+              "9176496467632444524",
+              "3502852440840948159",
+              "862619451844883540",
+              "5233481220285556446",
+              "16819869379838549488",
+              "3596870685708300875",
+              "8548951035257983584",
+              "3403216158791631766"
+            ]
+          }
+        }
+      ],
+      "name": "lut_pair",
+      "num_instances": 2,
+      "zeta": {
+        "c0_decimal": "5233481220285556446",
+        "c1_decimal": "862619451844883540"
+      }
+    },
+    {
+      "alpha": {
+        "c0_decimal": "12135940998783494814",
+        "c1_decimal": "7780261942005426930"
+      },
+      "comment": "two PrepEqAir instances (h=8, h=4) with preprocessed columns: global preprocessed commitment observed AFTER main (v3 observed preprocessed first — F2/N3 delta)",
+      "commits": {
+        "main": "7779f1184d7fa444b22560ff6c48b1bd1926c8f61d655bf7bf514469a143977a",
+        "permutation": null,
+        "preprocessed": "7779f1184d7fa444b22560ff6c48b1bd1926c8f61d655bf7bf514469a143977a",
+        "quotient": "bcdb6508c349d6efc7698e1f9c03582996bb5f4821acd88761ddbdc0838f05b6",
+        "random": null
+      },
+      "instances": [
+        {
+          "cumulative_sums": [],
+          "global_buses": [],
+          "log_degree": 3,
+          "log_ext_degree": 3,
+          "main_next_used": true,
+          "num_locals": 0,
+          "num_quotient_chunks": 1,
+          "perm_challenges": [],
+          "permutation_local_len": 0,
+          "permutation_next_len": 0,
+          "prep_next_used": true,
+          "preprocessed_local_len": 1,
+          "preprocessed_next_len": 1,
+          "preprocessed_width": 1,
+          "public_values": [],
+          "quotient_chunk_dim": 2,
+          "random_len": 0,
+          "trace_local_len": 1,
+          "trace_next_len": 1,
+          "width": 1
+        },
+        {
+          "cumulative_sums": [],
+          "global_buses": [],
+          "log_degree": 2,
+          "log_ext_degree": 2,
+          "main_next_used": true,
+          "num_locals": 0,
+          "num_quotient_chunks": 1,
+          "perm_challenges": [],
+          "permutation_local_len": 0,
+          "permutation_next_len": 0,
+          "prep_next_used": true,
+          "preprocessed_local_len": 1,
+          "preprocessed_next_len": 1,
+          "preprocessed_width": 1,
+          "public_values": [],
+          "quotient_chunk_dim": 2,
+          "random_len": 0,
+          "trace_local_len": 1,
+          "trace_next_len": 1,
+          "width": 1
+        }
+      ],
+      "is_zk": 0,
+      "milestones": [
+        {
+          "label": "initial",
+          "state": {
+            "input_buffer": [],
+            "output_buffer": [
+              "8122443742893029123",
+              "1712562873921952301",
+              "1338653381843625503",
+              "11582333702292144329"
+            ],
+            "sponge_state": [
+              "8122443742893029123",
+              "1712562873921952301",
+              "1338653381843625503",
+              "11582333702292144329",
+              "11321426442848935021",
+              "6030113329745424422",
+              "3598390853696070029",
+              "14157727861574636202"
+            ]
+          }
+        },
+        {
+          "label": "after_count_bindings",
+          "state": {
+            "input_buffer": [
+              "1",
+              "0"
+            ],
+            "output_buffer": [],
+            "sponge_state": [
+              "542618028263521452",
+              "625068790860989403",
+              "10869318159537619957",
+              "8862801664690434733",
+              "8580883510400211119",
+              "9086919288790718138",
+              "2137334796727785969",
+              "11420412254800263663"
+            ]
+          }
+        },
+        {
+          "label": "after_main_publics",
+          "state": {
+            "input_buffer": [
+              "17823951129617638937",
+              "8833603554645397951"
+            ],
+            "output_buffer": [],
+            "sponge_state": [
+              "11480109110106998283",
+              "9315904798565607401",
+              "10874839901118497336",
+              "9381625851725213553",
+              "4966400504840801786",
+              "16390355736934181229",
+              "749639211074131176",
+              "274156374077916136"
+            ]
+          }
+        },
+        {
+          "label": "after_preprocessed",
+          "state": {
+            "input_buffer": [
+              "17823951129617638937",
+              "8833603554645397951"
+            ],
+            "output_buffer": [],
+            "sponge_state": [
+              "12489857130245515303",
+              "12787930734391345628",
+              "7839992455074651607",
+              "11614830749786615971",
+              "5482165708209187696",
+              "10773501985967560206",
+              "3518988629338713817",
+              "13574464263875913043"
+            ]
+          }
+        },
+        {
+          "label": "after_perm_challenges",
+          "state": {
+            "input_buffer": [
+              "17823951129617638937",
+              "8833603554645397951"
+            ],
+            "output_buffer": [],
+            "sponge_state": [
+              "12489857130245515303",
+              "12787930734391345628",
+              "7839992455074651607",
+              "11614830749786615971",
+              "5482165708209187696",
+              "10773501985967560206",
+              "3518988629338713817",
+              "13574464263875913043"
+            ]
+          }
+        },
+        {
+          "label": "after_alpha",
+          "state": {
+            "input_buffer": [],
+            "output_buffer": [
+              "2103937571151885853",
+              "8089964486126829343"
+            ],
+            "sponge_state": [
+              "2103937571151885853",
+              "8089964486126829343",
+              "7780261942005426930",
+              "12135940998783494814",
+              "13391028775255093687",
+              "8478001875410379289",
+              "8952172881434045529",
+              "1898191097306475051"
+            ]
+          }
+        },
+        {
+          "label": "after_quotient",
+          "state": {
+            "input_buffer": [],
+            "output_buffer": [
+              "5103928896800908407",
+              "12178741442601095786",
+              "3914305929457832337",
+              "12562696452201258670"
+            ],
+            "sponge_state": [
+              "5103928896800908407",
+              "12178741442601095786",
+              "3914305929457832337",
+              "12562696452201258670",
+              "2724735437592390941",
+              "7871914959569880243",
+              "12442299378737369210",
+              "12630061128040848906"
+            ]
+          }
+        },
+        {
+          "label": "after_random",
+          "state": {
+            "input_buffer": [],
+            "output_buffer": [
+              "5103928896800908407",
+              "12178741442601095786",
+              "3914305929457832337",
+              "12562696452201258670"
+            ],
+            "sponge_state": [
+              "5103928896800908407",
+              "12178741442601095786",
+              "3914305929457832337",
+              "12562696452201258670",
+              "2724735437592390941",
+              "7871914959569880243",
+              "12442299378737369210",
+              "12630061128040848906"
+            ]
+          }
+        },
+        {
+          "label": "after_zeta",
+          "state": {
+            "input_buffer": [],
+            "output_buffer": [
+              "5103928896800908407",
+              "12178741442601095786"
+            ],
+            "sponge_state": [
+              "5103928896800908407",
+              "12178741442601095786",
+              "3914305929457832337",
+              "12562696452201258670",
+              "2724735437592390941",
+              "7871914959569880243",
+              "12442299378737369210",
+              "12630061128040848906"
+            ]
+          }
+        }
+      ],
+      "name": "prep_pair",
+      "num_instances": 2,
+      "zeta": {
+        "c0_decimal": "12562696452201258670",
+        "c1_decimal": "3914305929457832337"
+      }
+    },
+    {
+      "alpha": {
+        "c0_decimal": "12747815644666468941",
+        "c1_decimal": "8234617486910771379"
+      },
+      "comment": "is_zk=1 (HidingFriPcs, SmallRng(1)): random commitment observed after quotient, before zeta; random opened values dim 2; degree_bits include the ZK +1",
+      "commits": {
+        "main": "596a68dbb4cc08415b688a6d91a37909fabd87eb48d35a7605af7972c4c1ccf4",
+        "permutation": null,
+        "preprocessed": null,
+        "quotient": "8e37dbf6c5ee357232bdc219cd302eba4b9183cb7d911daa58b598e0efbc9d49",
+        "random": "bb7d50b84e5306ca7d4e0f22e8bfebc43d26ae151997fdbc084f3fefe8205b61"
+      },
+      "instances": [
+        {
+          "cumulative_sums": [],
+          "global_buses": [],
+          "log_degree": 3,
+          "log_ext_degree": 4,
+          "main_next_used": true,
+          "num_locals": 0,
+          "num_quotient_chunks": 4,
+          "perm_challenges": [],
+          "permutation_local_len": 0,
+          "permutation_next_len": 0,
+          "prep_next_used": false,
+          "preprocessed_local_len": 0,
+          "preprocessed_next_len": 0,
+          "preprocessed_width": 0,
+          "public_values": [
+            "0",
+            "1",
+            "21"
+          ],
+          "quotient_chunk_dim": 2,
+          "random_len": 2,
+          "trace_local_len": 2,
+          "trace_next_len": 2,
+          "width": 2
+        },
+        {
+          "cumulative_sums": [],
+          "global_buses": [],
+          "log_degree": 4,
+          "log_ext_degree": 5,
+          "main_next_used": true,
+          "num_locals": 0,
+          "num_quotient_chunks": 4,
+          "perm_challenges": [],
+          "permutation_local_len": 0,
+          "permutation_next_len": 0,
+          "prep_next_used": false,
+          "preprocessed_local_len": 0,
+          "preprocessed_next_len": 0,
+          "preprocessed_width": 0,
+          "public_values": [
+            "0",
+            "1",
+            "987"
+          ],
+          "quotient_chunk_dim": 2,
+          "random_len": 2,
+          "trace_local_len": 2,
+          "trace_next_len": 2,
+          "width": 2
+        }
+      ],
+      "is_zk": 1,
+      "milestones": [
+        {
+          "label": "initial",
+          "state": {
+            "input_buffer": [],
+            "output_buffer": [
+              "8122443742893029123",
+              "1712562873921952301",
+              "1338653381843625503",
+              "11582333702292144329"
+            ],
+            "sponge_state": [
+              "8122443742893029123",
+              "1712562873921952301",
+              "1338653381843625503",
+              "11582333702292144329",
+              "11321426442848935021",
+              "6030113329745424422",
+              "3598390853696070029",
+              "14157727861574636202"
+            ]
+          }
+        },
+        {
+          "label": "after_count_bindings",
+          "state": {
+            "input_buffer": [
+              "4",
+              "0"
+            ],
+            "output_buffer": [],
+            "sponge_state": [
+              "18057055772848708812",
+              "9870271146978509301",
+              "14700244574347991545",
+              "7376814735419341472",
+              "1255641271164555677",
+              "13613136567258503279",
+              "7635908374783389946",
+              "17668304336757622503"
+            ]
+          }
+        },
+        {
+          "label": "after_main_publics",
+          "state": {
+            "input_buffer": [],
+            "output_buffer": [
+              "11947308324649766023",
+              "10033441975036650231",
+              "13421770224826337829",
+              "14635429064218260947"
+            ],
+            "sponge_state": [
+              "11947308324649766023",
+              "10033441975036650231",
+              "13421770224826337829",
+              "14635429064218260947",
+              "9925195529148810443",
+              "3143885546813168293",
+              "17437492213227162070",
+              "13239446948427916728"
+            ]
+          }
+        },
+        {
+          "label": "after_preprocessed",
+          "state": {
+            "input_buffer": [],
+            "output_buffer": [
+              "13787472408468409630",
+              "8235369969352557732",
+              "8234617486910771379",
+              "12747815644666468941"
+            ],
+            "sponge_state": [
+              "13787472408468409630",
+              "8235369969352557732",
+              "8234617486910771379",
+              "12747815644666468941",
+              "14552988538354139994",
+              "1330219297631990368",
+              "5863388032948005639",
+              "14253979949653036041"
+            ]
+          }
+        },
+        {
+          "label": "after_perm_challenges",
+          "state": {
+            "input_buffer": [],
+            "output_buffer": [
+              "13787472408468409630",
+              "8235369969352557732",
+              "8234617486910771379",
+              "12747815644666468941"
+            ],
+            "sponge_state": [
+              "13787472408468409630",
+              "8235369969352557732",
+              "8234617486910771379",
+              "12747815644666468941",
+              "14552988538354139994",
+              "1330219297631990368",
+              "5863388032948005639",
+              "14253979949653036041"
+            ]
+          }
+        },
+        {
+          "label": "after_alpha",
+          "state": {
+            "input_buffer": [],
+            "output_buffer": [
+              "13787472408468409630",
+              "8235369969352557732"
+            ],
+            "sponge_state": [
+              "13787472408468409630",
+              "8235369969352557732",
+              "8234617486910771379",
+              "12747815644666468941",
+              "14552988538354139994",
+              "1330219297631990368",
+              "5863388032948005639",
+              "14253979949653036041"
+            ]
+          }
+        },
+        {
+          "label": "after_quotient",
+          "state": {
+            "input_buffer": [],
+            "output_buffer": [
+              "7260126028444397155",
+              "9264939757273188656",
+              "11226053937350481982",
+              "18107043039236560659"
+            ],
+            "sponge_state": [
+              "7260126028444397155",
+              "9264939757273188656",
+              "11226053937350481982",
+              "18107043039236560659",
+              "6388421020128433534",
+              "12755048427697053261",
+              "1107913603413096191",
+              "14877685515815862070"
+            ]
+          }
+        },
+        {
+          "label": "after_random",
+          "state": {
+            "input_buffer": [],
+            "output_buffer": [
+              "2001908850991838043",
+              "305359387660598835",
+              "15959165718354257776",
+              "2707483991268139926"
+            ],
+            "sponge_state": [
+              "2001908850991838043",
+              "305359387660598835",
+              "15959165718354257776",
+              "2707483991268139926",
+              "6524645312398019552",
+              "6523138598279426341",
+              "2815259128204794861",
+              "11094623340428112818"
+            ]
+          }
+        },
+        {
+          "label": "after_zeta",
+          "state": {
+            "input_buffer": [],
+            "output_buffer": [
+              "2001908850991838043",
+              "305359387660598835"
+            ],
+            "sponge_state": [
+              "2001908850991838043",
+              "305359387660598835",
+              "15959165718354257776",
+              "2707483991268139926",
+              "6524645312398019552",
+              "6523138598279426341",
+              "2815259128204794861",
+              "11094623340428112818"
+            ]
+          }
+        }
+      ],
+      "name": "fib_zk",
+      "num_instances": 2,
+      "zeta": {
+        "c0_decimal": "2707483991268139926",
+        "c1_decimal": "15959165718354257776"
+      }
+    }
+  ]
+}
