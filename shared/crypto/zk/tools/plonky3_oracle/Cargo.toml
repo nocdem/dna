@@ -6,46 +6,53 @@ license = "Apache-2.0"
 description = "DNAC-ZK Plonky3 reference oracle — emits test vectors for C primitives to byte-match against."
 publish = false
 
-# Plonky3 dependencies pinned to commit 82cfad73 (2026-05-20).
-# Per dnac/docs/plans/2026-05-21-stark-range-proof-keccak-design.md header pin.
+# Plonky3 dependencies pinned to commit 11cc5849 = tag v0.6.2 (2026-07-20).
+# PREVIOUS PIN: 82cfad73 (2026-05-20) — an untagged main commit between v0.5.3
+# and v0.6.0. Bumped 2026-07-26 (B2/S1) because Plonky3-recursion — the
+# reference for the P2 verifier-in-circuit work — requires the 0.6 line.
+# This bump is NOT cosmetic: DuplexChallenger::duplexing() became prefix-free
+# upstream (clears unused rate slots + binds the absorbed length into
+# sponge_state[RATE]), which moves every Fiat-Shamir challenge and therefore
+# every proof-bearing vector. Full delta measurement + the 52-vector risk
+# classification: tasks/orchestration.md FLEET 005.
 # DO NOT bump without a design-doc revision and full test-vector re-validation.
 [dependencies]
-p3-field = { git = "https://github.com/Plonky3/Plonky3", rev = "82cfad73cd734d37a0d51953094f970c531817ec" }
-p3-goldilocks = { git = "https://github.com/Plonky3/Plonky3", rev = "82cfad73cd734d37a0d51953094f970c531817ec" }
-p3-air = { git = "https://github.com/Plonky3/Plonky3", rev = "82cfad73cd734d37a0d51953094f970c531817ec" }
-p3-dft = { git = "https://github.com/Plonky3/Plonky3", rev = "82cfad73cd734d37a0d51953094f970c531817ec" }
-p3-util = { git = "https://github.com/Plonky3/Plonky3", rev = "82cfad73cd734d37a0d51953094f970c531817ec" }
-p3-fri = { git = "https://github.com/Plonky3/Plonky3", rev = "82cfad73cd734d37a0d51953094f970c531817ec" }
-p3-matrix = { git = "https://github.com/Plonky3/Plonky3", rev = "82cfad73cd734d37a0d51953094f970c531817ec" }
+p3-field = { git = "https://github.com/Plonky3/Plonky3", rev = "11cc5849a1b57a2f520d6edc608b9e516517d841" }
+p3-goldilocks = { git = "https://github.com/Plonky3/Plonky3", rev = "11cc5849a1b57a2f520d6edc608b9e516517d841" }
+p3-air = { git = "https://github.com/Plonky3/Plonky3", rev = "11cc5849a1b57a2f520d6edc608b9e516517d841" }
+p3-dft = { git = "https://github.com/Plonky3/Plonky3", rev = "11cc5849a1b57a2f520d6edc608b9e516517d841" }
+p3-util = { git = "https://github.com/Plonky3/Plonky3", rev = "11cc5849a1b57a2f520d6edc608b9e516517d841" }
+p3-fri = { git = "https://github.com/Plonky3/Plonky3", rev = "11cc5849a1b57a2f520d6edc608b9e516517d841" }
+p3-matrix = { git = "https://github.com/Plonky3/Plonky3", rev = "11cc5849a1b57a2f520d6edc608b9e516517d841" }
 # Direct deps added in Phase T1 (transcript oracle). Already transitively
 # pulled via p3-fri; declared here to be importable. Same commit pin.
-p3-challenger = { git = "https://github.com/Plonky3/Plonky3", rev = "82cfad73cd734d37a0d51953094f970c531817ec" }
-p3-symmetric = { git = "https://github.com/Plonky3/Plonky3", rev = "82cfad73cd734d37a0d51953094f970c531817ec" }
+p3-challenger = { git = "https://github.com/Plonky3/Plonky3", rev = "11cc5849a1b57a2f520d6edc608b9e516517d841" }
+p3-symmetric = { git = "https://github.com/Plonky3/Plonky3", rev = "11cc5849a1b57a2f520d6edc608b9e516517d841" }
 # Added Stage M1 (merkle/mmcs oracle, 2026-05-27). Same commit pin.
-p3-merkle-tree = { git = "https://github.com/Plonky3/Plonky3", rev = "82cfad73cd734d37a0d51953094f970c531817ec" }
-p3-commit = { git = "https://github.com/Plonky3/Plonky3", rev = "82cfad73cd734d37a0d51953094f970c531817ec" }
+p3-merkle-tree = { git = "https://github.com/Plonky3/Plonky3", rev = "11cc5849a1b57a2f520d6edc608b9e516517d841" }
+p3-commit = { git = "https://github.com/Plonky3/Plonky3", rev = "11cc5849a1b57a2f520d6edc608b9e516517d841" }
 # Added P2 (stark-priming oracle, 2026-05-30) — real p3_uni_stark::prove over a
 # vendored FibonacciAir. Same commit pin. Default features (no `parallel`); pow=0
 # in the FRI params keeps `prove` grind-free and byte-deterministic.
-p3-uni-stark = { git = "https://github.com/Plonky3/Plonky3", rev = "82cfad73cd734d37a0d51953094f970c531817ec" }
+p3-uni-stark = { git = "https://github.com/Plonky3/Plonky3", rev = "11cc5849a1b57a2f520d6edc608b9e516517d841" }
 # FP1c.2 — poseidon2-air trace generation oracle. Same commit pin. Provides
 # generate_trace_rows + RoundConstants for the Poseidon2Cols<8,7,1,4,22> layout.
-p3-poseidon2-air = { git = "https://github.com/Plonky3/Plonky3", rev = "82cfad73cd734d37a0d51953094f970c531817ec" }
+p3-poseidon2-air = { git = "https://github.com/Plonky3/Plonky3", rev = "11cc5849a1b57a2f520d6edc608b9e516517d841" }
 # B1 Stage-2 (2026-07-15) — GenericPoseidon2LinearLayers trait, needed by the
 # VERBATIM-vendored poseidon2-air eval (air.rs:144-323; pub(crate) upstream) used
 # inside the combined ConfRootAir. Already in Cargo.lock transitively via
 # p3-poseidon2-air; declared to be importable. Same commit pin.
-p3-poseidon2 = { git = "https://github.com/Plonky3/Plonky3", rev = "82cfad73cd734d37a0d51953094f970c531817ec" }
+p3-poseidon2 = { git = "https://github.com/Plonky3/Plonky3", rev = "11cc5849a1b57a2f520d6edc608b9e516517d841" }
 # P2L-a (2026-07-23) — LogUp gadget oracle (dump-logup). The REAL
 # p3_lookup::logup::LogUpGadget (lookup/src/logup.rs) generates the aux
 # (permutation) traces + constraint residuals the C logup.c byte-matches.
 # Same commit pin.
-p3-lookup = { git = "https://github.com/Plonky3/Plonky3", rev = "82cfad73cd734d37a0d51953094f970c531817ec" }
+p3-lookup = { git = "https://github.com/Plonky3/Plonky3", rev = "11cc5849a1b57a2f520d6edc608b9e516517d841" }
 # P2L-b (2026-07-23) — interaction/bus oracle (dump-logup-bus). The REAL
 # BatchTranscript::sample_perm_challenges (batch-stark/src/transcript.rs:74-102)
 # provides the per-bus challenge-memo ground truth the C logup_bus.c matches.
 # Same commit pin.
-p3-batch-stark = { git = "https://github.com/Plonky3/Plonky3", rev = "82cfad73cd734d37a0d51953094f970c531817ec" }
+p3-batch-stark = { git = "https://github.com/Plonky3/Plonky3", rev = "11cc5849a1b57a2f520d6edc608b9e516517d841" }
 
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

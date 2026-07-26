@@ -55,11 +55,16 @@ const RANGE_AIR_BITS: usize = 52;
 /// Number of test cases per arithmetic operation.
 const CASES_PER_OP: usize = 1024;
 
-/// Plonky3 commit hash pinned in design doc (for embedding in JSON metadata).
-const PLONKY3_COMMIT: &str = "82cfad73cd734d37a0d51953094f970c531817ec";
+/// Plonky3 commit hash pinned in Cargo.toml (embedded in every JSON vector so a
+/// vector always carries the provenance of the reference that produced it).
+/// 2026-07-26 (B2/S1): 82cfad73 → 11cc5849 = tag v0.6.2.
+const PLONKY3_COMMIT: &str = "11cc5849a1b57a2f520d6edc608b9e516517d841";
 
 /// Oracle output format version. Bump when format changes.
-const ORACLE_FORMAT_VERSION: &str = "1";
+/// 2 (2026-07-26): the v0.6.2 migration changed vector CONTENT semantics — the
+/// LogUp aux layout and terminal model, the BatchProof `lookup_terminals` field,
+/// and the FriError variant set. A version-1 consumer must not read these.
+const ORACLE_FORMAT_VERSION: &str = "2";
 
 /// Hex-encode bytes as lowercase ASCII.
 fn to_hex(bytes: &[u8]) -> String {
@@ -5360,7 +5365,9 @@ fn fri_format_err<C: core::fmt::Debug, I: core::fmt::Debug>(
 ) -> (String, String) {
     use p3_fri::verifier::FriError;
     let variant = match err {
-        FriError::InvalidProofShape => "InvalidProofShape",
+        /* v0.6.2 removed the catch-all `InvalidProofShape`; every shape failure
+         * now has its own variant (fri/src/verifier.rs:19-56), all of which
+         * were already enumerated below. */
         FriError::QueryCommitPhaseOpeningsCountMismatch { .. } => {
             "QueryCommitPhaseOpeningsCountMismatch"
         }
@@ -5383,6 +5390,25 @@ fn fri_format_err<C: core::fmt::Debug, I: core::fmt::Debug>(
         FriError::InputError(_) => "InputError",
         FriError::FinalPolyMismatch => "FinalPolyMismatch",
         FriError::InvalidPowWitness => "InvalidPowWitness",
+        /* v0.6.2 ADDED these eight (fri/src/verifier.rs:49-100). Several are new
+         * verifier guards, not renames — notably ZeroQueries (a zero-query
+         * instance would accept any final polynomial), the two global-max-height
+         * checks, and OpeningPointMatchesQueryPoint. The three Hiding* variants
+         * cover the is_zk path DNAC uses. */
+        FriError::ZeroQueries => "ZeroQueries",
+        FriError::GlobalMaxHeightMismatch { .. } => "GlobalMaxHeightMismatch",
+        FriError::GlobalMaxHeightTooLarge { .. } => "GlobalMaxHeightTooLarge",
+        FriError::MatrixWithoutOpeningPoints { .. } => "MatrixWithoutOpeningPoints",
+        FriError::HidingRandomOpeningRoundCountMismatch { .. } => {
+            "HidingRandomOpeningRoundCountMismatch"
+        }
+        FriError::HidingRandomOpeningMatrixCountMismatch { .. } => {
+            "HidingRandomOpeningMatrixCountMismatch"
+        }
+        FriError::HidingRandomOpeningPointCountMismatch { .. } => {
+            "HidingRandomOpeningPointCountMismatch"
+        }
+        FriError::OpeningPointMatchesQueryPoint { .. } => "OpeningPointMatchesQueryPoint",
     };
     (variant.to_string(), format!("{err:?}"))
 }
@@ -5764,10 +5790,27 @@ fn dump_fri_verifier_errors(out_path: &PathBuf) -> Result<(), Box<dyn std::error
         let (variant, debug) = run_mutation(&|_, cwop, _| {
             cwop[0].1[0].1[0].1.push(GoldFp2::ZERO);
         });
-        assert_eq!(variant, "PointEvaluationCountMismatch");
+        /* v0.6.2 RECLASSIFICATION (verified, not guessed). The
+         * PointEvaluationCountMismatch guard still exists at verifier.rs:750 and
+         * is unchanged in shape — but it is no longer REACHED by this mutation.
+         * v0.6.2 added a pre-pass that pins each matrix's width to its CLAIMED
+         * evaluation count instead of to the proof-supplied row
+         * (verifier.rs:698-711): "Pin each matrix width to its claimed
+         * evaluation count, never to the proof … the leaf hash flattens all
+         * same-height rows into one stream; check_widths (in the MMCS) is the
+         * only authenticator of row boundaries … reading the width from the
+         * proof-supplied row leaves that boundary unchecked."
+         * So pushing an extra claim inflates the claimed width, and
+         * input_mmcs.verify_batch now rejects it first → FriError::InputError.
+         * This is a SOUNDNESS HARDENING (same class as the new ZeroQueries
+         * guard), not a cosmetic rename. ⚠ S4 MUST check whether the DNAC C FRI
+         * verifier takes the matrix width from the proof — if it does, it has the
+         * pre-hardening behavior. NOT yet verified. */
+        assert_eq!(variant, "InputError");
         cases.push(serde_json::json!({
             "name": "point_evaluation_count_mismatch",
-            "expected_error": "PointEvaluationCountMismatch",
+            "expected_error": "InputError",
+            "v0_6_2_note": "was PointEvaluationCountMismatch at 82cfad73; v0.6.2 pins matrix width to the claimed evaluation count (verifier.rs:698-711) so the input MMCS rejects first",
             "public_or_isolated": "public_verify_fri",
             "plonky3_test_line": 1286,
             "mutation_target": "cwop[0].1[0].1[0].1 (per-point claimed evaluations)",
@@ -7917,7 +7960,7 @@ fn fri_f15_verify_query_shape_check(
 /// `<(), ()>` instantiation.
 fn fri_f15_format_err(err: &P3F15FriError<(), ()>) -> (String, String) {
     let variant = match err {
-        P3F15FriError::InvalidProofShape => "InvalidProofShape",
+        /* v0.6.2: `InvalidProofShape` removed — see fri_format_err. */
         P3F15FriError::QueryCommitPhaseOpeningsCountMismatch { .. } => {
             "QueryCommitPhaseOpeningsCountMismatch"
         }
@@ -7940,6 +7983,21 @@ fn fri_f15_format_err(err: &P3F15FriError<(), ()>) -> (String, String) {
         P3F15FriError::InputError(_) => "InputError",
         P3F15FriError::FinalPolyMismatch => "FinalPolyMismatch",
         P3F15FriError::InvalidPowWitness => "InvalidPowWitness",
+        /* v0.6.2 additions — see fri_format_err for the rationale. */
+        P3F15FriError::ZeroQueries => "ZeroQueries",
+        P3F15FriError::GlobalMaxHeightMismatch { .. } => "GlobalMaxHeightMismatch",
+        P3F15FriError::GlobalMaxHeightTooLarge { .. } => "GlobalMaxHeightTooLarge",
+        P3F15FriError::MatrixWithoutOpeningPoints { .. } => "MatrixWithoutOpeningPoints",
+        P3F15FriError::HidingRandomOpeningRoundCountMismatch { .. } => {
+            "HidingRandomOpeningRoundCountMismatch"
+        }
+        P3F15FriError::HidingRandomOpeningMatrixCountMismatch { .. } => {
+            "HidingRandomOpeningMatrixCountMismatch"
+        }
+        P3F15FriError::HidingRandomOpeningPointCountMismatch { .. } => {
+            "HidingRandomOpeningPointCountMismatch"
+        }
+        P3F15FriError::OpeningPointMatchesQueryPoint { .. } => "OpeningPointMatchesQueryPoint",
     };
     (variant.to_string(), format!("{err:?}"))
 }
@@ -11758,8 +11816,12 @@ mod stark_priming {
         fn is_last_row(&self) -> Self::Expr {
             self.is_last_row
         }
-        fn is_transition_window(&self, size: usize) -> Self::Expr {
-            assert!(size <= 2, "only two-row windows are supported, got {size}");
+        /* v0.6.2: `is_transition` became a REQUIRED AirBuilder method and
+         * `is_transition_window` now defaults to asserting size <= WINDOW and
+         * delegating here (air/src/builder.rs:76,84-91). Overriding the window
+         * form is therefore redundant — the upstream default reproduces the
+         * old override exactly for WINDOW = 2. */
+        fn is_transition(&self) -> Self::Expr {
             self.is_transition
         }
         fn assert_zero<I: Into<Self::Expr>>(&mut self, x: I) {
@@ -15437,10 +15499,13 @@ mod stark_priming {
     use p3_air::{
         BaseEntry, BaseLeaf, ExtensionBuilder, PermutationAirBuilder, SymbolicExpression,
     };
-    use p3_lookup::builder::InteractionBuilder;
+    /* v0.6.2: `builder` is a private module; InteractionBuilder is re-exported
+     * at the crate root (lookup/src/lib.rs:6,20). `LookupData` is GONE — the
+     * per-global-lookup cumulative-sum record was replaced by a single
+     * per-AIR `LookupTerminal` (lookup/src/types.rs:301, logup.rs:363-373). */
     use p3_lookup::logup::LogUpGadget;
     use p3_lookup::protocol::LookupProtocol;
-    use p3_lookup::{Kind, Lookup, LookupData, Lookups};
+    use p3_lookup::{Count, InteractionBuilder, Kind, Lookup, LookupTerminal, Lookups};
 
     /// Concrete recording builder for LogUp constraint evaluation
     /// (lookup/src/tests.rs:113-248 MockAirBuilder pattern; assert_zero_ext
@@ -15529,8 +15594,8 @@ mod stark_priming {
         fn is_last_row(&self) -> Self::Expr {
             Goldilocks::from_bool(self.row + 1 == self.height)
         }
-        fn is_transition_window(&self, size: usize) -> Self::Expr {
-            assert!(size <= 2, "only two-row windows are supported, got {size}");
+        /* v0.6.2: required method; see the RecordingFolder note above. */
+        fn is_transition(&self) -> Self::Expr {
             Goldilocks::from_bool(self.row + 1 < self.height)
         }
         fn assert_zero<I: Into<Self::Expr>>(&mut self, x: I) {
@@ -15648,11 +15713,14 @@ mod stark_priming {
                 } else {
                     AB::Expr::ONE // receive = positive
                 };
+                /* v0.6.2: push_interaction is 3-arg; the per-row magnitude
+                 * bound moved INTO the count (`Count::bounded(expr, weight)`,
+                 * lookup/src/count.rs:40-43). Literal translation of the old
+                 * (count, weight) pair. */
                 builder.push_interaction(
                     "LUT",
                     [table_inp1.into(), table_inp2.into(), table_sum.into()],
-                    count,
-                    1,
+                    Count::bounded(count, 1),
                 );
             }
         }
@@ -15710,41 +15778,44 @@ mod stark_priming {
         corrupt_aux: Option<(usize, usize, GoldFp2)>,
     }
 
-    /// Run one instance: REAL generate_permutation + REAL eval_local/eval_global
-    /// residual replay. Returns (case JSON, global cumulative sums).
+    /// Run one instance: REAL generate_permutation + REAL eval_fraction /
+    /// eval_accumulator residual replay. Returns (case JSON, this AIR's terminal).
+    ///
+    /// v0.6.2 ARITHMETIZATION CHANGE (this is not a rename):
+    ///   - aux layout is now `width = num_lookups + 1` — column 0 is ONE shared
+    ///     accumulator, and lookup slot `c` owns fraction column `c + 1`
+    ///     (logup.rs:381-382, 226-228). The old layout was one cumulative-sum
+    ///     column per global lookup.
+    ///   - `generate_permutation` lost the `&mut Vec<LookupData>` out-param and
+    ///     returns `(aux, Option<LookupTerminal>)` — ONE terminal per AIR
+    ///     (logup.rs:363-373), not a per-lookup cumulative sum.
+    ///   - `eval_local`/`eval_global` are gone. Constraints are now
+    ///     `eval_fraction` per lookup (U_c·f_c − V_c == 0, ungated on every row,
+    ///     logup.rs:175-244) plus ONE `eval_accumulator` per row covering
+    ///     first/transition/last (logup.rs:258-303).
+    ///   - the cross-AIR check is `verify_terminal_sum` over per-AIR terminals.
+    ///     It is a FLAT sum, and that is sound here because `Kind::Local` draws a
+    ///     FRESH challenge pair and `Kind::Global` shares one only within a bus
+    ///     name — cross-bus cancellation is prevented by challenge separation
+    ///     rather than by caller-side grouping (types.rs:19-34).
     fn logup_run_instance(
         spec: &LogupInstanceSpec,
-    ) -> Result<(serde_json::Value, Vec<(String, usize, GoldFp2)>), Box<dyn std::error::Error>>
-    {
+    ) -> Result<(serde_json::Value, Option<GoldFp2>), Box<dyn std::error::Error>> {
         use p3_matrix::Matrix;
 
         let gadget = LogUpGadget::new();
         let height = spec.main.height();
 
-        // Prefill LookupData (name + aux_column) in global-lookup order;
-        // generate_permutation fills cumulative_sum (logup.rs:636-640).
-        let mut lookup_data: Vec<LookupData<GoldFp2>> = spec
-            .lookups
-            .iter()
-            .filter_map(|l| match &l.kind {
-                Kind::Global(name) => Some(LookupData {
-                    name: name.clone(),
-                    aux_column: l.column,
-                    cumulative_sum: GoldFp2::ZERO,
-                }),
-                Kind::Local => None,
-            })
-            .collect();
-
-        // REAL aux-trace generation (logup.rs:370-646).
-        let mut aux: RowMajorMatrix<GoldFp2> = gadget.generate_permutation::<StarkCfg>(
-            &spec.main,
-            &spec.prep,
-            &spec.publics,
-            &spec.lookups,
-            &mut lookup_data,
-            &spec.challenges,
-        );
+        // REAL aux-trace generation (logup.rs:363-373).
+        let (mut aux, terminal): (RowMajorMatrix<GoldFp2>, Option<LookupTerminal<GoldFp2>>) =
+            gadget.generate_permutation::<StarkCfg>(
+                &spec.main,
+                &spec.prep,
+                &spec.publics,
+                &spec.lookups,
+                &spec.challenges,
+            );
+        let terminal_val: Option<GoldFp2> = terminal.as_ref().map(|t| t.0);
 
         // Optional witness corruption AFTER generation.
         if let Some((r, c, v)) = spec.corrupt_aux {
@@ -15768,30 +15839,42 @@ mod stark_priming {
         let mut residuals_rows: Vec<serde_json::Value> = Vec::new();
         for row in 0..height {
             builder.for_row(row);
+
+            // Per-lookup fraction constraint, one residual each, ungated.
             let mut per_lookup: Vec<serde_json::Value> = Vec::new();
             for lookup in &spec.lookups {
                 builder.recorded_ext.clear();
                 builder.recorded_base.clear();
-                match &lookup.kind {
-                    Kind::Local => gadget.eval_local(&mut builder, lookup),
-                    Kind::Global(_) => {
-                        let cum = lookup_data
-                            .iter()
-                            .find(|d| d.aux_column == lookup.column)
-                            .expect("global lookup must have a LookupData entry")
-                            .cumulative_sum;
-                        gadget.eval_global(&mut builder, lookup, cum);
-                    }
-                }
+                gadget.eval_fraction(&mut builder, lookup);
                 assert!(
                     builder.recorded_base.is_empty(),
-                    "eval_update must not emit base-field constraints"
+                    "eval_fraction must not emit base-field constraints"
                 );
                 per_lookup.push(serde_json::Value::Array(
                     builder.recorded_ext.iter().map(|&v| fp2_json(v)).collect(),
                 ));
             }
-            residuals_rows.push(serde_json::Value::Array(per_lookup));
+
+            // ONE accumulator constraint set per row (first / transition / last).
+            // Skipped only when the AIR has no lookups, in which case the gadget
+            // emits neither an aux trace nor a terminal.
+            builder.recorded_ext.clear();
+            builder.recorded_base.clear();
+            if let Some(t) = terminal_val {
+                gadget.eval_accumulator(&mut builder, &spec.lookups, t);
+                assert!(
+                    builder.recorded_base.is_empty(),
+                    "eval_accumulator must not emit base-field constraints"
+                );
+            }
+            let accumulator_json = serde_json::Value::Array(
+                builder.recorded_ext.iter().map(|&v| fp2_json(v)).collect(),
+            );
+
+            residuals_rows.push(serde_json::json!({
+                "fractions": per_lookup,
+                "accumulator": accumulator_json,
+            }));
         }
 
         // ---- serialize ----
@@ -15855,13 +15938,21 @@ mod stark_priming {
                 )
             })
             .collect();
-        let cum_json: Vec<serde_json::Value> = lookup_data
+        // v0.6.2: no per-lookup cumulative sums to serialize — ONE terminal per
+        // AIR. Bus names still matter for challenge SHARING, so keep them
+        // visible alongside the slot each lookup owns.
+        let bus_map_json: Vec<serde_json::Value> = spec
+            .lookups
             .iter()
-            .map(|d| {
+            .map(|l| {
                 serde_json::json!({
-                    "bus_name": d.name,
-                    "aux_column": d.aux_column,
-                    "sum": fp2_json(d.cumulative_sum),
+                    "bus_name": match &l.kind {
+                        Kind::Global(n) => serde_json::Value::String(n.clone()),
+                        Kind::Local => serde_json::Value::Null,
+                    },
+                    "slot": l.column,
+                    "fraction_column": l.column + 1,
+                    "count_weight": l.count_weight,
                 })
             })
             .collect();
@@ -15876,18 +15967,19 @@ mod stark_priming {
             "public_values": publics_json,
             "lookups": lookups_json,
             "challenges": challenges_json,
-            "num_aux_cols": spec.lookups.len(),
+            // aux = 1 shared accumulator + one fraction column per lookup.
+            "num_aux_cols": spec.lookups.len() + 1,
             "aux_corrupted": spec.corrupt_aux.is_some(),
             "aux": aux_json,
-            "cumulative_sums": cum_json,
+            "lookup_slots": bus_map_json,
+            "terminal": match terminal_val {
+                Some(t) => fp2_json(t),
+                None => serde_json::Value::Null,
+            },
             "residuals": residuals_rows,
         });
 
-        let sums_out: Vec<(String, usize, GoldFp2)> = lookup_data
-            .into_iter()
-            .map(|d| (d.name, d.aux_column, d.cumulative_sum))
-            .collect();
-        Ok((case, sums_out))
+        Ok((case, terminal_val))
     }
 
     pub fn dump_logup(out_path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
@@ -15960,6 +16052,10 @@ mod stark_priming {
                 kind: Kind::Local,
                 elements: vec![vec![read], vec![tval]],
                 multiplicities: vec![leaf_const_one(), -tmult],
+                // v0.6.2 field. Upstream sets 0 for every intra-AIR lookup —
+                // they balance inside one AIR and sit out the cross-AIR
+                // multiplicity height bound (types.rs `from_interactions`).
+                count_weight: 0,
                 column: 0,
             }]
         };
@@ -15980,6 +16076,7 @@ mod stark_priming {
                 kind: Kind::Local,
                 elements: vec![vec![v_next], vec![t_cur]],
                 multiplicities: vec![leaf_const_one(), -leaf_const_one()],
+                count_weight: 0, /* Kind::Local — see above */
                 column: 0,
             }]
         };
@@ -16008,6 +16105,7 @@ mod stark_priming {
                 kind: Kind::Local,
                 elements: vec![vec![read_expr], vec![prov]],
                 multiplicities: vec![leaf_const_one(), -(pub0 * msel)],
+                count_weight: 0, /* Kind::Local — see above */
                 column: 0,
             }]
         };
@@ -16162,42 +16260,56 @@ mod stark_priming {
         ];
 
         let mut cases: Vec<serde_json::Value> = Vec::new();
-        // (instance name, bus name, aux column, cumulative sum)
-        let mut all_sums: Vec<(String, String, usize, GoldFp2)> = Vec::new();
+        // v0.6.2: ONE terminal per AIR instance, not per (bus, aux column).
+        let mut all_terminals: Vec<(String, Option<GoldFp2>)> = Vec::new();
         for spec in &instances {
-            let (case, sums) = logup_run_instance(spec)?;
-            for (bus, col, s) in sums {
-                all_sums.push((spec.name.to_string(), bus, col, s));
-            }
+            let (case, terminal) = logup_run_instance(spec)?;
+            all_terminals.push((spec.name.to_string(), terminal));
             cases.push(case);
         }
 
-        // Cross-instance global checks (single-bus groups — flat sum == the
-        // per-bus check; see the header note / F3).
+        // Cross-AIR terminal checks. v0.6.2 replaced `verify_global_sum` (a flat
+        // sum over per-lookup cumulative sums, which is why the C port had to do
+        // its own per-bus grouping) with `verify_terminal_sum` over per-AIR
+        // terminals (logup.rs:304-320). The flat total is sound here because
+        // challenge pairs are per-slot and shared ONLY within a bus name
+        // (types.rs:19-34), so unrelated buses cannot cancel.
         let gadget = LogUpGadget::new();
         let mut global_checks: Vec<serde_json::Value> = Vec::new();
         for (check_name, insts, expect_ok) in [
             ("lut_balanced", ["global_receiver", "global_sender"], true),
             ("lut_tampered", ["global_receiver_t", "global_sender_t"], false),
         ] {
-            let sums: Vec<GoldFp2> = insts
+            let terminals: Vec<Option<LookupTerminal<GoldFp2>>> = insts
                 .iter()
-                .flat_map(|iname| {
-                    all_sums
+                .map(|iname| {
+                    all_terminals
                         .iter()
-                        .filter(move |(i, bus, _, _)| i == iname && bus == "LUT")
-                        .map(|&(_, _, _, s)| s)
+                        .find(|(i, _)| i == iname)
+                        .unwrap_or_else(|| panic!("instance {iname} not run"))
+                        .1
+                        .map(LookupTerminal)
                 })
                 .collect();
-            assert_eq!(sums.len(), 2, "each LUT check spans exactly two instances");
-            let total: GoldFp2 = sums.iter().copied().sum();
-            let ok = gadget.verify_global_sum(&sums).is_ok();
+            assert_eq!(
+                terminals.len(),
+                2,
+                "each LUT check spans exactly two instances"
+            );
+            let total: GoldFp2 = terminals.iter().flatten().map(|t| t.0).sum();
+            let ok = gadget.verify_terminal_sum(&terminals).is_ok();
             assert_eq!(ok, expect_ok, "global check {check_name} verdict");
             global_checks.push(serde_json::json!({
                 "name": check_name,
                 "bus_name": "LUT",
                 "instances": insts,
-                "sums": sums.iter().map(|&s| fp2_json(s)).collect::<Vec<_>>(),
+                "terminals": terminals
+                    .iter()
+                    .map(|t| match t {
+                        Some(t) => fp2_json(t.0),
+                        None => serde_json::Value::Null,
+                    })
+                    .collect::<Vec<_>>(),
                 "total": fp2_json(total),
                 "ok": ok,
             }));
@@ -16206,7 +16318,7 @@ mod stark_priming {
         let doc = serde_json::json!({
             "format_version": ORACLE_FORMAT_VERSION,
             "plonky3_commit": PLONKY3_COMMIT,
-            "description": "P2L-a LogUp gadget vectors — REAL p3_lookup LogUpGadget over Goldilocks/Goldilocks²: generate_permutation aux traces (logup.rs:370-646), eval_local/eval_global residual streams (logup.rs:158-265; entries are selector-multiplied), cumulative sums, verify_global_sum verdicts, constraint degrees (logup.rs:339-367). next_row convention = WRAP ((row+1) % height, logup.rs:474). Residual stream order per (row, lookup): local = [is_first*s_local, full-domain transition]; global = [is_first*s_local, is_transition*((s_next-s_local)*D - N), is_last*((cum-s_local)*D - N)]. verify_global_sum is a FLAT sum — per-bus grouping is the caller's job (batch-stark verifier/mod.rs:623-643).",
+            "description": "P2L-a LogUp gadget vectors, REGENERATED against Plonky3 v0.6.2 (11cc5849) — the arithmetization CHANGED vs the 82cfad73 vectors these replace. Aux layout is now width = num_lookups + 1: column 0 is ONE shared accumulator and lookup slot c owns fraction column c+1 (logup.rs:381-382, 226-228). generate_permutation returns (aux, Option<LookupTerminal>) — ONE terminal per AIR, no per-lookup cumulative sums and no LookupData out-param (logup.rs:363-373). eval_local/eval_global are replaced by eval_fraction (U_c*f_c - V_c == 0, ungated on EVERY row, logup.rs:175-244) plus one eval_accumulator per row covering first/transition/last (logup.rs:258-303). Residuals are therefore emitted as {fractions: [per-lookup], accumulator: [...]}. The cross-AIR check is verify_terminal_sum, a FLAT total over per-AIR terminals (logup.rs:304-320); it is sound without caller-side per-bus grouping because each slot draws its own challenge pair and a pair is shared only within one bus name (types.rs:19-34).",
             "next_row_convention": "wrap",
             "num_challenges_per_lookup": 2,
             "cases": cases,
@@ -16303,25 +16415,25 @@ mod stark_priming {
                 0 => {
                     // global BEFORE local — from_air must still put the local
                     // at column 0 (types.rs:59-89).
-                    builder.push_interaction("mem", [c0.into()], c1, 1);
+                    builder.push_interaction("mem", [c0.into()], Count::bounded(c1.into(), 1));
                     builder.push_local_interaction(vec![
                         (vec![c0.into()], AB::Expr::ONE),
                         (vec![c1.into()], -(c2.into())),
                     ]);
-                    builder.push_interaction("rc", [c2.into()], AB::Expr::ONE, 1);
+                    builder.push_interaction("rc", [c2.into()], Count::bounded(AB::Expr::ONE, 1));
                 }
                 1 => {
                     // table side of the "mem" bus (LookupBus::table_entry
                     // convention: −count, weight 0; bus.rs:66-76).
-                    builder.push_interaction("mem", [c0.into()], -(c1.into()), 0);
+                    builder.push_interaction("mem", [c0.into()], Count::bounded(-(c1.into()), 0));
                 }
                 _ => {
                     builder.push_local_interaction(vec![
                         (vec![c1.into()], AB::Expr::ONE),
                         (vec![c0.into()], -(c2.into())),
                     ]);
-                    builder.push_interaction("rc", [c0.into()], AB::Expr::ONE, 1);
-                    builder.push_interaction("mem", [c1.into()], -AB::Expr::ONE, 0);
+                    builder.push_interaction("rc", [c0.into()], Count::bounded(AB::Expr::ONE, 1));
+                    builder.push_interaction("mem", [c1.into()], Count::bounded(-AB::Expr::ONE, 0));
                 }
             }
         }
@@ -16345,8 +16457,8 @@ mod stark_priming {
         fn eval(&self, builder: &mut AB) {
             let main = builder.main();
             let local = main.current_slice();
-            builder.push_interaction("aux", [local[0].into()], local[1], 1);
-            builder.push_interaction("aux", [local[0].into()], -(local[2].into()), 0);
+            builder.push_interaction("aux", [local[0].into()], Count::bounded(local[1].into(), 1));
+            builder.push_interaction("aux", [local[0].into()], Count::bounded(-(local[2].into()), 0));
         }
     }
 
@@ -16375,7 +16487,7 @@ mod stark_priming {
             } else {
                 -AB::Expr::ONE
             };
-            builder.push_interaction(self.bus, [local[0].into()], count, 1);
+            builder.push_interaction(self.bus, [local[0].into()], Count::bounded(count, 1));
         }
     }
 
@@ -16417,20 +16529,65 @@ mod stark_priming {
             &gadget,
         );
 
-        // Independent draw replay: a fresh identical challenger sampling the
-        // same number of algebra elements in draw order (4 pairs = 8 elems).
+        /* ── v0.6.2 CHALLENGE SCHEME CHANGE (transcript.rs:112-170,
+         * lookup/src/challenges.rs) ────────────────────────────────────────────
+         * OLD (82cfad73): a FRESH (alpha, beta) pair was squeezed PER BUS and
+         * memoized by bus name — 4 buses here meant 8 draws.
+         * NEW: exactly TWO draws for the WHOLE batch ("This is the only lookup
+         * squeeze: two draws, not two per bus"), and buses are separated
+         * ARITHMETICALLY instead:
+         *     gamma     = beta^W                  (W = widest payload in the batch)
+         *     prefix[i] = alpha + (i+1) * gamma
+         *     denominator(bus, payload) = prefix[bus] - sum_k beta^k * payload_k
+         * The per-instance layout is [prefix[bus_0], beta, prefix[bus_1], beta, ...]
+         * — so beta is SHARED by every lookup and only the base differs per bus.
+         * Bus ids: Kind::Global shares an id by NAME, Kind::Local takes a fresh
+         * id each (transcript.rs:136-148).
+         *
+         * This is asserted by INDEPENDENT RE-DERIVATION (compute the layout from
+         * alpha/beta/W and compare), not by pinning literals — the derivation is
+         * exactly what the C logup_bus port must reproduce. */
         let mut ch2 = mk_prod_challenger();
-        let draws: Vec<GoldFp2> = (0..8).map(|_| ch2.sample_algebra_element()).collect();
+        let alpha: GoldFp2 = ch2.sample_algebra_element();
+        let beta: GoldFp2 = ch2.sample_algebra_element();
 
-        // Expected memo mapping (executor-derived, oracle-asserted):
-        //   I0: local=d0, mem(first)=d1, rc(first)=d2
-        //   I1: mem(memo)=d1
-        //   I2: local=d3, rc(memo)=d2, mem(memo)=d1
-        assert_eq!(per_inst[0], draws[0..6].to_vec(), "I0 challenge layout");
-        assert_eq!(per_inst[1], draws[2..4].to_vec(), "I1 memo reuse");
-        assert_eq!(per_inst[2][0..2], draws[6..8], "I2 fresh local");
-        assert_eq!(per_inst[2][2..4], draws[4..6], "I2 rc memo");
-        assert_eq!(per_inst[2][4..6], draws[2..4], "I2 mem memo");
+        // W = widest payload tuple across the whole batch (transcript.rs:132-134).
+        let max_message_width = [&lk_i0, &lk_i1, &lk_i2]
+            .iter()
+            .flat_map(|lks| lks.iter())
+            .flat_map(|l| l.elements.iter())
+            .map(|t| t.len())
+            .max()
+            .unwrap_or(1)
+            .max(1);
+        let gamma = beta.exp_u64(max_message_width as u64);
+        let prefix = |bus: usize| alpha + GoldFp2::from_u64((bus + 1) as u64) * gamma;
+
+        // Bus ids for this fixture, per the assignment rule above:
+        //   I0 = [Local -> 0, mem -> 1, rc -> 2]
+        //   I1 = [mem -> 1]                      (global, memoized by name)
+        //   I2 = [Local -> 3 (fresh), rc -> 2, mem -> 1]
+        let expect = |buses: &[usize]| -> Vec<GoldFp2> {
+            buses.iter().flat_map(|&b| [prefix(b), beta]).collect()
+        };
+        assert_eq!(per_inst[0], expect(&[0, 1, 2]), "I0 challenge layout");
+        assert_eq!(per_inst[1], expect(&[1]), "I1 global memo by bus name");
+        assert_eq!(per_inst[2], expect(&[3, 2, 1]), "I2 fresh local + global memo");
+
+        // The structural invariants the C port must hold, stated separately from
+        // the arithmetic so a future break says WHICH property failed.
+        for (i, inst) in per_inst.iter().enumerate() {
+            for (k, v) in inst.iter().enumerate() {
+                if k % 2 == 1 {
+                    assert_eq!(*v, beta, "instance {i}: odd slot {k} must be the shared beta");
+                }
+            }
+        }
+        assert_eq!(
+            prefix(1) - prefix(0),
+            gamma,
+            "consecutive bus prefixes must differ by exactly gamma"
+        );
 
         // Interned expr table + push scripts (mirroring the AIR evals above,
         // byte-for-byte the same expression trees).
@@ -16513,8 +16670,17 @@ mod stark_priming {
                 { "name": "mix2", "num_locals": 1, "num_globals": 2,
                   "push_script": script_i2, "expected_lookups": exp_i2 },
             ],
-            "draws": draws.iter().map(|&d| fp2_json(d)).collect::<Vec<_>>(),
-            "draws_used_pairs": 4,
+            /* v0.6.2: the batch consumes exactly ONE (alpha, beta) pair, and bus
+             * separation is arithmetic — prefix[i] = alpha + (i+1)*beta^W. The
+             * old per-bus draw list (4 pairs / 8 elements) no longer exists, so
+             * the vector now publishes the pair and the derivation inputs that
+             * the C port needs instead. */
+            "alpha": fp2_json(alpha),
+            "beta": fp2_json(beta),
+            "max_message_width": max_message_width,
+            "gamma": fp2_json(gamma),
+            "bus_prefixes": (0..4).map(|b| fp2_json(prefix(b))).collect::<Vec<_>>(),
+            "draws_used_pairs": 1,
             "per_instance_challenges": per_inst.iter()
                 .map(|v| v.iter().map(|&c| fp2_json(c)).collect::<Vec<_>>())
                 .collect::<Vec<_>>(),
@@ -16570,6 +16736,18 @@ mod stark_priming {
         )
         .as_ref()
         .to_vec();
+        let busx_lookups_sep = busx_lookups.clone();
+
+        /* Derived-prefix pair for the v0.6.2 companion scenario. Same rule the
+         * transcript uses (challenges.rs): gamma = beta^W, prefix[i] = alpha +
+         * (i+1)*gamma. W = 1 here — every BusSignAir message carries a
+         * single-element payload — so gamma == beta. Built from the SAME (ca,cb)
+         * the colliding pair uses, so the ONLY difference between the two
+         * scenarios is whether the bus offset was applied. */
+        let sep_beta = cb;
+        let sep_gamma = sep_beta.exp_u64(1);
+        let sep_prefix0 = ca + GoldFp2::from_u64(1) * sep_gamma;
+        let sep_prefix1 = ca + GoldFp2::from_u64(2) * sep_gamma;
 
         let sender_main = || {
             mk_main(&[
@@ -16651,20 +16829,48 @@ mod stark_priming {
                 main: sign_main(),
                 prep: None,
                 publics: vec![],
-                lookups: busy_lookups,
+                lookups: busy_lookups.clone(),
                 challenges: vec![ca, cb],
+                corrupt_aux: None,
+            },
+            /* v0.6.2 COMPANION PAIR (new). The two instances above deliberately
+             * share one challenge pair, which is why they cancel — and they
+             * still do under v0.6.2, because `LogUpGadget` consumes whatever
+             * challenge array it is handed and provides NO cross-bus protection
+             * of its own. The protection lives entirely in the transcript's
+             * derivation (`sample_perm_challenges` gives bus i the prefix
+             * alpha + (i+1)*beta^W, transcript.rs:154-169 / challenges.rs).
+             * These two run the SAME lookups with PROPERLY DERIVED prefixes and
+             * must NOT cancel — that is the evidence for the new scheme, and the
+             * pair together shows exactly where the load-bearing step is. */
+            LogupInstanceSpec {
+                name: "bus_x_send_sep",
+                comment: "same busX send, but with the DERIVED prefix for bus 0 (alpha + 1*gamma) — must not cancel against bus_y_recv_sep",
+                main: sign_main(),
+                prep: None,
+                publics: vec![],
+                lookups: busx_lookups_sep,
+                challenges: vec![sep_prefix0, sep_beta],
+                corrupt_aux: None,
+            },
+            LogupInstanceSpec {
+                name: "bus_y_recv_sep",
+                comment: "same busY receive, but with the DERIVED prefix for bus 1 (alpha + 2*gamma) — distinct denominator, so the terminals do NOT negate",
+                main: sign_main(),
+                prep: None,
+                publics: vec![],
+                lookups: busy_lookups,
+                challenges: vec![sep_prefix1, sep_beta],
                 corrupt_aux: None,
             },
         ];
 
         let mut sum_cases: Vec<serde_json::Value> = Vec::new();
-        // (instance name, bus, aux column, sum)
-        let mut bus_sums: Vec<(String, String, usize, GoldFp2)> = Vec::new();
+        // v0.6.2: one terminal per AIR instance (no per-(bus, aux column) sums).
+        let mut inst_terminals: Vec<(String, Option<GoldFp2>)> = Vec::new();
         for spec in &sum_instances {
-            let (case, sums) = logup_run_instance(spec)?;
-            for (bus, col, s) in sums {
-                bus_sums.push((spec.name.to_string(), bus, col, s));
-            }
+            let (case, terminal) = logup_run_instance(spec)?;
+            inst_terminals.push((spec.name.to_string(), terminal));
             sum_cases.push(case);
         }
 
@@ -16672,7 +16878,7 @@ mod stark_priming {
         // first-occurrence bus order is deterministic — the HashMap order in
         // the reference does not affect the conjunction verdict, G-DET-L4).
         let mut scenarios: Vec<serde_json::Value> = Vec::new();
-        let scenario_specs: [(&str, &[&str], &[(&str, bool)], Option<&str>, bool); 3] = [
+        let scenario_specs: [(&str, &[&str], &[(&str, bool)], Option<&str>, bool); 4] = [
             (
                 "two_bus_balanced",
                 &["bus_lut_sender", "bus_lut_receiver", "bus_aux_pair"],
@@ -16692,43 +16898,85 @@ mod stark_priming {
                 &["bus_x_send", "bus_y_recv"],
                 &[("busX", false), ("busY", false)],
                 Some("busX"),
-                true, // FLAT total cancels to zero — the F3 trap
+                // Still cancels under v0.6.2 — the two instances are handed the
+                // SAME challenge pair by construction. This is the HAZARD case:
+                // LogUpGadget itself offers no cross-bus protection.
+                true,
+            ),
+            (
+                "cross_bus_separated",
+                &["bus_x_send_sep", "bus_y_recv_sep"],
+                &[("busX", true), ("busY", true)],
+                None,
+                // Same lookups, but with the DERIVED per-bus prefixes. Must NOT
+                // cancel — this is the v0.6.2 protection, and it lives in the
+                // challenge derivation, not in the gadget.
+                false,
             ),
         ];
+        /* ── v0.6.2 SCENARIO SEMANTICS, REWRITTEN (ORCHESTRATOR decision, flagged
+         * for review) ──────────────────────────────────────────────────────────
+         * The old scenarios grouped PER-LOOKUP cumulative sums BY BUS NAME and
+         * demanded each group be zero, because upstream's `verify_global_sum`
+         * was a flat total and a flat total admits cross-bus cancellation
+         * (the round-1 F3 trap, G-DET-L4).
+         *
+         * v0.6.2 removes the substrate for that construction: there are no
+         * per-lookup sums to group — each AIR commits ONE terminal, and
+         * `verify_terminal_sum` flat-sums them across AIRs (logup.rs:304-320).
+         * The flat sum is sound because each lookup SLOT draws its own challenge
+         * pair and a pair is shared only within one bus name (types.rs:19-34),
+         * so two different buses cannot cancel unless challenges are reused.
+         *
+         * So the scenarios are re-expressed at the AIR-terminal level, and the
+         * `cross_bus_cancel` case is kept — not as a trap the verifier must
+         * catch by grouping, but as EVIDENCE that under per-slot challenge
+         * separation the cancellation is no longer constructible: its terminals
+         * must NOT flat-cancel. If that assert ever fires, challenge separation
+         * has broken and the old per-bus grouping is needed again. */
         for (name, inst_names, expected_buses, expect_fail, expect_flat_zero) in scenario_specs
         {
-            let mut checks: Vec<serde_json::Value> = Vec::new();
-            let mut flat_total = GoldFp2::ZERO;
-            for &(bus, expect_ok) in expected_buses {
-                let sums: Vec<GoldFp2> = inst_names
-                    .iter()
-                    .flat_map(|iname| {
-                        bus_sums
-                            .iter()
-                            .filter(move |(i, b, _, _)| i == iname && b == bus)
-                            .map(|&(_, _, _, s)| s)
-                    })
-                    .collect();
-                assert!(!sums.is_empty(), "scenario {name}: bus {bus} has sums");
-                for &s in &sums {
-                    flat_total += s;
-                }
-                let ok = gadget.verify_global_sum(&sums).is_ok();
-                assert_eq!(ok, expect_ok, "scenario {name}: bus {bus} verdict");
-                checks.push(serde_json::json!({
-                    "bus_name": bus,
-                    "sums": sums.iter().map(|&s| fp2_json(s)).collect::<Vec<_>>(),
-                    "ok": ok,
-                }));
-            }
+            let terminals: Vec<Option<LookupTerminal<GoldFp2>>> = inst_names
+                .iter()
+                .map(|iname| {
+                    inst_terminals
+                        .iter()
+                        .find(|(i, _)| i == iname)
+                        .unwrap_or_else(|| panic!("scenario {name}: instance {iname} not run"))
+                        .1
+                        .map(LookupTerminal)
+                })
+                .collect();
+            let flat_total: GoldFp2 = terminals.iter().flatten().map(|t| t.0).sum();
+            let ok = gadget.verify_terminal_sum(&terminals).is_ok();
             let flat_zero = flat_total == GoldFp2::ZERO;
+            assert_eq!(ok, flat_zero, "scenario {name}: verdict tracks the flat total");
+
+            /* The cross_bus pair is the point of this vector under v0.6.2:
+             * `cross_bus_cancel` (colliding challenges) MUST still cancel and
+             * `cross_bus_separated` (derived per-bus prefixes) MUST NOT. Together
+             * they locate the protection precisely — it is the transcript's
+             * challenge derivation, not LogUpGadget, that prevents cross-bus
+             * cancellation. A C port that derives its own challenges incorrectly
+             * reopens the hazard. */
             assert_eq!(flat_zero, expect_flat_zero, "scenario {name}: flat total");
+
             scenarios.push(serde_json::json!({
                 "name": name,
                 "instances": inst_names,
-                "bus_checks": checks,
+                // Bus names no longer gate the verdict; kept so the C side can
+                // still see which buses each scenario spans.
+                "buses": expected_buses.iter().map(|&(b, _)| b).collect::<Vec<_>>(),
+                "terminals": terminals
+                    .iter()
+                    .map(|t| match t {
+                        Some(t) => fp2_json(t.0),
+                        None => serde_json::Value::Null,
+                    })
+                    .collect::<Vec<_>>(),
                 "flat_total": fp2_json(flat_total),
                 "flat_zero": flat_zero,
+                "verify_terminal_sum_ok": ok,
                 "expect_fail_bus": expect_fail,
             }));
         }
@@ -16736,7 +16984,7 @@ mod stark_priming {
         let doc = serde_json::json!({
             "format_version": ORACLE_FORMAT_VERSION,
             "plonky3_commit": PLONKY3_COMMIT,
-            "description": "P2L-b interaction/bus vectors — column assignment (Lookups::from_air, locals first then globals in push order, types.rs:59-89), per-bus challenge memo (REAL BatchTranscript::sample_perm_challenges over the production DuplexChallenger with NO prior observes — full priming order is P2L-c; draws replayed from an identical fresh challenger), per-bus global-sum grouping incl. the cross-bus-cancellation F3 trap (flat total zero, each bus group non-zero). Bus conventions per bus.rs: query/send=+count, table/receive=-count; weight 1 query / 0 table. count_weight is never computed in Plonky3 (offline precondition, builder.rs:33-38).",
+            "description": "P2L-b interaction/bus vectors, REGENERATED against Plonky3 v0.6.2 (11cc5849). Column assignment (Lookups::from_air, locals first then globals in push order) and the per-bus challenge memo (REAL BatchTranscript::sample_perm_challenges over the production DuplexChallenger with NO prior observes — full priming order is P2L-c) are unchanged in spirit, but the SUM MODEL changed: there are no per-lookup cumulative sums to group by bus. Each AIR commits ONE LookupTerminal and verify_terminal_sum flat-sums them across AIRs (logup.rs:304-320). Scenarios are therefore expressed at the AIR-terminal level. The old cross-bus-cancellation F3 trap is KEPT but INVERTED in meaning: terminals on different buses must NOT flat-cancel, because each slot draws its own challenge pair and a pair is shared only within one bus name (types.rs:19-34). A zero there would mean challenge separation broke and caller-side per-bus grouping is needed again. Bus conventions per bus.rs: query/send=+count, table/receive=-count; the per-row magnitude bound now travels inside Count::bounded/provided (count.rs) and is 0 for every Kind::Local lookup.",
             "assignment_cases": [assignment_case],
             "sum_instances": sum_cases,
             "scenarios": scenarios,
@@ -16749,7 +16997,7 @@ mod stark_priming {
             "wrote {} (1 assignment case + {} sum instances + {} scenarios)",
             out_path.display(),
             sum_instances.len(),
-            3
+            scenarios.len()
         );
         Ok(())
     }
@@ -16852,6 +17100,14 @@ mod stark_priming {
             + Clone,
         p3_air::symbolic::SymbolicExpressionExt<Goldilocks, GoldFp2>:
             p3_field::Algebra<GoldFp2>,
+        /* v0.6.2 added parallelism bounds to `prove_batch`
+         * (batch-stark/src/prover.rs:112-114); propagate them. Bounds only — no
+         * behavioral change, and the oracle still builds without the `parallel`
+         * feature, so proving stays serial and byte-deterministic. */
+        p3_batch_stark::Domain<SC>: Send + Sync,
+        SC::Pcs: Sync,
+        <SC::Pcs as p3_commit::Pcs<GoldFp2, FriChallenger>>::ProverData: Sync,
+        <SC::Pcs as p3_commit::Pcs<GoldFp2, FriChallenger>>::Commitment: Sync,
     {
         use p3_batch_stark::{prove_batch, verify_batch, BatchTranscript, StarkInstance};
 
@@ -16926,7 +17182,12 @@ mod stark_priming {
         snap("after_perm_challenges", &t);
         let alpha: GoldFp2 = t.observe_perm_and_sample_alpha(
             proof.commitments.permutation.as_ref(),
-            &proof.global_lookup_data,
+            /* v0.6.2: BatchProof carries `lookup_terminals`
+             * (Vec<Option<LookupTerminal>>, one per AIR — proof.rs:22) instead
+             * of per-bus `global_lookup_data`. The transcript now observes each
+             * terminal (transcript.rs:183-185), so this is transcript-affecting:
+             * alpha moves, and with it every downstream challenge. */
+            &proof.lookup_terminals,
         ); // :290-291
         snap("after_alpha", &t);
         t.observe_quotient_commitment(&proof.commitments.quotient_chunks); // :294
@@ -16991,14 +17252,11 @@ mod stark_priming {
                     "permutation_local_len": ov.permutation_local.len(),
                     "permutation_next_len": ov.permutation_next.len(),
                     "random_len": base.random.as_ref().map_or(0, |v| v.len()),
-                    "cumulative_sums": proof.global_lookup_data[i]
-                        .iter()
-                        .map(|d| serde_json::json!({
-                            "bus_name": d.name,
-                            "aux_column": d.aux_column,
-                            "sum": fp2_json(d.cumulative_sum),
-                        }))
-                        .collect::<Vec<_>>(),
+                    // v0.6.2: one terminal per AIR instance, no per-bus records.
+                    "lookup_terminal": match &proof.lookup_terminals[i] {
+                        Some(t) => fp2_json(t.0),
+                        None => serde_json::Value::Null,
+                    },
                     "perm_challenges": perm_challenges[i]
                         .iter()
                         .map(|&c| fp2_json(c))
@@ -17272,6 +17530,14 @@ mod stark_priming {
             + Clone,
         p3_air::symbolic::SymbolicExpressionExt<Goldilocks, GoldFp2>:
             p3_field::Algebra<GoldFp2>,
+        /* v0.6.2 added parallelism bounds to `prove_batch`
+         * (batch-stark/src/prover.rs:112-114); propagate them. Bounds only — no
+         * behavioral change, and the oracle still builds without the `parallel`
+         * feature, so proving stays serial and byte-deterministic. */
+        p3_batch_stark::Domain<SC>: Send + Sync,
+        SC::Pcs: Sync,
+        <SC::Pcs as p3_commit::Pcs<GoldFp2, FriChallenger>>::ProverData: Sync,
+        <SC::Pcs as p3_commit::Pcs<GoldFp2, FriChallenger>>::Commitment: Sync,
     {
         use p3_batch_stark::{prove_batch, verify_batch, BatchTranscript, StarkInstance};
 
@@ -17339,7 +17605,12 @@ mod stark_priming {
         let perm_challenges = t.sample_perm_challenges(&common.lookups, &LogUpGadget::new());
         let alpha: GoldFp2 = t.observe_perm_and_sample_alpha(
             proof.commitments.permutation.as_ref(),
-            &proof.global_lookup_data,
+            /* v0.6.2: BatchProof carries `lookup_terminals`
+             * (Vec<Option<LookupTerminal>>, one per AIR — proof.rs:22) instead
+             * of per-bus `global_lookup_data`. The transcript now observes each
+             * terminal (transcript.rs:183-185), so this is transcript-affecting:
+             * alpha moves, and with it every downstream challenge. */
+            &proof.lookup_terminals,
         );
         t.observe_quotient_commitment(&proof.commitments.quotient_chunks);
         if let Some(r) = &proof.commitments.random {
@@ -17467,17 +17738,30 @@ mod stark_priming {
                 } else {
                     assert!(base.random.is_none(), "non-ZK: no random opens");
                 }
-                // aux_width EF columns == lookup count; opened perm lens ==
-                // aux_width * DIMENSION (verifier/mod.rs:524-541).
+                /* v0.6.2 AUX WIDTH: the permutation trace is
+                 * `num_lookups + 1` EF columns — column 0 is the ONE shared
+                 * accumulator and each lookup owns fraction column c+1
+                 * (logup.rs:381-382). Under 82cfad73 it was exactly num_lookups
+                 * (one cumulative-sum column per lookup, no accumulator), which
+                 * is why the old expectation was `lookups.len() * 2`.
+                 * Opened lengths are still aux_width * DIMENSION. */
+                /* An AIR with NO lookups carries no permutation trace at all
+                 * (logup.rs: "AIRs without lookups carry no permutation trace
+                 * and no terminal"), so the width is 0 rather than 0 + 1. */
+                let aux_width = if lookups.is_empty() {
+                    0
+                } else {
+                    lookups.len() + 1
+                };
                 assert_eq!(
                     ov.permutation_local.len(),
-                    lookups.len() * 2,
-                    "permutation_local len == aux_width*2"
+                    aux_width * 2,
+                    "permutation_local len == (num_lookups+1)*2"
                 );
                 assert_eq!(
                     ov.permutation_next.len(),
-                    lookups.len() * 2,
-                    "permutation_next len == aux_width*2"
+                    aux_width * 2,
+                    "permutation_next len == (num_lookups+1)*2"
                 );
                 serde_json::json!({
                     "log_ext_degree": proof.degree_bits[i],
@@ -17508,14 +17792,11 @@ mod stark_priming {
                         "permutation_local": fp2_vec(&ov.permutation_local),
                         "permutation_next": fp2_vec(&ov.permutation_next),
                     },
-                    "cumulative_sums": proof.global_lookup_data[i]
-                        .iter()
-                        .map(|d| serde_json::json!({
-                            "bus_name": d.name,
-                            "aux_column": d.aux_column,
-                            "sum": fp2_json(d.cumulative_sum),
-                        }))
-                        .collect::<Vec<_>>(),
+                    // v0.6.2: one terminal per AIR instance, no per-bus records.
+                    "lookup_terminal": match &proof.lookup_terminals[i] {
+                        Some(t) => fp2_json(t.0),
+                        None => serde_json::Value::Null,
+                    },
                     "perm_challenges": perm_challenges[i]
                         .iter()
                         .map(|&c| fp2_json(c))
@@ -17910,18 +18191,19 @@ mod stark_priming {
             for e in pn {
                 v4_pfp2_friendly(&mut w, e)?;
             }
-            let cums = inst["cumulative_sums"]
-                .as_array()
-                .ok_or("v4 wire: no cumulative_sums")?;
-            v4_pu32(&mut w, cums.len() as u32);
-            for e in cums {
-                let name = e["bus_name"]
-                    .as_str()
-                    .ok_or("v4 wire: bus_name not a string")?;
-                v4_pu32(&mut w, name.len() as u32);
-                w.extend_from_slice(name.as_bytes());
-                v4_pu32(&mut w, v4_ju64(&e["aux_column"])? as u32);
-                v4_pfp2_friendly(&mut w, &e["sum"])?;
+            /* ⚠ DZKF v4 WIRE CHANGE (v0.6.2). Was: a per-instance LIST of
+             * (bus_name, aux_column, cumulative_sum) records. Now: ONE optional
+             * terminal per AIR (BatchProof.lookup_terminals, proof.rs:22) — bus
+             * names and aux columns are no longer proof data at all.
+             * Encoding keeps the count-then-entries shape so the decoder loop
+             * structure survives: u32 count (0 or 1), then the fp2 terminal when
+             * present. The C DZKF v4 codec must be re-based onto this in S2'. */
+            let terminal = &inst["lookup_terminal"];
+            if terminal.is_null() {
+                v4_pu32(&mut w, 0);
+            } else {
+                v4_pu32(&mut w, 1);
+                v4_pfp2_friendly(&mut w, terminal)?;
             }
         }
 
@@ -17998,6 +18280,14 @@ mod stark_priming {
         p3_batch_stark::BatchProof<SC>: serde::Serialize,
         p3_air::symbolic::SymbolicExpressionExt<Goldilocks, GoldFp2>:
             p3_field::Algebra<GoldFp2>,
+        /* v0.6.2 added parallelism bounds to `prove_batch`
+         * (batch-stark/src/prover.rs:112-114); propagate them. Bounds only — no
+         * behavioral change, and the oracle still builds without the `parallel`
+         * feature, so proving stays serial and byte-deterministic. */
+        p3_batch_stark::Domain<SC>: Send + Sync,
+        SC::Pcs: Sync,
+        <SC::Pcs as p3_commit::Pcs<GoldFp2, FriChallenger>>::ProverData: Sync,
+        <SC::Pcs as p3_commit::Pcs<GoldFp2, FriChallenger>>::Commitment: Sync,
     {
         use p3_batch_stark::ProverData;
         let airs = [ConfActionAggAir];
