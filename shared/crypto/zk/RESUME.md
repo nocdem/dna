@@ -613,7 +613,18 @@
     hash pins verify. Consensus-inert (type-11 still REJECT-unconditional) →
     **no nodus version bump** (C1 linkage-only precedent).
   → d6 docs/memory (this block, design doc §4/§5, root CLAUDE.md, zk README,
-  memory + ledger). **Commit YOK — kullanıcı kararı.**
+  memory + ledger).
+- **✅ COMMITTED + PUSHED (2026-07-26): `b30f2425`** — "feat(zk): P2L complete —
+  LogUp + batched STARK, DZKF v4, v3 uni-stark retired". 88 files (26 added,
+  31 deleted, 31 modified), pushed to `gitlab` then `origin`. NO `[BUILD]` tag
+  (the messenger C library is untouched — zk+nodus commit, per the nodus-only
+  rule) and NO version bump (consensus-inert, C1 linkage-only precedent).
+  Everything P2L is now in history, including the 15 MB
+  `tools/vectors/batch_shielded_agg.json` KAT input (user-approved: the pin in
+  `.expected_hashes` needs it, and a fresh clone must be able to run the suite).
+  The only working-tree items deliberately left OUT of the commit are unrelated
+  and pre-existing: `Testing/`, `cpunk/cpunk.io/js/`, `dnac/tests/test_stress.c`,
+  `docs/2026-07-08-project-assessment.md`, `scripts/punk-daily-summary.*`.
 - **What it is:** a **prove + verify** STARK range/balance-proof stack over the
   Goldilocks field — Plonky3-grounded C ports of the verifier engine (field,
   NTT, Keccak-AIR, SHA3 sponge, transcript, Merkle-MMCS, FRI fold + verifier,
