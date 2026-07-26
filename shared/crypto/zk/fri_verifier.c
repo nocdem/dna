@@ -216,6 +216,18 @@ static dnac_fri_status_t fri_open_input(
          * pre-P2L-d same-height reject — Phase 2A, 2026-07-12 council
          * red-team — is superseded by the byte-matched mixed verify.) */
         if (cw->num_matrices > FRI_MAX_RO) return DNAC_FRI_ERR_INPUT_ERROR;
+        /* ⚠ FAIL-OPEN CLOSED (S2'-d, 2026-07-27; red-team lens 3). An empty
+         * batch left `have_height` false, which gated OUT the entire MMCS verify
+         * block below — the batch was then admitted with its opening proof never
+         * checked at all. Upstream calls `input_mmcs.verify_batch`
+         * UNCONDITIONALLY (82cfad73 fri/src/verifier.rs:590-597); DNAC's
+         * `if (have_height)` was a local deviation that failed OPEN.
+         * Rejecting outright is the fail-close form and is stricter than
+         * upstream: every real batch carries >= 1 matrix (batch_verify.c gives
+         * each round n >= 1 / total_qc >= 1), so no honest proof reaches this.
+         * Not reachable through dnac_batch_verify today — but dnac_fri_verify is
+         * a PUBLIC entry point, so the guard belongs here, not in the caller. */
+        if (cw->num_matrices == 0) return DNAC_FRI_ERR_INPUT_ERROR;
         size_t max_log_height = 0;
         bool have_height = false;
         bool mixed_heights = false;
@@ -256,11 +268,28 @@ static dnac_fri_status_t fri_open_input(
         for (size_t m = 0; m < cw->num_matrices; ++m) {
             size_t cols = bo->opened_values_lens[m];
             /* M3b: salted leaf = opened row ‖ salt_elems base salts
-             * (hiding_mmcs.rs:169-170). salt_elems==0 -> plain. Under the
-             * Poseidon2 PaddingFreeSponge leaf hash this length MUST be
-             * protocol-fixed (G-SEC-P1-6): salt_elems is pinned upstream
-             * (shielded wire pin, fri_proof_codec.c) and cols is pinned by the
-             * shape checks + PointEvaluationCountMismatch below. */
+             * (hiding_mmcs.rs:169-170). salt_elems==0 -> plain.
+             *
+             * ⚠ THE OLD COMMENT HERE WAS FALSE and is corrected in place
+             * (S2'-d, 2026-07-27; refuted independently by red-team lenses 1, 2
+             * and 3). It claimed "cols is pinned by the shape checks +
+             * PointEvaluationCountMismatch below" and that salt_elems is
+             * "pinned upstream (shielded wire pin, fri_proof_codec.c)".
+             * Both halves were wrong:
+             *   - the shape prefix never RECEIVES this data (fri_verifier.h
+             *     documents that commitments_with_opening_points is not even a
+             *     parameter), so it contributes nothing to any pin;
+             *   - the count check below compares `cols` against
+             *     `num_claimed_evals`, which is `BASE_LEN + rand tail` where the
+             *     tail is wire-decoded and unpinned in the is_zk path — the ONLY
+             *     path the shielded verifier uses. Wire-vs-wire is not a pin;
+             *   - fri_proof_codec.c pins NO salt count; the real salt pin lives
+             *     in shielded_verify.c. The function that comment named,
+             *     dnac_fri_verify_wire_shielded, was DELETED at d4.d.
+             * Under the Poseidon2 PaddingFreeSponge leaf hash the preimage
+             * length must be protocol-fixed (G-SEC-P1-6), and today only the
+             * salt half of that length is. Closing the row half is the rest of
+             * S2'-d; see tasks/orchestration.md FLEET 005. */
             const size_t se = bo->salt_elems;
             if (cols + se > FRI_LEAF_CAP) return DNAC_FRI_ERR_INPUT_ERROR;
             fri_lanes_base_row(bo->opened_values[m], cols, rowbuf[m]);
@@ -310,6 +339,21 @@ static dnac_fri_status_t fri_open_input(
         /* Per-matrix reduced-opening accumulation (verifier.rs:599-642). */
         for (size_t m = 0; m < cw->num_matrices; ++m) {
             const dnac_fri_matrix_openings_t *mo = &cw->matrices[m];
+            /* ⚠ ZERO-POINT MATRIX REJECTED (S2'-d, 2026-07-27; red-team lenses 1
+             * and 3). The only check on this matrix's wire-declared row width is
+             * the count compare INSIDE the point loop below. With num_points == 0
+             * that loop never runs, so the width is compared against nothing at
+             * all — while the row has ALREADY been hashed into the leaf above as
+             * an arbitrary-length segment, shifting every other row boundary in
+             * its height group. Upstream added FriError::MatrixWithoutOpeningPoints
+             * for exactly this, with the reason "a matrix opened at no points
+             * carries no claim to pin its width" (v0.6.2 fri/src/verifier.rs:702-707).
+             * Note the asymmetry this closes: the PROVER already rejects
+             * num_points == 0 (stark_prover.c:1055-1057); the verifier did not.
+             * Not reachable through dnac_batch_verify today (every BV_MAT call
+             * passes 1 or 2 points) — but dnac_fri_verify is a PUBLIC entry, and
+             * P2 recursion will build its own commitment descriptors. */
+            if (mo->num_points == 0) return DNAC_FRI_ERR_INPUT_ERROR;
             size_t log_height = (size_t)mo->domain.log_size + params->log_blowup;
             size_t bits_reduced = log_global_max_height - log_height;
             uint64_t rev = reverse_bits_len_u64(index >> bits_reduced, (unsigned)log_height);

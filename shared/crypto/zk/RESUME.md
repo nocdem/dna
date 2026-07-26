@@ -120,6 +120,25 @@
   WRAP+NODE, K=4, aggregate accumulators) UN-PARKED. Delegation = shared
   Poseidon2 table + lookup → P2-lookup design v3 GREEN (2 rounds;
   `dnac/docs/plans/2026-07-23-p2-lookup-{grounding-note,design}.md`).
+  - **Posture-A documentation obligation DISCHARGED (2026-07-26).** Choosing
+    the conjectured bound came with a written obligation (grounding-note §6):
+    document the proven floor + the Nov-2025 caveat + an upgrade trigger. It
+    was never written down until now. `shielded_fri_params.h` gains a
+    "Soundness POSTURE" header block: (a) the PROVEN floor for the live pin set
+    is **~87 bits, not 216**, and is query-INDEPENDENT — the additive
+    commit-phase term over |F|=Goldilocks²≈2^128 at m=3 with n=2^13 (= pinned
+    committed height 11 + log_blowup 2) caps it, so no query count reaches
+    proven-128 (that needs |F| ≳ 2^170); (b) the Nov-2025 up-to-capacity
+    disproof covers Goldilocks scale but bites only within O(1/log n) of
+    capacity, NOT at the Johnson radius where verification operates; (c) a
+    3-condition re-open trigger. `DNAC_SHIELDED_FRI_SOUNDNESS_TARGET` 100 →
+    **128** (policy floor only — not runtime-enforced, sole consumer is
+    `test_shielded_fri_params.c`; 216 conjectured clears it). Comment +
+    one policy constant; no behavior change, consensus-inert (type-11 still
+    unconditionally REJECT, `nodus_witness_verify.c:872-874` →
+    `verify_shielded_tx`). Memory `fri-proven-soundness-regate` rewritten in the
+    same pass — its "re-size before C3" / "P2 BLOCKED" items were stale and are
+    now marked SUPERSEDED.
 - **P2L-a ✅ DONE (2026-07-23, this working tree, UNCOMMITTED): LogUp gadget
   byte-matched port.** `logup.{c,h}` — the pure p3-lookup `LogUpGadget`
   (Plonky3 82cfad73 `lookup/src/logup.rs`): β-combine, numerator/common-
