@@ -2,7 +2,7 @@
 
 **Last Updated:** 2026-07-22 | **Status:** TESTNET (live 7-witness production cluster) | **Version:** v0.17.8-stake.wip
 
-**Note:** Framework rules (checkpoints, identity override, protocol mode, violations) are in root `/opt/dna/CLAUDE.md`. This file contains DNAC-specific guidelines only.
+**Note:** Framework rules (ORCHESTRATOR CYCLE O1-O10, agent classes, identity override, protocol mode, violations) are in root `/opt/dna/CLAUDE.md`. This file contains DNAC-specific guidelines only.
 
 **Stake/delegation v1:** SHIPPED — `stake-delegation-v1` merged to `main` and deployed (stake-weighted top-7 committee, delegation, per-block reward accrual, pull-based claim). Design doc: `dnac/docs/plans/2026-04-17-witness-stake-delegation-design.md` (local-only, gitignored). Sortition v2 (weighted random) is a future follow-up.
 

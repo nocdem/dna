@@ -4,7 +4,7 @@
 
 **Versions:** Library v0.11.8 | Flutter v1.0.0-rc238 | Nodus v0.18.6
 
-**Note:** Framework rules (checkpoints, identity override, protocol mode, violations) are in root `/opt/dna/CLAUDE.md`. This file contains messenger-specific guidelines only.
+**Note:** Framework rules (ORCHESTRATOR CYCLE O1-O10, agent classes, identity override, protocol mode, violations) are in root `/opt/dna/CLAUDE.md`. This file contains messenger-specific guidelines only.
 
 ---
 
