@@ -11,6 +11,9 @@ tasks/
 *security_audit*
 **/*AUDIT*
 *audit*.md
+# ...except agent definitions: .claude/agents/ holds subagent prompts (e.g.
+# zk-auditor.md), never audit OUTPUT. Audit reports remain ignored everywhere.
+!.claude/agents/*.md
 
 # Build artifacts
 *.o

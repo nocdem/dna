@@ -194,7 +194,7 @@ The bypass keeps subagents simple. Blast radius is contained by **CLASS**, not b
 - **Writing outside the whitelist = STOP and report back.** Do not "fix it while you're in there".
 - **Report format is grounded or it is worthless:** every claim carries `file:line`. Unverifiable → say so. `UYDURMAK = MISSION-CRITICAL FAIL` applies to subagents too.
 
-Agent definitions live in `~/.claude/agents/` (user level). Roster and dispatch rules: `ORCHESTRATOR CYCLE > O5`.
+Agent definitions live in `/opt/dna/.claude/agents/` (project level, tracked in git). Roster and dispatch rules: `ORCHESTRATOR CYCLE > O5`.
 
 ---
 
@@ -356,7 +356,7 @@ DO:
 DO NOT: Add improvements. Fix other things. Widen scope. Open a second round without a NEW approval.
 ```
 
-**Agent roster** (definitions: `~/.claude/agents/`):
+**Agent roster** (definitions: `.claude/agents/`):
 
 | Agent | Class | Use for |
 |---|---|---|
