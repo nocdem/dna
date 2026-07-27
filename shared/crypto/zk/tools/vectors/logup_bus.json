@@ -1,42 +1,34 @@
 {
   "assignment_cases": [
     {
-      "comment": "I0 pushes mem BEFORE its local (locals-first proof); I1 reuses mem; I2 reuses rc+mem after a fresh local. Draws = fresh production challenger, 4 pairs.",
-      "draws": [
+      "alpha": {
+        "c0_decimal": "15242811426554260087",
+        "c1_decimal": "2291271929930369342"
+      },
+      "beta": {
+        "c0_decimal": "2233078518482173027",
+        "c1_decimal": "11896885812789519960"
+      },
+      "bus_prefixes": [
         {
-          "c0_decimal": "11582333702292144329",
-          "c1_decimal": "1338653381843625503"
+          "c0_decimal": "17475889945036433114",
+          "c1_decimal": "14188157742719889302"
         },
         {
-          "c0_decimal": "1712562873921952301",
-          "c1_decimal": "8122443742893029123"
+          "c0_decimal": "1262224394104021820",
+          "c1_decimal": "7638299486094824941"
         },
         {
-          "c0_decimal": "5272607822370736873",
-          "c1_decimal": "14134212686289023646"
+          "c0_decimal": "3495302912586194847",
+          "c1_decimal": "1088441229469760580"
         },
         {
-          "c0_decimal": "13218034203944269917",
-          "c1_decimal": "7933059443562585725"
-        },
-        {
-          "c0_decimal": "8429690422158230468",
-          "c1_decimal": "11982263922700516536"
-        },
-        {
-          "c0_decimal": "8909452052537677524",
-          "c1_decimal": "11889076542628178890"
-        },
-        {
-          "c0_decimal": "572322605062210021",
-          "c1_decimal": "4206612343392660407"
-        },
-        {
-          "c0_decimal": "16900484451027962046",
-          "c1_decimal": "8654021114358084384"
+          "c0_decimal": "5728381431068367874",
+          "c1_decimal": "12985327042259280540"
         }
       ],
-      "draws_used_pairs": 4,
+      "comment": "I0 pushes mem BEFORE its local (locals-first proof); I1 reuses mem; I2 reuses rc+mem after a fresh local. Draws = fresh production challenger, 4 pairs.",
+      "draws_used_pairs": 1,
       "exprs": [
         {
           "col": 0,
@@ -78,6 +70,10 @@
           "val": "18446744069414584320"
         }
       ],
+      "gamma": {
+        "c0_decimal": "2233078518482173027",
+        "c1_decimal": "11896885812789519960"
+      },
       "instances": [
         {
           "expected_lookups": [
@@ -289,107 +285,82 @@
           ]
         }
       ],
+      "max_message_width": 1,
       "name": "memo_three_instances",
       "per_instance_challenges": [
         [
           {
-            "c0_decimal": "11582333702292144329",
-            "c1_decimal": "1338653381843625503"
+            "c0_decimal": "17475889945036433114",
+            "c1_decimal": "14188157742719889302"
           },
           {
-            "c0_decimal": "1712562873921952301",
-            "c1_decimal": "8122443742893029123"
+            "c0_decimal": "2233078518482173027",
+            "c1_decimal": "11896885812789519960"
           },
           {
-            "c0_decimal": "5272607822370736873",
-            "c1_decimal": "14134212686289023646"
+            "c0_decimal": "1262224394104021820",
+            "c1_decimal": "7638299486094824941"
           },
           {
-            "c0_decimal": "13218034203944269917",
-            "c1_decimal": "7933059443562585725"
+            "c0_decimal": "2233078518482173027",
+            "c1_decimal": "11896885812789519960"
           },
           {
-            "c0_decimal": "8429690422158230468",
-            "c1_decimal": "11982263922700516536"
+            "c0_decimal": "3495302912586194847",
+            "c1_decimal": "1088441229469760580"
           },
           {
-            "c0_decimal": "8909452052537677524",
-            "c1_decimal": "11889076542628178890"
+            "c0_decimal": "2233078518482173027",
+            "c1_decimal": "11896885812789519960"
           }
         ],
         [
           {
-            "c0_decimal": "5272607822370736873",
-            "c1_decimal": "14134212686289023646"
+            "c0_decimal": "1262224394104021820",
+            "c1_decimal": "7638299486094824941"
           },
           {
-            "c0_decimal": "13218034203944269917",
-            "c1_decimal": "7933059443562585725"
+            "c0_decimal": "2233078518482173027",
+            "c1_decimal": "11896885812789519960"
           }
         ],
         [
           {
-            "c0_decimal": "572322605062210021",
-            "c1_decimal": "4206612343392660407"
+            "c0_decimal": "5728381431068367874",
+            "c1_decimal": "12985327042259280540"
           },
           {
-            "c0_decimal": "16900484451027962046",
-            "c1_decimal": "8654021114358084384"
+            "c0_decimal": "2233078518482173027",
+            "c1_decimal": "11896885812789519960"
           },
           {
-            "c0_decimal": "8429690422158230468",
-            "c1_decimal": "11982263922700516536"
+            "c0_decimal": "3495302912586194847",
+            "c1_decimal": "1088441229469760580"
           },
           {
-            "c0_decimal": "8909452052537677524",
-            "c1_decimal": "11889076542628178890"
+            "c0_decimal": "2233078518482173027",
+            "c1_decimal": "11896885812789519960"
           },
           {
-            "c0_decimal": "5272607822370736873",
-            "c1_decimal": "14134212686289023646"
+            "c0_decimal": "1262224394104021820",
+            "c1_decimal": "7638299486094824941"
           },
           {
-            "c0_decimal": "13218034203944269917",
-            "c1_decimal": "7933059443562585725"
+            "c0_decimal": "2233078518482173027",
+            "c1_decimal": "11896885812789519960"
           }
         ]
       ]
     }
   ],
-  "description": "P2L-b interaction/bus vectors — column assignment (Lookups::from_air, locals first then globals in push order, types.rs:59-89), per-bus challenge memo (REAL BatchTranscript::sample_perm_challenges over the production DuplexChallenger with NO prior observes — full priming order is P2L-c; draws replayed from an identical fresh challenger), per-bus global-sum grouping incl. the cross-bus-cancellation F3 trap (flat total zero, each bus group non-zero). Bus conventions per bus.rs: query/send=+count, table/receive=-count; weight 1 query / 0 table. count_weight is never computed in Plonky3 (offline precondition, builder.rs:33-38).",
-  "format_version": "1",
-  "plonky3_commit": "82cfad73cd734d37a0d51953094f970c531817ec",
+  "description": "P2L-b interaction/bus vectors, REGENERATED against Plonky3 v0.6.2 (11cc5849). Column assignment (Lookups::from_air, locals first then globals in push order) and the per-bus challenge memo (REAL BatchTranscript::sample_perm_challenges over the production DuplexChallenger with NO prior observes — full priming order is P2L-c) are unchanged in spirit, but the SUM MODEL changed: there are no per-lookup cumulative sums to group by bus. Each AIR commits ONE LookupTerminal and verify_terminal_sum flat-sums them across AIRs (logup.rs:304-320). Scenarios are therefore expressed at the AIR-terminal level. The old cross-bus-cancellation F3 trap is KEPT but INVERTED in meaning: terminals on different buses must NOT flat-cancel, because each slot draws its own challenge pair and a pair is shared only within one bus name (types.rs:19-34). A zero there would mean challenge separation broke and caller-side per-bus grouping is needed again. Bus conventions per bus.rs: query/send=+count, table/receive=-count; the per-row magnitude bound now travels inside Count::bounded/provided (count.rs) and is 0 for every Kind::Local lookup.",
+  "format_version": "2",
+  "plonky3_commit": "11cc5849a1b57a2f520d6edc608b9e516517d841",
   "scenarios": [
     {
-      "bus_checks": [
-        {
-          "bus_name": "LUT",
-          "ok": true,
-          "sums": [
-            {
-              "c0_decimal": "4575908190697203328",
-              "c1_decimal": "15884729103687308315"
-            },
-            {
-              "c0_decimal": "13870835878717380993",
-              "c1_decimal": "2562014965727276006"
-            }
-          ]
-        },
-        {
-          "bus_name": "aux",
-          "ok": true,
-          "sums": [
-            {
-              "c0_decimal": "12445587390527186447",
-              "c1_decimal": "3949596737849643159"
-            },
-            {
-              "c0_decimal": "6001156678887397874",
-              "c1_decimal": "14497147331564941162"
-            }
-          ]
-        }
+      "buses": [
+        "LUT",
+        "aux"
       ],
       "expect_fail_bus": null,
       "flat_total": {
@@ -402,24 +373,26 @@
         "bus_lut_receiver",
         "bus_aux_pair"
       ],
-      "name": "two_bus_balanced"
+      "name": "two_bus_balanced",
+      "terminals": [
+        {
+          "c0_decimal": "4575908190697203328",
+          "c1_decimal": "15884729103687308315"
+        },
+        {
+          "c0_decimal": "13870835878717380993",
+          "c1_decimal": "2562014965727276006"
+        },
+        {
+          "c0_decimal": "0",
+          "c1_decimal": "0"
+        }
+      ],
+      "verify_terminal_sum_ok": true
     },
     {
-      "bus_checks": [
-        {
-          "bus_name": "LUT",
-          "ok": false,
-          "sums": [
-            {
-              "c0_decimal": "6835933968459915649",
-              "c1_decimal": "16158153373323619824"
-            },
-            {
-              "c0_decimal": "13870835878717380993",
-              "c1_decimal": "2562014965727276006"
-            }
-          ]
-        }
+      "buses": [
+        "LUT"
       ],
       "expect_fail_bus": "LUT",
       "flat_total": {
@@ -431,30 +404,23 @@
         "bus_lut_sender_bad",
         "bus_lut_receiver"
       ],
-      "name": "lut_dropped"
-    },
-    {
-      "bus_checks": [
+      "name": "lut_dropped",
+      "terminals": [
         {
-          "bus_name": "busX",
-          "ok": false,
-          "sums": [
-            {
-              "c0_decimal": "5086943416743571696",
-              "c1_decimal": "2609208208200519462"
-            }
-          ]
+          "c0_decimal": "6835933968459915649",
+          "c1_decimal": "16158153373323619824"
         },
         {
-          "bus_name": "busY",
-          "ok": false,
-          "sums": [
-            {
-              "c0_decimal": "13359800652671012625",
-              "c1_decimal": "15837535861214064859"
-            }
-          ]
+          "c0_decimal": "13870835878717380993",
+          "c1_decimal": "2562014965727276006"
         }
+      ],
+      "verify_terminal_sum_ok": false
+    },
+    {
+      "buses": [
+        "busX",
+        "busY"
       ],
       "expect_fail_bus": "busX",
       "flat_total": {
@@ -466,7 +432,46 @@
         "bus_x_send",
         "bus_y_recv"
       ],
-      "name": "cross_bus_cancel"
+      "name": "cross_bus_cancel",
+      "terminals": [
+        {
+          "c0_decimal": "5086943416743571696",
+          "c1_decimal": "2609208208200519462"
+        },
+        {
+          "c0_decimal": "13359800652671012625",
+          "c1_decimal": "15837535861214064859"
+        }
+      ],
+      "verify_terminal_sum_ok": true
+    },
+    {
+      "buses": [
+        "busX",
+        "busY"
+      ],
+      "expect_fail_bus": null,
+      "flat_total": {
+        "c0_decimal": "1759845953222975447",
+        "c1_decimal": "15928256545183332510"
+      },
+      "flat_zero": false,
+      "instances": [
+        "bus_x_send_sep",
+        "bus_y_recv_sep"
+      ],
+      "name": "cross_bus_separated",
+      "terminals": [
+        {
+          "c0_decimal": "11866715897148326981",
+          "c1_decimal": "7697659135365263227"
+        },
+        {
+          "c0_decimal": "8339874125489232787",
+          "c1_decimal": "8230597409818069283"
+        }
+      ],
+      "verify_terminal_sum_ok": false
     }
   ],
   "sum_instances": [
@@ -478,12 +483,6 @@
             "c1_decimal": "0"
           },
           {
-            "c0_decimal": "0",
-            "c1_decimal": "0"
-          }
-        ],
-        [
-          {
             "c0_decimal": "11147545694312017118",
             "c1_decimal": "8934732751133386313"
           },
@@ -494,22 +493,44 @@
         ],
         [
           {
-            "c0_decimal": "3035331524685530946",
-            "c1_decimal": "11836082059821265903"
+            "c0_decimal": "16910016105038645327",
+            "c1_decimal": "7280163560192478482"
           },
           {
-            "c0_decimal": "6069624571308163218",
-            "c1_decimal": "12948323306498995098"
+            "c0_decimal": "10334529899788098149",
+            "c1_decimal": "2901349308687879590"
+          },
+          {
+            "c0_decimal": "307154160581535009",
+            "c1_decimal": "14602892497439902929"
           }
         ],
         [
           {
-            "c0_decimal": "12908890922027241446",
-            "c1_decimal": "11643803783670179516"
+            "c0_decimal": "9104956095993694164",
+            "c1_decimal": "6337661296905676680"
           },
           {
-            "c0_decimal": "3236142308908395191",
-            "c1_decimal": "5537891188704790739"
+            "c0_decimal": "9873559397341710500",
+            "c1_decimal": "18254465793263497934"
+          },
+          {
+            "c0_decimal": "15613261807014816294",
+            "c1_decimal": "11036311951620379962"
+          }
+        ],
+        [
+          {
+            "c0_decimal": "16145033230935636637",
+            "c1_decimal": "17181694972374970255"
+          },
+          {
+            "c0_decimal": "5537853147387342875",
+            "c1_decimal": "6802940285744404805"
+          },
+          {
+            "c0_decimal": "1339765881788808137",
+            "c1_decimal": "10346837914982517576"
           }
         ]
       ],
@@ -533,17 +554,21 @@
         }
       ],
       "comment": "AddAir LUT sender; shares (ga,gb) with bus_lut_receiver",
-      "cumulative_sums": [
+      "height": 4,
+      "lookup_slots": [
         {
-          "aux_column": 1,
+          "bus_name": null,
+          "count_weight": 0,
+          "fraction_column": 1,
+          "slot": 0
+        },
+        {
           "bus_name": "LUT",
-          "sum": {
-            "c0_decimal": "4575908190697203328",
-            "c1_decimal": "15884729103687308315"
-          }
+          "count_weight": 1,
+          "fraction_column": 2,
+          "slot": 1
         }
       ],
-      "height": 4,
       "lookups": [
         {
           "bus_name": "",
@@ -675,12 +700,16 @@
       ],
       "main_width": 7,
       "name": "bus_lut_sender",
-      "num_aux_cols": 2,
+      "num_aux_cols": 3,
       "preprocessed": null,
       "public_values": [],
       "residuals": [
-        [
-          [
+        {
+          "accumulator": [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
             {
               "c0_decimal": "0",
               "c1_decimal": "0"
@@ -690,23 +719,27 @@
               "c1_decimal": "0"
             }
           ],
-          [
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            },
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            },
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            }
+          "fractions": [
+            [
+              {
+                "c0_decimal": "0",
+                "c1_decimal": "0"
+              }
+            ],
+            [
+              {
+                "c0_decimal": "0",
+                "c1_decimal": "0"
+              }
+            ]
           ]
-        ],
-        [
-          [
+        },
+        {
+          "accumulator": [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
             {
               "c0_decimal": "0",
               "c1_decimal": "0"
@@ -716,23 +749,27 @@
               "c1_decimal": "0"
             }
           ],
-          [
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            },
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            },
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            }
+          "fractions": [
+            [
+              {
+                "c0_decimal": "0",
+                "c1_decimal": "0"
+              }
+            ],
+            [
+              {
+                "c0_decimal": "0",
+                "c1_decimal": "0"
+              }
+            ]
           ]
-        ],
-        [
-          [
+        },
+        {
+          "accumulator": [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
             {
               "c0_decimal": "0",
               "c1_decimal": "0"
@@ -742,23 +779,27 @@
               "c1_decimal": "0"
             }
           ],
-          [
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            },
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            },
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            }
+          "fractions": [
+            [
+              {
+                "c0_decimal": "0",
+                "c1_decimal": "0"
+              }
+            ],
+            [
+              {
+                "c0_decimal": "0",
+                "c1_decimal": "0"
+              }
+            ]
           ]
-        ],
-        [
-          [
+        },
+        {
+          "accumulator": [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
             {
               "c0_decimal": "0",
               "c1_decimal": "0"
@@ -768,22 +809,26 @@
               "c1_decimal": "0"
             }
           ],
-          [
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            },
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            },
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            }
+          "fractions": [
+            [
+              {
+                "c0_decimal": "0",
+                "c1_decimal": "0"
+              }
+            ],
+            [
+              {
+                "c0_decimal": "0",
+                "c1_decimal": "0"
+              }
+            ]
           ]
-        ]
-      ]
+        }
+      ],
+      "terminal": {
+        "c0_decimal": "4575908190697203328",
+        "c1_decimal": "15884729103687308315"
+      }
     },
     {
       "aux": [
@@ -792,12 +837,6 @@
             "c0_decimal": "0",
             "c1_decimal": "0"
           },
-          {
-            "c0_decimal": "0",
-            "c1_decimal": "0"
-          }
-        ],
-        [
           {
             "c0_decimal": "457844259677731296",
             "c1_decimal": "2856279094161041648"
@@ -809,22 +848,44 @@
         ],
         [
           {
-            "c0_decimal": "6096275398442509819",
-            "c1_decimal": "2582855848548752846"
+            "c0_decimal": "150690099096196287",
+            "c1_decimal": "6700130666135723040"
           },
           {
-            "c0_decimal": "12377119498106421103",
-            "c1_decimal": "5498420762915589223"
+            "c0_decimal": "5638431138764778523",
+            "c1_decimal": "18173320823802295519"
+          },
+          {
+            "c0_decimal": "12684273658687956112",
+            "c1_decimal": "1654569190940907831"
           }
         ],
         [
           {
-            "c0_decimal": "6096275398442509819",
-            "c1_decimal": "2582855848548752846"
+            "c0_decimal": "26650827134346601",
+            "c1_decimal": "8081276611464342069"
           },
           {
-            "c0_decimal": "11037353616317612966",
-            "c1_decimal": "13598326917347655968"
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          {
+            "c0_decimal": "17106978187625776184",
+            "c1_decimal": "8099906154432066745"
+          }
+        ],
+        [
+          {
+            "c0_decimal": "17133629014760122785",
+            "c1_decimal": "16181182765896408814"
+          },
+          {
+            "c0_decimal": "12350468670972074502",
+            "c1_decimal": "15863888220865831475"
+          },
+          {
+            "c0_decimal": "2833482262399768027",
+            "c1_decimal": "7410432117794204359"
           }
         ]
       ],
@@ -848,17 +909,21 @@
         }
       ],
       "comment": "AddAir LUT receiver; shares (ga,gb) with bus_lut_sender",
-      "cumulative_sums": [
+      "height": 4,
+      "lookup_slots": [
         {
-          "aux_column": 1,
+          "bus_name": null,
+          "count_weight": 0,
+          "fraction_column": 1,
+          "slot": 0
+        },
+        {
           "bus_name": "LUT",
-          "sum": {
-            "c0_decimal": "13870835878717380993",
-            "c1_decimal": "2562014965727276006"
-          }
+          "count_weight": 1,
+          "fraction_column": 2,
+          "slot": 1
         }
       ],
-      "height": 4,
       "lookups": [
         {
           "bus_name": "",
@@ -990,12 +1055,16 @@
       ],
       "main_width": 7,
       "name": "bus_lut_receiver",
-      "num_aux_cols": 2,
+      "num_aux_cols": 3,
       "preprocessed": null,
       "public_values": [],
       "residuals": [
-        [
-          [
+        {
+          "accumulator": [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
             {
               "c0_decimal": "0",
               "c1_decimal": "0"
@@ -1005,23 +1074,27 @@
               "c1_decimal": "0"
             }
           ],
-          [
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            },
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            },
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            }
+          "fractions": [
+            [
+              {
+                "c0_decimal": "0",
+                "c1_decimal": "0"
+              }
+            ],
+            [
+              {
+                "c0_decimal": "0",
+                "c1_decimal": "0"
+              }
+            ]
           ]
-        ],
-        [
-          [
+        },
+        {
+          "accumulator": [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
             {
               "c0_decimal": "0",
               "c1_decimal": "0"
@@ -1031,23 +1104,27 @@
               "c1_decimal": "0"
             }
           ],
-          [
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            },
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            },
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            }
+          "fractions": [
+            [
+              {
+                "c0_decimal": "0",
+                "c1_decimal": "0"
+              }
+            ],
+            [
+              {
+                "c0_decimal": "0",
+                "c1_decimal": "0"
+              }
+            ]
           ]
-        ],
-        [
-          [
+        },
+        {
+          "accumulator": [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
             {
               "c0_decimal": "0",
               "c1_decimal": "0"
@@ -1057,23 +1134,27 @@
               "c1_decimal": "0"
             }
           ],
-          [
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            },
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            },
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            }
+          "fractions": [
+            [
+              {
+                "c0_decimal": "0",
+                "c1_decimal": "0"
+              }
+            ],
+            [
+              {
+                "c0_decimal": "0",
+                "c1_decimal": "0"
+              }
+            ]
           ]
-        ],
-        [
-          [
+        },
+        {
+          "accumulator": [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
             {
               "c0_decimal": "0",
               "c1_decimal": "0"
@@ -1083,22 +1164,26 @@
               "c1_decimal": "0"
             }
           ],
-          [
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            },
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            },
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            }
+          "fractions": [
+            [
+              {
+                "c0_decimal": "0",
+                "c1_decimal": "0"
+              }
+            ],
+            [
+              {
+                "c0_decimal": "0",
+                "c1_decimal": "0"
+              }
+            ]
           ]
-        ]
-      ]
+        }
+      ],
+      "terminal": {
+        "c0_decimal": "13870835878717380993",
+        "c1_decimal": "2562014965727276006"
+      }
     },
     {
       "aux": [
@@ -1107,12 +1192,6 @@
             "c0_decimal": "0",
             "c1_decimal": "0"
           },
-          {
-            "c0_decimal": "0",
-            "c1_decimal": "0"
-          }
-        ],
-        [
           {
             "c0_decimal": "2032334943415074171",
             "c1_decimal": "18085538849801976970"
@@ -1124,22 +1203,44 @@
         ],
         [
           {
-            "c0_decimal": "7953828391609129448",
-            "c1_decimal": "7400788046888206670"
+            "c0_decimal": "0",
+            "c1_decimal": "0"
           },
           {
-            "c0_decimal": "10492915677805454873",
-            "c1_decimal": "11045956022526377651"
+            "c0_decimal": "5921493448194055277",
+            "c1_decimal": "7761993266500814021"
+          },
+          {
+            "c0_decimal": "12525250621220529044",
+            "c1_decimal": "10684750802913770300"
           }
         ],
         [
           {
-            "c0_decimal": "7953828391609129448",
-            "c1_decimal": "7400788046888206670"
+            "c0_decimal": "0",
+            "c1_decimal": "0"
           },
           {
-            "c0_decimal": "10492915677805454873",
-            "c1_decimal": "11045956022526377651"
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          }
+        ],
+        [
+          {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          {
+            "c0_decimal": "4491758998918056999",
+            "c1_decimal": "14995552760376020810"
+          },
+          {
+            "c0_decimal": "13954985070496527322",
+            "c1_decimal": "3451191309038563511"
           }
         ]
       ],
@@ -1163,25 +1264,21 @@
         }
       ],
       "comment": "TWO global lookups on ONE bus in one AIR (same-bus memo => both columns share (xa,xb)); send==recv per row so the aux group cancels within the instance pair",
-      "cumulative_sums": [
+      "height": 4,
+      "lookup_slots": [
         {
-          "aux_column": 0,
           "bus_name": "aux",
-          "sum": {
-            "c0_decimal": "12445587390527186447",
-            "c1_decimal": "3949596737849643159"
-          }
+          "count_weight": 1,
+          "fraction_column": 1,
+          "slot": 0
         },
         {
-          "aux_column": 1,
           "bus_name": "aux",
-          "sum": {
-            "c0_decimal": "6001156678887397874",
-            "c1_decimal": "14497147331564941162"
-          }
+          "count_weight": 0,
+          "fraction_column": 2,
+          "slot": 1
         }
       ],
-      "height": 4,
       "lookups": [
         {
           "bus_name": "aux",
@@ -1255,12 +1352,12 @@
       ],
       "main_width": 3,
       "name": "bus_aux_pair",
-      "num_aux_cols": 2,
+      "num_aux_cols": 3,
       "preprocessed": null,
       "public_values": [],
       "residuals": [
-        [
-          [
+        {
+          "accumulator": [
             {
               "c0_decimal": "0",
               "c1_decimal": "0"
@@ -1274,23 +1371,23 @@
               "c1_decimal": "0"
             }
           ],
-          [
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            },
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            },
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            }
+          "fractions": [
+            [
+              {
+                "c0_decimal": "0",
+                "c1_decimal": "0"
+              }
+            ],
+            [
+              {
+                "c0_decimal": "0",
+                "c1_decimal": "0"
+              }
+            ]
           ]
-        ],
-        [
-          [
+        },
+        {
+          "accumulator": [
             {
               "c0_decimal": "0",
               "c1_decimal": "0"
@@ -1304,23 +1401,23 @@
               "c1_decimal": "0"
             }
           ],
-          [
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            },
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            },
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            }
+          "fractions": [
+            [
+              {
+                "c0_decimal": "0",
+                "c1_decimal": "0"
+              }
+            ],
+            [
+              {
+                "c0_decimal": "0",
+                "c1_decimal": "0"
+              }
+            ]
           ]
-        ],
-        [
-          [
+        },
+        {
+          "accumulator": [
             {
               "c0_decimal": "0",
               "c1_decimal": "0"
@@ -1334,23 +1431,23 @@
               "c1_decimal": "0"
             }
           ],
-          [
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            },
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            },
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            }
+          "fractions": [
+            [
+              {
+                "c0_decimal": "0",
+                "c1_decimal": "0"
+              }
+            ],
+            [
+              {
+                "c0_decimal": "0",
+                "c1_decimal": "0"
+              }
+            ]
           ]
-        ],
-        [
-          [
+        },
+        {
+          "accumulator": [
             {
               "c0_decimal": "0",
               "c1_decimal": "0"
@@ -1364,22 +1461,26 @@
               "c1_decimal": "0"
             }
           ],
-          [
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            },
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            },
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            }
+          "fractions": [
+            [
+              {
+                "c0_decimal": "0",
+                "c1_decimal": "0"
+              }
+            ],
+            [
+              {
+                "c0_decimal": "0",
+                "c1_decimal": "0"
+              }
+            ]
           ]
-        ]
-      ]
+        }
+      ],
+      "terminal": {
+        "c0_decimal": "0",
+        "c1_decimal": "0"
+      }
     },
     {
       "aux": [
@@ -1388,12 +1489,6 @@
             "c0_decimal": "0",
             "c1_decimal": "0"
           },
-          {
-            "c0_decimal": "0",
-            "c1_decimal": "0"
-          }
-        ],
-        [
           {
             "c0_decimal": "11147545694312017118",
             "c1_decimal": "8934732751133386313"
@@ -1405,22 +1500,44 @@
         ],
         [
           {
-            "c0_decimal": "3035331524685530946",
-            "c1_decimal": "11836082059821265903"
+            "c0_decimal": "16910016105038645327",
+            "c1_decimal": "7280163560192478482"
           },
           {
-            "c0_decimal": "6069624571308163218",
-            "c1_decimal": "12948323306498995098"
+            "c0_decimal": "10334529899788098149",
+            "c1_decimal": "2901349308687879590"
+          },
+          {
+            "c0_decimal": "307154160581535009",
+            "c1_decimal": "14602892497439902929"
           }
         ],
         [
           {
-            "c0_decimal": "12908890922027241446",
-            "c1_decimal": "11643803783670179516"
+            "c0_decimal": "9104956095993694164",
+            "c1_decimal": "6337661296905676680"
           },
           {
-            "c0_decimal": "5496168086671107512",
-            "c1_decimal": "5811315458341102248"
+            "c0_decimal": "9873559397341710500",
+            "c1_decimal": "18254465793263497934"
+          },
+          {
+            "c0_decimal": "17873287584777528615",
+            "c1_decimal": "11309736221256691471"
+          }
+        ],
+        [
+          {
+            "c0_decimal": "18405059008698348958",
+            "c1_decimal": "17455119242011281764"
+          },
+          {
+            "c0_decimal": "5537853147387342875",
+            "c1_decimal": "6802940285744404805"
+          },
+          {
+            "c0_decimal": "1339765881788808137",
+            "c1_decimal": "10346837914982517576"
           }
         ]
       ],
@@ -1444,17 +1561,21 @@
         }
       ],
       "comment": "sender with LUT row2 (1,0,1)->(1,0,2): local stays balanced (mult 0), the LUT group must NOT cancel",
-      "cumulative_sums": [
+      "height": 4,
+      "lookup_slots": [
         {
-          "aux_column": 1,
+          "bus_name": null,
+          "count_weight": 0,
+          "fraction_column": 1,
+          "slot": 0
+        },
+        {
           "bus_name": "LUT",
-          "sum": {
-            "c0_decimal": "6835933968459915649",
-            "c1_decimal": "16158153373323619824"
-          }
+          "count_weight": 1,
+          "fraction_column": 2,
+          "slot": 1
         }
       ],
-      "height": 4,
       "lookups": [
         {
           "bus_name": "",
@@ -1586,12 +1707,16 @@
       ],
       "main_width": 7,
       "name": "bus_lut_sender_bad",
-      "num_aux_cols": 2,
+      "num_aux_cols": 3,
       "preprocessed": null,
       "public_values": [],
       "residuals": [
-        [
-          [
+        {
+          "accumulator": [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
             {
               "c0_decimal": "0",
               "c1_decimal": "0"
@@ -1601,23 +1726,27 @@
               "c1_decimal": "0"
             }
           ],
-          [
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            },
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            },
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            }
+          "fractions": [
+            [
+              {
+                "c0_decimal": "0",
+                "c1_decimal": "0"
+              }
+            ],
+            [
+              {
+                "c0_decimal": "0",
+                "c1_decimal": "0"
+              }
+            ]
           ]
-        ],
-        [
-          [
+        },
+        {
+          "accumulator": [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
             {
               "c0_decimal": "0",
               "c1_decimal": "0"
@@ -1627,23 +1756,27 @@
               "c1_decimal": "0"
             }
           ],
-          [
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            },
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            },
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            }
+          "fractions": [
+            [
+              {
+                "c0_decimal": "0",
+                "c1_decimal": "0"
+              }
+            ],
+            [
+              {
+                "c0_decimal": "0",
+                "c1_decimal": "0"
+              }
+            ]
           ]
-        ],
-        [
-          [
+        },
+        {
+          "accumulator": [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
             {
               "c0_decimal": "0",
               "c1_decimal": "0"
@@ -1653,23 +1786,27 @@
               "c1_decimal": "0"
             }
           ],
-          [
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            },
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            },
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            }
+          "fractions": [
+            [
+              {
+                "c0_decimal": "0",
+                "c1_decimal": "0"
+              }
+            ],
+            [
+              {
+                "c0_decimal": "0",
+                "c1_decimal": "0"
+              }
+            ]
           ]
-        ],
-        [
-          [
+        },
+        {
+          "accumulator": [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
             {
               "c0_decimal": "0",
               "c1_decimal": "0"
@@ -1679,22 +1816,26 @@
               "c1_decimal": "0"
             }
           ],
-          [
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            },
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            },
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            }
+          "fractions": [
+            [
+              {
+                "c0_decimal": "0",
+                "c1_decimal": "0"
+              }
+            ],
+            [
+              {
+                "c0_decimal": "0",
+                "c1_decimal": "0"
+              }
+            ]
           ]
-        ]
-      ]
+        }
+      ],
+      "terminal": {
+        "c0_decimal": "6835933968459915649",
+        "c1_decimal": "16158153373323619824"
+      }
     },
     {
       "aux": [
@@ -1702,9 +1843,7 @@
           {
             "c0_decimal": "0",
             "c1_decimal": "0"
-          }
-        ],
-        [
+          },
           {
             "c0_decimal": "1820387858380689217",
             "c1_decimal": "1843478138321971723"
@@ -1712,14 +1851,32 @@
         ],
         [
           {
+            "c0_decimal": "1820387858380689217",
+            "c1_decimal": "1843478138321971723"
+          },
+          {
+            "c0_decimal": "9890719949753769949",
+            "c1_decimal": "10363731328092117970"
+          }
+        ],
+        [
+          {
             "c0_decimal": "11711107808134459166",
             "c1_decimal": "12207209466414089693"
+          },
+          {
+            "c0_decimal": "15606421578295059819",
+            "c1_decimal": "2718717642769213438"
           }
         ],
         [
           {
             "c0_decimal": "8870785317014934664",
             "c1_decimal": "14925927109183303131"
+          },
+          {
+            "c0_decimal": "14662902169143221353",
+            "c1_decimal": "6130025168431800652"
           }
         ]
       ],
@@ -1735,17 +1892,15 @@
         }
       ],
       "comment": "cross-bus-cancellation construction (F3): busX sends v with +1; (ca,cb) DELIBERATELY equals bus_y_recv's pair (manual assignment, NOT memo output)",
-      "cumulative_sums": [
+      "height": 4,
+      "lookup_slots": [
         {
-          "aux_column": 0,
           "bus_name": "busX",
-          "sum": {
-            "c0_decimal": "5086943416743571696",
-            "c1_decimal": "2609208208200519462"
-          }
+          "count_weight": 1,
+          "fraction_column": 1,
+          "slot": 0
         }
       ],
-      "height": 4,
       "lookups": [
         {
           "bus_name": "busX",
@@ -1785,12 +1940,12 @@
       ],
       "main_width": 1,
       "name": "bus_x_send",
-      "num_aux_cols": 1,
+      "num_aux_cols": 2,
       "preprocessed": null,
       "public_values": [],
       "residuals": [
-        [
-          [
+        {
+          "accumulator": [
             {
               "c0_decimal": "0",
               "c1_decimal": "0"
@@ -1803,10 +1958,18 @@
               "c0_decimal": "0",
               "c1_decimal": "0"
             }
+          ],
+          "fractions": [
+            [
+              {
+                "c0_decimal": "0",
+                "c1_decimal": "0"
+              }
+            ]
           ]
-        ],
-        [
-          [
+        },
+        {
+          "accumulator": [
             {
               "c0_decimal": "0",
               "c1_decimal": "0"
@@ -1819,10 +1982,18 @@
               "c0_decimal": "0",
               "c1_decimal": "0"
             }
+          ],
+          "fractions": [
+            [
+              {
+                "c0_decimal": "0",
+                "c1_decimal": "0"
+              }
+            ]
           ]
-        ],
-        [
-          [
+        },
+        {
+          "accumulator": [
             {
               "c0_decimal": "0",
               "c1_decimal": "0"
@@ -1835,10 +2006,18 @@
               "c0_decimal": "0",
               "c1_decimal": "0"
             }
+          ],
+          "fractions": [
+            [
+              {
+                "c0_decimal": "0",
+                "c1_decimal": "0"
+              }
+            ]
           ]
-        ],
-        [
-          [
+        },
+        {
+          "accumulator": [
             {
               "c0_decimal": "0",
               "c1_decimal": "0"
@@ -1851,9 +2030,21 @@
               "c0_decimal": "0",
               "c1_decimal": "0"
             }
+          ],
+          "fractions": [
+            [
+              {
+                "c0_decimal": "0",
+                "c1_decimal": "0"
+              }
+            ]
           ]
-        ]
-      ]
+        }
+      ],
+      "terminal": {
+        "c0_decimal": "5086943416743571696",
+        "c1_decimal": "2609208208200519462"
+      }
     },
     {
       "aux": [
@@ -1861,9 +2052,7 @@
           {
             "c0_decimal": "0",
             "c1_decimal": "0"
-          }
-        ],
-        [
+          },
           {
             "c0_decimal": "16626356211033895104",
             "c1_decimal": "16603265931092612598"
@@ -1871,14 +2060,32 @@
         ],
         [
           {
+            "c0_decimal": "16626356211033895104",
+            "c1_decimal": "16603265931092612598"
+          },
+          {
+            "c0_decimal": "8556024119660814372",
+            "c1_decimal": "8083012741322466351"
+          }
+        ],
+        [
+          {
             "c0_decimal": "6735636261280125155",
             "c1_decimal": "6239534603000494628"
+          },
+          {
+            "c0_decimal": "2840322491119524502",
+            "c1_decimal": "15728026426645370883"
           }
         ],
         [
           {
             "c0_decimal": "9575958752399649657",
             "c1_decimal": "3520816960231281190"
+          },
+          {
+            "c0_decimal": "3783841900271362968",
+            "c1_decimal": "12316718900982783669"
           }
         ]
       ],
@@ -1894,17 +2101,15 @@
         }
       ],
       "comment": "cross-bus-cancellation construction (F3): busY receives the same v with -1 under the SAME (ca,cb) => sums negate exactly",
-      "cumulative_sums": [
+      "height": 4,
+      "lookup_slots": [
         {
-          "aux_column": 0,
           "bus_name": "busY",
-          "sum": {
-            "c0_decimal": "13359800652671012625",
-            "c1_decimal": "15837535861214064859"
-          }
+          "count_weight": 1,
+          "fraction_column": 1,
+          "slot": 0
         }
       ],
-      "height": 4,
       "lookups": [
         {
           "bus_name": "busY",
@@ -1944,12 +2149,12 @@
       ],
       "main_width": 1,
       "name": "bus_y_recv",
-      "num_aux_cols": 1,
+      "num_aux_cols": 2,
       "preprocessed": null,
       "public_values": [],
       "residuals": [
-        [
-          [
+        {
+          "accumulator": [
             {
               "c0_decimal": "0",
               "c1_decimal": "0"
@@ -1962,57 +2167,511 @@
               "c0_decimal": "0",
               "c1_decimal": "0"
             }
+          ],
+          "fractions": [
+            [
+              {
+                "c0_decimal": "0",
+                "c1_decimal": "0"
+              }
+            ]
           ]
+        },
+        {
+          "accumulator": [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ],
+          "fractions": [
+            [
+              {
+                "c0_decimal": "0",
+                "c1_decimal": "0"
+              }
+            ]
+          ]
+        },
+        {
+          "accumulator": [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ],
+          "fractions": [
+            [
+              {
+                "c0_decimal": "0",
+                "c1_decimal": "0"
+              }
+            ]
+          ]
+        },
+        {
+          "accumulator": [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ],
+          "fractions": [
+            [
+              {
+                "c0_decimal": "0",
+                "c1_decimal": "0"
+              }
+            ]
+          ]
+        }
+      ],
+      "terminal": {
+        "c0_decimal": "13359800652671012625",
+        "c1_decimal": "15837535861214064859"
+      }
+    },
+    {
+      "aux": [
+        [
+          {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          {
+            "c0_decimal": "13882465055383107355",
+            "c1_decimal": "8185511739259757448"
+          }
         ],
         [
-          [
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            },
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            },
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            }
-          ]
+          {
+            "c0_decimal": "13882465055383107355",
+            "c1_decimal": "8185511739259757448"
+          },
+          {
+            "c0_decimal": "8291955042850035356",
+            "c1_decimal": "1758546946173568855"
+          }
         ],
         [
-          [
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            },
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            },
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            }
-          ]
+          {
+            "c0_decimal": "3727676028818558390",
+            "c1_decimal": "9944058685433326303"
+          },
+          {
+            "c0_decimal": "7929868364101013682",
+            "c1_decimal": "14624319803888939936"
+          }
         ],
         [
-          [
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            },
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            },
-            {
-              "c0_decimal": "0",
-              "c1_decimal": "0"
-            }
-          ]
+          {
+            "c0_decimal": "11657544392919572072",
+            "c1_decimal": "6121634419907681918"
+          },
+          {
+            "c0_decimal": "209171504228754909",
+            "c1_decimal": "1576024715457581309"
+          }
         ]
-      ]
+      ],
+      "aux_corrupted": false,
+      "challenges": [
+        {
+          "c0_decimal": "8049066381800445015",
+          "c1_decimal": "10851059040919941360"
+        },
+        {
+          "c0_decimal": "5425529520459970680",
+          "c1_decimal": "9765939890744571060"
+        }
+      ],
+      "comment": "same busX send, but with the DERIVED prefix for bus 0 (alpha + 1*gamma) — must not cancel against bus_y_recv_sep",
+      "height": 4,
+      "lookup_slots": [
+        {
+          "bus_name": "busX",
+          "count_weight": 1,
+          "fraction_column": 1,
+          "slot": 0
+        }
+      ],
+      "lookups": [
+        {
+          "bus_name": "busX",
+          "column": 0,
+          "constraint_degree": 2,
+          "kind": "global",
+          "tuples": [
+            {
+              "elements": [
+                {
+                  "col": 0,
+                  "next": 0,
+                  "op": "main"
+                }
+              ],
+              "multiplicity": {
+                "op": "const",
+                "val": "1"
+              }
+            }
+          ]
+        }
+      ],
+      "main": [
+        [
+          "3"
+        ],
+        [
+          "5"
+        ],
+        [
+          "7"
+        ],
+        [
+          "11"
+        ]
+      ],
+      "main_width": 1,
+      "name": "bus_x_send_sep",
+      "num_aux_cols": 2,
+      "preprocessed": null,
+      "public_values": [],
+      "residuals": [
+        {
+          "accumulator": [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ],
+          "fractions": [
+            [
+              {
+                "c0_decimal": "0",
+                "c1_decimal": "0"
+              }
+            ]
+          ]
+        },
+        {
+          "accumulator": [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ],
+          "fractions": [
+            [
+              {
+                "c0_decimal": "0",
+                "c1_decimal": "0"
+              }
+            ]
+          ]
+        },
+        {
+          "accumulator": [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ],
+          "fractions": [
+            [
+              {
+                "c0_decimal": "0",
+                "c1_decimal": "0"
+              }
+            ]
+          ]
+        },
+        {
+          "accumulator": [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ],
+          "fractions": [
+            [
+              {
+                "c0_decimal": "0",
+                "c1_decimal": "0"
+              }
+            ]
+          ]
+        }
+      ],
+      "terminal": {
+        "c0_decimal": "11866715897148326981",
+        "c1_decimal": "7697659135365263227"
+      }
+    },
+    {
+      "aux": [
+        [
+          {
+            "c0_decimal": "0",
+            "c1_decimal": "0"
+          },
+          {
+            "c0_decimal": "13696154495615069055",
+            "c1_decimal": "5422640761812007518"
+          }
+        ],
+        [
+          {
+            "c0_decimal": "13696154495615069055",
+            "c1_decimal": "5422640761812007518"
+          },
+          {
+            "c0_decimal": "13875996731287955834",
+            "c1_decimal": "7279164580730852125"
+          }
+        ],
+        [
+          {
+            "c0_decimal": "9125407157488440568",
+            "c1_decimal": "12701805342542859643"
+          },
+          {
+            "c0_decimal": "7116452314769491398",
+            "c1_decimal": "17404875087539572646"
+          }
+        ],
+        [
+          {
+            "c0_decimal": "16241859472257931966",
+            "c1_decimal": "11659936360667847968"
+          },
+          {
+            "c0_decimal": "10544758722645885142",
+            "c1_decimal": "15017405118564805636"
+          }
+        ]
+      ],
+      "aux_corrupted": false,
+      "challenges": [
+        {
+          "c0_decimal": "13474595902260415695",
+          "c1_decimal": "2170254862249928099"
+        },
+        {
+          "c0_decimal": "5425529520459970680",
+          "c1_decimal": "9765939890744571060"
+        }
+      ],
+      "comment": "same busY receive, but with the DERIVED prefix for bus 1 (alpha + 2*gamma) — distinct denominator, so the terminals do NOT negate",
+      "height": 4,
+      "lookup_slots": [
+        {
+          "bus_name": "busY",
+          "count_weight": 1,
+          "fraction_column": 1,
+          "slot": 0
+        }
+      ],
+      "lookups": [
+        {
+          "bus_name": "busY",
+          "column": 0,
+          "constraint_degree": 2,
+          "kind": "global",
+          "tuples": [
+            {
+              "elements": [
+                {
+                  "col": 0,
+                  "next": 0,
+                  "op": "main"
+                }
+              ],
+              "multiplicity": {
+                "op": "const",
+                "val": "18446744069414584320"
+              }
+            }
+          ]
+        }
+      ],
+      "main": [
+        [
+          "3"
+        ],
+        [
+          "5"
+        ],
+        [
+          "7"
+        ],
+        [
+          "11"
+        ]
+      ],
+      "main_width": 1,
+      "name": "bus_y_recv_sep",
+      "num_aux_cols": 2,
+      "preprocessed": null,
+      "public_values": [],
+      "residuals": [
+        {
+          "accumulator": [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ],
+          "fractions": [
+            [
+              {
+                "c0_decimal": "0",
+                "c1_decimal": "0"
+              }
+            ]
+          ]
+        },
+        {
+          "accumulator": [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ],
+          "fractions": [
+            [
+              {
+                "c0_decimal": "0",
+                "c1_decimal": "0"
+              }
+            ]
+          ]
+        },
+        {
+          "accumulator": [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ],
+          "fractions": [
+            [
+              {
+                "c0_decimal": "0",
+                "c1_decimal": "0"
+              }
+            ]
+          ]
+        },
+        {
+          "accumulator": [
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            },
+            {
+              "c0_decimal": "0",
+              "c1_decimal": "0"
+            }
+          ],
+          "fractions": [
+            [
+              {
+                "c0_decimal": "0",
+                "c1_decimal": "0"
+              }
+            ]
+          ]
+        }
+      ],
+      "terminal": {
+        "c0_decimal": "8339874125489232787",
+        "c1_decimal": "8230597409818069283"
+      }
     }
   ]
 }

@@ -2,7 +2,8 @@
  * @file test_fri_verifier_mmcs_calls.c
  * @brief F5 Part A oracle test — FRI MMCS verify_batch call replay.
  *
- * Plonky3 commit pin: 82cfad73cd734d37a0d51953094f970c531817ec.
+ * Plonky3 commit pin: v0.6.2 (11cc5849). The vector was regenerated at S2'-f;
+ * the 82cfad73 pin this header used to carry is historical.
  *
  * Loads tools/vectors/fri_verifier_mmcs_calls.json (8 verify_batch calls Plonky3
  * issued while verifying the V6 proof) and replays each through DNAC's stateless
@@ -15,7 +16,10 @@
  *   - header counts: total==8, input_mmcs==2, commit_phase==6; parsed exactly 8.
  *   - depth == log2(dimensions.height)   (makes "height" real, not decorative)
  *   - dnac_api_target == "dnac_merkle_verify" for all 8
- *   - width metadata: input_mmcs -> 0, params.mmcs -> arity (2)
+ *   - width metadata: input_mmcs -> the opened row's own lane count (v0.6.2
+ *     pins the matrix width to the claimed evaluation count, verifier.rs:695-712,
+ *     so check_widths can authenticate the row boundary; at 82cfad73 this was 0
+ *     because widths were never checked), params.mmcs -> arity (2)
  *
  * Accept-only: this proves the FRI->merkle call mapping on VALID openings; merkle
  * REJECTION soundness is covered independently by merkle_mmcs.json's reject cases.
@@ -285,7 +289,21 @@ int main(int argc, char **argv) {
 
                 bool is_input  = (strstr(c.call_site, "input_mmcs") != NULL);
                 int  exp_depth = ilog2_u64(c.height);
-                uint64_t exp_width = is_input ? 0u : 2u; /* arity = 1<<log_arity = 2 (V6) */
+                /* v0.6.2 (S2'-f): the INPUT mmcs is now handed a width PINNED
+                 * TO THE CLAIMED EVALUATION COUNT — `Dimensions { width:
+                 * values.len(), height }`, fri/src/verifier.rs:695-712 — so
+                 * that mmcs/geometry.rs:16-30 check_widths can authenticate the
+                 * row boundary the flat leaf hash cannot. At 82cfad73 upstream
+                 * passed 0 here because widths were never checked, which is why
+                 * this expectation used to be the constant 0.
+                 *
+                 * Asserted as the PROPERTY, not as a new magic number: the
+                 * declared width must equal the opened row's own lane count.
+                 * That is exactly the pin, so this catches a regression in
+                 * either direction. Commit-phase calls are unaffected — their
+                 * width is the Challenge DIMENSION 2 while the leaf is the
+                 * folded arity group (4 lanes), so the two are NOT equal there. */
+                uint64_t exp_width = is_input ? (uint64_t)(c.leaf_len / 8u) : 2u;
 
                 /* load-bearing structural asserts */
                 if ((int)c.nsib != exp_depth) { fail++; printf("  [FAIL] %-26s depth=%zu != log2(height=%llu)=%d\n", c.call_site, c.nsib, (unsigned long long)c.height, exp_depth); continue; }

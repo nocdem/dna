@@ -11,7 +11,6 @@
  */
 
 #include <stdlib.h>
-#include <string.h>
 
 #include "batch_priming.h"
 
@@ -104,74 +103,50 @@ int dnac_batch_observe_preprocessed(dnac_duplex_t   *ch,
 int dnac_batch_sample_perm_challenges(dnac_duplex_t               *ch,
                                       const dnac_logup_bus_view_t *views,
                                       uint32_t                     num_instances,
+                                      uint32_t                     max_message_width,
                                       gold_fp2_t *const           *out_challenges)
 {
     if (!ch || (num_instances > 0 && (!views || !out_challenges))) {
         return DNAC_BATCH_ERR_NULL;
     }
 
-    /* Count the fresh pairs the memo walk will need: one per local lookup +
-     * one per FIRST-occurrence bus name (transcript.rs:92-98). Pre-sampling
-     * exactly that many pairs in draw order is byte-identical to the
-     * reference's lazy sampling: no observes happen inside the phase, so the
-     * challenger produces the same sample stream. */
-    uint32_t total_globals = 0, fresh = 0;
+    /* ⚠ SQUEEZE COUNT CHANGED at v0.6.2 (S2'-c, 2026-07-27). This used to
+     * pre-count the fresh pairs the memo walk needed — one per local lookup
+     * plus one per FIRST-occurrence bus name — and sample 2 fp2 for each.
+     * v0.6.2 draws ONE pair for the WHOLE batch: "Draw the single (alpha,
+     * beta) pair for the whole batch. This is the only lookup squeeze: two
+     * draws, not two per bus." (batch-stark/src/transcript.rs:112-115).
+     * The per-bus separation moved into the DERIVATION —
+     * prefix[i] = alpha + (i+1)*beta^W, dnac_logup_bus_derive_challenges.
+     *
+     * This is a TRANSCRIPT-VISIBLE change, not an internal one: the number of
+     * elements squeezed here moves every challenge sampled after it. */
+
+    /* No lookups anywhere means NO squeeze at all, matching a batch that never
+     * had lookups (transcript.rs:106-110). Sampling unconditionally would
+     * desync the challenger against such a batch. */
+    int any_lookup = 0;
     for (uint32_t i = 0; i < num_instances; i++) {
         if (views[i].num_globals > 0 && !views[i].global_bus_names) {
             return DNAC_BATCH_ERR_NULL;
         }
-        fresh += views[i].num_locals;
-        total_globals += views[i].num_globals;
-    }
-    const char **seen = (const char **)malloc(
-        sizeof(const char *) * (total_globals ? total_globals : 1));
-    if (!seen) {
-        return DNAC_BATCH_ERR_OOM;
-    }
-    uint32_t num_seen = 0;
-    for (uint32_t i = 0; i < num_instances; i++) {
-        for (uint32_t g = 0; g < views[i].num_globals; g++) {
-            const char *name = views[i].global_bus_names[g];
-            if (!name) {
-                free((void *)seen);
-                return DNAC_BATCH_ERR_NULL;
-            }
-            int found = 0;
-            for (uint32_t m = 0; m < num_seen; m++) {
-                if (strcmp(seen[m], name) == 0) {
-                    found = 1;
-                    break;
-                }
-            }
-            if (!found) {
-                seen[num_seen++] = name;
-            }
+        if (views[i].num_locals + views[i].num_globals > 0) {
+            any_lookup = 1;
         }
     }
-    fresh += num_seen;
-    free((void *)seen);
-
-    /* Sample the draw stream: `fresh` pairs, 2 fp2 each (sample_n_challenges,
-     * transcript.rs:142-146; each fp2 = 2 base samples c0-first, P1a pin). */
-    gold_fp2_t *draws =
-        (gold_fp2_t *)malloc(sizeof(gold_fp2_t) * 2u * (fresh ? fresh : 1));
-    if (!draws) {
-        return DNAC_BATCH_ERR_OOM;
-    }
-    for (uint32_t d = 0; d < 2u * fresh; d++) {
-        draws[d] = dnac_duplex_sample_fp2(ch);
+    if (!any_lookup) {
+        return DNAC_BATCH_OK;
     }
 
-    uint32_t used = 0;
-    int rc = dnac_logup_bus_assign_challenges(views, num_instances, draws,
-                                              fresh, out_challenges, &used);
-    free(draws);
+    /* transcript.rs:114-115 — alpha then beta, one sample_algebra_element
+     * each (each fp2 = 2 base samples, c0 first — the P1a pin). */
+    const gold_fp2_t alpha = dnac_duplex_sample_fp2(ch);
+    const gold_fp2_t beta = dnac_duplex_sample_fp2(ch);
+
+    int rc = dnac_logup_bus_derive_challenges(views, num_instances, alpha, beta,
+                                              max_message_width, out_challenges,
+                                              NULL);
     if (rc != DNAC_LOGUP_OK) {
-        return DNAC_BATCH_ERR_PARAM;
-    }
-    if (used != fresh) {
-        /* The pre-count and the memo walk MUST agree — divergence would mean
-         * a draw-stream desync against the reference. Fail-close. */
         return DNAC_BATCH_ERR_PARAM;
     }
     return DNAC_BATCH_OK;
@@ -181,29 +156,39 @@ int dnac_batch_observe_perm_and_sample_alpha(
     dnac_duplex_t               *ch,
     const gold_fp_t             *permutation_commit,
     const dnac_logup_bus_view_t *views,
-    const gold_fp2_t *const    *cumulative_sums,
+    const gold_fp2_t            *terminals,
     uint32_t                     num_instances,
     gold_fp2_t                  *out_alpha)
 {
     if (!ch || !out_alpha || (num_instances > 0 && !views)) {
         return DNAC_BATCH_ERR_NULL;
     }
-    /* transcript.rs:106-119: iff the permutation commit exists, observe it
-     * and then every cumulative sum (flattened instance order, global-lookup
-     * order; observe_algebra_element = 2 coefficients). Alpha is sampled
+    /* transcript.rs:175-188: iff the permutation commit exists, observe it and
+     * then each AIR's committed lookup TERMINAL.
+     *
+     * ⚠ CHANGED at v0.6.2 (S2'-c) — this used to observe every CUMULATIVE SUM
+     * (one per global lookup, flattened instance order). There are no
+     * cumulative sums any more: generate_permutation returns ONE terminal per
+     * AIR, and upstream observes exactly those (`for terminal in
+     * lookup_terminals.iter().flatten()` — `flatten()` skips the None of an
+     * instance with no lookups, so a lookup-free instance contributes NOTHING
+     * to the transcript, exactly as it contributed no cumulative sums before).
+     * Transcript-visible: alpha and everything after it move.
+     *
+     * observe_algebra_element = 2 coefficients, c0 first. Alpha is sampled
      * either way. */
     if (permutation_commit) {
         dnac_batch_observe_commit(ch, permutation_commit);
         for (uint32_t i = 0; i < num_instances; i++) {
-            if (views[i].num_globals == 0) {
+            /* An AIR carries a terminal iff it has at least one lookup
+             * (logup.rs:374-377 returns None otherwise). */
+            if (views[i].num_locals + views[i].num_globals == 0) {
                 continue;
             }
-            if (!cumulative_sums || !cumulative_sums[i]) {
+            if (!terminals) {
                 return DNAC_BATCH_ERR_NULL;
             }
-            for (uint32_t g = 0; g < views[i].num_globals; g++) {
-                dnac_duplex_observe_fp2(ch, cumulative_sums[i][g]);
-            }
+            dnac_duplex_observe_fp2(ch, terminals[i]);
         }
     }
     *out_alpha = dnac_duplex_sample_fp2(ch);
@@ -277,12 +262,13 @@ int dnac_batch_priming_run(dnac_duplex_t                    *ch,
         return rc;
     }
     rc = dnac_batch_sample_perm_challenges(ch, in->views, n,
+                                           in->max_message_width,
                                            out_perm_challenges);
     if (rc != DNAC_BATCH_OK) {
         return rc;
     }
     rc = dnac_batch_observe_perm_and_sample_alpha(
-        ch, in->permutation_commit, in->views, in->cumulative_sums, n,
+        ch, in->permutation_commit, in->views, in->terminals, n,
         out_alpha);
     if (rc != DNAC_BATCH_OK) {
         return rc;
@@ -332,7 +318,12 @@ int dnac_batch_proof_shape_check(const dnac_batch_instance_shape_t *shapes,
     for (uint32_t i = 0; i < num_instances; i++) {
         const dnac_batch_instance_shape_t *s = &shapes[i];
         const uint32_t width = bindings[i].width;
-        const uint32_t aux_width = views[i].num_locals + views[i].num_globals;
+        /* aux_width (S2'-c, v0.6.2 verifier/mod.rs): num_lookups + 1 when the
+         * AIR declares any lookup — col 0 is the ONE shared accumulator and
+         * lookup c owns fraction column c+1 — else 0. At 82cfad73 this was
+         * max(lookup.column) + 1, i.e. num_lookups with no accumulator column. */
+        const uint32_t num_lookups = views[i].num_locals + views[i].num_globals;
+        const uint32_t aux_width = num_lookups ? num_lookups + 1u : 0u;
 
         /* trace_local width (verifier/mod.rs:162-169); trace_next iff the
          * AIR reads the next row (:170-180). */
@@ -372,29 +363,23 @@ int dnac_batch_proof_shape_check(const dnac_batch_instance_shape_t *shapes,
         }
 
         /* Permutation opened lens: local == next (:482-484), both ==
-         * aux_width · DIMENSION (:524-541). */
+         * aux_width · DIMENSION (v0.6.2 verifier/mod.rs:518-526). */
         if (s->permutation_local_len != s->permutation_next_len ||
             s->permutation_local_len != aux_width * 2u) {
             return DNAC_BATCH_ERR_SHAPE;
         }
 
-        /* global_lookup_data metadata: entry count == global count
-         * (:240-249); (name, aux_column) equal the expected list in order
-         * (:250-267) with locals-first columns (types.rs:59-89) so global g
-         * sits at column num_locals + g. */
-        if (s->num_global_entries != views[i].num_globals) {
+        /* LookupTerminal presence: one terminal iff the AIR declares any
+         * lookup, none otherwise — upstream's TerminalPresenceMismatch
+         * (v0.6.2 verifier/mod.rs).
+         *
+         * The (name, aux_column) metadata comparison that used to live here
+         * is DELETED, not relocated: v0.6.2 removed bus names and aux columns
+         * from the proof entirely, so there is no proof-side data left to
+         * cross-check against the bus view. Only the Option discriminant
+         * survives. */
+        if ((s->has_terminal != 0) != (num_lookups > 0)) {
             return DNAC_BATCH_ERR_SHAPE;
-        }
-        if (views[i].num_globals > 0 &&
-            (!s->entry_names || !s->entry_aux_columns)) {
-            return DNAC_BATCH_ERR_NULL;
-        }
-        for (uint32_t g = 0; g < views[i].num_globals; g++) {
-            if (!s->entry_names[g] ||
-                strcmp(s->entry_names[g], views[i].global_bus_names[g]) != 0 ||
-                s->entry_aux_columns[g] != views[i].num_locals + g) {
-                return DNAC_BATCH_ERR_SHAPE;
-            }
         }
     }
     return DNAC_BATCH_OK;

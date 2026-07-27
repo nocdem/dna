@@ -272,14 +272,30 @@ static int logup_lookup_validate(const dnac_logup_ctx_t *ctx,
  * field values — output-identical, G-DET-L1). Element/multiplicity values
  * are read from the base-field pool evaluation `vals` (logup.rs:512-529:
  * elements resolve to Val, multiplicities stay base and scale the inverse). */
-static int logup_row_contribution(const dnac_logup_ctx_t *ctx,
-                                  const dnac_logup_lookup_t *l,
+static int logup_row_contribution(const dnac_logup_lookup_t *l,
                                   const gold_fp_t *vals, gold_fp2_t alpha,
                                   gold_fp2_t beta, gold_fp2_t *out)
 {
     gold_fp2_t acc = gold_fp2_zero();
     for (uint32_t t = 0; t < l->num_tuples; t++) {
-        /* combined via Horner over base values lifted to fp2 (logup.rs:513-523) */
+        const gold_fp_t m_base = vals[l->multiplicities[t]];
+        /* FLAG-ZERO SKIP (v0.6.2 logup.rs:558-567) — NEW at this pin, and it
+         * is a behaviour change, not an optimisation. A zero multiplicity
+         * makes m/d vanish whatever d is, so upstream skips the element
+         * combine entirely and pins a UNIT placeholder denominator: "The unit
+         * keeps batch inversion well-defined (1 inverts to 1). The fraction
+         * term stays exact at 0 * 1 = 0."
+         * Without it this port ABORTED (ERR_ZERO_DENOM) on a row where a
+         * zero-weight tuple happened to combine to α — a row upstream accepts,
+         * and one its own test exercises
+         * (tests.rs generate_permutation_flag_zero_skip_matches_real_denominators).
+         * For every non-zero multiplicity the two paths are identical. */
+        if (gold_fp_is_zero(m_base)) {
+            continue; /* term is 0 · 1 = 0 */
+        }
+        /* combined via Horner over base values lifted to fp2 (logup.rs:569-592;
+         * the reference hoists β powers and dot-products, which is the same
+         * value — G-DET-L1 output-invariance). */
         gold_fp2_t comb = gold_fp2_zero();
         for (uint32_t j = 0; j < l->tuple_widths[t]; j++) {
             comb = gold_fp2_add(gold_fp2_mul(comb, beta),
@@ -288,12 +304,13 @@ static int logup_row_contribution(const dnac_logup_ctx_t *ctx,
         gold_fp2_t denom = gold_fp2_sub(alpha, comb);
         if (gold_fp2_eq(denom, gold_fp2_zero())) {
             /* Mirror of the Plonky3 batch-inversion panic on zero input
-             * (field/src/batch_inverse.rs:26) — fail-close. */
+             * (field/src/batch_inverse.rs:26) — fail-close. Only reachable now
+             * for a NON-zero multiplicity, which is exactly upstream's
+             * remaining panic case. */
             return DNAC_LOGUP_ERR_ZERO_DENOM;
         }
         gold_fp2_t inv = gold_fp2_inv(denom);
-        gold_fp2_t m = gold_fp2_from_base(vals[l->multiplicities[t]]);
-        acc = gold_fp2_add(acc, gold_fp2_mul(inv, m));
+        acc = gold_fp2_add(acc, gold_fp2_mul(inv, gold_fp2_from_base(m_base)));
     }
     *out = acc;
     return DNAC_LOGUP_OK;
@@ -309,104 +326,103 @@ int dnac_logup_generate_permutation(
     const gold_fp2_t          *challenges,
     uint32_t                   num_challenges,
     gold_fp2_t                *aux_out,
-    gold_fp2_t                *cumulative_sums,
-    uint32_t                   num_globals)
+    gold_fp2_t                *terminal_out)
 {
     int rc = dnac_logup_pool_validate(ctx);
     if (rc != DNAC_LOGUP_OK) {
         return rc;
     }
-    if (num_lookups > 0 && (!lookups || !aux_out)) {
+    if (num_lookups > 0 && (!lookups || !aux_out || !terminal_out)) {
         return DNAC_LOGUP_ERR_NULL;
     }
-    /* logup.rs:383-387 — challenge count must be per-lookup (2 each). */
+    /* logup.rs:384-389 — challenge count must be per-lookup (2 each). */
     if (num_challenges != 2u * num_lookups ||
         (num_challenges > 0 && !challenges)) {
         return DNAC_LOGUP_ERR_PARAM;
     }
-    /* logup.rs:390-401 — aux column indices unique (and in range: the aux
-     * matrix has num_lookups columns, logup.rs:380). Always-on fail-close
-     * (the reference guards this with debug assertions only). */
-    uint32_t global_count = 0;
+    /* logup.rs:399-406 — the slot index must EQUAL the slice position. This
+     * replaces the old unique-and-in-range pair check and is strictly
+     * stronger; upstream's reason is that slot i owns fraction column i+1, so
+     * a gap "is an out-of-bounds write on untrusted data". Contiguity implies
+     * uniqueness, so nothing is lost. Always-on fail-close here (the
+     * reference keeps it on in release for the same reason). */
     for (uint32_t i = 0; i < num_lookups; i++) {
-        if (lookups[i].column >= num_lookups) {
+        if (lookups[i].column != i) {
             return DNAC_LOGUP_ERR_PARAM;
-        }
-        for (uint32_t j = 0; j < i; j++) {
-            if (lookups[j].column == lookups[i].column) {
-                return DNAC_LOGUP_ERR_PARAM;
-            }
         }
         rc = logup_lookup_validate(ctx, &lookups[i]);
         if (rc != DNAC_LOGUP_OK) {
             return rc;
         }
-        if (lookups[i].is_global) {
-            global_count++;
-        }
     }
-    /* logup.rs:644 debug_assert — lookup_data entries == global lookups. */
-    if (global_count != num_globals ||
-        (num_globals > 0 && !cumulative_sums)) {
-        return DNAC_LOGUP_ERR_PARAM;
-    }
+    /* logup.rs:374-377 — an AIR without lookups carries no permutation trace
+     * and no terminal. */
     if (num_lookups == 0) {
         return DNAC_LOGUP_OK;
     }
 
     const uint32_t height = ctx->height;
+    const uint32_t width = num_lookups + 1u; /* logup.rs:381-382 */
     gold_fp_t *vals = (gold_fp_t *)malloc(sizeof(gold_fp_t) * (ctx->pool_len ? ctx->pool_len : 1));
-    gold_fp2_t *row_sums =
-        (gold_fp2_t *)malloc(sizeof(gold_fp2_t) * (size_t)height * num_lookups);
-    if (!vals || !row_sums) {
+    gold_fp2_t *row_totals =
+        (gold_fp2_t *)malloc(sizeof(gold_fp2_t) * (size_t)height);
+    if (!vals || !row_totals) {
         free(vals);
-        free(row_sums);
+        free(row_totals);
         return DNAC_LOGUP_ERR_OOM;
     }
 
-    /* Phase 1+2+3 fused, serial (logup.rs:449-558): per (row, lookup)
-     * contribution Σ_t m_t/(α − combined_t). */
+    /* Phases 1-3 fused, serial (logup.rs:489-635; the reference chunks this
+     * across threads and batch-inverts per chunk — inverses are unique field
+     * values, so the result is identical, G-DET-L1). Slot c's fraction is
+     * written straight into column c+1; col 0 is filled afterwards. */
     for (uint32_t r = 0; r < height; r++) {
         logup_pool_eval_row(ctx, r, vals);
+        gold_fp2_t total = gold_fp2_zero();
         for (uint32_t i = 0; i < num_lookups; i++) {
-            /* α, β indexed by the lookup's aux column (logup.rs:421-425). */
+            /* α, β indexed by the lookup's slot (logup.rs:424-431); the guard
+             * above pins column == i, so this is the slice position too. */
             gold_fp2_t alpha = challenges[2u * lookups[i].column];
             gold_fp2_t beta = challenges[2u * lookups[i].column + 1u];
-            rc = logup_row_contribution(ctx, &lookups[i], vals, alpha, beta,
-                                        &row_sums[(size_t)r * num_lookups + i]);
+            gold_fp2_t frac;
+            rc = logup_row_contribution(&lookups[i], vals, alpha, beta,
+                                        &frac);
             if (rc != DNAC_LOGUP_OK) {
                 free(vals);
-                free(row_sums);
+                free(row_totals);
                 return rc;
             }
+            /* logup.rs:629-630 — slot i lives at fraction column i + 1. */
+            aux_out[(size_t)r * width + i + 1u] = frac;
+            total = gold_fp2_add(total, frac); /* logup.rs:631 */
         }
+        row_totals[r] = total;
     }
 
-    /* Exclusive running sum per lookup column (logup.rs:560-634):
-     * s[0] = 0, s[r] = Σ_{j<r} contribution[j]. Cumulative sum (global
-     * lookups, lookup order) = inclusive total (logup.rs:636-640). */
-    uint32_t perm_counter = 0;
-    for (uint32_t i = 0; i < num_lookups; i++) {
-        const uint32_t col = lookups[i].column;
-        gold_fp2_t run = gold_fp2_zero();
-        for (uint32_t r = 0; r < height; r++) {
-            aux_out[(size_t)r * num_lookups + col] = run;
-            run = gold_fp2_add(run, row_sums[(size_t)r * num_lookups + i]);
-        }
-        if (lookups[i].is_global) {
-            cumulative_sums[perm_counter++] = run;
-        }
+    /* Accumulator column: EXCLUSIVE prefix sum of the row totals
+     * (logup.rs:637-654 + 690-700) — acc[0] = 0 and acc[r] = Σ_{j<r} total[j].
+     * The reference builds an INCLUSIVE prefix sum in three parallel phases
+     * and then reads acc[i+1] = row_totals[i]; the serial exclusive walk below
+     * produces the same column. The terminal is the full inclusive total,
+     * i.e. the last row's running value AFTER adding its own row total
+     * (logup.rs:685-688) — one per AIR, replacing the per-global-lookup
+     * cumulative sums. */
+    gold_fp2_t run = gold_fp2_zero();
+    for (uint32_t r = 0; r < height; r++) {
+        aux_out[(size_t)r * width] = run;
+        run = gold_fp2_add(run, row_totals[r]);
     }
+    *terminal_out = run;
 
     free(vals);
-    free(row_sums);
+    free(row_totals);
     return DNAC_LOGUP_OK;
 }
 
 /* ============================================================================
- * Constraint residuals — logup.rs:158-265 (concrete, selector-multiplied)
+ * Fraction-pin residual — logup.rs:175-246 eval_fraction (concrete, UNGATED)
  * ========================================================================== */
-int dnac_logup_eval_row(
+int dnac_logup_eval_fraction(
     const dnac_logup_ctx_t    *ctx,
     const dnac_logup_lookup_t *lookup,
     const gold_fp2_t          *aux,
@@ -414,11 +430,9 @@ int dnac_logup_eval_row(
     const gold_fp2_t          *challenges,
     uint32_t                   num_challenges,
     uint32_t                   row,
-    const gold_fp2_t          *cumulative_sum,
-    gold_fp2_t                 residuals[3],
-    uint32_t                  *num_residuals)
+    gold_fp2_t                *residual)
 {
-    if (!aux || !challenges || !residuals || !num_residuals) {
+    if (!aux || !challenges || !residual) {
         return DNAC_LOGUP_ERR_NULL;
     }
     int rc = dnac_logup_pool_validate(ctx);
@@ -429,38 +443,25 @@ int dnac_logup_eval_row(
     if (rc != DNAC_LOGUP_OK) {
         return rc;
     }
-    if (row >= ctx->height || lookup->column >= aux_width) {
+    /* Slot c owns fraction column c + 1 (logup.rs:226-229), so the aux trace
+     * must be wide enough for it — col 0 is the shared accumulator. */
+    if (row >= ctx->height || lookup->column + 1u >= aux_width) {
         return DNAC_LOGUP_ERR_PARAM;
     }
-    /* logup.rs:201-203 — challenge array must cover this lookup's pair. */
+    /* logup.rs:215-218 — challenge array must cover this lookup's pair. */
     if (num_challenges < 2u * (lookup->column + 1u)) {
-        return DNAC_LOGUP_ERR_PARAM;
-    }
-    /* logup.rs:239-241 / 254-256 — kind must match cumulative_sum presence. */
-    if ((cumulative_sum != NULL) != (lookup->is_global != 0)) {
         return DNAC_LOGUP_ERR_PARAM;
     }
 
     const gold_fp2_t alpha = challenges[2u * lookup->column];
     const gold_fp2_t beta = challenges[2u * lookup->column + 1u];
 
-    /* s_local / s_next with the WRAP next-row convention (logup.h pin). */
-    const uint32_t next_row = (row + 1u) % ctx->height;
-    const gold_fp2_t s_local = aux[(size_t)row * aux_width + lookup->column];
-    const gold_fp2_t s_next = aux[(size_t)next_row * aux_width + lookup->column];
-
-    /* Row selectors as base-field 0/1 (tests.rs:188-199 concrete builder);
-     * the filtered builder multiplies residual · condition
-     * (air/src/filtered.rs:78-86). */
-    const gold_fp2_t sel_first =
-        gold_fp2_from_base(row == 0 ? gold_fp_one() : gold_fp_zero());
-    const gold_fp2_t sel_last = gold_fp2_from_base(
-        row + 1u == ctx->height ? gold_fp_one() : gold_fp_zero());
-    const gold_fp2_t sel_trans = gold_fp2_from_base(
-        row + 1u < ctx->height ? gold_fp_one() : gold_fp_zero());
+    /* This lookup's fraction at the current row (logup.rs:229). */
+    const gold_fp2_t frac_local =
+        aux[(size_t)row * aux_width + lookup->column + 1u];
 
     /* Resolve elements + multiplicities at this row (base → fp2;
-     * logup.rs:180-194). */
+     * logup.rs:196-209). */
     gold_fp_t *vals =
         (gold_fp_t *)malloc(sizeof(gold_fp_t) * (ctx->pool_len ? ctx->pool_len : 1));
     if (!vals) {
@@ -508,31 +509,76 @@ int dnac_logup_eval_row(
         return rc;
     }
 
-    /* residual[0]: when_first_row().assert_zero_ext(s_local) (logup.rs:226). */
-    residuals[0] = gold_fp2_mul(s_local, sel_first);
-
-    /* (s_next − s_local)·D − N */
-    gold_fp2_t trans =
-        gold_fp2_sub(gold_fp2_mul(gold_fp2_sub(s_next, s_local), den), num);
-
-    if (cumulative_sum) {
-        /* Global (logup.rs:237-251): transition-gated + last-row final. */
-        residuals[1] = gold_fp2_mul(trans, sel_trans);
-        gold_fp2_t fin = gold_fp2_sub(
-            gold_fp2_mul(gold_fp2_sub(*cumulative_sum, s_local), den), num);
-        residuals[2] = gold_fp2_mul(fin, sel_last);
-        *num_residuals = 3;
-    } else {
-        /* Local (logup.rs:252-264): full-domain (wrap covers the last row). */
-        residuals[1] = trans;
-        *num_residuals = 2;
-    }
+    /* logup.rs:245 — assert_zero_ext(U · f − V), UNGATED on every row. */
+    *residual = gold_fp2_sub(gold_fp2_mul(den, frac_local), num);
     return DNAC_LOGUP_OK;
 }
 
 /* ============================================================================
- * Global-sum check — logup.rs:314-324 (FLAT sum; per-bus grouping is the
- * caller's job — see logup.h warning / G-DET-L4)
+ * Shared-accumulator residuals — logup.rs:258-302 eval_accumulator
+ * ========================================================================== */
+int dnac_logup_eval_accumulator(
+    const dnac_logup_ctx_t    *ctx,
+    const dnac_logup_lookup_t *lookups,
+    uint32_t                   num_lookups,
+    const gold_fp2_t          *aux,
+    uint32_t                   aux_width,
+    uint32_t                   row,
+    gold_fp2_t                 terminal,
+    gold_fp2_t                 residuals[3])
+{
+    if (!aux || !residuals || (num_lookups > 0 && !lookups)) {
+        return DNAC_LOGUP_ERR_NULL;
+    }
+    if (!ctx || ctx->height == 0 || row >= ctx->height) {
+        return DNAC_LOGUP_ERR_PARAM;
+    }
+    /* logup.rs:273-276 — the permutation trace must be wider than the lookup
+     * count, i.e. it carries the accumulator column on top of the fractions. */
+    if (aux_width <= num_lookups) {
+        return DNAC_LOGUP_ERR_PARAM;
+    }
+
+    /* Accumulator lives at column 0 (logup.rs:279-280); WRAP next row, the
+     * convention generate_permutation itself uses. */
+    const uint32_t next_row = (row + 1u) % ctx->height;
+    const gold_fp2_t acc_local = aux[(size_t)row * aux_width];
+    const gold_fp2_t acc_next = aux[(size_t)next_row * aux_width];
+
+    /* row_sum = Σ_c f_c[row], slot c at column c + 1 (logup.rs:285-287). */
+    gold_fp2_t row_sum = gold_fp2_zero();
+    for (uint32_t i = 0; i < num_lookups; i++) {
+        if (lookups[i].column + 1u >= aux_width) {
+            return DNAC_LOGUP_ERR_PARAM;
+        }
+        row_sum = gold_fp2_add(
+            row_sum, aux[(size_t)row * aux_width + lookups[i].column + 1u]);
+    }
+
+    /* Row selectors as base-field 0/1; the filtered builder multiplies
+     * residual · condition (air/src/filtered.rs:78-86). */
+    const gold_fp2_t sel_first =
+        gold_fp2_from_base(row == 0 ? gold_fp_one() : gold_fp_zero());
+    const gold_fp2_t sel_trans = gold_fp2_from_base(
+        row + 1u < ctx->height ? gold_fp_one() : gold_fp_zero());
+    const gold_fp2_t sel_last = gold_fp2_from_base(
+        row + 1u == ctx->height ? gold_fp_one() : gold_fp_zero());
+
+    /* logup.rs:291 — when_first_row: acc == 0. */
+    residuals[0] = gold_fp2_mul(acc_local, sel_first);
+    /* logup.rs:294-296 — when_transition: acc_next − acc − row_sum == 0. */
+    residuals[1] = gold_fp2_mul(
+        gold_fp2_sub(gold_fp2_sub(acc_next, acc_local), row_sum), sel_trans);
+    /* logup.rs:299-301 — when_last_row: terminal − acc − row_sum == 0. */
+    residuals[2] = gold_fp2_mul(
+        gold_fp2_sub(gold_fp2_sub(terminal, acc_local), row_sum), sel_last);
+    return DNAC_LOGUP_OK;
+}
+
+/* ============================================================================
+ * Cross-AIR terminal check — logup.rs:304-319 verify_terminal_sum. FLAT total,
+ * and correct as such at v0.6.2: the bus separation now lives in the challenge
+ * derivation (logup_bus.h), not in caller-side grouping.
  * ========================================================================== */
 int dnac_logup_eval_pool_window(
     const dnac_logup_expr_t *pool, uint32_t pool_len,
@@ -597,7 +643,7 @@ int dnac_logup_eval_pool_window(
     return DNAC_LOGUP_OK;
 }
 
-int dnac_logup_verify_global_sum(const gold_fp2_t *sums, uint32_t n)
+int dnac_logup_verify_terminal_sum(const gold_fp2_t *sums, uint32_t n)
 {
     if (n > 0 && !sums) {
         return DNAC_LOGUP_ERR_NULL;

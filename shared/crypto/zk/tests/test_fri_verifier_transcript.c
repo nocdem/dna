@@ -15,9 +15,11 @@
  *
  * Buffer-state alone cannot distinguish sample_bits(3) from sample_bits(4)
  * (same byte consumption, different mask), so we ALSO assert the flow's
- * log_global_max_height (== 4) and the masked query indices (== {8, 8} under
- * the P1c Poseidon2 config — the regenerated vector's oracle-gated
- * result.sampled_index values) — the one value F5's open_input will consume.
+ * log_global_max_height (== 4) and the masked query indices, which are READ
+ * FROM THE VECTOR (each sample_bits milestone's result.sampled_index) rather
+ * than pinned as literals: they are challenger-derived, so the S2'-b
+ * prefix-free fix moved them (they were {8, 8} against the P1c-era vector).
+ * A hardcoded pair would silently re-assert the OLD challenger.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: Apache-2.0
@@ -191,6 +193,7 @@ typedef struct {
     dnac_p2_digest_t commits[MAX_COMMITS];
     int      commit_n;
     uint64_t fp_c0, fp_c1; int have_fp;
+    uint64_t exp_qi[8]; int exp_qi_n;   /* oracle sampled_index values */
     /* fri_params */
     uint64_t log_blowup, log_final_poly_len, max_log_arity, num_queries,
              commit_pow, query_pow; int have_params;
@@ -282,6 +285,28 @@ static bool parse_milestone(js_t *s, world_t *w) {
         else if (strcmp(k, "operation_kind") == 0) { char *v = js_read_string(s); if (v) { strncpy(m->op_kind, v, sizeof(m->op_kind)-1); free(v); } }
         else if (strcmp(k, "transcript") == 0) { if (!parse_transcript(s, m)) { free(k); return false; } }
         else if (strcmp(k, "input_value_summary") == 0) { if (!parse_ivs(s, w)) { free(k); return false; } }
+        /* `result.sampled_index` on each sample_bits milestone — the query
+         * indices the ORACLE recorded. Read from the vector instead of pinned
+         * as a literal: they are challenger-derived, so the S2'-b prefix-free
+         * fix moved them (they were {8,8} against the P1c-era vector). A
+         * hardcoded pair silently re-asserts the OLD challenger. */
+        else if (strcmp(k, "result") == 0) {
+            /* `result` is null on the 8 observe/snapshot milestones and an
+             * object only on the value-producing ones (sample_bits etc.). */
+            if (!js_peek(s, '{')) { if (!js_skip_value(s)) { free(k); return false; } free(k); continue; }
+            if (!js_match(s, '{')) { free(k); return false; }
+            while (1) {
+                if (js_match(s, '}')) break;
+                if (js_peek(s, ',')) { s->pos++; continue; }
+                char *rk = js_read_string(s); if (!rk) { free(k); return false; }
+                if (!js_match(s, ':')) { free(rk); free(k); return false; }
+                if (strcmp(rk, "sampled_index") == 0) {
+                    uint64_t v = 0; js_read_u64(s, &v);
+                    if (w->exp_qi_n < 8) w->exp_qi[w->exp_qi_n++] = v;
+                } else js_skip_value(s);
+                free(rk);
+            }
+        }
         else js_skip_value(s);
         free(k);
     }
@@ -475,7 +500,9 @@ int main(int argc, char **argv) {
            completed ? "yes" : "no", out.log_global_max_height);
     printf("  query indices: ");
     for (size_t i = 0; i < out.num_query_indices; ++i) printf("%llu ", (unsigned long long)out.query_indices[i]);
-    printf("(want 8 8)\n");
+    printf("(want ");
+    for (int i = 0; i < w->exp_qi_n; ++i) printf("%llu ", (unsigned long long)w->exp_qi[i]);
+    printf("— from the vector)\n");
 
     int ok = (failed == 0)
           && (passed == 18)
@@ -484,8 +511,9 @@ int main(int argc, char **argv) {
           && (err == (dnac_fri_status_t)0xDEAD)            /* no error path taken */
           && (out.log_global_max_height == 4)
           && (out.num_query_indices == 2)
-          && (out.query_indices[0] == 8)   /* P1c vector sampled_index */
-          && (out.query_indices[1] == 8);
+          && (w->exp_qi_n == 2)
+          && (out.query_indices[0] == w->exp_qi[0])
+          && (out.query_indices[1] == w->exp_qi[1]);
 
     free(w);
 

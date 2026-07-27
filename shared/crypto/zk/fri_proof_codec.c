@@ -546,8 +546,7 @@ static int dec_proof(dctx_t *c, dnac_fri_proof_t *p) {
  *     fp2vec random ‖
  *     u32 permutation_len ‖ permutation_len fp2 (local) ‖
  *                           permutation_len fp2 (next) ‖
- *     u32 num_globals ‖ per entry: u32 name_len ‖ name bytes (1..64, no NUL)
- *                       ‖ u32 aux_column ‖ fp2 cumulative_sum ‖
+ *     u32 has_terminal (0 or 1) ‖ [fp2 terminal iff 1] ‖
  *   [iff is_zk] u32 num_rand_entries ‖ per entry: fp2vec vals ‖
  *   fri params (6 × u32, v3 order) ‖
  *   FriProof (v3 enc_proof encoding, incl. salt tails)
@@ -651,27 +650,11 @@ dnac_fri_codec_status_t dnac_batch_wire_encode(
             wb_fp2(&w, o->permutation_local[k]);
         for (uint32_t k = 0; k < o->permutation_len; ++k)
             wb_fp2(&w, o->permutation_next[k]);
-        if (o->num_globals > 0 &&
-            (!o->entry_names || !o->entry_aux_columns || !o->cumulative_sums)) {
-            free(w.buf);
-            return DNAC_FRI_CODEC_ERR_NULL;
-        }
-        if (o->num_globals > DNAC_BATCH_WIRE_MAX_GLOBALS) {
-            free(w.buf);
-            return DNAC_FRI_CODEC_ERR_LENGTH_OVERFLOW;
-        }
-        wb_u32(&w, o->num_globals);
-        for (uint32_t g = 0; g < o->num_globals; ++g) {
-            const char *nm = o->entry_names[g];
-            size_t nl = nm ? strlen(nm) : 0;
-            if (nl == 0 || nl > DNAC_BATCH_WIRE_MAX_BUS_NAME) {
-                free(w.buf);
-                return DNAC_FRI_CODEC_ERR_LENGTH_OVERFLOW;
-            }
-            wb_u32(&w, (uint32_t)nl);
-            wb_bytes(&w, (const uint8_t *)nm, nl);
-            wb_u32(&w, o->entry_aux_columns[g]);
-            wb_fp2(&w, o->cumulative_sums[g]);
+        /* LookupTerminal — u32 count (0 or 1) then the fp2 when present
+         * (oracle-pinned, main.rs:18194-18207). */
+        wb_u32(&w, o->has_terminal ? 1u : 0u);
+        if (o->has_terminal) {
+            wb_fp2(&w, o->terminal);
         }
     }
 
@@ -788,45 +771,24 @@ static int dec_batch_opened(dctx_t *c, dnac_batch_vopened_t *o) {
     o->permutation_next = pn;
     o->permutation_len = plen;
 
-    /* global_lookup_data entries (types.rs:108-115 field order). */
-    uint32_t ng;
-    if (!rd_count_var(c, DNAC_BATCH_WIRE_MAX_GLOBALS, &ng)) return 0;
-    gold_fp2_t  *cums = (gold_fp2_t *)rd_array(c, ng, sizeof(gold_fp2_t));
-    if (c->err) return 0;
-    const char **names = (const char **)rd_array(c, ng, sizeof(char *));
-    if (c->err) return 0;
-    uint32_t *auxcols = (uint32_t *)rd_array(c, ng, sizeof(uint32_t));
-    if (c->err) return 0;
-    for (uint32_t g = 0; g < ng; ++g) {
-        uint32_t nl;
-        if (!rd_u32(c, &nl)) return 0;
-        if (nl == 0 || nl > DNAC_BATCH_WIRE_MAX_BUS_NAME) {
-            c->err = DNAC_FRI_CODEC_ERR_LENGTH_OVERFLOW;
-            return 0;
-        }
-        if (!rd_avail(c, nl)) {
-            c->err = DNAC_FRI_CODEC_ERR_TRUNCATED;
-            return 0;
-        }
-        char *nm = (char *)reg_alloc(c->reg, (size_t)nl + 1);
-        if (!nm) { c->err = DNAC_FRI_CODEC_ERR_OOM; return 0; }
-        for (uint32_t b = 0; b < nl; ++b) {
-            uint8_t ch = c->buf[c->pos + b];
-            /* a NUL byte inside a length-prefixed name has no C-string
-             * representation — reject (canonical wire). */
-            if (ch == 0) { c->err = DNAC_FRI_CODEC_ERR_NONCANONICAL; return 0; }
-            nm[b] = (char)ch;
-        }
-        nm[nl] = '\0';
-        c->pos += nl;
-        names[g] = nm;
-        if (!rd_u32(c, &auxcols[g])) return 0;
-        if (!rd_fp2(c, &cums[g])) return 0;
+    /* LookupTerminal — u32 count (0 or 1) then the fp2 when present.
+     * Oracle-pinned layout (tools/plonky3_oracle/src/main.rs:18194-18207).
+     * The count-then-entries shape is kept deliberately so the decoder loop
+     * structure survives the v3 -> v0.6.2 change; the bus name and aux column
+     * that used to follow it are gone from the wire entirely. */
+    uint32_t nt;
+    if (!rd_u32(c, &nt)) return 0;
+    /* Exactly the Option discriminant: any other value is non-canonical.
+     * Checked here rather than via a max bound so that 2..UINT32_MAX is
+     * rejected as malformed rather than silently clamped. */
+    if (nt > 1u) { c->err = DNAC_FRI_CODEC_ERR_NONCANONICAL; return 0; }
+    if (nt == 1u) {
+        if (!rd_fp2(c, &o->terminal)) return 0;
+        o->has_terminal = 1;
+    } else {
+        o->terminal = gold_fp2_zero();
+        o->has_terminal = 0;
     }
-    o->cumulative_sums = cums;
-    o->entry_names = names;
-    o->entry_aux_columns = auxcols;
-    o->num_globals = ng;
     return 1;
 }
 

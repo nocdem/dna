@@ -125,10 +125,10 @@ typedef struct {
     dnac_logup_bus_view_t views[4];
     char *bus_names_store[4][8];
     const char *bus_names[4][8];
-    gold_fp2_t cums_store[4][8];
-    const gold_fp2_t *cums[4];
+    gold_fp2_t terminals[4];   /* ONE per AIR (v0.6.2); 0 when absent      */
+    int        has_terminal[4];
+    uint32_t   max_message_width; /* W — see scen_max_message_width()      */
     dnac_batch_instance_shape_t shapes[4];
-    uint32_t entry_cols[4][8];
     gold_fp2_t *exp_challenges[4];
     uint32_t exp_num_chal[4]; /* fp2 count */
     gold_fp_t commits[5][4];  /* main, prep, perm, quotient, random */
@@ -215,22 +215,19 @@ static int parse_scenario(const jv_t *s, scen_t *sc, const char *name)
         sc->views[i].global_bus_names = sc->bus_names[i];
         sc->views[i].global_count_weights = NULL;
 
-        const jv_t *cums = jv_get(in, "cumulative_sums");
-        if (!cums || cums->kind != JV_ARR || cums->n != buses->n || cums->n > 8)
-            return 2;
-        for (size_t g = 0; g < cums->n; g++) {
-            uint64_t col;
-            if (!jv_fp2(jv_get(cums->items[g], "sum"), &sc->cums_store[i][g]) ||
-                !jv_u64(jv_get(cums->items[g], "aux_column"), &col)) {
-                return 2;
-            }
-            sc->entry_cols[i][g] = (uint32_t)col;
+        /* LookupTerminal — one optional value per AIR (v0.6.2). Absent is
+         * JSON null and must coincide with "this AIR declares no lookup". */
+        const jv_t *lt = jv_get(in, "lookup_terminal");
+        const int has_term = (lt && lt->kind != JV_NULL);
+        if (has_term) {
+            if (!jv_fp2(lt, &sc->terminals[i])) return 2;
+        } else {
+            sc->terminals[i] = gold_fp2_zero();
         }
-        sc->cums[i] = buses->n ? sc->cums_store[i] : NULL;
+        if (has_term != (nlocals + buses->n > 0)) return 2;
+        sc->has_terminal[i] = has_term;
 
-        /* shape record (entry names reuse the view's bus-name strings —
-         * the dumped metadata was already verified equal by the oracle's
-         * verify_batch gate) */
+        /* shape record */
         dnac_batch_instance_shape_t *sh = &sc->shapes[i];
         sh->trace_local_len = (uint32_t)tl;
         sh->trace_next_len = (uint32_t)tn;
@@ -241,9 +238,7 @@ static int parse_scenario(const jv_t *s, scen_t *sc, const char *name)
         sh->permutation_local_len = (uint32_t)perml;
         sh->permutation_next_len = (uint32_t)permn;
         sh->random_len = (uint32_t)rnd;
-        sh->num_global_entries = (uint32_t)buses->n;
-        sh->entry_names = sc->bus_names[i];
-        sh->entry_aux_columns = sc->entry_cols[i];
+        sh->has_terminal = has_term;
         sh->main_next_used = mnu->bval ? 1 : 0;
         sh->prep_next_used = pnu->bval ? 1 : 0;
 
@@ -278,6 +273,26 @@ static int parse_scenario(const jv_t *s, scen_t *sc, const char *name)
     if (!jv_fp2(jv_get(s, "alpha"), &sc->exp_alpha) ||
         !jv_fp2(jv_get(s, "zeta"), &sc->exp_zeta)) {
         return 2;
+    }
+
+    /* W = max_message_width — the widest payload tuple in the batch
+     * (transcript.rs:118-135, floor 1). batch_priming.json records bus NAMES
+     * but not tuple widths, so it is taken from the fixture AIR: every
+     * scenario with lookups here is LogupAddAir, whose local pair and global
+     * "LUT" interaction all carry 3-element tuples
+     * (tools/plonky3_oracle/src/main.rs:15702-15724). Lookup-free scenarios
+     * never reach the derivation, so the floor value is used there.
+     *
+     * This is the one input the vector cannot pin, and the KAT is what
+     * checks it: W feeds gamma = beta^W, so a wrong value moves every
+     * bus prefix and the perm_challenges / after_perm_challenges milestone
+     * comparisons below fail immediately. */
+    sc->max_message_width = 1u;
+    for (uint32_t i = 0; i < sc->n; i++) {
+        if (sc->views[i].num_locals + sc->views[i].num_globals > 0) {
+            sc->max_message_width = 3u;
+            break;
+        }
     }
     return 0;
 }
@@ -340,6 +355,7 @@ static int run_scenario(const jv_t *s)
     check_milestone(name, "after_preprocessed", &ch, mstate[3]);
 
     rc = dnac_batch_sample_perm_challenges(&ch, sc.views, sc.n,
+                                           sc.max_message_width,
                                            (gold_fp2_t *const *)outs);
     CHECK(rc == DNAC_BATCH_OK, "[%s] perm challenges rc=%d", name, rc);
     check_milestone(name, "after_perm_challenges", &ch, mstate[4]);
@@ -353,7 +369,7 @@ static int run_scenario(const jv_t *s)
     gold_fp2_t alpha;
     rc = dnac_batch_observe_perm_and_sample_alpha(
         &ch, sc.has_commit[2] ? sc.commits[2] : NULL, sc.views,
-        sc.cums, sc.n, &alpha);
+        sc.terminals, sc.n, &alpha);
     CHECK(rc == DNAC_BATCH_OK, "[%s] alpha rc=%d", name, rc);
     check_milestone(name, "after_alpha", &ch, mstate[5]);
     CHECK(fp2_eq_limbs(alpha, sc.exp_alpha), "[%s] alpha value", name);
@@ -380,7 +396,8 @@ static int run_scenario(const jv_t *s)
             .num_publics = sc.num_publics,
             .preprocessed_widths = sc.prep_widths,
             .views = sc.views,
-            .cumulative_sums = sc.cums,
+            .terminals = sc.terminals,
+            .max_message_width = sc.max_message_width,
             .main_commit = sc.commits[0],
             .preprocessed_commit = sc.has_commit[1] ? sc.commits[1] : NULL,
             .permutation_commit = sc.has_commit[2] ? sc.commits[2] : NULL,
@@ -461,19 +478,19 @@ static int run_scenario(const jv_t *s)
         CHECK(rc == DNAC_BATCH_ERR_SHAPE, "[%s] perm-flag mutation rc=%d",
               name, rc);
 
-        /* lookup metadata: wrong aux column (only meaningful with globals) */
-        if (sc.views[0].num_globals > 0) {
-            uint32_t cols2[8];
-            memcpy(cols2, sc.entry_cols[0], sizeof(cols2));
-            cols2[0] += 1;
-            shapes2[0] = sc.shapes[0];
-            shapes2[0].entry_aux_columns = cols2;
-            rc = dnac_batch_proof_shape_check(shapes2, sc.bindings, sc.views,
-                                              sc.prep_widths, sc.n, sc.is_zk,
-                                              has_perm, has_rnd);
-            CHECK(rc == DNAC_BATCH_ERR_SHAPE,
-                  "[%s] aux-column mutation rc=%d", name, rc);
-        }
+        /* TerminalPresenceMismatch — the check that REPLACED the v3-era
+         * (bus name, aux column) metadata comparison. Both directions must
+         * fail-close, whichever way this scenario's instance 0 sits:
+         * a lookup-bearing AIR that omits its terminal, and a lookup-free
+         * AIR that invents one. */
+        shapes2[0] = sc.shapes[0];
+        shapes2[0].has_terminal = !sc.shapes[0].has_terminal;
+        rc = dnac_batch_proof_shape_check(shapes2, sc.bindings, sc.views,
+                                          sc.prep_widths, sc.n, sc.is_zk,
+                                          has_perm, has_rnd);
+        CHECK(rc == DNAC_BATCH_ERR_SHAPE,
+              "[%s] terminal-presence mutation (%d -> %d) rc=%d", name,
+              sc.shapes[0].has_terminal, shapes2[0].has_terminal, rc);
     }
 
     /* ---- composed-run fail-close negatives (once, on scenario data) ---- */
@@ -486,7 +503,8 @@ static int run_scenario(const jv_t *s)
             .num_publics = sc.num_publics,
             .preprocessed_widths = sc.prep_widths,
             .views = sc.views,
-            .cumulative_sums = sc.cums,
+            .terminals = sc.terminals,
+            .max_message_width = sc.max_message_width,
             .main_commit = sc.commits[0],
             .preprocessed_commit = sc.has_commit[1] ? sc.commits[1] : NULL,
             .permutation_commit = sc.has_commit[2] ? sc.commits[2] : NULL,

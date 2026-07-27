@@ -193,7 +193,7 @@ dnac_shielded_verify_status_t dnac_shielded_verify_statement(
         opened->num_quotient_chunks != SV_NUM_QC ||
         opened->random_len != SV_RANDOM_LEN ||
         opened->preprocessed_local != NULL || opened->preprocessed_next != NULL ||
-        opened->permutation_len != 0 || opened->num_globals != 0) {
+        opened->permutation_len != 0 || opened->has_terminal != 0) {
         goto out;
     }
 

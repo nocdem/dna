@@ -1,6 +1,6 @@
 {
-  "format_version": "1",
-  "plonky3_commit": "82cfad73cd734d37a0d51953094f970c531817ec",
+  "format_version": "2",
+  "plonky3_commit": "11cc5849a1b57a2f520d6edc608b9e516517d841",
   "field_p": "18446744069414584321",
   "ext_irreducible_w": 7,
   "convention": "fri_fold_matrix (log_arity == 1, optimized arity-2 path) via p3_fri::TwoAdicFriFolding::<(),()>::fold_matrix (Plonky3 commit 82cfad73, fri/src/two_adic_pcs.rs:135-162). F = Goldilocks, EF = BinomialExtensionField<Goldilocks, 2> (W=7). Matrix layout: row-major, height x 2 columns of fp2. Goldilocks elements emitted in canonical [0, p) form via as_canonical_u64.",

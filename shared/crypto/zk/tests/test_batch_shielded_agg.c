@@ -101,7 +101,31 @@ static gold_fp2_t parse_fp2_decimal(js_t *s){
     return gold_fp2_new(gold_fp_from_u64(c0),gold_fp_from_u64(c1));
 }
 /* serde base scalar {"value":N} → u64. */
-static uint64_t parse_base_obj(js_t *s){ uint64_t r=0; js_match(s,'{'); while(!js_match(s,'}')){ if(js_peek(s,',')){s->pos++;continue;} char*k=js_read_string(s); js_match(s,':'); if(k&&strcmp(k,"value")==0)js_read_u64(s,&r); else js_skip_value(s); free(k);} return r; }
+/* Goldilocks serde: v0.6.2 emits a BARE number where 82cfad73 emitted the
+ * wrapped {"value": N} (compare the two batch_shielded_agg.json revisions:
+ * cap [[2369166141762287410, ...]] vs cap [[{"value":2369166141762287410},...]]).
+ * Both forms are accepted so this parser reads either vintage.
+ *
+ * The no-progress guard is NOT cosmetic: without it the bare-number form made
+ * this loop spin forever — js_match('{') failed, js_read_string returned NULL,
+ * js_match(':') failed, and nothing advanced s->pos. A 41-second test ran past
+ * 15 minutes with no output and looked exactly like a crypto hang. A parser
+ * that cannot advance must fail, not wedge. */
+static uint64_t parse_base_obj(js_t *s){
+    uint64_t r=0;
+    js_skip_ws(s);
+    if(s->pos<s->len && s->src[s->pos]!='{'){ js_read_u64(s,&r); return r; }
+    js_match(s,'{');
+    while(!js_match(s,'}')){
+        if(js_peek(s,',')){s->pos++;continue;}
+        const size_t before=s->pos;
+        char*k=js_read_string(s); js_match(s,':');
+        if(k&&strcmp(k,"value")==0)js_read_u64(s,&r); else js_skip_value(s);
+        free(k);
+        if(s->pos==before) break;   /* unparsable token: bail, never spin */
+    }
+    return r;
+}
 /* serde ext {"_phantom":null,"value":[{value},{value}]} → fp2. */
 static gold_fp2_t parse_fp2_wrapped(js_t *s){
     uint64_t comps[2]={0,0}; int n=0; js_match(s,'{');

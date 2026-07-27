@@ -11,14 +11,25 @@
  *   - column assignment (lookup/src/types.rs:59-89 from_interactions:
  *     locals FIRST, then globals, each in push order; a global interaction
  *     becomes a single-tuple lookup),
- *   - per-bus challenge assignment (batch-stark/src/transcript.rs:74-102
- *     sample_perm_challenges: globals sharing a bus name share ONE (α,β)
- *     pair memoized at first occurrence — instance order, then column
- *     order; locals always draw fresh),
- *   - per-bus global-sum verification (batch-stark/src/verifier/mod.rs:
- *     623-643: cumulative sums grouped BY BUS NAME, each group must sum to
- *     zero — G-DET-L4/G-SEC-L3/L4; a flat cross-bus total is the F3
- *     soundness hole and is NOT what this layer does),
+ *   - single-pair challenge DERIVATION (batch-stark/src/transcript.rs:
+ *     118-155 sample_perm_challenges at v0.6.2: ONE (α,β) pair is squeezed
+ *     for the WHOLE batch — "two draws, not two per bus" — and buses are
+ *     separated by prefix[bus] = α + (bus+1)·β^W instead of by extra draws.
+ *     Bus ids: locals take a fresh id each, globals share one by NAME),
+ *   - the FLAT cross-AIR terminal-sum check (one committed terminal per AIR;
+ *     Σ terminals == 0),
+ *
+ *   ⚠ THE F3 FRAMING INVERTED AT v0.6.2 (S2'-c, 2026-07-27) — this header
+ *   previously said the opposite, so read it deliberately. Under 82cfad73 a
+ *   flat cross-bus total WAS the soundness hole and the check had to group by
+ *   bus name (old verifier/mod.rs:623-643, G-DET-L4/G-SEC-L3/L4). At v0.6.2
+ *   the flat total is the CORRECT and only check, because the separation moved
+ *   DOWN into the challenge derivation: the bus offset sits at β^W, one power
+ *   above every payload term, so two different buses cannot produce cancelling
+ *   contributions (lookup/src/challenges.rs:19-23). The grouping entry point
+ *   dnac_logup_bus_verify_global_sums is DELETED rather than kept as dead code
+ *   implying a protection that now lives elsewhere. The KAT pins both
+ *   directions (cross_bus_cancel / cross_bus_separated).
  *   - the height-bound OFFLINE precondition Σ count_weight·height < p
  *     (builder.rs:33-38 doc contract; red-team F4: count_weight is stored
  *     and NEVER computed anywhere in Plonky3 82cfad73 — the runtime
@@ -126,46 +137,82 @@ int dnac_logup_builder_finalize(dnac_logup_builder_t     *b,
 void dnac_logup_lookup_set_free(dnac_logup_lookup_set_t *s);
 
 /* ============================================================================
- * Per-bus challenge assignment (transcript.rs:74-102 sample_perm_challenges)
+ * Single-pair bus challenge DERIVATION
+ *   (transcript.rs:100-171 sample_perm_challenges + challenges.rs:39-74)
  *
- * draws = the ordered fresh (α,β) pair stream (2 fp2 per pair; at P2L-c the
- * pairs come from the DuplexChallenger in exactly this order — one
- * sample_algebra_element per element). Assignment walks instances in order
- * and each instance's lookups in column order:
- *   - local lookup      → consume the next fresh pair,
- *   - global lookup     → memo by bus name: first occurrence consumes the
- *                         next fresh pair; later occurrences (any instance)
- *                         REUSE it (transcript.rs:92-98).
- * out_challenges[i] must hold 2·(num_locals+num_globals) of instance i —
- * the flat per-instance array indexed challenges[2·column] the gadget
- * expects. Fail-close if the draw stream is exhausted.
+ * ⚠ REPLACES dnac_logup_bus_assign_challenges (S2'-c, 2026-07-27). The old
+ * scheme SAMPLED one fresh (α,β) pair per local lookup and per distinct bus
+ * name — 2·num_buses squeezes. v0.6.2 draws ONE pair for the whole batch
+ * ("This is the only lookup squeeze: two draws, not two per bus",
+ * transcript.rs:112-115) and separates buses by DERIVATION instead:
+ *
+ *   γ           = β^W                      (W = max_message_width)
+ *   prefix[i]   = α + (i + 1)·γ            (challenges.rs:56-66)
+ *   denominator = prefix[bus] − Σ_k β^k·payload_k
+ *
+ * Injectivity, upstream's own argument (challenges.rs:19-23): payload terms
+ * occupy β^0..β^(W−1) and the bus offset sits at β^W, one power above every
+ * payload term, so two messages collide only when bus AND payload agree.
+ * This is what makes the FLAT cross-AIR terminal sum sound and retires the
+ * per-bus grouping DNAC used to do (see dnac_logup_verify_terminal_sum).
+ *
+ * BUS IDs (transcript.rs:117-151): walk instances in order, each instance's
+ * lookups in column order (locals first, then globals — see the bus view):
+ *   - Kind::Local  → a FRESH id each, so nothing else can cancel it,
+ *   - Kind::Global → shared by bus NAME across all instances, so senders and
+ *                    receivers cancel in the terminal sum.
+ *
+ * out_challenges[i] receives instance i's flat per-lookup array in column
+ * order, laid out exactly as the gadget indexes it (transcript.rs:156-169):
+ *
+ *   [ prefix[bus_0], β, prefix[bus_1], β, ... ]
+ *
+ * i.e. the DENOMINATOR BASE takes α's slot. The gadget computes
+ * `base − combined`, so passing prefix[bus] yields the separated denominator
+ * with no gadget change.
+ *
+ * @param max_message_width  W — the widest payload tuple in the WHOLE batch,
+ *   minimum 1. It cannot be derived from the bus view (which carries no tuple
+ *   widths), so the caller must supply it; upstream computes it in the same
+ *   pass that assigns bus ids (transcript.rs:132-135). W == 0 is rejected:
+ *   the bus offset would land on β^0 and collide with payloads
+ *   (challenges.rs:51-54).
+ * @param out_num_buses  optional — the number of distinct bus ids assigned.
  * ========================================================================== */
-int dnac_logup_bus_assign_challenges(
+int dnac_logup_bus_derive_challenges(
     const dnac_logup_bus_view_t *views,
     uint32_t                     num_instances,
-    const gold_fp2_t            *draws,          /* [2*num_draw_pairs]      */
-    uint32_t                     num_draw_pairs,
+    gold_fp2_t                   alpha,
+    gold_fp2_t                   beta,
+    uint32_t                     max_message_width,
     gold_fp2_t *const           *out_challenges, /* [i][2*num_lookups_i]    */
-    uint32_t                    *out_draw_pairs_used);
+    uint32_t                    *out_num_buses);
 
 /* ============================================================================
- * Per-bus global-sum verification (verifier/mod.rs:623-643)
+ * W = max_message_width — the widest payload tuple in the WHOLE batch
  *
- * cum_sums[i] = instance i's cumulative sums in GLOBAL-lookup order (the
- * dnac_logup_generate_permutation output order). Groups sums BY BUS NAME
- * (first-occurrence order — verdict identical to the reference's HashMap
- * iteration since the check is a conjunction, G-DET-L4) and requires EACH
- * group to sum to zero via dnac_logup_verify_global_sum.
+ * Upstream computes this in the same pass that assigns bus ids
+ * (transcript.rs:118-135): `max_message_width` starts at **1** and is maxed
+ * over `tuple.len()` for EVERY tuple of EVERY lookup of EVERY instance.
+ * The floor of 1 is upstream's, not a DNAC choice, and it is what keeps a
+ * lookup-free or empty-tuple batch off the rejected W == 0 path.
  *
- * Returns DNAC_LOGUP_OK iff every bus group balances;
- * DNAC_LOGUP_ERR_GLOBAL_SUM otherwise, with *out_failed_bus (optional) set
- * to the first failing bus name in first-occurrence order.
+ * Shared by both sides on purpose: the prover and the verifier must derive
+ * γ = β^W from ONE definition or they desynchronize the transcript. Same
+ * discipline as num_random_codewords (S2'-d).
+ *
+ * lookups[i] may be NULL iff num_lookups[i] == 0.
  * ========================================================================== */
-int dnac_logup_bus_verify_global_sums(
-    const dnac_logup_bus_view_t *views,
-    uint32_t                     num_instances,
-    const gold_fp2_t *const    *cum_sums,        /* [i][num_globals_i]      */
-    const char                 **out_failed_bus);
+uint32_t dnac_logup_bus_max_message_width(
+    const dnac_logup_lookup_t *const *lookups,
+    const uint32_t                   *num_lookups,
+    uint32_t                          num_instances);
+
+/* NOTE: dnac_logup_bus_verify_global_sums is GONE (S2'-c). Per-bus grouping of
+ * cumulative sums no longer exists as a concept: there are no per-lookup
+ * cumulative sums, only ONE terminal per AIR, and the cross-AIR check is the
+ * flat dnac_logup_verify_terminal_sum. Keeping a grouping entry point would
+ * have been dead code implying a protection that now lives elsewhere. */
 
 /* ============================================================================
  * Height-bound offline precondition (builder.rs:33-38; red-team F4)

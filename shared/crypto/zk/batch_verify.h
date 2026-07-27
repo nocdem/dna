@@ -39,10 +39,15 @@
  *      → air.eval FIRST then lookups (protocol.rs:64-81), ONE fold stream
  *      acc = acc·α + x for base AND ext constraints (folder.rs:169-181);
  *      the permutation window at ζ is the RECOMPOSED EF matrix (aux_width
- *      wide; opened lens = aux_width·2, :524-541, recompose :543-559);
+ *      wide; opened lens = aux_width·2, v0.6.2 verifier/mod.rs:518-526,
+ *      recompose :528-544; aux_width = num_lookups+1 or 0);
  *      final acc·inv_vanishing == quotient (data.rs:99-103)
- *   8. per-bus global-sum check                  (:623-643, via
- *      dnac_logup_bus_verify_global_sums — G-DET-L4, never a flat sum)
+ *   8. cross-AIR terminal check                  (v0.6.2 verifier/mod.rs, via
+ *      dnac_logup_verify_terminal_sum — a FLAT total over every AIR's one
+ *      committed terminal. The v3-era per-bus grouping is RETIRED: each slot
+ *      draws its own challenge pair and a pair is shared only within one bus
+ *      name (lookup/src/types.rs:19-34), so the separation the grouping used
+ *      to provide now lives in the challenge derivation instead.)
  *
  * NOT in scope here: wire decode (d4), the batched prover (d3), the
  * shielded_verify re-base (d4, atomic with the v4 codec + vector regen —
@@ -80,8 +85,8 @@ typedef enum {
                                        verify rejected; see out->fri_status  */
     DNAC_BV_ERR_OOD = -7,           /* OodEvaluationMismatch — constraint
                                        check failed; see out->bad_instance   */
-    DNAC_BV_ERR_LOOKUP_SUM = -8,    /* LookupError — a bus group's cumulative
-                                       sums don't cancel; see out->failed_bus */
+    DNAC_BV_ERR_LOOKUP_SUM = -8,    /* LookupError — the flat cross-AIR sum of
+                                       the committed terminals is non-zero    */
 } dnac_batch_verify_status_t;
 
 /* Per-instance verifier description — the (air, lookups) bundle the
@@ -124,12 +129,29 @@ typedef struct {
     const gold_fp2_t *permutation_local;  /* [permutation_len] flat or NULL */
     const gold_fp2_t *permutation_next;   /* [permutation_len] flat or NULL */
     uint32_t          permutation_len;    /* == aux_width*2                 */
-    /* global_lookup_data (proof side): values in global-lookup order plus
-     * the (name, aux_column) metadata the verifier cross-checks (:233-267). */
-    const gold_fp2_t  *cumulative_sums;   /* [num_globals]                  */
-    const char *const *entry_names;       /* [num_globals]                  */
-    const uint32_t    *entry_aux_columns; /* [num_globals]                  */
-    uint32_t           num_globals;
+    /* LookupTerminal (proof side, v0.6.2). ONE optional value per AIR —
+     * BatchProof.lookup_terminals: Vec<Option<LookupTerminal<Challenge>>>
+     * (batch-stark/src/proof.rs:22), LookupTerminal<F>(pub F) is a newtype
+     * over a single Challenge (lookup/src/types.rs:301).
+     *
+     * This REPLACES the v3-era global_lookup_data: a per-instance LIST of
+     * (bus name, aux_column, cumulative_sum) records. v0.6.2 deleted the
+     * name/aux_column cross-check outright — bus names and aux columns are
+     * no longer proof data at all — and collapsed the per-global sums into
+     * this single terminal (verifier/mod.rs, the block that used to build
+     * expected_global_lookup_entries).
+     *
+     * PLACEMENT IS A PORT CHOICE, NOT A MIRROR: upstream carries the
+     * terminals as one proof-level Vec beside opened_values, not inside the
+     * per-instance opened values. With has_terminal standing in for Option,
+     * the two are isomorphic, and the wire layout is pinned independently
+     * (fri_proof_codec.h). Recorded so this is not later read as
+     * upstream-shaped.
+     *
+     * has_terminal MUST equal (insts[i].num_lookups > 0) — upstream's
+     * TerminalPresenceMismatch, checked in dnac_batch_verify. */
+    gold_fp2_t         terminal;     /* read only when has_terminal          */
+    int                has_terminal; /* 0/1 — the Option discriminant        */
 } dnac_batch_vopened_t;
 
 /* Batch commitments (proof.rs:26-37), each 4 canonical lanes. */
@@ -160,7 +182,11 @@ typedef struct {
     gold_fp2_t        zeta;         /* OOD point                             */
     dnac_fri_status_t fri_status;   /* set when DNAC_BV_ERR_FRI              */
     uint32_t          bad_instance; /* set when DNAC_BV_ERR_OOD              */
-    const char       *failed_bus;   /* set when DNAC_BV_ERR_LOOKUP_SUM       */
+    gold_fp2_t        terminal_sum; /* set when DNAC_BV_ERR_LOOKUP_SUM — the
+                                       non-zero flat total. Replaces the v3
+                                       `failed_bus` name: under the single
+                                       terminal there is no per-bus grouping
+                                       left to name a culprit with.          */
 } dnac_batch_verify_out_t;
 
 /**

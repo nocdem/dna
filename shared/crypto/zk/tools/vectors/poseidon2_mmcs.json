@@ -1,6 +1,6 @@
 {
-  "format_version": "1",
-  "plonky3_commit": "82cfad73cd734d37a0d51953094f970c531817ec",
+  "format_version": "2",
+  "plonky3_commit": "11cc5849a1b57a2f520d6edc608b9e516517d841",
   "constructor": "MerkleTreeMmcs<ValPacking,ValPacking,PaddingFreeSponge<Perm,8,4,4>,TruncatedPermutation<Perm,2,4,8>,2,4> cap 0 (+ MerkleTreeHidingMmcs<...,SmallRng(1),2,4,SALT_ELEMS=2>) — types per prove_goldilocks_poseidon2.rs:41-48, hiding per hiding_mmcs.rs:39-51",
   "permutation": "default_goldilocks_poseidon2_8 (goldilocks/src/poseidon2.rs:570)",
   "width": 8,

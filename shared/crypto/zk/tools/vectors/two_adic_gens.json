@@ -1,6 +1,6 @@
 {
-  "format_version": "1",
-  "plonky3_commit": "82cfad73cd734d37a0d51953094f970c531817ec",
+  "format_version": "2",
+  "plonky3_commit": "11cc5849a1b57a2f520d6edc608b9e516517d841",
   "two_adicity": 32,
   "generators": [
     {

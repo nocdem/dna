@@ -1,25 +1,25 @@
 {
   "air": "vendored SquareAir (uni-stark/tests/no_next_row.rs:16-49 @ 82cfad73)",
   "alpha": {
-    "c0_decimal": "3646967817627756346",
-    "c1_decimal": "13763607059507581316"
+    "c0_decimal": "9126922721736475016",
+    "c1_decimal": "7009888652862700583"
   },
   "base_degree_bits": 3,
   "degree_bits": 3,
   "final_equal": true,
   "final_lhs": {
-    "c0_decimal": "615405393362701599",
-    "c1_decimal": "16776949532034884235"
+    "c0_decimal": "4878825501604587442",
+    "c1_decimal": "16049522272301826165"
   },
   "final_rhs": {
-    "c0_decimal": "615405393362701599",
-    "c1_decimal": "16776949532034884235"
+    "c0_decimal": "4878825501604587442",
+    "c1_decimal": "16049522272301826165"
   },
   "folded_constraints": {
-    "c0_decimal": "9071515600057635109",
-    "c1_decimal": "14127005368693309673"
+    "c0_decimal": "11554064669353532275",
+    "c1_decimal": "3089445757660750799"
   },
-  "format_version": "1",
+  "format_version": "2",
   "grounding": {
     "gate1_p3_uni_stark_verify": "Ok",
     "gate2_pub_verify_constraints": "Ok",
@@ -36,8 +36,8 @@
   "per_constraint_fold_trace": [
     {
       "accumulator_after": {
-        "c0_decimal": "9071515600057635109",
-        "c1_decimal": "14127005368693309673"
+        "c0_decimal": "11554064669353532275",
+        "c1_decimal": "3089445757660750799"
       },
       "accumulator_before": {
         "c0_decimal": "0",
@@ -46,24 +46,24 @@
       "constraint_index": 0,
       "constraint_name": "all_rows: trace[0]*trace[0] == trace[1]",
       "raw_constraint_value": {
-        "c0_decimal": "9071515600057635109",
-        "c1_decimal": "14127005368693309673"
+        "c0_decimal": "11554064669353532275",
+        "c1_decimal": "3089445757660750799"
       },
       "selector": "one(unfiltered)",
       "selector_applied_value": {
-        "c0_decimal": "9071515600057635109",
-        "c1_decimal": "14127005368693309673"
+        "c0_decimal": "11554064669353532275",
+        "c1_decimal": "3089445757660750799"
       }
     }
   ],
-  "plonky3_commit": "82cfad73cd734d37a0d51953094f970c531817ec",
+  "plonky3_commit": "11cc5849a1b57a2f520d6edc608b9e516517d841",
   "proof_verification_result": "Ok",
   "public_values": [],
   "quotient_chunks": [
     [
       {
-        "c0_decimal": "615405393362701599",
-        "c1_decimal": "16776949532034884235"
+        "c0_decimal": "4878825501604587442",
+        "c1_decimal": "16049522272301826165"
       },
       {
         "c0_decimal": "0",
@@ -73,51 +73,51 @@
   ],
   "quotient_recompose_mode": "one_chunk_ch0_plus_ch1_X",
   "quotient_zeta": {
-    "c0_decimal": "615405393362701599",
-    "c1_decimal": "16776949532034884235"
+    "c0_decimal": "4878825501604587442",
+    "c1_decimal": "16049522272301826165"
   },
   "scope": "stark_verify_constraints",
   "selectors": {
     "inv_vanishing": {
-      "c0_decimal": "9246178938918092642",
-      "c1_decimal": "17869278069765475731"
+      "c0_decimal": "16466825276601461569",
+      "c1_decimal": "14532973686970916337"
     },
     "is_first_row": {
-      "c0_decimal": "7144924857609563141",
-      "c1_decimal": "12956322749837855786"
+      "c0_decimal": "3035306437332931176",
+      "c1_decimal": "7920738694914152831"
     },
     "is_last_row": {
-      "c0_decimal": "7167827631276723135",
-      "c1_decimal": "15224324929208315460"
+      "c0_decimal": "3350760094535955552",
+      "c1_decimal": "9540664506225887452"
     },
     "is_transition": {
-      "c0_decimal": "10059245486929321353",
-      "c1_decimal": "6381518673646768928"
+      "c0_decimal": "2669337229184011034",
+      "c1_decimal": "5206305927397056080"
     },
     "z_h": {
-      "c0_decimal": "16117677919030965771",
-      "c1_decimal": "4781748542841680310"
+      "c0_decimal": "17284812728335987563",
+      "c1_decimal": "6423722008433291145"
     }
   },
   "spec_doc": "docs/plans/2026-05-30-stark-constraint-check-implementation-design.md",
   "synthetic_primary_oracle": false,
   "trace_local": [
     {
-      "c0_decimal": "65462810479347886",
-      "c1_decimal": "402011326358466225"
+      "c0_decimal": "13888393701390267604",
+      "c1_decimal": "12819380149933358820"
     },
     {
-      "c0_decimal": "14278999504220986291",
-      "c1_decimal": "101909498583890523"
+      "c0_decimal": "18234751698914032121",
+      "c1_decimal": "736842572174237133"
     }
   ],
   "trace_next": null,
   "zeta": {
-    "c0_decimal": "10059246586440948873",
-    "c1_decimal": "6381518673646768928"
+    "c0_decimal": "2669338328695638554",
+    "c1_decimal": "5206305927397056080"
   },
   "zeta_next": {
-    "c0_decimal": "9660087899815385504",
-    "c1_decimal": "10619825981979398070"
+    "c0_decimal": "17196915530806922086",
+    "c1_decimal": "6311016825916768388"
   }
 }

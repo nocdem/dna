@@ -279,9 +279,10 @@ int main(int argc, char **argv)
         }
 
         CHECK(vs == DNAC_BV_OK,
-              "%s: verify(decoded) = %d (fri=%d bad_inst=%u bus=%s)", nm,
-              (int)vs, (int)out.fri_status, out.bad_instance,
-              out.failed_bus ? out.failed_bus : "-");
+              "%s: verify(decoded) = %d (fri=%d bad_inst=%u term_sum=%llu,%llu)",
+              nm, (int)vs, (int)out.fri_status, out.bad_instance,
+              (unsigned long long)gold_fp_to_u64(out.terminal_sum.a),
+              (unsigned long long)gold_fp_to_u64(out.terminal_sum.b));
         gold_fp2_t ea, ez;
         CHECK(jv_fp2(jv_get(js, "alpha"), &ea) &&
                   fp2_eq_limbs(out.alpha, ea),

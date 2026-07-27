@@ -1,13 +1,13 @@
 {
   "description": "S8 C-prover KAT: the 48 SmallRng(1) draws (stream position 392) forming the 8x6 randomization matrix R (hiding_pcs.rs:404-424); plain inner commit of R == proof.commitments.random (gates G1+G2).",
-  "format_version": "1",
+  "format_version": "2",
   "params": {
     "log_blowup": 2,
     "r_height": 8,
     "r_width": 6,
     "stream_position": 392
   },
-  "plonky3_commit": "82cfad73cd734d37a0d51953094f970c531817ec",
+  "plonky3_commit": "11cc5849a1b57a2f520d6edc608b9e516517d841",
   "r_draws": [
     "7489827004968609008",
     "6579174955096374046",

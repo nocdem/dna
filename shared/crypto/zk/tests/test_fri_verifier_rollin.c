@@ -194,16 +194,30 @@ static void parse_commit_digest(js_t *s, dnac_p2_digest_t *out) {
     }
 }
 /* {value:x} -> x */
+/* Goldilocks serde: v0.6.2 emits a BARE number where 82cfad73 emitted the
+ * wrapped {"value": N}. Both forms are accepted so this parser reads either
+ * vintage.
+ *
+ * The no-progress guard is NOT cosmetic: without it the bare-number form makes
+ * this loop spin forever — js_match('{') fails, js_read_string returns NULL,
+ * js_match(':') fails, and nothing advances s->pos. The test then emits nothing
+ * and looks exactly like a crypto hang (that cost a worktree baseline and a
+ * gdb backtrace to diagnose the first time, in test_batch_shielded_agg.c).
+ * A parser that cannot advance must fail, not wedge. */
 static uint64_t parse_base_obj(js_t *s) {
     uint64_t r = 0;
+    js_skip_ws(s);
+    if (s->pos < s->len && s->src[s->pos] != '{') { js_read_u64(s, &r); return r; }
     js_match(s, '{');
     while (!js_match(s, '}')) {
         if (js_peek(s, ',')) { s->pos++; continue; }
+        const size_t before = s->pos;
         char *k = js_read_string(s);
         js_match(s, ':');
         if (k && strcmp(k, "value") == 0) js_read_u64(s, &r);
         else js_skip_value(s);
         free(k);
+        if (s->pos == before) break;   /* unparsable token: bail, never spin */
     }
     return r;
 }

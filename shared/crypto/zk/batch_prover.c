@@ -39,14 +39,16 @@ static size_t bp_log2(size_t n)
     return l;
 }
 
-/* aux width = max lookup column + 1 (verifier/mod.rs:524-529). */
+/* Aux width (v0.6.2 batch-stark/src/verifier/mod.rs:512-516): num_lookups + 1
+ * when the AIR declares any lookup, else 0 — col 0 is the SHARED accumulator
+ * and slot c owns fraction column c + 1 (lookup/src/logup.rs:381-382); zero
+ * lookups means no permutation trace at all (logup.rs:374-377).
+ * At 82cfad73 this was `max(lookup.column) + 1`, i.e. num_lookups with NO
+ * accumulator column. Must stay identical to bv_aux_width in batch_verify.c. */
 static uint32_t bp_aux_width(const dnac_batch_vinstance_t *inst)
 {
-    uint32_t aw = 0;
-    for (uint32_t l = 0; l < inst->num_lookups; l++) {
-        if (inst->lookups[l].column + 1u > aw) aw = inst->lookups[l].column + 1u;
-    }
-    return aw;
+    if (inst->num_lookups == 0) return 0;
+    return inst->num_lookups + 1u;
 }
 
 static void bp_digest_lanes(const dnac_p2_digest_t *d, gold_fp_t out[4])
@@ -79,9 +81,7 @@ struct dnac_batch_proof_s {
     /* per-instance opened values (base parts) + metadata */
     dnac_batch_vopened_t opened[BP_MAX_INSTANCES];
     gold_fp2_t *opened_arena;   /* all base opened values                    */
-    gold_fp2_t *cums_arena;     /* all cumulative sums                       */
-    const char **names_arena;   /* borrowed bus-name pointers (static strs)  */
-    uint32_t   *auxcols_arena;
+    gold_fp2_t *terminals;      /* [n] ONE lookup terminal per AIR (S2'-c)   */
     char       *names_store;    /* owned copies of bus names                 */
 
     /* rand-openings (hiding tails), assembly-point order */
@@ -128,9 +128,7 @@ void dnac_batch_proof_free(dnac_batch_proof_t *p)
 {
     if (p == NULL) return;
     free(p->opened_arena);
-    free(p->cums_arena);
-    free(p->names_arena);
-    free(p->auxcols_arena);
+    free(p->terminals);
     free(p->names_store);
     free(p->rand_arena);
     free(p->rand_ptrs);
@@ -276,7 +274,7 @@ static dnac_prover_status_t bp_quotient_values(
     const uint64_t *trace_q,   /* [q_size][w] natural order                  */
     const uint64_t *prep_q,    /* [q_size][pw] or NULL                       */
     const uint64_t *perm_q,    /* [q_size][2*aw] base-flattened or NULL      */
-    const gold_fp2_t *cums,    /* [num_globals]                              */
+    gold_fp2_t        terminal, /* the AIR's committed lookup terminal       */
     const gold_fp2_t *challenges, /* [2*num_lookups]                         */
     gold_fp2_t alpha,
     const uint64_t *sf, const uint64_t *sl, const uint64_t *st,
@@ -358,7 +356,6 @@ static dnac_prover_status_t bp_quotient_values(
                     di->num_publics, pv) != DNAC_LOGUP_OK) {
                 goto out;
             }
-            uint32_t pv_idx = 0;
             for (uint32_t l = 0; l < di->num_lookups; l++) {
                 const dnac_logup_lookup_t *lk = &di->lookups[l];
                 const uint32_t col = lk->column;
@@ -387,24 +384,39 @@ static dnac_prover_status_t bp_quotient_values(
                                              &den) != DNAC_LOGUP_OK) {
                     goto out;
                 }
-                const gold_fp2_t s_loc = perm_loc[col];
-                const gold_fp2_t s_nxt = perm_nxt[col];
+                /* S2'-c emission order mirrors eval_all (protocol.rs:56-81):
+                 * EVERY lookup's fraction pin first, then ONE accumulator
+                 * block after the loop. The fraction residual is UNGATED —
+                 * "The identity is cyclic in the trace domain, so it does not
+                 * need a transition gate" (logup.rs:241-244). Slot c reads
+                 * fraction column c + 1; column 0 is the shared accumulator. */
+                const gold_fp2_t frac_loc = perm_loc[col + 1u];
                 dnac_stark_fold_assert_zero(
-                    &folder.fold, gold_fp2_mul(folder.is_first_row, s_loc));
-                const gold_fp2_t trans = gold_fp2_sub(
-                    gold_fp2_mul(gold_fp2_sub(s_nxt, s_loc), den), num);
-                if (!lk->is_global) {
-                    dnac_stark_fold_assert_zero(&folder.fold, trans);
-                } else {
-                    const gold_fp2_t cum = cums[pv_idx++];
-                    dnac_stark_fold_assert_zero(
-                        &folder.fold,
-                        gold_fp2_mul(folder.is_transition, trans));
-                    const gold_fp2_t last = gold_fp2_sub(
-                        gold_fp2_mul(gold_fp2_sub(cum, s_loc), den), num);
-                    dnac_stark_fold_assert_zero(
-                        &folder.fold, gold_fp2_mul(folder.is_last_row, last));
+                    &folder.fold,
+                    gold_fp2_sub(gold_fp2_mul(den, frac_loc), num));
+            }
+            /* eval_accumulator (logup.rs:258-302), once per row after every
+             * fraction: anchor / transition / terminal binding. */
+            {
+                const gold_fp2_t acc_loc = perm_loc[0];
+                const gold_fp2_t acc_nxt = perm_nxt[0];
+                gold_fp2_t row_sum = gold_fp2_zero();
+                for (uint32_t l = 0; l < di->num_lookups; l++) {
+                    row_sum = gold_fp2_add(
+                        row_sum, perm_loc[di->lookups[l].column + 1u]);
                 }
+                dnac_stark_fold_assert_zero(
+                    &folder.fold, gold_fp2_mul(folder.is_first_row, acc_loc));
+                dnac_stark_fold_assert_zero(
+                    &folder.fold,
+                    gold_fp2_mul(folder.is_transition,
+                                 gold_fp2_sub(gold_fp2_sub(acc_nxt, acc_loc),
+                                              row_sum)));
+                dnac_stark_fold_assert_zero(
+                    &folder.fold,
+                    gold_fp2_mul(folder.is_last_row,
+                                 gold_fp2_sub(gold_fp2_sub(terminal, acc_loc),
+                                              row_sum)));
             }
         }
 
@@ -833,7 +845,22 @@ dnac_prover_status_t dnac_batch_prove(
             ch_ptrs[i] = insts[i].num_lookups > 0 ? ch_flat + off : NULL;
             off += 2u * insts[i].num_lookups;
         }
-        if (dnac_batch_sample_perm_challenges(&dx, views, n, ch_ptrs) !=
+        /* W = widest payload tuple in the batch, min 1 (transcript.rs:124,
+         * 132-135). It fixes the bus offset beta^W, so it must be computed
+         * over EVERY instance's lookups, not per instance.
+         *
+         * Via the SHARED helper, not a second inline loop: prover and verifier
+         * must derive gamma = beta^W from ONE definition or the transcript
+         * forks between them. (This was two copies until S2'-c collapsed it.) */
+        const dnac_logup_lookup_t *lk_ptrs[BP_MAX_INSTANCES];
+        uint32_t                   lk_counts[BP_MAX_INSTANCES];
+        for (uint32_t i = 0; i < n; i++) {
+            lk_ptrs[i] = insts[i].lookups;
+            lk_counts[i] = insts[i].num_lookups;
+        }
+        const uint32_t mmw =
+            dnac_logup_bus_max_message_width(lk_ptrs, lk_counts, n);
+        if (dnac_batch_sample_perm_challenges(&dx, views, n, mmw, ch_ptrs) !=
             DNAC_BATCH_OK) {
             goto cleanup;
         }
@@ -841,16 +868,14 @@ dnac_prover_status_t dnac_batch_prove(
 
     /* ── permutation traces + commit (prover.rs:229-302) ── */
     {
-        uint32_t total_globals = 0;
-        for (uint32_t i = 0; i < n; i++) total_globals += views[i].num_globals;
-        p->cums_arena = (gold_fp2_t *)calloc(
-            total_globals ? total_globals : 1, sizeof(gold_fp2_t));
-        if (!p->cums_arena) goto cleanup;
+        /* ONE terminal per AIR (S2'-c), so the arena is simply [n]. */
+        p->terminals = (gold_fp2_t *)calloc(n ? n : 1, sizeof(gold_fp2_t));
+        if (!p->terminals) goto cleanup;
     }
     {
         const uint64_t *mats[BP_MAX_INSTANCES];
         size_t widths[BP_MAX_INSTANCES], heights[BP_MAX_INSTANCES];
-        uint32_t j = 0, cum_off = 0;
+        uint32_t j = 0;
         for (uint32_t i = 0; i < n; i++) {
             const dnac_batch_vinstance_t *di = &insts[i];
             if (di->num_lookups == 0) continue;
@@ -887,17 +912,17 @@ dnac_prover_status_t dnac_batch_prove(
             ctx.pool = di->pool;
             ctx.pool_len = di->pool_len;
 
-            aux_ef[i] = (gold_fp2_t *)malloc(base_h[i] * di->num_lookups *
+            /* S2'-c: aux is [height][num_lookups + 1] — accumulator + one
+             * fraction column per lookup. */
+            aux_ef[i] = (gold_fp2_t *)malloc(base_h[i] * (di->num_lookups + 1u) *
                                              sizeof(gold_fp2_t));
             if (!aux_ef[i]) goto cleanup;
-            gold_fp2_t *cums_i = p->cums_arena + cum_off;
             if (dnac_logup_generate_permutation(
                     &ctx, di->lookups, di->num_lookups, ch_ptrs[i],
-                    2u * di->num_lookups, aux_ef[i], cums_i,
-                    views[i].num_globals) != DNAC_LOGUP_OK) {
+                    2u * di->num_lookups, aux_ef[i],
+                    &p->terminals[i]) != DNAC_LOGUP_OK) {
                 goto cleanup;
             }
-            cum_off += views[i].num_globals;
 
             /* flatten_to_base ([c0,c1] per EF cell, prover.rs:269) then the
              * hiding randomization (zk) — draws AFTER the challenge phase,
@@ -908,7 +933,7 @@ dnac_prover_status_t dnac_batch_prove(
             if (!flat) goto cleanup;
             for (size_t r = 0; r < base_h[i]; r++) {
                 for (uint32_t c = 0; c < aw[i]; c++) {
-                    const gold_fp2_t v = aux_ef[i][r * di->num_lookups + c];
+                    const gold_fp2_t v = aux_ef[i][r * (di->num_lookups + 1u) + c];
                     flat[r * fw + 2 * c] = gold_fp_to_u64(v.a);
                     flat[r * fw + 2 * c + 1] = gold_fp_to_u64(v.b);
                 }
@@ -950,15 +975,8 @@ dnac_prover_status_t dnac_batch_prove(
         }
     }
     {
-        const gold_fp2_t *cum_ptrs[BP_MAX_INSTANCES];
-        uint32_t cum_off = 0;
-        for (uint32_t i = 0; i < n; i++) {
-            cum_ptrs[i] =
-                views[i].num_globals ? p->cums_arena + cum_off : NULL;
-            cum_off += views[i].num_globals;
-        }
         if (dnac_batch_observe_perm_and_sample_alpha(
-                &dx, p->has_perm ? p->perm_lanes : NULL, views, cum_ptrs, n,
+                &dx, p->has_perm ? p->perm_lanes : NULL, views, p->terminals, n,
                 &p->alpha) != DNAC_BATCH_OK) {
             goto cleanup;
         }
@@ -969,7 +987,7 @@ dnac_prover_status_t dnac_batch_prove(
     {
         const uint64_t *mats[BP_MAX_INSTANCES * 8];
         size_t widths[BP_MAX_INSTANCES * 8], heights[BP_MAX_INSTANCES * 8];
-        uint32_t mi = 0, cum_off = 0, jperm = 0, mprep = 0;
+        uint32_t mi = 0, jperm = 0, mprep = 0;
         uint32_t prep_of[BP_MAX_INSTANCES], perm_of[BP_MAX_INSTANCES];
         for (uint32_t i = 0; i < n; i++) {
             prep_of[i] = pw[i] > 0 ? mprep++ : UINT32_MAX;
@@ -1016,11 +1034,10 @@ dnac_prover_status_t dnac_batch_prove(
                 if (s != DNAC_PROVER_OK) { rc = s; goto cleanup; }
             }
             s = bp_quotient_values(di, trace_q, prep_q, perm_q,
-                                   p->cums_arena + cum_off, ch_ptrs[i],
+                                   p->terminals[i], ch_ptrs[i],
                                    p->alpha, sf, sl, st, ivv, qs, next_step,
                                    qflat);
             if (s != DNAC_PROVER_OK) { rc = s; goto cleanup; }
-            cum_off += views[i].num_globals;
 
             chunk_ldes[i] = (uint64_t *)malloc(nqc[i] * lde_h[i] * cw[i] *
                                                sizeof(uint64_t));
@@ -1312,34 +1329,21 @@ dnac_prover_status_t dnac_batch_prove(
             p->has_rand_op = 1;
         }
 
-        /* global_lookup_data metadata (names + aux columns). */
-        {
-            uint32_t total_globals = 0;
-            for (uint32_t i = 0; i < n; i++) {
-                total_globals += views[i].num_globals;
-            }
-            p->names_arena = (const char **)calloc(
-                total_globals ? total_globals : 1, sizeof(char *));
-            p->auxcols_arena = (uint32_t *)calloc(
-                total_globals ? total_globals : 1, sizeof(uint32_t));
-            if (!p->names_arena || !p->auxcols_arena) goto cleanup;
-            uint32_t off = 0;
-            for (uint32_t i = 0; i < n; i++) {
-                const dnac_batch_vinstance_t *di = &insts[i];
-                uint32_t g = 0;
-                for (uint32_t l = 0; l < di->num_lookups; l++) {
-                    if (!di->lookups[l].is_global) continue;
-                    p->names_arena[off + g] = views[i].global_bus_names[g];
-                    p->auxcols_arena[off + g] = di->lookups[l].column;
-                    g++;
-                }
-                p->opened[i].cumulative_sums =
-                    g ? p->cums_arena + off : NULL;
-                p->opened[i].entry_names = g ? p->names_arena + off : NULL;
-                p->opened[i].entry_aux_columns =
-                    g ? p->auxcols_arena + off : NULL;
-                p->opened[i].num_globals = g;
-                off += g;
+        /* LookupTerminal publication (v0.6.2 BatchProof.lookup_terminals,
+         * proof.rs:22). ONE optional value per AIR — present iff the AIR
+         * declares any lookup (Option::Some/None; the verifier enforces the
+         * same equivalence as TerminalPresenceMismatch).
+         *
+         * The v3-era arenas are GONE with the concept: there is no list of
+         * (bus name, aux column, cumulative sum) records to publish, because
+         * v0.6.2 removed bus names and aux columns from the proof entirely. */
+        for (uint32_t i = 0; i < n; i++) {
+            if (insts[i].num_lookups > 0) {
+                p->opened[i].terminal = p->terminals[i];
+                p->opened[i].has_terminal = 1;
+            } else {
+                p->opened[i].terminal = gold_fp2_zero();
+                p->opened[i].has_terminal = 0;
             }
         }
 

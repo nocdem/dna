@@ -111,28 +111,37 @@ int dnac_batch_observe_preprocessed(dnac_duplex_t   *ch,
                                     uint32_t         num_instances,
                                     const gold_fp_t *preprocessed_commit /* or NULL */);
 
-/* sample_perm_challenges (transcript.rs:74-102): counts the fresh pairs
- * (locals + first-occurrence buses), samples them from the challenger in
- * draw order (2 fp2 each), then assigns via the P2L-b memo
- * (dnac_logup_bus_assign_challenges). out_challenges[i] must hold
- * 2·(num_locals+num_globals) of instance i; pass NULL for instances with no
- * lookups. Pre-sampling is byte-identical to the reference's lazy sampling
- * (no observes interleave inside the phase). */
+/* sample_perm_challenges (transcript.rs:100-171).
+ *
+ * ⚠ SQUEEZE COUNT CHANGED at v0.6.2 (S2'-c): this samples exactly TWO fp2 —
+ * one (alpha, beta) pair for the WHOLE batch — where it used to sample one
+ * pair per local lookup and per first-occurrence bus name. Per-bus separation
+ * now comes from the derivation prefix[i] = alpha + (i+1)·beta^W
+ * (dnac_logup_bus_derive_challenges), not from extra draws. A batch with NO
+ * lookups anywhere squeezes NOTHING (transcript.rs:106-110).
+ * This is transcript-visible: every challenge sampled afterwards moves.
+ *
+ * @param max_message_width  W, the widest payload tuple in the batch (>= 1) —
+ *   fixes where the bus offset sits. Not derivable from the bus views.
+ * out_challenges[i] must hold 2·(num_locals+num_globals) of instance i; pass
+ * NULL for instances with no lookups. */
 int dnac_batch_sample_perm_challenges(dnac_duplex_t              *ch,
                                       const dnac_logup_bus_view_t *views,
                                       uint32_t                    num_instances,
+                                      uint32_t                    max_message_width,
                                       gold_fp2_t *const          *out_challenges);
 
-/* observe_perm_and_sample_alpha (transcript.rs:106-119): iff the permutation
- * commit is present, observe it and then EVERY cumulative sum (flattened
- * instance order, global-lookup order; 2 coefficients each); then sample
- * constraint-alpha. Mirrors the reference exactly: with no permutation
- * commit nothing is observed, alpha is still sampled. */
+/* observe_perm_and_sample_alpha (transcript.rs:175-188): iff the permutation
+ * commit is present, observe it and then each AIR's committed lookup TERMINAL
+ * (2 coefficients each); then sample constraint-alpha.
+ * ⚠ S2'-c: this observed every CUMULATIVE SUM before v0.6.2. An instance with
+ * no lookups has no terminal and contributes nothing (upstream `flatten()`).
+ * With no permutation commit nothing is observed, alpha is still sampled. */
 int dnac_batch_observe_perm_and_sample_alpha(
     dnac_duplex_t               *ch,
     const gold_fp_t             *permutation_commit /* 4 lanes or NULL */,
     const dnac_logup_bus_view_t *views,
-    const gold_fp2_t *const    *cumulative_sums, /* [i][num_globals_i]      */
+    const gold_fp2_t            *terminals,      /* [i] — one per AIR       */
     uint32_t                     num_instances,
     gold_fp2_t                  *out_alpha);
 
@@ -152,9 +161,18 @@ typedef struct {
     const uint32_t              *num_publics;         /* [n]                */
     const uint32_t              *preprocessed_widths; /* [n]                */
     const dnac_logup_bus_view_t *views;               /* [n]                */
-    const gold_fp2_t *const    *cumulative_sums;      /* [n][num_globals_i];
-                                                         entry may be NULL
-                                                         when 0 globals     */
+    uint32_t                     max_message_width;   /* W >= 1 (S2'-c): the
+                                                         widest payload tuple
+                                                         in the batch; fixes
+                                                         the bus offset beta^W
+                                                         (challenges.rs:52-57).
+                                                         Ignored when no
+                                                         instance has lookups. */
+    const gold_fp2_t            *terminals;           /* [n] — ONE per AIR
+                                                         (S2'-c); entry i is
+                                                         read only when
+                                                         instance i has >= 1
+                                                         lookup             */
     const gold_fp_t             *main_commit;         /* 4 lanes            */
     const gold_fp_t             *preprocessed_commit; /* 4 lanes or NULL    */
     const gold_fp_t             *permutation_commit;  /* 4 lanes or NULL    */
@@ -184,16 +202,23 @@ typedef struct {
     uint32_t preprocessed_next_len;
     uint32_t num_quotient_chunks;    /* == binding (:183-191)               */
     uint32_t quotient_chunk_dim;     /* == 2 = Challenge DIMENSION (:193-199)*/
-    uint32_t permutation_local_len;  /* == aux_width·2 (:524-541), aux_width
-                                        = num_locals + num_globals          */
+    uint32_t permutation_local_len;  /* == aux_width·2; aux_width (S2'-c,
+                                        v0.6.2 verifier/mod.rs) is
+                                        num_lookups + 1 when the AIR declares
+                                        any lookup, else 0 — col 0 is the ONE
+                                        shared accumulator and lookup c owns
+                                        fraction column c+1. Was max(column)+1
+                                        over the lookups at 82cfad73.        */
     uint32_t permutation_next_len;   /* == permutation_local (:482-484)     */
     uint32_t random_len;             /* 2 iff is_zk else 0 (:74-84,:201-209)*/
-    /* global_lookup_data entries (name, aux_column) — must equal the
-     * expected (bus name, column) list in order (:233-267); columns are
-     * locals-first so global g sits at num_locals + g (types.rs:59-89). */
-    uint32_t              num_global_entries;
-    const char *const    *entry_names;
-    const uint32_t       *entry_aux_columns;
+    /* LookupTerminal presence (S2'-c, v0.6.2): must equal (num_lookups > 0)
+     * — upstream's TerminalPresenceMismatch.
+     *
+     * The v3-era (name, aux_column) metadata list is GONE. v0.6.2 deleted
+     * that entire cross-check from the verifier: bus names and aux columns
+     * stopped being proof data, so there is nothing left to compare against.
+     * Only the Option discriminant is still checked. */
+    int                   has_terminal;
     int                   main_next_used;
     int                   prep_next_used;
 } dnac_batch_instance_shape_t;

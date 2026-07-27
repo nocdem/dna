@@ -297,6 +297,43 @@ static dnac_fri_status_t fri_open_input(
              * `cols`/`se` pair when called through the PUBLIC dnac_fri_verify
              * entry with a caller that pins neither; the pin belongs to the
              * batch layer because that is where the instance's shape is known. */
+            /* ── check_widths: the matrix width is PINNED TO THE CLAIMED
+             *    EVALUATION COUNT, never read from the proof (S2'-f, option A;
+             *    v0.6.2 fri/src/verifier.rs:695-712 builds
+             *    `Dimensions { width: values.len(), height }` from the FIRST
+             *    opening point, and merkle-tree/src/mmcs/geometry.rs:16-30
+             *    `check_widths` then rejects a row whose length disagrees).
+             *
+             *    Upstream's own reason (geometry.rs:12-15): "The leaf hash
+             *    flattens all rows at one height into a single element stream,
+             *    so a digest match alone does not pin where one row ends and
+             *    the next begins."
+             *
+             *    ORDER IS THE POINT. Upstream runs check_widths at
+             *    mmcs/batch.rs:184 — BEFORE any hashing. DNAC previously built
+             *    the leaf from the proof-supplied `opened_values_lens[m]` and
+             *    only compared it against `num_claimed_evals` afterwards, in
+             *    the per-point loop below, so the same malformed proof surfaced
+             *    as PointEvaluationCountMismatch instead of an InputError. Both
+             *    REJECT — this was an error-taxonomy divergence, not a
+             *    soundness gap — but the KAT pins the variant, and matching the
+             *    reference is what keeps that pin meaningful.
+             *
+             *    The per-point check below SURVIVES and is still reachable:
+             *    upstream keeps PointEvaluationCountMismatch (v0.6.2
+             *    verifier.rs:749-757) for opening points 1..N-1, whose counts
+             *    are NOT what pinned the width. Only point 0 moves here.
+             *
+             *    num_points == 0 is already rejected as MatrixWithoutOpeningPoints
+             *    (S2'-d), which is what makes `points[0]` safe to read. */
+            const dnac_fri_matrix_openings_t *mw = &cw->matrices[m];
+            if (mw->num_points == 0) {
+                return DNAC_FRI_ERR_MATRIX_WITHOUT_OPENING_POINTS;
+            }
+            if (cols != mw->points[0].num_claimed_evals) {
+                return DNAC_FRI_ERR_INPUT_ERROR; /* MerkleTreeError::WrongWidth */
+            }
+
             const size_t se = bo->salt_elems;
             if (cols + se > FRI_LEAF_CAP) return DNAC_FRI_ERR_INPUT_ERROR;
             fri_lanes_base_row(bo->opened_values[m], cols, rowbuf[m]);
@@ -362,22 +399,24 @@ static dnac_fri_status_t fri_open_input(
         /* Per-matrix reduced-opening accumulation (verifier.rs:599-642). */
         for (size_t m = 0; m < cw->num_matrices; ++m) {
             const dnac_fri_matrix_openings_t *mo = &cw->matrices[m];
-            /* ⚠ ZERO-POINT MATRIX REJECTED (S2'-d, 2026-07-27; red-team lenses 1
-             * and 3). The only check on this matrix's wire-declared row width is
-             * the count compare INSIDE the point loop below. With num_points == 0
-             * that loop never runs, so the width is compared against nothing at
-             * all — while the row has ALREADY been hashed into the leaf above as
-             * an arbitrary-length segment, shifting every other row boundary in
-             * its height group. Upstream added FriError::MatrixWithoutOpeningPoints
-             * for exactly this, with the reason "a matrix opened at no points
-             * carries no claim to pin its width" (v0.6.2 fri/src/verifier.rs:702-707).
-             * Note the asymmetry this closes: the PROVER already rejects
-             * num_points == 0 (stark_prover.c:1055-1057); the verifier did not.
-             * Not reachable through dnac_batch_verify today (every BV_MAT call
-             * passes 1 or 2 points) — but dnac_fri_verify is a PUBLIC entry, and
-             * P2 recursion will build its own commitment descriptors.
-             * (S2'-d final: carries upstream's own variant name now, instead of
-             * the generic INPUT_ERROR it was first landed with.) */
+            /* ZERO-POINT MATRIX REJECTED — upstream's
+             * FriError::MatrixWithoutOpeningPoints, whose reason is that "a
+             * matrix opened at no points carries no claim to pin its width"
+             * (v0.6.2 fri/src/verifier.rs:702-707). The PROVER already rejected
+             * this (stark_prover.c:1055-1057); the verifier did not until S2'-d.
+             *
+             * ⚠ THIS IS NOW A REDUNDANT BACKSTOP, NOT THE LIVE GUARD (S2'-f).
+             * The width pin added to the leaf-assembly loop above runs the same
+             * `num_points == 0` test over the same cw->matrices[m], for every m,
+             * before any hashing — and cw->num_matrices == 0 is rejected earlier
+             * still. So this branch is unreachable for every input, and the
+             * ERRCHK("MatrixWithoutOpeningPoints") in test_fri_verifier_valid.c
+             * now trips up there, not here.
+             * KEPT DELIBERATELY rather than deleted: it is a fail-close guard,
+             * and its reachability depends on the two loops staying coupled in
+             * their current order. Dropping it would make a future reordering
+             * silently reopen the hole. Documented as redundant so nobody reads
+             * it as the enforcing check. */
             if (mo->num_points == 0) {
                 return DNAC_FRI_ERR_MATRIX_WITHOUT_OPENING_POINTS;
             }
@@ -396,7 +435,11 @@ static dnac_fri_status_t fri_open_input(
 
             for (size_t point = 0; point < mo->num_points; ++point) {
                 const dnac_fri_opening_point_t *pt = &mo->points[point];
-                /* PointEvaluationCountMismatch (verifier.rs:625-633). */
+                /* PointEvaluationCountMismatch (v0.6.2 verifier.rs:748-757;
+                 * the ":625-633" this used to cite is 82cfad73 numbering).
+                 * Point 0 can no longer reach this — the width pin above
+                 * compares exactly this quantity first — but points 1..N-1
+                 * still can, which is precisely upstream's reachability. */
                 if (bo->opened_values_lens[m] != pt->num_claimed_evals) {
                     return DNAC_FRI_ERR_POINT_EVALUATION_COUNT_MISMATCH;
                 }

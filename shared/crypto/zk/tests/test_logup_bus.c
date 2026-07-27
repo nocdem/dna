@@ -1,7 +1,8 @@
 /**
  * @file test_logup_bus.c
  * @brief P2L-b — byte-match gate for logup_bus.c vs Plonky3 p3-lookup
- *        builder/bus + batch-stark challenge memo / per-bus grouping.
+ *        builder/bus + batch-stark single-pair challenge derivation /
+ *        cross-AIR terminal sum (RE-BASED to v0.6.2 at S2'-c, 2026-07-27).
  *
  * Loads tools/vectors/logup_bus.json and asserts:
  *   1. COLUMN ASSIGNMENT: replaying each instance's push script through the C
@@ -9,16 +10,21 @@
  *      exactly the lookups the REAL Lookups::from_air produced (locals first,
  *      then globals, push order; types.rs:59-89) — kind/bus/column/tuple
  *      structure compared as interned expr-pool indices.
- *   2. CHALLENGE MEMO: the dumped draw stream replays byte-identically on the
- *      C DuplexChallenger (init_default → sample_fp2 ×8, binding P2L-b to the
- *      P1a surface), and dnac_logup_bus_assign_challenges reproduces the REAL
- *      BatchTranscript::sample_perm_challenges per-instance arrays
- *      (transcript.rs:74-102) including memo reuse across instances.
- *   3. PER-BUS GROUPING: C generate_permutation byte-matches each sum
- *      instance's aux + cumulative sums, then
- *      dnac_logup_bus_verify_global_sums reproduces every scenario verdict
- *      (verifier/mod.rs:623-643) — including the cross-bus-cancellation F3
- *      trap where the FLAT total is zero but each bus group fails.
+ *   2. CHALLENGE DERIVATION: the single (α,β) pair replays byte-identically
+ *      on the C DuplexChallenger (init_default → sample_fp2 ×2, binding P2L-b
+ *      to the P1a surface), and dnac_logup_bus_derive_challenges reproduces the
+ *      REAL BatchTranscript::sample_perm_challenges per-instance arrays
+ *      (v0.6.2 transcript.rs:118-155) — including γ = β^W and the derived bus
+ *      prefixes, checked separately from the per-instance layout so a failure
+ *      localises to derivation vs layout.
+ *   3. CROSS-AIR TERMINALS (v0.6.2): C generate_permutation byte-matches each
+ *      sum instance's aux + its ONE committed terminal, then
+ *      dnac_logup_verify_terminal_sum reproduces every scenario verdict as a
+ *      FLAT total. The F3 framing INVERTED at v0.6.2 — the flat total is now
+ *      the correct check, because separation moved into the challenge
+ *      derivation (prefix[bus] = alpha + (bus+1)*beta^W). Both directions are
+ *      still pinned: `cross_bus_cancel` cancels with hand-built colliding
+ *      prefixes, `cross_bus_separated` does NOT with the derived prefix.
  *   4. HEIGHT BOUND: C-only unit tests of the offline precondition
  *      Σ weight·height < p (builder.rs:33-38; never enforced in Plonky3, F4)
  *      at exact boundaries (p−1 OK, p FAIL) without overflow.
@@ -89,16 +95,24 @@ static int run_assignment_case(const jv_t *cs)
 
     const jv_t *exprs = jv_get(cs, "exprs");
     const jv_t *insts = jv_get(cs, "instances");
-    const jv_t *jdraws = jv_get(cs, "draws");
     const jv_t *jperinst = jv_get(cs, "per_instance_challenges");
-    uint64_t draws_used_exp;
+    uint64_t draws_used_exp, mmw;
+    gold_fp2_t alpha, beta;
     if (!exprs || exprs->kind != JV_ARR || !insts || insts->kind != JV_ARR ||
-        !jdraws || jdraws->kind != JV_ARR || jdraws->n % 2 != 0 ||
         !jperinst || jperinst->kind != JV_ARR || jperinst->n != insts->n ||
-        !jv_u64(jv_get(cs, "draws_used_pairs"), &draws_used_exp)) {
+        !jv_u64(jv_get(cs, "draws_used_pairs"), &draws_used_exp) ||
+        !jv_u64(jv_get(cs, "max_message_width"), &mmw) ||
+        !jv_fp2(jv_get(cs, "alpha"), &alpha) ||
+        !jv_fp2(jv_get(cs, "beta"), &beta)) {
         fprintf(stderr, "FAIL[%s]: case fields\n", name);
         return 2;
     }
+    /* v0.6.2 draws ONE (alpha, beta) pair for the WHOLE batch — "two draws,
+     * not two per bus" (transcript.rs:112-115). The per-bus separation that
+     * used to cost a draw each now comes from the derivation. Any vector
+     * claiming more than one pair would mean the squeeze count regressed. */
+    CHECK(draws_used_exp == 1, "[%s] draws_used_pairs %" PRIu64 " != 1", name,
+          draws_used_exp);
 
     pool_t pool = {0};
     int32_t *map = NULL;
@@ -107,26 +121,16 @@ static int run_assignment_case(const jv_t *cs)
         return 2;
     }
 
-    /* --- draws: parse + replay on the C duplex challenger (P1a surface).
-     * The oracle sampled from a FRESH production challenger (DS prefix,
-     * no observes — full priming order is P2L-c scope). */
-    const size_t ndraw_elems = jdraws->n;
-    gold_fp2_t *draws = (gold_fp2_t *)malloc(sizeof(gold_fp2_t) * ndraw_elems);
-    if (!draws) return 2;
-    for (size_t i = 0; i < ndraw_elems; i++) {
-        if (!jv_fp2(jdraws->items[i], &draws[i])) {
-            fprintf(stderr, "FAIL[%s]: draws parse\n", name);
-            return 2;
-        }
-    }
+    /* --- the single pair, replayed on the C duplex challenger (P1a surface).
+     * The oracle sampled from a FRESH production challenger (DS prefix, no
+     * observes — full priming order is P2L-c scope): alpha then beta. */
     {
         dnac_duplex_t ch;
         dnac_duplex_init_default(&ch);
-        for (size_t i = 0; i < ndraw_elems; i++) {
-            gold_fp2_t got = dnac_duplex_sample_fp2(&ch);
-            CHECK(fp2_eq_limbs(got, draws[i]),
-                  "[%s] duplex draw %zu replay", name, i);
-        }
+        gold_fp2_t ga = dnac_duplex_sample_fp2(&ch);
+        gold_fp2_t gb = dnac_duplex_sample_fp2(&ch);
+        CHECK(fp2_eq_limbs(ga, alpha), "[%s] duplex alpha replay", name);
+        CHECK(fp2_eq_limbs(gb, beta), "[%s] duplex beta replay", name);
     }
 
     /* --- per instance: replay the push script through the C builder. */
@@ -283,13 +287,33 @@ static int run_assignment_case(const jv_t *cs)
         outs[i] = (gold_fp2_t *)malloc(sizeof(gold_fp2_t) * 2u * (n ? n : 1));
         if (!outs[i]) return 2;
     }
-    uint32_t used = 0;
-    int rc = dnac_logup_bus_assign_challenges(
-        views, (uint32_t)insts->n, draws, (uint32_t)(ndraw_elems / 2),
-        (gold_fp2_t *const *)outs, &used);
-    CHECK(rc == DNAC_LOGUP_OK, "[%s] assign_challenges rc=%d", name, rc);
-    CHECK(used == draws_used_exp, "[%s] draws_used %u != %" PRIu64, name, used,
-          draws_used_exp);
+    uint32_t nbuses = 0;
+    int rc = dnac_logup_bus_derive_challenges(
+        views, (uint32_t)insts->n, alpha, beta, (uint32_t)mmw,
+        (gold_fp2_t *const *)outs, &nbuses);
+    CHECK(rc == DNAC_LOGUP_OK, "[%s] derive_challenges rc=%d", name, rc);
+
+    /* The derived bus prefixes themselves — prefix[i] = alpha + (i+1)*gamma,
+     * gamma = beta^W (challenges.rs:56-66). Checking these separately from
+     * the per-instance layout localises a failure to derivation vs layout. */
+    const jv_t *jpref = jv_get(cs, "bus_prefixes");
+    if (jpref && jpref->kind == JV_ARR) {
+        CHECK(jpref->n == nbuses, "[%s] bus count %zu != %u", name, jpref->n,
+              nbuses);
+        gold_fp2_t gamma = gold_fp2_one();
+        for (uint64_t e = 0; e < mmw; e++) gamma = gold_fp2_mul(gamma, beta);
+        gold_fp2_t egamma;
+        if (jv_fp2(jv_get(cs, "gamma"), &egamma)) {
+            CHECK(fp2_eq_limbs(gamma, egamma), "[%s] gamma = beta^W", name);
+        }
+        gold_fp2_t run = alpha;
+        for (size_t b = 0; b < jpref->n; b++) {
+            gold_fp2_t ep;
+            run = gold_fp2_add(run, gamma);
+            if (!jv_fp2(jpref->items[b], &ep)) return 2;
+            CHECK(fp2_eq_limbs(run, ep), "[%s] bus_prefix[%zu]", name, b);
+        }
+    }
     for (size_t i = 0; i < insts->n; i++) {
         const jv_t *exp = jperinst->items[i];
         uint32_t n = 2u * (views[i].num_locals + views[i].num_globals);
@@ -311,7 +335,6 @@ static int run_assignment_case(const jv_t *cs)
     }
     free(sets);
     free(views);
-    free(draws);
     free(map);
     free(pool.nodes);
     return 0;
@@ -325,7 +348,8 @@ typedef struct {
     char *name;
     uint32_t num_locals, num_globals;
     char **global_bus_names;   /* [num_globals] owned */
-    gold_fp2_t *cum_sums;      /* [num_globals] byte-matched */
+    gold_fp2_t terminal;       /* the AIR's ONE terminal, byte-matched */
+    int        has_terminal;   /* the Option discriminant */
     dnac_logup_bus_view_t view;
 } sum_inst_t;
 
@@ -370,7 +394,11 @@ static int run_sum_instance(const jv_t *cs)
         return 2;
     }
     const uint32_t height = (uint32_t)height64;
-    const uint32_t nlk = (uint32_t)num_aux64;
+    /* num_aux_cols is the aux WIDTH = num_lookups + 1 at v0.6.2 (col 0 is the
+     * shared accumulator, logup.rs:381-382); it equalled the lookup count at
+     * 82cfad73. */
+    if (num_aux64 == 0) return 2;
+    const uint32_t nlk = (uint32_t)num_aux64 - 1u;
 
     uint32_t mh, mw;
     gold_fp_t *main_m = NULL;
@@ -459,38 +487,42 @@ static int run_sum_instance(const jv_t *cs)
         if (!jv_fp2(jch->items[i], &chal[i])) return 2;
     }
 
-    /* generate + byte-match aux and cumulative sums */
+    /* generate + byte-match aux and the AIR's single terminal. aux is now
+     * [height][num_lookups + 1]: col 0 the shared accumulator, lookup slot c
+     * owning fraction column c + 1 (logup.rs:381-382). */
+    const uint32_t auxw = nlk + 1u;
     const jv_t *jaux = jv_get(cs, "aux");
-    const jv_t *jcums = jv_get(cs, "cumulative_sums");
-    if (!jaux || jaux->kind != JV_ARR || jaux->n != height || !jcums ||
-        jcums->kind != JV_ARR || jcums->n != num_globals) {
+    const jv_t *jterm = jv_get(cs, "terminal");
+    uint64_t nac;
+    if (!jaux || jaux->kind != JV_ARR || jaux->n != height ||
+        !jv_u64(jv_get(cs, "num_aux_cols"), &nac) || (uint32_t)nac != auxw) {
         return 2;
     }
+    const int has_term = (jterm && jterm->kind != JV_NULL);
+    gold_fp2_t exp_term = gold_fp2_zero();
+    if (has_term && !jv_fp2(jterm, &exp_term)) return 2;
+    if (has_term != (nlk > 0)) return 2;
+
     gold_fp2_t *aux =
-        (gold_fp2_t *)malloc(sizeof(gold_fp2_t) * (size_t)height * nlk);
-    gold_fp2_t cums[8];
-    if (!aux || num_globals > 8) return 2;
+        (gold_fp2_t *)malloc(sizeof(gold_fp2_t) * (size_t)height * auxw);
+    gold_fp2_t term = gold_fp2_zero();
+    if (!aux) return 2;
     int rc = dnac_logup_generate_permutation(&ctx, lks, nlk, chal, 2u * nlk,
-                                             aux, num_globals ? cums : NULL,
-                                             num_globals);
+                                             aux, &term);
     CHECK(rc == DNAC_LOGUP_OK, "[%s] generate rc=%d", name, rc);
     if (rc == DNAC_LOGUP_OK) {
         uint32_t diff = 0;
         for (uint32_t r = 0; r < height; r++) {
             const jv_t *row = jaux->items[r];
-            if (row->kind != JV_ARR || row->n != nlk) return 2;
-            for (uint32_t c = 0; c < nlk; c++) {
+            if (row->kind != JV_ARR || row->n != auxw) return 2;
+            for (uint32_t c = 0; c < auxw; c++) {
                 gold_fp2_t e;
                 if (!jv_fp2(row->items[c], &e)) return 2;
-                if (!fp2_eq_limbs(aux[(size_t)r * nlk + c], e)) diff++;
+                if (!fp2_eq_limbs(aux[(size_t)r * auxw + c], e)) diff++;
             }
         }
         CHECK(diff == 0, "[%s] aux diff=%u", name, diff);
-        for (uint32_t g = 0; g < num_globals; g++) {
-            gold_fp2_t e;
-            if (!jv_fp2(jv_get(jcums->items[g], "sum"), &e)) return 2;
-            CHECK(fp2_eq_limbs(cums[g], e), "[%s] cum sum %u", name, g);
-        }
+        CHECK(fp2_eq_limbs(term, exp_term), "[%s] terminal", name);
     }
 
     /* stash for the scenarios */
@@ -501,10 +533,9 @@ static int run_sum_instance(const jv_t *cs)
     si->num_locals = num_locals;
     si->num_globals = num_globals;
     si->global_bus_names = busnames;
-    si->cum_sums = (gold_fp2_t *)malloc(sizeof(gold_fp2_t) *
-                                        (num_globals ? num_globals : 1));
-    if (!si->name || !si->cum_sums) return 2;
-    memcpy(si->cum_sums, cums, sizeof(gold_fp2_t) * num_globals);
+    if (!si->name) return 2;
+    si->terminal = term;
+    si->has_terminal = has_term;
     si->view.num_locals = num_locals;
     si->view.num_globals = num_globals;
     si->view.global_bus_names = (const char *const *)busnames;
@@ -541,18 +572,21 @@ static int run_scenario(const jv_t *sc)
     const jv_t *jname = jv_get(sc, "name");
     const char *name = (jname && jname->kind == JV_STR) ? jname->str : "?";
     const jv_t *insts = jv_get(sc, "instances");
-    const jv_t *checks = jv_get(sc, "bus_checks");
+    const jv_t *jterms = jv_get(sc, "terminals");
     const jv_t *flat_zero = jv_get(sc, "flat_zero");
-    const jv_t *fail_bus = jv_get(sc, "expect_fail_bus");
-    if (!insts || insts->kind != JV_ARR || insts->n > 8 || !checks ||
-        checks->kind != JV_ARR || !flat_zero || flat_zero->kind != JV_BOOL) {
+    const jv_t *jok = jv_get(sc, "verify_terminal_sum_ok");
+    const jv_t *jtotal = jv_get(sc, "flat_total");
+    if (!insts || insts->kind != JV_ARR || insts->n > 8 || !jterms ||
+        jterms->kind != JV_ARR || jterms->n != insts->n || !flat_zero ||
+        flat_zero->kind != JV_BOOL || !jok || jok->kind != JV_BOOL) {
         return 2;
     }
 
-    dnac_logup_bus_view_t views[8];
-    const gold_fp2_t *cums[8];
-    gold_fp2_t all_sums[32];
-    uint32_t nall = 0;
+    /* Gather each named AIR's ONE terminal. The v3-era per-bus grouping is
+     * gone: bus_checks / expect_fail_bus no longer drive a verdict, because
+     * there are no per-(bus, column) sums left to group. */
+    gold_fp2_t terms[8];
+    uint32_t nterms = 0;
     for (size_t i = 0; i < insts->n; i++) {
         const sum_inst_t *si = find_inst(insts->items[i]->str);
         if (!si) {
@@ -560,66 +594,46 @@ static int run_scenario(const jv_t *sc)
                     insts->items[i]->str);
             return 2;
         }
-        views[i] = si->view;
-        cums[i] = si->cum_sums;
-        for (uint32_t g = 0; g < si->num_globals && nall < 32; g++) {
-            all_sums[nall++] = si->cum_sums[g];
+        /* the dumped terminal must equal the one the C gadget produced */
+        const jv_t *jt = jterms->items[i];
+        const int exp_has = (jt && jt->kind != JV_NULL);
+        CHECK(exp_has == si->has_terminal, "[%s] %s terminal presence", name,
+              si->name);
+        if (exp_has && si->has_terminal) {
+            gold_fp2_t et;
+            if (!jv_fp2(jt, &et)) return 2;
+            CHECK(fp2_eq_limbs(si->terminal, et), "[%s] %s terminal value",
+                  name, si->name);
         }
+        if (si->has_terminal && nterms < 8) terms[nterms++] = si->terminal;
     }
 
-    /* per-bus sums byte-match (gathered instance order, then global order —
-     * verifier/mod.rs:624-636) */
-    for (size_t c = 0; c < checks->n; c++) {
-        const jv_t *chk = checks->items[c];
-        const jv_t *bus = jv_get(chk, "bus_name");
-        const jv_t *sums = jv_get(chk, "sums");
-        const jv_t *ok = jv_get(chk, "ok");
-        if (!bus || bus->kind != JV_STR || !sums || sums->kind != JV_ARR ||
-            !ok || ok->kind != JV_BOOL) {
-            return 2;
-        }
-        gold_fp2_t gathered[16];
-        uint32_t ng = 0;
-        for (size_t i = 0; i < insts->n; i++) {
-            const sum_inst_t *si = find_inst(insts->items[i]->str);
-            for (uint32_t g = 0; g < si->num_globals && ng < 16; g++) {
-                if (!strcmp(si->global_bus_names[g], bus->str)) {
-                    gathered[ng++] = si->cum_sums[g];
-                }
-            }
-        }
-        CHECK(ng == sums->n, "[%s] bus %s sum count %u != %zu", name, bus->str,
-              ng, sums->n);
-        for (uint32_t k = 0; k < ng && k < sums->n; k++) {
-            gold_fp2_t e;
-            if (!jv_fp2(sums->items[k], &e)) return 2;
-            CHECK(fp2_eq_limbs(gathered[k], e), "[%s] bus %s sum %u", name,
-                  bus->str, k);
-        }
-        int got_ok =
-            dnac_logup_verify_global_sum(gathered, ng) == DNAC_LOGUP_OK;
-        CHECK(got_ok == ok->bval, "[%s] bus %s group verdict", name, bus->str);
+    /* The cross-AIR check IS the flat total now (logup.rs:304-320). */
+    gold_fp2_t total = gold_fp2_zero();
+    for (uint32_t k = 0; k < nterms; k++)
+        total = gold_fp2_add(total, terms[k]);
+    gold_fp2_t exp_total;
+    if (jv_fp2(jtotal, &exp_total)) {
+        CHECK(fp2_eq_limbs(total, exp_total), "[%s] flat total value", name);
     }
+    CHECK(fp2_eq_limbs(total, gold_fp2_zero()) == (flat_zero->bval != 0),
+          "[%s] flat total zero-ness", name);
 
-    /* the bus-layer entry point: verdict + first failing bus */
-    const char *failed = NULL;
-    int rc = dnac_logup_bus_verify_global_sums(views, (uint32_t)insts->n, cums,
-                                               &failed);
-    if (fail_bus && fail_bus->kind == JV_STR) {
-        CHECK(rc == DNAC_LOGUP_ERR_GLOBAL_SUM && failed &&
-                  !strcmp(failed, fail_bus->str),
-              "[%s] expected fail bus %s, rc=%d got %s", name, fail_bus->str,
-              rc, failed ? failed : "(null)");
-    } else {
-        CHECK(rc == DNAC_LOGUP_OK && failed == NULL,
-              "[%s] expected all buses OK, rc=%d (%s)", name, rc,
-              failed ? failed : "-");
-    }
+    int rc = dnac_logup_verify_terminal_sum(terms, nterms);
+    CHECK((rc == DNAC_LOGUP_OK) == (jok->bval != 0),
+          "[%s] verify_terminal_sum verdict rc=%d (want ok=%d)", name, rc,
+          (int)jok->bval);
 
-    /* flat-total cross-check (the F3 trap: cross_bus_cancel has flat zero
-     * while per-bus fails) */
-    int flat_ok = dnac_logup_verify_global_sum(all_sums, nall) == DNAC_LOGUP_OK;
-    CHECK(flat_ok == flat_zero->bval, "[%s] flat total zero-ness", name);
+    /* THE F3 TRAP, re-expressed. Under the v3 scheme cross_bus_cancel was the
+     * case where a FLAT total was zero while a per-bus group failed — which is
+     * why the flat sum was forbidden. At v0.6.2 the flat sum is the only check,
+     * and it is sound because separation moved into the challenge derivation.
+     * The vector keeps BOTH halves of the trap so that property is pinned, not
+     * assumed: `cross_bus_cancel` builds the colliding prefixes by hand and
+     * still cancels (flat zero, accepted), while `cross_bus_separated` uses the
+     * DERIVED prefix alpha + (i+1)*beta^W for the same multiset and no longer
+     * cancels (non-zero, rejected). If derivation ever stopped separating
+     * buses, the second case would start passing. */
     return 0;
 }
 
@@ -680,13 +694,25 @@ static void run_units(void)
         .num_locals = 1, .num_globals = 1,
         .global_bus_names = nb, .global_count_weights = NULL,
     };
-    gold_fp2_t one_pair[2] = { gold_fp2_one(), gold_fp2_one() };
     gold_fp2_t out4[4];
     gold_fp2_t *outp[1] = { out4 };
-    uint32_t used = 0;
-    rc = dnac_logup_bus_assign_challenges(&v1, 1, one_pair, 1,
-                                          (gold_fp2_t *const *)outp, &used);
-    CHECK(rc == DNAC_LOGUP_ERR_PARAM, "assign exhausted rc=%d", rc);
+    uint32_t nb_out = 0;
+    /* W == 0 is rejected: the bus offset would land on beta^0 and collide
+     * with the payload terms (challenges.rs:51-54). This REPLACES the old
+     * "draw pool exhausted" negative — there is no pool to exhaust now, one
+     * pair covers the whole batch. */
+    rc = dnac_logup_bus_derive_challenges(&v1, 1, gold_fp2_one(),
+                                          gold_fp2_one(), 0,
+                                          (gold_fp2_t *const *)outp, &nb_out);
+    CHECK(rc == DNAC_LOGUP_ERR_PARAM, "derive W=0 rc=%d", rc);
+
+    /* W >= 1 succeeds and assigns one bus id per lookup here (1 local + 1
+     * global, both first occurrences). */
+    rc = dnac_logup_bus_derive_challenges(&v1, 1, gold_fp2_one(),
+                                          gold_fp2_one(), 1,
+                                          (gold_fp2_t *const *)outp, &nb_out);
+    CHECK(rc == DNAC_LOGUP_OK && nb_out == 2, "derive W=1 rc=%d nbuses=%u", rc,
+          nb_out);
 
     /* builder negatives */
     rc = dnac_logup_push_interaction(NULL, "x", NULL, 0, 0, 1);
@@ -780,7 +806,6 @@ int main(int argc, char **argv)
             free(g_insts[i].global_bus_names[g]);
         }
         free(g_insts[i].global_bus_names);
-        free(g_insts[i].cum_sums);
         free(g_insts[i].name);
     }
     jv_free(doc);

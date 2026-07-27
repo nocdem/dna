@@ -655362,8 +655362,8 @@
     "5488130055890078061",
     "3361580487844675452"
   ],
-  "format_version": "1",
-  "plonky3_commit": "82cfad73cd734d37a0d51953094f970c531817ec",
+  "format_version": "2",
+  "plonky3_commit": "11cc5849a1b57a2f520d6edc608b9e516517d841",
   "scope": "smallrng_goldilocks_draws",
   "source": "fresh SmallRng::seed_from_u64(1), sequential rng.random::<Goldilocks>() — the HidingFriPcs prove consumption stream (D1-B KAT input; production = OS entropy)"
 }

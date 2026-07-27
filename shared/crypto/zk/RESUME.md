@@ -740,9 +740,104 @@
     132/132** (`test_zk_link` Passed); messenger 0 warnings, libdna.so built.
     No version bump (consensus-inert, C1 precedent).
   - **Still open from this thread:** the `GlobalMaxHeightMismatch` two-sided
-    cross-check; then F1 (challenger prefix-free port, regen vector in the
-    session scratchpad), F2 (`generate_permutation` rewrite, aux width
-    `num_lookups + 1`), then S2'-c remainder → S2'-e → S2'-f (32 vectors).
+    cross-check; then F2 (`generate_permutation` rewrite, aux width
+    `num_lookups + 1`), then S2'-c remainder → S2'-e → S2'-f (the other 31
+    vectors).
+- **S2'-b (F1) ✅ REDONE (2026-07-27) — the challenger is prefix-free, and the
+  tree is now deliberately RED until S2'-f.** `dc_duplexing` ports v0.6.2
+  `challenger/src/duplex_challenger.rs:86-112`: after overwriting the leading
+  rate slots it now CLEARS the rate slots the inputs did not reach (rs:102) and
+  ADDS the absorbed length into the first capacity element (rs:104) — a field
+  add, not a store, because the capacity carries sponge state across
+  permutations. The `num_absorbed > 0` guard keeps a SQUEEZE from doing either
+  (rs:98-99). Without this a k-element absorb and its zero-extension reached the
+  same post-permutation state, so length and zero-padding could collide; every
+  Fiat-Shamir challenge in the stack moves as a result.
+  O2 note: the WHOLE file was diffed between the pins, not just the function —
+  `duplexing` is the only semantic change (the rest is trait bounds + tests),
+  and `absorb_rate_padded_with_tag` is not ported into DNAC.
+  **Byte-match on the first attempt:** `test_duplex_challenger` PASS, 13 cases /
+  80 steps; `tools/vectors/duplex_challenger.json` replaced by the v0.6.2 regen
+  (format_version 2, commit 11cc5849) with its `.expected_hashes` line updated
+  in the same step — that hash is a `make test` gate, so a stale one aborts the
+  run before any test executes.
+  **THE RED WINDOW IS MEASURED, NOT ASSUMED.** `make test` halts at the first
+  failing recipe, so all 75 runner invocations were executed individually:
+  **54 PASS / 21 FAIL**, and every one of the 21 failures links
+  `duplex_challenger.c` — cross-tabbed against the actual link commands, with
+  ZERO failures that do not. All 18 tests on S1c-unchanged vectors
+  (poseidon2_mmcs{,_mixed}, fri_fold×3, fri_verifier_verify_query, range_air,
+  sum_balance, ntt, note_commit, poseidon2_air_trace, poseidon2_goldilocks,
+  prover_trace, primitive_ops, two_adic_gens, field_ops, field_ext, smallrng)
+  stay GREEN, so nothing unrelated is hiding behind the red. nodus: 0 warnings,
+  ctest 132/132 (nothing there pins challenger output values).
+  NOT COMMITTED — F1 alone leaves the tree red; it commits at S2'-f.
+- **S2'-c + S2'-e ✅ DONE as ONE MERGED SLICE (2026-07-27) — the LogUp terminal
+  collapse, from the gadget through the DZKF v4 wire.** They could not be
+  separated: `dnac_batch_vopened_t` is the seam between them and the terminal
+  crosses it.
+  **The model change (v0.6.2).** `global_lookup_data: Vec<Vec<LookupData>>` — a
+  per-instance LIST of (bus name, aux column, cumulative sum) records — becomes
+  `lookup_terminals: Vec<Option<LookupTerminal<Challenge>>>`, ONE optional value
+  per AIR (`batch-stark/src/proof.rs:22`; `LookupTerminal<F>(pub F)` is a
+  newtype over a single Challenge, `lookup/src/types.rs:301`). Bus names and aux
+  columns stop being proof data at all, so v0.6.2 DELETES the metadata
+  cross-check outright rather than relocating it; what survives is the Option
+  discriminant, `TerminalPresenceMismatch`.
+  **Aux layout.** `aux_width = num_lookups + 1` when the AIR declares any lookup
+  and 0 otherwise (was `max(lookup.column) + 1`): column 0 is ONE shared
+  accumulator, lookup slot c owns fraction column c+1.
+  **Constraint order** (`lookup/src/protocol.rs:56-82`): `air.eval` first, then
+  one UNGATED `U·f − V` per lookup on EVERY row (logup.rs:245 — the identity is
+  cyclic so it needs no transition gate, and forcing it everywhere pins the
+  last-row value the terminal binding consumes), THEN one accumulator block:
+  `is_first·acc`, `is_transition·(acc_next − acc − row_sum)`,
+  `is_last·(terminal − acc − row_sum)`. The `is_global` branch is gone — one
+  accumulator covers local and global alike.
+  **Cross-AIR check** is now the FLAT `dnac_logup_verify_terminal_sum`. That is
+  sound at v0.6.2 where it was not before: bus separation moved DOWN into the
+  challenge derivation (`prefix[bus] = α + (bus+1)·β^W`, one power above every
+  payload term — `lookup/src/challenges.rs:19-23`), so two buses cannot produce
+  cancelling contributions. The per-bus grouping entry point is deleted rather
+  than kept as dead code implying a protection that now lives elsewhere.
+  **W = max_message_width** is shared by prover and verifier through ONE helper,
+  `dnac_logup_bus_max_message_width` (`transcript.rs:118-135`: seed **1**, max
+  over every tuple of every lookup of every instance). It had been computed
+  inline in the prover and not at all in the verifier; two implementations of
+  the value feeding γ = β^W is a transcript fork waiting to happen.
+  **DZKF v4 wire — REDEFINED IN PLACE, NOT BUMPED.** Per instance the record is
+  now `u32 count (0 or 1) ‖ [fp2 terminal iff 1]`. The layout was NOT a design
+  choice here: the migrated oracle already fixed it and left the instruction at
+  `tools/plonky3_oracle/src/main.rs:18194-18207`. Version stays 4 because v4 has
+  no live speaker — type-11 is REJECT-unconditional
+  (`nodus/src/witness/nodus_witness_verify.c:749-753`) and the only reference
+  outside `shared/crypto/zk` is a COMMENT (`nodus/tests/test_zk_link.c:14`), both
+  grep-proven. The expiry condition for that reasoning is recorded in
+  `fri_proof_codec.h`. `DNAC_BATCH_WIRE_MAX_GLOBALS` / `_MAX_BUS_NAME` are gone.
+  **Vectors landed (5):** `logup.json`, `logup_bus.json`, `batch_priming.json`,
+  `batch_proof.json`, `batch_shielded_agg.json` + their `.expected_hashes`
+  lines; `sha256sum -c` clean across all 52.
+  **Two serde/API changes the regeneration forced, worth knowing before S2'-f:**
+  (1) `num_aux_cols` in the vectors is the aux WIDTH (`num_lookups + 1`) where it
+  used to equal the lookup count; (2) **v0.6.2 emits Goldilocks base elements as
+  BARE numbers where 82cfad73 wrapped them as `{"value": N}`.** The second one
+  wedged the hand-rolled parser in `test_batch_shielded_agg.c` /
+  `test_prover_agg.c` in an infinite loop (no token matched, `s->pos` never
+  advanced) — a 41-second test ran past 15 minutes emitting nothing and looked
+  exactly like a crypto hang until `gdb -p` showed `js_skip_ws / parse_base_obj`.
+  Both now accept either vintage and carry a no-progress guard. **The identical
+  parser is still in `test_fri_verifier_rollin.c` and `test_fri_verifier_valid.c`,
+  which read 82cfad73-era vectors today and WILL hit this the moment S2'-f
+  regenerates theirs — fix them in the same slice.**
+  **Gate (per-binary, because `make test` halts at the first failure and the
+  first failure is a stale-vector test):** 70 binaries run individually with the
+  Makefile's own invocations. Every red links a changed source AND reads a stale
+  vector; **no test that links none of the changed sources is red.** The agg
+  path was baselined against a git worktree at HEAD (41s) to prove the timeout
+  was the parser and not a crypto regression — after the fix, 42s / 549 checks /
+  byte-matched.
+  NOT COMMITTED — the tree stays deliberately RED until S2'-f lands the
+  remaining stale vectors. Next: **S2'-f** (the other 31 vectors + full green).
 - **What it is:** a **prove + verify** STARK range/balance-proof stack over the
   Goldilocks field — Plonky3-grounded C ports of the verifier engine (field,
   NTT, Keccak-AIR, SHA3 sponge, transcript, Merkle-MMCS, FRI fold + verifier,

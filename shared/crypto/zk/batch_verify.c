@@ -47,16 +47,22 @@ typedef struct {
     uint32_t                  base_len;
 } bv_point_fill_t;
 
-/* Aux width = max lookup column + 1 (verifier/mod.rs:524-529); from_air
- * assigns columns 0..num_lookups-1, so this equals num_lookups for a
- * well-formed set — computed the reference's way regardless. */
+/* Aux width (v0.6.2 batch-stark/src/verifier/mod.rs:512-516):
+ *
+ *     num_lookups + 1   when the AIR declares any lookup
+ *     0                 otherwise
+ *
+ * Column 0 is the ONE shared accumulator and lookup slot c owns fraction
+ * column c + 1 (lookup/src/logup.rs:226-229, 381-382); zero lookups means no
+ * permutation trace at all (logup.rs:374-377).
+ *
+ * At 82cfad73 this was `max(lookup.column) + 1` (old verifier/mod.rs:524-529),
+ * i.e. num_lookups with NO accumulator column — off by exactly the column that
+ * now carries the accumulator. */
 static uint32_t bv_aux_width(const dnac_batch_vinstance_t *inst)
 {
-    uint32_t aw = 0;
-    for (uint32_t l = 0; l < inst->num_lookups; l++) {
-        if (inst->lookups[l].column + 1u > aw) aw = inst->lookups[l].column + 1u;
-    }
-    return aw;
+    if (inst->num_lookups == 0) return 0;
+    return inst->num_lookups + 1u;
 }
 
 dnac_batch_verify_status_t dnac_batch_verify(
@@ -154,7 +160,9 @@ dnac_batch_verify_status_t dnac_batch_verify(
     uint32_t                    pre_widths[BV_MAX_INSTANCES];
     const gold_fp_t            *pubs[BV_MAX_INSTANCES];
     uint32_t                    npubs[BV_MAX_INSTANCES];
-    const gold_fp2_t           *cums[BV_MAX_INSTANCES];
+    gold_fp2_t                  terminals[BV_MAX_INSTANCES];
+    const dnac_logup_lookup_t  *lookup_ptrs[BV_MAX_INSTANCES];
+    uint32_t                    lookup_counts[BV_MAX_INSTANCES];
 
     for (uint32_t i = 0; i < n; i++) {
         const dnac_batch_vinstance_t *di = &insts[i];
@@ -183,7 +191,13 @@ dnac_batch_verify_status_t dnac_batch_verify(
         if (di->view.num_locals + di->view.num_globals != di->num_lookups) {
             return DNAC_BV_ERR_PARAM;
         }
-        if (oi->num_globals != di->view.num_globals) return DNAC_BV_ERR_SHAPE;
+        /* TerminalPresenceMismatch (v0.6.2 verifier/mod.rs): one terminal iff
+         * the AIR declares any lookup, none otherwise. This is the whole of
+         * what survived the old global_lookup_data metadata cross-check —
+         * bus names and aux columns are no longer proof data. */
+        if ((oi->has_terminal != 0) != (di->num_lookups > 0)) {
+            return DNAC_BV_ERR_SHAPE;
+        }
 
         bindings[i].log_ext_degree = di->degree_bits;
         bindings[i].log_degree = di->degree_bits - (uint32_t)is_zk;
@@ -199,9 +213,7 @@ dnac_batch_verify_status_t dnac_batch_verify(
         shapes[i].permutation_local_len = oi->permutation_len;
         shapes[i].permutation_next_len = oi->permutation_len;
         shapes[i].random_len = oi->random_len;
-        shapes[i].num_global_entries = oi->num_globals;
-        shapes[i].entry_names = oi->entry_names;
-        shapes[i].entry_aux_columns = oi->entry_aux_columns;
+        shapes[i].has_terminal = oi->has_terminal;
         shapes[i].main_next_used = di->air.main_next;
         shapes[i].prep_next_used = di->prep_next;
 
@@ -209,7 +221,14 @@ dnac_batch_verify_status_t dnac_batch_verify(
         pre_widths[i] = di->preprocessed_width;
         pubs[i] = di->public_values;
         npubs[i] = di->num_publics;
-        cums[i] = oi->cumulative_sums;
+        /* Absent terminal contributes ZERO to the cross-AIR sum — upstream's
+         * `lookup_terminals.iter().flatten()` skips a None. Forced here rather
+         * than trusted from the caller: a struct built in memory (not via the
+         * decoder, which zeroes it) could carry a stale value behind
+         * has_terminal == 0 and poison the flat sum. */
+        terminals[i] = oi->has_terminal ? oi->terminal : gold_fp2_zero();
+        lookup_ptrs[i] = di->lookups;
+        lookup_counts[i] = di->num_lookups;
 
         /* pointer/len coherence (fail-close before any use). */
         if (!oi->trace_local ||
@@ -219,12 +238,12 @@ dnac_batch_verify_status_t dnac_batch_verify(
             (oi->num_quotient_chunks > 0 && !oi->quotient_chunks) ||
             (oi->permutation_len > 0 &&
              (!oi->permutation_local || !oi->permutation_next)) ||
-            (oi->num_globals > 0 &&
-             (!oi->cumulative_sums || !oi->entry_names ||
-              !oi->entry_aux_columns))) {
+            (di->num_lookups > 0 && !di->lookups)) {
             return DNAC_BV_ERR_NULL;
         }
-        /* aux width from lookup columns (:524-541). */
+        /* permutation opened lens == aux_width · DIMENSION
+         * (v0.6.2 verifier/mod.rs:518-526; the ":524-541" this used to cite is
+         * the superseded 82cfad73 location). */
         if (oi->permutation_len != bv_aux_width(di) * 2u) {
             return DNAC_BV_ERR_SHAPE;
         }
@@ -268,7 +287,12 @@ dnac_batch_verify_status_t dnac_batch_verify(
         pin.num_publics = npubs;
         pin.preprocessed_widths = pre_widths;
         pin.views = views;
-        pin.cumulative_sums = cums;
+        /* W = β's bus-offset power. Derived from the LOOKUPS, not the bus view
+         * (which carries no tuple widths), through the same shared helper the
+         * prover uses — the two sides must agree or the transcript forks. */
+        pin.max_message_width = dnac_logup_bus_max_message_width(
+            lookup_ptrs, lookup_counts, n);
+        pin.terminals = terminals;
         pin.main_commit = commits->main_commit;
         pin.preprocessed_commit = commits->preprocessed_commit;
         pin.permutation_commit = commits->permutation_commit;
@@ -285,7 +309,7 @@ dnac_batch_verify_status_t dnac_batch_verify(
         out->zeta = zeta;
         out->fri_status = DNAC_FRI_OK;
         out->bad_instance = 0;
-        out->failed_bus = NULL;
+        out->terminal_sum = gold_fp2_zero();
     }
 
     /* ---- 4. opening-round assembly (N2 order, :302-499) ----
@@ -677,10 +701,18 @@ rand_shape:
                     return DNAC_BV_ERR_SHAPE;
                 }
             }
-            uint32_t pv_idx = 0; /* permutation_values cursor (protocol.rs:32) */
+            /* PASS 1 — one UNGATED fraction residual per lookup, in lookup
+             * order (protocol.rs:76-78 driving logup.rs:245). */
             for (uint32_t l = 0; l < di->num_lookups; l++) {
                 const dnac_logup_lookup_t *lk = &di->lookups[l];
                 const uint32_t col = lk->column;
+                /* col indexes both the challenge pair (2·col, 2·col+1,
+                 * logup.rs:221-223) and fraction column col+1 of an aux_w =
+                 * num_lookups+1 wide trace — so col must be < num_lookups. */
+                if (col >= di->num_lookups) {
+                    free(pv); free(ch_flat);
+                    return DNAC_BV_ERR_SHAPE;
+                }
                 const gold_fp2_t la = ch_ptrs[i][2u * col];
                 const gold_fp2_t lb = ch_ptrs[i][2u * col + 1u];
                 /* Row-resolved tuple element / multiplicity values. */
@@ -720,41 +752,53 @@ rand_shape:
                     free(pv); free(ch_flat);
                     return DNAC_BV_ERR_SHAPE;
                 }
-                const gold_fp2_t s_loc = perm_loc[col];
-                const gold_fp2_t s_nxt = perm_nxt[col];
-                /* residual stream (logup.rs:158-265; selector-multiplied per
-                 * filtered.rs:78-86; order pinned = the P2L-a eval_row order):
-                 *   [0] is_first · s_local              (logup.rs:226)     */
+                /* U·f − V, pinned on EVERY row with NO selector (logup.rs:245).
+                 * Upstream's reason (logup.rs:241-244): the identity is cyclic
+                 * in the trace domain so it needs no transition gate, and
+                 * forcing it everywhere pins the last-row value the
+                 * accumulator's terminal binding then consumes.
+                 * Fraction column is col + 1 — column 0 is the shared
+                 * accumulator (logup.rs:226-229). */
+                const gold_fp2_t frac = perm_loc[col + 1u];
                 dnac_stark_fold_assert_zero(
-                    &folder.fold, gold_fp2_mul(sels.is_first_row, s_loc));
-                const gold_fp2_t trans = gold_fp2_sub(
-                    gold_fp2_mul(gold_fp2_sub(s_nxt, s_loc), den), num);
-                if (!lk->is_global) {
-                    /* [1] full-domain transition (logup.rs:259-263). */
-                    dnac_stark_fold_assert_zero(&folder.fold, trans);
-                } else {
-                    /* [1] is_transition · transition (logup.rs:245-247)
-                     * [2] is_last · ((cum − s_local)·D − N) (logup.rs:250-251,
-                     *     cum = permutation_values[pv_idx++], protocol.rs:37) */
-                    if (pv_idx >= oi->num_globals) {
-                        free(pv); free(ch_flat);
-                        return DNAC_BV_ERR_SHAPE;
-                    }
-                    const gold_fp2_t cum = oi->cumulative_sums[pv_idx++];
-                    dnac_stark_fold_assert_zero(
-                        &folder.fold, gold_fp2_mul(sels.is_transition, trans));
-                    const gold_fp2_t last = gold_fp2_sub(
-                        gold_fp2_mul(gold_fp2_sub(cum, s_loc), den), num);
-                    dnac_stark_fold_assert_zero(
-                        &folder.fold, gold_fp2_mul(sels.is_last_row, last));
-                }
+                    &folder.fold,
+                    gold_fp2_sub(gold_fp2_mul(den, frac), num));
             }
             free(pv);
-            /* every cumulative sum consumed (protocol.rs:43). */
-            if (pv_idx != oi->num_globals) {
-                free(ch_flat);
-                return DNAC_BV_ERR_SHAPE;
+
+            /* PASS 2 — ONE accumulator block for the whole AIR
+             * (protocol.rs:81 driving logup.rs:291-301), selector-multiplied
+             * per air/src/filtered.rs:78-86. The per-lookup running sums of
+             * the 82cfad73 scheme are gone: one shared accumulator covers
+             * local and global alike, and the is_global branch with it.
+             *
+             *   [0] is_first_row  · acc_local
+             *   [1] is_transition · (acc_next − acc_local − row_sum)
+             *   [2] is_last_row   · (terminal − acc_local − row_sum)
+             *
+             * row_sum = Σ_c f_c over every lookup's fraction column at this
+             * row (logup.rs:285-287). */
+            const gold_fp2_t acc_loc = perm_loc[0];
+            const gold_fp2_t acc_nxt = perm_nxt[0];
+            gold_fp2_t row_sum = gold_fp2_zero();
+            for (uint32_t l = 0; l < di->num_lookups; l++) {
+                row_sum = gold_fp2_add(row_sum,
+                                       perm_loc[di->lookups[l].column + 1u]);
             }
+            dnac_stark_fold_assert_zero(
+                &folder.fold, gold_fp2_mul(sels.is_first_row, acc_loc));
+            dnac_stark_fold_assert_zero(
+                &folder.fold,
+                gold_fp2_mul(sels.is_transition,
+                             gold_fp2_sub(gold_fp2_sub(acc_nxt, acc_loc),
+                                          row_sum)));
+            /* The terminal is the value this AIR committed — presence already
+             * gated against num_lookups > 0 above, so it is live here. */
+            dnac_stark_fold_assert_zero(
+                &folder.fold,
+                gold_fp2_mul(sels.is_last_row,
+                             gold_fp2_sub(gold_fp2_sub(oi->terminal, acc_loc),
+                                          row_sum)));
         }
 
         /* final: acc · inv_vanishing == quotient (data.rs:99-103). */
@@ -767,14 +811,21 @@ rand_shape:
     }
     free(ch_flat);
 
-    /* ---- 8. per-bus global sums (:623-643) ---- */
-    {
-        const char *failed = NULL;
-        if (dnac_logup_bus_verify_global_sums(views, n, cums, &failed) !=
-            DNAC_LOGUP_OK) {
-            if (out) out->failed_bus = failed;
-            return DNAC_BV_ERR_LOOKUP_SUM;
+    /* ---- 8. cross-AIR terminal sum (v0.6.2 verifier/mod.rs) ----
+     * A FLAT total over every AIR's one committed terminal, replacing the
+     * per-bus HashMap grouping of 82cfad73. Sound at v0.6.2 because bus
+     * separation moved into the challenge derivation: each slot's denominator
+     * base is prefix[bus] = α + (bus+1)·β^W, one power above every payload
+     * term, so two different buses cannot produce cancelling contributions
+     * (challenges.rs:19-23). Absent terminals were forced to zero above and
+     * so contribute nothing, matching upstream's `.flatten()`. */
+    if (dnac_logup_verify_terminal_sum(terminals, n) != DNAC_LOGUP_OK) {
+        if (out) {
+            gold_fp2_t s = gold_fp2_zero();
+            for (uint32_t i = 0; i < n; i++) s = gold_fp2_add(s, terminals[i]);
+            out->terminal_sum = s;
         }
+        return DNAC_BV_ERR_LOOKUP_SUM;
     }
 
     return DNAC_BV_OK; /* verifier/mod.rs:645 Ok(()) */

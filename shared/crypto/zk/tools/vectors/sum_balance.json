@@ -1,6 +1,6 @@
 {
-  "format_version": "1",
-  "plonky3_commit": "82cfad73cd734d37a0d51953094f970c531817ec",
+  "format_version": "2",
+  "plonky3_commit": "11cc5849a1b57a2f520d6edc608b9e516517d841",
   "field_p": "18446744069414584321",
   "convention": "fib_air-style unified-trace accumulator: range_air cols 0..RANGE_AIR_BITS (bits + amount at RANGE_AIR_BITS) extended with acc col at RANGE_AIR_BITS+1; constraints N (count bound n<=1024), I (first), U (transition), F (last) in Goldilocks. Each amount < 2^RANGE_AIR_BITS and n<=1024 ⇒ Sum < p, so the accumulator equals the integer sum (no mint-by-wraparound). Public inputs: claimed_input_sum and committed_fee.",
   "reference_pattern": "uni-stark/tests/fib_air.rs::FibonacciAir::eval lines 44-72 (boundary + transition + boundary + public_values)",

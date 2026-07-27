@@ -86,11 +86,11 @@ extern "C" {
  *   is_zk, num_instances, the 5 commits (main/preprocessed/permutation/
  *   quotient/random — prep/perm/random presence-flagged; main+quotient
  *   always), per-instance UNMERGED opened values (dnac_batch_vopened_t) +
- *   global_lookup_data entries (len-prefixed bus name, aux_column,
- *   cumulative_sum — lookup/src/types.rs:108-115), the random-codeword
- *   openings iff is_zk, the FRI params, and the FriProof (same encoding as
- *   v3: u32 counts, canonical u64-LE fail-close, fp2 c0‖c1, 4-lane digests,
- *   salt tails).
+ *   ONE optional LookupTerminal per instance (u32 count 0/1 then the fp2 —
+ *   BatchProof.lookup_terminals, batch-stark/src/proof.rs:22), the
+ *   random-codeword openings iff is_zk, the FRI params, and the FriProof
+ *   (same encoding as v3: u32 counts, canonical u64-LE fail-close, fp2
+ *   c0‖c1, 4-lane digests, salt tails).
  *
  * STRUCTURAL RULE (closes the v3 H2 class by construction): the v4 wire
  * carries NO opening points and NO per-commitment opening-point lists — the
@@ -99,6 +99,20 @@ extern "C" {
  *
  * Version = 4 under the same DZKF magic; a buffer at ANY older version is
  * REJECTED on VERSION by the v4 decoder (tests/test_batch_wire.c N2b).
+ *
+ * v4 REDEFINED IN PLACE, NOT BUMPED TO 5 (S2'-c, 2026-07-27). The v0.6.2
+ * lookup change replaced the per-instance LIST of (bus_name, aux_column,
+ * cumulative_sum) records with ONE optional terminal, which is a BREAKING
+ * layout change to an already-numbered version. It is not a compatibility
+ * break in fact: v4 has no live speaker anywhere. type-11 is
+ * REJECT-unconditional (nodus/src/witness/nodus_witness_verify.c:749-753) and
+ * the only reference to the codec outside shared/crypto/zk is a COMMENT
+ * (nodus/tests/test_zk_link.c:14) — grep-proven at the O4 gate. No chain, disk
+ * or wire speaks v4, so there is no buffer in existence to stay compatible
+ * with. The decision is the oracle's: its migrated encoder keeps `u16 4` and
+ * says so at tools/plonky3_oracle/src/main.rs:18194-18200. If a v4 buffer ever
+ * DOES escape to a consumer, this reasoning expires and the next layout change
+ * must bump.
  * ========================================================================== */
 #define DNAC_BATCH_WIRE_VERSION 4u
 
@@ -107,9 +121,11 @@ extern "C" {
 #define DNAC_BATCH_WIRE_MAX_INSTANCES    32u
 #define DNAC_BATCH_WIRE_MAX_OPENED_VALS  65536u
 #define DNAC_BATCH_WIRE_MAX_QC           1024u
-#define DNAC_BATCH_WIRE_MAX_GLOBALS      64u
-#define DNAC_BATCH_WIRE_MAX_BUS_NAME     64u
 #define DNAC_BATCH_WIRE_MAX_RAND_ENTRIES 4096u
+/* DNAC_BATCH_WIRE_MAX_GLOBALS / _MAX_BUS_NAME are GONE with the v3-era
+ * global_lookup_data list: bus names and aux columns left the wire at v0.6.2,
+ * and the terminal's only bound is the 0/1 Option discriminant the decoder
+ * checks inline. Nothing left to cap. */
 
 /* Opaque owner of a decoded v4 batched-proof package. */
 typedef struct dnac_batch_wire_package_s dnac_batch_wire_package_t;

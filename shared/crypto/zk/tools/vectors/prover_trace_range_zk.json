@@ -8,10 +8,10 @@
   "claimed": "107",
   "description": "S1 C-prover KAT: deterministic base witness trace of the M3a RangeProofAir instance (generate_range_proof_trace output, row-major, canonical u64 decimal per cell; PRE-randomization).",
   "fee": "7",
-  "format_version": "1",
+  "format_version": "2",
   "height": 4,
   "n_real": 4,
-  "plonky3_commit": "82cfad73cd734d37a0d51953094f970c531817ec",
+  "plonky3_commit": "11cc5849a1b57a2f520d6edc608b9e516517d841",
   "public_values": [
     "107",
     "7",

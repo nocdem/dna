@@ -184,7 +184,7 @@
       }
     },
     {
-      "expected_error": "PointEvaluationCountMismatch",
+      "expected_error": "InputError",
       "expected_error_matched": true,
       "mutated_value_summary": "len = 3",
       "mutation_description": "push extra ZERO claim to the single point's evaluations",
@@ -194,9 +194,10 @@
       "plonky3_test_line": 1286,
       "proof_fragment_for_c_replay": "Push Challenge::ZERO to cwop[0].matrices[0].points[0].evaluations.",
       "public_or_isolated": "public_verify_fri",
+      "v0_6_2_note": "was PointEvaluationCountMismatch at 82cfad73; v0.6.2 pins matrix width to the claimed evaluation count (verifier.rs:698-711) so the input MMCS rejects first",
       "verify_result_from_plonky3": {
-        "error_debug": "PointEvaluationCountMismatch { batch: 0, matrix: 0, point: 0, expected: 2, got: 3 }",
-        "error_variant": "PointEvaluationCountMismatch",
+        "error_debug": "InputError(WrongWidth { matrix: 0, expected: 3, got: 2 })",
+        "error_variant": "InputError",
         "result": "err"
       }
     },
@@ -307,26 +308,26 @@
     },
     {
       "corrupted_horner_eval_fp2": {
-        "c0_decimal": "8156482088767687707",
-        "c1_decimal": "17830249650025010991"
+        "c0_decimal": "4312380317129191410",
+        "c1_decimal": "2400280469328099502"
       },
       "expected_error": "FinalPolyMismatch",
       "expected_error_matched": true,
       "honest_horner_eval_fp2": {
-        "c0_decimal": "8156482088767687706",
-        "c1_decimal": "17830249650025010991"
+        "c0_decimal": "4312380317129191409",
+        "c1_decimal": "2400280469328099502"
       },
       "horner_eval_x_decimal": "2",
       "mutated_value_summary": {
-        "c0_decimal": "8156482088767687707",
-        "c1_decimal": "17830249650025010991"
+        "c0_decimal": "4312380317129191410",
+        "c1_decimal": "2400280469328099502"
       },
       "mutation_description": "Add Challenge::ONE to the constant coefficient. Horner evaluation at x=2 must differ from the honest evaluation. Verifier.rs:1569 test acknowledges this error cannot be reached via verify_fri because final_poly is in the transcript.",
       "mutation_target": "proof.final_poly[0] (constant coefficient)",
       "name": "final_poly_mismatch",
       "original_value_summary": {
-        "c0_decimal": "8156482088767687706",
-        "c1_decimal": "17830249650025010991"
+        "c0_decimal": "4312380317129191409",
+        "c1_decimal": "2400280469328099502"
       },
       "plonky3_test_line": 1569,
       "proof_fragment_for_c_replay": "C verifier internal Horner check must reject when corrupted_eval (computed from final_poly with [0] += 1) differs from folded_eval; assert on the C side that honest_horner_eval_fp2 != corrupted_horner_eval_fp2.",
@@ -341,7 +342,7 @@
       "expected_error": "InvalidProofShape",
       "expected_error_matched": true,
       "mutated_value_summary": "n/a",
-      "mutation_description": "InvalidProofShape is constructed only by hiding_pcs.rs:389/392/395 (zip_eq shape mismatch between FRI proof rounds and the auxiliary randomness Vec used by the hiding PCS variant). The non-hiding verify_fri code path never returns this variant.",
+      "mutation_description": "v0.6.2 REMOVED the catch-all InvalidProofShape from FriError entirely — every shape failure now has its own variant (fri/src/verifier.rs). At 82cfad73 it was constructed only by hiding_pcs.rs:389/392/395 (zip_eq mismatch between FRI proof rounds and the hiding PCS auxiliary randomness Vec), and the non-hiding verify_fri path never returned it. The case is retained because DNAC keeps status value 1 as a LOCAL guard (fri_verifier.h:92, raised at fri_verifier.c:699 on num_betas > FRI_MAX_ROUNDS); it no longer corresponds to any upstream variant.",
       "mutation_target": "n/a",
       "name": "invalid_proof_shape_not_reachable_in_dnac",
       "original_value_summary": "n/a",
@@ -373,10 +374,10 @@
     "trace_rows": 8,
     "trace_seed": 42
   },
-  "format_version": "1",
-  "fri_error_variants_covered": 19,
-  "fri_error_variants_total_in_enum": 19,
-  "plonky3_commit": "82cfad73cd734d37a0d51953094f970c531817ec",
+  "format_version": "2",
+  "fri_error_variants_covered": 18,
+  "fri_error_variants_total_in_enum": 26,
+  "plonky3_commit": "11cc5849a1b57a2f520d6edc608b9e516517d841",
   "scope": "fri_verifier_errors",
   "spec_doc": "docs/plans/2026-05-27-fri-verifier-design.md § 12 V1 + V7",
   "valid_proof_vector_reference": "fri_verifier_valid.json"

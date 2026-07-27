@@ -36,15 +36,51 @@ const uint64_t DNAC_DUPLEX_DS_PREFIX[DNAC_DUPLEX_RATE] = {
     0x0000000000000031ULL, /* "1" + zero pad */
 };
 
-/* duplexing (duplex_challenger.rs:86-99): OVERWRITE state[0..input_len] with
- * the drained input buffer, permute the full width-8 state, refill
- * output_buffer = state[0..RATE]. */
+/* duplexing — PREFIX-FREE ABSORB (v0.6.2 duplex_challenger.rs:86-112).
+ *
+ * OVERWRITE state[0..num_absorbed] with the drained input buffer; if anything
+ * was absorbed, clear the rate slots the inputs did NOT overwrite and bind the
+ * absorbed length into the first capacity element; permute the full width-8
+ * state; refill output_buffer = state[0..RATE].
+ *
+ * S2'-b (2026-07-27): the length binding and the rate clear are NEW at v0.6.2 —
+ * upstream's own words, rs:98-99: "An empty buffer is a squeeze: permute the
+ * current state, leaving the rate untouched. A non-empty buffer is an absorb,
+ * made prefix-free so length and zero-padding cannot collide." Without them a
+ * short absorb and its zero-extension reach the SAME post-permutation state,
+ * because the trailing rate slots a k-element absorb leaves behind already hold
+ * whatever was there — so observing k elements and observing those same k
+ * followed by zeros were indistinguishable to the sponge. Every Fiat-Shamir
+ * challenge in the stack moves as a result; that is why all 31 downstream
+ * proof-bearing vectors are regenerated across S2'.
+ *
+ * Two details that are load-bearing and easy to get wrong:
+ *  - the `num_absorbed > 0` guard is what keeps a SQUEEZE (sample with an empty
+ *    input buffer, rs:98) from clearing the rate and adding 0 — the squeeze must
+ *    permute the state as-is;
+ *  - `+=` is a FIELD ADD, not a store (rs:104). The capacity carries sponge
+ *    state across permutations, so overwriting it would discard that history.
+ *    gold_fp_add reduces, which matters because state[RATE] is an unconstrained
+ *    permutation output.
+ * F::from_u8(num_absorbed) is just the count as a field element; num_absorbed
+ * <= RATE = 4 here, far inside the u8 the upstream tag doc warns about. */
 static void dc_duplexing(dnac_duplex_t *c) {
     if (c->input_len > DNAC_DUPLEX_RATE) dc_fail("input_buffer overflow");
-    for (size_t i = 0; i < c->input_len; i++) {
+    const size_t num_absorbed = c->input_len;
+    for (size_t i = 0; i < num_absorbed; i++) {
         c->sponge_state[i] = c->input_buffer[i]; /* overwrite, NOT add */
     }
     c->input_len = 0;
+    if (num_absorbed > 0) {
+        /* rs:102 — clear the rate slots the inputs did not overwrite. */
+        for (size_t i = num_absorbed; i < DNAC_DUPLEX_RATE; i++) {
+            c->sponge_state[i] = 0;
+        }
+        /* rs:104 — bind the absorbed length into the first capacity element. */
+        c->sponge_state[DNAC_DUPLEX_RATE] = gold_fp_to_u64(gold_fp_add(
+            gold_fp_from_u64(c->sponge_state[DNAC_DUPLEX_RATE]),
+            gold_fp_from_u64((uint64_t)num_absorbed)));
+    }
     poseidon2_goldilocks8_permute(c->sponge_state);
     for (size_t i = 0; i < DNAC_DUPLEX_RATE; i++) {
         c->output_buffer[i] = c->sponge_state[i];

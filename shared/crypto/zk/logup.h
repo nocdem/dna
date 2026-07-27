@@ -170,20 +170,35 @@ int dnac_logup_sum_terms_fp2(
     gold_fp2_t              *denominator);
 
 /* ============================================================================
- * Aux-trace generation — logup.rs:370-646 generate_permutation (SERIAL)
+ * Aux-trace generation — logup.rs:362-703 generate_permutation (SERIAL)
  *
- * aux_out is row-major [height][num_lookups]; lookup i writes column
- * lookups[i].column. Exclusive running sum: s[0] = 0,
- * s[r] = Σ_{j<r} row_contribution[j] (logup.rs:560-634).
+ * ⚠ ARITHMETIZATION CHANGED at Plonky3 v0.6.2 (S2'-c, 2026-07-27). This is a
+ * RE-PORT, not a patch: the old scheme kept one exclusive running sum per
+ * lookup and returned a cumulative sum per GLOBAL lookup. The new one is
  *
- * cumulative_sums receives, for each GLOBAL lookup in lookup order, the
- * inclusive total Σ_all rows (logup.rs:636-640). num_globals must equal the
- * number of is_global lookups (mirrors the logup.rs:644 debug_assert);
- * pass NULL/0 when there are none.
+ *   aux width = num_lookups + 1                            (logup.rs:381-382)
+ *     col 0      = ONE shared accumulator
+ *     col c + 1  = lookup slot c's FRACTION column
+ *
+ *   frac_c[r]  = Σ_t m_t / (α − combined_t)   written directly (logup.rs:630)
+ *   row_total[r] = Σ_c frac_c[r]
+ *   acc[0] = 0,  acc[r] = Σ_{j<r} row_total[j]   EXCLUSIVE prefix sum
+ *                                              (logup.rs:637-654, 690-700)
+ *   terminal   = Σ_{all r} row_total[r]        ONE per AIR, not per lookup
+ *                                              (logup.rs:685-688, 702)
+ *
+ * `terminal_out` receives that single value; it replaces the old
+ * `cumulative_sums`/`num_globals` pair outright. NULL is legal only when
+ * num_lookups == 0, which produces no aux trace and no terminal
+ * (logup.rs:374-377).
  *
  * Fail-close checks (always on): num_challenges == 2·num_lookups
- * (logup.rs:383-387), duplicate/out-of-range aux columns (logup.rs:390-401),
- * height > 0, zero denominator (ERR_ZERO_DENOM).
+ * (logup.rs:384-389); **lookups[i].column == i** — the slot index must equal
+ * the slice position (logup.rs:399-406). That last one REPLACES the old
+ * unique-and-in-range pair check and is strictly stronger: upstream's own
+ * reason is that a gap is "an out-of-bounds write on untrusted data", since
+ * slot i writes column i+1 here while the constraint reads the column the
+ * lookup names. Also height > 0.
  * ========================================================================== */
 int dnac_logup_generate_permutation(
     const dnac_logup_ctx_t    *ctx,
@@ -191,45 +206,66 @@ int dnac_logup_generate_permutation(
     uint32_t                   num_lookups,
     const gold_fp2_t          *challenges,     /* [num_challenges]          */
     uint32_t                   num_challenges, /* == 2·num_lookups          */
-    gold_fp2_t                *aux_out,        /* [height][num_lookups]     */
-    gold_fp2_t                *cumulative_sums,/* [num_globals] or NULL     */
-    uint32_t                   num_globals);
+    gold_fp2_t                *aux_out,        /* [height][num_lookups + 1] */
+    gold_fp2_t                *terminal_out);  /* single per-AIR terminal   */
 
 /* ============================================================================
- * Constraint residuals — logup.rs:158-265 eval_update, concrete evaluation
+ * Constraint residuals — SPLIT IN TWO at v0.6.2 (S2'-c, 2026-07-27).
  *
- * Emits the ordered assert_zero_ext stream for one (row, lookup), with each
- * entry multiplied by its row selector exactly as the reference filtered
- * builder does (air/src/filtered.rs:78-86: residual · condition):
+ * The old single `dnac_logup_eval_row` emitted a per-lookup running-sum stream
+ * (first-row anchor + transition + optional last-row cumulative binding). The
+ * new scheme separates the two jobs, because the accumulator is now SHARED:
  *
- *   residuals[0] = is_first_row · s_local                (logup.rs:226)
- *   Local  (cumulative_sum == NULL), *num_residuals = 2:
- *   residuals[1] = (s_next − s_local)·D − N              (full domain,
- *                                                         logup.rs:259-263)
- *   Global (cumulative_sum != NULL), *num_residuals = 3:
- *   residuals[1] = is_transition · ((s_next − s_local)·D − N)
- *                                                        (logup.rs:245-247)
- *   residuals[2] = is_last_row · ((cum − s_local)·D − N) (logup.rs:250-251)
+ *   eval_fraction     — ONE residual per lookup, per row, UNGATED
+ *   eval_accumulator  — THREE residuals per row, over ALL lookups at once
  *
- * where D/N come from dnac_logup_sum_terms_fp2 over the row-resolved
- * elements, s_local = aux[row][column], s_next = aux[(row+1)%height][column]
- * (WRAP). A valid witness yields all-zero residuals on every row.
+ * ── eval_fraction (logup.rs:175-246) ────────────────────────────────────────
+ *   residual = U_c · f_c[r] − V_c        where f_c[r] = aux[row][column + 1]
  *
- * cumulative_sum presence MUST match lookup->is_global (ERR_PARAM otherwise;
- * mirrors logup.rs:239-241 / 254-256).
+ * (V_c, U_c) = (numerator, common_denominator) from dnac_logup_sum_terms_fp2
+ * over the row-resolved elements. Pinned on EVERY row with no selector —
+ * upstream's reason (logup.rs:241-244): "The identity is cyclic in the trace
+ * domain, so it does not need a transition gate. Forcing it on every row also
+ * pins the last-row value used by the accumulator's terminal binding."
+ * A valid witness yields zero on every row.
  * ========================================================================== */
-int dnac_logup_eval_row(
+int dnac_logup_eval_fraction(
     const dnac_logup_ctx_t    *ctx,
     const dnac_logup_lookup_t *lookup,
     const gold_fp2_t          *aux,            /* [height][aux_width]       */
-    uint32_t                   aux_width,
+    uint32_t                   aux_width,      /* == num_lookups + 1        */
     const gold_fp2_t          *challenges,
     uint32_t                   num_challenges, /* >= 2·(column+1),
-                                                  logup.rs:201-203          */
+                                                  logup.rs:215-218          */
     uint32_t                   row,
-    const gold_fp2_t          *cumulative_sum, /* NULL = local              */
-    gold_fp2_t                 residuals[3],
-    uint32_t                  *num_residuals);
+    gold_fp2_t                *residual);
+
+/* ── eval_accumulator (logup.rs:258-302) ────────────────────────────────────
+ * Emits the ordered assert_zero_ext stream for the SHARED accumulator at one
+ * row, each entry multiplied by its row selector exactly as the reference
+ * filtered builder does (air/src/filtered.rs:78-86: residual · condition):
+ *
+ *   residuals[0] = is_first_row  · acc_local                    (logup.rs:291)
+ *   residuals[1] = is_transition · (acc_next − acc_local − row_sum)
+ *                                                               (logup.rs:294-296)
+ *   residuals[2] = is_last_row   · (terminal − acc_local − row_sum)
+ *                                                               (logup.rs:299-301)
+ *
+ * with acc_local = aux[row][0], acc_next = aux[(row+1) % height][0] (WRAP),
+ * and row_sum = Σ_c aux[row][c + 1] over every lookup slot (logup.rs:285-287).
+ * `terminal` is the value the prover committed for this AIR — the same one
+ * generate_permutation returned. Always exactly 3 residuals: the local/global
+ * distinction is GONE from this layer, since one accumulator now covers both.
+ * ========================================================================== */
+int dnac_logup_eval_accumulator(
+    const dnac_logup_ctx_t    *ctx,
+    const dnac_logup_lookup_t *lookups,
+    uint32_t                   num_lookups,
+    const gold_fp2_t          *aux,            /* [height][aux_width]       */
+    uint32_t                   aux_width,      /* == num_lookups + 1        */
+    uint32_t                   row,
+    gold_fp2_t                 terminal,
+    gold_fp2_t                 residuals[3]);
 
 /* ============================================================================
  * EF-window pool evaluation — P2L-d d2 (the verifier side at ζ)
@@ -257,16 +293,27 @@ int dnac_logup_eval_pool_window(
     gold_fp2_t       *vals /* [pool_len] */);
 
 /* ============================================================================
- * Global-sum check — logup.rs:314-324 verify_global_sum
+ * Cross-AIR terminal check — logup.rs:304-319 verify_terminal_sum
  *
- * Returns DNAC_LOGUP_OK iff Σ sums == 0, else DNAC_LOGUP_ERR_GLOBAL_SUM.
+ * Returns DNAC_LOGUP_OK iff Σ terminals == 0, else DNAC_LOGUP_ERR_GLOBAL_SUM.
  *
- * ⚠ FLAT sum over the given list. The caller MUST group cumulative sums
- * PER BUS NAME and call this once per group — a flat total across buses is
- * a cross-bus-cancellation soundness hole (G-DET-L4 / red-team F3; the
- * reference grouping lives in batch-stark verifier/mod.rs:623-643).
+ * FLAT total over every AIR's committed terminal — and at v0.6.2 that is
+ * CORRECT, where the old flat sum was not. The previous contract here warned
+ * that the caller had to group per bus name (G-DET-L4 / red-team F3), because
+ * a flat total let one bus's imbalance cancel another's. That hazard is now
+ * closed one layer down, in the CHALLENGE DERIVATION rather than in the
+ * gadget: every lookup slot gets a domain-separated denominator base
+ * prefix[bus] = α + (bus+1)·β^W, so two different buses cannot produce
+ * cancelling terms (challenges.rs:8-37 "Injectivity"; Kind::Local takes a
+ * fresh bus id each while Kind::Global shares one by NAME,
+ * transcript.rs:117-151). See dnac_logup_bus_derive in logup_bus.h.
+ *
+ * ⚠ The gadget itself still provides NO cross-bus protection — it consumes
+ * whatever challenge array it is handed. Hand it colliding prefixes and the
+ * hazard returns. The logup_bus KAT pins BOTH directions on purpose
+ * (`cross_bus_cancel` vs `cross_bus_separated`).
  * ========================================================================== */
-int dnac_logup_verify_global_sum(const gold_fp2_t *sums, uint32_t n);
+int dnac_logup_verify_terminal_sum(const gold_fp2_t *terminals, uint32_t n);
 
 /* ============================================================================
  * Constraint degree — logup.rs:339-367 constraint_degree

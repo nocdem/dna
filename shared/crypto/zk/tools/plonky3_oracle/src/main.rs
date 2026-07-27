@@ -6022,7 +6022,7 @@ fn dump_fri_verifier_errors(out_path: &PathBuf) -> Result<(), Box<dyn std::error
         "public_or_isolated": "not_reachable_in_dnac",
         "plonky3_test_line": null,
         "mutation_target": "n/a",
-        "mutation_description": "InvalidProofShape is constructed only by hiding_pcs.rs:389/392/395 (zip_eq shape mismatch between FRI proof rounds and the auxiliary randomness Vec used by the hiding PCS variant). The non-hiding verify_fri code path never returns this variant.",
+        "mutation_description": "v0.6.2 REMOVED the catch-all InvalidProofShape from FriError entirely — every shape failure now has its own variant (fri/src/verifier.rs). At 82cfad73 it was constructed only by hiding_pcs.rs:389/392/395 (zip_eq mismatch between FRI proof rounds and the hiding PCS auxiliary randomness Vec), and the non-hiding verify_fri path never returned it. The case is retained because DNAC keeps status value 1 as a LOCAL guard (fri_verifier.h:92, raised at fri_verifier.c:699 on num_betas > FRI_MAX_ROUNDS); it no longer corresponds to any upstream variant.",
         "original_value_summary": "n/a",
         "mutated_value_summary": "n/a",
         "verify_result_from_plonky3": {
@@ -6055,6 +6055,18 @@ fn dump_fri_verifier_errors(out_path: &PathBuf) -> Result<(), Box<dyn std::error
     // -----------------------------------------------------------------------
     // Envelope + write
     // -----------------------------------------------------------------------
+    /* DISTINCT variants exercised, not the case count — computed out here
+     * because the json! macro cannot parse the turbofish. */
+    let covered_variants = {
+        let mut seen = cases
+            .iter()
+            .filter_map(|c| c["expected_error"].as_str())
+            .collect::<Vec<_>>();
+        seen.sort_unstable();
+        seen.dedup();
+        seen.len()
+    };
+
     let envelope = serde_json::json!({
         "format_version": ORACLE_FORMAT_VERSION,
         "plonky3_commit": PLONKY3_COMMIT,
@@ -6092,8 +6104,19 @@ fn dump_fri_verifier_errors(out_path: &PathBuf) -> Result<(), Box<dyn std::error
         "case_count_isolated_verify_query": count_isolated_vq,
         "case_count_isolated_horner": count_isolated_horner,
         "case_count_not_reachable_in_dnac": count_not_reachable,
-        "fri_error_variants_total_in_enum": 19,
-        "fri_error_variants_covered": total_cases,
+        /* v0.6.2 FriError has 26 top-level variants (fri/src/verifier.rs enum
+         * FriError). This was a hardcoded 19 carried over from 82cfad73 and it
+         * was FALSE at this pin. Still a manual pin — Rust cannot count enum
+         * variants without a derive — so it MUST be re-checked whenever the
+         * Plonky3 commit moves. Recount with:
+         *   git show <pin>:fri/src/verifier.rs |
+         *     awk '/^pub enum FriError/,/^}/' | grep -cE '^    [A-Z]' */
+        "fri_error_variants_total_in_enum": 26,
+        /* DISTINCT variants exercised, not the case count. These diverged at
+         * S2'-f when point_evaluation_count_mismatch was retargeted to
+         * InputError, giving two cases on one variant. Emitting total_cases
+         * here overstated coverage by exactly that duplicate. */
+        "fri_error_variants_covered": covered_variants,
         "cases": cases
     });
 

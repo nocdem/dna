@@ -2,7 +2,8 @@
  * @file test_fri_verifier_valid.c
  * @brief F7 integrated oracle test — V6 valid proof end-to-end acceptance.
  *
- * Plonky3 commit pin: 82cfad73cd734d37a0d51953094f970c531817ec.
+ * Plonky3 commit pin: v0.6.2 (11cc5849). The vectors were regenerated at S2'-f;
+ * the 82cfad73 pin this header used to carry is historical.
  *
  * Parses the locked V6 valid proof + commitments_with_opening_points from
  * tools/vectors/fri_verifier_valid.json, seeds a transcript to the captured
@@ -11,10 +12,14 @@
  * caller's job, out of FRI scope), then runs the full integrated verifier via
  * dnac_fri_test_verify_capture and asserts:
  *   - dnac_fri_verify returns DNAC_FRI_OK (V6 verifies end-to-end);
- *   - query indices == {8, 8}         (F4 milestones / sample_bits, P1c regen)
- *   - reduced_index == {8, 8}         (F5 mmcs_calls input entries)
- *   - folded_eval[q] == {8156482088767687706, 17830249650025010991}
- *                                     (F6 honest eval == folded_eval, P1c)
+ *   - query indices == each sample_bits milestone's result.sampled_index,
+ *     READ FROM THE VECTOR (they are challenger-derived, so S2'-b moved them
+ *     from the P1c-era {8, 8}; a literal here would re-assert the OLD
+ *     challenger and, in fx_query_x, silently stop reproducing z == x);
+ *   - reduced_index == the same indices — this fixture's single matrix sits AT
+ *     the global max height, so bits_reduced is 0 (verifier.rs:576-580);
+ *   - folded_eval[q] == v6_honest_query_0.eval_fp2, READ from
+ *     tools/vectors/fri_verifier_terminal_horner.json (oracle-gated by F6)
  * The intermediate cross-checks decompose a failure to a single stage.
  *
  * Copyright (c) 2026 nocdem
@@ -179,16 +184,31 @@ static void parse_commit_digest(js_t *s, dnac_p2_digest_t *out) {
     }
 }
 /* {value:x} -> x */
+/* Goldilocks serde: v0.6.2 emits a BARE number where 82cfad73 emitted the
+ * wrapped {"value": N}. Both forms are accepted so this parser reads either
+ * vintage.
+ *
+ * Two guards, neither cosmetic. (1) No-progress: without it the bare-number
+ * form makes this loop spin forever — nothing advances s->pos — and the test
+ * emits nothing and looks exactly like a crypto hang. (2) NULL key: this copy
+ * dereferenced js_read_string's result WITHOUT a NULL check, which the
+ * bare-number form reaches directly (no leading '"', so js_read_string returns
+ * NULL) — a segfault, not just a hang. Fixed here rather than left as a latent
+ * trap for whoever regenerates the next vector. */
 static uint64_t parse_base_obj(js_t *s) {
     uint64_t r = 0;
+    js_skip_ws(s);
+    if (s->pos < s->len && s->src[s->pos] != '{') { js_read_u64(s, &r); return r; }
     js_match(s, '{');
     while (!js_match(s, '}')) {
         if (js_peek(s, ',')) { s->pos++; continue; }
+        const size_t before = s->pos;
         char *k = js_read_string(s);
         js_match(s, ':');
-        if (strcmp(k, "value") == 0) js_read_u64(s, &r);
+        if (k && strcmp(k, "value") == 0) js_read_u64(s, &r);
         else js_skip_value(s);
         free(k);
+        if (s->pos == before) break;   /* unparsable token: bail, never spin */
     }
     return r;
 }
@@ -270,6 +290,7 @@ typedef struct {
 
     /* P1c: milestone-0 primed DuplexChallenger state from the vector */
     dnac_duplex_t primed; int have_primed;
+    uint64_t exp_qi[4]; int exp_qi_n;  /* oracle result.sampled_index values */
 } fx_t;
 
 /* P1c: rebuild a transcript at milestone 0. Requires the TESTING accessor —
@@ -506,12 +527,94 @@ static void load_seed(const char *path, fx_t *fx) {
                 } else js_skip_value(&s);
                 free(mk);
             }
-            /* skip the rest of the milestones array */
-            while (!js_match(&s, ']')) { if (js_peek(&s, ',')) { s.pos++; continue; } js_skip_value(&s); }
+            /* The REST of the milestones: harvest each sample_bits milestone's
+             * result.sampled_index. These are the oracle's query indices; they
+             * are challenger-derived, so S2'-b moved them (they were {8,8}
+             * against the P1c-era vector). Read them rather than hardcoding, so
+             * this test keeps its OWN pin instead of trusting F4's. */
+            while (!js_match(&s, ']')) {
+                if (js_peek(&s, ',')) { s.pos++; continue; }
+                if (!js_peek(&s, '{')) { js_skip_value(&s); continue; }
+                js_match(&s, '{');
+                while (!js_match(&s, '}')) {
+                    if (js_peek(&s, ',')) { s.pos++; continue; }
+                    char *mk2 = js_read_string(&s); js_match(&s, ':');
+                    if (mk2 && strcmp(mk2, "result") == 0 && js_peek(&s, '{')) {
+                        js_match(&s, '{');
+                        while (!js_match(&s, '}')) {
+                            if (js_peek(&s, ',')) { s.pos++; continue; }
+                            char *rk = js_read_string(&s); js_match(&s, ':');
+                            if (rk && strcmp(rk, "sampled_index") == 0) {
+                                uint64_t v = 0;
+                                if (js_read_u64(&s, &v) && fx->exp_qi_n < 4)
+                                    fx->exp_qi[fx->exp_qi_n++] = v;
+                            } else js_skip_value(&s);
+                            free(rk);
+                        }
+                    } else js_skip_value(&s);
+                    free(mk2);
+                }
+            }
         } else js_skip_value(&s);
         free(k);
     }
     free(blob);
+}
+
+
+/* Read v6_honest_query_0.eval_fp2 from fri_verifier_terminal_horner.json, which
+ * lives beside the milestones vector passed as argv[2]. Deliberately reads the
+ * value instead of duplicating it: the same number is oracle-gated by F6
+ * (test_fri_verifier_terminal_horner, 173/173), so there is exactly one source
+ * of truth and a regeneration cannot leave this test asserting a stale one.
+ *
+ * ⚠ THE SEARCH RUNS BACKWARD ON PURPOSE. serde emits object keys in ALPHABETICAL
+ * order, so within a case `"eval_fp2"` comes BEFORE `"name"`. Searching FORWARD
+ * from the name landed 531 bytes later, inside the NEXT case object
+ * (v6_honest_query_1, domain_index 14) — it only appeared to work because both
+ * v6 honest queries carry the identical eval (this fixture's final_poly has a
+ * single coefficient, so the Horner eval is constant in the terminal point).
+ * With final_poly_len > 1 that would silently assert the wrong query's value.
+ * So: find the name, then take the NEAREST PRECEDING "eval_fp2", which is the
+ * one inside the same object. The leading quote also keeps this from matching
+ * "corrupted_eval_fp2" (preceded by '_', not '"'). */
+static bool load_v6_honest_eval(const char *milestones_path, gold_fp2_t *out) {
+    const char *slash = strrchr(milestones_path, '/');
+    const size_t dlen = slash ? (size_t)(slash - milestones_path) + 1 : 0;
+    char path[1024];
+    if (dlen + 40 >= sizeof path) return false;
+    memcpy(path, milestones_path, dlen);
+    memcpy(path + dlen, "fri_verifier_terminal_horner.json", 34);
+    size_t blen = 0;
+    char *blob = slurp(path, &blen);
+    if (!blob) return false;
+    bool ok = false;
+    const char *name = strstr(blob, "\"v6_honest_query_0\"");
+    if (name) {
+        /* nearest "eval_fp2" strictly BEFORE the name => same object */
+        const char *ev = NULL;
+        for (const char *p = strstr(blob, "\"eval_fp2\"");
+             p && p < name;
+             p = strstr(p + 1, "\"eval_fp2\"")) {
+            ev = p;
+        }
+        if (ev) {
+            const char *c0 = strstr(ev, "\"c0_decimal\"");
+            const char *c1 = c0 ? strstr(c0, "\"c1_decimal\"") : NULL;
+            if (c0 && c1 && c0 < name && c1 < name) {
+                const char *q0 = strchr(c0 + 12, '"');
+                const char *q1 = strchr(c1 + 12, '"');
+                if (q0 && q1) {
+                    *out = gold_fp2_new(
+                        gold_fp_from_u64((uint64_t)strtoull(q0 + 1, NULL, 10)),
+                        gold_fp_from_u64((uint64_t)strtoull(q1 + 1, NULL, 10)));
+                    ok = true;
+                }
+            }
+        }
+    }
+    free(blob);
+    return ok;
 }
 
 /* Run the integrated verifier on fx with a fresh transcript seeded to milestone-0. */
@@ -535,7 +638,11 @@ static gold_fp2_t fx_query_x(const fx_t *fx) {
                         fx->params.log_final_poly_len;
     const size_t log_height =
         (size_t)fx->matrix0.domain.log_size + fx->params.log_blowup;
-    const uint64_t index = 8; /* the fixture's query index, asserted below */
+    /* The fixture's query index, taken from the oracle's recorded
+     * result.sampled_index rather than a literal — S2'-b moved it from 8 to 0,
+     * and a stale literal here silently stops reproducing z == x, which turns
+     * this ERRCHK into a false negative instead of a failure. */
+    const uint64_t index = (fx->exp_qi_n > 0) ? fx->exp_qi[0] : 0;
     uint64_t v = index >> (lgmh - log_height);
     uint64_t rev = 0;
     for (unsigned b = 0; b < (unsigned)log_height; ++b) {
@@ -636,24 +743,43 @@ int main(int argc, char **argv) {
                                                         &fx->cwop, 1, &dbg);
     dnac_transcript_free(t);
 
-    /* P1c vector-grounded pins: sampled_index = {8, 8} (milestones fixture
-     * result.sampled_index) and the honest folded eval from the regenerated
-     * terminal-horner fixture's v6_honest_query_0 eval_fp2. */
-    gold_fp2_t want_folded = gold_fp2_new(gold_fp_from_u64(8156482088767687706ULL),
-                                          gold_fp_from_u64(17830249650025010991ULL));
+    /* The honest terminal folded eval, READ from the regenerated terminal-horner
+     * fixture's v6_honest_query_0 eval_fp2 rather than pinned as a literal.
+     * It is challenger-derived, so S2'-b moved it; a hardcoded pair silently
+     * re-asserts the OLD challenger, which is exactly the trap the query-index
+     * literals above turned out to be. Path is taken from argv[2]'s directory
+     * so no CWD assumption and no Makefile change is needed.
+     *
+     * Both v6 queries share one value because this fixture's final_poly has a
+     * single coefficient — the Horner eval is then constant in the terminal
+     * point, so it does not depend on which index each query landed on. */
+    gold_fp2_t want_folded;
+    if (!load_v6_honest_eval(argv[2], &want_folded)) {
+        fprintf(stderr, "cannot read v6_honest_query_0 eval_fp2 from the "
+                        "terminal-horner vector beside %s\n", argv[2]);
+        return 2;
+    }
 
     printf("  dnac_fri_verify -> %d (want %d=DNAC_FRI_OK)\n", (int)st, (int)DNAC_FRI_OK);
-    printf("  query_index   = {%llu, %llu} (want {8, 8})\n",
-           (unsigned long long)dbg.query_index[0], (unsigned long long)dbg.query_index[1]);
-    printf("  reduced_index = {%llu, %llu} (want {8, 8})\n",
+    printf("  query_index   = {%llu, %llu} (want {%llu, %llu} — from the vector)\n",
+           (unsigned long long)dbg.query_index[0], (unsigned long long)dbg.query_index[1],
+           (unsigned long long)fx->exp_qi[0], (unsigned long long)fx->exp_qi[1]);
+    printf("  reduced_index = {%llu, %llu} (want the same)\n",
            (unsigned long long)dbg.reduced_index[0], (unsigned long long)dbg.reduced_index[1]);
     printf("  folded_eval[0]==folded_eval[1]==honest: %s / %s\n",
            gold_fp2_eq(dbg.folded_eval[0], want_folded) ? "yes" : "no",
            gold_fp2_eq(dbg.folded_eval[1], want_folded) ? "yes" : "no");
 
     int v6_ok = (st == DNAC_FRI_OK)
-          && (dbg.query_index[0] == 8) && (dbg.query_index[1] == 8)
-          && (dbg.reduced_index[0] == 8) && (dbg.reduced_index[1] == 8)
+          && (fx->exp_qi_n == 2)
+          && (dbg.query_index[0] == fx->exp_qi[0])
+          && (dbg.query_index[1] == fx->exp_qi[1])
+          /* This fixture's single matrix sits AT the global max height, so
+           * bits_reduced is 0 and reduced_index is the query index unchanged
+           * (verifier.rs:576-580). Asserted as that invariant rather than as
+           * the literal {8,8} the P1c-era vector happened to produce. */
+          && (dbg.reduced_index[0] == fx->exp_qi[0])
+          && (dbg.reduced_index[1] == fx->exp_qi[1])
           && gold_fp2_eq(dbg.folded_eval[0], want_folded)
           && gold_fp2_eq(dbg.folded_eval[1], want_folded);
 
@@ -687,9 +813,23 @@ int main(int argc, char **argv) {
     ERRCHK("BatchOpenedValuesCountMismatch",
            fx->bo[0].num_matrices = 2, fx->bo[0].num_matrices = 1,
            DNAC_FRI_ERR_BATCH_OPENED_VALUES_COUNT_MISMATCH);
-    ERRCHK("PointEvaluationCountMismatch",
+    /* S2'-f (option A): this mutation now surfaces as the MMCS WrongWidth class
+     * (InputError), NOT PointEvaluationCountMismatch. v0.6.2 pins the matrix
+     * width to the FIRST opening point's claimed evaluation count
+     * (fri/src/verifier.rs:695-712) and check_widths rejects BEFORE any hashing
+     * (mmcs/geometry.rs:16-30, called at mmcs/batch.rs:184), so mismatching
+     * point 0's count trips the width pin first. The regenerated
+     * fri_verifier_errors.json case 10 records exactly this transition.
+     * Both REJECT; only the variant moved.
+     *
+     * COVERAGE NOTE, stated rather than hidden: upstream KEEPS
+     * PointEvaluationCountMismatch reachable for opening points 1..N-1, whose
+     * counts do not pin the width (v0.6.2 verifier.rs:749-757). This fixture
+     * has a SINGLE opening point and so can no longer express that path; the
+     * variant is listed as deferred below rather than left looking tested. */
+    ERRCHK("WrongWidth (width pin; was PointEvaluationCountMismatch)",
            fx->point0.num_claimed_evals = 3, fx->point0.num_claimed_evals = 2,
-           DNAC_FRI_ERR_POINT_EVALUATION_COUNT_MISMATCH);
+           DNAC_FRI_ERR_INPUT_ERROR);
     ERRCHK("SiblingValuesLengthMismatch",
            fx->cpo[0][0].num_sibling_values = 2, fx->cpo[0][0].num_sibling_values = 1,
            DNAC_FRI_ERR_SIBLING_VALUES_LENGTH_MISMATCH);
@@ -710,6 +850,8 @@ int main(int argc, char **argv) {
     printf("  error coverage: 8 integrated (here, incl. the 2 S2'-d guards) + 6 shape\n");
     printf("                  (F3) + 3 verify_query isolated (F5) + 1 FinalPolyMismatch\n");
     printf("                  horner (F6); deferred: InvalidPowWitness (V6 PoW=0),\n");
+    printf("                  PointEvaluationCountMismatch (S2'-f: needs a matrix\n");
+    printf("                  opened at >=2 points; point 0 trips the width pin),\n");
     printf("                  MissingInitialReducedOpening (needs empty input)\n");
     if (v6_ok && errs_ok) {
         printf("F7 INTEGRATED GATE: GREEN — V6 verifies end-to-end + 8/8 public errors\n");

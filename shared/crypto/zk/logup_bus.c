@@ -330,178 +330,144 @@ void dnac_logup_lookup_set_free(dnac_logup_lookup_set_t *set)
  * Per-bus challenge assignment (transcript.rs:74-102)
  * ========================================================================== */
 
-int dnac_logup_bus_assign_challenges(
+/* ============================================================================
+ * Single-pair bus challenge derivation
+ *   (transcript.rs:100-171 sample_perm_challenges + challenges.rs:39-74)
+ * ========================================================================== */
+int dnac_logup_bus_derive_challenges(
     const dnac_logup_bus_view_t *views,
     uint32_t                     num_instances,
-    const gold_fp2_t            *draws,
-    uint32_t                     num_draw_pairs,
+    gold_fp2_t                   alpha,
+    gold_fp2_t                   beta,
+    uint32_t                     max_message_width,
     gold_fp2_t *const           *out_challenges,
-    uint32_t                    *out_draw_pairs_used)
+    uint32_t                    *out_num_buses)
 {
-    if ((num_instances > 0 && (!views || !out_challenges)) ||
-        (num_draw_pairs > 0 && !draws) || !out_draw_pairs_used) {
+    if (num_instances > 0 && (!views || !out_challenges)) {
         return DNAC_LOGUP_ERR_NULL;
     }
+    /* challenges.rs:51-54 — a zero width leaves no power free for the bus
+     * offset, so it would land on beta^0 and collide with payloads. */
+    if (max_message_width == 0) {
+        return DNAC_LOGUP_ERR_PARAM;
+    }
 
-    /* Memo: bus name -> draw-pair index (first occurrence registers;
-     * transcript.rs:92-98). Bounded by the total global count. */
-    uint32_t total_globals = 0;
+    /* Bus-id memo: name -> id, first occurrence registers (transcript.rs:137-141).
+     * Bounded by the total lookup count (every local takes a fresh id too). */
+    uint32_t total_lookups = 0;
     for (uint32_t i = 0; i < num_instances; i++) {
         if (views[i].num_globals > 0 && !views[i].global_bus_names) {
             return DNAC_LOGUP_ERR_NULL;
         }
-        total_globals += views[i].num_globals;
+        total_lookups += views[i].num_locals + views[i].num_globals;
     }
     const char **memo_names = (const char **)malloc(
-        sizeof(const char *) * (total_globals ? total_globals : 1));
-    uint32_t *memo_pair = (uint32_t *)malloc(
-        sizeof(uint32_t) * (total_globals ? total_globals : 1));
-    if (!memo_names || !memo_pair) {
-        free((void *)memo_names);
-        free(memo_pair);
+        sizeof(const char *) * (total_lookups ? total_lookups : 1));
+    uint32_t *memo_id = (uint32_t *)malloc(
+        sizeof(uint32_t) * (total_lookups ? total_lookups : 1));
+    /* Assigned bus id per lookup, flat in (instance, column) order. */
+    uint32_t *bus_of = (uint32_t *)malloc(
+        sizeof(uint32_t) * (total_lookups ? total_lookups : 1));
+    if (!memo_names || !memo_id || !bus_of) {
+        free((void *)memo_names); free(memo_id); free(bus_of);
         return DNAC_LOGUP_ERR_OOM;
     }
-    uint32_t num_memo = 0, next_pair = 0;
-    int rc = DNAC_LOGUP_OK;
 
+    /* Pass 1 — assign bus ids (transcript.rs:125-151). Locals take a fresh id
+     * each so nothing can cancel them; globals share one by NAME. */
+    uint32_t num_memo = 0, next_bus = 0, k = 0;
+    int rc = DNAC_LOGUP_OK;
     for (uint32_t i = 0; i < num_instances && rc == DNAC_LOGUP_OK; i++) {
-        gold_fp2_t *out = out_challenges[i];
-        if (!out && (views[i].num_locals + views[i].num_globals) > 0) {
-            rc = DNAC_LOGUP_ERR_NULL;
-            break;
-        }
-        uint32_t slot = 0;
-        /* Locals first (column order): each draws fresh
-         * (transcript.rs:97). */
         for (uint32_t l = 0; l < views[i].num_locals; l++) {
-            if (next_pair >= num_draw_pairs) {
-                rc = DNAC_LOGUP_ERR_PARAM;
-                break;
-            }
-            out[slot++] = draws[2u * next_pair];
-            out[slot++] = draws[2u * next_pair + 1u];
-            next_pair++;
+            bus_of[k++] = next_bus++;              /* transcript.rs:142-145 */
         }
-        /* Globals: memo by bus name (transcript.rs:93-96). */
-        for (uint32_t g = 0; g < views[i].num_globals && rc == DNAC_LOGUP_OK;
-             g++) {
+        for (uint32_t g = 0; g < views[i].num_globals; g++) {
             const char *name = views[i].global_bus_names[g];
-            if (!name) {
-                rc = DNAC_LOGUP_ERR_NULL;
-                break;
-            }
-            uint32_t pair = UINT32_MAX;
+            if (!name) { rc = DNAC_LOGUP_ERR_NULL; break; }
+            uint32_t id = UINT32_MAX;
             for (uint32_t m = 0; m < num_memo; m++) {
-                if (strcmp(memo_names[m], name) == 0) {
-                    pair = memo_pair[m];
-                    break;
-                }
+                if (strcmp(memo_names[m], name) == 0) { id = memo_id[m]; break; }
             }
-            if (pair == UINT32_MAX) {
-                if (next_pair >= num_draw_pairs) {
-                    rc = DNAC_LOGUP_ERR_PARAM;
-                    break;
-                }
-                pair = next_pair++;
+            if (id == UINT32_MAX) {                /* transcript.rs:137-141 */
+                id = next_bus++;
                 memo_names[num_memo] = name;
-                memo_pair[num_memo] = pair;
+                memo_id[num_memo] = id;
                 num_memo++;
             }
-            out[slot++] = draws[2u * pair];
-            out[slot++] = draws[2u * pair + 1u];
+            bus_of[k++] = id;
+        }
+    }
+    if (rc != DNAC_LOGUP_OK) {
+        free((void *)memo_names); free(memo_id); free(bus_of);
+        return rc;
+    }
+
+    /* Pass 2 — prefix[i] = alpha + (i+1)*gamma, gamma = beta^W. The reference
+     * accumulates (`prefix += gamma`) to skip a multiply per bus
+     * (challenges.rs:56-66); the running add below is that same sequence. */
+    gold_fp2_t gamma = gold_fp2_one();
+    for (uint32_t e = 0; e < max_message_width; e++) {
+        gamma = gold_fp2_mul(gamma, beta);
+    }
+    gold_fp2_t *prefix = (gold_fp2_t *)malloc(
+        sizeof(gold_fp2_t) * (next_bus ? next_bus : 1));
+    if (!prefix) {
+        free((void *)memo_names); free(memo_id); free(bus_of);
+        return DNAC_LOGUP_ERR_OOM;
+    }
+    {
+        gold_fp2_t run = alpha;
+        for (uint32_t b = 0; b < next_bus; b++) {
+            run = gold_fp2_add(run, gamma);
+            prefix[b] = run;
         }
     }
 
-    *out_draw_pairs_used = next_pair;
-    free((void *)memo_names);
-    free(memo_pair);
+    /* Pass 3 — lay out [prefix[bus], beta] per lookup, column order
+     * (transcript.rs:162-169). The gadget computes `base - combined`, so the
+     * prefix takes alpha's slot and the separation needs no gadget change. */
+    k = 0;
+    for (uint32_t i = 0; i < num_instances && rc == DNAC_LOGUP_OK; i++) {
+        const uint32_t nl = views[i].num_locals + views[i].num_globals;
+        gold_fp2_t *out = out_challenges[i];
+        if (!out && nl > 0) { rc = DNAC_LOGUP_ERR_NULL; break; }
+        for (uint32_t c = 0; c < nl; c++) {
+            out[2u * c] = prefix[bus_of[k++]];
+            out[2u * c + 1u] = beta;
+        }
+    }
+
+    if (out_num_buses) *out_num_buses = next_bus;
+    free((void *)memo_names); free(memo_id); free(bus_of); free(prefix);
     return rc;
 }
 
 /* ============================================================================
- * Per-bus global-sum verification (verifier/mod.rs:623-643)
+ * W = max_message_width (transcript.rs:118-135)
  * ========================================================================== */
 
-int dnac_logup_bus_verify_global_sums(
-    const dnac_logup_bus_view_t *views,
-    uint32_t                     num_instances,
-    const gold_fp2_t *const    *cum_sums,
-    const char                 **out_failed_bus)
+uint32_t dnac_logup_bus_max_message_width(
+    const dnac_logup_lookup_t *const *lookups,
+    const uint32_t                   *num_lookups,
+    uint32_t                          num_instances)
 {
-    if (out_failed_bus) {
-        *out_failed_bus = NULL;
-    }
-    if (num_instances > 0 && (!views || !cum_sums)) {
-        return DNAC_LOGUP_ERR_NULL;
-    }
-    uint32_t total_globals = 0;
+    /* Upstream seeds this at 1, not 0 (transcript.rs:124). Keeping the same
+     * floor means a batch whose every tuple is empty still derives
+     * γ = β^1 rather than tripping the W == 0 rejection. */
+    uint32_t w = 1u;
+    if (num_instances == 0 || !lookups || !num_lookups) return w;
+
     for (uint32_t i = 0; i < num_instances; i++) {
-        if (views[i].num_globals > 0 &&
-            (!views[i].global_bus_names || !cum_sums[i])) {
-            return DNAC_LOGUP_ERR_NULL;
-        }
-        total_globals += views[i].num_globals;
-    }
-    if (total_globals == 0) {
-        return DNAC_LOGUP_OK;
-    }
-
-    /* First-occurrence-ordered bus list (deterministic; the verdict is a
-     * conjunction so it equals the reference HashMap grouping, G-DET-L4). */
-    const char **names = (const char **)malloc(sizeof(const char *) * total_globals);
-    gold_fp2_t *group = (gold_fp2_t *)malloc(sizeof(gold_fp2_t) * total_globals);
-    if (!names || !group) {
-        free((void *)names);
-        free(group);
-        return DNAC_LOGUP_ERR_OOM;
-    }
-    uint32_t num_names = 0;
-    for (uint32_t i = 0; i < num_instances; i++) {
-        for (uint32_t g = 0; g < views[i].num_globals; g++) {
-            const char *name = views[i].global_bus_names[g];
-            if (!name) {
-                free((void *)names);
-                free(group);
-                return DNAC_LOGUP_ERR_NULL;
-            }
-            int seen = 0;
-            for (uint32_t m = 0; m < num_names; m++) {
-                if (strcmp(names[m], name) == 0) {
-                    seen = 1;
-                    break;
-                }
-            }
-            if (!seen) {
-                names[num_names++] = name;
+        const dnac_logup_lookup_t *li = lookups[i];
+        if (!li) continue;                 /* legal iff num_lookups[i] == 0 */
+        for (uint32_t c = 0; c < num_lookups[i]; c++) {
+            if (!li[c].tuple_widths) continue;
+            for (uint32_t t = 0; t < li[c].num_tuples; t++) {
+                if (li[c].tuple_widths[t] > w) w = li[c].tuple_widths[t];
             }
         }
     }
-
-    int rc = DNAC_LOGUP_OK;
-    for (uint32_t m = 0; m < num_names; m++) {
-        /* Gather this bus's sums across all instances, instance order then
-         * global-lookup order (verifier/mod.rs:624-636). */
-        uint32_t cnt = 0;
-        for (uint32_t i = 0; i < num_instances; i++) {
-            for (uint32_t g = 0; g < views[i].num_globals; g++) {
-                if (strcmp(views[i].global_bus_names[g], names[m]) == 0) {
-                    group[cnt++] = cum_sums[i][g];
-                }
-            }
-        }
-        /* EACH name group must sum to zero (verifier/mod.rs:639-643). */
-        if (dnac_logup_verify_global_sum(group, cnt) != DNAC_LOGUP_OK) {
-            if (out_failed_bus) {
-                *out_failed_bus = names[m];
-            }
-            rc = DNAC_LOGUP_ERR_GLOBAL_SUM;
-            break;
-        }
-    }
-
-    free((void *)names);
-    free(group);
-    return rc;
+    return w;
 }
 
 /* ============================================================================

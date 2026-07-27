@@ -164,26 +164,20 @@ static void match_scenario(const jv_t *js, pscenario_t *sc,
             }
             CHECK(ok, "%s: inst %u quotient chunk values", name, i);
         }
-        /* cumulative sums + metadata. */
-        const jv_t *cs = jv_get(insts->items[i], "cumulative_sums");
-        CHECK(cs && cs->kind == JV_ARR && cs->n == oi->num_globals,
-              "%s: inst %u num_globals", name, i);
-        if (cs && cs->kind == JV_ARR && cs->n == oi->num_globals) {
-            int ok = 1;
-            for (size_t g = 0; g < cs->n; g++) {
-                gold_fp2_t es;
-                uint64_t ac;
-                const jv_t *bn = jv_get(cs->items[g], "bus_name");
-                if (!jv_fp2(jv_get(cs->items[g], "sum"), &es) ||
-                    !sv_u64(jv_get(cs->items[g], "aux_column"), &ac) || !bn ||
-                    bn->kind != JV_STR ||
-                    !fp2_eq(oi->cumulative_sums[g], es) ||
-                    oi->entry_aux_columns[g] != (uint32_t)ac ||
-                    strcmp(oi->entry_names[g], bn->str) != 0) {
-                    ok = 0;
-                }
+        /* LookupTerminal — the C prover's published Option must match the
+         * oracle's per-instance value in BOTH the discriminant and, when
+         * present, the field element. */
+        {
+            const jv_t *lt = jv_get(insts->items[i], "lookup_terminal");
+            const int exp_present = (lt && lt->kind != JV_NULL);
+            CHECK(exp_present == (oi->has_terminal != 0),
+                  "%s: inst %u terminal presence (want %d got %d)", name, i,
+                  exp_present, oi->has_terminal);
+            if (exp_present && oi->has_terminal) {
+                gold_fp2_t et;
+                CHECK(jv_fp2(lt, &et) && fp2_eq(oi->terminal, et),
+                      "%s: inst %u terminal value", name, i);
             }
-            CHECK(ok, "%s: inst %u cumulative sums", name, i);
         }
     }
 

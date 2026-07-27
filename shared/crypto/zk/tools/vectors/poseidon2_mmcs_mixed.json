@@ -1,6 +1,6 @@
 {
-  "format_version": "1",
-  "plonky3_commit": "82cfad73cd734d37a0d51953094f970c531817ec",
+  "format_version": "2",
+  "plonky3_commit": "11cc5849a1b57a2f520d6edc608b9e516517d841",
   "constructor": "MIXED-height MerkleTreeMmcs / MerkleTreeHidingMmcs (SmallRng(1), SALT_ELEMS=2), N=2 cap 0 — layer injection per merkle_tree.rs:127-176; openings per mmcs.rs:976-1180",
   "salt_elems": 2,
   "trees": [

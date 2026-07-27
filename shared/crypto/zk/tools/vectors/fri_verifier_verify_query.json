@@ -102,8 +102,8 @@
     "val": "Goldilocks"
   },
   "errors_vector_reference": "fri_verifier_errors.json",
-  "format_version": "1",
-  "plonky3_commit": "82cfad73cd734d37a0d51953094f970c531817ec",
+  "format_version": "2",
+  "plonky3_commit": "11cc5849a1b57a2f520d6edc608b9e516517d841",
   "reimplementation_disclosure": {
     "cross_check_protocol": "Plonky3's actual `FriError` enum is used (FriError<(), ()> with unit-typed Mmcs/Input error generics — the three target variants don't carry those wrapped fields). Each computed error is compared against the variant name Plonky3's #[test] asserts; mismatch aborts before JSON is written.",
     "lines_mirrored": "verifier.rs:378 (ro_iter init), 384-388 (empty check → MissingInitialReducedOpening), 389-394 (first height check → InitialReducedOpeningHeightMismatch), 395 (consume seed → folded_eval), 398 (log_current_height init), [402-477 SKIPPED — fold loop body], 482-485 (final-height check → FinalFoldHeightMismatch), 489-494 (leftover check → UnconsumedReducedOpenings), 499 (Ok(folded_eval))",

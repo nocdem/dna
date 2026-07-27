@@ -49,15 +49,16 @@ static int g_total = 0, g_failed = 0;
         }                                                                      \
     } while (0)
 
-/* Per-instance cumulative sums stashed for the cross-instance global checks. */
+/* Per-AIR terminals stashed for the cross-AIR terminal checks. v0.6.2 keys
+ * these by INSTANCE, not by (instance, bus): an AIR commits one terminal
+ * covering every lookup it declares, so there is no per-bus entry to key on. */
 typedef struct {
     const char *instance;
-    char bus[32];
-    uint32_t aux_column;
-    gold_fp2_t sum;
-} cum_entry_t;
-static cum_entry_t g_cums[64];
-static size_t g_ncums = 0;
+    int         has;      /* the Option discriminant                        */
+    gold_fp2_t  terminal;
+} term_entry_t;
+static term_entry_t g_terms[64];
+static size_t g_nterms = 0;
 
 static bool parse_fp_matrix(const jv_t *rows, uint32_t *h, uint32_t *w,
                             gold_fp_t **out)
@@ -96,7 +97,14 @@ static int run_case(const jv_t *cs)
         return 2;
     }
     const uint32_t height = (uint32_t)height64;
-    const uint32_t num_aux = (uint32_t)num_aux64;
+    /* num_aux_cols is the aux WIDTH, which at v0.6.2 is num_lookups + 1 —
+     * column 0 is the shared accumulator (logup.rs:381-382). At 82cfad73 the
+     * width equalled the lookup count, so this used to be the same number. */
+    if (num_aux64 == 0) {
+        fprintf(stderr, "FAIL[%s]: num_aux_cols must be >= 1\n", name);
+        return 2;
+    }
+    const uint32_t num_aux = (uint32_t)num_aux64 - 1u; /* = num_lookups */
 
     /* main / preprocessed / publics */
     uint32_t mh, mw;
@@ -225,35 +233,54 @@ static int run_case(const jv_t *cs)
 
     /* expected aux + cumulative sums + residuals */
     const jv_t *jaux = jv_get(cs, "aux");
+    /* aux is now [height][num_lookups + 1] — col 0 is the ONE shared
+     * accumulator, lookup slot c owns fraction column c + 1
+     * (logup.rs:381-382). The vector states the width; cross-check it. */
+    const uint32_t auxw = nlk + 1u;
+    {
+        uint64_t nac = 0;
+        if (!jv_u64(jv_get(cs, "num_aux_cols"), &nac) ||
+            (uint32_t)nac != auxw) {
+            fprintf(stderr, "FAIL[%s]: num_aux_cols %" PRIu64 " != %u\n", name,
+                    nac, auxw);
+            return 2;
+        }
+    }
     if (!jaux || jaux->kind != JV_ARR || jaux->n != height) return 2;
     gold_fp2_t *exp_aux =
-        (gold_fp2_t *)malloc(sizeof(gold_fp2_t) * (size_t)height * nlk);
+        (gold_fp2_t *)malloc(sizeof(gold_fp2_t) * (size_t)height * auxw);
     if (!exp_aux) return 2;
     for (uint32_t r = 0; r < height; r++) {
         const jv_t *row = jaux->items[r];
-        if (row->kind != JV_ARR || row->n != nlk) return 2;
-        for (uint32_t c = 0; c < nlk; c++) {
-            if (!jv_fp2(row->items[c], &exp_aux[(size_t)r * nlk + c])) return 2;
+        if (row->kind != JV_ARR || row->n != auxw) return 2;
+        for (uint32_t c = 0; c < auxw; c++) {
+            if (!jv_fp2(row->items[c], &exp_aux[(size_t)r * auxw + c])) return 2;
         }
     }
     const jv_t *jcorr = jv_get(cs, "aux_corrupted");
     bool corrupted = jcorr && jcorr->kind == JV_BOOL && jcorr->bval;
 
-    const jv_t *jcums = jv_get(cs, "cumulative_sums");
-    uint32_t nglob = jcums ? (uint32_t)jcums->n : 0;
+    /* ONE optional terminal per AIR, replacing the per-global sum list. */
+    const jv_t *jterm = jv_get(cs, "terminal");
+    const int has_term = (jterm && jterm->kind != JV_NULL);
+    gold_fp2_t exp_term = gold_fp2_zero();
+    if (has_term && !jv_fp2(jterm, &exp_term)) return 2;
+    if (has_term != (nlk > 0)) {
+        fprintf(stderr, "FAIL[%s]: terminal presence vs num_lookups\n", name);
+        return 2;
+    }
 
     /* ---- 1. generate_permutation byte-match ---- */
     gold_fp2_t *got_aux =
-        (gold_fp2_t *)malloc(sizeof(gold_fp2_t) * (size_t)height * nlk);
-    gold_fp2_t got_cums[8];
-    if (!got_aux || nglob > 8) return 2;
+        (gold_fp2_t *)malloc(sizeof(gold_fp2_t) * (size_t)height * auxw);
+    gold_fp2_t got_term = gold_fp2_zero();
+    if (!got_aux) return 2;
     int rc = dnac_logup_generate_permutation(&ctx, lks, nlk, ch, 2u * nlk,
-                                             got_aux, nglob ? got_cums : NULL,
-                                             nglob);
+                                             got_aux, &got_term);
     CHECK(rc == DNAC_LOGUP_OK, "[%s] generate_permutation rc=%d", name, rc);
     if (rc == DNAC_LOGUP_OK) {
         uint32_t diff = 0;
-        for (size_t k = 0; k < (size_t)height * nlk; k++) {
+        for (size_t k = 0; k < (size_t)height * auxw; k++) {
             if (!fp2_eq_limbs(got_aux[k], exp_aux[k])) diff++;
         }
         if (corrupted) {
@@ -262,31 +289,20 @@ static int run_case(const jv_t *cs)
         } else {
             CHECK(diff == 0, "[%s] aux diff=%u (want 0)", name, diff);
         }
-        /* ---- 2. cumulative sums ---- */
-        for (uint32_t g = 0; g < nglob; g++) {
-            gold_fp2_t exp_sum;
-            uint64_t exp_col;
-            const jv_t *ce = jcums->items[g];
-            if (!jv_fp2(jv_get(ce, "sum"), &exp_sum) ||
-                !jv_u64(jv_get(ce, "aux_column"), &exp_col)) {
-                return 2;
-            }
-            CHECK(fp2_eq_limbs(got_cums[g], exp_sum),
-                  "[%s] cumulative_sum[%u] (%" PRIu64 ",%" PRIu64
-                  ") != (%" PRIu64 ",%" PRIu64 ")",
-                  name, g, gold_fp_to_u64(got_cums[g].a),
-                  gold_fp_to_u64(got_cums[g].b), gold_fp_to_u64(exp_sum.a),
-                  gold_fp_to_u64(exp_sum.b));
-            /* stash for cross-instance global checks */
-            const jv_t *bus = jv_get(ce, "bus_name");
-            if (g_ncums < 64 && bus && bus->kind == JV_STR) {
-                g_cums[g_ncums].instance = name;
-                snprintf(g_cums[g_ncums].bus, sizeof(g_cums[g_ncums].bus), "%s",
-                         bus->str);
-                g_cums[g_ncums].aux_column = (uint32_t)exp_col;
-                g_cums[g_ncums].sum = exp_sum;
-                g_ncums++;
-            }
+        /* ---- 2. the AIR's single terminal ---- */
+        if (has_term && !corrupted) {
+            CHECK(fp2_eq_limbs(got_term, exp_term),
+                  "[%s] terminal (%" PRIu64 ",%" PRIu64 ") != (%" PRIu64
+                  ",%" PRIu64 ")",
+                  name, gold_fp_to_u64(got_term.a), gold_fp_to_u64(got_term.b),
+                  gold_fp_to_u64(exp_term.a), gold_fp_to_u64(exp_term.b));
+        }
+        /* stash for the cross-AIR terminal checks */
+        if (g_nterms < 64) {
+            g_terms[g_nterms].instance = name;
+            g_terms[g_nterms].has = has_term;
+            g_terms[g_nterms].terminal = exp_term;
+            g_nterms++;
         }
     }
 
@@ -296,46 +312,51 @@ static int run_case(const jv_t *cs)
     if (!jres || jres->kind != JV_ARR || jres->n != height) return 2;
     for (uint32_t r = 0; r < height; r++) {
         const jv_t *rrow = jres->items[r];
-        if (rrow->kind != JV_ARR || rrow->n != nlk) return 2;
+        if (!rrow || rrow->kind != JV_OBJ) return 2;
+
+        /* (a) one UNGATED fraction residual per lookup (logup.rs:245). The
+         *     oracle emits them as a per-row array of 1-element arrays, one
+         *     entry per lookup slot, so the shape doubles as a count check. */
+        const jv_t *jfr = jv_get(rrow, "fractions");
+        if (!jfr || jfr->kind != JV_ARR || jfr->n != nlk) return 2;
         for (uint32_t i = 0; i < nlk; i++) {
-            const jv_t *stream = rrow->items[i];
-            if (stream->kind != JV_ARR) return 2;
-            gold_fp2_t cum_val;
-            const gold_fp2_t *cum_ptr = NULL;
-            if (lks[i].is_global) {
-                /* the lookup's dumped cumulative sum (matched above) */
-                bool found = false;
-                for (uint32_t g = 0; g < nglob; g++) {
-                    uint64_t col;
-                    if (jv_u64(jv_get(jcums->items[g], "aux_column"), &col) &&
-                        (uint32_t)col == lks[i].column &&
-                        jv_fp2(jv_get(jcums->items[g], "sum"), &cum_val)) {
-                        cum_ptr = &cum_val;
-                        found = true;
-                        break;
-                    }
-                }
-                if (!found) return 2;
-            }
-            gold_fp2_t got_res[3];
-            uint32_t got_n = 0;
-            rc = dnac_logup_eval_row(&ctx, &lks[i], exp_aux, nlk, ch, 2u * nlk,
-                                     r, cum_ptr, got_res, &got_n);
-            CHECK(rc == DNAC_LOGUP_OK, "[%s] eval_row(r=%u,lk=%u) rc=%d", name,
-                  r, i, rc);
+            const jv_t *slot = jfr->items[i];
+            if (!slot || slot->kind != JV_ARR || slot->n != 1) return 2;
+            gold_fp2_t got_f = gold_fp2_zero(), exp_f;
+            rc = dnac_logup_eval_fraction(&ctx, &lks[i], exp_aux, auxw, ch,
+                                          2u * nlk, r, &got_f);
+            CHECK(rc == DNAC_LOGUP_OK, "[%s] eval_fraction(r=%u,lk=%u) rc=%d",
+                  name, r, i, rc);
             if (rc != DNAC_LOGUP_OK) continue;
-            CHECK(got_n == stream->n, "[%s] residual count r=%u lk=%u: %u != %zu",
-                  name, r, i, got_n, stream->n);
-            for (uint32_t k = 0; k < got_n && k < stream->n; k++) {
-                gold_fp2_t exp_r;
-                if (!jv_fp2(stream->items[k], &exp_r)) return 2;
-                CHECK(fp2_eq_limbs(got_res[k], exp_r),
-                      "[%s] residual r=%u lk=%u idx=%u: (%" PRIu64 ",%" PRIu64
-                      ") != (%" PRIu64 ",%" PRIu64 ")",
-                      name, r, i, k, gold_fp_to_u64(got_res[k].a),
-                      gold_fp_to_u64(got_res[k].b), gold_fp_to_u64(exp_r.a),
-                      gold_fp_to_u64(exp_r.b));
-            }
+            if (!jv_fp2(slot->items[0], &exp_f)) return 2;
+            CHECK(fp2_eq_limbs(got_f, exp_f),
+                  "[%s] fraction r=%u lk=%u: (%" PRIu64 ",%" PRIu64
+                  ") != (%" PRIu64 ",%" PRIu64 ")",
+                  name, r, i, gold_fp_to_u64(got_f.a), gold_fp_to_u64(got_f.b),
+                  gold_fp_to_u64(exp_f.a), gold_fp_to_u64(exp_f.b));
+        }
+
+        /* (b) ONE accumulator block per row — always exactly 3 residuals
+         *     (first / transition / last), over ALL lookups (logup.rs:291-301).
+         *     Fed the DUMPED terminal so a corrupted case reproduces the
+         *     oracle's non-zero residuals rather than the clean C one. */
+        const jv_t *jac = jv_get(rrow, "accumulator");
+        if (!jac || jac->kind != JV_ARR || jac->n != 3) return 2;
+        gold_fp2_t got_acc[3];
+        rc = dnac_logup_eval_accumulator(&ctx, lks, nlk, exp_aux, auxw, r,
+                                         exp_term, got_acc);
+        CHECK(rc == DNAC_LOGUP_OK, "[%s] eval_accumulator(r=%u) rc=%d", name, r,
+              rc);
+        if (rc != DNAC_LOGUP_OK) continue;
+        for (uint32_t k = 0; k < 3; k++) {
+            gold_fp2_t exp_a;
+            if (!jv_fp2(jac->items[k], &exp_a)) return 2;
+            CHECK(fp2_eq_limbs(got_acc[k], exp_a),
+                  "[%s] accumulator r=%u idx=%u: (%" PRIu64 ",%" PRIu64
+                  ") != (%" PRIu64 ",%" PRIu64 ")",
+                  name, r, k, gold_fp_to_u64(got_acc[k].a),
+                  gold_fp_to_u64(got_acc[k].b), gold_fp_to_u64(exp_a.a),
+                  gold_fp_to_u64(exp_a.b));
         }
     }
 
@@ -398,16 +419,17 @@ static void run_negatives(void)
         .is_global = 0, .column = 0, .num_tuples = 1,
         .tuple_widths = w1, .tuple_elems = el, .multiplicities = m0,
     };
-    gold_fp2_t aux[1];
-    gold_fp2_t res[3];
-    uint32_t nres;
+    /* aux is [height][num_lookups + 1] now — height 1, one lookup => 2. */
+    gold_fp2_t aux[2];
+    gold_fp2_t term = gold_fp2_zero();
 
     /* zero denominator: α = main value 5 (base-embedded) => α − combined = 0
-     * (mirror of the batch-inversion panic, batch_inverse.rs:26) */
+     * (mirror of the batch-inversion panic, batch_inverse.rs:26). Reachable
+     * only for a NON-zero multiplicity since the v0.6.2 flag-zero skip. */
     gold_fp2_t ch_zero[2] = { gold_fp2_from_base(gold_fp_from_u64(5)),
                               gold_fp2_zero() };
     int rc = dnac_logup_generate_permutation(&ctx, &lk, 1, ch_zero, 2, aux,
-                                             NULL, 0);
+                                             &term);
     CHECK(rc == DNAC_LOGUP_ERR_ZERO_DENOM, "neg: zero denom rc=%d", rc);
 
     gold_fp2_t ch_ok[4] = { gold_fp2_from_base(gold_fp_from_u64(7)),
@@ -415,21 +437,25 @@ static void run_negatives(void)
                             gold_fp2_from_base(gold_fp_from_u64(11)),
                             gold_fp2_from_base(gold_fp_from_u64(13)) };
 
-    /* challenge count mismatch (logup.rs:383-387) */
-    rc = dnac_logup_generate_permutation(&ctx, &lk, 1, ch_ok, 4, aux, NULL, 0);
+    /* challenge count mismatch (logup.rs:384-389) */
+    rc = dnac_logup_generate_permutation(&ctx, &lk, 1, ch_ok, 4, aux, &term);
     CHECK(rc == DNAC_LOGUP_ERR_PARAM, "neg: challenge count rc=%d", rc);
 
-    /* duplicate aux column (logup.rs:390-401) */
+    /* slot guard: lookups[i].column MUST equal i (logup.rs:399-406). Both
+     * these lookups name column 0, so slot 1 is misdeclared. This REPLACED
+     * the old unique-and-in-range pair check and is strictly stronger —
+     * upstream's reason is that a gap would be an out-of-bounds write on
+     * untrusted data, since slot i writes column i+1. */
     dnac_logup_lookup_t two[2] = { lk, lk }; /* both column 0 */
-    gold_fp2_t aux2[2];
-    rc = dnac_logup_generate_permutation(&ctx, two, 2, ch_ok, 4, aux2, NULL, 0);
-    CHECK(rc == DNAC_LOGUP_ERR_PARAM, "neg: duplicate column rc=%d", rc);
+    gold_fp2_t aux2[3];                      /* 1 row x (2 lookups + 1) */
+    rc = dnac_logup_generate_permutation(&ctx, two, 2, ch_ok, 4, aux2, &term);
+    CHECK(rc == DNAC_LOGUP_ERR_PARAM, "neg: slot != position rc=%d", rc);
 
-    /* kind/cumulative_sum mismatch (logup.rs:239-241 / 254-256) */
-    gold_fp2_t cum = gold_fp2_zero();
-    aux[0] = gold_fp2_zero();
-    rc = dnac_logup_eval_row(&ctx, &lk, aux, 1, ch_ok, 2, 0, &cum, res, &nres);
-    CHECK(rc == DNAC_LOGUP_ERR_PARAM, "neg: local+cum rc=%d", rc);
+    /* the same guard catches a slot index PAST the slice as well. */
+    dnac_logup_lookup_t gap = lk;
+    gap.column = 1; /* declared at slot 1 while sitting at position 0 */
+    rc = dnac_logup_generate_permutation(&ctx, &gap, 1, ch_ok, 2, aux, &term);
+    CHECK(rc == DNAC_LOGUP_ERR_PARAM, "neg: slot out of range rc=%d", rc);
 
     /* sum_terms n == 0 => (0, 1) (logup.rs:113-114) */
     gold_fp2_t nn, dd;
@@ -439,12 +465,18 @@ static void run_negatives(void)
               fp2_eq_limbs(dd, gold_fp2_one()),
           "neg: empty sum_terms rc=%d", rc);
 
-    /* verify_global_sum: non-zero flat sum rejects */
-    gold_fp2_t sums_bad[1] = { gold_fp2_one() };
-    rc = dnac_logup_verify_global_sum(sums_bad, 1);
-    CHECK(rc == DNAC_LOGUP_ERR_GLOBAL_SUM, "neg: nonzero global sum rc=%d", rc);
-    rc = dnac_logup_verify_global_sum(NULL, 0);
-    CHECK(rc == DNAC_LOGUP_OK, "neg: empty global sum rc=%d", rc);
+    /* verify_terminal_sum: non-zero flat total rejects */
+    gold_fp2_t terms_bad[1] = { gold_fp2_one() };
+    rc = dnac_logup_verify_terminal_sum(terms_bad, 1);
+    CHECK(rc == DNAC_LOGUP_ERR_GLOBAL_SUM, "neg: nonzero terminal sum rc=%d",
+          rc);
+    rc = dnac_logup_verify_terminal_sum(NULL, 0);
+    CHECK(rc == DNAC_LOGUP_OK, "neg: empty terminal sum rc=%d", rc);
+    /* two terminals that cancel are accepted — the balanced case. */
+    gold_fp2_t terms_ok[2] = { gold_fp2_one(),
+                               gold_fp2_sub(gold_fp2_zero(), gold_fp2_one()) };
+    rc = dnac_logup_verify_terminal_sum(terms_ok, 2);
+    CHECK(rc == DNAC_LOGUP_OK, "neg: cancelling terminal sum rc=%d", rc);
 }
 
 /* ============================================================================
@@ -506,23 +538,47 @@ int main(int argc, char **argv)
             free(buf);
             return 2;
         }
-        /* gather this group's sums from the per-instance stash, in the
-         * check's instance order (single-bus group => flat sum == the
-         * per-bus check; G-DET-L4) */
-        gold_fp2_t sums[8];
-        uint32_t nsums = 0;
+        /* Gather this check's per-AIR terminals from the stash, in the
+         * check's instance order. v0.6.2 keys by INSTANCE, not by
+         * (instance, bus): one terminal covers every lookup an AIR declares,
+         * so the bus name is only a label on the check now. An AIR with no
+         * terminal contributes nothing, matching upstream's `.flatten()`. */
+        gold_fp2_t terms[8];
+        uint32_t nterms = 0;
         for (size_t k = 0; k < insts->n; k++) {
-            for (size_t c = 0; c < g_ncums; c++) {
-                if (!strcmp(g_cums[c].instance, insts->items[k]->str) &&
-                    !strcmp(g_cums[c].bus, bus->str) && nsums < 8) {
-                    sums[nsums++] = g_cums[c].sum;
+            for (size_t c = 0; c < g_nterms; c++) {
+                if (!strcmp(g_terms[c].instance, insts->items[k]->str) &&
+                    g_terms[c].has && nterms < 8) {
+                    terms[nterms++] = g_terms[c].terminal;
                 }
             }
         }
-        int rc = dnac_logup_verify_global_sum(sums, nsums);
+        /* The vector states the terminals it expects; compare against the
+         * stash so a silently-missed instance cannot pass as a short list. */
+        const jv_t *jterms = jv_get(gc, "terminals");
+        if (jterms && jterms->kind == JV_ARR) {
+            CHECK(jterms->n == nterms, "[global %s] terminal count %zu != %u",
+                  gname->str, jterms->n, nterms);
+            for (size_t k = 0; k < jterms->n && k < nterms; k++) {
+                gold_fp2_t et;
+                if (!jv_fp2(jterms->items[k], &et)) continue;
+                CHECK(fp2_eq_limbs(terms[k], et),
+                      "[global %s] terminal[%zu] mismatch", gname->str, k);
+            }
+        }
+        int rc = dnac_logup_verify_terminal_sum(terms, nterms);
         bool got_ok = (rc == DNAC_LOGUP_OK);
         CHECK(got_ok == ok->bval, "[global %s] verdict %d != %d (n=%u)",
-              gname->str, (int)got_ok, (int)ok->bval, nsums);
+              gname->str, (int)got_ok, (int)ok->bval, nterms);
+        /* and the dumped flat total itself */
+        gold_fp2_t exp_total;
+        if (jv_fp2(jv_get(gc, "total"), &exp_total)) {
+            gold_fp2_t got_total = gold_fp2_zero();
+            for (uint32_t k = 0; k < nterms; k++)
+                got_total = gold_fp2_add(got_total, terms[k]);
+            CHECK(fp2_eq_limbs(got_total, exp_total),
+                  "[global %s] flat total mismatch", gname->str);
+        }
     }
     printf("global checks: %zu groups checked\n", checks->n);
 

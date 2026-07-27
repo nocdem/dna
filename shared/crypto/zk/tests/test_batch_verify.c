@@ -10,8 +10,8 @@
  * priming, N2 round assembly, hiding merge (fib_zk), PCS observe +
  * dnac_fri_verify (mixed-height input batches incl. the d1a consumer
  * lut_mixed_trio), per-instance constraint check at ζ (air.eval + LogUp
- * residual folds), per-bus global sums — and the sampled (α, ζ) must
- * byte-match the oracle's transcript replay.
+ * residual folds), the FLAT cross-AIR terminal sum — and the sampled (α, ζ)
+ * must byte-match the oracle's transcript replay.
  *
  * AIR fixtures mirror the oracle's: FibonacciAir (fib_air.rs:44-72, the
  * pinned 5-constraint emission), LogupAddAir (lookup/src/tests.rs:1100-1169:
@@ -24,7 +24,7 @@
  * here at d2). The local copies are GONE — this file now includes the shared
  * header, so there is exactly ONE definition and no drift is possible. Only
  * the verifier-side scenario loader (load_scenario, which parses the opened
- * values / commits / cumulative sums this test alone needs) stays local.
+ * values / commits / per-AIR terminal this test alone needs) stays local.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: Apache-2.0
@@ -67,10 +67,8 @@ typedef struct {
     gold_fp2_t tl[MAX_VALS], tn[MAX_VALS], pl[MAX_VALS], pnx[MAX_VALS];
     gold_fp2_t qc[MAX_QCV * 2], rnd[MAX_VALS], perml[MAX_VALS],
         permn[MAX_VALS];
-    gold_fp2_t cums[4];
-    const char *names[4];
-    char        name_store[4][16];
-    uint32_t    auxcols[4];
+    /* the v3-era cums/names/auxcols scratch is gone with global_lookup_data —
+     * the terminal lives directly in dnac_batch_vopened_t now. */
     gold_fp_t   pubs[4];
 } inst_store_t;
 
@@ -283,26 +281,16 @@ static bool load_scenario(const jv_t *js, scenario_t *sc)
         oi->permutation_next = pll ? st->permn : NULL;
         oi->permutation_len = pll;
 
-        /* cumulative sums + metadata */
-        const jv_t *cs = jv_get(ji, "cumulative_sums");
-        if (!cs || cs->kind != JV_ARR || cs->n > 4) RF();
-        for (size_t g = 0; g < cs->n; g++) {
-            const jv_t *e = cs->items[g];
-            if (!jv_fp2(jv_get(e, "sum"), &st->cums[g])) RF();
-            const jv_t *bn = jv_get(e, "bus_name");
-            uint64_t ac;
-            if (!bn || bn->kind != JV_STR || strlen(bn->str) >= 16 ||
-                !sv_u64(jv_get(e, "aux_column"), &ac)) {
-                RF();
-            }
-            strcpy(st->name_store[g], bn->str);
-            st->names[g] = st->name_store[g];
-            st->auxcols[g] = (uint32_t)ac;
+        /* LookupTerminal — one optional value per AIR (v0.6.2). JSON null
+         * is the None discriminant; the metadata list it replaced is gone. */
+        const jv_t *lt = jv_get(ji, "lookup_terminal");
+        if (!lt || lt->kind == JV_NULL) {
+            oi->terminal = gold_fp2_zero();
+            oi->has_terminal = 0;
+        } else {
+            if (!jv_fp2(lt, &oi->terminal)) RF();
+            oi->has_terminal = 1;
         }
-        oi->cumulative_sums = st->cums;
-        oi->entry_names = st->names;
-        oi->entry_aux_columns = st->auxcols;
-        oi->num_globals = (uint32_t)cs->n;
 
         if (prew > 0) sc->prep_map[sc->num_prep++] = i;
     }
@@ -371,9 +359,10 @@ int main(int argc, char **argv)
         memset(&out, 0, sizeof(out));
         dnac_batch_verify_status_t st = run_scenario(sc, &out);
         CHECK(st == DNAC_BV_OK,
-              "%s: dnac_batch_verify = %d (fri=%d bad_inst=%u bus=%s)", sname,
-              (int)st, (int)out.fri_status, out.bad_instance,
-              out.failed_bus ? out.failed_bus : "-");
+              "%s: dnac_batch_verify = %d (fri=%d bad_inst=%u term_sum=%llu,%llu)",
+              sname, (int)st, (int)out.fri_status, out.bad_instance,
+              (unsigned long long)gold_fp_to_u64(out.terminal_sum.a),
+              (unsigned long long)gold_fp_to_u64(out.terminal_sum.b));
         CHECK(fp2_eq_limbs(out.alpha, sc->exp_alpha), "%s: alpha mismatch",
               sname);
         CHECK(fp2_eq_limbs(out.zeta, sc->exp_zeta), "%s: zeta mismatch",
@@ -413,19 +402,31 @@ int main(int argc, char **argv)
           "N3 missing perm commit must be SHAPE");
 
     /* N4: truncate the permutation opened lens → SHAPE (aux_width·2,
-     * verifier/mod.rs:524-541). */
+     * v0.6.2 verifier/mod.rs:518-526). */
     CHECK(load_scenario(js_lut, neg), "N4 load");
     neg->opened[0].permutation_len -= 2;
     CHECK(run_scenario(neg, &out) == DNAC_BV_ERR_SHAPE,
           "N4 short permutation opens must be SHAPE");
 
-    /* N5: tamper a cumulative sum — it is observed pre-alpha
-     * (transcript.rs:106-119) → FRI reject. */
+    /* N5: tamper the committed lookup TERMINAL. It is observed before alpha
+     * is sampled (transcript.rs:175-188), so the whole downstream transcript —
+     * alpha, then zeta — diverges and FRI rejects before the constraint check
+     * ever sees the bad terminal. (Replaces the v3-era tampered-cumulative-sum
+     * negative; same property, one value instead of a per-global list.) */
     CHECK(load_scenario(js_lut, neg), "N5 load");
-    neg->st[0].cums[0] = gold_fp2_add(neg->st[0].cums[0],
-                                      gold_fp2_from_base(gold_fp_one()));
+    CHECK(neg->opened[0].has_terminal, "N5 fixture must carry a terminal");
+    neg->opened[0].terminal = gold_fp2_add(neg->opened[0].terminal,
+                                           gold_fp2_from_base(gold_fp_one()));
     CHECK(run_scenario(neg, &out) == DNAC_BV_ERR_FRI,
-          "N5 tampered cumulative sum must fail in FRI");
+          "N5 tampered terminal must fail in FRI");
+
+    /* N5b: the presence discriminant itself is load-bearing — an AIR that
+     * declares lookups but omits its terminal is TerminalPresenceMismatch,
+     * caught structurally before any transcript work. */
+    CHECK(load_scenario(js_lut, neg), "N5b load");
+    neg->opened[0].has_terminal = 0;
+    CHECK(run_scenario(neg, &out) == DNAC_BV_ERR_SHAPE,
+          "N5b missing terminal on a lookup AIR must be SHAPE");
 
     /* N6: tamper a main-commit lane → FRI reject (MMCS mismatch). */
     CHECK(load_scenario(js_fib, neg), "N6 load");
