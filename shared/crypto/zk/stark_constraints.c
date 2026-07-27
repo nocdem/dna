@@ -43,6 +43,12 @@ dnac_stark_selectors_t dnac_stark_selectors_at_point(gold_fp2_t zeta,
     return s;
 }
 
+bool dnac_stark_zeta_in_domain(const dnac_stark_selectors_t *sels)
+{
+    /* Z_gH(zeta) == 0 <=> zeta is one of the trace-domain points. */
+    return sels == NULL || gold_fp2_eq(sels->z_h, gold_fp2_zero());
+}
+
 /* ============================================================================
  * Quotient recompose, num_qc=1 (verifier.rs:87-95)
  * ========================================================================== */
@@ -305,6 +311,15 @@ static dnac_stark_verify_status_t stark_verify_constraints_core(
     /* 3. selectors at zeta. */
     const dnac_stark_selectors_t sels =
         dnac_stark_selectors_at_point(zeta, base_degree_bits);
+
+    /* OodPointInDomain (S2'-d2) — reject BEFORE anything consumes
+     * sels.inv_vanishing. At zeta on the domain z_h is zero, so
+     * inv_vanishing = gold_fp2_inv(0) = (0,0) by the documented contract and
+     * the final check below would degenerate to `folded · 0 == quotient`,
+     * accepting any folded value against a zero quotient. */
+    if (dnac_stark_zeta_in_domain(&sels)) {
+        return DNAC_STARK_VERIFY_ERR_OOD_POINT_IN_DOMAIN;
+    }
 
     /* main_next=false => zero-window trace_next (verifier.rs:469-476). The AIR
      * never reads it, but we supply a valid full-width buffer defensively.

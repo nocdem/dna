@@ -87,6 +87,26 @@ typedef enum {
                                        check failed; see out->bad_instance   */
     DNAC_BV_ERR_LOOKUP_SUM = -8,    /* LookupError — the flat cross-AIR sum of
                                        the committed terminals is non-zero    */
+    DNAC_BV_ERR_OOD_POINT_IN_DOMAIN = -9,
+        /* OodPointInDomain (S2'-d2; v0.6.2 batch-stark/src/verifier/data.rs).
+         * zeta landed ON the trace domain, where the vanishing polynomial is
+         * zero. Upstream added this because `inv_vanishing` would PANIC there;
+         * in C it is worse than a panic — gold_fp2_inv(0) returns (0,0) by the
+         * documented contract (field_goldilocks.c:257-266, inheriting the base
+         * gold_fp_inv(0) == 0 contract at :176-181), so the final check
+         * degenerates to `acc · 0 == quotient` and passes for ANY acc whenever
+         * the prover opens the quotient to zero. That is a fail-OPEN of the
+         * whole constraint system. Honest Fiat-Shamir reaches it only with
+         * probability |H| / |EF| — at the SHIPPED shielded parameters that is
+         * 2^10 / ~2^127.9 ~ 2^-118 (DNAC_SHIELDED_BASE_LOG_HEIGHT = 10,
+         * shielded_fri_params.h:201), so this
+         * is a grinding bound, not a live break — but it is free to close. */
+    DNAC_BV_ERR_HEIGHT_BOUND = -10,
+        /* MultiplicityHeightBoundExceeded (S2'-d2; v0.6.2 lookup/src/types.rs
+         * :246-271, called from verifier/mod.rs:146-149). Sum_i w_i·h_i >= p,
+         * so a LogUp multiplicity could wrap modulo p and be forged. DNAC had
+         * the checker since P2L-b but only ever called it from tests; v0.6.2
+         * moved it ONTO the verify path. */
 } dnac_batch_verify_status_t;
 
 /* Per-instance verifier description — the (air, lookups) bundle the

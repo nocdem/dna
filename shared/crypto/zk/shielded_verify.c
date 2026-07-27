@@ -243,7 +243,16 @@ dnac_shielded_verify_status_t dnac_shielded_verify_statement(
             rc = DNAC_SHIELDED_VERIFY_ERR_FRI;
             break;
         case DNAC_BV_ERR_OOD:
-        case DNAC_BV_ERR_LOOKUP_SUM: /* no lookups — cannot fire, map defensively */
+        case DNAC_BV_ERR_OOD_POINT_IN_DOMAIN:
+            /* S2'-d2: the sibling of ERR_OOD — zeta landed ON the trace domain,
+             * so the constraint identity could not be evaluated at all. Same
+             * class, and it MUST be listed: falling through to `default` would
+             * have reported a constraint failure as a SHAPE error. */
+        case DNAC_BV_ERR_LOOKUP_SUM:
+        case DNAC_BV_ERR_HEIGHT_BOUND:
+            /* Neither can fire here — the shielded instance declares no lookups
+             * (vi.view is zeroed, num_globals == 0) — but both are lookup-class
+             * failures and are mapped defensively rather than left to default. */
             rc = DNAC_SHIELDED_VERIFY_ERR_CONSTRAINTS;
             break;
         default: /* SHAPE / RANDOMIZATION / PARAM / OOM / NULL */

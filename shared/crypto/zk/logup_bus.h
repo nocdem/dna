@@ -30,11 +30,16 @@
  *   dnac_logup_bus_verify_global_sums is DELETED rather than kept as dead code
  *   implying a protection that now lives elsewhere. The KAT pins both
  *   directions (cross_bus_cancel / cross_bus_separated).
- *   - the height-bound OFFLINE precondition Σ count_weight·height < p
- *     (builder.rs:33-38 doc contract; red-team F4: count_weight is stored
- *     and NEVER computed anywhere in Plonky3 82cfad73 — the runtime
- *     verifier will NOT catch a violation, so configs must be checked with
- *     dnac_logup_bus_check_height_bound at parameter-freeze time).
+ *   - the height-bound check Σ count_weight·height < p (builder.rs:33-38 doc
+ *     contract; red-team F4). ⚠ NO LONGER OFFLINE-ONLY (S2'-d2): at 82cfad73
+ *     count_weight was stored and never computed anywhere in Plonky3, so the
+ *     runtime verifier could not catch a violation and a parameter freeze had
+ *     to. v0.6.2 MOVED the check onto the verify path
+ *     (lookup/src/types.rs:246-271, called from verifier/mod.rs:146-149) and
+ *     dnac_batch_verify follows — it now runs on every proof, before any
+ *     transcript work. The freeze-time call remains useful as an earlier,
+ *     cheaper check, but it is no longer the only thing standing between a bad
+ *     config and a forgeable multiplicity.
  * NOT in scope here: the batch-stark proof shape / transcript priming order
  * (P2L-c), prover/verifier/wire integration (P2L-d).
  *
@@ -64,8 +69,10 @@ extern "C" {
 #endif
 
 /* Additional error code (extends the DNAC_LOGUP_* set in logup.h). */
-#define DNAC_LOGUP_ERR_HEIGHT_BOUND (-7) /* Σ weight·height >= p (F4
-                                            offline precondition violated) */
+#define DNAC_LOGUP_ERR_HEIGHT_BOUND (-7) /* Σ weight·height >= p — a LogUp
+                                            multiplicity could wrap mod p.
+                                            Enforced on the verify path since
+                                            S2'-d2, not offline-only. */
 
 /* ============================================================================
  * Bus view — the per-instance shape the bus-level operations need
@@ -79,9 +86,12 @@ typedef struct {
     uint32_t             num_locals;
     uint32_t             num_globals;
     const char *const   *global_bus_names;     /* [num_globals], column order */
-    const uint32_t      *global_count_weights; /* [num_globals]; may be NULL
-                                                  if only used for challenge
-                                                  assignment / grouping      */
+    const uint32_t      *global_count_weights; /* [num_globals].
+        REQUIRED whenever num_globals > 0 on the dnac_batch_verify path
+        (S2'-d2): the multiplicity height bound is now enforced there, so a
+        caller cannot state its global lookups without stating their weights —
+        it fail-closes instead of skipping the bound. Still ignorable for a view
+        used ONLY for challenge derivation, which reads names and counts. */
 } dnac_logup_bus_view_t;
 
 /* ============================================================================
@@ -220,8 +230,12 @@ uint32_t dnac_logup_bus_max_message_width(
  * Checks Σ over all GLOBAL interactions of count_weight · height(instance)
  * < p (Goldilocks). Overflow-safe accumulation (each u32·u32 product fits
  * u64; the running sum fail-closes the moment it reaches p). This is a
- * CONFIG-TIME check — the runtime verifier does NOT enforce it (F4), so a
- * parameter freeze MUST call this. Views must carry global_count_weights.
+ * ⚠ THIS IS NO LONGER CONFIG-TIME ONLY (S2'-d2). dnac_batch_verify calls it on
+ * every proof (v0.6.2 parity — verifier/mod.rs:146-149). The comment here used
+ * to say "the runtime verifier does NOT enforce it", which was true at 82cfad73
+ * and is false now. Calling it at parameter-freeze time is still worthwhile —
+ * it fails earlier and cheaper — but it is no longer the only enforcement.
+ * Views MUST carry global_count_weights whenever num_globals > 0.
  * ========================================================================== */
 int dnac_logup_bus_check_height_bound(const dnac_logup_bus_view_t *views,
                                       const uint32_t              *heights,

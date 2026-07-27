@@ -256,6 +256,49 @@ dnac_batch_verify_status_t dnac_batch_verify(
         return DNAC_BV_ERR_SHAPE;
     }
 
+    /* ---- 2b. LogUp multiplicity height bound (S2'-d2) --------------------
+     * Sum_i w_i·h_i < p, where w_i is the AIR's total count_weight and h_i its
+     * BASE trace height. Upstream v0.6.2 runs this inside verify_batch
+     * (verifier/mod.rs:146-149, "Soundness: bound LogUp multiplicities so none
+     * wraps modulo p"), immediately before observe_instance_count — i.e. before
+     * ANY transcript work, which is where it sits here too.
+     *
+     * WHY IT MATTERS (lookup/src/types.rs:222-232): a provided entry's
+     * multiplicity equals how many queries hit it, and counted honestly that
+     * never exceeds Sum w_i·h_i. Holding the sum below p is what rules out a
+     * multiplicity WRAPPING modulo p — a wrap would let a prover forge
+     * multiplicities and break the lookup argument.
+     *
+     * DNAC has had the checker since P2L-b but called it ONLY from tests, with
+     * logup_bus.h calling it an offline "parameter-freeze" precondition. That
+     * was a deviation: upstream enforces it on the verify path, so a config that
+     * never went through a freeze step was unprotected.
+     *
+     * Heights are the BASE trace heights (upstream maps base_degree_bits ->
+     * 1 << b); bindings[i].log_degree is exactly base = ext - is_zk.
+     *
+     * Only GLOBAL weights are summed, which matches upstream summing over ALL
+     * lookups: intra-AIR lookups always carry count_weight 0 (types.rs:45-51),
+     * and logup_bus.c enforces that rather than assuming it. */
+    {
+        uint32_t heights[BV_MAX_INSTANCES];
+        for (uint32_t i = 0; i < n; i++) {
+            if (bindings[i].log_degree >= 32) return DNAC_BV_ERR_SHAPE;
+            heights[i] = 1u << bindings[i].log_degree;
+        }
+        const int hb = dnac_logup_bus_check_height_bound(views, heights, n);
+        if (hb == DNAC_LOGUP_ERR_HEIGHT_BOUND) {
+            return DNAC_BV_ERR_HEIGHT_BOUND;
+        }
+        if (hb != DNAC_LOGUP_OK) {
+            /* Missing global_count_weights on an instance that declares
+             * globals: the caller cannot state its lookups without stating
+             * their weights, so this fail-closes rather than skipping the
+             * bound. See logup_bus.h — the field is REQUIRED on this path. */
+            return DNAC_BV_ERR_NULL;
+        }
+    }
+
     /* ---- 3. full batched priming (:143-300) ---- */
     uint32_t total_ch = 0;
     for (uint32_t i = 0; i < n; i++) total_ch += 2u * insts[i].num_lookups;
@@ -629,6 +672,17 @@ rand_shape:
 
         const dnac_stark_selectors_t sels =
             dnac_stark_selectors_at_point(zeta, bindings[i].log_degree);
+
+        /* OodPointInDomain (S2'-d2) — upstream v0.6.2 puts this at the TOP of
+         * verify_constraints_with_lookups (batch-stark/src/verifier/data.rs),
+         * i.e. before any selector is consumed, and so does this. See
+         * DNAC_BV_ERR_OOD_POINT_IN_DOMAIN in batch_verify.h for why the C form
+         * is a fail-OPEN rather than upstream's panic. */
+        if (dnac_stark_zeta_in_domain(&sels)) {
+            if (out) out->bad_instance = i;
+            free(ch_flat);
+            return DNAC_BV_ERR_OOD_POINT_IN_DOMAIN;
+        }
 
         /* zero-windows (:563-581). */
         gold_fp2_t tzeros[DNAC_STARK_MAX_MAIN_WIDTH];

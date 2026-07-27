@@ -26,6 +26,7 @@
 #ifndef DNAC_ZK_STARK_CONSTRAINTS_H
 #define DNAC_ZK_STARK_CONSTRAINTS_H
 
+#include <stdbool.h>
 #include <stddef.h>
 
 #include "field_goldilocks.h"
@@ -47,6 +48,12 @@ typedef enum {
      *  trace_next presence (verifier.rs:327-358). Reserved for the S4 glue; the S3
      *  primitives do not emit it. */
     DNAC_STARK_VERIFY_ERR_SHAPE = 2,
+    /* OodPointInDomain (S2'-d2; v0.6.2 batch-stark/src/verifier/data.rs).
+     * zeta is ON the trace domain, so the vanishing polynomial is zero and
+     * inv_vanishing = gold_fp2_inv(0) = (0,0) by contract — the final check
+     * would collapse to `folded · 0 == quotient` and accept ANY folded value
+     * against a zero quotient. Fail-close instead. */
+    DNAC_STARK_VERIFY_ERR_OOD_POINT_IN_DOMAIN = 3,
 } dnac_stark_verify_status_t;
 
 /* ============================================================================
@@ -80,6 +87,26 @@ typedef struct {
  */
 dnac_stark_selectors_t dnac_stark_selectors_at_point(gold_fp2_t zeta,
                                                      size_t base_degree_bits);
+
+/* ============================================================================
+ * OodPointInDomain predicate (S2'-d2)
+ *
+ * True iff zeta lies ON the trace domain, i.e. the vanishing polynomial
+ * Z_gH(zeta) is zero. `sels.z_h` IS that polynomial: upstream defines
+ * vanishing_poly_at_point(z) = (z·shift^-1)^|H| - 1 (v0.6.2
+ * commit/src/domain.rs:249-253) and DNAC computes exactly that with shift = ONE
+ * (stark_constraints.c, two_adic_pcs.rs:286 pin).
+ *
+ * WHY A SHARED PREDICATE AND NOT AN INLINE COMPARE. DNAC has TWO constraint
+ * verify entries where upstream has one — dnac_batch_verify and
+ * dnac_stark_verify_constraints{,_nchunk}. A literal port would guard only the
+ * batched one and leave the other consuming inv_vanishing unchecked. Both call
+ * this, so the guard closes the CLASS rather than the caller (the same reason
+ * S2'-d moved the salt pin down into the batch layer).
+ *
+ * Takes the ALREADY-COMPUTED selectors, so no field arithmetic is repeated and
+ * the predicate cannot drift from the z_h the caller actually folds with. */
+bool dnac_stark_zeta_in_domain(const dnac_stark_selectors_t *sels);
 
 /* ============================================================================
  * Quotient recomposition — num_qc=1 (all degree-2 DNAC/fib/square AIRs).

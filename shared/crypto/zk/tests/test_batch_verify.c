@@ -35,6 +35,7 @@
 #include <string.h>
 
 #include "../batch_verify.h"
+#include "../stark_constraints.h"
 #include "batch_test_util.h" /* d4.d: the SHARED fixture set (was duplicated
                               * verbatim below — serde decoders, fri_fixture_t /
                               * build_fri_proof, rand_fixture_t /
@@ -419,6 +420,92 @@ int main(int argc, char **argv)
                                            gold_fp2_from_base(gold_fp_one()));
     CHECK(run_scenario(neg, &out) == DNAC_BV_ERR_FRI,
           "N5 tampered terminal must fail in FRI");
+
+    /* N4b (S2'-d2): zeta ON the trace domain -> OodPointInDomain.
+     * zeta is Fiat-Shamir-sampled inside dnac_batch_verify, so it cannot be set
+     * from here; instead shrink the instance's degree_bits until the SAMPLED
+     * zeta happens to satisfy zeta^(2^bdb) == 1. At bdb == 0 the trace domain is
+     * the single point {1} and z_h = zeta^1 - 1, which is zero only for
+     * zeta == 1 — still not reachable. So this negative drives the PREDICATE
+     * directly rather than pretending to drive the verifier: it is the one piece
+     * of the guard that is testable without grinding Fiat-Shamir, and the
+     * ~2^-115 unreachability through dnac_batch_verify is exactly why the guard
+     * is cheap insurance rather than a live fix. */
+    {
+        dnac_stark_selectors_t s_ok = dnac_stark_selectors_at_point(
+            gold_fp2_new(gold_fp_from_u64(12345), gold_fp_from_u64(678)), 3);
+        CHECK(!dnac_stark_zeta_in_domain(&s_ok),
+              "N4b off-domain zeta must NOT trip the guard");
+        /* zeta = 1 is on EVERY trace domain: z_h = 1^(2^bdb) - 1 = 0. */
+        dnac_stark_selectors_t s_bad =
+            dnac_stark_selectors_at_point(gold_fp2_one(), 3);
+        CHECK(gold_fp2_eq(s_bad.z_h, gold_fp2_zero()),
+              "N4b zeta=1 must give a zero vanishing polynomial");
+        CHECK(dnac_stark_zeta_in_domain(&s_bad),
+              "N4b on-domain zeta must trip the guard");
+        /* and the fail-open it prevents: inv_vanishing is 0, not a trap. */
+        CHECK(gold_fp2_eq(s_bad.inv_vanishing, gold_fp2_zero()),
+              "N4b inv_vanishing at a zero z_h is 0 (the fail-open)");
+    }
+
+    /* N4c (S2'-d2): the LogUp multiplicity height bound is enforced ON the
+     * verify path now. Driven in two parts below: (i) the wiring and its
+     * fail-close through the REAL verify path, and (ii) the bound itself,
+     * driven directly — inflating the fixture's count_weight cannot reach p,
+     * for the reasons spelled out at (ii). */
+    {
+        CHECK(load_scenario(js_lut, neg), "N4c load");
+        const uint32_t *saved = neg->insts[0].view.global_count_weights;
+        /* (i) It is WIRED and fail-CLOSES: an AIR that declares globals but no
+         *     weights cannot have its bound evaluated, so the verify must
+         *     reject rather than skip the check. */
+        neg->insts[0].view.global_count_weights = NULL;
+        CHECK(run_scenario(neg, &out) == DNAC_BV_ERR_NULL,
+              "N4c missing weights must fail closed, not skip the bound");
+        neg->insts[0].view.global_count_weights = saved;
+
+        /* (ii) The bound itself fires at realistic maxima — driven directly,
+         *      because it CANNOT be reached through this fixture. Arithmetic:
+         *      count_weight is u32 and the batch layer caps log_degree < 32, so
+         *      ONE term is at most (2^32-1)·2^31 = 2^63 - 2^31, still under
+         *      p = 2^64 - 2^32 + 1. TWO such terms give exactly p - 1, which
+         *      still PASSES — so THREE maximal terms are the minimum that fires,
+         *      which is why the direct drive below uses three. The accumulator
+         *      loops over GLOBAL LOOKUPS, not instances (logup_bus.c), so one
+         *      instance with three globals would do; the blocker here is simply
+         *      that the only fixture with globals uses weight 1 against base
+         *      heights 4 and 8, i.e. a sum of 12.
+         *
+         * ⚠ COVERAGE DISCLOSED: the batch-layer mapping
+         *   DNAC_LOGUP_ERR_HEIGHT_BOUND -> DNAC_BV_ERR_HEIGHT_BOUND is
+         *   consequently NOT exercised end-to-end here. The underlying check is
+         *   boundary-tested (p-1 OK / p FAIL) in test_logup_bus.c; what follows
+         *   pins that the same inputs dnac_batch_verify would hand it do trip
+         *   it. Exercising the mapping end-to-end needs a fixture carrying
+         *   >= 3 near-maximal (weight x height) global terms, which no current
+         *   vector provides — and on the consensus path it is unreachable by
+         *   construction, since the shielded view is built by the verifier
+         *   itself and declares no globals at all. */
+        {
+            static const char *const nm[1] = { "LUT" };
+            static const uint32_t wmax[1] = { 0xFFFFFFFFu };
+            dnac_logup_bus_view_t v3[3];
+            uint32_t h3[3];
+            for (int k = 0; k < 3; k++) {
+                v3[k].num_locals = 0;
+                v3[k].num_globals = 1;
+                v3[k].global_bus_names = nm;
+                v3[k].global_count_weights = wmax;
+                h3[k] = 1u << 31;               /* the cap the batch layer allows */
+            }
+            CHECK(dnac_logup_bus_check_height_bound(v3, h3, 3) ==
+                      DNAC_LOGUP_ERR_HEIGHT_BOUND,
+                  "N4c 3 x (2^32-1)*2^31 must exceed p");
+            h3[0] = 1u; h3[1] = 1u; h3[2] = 1u;
+            CHECK(dnac_logup_bus_check_height_bound(v3, h3, 3) == DNAC_LOGUP_OK,
+                  "N4c the same weights at height 1 must pass");
+        }
+    }
 
     /* N5b: the presence discriminant itself is load-bearing — an AIR that
      * declares lookups but omits its terminal is TerminalPresenceMismatch,
