@@ -197,8 +197,10 @@ int main(int argc, char **argv) {
                 continue;
             }
             const size_t widths[1] = {S3_RAND_W};
+            /* `proof` came from open_batch, so its `depth` IS the length of
+             * `sib` — the path-object contract (poseidon2_mmcs.h). */
             if (dnac_p2_mmcs_verify(&root_expect, rows, widths, 1, S3_LDE_H,
-                                    idx[k], sib, 5) != DNAC_P2M_OK) {
+                                    idx[k], &proof) != DNAC_P2M_OK) {
                 bad++;
             }
         }

@@ -1,4 +1,4 @@
-# RESUME — DNAC v3 ZK stack (CURRENT STATUS: 2026-07-22)
+# RESUME — DNAC v3 ZK stack (CURRENT STATUS: 2026-07-27)
 
 > **This top block is authoritative and current. Everything under "═══ HISTORICAL
 > BUILD LOG ═══" is the traceable module-by-module history and its numbers
@@ -644,6 +644,105 @@
   The only working-tree items deliberately left OUT of the commit are unrelated
   and pre-existing: `Testing/`, `cpunk/cpunk.io/js/`, `dnac/tests/test_stress.c`,
   `docs/2026-07-08-project-assessment.md`, `scripts/punk-daily-summary.*`.
+- **S2'-d ✅ COMPLETE (2026-07-27, this working tree) — the FRI/MMCS verify
+  surface hardening that the v0.6.2 migration's red-team surfaced.** Six items,
+  all landed; the first three shipped earlier in the day, the last three had to
+  land as ONE block because the signature change makes half of it uncompilable.
+  Consensus-INERT throughout (type-11 still REJECT-unconditional,
+  `nodus_witness_verify.c:750-753`) but consensus-LINKED (the changed sources
+  compile into libnodus, `nodus/CMakeLists.txt:192/194/222/223`), so everything
+  here goes live the moment C3 flips shielded admission on.
+  - **Fail-open #1 — empty batch skipped the MMCS verify entirely.**
+    `have_height` stayed false at `cw->num_matrices == 0`, gating OUT the whole
+    verify block; upstream calls `input_mmcs.verify_batch` unconditionally
+    (82cfad73 fri/src/verifier.rs:590-597). Now fail-close in `dnac_fri_verify`
+    itself, since that is a public entry.
+  - **Fail-open #2 — a matrix opened at ZERO points had an unchecked row
+    width.** The only width check lives inside the point loop, which never runs
+    at `num_points == 0`, while the row is already hashed into the flat leaf.
+    Upstream: `MatrixWithoutOpeningPoints` (v0.6.2 verifier.rs:698-707).
+  - **Fail-open #3 — `z == x` silently DELETED a matrix's claim.**
+    `gold_fp_inv(0)` returns 0 by its own documented contract
+    (`field_goldilocks.c:170-181`), so the quotient became 0, every term
+    vanished, and those claimed evaluations were never tested against anything —
+    while `alpha_pow` advanced normally. Upstream rejects instead
+    (`OpeningPointMatchesQueryPoint`, v0.6.2 verifier.rs:642-662, where the
+    equivalent would panic in `batch_multiplicative_inverse`).
+  - **Heap overread — the Merkle path length never crossed the API boundary.**
+    `opening_proof.depth` was decoded from the wire and the siblings array
+    allocated to exactly that (`fri_proof_codec.c:352-360`, whose own comment
+    admits it "does NOT check depth == verifier-derived height"), but the walk
+    was bounded by the depth the VERIFIER derived — and `.depth` was read
+    nowhere in the tree. Patch it 13 → 1 and the MMCS read 384 bytes past a
+    32-byte allocation, with nothing to catch it (query proofs are never
+    observed into the transcript, so the PoW witness still validated). The
+    verdict stayed deterministic (ROOT_MISMATCH) so this was memory-safety, not
+    a soundness break — but Android is a declared target and its hardened
+    allocator turns that into a probabilistic SIGSEGV.
+    **FIX: `dnac_p2_mmcs_verify` / `_mixed` now take a `const dnac_p2_proof_t *`**
+    — pointer and length inseparable, the C form of upstream's
+    `opening_proof: &[Digest]` — and enforce
+    `proof->depth == log2(height)` exactly as upstream's WrongHeight does
+    (82cfad73 mmcs.rs:1110-1116, unchanged at v0.6.2 mmcs/batch.rs:174-179).
+    24 call sites converted; `leaf_index`/`num_matrices` are documented as NOT
+    read (the verifier derives both). Every producer already set `.depth`
+    correctly — the bug was purely that the verifier threw it away.
+  - **Row-width authority — half constant, half wire.** Under the Poseidon2
+    PaddingFreeSponge the leaf is a flat, separator-free stream, so a row
+    boundary is only as authenticated as the width the verifier asserts;
+    `num_claimed_evals = BASE_LEN + tail` made half of it prover-chosen. A
+    same-height group could be REPARTITIONED at constant total — the 8 quotient
+    rows as 7,5,6,6,6,6,6,6 instead of 6×8 — for a byte-identical leaf under the
+    same committed root. **FIX: `dnac_batch_verify` gained two REQUIRED pins,
+    `num_random_codewords` and `salt_elems`**, mirroring the prover's own
+    parameters (`batch_prover.h`). The salt pin MOVED DOWN from
+    `shielded_verify.c` (where it guarded one entry) into the decode → verify
+    pair itself, so P2 recursion cannot inherit the hole; `shielded_fri_params.h`
+    gains `DNAC_SHIELDED_NUM_RANDOM 4` next to `DNAC_SHIELDED_SALT_ELEMS 2`,
+    CT-asserted against the prover's `A_NUM_RANDOM`.
+    ⚠ **STRICTER THAN UPSTREAM, deliberately — not a port.** Plonky3's hiding
+    PCS checks only the NESTING SHAPE of the random openings (round/matrix/point
+    counts, v0.6.2 hiding_pcs.rs:398-428); the per-point tail LENGTH is never
+    pinned, and verifier.rs:698-711 pins width to `values.len()` = public + that
+    unpinned tail. The reference carries the same freedom.
+  - **FriError mirror completed to v0.6.2.** Upstream added EIGHT variants and
+    dropped one between the two pins. All eight are declared (21-28, appended —
+    the enum is DNAC-internal and crosses no wire, so renumbering would buy
+    nothing); three bind to guards DNAC already had (`ZeroQueries`,
+    `GlobalMaxHeightTooLarge`, `MatrixWithoutOpeningPoints`), one brings the new
+    `z == x` guard, and four are declared-but-unraised with the reason written
+    at each (`GlobalMaxHeightMismatch` is DEFERRED as its own item — DNAC has
+    only a one-sided post-transcript version; the three `HidingRandomOpening*`
+    live in `dnac_batch_verify`'s status enum, not FriError). `InvalidProofShape`
+    is KEPT despite upstream removing it — DNAC raises it for local bound checks.
+  - **Bound tightened 64 → `GOLDILOCKS_TWO_ADICITY` (32).** The old bound only
+    closed shift-count UB and left 33..63 accepted, and there
+    `gold_fp_two_adic_generator` returns `gold_fp_one()`
+    (`field_goldilocks.c:206-209`) — it does not panic, it degrades. What
+    degenerates is the FRI TERMINAL point (`two_adic_generator(lgmh)^rev`, no
+    generator coset factor): past 32 it is 1 for every query, so the final
+    polynomial is only ever tested at ONE fixed point. Upstream bounds by
+    `Val::TWO_ADICITY` for the same reason (v0.6.2 verifier.rs:258-268).
+    Honest shielded lgmh is **13** (log_blowup 2 + log_final_poly_len **0** +
+    sum_la 11), and the prover rejects `degree_bits >= 30` outright.
+  - **NO VECTOR CHANGES.** Every fix only rejects malformed proofs; the prover
+    emits exactly `nrc` on non-preprocessed points and 0 on preprocessed ones,
+    so honest behaviour is byte-identical. This is what let the block land green
+    on its own, ahead of the rest of the v0.6.2 C re-port.
+  - **New negatives:** `test_batch_wire` N10-N14 (short input-batch path, short
+    commit-phase path, tail repartition at constant total, wrong salt pin, wrong
+    nrc pin) driven on the LIVE decoded package with per-guard coverage
+    assertions — 74 → **96 checks**; `test_fri_verifier_valid` 6 → **8/8** ERRCHK
+    cases, the `z == x` one re-deriving the query point independently of
+    `fri_verifier.c`.
+  - **O9 (ORCHESTRATOR-run):** zk `make clean && make test` exit 0, **70
+    binaries, 0 warnings, ALL GATES GREEN**; nodus cmake+make 0 warnings, **ctest
+    132/132** (`test_zk_link` Passed); messenger 0 warnings, libdna.so built.
+    No version bump (consensus-inert, C1 precedent).
+  - **Still open from this thread:** the `GlobalMaxHeightMismatch` two-sided
+    cross-check; then F1 (challenger prefix-free port, regen vector in the
+    session scratchpad), F2 (`generate_permutation` rewrite, aux width
+    `num_lookups + 1`), then S2'-c remainder → S2'-e → S2'-f (32 vectors).
 - **What it is:** a **prove + verify** STARK range/balance-proof stack over the
   Goldilocks field — Plonky3-grounded C ports of the verifier engine (field,
   NTT, Keccak-AIR, SHA3 sponge, transcript, Merkle-MMCS, FRI fold + verifier,

@@ -89,8 +89,12 @@ extern "C" {
 typedef enum {
     DNAC_FRI_OK = 0,                                       /* Ok(())                                */
 
-    DNAC_FRI_ERR_INVALID_PROOF_SHAPE = 1,                 /* InvalidProofShape (hiding-pcs only;   */
-                                                          /*   not reachable in DNAC path)         */
+    DNAC_FRI_ERR_INVALID_PROOF_SHAPE = 1,                 /* InvalidProofShape — REMOVED upstream  */
+                                                          /*   at v0.6.2 (split into the per-shape */
+                                                          /*   Hiding* variants at 26-28). KEPT:   */
+                                                          /*   DNAC raises it for its own local    */
+                                                          /*   bound checks (num_betas >           */
+                                                          /*   FRI_MAX_ROUNDS; agg-prover shape).  */
     DNAC_FRI_ERR_QUERY_COMMIT_PHASE_OPENINGS_COUNT_MISMATCH = 2,  /* QueryCommitPhaseOpeningsCountMismatch */
     DNAC_FRI_ERR_QUERY_LOG_ARITIES_MISMATCH = 3,          /* QueryLogAritiesMismatch               */
     DNAC_FRI_ERR_COMMIT_POW_WITNESS_COUNT_MISMATCH = 4,   /* CommitPowWitnessCountMismatch         */
@@ -112,17 +116,102 @@ typedef enum {
     DNAC_FRI_ERR_INVALID_POW_WITNESS = 19,                /* InvalidPowWitness                     */
 
     /* DNAC-specific pre-consensus safety guard (NOT a Plonky3 mirror variant).
-     * Rejects wire-supplied FRI params that are degenerate or would cause
-     * undefined behavior in the verifier, independent of the chosen security
-     * level: num_queries == 0 (the low-degree test never runs — an accept-any-
-     * garbage downgrade), or log_global_max_height >= 64 (shift-count UB feeding
-     * transcript sample_bits / domain_index >>= sum_la → nondeterministic verdict
-     * across builds = chain-split class). (Mixed-height input batches verify via
-     * the d1a mixed MMCS since P2L-d d2 — no longer rejected here.)
+     * Rejects a wire-supplied FRI shape that is degenerate or would cause
+     * undefined behavior, independent of the chosen security level.
+     * SCOPE NARROWED at S2'-d (2026-07-27): the two guards this used to carry —
+     * num_queries == 0 and the log_global_max_height bound — moved to the
+     * variants upstream gave them, ZERO_QUERIES (21) and
+     * GLOBAL_MAX_HEIGHT_TOO_LARGE (22), and the height bound was tightened from
+     * >= 64 to > GOLDILOCKS_TWO_ADICITY at the same time. What is left here is
+     * the per-batch overshoot check `max_log_height > log_global_max_height`,
+     * whose only job is to stop `log_global_max_height - max_log_height` from
+     * underflowing size_t into shift-count UB (a chain-split class: two builds
+     * can diverge on identical bytes). Upstream's nearest equivalent is the
+     * two-sided GlobalMaxHeightMismatch (25) — see the note there.
+     * (Mixed-height input batches verify via the d1a mixed MMCS since P2L-d d2
+     * — no longer rejected here.)
      * A FULL production param pin (exact-match to a grounded secure
      * FriParameters set) remains a MUST-FIX before consensus wiring — see
      * dnac/docs/plans/2026-07-11-...-design.md §5.4. */
-    DNAC_FRI_ERR_UNSUPPORTED_PARAMS = 20
+    DNAC_FRI_ERR_UNSUPPORTED_PARAMS = 20,
+
+    /* ── v0.6.2 additions (S2'-d, 2026-07-27) ─────────────────────────────
+     * Plonky3 grew EIGHT FriError variants between 82cfad73 and v0.6.2 and
+     * dropped one (`InvalidProofShape`, see the note at value 1). Appended
+     * here rather than interleaved in upstream declaration order: the values
+     * are DNAC-internal (`grep -rn dnac_fri_status_t` outside shared/crypto/zk
+     * is empty — this enum never crosses a wire, a DB or an FFI boundary), so
+     * renumbering would buy nothing and churn every existing site.
+     *
+     * Three of the eight bind to a guard DNAC already had, one brings a NEW
+     * guard, and four are declared-but-unraised — each says which below,
+     * because a mirror enum with a silently-unreachable member is how a
+     * missing check hides. Same convention as value 1. */
+
+    /* RAISED (fri_verifier.c). ------------------------------------------- */
+    DNAC_FRI_ERR_ZERO_QUERIES = 21,
+        /* ZeroQueries (v0.6.2 verifier.rs:44-49, guard :183-188 — "Reject a
+         * vacuous instance before any transcript work"). The query loop never
+         * runs, so ANY final polynomial is accepted. DNAC already rejected
+         * num_queries == 0 (2026-07-12 council red-team, Sun Tzu) but folded it
+         * into UNSUPPORTED_PARAMS; it now has upstream's own name. */
+    DNAC_FRI_ERR_GLOBAL_MAX_HEIGHT_TOO_LARGE = 22,
+        /* GlobalMaxHeightTooLarge (v0.6.2 verifier.rs:56-62, guard :258-268).
+         * Upstream bounds log_global_max_height by Val::TWO_ADICITY (= 32 for
+         * Goldilocks, goldilocks.rs:547) because the query phase evaluates the
+         * final polynomial at a 2^lgmh-th root of unity, which does not exist
+         * past the two-adicity — upstream would panic (goldilocks.rs:550
+         * asserts). DNAC does not panic: gold_fp_two_adic_generator returns
+         * gold_fp_one() for bits > 32 (field_goldilocks.c:206-209) — it
+         * degrades instead. What degenerates is the FRI TERMINAL point, which
+         * is two_adic_generator(lgmh)^rev with no generator coset factor
+         * (fri_verifier.c fri_terminal_horner_eval): past 32 it is 1 for every
+         * query, so the final polynomial is only ever tested at one fixed
+         * point. That is why the bound moved from the old shift-UB value
+         * (>= 64) down to upstream's 32: 64 only stopped undefined behaviour,
+         * 32 stops a meaningless-but-well-defined accept.
+         * Honest shielded lgmh is 13 (log_blowup 2 + log_final_poly_len 0 +
+         * sum_la 11; the prover's log_gmh = ext_db + lb = 11 + 2), and the
+         * prover cannot reach 33 for any instance — it rejects
+         * degree_bits >= 30. */
+    DNAC_FRI_ERR_MATRIX_WITHOUT_OPENING_POINTS = 23,
+        /* MatrixWithoutOpeningPoints (v0.6.2 verifier.rs:92-95, guard
+         * :698-707). A matrix opened at NO points carries no claim that could
+         * pin its width, while its row has already been hashed into the flat
+         * leaf. DNAC began rejecting this earlier in S2'-d as a generic
+         * INPUT_ERROR; this is its proper name. */
+    DNAC_FRI_ERR_OPENING_POINT_MATCHES_QUERY_POINT = 24,
+        /* OpeningPointMatchesQueryPoint (v0.6.2 verifier.rs:133-141, guard
+         * :655-662). NEW guard in DNAC, not a rename — z == x makes the
+         * quotient denominator zero. Upstream would panic inside
+         * batch_multiplicative_inverse; DNAC instead FAILED OPEN, because
+         * gold_fp_inv(0) returns 0 "silently" by its own contract
+         * (field_goldilocks.c:170-181), so quotient == 0 and that matrix's
+         * entire contribution to the reduced opening vanished while alpha_pow
+         * advanced normally — the claimed evaluations at that point were never
+         * tested against anything. */
+
+    /* DECLARED, NOT RAISED — the mirror is complete, the DNAC equivalent
+     * lives elsewhere or the guard is a separate tracked item. ----------- */
+    DNAC_FRI_ERR_GLOBAL_MAX_HEIGHT_MISMATCH = 25,
+        /* GlobalMaxHeightMismatch (v0.6.2 verifier.rs:54-55, guard :278-289):
+         * lgmh derived from the FOLD schedule must EQUAL the max over the
+         * commitments of log2(domain.size()) + log_blowup. DNAC has only the
+         * one-sided, per-batch overshoot check (fri_verifier.c, feeding
+         * UNSUPPORTED_PARAMS) and it runs after the transcript rather than
+         * before. Adding the two-sided pre-check is a behaviour change on the
+         * fixtures and was DEFERRED out of S2'-d deliberately (own item). */
+    DNAC_FRI_ERR_HIDING_RANDOM_OPENING_ROUND_COUNT_MISMATCH = 26,
+    DNAC_FRI_ERR_HIDING_RANDOM_OPENING_MATRIX_COUNT_MISMATCH = 27,
+    DNAC_FRI_ERR_HIDING_RANDOM_OPENING_POINT_COUNT_MISMATCH = 28
+        /* The three hiding-PCS shape errors (v0.6.2 verifier.rs:106-124,
+         * guards hiding_pcs.rs:398-428). DNAC does not layer a hiding PCS over
+         * an inner PCS: the merge happens inside dnac_batch_verify, which
+         * checks the FLATTENED equivalent of all three at once
+         * (rand_openings->num_entries == total assembled points) and reports it
+         * as DNAC_BV_ERR_SHAPE, a batch_verify status. Declared here so the
+         * mirror is complete and so the S2'-f vector's variant count lines up
+         * with upstream's 26. */
 } dnac_fri_status_t;
 
 /* ============================================================================

@@ -47,6 +47,32 @@ static int g_fails = 0;
     } while (0)
 
 /* wire_v4 hex string → malloc'd bytes (caller frees). */
+/* S2'-d: the two hiding-preimage counts dnac_batch_verify now requires,
+ * derived from a decoded package (this test has no protocol constant of its
+ * own — see the call site). NOT pins: the pins are the consensus constants
+ * stated at the shielded entry. */
+static uint32_t wire_derive_nrc(const dnac_batch_wire_package_t *pkg)
+{
+    const dnac_batch_rand_openings_t *ro = dnac_batch_wire_rand_openings(pkg);
+    uint32_t nrc = 0;
+    if (ro) {
+        for (uint32_t e = 0; e < ro->num_entries; e++) {
+            if (ro->lens[e] > nrc) nrc = ro->lens[e];
+        }
+    }
+    return nrc;
+}
+
+static size_t wire_derive_salt_elems(const dnac_batch_wire_package_t *pkg)
+{
+    const dnac_fri_proof_t *pf = dnac_batch_wire_proof(pkg);
+    if (pf && pf->num_query_proofs > 0 &&
+        pf->query_proofs[0].num_input_batches > 0) {
+        return pf->query_proofs[0].input_proof[0].salt_elems;
+    }
+    return 0;
+}
+
 static uint8_t *wire_from_hex(const jv_t *v, size_t *out_len)
 {
     if (!v || v->kind != JV_STR) return NULL;
@@ -97,6 +123,9 @@ int main(int argc, char **argv)
     static pscenario_t sc;
     uint8_t *first_wire = NULL; /* scenario-0 wire kept for the negatives */
     size_t first_len = 0;
+    /* S2'-d gate-2b coverage counters: a guard that never fired on any
+     * scenario is an untested guard, so the run asserts each was exercised. */
+    int n10_seen = 0, n11_seen = 0, n12_seen = 0, n13_seen = 0, n14_seen = 0;
 
     for (size_t s = 0; s < scens->n; s++) {
         const jv_t *js = scens->items[s];
@@ -132,15 +161,123 @@ int main(int argc, char **argv)
             if (sc.insts[i].preprocessed_width > 0) prep_map[num_prep++] = i;
         }
 
+        /* S2'-d: dnac_batch_verify REQUIRES the two hiding-preimage counts.
+         * This test round-trips a WIRE package and has no protocol constant to
+         * state, so it derives both from the decoded proof and leaves it to
+         * dnac_batch_verify to reject anything not self-consistent. The real
+         * pin is DNAC_SHIELDED_NUM_RANDOM / DNAC_SHIELDED_SALT_ELEMS at the
+         * shielded entry; N10-N12 below prove that stating a value the package
+         * does not honour rejects. */
+        const uint32_t nrc = wire_derive_nrc(pkg);
+        const size_t   se  = wire_derive_salt_elems(pkg);
+
         /* ---- gate 2: decoded package verifies end-to-end ---- */
         dnac_batch_verify_out_t out;
         memset(&out, 0, sizeof(out));
         dnac_batch_verify_status_t vs = dnac_batch_verify(
             sc.insts, dnac_batch_wire_opened(pkg), sc.n, sc.is_zk,
             dnac_batch_wire_commits(pkg), num_prep ? prep_map : NULL,
-            num_prep, dnac_batch_wire_params(pkg),
+            num_prep, dnac_batch_wire_params(pkg), nrc, se,
             dnac_batch_wire_proof(pkg), dnac_batch_wire_rand_openings(pkg),
             &out);
+        /* ---- gate 2b (S2'-d): the three rejections this slice added, driven
+         * on the LIVE decoded package. Every mutation below decodes cleanly
+         * and verified GREEN before S2'-d, so each is a true regression test:
+         * it can only pass with the fix in place. Each is reverted right
+         * after, so gate 3 still re-encodes the pristine package. ---- */
+        if (vs == DNAC_BV_OK) {
+            dnac_fri_proof_t *mp = (dnac_fri_proof_t *)
+                (uintptr_t)dnac_batch_wire_proof(pkg);
+            dnac_batch_verify_out_t o2;
+#define WIRE_REVERIFY(NRC, SE)                                                \
+            (memset(&o2, 0, sizeof(o2)),                                      \
+             dnac_batch_verify(sc.insts, dnac_batch_wire_opened(pkg), sc.n,   \
+                               sc.is_zk, dnac_batch_wire_commits(pkg),        \
+                               num_prep ? prep_map : NULL, num_prep,          \
+                               dnac_batch_wire_params(pkg), (NRC), (SE),      \
+                               dnac_batch_wire_proof(pkg),                    \
+                               dnac_batch_wire_rand_openings(pkg), &o2))
+
+            /* N10 — input-batch Merkle path length. The siblings array is
+             * allocated to exactly this WIRE field (fri_proof_codec.c) while
+             * the walk used to be bounded by the verifier-DERIVED height, so
+             * shrinking it was invisible to the verifier and made the MMCS
+             * read past the end of the allocation. */
+            if (mp && mp->num_query_proofs > 0 &&
+                mp->query_proofs[0].num_input_batches > 0) {
+                dnac_fri_batch_opening_t *bo = (dnac_fri_batch_opening_t *)
+                    (uintptr_t)&mp->query_proofs[0].input_proof[0];
+                uint32_t save = bo->opening_proof.depth;
+                if (save > 0) {
+                    bo->opening_proof.depth = save - 1;
+                    CHECK(WIRE_REVERIFY(nrc, se) != DNAC_BV_OK,
+                          "%s N10: short input-batch Merkle path accepted", nm);
+                    bo->opening_proof.depth = save;
+                    n10_seen++;
+                }
+            }
+
+            /* N11 — same field on a commit-phase step. */
+            if (mp && mp->num_query_proofs > 0 &&
+                mp->query_proofs[0].num_commit_phase_openings > 0) {
+                dnac_fri_commit_phase_proof_step_t *st =
+                    (dnac_fri_commit_phase_proof_step_t *)(uintptr_t)
+                        &mp->query_proofs[0].commit_phase_openings[0];
+                uint32_t save = st->opening_proof.depth;
+                if (save > 0) {
+                    st->opening_proof.depth = save - 1;
+                    CHECK(WIRE_REVERIFY(nrc, se) != DNAC_BV_OK,
+                          "%s N11: short commit-phase Merkle path accepted", nm);
+                    st->opening_proof.depth = save;
+                    n11_seen++;
+                }
+            }
+
+            /* N12 — hiding-tail REPARTITION at constant total. Move one value
+             * from one opening point's random tail to another's: the sum is
+             * unchanged, so nothing that only counts lanes can notice, but the
+             * per-row boundary inside the flat MMCS leaf has moved. This is the
+             * attack the descriptor pin exists for (batch_verify.h). */
+            {
+                const dnac_batch_rand_openings_t *cro =
+                    dnac_batch_wire_rand_openings(pkg);
+                if (sc.is_zk && cro && cro->num_entries >= 2 && nrc > 0) {
+                    uint32_t *lens = (uint32_t *)(uintptr_t)cro->lens;
+                    uint32_t a = UINT32_MAX, b = UINT32_MAX;
+                    for (uint32_t e = 0; e < cro->num_entries; e++) {
+                        if (lens[e] != nrc) continue;
+                        if (a == UINT32_MAX) a = e;
+                        else { b = e; break; }
+                    }
+                    if (b != UINT32_MAX) {
+                        lens[a] = nrc - 1;
+                        lens[b] = nrc + 1;   /* total preserved */
+                        CHECK(WIRE_REVERIFY(nrc, se) != DNAC_BV_OK,
+                              "%s N12: repartitioned hiding tail accepted", nm);
+                        lens[a] = nrc;
+                        lens[b] = nrc;
+                        n12_seen++;
+                    }
+                }
+            }
+
+            /* N13 — the caller states a salt count the package does not carry.
+             * Proves the pin is enforced by dnac_batch_verify itself and not
+             * merely by whatever the shielded entry used to check. */
+            CHECK(WIRE_REVERIFY(nrc, se + 1) != DNAC_BV_OK,
+                  "%s N13: mismatched salt_elems pin accepted", nm);
+            n13_seen++;
+
+            /* N14 — likewise for the random-codeword count. */
+            if (sc.is_zk) {
+                CHECK(WIRE_REVERIFY(nrc + 1, se) != DNAC_BV_OK,
+                      "%s N14: mismatched num_random_codewords pin accepted",
+                      nm);
+                n14_seen++;
+            }
+#undef WIRE_REVERIFY
+        }
+
         CHECK(vs == DNAC_BV_OK,
               "%s: verify(decoded) = %d (fri=%d bad_inst=%u bus=%s)", nm,
               (int)vs, (int)out.fri_status, out.bad_instance,
@@ -332,6 +469,17 @@ int main(int argc, char **argv)
     } else {
         CHECK(0, "no scenario-0 wire for the negatives");
     }
+
+    /* Coverage assertions for gate 2b — see the counters' declaration. */
+    CHECK(n10_seen > 0, "N10 never exercised (no input-batch Merkle path)");
+    CHECK(n11_seen > 0, "N11 never exercised (no commit-phase Merkle path)");
+    CHECK(n12_seen > 0,
+          "N12 never exercised — no is_zk scenario with two full hiding tails, "
+          "so the repartition guard is untested");
+    CHECK(n13_seen > 0, "N13 never exercised (salt pin)");
+    CHECK(n14_seen > 0,
+          "N14 never exercised — no is_zk scenario, so the random-codeword pin "
+          "is untested");
 
     jv_free(doc);
     free(fbuf);

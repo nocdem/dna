@@ -179,9 +179,47 @@ typedef struct {
  *                     consistent with insts[i].preprocessed_width (:410-445).
  * @param fri_params   FRI parameters (the consensus pin at the shielded
  *                     entry; fixture params in KATs).
+ * @param num_random_codewords
+ *                     REQUIRED instance pin, no default. The number of hiding
+ *                     random-codeword values appended to EVERY non-preprocessed
+ *                     opening point. Must be 0 when !is_zk. Mirrors the
+ *                     prover's parameter of the same name (batch_prover.h) so
+ *                     both sides read the count from the caller, never from the
+ *                     proof.
+ * @param salt_elems   REQUIRED instance pin, no default. The number of hiding
+ *                     leaf-salt lanes every input-batch opening and every
+ *                     commit-phase step of `fri_proof` must declare. Mirrors
+ *                     the prover's `salt_elems` (batch_prover.h).
  * @param fri_proof    The FRI opening proof (dnac_fri_proof_t).
  * @param rand_openings Random-codeword openings iff is_zk, else NULL.
  * @param out          Optional diagnostics (α, ζ, failure detail).
+ *
+ * WHY THESE TWO ARE PARAMETERS AND NOT DEFAULTS (S2'-d, 2026-07-27):
+ *
+ *   Under the Poseidon2 PaddingFreeSponge leaf hash the whole batch's rows are
+ *   flattened into ONE element stream with no separator, count or length, so
+ *   the digest is a pure function of (lane sequence, total length) and the row
+ *   boundaries are authenticated only by the widths the verifier asserts. Half
+ *   of each width was a protocol constant and half — the hiding tail — was read
+ *   off the wire and compared against another wire field. A prover could
+ *   therefore REPARTITION a same-height group at constant total: declare the 8
+ *   quotient rows as 7,5,6,6,6,6,6,6 instead of 6x8 and obtain a byte-identical
+ *   leaf against the same committed root.
+ *
+ *   Pinning both counts here rather than at one caller is deliberate: the pin
+ *   used to live only in the shielded entry, so any SECOND consumer of the same
+ *   decode -> verify pair (P2 recursion is the one being built) inherited the
+ *   hole. Requiring the caller to state them closes the class.
+ *
+ *   HONEST LABEL — this is STRICTER THAN UPSTREAM, not a port. Plonky3's hiding
+ *   PCS checks only the NESTING SHAPE of the random openings (one set per
+ *   round, per matrix, per point — v0.6.2 fri/src/hiding_pcs.rs:398-428) and
+ *   never the per-point tail LENGTH, and the inner verifier then pins each
+ *   matrix width to `values.len()` (v0.6.2 fri/src/verifier.rs:698-711) which
+ *   is public + that unpinned tail. The reference carries the same freedom.
+ *   Honest proofs are unaffected either way: the prover emits exactly
+ *   num_random_codewords on every non-preprocessed point and 0 on preprocessed
+ *   ones (batch_prover.c BP_OPEN_MAT), so no KAT vector moves.
  */
 dnac_batch_verify_status_t dnac_batch_verify(
     const dnac_batch_vinstance_t     *insts,
@@ -192,6 +230,8 @@ dnac_batch_verify_status_t dnac_batch_verify(
     const uint32_t                   *prep_matrix_to_instance,
     uint32_t                          num_prep_matrices,
     const dnac_fri_params_t          *fri_params,
+    uint32_t                          num_random_codewords,
+    size_t                            salt_elems,
     const dnac_fri_proof_t           *fri_proof,
     const dnac_batch_rand_openings_t *rand_openings,
     dnac_batch_verify_out_t          *out);

@@ -458,12 +458,16 @@ dnac_p2_mmcs_status_t dnac_p2_mmcs_verify_mixed(
     const size_t           *heights,
     size_t                  num_matrices,
     uint64_t                index,
-    const dnac_p2_digest_t *siblings,
-    size_t                  depth)
+    const dnac_p2_proof_t  *proof)
 {
     if (!root || !opened_rows || !widths || !heights || num_matrices == 0 ||
-        (depth > 0 && !siblings))
+        !proof)
         return DNAC_P2M_ERR_PARAM;
+    /* `depth` is the LENGTH of `siblings`, not a caller-derived height — see
+     * the poseidon2_mmcs.h contract. The walk below is bounded by it. */
+    const size_t            depth    = (size_t)proof->depth;
+    const dnac_p2_digest_t *siblings = proof->siblings;
+    if (depth > 0 && !siblings) return DNAC_P2M_ERR_PARAM;
 
     size_t max_h = 0, total_width = 0;
     for (size_t m = 0; m < num_matrices; m++) {
@@ -475,8 +479,10 @@ dnac_p2_mmcs_status_t dnac_p2_mmcs_verify_mixed(
         total_width += widths[m];
     }
     if (index >= max_h) return DNAC_P2M_ERR_BAD_INDEX; /* mmcs.rs:1094-1096 */
+    /* opening_proof.len() != expected_proof_len => WrongHeight
+     * (mmcs.rs:1110-1116; N=2 + cap 0 => expected = log2(max height)). */
     if (depth != p2m_log2(max_h))
-        return DNAC_P2M_ERR_BAD_DEPTH; /* WrongHeight, mmcs.rs:1109-1116 */
+        return DNAC_P2M_ERR_BAD_DEPTH;
 
     uint64_t *scratch = (uint64_t *)malloc(total_width * sizeof(uint64_t));
     if (!scratch) return DNAC_P2M_ERR_ALLOC;
@@ -531,15 +537,21 @@ dnac_p2_mmcs_status_t dnac_p2_mmcs_verify(
     size_t                  num_matrices,
     size_t                  num_rows,
     uint64_t                leaf_index,
-    const dnac_p2_digest_t *siblings,
-    size_t                  depth)
+    const dnac_p2_proof_t  *proof)
 {
     if (!root || !opened_rows || !widths || num_matrices == 0 ||
-        !p2m_is_pow2(num_rows) || (depth > 0 && !siblings))
+        !p2m_is_pow2(num_rows) || !proof)
         return DNAC_P2M_ERR_PARAM;
+    /* `depth` is the LENGTH of `siblings`, not a caller-derived height — see
+     * the poseidon2_mmcs.h contract. The walk below is bounded by it. */
+    const size_t            depth    = (size_t)proof->depth;
+    const dnac_p2_digest_t *siblings = proof->siblings;
+    if (depth > 0 && !siblings) return DNAC_P2M_ERR_PARAM;
     if (leaf_index >= num_rows) return DNAC_P2M_ERR_BAD_INDEX; /* mmcs.rs:1093 */
+    /* opening_proof.len() != expected_proof_len => WrongHeight
+     * (mmcs.rs:1110-1116; N=2 + cap 0 => expected = log2(num_rows)). */
     if (depth != p2m_log2(num_rows))
-        return DNAC_P2M_ERR_BAD_DEPTH; /* WrongHeight, mmcs.rs:1108-1115 */
+        return DNAC_P2M_ERR_BAD_DEPTH;
 
     size_t total_width = 0;
     for (size_t m = 0; m < num_matrices; m++) {

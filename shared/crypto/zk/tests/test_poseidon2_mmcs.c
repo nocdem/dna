@@ -147,6 +147,19 @@ typedef struct {
     size_t   n_sib;
 } opening_t;
 
+/* S2'-d: dnac_p2_mmcs_verify takes the authentication path as ONE object so
+ * its length cannot be separated from its pointer (poseidon2_mmcs.h). Here the
+ * two always agree by construction — `n` IS the length of `sib`. leaf_index
+ * and num_matrices are not read by the verify. */
+static dnac_p2_proof_t mkpath(const dnac_p2_digest_t *sib, size_t n) {
+    dnac_p2_proof_t p;
+    p.leaf_index   = 0;
+    p.depth        = (uint32_t)n;
+    p.num_matrices = 0;
+    p.siblings     = (dnac_p2_digest_t *)sib;
+    return p;
+}
+
 int main(int argc, char **argv) {
     if (argc < 2) {
         fprintf(stderr, "usage: %s <poseidon2_mmcs.json>\n", argv[0]);
@@ -356,9 +369,9 @@ int main(int argc, char **argv) {
                            o->salts_len[m] * sizeof(uint64_t));
                 vptrs[m] = vrows[m];
             }
+            dnac_p2_proof_t vpath = mkpath(o->sib, o->n_sib);
             st = dnac_p2_mmcs_verify(&root, vptrs, eff_w, n_mats,
-                                     (size_t)num_rows, o->index, o->sib,
-                                     o->n_sib);
+                                     (size_t)num_rows, o->index, &vpath);
             if (st != DNAC_P2M_OK) {
                 fprintf(stderr, "FAIL [%s]: verify(%" PRIu64 ") status %d\n",
                         name, o->index, (int)st);
@@ -371,15 +384,15 @@ int main(int argc, char **argv) {
                 uint64_t save = vrows[0][0];
                 vrows[0][0] = (save + 1) % GOLDILOCKS_P;
                 if (dnac_p2_mmcs_verify(&root, vptrs, eff_w, n_mats,
-                                        (size_t)num_rows, o->index, o->sib,
-                                        o->n_sib) != DNAC_P2M_ERR_ROOT_MISMATCH) {
+                                        (size_t)num_rows, o->index,
+                                        &vpath) != DNAC_P2M_ERR_ROOT_MISMATCH) {
                     fprintf(stderr, "FAIL [%s]: lane tamper not caught\n", name);
                     g_fails++;
                 }
                 vrows[0][0] = GOLDILOCKS_P; /* non-canonical */
                 if (dnac_p2_mmcs_verify(&root, vptrs, eff_w, n_mats,
-                                        (size_t)num_rows, o->index, o->sib,
-                                        o->n_sib) != DNAC_P2M_ERR_NONCANONICAL) {
+                                        (size_t)num_rows, o->index,
+                                        &vpath) != DNAC_P2M_ERR_NONCANONICAL) {
                     fprintf(stderr,
                             "FAIL [%s]: non-canonical lane not fail-closed\n",
                             name);
@@ -389,28 +402,34 @@ int main(int argc, char **argv) {
                 dnac_p2_digest_t tsib[MAX_DEPTH];
                 memcpy(tsib, o->sib, o->n_sib * sizeof(tsib[0]));
                 tsib[0].lanes[0] ^= 1;
+                dnac_p2_proof_t tpath = mkpath(tsib, o->n_sib);
                 if (dnac_p2_mmcs_verify(&root, vptrs, eff_w, n_mats,
-                                        (size_t)num_rows, o->index, tsib,
-                                        o->n_sib) != DNAC_P2M_ERR_ROOT_MISMATCH) {
+                                        (size_t)num_rows, o->index,
+                                        &tpath) != DNAC_P2M_ERR_ROOT_MISMATCH) {
                     fprintf(stderr, "FAIL [%s]: sibling tamper not caught\n",
                             name);
                     g_fails++;
                 }
                 if (dnac_p2_mmcs_verify(&root, vptrs, eff_w, n_mats,
-                                        (size_t)num_rows, o->index ^ 1, o->sib,
-                                        o->n_sib) != DNAC_P2M_ERR_ROOT_MISMATCH) {
+                                        (size_t)num_rows, o->index ^ 1,
+                                        &vpath) != DNAC_P2M_ERR_ROOT_MISMATCH) {
                     fprintf(stderr, "FAIL [%s]: wrong index not caught\n", name);
                     g_fails++;
                 }
+                /* Short path: the object now carries its own length, so this
+                 * is the exact shape S2'-d closed — a path claiming fewer
+                 * digests than the tree height must be rejected BEFORE the
+                 * walk, not walked to the derived height (mmcs.rs:1110-1116). */
+                dnac_p2_proof_t spath = mkpath(o->sib, o->n_sib - 1);
                 if (dnac_p2_mmcs_verify(&root, vptrs, eff_w, n_mats,
-                                        (size_t)num_rows, o->index, o->sib,
-                                        o->n_sib - 1) != DNAC_P2M_ERR_BAD_DEPTH) {
+                                        (size_t)num_rows, o->index,
+                                        &spath) != DNAC_P2M_ERR_BAD_DEPTH) {
                     fprintf(stderr, "FAIL [%s]: wrong depth not caught\n", name);
                     g_fails++;
                 }
                 if (dnac_p2_mmcs_verify(&root, vptrs, eff_w, n_mats,
-                                        (size_t)num_rows, num_rows, o->sib,
-                                        o->n_sib) != DNAC_P2M_ERR_BAD_INDEX) {
+                                        (size_t)num_rows, num_rows,
+                                        &vpath) != DNAC_P2M_ERR_BAD_INDEX) {
                     fprintf(stderr, "FAIL [%s]: OOB index not caught\n", name);
                     g_fails++;
                 }

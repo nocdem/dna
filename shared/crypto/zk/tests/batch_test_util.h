@@ -276,6 +276,15 @@ typedef struct {
     const gold_fp2_t *vals[MAX_RAND_ENTRIES];
     uint32_t          lens[MAX_RAND_ENTRIES];
     dnac_batch_rand_openings_t ro;
+    /* S2'-d: dnac_batch_verify now REQUIRES the caller to state the hiding tail
+     * length. A KAT fixture has no protocol constant to state — it replays
+     * whatever the oracle emitted — so it derives the count as the MAX over the
+     * loaded entries. That is exactly right here and NOT a pin: preprocessed
+     * points carry 0 and every other point carries the same nrc, so the max IS
+     * nrc; and if a vector ever disagreed with itself, the verify rejects,
+     * which is the outcome a KAT should have. The real pin is the consensus
+     * constant DNAC_SHIELDED_NUM_RANDOM, stated at the shielded entry. */
+    uint32_t          nrc_derived;
 } rand_fixture_t;
 
 static inline bool build_rand_openings(const jv_t *rv, rand_fixture_t *rf)
@@ -306,6 +315,10 @@ static inline bool build_rand_openings(const jv_t *rv, rand_fixture_t *rf)
     rf->ro.vals = rf->vals;
     rf->ro.lens = rf->lens;
     rf->ro.num_entries = k;
+    rf->nrc_derived = 0;
+    for (uint32_t e = 0; e < k; e++) {
+        if (rf->lens[e] > rf->nrc_derived) rf->nrc_derived = rf->lens[e];
+    }
     return true;
 }
 

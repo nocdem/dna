@@ -164,18 +164,37 @@ extern "C" {
  * fail-close. Mirrors the prover's A_SALT_ELEMS (stark_prover_agg.c CT-asserts
  * the equality).
  *
- * ⚠ ENFORCER CORRECTED (S2'-d, 2026-07-27). This comment named
- * `dnac_fri_verify_wire_shielded`, a function DELETED at d4.d with the v3 wire.
- * The pin is enforced by `sv_salt_elems_pinned` in shielded_verify.c. Note the
- * scope limit that rename exposes: the check lives in the SHIELDED entry only —
- * neither the decoder nor `dnac_batch_verify` enforces it, so any second
- * consumer of the v4 decode → batch-verify pair (P2 recursion) inherits a
- * wire-chosen salt count with no pin. Tracked in FLEET 005.
- *
- * ⚠ AND the companion half of this preimage length — the opened ROW width — is
- * NOT pinned at all in the is_zk path. See the corrected comment in
- * fri_verifier.c; closing it is the remainder of S2'-d. */
+ * ENFORCER (S2'-d, 2026-07-27): `dnac_batch_verify`, which the shielded entry
+ * hands this constant to as its REQUIRED `salt_elems` argument. It used to be a
+ * private helper inside shielded_verify.c, which meant the pin protected the
+ * one entry rather than the decode → batch-verify PAIR: any second consumer of
+ * that pair — P2 recursion is the one being built — inherited a wire-chosen
+ * salt count with no pin at all. Moving it down closes the class.
+ * (Two earlier versions of this comment named `dnac_fri_verify_wire_shielded`,
+ * a function deleted at d4.d with the v3 wire.) */
 #define DNAC_SHIELDED_SALT_ELEMS               ((size_t)2)
+
+/* The companion half of that same preimage length: the number of hiding
+ * random-codeword values appended to every non-preprocessed opening point.
+ * Also a CONSENSUS CONSTANT — in Plonky3 it is a field of the HidingFriPcs
+ * instance (num_random_codewords, hiding_pcs.rs), never proof data.
+ *
+ * Both halves matter for the same reason. The Poseidon2 PaddingFreeSponge leaf
+ * hashes all same-height rows as ONE flat stream with no separator, so a row
+ * boundary is authenticated only by the width the verifier asserts. Half of
+ * each width was this protocol constant and half was wire data checked against
+ * other wire data, which let a prover repartition a same-height group at
+ * constant total (the 8 quotient rows as 7,5,6,6,6,6,6,6 rather than 6x8) for a
+ * byte-identical leaf under the same committed root.
+ *
+ * Value MIRRORS the prover's A_NUM_RANDOM (stark_prover_agg.c, passed to
+ * dnac_batch_prove); stark_prover_agg.c CT-asserts the equality exactly as it
+ * does for A_SALT_ELEMS above, so the two sides cannot drift.
+ *
+ * ⚠ STRICTER THAN UPSTREAM, deliberately — Plonky3's hiding PCS checks only the
+ * NESTING SHAPE of the random openings and never the per-point tail LENGTH
+ * (v0.6.2 fri/src/hiding_pcs.rs:398-428). See batch_verify.h. */
+#define DNAC_SHIELDED_NUM_RANDOM               ((size_t)4)
 
 /* Pinned PHYSICAL shielded-AIR trace height, log2 (C1 fixed H=1024=2^10). This is
  * the base_degree_bits, NOT what the verifier sees on the wire. */

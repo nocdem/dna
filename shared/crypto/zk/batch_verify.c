@@ -68,6 +68,8 @@ dnac_batch_verify_status_t dnac_batch_verify(
     const uint32_t                   *prep_matrix_to_instance,
     uint32_t                          num_prep_matrices,
     const dnac_fri_params_t          *fri_params,
+    uint32_t                          num_random_codewords,
+    size_t                            salt_elems,
     const dnac_fri_proof_t           *fri_proof,
     const dnac_batch_rand_openings_t *rand_openings,
     dnac_batch_verify_out_t          *out)
@@ -82,7 +84,37 @@ dnac_batch_verify_status_t dnac_batch_verify(
     if (!commits->main_commit || !commits->quotient_commit) {
         return DNAC_BV_ERR_NULL;
     }
+    /* Hiding randomization exists only in the is_zk configuration: a non-ZK
+     * caller that names a nonzero count has mis-described its own instance
+     * (fail-close rather than silently ignore it). */
+    if (is_zk == 0 && num_random_codewords != 0) return DNAC_BV_ERR_PARAM;
     const uint32_t n = num_instances;
+
+    /* ---- 0. SALT_ELEMS pin (G-SEC-P1-6) ----------------------------------
+     * Every input-batch opening AND every commit-phase step must declare
+     * exactly the caller's salt count. The salted leaf is row ‖ salts hashed
+     * as one flat stream (hiding_mmcs.rs:169-170 assembled by
+     * fri_verifier.c), so the salt count is part of the preimage LENGTH and
+     * must be protocol-fixed, not read from the proof.
+     * A mismatch would usually fail the FRI verify anyway (the committed leaf
+     * hash differs), but "usually" is not a pin; this fail-closes it up front.
+     * This check MOVED here from shielded_verify.c in S2'-d — it used to guard
+     * only the shielded entry, leaving every other consumer of the same
+     * decode -> dnac_batch_verify pair (P2 recursion) with no salt pin at
+     * all. See batch_verify.h for the full rationale. */
+    for (size_t q = 0; q < fri_proof->num_query_proofs; q++) {
+        const dnac_fri_query_proof_t *qp = &fri_proof->query_proofs[q];
+        for (size_t b = 0; b < qp->num_input_batches; b++) {
+            if (qp->input_proof[b].salt_elems != salt_elems) {
+                return DNAC_BV_ERR_SHAPE;
+            }
+        }
+        for (size_t r = 0; r < qp->num_commit_phase_openings; r++) {
+            if (qp->commit_phase_openings[r].salt_elems != salt_elems) {
+                return DNAC_BV_ERR_SHAPE;
+            }
+        }
+    }
 
     /* ---- 1. random-vs-ZK (:74-84) + rand-openings presence ---- */
     if ((commits->random_commit != NULL) != (is_zk == 1)) {
@@ -311,54 +343,80 @@ dnac_batch_verify_status_t dnac_batch_verify(
         return DNAC_BV_ERR_OOM;
     }
 
-    /* Merged-evals arena: base lens + rand tails. */
+    /* Merged-evals arena: base lens + rand tails.
+     *
+     * ⚠ RAND-TAIL PIN (S2'-d, 2026-07-27). This pass is also where every
+     * `rand_openings->lens[k]` is CHECKED, because it is the one walk that
+     * visits every entry exactly once, in assembly order, knowing which round
+     * each belongs to. Until now only two facts were enforced —
+     * `num_entries == total_points` above, and `== 0` on preprocessed entries
+     * — so on every other point the tail length was wire data compared against
+     * nothing, and `num_claimed_evals = BASE_LEN + tail` handed the prover the
+     * row boundaries of a flat, separator-free MMCS leaf. See batch_verify.h
+     * for the repartition attack this closes and for the note that upstream
+     * does NOT make this check.
+     *
+     *   non-preprocessed point -> tail MUST equal num_random_codewords
+     *   preprocessed point     -> tail MUST be 0 (hiding_pcs.rs:343-348,
+     *                             split 0 at PREPROCESSED_TRACE_IDX)
+     *
+     * BV_TAIL yields the tail of entry `re` and advances, or jumps to
+     * rand_shape on any deviation. Non-ZK never consumes an entry. */
     size_t eval_lanes = 0;
     {
         uint32_t re = 0; /* rand entry cursor (assembly point order) */
+        uint32_t tl;     /* tail of the entry BV_TAIL just consumed */
         /* helper macro-free double pass: first count, then fill below. */
+#define BV_TAIL(EXPECT)                                                       \
+        do {                                                                  \
+            tl = 0u;                                                          \
+            if (is_zk) {                                                      \
+                if (rand_openings->lens[re] != (EXPECT)) goto rand_shape;     \
+                tl = rand_openings->lens[re++];                               \
+            }                                                                 \
+        } while (0)
+
         if (is_zk) {
             for (uint32_t i = 0; i < n; i++) {
-                eval_lanes += opened[i].random_len + rand_openings->lens[re++];
+                BV_TAIL(num_random_codewords);
+                eval_lanes += opened[i].random_len + tl;
             }
         }
         for (uint32_t i = 0; i < n; i++) {
-            eval_lanes += opened[i].trace_local_len +
-                          (is_zk ? rand_openings->lens[re++] : 0u);
+            BV_TAIL(num_random_codewords);
+            eval_lanes += opened[i].trace_local_len + tl;
             if (insts[i].air.main_next) {
-                eval_lanes += opened[i].trace_next_len +
-                              (is_zk ? rand_openings->lens[re++] : 0u);
+                BV_TAIL(num_random_codewords);
+                eval_lanes += opened[i].trace_next_len + tl;
             }
         }
         for (uint32_t i = 0; i < n; i++) {
             for (uint32_t c = 0; c < opened[i].num_quotient_chunks; c++) {
-                eval_lanes += 2u + (is_zk ? rand_openings->lens[re++] : 0u);
+                BV_TAIL(num_random_codewords);
+                eval_lanes += 2u + tl;
             }
         }
         for (uint32_t m = 0; m < num_prep_matrices; m++) {
             uint32_t ii = prep_matrix_to_instance[m];
-            /* preprocessed round carries NO rand tail
-             * (hiding_pcs.rs:343-348: split 0 at PREPROCESSED_TRACE_IDX). */
-            if (is_zk && rand_openings->lens[re] != 0) {
-                free(mats); free(pts); free(ch_flat);
-                return DNAC_BV_ERR_SHAPE;
-            }
-            if (is_zk) re++;
+            BV_TAIL(0u);
             eval_lanes += opened[ii].preprocessed_local_len;
             if (insts[ii].prep_next) {
-                if (is_zk && rand_openings->lens[re] != 0) {
-                    free(mats); free(pts); free(ch_flat);
-                    return DNAC_BV_ERR_SHAPE;
-                }
-                if (is_zk) re++;
+                BV_TAIL(0u);
                 eval_lanes += opened[ii].preprocessed_next_len;
             }
         }
         for (uint32_t i = 0; i < n; i++) {
             if (insts[i].num_lookups == 0) continue;
-            eval_lanes += opened[i].permutation_len +
-                          (is_zk ? rand_openings->lens[re++] : 0u);
-            eval_lanes += opened[i].permutation_len +
-                          (is_zk ? rand_openings->lens[re++] : 0u);
+            BV_TAIL(num_random_codewords);
+            eval_lanes += opened[i].permutation_len + tl;
+            BV_TAIL(num_random_codewords);
+            eval_lanes += opened[i].permutation_len + tl;
+        }
+#undef BV_TAIL
+        if (0) {
+rand_shape:
+            free(mats); free(pts); free(ch_flat);
+            return DNAC_BV_ERR_SHAPE;
         }
     }
     gold_fp2_t *evals = (gold_fp2_t *)calloc(

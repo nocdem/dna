@@ -184,7 +184,8 @@ int main(void) {
             double v0 = now_ms();
             dnac_batch_verify_status_t vs =
                 dnac_batch_verify(&vi, opened, 1, BP_IS_ZK, &commits, NULL, 0,
-                                  &params, fri, ro, &vo);
+                                  &params, BP_NRC, 0 /* unsalted, see header */,
+                                  fri, ro, &vo);
             double v1 = now_ms();
             if (vs != DNAC_BV_OK) {
                 printf("%6zu   (verify FAILED, status=%d fri=%d)\n", base_h,

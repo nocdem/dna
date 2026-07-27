@@ -218,8 +218,8 @@ int main(int argc, char **argv) {
                 const size_t w1[1] = {CW};
                 if (dnac_p2_mmcs_open_batch(rtree, index, rows1, &pr) != DNAC_P2M_OK ||
                     dnac_p2_mmcs_tree_width(rtree, 0) != CW ||
-                    dnac_p2_mmcs_verify(&rroot, rows1, w1, 1, LDE_H, index, sib,
-                                        pr.depth) != DNAC_P2M_OK)
+                    dnac_p2_mmcs_verify(&rroot, rows1, w1, 1, LDE_H, index,
+                                        &pr) != DNAC_P2M_OK)
                     bad++;
             }
             /* trace tree */
@@ -229,8 +229,8 @@ int main(int argc, char **argv) {
                 const size_t w1[1] = {RAND_W};
                 if (dnac_p2_mmcs_open_batch(ttree, index, rows1, &pr) != DNAC_P2M_OK ||
                     dnac_p2_mmcs_tree_width(ttree, 0) != RAND_W ||
-                    dnac_p2_mmcs_verify(&troot, rows1, w1, 1, LDE_H, index, sib,
-                                        pr.depth) != DNAC_P2M_OK)
+                    dnac_p2_mmcs_verify(&troot, rows1, w1, 1, LDE_H, index,
+                                        &pr) != DNAC_P2M_OK)
                     bad++;
             }
             /* quotient batch tree (4 matrices) */
@@ -243,7 +243,7 @@ int main(int argc, char **argv) {
                 else {
                     for (size_t m = 0; m < NQ; m++) row_lens[m] = CW;
                     if (dnac_p2_mmcs_verify(&qroot, rows, row_lens, NQ, LDE_H,
-                                            index, sib, pr.depth) != DNAC_P2M_OK)
+                                            index, &pr) != DNAC_P2M_OK)
                         bad++;
                 }
             }
@@ -266,7 +266,7 @@ int main(int argc, char **argv) {
             if (dnac_p2_mmcs_open_batch(res.layer_trees[0], group_index, rows1, &pr) != DNAC_P2M_OK ||
                 dnac_p2_mmcs_tree_width(res.layer_trees[0], 0) != 4 ||
                 dnac_p2_mmcs_verify(&res.roots[0], rows1, w1, 1, 16, group_index,
-                                    sib, pr.depth) != DNAC_P2M_OK)
+                                    &pr) != DNAC_P2M_OK)
                 bad++;
         }
         if (bad) failed++;

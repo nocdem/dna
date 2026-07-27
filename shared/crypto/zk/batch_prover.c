@@ -1600,9 +1600,13 @@ dnac_prover_status_t dnac_batch_prove(
         dnac_batch_proof_commits(p, &commits);
         dnac_batch_verify_out_t vo;
         memset(&vo, 0, sizeof(vo));
+        /* Self-verify states the counts this prover just emitted — that is the
+         * point: if the two sides ever drift, the prover fails on its own
+         * output instead of shipping a proof only a laxer verifier accepts. */
         if (dnac_batch_verify(insts, p->opened, n, is_zk, &commits,
                               p->num_prep ? p->prep_map : NULL, p->num_prep,
-                              &p->params, &p->proof,
+                              &p->params, nrc, salt_elems,
+                              &p->proof,
                               p->has_rand_op ? &p->rand_op : NULL,
                               &vo) != DNAC_BV_OK) {
             rc = DNAC_PROVER_ERR_VERIFY;

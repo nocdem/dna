@@ -324,9 +324,12 @@ static bool load_scenario(const jv_t *js, scenario_t *sc)
 static dnac_batch_verify_status_t run_scenario(scenario_t *sc,
                                                dnac_batch_verify_out_t *out)
 {
+    /* Pins: the tail count the fixture loaded (see rand_fixture_t) and salt 0 —
+     * build_fri_proof emits every opening with salt_elems == 0. */
     return dnac_batch_verify(
         sc->insts, sc->opened, sc->n, sc->is_zk, &sc->commits,
         sc->num_prep ? sc->prep_map : NULL, sc->num_prep, &sc->params,
+        sc->is_zk ? sc->rf.nrc_derived : 0u, 0,
         &sc->fri.proof, sc->is_zk ? &sc->rf.ro : NULL, out);
 }
 

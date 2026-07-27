@@ -283,13 +283,20 @@ static dnac_fri_status_t fri_open_input(
              *     `num_claimed_evals`, which is `BASE_LEN + rand tail` where the
              *     tail is wire-decoded and unpinned in the is_zk path — the ONLY
              *     path the shielded verifier uses. Wire-vs-wire is not a pin;
-             *   - fri_proof_codec.c pins NO salt count; the real salt pin lives
-             *     in shielded_verify.c. The function that comment named,
-             *     dnac_fri_verify_wire_shielded, was DELETED at d4.d.
+             *   - fri_proof_codec.c pins NO salt count. The function that
+             *     comment named, dnac_fri_verify_wire_shielded, was DELETED at
+             *     d4.d.
              * Under the Poseidon2 PaddingFreeSponge leaf hash the preimage
-             * length must be protocol-fixed (G-SEC-P1-6), and today only the
-             * salt half of that length is. Closing the row half is the rest of
-             * S2'-d; see tasks/orchestration.md FLEET 005. */
+             * length must be protocol-fixed (G-SEC-P1-6). BOTH halves of that
+             * length are now pinned, but NOT here — the final S2'-d block moved
+             * them into `dnac_batch_verify`, which takes `salt_elems` and
+             * `num_random_codewords` as REQUIRED caller-stated arguments and
+             * enforces them over the whole proof before any transcript work
+             * (batch_verify.h carries the rationale and the repartition attack
+             * that motivated it). So this function still sees an unpinned
+             * `cols`/`se` pair when called through the PUBLIC dnac_fri_verify
+             * entry with a caller that pins neither; the pin belongs to the
+             * batch layer because that is where the instance's shape is known. */
             const size_t se = bo->salt_elems;
             if (cols + se > FRI_LEAF_CAP) return DNAC_FRI_ERR_INPUT_ERROR;
             fri_lanes_base_row(bo->opened_values[m], cols, rowbuf[m]);
@@ -315,14 +322,31 @@ static dnac_fri_status_t fri_open_input(
              * sibling path comes from the proof (verifier.rs:590-597). Same-height
              * batches keep the P1b path (KATs frozen); mixed batches go through
              * the d1a mixed MMCS (per-matrix reduced indices + layer injection,
-             * mmcs.rs:1052-1180 / merkle_tree.rs:127-176). */
+             * mmcs.rs:1052-1180 / merkle_tree.rs:127-176).
+             *
+             * ⚠ HEAP OVERREAD CLOSED (S2'-d, 2026-07-27; red-team lens 4). The
+             * path is handed over as the WHOLE `bo->opening_proof`, so its
+             * length travels with its pointer. Previously the bare
+             * `.siblings` pointer was paired with the DERIVED `max_log_height`
+             * while the array had been allocated to exactly the WIRE-declared
+             * `.depth` (fri_proof_codec.c:352-360, whose own comment states it
+             * "does NOT check depth == verifier-derived height"). Patching the
+             * wire depth 13 -> 1 therefore made the MMCS walk read 12 digests
+             * — 384 bytes — past a 32-byte allocation, and nothing else caught
+             * it: query proofs are never observed into the transcript, so the
+             * PoW witness still validated. The verdict stayed deterministic
+             * (ROOT_MISMATCH), so this was memory-safety, not a soundness
+             * break — but Android is a declared target and its hardened
+             * allocator turns that read into a probabilistic SIGSEGV.
+             * The MMCS now rejects depth != log2(height) itself, which is what
+             * upstream has always done (82cfad73 mmcs.rs:1110-1116 /
+             * v0.6.2 mmcs/batch.rs:174-179, WrongHeight). */
             dnac_p2_mmcs_status_t ms;
             if (!mixed_heights) {
                 ms = dnac_p2_mmcs_verify(
                     &cw->commitment, opened_rows, row_lane_lens,
                     cw->num_matrices, (size_t)1u << max_log_height,
-                    reduced_index, bo->opening_proof.siblings,
-                    (size_t)max_log_height);
+                    reduced_index, &bo->opening_proof);
             } else {
                 size_t mat_heights[FRI_MAX_RO];
                 for (size_t m = 0; m < cw->num_matrices; ++m) {
@@ -330,8 +354,7 @@ static dnac_fri_status_t fri_open_input(
                 }
                 ms = dnac_p2_mmcs_verify_mixed(
                     &cw->commitment, opened_rows, row_lane_lens, mat_heights,
-                    cw->num_matrices, reduced_index,
-                    bo->opening_proof.siblings, (size_t)max_log_height);
+                    cw->num_matrices, reduced_index, &bo->opening_proof);
             }
             if (ms != DNAC_P2M_OK) return DNAC_FRI_ERR_INPUT_ERROR;
         }
@@ -352,8 +375,12 @@ static dnac_fri_status_t fri_open_input(
              * num_points == 0 (stark_prover.c:1055-1057); the verifier did not.
              * Not reachable through dnac_batch_verify today (every BV_MAT call
              * passes 1 or 2 points) — but dnac_fri_verify is a PUBLIC entry, and
-             * P2 recursion will build its own commitment descriptors. */
-            if (mo->num_points == 0) return DNAC_FRI_ERR_INPUT_ERROR;
+             * P2 recursion will build its own commitment descriptors.
+             * (S2'-d final: carries upstream's own variant name now, instead of
+             * the generic INPUT_ERROR it was first landed with.) */
+            if (mo->num_points == 0) {
+                return DNAC_FRI_ERR_MATRIX_WITHOUT_OPENING_POINTS;
+            }
             size_t log_height = (size_t)mo->domain.log_size + params->log_blowup;
             size_t bits_reduced = log_global_max_height - log_height;
             uint64_t rev = reverse_bits_len_u64(index >> bits_reduced, (unsigned)log_height);
@@ -373,7 +400,29 @@ static dnac_fri_status_t fri_open_input(
                 if (bo->opened_values_lens[m] != pt->num_claimed_evals) {
                     return DNAC_FRI_ERR_POINT_EVALUATION_COUNT_MISMATCH;
                 }
-                gold_fp2_t quotient = gold_fp2_inv(gold_fp2_sub(pt->point, x_ext)); /* (z - x)^-1 */
+                /* ⚠ FAIL-OPEN CLOSED (S2'-d, 2026-07-27). z == x makes the
+                 * quotient denominator zero. Upstream rejects it explicitly —
+                 * "batch_multiplicative_inverse panics on a zero input, so
+                 * reject a coinciding opening point (`z == x`, making the
+                 * quotient undefined) here" (v0.6.2 fri/src/verifier.rs:642-662,
+                 * FriError::OpeningPointMatchesQueryPoint). DNAC did not panic;
+                 * it failed OPEN. gold_fp_inv(0) returns 0 by its own documented
+                 * contract ("inv(0) is undefined — caller MUST check (returns 0
+                 * silently here)", field_goldilocks.c:170-181), so gold_fp2_inv
+                 * yields (0,0), every `term` below becomes 0, and this matrix's
+                 * claimed evaluations at this point contribute NOTHING to the
+                 * reduced opening — untested — while alpha_pow still advances.
+                 * A dropped claim, not a corrupted one.
+                 * Unreachable in the shielded instance today (z is the
+                 * transcript-sampled zeta and x is fixed by the query index, so
+                 * a collision is a ~2^-64 accident, not a choice), but
+                 * dnac_fri_verify is a PUBLIC entry and P2 recursion supplies
+                 * its own opening points. */
+                const gold_fp2_t denom = gold_fp2_sub(pt->point, x_ext);
+                if (gold_fp2_eq(denom, gold_fp2_zero())) {
+                    return DNAC_FRI_ERR_OPENING_POINT_MATCHES_QUERY_POINT;
+                }
+                gold_fp2_t quotient = gold_fp2_inv(denom); /* (z - x)^-1 */
                 for (size_t j = 0; j < pt->num_claimed_evals; ++j) {
                     gold_fp2_t p_at_z = pt->claimed_evals[j];
                     gold_fp2_t p_at_x = gold_fp2_from_base(bo->opened_values[m][j]);
@@ -486,11 +535,14 @@ static dnac_fri_status_t fri_verify_query(
         {
             const uint64_t *leaf_rows[1] = { leaf };
             const size_t    leaf_lens[1] = { arity * 2 + cse };
+            /* Path handed over whole, same rule as the input MMCS above: the
+             * commit-phase siblings array is likewise allocated to the
+             * wire-declared depth (fri_proof_codec.c:410-419) while the walk
+             * used to be bounded by the derived log_folded_height. */
             if (dnac_p2_mmcs_verify(&commit_phase_commits[round], leaf_rows,
                                     leaf_lens, 1,
                                     (size_t)1u << log_folded_height, idx,
-                                    step->opening_proof.siblings,
-                                    log_folded_height) != DNAC_P2M_OK) {
+                                    &step->opening_proof) != DNAC_P2M_OK) {
                 return DNAC_FRI_ERR_COMMIT_PHASE_MMCS_ERROR;
             }
         }
@@ -557,15 +609,42 @@ static dnac_fri_status_t fri_verify_impl(
 
     /* Pre-consensus param-safety guards (2026-07-12 council red-team: Sun Tzu
      * num_queries=0 downgrade + Taleb shift-UB). These reject provably-broken
-     * wire params, NOT a chosen security level:
-     *  - num_queries == 0 → the query loop below (and low-degree test) never
-     *    runs → verifier accepts any polynomial. Real FRI has num_queries > 0.
-     *  - lgmh >= 64 → sample_bits(lgmh) does 1u64<<bits (transcript.c) and
-     *    domain_index >>= sum_la (sum_la <= lgmh) are shift-count UB; two builds
-     *    can diverge on identical bytes (chain-split). A real trace has lgmh far
-     *    below 64 (2^lgmh rows). Guarding lgmh covers all downstream shifts. */
-    if (params->num_queries == 0 || lgmh >= 64) {
-        return DNAC_FRI_ERR_UNSUPPORTED_PARAMS;
+     * wire params, NOT a chosen security level. Both carried upstream's own
+     * names as of S2'-d (2026-07-27); the second also TIGHTENED its bound:
+     *
+     *  - num_queries == 0 → the query loop below (and the low-degree test)
+     *    never runs → the verifier accepts any polynomial. Upstream rejects
+     *    this first thing, before any transcript work (v0.6.2
+     *    fri/src/verifier.rs:183-188, FriError::ZeroQueries); DNAC's check
+     *    already sat before the alpha sample below, so only the name moved.
+     *
+     *  - lgmh > GOLDILOCKS_TWO_ADICITY (32) → upstream's bound
+     *    (v0.6.2 verifier.rs:258-268, FriError::GlobalMaxHeightTooLarge:
+     *    "the query phase evaluates the final polynomial at a
+     *    2^log_global_max_height-th root of unity, which does not exist past
+     *    the two-adicity and would panic"). DNAC previously bounded at >= 64,
+     *    which only closed the shift-count UB (sample_bits does 1u64<<bits;
+     *    domain_index >>= sum_la) — a chain-split class, but it left 33..63
+     *    accepted, and THERE gold_fp_two_adic_generator returns gold_fp_one()
+     *    (field_goldilocks.c:206-209 — it does not panic, it degrades).
+     *    The point that degenerates is the FRI TERMINAL one: fri_terminal_
+     *    horner_eval takes x = two_adic_generator(lgmh)^rev with NO generator
+     *    coset factor (:126-133), so past 32 it is 1 for EVERY query and the
+     *    final polynomial is only ever tested at a single fixed point — the
+     *    low-degree test stops testing anything. (The per-matrix x at :382-384
+     *    does carry the GENERATOR factor and uses its own log_height, so it is
+     *    not the one that collapses; the terminal point is.) 32 closes both
+     *    failures: strictly stronger than the old bound, and equal to upstream.
+     *    Honest shielded lgmh is 13 — sum_la + log_blowup + log_final_poly_len
+     *    with log_blowup 2 and log_final_poly_len 0 (shielded_fri_params.h),
+     *    matching the prover's log_gmh = ext_db + lb = 11 + 2
+     *    (batch_prover.c). No configuration this prover can produce reaches 33
+     *    at all: it rejects degree_bits >= 30 outright (batch_prover.c). */
+    if (params->num_queries == 0) {
+        return DNAC_FRI_ERR_ZERO_QUERIES;
+    }
+    if (lgmh > GOLDILOCKS_TWO_ADICITY) {
+        return DNAC_FRI_ERR_GLOBAL_MAX_HEIGHT_TOO_LARGE;
     }
 
     /* T1 — alpha (verifier.rs:143). */
@@ -772,9 +851,17 @@ dnac_p2_mmcs_status_t dnac_fri_test_mmcs_verify_single(
     assert(depth == 0 || siblings != NULL);
     const uint64_t *rows[1] = { leaf_lanes };
     const size_t    lens[1] = { leaf_lane_len };
+    /* `depth` here IS the caller's array length (the vector's `nsib`), so the
+     * path object is well-formed by construction. leaf_index/num_matrices are
+     * not read by the verify — see poseidon2_mmcs.h. */
+    const dnac_p2_proof_t pr = {
+        .leaf_index   = leaf_index,
+        .depth        = depth,
+        .num_matrices = 1,
+        .siblings     = (dnac_p2_digest_t *)siblings,
+    };
     return dnac_p2_mmcs_verify(root, rows, lens, 1,
-                               (size_t)1u << depth, leaf_index,
-                               siblings, (size_t)depth);
+                               (size_t)1u << depth, leaf_index, &pr);
 }
 
 dnac_fri_status_t dnac_fri_test_verify_query_shape(

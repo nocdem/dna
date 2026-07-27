@@ -84,24 +84,6 @@ static void sv_build_publics(const dnac_tx_shielded_fields_t *sf,
         out[CONF_AGGZK_PUB_TXBIND + j] = gold_fp_from_u64(txbind[j]);
 }
 
-/* Every input-batch opening AND commit-phase step of the FRI proof MUST carry
- * exactly DNAC_SHIELDED_SALT_ELEMS salt lanes (G-SEC-P1-6, the hiding leaf
- * pin). A mismatch would fail the FRI verify anyway (the committed leaf hash
- * differs), but the explicit pin fail-closes it here. */
-static int sv_salt_elems_pinned(const dnac_fri_proof_t *proof) {
-    for (size_t q = 0; q < proof->num_query_proofs; q++) {
-        const dnac_fri_query_proof_t *qp = &proof->query_proofs[q];
-        for (size_t b = 0; b < qp->num_input_batches; b++)
-            if (qp->input_proof[b].salt_elems != DNAC_SHIELDED_SALT_ELEMS)
-                return 0;
-        for (size_t r = 0; r < qp->num_commit_phase_openings; r++)
-            if (qp->commit_phase_openings[r].salt_elems !=
-                DNAC_SHIELDED_SALT_ELEMS)
-                return 0;
-    }
-    return 1;
-}
-
 dnac_shielded_verify_status_t dnac_shielded_verify_statement(
     const dnac_tx_shielded_fields_t *sf,
     const uint8_t                    chain_id[32],
@@ -215,13 +197,8 @@ dnac_shielded_verify_status_t dnac_shielded_verify_statement(
         goto out;
     }
 
-    /* SALT_ELEMS pin (G-SEC-P1-6): every FRI opening carries exactly 2 salts. */
     const dnac_fri_proof_t *proof = dnac_batch_wire_proof(pkg);
     if (proof == NULL) goto out;
-    if (!sv_salt_elems_pinned(proof)) {
-        rc = DNAC_SHIELDED_VERIFY_ERR_FRI;
-        goto out;
-    }
 
     /* ── 6. Build the pinned 1-instance aggregate descriptor + the recomputed
      *       publics, and run the batched verify. degree_bits is PINNED to 11
@@ -247,9 +224,17 @@ dnac_shielded_verify_status_t dnac_shielded_verify_statement(
 
         dnac_batch_verify_out_t vo;
         memset(&vo, 0, sizeof(vo));
+        /* The two hiding-preimage pins are STATED here and enforced inside
+         * dnac_batch_verify (S2'-d, 2026-07-27). The salt pin used to be a
+         * private check in this file, and the random-tail count was pinned
+         * nowhere at all; both now travel with the instance so that the second
+         * consumer of the decode → batch-verify pair (P2 recursion) cannot
+         * inherit an unpinned leaf preimage length. See batch_verify.h. */
         dnac_batch_verify_status_t bst = dnac_batch_verify(
             &vi, opened, 1, DNAC_SHIELDED_IS_ZK, dnac_batch_wire_commits(pkg),
-            NULL, 0, &pinned, proof, dnac_batch_wire_rand_openings(pkg), &vo);
+            NULL, 0, &pinned,
+            (uint32_t)DNAC_SHIELDED_NUM_RANDOM, DNAC_SHIELDED_SALT_ELEMS,
+            proof, dnac_batch_wire_rand_openings(pkg), &vo);
         switch (bst) {
         case DNAC_BV_OK:
             rc = DNAC_SHIELDED_VERIFY_OK;

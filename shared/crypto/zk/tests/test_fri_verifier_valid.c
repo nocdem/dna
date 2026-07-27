@@ -515,6 +515,38 @@ static void load_seed(const char *path, fx_t *fx) {
 }
 
 /* Run the integrated verifier on fx with a fresh transcript seeded to milestone-0. */
+/* S2'-d: the query-domain point x the verifier derives for the fixture's single
+ * matrix, re-derived here INDEPENDENTLY of fri_verifier.c (which keeps its own
+ * static helpers) so that setting the opening point z := x reproduces the
+ * degenerate `z == x` case upstream calls OpeningPointMatchesQueryPoint.
+ *
+ *   x = GENERATOR * two_adic_generator(log_height)^rev            [:614-615]
+ *   rev = reverse_bits_len(index >> (lgmh - log_height), log_height)
+ *
+ * The V6 fixture has ONE matrix and both queries land on the same index (the
+ * test prints query_index = {8, 8}), and that matrix sits at the global max
+ * height, so bits_reduced is 0 and one x covers the whole run. */
+static gold_fp2_t fx_query_x(const fx_t *fx) {
+    size_t sum_la = 0;
+    for (size_t r = 0; r < fx->qp[0].num_commit_phase_openings; ++r) {
+        sum_la += (size_t)fx->qp[0].commit_phase_openings[r].log_arity;
+    }
+    const size_t lgmh = sum_la + fx->params.log_blowup +
+                        fx->params.log_final_poly_len;
+    const size_t log_height =
+        (size_t)fx->matrix0.domain.log_size + fx->params.log_blowup;
+    const uint64_t index = 8; /* the fixture's query index, asserted below */
+    uint64_t v = index >> (lgmh - log_height);
+    uint64_t rev = 0;
+    for (unsigned b = 0; b < (unsigned)log_height; ++b) {
+        rev = (rev << 1) | ((v >> b) & 1u);
+    }
+    gold_fp_t x = gold_fp_mul(
+        gold_fp_from_u64(7), /* Goldilocks GENERATOR (fri_verifier.c) */
+        gold_fp_pow(gold_fp_two_adic_generator((unsigned)log_height), rev));
+    return gold_fp2_from_base(x);
+}
+
 static dnac_fri_status_t run_verify(fx_t *fx) {
     dnac_transcript_t *t = mk_primed(fx);
     if (!t) return (dnac_fri_status_t)0xBEEF;
@@ -639,6 +671,19 @@ int main(int argc, char **argv) {
     ERRCHK("InputProofBatchCountMismatch",
            fx->qp[0].num_input_batches = 2, fx->qp[0].num_input_batches = 1,
            DNAC_FRI_ERR_INPUT_PROOF_BATCH_COUNT_MISMATCH);
+    /* S2'-d: the two guards added with the v0.6.2 variant mirror. Both were
+     * fail-OPEN before — the first left an unauthenticated row width in the
+     * flat MMCS leaf, the second silently dropped a matrix's whole claim
+     * because gold_fp_inv(0) returns 0 rather than trapping. */
+    ERRCHK("MatrixWithoutOpeningPoints",
+           fx->matrix0.num_points = 0, fx->matrix0.num_points = 1,
+           DNAC_FRI_ERR_MATRIX_WITHOUT_OPENING_POINTS);
+    {
+        const gold_fp2_t z_save = fx->point0.point;
+        ERRCHK("OpeningPointMatchesQueryPoint",
+               fx->point0.point = fx_query_x(fx), fx->point0.point = z_save,
+               DNAC_FRI_ERR_OPENING_POINT_MATCHES_QUERY_POINT);
+    }
     ERRCHK("BatchOpenedValuesCountMismatch",
            fx->bo[0].num_matrices = 2, fx->bo[0].num_matrices = 1,
            DNAC_FRI_ERR_BATCH_OPENED_VALUES_COUNT_MISMATCH);
@@ -657,17 +702,17 @@ int main(int argc, char **argv) {
     #undef ERRCHK
 
     free(fx);
-    int errs_ok = (errs_run == 6) && (errs_pass == 6);
+    int errs_ok = (errs_run == 8) && (errs_pass == 8);
 
     printf("------------------------------------------------------------\n");
     printf("  V6 end-to-end: %s | integrated error vectors: %d/%d\n",
            v6_ok ? "OK" : "FAIL", errs_pass, errs_run);
-    printf("  error coverage: 6 integrated (here) + 6 shape (F3) + 3 verify_query\n");
-    printf("                  isolated (F5) + 1 FinalPolyMismatch horner (F6) = 16/19;\n");
-    printf("                  deferred: InvalidPowWitness (V6 PoW=0), MissingInitialReducedOpening\n");
-    printf("                  (needs empty input); not-reachable: InvalidProofShape (hiding-pcs)\n");
+    printf("  error coverage: 8 integrated (here, incl. the 2 S2'-d guards) + 6 shape\n");
+    printf("                  (F3) + 3 verify_query isolated (F5) + 1 FinalPolyMismatch\n");
+    printf("                  horner (F6); deferred: InvalidPowWitness (V6 PoW=0),\n");
+    printf("                  MissingInitialReducedOpening (needs empty input)\n");
     if (v6_ok && errs_ok) {
-        printf("F7 INTEGRATED GATE: GREEN — V6 verifies end-to-end + 6/6 public errors\n");
+        printf("F7 INTEGRATED GATE: GREEN — V6 verifies end-to-end + 8/8 public errors\n");
         printf("============================================================\n");
         return 0;
     }

@@ -100,6 +100,13 @@ typedef struct {
  * SHA3 dnac_merkle_proof_t so proof-struct consumers port 1:1). siblings[0]
  * is the leaf-level sibling; siblings[depth-1] the root-side one
  * (open_batch order, mmcs.rs:1009-1021).
+ *
+ * PRODUCER CONTRACT (all three producers honour it: fri_proof_codec.c:352-360
+ * and :410-419 from the wire, batch_prover.c:1489/:1553 from the tree,
+ * dnac_p2_mmcs_open_batch below): `depth` is the number of digests actually
+ * present in `siblings` — never a separately-derived height. The verify entries
+ * rely on exactly this to bound the walk, so a producer that sets one without
+ * the other reintroduces the out-of-bounds read S2'-d closed.
  */
 typedef struct {
     uint64_t          leaf_index;
@@ -202,8 +209,30 @@ void dnac_p2_mmcs_tree_free(dnac_p2_mmcs_tree_t *tree);
 /**
  * Verify an opening: recompute leaf digest from the opened rows (caller
  * passes rows WITH salts already appended for the hiding form), walk the
- * siblings (LSB-first bit order, depth == log2(num_rows) enforced), compare
- * against root. Fail-close on any non-canonical opened lane.
+ * sibling path (LSB-first bit order), compare against root. Fail-close on any
+ * non-canonical opened lane.
+ *
+ * The path arrives as a whole `dnac_p2_proof_t` — pointer AND length together,
+ * the C form of upstream's `opening_proof: &[Digest]`. That is deliberate and
+ * load-bearing (S2'-d, 2026-07-27): the earlier signature took `siblings` as a
+ * bare pointer plus a SEPARATE `depth`, so callers passed the depth they had
+ * DERIVED while the array had been allocated to the length the WIRE declared.
+ * `dnac_p2_mmcs_verify` then walked past the allocation whenever the two
+ * disagreed. Binding them into one object makes that class unrepresentable:
+ * `proof->depth` is the length of `proof->siblings`, and the expected length is
+ * derived here, from `num_rows`.
+ *
+ * Enforced: `proof->depth == log2(num_rows)`, else DNAC_P2M_ERR_BAD_DEPTH —
+ * upstream's `opening_proof.len() != expected_proof_len => WrongHeight`
+ * (82cfad73 merkle-tree/src/mmcs.rs:1110-1116, unchanged at v0.6.2
+ * merkle-tree/src/mmcs/batch.rs:174-179; N=2 + cap 0 makes the arity schedule
+ * all-2s, so expected_proof_len = sum(step-1) = log2(num_rows)).
+ *
+ * NOT READ from the proof: `leaf_index` and `num_matrices`. Both are VERIFIER
+ * knowledge — the index is computed from the query (verifier.rs:576-580) and
+ * the matrix count comes from the committed dimensions — so both are taken as
+ * explicit parameters and the proof-side copies are ignored on purpose. A
+ * decoder is free to leave them zero.
  */
 dnac_p2_mmcs_status_t dnac_p2_mmcs_verify(
     const dnac_p2_digest_t *root,
@@ -212,8 +241,7 @@ dnac_p2_mmcs_status_t dnac_p2_mmcs_verify(
     size_t                  num_matrices,
     size_t                  num_rows,
     uint64_t                leaf_index,
-    const dnac_p2_digest_t *siblings,
-    size_t                  depth);
+    const dnac_p2_proof_t  *proof);
 
 /* --------------------------------------------------------------------------
  * MIXED-height batch commit / open / verify (P2L-d d1a; N=2, cap 0,
@@ -254,9 +282,12 @@ dnac_p2_mmcs_status_t dnac_p2_mmcs_open_mixed(
  * digest = H(concat tallest-group opened rows); per level compress with the
  * sibling (LSB-first bit order), then, when a group's height equals the new
  * layer length, digest = C(digest, H(concat that group's opened rows)).
- * depth MUST equal log2(max height) (proof length rule mmcs.rs:1109-1116).
- * Opened rows are indexed by ORIGINAL matrix position and carry any hiding
- * salts already appended (widths[m] = row lanes incl. salts).
+ * `proof->depth` MUST equal log2(max height) (proof length rule
+ * mmcs.rs:1109-1116). Opened rows are indexed by ORIGINAL matrix position and
+ * carry any hiding salts already appended (widths[m] = row lanes incl. salts).
+ * Same path-object contract as dnac_p2_mmcs_verify above, for the same reason:
+ * `proof->depth` is the length of `proof->siblings`, and `proof->leaf_index` /
+ * `proof->num_matrices` are NOT read.
  */
 dnac_p2_mmcs_status_t dnac_p2_mmcs_verify_mixed(
     const dnac_p2_digest_t *root,
@@ -265,8 +296,7 @@ dnac_p2_mmcs_status_t dnac_p2_mmcs_verify_mixed(
     const size_t           *heights,
     size_t                  num_matrices,
     uint64_t                index,
-    const dnac_p2_digest_t *siblings,
-    size_t                  depth);
+    const dnac_p2_proof_t  *proof);
 
 #ifdef __cplusplus
 }

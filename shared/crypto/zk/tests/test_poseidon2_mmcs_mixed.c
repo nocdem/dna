@@ -71,6 +71,19 @@ static bool digest_from_jv(const jv_t *arr, dnac_p2_digest_t *d)
     return true;
 }
 
+/* S2'-d: dnac_p2_mmcs_verify_mixed takes the authentication path as ONE object
+ * so its length cannot be separated from its pointer (poseidon2_mmcs.h).
+ * leaf_index and num_matrices are not read by the verify. */
+static dnac_p2_proof_t mkpath(const dnac_p2_digest_t *sib, size_t n)
+{
+    dnac_p2_proof_t p;
+    p.leaf_index   = 0;
+    p.depth        = (uint32_t)n;
+    p.num_matrices = 0;
+    p.siblings     = (dnac_p2_digest_t *)sib;
+    return p;
+}
+
 static int run_tree(const jv_t *tr, size_t salt_elems)
 {
     const jv_t *jname = jv_get(tr, "name");
@@ -174,11 +187,12 @@ static int run_tree(const jv_t *tr, size_t salt_elems)
         for (size_t s = 0; s < depth; s++) {
             if (!digest_from_jv(jsibs->items[s], &sibs[s])) return 2;
         }
+        dnac_p2_proof_t mpath = mkpath(sibs, depth);
 
         /* verify accepts */
         int rc = dnac_p2_mmcs_verify_mixed(&root, (const uint64_t *const *)rows,
                                            row_widths, heights, nm, index,
-                                           sibs, depth);
+                                           &mpath);
         CHECK(rc == DNAC_P2M_OK, "[%s] verify idx=%" PRIu64 " rc=%d", name,
               index, rc);
 
@@ -211,7 +225,7 @@ static int run_tree(const jv_t *tr, size_t salt_elems)
             rc = dnac_p2_mmcs_verify_mixed(&root,
                                            (const uint64_t *const *)rows,
                                            row_widths, heights, nm, index,
-                                           sibs, depth);
+                                           &mpath);
             CHECK(rc == DNAC_P2M_ERR_ROOT_MISMATCH,
                   "[%s] tampered-row rc=%d", name, rc);
             rows[0][0] = saved;
@@ -221,22 +235,27 @@ static int run_tree(const jv_t *tr, size_t salt_elems)
             rc = dnac_p2_mmcs_verify_mixed(&root,
                                            (const uint64_t *const *)rows,
                                            row_widths, heights, nm, index,
-                                           sibs, depth);
+                                           &mpath);
             CHECK(rc == DNAC_P2M_ERR_ROOT_MISMATCH,
                   "[%s] tampered-sibling rc=%d", name, rc);
             sibs[0] = sib_save;
 
+            /* Short path: the object carries its own length, so this is the
+             * exact shape S2'-d closed — a path claiming fewer digests than
+             * log2(max height) is rejected BEFORE the walk, never walked to a
+             * separately-derived depth (mmcs.rs:1110-1116). */
+            dnac_p2_proof_t spath = mkpath(sibs, depth - 1);
             rc = dnac_p2_mmcs_verify_mixed(&root,
                                            (const uint64_t *const *)rows,
                                            row_widths, heights, nm, index,
-                                           sibs, depth - 1);
+                                           &spath);
             CHECK(rc == DNAC_P2M_ERR_BAD_DEPTH, "[%s] wrong-depth rc=%d", name,
                   rc);
 
             rc = dnac_p2_mmcs_verify_mixed(&root,
                                            (const uint64_t *const *)rows,
                                            row_widths, heights, nm,
-                                           (uint64_t)max_h, sibs, depth);
+                                           (uint64_t)max_h, &mpath);
             CHECK(rc == DNAC_P2M_ERR_BAD_INDEX, "[%s] oob-index rc=%d", name,
                   rc);
 
@@ -246,14 +265,14 @@ static int run_tree(const jv_t *tr, size_t salt_elems)
             rc = dnac_p2_mmcs_verify_mixed(&root,
                                            (const uint64_t *const *)rows,
                                            row_widths, bad_heights, nm, index,
-                                           sibs, depth);
+                                           &mpath);
             CHECK(rc == DNAC_P2M_ERR_PARAM, "[%s] non-pow2 rc=%d", name, rc);
 
             rows[0][0] = GOLDILOCKS_P; /* non-canonical lane */
             rc = dnac_p2_mmcs_verify_mixed(&root,
                                            (const uint64_t *const *)rows,
                                            row_widths, heights, nm, index,
-                                           sibs, depth);
+                                           &mpath);
             CHECK(rc == DNAC_P2M_ERR_NONCANONICAL, "[%s] noncanonical rc=%d",
                   name, rc);
             rows[0][0] = saved;

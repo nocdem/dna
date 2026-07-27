@@ -40,7 +40,7 @@
 #define A_LOG_NUM_QC 2u
 #define A_NUM_RANDOM 4u
 #define A_W ((size_t)CONF_AGGZK_WIDTH)     /* 2318 (post-F3) */
-#define A_RAND_W (A_W + A_NUM_RANDOM)      /* 1950 */
+#define A_RAND_W (A_W + A_NUM_RANDOM)      /* 2322 */
 #define A_CW ((size_t)2 + A_NUM_RANDOM)    /* 6 */
 #define A_NUM_PUBLICS ((size_t)CONF_AGGZK_NUM_PUBLICS) /* 43 (S4c) */
 #define A_SALT_ELEMS 2u                    /* P4: M3b leaf-salt (128-bit nominal), mirror C_SALT_ELEMS */
@@ -84,6 +84,12 @@ AGG_CT_ASSERT((size_t)A_SALT_ELEMS * ((size_t)1 << (A_LOG_BLOWUP + A_IS_ZK)) *
  * make every honest proof unverifiable (liveness), never unsound. */
 AGG_CT_ASSERT((size_t)A_SALT_ELEMS == DNAC_SHIELDED_SALT_ELEMS,
               salt_elems_matches_consensus_pin);
+/* S2'-d (2026-07-27): the OTHER half of the hiding leaf preimage length. Same
+ * argument as the salt count above, and it is now a required argument of
+ * dnac_batch_verify, so the two sides must not drift: the shielded entry states
+ * DNAC_SHIELDED_NUM_RANDOM and this prover emits A_NUM_RANDOM. */
+AGG_CT_ASSERT((size_t)A_NUM_RANDOM == DNAC_SHIELDED_NUM_RANDOM,
+              num_random_matches_consensus_pin);
 
 /* d4.c-2: the aggregate proof is now a THIN WRAPPER over a batched proof
  * (dnac_batch_prove, 1-instance is_zk=1) — the v3 S1-S13 uni-stark pipeline is
@@ -96,6 +102,7 @@ struct dnac_agg_prover_proof_s {
     size_t base_degree_bits;             /* log_height                           */
     size_t degree_bits;                  /* log_height + A_IS_ZK                  */
     dnac_fri_params_t params;            /* the params bp was proved with        */
+    size_t salt_elems;                   /* SE bp was proved with (0 = unsalted) */
 };
 
 /* poseidon2-air block output lane k (end_post of the final full round). */
@@ -373,6 +380,7 @@ dnac_fri_status_t dnac_agg_prover_proof_verify(const dnac_agg_prover_proof_t *cp
     memset(&vo, 0, sizeof(vo));
     dnac_batch_verify_status_t st = dnac_batch_verify(
         &vi, opened, 1, A_IS_ZK, &commits, NULL, 0, &p->params,
+        A_NUM_RANDOM, p->salt_elems,
         dnac_batch_proof_fri(p->bp), dnac_batch_proof_rand_openings(p->bp), &vo);
     return st == DNAC_BV_OK ? DNAC_FRI_OK : DNAC_FRI_ERR_INVALID_PROOF_SHAPE;
 }
@@ -480,6 +488,12 @@ static dnac_prover_status_t agg_prove_cfg(
     p->params.num_queries = cfg->num_queries;
     p->params.commit_proof_of_work_bits = cfg->commit_pow_bits;
     p->params.query_proof_of_work_bits = cfg->query_pow_bits;
+    /* S2'-d: dnac_batch_verify now REQUIRES the salt count as an argument, and
+     * this pipeline produces both salted and unsalted proofs (SE is 0 when the
+     * caller supplied no salt draws — the byte-identical unsalted KAT path), so
+     * the re-verify entries below must state the count this proof was actually
+     * proved with rather than assume the consensus constant. */
+    p->salt_elems = SE;
 
     /* Stream B (FRI mmcs) = the INDEPENDENT fri_salt_draws when set; NULL falls
      * back to salt_draws@0 (KAT clone-seed parity, P1e-HIGH1). */
@@ -647,9 +661,14 @@ dnac_fri_codec_status_t dnac_agg_prover_wire_selfcheck_shielded(
     agg_fill_vinstance(&vi, p->degree_bits, p->publics);
     dnac_batch_verify_out_t vo;
     memset(&vo, 0, sizeof(vo));
+    /* Pins are the SHIELDED constants, not this proof's own SE: this entry
+     * exists to mirror the consensus verify, and the consensus verify states
+     * the consensus pins. A proof produced unsalted therefore fails here, the
+     * same way it fails at dnac_shielded_verify_statement. */
     dnac_batch_verify_status_t st = dnac_batch_verify(
         &vi, dnac_batch_wire_opened(pkg), 1, A_IS_ZK,
         dnac_batch_wire_commits(pkg), NULL, 0, dnac_batch_wire_params(pkg),
+        (uint32_t)DNAC_SHIELDED_NUM_RANDOM, DNAC_SHIELDED_SALT_ELEMS,
         dnac_batch_wire_proof(pkg), dnac_batch_wire_rand_openings(pkg), &vo);
     dnac_batch_wire_free(pkg);
     if (st == DNAC_BV_OK) {
