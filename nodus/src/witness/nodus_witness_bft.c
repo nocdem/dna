@@ -4109,14 +4109,20 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
             entry->fee = btx->fee;
             entry->client_conn = NULL;  /* Follower has no client conn */
 
-            /* Verify this TX independently */
+            /* Verify this TX independently.
+             * VALIDATION mode: this is the follower's verdict on the
+             * LEADER's proposal, and a single reject drops the whole
+             * batch below. It MUST depend only on the TX bytes and
+             * committed DB state — never on this node's mempool depth,
+             * which differs from the leader's by arrival timing alone. */
             int vrc = nodus_witness_verify_transaction(w,
                           entry->tx_data, entry->tx_len,
                           entry->tx_hash, entry->tx_type,
                           (const uint8_t *)entry->nullifiers,
                           entry->nullifier_count,
                           entry->client_pubkey, entry->client_sig,
-                          entry->fee, reject_reason, sizeof(reject_reason));
+                          entry->fee, NODUS_WITNESS_VERIFY_VALIDATION,
+                          reject_reason, sizeof(reject_reason));
             if (vrc != 0) {
                 fprintf(stderr, "%s: batch TX %d rejected: %s\n",
                         LOG_TAG, i, reject_reason);
@@ -4864,13 +4870,19 @@ int nodus_witness_bft_handle_commit(nodus_witness_t *w,
         for (int bi = 0; bi < cmt->batch_count; bi++) {
             nodus_witness_mempool_entry_t *e = &local_entries[bi];
             char f02_reject[256];
+            /* VALIDATION mode: same reason as the propose-path loop —
+             * this re-verify decides whether an ALREADY-COMMITTED block
+             * is applied to local state, so it must reach the identical
+             * verdict on every node. A mempool-dependent reject here
+             * would leave this witness behind the chain. */
             int f02_vrc = nodus_witness_verify_transaction(w,
                               e->tx_data, e->tx_len,
                               e->tx_hash, e->tx_type,
                               (const uint8_t *)e->nullifiers,
                               e->nullifier_count,
                               e->client_pubkey, e->client_sig,
-                              e->fee, f02_reject, sizeof(f02_reject));
+                              e->fee, NODUS_WITNESS_VERIFY_VALIDATION,
+                              f02_reject, sizeof(f02_reject));
             if (f02_vrc != 0) {
                 QGP_LOG_ERROR(LOG_TAG,
                               "commit-path verify rejected batch TX %d: %s",

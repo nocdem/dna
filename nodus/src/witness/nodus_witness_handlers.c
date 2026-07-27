@@ -1907,12 +1907,18 @@ static void handle_dnac_spend(nodus_witness_t *w,
         fprintf(stderr, "%s: dnac_spend — we are leader, adding to mempool\n",
                 LOG_TAG);
 
-        /* Pre-verify TX before adding to mempool */
+        /* Pre-verify TX before adding to mempool.
+         * ADMISSION mode: this is the leader's local intake gate for a
+         * client-submitted TX, the one place where the node-local
+         * mempool fee surge is meaningful (and where the client can
+         * still be told to raise its fee). No peer's verdict depends on
+         * the outcome here. */
         char reject_reason[256] = {0};
         int vrc = nodus_witness_verify_transaction(w, tx_data, (uint32_t)tx_len,
                       tx_hash, tx_type,
                       (const uint8_t *)nullifiers, nullifier_count,
                       client_pk, client_sig, fee,
+                      NODUS_WITNESS_VERIFY_ADMISSION,
                       reject_reason, sizeof(reject_reason));
         if (vrc == -2) {
             send_error(conn, txn_id, NODUS_ERR_DOUBLE_SPEND,

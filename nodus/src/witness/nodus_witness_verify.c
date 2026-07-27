@@ -763,6 +763,7 @@ int nodus_witness_verify_transaction(nodus_witness_t *w,
                                       const uint8_t *client_pubkey,
                                       const uint8_t *client_signature,
                                       uint64_t declared_fee,
+                                      nodus_witness_verify_mode_t mode,
                                       char *reject_reason, size_t reason_size) {
     if (!w || !tx_data || !tx_hash) {
         if (reject_reason)
@@ -1032,19 +1033,65 @@ int nodus_witness_verify_transaction(nodus_witness_t *w,
 
         /* ── Check 5: Dynamic fee (DNAC-only) ─────────────────── */
         uint64_t actual_fee = total_input - total_output;
-        /* Dynamic fee: base * (1 + mempool_count / surge_step)
-         * Surge increases fee as mempool fills up. */
-        int mp_count = w ? w->mempool.count : 0;
-        uint64_t min_fee = NODUS_W_BASE_TX_FEE * (1 + (uint64_t)mp_count / NODUS_W_FEE_SURGE_STEP);
 
-        if (actual_fee < min_fee) {
+        /* Check 5 is TWO gates, in this order:
+         *   (a) a deterministic FLOOR on actual_fee  -- both modes, below;
+         *   (b) the mempool SURGE above that floor   -- ADMISSION only.
+         *
+         * Why (b) is ADMISSION-ONLY (G-DET-2): w->mempool.count is node-LOCAL and
+         * arrival-order dependent, so two honest witnesses compute
+         * different min_fee for the SAME TX. This function also runs on
+         * the block VALIDATION paths (nodus_witness_bft.c:4118 propose,
+         * :4878 F02 commit re-verify) where a single TX reject drops the
+         * ENTIRE batch (bft.c:4126-4132) — a follower holding 8 pending
+         * TXs would reject the honest block of a leader holding 7.
+         * Evaluating it there is a chain-liveness split with no attacker.
+         *
+         * VALIDATION does not merely skip the comparison: it never READS
+         * w->mempool.count, so the deterministic path has no dependency
+         * on node-local state at all.
+         *
+         * The floor on actual_fee is kept BELOW, in both modes. It is NOT
+         * covered by Check 0: Check 0 bounds the header field
+         * committed_fee@74 (line 796), whereas the surge bounded
+         * actual_fee = Sum(inputs) - Sum(outputs). Nothing in this
+         * function binds those two quantities for a transparent TX --
+         * declared_fee is a caller parameter (the wire btx->fee on the
+         * propose path) and is only ever compared to actual_fee. Dropping
+         * the surge without a replacement floor would therefore let
+         * actual_fee == declared_fee == 1 pass VALIDATION. That is caught
+         * later and deterministically by check_supply_invariant_v016
+         * (nodus_witness_bft.c:3304) -- route_tx_fee burns committed_fee
+         * while the UTXO delta only removes actual_fee -- but "caught" then
+         * means the WHOLE BLOCK is rolled back at finalize instead of one
+         * TX being dropped here. Hence the explicit deterministic floor. */
+        if (actual_fee < NODUS_W_BASE_TX_FEE) {
             snprintf(reject_reason, reason_size,
-                     "fee too low: actual=%lu < min=%lu (mempool=%d)",
-                     (unsigned long)actual_fee, (unsigned long)min_fee,
-                     mp_count);
+                     "fee too low: actual=%lu < min=%lu",
+                     (unsigned long)actual_fee,
+                     (unsigned long)NODUS_W_BASE_TX_FEE);
             return -1;
         }
 
+        /* Surge ABOVE that floor -- ADMISSION only. Same base constant, so
+         * this branch is a strict superset of the floor above and can only
+         * ever raise the bar, never lower it. */
+        if (mode == NODUS_WITNESS_VERIFY_ADMISSION) {
+            int mp_count = w->mempool.count;
+            uint64_t min_fee = NODUS_W_BASE_TX_FEE *
+                               (1 + (uint64_t)mp_count / NODUS_W_FEE_SURGE_STEP);
+
+            if (actual_fee < min_fee) {
+                snprintf(reject_reason, reason_size,
+                         "fee too low: actual=%lu < min=%lu (mempool=%d)",
+                         (unsigned long)actual_fee, (unsigned long)min_fee,
+                         mp_count);
+                return -1;
+            }
+        }
+
+        /* Deterministic in BOTH modes: fee identity is a property of the
+         * TX bytes and the committed UTXO set, not of local queue depth. */
         if (actual_fee != declared_fee) {
             snprintf(reject_reason, reason_size,
                      "fee mismatch: actual=%lu != declared=%lu",

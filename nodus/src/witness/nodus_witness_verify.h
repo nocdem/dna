@@ -22,6 +22,35 @@ extern "C" {
 #endif
 
 /**
+ * Verification mode — separates DETERMINISTIC consensus validation from
+ * per-node LOCAL ADMISSION policy.
+ *
+ * The dynamic fee surge (Check 5) scales the minimum acceptable fee with
+ * w->mempool.count, which is node-local and arrival-order dependent. Two
+ * honest witnesses holding different mempool depths therefore compute
+ * different min_fee values for the SAME transaction. On the block
+ * validation path a single TX reject drops the whole batch
+ * (nodus_witness_bft.c: handle_propose / handle_commit verify loops), so a
+ * follower with a fuller mempool would reject an honest leader's block —
+ * a liveness split with no attacker involved. Surge is therefore evaluated
+ * ONLY in ADMISSION mode; VALIDATION never reads w->mempool.count.
+ *
+ * The deterministic fee floor is unaffected: Check 0 enforces
+ * committed_fee >= DNAC_MIN_FEE_RAW in BOTH modes, and
+ * DNAC_MIN_FEE_RAW == NODUS_W_BASE_TX_FEE, so VALIDATION still holds the
+ * full base-fee bar.
+ *
+ * VALIDATION == 0 IS DELIBERATE AND MUST NOT BE REORDERED: a future call
+ * site that leaves the field zero-initialised or forgets to pass a mode
+ * falls into the DETERMINISTIC branch (fail-close for consensus), never
+ * into the node-local one.
+ */
+typedef enum {
+    NODUS_WITNESS_VERIFY_VALIDATION = 0,  /* block validation — deterministic, no surge */
+    NODUS_WITNESS_VERIFY_ADMISSION  = 1   /* mempool admission — local policy, surge on */
+} nodus_witness_verify_mode_t;
+
+/**
  * Recompute SHA3-512 hash from serialized tx_data.
  *
  * Matches dnac_tx_compute_hash() byte-for-byte (design §2.3, F-CRYPTO-10):
@@ -63,8 +92,11 @@ int nodus_witness_recompute_tx_hash(const uint8_t *chain_id,
  *   2. TX hash integrity (recompute and compare)
  *   3. Sender Dilithium5 signature
  *   4. Balance (input amounts from UTXO DB >= output amounts)
- *   5. Fee (actual >= min fee, matches declared)
+ *   5. Fee (actual == declared; surge minimum in ADMISSION mode only)
  *   6. Double-spend (nullifiers not already in DB)
+ *
+ * Every check except the Check-5 surge minimum is deterministic: it reads
+ * only the TX bytes and committed DB state. See nodus_witness_verify_mode_t.
  *
  * @param w                 Witness context (for DB lookups)
  * @param tx_data           Serialized transaction bytes
@@ -76,6 +108,8 @@ int nodus_witness_recompute_tx_hash(const uint8_t *chain_id,
  * @param client_pubkey     Sender's Dilithium5 public key (2592 bytes)
  * @param client_signature  Sender's signature over tx_hash (4627 bytes)
  * @param declared_fee      Fee amount declared by client
+ * @param mode              VALIDATION (deterministic; block verify paths) or
+ *                          ADMISSION (adds the node-local mempool fee surge)
  * @param reject_reason     Output: human-readable rejection reason
  * @param reason_size       Size of reject_reason buffer
  * @return 0 if valid, -1 if invalid (reject_reason filled), -2 if double-spend
@@ -87,6 +121,7 @@ int nodus_witness_verify_transaction(nodus_witness_t *w,
                                       const uint8_t *client_pubkey,
                                       const uint8_t *client_signature,
                                       uint64_t declared_fee,
+                                      nodus_witness_verify_mode_t mode,
                                       char *reject_reason, size_t reason_size);
 
 #ifdef __cplusplus
