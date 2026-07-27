@@ -1,4 +1,100 @@
-# RESUME — DNAC v3 ZK stack (CURRENT STATUS: 2026-07-27)
+# RESUME — DNAC v3 ZK stack (CURRENT STATUS: 2026-07-28)
+
+## ⏭ WHAT IS LEFT — read this first (2026-07-28)
+
+**The zk stack itself is GREEN and idle. Nothing in `shared/crypto/zk/` is blocking.**
+`make test` 70 binaries / 0 warnings, 52/52 vectors hash-clean, nodus ctest 132/132. The whole
+verify stack is consensus-LINKED but consensus-DEAD: type-11 is still REJECT-unconditional
+(`nodus/src/witness/nodus_witness_verify.c:743-753` — verified 2026-07-27, the `return -1` is the
+function's last statement, there is no accept path). **C3 is the door that opens it, and the work
+left is NOT zk work — it is design and consensus work upstream of the circuits.**
+
+### The four things standing between here and a live shielded pool
+
+1. **F1 — the production note tree.** Design doc `dnac/docs/plans/2026-07-22-f1-note-commitment-
+   tree-design.md` exists and is user-locked at D=24, but its red-team ran 2026-07-27 and came back
+   **NOT-GREEN**: 10 findings, and **4 of the doc's own 20 "grounded" facts were REFUTED**. The two
+   that cost real work: the doc claims the D flip changes "not the trace width (2318) nor the
+   constraint SET" — **both false**. Width is `2306 + 3·D` (`conf_action_agg_fold.h:99-111`), so
+   D=24 ⇒ **2378**; and the fold emits 4 constraints/level for i=1..D plus 5/level for i=2..D
+   (`conf_action_agg_fold.c:61-72`, `:119-141`) ⇒ **31 → 211 constraints**, a different constraint
+   polynomial because the alpha-fold is order-sensitive. Headroom is fine
+   (`DNAC_PROVER_MAX_TRACE_WIDTH = 2560`, `stark_prover.h:80`). Also undefined in the doc: behaviour
+   at tree capacity (the 2^24-th append — neither reject nor wrap is chosen), and §0 still cites
+   `merkle_smt.h`/`merkle_smt.c`, **files deleted in the P1c cutover**.
+   → **The doc needs revision before F1a can start.**
+
+2. **The shield/unshield boundary — the real blocker, and it was mis-scoped.** What was tracked as
+   "F2, the confidential-pool supply model" is **not a separate item**; it is answered by the
+   boundary design. New doc: `dnac/docs/plans/2026-07-27-boundary-shield-unshield-design.md`
+   (supersedes the 2026-07-16 C6 turnstile doc, which was comprehensively obsoleted — its dual-mode
+   TX premise was outlawed by the S5 V4 wire **one day after C6 was written**, and 35 of its 55
+   re-checked facts came back stale or false). User-locked shape: **dedicated TX types 12/13**
+   (11 stays byte-identical, D7.1 intact), **two unsigned public slots** `pub_boundary_in/out`
+   (publics 43 → 45), and **one combined re-ground with F1's D=24** so the vector regeneration and
+   `num_qc` re-measure are paid once. **Its §3 red-team has NOT been run** — chartered at the
+   consensus row, 8-13 agents, with a mandatory cost gate.
+   ⚠ Two hard preconditions the doc pins as **G-DET-B-0**, because the pool balance would ride the
+   same mechanisms: `state_root` currently substitutes tagged-empty sentinels on a transient DB
+   fault (`nodus_witness_merkle.c:1218-1238`), and `nodus_witness_supply_get` returns an ambiguous
+   -1 that makes the supply gate **skip entirely** (`bft.c:901-906`) while zeroed counters get
+   hashed into every epoch_state leaf (`merkle.c:1105-1109`). Both are live, both are recorded in
+   `nodus/BUGS.md`, **neither is fixed**.
+
+3. **Why the pool cannot just be bolted on.** Two facts established by reading, not assumed:
+   the supply counters `total_minted`/`total_burned` are **inside `state_root`** — hashed
+   big-endian into every epoch_state leaf (`nodus_witness_merkle.c:1105`, `~:1154-1157`) — so the
+   accounting model is a **determinism** constraint, not bookkeeping; and the pool is presently
+   **unreachable in both directions**, because type-11 forbids a transparent leg (D7.1,
+   `verify.c:591-604`) and the circuit cannot mint from nothing (balance accumulator must be zero
+   at the last row, `conf_action_fold.c:288`, over 52-bit non-negative values).
+
+4. **P2 recursion — buildable, but its first slice has NO upstream reference.** P2a
+   (transcript-in-AIR) was grounded against the pinned Plonky3 v0.6.2 (`11cc5849`) on 2026-07-27.
+   Q1/Q2 are solid: `P2AIR_NUM_COLS = 180` matches upstream `columns.rs` for (8,7,1,4,22), and the
+   DuplexChallenger has exactly **five** state transitions with **two** distinct permutation
+   preambles (absorb does a rate-clear plus `state[RATE] += num_absorbed`; squeeze does neither),
+   split at `duplex_challenger.c:74`. **Q3's answer is NO:** the v0.6.2 workspace has 41 crates and
+   **zero** recursion/wrap/circuit crate, and `poseidon2-air/src/air.rs:135-137` is literally
+   `fn main_next_row_columns(&self) -> Vec<usize> { vec![] }` — upstream's only Poseidon2 AIR emits
+   no next-row constraints, so it **structurally cannot** express a sponge state chained across
+   rows. p3-challenger is a dev-dependency of the AIR crates only; upstream *proves* challengers,
+   it does not *constrain* them, and `challenger/src/lib.rs:127-140` concedes the recursive verifier
+   circuit lives downstream. → **P2a's three core pieces have nothing to byte-match.** Under
+   `ANA HEDEF: KAFADAN KRİPTO YASAK` this must be argued with the user before a line is delegated.
+   **Good news for scheduling:** P2a does **not** touch the shared verify surface — AIRs and lookups
+   are caller-supplied descriptors (`batch_verify.h:112-123`, single call site
+   `batch_verify.c:727`), so adding an AIR needs no edit to `batch_verify.c`, and P2b/P2c would
+   *mirror* `fri_verifier.c`/`poseidon2_mmcs.*` rather than modify them. **C3 and P2a are safe to
+   run in parallel.** The one genuine collision is mechanical: F1a and P2a share
+   `tools/plonky3_oracle/src/main.rs` (`const AGG_D` at `:14079`), the zk `Makefile`, and worst,
+   `tools/vectors/.expected_hashes` — a **single 52-line file**.
+
+### Standing cautions
+
+- **The S2'-d descriptor pins (`num_random_codewords`, `salt_elems`) are STRICTER THAN UPSTREAM.**
+  No upstream KAT stands behind them; they rest on the S2'-a red-team's reasoning. C3 makes that
+  surface live — do not inherit any green as a soundness claim for it.
+- **A red-team verdict expires when the substrate moves.** This is not a slogan; it is what
+  destroyed C6 (verdict rendered 2026-07-16, premise outlawed 2026-07-17). Any charter in the
+  boundary doc must run against the tree as it stands the day the code starts.
+- **Size a verify stage to the finding count, never to a constant.** The 2026-07-27 C6 round
+  produced 14 CRITICAL/HIGH and independently verified only 3, because the fan-out was hard-capped
+  at 3 in the orchestration script. The other 11 are named but carry **no verdict**.
+- `tools/vectors/fri_fold_matrix.json` is **65.2 MB** against GitHub's 100 MB hard limit. Any
+  re-ground must not push it over; a push failure would be total.
+- `fri_error_variants_total_in_enum = 26` is pinned BY HAND and must be updated on the next
+  Plonky3 bump. `PointEvaluationCountMismatch` is no longer exercised, and the
+  `DNAC_LOGUP_ERR_HEIGHT_BOUND → DNAC_BV_ERR_HEIGHT_BOUND` mapping is unreachable from any fixture
+  (needs three maximal terms) — both documented in the tests themselves.
+
+**Suggested order, given the above:** revise the F1 doc → run the boundary doc's §3 red-team
+against the then-current tree → ONE combined re-ground (D=24 + boundary publics) → the C3 apply /
+accept-flip. P2a can proceed independently at any point, but only after its no-upstream-reference
+problem is argued out with the user.
+
+---
+
 
 > **This top block is authoritative and current. Everything under "═══ HISTORICAL
 > BUILD LOG ═══" is the traceable module-by-module history and its numbers
