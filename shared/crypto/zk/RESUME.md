@@ -268,9 +268,36 @@ left is NOT zk work — it is design and consensus work upstream of the circuits
    `sel_start` may appear anywhere with no instance-ID column (bind row TYPES),
    non-canonical cells alias so the commitment layer must canonicalize.
    zk `make test` **71 binaries** ALL GATES GREEN, 0 warnings. No version bump
-   (consensus-inert). NEXT: **P2b (MMCS-in-AIR) design** — mapping ready; the
-   real work is opening `poseidon2-circuit-air`'s AIR-level `mmcs_bit`
-   placement constraint.
+   (consensus-inert).
+   **P2b DESIGN v2 (2026-07-28) — written, red-teamed, NOT-GREEN, folded.**
+   Doc: `dnac/docs/plans/2026-07-28-p2b-mmcs-in-air-design.md`. O2 closed
+   FLEET 010's last hole: the AIR-level `mmcs_bit` placement constraint is
+   `P3rec poseidon2-circuit-air/src/air.rs:984-1002` (gated pair, degree 3),
+   plus the `mmcs_index_sum` recurrence `:1022-1029`. User-locked at O3:
+   preprocessed selectors + slice 1 = same-height binary walk.
+   **FLEET 016 (2 red-teamers) — BOTH lenses independently found the SAME
+   CRITICAL:** DNAC's preprocessed commitment is PROVER-SUPPLIED (committed at
+   `batch_prover.c:820-825`, wire `fri_proof_codec.c:851`, verifier only checks
+   PRESENCE `batch_verify.c:149`; no pinned comparison exists in the tree), so
+   an all-zero selector table makes every gated constraint vacuous. Upstream
+   does not have this hole structurally: its preprocessed commitment is NOT a
+   proof field (`Plonky3 11cc5849 batch-stark/src/proof.rs:29-38`) but lives
+   verifier-side in `CommonData` (`common.rs:47-51`), and the AIR says so:
+   *"committed at setup time and cannot be changed"* (`air.rs:933-935`) —
+   **DNAC has no setup time.** NOT live-exploitable: `shielded_verify.c:214-215`
+   declares no preprocessed and `batch_verify.c:149` rejects an undeclared
+   commit. **User-locked fix: PIN-1** — the P2b verify entry compares the
+   preprocessed root against a consensus constant (S2'-d precedent; constant +
+   generator KAT in the `shielded_domsep` style). **PIN-2** (forced by the
+   port): `prep_next = 1` mandatory — the gates read the NEXT-row window
+   (`air.rs:945-951`, `:987`) and with 0 the verifier zero-fills
+   (`batch_verify.c:696-707`) while the prover uses real values
+   (`batch_prover.c:311-313`) ⇒ silent vacuity, not fail-close.
+   All 17 findings folded into v2 (opened-rows public equality, leaf zero-state,
+   final-row threading, ungated block + degree horn, PaddingFreeSponge absorb
+   semantics, bit-order correction — a KAT CANNOT settle it, OBL-1/2/3 named
+   consumer obligations). **Nothing on the preprocessed path may be built
+   before PIN-1 and PIN-2 exist.** NEXT: P2b code slice (own O4) or P2c.
 
 ### ⚑ CITATION BASELINE — read this before checking any Plonky3 `file:line` in this tree
 
