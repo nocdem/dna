@@ -1078,8 +1078,14 @@ static void handle_dnac_block(nodus_witness_t *w,
          * Phase 2 / Task 37: adds "commit_cert" — array of maps with
          * {signer_id: bstr(32), sig: bstr(4627)} for each 2f+1
          * PRECOMMIT APPROVE signer. Empty array if no cert was stored
-         * (e.g., pre-BFT seeded genesis). */
-        enc_dnac_response(&enc, txn_id, "dnac_block", 9);
+         * (e.g., pre-BFT seeded genesis).
+         *
+         * 2026-07-29: adds "state_root" so read-only clients (explorer)
+         * can recompute the block's own hash via the canonical preimage
+         * (nodus_witness_compute_block_hash_ex) without waiting for the
+         * child block's prev_hash. The client decoder has parsed this
+         * key since Phase 7 (nodus_client.c dnac_block state_root arm). */
+        enc_dnac_response(&enc, txn_id, "dnac_block", 10);
         cbor_encode_cstr(&enc, "found");
         cbor_encode_bool(&enc, true);
         cbor_encode_cstr(&enc, "height");
@@ -1096,6 +1102,8 @@ static void handle_dnac_block(nodus_witness_t *w,
         cbor_encode_bstr(&enc, blk.proposer_id, NODUS_T3_WITNESS_ID_LEN);
         cbor_encode_cstr(&enc, "prev_hash");
         cbor_encode_bstr(&enc, blk.prev_hash, NODUS_T3_TX_HASH_LEN);
+        cbor_encode_cstr(&enc, "state_root");
+        cbor_encode_bstr(&enc, blk.state_root, NODUS_T3_TX_HASH_LEN);
 
         cbor_encode_cstr(&enc, "commit_cert");
         cbor_encode_array(&enc, (size_t)cert_count);

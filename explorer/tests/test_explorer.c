@@ -1131,6 +1131,82 @@ static void test_sync_stale_name(void) {
     PASS();
 }
 
+/* exp_sync_compute_block_hash: KAT against the pinned preimage layout
+ * (dnac/include/dnac/block.h "Compute block_hash" doc, byte-matched by
+ * nodus_witness_compute_block_hash_ex):
+ *   SHA3-512( height(8 LE) || prev_hash(64) || state_root(64)
+ *             || tx_root(64) || tx_count(4 LE) || proposer_id(32) )
+ * The expected value is built here from that 236-byte layout directly, so
+ * this test fails if dnac_block_compute_hash and the documented preimage
+ * ever drift apart — it is not a call-the-same-function tautology. */
+static void test_sync_compute_block_hash(void) {
+    TEST("exp_sync_compute_block_hash: KAT + fail-closed guards");
+
+    nodus_dnac_block_result_t blk;
+    memset(&blk, 0, sizeof(blk));
+    fill(blk.prev_hash, 64, 0xA1);
+    fill(blk.state_root, 64, 0xB2);
+    fill(blk.tx_root, 64, 0xC3);
+    blk.tx_count = 3;
+    blk.timestamp = 1753776000; /* display-only — MUST NOT affect the hash */
+    fill(blk.proposer_id, 32, 0xD4);
+
+    uint8_t got[64];
+    if (exp_sync_compute_block_hash(42, &blk, got) != 0) {
+        FAIL("expected success for height 42 with non-zero state_root");
+        return;
+    }
+
+    /* Expected: manual 236-byte preimage per the pinned layout. */
+    uint8_t pre[236];
+    uint8_t *p = pre;
+    uint64_t height = 42;
+    for (int i = 0; i < 8; i++) *p++ = (uint8_t)((height >> (i * 8)) & 0xff);
+    memset(p, 0xA1, 64); p += 64;   /* prev_hash  */
+    memset(p, 0xB2, 64); p += 64;   /* state_root */
+    memset(p, 0xC3, 64); p += 64;   /* tx_root    */
+    uint32_t tx_count = 3;
+    for (int i = 0; i < 4; i++) *p++ = (uint8_t)((tx_count >> (i * 8)) & 0xff);
+    memset(p, 0xD4, 32); p += 32;   /* proposer   */
+
+    uint8_t want[64];
+    if (qgp_sha3_512(pre, sizeof(pre), want) != 0) { FAIL("sha3 failed"); return; }
+    if (memcmp(got, want, 64) != 0) {
+        FAIL("hash != SHA3-512 over the documented 236-byte preimage");
+        return;
+    }
+
+    /* Timestamp is NOT part of the preimage (PR 2, 2026-05-03) — changing
+     * it must not change the hash. */
+    blk.timestamp = 1;
+    uint8_t got2[64];
+    if (exp_sync_compute_block_hash(42, &blk, got2) != 0 ||
+        memcmp(got, got2, 64) != 0) {
+        FAIL("timestamp leaked into the hash preimage");
+        return;
+    }
+
+    /* Fail-closed: all-zero state_root (pre-upgrade witness) must refuse
+     * to compute rather than hash a wrong preimage. */
+    memset(blk.state_root, 0, 64);
+    if (exp_sync_compute_block_hash(42, &blk, got) == 0) {
+        FAIL("all-zero state_root should fail closed");
+        return;
+    }
+    fill(blk.state_root, 64, 0xB2);
+
+    /* Fail-closed: heights 0 and 1 (genesis needs the chain_def blob the
+     * dnac_block response doesn't carry). */
+    if (exp_sync_compute_block_hash(1, &blk, got) == 0) { FAIL("height 1 (genesis) should fail closed"); return; }
+    if (exp_sync_compute_block_hash(0, &blk, got) == 0) { FAIL("height 0 should fail closed"); return; }
+
+    /* Rejects NULL params. */
+    if (exp_sync_compute_block_hash(42, NULL, got) == 0) { FAIL("NULL blk should fail"); return; }
+    if (exp_sync_compute_block_hash(42, &blk, NULL) == 0) { FAIL("NULL out should fail"); return; }
+
+    PASS();
+}
+
 /* ── t23+: exp_json (Task 6) ────────────────────────────────────────── */
 
 static void test_json_str_escaping(void) {
@@ -1678,6 +1754,7 @@ int main(void) {
     test_reset_fsm_candidate_switch_restarts();
     test_reset_fsm_negative_index_does_not_mutate();
     test_sync_stale_name();
+    test_sync_compute_block_hash();
     test_json_str_escaping();
     test_json_hex_emit();
     test_route_stats_200();

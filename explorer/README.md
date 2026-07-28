@@ -20,6 +20,15 @@ summary below is grounded in that doc's §7/§8.
 - `src/exp_sync.{c,h}` — the sync loop: walks the chain by ledger `seq`
   (`exp_chain_ledger_range`, served by the witness's `dnac_ledger_range`
   query), fetches each TX (`dnac_tx`), and writes rows into the index DB.
+  Block headers are backfilled per height via `dnac_block`; each row's OWN
+  `block_hash` is computed locally at insert (`exp_sync_compute_block_hash`,
+  via libdna's `dnac_block_compute_hash` — same canonical preimage as the
+  witness chain) when the response carries a non-zero `state_root`
+  (witness >= v0.18.18), so the TIP block is never shown hash-less
+  ("pending") on the site. Fallback for genesis (height 1, chain_def not
+  served by `dnac_block`) and pre-v0.18.18 witnesses: the child block's
+  `prev_hash` backfills the parent's hash, which also remains the
+  authoritative overwrite for every height.
 - `src/exp_extract.{c,h}` — deserializes raw TX bytes into index rows
   (`exp_tx_row_t` / `exp_io_row_t`), sourcing timestamps only from the
   deserialized TX, never the witness response envelope.

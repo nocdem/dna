@@ -8,10 +8,14 @@
  *      current index db aside and starts a fresh one.
  *   2. Walk ledger sequences in the index's [last_indexed_seq+1, tip]
  *      gap in chunks of 100, extracting + inserting each TX.
- *   3. Backfill block headers for every new height observed in step 2,
- *      wiring each block's tx_root row and using the CHILD block's
- *      prev_hash to backfill the PARENT's block_hash (exp_db.h: a block
- *      row only learns its own hash from its child).
+ *   3. Backfill block headers for every new height observed in step 2.
+ *      Each row's OWN block_hash is computed locally at insert when the
+ *      dnac_block response carries a non-zero state_root
+ *      (exp_sync_compute_block_hash below) — the tip is never left
+ *      hash-less. The CHILD block's prev_hash backfill of the PARENT's
+ *      block_hash stays as the authoritative overwrite and as the only
+ *      path for rows the helper can't compute (genesis at height 1,
+ *      pre-upgrade witness serving no state_root).
  *
  * Binding FSM-integration rules (Task 4 security review, G6):
  *   1. On startup, preseed the FSM's ref_chain_id from db meta
@@ -123,6 +127,31 @@ void exp_sync_preseed(exp_db_t *db, exp_reset_fsm_t *fsm);
  * @return 0 on success, -1 on bad params or truncation
  */
 int exp_sync_stale_name(const char *db_path, const uint8_t chain_id[32], char *out, size_t outlen);
+
+/* Pure helper (no I/O): compute a block's OWN hash from the fields the
+ * dnac_block response carries, via libdna's dnac_block_compute_hash — the
+ * same canonical preimage the witness chain uses
+ * (nodus/src/witness/nodus_witness_db.c nodus_witness_compute_block_hash_ex;
+ * layout pinned at dnac/include/dnac/block.h "Compute block_hash" doc:
+ * SHA3-512( height(8 LE) || prev_hash(64) || state_root(64) || tx_root(64)
+ *           || tx_count(4 LE) || proposer_id(32) ), timestamp NOT hashed).
+ * Lets the tip block show its real hash immediately instead of waiting for
+ * the child block's prev_hash backfill (which stays in place as the
+ * authoritative overwrite).
+ *
+ * Returns -1 (out untouched) when the hash is NOT locally computable:
+ *   - height <= 1: height 1 is this witness implementation's genesis (see
+ *     sync_blocks' h-init comment) and its preimage appends the chain_def
+ *     blob, which the dnac_block response does not carry;
+ *   - blk->state_root all-zero: a pre-upgrade witness that doesn't serve
+ *     state_root yet (the field decodes as zeros) — hashing a zeroed
+ *     state_root would produce a WRONG hash, so fail closed and leave the
+ *     row on the child-backfill path.
+ * @return 0 on success (out filled), -1 otherwise
+ */
+int exp_sync_compute_block_hash(uint64_t height,
+                                 const nodus_dnac_block_result_t *blk,
+                                 uint8_t out[64]);
 
 /* Sync thread entry point (pthread_create-compatible). Runs exp_sync_tick()
  * in a loop, sleeping EXP_SYNC_POLL_SECONDS between polls (checking

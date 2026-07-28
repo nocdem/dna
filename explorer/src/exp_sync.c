@@ -12,6 +12,7 @@
 #include "exp_extract.h"
 #include "nodus/nodus.h"
 #include "dnac/transaction.h"
+#include "dnac/block.h"
 
 #include "crypto/utils/qgp_log.h"
 #define LOG_TAG "EXP_SYNC"
@@ -281,11 +282,50 @@ static int sync_ledger(exp_chain_t *chain, exp_db_t *db, uint64_t tip,
     return 0;
 }
 
+/* See exp_sync.h for the contract (computability conditions + preimage
+ * pin). Kept next to sync_blocks, its only production caller. */
+int exp_sync_compute_block_hash(uint64_t height,
+                                 const nodus_dnac_block_result_t *blk,
+                                 uint8_t out[64]) {
+    if (!blk || !out || height <= 1) return -1;
+
+    int all_zero = 1;
+    for (int i = 0; i < 64; i++) {
+        if (blk->state_root[i] != 0) { all_zero = 0; break; }
+    }
+    if (all_zero) return -1;
+
+    /* dnac_block_t embeds the full genesis chain_def (~75 KiB of witness
+     * pubkey slots) — heap-allocate instead of burdening the sync thread's
+     * stack. calloc's zero-fill is REQUIRED by dnac_block_compute_hash's
+     * contract (block.h: is_genesis=false + zeroed chain_def → chain_def
+     * excluded from the preimage). */
+    dnac_block_t *b = calloc(1, sizeof(*b));
+    if (!b) return -1;
+
+    b->block_height = height;
+    memcpy(b->prev_block_hash, blk->prev_hash, DNAC_BLOCK_HASH_SIZE);
+    memcpy(b->state_root, blk->state_root, DNAC_BLOCK_HASH_SIZE);
+    memcpy(b->tx_root, blk->tx_root, DNAC_BLOCK_HASH_SIZE);
+    b->tx_count = blk->tx_count;
+    b->timestamp = blk->timestamp;  /* display-only; NOT in the preimage */
+    memcpy(b->proposer_id, blk->proposer_id, DNAC_BLOCK_PROPOSER_SIZE);
+
+    int rc = dnac_block_compute_hash(b);
+    if (rc == 0) memcpy(out, b->block_hash, DNAC_BLOCK_HASH_SIZE);
+    free(b);
+    return rc == 0 ? 0 : -1;
+}
+
 /* Step 3: backfill block headers for every new height in
- * (last_block_height, max_height]. Each block's tx_root is stored via
- * exp_db_insert_block (has_block_hash=0 — this row doesn't know its own
- * hash yet); the CHILD block's prev_hash backfills the PARENT's
- * block_hash via exp_db_set_block_hash. On the full-success path,
+ * (last_block_height, max_height]. Each block's row is stored via
+ * exp_db_insert_block with its OWN hash already computed locally when the
+ * response carries a non-zero state_root (exp_sync_compute_block_hash
+ * above) — so the tip is never left hash-less. Fallback for rows the
+ * helper can't compute (genesis at height 1, pre-upgrade witness serving
+ * no state_root): the CHILD block's prev_hash backfills the PARENT's
+ * block_hash via exp_db_set_block_hash, which also stays as the
+ * authoritative overwrite for every height. On the full-success path,
  * last_block_height is persisted once, after the whole loop commits
  * (watermark discipline). fix round 2, R3: a transport/query failure at
  * height h returns -1 with the watermark untouched (retry next tick); an
@@ -376,7 +416,9 @@ static int sync_blocks(exp_chain_t *chain, exp_db_t *db, uint64_t max_height) {
         memset(&row, 0, sizeof(row));
         row.height = h;
         memcpy(row.tx_root, blk.tx_root, 64);
-        row.has_block_hash = 0;
+        if (exp_sync_compute_block_hash(h, &blk, row.block_hash) == 0)
+            row.has_block_hash = 1;
+        /* else: has_block_hash stays 0 (memset) — child-backfill path. */
         row.timestamp = blk.timestamp;
         memcpy(row.proposer, blk.proposer_id, 32);
         row.tx_count = blk.tx_count;
