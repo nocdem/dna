@@ -149,14 +149,23 @@ Then check logs for divergence. The real log string is `state_root DIVERGED`
 journalctl -u nodus -n 200 | grep -i "DIVERGED\|SUPPLY INVARIANT\|QUARANTINED"
 ```
 
-⚠ **`nodus/tests/smoke_post_deploy.sh` is currently BROKEN — do not rely on it.**
-Audited 2026-07-28: it greps `cluster-status` for `block_height=[0-9]+`, a token that
-output does not contain (it is a table), so it aborts at its own "could not parse"
-guard; it then calls `dna spend --sender … --recipient … --amount …`, and neither that
-verb nor those flags exist (the real verb is `dna send <name|fp> <amount>`, positional,
-in **raw base units** — 10^8 per DNAC). Even repaired, it takes `head -1` of one node's
-height, so it is blind to precisely the divergence class above. Use the manual checks
-in this section until it is rewritten.
+The same checks are automated by `nodus/tests/smoke_post_deploy.sh`, **rewritten
+2026-07-28** (the previous version could not run at all, and would not have detected
+divergence if it had — see its header comment for the specifics):
+
+```bash
+# Agreement only — no wallet needed, safe to run any time:
+./nodus/tests/smoke_post_deploy.sh <host1:4001> <host2:4001> ...
+
+# Agreement + liveness (needs a funded wallet on this machine):
+SMOKE_SPEND_TO=<fingerprint> SMOKE_SPEND_AMOUNT=<raw base units> \
+    ./nodus/tests/smoke_post_deploy.sh <host1:4001> ...
+```
+
+It fails immediately on **same height with different `state_root`** (a real divergence,
+never retried) and retries while heights merely differ (a node catching up), so it is
+not flaky by construction. Verified against a live 7-node harness on 2026-07-28: 7/7
+agreement passes, and a single unreachable node fails it.
 
 ---
 
