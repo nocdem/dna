@@ -49,24 +49,77 @@ left is NOT zk work — it is design and consensus work upstream of the circuits
    `verify.c:591-604`) and the circuit cannot mint from nothing (balance accumulator must be zero
    at the last row, `conf_action_fold.c:288`, over 52-bit non-negative values).
 
-4. **P2 recursion — buildable, but its first slice has NO upstream reference.** P2a
-   (transcript-in-AIR) was grounded against the pinned Plonky3 v0.6.2 (`11cc5849`) on 2026-07-27.
-   Q1/Q2 are solid: `P2AIR_NUM_COLS = 180` matches upstream `columns.rs` for (8,7,1,4,22), and the
-   DuplexChallenger has exactly **five** state transitions with **two** distinct permutation
-   preambles (absorb does a rate-clear plus `state[RATE] += num_absorbed`; squeeze does neither),
-   split at `duplex_challenger.c:74`. **Q3's answer is NO:** the v0.6.2 workspace has 41 crates and
-   **zero** recursion/wrap/circuit crate, and `poseidon2-air/src/air.rs:135-137` is literally
-   `fn main_next_row_columns(&self) -> Vec<usize> { vec![] }` — upstream's only Poseidon2 AIR emits
-   no next-row constraints, so it **structurally cannot** express a sponge state chained across
-   rows. p3-challenger is a dev-dependency of the AIR crates only; upstream *proves* challengers,
-   it does not *constrain* them, and `challenger/src/lib.rs:127-140` concedes the recursive verifier
-   circuit lives downstream. → **P2a's three core pieces have nothing to byte-match.** Under
-   `ANA HEDEF: KAFADAN KRİPTO YASAK` this must be argued with the user before a line is delegated.
-   **Good news for scheduling:** P2a does **not** touch the shared verify surface — AIRs and lookups
-   are caller-supplied descriptors (`batch_verify.h:112-123`, single call site
-   `batch_verify.c:727`), so adding an AIR needs no edit to `batch_verify.c`, and P2b/P2c would
-   *mirror* `fri_verifier.c`/`poseidon2_mmcs.*` rather than modify them. **C3 and P2a are safe to
-   run in parallel.** The one genuine collision is mechanical: F1a and P2a share
+4. **P2 recursion — a FULL upstream reference exists. `Plonky3/Plonky3-recursion`.**
+
+   ⚠ **CORRECTION (2026-07-28). An earlier revision of this file stated "P2a's three core pieces
+   have nothing to byte-match" and classified P2a as referenceless KAFADAN-risk. That was WRONG.**
+   The 2026-07-27 grounding pass searched the **`Plonky3/Plonky3` repository** and correctly found
+   no recursion there — then generalised that to "no reference exists". Recursion lives in a
+   **separate repository of the same organisation**, which that pass never looked for. The right
+   query was "who builds recursion on Plonky3", not "does Plonky3 contain recursion". Corrected
+   after the user pushed back on the claim rather than accepting it.
+
+   **PIN: `Plonky3/Plonky3-recursion` @ `b36339709a7a67ee9760fb578b3d4339fd983709`**
+   (`b3633970`, 2026-07-06, no tags — pin by commit). Read it the same way as the main pin:
+   `git show <pin>:<path>`, never checkout.
+
+   Why it is usable, all verified on the clone:
+   - **Licence `MIT OR Apache-2.0`** (`Cargo.toml:16` area, `LICENSE-APACHE` + `LICENSE-MIT`
+     present) — compatible with this Apache-2.0 tree. No GPL hazard.
+   - **Targets `p3-* = "0.6"`** (`Cargo.toml:50-73`: p3-batch-stark, p3-challenger, p3-fri,
+     p3-goldilocks, p3-uni-stark) — the exact Plonky3 line DNAC migrated to at S2'.
+   - **Goldilocks is a first-class, separately-tested configuration, and it is OURS.**
+     `recursion/tests/goldilocks.rs:1-5`: *"Goldilocks uses a degree-2 extension (D=2), Poseidon2
+     width-8, and 4-element digests — all distinct from the BabyBear/KoalaBear D=4, width-16,
+     8-element configurations tested elsewhere."* That is DNAC's configuration exactly, and there
+     is a dedicated `p3_circuit::ops::GoldilocksD2Width8`. The common upstream path is
+     BabyBear/KoalaBear; the road DNAC took is the one explicitly covered here.
+
+   **Piece-by-piece map — every P2 sub-design now has a reference:**
+
+   | DNAC piece | Upstream file | Lines |
+   |---|---|---|
+   | **P2a** transcript-in-AIR | `recursion/src/challenger/circuit.rs` (+ `challenger_perm.rs` 102, `traits/challenger.rs` 137) | 440 |
+   | **P2b** Merkle/MMCS-verify-in-AIR | `recursion/src/pcs/mmcs.rs` | 2572 |
+   | **P2c** FRI-in-AIR | `recursion/src/pcs/fri/verifier.rs` (+ `fri/targets.rs` 1368, `fri/params.rs` 149, `backend/fri.rs` 852) | 1838 |
+   | **P2d** constraint-check-in-AIR | `recursion/src/verifier/batch_stark.rs` 1324, `stark.rs` 502, `quotient.rs` 407, `periodic.rs` 231 | 2464 |
+   | **P2e** WRAP + NODE composition | `recursion/src/recursion.rs` 1001, `examples/recursive_aggregation.rs` 1558 | 2559 |
+
+   `pcs/whir/*` (~2.4k lines) is a DIFFERENT polynomial commitment scheme and is **not**
+   applicable to DNAC, which is FRI-based. Ignore it.
+
+   **P2a's two supposedly-unreferenced constraints are right there.**
+   `recursion/src/challenger/circuit.rs:94-96` documents `duplexing()` as *"Matches native
+   `DuplexChallenger::duplexing()` exactly"*, and the body contains both:
+   - `:126` — `for slot in self.state.iter_mut().take(RATE).skip(num_absorbed)` = the rate clear
+   - `:131` — `self.state[RATE] = circuit.add(self.state[RATE], length_tag)` = the length tag
+
+   These are the in-circuit form of DNAC's `duplex_challenger.c:76-78` and `:80-82` — i.e. exactly
+   the absorb-vs-squeeze preamble distinction the earlier pass declared unreferenceable.
+
+   Directly relevant tests to mine: `recursion/tests/goldilocks.rs`, `challenger_transcript.rs`,
+   `fri.rs`, **`zk_hiding_mmcs.rs`** (DNAC uses a salted/hiding MMCS), `arity4_mmcs_bus_balance.rs`,
+   `zk_aggregation.rs`, `preprocessing.rs`, `test_lookups.rs`.
+
+   **What this changes.** P2a moves from "referenceless crypto, argue it out with the user before
+   delegating a line" to **"port against a pinned reference"** — the same P1a-P1d cycle: read,
+   pin, byte-match, KAT. The KAFADAN rule's normal path is available; no bespoke design argument
+   is required for the mechanism itself.
+
+   **Still DNAC-owned, no upstream will cover it:** the 4-limb `"DNAC|ZK|FRI|TRANSCRIPT|V1"` DS
+   prefix pre-absorb (`duplex_challenger.c:32-37`, applied at `:96-103`). Upstream
+   `DuplexChallenger::new` has no initial-state hook. That piece stays **self-consistent**, not
+   upstream-grounded, and must keep being labelled so.
+
+   **NOT YET VERIFIED — the honest limit of this pass.** Only the challenger's `duplexing()` body
+   and the crate/test inventory were read. Whether the upstream semantics match DNAC's in every
+   detail is unestablished; that is the first task of P2a, not a conclusion of this survey.
+
+   **Scheduling (unchanged and still true):** P2a does **not** touch the shared verify surface —
+   AIRs and lookups are caller-supplied descriptors (`batch_verify.h:112-123`, single call site
+   `batch_verify.c:727`), so adding an AIR needs no edit to `batch_verify.c`, and P2b/P2c *mirror*
+   `fri_verifier.c`/`poseidon2_mmcs.*` rather than modify them. **C3 and P2a are safe to run in
+   parallel.** The one genuine collision is mechanical: F1a and P2a share
    `tools/plonky3_oracle/src/main.rs` (`const AGG_D` at `:14079`), the zk `Makefile`, and worst,
    `tools/vectors/.expected_hashes` — a **single 52-line file**.
 
