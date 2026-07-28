@@ -5,11 +5,28 @@
  * Binds a confidential proof to a specific transaction (the SEC-5 replay-resistance
  * MECHANISM) so a valid proof for one tx does not transfer to another. Two pieces:
  *
- *  1. **Byte→Goldilocks map** (design v3.1 §4a) — truncate the 64-byte SHA3-512
- *     sighash to N=4 canonical Goldilocks elements by the SAME rejection convention
- *     the DNAC challenger already uses (transcript.c:380-388: walk 8-byte LE groups,
- *     accept `u < p`, skip otherwise, take the first 4). Grounded, not invented;
- *     reduce-mod-p is FORBIDDEN (double-covers low residues → bias).
+ *  1. **Byte→Goldilocks map** (design v3.1 §4a) — walk the 64-byte SHA3-512 sighash
+ *     in 8 little-endian u64 groups, ACCEPT a group iff `u < GOLDILOCKS_P`, SKIP it
+ *     otherwise, and take the first 4 accepted (`conf_txbind.c:36-43`). Fail-CLOSE if
+ *     fewer than 4 of the 8 groups are canonical.
+ *
+ *     ⚠ GROUNDING STATUS: **DNAC-owned rejection convention, not upstream-grounded.**
+ *     This block previously claimed grounding by pointing at "the SAME rejection
+ *     convention the DNAC challenger already uses (transcript.c:380-388)". That
+ *     citation is DEAD: the SHA3 HashChallenger it referred to was deleted in the P1c
+ *     Poseidon2 cutover, and `transcript.c` is now a 124-line duplex wrapper — the
+ *     cited range does not exist. It was in any case an INTERNAL citation, so it never
+ *     grounded the convention against anything outside this tree; it only asserted that
+ *     two DNAC sites agreed. Corrected 2026-07-28 rather than re-pointed, because
+ *     re-pointing it at `conf_txbind.c:40` would make the claim circular.
+ *
+ *     What IS sound here, and is the actual argument: reduce-mod-p is FORBIDDEN because
+ *     a 64-bit value reduced into p = 2^64 - 2^32 + 1 double-covers the low residues
+ *     [0, 2^32 - 2), biasing the map. Rejection sampling is the standard fix and costs
+ *     nothing: a uniform u64 is non-canonical with probability (2^32 - 1)/2^64 ≈ 2^-32,
+ *     so with 8 candidate groups the chance that fewer than 4 are canonical is far
+ *     below 2^-100 — which is why the fail-close path is unreachable in practice and
+ *     is nevertheless kept fail-CLOSE rather than falling back to reduction.
  *
  *  2. **tx-bound root** — fold `tx_binding` into the commitment-set root
  *     (`conf_root_air_fold_step`), so the proof's public output binds BOTH the

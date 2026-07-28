@@ -123,6 +123,45 @@ left is NOT zk work — it is design and consensus work upstream of the circuits
    `tools/plonky3_oracle/src/main.rs` (`const AGG_D` at `:14079`), the zk `Makefile`, and worst,
    `tools/vectors/.expected_hashes` — a **single 52-line file**.
 
+### ⚑ CITATION BASELINE — read this before checking any Plonky3 `file:line` in this tree
+
+**The `file:line` citations throughout `shared/crypto/zk/` are against Plonky3
+`82cfad73`, not against the tree's current pin `11cc5849` (v0.6.2). They are CORRECT
+— check them at the commit they name.**
+
+This was verified, not assumed, on 2026-07-28. Worked example: `poseidon2_goldilocks.c`
+cites `goldilocks/src/poseidon2.rs:75` for `RC_8_EXTERNAL_INITIAL` and `:177` for
+`RC_8_INTERNAL`. At `82cfad73` those lines are exactly those two constants. At
+`11cc5849` the same constants sit at `:111` and `:213` — a uniform **+36** in that file,
+because the file grew between the two commits.
+
+⚠ **An earlier revision of this document called those citations "stale" and reported a
+"+36 line drift" as a defect. That was WRONG and is retracted.** A citation that names
+its commit and is accurate at that commit is not stale; it is a correct citation about a
+specific revision. The error was mine: I checked the citations against the CURRENT pin
+instead of the one they name, then reported the mismatch as drift. Checking a reference
+against a commit it never claimed is the same class of measurement error as running a
+grep that cannot return positive.
+
+**How to check a citation here:**
+```bash
+git -C <plonky3-clone> show 82cfad73:<path>        # for a bare or 82cfad73-labelled cite
+git -C <plonky3-clone> show 11cc5849:<path>        # for anything explicitly marked v0.6.2
+```
+`82cfad73` is an ancestor of `11cc5849`, so a single clone serves both — no extra fetch.
+
+**Scope, measured:** 132 full-path `crate/src/file.rs:N` citations plus 874 short-form
+`rs:N` citations across the zk sources. Renumbering ~1000 citations to the new pin was
+considered and REJECTED: it is a large mechanical edit on crypto-grounding text where a
+single wrong number silently converts a true citation into a false one, and it buys
+nothing — the old commit remains reachable and the citations remain checkable. The
+correct fix was to state the baseline, which is what this block does.
+
+**Where citations DO name v0.6.2 explicitly** (the S2' migration work: `batch_verify`,
+`logup`, `logup_bus`, `batch_priming`, the FRI/MMCS verify hardening) they are against
+`11cc5849` and say so. Mixed baselines in one tree are tolerable ONLY because each
+citation carries its commit; a bare `rs:N` with no commit defaults to `82cfad73`.
+
 ### Standing cautions
 
 - **The S2'-d descriptor pins (`num_random_codewords`, `salt_elems`) are STRICTER THAN UPSTREAM.**
