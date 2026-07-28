@@ -247,11 +247,30 @@ left is NOT zk work — it is design and consensus work upstream of the circuits
    additions user-approved** (is_pow column; the canonicality gadget as a
    degree-3 is-zero ADAPTATION of assert_bits_canonical, hand-verified,
    runtime shape-guarded; the il[4]=0 op-row guard; il/buffer threading on
-   sample rows) — recorded in the design doc §0.5/§5. **Open at P2e:**
-   last-row boundary ("final row is filler") — the evaluator skips transitions
-   on the last row. zk `make test` **71 binaries** ALL GATES GREEN, 0 warnings.
-   No version bump (consensus-inert). NEXT: P2a i3 = form-by-form
-   implementation red-verify (own O4), then P2b (MMCS-in-AIR) design.
+   sample rows) — recorded in the design doc §0.5/§5.
+   **P2a-i3 DONE (2026-07-28, FLEET 015: 2 zk-auditors + ORCHESTRATOR fixes).**
+   A1 form-by-form: **26 GROUNDED / 8 JUDGMENT / 1 KAFADAN** — zero KAFADAN in
+   the constraint code; the one KAFADAN was a DOC miscount ("20+5" negatives
+   when there were 20 — fixed here, in the design doc and in root CLAUDE.md).
+   A2 independent second-witness hunt (design doc withheld): **1 HIGH / 2 MED /
+   3 LOW / 1 INFO**. **The HIGH is FIXED, not deferred:** a trace ending in a
+   sampling row had a FREE challenge (no transition constraints on the last
+   row) — `dnac_transcript_air_eval_trace` now enforces "final row is
+   `sel_filler`"; test N20b (trace TRUNCATED at a sample row, no filler to
+   trip terminality) is caught with exactly 1 violation, proving the new
+   constraint carries it alone. Also folded: `eval_trace` saturates instead of
+   overflowing `int`; the sentinel's "per-trace" claim corrected to per-row;
+   the header now warns that `eval_row` standalone is a WEAKER system (next-row
+   one-hot completion lives in that row's own local block). **10 new negatives**
+   close A1's "discharged but untested" forms → suite = 8 accepts + 30
+   negatives. Named consumer obligations carried to P2c/P2e: `is_pow` is a free
+   column (composition must pin PoW rows + the witness-observe adjacency),
+   `sel_start` may appear anywhere with no instance-ID column (bind row TYPES),
+   non-canonical cells alias so the commitment layer must canonicalize.
+   zk `make test` **71 binaries** ALL GATES GREEN, 0 warnings. No version bump
+   (consensus-inert). NEXT: **P2b (MMCS-in-AIR) design** — mapping ready; the
+   real work is opening `poseidon2-circuit-air`'s AIR-level `mmcs_bit`
+   placement constraint.
 
 ### ⚑ CITATION BASELINE — read this before checking any Plonky3 `file:line` in this tree
 

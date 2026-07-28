@@ -432,7 +432,31 @@ int dnac_transcript_air_eval_trace(const uint64_t *trace, size_t n_rows,
         const uint64_t *next = (r + 1 < n_rows) ? local + TAIR_WIDTH : NULL;
         const int v = dnac_transcript_air_eval_row(local, next, r == 0, cfg);
         if (v >= TAIR_VIOL_BAD_CONFIG) return TAIR_VIOL_BAD_CONFIG;
-        total += v;
+        /* Saturate instead of overflowing: a long, wholly-corrupt trace can sum
+         * past INT_MAX (signed overflow is UB), and the sentinel band must stay
+         * distinguishable. i3/A2-F5. */
+        if (total >= TAIR_VIOL_BAD_CONFIG - 1 - v) {
+            total = TAIR_VIOL_BAD_CONFIG - 1;
+        } else {
+            total += v;
+        }
+    }
+    /* LAST-ROW BOUNDARY (i3/A2-F1, CLOSED here rather than deferred to P2e).
+     * The final row gets NO transition constraints (`next == NULL` above), so
+     * every effect a row pins on its SUCCESSOR — the popped challenge lane
+     * included (blocks J/K) — is unconstrained there. A trace ending in a
+     * sampling row therefore admits a FREE challenge: an independent
+     * second-witness hunt built one in 6 rows. The evaluator now ENFORCES what
+     * the header only documented: the trace must end in a filler row, whose
+     * own row-local constraints carry no sponge effect. Fail-close, and it
+     * costs the honest prover nothing (padding to a power of two already ends
+     * in fillers). */
+    {
+        const uint64_t *last = trace + (n_rows - 1) * (size_t)TAIR_WIDTH;
+        if (last[tair_sel_off(TAIR_SEL_FILLER)] != 1u &&
+            total < TAIR_VIOL_BAD_CONFIG - 1) {
+            total += 1;
+        }
     }
     return total;
 }

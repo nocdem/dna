@@ -127,7 +127,12 @@ extern "C" {
 
 /** Fail-close sentinel: returned INSTEAD of a violation count when the config
  *  or the field shape is out of contract. Strictly larger than any reachable
- *  per-trace violation count, so a caller comparing `== 0` cannot be fooled. */
+ *  PER-ROW violation count, so a caller comparing `== 0` cannot be fooled.
+ *  ⚠ NOT larger than every conceivable per-TRACE sum (i3/A2-F5 corrected an
+ *  earlier over-claim here): `dnac_transcript_air_eval_trace` SATURATES at
+ *  `TAIR_VIOL_BAD_CONFIG - 1` rather than overflowing, so a saturated count and
+ *  the sentinel stay distinguishable, but a caller must treat any non-zero
+ *  return as "invalid" and only `== TAIR_VIOL_BAD_CONFIG` as "bad config". */
 #define TAIR_VIOL_BAD_CONFIG 1000000
 
 /* ── Column accessors (P2AIR accessor pattern, `poseidon2_air_cols.h:77-107`) ─ */
@@ -193,7 +198,15 @@ bool dnac_transcript_air_layout_check(void);
  * Evaluates the row-local constraints of `local`, plus the transition
  * constraints from `local` to `next`. Pass `next == NULL` for the final trace
  * row (no transition is evaluated there — the trace MUST therefore end in a
- * filler row for the last real op's effect to be constrained).
+ * filler row for the last real op's effect to be constrained; that rule is
+ * ENFORCED by `dnac_transcript_air_eval_trace`, not here).
+ *
+ * ⚠ CONTRACT (i3/A2-F4): the transition constraints pin ONE slot of each
+ * next-row one-hot group (e.g. `nil_[k] == 1`) and rely on `next`'s OWN
+ * row-local block to force the group's other slots to zero. A caller that
+ * evaluates rows in isolation and never evaluates `next` as a `local` gets a
+ * WEAKER system. Use `dnac_transcript_air_eval_trace`, which evaluates every
+ * row both ways; direct `eval_row` use is for negative tests only.
  *
  * PRECONDITION (same contract as `poseidon2_air_eval_row`): every column is a
  * canonical Goldilocks u64 in [0, p). Non-canonical cells alias; the bit

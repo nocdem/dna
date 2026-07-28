@@ -854,6 +854,125 @@ int main(int argc, char **argv) {
         free(t);
     }
 
+    /* ── i3 round: the forms the round-1 audit found DISCHARGED BUT UNTESTED
+     * (each of these constraints could be deleted today without turning the
+     * suite red — that is a regression hole, not a code defect), plus the one
+     * real second witness the independent hunt constructed. ── */
+
+    /* N20 (i3/A2-F1, the HIGH) — a trace that does NOT end in a filler. The
+     * last row gets no transition constraints, so a terminal SAMPLING row's
+     * popped challenge would be entirely free: relabel the final filler as a
+     * sample and give it an attacker-chosen lane. Caught only by the
+     * last-row-filler boundary in eval_trace. */
+    {
+        uint64_t *t = clone_trace(W);
+        uint64_t *last = row_of(t, W->n_rows - 1);
+        last[tair_sel_off(TAIR_SEL_FILLER)] = 0;
+        last[tair_sel_off(TAIR_SEL_SAMPLE)] = 1;
+        last[TAIR_LANE_OFF] = 0x1234u;      /* free — not the sponge's value */
+        write_bits(last, 0x1234u);
+        expect_reject("trace ends in a sampling row (free challenge)", t,
+                      W->n_rows, &cfg);
+        free(t);
+    }
+    /* N20b — the SAME hole in its pure form, and the one that isolates the new
+     * boundary: TRUNCATE the honest trace so it ends at a sampling row. No
+     * filler exists anywhere after it, so filler-terminality cannot fire and
+     * the last-row-filler boundary is the ONLY constraint left to reject it.
+     * (Exactly the shape the independent second-witness hunt constructed.) */
+    {
+        uint64_t *t = clone_trace(W);
+        expect_reject("truncated trace ending at a sample row", t,
+                      (size_t)r_smp + 1, &cfg);
+        free(t);
+    }
+    /* N21 (A2 §5.3 / transcript_air.c:151) — an op row entered at input_len ==
+     * RATE. Unreachable natively (the 4th observe drains eagerly); without the
+     * guard, sel_sample_dup at il[4] has NO absorb branch pinning its preimage,
+     * so the rate lanes go free. */
+    {
+        uint64_t *t = clone_trace(W);
+        uint64_t *row = row_of(t, (size_t)r_smp);
+        for (size_t k = 0; k < TAIR_LEN_SLOTS; k++) row[tair_il_off(k)] = (k == TAIR_RATE);
+        expect_reject("op row at input_len == RATE (il[4] guard)", t, W->n_rows, &cfg);
+        free(t);
+    }
+    /* N22 (§5.4) — input_len JUMPS across a sample row (0 -> 2), the shape that
+     * fabricates absorbed lanes for the next duplexing. */
+    {
+        uint64_t *t = clone_trace(W);
+        uint64_t *nxt = row_of(t, (size_t)r_smp + 1);
+        for (size_t k = 0; k < TAIR_LEN_SLOTS; k++) nxt[tair_il_off(k)] = (k == 2);
+        expect_reject("input_len jumped across a sample row", t, W->n_rows, &cfg);
+        free(t);
+    }
+    /* N23 (§5.4) — the input BUFFER mutated across a sample row (same class:
+     * the lanes a later absorb reads must be the ones observes wrote). */
+    {
+        uint64_t *t = clone_trace(W);
+        uint64_t *nxt = row_of(t, (size_t)r_smp + 1);
+        nxt[tair_inbuf_off(0)] = fadd(nxt[tair_inbuf_off(0)], 1);
+        expect_reject("input_buffer mutated across a sample row", t, W->n_rows, &cfg);
+        free(t);
+    }
+    /* N24 (transcript_air.c:268) — an observe that does NOT invalidate the
+     * output buffer (`duplex_challenger.c:108`): leaving output_len non-zero
+     * would let a later sample pop a STALE lane. */
+    {
+        uint64_t *t = clone_trace(W);
+        const int r_obs = find_row(W, TAIR_SEL_OBS, 0);
+        if (r_obs < 0 || (size_t)r_obs + 1 >= W->n_rows) {
+            printf("  [reject] plain observe row missing                 FAIL\n");
+            fails++;
+        } else {
+            uint64_t *nxt = row_of(t, (size_t)r_obs + 1);
+            for (size_t k = 0; k < TAIR_LEN_SLOTS; k++)
+                nxt[tair_ol_off(k)] = (k == TAIR_RATE);
+            expect_reject("observe did not invalidate the output buffer", t,
+                          W->n_rows, &cfg);
+        }
+        free(t);
+    }
+    /* N25 (transcript_air.c:301-303) — the eager-duplex row's length tag: the
+     * obs_dup twin of N2, which only covered the sample_dup tag. */
+    {
+        uint64_t *t = clone_trace(W);
+        uint64_t *row = row_of(t, (size_t)r_obsdup);
+        row[tair_perm_in_off(TAIR_RATE)] = row[tair_state_off(TAIR_RATE)];
+        regen_perm(row);
+        expect_reject("obs_dup length tag skipped (+4)", t, W->n_rows, &cfg);
+        free(t);
+    }
+    /* N26 (transcript_air.c:167) — trace row 0 is not a sel_start row. */
+    {
+        uint64_t *t = clone_trace(W);
+        uint64_t *row = row_of(t, 0);
+        row[tair_sel_off(TAIR_SEL_START)] = 0;
+        row[tair_sel_off(TAIR_SEL_FILLER)] = 1;
+        expect_reject("row 0 is not sel_start (boundary)", t, W->n_rows, &cfg);
+        free(t);
+    }
+    /* N27 (transcript_air.c:251-253) — prefix_ctr JUMPED past DS limbs: an
+     * observe advancing 0 -> 4 would skip three pinned prefix observes. */
+    {
+        uint64_t *t = clone_trace(W);
+        uint64_t *nxt = row_of(t, (size_t)r_prefix + 1);
+        for (size_t k = 0; k < TAIR_PREFIX_SLOTS; k++)
+            nxt[tair_prefix_off(k)] = (k == TAIR_RATE);
+        expect_reject("prefix_ctr jumped (DS limbs skipped)", t, W->n_rows, &cfg);
+        free(t);
+    }
+    /* N28 (transcript_air.c:339) — the popped challenge is not
+     * sponge_state[output_len - 1] (the F10 output_buffer invariant). */
+    {
+        uint64_t *t = clone_trace(W);
+        uint64_t *row = row_of(t, (size_t)r_smp);
+        row[TAIR_LANE_OFF] = fadd(row[TAIR_LANE_OFF], 1);
+        write_bits(row, row[TAIR_LANE_OFF]);
+        expect_reject("sample lane != state[output_len-1]", t, W->n_rows, &cfg);
+        free(t);
+    }
+
     /* ── multi-instance: a second instance started WITHOUT sel_start ── */
     if (B_multi->n_rows == 0) {
         printf("  [reject] multi_instance trace missing              FAIL\n");
@@ -986,7 +1105,7 @@ int main(int argc, char **argv) {
     printf("------------------------------------------------------------\n");
     if (fails) { printf("P2a transcript AIR: %d FAIL\n", fails); return 1; }
     printf("P2a transcript AIR: 8 oracle scenarios accepted (state + duplexings\n"
-           "  + exposed bits byte-matched) + 20 §0.5 constraint-form negatives\n"
-           "  rejected — PASS\n");
+           "  + exposed bits byte-matched) + 30 negatives rejected (25 trace-level\n"
+           "  incl. the i3 round's 10, 5 synthetic bit-gadget) — PASS\n");
     return 0;
 }
