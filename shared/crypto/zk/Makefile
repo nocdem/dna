@@ -149,7 +149,8 @@ TESTS = \
     $(BUILD)/test_batch_prover \
     $(BUILD)/test_batch_wire \
     $(BUILD)/test_batch_shielded_agg \
-    $(BUILD)/test_transcript_air
+    $(BUILD)/test_transcript_air \
+    $(BUILD)/test_mmcs_air_table
 
 # ── PREREQ HYGIENE (d4.d, 2026-07-26) ───────────────────────────────────────
 # A source on a recipe's command line that is NOT among its prerequisites means
@@ -257,6 +258,18 @@ $(BUILD)/test_batch_wire: tests/test_batch_wire.c tests/batch_test_util.h tests/
 # so the two can no longer drift apart.
 $(BUILD)/test_batch_shielded_agg: tests/test_batch_shielded_agg.c $(AGG_PROVER_SRCS) stark_prover_agg.h batch_prover.h | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) tests/test_batch_shielded_agg.c $(AGG_PROVER_SRCS) $(SHA3_SRC) $(LDLIBS) -o $@
+
+# P2b PIN slice — the preprocessed row-type table generator + PIN-1 (pinned
+# preprocessed root + runtime KAT binding constant to generator) + PIN-2
+# evidence (prep_next = 1 is load-bearing: the same proof verified with a
+# prep_next = 0 descriptor is REJECTED). Links the batched prover/verifier
+# stack because T4 proves + verifies a real one-instance batch whose
+# PREPROCESSED matrix is the generated table. Same source set as
+# test_batch_prover (which uses $(PROVER_STACK) ⊃ $(TRANSCRIPT_STACK)), plus
+# mmcs_air_table.c. Prerequisites list exactly what the command line links —
+# the d4.d AGG_PROVER_SRCS stale-binary lesson.
+$(BUILD)/test_mmcs_air_table: tests/test_mmcs_air_table.c mmcs_air_table.c mmcs_air_table.h batch_prover.c batch_verify.c batch_priming.c logup_bus.c logup.c stark_constraints.c fri_verifier.c $(PROVER_STACK) batch_prover.h batch_verify.h shielded_fri_params.h poseidon2_mmcs.h stark_prover.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_mmcs_air_table.c mmcs_air_table.c batch_prover.c batch_verify.c batch_priming.c logup_bus.c logup.c stark_constraints.c fri_verifier.c $(PROVER_STACK) -o $@
 
 # P1b — Poseidon2 MMCS byte-match (plain + hiding trees, oracle replay;
 # note_commit.c linked for the note_sponge_hash8 bridge KAT).
@@ -1109,6 +1122,15 @@ test: all
 	@echo "  exposed-bit byte-match; 20 design-§0.5 constraint-form negatives"
 	@echo "============================================================"
 	@$(BUILD)/test_transcript_air tools/vectors/transcript_trace_basic.json tools/vectors/transcript_trace_multi_instance.json tools/vectors/transcript_trace_partial_absorb.json tools/vectors/transcript_trace_pow_nonzero.json tools/vectors/transcript_trace_pow_zero_bits.json tools/vectors/transcript_trace_rate_boundary.json tools/vectors/transcript_trace_sample_bits_32.json tools/vectors/transcript_trace_squeeze_chain.json
+	@echo
+	@echo "============================================================"
+	@echo "P2b PIN slice — preprocessed row-type table + PIN-1 + PIN-2"
+	@echo "  deterministic generator + schedule shape (leaf perms derived"
+	@echo "  from the PaddingFreeSponge schedule) + the pinned preprocessed"
+	@echo "  root KAT (constant vs generator) + a real prove/verify round"
+	@echo "  trip whose prep_next = 0 flip MUST be rejected"
+	@echo "============================================================"
+	@$(BUILD)/test_mmcs_air_table
 	@echo
 	@echo "============================================================"
 	@echo "ALL GATES: GREEN"

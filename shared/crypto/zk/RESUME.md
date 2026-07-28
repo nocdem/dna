@@ -1,9 +1,9 @@
-# RESUME — DNAC v3 ZK stack (CURRENT STATUS: 2026-07-28)
+# RESUME — DNAC v3 ZK stack (CURRENT STATUS: 2026-07-29)
 
-## ⏭ WHAT IS LEFT — read this first (2026-07-28)
+## ⏭ WHAT IS LEFT — read this first (2026-07-29)
 
 **The zk stack itself is GREEN and idle. Nothing in `shared/crypto/zk/` is blocking.**
-`make test` 70 binaries / 0 warnings, 52/52 vectors hash-clean, nodus ctest 132/132. The whole
+`make test` 72 binaries / 0 warnings, 60/60 vectors hash-clean, nodus ctest 132/132. The whole
 verify stack is consensus-LINKED but consensus-DEAD: type-11 is still REJECT-unconditional
 (`nodus/src/witness/nodus_witness_verify.c:743-753` — verified 2026-07-27, the `return -1` is the
 function's last statement, there is no accept path). **C3 is the door that opens it, and the work
@@ -297,7 +297,40 @@ left is NOT zk work — it is design and consensus work upstream of the circuits
    final-row threading, ungated block + degree horn, PaddingFreeSponge absorb
    semantics, bit-order correction — a KAT CANNOT settle it, OBL-1/2/3 named
    consumer obligations). **Nothing on the preprocessed path may be built
-   before PIN-1 and PIN-2 exist.** NEXT: P2b code slice (own O4) or P2c.
+   before PIN-1 and PIN-2 exist.**
+   **P2b PIN SLICE DONE (2026-07-29, FLEET 017: 1 code-executor + independent
+   verifier 8/8 CONFIRMED + ORCHESTRATOR).** `mmcs_air_table.{c,h}` +
+   `tests/test_mmcs_air_table.c` (53 checks) + Makefile; tests 71 → **72**,
+   ALL GATES GREEN, 0 warnings, consensus-inert (no version bump).
+   - **PIN-1 established:** deterministic row-type table generator
+     (`is_leaf`/`is_compress`/`is_final`; leaf-row count derived from the
+     PaddingFreeSponge schedule `poseidon2_mmcs.c:41-72` ↔ 11cc5849
+     `sponge.rs:172-204` — exact-multiple ⇒ NO trailing permute) +
+     `DNAC_P2B_PREP_ROOT[4]` = {0xfcc92a4ebbd79fc4, 0xb0c4a93617190754,
+     0x3034244cd5325682, 0xa5c49b90e07500b9} + runtime KAT (T3: table →
+     `dnac_prover_coset_lde_bitrev`(lb=2, shift=7) → `dnac_p2_mmcs_commit_mixed`
+     == constant — the EXACT `batch_prover.c:787-826` pipeline, so T4 reads the
+     same root back out of a REAL `dnac_batch_prove` proof) + fail-close
+     comparator `dnac_p2b_prep_root_check` (caller-side, S2'-d style;
+     `dnac_batch_verify` signature untouched). ⚠ MECHANISM pin against the
+     REFERENCE schedule {2 mats, widths {8,5}, depth 4, H=16}; production
+     constant re-pins when P2c fixes the real schedule (header says so).
+   - **PIN-2 evidence:** N2a same proof + `prep_next=0` descriptor →
+     BV_ERR_SHAPE (`batch_priming.c:352-363`); N2b with next-row openings ALSO
+     trimmed (the shape a malicious prover would ship) → BV_ERR_FRI, asserted
+     != SHAPE so the negative is not vacuous; N5 proves the harness's
+     prep_next-consuming constraint is live (tampered main → PROVER_ERR_VERIFY).
+   - **Bit order G-DET-P2b-3 DECIDED (user-locked): A1 — LSB-first, direction
+     bits as PUBLICS.** New grounding in the design doc §0: upstream PRODUCTION
+     never uses `mmcs_index_sum` (`ops/mmcs.rs:137/158/181` all pass None; the
+     only Some is an example); real binding is per-level `path_bits[l]` from
+     LE `sample_bits` (`recursion/src/pcs/mmcs.rs:365-367`,
+     `circuit_builder.rs:1203-1217`, `fri/verifier.rs:615`) — LSB-first, same
+     as native `poseidon2_mmcs.c:581-590`. Slice 1 has NO `idx_acc` column.
+   - ⚠ NOT yet enforced anywhere: no verify entry calls the comparator yet, and
+     nothing forces `prep_next=1` on a descriptor — both become real in the AIR
+     slice's verify entry. NEXT: P2b AIR slice (`mmcs_air.{c,h}`, own O4,
+     §0.5 constraint forms, P2a i2/i3 pattern) or P2c in parallel.
 
 ### ⚑ CITATION BASELINE — read this before checking any Plonky3 `file:line` in this tree
 
