@@ -20,7 +20,8 @@
  * accepted language contains the native one (accepts) and excludes each
  * single-form deviation (negatives).
  *
- * (accept) For two configs x two indices: commit a deterministically filled
+ * (accept) For three configs (incl. the leaf==1 single-permutation shape) at
+ *   non-palindromic indices: commit a deterministically filled
  *   batch (NO RNG — a fixed affine fill), open a row, require the NATIVE
  *   verifier to ACCEPT it, then build the AIR trace from that same opening and
  *   require `dnac_mmcs_air_eval_trace == 0`, with the leaf digest and every
@@ -33,12 +34,16 @@
  *   NON-PALINDROMIC at their depth (asserted in-test), so the A1 bit-order
  *   negatives are not vacuous.
  *
- * (reject) 22 negatives, at least one per §0.5 constraint form (plus one per
- *   constraint of the beyond-doc step-index mechanism, so none of those is a
- *   regression hole either), each flipping exactly ONE thing. Four of them pin
- *   an EXACT violation count, which is what proves they hit that form and only
- *   that form: the public root (1), the final-row threading (4), the terminal
- *   row rule (1) and `dir` off a compress row (1).
+ * (reject) 25 negatives, at least one per §0.5 constraint form, each flipping
+ *   exactly ONE thing. Four pin an EXACT violation count, which is what proves
+ *   they hit that form and only that form: the public root (1), the final-row
+ *   threading (4), the terminal row rule (1) and `dir` off a compress row (1).
+ *   ⚠ Step-index coverage, stated honestly (red-verify A1-F2 corrected an
+ *   earlier over-claim): boolean/sum/agreement/advance each have a negative
+ *   (N16-N18, N22, N23); the row-0 anchor's N23 cannot be fully isolated
+ *   (type-agreement also fires) and the step-63 overflow guard
+ *   (mmcs_air.c `pos[63]·pn_sum`) is UNREACHABLE for any accepted config —
+ *   defensive only, flagged rather than faked.
  *
  * Build (via Makefile):  ./build/test_mmcs_air        (no vector files)
  *
@@ -406,6 +411,13 @@ static int accept_case(const dnac_p2b_table_cfg_t *cfg, uint64_t index,
 static const size_t CFG_B_WIDTHS[2] = {4, 4};
 static const dnac_p2b_table_cfg_t CFG_B = {2, CFG_B_WIDTHS, 3};
 
+/* Third config (red-verify A1-F3: the leaf == 1 branch was never exercised):
+ * ONE matrix of width 2 => a SINGLE leaf permutation whose partial block
+ * leaves rate slots 2..3 AND the capacity to the first-row zero-fill
+ * (mmcs_air.c block D, blk == 0, j = k..8). depth 4 => rows 1+4+1=6 -> 8. */
+static const size_t CFG_C_WIDTHS[1] = {2};
+static const dnac_p2b_table_cfg_t CFG_C = {1, CFG_C_WIDTHS, 4};
+
 int main(void) {
     printf("============================================================\n");
     printf("P2b slice 1 — MMCS-verify control-AIR  WIDTH=%zu (%zu control + %d perm)\n",
@@ -521,6 +533,10 @@ int main(void) {
     accept_case(A, IDX_A2, "ref {8,5} d4", NULL);
     accept_case(&CFG_B, IDX_B, "alt {4,4} d3", NULL);
     accept_case(&CFG_B, IDX_B2, "alt {4,4} d3", NULL);
+    /* leaf == 1: the single-permutation sponge, first-row zero-fill covering
+     * leftover RATE slots (red-verify A1-F3 branch coverage). Index 3 is
+     * non-palindromic at depth 4 (asserted above for IDX_A). */
+    accept_case(&CFG_C, IDX_A, "one {2}   d4", NULL);
 
     /* ══ PHASE 2 — NEGATIVE ══
      * Workhorse: the reference config at the non-palindromic index 3. It has
@@ -837,6 +853,54 @@ int main(void) {
         free(t);
     }
 
+    /* N23 — the ROW-0 ANCHOR (mmcs_air.c `is_first_row` => pos[0] == 1;
+     * red-verify A1-F2: this constraint had no negative). Move row 0's claimed
+     * step from 0 to 1. Not fully isolable — the shifted chain also trips the
+     * type-agreement rule downstream — but the anchor is among what fires, and
+     * without this negative deleting the anchor would not turn the suite red. */
+    {
+        uint64_t *t = clone_trace(&W);
+        uint64_t *row = row_of(t, 0);
+        row[mair_pos_off(0)] = 0;
+        row[mair_pos_off(1)] = 1;
+        expect_reject("N23 row-0 anchor: first row claims step 1", t, W.prep,
+                      W.rows, W.cfg, W.pub, W.num_pub, 0);
+        free(t);
+    }
+    /* N24 — leftover-RATE zero-fill on a PARTIAL FIRST block (leaf == 1 config;
+     * red-verify A1-F3: branch never exercised). Rate slot 2 is beyond the
+     * absorbed k=2 and must be pinned to ZERO by the blk==0 zero-fill. */
+    {
+        fixture_t *F = (fixture_t *)calloc(1, sizeof(fixture_t));
+        built_t    X;
+        if (F && make_fixture(&CFG_C, IDX_A, F) &&
+            build_trace(&X, &CFG_C, IDX_A, F->elems, F->sibs, F->root.lanes)) {
+            uint64_t *row = row_of(X.trace, 0);
+            row[mair_perm_in_off(2)] = 1; /* leftover rate slot, must be 0 */
+            regen_perm(row);
+            expect_reject("N24 leftover rate slot nonzero (leaf==1 zero-fill)",
+                          X.trace, X.prep, X.rows, X.cfg, X.pub, X.num_pub, 0);
+            built_free(&X);
+        } else {
+            printf("  [reject] N24 fixture/build                                 FAIL\n");
+            fails++;
+        }
+        free(F);
+    }
+    /* N25 — NON-CANONICAL PUBLIC fails closed (red-verify A2-F1). p+1 aliases
+     * 1 inside the field view (`fp()` reduces) while a raw-u64 consumer reads
+     * its low bit as 0 — the exact seam attack; the eval entry now REJECTS any
+     * public >= p instead of evaluating the reduced alias. */
+    {
+        uint64_t *p = clone_pub(&W);
+        /* dir bit 0 of index 3 is 1; encode it as p+1 (== 1 mod p). */
+        p[MAIR_PUB_DIR_OFF + 0] = GOLDILOCKS_P + 1u;
+        expect_bad_config("N25 non-canonical public (p+1 dir bit)",
+                          dnac_mmcs_air_eval_trace(W.trace, W.prep, W.rows,
+                                                   W.cfg, p, W.num_pub));
+        free(p);
+    }
+
     built_free(&W);
 
     printf("------------------------------------------------------------\n");
@@ -844,8 +908,12 @@ int main(void) {
         printf("P2b MMCS AIR: %d FAIL\n", fails);
         return 1;
     }
-    printf("P2b MMCS AIR: 4 honest openings accepted (2 configs x 2 indices,\n"
+    /* Count claim audited (red-verify A1-F1 caught the previous "7 fail-close
+     * configs" as unsupported): 6 fail-close gates in Gate 0c; N12/N14/N25 are
+     * fail-close IN MECHANISM and counted among the 25 numbered negatives. */
+    printf("P2b MMCS AIR: 5 honest openings accepted (3 configs incl. leaf==1,\n"
            "  both sponge residue classes, native chain cross-checked) +\n"
-           "  7 fail-close configs + 22 constraint-form negatives — PASS\n");
+           "  6 fail-close config gates + 25 constraint-form negatives\n"
+           "  (3 of them fail-close in mechanism) — PASS\n");
     return 0;
 }

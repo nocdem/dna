@@ -341,10 +341,11 @@ left is NOT zk work — it is design and consensus work upstream of the circuits
    dir booleanity (+ dir=0 off compress — §4.6 settled), terminality in
    eval_trace, schedule conformance (n_rows from the pinned table only).
    Publics: `[root 4][dir bits depth][opened rows total_width]` — P2c binds to
-   these offsets. `test_mmcs_air`: 4 native-replay accepts (2 configs × 2
-   NON-PALINDROMIC indices, both sponge residue classes; byte-match INHERITED
-   from P1b/FP1c — honest label) + 7 fail-close + 22 negatives incl. the
-   BIT-REVERSED-index composition trap (N6) and 4 exact-count isolations.
+   these offsets. `test_mmcs_air`: 5 native-replay accepts (3 configs incl.
+   leaf==1, both sponge residue classes, NON-PALINDROMIC indices; byte-match
+   INHERITED from P1b/FP1c — honest label) + 6 fail-close config gates + 25
+   negatives (3 fail-close in mechanism) incl. the BIT-REVERSED-index
+   composition trap (N6) and 4 exact-count isolations.
    Tests 72 → **73** ALL GATES GREEN, 0 warnings, consensus-inert.
    **4 BEYOND-DOC user-approved 2026-07-29** (design doc §5): pos[64] step
    one-hot (row-index-dependent forms need a carrier; upstream's in_ctl
@@ -352,8 +353,25 @@ left is NOT zk work — it is design and consensus work upstream of the circuits
    no-padding-config reject, main_next-without-prep_next reject (PIN-2 shape).
    **Carried obligation (verifier residual):** pos rigidity assumes typed rows
    form a PREFIX — a generator property under PIN-1; re-check at the P2c
-   production-table pin (design doc §5). NEXT: implementation red-verify
-   (i3 precedent, own O4), then P2c (FRI-in-AIR) or slice 2 (mixed-height).
+   production-table pin (design doc §5).
+   **P2b i-ROUND RED-VERIFY DONE (2026-07-29, FLEET 019: 2 zk-auditors,
+   ALL FOLDED — design doc §5.1).** A1 form-by-form: 16 GROUNDED / 6 JUDGMENT /
+   1 KAFADAN (the KAFADAN was AGAIN a count claim — "7 fail-close" was
+   unsupported; suite recounted above). A2 second-witness hunt (doc withheld):
+   **NO second witness constructible** under generator-exact table +
+   verifier-constant cfg + canonical publics; 16-entry could-not-break table.
+   Folded fixes: (1) **publics canonicality now FAIL-CLOSE in the eval entry**
+   (A2-F1 MED — fp() aliases x/x+p while the native seam is representation-
+   sensitive; N25); (2) mmcs_air_table.h residue claim CORRECTED (A2-F2
+   KAFADAN — ceil not injective; the table encodes the ROW COUNT only);
+   (3) **NEW OBL-4** (A2-F3 MED): PIN-1 binds the SCHEDULE not the cfg —
+   {2,{8,5},4} and {1,{16},4} share one root; composition must pin cfg
+   independently; (4) "example-only" mislabel fixed (A2-F4 — upstream's
+   accumulator is production-constrained but DISABLED by the production op);
+   (5) leaf==1 branch coverage (CFG_C accept + N24) + row-0 anchor negative
+   (N23) + citation drifts. eval_trace table-gap slack recorded as accepted
+   (soundness-neutral; binding artifact is PIN-1 + OBL-4). Gate re-run GREEN.
+   NEXT: P2c (FRI-in-AIR) design or slice 2 (mixed-height).
 
 ### ⚑ CITATION BASELINE — read this before checking any Plonky3 `file:line` in this tree
 

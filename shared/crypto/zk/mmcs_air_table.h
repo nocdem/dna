@@ -52,9 +52,16 @@
  *     otherwise                   → total_width / 4 + 1
  *
  * i.e. ceil(total_width / RATE) for total_width > 0, with NO trailing
- * permutation on the exact-multiple case. The schedule therefore encodes
- * total_width AND its residue class (design §0.5, round-1 A1-F6): the row
- * count comes from the pinned table, never from a witnessed length.
+ * permutation on the exact-multiple case.
+ * ⚠ CORRECTED (red-verify A2-F2): an earlier revision claimed the schedule
+ * "encodes total_width AND its residue class" — FALSE, ceil is not injective
+ * (leaf == 4 for total_width 13, 14, 15 AND 16). What the pinned table
+ * encodes is the ROW COUNT ONLY. total_width and its residue are pinned by
+ * the cfg plus the AIR's `num_publics` fail-close at its eval entry
+ * (mmcs_air.c), and the cfg itself must be pinned by the composition
+ * INDEPENDENTLY of the table root (mmcs_air.h OBL-4 — two configs can share
+ * one root). The A1-F6 requirement that stands: the row count comes from the
+ * pinned table, never from a witnessed length.
  *
  * ── SCHEDULE ───────────────────────────────────────────────────────────────
  *   [leaf rows] [`depth` compress rows] [1 final row] [all-zero padding]

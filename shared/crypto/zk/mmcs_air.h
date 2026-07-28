@@ -56,7 +56,7 @@
  *
  * ── Constraint degree ───────────────────────────────────────────────────────
  * Every control constraint here is degree <= 3, matching `poseidon2_air`'s own
- * max degree 3 (SBOX_REGISTERS = 1, poseidon2_air_cols.h:63), so the whole AIR
+ * max degree 3 (SBOX_REGISTERS = 1, poseidon2_air_cols.h:59), so the whole AIR
  * stays inside the FRI log_blowup = 2 envelope. The two degree-3 forms are the
  * placement pair (prep_next selector x next dir x linear) and the step-counter
  * advance (pos x prep_next-sum x linear); everything else is <= 2.
@@ -80,8 +80,11 @@
  * poseidon2_mmcs.c:581-590) and upstream's PRODUCTION shape (`path_bits =
  * &index_bits[..path_depth]`, P3rec recursion/src/pcs/mmcs.rs:365, zipped with
  * the levels in order, circuit/src/ops/mmcs.rs:117). There is NO accumulator
- * column: upstream's `2*acc + bit` recurrence (air.rs:1027) is example-only
- * there and would compose to the BIT-REVERSAL of the native index.
+ * column: upstream's `2*acc + bit` recurrence (air.rs:1027) is a
+ * production-constrained column there, but the production MMCS op DISABLES it
+ * (`mmcs_index_sum: None`, ops/mmcs.rs:137/:158/:181 — red-verify A2-F4
+ * corrected an earlier "example-only" mislabel), and composed naively it
+ * would yield the BIT-REVERSAL of the native index.
  *
  * ── Native checks with NO in-AIR counterpart (design §0.5 OBL table) ────────
  *   OBL-1 `depth != log2(num_rows)`  (poseidon2_mmcs.c:553-554) — COMPOSITION:
@@ -91,6 +94,14 @@
  *         layer: AIR cells are field elements by construction.
  *   OBL-3 `leaf_index >= num_rows`   (poseidon2_mmcs.c:550) — COMPOSITION;
  *         implied by `depth` boolean bits ONLY once OBL-1 is discharged.
+ *   OBL-4 (red-verify A2-F3) PIN-1 binds the ROW SCHEDULE, not the cfg: two
+ *         different configs can share one preprocessed root — e.g.
+ *         {2 mats, widths {8,5}, depth 4} and {1 mat, width {16}, depth 4}
+ *         both generate the identical 16x3 table (ceil is not injective) while
+ *         their AIRs differ (num_publics 21 vs 24, last-block absorb count 1
+ *         vs 4). The COMPOSITION must pin cfg (num_matrices / widths / depth)
+ *         independently of the table root. The `num_publics` fail-close at
+ *         eval entry is what pins total_width TODAY — not the table.
  *
  * ── Slice scope ─────────────────────────────────────────────────────────────
  * Same-height binary walk only (`dnac_p2_mmcs_verify`). Mixed-height layer
@@ -243,7 +254,10 @@ bool dnac_mmcs_air_layout_check(void);
  * PRECONDITION (same contract as `poseidon2_air_eval_row`): every main column
  * is a canonical Goldilocks u64 in [0, p). Preprocessed cells are read as
  * field elements and are NOT required to be boolean (generator obligation,
- * design §0.5 / round-1 A2-F5).
+ * design §0.5 / round-1 A2-F5). ⚠ PUBLICS are NOT a precondition: they are
+ * checked canonical (< p) and any non-canonical public FAILS CLOSED
+ * (red-verify A2-F1 — `fp()` aliases x and x+p while the native seam is
+ * representation-sensitive: poseidon2_mmcs.c:557-562 sweep, :593 memcmp).
  *
  * @param main_local   MAIR_WIDTH columns.
  * @param main_next    MAIR_WIDTH columns, or NULL on the last row.

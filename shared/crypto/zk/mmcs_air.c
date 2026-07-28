@@ -184,6 +184,17 @@ int dnac_mmcs_air_eval_row(const uint64_t *main_local, const uint64_t *main_next
     const size_t pub_open = MAIR_PUB_DIR_OFF + s.depth;
     if (num_publics != pub_open + s.total_width) return MAIR_VIOL_BAD_CONFIG;
 
+    /* Publics canonicality — FAIL-CLOSE, not a precondition (red-verify
+     * A2-F1). `fp()` reduces mod p, so x and x+p alias inside the field view
+     * while the NATIVE seam is representation-sensitive: the opened-rows sweep
+     * rejects non-canonical input (poseidon2_mmcs.c:557-562) and the root
+     * compare is a raw memcmp (:593). Accepting a non-canonical public here
+     * would let the AIR prove a statement about publics a downstream u64
+     * consumer reads DIFFERENTLY (e.g. p+1's low bit is 0 as a field element's
+     * canonical form but 1 as a raw u64). Mirror the native posture: reject. */
+    for (size_t i = 0; i < num_publics; i++)
+        if (publics[i] >= GOLDILOCKS_P) return MAIR_VIOL_BAD_CONFIG;
+
     int v = 0;
     const gold_fp_t one = gold_fp_one();
     const gold_fp_t zero = gold_fp_zero();
@@ -285,8 +296,11 @@ int dnac_mmcs_air_eval_row(const uint64_t *main_local, const uint64_t *main_next
      * bit l — LSB-first. Upstream production wires the same way
      * (`path_bits = &index_bits[..path_depth]`, P3rec recursion/src/pcs/mmcs.rs
      * :365, zipped level-by-level at circuit/src/ops/mmcs.rs:117); its
-     * `2*acc + bit` accumulator (air.rs:1027) is example-only and would compose
-     * to the BIT-REVERSAL of the native index (design §0.5 / G-DET-P2b-3).
+     * `2*acc + bit` accumulator (air.rs:1027) is a production-constrained
+     * column upstream, but the production MMCS op DISABLES it (`mmcs_index_sum:
+     * None` at ops/mmcs.rs:137/:158/:181 — red-verify A2-F4 corrected an
+     * earlier "example-only" mislabel here), and composed naively it would
+     * yield the BIT-REVERSAL of the native index (design §0.5 / G-DET-P2b-3).
      * There is NO accumulator column here. `dir` being boolean (block B) makes
      * the public bits boolean transitively. */
     for (size_t l = 0; l < s.depth; l++)
@@ -346,7 +360,8 @@ int dnac_mmcs_air_eval_row(const uint64_t *main_local, const uint64_t *main_next
      *                     when(merkle_chain_i · next_bit) : next_in[RATE + i] == local_out[i]
      *
      * with `merkle_chain_i` taken from the NEXT row's PREPROCESSED window
-     * (air.rs:986-989 reads `s = next_preprocessed`) — which is precisely why
+     * (`let s = next_preprocessed` is bound at air.rs:945; the :986-989 gates
+     * read it) — which is precisely why
      * PIN-2 (`prep_next = 1`) is mandatory. Here the row type IS the gate:
      * `is_compress` of the next row. The running hash lands in the LEFT half
      * when the bit is 0 and in the RIGHT half when it is 1 — the native
