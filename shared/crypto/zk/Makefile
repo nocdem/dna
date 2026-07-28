@@ -150,7 +150,8 @@ TESTS = \
     $(BUILD)/test_batch_wire \
     $(BUILD)/test_batch_shielded_agg \
     $(BUILD)/test_transcript_air \
-    $(BUILD)/test_mmcs_air_table
+    $(BUILD)/test_mmcs_air_table \
+    $(BUILD)/test_mmcs_air
 
 # ── PREREQ HYGIENE (d4.d, 2026-07-26) ───────────────────────────────────────
 # A source on a recipe's command line that is NOT among its prerequisites means
@@ -270,6 +271,20 @@ $(BUILD)/test_batch_shielded_agg: tests/test_batch_shielded_agg.c $(AGG_PROVER_S
 # the d4.d AGG_PROVER_SRCS stale-binary lesson.
 $(BUILD)/test_mmcs_air_table: tests/test_mmcs_air_table.c mmcs_air_table.c mmcs_air_table.h batch_prover.c batch_verify.c batch_priming.c logup_bus.c logup.c stark_constraints.c fri_verifier.c $(PROVER_STACK) batch_prover.h batch_verify.h shielded_fri_params.h poseidon2_mmcs.h stark_prover.h | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) tests/test_mmcs_air_table.c mmcs_air_table.c batch_prover.c batch_verify.c batch_priming.c logup_bus.c logup.c stark_constraints.c fri_verifier.c $(PROVER_STACK) -o $@
+
+# P2b AIR slice 1 — the same-height binary MMCS-verify control AIR. Honest
+# traces are built test-side by NATIVE REPLAY (dnac_p2_mmcs_commit/open_batch/
+# verify + hash_iter/compress + poseidon2_air_generate_row — the byte-match is
+# INHERITED from the P1b/FP1c gates, not re-proved here) and must eval to 0
+# violations; 22 negatives, at least one per design §0.5 constraint form, plus
+# the fail-close configs, must each be caught.
+#
+# Sources are named LITERALLY, not through a stack variable — no ordering
+# hazard of the AGG_PROVER_SRCS class (a variable still undefined when make
+# reads the rule expands to an EMPTY prerequisite list, silently). Every source
+# on the command line is also a prerequisite, so an edit to any of them relinks.
+$(BUILD)/test_mmcs_air: tests/test_mmcs_air.c mmcs_air.c mmcs_air_table.c poseidon2_mmcs.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c poseidon2_goldilocks.c field_goldilocks.c mmcs_air.h mmcs_air_table.h poseidon2_mmcs.h poseidon2_air.h poseidon2_air_trace.h poseidon2_air_cols.h poseidon2_goldilocks.h field_goldilocks.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_mmcs_air.c mmcs_air.c mmcs_air_table.c poseidon2_mmcs.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c poseidon2_goldilocks.c field_goldilocks.c -o $@
 
 # P1b — Poseidon2 MMCS byte-match (plain + hiding trees, oracle replay;
 # note_commit.c linked for the note_sponge_hash8 bridge KAT).
@@ -1131,6 +1146,14 @@ test: all
 	@echo "  trip whose prep_next = 0 flip MUST be rejected"
 	@echo "============================================================"
 	@$(BUILD)/test_mmcs_air_table
+	@echo
+	@echo "============================================================"
+	@echo "P2b slice 1 — MMCS-verify control AIR (same-height binary walk)"
+	@echo "  native commit/open/verify replay -> honest trace 0 viol, both"
+	@echo "  sponge residue classes x 2 non-palindromic indices; 22"
+	@echo "  design-§0.5 constraint-form negatives + fail-close configs"
+	@echo "============================================================"
+	@$(BUILD)/test_mmcs_air
 	@echo
 	@echo "============================================================"
 	@echo "ALL GATES: GREEN"

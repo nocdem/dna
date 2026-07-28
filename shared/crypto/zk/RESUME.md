@@ -3,7 +3,7 @@
 ## ⏭ WHAT IS LEFT — read this first (2026-07-29)
 
 **The zk stack itself is GREEN and idle. Nothing in `shared/crypto/zk/` is blocking.**
-`make test` 72 binaries / 0 warnings, 60/60 vectors hash-clean, nodus ctest 132/132. The whole
+`make test` 73 binaries / 0 warnings, 60/60 vectors hash-clean, nodus ctest 132/132. The whole
 verify stack is consensus-LINKED but consensus-DEAD: type-11 is still REJECT-unconditional
 (`nodus/src/witness/nodus_witness_verify.c:743-753` — verified 2026-07-27, the `return -1` is the
 function's last statement, there is no accept path). **C3 is the door that opens it, and the work
@@ -328,9 +328,32 @@ left is NOT zk work — it is design and consensus work upstream of the circuits
      `circuit_builder.rs:1203-1217`, `fri/verifier.rs:615`) — LSB-first, same
      as native `poseidon2_mmcs.c:581-590`. Slice 1 has NO `idx_acc` column.
    - ⚠ NOT yet enforced anywhere: no verify entry calls the comparator yet, and
-     nothing forces `prep_next=1` on a descriptor — both become real in the AIR
-     slice's verify entry. NEXT: P2b AIR slice (`mmcs_air.{c,h}`, own O4,
-     §0.5 constraint forms, P2a i2/i3 pattern) or P2c in parallel.
+     nothing forces `prep_next=1` on a descriptor — both become real in the
+     P2b/P2c composition entry.
+   **P2b AIR SLICE 1 DONE (2026-07-29, FLEET 018: 1 code-executor + independent
+   verifier 6/8 CONFIRMED / 2 description-level REFUTED (no code defect) +
+   ORCHESTRATOR line-by-line).** `mmcs_air.{c,h}` — the same-height binary
+   MMCS-verify control-AIR, `MAIR_WIDTH = 245` (1 dir + 64 pos + INLINE 180-col
+   poseidon2_air embed, UNGATED, degree ≤ 3), all §0.5 forms discharged:
+   placement pair (air.rs:984-1002 port), leaf zero-state + PaddingFreeSponge
+   overwrite/carry, opened-rows public equality, **A1 index binding (LSB-first,
+   dir bits as publics, NO accumulator)**, final-row threading + root equality,
+   dir booleanity (+ dir=0 off compress — §4.6 settled), terminality in
+   eval_trace, schedule conformance (n_rows from the pinned table only).
+   Publics: `[root 4][dir bits depth][opened rows total_width]` — P2c binds to
+   these offsets. `test_mmcs_air`: 4 native-replay accepts (2 configs × 2
+   NON-PALINDROMIC indices, both sponge residue classes; byte-match INHERITED
+   from P1b/FP1c — honest label) + 7 fail-close + 22 negatives incl. the
+   BIT-REVERSED-index composition trap (N6) and 4 exact-count isolations.
+   Tests 72 → **73** ALL GATES GREEN, 0 warnings, consensus-inert.
+   **4 BEYOND-DOC user-approved 2026-07-29** (design doc §5): pos[64] step
+   one-hot (row-index-dependent forms need a carrier; upstream's in_ctl
+   machinery unported; pinned 3-col table unwidenable), MAIR_MAX_STEPS=64,
+   no-padding-config reject, main_next-without-prep_next reject (PIN-2 shape).
+   **Carried obligation (verifier residual):** pos rigidity assumes typed rows
+   form a PREFIX — a generator property under PIN-1; re-check at the P2c
+   production-table pin (design doc §5). NEXT: implementation red-verify
+   (i3 precedent, own O4), then P2c (FRI-in-AIR) or slice 2 (mixed-height).
 
 ### ⚑ CITATION BASELINE — read this before checking any Plonky3 `file:line` in this tree
 
