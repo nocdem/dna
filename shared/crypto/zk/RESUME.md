@@ -237,10 +237,21 @@ left is NOT zk work — it is design and consensus work upstream of the circuits
    pins its literal to the exported `DNAC_TRANSCRIPT_PROD_INIT_STATE` (recipe
    → `$(TRANSCRIPT_STACK)`), negative control executed (one-byte tamper →
    FAIL). zk `make test` ALL GATES GREEN, 70 binaries, 0 warnings; cargo build
-   0 warnings. No version bump (zk-only, consensus-inert). NEXT: **i2 =
-   transcript AIR** (`transcript_air.{c,h}` + tests + Makefile, own O4)
-   against the v2 doc's §0.5 constraint forms; column budget ≈277/2560
-   re-check at P2e.
+   0 warnings. No version bump (zk-only, consensus-inert).
+   **P2a-i2 DONE (2026-07-28, FLEET 014 + ORCHESTRATOR):** `transcript_air.{c,h}`
+   — the DuplexChallenger control-AIR, `TAIR_WIDTH = 281` (101 control + INLINE
+   180-col poseidon2_air embed), all §0.5 constraint forms discharged;
+   `test_transcript_air` = 8 honest oracle scenarios (native-replay
+   cross-checked) + 20 constraint-form negatives + 5 bit-gadget negatives
+   (incl. the x+p alias and a lied is-zero witness). **Four beyond-doc
+   additions user-approved** (is_pow column; the canonicality gadget as a
+   degree-3 is-zero ADAPTATION of assert_bits_canonical, hand-verified,
+   runtime shape-guarded; the il[4]=0 op-row guard; il/buffer threading on
+   sample rows) — recorded in the design doc §0.5/§5. **Open at P2e:**
+   last-row boundary ("final row is filler") — the evaluator skips transitions
+   on the last row. zk `make test` **71 binaries** ALL GATES GREEN, 0 warnings.
+   No version bump (consensus-inert). NEXT: P2a i3 = form-by-form
+   implementation red-verify (own O4), then P2b (MMCS-in-AIR) design.
 
 ### ⚑ CITATION BASELINE — read this before checking any Plonky3 `file:line` in this tree
 

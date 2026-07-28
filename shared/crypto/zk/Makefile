@@ -148,7 +148,8 @@ TESTS = \
     $(BUILD)/test_batch_verify \
     $(BUILD)/test_batch_prover \
     $(BUILD)/test_batch_wire \
-    $(BUILD)/test_batch_shielded_agg
+    $(BUILD)/test_batch_shielded_agg \
+    $(BUILD)/test_transcript_air
 
 # ── PREREQ HYGIENE (d4.d, 2026-07-26) ───────────────────────────────────────
 # A source on a recipe's command line that is NOT among its prerequisites means
@@ -660,6 +661,19 @@ bench-prover: tools/bench_prover.c tests/batch_test_util.h tests/logup_test_util
 	$(CC) $(CFLAGS) $(INCLUDES) tools/bench_prover.c $(BENCH_PROVER_SRCS) -o $(BUILD)/bench_prover
 	$(BUILD)/bench_prover
 
+# P2a-i2 — transcript control-AIR (DuplexChallenger as a row-AIR). Honest
+# traces built test-side from the 8 dump-transcript-trace oracle scenarios
+# (native challenger replay, cross-checked against the vectors' state /
+# duplexings / exposed-bit fields) must eval to 0 violations; 20 negatives, at
+# least one per design §0.5 "MUST", must each be caught.
+#
+# Sources are named LITERALLY, not through a stack variable — no ordering
+# hazard of the AGG_PROVER_SRCS class (a variable still undefined when make
+# reads the rule expands to an EMPTY prerequisite list, silently). Every source
+# on the command line is also a prerequisite, so an edit to any of them relinks.
+$(BUILD)/test_transcript_air: tests/test_transcript_air.c transcript_air.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c duplex_challenger.c poseidon2_goldilocks.c field_goldilocks.c transcript_air.h poseidon2_air.h poseidon2_air_trace.h poseidon2_air_cols.h duplex_challenger.h poseidon2_goldilocks.h field_goldilocks.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_transcript_air.c transcript_air.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c duplex_challenger.c poseidon2_goldilocks.c field_goldilocks.c -o $@
+
 test: all
 	@echo "============================================================"
 	@echo "[0] Vector integrity — sha256sum -c .expected_hashes"
@@ -1088,6 +1102,13 @@ test: all
 	@echo "  vs the REAL Plonky3 shielded-aggregate vectors"
 	@echo "============================================================"
 	@$(BUILD)/test_batch_shielded_agg tools/vectors/batch_shielded_agg.json tools/vectors/smallrng_goldilocks.json
+	@echo
+	@echo "============================================================"
+	@echo "P2a-i2 — transcript control-AIR (DuplexChallenger as a row-AIR)"
+	@echo "  8 oracle scenarios: honest trace 0 viol + state/duplexings/"
+	@echo "  exposed-bit byte-match; 20 design-§0.5 constraint-form negatives"
+	@echo "============================================================"
+	@$(BUILD)/test_transcript_air tools/vectors/transcript_trace_basic.json tools/vectors/transcript_trace_multi_instance.json tools/vectors/transcript_trace_partial_absorb.json tools/vectors/transcript_trace_pow_nonzero.json tools/vectors/transcript_trace_pow_zero_bits.json tools/vectors/transcript_trace_rate_boundary.json tools/vectors/transcript_trace_sample_bits_32.json tools/vectors/transcript_trace_squeeze_chain.json
 	@echo
 	@echo "============================================================"
 	@echo "ALL GATES: GREEN"
