@@ -608,6 +608,19 @@ enum Cmd {
         #[arg(long)]
         out: PathBuf,
     },
+    /// P2a-i1 — transcript TRACE: the ordered op stream + the sponge-state
+    /// trajectory of the same REAL DuplexChallenger, one file per scenario
+    /// (`transcript_trace_<scenario>.json` in --out-dir). Where
+    /// dump-duplex-challenger pins the PRIMITIVE (per-op results + buffers),
+    /// this pins what a ROW-AIR needs: which ops fired a duplexing, the state
+    /// after every duplexing, and the per-instance DS-prefix boundary. Ground
+    /// truth for the P2a control-AIR state-thread KAT
+    /// (dnac/docs/plans/2026-07-28-p2a-transcript-in-air-design.md §1).
+    #[command(name = "dump-transcript-trace", alias = "transcript-trace")]
+    DumpTranscriptTrace {
+        #[arg(long)]
+        out_dir: PathBuf,
+    },
     /// P1b — Poseidon2 MMCS: REAL MerkleTreeMmcs (+ MerkleTreeHidingMmcs,
     /// SALT_ELEMS=2) over PaddingFreeSponge<Perm,8,4,4> hasher +
     /// TruncatedPermutation<Perm,2,4,8> compressor, cap_height 0, 4-lane
@@ -782,6 +795,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Cmd::DumpPoseidon2AirTrace { out } => dump_poseidon2_air_trace(&out)?,
         Cmd::DumpNoteCommitSponge { out } => dump_note_commit_sponge(&out)?,
         Cmd::DumpDuplexChallenger { out } => dump_duplex_challenger(&out)?,
+        Cmd::DumpTranscriptTrace { out_dir } => dump_transcript_trace(&out_dir)?,
         Cmd::DumpPoseidon2Mmcs { out } => dump_poseidon2_mmcs(&out)?,
         Cmd::DumpPoseidon2MmcsMixed { out } => dump_poseidon2_mmcs_mixed(&out)?,
         Cmd::DumpLogup { out } => stark_priming::dump_logup(&out)?,
@@ -1643,6 +1657,505 @@ fn dump_duplex_challenger(out_path: &PathBuf) -> Result<(), Box<dyn std::error::
     f.write_all(serde_json::to_string_pretty(&file)?.as_bytes())?;
     f.write_all(b"\n")?;
     eprintln!("wrote {}", out_path.display());
+    Ok(())
+}
+
+// ============================================================================
+// P2a-i1 — transcript-trace oracle (dump-transcript-trace, 2026-07-28)
+//
+// Emits, per scenario, the ORDERED op stream and the sponge-state trajectory of
+// the REAL DuplexChallenger<Goldilocks, Poseidon2Goldilocks<8>, 8, 4> — the
+// ground truth for the P2a control-AIR's row-by-row state-thread KAT
+// (dnac/docs/plans/2026-07-28-p2a-transcript-in-air-design.md §1 test plan).
+// dump-duplex-challenger already pins the primitive's RESULTS; what a row-AIR
+// additionally needs is WHICH op fired a permutation, the state AFTER each one,
+// and where each transcript instance begins.
+//
+// WHY A TRACER AND NOT A REIMPLEMENTATION. `DuplexChallenger::duplexing()` is
+// `pub(crate)` upstream (duplex_challenger.rs:86), so the oracle can neither
+// call nor hook it. Nothing below re-derives sponge semantics: every value
+// written out is READ from the real challenger's public fields (`sponge_state`
+// / `input_buffer` / `output_buffer`, duplex_challenger.rs:42-56) after a real
+// API call. The only thing computed locally is WHEN a duplexing fired, and that
+// is upstream's own trigger predicate evaluated on those same public fields
+// BEFORE the call:
+//   - observe: duplexes iff the push fills the rate — `if self.input_buffer
+//     .len() == RATE { self.duplexing() }` (duplex_challenger.rs:170-174)
+//   - sample:  duplexes iff `!self.input_buffer.is_empty() ||
+//     self.output_buffer.is_empty()` (duplex_challenger.rs:255-259)
+// Both branches are then re-checked against upstream's post-conditions in
+// `tr_record` (drain :94-96, rate refill :110-111, LIFO pop :261-263). A wrong
+// predicate therefore ABORTS the dump instead of writing a wrong vector.
+//
+// The two composite ops are decomposed exactly as upstream defines them, and
+// each is cross-validated against the REAL composite call replayed on a clone —
+// result AND full post-state must match, or the dump aborts:
+//   - sample_bits(bits): ONE base sample, canonical u64, low-bit mask
+//     (duplex_challenger.rs:282-288)
+//   - check_pow(bits, w): `if bits == 0 { return true }` else observe(w) then
+//     `sample_bits(bits) == 0` (grinding_challenger.rs:42-48)
+//
+// INSTANCES. Every instance is a FRESH challenger followed by the 4 DS-prefix
+// observes — i.e. dnac_duplex_init_default (duplex_challenger.c:96-103) — since
+// the AIR requires the prefix at the head of EVERY instance (design §0.5
+// "DS-prefix rows" / G-SEC-P2a-3). `multi_instance` carries two instances in ONE
+// flat op stream: that is the NODE trace shape (K=2 children => >= 2 instances
+// per trace), and it is what the `sel_start` / `prefix_ctr` reset constraints
+// are tested against.
+// ============================================================================
+
+#[derive(Serialize)]
+struct TraceOp {
+    /// "observe" | "sample" | "sample_bits" | "check_pow".
+    #[serde(rename = "type")]
+    op_type: &'static str,
+    /// 0-based transcript instance this op belongs to (see `instance_starts`).
+    instance: usize,
+    /// observe: the observed lane. sample: the sampled challenge.
+    /// sample_bits: the RAW sampled lane BEFORE masking — the cell the AIR's
+    /// bit decomposition reconstructs (design §0.5 "sample_bits rows").
+    /// check_pow: the raw sampled lane of its internal sample_bits; "0" when
+    /// bits == 0 (a total no-op — no observe, no sample).
+    lane: String,
+    /// sample_bits / check_pow: the bit count. "0" otherwise.
+    bits: String,
+    /// sample: the challenge. sample_bits: the masked value. "0" otherwise.
+    out: String,
+    /// check_pow: the observed witness lane. "0" otherwise.
+    witness: String,
+    /// check_pow: "1" / "0". "0" otherwise.
+    ok: String,
+    /// sponge_state[8] AFTER the op (canonical u64 strings).
+    state: Vec<String>,
+    /// input_buffer AFTER the op (its length IS input_len).
+    input: Vec<String>,
+    /// output_buffer AFTER the op, storage order (pop from the END).
+    output: Vec<String>,
+    /// How many duplexings this op fired (recorded, never assumed).
+    duplexings: usize,
+    /// Index of this op's FIRST duplexing in the file-level `duplexings` list.
+    /// When the op fires none, this is that list's length at op entry.
+    duplex_index: usize,
+}
+
+#[derive(Serialize)]
+struct TraceFile {
+    format_version: &'static str,
+    plonky3_commit: &'static str,
+    constructor: &'static str,
+    permutation: &'static str,
+    width: usize,
+    rate: usize,
+    scenario: &'static str,
+    /// The 4 DS-prefix limbs every instance opens with.
+    ds_prefix: Vec<String>,
+    /// Op index at which each instance begins (its first DS-prefix observe) —
+    /// the `sel_start` rows of the AIR.
+    instance_starts: Vec<usize>,
+    ops: Vec<TraceOp>,
+    /// sponge_state[8] after EVERY duplexing, in order across the whole file.
+    duplexings: Vec<Vec<String>>,
+    /// sponge_state[8] after the LAST op of the file.
+    final_state: Vec<String>,
+}
+
+fn dump_transcript_trace(out_dir: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    use p3_challenger::{CanObserve, CanSample, CanSampleBits, DuplexChallenger, GrindingChallenger};
+    use p3_goldilocks::Poseidon2Goldilocks;
+
+    const WIDTH: usize = 8;
+    const RATE: usize = 4;
+    type Ch = DuplexChallenger<Goldilocks, Poseidon2Goldilocks<8>, WIDTH, RATE>;
+
+    fn g(v: u64) -> Goldilocks {
+        Goldilocks::from_u64(v)
+    }
+    fn snap(xs: &[Goldilocks]) -> Vec<String> {
+        xs.iter().map(|x| x.as_canonical_u64().to_string()).collect()
+    }
+    /// SplitMix64 — deterministic scenario values, no RNG state (the same
+    /// generator dump_duplex_challenger uses; seeded PER SCENARIO here so each
+    /// file is independent of the order the others are generated in).
+    fn sm64(x: &mut u64) -> u64 {
+        *x = x.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut z = *x;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
+    }
+    fn rv(seed: &mut u64) -> u64 {
+        sm64(seed) % GOLDILOCKS_P
+    }
+    /// The Q1 DS prefix as 4 LE u64 limbs — the derivation of
+    /// duplex_challenger.c:27-37 over transcript.c:22-29's 25 ASCII bytes
+    /// (8-byte LE chunks, last zero-padded).
+    fn ds_prefix_limbs() -> [u64; RATE] {
+        let ds_bytes: &[u8] = b"DNAC|ZK|FRI|TRANSCRIPT|V1";
+        assert_eq!(ds_bytes.len(), 25);
+        let mut limbs = [0u64; RATE];
+        for (i, b) in ds_bytes.iter().enumerate() {
+            limbs[i / 8] |= (*b as u64) << (8 * (i % 8));
+        }
+        for l in limbs {
+            assert!(l < GOLDILOCKS_P, "DS limb must be canonical");
+        }
+        limbs
+    }
+
+    /// The public-field snapshot taken BEFORE a primitive call.
+    struct PreSnap {
+        state: [Goldilocks; WIDTH],
+        input_len: usize,
+        output_len: usize,
+        /// output_buffer contents, storage order (for the LIFO-pop check).
+        output: Vec<u64>,
+    }
+
+    struct Tracer {
+        ch: Ch,
+        instance: usize,
+        ops: Vec<TraceOp>,
+        duplexings: Vec<Vec<String>>,
+        instance_starts: Vec<usize>,
+    }
+
+    fn tr_pre(t: &Tracer) -> PreSnap {
+        PreSnap {
+            state: t.ch.sponge_state,
+            input_len: t.ch.input_buffer.len(),
+            output_len: t.ch.output_buffer.len(),
+            output: t.ch.output_buffer.iter().map(|x| x.as_canonical_u64()).collect(),
+        }
+    }
+
+    /// Record (and SELF-CHECK) the duplexing accounting of ONE primitive call.
+    ///
+    /// `will_duplex` is upstream's trigger predicate read off `pre`;
+    /// `expect_in` / `expect_out` are the buffer lengths upstream's own code
+    /// leaves behind. Returns the number of duplexings fired.
+    fn tr_record(t: &mut Tracer, will_duplex: bool, pre: &PreSnap, expect_in: usize,
+                 expect_out: usize) -> usize {
+        assert_eq!(t.ch.input_buffer.len(), expect_in, "input_buffer length after the call");
+        assert_eq!(t.ch.output_buffer.len(), expect_out, "output_buffer length after the call");
+        if will_duplex {
+            // duplexing() drains the input buffer into the rate (:94-96) and
+            // refills output_buffer from the PERMUTED state (:110-111), so the
+            // post-call state IS the post-duplexing state and what remains of
+            // output_buffer mirrors the leading rate lanes.
+            for (i, o) in t.ch.output_buffer.iter().enumerate() {
+                assert_eq!(o.as_canonical_u64(), t.ch.sponge_state[i].as_canonical_u64(),
+                           "output_buffer must mirror the rate after a duplexing");
+            }
+            t.duplexings.push(snap(&t.ch.sponge_state));
+            1
+        } else {
+            // duplexing() is the ONLY writer of sponge_state (:86-112), so a
+            // call that did not duplex must leave it bit-identical.
+            assert_eq!(snap(&pre.state), snap(&t.ch.sponge_state),
+                       "a non-duplexing call must not touch the sponge state");
+            0
+        }
+    }
+
+    fn tr_push(t: &mut Tracer, op_type: &'static str, lane: u64, bits: usize, out: u64,
+               witness: u64, ok: bool, dups: usize, di: usize) {
+        let op = TraceOp {
+            op_type,
+            instance: t.instance,
+            lane: lane.to_string(),
+            bits: bits.to_string(),
+            out: out.to_string(),
+            witness: witness.to_string(),
+            ok: (ok as u64).to_string(),
+            state: snap(&t.ch.sponge_state),
+            input: snap(&t.ch.input_buffer),
+            output: snap(&t.ch.output_buffer),
+            duplexings: dups,
+            duplex_index: di,
+        };
+        t.ops.push(op);
+    }
+
+    /// PRIMITIVE observe (duplex_challenger.rs:166-175). Records the duplexing,
+    /// pushes NO op row — the composite ops fold their primitives into one row.
+    fn tr_prim_observe(t: &mut Tracer, v: u64) -> usize {
+        let pre = tr_pre(t);
+        assert!(pre.input_len < RATE, "input_buffer is drained at RATE, never above it");
+        let will_duplex = pre.input_len + 1 == RATE; // rs:172-174
+        // rs:168 clears output_buffer unconditionally; a duplexing then refills
+        // it to RATE (rs:110-111).
+        let (expect_in, expect_out) = if will_duplex { (0, RATE) } else { (pre.input_len + 1, 0) };
+        t.ch.observe(g(v));
+        tr_record(t, will_duplex, &pre, expect_in, expect_out)
+    }
+
+    /// PRIMITIVE base sample (duplex_challenger.rs:253-265). Returns the popped
+    /// lane and the duplexing count.
+    fn tr_prim_sample(t: &mut Tracer) -> (u64, usize) {
+        let pre = tr_pre(t);
+        let will_duplex = pre.input_len > 0 || pre.output_len == 0; // rs:257-259
+        // The pop (rs:261-263) removes exactly one lane from the END.
+        let expect_out = if will_duplex { RATE - 1 } else { pre.output_len - 1 };
+        let s: Goldilocks = t.ch.sample();
+        let lane = s.as_canonical_u64();
+        let dups = tr_record(t, will_duplex, &pre, 0, expect_out);
+        // LIFO: a duplexing refills output_buffer = state[..RATE] and the pop
+        // takes state[RATE-1]; without one it takes the last PRE-call lane.
+        let expect_lane = if will_duplex {
+            t.ch.sponge_state[RATE - 1].as_canonical_u64()
+        } else {
+            pre.output[pre.output_len - 1]
+        };
+        assert_eq!(lane, expect_lane, "sample must be the LIFO pop of the rate");
+        (lane, dups)
+    }
+
+    fn tr_observe(t: &mut Tracer, v: u64) {
+        let di = t.duplexings.len();
+        let dups = tr_prim_observe(t, v);
+        tr_push(t, "observe", v, 0, 0, 0, false, dups, di);
+    }
+
+    fn tr_sample(t: &mut Tracer) -> u64 {
+        let di = t.duplexings.len();
+        let (lane, dups) = tr_prim_sample(t);
+        tr_push(t, "sample", lane, 0, lane, 0, false, dups, di);
+        lane
+    }
+
+    fn tr_sample_bits(t: &mut Tracer, bits: usize) -> u64 {
+        // The AIR pins num_bits <= 32 (design §0.5; lgmh <= GOLDILOCKS_TWO_ADICITY),
+        // which also keeps the mask shift far inside u64.
+        assert!(bits <= 32, "AIR-pinned num_bits bound");
+        // REAL composite, replayed on a clone — the decomposition below must
+        // reproduce its result AND its full post-state.
+        let mut oracle = t.ch.clone();
+        let expect = oracle.sample_bits(bits) as u64;
+
+        let di = t.duplexings.len();
+        let (lane, dups) = tr_prim_sample(t);
+        let out = lane & ((1u64 << bits) - 1); // rs:287 (bits == 0 => mask 0)
+        assert_eq!(out, expect, "decomposed sample_bits != REAL sample_bits");
+        assert_eq!(snap(&oracle.sponge_state), snap(&t.ch.sponge_state),
+                   "decomposed sample_bits diverged from REAL state");
+        assert_eq!(snap(&oracle.input_buffer), snap(&t.ch.input_buffer));
+        assert_eq!(snap(&oracle.output_buffer), snap(&t.ch.output_buffer));
+        tr_push(t, "sample_bits", lane, bits, out, 0, false, dups, di);
+        out
+    }
+
+    fn tr_check_pow(t: &mut Tracer, bits: usize, witness: u64) -> bool {
+        assert!(bits <= 32, "AIR-pinned num_bits bound");
+        let mut oracle = t.ch.clone();
+        let expect = oracle.check_witness(bits, g(witness));
+
+        let pre = tr_pre(t);
+        let di = t.duplexings.len();
+        let (lane, ok, dups) = if bits == 0 {
+            // grinding_challenger.rs:43-45 — early true: NO observe, NO sample,
+            // no state change at all.
+            (0u64, true, 0usize)
+        } else {
+            // grinding_challenger.rs:46-47 — observe(witness) then
+            // sample_bits(bits) == 0, folded into ONE recorded row (the AIR's
+            // check_pow archetype, design §0.5).
+            let d0 = tr_prim_observe(t, witness);
+            let (lane, d1) = tr_prim_sample(t);
+            (lane, (lane & ((1u64 << bits) - 1)) == 0, d0 + d1)
+        };
+        assert_eq!(ok, expect, "decomposed check_pow != REAL check_witness");
+        assert_eq!(snap(&oracle.sponge_state), snap(&t.ch.sponge_state),
+                   "decomposed check_pow diverged from REAL state");
+        assert_eq!(snap(&oracle.input_buffer), snap(&t.ch.input_buffer));
+        assert_eq!(snap(&oracle.output_buffer), snap(&t.ch.output_buffer));
+        if bits == 0 {
+            assert_eq!(snap(&pre.state), snap(&t.ch.sponge_state),
+                       "check_pow(0, _) must not touch the sponge state");
+            assert_eq!(pre.input_len, t.ch.input_buffer.len());
+            assert_eq!(pre.output_len, t.ch.output_buffer.len());
+        }
+        tr_push(t, "check_pow", lane, bits, 0, witness, ok, dups, di);
+        ok
+    }
+
+    /// Open a transcript instance: FRESH challenger + the 4 DS-prefix observes
+    /// (dnac_duplex_init_default, duplex_challenger.c:96-103). The 4th observe
+    /// fires the single prefix permutation.
+    fn tr_start_instance(t: &mut Tracer, ds: &[u64; RATE]) {
+        if !t.ops.is_empty() {
+            t.instance += 1;
+        }
+        t.instance_starts.push(t.ops.len());
+        t.ch = Ch::new(default_goldilocks_poseidon2_8());
+        for l in ds {
+            tr_observe(t, *l);
+        }
+    }
+
+    /// The LEAST witness passing Plonky3's own check_witness at `bits`, searched
+    /// on clones so the traced challenger is untouched. The AIR's check_pow
+    /// archetype only represents a PASSING witness (design §0.5: the exposed low
+    /// `bits` lanes are constrained zero), so the vectors carry a real one.
+    /// Least-witness is the DNAC determinization already used by
+    /// dump-duplex-challenger (Plonky3's grind() returns ANY passing witness).
+    fn least_pow_witness(ch: &Ch, bits: usize) -> u64 {
+        assert!(bits > 0);
+        let mut w: u64 = 0;
+        loop {
+            let mut c = ch.clone();
+            if c.check_witness(bits, g(w)) {
+                return w;
+            }
+            w += 1;
+        }
+    }
+
+    let ds = ds_prefix_limbs();
+    let scenarios: &[&'static str] = &[
+        "basic",
+        "rate_boundary",
+        "partial_absorb",
+        "squeeze_chain",
+        "pow_zero_bits",
+        "pow_nonzero",
+        "multi_instance",
+        "sample_bits_32",
+    ];
+
+    std::fs::create_dir_all(out_dir)?;
+    for (idx, scenario) in scenarios.iter().enumerate() {
+        // Per-scenario seed: "P2A" || the scenario index.
+        let mut seed: u64 = 0x5032_4100_0000_0000 | (idx as u64);
+        let mut t = Tracer {
+            ch: Ch::new(default_goldilocks_poseidon2_8()),
+            instance: 0,
+            ops: Vec::new(),
+            duplexings: Vec::new(),
+            instance_starts: Vec::new(),
+        };
+        tr_start_instance(&mut t, &ds);
+        let expect_instances = if *scenario == "multi_instance" { 2 } else { 1 };
+
+        match *scenario {
+            // Mixed observe/sample interleaving that crosses the rate boundary
+            // exactly once: the 4th observe of the middle run fires the EAGER
+            // duplex (rs:172-174 — the AIR's sel_obs_dup archetype), while the
+            // first sample duplexes on pending input (num_absorbed = 2).
+            "basic" => {
+                tr_observe(&mut t, rv(&mut seed));
+                tr_observe(&mut t, rv(&mut seed));
+                tr_sample(&mut t);
+                tr_observe(&mut t, rv(&mut seed));
+                tr_observe(&mut t, rv(&mut seed));
+                tr_observe(&mut t, rv(&mut seed));
+                tr_observe(&mut t, rv(&mut seed)); // eager duplex fires here
+                tr_sample(&mut t);
+                tr_sample(&mut t);
+            }
+            // Back-to-back FULL-rate absorbs: num_absorbed == 4 twice, i.e. the
+            // path where the rate clear (rs:102) is vacuous and the length tag
+            // (rs:104) adds 4.
+            "rate_boundary" => {
+                for _ in 0..8 {
+                    tr_observe(&mut t, rv(&mut seed));
+                }
+                tr_sample(&mut t);
+                tr_sample(&mut t);
+            }
+            // Absorbs of 1, 2 and 3 lanes, each flushed by a sample: the paths
+            // where the rate clear zeroes state[k..RATE] and the tag adds k.
+            "partial_absorb" => {
+                tr_observe(&mut t, rv(&mut seed));
+                tr_sample(&mut t); // k = 1
+                tr_observe(&mut t, rv(&mut seed));
+                tr_observe(&mut t, rv(&mut seed));
+                tr_sample(&mut t); // k = 2
+                tr_observe(&mut t, rv(&mut seed));
+                tr_observe(&mut t, rv(&mut seed));
+                tr_observe(&mut t, rv(&mut seed));
+                tr_sample(&mut t); // k = 3
+            }
+            // Consecutive samples: once the output buffer drains, the duplexing
+            // is a SQUEEZE — the `num_absorbed > 0` guard (rs:100) skips BOTH
+            // the rate clear and the length tag. Nine samples drain the prefix
+            // block and then squeeze twice.
+            "squeeze_chain" => {
+                for _ in 0..9 {
+                    tr_sample(&mut t);
+                }
+            }
+            // check_pow(bits = 0) is a TOTAL no-op (grinding_challenger.rs:43-45):
+            // the row before and the row after MUST carry the same state.
+            "pow_zero_bits" => {
+                tr_observe(&mut t, rv(&mut seed));
+                tr_sample(&mut t);
+                tr_check_pow(&mut t, 0, 12345);
+                tr_sample(&mut t);
+            }
+            // A real 8-bit PoW witness, ground out against Plonky3's own
+            // check_witness.
+            "pow_nonzero" => {
+                tr_observe(&mut t, rv(&mut seed));
+                tr_observe(&mut t, rv(&mut seed));
+                let w = least_pow_witness(&t.ch, 8);
+                let ok = tr_check_pow(&mut t, 8, w);
+                assert!(ok, "pow_nonzero must carry a PASSING witness");
+                tr_sample(&mut t);
+            }
+            // TWO independent instances in ONE flat op stream — the NODE trace
+            // shape. Each opens with a fresh challenger + the DS prefix, so the
+            // AIR's sel_start reset and prefix_ctr chain both get exercised.
+            "multi_instance" => {
+                tr_observe(&mut t, rv(&mut seed));
+                tr_observe(&mut t, rv(&mut seed));
+                tr_sample(&mut t);
+                tr_sample(&mut t);
+                tr_start_instance(&mut t, &ds);
+                tr_observe(&mut t, rv(&mut seed));
+                tr_sample(&mut t);
+                tr_observe(&mut t, rv(&mut seed));
+                tr_observe(&mut t, rv(&mut seed));
+                tr_observe(&mut t, rv(&mut seed));
+                tr_observe(&mut t, rv(&mut seed)); // eager duplex fires here
+                tr_sample(&mut t);
+            }
+            // bits = 32, the AIR's pinned upper bound (lgmh <=
+            // GOLDILOCKS_TWO_ADICITY, fri_verifier.c:689-691). Five draws span
+            // an absorb-triggered duplexing and a squeeze refill.
+            "sample_bits_32" => {
+                tr_observe(&mut t, rv(&mut seed));
+                tr_observe(&mut t, rv(&mut seed));
+                for _ in 0..5 {
+                    tr_sample_bits(&mut t, 32);
+                }
+            }
+            other => unreachable!("unknown transcript-trace scenario {other}"),
+        }
+
+        assert!(!t.ops.is_empty(), "empty scenario");
+        assert_eq!(t.instance_starts.len(), expect_instances, "instance count");
+        assert!(!t.duplexings.is_empty(), "every instance's DS prefix fires one duplexing");
+
+        let file = TraceFile {
+            format_version: ORACLE_FORMAT_VERSION,
+            plonky3_commit: PLONKY3_COMMIT,
+            constructor: "DuplexChallenger::<Goldilocks, Poseidon2Goldilocks<8>, 8, 4>::new(default_goldilocks_poseidon2_8()) per instance, then the 4 DS-prefix observes (dnac_duplex_init_default, duplex_challenger.c:96-103)",
+            permutation: "default_goldilocks_poseidon2_8 (goldilocks/src/poseidon2.rs:570)",
+            width: WIDTH,
+            rate: RATE,
+            scenario: *scenario,
+            ds_prefix: ds.iter().map(|l| l.to_string()).collect(),
+            instance_starts: t.instance_starts.clone(),
+            ops: t.ops,
+            duplexings: t.duplexings,
+            final_state: snap(&t.ch.sponge_state),
+        };
+        let out_path = out_dir.join(format!("transcript_trace_{scenario}.json"));
+        let mut f = File::create(&out_path)?;
+        f.write_all(serde_json::to_string_pretty(&file)?.as_bytes())?;
+        f.write_all(b"\n")?;
+        eprintln!("wrote {}", out_path.display());
+    }
     Ok(())
 }
 

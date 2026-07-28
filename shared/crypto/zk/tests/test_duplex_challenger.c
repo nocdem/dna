@@ -37,6 +37,7 @@
 #include <string.h>
 
 #include "../duplex_challenger.h"
+#include "../transcript.h"
 
 /* Read the whole file into a heap buffer (NUL-terminated). */
 static char *slurp(const char *path, size_t *out_len) {
@@ -184,9 +185,22 @@ int main(int argc, char **argv) {
     }
 
     /* --- Gate A: DS prefix derivation (local re-derivation of the Q1 25-byte
-     * string as LE u64 chunks == the exported constant). */
+     * string as LE u64 chunks == the exported constant). The local literal is
+     * first pinned byte-for-byte to transcript.c's EXPORTED byte constant
+     * (F7, P2a design §4.3): editing transcript.h/.c's bytes now breaks this
+     * test instead of drifting silently — the literal is kept because the
+     * derived==DNAC_DUPLEX_DS_PREFIX comparison below is only meaningful
+     * against an independent source. */
     {
         static const uint8_t ds[25] = "DNAC|ZK|FRI|TRANSCRIPT|V1";
+        if (DNAC_TRANSCRIPT_PROD_INIT_STATE_LEN != sizeof(ds) ||
+            memcmp(ds, DNAC_TRANSCRIPT_PROD_INIT_STATE, sizeof(ds)) != 0) {
+            fprintf(stderr,
+                    "FAIL: local DS literal != DNAC_TRANSCRIPT_PROD_INIT_STATE "
+                    "(len %zu vs %zu)\n",
+                    sizeof(ds), DNAC_TRANSCRIPT_PROD_INIT_STATE_LEN);
+            g_fails++;
+        }
         uint64_t limbs[4] = {0, 0, 0, 0};
         for (size_t i = 0; i < 25; i++)
             limbs[i / 8] |= (uint64_t)ds[i] << (8 * (i % 8));

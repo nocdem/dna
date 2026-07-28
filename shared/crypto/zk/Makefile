@@ -187,8 +187,10 @@ $(BUILD)/test_poseidon2_goldilocks: tests/test_poseidon2_goldilocks.c poseidon2_
 	$(CC) $(CFLAGS) $(INCLUDES) tests/test_poseidon2_goldilocks.c poseidon2_goldilocks.c field_goldilocks.c -o $@
 
 # P1a — Poseidon2 DuplexChallenger byte-match (oracle scenario replay).
-$(BUILD)/test_duplex_challenger: tests/test_duplex_challenger.c duplex_challenger.c poseidon2_goldilocks.c field_goldilocks.c duplex_challenger.h poseidon2_goldilocks.h field_goldilocks.h | $(BUILD)
-	$(CC) $(CFLAGS) $(INCLUDES) tests/test_duplex_challenger.c duplex_challenger.c poseidon2_goldilocks.c field_goldilocks.c -o $@
+# F7 (P2a design §4.3): links TRANSCRIPT_STACK so Gate A can pin its local DS
+# literal to transcript.c's exported DNAC_TRANSCRIPT_PROD_INIT_STATE.
+$(BUILD)/test_duplex_challenger: tests/test_duplex_challenger.c $(TRANSCRIPT_STACK) transcript.h duplex_challenger.h poseidon2_goldilocks.h field_goldilocks.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_duplex_challenger.c $(TRANSCRIPT_STACK) -o $@
 
 # P2L-a — LogUp lookup gadget byte-match (aux traces, residual streams,
 # cumulative sums, global-sum verdicts, constraint degrees vs the REAL

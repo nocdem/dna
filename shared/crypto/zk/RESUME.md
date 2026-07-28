@@ -106,10 +106,15 @@ left is NOT zk work — it is design and consensus work upstream of the circuits
    pin, byte-match, KAT. The KAFADAN rule's normal path is available; no bespoke design argument
    is required for the mechanism itself.
 
-   **Still DNAC-owned, no upstream will cover it:** the 4-limb `"DNAC|ZK|FRI|TRANSCRIPT|V1"` DS
-   prefix pre-absorb (`duplex_challenger.c:32-37`, applied at `:96-103`). Upstream
-   `DuplexChallenger::new` has no initial-state hook. That piece stays **self-consistent**, not
-   upstream-grounded, and must keep being labelled so.
+   **DS prefix — CORRECTED 2026-07-28: mechanism REFERENCED, only the VALUES are DNAC-owned.**
+   An earlier revision here said "no upstream will cover it" — that conflated "no initial-state
+   hook" (true, irrelevant) with "no reference for the mechanism" (false). DNAC applies the
+   4-limb `"DNAC|ZK|FRI|TRANSCRIPT|V1"` prefix as **four ordinary observe calls** after a
+   zero-state init (`duplex_challenger.c:96-103` — NOT a direct state write), and the in-circuit
+   "observe a pinned constant" pattern exists verbatim upstream (`alloc_const` +
+   `challenger.observe`, `targets.rs:796-800`). DNAC-owned remainder: the constant VALUES
+   (`:32-37`) — a consensus value pin, runtime-KAT-bound (`:27-31`). No bespoke mechanism
+   argument is needed for P2a. Caught by the user pushing back on "referansı yok" (again).
 
    **NOT YET VERIFIED — the honest limit of this pass.** Only the challenger's `duplexing()` body
    and the crate/test inventory were read. Whether the upstream semantics match DNAC's in every
@@ -134,9 +139,15 @@ left is NOT zk work — it is design and consensus work upstream of the circuits
    fan-in; the two must not be conflated. So K = 2 makes upstream's aggregation layer
    usable as P2e's reference, at the cost of one extra tree level per doubling; K = 4
    would have required writing the NODE with no upstream counterpart. Sections of P2.0
-   that this invalidates (G-DET-4's 4-slot padding selector, the §3.2/F-R2-3 trace-size
-   arithmetic, the four-way sorted-merge) are marked in that doc and MUST be revised
-   before P2e.
+   that this invalidated (G-DET-4's 4-slot padding selector, the §3.2/F-R2-3 trace-size
+   arithmetic, the four-way sorted-merge) were **REVISED IN PLACE 2026-07-28** — see the
+   "K = 2 recompute" section of that doc: child-verify 15,567 perms (2^14, unchanged),
+   NODE natural 2×15,567 = 31,134 → 2^15 (headroom condition ≤1,634 non-perm rows,
+   P2e-validated), WRAP 76,105 → 2^17, **H_rec = H_wrap = 2^17 STANDS** (the F-R2-3
+   inconsistency dissolves at K=2), interior padding 2×→4×, tree proofs 5461→8191=2N−1
+   (N=4096 reconstruction labelled; N_max pinned at P2e), union bound 141.0 →
+   **Q≈59 STANDS, margin +1.0 bit**. F-R2-3 RESOLVED; F-R2-4 (multiset-equality
+   merge) now inline in G-DET-1, folded at P2e; F-R2-5 unchanged.
 
    **Challenger mapping, ORCHESTRATOR-verified 2026-07-28 (both sides opened).** All
    five DNAC state transitions have upstream circuit counterparts: T1/T2 →
@@ -169,10 +180,67 @@ left is NOT zk work — it is design and consensus work upstream of the circuits
    BASE-element state machine. The fp2 surface needs no separate AIR — it decomposes
    into two primitive calls, and the extension level is handled in-circuit by a
    decompose/recompose gadget.
-   **Unread reference, ~6.4k lines:** `pcs/mmcs.rs` (2572, the P2b reference) and
-   `pcs/fri/verifier.rs` + `fri/targets.rs` + `backend/fri.rs` (~3.8k, P2c). Location-
-   and structure-heavy, so delegable — unlike the two questions above, which were
-   claims and were answered by the ORCHESTRATOR reading the code.
+   **~~Unread~~ READ + MAPPED 2026-07-28 (FLEET 010: 2 zk-auditors; FLEET 011: independent
+   verifier 15/15 CONFIRMED / 0 REFUTED; every load-bearing claim ALSO opened by the
+   ORCHESTRATOR):** `pcs/mmcs.rs` (P2b) and the FRI surface (P2c) are fully mapped to
+   DNAC's `poseidon2_mmcs.c` / `fri_verifier.c`. Facts the P2 designs build on:
+   - ⚠ **The binary Merkle-walk constraint lives in `circuit/src/ops/mmcs.rs:81-207`**
+     (same repo/pin), NOT in `pcs/mmcs.rs` — per level one perm row `merkle_path:true` +
+     `mmcs_bit=direction`; siblings are op private data; mixed-height injection is a
+     separate row, digest into `inputs[rate_ext..]`, combine order C(running, injected)
+     == DNAC `poseidon2_mmcs.c:522`, same interleaving. AIR-level `mmcs_bit` placement
+     constraint (`poseidon2-circuit-air`) still unread → P2b design work.
+   - **F-S challenge order is IDENTICAL both sides** (`targets.rs:770-807` ==
+     `fri_verifier.c:694-726`; both ORCHESTRATOR-opened): alpha → per-commit
+     {observe, commit-PoW, beta} → final_poly → log_arities → query-PoW → indices after.
+   - **Hiding/salt split:** upstream salts = circuit PRIVATE INPUTS
+     (`targets.rs:595-600`), siblings = op private data (`SaltedMmcsProof` mmcs.rs:768);
+     leaf preimage `[row‖salt]` per matrix == DNAC's caller-side append. Port rule:
+     salt columns private + alu_recompose bus obligation (mmcs.rs:33-37).
+   - **Real divergences (DNAC stricter, port must decide to keep):** unmatched roll-in
+     DNAC REJECTS (`:613-615`) vs circuit connects-to-zero (`verifier.rs:1640-1643`);
+     num_queries DNAC EXACT vs upstream lower-bound (`targets.rs:840-844`); lgmh bound
+     DNAC 32 (two-adicity) vs circuit `Val::bits()` = 64 (GROUNDED:
+     `field.rs:1056-1058` + Goldilocks P `goldilocks.rs:27` @ 82cfad73). DNAC-owned
+     hardenings with NO circuit counterpart: empty-batch reject, z==x reject
+     (circuit does bare `div`), FriError taxonomy.
+   - **Port's main structural work:** public/private/op-data map (final_poly + PoW
+     witness PUBLIC; siblings + opened values + salts PRIVATE; path digests op-data)
+     and the u64 query index → bit-decomposed bool-pinned targets (`sample_bits` +
+     `assert_bool` verifier.rs:1087-1089).
+   - **Still unread** (named so the next session doesn't re-derive): `p3_circuit`
+     builder semantics beyond decompose_to_bits (connect/div constraint meaning,
+     div-by-zero), `tests/goldilocks.rs` + `tests/fri.rs`, circuit behaviour at
+     lgmh∈(33,64], native-82cfad73 side of the roll-in divergence.
+
+   **P2a DESIGN v2 GREEN-pending-code (2026-07-28).** Doc:
+   `dnac/docs/plans/2026-07-28-p2a-transcript-in-air-design.md`. Round-1 red-team
+   (FLEET 012, 1 agent) NOT-GREEN — 3 CRIT / 2 HIGH / 6 MED / 2 LOW, all
+   ORCHESTRATOR-verified at source, ALL 13 FOLDED into v2 (constraint FORMS now
+   committed, not prose: one-hot counters, merged eager-duplex rows, state
+   threading + `sel_start` boundary, filler terminality, prefix_ctr chaining).
+   **Two user-locked decisions:** (1) perm delegation = **INLINE 180-col
+   embedding** (shipped `conf_action_fold.c` pattern; upstream table+CTL+bus NOT
+   ported — `poseidon2_air` has no CTL columns and the shipped bus has never
+   carried a permutation); (2) **recursion config NON-HIDING, `salt_elems=0`**
+   (leaf stays salted) — dissolves the `batch_prover.c:581-589` salted+lookups
+   fail-close for P2e's LogUp merge; leak argument = P2a §2 G-SEC-P2a-6.
+   v1's booleanity claim RETRACTED (F9 — upstream `decompose_to_bits` asserts
+   bool itself, `circuit_builder.rs:1212-1213`).
+   **P2a-i1 DONE (2026-07-28, FLEET 013 + ORCHESTRATOR):** (a) oracle
+   `dump-transcript-trace` mode landed (`plonky3_oracle/src/main.rs`, +513
+   lines) — 8 scenario vectors (basic/rate_boundary/partial_absorb/
+   squeeze_chain/pow_zero_bits/pow_nonzero/multi_instance/sample_bits_32),
+   real-challenger tracing, upstream trigger predicates self-checked against
+   post-conditions, composites cross-validated on clones; `.expected_hashes`
+   52→60, `sha256sum -c` clean; (b) F7 closed — `test_duplex_challenger` Gate A
+   pins its literal to the exported `DNAC_TRANSCRIPT_PROD_INIT_STATE` (recipe
+   → `$(TRANSCRIPT_STACK)`), negative control executed (one-byte tamper →
+   FAIL). zk `make test` ALL GATES GREEN, 70 binaries, 0 warnings; cargo build
+   0 warnings. No version bump (zk-only, consensus-inert). NEXT: **i2 =
+   transcript AIR** (`transcript_air.{c,h}` + tests + Makefile, own O4)
+   against the v2 doc's §0.5 constraint forms; column budget ≈277/2560
+   re-check at P2e.
 
 ### ⚑ CITATION BASELINE — read this before checking any Plonky3 `file:line` in this tree
 
