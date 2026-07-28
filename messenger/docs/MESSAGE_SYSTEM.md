@@ -87,7 +87,7 @@ This document describes how the DNA Connect message system works, with all facts
 
 | Algorithm | Standard | Purpose | Key/Output Size |
 |-----------|----------|---------|-----------------|
-| **Kyber1024** | ML-KEM-1024 (FIPS 203) | Key Encapsulation | Pub: 1568, Priv: 3168, CT: 1568, SS: 32 |
+| **Kyber1024** | Kyber **round-3** — *not* ML-KEM/FIPS 203 ⚠ | Key Encapsulation | Pub: 1568, Priv: 3168, CT: 1568, SS: 32 |
 | **Dilithium5** | ML-DSA-87 (FIPS 204) | Digital Signatures | Pub: 2592, Priv: 4896, Sig: ~4627 |
 | **AES-256-GCM** | FIPS 197 + SP 800-38D | Symmetric Encryption | Key: 32, Nonce: 12, Tag: 16 |
 | **SHA3-512** | FIPS 202 | Fingerprints/Hashing | Output: 64 bytes |

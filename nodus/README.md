@@ -18,7 +18,7 @@ Nodus is the distributed hash table (DHT) infrastructure for the DNA ecosystem. 
 
 - **Pure C** — No C++ dependencies, minimal footprint
 - **Dilithium5 signatures** — All stored values cryptographically signed (FIPS 204)
-- **Kyber1024 channel encryption** — All client connections encrypted (FIPS 203 key exchange + AES-256-GCM)
+- **Kyber1024 channel encryption** — All client connections encrypted (Kyber round-3 key exchange + AES-256-GCM; *not* ML-KEM/FIPS 203 — see `shared/crypto/enc/qgp_kyber.h`)
 - **Cluster management** — Heartbeat-based health monitoring with Kademlia replication
 - **512-bit keyspace** — Kademlia routing with k=8 buckets
 - **7-day TTL** — Values persist across restarts with SQLite storage
@@ -226,7 +226,7 @@ nodus_client_media_get(client, key, callback, userdata);
 
 ## Kyber Channel Encryption
 
-All TCP connections (ports 4001 and 4002) are encrypted with Kyber1024 key exchange (FIPS 203) followed by AES-256-GCM symmetric encryption. The handshake occurs immediately after TCP connection, before any protocol messages are exchanged. This ensures all client operations, inter-node replication, and circuit relay traffic are protected against quantum adversaries.
+All TCP connections (ports 4001 and 4002) are encrypted with Kyber1024 key exchange (Kyber **round-3**, NIST Level 5 — this is *not* ML-KEM-1024 and *not* FIPS 203; the divergences are documented in `shared/crypto/enc/qgp_kyber.h`) followed by AES-256-GCM symmetric encryption. The handshake occurs immediately after TCP connection, before any protocol messages are exchanged. This ensures all client operations, inter-node replication, and circuit relay traffic are protected against quantum adversaries.
 
 ---
 

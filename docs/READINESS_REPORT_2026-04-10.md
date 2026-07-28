@@ -210,6 +210,17 @@ test_real .................. FAIL   (witness collection — network-dependent)
 
 ### Status: COMPLETE AND VERIFIED
 
+> ⚠ **CORRECTION APPENDED 2026-07-28 — the first row of this table is wrong, and its
+> "Verified: YES" was never true.** The KEM is **Kyber round-3**, not ML-KEM-1024, and it
+> is **not** FIPS 203: the shipped code keeps round-3's final shared-secret hash
+> `ss = SHAKE256(K' ‖ H(c))` (`shared/crypto/enc/kem/kem.c:73-75`), which FIPS 203 removed,
+> and its keygen feeds G 32 bytes instead of `G(d ‖ k)` (`kem/indcpa.c:231-232`). The sizes
+> in that row are correct; only the standard and the verification claim are not. The
+> ML-DSA-87/FIPS 204 row IS accurate — the signature side did receive its FIPS-204
+> alignment (`shared/crypto/sign/dsa/sign.c:34-36`), which is exactly what made the KEM
+> row's inaccuracy visible. This report is left otherwise unedited as the dated record of
+> what was believed on 2026-04-10. Authoritative statement: `shared/crypto/enc/qgp_kyber.h`.
+
 | Algorithm | Standard | Purpose | Verified |
 |-----------|----------|---------|----------|
 | ML-KEM-1024 (Kyber1024) | NIST FIPS 203 | Key encapsulation | YES (pk=1568B, sk=3168B, ct=1568B) |

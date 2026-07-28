@@ -26,7 +26,8 @@
 typedef enum {
     QGP_KEY_TYPE_INVALID = 0,
     QGP_KEY_TYPE_DSA87 = 1,    // Post-quantum signature (ML-DSA-87, FIPS 204, Category 5)
-    QGP_KEY_TYPE_KEM1024 = 2   // Post-quantum KEM (ML-KEM-1024, FIPS 203, Category 5)
+    QGP_KEY_TYPE_KEM1024 = 2   // Post-quantum KEM (Kyber1024 round-3, Category 5).
+                               // NOT ML-KEM / NOT FIPS 203 — see crypto/enc/qgp_kyber.h
 } qgp_key_type_t;
 
 /**

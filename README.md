@@ -89,7 +89,7 @@ DNA is a suite of decentralized applications built on **NIST-approved post-quant
 
 | Algorithm | Standard | Purpose |
 |-----------|----------|---------|
-| **Kyber1024** | ML-KEM-1024 (FIPS 203) | Key encapsulation |
+| **Kyber1024** | Kyber round-3 (NIST Level 5) — *not* ML-KEM/FIPS 203, see `shared/crypto/enc/qgp_kyber.h` | Key encapsulation |
 | **Dilithium5** | ML-DSA-87 (FIPS 204) | Digital signatures |
 | **AES-256-GCM** | NIST | Symmetric encryption |
 | **SHA3-512** | NIST | Hashing |

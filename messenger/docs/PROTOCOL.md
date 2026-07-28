@@ -44,13 +44,28 @@ All protocols use NIST Category 5 post-quantum cryptography.
 
 | Algorithm | Standard | Purpose | Sizes |
 |-----------|----------|---------|-------|
-| **ML-KEM-1024** | FIPS 203 (Kyber1024) | Key Encapsulation | Pub: 1568, Priv: 3168, CT: 1568, SS: 32 |
+| **Kyber1024** | Kyber **round-3** — *not* ML-KEM-1024, *not* FIPS 203 ⚠ | Key Encapsulation | Pub: 1568, Priv: 3168, CT: 1568, SS: 32 |
 | **ML-DSA-87** | FIPS 204 (Dilithium5) | Digital Signatures | Pub: 2592, Priv: 4896, Sig: ~4627 |
 | **AES-256-GCM** | FIPS 197 + SP 800-38D | Symmetric Encryption | Key: 32, Nonce: 12, Tag: 16 |
 | **SHA3-512** | FIPS 202 | Fingerprints/Hashing | Output: 64 bytes |
 | **AES Key Wrap** | RFC 3394 | DEK Protection | KEK: 32, Wrapped: 40 |
 
 **Source:** `crypto/utils/qgp_types.h`
+
+> ⚠ **Naming note (corrected 2026-07-28).** This document, and several others, used
+> **ML-KEM-1024** as a synonym for the KEM in use. It is not one: the shipped code is
+> **Kyber round-3**, ML-KEM's direct predecessor, and the two are not interoperable.
+> Round-3 retains a final shared-secret hash `ss = SHAKE256(K' ‖ H(c))`
+> (`shared/crypto/enc/kem/kem.c:73-75`) that FIPS 203 removed, and its keygen feeds G
+> 32 bytes rather than `G(d ‖ k)` (`kem/indcpa.c:231-232`). Wherever the text below
+> says "ML-KEM-1024", read **Kyber1024 (round-3)** — the wire sizes are identical
+> (1568/3168/1568/32), so the format descriptions remain accurate; only the standard
+> name was wrong. Authoritative statement: `shared/crypto/enc/qgp_kyber.h`.
+>
+> This is a documentation correction, **not** a request to change the algorithm.
+> Kyber1024 round-3 is not broken. Switching to ML-KEM would change every derived
+> shared secret and break every stored ciphertext and every deployed peer — a separate,
+> breaking decision.
 
 ---
 

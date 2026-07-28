@@ -5,8 +5,10 @@
 #include <stdint.h>
 #include "params.h"
 
-/* NIST FIPS 203 (ML-KEM) - SHAKE-based symmetric primitives
- * Note: Kyber-90s (AES/SHA2 variant) removed - not NIST standardized */
+/* Kyber round-3 — SHAKE-based symmetric primitives (H, G, KDF, PRF).
+ * Note: Kyber-90s (AES/SHA2 variant) removed.
+ * ⚠ NOT FIPS 203: `kdf` below is round-3's final shared-secret hash, which ML-KEM
+ * does not have (it is applied at kem.c:75). See ../qgp_kyber.h. */
 
 #include "fips202_kyber.h"
 

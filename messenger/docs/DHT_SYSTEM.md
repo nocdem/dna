@@ -1403,7 +1403,7 @@ await engine.blockUser(fingerprint, "spam");
 | Algorithm | Standard | NIST Level | Use |
 |-----------|----------|------------|-----|
 | Dilithium5 | ML-DSA-87 (FIPS 204) | Category 5 | Signing, Node Identity |
-| Kyber1024 | ML-KEM-1024 (FIPS 203) | Category 5 | Key Encapsulation |
+| Kyber1024 | Kyber **round-3** — *not* ML-KEM/FIPS 203 ⚠ | Category 5 | Key Encapsulation |
 | AES-256-GCM | FIPS 197 | - | Message Encryption |
 | SHA3-512 | FIPS 202 | - | Key Derivation, Hashing |
 
