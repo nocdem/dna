@@ -150,8 +150,25 @@ left is NOT zk work — it is design and consensus work upstream of the circuits
    `d() == 2`, so the tag IS applied — consistent with DNAC applying it
    unconditionally. That branch exists for D1 base-field-challenge configs, which DNAC
    does not use.
-   **NOT established, and it is P2a's first task:** whether DNAC's base-lane `observe`
-   maps to upstream's `observe` or `observe_ext`.
+   **The observe/observe_ext question is now ANSWERED (2026-07-28, both sides opened) —
+   it is BOTH, and DNAC already carries the correct 1:1 split:**
+   `dnac_duplex_observe_fp` ↔ `observe` (`circuit.rs:337`) ·
+   `dnac_duplex_observe_fp2` ↔ `observe_ext` (`:366`) ·
+   `dnac_duplex_sample_fp` ↔ `sample` (`:351`) ·
+   `dnac_duplex_sample_fp2` ↔ `sample_ext` (`:378`).
+   Upstream's `observe`/`sample` are the PRIMITIVES (one base element; duplex when the
+   buffer hits RATE) and the `_ext` forms are WRAPPERS — `observe_ext` decomposes an
+   extension element into D base coefficients and calls `observe` on each, `sample_ext`
+   takes D samples and recomposes. DNAC does exactly that
+   (`duplex_challenger.c:117-122`, `:134-140`). Basis ORDER also checked: native
+   `observe_algebra_element` is `observe_slice(as_basis_coefficients_slice())`
+   (`challenger/src/lib.rs:106-108` @ 82cfad73, `:105-107` @ 11cc5849 — identical at
+   both pins), i.e. **c0 first**, matching DNAC's `observe_fp(v.a)` then
+   `observe_fp(v.b)`.
+   **Consequence, and it makes P2a SMALLER:** the AIR only has to constrain the
+   BASE-element state machine. The fp2 surface needs no separate AIR — it decomposes
+   into two primitive calls, and the extension level is handled in-circuit by a
+   decompose/recompose gadget.
    **Unread reference, ~6.4k lines:** `pcs/mmcs.rs` (2572, the P2b reference) and
    `pcs/fri/verifier.rs` + `fri/targets.rs` + `backend/fri.rs` (~3.8k, P2c). Location-
    and structure-heavy, so delegable — unlike the two questions above, which were
