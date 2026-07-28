@@ -123,6 +123,40 @@ left is NOT zk work — it is design and consensus work upstream of the circuits
    `tools/plonky3_oracle/src/main.rs` (`const AGG_D` at `:14079`), the zk `Makefile`, and worst,
    `tools/vectors/.expected_hashes` — a **single 52-line file**.
 
+   **⚑ K RE-DECIDED 2026-07-28: K = 4 → K = 2 (user-locked).** P2.0 chose K = 4 while
+   believing no upstream recursion existed. The reference's aggregation API is
+   **hard-shaped 2-to-1**: `prove_aggregation_layer` (`recursion/src/recursion.rs:661`)
+   takes exactly `left` and `right`, separately typed, with separate verifier results;
+   there is no slice, no `Vec<Proof>` and no loop over children anywhere in that file
+   (searched — empty), and every entry point is documented "2-to-1 aggregation layer"
+   (`:541`, `:648`, `:769`, `:891`, `:945`). ⚠ `recursion.rs:774` mentions an "arity-4
+   proof" — that is the **MMCS (Merkle) arity inside a proof**, NOT the aggregation
+   fan-in; the two must not be conflated. So K = 2 makes upstream's aggregation layer
+   usable as P2e's reference, at the cost of one extra tree level per doubling; K = 4
+   would have required writing the NODE with no upstream counterpart. Sections of P2.0
+   that this invalidates (G-DET-4's 4-slot padding selector, the §3.2/F-R2-3 trace-size
+   arithmetic, the four-way sorted-merge) are marked in that doc and MUST be revised
+   before P2e.
+
+   **Challenger mapping, ORCHESTRATOR-verified 2026-07-28 (both sides opened).** All
+   five DNAC state transitions have upstream circuit counterparts: T1/T2 →
+   `observe` (`challenger/circuit.rs:337`), T3/T4/T5 → `sample` (`:351`), and the
+   absorb-vs-squeeze split is `duplexing`'s `if num_absorbed > 0` guard (`:97`+), which
+   skips both the rate clear and the length tag on a squeeze — exactly DNAC's
+   `duplex_challenger.c:74`. Shape matches exactly: `impl CircuitChallenger<8, 4,
+   Poseidon2Config>` with `new_goldilocks()` → `GOLDILOCKS_D2_W8` (`:307`).
+   **A trap that was checked and does NOT bite us:** upstream binds the length tag only
+   under `if !is_base`, where `is_base = config.d() == 1`. Our config is D2, so
+   `d() == 2`, so the tag IS applied — consistent with DNAC applying it
+   unconditionally. That branch exists for D1 base-field-challenge configs, which DNAC
+   does not use.
+   **NOT established, and it is P2a's first task:** whether DNAC's base-lane `observe`
+   maps to upstream's `observe` or `observe_ext`.
+   **Unread reference, ~6.4k lines:** `pcs/mmcs.rs` (2572, the P2b reference) and
+   `pcs/fri/verifier.rs` + `fri/targets.rs` + `backend/fri.rs` (~3.8k, P2c). Location-
+   and structure-heavy, so delegable — unlike the two questions above, which were
+   claims and were answered by the ORCHESTRATOR reading the code.
+
 ### ⚑ CITATION BASELINE — read this before checking any Plonky3 `file:line` in this tree
 
 **The `file:line` citations throughout `shared/crypto/zk/` are against Plonky3
