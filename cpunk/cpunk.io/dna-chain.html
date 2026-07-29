@@ -1187,6 +1187,111 @@
         </div>
       </section>
 
+      <!-- ══ Under the Hood ══ -->
+      <section id="engineering" class="s-section s-panel">
+        <div class="wrap">
+          <div class="section-header-center reveal">
+            <div class="section-label" data-i18n="chain_page.eng.label">Engineering</div>
+            <h2 class="section-title" data-i18n="chain_page.eng.title">Under the Hood</h2>
+            <p class="section-desc" style="max-width: 38rem;" data-i18n="chain_page.eng.desc">
+              Not a fork, not a framework — an independent chain written in pure C,
+              running on its own substrate.
+            </p>
+          </div>
+
+          <div class="token-grid stagger" style="margin-bottom: 1.2rem;">
+            <article class="token-card reveal">
+              <span class="token-card-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg></span>
+              <h3 data-i18n="chain_page.eng.blocks_title">5-Second Blocks</h3>
+              <p data-i18n="chain_page.eng.blocks_desc">
+                Blocks are produced every 5 seconds by the witness committee. Committee membership
+                re-ranks every 720 blocks &mdash; roughly once an hour &mdash; from on-chain stake.
+              </p>
+            </article>
+
+            <article class="token-card reveal">
+              <span class="token-card-icon"><svg viewBox="0 0 24 24"><path d="M4 17V7"/><path d="M10 17V7"/><path d="M16 17V7"/><path d="M22 17V7"/><path d="M2 7h20"/><path d="M2 17h20"/></svg></span>
+              <h3 data-i18n="chain_page.eng.bft_title">Four-Phase BFT</h3>
+              <p data-i18n="chain_page.eng.bft_desc">
+                Propose &rarr; Prevote &rarr; Precommit &rarr; Commit. A block is final when a
+                2f+1 supermajority of the 7-seat committee signs it &mdash; deterministic finality,
+                not probabilistic confirmation.
+              </p>
+            </article>
+
+            <article class="token-card reveal">
+              <span class="token-card-icon"><svg viewBox="0 0 24 24"><path d="M12 3v4"/><path d="M6 21v-4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v4"/><circle cx="12" cy="9" r="2"/><circle cx="7" cy="19" r="0.5"/><circle cx="17" cy="19" r="0.5"/><path d="M12 11v4"/></svg></span>
+              <h3 data-i18n="chain_page.eng.merkle_title">Merkle State Root</h3>
+              <p data-i18n="chain_page.eng.merkle_desc">
+                Every block commits a SHA3-512 state root over the UTXO, validator, delegation,
+                reward and config subtrees. If any node's state diverges, the mismatch is caught
+                at the very next block.
+              </p>
+            </article>
+
+            <article class="token-card reveal">
+              <span class="token-card-icon"><svg viewBox="0 0 24 24"><path d="M9 11l3 3 8-8"/><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/></svg></span>
+              <h3 data-i18n="chain_page.eng.determinism_title">Determinism as a Gate</h3>
+              <p data-i18n="chain_page.eng.determinism_desc">
+                Consensus code ships only after a 7-node harness reproduces bit-identical state
+                roots on every block, every run. Non-determinism is treated as a chain-split bug,
+                not a flaky test.
+              </p>
+            </article>
+
+            <article class="token-card reveal">
+              <span class="token-card-icon"><svg viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 10l3 3 5-5"/><line x1="8" y1="17" x2="16" y2="17"/></svg></span>
+              <h3 data-i18n="chain_page.eng.governance_title">On-Chain Governance</h3>
+              <p data-i18n="chain_page.eng.governance_desc">
+                Consensus parameters change through committee-voted configuration transactions
+                recorded on-chain &mdash; auditable by everyone, with enforced grace periods.
+                No silent binary upgrades.
+              </p>
+            </article>
+
+            <article class="token-card reveal">
+              <span class="token-card-icon"><svg viewBox="0 0 24 24"><circle cx="8" cy="8" r="5"/><path d="M6.5 8h3"/><path d="M8 6.5v3"/><circle cx="16" cy="16" r="5"/><path d="M14.5 16h3"/></svg></span>
+              <h3 data-i18n="chain_page.eng.tokens_title">Native Tokens</h3>
+              <p data-i18n="chain_page.eng.tokens_desc">
+                Tokens are issued natively at the protocol level and settle with the same BFT
+                guarantees as the base asset &mdash; no smart-contract layer required.
+              </p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <!-- ══ Zero-Knowledge ══ -->
+      <section id="zk" class="s-section s-gradient">
+        <div class="wrap">
+          <div class="dna-row">
+            <div class="dna-text reveal-left">
+              <h3 data-i18n="chain_page.zk.title"><span class="teal">Zero-Knowledge</span>, Post-Quantum</h3>
+              <p data-i18n="chain_page.zk.desc1">
+                Privacy features on most chains rely on elliptic-curve proof systems that a quantum
+                computer could eventually break. DNA Chain's zero-knowledge layer is built on STARKs:
+                transparent proofs whose security rests on hash functions &mdash; the same post-quantum
+                foundation as the rest of the chain.
+              </p>
+              <ul>
+                <li data-i18n="chain_page.zk.li1"><strong>No trusted setup</strong> &mdash; no ceremony, no toxic waste, nothing to leak</li>
+                <li data-i18n="chain_page.zk.li2"><strong>Hash-based security</strong> &mdash; no elliptic curves anywhere in the proof system</li>
+                <li data-i18n="chain_page.zk.li3"><strong>Pure C implementation</strong> &mdash; the same zero-dependency discipline as the chain itself</li>
+              </ul>
+              <p data-i18n="chain_page.zk.desc2">
+                In active development on the testnet track &mdash; the testnet resets as these
+                features land.
+              </p>
+            </div>
+            <div class="dna-visual reveal-right">
+              <div class="dna-icon glow-teal">
+                <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8a4 4 0 1 0 4 4"/><path d="M12 12h.01"/><path d="M16 3.5l1 1"/><path d="M7 19.5l1 1"/></svg>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <!-- ══ Live Testnet ══ -->
       <section id="testnet" class="s-section s-dark">
         <div class="wrap">
