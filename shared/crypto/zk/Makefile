@@ -155,7 +155,9 @@ TESTS = \
     $(BUILD)/test_fri_air_table \
     $(BUILD)/test_fri_air \
     $(BUILD)/test_fri_oi_air_table \
-    $(BUILD)/test_fri_oi_air
+    $(BUILD)/test_fri_oi_air \
+    $(BUILD)/test_mmcs_mixed_air_table \
+    $(BUILD)/test_mmcs_mixed_air
 
 # ── PREREQ HYGIENE (d4.d, 2026-07-26) ───────────────────────────────────────
 # A source on a recipe's command line that is NOT among its prerequisites means
@@ -350,6 +352,24 @@ $(BUILD)/test_fri_oi_air_table: tests/test_fri_oi_air_table.c fri_oi_air_table.c
 # is linked.
 $(BUILD)/test_fri_oi_air: tests/test_fri_oi_air.c fri_oi_air.c fri_oi_air_table.c field_goldilocks.c fri_oi_air.h fri_oi_air_table.h field_goldilocks.h | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) tests/test_fri_oi_air.c fri_oi_air.c fri_oi_air_table.c field_goldilocks.c -o $@
+
+# P2b slice 2 PIN — the preprocessed ROW-TYPE table for the MIXED-HEIGHT
+# MMCS-verify AIR. Wired EXACTLY like test_fri_oi_air_table: the generator +
+# static validator + PIN-1-MMIX root KAT via the SHIPPED LDE->commit pipeline.
+# Prerequisites list exactly what the command line links — $(PROVER_STACK) is
+# defined at the TOP of this file, above this rule, so it cannot expand to an
+# empty list (the d4.d AGG_PROVER_SRCS stale-binary lesson).
+$(BUILD)/test_mmcs_mixed_air_table: tests/test_mmcs_mixed_air_table.c mmcs_mixed_air_table.c mmcs_mixed_air_table.h $(PROVER_STACK) shielded_fri_params.h poseidon2_mmcs.h stark_prover.h field_goldilocks.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_mmcs_mixed_air_table.c mmcs_mixed_air_table.c $(PROVER_STACK) -o $@
+
+# P2b slice 2 — the mixed-height MMCS-verify control AIR. Wired EXACTLY like
+# test_mmcs_air (slice 1): the AIR + its preprocessed table + the poseidon2
+# leaf/compress primitives + the embedded 180-col poseidon2_air block. Sources
+# are named LITERALLY, not through a stack variable — every source on the command
+# line is also a prerequisite, so an edit to any of them relinks (the d4.d
+# AGG_PROVER_SRCS stale-binary lesson).
+$(BUILD)/test_mmcs_mixed_air: tests/test_mmcs_mixed_air.c mmcs_mixed_air.c mmcs_mixed_air_table.c poseidon2_mmcs.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c poseidon2_goldilocks.c field_goldilocks.c mmcs_mixed_air.h mmcs_mixed_air_table.h poseidon2_mmcs.h poseidon2_air.h poseidon2_air_trace.h poseidon2_air_cols.h poseidon2_goldilocks.h field_goldilocks.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_mmcs_mixed_air.c mmcs_mixed_air.c mmcs_mixed_air_table.c poseidon2_mmcs.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c poseidon2_goldilocks.c field_goldilocks.c -o $@
 
 # P1b — Poseidon2 MMCS byte-match (plain + hiding trees, oracle replay;
 # note_commit.c linked for the note_sponge_hash8 bridge KAT).
@@ -1268,6 +1288,30 @@ test: all
 	@echo "  C2a seed anchor, C5 lb per-batch zero, C1c booleanity, h_max gate"
 	@echo "============================================================"
 	@$(BUILD)/test_fri_oi_air
+	@echo
+	@echo "============================================================"
+	@echo "P2b slice 2 PIN — mixed-height MMCS-verify preprocessed table"
+	@echo "  deterministic generator (ref heights {8,2} salt 2 + a wider"
+	@echo "  {16,4,2} shape) — tallest-group leaf + per-level compress with"
+	@echo "  OPTIONAL interleaved inject blocks (leaf-hash of the injecting"
+	@echo "  group + inject-compress) + final + padding — the structural"
+	@echo "  static validator (primary schedule, has_inject, level + group +"
+	@echo "  step one-hots) + the pinned preprocessed root KAT"
+	@echo "  (root FILLED 2026-07-29; on a future re-pin it reverts to the"
+	@echo "  {0,0,0,0} placeholder and the KAT goes RED by design)"
+	@echo "============================================================"
+	@$(BUILD)/test_mmcs_mixed_air_table
+	@echo
+	@echo "============================================================"
+	@echo "P2b slice 2 — mixed-height MMCS-verify control AIR"
+	@echo "  native commit/open/verify_mixed replay -> honest trace 0 viol"
+	@echo "  (REF {8,2} + WIDE {16,4,2} two inject blocks + MG {8,8,2}"
+	@echo "  two-matrix tallest group + INJ2 multi-row inject group),"
+	@echo "  leaf/compress/inject digests"
+	@echo "  cross-checked; N-order (the running<->rows combine-order catch)"
+	@echo "  + 18 more constraint-form negatives + 6 fail-close eval gates"
+	@echo "============================================================"
+	@$(BUILD)/test_mmcs_mixed_air
 	@echo
 	@echo "============================================================"
 	@echo "ALL GATES: GREEN"

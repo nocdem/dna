@@ -517,12 +517,40 @@ left is NOT zk work — it is design and consensus work upstream of the circuits
    rounds could not. Consensus-inert, no version bump. NOT-YET-ENFORCED
    (composition scope): PIN-1-OI comparator uncalled, p_x↔MMCS + α/z↔
    transcript seams, OBL-P2c-3 row-0 selector, roll-in set-equality
-   (OI.H ⊇ fri_air.rollin), multi-query. NEXT: mmcs_air slice-2 (mixed-
-   height injection rows — the last un-arithmetized native piece) OR the
-   composition entry (wire all P2c AIRs + enforce every deferred pin/seam).
-   Loop grand total 020-025: ~2.89M subagent tokens, 21 agents. SHIPPED:
-   P2c slice-1 (fri_air) + open_input (fri_oi_air), 77 bin GREEN. Type-11
-   still REJECT.
+   (OI.H ⊇ fri_air.rollin), multi-query. **P2b slice-2 mixed-height MMCS
+   SHIPPED (2026-07-29, FLEET 026: 2 code-executors + 2 verifiers + O9).**
+   Commit 5685f46d checkpointed the P2c work first (user "commit sonra
+   slice2"), then a fresh worktree @ that HEAD. NEW module (shipped mmcs_air
+   untouched). 026a `mmcs_mixed_air_table.{c,h}` + test (144 checks): the
+   mixed schedule (leaf over the tallest group → per-level compress +
+   injection block iff a group height == max_h>>(l+1)), `DNAC_P2C_MMIX_PREP_
+   ROOT = {d0380af189cf4999, fe79194f82938956, 53616f3d705958cb,
+   622631697e3f65f6}`. Verifier 10/0. 026b `mmcs_mixed_air.{c,h}` + test
+   (5 accepts + 6 gates + 19 negatives): the injection-row AIR arithmetizing
+   `dnac_p2_mmcs_verify_mixed`. LOAD-BEARING new form — **inject-compress
+   C(running,injected) running-FIRST (native poseidon2_mmcs.c:522), the
+   N-order swap caught (12 viol)**. Beyond-doc RDIG carry column (the running
+   digest is non-adjacent to its inject-compress — inject-leaf rows sit
+   between; SEEDED/HELD/READ, fully pinned, mirrors slice-1's pos column).
+   HONEST-LABEL held: the native has NO verify-side per-matrix reduced-index
+   /level check (OPEN-side only, :434-439) → declared OBL-5 composition seam,
+   NO fabricated KAFADAN constraint (verifier CONFIRMED). Native-replay
+   accepts byte-match the intermediate digests. Verifier 11/0 CONFIRMED, 0
+   REFUTED. O9 make test **79 binaries ALL GATES GREEN, 0 warnings**. FLEET
+   026 = 792k tokens. Consensus-inert, no version bump.
+   **▶ ALL native FRI-verify pieces now have in-AIR counterparts:**
+   transcript (P2a `transcript_air`), MMCS same-height (P2b-s1 `mmcs_air`),
+   MMCS mixed-height (P2b-s2 `mmcs_mixed_air`), fold-walk (P2c `fri_air`),
+   open_input accumulation (P2c `fri_oi_air`). Each standalone + consensus-
+   inert; EVERY pin (PIN-1 for all 5 tables, PIN-2 shapes) and cross-AIR
+   seam (p_x↔MMCS, α/z↔transcript, direction-bits↔shared-index, OBL-P2c-1..4,
+   OBL-5 reduced-index, roll-in set-equality, multi-query) is deferred to the
+   composition entry. Loop grand total 020-026: ~3.68M subagent tokens, 25
+   agents. Uncommitted since 5685f46d: FLEET 026 (mmcs_mixed_air + table +
+   tests). NEXT: the COMPOSITION ENTRY — wire all 5 AIRs into one recursive
+   verify circuit + enforce every deferred pin/seam (the real security comes
+   online here; it is design + integration, larger than a slice) OR commit
+   026 + pause. Type-11 still REJECT.
 
 ### ⚑ CITATION BASELINE — read this before checking any Plonky3 `file:line` in this tree
 
