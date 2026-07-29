@@ -289,7 +289,7 @@
   "nodus_page.ecosystem.connect_desc": "耐量子暗号化通信 — メッセージはオフラインサポート付きでNodusネットワーク経由でルーティング・配信されます。",
   "nodus_page.ecosystem.connect_title": "DNA Connect",
   "nodus_page.ecosystem.desc": "NodusはDNAエコシステムのインフラレイヤーです。DNAアプリケーションがユーザー向け機能を提供する一方、NodusはIDとピアを接続する分散型ネットワーキング基盤を提供します。",
-  "nodus_page.ecosystem.future_desc": "DNACデジタルキャッシュをはじめとする将来の分散型アプリケーションがNodus上に構築可能 — 耐量子対応のインフラスタックを形成します。",
+  "nodus_page.ecosystem.future_desc": "DNA Chain（DNAC）をはじめとする将来の分散型アプリケーションがNodus上に構築可能 — 耐量子対応のインフラスタックを形成します。",
   "nodus_page.ecosystem.future_title": "将来のアプリケーション",
   "nodus_page.ecosystem.identity_desc": "分散型ID解決 — 暗号鍵ペアに紐づいた人間が読める名前をNodus DHT経由で解決します。",
   "nodus_page.ecosystem.identity_title": "DNA Identity",

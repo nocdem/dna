@@ -1,0 +1,1250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>DNA Chain – The Post-Quantum Layer-0 | CPUNK.IO</title>
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description"
+    content="DNA Chain is the post-quantum Layer-0 of the DNA ecosystem — the network, transport, storage and consensus substrate that DNA applications and future chains build on. Live testnet."
+  />
+  <meta name="keywords"
+    content="DNA Chain, DNAC, Layer-0, post-quantum blockchain, BFT consensus, UTXO, zero-knowledge, CPUNK, quantum-safe"
+  />
+  <meta name="author" content="DNA Protocol" />
+  <!-- DRAFT: flip to "index, follow" at launch -->
+  <meta name="robots" content="noindex, nofollow" />
+  <link rel="canonical" href="https://cpunk.io/dna-chain.html" />
+
+  <!-- Open Graph / Social -->
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://cpunk.io/dna-chain.html">
+  <meta property="og:title" content="DNA Chain — The Post-Quantum Layer-0 | CPUNK">
+  <meta property="og:description" content="The network, transport, storage and consensus substrate that DNA applications and future chains build on. Live testnet.">
+  <meta property="og:image" content="https://cpunk.io/images/cpunk_card.jpg">
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:url" content="https://cpunk.io/dna-chain.html">
+  <meta name="twitter:title" content="DNA Chain — The Post-Quantum Layer-0">
+  <meta name="twitter:description" content="The network, transport, storage and consensus substrate that DNA applications and future chains build on. Live testnet.">
+  <meta name="twitter:image" content="https://cpunk.io/images/cpunk_card.jpg">
+  <meta name="twitter:site" content="@OfficialCpunk">
+
+  <style>
+    /* Self-hosted fonts (see /fonts/) — no third-party requests */
+    @font-face {
+      font-family: 'Orbitron';
+      font-style: normal;
+      font-weight: 400 900;
+      font-display: swap;
+      src: url(/fonts/orbitron-latin.woff2) format('woff2');
+      unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+    }
+    @font-face {
+      font-family: 'Inter';
+      font-style: normal;
+      font-weight: 300 700;
+      font-display: swap;
+      src: url(/fonts/inter-latin.woff2) format('woff2');
+      unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+    }
+    @font-face {
+      font-family: 'Inter';
+      font-style: normal;
+      font-weight: 300 700;
+      font-display: swap;
+      src: url(/fonts/inter-latin-ext.woff2) format('woff2');
+      unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+    }
+  </style>
+
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
+  <link rel="manifest" href="/site.webmanifest">
+
+  <style>
+    :root {
+      --bg: #050712;
+      --bg-alt: #080c1a;
+      --panel: #0e1225;
+      --panel-alt: #131733;
+      --teal: #06c5d2;
+      --teal-soft: rgba(6, 197, 210, 0.08);
+      --teal-glow: rgba(6, 197, 210, 0.35);
+      --teal-dim: rgba(6, 197, 210, 0.15);
+      --orange: #f26229;
+      --orange-soft: rgba(242, 98, 41, 0.08);
+      --orange-glow: rgba(242, 98, 41, 0.35);
+      --orange-dim: rgba(242, 98, 41, 0.15);
+      --text-main: #f0f2ff;
+      --text-muted: #8a94c0;
+      --border-subtle: rgba(255, 255, 255, 0.06);
+      --shadow-soft: 0 18px 40px rgba(0, 0, 0, 0.5);
+      --radius-lg: 20px;
+      --radius-xl: 28px;
+      --radius-pill: 999px;
+      --transition-fast: 150ms ease-out;
+      --nav-height: 72px;
+      --max-width: 1120px;
+      --font-display: 'Orbitron', sans-serif;
+      --font-body: 'Inter', system-ui, -apple-system, sans-serif;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html {
+      height: 100%;
+      scroll-behavior: smooth;
+    }
+
+    body {
+      height: 100%;
+      max-width: 100%;
+      overflow-x: hidden;
+      font-family: var(--font-body);
+      background: var(--bg);
+      color: var(--text-main);
+    }
+
+    a { color: inherit; text-decoration: none; }
+
+    .page {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .wrap {
+      width: 100%;
+      max-width: var(--max-width);
+      margin: 0 auto;
+      padding: 0 1.25rem;
+    }
+
+    /* ── Animations ── */
+
+    @keyframes fadeInLeft {
+      from { opacity: 0; transform: translateX(-30px); }
+      to   { opacity: 1; transform: translateX(0); }
+    }
+
+    @keyframes fadeInRight {
+      from { opacity: 0; transform: translateX(30px); }
+      to   { opacity: 1; transform: translateX(0); }
+    }
+
+    @keyframes pulseGlow {
+      0%, 100% { opacity: 0.4; }
+      50%      { opacity: 0.8; }
+    }
+
+    @keyframes gradientShift {
+      0% { background-position: 0% 50%; }
+      50% { background-position: 100% 50%; }
+      100% { background-position: 0% 50%; }
+    }
+
+    /* Scroll reveal */
+    .reveal {
+      opacity: 0;
+      transform: translateY(28px);
+      transition: opacity 0.7s ease, transform 0.7s ease;
+    }
+
+    .reveal.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    .reveal-left {
+      opacity: 0;
+      transform: translateX(-28px);
+      transition: opacity 0.7s ease, transform 0.7s ease;
+    }
+
+    .reveal-right {
+      opacity: 0;
+      transform: translateX(28px);
+      transition: opacity 0.7s ease, transform 0.7s ease;
+    }
+
+    .reveal-left.visible,
+    .reveal-right.visible {
+      opacity: 1;
+      transform: translateX(0);
+    }
+
+    /* Staggered children */
+    .stagger > *:nth-child(1) { transition-delay: 0s; }
+    .stagger > *:nth-child(2) { transition-delay: 0.1s; }
+    .stagger > *:nth-child(3) { transition-delay: 0.2s; }
+    .stagger > *:nth-child(4) { transition-delay: 0.3s; }
+
+    /* ── Header / Nav ── */
+
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      backdrop-filter: blur(12px);
+      background: linear-gradient(to bottom, rgba(5,7,18,0.96), rgba(5,7,18,0.88), transparent);
+      border-bottom: 1px solid rgba(255,255,255,0.04);
+    }
+
+    .nav {
+      height: var(--nav-height);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1.5rem;
+      position: relative;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .brand-text { display: flex; flex-direction: column; line-height: 1.1; }
+
+    .brand-name {
+      font-family: var(--font-display);
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      font-size: 1rem;
+      text-transform: uppercase;
+    }
+
+    .brand-tag { font-size: 0.7rem; color: var(--text-muted); }
+
+    .nav-menu { display: flex; align-items: center; gap: 1.5rem; }
+
+    .nav-links { display: flex; align-items: center; gap: 1.5rem; font-size: 0.9rem; }
+
+    .nav-links a {
+      color: var(--text-muted);
+      padding-bottom: 2px;
+      border-bottom: 1px solid transparent;
+      transition: color var(--transition-fast), border-bottom-color var(--transition-fast);
+    }
+
+    .nav-links a.active { color: var(--text-main); border-bottom-color: var(--teal); }
+    .nav-links a:hover { color: var(--orange); border-bottom-color: var(--orange); }
+
+    .nav-cta { display: flex; align-items: center; gap: 0.8rem; }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.45rem;
+      padding: 0.5rem 1.2rem;
+      border-radius: var(--radius-pill);
+      border: 1px solid transparent;
+      font-size: 0.85rem;
+      font-weight: 500;
+      cursor: pointer;
+      background: transparent;
+      color: var(--text-main);
+      transition: background var(--transition-fast), border var(--transition-fast),
+        transform var(--transition-fast), box-shadow var(--transition-fast);
+      text-decoration: none;
+      white-space: nowrap;
+    }
+
+    .btn-primary {
+      background: var(--orange);
+      border-color: rgba(242,98,41,0.5);
+      box-shadow: 0 8px 25px rgba(242,98,41,0.25);
+      color: #ffffff;
+      font-weight: 600;
+    }
+
+    .btn-primary:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 14px 35px rgba(242,98,41,0.35);
+    }
+
+    .btn-ghost {
+      border-color: rgba(138,148,192,0.5);
+      background: rgba(10,12,30,0.7);
+    }
+
+    .btn-ghost:hover {
+      background: rgba(20,24,60,0.9);
+      border-color: var(--orange);
+      color: var(--orange);
+    }
+
+    .btn-lg { padding: 0.7rem 1.8rem; font-size: 0.95rem; }
+
+    .mobile-menu-toggle {
+      display: none;
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      border: 1px solid rgba(255,255,255,0.18);
+      background: rgba(7,9,25,0.9);
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+    }
+
+    .mobile-menu-toggle span {
+      display: block; width: 16px; height: 2px;
+      border-radius: 999px; background: #fff; position: relative;
+    }
+
+    .mobile-menu-toggle span::before,
+    .mobile-menu-toggle span::after {
+      content: ""; position: absolute; left: 0;
+      width: 16px; height: 2px; border-radius: inherit; background: inherit;
+    }
+
+    .mobile-menu-toggle span::before { top: -5px; }
+    .mobile-menu-toggle span::after { top: 5px; }
+
+    /* Dropdown */
+    .nav-item { position: relative; }
+
+    .nav-item-label {
+      display: inline-flex; align-items: center; gap: 0.25rem;
+      cursor: pointer; color: var(--text-muted);
+    }
+
+    .nav-item:hover .nav-item-label { color: var(--text-main); }
+    .nav-item .caret { border: 4px solid transparent; border-top-color: var(--text-muted); margin-top: 2px; }
+
+    .dropdown {
+      position: absolute; top: 110%; left: 0; min-width: 190px;
+      background: rgba(5,7,18,0.98); border-radius: 12px;
+      border: 1px solid rgba(255,255,255,0.08);
+      box-shadow: 0 14px 30px rgba(0,0,0,0.6);
+      padding: 0.4rem 0; display: none; z-index: 30;
+    }
+
+    .dropdown a { display: block; padding: 0.4rem 0.9rem; font-size: 0.85rem; color: var(--text-muted); }
+    .dropdown a:hover { background: rgba(255,255,255,0.04); color: var(--orange); }
+    .nav-item:hover .dropdown { display: block; }
+
+    /* ══════════════════════════════════════════ */
+    /* ── HERO (Split layout)                  ── */
+    /* ══════════════════════════════════════════ */
+
+    .hero-split {
+      position: relative;
+      padding: 4rem 0 3rem;
+      overflow: hidden;
+    }
+
+    .hero-split-bg {
+      position: absolute;
+      inset: 0;
+      z-index: 0;
+      background:
+        radial-gradient(ellipse at 25% 50%, rgba(6,197,210,0.15) 0%, transparent 55%),
+        radial-gradient(ellipse at 75% 50%, rgba(242,98,41,0.06) 0%, transparent 55%),
+        var(--bg);
+    }
+
+    .hero-split-grid {
+      position: relative;
+      z-index: 1;
+      display: grid;
+      grid-template-columns: 1.3fr 1fr;
+      gap: 2.5rem;
+      align-items: center;
+    }
+
+    .hero-split-text {
+      animation: fadeInLeft 0.9s ease-out;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.55rem;
+      padding: 0.2rem 0.7rem 0.2rem 0.3rem;
+      border-radius: var(--radius-pill);
+      background: radial-gradient(circle at left, rgba(6,197,210,0.25), transparent);
+      border: 1px solid rgba(6,197,210,0.3);
+      margin-bottom: 1rem;
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+
+    .eyebrow-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--teal);
+      box-shadow: 0 0 10px var(--teal-glow);
+      animation: pulseGlow 2s ease-in-out infinite;
+    }
+
+    .eyebrow-label {
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      font-weight: 600;
+      color: var(--teal);
+      font-family: var(--font-display);
+      font-size: 0.68rem;
+    }
+
+    .hero-split-text h1 {
+      font-family: var(--font-display);
+      font-size: clamp(2.2rem, 4vw, 3rem);
+      font-weight: 800;
+      line-height: 1.1;
+      margin-bottom: 0.8rem;
+      letter-spacing: 0.04em;
+      color: #ffffff;
+    }
+
+    .hero-split-text h1 .accent {
+      background: linear-gradient(130deg, var(--teal), #4dd9e0, var(--orange));
+      background-size: 200% 200%;
+      animation: gradientShift 6s ease infinite;
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+
+    .hero-split-text .subtitle {
+      font-size: 0.95rem;
+      color: var(--text-muted);
+      max-width: 36rem;
+      line-height: 1.7;
+      margin-bottom: 1.4rem;
+    }
+
+    .hero-split-text .subtitle strong {
+      color: var(--teal);
+      font-weight: 500;
+    }
+
+    .hero-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      margin-bottom: 1rem;
+    }
+
+    .hero-meta {
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1.2rem;
+    }
+
+    .hero-meta span {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+    }
+
+    .hero-meta-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--orange);
+      box-shadow: 0 0 6px var(--orange-glow);
+    }
+
+    .hero-split-media {
+      animation: fadeInRight 0.9s ease-out;
+      border-radius: var(--radius-xl);
+      background: radial-gradient(circle at top, var(--panel-alt), var(--bg) 70%);
+      border: 1px solid var(--border-subtle);
+      box-shadow: var(--shadow-soft);
+      padding: 1rem;
+      overflow: hidden;
+    }
+
+    .hero-split-media a {
+      display: block;
+      border-radius: 18px;
+      overflow: hidden;
+      transition: transform 0.3s ease, box-shadow 0.3s ease;
+    }
+
+    .hero-split-media a:hover {
+      transform: scale(1.02);
+      box-shadow: 0 0 24px var(--teal-glow);
+    }
+
+    .hero-split-media img {
+      width: 100%;
+      border-radius: 18px;
+      border: 1px solid rgba(255,255,255,0.1);
+      display: block;
+    }
+
+    .image-caption {
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      margin-top: 0.5rem;
+      text-align: center;
+    }
+
+    /* ══════════════════════════════════════════ */
+    /* ── SECTIONS                             ── */
+    /* ══════════════════════════════════════════ */
+
+    .s-section {
+      padding: 5rem 0;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .s-dark { background: var(--bg); }
+
+    .s-panel {
+      background:
+        linear-gradient(180deg, var(--bg-alt) 0%, var(--bg) 100%);
+      border-top: 1px solid rgba(6,197,210,0.06);
+      border-bottom: 1px solid rgba(6,197,210,0.06);
+    }
+
+    .s-gradient {
+      background:
+        radial-gradient(ellipse at 20% 50%, rgba(6,197,210,0.03) 0%, transparent 50%),
+        radial-gradient(ellipse at 80% 50%, rgba(6,197,210,0.02) 0%, transparent 50%),
+        var(--bg);
+    }
+
+    .s-section::before {
+      content: "";
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 3px;
+      height: 100%;
+      background: linear-gradient(180deg, transparent, var(--teal-dim), var(--teal-dim), transparent);
+      opacity: 0.5;
+    }
+
+    .section-label {
+      font-family: var(--font-display);
+      font-size: 0.72rem;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--teal);
+      margin-bottom: 0.5rem;
+    }
+
+    .section-title {
+      font-family: var(--font-display);
+      font-size: clamp(1.3rem, 2.5vw, 1.7rem);
+      font-weight: 700;
+      line-height: 1.2;
+      margin-bottom: 0.6rem;
+      letter-spacing: 0.02em;
+    }
+
+    .section-desc {
+      font-size: 0.92rem;
+      color: var(--text-muted);
+      max-width: 36rem;
+      line-height: 1.6;
+    }
+
+    .section-header-center {
+      text-align: center;
+      margin-bottom: 2.5rem;
+    }
+
+    .section-header-center .section-label,
+    .section-header-center .section-title,
+    .section-header-center .section-desc {
+      margin-left: auto;
+      margin-right: auto;
+    }
+
+    /* ── Token Cards Grid ── */
+
+    .token-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1.2rem;
+    }
+
+    .token-card {
+      border-radius: var(--radius-lg);
+      background: var(--panel);
+      border: 1px solid var(--border-subtle);
+      padding: 1.5rem 1.2rem;
+      text-align: center;
+      transition: border-color 0.4s, transform 0.4s, box-shadow 0.4s;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .token-card::after {
+      content: "";
+      position: absolute;
+      top: 0;
+      left: -100%;
+      width: 100%;
+      height: 100%;
+      background: linear-gradient(90deg, transparent, rgba(242,98,41,0.06), transparent);
+      transition: left 0.6s ease;
+    }
+
+    .token-card:hover::after { left: 100%; }
+
+    .token-card:hover {
+      border-color: rgba(242,98,41,0.4);
+      transform: translateY(-5px);
+      box-shadow: 0 12px 30px rgba(242,98,41,0.12), 0 0 0 1px rgba(242,98,41,0.1);
+    }
+
+    .token-card-icon {
+      margin-bottom: 0.8rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: transform 0.4s ease;
+    }
+
+    .token-card-icon svg {
+      width: 48px;
+      height: 48px;
+      stroke: var(--orange);
+      stroke-width: 1.5;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      fill: none;
+      filter: drop-shadow(0 0 6px rgba(242,98,41,0.5)) drop-shadow(0 0 16px rgba(242,98,41,0.2));
+      transition: filter 0.4s ease;
+    }
+
+    .token-card:hover .token-card-icon svg {
+      filter: drop-shadow(0 0 10px rgba(242,98,41,0.7)) drop-shadow(0 0 28px rgba(242,98,41,0.4));
+    }
+
+    .token-card:hover .token-card-icon { transform: scale(1.15) rotate(5deg); }
+
+    .token-card:hover h3 { color: var(--orange); }
+
+    .token-card h3 {
+      font-family: var(--font-display);
+      font-size: 0.85rem;
+      font-weight: 600;
+      margin-bottom: 0.4rem;
+      letter-spacing: 0.03em;
+      color: var(--teal);
+      position: relative;
+      z-index: 1;
+    }
+
+    .token-card p {
+      font-size: 0.82rem;
+      color: var(--text-muted);
+      line-height: 1.5;
+      position: relative;
+      z-index: 1;
+    }
+
+    /* ── DNA Row (split layout) ── */
+
+    .dna-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 3rem;
+      align-items: center;
+    }
+
+    .dna-row.reverse { direction: rtl; }
+    .dna-row.reverse > * { direction: ltr; }
+
+    .dna-text h3 {
+      font-family: var(--font-display);
+      font-size: clamp(1.2rem, 2vw, 1.5rem);
+      font-weight: 700;
+      margin-bottom: 0.8rem;
+      letter-spacing: 0.03em;
+    }
+
+    .dna-text h3 .teal { color: var(--teal); }
+    .dna-text h3 .orange { color: var(--orange); }
+
+    .dna-text p {
+      font-size: 0.92rem;
+      color: var(--text-muted);
+      line-height: 1.7;
+      margin-bottom: 0.8rem;
+    }
+
+    .dna-text ul {
+      list-style: none;
+      margin-top: 0.4rem;
+      margin-bottom: 0.8rem;
+    }
+
+    .dna-text ul li {
+      margin-bottom: 0.4rem;
+      padding-left: 1.2rem;
+      position: relative;
+      font-size: 0.9rem;
+      color: var(--text-muted);
+      line-height: 1.6;
+    }
+
+    .dna-text ul li::before {
+      content: "\25B9";
+      position: absolute;
+      left: 0;
+      top: 0;
+      color: var(--teal);
+      font-size: 0.8rem;
+    }
+
+    .dna-text ul li strong {
+      color: var(--text-main);
+      font-weight: 500;
+    }
+
+    .dna-visual {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .dna-icon {
+      width: 180px;
+      height: 180px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 24px;
+      transition: transform 0.5s ease, box-shadow 0.5s ease;
+    }
+
+    .dna-icon:hover { transform: scale(1.06); }
+
+    .dna-icon.glow-teal {
+      background: radial-gradient(circle, rgba(6,197,210,0.08) 0%, transparent 70%);
+      border: 1px solid rgba(6,197,210,0.15);
+      box-shadow: 0 0 30px rgba(6,197,210,0.06);
+    }
+
+    .dna-icon.glow-teal:hover {
+      box-shadow: 0 0 50px rgba(242,98,41,0.15);
+      border-color: rgba(242,98,41,0.2);
+    }
+
+    .dna-icon.glow-orange {
+      background: radial-gradient(circle, rgba(242,98,41,0.08) 0%, transparent 70%);
+      border: 1px solid rgba(242,98,41,0.15);
+      box-shadow: 0 0 30px rgba(242,98,41,0.06);
+    }
+
+    .dna-icon.glow-orange:hover {
+      box-shadow: 0 0 50px rgba(242,98,41,0.15);
+      border-color: rgba(242,98,41,0.2);
+    }
+
+    .dna-icon svg {
+      width: 80px;
+      height: 80px;
+      stroke: var(--teal);
+      stroke-width: 1.2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      fill: none;
+      filter: drop-shadow(0 0 12px rgba(6,197,210,0.4));
+    }
+
+    /* ── Testnet status strip ── */
+
+    .testnet-note {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.7rem;
+      max-width: 44rem;
+      margin: 2rem auto 0;
+      padding: 0.9rem 1.1rem;
+      border-radius: var(--radius-lg);
+      background: var(--teal-soft);
+      border: 1px solid rgba(6,197,210,0.25);
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      line-height: 1.6;
+    }
+
+    .testnet-note-dot {
+      flex-shrink: 0;
+      width: 8px;
+      height: 8px;
+      margin-top: 0.45rem;
+      border-radius: 50%;
+      background: var(--teal);
+      box-shadow: 0 0 10px var(--teal-glow);
+      animation: pulseGlow 2s ease-in-out infinite;
+    }
+
+    .testnet-note strong { color: var(--text-main); font-weight: 500; }
+
+    /* ── CTA ── */
+
+    .cta-section { padding: 4rem 0; }
+
+    .cta-box {
+      border-radius: var(--radius-xl);
+      background:
+        radial-gradient(ellipse at 30% 50%, rgba(6,197,210,0.05) 0%, transparent 50%),
+        radial-gradient(ellipse at 70% 50%, rgba(6,197,210,0.05) 0%, transparent 50%),
+        radial-gradient(circle at top, #141840, #050712);
+      border: 1px solid rgba(6,197,210,0.15);
+      padding: 2.5rem 2rem;
+      text-align: center;
+      box-shadow: var(--shadow-soft);
+      transition: border-color 0.4s, box-shadow 0.4s;
+    }
+
+    .cta-box:hover {
+      border-color: rgba(242,98,41,0.3);
+      box-shadow: 0 20px 50px rgba(242,98,41,0.1);
+    }
+
+    .cta-title {
+      font-family: var(--font-display);
+      font-size: clamp(1.2rem, 2.2vw, 1.6rem);
+      font-weight: 700;
+      margin-bottom: 0.6rem;
+      letter-spacing: 0.03em;
+    }
+
+    .cta-text {
+      font-size: 0.9rem;
+      color: var(--text-muted);
+      max-width: 32rem;
+      margin: 0 auto 1.5rem;
+      line-height: 1.6;
+    }
+
+    .cta-actions {
+      display: flex; flex-wrap: wrap; gap: 0.7rem; justify-content: center;
+    }
+
+    /* ── Footer ── */
+
+    footer {
+      padding: 1.8rem 0 2.2rem;
+      font-size: 0.8rem;
+      color: var(--text-muted);
+    }
+
+    .footer-row {
+      display: flex; flex-wrap: wrap; justify-content: space-between;
+      gap: 1rem; align-items: end;
+    }
+
+    .footer-links { display: flex; flex-wrap: wrap; gap: 0.9rem; }
+    .footer-links a { color: var(--text-muted); font-size: 0.8rem; }
+    .footer-links a:hover { color: var(--orange); }
+
+    /* ── Responsive ── */
+
+    @media (max-width: 900px) {
+      .hero-split-grid { grid-template-columns: 1fr; }
+      .hero-split-media { order: -1; }
+      .token-grid { grid-template-columns: 1fr; }
+      .dna-row,
+      .dna-row.reverse {
+        grid-template-columns: 1fr;
+        direction: ltr;
+        text-align: center;
+      }
+      .dna-visual { order: -1; }
+      .dna-text ul li { text-align: left; }
+      .cta-box { padding: 2rem 1.2rem; }
+    }
+
+    @media (max-width: 768px) {
+      .nav-menu {
+        display: none; position: absolute; top: var(--nav-height);
+        right: 0; left: 0; padding: 0.9rem 1rem 1rem; border-radius: 14px;
+        background: rgba(5,7,18,0.98); border: 1px solid rgba(255,255,255,0.08);
+        flex-direction: column; align-items: flex-start; gap: 0.7rem; z-index: 15;
+      }
+
+      .nav-menu.active { display: flex; }
+
+      .nav-links { flex-direction: column; align-items: flex-start; width: 100%; gap: 0.75rem; }
+      .nav-links a { width: 100%; padding: 0.25rem 0; }
+      .nav-cta { width: 100%; justify-content: flex-start; margin-top: 0.4rem; }
+      .mobile-menu-toggle { display: inline-flex; }
+
+      .dropdown {
+        position: static; box-shadow: none; border-radius: 10px;
+        border: 1px solid rgba(255,255,255,0.06); margin-top: 0.3rem;
+      }
+
+      .nav-item:hover .dropdown { display: none; }
+      .nav-item.open .dropdown { display: block; }
+    }
+
+    @media (max-width: 480px) {
+      .hero-split-text h1 { font-size: 1.9rem; }
+      .dna-icon { width: 140px; height: 140px; }
+      .dna-icon svg { width: 60px; height: 60px; }
+    }
+
+    /* Reduced motion */
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+      }
+      .reveal, .reveal-left, .reveal-right { opacity: 1; transform: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+
+    <!-- Header / Nav -->
+    <header>
+      <div class="wrap">
+        <div class="nav">
+          <a href="/" class="brand">
+            <div class="brand-text">
+              <span class="brand-name">CPUNK.IO</span>
+              <span class="brand-tag" data-i18n="brand.tag">Privacy • Quantum Safety • Decentralization</span>
+            </div>
+          </a>
+
+          <button class="mobile-menu-toggle" aria-label="Toggle navigation">
+            <span></span>
+          </button>
+
+          <div class="nav-menu">
+            <nav class="nav-links">
+              <a href="/" data-i18n="nav.home">Home</a>
+
+              <div class="nav-item" data-dropdown="products">
+                <div class="nav-item-label">
+                  <span data-i18n="nav.dna_connect">DNA Connect</span>
+                  <span class="caret"></span>
+                </div>
+                <div class="dropdown">
+                  <a href="/DNA-Connect/identity.html" data-i18n="nav.identity">Identity</a>
+                  <a href="/DNA-Connect/messenger.html" data-i18n="nav.messenger">Messenger</a>
+                  <a href="/DNA-Connect/wallet.html" data-i18n="nav.wallet">Wallet</a>
+                  <a href="/DNA-Connect/nodus.html" data-i18n="nav.nodus">Nodus</a>
+                </div>
+              </div>
+
+              <a href="/team.html" data-i18n="nav.team">Team</a>
+
+              <div class="nav-item" data-dropdown="documents">
+                <div class="nav-item-label">
+                  <span data-i18n="nav.documents">Documents</span>
+                  <span class="caret"></span>
+                </div>
+                <div class="dropdown">
+                  <a href="/doc/cpunk-litepaper.pdf" target="_blank" data-i18n="nav.litepaper">Litepaper</a>
+                  <a href="/doc/cpunk-legal.pdf" target="_blank" data-i18n="nav.legal">Legal</a>
+                  <a href="/privacy.html" data-i18n="nav.privacy">Privacy Policy</a>
+                  <a href="/terms.html" data-i18n="nav.terms">Terms of Service</a>
+                </div>
+              </div>
+            </nav>
+
+            <div class="nav-cta">
+              <a href="https://bitcointry.com/en/exchange/CPUNK_USDT" target="_blank" rel="noreferrer" class="btn btn-primary">
+                <span data-i18n="nav.trade">Trade CPUNK</span>
+              </a>
+              <div id="lang-selector"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <main id="top">
+
+      <!-- ══ Hero (Split layout) ══ -->
+      <section class="hero-split">
+        <div class="hero-split-bg"></div>
+        <div class="wrap">
+          <div class="hero-split-grid">
+            <div class="hero-split-text">
+              <div class="eyebrow">
+                <span class="eyebrow-dot"></span>
+                <span class="eyebrow-label" data-i18n="chain_page.hero.eyebrow_label">Layer-0</span>
+                <span data-i18n="chain_page.hero.eyebrow_text">Live testnet</span>
+              </div>
+
+              <h1 data-i18n="chain_page.hero.title">
+                DNA <span class="accent">Chain</span>
+              </h1>
+
+              <p class="subtitle" data-i18n="chain_page.hero.subtitle1">
+                DNA Chain is a <strong>Layer-0</strong> — the network, transport, storage and consensus
+                substrate that DNA applications and future chains build on.
+              </p>
+              <p class="subtitle" data-i18n="chain_page.hero.subtitle2">
+                Built from the ground up in pure C with post-quantum cryptography at its core: ML-DSA-87
+                signatures, SHA3-512 hashing, and BFT consensus. Not a fork of an existing chain — an
+                independent foundation designed for privacy infrastructure.
+              </p>
+
+              <div class="hero-actions">
+                <a href="https://scan.cpunk.io" target="_blank" rel="noopener" class="btn btn-primary" data-i18n="chain_page.hero.btn_explorer">Open Explorer</a>
+                <a href="#layer0" class="btn btn-ghost" data-i18n="chain_page.hero.btn_layer0">Why Layer-0</a>
+                <a href="#consensus" class="btn btn-ghost" data-i18n="chain_page.hero.btn_consensus">Consensus</a>
+              </div>
+
+              <div class="hero-meta">
+                <span>
+                  <span class="hero-meta-dot"></span>
+                  <span data-i18n="chain_page.hero.meta1">Post-quantum by design. No classical fallback.</span>
+                </span>
+                <span data-i18n="chain_page.hero.meta2">
+                  Pure C &middot; <strong style="color:var(--text-main);font-weight:500;">NIST Category 5 cryptography</strong>
+                </span>
+              </div>
+            </div>
+
+            <aside class="hero-split-media" aria-label="DNA Chain live testnet explorer">
+              <a href="https://scan.cpunk.io" target="_blank" rel="noopener">
+                <img
+                  src="/images/nodus-network-diagram.jpg"
+                  alt="DNA Chain running on the Nodus substrate"
+                />
+              </a>
+              <p class="image-caption" data-i18n="chain_page.hero.caption">Watch the testnet live at scan.cpunk.io</p>
+            </aside>
+          </div>
+        </div>
+      </section>
+
+      <!-- ══ Why Layer-0 ══ -->
+      <section id="layer0" class="s-section s-dark">
+        <div class="wrap">
+          <div class="section-header-center reveal">
+            <div class="section-label" data-i18n="chain_page.layer0.label">Architecture</div>
+            <h2 class="section-title" data-i18n="chain_page.layer0.title">Why Layer-0</h2>
+            <p class="section-desc" style="max-width: 38rem;" data-i18n="chain_page.layer0.desc">
+              Most blockchains host applications as smart contracts on the chain. DNA works the other way
+              around: applications run beside the chain, on the same network substrate.
+            </p>
+          </div>
+
+          <div class="token-grid stagger">
+            <article class="token-card reveal">
+              <span class="token-card-icon"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="3"/><circle cx="19" cy="12" r="3"/><line x1="8" y1="12" x2="16" y2="12"/><circle cx="12" cy="5" r="3"/><circle cx="12" cy="19" r="3"/><line x1="12" y1="8" x2="12" y2="16"/></svg></span>
+              <h3 data-i18n="chain_page.layer0.substrate_title">The Substrate</h3>
+              <p data-i18n="chain_page.layer0.substrate_desc">
+                The Nodus network provides routing, peer discovery, distributed storage, and encrypted
+                transport. Messaging, identity, and payments all run directly on this substrate &mdash;
+                no smart contracts required.
+              </p>
+            </article>
+
+            <article class="token-card reveal">
+              <span class="token-card-icon"><svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg></span>
+              <h3 data-i18n="chain_page.layer0.consensus_title">Embedded Consensus</h3>
+              <p data-i18n="chain_page.layer0.consensus_desc">
+                The chain itself is embedded in the substrate as a validation layer: BFT witness
+                consensus provides settlement and trust anchoring for operations that need stronger
+                guarantees than distributed storage alone.
+              </p>
+            </article>
+
+            <article class="token-card reveal">
+              <span class="token-card-icon"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="8.5" y="14" width="7" height="7" rx="1.5"/><path d="M6.5 10v2a2 2 0 0 0 2 2h1"/><path d="M17.5 10v2a2 2 0 0 1-2 2h-1"/></svg></span>
+              <h3 data-i18n="chain_page.layer0.chains_title">Future Chains</h3>
+              <p data-i18n="chain_page.layer0.chains_desc">
+                Every chain is identified by its genesis hash &mdash; a unique chain ID that commits to
+                its entire definition. The chain format already supports child chains referencing a
+                parent, so new chains can launch on the same substrate.
+              </p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <!-- ══ Post-Quantum ══ -->
+      <section id="pq" class="s-section s-panel">
+        <div class="wrap">
+          <div class="dna-row">
+            <div class="dna-text reveal-left">
+              <h3 data-i18n="chain_page.pq.title"><span class="teal">Post-Quantum</span> by Design</h3>
+              <p data-i18n="chain_page.pq.desc1">
+                Most blockchains rely on elliptic-curve cryptography that a sufficiently powerful quantum
+                computer could break. DNA Chain uses NIST-standardized post-quantum algorithms for every
+                signature and every hash &mdash; there is no classical fallback to attack.
+              </p>
+              <ul>
+                <li data-i18n="chain_page.pq.li1"><strong>ML-DSA-87 (Dilithium5)</strong> &mdash; every transaction and every consensus vote is post-quantum signed</li>
+                <li data-i18n="chain_page.pq.li2"><strong>SHA3-512</strong> &mdash; uniform hashing for transactions, blocks, and state</li>
+                <li data-i18n="chain_page.pq.li3"><strong>UTXO model</strong> &mdash; simple, auditable transaction semantics</li>
+                <li data-i18n="chain_page.pq.li4"><strong>Zero-knowledge privacy</strong> &mdash; STARK-based private transactions, in active development</li>
+              </ul>
+            </div>
+            <div class="dna-visual reveal-right">
+              <div class="dna-icon glow-teal">
+                <svg viewBox="0 0 24 24"><path d="M12 2L4 6v5c0 5.25 3.4 10.2 8 11.6 4.6-1.4 8-6.35 8-11.6V6L12 2z"/><ellipse cx="12" cy="11" rx="4.5" ry="2" transform="rotate(-30 12 11)"/><ellipse cx="12" cy="11" rx="4.5" ry="2" transform="rotate(30 12 11)"/><ellipse cx="12" cy="11" rx="4.5" ry="2" transform="rotate(90 12 11)"/></svg>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ══ Consensus ══ -->
+      <section id="consensus" class="s-section s-gradient">
+        <div class="wrap">
+          <div class="dna-row reverse">
+            <div class="dna-text reveal-right">
+              <h3 data-i18n="chain_page.consensus.title"><span class="orange">BFT</span> Witness Consensus</h3>
+              <p data-i18n="chain_page.consensus.desc1">
+                Blocks are produced by a committee of witness nodes running Byzantine fault-tolerant
+                consensus. Every block requires a supermajority of committee signatures, so no single
+                operator &mdash; not even the founding team &mdash; can rewrite history alone.
+              </p>
+              <ul>
+                <li data-i18n="chain_page.consensus.li1"><strong>Stake-weighted committee</strong> &mdash; membership derived entirely from on-chain state</li>
+                <li data-i18n="chain_page.consensus.li2"><strong>2f+1 quorum</strong> &mdash; consensus proceeds only with a Byzantine supermajority</li>
+                <li data-i18n="chain_page.consensus.li3"><strong>5-second blocks</strong> &mdash; fast finality without probabilistic confirmation</li>
+                <li data-i18n="chain_page.consensus.li4"><strong>On-chain governance</strong> &mdash; consensus parameters change by committee vote, not by silent upgrade</li>
+              </ul>
+            </div>
+            <div class="dna-visual reveal-left">
+              <div class="dna-icon glow-orange">
+                <svg viewBox="0 0 24 24"><rect x="2" y="7" width="5" height="5" rx="1"/><rect x="9.5" y="7" width="5" height="5" rx="1"/><rect x="17" y="7" width="5" height="5" rx="1"/><path d="M4.5 12v3h15v-3"/><path d="M12 15v3"/><circle cx="12" cy="20" r="1.5"/></svg>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ══ Live Testnet ══ -->
+      <section id="testnet" class="s-section s-dark">
+        <div class="wrap">
+          <div class="section-header-center reveal">
+            <div class="section-label" data-i18n="chain_page.testnet.label">Status</div>
+            <h2 class="section-title" data-i18n="chain_page.testnet.title">Live Testnet</h2>
+            <p class="section-desc" style="max-width: 38rem;" data-i18n="chain_page.testnet.desc">
+              DNA Chain is running today on a live testnet. Blocks are produced, validated, and served
+              in real time &mdash; watch it happen in the block explorer.
+            </p>
+            <div style="margin-top: 1.5rem;">
+              <a href="https://scan.cpunk.io" target="_blank" rel="noopener" class="btn btn-primary btn-lg" data-i18n="chain_page.testnet.btn_explorer">Open Block Explorer</a>
+            </div>
+          </div>
+
+          <div class="testnet-note reveal">
+            <span class="testnet-note-dot"></span>
+            <span data-i18n="chain_page.testnet.note">
+              <strong>Testnet status:</strong> zero-knowledge privacy is being integrated now, and the
+              testnet will be reset as those features land. Mainnet is still months away. The CPUNK token
+              lives on Cellframe (CF20) &mdash; DNA Chain is a separate network in testnet.
+            </span>
+          </div>
+        </div>
+      </section>
+
+      <!-- ══ Join CTA ══ -->
+      <section class="cta-section">
+        <div class="wrap">
+          <div class="cta-box reveal">
+            <h2 class="cta-title" data-i18n="chain_page.cta.title">Follow the build</h2>
+            <p class="cta-text" data-i18n="chain_page.cta.text">
+              DNA Chain is being built in the open. Watch the testnet, read the code,
+              and join the conversation.
+            </p>
+            <div class="cta-actions">
+              <a href="https://scan.cpunk.io" target="_blank" rel="noopener" class="btn btn-primary btn-lg" data-i18n="chain_page.cta.btn_explorer">Block Explorer</a>
+              <a href="https://t.me/chippunk_official" target="_blank" rel="noreferrer" class="btn btn-ghost btn-lg" data-i18n="chain_page.cta.btn_telegram">Join Telegram</a>
+              <a href="https://gitlab.cpunk.io/cpunk/dna" target="_blank" rel="noreferrer" class="btn btn-ghost btn-lg" data-i18n="chain_page.cta.btn_code">Explore Code</a>
+            </div>
+          </div>
+        </div>
+      </section>
+
+    </main>
+
+    <!-- Footer -->
+    <footer>
+      <div class="wrap">
+        <div class="footer-row">
+          <div data-i18n="footer.copyright">© 2026 DNA Protocol — Privacy, Quantum Safety, Decentralization.</div>
+          <div class="footer-links">
+            <a href="/" data-i18n="footer.home">Home</a>
+            <a href="/DNA-Connect/identity.html" data-i18n="footer.identity">Identity</a>
+            <a href="/DNA-Connect/messenger.html" data-i18n="footer.messenger">Messenger</a>
+            <a href="/DNA-Connect/wallet.html" data-i18n="footer.wallet">Wallet</a>
+            <a href="/DNA-Connect/nodus.html" data-i18n="footer.nodus">Nodus</a>
+            <a href="/team.html" data-i18n="footer.team">Team</a>
+            <a href="/doc/cpunk-litepaper.pdf" target="_blank" data-i18n="footer.litepaper">Litepaper</a>
+            <a href="/doc/cpunk-legal.pdf" target="_blank" data-i18n="footer.legal">Legal</a>
+            <a href="/privacy.html" data-i18n="footer.privacy">Privacy Policy</a>
+            <a href="/terms.html" data-i18n="footer.terms">Terms of Service</a>
+          </div>
+        </div>
+      </div>
+    </footer>
+  </div>
+
+  <!-- i18n -->
+  <script src="/i18n/i18n.js"></script>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', function() {
+      var mobileToggle = document.querySelector('.mobile-menu-toggle');
+      var navMenu = document.querySelector('.nav-menu');
+
+      if (mobileToggle && navMenu) {
+        mobileToggle.addEventListener('click', function() {
+          navMenu.classList.toggle('active');
+        });
+      }
+
+      document.querySelectorAll('.nav-item').forEach(function(item) {
+        var label = item.querySelector('.nav-item-label');
+        if (!label) return;
+        label.addEventListener('click', function(e) {
+          if (window.innerWidth <= 768) {
+            e.stopPropagation();
+            item.classList.toggle('open');
+          }
+        });
+      });
+
+      /* ── Scroll Reveal ── */
+      var revealElements = document.querySelectorAll('.reveal, .reveal-left, .reveal-right');
+
+      if ('IntersectionObserver' in window) {
+        var observer = new IntersectionObserver(function(entries) {
+          entries.forEach(function(entry) {
+            if (entry.isIntersecting) {
+              entry.target.classList.add('visible');
+              observer.unobserve(entry.target);
+            }
+          });
+        }, {
+          threshold: 0.12,
+          rootMargin: '0px 0px -40px 0px'
+        });
+
+        revealElements.forEach(function(el) {
+          observer.observe(el);
+        });
+      } else {
+        revealElements.forEach(function(el) {
+          el.classList.add('visible');
+        });
+      }
+    });
+  </script>
+</body>
+</html>

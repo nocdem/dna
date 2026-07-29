@@ -289,7 +289,7 @@
   "nodus_page.ecosystem.connect_desc": "Post-quantum versleutelde communicatie — berichten gerouteerd en bezorgd via het Nodus-netwerk met offline-ondersteuning.",
   "nodus_page.ecosystem.connect_title": "DNA Connect",
   "nodus_page.ecosystem.desc": "Nodus is de infrastructuurlaag van het DNA-ecosysteem. Waar DNA-applicaties gebruikersgerichte functionaliteit bieden, levert Nodus het onderliggende gedecentraliseerde netwerksysteem dat identiteiten en peers met elkaar verbindt.",
-  "nodus_page.ecosystem.future_desc": "DNAC digital cash en toekomstige gedecentraliseerde applicaties kunnen op Nodus bouwen — en vormen samen een post-quantum infrastructuurstack.",
+  "nodus_page.ecosystem.future_desc": "DNA Chain (DNAC) en toekomstige gedecentraliseerde applicaties kunnen op Nodus bouwen — en vormen samen een post-quantum infrastructuurstack.",
   "nodus_page.ecosystem.future_title": "Toekomstige Applicaties",
   "nodus_page.ecosystem.identity_desc": "Gedecentraliseerde identiteitsresolutie — leesbare namen gekoppeld aan cryptografische sleutelparen, opgelost via de Nodus DHT.",
   "nodus_page.ecosystem.identity_title": "DNA Identity",

@@ -289,7 +289,7 @@
   "nodus_page.ecosystem.connect_desc": "后量子加密通讯——消息通过 Nodus 网络路由和传递，支持离线消息。",
   "nodus_page.ecosystem.connect_title": "DNA Connect",
   "nodus_page.ecosystem.desc": "Nodus 是 DNA 生态的基础设施层。DNA 应用提供面向用户的功能，Nodus 则提供底层的去中心化网络系统，连接身份和对等节点。",
-  "nodus_page.ecosystem.future_desc": "DNAC 数字现金以及未来的去中心化应用都可以基于 Nodus 构建——形成一套具备后量子能力的基础设施栈。",
+  "nodus_page.ecosystem.future_desc": "DNA Chain（DNAC）以及未来的去中心化应用都可以基于 Nodus 构建——形成一套具备后量子能力的基础设施栈。",
   "nodus_page.ecosystem.future_title": "未来应用",
   "nodus_page.ecosystem.identity_desc": "去中心化身份解析——人类可读的名称绑定到密码学密钥对，通过 Nodus DHT 解析。",
   "nodus_page.ecosystem.identity_title": "DNA Identity",

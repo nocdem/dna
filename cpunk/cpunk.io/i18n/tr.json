@@ -289,7 +289,7 @@
   "nodus_page.ecosystem.connect_desc": "Kuantum sonrası şifreli iletişim — mesajlar çevrimdışı desteğiyle Nodus ağı üzerinden yönlendirilir ve teslim edilir.",
   "nodus_page.ecosystem.connect_title": "DNA Connect",
   "nodus_page.ecosystem.desc": "Nodus, DNA ekosisteminin altyapı katmanıdır. DNA uygulamaları kullanıcıya yönelik işlevsellik sağlarken, Nodus kimlikleri ve eşleri birbirine bağlayan merkeziyetsiz ağ sistemini sağlar.",
-  "nodus_page.ecosystem.future_desc": "DNAC dijital nakit ve gelecekteki herhangi bir merkeziyetsiz uygulama Nodus üzerine inşa edilebilir — kuantum sonrası yetenekli bir altyapı yığını oluşturur.",
+  "nodus_page.ecosystem.future_desc": "DNA Chain (DNAC) ve gelecekteki herhangi bir merkeziyetsiz uygulama Nodus üzerine inşa edilebilir — kuantum sonrası yetenekli bir altyapı yığını oluşturur.",
   "nodus_page.ecosystem.future_title": "Gelecek Uygulamalar",
   "nodus_page.ecosystem.identity_desc": "Merkeziyetsiz kimlik çözümleme — kriptografik anahtar çiftlerine bağlı, insanların okuyabileceği adlar, Nodus DHT aracılığıyla çözümlenir.",
   "nodus_page.ecosystem.identity_title": "DNA Identity",

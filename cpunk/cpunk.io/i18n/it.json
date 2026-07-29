@@ -289,7 +289,7 @@
   "nodus_page.ecosystem.connect_desc": "Comunicazione crittografata post-quantum — messaggi instradati e consegnati attraverso la rete Nodus con supporto offline.",
   "nodus_page.ecosystem.connect_title": "DNA Connect",
   "nodus_page.ecosystem.desc": "Nodus e il livello infrastrutturale dell'ecosistema DNA. Mentre le applicazioni DNA forniscono funzionalita rivolte all'utente, Nodus fornisce il sistema di rete decentralizzato sottostante che connette identita e peer.",
-  "nodus_page.ecosystem.future_desc": "DNAC digital cash e qualsiasi futura applicazione decentralizzata possono costruire su Nodus — formando uno stack infrastrutturale con capacita post-quantum.",
+  "nodus_page.ecosystem.future_desc": "DNA Chain (DNAC) e qualsiasi futura applicazione decentralizzata possono costruire su Nodus — formando uno stack infrastrutturale con capacita post-quantum.",
   "nodus_page.ecosystem.future_title": "Applicazioni Future",
   "nodus_page.ecosystem.identity_desc": "Risoluzione di identita decentralizzata — nomi leggibili legati a coppie di chiavi crittografiche, risolti tramite il Nodus DHT.",
   "nodus_page.ecosystem.identity_title": "DNA Identity",

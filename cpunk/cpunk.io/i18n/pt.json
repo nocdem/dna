@@ -289,7 +289,7 @@
   "nodus_page.ecosystem.connect_desc": "Comunicação encriptada pós-quântica — mensagens encaminhadas e entregues pela rede Nodus com suporte offline.",
   "nodus_page.ecosystem.connect_title": "DNA Connect",
   "nodus_page.ecosystem.desc": "O Nodus é a camada de infraestrutura do ecossistema DNA. Enquanto as aplicações DNA oferecem funcionalidades ao utilizador, o Nodus fornece o sistema de rede descentralizado subjacente que liga identidades e pares.",
-  "nodus_page.ecosystem.future_desc": "O DNAC (dinheiro digital) e qualquer futura aplicação descentralizada pode construir sobre o Nodus — formando uma pilha de infraestrutura com capacidade pós-quântica.",
+  "nodus_page.ecosystem.future_desc": "A DNA Chain (DNAC) e qualquer futura aplicação descentralizada pode construir sobre o Nodus — formando uma pilha de infraestrutura com capacidade pós-quântica.",
   "nodus_page.ecosystem.future_title": "Aplicações Futuras",
   "nodus_page.ecosystem.identity_desc": "Resolução de identidade descentralizada — nomes legíveis associados a pares de chaves criptográficas, resolvidos pelo Nodus DHT.",
   "nodus_page.ecosystem.identity_title": "DNA Identity",

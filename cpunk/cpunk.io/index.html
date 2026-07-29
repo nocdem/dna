@@ -28,12 +28,33 @@
   <meta name="twitter:image" content="https://cpunk.io/images/cpunk_card.jpg">
   <meta name="twitter:site" content="@OfficialCpunk">
 
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link
-    href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;600;700;800;900&family=Inter:wght@300;400;500;600;700&display=swap"
-    rel="stylesheet"
-  />
+  <style>
+    /* Self-hosted fonts (see /fonts/) — no third-party requests */
+    @font-face {
+      font-family: 'Orbitron';
+      font-style: normal;
+      font-weight: 400 900;
+      font-display: swap;
+      src: url(/fonts/orbitron-latin.woff2) format('woff2');
+      unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+    }
+    @font-face {
+      font-family: 'Inter';
+      font-style: normal;
+      font-weight: 300 700;
+      font-display: swap;
+      src: url(/fonts/inter-latin.woff2) format('woff2');
+      unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+    }
+    @font-face {
+      font-family: 'Inter';
+      font-style: normal;
+      font-weight: 300 700;
+      font-display: swap;
+      src: url(/fonts/inter-latin-ext.woff2) format('woff2');
+      unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+    }
+  </style>
 
   <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
   <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
@@ -754,96 +775,6 @@
       .feature-grid { grid-template-columns: 1fr; }
     }
 
-    /* ── Live Data ── */
-
-    .live-grid {
-      display: grid;
-      grid-template-columns: 1.2fr 1fr;
-      gap: 1.5rem;
-      align-items: start;
-    }
-
-    .live-table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 0.88rem;
-    }
-
-    .live-table tr {
-      border-bottom: 1px solid rgba(255,255,255,0.06);
-      transition: background 0.3s;
-    }
-
-    .live-table tr:hover {
-      background: rgba(242,98,41,0.04);
-    }
-
-    .live-table td { padding: 0.6rem 0.1rem; }
-    .live-table td:first-child { color: var(--text-muted); width: 42%; font-size: 0.82rem; }
-    .live-table strong { font-weight: 600; }
-
-    .market-panel {
-      border-radius: var(--radius-lg);
-      background: radial-gradient(circle at top right, var(--teal-soft), transparent 55%), var(--panel);
-      border: 1px solid var(--border-subtle);
-      padding: 1.2rem;
-      transition: border-color 0.4s, box-shadow 0.4s;
-    }
-
-    .market-panel:hover {
-      border-color: rgba(242,98,41,0.3);
-      box-shadow: 0 8px 30px rgba(242,98,41,0.08);
-    }
-
-    .market-panel-title {
-      font-family: var(--font-display);
-      font-size: 0.72rem;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
-      color: var(--teal);
-      margin-bottom: 0.8rem;
-    }
-
-    .market-stats {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 0.8rem;
-    }
-
-    .market-stat {
-      padding: 0.6rem 0.7rem;
-      border-radius: 12px;
-      background: rgba(6,8,26,0.88);
-      border: 1px solid rgba(255,255,255,0.08);
-      transition: border-color 0.3s, transform 0.3s;
-    }
-
-    .market-stat:hover {
-      border-color: rgba(242,98,41,0.3);
-      transform: translateY(-2px);
-    }
-
-    .market-stat-label { font-size: 0.7rem; color: var(--text-muted); margin-bottom: 0.2rem; }
-    .market-stat-value { font-size: 0.9rem; font-weight: 600; }
-    .market-stat-sub { font-size: 0.72rem; color: var(--text-muted); margin-top: 0.1rem; }
-
-    .market-footer {
-      display: flex; justify-content: space-between; align-items: center;
-      margin-top: 0.8rem; font-size: 0.72rem; color: var(--text-muted);
-    }
-
-    .market-pill {
-      padding: 0.2rem 0.6rem; border-radius: 999px;
-      background: rgba(0,0,0,0.35); border: 1px solid rgba(255,255,255,0.12);
-      display: inline-flex; align-items: center; gap: 0.3rem;
-    }
-
-    .market-pill-dot {
-      width: 6px; height: 6px; border-radius: 50%;
-      background: #40ff86; box-shadow: 0 0 8px rgba(64,255,134,0.8);
-      animation: pulseGlow 2s ease-in-out infinite;
-    }
-
     /* ══════════════════════════════════════════ */
     /* ── DNA UTILITY SECTIONS                 ── */
     /* ══════════════════════════════════════════ */
@@ -1049,7 +980,6 @@
     @media (max-width: 900px) {
       .token-grid { grid-template-columns: repeat(2, 1fr); }
       .card-grid-3 { grid-template-columns: 1fr; }
-      .live-grid { grid-template-columns: 1fr; }
       .dna-row,
       .dna-row.reverse {
         grid-template-columns: 1fr;
@@ -1090,7 +1020,6 @@
       .hero-title { font-size: 3rem; }
       .token-grid { grid-template-columns: 1fr 1fr; }
       .card-grid-3 { grid-template-columns: 1fr; }
-      .market-stats { grid-template-columns: 1fr; }
       .dna-icon { width: 140px; height: 140px; font-size: 3.5rem; }
     }
 
@@ -1386,66 +1315,6 @@
               <h3 data-i18n="community.governance.title">Governance</h3>
               <p data-i18n="community.governance.desc">Propose and vote on protocol changes through CIPs. On-chain governance for protocol decisions.</p>
             </article>
-          </div>
-        </div>
-      </section>
-
-      <!-- ══ Section 3: Live Token Data (hidden — may move to subpage) ══ -->
-      <section id="live-data" class="s-section s-gradient" style="display:none;">
-        <div class="wrap">
-          <div class="section-header-center reveal">
-            <div class="section-label">CPUNK Token</div>
-            <h2 class="section-title">Live Data</h2>
-            <p class="section-desc" style="max-width: 34rem;">CPUNK at a glance.</p>
-          </div>
-
-          <div class="live-grid">
-            <div class="reveal-left">
-              <table class="live-table" aria-label="CPUNK token details">
-                <tbody>
-                  <tr><td>Ticker</td><td><strong>CPUNK</strong></td></tr>
-                  <tr><td>Network</td><td>Post-Quantum Chain (CF20)</td></tr>
-                  <tr><td>Total Supply</td><td>1,000,000,000 CPUNK</td></tr>
-                  <tr><td>Distribution</td><td>Fair launch &bull; No private rounds &bull; No insider allocations</td></tr>
-                  <tr><td>Primary Use</td><td>Governance, in-app transfers, and ecosystem utility</td></tr>
-                  <tr>
-                    <td>Exchange</td>
-                    <td><a href="https://bitcointry.com/en/exchange/CPUNK_USDT" target="_blank" rel="noreferrer" style="color: var(--teal);">Trade CPUNK / USDT</a></td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-
-            <aside class="market-panel reveal-right">
-              <div class="market-panel-title">Live Market Snapshot</div>
-              <div class="market-stats">
-                <div class="market-stat">
-                  <div class="market-stat-label">Token Price</div>
-                  <div class="market-stat-value" id="token-price">Loading&hellip;</div>
-                  <div class="market-stat-sub">24h: <span id="price-change">--</span></div>
-                </div>
-                <div class="market-stat">
-                  <div class="market-stat-label">Market Cap</div>
-                  <div class="market-stat-value" id="market-cap">Loading&hellip;</div>
-                </div>
-                <div class="market-stat">
-                  <div class="market-stat-label">24h Volume</div>
-                  <div class="market-stat-value" id="trading-volume">Loading&hellip;</div>
-                </div>
-                <div class="market-stat">
-                  <div class="market-stat-label">Supply</div>
-                  <div class="market-stat-value" id="circulating-supply">1,000,000,000</div>
-                  <div class="market-stat-sub">No hidden unlocks</div>
-                </div>
-              </div>
-              <div class="market-footer">
-                <div class="market-pill">
-                  <span class="market-pill-dot"></span>
-                  Live feed
-                </div>
-                <span>Refresh: <span id="last-refresh-time">--:--:--</span></span>
-              </div>
-            </aside>
           </div>
         </div>
       </section>
@@ -1860,69 +1729,7 @@
           el.classList.add('visible');
         });
       }
-
-      initNetworkStats();
     });
-
-    /* ── Live Price Data ── */
-    var PRICE_REFRESH_INTERVAL = 30000;
-
-    function setText(id, value) {
-      var el = document.getElementById(id);
-      if (el) el.textContent = value;
-    }
-
-    function formatNumber(number, decimals) {
-      if (typeof decimals === 'undefined') decimals = 6;
-      if (number < 0.0001) return number.toFixed(8);
-      return new Intl.NumberFormat('en-US', {
-        minimumFractionDigits: 0,
-        maximumFractionDigits: decimals
-      }).format(number);
-    }
-
-    async function fetchTokenPrice() {
-      try {
-        var res = await fetch('https://api.bitcointry.com/api/v2/ticker?pair=CPUNK_USDT');
-        var data = await res.json();
-
-        if (data && data.CPUNK_USDT) {
-          var ticker = data.CPUNK_USDT;
-          var lastPrice = parseFloat(ticker.last_price);
-          var priceChange = parseFloat(ticker.price_change_percent_24h);
-          var quoteVolume = parseFloat(ticker.quote_volume);
-          var circulatingSupply = 1000000000;
-          var marketCap = lastPrice * circulatingSupply;
-
-          setText('token-price', formatNumber(lastPrice) + ' USDT');
-
-          var changeEl = document.getElementById('price-change');
-          if (changeEl) {
-            changeEl.textContent = (priceChange >= 0 ? '+' : '') + priceChange + '%';
-            changeEl.style.color = priceChange >= 0 ? '#40ff86' : '#ff4444';
-          }
-
-          setText('market-cap', '$' + formatNumber(marketCap, 2));
-          setText('trading-volume', formatNumber(quoteVolume, 2) + ' USDT');
-          setText('circulating-supply', formatNumber(circulatingSupply, 0) + ' CPUNK');
-        }
-      } catch (err) {
-        console.error('Price fetch error:', err);
-        setText('token-price', 'Unavailable');
-      }
-    }
-
-    function updateRefreshTime() {
-      var el = document.getElementById('last-refresh-time');
-      if (el) el.textContent = new Date().toLocaleTimeString();
-    }
-
-    function initNetworkStats() {
-      fetchTokenPrice();
-      updateRefreshTime();
-      setInterval(fetchTokenPrice, PRICE_REFRESH_INTERVAL);
-      setInterval(updateRefreshTime, 60000);
-    }
   </script>
 
   <!-- i18n -->

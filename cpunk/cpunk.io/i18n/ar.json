@@ -289,7 +289,7 @@
   "nodus_page.ecosystem.connect_desc": "اتصالات مشفّرة بتقنية ما بعد الكم — الرسائل تُوجَّه وتُسلَّم عبر شبكة Nodus مع دعم وضع عدم الاتصال.",
   "nodus_page.ecosystem.connect_title": "DNA Connect",
   "nodus_page.ecosystem.desc": "Nodus هي طبقة البنية التحتية لمنظومة DNA. بينما توفر تطبيقات DNA وظائف موجّهة للمستخدم، يوفر Nodus نظام الشبكة اللامركزي الأساسي الذي يربط الهويات والأقران.",
-  "nodus_page.ecosystem.future_desc": "النقد الرقمي DNAC وأي تطبيق لامركزي مستقبلي يمكنه البناء على Nodus — لتشكيل حزمة بنية تحتية قادرة على مقاومة الحوسبة الكمية.",
+  "nodus_page.ecosystem.future_desc": "بلوكتشين DNA Chain (DNAC) وأي تطبيق لامركزي مستقبلي يمكنه البناء على Nodus — لتشكيل حزمة بنية تحتية قادرة على مقاومة الحوسبة الكمية.",
   "nodus_page.ecosystem.future_title": "تطبيقات مستقبلية",
   "nodus_page.ecosystem.identity_desc": "تحليل هوية لامركزي — أسماء مقروءة مرتبطة بأزواج مفاتيح تشفيرية، تُحلَّل عبر Nodus DHT.",
   "nodus_page.ecosystem.identity_title": "هوية DNA",
