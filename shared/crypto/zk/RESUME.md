@@ -371,7 +371,158 @@ left is NOT zk work — it is design and consensus work upstream of the circuits
    (5) leaf==1 branch coverage (CFG_C accept + N24) + row-0 anchor negative
    (N23) + citation drifts. eval_trace table-gap slack recorded as accepted
    (soundness-neutral; binding artifact is PIN-1 + OBL-4). Gate re-run GREEN.
-   NEXT: P2c (FRI-in-AIR) design or slice 2 (mixed-height).
+   **P2c DESIGN DONE + RED-TEAMED (2026-07-29, FLEET 020: A1 zk-auditor
+   doc-given + A2 red-teamer BLINDED-bare-spec; ALL FOLDED — doc §3.1).**
+   Doc: `dnac/docs/plans/2026-07-29-p2c-fri-in-air-design.md` —
+   GREEN-pending-code. Four user-locked decisions: slice 1 = FOLD-WALK +
+   TERMINAL only (open_input = next slice; MMCS binding at composition);
+   P2b slice-2 (mixed-height) DEFERRED to the open_input slice (grounded:
+   commit-phase walk uses SAME-HEIGHT `fri_verifier.c:585`, `_mixed` only
+   at input-open `:392`); all 3 DNAC-strict divergences KEPT in-AIR (new
+   grounding: upstream NATIVE also rejects unconsumed roll-ins 82cfad73
+   verifier.rs:492-497; lgmh>32 upstream circuit PANICS at build —
+   goldilocks two_adic_generator assert :527-530@82cfad73 /:547,:550
+   @11cc5849); preprocessed PIN path, NO P2a retrofit. Design: `fri_air`
+   control-AIR, NO embedded permutation (hash-free fold walk), 20 main
+   lanes, one row per chain-step/fold-phase, x0 via DERIVED recurrence
+   `x_{r+1}=x_r²·(1−2b)` (A1-CONFIRMED by independent algebra + A2
+   could-not-break), publics `[bits lgmh][betas 2R][f_init 2][ro 2|RI|]
+   [final_poly0 2]`. FLEET 020 catches, all design-time, all folded:
+   **2 CRITICAL — C4 t1 SIGN (both lenses independently; folds at
+   reflected challenge 2x0−β) + f_init READ BY NO CONSTRAINT (walk had no
+   start boundary)**; 2 HIGH (last-fold-row gating; handoff-copy drops
+   bit_1 factor); 3 MED (pos prep-vs-main contradiction; OBL-P2c-1 shape
+   precedence; OBL-P2c-2 query multiplicity — both new composition
+   obligations); + W=7 pin, degree ≤3 inclusive-of-gate restatement,
+   G7 completeness. Consumer-obligation ledger now OBL-1..4 + OBL-P2c-1/2
+   + typed-prefix residual.
+   **P2c SLICE-1 IMPLEMENTED (2026-07-29, FLEET 021: 2 code-executors +
+   2 independent verifiers + ORCHESTRATOR line-by-line + O9).**
+   021a `fri_air_table.{c,h}` + `test_fri_air_table` (192 checks): table
+   generator (73 prep cols = 8 flags + g_pow2 + GLOBAL 64-wide pos one-hot;
+   pair-gates is_chainpair/is_handoff/is_foldpair/is_terminal/is_rollin
+   emitted by the generator so every AIR transition is gated by ONE prep
+   cell), 13-check structural validator (typed prefix, C3 multiplication
+   count, placement-vs-count isolation), `DNAC_P2C_PREP_ROOT[4] =
+   {bc18e697c2e82726, 249ab7d1a3b19403, e4b0ab20bf65f146, 1be1561acee2167c}`
+   (MECHANISM pin, ref cfg lgmh=13 rollins {11,9}; ORCHESTRATOR-derived via
+   --print-root; unfilled-placeholder contract: comparator rejects
+   EVERYTHING until filled) + KAT through the real batch_prover LDE→commit
+   pipeline. PIN-2 posture CORRECTED (O6 B1): at width 73 > 64 a
+   prep_next=0 descriptor dies on the SHAPE guard (batch_verify.c:696-701),
+   stronger than P2b's zero-window path.
+   021b `fri_air.{c,h}` + `test_fri_air`: the fold-walk control-AIR, 21 main
+   lanes (doc said 20 — 5th count-KAFADAN, in the DESIGN DOC; code derives
+   FAIR_NUM_COLS so it cannot drift), NO embedded permutation, degree ≤ 3
+   incl. the single prep gate, all §0.5 forms C2-C6 + §0.5b recurrence.
+   Suite: 5 native-replay accepts (leaf/recursion/lgmh-4-hand-checked; every
+   phase x0 cross-checked vs the native closed form AND f' vs
+   fri_fold_row_fp2) + 8 cfg gates + 37 negatives (24 exact-count) + 19
+   assertions — incl. the four FLEET 020 mandatory catches (t1-sign N1,
+   free-f_init N2, handoff-copy N3, last-row N4a/b). O9 root-caused the one
+   red: N6 expected 2 but the predecessor's C4k also reads the tampered b'
+   (incoming edge, same accounting N7 already did) → expectation fixed to 3,
+   AIR itself defect-free. Both verifiers: 021a 10 CONF/3 REF (all folded),
+   021b 15/15 CONFIRMED / 0 REFUTED. zk make test **75 binaries ALL GATES
+   GREEN, 0 warnings** (ORCHESTRATOR-run, twice). Consensus-inert (type-11
+   REJECT; nothing links fri_air outside its own test) → no version bump.
+   NOT YET ENFORCED (unchanged ledger): PIN-1-P2c comparator uncalled,
+   PIN-2 descriptor unforced, OBL-P2c-1/2 composition duties, sibling `s`
+   unbound until P2b composition.
+   **P2c SLICE-1 i-ROUND DONE (2026-07-29, FLEET 022: 2 zk-auditors, ALL
+   FOLDED — GREEN).** A1 (doc+code+3 pins): 41 GROUNDED / 7 JUDGMENT /
+   1 KAFADAN (stale "design says 20" quote — the doc had been corrected
+   AFTER the header was written); every §0.5 form discharged, ALL counts
+   survived re-counting (a slice first), degree table re-derived ≤3, all
+   24 exact violation counts re-derived from the constraint graph. A2
+   (BLINDED, code only): **0 second witness / 22 could-not-break** — full
+   six-pair transition-cell enumeration clean, lgmh=2/3 edges compose,
+   fold arithmetic == native barycentric closed form incl. β=±x0
+   degenerates. t1 sign + x0 recurrence now confirmed by THREE independent
+   derivations each. Folds: TWO NEW composition obligations — **OBL-P2c-3**
+   (C3a's `is_first_row` is a caller flag anchoring the whole x0 chain →
+   composition must wire the real first-row selector; A2-F8) and
+   **OBL-P2c-4** (final-height reduced opening must be ZERO — native
+   fri_verifier.c:480-487 / upstream :647-651; rule lives in open_input,
+   slice-1 AIR accepts any value there; A1-F3) — both in fri_air.h + doc
+   §0.6; OBL-4c REGROUNDED (root DOES pin R/RI — residual is the
+   table↔cfg-argument seam); stale quotes + P3→P3rec attribution + 2
+   wrong-file cites fixed; DOC-CITE BASELINE notes added (RESUME practice)
+   for the ±3-line doc drift. Suite re-run post-fold: **75 binaries ALL
+   GATES GREEN, 0 warnings** (ORCHESTRATOR).
+   **open_input slice v1 DESIGN red-teamed (2026-07-29, FLEET 023: A1
+   grounding + A2 blinded) — NOT-GREEN, v2 revision pending USER
+   RATIFICATION.** Doc: `dnac/docs/plans/2026-07-29-p2c-open-input-mixed-
+   mmcs-design.md`. A1 (11 GROUNDED/5 JUDGMENT/1 KAFADAN): §0 grounding
+   SOUND — coset GENERATOR factor (absent from fold x0, present in
+   open_input, both sides), cross-batch alpha_pow persistence +
+   one-big-Horner==per-column algebra, z==x preserved by div-unsat, native
+   final-height-zero (OBL-P2c-4's home), mixed-MMCS injection combine order
+   — verified at both pins. A2 (BLINDED, 3 CRIT/4 HIGH/5 MED, 3 second
+   witnesses): the §0.5 CONSTRAINT SKETCH stated its bindings as PROSE not
+   constraints — closeout rows disconnected from the accumulators (F1),
+   x-on-accumulation-row not bound to the capture register (F2), p_z/z
+   "publics-bound" with no equality (F3), group-boundary UNSAT without
+   pair-gates (F5), lb roll-in slot fri_air reads left unexported (F6,
+   cross-seam forgery), h_max==lgmh ungated (F7), + F8-F12. ALL fixes
+   known + mechanical, folded into doc §5 + a v2-required list. **LOOP
+   ("loop kur bitene kadar") HALTED here per its NOT-GREEN charter.** Loop
+   deliverables (FLEET 020-023, ~1.865M subagent tokens, 15 agents): P2c
+   slice-1 SHIPPED (fri_air + table, 75 binaries GREEN, both verifiers
+   CONFIRMED) → i-round GREEN (2 new obligations OBL-P2c-3/4) → open_input
+   v1 red-teamed NOT-GREEN.
+   **open_input v2 (P-1/P-2/P-3 ratified at recommended) red-teamed
+   2026-07-29, FLEET 024 — NOT-GREEN AGAIN (2nd consecutive).** A1
+   re-grounded 11 G/2 J/4 K; A2 BLINDED independently reproduced the two
+   core holes as full second witnesses + 2 more: F1 (the `is_accpair`
+   two-sided gate disconnects every closeout row — closeout `ro` free, and
+   the dual reading is a completeness break; fix = ONE-SIDED current-row
+   gate), F2 (k capture registers with NO persistence/hold constraint —
+   free at every read), F4 (dedicated lb-zero checkpoint rows sever the acc
+   chain both sides), F5 (index-bit booleanity is an UNDECLARED cross-AIR
+   dependency on fri_air.c:342). v2 reproduced v1's write-key/read-key class
+   one level down. 8 v3 fixes known + grounded (doc §7): one-sided carry
+   gate, explicit x_h hold, per-row capture seed copy, lb-zero folded onto
+   an acc row, in-OI bit booleanity, degree-relief `t` column, roll-in
+   set-equality duty, PIN-1-OI prerequisite block. **LOOP HALTED per
+   RED-TEAM ÖLÇEĞİ item 3** (2 non-convergent rounds + gate finding errors
+   in minutes-old design = expensive writing round; 3rd round needs
+   explicit user approval). RECOMMENDATION: implement-with-TDD (executor
+   writes each constraint explicitly; the impl red-verify reads REAL code —
+   the fri_air slice-1 path that worked) OR park.
+   **USER PICKED implement-with-TDD. open_input fri_oi_air SHIPPED
+   (2026-07-29, FLEET 025: 2 code-executors + 2 verifiers + ORCHESTRATOR
+   O9).** 025a `fri_oi_air_table.{c,h}` + test (150 checks): the
+   accumulation schedule generator (chain rows n_chain=lgmh with
+   INTERLEAVED capture blocks [seed][cum_h=lgmh-h squarings][store] per
+   height, then DESCENDING acc groups each ending in ONE closeout, then
+   padding), 10-check structural validator, `DNAC_P2C_OI_PREP_ROOT =
+   {4bc948ef32b400c0, f736ee0aeca1140e, 496968789dfe55be,
+   b4e0665ff6700e66}` (mechanism pin, ref cfg lgmh=4 H={4,2} lb=2) + KAT.
+   Verifier 8/0. 025b `fri_oi_air.{c,h}` + test (5 accepts + 32 negatives):
+   the hash-free reduced-opening accumulation control-AIR — ALL 6 v3 fixes,
+   the two v1/v2 CRITICAL holes now closed WITH constructed-second-witness
+   tests: **C3f ONE-SIDED carry (last-acc→closeout FIRES ⇒ closeout ro ==
+   accumulation, closes A2-F1) + C2e UNGATED register HOLD (x_reg globally
+   constant, closes A2-F2 — executor strengthened past the spec's
+   store-exempt literal)** + C2a/C2d seed anchor + per-row g-resume (F3) +
+   C5 lb-zero folded onto an acc row, no sever row (F4) + C1c in-OI
+   booleanity (F5) + C3e degree-relief t (deg ≤3). x_h cross-checked vs the
+   native coset form at every store row; exponent identity re-derived by
+   the verifier. N32 root-caused (ungated C2e spans padding → x_reg pinned;
+   AIR correct+stricter, test fixed + N32b proves the hold fires on
+   padding). Verifier 6/6 CONFIRMED, 0 REFUTED, 0 CRITICAL. O9 make test
+   **77 binaries ALL GATES GREEN, 0 warnings** (ORCHESTRATOR). FLEET 025 =
+   787.6k tokens (under est). implement-with-TDD delivered what 2 design
+   rounds could not. Consensus-inert, no version bump. NOT-YET-ENFORCED
+   (composition scope): PIN-1-OI comparator uncalled, p_x↔MMCS + α/z↔
+   transcript seams, OBL-P2c-3 row-0 selector, roll-in set-equality
+   (OI.H ⊇ fri_air.rollin), multi-query. NEXT: mmcs_air slice-2 (mixed-
+   height injection rows — the last un-arithmetized native piece) OR the
+   composition entry (wire all P2c AIRs + enforce every deferred pin/seam).
+   Loop grand total 020-025: ~2.89M subagent tokens, 21 agents. SHIPPED:
+   P2c slice-1 (fri_air) + open_input (fri_oi_air), 77 bin GREEN. Type-11
+   still REJECT.
 
 ### ⚑ CITATION BASELINE — read this before checking any Plonky3 `file:line` in this tree
 

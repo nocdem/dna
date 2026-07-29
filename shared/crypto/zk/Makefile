@@ -151,7 +151,11 @@ TESTS = \
     $(BUILD)/test_batch_shielded_agg \
     $(BUILD)/test_transcript_air \
     $(BUILD)/test_mmcs_air_table \
-    $(BUILD)/test_mmcs_air
+    $(BUILD)/test_mmcs_air \
+    $(BUILD)/test_fri_air_table \
+    $(BUILD)/test_fri_air \
+    $(BUILD)/test_fri_oi_air_table \
+    $(BUILD)/test_fri_oi_air
 
 # ── PREREQ HYGIENE (d4.d, 2026-07-26) ───────────────────────────────────────
 # A source on a recipe's command line that is NOT among its prerequisites means
@@ -285,6 +289,67 @@ $(BUILD)/test_mmcs_air_table: tests/test_mmcs_air_table.c mmcs_air_table.c mmcs_
 # on the command line is also a prerequisite, so an edit to any of them relinks.
 $(BUILD)/test_mmcs_air: tests/test_mmcs_air.c mmcs_air.c mmcs_air_table.c poseidon2_mmcs.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c poseidon2_goldilocks.c field_goldilocks.c mmcs_air.h mmcs_air_table.h poseidon2_mmcs.h poseidon2_air.h poseidon2_air_trace.h poseidon2_air_cols.h poseidon2_goldilocks.h field_goldilocks.h | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) tests/test_mmcs_air.c mmcs_air.c mmcs_air_table.c poseidon2_mmcs.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c poseidon2_goldilocks.c field_goldilocks.c -o $@
+
+# P2c PIN slice — the FRI fold-walk AIR's preprocessed row-type table generator
+# + its structural static validator + PIN-1-P2c (pinned preprocessed root +
+# runtime KAT binding constant to generator). No AIR and no prove/verify round
+# trip in this slice, so the link set is the PROVER stack only: the KAT runs the
+# SHIPPED preprocessed-commit pipeline (dnac_prover_coset_lde_bitrev from
+# stark_prover.c, then dnac_p2_mmcs_commit_mixed from poseidon2_mmcs.c — both in
+# $(PROVER_STACK), which also carries $(TRANSCRIPT_STACK)/field_goldilocks).
+# shielded_fri_params.h is included for its MACROS only (the compile-time drift
+# pins), so shielded_fri_params.c is deliberately NOT linked.
+#
+# Prerequisites list exactly what the command line links — the d4.d
+# AGG_PROVER_SRCS stale-binary lesson. $(PROVER_STACK) is defined at the TOP of
+# this file, well above this rule, so it cannot expand to an empty list.
+$(BUILD)/test_fri_air_table: tests/test_fri_air_table.c fri_air_table.c fri_air_table.h $(PROVER_STACK) shielded_fri_params.h poseidon2_mmcs.h stark_prover.h field_goldilocks.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_fri_air_table.c fri_air_table.c $(PROVER_STACK) -o $@
+
+# P2c AIR slice 1 — the FRI fold-walk control AIR. Honest traces are built
+# TEST-SIDE by NATIVE REPLAY (fri_fold_row_fp2 + the roll-in addition + the
+# two-adic generator ladder — the byte-match is INHERITED from the Phase D.2 /
+# two-adic-gens gates, not re-proved here) and must eval to 0 violations; each
+# accept also cross-checks every phase's x0 against the NATIVE closed form
+# g_{lgmh-r}^{rev(idx>>(r+1), lgmh-1-r)}, which is what validates the design's
+# DERIVED x0 recurrence independently of the AIR. 37 negatives (24 exact-count
+# pinned, 11 fail-close, 2 caught-without-count), including the four MANDATORY
+# FLEET 020 catches (t1 SIGN, FREE f_init, handoff-as-copy, last fold phase
+# free), plus 8 fail-close cfg gates.
+#
+# This AIR embeds NO permutation (the fold walk is hash-free), so the link set
+# is small and named LITERALLY, not through a stack variable — no ordering
+# hazard of the AGG_PROVER_SRCS class (a variable still undefined when make
+# reads the rule expands to an EMPTY prerequisite list, silently). Every source
+# on the command line is also a prerequisite, so an edit to any of them
+# relinks. fri_fold.c is the native fold oracle the test replays; it needs
+# zk_field_helpers.c (shifted_powers / reverse_slice_index_bits /
+# reverse_bits_len_u64, which the test also calls directly).
+$(BUILD)/test_fri_air: tests/test_fri_air.c fri_air.c fri_air_table.c fri_fold.c zk_field_helpers.c field_goldilocks.c fri_air.h fri_air_table.h fri_fold.h zk_field_helpers.h field_goldilocks.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_fri_air.c fri_air.c fri_air_table.c fri_fold.c zk_field_helpers.c field_goldilocks.c -o $@
+
+# P2c open_input PIN slice — the preprocessed ROW-TYPE table for the FRI
+# reduced-opening accumulation AIR. Wired EXACTLY like test_fri_air_table: the
+# generator + static validator + PIN-1-OI root KAT via the SHIPPED LDE->commit
+# pipeline. Prerequisites list exactly what the command line links —
+# $(PROVER_STACK) is defined at the TOP of this file, above this rule, so it
+# cannot expand to an empty list (the d4.d AGG_PROVER_SRCS stale-binary lesson).
+$(BUILD)/test_fri_oi_air_table: tests/test_fri_oi_air_table.c fri_oi_air_table.c fri_oi_air_table.h $(PROVER_STACK) shielded_fri_params.h poseidon2_mmcs.h stark_prover.h field_goldilocks.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_fri_oi_air_table.c fri_oi_air_table.c $(PROVER_STACK) -o $@
+
+# P2c open_input AIR slice — the FRI reduced-opening accumulation control AIR.
+# Honest traces are built TEST-SIDE by NATIVE-FORMULA REPLAY of fri_open_input
+# (x_h = GENERATOR*two_adic_generator(h)^rev, fri_verifier.c:423-431; the per-
+# height ro += alpha_pow*(p_z-p_x)/(z-x) accumulation, :469-476) and must eval
+# to 0 violations; every accept cross-checks x_h a SECOND way (7*g^{2^cum} from
+# the MSB-first chain state) at every store row. 32 negatives incl. the six
+# MANDATORY A2 catches (C3f one-sided carry, C2e HOLD, C2a seed, C5 lb-zero,
+# C1c booleanity, h_max gate). Embeds NO permutation (hash-free), so the link
+# set is small and named LITERALLY (no AGG_PROVER_SRCS ordering hazard); reverse
+# _bits is inlined test-side so nothing beyond the AIR + its table + the field
+# is linked.
+$(BUILD)/test_fri_oi_air: tests/test_fri_oi_air.c fri_oi_air.c fri_oi_air_table.c field_goldilocks.c fri_oi_air.h fri_oi_air_table.h field_goldilocks.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_fri_oi_air.c fri_oi_air.c fri_oi_air_table.c field_goldilocks.c -o $@
 
 # P1b — Poseidon2 MMCS byte-match (plain + hiding trees, oracle replay;
 # note_commit.c linked for the note_sponge_hash8 bridge KAT).
@@ -1154,6 +1219,55 @@ test: all
 	@echo "  design-§0.5 constraint-form negatives + fail-close configs"
 	@echo "============================================================"
 	@$(BUILD)/test_mmcs_air
+	@echo
+	@echo "============================================================"
+	@echo "P2c PIN slice — FRI fold-walk preprocessed row-type table"
+	@echo "  deterministic generator (leaf lgmh 13 + recursion lgmh 19 +"
+	@echo "  the extremal lgmh 32 shapes) + the structural static"
+	@echo "  validator (typed prefix, counts, C3 multiplication-count"
+	@echo "  identity, pair gates, roll-in placement, G_j literals) +"
+	@echo "  the pinned preprocessed root KAT (constant vs generator)"
+	@echo "  (root FILLED 2026-07-29; on a future re-pin it reverts to the"
+	@echo "  {0,0,0,0} placeholder and this KAT goes RED by design)"
+	@echo "============================================================"
+	@$(BUILD)/test_fri_air_table
+	@echo
+	@echo "============================================================"
+	@echo "P2c slice 1 — FRI fold-walk control AIR (arity-2, lfpl 0)"
+	@echo "  native-replay honest walks (leaf lgmh 13 x 3 index vectors +"
+	@echo "  recursion lgmh 19 + a hand-checked lgmh 4) at 0 violations,"
+	@echo "  each with the x0 CLOSED-FORM cross-check that validates the"
+	@echo "  design's derived recurrence independently of the AIR;"
+	@echo "  37 constraint-form negatives (24 exact-count pinned, 11"
+	@echo "  fail-close, 2 caught; incl. the four MANDATORY FLEET 020"
+	@echo "  catches) + 8 eval-entry cfg gates"
+	@echo "============================================================"
+	@$(BUILD)/test_fri_air
+	@echo
+	@echo "============================================================"
+	@echo "P2c open_input PIN slice — FRI reduced-opening preprocessed table"
+	@echo "  deterministic generator (ref lgmh 4 H={4,2} + a wider lgmh 6"
+	@echo "  H={6,4,2} shape) — chain with INTERLEAVED capture blocks of"
+	@echo "  different lengths + DESCENDING accumulation groups + padding —"
+	@echo "  the structural static validator (primary schedule, capture"
+	@echo "  sub-flags, group-start/closeout/final, height + step one-hots,"
+	@echo "  G_j literals) + the pinned preprocessed root KAT"
+	@echo "  (root FILLED 2026-07-29; on a future re-pin it reverts to the"
+	@echo "  {0,0,0,0} placeholder and the KAT goes RED by design)"
+	@echo "============================================================"
+	@$(BUILD)/test_fri_oi_air_table
+	@echo
+	@echo "============================================================"
+	@echo "P2c open_input slice — FRI reduced-opening accumulation AIR"
+	@echo "  native x_h + accumulation replay (ref lgmh 4 H={4,2} + a wider"
+	@echo "  lgmh 6 H={6,4,2} + a 2-batch-lb cfg) at 0 violations, each with"
+	@echo "  the x_h closed-form cross-check (7*g^{2^cum} == GENERATOR*"
+	@echo "  two_adic_generator(h)^rev) at every store row; 32 negatives"
+	@echo "  (16 exact-count pinned, 1 caught, 15 fail-close) incl. the SIX"
+	@echo "  MANDATORY A2 catches: C3f one-sided carry, C2e register HOLD,"
+	@echo "  C2a seed anchor, C5 lb per-batch zero, C1c booleanity, h_max gate"
+	@echo "============================================================"
+	@$(BUILD)/test_fri_oi_air
 	@echo
 	@echo "============================================================"
 	@echo "ALL GATES: GREEN"
