@@ -1136,26 +1136,78 @@
       <!-- ══ Post-Quantum ══ -->
       <section id="pq" class="s-section s-panel">
         <div class="wrap">
-          <div class="dna-row">
-            <div class="dna-text reveal-left">
-              <h3 data-i18n="chain_page.pq.title"><span class="teal">Post-Quantum</span> by Design</h3>
-              <p data-i18n="chain_page.pq.desc1">
-                Most blockchains rely on elliptic-curve cryptography that a sufficiently powerful quantum
-                computer could break. DNA Chain uses NIST-standardized post-quantum algorithms for every
-                signature and every hash &mdash; there is no classical fallback to attack.
+          <div class="section-header-center reveal">
+            <div class="section-label" data-i18n="chain_page.pq.label">Cryptography</div>
+            <h2 class="section-title" data-i18n="chain_page.pq.title2">Post-Quantum by Design</h2>
+            <p class="section-desc" style="max-width: 40rem;" data-i18n="chain_page.pq.desc1">
+              Most blockchains rely on elliptic-curve cryptography that a sufficiently powerful quantum
+              computer could break. DNA Chain uses NIST-standardized post-quantum algorithms at the
+              highest security level &mdash; Category 5 &mdash; for every signature, every key exchange,
+              and every hash. This is the full stack, and what each piece does.
+            </p>
+          </div>
+
+          <div class="token-grid stagger" style="margin-bottom: 1.2rem;">
+            <article class="token-card reveal">
+              <span class="token-card-icon"><svg viewBox="0 0 24 24"><path d="M12 3l7 4v5c0 4.6-3 8.9-7 10-4-1.1-7-5.4-7-10V7l7-4z"/><path d="M9 12l2 2 4-4"/></svg></span>
+              <h3 data-i18n="chain_page.pq.sign_title">Signatures &mdash; ML-DSA-87</h3>
+              <p data-i18n="chain_page.pq.sign_desc">
+                Every transaction, every consensus vote, and every network record is signed with
+                ML-DSA-87 (Dilithium5), NIST Category 5. Public keys are 2,592 bytes and signatures
+                4,627 bytes &mdash; the chain is engineered for post-quantum sizes from day one,
+                not retrofitted around small curve keys.
               </p>
-              <ul>
-                <li data-i18n="chain_page.pq.li1"><strong>ML-DSA-87 (Dilithium5)</strong> &mdash; every transaction and every consensus vote is post-quantum signed</li>
-                <li data-i18n="chain_page.pq.li2"><strong>SHA3-512</strong> &mdash; hashing for transactions, blocks, and state commitments; <strong>Poseidon2</strong> inside the zero-knowledge proof system</li>
-                <li data-i18n="chain_page.pq.li3"><strong>UTXO model</strong> &mdash; simple, auditable transaction semantics</li>
-                <li data-i18n="chain_page.pq.li4"><strong>Zero-knowledge privacy</strong> &mdash; STARK-based private transactions, in active development</li>
-              </ul>
-            </div>
-            <div class="dna-visual reveal-right">
-              <div class="dna-icon glow-teal">
-                <svg viewBox="0 0 24 24"><path d="M12 2L4 6v5c0 5.25 3.4 10.2 8 11.6 4.6-1.4 8-6.35 8-11.6V6L12 2z"/><ellipse cx="12" cy="11" rx="4.5" ry="2" transform="rotate(-30 12 11)"/><ellipse cx="12" cy="11" rx="4.5" ry="2" transform="rotate(30 12 11)"/><ellipse cx="12" cy="11" rx="4.5" ry="2" transform="rotate(90 12 11)"/></svg>
-              </div>
-            </div>
+            </article>
+
+            <article class="token-card reveal">
+              <span class="token-card-icon"><svg viewBox="0 0 24 24"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/><circle cx="12" cy="15" r="1.5"/></svg></span>
+              <h3 data-i18n="chain_page.pq.kem_title">Key Exchange &mdash; ML-KEM-1024</h3>
+              <p data-i18n="chain_page.pq.kem_desc">
+                Connections and messages across the substrate are keyed with ML-KEM-1024 (Kyber1024)
+                encapsulation, also Category 5, with 1,568-byte public keys. Once keys are established,
+                AES-256-GCM carries the traffic &mdash; authenticated encryption end to end.
+              </p>
+            </article>
+
+            <article class="token-card reveal">
+              <span class="token-card-icon"><svg viewBox="0 0 24 24"><path d="M4 7h16"/><path d="M4 12h16"/><path d="M4 17h16"/><path d="M9 4L7 20"/><path d="M17 4l-2 16"/></svg></span>
+              <h3 data-i18n="chain_page.pq.hash_title">Hashing &mdash; SHA3-512</h3>
+              <p data-i18n="chain_page.pq.hash_desc">
+                Transaction hashes, block hashes, state roots, nullifiers, and the 512-bit DHT keyspace
+                all use SHA3-512 (FIPS 202) &mdash; 64-byte digests everywhere consensus touches.
+                One hash function for the whole consensus surface, no mix-and-match.
+              </p>
+            </article>
+
+            <article class="token-card reveal">
+              <span class="token-card-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8a4 4 0 1 0 4 4"/><path d="M12 12h.01"/></svg></span>
+              <h3 data-i18n="chain_page.pq.zk_title">Zero-Knowledge &mdash; STARKs</h3>
+              <p data-i18n="chain_page.pq.zk_desc">
+                Proofs are built over the 64-bit Goldilocks field with Poseidon2 as the proof-internal
+                hash and FRI low-degree commitments. Transparent by construction: security rests on
+                hash functions alone &mdash; no trusted setup, no elliptic curves. In active development.
+              </p>
+            </article>
+
+            <article class="token-card reveal">
+              <span class="token-card-icon"><svg viewBox="0 0 24 24"><circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.7 12.3L21 2"/><path d="M16 7l3 3"/><path d="M13 10l2 2"/></svg></span>
+              <h3 data-i18n="chain_page.pq.key_title">Key Derivation &mdash; BIP39</h3>
+              <p data-i18n="chain_page.pq.key_desc">
+                Identities and wallets derive deterministically from a BIP39 recovery phrase.
+                One seed restores your identity, your keys, and your funds &mdash; nothing to back up
+                except the words.
+              </p>
+            </article>
+
+            <article class="token-card reveal">
+              <span class="token-card-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><line x1="5.5" y1="5.5" x2="18.5" y2="18.5"/></svg></span>
+              <h3 data-i18n="chain_page.pq.nofallback_title">No Classical Fallback</h3>
+              <p data-i18n="chain_page.pq.nofallback_desc">
+                Classical curves (secp256k1, Ed25519) exist only in the multi-chain wallet, for talking
+                to external chains like Ethereum or Solana. DNA Chain's own consensus contains no
+                classical-curve cryptography to attack &mdash; there is no weakest link to break.
+              </p>
+            </article>
           </div>
         </div>
       </section>
