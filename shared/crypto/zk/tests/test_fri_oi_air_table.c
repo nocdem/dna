@@ -16,6 +16,9 @@
  *   T2  schedule shape: chain + INTERLEAVED capture blocks (of different
  *       lengths) + DESCENDING accumulation groups + padding; the height and
  *       step one-hots; the G_j literals; the static validator accepts both cfgs
+ *   T4  the lb-LESS (REF-proof-shaped) schedule, FLEET 029: a cfg with NO height
+ *       at log_blowup generates, validates, and carries ZERO is_final_closeout
+ *       rows; a hand-forged is_final_closeout on its last closeout is REJECTED
  *   T3  PIN-1-OI KAT: table -> coset LDE (bitrev) -> dnac_p2_mmcs_commit_mixed
  *       == DNAC_P2C_OI_PREP_ROOT, and the comparator accepts it.
  *       (Pin FILLED 2026-07-29 from `--print-root`; on a future re-pin the
@@ -110,6 +113,29 @@ static const dnac_p2c_oi_height_desc_t WIDE_HEIGHTS[3] = {
     { 6, 1, 1, 1, 2 }, { 4, 1, 1, 1, 2 }, { 2, 1, 1, 1, 2 }
 };
 static const dnac_p2c_oi_table_cfg_t WIDE_CFG = { 6, 2, 3, WIDE_HEIGHTS, 100 };
+
+/* The REF-PROOF-SHAPED cfg (FLEET 029): lgmh 5, lb = 2, H = {5, 4} — NO height
+ * AT lb. A real inner proof never opens a matrix at log_height == log_blowup (it
+ * would be a degree-0 polynomial), so the schedule may not REQUIRE one; the
+ * native lb-zero rule is CONDITIONAL on such a height existing
+ * (fri_verifier.c:482-487). Structural expectation: NO is_final_closeout row.
+ *   chain 5 + captures (cum 0 / 1 => 2 + 3 = 5) + groups (2 * (1+1) = 4)
+ *   = 14 scheduled, 16 rows.
+ * NO root is pinned for it (the PIN-1-OI reference cfg is unchanged). */
+static const dnac_p2c_oi_height_desc_t NOLB_HEIGHTS[2] = {
+    { 5, 1, 1, 1, 1 }, { 4, 1, 1, 1, 1 }
+};
+static const dnac_p2c_oi_table_cfg_t NOLB_CFG = { 5, 2, 2, NOLB_HEIGHTS, 100 };
+
+/* Same shape with TWO batches on the LAST (h = 4) group, so that group HAS a
+ * per-batch boundary. If the generator still equated "last group" with "the lb
+ * group", this cfg would carry a final closeout / an lb-zero step; it must not.
+ *   groups (1+1) + (2+1) = 5 => 15 scheduled, 16 rows. */
+static const dnac_p2c_oi_height_desc_t NOLB_MB_HEIGHTS[2] = {
+    { 5, 1, 1, 1, 1 }, { 4, 2, 1, 1, 1 }
+};
+static const dnac_p2c_oi_table_cfg_t NOLB_MB_CFG = { 5, 2, 2, NOLB_MB_HEIGHTS,
+                                                     100 };
 
 /* ==========================================================================
  * Shared helper: the SHIPPED preprocessed-commit pipeline
@@ -276,7 +302,15 @@ static void t2_shape(const dnac_p2c_oi_table_cfg_t *cfg, const char *name,
           n_closeout, cfg->num_heights);
     CHECK(n_group_start == cfg->num_heights, "T2[%s]: group starts %zu != %zu",
           name, n_group_start, cfg->num_heights);
-    CHECK(n_final == 1, "T2[%s]: is_final_closeout count %zu != 1", name, n_final);
+    /* is_final_closeout is CONDITIONAL (FLEET 029): exactly one iff some height
+     * equals lb; NONE otherwise — the native's conditional lb-zero rule
+     * (fri_verifier.c:482-487), never a schedule requirement. */
+    size_t exp_final = 0;
+    for (size_t i = 0; i < cfg->num_heights; i++) {
+        if (cfg->heights[i].log_height == cfg->log_blowup) exp_final = 1;
+    }
+    CHECK(n_final == exp_final, "T2[%s]: is_final_closeout count %zu != %zu",
+          name, n_final, exp_final);
     CHECK(n_pad == rows - sched && n_pad >= 1,
           "T2[%s]: padding rows %zu != %zu (>=1)", name, n_pad, rows - sched);
     CHECK(exclusive_ok, "T2[%s]: a row carries != 1 primary type", name);
@@ -391,13 +425,83 @@ static void t2_hand_layout(void)
 #undef AT
 }
 
+/* ==========================================================================
+ * T4 — the lb-LESS (REF-proof-shaped) schedule: structure + the forged
+ *      final-closeout negative (FLEET 029)
+ * ======================================================================== */
+
+/** Table row index of the closeout of descending-H index `hidx`, or SIZE_MAX. */
+static size_t oi_closeout_row(const dnac_p2c_oi_table_cfg_t *cfg, size_t hidx)
+{
+    const size_t rows = dnac_p2c_oi_table_rows(cfg);
+    for (size_t r = 0; r < rows; r++) {
+        dnac_p2c_oi_row_t rec;
+        if (dnac_p2c_oi_table_row(cfg, r, &rec) != DNAC_P2C_OI_TABLE_OK) break;
+        if (rec.type == DNAC_P2C_OI_ROW_CLOSEOUT && rec.h_index == hidx) return r;
+    }
+    return (size_t)-1;
+}
+
+static void t4_nolb(const dnac_p2c_oi_table_cfg_t *cfg, const char *name,
+                    size_t exp_rows, size_t exp_sched)
+{
+    static uint64_t t[WIDE_CELLS];
+    const size_t rows = dnac_p2c_oi_table_rows(cfg);
+    CHECK(rows == exp_rows, "T4[%s]: rows %zu != %zu (cfg REJECTED?)", name, rows,
+          exp_rows);
+    CHECK(dnac_p2c_oi_sched_rows(cfg) == exp_sched, "T4[%s]: sched %zu != %zu",
+          name, dnac_p2c_oi_sched_rows(cfg), exp_sched);
+    if (rows != exp_rows ||
+        dnac_p2c_oi_table_generate(cfg, t, WIDE_CELLS) != DNAC_P2C_OI_TABLE_OK) {
+        CHECK(0, "T4[%s]: generate failed", name);
+        return;
+    }
+
+    /* NO row carries is_final_closeout — C4b is vacuous on this schedule. */
+    size_t n_fc = 0, n_close = 0;
+    for (size_t r = 0; r < rows; r++) {
+        n_fc += (size_t)t[r * OI_COLS + DNAC_P2C_OI_COL_IS_FINAL_CLOSEOUT];
+        n_close += (size_t)t[r * OI_COLS + DNAC_P2C_OI_COL_IS_CLOSEOUT];
+    }
+    CHECK(n_close == cfg->num_heights, "T4[%s]: closeouts %zu != %zu", name,
+          n_close, cfg->num_heights);
+    CHECK(n_fc == 0, "T4[%s]: %zu is_final_closeout rows on an lb-LESS schedule",
+          name, n_fc);
+
+    dnac_p2c_oi_table_defect_t d = DNAC_P2C_OI_DEFECT_NONE;
+    CHECK(dnac_p2c_oi_table_validate(cfg, t, rows, &d) == DNAC_P2C_OI_TABLE_OK,
+          "T4[%s]: validator REJECTED the lb-less table (defect %d)", name,
+          (int)d);
+
+    /* NEGATIVE — a hand-made table with a FORGED is_final_closeout on the last
+     * group's closeout. C4b would then force that group's ro to 0, i.e. a
+     * DIFFERENT (and wrong) statement; the validator must reject it. */
+    const size_t clo = oi_closeout_row(cfg, cfg->num_heights - 1);
+    CHECK(clo != (size_t)-1, "T4[%s]: no closeout row found", name);
+    if (clo != (size_t)-1) {
+        t[clo * OI_COLS + DNAC_P2C_OI_COL_IS_FINAL_CLOSEOUT] = 1;
+        d = DNAC_P2C_OI_DEFECT_NONE;
+        CHECK(dnac_p2c_oi_table_validate(cfg, t, rows, &d) ==
+                  DNAC_P2C_OI_TABLE_ERR_SCHEDULE,
+              "T4[%s]: validator ACCEPTED a forged is_final_closeout", name);
+        CHECK(d == DNAC_P2C_OI_DEFECT_FINAL_CLOSEOUT,
+              "T4[%s]: defect %d != FINAL_CLOSEOUT", name, (int)d);
+    }
+}
+
 static void t2_all(void)
 {
     /* ref: chain 4, capture 6, group 4, 16 rows. */
     t2_shape(dnac_p2c_oi_ref_cfg(), "ref", 4, 6, 4, REF_ROWS);
     /* wide: chain 6, capture 12, group 9, 32 rows. */
     t2_shape(&WIDE_CFG, "wide", 6, 12, 9, WIDE_ROWS);
+    /* nolb: chain 5, capture 5, group 4, 16 rows — NO lb height. */
+    t2_shape(&NOLB_CFG, "nolb", 5, 5, 4, (size_t)16);
+    /* nolb_mb: chain 5, capture 5, group 5 (last group 2 batches), 16 rows. */
+    t2_shape(&NOLB_MB_CFG, "nolb_mb", 5, 5, 5, (size_t)16);
     t2_hand_layout();
+    t4_nolb(&NOLB_CFG, "nolb", 16, 14);
+    t4_nolb(&NOLB_MB_CFG, "nolb_mb", 16, 15);
 }
 
 /* ==========================================================================
@@ -687,8 +791,8 @@ static void n4_failclose(void)
                                                         { 2, 1, 1, 1, 1 } };
     static const dnac_p2c_oi_height_desc_t h_hmax_bad[2] = {
         { 3, 1, 1, 1, 1 }, { 2, 1, 1, 1, 1 } }; /* h_max != lgmh */
-    static const dnac_p2c_oi_height_desc_t h_hmin_bad[2] = {
-        { 4, 1, 1, 1, 1 }, { 3, 1, 1, 1, 1 } }; /* h_min != lb */
+    static const dnac_p2c_oi_height_desc_t h_below_lb[2] = {
+        { 4, 1, 1, 1, 1 }, { 1, 1, 1, 1, 1 } }; /* h < lb = 2 */
     static const dnac_p2c_oi_height_desc_t h_notdesc[3] = {
         { 4, 1, 1, 1, 1 }, { 4, 1, 1, 1, 1 }, { 2, 1, 1, 1, 1 } }; /* 4>=4 */
     static const dnac_p2c_oi_height_desc_t h_zero[2] = {
@@ -704,7 +808,7 @@ static void n4_failclose(void)
         { "num_heights 0", { 4, 2, 0, h_ok2, 100 } },
         { "heights NULL", { 4, 2, 2, NULL, 100 } },
         { "h_max != lgmh", { 4, 2, 2, h_hmax_bad, 100 } },
-        { "h_min != lb", { 4, 2, 2, h_hmin_bad, 100 } },
+        { "height below lb", { 4, 2, 2, h_below_lb, 100 } },
         { "not descending", { 4, 2, 3, h_notdesc, 100 } },
         { "zero count", { 4, 2, 2, h_zero, 100 } },
         { "n_sched overflow", { 4, 2, 2, h_big, 100 } },
@@ -722,6 +826,19 @@ static void n4_failclose(void)
     /* An ACCEPTED non-reference cfg still validates (the WIDE shape). */
     CHECK(dnac_p2c_oi_table_rows(&WIDE_CFG) == WIDE_ROWS,
           "N4: WIDE cfg REJECTED");
+
+    /* FLEET 029 — an lb-LESS cfg is ACCEPTED (the `heights[last] == lb` rule is
+     * GONE); the remaining rules still bite, which the negatives above pin. */
+    CHECK(dnac_p2c_oi_table_rows(&NOLB_CFG) == 16, "N4: lb-less NOLB REJECTED");
+    CHECK(dnac_p2c_oi_table_rows(&NOLB_MB_CFG) == 16,
+          "N4: lb-less NOLB_MB REJECTED");
+    { /* lgmh 4, H = {4, 3}, lb = 2: also lb-less, also accepted. */
+        static const dnac_p2c_oi_height_desc_t h_nolb[2] = { { 4, 1, 1, 1, 1 },
+                                                             { 3, 1, 1, 1, 1 } };
+        const dnac_p2c_oi_table_cfg_t nolb43 = { 4, 2, 2, h_nolb, 100 };
+        CHECK(dnac_p2c_oi_table_rows(&nolb43) != 0,
+              "N4: lb-less cfg H={4,3} REJECTED");
+    }
 }
 
 /* ==========================================================================

@@ -149,6 +149,7 @@ TESTS = \
     $(BUILD)/test_batch_prover \
     $(BUILD)/test_batch_wire \
     $(BUILD)/test_batch_shielded_agg \
+    $(BUILD)/test_transcript_air_table \
     $(BUILD)/test_transcript_air \
     $(BUILD)/test_mmcs_air_table \
     $(BUILD)/test_mmcs_air \
@@ -157,7 +158,13 @@ TESTS = \
     $(BUILD)/test_fri_oi_air_table \
     $(BUILD)/test_fri_oi_air \
     $(BUILD)/test_mmcs_mixed_air_table \
-    $(BUILD)/test_mmcs_mixed_air
+    $(BUILD)/test_mmcs_mixed_air \
+    $(BUILD)/test_transcript_air_fold \
+    $(BUILD)/test_mmcs_air_fold \
+    $(BUILD)/test_mmcs_mixed_air_fold \
+    $(BUILD)/test_fri_air_fold \
+    $(BUILD)/test_fri_oi_air_fold \
+    $(BUILD)/test_fri_statement
 
 # ── PREREQ HYGIENE (d4.d, 2026-07-26) ───────────────────────────────────────
 # A source on a recipe's command line that is NOT among its prerequisites means
@@ -370,6 +377,89 @@ $(BUILD)/test_mmcs_mixed_air_table: tests/test_mmcs_mixed_air_table.c mmcs_mixed
 # AGG_PROVER_SRCS stale-binary lesson).
 $(BUILD)/test_mmcs_mixed_air: tests/test_mmcs_mixed_air.c mmcs_mixed_air.c mmcs_mixed_air_table.c poseidon2_mmcs.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c poseidon2_goldilocks.c field_goldilocks.c mmcs_mixed_air.h mmcs_mixed_air_table.h poseidon2_mmcs.h poseidon2_air.h poseidon2_air_trace.h poseidon2_air_cols.h poseidon2_goldilocks.h field_goldilocks.h | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) tests/test_mmcs_mixed_air.c mmcs_mixed_air.c mmcs_mixed_air_table.c poseidon2_mmcs.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c poseidon2_goldilocks.c field_goldilocks.c -o $@
+
+# Composition s1a — the FOLD-FORM evaluators of the two hash-free P2c AIRs.
+#
+# Each test INCLUDES the shipped u64 gate's translation unit (tests/test_fri_air.c
+# / tests/test_fri_oi_air.c, with their main() renamed out of the way) so the
+# honest-trace builder, the fixtures, the configs and the tamper recipes are the
+# SAME code, not a fork — the property under test is "the fold form accepts
+# EXACTLY what the u64 form accepts", which a copy could not establish. That is
+# why the shipped test .c is BOTH a prerequisite and (transitively) on the
+# command line: an edit to it must relink these binaries (the d4.d
+# AGG_PROVER_SRCS stale-binary lesson).
+#
+# stark_constraints.c is the folder/fold-helper implementation (the capture
+# instrumentation the count + equivalence checks read). No permutation is
+# embedded in either AIR, so the link set stays small and is named LITERALLY.
+$(BUILD)/test_fri_air_fold: tests/test_fri_air_fold.c tests/test_fri_air.c tests/fold_test_util_b.h fri_air_fold.c fri_air.c fri_air_table.c stark_constraints.c fri_fold.c zk_field_helpers.c field_goldilocks.c fri_air_fold.h fri_air.h fri_air_table.h stark_constraints.h fri_fold.h zk_field_helpers.h field_goldilocks.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_fri_air_fold.c fri_air_fold.c fri_air.c fri_air_table.c stark_constraints.c fri_fold.c zk_field_helpers.c field_goldilocks.c -o $@
+
+$(BUILD)/test_fri_oi_air_fold: tests/test_fri_oi_air_fold.c tests/test_fri_oi_air.c tests/fold_test_util_b.h fri_oi_air_fold.c fri_oi_air.c fri_oi_air_table.c stark_constraints.c field_goldilocks.c fri_oi_air_fold.h fri_oi_air.h fri_oi_air_table.h stark_constraints.h field_goldilocks.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_fri_oi_air_fold.c fri_oi_air_fold.c fri_oi_air.c fri_oi_air_table.c stark_constraints.c field_goldilocks.c -o $@
+
+# ── s1b+s1c COMPOSITION ENTRY (fri_statement) ───────────────────────────────
+# The entry binds FOUR s1a fold AIRs (mmix, mmcs, fri, oi — s1c added oi) into
+# one batched instance set, so this recipe links the whole batch prove+verify
+# stack: the test PROVES the four instances (prover side is test-side by design
+# — no prover enters the lib) and then runs the entry over the result. It also
+# #includes the five SHIPPED u64
+# gates for their honest-trace builders (with every shared file-scope name
+# macro-renamed, see the test's header), which is why those five .c files are
+# prerequisites here as well.
+# fri_statement.c itself links NOTHING from the prover: the LDE + Merkle commit
+# half of the pin pipeline is test-side on purpose (fri_statement.h documents
+# why), so the consensus verify surface stays prover-free.
+# s3b adds the FIFTH instance: the transcript control AIR, its preprocessed
+# op-schedule table and its fold-form evaluator. duplex_challenger.c /
+# poseidon2_goldilocks.c / field_goldilocks.c / poseidon2_mmcs.c are already on
+# the line through $(PROVER_STACK) -> $(TRANSCRIPT_STACK), so only the three
+# transcript translation units are new here.
+FRI_STATEMENT_SRCS = fri_statement.c fri_air_fold.c fri_air.c fri_air_table.c \
+    fri_oi_air_fold.c fri_oi_air.c fri_oi_air_table.c \
+    mmcs_air_fold.c mmcs_air.c mmcs_air_table.c mmcs_mixed_air_fold.c \
+    mmcs_mixed_air.c mmcs_mixed_air_table.c transcript_air_fold.c \
+    transcript_air.c transcript_air_table.c poseidon2_fold.c poseidon2_air.c \
+    poseidon2_air_trace.c poseidon2_air_cols.c stark_constraints.c \
+    batch_prover.c batch_verify.c batch_priming.c logup_bus.c logup.c \
+    fri_verifier.c $(PROVER_STACK)
+
+FRI_STATEMENT_HDRS = fri_statement.h fri_air_fold.h fri_air.h fri_air_table.h \
+    fri_oi_air_fold.h fri_oi_air.h fri_oi_air_table.h \
+    mmcs_air_fold.h mmcs_air.h mmcs_air_table.h mmcs_mixed_air_fold.h \
+    mmcs_mixed_air.h mmcs_mixed_air_table.h transcript_air_fold.h \
+    transcript_air.h transcript_air_table.h duplex_challenger.h \
+    stark_constraints.h \
+    batch_prover.h batch_verify.h batch_priming.h logup_bus.h logup.h \
+    fri_verifier.h stark_prover.h poseidon2_mmcs.h field_goldilocks.h
+
+$(BUILD)/test_fri_statement: tests/test_fri_statement.c tests/test_fri_air.c tests/test_mmcs_air.c tests/test_mmcs_mixed_air.c tests/test_fri_oi_air.c tests/test_transcript_air.c tests/logup_test_util.h $(FRI_STATEMENT_SRCS) $(FRI_STATEMENT_HDRS) | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_fri_statement.c $(FRI_STATEMENT_SRCS) $(FRI_VERIFIER_LDADD) -o $@
+
+# ── s1a FOLD-form evaluators (composition slice 1a) ─────────────────────────
+# Each of the three tests below is an EQUIVALENCE gate: it #includes the SHIPPED
+# u64 AIR test (for its honest-trace builder, with that file's `main` renamed
+# out of the way) and folds the very same trace through the new fp2 `air_eval`.
+# The shipped .c therefore appears ONLY as a prerequisite, never on the command
+# line — it is textually included by the fold test, so compiling it separately
+# would duplicate every symbol. It IS listed as a prerequisite so an edit to the
+# shipped test relinks the fold test (the d4.d stale-binary lesson).
+#
+# Link sets = the shipped test's link set + the fold module + stark_constraints.c
+# (the folder helpers) + poseidon2_fold.c (the shared 180-col block emission).
+
+# s1a/A — transcript control-AIR, fold form. Takes the same 8 oracle vectors as
+# test_transcript_air (they are the honest traces being folded).
+$(BUILD)/test_transcript_air_fold: tests/test_transcript_air_fold.c tests/test_transcript_air.c tests/fold_test_util.h transcript_air_fold.c transcript_air.c transcript_air_table.c stark_constraints.c poseidon2_fold.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c poseidon2_mmcs.c duplex_challenger.c poseidon2_goldilocks.c field_goldilocks.c transcript_air_fold.h transcript_air.h transcript_air_table.h stark_constraints.h poseidon2_fold.h poseidon2_air.h poseidon2_air_trace.h poseidon2_air_cols.h poseidon2_mmcs.h duplex_challenger.h poseidon2_goldilocks.h field_goldilocks.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_transcript_air_fold.c transcript_air_fold.c transcript_air.c transcript_air_table.c stark_constraints.c poseidon2_fold.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c poseidon2_mmcs.c duplex_challenger.c poseidon2_goldilocks.c field_goldilocks.c -o $@
+
+# s1a/B — same-height MMCS control-AIR, fold form (no vector files).
+$(BUILD)/test_mmcs_air_fold: tests/test_mmcs_air_fold.c tests/test_mmcs_air.c tests/fold_test_util.h mmcs_air_fold.c mmcs_air.c mmcs_air_table.c stark_constraints.c poseidon2_fold.c poseidon2_mmcs.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c poseidon2_goldilocks.c field_goldilocks.c mmcs_air_fold.h mmcs_air.h mmcs_air_table.h stark_constraints.h poseidon2_fold.h poseidon2_mmcs.h poseidon2_air.h poseidon2_air_trace.h poseidon2_air_cols.h poseidon2_goldilocks.h field_goldilocks.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_mmcs_air_fold.c mmcs_air_fold.c mmcs_air.c mmcs_air_table.c stark_constraints.c poseidon2_fold.c poseidon2_mmcs.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c poseidon2_goldilocks.c field_goldilocks.c -o $@
+
+# s1a/C — mixed-height MMCS control-AIR, fold form (no vector files).
+$(BUILD)/test_mmcs_mixed_air_fold: tests/test_mmcs_mixed_air_fold.c tests/test_mmcs_mixed_air.c tests/fold_test_util.h mmcs_mixed_air_fold.c mmcs_mixed_air.c mmcs_mixed_air_table.c stark_constraints.c poseidon2_fold.c poseidon2_mmcs.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c poseidon2_goldilocks.c field_goldilocks.c mmcs_mixed_air_fold.h mmcs_mixed_air.h mmcs_mixed_air_table.h stark_constraints.h poseidon2_fold.h poseidon2_mmcs.h poseidon2_air.h poseidon2_air_trace.h poseidon2_air_cols.h poseidon2_goldilocks.h field_goldilocks.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_mmcs_mixed_air_fold.c mmcs_mixed_air_fold.c mmcs_mixed_air.c mmcs_mixed_air_table.c stark_constraints.c poseidon2_fold.c poseidon2_mmcs.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c poseidon2_goldilocks.c field_goldilocks.c -o $@
 
 # P1b — Poseidon2 MMCS byte-match (plain + hiding trees, oracle replay;
 # note_commit.c linked for the note_sponge_hash8 bridge KAT).
@@ -784,8 +874,17 @@ bench-prover: tools/bench_prover.c tests/batch_test_util.h tests/logup_test_util
 # hazard of the AGG_PROVER_SRCS class (a variable still undefined when make
 # reads the rule expands to an EMPTY prerequisite list, silently). Every source
 # on the command line is also a prerequisite, so an edit to any of them relinks.
-$(BUILD)/test_transcript_air: tests/test_transcript_air.c transcript_air.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c duplex_challenger.c poseidon2_goldilocks.c field_goldilocks.c transcript_air.h poseidon2_air.h poseidon2_air_trace.h poseidon2_air_cols.h duplex_challenger.h poseidon2_goldilocks.h field_goldilocks.h | $(BUILD)
-	$(CC) $(CFLAGS) $(INCLUDES) tests/test_transcript_air.c transcript_air.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c duplex_challenger.c poseidon2_goldilocks.c field_goldilocks.c -o $@
+$(BUILD)/test_transcript_air: tests/test_transcript_air.c transcript_air.c transcript_air_table.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c poseidon2_mmcs.c duplex_challenger.c poseidon2_goldilocks.c field_goldilocks.c transcript_air.h transcript_air_table.h poseidon2_air.h poseidon2_air_trace.h poseidon2_air_cols.h poseidon2_mmcs.h duplex_challenger.h poseidon2_goldilocks.h field_goldilocks.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_transcript_air.c transcript_air.c transcript_air_table.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c poseidon2_mmcs.c duplex_challenger.c poseidon2_goldilocks.c field_goldilocks.c -o $@
+
+# s3a PIN slice — the transcript AIR's preprocessed OP-SCHEDULE table:
+# deterministic generator (challenger simulation), structural static validator,
+# the PIN-1-P2a root KAT through the SHIPPED LDE->commit pipeline, and the
+# `--print-roots` workflow the ORCHESTRATOR fills DNAC_P2A_PREP_ROOT_LANE* from.
+# Wired EXACTLY like test_fri_air_table: $(PROVER_STACK) is defined at the TOP of
+# this file, well above this rule, so it cannot expand to an empty list.
+$(BUILD)/test_transcript_air_table: tests/test_transcript_air_table.c transcript_air_table.c transcript_air_table.h transcript_air.h $(PROVER_STACK) shielded_fri_params.h poseidon2_mmcs.h stark_prover.h field_goldilocks.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_transcript_air_table.c transcript_air_table.c $(PROVER_STACK) -o $@
 
 test: all
 	@echo "============================================================"
@@ -1217,9 +1316,22 @@ test: all
 	@$(BUILD)/test_batch_shielded_agg tools/vectors/batch_shielded_agg.json tools/vectors/smallrng_goldilocks.json
 	@echo
 	@echo "============================================================"
-	@echo "P2a-i2 — transcript control-AIR (DuplexChallenger as a row-AIR)"
+	@echo "s3a PIN slice — transcript AIR preprocessed OP-SCHEDULE table"
+	@echo "  generator determinism + the challenger-simulation schedule +"
+	@echo "  the structural static validator (machine legality, script"
+	@echo "  agreement, op-step one-hot, is_pow, terminality) + the pinned"
+	@echo "  preprocessed root KAT (constant vs generator)"
+	@echo "  (root is the {0,0,0,0} PLACEHOLDER — the KAT is RED by design"
+	@echo "   until the ORCHESTRATOR fills it from --print-roots)"
+	@echo "============================================================"
+	@$(BUILD)/test_transcript_air_table
+	@echo
+	@echo "============================================================"
+	@echo "P2a-i2 + s3a — transcript control-AIR (DuplexChallenger as a row-AIR)"
 	@echo "  8 oracle scenarios: honest trace 0 viol + state/duplexings/"
-	@echo "  exposed-bit byte-match; 20 design-§0.5 constraint-form negatives"
+	@echo "  exposed-bit byte-match, each against its OWN pinned op-schedule"
+	@echo "  table; design-§0.5 constraint-form negatives + the s3a CT-1..CT-4"
+	@echo "  table/publics negatives"
 	@echo "============================================================"
 	@$(BUILD)/test_transcript_air tools/vectors/transcript_trace_basic.json tools/vectors/transcript_trace_multi_instance.json tools/vectors/transcript_trace_partial_absorb.json tools/vectors/transcript_trace_pow_nonzero.json tools/vectors/transcript_trace_pow_zero_bits.json tools/vectors/transcript_trace_rate_boundary.json tools/vectors/transcript_trace_sample_bits_32.json tools/vectors/transcript_trace_squeeze_chain.json
 	@echo
@@ -1312,6 +1424,55 @@ test: all
 	@echo "  + 18 more constraint-form negatives + 6 fail-close eval gates"
 	@echo "============================================================"
 	@$(BUILD)/test_mmcs_mixed_air
+	@echo
+	@echo "============================================================"
+	@echo "s1a — FOLD-form evaluators (composition slice 1a)"
+	@echo "  each AIR's u64 evaluator transcribed into the batch-STARK"
+	@echo "  air_eval (fp2 alpha-fold) form, then proved EQUIVALENT on the"
+	@echo "  SHIPPED honest traces: T-EQ (all captured residuals zero),"
+	@echo "  T-CNT (uniform, formula-matching step count, Poseidon2 block"
+	@echo "  count MEASURED not asserted), T-NEG (tampers from the u64"
+	@echo "  suites still caught) and T-TERM (the is_last_row boundary that"
+	@echo "  carries each u64 eval_trace terminality gate)"
+	@echo "============================================================"
+	@$(BUILD)/test_transcript_air_fold tools/vectors/transcript_trace_basic.json tools/vectors/transcript_trace_multi_instance.json tools/vectors/transcript_trace_partial_absorb.json tools/vectors/transcript_trace_pow_nonzero.json tools/vectors/transcript_trace_pow_zero_bits.json tools/vectors/transcript_trace_rate_boundary.json tools/vectors/transcript_trace_sample_bits_32.json tools/vectors/transcript_trace_squeeze_chain.json
+	@echo
+	@$(BUILD)/test_mmcs_air_fold
+	@echo
+	@$(BUILD)/test_mmcs_mixed_air_fold
+	@echo
+	@echo "============================================================"
+	@echo "s1a — FRI fold-walk control AIR in FOLD (batch-STARK) form"
+	@echo "  the u64 evaluator's constraint set transcribed to the"
+	@echo "  dnac_stark_folder_t callback: 5 honest walks accepted with"
+	@echo "  ZERO non-zero residuals, 14 tampers whose non-zero count"
+	@echo "  matches the u64 violation count EXACTLY (incl. the four"
+	@echo "  MANDATORY FLEET 020 catches), the terminality gate re-proved"
+	@echo "  as a live is_last_row boundary, + bind/descriptor/shape-rail"
+	@echo "============================================================"
+	@$(BUILD)/test_fri_air_fold
+	@echo
+	@echo "============================================================"
+	@echo "s1a — FRI open_input accumulation AIR in FOLD form"
+	@echo "  same transcription gate: 5 honest walks at zero residual,"
+	@echo "  13 tampers with EXACT u64-count agreement (incl. the A2"
+	@echo "  closures N-F1 one-sided carry and N-F2 ungated x_reg HOLD),"
+	@echo "  terminality-as-constraint, + bind/descriptor/shape-rail"
+	@echo "============================================================"
+	@$(BUILD)/test_fri_oi_air_fold
+	@echo
+	@echo "============================================================"
+	@echo "s1b — the FRI-verify statement ENTRY (composition)"
+	@echo "  the pinned 3-cfg set (mmix + mmcs round-0 + fri) re-derived"
+	@echo "  FROM the prep_pair fixture, the composed preprocessed-root"
+	@echo "  pin + its per-table tamper negatives, the aliased publics"
+	@echo "  compared against the shipped builders' own, canonicality"
+	@echo "  ordering, + the NULL/map rails; RT-1 honest round-trip"
+	@echo "  (3-instance prove -> entry) + N-PIN2 / N-ALIAS / N-CFG."
+	@echo "  Green in BOTH pin states: with DNAC_P2S_PREP_ROOT at its"
+	@echo "  placeholder the pin-dependent checks assert the reject."
+	@echo "============================================================"
+	@$(BUILD)/test_fri_statement
 	@echo
 	@echo "============================================================"
 	@echo "ALL GATES: GREEN"

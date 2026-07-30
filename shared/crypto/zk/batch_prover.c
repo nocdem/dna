@@ -285,20 +285,43 @@ static dnac_prover_status_t bp_quotient_values(
     const size_t w = di->air.main_width;
     const uint32_t pw = di->preprocessed_width;
     const uint32_t aw = bp_aux_width(di);
-    if (w > DNAC_STARK_MAX_MAIN_WIDTH || aw > 64 || pw > 64) {
+    if (w > DNAC_STARK_MAX_MAIN_WIDTH || aw > 64) {
         return DNAC_PROVER_ERR_PARAM;
     }
 
     gold_fp2_t *tl = (gold_fp2_t *)malloc(w * sizeof(gold_fp2_t));
     gold_fp2_t *tn = (gold_fp2_t *)malloc(w * sizeof(gold_fp2_t));
+    /* PREPROCESSED WINDOWS: heap, sized by `pw` — the same pattern tl/tn use.
+     *
+     * They were `gold_fp2_t pl[64], pn[64]` fixed stack arrays, which forced the
+     * `pw > 64` reject that used to sit in the guard above. That cap made any
+     * AIR with a wider preprocessed table UNPROVABLE, which the P2b/P2c control
+     * AIRs are: DNAC_P2C_MMIX_TABLE_COLS is 136 and DNAC_P2C_TABLE_COLS is 73.
+     * The composition entry (fri_statement.c) is the first caller to need them,
+     * and it was reachable only as an ERR_PARAM.
+     *
+     * NO SEMANTIC CHANGE. Every value written into these windows, and the order
+     * they are written in, is byte-identical to the stack version — only the
+     * storage moved. For every pw <= 64 instance the arithmetic is unchanged, so
+     * no vector and no byte-match moves; wider preprocessed tables simply become
+     * possible. The VERIFIER never had this limit on the path that matters:
+     * batch_verify.c:696-706 caps at 64 only when `prep_next == 0` (its
+     * `pzeros[64]` zero-window), so prover and verifier were asymmetric.
+     *
+     * `perm_loc` / `perm_nxt` are deliberately NOT touched and the `aw > 64`
+     * gate above stays: the aux width is num_lookups+1 and no AIR in this tree
+     * comes near 64 lookups, so widening it would be unmotivated churn on a
+     * consensus-adjacent path. */
+    gold_fp2_t *pl = pw ? (gold_fp2_t *)malloc(pw * sizeof(gold_fp2_t)) : NULL;
+    gold_fp2_t *pn = pw ? (gold_fp2_t *)malloc(pw * sizeof(gold_fp2_t)) : NULL;
     gold_fp2_t *pv = di->pool_len
                          ? (gold_fp2_t *)malloc(di->pool_len * sizeof(gold_fp2_t))
                          : NULL;
-    if (!tl || !tn || (di->pool_len && !pv)) {
-        free(tl); free(tn); free(pv);
+    if (!tl || !tn || (pw && (!pl || !pn)) || (di->pool_len && !pv)) {
+        free(tl); free(tn); free(pl); free(pn); free(pv);
         return DNAC_PROVER_ERR_PARAM;
     }
-    gold_fp2_t pl[64], pn[64], perm_loc[64], perm_nxt[64];
+    gold_fp2_t perm_loc[64], perm_nxt[64];
     dnac_prover_status_t rc = DNAC_PROVER_ERR_PARAM;
 
     for (size_t i = 0; i < q_size; i++) {
@@ -428,7 +451,7 @@ static dnac_prover_status_t bp_quotient_values(
     }
     rc = DNAC_PROVER_OK;
 out:
-    free(tl); free(tn); free(pv);
+    free(tl); free(tn); free(pl); free(pn); free(pv);
     return rc;
 }
 

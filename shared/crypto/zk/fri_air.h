@@ -142,10 +142,16 @@
  *          (fri_verifier.c:480-487; 82cfad73 fri/src/verifier.rs:647-651 —
  *          "f is constant, so ... must equal 0"). That rule lives in
  *          open_input, OUTSIDE this slice; this AIR accepts an arbitrary
- *          public in a final-height roll-in slot. When the open_input slice
- *          lands, it must pin final-height reduced openings to zero, and the
- *          composition must not bless a cfg with a final-height roll-in
- *          before then.
+ *          public in a final-height roll-in slot. ⚠ REVISED BY FLEET 029: the
+ *          oi module's final-closeout is now CONDITIONAL (a height AT lb is
+ *          OPTIONAL — real proofs have none; fri_oi_air_table.c:92-100), so
+ *          the pin exists only when the oi cfg contains an lb group. The
+ *          composition entry owns BOTH halves: (a) every fri_air roll-in
+ *          height MUST appear in OI.H (lb is admissible here — final_h =
+ *          lb + lfpl, fri_air_table.c:64/:89 — so this is a REAL check, not
+ *          vacuously true), and (b) a cfg pair with a final-height roll-in is
+ *          blessed only when the oi side carries the lb group whose C4b pins
+ *          that slot to zero. Mirror text: fri_oi_air.h (cross-seam label).
  *   OBL-P2c-1 (FLEET 020 A2-F6, cross-seam) SHAPE PRECEDENCE. The native
  *          derives the round count and lgmh from the PROOF
  *          (fri_verifier.c:642-649) and rejects extra reduced openings only via

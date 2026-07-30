@@ -51,11 +51,61 @@
  * ── Scope (design §0.5 "Op-stream binding — honest scope split", F8) ────────
  * This AIR binds the stream SHAPE (instance boundary + reset, DS prefix,
  * transition legality, filler inertness/terminality, canonical bit exposure).
- * It does NOT bind WHICH ops the verifier issues — that is the pinned recursion
- * config plus the P2c/P2e composition wiring (G-DET-P2a-5). It also does not
- * cover fp2: the AIR sees only base ops, and the CONSUMER must bind each fp2
- * challenge to two consecutive base pops, c0 first (design §0.5 F13;
+ * ⚠ REVISED at s3a: it now ALSO binds WHICH ops the instance issues, and the
+ * payload of each one — see "s3a" below. It still does not cover fp2: the AIR
+ * sees only base ops, and the CONSUMER must bind each fp2 challenge to two
+ * consecutive base pops, c0 first (design §0.5 F13;
  * `duplex_challenger.c:134-140` <-> `circuit.rs:378-386`).
+ *
+ * ── s3a: the preprocessed OP-SCHEDULE table + publics (spec §3) ─────────────
+ * Two P2a-i3 obligations are closed here, both by moving free MAIN columns onto
+ * a PINNED preprocessed table (`transcript_air_table.{c,h}`):
+ *
+ *   CT-1  ROW TYPE conformance — the table's type one-hot EQUALS the main
+ *         selector one-hot, index for index. `sel_start` can no longer appear
+ *         anywhere the schedule does not put it, and no op can be relabelled as
+ *         another archetype.
+ *   CT-2  `is_pow` conformance — the PoW modifier is preprocessed, not a free
+ *         main column.
+ *   CT-3  PAYLOAD binding — the row's `lane` EQUALS `publics[pub_slot]`, where
+ *         `pub_slot` is selected by the table's op-step one-hot. The op-step
+ *         one-hot ALSO has to sum to the row's op indicator, so a payload row
+ *         cannot escape by carrying no position at all.
+ *   CT-4  INDEX-BIT export — on an op the schedule marks as a bit-exporting
+ *         sample (a FRI query index, `fri_verifier.c:737`), `bit[j]` EQUALS the
+ *         public reserved for that op's bit j. This is the surface the P2c/P2e
+ *         composition aliases onto the shared query index.
+ *
+ * Public-value layout is `transcript_air_table.h`'s: `[0, n_ops)` payload lanes
+ * in script order, then the exported bits. `dnac_tair_num_publics(script)`.
+ *
+ * ⚠ PIN-1-P2a IS A PREREQUISITE OF ALL FOUR. Preprocessed cells are
+ * VERIFIER-AUTHORITATIVE ONLY under the root pin: nothing on the verify path
+ * checks a preprocessed cell (`batch_verify.c:722-727` hands the window to
+ * `air_eval` raw), so an all-zero table would satisfy CT-3/CT-4 vacuously and
+ * CT-1/CT-2 would force the main selectors to zero — which the main one-hot sum
+ * then rejects, but only by accident.
+ *
+ * ⚠⚠ THE ALL-ZERO TABLE IS THE WEAK CASE, NOT THE STRONG ONE (FLEET 032
+ * red-verify #20, HIGH — an earlier revision of this paragraph stopped at
+ * "vacuous", which UNDERSTATES the requirement). CT-1 and CT-2 are
+ * self-protecting: they equate a prep cell to a MAIN column that block A / A3
+ * already forces boolean (:180, :214). The `pos` one-hot is NOT — CT-3a pins
+ * only its SUM (`Σ prep[pos_k] == g_op`), and nothing anywhere constrains an
+ * individual `pos` cell to {0,1}. So an unpinned table can INTERPOLATE: on an
+ * op row with slots a,b set `pos_a = x`, `pos_b = 1 - x`; CT-3a still holds and
+ * CT-3b becomes `lane = x*pub[a] + (1-x)*pub[b]`, solvable for ANY target lane
+ * whenever `pub[a] != pub[b]`. That forges an arbitrary payload, not merely a
+ * zero one. Booleanity/one-hotness of `pos` is a TABLE-GENERATOR obligation
+ * (the standing family posture — fri_air.h:39-47, mmcs_air.h:22-27) and the
+ * root pin is what freezes the generator's output, so PIN-1-P2a is
+ * LOAD-BEARING FOR SOUNDNESS here, not merely for non-vacuity.
+ *
+ * The P2a verify ENTRY must compare the
+ * decoded preprocessed root against `DNAC_P2A_PREP_ROOT`
+ * (`dnac_tair_prep_root_check`) and fail closed. It must ALSO pin the SCRIPT
+ * independently of that root (OBL-P2a-T1, transcript_air_table.h).
+ * Neither pin is enforced by THIS module: there is no P2a verify entry yet.
  *
  * ── P2a-i2 scope ────────────────────────────────────────────────────────────
  * AIR evaluation only. There is no prover for this AIR yet (the recursion
@@ -75,6 +125,7 @@
 
 #include "duplex_challenger.h" /* DNAC_DUPLEX_WIDTH / _RATE / _DS_PREFIX */
 #include "poseidon2_air_cols.h"
+#include "transcript_air_table.h" /* dnac_tair_script_t + TAIR_TBL_* layout */
 
 #ifdef __cplusplus
 extern "C" {
@@ -195,11 +246,17 @@ bool dnac_transcript_air_layout_check(void);
 /**
  * @brief Evaluate every constraint anchored at ONE row.
  *
- * Evaluates the row-local constraints of `local`, plus the transition
- * constraints from `local` to `next`. Pass `next == NULL` for the final trace
- * row (no transition is evaluated there — the trace MUST therefore end in a
- * filler row for the last real op's effect to be constrained; that rule is
- * ENFORCED by `dnac_transcript_air_eval_trace`, not here).
+ * Evaluates the row-local constraints of the (`local`, `prep_local`) pair, plus
+ * the transition constraints from `local` to `next`. Pass `next == NULL` for the
+ * final trace row (no transition is evaluated there — the trace MUST therefore
+ * end in a filler row for the last real op's effect to be constrained; that rule
+ * is ENFORCED by `dnac_transcript_air_eval_trace`, not here).
+ *
+ * ⚠ s3a: there is NO table-less accept path. `prep_local`, `sched` and
+ * `publics` are REQUIRED; a NULL or an out-of-contract length fails closed.
+ * The NEXT row's preprocessed window is deliberately NOT a parameter: no CT-*
+ * form reads it (see OBL-P2a-T2 in transcript_air_table.h for why `prep_next`
+ * must still be pinned at the composition entry).
  *
  * ⚠ CONTRACT (i3/A2-F4): the transition constraints pin ONE slot of each
  * next-row one-hot group (e.g. `nil_[k] == 1`) and rely on `next`'s OWN
@@ -213,16 +270,30 @@ bool dnac_transcript_air_layout_check(void);
  * decomposition's own `< p` constraint is what pins the SAMPLED lane's
  * representative, and that one IS checked here.
  *
+ * PUBLICS are NOT a precondition: they are checked canonical (< p) and any
+ * non-canonical public FAILS CLOSED (the P2b red-verify A2-F1 posture,
+ * mmcs_air.h:256-261 — `fp()` aliases x and x+p while a downstream u64 consumer
+ * reads them differently).
+ *
  * @param local        TAIR_WIDTH columns.
  * @param next         TAIR_WIDTH columns, or NULL on the last row.
+ * @param prep_local   TAIR_TBL_COLS preprocessed cells of this row. REQUIRED.
  * @param is_first_row non-zero on trace row 0 (boundary: MUST be `sel_start`).
  * @param cfg          pinned config; NULL or pow_bits > TAIR_MAX_NUM_BITS is
- *                     fail-close.
+ *                     fail-close, as is a cfg whose `pow_bits` disagrees with
+ *                     the script's PoW ops.
+ * @param sched        the pinned op script — the ONE schedule authority
+ *                     (`transcript_air_table.h`). NULL / rejected is fail-close.
+ * @param publics      `dnac_tair_num_publics(sched)` canonical values.
+ * @param num_publics  MUST equal `dnac_tair_num_publics(sched)`.
  * @return number of violated constraints (0 == valid), or TAIR_VIOL_BAD_CONFIG.
  */
 int dnac_transcript_air_eval_row(const uint64_t *local, const uint64_t *next,
+                                 const uint64_t *prep_local,
                                  int is_first_row,
-                                 const dnac_tair_config_t *cfg);
+                                 const dnac_tair_config_t *cfg,
+                                 const dnac_tair_script_t *sched,
+                                 const uint64_t *publics, size_t num_publics);
 
 /**
  * @brief Evaluate the whole trace: every row local, every adjacent pair.
@@ -230,13 +301,26 @@ int dnac_transcript_air_eval_row(const uint64_t *local, const uint64_t *next,
  * Row 0 carries the boundary constraint; the last row is evaluated with
  * `next == NULL`.
  *
- * @param trace  n_rows * TAIR_WIDTH canonical columns, row-major.
- * @param n_rows number of rows (>= 1).
- * @param cfg    pinned config.
+ * Enforces, beyond the per-row forms:
+ *   - SCHEDULE CONFORMANCE (s3a): `n_rows` MUST equal
+ *     `dnac_tair_table_rows(sched)`. The row count comes from the pinned
+ *     schedule, NEVER from a witnessed length. Fail-close.
+ *   - TERMINALITY (the i3 shipped-HIGH): the LAST row must be a filler row.
+ *
+ * @param trace      n_rows * TAIR_WIDTH canonical columns, row-major.
+ * @param prep_table n_rows * TAIR_TBL_COLS preprocessed cells, row-major — the
+ *                   table PIN-1-P2a pins the root of.
+ * @param n_rows     number of rows (>= 1).
+ * @param cfg        pinned config.
+ * @param sched      the pinned op script.
+ * @param publics    `dnac_tair_num_publics(sched)` canonical values.
  * @return total violated constraints (0 == valid), or TAIR_VIOL_BAD_CONFIG.
  */
-int dnac_transcript_air_eval_trace(const uint64_t *trace, size_t n_rows,
-                                   const dnac_tair_config_t *cfg);
+int dnac_transcript_air_eval_trace(const uint64_t *trace,
+                                   const uint64_t *prep_table, size_t n_rows,
+                                   const dnac_tair_config_t *cfg,
+                                   const dnac_tair_script_t *sched,
+                                   const uint64_t *publics, size_t num_publics);
 
 #ifdef __cplusplus
 }

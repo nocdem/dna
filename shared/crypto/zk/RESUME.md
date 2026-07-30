@@ -546,11 +546,229 @@ left is NOT zk work — it is design and consensus work upstream of the circuits
    seam (p_x↔MMCS, α/z↔transcript, direction-bits↔shared-index, OBL-P2c-1..4,
    OBL-5 reduced-index, roll-in set-equality, multi-query) is deferred to the
    composition entry. Loop grand total 020-026: ~3.68M subagent tokens, 25
-   agents. Uncommitted since 5685f46d: FLEET 026 (mmcs_mixed_air + table +
-   tests). NEXT: the COMPOSITION ENTRY — wire all 5 AIRs into one recursive
-   verify circuit + enforce every deferred pin/seam (the real security comes
-   online here; it is design + integration, larger than a slice) OR commit
-   026 + pause. Type-11 still REJECT.
+   agents. NEXT AFTER 026 was the COMPOSITION ENTRY; its slice 1a is DONE ↓.
+   **COMPOSITION s1a — FOLD EVALUATORS SHIPPED (2026-07-29, FLEET 027:
+   2 code-executors + 2 verifiers + ORCHESTRATOR line-by-line + O9).**
+   User locked 4 composition decisions (all recommended): (1) verify-statement
+   = the 5 AIRs as 5 instances of the EXISTING dnac_batch_verify
+   (batch_verify.h:112-132 is already multi-instance — no new STARK infra);
+   (2) publics aliasing = SHARED-PUBLICS (the s1b entry derives every
+   instance's publics from ONE decoded statement; p_x binding at s2 extends
+   fri_oi publics); (3) ALL pin enforcement in ONE composition entry;
+   (4) small slices + implement-with-TDD. Hidden prerequisite surfaced BEFORE
+   dispatch: the batch descriptor needs `air_eval(dnac_stark_folder_t*)`
+   (stark_constraints.h:284-291) and the 5 AIRs only had u64 test evaluators
+   → s1 split into s1a (fold evaluators) + s1b (entry). SHIPPED s1a: 5 NEW
+   modules `{transcript,mmcs,mmcs_mixed,fri,fri_oi}_air_fold.{c,h}` —
+   `dnac_*_fold_bind(cfg, dnac_stark_air_t*)` with MODULE-STATIC cfg snapshot
+   (air_eval carries no ctx; shared surface untouched; bind-before-verify,
+   single-thread, REJECTED BIND DISARMS — verifier-B H1 fold) — each a
+   1:1 TRANSCRIPTION of its u64 evaluator (emission order pinned = u64 order;
+   every block cites the u64 line; perm-embed AIRs call the SHIPPED
+   `dnac_poseidon2_fold_eval` UNGATED; transition forms ×is_transition; u64
+   eval_trace terminality gates became EXPLICIT is_last_row boundaries) + 5
+   equivalence tests (T-EQ honest traces via #include of the SHIPPED test
+   builders — zero fork; T-CNT step-count formulas re-derived; T-NEG tampers
+   with EXACT u64-violation-count agreement incl. FLEET-020's four + oi
+   N-F1/N-F2; T-TERM single-constraint isolation; T-RAIL; T-DISARM).
+   Verifier A 10/10 CONFIRMED; verifier B 8 CONFIRMED / 1 REFUTED (H1
+   disarm — FIXED in-slice + tested; M1 count-KAFADAN banners recounted).
+   ⚠ s1b MUST size log_num_qc for DEGREE 4 (×is_transition pushes the
+   transition families 3→4 in ALL FIVE folds — load-bearing: terminality
+   pins only primary row types, not pair gates, else cyclic wrap; documented
+   in every fold header). ⚠ mmcs/mmix fold terminality is 1-cell (is_pad /
+   type-sum) vs the u64's 6-cell gate — residual leans on PIN-1
+   TYPE_EXCLUSIVE, enforced at s1b. G4a schedule-conformance + G6 publics
+   canonicality are S1B ENTRY DUTIES (folder publics are gold_fp_t; the
+   entry must canonicality-check decoded publics BEFORE the folder). O9
+   ORCHESTRATOR-run: zk make test **84 binaries ALL GATES GREEN, 0 warnings**
+   (tests 79 → 84). FLEET 027 = 1.094M subagent tokens (est 0.7-1.0M).
+   Consensus-inert, no version bump, UNCOMMITTED (user command awaited; ~9
+   older commits also unpushed). NEXT: **s1b — the composition verify entry**:
+   one entry decodes a statement, derives all 5 instances' publics from it
+   (shared-index alias), calls the 5 dnac_*_prep_root_check comparators +
+   hard-codes prep_next=1 + pins cfg scalars independently of the roots
+   (OBL-4c/OBL-4-MMIX), enforces OBL-P2c-1 shape precedence, G4a/G6, sizes
+   log_num_qc for degree 4, honest round-trip (single query) + PIN negatives.
+   Then s2 p_x↔MMCS, s3 α/z/β↔transcript + ro-export↔f_init/roll-ins;
+   multi-query (OBL-P2c-2) after. Type-11 still REJECT.
+   **s1b — COMPOSITION VERIFY ENTRY SHIPPED (2026-07-30, FLEET 028: 1
+   code-executor ×3 tur + 1 verifier + ORCHESTRATOR).** `fri_statement.{c,h}` —
+   `dnac_p2_fri_statement_verify`: 7 fail-close adım (G6 kanonluk + bit rail →
+   composed prep-root PIN + prep_map=={0,1,2} → pinli cfg'ler + fold_bind ×3 →
+   G4a degree_bits=log2(tablo satırı) → log_num_qc KODDA türetilir
+   (symbolic.rs:70-78; degree 4 ⇒ 2) → shared-index publics kurulumu →
+   dnac_batch_verify is_zk=0/nrc=0/salt=0). REF statement = `prep_pair`
+   fixture'ından türetilen TUTARLI cfg seti (fri{lgmh5,lb2,rollin{4},Q2} +
+   mmcs-round0{1,{4},d4} + mmix{2,{1,1},{32,16},d5}); alias haritası
+   kaynak-pinli (mmix dir=B[lgmh−depth+..] :252-255; mmcs dir=B[mla+..]
+   :557-558/:585-588). `DNAC_P2S_PREP_ROOT` DOLU (ORCHESTRATOR bağımsız
+   --print-roots, executor'la birebir): {eaff9f3c7d034d1b, 884685112df9a2a0,
+   04df3d2a81697631, 5084f428a46e88f5}. **İKİ HALT bulgusu (kullanıcı
+   kararlarıyla çözüldü):** (1) shipped fri_oi_air GERÇEK proof'u tarif
+   EDEMİYOR — heights[son]==lb ŞART (fri_oi_air_table.c:92-95) ama native
+   lb-zero KOŞULLU (fri_verifier.c:482-487) = COMPLETENESS defekti → s1b
+   3-instance, oi düzeltmesi KENDİ diliminde (sıradaki iş); (2)
+   batch_prover.c:288 pw>64 reddi + pl[64]/pn[64] sabit pencereler → prover
+   73/136-kolon tabloları PROVE EDEMİYORDU → kullanıcı onayıyla heap-alloc'a
+   (tek hunk, semantik değişmez, test_batch_prover 371/0 byte-match dahil tüm
+   regresyonlar GREEN). Verifier 8 CONF / 0 REF / 1 UNVERIFIABLE(runtime —
+   ORCHESTRATOR kapadı: placeholder 107/0, dolu 117/0 RT-1 OK); M1 (N-CFG
+   sessiz kaçış) + M2 (mmcs arity-eşitliği varsayımı seam listesine) + L3/L4
+   atıf düzeltmeleri FOLDED. Tek-pin sapması meşru (batch_prover.c:786-822 tek
+   mixed commit — per-tablo root yok). O9: **85 binary ALL GATES GREEN 0
+   uyarı** (tests 84 → 85). Konsensüs-inert, version bump yok, UNCOMMITTED.
+   Dürüst seam'ler (header §HONEST LABELS): transcript-yok (s3), oi-yok
+   (lb-fix dilimi), round 0 + tek query, p_x↔MMCS açık (s2), arity-eşitliği
+   pinli şekle bağlı.
+   **oi lb-kapısı DÜZELTİLDİ (2026-07-30, FLEET 029: 1 executor + 1 zk-auditor
+   red-verify + ORCHESTRATOR).** TEK davranışsal değişiklik:
+   fri_oi_air_table.c cfg kapısından `heights[son]==lb` ŞARTI silindi —
+   final-closeout artık KOŞULLU, native fri_verifier.c:482-487'nin aynası
+   (lb ∈ H ise C4b/C5 aynen; değilse `is_final_closeout` hiçbir satırda 1,
+   n_lb_zero=0 — her iki türetim de cfg'den, u64+fold uyumu eşdeğerlik
+   testleriyle). AIR/fold KOD değişikliği SIFIR (yalnız yorum/honest-label);
+   `DNAC_P2C_OI_PREP_ROOT` DEĞİŞMEDİ (ref cfg lb'li, KAT aynı kökü türetir).
+   Yeni testler: NOLB {lgmh5,lb2,H={5,4}} (gerçek prep_pair şekli!) + NOLB_MB
+   honest kabuller, sahte-final-closeout validator reddi, "height below lb"
+   negatifi; tablo testi 150→201 check. Auditor: 7 GROUNDED / 3 JUDGMENT /
+   1 KAFADAN, 0 CRIT/HIGH, **ikinci tanık KURULAMADI** (A2-F1/A2-F2
+   kapanışları lb'den bağımsız — kodda gösterildi). Kapatılan bulgular:
+   F8 KAFADAN (table.h "yalnız num_queries kaçar" → lb'siz sınıfta log_blowup
+   da tabloya girmez; cümle düzeltildi, cfg-pin yükü load-bearing etiketlendi)
+   + F9 (fri_air.h OBL-P2c-4 koşullu forma revize: composition BOTH — roll-in
+   ⊆ OI.H çapraz kontrolü [lb fri_air'da KABUL, final_h=lb+lfpl,
+   fri_air_table.c:64/:89] + final-height roll-in ancak lb'li oi cfg'yle).
+   Ayrıca ORCHESTRATOR'ın tasarım notundaki "lb aralık dışı" iddiası
+   executor'ca çürütüldü — notta adıyla geri çekildi (KAFADAN dersi
+   lessons.md'de). O9: **85 binary ALL GATES GREEN 0 uyarı**. Konsensüs-inert,
+   pin/vektör değişimi yok, UNCOMMITTED.
+   **s1c — oi STATEMENT'A KATILDI (2026-07-30, FLEET 030: 1 executor + 1
+   verifier + ORCHESTRATOR).** fri_statement 3 → **4 instance** (mmix, mmcs-r0,
+   fri, **oi**). KAPANAN SEAM: **ro-export ↔ f_init/roll-ins** — statement'ın
+   `f_init`/`rollins` alanları SİLİNDİ; tek `ro_export` bölgesi üç tüketiciye
+   inşa gereği alias'lanır (fri.f_init := ro_export[lgmh] per
+   fri_verifier.c:524-527; fri.rollins := azalan eşleme :600-605; oi.ro publics
+   aynı lane'ler) — T-SRC iki-tüketici assert'i + N-ALIAS/ro her lane'de iki
+   publics'in birden oynadığını kanıtlar. oi REF cfg prep_pair'den ÖLÇÜLDÜ:
+   H={5,4} lb'siz (FLEET 029'un mümkün kıldığı şekil), yükseklik başına 6 acc
+   satırı (3 batch × [main 2·1 + quotient 1·2 + prep 2·1], dört iç içe döngü
+   fri_verifier.c:207/:400/:436/:469), 12 toplam; uniform (3,1,2,1) çarpanlama
+   DÜRÜST etiketli (yalnız total+boundary yük taşır; batch_sz lb'siz cfg'de
+   yalnız fail-close rail). YENİ statik tutarlılık kontrolleri (bind öncesi,
+   fail-close): fri roll-in ⊆ OI.H\{lgmh} + lb roll-in ⇒ lb'li oi cfg (FLEET
+   029 F9 görevlerinin giriş yarısı) + lgmh/lb/descent eşitlikleri. Composed
+   root 4 tabloya RE-PIN (prep genişlikleri 136/3/73/106; ORCHESTRATOR bağımsız
+   --print-roots executor'la birebir): {cbf49fc544f375b3, 74adcd84b83da91c,
+   33a40c6616608252, b12f5d1400263f49}. Verifier 9 CONF / 0 REF / 2
+   UNVERIFIABLE(runtime — ORCHESTRATOR kapadı: placeholder 158/0, dolu 172/0
+   RT-1 OK); HIGH'ı (Makefile oi kaynakları) ORCHESTRATOR O7'de uygulamıştı +
+   :401 yorumu düzeltildi. NOT (LOW-3): batch_proof.json `prep_pair` senaryo
+   YORUMU verisiyle çelişir ("no prep next-row" der ama main_next/prep_next
+   true) — VERİ otoritedir, vektör hash-pinli olduğundan yorum düzeltilmedi;
+   burada kayıt. O9: **85 binary ALL GATES GREEN 0 uyarı** (test_fri_statement
+   suite-içi 172/0). Konsensüs-inert, UNCOMMITTED. Kalan seam'ler (header
+   §HONEST LABELS): transcript/α/z/β (s3), p_x↔MMCS (s2), round replikasyonu +
+   multi-query, arity-eşitliği.
+   **s2 — p_x KISMEN BAĞLANDI (2026-07-30, FLEET 031: 1 executor + 1 zk-auditor
+   + ORCHESTRATOR; kullanıcı kararları: mekanizma = oi publics genişletme,
+   kapsam = main-batch kısmi).** fri_oi_air ailesine `[px total_acc]` publics
+   bölgesi (SONA ek — mevcut offset'ler stabil) + **C3g** (pos-gated, C3c'ye
+   bitişik, sıra pinli z0,z1,pz0,pz1,px; degree 2; native p_at_x =
+   opened_values[m][j], fri_verifier.c:469-476) u64+fold. p_x artık SERBEST
+   WITNESS DEĞİL. Statement: main-batch acc satırları `stmt.mmix_opened`
+   lane'lerinden (yükseklik→matris türetimi fail-close: teklik + genişlik
+   eşitliği + tam bölüntü; "batch 0 = main" ÖLÇÜMLE, batch_verify.c:544-563
+   is_zk=0'da Round-0 atlanır), quotient/prep satırları YENİ `px_rest[8]`
+   (DÜRÜST etiket: batch replikasyonuna dek bağsız statement girdisi — N-PXREST
+   iki yönlü pinler: oi'ye ulaşır, mmix'e ulaşmaz). Pinler DEĞİŞMEDİ (px
+   publics'te, tabloda değil; T-PINKAT canlı). Auditor: 10 G / 2 J / 1 K,
+   0 CRIT/HIGH, **ikinci tanık KURULAMADI** (C3e↔C3g tutarlılığı, pos'suz
+   satır serbestliği ro'ya girmiyor, kanonluk aliası kapalı — hepsi file:line
+   ile). K = bayat placeholder yorumu (fri_statement.h:329) — O7'de düzeltildi.
+   Testler: oi 36 negatif (N33/N34/N34b/N35), fold T-CNT 51 step/row REF,
+   statement **237/0** (T-SRC/px + N-ALIAS/px + N-PXREST). O9: **85 binary ALL
+   GATES GREEN 0 uyarı** (test_batch_prover 371/0 byte-match dahil — prover
+   heap-pencere değişiminin vektör kanıtı). Konsensüs-inert, UNCOMMITTED.
+   **s3a — TAIR OP-SCHEDULE TABLOSU SHIPPED (2026-07-30, FLEET 032: 1 executor
+   + 1 zk-auditor + ORCHESTRATOR; kullanıcı kararı: s3a+s3b böl, FRI-tail
+   only).** YENİ `transcript_air_table.{c,h}`: op-schedule preprocessed tablo
+   üreteci (TAIR_TBL_COLS = TYPE 6 + IS_POW 1 + POS 64 = 71) — native
+   challenger'ın duplex ZAMANLAMASINI simüle eder (eager duplex 4. observe'da,
+   sample duplex koşulu in>0||out==0, LIFO pop, observe out'u geçersiz kılar,
+   check_witness(0) SIFIR op — hepsi duplex_challenger.c file:line eşlemeli) ve
+   op dizisi fri_verifier.c:693-737 FRI-tail sırası. REF script: R=3 lfpl=0 Q=2
+   lgmh=5 pow=0/0 → **31 op / 64 satır / 41 public** (ORCHESTRATOR bağımsız
+   türetti, executor+auditor ile üç yönlü eşleşti). `DNAC_P2A_PREP_ROOT` DOLU
+   (bağımsız --print-roots, lane-lane eşleşti): {b689a4e626921aa3,
+   9a08256aa5794c1d, db86740992ed646d, 443190c5257d97ea}. transcript_air'a
+   publics `[payload n_ops][exported bits Q*lgmh]` + **CT-1..4** (u64+fold aynı
+   pinli sırada): CT-1 tip konformansı (prep tip == main sel — P2a-i3'ün
+   "sel_start herhangi bir yerde / satır her arketipi iddia edebilir"
+   yükümlülüğü KAPANDI), CT-2 is_pow (i3'ün "serbest kolon"u KAPANDI), CT-3a
+   Σpos==g_op + CT-3b payload==publics[slot], CT-4 index-bit İHRACI (s3b'nin
+   alias yüzeyi). Mevcut A-M blokları BYTE-AYNI (diff kanıtlı). Executor TDD
+   sırasında 2 gerçek defekt buldu+düzeltti (DEFECT_TERMINAL ölüydü — validator
+   sırası; N3 tamper padding satırını hedefliyordu). Auditor: **0 CRITICAL,
+   2 HIGH — ikisi de BELGE/YÜKÜMLÜLÜK, kodda düzeltme YOK** (ORCHESTRATOR ikisini
+   de kaynakta doğruladı + folded): (#20) `pos` hücreleri hiçbir yerde boolean
+   DEĞİL, CT-3a yalnız TOPLAMI pinler → pinlenmemiş tabloda `pos_a=x,
+   pos_b=1−x` interpolasyonu payload'ı KEYFİ değere zorlar; header "all-zero →
+   vacuous" diyordu, gerçek saldırı daha güçlü ⇒ PIN-1-P2a soundness için YÜK
+   TAŞIR (aile duruşunun aynısı, yeni delik değil); (#30) **`pow_bits` tabloya
+   HİÇ girmiyor** — 16-bit ve 1-bit grinding AYNI kökü üretir ⇒ OBL-P2a-T1'e
+   eklendi, **s3b girişi pow_bits'i kökten BAĞIMSIZ pinlemek ZORUNDA** (FLEET
+   029 #F8 lb-kaçışıyla aynı sınıf). Ayrıca folded: TERMINAL/MACHINE "DEAD"
+   mutlak iddiası düzeltildi (filler'sız trace'te yanlış), yanlış makro adı, 4
+   bayat batch_prover.c atıfı (⚠ aynı 4 atıf fri_air_table.h / mmcs_air_table.h
+   / fri_oi_air_table.h / mmcs_mixed_air_table.h'ye de kopyalanmış — AYRI doc
+   sweep işi). İkinci tanık: yalnız #20, o da modülün kendi beyan ettiği
+   pinsiz rejimde; pin altında (a)-(e) denemelerinin hepsi KURULAMADI. O9:
+   **86 binary ALL GATES GREEN 0 uyarı** (tests 85 → 86). Konsensüs-inert,
+   UNCOMMITTED.
+   **s3b — TRANSCRIPT STATEMENT'A KATILDI: ONAYLI DİLİM HARİTASI TAMAMLANDI
+   (2026-07-31, FLEET 033: 1 executor + 1 verifier + ORCHESTRATOR).**
+   fri_statement 4 → **5 instance** (mmix, mmcs-r0, fri, oi, **tair**).
+   KAPANAN SEAM: **α / β / query-index ↔ Fiat-Shamir**. Statement'ın `betas` ve
+   `alpha` ALANLARI SİLİNDİ; tek `tair_payload` bölgesi ÜÇ tüketiciye alias'lanır
+   (ORCHESTRATOR saydı: fri betas :776/:778, oi alpha :832/:833, tair kendi
+   publics'i :928 — dördüncü tüketim yok) ve tek `index_bits` hem tair'ın q=0
+   exported-bit bloğuna hem dört tüketicinin bit/dir bölgelerine yazılır ⇒
+   transcript'in ÜRETTİĞİ index ile dört AIR'ın TÜKETTİĞİ index aynı lane'ler.
+   tair cfg s1 sabitlerinden türer; script `dnac_tair_fri_build_script` ile
+   kurulur ve REF script ile op-op aynı (T-REF). Op indeksleri LİTERAL DEĞİL —
+   `p2s_tair_pop_op` ordinal→op tarayıcısından türer. **FLEET 032 #30 KAPANDI:**
+   `dnac_p2s_check_tair_pow_pin` (:150-176) script/params/AIR-cfg genişliklerinin
+   üçünü birden eşitler + iki farklı non-zero width'i reddeder; çağrı zinciri
+   :559 → :625 static-consistency → 5 bind :634-650, yani **bind'DAN ÖNCE**,
+   fail-close. N-POWPIN sentetik pow=1/pow=16 script'leriyle sürer VE iki
+   tablonun **byte-özdeşliğini** assert eder (kökün bu pini bağlayamadığının
+   kanıtı). BLOKER + kanca: oi'nin alpha'sı build_honest İÇİNDE tohumdan türeyip
+   build sırasında tüketiliyordu (tfp2 çıktısında b−a ≡ 0x100000007 sabit,
+   transcript alpha'sında 0x4c42e371b14a9ec8 ⇒ hiçbir tohum tutturamaz) →
+   kullanıcı onayıyla whitelist += tests/test_fri_oi_air.c, s2'nin shipped+
+   denetlenmiş `g_px_ext` deseninin birebir aynısı olan `g_alpha_ext` kancası
+   (ORCHESTRATOR diff'i okudu: 23 ekleme + 1 çağrı yeri, NULL'da byte-özdeş).
+   ⚠ ORCHESTRATOR KAFADAN'ı: executor'a "fri betas de enjekte edilemez" dedim ve
+   "kaynaktan doğruladım" diye ETİKETLEDİM — executor ÇÜRÜTTÜ (fixture_t
+   çağıranın struct'ı; test_fri_statement.c zaten f_init/ro'yu eziyor), geri
+   çektim, lessons.md'ye işlendi. Composed root 5 tabloya RE-PIN (genişlikler
+   136/3/73/106/71; ORCHESTRATOR bağımsız --print-roots, executor'la lane-lane
+   eşleşti): {0d61c566c046f50b, 6c028d283562f043, 5fc153486979664d,
+   ba116b402a5fe146}. Verifier 8 CONF / 0 REF / 0 CRIT / 0 HIGH; CLAIM-7 notu
+   folded (gözlemlenen-lane'ler-bağsız + RT-1-self-consistent etiketleri TEST
+   dosyasından `fri_statement.h` honest-label listesine 6/7. madde olarak
+   TAŞINDI — konsensüs çağıranının görmesi gereken yer). O9: **86 binary ALL
+   GATES GREEN 0 uyarı**, statement girişi **353/0**, `dnac_batch_prove OK —
+   5 instances`. Konsensüs-inert, UNCOMMITTED.
+   ▶ **ONAYLI HARİTA BİTTİ (s1a→s1b→s1c→s2→s3a→s3b).** Kalan seam'ler
+   (`fri_statement.h` §HONEST LABELS 1-7): priming transcript'i (ζ/z hâlâ
+   statement girdisi — script yalnız FRI tail), commit-round 1..R-1 + input-batch
+   replikasyonu (px_rest ve gözlemlenen lane'ler bunu bekliyor), multi-query
+   (OBL-P2c-2; script Q örneklerken yalnız 1 tüketiliyor), arity-eşitliği,
+   oi grup-şekli etiketi. HEPSİ yeni bir dilim haritası + muhtemelen
+   ctx-redesign kararı ister (air_eval ctx taşımıyor, stark_constraints.h:289
+   shared yüzey) — ORCHESTRATOR kullanıcıya sunmalı, kendi başlatmamalı.
 
 ### ⚑ CITATION BASELINE — read this before checking any Plonky3 `file:line` in this tree
 

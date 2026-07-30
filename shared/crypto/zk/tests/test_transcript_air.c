@@ -45,11 +45,20 @@
 #include "../field_goldilocks.h"
 #include "../poseidon2_air_trace.h"
 #include "../transcript_air.h"
+#include "../transcript_air_table.h"
 
 #define MAX_OPS   64
 #define MAX_DUPS  32
 #define MAX_ROWS  128
 #define TRACE_ELEMS ((size_t)MAX_ROWS * TAIR_WIDTH)
+
+/* s3a — every scenario now runs against its OWN preprocessed op-schedule table.
+ * There is no table-less accept path in the evaluator any more (spec §3/§4), so
+ * the scenario's op sequence is turned into a `dnac_tair_script_t`, the table is
+ * GENERATED from it, and the publics are read back out of the honest trace. */
+#define MAX_SCRIPT_OPS ((size_t)128)
+#define MAX_PUB        ((size_t)512)
+#define PREP_ELEMS     ((size_t)MAX_ROWS * TAIR_TBL_COLS)
 
 /* Live shielded query-PoW pin (shielded_fri_params.h
  * DNAC_SHIELDED_FRI_QUERY_POW_BITS == 16). Used for scenarios that carry no
@@ -282,7 +291,21 @@ typedef struct {
     int sel_of[MAX_ROWS];
     int dup_of[MAX_ROWS]; /* duplexing index, or -1 */
     int op_of[MAX_ROWS];  /* vector op index, or -1 */
+    /* ── s3a ── */
+    dnac_tair_op_t     ops[MAX_SCRIPT_OPS];
+    size_t             starts[8];
+    dnac_tair_script_t script;
+    uint64_t          *prep;  /* PREP_ELEMS  */
+    uint64_t          *pub;   /* MAX_PUB     */
+    size_t             n_pub;
 } built_t;
+
+/* Re-point the script at THIS struct's own arrays. `stash` memcpy's a built_t,
+ * which would otherwise leave `script.ops` aimed at the SOURCE's buffer. */
+static void rebind_script(built_t *B) {
+    B->script.ops = B->ops;
+    B->script.instance_starts = B->starts;
+}
 
 static uint64_t *row_of(uint64_t *t, size_t r) { return t + r * (size_t)TAIR_WIDTH; }
 
@@ -362,6 +385,83 @@ static void set_perm_sample_dup(uint64_t *row, const dnac_duplex_t *c) {
             fadd(c->sponge_state[TAIR_RATE], (uint64_t)k);
     }
     regen_perm(row);
+}
+
+/* ── s3a: the scenario's op script ────────────────────────────────────────
+ * The vector's op list is the transcript's op stream, with ONE expansion rule,
+ * taken from the native `check_witness` (duplex_challenger.c:151-158):
+ *   bits == 0 -> ZERO ops (:153-155 returns before touching the sponge),
+ *   bits >  0 -> an OBSERVE of the witness (:156) then a SAMPLE with is_pow
+ *                (:157, whose sample_bits is ONE base pop, :146-148).
+ * This is exactly the expansion `build_trace` below already performs on the
+ * TRACE side, so the two cannot disagree about how many rows an op costs. */
+static bool script_of(const vec_t *V, built_t *B) {
+    size_t n = 0, ns = 0;
+    memset(B->ops, 0, sizeof(B->ops));
+    memset(B->starts, 0, sizeof(B->starts));
+
+    for (size_t i = 0; i < V->n_ops; i++) {
+        for (size_t j = 0; j < V->n_starts; j++) {
+            if (V->starts[j] != (uint64_t)i) continue;
+            if (ns >= sizeof(B->starts) / sizeof(B->starts[0])) return false;
+            B->starts[ns++] = n;
+        }
+        const vec_op_t *o = &V->ops[i];
+        if (n + 2 > MAX_SCRIPT_OPS) return false;
+        if (strcmp(o->type, "observe") == 0) {
+            B->ops[n++].kind = DNAC_TAIR_OP_OBSERVE;
+        } else if (strcmp(o->type, "sample") == 0) {
+            B->ops[n].kind = DNAC_TAIR_OP_SAMPLE;
+            n++;
+        } else if (strcmp(o->type, "sample_bits") == 0) {
+            B->ops[n].kind = DNAC_TAIR_OP_SAMPLE;
+            B->ops[n].num_bits = (size_t)o->bits;
+            n++;
+        } else if (strcmp(o->type, "check_pow") == 0) {
+            if (o->bits == 0) continue; /* a full no-op on both sides */
+            B->ops[n++].kind = DNAC_TAIR_OP_OBSERVE;
+            B->ops[n].kind = DNAC_TAIR_OP_SAMPLE;
+            B->ops[n].is_pow = 1;
+            B->ops[n].pow_bits = (size_t)o->bits;
+            n++;
+        } else {
+            return false;
+        }
+    }
+    if (n == 0 || ns == 0) return false;
+
+    B->script.ops = B->ops;
+    B->script.n_ops = n;
+    B->script.instance_starts = B->starts;
+    B->script.n_starts = ns;
+    return dnac_tair_table_rows(&B->script) != 0;
+}
+
+/* Read the publics out of the honest trace: the payload lane of every op row in
+ * script order, then each bit-exporting op's exposed lanes. */
+static bool build_publics(built_t *B) {
+    B->n_pub = dnac_tair_num_publics(&B->script);
+    if (B->n_pub == 0 || B->n_pub > MAX_PUB) return false;
+    memset(B->pub, 0, MAX_PUB * sizeof(uint64_t));
+
+    size_t k = 0;
+    for (size_t r = 0; r < B->n_rows; r++) {
+        const int s = B->sel_of[r];
+        if (s != TAIR_SEL_OBS && s != TAIR_SEL_OBS_DUP && s != TAIR_SEL_SAMPLE &&
+            s != TAIR_SEL_SAMPLE_DUP)
+            continue;
+        if (k >= B->script.n_ops) return false;
+        const uint64_t *row = row_of(B->trace, r);
+        B->pub[k] = row[TAIR_LANE_OFF];
+        const size_t nb = B->script.ops[k].num_bits;
+        if (nb > 0) {
+            const size_t off = dnac_tair_op_bit_off(&B->script, k);
+            if (off == (size_t)-1 || off + nb > B->n_pub) return false;
+            for (size_t j = 0; j < nb; j++) B->pub[off + j] = row[tair_bit_off(j)];
+        }
+        k++;
+    }
+    return k == B->script.n_ops;
 }
 
 static bool build_trace(const vec_t *V, built_t *B) {
@@ -484,7 +584,31 @@ static bool build_trace(const vec_t *V, built_t *B) {
 
     for (size_t j = 0; j < TAIR_STATE_LANES; j++)
         if (ch.sponge_state[j] != V->final_state[j]) return false;
-    return true;
+
+    /* ── s3a: script -> table -> publics ──────────────────────────────────
+     * The table generator runs its OWN simulation of `duplex_challenger.c`
+     * (transcript_air_table.c `tair_sim_step`); the builder above ran the REAL
+     * challenger. Requiring the two to agree row for row — and requiring the
+     * padded height to match — is an independent cross-check of the generator,
+     * not a restatement of it. */
+    if (!script_of(V, B)) return false;
+    if (dnac_tair_table_rows(&B->script) != B->n_rows) return false;
+    memset(B->prep, 0, PREP_ELEMS * sizeof(uint64_t));
+    if (dnac_tair_table_generate(&B->script, B->prep, PREP_ELEMS) !=
+        DNAC_TAIR_TABLE_OK)
+        return false;
+    {
+        dnac_tair_table_defect_t d = DNAC_TAIR_DEFECT_NONE;
+        if (dnac_tair_table_validate(&B->script, B->prep, B->n_rows, &d) !=
+            DNAC_TAIR_TABLE_OK)
+            return false;
+    }
+    for (size_t rr = 0; rr < B->n_rows; rr++) {
+        const uint64_t *prow = B->prep + rr * TAIR_TBL_COLS;
+        if (B->sel_of[rr] < 0) return false;
+        if (prow[tair_tbl_col_type((size_t)B->sel_of[rr])] != 1) return false;
+    }
+    return build_publics(B);
 }
 
 /* ═════════════════════════════ helpers/reporting ═════════════════════════ */
@@ -505,10 +629,17 @@ static int find_row(const built_t *B, int sel, size_t from) {
 /* Keep a scenario's built trace + vector for the negative phase. */
 static void stash(built_t *db, vec_t *dv, const built_t *sb, const vec_t *sv) {
     memcpy(db->trace, sb->trace, TRACE_ELEMS * sizeof(uint64_t));
+    memcpy(db->prep, sb->prep, PREP_ELEMS * sizeof(uint64_t));
+    memcpy(db->pub, sb->pub, MAX_PUB * sizeof(uint64_t));
     memcpy(db->sel_of, sb->sel_of, sizeof(db->sel_of));
     memcpy(db->dup_of, sb->dup_of, sizeof(db->dup_of));
     memcpy(db->op_of, sb->op_of, sizeof(db->op_of));
+    memcpy(db->ops, sb->ops, sizeof(db->ops));
+    memcpy(db->starts, sb->starts, sizeof(db->starts));
+    db->script = sb->script;
+    db->n_pub = sb->n_pub;
     db->n_rows = sb->n_rows;
+    rebind_script(db); /* the memcpy'd script still names the SOURCE's arrays */
     memcpy(dv, sv, sizeof(*dv));
 }
 
@@ -518,16 +649,39 @@ static uint64_t *clone_trace(const built_t *B) {
     return t;
 }
 
-static void expect_reject(const char *name, const uint64_t *trace, size_t n_rows,
-                          const dnac_tair_config_t *cfg) {
-    const int v = dnac_transcript_air_eval_trace(trace, n_rows, cfg);
+static uint64_t *clone_buf(const uint64_t *src, size_t n) {
+    uint64_t *t = (uint64_t *)malloc(n * sizeof(uint64_t));
+    if (t) memcpy(t, src, n * sizeof(uint64_t));
+    return t;
+}
+
+/* Trace-level reject against a scenario's OWN table + publics (`B`), with
+ * optional overrides so a negative can tamper the table or the publics instead
+ * of the trace. */
+static void expect_reject_ex(const char *name, const built_t *B,
+                             const uint64_t *trace, const uint64_t *prep,
+                             const uint64_t *pub, size_t n_rows,
+                             const dnac_tair_config_t *cfg) {
+    const int v = dnac_transcript_air_eval_trace(
+        trace ? trace : B->trace, prep ? prep : B->prep, n_rows, cfg, &B->script,
+        pub ? pub : B->pub, B->n_pub);
     if (v >= 1) printf("  [reject] %-48s caught (%d viol) — OK\n", name, v);
     else { printf("  [reject] %-48s NOT caught — FAIL\n", name); fails++; }
 }
 
+static void expect_reject(const char *name, const built_t *B,
+                          const uint64_t *trace, size_t n_rows,
+                          const dnac_tair_config_t *cfg) {
+    expect_reject_ex(name, B, trace, NULL, NULL, n_rows, cfg);
+}
+
 static void expect_reject_pair(const char *name, const uint64_t *local,
-                               const uint64_t *next, const dnac_tair_config_t *cfg) {
-    const int v = dnac_transcript_air_eval_row(local, next, 0, cfg);
+                               const uint64_t *next, const uint64_t *prep,
+                               const dnac_tair_config_t *cfg,
+                               const dnac_tair_script_t *sched,
+                               const uint64_t *pub, size_t n_pub) {
+    const int v = dnac_transcript_air_eval_row(local, next, prep, 0, cfg, sched,
+                                               pub, n_pub);
     if (v >= 1) printf("  [reject] %-48s caught (%d viol) — OK\n", name, v);
     else { printf("  [reject] %-48s NOT caught — FAIL\n", name); fails++; }
 }
@@ -535,7 +689,67 @@ static void expect_reject_pair(const char *name, const uint64_t *local,
 /* A minimal (sel_sample -> sel_filler) pair whose popped challenge is exactly
  * `x`. Lets the bit gadget be probed at values the sponge would never emit —
  * in particular an x < 2^32 - 1, the only range where x and x + p are BOTH
- * 64-bit representations (the alias circuit_builder.rs:1103-1106 names). */
+ * 64-bit representations (the alias circuit_builder.rs:1103-1106 names).
+ *
+ * s3a: the evaluator has no table-less path, so the pair comes with its own
+ * script, its generated table and the matching publics.
+ *
+ * The script is TWO samples, not one, and that is forced by the machine rather
+ * than chosen: from a fresh instance `input_len == output_len == 0`, so the
+ * FIRST sample must duplex (duplex_challenger.c:127) and is a `sel_sample_dup`
+ * row. The SECOND pops from the refilled buffer and is the plain `sel_sample`
+ * row this probe needs — table row 2 (row 0 is the mandatory instance start).
+ * `is_pow` / `num_bits` are script-level, so a PoW probe binds them in the TABLE
+ * too and the rejection it produces isolates the PoW rule rather than tripping
+ * CT-2.
+ *
+ * Public layout for this script: [0] op0's payload (unread by row 2), [1] op1's
+ * payload == x, [2 ..] op1's exported bits. */
+typedef struct {
+    dnac_tair_op_t     ops[2];
+    size_t             starts[1];
+    dnac_tair_script_t script;
+    uint64_t           prep[4 * TAIR_TBL_COLS]; /* 1 start + 2 ops + 1 pad */
+    uint64_t           pub[2 + TAIR_TBL_MAX_OP_BITS];
+    size_t             n_pub;
+} synth_t;
+
+static bool mk_synth(synth_t *S, uint64_t x, int is_pow, size_t pow_bits,
+                     size_t num_bits) {
+    memset(S, 0, sizeof(*S));
+    S->ops[0].kind = DNAC_TAIR_OP_SAMPLE; /* the forced sample_dup */
+    S->ops[1].kind = DNAC_TAIR_OP_SAMPLE; /* the probed plain sample */
+    S->ops[1].is_pow = is_pow;
+    S->ops[1].pow_bits = is_pow ? pow_bits : 0;
+    S->ops[1].num_bits = num_bits;
+    S->starts[0] = 0;
+    S->script.ops = S->ops;
+    S->script.n_ops = 2;
+    S->script.instance_starts = S->starts;
+    S->script.n_starts = 1;
+
+    if (dnac_tair_table_rows(&S->script) != 4) return false;
+    if (dnac_tair_table_generate(&S->script, S->prep,
+                                 sizeof(S->prep) / sizeof(S->prep[0])) !=
+        DNAC_TAIR_TABLE_OK)
+        return false;
+    /* The generator must have labelled row 2 the plain sample — the whole point
+     * of the two-op script. Checked, not assumed. */
+    if (S->prep[2 * TAIR_TBL_COLS + tair_tbl_col_type(TAIR_TBL_TYPE_SAMPLE)] != 1)
+        return false;
+
+    S->n_pub = dnac_tair_num_publics(&S->script);
+    if (S->n_pub != 2 + num_bits) return false;
+    S->pub[1] = x;
+    for (size_t j = 0; j < num_bits; j++) S->pub[2 + j] = (x >> j) & 1u;
+    return true;
+}
+
+/** The probed plain-sample row's preprocessed window (table row 2). */
+static const uint64_t *synth_prep(const synth_t *S) {
+    return S->prep + 2 * TAIR_TBL_COLS;
+}
+
 static void mk_sample_pair(uint64_t x, uint64_t *local, uint64_t *next) {
     static const uint64_t z[TAIR_STATE_LANES] = {0};
     memset(local, 0, (size_t)TAIR_WIDTH * sizeof(uint64_t));
@@ -579,18 +793,68 @@ int main(int argc, char **argv) {
         printf("  [accept] column-layout binding contract           OK\n");
     else { printf("  [accept] column-layout binding contract           FAIL\n"); fails++; }
 
-    /* ── Gate 0b: fail-close config ── */
+    /* ── Gate 0b: fail-close config / schedule / publics (s3a) ── */
     {
-        dnac_tair_config_t bad = {(size_t)TAIR_MAX_NUM_BITS + 1};
+        synth_t *S = (synth_t *)calloc(1, sizeof(synth_t));
         uint64_t *dummy = (uint64_t *)calloc((size_t)TAIR_WIDTH, sizeof(uint64_t));
-        if (!dummy) return 2;
-        const int v = dnac_transcript_air_eval_row(dummy, NULL, 0, &bad);
-        if (v == TAIR_VIOL_BAD_CONFIG)
-            printf("  [accept] pow_bits > %d fails closed                OK\n",
-                   TAIR_MAX_NUM_BITS);
-        else { printf("  [accept] pow_bits > %d fails closed                FAIL\n",
-                      TAIR_MAX_NUM_BITS); fails++; }
+        if (!S || !dummy) return 2;
+        if (!mk_synth(S, 0x1234u, 0, 0, 0)) {
+            printf("  [accept] synthetic script/table build             FAIL\n");
+            fails++;
+        }
+        const dnac_tair_config_t good = {TAIR_TEST_DEFAULT_POW_BITS};
+        const dnac_tair_config_t bad = {(size_t)TAIR_MAX_NUM_BITS + 1};
+        const uint64_t *P = synth_prep(S);
+
+#define GATE(cond, label)                                                     \
+    do {                                                                      \
+        if (cond) printf("  [accept] %-48s OK\n", label);                     \
+        else { printf("  [accept] %-48s FAIL\n", label); fails++; }           \
+    } while (0)
+
+        GATE(dnac_transcript_air_eval_row(dummy, NULL, P, 0, &bad, &S->script,
+                                          S->pub, S->n_pub) ==
+                 TAIR_VIOL_BAD_CONFIG,
+             "pow_bits > max fails closed");
+        GATE(dnac_transcript_air_eval_row(dummy, NULL, P, 0, &good, NULL,
+                                          S->pub, S->n_pub) ==
+                 TAIR_VIOL_BAD_CONFIG,
+             "NULL schedule fails closed");
+        GATE(dnac_transcript_air_eval_row(dummy, NULL, NULL, 0, &good,
+                                          &S->script, S->pub, S->n_pub) ==
+                 TAIR_VIOL_BAD_CONFIG,
+             "NULL preprocessed window fails closed");
+        GATE(dnac_transcript_air_eval_row(dummy, NULL, P, 0, &good, &S->script,
+                                          S->pub, S->n_pub + 1) ==
+                 TAIR_VIOL_BAD_CONFIG,
+             "wrong num_publics fails closed");
+        {
+            uint64_t alias[2 + TAIR_TBL_MAX_OP_BITS];
+            memcpy(alias, S->pub, sizeof(alias));
+            alias[1] = GOLDILOCKS_P; /* non-canonical: aliases 0 in the field */
+            GATE(dnac_transcript_air_eval_row(dummy, NULL, P, 0, &good,
+                                              &S->script, alias, S->n_pub) ==
+                     TAIR_VIOL_BAD_CONFIG,
+                 "non-canonical public fails closed");
+        }
+        /* A PoW script whose grinding width disagrees with the AIR cfg. */
+        {
+            synth_t *SP = (synth_t *)calloc(1, sizeof(synth_t));
+            if (!SP) return 2;
+            if (!mk_synth(SP, 0x1200u, 1, 8, 0)) {
+                printf("  [accept] synthetic PoW script build               FAIL\n");
+                fails++;
+            }
+            const dnac_tair_config_t mism = {16}; /* script says 8 */
+            GATE(dnac_transcript_air_eval_row(dummy, NULL, synth_prep(SP), 0,
+                                              &mism, &SP->script, SP->pub,
+                                              SP->n_pub) == TAIR_VIOL_BAD_CONFIG,
+                 "cfg pow_bits != script pow_bits fails closed");
+            free(SP);
+        }
+#undef GATE
         free(dummy);
+        free(S);
     }
 
     /* nodus/messenger fixture rule: multi-KB fixtures are heap-allocated. */
@@ -598,18 +862,24 @@ int main(int argc, char **argv) {
     built_t *B_basic = (built_t *)calloc(1, sizeof(built_t));
     built_t *B_multi = (built_t *)calloc(1, sizeof(built_t));
     built_t *B_squeeze = (built_t *)calloc(1, sizeof(built_t));
+    built_t *B_bits = (built_t *)calloc(1, sizeof(built_t));
     vec_t *V = (vec_t *)calloc(1, sizeof(vec_t));
     vec_t *V_basic = (vec_t *)calloc(1, sizeof(vec_t));
     vec_t *V_multi = (vec_t *)calloc(1, sizeof(vec_t));
     vec_t *V_squeeze = (vec_t *)calloc(1, sizeof(vec_t));
-    if (!B || !B_basic || !B_multi || !B_squeeze || !V || !V_basic || !V_multi ||
-        !V_squeeze)
+    vec_t *V_bits = (vec_t *)calloc(1, sizeof(vec_t));
+    if (!B || !B_basic || !B_multi || !B_squeeze || !B_bits || !V || !V_basic ||
+        !V_multi || !V_squeeze || !V_bits)
         return 2;
-    B->trace = (uint64_t *)calloc(TRACE_ELEMS, sizeof(uint64_t));
-    B_basic->trace = (uint64_t *)calloc(TRACE_ELEMS, sizeof(uint64_t));
-    B_multi->trace = (uint64_t *)calloc(TRACE_ELEMS, sizeof(uint64_t));
-    B_squeeze->trace = (uint64_t *)calloc(TRACE_ELEMS, sizeof(uint64_t));
-    if (!B->trace || !B_basic->trace || !B_multi->trace || !B_squeeze->trace) return 2;
+    {
+        built_t *all[5] = {B, B_basic, B_multi, B_squeeze, B_bits};
+        for (int i = 0; i < 5; i++) {
+            all[i]->trace = (uint64_t *)calloc(TRACE_ELEMS, sizeof(uint64_t));
+            all[i]->prep = (uint64_t *)calloc(PREP_ELEMS, sizeof(uint64_t));
+            all[i]->pub = (uint64_t *)calloc(MAX_PUB, sizeof(uint64_t));
+            if (!all[i]->trace || !all[i]->prep || !all[i]->pub) return 2;
+        }
+    }
 
     /* ══ PHASE 1 — POSITIVE: all 8 oracle scenarios ══ */
     printf("------------------------------------------------------------\n");
@@ -636,7 +906,8 @@ int main(int argc, char **argv) {
             continue;
         }
 
-        const int viol = dnac_transcript_air_eval_trace(B->trace, B->n_rows, &cfg);
+        const int viol = dnac_transcript_air_eval_trace(
+            B->trace, B->prep, B->n_rows, &cfg, &B->script, B->pub, B->n_pub);
         int bad = (viol != 0);
 
         /* Duplexing rows: the embedded block's OUTPUT columns are the oracle's
@@ -693,6 +964,7 @@ int main(int argc, char **argv) {
         if (strcmp(V->scenario, "basic") == 0) stash(B_basic, V_basic, B, V);
         if (strcmp(V->scenario, "multi_instance") == 0) stash(B_multi, V_multi, B, V);
         if (strcmp(V->scenario, "squeeze_chain") == 0) stash(B_squeeze, V_squeeze, B, V);
+        if (strcmp(V->scenario, "sample_bits_32") == 0) stash(B_bits, V_bits, B, V);
     }
     if (scenarios != 8) {
         printf("  [accept] expected 8 scenarios, replayed %d      FAIL\n", scenarios);
@@ -712,7 +984,8 @@ int main(int argc, char **argv) {
     }
     built_t *const W = B_basic;
     const dnac_tair_config_t cfg = {pow_bits_of(V_basic)};
-    if (dnac_transcript_air_eval_trace(W->trace, W->n_rows, &cfg) != 0) {
+    if (dnac_transcript_air_eval_trace(W->trace, W->prep, W->n_rows, &cfg,
+                                       &W->script, W->pub, W->n_pub) != 0) {
         printf("  FAIL: workhorse trace is not clean\n");
         return 1;
     }
@@ -746,7 +1019,7 @@ int main(int argc, char **argv) {
         uint64_t *t = clone_trace(W);
         uint64_t *row = row_of(t, (size_t)r_absorb);
         for (size_t k = 0; k < TAIR_LEN_SLOTS; k++) row[tair_il_off(k)] = (k == 0);
-        expect_reject("absorb relabelled as squeeze (guard :74)", t, W->n_rows, &cfg);
+        expect_reject("absorb relabelled as squeeze (guard :74)", W, t, W->n_rows, &cfg);
         free(t);
     }
     /* N2 — length tag skipped (capacity lane loses the += k, :80-82). */
@@ -755,7 +1028,7 @@ int main(int argc, char **argv) {
         uint64_t *row = row_of(t, (size_t)r_absorb);
         row[tair_perm_in_off(TAIR_RATE)] = row[tair_state_off(TAIR_RATE)];
         regen_perm(row);
-        expect_reject("length tag skipped (capacity pin :80-82)", t, W->n_rows, &cfg);
+        expect_reject("length tag skipped (capacity pin :80-82)", W, t, W->n_rows, &cfg);
         free(t);
     }
     /* N3 — rate clear skipped (a slot the absorb did not overwrite keeps data,
@@ -765,7 +1038,7 @@ int main(int argc, char **argv) {
         uint64_t *row = row_of(t, (size_t)r_absorb);
         row[tair_perm_in_off(TAIR_RATE - 1)] = 0xDEADBEEFu;
         regen_perm(row);
-        expect_reject("rate clear skipped (:76-78)", t, W->n_rows, &cfg);
+        expect_reject("rate clear skipped (:76-78)", W, t, W->n_rows, &cfg);
         free(t);
     }
     /* N4 — DS-prefix limb tampered (G-SEC-P2a-3). */
@@ -773,7 +1046,7 @@ int main(int argc, char **argv) {
         uint64_t *t = clone_trace(W);
         uint64_t *row = row_of(t, (size_t)r_prefix);
         row[TAIR_LANE_OFF] = fadd(row[TAIR_LANE_OFF], 1);
-        expect_reject("DS-prefix limb tampered", t, W->n_rows, &cfg);
+        expect_reject("DS-prefix limb tampered", W, t, W->n_rows, &cfg);
         free(t);
     }
     /* N5 — a sample injected before the prefix completes. */
@@ -782,7 +1055,7 @@ int main(int argc, char **argv) {
         uint64_t *row = row_of(t, (size_t)r_prefix);
         row[tair_sel_off(TAIR_SEL_OBS)] = 0;
         row[tair_sel_off(TAIR_SEL_SAMPLE)] = 1;
-        expect_reject("sample injected mid-prefix", t, W->n_rows, &cfg);
+        expect_reject("sample injected mid-prefix", W, t, W->n_rows, &cfg);
         free(t);
     }
     /* N6 — an op AFTER padding started (filler terminality, F8). */
@@ -791,7 +1064,7 @@ int main(int argc, char **argv) {
         uint64_t *row = row_of(t, (size_t)r_fill + 1);
         row[tair_sel_off(TAIR_SEL_FILLER)] = 0;
         row[tair_sel_off(TAIR_SEL_OBS)] = 1;
-        expect_reject("op after filler (terminality)", t, W->n_rows, &cfg);
+        expect_reject("op after filler (terminality)", W, t, W->n_rows, &cfg);
         free(t);
     }
     /* N7 — il_flag one-hot broken (double bit). */
@@ -799,7 +1072,7 @@ int main(int argc, char **argv) {
         uint64_t *t = clone_trace(W);
         uint64_t *row = row_of(t, (size_t)r_smp);
         row[tair_il_off(1)] = 1;
-        expect_reject("il_flag double-bit (one-hot)", t, W->n_rows, &cfg);
+        expect_reject("il_flag double-bit (one-hot)", W, t, W->n_rows, &cfg);
         free(t);
     }
     /* N8 — selector one-hot broken (double bit). */
@@ -807,7 +1080,7 @@ int main(int argc, char **argv) {
         uint64_t *t = clone_trace(W);
         uint64_t *row = row_of(t, (size_t)r_smp);
         row[tair_sel_off(TAIR_SEL_FILLER)] = 1;
-        expect_reject("selector double-bit (one-hot)", t, W->n_rows, &cfg);
+        expect_reject("selector double-bit (one-hot)", W, t, W->n_rows, &cfg);
         free(t);
     }
     /* N9 — an interior cell of the embedded poseidon2 block (G-SEC-P2a-4:
@@ -817,7 +1090,7 @@ int main(int argc, char **argv) {
         uint64_t *row = row_of(t, (size_t)r_obsdup);
         const size_t off = (size_t)TAIR_PERM_OFF + p2air_beg_sbox_off(0, 0);
         row[off] = fadd(row[off], 1);
-        expect_reject("poseidon2 block interior cell tamper", t, W->n_rows, &cfg);
+        expect_reject("poseidon2 block interior cell tamper", W, t, W->n_rows, &cfg);
         free(t);
     }
     /* N10 — state copy broken on a NON-duplexing row (F3 threading). */
@@ -825,7 +1098,7 @@ int main(int argc, char **argv) {
         uint64_t *t = clone_trace(W);
         uint64_t *row = row_of(t, (size_t)r_smp + 1);
         row[tair_state_off(0)] = fadd(row[tair_state_off(0)], 1);
-        expect_reject("state copy broken on a sample row", t, W->n_rows, &cfg);
+        expect_reject("state copy broken on a sample row", W, t, W->n_rows, &cfg);
         free(t);
     }
     /* N11 — wrong-flag duplex: an obs_dup relabelled as a plain observe, i.e.
@@ -835,7 +1108,7 @@ int main(int argc, char **argv) {
         uint64_t *row = row_of(t, (size_t)r_obsdup);
         row[tair_sel_off(TAIR_SEL_OBS_DUP)] = 0;
         row[tair_sel_off(TAIR_SEL_OBS)] = 1;
-        expect_reject("duplexing skipped at RATE (wrong flag)", t, W->n_rows, &cfg);
+        expect_reject("duplexing skipped at RATE (wrong flag)", W, t, W->n_rows, &cfg);
         free(t);
     }
     /* N12 — the reset a sel_start row forces is not applied. */
@@ -843,14 +1116,14 @@ int main(int argc, char **argv) {
         uint64_t *t = clone_trace(W);
         uint64_t *row = row_of(t, 1); /* row 0 is sel_start */
         row[tair_state_off(0)] = fadd(row[tair_state_off(0)], 1);
-        expect_reject("sel_start reset not applied", t, W->n_rows, &cfg);
+        expect_reject("sel_start reset not applied", W, t, W->n_rows, &cfg);
         free(t);
     }
     /* N13 — is_pow on a NON-sampling row. */
     {
         uint64_t *t = clone_trace(W);
         row_of(t, (size_t)r_obsdup)[TAIR_ISPOW_OFF] = 1;
-        expect_reject("is_pow on a non-sampling row", t, W->n_rows, &cfg);
+        expect_reject("is_pow on a non-sampling row", W, t, W->n_rows, &cfg);
         free(t);
     }
 
@@ -871,18 +1144,20 @@ int main(int argc, char **argv) {
         last[tair_sel_off(TAIR_SEL_SAMPLE)] = 1;
         last[TAIR_LANE_OFF] = 0x1234u;      /* free — not the sponge's value */
         write_bits(last, 0x1234u);
-        expect_reject("trace ends in a sampling row (free challenge)", t,
+        expect_reject("trace ends in a sampling row (free challenge)", W, t,
                       W->n_rows, &cfg);
         free(t);
     }
-    /* N20b — the SAME hole in its pure form, and the one that isolates the new
-     * boundary: TRUNCATE the honest trace so it ends at a sampling row. No
-     * filler exists anywhere after it, so filler-terminality cannot fire and
-     * the last-row-filler boundary is the ONLY constraint left to reject it.
-     * (Exactly the shape the independent second-witness hunt constructed.) */
+    /* N20b — the SAME hole in its pure form: TRUNCATE the honest trace so it
+     * ends at a sampling row. Before s3a this was the ONLY negative the
+     * last-row-filler boundary caught in isolation; s3a's SCHEDULE CONFORMANCE
+     * gate (`n_rows != dnac_tair_table_rows(sched)`) now rejects it FIRST, with
+     * TAIR_VIOL_BAD_CONFIG. Both are rejections, but the isolation claim moved
+     * — stated rather than left implied. N20 above still exercises the boundary
+     * itself at the pinned height. */
     {
         uint64_t *t = clone_trace(W);
-        expect_reject("truncated trace ending at a sample row", t,
+        expect_reject("truncated trace ending at a sample row", W, t,
                       (size_t)r_smp + 1, &cfg);
         free(t);
     }
@@ -894,7 +1169,7 @@ int main(int argc, char **argv) {
         uint64_t *t = clone_trace(W);
         uint64_t *row = row_of(t, (size_t)r_smp);
         for (size_t k = 0; k < TAIR_LEN_SLOTS; k++) row[tair_il_off(k)] = (k == TAIR_RATE);
-        expect_reject("op row at input_len == RATE (il[4] guard)", t, W->n_rows, &cfg);
+        expect_reject("op row at input_len == RATE (il[4] guard)", W, t, W->n_rows, &cfg);
         free(t);
     }
     /* N22 (§5.4) — input_len JUMPS across a sample row (0 -> 2), the shape that
@@ -903,7 +1178,7 @@ int main(int argc, char **argv) {
         uint64_t *t = clone_trace(W);
         uint64_t *nxt = row_of(t, (size_t)r_smp + 1);
         for (size_t k = 0; k < TAIR_LEN_SLOTS; k++) nxt[tair_il_off(k)] = (k == 2);
-        expect_reject("input_len jumped across a sample row", t, W->n_rows, &cfg);
+        expect_reject("input_len jumped across a sample row", W, t, W->n_rows, &cfg);
         free(t);
     }
     /* N23 (§5.4) — the input BUFFER mutated across a sample row (same class:
@@ -912,7 +1187,7 @@ int main(int argc, char **argv) {
         uint64_t *t = clone_trace(W);
         uint64_t *nxt = row_of(t, (size_t)r_smp + 1);
         nxt[tair_inbuf_off(0)] = fadd(nxt[tair_inbuf_off(0)], 1);
-        expect_reject("input_buffer mutated across a sample row", t, W->n_rows, &cfg);
+        expect_reject("input_buffer mutated across a sample row", W, t, W->n_rows, &cfg);
         free(t);
     }
     /* N24 (transcript_air.c:268) — an observe that does NOT invalidate the
@@ -928,7 +1203,7 @@ int main(int argc, char **argv) {
             uint64_t *nxt = row_of(t, (size_t)r_obs + 1);
             for (size_t k = 0; k < TAIR_LEN_SLOTS; k++)
                 nxt[tair_ol_off(k)] = (k == TAIR_RATE);
-            expect_reject("observe did not invalidate the output buffer", t,
+            expect_reject("observe did not invalidate the output buffer", W, t,
                           W->n_rows, &cfg);
         }
         free(t);
@@ -940,7 +1215,7 @@ int main(int argc, char **argv) {
         uint64_t *row = row_of(t, (size_t)r_obsdup);
         row[tair_perm_in_off(TAIR_RATE)] = row[tair_state_off(TAIR_RATE)];
         regen_perm(row);
-        expect_reject("obs_dup length tag skipped (+4)", t, W->n_rows, &cfg);
+        expect_reject("obs_dup length tag skipped (+4)", W, t, W->n_rows, &cfg);
         free(t);
     }
     /* N26 (transcript_air.c:167) — trace row 0 is not a sel_start row. */
@@ -949,7 +1224,7 @@ int main(int argc, char **argv) {
         uint64_t *row = row_of(t, 0);
         row[tair_sel_off(TAIR_SEL_START)] = 0;
         row[tair_sel_off(TAIR_SEL_FILLER)] = 1;
-        expect_reject("row 0 is not sel_start (boundary)", t, W->n_rows, &cfg);
+        expect_reject("row 0 is not sel_start (boundary)", W, t, W->n_rows, &cfg);
         free(t);
     }
     /* N27 (transcript_air.c:251-253) — prefix_ctr JUMPED past DS limbs: an
@@ -959,7 +1234,7 @@ int main(int argc, char **argv) {
         uint64_t *nxt = row_of(t, (size_t)r_prefix + 1);
         for (size_t k = 0; k < TAIR_PREFIX_SLOTS; k++)
             nxt[tair_prefix_off(k)] = (k == TAIR_RATE);
-        expect_reject("prefix_ctr jumped (DS limbs skipped)", t, W->n_rows, &cfg);
+        expect_reject("prefix_ctr jumped (DS limbs skipped)", W, t, W->n_rows, &cfg);
         free(t);
     }
     /* N28 (transcript_air.c:339) — the popped challenge is not
@@ -969,7 +1244,7 @@ int main(int argc, char **argv) {
         uint64_t *row = row_of(t, (size_t)r_smp);
         row[TAIR_LANE_OFF] = fadd(row[TAIR_LANE_OFF], 1);
         write_bits(row, row[TAIR_LANE_OFF]);
-        expect_reject("sample lane != state[output_len-1]", t, W->n_rows, &cfg);
+        expect_reject("sample lane != state[output_len-1]", W, t, W->n_rows, &cfg);
         free(t);
     }
 
@@ -990,8 +1265,8 @@ int main(int argc, char **argv) {
             uint64_t *row = row_of(t, (size_t)r_start2);
             row[tair_sel_off(TAIR_SEL_START)] = 0;
             row[tair_sel_off(TAIR_SEL_FILLER)] = 1;
-            expect_reject("instance 2 started without sel_start", t, B_multi->n_rows,
-                          &cfg_m);
+            expect_reject("instance 2 started without sel_start", B_multi, t,
+                          B_multi->n_rows, &cfg_m);
             free(t);
         }
     }
@@ -1021,8 +1296,8 @@ int main(int argc, char **argv) {
             uint64_t *row = row_of(t, (size_t)r_squeeze);
             row[tair_sel_off(TAIR_SEL_SAMPLE_DUP)] = 0;
             row[tair_sel_off(TAIR_SEL_SAMPLE)] = 1;
-            expect_reject("sel_sample with output_len == 0", t, B_squeeze->n_rows,
-                          &cfg_s);
+            expect_reject("sel_sample with output_len == 0", B_squeeze, t,
+                          B_squeeze->n_rows, &cfg_s);
             free(t);
         }
     }
@@ -1035,23 +1310,36 @@ int main(int argc, char **argv) {
         const dnac_tair_config_t cfg_b = {8};
         uint64_t *lo = (uint64_t *)calloc((size_t)TAIR_WIDTH, sizeof(uint64_t));
         uint64_t *nx = (uint64_t *)calloc((size_t)TAIR_WIDTH, sizeof(uint64_t));
-        if (!lo || !nx) return 2;
+        synth_t *S = (synth_t *)calloc(1, sizeof(synth_t));   /* no bit export */
+        synth_t *SP = (synth_t *)calloc(1, sizeof(synth_t));  /* is_pow, 8 bits */
+        if (!lo || !nx || !S || !SP) return 2;
         const uint64_t x = 0x1234u; /* < 2^32 - 1 => x + p is a second encoding */
+
+        if (!mk_synth(S, x, 0, 0, 0) || !mk_synth(SP, x, 1, 8, 0)) {
+            printf("  FAIL: synthetic script/table build\n");
+            return 1;
+        }
+        const uint64_t *P = synth_prep(S);
+        const uint64_t *PP = synth_prep(SP);
 
         mk_sample_pair(x, lo, nx);
         {
-            const int v = dnac_transcript_air_eval_row(lo, nx, 0, &cfg_b);
+            const int v = dnac_transcript_air_eval_row(lo, nx, P, 0, &cfg_b,
+                                                       &S->script, S->pub,
+                                                       S->n_pub);
             if (v == 0) printf("  [accept] synthetic sample pair                    0 viol — OK\n");
             else { printf("  [accept] synthetic sample pair                    %d viol — FAIL\n", v); fails++; }
         }
         /* N16 — non-boolean bit. */
         mk_sample_pair(x, lo, nx);
         lo[tair_bit_off(5)] = 2;
-        expect_reject_pair("non-boolean bit", lo, nx, &cfg_b);
+        expect_reject_pair("non-boolean bit", lo, nx, P, &cfg_b, &S->script,
+                           S->pub, S->n_pub);
         /* N17 — reconstruction broken (a boolean bit flipped). */
         mk_sample_pair(x, lo, nx);
         lo[tair_bit_off(3)] ^= 1u;
-        expect_reject_pair("reconstruction broken (bit flipped)", lo, nx, &cfg_b);
+        expect_reject_pair("reconstruction broken (bit flipped)", lo, nx, P,
+                           &cfg_b, &S->script, S->pub, S->n_pub);
         /* N18 — the NON-CANONICAL second encoding: bits of x + p. Reconstruction
          * still holds (x + p == x in the field); only the `< p` comparison can
          * reject it — the F-S index-shift attack circuit_builder.rs:1103-1106
@@ -1065,11 +1353,13 @@ int main(int argc, char **argv) {
                 lo[tair_bit_off(i)] = b;
                 if (i >= 32) hi_ones += b;
             }
-            const uint64_t S = 32u - hi_ones; /* == 0: every high bit is set */
-            lo[TAIR_CANON_ISZ_OFF] = (S == 0);
+            const uint64_t S_hi = 32u - hi_ones; /* == 0: every high bit is set */
+            lo[TAIR_CANON_ISZ_OFF] = (S_hi == 0);
             lo[TAIR_CANON_INV_OFF] =
-                (S == 0) ? 0u : gold_fp_to_u64(gold_fp_inv(gold_fp_from_u64(S)));
-            expect_reject_pair("non-canonical decomposition (x + p)", lo, nx, &cfg_b);
+                (S_hi == 0) ? 0u
+                            : gold_fp_to_u64(gold_fp_inv(gold_fp_from_u64(S_hi)));
+            expect_reject_pair("non-canonical decomposition (x + p)", lo, nx, P,
+                               &cfg_b, &S->script, S->pub, S->n_pub);
         }
         /* N18b — the same alias with a LIED is-zero witness (isz = 0 to dodge
          * the low-bits constraint): the is-zero gadget itself catches it. */
@@ -1080,32 +1370,178 @@ int main(int argc, char **argv) {
                 lo[tair_bit_off(i)] = (alias >> i) & 1u;
             lo[TAIR_CANON_ISZ_OFF] = 0;
             lo[TAIR_CANON_INV_OFF] = 0;
-            expect_reject_pair("non-canonical + lied is-zero witness", lo, nx, &cfg_b);
+            expect_reject_pair("non-canonical + lied is-zero witness", lo, nx, P,
+                               &cfg_b, &S->script, S->pub, S->n_pub);
         }
-        /* N19 — PoW row whose exposed low `pow_bits` are NOT zero. */
+        /* N19 — PoW row whose exposed low `pow_bits` are NOT zero. Run against
+         * the is_pow SCRIPT, so CT-2 agrees and the PoW rule is what rejects. */
         mk_sample_pair(x, lo, nx); /* x = 0x1234, low 8 bits = 0x34 != 0 */
         lo[TAIR_ISPOW_OFF] = 1;
-        expect_reject_pair("PoW row with non-zero low bits", lo, nx, &cfg_b);
+        expect_reject_pair("PoW row with non-zero low bits", lo, nx, PP, &cfg_b,
+                           &SP->script, SP->pub, SP->n_pub);
         /* and the honest PoW counterpart is accepted */
-        mk_sample_pair(0x1200u, lo, nx); /* low 8 bits zero */
-        lo[TAIR_ISPOW_OFF] = 1;
         {
-            const int v = dnac_transcript_air_eval_row(lo, nx, 0, &cfg_b);
+            /* Two scripts over the SAME challenge 0x1200 (low 8 bits zero, so
+             * the PoW rule itself is satisfied either way): one that declares
+             * the row a PoW check and one that does not. The pair isolates CT-2
+             * exactly — the only difference between the accept and the reject is
+             * the TABLE's `is_pow` cell. */
+            synth_t *SPok = (synth_t *)calloc(1, sizeof(synth_t));
+            synth_t *S12 = (synth_t *)calloc(1, sizeof(synth_t));
+            if (!SPok || !S12) return 2;
+            if (!mk_synth(SPok, 0x1200u, 1, 8, 0) ||
+                !mk_synth(S12, 0x1200u, 0, 0, 0)) {
+                printf("  FAIL: synthetic PoW-accept script build\n");
+                return 1;
+            }
+            mk_sample_pair(0x1200u, lo, nx); /* low 8 bits zero */
+            lo[TAIR_ISPOW_OFF] = 1;
+            const int v = dnac_transcript_air_eval_row(
+                lo, nx, synth_prep(SPok), 0, &cfg_b, &SPok->script, SPok->pub,
+                SPok->n_pub);
             if (v == 0) printf("  [accept] PoW row with zero low bits               0 viol — OK\n");
             else { printf("  [accept] PoW row with zero low bits               %d viol — FAIL\n", v); fails++; }
+            /* N31 (s3a CT-2) — the MAIN `is_pow` flipped on a row whose PINNED
+             * table says it is not a PoW row. Before s3a `is_pow` was a free
+             * main column and this was satisfiable (the P2a-i3 obligation). */
+            mk_sample_pair(0x1200u, lo, nx);
+            lo[TAIR_ISPOW_OFF] = 1;
+            expect_reject_pair("is_pow flipped vs the pinned table (CT-2)", lo,
+                               nx, synth_prep(S12), &cfg_b, &S12->script,
+                               S12->pub, S12->n_pub);
+            free(SPok);
+            free(S12);
+        }
+        /* N29 (s3a CT-1) — the MAIN row type relabelled while the table keeps
+         * the pinned one: a plain sample claimed as a filler. */
+        mk_sample_pair(x, lo, nx);
+        lo[tair_sel_off(TAIR_SEL_SAMPLE)] = 0;
+        lo[tair_sel_off(TAIR_SEL_FILLER)] = 1;
+        expect_reject_pair("row type relabelled vs the table (CT-1)", lo, nx, P,
+                           &cfg_b, &S->script, S->pub, S->n_pub);
+        /* N30 (s3a CT-3b) — the payload public moved: the AIR's popped lane no
+         * longer equals the public the schedule reserved for this op. */
+        mk_sample_pair(x, lo, nx);
+        {
+            uint64_t *pub2 = clone_buf(S->pub, S->n_pub);
+            if (!pub2) return 2;
+            pub2[1] = fadd(pub2[1], 1);
+            expect_reject_pair("payload public moved (CT-3b)", lo, nx, P, &cfg_b,
+                               &S->script, pub2, S->n_pub);
+            free(pub2);
+        }
+        /* N33 (s3a CT-3a) — the table's op-step one-hot cleared on an op row.
+         * Without CT-3a the payload selection would collapse to `lane == 0` and
+         * an all-zero position would be free. (A tampered TABLE is only reachable
+         * if PIN-1-P2a is not enforced — which is exactly the state this slice
+         * ships in, hence the negative.) */
+        mk_sample_pair(x, lo, nx);
+        {
+            uint64_t *prep2 = clone_buf(P, TAIR_TBL_COLS);
+            if (!prep2) return 2;
+            prep2[tair_tbl_col_pos(1)] = 0;
+            expect_reject_pair("table op-step one-hot cleared (CT-3a)", lo, nx,
+                               prep2, &cfg_b, &S->script, S->pub, S->n_pub);
+            free(prep2);
         }
         free(lo);
         free(nx);
+        free(S);
+        free(SP);
     }
 
-    free(B->trace); free(B_basic->trace); free(B_multi->trace); free(B_squeeze->trace);
-    free(B); free(B_basic); free(B_multi); free(B_squeeze);
-    free(V); free(V_basic); free(V_multi); free(V_squeeze);
+    /* ── s3a: the index-bit export surface, on the sample_bits_32 scenario ── */
+    printf("------------------------------------------------------------\n");
+    printf("Phase 4 — s3a table conformance + public binding (CT-1..CT-4)\n");
+    printf("------------------------------------------------------------\n");
+    if (B_bits->n_rows == 0) {
+        printf("  [reject] sample_bits_32 trace missing              FAIL\n");
+        fails++;
+    } else {
+        const dnac_tair_config_t cfg_x = {pow_bits_of(V_bits)};
+        /* N32 (CT-4) — one exported index bit moved in the publics. This is the
+         * surface the P2c/P2e composition aliases onto the shared query index;
+         * if it were unbound, the AIR would prove a decomposition of a challenge
+         * nobody downstream can name. */
+        {
+            uint64_t *pub2 = clone_buf(B_bits->pub, B_bits->n_pub);
+            if (!pub2) return 2;
+            const size_t off = dnac_tair_op_bit_off(&B_bits->script,
+                                                    B_bits->script.n_ops - 1);
+            if (off == (size_t)-1) {
+                printf("  [reject] last op exports no bits                   FAIL\n");
+                fails++;
+            } else {
+                pub2[off] ^= 1u;
+                expect_reject_ex("exported index bit moved (CT-4)", B_bits, NULL,
+                                 NULL, pub2, B_bits->n_rows, &cfg_x);
+            }
+            free(pub2);
+        }
+        /* N34 (CT-1) — a TABLE row type flipped: the schedule now claims a
+         * sample where the honest trace has an observe. */
+        {
+            uint64_t *prep2 = clone_buf(B_bits->prep, PREP_ELEMS);
+            int r_obs2 = find_row(B_bits, TAIR_SEL_OBS, 0);
+            if (!prep2) return 2;
+            if (r_obs2 < 0) {
+                printf("  [reject] sample_bits_32 has no plain observe      FAIL\n");
+                fails++;
+            } else {
+                uint64_t *prow = prep2 + (size_t)r_obs2 * TAIR_TBL_COLS;
+                prow[tair_tbl_col_type(TAIR_TBL_TYPE_OBS)] = 0;
+                prow[tair_tbl_col_type(TAIR_TBL_TYPE_SAMPLE)] = 1;
+                expect_reject_ex("table row type flipped (CT-1)", B_bits, NULL,
+                                 prep2, NULL, B_bits->n_rows, &cfg_x);
+            }
+            free(prep2);
+        }
+        /* N35 (CT-3b) — the lane column smuggling a payload onto a FILLER row.
+         * Pre-s3a the lane was unconstrained there (block E only gates observe
+         * and start rows); CT-3b now forces it to zero. */
+        {
+            uint64_t *t = clone_trace(B_bits);
+            const int rf = find_row(B_bits, TAIR_SEL_FILLER, 0);
+            if (!t) return 2;
+            if (rf < 0) {
+                printf("  [reject] sample_bits_32 has no filler row         FAIL\n");
+                fails++;
+            } else {
+                row_of(t, (size_t)rf)[TAIR_LANE_OFF] = 0xBEEFu;
+                expect_reject("filler row smuggles a payload lane (CT-3b)",
+                              B_bits, t, B_bits->n_rows, &cfg_x);
+            }
+            free(t);
+        }
+        /* N36 (schedule conformance) — the trace one row short of the pinned
+         * table height. The row count comes from the schedule, never from a
+         * witnessed length. */
+        {
+            uint64_t *t = clone_trace(B_bits);
+            if (!t) return 2;
+            expect_reject("trace height != pinned table height", B_bits, t,
+                          B_bits->n_rows - 1, &cfg_x);
+            free(t);
+        }
+    }
+
+    {
+        built_t *all[5] = {B, B_basic, B_multi, B_squeeze, B_bits};
+        for (int i = 0; i < 5; i++) {
+            free(all[i]->trace);
+            free(all[i]->prep);
+            free(all[i]->pub);
+            free(all[i]);
+        }
+    }
+    free(V); free(V_basic); free(V_multi); free(V_squeeze); free(V_bits);
 
     printf("------------------------------------------------------------\n");
     if (fails) { printf("P2a transcript AIR: %d FAIL\n", fails); return 1; }
     printf("P2a transcript AIR: 8 oracle scenarios accepted (state + duplexings\n"
-           "  + exposed bits byte-matched) + 30 negatives rejected (25 trace-level\n"
-           "  incl. the i3 round's 10, 5 synthetic bit-gadget) — PASS\n");
+           "  + exposed bits byte-matched, each against its OWN pinned op-schedule\n"
+           "  table) + 38 negatives rejected (25 trace-level incl. the i3 round's\n"
+           "  10, 8 synthetic bit-gadget/CT, 4 s3a table+publics, and 1 schedule\n"
+           "  conformance) — PASS\n");
     return 0;
 }

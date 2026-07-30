@@ -79,7 +79,7 @@ static uint64_t rev_bits(uint64_t v, unsigned bits) {
 typedef struct {
     const dnac_p2c_oi_table_cfg_t *cfg;
     size_t    lgmh, num_heights, rows, sched, num_cols, num_pub;
-    size_t    pub_alpha, pub_zpz, pub_ro;
+    size_t    pub_alpha, pub_zpz, pub_ro, pub_px;
     uint64_t  index;
     uint64_t *trace; /* rows * num_cols                */
     uint64_t *prep;  /* rows * DNAC_P2C_OI_TABLE_COLS  */
@@ -101,7 +101,45 @@ static void built_free(built_t *B) {
 
 /* zoff / px / pz fixtures as a pure function of the global acc index. */
 static gold_fp2_t zoff_of(size_t a) { return tfp2(a + 1, 13); }
-static gold_fp_t  px_of(size_t a) { return tfp(a + 2, 17); }
+
+/**
+ * OPTIONAL EXTERNAL p_x SOURCE (s2). NULL — the shipped default for every test
+ * in THIS file — means "use the deterministic fixture below", so nothing about
+ * this gate's own behaviour changes. The composition gate
+ * (tests/test_fri_statement.c) points it at the MMCS opened lanes for the main
+ * input batch's acc rows, which is the only way to drive an honest oi trace
+ * whose p_x publics ARE the mmix instance's opened row. Must be [total_acc]
+ * CANONICAL lanes, and must be cleared after the build.
+ */
+static const uint64_t *g_px_ext = NULL;
+
+static gold_fp_t px_of(size_t a) {
+    if (g_px_ext != NULL) return fp(g_px_ext[a]);
+    return tfp(a + 2, 17);
+}
+
+/**
+ * OPTIONAL EXTERNAL alpha SOURCE (s3b) — the same shape as `g_px_ext` above and
+ * for the same reason. NULL is the shipped default for every test in THIS file,
+ * so nothing about this gate's own behaviour changes.
+ *
+ * The composition gate (tests/test_fri_statement.c) points it at the challenge
+ * the TRANSCRIPT instance pops for the FRI batch-combine alpha. That value is a
+ * CONSTANT of the protocol — `dnac_duplex_init_default` absorbs the pinned DS
+ * prefix (duplex_challenger.c:96-103) and the AIR pins those observed lanes
+ * (transcript_air.c:279), so the first two pops are fixed — and the fixture
+ * family `tfp2(seed, 3)` below cannot reach it for ANY seed: both of its lanes
+ * move together, so `b - a` is always 0x0000000100000007 while the transcript's
+ * is 0x4c42e371b14a9ec8. Without this hook there is no honest oi trace at the
+ * aliased alpha, and the 5-instance round-trip is unprovable.
+ * Must be TWO CANONICAL lanes [c0, c1], and must be cleared after the build.
+ */
+static const uint64_t *g_alpha_ext = NULL;
+
+static gold_fp2_t alpha_of(uint64_t seed) {
+    if (g_alpha_ext != NULL) return gold_fp2_new(fp(g_alpha_ext[0]), fp(g_alpha_ext[1]));
+    return tfp2(seed, 3);
+}
 
 static int build_honest(built_t *B, const dnac_p2c_oi_table_cfg_t *cfg,
                         uint64_t index, uint64_t seed) {
@@ -117,6 +155,7 @@ static int build_honest(built_t *B, const dnac_p2c_oi_table_cfg_t *cfg,
     B->pub_alpha = dnac_foi_pub_alpha_off(cfg);
     B->pub_zpz = dnac_foi_pub_zpz_off(cfg);
     B->pub_ro = dnac_foi_pub_ro_off(cfg);
+    B->pub_px = dnac_foi_pub_px_off(cfg);
     if (B->rows == 0 || B->num_cols == 0 || B->num_pub == 0) return 0;
     if (B->rows > T_MAX_ROWS || B->num_pub > T_MAX_PUB) return 0;
 
@@ -153,7 +192,7 @@ static int build_honest(built_t *B, const dnac_p2c_oi_table_cfg_t *cfg,
         B->x_h[i] = gold_fp_mul(
             GEN, gold_fp_pow(gold_fp_two_adic_generator((unsigned)h), rv));
     }
-    B->alpha = tfp2(seed, 3);
+    B->alpha = alpha_of(seed);
 
     gold_fp_t  gacc = gold_fp_zero();
     gold_fp_t  ycur = gold_fp_zero();
@@ -242,6 +281,10 @@ static int build_honest(built_t *B, const dnac_p2c_oi_table_cfg_t *cfg,
             B->pub[zo + 1] = u(z.b);
             B->pub[zo + 2] = u(pz.a);
             B->pub[zo + 3] = u(pz.b);
+            /* s2 — the p_x public this acc row's C3g binds to. Published from
+             * the SAME value the trace column carries, so the honest walk is
+             * honest under C3g by construction. */
+            B->pub[B->pub_px + a_global] = u(px);
             B->a_of_row[r] = a_global;
 
             ro = gold_fp2_add(ro, gold_fp2_mul(t, quot));
@@ -371,6 +414,24 @@ static const dnac_p2c_oi_height_desc_t WIDE_H[3] = {
     {6, 1, 1, 1, 1}, {4, 1, 1, 1, 1}, {2, 1, 1, 1, 1}};
 static const dnac_p2c_oi_table_cfg_t CFG_WIDE = {6, 2, 3, WIDE_H, 50};
 
+/* REF-PROOF-SHAPED cfgs (FLEET 029): lgmh 5, lb = 2, H = {5, 4} — NO height AT
+ * lb, which is the shape a real inner proof actually has (a matrix at
+ * log_height == log_blowup would be a degree-0 polynomial). The native lb-zero
+ * rule is CONDITIONAL on such a height existing (fri_verifier.c:482-487), so the
+ * schedule carries NO is_final_closeout row here and C4b/C5 are both vacuous.
+ *   NOLB    : each height {1,1,1,1}  => 14 scheduled rows, 16 total
+ *   NOLB_MB : the LAST group has TWO batches, i.e. a per-batch boundary. If the
+ *             derivation still equated "last group" with "the lb group", C5
+ *             would demand ro == 0 at that boundary and this honest walk (whose
+ *             ro is non-zero there) would be REJECTED — so its acceptance is
+ *             what pins n_lb_zero == 0.  => 15 scheduled rows, 16 total. */
+static const dnac_p2c_oi_height_desc_t NOLB_H[2] = {{5, 1, 1, 1, 1},
+                                                    {4, 1, 1, 1, 1}};
+static const dnac_p2c_oi_table_cfg_t CFG_NOLB = {5, 2, 2, NOLB_H, 50};
+static const dnac_p2c_oi_height_desc_t NOLB_MB_H[2] = {{5, 1, 1, 1, 1},
+                                                       {4, 2, 1, 1, 1}};
+static const dnac_p2c_oi_table_cfg_t CFG_NOLB_MB = {5, 2, 2, NOLB_MB_H, 50};
+
 /* multi-batch lb cfg (N-F4): lb height has num_batches = 2 => lb group has
  * 2 acc rows, one batch boundary at local index 1. */
 static const dnac_p2c_oi_height_desc_t MB_H[2] = {{4, 1, 1, 1, 1},
@@ -425,12 +486,18 @@ int main(void) {
     check("column layout + public regions (REF)", dnac_foi_layout_check());
     check("num_cols(REF) == 20 (18 fixed + 2 heights)",
           dnac_foi_num_cols(REF) == 20);
-    check("num_publics(REF) == 18 (4 + 2 + 8 + 4)",
-          dnac_foi_num_publics(REF) == 18);
+    check("num_publics(REF) == 20 (4 + 2 + 8 + 4 + 2)",
+          dnac_foi_num_publics(REF) == 20);
     check("total_acc(REF) == 2", dnac_foi_total_acc(REF) == 2);
     check("pub_alpha(REF) == 4", dnac_foi_pub_alpha_off(REF) == 4);
     check("pub_zpz(REF) == 6", dnac_foi_pub_zpz_off(REF) == 6);
     check("pub_ro(REF) == 14", dnac_foi_pub_ro_off(REF) == 14);
+    /* s2 — the p_x region is APPENDED, so every offset above is unmoved. */
+    check("pub_px(REF) == 18 (appended after ro)",
+          dnac_foi_pub_px_off(REF) == 18);
+    check("pub_px(REF) == pub_ro + 2*num_heights",
+          dnac_foi_pub_px_off(REF) ==
+              dnac_foi_pub_ro_off(REF) + 2 * REF->num_heights);
     check("table rows(REF) == 16", dnac_p2c_oi_table_rows(REF) == 16);
     check("num_cols(WIDE) == 21, total_acc == 3",
           dnac_foi_num_cols(&CFG_WIDE) == 21 &&
@@ -445,6 +512,42 @@ int main(void) {
     accept_case(REF, 13, 3, "REF idx 13 (non-palin)");
     accept_case(&CFG_WIDE, UINT64_C(0x2D), 4, "WIDE lgmh 6 idx 45");
     accept_case(&CFG_MB, 6, 5, "MB lgmh 4 (2-batch lb)");
+    accept_case(&CFG_NOLB, 21, 6, "NOLB lgmh 5 H={5,4} (no lb)");
+    accept_case(&CFG_NOLB_MB, 21, 7, "NOLB_MB (no lb, 2-batch last)");
+
+    /* FLEET 029 structural pin: on an lb-LESS schedule NO row carries
+     * is_final_closeout, so C4b is vacuous — exactly the native's conditional
+     * lb-zero rule (fri_verifier.c:482-487) rather than a schedule requirement.
+     * The NOLB_MB acceptance just above is the companion n_lb_zero == 0 pin (its
+     * last group HAS a per-batch boundary and a NON-zero incoming ro there). */
+    {
+        built_t B;
+        if (build_honest(&B, &CFG_NOLB_MB, 21, 7)) {
+            size_t n_fc = 0, n_close = 0;
+            for (size_t r = 0; r < B.rows; r++) {
+                const uint64_t *pr =
+                    B.prep + r * (size_t)DNAC_P2C_OI_TABLE_COLS;
+                n_fc += (size_t)pr[DNAC_P2C_OI_COL_IS_FINAL_CLOSEOUT];
+                n_close += (size_t)pr[DNAC_P2C_OI_COL_IS_CLOSEOUT];
+            }
+            check("NOLB_MB: 2 closeouts, ZERO is_final_closeout (C4b vacuous)",
+                  n_close == 2 && n_fc == 0);
+            /* The boundary the C5 pin rests on really exists: the last group
+             * has 2 acc rows and its second one carries a NON-zero incoming ro
+             * (an lb group would have been forced to 0 there). */
+            const long r1 = acc_row_for_height(&B, 1, 1);
+            check("NOLB_MB: last group has a 2nd acc row (batch boundary)",
+                  r1 >= 0);
+            if (r1 >= 0) {
+                const uint64_t *ar = row_of(&B, (size_t)r1);
+                check("NOLB_MB: incoming ro at that boundary is NON-zero",
+                      (ar[FOI_COL_RO] | ar[FOI_COL_RO + 1]) != 0);
+            }
+            built_free(&B);
+        } else {
+            check("NOLB_MB structural build", 0);
+        }
+    }
 
     /* Keep a primary REF fixture for the publics/gate negatives. */
     built_t W;
@@ -651,6 +754,22 @@ int main(void) {
         built_free(&B);
     }
 
+    /* N33 (s2) p_x TRACE column on an lb acc row. Before C3g existed this was
+     * the free-witness hole: p_x could be anything as long as t moved with it.
+     * Here only the column moves, so C3g fires against the (untouched) public,
+     * and C3e's c0 lane fires because t no longer equals ap*(p_z - p_x). The c1
+     * lane does NOT — this row is a group start, so ap == (1,0) and c1 reads
+     * ap0*pz1 + ap1*d0, which p_x does not enter. C3f-ro reads t and quot only,
+     * both untouched. Exactly 2. */
+    {
+        built_t B;
+        build_honest(&B, REF, 13, 2);
+        uint64_t *ar = row_of(&B, (size_t)r_acc_h2);
+        ar[FOI_COL_PX] = bump(ar[FOI_COL_PX]);
+        expect_reject("N33 p_x trace column tampered (C3g + C3e-c0)", &B, 2);
+        built_free(&B);
+    }
+
     printf("\n-- publics-binding negatives --------------------------------\n");
 
     /* N13 index bit public flipped: exactly C1c-p on its chain row. */
@@ -689,26 +808,44 @@ int main(void) {
         expect_reject("N17 alpha public lane moved (C3f-ap, both groups)", &W, 2);
         W.pub[W.pub_alpha] = sv;
     }
-    check("N13-N17 publics restored", eval_b(&W) == 0);
+    /* N34 (s2) p_x PUBLIC lane moved: exactly C3g on its acc row. Nothing else
+     * reads the p_x public — C3e reads the trace column — so the count is 1,
+     * and that is what pins C3g as its own form rather than a side effect. */
+    {
+        const uint64_t sv = W.pub[W.pub_px];
+        W.pub[W.pub_px] = bump(sv);
+        expect_reject("N34 p_x public lane moved (C3g)", &W, 1);
+        W.pub[W.pub_px] = sv;
+    }
+    /* N34b the SECOND acc row's p_x public: the per-row slot really is per-row
+     * (a single shared slot would have been caught by neither N34 alone). */
+    {
+        const uint64_t sv = W.pub[W.pub_px + 1];
+        W.pub[W.pub_px + 1] = bump(sv);
+        expect_reject("N34b p_x public lane 1 moved (C3g, per-row slot)", &W, 1);
+        W.pub[W.pub_px + 1] = sv;
+    }
+    check("N13-N17/N34 publics restored", eval_b(&W) == 0);
 
     printf("\n-- fail-close negatives (canonicality / shape / terminality) \n");
 
-    /* N18-N22 publics canonicality, ONE per public region (OBL-2). */
+    /* N18-N22 + N35 publics canonicality, ONE per public region (OBL-2). */
     {
-        const size_t region[5] = {0, W.pub_alpha, W.pub_zpz, W.pub_zpz + 2,
-                                   W.pub_ro};
-        const char  *name[5] = {"N18 public >= p: index bit",
+        const size_t region[6] = {0, W.pub_alpha, W.pub_zpz, W.pub_zpz + 2,
+                                   W.pub_ro, W.pub_px};
+        const char  *name[6] = {"N18 public >= p: index bit",
                                 "N19 public >= p: alpha lane",
                                 "N20 public >= p: z lane",
                                 "N21 public >= p: p_z lane",
-                                "N22 public >= p: exported ro"};
-        for (int i = 0; i < 5; i++) {
+                                "N22 public >= p: exported ro",
+                                "N35 public >= p: p_x lane (s2 region)"};
+        for (int i = 0; i < 6; i++) {
             const uint64_t sv = W.pub[region[i]];
             W.pub[region[i]] = GOLDILOCKS_P + (sv & 0xFFu); /* aliases, no wrap */
             expect_bad_config(name[i], eval_b(&W));
             W.pub[region[i]] = sv;
         }
-        check("N18-N22 publics restored", eval_b(&W) == 0);
+        check("N18-N22/N35 publics restored", eval_b(&W) == 0);
     }
 
     /* N23/N24 num_publics EXACT, not a bound. */
@@ -798,23 +935,28 @@ int main(void) {
         return 1;
     }
     /* Roster, audited by ENUMERATION one-by-one (count-KAFADAN discipline):
-     *   accepts     5   REF@0, REF@11, REF@13, WIDE lgmh6, MB 2-batch-lb
-     *   negatives  32   N-F1..N-F5, N-F7 (6 mandatory) + N6..N12 (7 form) +
-     *                   N13..N17 (5 publics) + N18..N22 (5 canonicality) +
+     *   accepts     7   REF@0, REF@11, REF@13, WIDE lgmh6, MB 2-batch-lb,
+     *                   NOLB (lb-less), NOLB_MB (lb-less, 2-batch last group)
+     *   negatives  36   N-F1..N-F5, N-F7 (6 mandatory) + N6..N12, N33 (8 form,
+     *                   N33 is the s2 p_x trace column) + N13..N17, N34, N34b
+     *                   (7 publics) + N18..N22, N35 (6 canonicality) +
      *                   N23..N26 (4 shape) + N27..N28 (2 PIN-2) +
-     *                   N29..N31 (3 cfg gates) = 6+7+5+5+4+2+3 = 32
-     *                   pinned exact-count (16): N-F1(1) N-F2(1) N-F3(2)
+     *                   N29..N31 (3 cfg gates) = 6+8+7+6+4+2+3 = 36
+     *                   pinned exact-count (19): N-F1(1) N-F2(1) N-F3(2)
      *                     N-F4(2) N-F5(3) N6(2) N7(3) N8(2) N10(3) N11(2)
-     *                     N12(2) N13(1) N14(1) N15(1) N16(1) N17(2)
+     *                     N12(2) N13(1) N14(1) N15(1) N16(1) N17(2) N33(2)
+     *                     N34(1) N34b(1)
      *                   caught-without-count (1): N9
-     *                   fail-close (15): N-F7 N18 N19 N20 N21 N22 N23 N24 N25
-     *                     N26 N27 N28 N29 N30 N31
-     *   assertions      layout/offset (10) + fixture-accept + landmarks +
-     *                   N-F4 lb-row + restore/positive (N13-17, N18-22, N26,
-     *                   N32 C6 padding-freedom) */
-    printf("P2c open_input AIR: 5 honest walks (native x_h + accumulation\n"
-           "  replay, x_h cross-checked at every store row) + 32 negatives\n"
-           "  (16 exact-count pinned, 1 caught, 15 fail-close; N-F1..N-F5/N-F7\n"
-           "  are the MANDATORY A2 catches) + layout/restore assertions — PASS\n");
+     *                   fail-close (16): N-F7 N18 N19 N20 N21 N22 N35 N23 N24
+     *                     N25 N26 N27 N28 N29 N30 N31
+     *   assertions      layout/offset (12, incl. the 2 s2 p_x-region pins) +
+     *                   fixture-accept + landmarks + N-F4 lb-row + the 3
+     *                   FLEET-029 lb-less structural pins + restore/positive
+     *                   (N13-17/N34, N18-22/N35, N26, N32 C6 padding-freedom) */
+    printf("P2c open_input AIR: 7 honest walks (native x_h + accumulation\n"
+           "  replay, x_h cross-checked at every store row) + 36 negatives\n"
+           "  (19 exact-count pinned, 1 caught, 16 fail-close; N-F1..N-F5/N-F7\n"
+           "  are the MANDATORY A2 catches, N33/N34/N34b/N35 the s2 p_x\n"
+           "  binding) + layout/restore assertions — PASS\n");
     return 0;
 }

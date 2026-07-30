@@ -31,7 +31,9 @@
 /* ── the pinned reference config (fri_oi_air_table.h DNAC_P2C_OI_REF_*) ───── */
 static const dnac_p2c_oi_height_desc_t P2C_OI_REF_HEIGHTS[DNAC_P2C_OI_REF_NUM_HEIGHTS] = {
     { 4, 1, 1, 1, 1 }, /* h_max == lgmh == 4, cum = 0 */
-    { 2, 1, 1, 1, 1 }, /* h_min == lb   == 2, cum = 2 */
+    { 2, 1, 1, 1, 1 }, /* h_min == lb   == 2, cum = 2 (an lb group is OPTIONAL
+                        * in general; this REFERENCE cfg has one so the pin
+                        * exercises the final-closeout path) */
 };
 static const dnac_p2c_oi_table_cfg_t P2C_OI_REF_CFG = {
     DNAC_P2C_OI_REF_LGMH,       DNAC_P2C_OI_REF_LOG_BLOWUP,
@@ -79,7 +81,7 @@ static int p2c_oi_cfg_check(const dnac_p2c_oi_table_cfg_t *cfg)
     if (cfg->lgmh < DNAC_P2C_OI_MIN_LGMH || cfg->lgmh > DNAC_P2C_OI_MAX_LGMH) {
         return 0;
     }
-    /* lb <= lgmh: h_min == lb must not exceed h_max == lgmh. */
+    /* lb <= lgmh: the height FLOOR must not exceed h_max == lgmh. */
     if (cfg->log_blowup > cfg->lgmh) return 0;
 
     if (cfg->num_heights < 1 || cfg->num_heights > DNAC_P2C_OI_MAX_HEIGHTS) {
@@ -87,12 +89,15 @@ static int p2c_oi_cfg_check(const dnac_p2c_oi_table_cfg_t *cfg)
     }
     if (cfg->heights == NULL) return 0;
 
-    /* h_max == lgmh (FIX F7, spec :21) and h_min == lb (spec C4b: the final
-     * closeout lives on the lb group). */
+    /* h_max == lgmh (FIX F7, spec :21). There is deliberately NO h_min rule:
+     * a height AT lb is OPTIONAL (FLEET 029). The native lb-zero check is
+     * CONDITIONAL on a reduced opening existing at log_blowup
+     * (fri_verifier.c:482-487), and a real inner proof has none (a matrix at
+     * log_height == log_blowup would be a degree-0 polynomial), so REQUIRING one
+     * made this schedule unable to describe a real open_input walk. Position is
+     * not a separate rule either: heights are STRICTLY DESCENDING, so if lb is
+     * present it is necessarily the last group. */
     if (cfg->heights[0].log_height != cfg->lgmh) return 0;
-    if (cfg->heights[cfg->num_heights - 1].log_height != cfg->log_blowup) {
-        return 0;
-    }
 
     /* Per-height: in [lb, lgmh], STRICTLY DESCENDING, all four counts >= 1. */
     for (size_t i = 0; i < cfg->num_heights; i++) {
@@ -540,7 +545,10 @@ dnac_p2c_oi_table_status_t dnac_p2c_oi_table_validate(
     }
 
     /* 7 — final closeout: set iff the h==lb group's closeout (spec C4b); 0
-     *     elsewhere. Exactly one exists because h_min == lb is gated. */
+     *     elsewhere. CONDITIONAL (FLEET 029): at most one exists, and NONE at
+     *     all when no height equals lb — the `exp` walk derives it from
+     *     log_height == log_blowup, so a forged flag on an lb-less schedule is
+     *     rejected here. */
     for (size_t r = 0; r < rows; r++) {
         if (cells[r * cols + DNAC_P2C_OI_COL_IS_FINAL_CLOSEOUT] !=
             (uint64_t)exp[r].is_final_closeout) {

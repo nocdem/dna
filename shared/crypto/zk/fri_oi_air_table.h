@@ -74,7 +74,13 @@
  *   is_group_start                the FIRST acc row of a group (spec C3a,
  *                                 ROW-LOCAL alpha_pow==1, ro==0)
  *   is_final_closeout             the closeout of the h==lb group (spec C4b,
- *                                 ro==0 zero rule; sub-flag of is_closeout)
+ *                                 ro==0 zero rule; sub-flag of is_closeout).
+ *                                 CONDITIONAL: set on NO row when H contains no
+ *                                 height at lb — the mirror of the native's own
+ *                                 condition (fri_verifier.c:482-487), which
+ *                                 checks the lb ro only if a reduced opening at
+ *                                 log_blowup exists. Real inner proofs have
+ *                                 none (FLEET 029).
  *   g_pow2                        chain row j: G_j = g_lgmh^{2^j}; 0 elsewhere
  *   h_sel[DNAC_P2C_OI_MAX_HEIGHTS] per-height one-hot: which descending-H index
  *                                 this row belongs to. Set on every capture-
@@ -142,8 +148,14 @@
  * height one-hot pins H, the group counts pin the batch shape) — but a
  * root-checked table paired with a MISMATCHED cfg argument leaves cfg-derived
  * loop bounds aimed at the wrong publics. The COMPOSITION entry MUST pin the cfg
- * scalars INDEPENDENTLY of DNAC_P2C_OI_PREP_ROOT. Of the cfg scalars only
- * num_queries escapes the table entirely.
+ * scalars INDEPENDENTLY of DNAC_P2C_OI_PREP_ROOT. ⚠ TWO cfg scalars escape the
+ * table entirely (FLEET 029 red-verify F8; the earlier "only num_queries"
+ * sentence was stale): num_queries, AND — for the lb-less class this fleet
+ * admits — log_blowup itself: with no height at lb, `is_final_closeout` is 0
+ * everywhere (its ONLY table imprint, fri_oi_air_table.c:295-296), so two cfgs
+ * differing only in a below-min(H) log_blowup share one root while C4b/C5
+ * semantics depend on lb. The independent cfg pin above is therefore
+ * load-bearing for lb, not belt-and-suspenders.
  *
  * ── PIN-1-OI PREREQUISITE (BUILDABLE spec :117-121, the fri_air.h:49-56 block,
  * verbatim posture) ──
@@ -227,7 +239,8 @@ extern "C" {
  * PRIMARY type set = { IS_CHAIN, IS_CAPTURE, IS_ACC, IS_CLOSEOUT, IS_PAD };
  * exactly one is set per row. IS_SQPAIR / IS_STORE sub-select capture rows;
  * IS_GROUP_START sub-selects acc rows; IS_FINAL_CLOSEOUT sub-selects the lb
- * closeout. ──────────────────────────────────────────────────────────────── */
+ * closeout WHEN a height at lb exists (else no row carries it).
+ * ─────────────────────────────────────────────────────────────────────────── */
 
 #define DNAC_P2C_OI_COL_IS_CHAIN          0  /**< primary: chain row           */
 #define DNAC_P2C_OI_COL_IS_CAPTURE        1  /**< primary: any capture-block row*/
@@ -237,7 +250,8 @@ extern "C" {
 #define DNAC_P2C_OI_COL_IS_SQPAIR         5  /**< capture: y' = y*y squaring    */
 #define DNAC_P2C_OI_COL_IS_STORE          6  /**< capture: x_reg[h] = 7*y store */
 #define DNAC_P2C_OI_COL_IS_GROUP_START    7  /**< acc: FIRST acc row of a group */
-#define DNAC_P2C_OI_COL_IS_FINAL_CLOSEOUT 8  /**< closeout: the h==lb group     */
+#define DNAC_P2C_OI_COL_IS_FINAL_CLOSEOUT 8  /**< closeout: the h==lb group, if
+                                                  H has one at all            */
 #define DNAC_P2C_OI_COL_G_POW2            9  /**< chain row j: G_j = g_lgmh^{2^j}*/
 #define DNAC_P2C_OI_COL_HSEL_OFF          10 /**< [10, 10+MAX_HEIGHTS): h one-hot*/
 
@@ -320,7 +334,8 @@ typedef struct {
     int      is_sqpair; /**< capture squaring row                           */
     int      is_store;  /**< capture store row (seed = capture & !sq & !st)  */
     int      is_group_start;    /**< acc: first acc row of the group         */
-    int      is_final_closeout; /**< closeout: the h==lb group's closeout    */
+    int      is_final_closeout; /**< closeout: the h==lb group's closeout;
+                                     always 0 when H has no height at lb    */
     uint64_t g_pow2;    /**< canonical G_j on chain rows, 0 elsewhere        */
 } dnac_p2c_oi_row_t;
 
@@ -346,13 +361,20 @@ typedef struct {
  * The module ports ONLY the arity-2, log_final_poly_len == 0 open_input shape
  * (spec :11-14); those two are module invariants, not cfg fields. `heights`
  * are STRICTLY DESCENDING by `log_height`; heights[0].log_height MUST == lgmh
- * (h_max, FIX F7) and heights[num_heights-1].log_height MUST == log_blowup (the
- * final height that carries is_final_closeout, spec C4b). Every height lies in
- * [log_blowup, lgmh].
+ * (h_max, FIX F7). Every height lies in [log_blowup, lgmh].
+ *
+ * ⚠ A height AT log_blowup is OPTIONAL (FLEET 029) — there is NO h_min rule.
+ * The C4b zero rule mirrors the native's CONDITIONAL lb check
+ * (fri_verifier.c:482-487) and is carried by `is_final_closeout`, which the
+ * generator sets only on a group whose log_height == log_blowup; on a cfg
+ * without one, NO row carries it and C4b is vacuous. Real inner proofs are that
+ * shape (a matrix at log_blowup would be a degree-0 polynomial). Strict descent
+ * already makes an lb group, when present, the LAST one — no position rule.
  */
 typedef struct {
     size_t                           lgmh;        /**< log_global_max_height    */
-    size_t                           log_blowup;  /**< lb; == min(H) (C4b)      */
+    size_t                           log_blowup;  /**< lb; the FLOOR of H, which
+                                                       need not be ATTAINED     */
     size_t                           num_heights; /**< k, 1..MAX_HEIGHTS        */
     const dnac_p2c_oi_height_desc_t *heights;     /**< [k], descending          */
     size_t                           num_queries; /**< 1..MAX_QUERIES           */
@@ -483,7 +505,8 @@ dnac_p2c_oi_table_status_t dnac_p2c_oi_table_generate(
  *                       groups | pad) — subsumes all row-type COUNTS
  *   5 capture sub-flags seed/sq_{cum_h}/store per height, cum_h = lgmh - h
  *   6 group start       is_group_start iff the FIRST acc row of a group
- *   7 final closeout    is_final_closeout iff the h==lb group's closeout
+ *   7 final closeout    is_final_closeout iff the h==lb group's closeout — so
+ *                       NO row may carry it when H has no height at lb
  *   8 height one-hot    h_sel routes the right descending-H index on capture /
  *                       acc / closeout rows; all-zero on chain / pad
  *   9 step one-hot      scheduled row k carries pos[k]=1 and nothing else;

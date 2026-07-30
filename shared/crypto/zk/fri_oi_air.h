@@ -68,6 +68,8 @@
  *                                                        dnac_foi_pub_zpz_off
  *   [.., + 2*num_heights)            exported ro per height, DESCENDING
  *                                                        dnac_foi_pub_ro_off
+ *   [.., + total_acc)                per acc row: p_x (ONE BASE lane), schedule
+ *                                    order                dnac_foi_pub_px_off
  * total = `dnac_foi_num_publics(cfg)`; any other length fails closed.
  *
  *   - BITS are public (composition binds them to the P2a transcript index; here
@@ -75,20 +77,40 @@
  *   - ALPHA is public (slice 1 carries no transcript); the composition binds it
  *     to the P2a challenge (OBL alpha/z provenance).
  *   - z, p_z sit one fp2 pair each PER acc row in schedule (batch-major,
- *     height-descending) order. p_x is NOT public — it is a witness column,
- *     MMCS-bound at composition (declared seam, below).
+ *     height-descending) order.
+ *   - P_X is public as of the s2 slice, ONE base lane per acc row in the SAME
+ *     schedule order as the z / p_z pairs. The region is appended at the END so
+ *     every pre-existing offset is unmoved. It is bound to the trace column by
+ *     C3g (fri_oi_air.c), so `p_x` is no longer a free witness. Native
+ *     correspondent: `p_at_x = bo->opened_values[m][j]` (fri_verifier.c:469-476)
+ *     — a BASE-field opened value, which is why one lane suffices.
+ *     ⚠ WHO FILLS THE PUBLIC is the composition's job, and only PART of it is
+ *     closed today: see the declared seam below.
  *   - RO is exported one fp2 per height in DESCENDING height order, matching the
  *     native's descending write (fri_verifier.c:490-497) and the roll-in slots
  *     fri_air consumes (OBL roll-in set-equality).
  *
  * ── Declared seams (deferred to composition, NOT holes — spec :138-142) ──────
- *   - p_x <-> the MMCS opened rows. `p_x` is UNCONSTRAINED witness until the
- *     composition binds it to P2b opened-row publics; every soundness claim of
- *     this AIR (ro correctness) is conditional on that seam.
+ *   - p_x <-> the MMCS opened rows. C3g pins `p_x` to a PUBLIC (s2); what a
+ *     public is worth depends entirely on where the composition sources it. The
+ *     composition entry (fri_statement.c) sources the MAIN input batch's acc
+ *     rows from the mmix instance's opened-row publics — for those rows the seam
+ *     is CLOSED by aliasing — and the remaining batches' rows from a statement
+ *     field, which is the same trust level p_x had before, now inside the
+ *     mechanism instead of outside it. Every ro-correctness claim of this AIR
+ *     remains conditional on that remainder.
  *   - alpha / z provenance from the P2a transcript (Fiat-Shamir order).
  *   - roll-in set-equality OI.H ⊇ fri_air.rollin: every height fri_air rolls in
- *     MUST be an exported ro slot here, and the final-height (lb) ro MUST be the
- *     zero this AIR pins (C4b) so fri_air's final-height slot reads 0.
+ *     MUST be an exported ro slot here. A height AT lb is OPTIONAL in the cfg
+ *     (FLEET 029 — a real inner proof has none, mirroring the native's
+ *     CONDITIONAL lb check, fri_verifier.c:482-487): when H HAS one, C4b pins
+ *     that ro to zero and fri_air's final-height slot reads 0; when it does NOT,
+ *     C4b is vacuous and the composition MUST NOT wire a roll-in at lb either.
+ *     ⚠ That obligation is NOT self-enforcing on the fri_air side: its cfg gate
+ *     admits roll-in heights in [log_blowup + log_final_poly_len, lgmh - 1]
+ *     (fri_air_table.c:64/89) and log_final_poly_len is pinned to 0 (gate G2),
+ *     so lb IS an admissible roll-in height there. The composition entry owns
+ *     the cross-check "every fri_air roll-in height appears in OI.H".
  *   - multi-query (OBL-P2c-2): one trace == one query.
  *   - PIN-1-OI production re-pin (OBL-4c-OI): the ref root binds a REFERENCE
  *     cfg; the composition re-pins the cfg scalars INDEPENDENTLY of the root.
@@ -154,8 +176,9 @@ extern "C" {
  *  (C3c). */
 #define FOI_COL_PZ ((size_t)10)
 
-/** p_x[1] — this acc row's opened value p(x) (base). PRIVATE witness; MMCS-bound
- *  at composition, UNCONSTRAINED here (declared seam). */
+/** p_x[1] — this acc row's opened value p(x) (base). Bound to its own public by
+ *  C3g (s2); the composition decides where that public comes from (declared
+ *  seam, partially closed — see the header). */
 #define FOI_COL_PX ((size_t)12)
 
 /** x[1] — this acc row's eval point x_h (base). Bound to the height's register
@@ -229,7 +252,12 @@ size_t dnac_foi_pub_zpz_off(const dnac_p2c_oi_table_cfg_t *cfg);
  *  Height index `i` (descending) binds ro at ro_off + 2*i. 0 on reject. */
 size_t dnac_foi_pub_ro_off(const dnac_p2c_oi_table_cfg_t *cfg);
 
-/** Required public-value count (== ro_off + 2*num_heights). 0 on reject. This
+/** First public index of the p_x region (== ro_off + 2*num_heights). Acc row `a`
+ *  binds p_x at px_off + a — ONE base lane, same schedule order as the z / p_z
+ *  pairs. APPENDED LAST so every earlier offset is unchanged. 0 on reject. */
+size_t dnac_foi_pub_px_off(const dnac_p2c_oi_table_cfg_t *cfg);
+
+/** Required public-value count (== px_off + total_acc). 0 on reject. This
  *  is what the eval entry compares `num_publics` against, EXACTLY. */
 size_t dnac_foi_num_publics(const dnac_p2c_oi_table_cfg_t *cfg);
 

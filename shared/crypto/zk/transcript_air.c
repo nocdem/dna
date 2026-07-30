@@ -35,6 +35,50 @@ static inline void az_bool_gated(int *v, gold_fp_t gate, gold_fp_t x) {
     az(v, mul(gate, mul(x, sub(x, gold_fp_one()))));
 }
 
+/* ── s3a: the table's row-type indices ARE the main selector indices ────────
+ * CT-1 is a per-index equality between the preprocessed type block and the MAIN
+ * selector block, so a silent re-ordering on either side would swap two
+ * archetypes. This translation unit is the only one that sees both headers, so
+ * the assertion lives here. */
+typedef char tair_type_index_assert
+    [(TAIR_TBL_NUM_TYPES == (size_t)TAIR_NUM_SEL &&
+      TAIR_TBL_TYPE_START == (size_t)TAIR_SEL_START &&
+      TAIR_TBL_TYPE_OBS == (size_t)TAIR_SEL_OBS &&
+      TAIR_TBL_TYPE_OBS_DUP == (size_t)TAIR_SEL_OBS_DUP &&
+      TAIR_TBL_TYPE_SAMPLE == (size_t)TAIR_SEL_SAMPLE &&
+      TAIR_TBL_TYPE_SAMPLE_DUP == (size_t)TAIR_SEL_SAMPLE_DUP &&
+      TAIR_TBL_TYPE_FILLER == (size_t)TAIR_SEL_FILLER &&
+      TAIR_TBL_MAX_OP_BITS == (size_t)TAIR_MAX_NUM_BITS)
+         ? 1
+         : -1];
+
+/* s3a config/schedule gate — ONE place, so `eval_row` and `eval_trace` cannot
+ * disagree about what they accept. Returns 0 on reject; on accept writes the
+ * required public count.
+ *
+ * The `pow_bits` agreement is load-bearing: the AIR carries ONE `cfg->pow_bits`
+ * and applies it to every `is_pow` row (block D below), while the script records
+ * the grinding width per op. A script whose PoW ops disagree with the cfg would
+ * silently constrain the WRONG number of low bits — fail closed instead. */
+static int tair_sched_gate(const dnac_tair_config_t *cfg,
+                           const dnac_tair_script_t *sched, size_t *out_npub) {
+    if (cfg == NULL || sched == NULL) return 0;
+    if (cfg->pow_bits > (size_t)TAIR_MAX_NUM_BITS) return 0;
+
+    const size_t npub = dnac_tair_num_publics(sched);
+    if (npub == 0) return 0;
+    if (sched->n_ops > TAIR_TBL_MAX_STEPS) return 0;
+
+    size_t script_pow = 0;
+    if (dnac_tair_script_pow_bits(sched, &script_pow) != DNAC_TAIR_TABLE_OK) {
+        return 0;
+    }
+    if (script_pow != 0 && script_pow != cfg->pow_bits) return 0;
+
+    *out_npub = npub;
+    return 1;
+}
+
 bool dnac_transcript_air_layout_check(void) {
     if (TAIR_STATE_OFF != 0) return false;
     if (TAIR_INBUF_OFF != TAIR_STATE_OFF + TAIR_STATE_LANES) return false;
@@ -66,10 +110,24 @@ bool dnac_transcript_air_layout_check(void) {
 }
 
 int dnac_transcript_air_eval_row(const uint64_t *local, const uint64_t *next,
+                                 const uint64_t *prep_local,
                                  int is_first_row,
-                                 const dnac_tair_config_t *cfg) {
-    if (!local || !cfg) return TAIR_VIOL_BAD_CONFIG;
-    if (cfg->pow_bits > TAIR_MAX_NUM_BITS) return TAIR_VIOL_BAD_CONFIG;
+                                 const dnac_tair_config_t *cfg,
+                                 const dnac_tair_script_t *sched,
+                                 const uint64_t *publics, size_t num_publics) {
+    if (!local || !cfg || !prep_local || !publics) return TAIR_VIOL_BAD_CONFIG;
+
+    size_t want_npub = 0;
+    if (!tair_sched_gate(cfg, sched, &want_npub)) return TAIR_VIOL_BAD_CONFIG;
+    if (num_publics != want_npub) return TAIR_VIOL_BAD_CONFIG;
+
+    /* Publics canonicality — FAIL-CLOSE, not a precondition (the P2b red-verify
+     * A2-F1 posture, mmcs_air.c:187-196). `fp()` reduces mod p, so x and x+p
+     * alias inside the field view while a downstream u64 consumer reads them
+     * differently; accepting a non-canonical public would let the AIR prove a
+     * statement about a lane nobody else sees the same way. */
+    for (size_t i = 0; i < num_publics; i++)
+        if (publics[i] >= GOLDILOCKS_P) return TAIR_VIOL_BAD_CONFIG;
 
     /* ADAPTATION guard (see transcript_air.h): the is-zero realization of
      * `assert_bits_canonical` (circuit_builder.rs:1123-1158) is equivalent to
@@ -219,6 +277,69 @@ int dnac_transcript_air_eval_row(const uint64_t *local, const uint64_t *next,
          * (`duplex_challenger.c:32-37`, applied at :96-103). */
         for (size_t k = 0; k < TAIR_RATE; k++)
             az(&v, mul(g_observe, mul(pc[k], sub(lane, fp(DNAC_DUPLEX_DS_PREFIX[k])))));
+    }
+
+    /* ══ T. Preprocessed-table conformance + payload binding (s3a, spec §3) ══
+     * ROW-LOCAL, emitted after E and before the transition half. Every form
+     * below is degree <= 2: a preprocessed cell is degree 1 and a public value
+     * is a constant, so `Σ pos[k]·publics[k]` stays degree 1.
+     *
+     * ⚠ ALL FOUR REST ON PIN-1-P2a (transcript_air.h): preprocessed cells are
+     * authoritative only under the root pin, and the SCRIPT must be pinned
+     * independently of that root (OBL-P2a-T1). */
+    {
+        /* CT-1 — ROW TYPE is preprocessed, not witnessed. Index for index
+         * against the main selector one-hot (the equality of the two index
+         * spaces is `tair_type_index_assert` above). This is what closes the
+         * P2a-i3 "sel_start may sit anywhere / a row may claim any archetype"
+         * obligation: the op stream's SHAPE is now pinned, not merely legal. */
+        for (size_t t = 0; t < TAIR_NUM_SEL; t++)
+            az(&v, sub(fp(prep_local[tair_tbl_col_type(t)]), sel[t]));
+
+        /* CT-2 — `is_pow` is preprocessed (closes i3's "is_pow is a free
+         * column"). The row-local A3 rule above still forbids it off a sampling
+         * row; this pins WHICH sampling row carries it. */
+        az(&v, sub(fp(prep_local[TAIR_TBL_COL_IS_POW]), is_pow));
+
+        /* CT-3 — PAYLOAD binding. The op-step one-hot selects the public slot
+         * (`pos` index == public index, a table invariant the static validator
+         * checks and the root freezes).
+         *
+         * CT-3a first: the one-hot must SUM to this row's op indicator. Without
+         * it a payload row could carry an all-zero position, which would collapse
+         * the selection below to `lane == 0` — satisfiable whenever the sponge
+         * happens to emit zero, and always satisfiable for an attacker who also
+         * controls the value. With it, an op row has exactly one slot and a
+         * start/filler row has none. */
+        {
+            gold_fp_t possum = zero, acc = zero;
+            for (size_t k = 0; k < sched->n_ops; k++) {
+                const gold_fp_t p = fp(prep_local[tair_tbl_col_pos(k)]);
+                possum = add(possum, p);
+                acc = add(acc, mul(p, fp(publics[k])));
+            }
+            az(&v, sub(possum, g_op));
+            /* CT-3b — the payload equality. On start/filler rows `possum` is 0,
+             * so this reads `lane == 0`: those rows carry no payload and the
+             * lane column must not smuggle one. */
+            az(&v, sub(lane, acc));
+        }
+
+        /* CT-4 — INDEX-BIT export. On a bit-exporting sample (a FRI query
+         * index, fri_verifier.c:737) the AIR's own LE bit decomposition — already
+         * boolean, reconstructing and `< p` under block D — is EXPORTED lane by
+         * lane. This is the surface the P2c/P2e composition aliases onto the
+         * shared query index; nothing here consumes it. */
+        for (size_t k = 0; k < sched->n_ops; k++) {
+            const size_t nb = sched->ops[k].num_bits;
+            if (nb == 0) continue;
+            const size_t boff = dnac_tair_op_bit_off(sched, k);
+            if (boff == (size_t)-1) return TAIR_VIOL_BAD_CONFIG; /* fail-close */
+            const gold_fp_t g = fp(prep_local[tair_tbl_col_pos(k)]);
+            for (size_t j = 0; j < nb; j++)
+                az(&v, mul(g, sub(fp(local[tair_bit_off(j)]),
+                                  fp(publics[boff + j]))));
+        }
     }
 
     if (!next) return v; /* last row: no transition constraints */
@@ -423,14 +544,27 @@ int dnac_transcript_air_eval_row(const uint64_t *local, const uint64_t *next,
     return v;
 }
 
-int dnac_transcript_air_eval_trace(const uint64_t *trace, size_t n_rows,
-                                   const dnac_tair_config_t *cfg) {
-    if (!trace || n_rows == 0) return TAIR_VIOL_BAD_CONFIG;
+int dnac_transcript_air_eval_trace(const uint64_t *trace,
+                                   const uint64_t *prep_table, size_t n_rows,
+                                   const dnac_tair_config_t *cfg,
+                                   const dnac_tair_script_t *sched,
+                                   const uint64_t *publics, size_t num_publics) {
+    if (!trace || !prep_table || n_rows == 0) return TAIR_VIOL_BAD_CONFIG;
+
+    /* SCHEDULE CONFORMANCE (s3a; the P2b A1-F6 shape, mmcs_air.c:408-413): the
+     * row count comes from the PINNED schedule, never from a witnessed length.
+     * A shorter trace would be a shorter op stream — i.e. a different
+     * statement. */
+    const size_t want_rows = dnac_tair_table_rows(sched);
+    if (want_rows == 0 || n_rows != want_rows) return TAIR_VIOL_BAD_CONFIG;
+
     int total = 0;
     for (size_t r = 0; r < n_rows; r++) {
         const uint64_t *local = trace + r * (size_t)TAIR_WIDTH;
         const uint64_t *next = (r + 1 < n_rows) ? local + TAIR_WIDTH : NULL;
-        const int v = dnac_transcript_air_eval_row(local, next, r == 0, cfg);
+        const uint64_t *pl = prep_table + r * TAIR_TBL_COLS;
+        const int v = dnac_transcript_air_eval_row(local, next, pl, r == 0, cfg,
+                                                   sched, publics, num_publics);
         if (v >= TAIR_VIOL_BAD_CONFIG) return TAIR_VIOL_BAD_CONFIG;
         /* Saturate instead of overflowing: a long, wholly-corrupt trace can sum
          * past INT_MAX (signed overflow is UB), and the sentinel band must stay

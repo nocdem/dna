@@ -41,6 +41,7 @@
  *   C3a    is_group_start * (alpha_pow==1, ro==0)           1      1      2
  *   C3b    is_acc * h_sel_i * (x - x_reg_i)                 2      1      3
  *   C3c    pos_k * (z==pub, p_z==pub)                       1      1      2
+ *   C3g    pos_k * (p_x - pub_px[accidx(k)])                1      1      2
  *   C3d    is_acc * ((z - x)*quot - 1)  [2 lanes]           1      2      3
  *   C3e    is_acc * (t - alpha_pow*(p_z - p_x))  [2 lanes]  1      2      3
  *   C3f-ro is_acc * (nro - ro - t*quot)  [2 lanes]          1      2      3
@@ -93,6 +94,7 @@ typedef struct {
     size_t pub_alpha;  /* public-region offsets (fri_oi_air.h layout)        */
     size_t pub_zpz;
     size_t pub_ro;
+    size_t pub_px;
     size_t num_publics;
     /* Per SCHEDULED step k (< sched); padding steps carry the sentinels. */
     size_t bit[DNAC_P2C_OI_MAX_STEPS];    /* chain step: index bit; else -1  */
@@ -122,11 +124,15 @@ static int foi_schedule(const dnac_p2c_oi_table_cfg_t *cfg, foi_sched_t *s) {
     s->total_acc = total_acc;
     s->num_cols = FOI_NUM_FIXED_COLS + cfg->num_heights;
 
-    /* Public layout (fri_oi_air.h): bits | alpha | (z,p_z)*total_acc | ro*k */
+    /* Public layout (fri_oi_air.h):
+     * bits | alpha | (z,p_z)*total_acc | ro*k | p_x*total_acc
+     * The p_x region is APPENDED LAST (s2), so every earlier offset is exactly
+     * what it was before the region existed. */
     s->pub_alpha = cfg->lgmh;
     s->pub_zpz = s->pub_alpha + FOI_EXT_LANES;
     s->pub_ro = s->pub_zpz + 2 * FOI_EXT_LANES * total_acc; /* 4 lanes/row   */
-    s->num_publics = s->pub_ro + FOI_EXT_LANES * cfg->num_heights;
+    s->pub_px = s->pub_ro + FOI_EXT_LANES * cfg->num_heights;
+    s->num_publics = s->pub_px + total_acc; /* ONE base lane per acc row     */
 
     for (size_t k = 0; k < DNAC_P2C_OI_MAX_STEPS; k++) {
         s->bit[k] = (size_t)-1;
@@ -168,7 +174,10 @@ static int foi_schedule(const dnac_p2c_oi_table_cfg_t *cfg, foi_sched_t *s) {
             s->accidx[r] = a_global;
             /* per-batch lb-zero (C5): the incoming ro must be 0 at each batch
              * boundary of the lb group (native fri_verifier.c:480-487 checks
-             * height==lb ro==0 after EACH batch). a==0 is covered by C3a. */
+             * height==lb ro==0 after EACH batch). a==0 is covered by C3a.
+             * `cur_is_lb` is derived from the cfg, and a height at lb is
+             * OPTIONAL (FLEET 029) — a cfg without one produces no lb_zero step
+             * at all, mirroring the native condition. */
             if (cur_is_lb && local_a > 0 && (local_a % batch_sz) == 0)
                 s->lb_zero[r] = 1;
             a_global++;
@@ -220,6 +229,12 @@ size_t dnac_foi_pub_ro_off(const dnac_p2c_oi_table_cfg_t *cfg) {
     return s.pub_ro;
 }
 
+size_t dnac_foi_pub_px_off(const dnac_p2c_oi_table_cfg_t *cfg) {
+    foi_sched_t s;
+    if (!foi_schedule(cfg, &s)) return 0;
+    return s.pub_px;
+}
+
 size_t dnac_foi_num_publics(const dnac_p2c_oi_table_cfg_t *cfg) {
     foi_sched_t s;
     if (!foi_schedule(cfg, &s)) return 0;
@@ -254,8 +269,11 @@ bool dnac_foi_layout_check(void) {
         if (dnac_foi_pub_zpz_off(ref) != DNAC_P2C_OI_REF_LGMH + 2) return false;
         if (dnac_foi_pub_ro_off(ref) != DNAC_P2C_OI_REF_LGMH + 2 + 4 * 2)
             return false;
-        /* 4 + 2 + 8 + 4 == 18 */
-        if (dnac_foi_num_publics(ref) != (size_t)18) return false;
+        /* p_x is APPENDED after ro: 4 + 2 + 8 + 4 == 18 */
+        if (dnac_foi_pub_px_off(ref) != DNAC_P2C_OI_REF_LGMH + 2 + 4 * 2 + 2 * 2)
+            return false;
+        /* 4 + 2 + 8 + 4 + 2 == 20 */
+        if (dnac_foi_num_publics(ref) != (size_t)20) return false;
         if (FOI_PUB_BITS_OFF != 0) return false;
     }
     return true;
@@ -384,7 +402,7 @@ int dnac_foi_eval_row(const uint64_t *main_local, const uint64_t *main_next,
         az(&v, mul(p_acc, sub(t1, add(mul(ap0, pz1), mul(ap1, d0)))));
     }
 
-    /* ══ C1c-p / C3c / C5 — the pos-gated publics + lb-zero forms ══════════
+    /* ══ C1c-p / C3c / C3g / C5 — the pos-gated publics + lb-zero forms ════
      * `pos` is PREPROCESSED (a degree-1 selector); only the row whose step is k
      * has pos[k]=1, so exactly one term per row survives. Loop stops at `sched`
      * because padding steps carry pos == 0 (generator obligation under PIN-1-OI). */
@@ -396,13 +414,22 @@ int dnac_foi_eval_row(const uint64_t *main_local, const uint64_t *main_next,
             az(&v, mul(pk, sub(b, fp(publics[FOI_PUB_BITS_OFF + s.bit[k]]))));
         }
 
-        /* C3c z / p_z binding: acc step k -> its own (z, p_z) public pair. */
+        /* C3c z / p_z binding: acc step k -> its own (z, p_z) public pair.
+         * ══ C3g (s2) — p_x binding, EMITTED IMMEDIATELY AFTER C3c and inside
+         * the same pos gate, so the two share one selector read and the emission
+         * ORDER (z0, z1, pz0, pz1, px) is a pinned property the fold form
+         * transcribes verbatim (the alpha-fold is order-sensitive).
+         * `p_x` was a free witness through s1c; it is now bound to the public
+         * the composition sources from the MMCS opened row
+         * (native: p_at_x = bo->opened_values[m][j], fri_verifier.c:469-476).
+         * ONE lane, base field, degree 2 (pos selector x linear). */
         if (s.accidx[k] != (size_t)-1) {
             const size_t zo = s.pub_zpz + 4 * s.accidx[k];
             az(&v, mul(pk, sub(z0, fp(publics[zo]))));
             az(&v, mul(pk, sub(z1, fp(publics[zo + 1]))));
             az(&v, mul(pk, sub(pz0, fp(publics[zo + 2]))));
             az(&v, mul(pk, sub(pz1, fp(publics[zo + 3]))));
+            az(&v, mul(pk, sub(px, fp(publics[s.pub_px + s.accidx[k]]))));
         }
 
         /* C5 per-batch lb-zero: incoming ro == 0 at each lb batch boundary. */
@@ -423,9 +450,15 @@ int dnac_foi_eval_row(const uint64_t *main_local, const uint64_t *main_next,
     }
 
     /* ══ C4b — FINAL closeout (h == lb): ro == 0 (spec C4b :96-98) ════════
-     * The native FinalPolyMismatch zero rule (fri_verifier.c:482-487). With C4a
-     * this also forces publics[ro_slot_lb] == 0, so fri_air's final-height slot
-     * reads the zero (OBL roll-in set-equality). */
+     * The native FinalPolyMismatch zero rule (fri_verifier.c:482-487) — which is
+     * CONDITIONAL there: the native checks it only for a reduced opening that
+     * exists AT log_blowup. The mirror here is the `p_fc` prep gate: the
+     * generator sets is_final_closeout only on a group whose log_height == lb,
+     * so on a cfg with no such height NO row carries it and this form is
+     * VACUOUS — exactly the native's condition, not a schedule requirement
+     * (FLEET 029). When an lb group IS present, C4b together with C4a also
+     * forces publics[ro_slot_lb] == 0, so fri_air's final-height slot reads the
+     * zero (OBL roll-in set-equality). */
     az(&v, mul(p_fc, ro0));
     az(&v, mul(p_fc, ro1));
 
