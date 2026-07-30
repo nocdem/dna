@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>The Network – CPUNK Wiki</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="How the DNA ecosystem works without central servers: a network of independent computers called Nodus stores and forwards your encrypted data." />
+  <meta name="robots" content="index, follow" />
+  <link rel="canonical" href="https://wiki.cpunk.io/network.html">
+
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+  <!-- Header / Nav -->
+  <header>
+    <div class="wrap">
+      <div class="nav">
+        <a href="/" class="brand">
+          <div class="brand-text">
+            <span class="brand-name">CPUNK <span class="accent">Wiki</span></span>
+            <span class="brand-tag">Guides &amp; Help</span>
+          </div>
+        </a>
+
+        <button class="mobile-menu-toggle" aria-label="Toggle navigation">
+          <span></span>
+        </button>
+
+        <div class="nav-menu">
+          <nav class="nav-links">
+            <a href="/">Wiki Home</a>
+            <a href="/getting-started.html">Getting Started</a>
+            <a href="/messaging.html">Messaging</a>
+            <a href="/wallet.html">Wallet</a>
+            <a href="/dna-chain.html">DNA Chain</a>
+            <a href="https://cpunk.io/">cpunk.io &#8599;</a>
+          </nav>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <div class="wrap wiki-layout">
+
+      <!-- Sidebar -->
+      <aside class="sidebar">
+        <div class="sidebar-group">
+          <h4>DNA Connect</h4>
+          <a href="/getting-started.html">Getting Started</a>
+          <a href="/identity.html">Identity &amp; Profile</a>
+          <a href="/messaging.html">Messaging</a>
+          <a href="/contacts-groups.html">Contacts &amp; Groups</a>
+          <a href="/wallet.html">Wallet</a>
+          <a href="/wall.html">The Wall</a>
+          <a href="/security.html">Security &amp; App Lock</a>
+          <a href="/recovery-phrase.html">Your Recovery Phrase</a>
+        </div>
+        <div class="sidebar-group">
+          <h4>Ecosystem</h4>
+          <a href="/network.html" class="active">The Network</a>
+          <a href="/dna-chain.html">DNA Chain FAQ</a>
+        </div>
+      </aside>
+
+      <!-- Article -->
+      <article>
+        <nav class="breadcrumb">
+          <a href="/">Wiki Home</a><span class="sep">/</span>Ecosystem<span class="sep">/</span>The Network
+        </nav>
+
+        <h1>The Network</h1>
+        <p class="article-lead">
+          Most messengers run on one company's servers. DNA Connect runs on
+          <strong>Nodus</strong> — a network of independent computers that
+          cooperate to store and deliver encrypted data, with no company in the
+          middle.
+        </p>
+
+        <h2>No central server</h2>
+        <p>
+          When you send a message, it doesn't go to a corporate data center. It
+          travels across Nodus nodes, which hold it — <strong>encrypted</strong>
+          — until your friend's device picks it up. No single machine is
+          special: data is copied across several nodes, so the network keeps
+          working even when some machines go down.
+        </p>
+
+        <h2>What the network can and cannot see</h2>
+        <p>
+          Nodes store and forward <strong>locked boxes</strong>. They can tell
+          that boxes are moving — that is what delivering them requires — but
+          they cannot open them. Your messages are readable only on your device
+          and the recipient's. There are no usernames or passwords on the
+          network — your keys speak for you — and nothing a node holds for
+          delivery or backup is readable by the node.
+        </p>
+
+        <h2>What Nodus does for you, quietly</h2>
+        <ul>
+          <li><strong>Delivers messages</strong> — including holding encrypted
+              messages up to 7 days for offline friends</li>
+          <li><strong>Keeps the name directory</strong> — the record that says
+              which keys <em>alice</em> belongs to, signed by its owner</li>
+          <li><strong>Serves profiles</strong> — avatars, bios, and the Wall</li>
+          <li><strong>Connects the app to DNA Chain</strong> — wallet balances
+              and transactions flow through the same network</li>
+        </ul>
+
+        <h2>Built for the quantum era</h2>
+        <p>
+          The connection between your app and the network is protected with
+          new-generation, quantum-resistant cryptography, and so are the links
+          nodes use to hand your data to each other. Coordination traffic
+          between nodes is cryptographically signed with the same standard —
+          the whole DNA ecosystem is built on it.
+        </p>
+
+        <h2>Who runs the nodes?</h2>
+        <p>
+          Today the network is operated by the project as it grows. It is
+          designed for <strong>community operation</strong>: the long-term goal
+          is a network of nodes run by independent people, the same way the
+          code is already open for anyone to inspect at
+          <a class="inline" href="https://gitlab.cpunk.io/cpunk/dna">gitlab.cpunk.io/cpunk/dna</a>.
+        </p>
+
+        <div class="pager">
+          <a href="/recovery-phrase.html">
+            <span class="pager-label">Previous</span>
+            <span class="pager-title">&#8592; Your Recovery Phrase</span>
+          </a>
+          <a class="next" href="/dna-chain.html">
+            <span class="pager-label">Next</span>
+            <span class="pager-title">DNA Chain FAQ &#8594;</span>
+          </a>
+        </div>
+      </article>
+
+    </div>
+  </main>
+
+  <!-- Footer -->
+  <footer>
+    <div class="wrap">
+      <div class="footer-row">
+        <div>&copy; 2026 CPUNK — Privacy &bull; Quantum Safety &bull; Decentralization</div>
+        <div class="footer-links">
+          <a href="https://cpunk.io/">cpunk.io</a>
+          <a href="https://cpunk.io/privacy.html">Privacy Policy</a>
+          <a href="https://cpunk.io/terms.html">Terms of Service</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', function() {
+      var mobileToggle = document.querySelector('.mobile-menu-toggle');
+      var navMenu = document.querySelector('.nav-menu');
+      if (mobileToggle && navMenu) {
+        mobileToggle.addEventListener('click', function() {
+          navMenu.classList.toggle('active');
+        });
+      }
+    });
+  </script>
+</body>
+</html>

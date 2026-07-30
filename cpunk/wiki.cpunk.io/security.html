@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Security &amp; App Lock – CPUNK Wiki</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="How DNA Connect protects you: automatic encryption, encrypted storage on your device, app lock with PIN and biometrics — and what security cannot do." />
+  <meta name="robots" content="index, follow" />
+  <link rel="canonical" href="https://wiki.cpunk.io/security.html">
+
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+  <!-- Header / Nav -->
+  <header>
+    <div class="wrap">
+      <div class="nav">
+        <a href="/" class="brand">
+          <div class="brand-text">
+            <span class="brand-name">CPUNK <span class="accent">Wiki</span></span>
+            <span class="brand-tag">Guides &amp; Help</span>
+          </div>
+        </a>
+
+        <button class="mobile-menu-toggle" aria-label="Toggle navigation">
+          <span></span>
+        </button>
+
+        <div class="nav-menu">
+          <nav class="nav-links">
+            <a href="/">Wiki Home</a>
+            <a href="/getting-started.html">Getting Started</a>
+            <a href="/messaging.html">Messaging</a>
+            <a href="/wallet.html">Wallet</a>
+            <a href="/dna-chain.html">DNA Chain</a>
+            <a href="https://cpunk.io/">cpunk.io &#8599;</a>
+          </nav>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <div class="wrap wiki-layout">
+
+      <!-- Sidebar -->
+      <aside class="sidebar">
+        <div class="sidebar-group">
+          <h4>DNA Connect</h4>
+          <a href="/getting-started.html">Getting Started</a>
+          <a href="/identity.html">Identity &amp; Profile</a>
+          <a href="/messaging.html">Messaging</a>
+          <a href="/contacts-groups.html">Contacts &amp; Groups</a>
+          <a href="/wallet.html">Wallet</a>
+          <a href="/wall.html">The Wall</a>
+          <a href="/security.html" class="active">Security &amp; App Lock</a>
+          <a href="/recovery-phrase.html">Your Recovery Phrase</a>
+        </div>
+        <div class="sidebar-group">
+          <h4>Ecosystem</h4>
+          <a href="/network.html">The Network</a>
+          <a href="/dna-chain.html">DNA Chain FAQ</a>
+        </div>
+      </aside>
+
+      <!-- Article -->
+      <article>
+        <nav class="breadcrumb">
+          <a href="/">Wiki Home</a><span class="sep">/</span>DNA Connect<span class="sep">/</span>Security &amp; App Lock
+        </nav>
+
+        <h1>Security &amp; App Lock</h1>
+        <p class="article-lead">
+          You don't need to understand cryptography to be safe in DNA Connect —
+          security is on by default, everywhere, and cannot be switched off.
+          Here is what protects you, in plain language.
+        </p>
+
+        <h2>Encryption is automatic</h2>
+        <p>
+          Every message is locked on your device before it goes anywhere, and
+          only the person (or group) you sent it to can unlock it. There are no
+          modes to enable and no keys to compare. The encryption used is
+          <strong>new-generation, quantum-resistant cryptography</strong> —
+          designed to hold up even against the quantum computers expected in
+          the future.
+        </p>
+
+        <h2>Your data is encrypted at rest, too</h2>
+        <p>
+          Your message history and contacts live in <strong>encrypted storage
+          on your device</strong> — someone who copies the app's files off your
+          phone still cannot read your conversations. Your contact list and
+          optional message backup on the network are encrypted the same way,
+          with <strong>your</strong> keys. Your public profile (name, avatar,
+          addresses) is different by design: it is meant to be findable, so it
+          is signed against tampering rather than hidden.
+        </p>
+
+        <h2>App Lock</h2>
+        <p>
+          Add a second wall in <strong>Settings &#8594; App Lock</strong>:
+        </p>
+        <ul>
+          <li><strong>PIN</strong> — the app asks for your PIN when opened</li>
+          <li><strong>Biometrics</strong> — use your fingerprint or face where
+              your device supports it (a PIN is always set first, as backup)</li>
+        </ul>
+        <p>
+          With App Lock on, someone borrowing your unlocked phone still cannot
+          open DNA Connect.
+        </p>
+
+        <h2>You control who reaches you</h2>
+        <p>
+          Strangers need your approval to become contacts, and anyone can be
+          <strong>blocked</strong> at any time. See
+          <a class="inline" href="/contacts-groups.html">Contacts &amp; Groups</a>.
+        </p>
+
+        <h2>What no app can protect you from</h2>
+        <p>Honesty matters more than marketing. No messenger — including this
+        one — can protect you if:</p>
+        <ul>
+          <li><strong>Someone has your 24 words.</strong> The Recovery Phrase
+              <em>is</em> your account. Guard it like cash —
+              <a class="inline" href="/recovery-phrase.html">here's how</a>.</li>
+          <li><strong>Someone controls your unlocked device.</strong> Use App
+              Lock and your phone's own screen lock together.</li>
+          <li><strong>The person you message shares it.</strong> Encryption
+              protects the journey, not what the recipient does afterwards —
+              anyone can screenshot a conversation. Trust the people you talk
+              to.</li>
+        </ul>
+
+        <h2>Common questions</h2>
+        <div class="faq">
+          <details>
+            <summary>Can CPUNK read my messages, even in an emergency?</summary>
+            <div class="faq-body">
+              <p>No. This is not a policy promise — it is how the system is
+              built. Messages are unlocked only on your and your friend's
+              devices; there is no master key, and what the network briefly
+              holds for delivery or backup is encrypted — there is nothing
+              readable to hand over.</p>
+            </div>
+          </details>
+          <details>
+            <summary>Why is there no "verify safety number" step?</summary>
+            <div class="faq-body">
+              <p>DNA Connect ties encryption to your registered identity
+              automatically, so there is nothing manual left for you to check.
+              Security that depends on users doing homework is security most
+              people don't have.</p>
+            </div>
+          </details>
+          <details>
+            <summary>Is the code audited or public?</summary>
+            <div class="faq-body">
+              <p>The code is open source — anyone can inspect it at
+              <a class="inline" href="https://gitlab.cpunk.io/cpunk/dna">gitlab.cpunk.io/cpunk/dna</a>.
+              Openness means claims like the ones on this page can be checked
+              by anyone, not taken on faith.</p>
+            </div>
+          </details>
+        </div>
+
+        <div class="pager">
+          <a href="/wall.html">
+            <span class="pager-label">Previous</span>
+            <span class="pager-title">&#8592; The Wall</span>
+          </a>
+          <a class="next" href="/recovery-phrase.html">
+            <span class="pager-label">Next</span>
+            <span class="pager-title">Your Recovery Phrase &#8594;</span>
+          </a>
+        </div>
+      </article>
+
+    </div>
+  </main>
+
+  <!-- Footer -->
+  <footer>
+    <div class="wrap">
+      <div class="footer-row">
+        <div>&copy; 2026 CPUNK — Privacy &bull; Quantum Safety &bull; Decentralization</div>
+        <div class="footer-links">
+          <a href="https://cpunk.io/">cpunk.io</a>
+          <a href="https://cpunk.io/privacy.html">Privacy Policy</a>
+          <a href="https://cpunk.io/terms.html">Terms of Service</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', function() {
+      var mobileToggle = document.querySelector('.mobile-menu-toggle');
+      var navMenu = document.querySelector('.nav-menu');
+      if (mobileToggle && navMenu) {
+        mobileToggle.addEventListener('click', function() {
+          navMenu.classList.toggle('active');
+        });
+      }
+    });
+  </script>
+</body>
+</html>

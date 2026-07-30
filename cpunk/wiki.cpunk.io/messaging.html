@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Messaging – CPUNK Wiki</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="How private messaging works in DNA Connect: adding contacts, automatic encryption, and offline delivery." />
+  <meta name="robots" content="index, follow" />
+  <link rel="canonical" href="https://wiki.cpunk.io/messaging.html">
+
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+  <!-- Header / Nav -->
+  <header>
+    <div class="wrap">
+      <div class="nav">
+        <a href="/" class="brand">
+          <div class="brand-text">
+            <span class="brand-name">CPUNK <span class="accent">Wiki</span></span>
+            <span class="brand-tag">Guides &amp; Help</span>
+          </div>
+        </a>
+
+        <button class="mobile-menu-toggle" aria-label="Toggle navigation">
+          <span></span>
+        </button>
+
+        <div class="nav-menu">
+          <nav class="nav-links">
+            <a href="/">Wiki Home</a>
+            <a href="/getting-started.html">Getting Started</a>
+            <a href="/messaging.html" class="active">Messaging</a>
+            <a href="/wallet.html">Wallet</a>
+            <a href="/dna-chain.html">DNA Chain</a>
+            <a href="https://cpunk.io/">cpunk.io &#8599;</a>
+          </nav>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <div class="wrap wiki-layout">
+
+      <!-- Sidebar -->
+      <aside class="sidebar">
+        <div class="sidebar-group">
+          <h4>DNA Connect</h4>
+          <a href="/getting-started.html">Getting Started</a>
+          <a href="/identity.html">Identity &amp; Profile</a>
+          <a href="/messaging.html" class="active">Messaging</a>
+          <a href="/contacts-groups.html">Contacts &amp; Groups</a>
+          <a href="/wallet.html">Wallet</a>
+          <a href="/wall.html">The Wall</a>
+          <a href="/security.html">Security &amp; App Lock</a>
+          <a href="/recovery-phrase.html">Your Recovery Phrase</a>
+        </div>
+        <div class="sidebar-group">
+          <h4>Ecosystem</h4>
+          <a href="/network.html">The Network</a>
+          <a href="/dna-chain.html">DNA Chain FAQ</a>
+        </div>
+      </aside>
+
+      <!-- Article -->
+      <article>
+        <nav class="breadcrumb">
+          <a href="/">Wiki Home</a><span class="sep">/</span>DNA Connect<span class="sep">/</span>Messaging
+        </nav>
+
+        <h1>Messaging in DNA Connect</h1>
+        <p class="article-lead">
+          Messaging in DNA Connect looks and feels like any modern messenger.
+          The difference is what happens underneath: your messages travel over a
+          network run by independent computers, locked so that only you and the
+          person you are talking to can read them.
+        </p>
+
+        <h2>Adding contacts</h2>
+        <p>
+          Friends find each other by <strong>name</strong> — the name you picked
+          when you created your identity. There are no phone numbers to exchange
+          and no contact lists uploaded from your phone. Add someone by their
+          name and start talking.
+        </p>
+
+        <h2>Everything is encrypted, always</h2>
+        <p>
+          Every message is <strong>end-to-end encrypted before it leaves your
+          device</strong>. Only the person you send it to can unlock it — not
+          the network, not CPUNK, not anyone in between. There is no
+          "secret chat" mode to remember: encryption is on for every message,
+          every time, and cannot be switched off.
+        </p>
+        <div class="callout callout-info">
+          <span class="callout-title">Quantum safety</span>
+          <p>DNA Connect uses new-generation encryption designed to stay secure
+          even against future quantum computers. Messages you send today are
+          protected against the technology of tomorrow.</p>
+        </div>
+
+        <h2>What if my friend is offline?</h2>
+        <p>
+          Just send the message. If your friend's device is off or unreachable,
+          the network <strong>holds the encrypted message for up to 7 days</strong>
+          and delivers it when they come back online. While it waits, it stays
+          locked — the computers storing it cannot read it.
+        </p>
+
+        <h2>Reactions and starred messages</h2>
+        <p>
+          Open a message's menu to <strong>react</strong> with an emoji, or
+          <strong>star</strong> it to save it. Starred messages have their own
+          list on the <strong>More</strong> screen, so the important stuff — an
+          address, a promise, a good joke — is always one tap away.
+        </p>
+
+        <h2>Group conversations</h2>
+        <p>
+          Groups get the same protection as private chats: end-to-end
+          encrypted, members only. See
+          <a class="inline" href="/contacts-groups.html">Contacts &amp; Groups</a>
+          for creating groups and handling invitations.
+        </p>
+
+        <h2>Where are my messages stored?</h2>
+        <p>
+          Your conversation history lives in <strong>encrypted storage on your
+          device</strong>. If you want more, turn on <strong>message
+          backup</strong> (Settings &#8594; Data &amp; Storage): the app then
+          keeps an encrypted copy on the network — locked with your own keys,
+          so the computers storing it cannot read a word. When you restore
+          your identity on a new device, the app looks for that backup and
+          <strong>offers</strong> to bring your history back. No backup turned
+          on, no history to restore — that is the trade-off of a service that
+          cannot read your data.
+        </p>
+
+        <h2>Common questions</h2>
+        <div class="faq">
+          <details>
+            <summary>Do I need to verify anything to be secure?</summary>
+            <div class="faq-body">
+              <p>No. Security in DNA Connect is automatic. There are no keys to
+              compare and no settings to enable — the app handles all of it.</p>
+            </div>
+          </details>
+          <details>
+            <summary>Can CPUNK read my messages?</summary>
+            <div class="faq-body">
+              <p>No. Messages are locked on your device and unlocked only on
+              your friend's device. Nobody in between — including the people
+              who build DNA Connect — can read them.</p>
+            </div>
+          </details>
+          <details>
+            <summary>Why did my message take a moment to arrive?</summary>
+            <div class="faq-body">
+              <p>Your messages travel across a network of independent computers
+              rather than one central server. Delivery is usually quick, but
+              can occasionally take a little longer than centralized apps —
+              that is the price of having no single company in the middle.</p>
+            </div>
+          </details>
+        </div>
+
+        <div class="pager">
+          <a href="/identity.html">
+            <span class="pager-label">Previous</span>
+            <span class="pager-title">&#8592; Identity &amp; Profile</span>
+          </a>
+          <a class="next" href="/contacts-groups.html">
+            <span class="pager-label">Next</span>
+            <span class="pager-title">Contacts &amp; Groups &#8594;</span>
+          </a>
+        </div>
+      </article>
+
+    </div>
+  </main>
+
+  <!-- Footer -->
+  <footer>
+    <div class="wrap">
+      <div class="footer-row">
+        <div>&copy; 2026 CPUNK — Privacy &bull; Quantum Safety &bull; Decentralization</div>
+        <div class="footer-links">
+          <a href="https://cpunk.io/">cpunk.io</a>
+          <a href="https://cpunk.io/privacy.html">Privacy Policy</a>
+          <a href="https://cpunk.io/terms.html">Terms of Service</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', function() {
+      var mobileToggle = document.querySelector('.mobile-menu-toggle');
+      var navMenu = document.querySelector('.nav-menu');
+      if (mobileToggle && navMenu) {
+        mobileToggle.addEventListener('click', function() {
+          navMenu.classList.toggle('active');
+        });
+      }
+    });
+  </script>
+</body>
+</html>

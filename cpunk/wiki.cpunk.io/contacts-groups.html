@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Contacts &amp; Groups – CPUNK Wiki</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Adding contacts, approving contact requests, blocking, and encrypted group chats in DNA Connect." />
+  <meta name="robots" content="index, follow" />
+  <link rel="canonical" href="https://wiki.cpunk.io/contacts-groups.html">
+
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+  <!-- Header / Nav -->
+  <header>
+    <div class="wrap">
+      <div class="nav">
+        <a href="/" class="brand">
+          <div class="brand-text">
+            <span class="brand-name">CPUNK <span class="accent">Wiki</span></span>
+            <span class="brand-tag">Guides &amp; Help</span>
+          </div>
+        </a>
+
+        <button class="mobile-menu-toggle" aria-label="Toggle navigation">
+          <span></span>
+        </button>
+
+        <div class="nav-menu">
+          <nav class="nav-links">
+            <a href="/">Wiki Home</a>
+            <a href="/getting-started.html">Getting Started</a>
+            <a href="/messaging.html">Messaging</a>
+            <a href="/wallet.html">Wallet</a>
+            <a href="/dna-chain.html">DNA Chain</a>
+            <a href="https://cpunk.io/">cpunk.io &#8599;</a>
+          </nav>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <div class="wrap wiki-layout">
+
+      <!-- Sidebar -->
+      <aside class="sidebar">
+        <div class="sidebar-group">
+          <h4>DNA Connect</h4>
+          <a href="/getting-started.html">Getting Started</a>
+          <a href="/identity.html">Identity &amp; Profile</a>
+          <a href="/messaging.html">Messaging</a>
+          <a href="/contacts-groups.html" class="active">Contacts &amp; Groups</a>
+          <a href="/wallet.html">Wallet</a>
+          <a href="/wall.html">The Wall</a>
+          <a href="/security.html">Security &amp; App Lock</a>
+          <a href="/recovery-phrase.html">Your Recovery Phrase</a>
+        </div>
+        <div class="sidebar-group">
+          <h4>Ecosystem</h4>
+          <a href="/network.html">The Network</a>
+          <a href="/dna-chain.html">DNA Chain FAQ</a>
+        </div>
+      </aside>
+
+      <!-- Article -->
+      <article>
+        <nav class="breadcrumb">
+          <a href="/">Wiki Home</a><span class="sep">/</span>DNA Connect<span class="sep">/</span>Contacts &amp; Groups
+        </nav>
+
+        <h1>Contacts &amp; Groups</h1>
+        <p class="article-lead">
+          You decide who can reach you. DNA Connect never uploads your phone's
+          contact list — you add people by name, and strangers need your
+          approval before they become contacts.
+        </p>
+
+        <h2>Adding a contact</h2>
+        <p>
+          Tap <strong>add contact</strong> and enter your friend's
+          <strong>name</strong> — the one they registered when creating their
+          identity. That's it. No phone numbers, no invitation links.
+        </p>
+
+        <h2>Contact requests</h2>
+        <p>
+          When someone adds you, it arrives as a <strong>contact
+          request</strong> — like the classic messengers did it. You see who is
+          asking and choose to accept or not. Until you accept, they are not in
+          your contact list.
+        </p>
+
+        <h2>Blocking</h2>
+        <p>
+          If someone bothers you, <strong>block them</strong>. The app stops
+          their contact requests and no longer alerts you about their
+          messages. Your blocked list lives in the <strong>Blocked</strong> tab
+          of the Contacts screen, and you can unblock at any time.
+        </p>
+
+        <h2>Group chats</h2>
+        <p>
+          Groups work the way you'd expect:
+        </p>
+        <ol class="steps">
+          <li><strong>Create a group</strong> from the Groups screen and give it a name.</li>
+          <li><strong>Add people</strong> from your contacts. They get an
+              invitation notice showing the ID of whoever added them, and can
+              dismiss it if they're not interested.</li>
+          <li><strong>Chat.</strong> Group messages are end-to-end encrypted,
+              just like private ones — only members of the group can read
+              them.</li>
+        </ol>
+        <p>
+          Everyone can see the group's member count, and any member can add
+          people from their own contacts — so who you share a group with
+          depends on who you share it with. Keep sensitive circles small.
+        </p>
+
+        <div class="callout callout-info">
+          <span class="callout-title">Good to know</span>
+          <p>Whether it's one friend or a whole group, the same rule applies:
+          messages are locked before they leave your device, and only the
+          intended readers hold the key. See
+          <a class="inline" href="/messaging.html">Messaging</a> for more.</p>
+        </div>
+
+        <div class="pager">
+          <a href="/messaging.html">
+            <span class="pager-label">Previous</span>
+            <span class="pager-title">&#8592; Messaging</span>
+          </a>
+          <a class="next" href="/wallet.html">
+            <span class="pager-label">Next</span>
+            <span class="pager-title">Wallet &#8594;</span>
+          </a>
+        </div>
+      </article>
+
+    </div>
+  </main>
+
+  <!-- Footer -->
+  <footer>
+    <div class="wrap">
+      <div class="footer-row">
+        <div>&copy; 2026 CPUNK — Privacy &bull; Quantum Safety &bull; Decentralization</div>
+        <div class="footer-links">
+          <a href="https://cpunk.io/">cpunk.io</a>
+          <a href="https://cpunk.io/privacy.html">Privacy Policy</a>
+          <a href="https://cpunk.io/terms.html">Terms of Service</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', function() {
+      var mobileToggle = document.querySelector('.mobile-menu-toggle');
+      var navMenu = document.querySelector('.nav-menu');
+      if (mobileToggle && navMenu) {
+        mobileToggle.addEventListener('click', function() {
+          navMenu.classList.toggle('active');
+        });
+      }
+    });
+  </script>
+</body>
+</html>

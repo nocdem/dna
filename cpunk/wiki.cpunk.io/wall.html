@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>The Wall – CPUNK Wiki</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="The Wall in DNA Connect: a public timeline with posts, likes, comments, and DNAC tips." />
+  <meta name="robots" content="index, follow" />
+  <link rel="canonical" href="https://wiki.cpunk.io/wall.html">
+
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+  <!-- Header / Nav -->
+  <header>
+    <div class="wrap">
+      <div class="nav">
+        <a href="/" class="brand">
+          <div class="brand-text">
+            <span class="brand-name">CPUNK <span class="accent">Wiki</span></span>
+            <span class="brand-tag">Guides &amp; Help</span>
+          </div>
+        </a>
+
+        <button class="mobile-menu-toggle" aria-label="Toggle navigation">
+          <span></span>
+        </button>
+
+        <div class="nav-menu">
+          <nav class="nav-links">
+            <a href="/">Wiki Home</a>
+            <a href="/getting-started.html">Getting Started</a>
+            <a href="/messaging.html">Messaging</a>
+            <a href="/wallet.html">Wallet</a>
+            <a href="/dna-chain.html">DNA Chain</a>
+            <a href="https://cpunk.io/">cpunk.io &#8599;</a>
+          </nav>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <div class="wrap wiki-layout">
+
+      <!-- Sidebar -->
+      <aside class="sidebar">
+        <div class="sidebar-group">
+          <h4>DNA Connect</h4>
+          <a href="/getting-started.html">Getting Started</a>
+          <a href="/identity.html">Identity &amp; Profile</a>
+          <a href="/messaging.html">Messaging</a>
+          <a href="/contacts-groups.html">Contacts &amp; Groups</a>
+          <a href="/wallet.html">Wallet</a>
+          <a href="/wall.html" class="active">The Wall</a>
+          <a href="/security.html">Security &amp; App Lock</a>
+          <a href="/recovery-phrase.html">Your Recovery Phrase</a>
+        </div>
+        <div class="sidebar-group">
+          <h4>Ecosystem</h4>
+          <a href="/network.html">The Network</a>
+          <a href="/dna-chain.html">DNA Chain FAQ</a>
+        </div>
+      </aside>
+
+      <!-- Article -->
+      <article>
+        <nav class="breadcrumb">
+          <a href="/">Wiki Home</a><span class="sep">/</span>DNA Connect<span class="sep">/</span>The Wall
+        </nav>
+
+        <h1>The Wall</h1>
+        <p class="article-lead">
+          The Wall is the social side of DNA Connect: a timeline where people
+          post publicly under their name. Unlike your messages, the Wall is
+          <strong>meant to be seen</strong>.
+        </p>
+
+        <h2>Posting</h2>
+        <p>
+          Write a post and it appears under your name in the timeline of
+          everyone who has you as a <strong>contact</strong> or
+          <strong>follows</strong> you. Others can <strong>like</strong> your
+          post, <strong>comment</strong> on it, and reply to each other in
+          threads.
+        </p>
+
+        <h2>Tips — appreciation with real weight</h2>
+        <p>
+          If you enjoy someone's post, you can send the author a
+          <strong>tip in CPUNK</strong> right from the post. The tip is a real
+          token transfer from your wallet to theirs — no platform in between,
+          no cut taken by anyone (only the usual small network fee applies).
+          During the current test phase, if you also hold DNAC the app mirrors
+          the tip on <a class="inline" href="/dna-chain.html">DNA Chain</a> as
+          well — part of testing the chain with real activity.
+        </p>
+
+        <h2>Boosting</h2>
+        <p>
+          When writing a post you can <strong>boost</strong> it — once per day —
+          to put it on the timeline of <strong>everyone</strong>, not just the
+          people who follow you. Boosted posts are visibly marked.
+        </p>
+
+        <h2>Remember: the Wall is public</h2>
+        <div class="callout callout-warn">
+          <span class="callout-title">Think before you post</span>
+          <p>Your messages are private; the Wall is not. Posts are published
+          under your name for others to see, and on a decentralized network
+          you should assume a post, once seen, cannot be fully taken back.
+          Post accordingly.</p>
+        </div>
+
+        <div class="pager">
+          <a href="/wallet.html">
+            <span class="pager-label">Previous</span>
+            <span class="pager-title">&#8592; Wallet</span>
+          </a>
+          <a class="next" href="/security.html">
+            <span class="pager-label">Next</span>
+            <span class="pager-title">Security &amp; App Lock &#8594;</span>
+          </a>
+        </div>
+      </article>
+
+    </div>
+  </main>
+
+  <!-- Footer -->
+  <footer>
+    <div class="wrap">
+      <div class="footer-row">
+        <div>&copy; 2026 CPUNK — Privacy &bull; Quantum Safety &bull; Decentralization</div>
+        <div class="footer-links">
+          <a href="https://cpunk.io/">cpunk.io</a>
+          <a href="https://cpunk.io/privacy.html">Privacy Policy</a>
+          <a href="https://cpunk.io/terms.html">Terms of Service</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', function() {
+      var mobileToggle = document.querySelector('.mobile-menu-toggle');
+      var navMenu = document.querySelector('.nav-menu');
+      if (mobileToggle && navMenu) {
+        mobileToggle.addEventListener('click', function() {
+          navMenu.classList.toggle('active');
+        });
+      }
+    });
+  </script>
+</body>
+</html>

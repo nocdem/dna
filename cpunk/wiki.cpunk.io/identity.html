@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Identity &amp; Profile – CPUNK Wiki</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Your DNA Connect identity: your name, profile, avatar, wallet addresses, and QR login approval." />
+  <meta name="robots" content="index, follow" />
+  <link rel="canonical" href="https://wiki.cpunk.io/identity.html">
+
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+  <!-- Header / Nav -->
+  <header>
+    <div class="wrap">
+      <div class="nav">
+        <a href="/" class="brand">
+          <div class="brand-text">
+            <span class="brand-name">CPUNK <span class="accent">Wiki</span></span>
+            <span class="brand-tag">Guides &amp; Help</span>
+          </div>
+        </a>
+
+        <button class="mobile-menu-toggle" aria-label="Toggle navigation">
+          <span></span>
+        </button>
+
+        <div class="nav-menu">
+          <nav class="nav-links">
+            <a href="/">Wiki Home</a>
+            <a href="/getting-started.html">Getting Started</a>
+            <a href="/messaging.html">Messaging</a>
+            <a href="/wallet.html">Wallet</a>
+            <a href="/dna-chain.html">DNA Chain</a>
+            <a href="https://cpunk.io/">cpunk.io &#8599;</a>
+          </nav>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <div class="wrap wiki-layout">
+
+      <!-- Sidebar -->
+      <aside class="sidebar">
+        <div class="sidebar-group">
+          <h4>DNA Connect</h4>
+          <a href="/getting-started.html">Getting Started</a>
+          <a href="/identity.html" class="active">Identity &amp; Profile</a>
+          <a href="/messaging.html">Messaging</a>
+          <a href="/contacts-groups.html">Contacts &amp; Groups</a>
+          <a href="/wallet.html">Wallet</a>
+          <a href="/wall.html">The Wall</a>
+          <a href="/security.html">Security &amp; App Lock</a>
+          <a href="/recovery-phrase.html">Your Recovery Phrase</a>
+        </div>
+        <div class="sidebar-group">
+          <h4>Ecosystem</h4>
+          <a href="/network.html">The Network</a>
+          <a href="/dna-chain.html">DNA Chain FAQ</a>
+        </div>
+      </aside>
+
+      <!-- Article -->
+      <article>
+        <nav class="breadcrumb">
+          <a href="/">Wiki Home</a><span class="sep">/</span>DNA Connect<span class="sep">/</span>Identity &amp; Profile
+        </nav>
+
+        <h1>Identity &amp; Profile</h1>
+        <p class="article-lead">
+          In DNA Connect, <strong>you</strong> create your identity — not a
+          company. It is generated on your own device from your 24-word
+          Recovery Phrase, and no company holds an account — or your keys —
+          for you.
+        </p>
+
+        <h2>Your name</h2>
+        <p>
+          Every account has a <strong>name</strong> — a simple, human-readable
+          handle like <em>alice</em> that you register when you set up the
+          app. Your friends add you by this name; nobody needs to exchange
+          long codes or phone numbers. Names are unique: once a name is
+          registered, nobody else can take it.
+        </p>
+        <div class="callout callout-info">
+          <span class="callout-title">Tip</span>
+          <p>Pick a name you are happy to keep. Your name is how everyone
+          knows you across messaging, groups, and the Wall.</p>
+        </div>
+
+        <h2>Your profile</h2>
+        <p>
+          Your profile is what others see when they look you up. You can add:
+        </p>
+        <ul>
+          <li>A <strong>profile picture</strong> — pick a photo and crop it in the app</li>
+          <li>A short <strong>bio</strong>, your <strong>location</strong>, and a <strong>website</strong></li>
+        </ul>
+        <p>
+          These are all optional — share as much or as little as you like.
+        </p>
+
+        <h2>Your wallet addresses</h2>
+        <p>
+          Your profile also carries your <strong>wallet addresses</strong>
+          (Cellframe, Ethereum, Solana, Tron, BNB Smart Chain). You don't type
+          these in and you can't get them wrong: they are <strong>created
+          automatically from your identity</strong> and shown read-only. This
+          is what lets a friend send you funds by simply picking your name in
+          their <a class="inline" href="/wallet.html">wallet</a> — the app
+          looks up the right address from your profile, no copy-pasting needed.
+        </p>
+        <div class="callout callout-info">
+          <span class="callout-title">Good to know</span>
+          <p>Your name and profile (bio, avatar, addresses) are
+          <strong>public</strong> — that is what makes you findable. They are
+          cryptographically signed so nobody can tamper with them or
+          impersonate you, but anyone can look them up. Your contacts and
+          messages are a different story: those are encrypted, for your eyes
+          only.</p>
+        </div>
+
+        <h2>Your identity lives on the network, not on one device</h2>
+        <p>
+          Your name and profile live on
+          <a class="inline" href="/network.html">the network</a>, signed by
+          your keys. Your contact list lives there too — encrypted, so only
+          you can open it — and if you turn on message backup, an encrypted
+          copy of your history joins it. Your device holds the keys, which
+          your 24 words can recreate anywhere. That is why a phone can break
+          or get lost without your identity going with it: enter your 24 words
+          on any device and you are back — your name, your profile, your
+          contacts, and (if you enabled backup) your messages.
+        </p>
+
+        <h2>Logging in elsewhere with QR codes</h2>
+        <p>
+          Services in the CPUNK ecosystem can let you log in using your DNA
+          identity instead of a username and password. When a website shows a
+          login QR code, open the <strong>QR scanner</strong> in DNA Connect
+          (on your Android phone — the scanner needs a camera), scan it, and
+          approve or reject the request on your device. Your keys never leave
+          the app — you simply confirm "yes, that's me".
+        </p>
+        <div class="callout callout-warn">
+          <span class="callout-title">Careful</span>
+          <p>Only approve QR logins that <strong>you</strong> started. If a
+          login request appears that you did not ask for, reject it.</p>
+        </div>
+
+        <h2>Moving to a new device</h2>
+        <p>
+          Install DNA Connect on the new device, choose restore, and enter
+          your 24 words — your name, profile, and contacts come back from the
+          network, and the app checks for an encrypted message backup (you'll
+          have one if you turned backup on). See
+          <a class="inline" href="/recovery-phrase.html">Your Recovery Phrase</a>.
+        </p>
+
+        <div class="pager">
+          <a href="/getting-started.html">
+            <span class="pager-label">Previous</span>
+            <span class="pager-title">&#8592; Getting Started</span>
+          </a>
+          <a class="next" href="/messaging.html">
+            <span class="pager-label">Next</span>
+            <span class="pager-title">Messaging &#8594;</span>
+          </a>
+        </div>
+      </article>
+
+    </div>
+  </main>
+
+  <!-- Footer -->
+  <footer>
+    <div class="wrap">
+      <div class="footer-row">
+        <div>&copy; 2026 CPUNK — Privacy &bull; Quantum Safety &bull; Decentralization</div>
+        <div class="footer-links">
+          <a href="https://cpunk.io/">cpunk.io</a>
+          <a href="https://cpunk.io/privacy.html">Privacy Policy</a>
+          <a href="https://cpunk.io/terms.html">Terms of Service</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', function() {
+      var mobileToggle = document.querySelector('.mobile-menu-toggle');
+      var navMenu = document.querySelector('.nav-menu');
+      if (mobileToggle && navMenu) {
+        mobileToggle.addEventListener('click', function() {
+          navMenu.classList.toggle('active');
+        });
+      }
+    });
+  </script>
+</body>
+</html>
