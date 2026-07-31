@@ -695,6 +695,15 @@ add_executable(test_merkle_utxo_root tests/test_merkle_utxo_root.c)
 target_link_libraries(test_merkle_utxo_root nodus dsa nodus)
 add_test(NAME test_merkle_utxo_root COMMAND test_merkle_utxo_root)
 
+# state_root GOLDEN VECTOR — pins the five-subtree composition to a fixed
+# 64-byte value so a format change cannot pass a relational test. Also
+# usable as a generator: ./test_merkle_state_root_golden --print-root
+add_executable(test_merkle_state_root_golden
+    tests/test_merkle_state_root_golden.c)
+target_link_libraries(test_merkle_state_root_golden nodus dsa nodus)
+add_test(NAME test_merkle_state_root_golden
+         COMMAND test_merkle_state_root_golden)
+
 # state_root leaf-scan fail-close tests (K3 / K3b — mid-scan step error
 # and malformed row must fail the load, never truncate the leaf set)
 add_executable(test_merkle_scan_fail_close tests/test_merkle_scan_fail_close.c)
