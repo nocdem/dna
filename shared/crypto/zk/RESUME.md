@@ -1055,6 +1055,84 @@ left is NOT zk work — it is design and consensus work upstream of the circuits
    dört header grep'lenmişti). Kullanıcı kararı bekliyor: kapsamı genişlet
    (~250k) / borç olarak bırak / satır-numaralı atıf modelini kalıcı değiştir.
 
+   ═══════════════════════════════════════════════════════════════════════════
+   ▶▶ PRIMING DİLİMİ (label 1 + 6a) BİR TASARIM BLOKAJINA ÇARPTI — KOD YAZILMADI
+   ═══════════════════════════════════════════════════════════════════════════
+   2026-07-31, O2 zemininde bulundu; hiçbir ajan dispatch edilmedi, 0 token
+   harcandı. **Bu, sonraki oturumun ilk konusudur ve bir KRİPTO TASARIM
+   KARARIDIR — kullanıcıyla tartışılmadan delege edilemez.**
+
+   **SABİT NOKTA.** Priming'i transcript AIR'ının içinde modellemek, AIR'ın
+   KENDİ publics'ini gözlemlemesini gerektiriyor. Zincir (hepsi doğrulandı):
+     `batch_verify.c:222`  pubs[i] = di->public_values   (HER instance için)
+     `batch_verify.c:329`  pin.public_values = pubs
+     `batch_verify.c:344`  dnac_batch_priming_run(...)
+     `batch_priming.c:77-79`  for j: observe_fp(public_values[i][j])
+                              ⇒ publics ELEMAN ELEMAN gözlemleniyor
+     `batch_priming.c:30-37`  observe_commit ⇒ commit'ler 4 LANE
+     `fri_statement.c:1476`   pub_tair[k] = tair_payload[k]
+                              ⇒ tair'in publics'i PAYLOAD'IN KENDİSİ
+   ⇒ priming, tair'in payload'ını açık metin olarak gözlemliyor.
+
+   **DİVERJANSIN TAM YERİ** — matematikte değil, op/lane modelinde:
+     `transcript_air_table.h:345-352` — `dnac_tair_op_t` alanları
+       {kind, is_pow, pow_bits, num_bits}. **Mevcut bir lane'e REFERANS alanı YOK.**
+     `transcript_air_table.h:375` — "op index == one-hot position == public slot"
+     `fri_statement.h:1232` — tair_payload[DNAC_P2S_TAIR_NUM_OPS]  ⇒ op ↔ lane 1:1
+   ⇒ N op → N lane → N public → priming N lane gözlemler → N op daha → …
+   Sorun "transcript kendini gözlemliyor" DEĞİL; **kendini AÇIK METİN olarak**
+   gözlemlemesi. Commit'ler 4 lane olduğu için opak ve öz-referans doğurmuyor.
+
+   **ÖLÇEK (ikincil ama ağır):** count+bindings 2+17×8 = 138 fp observe,
+   observe_main 4 + ~353 (statement'ın TÜM publics'i) = 357, artı preprocessed /
+   perm / alpha / quotient commit / ζ ⇒ ~520+ observe, mevcut FRI-tail script'inin
+   ÜSTÜNE. tair tablosu 64 → ~1024+ satır. Ölçeği para çözer, diverjansı çözmez.
+
+   **LABEL 6a AÇISINDAN NE DEMEK:** 6a'nın kapanma MEKANİZMASI tam olarak bu
+   tarama — `mmix_root`/`mmcs_root` priming'de mmix/mmcs instance'larının
+   PUBLICS'İ olarak gözlemleniyor, ayrı bir "observe root" op'u YOK. Yani
+   kökleri bağlamak = publics taramasını modellemek = tair'i de kapsamak.
+
+   **SEÇENEKLER (ORCHESTRATOR analizi, güven seviyeleriyle):**
+   A. **Payload'ı publics'ten çıkar → trace'e; instance'ları LogUp bus'ıyla bağla.**
+      Priming 500 lane yerine 4 lane'lik main commit'i gözlemler; commit AIR için
+      opak, "commit↔trace" bağını dış FRI/MMCS kurar. Özyineleme kırılır. Gerçek
+      recursive verifier'ların standart şekli. BEDEL: composition'ın TÜM paylaşım
+      mekanizması değişir (`tair_payload`→betas/alpha, `ro_export`, `mmix_opened`,
+      `index_bits` — hepsi bugün "tek alan, iki instance'ın publics'i"), perm turu
+      canlanır. Mekanizma VAR (`logup_bus.c`, batch_verify destekliyor,
+      composition HİÇ kullanmıyor — grep boş). ⚠ TEMİZ KAPANDIĞI DOĞRULANMADI.
+   B. Transcript'i tüketicileriyle BİRLEŞTİR (paylaşım instance-içi kolon olur).
+      Sabit noktayı öldürür, bus gerekmez — ama kullanıcı-kilitli "5 instance of
+      the EXISTING dnac_batch_verify" şeklini bozar.
+   C. **Kısmi priming: yalnız commit'ler + ζ, publics taraması YOK.** Diverjans
+      yok. 6a'yı KAPATMAZ. Ama ζ transcript-türevli olur ⇒ **label 1'in ana
+      içeriği + label 8 (per-query z) kapanır** — bugün prover'ın serbestçe
+      seçtiği bir girdi kalkar. Uygulanabilirliğine güven YÜKSEK.
+      ⚠ **C, A'nın ATILACAK sapması DEĞİL, SIKI ÖN-EKİ:** priming op DİZİSİ
+      `batch_priming.c`'de sabit (count+bindings → main commit → publics →
+      preprocessed → perm → alpha → quotient commit → ζ); A'nın değiştirdiği tek
+      şey publics taramasının UZUNLUĞU. C'de kurulan altyapı A'da aynen kullanılır.
+   D. Op'lara "mevcut lane'i gözlemle" türü ekle. TEK BAŞINA YETMEZ: diğer
+      instance'ların publics'i payload lane'i değil ve tair onları göremez. Güven DÜŞÜK.
+   E. Park. Label 1/6a açık, P2e re-pin devralır.
+
+   **ORCHESTRATOR ÖNERİSİ (kullanıcı "yeni sezon" dedi, maliyet kısıt değil):
+   A — ama tek hamlede değil, sezon olarak, ve İLK İŞ KOD DEĞİL ARAŞTIRMA.**
+   Sezon 0'da cevaplanacak İKİ DOĞRULANMAMIŞ ÖNCÜL (READ-ONLY, ~200-300k):
+     (i) LogUp bus FARKLI YÜKSEKLİKTEKİ instance'lar arasında değer taşıyabiliyor
+         mu? (composition'da 8/16/32/64 satırlık instance'lar var)
+     (ii) Perm turu canlandığında KENDİ commitment'ı transcript AIR'ın
+          modellemesi gereken YENİ bir observe doğuruyor mu?
+   Cevap "hayır" ise sezon A değil **C + park** olur — ve bunu ÖNCE bilmek,
+   üstüne inşa ettikten sonra öğrenmekten çok ucuz. Bu oturumda İKİ KEZ
+   "modülü kullanmaya kalkınca çıkan tavan" görüldü (mmcs_air completeness,
+   FRI_MAX_RO); üçüncüsü davet edilmemeli.
+   Sezon şekli: 0 araştırma (kapı: sonuç kullanıcıya sunulur, şekil ORADA
+   kesinleşir) → 1 = C (ζ + label 8, commit'lenir) → 2 = payload→trace + bus
+   (6a kapanır ⇒ **label 3 KRİPTOGRAFİK OLARAK kapanır**) → 3 re-pin
+   (`DNAC_P2A_PREP_ROOT` + composed root) + tam doğrulama.
+
    **COMMIT-ROUND REPLİKASYONU + LABEL 6 SHIPPED (2026-07-31, FLEET 036:
    1 executor 2 tur + verifier + zk-auditor + ORCHESTRATOR).**
    Statement artık **tüm R commit turunu** koşuyor (R = LGMH−LB−LFPL = 3):
