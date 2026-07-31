@@ -35,37 +35,13 @@ static inline gold_fp2_t mul2(gold_fp2_t a, gold_fp2_t b) {
     return gold_fp2_mul(a, b);
 }
 
-/** "No mapping for this scheduled step" (the (size_t)-1 sentinel of
- *  fri_oi_air.c:131-135). */
-#define FOI_FOLD_NO_MAP ((size_t)-1)
+/** Local alias for the header's sentinel (fri_oi_air.c:131-135). */
+#define FOI_FOLD_NO_MAP DNAC_FOI_FOLD_NO_MAP
 
-/* ══════════════════════════ module-static binding ════════════════════════ */
-
-/**
- * The snapshot `air_eval` runs on. Mirrors `foi_sched_t` (fri_oi_air.c:85-102);
- * the cfg POINTER is deliberately not kept (see the bind contract) — every
- * derived quantity is copied.
- */
-typedef struct {
-    int    bound;
-    size_t lgmh;
-    size_t num_heights;
-    size_t sched;
-    size_t num_cols;
-    size_t total_acc;
-    size_t pub_alpha;
-    size_t pub_zpz;
-    size_t pub_ro;
-    size_t pub_px;
-    size_t num_publics;
-    size_t n_lb_zero; /* number of lb per-batch boundaries (C5 pairs)        */
-    /* Per SCHEDULED step k (< sched); every other step carries the sentinel. */
-    size_t bit[DNAC_P2C_OI_MAX_STEPS];    /* chain step: index bit           */
-    size_t accidx[DNAC_P2C_OI_MAX_STEPS]; /* acc step: global acc index      */
-    int    lb_zero[DNAC_P2C_OI_MAX_STEPS];/* lb-group per-batch boundary      */
-} foi_fold_state_t;
-
-static foi_fold_state_t g_foi;
+/* ═══════════════ binding — CALLER-OWNED state, no module static ═══════════
+ * FLEET 034: `dnac_foi_fold_state_t` lives in the header and the caller owns
+ * the storage; `air_eval` reads it back out of `folder->ctx`. Nothing about the
+ * derivation moved. */
 
 /**
  * Derive the snapshot for `cfg`. This is `foi_schedule` (fri_oi_air.c:104-188)
@@ -82,7 +58,7 @@ static foi_fold_state_t g_foi;
  * @return 1 on success, 0 on reject (fail-close).
  */
 static int foi_fold_derive(const dnac_p2c_oi_table_cfg_t *cfg,
-                           foi_fold_state_t *out) {
+                           dnac_foi_fold_state_t *out) {
     if (cfg == NULL || out == NULL) return 0;
     /* Zero FIRST: every early return then leaves a fully-initialised (and
      * unbound) snapshot, so no caller can copy indeterminate bytes. The
@@ -187,7 +163,7 @@ static int foi_fold_derive(const dnac_p2c_oi_table_cfg_t *cfg,
 /* ══════════════════════════ public helpers ═══════════════════════════════ */
 
 size_t dnac_foi_fold_num_constraints(const dnac_p2c_oi_table_cfg_t *cfg) {
-    foi_fold_state_t s;
+    dnac_foi_fold_state_t s;
     if (!foi_fold_derive(cfg, &s)) return 0;
     /* 5 per height: C2c(1) + C3b(1) + C4a(2) + C2e(1).
      * Per acc row: C3c(4) + C3g(1, s2) == 5. */
@@ -196,23 +172,27 @@ size_t dnac_foi_fold_num_constraints(const dnac_p2c_oi_table_cfg_t *cfg) {
 }
 
 int dnac_foi_fold_bind(const dnac_p2c_oi_table_cfg_t *cfg,
+                       dnac_foi_fold_state_t *state,
                        dnac_stark_air_t *out_air) {
-    /* Fail-close: a rejected bind DISARMS any previous binding, so a caller
-     * that ignores this return code cannot silently keep evaluating the OLD
-     * cfg's constraint system (FLEET 027 verifier-B H1; the mmcs_air_fold.c
-     * bind pattern). */
-    g_foi.bound = 0;
-    if (cfg == NULL || out_air == NULL) return DNAC_FOI_FOLD_ERR_PARAM;
+    /* Fail-close: ANY rejected bind DISARMS the DESCRIPTOR (`out_air->ctx =
+     * NULL`) as well as the state it was handed — see the same block in
+     * fri_air_fold.c. Only the ARMING is cleared; the shape fields are the
+     * caller's and are left untouched. */
+    if (out_air != NULL) out_air->ctx = NULL;
+    if (state != NULL) state->bound = 0;
+    if (state == NULL || cfg == NULL || out_air == NULL)
+        return DNAC_FOI_FOLD_ERR_PARAM;
 
-    foi_fold_state_t s;
+    dnac_foi_fold_state_t s;
     if (!foi_fold_derive(cfg, &s)) return DNAC_FOI_FOLD_ERR_CFG;
 
-    g_foi = s;
+    *state = s;
 
     out_air->main_width = s.num_cols;
     out_air->num_public_values = s.num_publics;
     out_air->main_next = 1;
     out_air->air_eval = dnac_foi_fold_air_eval;
+    out_air->ctx = state;
     return DNAC_FOI_FOLD_OK;
 }
 
@@ -232,9 +212,13 @@ static inline gold_fp2_t pub2(const dnac_stark_folder_t *f, size_t i) {
 void dnac_foi_fold_air_eval(dnac_stark_folder_t *f) {
     const gold_fp2_t one = gold_fp2_one();
 
-    /* ── SHAPE RAIL (fail-close; see the header). NOT the s1b publics duty. ── */
-    if (!g_foi.bound || f->main_width != g_foi.num_cols ||
-        f->num_public_values != g_foi.num_publics ||
+    /* ── SHAPE RAIL (fail-close; see the header). NOT the s1b publics duty.
+     * `ctx == NULL` (no binding at all) joins the same gate — the exact
+     * analogue of the retired `!g_foi.bound`. ───────────────────────────── */
+    const dnac_foi_fold_state_t *const S =
+        (const dnac_foi_fold_state_t *)f->ctx;
+    if (S == NULL || !S->bound || f->main_width != S->num_cols ||
+        f->num_public_values != S->num_publics ||
         f->public_values == NULL || f->trace_local == NULL ||
         f->trace_next == NULL || f->preprocessed_local == NULL ||
         f->preprocessed_next == NULL ||
@@ -309,7 +293,7 @@ void dnac_foi_fold_air_eval(dnac_stark_folder_t *f) {
     dnac_stark_folder_when(f, p_seed, sub2(y, g));
 
     /* ══ C2c — capture STORE: x_reg[h] == 7*y (fri_oi_air.c:346-354) ══════ */
-    for (size_t i = 0; i < g_foi.num_heights; i++) {
+    for (size_t i = 0; i < S->num_heights; i++) {
         const gold_fp2_t hs = P[dnac_p2c_oi_col_hsel(i)];
         const gold_fp2_t xr = L[dnac_foi_col_xreg(i)];
         dnac_stark_folder_when(f, mul2(p_store, hs), sub2(xr, mul2(GEN, y)));
@@ -323,7 +307,7 @@ void dnac_foi_fold_air_eval(dnac_stark_folder_t *f) {
     dnac_stark_folder_when(f, p_gs, ro1);
 
     /* ══ C3b — x binding: x == x_reg[h(row)] (fri_oi_air.c:363-368) ═══════ */
-    for (size_t i = 0; i < g_foi.num_heights; i++) {
+    for (size_t i = 0; i < S->num_heights; i++) {
         const gold_fp2_t hs = P[dnac_p2c_oi_col_hsel(i)];
         const gold_fp2_t xr = L[dnac_foi_col_xreg(i)];
         dnac_stark_folder_when(f, mul2(p_acc, hs), sub2(x, xr));
@@ -352,40 +336,40 @@ void dnac_foi_fold_air_eval(dnac_stark_folder_t *f) {
      * (fri_oi_air.c:387-421). `pos` is PREPROCESSED (a degree-1 selector), so
      * exactly one term per row survives; the loop stops at `sched` because
      * padding steps carry pos == 0 (generator obligation under PIN-1-OI). */
-    for (size_t k = 0; k < g_foi.sched; k++) {
+    for (size_t k = 0; k < S->sched; k++) {
         const gold_fp2_t pk = P[dnac_p2c_oi_col_pos(k)];
 
         /* C1c public binding: chain step k reads index bit bit[k]. */
-        if (g_foi.bit[k] != FOI_FOLD_NO_MAP) {
+        if (S->bit[k] != FOI_FOLD_NO_MAP) {
             dnac_stark_folder_when(
-                f, pk, sub2(b, pub2(f, FOI_PUB_BITS_OFF + g_foi.bit[k])));
+                f, pk, sub2(b, pub2(f, FOI_PUB_BITS_OFF + S->bit[k])));
         }
 
         /* C3c z / p_z binding, then C3g's p_x binding — SAME ORDER as the u64
          * evaluator emits them (z0, z1, pz0, pz1, px), inside the same pos gate.
          * The order is the contract: the alpha-fold is order-sensitive and the
          * count test pins it. C3g is row-local, so no is_transition factor. */
-        if (g_foi.accidx[k] != FOI_FOLD_NO_MAP) {
-            const size_t zo = g_foi.pub_zpz + 4 * g_foi.accidx[k];
+        if (S->accidx[k] != FOI_FOLD_NO_MAP) {
+            const size_t zo = S->pub_zpz + 4 * S->accidx[k];
             dnac_stark_folder_when(f, pk, sub2(z0, pub2(f, zo)));
             dnac_stark_folder_when(f, pk, sub2(z1, pub2(f, zo + 1)));
             dnac_stark_folder_when(f, pk, sub2(pz0, pub2(f, zo + 2)));
             dnac_stark_folder_when(f, pk, sub2(pz1, pub2(f, zo + 3)));
             dnac_stark_folder_when(
-                f, pk, sub2(px, pub2(f, g_foi.pub_px + g_foi.accidx[k])));
+                f, pk, sub2(px, pub2(f, S->pub_px + S->accidx[k])));
         }
 
         /* C5 per-batch lb-zero: incoming ro == 0 at each lb batch boundary. */
-        if (g_foi.lb_zero[k]) {
+        if (S->lb_zero[k]) {
             dnac_stark_folder_when(f, pk, ro0);
             dnac_stark_folder_when(f, pk, ro1);
         }
     }
 
     /* ══ C4a — CLOSEOUT ro export (fri_oi_air.c:415-423) ══════════════════ */
-    for (size_t i = 0; i < g_foi.num_heights; i++) {
+    for (size_t i = 0; i < S->num_heights; i++) {
         const gold_fp2_t hs = P[dnac_p2c_oi_col_hsel(i)];
-        const size_t ao = g_foi.pub_ro + FOI_EXT_LANES * i;
+        const size_t ao = S->pub_ro + FOI_EXT_LANES * i;
         dnac_stark_folder_when(f, mul2(p_close, hs), sub2(ro0, pub2(f, ao)));
         dnac_stark_folder_when(f, mul2(p_close, hs), sub2(ro1, pub2(f, ao + 1)));
     }
@@ -435,7 +419,7 @@ void dnac_foi_fold_air_eval(dnac_stark_folder_t *f) {
      * gate: x_reg[i] is still held on EVERY transition, so it stays globally
      * constant and pinned by its single C2c write. Weakening this to the spec's
      * store-row-exempt form reopens the A2-F2 write-key/read-key hole (N-F2). */
-    for (size_t i = 0; i < g_foi.num_heights; i++) {
+    for (size_t i = 0; i < S->num_heights; i++) {
         const gold_fp2_t xr = L[dnac_foi_col_xreg(i)];
         const gold_fp2_t nxr = N[dnac_foi_col_xreg(i)];
         dnac_stark_folder_when(f, tr, sub2(nxr, xr));
@@ -456,8 +440,8 @@ void dnac_foi_fold_air_eval(dnac_stark_folder_t *f) {
         when_t(f, tr, p_acc, sub2(nro1, add2(ro1, tq1)));
 
         /* alpha_pow * alpha (fp2), alpha public. */
-        const gold_fp2_t al0 = pub2(f, g_foi.pub_alpha);
-        const gold_fp2_t al1 = pub2(f, g_foi.pub_alpha + 1);
+        const gold_fp2_t al0 = pub2(f, S->pub_alpha);
+        const gold_fp2_t al1 = pub2(f, S->pub_alpha + 1);
         const gold_fp2_t ma0 = add2(mul2(ap0, al0), mul2(W, mul2(ap1, al1)));
         const gold_fp2_t ma1 = add2(mul2(ap0, al1), mul2(ap1, al0));
         when_t(f, tr, p_acc, sub2(nap0, ma0));

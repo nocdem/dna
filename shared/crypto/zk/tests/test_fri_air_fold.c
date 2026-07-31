@@ -35,9 +35,11 @@
  *           boundary: a table whose last row is not padding is caught by that
  *           boundary and by nothing else (exact-count 1 on the minimal tamper).
  *   T-BIND  a cfg the u64 evaluator fails closed on is refused by
- *           `dnac_fair_fold_bind`, with the descriptor left untouched.
+ *           `dnac_fair_fold_bind`, which DISARMS the descriptor (`ctx = NULL`)
+ *           and leaves its shape metadata untouched.
  *   T-RAIL  the shape rail fires (one unsatisfiable constraint) on a window
  *           that does not match the bound cfg.
+ *   T-CTX-NULL  a descriptor with no context at all fails closed (FLEET 034).
  *
  * Deterministic fixtures only — NO rand() (root CLAUDE.md).
  *
@@ -82,6 +84,11 @@ static size_t fair_expect_steps(const dnac_p2c_table_cfg_t *cfg) {
  * Also pins the per-row step count (T-CNT). BAD_CONFIG traces are handled by
  * the dedicated T-TERM / T-BIND blocks, never here.
  */
+/* FLEET 034: the binding is CALLER-OWNED state now, reached through
+ * `dnac_stark_air_t::ctx`. One state per descriptor lifetime; file scope so it
+ * outlives every `air_eval` the harness drives (the header's LIFETIME rule). */
+static dnac_fair_fold_state_t g_eq_state;
+
 static void fold_vs_u64(const char *name, const built_t *B) {
     const int u = eval_built(B);
     if (u >= FAIR_VIOL_BAD_CONFIG) {
@@ -92,7 +99,7 @@ static void fold_vs_u64(const char *name, const built_t *B) {
 
     dnac_stark_air_t air;
     memset(&air, 0, sizeof(air));
-    if (dnac_fair_fold_bind(B->cfg, &air) != DNAC_FAIR_FOLD_OK) {
+    if (dnac_fair_fold_bind(B->cfg, &g_eq_state, &air) != DNAC_FAIR_FOLD_OK) {
         printf("  [eq]     %-52s bind REJECTED — FAIL\n", name);
         fails++;
         return;
@@ -158,9 +165,13 @@ int main(void) {
     printf("-- T-BIND: descriptor + cfg fail-close ----------------------\n");
     {
         dnac_stark_air_t air;
+        static dnac_fair_fold_state_t st;
         memset(&air, 0, sizeof(air));
+        memset(&st, 0, sizeof(st));
         check("bind(REF) accepted",
-              dnac_fair_fold_bind(REF, &air) == DNAC_FAIR_FOLD_OK);
+              dnac_fair_fold_bind(REF, &st, &air) == DNAC_FAIR_FOLD_OK);
+        check("descriptor ctx == the caller's state, state armed",
+              air.ctx == (const void *)&st && st.bound == 1);
         check("descriptor main_width == FAIR_NUM_COLS (21)",
               air.main_width == FAIR_NUM_COLS);
         check("descriptor num_public_values == dnac_fair_num_publics(REF)",
@@ -178,8 +189,9 @@ int main(void) {
                   fair_expect_steps(&CFG_SMALL));
 
         /* The SAME bad cfgs the shipped gate fails closed on (its G0..G7 +
-         * D2 + roll-in order block). bind must refuse each, and must leave the
-         * descriptor untouched — a half-written descriptor is a live AIR. */
+         * D2 + roll-in order block). bind must refuse each, must DISARM the
+         * descriptor (`ctx = NULL`) and must leave its shape metadata alone —
+         * a half-written descriptor is a live AIR. */
         const dnac_p2c_table_cfg_t *bad[7] = {&CFG_G1,  &CFG_G2, &CFG_G3, &CFG_G7A,
                                               &CFG_G7B, &CFG_Q0, &CFG_RI};
         const char *bname[7] = {"G1 arity",  "G2 lfpl",    "G3 lgmh>32",
@@ -187,25 +199,34 @@ int main(void) {
                                 "roll-in order"};
         for (int i = 0; i < 7; i++) {
             dnac_stark_air_t probe;
+            static dnac_fair_fold_state_t pst;
             memset(&probe, 0, sizeof(probe));
-            const int rc = dnac_fair_fold_bind(bad[i], &probe);
+            memset(&pst, 0xA5, sizeof(pst));
+            const int rc = dnac_fair_fold_bind(bad[i], &pst, &probe);
             char msg[96];
-            snprintf(msg, sizeof(msg), "bind rejects %s (descriptor untouched)",
+            snprintf(msg, sizeof(msg), "bind rejects %s (disarmed, shape kept)",
                      bname[i]);
+            /* FLEET 034: `ctx` joins the untouched set, and the state itself
+             * must come back DISARMED rather than half-filled. */
             check(msg, rc != DNAC_FAIR_FOLD_OK && probe.air_eval == NULL &&
-                           probe.main_width == 0);
+                           probe.main_width == 0 && probe.ctx == NULL &&
+                           pst.bound == 0);
         }
         {
             dnac_stark_air_t probe;
+            static dnac_fair_fold_state_t pst;
             memset(&probe, 0, sizeof(probe));
+            memset(&pst, 0, sizeof(pst));
             check("bind rejects NULL cfg",
-                  dnac_fair_fold_bind(NULL, &probe) != DNAC_FAIR_FOLD_OK);
+                  dnac_fair_fold_bind(NULL, &pst, &probe) != DNAC_FAIR_FOLD_OK);
             check("bind rejects NULL out_air",
-                  dnac_fair_fold_bind(REF, NULL) != DNAC_FAIR_FOLD_OK);
+                  dnac_fair_fold_bind(REF, &pst, NULL) != DNAC_FAIR_FOLD_OK);
+            check("bind rejects NULL state",
+                  dnac_fair_fold_bind(REF, NULL, &probe) != DNAC_FAIR_FOLD_OK);
         }
         /* Re-bind REF: the bad probes above must not have left state behind. */
         check("re-bind(REF) accepted",
-              dnac_fair_fold_bind(REF, &air) == DNAC_FAIR_FOLD_OK);
+              dnac_fair_fold_bind(REF, &st, &air) == DNAC_FAIR_FOLD_OK);
     }
 
     /* ── T-EQ + T-CNT: the five honest walks of the shipped gate ──────────── */
@@ -458,9 +479,11 @@ int main(void) {
     printf("\n-- T-TERM: terminality is a live constraint, not a gate -----\n");
     {
         dnac_stark_air_t air;
+        static dnac_fair_fold_state_t st;
         memset(&air, 0, sizeof(air));
+        memset(&st, 0, sizeof(st));
         check("bind(REF) for T-TERM",
-              dnac_fair_fold_bind(W.cfg, &air) == DNAC_FAIR_FOLD_OK);
+              dnac_fair_fold_bind(W.cfg, &st, &air) == DNAC_FAIR_FOLD_OK);
 
         uint64_t      *last = W.prep + (W.rows - 1) * (size_t)DNAC_P2C_TABLE_COLS;
         const uint64_t sp = last[DNAC_P2C_COL_IS_PAD];
@@ -508,9 +531,11 @@ int main(void) {
     printf("\n-- T-RAIL: out-of-contract window -> unsatisfiable ----------\n");
     {
         dnac_stark_air_t air;
+        static dnac_fair_fold_state_t st;
         memset(&air, 0, sizeof(air));
+        memset(&st, 0, sizeof(st));
         check("bind(REF) for T-RAIL",
-              dnac_fair_fold_bind(W.cfg, &air) == DNAC_FAIR_FOLD_OK);
+              dnac_fair_fold_bind(W.cfg, &st, &air) == DNAC_FAIR_FOLD_OK);
         ftu_result_t R;
         /* main_width one short of the bound width: the rail must fire on every
          * row, emitting exactly one (unsatisfiable) constraint each. */
@@ -522,19 +547,49 @@ int main(void) {
               R.steps == 1 && R.nonzero == W.rows);
     }
 
+    /* ── T-CTX-NULL: a descriptor carrying NO context at all ───────────────
+     * The primary NEW failure mode FLEET 034 introduces. Before it, `air_eval`
+     * could not be reached without a module-static binding; now `ctx` IS the
+     * binding, so a NULL one must fail CLOSED rather than fold nothing (which
+     * would ACCEPT everything). The shape fields are copied from a GOOD bind
+     * and the trace is the HONEST one, so the missing context is the only thing
+     * wrong — the rail cannot fire for an unrelated reason. */
+    printf("\n-- T-CTX-NULL: ctx == NULL -> unsatisfiable -----------------\n");
+    {
+        dnac_stark_air_t air;
+        static dnac_fair_fold_state_t st;
+        memset(&air, 0, sizeof(air));
+        memset(&st, 0, sizeof(st));
+        check("bind(REF) for T-CTX-NULL",
+              dnac_fair_fold_bind(W.cfg, &st, &air) == DNAC_FAIR_FOLD_OK);
+        air.ctx = NULL; /* the ONLY thing wrong with this descriptor */
+        ftu_result_t R;
+        check("fold run on the HONEST trace with ctx == NULL",
+              ftu_run_trace(&air, W.trace, W.rows, air.main_width, W.prep,
+                            (size_t)DNAC_P2C_TABLE_COLS, W.pub, W.num_pub,
+                            &R) == 1);
+        check("T-CTX-NULL rail fires (1 step/row, every one non-zero)",
+              R.steps == 1 && R.nonzero == W.rows);
+    }
+
     /* ── T-DISARM: a REJECTED bind disarms the previous binding ─────────────
      * FLEET 027 verifier-B H1: bind used to return before touching g_fair, so
      * after a rejected re-bind the module kept evaluating the OLD cfg's
      * constraint system. The fix clears `bound` on ENTRY; this block pins it:
-     * honest trace + valid descriptor, but post-reject the rail must fire. */
+     * honest trace + valid descriptor, but post-reject the rail must fire.
+     * FLEET 034: the disarm is now PER-STATE — re-binding the SAME state must
+     * still disarm it, which is what the descriptor's `ctx` still points at. */
     printf("\n-- T-DISARM: rejected bind disarms previous binding ---------\n");
     {
         dnac_stark_air_t air;
+        static dnac_fair_fold_state_t st;
         memset(&air, 0, sizeof(air));
+        memset(&st, 0, sizeof(st));
         check("bind(REF) for T-DISARM",
-              dnac_fair_fold_bind(W.cfg, &air) == DNAC_FAIR_FOLD_OK);
+              dnac_fair_fold_bind(W.cfg, &st, &air) == DNAC_FAIR_FOLD_OK);
         check("re-bind(G1 arity) rejected",
-              dnac_fair_fold_bind(&CFG_G1, &air) != DNAC_FAIR_FOLD_OK);
+              dnac_fair_fold_bind(&CFG_G1, &st, &air) != DNAC_FAIR_FOLD_OK);
+        check("the rejected re-bind DISARMED the state", st.bound == 0);
         ftu_result_t R;
         check("fold run on the HONEST trace after the rejected bind",
               ftu_run_trace(&air, W.trace, W.rows, air.main_width, W.prep,
@@ -543,7 +598,7 @@ int main(void) {
         check("T-DISARM rail fires (1 step/row, every one non-zero)",
               R.steps == 1 && R.nonzero == W.rows);
         check("re-bind(REF) re-arms",
-              dnac_fair_fold_bind(W.cfg, &air) == DNAC_FAIR_FOLD_OK);
+              dnac_fair_fold_bind(W.cfg, &st, &air) == DNAC_FAIR_FOLD_OK);
     }
 
     built_free(&W);

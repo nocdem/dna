@@ -23,6 +23,15 @@
  * (reject) T-NEG: 8 tampers carried over from the shipped negative suite.
  * (reject) T-TERM: an otherwise-valid TYPED last row trips the `is_last_row`
  *   boundary in isolation (EXACTLY one non-zero residual).
+ * (accept) N-CTX-TWO (FLEET 034): TWO states bound to TWO descriptors carrying
+ *   TWO DIFFERENT cfgs of this AIR, both live AT THE SAME TIME, each folding its
+ *   own honest trace to all-zero with its OWN step count. This is the test the
+ *   pre-FLEET-034 module-static binding made impossible — the second bind
+ *   overwrote the first, so the first descriptor evaluated the SECOND cfg's
+ *   constraint system.
+ * (reject) N-CTX-NULL / N-CTX-UNBOUND / N-CTX-REJECT: a NULL ctx, a zeroed
+ *   state and a state left over from a rejected bind each fail closed with
+ *   EXACTLY one unsatisfiable residual per row.
  *
  * Build (via Makefile):  ./build/test_mmcs_air_fold        (no vector files)
  *
@@ -99,6 +108,8 @@ static void fexpect_reject(const char *name, const fold_input_t *in,
 /* Global measured Poseidon2 block cost (set in main). */
 static size_t g_p2_steps;
 static dnac_stark_air_t g_air;
+/* FLEET 034: the binding is CALLER-OWNED state now; this is the workhorse's. */
+static dnac_mair_fold_state_t g_state;
 
 /* Fold one honest (cfg, index) opening; optionally keep the built trace. */
 static int fold_accept_case(const dnac_p2b_table_cfg_t *cfg, uint64_t index,
@@ -129,7 +140,7 @@ static int fold_accept_case(const dnac_p2b_table_cfg_t *cfg, uint64_t index,
         built_free(&B);
         return 0;
     }
-    if (dnac_mmcs_air_fold_bind(cfg, &g_air) != 0) {
+    if (dnac_mmcs_air_fold_bind(cfg, &g_state, &g_air) != 0) {
         printf("  [accept] %-46s bind — FAIL\n", label);
         fails++;
         built_free(&B);
@@ -168,20 +179,34 @@ int main(void) {
 
     /* ── Gate 0: bind contract + fail-close ── */
     {
-        if (dnac_mmcs_air_fold_bind(NULL, &g_air) != 0)
+        /* Zeroed trace/prep/publics window reused by every fail-close probe:
+         * whatever the eval is handed, it must emit EXACTLY one unsatisfiable
+         * residual per row and read nothing. */
+        uint64_t *zt = (uint64_t *)calloc((size_t)MAIR_WIDTH * 2, sizeof(uint64_t));
+        uint64_t *zp = (uint64_t *)calloc((size_t)DNAC_P2B_TABLE_COLS * 2,
+                                          sizeof(uint64_t));
+        uint64_t zpub[4] = {0, 0, 0, 0};
+        if (!zt || !zp) return 2;
+
+        if (dnac_mmcs_air_fold_bind(NULL, &g_state, &g_air) != 0)
             printf("  [accept] bind(NULL cfg) rejected                        OK\n");
         else { printf("  [accept] bind(NULL cfg) rejected                        FAIL\n"); fails++; }
 
-        if (dnac_mmcs_air_fold_bind(A, NULL) != 0)
+        if (dnac_mmcs_air_fold_bind(A, &g_state, NULL) != 0)
             printf("  [accept] bind(NULL out_air) rejected                    OK\n");
         else { printf("  [accept] bind(NULL out_air) rejected                    FAIL\n"); fails++; }
+
+        /* FLEET 034: a NULL state is a PARAM error, not a silent no-op. */
+        if (dnac_mmcs_air_fold_bind(A, NULL, &g_air) != 0)
+            printf("  [accept] bind(NULL state) rejected                      OK\n");
+        else { printf("  [accept] bind(NULL state) rejected                      FAIL\n"); fails++; }
 
         /* depth == 0 is not a Merkle tree (mmcs_air_table.c:36) — the u64
          * module's schedule authority rejects it, so this module must too. */
         {
             static const size_t w2[2] = {4, 4};
             const dnac_p2b_table_cfg_t bad = {2, w2, 0};
-            if (dnac_mmcs_air_fold_bind(&bad, &g_air) != 0 &&
+            if (dnac_mmcs_air_fold_bind(&bad, &g_state, &g_air) != 0 &&
                 dnac_mmcs_air_fold_control_steps(&bad) == 0)
                 printf("  [accept] bind(depth == 0) rejected                      OK\n");
             else { printf("  [accept] bind(depth == 0) rejected                      FAIL\n"); fails++; }
@@ -191,47 +216,148 @@ int main(void) {
         {
             static const size_t wide[1] = {248};
             const dnac_p2b_table_cfg_t big = {1, wide, 4};
-            if (dnac_mmcs_air_fold_bind(&big, &g_air) != 0)
+            if (dnac_mmcs_air_fold_bind(&big, &g_state, &g_air) != 0)
                 printf("  [accept] bind(schedule > MAIR_MAX_STEPS) rejected       OK\n");
             else { printf("  [accept] bind(schedule > MAIR_MAX_STEPS) rejected       FAIL\n"); fails++; }
         }
-        /* A schedule leaving NO padding row (test_mmcs_air.c:488-498): the u64
-         * rejects it up front, so terminality can never be vacuous. */
+        /* N-CTX-REJECT — a schedule leaving NO padding row (test_mmcs_air.c:
+         * 488-498). Three things at once: the bind reports the error, it leaves
+         * the state DISARMED, and it DISARMS THE DESCRIPTOR (`ctx == NULL`)
+         * while leaving the caller's shape metadata alone. The shape fields are
+         * checked against the 0xA5 sentinel individually rather than by memcmp
+         * over the whole struct, because `ctx` is now deliberately written. */
         {
             static const size_t exact[1] = {12};
             const dnac_p2b_table_cfg_t nopad = {1, exact, 4};
-            if (dnac_mmcs_air_fold_bind(&nopad, &g_air) != 0)
-                printf("  [accept] bind(schedule with no padding row) rejected    OK\n");
-            else { printf("  [accept] bind(schedule with no padding row) rejected    FAIL\n"); fails++; }
+            dnac_stark_air_t sentinel;
+            dnac_mair_fold_state_t st;
+            memset(&sentinel, 0xA5, sizeof(sentinel));
+            memset(&st, 0xA5, sizeof(st));
+            const dnac_stark_air_t before = sentinel;
+            const int rc = dnac_mmcs_air_fold_bind(&nopad, &st, &sentinel);
+            if (rc != 0 && st.bound == 0 && sentinel.ctx == NULL &&
+                sentinel.main_width == before.main_width &&
+                sentinel.num_public_values == before.num_public_values &&
+                sentinel.main_next == before.main_next &&
+                sentinel.air_eval == before.air_eval)
+                printf("  [accept] N-CTX-REJECT: disarmed, shape untouched        OK\n");
+            else {
+                printf("  [accept] N-CTX-REJECT: disarmed, shape untouched        "
+                       "FAIL (rc=%d bound=%d ctx=%p)\n", rc, st.bound,
+                       (const void *)sentinel.ctx);
+                fails++;
+            }
+            /* ...and evaluating THROUGH that rejected state still fails close. */
+            {
+                dnac_stark_air_t probe = {(size_t)MAIR_WIDTH, 4, 1,
+                                          dnac_mmcs_air_fold_eval, &st};
+                fold_input_t in = {&probe, zt, 2, (size_t)MAIR_WIDTH,
+                                   zp, (size_t)DNAC_P2B_TABLE_COLS, zpub, 4};
+                const fold_trace_t T = fold_eval_trace(&in);
+                if (T.nonzero == 2 && T.steps_row0 == 1)
+                    printf("  [accept] N-CTX-REJECT: eval unsatisfiable               OK\n");
+                else {
+                    printf("  [accept] N-CTX-REJECT: eval unsatisfiable               "
+                           "FAIL (%zu non-zero, %zu steps)\n", T.nonzero, T.steps_row0);
+                    fails++;
+                }
+            }
         }
-        /* The last rejected bind must have left the module DISARMED. */
+        /* N-CTX-NULL — a descriptor with NO context at all. Before FLEET 034
+         * this case did not exist (the module static answered for everybody);
+         * now it is the primary fail-close and must not be a fail-OPEN. */
         {
-            uint64_t *zt = (uint64_t *)calloc((size_t)MAIR_WIDTH * 2, sizeof(uint64_t));
-            uint64_t *zp = (uint64_t *)calloc((size_t)DNAC_P2B_TABLE_COLS * 2,
-                                              sizeof(uint64_t));
-            uint64_t zpub[4] = {0, 0, 0, 0};
-            if (!zt || !zp) return 2;
             dnac_stark_air_t probe = {(size_t)MAIR_WIDTH, 4, 1,
-                                      dnac_mmcs_air_fold_eval};
+                                      dnac_mmcs_air_fold_eval, NULL};
             fold_input_t in = {&probe, zt, 2, (size_t)MAIR_WIDTH,
                                zp, (size_t)DNAC_P2B_TABLE_COLS, zpub, 4};
             const fold_trace_t T = fold_eval_trace(&in);
             if (T.nonzero == 2 && T.steps_row0 == 1)
-                printf("  [accept] unbound eval is unsatisfiable (fail-close)     OK\n");
+                printf("  [accept] N-CTX-NULL: eval unsatisfiable                 OK\n");
             else {
-                printf("  [accept] unbound eval is unsatisfiable (fail-close)     "
+                printf("  [accept] N-CTX-NULL: eval unsatisfiable                 "
                        "FAIL (%zu non-zero, %zu steps)\n", T.nonzero, T.steps_row0);
                 fails++;
             }
-            free(zt);
-            free(zp);
         }
-        /* Descriptor fields on a good bind. */
-        if (dnac_mmcs_air_fold_bind(A, &g_air) == 0 &&
+        /* N-CTX-UNBOUND — a state that was never bound (all-zero storage). */
+        {
+            dnac_mair_fold_state_t zs;
+            memset(&zs, 0, sizeof(zs));
+            dnac_stark_air_t probe = {(size_t)MAIR_WIDTH, 4, 1,
+                                      dnac_mmcs_air_fold_eval, &zs};
+            fold_input_t in = {&probe, zt, 2, (size_t)MAIR_WIDTH,
+                               zp, (size_t)DNAC_P2B_TABLE_COLS, zpub, 4};
+            const fold_trace_t T = fold_eval_trace(&in);
+            if (T.nonzero == 2 && T.steps_row0 == 1)
+                printf("  [accept] N-CTX-UNBOUND: eval unsatisfiable              OK\n");
+            else {
+                printf("  [accept] N-CTX-UNBOUND: eval unsatisfiable              "
+                       "FAIL (%zu non-zero, %zu steps)\n", T.nonzero, T.steps_row0);
+                fails++;
+            }
+        }
+        /* ══ N-CTX-STALE — the reason a rejected bind must DISARM THE
+         * DESCRIPTOR, not just the state it was handed (FLEET 034 F2).
+         *
+         * Sequence: arm `air` with a GOOD cfg and state A; then re-bind the SAME
+         * `air` with a BAD cfg and a DIFFERENT state B. The bind fails and
+         * disarms B — but B was never what `air` pointed at. If the failing bind
+         * leaves `air` alone, `air->ctx` still holds A, A is still armed, and a
+         * caller that ignores the return code goes on evaluating cfgA's
+         * constraint system. Pre-034 the process-wide `g_X.bound = 0` caught
+         * exactly this; the caller-owned state must not lose it.
+         *
+         * ⚠ The window below is deliberately shaped to MATCH cfgA's binding
+         * (MAIR_WIDTH, cfgA's public count, a full prep window). Otherwise the
+         * shape rail would fire for an unrelated reason and the test would pass
+         * green while proving nothing. */
+        {
+            const size_t np = dnac_mmcs_air_num_publics(A);
+            uint64_t *apub = (uint64_t *)calloc(np ? np : 1, sizeof(uint64_t));
+            static const size_t exact[1] = {12}; /* the no-padding-row cfg */
+            const dnac_p2b_table_cfg_t nopad = {1, exact, 4};
+            dnac_stark_air_t air_s;
+            dnac_mair_fold_state_t stA, stB;
+            memset(&air_s, 0, sizeof(air_s));
+            memset(&stA, 0, sizeof(stA));
+            memset(&stB, 0, sizeof(stB));
+            if (!apub || np == 0) return 2;
+
+            const int rc_good = dnac_mmcs_air_fold_bind(A, &stA, &air_s);
+            const int rc_bad = dnac_mmcs_air_fold_bind(&nopad, &stB, &air_s);
+            fold_input_t in = {&air_s, zt, 2, (size_t)MAIR_WIDTH,
+                               zp, (size_t)DNAC_P2B_TABLE_COLS, apub, np};
+            const fold_trace_t T = fold_eval_trace(&in);
+            if (rc_good == 0 && rc_bad != 0 && air_s.ctx == NULL &&
+                T.steps_row0 == 1 && T.nonzero == 2)
+                printf("  [accept] N-CTX-STALE: failed re-bind disarms descriptor OK\n");
+            else {
+                printf("  [accept] N-CTX-STALE: failed re-bind disarms descriptor "
+                       "FAIL (ctx=%p, %zu non-zero, %zu steps)\n",
+                       (const void *)air_s.ctx, T.nonzero, T.steps_row0);
+                fails++;
+            }
+            /* The shape fields are the CALLER's; only the arming is ours. */
+            if (air_s.main_width == (size_t)MAIR_WIDTH &&
+                air_s.num_public_values == np && air_s.main_next == 1 &&
+                air_s.air_eval == dnac_mmcs_air_fold_eval)
+                printf("  [accept] N-CTX-STALE: shape metadata left intact        OK\n");
+            else {
+                printf("  [accept] N-CTX-STALE: shape metadata left intact        FAIL\n");
+                fails++;
+            }
+            free(apub);
+        }
+        free(zt);
+        free(zp);
+        /* Descriptor fields on a good bind — `ctx` now included. */
+        if (dnac_mmcs_air_fold_bind(A, &g_state, &g_air) == 0 &&
             g_air.main_width == (size_t)MAIR_WIDTH &&
             g_air.num_public_values == dnac_mmcs_air_num_publics(A) &&
-            g_air.main_next == 1 && g_air.air_eval == dnac_mmcs_air_fold_eval)
-            printf("  [accept] descriptor {w=%zu, pubs=%zu, next=1}             OK\n",
+            g_air.main_next == 1 && g_air.air_eval == dnac_mmcs_air_fold_eval &&
+            g_air.ctx == (const void *)&g_state && g_state.bound == 1)
+            printf("  [accept] descriptor {w=%zu, pubs=%zu, next=1, ctx}        OK\n",
                    g_air.main_width, g_air.num_public_values);
         else {
             printf("  [accept] descriptor fields                              FAIL\n");
@@ -281,7 +407,7 @@ int main(void) {
     fold_accept_case(&CFG_C, IDX_A, "one {2}   d4 (leaf == 1)", NULL);
 
     /* Re-bind the workhorse cfg for the negative phase. */
-    if (dnac_mmcs_air_fold_bind(W.cfg, &g_air) != 0) {
+    if (dnac_mmcs_air_fold_bind(W.cfg, &g_state, &g_air) != 0) {
         printf("  FAIL: workhorse re-bind\n");
         return 1;
     }
@@ -465,6 +591,94 @@ int main(void) {
     }
 #undef FOLD_IN
 
+    /* ══ PHASE 4 — N-CTX-TWO (FLEET 034: the wall this slice removed) ══
+     * Two DIFFERENT cfgs of THIS AIR, bound into two SEPARATE caller-owned
+     * states, both live at the same time, evaluated through two separate
+     * descriptors.
+     *
+     * Why this is the whole point: before FLEET 034 the binding was a MODULE
+     * STATIC, so `bind(A)` then `bind(B)` left ONE cfg armed — descriptor A then
+     * evaluated B's constraint system. That is unobservable in a single-instance
+     * test and fatal in a composed batch. Here it is observable twice over:
+     *   (1) each trace folds to ALL-ZERO under its own descriptor while the
+     *       other binding is live, and
+     *   (2) the two step counts DIFFER, so a clobbered binding cannot even
+     *       accidentally produce the right shape — folding A's trace under B's
+     *       cfg is a different constraint stream, not a coincidence.
+     * The binds are deliberately done BOTH orders around the evaluations. */
+    printf("------------------------------------------------------------\n");
+    printf("Phase 4 — N-CTX-TWO (two cfgs bound simultaneously)\n");
+    printf("------------------------------------------------------------\n");
+    {
+        const dnac_p2b_table_cfg_t *cfg1 = A;       /* {8,5} d4 */
+        const dnac_p2b_table_cfg_t *cfg2 = &CFG_B;  /* {4,4} d3 */
+        const size_t want1 = dnac_mmcs_air_fold_control_steps(cfg1) + g_p2_steps;
+        const size_t want2 = dnac_mmcs_air_fold_control_steps(cfg2) + g_p2_steps;
+
+        built_t B1, B2;
+        fixture_t *F = (fixture_t *)calloc(1, sizeof(fixture_t));
+        int built = 0;
+        memset(&B1, 0, sizeof(B1));
+        memset(&B2, 0, sizeof(B2));
+        if (F && make_fixture(cfg1, IDX_A, F) &&
+            build_trace(&B1, cfg1, IDX_A, F->elems, F->sibs, F->root.lanes) &&
+            make_fixture(cfg2, IDX_B, F) &&
+            build_trace(&B2, cfg2, IDX_B, F->elems, F->sibs, F->root.lanes)) {
+            built = 1;
+        }
+        free(F);
+
+        if (!built || want1 == g_p2_steps || want2 == g_p2_steps) {
+            printf("  [accept] N-CTX-TWO fixtures                             FAIL\n");
+            fails++;
+        } else if (want1 == want2) {
+            /* The discriminator has to actually discriminate. */
+            printf("  [accept] N-CTX-TWO cfgs must differ in step count        "
+                   "FAIL (both %zu)\n", want1);
+            fails++;
+        } else {
+            /* Two states, two descriptors. Bind BOTH before evaluating EITHER —
+             * that ordering is exactly what the module static could not survive. */
+            dnac_mair_fold_state_t st1, st2;
+            dnac_stark_air_t air1, air2;
+            memset(&st1, 0, sizeof(st1));
+            memset(&st2, 0, sizeof(st2));
+            memset(&air1, 0, sizeof(air1));
+            memset(&air2, 0, sizeof(air2));
+
+            if (dnac_mmcs_air_fold_bind(cfg1, &st1, &air1) != 0 ||
+                dnac_mmcs_air_fold_bind(cfg2, &st2, &air2) != 0) {
+                printf("  [accept] N-CTX-TWO double bind                          FAIL\n");
+                fails++;
+            } else if (air1.ctx == air2.ctx || air1.ctx != (const void *)&st1 ||
+                       air2.ctx != (const void *)&st2) {
+                printf("  [accept] N-CTX-TWO distinct contexts                    FAIL\n");
+                fails++;
+            } else {
+                const fold_input_t in1 = {&air1, B1.trace, B1.rows,
+                                          (size_t)MAIR_WIDTH, B1.prep,
+                                          (size_t)DNAC_P2B_TABLE_COLS, B1.pub,
+                                          B1.num_pub};
+                const fold_input_t in2 = {&air2, B2.trace, B2.rows,
+                                          (size_t)MAIR_WIDTH, B2.prep,
+                                          (size_t)DNAC_P2B_TABLE_COLS, B2.pub,
+                                          B2.num_pub};
+                /* Interleave: 1, 2, then 1 again — a stale binding would show up
+                 * on the third run even if the first two happened to line up. */
+                fexpect_clean("N-CTX-TWO cfg1 {8,5} d4 (cfg2 also bound)", &in1,
+                              want1);
+                fexpect_clean("N-CTX-TWO cfg2 {4,4} d3 (cfg1 also bound)", &in2,
+                              want2);
+                fexpect_clean("N-CTX-TWO cfg1 again, both still bound", &in1,
+                              want1);
+                printf("  [info]   cfg1 %zu steps vs cfg2 %zu steps — distinct\n",
+                       want1, want2);
+            }
+        }
+        built_free(&B1);
+        built_free(&B2);
+    }
+
     built_free(&W);
 
     printf("------------------------------------------------------------\n");
@@ -472,7 +686,7 @@ int main(void) {
         printf("s1a MMCS FOLD: %d FAIL\n", fails);
         return 1;
     }
-    printf("s1a MMCS FOLD: 3 openings T-EQ+T-CNT + 7 bind/shape gates +\n"
-           "  12 T-NEG + 1 T-TERM — PASS\n");
+    printf("s1a MMCS FOLD: 3 openings T-EQ+T-CNT + 10 bind/shape/ctx gates +\n"
+           "  12 T-NEG + 1 T-TERM + 3 N-CTX-TWO — PASS\n");
     return 0;
 }

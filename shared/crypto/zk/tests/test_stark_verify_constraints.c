@@ -274,8 +274,9 @@ static void square_air_eval(dnac_stark_folder_t *f) {
     dnac_stark_folder_assert_zero(f, gold_fp2_sub(gold_fp2_mul(l[0], l[0]), l[1]));
 }
 
-static const dnac_stark_air_t FIB_AIR = { 2, 3, 1, fib_air_eval };
-static const dnac_stark_air_t SQUARE_AIR = { 2, 0, 0, square_air_eval };
+/* The trailing NULL is `ctx` (FLEET 034): neither eval reads `folder->ctx`. */
+static const dnac_stark_air_t FIB_AIR = { 2, 3, 1, fib_air_eval, NULL };
+static const dnac_stark_air_t SQUARE_AIR = { 2, 0, 0, square_air_eval, NULL };
 
 /* ===== positive: verify_constraints OK + per-constraint capture ===== */
 static int run_vector(const dnac_stark_air_t *air, const vec_t *v, const char *label, int expect_n) {

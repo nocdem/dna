@@ -606,6 +606,7 @@ static dnac_p2s_status_t p2s_fill_geometry(dnac_batch_vinstance_t *vi,
 dnac_p2s_status_t dnac_p2_fri_statement_build_instances(
     const dnac_p2s_statement_t *stmt,
     dnac_batch_vinstance_t     *insts,
+    dnac_p2s_fold_states_t     *states,
     gold_fp_t                  *pub_mmix,
     gold_fp_t                  *pub_mmcs,
     gold_fp_t                  *pub_fri,
@@ -615,11 +616,19 @@ dnac_p2s_status_t dnac_p2_fri_statement_build_instances(
     dnac_p2s_status_t st;
     const dnac_tair_script_t *tsc;
 
-    if (!stmt || !insts || !pub_mmix || !pub_mmcs || !pub_fri || !pub_oi ||
+    if (!insts) return DNAC_P2S_ERR_NULL;
+    /* DISARM FIRST, before any other validation: every failure path below then
+     * leaves all five descriptors with `ctx == NULL` and `air_eval == NULL`, so
+     * a caller that ignores the return code cannot keep evaluating a binding an
+     * EARLIER successful call left on this array. Same discipline as each fold
+     * module's bind (which disarms its descriptor on entry), applied at the
+     * statement layer. */
+    memset(insts, 0, DNAC_P2S_NUM_INSTANCES * sizeof(*insts));
+
+    if (!stmt || !states || !pub_mmix || !pub_mmcs || !pub_fri || !pub_oi ||
         !pub_tair) {
         return DNAC_P2S_ERR_NULL;
     }
-    memset(insts, 0, DNAC_P2S_NUM_INSTANCES * sizeof(*insts));
 
     /* ── Step 3a: the cfg SET's internal consistency, before any bind. ── */
     st = p2s_check_static_consistency();
@@ -628,26 +637,31 @@ dnac_p2s_status_t dnac_p2_fri_statement_build_instances(
     tsc = dnac_p2s_tair_script();
     if (tsc == NULL) return DNAC_P2S_ERR_CFG;
 
-    /* ── Step 3b: bind the five PINNED cfgs. A bind runs each module's own cfg
-     * gate, so a cfg its u64 evaluator would fail closed on is rejected here by
-     * construction. Every bind is checked; a rejected bind also disarms. ── */
-    if (dnac_mmix_air_fold_bind(&P2S_MMIX_CFG,
-                               &insts[DNAC_P2S_INST_MMIX].air) != 0) {
+    /* ── Step 3b: bind the five PINNED cfgs into the CALLER'S state storage
+     * (FLEET 034: the fold modules keep no module-static binding; each snapshot
+     * is caller-owned and reached through `dnac_stark_air_t::ctx`). A bind runs
+     * each module's own cfg gate, so a cfg its u64 evaluator would fail closed
+     * on is rejected here by construction. Every bind is checked; a rejected
+     * bind also disarms its own state. ── */
+    if (dnac_mmix_air_fold_bind(&P2S_MMIX_CFG, &states->mmix,
+                                &insts[DNAC_P2S_INST_MMIX].air) != 0) {
         return DNAC_P2S_ERR_CFG;
     }
-    if (dnac_mmcs_air_fold_bind(&P2S_MMCS_CFG,
-                               &insts[DNAC_P2S_INST_MMCS].air) != 0) {
+    if (dnac_mmcs_air_fold_bind(&P2S_MMCS_CFG, &states->mmcs,
+                                &insts[DNAC_P2S_INST_MMCS].air) != 0) {
         return DNAC_P2S_ERR_CFG;
     }
-    if (dnac_fair_fold_bind(&P2S_FRI_CFG, &insts[DNAC_P2S_INST_FRI].air) !=
+    if (dnac_fair_fold_bind(&P2S_FRI_CFG, &states->fri,
+                            &insts[DNAC_P2S_INST_FRI].air) !=
         DNAC_FAIR_FOLD_OK) {
         return DNAC_P2S_ERR_CFG;
     }
-    if (dnac_foi_fold_bind(&P2S_OI_CFG, &insts[DNAC_P2S_INST_OI].air) !=
+    if (dnac_foi_fold_bind(&P2S_OI_CFG, &states->oi,
+                           &insts[DNAC_P2S_INST_OI].air) !=
         DNAC_FOI_FOLD_OK) {
         return DNAC_P2S_ERR_CFG;
     }
-    if (dnac_transcript_air_fold_bind(&P2S_TAIR_CFG, tsc,
+    if (dnac_transcript_air_fold_bind(&P2S_TAIR_CFG, tsc, &states->tair,
                                       &insts[DNAC_P2S_INST_TAIR].air) != 0) {
         return DNAC_P2S_ERR_CFG;
     }
@@ -981,6 +995,14 @@ dnac_p2s_status_t dnac_p2_fri_statement_verify(
     dnac_batch_verify_out_t      *out)
 {
     dnac_batch_vinstance_t insts[DNAC_P2S_NUM_INSTANCES];
+    /* FLEET 034: the five fold-state snapshots the descriptors' `ctx` fields
+     * point at. SCOPE-LOCAL on purpose — it must outlive `insts`, and `insts`
+     * dies with this frame, so the two lifetimes are identical by construction.
+     * Same rule as the publics buffers below (fri_statement.h).
+     * ZERO-INITIALISED: a step-3a reject returns before any bind runs, so
+     * without this the untouched states would hold indeterminate bytes. Zeroed
+     * means UNBOUND, which is the fail-close value. */
+    dnac_p2s_fold_states_t states;
     gold_fp_t pub_mmix[DNAC_P2S_MMIX_NUM_PUBLICS];
     gold_fp_t pub_mmcs[DNAC_P2S_MMCS_NUM_PUBLICS];
     gold_fp_t pub_fri[DNAC_P2S_FRI_NUM_PUBLICS];
@@ -988,6 +1010,8 @@ dnac_p2s_status_t dnac_p2_fri_statement_verify(
     gold_fp_t pub_tair[DNAC_P2S_TAIR_NUM_PUBLICS];
     dnac_p2s_status_t st;
     dnac_batch_verify_status_t bs;
+
+    memset(&states, 0, sizeof(states));
 
     if (!stmt || !opened || !commits || !fri_proof) return DNAC_P2S_ERR_NULL;
 
@@ -1000,9 +1024,11 @@ dnac_p2s_status_t dnac_p2_fri_statement_verify(
                              num_prep_matrices);
     if (st != DNAC_P2S_OK) return st;
 
-    /* Steps 3-6. */
-    st = dnac_p2_fri_statement_build_instances(stmt, insts, pub_mmix, pub_mmcs,
-                                               pub_fri, pub_oi, pub_tair);
+    /* Steps 3-6. `states` is left ARMED on success and stays valid for the
+     * `dnac_batch_verify` call below — that is the whole lifetime it needs. */
+    st = dnac_p2_fri_statement_build_instances(stmt, insts, &states, pub_mmix,
+                                               pub_mmcs, pub_fri, pub_oi,
+                                               pub_tair);
     if (st != DNAC_P2S_OK) return st;
 
     /* Step 7. is_zk / num_random_codewords / salt_elems are all zero: the

@@ -359,6 +359,7 @@ static dnac_stark_verify_status_t stark_verify_constraints_core(
     folder.preprocessed_local = NULL; /* v3 path: no preprocessed columns */
     folder.preprocessed_next = NULL;
     folder.prep_width = 0;
+    folder.ctx = air->ctx; /* FLEET 034: per-descriptor AIR context, verbatim */
     air->air_eval(&folder);
 
     /* 6. final OOD check (verifier.rs:157-159). */

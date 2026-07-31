@@ -130,6 +130,9 @@ int main(int argc, char **argv) {
 
     dnac_stark_air_t air;
     memset(&air, 0, sizeof(air));
+    /* FLEET 034: the binding is CALLER-OWNED state now, reached via air.ctx. */
+    static dnac_tair_fold_state_t state;
+    memset(&state, 0, sizeof(state));
 
     /* ── Gate 0: bind contract + fail-close ── */
     {
@@ -148,47 +151,71 @@ int main(int argc, char **argv) {
             return 1;
         }
 
-        if (dnac_transcript_air_fold_bind(NULL, &ref, &air) != 0)
+        if (dnac_transcript_air_fold_bind(NULL, &ref, &state, &air) != 0)
             printf("  [accept] bind(NULL cfg) rejected                       OK\n");
         else { printf("  [accept] bind(NULL cfg) rejected                       FAIL\n"); fails++; }
 
-        if (dnac_transcript_air_fold_bind(&good, NULL, &air) != 0)
+        if (dnac_transcript_air_fold_bind(&good, NULL, &state, &air) != 0)
             printf("  [accept] bind(NULL script) rejected                    OK\n");
         else { printf("  [accept] bind(NULL script) rejected                    FAIL\n"); fails++; }
 
-        if (dnac_transcript_air_fold_bind(&good, &ref, NULL) != 0)
+        if (dnac_transcript_air_fold_bind(&good, &ref, &state, NULL) != 0)
             printf("  [accept] bind(NULL out_air) rejected                   OK\n");
         else { printf("  [accept] bind(NULL out_air) rejected                   FAIL\n"); fails++; }
 
-        if (dnac_transcript_air_fold_bind(&bad, &ref, &air) != 0)
+        /* FLEET 034: a NULL state is a PARAM error, not a silent no-op. */
+        if (dnac_transcript_air_fold_bind(&good, &ref, NULL, &air) != 0)
+            printf("  [accept] bind(NULL state) rejected                     OK\n");
+        else { printf("  [accept] bind(NULL state) rejected                     FAIL\n"); fails++; }
+
+        if (dnac_transcript_air_fold_bind(&bad, &ref, &state, &air) != 0)
             printf("  [accept] bind(pow_bits > max) rejected                 OK\n");
         else { printf("  [accept] bind(pow_bits > max) rejected                 FAIL\n"); fails++; }
 
-        /* A rejected bind must leave the module DISARMED: an eval on the
-         * unbound module emits exactly ONE unsatisfiable constraint. */
+        /* N-CTX-REJECT — the rejected bind above must have left `state`
+         * DISARMED, and an eval THROUGH it emits exactly ONE unsatisfiable
+         * constraint. N-CTX-NULL — a descriptor with no context at all does the
+         * same (before FLEET 034 that case did not exist: the module static
+         * answered for every descriptor). */
         {
             uint64_t *z = (uint64_t *)calloc((size_t)TAIR_WIDTH * 2, sizeof(uint64_t));
             if (!z) return 2;
-            dnac_stark_air_t probe = {(size_t)TAIR_WIDTH, 0, 1,
-                                      dnac_transcript_air_fold_eval};
-            fold_input_t in = {&probe, z, 2, (size_t)TAIR_WIDTH, NULL, 0, NULL, 0};
-            const fold_trace_t T = fold_eval_trace(&in);
-            if (T.nonzero == 2 && T.steps_row0 == 1)
-                printf("  [accept] unbound eval is unsatisfiable (fail-close)    OK\n");
-            else {
-                printf("  [accept] unbound eval is unsatisfiable (fail-close)    "
-                       "FAIL (%zu non-zero, %zu steps)\n", T.nonzero, T.steps_row0);
-                fails++;
+            {
+                dnac_stark_air_t probe = {(size_t)TAIR_WIDTH, 0, 1,
+                                          dnac_transcript_air_fold_eval, &state};
+                fold_input_t in = {&probe, z, 2, (size_t)TAIR_WIDTH, NULL, 0, NULL, 0};
+                const fold_trace_t T = fold_eval_trace(&in);
+                if (state.bound == 0 && T.nonzero == 2 && T.steps_row0 == 1)
+                    printf("  [accept] N-CTX-REJECT: disarmed, eval unsatisfiable    OK\n");
+                else {
+                    printf("  [accept] N-CTX-REJECT: disarmed, eval unsatisfiable    "
+                           "FAIL (%zu non-zero, %zu steps)\n", T.nonzero, T.steps_row0);
+                    fails++;
+                }
+            }
+            {
+                dnac_stark_air_t probe = {(size_t)TAIR_WIDTH, 0, 1,
+                                          dnac_transcript_air_fold_eval, NULL};
+                fold_input_t in = {&probe, z, 2, (size_t)TAIR_WIDTH, NULL, 0, NULL, 0};
+                const fold_trace_t T = fold_eval_trace(&in);
+                if (T.nonzero == 2 && T.steps_row0 == 1)
+                    printf("  [accept] N-CTX-NULL: eval unsatisfiable                OK\n");
+                else {
+                    printf("  [accept] N-CTX-NULL: eval unsatisfiable                "
+                           "FAIL (%zu non-zero, %zu steps)\n", T.nonzero, T.steps_row0);
+                    fails++;
+                }
             }
             free(z);
         }
 
-        if (dnac_transcript_air_fold_bind(&good, &ref, &air) == 0 &&
+        if (dnac_transcript_air_fold_bind(&good, &ref, &state, &air) == 0 &&
             air.main_width == (size_t)TAIR_WIDTH &&
             air.num_public_values == dnac_tair_num_publics(&ref) &&
             air.num_public_values == DNAC_P2A_REF_PUBLICS && air.main_next == 1 &&
-            air.air_eval == dnac_transcript_air_fold_eval)
-            printf("  [accept] descriptor {w=%zu, pubs=%zu, next=1}            OK\n",
+            air.air_eval == dnac_transcript_air_fold_eval &&
+            air.ctx == (const void *)&state && state.bound == 1)
+            printf("  [accept] descriptor {w=%zu, pubs=%zu, next=1, ctx}       OK\n",
                    air.main_width, air.num_public_values);
         else {
             printf("  [accept] descriptor fields                             FAIL\n");
@@ -235,7 +262,7 @@ int main(int argc, char **argv) {
             fails++;
             continue;
         }
-        if (dnac_transcript_air_fold_bind(&cfg, &B->script, &air) != 0) {
+        if (dnac_transcript_air_fold_bind(&cfg, &B->script, &state, &air) != 0) {
             printf("  [accept] %-20s bind                            FAIL\n",
                    V->scenario);
             fails++;
@@ -265,7 +292,7 @@ int main(int argc, char **argv) {
     }
     built_t *const W = B_basic;
     const dnac_tair_config_t cfg = {pow_bits_of(V_basic)};
-    if (dnac_transcript_air_fold_bind(&cfg, &W->script, &air) != 0) {
+    if (dnac_transcript_air_fold_bind(&cfg, &W->script, &state, &air) != 0) {
         printf("  FAIL: workhorse bind\n");
         return 1;
     }
@@ -480,7 +507,7 @@ int main(int argc, char **argv) {
                 break;
             }
             const dnac_tair_config_t cfg_x = {pow_bits_of(V)};
-            if (dnac_transcript_air_fold_bind(&cfg_x, &B->script, &air) != 0) {
+            if (dnac_transcript_air_fold_bind(&cfg_x, &B->script, &state, &air) != 0) {
                 printf("  FAIL: sample_bits_32 bind\n");
                 fails++;
                 break;

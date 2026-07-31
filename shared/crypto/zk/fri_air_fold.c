@@ -38,36 +38,13 @@ static inline gold_fp2_t mul2(gold_fp2_t a, gold_fp2_t b) {
     return gold_fp2_mul(a, b);
 }
 
-/** Sentinel in `rollin_rank`: this fold row carries no roll-in slot
- *  (the FAIR_NO_ROLLIN of fri_air.c:87, re-declared — it is file-static there). */
-#define FAIR_FOLD_NO_ROLLIN ((size_t)-1)
+/** Local alias for the header's sentinel (fri_air.c:87's FAIR_NO_ROLLIN). */
+#define FAIR_FOLD_NO_ROLLIN DNAC_FAIR_FOLD_NO_ROLLIN
 
-/* ══════════════════════════ module-static binding ════════════════════════ */
-
-/**
- * The snapshot `air_eval` runs on. Filled ONLY by dnac_fair_fold_bind; the
- * cfg POINTER is deliberately not kept (see the bind contract in the header):
- * every derived quantity is copied, so `air_eval` cannot depend on caller
- * lifetime. `bound == 0` trips the shape rail.
- */
-typedef struct {
-    int    bound;
-    size_t lgmh;
-    size_t n_chain;
-    size_t n_fold;
-    size_t sched; /* n_chain + n_fold — the non-padding prefix              */
-    size_t pub_beta;
-    size_t pub_finit;
-    size_t pub_ro;
-    size_t pub_final;
-    size_t num_publics;
-    size_t num_rollin;
-    /* Roll-in RANK of fold row r, or FAIR_FOLD_NO_ROLLIN — read back OUT of
-     * the schedule authority exactly as fri_air.c:144-155 reads it. */
-    size_t rollin_rank[DNAC_P2C_MAX_LGMH];
-} fair_fold_state_t;
-
-static fair_fold_state_t g_fair;
+/* ═══════════════ binding — CALLER-OWNED state, no module static ═══════════
+ * FLEET 034: `dnac_fair_fold_state_t` lives in the header and the caller owns
+ * the storage; `air_eval` reads it back out of `folder->ctx`. Nothing about the
+ * derivation moved. */
 
 /**
  * Derive the snapshot for `cfg`. Mirrors `fair_schedule` (fri_air.c:124-169)
@@ -78,7 +55,7 @@ static fair_fold_state_t g_fair;
  * @return 1 on success, 0 on reject (fail-close; `out` is left indeterminate).
  */
 static int fair_fold_derive(const dnac_p2c_table_cfg_t *cfg,
-                            fair_fold_state_t *out) {
+                            dnac_fair_fold_state_t *out) {
     if (cfg == NULL || out == NULL) return 0;
     /* Zero FIRST: every early return then leaves a fully-initialised (and
      * unbound) snapshot, so no caller can copy indeterminate bytes. */
@@ -135,30 +112,36 @@ static int fair_fold_derive(const dnac_p2c_table_cfg_t *cfg,
 /* ══════════════════════════ public helpers ═══════════════════════════════ */
 
 size_t dnac_fair_fold_num_constraints(const dnac_p2c_table_cfg_t *cfg) {
-    fair_fold_state_t s;
+    dnac_fair_fold_state_t s;
     if (!fair_fold_derive(cfg, &s)) return 0;
     return FAIR_FOLD_FIXED_STEPS + s.sched + FAIR_EXT_LANES * s.n_fold +
            FAIR_EXT_LANES * s.num_rollin;
 }
 
 int dnac_fair_fold_bind(const dnac_p2c_table_cfg_t *cfg,
+                        dnac_fair_fold_state_t *state,
                         dnac_stark_air_t *out_air) {
-    /* Fail-close: a rejected bind DISARMS any previous binding, so a caller
-     * that ignores this return code cannot silently keep evaluating the OLD
-     * cfg's constraint system (FLEET 027 verifier-B H1; the mmcs_air_fold.c
-     * bind pattern). */
-    g_fair.bound = 0;
-    if (cfg == NULL || out_air == NULL) return DNAC_FAIR_FOLD_ERR_PARAM;
+    /* Fail-close: ANY rejected bind DISARMS the DESCRIPTOR (`out_air->ctx =
+     * NULL`) as well as the state it was handed, so a caller that ignores the
+     * return code cannot silently keep evaluating the OLD cfg's constraint
+     * system (FLEET 027 verifier-B H1). Disarming only the state misses the
+     * case where `out_air` was armed by a PREVIOUS bind onto a DIFFERENT state.
+     * Only the ARMING is cleared; the shape fields are the caller's. */
+    if (out_air != NULL) out_air->ctx = NULL;
+    if (state != NULL) state->bound = 0;
+    if (state == NULL || cfg == NULL || out_air == NULL)
+        return DNAC_FAIR_FOLD_ERR_PARAM;
 
-    fair_fold_state_t s;
+    dnac_fair_fold_state_t s;
     if (!fair_fold_derive(cfg, &s)) return DNAC_FAIR_FOLD_ERR_CFG;
 
-    g_fair = s;
+    *state = s;
 
     out_air->main_width = FAIR_NUM_COLS;
     out_air->num_public_values = s.num_publics;
     out_air->main_next = 1;
     out_air->air_eval = dnac_fair_fold_air_eval;
+    out_air->ctx = state;
     return DNAC_FAIR_FOLD_OK;
 }
 
@@ -175,10 +158,14 @@ void dnac_fair_fold_air_eval(dnac_stark_folder_t *f) {
 
     /* ── SHAPE RAIL (fail-close; see the header) ───────────────────────────
      * `air_eval` has no error channel, so an out-of-contract window emits ONE
-     * unsatisfiable constraint instead of reading out of bounds. Note this is
-     * NOT the s1b G6 duty: it is a bound check, not publics canonicality. */
-    if (!g_fair.bound || f->main_width != FAIR_NUM_COLS ||
-        f->num_public_values != g_fair.num_publics ||
+     * unsatisfiable constraint instead of reading out of bounds. `ctx == NULL`
+     * (no binding at all) joins the same gate — the exact analogue of the
+     * retired `!g_fair.bound`. Note this is NOT the s1b G6 duty: it is a bound
+     * check, not publics canonicality. */
+    const dnac_fair_fold_state_t *const S =
+        (const dnac_fair_fold_state_t *)f->ctx;
+    if (S == NULL || !S->bound || f->main_width != FAIR_NUM_COLS ||
+        f->num_public_values != S->num_publics ||
         f->public_values == NULL || f->trace_local == NULL ||
         f->trace_next == NULL || f->preprocessed_local == NULL ||
         f->preprocessed_next == NULL ||
@@ -248,9 +235,9 @@ void dnac_fair_fold_air_eval(dnac_stark_folder_t *f) {
      * (fri_air.c:344-362). Chain row j reads public bit lgmh-1-j (MSB-first),
      * fold row r reads bit r (LSB-first); the overlap is read TWICE, which is
      * what forces chain and walk onto ONE index. */
-    for (size_t k = 0; k < g_fair.sched; k++) {
+    for (size_t k = 0; k < S->sched; k++) {
         const size_t bit =
-            (k < g_fair.n_chain) ? (g_fair.lgmh - 1 - k) : (k - g_fair.n_chain);
+            (k < S->n_chain) ? (S->lgmh - 1 - k) : (k - S->n_chain);
         dnac_stark_folder_when(
             f, P[dnac_p2c_col_pos(k)],
             sub2(b, gold_fp2_from_base(f->public_values[FAIR_PUB_BITS_OFF + bit])));
@@ -308,16 +295,16 @@ void dnac_fair_fold_air_eval(dnac_stark_folder_t *f) {
      * Fold row r takes beta pair r (transcript order) and, iff the cfg pins a
      * roll-in at its post-fold height, roll-in slot `rank` (the descending-list
      * rank == the native's monotone consumption order). */
-    for (size_t r = 0; r < g_fair.n_fold; r++) {
-        const gold_fp2_t pk = P[dnac_p2c_col_pos(g_fair.n_chain + r)];
-        const size_t bo = g_fair.pub_beta + FAIR_EXT_LANES * r;
+    for (size_t r = 0; r < S->n_fold; r++) {
+        const gold_fp2_t pk = P[dnac_p2c_col_pos(S->n_chain + r)];
+        const size_t bo = S->pub_beta + FAIR_EXT_LANES * r;
         dnac_stark_folder_when(
             f, pk, sub2(be0, gold_fp2_from_base(f->public_values[bo])));
         dnac_stark_folder_when(
             f, pk, sub2(be1, gold_fp2_from_base(f->public_values[bo + 1])));
-        if (g_fair.rollin_rank[r] != FAIR_FOLD_NO_ROLLIN) {
+        if (S->rollin_rank[r] != FAIR_FOLD_NO_ROLLIN) {
             const size_t ao =
-                g_fair.pub_ro + FAIR_EXT_LANES * g_fair.rollin_rank[r];
+                S->pub_ro + FAIR_EXT_LANES * S->rollin_rank[r];
             dnac_stark_folder_when(
                 f, pk, sub2(ro0, gold_fp2_from_base(f->public_values[ao])));
             dnac_stark_folder_when(
@@ -336,10 +323,10 @@ void dnac_fair_fold_air_eval(dnac_stark_folder_t *f) {
     /* ══ C5 — TERMINAL boundary: f == final_poly[0] (fri_air.c:473-485) ═══ */
     dnac_stark_folder_when(
         f, p_term,
-        sub2(f0, gold_fp2_from_base(f->public_values[g_fair.pub_final])));
+        sub2(f0, gold_fp2_from_base(f->public_values[S->pub_final])));
     dnac_stark_folder_when(
         f, p_term,
-        sub2(f1, gold_fp2_from_base(f->public_values[g_fair.pub_final + 1])));
+        sub2(f1, gold_fp2_from_base(f->public_values[S->pub_final + 1])));
 
     /* ══════════════ transitions (fri_air.c:487-555) ══════════════════════
      * The u64 evaluator RETURNS before this block when there is no next row
@@ -369,9 +356,9 @@ void dnac_fair_fold_air_eval(dnac_stark_folder_t *f) {
     /* ══ C4j — FOLD-ROW-0 BOUNDARY: f' == publics[f_init] (fri_air.c:514-523)
      * Closes FLEET 020 A2-F2: without it the walk's starting value is FREE. */
     when_t(f, tr, p_hand,
-           sub2(nf0, gold_fp2_from_base(f->public_values[g_fair.pub_finit])));
+           sub2(nf0, gold_fp2_from_base(f->public_values[S->pub_finit])));
     when_t(f, tr, p_hand,
-           sub2(nf1, gold_fp2_from_base(f->public_values[g_fair.pub_finit + 1])));
+           sub2(nf1, gold_fp2_from_base(f->public_values[S->pub_finit + 1])));
 
     /* ══ C4k — x0 RECURRENCE, fold -> fold ONLY (fri_air.c:525-536) ═══════
      *     x_{i+1} = x_i^2 * (1 - 2*b_{i+1}) */

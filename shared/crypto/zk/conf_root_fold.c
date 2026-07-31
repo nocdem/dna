@@ -200,4 +200,5 @@ const dnac_stark_air_t DNAC_CONF_ROOT_FOLD_AIR = {
     CONF_ROOT_FOLD_NUM_PUBLICS,    /* 17 */
     1,                             /* main_next: accumulators read the next row */
     dnac_conf_root_fold_air_eval,
+    NULL, /* ctx: this AIR has no cfg state — its eval never reads folder->ctx */
 };

@@ -77,19 +77,29 @@
  * (CT-1..CT-4, transcript_air.c) is transcribed in the same position and order.
  * `folder->preprocessed_next` is NOT read — no CT-* form touches it.
  *
- * ── Binding contract (spec §2) ──────────────────────────────────────────────
- * `dnac_stark_air_t::air_eval` has no ctx parameter (stark_constraints.h:290) and
- * that signature is shared surface this slice may not change, so the cfg is bound
- * into MODULE-STATIC state. Consequences, stated rather than assumed:
- *   - SINGLE-THREADED. One bound cfg per process at a time.
- *   - The bind MUST happen BEFORE `dnac_batch_verify` / `dnac_batch_prove` is
- *     called and the cfg MUST NOT change for the duration of that call.
- *   - Determinism is unaffected: the state is a pure function of the pinned cfg,
- *     never of wire data, a clock or an RNG. Two nodes binding the same cfg emit
- *     the identical constraint stream.
- *   - Before the first successful bind — or after a REJECTED bind — `air_eval`
- *     emits ONE unsatisfiable constraint (`assert_zero(1)`) instead of silently
- *     folding nothing. Fail-close, never fail-open.
+ * ── Binding contract (FLEET 034: CALLER-OWNED state, no module static) ──────
+ * `dnac_stark_air_t::air_eval`'s SIGNATURE still carries no context, but
+ * `dnac_stark_folder_t` now does — `folder->ctx`, copied verbatim from
+ * `dnac_stark_air_t::ctx` by every glue that builds a folder. The cfg + script
+ * snapshot is therefore a CALLER-OWNED `dnac_tair_fold_state_t`. Consequences,
+ * stated rather than assumed:
+ *   - N SIMULTANEOUS bindings are legal: two descriptors with two states may
+ *     carry two DIFFERENT (cfg, script) pairs of THIS AIR in the same batch, and
+ *     each eval sees only its own state. Before FLEET 034 the second bind
+ *     silently overwrote the first.
+ *   - ⚠ LIFETIME: the state object AND the script it names must outlive every
+ *     `air_eval` call made under that binding — i.e. the whole
+ *     `dnac_batch_verify` / `dnac_batch_prove` call. Nothing is copied.
+ *   - Determinism is unaffected: the state is a pure function of the pinned cfg
+ *     and script, never of wire data, a clock or an RNG. Two nodes binding the
+ *     same pair emit the identical constraint stream. The move changed only
+ *     WHERE the bytes live.
+ *   - `folder->ctx == NULL`, an unbound state, or a REJECTED bind all make
+ *     `air_eval` emit ONE unsatisfiable constraint (`assert_zero(1)`) instead of
+ *     silently folding nothing. Fail-close, never fail-open. A rejected bind
+ *     disarms BOTH the state (`bound`) and the descriptor (`ctx = NULL`), on
+ *     entry — see the same note in mmcs_air_fold.h for why the state alone is
+ *     not enough.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: Apache-2.0
@@ -150,7 +160,25 @@ size_t dnac_transcript_air_fold_control_steps(const dnac_tair_config_t *cfg,
                                               const dnac_tair_script_t *sched);
 
 /**
- * @brief Bind the pinned cfg + script to this module and fill the descriptor.
+ * @brief The cfg + script snapshot `dnac_transcript_air_fold_eval` runs on — the
+ *        object `dnac_stark_air_t::ctx` points at (FLEET 034).
+ *
+ * PUBLIC only so the caller can OWN the storage; the fields are this module's
+ * business. Fill it ONLY through `dnac_transcript_air_fold_bind`. A zeroed state
+ * is "unbound" and fails closed.
+ */
+typedef struct {
+    int      bound;
+    size_t   pow_bits;
+    unsigned trailing; /**< trailing-zero run of p-1 (transcript_air.c:79-84) */
+    /** s3a: the pinned schedule. The POINTER is retained — the script and the
+     *  arrays it names must outlive every eval under this binding (header). */
+    const dnac_tair_script_t *sched;
+    size_t num_publics;
+} dnac_tair_fold_state_t;
+
+/**
+ * @brief Bind the pinned cfg + script into `state` and fill the descriptor.
  *
  * @param cfg      pinned transcript-AIR config. `pow_bits > TAIR_MAX_NUM_BITS`
  *                 is rejected (the same gate as transcript_air.c), as is a
@@ -161,15 +189,20 @@ size_t dnac_transcript_air_fold_control_steps(const dnac_tair_config_t *cfg,
  * @param sched    the pinned op script (`transcript_air_table.h`). The POINTER
  *                 is retained: the script and the arrays it names MUST outlive
  *                 every `air_eval` call made under this binding.
+ * @param state    CALLER-OWNED storage for the snapshot; must outlive every
+ *                 `air_eval` call made under this binding. Left UNBOUND
+ *                 (`state->bound == 0`) on rejection, never partially armed.
  * @param out_air  filled on success with {TAIR_WIDTH,
- *                 dnac_tair_num_publics(sched), main_next = 1, air_eval}.
- *                 UNTOUCHED on failure.
+ *                 dnac_tair_num_publics(sched), main_next = 1, air_eval,
+ *                 ctx = state}. On FAILURE its `ctx` is set to NULL (DISARMED)
+ *                 and its shape fields are left as the caller had them.
  * @return 0 on success, non-zero on a rejected pair / NULL argument
- *         (fail-close: a failed bind also DISARMS any previous binding, so a
- *         stale cfg cannot survive a rejected re-bind).
+ *         (fail-close: a failed bind DISARMS both `state` and `out_air->ctx`,
+ *         so no stale cfg can survive a rejected re-bind).
  */
 int dnac_transcript_air_fold_bind(const dnac_tair_config_t *cfg,
                                   const dnac_tair_script_t *sched,
+                                  dnac_tair_fold_state_t *state,
                                   dnac_stark_air_t *out_air);
 
 /**
@@ -177,11 +210,12 @@ int dnac_transcript_air_fold_bind(const dnac_tair_config_t *cfg,
  *
  * Exposed for the equivalence tests (and for a caller that already holds a
  * descriptor); production callers get it through `dnac_transcript_air_fold_bind`.
- * Reads `folder->trace_local` / `trace_next` (TAIR_WIDTH each),
+ * Reads its snapshot from `folder->ctx` (a `const dnac_tair_fold_state_t *`),
+ * plus `folder->trace_local` / `trace_next` (TAIR_WIDTH each),
  * `folder->preprocessed_local` (>= TAIR_TBL_COLS) and `folder->public_values`,
  * and emits the constraint stream described above. Emits ONE unsatisfiable
- * constraint if the module is unbound or the folder shape does not match the
- * binding.
+ * constraint if `ctx` is NULL, the state is unbound, or the folder shape does
+ * not match the binding.
  */
 void dnac_transcript_air_fold_eval(dnac_stark_folder_t *folder);
 

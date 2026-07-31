@@ -27,8 +27,10 @@
  *           a last row that is not padding is caught by that boundary alone
  *           (exact count 1 on the minimal tamper).
  *   T-BIND  a cfg the u64 evaluator fails closed on is refused by
- *           `dnac_foi_fold_bind`, descriptor untouched.
+ *           `dnac_foi_fold_bind`, which DISARMS the descriptor (`ctx = NULL`)
+ *           and leaves its shape metadata untouched.
  *   T-RAIL  the shape rail fires on a window that does not match the bound cfg.
+ *   T-CTX-NULL  a descriptor with no context at all fails closed (FLEET 034).
  *
  * Deterministic fixtures only — NO rand() (root CLAUDE.md).
  *
@@ -86,6 +88,11 @@ static size_t foi_expect_steps(const dnac_p2c_oi_table_cfg_t *cfg) {
  * Run the fold form over `B`'s trace and require it to agree with the u64
  * evaluator, form for form (see test_fri_air_fold.c for the rationale).
  */
+/* FLEET 034: the binding is CALLER-OWNED state now, reached through
+ * `dnac_stark_air_t::ctx`. File scope so it outlives every `air_eval` the
+ * harness drives (the header's LIFETIME rule). */
+static dnac_foi_fold_state_t g_eq_state;
+
 static void fold_vs_u64(const char *name, const built_t *B) {
     const int u = eval_b(B);
     if (u >= FOI_VIOL_BAD_CONFIG) {
@@ -96,7 +103,7 @@ static void fold_vs_u64(const char *name, const built_t *B) {
 
     dnac_stark_air_t air;
     memset(&air, 0, sizeof(air));
-    if (dnac_foi_fold_bind(B->cfg, &air) != DNAC_FOI_FOLD_OK) {
+    if (dnac_foi_fold_bind(B->cfg, &g_eq_state, &air) != DNAC_FOI_FOLD_OK) {
         printf("  [eq]     %-50s bind REJECTED — FAIL\n", name);
         fails++;
         return;
@@ -160,9 +167,13 @@ int main(void) {
     printf("-- T-BIND: descriptor + cfg fail-close ----------------------\n");
     {
         dnac_stark_air_t air;
+        static dnac_foi_fold_state_t st;
         memset(&air, 0, sizeof(air));
+        memset(&st, 0, sizeof(st));
         check("bind(REF) accepted",
-              dnac_foi_fold_bind(REF, &air) == DNAC_FOI_FOLD_OK);
+              dnac_foi_fold_bind(REF, &st, &air) == DNAC_FOI_FOLD_OK);
+        check("descriptor ctx == the caller's state, state armed",
+              air.ctx == (const void *)&st && st.bound == 1);
         check("descriptor main_width == dnac_foi_num_cols(REF)",
               air.main_width == dnac_foi_num_cols(REF));
         check("descriptor num_public_values == dnac_foi_num_publics(REF)",
@@ -195,24 +206,33 @@ int main(void) {
                                 "h_max != lgmh"};
         for (int i = 0; i < 3; i++) {
             dnac_stark_air_t probe;
+            static dnac_foi_fold_state_t pst;
             memset(&probe, 0, sizeof(probe));
-            const int rc = dnac_foi_fold_bind(bad[i], &probe);
+            memset(&pst, 0xA5, sizeof(pst));
+            const int rc = dnac_foi_fold_bind(bad[i], &pst, &probe);
             char msg[96];
-            snprintf(msg, sizeof(msg), "bind rejects %s (descriptor untouched)",
+            snprintf(msg, sizeof(msg), "bind rejects %s (disarmed, shape kept)",
                      bname[i]);
+            /* FLEET 034: `ctx` joins the untouched set, and the state itself
+             * must come back DISARMED rather than half-filled. */
             check(msg, rc != DNAC_FOI_FOLD_OK && probe.air_eval == NULL &&
-                           probe.main_width == 0);
+                           probe.main_width == 0 && probe.ctx == NULL &&
+                           pst.bound == 0);
         }
         {
             dnac_stark_air_t probe;
+            static dnac_foi_fold_state_t pst;
             memset(&probe, 0, sizeof(probe));
+            memset(&pst, 0, sizeof(pst));
             check("bind rejects NULL cfg",
-                  dnac_foi_fold_bind(NULL, &probe) != DNAC_FOI_FOLD_OK);
+                  dnac_foi_fold_bind(NULL, &pst, &probe) != DNAC_FOI_FOLD_OK);
             check("bind rejects NULL out_air",
-                  dnac_foi_fold_bind(REF, NULL) != DNAC_FOI_FOLD_OK);
+                  dnac_foi_fold_bind(REF, &pst, NULL) != DNAC_FOI_FOLD_OK);
+            check("bind rejects NULL state",
+                  dnac_foi_fold_bind(REF, NULL, &probe) != DNAC_FOI_FOLD_OK);
         }
         check("re-bind(REF) accepted",
-              dnac_foi_fold_bind(REF, &air) == DNAC_FOI_FOLD_OK);
+              dnac_foi_fold_bind(REF, &st, &air) == DNAC_FOI_FOLD_OK);
     }
 
     /* ── T-EQ + T-CNT: the five honest walks of the shipped gate ──────────── */
@@ -460,9 +480,11 @@ int main(void) {
     printf("\n-- T-TERM: terminality is a live constraint, not a gate -----\n");
     {
         dnac_stark_air_t air;
+        static dnac_foi_fold_state_t st;
         memset(&air, 0, sizeof(air));
+        memset(&st, 0, sizeof(st));
         check("bind(REF) for T-TERM",
-              dnac_foi_fold_bind(W.cfg, &air) == DNAC_FOI_FOLD_OK);
+              dnac_foi_fold_bind(W.cfg, &st, &air) == DNAC_FOI_FOLD_OK);
 
         uint64_t *last =
             W.prep + (W.rows - 1) * (size_t)DNAC_P2C_OI_TABLE_COLS;
@@ -507,9 +529,11 @@ int main(void) {
     printf("\n-- T-RAIL: out-of-contract window -> unsatisfiable ----------\n");
     {
         dnac_stark_air_t air;
+        static dnac_foi_fold_state_t st;
         memset(&air, 0, sizeof(air));
+        memset(&st, 0, sizeof(st));
         check("bind(REF) for T-RAIL",
-              dnac_foi_fold_bind(W.cfg, &air) == DNAC_FOI_FOLD_OK);
+              dnac_foi_fold_bind(W.cfg, &st, &air) == DNAC_FOI_FOLD_OK);
         ftu_result_t R;
         check("fold run with a short main_width",
               ftu_run_trace(&air, W.trace, W.rows, air.main_width - 1, W.prep,
@@ -519,16 +543,41 @@ int main(void) {
               R.steps == 1 && R.nonzero == W.rows);
     }
 
+    /* ── T-CTX-NULL: a descriptor carrying NO context at all ───────────────
+     * The primary NEW failure mode FLEET 034 introduces (see the same block in
+     * test_fri_air_fold.c). Shape fields copied from a GOOD bind, HONEST trace,
+     * so the missing context is the only thing wrong. */
+    printf("\n-- T-CTX-NULL: ctx == NULL -> unsatisfiable -----------------\n");
+    {
+        dnac_stark_air_t air;
+        static dnac_foi_fold_state_t st;
+        memset(&air, 0, sizeof(air));
+        memset(&st, 0, sizeof(st));
+        check("bind(REF) for T-CTX-NULL",
+              dnac_foi_fold_bind(W.cfg, &st, &air) == DNAC_FOI_FOLD_OK);
+        air.ctx = NULL; /* the ONLY thing wrong with this descriptor */
+        ftu_result_t R;
+        check("fold run on the HONEST trace with ctx == NULL",
+              ftu_run_trace(&air, W.trace, W.rows, air.main_width, W.prep,
+                            (size_t)DNAC_P2C_OI_TABLE_COLS, W.pub, W.num_pub,
+                            &R) == 1);
+        check("T-CTX-NULL rail fires (1 step/row, every one non-zero)",
+              R.steps == 1 && R.nonzero == W.rows);
+    }
+
     /* ── T-DISARM: a REJECTED bind disarms the previous binding ─────────────
      * FLEET 027 verifier-B H1 (see test_fri_air_fold.c for the full note). */
     printf("\n-- T-DISARM: rejected bind disarms previous binding ---------\n");
     {
         dnac_stark_air_t air;
+        static dnac_foi_fold_state_t st;
         memset(&air, 0, sizeof(air));
+        memset(&st, 0, sizeof(st));
         check("bind(REF) for T-DISARM",
-              dnac_foi_fold_bind(W.cfg, &air) == DNAC_FOI_FOLD_OK);
+              dnac_foi_fold_bind(W.cfg, &st, &air) == DNAC_FOI_FOLD_OK);
         check("re-bind(lgmh > 32) rejected",
-              dnac_foi_fold_bind(&CFG_LGMH33, &air) != DNAC_FOI_FOLD_OK);
+              dnac_foi_fold_bind(&CFG_LGMH33, &st, &air) != DNAC_FOI_FOLD_OK);
+        check("the rejected re-bind DISARMED the state", st.bound == 0);
         ftu_result_t R;
         check("fold run on the HONEST trace after the rejected bind",
               ftu_run_trace(&air, W.trace, W.rows, air.main_width, W.prep,
@@ -537,7 +586,7 @@ int main(void) {
         check("T-DISARM rail fires (1 step/row, every one non-zero)",
               R.steps == 1 && R.nonzero == W.rows);
         check("re-bind(REF) re-arms",
-              dnac_foi_fold_bind(W.cfg, &air) == DNAC_FOI_FOLD_OK);
+              dnac_foi_fold_bind(W.cfg, &st, &air) == DNAC_FOI_FOLD_OK);
     }
 
     built_free(&W);

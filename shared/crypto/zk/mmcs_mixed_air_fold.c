@@ -19,6 +19,8 @@
 
 #include "mmcs_mixed_air_fold.h"
 
+#include <string.h>
+
 #include "field_goldilocks.h"
 #include "mmcs_mixed_air_table.h"
 #include "poseidon2_air_cols.h"
@@ -30,46 +32,18 @@ static inline gold_fp2_t mul(gold_fp2_t a, gold_fp2_t b) { return gold_fp2_mul(a
 
 #define MMIX_FOLD_INF ((size_t)-1)
 
-/* ══════════════════════════ module-static binding ════════════════════════
- * The per-step map is DECODED from the table module's own row decoder (the
- * schedule authority); the absorb concat / stream->public map are re-derived
- * from the cfg scalars and cross-checked. See the header's DECLARED DUPLICATION
- * note. Pure function of the cfg: no clock, no RNG, no wire input. */
-
-enum {
-    MMIXF_T_OTHER = 0, /* compress / final / pad — no per-step absorb work */
-    MMIXF_T_LEAF,      /* tallest-group leaf OR injecting-group leaf       */
-    MMIXF_T_COMPRESS
-};
-
-typedef struct {
-    int    bound;
-    size_t sched;        /* scheduled (non-padding) rows                    */
-    size_t depth;
-    size_t num_groups;
-    size_t total_opened; /* Σ widths[m] (semantic)                          */
-    size_t pub_opened;   /* first public index of the opened-rows region    */
-    size_t num_publics;
-    size_t salt_elems;
-    size_t num_matrices;
-    size_t widths[DNAC_P2C_MMIX_MAX_MATRICES];
-    size_t heights[DNAC_P2C_MMIX_MAX_MATRICES];
-    size_t prefix_w[DNAC_P2C_MMIX_MAX_MATRICES]; /* per-matrix public prefix */
-    size_t g_height[DNAC_P2C_MMIX_MAX_GROUPS];
-    size_t g_lg[DNAC_P2C_MMIX_MAX_GROUPS];     /* (inject-)leaf rows        */
-    size_t g_concat[DNAC_P2C_MMIX_MAX_GROUPS]; /* Σ (width + salt)          */
-    /* per scheduled step */
-    unsigned char stype[DNAC_P2C_MMIX_MAX_STEPS];
-    size_t        slevel[DNAC_P2C_MMIX_MAX_STEPS];
-    size_t        sgroup[DNAC_P2C_MMIX_MAX_STEPS];
-    size_t        sblk[DNAC_P2C_MMIX_MAX_STEPS];
-} mmix_fold_state_t;
-
-static mmix_fold_state_t g_mmix_fold; /* zero-initialized: unbound */
+/* ═══════════════ binding — CALLER-OWNED state, no module static ═══════════
+ * FLEET 034: `dnac_mmix_fold_state_t` lives in the header and the caller owns
+ * the storage; `air_eval` reads it back out of `folder->ctx`. Nothing about the
+ * derivation moved: the per-step map is still DECODED from the table module's
+ * own row decoder (the schedule authority), and the absorb concat /
+ * stream->public map are still re-derived from the cfg scalars and
+ * cross-checked. See the header's DECLARED DUPLICATION note. Pure function of
+ * the cfg: no clock, no RNG, no wire input. */
 
 /* Elements absorbed by (inject-)leaf block `blk` of group `g`
  * (mmcs_mixed_air.c:212-217). */
-static inline size_t mmixf_absorb(const mmix_fold_state_t *S, size_t g,
+static inline size_t mmixf_absorb(const dnac_mmix_fold_state_t *S, size_t g,
                                   size_t blk) {
     const size_t lg = S->g_lg[g];
     return (blk + 1 < lg) ? (size_t)MMIX_RATE
@@ -78,7 +52,7 @@ static inline size_t mmixf_absorb(const mmix_fold_state_t *S, size_t g,
 
 /* Public index a group's absorb-stream position maps to, or MMIX_FOLD_INF for a
  * SALT lane (free witness). Re-derivation of mmcs_mixed_air.c:196-208. */
-static size_t mmixf_stream_pub(const mmix_fold_state_t *S, size_t g,
+static size_t mmixf_stream_pub(const dnac_mmix_fold_state_t *S, size_t g,
                                size_t stream_pos) {
     const size_t gh = S->g_height[g];
     size_t off = 0;
@@ -95,8 +69,18 @@ static size_t mmixf_stream_pub(const mmix_fold_state_t *S, size_t g,
 
 /* Resolve the schedule. Returns 0 on reject (fail-close, never a guess). */
 static int mmixf_resolve(const dnac_p2c_mmix_table_cfg_t *cfg,
-                         mmix_fold_state_t *S) {
-    if (cfg == NULL || cfg->widths == NULL || cfg->heights == NULL) return 0;
+                         dnac_mmix_fold_state_t *S) {
+    if (cfg == NULL || S == NULL || cfg->widths == NULL ||
+        cfg->heights == NULL)
+        return 0;
+    /* Zero FIRST: every early return then leaves a fully-initialised (and
+     * unbound) snapshot, so no caller can copy indeterminate bytes. Matches
+     * `fair_fold_derive` (fri_air_fold.c) and `foi_fold_derive`
+     * (fri_oi_air_fold.c). Load-bearing since FLEET 034: the target used to be
+     * a file-scope static (zeroed by C), and is now the CALLER'S storage, which
+     * may be an uninitialised automatic. The per-step arrays are only written
+     * for k < sched, so without this the tail stays indeterminate. */
+    memset(S, 0, sizeof(*S));
 
     /* Every table accessor re-runs the module's cfg gate and returns 0 on
      * reject, so a bad cfg dies here. */
@@ -176,17 +160,17 @@ static int mmixf_resolve(const dnac_p2c_mmix_table_cfg_t *cfg,
         case DNAC_P2C_MMIX_ROW_LEAF:
         case DNAC_P2C_MMIX_ROW_INJECT_LEAF:
             if (rec.group >= ng) return 0;
-            S->stype[k] = MMIXF_T_LEAF;
+            S->stype[k] = DNAC_MMIXF_T_LEAF;
             S->sblk[k] = seen_leaf_rows[rec.group]++;
             if (S->sblk[k] >= S->g_lg[rec.group]) return 0;
             break;
         case DNAC_P2C_MMIX_ROW_COMPRESS:
             if (rec.level >= S->depth) return 0;
-            S->stype[k] = MMIXF_T_COMPRESS;
+            S->stype[k] = DNAC_MMIXF_T_COMPRESS;
             break;
         case DNAC_P2C_MMIX_ROW_INJECT_COMPRESS:
         case DNAC_P2C_MMIX_ROW_FINAL:
-            S->stype[k] = MMIXF_T_OTHER;
+            S->stype[k] = DNAC_MMIXF_T_OTHER;
             break;
         default: /* a PAD row inside the scheduled prefix is a contradiction */
             return 0;
@@ -201,14 +185,18 @@ static int mmixf_resolve(const dnac_p2c_mmix_table_cfg_t *cfg,
 }
 
 size_t dnac_mmix_air_fold_control_steps(const dnac_p2c_mmix_table_cfg_t *cfg) {
-    static mmix_fold_state_t S; /* multi-KB; not a stack fixture */
+    /* SCRATCH ONLY — multi-KB, so not a stack fixture. Unlike the retired
+     * `g_mmix_fold` this carries NO cross-call meaning: `mmixf_resolve` writes
+     * every field this function then reads, and a rejected cfg returns 0 before
+     * any read. It is not a binding and `air_eval` never sees it. */
+    static dnac_mmix_fold_state_t S;
     S.bound = 0;
     if (!mmixf_resolve(cfg, &S)) return 0;
 
     size_t n = 0;
     n += 2;                                    /* B */
     for (size_t k = 0; k < S.sched; k++) {     /* C */
-        if (S.stype[k] != MMIXF_T_LEAF) continue;
+        if (S.stype[k] != DNAC_MMIXF_T_LEAF) continue;
         const size_t g = S.sgroup[k], b = S.sblk[k];
         const size_t kab = mmixf_absorb(&S, g, b);
         for (size_t s = 0; s < kab; s++)
@@ -221,7 +209,7 @@ size_t dnac_mmix_air_fold_control_steps(const dnac_p2c_mmix_table_cfg_t *cfg) {
     n += (size_t)MMIX_DIGEST_LANES;            /* F */
     n += 6 * (size_t)MMIX_DIGEST_LANES;        /* G(2) + H + I + J + K, per lane */
     for (size_t k = 0; k < S.sched; k++) {     /* L */
-        if (S.stype[k] != MMIXF_T_LEAF) continue;
+        if (S.stype[k] != DNAC_MMIXF_T_LEAF) continue;
         const size_t b = S.sblk[k];
         if (b == 0) continue;
         n += (size_t)MMIX_PERM_WIDTH - mmixf_absorb(&S, S.sgroup[k], b);
@@ -231,22 +219,27 @@ size_t dnac_mmix_air_fold_control_steps(const dnac_p2c_mmix_table_cfg_t *cfg) {
 }
 
 int dnac_mmix_air_fold_bind(const dnac_p2c_mmix_table_cfg_t *cfg,
+                            dnac_mmix_fold_state_t *state,
                             dnac_stark_air_t *out_air) {
-    /* Fail-close: a rejected bind DISARMS, so a stale cfg cannot survive it. */
-    g_mmix_fold.bound = 0;
-    if (cfg == NULL || out_air == NULL) return -1;
+    /* Fail-close: ANY rejected bind DISARMS the DESCRIPTOR (`out_air->ctx =
+     * NULL`) as well as the state it was handed — see the same block in
+     * mmcs_air_fold.c for why the state alone is not enough. Only the ARMING is
+     * cleared; the shape fields are the caller's and are left untouched. */
+    if (out_air != NULL) out_air->ctx = NULL;
+    if (state != NULL) state->bound = 0;
+    if (state == NULL || cfg == NULL || out_air == NULL) return -1;
 
-    mmix_fold_state_t *const S = &g_mmix_fold;
-    if (!mmixf_resolve(cfg, S)) {
-        S->bound = 0;
+    if (!mmixf_resolve(cfg, state)) {
+        state->bound = 0;
         return -1;
     }
-    S->bound = 1;
+    state->bound = 1;
 
     out_air->main_width = (size_t)MMIX_WIDTH;
-    out_air->num_public_values = S->num_publics;
+    out_air->num_public_values = state->num_publics;
     out_air->main_next = 1; /* blocks G..L read the next row */
     out_air->air_eval = dnac_mmix_air_fold_eval;
+    out_air->ctx = state;
     return 0;
 }
 
@@ -254,13 +247,16 @@ int dnac_mmix_air_fold_bind(const dnac_p2c_mmix_table_cfg_t *cfg,
 
 void dnac_mmix_air_fold_eval(dnac_stark_folder_t *f) {
     /* Shape / binding gate — fail-close (an `air_eval` cannot report an error,
-     * and folding nothing would ACCEPT everything). The preprocessed-window
-     * requirement is PIN-2's shape: a REAL next-row window, never a zero fill
-     * (batch_verify.c:696-707) — the u64 rejects the same mismatch at
-     * mmcs_mixed_air.c:278. */
-    if (!g_mmix_fold.bound || f->trace_local == NULL || f->trace_next == NULL ||
-        f->main_width != (size_t)MMIX_WIDTH ||
-        f->num_public_values != g_mmix_fold.num_publics ||
+     * and folding nothing would ACCEPT everything). `ctx == NULL` (no binding
+     * at all) joins the same gate: the exact analogue of the retired
+     * `!g_mmix_fold.bound`. The preprocessed-window requirement is PIN-2's
+     * shape: a REAL next-row window, never a zero fill (batch_verify.c:696-707)
+     * — the u64 rejects the same mismatch at mmcs_mixed_air.c:278. */
+    const dnac_mmix_fold_state_t *const S =
+        (const dnac_mmix_fold_state_t *)f->ctx;
+    if (S == NULL || !S->bound || f->trace_local == NULL ||
+        f->trace_next == NULL || f->main_width != (size_t)MMIX_WIDTH ||
+        f->num_public_values != S->num_publics ||
         f->public_values == NULL || f->preprocessed_local == NULL ||
         f->preprocessed_next == NULL ||
         f->prep_width < (size_t)DNAC_P2C_MMIX_TABLE_COLS) {
@@ -268,7 +264,6 @@ void dnac_mmix_air_fold_eval(dnac_stark_folder_t *f) {
         return;
     }
 
-    const mmix_fold_state_t *const S = &g_mmix_fold;
     const gold_fp2_t *L = f->trace_local;
     const gold_fp2_t *N = f->trace_next;
     const gold_fp2_t *PL = f->preprocessed_local;
@@ -297,7 +292,7 @@ void dnac_mmix_air_fold_eval(dnac_stark_folder_t *f) {
      * their public opened element, SALT slots emit nothing (free witness,
      * OBL-6); the FIRST block of each group starts from an ALL-ZERO state. */
     for (size_t k = 0; k < S->sched; k++) {
-        if (S->stype[k] != MMIXF_T_LEAF) continue;
+        if (S->stype[k] != DNAC_MMIXF_T_LEAF) continue;
         const size_t g = S->sgroup[k];
         const size_t b = S->sblk[k];
         const size_t kab = mmixf_absorb(S, g, b);
@@ -315,7 +310,7 @@ void dnac_mmix_air_fold_eval(dnac_stark_folder_t *f) {
 
     /* ══ D. Index binding — A1, LSB-first, bits as PUBLICS (:349-359) ═════ */
     for (size_t k = 0; k < S->sched; k++) {
-        if (S->stype[k] != MMIXF_T_COMPRESS) continue;
+        if (S->stype[k] != DNAC_MMIXF_T_COMPRESS) continue;
         dnac_stark_folder_when(
             f, PL[dnac_p2c_mmix_col_pos(k)],
             sub(dir, MXPUB((size_t)MMIX_PUB_DIR_OFF + S->slevel[k])));
@@ -382,7 +377,7 @@ void dnac_mmix_air_fold_eval(dnac_stark_folder_t *f) {
      * Anchored at the PREDECESSOR (pos[k-1]) so it never fires on a
      * last-leaf -> compress / inject-compress step. */
     for (size_t k = 0; k < S->sched; k++) {
-        if (S->stype[k] != MMIXF_T_LEAF) continue;
+        if (S->stype[k] != DNAC_MMIXF_T_LEAF) continue;
         const size_t b = S->sblk[k];
         if (b == 0) continue;
         const size_t kab = mmixf_absorb(S, S->sgroup[k], b);

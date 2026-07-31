@@ -30,22 +30,16 @@ static inline gold_fp2_t add(gold_fp2_t a, gold_fp2_t b) { return gold_fp2_add(a
 static inline gold_fp2_t sub(gold_fp2_t a, gold_fp2_t b) { return gold_fp2_sub(a, b); }
 static inline gold_fp2_t mul(gold_fp2_t a, gold_fp2_t b) { return gold_fp2_mul(a, b); }
 
-/* ══════════════════════════ module-static binding ════════════════════════ */
-
-typedef struct {
-    int    bound;
-    size_t leaf;        /* leaf-hash rows                                   */
-    size_t depth;       /* compress rows                                    */
-    size_t total_width; /* Σ widths[m] — the sponge input length            */
-    size_t pub_open;    /* first public index of the opened-rows region     */
-    size_t num_publics;
-} mair_fold_state_t;
-
-static mair_fold_state_t g_mair_fold; /* zero-initialized: unbound */
+/* ═══════════════ binding — CALLER-OWNED state, no module static ═══════════
+ * FLEET 034: `dnac_mair_fold_state_t` lives in the header and the caller owns
+ * the storage; `air_eval` reads it back out of `folder->ctx`. There is no
+ * process-wide binding left, so N instances of this AIR with N different cfgs
+ * can coexist in one batch. */
 
 /* Elements absorbed by leaf block `blk` — `mair_absorb_count`'s formula
  * (mmcs_air.c:110-114) over the scalars the public accessors hand back. */
-static inline size_t mair_fold_absorb(const mair_fold_state_t *s, size_t blk) {
+static inline size_t mair_fold_absorb(const dnac_mair_fold_state_t *s,
+                                      size_t blk) {
     return (blk + 1 < s->leaf) ? (size_t)MAIR_RATE
                                : s->total_width - (size_t)MAIR_RATE * (s->leaf - 1);
 }
@@ -54,7 +48,7 @@ static inline size_t mair_fold_absorb(const mair_fold_state_t *s, size_t blk) {
  * ONE schedule authority (mmcs_air.c:118-140, each of which runs the static
  * `mair_schedule` and returns 0 on reject). Returns 0 on reject. */
 static int mair_fold_resolve(const dnac_p2b_table_cfg_t *cfg,
-                             mair_fold_state_t *s) {
+                             dnac_mair_fold_state_t *s) {
     if (cfg == NULL) return 0;
     const size_t leaf = dnac_mmcs_air_leaf_rows(cfg);
     const size_t total = dnac_mmcs_air_total_width(cfg);
@@ -80,7 +74,7 @@ static int mair_fold_resolve(const dnac_p2b_table_cfg_t *cfg,
 }
 
 size_t dnac_mmcs_air_fold_control_steps(const dnac_p2b_table_cfg_t *cfg) {
-    mair_fold_state_t s;
+    dnac_mair_fold_state_t s;
     s.bound = 0;
     if (!mair_fold_resolve(cfg, &s)) return 0;
 
@@ -102,22 +96,33 @@ size_t dnac_mmcs_air_fold_control_steps(const dnac_p2b_table_cfg_t *cfg) {
 }
 
 int dnac_mmcs_air_fold_bind(const dnac_p2b_table_cfg_t *cfg,
+                            dnac_mair_fold_state_t *state,
                             dnac_stark_air_t *out_air) {
-    /* Fail-close: a rejected bind DISARMS, so a stale cfg cannot survive it. */
-    g_mair_fold.bound = 0;
-    if (cfg == NULL || out_air == NULL) return -1;
+    /* Fail-close: ANY rejected bind DISARMS the DESCRIPTOR (`out_air->ctx =
+     * NULL`) as well as the state it was handed. Disarming only the state is
+     * not enough — a re-bind that fails would leave `out_air->ctx` pointing at
+     * whatever state a PREVIOUS successful bind armed, and a caller ignoring
+     * the return code would go on evaluating THAT cfg's constraint system.
+     * (Pre-FLEET-034 the process-wide `g_mair_fold.bound = 0` covered this;
+     * FLEET 027 verifier-B H1 is the same requirement.) Only the ARMING is
+     * cleared: `main_width` / `num_public_values` / `main_next` / `air_eval`
+     * are the caller's shape metadata and are left untouched. */
+    if (out_air != NULL) out_air->ctx = NULL;
+    if (state != NULL) state->bound = 0;
+    if (state == NULL || cfg == NULL || out_air == NULL) return -1;
 
-    mair_fold_state_t s;
+    dnac_mair_fold_state_t s;
     s.bound = 0;
     if (!mair_fold_resolve(cfg, &s)) return -1;
 
     s.bound = 1;
-    g_mair_fold = s;
+    *state = s;
 
     out_air->main_width = (size_t)MAIR_WIDTH;
     out_air->num_public_values = s.num_publics;
     out_air->main_next = 1; /* blocks G..J read the next row */
     out_air->air_eval = dnac_mmcs_air_fold_eval;
+    out_air->ctx = state;
     return 0;
 }
 
@@ -126,12 +131,16 @@ int dnac_mmcs_air_fold_bind(const dnac_p2b_table_cfg_t *cfg,
 void dnac_mmcs_air_fold_eval(dnac_stark_folder_t *f) {
     /* Shape / binding gate. `air_eval` cannot report an error, so an
      * out-of-contract call emits ONE unsatisfiable constraint rather than
-     * folding nothing (which would ACCEPT everything). The preprocessed window
+     * folding nothing (which would ACCEPT everything). `ctx == NULL` (no
+     * binding at all) is checked FIRST and joins the same fail-close: it is the
+     * exact analogue of the old `!g_mair_fold.bound`. The preprocessed window
      * requirement is PIN-2's shape: a REAL next-row window, never a zero fill
      * (batch_verify.c:696-707). */
-    if (!g_mair_fold.bound || f->trace_local == NULL || f->trace_next == NULL ||
-        f->main_width != (size_t)MAIR_WIDTH ||
-        f->num_public_values != g_mair_fold.num_publics ||
+    const dnac_mair_fold_state_t *const S =
+        (const dnac_mair_fold_state_t *)f->ctx;
+    if (S == NULL || !S->bound || f->trace_local == NULL ||
+        f->trace_next == NULL || f->main_width != (size_t)MAIR_WIDTH ||
+        f->num_public_values != S->num_publics ||
         f->public_values == NULL || f->preprocessed_local == NULL ||
         f->preprocessed_next == NULL ||
         f->prep_width < (size_t)DNAC_P2B_TABLE_COLS) {
@@ -139,7 +148,6 @@ void dnac_mmcs_air_fold_eval(dnac_stark_folder_t *f) {
         return;
     }
 
-    const mair_fold_state_t *const S = &g_mair_fold;
     const gold_fp2_t *L = f->trace_local;
     const gold_fp2_t *N = f->trace_next;
     const gold_fp2_t *PL = f->preprocessed_local;

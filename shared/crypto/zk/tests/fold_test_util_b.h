@@ -143,6 +143,11 @@ static inline int ftu_run_trace(const dnac_stark_air_t *air,
         folder.preprocessed_local = ploc;
         folder.preprocessed_next = pnxt;
         folder.prep_width = prep_width;
+        /* FLEET 034: the descriptor's AIR context, verbatim — exactly what the
+         * production glues (batch_verify.c / batch_prover.c) do. `folder` is an
+         * uninitialised automatic assigned field by field, so leaving `ctx`
+         * out would be an INDETERMINATE pointer read on every row. */
+        folder.ctx = air->ctx;
 
         air->air_eval(&folder);
 

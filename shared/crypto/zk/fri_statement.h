@@ -627,6 +627,25 @@ dnac_p2s_status_t dnac_p2s_check_tair_pow_pin(const dnac_tair_script_t *s);
 const dnac_fri_params_t *dnac_p2s_fri_params(void);
 
 /**
+ * @brief Storage for the five instances' fold-state snapshots (FLEET 034).
+ *
+ * The fold modules keep NO module-static binding: `<module>_fold_bind` fills a
+ * CALLER-OWNED state and points the descriptor's `ctx` at it
+ * (stark_constraints.h:299-311). This block is the statement's five of them, in
+ * instance order, so a caller declares ONE object instead of five.
+ *
+ * Contents are this file's business — declare it, pass it, do not read it.
+ * Several KB; a file-scope or heap object, not a deep-stack fixture.
+ */
+typedef struct {
+    dnac_mmix_fold_state_t mmix;
+    dnac_mair_fold_state_t mmcs;
+    dnac_fair_fold_state_t fri;
+    dnac_foi_fold_state_t  oi;
+    dnac_tair_fold_state_t tair;
+} dnac_p2s_fold_states_t;
+
+/**
  * @brief Build the four batch descriptors from the statement — steps 3-6.
  *
  * Exposed because the TEST must prove the SAME instances the entry verifies:
@@ -634,21 +653,30 @@ const dnac_fri_params_t *dnac_p2s_fri_params(void);
  * would be faithfully mirrored on both sides and RT-1 would pass regardless.
  * With one builder, RT-1 is a statement about the entry's own construction.
  *
- * Fills, per instance: the fold `air` descriptor (via the module's bind),
- * `preprocessed_width`, `prep_next = 1` (PIN-2, hard-coded — see the entry),
- * `degree_bits` from the table's own row count, `log_num_qc` from the upstream
- * symbolic rule, and `public_values` / `num_publics` pointing at the caller's
- * buffers, which this function fills.
+ * Fills, per instance: the fold `air` descriptor (via the module's bind,
+ * including its `ctx` into `states`), `preprocessed_width`, `prep_next = 1`
+ * (PIN-2, hard-coded — see the entry), `degree_bits` from the table's own row
+ * count, `log_num_qc` from the upstream symbolic rule, and `public_values` /
+ * `num_publics` pointing at the caller's buffers, which this function fills.
  *
- * ⚠ Leaves the module-static fold bindings ARMED on success — the four fold
- * modules bind MODULE-STATICALLY (fri_air_fold.h:130-146) and `insts[].air`
- * only carries the callback, so the caller MUST run its prove/verify before
- * binding anything else. A rejected call disarms them (each bind clears its
- * own state on entry).
+ * ⚠ On success the descriptors' `ctx` fields point INTO `states`, which is why
+ * it carries the same must-outlive rule as the publics buffers.
+ *
+ * ⚠ On FAILURE — stated exactly, because the useful property is about `insts`,
+ * not about `states`. Once `insts` is non-NULL it is ZEROED before anything
+ * else, so EVERY failure path below leaves all five descriptors with
+ * `ctx == NULL` AND `air_eval == NULL`: a caller that ignores the return code
+ * cannot evaluate a stale cfg's constraint system, because it cannot evaluate
+ * at all. Additionally, each bind that actually RAN disarmed its own state and
+ * its own descriptor on entry. States belonging to binds that were never
+ * reached (an early step-3a reject) are left exactly as the caller supplied
+ * them — which is why `dnac_p2_fri_statement_verify` zero-initialises the
+ * block, and why callers should too.
  *
  * @param stmt      the statement; publics are built from it, nothing is read
  *                  from any proof.
  * @param insts     [DNAC_P2S_NUM_INSTANCES], filled on success.
+ * @param states    the five fold-state snapshots; must outlive `insts`.
  * @param pub_mmix  >= DNAC_P2S_MMIX_NUM_PUBLICS elements; must outlive `insts`.
  * @param pub_mmcs  >= DNAC_P2S_MMCS_NUM_PUBLICS elements; must outlive `insts`.
  * @param pub_fri   >= DNAC_P2S_FRI_NUM_PUBLICS  elements; must outlive `insts`.
@@ -659,6 +687,7 @@ const dnac_fri_params_t *dnac_p2s_fri_params(void);
 dnac_p2s_status_t dnac_p2_fri_statement_build_instances(
     const dnac_p2s_statement_t *stmt,
     dnac_batch_vinstance_t     *insts,
+    dnac_p2s_fold_states_t     *states,
     gold_fp_t                  *pub_mmix,
     gold_fp_t                  *pub_mmcs,
     gold_fp_t                  *pub_fri,

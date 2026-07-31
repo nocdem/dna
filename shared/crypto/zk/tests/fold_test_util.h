@@ -152,6 +152,11 @@ static inline fold_row_t fold_eval_row(const fold_input_t *in, size_t r) {
     f.preprocessed_local = (in->prep && pw) ? ploc : NULL;
     f.preprocessed_next = (in->prep && pw) ? pnex : NULL;
     f.prep_width = pw;
+    /* FLEET 034: the descriptor's AIR context, verbatim — exactly what the
+     * production glues (batch_verify.c / batch_prover.c) do. A descriptor with
+     * ctx == NULL therefore reaches the eval's fail-close, which is what the
+     * N-CTX-NULL negative pins. */
+    f.ctx = in->air->ctx;
 
     in->air->air_eval(&f);
 

@@ -362,8 +362,9 @@ static void range_proof_air_eval(dnac_stark_folder_t *f) {
     dnac_stark_folder_when(f, f->is_last_row, gold_fp2_sub(l[COL_CNT], n_real));
 }
 
-static const dnac_stark_air_t RANGE_ONLY_AIR = { RANGE_ONLY_W, 0, 0, range_only_air_eval };
-static const dnac_stark_air_t RANGE_PROOF_AIR = { RANGE_PROOF_W, 3, 1, range_proof_air_eval };
+/* The trailing NULL is `ctx` (FLEET 034): neither eval reads `folder->ctx`. */
+static const dnac_stark_air_t RANGE_ONLY_AIR = { RANGE_ONLY_W, 0, 0, range_only_air_eval, NULL };
+static const dnac_stark_air_t RANGE_PROOF_AIR = { RANGE_PROOF_W, 3, 1, range_proof_air_eval, NULL };
 
 /* ===== P-constraint isolation (grounded, NOT oracle-lockstep) =====
  * The soundness role of P = (1-is_real)*amount is to REJECT a value-bearing

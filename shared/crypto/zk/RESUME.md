@@ -1,9 +1,9 @@
 # RESUME — DNAC v3 ZK stack (CURRENT STATUS: 2026-07-29)
 
-## ⏭ WHAT IS LEFT — read this first (2026-07-29)
+## ⏭ WHAT IS LEFT — read this first (2026-07-31)
 
 **The zk stack itself is GREEN and idle. Nothing in `shared/crypto/zk/` is blocking.**
-`make test` 73 binaries / 0 warnings, 60/60 vectors hash-clean, nodus ctest 132/132. The whole
+`make test` 86 binaries / 0 warnings, 60/60 vectors hash-clean, nodus ctest 132/132. The whole
 verify stack is consensus-LINKED but consensus-DEAD: type-11 is still REJECT-unconditional
 (`nodus/src/witness/nodus_witness_verify.c:743-753` — verified 2026-07-27, the `return -1` is the
 function's last statement, there is no accept path). **C3 is the door that opens it, and the work
@@ -769,6 +769,79 @@ left is NOT zk work — it is design and consensus work upstream of the circuits
    oi grup-şekli etiketi. HEPSİ yeni bir dilim haritası + muhtemelen
    ctx-redesign kararı ister (air_eval ctx taşımıyor, stark_constraints.h:289
    shared yüzey) — ORCHESTRATOR kullanıcıya sunmalı, kendi başlatmamalı.
+
+   **ctx-redesign ÇÖZÜLDÜ — SEÇENEK A SHIPPED (2026-07-31, FLEET 034:
+   1 executor 3 tur + verifier + red-teamer + zk-auditor + ORCHESTRATOR).**
+   Yukarıdaki blokaj kalktı: `dnac_stark_air_t` ve `dnac_stark_folder_t`
+   SON alan olarak `const void *ctx` kazandı (`stark_constraints.h:283-311`),
+   üç folder-kurulum yeri onu aynen iletiyor (`stark_constraints.c:362`,
+   `batch_verify.c:727`, `batch_prover.c:371`), ve beş P2 fold modülü
+   (`fri_air_fold`, `fri_oi_air_fold`, `mmcs_air_fold`, `mmcs_mixed_air_fold`,
+   `transcript_air_fold`) modül-statik cfg binding'ini BIRAKTI — state artık
+   çağıran-sahipli, tipi header'da public (`dnac_{fair,foi,mair,mmix,tair}_fold_state_t`),
+   `air_eval` onu `folder->ctx`'ten okuyor. **`air_eval` İMZASI DEĞİŞMEDİ**, bu
+   yüzden üç `conf_*` fold modülünün gövdeleri ve KAT'ları byte-değişmez kaldı
+   (yalnız descriptor'larına açık `NULL` ctx satırı eklendi). **AYNI AIR'IN İKİ
+   FARKLI CFG'Lİ INSTANCE'I ARTIK MÜMKÜN** — N-CTX-TWO testi (iki state, iki cfg,
+   ikisi de aynı anda bound, araya sıkıştırılmış üçüncü değerlendirme) bunu
+   `mmcs_air_fold` ve `mmcs_mixed_air_fold` üzerinde kanıtlıyor; executor
+   düzeltmeden ÖNCE eski clobber'ı geri takıp testin KIRMIZI olduğunu da
+   gösterdi. Sıfır kısıt / KAT / vektör / wire değişikliği.
+   Statement tarafı: `fri_statement.h` public `dnac_p2s_fold_states_t` bloğu
+   (5 state, instance sırasında, ~5.8 KB) + `dnac_p2_fri_statement_build_instances`
+   prototipi `states` parametresi aldı; depolama `dnac_p2_fri_statement_verify`'da
+   `insts` ile AYNI kapsamda, ömürler inşa gereği özdeş.
+   **O6 (3 lens + ORCHESTRATOR, çelişki yok):** verifier 6 CONF / 0 REF
+   (kısıt akışı DEĞİŞMEDİ — beş eval gövdesinde tek bir `when`/`assert_*`
+   argümanı bile değişmemiş); zk-auditor 7 GROUNDED / 5 JUDGMENT / 0 KAFADAN
+   (derive/resolve gövdeleri byte-özdeş, 20 schedule-authority dosyası
+   md5-özdeş, `DNAC_P2S_PREP_ROOT` 4 lane byte-özdeş — PIN KIRILMADI);
+   red-teamer 0 CRIT / 0 HIGH / 1 MED / 3 LOW, **0 deployed-exploitable**.
+   **O6'nın çıkardığı iki gerçek bulgu, ikisi de aynı dilimde KAPATILDI:**
+   *(F2, MED)* Reddedilen bind eskiden süreç-geneli `g_X.bound = 0` ile
+   descriptor'ı da silahsızlandırıyordu; caller-owned state'e geçince
+   `out_air untouched` sözleşmesi bunu KAYBETTİ — `bind(A,&sA,&air)` OK,
+   `bind(B_kötü,&sB,&air)` FAIL, `air.ctx` hâlâ armed sA → dönüş kodunu yok
+   sayan çağıran cfgA'nın sistemini değerlendirir (kırmızı testte **421 adım**
+   = cfgA'nın tam akışı). Düzeltme: her bind girişte `out_air->ctx = NULL` +
+   `state->bound = 0` yapar, **şekil alanlarına dokunmaz** (`main_width`,
+   `num_public_values`, `main_next`, `air_eval` çağıranın kalır). Yeni negatif
+   **N-CTX-STALE** bunu pinliyor ve penceresi kasten cfgA'nın bağlamasına
+   uydurulmuş, böylece şekil rayı alakasız bir sebeple sahte-yeşil veremiyor.
+   Aynı disiplin bir katman yukarıda da uygulandı: `build_instances` giriş
+   noktasında beş descriptor'ı silahsızlandırıyor (`fri_statement.c:619-625`),
+   yoksa `build_instances(stmt, zaten_armed_insts, NULL, …)` `ERR_NULL` dönerken
+   diziyi armed bırakıyordu.
+   *(F1, hijyen)* `mmixf_resolve` çıktısını memset etmiyordu; hedef eskiden
+   file-scope statikti (C sıfırlıyordu), caller-owned automatic'e geçince
+   mmix state'inin dizi kuyrukları belirsiz byte tutuyordu — kardeşlerinin
+   (`fri_air_fold.c:61`, `fri_oi_air_fold.c:66`) zaten belgelediği desen
+   eklendi (`mmcs_mixed_air_fold.c:83`), `states` sıfır-initialize edildi
+   (`fri_statement.c:1014`, tüm erken dönüşlerden ÖNCE), ve `fri_statement.h`
+   §663-673'teki "A rejected call leaves every state DISARMED" iddiası —
+   bind-öncesi erken dönüşlerde YANLIŞTI — fiilen doğru kılındı.
+   *(F3)* `S == NULL` bu dilimin YARATTIĞI birincil yeni failure mode'du ve
+   fri + oi'de eval seviyesinde testsizdi; T-CTX-NULL ikisine de eklendi.
+   **O9 (ORCHESTRATOR koştu, üç kapı):** zk `make clean && make test` →
+   **86 binary, 0 uyarı, ALL GATES GREEN**, statement **353/0**; nodus build
+   0 uyarı + **ctest 132/132** (#124 `test_fault_inject_round_skip` tasarımı
+   gereği atlıyor — `-DQGP_FAULT_INJECT=ON` gerektirir,
+   `nodus/tests/test_fault_inject_round_skip.c:45,86`); messenger/libdna
+   0 uyarı, `dna-connect-cli` linkli. Konsensüs-inert (type-11 hâlâ REJECT)
+   → nodus version bump YOK (C1 emsali). 29 dosya, +1270/−503.
+   ⚠ **A'nın getirdiği yeni keskin kenar, bilerek kabul edildi:** `f->ctx`
+   denetlenmeyen bir `void *` cast'i — X AIR'ın eval'i + Y AIR'ın state'i
+   eşleşmesi derleyicide yakalanmaz; `bound`/`num_publics` kapıları
+   olasılıksal yakalar, deterministik değil. Bugün tek üretim bağlayıcısı
+   doğru eşliyor. Slot-index tasarımı (Seçenek B) bunu tip-güvenli yapardı;
+   kullanıcı kapasite ve re-pin esnekliği için A'yı bilerek seçti.
+   ⚠ **Bu dilimden DEĞİL, önceden var (atfedilmesin):** `batch_verify.c:730`
+   `air_eval == NULL` kontrolü yok (prover'da var, `batch_prover.c:640`);
+   `mmcs_mixed_air_fold.c:180` `control_steps` içinde fonksiyon-yerel statik
+   scratch (`air_eval` görmüyor, kısıt akışına değmiyor).
+   ▶ **SIRADAKİ DİLİM ARTIK AÇIK:** multi-query (OBL-P2c-2) Q ayrı fri/oi/mmcs/
+   mmix instance'ı bağlayabilir; `dnac_p2s_fold_states_t` Q×4+1'e büyüyecek ve
+   depolama zaten çağıranda olduğu için değişiklik yalnız dizi boyutlandırma.
 
 ### ⚑ CITATION BASELINE — read this before checking any Plonky3 `file:line` in this tree
 

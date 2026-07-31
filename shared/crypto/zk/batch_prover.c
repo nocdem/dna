@@ -364,6 +364,11 @@ static dnac_prover_status_t bp_quotient_values(
         folder.preprocessed_local = pw ? pl : NULL;
         folder.preprocessed_next = pw ? pn : NULL;
         folder.prep_width = pw;
+        /* FLEET 034: the PER-INSTANCE AIR context, verbatim (the memset above
+         * already zeroes it; set EXPLICITLY so prover and verifier read the
+         * same field from the same descriptor — a silent divergence here would
+         * be a prove/verify constraint-stream mismatch). */
+        folder.ctx = di->air.ctx;
 
         /* air.eval FIRST (protocol.rs:64-81)... */
         di->air.air_eval(&folder);

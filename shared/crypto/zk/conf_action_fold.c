@@ -310,4 +310,5 @@ const dnac_stark_air_t DNAC_CONF_ACTION_FOLD_AIR = {
     CONF_ACTION_FOLD_NUM_PUBLICS, /* 0 */
     1,                           /* main_next: counter/freeze/carry/BAL read next */
     dnac_conf_action_fold_air_eval,
+    NULL, /* ctx: this AIR has no cfg state — its eval never reads folder->ctx */
 };

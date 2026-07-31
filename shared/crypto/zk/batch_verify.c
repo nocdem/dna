@@ -722,6 +722,9 @@ rand_shape:
         folder.preprocessed_local = oi->preprocessed_local;
         folder.preprocessed_next = pn;
         folder.prep_width = di->preprocessed_width;
+        /* FLEET 034: the PER-INSTANCE AIR context, verbatim. This is what lets
+         * two instances of the same AIR carry two different cfgs in one batch. */
+        folder.ctx = di->air.ctx;
 
         /* air.eval FIRST (protocol.rs:64-81). */
         di->air.air_eval(&folder);

@@ -65,11 +65,11 @@
  *     alpha/z provenance, roll-in set-equality, multi-query) stands unchanged.
  *
  * ── SHAPE RAIL (memory safety, fail-close) ─────────────────────────────────
- * `air_eval` returns void. When the window does not match what was bound
- * (unbound module, wrong `main_width`, wrong `num_public_values`, missing
- * preprocessed window, `prep_width` under DNAC_P2C_OI_TABLE_COLS) this module
- * emits ONE unsatisfiable constraint and returns rather than reading out of
- * bounds.
+ * `air_eval` returns void. When the window does not match what was bound (NULL
+ * `folder->ctx`, an unbound state, wrong `main_width`, wrong
+ * `num_public_values`, missing preprocessed window, `prep_width` under
+ * DNAC_P2C_OI_TABLE_COLS) this module emits ONE unsatisfiable constraint and
+ * returns rather than reading out of bounds.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: Apache-2.0
@@ -88,7 +88,8 @@
 extern "C" {
 #endif
 
-/** Bind status. Any non-zero value means "not bound"; `out_air` is untouched. */
+/** Bind status. Any non-zero value means "not bound": `out_air->ctx` is set to
+ *  NULL (DISARMED) and its shape fields are left as the caller had them. */
 typedef enum {
     DNAC_FOI_FOLD_OK = 0,
     DNAC_FOI_FOLD_ERR_PARAM = -1, /**< NULL cfg / NULL out_air               */
@@ -124,21 +125,60 @@ typedef enum {
  */
 #define FOI_FOLD_FIXED_STEPS ((size_t)27)
 
+/** "No mapping for this scheduled step" (the (size_t)-1 sentinel of
+ *  fri_oi_air.c:131-135), used by `dnac_foi_fold_state_t`'s per-step maps. */
+#define DNAC_FOI_FOLD_NO_MAP ((size_t)-1)
+
 /**
- * @brief Bind `cfg` to the module and fill the AIR descriptor.
+ * @brief The cfg-derived snapshot `dnac_foi_fold_air_eval` runs on — the object
+ *        `dnac_stark_air_t::ctx` points at (FLEET 034). Mirrors `foi_sched_t`
+ *        (fri_oi_air.c:85-102).
  *
- * ⚠ CONTRACT — identical to `dnac_fair_fold_bind` (the callback signature
- * cannot carry a context; stark_constraints.h:290 is a shared surface this
- * slice does NOT change, so the binding is MODULE-STATIC):
- *   - single-thread; ONE bound cfg at a time, process-wide;
- *   - bind BEFORE `dnac_batch_verify` / `dnac_batch_prove`, do not re-bind for
- *     the duration of that call (s1b binds the PINNED cfg);
+ * PUBLIC only so the caller can OWN the storage; the fields are this module's
+ * business. Fill it ONLY through `dnac_foi_fold_bind`. A zeroed state is
+ * "unbound" and fails closed. The cfg POINTER is deliberately NOT kept — every
+ * derived quantity is copied.
+ */
+typedef struct {
+    int    bound;
+    size_t lgmh;
+    size_t num_heights;
+    size_t sched;
+    size_t num_cols;
+    size_t total_acc;
+    size_t pub_alpha;
+    size_t pub_zpz;
+    size_t pub_ro;
+    size_t pub_px;
+    size_t num_publics;
+    size_t n_lb_zero; /**< number of lb per-batch boundaries (C5 pairs)       */
+    /* Per SCHEDULED step k (< sched); every other step carries the sentinel. */
+    size_t bit[DNAC_P2C_OI_MAX_STEPS];     /**< chain step: index bit         */
+    size_t accidx[DNAC_P2C_OI_MAX_STEPS];  /**< acc step: global acc index    */
+    int    lb_zero[DNAC_P2C_OI_MAX_STEPS]; /**< lb-group per-batch boundary   */
+} dnac_foi_fold_state_t;
+
+/**
+ * @brief Bind `cfg` into `state` and fill the AIR descriptor.
+ *
+ * ⚠ CONTRACT — identical to `dnac_fair_fold_bind` (FLEET 034: the callback
+ * signature still carries no context, but `dnac_stark_folder_t` does —
+ * `folder->ctx`, copied verbatim from `dnac_stark_air_t::ctx` — so the binding
+ * is CALLER-OWNED, not module-static):
+ *   - N SIMULTANEOUS bindings are legal; two descriptors with two states may
+ *     carry two DIFFERENT cfgs of THIS AIR in the same batch;
+ *   - ⚠ LIFETIME: `state` must outlive every `air_eval` call made under this
+ *     binding, i.e. the whole `dnac_batch_verify` / `dnac_batch_prove` call;
  *   - every quantity `air_eval` needs is SNAPSHOT at bind (row counts, public
  *     offsets, the per-step chain-bit / acc-index / lb-boundary maps), so `cfg`
  *     need not outlive the call;
- *   - a REJECTED bind DISARMS any previous binding (bound is cleared on entry,
- *     FLEET 027 verifier-B H1): a caller that ignores the return code gets the
+ *   - a REJECTED bind DISARMS BOTH `state` (`bound` cleared) AND `out_air`
+ *     (`ctx` set to NULL), on entry, before any validation (FLEET 027
+ *     verifier-B H1): a caller that ignores the return code gets the
  *     unsatisfiable shape rail, never the stale cfg's constraint system.
+ *     ⚠ Clearing the state alone would NOT deliver that — see the same note in
+ *     fri_air_fold.h. The shape fields are the caller's and are NOT modified;
+ *   - determinism is unaffected: the state is a pure function of the pinned cfg.
  *
  * The cfg gates run through the SAME accessors the u64 evaluator uses
  * (fri_oi_air.c:104-188), so a cfg `dnac_foi_eval_trace` rejects is rejected
@@ -149,16 +189,20 @@ typedef enum {
  *   num_public_values = dnac_foi_num_publics(cfg)
  *   main_next         = 1  (C1b/C2b/C2d/C2e/C3f read the next row)
  *   air_eval          = dnac_foi_fold_air_eval
+ *   ctx               = state
  *
- * @return DNAC_FOI_FOLD_OK, or a negative status with `out_air` untouched.
+ * @return DNAC_FOI_FOLD_OK, or a negative status. On failure `out_air->ctx` is
+ *         NULL (disarmed) and `out_air`'s shape fields are untouched.
  */
 int dnac_foi_fold_bind(const dnac_p2c_oi_table_cfg_t *cfg,
+                       dnac_foi_fold_state_t *state,
                        dnac_stark_air_t *out_air);
 
 /**
  * @brief The fold-form eval callback. Emits the u64 evaluator's constraint set
  *        in the u64 evaluator's order (the alpha-fold is order-sensitive).
  *
+ * Reads its cfg snapshot from `folder->ctx` (a `const dnac_foi_fold_state_t *`).
  * PRECONDITION: `folder` is non-NULL (the `air_eval` contract).
  */
 void dnac_foi_fold_air_eval(dnac_stark_folder_t *folder);

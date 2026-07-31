@@ -280,6 +280,14 @@ typedef struct {
     const gold_fp2_t *preprocessed_local; /**< [prep_width] @ zeta or NULL  */
     const gold_fp2_t *preprocessed_next;  /**< [prep_width] @ g*zeta or NULL */
     size_t            prep_width;
+    /* FLEET 034 (ADDITIVE, LAST FIELD): the per-instance AIR context, copied
+     * verbatim from `dnac_stark_air_t::ctx` by every glue that builds a folder
+     * (dnac_stark_verify_constraints_nchunk, dnac_batch_verify,
+     * dnac_batch_prove). An `air_eval` that needs cfg-derived state casts this
+     * back to its own state type; an AIR with no cfg state leaves it NULL and
+     * never reads it. NOT part of any constraint — pure plumbing, so no KAT,
+     * no vector and no wire format moves. */
+    const void       *ctx;
 } dnac_stark_folder_t;
 
 /** An AIR for the constraint check: shape metadata + the eval callback. */
@@ -288,6 +296,19 @@ typedef struct {
     size_t num_public_values;   /**< air.rs:188 */
     int    main_next;           /**< 1 iff the AIR reads the next row (air.rs:122) */
     void (*air_eval)(dnac_stark_folder_t *folder);  /**< emits constraints in PINNED order */
+    /* FLEET 034 (ADDITIVE, LAST FIELD). The `air_eval` SIGNATURE is unchanged —
+     * the context travels through the folder instead. This is what makes two
+     * instances of the SAME AIR under DIFFERENT cfgs possible in one batch: the
+     * cfg-derived state is per-descriptor, not per-module.
+     *
+     * ⚠ LIFETIME. The object `ctx` points at is CALLER-OWNED and must outlive
+     * EVERY `air_eval` call made through this descriptor — i.e. the whole
+     * `dnac_batch_verify` / `dnac_batch_prove` call. Nothing here copies it.
+     *
+     * NULL is legal and means "this AIR has no cfg state"; such an eval must
+     * never dereference `folder->ctx`. An AIR that DOES need state fail-closes
+     * on `folder->ctx == NULL` (one unsatisfiable constraint), never fail-open. */
+    const void *ctx;
 } dnac_stark_air_t;
 
 /* Folder-level fold helpers (the air_eval API). Each wraps the S3 dnac_stark_fold_*

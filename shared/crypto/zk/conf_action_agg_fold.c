@@ -346,4 +346,5 @@ const dnac_stark_air_t DNAC_CONF_ACTION_AGG_FOLD_AIR = {
     CONF_AGGZK_NUM_PUBLICS,  /* 43 */
     1,                       /* main_next: C1 counter/freeze + membership chaining + N_input/N_output */
     dnac_conf_action_agg_fold_air_eval,
+    NULL, /* ctx: this AIR has no cfg state — its eval never reads folder->ctx */
 };

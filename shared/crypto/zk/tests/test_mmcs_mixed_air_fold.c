@@ -101,6 +101,9 @@ static void fexpect_reject(const char *name, const fold_input_t *in,
 
 static size_t g_p2_steps;
 static dnac_stark_air_t g_air;
+/* FLEET 034: the binding is CALLER-OWNED state now. File scope, not a local:
+ * `dnac_mmix_fold_state_t` is several KB (mmcs_mixed_air_fold.h). */
+static dnac_mmix_fold_state_t g_state;
 
 /* Fold one honest (cfg, index) opening; optionally keep the built trace. */
 static int fold_accept_case(const dnac_p2c_mmix_table_cfg_t *cfg, uint64_t index,
@@ -129,7 +132,7 @@ static int fold_accept_case(const dnac_p2c_mmix_table_cfg_t *cfg, uint64_t index
         built_free(&B);
         return 0;
     }
-    if (dnac_mmix_air_fold_bind(cfg, &g_air) != 0) {
+    if (dnac_mmix_air_fold_bind(cfg, &g_state, &g_air) != 0) {
         printf("  [accept] %-46s bind — FAIL\n", label);
         fails++;
         built_free(&B);
@@ -167,19 +170,24 @@ int main(void) {
     /* ── Gate 0: bind contract + fail-close (the cfg gates the u64 module
      * applies at its eval entry, test_mmcs_mixed_air.c:515-559) ── */
     {
-        if (dnac_mmix_air_fold_bind(NULL, &g_air) != 0)
+        if (dnac_mmix_air_fold_bind(NULL, &g_state, &g_air) != 0)
             printf("  [accept] bind(NULL cfg) rejected                        OK\n");
         else { printf("  [accept] bind(NULL cfg) rejected                        FAIL\n"); fails++; }
 
-        if (dnac_mmix_air_fold_bind(&CFG_REF, NULL) != 0)
+        if (dnac_mmix_air_fold_bind(&CFG_REF, &g_state, NULL) != 0)
             printf("  [accept] bind(NULL out_air) rejected                    OK\n");
         else { printf("  [accept] bind(NULL out_air) rejected                    FAIL\n"); fails++; }
+
+        /* FLEET 034: a NULL state is a PARAM error, not a silent no-op. */
+        if (dnac_mmix_air_fold_bind(&CFG_REF, NULL, &g_air) != 0)
+            printf("  [accept] bind(NULL state) rejected                      OK\n");
+        else { printf("  [accept] bind(NULL state) rejected                      FAIL\n"); fails++; }
 
         { /* depth != log2(max_h) */
             static const size_t w[2] = {1, 1};
             static const size_t h[2] = {8, 2};
             const dnac_p2c_mmix_table_cfg_t bad = {2, w, h, 2, 2};
-            if (dnac_mmix_air_fold_bind(&bad, &g_air) != 0 &&
+            if (dnac_mmix_air_fold_bind(&bad, &g_state, &g_air) != 0 &&
                 dnac_mmix_air_fold_control_steps(&bad) == 0)
                 printf("  [accept] bind(depth != log2(max_h)) rejected            OK\n");
             else { printf("  [accept] bind(depth != log2(max_h)) rejected            FAIL\n"); fails++; }
@@ -188,7 +196,7 @@ int main(void) {
             static const size_t w[2] = {1, 1};
             static const size_t h[2] = {8, 3};
             const dnac_p2c_mmix_table_cfg_t bad = {2, w, h, 3, 2};
-            if (dnac_mmix_air_fold_bind(&bad, &g_air) != 0)
+            if (dnac_mmix_air_fold_bind(&bad, &g_state, &g_air) != 0)
                 printf("  [accept] bind(non-pow2 height) rejected                 OK\n");
             else { printf("  [accept] bind(non-pow2 height) rejected                 FAIL\n"); fails++; }
         }
@@ -196,38 +204,60 @@ int main(void) {
             static const size_t w[2] = {0, 1};
             static const size_t h[2] = {8, 2};
             const dnac_p2c_mmix_table_cfg_t bad = {2, w, h, 3, 2};
-            if (dnac_mmix_air_fold_bind(&bad, &g_air) != 0)
+            if (dnac_mmix_air_fold_bind(&bad, &g_state, &g_air) != 0)
                 printf("  [accept] bind(width == 0) rejected                      OK\n");
             else { printf("  [accept] bind(width == 0) rejected                      FAIL\n"); fails++; }
         }
-        /* The last rejected bind must have left the module DISARMED. */
+        /* The last rejected bind must have left the state DISARMED; and the two
+         * FLEET 034 "no context" shapes (NULL ctx / never-bound state) must both
+         * fail closed with EXACTLY one unsatisfiable residual per row. */
         {
             uint64_t *zt = (uint64_t *)calloc((size_t)MMIX_WIDTH * 2, sizeof(uint64_t));
             uint64_t *zp = (uint64_t *)calloc((size_t)DNAC_P2C_MMIX_TABLE_COLS * 2,
                                               sizeof(uint64_t));
             uint64_t zpub[8] = {0, 0, 0, 0, 0, 0, 0, 0};
             if (!zt || !zp) return 2;
-            dnac_stark_air_t probe = {(size_t)MMIX_WIDTH, 8, 1,
-                                      dnac_mmix_air_fold_eval};
-            fold_input_t in = {&probe, zt, 2, (size_t)MMIX_WIDTH,
-                               zp, (size_t)DNAC_P2C_MMIX_TABLE_COLS, zpub, 8};
-            const fold_trace_t T = fold_eval_trace(&in);
-            if (T.nonzero == 2 && T.steps_row0 == 1)
-                printf("  [accept] unbound eval is unsatisfiable (fail-close)     OK\n");
-            else {
-                printf("  [accept] unbound eval is unsatisfiable (fail-close)     "
-                       "FAIL (%zu non-zero, %zu steps)\n", T.nonzero, T.steps_row0);
-                fails++;
+
+            /* N-CTX-REJECT: `g_state` is whatever the width == 0 bind above left. */
+            {
+                dnac_stark_air_t probe = {(size_t)MMIX_WIDTH, 8, 1,
+                                          dnac_mmix_air_fold_eval, &g_state};
+                fold_input_t in = {&probe, zt, 2, (size_t)MMIX_WIDTH,
+                                   zp, (size_t)DNAC_P2C_MMIX_TABLE_COLS, zpub, 8};
+                const fold_trace_t T = fold_eval_trace(&in);
+                if (g_state.bound == 0 && T.nonzero == 2 && T.steps_row0 == 1)
+                    printf("  [accept] N-CTX-REJECT: disarmed, eval unsatisfiable     OK\n");
+                else {
+                    printf("  [accept] N-CTX-REJECT: disarmed, eval unsatisfiable     "
+                           "FAIL (%zu non-zero, %zu steps)\n", T.nonzero, T.steps_row0);
+                    fails++;
+                }
+            }
+            /* N-CTX-NULL: a descriptor with no context at all. */
+            {
+                dnac_stark_air_t probe = {(size_t)MMIX_WIDTH, 8, 1,
+                                          dnac_mmix_air_fold_eval, NULL};
+                fold_input_t in = {&probe, zt, 2, (size_t)MMIX_WIDTH,
+                                   zp, (size_t)DNAC_P2C_MMIX_TABLE_COLS, zpub, 8};
+                const fold_trace_t T = fold_eval_trace(&in);
+                if (T.nonzero == 2 && T.steps_row0 == 1)
+                    printf("  [accept] N-CTX-NULL: eval unsatisfiable                 OK\n");
+                else {
+                    printf("  [accept] N-CTX-NULL: eval unsatisfiable                 "
+                           "FAIL (%zu non-zero, %zu steps)\n", T.nonzero, T.steps_row0);
+                    fails++;
+                }
             }
             free(zt);
             free(zp);
         }
-        /* Descriptor fields on a good bind. */
-        if (dnac_mmix_air_fold_bind(&CFG_REF, &g_air) == 0 &&
+        /* Descriptor fields on a good bind — `ctx` now included. */
+        if (dnac_mmix_air_fold_bind(&CFG_REF, &g_state, &g_air) == 0 &&
             g_air.main_width == (size_t)MMIX_WIDTH &&
             g_air.num_public_values == dnac_mmix_air_num_publics(&CFG_REF) &&
-            g_air.main_next == 1 && g_air.air_eval == dnac_mmix_air_fold_eval)
-            printf("  [accept] descriptor {w=%zu, pubs=%zu, next=1}              OK\n",
+            g_air.main_next == 1 && g_air.air_eval == dnac_mmix_air_fold_eval &&
+            g_air.ctx == (const void *)&g_state && g_state.bound == 1)
+            printf("  [accept] descriptor {w=%zu, pubs=%zu, next=1, ctx}         OK\n",
                    g_air.main_width, g_air.num_public_values);
         else {
             printf("  [accept] descriptor fields                              FAIL\n");
@@ -250,7 +280,7 @@ int main(void) {
     fold_accept_case(&CFG_MG, 5, "MG   {8,8,2}  d3 (2-matrix tallest)", NULL);
     fold_accept_case(&CFG_INJ2, 5, "INJ2 {8,2} w{1,6} (multi-row inject)", NULL);
 
-    if (dnac_mmix_air_fold_bind(W.cfg, &g_air) != 0) {
+    if (dnac_mmix_air_fold_bind(W.cfg, &g_state, &g_air) != 0) {
         printf("  FAIL: workhorse re-bind\n");
         return 1;
     }
@@ -424,7 +454,7 @@ int main(void) {
         built_t X;
         if (F && make_fixt(&CFG_MG, 5, F) &&
             build_trace(&X, &CFG_MG, F, F->sibs, F->root.lanes) &&
-            dnac_mmix_air_fold_bind(&CFG_MG, &g_air) == 0) {
+            dnac_mmix_air_fold_bind(&CFG_MG, &g_state, &g_air) == 0) {
             uint64_t *row = row_of(X.trace, 1); /* 2nd tallest-leaf row */
             row[mmix_perm_in_off(MMIX_PERM_WIDTH - 1)] =
                 bump(row[mmix_perm_in_off(MMIX_PERM_WIDTH - 1)]);
@@ -440,7 +470,7 @@ int main(void) {
             fails++;
         }
         free(F);
-        if (dnac_mmix_air_fold_bind(W.cfg, &g_air) != 0) {
+        if (dnac_mmix_air_fold_bind(W.cfg, &g_state, &g_air) != 0) {
             printf("  FAIL: workhorse re-bind after F-N14\n");
             return 1;
         }
@@ -482,6 +512,79 @@ int main(void) {
         free(p);
     }
 
+    /* ══ PHASE 4 — N-CTX-TWO (FLEET 034: the wall this slice removed) ══
+     * The same statement as tests/test_mmcs_air_fold.c Phase 4, on the SECOND
+     * AIR: two DIFFERENT cfgs bound into two SEPARATE caller-owned states, both
+     * live at once, each folding its own honest trace to ALL-ZERO with its OWN
+     * step count. With the pre-FLEET-034 module static, `bind(CFG_WIDE)` after
+     * `bind(CFG_REF)` left ONE cfg armed and the first descriptor evaluated the
+     * second cfg's constraint system. */
+    printf("------------------------------------------------------------\n");
+    printf("Phase 4 — N-CTX-TWO (two cfgs bound simultaneously)\n");
+    printf("------------------------------------------------------------\n");
+    {
+        /* Several KB each — file scope, per the module header's SIZE note. */
+        static dnac_mmix_fold_state_t st1, st2;
+        const size_t want1 =
+            dnac_mmix_air_fold_control_steps(&CFG_REF) + g_p2_steps;
+        const size_t want2 =
+            dnac_mmix_air_fold_control_steps(&CFG_WIDE) + g_p2_steps;
+
+        built_t B1, B2;
+        fixt_t *F = (fixt_t *)calloc(1, sizeof(fixt_t));
+        int built = 0;
+        memset(&B1, 0, sizeof(B1));
+        memset(&B2, 0, sizeof(B2));
+        if (F && make_fixt(&CFG_REF, 3, F) &&
+            build_trace(&B1, &CFG_REF, F, F->sibs, F->root.lanes) &&
+            make_fixt(&CFG_WIDE, 3, F) &&
+            build_trace(&B2, &CFG_WIDE, F, F->sibs, F->root.lanes)) {
+            built = 1;
+        }
+        free(F);
+
+        if (!built) {
+            printf("  [accept] N-CTX-TWO fixtures                             FAIL\n");
+            fails++;
+        } else if (want1 == want2 || want1 == g_p2_steps || want2 == g_p2_steps) {
+            printf("  [accept] N-CTX-TWO cfgs must differ in step count        FAIL\n");
+            fails++;
+        } else {
+            dnac_stark_air_t air1, air2;
+            memset(&st1, 0, sizeof(st1));
+            memset(&st2, 0, sizeof(st2));
+            memset(&air1, 0, sizeof(air1));
+            memset(&air2, 0, sizeof(air2));
+
+            if (dnac_mmix_air_fold_bind(&CFG_REF, &st1, &air1) != 0 ||
+                dnac_mmix_air_fold_bind(&CFG_WIDE, &st2, &air2) != 0) {
+                printf("  [accept] N-CTX-TWO double bind                          FAIL\n");
+                fails++;
+            } else if (air1.ctx == air2.ctx || air1.ctx != (const void *)&st1 ||
+                       air2.ctx != (const void *)&st2) {
+                printf("  [accept] N-CTX-TWO distinct contexts                    FAIL\n");
+                fails++;
+            } else {
+                const fold_input_t in1 = {&air1, B1.trace, B1.rows,
+                                          (size_t)MMIX_WIDTH, B1.prep,
+                                          (size_t)DNAC_P2C_MMIX_TABLE_COLS,
+                                          B1.pub, B1.npub};
+                const fold_input_t in2 = {&air2, B2.trace, B2.rows,
+                                          (size_t)MMIX_WIDTH, B2.prep,
+                                          (size_t)DNAC_P2C_MMIX_TABLE_COLS,
+                                          B2.pub, B2.npub};
+                fexpect_clean("N-CTX-TWO REF  (WIDE also bound)", &in1, want1);
+                fexpect_clean("N-CTX-TWO WIDE (REF also bound)", &in2, want2);
+                fexpect_clean("N-CTX-TWO REF again, both still bound", &in1,
+                              want1);
+                printf("  [info]   REF %zu steps vs WIDE %zu steps — distinct\n",
+                       want1, want2);
+            }
+        }
+        built_free(&B1);
+        built_free(&B2);
+    }
+
     built_free(&W);
 
     printf("------------------------------------------------------------\n");
@@ -489,7 +592,7 @@ int main(void) {
         printf("s1a MIXED MMCS FOLD: %d FAIL\n", fails);
         return 1;
     }
-    printf("s1a MIXED MMCS FOLD: 5 openings T-EQ+T-CNT + 7 bind gates +\n"
-           "  14 T-NEG (N-order included) + 2 T-TERM — PASS\n");
+    printf("s1a MIXED MMCS FOLD: 5 openings T-EQ+T-CNT + 9 bind/ctx gates +\n"
+           "  14 T-NEG (N-order included) + 2 T-TERM + 3 N-CTX-TWO — PASS\n");
     return 0;
 }

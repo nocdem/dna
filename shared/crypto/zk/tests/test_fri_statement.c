@@ -474,6 +474,15 @@
 static int g_checks = 0;
 static int g_fails = 0;
 
+/* FLEET 034: `dnac_p2_fri_statement_build_instances` now takes the caller's
+ * fold-state storage (fri_statement.h), which must outlive the `insts` it arms.
+ * These are the TEST's fixtures for it. File scope rather than automatics: the
+ * block is several KB and several call sites sit inside loops, so a stack copy
+ * per iteration buys nothing. Two of them because a few negatives build TWO
+ * descriptor sets side by side and each set must own its own snapshots. */
+static dnac_p2s_fold_states_t g_fs_a;
+static dnac_p2s_fold_states_t g_fs_b;
+
 #define CHECK(cond, ...)                                                       \
     do {                                                                       \
         g_checks++;                                                            \
@@ -1900,8 +1909,8 @@ static void t_alias_positive(const dnac_p2s_statement_t *stmt, const traces_t *T
     gold_fp_t pt[DNAC_P2S_TAIR_NUM_PUBLICS];
     size_t bad = 0;
 
-    if (dnac_p2_fri_statement_build_instances(stmt, insts, pm, pc, pf, po,
-                                              pt) != DNAC_P2S_OK) {
+    if (dnac_p2_fri_statement_build_instances(stmt, insts, &g_fs_a, pm, pc, pf,
+                                              po, pt) != DNAC_P2S_OK) {
         CHECK(0, "T-ALIAS: build_instances rejected the honest statement");
         return;
     }
@@ -2101,8 +2110,8 @@ static int p2s_prove(const dnac_p2s_statement_t *stmt, const traces_t *T,
     dnac_prover_status_t ps;
 
     *out_proof = NULL;
-    if (dnac_p2_fri_statement_build_instances(stmt, insts, pm, pc, pf, po,
-                                              pt) != DNAC_P2S_OK) {
+    if (dnac_p2_fri_statement_build_instances(stmt, insts, &g_fs_a, pm, pc, pf,
+                                              po, pt) != DNAC_P2S_OK) {
         return 0;
     }
     memset(wits, 0, sizeof(wits));
@@ -2445,7 +2454,8 @@ static void rt1_and_proof_negatives(const dnac_p2s_statement_t *stmt,
         gold_fp_t po[DNAC_P2S_OI_NUM_PUBLICS];
     gold_fp_t pt[DNAC_P2S_TAIR_NUM_PUBLICS];
         dnac_batch_verify_status_t bs;
-        CHECK(dnac_p2_fri_statement_build_instances(stmt, insts, pm, pc, pf, po,
+        CHECK(dnac_p2_fri_statement_build_instances(stmt, insts, &g_fs_a, pm,
+                                                    pc, pf, po,
                                                     pt) == DNAC_P2S_OK,
               "RT-1: build_instances rejected the honest statement");
         bs = dnac_batch_verify(insts, opened, DNAC_P2S_NUM_INSTANCES, 0, &cm,
@@ -2491,8 +2501,8 @@ static void rt1_and_proof_negatives(const dnac_p2s_statement_t *stmt,
         gold_fp_t pf[DNAC_P2S_FRI_NUM_PUBLICS];
         gold_fp_t po[DNAC_P2S_OI_NUM_PUBLICS];
     gold_fp_t pt[DNAC_P2S_TAIR_NUM_PUBLICS];
-        if (dnac_p2_fri_statement_build_instances(stmt, insts, pm, pc, pf, po,
-                                                  pt) == DNAC_P2S_OK) {
+        if (dnac_p2_fri_statement_build_instances(stmt, insts, &g_fs_a, pm, pc,
+                                                  pf, po, pt) == DNAC_P2S_OK) {
             dnac_batch_verify_status_t bs;
             CHECK(dnac_p2s_prep_cols(DNAC_P2S_INST_FRI) > 64,
                   "N-PIN2: the fri preprocessed width is no longer > 64, so "
@@ -2508,8 +2518,8 @@ static void rt1_and_proof_negatives(const dnac_p2s_statement_t *stmt,
             /* The oi table is 106 columns, so it takes the SAME capacity route
              * as fri — pinned separately because a future width change could
              * move it to the other one silently. */
-            if (dnac_p2_fri_statement_build_instances(stmt, insts, pm, pc, pf,
-                                                      po, pt) == DNAC_P2S_OK) {
+            if (dnac_p2_fri_statement_build_instances(
+                    stmt, insts, &g_fs_a, pm, pc, pf, po, pt) == DNAC_P2S_OK) {
                 CHECK(dnac_p2s_prep_cols(DNAC_P2S_INST_OI) > 64,
                       "N-PIN2: the oi preprocessed width is no longer > 64");
                 insts[DNAC_P2S_INST_OI].prep_next = 0;
@@ -2527,8 +2537,8 @@ static void rt1_and_proof_negatives(const dnac_p2s_statement_t *stmt,
              * window is silently zeroed and the AIR's gated forms then fail the
              * constraint check instead of the shape check. Both are rejects;
              * pinning which one keeps the two routes distinguishable. */
-            if (dnac_p2_fri_statement_build_instances(stmt, insts, pm, pc, pf,
-                                                      po, pt) == DNAC_P2S_OK) {
+            if (dnac_p2_fri_statement_build_instances(
+                    stmt, insts, &g_fs_a, pm, pc, pf, po, pt) == DNAC_P2S_OK) {
                 CHECK(dnac_p2s_prep_cols(DNAC_P2S_INST_MMCS) <= 64,
                       "N-PIN2: the mmcs width moved above the zero-window cap");
                 insts[DNAC_P2S_INST_MMCS].prep_next = 0;
@@ -2587,10 +2597,10 @@ static void rt1_and_proof_negatives(const dnac_p2s_statement_t *stmt,
             gold_fp_t ao[DNAC_P2S_OI_NUM_PUBLICS], bo[DNAC_P2S_OI_NUM_PUBLICS];
             gold_fp_t at[DNAC_P2S_TAIR_NUM_PUBLICS], bt[DNAC_P2S_TAIR_NUM_PUBLICS];
             int fri_moved = 0, oi_moved = 0;
-            if (dnac_p2_fri_statement_build_instances(stmt, i0, am, ac, af, ao,
-                                                      at) == DNAC_P2S_OK &&
-                dnac_p2_fri_statement_build_instances(&bad, i1, bm, bc, bf, bo,
-                                                      bt) == DNAC_P2S_OK) {
+            if (dnac_p2_fri_statement_build_instances(
+                    stmt, i0, &g_fs_a, am, ac, af, ao, at) == DNAC_P2S_OK &&
+                dnac_p2_fri_statement_build_instances(
+                    &bad, i1, &g_fs_b, bm, bc, bf, bo, bt) == DNAC_P2S_OK) {
                 for (size_t k = 0; k < DNAC_P2S_FRI_NUM_PUBLICS; k++) {
                     if (gold_fp_to_u64(af[k]) != gold_fp_to_u64(bf[k])) {
                         fri_moved = 1;
@@ -2666,11 +2676,11 @@ static void rt1_and_proof_negatives(const dnac_p2s_statement_t *stmt,
                 gold_fp_t af[DNAC_P2S_FRI_NUM_PUBLICS], bf[DNAC_P2S_FRI_NUM_PUBLICS];
                 gold_fp_t ao[DNAC_P2S_OI_NUM_PUBLICS], bo[DNAC_P2S_OI_NUM_PUBLICS];
                 gold_fp_t at[DNAC_P2S_TAIR_NUM_PUBLICS], bt[DNAC_P2S_TAIR_NUM_PUBLICS];
-                if (dnac_p2_fri_statement_build_instances(stmt, i0, am, ac, af,
-                                                          ao, at) ==
+                if (dnac_p2_fri_statement_build_instances(
+                        stmt, i0, &g_fs_a, am, ac, af, ao, at) ==
                         DNAC_P2S_OK &&
-                    dnac_p2_fri_statement_build_instances(&bad, i1, bm, bc, bf,
-                                                          bo, bt) ==
+                    dnac_p2_fri_statement_build_instances(
+                        &bad, i1, &g_fs_b, bm, bc, bf, bo, bt) ==
                         DNAC_P2S_OK) {
                     for (size_t j = 0; j < DNAC_P2S_TAIR_NUM_PUBLICS; j++) {
                         if (gold_fp_to_u64(at[j]) != gold_fp_to_u64(bt[j])) {
@@ -2738,10 +2748,10 @@ static void rt1_and_proof_negatives(const dnac_p2s_statement_t *stmt,
         int tair_moved = 0;
 
         bad.index_bits[l] ^= 1u;
-        if (dnac_p2_fri_statement_build_instances(stmt, i0, am, ac, af, ao,
-                                                  at) == DNAC_P2S_OK &&
-            dnac_p2_fri_statement_build_instances(&bad, i1, bm, bc, bf, bo,
-                                                  bt) == DNAC_P2S_OK) {
+        if (dnac_p2_fri_statement_build_instances(
+                stmt, i0, &g_fs_a, am, ac, af, ao, at) == DNAC_P2S_OK &&
+            dnac_p2_fri_statement_build_instances(
+                &bad, i1, &g_fs_b, bm, bc, bf, bo, bt) == DNAC_P2S_OK) {
             for (size_t j = 0; j < DNAC_P2S_TAIR_NUM_PUBLICS; j++) {
                 if (gold_fp_to_u64(at[j]) != gold_fp_to_u64(bt[j])) {
                     tair_moved = 1;
@@ -2771,10 +2781,10 @@ static void rt1_and_proof_negatives(const dnac_p2s_statement_t *stmt,
         dnac_p2s_status_t st;
 
         bad.tair_bits_rest[i] ^= 1u;
-        if (dnac_p2_fri_statement_build_instances(stmt, i0, am, ac, af, ao,
-                                                  at) == DNAC_P2S_OK &&
-            dnac_p2_fri_statement_build_instances(&bad, i1, bm, bc, bf, bo,
-                                                  bt) == DNAC_P2S_OK) {
+        if (dnac_p2_fri_statement_build_instances(
+                stmt, i0, &g_fs_a, am, ac, af, ao, at) == DNAC_P2S_OK &&
+            dnac_p2_fri_statement_build_instances(
+                &bad, i1, &g_fs_b, bm, bc, bf, bo, bt) == DNAC_P2S_OK) {
             for (size_t j = 0; j < DNAC_P2S_TAIR_NUM_PUBLICS; j++) {
                 if (gold_fp_to_u64(at[j]) != gold_fp_to_u64(bt[j])) {
                     tair_moved = 1;
@@ -2832,10 +2842,10 @@ static void rt1_and_proof_negatives(const dnac_p2s_statement_t *stmt,
             const size_t opx = dnac_foi_pub_px_off(dnac_p2s_oi_cfg());
             int mmix_moved = 0, oi_px_moved = 0, oi_other_moved = 0;
 
-            if (dnac_p2_fri_statement_build_instances(stmt, i0, am, ac, af, ao,
-                                                      at) == DNAC_P2S_OK &&
-                dnac_p2_fri_statement_build_instances(&bad, i1, bm, bc, bf, bo,
-                                                      bt) == DNAC_P2S_OK) {
+            if (dnac_p2_fri_statement_build_instances(
+                    stmt, i0, &g_fs_a, am, ac, af, ao, at) == DNAC_P2S_OK &&
+                dnac_p2_fri_statement_build_instances(
+                    &bad, i1, &g_fs_b, bm, bc, bf, bo, bt) == DNAC_P2S_OK) {
                 for (size_t k = 0; k < DNAC_P2S_MMIX_NUM_PUBLICS; k++) {
                     if (gold_fp_to_u64(am[k]) != gold_fp_to_u64(bm[k])) {
                         mmix_moved = 1;
@@ -2893,10 +2903,10 @@ static void rt1_and_proof_negatives(const dnac_p2s_statement_t *stmt,
             gold_fp_t at[DNAC_P2S_TAIR_NUM_PUBLICS], bt[DNAC_P2S_TAIR_NUM_PUBLICS];
             const size_t opx = dnac_foi_pub_px_off(dnac_p2s_oi_cfg());
             int oi_px_moved = 0, mmix_moved = 0;
-            if (dnac_p2_fri_statement_build_instances(stmt, i0, am, ac, af, ao,
-                                                      at) == DNAC_P2S_OK &&
-                dnac_p2_fri_statement_build_instances(&bad, i1, bm, bc, bf, bo,
-                                                      bt) == DNAC_P2S_OK) {
+            if (dnac_p2_fri_statement_build_instances(
+                    stmt, i0, &g_fs_a, am, ac, af, ao, at) == DNAC_P2S_OK &&
+                dnac_p2_fri_statement_build_instances(
+                    &bad, i1, &g_fs_b, bm, bc, bf, bo, bt) == DNAC_P2S_OK) {
                 for (size_t k = opx; k < DNAC_P2S_OI_NUM_PUBLICS; k++) {
                     if (gold_fp_to_u64(ao[k]) != gold_fp_to_u64(bo[k])) {
                         oi_px_moved = 1;
@@ -2957,16 +2967,25 @@ static void rt1_and_proof_negatives(const dnac_p2s_statement_t *stmt,
             static gold_fp_t alt_pub[256];
             const size_t anp = dnac_fair_num_publics(&ALT);
             dnac_stark_air_t alt_air;
+            /* FLEET 034: the alternative binding gets its OWN caller-owned
+             * state, so it no longer disturbs the statement's own FRI binding
+             * (with the retired module static, this bind CLOBBERED the one
+             * `build_instances` had just armed — the alt cfg leaked into the
+             * statement's instance and the negative was measuring the wrong
+             * thing). `static` because it must outlive `dnac_batch_prove`. */
+            static dnac_fair_fold_state_t alt_state;
             int ok = 1;
 
             stmt_from_traces(&astmt, &AT);
-            if (dnac_p2_fri_statement_build_instances(&astmt, insts, pm, pc, pf,
-                                                      po, pt) != DNAC_P2S_OK) {
+            if (dnac_p2_fri_statement_build_instances(
+                    &astmt, insts, &g_fs_a, pm, pc, pf, po,
+                    pt) != DNAC_P2S_OK) {
                 CHECK(0, "N-CFG: build_instances failed");
                 ok = 0;
             }
             memset(&alt_air, 0, sizeof(alt_air));
-            if (ok && dnac_fair_fold_bind(&ALT, &alt_air) !=
+            memset(&alt_state, 0, sizeof(alt_state));
+            if (ok && dnac_fair_fold_bind(&ALT, &alt_state, &alt_air) !=
                           DNAC_FAIR_FOLD_OK) {
                 CHECK(0, "N-CFG: could not bind the alternative cfg");
                 ok = 0;

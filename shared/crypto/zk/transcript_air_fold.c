@@ -33,22 +33,12 @@ static inline gold_fp2_t add(gold_fp2_t a, gold_fp2_t b) { return gold_fp2_add(a
 static inline gold_fp2_t sub(gold_fp2_t a, gold_fp2_t b) { return gold_fp2_sub(a, b); }
 static inline gold_fp2_t mul(gold_fp2_t a, gold_fp2_t b) { return gold_fp2_mul(a, b); }
 
-/* ══════════════════════════ module-static binding ════════════════════════
- * `air_eval` takes no ctx (stark_constraints.h:290), so the pinned cfg lives
- * here. Pure function of the cfg — no clock, no RNG, no wire data — so two nodes
- * binding the same cfg emit the identical constraint stream. See the header for
- * the single-threaded / bind-before-verify contract. */
-typedef struct {
-    int      bound;
-    size_t   pow_bits;
-    unsigned trailing; /**< trailing-zero run of p-1 (transcript_air.c:79-84) */
-    /* s3a: the pinned schedule. The POINTER is retained — the script and the
-     * arrays it names must outlive every eval under this binding (header). */
-    const dnac_tair_script_t *sched;
-    size_t num_publics;
-} tair_fold_state_t;
-
-static tair_fold_state_t g_tair_fold; /* zero-initialized: unbound */
+/* ═══════════════ binding — CALLER-OWNED state, no module static ═══════════
+ * FLEET 034: `air_eval`'s signature still takes no ctx, but the FOLDER carries
+ * one (`folder->ctx`), so the pinned cfg + script snapshot lives in a
+ * caller-owned `dnac_tair_fold_state_t` (header). Pure function of the cfg — no
+ * clock, no RNG, no wire data — so two nodes binding the same pair emit the
+ * identical constraint stream. See the header for the lifetime contract. */
 
 /* The field-shape precondition of the canonicality ADAPTATION
  * (transcript_air.c:74-84 verbatim): p-1 must be [ones][trailing zeros].
@@ -98,10 +88,15 @@ size_t dnac_transcript_air_fold_control_steps(const dnac_tair_config_t *cfg,
 
 int dnac_transcript_air_fold_bind(const dnac_tair_config_t *cfg,
                                   const dnac_tair_script_t *sched,
+                                  dnac_tair_fold_state_t *state,
                                   dnac_stark_air_t *out_air) {
-    /* Fail-close: a rejected bind DISARMS, so a stale cfg cannot survive it. */
-    g_tair_fold.bound = 0;
-    if (out_air == NULL) return -1;
+    /* Fail-close: ANY rejected bind DISARMS the DESCRIPTOR (`out_air->ctx =
+     * NULL`) as well as the state it was handed — see the same block in
+     * mmcs_air_fold.c for why the state alone is not enough. Only the ARMING is
+     * cleared; the shape fields are the caller's and are left untouched. */
+    if (out_air != NULL) out_air->ctx = NULL;
+    if (state != NULL) state->bound = 0;
+    if (state == NULL || out_air == NULL) return -1;
 
     size_t npub = 0;
     if (!tair_fold_resolve(cfg, sched, &npub)) return -1;
@@ -109,16 +104,17 @@ int dnac_transcript_air_fold_bind(const dnac_tair_config_t *cfg,
     unsigned trailing = 0;
     if (!tair_fold_field_shape(&trailing)) return -1;
 
-    g_tair_fold.pow_bits = cfg->pow_bits;
-    g_tair_fold.trailing = trailing;
-    g_tair_fold.sched = sched;
-    g_tair_fold.num_publics = npub;
-    g_tair_fold.bound = 1;
+    state->pow_bits = cfg->pow_bits;
+    state->trailing = trailing;
+    state->sched = sched;
+    state->num_publics = npub;
+    state->bound = 1;
 
     out_air->main_width = (size_t)TAIR_WIDTH;
     out_air->num_public_values = npub;
     out_air->main_next = 1; /* blocks F..L read the next row */
     out_air->air_eval = dnac_transcript_air_fold_eval;
+    out_air->ctx = state;
     return 0;
 }
 
@@ -127,10 +123,15 @@ int dnac_transcript_air_fold_bind(const dnac_tair_config_t *cfg,
 void dnac_transcript_air_fold_eval(dnac_stark_folder_t *f) {
     /* Shape / binding gate. `air_eval` cannot report an error, so an
      * out-of-contract call emits ONE unsatisfiable constraint rather than
-     * folding nothing (which would ACCEPT everything). */
-    if (!g_tair_fold.bound || f->trace_local == NULL || f->trace_next == NULL ||
+     * folding nothing (which would ACCEPT everything). `ctx == NULL` (no
+     * binding at all) joins the same gate — the exact analogue of the retired
+     * `!g_tair_fold.bound`. (`ST`, not `S`: block D already owns `S`.) */
+    const dnac_tair_fold_state_t *const ST =
+        (const dnac_tair_fold_state_t *)f->ctx;
+    if (ST == NULL || !ST->bound || ST->sched == NULL ||
+        f->trace_local == NULL || f->trace_next == NULL ||
         f->main_width != (size_t)TAIR_WIDTH ||
-        f->num_public_values != g_tair_fold.num_publics ||
+        f->num_public_values != ST->num_publics ||
         f->public_values == NULL || f->preprocessed_local == NULL ||
         f->prep_width < TAIR_TBL_COLS) {
         dnac_stark_folder_assert_zero(f, gold_fp2_one());
@@ -140,7 +141,7 @@ void dnac_transcript_air_fold_eval(dnac_stark_folder_t *f) {
     const gold_fp2_t *L = f->trace_local;
     const gold_fp2_t *N = f->trace_next;
     const gold_fp2_t *PL = f->preprocessed_local;
-    const dnac_tair_script_t *const SC = g_tair_fold.sched;
+    const dnac_tair_script_t *const SC = ST->sched;
 
     /* Publics are BASE field in the folder (stark_constraints.h:265-266);
      * promote in-expression, the conf_root_fold / mmcs_air_fold idiom. */
@@ -148,7 +149,7 @@ void dnac_transcript_air_fold_eval(dnac_stark_folder_t *f) {
     const gold_fp2_t one = gold_fp2_one();
     const gold_fp2_t zero = gold_fp2_zero();
     const gold_fp2_t tr = f->is_transition;
-    const unsigned trailing = g_tair_fold.trailing;
+    const unsigned trailing = ST->trailing;
 
     /* ══ Column reads (transcript_air.c:90-112) ═══════════════════════════ */
     gold_fp2_t sel[TAIR_NUM_SEL], il[TAIR_LEN_SLOTS], ol[TAIR_LEN_SLOTS];
@@ -236,7 +237,7 @@ void dnac_transcript_air_fold_eval(dnac_stark_folder_t *f) {
         dnac_stark_folder_when(f, g_sampling, mul(isz, low_sum));            /* :200 */
 
         /* PoW: the exposed low `pow_bits` of the challenge are zero (:204-205). */
-        for (size_t i = 0; i < g_tair_fold.pow_bits; i++)
+        for (size_t i = 0; i < ST->pow_bits; i++)
             dnac_stark_folder_when(f, is_pow, L[tair_bit_off(i)]);
     }
 

@@ -65,18 +65,32 @@
  *   OBL-4 (mmcs_air.h:97-104) — PIN-1 binds the SCHEDULE, not the cfg. The cfg
  *        bound here must be pinned INDEPENDENTLY of the table root.
  *
- * ── Binding contract (spec §2) ──────────────────────────────────────────────
- * `air_eval` has no ctx parameter (stark_constraints.h:290) — shared surface
- * this slice may not change — so the cfg is bound into MODULE-STATIC state:
- *   - SINGLE-THREADED; one bound cfg at a time.
- *   - Bind BEFORE `dnac_batch_verify` / `dnac_batch_prove`; do not change the
- *     cfg for the duration of that call. The bound state holds a POINTER to the
- *     caller's cfg only indirectly (the derived scalars are copied), but the
- *     caller's `cfg->widths` array is NOT retained.
+ * ── Binding contract (FLEET 034: CALLER-OWNED state, no module static) ──────
+ * `air_eval`'s SIGNATURE still carries no context, but `dnac_stark_folder_t`
+ * now does (`folder->ctx`, copied verbatim from `dnac_stark_air_t::ctx` by every
+ * glue that builds a folder). So the cfg-derived state is a CALLER-OWNED
+ * `dnac_mair_fold_state_t` handed to `dnac_mair_fold_bind`, which fills it and
+ * points the descriptor at it. There is NO module-static binding left:
+ *   - N SIMULTANEOUS bindings are legal. Two `dnac_stark_air_t` descriptors
+ *     with two different states may carry two DIFFERENT cfgs of THIS AIR in the
+ *     same batch, and each eval sees only its own state. (Before FLEET 034 the
+ *     second bind silently overwrote the first — that wall is what this
+ *     removes.)
+ *   - ⚠ LIFETIME. The state object must outlive EVERY `air_eval` call made
+ *     under that binding — i.e. the whole `dnac_batch_verify` /
+ *     `dnac_batch_prove` call. Nothing copies it. Same contract the transcript
+ *     module already states for its `sched` pointer.
  *   - Pure function of the pinned cfg — no clock, no RNG, no wire data — so two
  *     nodes binding the same cfg emit the identical constraint stream.
- *   - Unbound (or after a REJECTED bind) `air_eval` emits ONE unsatisfiable
- *     constraint. Fail-close, never fail-open.
+ *     Determinism is unaffected by the move: nothing about the derivation
+ *     changed, only where the bytes live.
+ *   - `folder->ctx == NULL`, an unbound state, or a REJECTED bind all make
+ *     `air_eval` emit ONE unsatisfiable constraint. Fail-close, never fail-open.
+ *     A rejected bind disarms BOTH the state (`bound`) and the descriptor
+ *     (`ctx = NULL`), on entry — clearing the state alone would leave a
+ *     descriptor armed by an EARLIER bind against a DIFFERENT state still live.
+ *   - The caller's `cfg->widths` array is NOT retained; every derived scalar is
+ *     copied into the state at bind time.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: Apache-2.0
@@ -124,27 +138,53 @@ extern "C" {
 size_t dnac_mmcs_air_fold_control_steps(const dnac_p2b_table_cfg_t *cfg);
 
 /**
- * @brief Bind the pinned opening shape to this module and fill the descriptor.
+ * @brief The cfg-derived snapshot `dnac_mmcs_air_fold_eval` runs on — the object
+ *        `dnac_stark_air_t::ctx` points at (FLEET 034).
+ *
+ * PUBLIC only so the caller can OWN the storage; the fields are this module's
+ * business. Fill it ONLY through `dnac_mmcs_air_fold_bind`. A zeroed state is
+ * "unbound" and fails closed.
+ *
+ * The one schedule authority is unchanged: every scalar below is read back out
+ * of the u64 module's public accessors (mmcs_air.c:118-140).
+ */
+typedef struct {
+    int    bound;
+    size_t leaf;        /**< leaf-hash rows                                  */
+    size_t depth;       /**< compress rows                                   */
+    size_t total_width; /**< Σ widths[m] — the sponge input length           */
+    size_t pub_open;    /**< first public index of the opened-rows region    */
+    size_t num_publics;
+} dnac_mair_fold_state_t;
+
+/**
+ * @brief Bind the pinned opening shape into `state` and fill the descriptor.
  *
  * @param cfg      the pinned same-height opening shape. Accepted iff the u64
  *                 module's schedule authority accepts it (see the header note).
+ * @param state    CALLER-OWNED storage for the cfg snapshot. Must outlive every
+ *                 `air_eval` call made under this binding (see the binding
+ *                 contract above). On rejection it is left UNBOUND
+ *                 (`state->bound == 0`), never partially armed.
  * @param out_air  filled on success with {MAIR_WIDTH,
- *                 dnac_mmcs_air_num_publics(cfg), main_next = 1, air_eval}.
- *                 UNTOUCHED on failure.
- * @return 0 on success, non-zero on a rejected cfg / NULL argument (a failed
- *         bind also DISARMS any previous binding).
+ *                 dnac_mmcs_air_num_publics(cfg), main_next = 1, air_eval,
+ *                 ctx = state}. On FAILURE its `ctx` is set to NULL (DISARMED)
+ *                 and its shape fields are left as the caller had them.
+ * @return 0 on success, non-zero on a rejected cfg / NULL argument.
  */
 int dnac_mmcs_air_fold_bind(const dnac_p2b_table_cfg_t *cfg,
+                            dnac_mair_fold_state_t *state,
                             dnac_stark_air_t *out_air);
 
 /**
  * @brief The fold-form eval (the `dnac_stark_air_t::air_eval` callback).
  *
- * Reads `folder->trace_local` / `trace_next` (MAIR_WIDTH each),
+ * Reads its cfg snapshot from `folder->ctx` (a `const dnac_mair_fold_state_t *`),
+ * plus `folder->trace_local` / `trace_next` (MAIR_WIDTH each),
  * `folder->preprocessed_local` / `preprocessed_next` (>= DNAC_P2B_TABLE_COLS
  * cells each — a `prep_next = 1` descriptor's shape, PIN-2) and
- * `folder->public_values`. Emits ONE unsatisfiable constraint if the module is
- * unbound or the folder shape does not match the binding.
+ * `folder->public_values`. Emits ONE unsatisfiable constraint if `ctx` is NULL,
+ * the state is unbound, or the folder shape does not match the binding.
  */
 void dnac_mmcs_air_fold_eval(dnac_stark_folder_t *folder);
 

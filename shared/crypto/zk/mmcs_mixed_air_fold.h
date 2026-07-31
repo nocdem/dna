@@ -80,13 +80,28 @@
  *        un-enforced; plus the whole OBL-1..OBL-9 ledger (mmcs_mixed_air.h:
  *        122-157), which this transcription neither discharges nor widens.
  *
- * ── Binding contract (spec §2) ──────────────────────────────────────────────
- * `air_eval` has no ctx parameter (stark_constraints.h:290), so the cfg is bound
- * into MODULE-STATIC state: SINGLE-THREADED, bound BEFORE
- * `dnac_batch_verify`/`_prove` and unchanged for that call, a pure function of
- * the pinned cfg (no clock / RNG / wire data), and unbound-or-rejected means
- * `air_eval` emits ONE unsatisfiable constraint. The cfg's `widths` / `heights`
- * arrays are NOT retained — every derived scalar is copied at bind time.
+ * ── Binding contract (FLEET 034: CALLER-OWNED state, no module static) ──────
+ * `air_eval`'s SIGNATURE still carries no context, but `dnac_stark_folder_t`
+ * does (`folder->ctx`, copied verbatim from `dnac_stark_air_t::ctx`). The cfg
+ * snapshot is therefore a CALLER-OWNED `dnac_mmix_fold_state_t` handed to
+ * `dnac_mmix_air_fold_bind`. No module-static binding remains:
+ *   - N SIMULTANEOUS bindings are legal — two descriptors with two states may
+ *     carry two DIFFERENT cfgs of THIS AIR in the same batch. (Before FLEET 034
+ *     the second bind silently overwrote the first.)
+ *   - ⚠ LIFETIME. The state must outlive every `air_eval` call made under that
+ *     binding, i.e. the whole `dnac_batch_verify` / `dnac_batch_prove` call.
+ *   - ⚠ SIZE. `dnac_mmix_fold_state_t` is several KB (the per-step maps). Heap-
+ *     or file-scope storage, not a deep-stack fixture.
+ *   - Pure function of the pinned cfg (no clock / RNG / wire data), so two nodes
+ *     binding the same cfg emit the identical constraint stream — the move
+ *     changed WHERE the bytes live, nothing about how they are derived.
+ *   - `folder->ctx == NULL`, an unbound state, or a REJECTED bind all make
+ *     `air_eval` emit ONE unsatisfiable constraint. Fail-close. A rejected bind
+ *     disarms BOTH the state (`bound`) and the descriptor (`ctx = NULL`), on
+ *     entry — see the same note in mmcs_air_fold.h for why the state alone is
+ *     not enough.
+ *   - The cfg's `widths` / `heights` arrays are NOT retained — every derived
+ *     scalar is copied at bind time.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: Apache-2.0
@@ -135,29 +150,73 @@ extern "C" {
  */
 size_t dnac_mmix_air_fold_control_steps(const dnac_p2c_mmix_table_cfg_t *cfg);
 
+/** Per-scheduled-step row class of the mixed schedule (state-internal). */
+enum {
+    DNAC_MMIXF_T_OTHER = 0, /**< compress / final / pad — no per-step absorb */
+    DNAC_MMIXF_T_LEAF,      /**< tallest-group leaf OR injecting-group leaf  */
+    DNAC_MMIXF_T_COMPRESS
+};
+
 /**
- * @brief Bind the pinned mixed-height opening shape and fill the descriptor.
+ * @brief The cfg-derived snapshot `dnac_mmix_air_fold_eval` runs on — the object
+ *        `dnac_stark_air_t::ctx` points at (FLEET 034).
+ *
+ * PUBLIC only so the caller can OWN the storage; the fields are this module's
+ * business. Fill it ONLY through `dnac_mmix_air_fold_bind`. A zeroed state is
+ * "unbound" and fails closed. Several KB — do not put it on a deep stack.
+ */
+typedef struct {
+    int    bound;
+    size_t sched;        /**< scheduled (non-padding) rows                   */
+    size_t depth;
+    size_t num_groups;
+    size_t total_opened; /**< Σ widths[m] (semantic)                         */
+    size_t pub_opened;   /**< first public index of the opened-rows region   */
+    size_t num_publics;
+    size_t salt_elems;
+    size_t num_matrices;
+    size_t widths[DNAC_P2C_MMIX_MAX_MATRICES];
+    size_t heights[DNAC_P2C_MMIX_MAX_MATRICES];
+    size_t prefix_w[DNAC_P2C_MMIX_MAX_MATRICES]; /**< per-matrix public prefix */
+    size_t g_height[DNAC_P2C_MMIX_MAX_GROUPS];
+    size_t g_lg[DNAC_P2C_MMIX_MAX_GROUPS];     /**< (inject-)leaf rows       */
+    size_t g_concat[DNAC_P2C_MMIX_MAX_GROUPS]; /**< Σ (width + salt)         */
+    /* per scheduled step */
+    unsigned char stype[DNAC_P2C_MMIX_MAX_STEPS]; /**< DNAC_MMIXF_T_*        */
+    size_t        slevel[DNAC_P2C_MMIX_MAX_STEPS];
+    size_t        sgroup[DNAC_P2C_MMIX_MAX_STEPS];
+    size_t        sblk[DNAC_P2C_MMIX_MAX_STEPS];
+} dnac_mmix_fold_state_t;
+
+/**
+ * @brief Bind the pinned mixed-height opening shape into `state` and fill the
+ *        descriptor.
  *
  * @param cfg      the pinned shape. Accepted iff the table module accepts it AND
  *                 this module's re-derived absorb schedule agrees with the table
  *                 module's accessors (see the DECLARED DUPLICATION note).
+ * @param state    CALLER-OWNED storage for the cfg snapshot; must outlive every
+ *                 `air_eval` call made under this binding. Left UNBOUND
+ *                 (`state->bound == 0`) on rejection, never partially armed.
  * @param out_air  filled on success with {MMIX_WIDTH,
- *                 dnac_mmix_air_num_publics(cfg), main_next = 1, air_eval}.
- *                 UNTOUCHED on failure.
- * @return 0 on success, non-zero on reject (a failed bind also DISARMS any
- *         previous binding).
+ *                 dnac_mmix_air_num_publics(cfg), main_next = 1, air_eval,
+ *                 ctx = state}. On FAILURE its `ctx` is set to NULL (DISARMED)
+ *                 and its shape fields are left as the caller had them.
+ * @return 0 on success, non-zero on reject.
  */
 int dnac_mmix_air_fold_bind(const dnac_p2c_mmix_table_cfg_t *cfg,
+                            dnac_mmix_fold_state_t *state,
                             dnac_stark_air_t *out_air);
 
 /**
  * @brief The fold-form eval (the `dnac_stark_air_t::air_eval` callback).
  *
- * Reads `folder->trace_local` / `trace_next` (MMIX_WIDTH each),
+ * Reads its cfg snapshot from `folder->ctx` (a `const dnac_mmix_fold_state_t *`),
+ * plus `folder->trace_local` / `trace_next` (MMIX_WIDTH each),
  * `folder->preprocessed_local` / `preprocessed_next` (>= DNAC_P2C_MMIX_TABLE_COLS
  * cells each — a `prep_next = 1` descriptor's shape, PIN-2) and
- * `folder->public_values`. Emits ONE unsatisfiable constraint if the module is
- * unbound or the folder shape does not match the binding.
+ * `folder->public_values`. Emits ONE unsatisfiable constraint if `ctx` is NULL,
+ * the state is unbound, or the folder shape does not match the binding.
  */
 void dnac_mmix_air_fold_eval(dnac_stark_folder_t *folder);
 
