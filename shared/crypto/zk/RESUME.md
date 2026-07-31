@@ -843,6 +843,80 @@ left is NOT zk work — it is design and consensus work upstream of the circuits
    mmix instance'ı bağlayabilir; `dnac_p2s_fold_states_t` Q×4+1'e büyüyecek ve
    depolama zaten çağıranda olduğu için değişiklik yalnız dizi boyutlandırma.
 
+   **MULTI-QUERY SHIPPED — OBL-P2c-2 TAHLİYE EDİLDİ (2026-07-31, FLEET 035:
+   1 executor 3 tur + verifier + zk-auditor + ORCHESTRATOR).**
+   Statement artık `1 + 4·Q` instance koşuyor (Q=2 ⇒ **9**): `idx 0 = tair`,
+   `idx 1 + 4q + slot` (slot ∈ {mmix, mmcs, fri, oi}). `DNAC_P2S_NUM_INSTANCES`
+   formülden TÜRÜYOR, elle yazılmadı; Q tavanı `(32−1)/4 = 7` derleme-zamanı
+   assert'le pinli (`BV_MAX_INSTANCES`/`BP_MAX_INSTANCES` `.c`-private olduğu
+   için header'daki 32 dürüst bir AYNA, atfıyla birlikte).
+   **Soundness kazancı:** eskiden script Q sorgu örneklerken statement yalnız
+   1'ini tüketiyordu (`tair_bits_rest` kalanı dürüst-etiketli taşıyordu), yani
+   güvenlik `lb·Q + pow` yerine `lb + pow`'a çöküyordu. Artık sorgu q'nun DÖRT
+   tüketicisi transcript'in **q'ncı** ihraç bloğundan besleniyor; `index_bits`
+   `[Q][LGMH]` oldu ve `tair_bits_rest` alanı **tamamen tüketilip SİLİNDİ**.
+   "Q DISTINCT index" = Q ayrı örnekleme POZİSYONU (değer farkı DEĞİL — native
+   `fri_verifier.c:737` değiştirmeli örneklüyor, çakışma meşru); yeniden
+   yorumlama `fri_air.h`'de yazılı ve test pinli indekslerin farklılığını da
+   raporluyor.
+   **PAYLAŞIMLI (Q boyunca alias'lı):** `alpha` (`fri_verifier.c:694`),
+   `betas[r]` (`:707`), `final_poly0` (`:710-712`) — üçü de sorgu döngüsünden
+   (`:736`) ÖNCE örnekleniyor — artı `mmix_root`/`mmcs_root` (tek ağaç, Q
+   açılım; `:743`/`:749` her q'ya aynı pointer). **PER-QUERY:** `index_bits`,
+   `ro_export` (`fri_open_input` döngü İÇİNDE, `:742`), `mmix_opened`,
+   `mmcs_opened`, `px_rest`, ve `z`.
+   **`DNAC_P2S_PREP_ROOT` 9 tablo üzerinden RE-PIN:** `2a3d33b3147d5931 /
+   cd89ac43548b337c / 79258c2d74edf477 / ce9bfc860f64c3d9` — ORCHESTRATOR
+   BAĞIMSIZ türetti, executor'ınkiyle lane-lane eşleşti. Diğer beş modül pini
+   ve tüm `P2S_*_CFG` sabitleri byte-özdeş (zk-auditor md5 ile doğruladı).
+   **O6 (2 lens + ORCHESTRATOR):** verifier — Q ayrıklık CONFIRMED, dört gizli
+   çöküş yolu (caller q'yu sabitler / instance alias / publics örtüşmesi /
+   transcript export bloklarının çakışması) ayrı ayrı kapalı. zk-auditor —
+   11 GROUNDED / 4 JUDGMENT / **0 KAFADAN**, 0 CRITICAL; N-PIN×4 dokuz tablonun
+   AYRI commit edildiğini pozitif kanıtlıyor.
+   **O6'nın çıkardığı DÖRT bulgu, hepsi dilim içinde kapatıldı:**
+   *(F1)* Pin placeholder'ken `expect_entry_reject`'in `ERR_BATCH` bacağı
+   `#if`'le kapalıydı ⇒ reddetme bacakları taşıyıcı DEĞİLDİ; ORCHESTRATOR pin'i
+   bağımsız türetip doldurdu (kontrol 550 → 620).
+   *(F2)* `expect_entry_reject` proof yokken SESSİZ dönüyordu (`g_checks`
+   artmıyor) ⇒ prover tıkanırsa sayı sessizce düşer, hata vermezdi; atlama
+   korundu, `[skip]` satırı eklendi.
+   *(F3)* **ATIF HATASI** — header prover guard'ını `batch_prover.c:22/:210/:247`
+   diye gösteriyordu; gerçek guard `:572` (`dnac_batch_prove` `:555` içinde),
+   `:210`/`:247` yardımcı fonksiyonlar. Düzeltildi.
+   *(F4, tasarım — kullanıcı kararıyla)* `zpz[Q]` bölgesi hem `z` hem `p_z`
+   tutuyordu ve HONEST LABEL 8'in gerekçesi yalnız `z`'yi kapsıyordu.
+   Denetçi gösterdi, ORCHESTRATOR kaynağında doğruladı: builder
+   `pz = cur_is_lb ? emb(px) : tfp2(a_global+3,19)` ve pinli cfg'de
+   `cur_is_lb == 0` HER YERDE (`OI_H0=5`, `OI_H1=4`, `LOG_BLOWUP=2` → lb grubu
+   yok) ⇒ `p_z` sorgu indeksinden BAĞIMSIZ ⇒ **paylaşımlı `p_z`'nin dürüst
+   tanığı VAR**. Native'de de ikisi de döngü DIŞINDA (`:209` ← `:743`, `:470`).
+   Yani per-query `p_z` gerekçesiz bir serbestlikti: her sorgu kendi claimed
+   evaluation'ını adlandırabiliyordu. **KAPATILDI:** bölge ikiye ayrıldı —
+   `pz_shared[2·ACC]` PAYLAŞIMLI, `z_pq[Q][2·ACC]` per-query. Statement 1464 B
+   → 1272 B küçüldü. `z`'nin per-query kalması ZORUNLU: builder `z = x + zoff`
+   yapıyor ve `x` indeksten türüyor, paylaşımlı `z`'nin tanığı yok.
+   ⚠ `cur_is_lb == 0` önermesi artık İKİ nedenle taşıyıcı; gelecekte bir cfg
+   lb'ye grup koyarsa `p_z = emb(p_x)` olur ve `p_x` sorgu-bağımlıdır ⇒
+   paylaşımlı bölge tanığını kaybeder. `T-CONST` bunu zaten fail-close
+   ediyor (`tests/test_fri_statement.c:1032-1033`) — mükerrer kontrol
+   eklenmedi, bağımlılık belgelendi.
+   **Testler:** N-QSEP (q=1'in ihraç bloğu bozulunca YALNIZ q=1'in dördü
+   hareket eder; kırmızıda 20 hata, iki yarısı da adıyla görünüyor) ·
+   N-QSHARED · N-QINDEP/{ro,px,pxrest,z} · **N-PZSHARED** (bir lane bozulunca
+   HER İKİ sorgunun oi'si hareket etmeli; kırmızıda 24 lane'in hepsi
+   `{oi[q0]}` verdi ve aynı enjeksiyon altında N-QINDEP/z SIFIR hata verdi ⇒
+   iki bacak bağımsız). Kontrol sayısı **353 → 696**, kaybolan yok
+   (`N-BITSREST` yerini N-QSEP'in exact-set iddiasına bıraktı).
+   **O9 ORCHESTRATOR-verified:** zk `make clean && make test` → **86 binary,
+   0 uyarı, ALL GATES GREEN, 696/0**, `dnac_batch_prove OK — 9 instances`.
+   `fri_statement`/`fri_air` **hiçbir üretim build'inde yok** (grep) →
+   konsensüs yüzeyi değişmedi, version bump YOK.
+   ▶ **KALAN SEAM'LER:** label 1 (priming transcript — ζ/z hâlâ bağsız; `z`'nin
+   per-query kalması da oraya bağlı), label 2'nin commit-round 1..R−1 yarısı,
+   label 3'ün input-batch replikasyonu (`px_rest` + opened claims), label 4
+   arity-eşitliği, label 5 oi grup-şekli.
+
 ### ⚑ CITATION BASELINE — read this before checking any Plonky3 `file:line` in this tree
 
 **The `file:line` citations throughout `shared/crypto/zk/` are against Plonky3

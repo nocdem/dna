@@ -10,30 +10,84 @@
  * verification shape, and one pinned cfg per participating AIR. The entry only
  * ever CONSTRUCTS and REJECTS — it introduces no constraint and no column.
  *
- * ── FIVE instances (s3b — the composition map is complete) ───────────────────
- *   idx 0  mmix  mixed-height input-batch MMCS verify   (inner input batch 0)
- *   idx 1  mmcs  same-height binary MMCS verify         (inner commit round 0)
- *   idx 2  fri   the fold-walk control AIR
- *   idx 3  oi    the reduced-opening accumulation AIR   (open_input)
- *   idx 4  tair  the DuplexChallenger control AIR       (the Fiat-Shamir tail)
- * The instance ORDER is part of the interface: the pinned preprocessed root
- * below is a commitment over the five tables IN THIS ORDER, so the entry
- * rejects any other `prep_matrix_to_instance`.
+ * ── 1 + 4*Q instances (the MULTI-QUERY slice — OBL-P2c-2 discharged) ─────────
+ *   idx 0                tair  the DuplexChallenger control AIR (the F-S tail)
+ *   idx 1 + 4q + 0       mmix  mixed-height input-batch MMCS verify, QUERY q
+ *   idx 1 + 4q + 1       mmcs  same-height binary MMCS verify (round 0), q
+ *   idx 1 + 4q + 2       fri   the fold-walk control AIR,               q
+ *   idx 1 + 4q + 3       oi    the reduced-opening accumulation AIR,    q
+ * i.e. `DNAC_P2S_INST(q, DNAC_P2S_SLOT_*)`, with q < DNAC_P2S_NUM_QUERIES.
  *
- * ── WHAT s3b CLOSES: the challenge <-> Fiat-Shamir transcript seam ───────────
- * s1c closed ro_export; s2 closed the main batch's p_x; this closes the last
- * one the earlier slices declared open by name: alpha, the betas and the query
- * INDEX were plain statement inputs, unbound to any transcript. They are now BY
+ * ⚠ THE INSTANCE ORDER IS PART OF THE INTERFACE. The pinned preprocessed root
+ * below is a commitment over the tables IN THIS ORDER, so the entry rejects any
+ * other `prep_matrix_to_instance`. WHY this order, and not the s3b order with
+ * the extra queries appended:
+ *   - the transcript is the ONE SHARED producer and every query's four
+ *     consumers read from it. At index 0 its position is INDEPENDENT of Q, so
+ *     raising Q APPENDS instances instead of renumbering the producer (in the
+ *     s3b order, tair sat at 4 and would have had to move to 4*Q).
+ *   - a query's four consumers are CONTIGUOUS, so "the instances of query q" is
+ *     one arithmetic expression and every per-query walk — in the entry, in the
+ *     prep-table generator and in the gate — is a single nested loop rather
+ *     than a lookup table.
+ *   - inside a query the s1b..s3b slot order (mmix, mmcs, fri, oi) is kept, so
+ *     the per-slot cfg / table / publics code is unchanged apart from its index.
+ *
+ * ⚠ HONEST NOTE — the Q copies of a slot's preprocessed table are BYTE-
+ * IDENTICAL. The pinned cfgs are per-SLOT, not per-query (a table encodes the
+ * AIR's SCHEDULE, and every query runs the same schedule; `num_queries` is a
+ * fail-close sanity rail that never enters a table — fri_air_table.h:215-217,
+ * fri_oi_air_table.h:225-226). So the composed root commits Q copies of each of
+ * the four, which is redundancy, not a defect: what differs per query is the
+ * MAIN trace and the PUBLICS, and those are what the aliases below partition.
+ *
+ * ── WHAT THE MULTI-QUERY SLICE CLOSES: OBL-P2c-2 (fri_air.h:163-169) ─────────
+ * Until now the statement consumed exactly ONE of the Q query indices the
+ * pinned script samples; the rest were the honest `tair_bits_rest` input with no
+ * consumer. Q copies of one query is worth `lb + pow` bits of soundness, not
+ * `lb*Q + pow`. Now every query has its own four instances, and the split
+ * between what is SHARED and what is PER-QUERY is the native's own:
+ *
+ *   SHARED (sampled/observed ONCE, OUTSIDE the per-query loop at
+ *   fri_verifier.c:736) — ONE statement field, aliased into all Q consumers:
+ *     oi[q].alpha     := tair_payload[first two non-PoW pops]        (:694)
+ *     fri[q].betas[r] := tair_payload[the round-r pop pair]          (:707)
+ *     fri[q].final    := final_poly0  (observed once at :710-713; a single fp2
+ *                        because log_final_poly_len == 0 is pinned)
+ *     oi[q].p_z       := pz_shared    (the CLAIMED EVALUATIONS: :470 reads them
+ *                        through `commitments`, which :743 passes unchanged on
+ *                        every iteration of the query loop)
+ *     mmix[q].root / mmcs[q].root := the ONE commitment each
+ *
+ *   PER-QUERY (produced INSIDE that loop) — one field PER QUERY, never aliased
+ *   across q, because aliasing them is exactly the collapse OBL-P2c-2 forbids:
+ *     index_bits[q]   the q-th index, and it is the tair instance's OWN q-th
+ *                     exported bit block (:737 samples a FRESH index per query)
+ *     ro_export[q]    the q-th `fri_open_input` result (:742), which is where
+ *                     fri[q].f_init and its roll-ins come from
+ *     mmix_opened[q] / mmcs_opened[q]   the rows opened AT the q-th index
+ *     px_rest[q]      the q-th query's remaining opened values (:471 reads p_x
+ *                     out of `qp->input_proof`, which IS the q-th query proof)
+ *     z_pq[q]         the q-th query's opening points — HONEST LABEL 8: the
+ *                     native's z does NOT move with q either, this one does
+ *                     only because the shipped honest-trace builder ties z to x
+ *
+ * ⚠ "Q DISTINCT indices" is about POSITION, not VALUE. The native samples
+ * freshly per query (:737) and two samples may legitimately land on the same
+ * index; what must not happen is Q consumers all reading the transcript's q = 0
+ * export block. That is what the per-query alias establishes by construction.
+ * (The pinned script is a fixed pin, so its Q indices are constants of this
+ * composition — the gate reports them and requires them to differ, which is an
+ * assertion about THIS pin, not a probabilistic claim.)
+ *
+ * ── WHAT s3b CLOSED: the challenge <-> Fiat-Shamir transcript seam ───────────
+ * s1c closed ro_export; s2 closed the main batch's p_x; s3b closed the last one
+ * the earlier slices declared open by name: alpha, the betas and the query
+ * INDEX were plain statement inputs, unbound to any transcript. They are BY
  * CONSTRUCTION the transcript instance's own publics — the statement carries ONE
  * `tair_payload` region (the observed/popped lane of every script op) and the
- * entry aliases it into both consumers,
- *   oi.alpha     := payload[first two non-PoW pops]   (fri_verifier.c:694)
- *   fri.betas[r] := payload[the round-r pop pair]     (fri_verifier.c:707)
- * while the ONE `index_bits` region is written into the tair instance's
- * exported-bit block for query 0 AS WELL AS into the four consumers' bit /
- * direction regions, so the index the transcript PRODUCES and the index the
- * four AIRs CONSUME are the same lanes. The `betas` and `alpha` statement
- * fields are GONE; the struct shrank again.
+ * entry aliases it into its consumers. The `betas` and `alpha` statement fields
+ * are GONE; the struct shrank.
  *
  * ── WHAT s1c CLOSES: the ro-export <-> f_init / roll-in seam ─────────────────
  * s1b had no oi instance, so the fri walk's seed and roll-in publics were plain
@@ -64,9 +118,10 @@
  *      labelled") — so `zeta` / `z` are still plain statement inputs, popped by
  *      a transcript this instance does not model. Prepending the priming ops is
  *      a later slice; alpha, the betas and the query index ARE bound here.
- *   2. Commit rounds 1..R-1 are NOT replicated (one mmcs instance, round 0
- *      only), and only ONE query is CONSUMED (OBL-P2c-2) even though the script
- *      samples Q of them — hence `tair_bits_rest`. Both are later slices.
+ *   2. Commit rounds 1..R-1 are NOT replicated (one mmcs instance per query,
+ *      round 0 only). ⚠ The other half of this label — "only ONE query is
+ *      CONSUMED (OBL-P2c-2)" — is CLOSED by the multi-query slice: all Q are
+ *      consumed now and `tair_bits_rest` is gone. Round replication remains.
  *   3. The `p_x` <-> MMCS opened-row seam is PARTIALLY closed (s2). `p_x` is no
  *      longer free oi witness — C3g binds every acc row's `p_x` to its own
  *      public (fri_oi_air.h) — and this entry sources the MAIN input batch's
@@ -106,6 +161,51 @@
  *      checks it against its own replay of that same challenger. The Rust-oracle
  *      pinning for the transcript lives in `tests/test_transcript_air.c`'s 8
  *      dump-transcript-trace scenarios, not here.
+ *   8. THE OPENING POINT `z` IS STILL PER-QUERY. WHAT ITS CLAIMED EVALUATION
+ *      `p_z` USED TO BE IS FIXED.
+ *
+ *      In the native BOTH halves of an acc row's opening claim are query-
+ *      invariant: `fri_open_input` receives `commitments` as an argument and the
+ *      query loop passes the SAME pointer on every iteration (fri_verifier.c
+ *      :743), so `cw = &commitments[batch]` (:209), `mo = &cw->matrices[m]`
+ *      (:401) and `pt = &mo->points[point]` (:437) reach the same objects for
+ *      every q — and from `pt` come BOTH `pt->point` (the opening point z, used
+ *      at :464) and `pt->claimed_evals[j]` (p_z, :470). Only the OTHER two
+ *      quantities move: `x` is derived from `index` (:425-430) and `p_at_x`
+ *      comes from `qp->input_proof` (:471), i.e. from the q-th query proof.
+ *
+ *      ⚠ WHAT THE FIRST VERSION OF THIS LABEL MISSED. It kept ONE region,
+ *      `zpz[q]`, carrying z at 4a and p_z at 4a+2, and justified the whole
+ *      region with the builder argument in (b) below. That argument is about
+ *      `z` ALONE. `p_z` was per-query as collateral damage, with NO reason
+ *      given — an unjustified freedom that let two queries name two different
+ *      claimed evaluations for the same opening. The region is now SPLIT:
+ *        `pz_shared[2*TOTAL_ACC]` — ONE region, aliased into every oi instance,
+ *                                   which is what the native says it is;
+ *        `z_pq[q][2*TOTAL_ACC]`   — still per-query, for the reason below.
+ *      Gate: N-PZSHARED (perturbing a `pz_shared` lane must move EVERY query's
+ *      oi instance) and N-QINDEP/z (perturbing `z_pq[q]` must move ONLY q's).
+ *
+ *      WHY `z` STAYS PER-QUERY — the (b) argument, which is valid for z only:
+ *      the shipped oi honest-trace builder derives z AS x + zoff
+ *      (tests/test_fri_oi_air.c:262-263, chosen so that z - x is a fixed
+ *      invertible fixture), and x IS query-dependent, so with two different
+ *      indices it emits two different z. A shared z region would have no honest
+ *      witness, and forcing one means a builder hook — a change to a file this
+ *      slice does not own. `p_z` has no such obstacle: the same builder emits
+ *      `pz = cur_is_lb ? emb(px) : tfp2(a_global + 3, 19)` (:265-266) and the
+ *      pinned cfg takes the second branch on every row (heights {5, 4} vs
+ *      log_blowup 2), so p_z is a pure function of the schedule ordinal and a
+ *      shared region HAS a witness — which RT-1 now demonstrates by construction.
+ *
+ *      WHAT REMAINS OPEN, by name: a per-query z still admits a statement whose
+ *      two queries name two DIFFERENT opening points. It costs nothing that was
+ *      previously held — z / zeta were ALREADY unbound plain statement inputs
+ *      (label 1: the priming ops are not in the pinned script, so nothing
+ *      recomputes zeta), so a shared z would be one unbound value instead of Q,
+ *      not a binding. Closing it is the PRIMING-TRANSCRIPT slice's job (label 1),
+ *      where zeta becomes a transcript public and the alias becomes available;
+ *      it is NOT achievable by re-shaping this field alone.
  *
  * ── The pinned cfg set (DERIVED from a real inner proof, then FROZEN) ────────
  * Source: scenario `prep_pair` of `tools/vectors/batch_proof.json` — the
@@ -206,20 +306,53 @@
 extern "C" {
 #endif
 
-/* ── Instance indices (the ORDER the pinned prep root commits to) ─────────── */
-#define DNAC_P2S_INST_MMIX ((uint32_t)0)
-#define DNAC_P2S_INST_MMCS ((uint32_t)1)
-#define DNAC_P2S_INST_FRI  ((uint32_t)2)
-#define DNAC_P2S_INST_OI   ((uint32_t)3)
-#define DNAC_P2S_INST_TAIR ((uint32_t)4)
-#define DNAC_P2S_NUM_INSTANCES ((uint32_t)5)
-
 /* ── The inner FRI shape (see the header derivation) ─────────────────────── */
 #define DNAC_P2S_LGMH           ((size_t)5)
 #define DNAC_P2S_LOG_BLOWUP     ((size_t)2)
 #define DNAC_P2S_LFPL           ((size_t)0)
 #define DNAC_P2S_MAX_LOG_ARITY   ((size_t)1)
 #define DNAC_P2S_NUM_QUERIES     ((size_t)2)
+
+/* ── Instance indices (the ORDER the pinned prep root commits to) ─────────────
+ * See the file header's instance map for why the transcript sits at 0 and each
+ * query's four consumers are contiguous. Nothing below is a written-out number:
+ * the instance COUNT is derived from the slot count and Q. */
+
+/** Slot of a consumer inside its query's block. */
+#define DNAC_P2S_SLOT_MMIX ((uint32_t)0)
+#define DNAC_P2S_SLOT_MMCS ((uint32_t)1)
+#define DNAC_P2S_SLOT_FRI  ((uint32_t)2)
+#define DNAC_P2S_SLOT_OI   ((uint32_t)3)
+/** Consumers per query. Also the value `dnac_p2s_inst_slot` returns for the
+ *  transcript instance and for an out-of-range index (i.e. "no slot"). */
+#define DNAC_P2S_SLOTS     ((uint32_t)4)
+
+/** The ONE shared producer. Q-independent by construction (see the map). */
+#define DNAC_P2S_INST_TAIR ((uint32_t)0)
+
+/** Instance index of query `q`'s consumer in slot `slot`. */
+#define DNAC_P2S_INST(q, slot)                                                \
+    ((uint32_t)(1u + DNAC_P2S_SLOTS * (uint32_t)(q) + (uint32_t)(slot)))
+
+/** DERIVED — 1 producer + 4 consumers per query. Never written as a number. */
+#define DNAC_P2S_NUM_INSTANCES                                                \
+    ((uint32_t)(1u + DNAC_P2S_SLOTS * (uint32_t)DNAC_P2S_NUM_QUERIES))
+
+/** MIRROR of the batch stack's instance cap, with its citation: `dnac_batch_
+ *  verify` rejects `num_instances > BV_MAX_INSTANCES` (batch_verify.c:20 and
+ *  :86) and `dnac_batch_prove` (batch_prover.c:555) rejects
+ *  `> BP_MAX_INSTANCES` at batch_prover.c:572 (the constant is :22; the two
+ *  helpers `dnac_batch_prove_num_draws` :210 and `_num_salt_draws` :247 carry
+ *  the same bound but are NOT the prove entry — FLEET 035 verifier, citation
+ *  corrected); both are 32 and NEITHER is exported by a header, so this is an
+ *  honest duplicate rather than a shared constant. It exists only to DERIVE the
+ *  Q ceiling below; the compile-time assert in fri_statement.c is what turns a
+ *  Q past that ceiling into a build failure instead of a runtime reject. */
+#define DNAC_P2S_BATCH_MAX_INSTANCES ((uint32_t)32)
+
+/** The largest Q this composition shape can carry: (cap - 1 producer) / 4. */
+#define DNAC_P2S_MAX_QUERIES                                                  \
+    ((size_t)((DNAC_P2S_BATCH_MAX_INSTANCES - 1u) / DNAC_P2S_SLOTS))
 
 /** The grinding widths of the OUTER FRI params. SINGLE-SOURCED here because
  *  three consumers must agree on them: `dnac_p2s_fri_params()`, the transcript
@@ -343,13 +476,11 @@ extern "C" {
      DNAC_P2S_TAIR_POW_OPS(DNAC_P2S_QUERY_POW_BITS) + DNAC_P2S_NUM_QUERIES)
 
 /** Exported index bits: one query sample per query, each exporting lgmh lanes
- *  (transcript_air_table.c:324). */
+ *  (transcript_air_table.c:324). EVERY one of them now has a consumer — query
+ *  q's block IS `index_bits[q]` — so the `tair_bits_rest` field and its
+ *  DNAC_P2S_TAIR_BITS_REST length that stood for the unconsumed remainder are
+ *  GONE (multi-query slice; OBL-P2c-2). */
 #define DNAC_P2S_TAIR_TOTAL_BITS (DNAC_P2S_NUM_QUERIES * DNAC_P2S_LGMH)
-
-/** The bit lanes of queries 1..Q-1 — the ones NO other instance consumes in
- *  this slice (only query 0's index is modelled, OBL-P2c-2). Honest statement
- *  input until the multi-query slice; see `tair_bits_rest`. */
-#define DNAC_P2S_TAIR_BITS_REST (DNAC_P2S_TAIR_TOTAL_BITS - DNAC_P2S_LGMH)
 
 /** `dnac_tair_num_publics` = payload ‖ exported bits. Compared against the
  *  module accessor by the entry. */
@@ -378,8 +509,23 @@ extern "C" {
     (DNAC_P2S_LGMH + 2 + 4 * DNAC_P2S_OI_TOTAL_ACC +                          \
      2 * DNAC_P2S_OI_NUM_HEIGHTS + DNAC_P2S_OI_TOTAL_ACC)
 
-/** Widest of the five, for callers sizing one scratch buffer. */
+/** Widest of the five AIRs, for callers sizing one scratch buffer. */
 #define DNAC_P2S_MAX_NUM_PUBLICS DNAC_P2S_OI_NUM_PUBLICS
+
+/* ── The FLAT publics block (multi-query slice) ───────────────────────────────
+ * s3b handed `build_instances` five separate `gold_fp_t *`, one per AIR. With
+ * 1 + 4*Q instances that parameter list is neither writable nor Q-independent,
+ * so the instances' publics now live CONTIGUOUSLY in ONE caller-owned block, in
+ * INSTANCE ORDER: the tair region first, then query 0's four, then query 1's,
+ * and so on. `dnac_p2s_pub_off` is the ONLY thing that knows the layout, so a
+ * caller never computes an offset and the entry never hard-codes one. */
+#define DNAC_P2S_QUERY_PUBLICS                                                \
+    (DNAC_P2S_MMIX_NUM_PUBLICS + DNAC_P2S_MMCS_NUM_PUBLICS +                  \
+     DNAC_P2S_FRI_NUM_PUBLICS + DNAC_P2S_OI_NUM_PUBLICS)
+
+#define DNAC_P2S_TOTAL_PUBLICS                                                \
+    (DNAC_P2S_TAIR_NUM_PUBLICS +                                              \
+     DNAC_P2S_NUM_QUERIES * DNAC_P2S_QUERY_PUBLICS)
 
 /* ── Max SYMBOLIC constraint degree over the five fold AIRs ─────────────────
  * Not computable at runtime (C has no symbolic builder), so it is a CITED
@@ -411,32 +557,37 @@ extern "C" {
  * four AIRs vacuously. Upstream has no such hole: its preprocessed commitment
  * lives verifier-side in `CommonData` (full argument at mmcs_air_table.h:73-100).
  *
- * ⚠ ONE pin, not five — a CORRECTED DEVIATION from spec §2/§3.2, which asked
- * for one constant per table. `batch_prover.c:786-822` commits ALL preprocessed
- * matrices in ONE `dnac_p2_mmcs_commit_mixed` call, so a batched proof carries a
- * SINGLE 4-lane preprocessed root
+ * ⚠ ONE pin, not one per table — a CORRECTED DEVIATION from spec §2/§3.2, which
+ * asked for one constant per table. `batch_prover.c:786-822` commits ALL
+ * preprocessed matrices in ONE `dnac_p2_mmcs_commit_mixed` call, so a batched
+ * proof carries a SINGLE 4-lane preprocessed root
  * (`dnac_batch_vcommits_t::preprocessed_commit`) and no per-table root exists
- * anywhere in it. Five constants would have had nothing to compare against.
- * The composed root binds all five tables jointly — tampering ANY cell of ANY
+ * anywhere in it. Per-table constants would have had nothing to compare against.
+ * The composed root binds all the tables jointly — tampering ANY cell of ANY
  * of them moves it — which is the property the pin needs; what it cannot do is
  * NAME the guilty table. The per-table discrimination spec §4's N-PIN×N asks
  * for therefore lives in the test, which tampers one table at a time and knows
  * which one it touched.
  *
- * ⚠ RE-PINNED AT s3b. Adding the TRANSCRIPT table as a fifth committed matrix
- * CHANGED the composed root; the s1c/s2 value is void and the constant below is
- * back at its {0,0,0,0} PLACEHOLDER. While it is, the comparator rejects
- * everything (see DNAC_P2S_PREP_ROOT_UNFILLED) and the pin-dependent checks in
- * tests/test_fri_statement.c assert exactly that; `--print-roots` refills it and
- * T-PINKAT then recomputes the root through the real pipeline and compares.
+ * ⚠ RE-PINNED AT THE MULTI-QUERY SLICE. The instance set went from 5 matrices
+ * to 1 + 4*Q in a NEW order (transcript first, then each query's four), and both
+ * the count and the order feed the mixed commit — so the s3b value is void and
+ * the constant below is back at its {0,0,0,0} PLACEHOLDER. While it is, the
+ * comparator rejects everything (see DNAC_P2S_PREP_ROOT_UNFILLED) and the
+ * pin-dependent checks in tests/test_fri_statement.c assert exactly that;
+ * `--print-roots` refills it and T-PINKAT then recomputes the root through the
+ * real pipeline and compares.
  *
  * DERIVATION (exactly the pipeline batch_prover.c:786-822 runs, is_zk = 0):
- *   for i in (mmix, mmcs, fri, oi, tair):             // prep_map order
- *       table_i = <table module>_generate(PINNED CFG_i)      // rows_i x COLS_i
+ *   for i in 0 .. DNAC_P2S_NUM_INSTANCES-1:           // prep_map order
+ *       table_i = <table module for the slot of i>_generate(PINNED CFG)
  *       lde_i   = dnac_prover_coset_lde_bitrev(table_i, rows_i, COLS_i,
  *                     DNAC_P2S_LOG_BLOWUP, GOLDILOCKS_GENERATOR, ·)
- *   root = dnac_p2_mmcs_commit_mixed({lde_0..lde_4}, {COLS_i},
- *                                    {rows_i << lb}, 5, ·, NULL)
+ *   root = dnac_p2_mmcs_commit_mixed({lde_i}, {COLS_i}, {rows_i << lb},
+ *                                    DNAC_P2S_NUM_INSTANCES, ·, NULL)
+ * The Q copies of a slot's table are byte-identical (see the file header's
+ * honest note); the root still MOVES when any single cell of any single copy is
+ * tampered, which is what the pin needs and what N-PIN asserts per instance.
  * `dnac_p2_fri_statement_prep_tables` + the test's commit half ARE that
  * pipeline, so the pin is filled and re-checked by running code, never
  * transcribed by hand.
@@ -449,10 +600,10 @@ extern "C" {
  * salt_elems = 0 is MANDATORY: salted + preprocessed is fail-closed at
  * batch_prover.c:604-612 (the guard inside `if (salt_elems > 0)`; citation
  * corrected — FLEET 028 verifier L3). */
-#define DNAC_P2S_PREP_ROOT_LANE0 UINT64_C(0x0d61c566c046f50b)
-#define DNAC_P2S_PREP_ROOT_LANE1 UINT64_C(0x6c028d283562f043)
-#define DNAC_P2S_PREP_ROOT_LANE2 UINT64_C(0x5fc153486979664d)
-#define DNAC_P2S_PREP_ROOT_LANE3 UINT64_C(0xba116b402a5fe146)
+#define DNAC_P2S_PREP_ROOT_LANE0 UINT64_C(0x2a3d33b3147d5931)
+#define DNAC_P2S_PREP_ROOT_LANE1 UINT64_C(0xcd89ac43548b337c)
+#define DNAC_P2S_PREP_ROOT_LANE2 UINT64_C(0x79258c2d74edf477)
+#define DNAC_P2S_PREP_ROOT_LANE3 UINT64_C(0xce9bfc860f64c3d9)
 
 #define DNAC_P2S_PREP_ROOT                                                    \
     {                                                                         \
@@ -477,8 +628,8 @@ typedef enum {
                                       index bit outside {0,1}                */
     DNAC_P2S_ERR_PREP_ROOT = -3, /**< the pin comparison failed (incl. the
                                       unfilled-placeholder reject) or the
-                                      preprocessed matrix map is not
-                                      exactly {mmix, mmcs, fri, oi}          */
+                                      preprocessed matrix map is not the
+                                      identity over DNAC_P2S_NUM_INSTANCES   */
     DNAC_P2S_ERR_CFG = -4,       /**< a fold bind rejected the pinned cfg, a
                                       module accessor disagreed with the
                                       pinned public/geometry constants, or the
@@ -499,69 +650,117 @@ typedef enum {
  * class. fp2 quantities are TWO consecutive lanes [c0, c1], c0 first, the
  * convention the fold modules use throughout. */
 typedef struct {
-    /** The ONE shared query index, LSB-first: bit l is index_bits[l].
-     *  Every instance's direction/bit publics are ALIASES of this (step 6), so
-     *  their agreement is true by construction rather than by a check. */
-    uint64_t index_bits[DNAC_P2S_LGMH];
+    /** PER-QUERY. Query q's index, LSB-first: bit l is index_bits[q][l]. Every
+     *  instance of query q takes its direction/bit publics as ALIASES of THIS
+     *  row (step 6), and the row is ALSO the transcript instance's own q-th
+     *  exported bit block — so "the index the transcript produced" and "the
+     *  index query q's four AIRs walk" are the same lanes by construction.
+     *
+     *  ⚠ NEVER aliased ACROSS q. Q consumers reading row 0 is exactly the
+     *  soundness collapse OBL-P2c-2 names (fri_air.h): the native samples a
+     *  FRESH index per query at fri_verifier.c:737. */
+    uint64_t index_bits[DNAC_P2S_NUM_QUERIES][DNAC_P2S_LGMH];
 
-    /** s3b — the transcript instance's PAYLOAD publics, one lane per script op
-     *  in script order: the OBSERVED value on an observe row, the POPPED
+    /** SHARED — the transcript instance's PAYLOAD publics, one lane per script
+     *  op in script order: the OBSERVED value on an observe row, the POPPED
      *  challenge on a sampling row (transcript_air_table.h "PUBLIC-VALUE
      *  LAYOUT"). This is the SINGLE SOURCE of every Fiat-Shamir value the other
-     *  instances consume — see the header's s3b block:
-     *      fri.betas[r] := payload[the (2 + 2r)-th / (3 + 2r)-th non-PoW pop]
-     *      oi.alpha     := payload[the first two non-PoW pops]
+     *  instances consume, and every consumer of every query reads the SAME
+     *  lanes — which is correct, because the native samples them ONCE, outside
+     *  the query loop:
+     *      fri[q].betas[r] := payload[the (2+2r)-th/(3+2r)-th non-PoW pop] :707
+     *      oi[q].alpha     := payload[the first two non-PoW pops]          :694
      *  so the `betas` and `alpha` statement fields of s1b/s1c are GONE, exactly
      *  as `f_init` / `rollins` went at s1c. There is no second field for a
-     *  challenge to disagree with. */
-    uint64_t tair_payload[DNAC_P2S_TAIR_NUM_OPS];
-    /** s3b — the exported index bits of queries 1..Q-1, in script order.
+     *  challenge to disagree with — and no per-query copy either, so two
+     *  queries cannot be folded with two different betas.
      *
-     *  ⚠ HONEST LABEL. Query 0's bits are NOT here: they are `index_bits`
-     *  above, which the entry writes into BOTH the tair instance's exported-bit
-     *  region and the four consumers' bit/direction regions — that alias is the
-     *  seam this slice closes. The remaining queries have no consumer yet (only
-     *  ONE query is modelled, OBL-P2c-2), so their lanes are a plain statement
-     *  input until the multi-query slice replicates the consumers. */
-    uint64_t tair_bits_rest[DNAC_P2S_TAIR_BITS_REST];
+     *  ⚠ The exported index bits of the tair instance are NOT here: they are
+     *  `index_bits` above. `tair_bits_rest`, which held the queries no consumer
+     *  modelled, is GONE — all Q are consumed now. */
+    uint64_t tair_payload[DNAC_P2S_TAIR_NUM_OPS];
 
     /* fri regions (fri_air.h public layout).
-     * ⚠ `f_init`, `rollins` (s1c) and now `betas` (s3b) are NOT fields — they
-     * are DERIVED from `ro_export` / `tair_payload`. Adding any of them back
+     * ⚠ `f_init`, `rollins` (s1c) and `betas` (s3b) are NOT fields — they are
+     * DERIVED from `ro_export[q]` / `tair_payload`. Adding any of them back
      * would re-open the very disagreement those slices removed. */
-    uint64_t final_poly0[2];               /**< the walk's terminal, fp2   */
+    /** SHARED — the walk's terminal, fp2. A single fp2 because
+     *  log_final_poly_len == 0 is pinned (fri_air.h:105-106), and SHARED across
+     *  q because the native observes the final poly once, before the query loop
+     *  (fri_verifier.c:710-713). */
+    uint64_t final_poly0[2];
+
+    /** SHARED — the CLAIMED EVALUATION p_z of each acc row, in the SAME
+     *  SCHEDULE order as `z_pq`: row a is the fp2 at 2*a, 2*a + 1. ONE region,
+     *  aliased into every query's oi instance — the `ro_export` / `tair_payload`
+     *  pattern, so two queries cannot name two different claimed evaluations
+     *  for the same opening.
+     *
+     *  Native: `p_at_z = pt->claimed_evals[j]` (fri_verifier.c:470) where `pt`
+     *  reaches back to `commitments[batch]` (:401 `mo = &cw->matrices[m]`, :437
+     *  `pt = &mo->points[point]`, :209 `cw = &commitments[batch]`), and
+     *  `commitments` is the SAME pointer on every iteration of the query loop
+     *  (:743). Its partner `p_at_x` (:471) comes from `qp->input_proof` and IS
+     *  per-query — that one is `mmix_opened[q]` / `px_rest[q]`.
+     *
+     *  ⚠ THE HONEST WITNESS FOR A SHARED REGION EXISTS ONLY WHILE NO OI HEIGHT
+     *  GROUP SITS AT log_blowup. The shipped builder emits
+     *  `pz = cur_is_lb ? emb(px) : tfp2(a_global + 3, 19)`
+     *  (tests/test_fri_oi_air.c:265-266): the lb branch makes p_z a copy of p_x,
+     *  which IS query-dependent, while the pinned cfg's heights {5, 4} against
+     *  log_blowup 2 take the other branch on every row — a pure function of the
+     *  schedule ordinal. T-CONST already fails closed if any pinned oi group
+     *  ever moves to log_blowup (it guards C4b/C5 vacuity); that same check is
+     *  now also what protects this region's witness. */
+    uint64_t pz_shared[2 * DNAC_P2S_OI_TOTAL_ACC];
 
     /* oi regions (fri_oi_air.h:64-71 public layout).
      * ⚠ `alpha` is NOT a field either (s3b) — see `tair_payload`. */
-    /** Per acc row, in SCHEDULE order (height-descending, then batch-major):
-     *  z at 4*a, p_z at 4*a + 2, each fp2. */
-    uint64_t zpz[4 * DNAC_P2S_OI_TOTAL_ACC];
-    /** The exported reduced openings, ONE fp2 per height, DESCENDING — the
-     *  SINGLE source of the fri walk's seed and roll-ins as well as the oi
-     *  instance's own ro publics (fri_verifier.c:490-497 writes them in this
-     *  order; fri_oi_air.h:79-82 exports them in it). */
-    uint64_t ro_export[2 * DNAC_P2S_OI_NUM_HEIGHTS];
-    /** s2 — the p_x of every acc row the MAIN batch does NOT cover, i.e. the
-     *  quotient and preprocessed batches' rows, in schedule order (height
-     *  descending, then batch-major, main batch's rows skipped).
+    /** PER-QUERY. The OPENING POINT z of each acc row, in SCHEDULE order
+     *  (height-descending, then batch-major): row a is the fp2 at 2*a, 2*a + 1.
+     *
+     *  ⚠ Per-query is WEAKER than the native, which takes z from
+     *  `commitments[batch]` — a `fri_open_input` argument that does not move
+     *  across the query loop (fri_verifier.c:743 passes the same pointer; :401
+     *  and :437 reach z through it). See HONEST LABEL 8: this region stays
+     *  per-query because the shipped honest-trace builder derives z as x + zoff
+     *  and x IS query-dependent, so a shared region would have no witness. */
+    uint64_t z_pq[DNAC_P2S_NUM_QUERIES][2 * DNAC_P2S_OI_TOTAL_ACC];
+    /** PER-QUERY. Query q's exported reduced openings, ONE fp2 per height,
+     *  DESCENDING — the SINGLE source of that query's fri walk seed and
+     *  roll-ins as well as its oi instance's own ro publics
+     *  (fri_verifier.c:490-497 writes them in this order; fri_oi_air.h:79-82
+     *  exports them in it).
+     *  ⚠ NEVER aliased across q: `fri_open_input` runs INSIDE the per-query
+     *  loop, against that query's index (fri_verifier.c:742). */
+    uint64_t ro_export[DNAC_P2S_NUM_QUERIES][2 * DNAC_P2S_OI_NUM_HEIGHTS];
+    /** PER-QUERY. s2 — the p_x of every acc row the MAIN batch does NOT cover,
+     *  i.e. the quotient and preprocessed batches' rows, in schedule order
+     *  (height descending, then batch-major, main batch's rows skipped).
      *
      *  ⚠ HONEST LABEL. The main batch's rows need no field here: the entry
-     *  aliases them off `mmix_opened`, so they are MMCS-bound by construction.
-     *  These are not — they are a statement input, exactly the trust level
-     *  `p_x` had in s1c when it was a free witness. What CHANGED is that they
-     *  are now inside the mechanism (a public C3g pins the trace column to)
-     *  rather than outside it, so closing them is a matter of replacing this
-     *  field with a second/third mmix instance when input-batch replication
-     *  lands — not of adding a constraint. */
-    uint64_t px_rest[DNAC_P2S_OI_PX_REST];
+     *  aliases them off `mmix_opened[q]`, so they are MMCS-bound by
+     *  construction. These are not — they are a statement input, exactly the
+     *  trust level `p_x` had in s1c when it was a free witness. What CHANGED is
+     *  that they are now inside the mechanism (a public C3g pins the trace
+     *  column to) rather than outside it, so closing them is a matter of
+     *  replacing this field with a second/third mmix instance when input-batch
+     *  replication lands — not of adding a constraint. Per-query because p_x is
+     *  an OPENED value: it is read at the query's own index
+     *  (fri_verifier.c:469-476). */
+    uint64_t px_rest[DNAC_P2S_NUM_QUERIES][DNAC_P2S_OI_PX_REST];
 
-    /* inner commitment roots (4 lanes each) */
+    /* SHARED inner commitment roots (4 lanes each). One commitment, opened at Q
+     * different indices — the root is what every query's opening is checked
+     * against, so a per-query root would let two queries open two trees. */
     uint64_t mmix_root[MMIX_DIGEST_LANES];
     uint64_t mmcs_root[MAIR_DIGEST_LANES];
 
-    /* inner opened rows, concatenated in matrix order */
-    uint64_t mmix_opened[DNAC_P2S_MMIX_TOTAL_OPENED];
-    uint64_t mmcs_opened[DNAC_P2S_MMCS_TOTAL_WIDTH];
+    /* PER-QUERY inner opened rows, concatenated in matrix order. These ARE the
+     * query-dependent half of an MMCS opening: same tree, same root, different
+     * leaf. */
+    uint64_t mmix_opened[DNAC_P2S_NUM_QUERIES][DNAC_P2S_MMIX_TOTAL_OPENED];
+    uint64_t mmcs_opened[DNAC_P2S_NUM_QUERIES][DNAC_P2S_MMCS_TOTAL_WIDTH];
 } dnac_p2s_statement_t;
 
 /* ── Pinned-cfg accessors (the dnac_p2b_ref_cfg pattern,
@@ -626,27 +825,60 @@ dnac_p2s_status_t dnac_p2s_check_tair_pow_pin(const dnac_tair_script_t *s);
  *  they do not choose a security level. */
 const dnac_fri_params_t *dnac_p2s_fri_params(void);
 
-/**
- * @brief Storage for the five instances' fold-state snapshots (FLEET 034).
- *
- * The fold modules keep NO module-static binding: `<module>_fold_bind` fills a
- * CALLER-OWNED state and points the descriptor's `ctx` at it
- * (stark_constraints.h:299-311). This block is the statement's five of them, in
- * instance order, so a caller declares ONE object instead of five.
- *
- * Contents are this file's business — declare it, pass it, do not read it.
- * Several KB; a file-scope or heap object, not a deep-stack fixture.
- */
+/** One query's four consumer snapshots. */
 typedef struct {
     dnac_mmix_fold_state_t mmix;
     dnac_mair_fold_state_t mmcs;
     dnac_fair_fold_state_t fri;
     dnac_foi_fold_state_t  oi;
-    dnac_tair_fold_state_t tair;
-} dnac_p2s_fold_states_t;
+} dnac_p2s_query_fold_states_t;
 
 /**
- * @brief Build the four batch descriptors from the statement — steps 3-6.
+ * @brief Storage for every instance's fold-state snapshot (FLEET 034, grown to
+ *        1 + 4*Q by the multi-query slice).
+ *
+ * The fold modules keep NO module-static binding: `<module>_fold_bind` fills a
+ * CALLER-OWNED state and points the descriptor's `ctx` at it
+ * (stark_constraints.h:299-311). That is precisely what makes Q instances of
+ * the SAME AIR possible: each gets its own snapshot, so query 1's bind cannot
+ * clobber query 0's. This block is all of them, in instance order, so a caller
+ * declares ONE object instead of 1 + 4*Q.
+ *
+ * Contents are this file's business — declare it, pass it, do not read it.
+ *
+ * ⚠ SIZE. ~11.3 KB at Q = 2 (5.8 KB at Q = 1, and it grows by ~5.6 KB per
+ * query — `dnac_mmix_fold_state_t` alone is 4 KB). `dnac_p2_fri_statement_
+ * verify` keeps one on its own FRAME, deliberately: a file-scope object would
+ * make the entry non-reentrant and give back exactly the shared-binding hazard
+ * FLEET 034 removed, and a heap object would add an allocation-failure path to
+ * a function whose whole contract is "construct and reject". A caller that
+ * cannot afford ~15 KB of frame (that block plus the descriptors and the
+ * publics) should drive `dnac_p2_fri_statement_build_instances` with storage of
+ * its own lifetime instead — which is why that entry point is exposed.
+ */
+typedef struct {
+    dnac_tair_fold_state_t       tair;
+    dnac_p2s_query_fold_states_t q[DNAC_P2S_NUM_QUERIES];
+} dnac_p2s_fold_states_t;
+
+/** Public-value count for instance `i`. 0 if `i` is out of range. */
+size_t dnac_p2s_num_publics(uint32_t instance);
+
+/** Start of instance `i`'s region inside the flat publics block, in elements.
+ *  SIZE_MAX if `i` is out of range. The regions are contiguous, in instance
+ *  order, and together span exactly DNAC_P2S_TOTAL_PUBLICS. */
+size_t dnac_p2s_pub_off(uint32_t instance);
+
+/** The per-query SLOT of instance `i`, or DNAC_P2S_SLOTS for the transcript
+ *  instance and for an out-of-range index ("no slot"). */
+uint32_t dnac_p2s_inst_slot(uint32_t instance);
+
+/** The QUERY instance `i` belongs to. SIZE_MAX for the transcript instance and
+ *  for an out-of-range index. */
+size_t dnac_p2s_inst_query(uint32_t instance);
+
+/**
+ * @brief Build every batch descriptor from the statement — steps 3-6.
  *
  * Exposed because the TEST must prove the SAME instances the entry verifies:
  * were the test to assemble its own publics, a bug in the entry's aliasing
@@ -657,42 +889,36 @@ typedef struct {
  * including its `ctx` into `states`), `preprocessed_width`, `prep_next = 1`
  * (PIN-2, hard-coded — see the entry), `degree_bits` from the table's own row
  * count, `log_num_qc` from the upstream symbolic rule, and `public_values` /
- * `num_publics` pointing at the caller's buffers, which this function fills.
+ * `num_publics` pointing INTO `pub`, which this function fills.
  *
- * ⚠ On success the descriptors' `ctx` fields point INTO `states`, which is why
- * it carries the same must-outlive rule as the publics buffers.
+ * ⚠ On success the descriptors' `ctx` fields point INTO `states` and their
+ * `public_values` INTO `pub`, which is why both carry the must-outlive rule.
  *
  * ⚠ On FAILURE — stated exactly, because the useful property is about `insts`,
  * not about `states`. Once `insts` is non-NULL it is ZEROED before anything
- * else, so EVERY failure path below leaves all five descriptors with
+ * else, so EVERY failure path below leaves every descriptor with
  * `ctx == NULL` AND `air_eval == NULL`: a caller that ignores the return code
  * cannot evaluate a stale cfg's constraint system, because it cannot evaluate
  * at all. Additionally, each bind that actually RAN disarmed its own state and
  * its own descriptor on entry. States belonging to binds that were never
- * reached (an early step-3a reject) are left exactly as the caller supplied
- * them — which is why `dnac_p2_fri_statement_verify` zero-initialises the
- * block, and why callers should too.
+ * reached (an early step-3a reject, or a later query's binds after an earlier
+ * query failed) are left exactly as the caller supplied them — which is why
+ * `dnac_p2_fri_statement_verify` zero-initialises the block, and why callers
+ * should too.
  *
  * @param stmt      the statement; publics are built from it, nothing is read
  *                  from any proof.
  * @param insts     [DNAC_P2S_NUM_INSTANCES], filled on success.
- * @param states    the five fold-state snapshots; must outlive `insts`.
- * @param pub_mmix  >= DNAC_P2S_MMIX_NUM_PUBLICS elements; must outlive `insts`.
- * @param pub_mmcs  >= DNAC_P2S_MMCS_NUM_PUBLICS elements; must outlive `insts`.
- * @param pub_fri   >= DNAC_P2S_FRI_NUM_PUBLICS  elements; must outlive `insts`.
- * @param pub_oi    >= DNAC_P2S_OI_NUM_PUBLICS   elements; must outlive `insts`.
- * @param pub_tair  >= DNAC_P2S_TAIR_NUM_PUBLICS elements; must outlive `insts`.
+ * @param states    the fold-state snapshots; must outlive `insts`.
+ * @param pub       >= DNAC_P2S_TOTAL_PUBLICS elements; must outlive `insts`.
+ *                  Sliced by `dnac_p2s_pub_off` / `dnac_p2s_num_publics`.
  * @return DNAC_P2S_OK, or the first failing step's status.
  */
 dnac_p2s_status_t dnac_p2_fri_statement_build_instances(
     const dnac_p2s_statement_t *stmt,
     dnac_batch_vinstance_t     *insts,
     dnac_p2s_fold_states_t     *states,
-    gold_fp_t                  *pub_mmix,
-    gold_fp_t                  *pub_mmcs,
-    gold_fp_t                  *pub_fri,
-    gold_fp_t                  *pub_oi,
-    gold_fp_t                  *pub_tair);
+    gold_fp_t                  *pub);
 
 /**
  * @brief Verify a composed FRI-verify statement.
@@ -713,14 +939,19 @@ dnac_p2s_status_t dnac_p2_fri_statement_build_instances(
  *            query shape the aliases index into, each query sample exports
  *            exactly lgmh bits, and the `pow_bits` PIN holds
  *            (`dnac_p2s_check_tair_pow_pin`).
- *   3b. the five cfgs bound; a cfg is never read out of the proof (OBL-P2c-1).
+ *   3b. every cfg bound; a cfg is never read out of the proof (OBL-P2c-1).
  *   4. each `degree_bits` from `<module>_table_rows(cfg)`.
  *   5. `log_num_qc` from the upstream symbolic rule.
- *   6. every instance's publics assembled from the ONE `index_bits`, the ONE
- *      `ro_export`, the ONE `mmix_opened` (whose main-batch lanes are the s2
- *      source of the oi p_x publics), the ONE `tair_payload` (the s3b source of
- *      the fri betas and the oi alpha) and the statement's own regions
- *      (aliasing, not checking).
+ *   6. every instance's publics assembled from the statement's regions by
+ *      ALIASING, not checking:
+ *        - SHARED into every query: the ONE `tair_payload` (the s3b source of
+ *          every fri instance's betas and every oi instance's alpha), the ONE
+ *          `final_poly0`, the ONE `mmix_root` / `mmcs_root`;
+ *        - PER QUERY q: `index_bits[q]` into the tair instance's q-th exported
+ *          bit block AND into query q's four bit/direction regions;
+ *          `ro_export[q]` into fri[q]'s f_init + roll-ins and oi[q]'s ro;
+ *          `mmix_opened[q]` into mmix[q]'s opened row AND (s2) into oi[q]'s
+ *          main-batch p_x publics; `mmcs_opened[q]`, `zpz[q]`, `px_rest[q]`.
  *   7. `dnac_batch_verify` with is_zk = 0, num_random_codewords = 0,
  *      salt_elems = 0 and the pinned outer FRI params.
  * Steps 3-6 are `dnac_p2_fri_statement_build_instances`.
@@ -730,7 +961,7 @@ dnac_p2s_status_t dnac_p2_fri_statement_build_instances(
  *                                 values, in the instance order above.
  * @param commits                  the batch commitments; `preprocessed_commit`
  *                                 is REQUIRED and is what the pin compares.
- * @param prep_matrix_to_instance  MUST be exactly {0, 1, 2, 3, 4}.
+ * @param prep_matrix_to_instance  MUST be the identity {0, 1, ..., N-1}.
  * @param num_prep_matrices        MUST be DNAC_P2S_NUM_INSTANCES.
  * @param fri_proof                the FRI opening proof.
  * @param out                      optional batch diagnostics (nullable).
@@ -746,8 +977,8 @@ dnac_p2s_status_t dnac_p2_fri_statement_verify(
     dnac_batch_verify_out_t      *out);
 
 /**
- * @brief Generate the five honest preprocessed tables for the pinned cfgs, in
- *        the instance order the pin commits to.
+ * @brief Generate the honest preprocessed table of every instance, in the
+ *        instance order the pin commits to.
  *
  * Sizes: `out[i]` needs `dnac_p2s_prep_cells(i)` cells. Exposed so the
  * `--print-roots` pin-fill path and the pin negatives can generate, tamper one

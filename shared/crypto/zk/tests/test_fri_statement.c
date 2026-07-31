@@ -1,7 +1,7 @@
 /**
  * @file test_fri_statement.c
- * @brief Composition s1b + s1c + s2 + s3b — gate for the FRI-verify statement
- *        ENTRY (fri_statement.{c,h}).
+ * @brief Composition s1b + s1c + s2 + s3b + MULTI-QUERY — gate for the
+ *        FRI-verify statement ENTRY (fri_statement.{c,h}).
  *
  * ── HOW THIS TEST REUSES THE SHIPPED GATES ──────────────────────────────────
  * The honest trace builders for all five participating AIRs already exist,
@@ -107,9 +107,39 @@
  *   N-ALIAS/idx flipping an index bit reaches the TRANSCRIPT's exported-bit
  *            publics too, so the index cannot be one the transcript did not
  *            produce.
- *   N-BITSREST queries 1..Q-1's bits ARE read (they reach the tair publics) but
- *            reach ONLY tair — the honest label that no consumer models a
- *            second query yet (OBL-P2c-2), pinned from both sides.
+ *
+ * ── MULTI-QUERY additions (OBL-P2c-2 discharged) ────────────────────────────
+ *   T-MAP    the instance map (1 producer at index 0, then 1 + 4q + slot) and
+ *            the flat publics layout, re-derived here from the header's own
+ *            rule: every instance named exactly once, every decoder round-trips,
+ *            out-of-range refused by every accessor, the Q copies of a slot the
+ *            same shape, the regions an exact gap-free in-order partition, and
+ *            the derived Q ceiling (32-1)/4 = 7 respected.
+ *   N-QSEP   ►► THE ACCEPTANCE CRITERION. Perturbing the transcript's q-th
+ *            exported bit block (= `index_bits[q]`, the alias) must move query
+ *            q's instances and NOT any other query's. Under the collapse this
+ *            slice removes, flipping block 1 moves nothing downstream and
+ *            flipping block 0 moves EVERY query — both are caught, because the
+ *            assertion is the EXACT instance set, not "something moved".
+ *   N-QSHARED the values the native samples/observes ONCE (alpha :694, the
+ *            betas :707, final_poly :710-713, and the two commitment roots)
+ *            reach EVERY query's consumer — one statement field, Q consumers.
+ *   N-PZSHARED the same claim for the CLAIMED EVALUATIONS `pz_shared`, which
+ *            used to sit inside the per-query region with no justification.
+ *            Perturbing a lane must move EVERY query's oi instance; one query
+ *            moving alone means the alias was not built. Swept over every lane.
+ *   N-QINDEP a per-query value (`ro_export[q]`, `mmix_opened[q]`,
+ *            `mmcs_opened[q]`, `px_rest[q]`, `z_pq[q]`) reaches ONLY query q's
+ *            consumers. This subsumes the old N-ALIAS/ro, N-ALIAS/px and
+ *            N-PXREST, each of which was a pair of booleans and is now an exact
+ *            set. Its `z` leg is the counterpart of N-PZSHARED: together they
+ *            pin the split so it cannot regress in either direction.
+ *   RT       the pinned script's Q indices are printed and required to DIFFER
+ *            (a constant of this pin, not a probabilistic claim), and every
+ *            query's four u64 evaluators must accept their own trace.
+ *
+ * ⚠ N-BITSREST is GONE with the field it tested: `tair_bits_rest` held the
+ * exported bit blocks no consumer modelled, and all Q are consumed now.
  *
  * ⚠ PIN-STATE DISCIPLINE. Every check passes in BOTH pin states; only the
  * PIN-DEPENDENT expectations differ. With `DNAC_P2S_PREP_ROOT` at its
@@ -148,6 +178,14 @@
  *     batch_verify's opening-round assembly (batch_verify.c:302-499) replicated
  *     test-side. That replication is a fork of consensus logic into a test and
  *     is NOT done here.
+ *     ⚠ MULTI-QUERY adds ONE more construction to that column: the LAST fold
+ *     row's sibling of every query is SOLVED so all Q walks land on the ONE
+ *     shared `final_poly0`. A real prover gets that for free (its queries are
+ *     folds of one codeword); a fixture-sibling walk does not, and making
+ *     `final_poly0` per-query instead would have DROPPED the constraint. The
+ *     solve is an inversion of the shipped builder's own fold expression and it
+ *     is self-checked — see `fri_solve_last_sib` and the q = 0 identity check
+ *     in `traces_build`.
  *   - tair: REAL for the challenger, FIXTURE for what it observes. The trace is
  *     the shipped builder's, and its pops come from replaying the shipped
  *     `duplex_challenger.c`, so alpha / the betas / the query index are genuine
@@ -155,12 +193,13 @@
  *     prefix are deterministic fixtures — ⚠ they are NOT aliased to the mmcs /
  *     mmix roots, so "the transcript absorbed the commitment this proof opens"
  *     is NOT closed here; that is the commit-round replication slice.
- * So RT-1 is: "the entry accepts an honest 5-instance proof over the pinned
- * cfgs, with every instance's index publics aliased from ONE transcript-produced
- * index, the fri walk's seed / roll-in aliased from the oi ro export, the fri
- * betas and the oi alpha aliased from the transcript payload, and the main
- * batch's p_x aliased from the mmix opening". It is NOT "the entry accepts
- * prep_pair's query 0". Reported as a delta against spec §4.
+ * So RT-1 is: "the entry accepts an honest 1 + 4*Q-instance proof over the
+ * pinned cfgs, where query q's four instances take their index publics from the
+ * transcript's OWN q-th exported block, their fri walk seed / roll-in from
+ * query q's oi ro export, and their main-batch p_x from query q's mmix opening,
+ * while the alpha, the betas and the final_poly every query folds with are ONE
+ * transcript-produced set". It is NOT "the entry accepts prep_pair's queries".
+ * Reported as a delta against spec §4.
  *
  * Deterministic fixtures only — NO rand() (root CLAUDE.md).
  *
@@ -461,6 +500,7 @@
 
 /* ══════════════════════════════ our own stack ════════════════════════════ */
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -474,15 +514,6 @@
 static int g_checks = 0;
 static int g_fails = 0;
 
-/* FLEET 034: `dnac_p2_fri_statement_build_instances` now takes the caller's
- * fold-state storage (fri_statement.h), which must outlive the `insts` it arms.
- * These are the TEST's fixtures for it. File scope rather than automatics: the
- * block is several KB and several call sites sit inside loops, so a stack copy
- * per iteration buys nothing. Two of them because a few negatives build TWO
- * descriptor sets side by side and each set must own its own snapshots. */
-static dnac_p2s_fold_states_t g_fs_a;
-static dnac_p2s_fold_states_t g_fs_b;
-
 #define CHECK(cond, ...)                                                       \
     do {                                                                       \
         g_checks++;                                                            \
@@ -493,6 +524,154 @@ static dnac_p2s_fold_states_t g_fs_b;
             printf("\n");                                                      \
         }                                                                      \
     } while (0)
+
+/* ══════════ ONE built descriptor set — the multi-query bookkeeping ═════════
+ *
+ * s3b's negatives each declared five publics arrays plus five more for the
+ * perturbed side; at 1 + 4*Q instances that shape does not survive. Everything
+ * the entry produces now lives in ONE object, and the ONLY question the
+ * negatives ask — "did instance i's publics move?" — is one function.
+ *
+ * FLEET 034: the fold-state storage must outlive the `insts` it arms, which is
+ * why it is a member here rather than an automatic at each call site. File
+ * scope rather than automatics for the whole object: ~13 KB each and several
+ * call sites sit inside loops. Two of them because the negatives build TWO
+ * descriptor sets side by side and each set must own its own snapshots.
+ */
+typedef struct {
+    dnac_batch_vinstance_t insts[DNAC_P2S_NUM_INSTANCES];
+    gold_fp_t              pub[DNAC_P2S_TOTAL_PUBLICS];
+    dnac_p2s_fold_states_t fs;
+} p2s_set_t;
+
+static p2s_set_t g_set_a;
+static p2s_set_t g_set_b;
+
+static dnac_p2s_status_t set_build(p2s_set_t *S,
+                                   const dnac_p2s_statement_t *stmt)
+{
+    memset(&S->fs, 0, sizeof(S->fs));
+    return dnac_p2_fri_statement_build_instances(stmt, S->insts, &S->fs,
+                                                 S->pub);
+}
+
+/** Instance `i`'s publics inside a built set. */
+static const gold_fp_t *set_pub(const p2s_set_t *S, uint32_t i)
+{
+    return S->pub + dnac_p2s_pub_off(i);
+}
+
+/** 1 iff instance `i`'s publics differ between the two sets. */
+static int inst_moved(const p2s_set_t *A, const p2s_set_t *B, uint32_t i)
+{
+    const gold_fp_t *a = set_pub(A, i), *b = set_pub(B, i);
+    for (size_t k = 0; k < dnac_p2s_num_publics(i); k++) {
+        if (gold_fp_to_u64(a[k]) != gold_fp_to_u64(b[k])) return 1;
+    }
+    return 0;
+}
+
+/** Build both sets (honest + perturbed) or report a test defect. */
+static int set_pair(const dnac_p2s_statement_t *good,
+                    const dnac_p2s_statement_t *bad, const char *what)
+{
+    if (set_build(&g_set_a, good) != DNAC_P2S_OK ||
+        set_build(&g_set_b, bad) != DNAC_P2S_OK) {
+        CHECK(0, "%s: build_instances rejected a canonical perturbation", what);
+        return 0;
+    }
+    return 1;
+}
+
+/** Human-readable instance name, for negatives that report per instance.
+ *  Caller-supplied buffer: two names are routinely formatted into one message,
+ *  and a shared static would make the first the second. */
+static const char *inst_name_r(uint32_t i, char *buf, size_t n)
+{
+    static const char *const slot[] = { "mmix", "mmcs", "fri", "oi" };
+    if (i == DNAC_P2S_INST_TAIR) {
+        snprintf(buf, n, "tair");
+    } else if (i < DNAC_P2S_NUM_INSTANCES) {
+        snprintf(buf, n, "%s[q%zu]", slot[dnac_p2s_inst_slot(i)],
+                 dnac_p2s_inst_query(i));
+    } else {
+        snprintf(buf, n, "inst%u", i);
+    }
+    return buf;
+}
+
+/** Single-use convenience wrapper (never two per message). */
+static const char *inst_name(uint32_t i)
+{
+    static char buf[32];
+    return inst_name_r(i, buf, sizeof(buf));
+}
+
+/* ── The instance MASK vocabulary the multi-query negatives speak in ────────
+ * DNAC_P2S_NUM_INSTANCES is 1 + 4*Q and the derived Q ceiling is 7, so 29
+ * instances is the most this shape can hold and a uint32_t mask always fits;
+ * the static assert says so rather than leaving it to the reader. */
+typedef char p2s_mask_fits_assert
+    [(DNAC_P2S_NUM_INSTANCES <= 32) ? 1 : -1];
+
+#define P2S_TMASK        (1u << DNAC_P2S_INST_TAIR)
+#define P2S_IMASK(q, s)  (1u << DNAC_P2S_INST((q), (s)))
+
+/** The set of instances whose publics differ between g_set_a and g_set_b. */
+static uint32_t moved_mask(void)
+{
+    uint32_t m = 0;
+    for (uint32_t i = 0; i < DNAC_P2S_NUM_INSTANCES; i++) {
+        if (inst_moved(&g_set_a, &g_set_b, i)) m |= 1u << i;
+    }
+    return m;
+}
+
+static void mask_str(uint32_t m, char *buf, size_t n)
+{
+    size_t used = 0;
+    char nm[32];
+    buf[0] = '\0';
+    for (uint32_t i = 0; i < DNAC_P2S_NUM_INSTANCES && used + 1 < n; i++) {
+        int w;
+        if (!(m & (1u << i))) continue;
+        w = snprintf(buf + used, n - used, "%s%s", used ? "," : "",
+                     inst_name_r(i, nm, sizeof(nm)));
+        if (w < 0) break;
+        used += (size_t)w;
+    }
+    if (used == 0) snprintf(buf, n, "(none)");
+}
+
+/**
+ * The EXACT-SET assertion every multi-query negative is written in.
+ *
+ * "At least one instance moved" cannot distinguish a working alias from a
+ * collapsed one — under the collapse the WRONG instances move, and they move.
+ * Comparing the whole set is what makes N-QSEP / N-QSHARED / N-QINDEP three
+ * different claims instead of three spellings of the same one, and it makes a
+ * failure self-describing: the message names both sets.
+ */
+static void check_mask_v(uint32_t got, uint32_t want, const char *fmt,
+                         va_list ap)
+{
+    char where[192], sg[256], sw[256];
+    g_checks++;
+    if (got == want) return;
+    g_fails++;
+    vsnprintf(where, sizeof(where), fmt, ap);
+    mask_str(got, sg, sizeof(sg));
+    mask_str(want, sw, sizeof(sw));
+    printf("  FAIL: %s moved {%s}, expected {%s}\n", where, sg, sw);
+}
+
+static void check_mask(uint32_t got, uint32_t want, const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    check_mask_v(got, want, fmt, ap);
+    va_end(ap);
+}
 
 /* ══════════ s3b — the transcript instance's honest trace + its F-S values ═══
  *
@@ -523,9 +702,12 @@ static dnac_p2s_fold_states_t g_fs_b;
 typedef struct {
     p2s_tair_vec_t   *V;
     p2s_tair_built_t *B;
-    uint64_t          index;                    /* query 0, low lgmh bits    */
-    uint64_t          alpha[2];                 /* the first two pops        */
-    uint64_t          beta[2 * DNAC_P2S_FRI_R]; /* per round, c0 then c1     */
+    /** PER QUERY — the low lgmh bits of the q-th index sample. The multi-query
+     *  slice's whole subject: query q's four instances are driven by index[q],
+     *  and index[q] is read out of the transcript's q-th exported bit block. */
+    uint64_t          index[DNAC_P2S_NUM_QUERIES];
+    uint64_t          alpha[2];                 /* SHARED: first two pops    */
+    uint64_t          beta[2 * DNAC_P2S_FRI_R]; /* SHARED: per round, c0/c1  */
     int               built;
 } tair_run_t;
 
@@ -711,32 +893,38 @@ static int tair_build(tair_run_t *T)
         T->beta[2 * r] = T->B->pub[k0];
         T->beta[2 * r + 1] = T->B->pub[k1];
     }
-    {
-        const size_t kq = tair_pop_op(s, 2 + 2 * DNAC_P2S_FRI_R);
+    /* EVERY query's index, not just query 0's (multi-query slice). Each block
+     * is read out of the transcript's own exported-bit publics, so index[q] is
+     * by construction "what the challenger squeezed on its q-th sample". */
+    for (size_t q = 0; q < DNAC_P2S_NUM_QUERIES; q++) {
+        const size_t kq = tair_pop_op(s, 2 + 2 * DNAC_P2S_FRI_R + q);
         size_t off;
         if (kq == (size_t)-1) {
-            CHECK(0, "tair: the script has no query-0 pop");
+            CHECK(0, "tair: the script has no query-%zu pop", q);
             return 0;
         }
         off = dnac_tair_op_bit_off(s, kq);
         if (off == (size_t)-1) {
-            CHECK(0, "tair: query 0 exports no bits");
+            CHECK(0, "tair: query %zu exports no bits", q);
             return 0;
         }
-        T->index = 0;
+        T->index[q] = 0;
         for (size_t l = 0; l < DNAC_P2S_LGMH; l++) {
             const uint64_t b = T->B->pub[off + l];
             if (b > 1) {
-                CHECK(0, "tair: exported bit %zu is not boolean", l);
+                CHECK(0, "tair: query %zu exported bit %zu is not boolean", q,
+                      l);
                 return 0;
             }
-            T->index |= b << l;
+            T->index[q] |= b << l;
         }
         /* The exported bits must BE the low bits of the popped challenge —
-         * otherwise the index the four consumers walk is not the one the
+         * otherwise the index that query's consumers walk is not the one the
          * transcript produced, and the whole alias is decoration. */
-        if ((T->B->pub[kq] & ((UINT64_C(1) << DNAC_P2S_LGMH) - 1)) != T->index) {
-            CHECK(0, "tair: query-0 bits are not the low bits of its challenge");
+        if ((T->B->pub[kq] & ((UINT64_C(1) << DNAC_P2S_LGMH) - 1)) !=
+            T->index[q]) {
+            CHECK(0, "tair: query-%zu bits are not the low bits of its "
+                     "challenge", q);
             return 0;
         }
     }
@@ -855,6 +1043,98 @@ static void t_const(void)
               "T-CONST: fri roll-in height %zu is not a non-seed OI height",
               fri->rollin_heights[k]);
     }
+}
+
+/* ═════════ T-MAP — the multi-query instance map and publics layout ════════
+ *
+ * The instance ORDER is interface (fri_statement.h): the pinned preprocessed
+ * root commits to it, so a silent renumbering would void the pin without
+ * moving a single table cell. Everything here is re-derived from the header's
+ * own rule — 1 producer at index 0, then 1 + 4q + slot — and compared against
+ * the module's decoders, so the two are independent.
+ */
+static void t_map(void)
+{
+    size_t next = 0;
+    size_t seen[DNAC_P2S_NUM_INSTANCES];
+
+    CHECK(DNAC_P2S_NUM_INSTANCES == 1u + 4u * DNAC_P2S_NUM_QUERIES,
+          "T-MAP: %u instances, the map says 1 + 4*Q = %zu",
+          DNAC_P2S_NUM_INSTANCES, (size_t)(1u + 4u * DNAC_P2S_NUM_QUERIES));
+    CHECK(DNAC_P2S_INST_TAIR == 0,
+          "T-MAP: the transcript instance is not index 0 — its index must be "
+          "Q-independent");
+    /* The batch stack's cap, and the ceiling the entry static-asserts against.
+     * Q = 7 is the largest this shape admits: 1 + 4*7 = 29 <= 32. */
+    CHECK(DNAC_P2S_MAX_QUERIES == 7,
+          "T-MAP: the derived Q ceiling is %zu, expected (32-1)/4 = 7",
+          (size_t)DNAC_P2S_MAX_QUERIES);
+    CHECK(DNAC_P2S_NUM_QUERIES <= DNAC_P2S_MAX_QUERIES &&
+              DNAC_P2S_NUM_INSTANCES <= DNAC_P2S_BATCH_MAX_INSTANCES,
+          "T-MAP: the pinned Q overruns the batch stack's instance cap");
+
+    /* (q, slot) round-trips through the decoders, for EVERY instance. */
+    CHECK(dnac_p2s_inst_slot(DNAC_P2S_INST_TAIR) == DNAC_P2S_SLOTS &&
+              dnac_p2s_inst_query(DNAC_P2S_INST_TAIR) == (size_t)-1,
+          "T-MAP: the transcript instance reports a query/slot");
+    CHECK(dnac_p2s_inst_slot(DNAC_P2S_NUM_INSTANCES) == DNAC_P2S_SLOTS &&
+              dnac_p2s_inst_query(DNAC_P2S_NUM_INSTANCES) == (size_t)-1 &&
+              dnac_p2s_num_publics(DNAC_P2S_NUM_INSTANCES) == 0 &&
+              dnac_p2s_pub_off(DNAC_P2S_NUM_INSTANCES) == (size_t)-1 &&
+              dnac_p2s_prep_rows(DNAC_P2S_NUM_INSTANCES) == 0 &&
+              dnac_p2s_prep_cols(DNAC_P2S_NUM_INSTANCES) == 0,
+          "T-MAP: an out-of-range instance is not refused by every accessor");
+
+    for (uint32_t i = 0; i < DNAC_P2S_NUM_INSTANCES; i++) seen[i] = 0;
+    for (size_t q = 0; q < DNAC_P2S_NUM_QUERIES; q++) {
+        for (uint32_t s = 0; s < DNAC_P2S_SLOTS; s++) {
+            const uint32_t i = DNAC_P2S_INST(q, s);
+            CHECK(i > 0 && i < DNAC_P2S_NUM_INSTANCES,
+                  "T-MAP: DNAC_P2S_INST(%zu,%u) = %u is out of range", q, s, i);
+            if (i >= DNAC_P2S_NUM_INSTANCES) continue;
+            seen[i]++;
+            CHECK(dnac_p2s_inst_slot(i) == s && dnac_p2s_inst_query(i) == q,
+                  "T-MAP: instance %u decodes to (q %zu, slot %u), built from "
+                  "(q %zu, slot %u)", i, dnac_p2s_inst_query(i),
+                  dnac_p2s_inst_slot(i), q, s);
+        }
+    }
+    seen[DNAC_P2S_INST_TAIR]++;
+    for (uint32_t i = 0; i < DNAC_P2S_NUM_INSTANCES; i++) {
+        CHECK(seen[i] == 1, "T-MAP: instance %u is named %zu times by the map",
+              i, seen[i]);
+    }
+
+    /* The Q copies of a slot are the SAME shape — the header's honest note. */
+    for (uint32_t s = 0; s < DNAC_P2S_SLOTS; s++) {
+        for (size_t q = 1; q < DNAC_P2S_NUM_QUERIES; q++) {
+            CHECK(dnac_p2s_prep_rows(DNAC_P2S_INST(q, s)) ==
+                          dnac_p2s_prep_rows(DNAC_P2S_INST(0, s)) &&
+                      dnac_p2s_prep_cols(DNAC_P2S_INST(q, s)) ==
+                          dnac_p2s_prep_cols(DNAC_P2S_INST(0, s)) &&
+                      dnac_p2s_num_publics(DNAC_P2S_INST(q, s)) ==
+                          dnac_p2s_num_publics(DNAC_P2S_INST(0, s)),
+                  "T-MAP: slot %u's copy for query %zu has a different shape",
+                  s, q);
+        }
+    }
+
+    /* The flat publics block is an exact, gap-free, in-order PARTITION. */
+    for (uint32_t i = 0; i < DNAC_P2S_NUM_INSTANCES; i++) {
+        CHECK(dnac_p2s_pub_off(i) == next,
+              "T-MAP: instance %u publics start at %zu, expected %zu", i,
+              dnac_p2s_pub_off(i), next);
+        CHECK(dnac_p2s_num_publics(i) != 0,
+              "T-MAP: instance %u declares zero publics", i);
+        next += dnac_p2s_num_publics(i);
+    }
+    CHECK(next == DNAC_P2S_TOTAL_PUBLICS,
+          "T-MAP: the regions span %zu elements, DNAC_P2S_TOTAL_PUBLICS is %zu",
+          next, (size_t)DNAC_P2S_TOTAL_PUBLICS);
+    CHECK(DNAC_P2S_TOTAL_PUBLICS ==
+              DNAC_P2S_TAIR_NUM_PUBLICS +
+                  DNAC_P2S_NUM_QUERIES * DNAC_P2S_QUERY_PUBLICS,
+          "T-MAP: TOTAL_PUBLICS is not TAIR + Q*QUERY_PUBLICS");
 }
 
 /* ═══════════ T-REF/tair — the tair cfg + script come from the s1 pins ══════
@@ -1564,6 +1844,7 @@ static void t_pin_kat(void)
 
 /* ═══════════════════════ the three honest traces ═════════════════════════ */
 
+/** One query's four honest traces. */
 typedef struct {
     p2s_mmix_fixt_t     mmix_fx;
     p2s_mmix_built_t    mmix;
@@ -1572,26 +1853,36 @@ typedef struct {
     p2s_fri_fixture_t   fri_fx;
     p2s_fri_built_t     fri;
     p2s_oi_built_t      oi;
-    tair_run_t          tair;
-    uint64_t            index; /* s3b: DERIVED from the transcript, not chosen */
-    int                 built[DNAC_P2S_NUM_INSTANCES];
+    uint64_t            index; /* DERIVED from the transcript, not chosen */
+    int                 built[DNAC_P2S_SLOTS];
+} qtraces_t;
+
+typedef struct {
+    tair_run_t tair;
+    int        tair_built;
+    qtraces_t  q[DNAC_P2S_NUM_QUERIES];
 } traces_t;
 
 static void traces_free(traces_t *T)
 {
-    if (T->built[DNAC_P2S_INST_MMIX]) p2s_mmix_built_free(&T->mmix);
-    if (T->built[DNAC_P2S_INST_MMCS]) p2s_mmcs_built_free(&T->mmcs);
-    if (T->built[DNAC_P2S_INST_FRI]) p2s_fri_built_free(&T->fri);
-    if (T->built[DNAC_P2S_INST_OI]) p2s_oi_built_free(&T->oi);
-    if (T->built[DNAC_P2S_INST_TAIR]) tair_free(&T->tair);
-    memset(T->built, 0, sizeof(T->built));
+    for (size_t q = 0; q < DNAC_P2S_NUM_QUERIES; q++) {
+        qtraces_t *Q = &T->q[q];
+        if (Q->built[DNAC_P2S_SLOT_MMIX]) p2s_mmix_built_free(&Q->mmix);
+        if (Q->built[DNAC_P2S_SLOT_MMCS]) p2s_mmcs_built_free(&Q->mmcs);
+        if (Q->built[DNAC_P2S_SLOT_FRI]) p2s_fri_built_free(&Q->fri);
+        if (Q->built[DNAC_P2S_SLOT_OI]) p2s_oi_built_free(&Q->oi);
+        memset(Q->built, 0, sizeof(Q->built));
+    }
+    if (T->tair_built) tair_free(&T->tair);
+    T->tair_built = 0;
 }
 
-/** The oi instance's exported ro for descending-height index `i`, as fp2. */
-static gold_fp2_t oi_ro_export(const traces_t *T, size_t i)
+/** Query q's oi instance exported ro for descending-height index `i`, as fp2. */
+static gold_fp2_t oi_ro_export(const traces_t *T, size_t q, size_t i)
 {
-    return gold_fp2_new(gold_fp_from_u64(T->oi.pub[T->oi.pub_ro + 2 * i]),
-                        gold_fp_from_u64(T->oi.pub[T->oi.pub_ro + 2 * i + 1]));
+    const p2s_oi_built_t *B = &T->q[q].oi;
+    return gold_fp2_new(gold_fp_from_u64(B->pub[B->pub_ro + 2 * i]),
+                        gold_fp_from_u64(B->pub[B->pub_ro + 2 * i + 1]));
 }
 
 /**
@@ -1608,7 +1899,7 @@ static gold_fp2_t oi_ro_export(const traces_t *T, size_t i)
  * they are exactly what the builder would have produced on its own — the
  * statement reads them back out of the builder's publics (stmt_from_traces).
  */
-static void oi_px_from_mmix(const traces_t *T,
+static void oi_px_from_mmix(const traces_t *T, size_t q,
                             uint64_t px[DNAC_P2S_OI_TOTAL_ACC])
 {
     const dnac_p2c_mmix_table_cfg_t *mc = dnac_p2s_mmix_cfg();
@@ -1631,8 +1922,8 @@ static void oi_px_from_mmix(const traces_t *T,
             if (a < batch_sz && mi != (size_t)-1) {
                 /* the MAIN batch's tuple: matrix mi, column a % num_columns
                  * (the p_x of native fri_verifier.c:471 depends on the column,
-                 * not on the opening point). */
-                px[g] = T->mmix_fx.rows[mi][a % d->num_columns];
+                 * not on the opening point). Query q's OWN opened row. */
+                px[g] = T->q[q].mmix_fx.rows[mi][a % d->num_columns];
             } else {
                 px[g] = p2s_oi_u(p2s_oi_tfp(g + 2, 17));
             }
@@ -1640,118 +1931,184 @@ static void oi_px_from_mmix(const traces_t *T,
     }
 }
 
-/**
- * Build the four honest traces at the pinned cfgs for ONE shared index.
+/* ══════════ the SHARED terminal — solving the last sibling (multi-query) ═══
  *
- * The index each builder receives is exactly the alias map fri_statement.c
- * step 6 implements, from the other side:
- *   mmix  reduced index = index >> (lgmh - depth)  == index  (shift 0)
- *   mmcs  index >> log_arity                       (fri_verifier.c:558)
- *   fri   the full index
- *   oi    the full index (its chain consumes all lgmh bits, MSB-first)
- * `fri_cfg` is a parameter so N-CFG can build the same batch on a DIFFERENT
- * fri cfg without duplicating any of this.
+ * `final_poly0` is a SHARED statement field: the native observes the final poly
+ * ONCE, before the query loop (fri_verifier.c:710-713), and with
+ * log_final_poly_len == 0 pinned it is a single fp2 CONSTANT, so EVERY query's
+ * walk must land on the SAME value. That is a real constraint of the composed
+ * system and the reason the field is not per-query.
  *
- * ⚠ ORDER IS LOAD-BEARING (s1c + s3b), and it is the SAME rule twice: a value
- * that is aliased must be produced BEFORE its consumers are built.
- *   1. tair first — it produces the index, alpha and every beta.
- *   2. mmix / mmcs on that index; oi with alpha injected (g_alpha_ext) and its
- *      p_x taken from the mmix opening (g_px_ext).
- *   3. fri last, with the betas from tair and f_init / roll-ins from the oi
- *      export written into its fixture.
- * So the walk really is seeded by the open_input result AND driven by the
- * challenger's own challenges, rather than by fixture values the entry happens
- * to copy into two instances.
+ * It is also the one place an honest 2-query witness does not fall out of the
+ * shipped builders for free. Each query's walk starts at its OWN f_init (the oi
+ * export for its OWN index) and folds over its OWN index bits, so the two
+ * terminals differ. A REAL prover has no such problem — its queries are folds
+ * of one codeword — but this gate's siblings are fixtures, not a codeword.
+ *
+ * The fri AIR leaves the sibling column FREE (fri_air.h "the sibling column `s`
+ * is UNCONSTRAINED witness data until the composition binds it to P2b opened-
+ * row publics"), and the fold is AFFINE in it. From the shipped builder's own
+ * expression (tests/test_fri_air.c:288-306):
+ *     t1  = (1 - 2b)*(s - f)
+ *     t2  = (beta - x)*t1
+ *     inv = NEG_HALF * x^-1
+ *     f'  = f + b*(s - f) + inv*t2 + beta^2*ro
+ *         = f + (s - f)*C + beta^2*ro,   C = b + inv*(beta - x)*(1 - 2b)
+ * so for a target f' the last row's sibling is
+ *     s = f + (f' - f - beta^2*ro) / C.
+ * Solving the LAST fold row leaves every earlier row exactly as the shipped
+ * builder produced it.
+ *
+ * ⚠ This is a WITNESS CONSTRUCTION, not a relaxation: the trace still has to
+ * satisfy every fri constraint, and the shipped u64 evaluator + the batch proof
+ * are what say it does. If the algebra here were wrong the walk would miss the
+ * target, C5 would fire on the terminal public and RT-1 would fail loudly.
  */
-static int traces_build(traces_t *T, const dnac_p2c_table_cfg_t *fri_cfg,
-                        uint64_t seed)
+static int fri_solve_last_sib(const p2s_fri_built_t *B,
+                              const p2s_fri_fixture_t *F, gold_fp2_t target,
+                              gold_fp2_t *out_sib)
 {
-    uint64_t index;
+    size_t r;
+    const uint64_t *row;
+    gold_fp_t x, one = gold_fp_one(), inv, sgn;
+    uint64_t b;
+    gold_fp2_t f, beta, ro, C, rhs;
 
-    memset(T, 0, sizeof(*T));
+    if (B->R == 0) return 0; /* no fold row to solve; B->R - 1 would wrap */
+    r = B->R - 1;
+    row = p2s_fri_row_of(B, B->n_chain + r);
 
-    /* tair — the SHIPPED gate's builder over a vector synthesized from the
-     * pinned script. Everything below is seeded from its result. */
-    if (!tair_build(&T->tair)) return 0;
-    T->built[DNAC_P2S_INST_TAIR] = 1;
-    index = T->tair.index;
-    T->index = index;
+    x = gold_fp_from_u64(row[FAIR_COL_G]);
+    b = row[FAIR_COL_B];
+    f = gold_fp2_new(gold_fp_from_u64(row[FAIR_COL_F]),
+                     gold_fp_from_u64(row[FAIR_COL_F + 1]));
+    beta = F->beta[r];
+    ro = B->is_rollin[r] ? F->ro[B->rank[r]] : gold_fp2_zero();
+
+    if (gold_fp_is_zero(x)) return 0;
+    inv = gold_fp_mul(gold_fp_from_u64(FAIR_NEG_HALF), gold_fp_inv(x));
+    sgn = gold_fp_sub(one, gold_fp_add(gold_fp_from_u64(b),
+                                       gold_fp_from_u64(b)));
+    /* C = b + inv*(beta - x)*(1 - 2b) */
+    C = gold_fp2_mul(gold_fp2_sub(beta, gold_fp2_from_base(x)),
+                     gold_fp2_from_base(gold_fp_mul(inv, sgn)));
+    C = gold_fp2_add(C, gold_fp2_from_base(gold_fp_from_u64(b)));
+    /* gold_fp2_inv returns 0 for 0 by contract, so a zero C would silently
+     * DELETE the equation — refuse instead (beta == x for b == 0 is the only
+     * way to reach it at the pinned shape). */
+    if (gold_fp_is_zero(C.a) && gold_fp_is_zero(C.b)) return 0;
+
+    rhs = gold_fp2_sub(gold_fp2_sub(target, f),
+                       gold_fp2_mul(gold_fp2_mul(beta, beta), ro));
+    *out_sib = gold_fp2_add(f, gold_fp2_mul(rhs, gold_fp2_inv(C)));
+    return 1;
+}
+
+/** The mmix / mmcs / oi traces of ONE query. `fri` is built afterwards, in the
+ *  second pass, because the SHARED terminal has to be fixed first. */
+static int qtraces_build_head(traces_t *T, size_t q, uint64_t seed)
+{
+    qtraces_t *Q = &T->q[q];
+    const uint64_t index = T->tair.index[q];
+
+    Q->index = index;
 
     /* mmix — the builder commits its own mixed batch, opens it and requires the
      * SHIPPED native mixed verifier to accept (test_mmcs_mixed_air.c:145-151)
-     * before any trace exists. */
-    if (!p2s_mmix_make_fixt(dnac_p2s_mmix_cfg(), index, &T->mmix_fx)) {
-        printf("  [rt]     mmix fixture FAILED\n");
+     * before any trace exists. The batch CONTENT is index-independent
+     * (test_mmcs_mixed_air.c:129-133 fills every cell from `cell(m, r, c)`), so
+     * every query commits the SAME tree and the root is genuinely shared — only
+     * the opened row and the sibling path move with q. stmt_from_traces asserts
+     * that rather than assuming it. */
+    if (!p2s_mmix_make_fixt(dnac_p2s_mmix_cfg(), index, &Q->mmix_fx)) {
+        printf("  [rt]     q%zu mmix fixture FAILED\n", q);
         return 0;
     }
-    if (!p2s_mmix_build_trace(&T->mmix, dnac_p2s_mmix_cfg(), &T->mmix_fx,
-                              T->mmix_fx.sibs, T->mmix_fx.root.lanes)) {
-        printf("  [rt]     mmix trace FAILED\n");
+    if (!p2s_mmix_build_trace(&Q->mmix, dnac_p2s_mmix_cfg(), &Q->mmix_fx,
+                              Q->mmix_fx.sibs, Q->mmix_fx.root.lanes)) {
+        printf("  [rt]     q%zu mmix trace FAILED\n", q);
         return 0;
     }
-    T->built[DNAC_P2S_INST_MMIX] = 1;
+    Q->built[DNAC_P2S_SLOT_MMIX] = 1;
 
     /* mmcs — same anchoring through dnac_p2_mmcs_verify
-     * (test_mmcs_air.c:128-133). */
+     * (test_mmcs_air.c:128-133), at this query's shifted index. */
     if (!p2s_mmcs_make_fixture(dnac_p2s_mmcs_cfg(),
                                index >> DNAC_P2S_MAX_LOG_ARITY,
-                               &T->mmcs_fx)) {
-        printf("  [rt]     mmcs fixture FAILED\n");
+                               &Q->mmcs_fx)) {
+        printf("  [rt]     q%zu mmcs fixture FAILED\n", q);
         return 0;
     }
-    if (!p2s_mmcs_build_trace(&T->mmcs, dnac_p2s_mmcs_cfg(),
+    if (!p2s_mmcs_build_trace(&Q->mmcs, dnac_p2s_mmcs_cfg(),
                               index >> DNAC_P2S_MAX_LOG_ARITY,
-                              T->mmcs_fx.elems, T->mmcs_fx.sibs,
-                              T->mmcs_fx.root.lanes)) {
-        printf("  [rt]     mmcs trace FAILED\n");
+                              Q->mmcs_fx.elems, Q->mmcs_fx.sibs,
+                              Q->mmcs_fx.root.lanes)) {
+        printf("  [rt]     q%zu mmcs trace FAILED\n", q);
         return 0;
     }
-    T->built[DNAC_P2S_INST_MMCS] = 1;
+    Q->built[DNAC_P2S_SLOT_MMCS] = 1;
 
     /* oi — a NATIVE-FORMULA REPLAY of fri_open_input over the builder's own
      * deterministic z / p_z fixtures (test_fri_oi_air.c:10-23), at the pinned
-     * cfg. Built BEFORE fri because fri consumes its ro export, and AFTER mmix
-     * because (s2) the MAIN batch's acc rows take their p_x from the mmix
-     * opening: the builder's `g_px_ext` hook is pointed at that derivation for
-     * the duration of the build and cleared immediately after, so the walk's
-     * reduced openings really are accumulated over the MMCS-opened values. */
+     * cfg and at THIS query's index. Built BEFORE fri because fri consumes its
+     * ro export, and AFTER mmix because (s2) the MAIN batch's acc rows take
+     * their p_x from the mmix opening: the builder's `g_px_ext` hook is pointed
+     * at that derivation for the duration of the build and cleared immediately
+     * after, so the walk's reduced openings really are accumulated over the
+     * MMCS-opened values of THIS query. */
     {
         uint64_t px[DNAC_P2S_OI_TOTAL_ACC];
         int ok;
-        oi_px_from_mmix(T, px);
+        oi_px_from_mmix(T, q, px);
         p2s_oi_g_px_ext = px;
         /* s3b — and its alpha is the TRANSCRIPT's first fp2 pop, injected the
-         * same way. The shipped fixture family cannot reach that value for any
-         * seed (both of its lanes move together), which is exactly why the hook
-         * exists; see tests/test_fri_oi_air.c's `g_alpha_ext` comment. */
+         * same way. SHARED across q, exactly like the statement field: the
+         * shipped fixture family cannot reach that value for any seed (both of
+         * its lanes move together), which is why the hook exists; see
+         * tests/test_fri_oi_air.c's `g_alpha_ext` comment. */
         p2s_oi_g_alpha_ext = T->tair.alpha;
-        ok = p2s_oi_build_honest(&T->oi, dnac_p2s_oi_cfg(), index, seed);
+        ok = p2s_oi_build_honest(&Q->oi, dnac_p2s_oi_cfg(), index, seed);
         p2s_oi_g_px_ext = NULL;
         p2s_oi_g_alpha_ext = NULL;
         if (!ok) {
-            printf("  [rt]     oi trace FAILED\n");
+            printf("  [rt]     q%zu oi trace FAILED\n", q);
             return 0;
         }
     }
-    T->built[DNAC_P2S_INST_OI] = 1;
+    Q->built[DNAC_P2S_SLOT_OI] = 1;
+    return 1;
+}
 
-    /* fri — betas / siblings are FIXTURE-DERIVED (see the file header's honest
-     * label), but f_init and every roll-in are OVERRIDDEN with the oi export
-     * BEFORE the trace is built. f_init takes the height-lgmh export (oi index
-     * 0); roll-in slot k takes the export of `rollin_heights[k]`, found by
-     * height in the oi cfg — the same lookup fri_statement.c performs. */
-    p2s_fri_fill_fixture(&T->fri_fx, seed);
-    /* s3b — every beta is the TRANSCRIPT's round-r fp2 pop. `fixture_t` is
-     * CALLER-owned (tests/test_fri_air.c:122-129 fills a struct the caller
-     * hands it, and build_trace reads `F->beta[r]` at :268), so no hook is
-     * needed on this side: overwriting after fill_fixture is the same move the
-     * f_init / ro lines below already make. */
+/** Fill query q's fri FIXTURE: the shared betas, and this query's own f_init /
+ *  roll-ins off its own oi export. The sibling column is left as
+ *  `fill_fixture` produced it; the caller may then solve its last entry. */
+static int qtraces_fri_fixture(traces_t *T, size_t q,
+                               const dnac_p2c_table_cfg_t *fri_cfg,
+                               uint64_t seed)
+{
+    qtraces_t *Q = &T->q[q];
+
+    /* seed + q so the two queries' SIBLING columns genuinely differ; the
+     * siblings are unconstrained witness here (fri_air.h), and a shared
+     * fixture would make the two fri traces differ only in their bits. */
+    p2s_fri_fill_fixture(&Q->fri_fx, seed + q);
+    /* s3b — every beta is the TRANSCRIPT's round-r fp2 pop, and it is the SAME
+     * pop for every query: the native samples beta once per round, outside the
+     * query loop (fri_verifier.c:707 vs :736). `fixture_t` is CALLER-owned
+     * (tests/test_fri_air.c:122-129 fills a struct the caller hands it, and
+     * build_trace reads `F->beta[r]` at :268), so no hook is needed on this
+     * side: overwriting after fill_fixture is the same move the f_init / ro
+     * lines below already make. */
     for (size_t r = 0; r < dnac_p2c_fold_rows(fri_cfg) && r < DNAC_P2S_FRI_R;
          r++) {
-        T->fri_fx.beta[r] = gold_fp2_new(gold_fp_from_u64(T->tair.beta[2 * r]),
-                                         gold_fp_from_u64(T->tair.beta[2 * r + 1]));
+        Q->fri_fx.beta[r] =
+            gold_fp2_new(gold_fp_from_u64(T->tair.beta[2 * r]),
+                         gold_fp_from_u64(T->tair.beta[2 * r + 1]));
     }
-    T->fri_fx.f_init = oi_ro_export(T, 0);
+    /* PER-QUERY: f_init takes THIS query's height-lgmh export (oi index 0);
+     * roll-in slot k takes THIS query's export of `rollin_heights[k]`, found by
+     * height in the oi cfg — the same lookup fri_statement.c performs. */
+    Q->fri_fx.f_init = oi_ro_export(T, q, 0);
     for (size_t k = 0; k < fri_cfg->num_rollin; k++) {
         const dnac_p2c_oi_table_cfg_t *oc = dnac_p2s_oi_cfg();
         size_t found = (size_t)-1;
@@ -1765,24 +2122,131 @@ static int traces_build(traces_t *T, const dnac_p2c_table_cfg_t *fri_cfg,
                    fri_cfg->rollin_heights[k]);
             return 0;
         }
-        T->fri_fx.ro[k] = oi_ro_export(T, found);
+        Q->fri_fx.ro[k] = oi_ro_export(T, q, found);
     }
-    if (!p2s_fri_build_trace(&T->fri, fri_cfg, index, &T->fri_fx, &V_HONEST)) {
-        printf("  [rt]     fri trace FAILED\n");
+    return 1;
+}
+
+/**
+ * Build every honest trace at the pinned cfgs, for ALL Q queries.
+ *
+ * The index each builder receives is exactly the alias map fri_statement.c
+ * step 6 implements, from the other side, for that query:
+ *   mmix  reduced index = index[q] >> (lgmh - depth) == index[q]  (shift 0)
+ *   mmcs  index[q] >> log_arity                      (fri_verifier.c:558)
+ *   fri   the full index[q]
+ *   oi    the full index[q] (its chain consumes all lgmh bits, MSB-first)
+ * `fri_cfg` is a parameter so N-CFG can build the same batch on a DIFFERENT
+ * fri cfg without duplicating any of this.
+ *
+ * ⚠ ORDER IS LOAD-BEARING (s1c + s3b + multi-query), and it is the SAME rule
+ * every time: a value that is aliased must be produced BEFORE its consumers.
+ *   1. tair FIRST — it produces every query's index, alpha and every beta.
+ *   2. per query: mmix / mmcs on index[q]; oi with the shared alpha injected
+ *      (g_alpha_ext) and its p_x taken from THAT query's mmix opening
+ *      (g_px_ext).
+ *   3. query 0's fri, which FIXES the shared terminal; then every query's fri
+ *      with its last sibling solved against that terminal.
+ * So each walk really is seeded by its own open_input result and driven by the
+ * challenger's own challenges, and all Q land on ONE final_poly.
+ */
+static int traces_build(traces_t *T, const dnac_p2c_table_cfg_t *fri_cfg,
+                        uint64_t seed)
+{
+    gold_fp2_t target;
+
+    memset(T, 0, sizeof(*T));
+
+    /* tair — the SHIPPED gate's builder over a vector synthesized from the
+     * pinned script. Everything below is seeded from its result. */
+    if (!tair_build(&T->tair)) return 0;
+    T->tair_built = 1;
+
+    for (size_t q = 0; q < DNAC_P2S_NUM_QUERIES; q++) {
+        if (!qtraces_build_head(T, q, seed)) return 0;
+        if (!qtraces_fri_fixture(T, q, fri_cfg, seed)) return 0;
+    }
+
+    /* Query 0's walk defines the SHARED terminal. Building it first and taking
+     * its natural output means query 0 needs no adjustment at all, and the
+     * solve applied to it is a self-check rather than a change. */
+    if (!p2s_fri_build_trace(&T->q[0].fri, fri_cfg, T->q[0].index,
+                             &T->q[0].fri_fx, &V_HONEST)) {
+        printf("  [rt]     q0 fri trace FAILED\n");
         return 0;
     }
-    T->built[DNAC_P2S_INST_FRI] = 1;
+    T->q[0].built[DNAC_P2S_SLOT_FRI] = 1;
+    {
+        const size_t fo = dnac_fair_pub_final_off(fri_cfg);
+        target = gold_fp2_new(gold_fp_from_u64(T->q[0].fri.pub[fo]),
+                              gold_fp_from_u64(T->q[0].fri.pub[fo + 1]));
+    }
+
+    /* SELF-CHECK of the inverse: solving query 0's last sibling against the
+     * terminal query 0 ALREADY produced must give back the sibling it already
+     * has. If the affine inversion above were wrong in any term, this fires
+     * here rather than as an unexplained RT-1 failure. */
+    {
+        gold_fp2_t s;
+        if (!fri_solve_last_sib(&T->q[0].fri, &T->q[0].fri_fx, target, &s)) {
+            CHECK(0, "RT: the last-sibling solve is not applicable at the "
+                     "pinned shape (x == 0 or a degenerate coefficient)");
+            return 0;
+        }
+        CHECK(gold_fp_to_u64(s.a) ==
+                      gold_fp_to_u64(T->q[0].fri_fx.sib[T->q[0].fri.R - 1].a) &&
+                  gold_fp_to_u64(s.b) ==
+                      gold_fp_to_u64(
+                          T->q[0].fri_fx.sib[T->q[0].fri.R - 1].b),
+              "RT: solving for the sibling that produced this terminal does "
+              "not return that sibling — the affine inversion is wrong");
+    }
+
+    /* Every other query: solve its last sibling so its walk lands on the SAME
+     * terminal, then rebuild. Rows before the last fold row are untouched. */
+    for (size_t q = 1; q < DNAC_P2S_NUM_QUERIES; q++) {
+        qtraces_t *Q = &T->q[q];
+        gold_fp2_t s;
+
+        if (!p2s_fri_build_trace(&Q->fri, fri_cfg, Q->index, &Q->fri_fx,
+                                 &V_HONEST)) {
+            printf("  [rt]     q%zu provisional fri trace FAILED\n", q);
+            return 0;
+        }
+        if (!fri_solve_last_sib(&Q->fri, &Q->fri_fx, target, &s)) {
+            CHECK(0, "RT: q%zu last-sibling solve not applicable", q);
+            p2s_fri_built_free(&Q->fri);
+            return 0;
+        }
+        Q->fri_fx.sib[Q->fri.R - 1] = s;
+        p2s_fri_built_free(&Q->fri);
+        if (!p2s_fri_build_trace(&Q->fri, fri_cfg, Q->index, &Q->fri_fx,
+                                 &V_HONEST)) {
+            printf("  [rt]     q%zu fri rebuild FAILED\n", q);
+            return 0;
+        }
+        Q->built[DNAC_P2S_SLOT_FRI] = 1;
+        {
+            const size_t fo = dnac_fair_pub_final_off(fri_cfg);
+            CHECK(Q->fri.pub[fo] == gold_fp_to_u64(target.a) &&
+                      Q->fri.pub[fo + 1] == gold_fp_to_u64(target.b),
+                  "RT: q%zu's walk does not land on the SHARED terminal", q);
+        }
+    }
 
     /* Each shipped u64 evaluator must accept its own trace — the anchor the
-     * whole round-trip stands on. */
-    CHECK(p2s_mmix_eval_built(&T->mmix) == 0,
-          "RT: the mmix u64 evaluator rejects its own honest trace");
-    CHECK(p2s_mmcs_eval_built(&T->mmcs) == 0,
-          "RT: the mmcs u64 evaluator rejects its own honest trace");
-    CHECK(p2s_fri_eval_built(&T->fri) == 0,
-          "RT: the fri u64 evaluator rejects its own honest trace");
-    CHECK(p2s_oi_eval_b(&T->oi) == 0,
-          "RT: the oi u64 evaluator rejects its own honest trace");
+     * whole round-trip stands on. Per query, so a builder that silently
+     * degraded for q > 0 cannot hide behind query 0. */
+    for (size_t q = 0; q < DNAC_P2S_NUM_QUERIES; q++) {
+        CHECK(p2s_mmix_eval_built(&T->q[q].mmix) == 0,
+              "RT: the mmix u64 evaluator rejects q%zu's honest trace", q);
+        CHECK(p2s_mmcs_eval_built(&T->q[q].mmcs) == 0,
+              "RT: the mmcs u64 evaluator rejects q%zu's honest trace", q);
+        CHECK(p2s_fri_eval_built(&T->q[q].fri) == 0,
+              "RT: the fri u64 evaluator rejects q%zu's honest trace", q);
+        CHECK(p2s_oi_eval_b(&T->q[q].oi) == 0,
+              "RT: the oi u64 evaluator rejects q%zu's honest trace", q);
+    }
     CHECK(dnac_transcript_air_eval_trace(
               T->tair.B->trace, T->tair.B->prep, T->tair.B->n_rows,
               dnac_p2s_tair_cfg(), dnac_p2s_tair_script(), T->tair.B->pub,
@@ -1791,89 +2255,119 @@ static int traces_build(traces_t *T, const dnac_p2c_table_cfg_t *fri_cfg,
     return 1;
 }
 
-/** Fill the statement from the three built traces. */
+/** Fill the statement from every built trace. */
 static void stmt_from_traces(dnac_p2s_statement_t *stmt, const traces_t *T)
 {
     const dnac_p2c_table_cfg_t *fri = dnac_p2s_fri_cfg();
-    const uint64_t index = T->index;
+    const size_t final_off = dnac_fair_pub_final_off(fri);
     memset(stmt, 0, sizeof(*stmt));
 
-    for (size_t l = 0; l < DNAC_P2S_LGMH; l++) {
-        stmt->index_bits[l] = (index >> l) & 1u;
-    }
+    /* ── SHARED regions, filled ONCE ──────────────────────────────────────
+     * Each is taken from query 0's builder and then REQUIRED to agree with
+     * every other query's, because "shared" is a claim about the traces, not
+     * just about the struct: a builder whose root or terminal moved with the
+     * index would make the shared field unsatisfiable and the failure would
+     * surface as an unexplained RT-1 reject instead of here. */
     for (size_t k = 0; k < (size_t)MMIX_DIGEST_LANES; k++) {
-        stmt->mmix_root[k] = T->mmix_fx.root.lanes[k];
+        stmt->mmix_root[k] = T->q[0].mmix_fx.root.lanes[k];
     }
     for (size_t k = 0; k < (size_t)MAIR_DIGEST_LANES; k++) {
-        stmt->mmcs_root[k] = T->mmcs_fx.root.lanes[k];
+        stmt->mmcs_root[k] = T->q[0].mmcs_fx.root.lanes[k];
     }
-    /* opened rows, taken from the SAME place each builder's publics take them:
-     * the mixed fixture's per-matrix DATA lanes, and the same-height fixture's
-     * concatenated element stream. */
-    {
-        size_t off = 0;
-        for (size_t m = 0; m < T->mmix_fx.nm; m++) {
-            for (size_t d = 0; d < T->mmix_fx.semw[m]; d++) {
-                stmt->mmix_opened[off + d] = T->mmix_fx.rows[m][d];
-            }
-            off += T->mmix_fx.semw[m];
+    stmt->final_poly0[0] = T->q[0].fri.pub[final_off];
+    stmt->final_poly0[1] = T->q[0].fri.pub[final_off + 1];
+    for (size_t q = 1; q < DNAC_P2S_NUM_QUERIES; q++) {
+        int same = 1;
+        for (size_t k = 0; k < (size_t)MMIX_DIGEST_LANES; k++) {
+            if (T->q[q].mmix_fx.root.lanes[k] != stmt->mmix_root[k]) same = 0;
         }
+        CHECK(same, "stmt: q%zu commits a DIFFERENT mmix root — the shared "
+                    "root field cannot describe both", q);
+        same = 1;
+        for (size_t k = 0; k < (size_t)MAIR_DIGEST_LANES; k++) {
+            if (T->q[q].mmcs_fx.root.lanes[k] != stmt->mmcs_root[k]) same = 0;
+        }
+        CHECK(same, "stmt: q%zu commits a DIFFERENT mmcs root", q);
+        CHECK(T->q[q].fri.pub[final_off] == stmt->final_poly0[0] &&
+                  T->q[q].fri.pub[final_off + 1] == stmt->final_poly0[1],
+              "stmt: q%zu's walk terminal is not the shared final_poly", q);
     }
-    for (size_t c = 0; c < DNAC_P2S_MMCS_TOTAL_WIDTH; c++) {
-        stmt->mmcs_opened[c] = T->mmcs_fx.elems[c];
+    /* The CLAIMED EVALUATIONS. Taken from query 0's oi builder at the p_z half
+     * of each acc row's four-lane block (z at 4a, p_z at 4a + 2), and then
+     * REQUIRED to agree with every other query's — which is the claim the
+     * shared region rests on, so it is asserted rather than assumed. The
+     * builder emits `pz = tfp2(a_global + 3, 19)` for every row of the pinned
+     * cfg (tests/test_fri_oi_air.c:265-266 with `cur_is_lb == 0` throughout,
+     * because no pinned oi height sits at log_blowup — T-CONST guards that),
+     * i.e. a pure function of the SCHEDULE ORDINAL, not of the query index.
+     * If that ever stops holding, this fires here instead of surfacing as an
+     * unexplained RT-1 rejection. */
+    for (size_t a = 0; a < DNAC_P2S_OI_TOTAL_ACC; a++) {
+        const p2s_oi_built_t *B0 = &T->q[0].oi;
+        stmt->pz_shared[2 * a] = B0->pub[B0->pub_zpz + 4 * a + 2];
+        stmt->pz_shared[2 * a + 1] = B0->pub[B0->pub_zpz + 4 * a + 3];
+    }
+    for (size_t q = 1; q < DNAC_P2S_NUM_QUERIES; q++) {
+        const p2s_oi_built_t *B = &T->q[q].oi;
+        size_t bad = 0;
+        for (size_t a = 0; a < DNAC_P2S_OI_TOTAL_ACC; a++) {
+            if (B->pub[B->pub_zpz + 4 * a + 2] != stmt->pz_shared[2 * a] ||
+                B->pub[B->pub_zpz + 4 * a + 3] != stmt->pz_shared[2 * a + 1]) {
+                bad++;
+            }
+        }
+        CHECK(bad == 0,
+              "stmt: q%zu's oi builder claims %zu DIFFERENT p_z value(s) — a "
+              "shared claimed-evaluation region has no honest witness", q, bad);
     }
     /* s3b — the transcript payload, read straight off the tair builder's own
      * publics. This is the SINGLE source of the betas and alpha, so those two
-     * have no statement field to fill any more (below). */
-    {
-        const dnac_tair_script_t *ts = dnac_p2s_tair_script();
-        size_t rest = 0;
-        for (size_t k = 0; k < DNAC_P2S_TAIR_NUM_OPS; k++) {
-            stmt->tair_payload[k] = T->tair.B->pub[k];
+     * have no statement field to fill any more, and no per-query copy either. */
+    for (size_t k = 0; k < DNAC_P2S_TAIR_NUM_OPS; k++) {
+        stmt->tair_payload[k] = T->tair.B->pub[k];
+    }
+
+    /* ── PER-QUERY regions ────────────────────────────────────────────────── */
+    for (size_t q = 0; q < DNAC_P2S_NUM_QUERIES; q++) {
+        const qtraces_t *Q = &T->q[q];
+        const uint64_t index = Q->index;
+
+        for (size_t l = 0; l < DNAC_P2S_LGMH; l++) {
+            stmt->index_bits[q][l] = (index >> l) & 1u;
         }
-        /* and the bit blocks of queries 1..Q-1, in script order */
-        for (size_t q = 1; q < DNAC_P2S_NUM_QUERIES; q++) {
-            const size_t kq = tair_pop_op(ts, 2 + 2 * DNAC_P2S_FRI_R + q);
-            size_t off;
-            if (kq == (size_t)-1) {
-                CHECK(0, "stmt: query %zu has no pop", q);
-                break;
-            }
-            off = dnac_tair_op_bit_off(ts, kq);
-            if (off == (size_t)-1) {
-                CHECK(0, "stmt: query %zu exports no bits", q);
-                break;
-            }
-            for (size_t l = 0; l < DNAC_P2S_LGMH; l++) {
-                if (rest < DNAC_P2S_TAIR_BITS_REST) {
-                    stmt->tair_bits_rest[rest++] = T->tair.B->pub[off + l];
+        /* opened rows, taken from the SAME place each builder's publics take
+         * them: the mixed fixture's per-matrix DATA lanes, and the same-height
+         * fixture's concatenated element stream. */
+        {
+            size_t off = 0;
+            for (size_t m = 0; m < Q->mmix_fx.nm; m++) {
+                for (size_t d = 0; d < Q->mmix_fx.semw[m]; d++) {
+                    stmt->mmix_opened[q][off + d] = Q->mmix_fx.rows[m][d];
                 }
+                off += Q->mmix_fx.semw[m];
             }
         }
-    }
-    /* fri regions, read back out of the builder's own publics so the statement
-     * and the trace cannot disagree by construction. `f_init` and the roll-ins
-     * (s1c) and now `betas` (s3b) are DELIBERATELY not read here — they have no
-     * statement field any more; the oi export and the tair payload are their
-     * single sources, and traces_build already seeded the fri trace from both. */
-    {
-        const size_t final_off = dnac_fair_pub_final_off(fri);
-        stmt->final_poly0[0] = T->fri.pub[final_off];
-        stmt->final_poly0[1] = T->fri.pub[final_off + 1];
-    }
-    /* oi regions, likewise straight off the oi builder's publics — minus alpha,
-     * which is the tair payload's now (s3b). */
-    {
-        for (size_t i = 0; i < 4 * DNAC_P2S_OI_TOTAL_ACC; i++) {
-            stmt->zpz[i] = T->oi.pub[T->oi.pub_zpz + i];
+        for (size_t c = 0; c < DNAC_P2S_MMCS_TOTAL_WIDTH; c++) {
+            stmt->mmcs_opened[q][c] = Q->mmcs_fx.elems[c];
+        }
+        /* oi regions, straight off the oi builder's publics — minus alpha,
+         * which is the tair payload's now (s3b). `f_init` and the roll-ins
+         * (s1c) are DELIBERATELY not read out of the fri builder: they have no
+         * statement field, the oi export is their single source, and
+         * traces_build already seeded the fri trace from it. */
+        /* Only the z half of each acc row's block is per-query; the p_z half is
+         * the shared region filled above. */
+        for (size_t a = 0; a < DNAC_P2S_OI_TOTAL_ACC; a++) {
+            stmt->z_pq[q][2 * a] = Q->oi.pub[Q->oi.pub_zpz + 4 * a];
+            stmt->z_pq[q][2 * a + 1] = Q->oi.pub[Q->oi.pub_zpz + 4 * a + 1];
         }
         for (size_t i = 0; i < 2 * DNAC_P2S_OI_NUM_HEIGHTS; i++) {
-            stmt->ro_export[i] = T->oi.pub[T->oi.pub_ro + i];
+            stmt->ro_export[q][i] = Q->oi.pub[Q->oi.pub_ro + i];
         }
         /* s2 — px_rest carries ONLY the acc rows the main batch does not cover.
          * The main-batch rows have NO statement field: the entry aliases them
-         * off mmix_opened, which is the whole point of the slice. Walked in the
-         * same schedule order the entry walks. */
+         * off mmix_opened[q], which is the whole point of that slice. Walked in
+         * the same schedule order the entry walks. */
         {
             const dnac_p2c_oi_table_cfg_t *oc = dnac_p2s_oi_cfg();
             size_t g = 0, rest = 0;
@@ -1886,7 +2380,7 @@ static void stmt_from_traces(dnac_p2s_statement_t *stmt, const traces_t *T)
                 for (size_t a = 0; a < n_acc; a++, g++) {
                     if (a < batch_sz) continue;
                     if (rest < DNAC_P2S_OI_PX_REST) {
-                        stmt->px_rest[rest++] = T->oi.pub[T->oi.pub_px + g];
+                        stmt->px_rest[q][rest++] = Q->oi.pub[Q->oi.pub_px + g];
                     }
                 }
             }
@@ -1901,234 +2395,277 @@ static void stmt_from_traces(dnac_p2s_statement_t *stmt, const traces_t *T)
  */
 static void t_alias_positive(const dnac_p2s_statement_t *stmt, const traces_t *T)
 {
-    dnac_batch_vinstance_t insts[DNAC_P2S_NUM_INSTANCES];
-    gold_fp_t pm[DNAC_P2S_MMIX_NUM_PUBLICS];
-    gold_fp_t pc[DNAC_P2S_MMCS_NUM_PUBLICS];
-    gold_fp_t pf[DNAC_P2S_FRI_NUM_PUBLICS];
-    gold_fp_t po[DNAC_P2S_OI_NUM_PUBLICS];
-    gold_fp_t pt[DNAC_P2S_TAIR_NUM_PUBLICS];
-    size_t bad = 0;
+    const p2s_set_t *S = &g_set_a;
+    const gold_fp_t *pt;
 
-    if (dnac_p2_fri_statement_build_instances(stmt, insts, &g_fs_a, pm, pc, pf,
-                                              po, pt) != DNAC_P2S_OK) {
+    if (set_build(&g_set_a, stmt) != DNAC_P2S_OK) {
         CHECK(0, "T-ALIAS: build_instances rejected the honest statement");
         return;
     }
-    for (size_t i = 0; i < DNAC_P2S_MMIX_NUM_PUBLICS; i++) {
-        if (gold_fp_to_u64(pm[i]) != T->mmix.pub[i]) bad++;
-    }
-    CHECK(bad == 0, "T-ALIAS: %zu mmix publics differ from the builder's", bad);
-    bad = 0;
-    for (size_t i = 0; i < DNAC_P2S_MMCS_NUM_PUBLICS; i++) {
-        if (gold_fp_to_u64(pc[i]) != T->mmcs.pub[i]) bad++;
-    }
-    CHECK(bad == 0, "T-ALIAS: %zu mmcs publics differ from the builder's", bad);
-    bad = 0;
-    for (size_t i = 0; i < DNAC_P2S_FRI_NUM_PUBLICS; i++) {
-        if (gold_fp_to_u64(pf[i]) != T->fri.pub[i]) bad++;
-    }
-    CHECK(bad == 0, "T-ALIAS: %zu fri publics differ from the builder's", bad);
-    bad = 0;
-    for (size_t i = 0; i < DNAC_P2S_OI_NUM_PUBLICS; i++) {
-        if (gold_fp_to_u64(po[i]) != T->oi.pub[i]) bad++;
-    }
-    CHECK(bad == 0, "T-ALIAS: %zu oi publics differ from the builder's", bad);
-    bad = 0;
-    for (size_t i = 0; i < DNAC_P2S_TAIR_NUM_PUBLICS; i++) {
-        if (gold_fp_to_u64(pt[i]) != T->tair.B->pub[i]) bad++;
-    }
-    CHECK(bad == 0, "T-ALIAS: %zu tair publics differ from the builder's", bad);
+    pt = set_pub(S, DNAC_P2S_INST_TAIR);
 
-    /* ── T-SRC: the s1c single-source property, asserted on the entry's OWN
-     * output. The fri instance's f_init region and its roll-in region must BE
-     * the oi instance's exported ro lanes — not merely equal to something the
-     * statement also holds, since the statement no longer holds them at all. ── */
     {
-        const dnac_p2c_table_cfg_t    *fc = dnac_p2s_fri_cfg();
-        const dnac_p2c_oi_table_cfg_t *oc = dnac_p2s_oi_cfg();
-        const size_t finit_off = dnac_fair_pub_finit_off(fc);
-        const size_t fro_off = dnac_fair_pub_ro_off(fc);
-        const size_t oro_off = dnac_foi_pub_ro_off(oc);
-
-        CHECK(gold_fp_to_u64(pf[finit_off]) == gold_fp_to_u64(po[oro_off]) &&
-                  gold_fp_to_u64(pf[finit_off + 1]) ==
-                      gold_fp_to_u64(po[oro_off + 1]),
-              "T-SRC: fri f_init is not the oi height-lgmh ro export");
-        for (size_t k = 0; k < fc->num_rollin; k++) {
-            size_t i = (size_t)-1;
-            for (size_t j = 0; j < oc->num_heights; j++) {
-                if (oc->heights[j].log_height == fc->rollin_heights[k]) i = j;
-            }
-            CHECK(i != (size_t)-1 && i != 0,
-                  "T-SRC: roll-in %zu has no non-seed oi export", k);
-            if (i == (size_t)-1) continue;
-            CHECK(gold_fp_to_u64(pf[fro_off + 2 * k]) ==
-                          gold_fp_to_u64(po[oro_off + 2 * i]) &&
-                      gold_fp_to_u64(pf[fro_off + 2 * k + 1]) ==
-                          gold_fp_to_u64(po[oro_off + 2 * i + 1]),
-                  "T-SRC: fri roll-in slot %zu is not oi ro export %zu", k, i);
+        size_t bad = 0;
+        for (size_t i = 0; i < DNAC_P2S_TAIR_NUM_PUBLICS; i++) {
+            if (gold_fp_to_u64(pt[i]) != T->tair.B->pub[i]) bad++;
         }
+        CHECK(bad == 0, "T-ALIAS: %zu tair publics differ from the builder's",
+              bad);
     }
 
-    /* ── T-SRC/px (s2): the MAIN batch's p_x publics ARE the mmix instance's
-     * opened-row publics. Asserted on the ENTRY's own two output vectors — not
-     * on the statement, which holds those lanes exactly once (in mmix_opened)
-     * and holds no p_x field for them at all. This is the same two-consumer
-     * shape T-SRC asserts for ro_export, one seam further down. ── */
-    {
-        const dnac_p2c_mmix_table_cfg_t *mc = dnac_p2s_mmix_cfg();
-        const dnac_p2c_oi_table_cfg_t   *oc = dnac_p2s_oi_cfg();
-        const size_t mo_off = dnac_mmix_air_pub_opened_off(mc);
-        const size_t opx_off = dnac_foi_pub_px_off(oc);
-        size_t g = 0, checked = 0;
+    for (size_t q = 0; q < DNAC_P2S_NUM_QUERIES; q++) {
+        const qtraces_t *Q = &T->q[q];
+        const gold_fp_t *pm = set_pub(S, DNAC_P2S_INST(q, DNAC_P2S_SLOT_MMIX));
+        const gold_fp_t *pc = set_pub(S, DNAC_P2S_INST(q, DNAC_P2S_SLOT_MMCS));
+        const gold_fp_t *pf = set_pub(S, DNAC_P2S_INST(q, DNAC_P2S_SLOT_FRI));
+        const gold_fp_t *po = set_pub(S, DNAC_P2S_INST(q, DNAC_P2S_SLOT_OI));
+        size_t bad = 0;
 
-        for (size_t i = 0; i < oc->num_heights; i++) {
-            const dnac_p2c_oi_height_desc_t *d = &oc->heights[i];
-            const size_t n_acc = d->num_batches * d->num_matrices *
-                                 d->num_points * d->num_columns;
-            const size_t batch_sz =
-                d->num_matrices * d->num_points * d->num_columns;
-            const size_t want_h = (size_t)1u << d->log_height;
-            size_t moff = 0, mi = (size_t)-1;
-
-            for (size_t m = 0; m < mc->num_matrices; m++) {
-                if (mc->heights[m] == want_h) { mi = m; break; }
-                moff += mc->widths[m];
-            }
-            CHECK(mi != (size_t)-1,
-                  "T-SRC/px: oi height %zu has no mmix matrix", d->log_height);
-            for (size_t a = 0; a < n_acc; a++, g++) {
-                if (mi == (size_t)-1 || a >= batch_sz) continue;
-                CHECK(gold_fp_to_u64(po[opx_off + g]) ==
-                          gold_fp_to_u64(pm[mo_off + moff + a % d->num_columns]),
-                      "T-SRC/px: oi acc row %zu (height %zu, main batch) is not "
-                      "the mmix opened lane", g, d->log_height);
-                checked++;
-            }
+        for (size_t i = 0; i < DNAC_P2S_MMIX_NUM_PUBLICS; i++) {
+            if (gold_fp_to_u64(pm[i]) != Q->mmix.pub[i]) bad++;
         }
-        /* Not vacuous: the loop must actually have compared MAIN_ACC rows. */
-        CHECK(checked == DNAC_P2S_OI_MAIN_ACC,
-              "T-SRC/px: compared %zu main-batch rows, expected %zu", checked,
-              (size_t)DNAC_P2S_OI_MAIN_ACC);
-    }
-
-    /* ── T-SRC/beta + T-SRC/alpha (s3b): the fri betas and the oi alpha ARE
-     * transcript payload lanes. Asserted on the ENTRY's own three output
-     * vectors — the statement holds each of these values exactly once, in
-     * `tair_payload`, and holds no beta or alpha field at all. The op indices
-     * are re-derived here by scanning the script, independently of the entry's
-     * own walk. ── */
-    {
-        const dnac_tair_script_t *ts = dnac_p2s_tair_script();
-        const size_t beta_off = dnac_fair_pub_beta_off(dnac_p2s_fri_cfg());
-        const size_t alpha_off = dnac_foi_pub_alpha_off(dnac_p2s_oi_cfg());
-        const size_t ka0 = tair_pop_op(ts, 0), ka1 = tair_pop_op(ts, 1);
-
-        CHECK(ka0 != (size_t)-1 && ka1 != (size_t)-1,
-              "T-SRC/alpha: the script has no alpha pops");
-        if (ka0 != (size_t)-1 && ka1 != (size_t)-1) {
-            CHECK(gold_fp_to_u64(po[alpha_off]) == gold_fp_to_u64(pt[ka0]) &&
-                      gold_fp_to_u64(po[alpha_off + 1]) ==
-                          gold_fp_to_u64(pt[ka1]),
-                  "T-SRC/alpha: the oi alpha publics are not the transcript's "
-                  "first fp2 pop");
+        CHECK(bad == 0, "T-ALIAS: %zu mmix[q%zu] publics differ from the "
+                        "builder's", bad, q);
+        bad = 0;
+        for (size_t i = 0; i < DNAC_P2S_MMCS_NUM_PUBLICS; i++) {
+            if (gold_fp_to_u64(pc[i]) != Q->mmcs.pub[i]) bad++;
         }
-        for (size_t r = 0; r < DNAC_P2S_FRI_R; r++) {
-            const size_t k0 = tair_pop_op(ts, 2 + 2 * r);
-            const size_t k1 = tair_pop_op(ts, 2 + 2 * r + 1);
-            CHECK(k0 != (size_t)-1 && k1 != (size_t)-1,
-                  "T-SRC/beta: no pops for round %zu", r);
-            if (k0 == (size_t)-1 || k1 == (size_t)-1) continue;
-            CHECK(gold_fp_to_u64(pf[beta_off + 2 * r]) ==
-                          gold_fp_to_u64(pt[k0]) &&
-                      gold_fp_to_u64(pf[beta_off + 2 * r + 1]) ==
-                          gold_fp_to_u64(pt[k1]),
-                  "T-SRC/beta: fri beta[%zu] is not the transcript's round-%zu "
-                  "pop pair", r, r);
+        CHECK(bad == 0, "T-ALIAS: %zu mmcs[q%zu] publics differ from the "
+                        "builder's", bad, q);
+        bad = 0;
+        for (size_t i = 0; i < DNAC_P2S_FRI_NUM_PUBLICS; i++) {
+            if (gold_fp_to_u64(pf[i]) != Q->fri.pub[i]) bad++;
         }
+        CHECK(bad == 0, "T-ALIAS: %zu fri[q%zu] publics differ from the "
+                        "builder's", bad, q);
+        bad = 0;
+        for (size_t i = 0; i < DNAC_P2S_OI_NUM_PUBLICS; i++) {
+            if (gold_fp_to_u64(po[i]) != Q->oi.pub[i]) bad++;
+        }
+        CHECK(bad == 0, "T-ALIAS: %zu oi[q%zu] publics differ from the "
+                        "builder's", bad, q);
 
-        /* ── T-SRC/index: the transcript's query-0 exported bits ARE the lanes
-         * the four consumers' bit / direction publics were built from. Compared
-         * against `index_bits` — the entry's single construction input — and
-         * then, one step further, against the fri instance's own bit region, so
-         * the chain transcript -> statement -> consumer is closed on the
-         * entry's output rather than on its input. ── */
+        /* ── T-SRC: the s1c single-source property, asserted on the entry's OWN
+         * output, PER QUERY. Query q's fri f_init region and its roll-in region
+         * must BE query q's oi exported ro lanes — not merely equal to
+         * something the statement also holds, since the statement no longer
+         * holds them at all. ── */
         {
-            const size_t kq = tair_pop_op(ts, 2 + 2 * DNAC_P2S_FRI_R);
-            const size_t off = (kq == (size_t)-1)
-                                   ? (size_t)-1
-                                   : dnac_tair_op_bit_off(ts, kq);
-            CHECK(off != (size_t)-1, "T-SRC/index: query 0 exports no bits");
-            if (off != (size_t)-1) {
-                for (size_t l = 0; l < DNAC_P2S_LGMH; l++) {
-                    CHECK(gold_fp_to_u64(pt[off + l]) == stmt->index_bits[l],
-                          "T-SRC/index: tair bit %zu is not index_bits[%zu]", l,
-                          l);
-                    CHECK(gold_fp_to_u64(pf[(size_t)FAIR_PUB_BITS_OFF + l]) ==
-                              gold_fp_to_u64(pt[off + l]),
-                          "T-SRC/index: the fri walk's bit %zu is not the "
-                          "transcript's exported bit", l);
+            const dnac_p2c_table_cfg_t    *fc = dnac_p2s_fri_cfg();
+            const dnac_p2c_oi_table_cfg_t *oc = dnac_p2s_oi_cfg();
+            const size_t finit_off = dnac_fair_pub_finit_off(fc);
+            const size_t fro_off = dnac_fair_pub_ro_off(fc);
+            const size_t oro_off = dnac_foi_pub_ro_off(oc);
+
+            CHECK(gold_fp_to_u64(pf[finit_off]) ==
+                          gold_fp_to_u64(po[oro_off]) &&
+                      gold_fp_to_u64(pf[finit_off + 1]) ==
+                          gold_fp_to_u64(po[oro_off + 1]),
+                  "T-SRC: fri[q%zu] f_init is not q%zu's oi height-lgmh ro "
+                  "export", q, q);
+            for (size_t k = 0; k < fc->num_rollin; k++) {
+                size_t i = (size_t)-1;
+                for (size_t j = 0; j < oc->num_heights; j++) {
+                    if (oc->heights[j].log_height == fc->rollin_heights[k]) {
+                        i = j;
+                    }
+                }
+                CHECK(i != (size_t)-1 && i != 0,
+                      "T-SRC: roll-in %zu has no non-seed oi export", k);
+                if (i == (size_t)-1) continue;
+                CHECK(gold_fp_to_u64(pf[fro_off + 2 * k]) ==
+                              gold_fp_to_u64(po[oro_off + 2 * i]) &&
+                          gold_fp_to_u64(pf[fro_off + 2 * k + 1]) ==
+                              gold_fp_to_u64(po[oro_off + 2 * i + 1]),
+                      "T-SRC: fri[q%zu] roll-in slot %zu is not oi ro export "
+                      "%zu", q, k, i);
+            }
+        }
+
+        /* ── T-SRC/px (s2): the MAIN batch's p_x publics ARE the SAME QUERY's
+         * mmix opened-row publics. Asserted on the ENTRY's own two output
+         * vectors — not on the statement, which holds those lanes exactly once
+         * (in mmix_opened[q]) and holds no p_x field for them at all. ── */
+        {
+            const dnac_p2c_mmix_table_cfg_t *mc = dnac_p2s_mmix_cfg();
+            const dnac_p2c_oi_table_cfg_t   *oc = dnac_p2s_oi_cfg();
+            const size_t mo_off = dnac_mmix_air_pub_opened_off(mc);
+            const size_t opx_off = dnac_foi_pub_px_off(oc);
+            size_t g = 0, checked = 0;
+
+            for (size_t i = 0; i < oc->num_heights; i++) {
+                const dnac_p2c_oi_height_desc_t *d = &oc->heights[i];
+                const size_t n_acc = d->num_batches * d->num_matrices *
+                                     d->num_points * d->num_columns;
+                const size_t batch_sz =
+                    d->num_matrices * d->num_points * d->num_columns;
+                const size_t want_h = (size_t)1u << d->log_height;
+                size_t moff = 0, mi = (size_t)-1;
+
+                for (size_t m = 0; m < mc->num_matrices; m++) {
+                    if (mc->heights[m] == want_h) { mi = m; break; }
+                    moff += mc->widths[m];
+                }
+                CHECK(mi != (size_t)-1, "T-SRC/px: oi height %zu has no mmix "
+                                        "matrix", d->log_height);
+                for (size_t a = 0; a < n_acc; a++, g++) {
+                    if (mi == (size_t)-1 || a >= batch_sz) continue;
+                    CHECK(gold_fp_to_u64(po[opx_off + g]) ==
+                              gold_fp_to_u64(
+                                  pm[mo_off + moff + a % d->num_columns]),
+                          "T-SRC/px: oi[q%zu] acc row %zu (height %zu, main "
+                          "batch) is not the mmix[q%zu] opened lane", q, g,
+                          d->log_height, q);
+                    checked++;
+                }
+            }
+            /* Not vacuous: the loop must actually have compared MAIN_ACC rows. */
+            CHECK(checked == DNAC_P2S_OI_MAIN_ACC,
+                  "T-SRC/px: compared %zu main-batch rows, expected %zu",
+                  checked, (size_t)DNAC_P2S_OI_MAIN_ACC);
+        }
+
+        /* ── T-SRC/beta + T-SRC/alpha (s3b): query q's fri betas and oi alpha
+         * ARE transcript payload lanes — the SAME lanes for every query, since
+         * `tair_payload` has no per-query copy. The op indices are re-derived
+         * here by scanning the script, independently of the entry's own
+         * walk. ── */
+        {
+            const dnac_tair_script_t *ts = dnac_p2s_tair_script();
+            const size_t beta_off = dnac_fair_pub_beta_off(dnac_p2s_fri_cfg());
+            const size_t alpha_off = dnac_foi_pub_alpha_off(dnac_p2s_oi_cfg());
+            const size_t ka0 = tair_pop_op(ts, 0), ka1 = tair_pop_op(ts, 1);
+
+            CHECK(ka0 != (size_t)-1 && ka1 != (size_t)-1,
+                  "T-SRC/alpha: the script has no alpha pops");
+            if (ka0 != (size_t)-1 && ka1 != (size_t)-1) {
+                CHECK(gold_fp_to_u64(po[alpha_off]) ==
+                              gold_fp_to_u64(pt[ka0]) &&
+                          gold_fp_to_u64(po[alpha_off + 1]) ==
+                              gold_fp_to_u64(pt[ka1]),
+                      "T-SRC/alpha: oi[q%zu]'s alpha publics are not the "
+                      "transcript's first fp2 pop", q);
+            }
+            for (size_t r = 0; r < DNAC_P2S_FRI_R; r++) {
+                const size_t k0 = tair_pop_op(ts, 2 + 2 * r);
+                const size_t k1 = tair_pop_op(ts, 2 + 2 * r + 1);
+                CHECK(k0 != (size_t)-1 && k1 != (size_t)-1,
+                      "T-SRC/beta: no pops for round %zu", r);
+                if (k0 == (size_t)-1 || k1 == (size_t)-1) continue;
+                CHECK(gold_fp_to_u64(pf[beta_off + 2 * r]) ==
+                              gold_fp_to_u64(pt[k0]) &&
+                          gold_fp_to_u64(pf[beta_off + 2 * r + 1]) ==
+                              gold_fp_to_u64(pt[k1]),
+                      "T-SRC/beta: fri[q%zu] beta[%zu] is not the transcript's "
+                      "round-%zu pop pair", q, r, r);
+            }
+
+            /* ── T-SRC/index, PER QUERY: the transcript's q-th exported bits
+             * ARE the lanes query q's four consumers' bit / direction publics
+             * were built from. This is the multi-query half of OBL-P2c-2 seen
+             * from the alias side: query q reads the transcript's BLOCK q, not
+             * block 0. ── */
+            {
+                const size_t kq = tair_pop_op(ts, 2 + 2 * DNAC_P2S_FRI_R + q);
+                const size_t off = (kq == (size_t)-1)
+                                       ? (size_t)-1
+                                       : dnac_tair_op_bit_off(ts, kq);
+                CHECK(off != (size_t)-1,
+                      "T-SRC/index: query %zu exports no bits", q);
+                if (off != (size_t)-1) {
+                    for (size_t l = 0; l < DNAC_P2S_LGMH; l++) {
+                        CHECK(gold_fp_to_u64(pt[off + l]) ==
+                                  stmt->index_bits[q][l],
+                              "T-SRC/index: tair bit %zu of block %zu is not "
+                              "index_bits[%zu][%zu]", l, q, q, l);
+                        CHECK(gold_fp_to_u64(
+                                  pf[(size_t)FAIR_PUB_BITS_OFF + l]) ==
+                                  gold_fp_to_u64(pt[off + l]),
+                              "T-SRC/index: fri[q%zu]'s bit %zu is not the "
+                              "transcript's q%zu exported bit", q, l, q);
+                        CHECK(gold_fp_to_u64(
+                                  po[(size_t)FOI_PUB_BITS_OFF + l]) ==
+                                  gold_fp_to_u64(pt[off + l]),
+                              "T-SRC/index: oi[q%zu]'s bit %zu is not the "
+                              "transcript's q%zu exported bit", q, l, q);
+                    }
                 }
             }
         }
     }
 
-    /* The descriptors the entry derived. */
-    CHECK(insts[DNAC_P2S_INST_MMIX].degree_bits == 4 &&
-              insts[DNAC_P2S_INST_MMCS].degree_bits == 3 &&
-              insts[DNAC_P2S_INST_FRI].degree_bits == 3 &&
-              insts[DNAC_P2S_INST_OI].degree_bits == 5 &&
-              insts[DNAC_P2S_INST_TAIR].degree_bits == 6,
-          "T-ALIAS: degree_bits (%u,%u,%u,%u,%u) not the table row counts",
-          insts[DNAC_P2S_INST_MMIX].degree_bits,
-          insts[DNAC_P2S_INST_MMCS].degree_bits,
-          insts[DNAC_P2S_INST_FRI].degree_bits,
-          insts[DNAC_P2S_INST_OI].degree_bits,
-          insts[DNAC_P2S_INST_TAIR].degree_bits);
+    /* The descriptors the entry derived. Row counts are a property of the SLOT
+     * (the Q copies of a table are identical), so they are checked per slot and
+     * applied to every query's instance. */
+    {
+        static const uint32_t want_db[DNAC_P2S_SLOTS] = { 4, 3, 3, 5 };
+        CHECK(S->insts[DNAC_P2S_INST_TAIR].degree_bits == 6,
+              "T-ALIAS: tair degree_bits %u, expected 6",
+              S->insts[DNAC_P2S_INST_TAIR].degree_bits);
+        for (size_t q = 0; q < DNAC_P2S_NUM_QUERIES; q++) {
+            for (uint32_t s = 0; s < DNAC_P2S_SLOTS; s++) {
+                const uint32_t i = DNAC_P2S_INST(q, s);
+                CHECK(S->insts[i].degree_bits == want_db[s],
+                      "T-ALIAS: %s degree_bits %u, expected %u", inst_name(i),
+                      S->insts[i].degree_bits, want_db[s]);
+            }
+        }
+    }
     for (uint32_t i = 0; i < DNAC_P2S_NUM_INSTANCES; i++) {
-        CHECK(insts[i].prep_next == 1, "T-ALIAS: inst %u prep_next != 1", i);
-        CHECK(insts[i].log_num_qc == 2, "T-ALIAS: inst %u log_num_qc != 2", i);
-        CHECK(insts[i].preprocessed_width == dnac_p2s_prep_cols(i),
-              "T-ALIAS: inst %u preprocessed_width wrong", i);
-        CHECK(insts[i].num_lookups == 0, "T-ALIAS: inst %u declares lookups", i);
+        CHECK(S->insts[i].prep_next == 1, "T-ALIAS: %s prep_next != 1",
+              inst_name(i));
+        CHECK(S->insts[i].log_num_qc == 2, "T-ALIAS: %s log_num_qc != 2",
+              inst_name(i));
+        CHECK(S->insts[i].preprocessed_width == dnac_p2s_prep_cols(i),
+              "T-ALIAS: %s preprocessed_width wrong", inst_name(i));
+        CHECK(S->insts[i].num_lookups == 0, "T-ALIAS: %s declares lookups",
+              inst_name(i));
+        /* The descriptor's publics pointer must be its OWN slice of the flat
+         * block — a shared or overlapping pointer would make two instances
+         * evaluate the same publics, which is the failure mode this layout is
+         * meant to make impossible. */
+        CHECK(S->insts[i].public_values == S->pub + dnac_p2s_pub_off(i),
+              "T-ALIAS: %s public_values is not its own region", inst_name(i));
+        CHECK(S->insts[i].num_publics == dnac_p2s_num_publics(i),
+              "T-ALIAS: %s num_publics disagrees with the layout", inst_name(i));
     }
 }
 
 /* ═════════════════════════════ prove + verify ════════════════════════════ */
 
-/** Prove the three instances the entry describes. Caller frees *out_proof. */
+/** Point `wits` at every instance's traces, in instance order. */
+static void p2s_fill_witnesses(dnac_batch_pwitness_t *wits, const traces_t *T)
+{
+    memset(wits, 0, DNAC_P2S_NUM_INSTANCES * sizeof(*wits));
+    wits[DNAC_P2S_INST_TAIR].main_trace = T->tair.B->trace;
+    wits[DNAC_P2S_INST_TAIR].prep_trace = T->tair.B->prep;
+    for (size_t q = 0; q < DNAC_P2S_NUM_QUERIES; q++) {
+        const qtraces_t *Q = &T->q[q];
+        wits[DNAC_P2S_INST(q, DNAC_P2S_SLOT_MMIX)].main_trace = Q->mmix.trace;
+        wits[DNAC_P2S_INST(q, DNAC_P2S_SLOT_MMIX)].prep_trace = Q->mmix.prep;
+        wits[DNAC_P2S_INST(q, DNAC_P2S_SLOT_MMCS)].main_trace = Q->mmcs.trace;
+        wits[DNAC_P2S_INST(q, DNAC_P2S_SLOT_MMCS)].prep_trace = Q->mmcs.prep;
+        wits[DNAC_P2S_INST(q, DNAC_P2S_SLOT_FRI)].main_trace = Q->fri.trace;
+        wits[DNAC_P2S_INST(q, DNAC_P2S_SLOT_FRI)].prep_trace = Q->fri.prep;
+        wits[DNAC_P2S_INST(q, DNAC_P2S_SLOT_OI)].main_trace = Q->oi.trace;
+        wits[DNAC_P2S_INST(q, DNAC_P2S_SLOT_OI)].prep_trace = Q->oi.prep;
+    }
+}
+
+/** Prove every instance the entry describes. Caller frees *out_proof. */
 static int p2s_prove(const dnac_p2s_statement_t *stmt, const traces_t *T,
                      dnac_batch_proof_t **out_proof)
 {
-    dnac_batch_vinstance_t insts[DNAC_P2S_NUM_INSTANCES];
     dnac_batch_pwitness_t wits[DNAC_P2S_NUM_INSTANCES];
-    gold_fp_t pm[DNAC_P2S_MMIX_NUM_PUBLICS];
-    gold_fp_t pc[DNAC_P2S_MMCS_NUM_PUBLICS];
-    gold_fp_t pf[DNAC_P2S_FRI_NUM_PUBLICS];
-    gold_fp_t po[DNAC_P2S_OI_NUM_PUBLICS];
-    gold_fp_t pt[DNAC_P2S_TAIR_NUM_PUBLICS];
     dnac_prover_status_t ps;
 
     *out_proof = NULL;
-    if (dnac_p2_fri_statement_build_instances(stmt, insts, &g_fs_a, pm, pc, pf,
-                                              po, pt) != DNAC_P2S_OK) {
-        return 0;
-    }
-    memset(wits, 0, sizeof(wits));
-    wits[DNAC_P2S_INST_MMIX].main_trace = T->mmix.trace;
-    wits[DNAC_P2S_INST_MMIX].prep_trace = T->mmix.prep;
-    wits[DNAC_P2S_INST_MMCS].main_trace = T->mmcs.trace;
-    wits[DNAC_P2S_INST_MMCS].prep_trace = T->mmcs.prep;
-    wits[DNAC_P2S_INST_FRI].main_trace = T->fri.trace;
-    wits[DNAC_P2S_INST_FRI].prep_trace = T->fri.prep;
-    wits[DNAC_P2S_INST_OI].main_trace = T->oi.trace;
-    wits[DNAC_P2S_INST_OI].prep_trace = T->oi.prep;
-    wits[DNAC_P2S_INST_TAIR].main_trace = T->tair.B->trace;
-    wits[DNAC_P2S_INST_TAIR].prep_trace = T->tair.B->prep;
+    if (set_build(&g_set_a, stmt) != DNAC_P2S_OK) return 0;
+    p2s_fill_witnesses(wits, T);
 
     /* is_zk 0, no random codewords, no salt — the non-hiding recursion
      * envelope. dnac_batch_prove self-verifies before returning. */
-    ps = dnac_batch_prove(insts, wits, DNAC_P2S_NUM_INSTANCES, 0,
+    ps = dnac_batch_prove(g_set_a.insts, wits, DNAC_P2S_NUM_INSTANCES, 0,
                           dnac_p2s_fri_params(), 0, NULL, 0, NULL, 0, NULL, 0,
                           0, out_proof);
     if (ps != DNAC_PROVER_OK) {
@@ -2217,18 +2754,13 @@ static void t_steps12_negatives(const dnac_p2s_statement_t *stmt,
      * name the guilty table, so the discrimination lives here: one run per
      * table, and the test knows which one it touched. ── */
     {
-        static const char *const names[DNAC_P2S_NUM_INSTANCES] = { "mmix",
-                                                                   "mmcs",
-                                                                   "fri",
-                                                                   "oi",
-                                                                   "tair" };
         for (uint32_t t = 0; t < DNAC_P2S_NUM_INSTANCES; t++) {
             uint64_t *tab[DNAC_P2S_NUM_INSTANCES] = { 0 };
             const uint64_t *ctab[DNAC_P2S_NUM_INSTANCES];
             uint64_t lanes[4];
             int moved = 0;
             if (!p2s_alloc_tables(tab)) {
-                CHECK(0, "N-PIN[%s]: table generate failed", names[t]);
+                CHECK(0, "N-PIN[%s]: table generate failed", inst_name(t));
                 p2s_free_tables(tab);
                 continue;
             }
@@ -2237,28 +2769,34 @@ static void t_steps12_negatives(const dnac_p2s_statement_t *stmt,
                 ctab[i] = tab[i];
             }
             if (!p2s_commit_tables(ctab, lanes)) {
-                CHECK(0, "N-PIN[%s]: commit failed", names[t]);
+                CHECK(0, "N-PIN[%s]: commit failed", inst_name(t));
                 p2s_free_tables(tab);
                 continue;
             }
             for (size_t k = 0; k < 4; k++) {
                 if (lanes[k] != honest_root[k]) moved = 1;
             }
-            /* Without this the negative would be vacuous. */
+            /* Without this the negative would be vacuous — and with Q copies
+             * of every slot's table in the set this is the check that says the
+             * copies are committed SEPARATELY: tampering query 1's fri table
+             * has to move the root even though query 0's is untouched. */
             CHECK(moved,
                   "N-PIN[%s]: a tampered table gives the SAME composed root",
-                  names[t]);
+                  inst_name(t));
             stub_init(&S, lanes);
             CHECK(stub_run(stmt, &S) == DNAC_P2S_ERR_PREP_ROOT,
                   "N-PIN[%s]: a tampered-table root was not rejected at step 2",
-                  names[t]);
+                  inst_name(t));
             p2s_free_tables(tab);
         }
     }
 
     /* ── N-PINMAP: the map is part of what the composed root means ── */
     {
-        const uint32_t swapped[DNAC_P2S_NUM_INSTANCES] = { 1, 0, 2, 3, 4 };
+        uint32_t swapped[DNAC_P2S_NUM_INSTANCES];
+        for (uint32_t i = 0; i < DNAC_P2S_NUM_INSTANCES; i++) swapped[i] = i;
+        swapped[0] = 1;
+        swapped[1] = 0;
         stub_init(&S, honest_root);
         CHECK(dnac_p2_fri_statement_verify(stmt, S.opened, &S.commits, swapped,
                                            DNAC_P2S_NUM_INSTANCES, &S.fri,
@@ -2293,56 +2831,76 @@ static void t_steps12_negatives(const dnac_p2s_statement_t *stmt,
               "N-CANON: the last payload lane was not rejected");
 
         bad = *stmt;
-        bad.tair_bits_rest[DNAC_P2S_TAIR_BITS_REST - 1] = GOLDILOCKS_P;
-        CHECK(stub_run(&bad, &S) == DNAC_P2S_ERR_CANON,
-              "N-CANON: a non-canonical tair_bits_rest lane was not rejected");
-
-        /* the boolean rail on the OTHER queries' exported bits */
-        bad = *stmt;
-        bad.tair_bits_rest[0] = 2;
-        CHECK(stub_run(&bad, &S) == DNAC_P2S_ERR_CANON,
-              "N-CANON: a non-boolean tair_bits_rest lane was not rejected");
-
-        bad = *stmt;
         bad.mmix_root[3] = UINT64_MAX;
         CHECK(stub_run(&bad, &S) == DNAC_P2S_ERR_CANON,
               "N-CANON: a non-canonical mmix root lane was not rejected");
-
-        bad = *stmt;
-        bad.mmcs_opened[0] = GOLDILOCKS_P + 1;
-        CHECK(stub_run(&bad, &S) == DNAC_P2S_ERR_CANON,
-              "N-CANON: a non-canonical mmcs opened lane was not rejected");
 
         bad = *stmt;
         bad.final_poly0[1] = GOLDILOCKS_P;
         CHECK(stub_run(&bad, &S) == DNAC_P2S_ERR_CANON,
               "N-CANON: a non-canonical final_poly lane was not rejected");
 
-        /* the s1c regions — every one of them is spanned by step 1, which the
-         * struct's sizeof static-assert (fri_statement.c) keeps true as the
-         * struct grows. */
+        /* the SHARED claimed-evaluation region — both ends, so an off-by-one
+         * in step 1's span shows up here rather than as a downstream surprise */
         bad = *stmt;
-        bad.zpz[4 * DNAC_P2S_OI_TOTAL_ACC - 1] = UINT64_MAX;
+        bad.pz_shared[0] = GOLDILOCKS_P;
         CHECK(stub_run(&bad, &S) == DNAC_P2S_ERR_CANON,
-              "N-CANON: a non-canonical z/p_z lane was not rejected");
+              "N-CANON: a non-canonical pz_shared lane was not rejected");
 
         bad = *stmt;
-        bad.ro_export[2 * DNAC_P2S_OI_NUM_HEIGHTS - 1] = GOLDILOCKS_P;
+        bad.pz_shared[2 * DNAC_P2S_OI_TOTAL_ACC - 1] = UINT64_MAX;
         CHECK(stub_run(&bad, &S) == DNAC_P2S_ERR_CANON,
-              "N-CANON: a non-canonical ro_export lane was not rejected");
+              "N-CANON: the LAST pz_shared lane was not rejected");
 
-        /* the s2 region — the sizeof static-assert in fri_statement.c is what
-         * keeps step 1 from forgetting it, and this is the runtime witness. */
-        bad = *stmt;
-        bad.px_rest[DNAC_P2S_OI_PX_REST - 1] = UINT64_MAX;
-        CHECK(stub_run(&bad, &S) == DNAC_P2S_ERR_CANON,
-              "N-CANON: a non-canonical px_rest lane was not rejected");
+        /* Every PER-QUERY region, for EVERY query. The multi-query slice turned
+         * five flat regions into Q rows each, and step 1's span must cover all
+         * of them — a loop that stopped at q = 0 would leave query 1's lanes
+         * unchecked and the sizeof static-assert in fri_statement.c would not
+         * notice, because the struct size is right either way. Each lane picked
+         * is the LAST of its row, so an off-by-one in the span shows up here. */
+        for (size_t q = 0; q < DNAC_P2S_NUM_QUERIES; q++) {
+            bad = *stmt;
+            bad.mmcs_opened[q][DNAC_P2S_MMCS_TOTAL_WIDTH - 1] =
+                GOLDILOCKS_P + 1;
+            CHECK(stub_run(&bad, &S) == DNAC_P2S_ERR_CANON,
+                  "N-CANON: q%zu's non-canonical mmcs opened lane was not "
+                  "rejected", q);
 
-        /* the boolean rail on the entry's own construction input */
-        bad = *stmt;
-        bad.index_bits[0] = 2;
-        CHECK(stub_run(&bad, &S) == DNAC_P2S_ERR_CANON,
-              "N-CANON: a non-boolean index bit was not rejected");
+            bad = *stmt;
+            bad.mmix_opened[q][DNAC_P2S_MMIX_TOTAL_OPENED - 1] = GOLDILOCKS_P;
+            CHECK(stub_run(&bad, &S) == DNAC_P2S_ERR_CANON,
+                  "N-CANON: q%zu's non-canonical mmix opened lane was not "
+                  "rejected", q);
+
+            bad = *stmt;
+            bad.z_pq[q][2 * DNAC_P2S_OI_TOTAL_ACC - 1] = UINT64_MAX;
+            CHECK(stub_run(&bad, &S) == DNAC_P2S_ERR_CANON,
+                  "N-CANON: q%zu's non-canonical z lane was not rejected", q);
+
+            bad = *stmt;
+            bad.ro_export[q][2 * DNAC_P2S_OI_NUM_HEIGHTS - 1] = GOLDILOCKS_P;
+            CHECK(stub_run(&bad, &S) == DNAC_P2S_ERR_CANON,
+                  "N-CANON: q%zu's non-canonical ro_export lane was not "
+                  "rejected", q);
+
+            bad = *stmt;
+            bad.px_rest[q][DNAC_P2S_OI_PX_REST - 1] = UINT64_MAX;
+            CHECK(stub_run(&bad, &S) == DNAC_P2S_ERR_CANON,
+                  "N-CANON: q%zu's non-canonical px_rest lane was not rejected",
+                  q);
+
+            /* the boolean rail on the entry's own construction input */
+            bad = *stmt;
+            bad.index_bits[q][0] = 2;
+            CHECK(stub_run(&bad, &S) == DNAC_P2S_ERR_CANON,
+                  "N-CANON: q%zu's non-boolean index bit was not rejected", q);
+
+            bad = *stmt;
+            bad.index_bits[q][DNAC_P2S_LGMH - 1] = GOLDILOCKS_P;
+            CHECK(stub_run(&bad, &S) == DNAC_P2S_ERR_CANON,
+                  "N-CANON: q%zu's non-canonical index bit was not rejected",
+                  q);
+        }
 
         /* ORDERING: a statement that is BOTH non-canonical and paired with a
          * bad root must report CANON, proving step 1 precedes step 2. */
@@ -2386,6 +2944,58 @@ static void t_steps12_negatives(const dnac_p2s_statement_t *stmt,
  * documented placeholder behaviour. Filling the pin flips those same checks to
  * their accept form; nothing else moves.
  */
+/* Defined below; declared here because rt1_and_proof_negatives drives them and
+ * `t_query_alias` must be reachable on the prove-failure path too. */
+static void t_query_alias(const dnac_p2s_statement_t *stmt,
+                          const dnac_batch_proof_t *proof);
+static void t_ncfg(void);
+
+/**
+ * Run the entry on a perturbed statement and require it to REJECT — and, once
+ * the pin is filled, to reject with the BATCH status, which is the form that
+ * proves the perturbed publics actually reach the constraint system rather
+ * than merely being written into a buffer.
+ *
+ * Skips silently when `proof` is NULL. That is the one deliberate skip in this
+ * file and it is bounded: `t_query_alias`'s mask half runs either way, so the
+ * alias SHAPE is still asserted; only the "and the batch notices" half needs a
+ * proof. See t_query_alias's nullable note for why that path exists.
+ */
+static void expect_entry_reject(const dnac_p2s_statement_t *bad,
+                                const dnac_batch_proof_t *proof,
+                                const char *fmt, ...)
+{
+    char where[192];
+    dnac_p2s_status_t st;
+    va_list ap;
+
+    /* The skip is deliberate (see the header comment) but must NEVER be
+     * SILENT: it does not increment `g_checks`, so a prover that stopped
+     * producing proofs would SHRINK the reported check count instead of
+     * failing, and a before/after count comparison would read the shrink as
+     * "fewer tests" rather than "the prover broke". Announce it.
+     * (FLEET 035 verifier finding.) */
+    if (!proof) {
+        va_start(ap, fmt);
+        vsnprintf(where, sizeof(where), fmt, ap);
+        va_end(ap);
+        printf("  [skip]   %s: no proof (prover blocked) — batch leg NOT run\n",
+               where);
+        return;
+    }
+    va_start(ap, fmt);
+    vsnprintf(where, sizeof(where), fmt, ap);
+    va_end(ap);
+
+    st = p2s_run_entry(bad, proof, NULL, NULL);
+    CHECK(st != DNAC_P2S_OK, "%s: perturbation was ACCEPTED", where);
+#if !DNAC_P2S_PREP_ROOT_UNFILLED
+    CHECK(st == DNAC_P2S_ERR_BATCH,
+          "%s: rejected as %d, want the BATCH check (the publics must actually "
+          "reach the constraint system)", where, (int)st);
+#endif
+}
+
 static void rt1_and_proof_negatives(const dnac_p2s_statement_t *stmt,
                                     const traces_t *T,
                                     const uint64_t honest_root[4])
@@ -2396,20 +3006,29 @@ static void rt1_and_proof_negatives(const dnac_p2s_statement_t *stmt,
     uint32_t nprep = 0;
     const uint32_t *map = NULL;
 
-    printf("  [rt]     preprocessed widths: mmix %zu, mmcs %zu, fri %zu, "
-           "oi %zu, tair %zu (the batch_prover.c pw cap is lifted)\n",
-           dnac_p2s_prep_cols(DNAC_P2S_INST_MMIX),
-           dnac_p2s_prep_cols(DNAC_P2S_INST_MMCS),
-           dnac_p2s_prep_cols(DNAC_P2S_INST_FRI),
-           dnac_p2s_prep_cols(DNAC_P2S_INST_OI),
-           dnac_p2s_prep_cols(DNAC_P2S_INST_TAIR));
+    printf("  [rt]     preprocessed widths: tair %zu, mmix %zu, mmcs %zu, "
+           "fri %zu, oi %zu (the batch_prover.c pw cap is lifted)\n",
+           dnac_p2s_prep_cols(DNAC_P2S_INST_TAIR),
+           dnac_p2s_prep_cols(DNAC_P2S_INST(0, DNAC_P2S_SLOT_MMIX)),
+           dnac_p2s_prep_cols(DNAC_P2S_INST(0, DNAC_P2S_SLOT_MMCS)),
+           dnac_p2s_prep_cols(DNAC_P2S_INST(0, DNAC_P2S_SLOT_FRI)),
+           dnac_p2s_prep_cols(DNAC_P2S_INST(0, DNAC_P2S_SLOT_OI)));
 
     if (!p2s_prove(stmt, T, &proof)) {
-        CHECK(0, "RT-1: dnac_batch_prove could not prove the 4-instance set");
+        CHECK(0, "RT-1: dnac_batch_prove could not prove the %u-instance set",
+              DNAC_P2S_NUM_INSTANCES);
+        /* ⚠ NO SILENT SKIP. A prove failure is exactly what a BROKEN alias
+         * produces — query q's honest trace then contradicts the publics the
+         * entry hands it — so returning here would suppress the very checks
+         * that name the cause. The proof-free half of the alias evidence runs
+         * regardless (FLEET 028 verifier M1). */
+        t_query_alias(stmt, NULL);
+        t_ncfg();
         return;
     }
-    printf("  [rt]     dnac_batch_prove OK — %u instances, is_zk 0\n",
-           DNAC_P2S_NUM_INSTANCES);
+    printf("  [rt]     dnac_batch_prove OK — %u instances (1 transcript + "
+           "%zu queries x 4), is_zk 0\n",
+           DNAC_P2S_NUM_INSTANCES, (size_t)DNAC_P2S_NUM_QUERIES);
 
     map = dnac_batch_proof_prep_map(proof, &nprep);
     dnac_batch_proof_commits(proof, &cm);
@@ -2447,19 +3066,11 @@ static void rt1_and_proof_negatives(const dnac_p2s_statement_t *stmt,
      * state, and it is what proves the entry's descriptors + aliased publics
      * are not merely self-consistent but actually satisfied by a real proof. ── */
     {
-        dnac_batch_vinstance_t insts[DNAC_P2S_NUM_INSTANCES];
-        gold_fp_t pm[DNAC_P2S_MMIX_NUM_PUBLICS];
-        gold_fp_t pc[DNAC_P2S_MMCS_NUM_PUBLICS];
-        gold_fp_t pf[DNAC_P2S_FRI_NUM_PUBLICS];
-        gold_fp_t po[DNAC_P2S_OI_NUM_PUBLICS];
-    gold_fp_t pt[DNAC_P2S_TAIR_NUM_PUBLICS];
         dnac_batch_verify_status_t bs;
-        CHECK(dnac_p2_fri_statement_build_instances(stmt, insts, &g_fs_a, pm,
-                                                    pc, pf, po,
-                                                    pt) == DNAC_P2S_OK,
+        CHECK(set_build(&g_set_a, stmt) == DNAC_P2S_OK,
               "RT-1: build_instances rejected the honest statement");
-        bs = dnac_batch_verify(insts, opened, DNAC_P2S_NUM_INSTANCES, 0, &cm,
-                               map, nprep, dnac_p2s_fri_params(), 0, 0,
+        bs = dnac_batch_verify(g_set_a.insts, opened, DNAC_P2S_NUM_INSTANCES, 0,
+                               &cm, map, nprep, dnac_p2s_fri_params(), 0, 0,
                                dnac_batch_proof_fri(proof), NULL, NULL);
         CHECK(bs == DNAC_BV_OK,
               "RT-1: the entry's own instances do NOT verify (batch %d)",
@@ -2495,21 +3106,21 @@ static void rt1_and_proof_negatives(const dnac_p2s_statement_t *stmt,
      * the zero-window capacity guard rejects on SHAPE outright
      * (batch_verify.c:696-706), rather than substituting an all-zero window. ── */
     {
-        dnac_batch_vinstance_t insts[DNAC_P2S_NUM_INSTANCES];
-        gold_fp_t pm[DNAC_P2S_MMIX_NUM_PUBLICS];
-        gold_fp_t pc[DNAC_P2S_MMCS_NUM_PUBLICS];
-        gold_fp_t pf[DNAC_P2S_FRI_NUM_PUBLICS];
-        gold_fp_t po[DNAC_P2S_OI_NUM_PUBLICS];
-    gold_fp_t pt[DNAC_P2S_TAIR_NUM_PUBLICS];
-        if (dnac_p2_fri_statement_build_instances(stmt, insts, &g_fs_a, pm, pc,
-                                                  pf, po, pt) == DNAC_P2S_OK) {
-            dnac_batch_verify_status_t bs;
-            CHECK(dnac_p2s_prep_cols(DNAC_P2S_INST_FRI) > 64,
+        /* Driven per SLOT, on query 0's instance — the Q copies have identical
+         * widths (T-MAP asserts that), so one per slot is the full evidence. */
+        const uint32_t fri_i = DNAC_P2S_INST(0, DNAC_P2S_SLOT_FRI);
+        const uint32_t oi_i = DNAC_P2S_INST(0, DNAC_P2S_SLOT_OI);
+        const uint32_t mmcs_i = DNAC_P2S_INST(0, DNAC_P2S_SLOT_MMCS);
+        dnac_batch_verify_status_t bs;
+
+        if (set_build(&g_set_a, stmt) == DNAC_P2S_OK) {
+            CHECK(dnac_p2s_prep_cols(fri_i) > 64,
                   "N-PIN2: the fri preprocessed width is no longer > 64, so "
                   "the SHAPE route this negative relies on has moved");
-            insts[DNAC_P2S_INST_FRI].prep_next = 0;
-            bs = dnac_batch_verify(insts, opened, DNAC_P2S_NUM_INSTANCES, 0,
-                                   &cm, map, nprep, dnac_p2s_fri_params(), 0, 0,
+            g_set_a.insts[fri_i].prep_next = 0;
+            bs = dnac_batch_verify(g_set_a.insts, opened,
+                                   DNAC_P2S_NUM_INSTANCES, 0, &cm, map, nprep,
+                                   dnac_p2s_fri_params(), 0, 0,
                                    dnac_batch_proof_fri(proof), NULL, NULL);
             CHECK(bs == DNAC_BV_ERR_SHAPE,
                   "N-PIN2: prep_next = 0 gave %d, want DNAC_BV_ERR_SHAPE",
@@ -2518,15 +3129,14 @@ static void rt1_and_proof_negatives(const dnac_p2s_statement_t *stmt,
             /* The oi table is 106 columns, so it takes the SAME capacity route
              * as fri — pinned separately because a future width change could
              * move it to the other one silently. */
-            if (dnac_p2_fri_statement_build_instances(
-                    stmt, insts, &g_fs_a, pm, pc, pf, po, pt) == DNAC_P2S_OK) {
-                CHECK(dnac_p2s_prep_cols(DNAC_P2S_INST_OI) > 64,
+            if (set_build(&g_set_a, stmt) == DNAC_P2S_OK) {
+                CHECK(dnac_p2s_prep_cols(oi_i) > 64,
                       "N-PIN2: the oi preprocessed width is no longer > 64");
-                insts[DNAC_P2S_INST_OI].prep_next = 0;
-                bs = dnac_batch_verify(insts, opened, DNAC_P2S_NUM_INSTANCES, 0,
-                                       &cm, map, nprep, dnac_p2s_fri_params(),
-                                       0, 0, dnac_batch_proof_fri(proof), NULL,
-                                       NULL);
+                g_set_a.insts[oi_i].prep_next = 0;
+                bs = dnac_batch_verify(g_set_a.insts, opened,
+                                       DNAC_P2S_NUM_INSTANCES, 0, &cm, map,
+                                       nprep, dnac_p2s_fri_params(), 0, 0,
+                                       dnac_batch_proof_fri(proof), NULL, NULL);
                 CHECK(bs == DNAC_BV_ERR_SHAPE,
                       "N-PIN2: oi prep_next = 0 gave %d, want "
                       "DNAC_BV_ERR_SHAPE", (int)bs);
@@ -2537,407 +3147,318 @@ static void rt1_and_proof_negatives(const dnac_p2s_statement_t *stmt,
              * window is silently zeroed and the AIR's gated forms then fail the
              * constraint check instead of the shape check. Both are rejects;
              * pinning which one keeps the two routes distinguishable. */
-            if (dnac_p2_fri_statement_build_instances(
-                    stmt, insts, &g_fs_a, pm, pc, pf, po, pt) == DNAC_P2S_OK) {
-                CHECK(dnac_p2s_prep_cols(DNAC_P2S_INST_MMCS) <= 64,
+            if (set_build(&g_set_a, stmt) == DNAC_P2S_OK) {
+                CHECK(dnac_p2s_prep_cols(mmcs_i) <= 64,
                       "N-PIN2: the mmcs width moved above the zero-window cap");
-                insts[DNAC_P2S_INST_MMCS].prep_next = 0;
-                bs = dnac_batch_verify(insts, opened, DNAC_P2S_NUM_INSTANCES, 0,
-                                       &cm, map, nprep, dnac_p2s_fri_params(),
-                                       0, 0, dnac_batch_proof_fri(proof), NULL,
-                                       NULL);
+                g_set_a.insts[mmcs_i].prep_next = 0;
+                bs = dnac_batch_verify(g_set_a.insts, opened,
+                                       DNAC_P2S_NUM_INSTANCES, 0, &cm, map,
+                                       nprep, dnac_p2s_fri_params(), 0, 0,
+                                       dnac_batch_proof_fri(proof), NULL, NULL);
                 CHECK(bs != DNAC_BV_OK,
                       "N-PIN2: mmcs prep_next = 0 was ACCEPTED");
             }
         }
     }
 
-    /* ── N-ALIAS, batch-driven: flip ONE bit of the single shared index. The
-     * entry BUILDS every instance's bit publics from it, so the flip lands in
-     * the fri bits AND (for l >= max_log_arity) the mmcs dir AND the mmix dir
-     * at once — it cannot be confined to one instance, which is the property
-     * the aliasing buys. Post-fill the rejection is the batch's own OOD/FRI
-     * check, which is the form that proves the publics really are consumed. ── */
-    for (size_t l = 0; l < DNAC_P2S_LGMH; l++) {
-        dnac_p2s_statement_t bad = *stmt;
-        dnac_p2s_status_t st;
-        bad.index_bits[l] ^= 1u;
-        st = p2s_run_entry(&bad, proof, NULL, NULL);
-        CHECK(st != DNAC_P2S_OK, "N-ALIAS: flipping index bit %zu was ACCEPTED",
-              l);
-#if !DNAC_P2S_PREP_ROOT_UNFILLED
-        CHECK(st == DNAC_P2S_ERR_BATCH,
-              "N-ALIAS: bit %zu rejected as %d, want the BATCH check (the "
-              "publics must actually reach the constraint system)", l, (int)st);
-#endif
-    }
+    t_query_alias(stmt, proof);
+    t_ncfg();
+    dnac_batch_proof_free(proof);
+}
 
-    /* ── N-ALIAS / RO-EXPORT (s1c): perturb ONE ro_export lane. There is no
-     * second field to perturb — the statement holds this value once — so the
-     * entry writes the changed lane into the oi instance's ro publics AND (for
-     * the seed lane, into f_init; for a roll-in height, into that slot) the fri
-     * instance's, and the batch check sees both move together. That both
-     * instances are affected is shown DIRECTLY on the entry's own output, not
-     * inferred: build the descriptors for the perturbed statement and count how
-     * many of the two publics vectors changed. ── */
-    for (size_t i = 0; i < 2 * DNAC_P2S_OI_NUM_HEIGHTS; i++) {
-        dnac_p2s_statement_t bad = *stmt;
-        dnac_p2s_status_t st;
-        bad.ro_export[i] =
-            gold_fp_to_u64(gold_fp_add(gold_fp_from_u64(bad.ro_export[i]),
-                                       gold_fp_one()));
+/* ══════════════════════════════════════════════════════════════════════════
+ * N-QSEP / N-QSHARED / N-QINDEP / N-ALIAS — ONE mechanism, three claims.
+ *
+ * Every one of these perturbs exactly ONE statement lane, rebuilds the
+ * descriptors, and asserts the EXACT SET of instances whose publics moved.
+ * An exact set (rather than "at least one moved") is what makes the three
+ * claims separable:
+ *
+ *   N-QSEP    query separation — the acceptance criterion of the multi-query
+ *             slice. Perturbing the transcript's q-th exported bit block must
+ *             move query q's four instances and NOT any other query's. If the
+ *             Q consumers had collapsed onto export block 0, flipping block 1
+ *             would move NOTHING downstream and flipping block 0 would move
+ *             EVERY query — either way the expected set is wrong and this
+ *             fires.
+ *   N-QSHARED the shared Fiat-Shamir values reach BOTH queries.
+ *   N-QINDEP  a per-query value reaches ONLY its own query.
+ *
+ * Then the entry itself is required to reject — post-fill with the BATCH
+ * status, which is what proves the publics really do reach the constraint
+ * system rather than merely being written.
+ *
+ * ⚠ `proof` IS NULLABLE, deliberately. The mask half needs no proof at all: it
+ * is a statement about `build_instances`. Keeping it runnable with a NULL proof
+ * means a prover blockage — which is exactly what a BROKEN alias causes, since
+ * query q's honest trace then contradicts the publics it is given — cannot
+ * silently skip the very evidence that would name the cause (the FLEET 028
+ * verifier M1 no-silent-escape discipline). With a NULL proof the reject legs
+ * are skipped and the mask legs still run.
+ */
+static void t_query_alias(const dnac_p2s_statement_t *stmt,
+                          const dnac_batch_proof_t *proof)
+{
+    /* ── N-QSEP: flip ONE bit of ONE query's index. ─────────────────────────
+     * Expected set, DERIVED (not listed): the transcript instance, because the
+     * bit IS its q-th exported public; plus query q's mmix / fri / oi, whose
+     * bit regions are the whole index; plus query q's mmcs only when the bit is
+     * inside the window round 0 consumes — `verify_query` shifts the index down
+     * by log_arity before the MMCS walk (fri_verifier.c:558 with :585-588), so
+     * bit 0 never reaches it. NOTHING of any other query. */
+    for (size_t qq = 0; qq < DNAC_P2S_NUM_QUERIES; qq++) {
+        for (size_t l = 0; l < DNAC_P2S_LGMH; l++) {
+            dnac_p2s_statement_t bad = *stmt;
+            uint32_t want;
 
-        /* (a) the two-consumer property, on the entry's construction. */
-        {
-            dnac_batch_vinstance_t i0[DNAC_P2S_NUM_INSTANCES];
-            dnac_batch_vinstance_t i1[DNAC_P2S_NUM_INSTANCES];
-            gold_fp_t am[DNAC_P2S_MMIX_NUM_PUBLICS], bm[DNAC_P2S_MMIX_NUM_PUBLICS];
-            gold_fp_t ac[DNAC_P2S_MMCS_NUM_PUBLICS], bc[DNAC_P2S_MMCS_NUM_PUBLICS];
-            gold_fp_t af[DNAC_P2S_FRI_NUM_PUBLICS], bf[DNAC_P2S_FRI_NUM_PUBLICS];
-            gold_fp_t ao[DNAC_P2S_OI_NUM_PUBLICS], bo[DNAC_P2S_OI_NUM_PUBLICS];
-            gold_fp_t at[DNAC_P2S_TAIR_NUM_PUBLICS], bt[DNAC_P2S_TAIR_NUM_PUBLICS];
-            int fri_moved = 0, oi_moved = 0;
-            if (dnac_p2_fri_statement_build_instances(
-                    stmt, i0, &g_fs_a, am, ac, af, ao, at) == DNAC_P2S_OK &&
-                dnac_p2_fri_statement_build_instances(
-                    &bad, i1, &g_fs_b, bm, bc, bf, bo, bt) == DNAC_P2S_OK) {
-                for (size_t k = 0; k < DNAC_P2S_FRI_NUM_PUBLICS; k++) {
-                    if (gold_fp_to_u64(af[k]) != gold_fp_to_u64(bf[k])) {
-                        fri_moved = 1;
-                    }
-                }
-                for (size_t k = 0; k < DNAC_P2S_OI_NUM_PUBLICS; k++) {
-                    if (gold_fp_to_u64(ao[k]) != gold_fp_to_u64(bo[k])) {
-                        oi_moved = 1;
-                    }
-                }
-            } else {
-                CHECK(0, "N-ALIAS/ro: build_instances rejected a canonical "
-                         "perturbation (lane %zu)", i);
+            bad.index_bits[qq][l] ^= 1u;
+            if (!set_pair(stmt, &bad, "N-QSEP")) continue;
+
+            want = P2S_TMASK | P2S_IMASK(qq, DNAC_P2S_SLOT_MMIX) |
+                   P2S_IMASK(qq, DNAC_P2S_SLOT_FRI) |
+                   P2S_IMASK(qq, DNAC_P2S_SLOT_OI);
+            if (l >= DNAC_P2S_MAX_LOG_ARITY &&
+                l < DNAC_P2S_MAX_LOG_ARITY + DNAC_P2S_MMCS_DEPTH) {
+                want |= P2S_IMASK(qq, DNAC_P2S_SLOT_MMCS);
             }
-            CHECK(oi_moved,
-                  "N-ALIAS/ro: lane %zu does not reach the oi publics", i);
-            /* Every pinned height is either the seed (index 0 -> f_init) or a
-             * roll-in height, so EVERY export lane must reach fri too. If a
-             * future cfg exported a height fri neither seeds from nor rolls in,
-             * this is the check that would report it rather than let the alias
-             * silently become one-sided. */
-            CHECK(fri_moved,
-                  "N-ALIAS/ro: lane %zu does not reach the fri publics — the "
-                  "export is no longer single-source for both consumers", i);
+            check_mask(moved_mask(), want, "N-QSEP: index_bits[q%zu][%zu]", qq,
+                       l);
+            expect_entry_reject(&bad, proof, "N-QSEP: index_bits[q%zu][%zu]",
+                                qq, l);
         }
-
-        /* (b) and the entry rejects it. */
-        st = p2s_run_entry(&bad, proof, NULL, NULL);
-        CHECK(st != DNAC_P2S_OK,
-              "N-ALIAS/ro: perturbing ro_export lane %zu was ACCEPTED", i);
-#if !DNAC_P2S_PREP_ROOT_UNFILLED
-        CHECK(st == DNAC_P2S_ERR_BATCH,
-              "N-ALIAS/ro: lane %zu rejected as %d, want the BATCH check", i,
-              (int)st);
-#endif
     }
 
-    /* ── N-ALIAS / beta + alpha (s3b): perturb ONE transcript payload lane that
-     * a consumer is aliased from. The statement holds it ONCE, so the entry
-     * writes the changed value into the tair instance's payload publics AND
-     * into the consumer's — they move TOGETHER, which is the property the alias
-     * buys and the thing a "the transcript said X but the walk used Y" attack
-     * would have to break. Shown on the entry's own construction, then the
-     * entry is required to reject. ── */
+    /* ── N-QSHARED: the values the native samples/observes ONCE reach EVERY
+     * query's consumer. A per-query copy of any of them would let two queries
+     * be folded with two different challenges, which is the other half of the
+     * OBL-P2c-2 shape. ── */
     {
         const dnac_tair_script_t *ts = dnac_p2s_tair_script();
-        struct { size_t ord; const char *what; int fri_leg; } legs[] = {
-            { 0, "alpha.c0", 0 },
-            { 1, "alpha.c1", 0 },
-            { 2, "beta[0].c0", 1 },
-            { 3, "beta[0].c1", 1 },
-            { 2 + 2 * (DNAC_P2S_FRI_R - 1), "beta[R-1].c0", 1 },
-        };
-        for (size_t e = 0; e < sizeof(legs) / sizeof(legs[0]); e++) {
-            const size_t k = tair_pop_op(ts, legs[e].ord);
+        uint32_t all_oi = 0, all_fri = 0, all_mmix = 0, all_mmcs = 0;
+
+        for (size_t q = 0; q < DNAC_P2S_NUM_QUERIES; q++) {
+            all_oi |= P2S_IMASK(q, DNAC_P2S_SLOT_OI);
+            all_fri |= P2S_IMASK(q, DNAC_P2S_SLOT_FRI);
+            all_mmix |= P2S_IMASK(q, DNAC_P2S_SLOT_MMIX);
+            all_mmcs |= P2S_IMASK(q, DNAC_P2S_SLOT_MMCS);
+        }
+
+        /* alpha (fri_verifier.c:694) -> EVERY oi instance, and the transcript
+         * whose payload lane it is. betas (:707) -> EVERY fri instance. */
+        {
+            struct { size_t ord; const char *what; uint32_t extra; } legs[] = {
+                { 0, "alpha.c0", 0 },
+                { 1, "alpha.c1", 0 },
+                { 2, "beta[0].c0", 1 },
+                { 3, "beta[0].c1", 1 },
+                { 2 + 2 * (DNAC_P2S_FRI_R - 1), "beta[R-1].c0", 1 },
+            };
+            for (size_t e = 0; e < sizeof(legs) / sizeof(legs[0]); e++) {
+                const size_t k = tair_pop_op(ts, legs[e].ord);
+                dnac_p2s_statement_t bad = *stmt;
+
+                if (k == (size_t)-1 || k >= DNAC_P2S_TAIR_NUM_OPS) {
+                    CHECK(0, "N-QSHARED/%s: no such pop in the pinned script",
+                          legs[e].what);
+                    continue;
+                }
+                bad.tair_payload[k] = gold_fp_to_u64(gold_fp_add(
+                    gold_fp_from_u64(bad.tair_payload[k]), gold_fp_one()));
+                if (!set_pair(stmt, &bad, "N-QSHARED")) continue;
+                check_mask(moved_mask(),
+                           P2S_TMASK | (legs[e].extra ? all_fri : all_oi),
+                           "N-QSHARED: tair_payload[%s]", legs[e].what);
+                expect_entry_reject(&bad, proof, "N-QSHARED: tair_payload[%s]",
+                                    legs[e].what);
+            }
+        }
+
+        /* final_poly0 -> EVERY fri instance, and NOTHING else.
+         * ⚠ HONEST LABEL: NOT the transcript. The native observes the final
+         * poly (fri_verifier.c:710-713) and the pinned script HAS those observe
+         * ops, but their payload lanes are deterministic fixtures rather than
+         * aliases of this field — the same seam fri_statement.h HONEST LABEL 6
+         * names for the commit digests. So this negative pins "shared across
+         * queries", not "transcript-bound". */
+        for (size_t j = 0; j < 2; j++) {
             dnac_p2s_statement_t bad = *stmt;
-            dnac_p2s_status_t st;
-            int tair_moved = 0, fri_moved = 0, oi_moved = 0;
+            bad.final_poly0[j] = gold_fp_to_u64(gold_fp_add(
+                gold_fp_from_u64(bad.final_poly0[j]), gold_fp_one()));
+            if (!set_pair(stmt, &bad, "N-QSHARED")) continue;
+            check_mask(moved_mask(), all_fri, "N-QSHARED: final_poly0[%zu]", j);
+            expect_entry_reject(&bad, proof, "N-QSHARED: final_poly0[%zu]", j);
+        }
 
-            if (k == (size_t)-1 || k >= DNAC_P2S_TAIR_NUM_OPS) {
-                CHECK(0, "N-ALIAS/%s: no such pop in the pinned script",
-                      legs[e].what);
-                continue;
+        /* ── N-PZSHARED: the CLAIMED EVALUATIONS -> EVERY query's oi instance,
+         * and nothing else.
+         *
+         * This is the acceptance criterion of the p_z split. `p_z` used to live
+         * inside the per-query `zpz[q]` region with no reason given, which let
+         * two queries name two different claimed evaluations for the same
+         * opening — a freedom the native does not have (fri_verifier.c:470
+         * reads them through `commitments`, and :743 passes the query loop the
+         * SAME pointer every iteration). If the alias were not built, only ONE
+         * query's oi instance would move here and the exact-set check fires.
+         *
+         * SWEPT over every lane, not sampled: the mask half is pure
+         * `build_instances` and costs nothing, and a region-walk off-by-one
+         * would move a NEIGHBOURING row rather than none at all — which only a
+         * full sweep with an exact expected set catches. The expensive
+         * entry-reject leg stays on the two ENDS, the same split the z leg
+         * below uses. ── */
+        for (size_t i = 0; i < 2 * DNAC_P2S_OI_TOTAL_ACC; i++) {
+            dnac_p2s_statement_t bad = *stmt;
+            bad.pz_shared[i] = gold_fp_to_u64(gold_fp_add(
+                gold_fp_from_u64(bad.pz_shared[i]), gold_fp_one()));
+            if (!set_pair(stmt, &bad, "N-PZSHARED")) continue;
+            check_mask(moved_mask(), all_oi, "N-PZSHARED: pz_shared[%zu]", i);
+            if (i == 0 || i == 2 * DNAC_P2S_OI_TOTAL_ACC - 1) {
+                expect_entry_reject(&bad, proof, "N-PZSHARED: pz_shared[%zu]",
+                                    i);
             }
-            bad.tair_payload[k] = gold_fp_to_u64(gold_fp_add(
-                gold_fp_from_u64(bad.tair_payload[k]), gold_fp_one()));
+        }
 
-            {
-                dnac_batch_vinstance_t i0[DNAC_P2S_NUM_INSTANCES];
-                dnac_batch_vinstance_t i1[DNAC_P2S_NUM_INSTANCES];
-                gold_fp_t am[DNAC_P2S_MMIX_NUM_PUBLICS], bm[DNAC_P2S_MMIX_NUM_PUBLICS];
-                gold_fp_t ac[DNAC_P2S_MMCS_NUM_PUBLICS], bc[DNAC_P2S_MMCS_NUM_PUBLICS];
-                gold_fp_t af[DNAC_P2S_FRI_NUM_PUBLICS], bf[DNAC_P2S_FRI_NUM_PUBLICS];
-                gold_fp_t ao[DNAC_P2S_OI_NUM_PUBLICS], bo[DNAC_P2S_OI_NUM_PUBLICS];
-                gold_fp_t at[DNAC_P2S_TAIR_NUM_PUBLICS], bt[DNAC_P2S_TAIR_NUM_PUBLICS];
-                if (dnac_p2_fri_statement_build_instances(
-                        stmt, i0, &g_fs_a, am, ac, af, ao, at) ==
-                        DNAC_P2S_OK &&
-                    dnac_p2_fri_statement_build_instances(
-                        &bad, i1, &g_fs_b, bm, bc, bf, bo, bt) ==
-                        DNAC_P2S_OK) {
-                    for (size_t j = 0; j < DNAC_P2S_TAIR_NUM_PUBLICS; j++) {
-                        if (gold_fp_to_u64(at[j]) != gold_fp_to_u64(bt[j])) {
-                            tair_moved = 1;
-                        }
-                    }
-                    for (size_t j = 0; j < DNAC_P2S_FRI_NUM_PUBLICS; j++) {
-                        if (gold_fp_to_u64(af[j]) != gold_fp_to_u64(bf[j])) {
-                            fri_moved = 1;
-                        }
-                    }
-                    for (size_t j = 0; j < DNAC_P2S_OI_NUM_PUBLICS; j++) {
-                        if (gold_fp_to_u64(ao[j]) != gold_fp_to_u64(bo[j])) {
-                            oi_moved = 1;
-                        }
-                    }
-                } else {
-                    CHECK(0, "N-ALIAS/%s: build_instances rejected a canonical "
-                             "perturbation", legs[e].what);
-                }
-                CHECK(tair_moved,
-                      "N-ALIAS/%s: the lane does not reach the tair publics",
-                      legs[e].what);
-                if (legs[e].fri_leg) {
-                    CHECK(fri_moved,
-                          "N-ALIAS/%s: the lane does not reach the fri betas — "
-                          "the beta alias is broken", legs[e].what);
-                    CHECK(!oi_moved,
-                          "N-ALIAS/%s: a beta lane reached the oi publics",
-                          legs[e].what);
-                } else {
-                    CHECK(oi_moved,
-                          "N-ALIAS/%s: the lane does not reach the oi alpha — "
-                          "the alpha alias is broken", legs[e].what);
-                    CHECK(!fri_moved,
-                          "N-ALIAS/%s: an alpha lane reached the fri publics",
-                          legs[e].what);
-                }
-            }
-
-            st = p2s_run_entry(&bad, proof, NULL, NULL);
-            CHECK(st != DNAC_P2S_OK, "N-ALIAS/%s: perturbation was ACCEPTED",
-                  legs[e].what);
-#if !DNAC_P2S_PREP_ROOT_UNFILLED
-            CHECK(st == DNAC_P2S_ERR_BATCH,
-                  "N-ALIAS/%s: rejected as %d, want the BATCH check",
-                  legs[e].what, (int)st);
-#endif
+        /* The two commitment roots -> every instance of their own slot, and
+         * nothing else. One commitment, Q openings. */
+        for (size_t k = 0; k < (size_t)MMIX_DIGEST_LANES; k++) {
+            dnac_p2s_statement_t bad = *stmt;
+            bad.mmix_root[k] = gold_fp_to_u64(gold_fp_add(
+                gold_fp_from_u64(bad.mmix_root[k]), gold_fp_one()));
+            if (!set_pair(stmt, &bad, "N-QSHARED")) continue;
+            check_mask(moved_mask(), all_mmix, "N-QSHARED: mmix_root[%zu]", k);
+            expect_entry_reject(&bad, proof, "N-QSHARED: mmix_root[%zu]", k);
+        }
+        for (size_t k = 0; k < (size_t)MAIR_DIGEST_LANES; k++) {
+            dnac_p2s_statement_t bad = *stmt;
+            bad.mmcs_root[k] = gold_fp_to_u64(gold_fp_add(
+                gold_fp_from_u64(bad.mmcs_root[k]), gold_fp_one()));
+            if (!set_pair(stmt, &bad, "N-QSHARED")) continue;
+            check_mask(moved_mask(), all_mmcs, "N-QSHARED: mmcs_root[%zu]", k);
+            expect_entry_reject(&bad, proof, "N-QSHARED: mmcs_root[%zu]", k);
         }
     }
 
-    /* ── N-ALIAS / idx (s3b): the index bits now have FIVE consumers. The bit
-     * flip loop above already proves the four AIR-side ones move; this asserts
-     * the TRANSCRIPT side moves with them, i.e. that the entry cannot be handed
-     * an index the transcript did not produce. ── */
-    for (size_t l = 0; l < DNAC_P2S_LGMH; l++) {
-        dnac_p2s_statement_t bad = *stmt;
-        dnac_batch_vinstance_t i0[DNAC_P2S_NUM_INSTANCES];
-        dnac_batch_vinstance_t i1[DNAC_P2S_NUM_INSTANCES];
-        gold_fp_t am[DNAC_P2S_MMIX_NUM_PUBLICS], bm[DNAC_P2S_MMIX_NUM_PUBLICS];
-        gold_fp_t ac[DNAC_P2S_MMCS_NUM_PUBLICS], bc[DNAC_P2S_MMCS_NUM_PUBLICS];
-        gold_fp_t af[DNAC_P2S_FRI_NUM_PUBLICS], bf[DNAC_P2S_FRI_NUM_PUBLICS];
-        gold_fp_t ao[DNAC_P2S_OI_NUM_PUBLICS], bo[DNAC_P2S_OI_NUM_PUBLICS];
-        gold_fp_t at[DNAC_P2S_TAIR_NUM_PUBLICS], bt[DNAC_P2S_TAIR_NUM_PUBLICS];
-        int tair_moved = 0;
+    /* ── N-QINDEP: a PER-QUERY lane reaches ONLY its own query's consumers.
+     * This is the leg that would fire if a per-query region had been aliased
+     * across q (the collapse), and it also carries the older single-query
+     * claims: the ro-export two-consumer property (s1c), the p_x <-> MMCS
+     * alias (s2, N-ALIAS/px) and the `px_rest` honest label (N-PXREST) — each
+     * now stated as an exact instance set instead of a pair of booleans. ── */
+    for (size_t qq = 0; qq < DNAC_P2S_NUM_QUERIES; qq++) {
+        const uint32_t m_mmix = P2S_IMASK(qq, DNAC_P2S_SLOT_MMIX);
+        const uint32_t m_mmcs = P2S_IMASK(qq, DNAC_P2S_SLOT_MMCS);
+        const uint32_t m_fri = P2S_IMASK(qq, DNAC_P2S_SLOT_FRI);
+        const uint32_t m_oi = P2S_IMASK(qq, DNAC_P2S_SLOT_OI);
 
-        bad.index_bits[l] ^= 1u;
-        if (dnac_p2_fri_statement_build_instances(
-                stmt, i0, &g_fs_a, am, ac, af, ao, at) == DNAC_P2S_OK &&
-            dnac_p2_fri_statement_build_instances(
-                &bad, i1, &g_fs_b, bm, bc, bf, bo, bt) == DNAC_P2S_OK) {
-            for (size_t j = 0; j < DNAC_P2S_TAIR_NUM_PUBLICS; j++) {
-                if (gold_fp_to_u64(at[j]) != gold_fp_to_u64(bt[j])) {
-                    tair_moved = 1;
-                }
-            }
-        } else {
-            CHECK(0, "N-ALIAS/idx: build_instances rejected bit %zu", l);
+        /* ro_export (s1c): the seed lane feeds fri's f_init, a roll-in height's
+         * lane feeds that roll-in slot — and BOTH feed the oi ro publics. Every
+         * pinned height is either the seed or a roll-in, so EVERY lane must
+         * reach fri; a future cfg exporting a height fri neither seeds from nor
+         * rolls in would be reported here rather than silently becoming a
+         * one-sided alias. */
+        for (size_t i = 0; i < 2 * DNAC_P2S_OI_NUM_HEIGHTS; i++) {
+            dnac_p2s_statement_t bad = *stmt;
+            bad.ro_export[qq][i] = gold_fp_to_u64(gold_fp_add(
+                gold_fp_from_u64(bad.ro_export[qq][i]), gold_fp_one()));
+            if (!set_pair(stmt, &bad, "N-QINDEP/ro")) continue;
+            check_mask(moved_mask(), m_fri | m_oi,
+                       "N-QINDEP/ro: ro_export[q%zu][%zu]", qq, i);
+            expect_entry_reject(&bad, proof,
+                                "N-QINDEP/ro: ro_export[q%zu][%zu]", qq, i);
         }
-        CHECK(tair_moved,
-              "N-ALIAS/idx: flipping index bit %zu does not reach the tair "
-              "exported-bit publics — the index is not transcript-bound", l);
-    }
 
-    /* ── N-BITSREST: the honest label on the OTHER queries' bits — they ARE
-     * read (they reach the tair publics) but reach ONLY tair, because no
-     * consumer models query 1 yet. Same two-sided pinning as N-PXREST. ── */
-    for (size_t i = 0; i < DNAC_P2S_TAIR_BITS_REST; i++) {
-        dnac_p2s_statement_t bad = *stmt;
-        dnac_batch_vinstance_t i0[DNAC_P2S_NUM_INSTANCES];
-        dnac_batch_vinstance_t i1[DNAC_P2S_NUM_INSTANCES];
-        gold_fp_t am[DNAC_P2S_MMIX_NUM_PUBLICS], bm[DNAC_P2S_MMIX_NUM_PUBLICS];
-        gold_fp_t ac[DNAC_P2S_MMCS_NUM_PUBLICS], bc[DNAC_P2S_MMCS_NUM_PUBLICS];
-        gold_fp_t af[DNAC_P2S_FRI_NUM_PUBLICS], bf[DNAC_P2S_FRI_NUM_PUBLICS];
-        gold_fp_t ao[DNAC_P2S_OI_NUM_PUBLICS], bo[DNAC_P2S_OI_NUM_PUBLICS];
-        gold_fp_t at[DNAC_P2S_TAIR_NUM_PUBLICS], bt[DNAC_P2S_TAIR_NUM_PUBLICS];
-        int tair_moved = 0, other_moved = 0;
-        dnac_p2s_status_t st;
-
-        bad.tair_bits_rest[i] ^= 1u;
-        if (dnac_p2_fri_statement_build_instances(
-                stmt, i0, &g_fs_a, am, ac, af, ao, at) == DNAC_P2S_OK &&
-            dnac_p2_fri_statement_build_instances(
-                &bad, i1, &g_fs_b, bm, bc, bf, bo, bt) == DNAC_P2S_OK) {
-            for (size_t j = 0; j < DNAC_P2S_TAIR_NUM_PUBLICS; j++) {
-                if (gold_fp_to_u64(at[j]) != gold_fp_to_u64(bt[j])) {
-                    tair_moved = 1;
-                }
-            }
-            for (size_t j = 0; j < DNAC_P2S_FRI_NUM_PUBLICS; j++) {
-                if (gold_fp_to_u64(af[j]) != gold_fp_to_u64(bf[j])) {
-                    other_moved = 1;
-                }
-            }
-            for (size_t j = 0; j < DNAC_P2S_OI_NUM_PUBLICS; j++) {
-                if (gold_fp_to_u64(ao[j]) != gold_fp_to_u64(bo[j])) {
-                    other_moved = 1;
-                }
-            }
-        } else {
-            CHECK(0, "N-BITSREST: build_instances rejected lane %zu", i);
-        }
-        CHECK(tair_moved, "N-BITSREST: lane %zu is never read", i);
-        CHECK(!other_moved,
-              "N-BITSREST: lane %zu reached a CONSUMER's publics — query 1 is "
-              "documented as unconsumed in this slice", i);
-
-        st = p2s_run_entry(&bad, proof, NULL, NULL);
-        CHECK(st != DNAC_P2S_OK,
-              "N-BITSREST: flipping bit %zu was ACCEPTED", i);
-#if !DNAC_P2S_PREP_ROOT_UNFILLED
-        CHECK(st == DNAC_P2S_ERR_BATCH,
-              "N-BITSREST: lane %zu rejected as %d, want the BATCH check", i,
-              (int)st);
-#endif
-    }
-
-    /* ── N-ALIAS / px (s2): perturb ONE `mmix_opened` lane. It is the mmix
-     * instance's opened-row public AND — for every acc row of the MAIN batch at
-     * that matrix's height — the oi instance's p_x public. There is no second
-     * field to disagree with, so the two move TOGETHER; that is what the p_x
-     * <-> MMCS seam being closed for those rows means, and it is shown on the
-     * entry's own construction rather than inferred from a reject. ── */
-    for (size_t c = 0; c < DNAC_P2S_MMIX_TOTAL_OPENED; c++) {
-        dnac_p2s_statement_t bad = *stmt;
-        dnac_p2s_status_t st;
-        bad.mmix_opened[c] =
-            gold_fp_to_u64(gold_fp_add(gold_fp_from_u64(bad.mmix_opened[c]),
-                                       gold_fp_one()));
-
-        {
-            dnac_batch_vinstance_t i0[DNAC_P2S_NUM_INSTANCES];
-            dnac_batch_vinstance_t i1[DNAC_P2S_NUM_INSTANCES];
-            gold_fp_t am[DNAC_P2S_MMIX_NUM_PUBLICS], bm[DNAC_P2S_MMIX_NUM_PUBLICS];
-            gold_fp_t ac[DNAC_P2S_MMCS_NUM_PUBLICS], bc[DNAC_P2S_MMCS_NUM_PUBLICS];
-            gold_fp_t af[DNAC_P2S_FRI_NUM_PUBLICS], bf[DNAC_P2S_FRI_NUM_PUBLICS];
-            gold_fp_t ao[DNAC_P2S_OI_NUM_PUBLICS], bo[DNAC_P2S_OI_NUM_PUBLICS];
-            gold_fp_t at[DNAC_P2S_TAIR_NUM_PUBLICS], bt[DNAC_P2S_TAIR_NUM_PUBLICS];
+        /* mmix_opened (s2): the mmix instance's opened row AND — for every acc
+         * row of the MAIN batch at that matrix's height — the oi instance's
+         * p_x. Two consumers, ONE field, SAME query. */
+        for (size_t c = 0; c < DNAC_P2S_MMIX_TOTAL_OPENED; c++) {
+            dnac_p2s_statement_t bad = *stmt;
             const size_t opx = dnac_foi_pub_px_off(dnac_p2s_oi_cfg());
-            int mmix_moved = 0, oi_px_moved = 0, oi_other_moved = 0;
+            const gold_fp_t *ao, *bo;
+            int outside_px = 0;
 
-            if (dnac_p2_fri_statement_build_instances(
-                    stmt, i0, &g_fs_a, am, ac, af, ao, at) == DNAC_P2S_OK &&
-                dnac_p2_fri_statement_build_instances(
-                    &bad, i1, &g_fs_b, bm, bc, bf, bo, bt) == DNAC_P2S_OK) {
-                for (size_t k = 0; k < DNAC_P2S_MMIX_NUM_PUBLICS; k++) {
-                    if (gold_fp_to_u64(am[k]) != gold_fp_to_u64(bm[k])) {
-                        mmix_moved = 1;
-                    }
+            bad.mmix_opened[qq][c] = gold_fp_to_u64(gold_fp_add(
+                gold_fp_from_u64(bad.mmix_opened[qq][c]), gold_fp_one()));
+            if (!set_pair(stmt, &bad, "N-QINDEP/px")) continue;
+            check_mask(moved_mask(), m_mmix | m_oi,
+                       "N-QINDEP/px: mmix_opened[q%zu][%zu]", qq, c);
+
+            /* and inside the oi vector it must land ONLY in the p_x region —
+             * anywhere else would mean the region walk mis-partitioned. */
+            ao = set_pub(&g_set_a, DNAC_P2S_INST(qq, DNAC_P2S_SLOT_OI));
+            bo = set_pub(&g_set_b, DNAC_P2S_INST(qq, DNAC_P2S_SLOT_OI));
+            for (size_t k = 0; k < opx; k++) {
+                if (gold_fp_to_u64(ao[k]) != gold_fp_to_u64(bo[k])) {
+                    outside_px = 1;
                 }
-                for (size_t k = 0; k < DNAC_P2S_OI_NUM_PUBLICS; k++) {
-                    if (gold_fp_to_u64(ao[k]) == gold_fp_to_u64(bo[k])) continue;
-                    if (k >= opx) oi_px_moved = 1;
-                    else oi_other_moved = 1;
-                }
-            } else {
-                CHECK(0, "N-ALIAS/px: build_instances rejected a canonical "
-                         "perturbation (lane %zu)", c);
             }
-            CHECK(mmix_moved,
-                  "N-ALIAS/px: lane %zu does not reach the mmix publics", c);
-            CHECK(oi_px_moved,
-                  "N-ALIAS/px: lane %zu does not reach the oi p_x publics — "
-                  "the main-batch rows are no longer MMCS-aliased", c);
-            /* It must land ONLY in the p_x region of the oi publics; anywhere
-             * else would mean the region walk mis-partitioned. */
-            CHECK(!oi_other_moved,
-                  "N-ALIAS/px: lane %zu moved an oi public OUTSIDE the p_x "
-                  "region", c);
+            CHECK(!outside_px,
+                  "N-QINDEP/px: mmix_opened[q%zu][%zu] moved an oi public "
+                  "OUTSIDE the p_x region", qq, c);
+            expect_entry_reject(&bad, proof,
+                                "N-QINDEP/px: mmix_opened[q%zu][%zu]", qq, c);
         }
 
-        st = p2s_run_entry(&bad, proof, NULL, NULL);
-        CHECK(st != DNAC_P2S_OK,
-              "N-ALIAS/px: perturbing mmix_opened lane %zu was ACCEPTED", c);
-#if !DNAC_P2S_PREP_ROOT_UNFILLED
-        CHECK(st == DNAC_P2S_ERR_BATCH,
-              "N-ALIAS/px: lane %zu rejected as %d, want the BATCH check", c,
-              (int)st);
-#endif
-    }
+        /* mmcs_opened: exactly one consumer, this query's mmcs instance. */
+        for (size_t c = 0; c < DNAC_P2S_MMCS_TOTAL_WIDTH; c++) {
+            dnac_p2s_statement_t bad = *stmt;
+            bad.mmcs_opened[qq][c] = gold_fp_to_u64(gold_fp_add(
+                gold_fp_from_u64(bad.mmcs_opened[qq][c]), gold_fp_one()));
+            if (!set_pair(stmt, &bad, "N-QINDEP/mmcs")) continue;
+            check_mask(moved_mask(), m_mmcs,
+                       "N-QINDEP/mmcs: mmcs_opened[q%zu][%zu]", qq, c);
+            expect_entry_reject(&bad, proof,
+                                "N-QINDEP/mmcs: mmcs_opened[q%zu][%zu]", qq, c);
+        }
 
-    /* ── N-PXREST (s2): the honest label under test. `px_rest` IS consumed —
-     * perturbing a lane reaches the oi p_x publics and the entry rejects — but
-     * it reaches ONLY oi, which is exactly the seam that is still open (no
-     * commitment binds it). Pinning both halves keeps the label from drifting
-     * into either "unused" or "bound". ── */
-    for (size_t i = 0; i < DNAC_P2S_OI_PX_REST; i++) {
-        dnac_p2s_statement_t bad = *stmt;
-        dnac_p2s_status_t st;
-        bad.px_rest[i] =
-            gold_fp_to_u64(gold_fp_add(gold_fp_from_u64(bad.px_rest[i]),
-                                       gold_fp_one()));
+        /* px_rest — the honest label under test (s2). It IS consumed, and it
+         * reaches ONLY this query's oi instance: not mmix (no commitment binds
+         * it — that is the seam that is still open) and not the other query. */
+        for (size_t i = 0; i < DNAC_P2S_OI_PX_REST; i++) {
+            dnac_p2s_statement_t bad = *stmt;
+            bad.px_rest[qq][i] = gold_fp_to_u64(gold_fp_add(
+                gold_fp_from_u64(bad.px_rest[qq][i]), gold_fp_one()));
+            if (!set_pair(stmt, &bad, "N-QINDEP/pxrest")) continue;
+            check_mask(moved_mask(), m_oi,
+                       "N-QINDEP/pxrest: px_rest[q%zu][%zu]", qq, i);
+            expect_entry_reject(&bad, proof,
+                                "N-QINDEP/pxrest: px_rest[q%zu][%zu]", qq, i);
+        }
+
+        /* z — the OPENING POINTS. One consumer, this query's oi instance: this
+         * is the half of the old `zpz` region that legitimately stays per-query
+         * (HONEST LABEL 8 — the shipped builder ties z to x, and x moves with
+         * the index). Its counterpart p_z is now SHARED and is pinned by
+         * N-PZSHARED; keeping both checks means the split cannot silently
+         * regress in either direction — a per-query p_z would fail N-PZSHARED,
+         * and a shared z would fail here.
+         *
+         * SWEPT for the mask, entry-rejected at the two ENDS: 2*total_acc lanes
+         * x Q full batch verifications buy nothing the exact-set mask does not
+         * already say, and the ends are what a region-walk off-by-one moves. */
         {
-            dnac_batch_vinstance_t i0[DNAC_P2S_NUM_INSTANCES];
-            dnac_batch_vinstance_t i1[DNAC_P2S_NUM_INSTANCES];
-            gold_fp_t am[DNAC_P2S_MMIX_NUM_PUBLICS], bm[DNAC_P2S_MMIX_NUM_PUBLICS];
-            gold_fp_t ac[DNAC_P2S_MMCS_NUM_PUBLICS], bc[DNAC_P2S_MMCS_NUM_PUBLICS];
-            gold_fp_t af[DNAC_P2S_FRI_NUM_PUBLICS], bf[DNAC_P2S_FRI_NUM_PUBLICS];
-            gold_fp_t ao[DNAC_P2S_OI_NUM_PUBLICS], bo[DNAC_P2S_OI_NUM_PUBLICS];
-            gold_fp_t at[DNAC_P2S_TAIR_NUM_PUBLICS], bt[DNAC_P2S_TAIR_NUM_PUBLICS];
-            const size_t opx = dnac_foi_pub_px_off(dnac_p2s_oi_cfg());
-            int oi_px_moved = 0, mmix_moved = 0;
-            if (dnac_p2_fri_statement_build_instances(
-                    stmt, i0, &g_fs_a, am, ac, af, ao, at) == DNAC_P2S_OK &&
-                dnac_p2_fri_statement_build_instances(
-                    &bad, i1, &g_fs_b, bm, bc, bf, bo, bt) == DNAC_P2S_OK) {
-                for (size_t k = opx; k < DNAC_P2S_OI_NUM_PUBLICS; k++) {
-                    if (gold_fp_to_u64(ao[k]) != gold_fp_to_u64(bo[k])) {
-                        oi_px_moved = 1;
-                    }
+            for (size_t i = 0; i < 2 * DNAC_P2S_OI_TOTAL_ACC; i++) {
+                dnac_p2s_statement_t bad = *stmt;
+                bad.z_pq[qq][i] = gold_fp_to_u64(gold_fp_add(
+                    gold_fp_from_u64(bad.z_pq[qq][i]), gold_fp_one()));
+                if (!set_pair(stmt, &bad, "N-QINDEP/z")) continue;
+                check_mask(moved_mask(), m_oi, "N-QINDEP/z: z_pq[q%zu][%zu]",
+                           qq, i);
+                if (i == 0 || i == 2 * DNAC_P2S_OI_TOTAL_ACC - 1) {
+                    expect_entry_reject(&bad, proof,
+                                        "N-QINDEP/z: z_pq[q%zu][%zu]", qq, i);
                 }
-                for (size_t k = 0; k < DNAC_P2S_MMIX_NUM_PUBLICS; k++) {
-                    if (gold_fp_to_u64(am[k]) != gold_fp_to_u64(bm[k])) {
-                        mmix_moved = 1;
-                    }
-                }
-            } else {
-                CHECK(0, "N-PXREST: build_instances rejected lane %zu", i);
             }
-            CHECK(oi_px_moved, "N-PXREST: lane %zu is never read", i);
-            CHECK(!mmix_moved,
-                  "N-PXREST: lane %zu reached the mmix publics — it is NOT the "
-                  "unbound remainder this field is documented to be", i);
         }
-        st = p2s_run_entry(&bad, proof, NULL, NULL);
-        CHECK(st != DNAC_P2S_OK,
-              "N-PXREST: perturbing px_rest lane %zu was ACCEPTED", i);
-#if !DNAC_P2S_PREP_ROOT_UNFILLED
-        CHECK(st == DNAC_P2S_ERR_BATCH,
-              "N-PXREST: lane %zu rejected as %d, want the BATCH check", i,
-              (int)st);
-#endif
     }
 
-    /* ── N-CFG (OBL-P2c-1): a proof whose fri instance was built on a
-     * DIFFERENT cfg. The entry always rebuilds from the PINNED cfg, so the
-     * shapes cannot line up. ── */
+}
+
+/* ── N-CFG (OBL-P2c-1): a proof whose fri instances were built on a DIFFERENT
+ * cfg. The entry always rebuilds from the PINNED cfg, so the shapes cannot line
+ * up. Self-contained (it builds its own traces, statement and proof), which is
+ * why it takes nothing. ── */
+static void t_ncfg(void)
+{
     {
         static const dnac_p2c_table_cfg_t ALT = {
             DNAC_P2S_LGMH, DNAC_P2S_LOG_BLOWUP, DNAC_P2S_LFPL,
@@ -2957,66 +3478,62 @@ static void rt1_and_proof_negatives(const dnac_p2s_statement_t *stmt,
              * M1 — no silent escape paths). */
             CHECK(0, "N-CFG: alternative-cfg traces not buildable (test bug)");
         } else {
-            dnac_batch_vinstance_t insts[DNAC_P2S_NUM_INSTANCES];
             dnac_batch_pwitness_t wits[DNAC_P2S_NUM_INSTANCES];
-            gold_fp_t pm[DNAC_P2S_MMIX_NUM_PUBLICS];
-            gold_fp_t pc[DNAC_P2S_MMCS_NUM_PUBLICS];
-            gold_fp_t pf[DNAC_P2S_FRI_NUM_PUBLICS];
-            gold_fp_t po[DNAC_P2S_OI_NUM_PUBLICS];
-    gold_fp_t pt[DNAC_P2S_TAIR_NUM_PUBLICS];
-            static gold_fp_t alt_pub[256];
+            /* [Q][anp]: the alternative cfg is bound into EVERY query's fri
+             * slot, so the mismatch is not one instance against Q-1 correct
+             * ones — the statement's rebuild from the PINNED cfg has to
+             * disagree with all of them. `static` because they must outlive
+             * `dnac_batch_prove`. */
+            static gold_fp_t alt_pub[DNAC_P2S_NUM_QUERIES][256];
+            static dnac_fair_fold_state_t alt_state[DNAC_P2S_NUM_QUERIES];
             const size_t anp = dnac_fair_num_publics(&ALT);
-            dnac_stark_air_t alt_air;
-            /* FLEET 034: the alternative binding gets its OWN caller-owned
-             * state, so it no longer disturbs the statement's own FRI binding
-             * (with the retired module static, this bind CLOBBERED the one
-             * `build_instances` had just armed — the alt cfg leaked into the
-             * statement's instance and the negative was measuring the wrong
-             * thing). `static` because it must outlive `dnac_batch_prove`. */
-            static dnac_fair_fold_state_t alt_state;
+            dnac_stark_air_t alt_air[DNAC_P2S_NUM_QUERIES];
             int ok = 1;
 
             stmt_from_traces(&astmt, &AT);
-            if (dnac_p2_fri_statement_build_instances(
-                    &astmt, insts, &g_fs_a, pm, pc, pf, po,
-                    pt) != DNAC_P2S_OK) {
+            if (set_build(&g_set_a, &astmt) != DNAC_P2S_OK) {
                 CHECK(0, "N-CFG: build_instances failed");
                 ok = 0;
             }
-            memset(&alt_air, 0, sizeof(alt_air));
-            memset(&alt_state, 0, sizeof(alt_state));
-            if (ok && dnac_fair_fold_bind(&ALT, &alt_state, &alt_air) !=
-                          DNAC_FAIR_FOLD_OK) {
-                CHECK(0, "N-CFG: could not bind the alternative cfg");
-                ok = 0;
-            }
-            if (ok && anp > sizeof(alt_pub) / sizeof(alt_pub[0])) {
+            if (ok && anp > sizeof(alt_pub[0]) / sizeof(alt_pub[0][0])) {
                 CHECK(0, "N-CFG: alternative publics too wide");
                 ok = 0;
+            }
+            /* FLEET 034: each alternative binding gets its OWN caller-owned
+             * state, so it neither disturbs the statement's fri bindings nor
+             * the other query's (with the retired module static, these binds
+             * CLOBBERED the ones `build_instances` had just armed — the alt cfg
+             * leaked into the statement's instance and the negative was
+             * measuring the wrong thing). */
+            for (size_t q = 0; ok && q < DNAC_P2S_NUM_QUERIES; q++) {
+                memset(&alt_air[q], 0, sizeof(alt_air[q]));
+                memset(&alt_state[q], 0, sizeof(alt_state[q]));
+                if (dnac_fair_fold_bind(&ALT, &alt_state[q], &alt_air[q]) !=
+                    DNAC_FAIR_FOLD_OK) {
+                    CHECK(0, "N-CFG: could not bind the alternative cfg for "
+                             "query %zu", q);
+                    ok = 0;
+                }
             }
             if (ok) {
                 size_t db = 0, v = 1;
                 const size_t rows = dnac_p2c_table_rows(&ALT);
                 while (v < rows) { v <<= 1; db++; }
-                for (size_t i = 0; i < anp; i++) {
-                    alt_pub[i] = gold_fp_from_u64(AT.fri.pub[i]);
+
+                p2s_fill_witnesses(wits, &AT);
+                for (size_t q = 0; q < DNAC_P2S_NUM_QUERIES; q++) {
+                    const uint32_t fi = DNAC_P2S_INST(q, DNAC_P2S_SLOT_FRI);
+                    for (size_t i = 0; i < anp; i++) {
+                        alt_pub[q][i] = gold_fp_from_u64(AT.q[q].fri.pub[i]);
+                    }
+                    g_set_a.insts[fi].air = alt_air[q];
+                    g_set_a.insts[fi].num_publics = (uint32_t)anp;
+                    g_set_a.insts[fi].public_values = alt_pub[q];
+                    g_set_a.insts[fi].degree_bits = (uint32_t)db;
                 }
-                insts[DNAC_P2S_INST_FRI].air = alt_air;
-                insts[DNAC_P2S_INST_FRI].num_publics = (uint32_t)anp;
-                insts[DNAC_P2S_INST_FRI].public_values = alt_pub;
-                insts[DNAC_P2S_INST_FRI].degree_bits = (uint32_t)db;
 
-                memset(wits, 0, sizeof(wits));
-                wits[DNAC_P2S_INST_MMIX].main_trace = AT.mmix.trace;
-                wits[DNAC_P2S_INST_MMIX].prep_trace = AT.mmix.prep;
-                wits[DNAC_P2S_INST_MMCS].main_trace = AT.mmcs.trace;
-                wits[DNAC_P2S_INST_MMCS].prep_trace = AT.mmcs.prep;
-                wits[DNAC_P2S_INST_FRI].main_trace = AT.fri.trace;
-                wits[DNAC_P2S_INST_FRI].prep_trace = AT.fri.prep;
-                wits[DNAC_P2S_INST_OI].main_trace = AT.oi.trace;
-                wits[DNAC_P2S_INST_OI].prep_trace = AT.oi.prep;
-
-                if (dnac_batch_prove(insts, wits, DNAC_P2S_NUM_INSTANCES, 0,
+                if (dnac_batch_prove(g_set_a.insts, wits,
+                                     DNAC_P2S_NUM_INSTANCES, 0,
                                      dnac_p2s_fri_params(), 0, NULL, 0, NULL, 0,
                                      NULL, 0, 0, &aproof) != DNAC_PROVER_OK) {
                     /* Recorded as an explicit CHECK so N-CFG can never end
@@ -3041,8 +3558,6 @@ static void rt1_and_proof_negatives(const dnac_p2s_statement_t *stmt,
             traces_free(&AT);
         }
     }
-
-    dnac_batch_proof_free(proof);
 }
 
 static void rt1_and_negatives(void)
@@ -3052,12 +3567,32 @@ static void rt1_and_negatives(void)
     uint64_t honest_root[4] = { 0, 0, 0, 0 };
 
     if (!traces_build(&T, dnac_p2s_fri_cfg(), 7)) {
-        CHECK(0, "RT: could not build the five honest traces");
+        CHECK(0, "RT: could not build the %u honest traces",
+              DNAC_P2S_NUM_INSTANCES);
         traces_free(&T);
         return;
     }
-    printf("  [rt]     transcript-derived query index = %llu (0x%llx)\n",
-           (unsigned long long)T.index, (unsigned long long)T.index);
+    for (size_t q = 0; q < DNAC_P2S_NUM_QUERIES; q++) {
+        printf("  [rt]     transcript-derived query index[%zu] = %llu "
+               "(0x%llx)\n", q, (unsigned long long)T.q[q].index,
+               (unsigned long long)T.q[q].index);
+    }
+    /* The Q indices of the PINNED script are CONSTANTS of this composition —
+     * the script is fixed and `duplex_challenger.c` is deterministic, so this
+     * is an assertion about the pin, not a probabilistic one. Two equal indices
+     * would still be a legitimate protocol outcome (fri_verifier.c:737 samples
+     * freshly and may repeat) and would not invalidate N-QSEP, whose fields are
+     * separate regardless — but it would mean the Q traces are identical, which
+     * is exactly the situation this slice exists to distinguish from, so it is
+     * reported rather than tolerated silently. */
+    for (size_t a = 0; a < DNAC_P2S_NUM_QUERIES; a++) {
+        for (size_t b = a + 1; b < DNAC_P2S_NUM_QUERIES; b++) {
+            CHECK(T.q[a].index != T.q[b].index,
+                  "RT: the pinned script's query indices %zu and %zu are BOTH "
+                  "%llu — the Q traces would be identical", a, b,
+                  (unsigned long long)T.q[a].index);
+        }
+    }
     stmt_from_traces(&stmt, &T);
     t_alias_positive(&stmt, &T);
 
@@ -3087,13 +3622,16 @@ int main(int argc, char **argv)
         const uint64_t *ctab[DNAC_P2S_NUM_INSTANCES];
         int ok = p2s_alloc_tables(tab);
 
-        printf("s3b composed preprocessed root — the PINNED cfg set "
-               "(5 tables: mmix, mmcs, fri, oi, tair),\n");
+        printf("multi-query composed preprocessed root — the PINNED cfg set "
+               "(%u tables: tair, then\n{mmix, mmcs, fri, oi} per query, "
+               "%zu queries),\n", DNAC_P2S_NUM_INSTANCES,
+               (size_t)DNAC_P2S_NUM_QUERIES);
         printf("pipeline = batch_prover.c:786-822 with is_zk = 0, blowup %zu\n\n",
                (size_t)DNAC_P2S_LOG_BLOWUP);
         for (uint32_t i = 0; i < DNAC_P2S_NUM_INSTANCES; i++) {
-            printf("  instance %u: %zu rows x %zu cols -> lde %zu rows\n", i,
-                   dnac_p2s_prep_rows(i), dnac_p2s_prep_cols(i),
+            printf("  instance %2u %-10s: %zu rows x %zu cols -> lde %zu rows\n",
+                   i, inst_name(i), dnac_p2s_prep_rows(i),
+                   dnac_p2s_prep_cols(i),
                    dnac_p2s_prep_rows(i) << DNAC_P2S_LOG_BLOWUP);
         }
         if (ok) {
@@ -3117,12 +3655,15 @@ int main(int argc, char **argv)
         return 0;
     }
 
-    printf("=== s1b + s1c + s2 + s3b — FRI-verify statement ENTRY "
-           "(5 instances) ===\n\n");
+    printf("=== s1b + s1c + s2 + s3b + MULTI-QUERY — FRI-verify statement "
+           "ENTRY (%u instances) ===\n\n", DNAC_P2S_NUM_INSTANCES);
 
     printf("T-CONST / T-LQ — the pinned arithmetic vs the module accessors\n");
     t_const();
     t_lq();
+
+    printf("\nT-MAP — the multi-query instance map + the flat publics layout\n");
+    t_map();
 
     printf("\nT-REF/tair — the transcript cfg + script derived from the s1 "
            "pins\n");

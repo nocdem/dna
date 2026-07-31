@@ -1,8 +1,9 @@
 /**
  * @file fri_statement.c
- * @brief Composition s1b + s1c + s2 + s3b — the FRI-verify statement entry (see
- *        fri_statement.h for the pinned cfg derivation, the seam s1c closes,
- *        the seams still declared, and the one-pin correction).
+ * @brief Composition s1b + s1c + s2 + s3b + MULTI-QUERY — the FRI-verify
+ *        statement entry (see fri_statement.h for the pinned cfg derivation,
+ *        the instance map, the shared/per-query split that discharges
+ *        OBL-P2c-2, the seams still declared, and the one-pin correction).
  *
  * This file CONSTRUCTS and REJECTS. It contains no constraint, no column and no
  * field arithmetic beyond a canonicality comparison: every constraint it relies
@@ -211,28 +212,86 @@ size_t dnac_p2s_log_num_qc(size_t max_symbolic_degree, int is_zk)
     return p2s_log2_ceil(cd - 1);
 }
 
+/* ── instance -> (query, slot) ───────────────────────────────────────────────
+ * The ONE place the instance map is decoded. Instance 0 is the transcript (no
+ * query, no slot); every other instance is 1 + 4*q + slot. */
+
+uint32_t dnac_p2s_inst_slot(uint32_t instance)
+{
+    if (instance == DNAC_P2S_INST_TAIR ||
+        instance >= DNAC_P2S_NUM_INSTANCES) {
+        return DNAC_P2S_SLOTS;
+    }
+    return (instance - 1u) % DNAC_P2S_SLOTS;
+}
+
+size_t dnac_p2s_inst_query(uint32_t instance)
+{
+    if (instance == DNAC_P2S_INST_TAIR ||
+        instance >= DNAC_P2S_NUM_INSTANCES) {
+        return (size_t)-1;
+    }
+    return (size_t)((instance - 1u) / DNAC_P2S_SLOTS);
+}
+
+/* The pinned cfgs are per SLOT, not per query (the file header's honest note:
+ * a table encodes the AIR's SCHEDULE and every query runs the same one), so the
+ * geometry accessors below dispatch on the slot and the Q copies of a slot are
+ * byte-identical. */
+
 size_t dnac_p2s_prep_cols(uint32_t instance)
 {
-    switch (instance) {
-    case DNAC_P2S_INST_MMIX: return (size_t)DNAC_P2C_MMIX_TABLE_COLS;
-    case DNAC_P2S_INST_MMCS: return (size_t)DNAC_P2B_TABLE_COLS;
-    case DNAC_P2S_INST_FRI:  return (size_t)DNAC_P2C_TABLE_COLS;
-    case DNAC_P2S_INST_OI:   return (size_t)DNAC_P2C_OI_TABLE_COLS;
-    case DNAC_P2S_INST_TAIR: return (size_t)TAIR_TBL_COLS;
+    if (instance == DNAC_P2S_INST_TAIR) return (size_t)TAIR_TBL_COLS;
+    switch (dnac_p2s_inst_slot(instance)) {
+    case DNAC_P2S_SLOT_MMIX: return (size_t)DNAC_P2C_MMIX_TABLE_COLS;
+    case DNAC_P2S_SLOT_MMCS: return (size_t)DNAC_P2B_TABLE_COLS;
+    case DNAC_P2S_SLOT_FRI:  return (size_t)DNAC_P2C_TABLE_COLS;
+    case DNAC_P2S_SLOT_OI:   return (size_t)DNAC_P2C_OI_TABLE_COLS;
     default: return 0;
     }
 }
 
 size_t dnac_p2s_prep_rows(uint32_t instance)
 {
-    switch (instance) {
-    case DNAC_P2S_INST_MMIX: return dnac_p2c_mmix_table_rows(&P2S_MMIX_CFG);
-    case DNAC_P2S_INST_MMCS: return dnac_p2b_table_rows(&P2S_MMCS_CFG);
-    case DNAC_P2S_INST_FRI:  return dnac_p2c_table_rows(&P2S_FRI_CFG);
-    case DNAC_P2S_INST_OI:   return dnac_p2c_oi_table_rows(&P2S_OI_CFG);
-    case DNAC_P2S_INST_TAIR: return dnac_tair_table_rows(dnac_p2s_tair_script());
+    if (instance == DNAC_P2S_INST_TAIR) {
+        return dnac_tair_table_rows(dnac_p2s_tair_script());
+    }
+    switch (dnac_p2s_inst_slot(instance)) {
+    case DNAC_P2S_SLOT_MMIX: return dnac_p2c_mmix_table_rows(&P2S_MMIX_CFG);
+    case DNAC_P2S_SLOT_MMCS: return dnac_p2b_table_rows(&P2S_MMCS_CFG);
+    case DNAC_P2S_SLOT_FRI:  return dnac_p2c_table_rows(&P2S_FRI_CFG);
+    case DNAC_P2S_SLOT_OI:   return dnac_p2c_oi_table_rows(&P2S_OI_CFG);
     default: return 0;
     }
+}
+
+size_t dnac_p2s_num_publics(uint32_t instance)
+{
+    if (instance == DNAC_P2S_INST_TAIR) return DNAC_P2S_TAIR_NUM_PUBLICS;
+    switch (dnac_p2s_inst_slot(instance)) {
+    case DNAC_P2S_SLOT_MMIX: return DNAC_P2S_MMIX_NUM_PUBLICS;
+    case DNAC_P2S_SLOT_MMCS: return DNAC_P2S_MMCS_NUM_PUBLICS;
+    case DNAC_P2S_SLOT_FRI:  return DNAC_P2S_FRI_NUM_PUBLICS;
+    case DNAC_P2S_SLOT_OI:   return DNAC_P2S_OI_NUM_PUBLICS;
+    default: return 0;
+    }
+}
+
+size_t dnac_p2s_pub_off(uint32_t instance)
+{
+    size_t off;
+    uint32_t s;
+
+    if (instance >= DNAC_P2S_NUM_INSTANCES) return (size_t)-1;
+    if (instance == DNAC_P2S_INST_TAIR) return 0;
+
+    off = DNAC_P2S_TAIR_NUM_PUBLICS +
+          dnac_p2s_inst_query(instance) * DNAC_P2S_QUERY_PUBLICS;
+    /* the slots BEFORE this one, inside the query's block */
+    for (s = 0; s < dnac_p2s_inst_slot(instance); s++) {
+        off += dnac_p2s_num_publics(DNAC_P2S_INST(0, s));
+    }
+    return off;
 }
 
 size_t dnac_p2s_prep_cells(uint32_t instance)
@@ -259,38 +318,45 @@ static int p2s_canon_span(const uint64_t *v, size_t n)
 static dnac_p2s_status_t p2s_check_canonical(const dnac_p2s_statement_t *s)
 {
     /* Every region, so a field cannot be forgotten as the struct grows: the
-     * total is static-asserted against sizeof below. */
-    if (!p2s_canon_span(s->index_bits, DNAC_P2S_LGMH) ||
+     * total is static-asserted against sizeof below. The per-query regions are
+     * spanned as ONE flat run each — they are C arrays of arrays, so the whole
+     * block is contiguous and no query can be skipped by an off-by-one. */
+    if (!p2s_canon_span(&s->index_bits[0][0],
+                        DNAC_P2S_NUM_QUERIES * DNAC_P2S_LGMH) ||
         !p2s_canon_span(s->tair_payload, DNAC_P2S_TAIR_NUM_OPS) ||
-        !p2s_canon_span(s->tair_bits_rest, DNAC_P2S_TAIR_BITS_REST) ||
         !p2s_canon_span(s->final_poly0, 2) ||
-        !p2s_canon_span(s->zpz, 4 * DNAC_P2S_OI_TOTAL_ACC) ||
-        !p2s_canon_span(s->ro_export, 2 * DNAC_P2S_OI_NUM_HEIGHTS) ||
-        !p2s_canon_span(s->px_rest, DNAC_P2S_OI_PX_REST) ||
+        !p2s_canon_span(s->pz_shared, 2 * DNAC_P2S_OI_TOTAL_ACC) ||
+        !p2s_canon_span(&s->z_pq[0][0],
+                        DNAC_P2S_NUM_QUERIES * 2 * DNAC_P2S_OI_TOTAL_ACC) ||
+        !p2s_canon_span(&s->ro_export[0][0],
+                        DNAC_P2S_NUM_QUERIES * 2 * DNAC_P2S_OI_NUM_HEIGHTS) ||
+        !p2s_canon_span(&s->px_rest[0][0],
+                        DNAC_P2S_NUM_QUERIES * DNAC_P2S_OI_PX_REST) ||
         !p2s_canon_span(s->mmix_root, (size_t)MMIX_DIGEST_LANES) ||
         !p2s_canon_span(s->mmcs_root, (size_t)MAIR_DIGEST_LANES) ||
-        !p2s_canon_span(s->mmix_opened, DNAC_P2S_MMIX_TOTAL_OPENED) ||
-        !p2s_canon_span(s->mmcs_opened, DNAC_P2S_MMCS_TOTAL_WIDTH)) {
+        !p2s_canon_span(&s->mmix_opened[0][0],
+                        DNAC_P2S_NUM_QUERIES * DNAC_P2S_MMIX_TOTAL_OPENED) ||
+        !p2s_canon_span(&s->mmcs_opened[0][0],
+                        DNAC_P2S_NUM_QUERIES * DNAC_P2S_MMCS_TOTAL_WIDTH)) {
         return DNAC_P2S_ERR_CANON;
     }
 
     /* STRICTER THAN SPEC §3.1, deliberately: the index bits are not merely
-     * publics, they are this entry's own CONSTRUCTION INPUT (step 6 slices them
-     * into five instances' bit / direction regions). A value outside {0,1} would
-     * still be rejected downstream — every consumer AIR asserts booleanity of
-     * the trace cell it binds to the public — but only as an OOD mismatch
-     * several hundred constraints later, with nothing naming the cause.
-     * Rejecting here is a rejection, not a new constraint. */
-    for (size_t l = 0; l < DNAC_P2S_LGMH; l++) {
-        if (s->index_bits[l] > 1) return DNAC_P2S_ERR_CANON;
-    }
-    /* s3b — the remaining queries' exported bits are the transcript instance's
-     * bit publics, and CT-4 binds each to a trace BIT cell whose booleanity the
-     * AIR asserts (transcript_air.c block D). Same argument as `index_bits`
-     * above: rejecting here names the cause instead of surfacing it as an OOD
-     * mismatch hundreds of constraints later. */
-    for (size_t i = 0; i < DNAC_P2S_TAIR_BITS_REST; i++) {
-        if (s->tair_bits_rest[i] > 1) return DNAC_P2S_ERR_CANON;
+     * publics, they are this entry's own CONSTRUCTION INPUT (step 6 slices each
+     * query's row into that query's four bit / direction regions AND into the
+     * transcript instance's q-th exported-bit block). A value outside {0,1}
+     * would still be rejected downstream — every consumer AIR asserts
+     * booleanity of the trace cell it binds to the public, and CT-4 does the
+     * same on the transcript side (transcript_air.c block D) — but only as an
+     * OOD mismatch several hundred constraints later, with nothing naming the
+     * cause. Rejecting here is a rejection, not a new constraint.
+     *
+     * All Q rows, because all Q are consumed now: the `tair_bits_rest` rail
+     * this loop used to need alongside it is gone with the field. */
+    for (size_t q = 0; q < DNAC_P2S_NUM_QUERIES; q++) {
+        for (size_t l = 0; l < DNAC_P2S_LGMH; l++) {
+            if (s->index_bits[q][l] > 1) return DNAC_P2S_ERR_CANON;
+        }
     }
     return DNAC_P2S_OK;
 }
@@ -300,21 +366,37 @@ static dnac_p2s_status_t p2s_check_canonical(const dnac_p2s_statement_t *s)
 typedef char p2s_statement_fully_spanned_assert
     [(sizeof(dnac_p2s_statement_t) ==
       sizeof(uint64_t) *
-          (DNAC_P2S_LGMH + DNAC_P2S_TAIR_NUM_OPS + DNAC_P2S_TAIR_BITS_REST +
-           2 + 4 * DNAC_P2S_OI_TOTAL_ACC + 2 * DNAC_P2S_OI_NUM_HEIGHTS +
-           DNAC_P2S_OI_PX_REST +
-           (size_t)MMIX_DIGEST_LANES +
-           (size_t)MAIR_DIGEST_LANES + DNAC_P2S_MMIX_TOTAL_OPENED +
-           DNAC_P2S_MMCS_TOTAL_WIDTH))
+          (DNAC_P2S_NUM_QUERIES *
+               (DNAC_P2S_LGMH + 2 * DNAC_P2S_OI_TOTAL_ACC +
+                2 * DNAC_P2S_OI_NUM_HEIGHTS + DNAC_P2S_OI_PX_REST +
+                DNAC_P2S_MMIX_TOTAL_OPENED + DNAC_P2S_MMCS_TOTAL_WIDTH) +
+           DNAC_P2S_TAIR_NUM_OPS + 2 + 2 * DNAC_P2S_OI_TOTAL_ACC +
+           (size_t)MMIX_DIGEST_LANES + (size_t)MAIR_DIGEST_LANES))
          ? 1
          : -1];
 
-/* s3b — `tair_bits_rest` is a C array, so a pin with a single query would give
- * it length zero, which is not valid C. The multi-query slice that lifts
- * OBL-P2c-2 is where a Q of 1 would ever make sense; until then this stops the
- * build rather than letting a zero-length array be someone's surprise. */
-typedef char p2s_tair_bits_rest_nonempty_assert
-    [(DNAC_P2S_NUM_QUERIES >= 2) ? 1 : -1];
+/* At least one query, or the per-query C arrays would have length zero, which
+ * is not valid C. (The old `Q >= 2` rail existed only because `tair_bits_rest`
+ * held queries 1..Q-1; with every query consumed, Q == 1 is a legal pin again
+ * and this is the honest bound.) */
+typedef char p2s_num_queries_nonzero_assert
+    [(DNAC_P2S_NUM_QUERIES >= 1) ? 1 : -1];
+
+/* Same hazard, one field down: `px_rest` is a C array whose length is the acc
+ * rows the MAIN batch does NOT cover. A pinned oi cfg with only the main batch
+ * would make it zero-length. */
+typedef char p2s_px_rest_nonempty_assert
+    [(DNAC_P2S_OI_PX_REST >= 1) ? 1 : -1];
+
+/* The Q CEILING. `dnac_batch_verify` / `dnac_batch_prove` reject an instance
+ * count past their (unexported) cap — batch_verify.c:20 + :86 and
+ * batch_prover.c:22 + :210/:247, both 32 — so a Q whose 1 + 4*Q overruns it
+ * would be a RUNTIME reject on every honest proof. Fail at BUILD time instead.
+ * DNAC_P2S_MAX_QUERIES is derived from the mirrored cap, never written out. */
+typedef char p2s_num_queries_fits_batch_assert
+    [(DNAC_P2S_NUM_QUERIES <= DNAC_P2S_MAX_QUERIES) ? 1 : -1];
+typedef char p2s_instance_count_fits_batch_assert
+    [(DNAC_P2S_NUM_INSTANCES <= DNAC_P2S_BATCH_MAX_INSTANCES) ? 1 : -1];
 
 /* ==========================================================================
  * Step 2 — the preprocessed root pin
@@ -329,10 +411,19 @@ static dnac_p2s_status_t p2s_check_prep_root(
 
     if (commits->preprocessed_commit == NULL) return DNAC_P2S_ERR_PREP_ROOT;
 
-    /* The pin is a commitment over the five tables IN prep_map ORDER, so the
-     * map is part of what has to match: the same five tables committed in a
-     * different order give a different root, and a map naming other instances
-     * would leave a gated AIR reading someone else's selector cells. */
+    /* The pin is a commitment over the tables IN prep_map ORDER, so the map is
+     * part of what has to match: the same tables committed in a different order
+     * give a different root, and a map naming other instances would leave a
+     * gated AIR reading someone else's selector cells.
+     *
+     * ⚠ HONEST SCOPE with Q copies present. A permutation that swaps two
+     * instances of the SAME slot (query 0's mmix matrix for query 1's) is
+     * semantically a no-op — the two matrices are byte-identical, so it moves
+     * neither the root nor any AIR's window. This identity check rejects it
+     * anyway, which is STRICTER than necessary rather than load-bearing; what
+     * IS load-bearing is that a map crossing slots (an oi instance handed the
+     * fri table) cannot pass. Stated so the check is not read as carrying a
+     * separation it does not carry. */
     if (num_prep_matrices != DNAC_P2S_NUM_INSTANCES ||
         prep_matrix_to_instance == NULL) {
         return DNAC_P2S_ERR_PREP_ROOT;
@@ -603,94 +694,41 @@ static dnac_p2s_status_t p2s_fill_geometry(dnac_batch_vinstance_t *vi,
     return DNAC_P2S_OK;
 }
 
-dnac_p2s_status_t dnac_p2_fri_statement_build_instances(
-    const dnac_p2s_statement_t *stmt,
-    dnac_batch_vinstance_t     *insts,
-    dnac_p2s_fold_states_t     *states,
-    gold_fp_t                  *pub_mmix,
-    gold_fp_t                  *pub_mmcs,
-    gold_fp_t                  *pub_fri,
-    gold_fp_t                  *pub_oi,
-    gold_fp_t                  *pub_tair)
+/* ── Step 6, one query's four consumers ──────────────────────────────────────
+ * Every module's own offset accessors place the regions — this file never
+ * hard-codes an offset — and every accessor is cross-checked against the pinned
+ * arithmetic, so a layout change in a module surfaces as a reject, not as a
+ * silent misalignment.
+ *
+ * ⚠ THE WHOLE POINT OF THE MULTI-QUERY SLICE IS THE `q` IN THIS FUNCTION'S
+ * SIGNATURE. Everything read out of `stmt` here is either
+ *   - a PER-QUERY region indexed by `q` (index_bits, ro_export, mmix_opened,
+ *     mmcs_opened, z_pq, px_rest), or
+ *   - a SHARED region with no query index at all (tair_payload, final_poly0,
+ *     pz_shared, the two roots),
+ * and the split is the native's: the shared ones are sampled or observed BEFORE
+ * the per-query loop at fri_verifier.c:736, the per-query ones inside it.
+ * Feeding `q = 0` to every call would put Q identical instances in the batch —
+ * the `lb*Q -> lb` collapse OBL-P2c-2 names (fri_air.h). */
+static dnac_p2s_status_t p2s_build_query_publics(
+    const dnac_p2s_statement_t *stmt, size_t q,
+    const dnac_tair_script_t *tsc, dnac_batch_vinstance_t *insts,
+    gold_fp_t *pub)
 {
-    dnac_p2s_status_t st;
-    const dnac_tair_script_t *tsc;
+    gold_fp_t *pub_mmix, *pub_mmcs, *pub_fri, *pub_oi;
 
-    if (!insts) return DNAC_P2S_ERR_NULL;
-    /* DISARM FIRST, before any other validation: every failure path below then
-     * leaves all five descriptors with `ctx == NULL` and `air_eval == NULL`, so
-     * a caller that ignores the return code cannot keep evaluating a binding an
-     * EARLIER successful call left on this array. Same discipline as each fold
-     * module's bind (which disarms its descriptor on entry), applied at the
-     * statement layer. */
-    memset(insts, 0, DNAC_P2S_NUM_INSTANCES * sizeof(*insts));
+    /* BEFORE any offset is formed: `dnac_p2s_pub_off` reports SIZE_MAX for an
+     * out-of-range instance, and `pub + SIZE_MAX` would be undefined behaviour
+     * rather than a rejected pointer. */
+    if (q >= DNAC_P2S_NUM_QUERIES) return DNAC_P2S_ERR_CFG;
 
-    if (!stmt || !states || !pub_mmix || !pub_mmcs || !pub_fri || !pub_oi ||
-        !pub_tair) {
-        return DNAC_P2S_ERR_NULL;
-    }
-
-    /* ── Step 3a: the cfg SET's internal consistency, before any bind. ── */
-    st = p2s_check_static_consistency();
-    if (st != DNAC_P2S_OK) return st;
-    /* Step 3a passed, so the script exists and has the pinned shape. */
-    tsc = dnac_p2s_tair_script();
-    if (tsc == NULL) return DNAC_P2S_ERR_CFG;
-
-    /* ── Step 3b: bind the five PINNED cfgs into the CALLER'S state storage
-     * (FLEET 034: the fold modules keep no module-static binding; each snapshot
-     * is caller-owned and reached through `dnac_stark_air_t::ctx`). A bind runs
-     * each module's own cfg gate, so a cfg its u64 evaluator would fail closed
-     * on is rejected here by construction. Every bind is checked; a rejected
-     * bind also disarms its own state. ── */
-    if (dnac_mmix_air_fold_bind(&P2S_MMIX_CFG, &states->mmix,
-                                &insts[DNAC_P2S_INST_MMIX].air) != 0) {
-        return DNAC_P2S_ERR_CFG;
-    }
-    if (dnac_mmcs_air_fold_bind(&P2S_MMCS_CFG, &states->mmcs,
-                                &insts[DNAC_P2S_INST_MMCS].air) != 0) {
-        return DNAC_P2S_ERR_CFG;
-    }
-    if (dnac_fair_fold_bind(&P2S_FRI_CFG, &states->fri,
-                            &insts[DNAC_P2S_INST_FRI].air) !=
-        DNAC_FAIR_FOLD_OK) {
-        return DNAC_P2S_ERR_CFG;
-    }
-    if (dnac_foi_fold_bind(&P2S_OI_CFG, &states->oi,
-                           &insts[DNAC_P2S_INST_OI].air) !=
-        DNAC_FOI_FOLD_OK) {
-        return DNAC_P2S_ERR_CFG;
-    }
-    if (dnac_transcript_air_fold_bind(&P2S_TAIR_CFG, tsc, &states->tair,
-                                      &insts[DNAC_P2S_INST_TAIR].air) != 0) {
-        return DNAC_P2S_ERR_CFG;
-    }
-
-    /* ── Steps 4+5 ── */
-    st = p2s_fill_geometry(&insts[DNAC_P2S_INST_MMIX], DNAC_P2S_INST_MMIX,
-                           DNAC_P2S_MMIX_NUM_PUBLICS);
-    if (st != DNAC_P2S_OK) return st;
-    st = p2s_fill_geometry(&insts[DNAC_P2S_INST_MMCS], DNAC_P2S_INST_MMCS,
-                           DNAC_P2S_MMCS_NUM_PUBLICS);
-    if (st != DNAC_P2S_OK) return st;
-    st = p2s_fill_geometry(&insts[DNAC_P2S_INST_FRI], DNAC_P2S_INST_FRI,
-                           DNAC_P2S_FRI_NUM_PUBLICS);
-    if (st != DNAC_P2S_OK) return st;
-    st = p2s_fill_geometry(&insts[DNAC_P2S_INST_OI], DNAC_P2S_INST_OI,
-                           DNAC_P2S_OI_NUM_PUBLICS);
-    if (st != DNAC_P2S_OK) return st;
-    st = p2s_fill_geometry(&insts[DNAC_P2S_INST_TAIR], DNAC_P2S_INST_TAIR,
-                           DNAC_P2S_TAIR_NUM_PUBLICS);
-    if (st != DNAC_P2S_OK) return st;
-
-    /* ── Step 6: publics, ALIASED off the one index. Each module's own offset
-     * accessors place the regions — this file never hard-codes an offset — and
-     * every accessor is cross-checked against the pinned arithmetic, so a
-     * layout change in a module surfaces as a reject, not as a silent
-     * misalignment. ── */
+    pub_mmix = pub + dnac_p2s_pub_off(DNAC_P2S_INST(q, DNAC_P2S_SLOT_MMIX));
+    pub_mmcs = pub + dnac_p2s_pub_off(DNAC_P2S_INST(q, DNAC_P2S_SLOT_MMCS));
+    pub_fri = pub + dnac_p2s_pub_off(DNAC_P2S_INST(q, DNAC_P2S_SLOT_FRI));
+    pub_oi = pub + dnac_p2s_pub_off(DNAC_P2S_INST(q, DNAC_P2S_SLOT_OI));
 
     /* mmix: root ‖ dir ‖ opened.
-     * dir[l] = index_bits[(lgmh - max_lh) + l]: the mixed MMCS walks the
+     * dir[l] = index_bits[q][(lgmh - max_lh) + l]: the mixed MMCS walks the
      * REDUCED index `index >> (log_global_max_height - max_log_height)`
      * (fri_verifier.c:252-255). Here max_lh == lgmh, so the shift is 0 and the
      * full index is consumed — written as the general expression so the alias
@@ -705,21 +743,22 @@ dnac_p2s_status_t dnac_p2_fri_statement_build_instances(
         }
         for (size_t k = 0; k < (size_t)MMIX_DIGEST_LANES; k++) {
             pub_mmix[(size_t)MMIX_PUB_ROOT_OFF + k] =
-                gold_fp_from_u64(stmt->mmix_root[k]);
+                gold_fp_from_u64(stmt->mmix_root[k]); /* SHARED */
         }
         for (size_t l = 0; l < DNAC_P2S_MMIX_DEPTH; l++) {
             pub_mmix[(size_t)MMIX_PUB_DIR_OFF + l] =
-                gold_fp_from_u64(stmt->index_bits[shift + l]);
+                gold_fp_from_u64(stmt->index_bits[q][shift + l]);
         }
         for (size_t c = 0; c < DNAC_P2S_MMIX_TOTAL_OPENED; c++) {
-            pub_mmix[opened_off + c] = gold_fp_from_u64(stmt->mmix_opened[c]);
+            pub_mmix[opened_off + c] =
+                gold_fp_from_u64(stmt->mmix_opened[q][c]);
         }
-        insts[DNAC_P2S_INST_MMIX].public_values = pub_mmix;
+        insts[DNAC_P2S_INST(q, DNAC_P2S_SLOT_MMIX)].public_values = pub_mmix;
     }
 
     /* mmcs (commit round 0): root ‖ dir ‖ opened.
-     * dir[l] = index_bits[log_arity + l]: verify_query shifts the index DOWN by
-     * log_arity (fri_verifier.c:558) BEFORE handing it to the MMCS together
+     * dir[l] = index_bits[q][log_arity + l]: verify_query shifts the index DOWN
+     * by log_arity (fri_verifier.c:558) BEFORE handing it to the MMCS together
      * with height 2^log_folded_height (:585-588), so round 0 consumes bits
      * starting at log_arity over `depth` levels. */
     {
@@ -733,29 +772,33 @@ dnac_p2s_status_t dnac_p2_fri_statement_build_instances(
         }
         for (size_t k = 0; k < (size_t)MAIR_DIGEST_LANES; k++) {
             pub_mmcs[(size_t)MAIR_PUB_ROOT_OFF + k] =
-                gold_fp_from_u64(stmt->mmcs_root[k]);
+                gold_fp_from_u64(stmt->mmcs_root[k]); /* SHARED */
         }
         for (size_t l = 0; l < DNAC_P2S_MMCS_DEPTH; l++) {
-            pub_mmcs[(size_t)MAIR_PUB_DIR_OFF + l] =
-                gold_fp_from_u64(stmt->index_bits[DNAC_P2S_MAX_LOG_ARITY + l]);
+            pub_mmcs[(size_t)MAIR_PUB_DIR_OFF + l] = gold_fp_from_u64(
+                stmt->index_bits[q][DNAC_P2S_MAX_LOG_ARITY + l]);
         }
         for (size_t c = 0; c < DNAC_P2S_MMCS_TOTAL_WIDTH; c++) {
-            pub_mmcs[opened_off + c] = gold_fp_from_u64(stmt->mmcs_opened[c]);
+            pub_mmcs[opened_off + c] =
+                gold_fp_from_u64(stmt->mmcs_opened[q][c]);
         }
-        insts[DNAC_P2S_INST_MMCS].public_values = pub_mmcs;
+        insts[DNAC_P2S_INST(q, DNAC_P2S_SLOT_MMCS)].public_values = pub_mmcs;
     }
 
-    /* fri: bits ‖ beta ‖ f_init ‖ ro ‖ final. bits are the FULL index,
+    /* fri: bits ‖ beta ‖ f_init ‖ ro ‖ final. bits are query q's FULL index,
      * LSB-first, exactly as the fold walk consumes them (fold row r reads bit
      * r) and as the MSB-first chain reads them from the other end.
      *
-     * f_init and the roll-in slots are ALIASES of `ro_export`, not statement
-     * fields — the s1c seam closure. f_init takes the height-lgmh export (the
-     * native seeds the walk with ro[0], whose height MUST be lgmh,
-     * fri_verifier.c:524-527); roll-in slot k takes the export of
+     * f_init and the roll-in slots are ALIASES of `ro_export[q]`, not statement
+     * fields — the s1c seam closure, now per query. f_init takes the
+     * height-lgmh export (the native seeds the walk with ro[0], whose height
+     * MUST be lgmh, fri_verifier.c:524-527); roll-in slot k takes the export of
      * `rollin_heights[k]`, which step 3a has already proved is an oi height
      * other than index 0. Both descending, so the k-th slot and the native's
-     * k-th `ro_i` advance (fri_verifier.c:600-605) name the same opening. */
+     * k-th `ro_i` advance (fri_verifier.c:600-605) name the same opening.
+     *
+     * The betas and final_poly are the SHARED lanes — see the block below and
+     * the field comments. */
     {
         const size_t beta_off = dnac_fair_pub_beta_off(&P2S_FRI_CFG);
         const size_t finit_off = dnac_fair_pub_finit_off(&P2S_FRI_CFG);
@@ -771,14 +814,17 @@ dnac_p2s_status_t dnac_p2_fri_statement_build_instances(
         }
         for (size_t l = 0; l < DNAC_P2S_LGMH; l++) {
             pub_fri[(size_t)FAIR_PUB_BITS_OFF + l] =
-                gold_fp_from_u64(stmt->index_bits[l]);
+                gold_fp_from_u64(stmt->index_bits[q][l]);
         }
         /* s3b — beta_r is ALIASED off the transcript payload, not a statement
          * field: the two lanes of round r's fp2 challenge are the (2+2r)-th and
          * (3+2r)-th non-PoW pops of the pinned script, c0 first
          * (transcript_air_table.c:308-309, the order duplex_challenger.c
          * :134-140 pops an fp2 in). There is no second field for the fri
-         * instance and the transcript instance to disagree over. */
+         * instance and the transcript instance to disagree over — and no
+         * per-query copy either, so EVERY query's walk folds with the SAME
+         * beta, which is what the native does (:707 is outside the query loop
+         * at :736). */
         for (size_t r = 0; r < DNAC_P2S_FRI_R; r++) {
             const size_t k0 = p2s_tair_pop_op(tsc, P2S_POP_BETA(r));
             const size_t k1 = p2s_tair_pop_op(tsc, P2S_POP_BETA(r) + 1);
@@ -791,28 +837,31 @@ dnac_p2s_status_t dnac_p2_fri_statement_build_instances(
             pub_fri[beta_off + 2 * r + 1] =
                 gold_fp_from_u64(stmt->tair_payload[k1]);
         }
-        pub_fri[finit_off] = gold_fp_from_u64(stmt->ro_export[0]);
-        pub_fri[finit_off + 1] = gold_fp_from_u64(stmt->ro_export[1]);
+        pub_fri[finit_off] = gold_fp_from_u64(stmt->ro_export[q][0]);
+        pub_fri[finit_off + 1] = gold_fp_from_u64(stmt->ro_export[q][1]);
         for (size_t k = 0; k < DNAC_P2S_NUM_ROLLIN; k++) {
             const size_t i = p2s_oi_height_index(P2S_FRI_ROLLIN[k]);
             if (i == (size_t)-1 || i == 0) return DNAC_P2S_ERR_CFG;
-            pub_fri[ro_off + 2 * k] = gold_fp_from_u64(stmt->ro_export[2 * i]);
+            pub_fri[ro_off + 2 * k] =
+                gold_fp_from_u64(stmt->ro_export[q][2 * i]);
             pub_fri[ro_off + 2 * k + 1] =
-                gold_fp_from_u64(stmt->ro_export[2 * i + 1]);
+                gold_fp_from_u64(stmt->ro_export[q][2 * i + 1]);
         }
+        /* SHARED: observed once at fri_verifier.c:710-713, and a single fp2
+         * because log_final_poly_len == 0 is pinned. */
         pub_fri[final_off] = gold_fp_from_u64(stmt->final_poly0[0]);
         pub_fri[final_off + 1] = gold_fp_from_u64(stmt->final_poly0[1]);
-        insts[DNAC_P2S_INST_FRI].public_values = pub_fri;
+        insts[DNAC_P2S_INST(q, DNAC_P2S_SLOT_FRI)].public_values = pub_fri;
     }
 
-    /* oi: bits ‖ alpha ‖ (z, p_z)*total_acc ‖ ro*num_heights.
-     * bits are the SAME shared index, LSB-first and unshifted: the oi chain
-     * reads bit lgmh-1-j on chain row j out of publics[bits_off + (lgmh-1-j)]
+    /* oi: bits ‖ alpha ‖ (z, p_z)*total_acc ‖ ro*num_heights ‖ p_x*total_acc.
+     * bits are query q's index, LSB-first and unshifted: the oi chain reads bit
+     * lgmh-1-j on chain row j out of publics[bits_off + (lgmh-1-j)]
      * (fri_oi_air.c:155 maps the step to the BIT INDEX, and the honest builder
      * publishes `(index >> i) & 1` at slot i), which is the same convention the
      * fri instance uses — hence a direct alias with no shift.
-     * The ro region is the SINGLE ro_export, i.e. exactly the lanes the fri
-     * f_init / roll-ins above were built from. */
+     * The ro region is `ro_export[q]`, i.e. exactly the lanes the fri f_init /
+     * roll-ins above were built from, for the SAME query. */
     {
         const size_t alpha_off = dnac_foi_pub_alpha_off(&P2S_OI_CFG);
         const size_t zpz_off = dnac_foi_pub_zpz_off(&P2S_OI_CFG);
@@ -830,12 +879,12 @@ dnac_p2s_status_t dnac_p2_fri_statement_build_instances(
         }
         for (size_t l = 0; l < DNAC_P2S_LGMH; l++) {
             pub_oi[(size_t)FOI_PUB_BITS_OFF + l] =
-                gold_fp_from_u64(stmt->index_bits[l]);
+                gold_fp_from_u64(stmt->index_bits[q][l]);
         }
         /* s3b — alpha is ALIASED off the transcript payload: the FIRST two
          * non-PoW pops of the pinned script, c0 first (fri_verifier.c:694 ->
-         * transcript_air_table.c:299-300). Same single-source shape as the
-         * betas above, one instance further along. */
+         * transcript_air_table.c:299-300). SHARED across q for the same reason
+         * the betas are: :694 runs once, before the query loop. */
         {
             const size_t k0 = p2s_tair_pop_op(tsc, P2S_POP_ALPHA);
             const size_t k1 = p2s_tair_pop_op(tsc, P2S_POP_ALPHA + 1);
@@ -846,20 +895,39 @@ dnac_p2s_status_t dnac_p2_fri_statement_build_instances(
             pub_oi[alpha_off] = gold_fp_from_u64(stmt->tair_payload[k0]);
             pub_oi[alpha_off + 1] = gold_fp_from_u64(stmt->tair_payload[k1]);
         }
-        for (size_t i = 0; i < 4 * DNAC_P2S_OI_TOTAL_ACC; i++) {
-            pub_oi[zpz_off + i] = gold_fp_from_u64(stmt->zpz[i]);
+        /* The (z, p_z) region: the AIR's layout is FOUR lanes per acc row —
+         * z at 4a, p_z at 4a + 2 — but the two halves have DIFFERENT statement
+         * sources, which is the whole point of the split (HONEST LABEL 8):
+         *   z   <- z_pq[q]     PER-QUERY (the builder ties z to x; x moves)
+         *   p_z <- pz_shared   SHARED    (native :470 reads the claimed evals
+         *                                 through `commitments`, and :743 hands
+         *                                 the query loop the same pointer every
+         *                                 time — so Q oi instances read the SAME
+         *                                 lanes, exactly as `ro_export` is one
+         *                                 source for two consumers)
+         * Written as one walk over acc rows so the interleaving is stated once
+         * and neither half can drift out of step with the other. */
+        for (size_t a = 0; a < DNAC_P2S_OI_TOTAL_ACC; a++) {
+            pub_oi[zpz_off + 4 * a] = gold_fp_from_u64(stmt->z_pq[q][2 * a]);
+            pub_oi[zpz_off + 4 * a + 1] =
+                gold_fp_from_u64(stmt->z_pq[q][2 * a + 1]);
+            pub_oi[zpz_off + 4 * a + 2] =
+                gold_fp_from_u64(stmt->pz_shared[2 * a]);
+            pub_oi[zpz_off + 4 * a + 3] =
+                gold_fp_from_u64(stmt->pz_shared[2 * a + 1]);
         }
         for (size_t i = 0; i < 2 * DNAC_P2S_OI_NUM_HEIGHTS; i++) {
-            pub_oi[ro_off + i] = gold_fp_from_u64(stmt->ro_export[i]);
+            pub_oi[ro_off + i] = gold_fp_from_u64(stmt->ro_export[q][i]);
         }
 
         /* ── s2: the p_x region, ONE base lane per acc row in SCHEDULE order.
          * The walk is the schedule's own: height groups in DESCENDING order,
          * each group's rows batch-major (fri_oi_air_table.h:104-114). Batch 0
-         * is the MAIN round — the batch the mmix instance describes — so the
-         * first `batch_sz` rows of each group take their p_x from that height's
-         * mmix opened lane (native: p_at_x = bo->opened_values[m][j],
-         * fri_verifier.c:469-476), and the rest take it from `px_rest`.
+         * is the MAIN round — the batch query q's mmix instance describes — so
+         * the first `batch_sz` rows of each group take their p_x from that
+         * height's mmix opened lane FOR THIS QUERY (native: p_at_x =
+         * bo->opened_values[m][j], fri_verifier.c:469-476, read at the query's
+         * own index), and the rest take it from `px_rest[q]`.
          *
          * `batch_sz` is read the way the AIR reads it — matrices*points*columns
          * (fri_oi_air.c's schedule walk) — and the group's total the way the
@@ -879,9 +947,9 @@ dnac_p2s_status_t dnac_p2_fri_statement_build_instances(
                 }
                 /* The height MUST name exactly one mmix matrix, and that
                  * matrix's SEMANTIC width must be the claimed-eval count the oi
-                 * group descriptor declares — otherwise `stmt.mmix_opened` does
-                 * not have a lane per main-batch acc row and the alias would be
-                 * reading someone else's column. */
+                 * group descriptor declares — otherwise `stmt.mmix_opened[q]`
+                 * does not have a lane per main-batch acc row and the alias
+                 * would be reading someone else's column. */
                 if (!p2s_mmix_matrix_at_height(d->log_height, &moff, &mw) ||
                     mw != d->num_columns) {
                     return DNAC_P2S_ERR_CFG;
@@ -896,13 +964,13 @@ dnac_p2s_status_t dnac_p2_fri_statement_build_instances(
                         /* main batch: (matrix 0, point a/columns, column
                          * a%columns) — the batch-major tuple order. */
                         pub_oi[px_off + g] = gold_fp_from_u64(
-                            stmt->mmix_opened[moff + (a % d->num_columns)]);
+                            stmt->mmix_opened[q][moff + (a % d->num_columns)]);
                     } else {
                         if (rest >= DNAC_P2S_OI_PX_REST) {
                             return DNAC_P2S_ERR_CFG;
                         }
                         pub_oi[px_off + g] =
-                            gold_fp_from_u64(stmt->px_rest[rest]);
+                            gold_fp_from_u64(stmt->px_rest[q][rest]);
                         rest++;
                     }
                 }
@@ -914,68 +982,138 @@ dnac_p2s_status_t dnac_p2_fri_statement_build_instances(
                 return DNAC_P2S_ERR_CFG;
             }
         }
-        insts[DNAC_P2S_INST_OI].public_values = pub_oi;
+        insts[DNAC_P2S_INST(q, DNAC_P2S_SLOT_OI)].public_values = pub_oi;
     }
 
-    /* tair (s3b): payload[n_ops] ‖ exported bits[Q * lgmh].
+    return DNAC_P2S_OK;
+}
+
+dnac_p2s_status_t dnac_p2_fri_statement_build_instances(
+    const dnac_p2s_statement_t *stmt,
+    dnac_batch_vinstance_t     *insts,
+    dnac_p2s_fold_states_t     *states,
+    gold_fp_t                  *pub)
+{
+    dnac_p2s_status_t st;
+    const dnac_tair_script_t *tsc;
+
+    if (!insts) return DNAC_P2S_ERR_NULL;
+    /* DISARM FIRST, before any other validation: every failure path below then
+     * leaves EVERY descriptor with `ctx == NULL` and `air_eval == NULL`, so
+     * a caller that ignores the return code cannot keep evaluating a binding an
+     * EARLIER successful call left on this array. Same discipline as each fold
+     * module's bind (which disarms its descriptor on entry), applied at the
+     * statement layer. */
+    memset(insts, 0, DNAC_P2S_NUM_INSTANCES * sizeof(*insts));
+
+    if (!stmt || !states || !pub) return DNAC_P2S_ERR_NULL;
+
+    /* ── Step 3a: the cfg SET's internal consistency, before any bind. ── */
+    st = p2s_check_static_consistency();
+    if (st != DNAC_P2S_OK) return st;
+    /* Step 3a passed, so the script exists and has the pinned shape. */
+    tsc = dnac_p2s_tair_script();
+    if (tsc == NULL) return DNAC_P2S_ERR_CFG;
+
+    /* ── Step 3b: bind the PINNED cfgs into the CALLER'S state storage
+     * (FLEET 034: the fold modules keep no module-static binding; each snapshot
+     * is caller-owned and reached through `dnac_stark_air_t::ctx`). A bind runs
+     * each module's own cfg gate, so a cfg its u64 evaluator would fail closed
+     * on is rejected here by construction. Every bind is checked; a rejected
+     * bind also disarms its own state.
      *
-     * The payload region is the statement's own — it is the SOURCE the fri
-     * betas and the oi alpha were just aliased from, so writing it here is what
-     * makes those two instances and this one read the same lanes.
+     * ⚠ Q instances of the SAME AIR share a cfg but NOT a state: query q binds
+     * into `states->q[q]`. That is exactly the property FLEET 034's caller-owned
+     * states bought — with the retired module-static binding, query 1's bind
+     * would have clobbered query 0's and both instances would have evaluated
+     * the last one bound. ── */
+    if (dnac_transcript_air_fold_bind(&P2S_TAIR_CFG, tsc, &states->tair,
+                                      &insts[DNAC_P2S_INST_TAIR].air) != 0) {
+        return DNAC_P2S_ERR_CFG;
+    }
+    for (size_t q = 0; q < DNAC_P2S_NUM_QUERIES; q++) {
+        dnac_p2s_query_fold_states_t *qs = &states->q[q];
+        if (dnac_mmix_air_fold_bind(
+                &P2S_MMIX_CFG, &qs->mmix,
+                &insts[DNAC_P2S_INST(q, DNAC_P2S_SLOT_MMIX)].air) != 0) {
+            return DNAC_P2S_ERR_CFG;
+        }
+        if (dnac_mmcs_air_fold_bind(
+                &P2S_MMCS_CFG, &qs->mmcs,
+                &insts[DNAC_P2S_INST(q, DNAC_P2S_SLOT_MMCS)].air) != 0) {
+            return DNAC_P2S_ERR_CFG;
+        }
+        if (dnac_fair_fold_bind(
+                &P2S_FRI_CFG, &qs->fri,
+                &insts[DNAC_P2S_INST(q, DNAC_P2S_SLOT_FRI)].air) !=
+            DNAC_FAIR_FOLD_OK) {
+            return DNAC_P2S_ERR_CFG;
+        }
+        if (dnac_foi_fold_bind(
+                &P2S_OI_CFG, &qs->oi,
+                &insts[DNAC_P2S_INST(q, DNAC_P2S_SLOT_OI)].air) !=
+            DNAC_FOI_FOLD_OK) {
+            return DNAC_P2S_ERR_CFG;
+        }
+    }
+
+    /* ── Steps 4+5, every instance, through the same slot-keyed accessors ── */
+    for (uint32_t i = 0; i < DNAC_P2S_NUM_INSTANCES; i++) {
+        st = p2s_fill_geometry(&insts[i], i, dnac_p2s_num_publics(i));
+        if (st != DNAC_P2S_OK) return st;
+    }
+
+    /* ── Step 6a: the transcript instance — payload ‖ exported bits[Q * lgmh].
      *
-     * The exported-bit region is where the seam closes in the other direction:
-     * query 0's block is `index_bits`, the SAME region the mmix / mmcs / fri /
-     * oi bit and direction publics were built from above. The transcript
-     * instance proves those bits are the low lgmh bits of a challenge its own
-     * sponge produced (CT-4 + block D), and the four consumers prove the walk
-     * they drive. Queries 1..Q-1 have no consumer in this slice, so their
-     * blocks are the honest `tair_bits_rest` input.
+     * The payload region is the statement's own — it is the SOURCE every fri
+     * instance's betas and every oi instance's alpha are aliased from, so
+     * writing it here is what makes those instances and this one read the same
+     * lanes.
+     *
+     * The exported-bit region is where the seam closes in the other direction,
+     * and where OBL-P2c-2 is discharged: query q's block is `index_bits[q]`,
+     * the SAME row query q's four consumers take their bit and direction
+     * publics from. The transcript instance proves each block holds the low
+     * lgmh bits of a challenge its own sponge produced (CT-4 + block D), and
+     * query q's four consumers prove the walk that row drives. No block is left
+     * unconsumed — `tair_bits_rest` is gone with the last of them.
      *
      * Offsets come from the module's own accessors (`dnac_tair_op_bit_off`),
      * never from arithmetic in this file, and each is bounds-checked against
-     * the pinned public count before it is written. */
+     * the pinned public count before it is written. ── */
     {
+        gold_fp_t *const pub_tair = pub + dnac_p2s_pub_off(DNAC_P2S_INST_TAIR);
         const size_t npub = dnac_tair_num_publics(tsc);
         if (npub != DNAC_P2S_TAIR_NUM_PUBLICS) return DNAC_P2S_ERR_CFG;
 
         for (size_t k = 0; k < DNAC_P2S_TAIR_NUM_OPS; k++) {
             pub_tair[k] = gold_fp_from_u64(stmt->tair_payload[k]);
         }
-        {
-            size_t rest = 0;
-            for (size_t q = 0; q < DNAC_P2S_NUM_QUERIES; q++) {
-                const size_t k = p2s_tair_pop_op(tsc, P2S_POP_QUERY(q));
-                size_t off;
-                if (k == (size_t)-1) return DNAC_P2S_ERR_CFG;
-                off = dnac_tair_op_bit_off(tsc, k);
-                if (off == (size_t)-1 || off < DNAC_P2S_TAIR_NUM_OPS ||
-                    off + DNAC_P2S_LGMH > npub) {
-                    return DNAC_P2S_ERR_CFG;
-                }
-                for (size_t l = 0; l < DNAC_P2S_LGMH; l++) {
-                    if (q == 0) {
-                        /* THE alias: the transcript's query-0 index bits ARE
-                         * the index every other instance consumes. LSB-first on
-                         * both sides — the AIR publishes `(challenge >> l) & 1`
-                         * at bit slot l (transcript_air_table.h:67-69), which is
-                         * the convention `index_bits` already carries. */
-                        pub_tair[off + l] =
-                            gold_fp_from_u64(stmt->index_bits[l]);
-                    } else {
-                        if (rest >= DNAC_P2S_TAIR_BITS_REST) {
-                            return DNAC_P2S_ERR_CFG;
-                        }
-                        pub_tair[off + l] =
-                            gold_fp_from_u64(stmt->tair_bits_rest[rest]);
-                        rest++;
-                    }
-                }
+        for (size_t q = 0; q < DNAC_P2S_NUM_QUERIES; q++) {
+            const size_t k = p2s_tair_pop_op(tsc, P2S_POP_QUERY(q));
+            size_t off;
+            if (k == (size_t)-1) return DNAC_P2S_ERR_CFG;
+            off = dnac_tair_op_bit_off(tsc, k);
+            if (off == (size_t)-1 || off < DNAC_P2S_TAIR_NUM_OPS ||
+                off + DNAC_P2S_LGMH > npub) {
+                return DNAC_P2S_ERR_CFG;
             }
-            /* Exact partition, same discipline as the oi p_x walk: every
-             * `tair_bits_rest` lane consumed once, none left over. */
-            if (rest != DNAC_P2S_TAIR_BITS_REST) return DNAC_P2S_ERR_CFG;
+            for (size_t l = 0; l < DNAC_P2S_LGMH; l++) {
+                /* THE alias, per query: the transcript's q-th exported index
+                 * bits ARE the index query q's instances consume. LSB-first on
+                 * both sides — the AIR publishes `(challenge >> l) & 1` at bit
+                 * slot l (transcript_air_table.h:67-69), which is the
+                 * convention `index_bits` already carries. */
+                pub_tair[off + l] = gold_fp_from_u64(stmt->index_bits[q][l]);
+            }
         }
         insts[DNAC_P2S_INST_TAIR].public_values = pub_tair;
+    }
+
+    /* ── Step 6b: each query's four consumers. ── */
+    for (size_t q = 0; q < DNAC_P2S_NUM_QUERIES; q++) {
+        st = p2s_build_query_publics(stmt, q, tsc, insts, pub);
+        if (st != DNAC_P2S_OK) return st;
     }
 
     return DNAC_P2S_OK;
@@ -995,19 +1133,19 @@ dnac_p2s_status_t dnac_p2_fri_statement_verify(
     dnac_batch_verify_out_t      *out)
 {
     dnac_batch_vinstance_t insts[DNAC_P2S_NUM_INSTANCES];
-    /* FLEET 034: the five fold-state snapshots the descriptors' `ctx` fields
-     * point at. SCOPE-LOCAL on purpose — it must outlive `insts`, and `insts`
-     * dies with this frame, so the two lifetimes are identical by construction.
-     * Same rule as the publics buffers below (fri_statement.h).
+    /* FLEET 034: the fold-state snapshots the descriptors' `ctx` fields point
+     * at, one per instance (1 + 4*Q since the multi-query slice). SCOPE-LOCAL
+     * on purpose — it must outlive `insts`, and `insts` dies with this frame,
+     * so the two lifetimes are identical by construction. Same rule as the
+     * publics block below (fri_statement.h, which also states the ~11.3 KB size
+     * and why this is neither file-scope nor heap).
      * ZERO-INITIALISED: a step-3a reject returns before any bind runs, so
      * without this the untouched states would hold indeterminate bytes. Zeroed
      * means UNBOUND, which is the fail-close value. */
     dnac_p2s_fold_states_t states;
-    gold_fp_t pub_mmix[DNAC_P2S_MMIX_NUM_PUBLICS];
-    gold_fp_t pub_mmcs[DNAC_P2S_MMCS_NUM_PUBLICS];
-    gold_fp_t pub_fri[DNAC_P2S_FRI_NUM_PUBLICS];
-    gold_fp_t pub_oi[DNAC_P2S_OI_NUM_PUBLICS];
-    gold_fp_t pub_tair[DNAC_P2S_TAIR_NUM_PUBLICS];
+    /* ONE flat block, sliced by `dnac_p2s_pub_off` (fri_statement.h): with
+     * 1 + 4*Q instances there is no per-AIR parameter list to write. */
+    gold_fp_t pub[DNAC_P2S_TOTAL_PUBLICS];
     dnac_p2s_status_t st;
     dnac_batch_verify_status_t bs;
 
@@ -1026,9 +1164,7 @@ dnac_p2s_status_t dnac_p2_fri_statement_verify(
 
     /* Steps 3-6. `states` is left ARMED on success and stays valid for the
      * `dnac_batch_verify` call below — that is the whole lifetime it needs. */
-    st = dnac_p2_fri_statement_build_instances(stmt, insts, &states, pub_mmix,
-                                               pub_mmcs, pub_fri, pub_oi,
-                                               pub_tair);
+    st = dnac_p2_fri_statement_build_instances(stmt, insts, &states, pub);
     if (st != DNAC_P2S_OK) return st;
 
     /* Step 7. is_zk / num_random_codewords / salt_elems are all zero: the
@@ -1046,9 +1182,14 @@ dnac_p2s_status_t dnac_p2_fri_statement_verify(
 }
 
 /* ==========================================================================
- * The five preprocessed tables, in the order the pin commits to. The LDE +
- * commit half of that pipeline is test-side (see fri_statement.h) so this
- * module never pulls in stark_prover.c.
+ * The preprocessed tables, in the order the pin commits to. The LDE + commit
+ * half of that pipeline is test-side (see fri_statement.h) so this module never
+ * pulls in stark_prover.c.
+ *
+ * One table per INSTANCE, generated from the SLOT's pinned cfg — so the Q
+ * copies of a slot come out byte-identical, which is what the file header's
+ * honest note describes. Written as a loop over instances rather than a fixed
+ * list, so the order lives in `dnac_p2s_inst_slot` alone.
  * ======================================================================== */
 
 dnac_p2s_status_t dnac_p2_fri_statement_prep_tables(uint64_t *const *out)
@@ -1058,31 +1199,44 @@ dnac_p2s_status_t dnac_p2_fri_statement_prep_tables(uint64_t *const *out)
         if (!out[i]) return DNAC_P2S_ERR_NULL;
     }
 
-    if (dnac_p2c_mmix_table_generate(&P2S_MMIX_CFG, out[DNAC_P2S_INST_MMIX],
-                                     dnac_p2s_prep_cells(DNAC_P2S_INST_MMIX)) !=
-        DNAC_P2C_MMIX_TABLE_OK) {
-        return DNAC_P2S_ERR_CFG;
-    }
-    if (dnac_p2b_table_generate(&P2S_MMCS_CFG, out[DNAC_P2S_INST_MMCS],
-                                dnac_p2s_prep_cells(DNAC_P2S_INST_MMCS)) !=
-        DNAC_P2B_TABLE_OK) {
-        return DNAC_P2S_ERR_CFG;
-    }
-    if (dnac_p2c_table_generate(&P2S_FRI_CFG, out[DNAC_P2S_INST_FRI],
-                                dnac_p2s_prep_cells(DNAC_P2S_INST_FRI)) !=
-        DNAC_P2C_TABLE_OK) {
-        return DNAC_P2S_ERR_CFG;
-    }
-    if (dnac_p2c_oi_table_generate(&P2S_OI_CFG, out[DNAC_P2S_INST_OI],
-                                   dnac_p2s_prep_cells(DNAC_P2S_INST_OI)) !=
-        DNAC_P2C_OI_TABLE_OK) {
-        return DNAC_P2S_ERR_CFG;
-    }
-    if (dnac_tair_table_generate(dnac_p2s_tair_script(),
-                                 out[DNAC_P2S_INST_TAIR],
-                                 dnac_p2s_prep_cells(DNAC_P2S_INST_TAIR)) !=
-        DNAC_TAIR_TABLE_OK) {
-        return DNAC_P2S_ERR_CFG;
+    for (uint32_t i = 0; i < DNAC_P2S_NUM_INSTANCES; i++) {
+        const size_t cells = dnac_p2s_prep_cells(i);
+
+        if (i == DNAC_P2S_INST_TAIR) {
+            if (dnac_tair_table_generate(dnac_p2s_tair_script(), out[i],
+                                         cells) != DNAC_TAIR_TABLE_OK) {
+                return DNAC_P2S_ERR_CFG;
+            }
+            continue;
+        }
+        switch (dnac_p2s_inst_slot(i)) {
+        case DNAC_P2S_SLOT_MMIX:
+            if (dnac_p2c_mmix_table_generate(&P2S_MMIX_CFG, out[i], cells) !=
+                DNAC_P2C_MMIX_TABLE_OK) {
+                return DNAC_P2S_ERR_CFG;
+            }
+            break;
+        case DNAC_P2S_SLOT_MMCS:
+            if (dnac_p2b_table_generate(&P2S_MMCS_CFG, out[i], cells) !=
+                DNAC_P2B_TABLE_OK) {
+                return DNAC_P2S_ERR_CFG;
+            }
+            break;
+        case DNAC_P2S_SLOT_FRI:
+            if (dnac_p2c_table_generate(&P2S_FRI_CFG, out[i], cells) !=
+                DNAC_P2C_TABLE_OK) {
+                return DNAC_P2S_ERR_CFG;
+            }
+            break;
+        case DNAC_P2S_SLOT_OI:
+            if (dnac_p2c_oi_table_generate(&P2S_OI_CFG, out[i], cells) !=
+                DNAC_P2C_OI_TABLE_OK) {
+                return DNAC_P2S_ERR_CFG;
+            }
+            break;
+        default:
+            return DNAC_P2S_ERR_CFG;
+        }
     }
     return DNAC_P2S_OK;
 }

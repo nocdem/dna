@@ -161,12 +161,33 @@
  *          reduced opening outside the cfg roll-in set, BEFORE selecting or
  *          attesting the circuit. Absence is a PRECONDITION here, not a check.
  *   OBL-P2c-2 (FLEET 020 A2-F7, cross-seam) QUERY MULTIPLICITY. One trace ==
- *          ONE query. The composed system MUST (a) ALIAS the beta / f_init /
- *          final_poly publics across all Q traces and (b) force Q DISTINCT
- *          transcript-derived index-bit vectors (the native samples a fresh
- *          index per query, fri_verifier.c:736-737, while betas and final_poly
- *          are shared). Otherwise Q copies of ONE query collapse soundness from
- *          lb*Q + pow to ~lb + pow bits.
+ *          ONE query. The composed system MUST (a) ALIAS the SHARED
+ *          Fiat-Shamir values across all Q traces and (b) feed each trace the
+ *          transcript's OWN q-th index sample. Otherwise Q copies of ONE query
+ *          collapse soundness from lb*Q + pow to ~lb + pow bits.
+ *          ⚠ TEXT CORRECTED (multi-query slice). This obligation used to name
+ *          the shared set as "beta / f_init / final_poly"; the design doc
+ *          (dnac/docs/plans/2026-07-29-p2c-fri-in-air-design.md:218) said
+ *          "beta / final_poly". BOTH were wrong. The shared set is
+ *          {alpha, betas, final_poly}:
+ *            alpha      fri_verifier.c:694  — sampled ONCE
+ *            betas[r]   fri_verifier.c:707  — once per commit round
+ *            final_poly fri_verifier.c:710-713 — observed once
+ *          all three OUTSIDE the per-query loop that starts at
+ *          fri_verifier.c:736. `f_init` is the OPPOSITE of shared: it is ro[0]
+ *          of `fri_open_input`, run INSIDE that loop against the query's own
+ *          index (:742), so aliasing it across queries would BE the collapse
+ *          this obligation forbids — as would aliasing the roll-ins. The doc
+ *          also omitted alpha, which is shared and does need the alias.
+ *          ⚠ (b) IS ABOUT POSITION, NOT VALUE. ":737 samples a fresh index per
+ *          query" does not mean the Q values must differ — two fresh samples
+ *          may legitimately collide. What must not happen is Q consumers all
+ *          reading the transcript's q = 0 export block.
+ *          DISCHARGED by the composition entry (fri_statement.h): instance
+ *          1 + 4q + slot consumes `index_bits[q]`, which IS the transcript
+ *          instance's q-th exported bit block; the shared three are single
+ *          statement fields with no per-query copy. Gate: N-QSEP / N-QSHARED /
+ *          N-QINDEP in tests/test_fri_statement.c.
  *
  * ── What slice 1 does NOT do (design §0.5 :393-403) ─────────────────────────
  *   - No MMCS verify. The sibling column `s` is UNCONSTRAINED witness data
