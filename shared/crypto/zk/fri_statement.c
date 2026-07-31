@@ -1,12 +1,15 @@
 /**
  * @file fri_statement.c
  * @brief Composition s1b + s1c + s2 + s3b + MULTI-QUERY + COMMIT-ROUND +
- *        INPUT-BATCH REPLICATION — the FRI-verify statement entry (see
+ *        INPUT-BATCH REPLICATION + PRIMING — the FRI-verify statement entry (see
  *        fri_statement.h for the pinned cfg derivation, the instance map, the
  *        shared/per-query, per-round and per-batch splits that discharge
  *        OBL-P2c-2 and HONEST LABELS 2 and 3, the transcript digest alias that
  *        closes HONEST LABEL 6, the seams still declared, and the one-pin
  *        correction).
+ *
+ * The PRIMING slice's narrative lives at the END of this file (search
+ * "PRIMING SLICE NOTES") — see the zero-shift rule recorded there.
  *
  * This file CONSTRUCTS and REJECTS. It contains no constraint, no column and no
  * field arithmetic beyond a canonicality comparison: every constraint it relies
@@ -188,17 +191,76 @@ static const dnac_fri_params_t P2S_FRI_PARAMS = {
     DNAC_P2S_QUERY_POW_BITS   /* query_proof_of_work_bits  */
 };
 
-/* ── tair (s3b): the FRI-tail cfg is DERIVED from the statement constants, and
- * the SCRIPT is expanded from it by the shipped builder — never written out
- * here. `dnac_tair_ref_script` expands the SAME function, which is why the test
- * can compare the two op for op. */
-static const dnac_tair_fri_cfg_t P2S_TAIR_FRI_CFG = {
-    DNAC_P2S_FRI_R,          /* R                  */
-    DNAC_P2S_LFPL,           /* log_final_poly_len */
-    DNAC_P2S_NUM_QUERIES,    /* num_queries        */
-    DNAC_P2S_LGMH,           /* lgmh               */
-    DNAC_P2S_COMMIT_POW_BITS,
-    DNAC_P2S_QUERY_POW_BITS
+/* ── tair (s3b, extended by the priming slice): the FULL cfg is DERIVED from the
+ * statement constants, and the SCRIPT is expanded from it by the shipped builder
+ * — never written out here. `dnac_tair_ref_script` expands the SAME function,
+ * which is why the test can compare the two op for op.
+ *
+ * The inner-proof half describes the batch proof the priming absorbs
+ * (DNAC_P2S_INNER_*, fri_statement.h). Its N instances are IDENTICAL in shape at
+ * this pin, so one initializer is repeated; written out per instance rather than
+ * loop-filled for the same reason P2S_MMIX_CFG above is — static storage AND
+ * `const`. */
+static const dnac_tair_inner_inst_t P2S_TAIR_INNER[DNAC_P2S_INNER_N] = {
+    { DNAC_P2S_INNER_PUBLICS, DNAC_P2S_INNER_MAIN_WIDTH,
+      DNAC_P2S_INNER_MAIN_NEXT, DNAC_P2S_INNER_PREP_WIDTH,
+      DNAC_P2S_INNER_PREP_NEXT, DNAC_P2S_INNER_NUM_QC,
+      DNAC_P2S_INNER_LOOKUPS },
+    { DNAC_P2S_INNER_PUBLICS, DNAC_P2S_INNER_MAIN_WIDTH,
+      DNAC_P2S_INNER_MAIN_NEXT, DNAC_P2S_INNER_PREP_WIDTH,
+      DNAC_P2S_INNER_PREP_NEXT, DNAC_P2S_INNER_NUM_QC,
+      DNAC_P2S_INNER_LOOKUPS }
+};
+
+/* The pinned inner-instance count is what the initializer above is written out
+ * for; if it moves, this stops the build instead of leaving an instance's shape
+ * zeroed (main_width 0, which the module's cfg gate rejects at runtime — a
+ * reject, but one that names nothing). */
+typedef char p2s_inner_list_matches_n_assert
+    [(DNAC_P2S_INNER_N == 2) ? 1 : -1];
+
+/* ── The inner-proof scalars reconciled with the mmix / oi pins ──────────────
+ * Two independent statements about the SAME quantity, tied at build time — the
+ * DNAC_P2S_MMIX_BW(b) <-> DNAC_P2S_OI_BNC(b) discipline (fri_statement.c:117-122)
+ * applied to the priming's view of the inner proof. Each names its failure. */
+/* Every opening round carries one matrix per inner INSTANCE (main and
+ * preprocessed, batch_verify.c:549 / :587), so the mmix matrix count IS N. */
+typedef char p2s_inner_n_is_mmix_matrices_assert
+    [(DNAC_P2S_INNER_N == DNAC_P2S_MMIX_NUM_MATRICES) ? 1 : -1];
+/* The QUOTIENT round carries one matrix per CHUNK of every instance
+ * (batch_verify.c:567-573), so N * chunks is that batch's matrix count. */
+typedef char p2s_inner_qc_is_quot_matrices_assert
+    [(DNAC_P2S_INNER_N * DNAC_P2S_INNER_NUM_QC ==
+      DNAC_P2S_MMIX_NUM_MATRICES) ? 1 : -1];
+/* A quotient chunk opens at ONE point with DIMENSION-2 claimed evals
+ * (batch_verify.c:568-571), which is that batch's opened-row width. */
+typedef char p2s_inner_quot_shape_assert
+    [(DNAC_P2S_OI_BNP(DNAC_P2S_BATCH_QUOT) == (size_t)1 &&
+      DNAC_P2S_MMIX_BW(DNAC_P2S_BATCH_QUOT) == (size_t)2) ? 1 : -1];
+/* `main_next` / `prep_next` ARE the point counts of the main / preprocessed
+ * batches (batch_verify.c:548 and :586 pick 2 vs 1 off exactly these flags). */
+typedef char p2s_inner_main_next_assert
+    [(DNAC_P2S_OI_BNP(DNAC_P2S_BATCH_MAIN) ==
+      (DNAC_P2S_INNER_MAIN_NEXT ? (size_t)2 : (size_t)1)) ? 1 : -1];
+typedef char p2s_inner_prep_next_assert
+    [(DNAC_P2S_OI_BNP(DNAC_P2S_BATCH_PREP) ==
+      (DNAC_P2S_INNER_PREP_NEXT ? (size_t)2 : (size_t)1)) ? 1 : -1];
+/* The non-hiding envelope: the statement's own `is_zk` argument to
+ * `dnac_batch_verify` is 0 (the step-7 call below), so the inner one must be too
+ * — a ZK inner proof would carry a random commit and a random opening round the
+ * script would have to model. Likewise `num_random_codewords`. */
+typedef char p2s_inner_non_zk_assert
+    [(DNAC_P2S_INNER_IS_ZK == 0 && DNAC_P2S_INNER_NRC == (size_t)0) ? 1 : -1];
+
+static const dnac_tair_full_cfg_t P2S_TAIR_FULL_CFG = {
+    { P2S_TAIR_INNER, DNAC_P2S_INNER_N, DNAC_P2S_INNER_IS_ZK,
+      DNAC_P2S_INNER_NRC },
+    { DNAC_P2S_FRI_R,          /* R                  */
+      DNAC_P2S_LFPL,           /* log_final_poly_len */
+      DNAC_P2S_NUM_QUERIES,    /* num_queries        */
+      DNAC_P2S_LGMH,           /* lgmh               */
+      DNAC_P2S_COMMIT_POW_BITS,
+      DNAC_P2S_QUERY_POW_BITS }
 };
 
 /** The AIR's own cfg. `pow_bits` is the ONE width the AIR can carry
@@ -236,7 +298,11 @@ const dnac_fri_params_t         *dnac_p2s_fri_params(void) { return &P2S_FRI_PAR
 const dnac_tair_config_t        *dnac_p2s_tair_cfg(void) { return &P2S_TAIR_CFG; }
 const dnac_tair_fri_cfg_t *dnac_p2s_tair_fri_cfg(void)
 {
-    return &P2S_TAIR_FRI_CFG;
+    return &P2S_TAIR_FULL_CFG.fri;
+}
+const dnac_tair_full_cfg_t *dnac_p2s_tair_full_cfg(void)
+{
+    return &P2S_TAIR_FULL_CFG;
 }
 
 /* ── The pinned transcript script ────────────────────────────────────────────
@@ -257,10 +323,20 @@ const dnac_tair_script_t *dnac_p2s_tair_script(void)
 {
     if (P2S_TAIR_SCRIPT_STATE == 0) {
         P2S_TAIR_SCRIPT_STATE = -1;
-        if (dnac_tair_fri_num_ops(&P2S_TAIR_FRI_CFG) == DNAC_P2S_TAIR_NUM_OPS &&
-            dnac_tair_fri_build_script(&P2S_TAIR_FRI_CFG, P2S_TAIR_OPS,
-                                       DNAC_P2S_TAIR_NUM_OPS, P2S_TAIR_STARTS,
-                                       &P2S_TAIR_SCRIPT) ==
+        /* Three independent counts must agree before a single op is written:
+         * the module's own arithmetic for the WHOLE run, and — since the
+         * priming slice — its per-block arithmetic against this header's
+         * per-block macros. A drift in ANY block fails closed here instead of
+         * shifting every ordinal the aliases index by. */
+        if (dnac_tair_full_num_ops(&P2S_TAIR_FULL_CFG) ==
+                DNAC_P2S_TAIR_NUM_OPS &&
+            dnac_tair_priming_num_ops(&P2S_TAIR_FULL_CFG.priming) ==
+                DNAC_P2S_TAIR_PRIMING_OPS &&
+            dnac_tair_pcs_num_ops(&P2S_TAIR_FULL_CFG.priming) ==
+                DNAC_P2S_TAIR_PCS_OPS &&
+            dnac_tair_full_build_script(&P2S_TAIR_FULL_CFG, P2S_TAIR_OPS,
+                                        DNAC_P2S_TAIR_NUM_OPS, P2S_TAIR_STARTS,
+                                        &P2S_TAIR_SCRIPT) ==
                 DNAC_TAIR_TABLE_OK) {
             P2S_TAIR_SCRIPT_STATE = 1;
         }
@@ -695,20 +771,33 @@ static size_t p2s_oi_height_index(size_t log_height)
 }
 
 /* ── s3b: the transcript script's pop sequence ───────────────────────────────
- * `dnac_tair_fri_build_script` emits, in this order (transcript_air_table.c
- * :296-324): the DS-prefix observes, then TWO non-PoW pops (alpha, c0 then c1),
- * then per round r the digest observes, an OPTIONAL PoW pair, and TWO non-PoW
- * pops (beta_r, c0 then c1), then the final-poly and log_arity observes, an
- * OPTIONAL PoW pair, and finally ONE non-PoW pop per query.
+ * `dnac_tair_full_build_script` (transcript_air_table.c:678-705) emits four
+ * blocks. The pops, in script order:
+ *
+ *   BLOCK 0  the DS prefix                                     — NO pops
+ *   BLOCK 1  the priming (transcript_air_table.c:411-445, mirroring
+ *            batch_priming.c:250-281):
+ *              4 pops IFF any instance declares a lookup — the (alpha, beta)
+ *                     squeeze                                  :143-144
+ *              2 pops the batch alpha                          :194
+ *              2 pops zeta                                     :280
+ *            i.e. DNAC_P2S_TAIR_PRE_POPS pops in total
+ *   BLOCK 2  the PCS claimed-eval observes                     — NO pops
+ *   BLOCK 3  the FRI tail (transcript_air_table.c:571-611): TWO non-PoW pops
+ *            (alpha, c0 then c1), then per round r the digest observes, an
+ *            OPTIONAL PoW pair, and TWO non-PoW pops (beta_r, c0 then c1), then
+ *            the final-poly and log_arity observes, an OPTIONAL PoW pair, and
+ *            finally ONE non-PoW pop per query.
  *
  * So the NON-PoW pops, numbered in script order, are exactly
- *     0, 1                  alpha.c0, alpha.c1
- *     2 + 2r, 3 + 2r        beta_r.c0, beta_r.c1        (r < R)
- *     2 + 2R + q            the query-q index sample     (q < Q)
+ *     PRE_POPS + 0, +1              alpha.c0, alpha.c1
+ *     PRE_POPS + 2 + 2r, +3 + 2r    beta_r.c0, beta_r.c1        (r < R)
+ *     PRE_POPS + 2 + 2R + q         the query-q index sample     (q < Q)
  * and this function maps that ordinal back to an OP INDEX by walking the
  * script. The aliases below index by ORDINAL, never by a hard-coded op number,
  * so the map stays correct if a PoW pair is ever switched on (which inserts an
- * `is_pow` pop the ordinal deliberately skips).
+ * `is_pow` pop the ordinal deliberately skips) — and, since the priming slice,
+ * if the inner proof's shape changes the number of pops ahead of the tail.
  *
  * @return the op index, or SIZE_MAX if the script has fewer non-PoW pops.
  */
@@ -727,9 +816,10 @@ static size_t p2s_tair_pop_op(const dnac_tair_script_t *s, size_t ordinal)
 /**
  * The same walk for OBSERVE ops — the map HONEST LABEL 6's closure indexes
  * through. Ordinals are given by DNAC_P2S_OBS_DIGEST (fri_statement.h), which
- * mirrors the builder's emission order at transcript_air_table.c:296-324; this
- * function turns an ordinal into an OP INDEX by scanning, so a PoW witness
- * observe switched on later shifts the map instead of corrupting it.
+ * mirrors the builder's emission order (transcript_air_table.c:678-705 for the
+ * block order, :571-611 for the tail); this function turns an ordinal into an OP
+ * INDEX by scanning, so a PoW witness observe switched on later — or a priming
+ * block of a different size — shifts the map instead of corrupting it.
  *
  * @return the op index, or SIZE_MAX if the script has fewer observes.
  */
@@ -745,11 +835,16 @@ static size_t p2s_tair_obs_op(const dnac_tair_script_t *s, size_t ordinal)
     return (size_t)-1;
 }
 
-/** Ordinal of alpha's c0 pop, and of the round-r / query-q pops. Named rather
- *  than inlined so the two consumers below and the test read the SAME map. */
-#define P2S_POP_ALPHA        ((size_t)0)
-#define P2S_POP_BETA(r)      ((size_t)2 + 2 * (r))
-#define P2S_POP_QUERY(q)     ((size_t)2 + 2 * DNAC_P2S_FRI_R + (q))
+/** Ordinal of the FRI alpha's c0 pop, and of the round-r / query-q pops. Named
+ *  rather than inlined so the two consumers below and the test read the SAME
+ *  map. ⚠ ALL THREE ARE OFFSET BY DNAC_P2S_TAIR_PRE_POPS since the priming
+ *  slice: the FRI tail's alpha is no longer the script's first pop — the
+ *  priming's batch alpha and zeta come first (and a lookup-bearing pin would add
+ *  the (alpha, beta) squeeze ahead of those). */
+#define P2S_POP_ALPHA        (DNAC_P2S_TAIR_PRE_POPS)
+#define P2S_POP_BETA(r)      (DNAC_P2S_TAIR_PRE_POPS + (size_t)2 + 2 * (r))
+#define P2S_POP_QUERY(q)                                                      \
+    (DNAC_P2S_TAIR_PRE_POPS + (size_t)2 + 2 * DNAC_P2S_FRI_R + (q))
 /** Total non-PoW pops the aliases account for. A script with MORE would have a
  *  challenge nothing consumes and nothing pins — rejected below. */
 #define P2S_POP_TOTAL        (P2S_POP_QUERY(DNAC_P2S_NUM_QUERIES))
@@ -787,6 +882,50 @@ static dnac_p2s_status_t p2s_check_tair_script(const dnac_tair_script_t *s)
      * past the end would resolve to SIZE_MAX below, but comparing the totals
      * catches a script SHAPE change before any ordinal is formed. */
     if (nobs != DNAC_P2S_TAIR_NUM_OBS) return DNAC_P2S_ERR_CFG;
+
+    /* ── THE HEAD RAILS (the priming slice) ──────────────────────────────────
+     * Every ordinal below is offset by DNAC_P2S_TAIR_PRE_POPS / _PRE_OBS, and
+     * those two are this header's arithmetic over the BLOCK boundaries. If the
+     * builder's blocks were a different size the offsets would silently aim at
+     * the wrong ops, so the boundaries are CHECKED against the script itself,
+     * op by op — the same OBL-P2a-T1 duty the round-digest bracket below
+     * discharges for the tail, extended to the head.
+     *
+     *  (i)   BLOCK 0 is RATE observes. The AIR's block E independently makes
+     *        the first four ops of an instance the DS-prefix observes
+     *        (transcript_air.c:266-280), so a violation here is unsatisfiable
+     *        rather than merely unexpected — but the entry must not be the place
+     *        that assumes it.
+     *  (ii)  BLOCK 2 is PURE observe. This is what lets the PCS block be modelled
+     *        by a COUNT alone (transcript_air_table.c `tair_emit_pcs`): a sample
+     *        inside it would be a challenge drawn where the native draws none.
+     *  (iii) The LAST pop before BLOCK 2 is the priming's zeta (batch_priming.c
+     *        :280), i.e. the last op of BLOCK 1.
+     *  (iv)  The FIRST pop of BLOCK 3 is the FRI alpha (fri_verifier.c:694), i.e.
+     *        the first op of the tail. (iii) and (iv) together pin BOTH block
+     *        boundaries the offsets are built from. ── */
+    for (size_t k = 0; k < DNAC_P2S_TAIR_OFF_PRIMING; k++) { /* (i) */
+        if (s->ops[k].kind != DNAC_TAIR_OP_OBSERVE) return DNAC_P2S_ERR_CFG;
+    }
+    for (size_t k = DNAC_P2S_TAIR_OFF_PCS; k < DNAC_P2S_TAIR_OFF_TAIL; k++) {
+        if (k >= s->n_ops) return DNAC_P2S_ERR_CFG;
+        if (s->ops[k].kind != DNAC_TAIR_OP_OBSERVE) return DNAC_P2S_ERR_CFG; /* (ii) */
+    }
+    if (DNAC_P2S_TAIR_PRE_POPS == 0) return DNAC_P2S_ERR_CFG; /* zeta exists */
+    if (p2s_tair_pop_op(s, DNAC_P2S_TAIR_PRE_POPS - 1) !=
+        DNAC_P2S_TAIR_OFF_PCS - 1) {
+        return DNAC_P2S_ERR_CFG; /* (iii) */
+    }
+    if (p2s_tair_pop_op(s, P2S_POP_ALPHA) != DNAC_P2S_TAIR_OFF_TAIL) {
+        return DNAC_P2S_ERR_CFG; /* (iv) */
+    }
+    /* No PoW op may sit in the head: `check_witness` is a FRI-tail construct
+     * (fri_verifier.c:703 / :723) and the priming has none, so an `is_pow` row
+     * before the tail would be a grinding check the native never runs — and it
+     * would shift every non-PoW ordinal that follows. */
+    for (size_t k = 0; k < DNAC_P2S_TAIR_OFF_TAIL; k++) {
+        if (s->ops[k].is_pow) return DNAC_P2S_ERR_CFG;
+    }
 
     /* ── HONEST LABEL 6's structural rail: the block DNAC_P2S_OBS_DIGEST names
      * for round r really IS round r's commit-digest block.
@@ -995,8 +1134,8 @@ static dnac_p2s_status_t p2s_fill_geometry(dnac_batch_vinstance_t *vi,
      * next-MAIN-without-next-PREP call outright (fri_oi_air.h:44-46, and its
      * fold form reads PN in C1b / C2b / C2d). The transcript AIR does NOT
      * (no CT-* form reads the next row's table cells), but OBL-P2a-T2
-     * (transcript_air_table.h:175-182) hands the entry the duty of pinning it
-     * anyway, and at TAIR_TBL_COLS = 71 a zero window is rejected on SHAPE
+     * (transcript_air_table.h OBL-P2a-T2) hands the entry the duty of pinning it
+     * anyway, and at TAIR_TBL_COLS = 135 a zero window is rejected on SHAPE
      * rather than silently substituted — so a `prep_next = 0` descriptor
      * would hand them a zero window. Not a caller option, hence no parameter. */
     vi->prep_next = 1;
@@ -1180,9 +1319,10 @@ static dnac_p2s_status_t p2s_build_query_publics(
                 gold_fp_from_u64(stmt->index_bits[q][l]);
         }
         /* s3b — beta_r is ALIASED off the transcript payload, not a statement
-         * field: the two lanes of round r's fp2 challenge are the (2+2r)-th and
-         * (3+2r)-th non-PoW pops of the pinned script, c0 first
-         * (transcript_air_table.c:308-309, the order duplex_challenger.c
+         * field: the two lanes of round r's fp2 challenge are the
+         * (PRE_POPS+2+2r)-th and (PRE_POPS+3+2r)-th non-PoW pops of the pinned
+         * script, c0 first
+         * (transcript_air_table.c:593, the order duplex_challenger.c
          * :134-140 pops an fp2 in). There is no second field for the fri
          * instance and the transcript instance to disagree over — and no
          * per-query copy either, so EVERY query's walk folds with the SAME
@@ -1245,9 +1385,12 @@ static dnac_p2s_status_t p2s_build_query_publics(
                 gold_fp_from_u64(stmt->index_bits[q][l]);
         }
         /* s3b — alpha is ALIASED off the transcript payload: the FIRST two
-         * non-PoW pops of the pinned script, c0 first (fri_verifier.c:694 ->
-         * transcript_air_table.c:299-300). SHARED across q for the same reason
-         * the betas are: :694 runs once, before the query loop. */
+         * non-PoW pops OF THE FRI TAIL, i.e. ordinals PRE_POPS and PRE_POPS+1,
+         * c0 first (fri_verifier.c:694 -> transcript_air_table.c:583). SHARED
+         * across q for the same reason the betas are: :694 runs once, before the
+         * query loop. ⚠ NOT the script's first two pops any more — those are the
+         * priming's batch alpha (batch_priming.c:194); the P2S_POP_ALPHA offset
+         * is what keeps this alias on the FRI one. */
         {
             const size_t k0 = p2s_tair_pop_op(tsc, P2S_POP_ALPHA);
             const size_t k1 = p2s_tair_pop_op(tsc, P2S_POP_ALPHA + 1);
@@ -1665,3 +1808,32 @@ dnac_p2s_status_t dnac_p2_fri_statement_prep_tables(uint64_t *const *out)
     }
     return DNAC_P2S_OK;
 }
+
+/* ============================================================================
+ * PRIMING SLICE NOTES  (prose only — kept at EOF ON PURPOSE)
+ *
+ * ⚠ ZERO-SHIFT RULE. This block sits at the END of the file because growing
+ * prose must not move code. The first version of this slice put it in the
+ * @file header instead, shifted the body by +9, and staled every
+ * `fri_statement.c:NNN` citation in fri_statement.h's HONEST LABEL block —
+ * the same defect FLEET 037 recorded for fri_verifier.c, recurring in the very
+ * file the lesson was written about. An O6 zk-auditor caught it. If you add
+ * narrative here, it costs nothing; if you add it at the top, you owe a
+ * citation sweep.
+ *
+ * WHAT THE SLICE DID. The pinned transcript script grew from the FRI TAIL to
+ * the WHOLE sponge run — DS prefix, batch-STARK priming, the PCS claimed-eval
+ * observe round, then the tail (31 -> 93 ops) — which is the SCOPE half of
+ * HONEST LABEL 1. The entry's arithmetic moved with it: every pop ordinal is
+ * offset by DNAC_P2S_TAIR_PRE_POPS, every observe ordinal by
+ * DNAC_P2S_TAIR_PRE_OBS, and `p2s_check_tair_script` gained the head rails that
+ * pin the block boundaries those offsets are built from.
+ *
+ * WHAT IT DID **NOT** DO — no ALIAS was added. zeta and the input-batch roots
+ * now have payload slots but no consumer (label 1(a), label 6a). Binding zeta
+ * to the opening points was scoped as step B and NOT done: the map is
+ * derivable (point index = a / BNC(b); point 0 = zeta, point 1 =
+ * bv_zeta_next), but the shipped oi honest-trace builder derives z as
+ * `x + zoff` (tests/test_fri_oi_air.c:262-266), so a zeta-derived z has no
+ * honest witness without changing that builder — a file this slice did not own.
+ * ========================================================================== */

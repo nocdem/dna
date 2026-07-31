@@ -1057,6 +1057,10 @@ left is NOT zk work — it is design and consensus work upstream of the circuits
 
    ═══════════════════════════════════════════════════════════════════════════
    ▶▶ PRIMING DİLİMİ (label 1 + 6a) BİR TASARIM BLOKAJINA ÇARPTI — KOD YAZILMADI
+   ⚠ ÇÖZÜLDÜ 2026-07-31 — aşağıdaki analiz O GÜNKÜ durumu anlatır, ARTIK GÜNCEL
+   DEĞİL. Sonuç için "SEZON 0 + PRIMING DİLİMİ SHIPPED" bölümüne bak: blokajın
+   teşhisi DOĞRUYDU ama KAPSAMI YANLIŞTI — sabit nokta yalnız ÖZBENZERLİKTE
+   doğuyor, pinli iç proof'un publics'i BOŞ olduğu için bu dilimde hiç doğmadı.
    ═══════════════════════════════════════════════════════════════════════════
    2026-07-31, O2 zemininde bulundu; hiçbir ajan dispatch edilmedi, 0 token
    harcandı. **Bu, sonraki oturumun ilk konusudur ve bir KRİPTO TASARIM
@@ -1208,6 +1212,109 @@ left is NOT zk work — it is design and consensus work upstream of the circuits
    yok (`N-QINDEP/mmcs` → daha ince `N-RSEP/opened`, Q·R·4=24 perturbasyon).
    `fri_statement`/`fri_air`/`mmcs_air`/`mmcs_air_table` **hiçbir üretim
    build'inde yok** (grep) → konsensüs yüzeyi değişmedi, version bump YOK.
+
+
+   ═══════════════════════════════════════════════════════════════════════════
+   ▶▶ SEZON 0 + PRIMING DİLİMİ SHIPPED (2026-07-31, FLEET 039 + 040)
+   ═══════════════════════════════════════════════════════════════════════════
+
+   **SEZON 0 — ARAŞTIRMA (FLEET 039, 2 zk-auditor READ-ONLY, 409k).** Blokajın
+   dayandığı iki doğrulanmamış öncül sınandı; ikisi de seçenek A lehine çıktı.
+
+   (i) **LogUp bus FARKLI YÜKSEKLİKTE çalışıyor — EVET, kod-kanıtlı.** Lookup
+   kısıtlarının tamamı instance'ın KENDİ iki-satır penceresinde değerleniyor
+   (`batch_verify.c:734-859`); AIR'lar arası TEK nesne `terminals[i]` = AIR başına
+   bir fp2, DÜZ toplanıyor (`:879`). Prover aux trace'i `base_h[i]`'de üretip
+   `dnac_p2_mmcs_commit_mixed` ile bağlıyor (`batch_prover.c:945-997`) — karışık
+   yükseklik YAPISAL. Yükseklik yalnız `Σ weight·height < p` sınırına giriyor ve o
+   fonksiyon per-instance `heights` dizisi alıyor (`logup_bus.h:240`).
+   **KARAR VERİCİ KANIT (ORCHESTRATOR kendi doğruladı):** `batch_proof.json`
+   senaryo `lut_mixed_trio` — `degree_bits [3,2,2]` (yükseklik 8/4/4), üçü de
+   `"LUT"` global bus'ında; üç terminal toplandı: **Σc0 = p ≡ 0, Σc1 = 2p ≡ 0**.
+   Vektörün pini `11cc5849` ⇒ prover UPSTREAM RUST, self-consistency DEĞİL.
+   KOŞULLAR: dolgu satırlarında multiplicity=0 AIR'ın yükümlülüğü (fraction kısıtı
+   SELECTOR'SUZ, `batch_verify.c:812-822`) · lookup derecesi ≤4 kalmalı, yoksa
+   `log_num_qc` yükselir ve 8×17 = 136 > `FRI_MAX_RO` 128.
+
+   (ii) **Perm turu ÖZ-REFERANS DOĞURMUYOR.** Üç yeni transcript olayı ekliyor:
+   α/β sample 4 op (`batch_priming.c:143-144`) · perm commit 4 op OPAK (`:181`) ·
+   lookup taşıyan instance başına terminal 2 op (`:182-192`). Terminal
+   `dnac_batch_vopened_t`'den (`batch_verify.c:229`), publics
+   `dnac_batch_vinstance_t`'den (`:222`) — İKİ AYRI STRUCT ⇒ terminal public DEĞİL
+   ⇒ `observe_main`'in tarayacağı yüzeye girmiyor.
+   **SABİT NOKTA `observe_main`'in publics taramasında** ve yalnız ÖZBENZERLİKTE:
+   `0 = A + 312 + bits` ⇒ çözüm yok. Bu tam olarak seçenek A'nın kaldırdığı şey
+   ⇒ (ii) A'yı ÇÜRÜTMÜYOR, ZORUNLU kılıyor.
+   ⚠ **ARAŞTIRMANIN BULDUĞU İKİ YENİ ŞEY (blokaj analizinde adı geçmiyordu):**
+   **DÖRDÜNCÜ TRANSCRIPT BLOĞU** — PCS claimed-eval observe turu
+   (`batch_verify.c:637-647`), `init_from_duplex` (`:632` → `transcript.c:48`
+   verbatim kopya) ile AYNI süngerde, priming ile FRI kuyruğunun ARASINDA;
+   seçenek A bunu KÜÇÜLTMEZ. **ÜÇÜNCÜ SHIPPED TAVAN** — `TAIR_TBL_MAX_STEPS 64`,
+   tek script kapısında sert RED (`transcript_air_table.c:42`).
+
+   **DİLİM 1 = C SHIPPED (FLEET 040): priming'in commit/ζ iskeleti.**
+   ⚠ **YENİDEN ÇERÇEVELEME:** pinli iç proof `prep_pair`'in iki instance'ının da
+   `public_values` BOŞ ⇒ priming'in publics taraması bu şekil için SIFIR op ⇒
+   **C "kısmi" değil, bu proof için TAM/SADIK model.** Sabit nokta yalnız
+   özbenzerlikte (P2e) doğuyor.
+   Script `dnac_tair_full_build_script` ile 4 bloğa çıktı: **4 DS + 38 priming +
+   24 PCS + 27 tail = 93 op** (bugün 31), satır **128**, tair publics **41 → 103**,
+   `DNAC_P2S_TOTAL_PUBLICS` 353 → 415, `TAIR_TBL_COLS` 71 → 135.
+   `TAIR_TBL_MAX_STEPS` 64 → 128; **`TAIR_TBL_MAX_ROWS` 128 DEĞİŞMEDİ** — bağlayıcı
+   tavan O, ve `tair_script_check` 126 op'ta fail-close ediyor (pay 33 op).
+   Op dizisi PARAMETRİK (iç proof şeklinden türüyor), 93 koda GÖMÜLÜ DEĞİL.
+   **ADIM B (ζ→z alias) YAPILMADI, ve beklenen sebepten değil:** harita
+   TÜRETİLEBİLİR (nokta 0 = ζ, nokta 1 = `bv_zeta_next`); tıkanan HONEST WITNESS —
+   shipped oi trace builder z'yi `x + zoff` üretiyor (`tests/test_fri_oi_air.c
+   :262-266`) ve o dosya whitelist DIŞIydı. Executor dokunmayıp raporladı.
+   ⇒ **LABEL 1'in SCOPE yarısı kapandı, ALIAS yarısı açık; LABEL 8 AÇIK KALDI.**
+
+   **PİNLER — ve bir TOTOLOJİ tespiti.** `DNAC_P2A_PREP_ROOT` = `6b256bdc22b03939
+   / 99495acdce48b0a5 / ef95381752fda28c / 0e25695cb770f76c`; `DNAC_P2S_PREP_ROOT`
+   (17 tablo) = `7bd103f976d60e7a / 370fd9ef04ca3930 / db116b37de732e01 /
+   75c802c4d448afcc`. Diğer 5 modül pini BYTE-ÖZDEŞ.
+   ⚠ `--print-roots` TEK BAŞINA DERIVATION DEĞİL: printer ile pin KAT'ı AYNI
+   yardımcıyı AYNI hücrelerde çağırıyor ⇒ "yapıştır, yeşile dönsün" totoloji.
+   ORCHESTRATOR bu yüzden İKİNCİ BİR SÜRÜCÜ yazdı (şekil sayılarını public
+   accessor'lardan yeniden okuyan kendi LDE→commit transkripsiyonu) ve lane-lane
+   karşılaştırdı; ikinci sürücü `n_ops 93 / rows 128 / cols 135`'i de bağımsız
+   doğruladı. Kural iki pinin de yanına yazıldı.
+
+   **O6 (2 lens, çelişki yok).** verifier **6 CONFIRMED / 1 REFUTED** —
+   ⚠ REFUTED olan **ORCHESTRATOR'IN KENDİ İDDİASIYDI**: "satır payı SIFIR" dedim,
+   gerçek pay **33 op** ve sınır sessizce büyümüyor, FAIL-CLOSE ediyor
+   (`transcript_air_table.c:124-125`); executor bana DOĞRUSUNU söylemişti, yanlış
+   aktaran bendim. zk-auditor **8 GROUNDED / 5 JUDGMENT / 0 KAFADAN · 0 CRITICAL /
+   1 HIGH / 6 MED** — mekanik taraf temiz: op dizisi upstream `transcript.rs` +
+   `verifier/mod.rs:152-284` + `two_adic_pcs.rs:696-702` ile uyumlu, REF cfg
+   gerçekten `prep_pair`'den ÖLÇÜLMÜŞ (9/9 alan), `MAX_STEPS` yükseltmesi SAF
+   KAPASİTE (genişleyen lane'ler hem generator'da hem VALIDATOR'da sıfıra çivili,
+   hiçbir kısıt okumuyor ⇒ vacuity YOK).
+   **HIGH bulgu = SIFIR-KAYMA DİSİPLİNİ TEKRAR İHLAL EDİLDİ**, hem de dersin
+   yazıldığı dosyada: dilimin eklediği 9 satırlık düzyazı başlığı
+   `fri_statement.c`'yi kaydırıp ≥8 atfı bayatlattı. Blok EOF'a taşındı, kural
+   bloğun İÇİNE yazıldı, 9 atıf GERÇEK HEDEFİNDEN okunarak tazelendi — kaymalar
+   TEK TİP DEĞİLDİ (+3 / +139 / +143 / +187), körlemesine ofset FLEET 038'in
+   yakaladığı tuzağa düşerdi.
+   **Dört yeni DÜRÜST ETİKET (label 1(d)-(g)), hepsi O6'dan:** (d) kabul kümesi
+   GENİŞLEDİ — α eskiden DS ile belirlenmiş TEK sabitti, artık 58 serbest lane'in
+   aşağısında; "31 op 93 oldu" bir GÜÇLENDİRME gibi okunmamalı. (e) 46 serbest
+   observe lane'i blok blok adlandırıldı. (f) `observe_usize`'ın 11 sıfır katsayısı
+   native'de yapısal sıfır, statement'ta SERBEST ⇒ modellenen transcript native'in
+   KATI ÜST KÜMESİ; ⚠ yapısal sınır DEĞİL — AIR bir lane'i çivileyebiliyor
+   (`transcript_air.c:277-279` DS emsali) ⇒ SEÇİM, ve yükümlülük script'i yeniden
+   şekillendiren dilime bağlandı. (g) REF satır tavanına OTURDU: 17-instance'lık
+   bir iç proof yalnız binding observe'ları için `2+8·17 = 138` op ister ⇒ P2e'de
+   `MAX_ROWS` yine kalkacak.
+
+   **O9 ORCHESTRATOR-verified:** zk `make clean && make test` → **86 binary,
+   0 uyarı, ALL GATES: GREEN**, `test_fri_statement` **1219 → 1373 kontrol / 0
+   hata**, kaybolan kontrol yok. Nodus build/ctest **KOŞULMADI ve bu bilerek**:
+   ana ağaçta PARALEL BİR OTURUMUN commit edilmemiş nodus witness işi duruyor
+   (`nodus/CMakeLists.txt` + `nodus_witness_{bft,sync}.c`), sonuç dilime
+   ATFEDİLEMEZ olurdu; dilim zaten konsensüs-inert — `fri_statement` /
+   `transcript_air*` hiçbir üretim build'inde YOK ve `fri_verifier.c`'ye
+   DOKUNULMADI. Version bump YOK.
 
 ### ⚑ CITATION BASELINE — read this before checking any Plonky3 `file:line` in this tree
 

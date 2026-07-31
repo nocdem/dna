@@ -717,7 +717,8 @@ static void check_mask(uint32_t got, uint32_t want, const char *fmt, ...)
  * The tair trace is built by the SHIPPED gate's builder (`p2s_tair_build_trace`,
  * tests/test_transcript_air.c:467) — not by a copy — but that builder is VECTOR
  * driven, and no shipped `transcript_trace_*.json` carries the pinned FRI-tail
- * op stream (they are 8-19 op scenarios; the pin is 31 ops). So the vector is
+ * op stream (they are 8-19 op scenarios; the pin is DNAC_P2S_TAIR_NUM_OPS ops,
+ * 93 at this pin since the priming slice). So the vector is
  * SYNTHESIZED here from the pinned SCRIPT by replaying the shipped
  * `duplex_challenger.c` and recording what it does.
  *
@@ -737,11 +738,15 @@ static void check_mask(uint32_t got, uint32_t want, const char *fmt, ...)
  *     replication slice's closure. They are fed in from `mmcs_probe_roots`
  *     BEFORE the challenger runs, so every challenge this transcript squeezes,
  *     including the query indices, is downstream of the real roots;
- *   - the final poly and the per-round log_arity keep a deterministic fixture.
- *     ⚠ Those two are still NOT aliased to anything, and `mmix_root` has no
- *     observe op at all (its batch is observed during priming, outside this
- *     script) — that is the residue label 6 still declares. Stated rather than
- *     implied.
+ *   - EVERYTHING ELSE keeps a deterministic fixture: the whole PRIMING block
+ *     (the bindings, the three commitment digests, the preprocessed widths),
+ *     the whole PCS claimed-eval block, the final poly and the per-round
+ *     log_arity.
+ *     ⚠ None of those is aliased to anything. Since the priming slice
+ *     `mmix_root[b]` DOES have observe ops (batch_priming.c:72 / :98 / :276) —
+ *     what it does not have is an alias, because the priming's commitment order
+ *     is not the FRI batch order (fri_statement.h HONEST LABEL 6a). Stated
+ *     rather than implied, and it is what N-PRIMEDEAD asserts.
  */
 typedef struct {
     p2s_tair_vec_t   *V;
@@ -981,9 +986,16 @@ static int tair_build(tair_run_t *T,
         }
     }
 
-    /* ── the F-S values, read out of the trace's own payload publics ── */
+    /* ── the F-S values, read out of the trace's own payload publics ──────────
+     * ⚠ EVERY ordinal here is offset by DNAC_P2S_TAIR_PRE_POPS since the priming
+     * slice: the script's first pops are the PRIMING's (the batch alpha at
+     * batch_priming.c:194 and zeta at :280, plus the lookup squeeze at :143-144
+     * on a pin that has lookups), and the FRI tail's alpha is the PRE_POPS-th.
+     * Reading ordinal 0 here would now extract the BATCH alpha and feed it to
+     * the oi instances as the FRI one. */
     {
-        const size_t ka0 = tair_pop_op(s, 0), ka1 = tair_pop_op(s, 1);
+        const size_t ka0 = tair_pop_op(s, DNAC_P2S_TAIR_PRE_POPS);
+        const size_t ka1 = tair_pop_op(s, DNAC_P2S_TAIR_PRE_POPS + 1);
         if (ka0 == (size_t)-1 || ka1 == (size_t)-1) {
             CHECK(0, "tair: the script has no alpha pops");
             return 0;
@@ -992,8 +1004,8 @@ static int tair_build(tair_run_t *T,
         T->alpha[1] = T->B->pub[ka1];
     }
     for (size_t r = 0; r < DNAC_P2S_FRI_R; r++) {
-        const size_t k0 = tair_pop_op(s, 2 + 2 * r);
-        const size_t k1 = tair_pop_op(s, 2 + 2 * r + 1);
+        const size_t k0 = tair_pop_op(s, DNAC_P2S_TAIR_PRE_POPS + 2 + 2 * r);
+        const size_t k1 = tair_pop_op(s, DNAC_P2S_TAIR_PRE_POPS + 2 + 2 * r + 1);
         if (k0 == (size_t)-1 || k1 == (size_t)-1) {
             CHECK(0, "tair: the script has no beta pops for round %zu", r);
             return 0;
@@ -1005,7 +1017,8 @@ static int tair_build(tair_run_t *T,
      * is read out of the transcript's own exported-bit publics, so index[q] is
      * by construction "what the challenger squeezed on its q-th sample". */
     for (size_t q = 0; q < DNAC_P2S_NUM_QUERIES; q++) {
-        const size_t kq = tair_pop_op(s, 2 + 2 * DNAC_P2S_FRI_R + q);
+        const size_t kq = tair_pop_op(
+            s, DNAC_P2S_TAIR_PRE_POPS + 2 + 2 * DNAC_P2S_FRI_R + q);
         size_t off;
         if (kq == (size_t)-1) {
             CHECK(0, "tair: the script has no query-%zu pop", q);
@@ -1624,29 +1637,127 @@ static void t_tair_ref(void)
     CHECK((size_t)TAIR_RATE == (size_t)DNAC_DUPLEX_RATE,
           "T-REF/tair: TAIR_RATE != DNAC_DUPLEX_RATE");
 
-    /* The pop shape the aliases index into: 2 alpha + 2R beta + Q query, and
-     * every query pop exports exactly lgmh bits. Derived here by scanning, so
-     * the entry's own walk is compared against something. */
+    /* The pop shape the aliases index into: PRE_POPS priming pops, then 2 alpha
+     * + 2R beta + Q query, and every query pop exports exactly lgmh bits.
+     * Derived here by scanning, so the entry's own walk is compared against
+     * something. */
     {
+        const size_t want_pops =
+            DNAC_P2S_TAIR_PRE_POPS + 2 + 2 * DNAC_P2S_FRI_R +
+            DNAC_P2S_NUM_QUERIES;
         size_t npop = 0;
         for (size_t k = 0; k < s->n_ops; k++) {
             if (s->ops[k].kind == DNAC_TAIR_OP_SAMPLE && !s->ops[k].is_pow) {
                 npop++;
             }
         }
-        CHECK(npop == 2 + 2 * DNAC_P2S_FRI_R + DNAC_P2S_NUM_QUERIES,
-              "T-REF/tair: %zu non-PoW pops, expected %zu", npop,
-              (size_t)(2 + 2 * DNAC_P2S_FRI_R + DNAC_P2S_NUM_QUERIES));
-        for (size_t o = 0; o < 2 + 2 * DNAC_P2S_FRI_R; o++) {
+        CHECK(npop == want_pops, "T-REF/tair: %zu non-PoW pops, expected %zu",
+              npop, want_pops);
+        for (size_t o = 0; o < DNAC_P2S_TAIR_PRE_POPS + 2 + 2 * DNAC_P2S_FRI_R;
+             o++) {
             const size_t k = tair_pop_op(s, o);
             CHECK(k != (size_t)-1 && s->ops[k].num_bits == 0,
-                  "T-REF/tair: alpha/beta pop %zu exports bits", o);
+                  "T-REF/tair: priming/alpha/beta pop %zu exports bits", o);
         }
         for (size_t q = 0; q < DNAC_P2S_NUM_QUERIES; q++) {
-            const size_t k = tair_pop_op(s, 2 + 2 * DNAC_P2S_FRI_R + q);
+            const size_t k = tair_pop_op(
+                s, DNAC_P2S_TAIR_PRE_POPS + 2 + 2 * DNAC_P2S_FRI_R + q);
             CHECK(k != (size_t)-1 && s->ops[k].num_bits == DNAC_P2S_LGMH,
                   "T-REF/tair: query pop %zu does not export lgmh bits", q);
         }
+    }
+
+    /* ── THE COMPOSED BLOCKS (the priming slice) ─────────────────────────────
+     * The header's per-block macros are re-derived HERE from the module's own
+     * accessors and the block boundaries are measured out of the script, so the
+     * offsets every ordinal above is built from are compared against something
+     * rather than assumed. */
+    {
+        const dnac_tair_full_cfg_t *fc = dnac_p2s_tair_full_cfg();
+        size_t nsmp_head = 0, nobs_head = 0;
+
+        CHECK(fc != NULL, "T-REF/tair: no full cfg");
+        if (fc == NULL) return;
+        CHECK(fc->priming.n == DNAC_P2S_INNER_N &&
+                  fc->priming.is_zk == DNAC_P2S_INNER_IS_ZK &&
+                  fc->priming.num_random_codewords == DNAC_P2S_INNER_NRC,
+              "T-REF/tair: the inner-proof cfg is not the pinned one");
+        for (size_t i = 0; i < fc->priming.n; i++) {
+            const dnac_tair_inner_inst_t *d = &fc->priming.insts[i];
+            CHECK(d->num_publics == DNAC_P2S_INNER_PUBLICS &&
+                      d->main_width == DNAC_P2S_INNER_MAIN_WIDTH &&
+                      d->main_next == DNAC_P2S_INNER_MAIN_NEXT &&
+                      d->preprocessed_width == DNAC_P2S_INNER_PREP_WIDTH &&
+                      d->prep_next == DNAC_P2S_INNER_PREP_NEXT &&
+                      d->num_quotient_chunks == DNAC_P2S_INNER_NUM_QC &&
+                      d->num_lookups == DNAC_P2S_INNER_LOOKUPS,
+                  "T-REF/tair: inner instance %zu is not the pinned shape", i);
+        }
+        CHECK(dnac_tair_priming_num_ops(&fc->priming) ==
+                  DNAC_P2S_TAIR_PRIMING_OPS,
+              "T-REF/tair: priming ops %zu != the header's %zu",
+              dnac_tair_priming_num_ops(&fc->priming),
+              (size_t)DNAC_P2S_TAIR_PRIMING_OPS);
+        CHECK(dnac_tair_pcs_num_ops(&fc->priming) == DNAC_P2S_TAIR_PCS_OPS,
+              "T-REF/tair: pcs ops %zu != the header's %zu",
+              dnac_tair_pcs_num_ops(&fc->priming),
+              (size_t)DNAC_P2S_TAIR_PCS_OPS);
+        CHECK(dnac_tair_full_num_ops(fc) == DNAC_P2S_TAIR_NUM_OPS,
+              "T-REF/tair: full ops %zu != the header's %zu",
+              dnac_tair_full_num_ops(fc), (size_t)DNAC_P2S_TAIR_NUM_OPS);
+        /* The DS prefix appears in the run EXACTLY ONCE. `dnac_tair_fri_num_ops`
+         * counts a STANDALONE tail, i.e. WITH a prefix, so subtracting RATE from
+         * it gives BLOCK 3 and the composed total must be
+         * RATE + priming + pcs + (standalone tail - RATE). A builder that
+         * emitted the prefix twice would break this by exactly RATE. */
+        CHECK(DNAC_P2S_TAIR_TAIL_OPS ==
+                  dnac_tair_fri_num_ops(dnac_p2s_tair_fri_cfg()) -
+                      (size_t)DNAC_DUPLEX_RATE,
+              "T-REF/tair: BLOCK 3 is not the standalone tail minus its prefix");
+        CHECK(DNAC_P2S_TAIR_NUM_OPS == (size_t)DNAC_DUPLEX_RATE +
+                                           DNAC_P2S_TAIR_PRIMING_OPS +
+                                           DNAC_P2S_TAIR_PCS_OPS +
+                                           DNAC_P2S_TAIR_TAIL_OPS,
+              "T-REF/tair: the composed count is not the sum of its blocks");
+
+        /* Block boundaries, measured against the script. */
+        for (size_t k = 0; k < DNAC_P2S_TAIR_OFF_PRIMING && k < s->n_ops; k++) {
+            CHECK(s->ops[k].kind == DNAC_TAIR_OP_OBSERVE,
+                  "T-REF/tair: DS-prefix op %zu is not an observe", k);
+        }
+        for (size_t k = DNAC_P2S_TAIR_OFF_PCS;
+             k < DNAC_P2S_TAIR_OFF_TAIL && k < s->n_ops; k++) {
+            CHECK(s->ops[k].kind == DNAC_TAIR_OP_OBSERVE,
+                  "T-REF/tair: PCS-block op %zu is not an observe", k);
+        }
+        for (size_t k = 0; k < DNAC_P2S_TAIR_OFF_TAIL && k < s->n_ops; k++) {
+            if (s->ops[k].kind == DNAC_TAIR_OP_SAMPLE) nsmp_head++;
+            else nobs_head++;
+            CHECK(!s->ops[k].is_pow,
+                  "T-REF/tair: head op %zu carries is_pow", k);
+        }
+        CHECK(nsmp_head == DNAC_P2S_TAIR_PRE_POPS,
+              "T-REF/tair: %zu head pops, DNAC_P2S_TAIR_PRE_POPS says %zu",
+              nsmp_head, (size_t)DNAC_P2S_TAIR_PRE_POPS);
+        CHECK(nobs_head == DNAC_P2S_TAIR_PRE_OBS,
+              "T-REF/tair: %zu head observes, DNAC_P2S_TAIR_PRE_OBS says %zu",
+              nobs_head, (size_t)DNAC_P2S_TAIR_PRE_OBS);
+        /* The two boundary pops the offsets stand on. */
+        CHECK(tair_pop_op(s, DNAC_P2S_TAIR_PRE_POPS - 1) ==
+                  DNAC_P2S_TAIR_OFF_PCS - 1,
+              "T-REF/tair: the last head pop is not the last op of BLOCK 1");
+        CHECK(tair_pop_op(s, DNAC_P2S_TAIR_PRE_POPS) == DNAC_P2S_TAIR_OFF_TAIL,
+              "T-REF/tair: the FRI alpha is not the first op of BLOCK 3");
+        /* And round 0's digest block really begins at PRE_OBS. */
+        CHECK(tair_obs_op(s, DNAC_P2S_OBS_DIGEST(0, 0)) ==
+                  DNAC_P2S_TAIR_OFF_TAIL + 2,
+              "T-REF/tair: round 0's digest does not follow the FRI alpha");
+        printf("  [t-ref]  tair script: %zu DS + %zu priming + %zu pcs + %zu "
+               "tail = %zu ops, %zu rows, %zu publics\n",
+               (size_t)DNAC_DUPLEX_RATE, (size_t)DNAC_P2S_TAIR_PRIMING_OPS,
+               (size_t)DNAC_P2S_TAIR_PCS_OPS, (size_t)DNAC_P2S_TAIR_TAIL_OPS,
+               s->n_ops, dnac_tair_table_rows(s),
+               dnac_tair_num_publics(s));
     }
 
     /* The pinned pair passes its own pow_bits pin (the positive leg; N-POWPIN
@@ -1806,6 +1917,82 @@ static void t_ref(const jv_t *doc)
                   nq == DNAC_P2S_NUM_QUERIES,
               "T-REF: num_queries %llu != pinned %zu", (unsigned long long)nq,
               (size_t)DNAC_P2S_NUM_QUERIES);
+    }
+
+    /* ── T-REF/inner: the INNER PROOF's shape, the priming slice's grounding ──
+     * DNAC_P2S_INNER_* is what BLOCK 1 and BLOCK 2 of the pinned transcript
+     * script are expanded from, so every one of those scalars is re-read out of
+     * the fixture here. Without this the priming block would be an op count with
+     * no proof behind it — the exact "count-KAFADAN" shape the rest of this file
+     * exists to prevent. */
+    {
+        const jv_t *insts = jv_get(s, "instances");
+        uint64_t ni = 0, zk = 0;
+        CHECK(jv_u64(jv_get(s, "num_instances"), &ni) &&
+                  ni == DNAC_P2S_INNER_N,
+              "T-REF/inner: num_instances %llu != pinned %zu",
+              (unsigned long long)ni, (size_t)DNAC_P2S_INNER_N);
+        CHECK(jv_u64(jv_get(s, "is_zk"), &zk) &&
+                  zk == (uint64_t)DNAC_P2S_INNER_IS_ZK,
+              "T-REF/inner: is_zk %llu != pinned %d", (unsigned long long)zk,
+              DNAC_P2S_INNER_IS_ZK);
+        /* `num_random_codewords` has no fixture field: it is a CALLER argument
+         * to dnac_batch_verify, not proof data (batch_verify.c:437-444 gates the
+         * whole tail on `is_zk`). The entry passes 0 alongside is_zk 0, and the
+         * build-time assert in fri_statement.c ties the two; stated rather than
+         * silently skipped. */
+        CHECK(DNAC_P2S_INNER_NRC == 0,
+              "T-REF/inner: a non-zero nrc has no witness in this fixture");
+        if (insts && insts->kind == JV_ARR && insts->n == DNAC_P2S_INNER_N) {
+            for (size_t i = 0; i < insts->n; i++) {
+                const jv_t *in = insts->items[i];
+                const jv_t *pv = jv_get(in, "public_values");
+                const jv_t *mn = jv_get(in, "main_next_used");
+                const jv_t *pn = jv_get(in, "prep_next_used");
+                uint64_t w = 0, pw = 0, nqc = 0, nl = 0;
+                CHECK(pv && pv->kind == JV_ARR &&
+                          pv->n == DNAC_P2S_INNER_PUBLICS,
+                      "T-REF/inner: instance %zu has %zu publics, pinned %zu", i,
+                      pv ? pv->n : (size_t)0, (size_t)DNAC_P2S_INNER_PUBLICS);
+                CHECK(jv_u64(jv_get(in, "width"), &w) &&
+                          w == DNAC_P2S_INNER_MAIN_WIDTH,
+                      "T-REF/inner: instance %zu width %llu != pinned %zu", i,
+                      (unsigned long long)w,
+                      (size_t)DNAC_P2S_INNER_MAIN_WIDTH);
+                CHECK(jv_u64(jv_get(in, "preprocessed_width"), &pw) &&
+                          pw == DNAC_P2S_INNER_PREP_WIDTH,
+                      "T-REF/inner: instance %zu prep width %llu != pinned %zu",
+                      i, (unsigned long long)pw,
+                      (size_t)DNAC_P2S_INNER_PREP_WIDTH);
+                CHECK(jv_u64(jv_get(in, "num_quotient_chunks"), &nqc) &&
+                          nqc == DNAC_P2S_INNER_NUM_QC,
+                      "T-REF/inner: instance %zu chunks %llu != pinned %zu", i,
+                      (unsigned long long)nqc, (size_t)DNAC_P2S_INNER_NUM_QC);
+                CHECK(jv_u64(jv_get(in, "num_lookups"), &nl) &&
+                          nl == DNAC_P2S_INNER_LOOKUPS,
+                      "T-REF/inner: instance %zu lookups %llu != pinned %zu", i,
+                      (unsigned long long)nl, (size_t)DNAC_P2S_INNER_LOOKUPS);
+                CHECK(mn && mn->kind == JV_BOOL &&
+                          (int)mn->bval == DNAC_P2S_INNER_MAIN_NEXT,
+                      "T-REF/inner: instance %zu main_next_used != pinned %d", i,
+                      DNAC_P2S_INNER_MAIN_NEXT);
+                CHECK(pn && pn->kind == JV_BOOL &&
+                          (int)pn->bval == DNAC_P2S_INNER_PREP_NEXT,
+                      "T-REF/inner: instance %zu prep_next_used != pinned %d", i,
+                      DNAC_P2S_INNER_PREP_NEXT);
+            }
+            printf("  [t-ref]  inner proof: %zu instances, is_zk %d, w %zu, "
+                   "pw %zu, %zu chunk(s), %zu publics, %zu lookups\n",
+                   (size_t)DNAC_P2S_INNER_N, DNAC_P2S_INNER_IS_ZK,
+                   (size_t)DNAC_P2S_INNER_MAIN_WIDTH,
+                   (size_t)DNAC_P2S_INNER_PREP_WIDTH,
+                   (size_t)DNAC_P2S_INNER_NUM_QC,
+                   (size_t)DNAC_P2S_INNER_PUBLICS,
+                   (size_t)DNAC_P2S_INNER_LOOKUPS);
+        } else {
+            CHECK(0, "T-REF/inner: the instances array is not %zu long",
+                  (size_t)DNAC_P2S_INNER_N);
+        }
     }
 
     const jv_t *op = jv_get(jv_get(s, "proof_serde"), "opening_proof");
@@ -3183,12 +3370,15 @@ static void t_alias_positive(const dnac_p2s_statement_t *stmt, const traces_t *T
          * ARE transcript payload lanes — the SAME lanes for every query, since
          * `tair_payload` has no per-query copy. The op indices are re-derived
          * here by scanning the script, independently of the entry's own
-         * walk. ── */
+         * walk. ⚠ EVERY ordinal is offset by DNAC_P2S_TAIR_PRE_POPS since the
+         * priming slice — pop 0 is the PRIMING's batch alpha, not the FRI
+         * one. ── */
         {
             const dnac_tair_script_t *ts = dnac_p2s_tair_script();
             const size_t beta_off = dnac_fair_pub_beta_off(dnac_p2s_fri_cfg());
             const size_t alpha_off = dnac_foi_pub_alpha_off(dnac_p2s_oi_cfg());
-            const size_t ka0 = tair_pop_op(ts, 0), ka1 = tair_pop_op(ts, 1);
+            const size_t ka0 = tair_pop_op(ts, DNAC_P2S_TAIR_PRE_POPS);
+            const size_t ka1 = tair_pop_op(ts, DNAC_P2S_TAIR_PRE_POPS + 1);
 
             CHECK(ka0 != (size_t)-1 && ka1 != (size_t)-1,
                   "T-SRC/alpha: the script has no alpha pops");
@@ -3198,11 +3388,13 @@ static void t_alias_positive(const dnac_p2s_statement_t *stmt, const traces_t *T
                           gold_fp_to_u64(po[alpha_off + 1]) ==
                               gold_fp_to_u64(pt[ka1]),
                       "T-SRC/alpha: oi[q%zu]'s alpha publics are not the "
-                      "transcript's first fp2 pop", q);
+                      "transcript's FRI-tail fp2 pop", q);
             }
             for (size_t r = 0; r < DNAC_P2S_FRI_R; r++) {
-                const size_t k0 = tair_pop_op(ts, 2 + 2 * r);
-                const size_t k1 = tair_pop_op(ts, 2 + 2 * r + 1);
+                const size_t k0 =
+                    tair_pop_op(ts, DNAC_P2S_TAIR_PRE_POPS + 2 + 2 * r);
+                const size_t k1 =
+                    tair_pop_op(ts, DNAC_P2S_TAIR_PRE_POPS + 2 + 2 * r + 1);
                 CHECK(k0 != (size_t)-1 && k1 != (size_t)-1,
                       "T-SRC/beta: no pops for round %zu", r);
                 if (k0 == (size_t)-1 || k1 == (size_t)-1) continue;
@@ -3220,7 +3412,8 @@ static void t_alias_positive(const dnac_p2s_statement_t *stmt, const traces_t *T
              * from the alias side: query q reads the transcript's BLOCK q, not
              * block 0. ── */
             {
-                const size_t kq = tair_pop_op(ts, 2 + 2 * DNAC_P2S_FRI_R + q);
+                const size_t kq = tair_pop_op(
+                    ts, DNAC_P2S_TAIR_PRE_POPS + 2 + 2 * DNAC_P2S_FRI_R + q);
                 const size_t off = (kq == (size_t)-1)
                                        ? (size_t)-1
                                        : dnac_tair_op_bit_off(ts, kq);
@@ -3274,8 +3467,12 @@ static void t_alias_positive(const dnac_p2s_statement_t *stmt, const traces_t *T
         static const uint32_t want_db[DNAC_P2S_SLOTS] = { 4, 4, 4, 3,
                                                           3, 3, 3, 5 };
         (void)sizeof(want_db_matches_slots);
-        CHECK(S->insts[DNAC_P2S_INST_TAIR].degree_bits == 6,
-              "T-ALIAS: tair degree_bits %u, expected 6",
+        /* 7, not 6, SINCE THE PRIMING SLICE: the tair script went 31 -> 93 ops
+         * (DS + priming + PCS + FRI tail), so its table went 64 -> 128 rows.
+         * Still hard-coded for the reason above — this is the one number the
+         * slice was expected to move, and it moved by exactly one bit. */
+        CHECK(S->insts[DNAC_P2S_INST_TAIR].degree_bits == 7,
+              "T-ALIAS: tair degree_bits %u, expected 7",
               S->insts[DNAC_P2S_INST_TAIR].degree_bits);
         for (size_t q = 0; q < DNAC_P2S_NUM_QUERIES; q++) {
             for (uint32_t s = 0; s < DNAC_P2S_SLOTS; s++) {
@@ -4026,14 +4223,19 @@ static void t_query_alias(const dnac_p2s_statement_t *stmt,
         }
 
         /* alpha (fri_verifier.c:694) -> EVERY oi instance, and the transcript
-         * whose payload lane it is. betas (:707) -> EVERY fri instance. */
+         * whose payload lane it is. betas (:707) -> EVERY fri instance.
+         * ⚠ ORDINALS OFFSET BY DNAC_P2S_TAIR_PRE_POPS since the priming slice —
+         * ordinal 0 is now the PRIMING's batch alpha (batch_priming.c:194), not
+         * the FRI one, and N-PRIMEOFF below is what shows the two really are
+         * different ops with different reach. */
         {
             struct { size_t ord; const char *what; uint32_t extra; } legs[] = {
-                { 0, "alpha.c0", 0 },
-                { 1, "alpha.c1", 0 },
-                { 2, "beta[0].c0", 1 },
-                { 3, "beta[0].c1", 1 },
-                { 2 + 2 * (DNAC_P2S_FRI_R - 1), "beta[R-1].c0", 1 },
+                { DNAC_P2S_TAIR_PRE_POPS + 0, "alpha.c0", 0 },
+                { DNAC_P2S_TAIR_PRE_POPS + 1, "alpha.c1", 0 },
+                { DNAC_P2S_TAIR_PRE_POPS + 2, "beta[0].c0", 1 },
+                { DNAC_P2S_TAIR_PRE_POPS + 3, "beta[0].c1", 1 },
+                { DNAC_P2S_TAIR_PRE_POPS + 2 + 2 * (DNAC_P2S_FRI_R - 1),
+                  "beta[R-1].c0", 1 },
             };
             for (size_t e = 0; e < sizeof(legs) / sizeof(legs[0]); e++) {
                 const size_t k = tair_pop_op(ts, legs[e].ord);
@@ -4178,6 +4380,83 @@ static void t_query_alias(const dnac_p2s_statement_t *stmt,
                 check_mask(moved_mask(), 0u,
                            "N-OBSDEAD: tair_payload[digest r%zu lane %zu]", r,
                            i);
+            }
+        }
+
+        /* ── N-PRIMEOFF — ►► THE ACCEPTANCE CRITERION OF THE PRIMING SLICE, on
+         * the data side. Two claims, one perturbation family.
+         *
+         * (i) THE OFFSET IS LOAD-BEARING. Pop ordinal 0 is no longer the FRI
+         *     alpha: it is the PRIMING's batch alpha (batch_priming.c:194 —
+         *     `dnac_batch_observe_perm_and_sample_alpha`'s unconditional
+         *     sample), and ordinal PRE_POPS-1 is zeta's second lane (:280). They
+         *     are DIFFERENT ops from the FRI alpha (fri_verifier.c:694), and
+         *     asserted so — a reverted offset would make the oi instances read
+         *     the batch alpha and nothing else here would notice.
+         *
+         * (ii) THE PRIMING'S OWN CHALLENGES HAVE NO CONSUMER YET — HONEST
+         *     LABEL 1(a), asserted rather than promised. Perturbing the batch
+         *     alpha or zeta moves the TRANSCRIPT instance and NOTHING else: the
+         *     lanes are modelled (the tair instance's CT-3b binds them to its
+         *     own trace) but no other instance is aliased to them. When the ζ
+         *     alias lands, THIS expected set is what has to change — the oi
+         *     instances join it — so the negative is a tripwire on the label as
+         *     well as on the offset. ── */
+        {
+            struct { size_t ord; const char *what; } head[] = {
+                { 0, "priming alpha.c0" },
+                { 1, "priming alpha.c1" },
+                { DNAC_P2S_TAIR_PRE_POPS - 2, "zeta.c0" },
+                { DNAC_P2S_TAIR_PRE_POPS - 1, "zeta.c1" },
+            };
+            const size_t k_fri_alpha = tair_pop_op(ts, DNAC_P2S_TAIR_PRE_POPS);
+            CHECK(DNAC_P2S_TAIR_PRE_POPS >= 2,
+                  "N-PRIMEOFF: the priming contributes no pops — the offset "
+                  "would be vacuous");
+            for (size_t e = 0;
+                 DNAC_P2S_TAIR_PRE_POPS >= 2 &&
+                 e < sizeof(head) / sizeof(head[0]);
+                 e++) {
+                const size_t k = tair_pop_op(ts, head[e].ord);
+                dnac_p2s_statement_t bad = *stmt;
+                if (k == (size_t)-1 || k >= DNAC_P2S_TAIR_NUM_OPS) {
+                    CHECK(0, "N-PRIMEOFF: no pop for %s", head[e].what);
+                    continue;
+                }
+                CHECK(k != k_fri_alpha && k < DNAC_P2S_TAIR_OFF_TAIL,
+                      "N-PRIMEOFF: %s is not a HEAD pop (op %zu, tail at %zu)",
+                      head[e].what, k, (size_t)DNAC_P2S_TAIR_OFF_TAIL);
+                bad.tair_payload[k] = gold_fp_to_u64(gold_fp_add(
+                    gold_fp_from_u64(bad.tair_payload[k]), gold_fp_one()));
+                if (!set_pair(stmt, &bad, "N-PRIMEOFF")) continue;
+                check_mask(moved_mask(), P2S_TMASK,
+                           "N-PRIMEOFF: tair_payload[%s]", head[e].what);
+                expect_entry_reject(&bad, proof, "N-PRIMEOFF: tair_payload[%s]",
+                                    head[e].what);
+            }
+        }
+
+        /* ── N-PRIMEDEAD — the PCS claimed-eval block is modelled but unaliased,
+         * exactly like the final poly (HONEST LABEL 6(b)). Perturbing one of its
+         * payload lanes moves the transcript instance and nothing else. Sampled
+         * at the two ends of the block rather than swept: the block is 24 lanes
+         * of one KIND and the claim is about the whole of it. ── */
+        {
+            const size_t ends[2] = { DNAC_P2S_TAIR_OFF_PCS,
+                                     DNAC_P2S_TAIR_OFF_TAIL - 1 };
+            for (size_t e = 0; e < 2; e++) {
+                dnac_p2s_statement_t bad = *stmt;
+                const size_t k = ends[e];
+                CHECK(k < DNAC_P2S_TAIR_NUM_OPS &&
+                          ts->ops[k].kind == DNAC_TAIR_OP_OBSERVE,
+                      "N-PRIMEDEAD: op %zu is not a PCS observe", k);
+                bad.tair_payload[k] = gold_fp_to_u64(gold_fp_add(
+                    gold_fp_from_u64(bad.tair_payload[k]), gold_fp_one()));
+                if (!set_pair(stmt, &bad, "N-PRIMEDEAD")) continue;
+                check_mask(moved_mask(), P2S_TMASK,
+                           "N-PRIMEDEAD: tair_payload[pcs op %zu]", k);
+                expect_entry_reject(&bad, proof,
+                                    "N-PRIMEDEAD: tair_payload[pcs op %zu]", k);
             }
         }
     }

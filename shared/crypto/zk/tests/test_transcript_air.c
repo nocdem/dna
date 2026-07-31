@@ -47,7 +47,14 @@
 #include "../transcript_air.h"
 #include "../transcript_air_table.h"
 
-#define MAX_OPS   64
+/* Op capacity of ONE loaded/synthesized vector. The 8 shipped
+ * `transcript_trace_*.json` scenarios are 8-19 ops, but tests/test_fri_statement.c
+ * reuses `vec_t` + `build_trace` for the COMPOSED statement script, which is
+ * DNAC_P2A_REF_OPS == 93 ops since the priming slice — so 64 was no longer
+ * enough. Raised to TAIR_TBL_MAX_ROWS' worth, which is the largest run any
+ * accepted script can describe. `MAX_DUPS` bounds only the JSON `duplexings`
+ * list, which the synthesized path does not use, so it is unchanged. */
+#define MAX_OPS   128
 #define MAX_DUPS  32
 #define MAX_ROWS  128
 #define TRACE_ELEMS ((size_t)MAX_ROWS * TAIR_WIDTH)

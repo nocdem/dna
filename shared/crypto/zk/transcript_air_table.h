@@ -87,9 +87,88 @@
  * enter the schedule, which is what makes the table a pure function of the cfg
  * (determinism, below).
  *
- * ── THE FRI-TAIL REFERENCE SCRIPT ──────────────────────────────────────────
+ * ── THE COMPOSED REFERENCE SCRIPT (the WHOLE sponge run) ───────────────────
+ * `dnac_tair_full_build_script` expands the pinned FULL cfg into the op
+ * sequence the batched-STARK verify path ACTUALLY issues, end to end. There is
+ * exactly ONE sponge: `dnac_batch_verify` creates it at batch_verify.c:321
+ * (`dnac_duplex_init_default`), primes it, observes the claimed evaluations,
+ * and hands the SAME state to FRI — `dnac_transcript_init_from_duplex`
+ * (batch_verify.c:632) copies the challenger VERBATIM (transcript.c:43-50), so
+ * there is no second DS prefix anywhere in the run.
+ *
+ *   BLOCK 0  the DS prefix              4 x OBSERVE, ONCE (see 1 below)
+ *   BLOCK 1  the batch-STARK PRIMING    `dnac_batch_priming_run`,
+ *                                       batch_priming.c:208-282
+ *   BLOCK 2  the PCS claimed-eval OBSERVE round, batch_verify.c:637-647
+ *   BLOCK 3  the FRI tail               `fri_verify_impl`, fri_verifier.c
+ *                                       :693-737, WITHOUT a DS prefix
+ *
+ * ⚠ WHAT A SCRIPT CAN AND CANNOT PIN. An op records a KIND (observe / sample)
+ * and, for a sample, its `is_pow` and `num_bits` — never a value and never a
+ * provenance. So inside a run of consecutive OBSERVEs the ORDER is not
+ * observable and the script pins only the COUNT and the run's POSITION relative
+ * to the sampling ops. BLOCK 2 is entirely observes, which is why the round /
+ * matrix / point / claimed-eval nesting of batch_verify.c:637-647 does not have
+ * to be reproduced here: every nesting of the same total emits the identical op
+ * sequence. What the composition binds to a payload lane it binds by OP INDEX,
+ * and THAT is what the entry's ordinal maps pin.
+ *
+ * ── BLOCK 1 — the priming, op by op (batch_priming.c:250-281) ──────────────
+ *   a. `dnac_batch_observe_count_and_bindings` (:39-58)
+ *        2 x OBSERVE          observe_usize(num_instances)            :47
+ *        8 x OBSERVE / inst   4 usize: log_ext_degree, log_degree,
+ *                             width, num_quotient_chunks              :52-55
+ *      (an `observe_usize` is TWO base observes — the value then a zero
+ *       coefficient, :26-27)
+ *   b. `dnac_batch_observe_main` (:60-82)
+ *        4 x OBSERVE          the main commitment digest              :72
+ *        num_publics x OBSERVE per instance — CONDITIONAL, a lookup-free
+ *                             instance with no publics contributes 0  :77-79
+ *   c. `dnac_batch_observe_preprocessed` (:84-101)
+ *        2 x OBSERVE / inst   observe_usize(preprocessed_width)       :94-96
+ *        4 x OBSERVE          the preprocessed commit — CONDITIONAL on the
+ *                             commitment being present at all         :97-99
+ *   d. `dnac_batch_sample_perm_challenges` (:103-153)
+ *        CONDITIONAL on any instance declaring a lookup: ZERO ops when none
+ *        does (:137-139 returns before touching the sponge), else
+ *        4 x SAMPLE          alpha then beta, two fp2 pops            :143-144
+ *   e. `dnac_batch_observe_perm_and_sample_alpha` (:155-196)
+ *        CONDITIONAL on the permutation commit, which `dnac_batch_priming_run`
+ *        requires to be present EXACTLY when some instance has lookups
+ *        (:246-248) — so the flag is DERIVED, never a free cfg field:
+ *          4 x OBSERVE       the permutation commit                   :181
+ *          2 x OBSERVE       one terminal fp2 per instance WITH lookups; an
+ *                            instance without any contributes NOTHING :182-192
+ *        2 x SAMPLE          alpha, sampled either way                :194
+ *   f. 4 x OBSERVE           the quotient commitment                  :276
+ *   g. 4 x OBSERVE           the random commitment — CONDITIONAL on is_zk,
+ *                            again a DERIVED presence (:243-245)      :277-279
+ *   h. 2 x SAMPLE            zeta                                     :280
+ *
+ * ── BLOCK 2 — the PCS claimed-eval observes (batch_verify.c:637-647) ───────
+ * Every claimed evaluation of every opening point of every matrix of every
+ * round is observed as an fp2, i.e. TWO base observes (transcript.c:79-82 ->
+ * duplex_challenger.c:117-122). The lane count is the arena length
+ * batch_verify.c:432-488 computes, round by round:
+ *     random  (iff is_zk)   per instance: 2 + num_random_codewords    :446-451
+ *     main                  per instance: (main_next ? 2 : 1) x
+ *                                         (main_width + nrc)          :452-459
+ *     quotient              per instance: num_quotient_chunks x
+ *                                         (2 + nrc)                   :460-465
+ *     preprocessed          per instance WITH a preprocessed matrix:
+ *                             (prep_next ? 2 : 1) x preprocessed_width,
+ *                             tail pinned to ZERO                     :466-474
+ *     permutation           per instance WITH lookups: 2 x
+ *                             ((num_lookups + 1) * 2 + nrc)           :475-481
+ * (`aux_width` is `num_lookups + 1` when the AIR declares any lookup and 0
+ *  otherwise — batch_priming.c:321-326 — and the opened permutation length is
+ *  `aux_width * 2`, batch_verify.c:247.)
+ *
+ * ── BLOCK 3 — the FRI tail ─────────────────────────────────────────────────
  * `dnac_tair_fri_build_script` expands the pinned FRI-tail cfg into the op
- * sequence, in the ORDER `fri_verify_impl` issues it (fri_verifier.c:693-737):
+ * sequence, in the ORDER `fri_verify_impl` issues it (fri_verifier.c:693-737).
+ * The composed builder emits the SAME sequence through the same helper, minus
+ * item 1 — the prefix belongs to the run, not to the tail:
  *
  *   1. 4 x OBSERVE   the DS prefix — `dnac_duplex_init_default` absorbs the
  *                    four DNAC_DUPLEX_DS_PREFIX limbs FIRST, and the 4th fires
@@ -115,12 +194,18 @@
  *   7. per query q < num_queries: 1 x SAMPLE with num_bits = lgmh
  *      (fri_verifier.c:737, `extra_query_index_bits == 0` at :651)
  *
- * ⚠ SCOPE, honestly labelled: this is the FRI TAIL only. The transcript the
+ * ⚠ SCOPE, honestly labelled. `dnac_tair_fri_build_script` alone is the FRI
+ * TAIL of a STANDALONE challenger run (it re-emits the DS prefix, so it is a
+ * complete run in its own right and stays usable as one). The transcript the
  * native `fri_verify_impl` receives has ALREADY absorbed the batch-STARK
- * priming (`dnac_batch_observe_main` etc.); those ops are NOT in this script and
- * the composition entry must prepend them (or pin a different script). What the
- * REF pin proves is that the mechanism works, not that this is the production
- * schedule.
+ * priming and the PCS claimed-eval round; THOSE are BLOCKS 1 and 2 above and
+ * they are what `dnac_tair_full_build_script` prepends. The REFERENCE script
+ * and the composition's script are now both the FULL form.
+ *
+ * ⚠ STILL a MECHANISM pin, not the production schedule: the REF inner-proof
+ * shape below is the shape of one small shipped fixture, and the FRI-tail
+ * scalars are that same fixture's. What the REF pin proves is that the
+ * mechanism works.
  *
  * ── PIN-1-P2a: DNAC_P2A_PREP_ROOT ──────────────────────────────────────────
  * In DNAC the preprocessed commitment is PROVER-SUPPLIED PROOF DATA: the prover
@@ -136,7 +221,7 @@
  * matrix, batch_prover.c:810-848 with is_zk = 0, so the pin equals the root
  * that appears in a real proof):
  *
- *   table = dnac_tair_table_generate(REFERENCE SCRIPT)   // H x COLS, H = 64
+ *   table = dnac_tair_table_generate(REFERENCE SCRIPT)   // H x COLS, H = 128
  *   lde   = dnac_prover_coset_lde_bitrev(table, H, COLS,
  *               DNAC_P2A_PREP_LOG_BLOWUP, GOLDILOCKS_GENERATOR, .)
  *   root  = dnac_p2_mmcs_commit_mixed({lde}, {COLS}, {H << lb}, 1, ., NULL)
@@ -177,9 +262,9 @@
  * load-bearing for P2a. It must still be pinned at the composition entry,
  * because at THIS width `prep_next = 0` is rejected on SHAPE rather than
  * silently zeroed: `preprocessed_width > 64` returns DNAC_BV_ERR_SHAPE
- * (batch_verify.c:696-701), and TAIR_TBL_COLS is 71. Fail-closed harder
+ * (batch_verify.c:696-701), and TAIR_TBL_COLS is 135. Fail-closed harder
  * than the P2b path, but the composition must confirm the full prove/verify
- * pipeline handles a 71-wide preprocessed matrix.
+ * pipeline handles a 135-wide preprocessed matrix.
  *
  * Determinism: every function here is a pure function of the SCRIPT scalars —
  * fixed-bound loops only, no allocation, no clock, no RNG, no iteration over
@@ -206,22 +291,54 @@ extern "C" {
 
 /**
  * Upper bound on op steps, and therefore the width of the op-step one-hot.
- * 64 covers the REF FRI-tail script (31 ops) with room for the composition's
- * priming prefix. Same MECHANISM-pin caveat as MAIR_MAX_STEPS (mmcs_air.h:
- * 140-145) and DNAC_P2C_MAX_STEPS (fri_air_table.h:187-193): re-pinned with the
- * production script. A script that exceeds it fails CLOSED.
+ * RAISED 64 -> 128 when the script grew from the FRI TAIL ALONE to the whole
+ * composed run (DS prefix + batch-STARK priming + PCS claimed-eval observes +
+ * tail): the REF script is 93 ops where the tail alone was 31.
+ *
+ * ⚠ IT IS NOT A REACHABLE OP COUNT. `tair_script_check` rejects a script whose
+ * `n_starts + n_ops + 1` exceeds TAIR_TBL_MAX_ROWS (the terminal filler row is
+ * mandatory), so with ONE instance the largest accepted script is
+ * MAX_ROWS - 1 - 1 = 126 ops, and with the maximum 8 instance starts it is 119.
+ * The ROW bound is what binds; this one is the one-hot WIDTH, sized so a `pos`
+ * index can never fall outside the table for any script the row bound admits.
+ * Both fail CLOSED, and the test static-asserts the direction that matters
+ * (tests/test_transcript_air_table.c).
+ *
+ * Same MECHANISM-pin caveat as MAIR_MAX_STEPS (mmcs_air.h:140-145) and
+ * DNAC_P2C_MAX_STEPS (fri_air_table.h:187-193): re-pinned with the production
+ * script.
  */
-#define TAIR_TBL_MAX_STEPS ((size_t)64)
+#define TAIR_TBL_MAX_STEPS ((size_t)128)
 
 /** Upper bound on instance-start rows in one script. */
 #define TAIR_TBL_MAX_STARTS ((size_t)8)
 
 /**
- * Upper bound on the PADDED row count. The extremal script (64 ops + 8 starts
- * = 72 scheduled rows, +1 terminal) pads to 128, so this is exactly reachable
- * and not a guess.
+ * Upper bound on the PADDED row count. UNCHANGED at 128 across the MAX_STEPS
+ * raise: it is the BINDING cap now (see TAIR_TBL_MAX_STEPS above) and it is
+ * exactly reachable — a 127-row schedule (e.g. 1 start + 126 ops) pads to 128.
  */
 #define TAIR_TBL_MAX_ROWS ((size_t)128)
+
+/**
+ * Upper bound on the INNER batch proof's instance count the priming block may
+ * describe. Honest duplicate of `BV_MAX_INSTANCES` (batch_verify.c:20, which
+ * batch_verify.h does not export) — `dnac_batch_verify` rejects anything past
+ * it, so a priming cfg past it could not describe a verifiable proof. A cfg
+ * that exceeds it fails CLOSED; in practice the op budget binds long before
+ * this does (one instance costs 8 binding observes + 2 preprocessed-width
+ * observes + its whole claimed-eval share).
+ */
+#define TAIR_TBL_MAX_INNER_INSTANCES ((size_t)32)
+
+/**
+ * Fail-close cap on any single per-instance lane/width scalar of the inner
+ * proof (publics, main width, preprocessed width, quotient chunks, lookups,
+ * random codewords). Deliberately generous — TAIR_TBL_MAX_STEPS on the finished
+ * script is what actually binds — and present only so the op arithmetic cannot
+ * overflow a `size_t` on a hostile cfg.
+ */
+#define TAIR_TBL_MAX_INNER_LANES ((size_t)4096)
 
 /** Smallest committable table height (stark_prover.h:185: power of two, >= 2).
  *  Unreachable for any accepted script (>= 1 start + >= 1 op + >= 1 pad ⇒ 4),
@@ -266,7 +383,9 @@ extern "C" {
 /** Op-step one-hot base: [POS_OFF, POS_OFF + TAIR_TBL_MAX_STEPS). */
 #define TAIR_TBL_COL_POS_OFF (TAIR_TBL_COL_IS_POW + 1)
 
-/** Total preprocessed width == 71 (6 type + is_pow + 64 one-hot lanes). */
+/** Total preprocessed width == 135 (6 type + is_pow + 128 one-hot lanes).
+ *  ⚠ WAS 71 while TAIR_TBL_MAX_STEPS was 64; it moves with that constant, and
+ *  the test static-asserts the arithmetic rather than the literal. */
 #define TAIR_TBL_COLS (TAIR_TBL_COL_POS_OFF + TAIR_TBL_MAX_STEPS)
 
 /** type[t], t < TAIR_TBL_NUM_TYPES. */
@@ -379,10 +498,10 @@ typedef struct {
     size_t num_bits; /**< exported bits on this row; 0 if none               */
 } dnac_tair_row_t;
 
-/* ── the FRI-tail reference cfg ──────────────────────────────────────────── */
+/* ── the reference cfg: the inner proof + the FRI tail ───────────────────── */
 
 /**
- * The FRI-tail scalars the reference script is expanded from. Every field is a
+ * The FRI-tail scalars the tail block is expanded from. Every field is a
  * consensus/cfg scalar. See the header preamble for the op sequence and its
  * `fri_verifier.c` line-by-line grounding.
  */
@@ -395,16 +514,94 @@ typedef struct {
     size_t query_pow_bits;     /**< the single query check_witness (:723)    */
 } dnac_tair_fri_cfg_t;
 
-/* REFERENCE CONFIG (pinned, spec §2): R = 3, lfpl = 0, Q = 2, lgmh = 5,
- * commit/query PoW 0/0.
+/**
+ * ONE inner batch-STARK instance, as the PRIMING and the PCS observe round see
+ * it. Every field is a cfg scalar of the proof being verified; NOTHING here may
+ * come off a wire — the script is a pinned object.
  *
- * Deliberately SMALL — this is a mechanism pin, and a small script keeps the
- * table inside one 64-row power of two while still exercising every op form:
- * multi-round digest observes, fp2 pops (alpha + betas), the final-poly and
- * log_arity observes, and TWO bit-exporting query samples. PoW is 0/0 so the
- * ZERO-OP `check_witness` branch (duplex_challenger.c:153-155) is the one on the
- * reference path; the non-zero branch is covered by the `pow_nonzero` oracle
- * scenario in tests/test_transcript_air.c. */
+ * The presence flags the priming branches on are DERIVED from these, never
+ * given separately, because `dnac_batch_priming_run` requires exactly that:
+ *   permutation commit present  iff  some instance has `num_lookups > 0`
+ *                                    (batch_priming.c:246-248)
+ *   random commit present       iff  `is_zk`             (batch_priming.c:243-245)
+ *   preprocessed commit present iff  some instance has a preprocessed matrix
+ *                                    (batch_verify.c:149 with :187)
+ */
+typedef struct {
+    /** Base lanes observed for this instance's public values
+     *  (batch_priming.c:77-79). 0 is normal — a lookup-free control AIR has
+     *  none. */
+    size_t num_publics;
+    /** Main trace width == the claimed-eval count of a main-round opening
+     *  (batch_priming.c:330 pins `trace_local_len == width`). MUST be >= 1
+     *  (batch_verify.c:174-177). */
+    size_t main_width;
+    /** 1 iff the AIR reads the next row, i.e. the main round opens at zeta AND
+     *  at g*zeta (batch_verify.c:548 / :552-555). */
+    int    main_next;
+    /** Preprocessed width; 0 = this instance has no preprocessed matrix and
+     *  contributes NO preprocessed opening (batch_verify.c:466-474 walks the
+     *  matrix map, and :187 ties `width > 0` to appearing in it). */
+    size_t preprocessed_width;
+    /** 1 iff the preprocessed round opens two points (batch_verify.c:586). Must
+     *  be 0 when `preprocessed_width` is 0 (batch_priming.c:352-355). */
+    int    prep_next;
+    /** Quotient chunk count == the transcript binding (batch_priming.c:340);
+     *  each chunk opens ONE point of DIMENSION 2 (batch_verify.c:568-571). MUST
+     *  be >= 1 (batch_priming.c:236-238). */
+    size_t num_quotient_chunks;
+    /** `num_locals + num_globals` of this instance's bus view
+     *  (batch_verify.c:191). > 0 makes it contribute a lookup TERMINAL to the
+     *  priming (batch_priming.c:182-192) and a permutation opening to the PCS
+     *  round (batch_verify.c:475-481). */
+    size_t num_lookups;
+} dnac_tair_inner_inst_t;
+
+/**
+ * The INNER batch proof's shape — everything BLOCK 1 (priming) and BLOCK 2 (the
+ * PCS claimed-eval observes) need in order to be expanded into ops.
+ */
+typedef struct {
+    const dnac_tair_inner_inst_t *insts;
+    size_t n;      /**< 1 .. TAIR_TBL_MAX_INNER_INSTANCES */
+    int    is_zk;  /**< 0 or 1; adds the random commit and the random round */
+    /** The rand TAIL appended to every non-preprocessed claimed-eval point when
+     *  `is_zk` (batch_verify.c:426-431 / :437-444). MUST be 0 when `is_zk` is 0
+     *  — a non-ZK proof consumes no rand entry at all (:440). */
+    size_t num_random_codewords;
+} dnac_tair_priming_cfg_t;
+
+/**
+ * The FULL composed run: the inner proof + the FRI tail. `dnac_tair_full_
+ * build_script` expands it into BLOCKS 0-3 (see the header preamble).
+ */
+typedef struct {
+    dnac_tair_priming_cfg_t priming;
+    dnac_tair_fri_cfg_t     fri;
+} dnac_tair_full_cfg_t;
+
+/* REFERENCE CONFIG (pinned): the FRI tail is R = 3, lfpl = 0, Q = 2, lgmh = 5,
+ * commit/query PoW 0/0, and the inner proof is 2 instances, non-ZK, no lookups,
+ * one quotient chunk each, main and preprocessed both 1 lane wide and both
+ * opening a next row.
+ *
+ * ⚠ MEASURED, not chosen: this is scenario `prep_pair` of
+ * `tools/vectors/batch_proof.json` — `num_instances` 2, `is_zk` 0, and per
+ * instance `public_values` [], `width` 1, `preprocessed_width` 1,
+ * `num_quotient_chunks` 1, `main_next_used` true, `prep_next_used` true,
+ * `num_lookups` 0 — the same fixture the composition's cfg set is derived from
+ * (fri_statement.h). tests/test_fri_statement.c re-reads every one of those
+ * fields out of the JSON and compares (T-REF/inner), so the pin cannot drift
+ * from the proof it claims to describe.
+ *
+ * Still deliberately SMALL — this is a mechanism pin — while exercising every op
+ * form: the DS prefix, usize observes, three commitment digests, fp2 pops
+ * (the batch alpha, zeta, the FRI alpha and betas), a full PCS observe round,
+ * the final-poly and log_arity observes, and TWO bit-exporting query samples.
+ * PoW is 0/0 so the ZERO-OP `check_witness` branch (duplex_challenger.c:153-155)
+ * is the one on the reference path; the non-zero branch is covered by the
+ * `pow_nonzero` oracle scenario in tests/test_transcript_air.c and by the
+ * PoW-bearing script in tests/test_transcript_air_table.c. */
 #define DNAC_P2A_REF_R                  ((size_t)3)
 #define DNAC_P2A_REF_LOG_FINAL_POLY_LEN ((size_t)0)
 #define DNAC_P2A_REF_NUM_QUERIES        ((size_t)2)
@@ -412,14 +609,39 @@ typedef struct {
 #define DNAC_P2A_REF_COMMIT_POW_BITS    ((size_t)0)
 #define DNAC_P2A_REF_QUERY_POW_BITS     ((size_t)0)
 
+#define DNAC_P2A_REF_INNER_N            ((size_t)2)
+#define DNAC_P2A_REF_IS_ZK              0
+#define DNAC_P2A_REF_NRC                ((size_t)0)
+#define DNAC_P2A_REF_INNER_PUBLICS      ((size_t)0)
+#define DNAC_P2A_REF_INNER_MAIN_WIDTH   ((size_t)1)
+#define DNAC_P2A_REF_INNER_MAIN_NEXT    1
+#define DNAC_P2A_REF_INNER_PREP_WIDTH   ((size_t)1)
+#define DNAC_P2A_REF_INNER_PREP_NEXT    1
+#define DNAC_P2A_REF_INNER_NUM_QC       ((size_t)1)
+#define DNAC_P2A_REF_INNER_LOOKUPS      ((size_t)0)
+
 /* Derived, and re-derived by the test from the accessors rather than trusted:
- *   ops  = 4 (DS) + 2 (alpha) + R*(4 + 0 + 2) + 2*(1<<lfpl) + R + 0 + Q
- *        = 4 + 2 + 18 + 2 + 3 + 2 = 31
- *   rows = next_pow2(1 start + 31 ops + 1 terminal) = 64
- *   publics = 31 payload + Q*lgmh = 31 + 10 = 41 */
-#define DNAC_P2A_REF_OPS     ((size_t)31)
-#define DNAC_P2A_REF_ROWS    ((size_t)64)
-#define DNAC_P2A_REF_PUBLICS ((size_t)41)
+ *
+ *   BLOCK 0 DS prefix                                                  =  4
+ *   BLOCK 1 priming  2 + 8*N                       (count + bindings)  = 18
+ *                  + 4 + N*publics                 (main commit + pubs)=  4
+ *                  + 2*N + 4                       (prep widths+commit)=  8
+ *                  + 0                             (no lookup squeeze) =  0
+ *                  + 0 + 2                         (no perm commit; alpha) = 2
+ *                  + 4                             (quotient commit)   =  4
+ *                  + 0                             (not ZK)            =  0
+ *                  + 2                             (zeta)              =  2
+ *                                                                       = 38
+ *   BLOCK 2 pcs      2 * N * ( main 2*(1+0) + quot 1*(2+0) + prep 2*1 )
+ *                  = 2 * 2 * 6                                          = 24
+ *   BLOCK 3 tail     2 (alpha) + R*(4 + 0 + 2) + 2*(1<<lfpl) + R + 0 + Q
+ *                  = 2 + 18 + 2 + 3 + 2                                 = 27
+ *   ops     = 4 + 38 + 24 + 27                                          = 93
+ *   rows    = next_pow2(1 start + 93 ops + 1 terminal) = next_pow2(95)  = 128
+ *   publics = 93 payload + Q*lgmh = 93 + 10                             = 103 */
+#define DNAC_P2A_REF_OPS     ((size_t)93)
+#define DNAC_P2A_REF_ROWS    ((size_t)128)
+#define DNAC_P2A_REF_PUBLICS ((size_t)103)
 
 /* Coset-LDE blowup the pin is derived at. Mirrors the shipped consensus FRI
  * blowup DNAC_SHIELDED_FRI_LOG_BLOWUP == 2 — the recursion envelope. Kept as its
@@ -430,16 +652,27 @@ typedef struct {
 
 /* PIN-1-P2a — the preprocessed root of the REFERENCE table, 4 Goldilocks lanes.
  *
+ * ⚠ RE-PINNED when the reference script grew from the FRI TAIL (31 ops, 64 rows,
+ * 71 cols) to the WHOLE composed run (93 ops, 128 rows, 135 cols). The previous
+ * value is void — the table it committed no longer exists.
+ *
  * PLACEHOLDER {0,0,0,0}: filled by the ORCHESTRATOR from
  * `build/test_transcript_air_table --print-roots`, whose output is pasted
  * verbatim. While unfilled the KAT in that test FAILS BY DESIGN and the
  * comparator rejects EVERYTHING (including an all-zero root — a placeholder pin
  * that accepted zero would be strictly worse than no pin). Do NOT hand-edit:
- * re-derive via --print-roots (the shielded_domsep.h practice). */
-#define DNAC_P2A_PREP_ROOT_LANE0 UINT64_C(0xb689a4e626921aa3)
-#define DNAC_P2A_PREP_ROOT_LANE1 UINT64_C(0x9a08256aa5794c1d)
-#define DNAC_P2A_PREP_ROOT_LANE2 UINT64_C(0xdb86740992ed646d)
-#define DNAC_P2A_PREP_ROOT_LANE3 UINT64_C(0x443190c5257d97ea)
+ * re-derive (the shielded_domsep.h practice).
+ *
+ * ⚠ `--print-roots` ALONE IS NOT A DERIVATION. It and the T3 KAT call the same
+ * `p2a_commit_table` on the same cells, so "paste it and the KAT goes green" is
+ * a tautology. The value below was re-derived by a SECOND, independently
+ * written LDE -> commit driver and cross-checked lane for lane against the
+ * printer; that driver also re-derived n_ops 93 / rows 128 / cols 135 from the
+ * public accessors. Same discipline as DNAC_P2S_PREP_ROOT — see the note there. */
+#define DNAC_P2A_PREP_ROOT_LANE0 UINT64_C(0x6b256bdc22b03939)
+#define DNAC_P2A_PREP_ROOT_LANE1 UINT64_C(0x99495acdce48b0a5)
+#define DNAC_P2A_PREP_ROOT_LANE2 UINT64_C(0xef95381752fda28c)
+#define DNAC_P2A_PREP_ROOT_LANE3 UINT64_C(0x0e25695cb770f76c)
 
 /** Brace-initializer form for a `uint64_t[4]`. */
 #define DNAC_P2A_PREP_ROOT                                                    \
@@ -455,19 +688,45 @@ typedef struct {
 
 /* ── API ─────────────────────────────────────────────────────────────────── */
 
-/** The pinned reference FRI-tail cfg DNAC_P2A_PREP_ROOT is derived from.
- *  Never NULL. */
+/** The FRI-tail half of the pinned reference cfg. Never NULL. */
 const dnac_tair_fri_cfg_t *dnac_tair_ref_fri_cfg(void);
 
+/** The FULL pinned reference cfg DNAC_P2A_PREP_ROOT is derived from — the inner
+ *  proof AND the FRI tail. Never NULL. */
+const dnac_tair_full_cfg_t *dnac_tair_ref_full_cfg(void);
+
 /**
- * Number of ops the FRI-tail `cfg` expands to, or 0 for a rejected cfg. Pure
- * function of the cfg scalars; the expansion itself is
- * `dnac_tair_fri_build_script`.
+ * Number of ops the FRI-tail `cfg` expands to as a STANDALONE run — the DS
+ * prefix INCLUDED — or 0 for a rejected cfg. Pure function of the cfg scalars;
+ * the expansion itself is `dnac_tair_fri_build_script`.
+ *
+ * ⚠ This is NOT the tail's contribution to a composed script: there the prefix
+ * belongs to the run, not to the tail. Use `dnac_tair_full_num_ops`.
  */
 size_t dnac_tair_fri_num_ops(const dnac_tair_fri_cfg_t *cfg);
 
 /**
- * Expand a FRI-tail cfg into an op script.
+ * Number of ops the batch-STARK PRIMING block (BLOCK 1) expands to, or 0 for a
+ * rejected cfg. The DS prefix is NOT included — it belongs to the run.
+ */
+size_t dnac_tair_priming_num_ops(const dnac_tair_priming_cfg_t *cfg);
+
+/**
+ * Number of ops the PCS claimed-eval OBSERVE round (BLOCK 2) expands to, or 0
+ * for a rejected cfg. Always even: every claimed eval is an fp2, i.e. two base
+ * observes.
+ */
+size_t dnac_tair_pcs_num_ops(const dnac_tair_priming_cfg_t *cfg);
+
+/**
+ * Number of ops the FULL composed run expands to (BLOCKS 0-3), or 0 for a
+ * rejected cfg or a script past TAIR_TBL_MAX_STEPS. Pure function of the cfg
+ * scalars.
+ */
+size_t dnac_tair_full_num_ops(const dnac_tair_full_cfg_t *cfg);
+
+/**
+ * Expand a FRI-tail cfg into a STANDALONE op script (DS prefix + tail).
  *
  * @param cfg        the FRI-tail scalars.
  * @param ops_out    caller-owned buffer, `ops_cap` entries.
@@ -482,8 +741,18 @@ dnac_tair_table_status_t dnac_tair_fri_build_script(
     size_t *starts_out, dnac_tair_script_t *out);
 
 /**
- * The REFERENCE script (the pinned FRI-tail cfg, expanded). Writes into the
- * caller's buffers exactly like `dnac_tair_fri_build_script`; `ops_cap` must be
+ * Expand a FULL cfg into the composed op script: DS prefix, batch-STARK
+ * priming, the PCS claimed-eval observes, then the FRI tail WITHOUT a second
+ * prefix. Same buffer contract as `dnac_tair_fri_build_script`; `ops_cap` must
+ * be >= `dnac_tair_full_num_ops(cfg)`.
+ */
+dnac_tair_table_status_t dnac_tair_full_build_script(
+    const dnac_tair_full_cfg_t *cfg, dnac_tair_op_t *ops_out, size_t ops_cap,
+    size_t *starts_out, dnac_tair_script_t *out);
+
+/**
+ * The REFERENCE script (the pinned FULL cfg, expanded). Writes into the
+ * caller's buffers exactly like `dnac_tair_full_build_script`; `ops_cap` must be
  * >= DNAC_P2A_REF_OPS.
  */
 dnac_tair_table_status_t dnac_tair_ref_script(dnac_tair_op_t *ops_out,

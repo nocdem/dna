@@ -4,9 +4,11 @@
  *        deterministic generator + static validator + the PIN-1-P2a comparator.
  *
  * See transcript_air_table.h for the full grounding contract (the challenger
- * simulation rules and their `duplex_challenger.c` lines, the FRI-tail op order
- * from `fri_verifier.c:693-737`, the public-value layout, the PIN derivation and
- * the two composition obligations).
+ * simulation rules and their `duplex_challenger.c` lines, the four blocks of the
+ * composed op order — DS prefix / batch-STARK priming / PCS claimed-eval
+ * observes / FRI tail — with their `batch_priming.c`, `batch_verify.c` and
+ * `fri_verifier.c` lines, the public-value layout, the PIN derivation and the
+ * two composition obligations).
  *
  * Determinism: every function is a pure function of the SCRIPT scalars — fixed
  * -bound loops only, no allocation, no clock, no RNG, no iteration over anything
@@ -23,14 +25,48 @@
 #include "field_goldilocks.h" /* GOLDILOCKS_P */
 #include "poseidon2_mmcs.h"   /* DNAC_P2M_DIGEST_LANES — the observe_digest cost */
 
-/* The pinned reference FRI-tail cfg (transcript_air_table.h DNAC_P2A_REF_*). */
-static const dnac_tair_fri_cfg_t P2A_REF_FRI_CFG = {
-    DNAC_P2A_REF_R,               DNAC_P2A_REF_LOG_FINAL_POLY_LEN,
-    DNAC_P2A_REF_NUM_QUERIES,     DNAC_P2A_REF_LGMH,
-    DNAC_P2A_REF_COMMIT_POW_BITS, DNAC_P2A_REF_QUERY_POW_BITS
+/* The pinned reference cfg (transcript_air_table.h DNAC_P2A_REF_*): the inner
+ * batch proof's shape, then the FRI-tail scalars. Both halves are the measured
+ * shape of scenario `prep_pair` (tools/vectors/batch_proof.json) — see the
+ * header. The two instances are identical at this pin; they are written out
+ * rather than loop-filled so the array keeps static storage AND stays `const`,
+ * which is what lets the accessor hand out a pointer with no initialisation
+ * order to reason about (the P2S_MMIX_CFG practice, fri_statement.c:41-78). */
+static const dnac_tair_inner_inst_t P2A_REF_INNER[DNAC_P2A_REF_INNER_N] = {
+    { DNAC_P2A_REF_INNER_PUBLICS, DNAC_P2A_REF_INNER_MAIN_WIDTH,
+      DNAC_P2A_REF_INNER_MAIN_NEXT, DNAC_P2A_REF_INNER_PREP_WIDTH,
+      DNAC_P2A_REF_INNER_PREP_NEXT, DNAC_P2A_REF_INNER_NUM_QC,
+      DNAC_P2A_REF_INNER_LOOKUPS },
+    { DNAC_P2A_REF_INNER_PUBLICS, DNAC_P2A_REF_INNER_MAIN_WIDTH,
+      DNAC_P2A_REF_INNER_MAIN_NEXT, DNAC_P2A_REF_INNER_PREP_WIDTH,
+      DNAC_P2A_REF_INNER_PREP_NEXT, DNAC_P2A_REF_INNER_NUM_QC,
+      DNAC_P2A_REF_INNER_LOOKUPS }
 };
 
-const dnac_tair_fri_cfg_t *dnac_tair_ref_fri_cfg(void) { return &P2A_REF_FRI_CFG; }
+/* The pinned instance count is what the initializer above is written out for.
+ * If it ever moves, this stops the build instead of silently leaving an
+ * instance's shape zeroed (main_width 0, which the cfg gate rejects at runtime
+ * — a reject, but one that names nothing). */
+typedef char p2a_ref_inner_list_matches_n_assert
+    [(DNAC_P2A_REF_INNER_N == 2) ? 1 : -1];
+
+static const dnac_tair_full_cfg_t P2A_REF_FULL_CFG = {
+    { P2A_REF_INNER, DNAC_P2A_REF_INNER_N, DNAC_P2A_REF_IS_ZK,
+      DNAC_P2A_REF_NRC },
+    { DNAC_P2A_REF_R,               DNAC_P2A_REF_LOG_FINAL_POLY_LEN,
+      DNAC_P2A_REF_NUM_QUERIES,     DNAC_P2A_REF_LGMH,
+      DNAC_P2A_REF_COMMIT_POW_BITS, DNAC_P2A_REF_QUERY_POW_BITS }
+};
+
+const dnac_tair_fri_cfg_t *dnac_tair_ref_fri_cfg(void)
+{
+    return &P2A_REF_FULL_CFG.fri;
+}
+
+const dnac_tair_full_cfg_t *dnac_tair_ref_full_cfg(void)
+{
+    return &P2A_REF_FULL_CFG;
+}
 
 /* ==========================================================================
  * Script gate — ONE place, so rows(), row(), generate() and validate() can
@@ -75,8 +111,9 @@ static int tair_script_check(const dnac_tair_script_t *s)
         }
     }
 
-    /* Total bits must not overflow the public block (fixed bounds: 64 ops x 32
-     * bits = 2048, far from wrapping; kept fail-close). */
+    /* Total bits must not overflow the public block. The binding cap is the ROW
+     * bound below, not TAIR_TBL_MAX_STEPS, so the real ceiling is 126 ops x 32
+     * bits = 4032 — far from wrapping; kept fail-close. */
     size_t bits = 0;
     for (size_t k = 0; k < s->n_ops; k++) {
         if (s->ops[k].num_bits > (size_t)-1 - bits) return 0;
@@ -217,7 +254,268 @@ dnac_tair_table_status_t dnac_tair_script_pow_bits(const dnac_tair_script_t *s,
 }
 
 /* ==========================================================================
- * FRI-tail expansion (the op order is fri_verifier.c:693-737 — see the header)
+ * Op emission primitives — ONE place, so every block writes a fully
+ * initialized op and no field is left to a caller's memset.
+ * ======================================================================== */
+
+static void tair_push_obs(dnac_tair_op_t *ops, size_t *n)
+{
+    memset(&ops[*n], 0, sizeof(ops[*n]));
+    ops[*n].kind = DNAC_TAIR_OP_OBSERVE;
+    (*n)++;
+}
+
+static void tair_push_smp(dnac_tair_op_t *ops, size_t *n, int is_pow,
+                          size_t pow_bits, size_t num_bits)
+{
+    memset(&ops[*n], 0, sizeof(ops[*n]));
+    ops[*n].kind = DNAC_TAIR_OP_SAMPLE;
+    ops[*n].is_pow = is_pow;
+    ops[*n].pow_bits = pow_bits;
+    ops[*n].num_bits = num_bits;
+    (*n)++;
+}
+
+/** `dnac_batch_observe_usize` is TWO base observes — the value, then a zero
+ *  second coefficient (batch_priming.c:26-27). */
+static void tair_push_usize(dnac_tair_op_t *ops, size_t *n)
+{
+    tair_push_obs(ops, n);
+    tair_push_obs(ops, n);
+}
+
+/** A commitment digest is DNAC_P2M_DIGEST_LANES base observes
+ *  (`dnac_batch_observe_commit`, batch_priming.c:34-36). */
+static void tair_push_commit(dnac_tair_op_t *ops, size_t *n)
+{
+    for (size_t i = 0; i < (size_t)DNAC_P2M_DIGEST_LANES; i++) {
+        tair_push_obs(ops, n);
+    }
+}
+
+/** An fp2 sample is TWO base pops, c0 first (duplex_challenger.c:134-140). */
+static void tair_push_smp_fp2(dnac_tair_op_t *ops, size_t *n)
+{
+    tair_push_smp(ops, n, 0, 0, 0);
+    tair_push_smp(ops, n, 0, 0, 0);
+}
+
+/** An fp2 observe is TWO base observes, c0 first (transcript.c:79-82 ->
+ *  duplex_challenger.c:117-122). */
+static void tair_push_obs_fp2(dnac_tair_op_t *ops, size_t *n)
+{
+    tair_push_obs(ops, n);
+    tair_push_obs(ops, n);
+}
+
+/* ==========================================================================
+ * BLOCK 1 — the batch-STARK priming (batch_priming.c:208-282)
+ * ======================================================================== */
+
+/* Derived presence flags. `dnac_batch_priming_run` REQUIRES each of these to
+ * match the corresponding commitment's presence (batch_priming.c:243-248), so
+ * they are computed from the instance shapes rather than carried as free cfg
+ * fields — a cfg cannot describe a priming run the native would reject. */
+typedef struct {
+    int    any_lookups;   /* -> the permutation commit is present  :246-248 */
+    size_t lookup_insts;  /* -> one observed terminal each          :182-192 */
+    int    any_prep;      /* -> the preprocessed commit is present
+                             (batch_verify.c:149 with :187)                 */
+} tair_priming_flags_t;
+
+static void tair_priming_flags(const dnac_tair_priming_cfg_t *cfg,
+                               tair_priming_flags_t *out)
+{
+    out->any_lookups = 0;
+    out->lookup_insts = 0;
+    out->any_prep = 0;
+    for (size_t i = 0; i < cfg->n; i++) {
+        if (cfg->insts[i].num_lookups > 0) {
+            out->any_lookups = 1;
+            out->lookup_insts++;
+        }
+        if (cfg->insts[i].preprocessed_width > 0) out->any_prep = 1;
+    }
+}
+
+static int tair_priming_cfg_check(const dnac_tair_priming_cfg_t *cfg)
+{
+    if (cfg == NULL || cfg->insts == NULL) return 0;
+    if (cfg->n == 0 || cfg->n > TAIR_TBL_MAX_INNER_INSTANCES) return 0;
+    if (cfg->is_zk != 0 && cfg->is_zk != 1) return 0;
+    /* A non-ZK proof consumes no rand entry at all, so a non-zero codeword count
+     * could not describe one (batch_verify.c:437-444: `if (is_zk)` gates the
+     * whole BV_TAIL body). */
+    if (!cfg->is_zk && cfg->num_random_codewords != 0) return 0;
+    if (cfg->num_random_codewords > TAIR_TBL_MAX_INNER_LANES) return 0;
+
+    for (size_t i = 0; i < cfg->n; i++) {
+        const dnac_tair_inner_inst_t *d = &cfg->insts[i];
+        /* main_width 0 is rejected outright by the verifier
+         * (batch_verify.c:174-177), and num_quotient_chunks 0 by the priming
+         * itself (batch_priming.c:236-238). */
+        if (d->main_width == 0 || d->main_width > TAIR_TBL_MAX_INNER_LANES) {
+            return 0;
+        }
+        if (d->num_quotient_chunks == 0 ||
+            d->num_quotient_chunks > TAIR_TBL_MAX_INNER_LANES) {
+            return 0;
+        }
+        if (d->num_publics > TAIR_TBL_MAX_INNER_LANES) return 0;
+        if (d->preprocessed_width > TAIR_TBL_MAX_INNER_LANES) return 0;
+        if (d->num_lookups > TAIR_TBL_MAX_INNER_LANES) return 0;
+        if (d->main_next != 0 && d->main_next != 1) return 0;
+        if (d->prep_next != 0 && d->prep_next != 1) return 0;
+        /* `prep_next` off a zero-width preprocessed matrix is a shape the
+         * verifier rejects: pw == 0 forces BOTH opened lengths to 0
+         * (batch_priming.c:352-355). */
+        if (d->preprocessed_width == 0 && d->prep_next) return 0;
+    }
+    return 1;
+}
+
+/** Op count of BLOCK 1, assuming `cfg` already passed `tair_priming_cfg_check`. */
+static size_t tair_priming_ops(const dnac_tair_priming_cfg_t *cfg)
+{
+    tair_priming_flags_t f;
+    size_t n = 0;
+
+    tair_priming_flags(cfg, &f);
+
+    /* a. observe_count_and_bindings (batch_priming.c:39-58). */
+    n += 2;                 /* observe_usize(num_instances)             :47 */
+    n += 8 * cfg->n;        /* 4 usize per instance                  :52-55 */
+    /* b. observe_main (:60-82). */
+    n += (size_t)DNAC_P2M_DIGEST_LANES;              /* the commit     :72 */
+    for (size_t i = 0; i < cfg->n; i++) {
+        n += cfg->insts[i].num_publics;              /*             :77-79 */
+    }
+    /* c. observe_preprocessed (:84-101). */
+    n += 2 * cfg->n;                                 /* the widths  :94-96 */
+    if (f.any_prep) n += (size_t)DNAC_P2M_DIGEST_LANES;   /*       :97-99 */
+    /* d. sample_perm_challenges (:103-153): ZERO ops with no lookups
+     *    (:137-139), else alpha and beta as two fp2 pops (:143-144). */
+    if (f.any_lookups) n += 4;
+    /* e. observe_perm_and_sample_alpha (:155-196). */
+    if (f.any_lookups) {
+        n += (size_t)DNAC_P2M_DIGEST_LANES;          /* the commit    :181 */
+        n += 2 * f.lookup_insts;                     /* terminals :182-192 */
+    }
+    n += 2;                                          /* alpha         :194 */
+    /* f-h. */
+    n += (size_t)DNAC_P2M_DIGEST_LANES;              /* quotient      :276 */
+    if (cfg->is_zk) n += (size_t)DNAC_P2M_DIGEST_LANES; /* random :277-279 */
+    n += 2;                                          /* zeta          :280 */
+    return n;
+}
+
+static void tair_emit_priming(const dnac_tair_priming_cfg_t *cfg,
+                              dnac_tair_op_t *ops, size_t *n)
+{
+    tair_priming_flags_t f;
+    tair_priming_flags(cfg, &f);
+
+    tair_push_usize(ops, n);                                    /* :47 */
+    for (size_t i = 0; i < cfg->n; i++) {
+        tair_push_usize(ops, n); /* log_ext_degree                 :52 */
+        tair_push_usize(ops, n); /* log_degree                     :53 */
+        tair_push_usize(ops, n); /* width                          :54 */
+        tair_push_usize(ops, n); /* num_quotient_chunks            :55 */
+    }
+    tair_push_commit(ops, n);                                   /* :72 */
+    for (size_t i = 0; i < cfg->n; i++) {
+        for (size_t j = 0; j < cfg->insts[i].num_publics; j++) {
+            tair_push_obs(ops, n);                           /* :77-79 */
+        }
+    }
+    for (size_t i = 0; i < cfg->n; i++) tair_push_usize(ops, n); /* :95 */
+    if (f.any_prep) tair_push_commit(ops, n);                /* :97-99 */
+    if (f.any_lookups) {
+        tair_push_smp_fp2(ops, n); /* the batch alpha              :143 */
+        tair_push_smp_fp2(ops, n); /* the batch beta               :144 */
+        tair_push_commit(ops, n);  /* the permutation commit       :181 */
+        for (size_t i = 0; i < cfg->n; i++) {
+            if (cfg->insts[i].num_lookups == 0) continue;    /* :185-187 */
+            tair_push_obs_fp2(ops, n); /* this AIR's terminal      :191 */
+        }
+    }
+    tair_push_smp_fp2(ops, n);                                 /* :194 */
+    tair_push_commit(ops, n);                                  /* :276 */
+    if (cfg->is_zk) tair_push_commit(ops, n);              /* :277-279 */
+    tair_push_smp_fp2(ops, n);                                 /* :280 */
+}
+
+/* ==========================================================================
+ * BLOCK 2 — the PCS claimed-eval observe round (batch_verify.c:637-647)
+ * ======================================================================== */
+
+/**
+ * Total claimed-eval LANES the observe round walks. This is exactly the arena
+ * length `batch_verify.c:432-488` computes, because :637-647 observes every
+ * `claimed_evals[k]` of every point of every matrix of every round, and
+ * `num_claimed_evals` is the BASE length plus the rand tail (:516).
+ *
+ * Assumes `cfg` already passed `tair_priming_cfg_check`.
+ */
+static size_t tair_pcs_lanes(const dnac_tair_priming_cfg_t *cfg)
+{
+    const size_t nrc = cfg->num_random_codewords;
+    size_t lanes = 0;
+
+    if (cfg->is_zk) { /* round 0: random @ zeta, random_len == 2 (:446-451) */
+        lanes += cfg->n * (2 + nrc);
+    }
+    for (size_t i = 0; i < cfg->n; i++) { /* round 1: main       (:452-459) */
+        const dnac_tair_inner_inst_t *d = &cfg->insts[i];
+        lanes += (d->main_next ? 2u : 1u) * (d->main_width + nrc);
+    }
+    for (size_t i = 0; i < cfg->n; i++) { /* round 2: quotient   (:460-465) */
+        lanes += cfg->insts[i].num_quotient_chunks * (2 + nrc);
+    }
+    for (size_t i = 0; i < cfg->n; i++) { /* round 3: prep       (:466-474) */
+        const dnac_tair_inner_inst_t *d = &cfg->insts[i];
+        if (d->preprocessed_width == 0) continue;
+        /* The tail is pinned to ZERO on a preprocessed point (:468 / :471). */
+        lanes += (d->prep_next ? 2u : 1u) * d->preprocessed_width;
+    }
+    for (size_t i = 0; i < cfg->n; i++) { /* round 4: perm       (:475-481) */
+        const dnac_tair_inner_inst_t *d = &cfg->insts[i];
+        size_t perm_len;
+        if (d->num_lookups == 0) continue;
+        /* aux_width = num_lookups + 1 (batch_priming.c:321-326); the opened
+         * permutation length is aux_width * DIMENSION (batch_verify.c:247). */
+        perm_len = (d->num_lookups + 1) * 2;
+        lanes += 2 * (perm_len + nrc);
+    }
+    return lanes;
+}
+
+static void tair_emit_pcs(const dnac_tair_priming_cfg_t *cfg,
+                          dnac_tair_op_t *ops, size_t *n)
+{
+    /* ⚠ Every op of this block is an OBSERVE, so the round / matrix / point /
+     * claimed-eval NESTING of batch_verify.c:637-647 is not reproduced here: a
+     * script records op KINDS, and any nesting with the same total emits the
+     * identical sequence. What is load-bearing is the COUNT and the block's
+     * position between the priming's zeta pop and the FRI tail's alpha pop. */
+    const size_t lanes = tair_pcs_lanes(cfg);
+    for (size_t k = 0; k < lanes; k++) tair_push_obs_fp2(ops, n);
+}
+
+size_t dnac_tair_priming_num_ops(const dnac_tair_priming_cfg_t *cfg)
+{
+    if (!tair_priming_cfg_check(cfg)) return 0;
+    return tair_priming_ops(cfg);
+}
+
+size_t dnac_tair_pcs_num_ops(const dnac_tair_priming_cfg_t *cfg)
+{
+    if (!tair_priming_cfg_check(cfg)) return 0;
+    return 2 * tair_pcs_lanes(cfg);
+}
+
+/* ==========================================================================
+ * BLOCK 3 — FRI-tail expansion (the op order is fri_verifier.c:693-737)
  * ======================================================================== */
 
 static int tair_fri_cfg_check(const dnac_tair_fri_cfg_t *cfg)
@@ -242,7 +540,13 @@ static int tair_fri_cfg_check(const dnac_tair_fri_cfg_t *cfg)
     return 1;
 }
 
-size_t dnac_tair_fri_num_ops(const dnac_tair_fri_cfg_t *cfg)
+/**
+ * RAW op count of the FRI tail, the DS prefix included iff `with_ds`. 0 iff the
+ * cfg is rejected. NO length bound is applied here — the callers apply
+ * TAIR_TBL_MAX_STEPS to the WHOLE script they are building, which is the only
+ * script that has to fit.
+ */
+static size_t tair_fri_tail_ops(const dnac_tair_fri_cfg_t *cfg, int with_ds)
 {
     if (!tair_fri_cfg_check(cfg)) return 0;
 
@@ -254,15 +558,84 @@ size_t dnac_tair_fri_num_ops(const dnac_tair_fri_cfg_t *cfg)
     const size_t commit_pow_ops = (cfg->commit_pow_bits == 0) ? 0 : 2;
     const size_t query_pow_ops = (cfg->query_pow_bits == 0) ? 0 : 2;
 
-    const size_t n = (size_t)DNAC_DUPLEX_RATE      /* 1. DS prefix observes   */
-                     + 2                            /* 2. alpha (fp2 = 2 pops) */
-                     + cfg->R * (digest_lanes + commit_pow_ops + 2) /* 3.      */
-                     + final_lanes                  /* 4. final poly           */
-                     + cfg->R                       /* 5. log_arity observes   */
-                     + query_pow_ops                /* 6. query PoW            */
-                     + cfg->num_queries;            /* 7. index samples        */
+    return (with_ds ? (size_t)DNAC_DUPLEX_RATE : 0) /* 1. DS prefix observes */
+           + 2                            /* 2. alpha (fp2 = 2 pops) */
+           + cfg->R * (digest_lanes + commit_pow_ops + 2) /* 3.      */
+           + final_lanes                  /* 4. final poly           */
+           + cfg->R                       /* 5. log_arity observes   */
+           + query_pow_ops                /* 6. query PoW            */
+           + cfg->num_queries;            /* 7. index samples        */
+}
+
+/** Emit the FRI tail, the DS prefix included iff `with_ds`. `cfg` must already
+ *  have passed `tair_fri_cfg_check`. */
+static void tair_emit_fri_tail(const dnac_tair_fri_cfg_t *cfg,
+                               dnac_tair_op_t *ops, size_t *n, int with_ds)
+{
+    /* 1 — the DS prefix (duplex_challenger.c:96-103). Emitted ONLY for a
+     *     standalone run; in a composed script the prefix belongs to BLOCK 0
+     *     and `dnac_transcript_init_from_duplex` adds none (transcript.c:48). */
+    if (with_ds) {
+        for (size_t i = 0; i < (size_t)DNAC_DUPLEX_RATE; i++) {
+            tair_push_obs(ops, n);
+        }
+    }
+    /* 2 — alpha, an fp2 sample = c0 then c1 (duplex_challenger.c:134-140). */
+    tair_push_smp_fp2(ops, n);
+    /* 3 — the commit-phase loop (fri_verifier.c:700-708). */
+    for (size_t r = 0; r < cfg->R; r++) {
+        for (size_t i = 0; i < (size_t)DNAC_P2M_DIGEST_LANES; i++) {
+            tair_push_obs(ops, n);
+        }
+        if (cfg->commit_pow_bits != 0) {
+            tair_push_obs(ops, n); /* the witness (duplex_challenger.c:156) */
+            tair_push_smp(ops, n, 1, cfg->commit_pow_bits, 0); /* :157 */
+        }
+        tair_push_smp_fp2(ops, n); /* beta c0, c1 */
+    }
+    /* 4 — the final polynomial (fri_verifier.c:711-713). */
+    {
+        const size_t final_lanes = (size_t)2 << cfg->log_final_poly_len;
+        for (size_t i = 0; i < final_lanes; i++) tair_push_obs(ops, n);
+    }
+    /* 5 — the per-round log_arity (fri_verifier.c:717-720). */
+    for (size_t r = 0; r < cfg->R; r++) tair_push_obs(ops, n);
+    /* 6 — the query PoW (fri_verifier.c:723). */
+    if (cfg->query_pow_bits != 0) {
+        tair_push_obs(ops, n);
+        tair_push_smp(ops, n, 1, cfg->query_pow_bits, 0);
+    }
+    /* 7 — one index sample per query (fri_verifier.c:737). */
+    for (size_t q = 0; q < cfg->num_queries; q++) {
+        tair_push_smp(ops, n, 0, 0, cfg->lgmh);
+    }
+}
+
+size_t dnac_tair_fri_num_ops(const dnac_tair_fri_cfg_t *cfg)
+{
+    const size_t n = tair_fri_tail_ops(cfg, 1);
     if (n == 0 || n > TAIR_TBL_MAX_STEPS) return 0;
     return n;
+}
+
+/* Finish a built script: pin the single instance start, gate the whole shape
+ * through `tair_script_check`, and publish. Shared by both builders so neither
+ * can accept a shape the other would reject. */
+static dnac_tair_table_status_t tair_finish_script(dnac_tair_op_t *ops_out,
+                                                   size_t n, size_t *starts_out,
+                                                   dnac_tair_script_t *out)
+{
+    dnac_tair_script_t built;
+
+    starts_out[0] = 0; /* ONE transcript instance */
+    built.ops = ops_out;
+    built.n_ops = n;
+    built.instance_starts = starts_out;
+    built.n_starts = 1;
+    if (!tair_script_check(&built)) return DNAC_TAIR_TABLE_ERR_PARAM;
+
+    *out = built;
+    return DNAC_TAIR_TABLE_OK;
 }
 
 dnac_tair_table_status_t dnac_tair_fri_build_script(
@@ -276,68 +649,60 @@ dnac_tair_table_status_t dnac_tair_fri_build_script(
     if (want == 0) return DNAC_TAIR_TABLE_ERR_PARAM;
     if (ops_cap < want) return DNAC_TAIR_TABLE_ERR_CAPACITY;
 
-    memset(ops_out, 0, want * sizeof(*ops_out));
     size_t n = 0;
+    tair_emit_fri_tail(cfg, ops_out, &n, 1);
+    if (n != want) return DNAC_TAIR_TABLE_ERR_PARAM; /* unreachable; fail-close */
 
-#define TAIR_PUSH_OBS()                                                       \
-    do {                                                                      \
-        ops_out[n].kind = DNAC_TAIR_OP_OBSERVE;                               \
-        n++;                                                                  \
-    } while (0)
-#define TAIR_PUSH_SMP(pow, pbits, nbits)                                      \
-    do {                                                                      \
-        ops_out[n].kind = DNAC_TAIR_OP_SAMPLE;                                \
-        ops_out[n].is_pow = (pow);                                            \
-        ops_out[n].pow_bits = (pbits);                                        \
-        ops_out[n].num_bits = (nbits);                                        \
-        n++;                                                                  \
-    } while (0)
+    return tair_finish_script(ops_out, n, starts_out, out);
+}
 
-    /* 1 — the DS prefix (duplex_challenger.c:96-103). */
-    for (size_t i = 0; i < (size_t)DNAC_DUPLEX_RATE; i++) TAIR_PUSH_OBS();
-    /* 2 — alpha, an fp2 sample = c0 then c1 (duplex_challenger.c:134-140). */
-    TAIR_PUSH_SMP(0, 0, 0);
-    TAIR_PUSH_SMP(0, 0, 0);
-    /* 3 — the commit-phase loop (fri_verifier.c:700-708). */
-    for (size_t r = 0; r < cfg->R; r++) {
-        for (size_t i = 0; i < (size_t)DNAC_P2M_DIGEST_LANES; i++) TAIR_PUSH_OBS();
-        if (cfg->commit_pow_bits != 0) {
-            TAIR_PUSH_OBS(); /* the witness (duplex_challenger.c:156) */
-            TAIR_PUSH_SMP(1, cfg->commit_pow_bits, 0); /* :157 */
-        }
-        TAIR_PUSH_SMP(0, 0, 0); /* beta c0 */
-        TAIR_PUSH_SMP(0, 0, 0); /* beta c1 */
-    }
-    /* 4 — the final polynomial (fri_verifier.c:711-713). */
-    {
-        const size_t final_lanes = (size_t)2 << cfg->log_final_poly_len;
-        for (size_t i = 0; i < final_lanes; i++) TAIR_PUSH_OBS();
-    }
-    /* 5 — the per-round log_arity (fri_verifier.c:717-720). */
-    for (size_t r = 0; r < cfg->R; r++) TAIR_PUSH_OBS();
-    /* 6 — the query PoW (fri_verifier.c:723). */
-    if (cfg->query_pow_bits != 0) {
-        TAIR_PUSH_OBS();
-        TAIR_PUSH_SMP(1, cfg->query_pow_bits, 0);
-    }
-    /* 7 — one index sample per query (fri_verifier.c:737). */
-    for (size_t q = 0; q < cfg->num_queries; q++) TAIR_PUSH_SMP(0, 0, cfg->lgmh);
+/* ==========================================================================
+ * The COMPOSED script — BLOCKS 0-3
+ * ======================================================================== */
 
-#undef TAIR_PUSH_OBS
-#undef TAIR_PUSH_SMP
+size_t dnac_tair_full_num_ops(const dnac_tair_full_cfg_t *cfg)
+{
+    if (cfg == NULL) return 0;
+    if (!tair_priming_cfg_check(&cfg->priming)) return 0;
+
+    const size_t tail = tair_fri_tail_ops(&cfg->fri, 0);
+    if (tail == 0) return 0; /* the cfg gate rejected the FRI half */
+
+    const size_t n = (size_t)DNAC_DUPLEX_RATE      /* BLOCK 0 — DS prefix */
+                     + tair_priming_ops(&cfg->priming)      /* BLOCK 1    */
+                     + 2 * tair_pcs_lanes(&cfg->priming)    /* BLOCK 2    */
+                     + tail;                                 /* BLOCK 3    */
+    if (n == 0 || n > TAIR_TBL_MAX_STEPS) return 0;
+    return n;
+}
+
+dnac_tair_table_status_t dnac_tair_full_build_script(
+    const dnac_tair_full_cfg_t *cfg, dnac_tair_op_t *ops_out, size_t ops_cap,
+    size_t *starts_out, dnac_tair_script_t *out)
+{
+    if (ops_out == NULL || starts_out == NULL || out == NULL) {
+        return DNAC_TAIR_TABLE_ERR_PARAM;
+    }
+    const size_t want = dnac_tair_full_num_ops(cfg);
+    if (want == 0) return DNAC_TAIR_TABLE_ERR_PARAM;
+    if (ops_cap < want) return DNAC_TAIR_TABLE_ERR_CAPACITY;
+
+    size_t n = 0;
+    /* BLOCK 0 — the DS prefix, ONCE for the whole run. `dnac_duplex_init_default`
+     * absorbs the four limbs (duplex_challenger.c:96-103) at the sponge's
+     * creation (batch_verify.c:321); nothing re-prefixes it afterwards, because
+     * `dnac_transcript_init_from_duplex` copies the state verbatim
+     * (batch_verify.c:632 -> transcript.c:43-50). */
+    for (size_t i = 0; i < (size_t)DNAC_DUPLEX_RATE; i++) {
+        tair_push_obs(ops_out, &n);
+    }
+    tair_emit_priming(&cfg->priming, ops_out, &n);          /* BLOCK 1 */
+    tair_emit_pcs(&cfg->priming, ops_out, &n);              /* BLOCK 2 */
+    tair_emit_fri_tail(&cfg->fri, ops_out, &n, 0);          /* BLOCK 3 */
 
     if (n != want) return DNAC_TAIR_TABLE_ERR_PARAM; /* unreachable; fail-close */
 
-    starts_out[0] = 0; /* ONE transcript instance */
-    dnac_tair_script_t built;
-    built.ops = ops_out;
-    built.n_ops = n;
-    built.instance_starts = starts_out;
-    built.n_starts = 1;
-    if (!tair_script_check(&built)) return DNAC_TAIR_TABLE_ERR_PARAM;
-
-    *out = built;
-    return DNAC_TAIR_TABLE_OK;
+    return tair_finish_script(ops_out, n, starts_out, out);
 }
 
 dnac_tair_table_status_t dnac_tair_ref_script(dnac_tair_op_t *ops_out,
@@ -345,8 +710,8 @@ dnac_tair_table_status_t dnac_tair_ref_script(dnac_tair_op_t *ops_out,
                                               size_t *starts_out,
                                               dnac_tair_script_t *out)
 {
-    return dnac_tair_fri_build_script(dnac_tair_ref_fri_cfg(), ops_out, ops_cap,
-                                      starts_out, out);
+    return dnac_tair_full_build_script(dnac_tair_ref_full_cfg(), ops_out,
+                                       ops_cap, starts_out, out);
 }
 
 /* ==========================================================================

@@ -170,13 +170,102 @@
  * which is what makes an oi cfg derivable from the REF proof at all.
  *
  * ⚠ HONEST LABELS — the seams that are still open:
- *   1. The transcript instance covers the FRI TAIL ONLY. The batch-STARK
- *      PRIMING ops (`dnac_batch_observe_main` and friends) are NOT in the
- *      pinned script — `dnac_tair_fri_build_script` starts at the DS prefix and
- *      ends at the query samples (transcript_air_table.h "SCOPE, honestly
- *      labelled") — so `zeta` / `z` are still plain statement inputs, popped by
- *      a transcript this instance does not model. Prepending the priming ops is
- *      a later slice; alpha, the betas and the query index ARE bound here.
+ *   1. THE SCRIPT NOW COVERS THE WHOLE SPONGE RUN; THE ζ ALIAS DOES NOT EXIST
+ *      YET. (Was: "the transcript instance covers the FRI TAIL ONLY".)
+ *
+ *      WHAT CLOSED — the SCOPE half. `dnac_p2s_tair_script()` is expanded by
+ *      `dnac_tair_full_build_script` and runs BLOCK 0 (the DS prefix) → BLOCK 1
+ *      (the batch-STARK priming, `dnac_batch_priming_run`) → BLOCK 2 (the PCS
+ *      claimed-eval observe round, batch_verify.c:637-647) → BLOCK 3 (the FRI
+ *      tail, with NO second prefix, because `dnac_transcript_init_from_duplex`
+ *      copies the primed state verbatim — batch_verify.c:632 -> transcript.c:48).
+ *      31 ops became 93. Everything the pop/observe ordinal maps address is
+ *      therefore addressed inside a model of the REAL run, not of a tail that
+ *      begins from a fresh sponge — which is what made the old alpha/beta/query
+ *      aliases claims about a DIFFERENT transcript than the one the proof uses.
+ *
+ *      WHAT DID NOT CLOSE, by name:
+ *        (a) ζ. The priming's last pop IS ζ (batch_priming.c:280) and it now has
+ *            a payload slot, but NOTHING reads it: the oi instances' opening
+ *            points still come from `z_pq[q]`, a plain statement field. Binding
+ *            them means writing every acc row's z as ζ or g_{log_degree}·ζ (the
+ *            two-adic factor batch_verify.c:27-31 / :366 applies), and the map
+ *            from an acc row to its (batch, point, height) IS derivable from the
+ *            pinned cfg — `DNAC_P2S_OI_BNP(b)` / `_BNC(b)` give the split and
+ *            batch_verify.c:550-555 / :588-592 fix point 0 = ζ, point 1 = g·ζ.
+ *            What blocks it is the WITNESS, not the map: the shipped oi honest
+ *            trace builder derives z as `emb(x) + zoff_of(a)`
+ *            (tests/test_fri_oi_air.c:262-263) with a fixed invertible `zoff`,
+ *            so a ζ-derived z has no honest trace until that builder changes.
+ *            See HONEST LABEL 8, whose "z stays per-query" reason is the same
+ *            builder.
+ *        (b) The three input-batch commitments. They ARE observed inside BLOCK 1
+ *            now — main at batch_priming.c:72, preprocessed at :98, quotient at
+ *            :276 — so unlike before there ARE observe ops to alias
+ *            `mmix_root[b]` to. The alias is not made here: the priming's
+ *            commitment ORDER (main, preprocessed, [permutation], quotient) is
+ *            NOT the FRI batch order (main, quotient, preprocessed —
+ *            batch_verify.c:545 / :565 / :582), so the mapping is a decision
+ *            with its own soundness argument and its own gates. Label 6a is
+ *            unchanged in substance and no longer blocked by scope.
+ *        (c) Nothing here is bound to a WIRE proof, for the reason label 6(c)
+ *            gives: the inner proof IS the statement.
+ *        (d) ⚠ THE ACCEPTANCE SET WIDENED — READ THIS BEFORE READING "31 ops
+ *            became 93" AS A STRENGTHENING. Before this slice the script began
+ *            at the DS prefix, whose four lanes the AIR pins to constants
+ *            (transcript_air.c:277-279), so the sponge state at the FRI alpha
+ *            pop was FULLY DETERMINED and CT-3b forced that alpha to ONE value;
+ *            each beta was determined by the DS prefix plus the round digests.
+ *            Alpha now sits at op 66, downstream of 62 observes of which 58 are
+ *            free statement lanes (`pub_tair[k] = stmt->tair_payload[k]`,
+ *            canonicality-checked only). A party choosing the statement now
+ *            chooses alpha, every beta and every query index.
+ *            Why this is still the right trade: the old determinacy was a
+ *            property of a sponge THE NATIVE NEVER RUNS — a tail starting from
+ *            a fresh DS state — so it constrained the wrong object. Nothing
+ *            cryptographically held was lost, because labels 3 and 6a already
+ *            say the roots and openings are unbound statement fields and the
+ *            statement carries no FRI binding on this axis either way. But the
+ *            set of accepted statements is strictly larger than before, and
+ *            that must not be discovered by a later reader from the code.
+ *        (e) ⚠ 46 NEWLY MODELLED OBSERVE LANES ARE FREE, and label 6's
+ *            "what did not close, by name" list did not cover them (it names
+ *            the commitment digests, the final poly and the log arities).
+ *            By block: `observe_usize(num_instances)` 2 lanes (ops 4-5), the
+ *            4-field per-instance bindings 16 lanes (ops 6-21), the
+ *            preprocessed widths 4 lanes (ops 26-29), and the ENTIRE PCS
+ *            claimed-eval block 24 lanes (ops 42-65). Every one of them is
+ *            DETERMINED by the pinned cfg (N=2, log_degree 3/2, width 1,
+ *            num_qc 1, prep width 1) and could be pinned to a constant; leaving
+ *            them free is a CHOICE, recorded here rather than left implicit.
+ *            N-PRIMEDEAD is the tripwire for the PCS 24.
+ *        (f) ⚠ THE MODELLED TRANSCRIPT IS A STRICT SUPERSET OF THE NATIVE ONE —
+ *            11 lanes the native fixes at ZERO are unconstrained here.
+ *            `dnac_batch_observe_usize` observes `(v, 0)`: the value then a zero
+ *            second coefficient (batch_priming.c:26-27, upstream
+ *            batch-stark/src/transcript.rs:206-209). A script records only op
+ *            KINDS, so the two ops are indistinguishable and both lanes are
+ *            copied from `tair_payload`. Affected: 1 count + 8 binding + 2
+ *            prep-width high coefficients.
+ *            ⚠ THIS IS NOT A STRUCTURAL LIMIT. The AIR CAN pin an observed lane
+ *            to a constant — it does exactly that for the DS prefix
+ *            (transcript_air.c:277-279). So closing (f) is available at any
+ *            time; the reason to defer is that pinning the zero HALF while the
+ *            value half beside it stays free barely narrows anything, and the
+ *            meaningful unit is the whole binding block of (e). OBLIGATION:
+ *            whichever slice re-shapes the script (see (g)) decides (e)+(f)
+ *            together, or states why not.
+ *        (g) ⚠ THE REF NOW SITS AT THE ROW CEILING. 1 start + 93 ops + 1
+ *            terminal = 95 scheduled rows, padded to TAIR_TBL_MAX_ROWS = 128;
+ *            `tair_script_check` fails closed past 126 ops (there are 33 spare,
+ *            not zero — an earlier note in this tree said zero and was wrong).
+ *            But the composed statement this module lives inside runs
+ *            DNAC_P2S_NUM_INSTANCES = 17 instances, and modelling a 17-instance
+ *            INNER proof needs 2 + 8*17 = 138 binding observes ALONE — past the
+ *            ceiling before the main commit, the widths, the PCS block or the
+ *            tail. So MAX_ROWS (and with it TAIR_TBL_COLS, both pins and the
+ *            LDE) MUST move again for a production-shaped inner proof. Named
+ *            here so P2e does not rediscover it.
  *   2. CLOSED (this slice). Both halves of the old label are now discharged:
  *      "only ONE query is CONSUMED (OBL-P2c-2)" went with the multi-query
  *      slice, and "commit rounds 1..R-1 are NOT replicated" goes here — every
@@ -193,7 +282,7 @@
  *      CRYPTOGRAPHICALLY. Every acc row's `p_x` is now an MMCS-bound lane — the
  *      wiring is complete and there is no free `p_x` input left. But the root it
  *      is bound TO, `mmix_root[b]`, is still a plain statement field carrying
- *      only a canonicality check (`p2s_canon_span`, fri_statement.c:503-504);
+ *      only a canonicality check (`p2s_canon_span`, fri_statement.c:583-584);
  *      nothing ties it to the transcript. A party that chooses the statement
  *      chooses the root too: write any `p_x` lanes, compute that leaf's Merkle
  *      root, set `mmix_root[b]` to it, and both the mmix AIR and oi are
@@ -264,7 +353,7 @@
  *      `dnac_transcript_observe_digest(transcript,
  *      &proof->commit_phase_commits[round])` (fri_verifier.c:702) and the
  *      builder expands it into DNAC_P2M_DIGEST_LANES observe ops
- *      (transcript_air_table.c:303). Until round replication there was no
+ *      (transcript_air_table.c:586-588). Until round replication there was no
  *      per-round digest ANYWHERE in the statement to alias it to — the entry
  *      sourced those lanes from `stmt.tair_payload` while the single round-0
  *      root sat in an unrelated field. `mmcs_root[r]` now exists, and step 6a
@@ -283,12 +372,18 @@
  *      (:702 inside the loop that samples beta at :707).
  *
  *      WHAT DID NOT CLOSE, by name:
- *        (a) `mmix_root[b]` — NONE of the B INPUT-batch commitments is in this
- *            script. They are observed during the batch-STARK PRIMING, which
- *            label 1 says is out of the pinned script's scope
- *            (`dnac_tair_fri_build_script` starts at the DS prefix). There is
- *            no observe op to alias them to; they stay plain statement fields
- *            until the priming-transcript slice. ⚠ INPUT-BATCH REPLICATION
+ *        (a) `mmix_root[b]` — the B INPUT-batch commitments are NOT ALIASED.
+ *            ⚠ THE REASON CHANGED AT THE PRIMING SLICE. It used to be SCOPE:
+ *            the script began at the DS prefix and went straight into the tail,
+ *            so there was no observe op to alias them to at all. There is now —
+ *            BLOCK 1 observes all three (batch_priming.c:72 main, :98
+ *            preprocessed, :276 quotient) — and what is left is a MAPPING
+ *            decision: the priming observes them in main / preprocessed /
+ *            quotient order while `fri_open_input` walks batches in main /
+ *            quotient / preprocessed order (batch_verify.c:545 / :565 / :582),
+ *            so `mmix_root[b]`'s observe ordinal is NOT `b`. Making that alias
+ *            is its own slice with its own gates; until then they stay plain
+ *            statement fields. ⚠ INPUT-BATCH REPLICATION
  *            MULTIPLIED THIS RESIDUE BY B: there are now three unbound roots
  *            where there was one. The honest accounting has a SECOND HALF that
  *            an earlier version of this note left out: the same slice took the
@@ -361,13 +456,17 @@
  *      shared region HAS a witness — which RT-1 now demonstrates by construction.
  *
  *      WHAT REMAINS OPEN, by name: a per-query z still admits a statement whose
- *      two queries name two DIFFERENT opening points. It costs nothing that was
- *      previously held — z / zeta were ALREADY unbound plain statement inputs
- *      (label 1: the priming ops are not in the pinned script, so nothing
- *      recomputes zeta), so a shared z would be one unbound value instead of Q,
- *      not a binding. Closing it is the PRIMING-TRANSCRIPT slice's job (label 1),
- *      where zeta becomes a transcript public and the alias becomes available;
- *      it is NOT achievable by re-shaping this field alone.
+ *      two queries name two DIFFERENT opening points. It costs nothing that is
+ *      currently held — `z` is an unbound plain statement input either way.
+ *      ⚠ THE OTHER HALF OF THAT SENTENCE IS NOW STALE AND IS CORRECTED HERE:
+ *      ζ is NO LONGER unmodelled. The priming block is in the pinned script and
+ *      its last pop IS `dnac_batch_sample_zeta` (batch_priming.c:280), so ζ has
+ *      a transcript payload slot and the alias `z ∈ {ζ, g_{log_degree}·ζ}` is
+ *      AVAILABLE — see label 1(a) for the derivation and for the one thing that
+ *      still blocks it, which is the shipped oi honest-trace builder's
+ *      `z = emb(x) + zoff_of(a)` (tests/test_fri_oi_air.c:262-263), not the map.
+ *      Closing it is a builder change plus this alias; it is still NOT
+ *      achievable by re-shaping this field alone.
  *
  *   9. THE COMMIT-ROUND LEAF IS NOT THE FOLDED ROW (fri_air.h:193-195; split
  *      out of the old label 2 by the round-replication slice). Natively ONE
@@ -503,29 +602,29 @@
  *
  *  - MEASURED, not assumed: T-REF/px re-derives — per batch AND per height —
  *    the point count and the opened-row width from the fixture JSON and
- *    compares them against BNP(b) / BNC(b) (test_fri_statement.c:2169-2176),
+ *    compares them against BNP(b) / BNC(b) (test_fri_statement.c:2356-2363),
  *    then requires at least one batch's real split to DIFFER from the uniform
- *    descriptor's (:2196), so the per-batch arithmetic cannot be vacuously
+ *    descriptor's (:2383), so the per-batch arithmetic cannot be vacuously
  *    exercised by an s2-shaped fixture.
  *
  *  - FAILS CLOSED on TWO equalities, each pinned at build time AND at run time:
  *      (i)  BNP(b) * BNC(b) == the block size. Build: three array-size asserts
- *           against ACC_PER_BATCH (fri_statement.c:98-106). Run: step 3a
- *           against the same constant (:928), and again in the p_x build loop
- *           against the DESCRIPTOR's own `batch_sz` (:1332) — the second is the
+ *           against ACC_PER_BATCH (fri_statement.c:101-109). Run: step 3a
+ *           against the same constant (:1067), and again in the p_x build loop
+ *           against the DESCRIPTOR's own `batch_sz` (:1475) — the second is the
  *           one that stops a re-shaped descriptor from re-partitioning that
  *           loop, since it reads the cfg rather than the constant.
  *      (ii) BNC(b) == DNAC_P2S_MMIX_BW(b), the width of batch b's mmix opened
  *           row. This is the native's own equality (fri_verifier.c:333 pins the
  *           opened row length to the claimed-eval count that :469-471 then
- *           indexes by). Build: fri_statement.c:114-119. Run: `mw != nc` at
- *           :940 and :1342, against the cfg the bind will actually receive
+ *           indexes by). Build: fri_statement.c:117-122. Run: `mw != nc` at
+ *           :1079 and :1485, against the cfg the bind will actually receive
  *           (OBL-4-MMIX). Without (ii) the alias would index a lane batch b's
  *           opened row does not have; without (i) it would index the wrong one.
  *
  *  - NOT CLOSED: the uniform descriptor can only describe a group whose B
- *    blocks are all the SAME size — :1322 forces the group total to be
- *    B * batch_sz and :1332 forces every batch onto that one `batch_sz`. A
+ *    blocks are all the SAME size — :1465 forces the group total to be
+ *    B * batch_sz and :1475 forces every batch onto that one `batch_sz`. A
  *    shape with genuinely different per-batch acc-row counts is therefore
  *    REJECTED rather than mis-verified, which is the safe direction but is
  *    still a shape this composition cannot express. If the production re-pin
@@ -897,42 +996,169 @@ extern "C" {
               : (b) == DNAC_P2S_BATCH_QUOT ? DNAC_P2S_OI_BNC1                 \
                                            : DNAC_P2S_OI_BNC2))
 
-/* ── tair (the transcript instance — s3b) ────────────────────────────────────
- * The FRI-tail cfg is DERIVED from the statement constants above, never written
- * out: `dnac_p2s_tair_fri_cfg()` fills `dnac_tair_fri_cfg_t` from R / lfpl / Q /
- * lgmh / the two PoW widths, and the script is then EXPANDED from it by the
- * shipped `dnac_tair_fri_build_script` (transcript_air_table.c:268-341) — the
- * same authority `dnac_tair_ref_script` uses, so "the REF script" and "the
- * statement script" cannot be two different things. The test asserts they are
- * op-for-op equal at this pin.
+/* ── THE INNER BATCH PROOF'S SHAPE (the priming + PCS blocks read THESE) ─────
+ * Until this slice the pinned transcript script covered the FRI TAIL ONLY, and
+ * HONEST LABEL 1 said so: the batch-STARK priming and the PCS claimed-eval
+ * observe round sit AHEAD of the tail in the SAME sponge (`dnac_batch_verify`
+ * creates it at batch_verify.c:321 and hands the primed state to FRI verbatim at
+ * :632 -> transcript.c:48), and neither was modelled. They are now, which means
+ * the statement has to pin the shape of the proof being verified.
+ *
+ * ⚠ MEASURED, not chosen — scenario `prep_pair` of `tools/vectors/batch_proof.
+ * json`, the SAME fixture the cfg set above is derived from. Its two instances
+ * are IDENTICAL in shape, which is why one set of scalars serves both; the .c
+ * writes the array out per instance and T-REF/inner re-reads every field out of
+ * the JSON, so "uniform" is a measured property of this pin and not a modelling
+ * shortcut. The build-time asserts below tie each scalar to the mmix/oi pin that
+ * describes the SAME quantity from the other side — two independent statements,
+ * reconciled, exactly as DNAC_P2S_MMIX_BW(b) is tied to DNAC_P2S_OI_BNC(b).
+ *
+ * ⚠ STILL A MECHANISM PIN. `prep_pair` is a toy fixture; the production re-pin
+ * (P2e) replaces these together with everything else. */
+/** The fixture's `num_instances`. Pinned INDEPENDENTLY of
+ *  DNAC_P2S_MMIX_NUM_MATRICES and reconciled with it by a build-time assert:
+ *  they are the same number only because the MAIN and PREPROCESSED rounds carry
+ *  one matrix per INSTANCE (batch_verify.c:549 / :587), which is a property of
+ *  those rounds, not a definition. */
+#define DNAC_P2S_INNER_N        ((size_t)2)
+#define DNAC_P2S_INNER_IS_ZK    0        /* the non-hiding recursion envelope   */
+#define DNAC_P2S_INNER_NRC      ((size_t)0) /* num_random_codewords; 0 iff !zk  */
+/** Base lanes observed per instance at batch_priming.c:77-79. The fixture's two
+ *  `PrepEqAir` instances declare `public_values: []`. */
+#define DNAC_P2S_INNER_PUBLICS  ((size_t)0)
+/** `width` — the main trace width. DERIVED, not a second pin: it IS the MAIN
+ *  batch's opened-row width, because `trace_local_len == width` is the shape the
+ *  verifier enforces (batch_priming.c:330) and that row is what the main input
+ *  batch opens. */
+#define DNAC_P2S_INNER_MAIN_WIDTH DNAC_P2S_MMIX_BW0
+/** `main_next_used` — the main round opens zeta AND g*zeta, which is what makes
+ *  the MAIN batch a 2-point batch (DNAC_P2S_OI_BNP0). */
+#define DNAC_P2S_INNER_MAIN_NEXT  1
+/** `preprocessed_width` — likewise DERIVED: it IS the PREPROCESSED batch's
+ *  opened-row width (batch_verify.c:588 opens `preprocessed_local`). */
+#define DNAC_P2S_INNER_PREP_WIDTH DNAC_P2S_MMIX_BW2
+/** `prep_next_used` — likewise a 2-point batch (DNAC_P2S_OI_BNP2). */
+#define DNAC_P2S_INNER_PREP_NEXT  1
+/** `num_quotient_chunks` PER INSTANCE. The QUOTIENT round is one matrix per
+ *  CHUNK of every instance (batch_verify.c:567-573), so N * this is the
+ *  quotient batch's matrix count — the equality the assert below pins. */
+#define DNAC_P2S_INNER_NUM_QC   ((size_t)1)
+/** `num_locals + num_globals`. Zero everywhere: this envelope has no lookups,
+ *  which is also why B == 3 rather than 5 (the permutation round is skipped —
+ *  see the file header's batch-order note). */
+#define DNAC_P2S_INNER_LOOKUPS  ((size_t)0)
+
+/* ── tair (the transcript instance — s3b, extended to the WHOLE run) ─────────
+ * The cfg is DERIVED from the statement constants above, never written out:
+ * `dnac_p2s_tair_full_cfg()` fills a `dnac_tair_full_cfg_t` from the inner-proof
+ * scalars and from R / lfpl / Q / lgmh / the two PoW widths, and the script is
+ * then EXPANDED from it by the shipped `dnac_tair_full_build_script` — the same
+ * authority `dnac_tair_ref_script` uses, so "the REF script" and "the statement
+ * script" cannot be two different things. The test asserts they are op-for-op
+ * equal at this pin.
  *
  * The op COUNT is mirrored here as a compile-time expression only because the
  * statement struct needs a fixed array bound; it is the same sum
- * `dnac_tair_fri_num_ops` computes, and the entry COMPARES the two and fails
+ * `dnac_tair_full_num_ops` computes, and the entry COMPARES the two and fails
  * closed on any disagreement (the count-KAFADAN discipline, exactly as
  * DNAC_P2S_FRI_NUM_PUBLICS is compared against `dnac_fair_num_publics`).
  *
- *   ops = RATE (DS prefix)            transcript_air_table.c:297
- *       + 2 (alpha, an fp2 pop)                            :299-300
- *       + R * (DIGEST_LANES + powops(commit) + 2)          :302-310
- *       + (2 << lfpl) (final poly)                         :313-314
- *       + R (per-round log_arity)                          :317
- *       + powops(query)                                    :319-322
- *       + Q (one index sample per query)                   :324
- * where powops(bits) is 2 for a non-zero width and 0 for zero — the ZERO-OP
+ * `powops(bits)` is 2 for a non-zero width and 0 for zero — the ZERO-OP
  * `check_witness` branch (duplex_challenger.c:153-155). */
 #define DNAC_P2S_TAIR_POW_OPS(bits) ((bits) != 0 ? (size_t)2 : (size_t)0)
 
-#define DNAC_P2S_TAIR_NUM_OPS                                                 \
-    ((size_t)DNAC_DUPLEX_RATE + (size_t)2 +                                   \
+/** BLOCK 1 — the batch-STARK priming (batch_priming.c:250-281). The uniform-
+ *  instance form of `dnac_tair_priming_num_ops`; the entry compares the two.
+ *    2                                 observe_usize(num_instances)     :47
+ *  + 8*N                               4 usize per instance          :52-55
+ *  + DIGEST_LANES                      the main commit                  :72
+ *  + N*publics                         CONDITIONAL, 0 here           :77-79
+ *  + 2*N                               the preprocessed widths       :94-96
+ *  + DIGEST_LANES iff any prep matrix  the preprocessed commit       :97-99
+ *  + 4 iff any lookup                  the (alpha, beta) squeeze    :143-144
+ *  + DIGEST_LANES + 2*N iff any lookup the perm commit + terminals  :181-192
+ *  + 2                                 the batch alpha                 :194
+ *  + DIGEST_LANES                      the quotient commit             :276
+ *  + DIGEST_LANES iff is_zk            the random commit           :277-279
+ *  + 2                                 zeta                            :280
+ *  ⚠ The lookup term uses 2*N rather than 2*(instances WITH lookups) because at
+ *  this pin the two are equal (every instance has the same `num_lookups`); the
+ *  module accessor counts them one by one, and the entry's comparison is what
+ *  would catch a pin where they diverge. */
+#define DNAC_P2S_TAIR_PRIMING_OPS                                             \
+    ((size_t)2 + (size_t)8 * DNAC_P2S_INNER_N +                               \
+     (size_t)DNAC_P2M_DIGEST_LANES +                                          \
+     DNAC_P2S_INNER_N * DNAC_P2S_INNER_PUBLICS +                              \
+     (size_t)2 * DNAC_P2S_INNER_N +                                           \
+     (DNAC_P2S_INNER_PREP_WIDTH != 0 ? (size_t)DNAC_P2M_DIGEST_LANES          \
+                                     : (size_t)0) +                           \
+     (DNAC_P2S_INNER_LOOKUPS != 0                                             \
+          ? (size_t)4 + (size_t)DNAC_P2M_DIGEST_LANES +                       \
+                (size_t)2 * DNAC_P2S_INNER_N                                  \
+          : (size_t)0) +                                                      \
+     (size_t)2 + (size_t)DNAC_P2M_DIGEST_LANES +                              \
+     (DNAC_P2S_INNER_IS_ZK ? (size_t)DNAC_P2M_DIGEST_LANES : (size_t)0) +     \
+     (size_t)2)
+
+/** BLOCK 2 — the PCS claimed-eval LANES (batch_verify.c:432-488, observed at
+ *  :637-647). Per instance: the random round iff ZK, the main round's 1 or 2
+ *  points, one point per quotient chunk, the preprocessed round's 1 or 2 points
+ *  with a ZERO rand tail, and two permutation points iff the AIR has lookups. */
+#define DNAC_P2S_TAIR_PCS_LANES                                               \
+    (DNAC_P2S_INNER_N *                                                       \
+     ((DNAC_P2S_INNER_IS_ZK ? (size_t)2 + DNAC_P2S_INNER_NRC : (size_t)0) +   \
+      (DNAC_P2S_INNER_MAIN_NEXT ? (size_t)2 : (size_t)1) *                    \
+          (DNAC_P2S_INNER_MAIN_WIDTH + DNAC_P2S_INNER_NRC) +                  \
+      DNAC_P2S_INNER_NUM_QC * ((size_t)2 + DNAC_P2S_INNER_NRC) +              \
+      (DNAC_P2S_INNER_PREP_WIDTH != 0                                         \
+           ? (DNAC_P2S_INNER_PREP_NEXT ? (size_t)2 : (size_t)1) *             \
+                 DNAC_P2S_INNER_PREP_WIDTH                                    \
+           : (size_t)0) +                                                     \
+      (DNAC_P2S_INNER_LOOKUPS != 0                                            \
+           ? (size_t)2 * ((DNAC_P2S_INNER_LOOKUPS + (size_t)1) * (size_t)2 +  \
+                          DNAC_P2S_INNER_NRC)                                 \
+           : (size_t)0)))
+/** Each claimed eval is an fp2 = TWO base observes (transcript.c:79-82). */
+#define DNAC_P2S_TAIR_PCS_OPS ((size_t)2 * DNAC_P2S_TAIR_PCS_LANES)
+
+/** BLOCK 3 — the FRI tail WITHOUT a DS prefix (fri_verifier.c:693-737; the
+ *  prefix belongs to the run, BLOCK 0). */
+#define DNAC_P2S_TAIR_TAIL_OPS                                                \
+    ((size_t)2 +                                                              \
      DNAC_P2S_FRI_R * ((size_t)DNAC_P2M_DIGEST_LANES +                        \
                        DNAC_P2S_TAIR_POW_OPS(DNAC_P2S_COMMIT_POW_BITS) +      \
                        (size_t)2) +                                           \
      ((size_t)2 << DNAC_P2S_LFPL) + DNAC_P2S_FRI_R +                          \
      DNAC_P2S_TAIR_POW_OPS(DNAC_P2S_QUERY_POW_BITS) + DNAC_P2S_NUM_QUERIES)
 
+/** Op index of the FIRST op of each BLOCK. The entry's structural rails index
+ *  into these; they are the builder's own boundaries. */
+#define DNAC_P2S_TAIR_OFF_PRIMING ((size_t)DNAC_DUPLEX_RATE)
+#define DNAC_P2S_TAIR_OFF_PCS                                                 \
+    (DNAC_P2S_TAIR_OFF_PRIMING + DNAC_P2S_TAIR_PRIMING_OPS)
+#define DNAC_P2S_TAIR_OFF_TAIL                                                \
+    (DNAC_P2S_TAIR_OFF_PCS + DNAC_P2S_TAIR_PCS_OPS)
+
+#define DNAC_P2S_TAIR_NUM_OPS                                                 \
+    (DNAC_P2S_TAIR_OFF_TAIL + DNAC_P2S_TAIR_TAIL_OPS)
+
+/** Non-PoW SAMPLE ops that precede the FRI tail — the (alpha, beta) lookup
+ *  squeeze iff any instance has lookups (batch_priming.c:143-144), the batch
+ *  alpha (:194) and zeta (:280). Every pop ordinal the entry aliases by is
+ *  offset by this, because the tail's alpha is no longer pop 0. */
+#define DNAC_P2S_TAIR_PRE_POPS                                                \
+    ((DNAC_P2S_INNER_LOOKUPS != 0 ? (size_t)4 : (size_t)0) + (size_t)2 +      \
+     (size_t)2)
+
+/** OBSERVE ops that precede the FRI tail: the DS prefix, the priming's observes
+ *  (its ops minus its pops) and the whole of BLOCK 2, which is pure observe. */
+#define DNAC_P2S_TAIR_PRE_OBS                                                 \
+    ((size_t)DNAC_DUPLEX_RATE +                                               \
+     (DNAC_P2S_TAIR_PRIMING_OPS - DNAC_P2S_TAIR_PRE_POPS) +                   \
+     DNAC_P2S_TAIR_PCS_OPS)
+
 /** Exported index bits: one query sample per query, each exporting lgmh lanes
- *  (transcript_air_table.c:324). EVERY one of them now has a consumer — query
+ *  (transcript_air_table.c:607-610). EVERY one of them now has a consumer — query
  *  q's block IS `index_bits[q]` — so the `tair_bits_rest` field and its
  *  DNAC_P2S_TAIR_BITS_REST length that stood for the unconsumed remainder are
  *  GONE (multi-query slice; OBL-P2c-2). */
@@ -945,33 +1171,39 @@ extern "C" {
 
 /* ── The OBSERVE ordinal map (HONEST LABEL 6's closure) ──────────────────────
  * The pop map above indexes SAMPLE ops by ordinal; the round-digest alias needs
- * the same for OBSERVE ops. From the builder's own order
- * (transcript_air_table.c:296-324) the observes are, in script order:
- *     0 .. RATE-1                     the DS prefix                    :297
- *     then per round r:               DIGEST_LANES commit-digest lanes :303
- *                                     + 1 PoW witness iff grinding is on :305
- *     then (2 << lfpl)                the final polynomial             :314
- *     then R                          the per-round log_arity          :317
- *     then 1 iff query grinding is on the query PoW witness            :320
- * so round r's digest block starts at RATE + r*(DIGEST_LANES + pow-observe).
- * The ordinal is mapped to an OP INDEX by walking the script, never by
- * arithmetic on op numbers, exactly as the pop map is — and the entry
- * additionally requires each block to sit BETWEEN the surrounding rounds' beta
- * pops, which is what proves the ordinal really named round r's digest.
+ * the same for OBSERVE ops. From the builder's own order the observes are, in
+ * script order:
+ *     0 .. PRE_OBS-1                  BLOCK 0 (the DS prefix) + every observe
+ *                                     of BLOCK 1 + the whole of BLOCK 2
+ *     then per round r:               DIGEST_LANES commit-digest lanes
+ *                                     + 1 PoW witness iff grinding is on
+ *     then (2 << lfpl)                the final polynomial
+ *     then R                          the per-round log_arity
+ *     then 1 iff query grinding is on the query PoW witness
+ * so round r's digest block starts at PRE_OBS + r*(DIGEST_LANES + pow-observe).
+ *
+ * ⚠ THE `PRE_OBS` OFFSET IS THE WHOLE CHANGE THIS SLICE MAKES TO THIS MAP. It
+ * used to be RATE, because the script started at the DS prefix and went straight
+ * into the tail; the priming and PCS blocks now sit between them and every
+ * digest ordinal moves by their observe count. The ordinal is still mapped to an
+ * OP INDEX by WALKING the script, never by arithmetic on op numbers, and the
+ * entry still requires each block to sit BETWEEN the surrounding rounds' beta
+ * pops — which is what proves the ordinal really named round r's digest and not
+ * some observe of the priming.
  *
  * ⚠ MAIR_DIGEST_LANES *IS* DNAC_P2M_DIGEST_LANES (mmcs_air.h:132 defines the
  * former as the latter), so "lane i of the root public" and "lane i of the
  * observed digest" are the same index by definition, not by coincidence. */
 #define DNAC_P2S_TAIR_POW_OBS(bits) ((bits) != 0 ? (size_t)1 : (size_t)0)
 #define DNAC_P2S_OBS_DIGEST(r, i)                                             \
-    ((size_t)DNAC_DUPLEX_RATE +                                               \
+    (DNAC_P2S_TAIR_PRE_OBS +                                                  \
      (size_t)(r) * ((size_t)DNAC_P2M_DIGEST_LANES +                           \
                     DNAC_P2S_TAIR_POW_OBS(DNAC_P2S_COMMIT_POW_BITS)) +         \
      (size_t)(i))
 /** Total OBSERVE ops of the pinned script — the count the entry compares the
  *  script's own against, so the ordinal map cannot address past the end. */
 #define DNAC_P2S_TAIR_NUM_OBS                                                 \
-    ((size_t)DNAC_DUPLEX_RATE +                                               \
+    (DNAC_P2S_TAIR_PRE_OBS +                                                  \
      DNAC_P2S_FRI_R * ((size_t)DNAC_P2M_DIGEST_LANES +                        \
                        DNAC_P2S_TAIR_POW_OBS(DNAC_P2S_COMMIT_POW_BITS)) +      \
      ((size_t)2 << DNAC_P2S_LFPL) + DNAC_P2S_FRI_R +                          \
@@ -1092,6 +1324,13 @@ extern "C" {
  * precede the R mmcs ones), so the 13-table value is void the same way the
  * 9-table one was.
  *
+ * ⚠ RE-PINNED AGAIN AT THE PRIMING SLICE. The instance SET did not move (still
+ * 17, still this order), but the TAIR TABLE did, twice over: the pinned script
+ * grew from 31 ops to 93 (its height 64 -> 128) and TAIR_TBL_COLS grew 71 -> 135
+ * with TAIR_TBL_MAX_STEPS. One of the 17 matrices therefore has a different
+ * width, a different height AND different content, so the composed root is a
+ * different value. The 17-table constant is void; the placeholder is back.
+ *
  * ⚠ WHAT THE 17 TABLES ARE, honestly. The R mmcs tables are NOT copies of one
  * another — round r's depth is DNAC_P2S_MMCS_DEPTH(r) = 4 / 3 / 2, so the three
  * carry DIFFERENT CONTENT (different leaf/compress/final row types). Their ROW
@@ -1109,13 +1348,23 @@ extern "C" {
  * SEPARATELY and IN ORDER, so tampering one cell of any single one of them
  * moves it, which is what the test asserts per instance.
  *
- * The constant below was re-derived: the executor shipped the {0,0,0,0}
- * placeholder and the ORCHESTRATOR refilled it from an INDEPENDENT
- * `--print-roots` run that matched lane for lane. While a placeholder is in
+ * The executor ships this constant as the {0,0,0,0} PLACEHOLDER and never fills
+ * it; the ORCHESTRATOR re-derives it and fills it. While the placeholder is in
  * place the comparator rejects everything (see DNAC_P2S_PREP_ROOT_UNFILLED) and
  * the pin-dependent checks in tests/test_fri_statement.c assert exactly that;
- * once filled, T-PINKAT recomputes the root through the real pipeline and
- * compares.
+ * once filled, T-PINKAT recomputes the root through the real pipeline.
+ *
+ * ⚠ HOW IT WAS RE-DERIVED, AND WHY NOT WITH `--print-roots` ALONE. Pasting the
+ * printer's output and watching the KAT go green proves NOTHING: `print_roots`
+ * and the KAT call the SAME helper on the SAME generated cells, so they cannot
+ * disagree. For the priming slice the ORCHESTRATOR therefore wrote a SECOND
+ * driver — its own LDE -> commit transcription, re-reading every shape number
+ * from the public accessors instead of the test's constants — and compared it
+ * lane for lane against the printer. Both agreed, and the second driver also
+ * re-derived n_ops / rows / cols independently. A future re-pin that only runs
+ * `--print-roots` should label itself "printer output", not "independently
+ * derived". (Caught by an O6 zk-auditor: the previous wording claimed the
+ * printer run WAS the independent derivation.)
  *
  * DERIVATION (exactly the pipeline batch_prover.c:786-822 runs, is_zk = 0):
  *   for i in 0 .. DNAC_P2S_NUM_INSTANCES-1:           // prep_map order
@@ -1140,10 +1389,10 @@ extern "C" {
  * salt_elems = 0 is MANDATORY: salted + preprocessed is fail-closed at
  * batch_prover.c:604-612 (the guard inside `if (salt_elems > 0)`; citation
  * corrected — FLEET 028 verifier L3). */
-#define DNAC_P2S_PREP_ROOT_LANE0 UINT64_C(0x39ab2b3686f99b36)
-#define DNAC_P2S_PREP_ROOT_LANE1 UINT64_C(0x8ffbdfa22ba45d68)
-#define DNAC_P2S_PREP_ROOT_LANE2 UINT64_C(0x1aa33517b8854b20)
-#define DNAC_P2S_PREP_ROOT_LANE3 UINT64_C(0xb56b09755fbe2b40)
+#define DNAC_P2S_PREP_ROOT_LANE0 UINT64_C(0x7bd103f976d60e7a)
+#define DNAC_P2S_PREP_ROOT_LANE1 UINT64_C(0x370fd9ef04ca3930)
+#define DNAC_P2S_PREP_ROOT_LANE2 UINT64_C(0xdb116b37de732e01)
+#define DNAC_P2S_PREP_ROOT_LANE3 UINT64_C(0x75c802c4d448afcc)
 
 #define DNAC_P2S_PREP_ROOT                                                    \
     {                                                                         \
@@ -1364,13 +1613,18 @@ const dnac_p2c_oi_table_cfg_t   *dnac_p2s_oi_cfg(void);
  *  `dnac_p2s_check_tair_pow_pin`. */
 const dnac_tair_config_t *dnac_p2s_tair_cfg(void);
 
-/** The FRI-tail scalars the pinned transcript script is expanded from, filled
- *  from the statement constants (R / lfpl / Q / lgmh / the PoW widths). */
+/** The FRI-TAIL half of the cfg the pinned transcript script is expanded from,
+ *  filled from the statement constants (R / lfpl / Q / lgmh / the PoW widths). */
 const dnac_tair_fri_cfg_t *dnac_p2s_tair_fri_cfg(void);
+
+/** The FULL cfg the pinned transcript script is expanded from — the inner
+ *  proof's shape (DNAC_P2S_INNER_*) AND the FRI-tail scalars. Since the priming
+ *  slice this, not the FRI half alone, is what the script covers. */
+const dnac_tair_full_cfg_t *dnac_p2s_tair_full_cfg(void);
 
 /**
  * @brief The PINNED transcript op script, expanded once from
- *        `dnac_p2s_tair_fri_cfg()` by `dnac_tair_fri_build_script`.
+ *        `dnac_p2s_tair_full_cfg()` by `dnac_tair_full_build_script`.
  *
  * NULL if the shipped builder rejects the derived cfg (fail-close). The script
  * and the arrays it names have static storage duration, so the pointer is
