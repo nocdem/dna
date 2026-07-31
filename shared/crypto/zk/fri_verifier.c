@@ -38,7 +38,7 @@
 
 /* Fixed bounds (V6-class proofs are tiny; generous caps). */
 #define FRI_MAX_ROUNDS 64
-#define FRI_MAX_RO     64
+#define FRI_MAX_RO     128 /* 64->128 2026-07-31; WHY + ⚠STACK TRIPWIRE: end of file */
 #define FRI_MAX_ARITY  256
 /* Leaf LANE capacity (P1c: leaves are Goldilocks lanes, not bytes): max over
  * (a) an INPUT-mmcs row = width + salt lanes and (b) a commit-phase leaf =
@@ -47,7 +47,7 @@
  * with 4 random codewords → 2322 lanes; +2 salts → 2324. Capped at 2560 lanes
  * (== DNAC_STARK_MAX_MAIN_WIDTH) for headroom. (History as bytes: 15488 →
  * 16384 → 20480 B; converted to 2560 LANES at the P1c Poseidon2 cutover —
- * same memory footprint, rowbuf[64][2560]·8 = 1.25 MB stack.) */
+ * same footprint; rowbuf[FRI_MAX_RO][2560]·8 — see the TRIPWIRE at EOF.) */
 #define FRI_LEAF_CAP   2560
 
 /* ============================================================================
@@ -954,3 +954,74 @@ dnac_fri_status_t dnac_fri_test_verify_capture(
 }
 
 #endif /* DNAC_FRI_TESTING */
+
+/* ============================================================================
+ * FRI_MAX_RO — WHY 128, AND THE STACK TRIPWIRE THAT COMES WITH IT
+ *
+ * Placed at EOF ON PURPOSE. This block used to sit above the constant and
+ * shifted every line below it by 73, which invalidated ~194 `fri_verifier.c:NNN`
+ * citations across the tree — and "re-read the citation" is the precondition of
+ * this project's no-fabrication rule. Prose that grows must not move code.
+ * ────────────────────────────────────────────────────────────────────────────
+ *
+ * WHY IT MOVED (64 -> 128, 2026-07-31, P2 composition). A BATCHED stark puts the
+ * QUOTIENT CHUNKS OF EVERY INSTANCE into ONE input batch: `total_qc` is summed
+ * over all instances (batch_verify.c:373-374) and becomes that single
+ * commitment's `num_matrices` (batch_verify.c:579), each instance contributing
+ * `1 << (log_num_qc + is_zk)` chunks (batch_prover.c:650). So one batch's matrix
+ * count grows with the INSTANCE COUNT. At 64 the guard below (:218) bound the
+ * batch stack to 16 instances at the degree-4 class — under the 32 that
+ * `dnac_batch_verify` itself admits (batch_verify.c:20, :86). The P2 FRI-verify
+ * composition needs 17 and hit exactly that wall: 17 * 4 = 68 > 64.
+ *
+ * WHY 128 rather than the 80 that would have sufficed: 128 == 4 * 32 == (chunks
+ * per instance at the degree-4 class) * (the batch stack's own instance cap), so
+ * the two ceilings ALIGN and the composition cannot return to this gate by
+ * adding instances. 80 would have moved the wall to 20, not removed it.
+ *
+ * ⚠ HONEST SCOPE — the "4" is NOT universal. `log_num_qc` is a CALLER-SUPPLIED
+ * field of `dnac_batch_vinstance_t` and batch_verify.c:179 bounds it only at
+ * `< 32`. A higher-degree AIR raises the multiplier and could exceed this cap at
+ * fewer instances. The assert below pins "the two ceilings agree FOR THE
+ * DEGREE-4 CLASS" — the claim 128 was chosen to make — not "no instance set can
+ * ever overflow the FRI side".
+ *
+ * ⚠ WHAT THIS CAP IS *NOT*. It does NOT bound an attacker. `cw->num_matrices` is
+ * CALLER-pinned, not proof-derived: the proof's declared chunk count is checked
+ * against the caller's binding BEFORE FRI runs (batch_priming.c:340, reached from
+ * batch_verify.c:253), and that binding is `1 << (log_num_qc + is_zk)` from the
+ * caller's own instance descriptor (batch_verify.c:180, :207); `n` is a caller
+ * argument (:97). The proof-side count is `bo->num_matrices`, capped separately
+ * by DNAC_FRI_WIRE_MAX_MATRICES (fri_proof_codec.h:71) and required to EQUAL the
+ * caller's value at :332. An earlier version of this block called FRI_MAX_RO "a
+ * DoS bound" and deferred a caller-pin obligation to C3 on that basis; both were
+ * wrong and are retracted — there is no attacker-scaled allocation here, and the
+ * 2.5 MB below is paid whether `num_matrices` is 1 or 128.
+ *
+ * ⚠⚠ TRIPWIRE — STACK. This constant sizes `rowbuf[FRI_MAX_RO][FRI_LEAF_CAP]`
+ * (:267), an AUTOMATIC in `fri_open_input`: 64*2560*8 = 1.25 MB became
+ * 128*2560*8 = 2.5 MB. The other FRI_MAX_RO arrays are negligible beside it
+ * (ros/ro 40 B per entry, the rest size_t or pointers — together under 20 KB).
+ *   TODAY THIS IS SAFE, for a reason that can change: this file is compiled ONLY
+ *   into libnodus (nodus/CMakeLists.txt:192) — a Linux server binary on the
+ *   glibc 8 MB default thread stack. It is in NO messenger CMakeLists, so no
+ *   mobile or desktop client builds it (verified by grep, 2026-07-31).
+ *   ⚠ IF THE VERIFY STACK EVER ENTERS libdna — the S7 wallet path, or any
+ *   Android build — 2.5 MB does not fit a 1 MB bionic pthread stack and
+ *   `fri_open_input` will smash it. (Android's MAIN thread is larger; the
+ *   hazard is worker threads.) Whoever does that port MUST heap-allocate
+ *   `rowbuf`, or bound it per call, BEFORE linking this file into libdna. This
+ *   is a porting precondition, not a tuning suggestion.
+ *
+ * ⚠ HONEST MIRROR: `BV_MAX_INSTANCES` is file-private to batch_verify.c:20, so
+ * the 32 below is a duplicate carrying its citation, not a shared constant. This
+ * file deliberately does NOT include fri_statement.h — the statement layer sits
+ * ABOVE the verifier and that dependency must not invert. Neither mirror is
+ * machine-checked against its source; if either drifts, nothing catches it.
+ * ========================================================================== */
+#define FRI_BV_MAX_INSTANCES_MIRROR 32u /* == batch_verify.c:20 */
+#define FRI_QC_PER_INSTANCE_DEG4    4u  /* == 1 << (log_num_qc 2 + is_zk 0) */
+typedef char fri_max_ro_covers_batch_cap_assert
+    [((FRI_QC_PER_INSTANCE_DEG4 * FRI_BV_MAX_INSTANCES_MIRROR) <= FRI_MAX_RO)
+         ? 1
+         : -1];

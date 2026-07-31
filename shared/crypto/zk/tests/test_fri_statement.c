@@ -1,7 +1,8 @@
 /**
  * @file test_fri_statement.c
- * @brief Composition s1b + s1c + s2 + s3b + MULTI-QUERY — gate for the
- *        FRI-verify statement ENTRY (fri_statement.{c,h}).
+ * @brief Composition s1b + s1c + s2 + s3b + MULTI-QUERY + COMMIT-ROUND +
+ *        INPUT-BATCH replication — gate for the FRI-verify statement ENTRY
+ *        (fri_statement.{c,h}).
  *
  * ── HOW THIS TEST REUSES THE SHIPPED GATES ──────────────────────────────────
  * The honest trace builders for all five participating AIRs already exist,
@@ -42,17 +43,37 @@
  *   T-SRC    the SINGLE-SOURCE property of s1c, asserted directly: the fri
  *            instance's f_init publics and its roll-in publics are the very
  *            lanes the oi instance exports as its ro publics.
- *   T-SRC/px the same property one seam down (s2): every MAIN-batch acc row's
- *            p_x public in the oi instance IS the mmix instance's opened-row
- *            public for that height. Asserted on the entry's two output
- *            vectors, and required to have compared MAIN_ACC rows (non-vacuous).
- *   T-REF/px the fixture MEASUREMENT the s2 alias rests on: batch 0's per-height
- *            (matrices, points, columns) split, which must be the pinned one
- *            EXACTLY — the quotient batch's is NOT, which is why only batch 0
- *            may be aliased.
- *   N-PIN×4  tampering ONE cell of ONE table moves the composed root and the
+ *   N-PXBOUND ►► THE ACCEPTANCE CRITERION OF THE INPUT-BATCH SLICE, and the
+ *            closure proof for fri_statement.h HONEST LABEL 3. Two directions,
+ *            both on the ENTRY's own output vectors:
+ *              (positive) EVERY acc row's p_x public in the oi instance IS its
+ *              OWN batch's mmix instance's opened-row public, at the column the
+ *              native's innermost loop index names. Swept over all TOTAL_ACC
+ *              rows and required to have compared exactly that many, so it is
+ *              non-vacuous. s2's T-SRC/px was this for batch 0 only.
+ *              (perturbation) moving ONE mmix opened lane of batch b MUST move
+ *              the corresponding oi acc row. Under the s2 shape a quotient or
+ *              preprocessed lane moved NOTHING in oi (their p_x came from the
+ *              deleted `px_rest`), which is exactly what this catches.
+ *   N-BSEP   ►► THE BATCH-AXIS SEPARATION, the exact-set counterpart of N-QSEP
+ *            and N-RSEP. Perturbing a lane of batch b's opened span must move
+ *            ONLY {mmix[q][b], oi[q]} — never another batch's mmix instance,
+ *            never another query's anything. A collapse that fed every batch
+ *            batch 0's span would move batch 0's instance for a batch-1 lane,
+ *            and the exact-set comparison fires.
+ *   T-REF/px the fixture MEASUREMENT the p_x alias rests on: EVERY batch's
+ *            per-height (matrices, points, columns) split and opened width,
+ *            which must be the pinned per-batch ones EXACTLY. The three splits
+ *            are NOT equal (the quotient batch is 1 point x 2 columns where the
+ *            other two are 2 x 1), which is precisely why the entry cannot use
+ *            the uniform group descriptor's column count for all of them.
+ *   N-PIN×N  tampering ONE cell of ONE table moves the composed root and the
  *            entry rejects at step 2; run once per table, so the test names the
- *            table even though the single composed root cannot.
+ *            table even though the single composed root cannot. ⚠ This is what
+ *            keeps the B mmix tables discriminated even though they are
+ *            BYTE-IDENTICAL to one another at this pin (their widths do not
+ *            reach the schedule — fri_statement.h's honest note): the composed
+ *            root commits the matrices separately and in order.
  *   N-PINMAP a reordered / absent / missing preprocessed map or commitment is
  *            rejected — the map is part of what the composed root means.
  *   N-CANON  a >= p statement lane, and a non-boolean index bit, are rejected
@@ -72,13 +93,12 @@
  *            s1c adds the RO-EXPORT leg: perturbing one ro_export lane is
  *            rejected, and it is rejected because it lands in the oi instance
  *            AND the fri instance at once (the alias is the only path either
- *            has to that value). s2 adds the PX leg: perturbing one
- *            `mmix_opened` lane lands in the mmix publics AND the oi p_x
- *            publics together, and NOWHERE ELSE in the oi vector.
- *   N-PXREST the honest label under test: `px_rest` IS read (perturbing a lane
- *            reaches the oi p_x publics and the entry rejects) and reaches ONLY
- *            oi — i.e. it is exactly the still-unbound remainder the header
- *            says it is, neither dead nor commitment-bound.
+ *            has to that value). The PX leg is now N-BSEP / N-PXBOUND above.
+ *
+ * ⚠ N-PXREST is GONE with the field it tested, exactly as N-BITSREST went with
+ * `tair_bits_rest`: `px_rest` held the acc rows no commitment bound, and every
+ * acc row is mmix-aliased now. Its claim is SUBSUMED by N-PXBOUND, which makes
+ * the STRONGER statement about the same rows (they are bound, not merely read).
  *   N-CFG    a proof whose fri instance was built on a DIFFERENT cfg is
  *            rejected (OBL-P2c-1).
  *
@@ -109,12 +129,12 @@
  *            produce.
  *
  * ── MULTI-QUERY additions (OBL-P2c-2 discharged) ────────────────────────────
- *   T-MAP    the instance map (1 producer at index 0, then 1 + 4q + slot) and
- *            the flat publics layout, re-derived here from the header's own
+ *   T-MAP    the instance map (1 producer at index 0, then 1 + SLOTS*q + slot)
+ *            and the flat publics layout, re-derived here from the header's own
  *            rule: every instance named exactly once, every decoder round-trips,
  *            out-of-range refused by every accessor, the Q copies of a slot the
  *            same shape, the regions an exact gap-free in-order partition, and
- *            the derived Q ceiling (32-1)/4 = 7 respected.
+ *            the derived Q ceiling (32-1)/(B+R+2) respected.
  *   N-QSEP   ►► THE ACCEPTANCE CRITERION. Perturbing the transcript's q-th
  *            exported bit block (= `index_bits[q]`, the alias) must move query
  *            q's instances and NOT any other query's. Under the collapse this
@@ -128,12 +148,13 @@
  *            used to sit inside the per-query region with no justification.
  *            Perturbing a lane must move EVERY query's oi instance; one query
  *            moving alone means the alias was not built. Swept over every lane.
- *   N-QINDEP a per-query value (`ro_export[q]`, `mmix_opened[q]`,
- *            `mmcs_opened[q]`, `px_rest[q]`, `z_pq[q]`) reaches ONLY query q's
- *            consumers. This subsumes the old N-ALIAS/ro, N-ALIAS/px and
- *            N-PXREST, each of which was a pair of booleans and is now an exact
- *            set. Its `z` leg is the counterpart of N-PZSHARED: together they
- *            pin the split so it cannot regress in either direction.
+ *   N-QINDEP a per-query value (`ro_export[q]`, `mmcs_opened[q]`, `z_pq[q]`)
+ *            reaches ONLY query q's consumers. This subsumes the old
+ *            N-ALIAS/ro, each of which was a pair of booleans and is now an
+ *            exact set. Its `z` leg is the counterpart of N-PZSHARED: together
+ *            they pin the split so it cannot regress in either direction.
+ *            (`mmix_opened[q]`'s per-query claim is now the finer
+ *            (query, batch) claim of N-BSEP, so it is not repeated there.)
  *   RT       the pinned script's Q indices are printed and required to DIFFER
  *            (a constant of this pin, not a probabilistic claim), and every
  *            query's four u64 evaluators must accept their own trace.
@@ -155,20 +176,31 @@
  * (that is what §2 asks for). The trace VALUES are a different matter:
  *   - mmix / mmcs: REAL. Each builder commits its own batch, opens the index and
  *     requires the SHIPPED native verifier to accept before it emits a trace
- *     (test_mmcs_mixed_air.c:145-151, test_mmcs_air.c:128-133), so those two
- *     instances replay genuine Poseidon2 MMCS openings at the pinned shapes.
+ *     (test_mmcs_mixed_air.c:145-151, test_mmcs_air.c:128-133), so all B + R of
+ *     those instances replay genuine Poseidon2 MMCS openings at the pinned
+ *     shapes. ⚠ HONEST NOTE on the B mmix fixtures: the shipped builder fills
+ *     every matrix cell from its own `cell(m, r, c)`, which sees the WIDTH but
+ *     not the batch, so batches 0 and 2 — identical cfgs at this pin — commit
+ *     the SAME tree and produce the SAME root and the SAME opened row, while
+ *     batch 1 (width 2) differs. That is a property of the fixture, not of the
+ *     mechanism: the statement carries a root and an opened span PER BATCH
+ *     regardless, and N-BSEP proves each span reaches only its own instance.
+ *     `stmt_from_traces` REPORTS which batch roots coincide rather than
+ *     asserting they differ, because differing is not something this pin can
+ *     honestly claim.
  *   - oi: NATIVE-FORMULA REPLAY. Its builder drives the exact field expressions
  *     of `fri_open_input` — x_h from the two-adic generator and the bit-reversed
  *     index, and ro += alpha_pow*(p_z - p_x)/(z - x) per acc row
  *     (test_fri_oi_air.c:10-23) — over ITS OWN deterministic z / p_z fixtures,
  *     at the pinned shape. So the ro EXPORTS RT-1 uses are genuine reduced
  *     openings of that fixture, not of prep_pair's data.
- *     s2 NARROWS this: the MAIN batch's acc rows no longer use the builder's
- *     p_x fixture — the `g_px_ext` hook feeds them the mmix instance's REAL
- *     opened lanes (which came out of a genuine Poseidon2 MMCS opening, above),
- *     so for those rows the accumulation is over real opened values. The
- *     quotient / preprocessed batches' rows keep the fixture, which is the same
- *     honest gap `px_rest` carries in the statement.
+ *     s2 NARROWED this for the MAIN batch, and the INPUT-BATCH slice finishes
+ *     it: NO acc row uses the builder's p_x fixture any more. The `g_px_ext`
+ *     hook feeds EVERY row its own batch's mmix instance's REAL opened lanes
+ *     (each of which came out of a genuine Poseidon2 MMCS opening, above), so
+ *     the whole accumulation is over real opened values. The honest gap
+ *     `px_rest` carried in the statement is gone from the trace too — there is
+ *     no fixture branch left in `oi_px_from_mmix`.
  *   - fri: its SIBLINGS are still the shipped deterministic fixture, but its
  *     f_init and roll-in are OVERRIDDEN with the oi instance's exported ro
  *     (s1c) and — s3b — every BETA is overridden with the transcript's own
@@ -193,12 +225,13 @@
  *     prefix are deterministic fixtures — ⚠ they are NOT aliased to the mmcs /
  *     mmix roots, so "the transcript absorbed the commitment this proof opens"
  *     is NOT closed here; that is the commit-round replication slice.
- * So RT-1 is: "the entry accepts an honest 1 + 4*Q-instance proof over the
- * pinned cfgs, where query q's four instances take their index publics from the
+ * So RT-1 is: "the entry accepts an honest 1 + (B+R+2)*Q-instance proof over
+ * the pinned cfgs, where query q's instances take their index publics from the
  * transcript's OWN q-th exported block, their fri walk seed / roll-in from
- * query q's oi ro export, and their main-batch p_x from query q's mmix opening,
- * while the alpha, the betas and the final_poly every query folds with are ONE
- * transcript-produced set". It is NOT "the entry accepts prep_pair's queries".
+ * query q's oi ro export, and EVERY acc row's p_x from query q's own opening of
+ * that row's batch, while the alpha, the betas and the final_poly every query
+ * folds with are ONE transcript-produced set". It is NOT "the entry accepts
+ * prep_pair's queries".
  * Reported as a delta against spec §4.
  *
  * Deterministic fixtures only — NO rand() (root CLAUDE.md).
@@ -588,17 +621,17 @@ static int set_pair(const dnac_p2s_statement_t *good,
  *  and a shared static would make the first the second. */
 static const char *inst_name_r(uint32_t i, char *buf, size_t n)
 {
+    const size_t b = dnac_p2s_inst_batch(i);
     const size_t r = dnac_p2s_inst_round(i);
     if (i == DNAC_P2S_INST_TAIR) {
         snprintf(buf, n, "tair");
+    } else if (b != (size_t)-1) {
+        snprintf(buf, n, "mmix%zu[q%zu]", b, dnac_p2s_inst_query(i));
     } else if (r != (size_t)-1) {
         snprintf(buf, n, "mmcs%zu[q%zu]", r, dnac_p2s_inst_query(i));
     } else if (i < DNAC_P2S_NUM_INSTANCES) {
-        const uint32_t s = dnac_p2s_inst_slot(i);
         snprintf(buf, n, "%s[q%zu]",
-                 s == DNAC_P2S_SLOT_MMIX ? "mmix"
-                 : s == DNAC_P2S_SLOT_FRI ? "fri"
-                                          : "oi",
+                 dnac_p2s_inst_slot(i) == DNAC_P2S_SLOT_FRI ? "fri" : "oi",
                  dnac_p2s_inst_query(i));
     } else {
         snprintf(buf, n, "inst%u", i);
@@ -1010,15 +1043,87 @@ static int tair_build(tair_run_t *T,
 
 static void t_const(void)
 {
-    const dnac_p2c_mmix_table_cfg_t *mmix = dnac_p2s_mmix_cfg();
     const dnac_p2c_table_cfg_t      *fri = dnac_p2s_fri_cfg();
     const dnac_p2c_oi_table_cfg_t   *oi = dnac_p2s_oi_cfg();
 
-    /* Each module's accessor vs this header's region arithmetic — two
-     * independent derivations of the same number (count-KAFADAN discipline). */
-    CHECK(dnac_mmix_air_num_publics(mmix) == DNAC_P2S_MMIX_NUM_PUBLICS,
-          "T-CONST: mmix publics %zu != pinned %zu",
-          dnac_mmix_air_num_publics(mmix), (size_t)DNAC_P2S_MMIX_NUM_PUBLICS);
+    /* ── the B input-batch cfgs, per batch ───────────────────────────────────
+     * The batch axis's own T-CONST: each batch's cfg must carry that batch's
+     * pinned opened WIDTH, its accessors must agree with the per-batch pinned
+     * arithmetic, the batch-independent parts (matrix count, heights, depth,
+     * salt) must actually be batch-independent, and the Σ the flat publics
+     * layout is built on must equal the actual sum. */
+    {
+        size_t sum_pub = 0, sum_opened = 0;
+        CHECK(dnac_p2s_mmix_cfg(DNAC_P2S_OI_NUM_BATCHES) == NULL,
+              "T-CONST: an out-of-range input batch returns a cfg");
+        CHECK(dnac_p2s_mmix_opened_off(DNAC_P2S_OI_NUM_BATCHES) == (size_t)-1,
+              "T-CONST: an out-of-range input batch returns an opened offset");
+        for (size_t b = 0; b < DNAC_P2S_OI_NUM_BATCHES; b++) {
+            const dnac_p2c_mmix_table_cfg_t *c = dnac_p2s_mmix_cfg(b);
+            CHECK(c != NULL, "T-CONST: input batch %zu has no pinned cfg", b);
+            if (!c) continue;
+            CHECK(c->num_matrices == DNAC_P2S_MMIX_NUM_MATRICES &&
+                      c->depth == DNAC_P2S_MMIX_DEPTH &&
+                      c->salt_elems == DNAC_P2S_MMIX_SALT_ELEMS,
+                  "T-CONST: batch %zu's batch-independent shape moved", b);
+            CHECK(c->heights[0] == ((size_t)1u << DNAC_P2S_MMIX_LH0) &&
+                      c->heights[1] == ((size_t)1u << DNAC_P2S_MMIX_LH1),
+                  "T-CONST: batch %zu's heights are not the pinned ones", b);
+            for (size_t m = 0; m < c->num_matrices; m++) {
+                CHECK(c->widths[m] == DNAC_P2S_MMIX_BW(b),
+                      "T-CONST: batch %zu matrix %zu width %zu != pinned %zu",
+                      b, m, c->widths[m], (size_t)DNAC_P2S_MMIX_BW(b));
+            }
+            CHECK(dnac_mmix_air_total_opened(c) ==
+                      DNAC_P2S_MMIX_TOTAL_OPENED(b),
+                  "T-CONST: batch %zu total_opened %zu != pinned %zu", b,
+                  dnac_mmix_air_total_opened(c),
+                  (size_t)DNAC_P2S_MMIX_TOTAL_OPENED(b));
+            CHECK(dnac_mmix_air_num_publics(c) == DNAC_P2S_MMIX_NUM_PUBLICS(b),
+                  "T-CONST: batch %zu publics %zu != pinned %zu", b,
+                  dnac_mmix_air_num_publics(c),
+                  (size_t)DNAC_P2S_MMIX_NUM_PUBLICS(b));
+            /* The opened spans are an exact, gap-free, in-order partition. */
+            CHECK(dnac_p2s_mmix_opened_off(b) == sum_opened,
+                  "T-CONST: batch %zu's opened span starts at %zu, expected "
+                  "%zu", b, dnac_p2s_mmix_opened_off(b), sum_opened);
+            /* The REAL (points, columns) split vs the uniform descriptor's
+             * block size — HONEST LABEL 5's reconciliation, re-derived here. */
+            CHECK(DNAC_P2S_OI_BNP(b) * DNAC_P2S_OI_BNC(b) ==
+                      DNAC_P2S_OI_ACC_PER_BATCH,
+                  "T-CONST: batch %zu's split %zu x %zu != ACC_PER_BATCH %zu",
+                  b, (size_t)DNAC_P2S_OI_BNP(b), (size_t)DNAC_P2S_OI_BNC(b),
+                  (size_t)DNAC_P2S_OI_ACC_PER_BATCH);
+            /* ...and the column count IS the opened width (fri_verifier.c:333
+             * pins them to each other; they are two constants here). */
+            CHECK(DNAC_P2S_OI_BNC(b) == DNAC_P2S_MMIX_BW(b),
+                  "T-CONST: batch %zu's column count %zu != its opened width "
+                  "%zu", b, (size_t)DNAC_P2S_OI_BNC(b),
+                  (size_t)DNAC_P2S_MMIX_BW(b));
+            sum_pub += DNAC_P2S_MMIX_NUM_PUBLICS(b);
+            sum_opened += DNAC_P2S_MMIX_TOTAL_OPENED(b);
+        }
+        CHECK(sum_opened == DNAC_P2S_MMIX_ALL_OPENED,
+              "T-CONST: Σ opened %zu != DNAC_P2S_MMIX_ALL_OPENED %zu",
+              sum_opened, (size_t)DNAC_P2S_MMIX_ALL_OPENED);
+        CHECK(sum_pub == DNAC_P2S_MMIX_ALL_PUBLICS,
+              "T-CONST: Σ mmix publics %zu != DNAC_P2S_MMIX_ALL_PUBLICS %zu",
+              sum_pub, (size_t)DNAC_P2S_MMIX_ALL_PUBLICS);
+        /* NON-VACUITY of the whole batch axis: if every batch had the same
+         * opened width the alias would be indistinguishable from the uniform
+         * one the s2 shape used, and N-PXBOUND's column arithmetic would never
+         * be exercised. At this pin the quotient batch is 2 where the others
+         * are 1. */
+        {
+            int any_differs = 0;
+            for (size_t b = 1; b < DNAC_P2S_OI_NUM_BATCHES; b++) {
+                if (DNAC_P2S_MMIX_BW(b) != DNAC_P2S_MMIX_BW(0)) any_differs = 1;
+            }
+            CHECK(any_differs,
+                  "T-CONST: every input batch has the SAME opened width — the "
+                  "per-batch column arithmetic is untested by this pin");
+        }
+    }
     /* ── the R commit-round cfgs, per round ──────────────────────────────────
      * The round axis's own T-CONST: each round's cfg must carry the depth the
      * fold walk gives it, its accessors must agree with the per-round pinned
@@ -1084,16 +1189,12 @@ static void t_const(void)
     CHECK(dnac_foi_num_publics(oi) ==
               dnac_foi_pub_px_off(oi) + DNAC_P2S_OI_TOTAL_ACC,
           "T-CONST: the oi p_x region is not total_acc lanes long");
-    /* The s2 main/rest partition of a group has to BE a partition. */
+    /* The per-batch partition of a group has to BE a partition — every acc row
+     * belongs to exactly one batch's block, which is what makes the p_x walk
+     * total. */
     CHECK(DNAC_P2S_OI_ACC_PER_BATCH * DNAC_P2S_OI_NUM_BATCHES ==
               DNAC_P2S_OI_ACC_PER_HEIGHT,
           "T-CONST: ACC_PER_BATCH * NUM_BATCHES != ACC_PER_HEIGHT");
-    CHECK(DNAC_P2S_OI_MAIN_ACC + DNAC_P2S_OI_PX_REST == DNAC_P2S_OI_TOTAL_ACC,
-          "T-CONST: MAIN_ACC + PX_REST != TOTAL_ACC");
-
-    CHECK(dnac_mmix_air_total_opened(mmix) == DNAC_P2S_MMIX_TOTAL_OPENED,
-          "T-CONST: mmix total_opened %zu != pinned %zu",
-          dnac_mmix_air_total_opened(mmix), (size_t)DNAC_P2S_MMIX_TOTAL_OPENED);
 
     /* R and the roll-in slot: the fold-row count is the table module's, R is
      * this header's arithmetic. */
@@ -1113,10 +1214,11 @@ static void t_const(void)
         CHECK(dnac_p2s_prep_cells(i) == rows * dnac_p2s_prep_cols(i),
               "T-CONST: instance %u cell count inconsistent", i);
     }
-    /* The mixed batch's depth must be log2 of its tallest matrix. */
-    CHECK(mmix->depth == DNAC_P2S_MMIX_LH0 &&
-              mmix->heights[0] == ((size_t)1u << DNAC_P2S_MMIX_LH0) &&
-              mmix->heights[1] == ((size_t)1u << DNAC_P2S_MMIX_LH1),
+    /* Every mixed batch's depth must be log2 of its tallest matrix — checked
+     * per batch above; restated here as the one-line invariant the alias shift
+     * (lgmh - depth == 0) depends on. */
+    CHECK(DNAC_P2S_MMIX_DEPTH == DNAC_P2S_MMIX_LH0 &&
+              DNAC_P2S_MMIX_LH0 > DNAC_P2S_MMIX_LH1,
           "T-CONST: mmix depth/heights inconsistent");
 
     /* ── the oi cfg: shape, the DESCENDING height array, and the STATIC
@@ -1175,33 +1277,55 @@ static void t_map(void)
     size_t next = 0;
     size_t seen[DNAC_P2S_NUM_INSTANCES];
 
-    /* The per-query block is mmix + R commit rounds + fri + oi. Written out
-     * here as `R + 3` so the map's claim is compared against arithmetic this
-     * file does independently, not against DNAC_P2S_SLOTS itself. */
-    CHECK(DNAC_P2S_SLOTS == DNAC_P2S_FRI_R + 3,
-          "T-MAP: %u slots per query, the map says R + 3 = %zu",
-          DNAC_P2S_SLOTS, (size_t)(DNAC_P2S_FRI_R + 3));
+    /* The per-query block is B input batches + R commit rounds + fri + oi.
+     * Written out here as `B + R + 2` so the map's claim is compared against
+     * arithmetic this file does independently, not against DNAC_P2S_SLOTS. */
+    CHECK(DNAC_P2S_SLOTS == DNAC_P2S_OI_NUM_BATCHES + DNAC_P2S_FRI_R + 2,
+          "T-MAP: %u slots per query, the map says B + R + 2 = %zu",
+          DNAC_P2S_SLOTS,
+          (size_t)(DNAC_P2S_OI_NUM_BATCHES + DNAC_P2S_FRI_R + 2));
     CHECK(DNAC_P2S_NUM_INSTANCES ==
-              1u + (DNAC_P2S_FRI_R + 3) * DNAC_P2S_NUM_QUERIES,
-          "T-MAP: %u instances, the map says 1 + (R+3)*Q = %zu",
+              1u + (DNAC_P2S_OI_NUM_BATCHES + DNAC_P2S_FRI_R + 2) *
+                       DNAC_P2S_NUM_QUERIES,
+          "T-MAP: %u instances, the map says 1 + (B+R+2)*Q = %zu",
           DNAC_P2S_NUM_INSTANCES,
-          (size_t)(1u + (DNAC_P2S_FRI_R + 3) * DNAC_P2S_NUM_QUERIES));
+          (size_t)(1u + (DNAC_P2S_OI_NUM_BATCHES + DNAC_P2S_FRI_R + 2) *
+                            DNAC_P2S_NUM_QUERIES));
     CHECK(DNAC_P2S_INST_TAIR == 0,
           "T-MAP: the transcript instance is not index 0 — its index must be "
-          "Q-independent");
-    /* The commit rounds are CONTIGUOUS, ASCENDING, and bracketed by mmix and
-     * fri — the slot order the pin's table sequence depends on. */
-    CHECK(DNAC_P2S_SLOT_MMCS(0) == DNAC_P2S_SLOT_MMIX + 1 &&
+          "Q-, B- and R-independent");
+    /* The input batches are CONTIGUOUS and ASCENDING from slot 0, the commit
+     * rounds are the contiguous block after them, and fri / oi close the
+     * query — the slot order the pin's table sequence depends on. */
+    CHECK(DNAC_P2S_SLOT_MMIX(0) == 0 &&
+              DNAC_P2S_SLOT_MMCS(0) ==
+                  DNAC_P2S_SLOT_MMIX(DNAC_P2S_OI_NUM_BATCHES - 1) + 1 &&
               DNAC_P2S_SLOT_FRI ==
                   DNAC_P2S_SLOT_MMCS(DNAC_P2S_FRI_R - 1) + 1 &&
               DNAC_P2S_SLOT_OI == DNAC_P2S_SLOT_FRI + 1,
-          "T-MAP: the commit-round slots are not the contiguous block between "
-          "mmix and fri");
+          "T-MAP: the slot blocks are not {mmix..}{mmcs..}{fri}{oi} in order");
+    /* The two RANGE predicates must be disjoint and must not swallow the "no
+     * slot" sentinel — the entry's decoders are built on exactly this. */
+    for (uint32_t s = 0; s <= DNAC_P2S_SLOTS; s++) {
+        const int is_b = DNAC_P2S_SLOT_IS_MMIX(s) ? 1 : 0;
+        const int is_r = DNAC_P2S_SLOT_IS_MMCS(s) ? 1 : 0;
+        CHECK(!(is_b && is_r),
+              "T-MAP: slot %u decodes as BOTH a batch and a round", s);
+        if (s == DNAC_P2S_SLOTS) {
+            CHECK(!is_b && !is_r,
+                  "T-MAP: the 'no slot' sentinel decodes as a batch or round");
+        }
+        if (is_b) {
+            CHECK(DNAC_P2S_SLOT_BATCH(s) < DNAC_P2S_OI_NUM_BATCHES,
+                  "T-MAP: slot %u decodes to batch %zu, out of range", s,
+                  DNAC_P2S_SLOT_BATCH(s));
+        }
+    }
     /* The batch stack's cap, and the ceiling the entry static-asserts against.
-     * With R + 3 = 6 consumers per query, Q = 5 is the largest this shape
-     * admits: 1 + 6*5 = 31 <= 32, while 1 + 6*6 = 37 would not fit. */
-    CHECK(DNAC_P2S_MAX_QUERIES == 5,
-          "T-MAP: the derived Q ceiling is %zu, expected (32-1)/(R+3) = 5",
+     * With B + R + 2 = 8 consumers per query, Q = 3 is the largest this shape
+     * admits: 1 + 8*3 = 25 <= 32, while 1 + 8*4 = 33 would not fit. */
+    CHECK(DNAC_P2S_MAX_QUERIES == 3,
+          "T-MAP: the derived Q ceiling is %zu, expected (32-1)/(B+R+2) = 3",
           (size_t)DNAC_P2S_MAX_QUERIES);
     CHECK(1u + DNAC_P2S_SLOTS * DNAC_P2S_MAX_QUERIES <=
                   DNAC_P2S_BATCH_MAX_INSTANCES &&
@@ -1215,10 +1339,12 @@ static void t_map(void)
     /* (q, slot) round-trips through the decoders, for EVERY instance. */
     CHECK(dnac_p2s_inst_slot(DNAC_P2S_INST_TAIR) == DNAC_P2S_SLOTS &&
               dnac_p2s_inst_query(DNAC_P2S_INST_TAIR) == (size_t)-1 &&
+              dnac_p2s_inst_batch(DNAC_P2S_INST_TAIR) == (size_t)-1 &&
               dnac_p2s_inst_round(DNAC_P2S_INST_TAIR) == (size_t)-1,
-          "T-MAP: the transcript instance reports a query/slot/round");
+          "T-MAP: the transcript instance reports a query/slot/batch/round");
     CHECK(dnac_p2s_inst_slot(DNAC_P2S_NUM_INSTANCES) == DNAC_P2S_SLOTS &&
               dnac_p2s_inst_query(DNAC_P2S_NUM_INSTANCES) == (size_t)-1 &&
+              dnac_p2s_inst_batch(DNAC_P2S_NUM_INSTANCES) == (size_t)-1 &&
               dnac_p2s_inst_round(DNAC_P2S_NUM_INSTANCES) == (size_t)-1 &&
               dnac_p2s_num_publics(DNAC_P2S_NUM_INSTANCES) == 0 &&
               dnac_p2s_pub_off(DNAC_P2S_NUM_INSTANCES) == (size_t)-1 &&
@@ -1244,17 +1370,31 @@ static void t_map(void)
          * lookup at the wrong table. */
         for (size_t r = 0; r < DNAC_P2S_FRI_R; r++) {
             const uint32_t i = DNAC_P2S_INST(q, DNAC_P2S_SLOT_MMCS(r));
-            CHECK(dnac_p2s_inst_round(i) == r,
-                  "T-MAP: instance %u decodes to round %zu, built from round "
-                  "%zu", i, dnac_p2s_inst_round(i), r);
+            CHECK(dnac_p2s_inst_round(i) == r &&
+                      dnac_p2s_inst_batch(i) == (size_t)-1,
+                  "T-MAP: instance %u decodes to (round %zu, batch %zu), built "
+                  "from round %zu", i, dnac_p2s_inst_round(i),
+                  dnac_p2s_inst_batch(i), r);
         }
-        CHECK(dnac_p2s_inst_round(DNAC_P2S_INST(q, DNAC_P2S_SLOT_MMIX)) ==
-                      (size_t)-1 &&
-                  dnac_p2s_inst_round(DNAC_P2S_INST(q, DNAC_P2S_SLOT_FRI)) ==
+        /* And the BATCH axis, symmetrically: only the mmix slots carry one. */
+        for (size_t b = 0; b < DNAC_P2S_OI_NUM_BATCHES; b++) {
+            const uint32_t i = DNAC_P2S_INST(q, DNAC_P2S_SLOT_MMIX(b));
+            CHECK(dnac_p2s_inst_batch(i) == b &&
+                      dnac_p2s_inst_round(i) == (size_t)-1,
+                  "T-MAP: instance %u decodes to (batch %zu, round %zu), built "
+                  "from batch %zu", i, dnac_p2s_inst_batch(i),
+                  dnac_p2s_inst_round(i), b);
+        }
+        CHECK(dnac_p2s_inst_round(DNAC_P2S_INST(q, DNAC_P2S_SLOT_FRI)) ==
                       (size_t)-1 &&
                   dnac_p2s_inst_round(DNAC_P2S_INST(q, DNAC_P2S_SLOT_OI)) ==
+                      (size_t)-1 &&
+                  dnac_p2s_inst_batch(DNAC_P2S_INST(q, DNAC_P2S_SLOT_FRI)) ==
+                      (size_t)-1 &&
+                  dnac_p2s_inst_batch(DNAC_P2S_INST(q, DNAC_P2S_SLOT_OI)) ==
                       (size_t)-1,
-              "T-MAP: a non-mmcs instance of q%zu reports a commit round", q);
+              "T-MAP: fri or oi of q%zu reports a commit round or input batch",
+              q);
     }
     seen[DNAC_P2S_INST_TAIR]++;
     for (uint32_t i = 0; i < DNAC_P2S_NUM_INSTANCES; i++) {
@@ -1290,6 +1430,22 @@ static void t_map(void)
         CHECK(dnac_p2s_num_publics(b) < dnac_p2s_num_publics(a),
               "T-MAP: round %zu does not have fewer publics than round %zu — "
               "the dir regions are not shrinking", r, r - 1);
+    }
+    /* The BATCHES are likewise not interchangeable, but the observable is
+     * different and the difference is the honest point: their TABLES coincide
+     * (their widths do not reach the schedule), so what separates them is the
+     * PUBLIC count. Asserted here, and required to be non-vacuous — if every
+     * batch had the same width the batch axis would carry nothing at all. */
+    {
+        int differs = 0;
+        for (size_t b = 1; b < DNAC_P2S_OI_NUM_BATCHES; b++) {
+            const uint32_t x = DNAC_P2S_INST(0, DNAC_P2S_SLOT_MMIX(0));
+            const uint32_t y = DNAC_P2S_INST(0, DNAC_P2S_SLOT_MMIX(b));
+            if (dnac_p2s_num_publics(y) != dnac_p2s_num_publics(x)) differs = 1;
+        }
+        CHECK(differs,
+              "T-MAP: every input batch declares the SAME public count — the "
+              "batch axis carries neither table content nor shape");
     }
     {
         uint64_t *tab[DNAC_P2S_NUM_INSTANCES] = { 0 };
@@ -1338,9 +1494,53 @@ static void t_map(void)
                   DNAC_P2S_NUM_QUERIES * DNAC_P2S_QUERY_PUBLICS,
           "T-MAP: TOTAL_PUBLICS is not TAIR + Q*QUERY_PUBLICS");
     CHECK(DNAC_P2S_QUERY_PUBLICS ==
-              DNAC_P2S_MMIX_NUM_PUBLICS + DNAC_P2S_MMCS_ALL_PUBLICS +
+              DNAC_P2S_MMIX_ALL_PUBLICS + DNAC_P2S_MMCS_ALL_PUBLICS +
                   DNAC_P2S_FRI_NUM_PUBLICS + DNAC_P2S_OI_NUM_PUBLICS,
-          "T-MAP: QUERY_PUBLICS is not mmix + Σ mmcs + fri + oi");
+          "T-MAP: QUERY_PUBLICS is not Σ mmix + Σ mmcs + fri + oi");
+
+    /* ── T-QCAP — the SECOND instance ceiling, MEASURED and REPORTED.
+     *
+     * The batch stack's 32-instance cap is not the binding one: the outer
+     * proof's QUOTIENT opening round is ONE FRI input batch carrying one matrix
+     * per quotient chunk of every instance (batch_verify.c:373-374 with :579),
+     * and `fri_open_input` caps a single input batch's matrices at FRI_MAX_RO
+     * (fri_verifier.c:218 with :41). See the full chain in fri_statement.h.
+     *
+     * ASSERTED, since the FRI_MAX_RO 64 → 128 raise: the pinned shape must FIT.
+     * If it ever stops fitting, RT-1's prove leg dies with a
+     * DNAC_PROVER_ERR_VERIFY that names nothing, so the ceiling is checked
+     * here — where the numbers are — rather than diagnosed later. The
+     * log_num_qc leg is checked too, because the ceiling arithmetic is only
+     * about the shape the entry actually builds. ── */
+    {
+        const size_t lq = dnac_p2s_log_num_qc(DNAC_P2S_MAX_SYMBOLIC_DEGREE, 0);
+        const size_t maxn = DNAC_P2S_FRI_RO_MAX_INSTANCES(lq);
+        const size_t qc = (size_t)DNAC_P2S_NUM_INSTANCES << lq;
+
+        CHECK(lq != (size_t)-1 && lq == 2,
+              "T-QCAP: log_num_qc is %zu, the ceiling arithmetic assumes the "
+              "derived 2", lq);
+        CHECK(DNAC_P2S_NUM_INSTANCES <= maxn,
+              "T-QCAP: %u instances x %zu quotient chunks = %zu matrices in ONE "
+              "FRI input batch, over the FRI_MAX_RO %zu cap (ceiling %zu) — no "
+              "honest proof of this shape is producible",
+              DNAC_P2S_NUM_INSTANCES, (size_t)1u << lq, qc,
+              (size_t)DNAC_P2S_FRI_MAX_RO, maxn);
+        /* The mirrored cap must be the one the verifier actually compiles. It
+         * is file-private to fri_verifier.c, so this cannot be a compile-time
+         * comparison — but a stale mirror would make the CHECK above pass while
+         * the real walk rejects, which is the exact failure the raise was meant
+         * to end. The honest rail: report both, so a drift is visible in the
+         * log next to the number it would invalidate. */
+        printf("  [t-qcap] quotient round: %u instances x %zu chunks = %zu "
+               "matrices vs FRI_MAX_RO %zu (mirror) -> instance ceiling %zu, "
+               "headroom %zu\n",
+               DNAC_P2S_NUM_INSTANCES, (size_t)1u << lq, qc,
+               (size_t)DNAC_P2S_FRI_MAX_RO, maxn,
+               (DNAC_P2S_NUM_INSTANCES <= maxn)
+                   ? maxn - DNAC_P2S_NUM_INSTANCES
+                   : 0);
+    }
 }
 
 /* ═══════════ T-REF/tair — the tair cfg + script come from the s1 pins ══════
@@ -1678,46 +1878,59 @@ static void t_ref(const jv_t *doc)
     CHECK(((size_t)2u << DNAC_P2S_MAX_LOG_ARITY) == DNAC_P2S_MMCS_TOTAL_WIDTH,
           "T-REF: 2*arity != pinned mmcs total width");
 
-    /* --- input batch 0 (the inner MAIN round): widths, heights, depth --- */
+    /* --- EVERY input batch: matrix count, widths, heights, depth, mixedness ---
+     * The input-batch replication slice's grounding. Until it, only batch 0 was
+     * measured, because only batch 0 had an instance; now every batch has one
+     * and every batch's SHAPE is compared against the per-batch pinned macros.
+     * This is what says the quotient batch really is 2 lanes wide and the other
+     * two really are 1 — the numbers the p_x column arithmetic stands on. */
     {
         const jv_t *ip = jv_get(q0, "input_proof");
-        if (!ip || ip->kind != JV_ARR || ip->n == 0) {
-            CHECK(0, "T-REF: no input_proof");
-            return;
-        }
-        const jv_t *b0 = ip->items[0];
-        const jv_t *ovs = jv_get(b0, "opened_values");
-        const jv_t *opr = jv_get(b0, "opening_proof");
-        CHECK(ovs && ovs->kind == JV_ARR &&
-                  ovs->n == DNAC_P2S_MMIX_NUM_MATRICES,
-              "T-REF: batch-0 has %zu matrices, pinned %zu",
-              ovs ? ovs->n : (size_t)0, (size_t)DNAC_P2S_MMIX_NUM_MATRICES);
-        CHECK(opr && opr->kind == JV_ARR && opr->n == DNAC_P2S_MMIX_DEPTH,
-              "T-REF: batch-0 opening depth %zu != pinned %zu",
-              opr ? opr->n : (size_t)0, (size_t)DNAC_P2S_MMIX_DEPTH);
-        if (ovs && ovs->kind == JV_ARR &&
-            ovs->n == DNAC_P2S_MMIX_NUM_MATRICES) {
-            const size_t want_w[DNAC_P2S_MMIX_NUM_MATRICES] = {
-                DNAC_P2S_MMIX_W0, DNAC_P2S_MMIX_W1
-            };
-            for (size_t m = 0; m < ovs->n; m++) {
-                CHECK(ovs->items[m]->kind == JV_ARR &&
-                          ovs->items[m]->n == want_w[m],
-                      "T-REF: batch-0 matrix %zu width %zu != pinned %zu", m,
-                      ovs->items[m]->n, want_w[m]);
-            }
-        }
-        /* heights: 2^(log_ext_degree_i + log_blowup), instance order. */
         const jv_t *insts = jv_get(s, "instances");
         const size_t want_lh[DNAC_P2S_MMIX_NUM_MATRICES] = {
             DNAC_P2S_MMIX_LH0, DNAC_P2S_MMIX_LH1
         };
+        if (!ip || ip->kind != JV_ARR || ip->n == 0) {
+            CHECK(0, "T-REF: no input_proof");
+            return;
+        }
+        CHECK(ip->n == DNAC_P2S_OI_NUM_BATCHES,
+              "T-REF: %zu input batches != pinned B %zu", ip->n,
+              (size_t)DNAC_P2S_OI_NUM_BATCHES);
+        for (size_t b = 0; b < ip->n && b < DNAC_P2S_OI_NUM_BATCHES; b++) {
+            const jv_t *ovs = jv_get(ip->items[b], "opened_values");
+            const jv_t *opr = jv_get(ip->items[b], "opening_proof");
+            CHECK(ovs && ovs->kind == JV_ARR &&
+                      ovs->n == DNAC_P2S_MMIX_NUM_MATRICES,
+                  "T-REF: batch-%zu has %zu matrices, pinned %zu", b,
+                  ovs ? ovs->n : (size_t)0,
+                  (size_t)DNAC_P2S_MMIX_NUM_MATRICES);
+            CHECK(opr && opr->kind == JV_ARR && opr->n == DNAC_P2S_MMIX_DEPTH,
+                  "T-REF: batch-%zu opening depth %zu != pinned %zu", b,
+                  opr ? opr->n : (size_t)0, (size_t)DNAC_P2S_MMIX_DEPTH);
+            if (ovs && ovs->kind == JV_ARR &&
+                ovs->n == DNAC_P2S_MMIX_NUM_MATRICES) {
+                for (size_t m = 0; m < ovs->n; m++) {
+                    CHECK(ovs->items[m]->kind == JV_ARR &&
+                              ovs->items[m]->n == DNAC_P2S_MMIX_BW(b),
+                          "T-REF: batch-%zu matrix %zu width %zu != pinned %zu",
+                          b, m, ovs->items[m]->n, (size_t)DNAC_P2S_MMIX_BW(b));
+                }
+            }
+            printf("  [t-ref]  input batch %zu: %zu matrices, width %zu each, "
+                   "depth %zu (one mmix instance, per query)\n", b,
+                   (size_t)DNAC_P2S_MMIX_NUM_MATRICES,
+                   (size_t)DNAC_P2S_MMIX_BW(b), (size_t)DNAC_P2S_MMIX_DEPTH);
+        }
+        /* heights: 2^(log_ext_degree_i + log_blowup), instance order. SHARED by
+         * every batch — each opening round carries one matrix per inner
+         * instance at that instance's log_ext_degree (batch_verify.c:549/:569/
+         * :587), which is what makes ONE heights array serve all B cfgs. */
         CHECK(insts && insts->kind == JV_ARR &&
                   insts->n == DNAC_P2S_MMIX_NUM_MATRICES,
               "T-REF: instance count != pinned matrix count");
         if (insts && insts->kind == JV_ARR &&
             insts->n == DNAC_P2S_MMIX_NUM_MATRICES) {
-            int mixed = 0;
             for (size_t i = 0; i < insts->n; i++) {
                 uint64_t led = 0;
                 CHECK(jv_u64(jv_get(insts->items[i], "log_ext_degree"), &led),
@@ -1725,12 +1938,10 @@ static void t_ref(const jv_t *doc)
                 CHECK((size_t)led + DNAC_P2S_LOG_BLOWUP == want_lh[i],
                       "T-REF: matrix %zu log-height %zu != pinned %zu", i,
                       (size_t)led + DNAC_P2S_LOG_BLOWUP, want_lh[i]);
-                if (i > 0 && led != 0) mixed = 1;
             }
-            (void)mixed;
             CHECK(want_lh[0] != want_lh[1],
-                  "T-REF: the pinned batch is NOT mixed-height — the mmix "
-                  "instance would be describing a same-height opening");
+                  "T-REF: the pinned batches are NOT mixed-height — the mmix "
+                  "instances would be describing same-height openings");
         }
         /* The mixed batch's max log-height is what the reduced index shifts by,
          * and it must be lgmh for the alias `dir[l] = bits[l]` to hold. */
@@ -1867,61 +2078,69 @@ static void t_ref(const jv_t *doc)
         }
     }
 
-    /* ── T-REF/px (s2): MEASURE the MAIN batch's share of each height group ──
-     * The s2 p_x alias rests on ONE claim about this fixture: in the schedule's
-     * BATCH-MAJOR order (fri_oi_air_table.h:104-114) the FIRST
-     * DNAC_P2S_OI_ACC_PER_BATCH rows of every height group belong to input
-     * batch 0, the MAIN round — the batch the mmix instance describes. The
-     * batch index in that order IS the native's batch loop index, i.e. the
-     * position in `input_proof` (fri_verifier.c:207), so what has to be
-     * measured is batch 0's per-height (matrices, points, columns) split.
+    /* ── T-REF/px: MEASURE EVERY batch's share of each height group ──────────
+     * The p_x alias rests on one claim about this fixture PER BATCH: in the
+     * schedule's BATCH-MAJOR order (fri_oi_air_table.h:104-114) each height
+     * group is B consecutive blocks of DNAC_P2S_OI_ACC_PER_BATCH rows, block b
+     * belonging to input batch b — the batch mmix instance
+     * DNAC_P2S_SLOT_MMIX(b) describes. The batch index in that order IS the
+     * native's batch loop index, i.e. the position in `input_proof`
+     * (fri_verifier.c:207), so what has to be measured is EVERY batch's
+     * per-height (matrices, points, columns) split.
      *
      * ⚠ This is where the "uniform (m,p,c) factorization is a LABEL" caveat
-     * (fri_statement.h) STOPS being harmless: for the group TOTAL only the
-     * product matters, but the p_x map indexes INSIDE the main batch's block,
-     * so the main batch's split must be the pinned one EXACTLY. It is measured
-     * here, not assumed — the quotient batch's split (1 point x 2 columns) is
-     * NOT the pinned (2 x 1), which is precisely why only batch 0 may be
-     * aliased. */
+     * (fri_statement.h HONEST LABEL 5) STOPS being harmless: for the group
+     * TOTAL only the product matters, but the p_x map indexes INSIDE a batch's
+     * block, so each batch's split must be the PER-BATCH pinned one EXACTLY.
+     * s2 only had to measure batch 0 because only batch 0 was aliased.
+     *
+     * ⚠ AND THE THREE SPLITS ARE NOT EQUAL — the quotient batch is 1 point x 2
+     * columns where the other two are 2 x 1. The loop below therefore compares
+     * each batch against DNAC_P2S_OI_BNP/_BNC(b), NOT against the descriptor's
+     * uniform (2, 1), and separately asserts that at least two of them differ
+     * so the per-batch machinery is not vacuously exercised. */
     {
         const jv_t *ip = jv_get(q0, "input_proof");
         const jv_t *rounds = jv_get(s, "opening_rounds");
         const jv_t *insts = jv_get(s, "instances");
         const size_t want_h[DNAC_P2S_OI_NUM_HEIGHTS] = { DNAC_P2S_OI_H0,
                                                          DNAC_P2S_OI_H1 };
-        const size_t want_w[DNAC_P2S_MMIX_NUM_MATRICES] = { DNAC_P2S_MMIX_W0,
-                                                            DNAC_P2S_MMIX_W1 };
         const size_t mmix_lh[DNAC_P2S_MMIX_NUM_MATRICES] = { DNAC_P2S_MMIX_LH0,
                                                              DNAC_P2S_MMIX_LH1 };
+        int split_differs = 0;
 
-        if (!ip || ip->kind != JV_ARR || ip->n == 0 || !rounds ||
-            rounds->kind != JV_ARR || !insts || insts->kind != JV_ARR) {
+        if (!ip || ip->kind != JV_ARR || ip->n != DNAC_P2S_OI_NUM_BATCHES ||
+            !rounds || rounds->kind != JV_ARR ||
+            rounds->n != DNAC_P2S_OI_NUM_BATCHES || !insts ||
+            insts->kind != JV_ARR) {
             CHECK(0, "T-REF/px: the fixture's batch arrays are unusable");
         } else {
-            const jv_t *mats0 = jv_get(rounds->items[0], "matrices");
-            const jv_t *ov0 = jv_get(ip->items[0], "opened_values");
-            if (!mats0 || mats0->kind != JV_ARR || !ov0 ||
-                ov0->kind != JV_ARR || mats0->n != ov0->n) {
-                CHECK(0, "T-REF/px: batch 0's matrix lists disagree");
-            } else {
-                /* batch 0 must be the mmix batch: one matrix per pinned height,
-                 * each at the pinned mmix log-height and opened width. */
-                CHECK(mats0->n == DNAC_P2S_MMIX_NUM_MATRICES,
-                      "T-REF/px: batch 0 has %zu matrices, mmix pins %zu",
-                      mats0->n, (size_t)DNAC_P2S_MMIX_NUM_MATRICES);
+            for (size_t b = 0; b < DNAC_P2S_OI_NUM_BATCHES; b++) {
+                const jv_t *matsb = jv_get(rounds->items[b], "matrices");
+                const jv_t *ovb = jv_get(ip->items[b], "opened_values");
+                if (!matsb || matsb->kind != JV_ARR || !ovb ||
+                    ovb->kind != JV_ARR || matsb->n != ovb->n) {
+                    CHECK(0, "T-REF/px: batch %zu's matrix lists disagree", b);
+                    continue;
+                }
+                /* batch b must be an mmix batch: one matrix per pinned height,
+                 * each at the pinned mmix log-height and batch b's width. */
+                CHECK(matsb->n == DNAC_P2S_MMIX_NUM_MATRICES,
+                      "T-REF/px: batch %zu has %zu matrices, mmix pins %zu", b,
+                      matsb->n, (size_t)DNAC_P2S_MMIX_NUM_MATRICES);
                 for (size_t i = 0; i < DNAC_P2S_OI_NUM_HEIGHTS; i++) {
                     size_t seen = 0, np = 0, nc = 0;
-                    for (size_t m = 0; m < mats0->n; m++) {
+                    for (size_t m = 0; m < matsb->n; m++) {
                         uint64_t ii = 0, led = 0;
-                        const jv_t *pts = jv_get(mats0->items[m], "points");
-                        if (!jv_u64(jv_get(mats0->items[m], "instance"), &ii) ||
+                        const jv_t *pts = jv_get(matsb->items[m], "points");
+                        if (!jv_u64(jv_get(matsb->items[m], "instance"), &ii) ||
                             ii >= insts->n ||
                             !jv_u64(jv_get(insts->items[(size_t)ii],
                                            "log_ext_degree"), &led) ||
                             !pts || pts->kind != JV_ARR ||
-                            ov0->items[m]->kind != JV_ARR) {
-                            CHECK(0, "T-REF/px: batch 0 matrix %zu unreadable",
-                                  m);
+                            ovb->items[m]->kind != JV_ARR) {
+                            CHECK(0, "T-REF/px: batch %zu matrix %zu "
+                                     "unreadable", b, m);
                             break;
                         }
                         if ((size_t)led + DNAC_P2S_LOG_BLOWUP != want_h[i]) {
@@ -1929,41 +2148,54 @@ static void t_ref(const jv_t *doc)
                         }
                         seen++;
                         np = pts->n;
-                        nc = ov0->items[m]->n;
+                        nc = ovb->items[m]->n;
                         /* the alias reads THIS matrix's opened row, so its
-                         * position in the mmix flattening has to be the pinned
+                         * position in batch b's flattening has to be the pinned
                          * one too. */
                         CHECK(m < DNAC_P2S_MMIX_NUM_MATRICES &&
                                   mmix_lh[m] == want_h[i] &&
-                                  nc == want_w[m],
-                              "T-REF/px: height %zu maps to batch-0 matrix %zu "
-                              "(width %zu), which is not the pinned mmix "
-                              "matrix", want_h[i], m, nc);
+                                  nc == DNAC_P2S_MMIX_BW(b),
+                              "T-REF/px: height %zu maps to batch-%zu matrix "
+                              "%zu (width %zu), which is not the pinned mmix "
+                              "matrix", want_h[i], b, m, nc);
                     }
-                    /* EXACTLY ONE main-batch matrix per height — the map the
+                    /* EXACTLY ONE matrix per (batch, height) — the map the
                      * entry's p2s_mmix_matrix_at_height fails closed on. */
                     CHECK(seen == DNAC_P2S_OI_NUM_MATRICES,
-                          "T-REF/px: batch 0 has %zu matrices at height %zu, "
-                          "the pinned group descriptor says %zu", seen,
+                          "T-REF/px: batch %zu has %zu matrices at height %zu, "
+                          "the pinned group descriptor says %zu", b, seen,
                           want_h[i], (size_t)DNAC_P2S_OI_NUM_MATRICES);
-                    CHECK(np == DNAC_P2S_OI_NUM_POINTS,
-                          "T-REF/px: batch 0 opens height %zu at %zu points, "
-                          "pinned %zu", want_h[i], np,
-                          (size_t)DNAC_P2S_OI_NUM_POINTS);
-                    CHECK(nc == DNAC_P2S_OI_NUM_COLUMNS,
-                          "T-REF/px: batch 0's height-%zu row is %zu columns "
-                          "wide, pinned %zu", want_h[i], nc,
-                          (size_t)DNAC_P2S_OI_NUM_COLUMNS);
+                    /* THE PER-BATCH SPLIT, not the uniform descriptor's. */
+                    CHECK(np == DNAC_P2S_OI_BNP(b),
+                          "T-REF/px: batch %zu opens height %zu at %zu points, "
+                          "pinned %zu", b, want_h[i], np,
+                          (size_t)DNAC_P2S_OI_BNP(b));
+                    CHECK(nc == DNAC_P2S_OI_BNC(b),
+                          "T-REF/px: batch %zu's height-%zu row is %zu columns "
+                          "wide, pinned %zu", b, want_h[i], nc,
+                          (size_t)DNAC_P2S_OI_BNC(b));
                     CHECK(seen * np * nc == DNAC_P2S_OI_ACC_PER_BATCH,
-                          "T-REF/px: batch 0 contributes %zu acc rows at height "
-                          "%zu, the s2 split assumes %zu", seen * np * nc,
-                          want_h[i], (size_t)DNAC_P2S_OI_ACC_PER_BATCH);
-                    printf("  [t-ref]  px: batch 0 @ h=%zu -> %zu matrix x "
-                           "%zu points x %zu cols = %zu acc rows (MAIN, "
-                           "mmix-aliased)\n",
-                           want_h[i], seen, np, nc, seen * np * nc);
+                          "T-REF/px: batch %zu contributes %zu acc rows at "
+                          "height %zu, the split assumes %zu", b,
+                          seen * np * nc, want_h[i],
+                          (size_t)DNAC_P2S_OI_ACC_PER_BATCH);
+                    if (np != DNAC_P2S_OI_NUM_POINTS ||
+                        nc != DNAC_P2S_OI_NUM_COLUMNS) {
+                        split_differs = 1;
+                    }
+                    printf("  [t-ref]  px: batch %zu @ h=%zu -> %zu matrix x "
+                           "%zu points x %zu cols = %zu acc rows "
+                           "(mmix-aliased)\n",
+                           b, want_h[i], seen, np, nc, seen * np * nc);
                 }
             }
+            /* NON-VACUITY: at least one batch's real split must differ from the
+             * uniform group descriptor's, or the per-batch column arithmetic
+             * would be indistinguishable from the s2 shape and this whole
+             * measurement would prove nothing the descriptor did not already. */
+            CHECK(split_differs,
+                  "T-REF/px: every batch's (points, columns) split equals the "
+                  "uniform descriptor's — the per-batch split is untested");
         }
     }
 }
@@ -2065,10 +2297,14 @@ static void t_pin_kat(void)
 
 /* ═══════════════════════ the three honest traces ═════════════════════════ */
 
-/** One query's honest traces — one per SLOT, so R of them for the mmcs AIR. */
+/** One query's honest traces — one per SLOT, so B of them for the mmix AIR and
+ *  R for the mmcs AIR. */
 typedef struct {
-    p2s_mmix_fixt_t     mmix_fx;
-    p2s_mmix_built_t    mmix;
+    /** PER INPUT BATCH. Batch b's fixture commits batch b's own cfg (its own
+     *  opened WIDTH) and opens it at the query's index, exactly as the entry's
+     *  alias says. */
+    p2s_mmix_fixt_t     mmix_fx[DNAC_P2S_OI_NUM_BATCHES];
+    p2s_mmix_built_t    mmix[DNAC_P2S_OI_NUM_BATCHES];
     /** PER COMMIT ROUND. Round r's fixture opens the round-r tree (its own
      *  depth) at the round-r folded index, exactly as the entry's alias says. */
     p2s_mmcs_fixture_t  mmcs_fx[DNAC_P2S_FRI_R];
@@ -2104,7 +2340,11 @@ static void traces_free(traces_t *T)
 {
     for (size_t q = 0; q < DNAC_P2S_NUM_QUERIES; q++) {
         qtraces_t *Q = &T->q[q];
-        if (Q->built[DNAC_P2S_SLOT_MMIX]) p2s_mmix_built_free(&Q->mmix);
+        for (size_t b = 0; b < DNAC_P2S_OI_NUM_BATCHES; b++) {
+            if (Q->built[DNAC_P2S_SLOT_MMIX(b)]) {
+                p2s_mmix_built_free(&Q->mmix[b]);
+            }
+        }
         for (size_t r = 0; r < DNAC_P2S_FRI_R; r++) {
             if (Q->built[DNAC_P2S_SLOT_MMCS(r)]) {
                 p2s_mmcs_built_free(&Q->mmcs[r]);
@@ -2127,49 +2367,58 @@ static gold_fp2_t oi_ro_export(const traces_t *T, size_t q, size_t i)
 }
 
 /**
- * s2 — the p_x lane every oi acc row must carry, in SCHEDULE order.
+ * INPUT-BATCH REPLICATION — the p_x lane every oi acc row must carry, in
+ * SCHEDULE order. EVERY row, no fixture branch left.
  *
- * Derived HERE from the mmix FIXTURE's opened rows and the two pinned cfgs,
- * INDEPENDENTLY of fri_statement.c (which maps `stmt.mmix_opened`, the flattened
- * form). Feeding this into the oi builder is what makes the honest oi trace's
- * p_x column BE the mmix instance's opened value; T-ALIAS then compares the two
- * derivations element for element, and T-SRC/px asserts the alias on the
- * entry's own output.
+ * Derived HERE from the B mmix FIXTURES' opened rows and the pinned cfgs,
+ * INDEPENDENTLY of fri_statement.c (which maps `stmt.mmix_opened`, the
+ * flattened form, through `dnac_p2s_mmix_opened_off`). Feeding this into the oi
+ * builder is what makes the honest oi trace's p_x column BE the mmix instances'
+ * opened values; T-ALIAS then compares the two derivations element for element,
+ * and N-PXBOUND asserts the alias on the entry's own output.
  *
- * Non-main rows keep the shipped gate's own deterministic fixture value, so
- * they are exactly what the builder would have produced on its own — the
- * statement reads them back out of the builder's publics (stmt_from_traces).
+ * ⚠ THE COLUMN INDEX IS PER BATCH, and that is the whole difficulty this slice
+ * added. The native's p_x depends on the CLAIMED-EVAL ordinal, not on the
+ * opening point (fri_verifier.c:469-471 with the point loop outside at :436),
+ * so under batch-major emission block row `a` reads column `a % nc_b` — where
+ * `nc_b` is batch b's OWN column count, which the uniform group descriptor does
+ * not carry. Using `d->num_columns` here would read column 0 for both of the
+ * quotient batch's rows.
+ *
+ * @return 0 if a (batch, height) pair does not name exactly one matrix — a test
+ *         defect, reported by the caller rather than papered over.
  */
-static void oi_px_from_mmix(const traces_t *T, size_t q,
-                            uint64_t px[DNAC_P2S_OI_TOTAL_ACC])
+static int oi_px_from_mmix(const traces_t *T, size_t q,
+                           uint64_t px[DNAC_P2S_OI_TOTAL_ACC])
 {
-    const dnac_p2c_mmix_table_cfg_t *mc = dnac_p2s_mmix_cfg();
-    const dnac_p2c_oi_table_cfg_t   *oc = dnac_p2s_oi_cfg();
+    const dnac_p2c_oi_table_cfg_t *oc = dnac_p2s_oi_cfg();
     size_t g = 0;
 
     for (size_t i = 0; i < oc->num_heights; i++) {
         const dnac_p2c_oi_height_desc_t *d = &oc->heights[i];
-        const size_t n_acc = d->num_batches * d->num_matrices * d->num_points *
-                             d->num_columns;
         const size_t batch_sz =
             d->num_matrices * d->num_points * d->num_columns;
         const size_t want_h = (size_t)1u << d->log_height;
-        size_t mi = (size_t)-1;
 
-        for (size_t m = 0; m < mc->num_matrices; m++) {
-            if (mc->heights[m] == want_h) { mi = m; break; }
-        }
-        for (size_t a = 0; a < n_acc && g < DNAC_P2S_OI_TOTAL_ACC; a++, g++) {
-            if (a < batch_sz && mi != (size_t)-1) {
-                /* the MAIN batch's tuple: matrix mi, column a % num_columns
-                 * (the p_x of native fri_verifier.c:471 depends on the column,
-                 * not on the opening point). Query q's OWN opened row. */
-                px[g] = T->q[q].mmix_fx.rows[mi][a % d->num_columns];
-            } else {
-                px[g] = p2s_oi_u(p2s_oi_tfp(g + 2, 17));
+        for (size_t b = 0; b < d->num_batches; b++) {
+            const dnac_p2c_mmix_table_cfg_t *mc = dnac_p2s_mmix_cfg(b);
+            const size_t nc = DNAC_P2S_OI_BNC(b);
+            size_t mi = (size_t)-1;
+
+            if (mc == NULL || nc == 0) return 0;
+            for (size_t m = 0; m < mc->num_matrices; m++) {
+                if (mc->heights[m] == want_h) { mi = m; break; }
+            }
+            if (mi == (size_t)-1) return 0;
+            for (size_t a = 0; a < batch_sz; a++, g++) {
+                if (g >= DNAC_P2S_OI_TOTAL_ACC) return 0;
+                /* batch b's tuple: matrix mi, column a % nc_b. Query q's OWN
+                 * opened row of THAT batch. */
+                px[g] = T->q[q].mmix_fx[b].rows[mi][a % nc];
             }
         }
     }
+    return g == DNAC_P2S_OI_TOTAL_ACC;
 }
 
 /* ══════════ the SHARED terminal — solving the last sibling (multi-query) ═══
@@ -2254,23 +2503,33 @@ static int qtraces_build_head(traces_t *T, size_t q, uint64_t seed)
 
     Q->index = index;
 
-    /* mmix — the builder commits its own mixed batch, opens it and requires the
-     * SHIPPED native mixed verifier to accept (test_mmcs_mixed_air.c:145-151)
-     * before any trace exists. The batch CONTENT is index-independent
+    /* mmix, ONE PER INPUT BATCH — the builder commits batch b's own mixed batch
+     * (at batch b's own opened WIDTH), opens it and requires the SHIPPED native
+     * mixed verifier to accept (test_mmcs_mixed_air.c:145-151) before any trace
+     * exists. The batch CONTENT is index-independent
      * (test_mmcs_mixed_air.c:129-133 fills every cell from `cell(m, r, c)`), so
-     * every query commits the SAME tree and the root is genuinely shared — only
-     * the opened row and the sibling path move with q. stmt_from_traces asserts
-     * that rather than assuming it. */
-    if (!p2s_mmix_make_fixt(dnac_p2s_mmix_cfg(), index, &Q->mmix_fx)) {
-        printf("  [rt]     q%zu mmix fixture FAILED\n", q);
-        return 0;
+     * every query commits the SAME tree per batch and each root is genuinely
+     * shared across q — only the opened row and the sibling path move with q.
+     * stmt_from_traces asserts that rather than assuming it. */
+    for (size_t b = 0; b < DNAC_P2S_OI_NUM_BATCHES; b++) {
+        const dnac_p2c_mmix_table_cfg_t *cfg = dnac_p2s_mmix_cfg(b);
+
+        if (cfg == NULL) {
+            printf("  [rt]     batch %zu has no pinned mmix cfg\n", b);
+            return 0;
+        }
+        if (!p2s_mmix_make_fixt(cfg, index, &Q->mmix_fx[b])) {
+            printf("  [rt]     q%zu mmix batch %zu fixture FAILED\n", q, b);
+            return 0;
+        }
+        if (!p2s_mmix_build_trace(&Q->mmix[b], cfg, &Q->mmix_fx[b],
+                                  Q->mmix_fx[b].sibs,
+                                  Q->mmix_fx[b].root.lanes)) {
+            printf("  [rt]     q%zu mmix batch %zu trace FAILED\n", q, b);
+            return 0;
+        }
+        Q->built[DNAC_P2S_SLOT_MMIX(b)] = 1;
     }
-    if (!p2s_mmix_build_trace(&Q->mmix, dnac_p2s_mmix_cfg(), &Q->mmix_fx,
-                              Q->mmix_fx.sibs, Q->mmix_fx.root.lanes)) {
-        printf("  [rt]     q%zu mmix trace FAILED\n", q);
-        return 0;
-    }
-    Q->built[DNAC_P2S_SLOT_MMIX] = 1;
 
     /* mmcs, ONE PER COMMIT ROUND — same anchoring through dnac_p2_mmcs_verify
      * (test_mmcs_air.c:128-133), at THIS round's cfg and THIS round's folded
@@ -2316,15 +2575,19 @@ static int qtraces_build_head(traces_t *T, size_t q, uint64_t seed)
     /* oi — a NATIVE-FORMULA REPLAY of fri_open_input over the builder's own
      * deterministic z / p_z fixtures (test_fri_oi_air.c:10-23), at the pinned
      * cfg and at THIS query's index. Built BEFORE fri because fri consumes its
-     * ro export, and AFTER mmix because (s2) the MAIN batch's acc rows take
-     * their p_x from the mmix opening: the builder's `g_px_ext` hook is pointed
-     * at that derivation for the duration of the build and cleared immediately
-     * after, so the walk's reduced openings really are accumulated over the
-     * MMCS-opened values of THIS query. */
+     * ro export, and AFTER the B mmix instances because EVERY acc row takes its
+     * p_x from its own batch's mmix opening: the builder's `g_px_ext` hook is
+     * pointed at that derivation for the duration of the build and cleared
+     * immediately after, so the walk's reduced openings really are accumulated
+     * over the MMCS-opened values of THIS query. */
     {
         uint64_t px[DNAC_P2S_OI_TOTAL_ACC];
         int ok;
-        oi_px_from_mmix(T, q, px);
+        if (!oi_px_from_mmix(T, q, px)) {
+            printf("  [rt]     q%zu p_x derivation FAILED (a (batch, height) "
+                   "pair does not name exactly one mmix matrix)\n", q);
+            return 0;
+        }
         p2s_oi_g_px_ext = px;
         /* s3b — and its alpha is the TRANSCRIPT's first fp2 pop, injected the
          * same way. SHARED across q, exactly like the statement field: the
@@ -2397,7 +2660,8 @@ static int qtraces_fri_fixture(traces_t *T, size_t q,
  *
  * The index each builder receives is exactly the alias map fri_statement.c
  * step 6 implements, from the other side, for that query:
- *   mmix  reduced index = index[q] >> (lgmh - depth) == index[q]  (shift 0)
+ *   mmix[b] reduced index = index[q] >> (lgmh - depth) == index[q] (shift 0),
+ *           the SAME for every batch because every batch's depth is lgmh
  *   mmcs  index[q] >> log_arity                      (fri_verifier.c:558)
  *   fri   the full index[q]
  *   oi    the full index[q] (its chain consumes all lgmh bits, MSB-first)
@@ -2407,9 +2671,9 @@ static int qtraces_fri_fixture(traces_t *T, size_t q,
  * ⚠ ORDER IS LOAD-BEARING (s1c + s3b + multi-query), and it is the SAME rule
  * every time: a value that is aliased must be produced BEFORE its consumers.
  *   1. tair FIRST — it produces every query's index, alpha and every beta.
- *   2. per query: mmix / mmcs on index[q]; oi with the shared alpha injected
- *      (g_alpha_ext) and its p_x taken from THAT query's mmix opening
- *      (g_px_ext).
+ *   2. per query: the B mmix instances and the R mmcs ones on index[q]; oi with
+ *      the shared alpha injected (g_alpha_ext) and EVERY acc row's p_x taken
+ *      from THAT query's opening of THAT row's batch (g_px_ext).
  *   3. query 0's fri, which FIXES the shared terminal; then every query's fri
  *      with its last sibling solved against that terminal.
  * So each walk really is seeded by its own open_input result and driven by the
@@ -2511,8 +2775,11 @@ static int traces_build(traces_t *T, const dnac_p2c_table_cfg_t *fri_cfg,
      * whole round-trip stands on. Per query, so a builder that silently
      * degraded for q > 0 cannot hide behind query 0. */
     for (size_t q = 0; q < DNAC_P2S_NUM_QUERIES; q++) {
-        CHECK(p2s_mmix_eval_built(&T->q[q].mmix) == 0,
-              "RT: the mmix u64 evaluator rejects q%zu's honest trace", q);
+        for (size_t b = 0; b < DNAC_P2S_OI_NUM_BATCHES; b++) {
+            CHECK(p2s_mmix_eval_built(&T->q[q].mmix[b]) == 0,
+                  "RT: the mmix u64 evaluator rejects q%zu batch %zu's honest "
+                  "trace", q, b);
+        }
         for (size_t r = 0; r < DNAC_P2S_FRI_R; r++) {
             CHECK(p2s_mmcs_eval_built(&T->q[q].mmcs[r]) == 0,
                   "RT: the mmcs u64 evaluator rejects q%zu round %zu's honest "
@@ -2546,8 +2813,48 @@ static void stmt_from_traces(dnac_p2s_statement_t *stmt, const traces_t *T)
      * just about the struct: a builder whose root or terminal moved with the
      * index would make the shared field unsatisfiable and the failure would
      * surface as an unexplained RT-1 reject instead of here. */
-    for (size_t k = 0; k < (size_t)MMIX_DIGEST_LANES; k++) {
-        stmt->mmix_root[k] = T->q[0].mmix_fx.root.lanes[k];
+    /* PER INPUT BATCH, shared across q. Taken from query 0's batch-b fixture
+     * and then required to agree with every other query's — batch b's tree
+     * CONTENT is index-independent (test_mmcs_mixed_air.c:129-133), so only the
+     * opened row and the path move with q. */
+    for (size_t b = 0; b < DNAC_P2S_OI_NUM_BATCHES; b++) {
+        for (size_t k = 0; k < (size_t)MMIX_DIGEST_LANES; k++) {
+            stmt->mmix_root[b][k] = T->q[0].mmix_fx[b].root.lanes[k];
+        }
+    }
+    /* ⚠ REPORTED, NOT ASSERTED — the honest counterpart of the mmcs
+     * distinctness check below. Two batches with identical pinned cfgs commit
+     * identical trees under the shipped builder's content function, so batches
+     * 0 and 2 legitimately share a root at this pin. That does not weaken any
+     * gate (the statement carries a root PER BATCH and N-BSEP works on the
+     * per-batch opened spans), and asserting distinctness would be asserting a
+     * fixture property this pin does not have. Printed so a reader of the log
+     * knows which axis is degenerate. */
+    for (size_t a = 0; a < DNAC_P2S_OI_NUM_BATCHES; a++) {
+        for (size_t b = a + 1; b < DNAC_P2S_OI_NUM_BATCHES; b++) {
+            int same = 1;
+            for (size_t k = 0; k < (size_t)MMIX_DIGEST_LANES; k++) {
+                if (stmt->mmix_root[a][k] != stmt->mmix_root[b][k]) same = 0;
+            }
+            if (same) {
+                printf("  [rt]     note: input batches %zu and %zu share a root "
+                       "(identical pinned cfgs; fixture property, see the "
+                       "honest label)\n", a, b);
+                /* ⚠ AND THEIR OPENED VALUES COINCIDE TOO — same widths, same
+                 * heights, and the fixture's cell content is cell(m,r,c), a pure
+                 * function of position (tests/test_mmcs_mixed_air.c:129-136).
+                 * So N-PXBOUND's POSITIVE half cannot tell "batch %zu's p_x came
+                 * from batch %zu" from "...came from batch %zu": the compared
+                 * lanes are equal either way. The discrimination is carried by
+                 * N-BSEP's PERTURBATION leg, which moves one batch's lane and
+                 * requires exactly that batch's instances to follow. Stated here
+                 * because the roots-degeneracy label alone does not cover it. */
+                printf("  [rt]     note: ...so their OPENED VALUES coincide as "
+                       "well — N-PXBOUND's positive half is value-degenerate "
+                       "between them; N-BSEP's perturbation leg is what "
+                       "discriminates\n");
+            }
+        }
     }
     /* PER ROUND, shared across q. Taken from query 0's round-r fixture and then
      * required to agree with every other query's — the round-r tree's CONTENT
@@ -2575,11 +2882,16 @@ static void stmt_from_traces(dnac_p2s_statement_t *stmt, const traces_t *T)
     stmt->final_poly0[1] = T->q[0].fri.pub[final_off + 1];
     for (size_t q = 1; q < DNAC_P2S_NUM_QUERIES; q++) {
         int same = 1;
-        for (size_t k = 0; k < (size_t)MMIX_DIGEST_LANES; k++) {
-            if (T->q[q].mmix_fx.root.lanes[k] != stmt->mmix_root[k]) same = 0;
+        for (size_t b = 0; b < DNAC_P2S_OI_NUM_BATCHES; b++) {
+            same = 1;
+            for (size_t k = 0; k < (size_t)MMIX_DIGEST_LANES; k++) {
+                if (T->q[q].mmix_fx[b].root.lanes[k] != stmt->mmix_root[b][k]) {
+                    same = 0;
+                }
+            }
+            CHECK(same, "stmt: q%zu commits a DIFFERENT batch-%zu mmix root — "
+                        "the shared root field cannot describe both", q, b);
         }
-        CHECK(same, "stmt: q%zu commits a DIFFERENT mmix root — the shared "
-                    "root field cannot describe both", q);
         for (size_t r = 0; r < DNAC_P2S_FRI_R; r++) {
             same = 1;
             for (size_t k = 0; k < (size_t)MAIR_DIGEST_LANES; k++) {
@@ -2639,15 +2951,29 @@ static void stmt_from_traces(dnac_p2s_statement_t *stmt, const traces_t *T)
         }
         /* opened rows, taken from the SAME place each builder's publics take
          * them: the mixed fixture's per-matrix DATA lanes, and the same-height
-         * fixture's concatenated element stream. */
+         * fixture's concatenated element stream.
+         *
+         * ONE FLAT ROW per query, batch by batch. The batch's base is read from
+         * the MODULE (`dnac_p2s_mmix_opened_off`) so the statement and the
+         * entry cannot disagree about where a batch's span starts, and the
+         * running offset is compared against it — a partition mismatch is a
+         * test defect, reported here rather than surfacing as an RT-1 reject. */
         {
             size_t off = 0;
-            for (size_t m = 0; m < Q->mmix_fx.nm; m++) {
-                for (size_t d = 0; d < Q->mmix_fx.semw[m]; d++) {
-                    stmt->mmix_opened[q][off + d] = Q->mmix_fx.rows[m][d];
+            for (size_t b = 0; b < DNAC_P2S_OI_NUM_BATCHES; b++) {
+                CHECK(dnac_p2s_mmix_opened_off(b) == off,
+                      "stmt: batch %zu's opened span starts at %zu, the module "
+                      "says %zu", b, off, dnac_p2s_mmix_opened_off(b));
+                for (size_t m = 0; m < Q->mmix_fx[b].nm; m++) {
+                    for (size_t d = 0; d < Q->mmix_fx[b].semw[m]; d++) {
+                        stmt->mmix_opened[q][off + d] = Q->mmix_fx[b].rows[m][d];
+                    }
+                    off += Q->mmix_fx[b].semw[m];
                 }
-                off += Q->mmix_fx.semw[m];
             }
+            CHECK(off == DNAC_P2S_MMIX_ALL_OPENED,
+                  "stmt: the B opened spans cover %zu lanes, ALL_OPENED is %zu",
+                  off, (size_t)DNAC_P2S_MMIX_ALL_OPENED);
         }
         for (size_t r = 0; r < DNAC_P2S_FRI_R; r++) {
             for (size_t c = 0; c < DNAC_P2S_MMCS_TOTAL_WIDTH; c++) {
@@ -2668,27 +2994,12 @@ static void stmt_from_traces(dnac_p2s_statement_t *stmt, const traces_t *T)
         for (size_t i = 0; i < 2 * DNAC_P2S_OI_NUM_HEIGHTS; i++) {
             stmt->ro_export[q][i] = Q->oi.pub[Q->oi.pub_ro + i];
         }
-        /* s2 — px_rest carries ONLY the acc rows the main batch does not cover.
-         * The main-batch rows have NO statement field: the entry aliases them
-         * off mmix_opened[q], which is the whole point of that slice. Walked in
-         * the same schedule order the entry walks. */
-        {
-            const dnac_p2c_oi_table_cfg_t *oc = dnac_p2s_oi_cfg();
-            size_t g = 0, rest = 0;
-            for (size_t i = 0; i < oc->num_heights; i++) {
-                const dnac_p2c_oi_height_desc_t *d = &oc->heights[i];
-                const size_t n_acc = d->num_batches * d->num_matrices *
-                                     d->num_points * d->num_columns;
-                const size_t batch_sz =
-                    d->num_matrices * d->num_points * d->num_columns;
-                for (size_t a = 0; a < n_acc; a++, g++) {
-                    if (a < batch_sz) continue;
-                    if (rest < DNAC_P2S_OI_PX_REST) {
-                        stmt->px_rest[q][rest++] = Q->oi.pub[Q->oi.pub_px + g];
-                    }
-                }
-            }
-        }
+        /* ⚠ NO p_x FIELD AT ALL any more (input-batch replication). Every acc
+         * row's p_x is an alias of `mmix_opened[q]`, so there is nothing left
+         * to copy out of the oi builder's publics — `px_rest`, which held the
+         * rows the main batch did not cover, is gone with the seam it stood
+         * for. T-ALIAS is what proves the entry reconstructs exactly the lanes
+         * the builder wrote. */
     }
 }
 
@@ -2719,16 +3030,24 @@ static void t_alias_positive(const dnac_p2s_statement_t *stmt, const traces_t *T
 
     for (size_t q = 0; q < DNAC_P2S_NUM_QUERIES; q++) {
         const qtraces_t *Q = &T->q[q];
-        const gold_fp_t *pm = set_pub(S, DNAC_P2S_INST(q, DNAC_P2S_SLOT_MMIX));
         const gold_fp_t *pf = set_pub(S, DNAC_P2S_INST(q, DNAC_P2S_SLOT_FRI));
         const gold_fp_t *po = set_pub(S, DNAC_P2S_INST(q, DNAC_P2S_SLOT_OI));
         size_t bad = 0;
 
-        for (size_t i = 0; i < DNAC_P2S_MMIX_NUM_PUBLICS; i++) {
-            if (gold_fp_to_u64(pm[i]) != Q->mmix.pub[i]) bad++;
+        /* One comparison per INPUT BATCH: each batch's instance must match the
+         * builder that opened THAT batch's tree at THAT batch's width. A single
+         * batch-0 comparison would pass even if batches 1..B-1 were fed batch
+         * 0's lanes, which is precisely the collapse N-BSEP forbids. */
+        for (size_t b = 0; b < DNAC_P2S_OI_NUM_BATCHES; b++) {
+            const gold_fp_t *pm =
+                set_pub(S, DNAC_P2S_INST(q, DNAC_P2S_SLOT_MMIX(b)));
+            bad = 0;
+            for (size_t i = 0; i < DNAC_P2S_MMIX_NUM_PUBLICS(b); i++) {
+                if (gold_fp_to_u64(pm[i]) != Q->mmix[b].pub[i]) bad++;
+            }
+            CHECK(bad == 0, "T-ALIAS: %zu mmix%zu[q%zu] publics differ from the "
+                            "builder's", bad, b, q);
         }
-        CHECK(bad == 0, "T-ALIAS: %zu mmix[q%zu] publics differ from the "
-                        "builder's", bad, q);
         /* One comparison per COMMIT ROUND: each round's instance must match the
          * builder that opened THAT round's tree at THAT round's index. A single
          * round-0 comparison would pass even if rounds 1..R-1 were fed round
@@ -2793,47 +3112,71 @@ static void t_alias_positive(const dnac_p2s_statement_t *stmt, const traces_t *T
             }
         }
 
-        /* ── T-SRC/px (s2): the MAIN batch's p_x publics ARE the SAME QUERY's
-         * mmix opened-row publics. Asserted on the ENTRY's own two output
-         * vectors — not on the statement, which holds those lanes exactly once
-         * (in mmix_opened[q]) and holds no p_x field for them at all. ── */
+        /* ── N-PXBOUND (positive half) — HONEST LABEL 3's CLOSURE PROOF.
+         *
+         * EVERY acc row's p_x public in the oi instance IS its OWN batch's mmix
+         * instance's opened-row public, at the column the native's innermost
+         * loop index names. Asserted on the ENTRY's own output vectors — not on
+         * the statement, which holds those lanes exactly once (in
+         * `mmix_opened[q]`) and holds no p_x field for any of them.
+         *
+         * s2's T-SRC/px was this restricted to batch 0 and required only
+         * MAIN_ACC comparisons; the requirement is TOTAL_ACC now, and a
+         * regression to the s2 shape would fail the count as well as the
+         * comparisons. The column index is per batch (DNAC_P2S_OI_BNC), which
+         * is what makes the quotient batch's SECOND acc row read its SECOND
+         * claimed evaluation rather than duplicating the first. ── */
         {
-            const dnac_p2c_mmix_table_cfg_t *mc = dnac_p2s_mmix_cfg();
-            const dnac_p2c_oi_table_cfg_t   *oc = dnac_p2s_oi_cfg();
-            const size_t mo_off = dnac_mmix_air_pub_opened_off(mc);
+            const dnac_p2c_oi_table_cfg_t *oc = dnac_p2s_oi_cfg();
             const size_t opx_off = dnac_foi_pub_px_off(oc);
             size_t g = 0, checked = 0;
 
             for (size_t i = 0; i < oc->num_heights; i++) {
                 const dnac_p2c_oi_height_desc_t *d = &oc->heights[i];
-                const size_t n_acc = d->num_batches * d->num_matrices *
-                                     d->num_points * d->num_columns;
                 const size_t batch_sz =
                     d->num_matrices * d->num_points * d->num_columns;
                 const size_t want_h = (size_t)1u << d->log_height;
-                size_t moff = 0, mi = (size_t)-1;
 
-                for (size_t m = 0; m < mc->num_matrices; m++) {
-                    if (mc->heights[m] == want_h) { mi = m; break; }
-                    moff += mc->widths[m];
-                }
-                CHECK(mi != (size_t)-1, "T-SRC/px: oi height %zu has no mmix "
-                                        "matrix", d->log_height);
-                for (size_t a = 0; a < n_acc; a++, g++) {
-                    if (mi == (size_t)-1 || a >= batch_sz) continue;
-                    CHECK(gold_fp_to_u64(po[opx_off + g]) ==
-                              gold_fp_to_u64(
-                                  pm[mo_off + moff + a % d->num_columns]),
-                          "T-SRC/px: oi[q%zu] acc row %zu (height %zu, main "
-                          "batch) is not the mmix[q%zu] opened lane", q, g,
-                          d->log_height, q);
-                    checked++;
+                for (size_t b = 0; b < d->num_batches; b++) {
+                    const dnac_p2c_mmix_table_cfg_t *mc = dnac_p2s_mmix_cfg(b);
+                    const gold_fp_t *pm =
+                        set_pub(S, DNAC_P2S_INST(q, DNAC_P2S_SLOT_MMIX(b)));
+                    const size_t nc = DNAC_P2S_OI_BNC(b);
+                    size_t mo_off, moff = 0, mi = (size_t)-1;
+
+                    CHECK(mc != NULL, "N-PXBOUND: batch %zu has no cfg", b);
+                    if (mc == NULL) { g += batch_sz; continue; }
+                    mo_off = dnac_mmix_air_pub_opened_off(mc);
+                    for (size_t m = 0; m < mc->num_matrices; m++) {
+                        if (mc->heights[m] == want_h) { mi = m; break; }
+                        moff += mc->widths[m];
+                    }
+                    CHECK(mi != (size_t)-1,
+                          "N-PXBOUND: batch %zu has no matrix at oi height %zu",
+                          b, d->log_height);
+                    if (mi == (size_t)-1) { g += batch_sz; continue; }
+                    CHECK(mc->widths[mi] == nc,
+                          "N-PXBOUND: batch %zu's height-%zu matrix is %zu "
+                          "columns wide, the pinned split says %zu", b,
+                          d->log_height, mc->widths[mi], nc);
+                    for (size_t a = 0; a < batch_sz; a++, g++) {
+                        CHECK(gold_fp_to_u64(po[opx_off + g]) ==
+                                  gold_fp_to_u64(pm[mo_off + moff + a % nc]),
+                              "N-PXBOUND: oi[q%zu] acc row %zu (height %zu, "
+                              "batch %zu, column %zu) is not the mmix%zu[q%zu] "
+                              "opened lane", q, g, d->log_height, b, a % nc, b,
+                              q);
+                        checked++;
+                    }
                 }
             }
-            /* Not vacuous: the loop must actually have compared MAIN_ACC rows. */
-            CHECK(checked == DNAC_P2S_OI_MAIN_ACC,
-                  "T-SRC/px: compared %zu main-batch rows, expected %zu",
-                  checked, (size_t)DNAC_P2S_OI_MAIN_ACC);
+            /* Not vacuous, and not the s2 subset: EVERY acc row compared. */
+            CHECK(checked == DNAC_P2S_OI_TOTAL_ACC,
+                  "N-PXBOUND: compared %zu acc rows, expected all %zu — a "
+                  "main-batch-only alias would report %zu",
+                  checked, (size_t)DNAC_P2S_OI_TOTAL_ACC,
+                  (size_t)(DNAC_P2S_OI_NUM_HEIGHTS *
+                           DNAC_P2S_OI_ACC_PER_BATCH));
         }
 
         /* ── T-SRC/beta + T-SRC/alpha (s3b): query q's fri betas and oi alpha
@@ -2909,18 +3252,27 @@ static void t_alias_positive(const dnac_p2s_statement_t *stmt, const traces_t *T
      * (the Q copies of a table are identical), so they are checked per slot and
      * applied to every query's instance. */
     {
-        /* mmix, then the R commit rounds, then fri and oi. Every commit round
-         * is 8 rows: depths 4/3/2 schedule 6/5/4 rows and the TERMINALITY
-         * RESERVE (mmcs_air_table.h) pads each to the next power of two ABOVE
-         * that, which is 8 for all three. Same height, DIFFERENT content — the
-         * table-content check below is what carries the round distinctness.
+        /* The B input batches, then the R commit rounds, then fri and oi.
+         * Every input batch is 16 rows: the mixed schedule sees a batch's width
+         * only through `leaf_rows = ceil(concat / 4)` and every pinned width
+         * (1 / 2 / 1) rounds to 1, so all three batches schedule the same rows.
+         * Every commit round is 8 rows: depths 4/3/2 schedule 6/5/4 rows and
+         * the TERMINALITY RESERVE (mmcs_air_table.h) pads each to the next
+         * power of two ABOVE that, which is 8 for all three. Same height,
+         * DIFFERENT content for the rounds — the table-content check below is
+         * what carries the round distinctness; the batches carry theirs in the
+         * CFG, not the table.
          * Hard-coded on purpose: deriving them from `dnac_p2s_prep_rows` would
          * compare the entry against itself. The assert pins the list LENGTH to
-         * the pinned shape, so a change to R fails the build instead of
+         * the pinned shape, so a change to B or R fails the build instead of
          * zero-filling a slot's expectation. */
         typedef char want_db_matches_slots
-            [(DNAC_P2S_SLOTS == 6 && DNAC_P2S_FRI_R == 3) ? 1 : -1];
-        static const uint32_t want_db[DNAC_P2S_SLOTS] = { 4, 3, 3, 3, 3, 5 };
+            [(DNAC_P2S_SLOTS == 8 && DNAC_P2S_FRI_R == 3 &&
+              DNAC_P2S_OI_NUM_BATCHES == 3)
+                 ? 1
+                 : -1];
+        static const uint32_t want_db[DNAC_P2S_SLOTS] = { 4, 4, 4, 3,
+                                                          3, 3, 3, 5 };
         (void)sizeof(want_db_matches_slots);
         CHECK(S->insts[DNAC_P2S_INST_TAIR].degree_bits == 6,
               "T-ALIAS: tair degree_bits %u, expected 6",
@@ -2952,6 +3304,21 @@ static void t_alias_positive(const dnac_p2s_statement_t *stmt, const traces_t *T
         CHECK(S->insts[i].num_publics == dnac_p2s_num_publics(i),
               "T-ALIAS: %s num_publics disagrees with the layout", inst_name(i));
     }
+
+    /* ── The MEASURED frame cost, so fri_statement.h's size note is a reading
+     * and not an estimate. `dnac_p2_fri_statement_verify` keeps exactly these
+     * three objects on its frame; the batch axis is the expensive one because
+     * `dnac_mmix_fold_state_t` is by far the largest of the five states. ── */
+    printf("  [size]   fold states %zu B (mmix %zu B each x %zu batches x %zu "
+           "queries) + %u descriptors %zu B + publics %zu B = frame ~%zu B\n",
+           sizeof(dnac_p2s_fold_states_t), sizeof(dnac_mmix_fold_state_t),
+           (size_t)DNAC_P2S_OI_NUM_BATCHES, (size_t)DNAC_P2S_NUM_QUERIES,
+           DNAC_P2S_NUM_INSTANCES,
+           DNAC_P2S_NUM_INSTANCES * sizeof(dnac_batch_vinstance_t),
+           DNAC_P2S_TOTAL_PUBLICS * sizeof(gold_fp_t),
+           sizeof(dnac_p2s_fold_states_t) +
+               DNAC_P2S_NUM_INSTANCES * sizeof(dnac_batch_vinstance_t) +
+               DNAC_P2S_TOTAL_PUBLICS * sizeof(gold_fp_t));
 }
 
 /* ═════════════════════════════ prove + verify ════════════════════════════ */
@@ -2964,8 +3331,11 @@ static void p2s_fill_witnesses(dnac_batch_pwitness_t *wits, const traces_t *T)
     wits[DNAC_P2S_INST_TAIR].prep_trace = T->tair.B->prep;
     for (size_t q = 0; q < DNAC_P2S_NUM_QUERIES; q++) {
         const qtraces_t *Q = &T->q[q];
-        wits[DNAC_P2S_INST(q, DNAC_P2S_SLOT_MMIX)].main_trace = Q->mmix.trace;
-        wits[DNAC_P2S_INST(q, DNAC_P2S_SLOT_MMIX)].prep_trace = Q->mmix.prep;
+        for (size_t b = 0; b < DNAC_P2S_OI_NUM_BATCHES; b++) {
+            const uint32_t i = DNAC_P2S_INST(q, DNAC_P2S_SLOT_MMIX(b));
+            wits[i].main_trace = Q->mmix[b].trace;
+            wits[i].prep_trace = Q->mmix[b].prep;
+        }
         for (size_t r = 0; r < DNAC_P2S_FRI_R; r++) {
             const uint32_t i = DNAC_P2S_INST(q, DNAC_P2S_SLOT_MMCS(r));
             wits[i].main_trace = Q->mmcs[r].trace;
@@ -3156,10 +3526,16 @@ static void t_steps12_negatives(const dnac_p2s_statement_t *stmt,
         CHECK(stub_run(&bad, &S) == DNAC_P2S_ERR_CANON,
               "N-CANON: the last payload lane was not rejected");
 
-        bad = *stmt;
-        bad.mmix_root[3] = UINT64_MAX;
-        CHECK(stub_run(&bad, &S) == DNAC_P2S_ERR_CANON,
-              "N-CANON: a non-canonical mmix root lane was not rejected");
+        /* EVERY batch's root — the span grew by an axis exactly as the round
+         * one did, and a loop that stopped at batch 0 would leave batches
+         * 1..B-1 unchecked while the struct's sizeof assert still passed. */
+        for (size_t b = 0; b < DNAC_P2S_OI_NUM_BATCHES; b++) {
+            bad = *stmt;
+            bad.mmix_root[b][MMIX_DIGEST_LANES - 1] = UINT64_MAX;
+            CHECK(stub_run(&bad, &S) == DNAC_P2S_ERR_CANON,
+                  "N-CANON: a non-canonical batch-%zu mmix root lane was not "
+                  "rejected", b);
+        }
 
         /* EVERY round's root — the span grew by an axis, and a loop that
          * stopped at round 0 would leave rounds 1..R-1 unchecked while the
@@ -3206,11 +3582,18 @@ static void t_steps12_negatives(const dnac_p2s_statement_t *stmt,
                       "lane was not rejected", q, r);
             }
 
-            bad = *stmt;
-            bad.mmix_opened[q][DNAC_P2S_MMIX_TOTAL_OPENED - 1] = GOLDILOCKS_P;
-            CHECK(stub_run(&bad, &S) == DNAC_P2S_ERR_CANON,
-                  "N-CANON: q%zu's non-canonical mmix opened lane was not "
-                  "rejected", q);
+            /* The LAST lane of EVERY batch's span, so an off-by-one in either
+             * the flat canonicality span or `dnac_p2s_mmix_opened_off` shows up
+             * here rather than downstream. */
+            for (size_t b = 0; b < DNAC_P2S_OI_NUM_BATCHES; b++) {
+                const size_t last = dnac_p2s_mmix_opened_off(b) +
+                                    DNAC_P2S_MMIX_TOTAL_OPENED(b) - 1;
+                bad = *stmt;
+                bad.mmix_opened[q][last] = GOLDILOCKS_P;
+                CHECK(stub_run(&bad, &S) == DNAC_P2S_ERR_CANON,
+                      "N-CANON: q%zu batch %zu's non-canonical mmix opened "
+                      "lane (%zu) was not rejected", q, b, last);
+            }
 
             bad = *stmt;
             bad.z_pq[q][2 * DNAC_P2S_OI_TOTAL_ACC - 1] = UINT64_MAX;
@@ -3222,12 +3605,6 @@ static void t_steps12_negatives(const dnac_p2s_statement_t *stmt,
             CHECK(stub_run(&bad, &S) == DNAC_P2S_ERR_CANON,
                   "N-CANON: q%zu's non-canonical ro_export lane was not "
                   "rejected", q);
-
-            bad = *stmt;
-            bad.px_rest[q][DNAC_P2S_OI_PX_REST - 1] = UINT64_MAX;
-            CHECK(stub_run(&bad, &S) == DNAC_P2S_ERR_CANON,
-                  "N-CANON: q%zu's non-canonical px_rest lane was not rejected",
-                  q);
 
             /* the boolean rail on the entry's own construction input */
             bad = *stmt;
@@ -3349,14 +3726,25 @@ static void rt1_and_proof_negatives(const dnac_p2s_statement_t *stmt,
     printf("  [rt]     preprocessed widths: tair %zu, mmix %zu, mmcs %zu, "
            "fri %zu, oi %zu (the batch_prover.c pw cap is lifted)\n",
            dnac_p2s_prep_cols(DNAC_P2S_INST_TAIR),
-           dnac_p2s_prep_cols(DNAC_P2S_INST(0, DNAC_P2S_SLOT_MMIX)),
+           dnac_p2s_prep_cols(DNAC_P2S_INST(0, DNAC_P2S_SLOT_MMIX(0))),
            dnac_p2s_prep_cols(DNAC_P2S_INST(0, DNAC_P2S_SLOT_MMCS(0))),
            dnac_p2s_prep_cols(DNAC_P2S_INST(0, DNAC_P2S_SLOT_FRI)),
            dnac_p2s_prep_cols(DNAC_P2S_INST(0, DNAC_P2S_SLOT_OI)));
 
     if (!p2s_prove(stmt, T, &proof)) {
-        CHECK(0, "RT-1: dnac_batch_prove could not prove the %u-instance set",
-              DNAC_P2S_NUM_INSTANCES);
+        /* If this fires, check T-QCAP FIRST: the quotient round puts one matrix
+         * per quotient chunk of every instance into ONE FRI input batch
+         * (batch_verify.c:373-374 with :579), and exceeding FRI_MAX_RO makes
+         * the prover's own self-verify (batch_prover.c:1639-1646) reject with a
+         * status that names nothing. That was the FLEET 037 blocker, closed by
+         * the 64 → 128 raise. */
+        CHECK(0, "RT-1: dnac_batch_prove could not prove the %u-instance set "
+                 "(quotient round %zu matrices vs FRI_MAX_RO %zu — check "
+                 "T-QCAP)",
+              DNAC_P2S_NUM_INSTANCES,
+              (size_t)DNAC_P2S_NUM_INSTANCES
+                  << dnac_p2s_log_num_qc(DNAC_P2S_MAX_SYMBOLIC_DEGREE, 0),
+              (size_t)DNAC_P2S_FRI_MAX_RO);
         /* ⚠ NO SILENT SKIP. A prove failure is exactly what a BROKEN alias
          * produces — query q's honest trace then contradicts the publics the
          * entry hands it — so returning here would suppress the very checks
@@ -3367,10 +3755,10 @@ static void rt1_and_proof_negatives(const dnac_p2s_statement_t *stmt,
         return;
     }
     printf("  [rt]     dnac_batch_prove OK — %u instances (1 transcript + "
-           "%zu queries x (1 mmix + %zu commit rounds + fri + oi)), "
+           "%zu queries x (%zu input batches + %zu commit rounds + fri + oi)), "
            "is_zk 0\n",
            DNAC_P2S_NUM_INSTANCES, (size_t)DNAC_P2S_NUM_QUERIES,
-           (size_t)DNAC_P2S_FRI_R);
+           (size_t)DNAC_P2S_OI_NUM_BATCHES, (size_t)DNAC_P2S_FRI_R);
 
     map = dnac_batch_proof_prep_map(proof, &nprep);
     dnac_batch_proof_commits(proof, &cm);
@@ -3567,9 +3955,15 @@ static void t_query_alias(const dnac_p2s_statement_t *stmt,
                 bad.index_bits[qq][l] ^= 1u;
                 if (!set_pair(stmt, &bad, "N-QSEP")) continue;
 
-                want = P2S_TMASK | P2S_IMASK(qq, DNAC_P2S_SLOT_MMIX) |
-                       P2S_IMASK(qq, DNAC_P2S_SLOT_FRI) |
+                want = P2S_TMASK | P2S_IMASK(qq, DNAC_P2S_SLOT_FRI) |
                        P2S_IMASK(qq, DNAC_P2S_SLOT_OI);
+                /* EVERY input batch of this query: their dir regions are the
+                 * whole index (depth == lgmh for every batch), so a bit reaches
+                 * all B — unlike the commit rounds, whose windows are proper
+                 * suffixes. */
+                for (size_t b = 0; b < DNAC_P2S_OI_NUM_BATCHES; b++) {
+                    want |= P2S_IMASK(qq, DNAC_P2S_SLOT_MMIX(b));
+                }
                 for (size_t r = 0; r < DNAC_P2S_FRI_R; r++) {
                     if (l >= DNAC_P2S_MMCS_BIT_OFF(r) &&
                         l < DNAC_P2S_MMCS_BIT_OFF(r) +
@@ -3624,12 +4018,11 @@ static void t_query_alias(const dnac_p2s_statement_t *stmt,
      * OBL-P2c-2 shape. ── */
     {
         const dnac_tair_script_t *ts = dnac_p2s_tair_script();
-        uint32_t all_oi = 0, all_fri = 0, all_mmix = 0;
+        uint32_t all_oi = 0, all_fri = 0;
 
         for (size_t q = 0; q < DNAC_P2S_NUM_QUERIES; q++) {
             all_oi |= P2S_IMASK(q, DNAC_P2S_SLOT_OI);
             all_fri |= P2S_IMASK(q, DNAC_P2S_SLOT_FRI);
-            all_mmix |= P2S_IMASK(q, DNAC_P2S_SLOT_MMIX);
         }
 
         /* alpha (fri_verifier.c:694) -> EVERY oi instance, and the transcript
@@ -3709,15 +4102,28 @@ static void t_query_alias(const dnac_p2s_statement_t *stmt,
             }
         }
 
-        /* The two commitment roots -> every instance of their own slot, and
-         * nothing else. One commitment, Q openings. */
-        for (size_t k = 0; k < (size_t)MMIX_DIGEST_LANES; k++) {
-            dnac_p2s_statement_t bad = *stmt;
-            bad.mmix_root[k] = gold_fp_to_u64(gold_fp_add(
-                gold_fp_from_u64(bad.mmix_root[k]), gold_fp_one()));
-            if (!set_pair(stmt, &bad, "N-QSHARED")) continue;
-            check_mask(moved_mask(), all_mmix, "N-QSHARED: mmix_root[%zu]", k);
-            expect_entry_reject(&bad, proof, "N-QSHARED: mmix_root[%zu]", k);
+        /* The commitment roots -> every instance of their own slot, and nothing
+         * else. One commitment, Q openings — and, since the input-batch slice,
+         * B such statements rather than one. The expected set is
+         * {mmix[q][b] : all q} for the perturbed batch and NOTHING of any other
+         * batch: a collapse that fed every batch batch 0's root would move all
+         * B for a batch-0 lane and none for the others. That is the SHARED-axis
+         * half of N-BSEP, and it is why this loop is over b as well as k. */
+        for (size_t b = 0; b < DNAC_P2S_OI_NUM_BATCHES; b++) {
+            uint32_t all_b = 0;
+            for (size_t q = 0; q < DNAC_P2S_NUM_QUERIES; q++) {
+                all_b |= P2S_IMASK(q, DNAC_P2S_SLOT_MMIX(b));
+            }
+            for (size_t k = 0; k < (size_t)MMIX_DIGEST_LANES; k++) {
+                dnac_p2s_statement_t bad = *stmt;
+                bad.mmix_root[b][k] = gold_fp_to_u64(gold_fp_add(
+                    gold_fp_from_u64(bad.mmix_root[b][k]), gold_fp_one()));
+                if (!set_pair(stmt, &bad, "N-QSHARED")) continue;
+                check_mask(moved_mask(), all_b,
+                           "N-QSHARED: mmix_root[b%zu][%zu]", b, k);
+                expect_entry_reject(&bad, proof,
+                                    "N-QSHARED: mmix_root[b%zu][%zu]", b, k);
+            }
         }
         /* ── N-OBSBIND — HONEST LABEL 6's ACCEPTANCE CRITERION, and the round
          * axis's shared-value leg in one.
@@ -3779,11 +4185,13 @@ static void t_query_alias(const dnac_p2s_statement_t *stmt,
     /* ── N-QINDEP: a PER-QUERY lane reaches ONLY its own query's consumers.
      * This is the leg that would fire if a per-query region had been aliased
      * across q (the collapse), and it also carries the older single-query
-     * claims: the ro-export two-consumer property (s1c), the p_x <-> MMCS
-     * alias (s2, N-ALIAS/px) and the `px_rest` honest label (N-PXREST) — each
-     * now stated as an exact instance set instead of a pair of booleans. ── */
+     * claim it subsumes: the ro-export two-consumer property (s1c), now stated
+     * as an exact instance set instead of a pair of booleans.
+     * ⚠ The p_x legs that used to live here — the s2 alias (N-ALIAS/px) and the
+     * `px_rest` honest label (N-PXREST) — have MOVED, not been dropped: they
+     * are the (query, batch) claims of N-BSEP / N-PXBOUND below, which is a
+     * strictly finer statement than "reaches only query qq". ── */
     for (size_t qq = 0; qq < DNAC_P2S_NUM_QUERIES; qq++) {
-        const uint32_t m_mmix = P2S_IMASK(qq, DNAC_P2S_SLOT_MMIX);
         const uint32_t m_fri = P2S_IMASK(qq, DNAC_P2S_SLOT_FRI);
         const uint32_t m_oi = P2S_IMASK(qq, DNAC_P2S_SLOT_OI);
 
@@ -3804,54 +4212,82 @@ static void t_query_alias(const dnac_p2s_statement_t *stmt,
                                 "N-QINDEP/ro: ro_export[q%zu][%zu]", qq, i);
         }
 
-        /* mmix_opened (s2): the mmix instance's opened row AND — for every acc
-         * row of the MAIN batch at that matrix's height — the oi instance's
-         * p_x. Two consumers, ONE field, SAME query. */
-        for (size_t c = 0; c < DNAC_P2S_MMIX_TOTAL_OPENED; c++) {
-            dnac_p2s_statement_t bad = *stmt;
-            const size_t opx = dnac_foi_pub_px_off(dnac_p2s_oi_cfg());
-            const gold_fp_t *ao, *bo;
-            int outside_px = 0;
+        /* ── N-BSEP + N-PXBOUND(perturbation) — ►► THE ACCEPTANCE CRITERION OF
+         * THE INPUT-BATCH SLICE, on the data side. ONE perturbation, TWO
+         * claims, because they are two facets of the same alias:
+         *
+         *   N-BSEP    (exact set) a lane of BATCH b's opened span reaches
+         *             {mmix[qq][b], oi[qq]} and NOTHING else — not another
+         *             batch's mmix instance (each has its own span), not
+         *             another query's anything (the row is per query).
+         *             Under a collapse that fed every batch batch 0's span, a
+         *             batch-1 lane would move mmix[qq][0] instead of
+         *             mmix[qq][1], and the exact set fires.
+         *   N-PXBOUND (the closure) the `oi` bit of that set is not incidental:
+         *             it is the p_x alias, and BEFORE this slice it was ABSENT
+         *             for b > 0 — the quotient and preprocessed rows came from
+         *             the deleted `px_rest`, so perturbing their opened lanes
+         *             moved oi not at all. The `m_oi` bit going missing is
+         *             therefore exactly the RED signal of a regression to the
+         *             s2 shape, and it is asserted for EVERY batch.
+         *
+         * Plus the containment leg: inside the oi vector the move must land
+         * ONLY in the p_x region, and only at the acc rows belonging to batch
+         * b — anywhere else would mean the region walk mis-partitioned. ── */
+        for (size_t b = 0; b < DNAC_P2S_OI_NUM_BATCHES; b++) {
+            const uint32_t m_mmix_b = P2S_IMASK(qq, DNAC_P2S_SLOT_MMIX(b));
+            const size_t base = dnac_p2s_mmix_opened_off(b);
 
-            bad.mmix_opened[qq][c] = gold_fp_to_u64(gold_fp_add(
-                gold_fp_from_u64(bad.mmix_opened[qq][c]), gold_fp_one()));
-            if (!set_pair(stmt, &bad, "N-QINDEP/px")) continue;
-            check_mask(moved_mask(), m_mmix | m_oi,
-                       "N-QINDEP/px: mmix_opened[q%zu][%zu]", qq, c);
+            CHECK(base != (size_t)-1, "N-BSEP: batch %zu has no opened offset",
+                  b);
+            if (base == (size_t)-1) continue;
+            for (size_t c = 0; c < DNAC_P2S_MMIX_TOTAL_OPENED(b); c++) {
+                dnac_p2s_statement_t bad = *stmt;
+                const size_t opx = dnac_foi_pub_px_off(dnac_p2s_oi_cfg());
+                const gold_fp_t *ao, *bo;
+                int outside_px = 0, px_moved = 0;
 
-            /* and inside the oi vector it must land ONLY in the p_x region —
-             * anywhere else would mean the region walk mis-partitioned. */
-            ao = set_pub(&g_set_a, DNAC_P2S_INST(qq, DNAC_P2S_SLOT_OI));
-            bo = set_pub(&g_set_b, DNAC_P2S_INST(qq, DNAC_P2S_SLOT_OI));
-            for (size_t k = 0; k < opx; k++) {
-                if (gold_fp_to_u64(ao[k]) != gold_fp_to_u64(bo[k])) {
-                    outside_px = 1;
+                bad.mmix_opened[qq][base + c] =
+                    gold_fp_to_u64(gold_fp_add(
+                        gold_fp_from_u64(bad.mmix_opened[qq][base + c]),
+                        gold_fp_one()));
+                if (!set_pair(stmt, &bad, "N-BSEP")) continue;
+                check_mask(moved_mask(), m_mmix_b | m_oi,
+                           "N-BSEP: mmix_opened[q%zu] batch %zu lane %zu "
+                           "(flat %zu)", qq, b, c, base + c);
+
+                ao = set_pub(&g_set_a, DNAC_P2S_INST(qq, DNAC_P2S_SLOT_OI));
+                bo = set_pub(&g_set_b, DNAC_P2S_INST(qq, DNAC_P2S_SLOT_OI));
+                for (size_t k = 0; k < opx; k++) {
+                    if (gold_fp_to_u64(ao[k]) != gold_fp_to_u64(bo[k])) {
+                        outside_px = 1;
+                    }
                 }
+                for (size_t k = opx; k < DNAC_P2S_OI_NUM_PUBLICS; k++) {
+                    if (gold_fp_to_u64(ao[k]) != gold_fp_to_u64(bo[k])) {
+                        px_moved = 1;
+                    }
+                }
+                CHECK(!outside_px,
+                      "N-BSEP: mmix_opened[q%zu] batch %zu lane %zu moved an "
+                      "oi public OUTSIDE the p_x region", qq, b, c);
+                /* THE CLOSURE ASSERTION, stated on its own so a failure names
+                 * it rather than hiding inside the mask message. */
+                CHECK(px_moved,
+                      "N-PXBOUND: mmix_opened[q%zu] batch %zu lane %zu reaches "
+                      "NO oi p_x public — batch %zu's acc rows are not bound to "
+                      "its opening (the pre-slice `px_rest` shape)", qq, b, c,
+                      b);
+                expect_entry_reject(&bad, proof,
+                                    "N-BSEP: mmix_opened[q%zu] batch %zu lane "
+                                    "%zu", qq, b, c);
             }
-            CHECK(!outside_px,
-                  "N-QINDEP/px: mmix_opened[q%zu][%zu] moved an oi public "
-                  "OUTSIDE the p_x region", qq, c);
-            expect_entry_reject(&bad, proof,
-                                "N-QINDEP/px: mmix_opened[q%zu][%zu]", qq, c);
         }
 
         /* mmcs_opened's per-query claim is now the (query, round) claim of
-         * N-RSEP/opened above — the same perturbation with a finer expected
-         * set, so it is not repeated here. */
-
-        /* px_rest — the honest label under test (s2). It IS consumed, and it
-         * reaches ONLY this query's oi instance: not mmix (no commitment binds
-         * it — that is the seam that is still open) and not the other query. */
-        for (size_t i = 0; i < DNAC_P2S_OI_PX_REST; i++) {
-            dnac_p2s_statement_t bad = *stmt;
-            bad.px_rest[qq][i] = gold_fp_to_u64(gold_fp_add(
-                gold_fp_from_u64(bad.px_rest[qq][i]), gold_fp_one()));
-            if (!set_pair(stmt, &bad, "N-QINDEP/pxrest")) continue;
-            check_mask(moved_mask(), m_oi,
-                       "N-QINDEP/pxrest: px_rest[q%zu][%zu]", qq, i);
-            expect_entry_reject(&bad, proof,
-                                "N-QINDEP/pxrest: px_rest[q%zu][%zu]", qq, i);
-        }
+         * N-RSEP/opened above, and mmix_opened's is the (query, batch) claim of
+         * N-BSEP — the same perturbations with finer expected sets, so neither
+         * is repeated here. */
 
         /* z — the OPENING POINTS. One consumer, this query's oi instance: this
          * is the half of the old `zpz` region that legitimately stays per-query
@@ -4051,11 +4487,12 @@ int main(int argc, char **argv)
         const uint64_t *ctab[DNAC_P2S_NUM_INSTANCES];
         int ok = p2s_alloc_tables(tab);
 
-        printf("multi-query + round-replication composed preprocessed root — "
-               "the PINNED cfg set\n(%u tables: tair, then "
-               "{mmix, mmcs[0..%zu], fri, oi} per query, %zu queries),\n",
-               DNAC_P2S_NUM_INSTANCES, (size_t)DNAC_P2S_FRI_R - 1,
-               (size_t)DNAC_P2S_NUM_QUERIES);
+        printf("multi-query + round + input-batch replication composed "
+               "preprocessed root — the PINNED cfg set\n(%u tables: tair, then "
+               "{mmix[0..%zu], mmcs[0..%zu], fri, oi} per query, "
+               "%zu queries),\n",
+               DNAC_P2S_NUM_INSTANCES, (size_t)DNAC_P2S_OI_NUM_BATCHES - 1,
+               (size_t)DNAC_P2S_FRI_R - 1, (size_t)DNAC_P2S_NUM_QUERIES);
         printf("pipeline = batch_prover.c:786-822 with is_zk = 0, blowup %zu\n\n",
                (size_t)DNAC_P2S_LOG_BLOWUP);
         for (uint32_t i = 0; i < DNAC_P2S_NUM_INSTANCES; i++) {
@@ -4085,8 +4522,8 @@ int main(int argc, char **argv)
         return 0;
     }
 
-    printf("=== s1b + s1c + s2 + s3b + MULTI-QUERY + ROUND-REPLICATION — "
-           "FRI-verify statement ENTRY (%u instances) ===\n\n",
+    printf("=== s1b + s1c + s2 + s3b + MULTI-QUERY + ROUND + INPUT-BATCH "
+           "REPLICATION — FRI-verify statement ENTRY (%u instances) ===\n\n",
            DNAC_P2S_NUM_INSTANCES);
 
     printf("T-CONST / T-LQ — the pinned arithmetic vs the module accessors\n");

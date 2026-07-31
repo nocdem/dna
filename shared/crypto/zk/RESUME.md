@@ -917,6 +917,95 @@ left is NOT zk work — it is design and consensus work upstream of the circuits
    label 3'ün input-batch replikasyonu (`px_rest` + opened claims), label 4
    arity-eşitliği, label 5 oi grup-şekli.
 
+   **INPUT-BATCH REPLİKASYONU SHIPPED — LABEL 3 YAPISAL OLARAK KAPANDI
+   (2026-07-31, FLEET 037: 1 executor 2 tur + verifier + zk-auditor +
+   ORCHESTRATOR).** Per-query blok `{mmix[0..B−1], mmcs[0..R−1], fri, oi}`,
+   B=3 (main/quotient/preprocessed), `SLOTS = B+R+2 = 8`, toplam `1 + Q·8` =
+   **17** instance; Q tavanı 3. Batch sırası native'den okundu:
+   `fri_open_input` `qp->input_proof[batch]` üzerinden geziyor
+   (`fri_verifier.c:207-209`) ve `dnac_batch_verify` is_zk=0 + lookup yokken tam
+   olarak main/quotient/preprocessed emit ediyor (`batch_verify.c:545-602`).
+   **`px_rest` alanı TAMAMEN TÜKETİLİP SİLİNDİ** (kod atfı sıfır) — `p_x`'in
+   üç batch'i de artık ilgili mmix instance'ının opened lane'lerinden, tek
+   kaynak-çok tüketici deseniyle.
+   Native dayanağı: `fri_open_input` her batch'i AYNI gövdeden geçirip
+   `cw->commitment`'a karşı MMCS-doğruluyor ve biriktirdiği `p_x` o doğrulanmış
+   açılımın İÇİNDEN geliyor (`fri_verifier.c:381-396` `:207` döngüsü içinde,
+   `:471`). **Native'de ayrıcalıklı "main batch" YOK** — s2'nin asimetrisi saf
+   bir modelleme artefaktıydı; üç kök gerçekten ayrı (`batch_verify.c:557-559`
+   / `:574-576` / `:595-597`), o yüzden `mmix_root` batch ekseni kazandı.
+   ⚠ **LABEL 3 "STRUCTURALLY CLOSED, NOT YET CRYPTOGRAPHICALLY"** olarak
+   etiketlendi (denetçi başlığın koşulluluğu taşımadığını yakaladı): kablolama
+   tam, serbest `p_x` girdisi kalmadı, ama bağlandığı `mmix_root[b]` hâlâ yalnız
+   kanoniklik-denetimli bir statement alanı (`fri_statement.c:503-504`).
+   Statement'ı seçen kökü de seçer ⇒ **kapanış label 6a kapanana kadar soundness
+   taşımıyor.** 6a muhasebesi iki yönlü yazıldı: kök 1→3 bağsız, ama bağsız
+   `p_x` lane'i (TOTAL_ACC−MAIN_ACC)→0 — artık dağınık değerlerden üç köke
+   yoğunlaştı, 6a'yı kapatmak artık label 3'ü de kapatacak.
+   ⚠ **YENİ YÜKÜMLÜLÜK — `DNAC_P2S_MMIX_SALT_ELEMS == 0` LABEL 3'Ü TAŞIYOR:**
+   native `cols + se` lane hash'liyor (`fri_verifier.c:410-428`); se=0'da
+   hash'lenen ön-görüntü = açılan satır, yani opened publics her şeyi kapsıyor.
+   se>0 olan bir pin'de publics yalnız ÖN-EKİ kapsar ⇒ label 3 YENİDEN AÇILIR.
+   Runtime'da zorlayan yok; sabitin yanına yazıldı.
+   ⚠ **İKİNCİ SHIPPED TAVAN — `FRI_MAX_RO` 64 → 128 (konsensüs-linkli dosya).**
+   Batched stark'ın quotient turu TEK commitment ve `num_matrices = Σ
+   num_quotient_chunks` (`batch_verify.c:373`/`:579`), instance başına
+   `1<<(log_num_qc+is_zk)` = 4 chunk (`batch_prover.c:650`) ⇒ 17×4 = 68 > 64,
+   `fri_verifier.c:218` guard'ı proof üretimini reddediyordu. 128 seçildi çünkü
+   `4 × BV_MAX_INSTANCES = 128` — iki tavan HİZALANIR ve composition bu kapıya
+   bir daha dönmez (80 duvarı 20'ye taşırdı, kaldırmazdı). Assert dürüst
+   kapsamlı: "4" evrensel DEĞİL, `log_num_qc` çağıran-tarafından ve
+   `batch_verify.c:179` yalnız `<32` sınırlıyor ⇒ assert "degree-4 sınıfı için
+   iki tavan uyuşuyor" der, "hiçbir instance kümesi taşamaz" DEMEZ.
+   ⚠ **STACK TRIPWIRE:** `rowbuf[FRI_MAX_RO][FRI_LEAF_CAP]` automatic,
+   1.25 MB → **2.5 MB**. Bugün güvenli, ve yalnız DEĞİŞEBİLİR bir sebeple:
+   `fri_verifier.c` YALNIZ libnodus'ta derleniyor (`nodus/CMakeLists.txt:192`),
+   messenger'ın hiçbir CMakeLists'inde yok (grep). Verify stack bir gün
+   `libdna`'ya girerse (S7 cüzdan / Android) 2.5 MB bionic'in 1 MB pthread
+   stack'ine SIĞMAZ — port eden `rowbuf`'u heap'e almak ZORUNDA. Bu bir port
+   ön-koşulu, ayar önerisi değil.
+   ⚠⚠ **ORCHESTRATOR'IN GERİ ÇEKTİĞİ UYDURMA (KAFADAN, zk-auditor yakaladı).**
+   "`cw->num_matrices` proof-türevli, dolayısıyla `FRI_MAX_RO` bir DoS sınırı;
+   C3 onu çağıran-pinli yapmalı" diye yazmıştım — **YANLIŞ.** Sayı zaten
+   ÇAĞIRAN-pinli: proof'un beyan ettiği chunk sayısı FRI'dan ÖNCE çağıranın
+   binding'ine karşı denetleniyor (`batch_priming.c:340`, `batch_verify.c:253`
+   üzerinden), binding çağıranın kendi descriptor'ından (`batch_verify.c:180`,
+   `:207`), `n` çağıran argümanı (`:97`). Proof-türevli olan `bo->num_matrices`
+   ve onun kapağı AYRI (`DNAC_FRI_WIRE_MAX_MATRICES 256`,
+   `fri_proof_codec.h:71`), üstelik `:332` ikisinin eşitliğini şart koşuyor. Ve
+   `rowbuf` sabit automatic ⇒ 2.5 MB `num_matrices` 1 olsa da ödeniyor: yükseltme
+   SABİT bir maliyeti ikiye katladı, saldırgan-ölçekli bir maliyeti DEĞİL.
+   İddia ve ondan türeyen C3 yükümlülüğü **iki yerde adıyla geri çekildi**
+   (`fri_verifier.c` EOF + `fri_statement.h`). Kararın kendisi (128) doğru
+   kaldı — gerekçesinin güvenlik yarısı uydurmaydı.
+   ⚠ **SIFIR-KAYMA DİSİPLİNİ (yeni, kalıcı ders).** 73 satırlık gerekçe bloğu
+   `fri_verifier.c`'nin gövdesini +73 kaydırmış ve ağaçtaki **~194
+   `fri_verifier.c:NNN` atfını bayatlatmıştı — ki "atıfı tekrar oku" bu projenin
+   uydurma-yasağının ÖN KOŞULU. Blok dosyanın SONUNA taşındı, `.c`'de yalnız
+   sabitin DEĞERİ değişti; `:218` (guard), `:207` (batch döngüsü), `:51`
+   (`FRI_LEAF_CAP`) hepsi orijinal satırlarında. **Büyüyen düzyazı kodu
+   kaydırmamalı** — kural bloğun içine yazıldı.
+   **O6 (2 lens + ORCHESTRATOR):** verifier 11 CONFIRMED / 1 REFUTED
+   (batch'ler ayrık EVET, label 3 kapandı EVET; REFUTED = executor'ın
+   "`[skip]` yolu kapandı" ifadesi — fonksiyon byte-özdeş, değişen prover'ın
+   başarılı olması; ORCHESTRATOR koşusunda `[skip]` sayısı 0, yani ikisi de
+   farklı şeyler hakkında haklı); zk-auditor 11 GROUNDED / 5 JUDGMENT /
+   **1 KAFADAN** (yukarıdaki geri çekme). Her iki lensin bulduğu belge
+   defektleri düzeltildi: LABEL 3 başlığı, 6a muhasebesi, salt yükümlülüğü,
+   `FRI_RO_MAX_INSTANCES` tazelendi (128>>2 = 32, artık bağlayıcı tavan O),
+   quotient turunun **chunk** başına matris taşıdığı (instance başına değil —
+   bu pin'de `num_quotient_chunks==1` olduğu için çakışıyor, fail-close),
+   N-PXBOUND'un batch 0↔2 arasında **değer-dejenere** olduğu ve ayrımı
+   N-BSEP'in perturbasyon bacağının taşıdığı.
+   `DNAC_P2S_PREP_ROOT` 17 tablo üzerinden RE-PIN: `39ab2b3686f99b36 /
+   8ffbdfa22ba45d68 / 1aa33517b8854b20 / b56b09755fbe2b40` — ORCHESTRATOR
+   bağımsız türetti, hem executor'ınkiyle hem yükseltme-öncesi türetimle
+   eşleşti (⇒ `FRI_MAX_RO` preprocessed tablolara girmiyor). Diğer 5 modül pini
+   byte-özdeş.
+   **O9 ORCHESTRATOR-verified:** zk `make clean && make test` → **86 binary,
+   0 uyarı, ALL GATES GREEN, 1219/0**, `dnac_batch_prove OK — 17 instances`,
+   `[skip]` 0. Kontrol 933 → 1219.
+
    **COMMIT-ROUND REPLİKASYONU + LABEL 6 SHIPPED (2026-07-31, FLEET 036:
    1 executor 2 tur + verifier + zk-auditor + ORCHESTRATOR).**
    Statement artık **tüm R commit turunu** koşuyor (R = LGMH−LB−LFPL = 3):

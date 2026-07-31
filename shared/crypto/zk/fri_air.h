@@ -188,11 +188,15 @@
  *          instance's q-th exported bit block; the shared three are single
  *          statement fields with no per-query copy. Gate: N-QSEP / N-QSHARED /
  *          N-QINDEP in tests/test_fri_statement.c.
- *          ⚠ INDEX FORMULA UPDATED by the commit-round replication slice: the
- *          per-query block is no longer 4 consumers but SLOTS = R + 3 of them
- *          (mmix, one MMCS instance per commit round, fri, oi), so the stride
- *          is DNAC_P2S_SLOTS. The obligation itself is unchanged — what it
- *          requires is the per-query index alias, not a particular stride.
+ *          ⚠ INDEX FORMULA UPDATED TWICE. The commit-round replication slice
+ *          took the per-query block from 4 consumers to R + 3 (mmix, one MMCS
+ *          instance per commit round, fri, oi); the INPUT-BATCH replication
+ *          slice took it to SLOTS = B + R + 2 (one mixed-MMCS instance per
+ *          input batch, one MMCS instance per commit round, fri, oi), so the
+ *          stride is DNAC_P2S_SLOTS. The obligation itself is unchanged in
+ *          both cases — what it requires is the per-query index alias, not a
+ *          particular stride, and every one of the B + R + 2 consumers takes
+ *          its bit / direction publics from `index_bits[q]`.
  *
  * ── What slice 1 does NOT do (design §0.5 :393-403) ─────────────────────────
  *   - No MMCS verify. The sibling column `s` is UNCONSTRAINED witness data

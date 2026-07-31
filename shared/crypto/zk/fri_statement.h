@@ -10,33 +10,50 @@
  * verification shape, and one pinned cfg per participating AIR. The entry only
  * ever CONSTRUCTS and REJECTS — it introduces no constraint and no column.
  *
- * ── 1 + (R+3)*Q instances (MULTI-QUERY + COMMIT-ROUND REPLICATION) ───────────
+ * ── 1 + (B+R+2)*Q instances (MULTI-QUERY + COMMIT-ROUND + INPUT-BATCH) ───────
  *   idx 0                    tair    the DuplexChallenger control AIR (F-S tail)
- *   idx 1 + S*q + 0          mmix    mixed-height input-batch MMCS verify, q
- *   idx 1 + S*q + 1 + r      mmcs[r] same-height binary MMCS verify, ROUND r, q
+ *   idx 1 + S*q + b          mmix[b] mixed-height input-batch MMCS verify,
+ *                                    INPUT BATCH b, q  (b < DNAC_P2S_OI_NUM_BATCHES)
+ *   idx 1 + S*q + B + r      mmcs[r] same-height binary MMCS verify, ROUND r, q
  *                                    (r < DNAC_P2S_FRI_R)
- *   idx 1 + S*q + 1 + R      fri     the fold-walk control AIR,            q
- *   idx 1 + S*q + 2 + R      oi      the reduced-opening accumulation AIR, q
- * with S == DNAC_P2S_SLOTS == R + 3, i.e. `DNAC_P2S_INST(q, slot)` where the
- * slot is one of DNAC_P2S_SLOT_MMIX / _MMCS(r) / _FRI / _OI.
+ *   idx 1 + S*q + B + R      fri     the fold-walk control AIR,            q
+ *   idx 1 + S*q + B + R + 1  oi      the reduced-opening accumulation AIR, q
+ * with S == DNAC_P2S_SLOTS == B + R + 2, i.e. `DNAC_P2S_INST(q, slot)` where the
+ * slot is one of DNAC_P2S_SLOT_MMIX(b) / _MMCS(r) / _FRI / _OI.
  *
  * ⚠ THE INSTANCE ORDER IS PART OF THE INTERFACE. The pinned preprocessed root
  * below is a commitment over the tables IN THIS ORDER, so the entry rejects any
  * other `prep_matrix_to_instance`. WHY this order:
  *   - the transcript is the ONE SHARED producer and every query's consumers
- *     read from it. At index 0 its position is INDEPENDENT of Q and of R, so
- *     raising either APPENDS instances instead of renumbering the producer (in
- *     the s3b order, tair sat at 4 and would have had to move).
+ *     read from it. At index 0 its position is INDEPENDENT of Q, of R and of B,
+ *     so raising any of them APPENDS instances instead of renumbering the
+ *     producer (in the s3b order, tair sat at 4 and would have had to move).
  *   - a query's consumers are CONTIGUOUS, so "the instances of query q" is one
  *     arithmetic expression and every per-query walk — in the entry, in the
  *     prep-table generator and in the gate — is a single nested loop rather
  *     than a lookup table.
- *   - the R commit rounds are inserted WHERE THE SINGLE mmcs SLOT WAS, in
- *     ROUND ORDER, so the surrounding slot order (mmix, mmcs.., fri, oi) is the
- *     s1b..s3b one and the per-slot cfg / table / publics code is unchanged
- *     apart from its index. Round order is the native's own walk order
- *     (fri_verifier.c:532 iterates `round` ascending), so instance index and
- *     fold depth run the same way.
+ *   - the R commit rounds sit WHERE THE SINGLE mmcs SLOT WAS, in ROUND ORDER;
+ *     round order is the native's own walk order (fri_verifier.c:532 iterates
+ *     `round` ascending), so instance index and fold depth run the same way.
+ *   - the B input batches sit WHERE THE SINGLE mmix SLOT WAS, in BATCH ORDER,
+ *     so the surrounding slot order (mmix.., mmcs.., fri, oi) is the s1b..s3b
+ *     one and the per-slot cfg / table / publics code is unchanged apart from
+ *     its index.
+ *
+ * ⚠ THE BATCH ORDER IS THE NATIVE'S, READ OFF THE CODE — NOT CHOSEN HERE.
+ * `fri_open_input` walks `for (batch = 0; batch < num_commitments; ++batch)`
+ * and reads `qp->input_proof[batch]` / `commitments[batch]` at that index
+ * (fri_verifier.c:207-209), so "batch b" means "position b in the commitments
+ * array". `dnac_batch_verify` builds that array in ROUND-EMISSION order and,
+ * with is_zk = 0 and no lookups (this composition's envelope), emits exactly
+ * three rounds:
+ *     b = 0  MAIN          batch_verify.c:545-564  (`main_commit`)
+ *     b = 1  QUOTIENT      batch_verify.c:565-581  (`quotient_commit`)
+ *     b = 2  PREPROCESSED  batch_verify.c:582-602  (`preprocessed_commit`)
+ * (the is_zk RANDOM round at :531-544 and the lookup PERMUTATION round at
+ * :603-620 are both skipped, which is what makes B == 3 rather than 5.)
+ * DNAC_P2S_SLOT_MMIX(b) uses that same b, so the slot index, the statement's
+ * `mmix_root[b]` and the native's batch loop are one numbering.
  *
  * ⚠ HONEST NOTE — WHICH copies are byte-identical, and which are NOT.
  * The pinned cfgs are per-SLOT, not per-query (a table encodes the AIR's
@@ -50,6 +67,22 @@
  * this pin), so each round has its OWN cfg, its OWN table, its OWN row count
  * (8 / 8 / 8 at this pin — see below) and its OWN public count. That is why the mmcs accessors below
  * take a round and why `DNAC_P2S_MMCS_NUM_PUBLICS` is function-like.
+ * Across BATCHES the answer is MIXED, and stated exactly because it is easy to
+ * get wrong: the three batches differ in their opened-row WIDTH (1 / 2 / 1 at
+ * this pin — MEASURED, see the cfg derivation below), so they have three
+ * different cfgs and three different PUBLIC counts, and `DNAC_P2S_MMIX_*` is
+ * function-like for the same reason the mmcs ones are. Their TABLES, however,
+ * coincide: the mixed schedule's row types are a function of the per-height
+ * CONCATENATED width only through `leaf_rows = ceil(concat / rate)`
+ * (mmcs_mixed_air_table.c:271-272, :298), and 1 and 2 both round up to ONE leaf
+ * row at rate 4 — so all 3B tables are byte-identical here. That is a property
+ * of THIS pin, not of the mechanism (a batch with a 5-wide opened row would
+ * separate them), and it is exactly the OBL-4-MMIX situation: the root binds
+ * table CONTENT, so the WIDTH must be — and is — pinned independently, by the
+ * cfg the entry hands the bind and by the `num_publics` comparison in
+ * `p2s_fill_geometry`. N-PIN still discriminates all 3B tables because it
+ * tampers one CELL of one table at a time and the composed root commits the
+ * matrices SEPARATELY, in order.
  *
  * ── WHAT THE MULTI-QUERY SLICE CLOSES: OBL-P2c-2 (fri_air.h:163-169) ─────────
  * Until now the statement consumed exactly ONE of the Q query indices the
@@ -67,7 +100,9 @@
  *     oi[q].p_z       := pz_shared    (the CLAIMED EVALUATIONS: :470 reads them
  *                        through `commitments`, which :743 passes unchanged on
  *                        every iteration of the query loop)
- *     mmix[q].root       := the ONE input-batch commitment
+ *     mmix[q][b].root    := mmix_root[b], the ONE commitment OF INPUT BATCH b
+ *                        (`commitments[batch]`, fri_verifier.c:209) — SHARED
+ *                        across q, DISTINCT across b
  *     mmcs[q][r].root    := mmcs_root[r], the ONE commitment OF ROUND r
  *                        (`proof->commit_phase_commits` is an ARRAY indexed by
  *                        round, fri_verifier.c:585 reads `[round]`, and the
@@ -80,14 +115,18 @@
  *                     exported bit block (:737 samples a FRESH index per query)
  *     ro_export[q]    the q-th `fri_open_input` result (:742), which is where
  *                     fri[q].f_init and its roll-ins come from
- *     mmix_opened[q]        the input row opened AT the q-th index
+ *     mmix_opened[q]  EVERY input batch's row opened AT the q-th index, laid
+ *                     out batch by batch (:471 reads p_x out of
+ *                     `qp->input_proof`, which IS the q-th query proof, and
+ *                     :383/:392 verify that same row's opening). The batch axis
+ *                     lives INSIDE the row rather than as a second array index
+ *                     because the batches have different widths — see the field
+ *                     comment.
  *     mmcs_opened[q][r]     round r's leaf for query q — the arity fp2 evals
  *                     the walk reconstructs at :547-555 and hands the MMCS at
  *                     :585-588. PER QUERY *and* PER ROUND: the leaf is a
  *                     function of the query's folded index, which is shifted
  *                     once per round (:558)
- *     px_rest[q]      the q-th query's remaining opened values (:471 reads p_x
- *                     out of `qp->input_proof`, which IS the q-th query proof)
  *     z_pq[q]         the q-th query's opening points — HONEST LABEL 8: the
  *                     native's z does NOT move with q either, this one does
  *                     only because the shipped honest-trace builder ties z to x
@@ -150,21 +189,57 @@
  *      and the fri instance can be handed different values for one row. Moved
  *      OUT of this label into label 9, so a closed label does not carry an open
  *      obligation.
- *   3. The `p_x` <-> MMCS opened-row seam is PARTIALLY closed (s2). `p_x` is no
- *      longer free oi witness — C3g binds every acc row's `p_x` to its own
- *      public (fri_oi_air.h) — and this entry sources the MAIN input batch's
- *      acc rows from `stmt.mmix_opened`, i.e. from the SAME lanes the mmix
- *      instance's opened-row publics are built from. For those rows the two
- *      instances cannot be given different opened values, exactly as `ro_export`
- *      does for the fri seed. The QUOTIENT and PREPROCESSED batches' rows come
- *      from `stmt.px_rest`, an honest statement input (see its field comment):
- *      inside the mechanism, but not yet bound to a commitment. Closing them
- *      needs the INPUT-BATCH replication slice (one mmix instance per input
- *      batch). ⚠ TEXT CORRECTED: this label used to say that slice "is the same
- *      slice the commit-round replication belongs to". It is not — the commit
- *      rounds are the FRI phase's own Merkle trees (`commit_phase_commits`) and
- *      landed here, while the input batches are `qp->input_proof`'s and are a
- *      separate axis. Round replication is done; this stays open.
+ *   3. STRUCTURALLY CLOSED (this slice — INPUT-BATCH REPLICATION), and NOT YET
+ *      CRYPTOGRAPHICALLY. Every acc row's `p_x` is now an MMCS-bound lane — the
+ *      wiring is complete and there is no free `p_x` input left. But the root it
+ *      is bound TO, `mmix_root[b]`, is still a plain statement field carrying
+ *      only a canonicality check (`p2s_canon_span`, fri_statement.c:503-504);
+ *      nothing ties it to the transcript. A party that chooses the statement
+ *      chooses the root too: write any `p_x` lanes, compute that leaf's Merkle
+ *      root, set `mmix_root[b]` to it, and both the mmix AIR and oi are
+ *      satisfied. So this closure carries no soundness UNTIL label 6a closes.
+ *      The heading says so because the body alone was not enough — the previous
+ *      version read "CLOSED" and a reader who stopped at the heading would have
+ *      taken a binding this does not yet have.
+ *
+ *      WHAT s2 LEFT OPEN, and why it is gone. s2 made `p_x` a C3g-bound public
+ *      instead of free oi witness (fri_oi_air.h) and sourced the MAIN batch's
+ *      acc rows from `stmt.mmix_opened` — the SAME lanes the mmix instance's
+ *      opened-row publics are built from — but the QUOTIENT and PREPROCESSED
+ *      batches' rows came from `stmt.px_rest`, a plain statement input: inside
+ *      the mechanism, not bound to any commitment. The closure named here was
+ *      "one mmix instance per input batch", and that is exactly what landed:
+ *      every query now carries B mmix instances, batch b's opened row is
+ *      instance `DNAC_P2S_SLOT_MMIX(b)`'s own opened public, and the oi
+ *      instance's p_x for a row of batch b is an ALIAS of that same lane. The
+ *      `px_rest` field is CONSUMED AND GONE, exactly as `tair_bits_rest` went
+ *      with the multi-query slice; the struct shrank.
+ *
+ *      THE NATIVE GROUNDING — why the other two batches deserve an MMCS
+ *      instance at all. `fri_open_input` treats every batch identically: the
+ *      SAME loop body runs `dnac_p2_mmcs_verify` / `_verify_mixed` on batch b's
+ *      opening against `cw->commitment` for EVERY b (fri_verifier.c:381-396,
+ *      inside the `for (batch = ...)` at :207), and the p_x it then accumulates
+ *      is `bo->opened_values[m][j]` off that SAME just-verified batch opening
+ *      (:471). There is no privileged main batch in the native — the asymmetry
+ *      was purely an artifact of the composition having modelled one batch. So
+ *      the quotient and preprocessed openings are commitment-bound in the
+ *      native, and the composition now says so too.
+ *      ⚠ Which commitment: batch b's `cw->commitment` is `main_commit` /
+ *      `quotient_commit` / `preprocessed_commit` for b = 0 / 1 / 2
+ *      (batch_verify.c:557-559, :574-576, :595-597) — three DISTINCT roots,
+ *      which is why `mmix_root` gained a batch axis.
+ *      Gates: N-BSEP (batch b's opened lanes reach ONLY that batch's mmix
+ *      instance and oi — never another batch's) and N-PXBOUND (the closure
+ *      proper: EVERY acc row's p_x public IS its batch's mmix opened lane, all
+ *      B batches, asserted on the entry's own output vectors).
+ *
+ *      WHAT DOES NOT CLOSE WITH IT, by name: the three roots themselves are
+ *      still plain statement fields — the input batches are observed during the
+ *      batch-STARK PRIMING, which label 1 puts outside the pinned script, so
+ *      there is no observe op to alias them to (label 6a). "The p_x the walk
+ *      accumulates is the row the MMCS opened" is closed; "that MMCS root is
+ *      the one the challenger absorbed" is not, for any of the B batches.
  *   4. ARITY-EQUALITY ASSUMPTION (FLEET 028 verifier M2), still TEST-side.
  *      Round r's dir alias reads the index-bit window starting at
  *      `(r+1)*max_log_arity` over `DNAC_P2S_MMCS_DEPTH(r)` levels, while the
@@ -208,12 +283,21 @@
  *      (:702 inside the loop that samples beta at :707).
  *
  *      WHAT DID NOT CLOSE, by name:
- *        (a) `mmix_root` — the INPUT-batch commitment is NOT in this script at
- *            all. It is observed during the batch-STARK PRIMING, which label 1
- *            says is out of the pinned script's scope
+ *        (a) `mmix_root[b]` — NONE of the B INPUT-batch commitments is in this
+ *            script. They are observed during the batch-STARK PRIMING, which
+ *            label 1 says is out of the pinned script's scope
  *            (`dnac_tair_fri_build_script` starts at the DS prefix). There is
- *            no observe op to alias it to; it stays a plain statement field
- *            until the priming-transcript slice.
+ *            no observe op to alias them to; they stay plain statement fields
+ *            until the priming-transcript slice. ⚠ INPUT-BATCH REPLICATION
+ *            MULTIPLIED THIS RESIDUE BY B: there are now three unbound roots
+ *            where there was one. The honest accounting has a SECOND HALF that
+ *            an earlier version of this note left out: the same slice took the
+ *            quotient and preprocessed `p_x` lanes from bound-to-NOTHING
+ *            (`px_rest`, deleted) to bound-to-a-root. So the ledger is
+ *            roots 1 -> 3 unbound, and unbound `p_x` lanes
+ *            (TOTAL_ACC - MAIN_ACC) -> 0. Neither "worse" nor "better": the
+ *            residue concentrated from many free values into three roots, which
+ *            is what makes closing label 6a close label 3 with it.
  *        (b) the FINAL-POLY lanes (fri_verifier.c:711-713) and the per-round
  *            LOG-ARITY lanes (:717-720). Both ARE in the script, and both are
  *            still deterministic `tair_payload` inputs: the final poly has a
@@ -311,8 +395,33 @@
  *   commit rounds     3, each log_arity 1, sibling counts 1,
  *                     opening depths 4 / 3 / 2
  *   instances         log_ext_degree 3 and 2, main width 1 each
- *   input batch 0     2 matrices, opened widths {1,1}, opening depth 5
- *                     (main round: LDE heights 2^5 and 2^4 -> MIXED)
+ *   input batches     3, EACH 2 matrices at LDE heights 2^5 and 2^4 (-> MIXED)
+ *                     with opening depth 5. They differ ONLY in the opened-row
+ *                     WIDTH, which is that batch's claimed-eval count:
+ *                       b=0 MAIN          widths {1,1}   (the instances' main
+ *                                                        width, batch_verify.c
+ *                                                        :550 -> trace_local)
+ *                       b=1 QUOTIENT      widths {2,2}   (one chunk per
+ *                                                        instance at this pin,
+ *                                                        emitted with
+ *                                                        num_claimed_evals = 2
+ *                                                        — the fp2 chunk's two
+ *                                                        base lanes,
+ *                                                        batch_verify.c:570-571)
+ *                       b=2 PREPROCESSED  widths {1,1}   (the instances'
+ *                                                        preprocessed width,
+ *                                                        batch_verify.c:588)
+ *                     MEASURED, not inferred: T-REF walks all three batches of
+ *                     the fixture's query-0 input proof and compares matrix
+ *                     count / per-matrix width / opening depth / mixedness
+ *                     against the per-batch pins, for every batch.
+ *   ⚠ The opened-row width and the oi group's COLUMN count are the SAME
+ *   quantity by the native's own rule — `fri_verifier.c:333` rejects a batch
+ *   whose `opened_values_lens[m]` differs from `points[0].num_claimed_evals`,
+ *   and :469-471 indexes `opened_values[m][j]` by the claimed-eval ordinal j.
+ *   They are nonetheless pinned as TWO constants here (the MMCS leaf's width
+ *   and the accumulation loop's column count) and the entry CHECKS they agree,
+ *   because that equality is a property of the native, not of this header.
  *
  * From those, exactly as `fri_verifier.c:640-650` derives them:
  *   lgmh = sum(log_arity) + log_blowup + log_final_poly_len = 3 + 2 + 0 = 5
@@ -331,7 +440,10 @@
  *     is exactly the fixture's three opening depths above — and the last one
  *     equals log_final_height (lb + lfpl = 2), which is the walk's closing
  *     condition at :609-611.
- *   input batch 0 depth = log2(max height) = 5 (mmcs_mixed_air_table.h:361-368)
+ *   input batch b depth = log2(max height of batch b) = 5 for every b
+ *     (mmcs_mixed_air_table.h:361-368). All three coincide here because all
+ *     three carry the tallest instance's matrix; the entry treats the depth as
+ *     a per-pin constant and T-REF measures it per batch.
  *
  * ── The oi (open_input) cfg — DERIVED THE SAME WAY, from the same proof ──────
  * `fri_open_input` accumulates one reduced opening PER DISTINCT log-height over
@@ -354,18 +466,36 @@
  *                         preprocessed 1 matrix x 2 points x 1 eval   = 2
  *                       => 6 acc rows per height, 12 in total.
  *
- * ⚠ HONEST LABEL — THE GROUP DESCRIPTOR IS A FACTORIZATION, NOT A SHAPE.
+ * ⚠ HONEST LABEL 5 — THE GROUP DESCRIPTOR IS A FACTORIZATION, NOT A SHAPE, AND
+ * THE INPUT-BATCH SLICE IS WHERE THAT STOPS BEING FREE.
  * `dnac_p2c_oi_height_desc_t` describes a group as a UNIFORM product
  * (num_batches x num_matrices x num_points x num_columns). The real batches are
  * NOT uniform in the (points, columns) split — the quotient batch is 1x2 where
  * the other two are 2x1 — so the pinned (3, 1, 2, 1) reproduces the correct
  * PER-BATCH count (2), the correct group TOTAL (6) and the correct group
  * boundary, and mislabels only the internal split. That split carries no
- * semantics here: `num_matrices*num_points*num_columns` is read ONLY as
+ * semantics FOR THE AIR: `num_matrices*num_points*num_columns` is read ONLY as
  * `batch_sz` for the C5 per-batch lb-zero rule (fri_oi_air.c:164-176), which is
  * gated on `cur_is_lb` and therefore never fires for a cfg with no height at
  * log_blowup. What DOES carry semantics — the total and the per-acc-row public
  * slot ORDER — is pinned by the schedule and proved by the test's native replay.
+ *
+ * ⚠ BUT THE p_x ALIAS READS INSIDE A BATCH'S BLOCK, so it needs the REAL split.
+ * s2 could ignore this: it only aliased batch 0, whose split IS the pinned
+ * (2 points x 1 column). Aliasing all B means resolving, for acc row `a` of
+ * batch b's block, WHICH COLUMN of batch b's opened row it accumulates — and
+ * the native says the column is the innermost loop index, `j` in
+ * `opened_values[m][j]` (fri_verifier.c:469-471), i.e. `a % nc_b` under the
+ * batch-major (matrix -> point -> column) emission order. With the descriptor's
+ * uniform nc = 1 that would read column 0 for BOTH of the quotient batch's two
+ * acc rows, silently dropping its second claimed evaluation and duplicating the
+ * first. So the per-batch (points, columns) split is pinned SEPARATELY here
+ * (DNAC_P2S_OI_BNP / _BNC below), MEASURED per batch by T-REF, and the entry
+ * fails closed unless `BNP(b) * BNC(b)` equals the descriptor's `batch_sz` for
+ * every b — which is what keeps the uniform descriptor and the real split from
+ * disagreeing about the group total. The descriptor itself is UNCHANGED: this
+ * is extra information alongside it, not a re-shaping of it (the oi table
+ * module owns the descriptor, and this slice does not modify that module).
  *
  * `tests/test_fri_statement.c` re-derives every one of those numbers from the
  * fixture JSON and compares them against the constants below, so the pin cannot
@@ -422,27 +552,60 @@ extern "C" {
  *  here, ahead of the slot map, because the slot map now depends on it. */
 #define DNAC_P2S_FRI_R (DNAC_P2S_LGMH - DNAC_P2S_LOG_BLOWUP - DNAC_P2S_LFPL)
 
+/** INPUT BATCHES — B. The count of `qp->input_proof` entries the native walks
+ *  (fri_verifier.c:203-207 requires it to equal `num_commitments`), which for
+ *  this composition's envelope (is_zk 0, no lookups) is the three rounds
+ *  `dnac_batch_verify` emits: main / quotient / preprocessed
+ *  (batch_verify.c:545 / :565 / :582).
+ *
+ *  ⚠ DEFINED HERE, ahead of the slot map, for the same reason R is: since the
+ *  input-batch replication slice the slot map depends on it. It is ALSO the oi
+ *  group descriptor's `num_batches` — one constant, because they are the same
+ *  number by construction (the oi schedule's batch axis IS the native's batch
+ *  loop index; see the s2 block further down). */
+#define DNAC_P2S_OI_NUM_BATCHES  ((size_t)3) /* main / quotient / preprocessed */
+
+/** Batch ordinals, so no call site writes 0 / 1 / 2. NOT a free choice — see
+ *  the file header's "THE BATCH ORDER IS THE NATIVE'S". */
+#define DNAC_P2S_BATCH_MAIN ((size_t)0)
+#define DNAC_P2S_BATCH_QUOT ((size_t)1)
+#define DNAC_P2S_BATCH_PREP ((size_t)2)
+
 /* ── Instance indices (the ORDER the pinned prep root commits to) ─────────────
  * See the file header's instance map for why the transcript sits at 0 and each
  * query's consumers are contiguous. Nothing below is a written-out number: the
- * slot count is derived from R and the instance COUNT from the slot count and
- * Q. */
+ * slot count is derived from B and R, and the instance COUNT from the slot
+ * count and Q. */
 
-/** Slot of a consumer inside its query's block. */
-#define DNAC_P2S_SLOT_MMIX  ((uint32_t)0)
+/** Input batch 0's slot; batch b sits at DNAC_P2S_SLOT_MMIX(b). The B batches
+ *  are CONTIGUOUS and in ASCENDING batch order — the order `fri_open_input`
+ *  walks them (fri_verifier.c:207) and the order `dnac_batch_verify` emits the
+ *  commitments in (batch_verify.c:545-602). */
+#define DNAC_P2S_SLOT_MMIX0 ((uint32_t)0)
+#define DNAC_P2S_SLOT_MMIX(b)                                                 \
+    ((uint32_t)(DNAC_P2S_SLOT_MMIX0 + (uint32_t)(b)))
 /** Commit round 0's slot; round r sits at DNAC_P2S_SLOT_MMCS(r). The R rounds
  *  are CONTIGUOUS and in ASCENDING round order — the order `fri_verify_query`
  *  walks them (fri_verifier.c:532) and the order their depths descend in. */
-#define DNAC_P2S_SLOT_MMCS0 ((uint32_t)1)
+#define DNAC_P2S_SLOT_MMCS0                                                   \
+    ((uint32_t)(DNAC_P2S_SLOT_MMIX0 + (uint32_t)DNAC_P2S_OI_NUM_BATCHES))
 #define DNAC_P2S_SLOT_MMCS(r)                                                 \
     ((uint32_t)(DNAC_P2S_SLOT_MMCS0 + (uint32_t)(r)))
 #define DNAC_P2S_SLOT_FRI                                                     \
     ((uint32_t)(DNAC_P2S_SLOT_MMCS0 + (uint32_t)DNAC_P2S_FRI_R))
 #define DNAC_P2S_SLOT_OI    ((uint32_t)(DNAC_P2S_SLOT_FRI + 1u))
-/** Consumers per query = mmix + R commit rounds + fri + oi. Also the value
- *  `dnac_p2s_inst_slot` returns for the transcript instance and for an
+/** Consumers per query = B input batches + R commit rounds + fri + oi. Also the
+ *  value `dnac_p2s_inst_slot` returns for the transcript instance and for an
  *  out-of-range index (i.e. "no slot"). */
 #define DNAC_P2S_SLOTS      ((uint32_t)(DNAC_P2S_SLOT_OI + 1u))
+
+/** 1 iff `s` is one of the B input-batch slots, and the batch it names. The
+ *  "no slot" sentinel DNAC_P2S_SLOTS is excluded because SLOTS > SLOT_MMCS0
+ *  whenever R >= 1 and there are two trailing slots — the static assert
+ *  `p2s_slot_sentinel_is_not_a_batch_assert` in fri_statement.c says so rather
+ *  than leaving it to this comment. */
+#define DNAC_P2S_SLOT_IS_MMIX(s) ((uint32_t)(s) < DNAC_P2S_SLOT_MMCS0)
+#define DNAC_P2S_SLOT_BATCH(s) ((size_t)((uint32_t)(s) - DNAC_P2S_SLOT_MMIX0))
 
 /** 1 iff `s` is one of the R commit-round slots, and the round it names. Both
  *  used by the slot-keyed accessors; a caller that has an INSTANCE should use
@@ -458,7 +621,7 @@ extern "C" {
 #define DNAC_P2S_INST(q, slot)                                                \
     ((uint32_t)(1u + DNAC_P2S_SLOTS * (uint32_t)(q) + (uint32_t)(slot)))
 
-/** DERIVED — 1 producer + (R + 3) consumers per query. Never a number. */
+/** DERIVED — 1 producer + (B + R + 2) consumers per query. Never a number. */
 #define DNAC_P2S_NUM_INSTANCES                                                \
     ((uint32_t)(1u + DNAC_P2S_SLOTS * (uint32_t)DNAC_P2S_NUM_QUERIES))
 
@@ -475,11 +638,80 @@ extern "C" {
 #define DNAC_P2S_BATCH_MAX_INSTANCES ((uint32_t)32)
 
 /** The largest Q this composition shape can carry: (cap - 1 producer) divided
- *  by the per-query consumer count, which is now R + 3 rather than 4 — so the
- *  ceiling MOVES when the round count does, and the assert in fri_statement.c
- *  is what turns an over-large pin into a build failure. */
+ *  by the per-query consumer count, which is now B + R + 2 rather than R + 3 —
+ *  so the ceiling MOVES when either the round count OR the batch count does,
+ *  and the assert in fri_statement.c is what turns an over-large pin into a
+ *  build failure. At this pin (B 3, R 3) that is (32-1)/8 = 3, DOWN from 5.
+ *
+ *  ⚠ SINCE THE FRI_MAX_RO RAISE THIS IS THE BINDING CEILING AGAIN. Before it,
+ *  DNAC_P2S_FRI_RO_MAX_INSTANCES was tighter and this pin exceeded it — that is
+ *  what blocked the slice. At 128 the FRI-side ceiling is 128>>2 = 32, EQUAL to
+ *  the batch cap, and this pin (17) is under both. T-QCAP asserts it. */
 #define DNAC_P2S_MAX_QUERIES                                                  \
     ((size_t)((DNAC_P2S_BATCH_MAX_INSTANCES - 1u) / DNAC_P2S_SLOTS))
+
+/* ── A SECOND INSTANCE CEILING — FOUND BY THIS SLICE, AND RAISED BY IT.
+ *      Read this before raising Q, B or R again.
+ *
+ * The batch stack's own 32-instance cap (mirrored above) is not the only one.
+ * The OUTER proof's QUOTIENT opening round is ONE FRI input batch carrying ONE
+ * MATRIX PER QUOTIENT CHUNK OF EVERY INSTANCE, and `fri_open_input` caps the
+ * matrices of a single input batch at FRI_MAX_RO. The chain, read end to end:
+ *
+ *   batch_prover.c:650    nqc[i] = 1 << (log_num_qc + is_zk)   = 4 here
+ *                         (is_zk 0; log_num_qc 2, which is DERIVED from
+ *                         DNAC_P2S_MAX_SYMBOLIC_DEGREE 4 by the upstream rule
+ *                         and asserted per instance by T-ALIAS)
+ *   batch_prover.c:1320   opened[i].num_quotient_chunks = nqc[i]
+ *   batch_verify.c:373-374 total_qc = Σ_i opened[i].num_quotient_chunks
+ *   batch_verify.c:579    the quotient round is ONE commitment whose
+ *                         `num_matrices` IS total_qc
+ *   fri_verifier.c:218    `if (cw->num_matrices > FRI_MAX_RO) return
+ *                         DNAC_FRI_ERR_INPUT_ERROR;`
+ *   fri_verifier.c        FRI_MAX_RO
+ *
+ * so the real bound is  N * (1 << log_num_qc) <= FRI_MAX_RO. At FRI_MAX_RO 64
+ * that was N <= 16 at this degree, and THE PINNED SHAPE IS N = 17 — measured,
+ * not inferred: at N = 9 (Q = 1) `dnac_batch_prove` returned OK; at N = 17 it
+ * returned DNAC_PROVER_ERR_VERIFY, because its own self-verify
+ * (batch_prover.c:1639-1646) runs `dnac_batch_verify` and the FRI input walk
+ * rejected the 68-matrix quotient round.
+ *
+ * ⚠ RESOLVED IN THIS SLICE, by user decision: FRI_MAX_RO was raised 64 → 128,
+ * chosen as 4 * 32 == (chunks per instance at the degree-4 class) * (the batch
+ * stack's own instance cap) so the two ceilings ALIGN and the composition
+ * cannot return to this gate by adding instances. The full rationale, the
+ * relation assert and — importantly — the STACK TRIPWIRE (rowbuf went 1.25 MB
+ * → 2.5 MB; safe only because fri_verifier.c is compiled into libnodus alone,
+ * NOT into libdna) live at the constant itself in fri_verifier.c. Anyone
+ * porting the verify stack to Android/S7 must read that tripwire first.
+ *
+ * ⚠ RETRACTED — an earlier version of this paragraph claimed `cw->num_matrices`
+ * is PROOF-SUPPLIED, called FRI_MAX_RO "the only thing bounding an
+ * attacker-forced allocation walk", and handed C3 an obligation to make the
+ * bound caller-pinned. All of that was WRONG and none of it survives review.
+ * The count is CALLER-pinned already: the proof's declared chunk count is
+ * checked against the caller's binding BEFORE FRI runs (batch_priming.c:340,
+ * reached from batch_verify.c:253), and that binding is `1 << (log_num_qc +
+ * is_zk)` taken from the caller's own instance descriptor (batch_verify.c:180,
+ * :207); `n` is a caller argument (:97). The proof-side count is
+ * `bo->num_matrices`, bounded independently by DNAC_FRI_WIRE_MAX_MATRICES
+ * (fri_proof_codec.h:71) and required to EQUAL the caller's value
+ * (fri_verifier.c:332). And `rowbuf` is a fixed automatic, so the 2.5 MB is
+ * paid whether the count is 1 or 128 — raising the cap doubled a CONSTANT cost,
+ * not an attacker-scaled one. There is no C3 obligation here.
+ *
+ * Mirrored here (an honest duplicate, like DNAC_P2S_BATCH_MAX_INSTANCES —
+ * fri_verifier.c exports neither the constant nor the bound) so the number is
+ * derived in one place. The ceiling is FUNCTION-LIKE because `log_num_qc` is a
+ * RUNTIME derivation (`dnac_p2s_log_num_qc`, the upstream log2_ceil rule) and
+ * this header does not carry a preprocessor copy of it — writing one would be a
+ * second, unchecked source for a number the entry already derives. T-QCAP
+ * reports the headroom; the relation is asserted at the constant in
+ * fri_verifier.c, which is where both halves of it are in scope. */
+#define DNAC_P2S_FRI_MAX_RO ((size_t)128)
+#define DNAC_P2S_FRI_RO_MAX_INSTANCES(log_num_qc)                             \
+    (DNAC_P2S_FRI_MAX_RO >> (log_num_qc))
 
 /** The grinding widths of the OUTER FRI params. SINGLE-SOURCED here because
  *  three consumers must agree on them: `dnac_p2s_fri_params()`, the transcript
@@ -514,23 +746,60 @@ extern "C" {
 #define DNAC_P2S_MMCS_DEPTH(r)                                                \
     (DNAC_P2S_LGMH - DNAC_P2S_MMCS_BIT_OFF(r))
 
-/* ── mmix (input batch 0 = the inner MAIN round) ─────────────────────────── */
+/* ── mmix (the B input batches) ──────────────────────────────────────────────
+ * ONE instance per input batch per query. Every batch of this pin has the SAME
+ * matrix count, the SAME per-matrix heights and the SAME opening depth — its
+ * matrices are the SAME inner instances' (batch_verify.c gives every round one
+ * matrix per instance at that instance's `log_ext_degree`). What DIFFERS is the
+ * opened-row WIDTH, which is the batch's claimed-eval count. MEASURED per batch
+ * by T-REF; nothing here is inferred from another batch. */
 #define DNAC_P2S_MMIX_NUM_MATRICES ((size_t)2)
-/** Per-matrix opened widths — the inner instances' main widths, straight off
- *  the fixture (both 1). A proof-shape scalar: nothing derives it. */
-#define DNAC_P2S_MMIX_W0 ((size_t)1)
-#define DNAC_P2S_MMIX_W1 ((size_t)1)
-#define DNAC_P2S_MMIX_TOTAL_OPENED (DNAC_P2S_MMIX_W0 + DNAC_P2S_MMIX_W1)
 /** Per-matrix heights: 2^(log_ext_degree_i + log_blowup) for the two inner
- *  instances (log_ext_degree 3 and 2). */
+ *  instances (log_ext_degree 3 and 2). SHARED across batches (see above). */
 #define DNAC_P2S_MMIX_LH0 ((size_t)5)
 #define DNAC_P2S_MMIX_LH1 ((size_t)4)
 /** depth == log2(max height) == the tallest matrix's log-height. */
 #define DNAC_P2S_MMIX_DEPTH DNAC_P2S_MMIX_LH0
 /** Non-hiding recursion envelope (G-DET-3, user-locked at P2a): no leaf salt.
  *  Matches the fixture, whose input openings carry salt_elems 0
- *  (tests/batch_test_util.h:231-232). */
+ *  (tests/batch_test_util.h:231-232).
+ *
+ *  ⚠ OBLIGATION — LABEL 3 DEPENDS ON THIS BEING ZERO. The native hashes
+ *  `row_lane_lens[m] = cols + se` lanes: the opened row FOLLOWED BY `se` salt
+ *  lanes (fri_verifier.c:410-428). At se == 0 the hashed preimage IS the opened
+ *  row, so the mmix instance's opened publics cover all of it and label 3's
+ *  `p_x` binding is total. At se > 0 the salt lanes enter the leaf but NOT the
+ *  AIR publics, so the opened publics would cover only a PREFIX of the hashed
+ *  row — label 3 REOPENS, and a pin with salts must either publish the salt
+ *  lanes or state what the partial binding buys. Nothing enforces se == 0 at
+ *  runtime here; it is a pinned scalar, and this note is the guard. */
 #define DNAC_P2S_MMIX_SALT_ELEMS ((size_t)0)
+
+/** PER-BATCH opened width — every matrix of batch b opens `DNAC_P2S_MMIX_BW(b)`
+ *  lanes. A proof-shape scalar per batch; nothing derives it.
+ *  ⚠ RENAMED from the old `DNAC_P2S_MMIX_W0/W1`, which meant the two MATRICES'
+ *  widths of the single (main) batch. The axis moved, so the name did: `BW`
+ *  is per BATCH, and the two matrices of a batch share it at this pin. */
+#define DNAC_P2S_MMIX_BW0 ((size_t)1) /* main         — trace_local width      */
+#define DNAC_P2S_MMIX_BW1 ((size_t)2) /* quotient     — an fp2 chunk's 2 lanes */
+#define DNAC_P2S_MMIX_BW2 ((size_t)1) /* preprocessed — preprocessed_local     */
+#define DNAC_P2S_MMIX_BW(b)                                                   \
+    ((size_t)((b) == DNAC_P2S_BATCH_MAIN   ? DNAC_P2S_MMIX_BW0                \
+              : (b) == DNAC_P2S_BATCH_QUOT ? DNAC_P2S_MMIX_BW1                \
+                                           : DNAC_P2S_MMIX_BW2))
+
+/** Batch b's flattened opened region: one row per matrix, concatenated in
+ *  MATRIX order using the SEMANTIC widths (mmcs_mixed_air.h "Public values"). */
+#define DNAC_P2S_MMIX_TOTAL_OPENED(b)                                         \
+    (DNAC_P2S_MMIX_NUM_MATRICES * DNAC_P2S_MMIX_BW(b))
+/** Σ over the B batches — the length of ONE query's `mmix_opened` row. Written
+ *  as an explicit B-term sum because it must be a COMPILE-TIME expression (it
+ *  bounds a C array); `p2s_mmix_batch_list_matches_b_assert` in fri_statement.c
+ *  stops the build if B ever moves off 3. */
+#define DNAC_P2S_MMIX_ALL_OPENED                                              \
+    (DNAC_P2S_MMIX_TOTAL_OPENED(DNAC_P2S_BATCH_MAIN) +                        \
+     DNAC_P2S_MMIX_TOTAL_OPENED(DNAC_P2S_BATCH_QUOT) +                        \
+     DNAC_P2S_MMIX_TOTAL_OPENED(DNAC_P2S_BATCH_PREP))
 
 /* ── oi (open_input: the WHOLE input side, all three inner batches) ──────────
  * The distinct reduced-opening heights, STRICTLY DESCENDING, heights[0] == lgmh
@@ -540,10 +809,11 @@ extern "C" {
 #define DNAC_P2S_OI_H0 DNAC_P2S_LGMH
 #define DNAC_P2S_OI_H1 ((size_t)4)
 
-/* The group descriptor. See the header's HONEST LABEL: only the PRODUCT (the
- * group's acc-row count) and the group boundary are load-bearing; the (m,p,c)
- * split is a label, unread for a group that is not the log_blowup group. */
-#define DNAC_P2S_OI_NUM_BATCHES  ((size_t)3) /* main / quotient / preprocessed */
+/* The group descriptor. See the header's HONEST LABEL 5: only the PRODUCT (the
+ * group's acc-row count) and the group boundary are load-bearing FOR THE AIR;
+ * the (m,p,c) split is a label, unread for a group that is not the log_blowup
+ * group. `num_batches` is DNAC_P2S_OI_NUM_BATCHES, defined with the slot map
+ * above because the slot map depends on it. */
 #define DNAC_P2S_OI_NUM_MATRICES ((size_t)1) /* per batch, at each height      */
 #define DNAC_P2S_OI_NUM_POINTS   ((size_t)2)
 #define DNAC_P2S_OI_NUM_COLUMNS  ((size_t)1)
@@ -557,26 +827,41 @@ extern "C" {
 #define DNAC_P2S_OI_TOTAL_ACC                                                 \
     (DNAC_P2S_OI_ACC_PER_HEIGHT * DNAC_P2S_OI_NUM_HEIGHTS)
 
-/* ── s2: the MAIN input batch's share of each height group ───────────────────
+/* ── s2 + INPUT-BATCH REPLICATION: each batch's share of each height group ────
  * The oi schedule emits a group's acc rows BATCH-MAJOR (batch -> matrix ->
  * point -> column, fri_oi_air_table.h:104-114, the native's own nesting at
  * fri_verifier.c:207/400/436/469), and the batch index IS the native's batch
- * loop index, i.e. the position in `qp->input_proof`. Input batch 0 is the
- * inner MAIN round — the batch the mmix instance describes (see the mmix block
- * above, and T-REF in tests/test_fri_statement.c, which MEASURES the fixture's
- * per-batch per-height shape rather than assuming it).
- * So the FIRST `DNAC_P2S_OI_ACC_PER_BATCH` acc rows of every height group are
- * the main batch's, and their `p_x` is that height's mmix opened lane. */
+ * loop index, i.e. the position in `qp->input_proof`. So a height group is B
+ * consecutive blocks of `DNAC_P2S_OI_ACC_PER_BATCH` rows, block b belonging to
+ * input batch b — the batch mmix instance `DNAC_P2S_SLOT_MMIX(b)` describes —
+ * and every one of those rows' `p_x` is that batch's mmix opened lane at that
+ * height. s2 aliased block 0 only; every block is aliased now.
+ * T-REF/px MEASURES the per-batch per-height shape rather than assuming it. */
 #define DNAC_P2S_OI_ACC_PER_BATCH                                             \
     (DNAC_P2S_OI_NUM_MATRICES * DNAC_P2S_OI_NUM_POINTS *                      \
      DNAC_P2S_OI_NUM_COLUMNS)
-/** Acc rows whose p_x is MMCS-bound by aliasing (main batch, every height). */
-#define DNAC_P2S_OI_MAIN_ACC                                                  \
-    (DNAC_P2S_OI_NUM_HEIGHTS * DNAC_P2S_OI_ACC_PER_BATCH)
-/** Acc rows whose p_x still comes from the statement (quotient + preprocessed
- *  batches). Length of `dnac_p2s_statement_t::px_rest`. */
-#define DNAC_P2S_OI_PX_REST                                                   \
-    (DNAC_P2S_OI_TOTAL_ACC - DNAC_P2S_OI_MAIN_ACC)
+
+/** PER-BATCH (points, columns) split of a batch's block — the REAL one, which
+ *  the uniform group descriptor above does NOT carry (HONEST LABEL 5). The
+ *  column count is what the p_x alias indexes batch b's opened row by, because
+ *  the native's innermost loop index IS the claimed-eval / column ordinal
+ *  (`opened_values[m][j]`, fri_verifier.c:469-471) under batch-major emission.
+ *  BNP(b) * BNC(b) MUST equal DNAC_P2S_OI_ACC_PER_BATCH — checked at build time
+ *  and again at step 3a, so the two descriptions of a block cannot disagree. */
+#define DNAC_P2S_OI_BNP0 ((size_t)2) /* main:         zeta, zeta_next   */
+#define DNAC_P2S_OI_BNC0 ((size_t)1) /*               x 1 claimed eval  */
+#define DNAC_P2S_OI_BNP1 ((size_t)1) /* quotient:     zeta              */
+#define DNAC_P2S_OI_BNC1 ((size_t)2) /*               x 2 fp2 lanes     */
+#define DNAC_P2S_OI_BNP2 ((size_t)2) /* preprocessed: zeta, zeta_next   */
+#define DNAC_P2S_OI_BNC2 ((size_t)1) /*               x 1 claimed eval  */
+#define DNAC_P2S_OI_BNP(b)                                                    \
+    ((size_t)((b) == DNAC_P2S_BATCH_MAIN   ? DNAC_P2S_OI_BNP0                 \
+              : (b) == DNAC_P2S_BATCH_QUOT ? DNAC_P2S_OI_BNP1                 \
+                                           : DNAC_P2S_OI_BNP2))
+#define DNAC_P2S_OI_BNC(b)                                                    \
+    ((size_t)((b) == DNAC_P2S_BATCH_MAIN   ? DNAC_P2S_OI_BNC0                 \
+              : (b) == DNAC_P2S_BATCH_QUOT ? DNAC_P2S_OI_BNC1                 \
+                                           : DNAC_P2S_OI_BNC2))
 
 /* ── tair (the transcript instance — s3b) ────────────────────────────────────
  * The FRI-tail cfg is DERIVED from the statement constants above, never written
@@ -687,9 +972,19 @@ extern "C" {
     (DNAC_P2S_FRI_R *                                                         \
          ((size_t)MAIR_DIGEST_LANES + DNAC_P2S_MMCS_TOTAL_WIDTH) +            \
      DNAC_P2S_MMCS_SUM_DEPTHS)
-#define DNAC_P2S_MMIX_NUM_PUBLICS                                             \
+/** PER BATCH: the opened region is that batch's, so the count moves with the
+ *  batch's width. `dnac_p2s_num_publics(instance)` is the runtime form. */
+#define DNAC_P2S_MMIX_NUM_PUBLICS(b)                                          \
     ((size_t)MMIX_DIGEST_LANES + DNAC_P2S_MMIX_DEPTH +                        \
-     DNAC_P2S_MMIX_TOTAL_OPENED)
+     DNAC_P2S_MMIX_TOTAL_OPENED(b))
+/** Σ over b of DNAC_P2S_MMIX_NUM_PUBLICS(b) — one query's whole mmix share.
+ *  The root+dir part is batch-independent, so only the opened part is summed
+ *  (and DNAC_P2S_MMIX_ALL_OPENED is exactly that sum). T-CONST re-derives this
+ *  by summing the per-batch macro. */
+#define DNAC_P2S_MMIX_ALL_PUBLICS                                             \
+    (DNAC_P2S_OI_NUM_BATCHES *                                                \
+         ((size_t)MMIX_DIGEST_LANES + DNAC_P2S_MMIX_DEPTH) +                  \
+     DNAC_P2S_MMIX_ALL_OPENED)
 #define DNAC_P2S_OI_NUM_PUBLICS                                               \
     (DNAC_P2S_LGMH + 2 + 4 * DNAC_P2S_OI_TOTAL_ACC +                          \
      2 * DNAC_P2S_OI_NUM_HEIGHTS + DNAC_P2S_OI_TOTAL_ACC)
@@ -699,16 +994,17 @@ extern "C" {
 
 /* ── The FLAT publics block (multi-query slice) ───────────────────────────────
  * s3b handed `build_instances` five separate `gold_fp_t *`, one per AIR. With
- * 1 + (R+3)*Q instances that parameter list is neither writable nor Q- or
- * R-independent, so the instances' publics live CONTIGUOUSLY in ONE
+ * 1 + (B+R+2)*Q instances that parameter list is neither writable nor Q-, R- or
+ * B-independent, so the instances' publics live CONTIGUOUSLY in ONE
  * caller-owned block, in INSTANCE ORDER: the tair region first, then query 0's
- * R+3, then query 1's, and so on. `dnac_p2s_pub_off` is the ONLY thing that
+ * B+R+2, then query 1's, and so on. `dnac_p2s_pub_off` is the ONLY thing that
  * knows the layout, so a caller never computes an offset and the entry never
  * hard-codes one. ⚠ The per-query block is NOT SLOTS uniform regions — the R
- * mmcs regions have R different lengths — which is exactly why `pub_off` sums
- * `dnac_p2s_num_publics` over the preceding slots instead of multiplying. */
+ * mmcs regions have R different lengths and the B mmix regions have B different
+ * lengths — which is exactly why `pub_off` sums `dnac_p2s_num_publics` over the
+ * preceding slots instead of multiplying. */
 #define DNAC_P2S_QUERY_PUBLICS                                                \
-    (DNAC_P2S_MMIX_NUM_PUBLICS + DNAC_P2S_MMCS_ALL_PUBLICS +                  \
+    (DNAC_P2S_MMIX_ALL_PUBLICS + DNAC_P2S_MMCS_ALL_PUBLICS +                  \
      DNAC_P2S_FRI_NUM_PUBLICS + DNAC_P2S_OI_NUM_PUBLICS)
 
 #define DNAC_P2S_TOTAL_PUBLICS                                                \
@@ -757,26 +1053,35 @@ extern "C" {
  * for therefore lives in the test, which tampers one table at a time and knows
  * which one it touched.
  *
- * ⚠ RE-PINNED AT THE ROUND-REPLICATION SLICE. The instance set went from
- * 1 + 4*Q (9) to 1 + (R+3)*Q (13), and the R mmcs tables are NOT copies of one
- * another — round r's depth is DNAC_P2S_MMCS_DEPTH(r) = 4 / 3 / 2, so the three
- * carry DIFFERENT CONTENT (different leaf/compress/final row types).
+ * ⚠ RE-PINNED AT THE INPUT-BATCH REPLICATION SLICE. The instance set went from
+ * 1 + (R+3)*Q (13) to 1 + (B+R+2)*Q (17) in a NEW ORDER (the B mmix slots now
+ * precede the R mmcs ones), so the 13-table value is void the same way the
+ * 9-table one was.
  *
- * ⚠ Their ROW COUNTS coincide at this pin: leaf width 4 == the sponge rate, so
+ * ⚠ WHAT THE 17 TABLES ARE, honestly. The R mmcs tables are NOT copies of one
+ * another — round r's depth is DNAC_P2S_MMCS_DEPTH(r) = 4 / 3 / 2, so the three
+ * carry DIFFERENT CONTENT (different leaf/compress/final row types). Their ROW
+ * COUNTS nonetheless coincide at this pin: leaf width 4 == the sponge rate, so
  * leaf == 1, `used` = 1 + depth + 1 = 6 / 5 / 4, and with the terminality
  * reserve `pad(used + 1)` = 8 / 8 / 8. Do NOT read the depths off the heights —
- * they are equal here by arithmetic accident, not by construction, and a pin
- * with a wider leaf would separate them. It is the CONTENT that makes the three
- * tables distinct commitments, which is what N-PIN proves by tampering one cell
- * of each of the 13 tables and requiring the composed root to move every time.
+ * they are equal here by arithmetic accident, not by construction.
+ * The B mmix tables, by contrast, ARE byte-identical to one another: the mixed
+ * schedule sees a batch's width only through `leaf_rows = ceil(concat / 4)`
+ * (mmcs_mixed_air_table.c:100-104 with :152/:161), and 1 and 2 both give 1. So
+ * the batch axis carries NO table content at this pin — it carries a different
+ * CFG and a different PUBLIC count, which is why the width must be pinned
+ * independently of the root (OBL-4-MMIX) and is.
+ * Neither fact weakens N-PIN: the composed root commits the 17 matrices
+ * SEPARATELY and IN ORDER, so tampering one cell of any single one of them
+ * moves it, which is what the test asserts per instance.
  *
- * The multi-query value is void (9 -> 13 matrices in a new order), so the
- * constant below was re-derived: the executor shipped the {0,0,0,0} placeholder
- * and the ORCHESTRATOR refilled it from an INDEPENDENT `--print-roots` run that
- * matched lane for lane. While a placeholder is in place the comparator rejects
- * everything (see DNAC_P2S_PREP_ROOT_UNFILLED) and the pin-dependent checks in
- * tests/test_fri_statement.c assert exactly that; once filled, T-PINKAT
- * recomputes the root through the real pipeline and compares.
+ * The constant below was re-derived: the executor shipped the {0,0,0,0}
+ * placeholder and the ORCHESTRATOR refilled it from an INDEPENDENT
+ * `--print-roots` run that matched lane for lane. While a placeholder is in
+ * place the comparator rejects everything (see DNAC_P2S_PREP_ROOT_UNFILLED) and
+ * the pin-dependent checks in tests/test_fri_statement.c assert exactly that;
+ * once filled, T-PINKAT recomputes the root through the real pipeline and
+ * compares.
  *
  * DERIVATION (exactly the pipeline batch_prover.c:786-822 runs, is_zk = 0):
  *   for i in 0 .. DNAC_P2S_NUM_INSTANCES-1:           // prep_map order
@@ -785,10 +1090,10 @@ extern "C" {
  *                     DNAC_P2S_LOG_BLOWUP, GOLDILOCKS_GENERATOR, ·)
  *   root = dnac_p2_mmcs_commit_mixed({lde_i}, {COLS_i}, {rows_i << lb},
  *                                    DNAC_P2S_NUM_INSTANCES, ·, NULL)
- * The Q copies of ONE slot's table are byte-identical while the R mmcs tables
- * are not (see the file header's honest note); the root MOVES when any single
- * cell of any single one is tampered either way, which is what the pin needs
- * and what N-PIN asserts per instance.
+ * The Q copies of ONE slot's table are byte-identical (and so, at this pin, are
+ * the B mmix slots' — see above) while the R mmcs tables are not; the root
+ * MOVES when any single cell of any single one is tampered either way, which is
+ * what the pin needs and what N-PIN asserts per instance.
  * `dnac_p2_fri_statement_prep_tables` + the test's commit half ARE that
  * pipeline, so the pin is filled and re-checked by running code, never
  * transcribed by hand.
@@ -801,10 +1106,10 @@ extern "C" {
  * salt_elems = 0 is MANDATORY: salted + preprocessed is fail-closed at
  * batch_prover.c:604-612 (the guard inside `if (salt_elems > 0)`; citation
  * corrected — FLEET 028 verifier L3). */
-#define DNAC_P2S_PREP_ROOT_LANE0 UINT64_C(0xe53b50ec6809f575)
-#define DNAC_P2S_PREP_ROOT_LANE1 UINT64_C(0x6962531b63186c2c)
-#define DNAC_P2S_PREP_ROOT_LANE2 UINT64_C(0xb6b24c5508080e1c)
-#define DNAC_P2S_PREP_ROOT_LANE3 UINT64_C(0x424f1dd15ca4959f)
+#define DNAC_P2S_PREP_ROOT_LANE0 UINT64_C(0x39ab2b3686f99b36)
+#define DNAC_P2S_PREP_ROOT_LANE1 UINT64_C(0x8ffbdfa22ba45d68)
+#define DNAC_P2S_PREP_ROOT_LANE2 UINT64_C(0x1aa33517b8854b20)
+#define DNAC_P2S_PREP_ROOT_LANE3 UINT64_C(0xb56b09755fbe2b40)
 
 #define DNAC_P2S_PREP_ROOT                                                    \
     {                                                                         \
@@ -913,7 +1218,8 @@ typedef struct {
      *  `pt = &mo->points[point]`, :209 `cw = &commitments[batch]`), and
      *  `commitments` is the SAME pointer on every iteration of the query loop
      *  (:743). Its partner `p_at_x` (:471) comes from `qp->input_proof` and IS
-     *  per-query — that one is `mmix_opened[q]` / `px_rest[q]`.
+     *  per-query — that one is `mmix_opened[q]`, for EVERY batch since the
+     *  input-batch replication slice.
      *
      *  ⚠ THE HONEST WITNESS FOR A SHARED REGION EXISTS ONLY WHILE NO OI HEIGHT
      *  GROUP SITS AT log_blowup. The shipped builder emits
@@ -946,27 +1252,24 @@ typedef struct {
      *  ⚠ NEVER aliased across q: `fri_open_input` runs INSIDE the per-query
      *  loop, against that query's index (fri_verifier.c:742). */
     uint64_t ro_export[DNAC_P2S_NUM_QUERIES][2 * DNAC_P2S_OI_NUM_HEIGHTS];
-    /** PER-QUERY. s2 — the p_x of every acc row the MAIN batch does NOT cover,
-     *  i.e. the quotient and preprocessed batches' rows, in schedule order
-     *  (height descending, then batch-major, main batch's rows skipped).
-     *
-     *  ⚠ HONEST LABEL. The main batch's rows need no field here: the entry
-     *  aliases them off `mmix_opened[q]`, so they are MMCS-bound by
-     *  construction. These are not — they are a statement input, exactly the
-     *  trust level `p_x` had in s1c when it was a free witness. What CHANGED is
-     *  that they are now inside the mechanism (a public C3g pins the trace
-     *  column to) rather than outside it, so closing them is a matter of
-     *  replacing this field with a second/third mmix instance when input-batch
-     *  replication lands — not of adding a constraint. Per-query because p_x is
-     *  an OPENED value: it is read at the query's own index
-     *  (fri_verifier.c:469-476). */
-    uint64_t px_rest[DNAC_P2S_NUM_QUERIES][DNAC_P2S_OI_PX_REST];
+    /* ⚠ `px_rest` IS NOT A FIELD ANY MORE (input-batch replication; HONEST
+     * LABEL 3). It held the p_x of the acc rows the MAIN batch did not cover —
+     * the quotient and preprocessed batches' — as a plain statement input bound
+     * to no commitment. Every batch has its own mmix instance now, so every acc
+     * row's p_x is an ALIAS of `mmix_opened[q]` at that batch's offset and
+     * there is nothing left for the field to hold. Adding it back would re-open
+     * exactly the seam that closure removed. */
 
-    /** SHARED across q — the input-batch commitment. One commitment, opened at
+    /** SHARED across q, DISTINCT per INPUT BATCH — batch b's commitment, i.e.
+     *  `commitments[b].commitment` as `fri_open_input` reads it
+     *  (fri_verifier.c:209 then :383/:392). ONE commitment per batch, opened at
      *  Q different indices, so a per-query root would let two queries open two
-     *  trees. NOT transcript-bound (HONEST LABEL 6a: the input batches are
+     *  trees; three roots because `dnac_batch_verify` gives each round its own
+     *  (`main_commit` / `quotient_commit` / `preprocessed_commit`,
+     *  batch_verify.c:557-559 / :574-576 / :595-597).
+     *  NOT transcript-bound, for ANY b (HONEST LABEL 6a: the input batches are
      *  observed during priming, which the pinned script does not cover). */
-    uint64_t mmix_root[MMIX_DIGEST_LANES];
+    uint64_t mmix_root[DNAC_P2S_OI_NUM_BATCHES][MMIX_DIGEST_LANES];
     /** SHARED across q, DISTINCT per ROUND — `proof->commit_phase_commits[r]`
      *  (fri_verifier.c:585 indexes the array by round). Round r's root is what
      *  query q's round-r opening is checked against, for every q.
@@ -979,10 +1282,22 @@ typedef struct {
      *  the Merkle walk verifies against". */
     uint64_t mmcs_root[DNAC_P2S_FRI_R][MAIR_DIGEST_LANES];
 
-    /* PER-QUERY inner opened rows, concatenated in matrix order. These ARE the
-     * query-dependent half of an MMCS opening: same tree, same root, different
-     * leaf. */
-    uint64_t mmix_opened[DNAC_P2S_NUM_QUERIES][DNAC_P2S_MMIX_TOTAL_OPENED];
+    /* PER-QUERY inner opened rows. These ARE the query-dependent half of an
+     * MMCS opening: same tree, same root, different leaf.
+     *
+     * ONE FLAT ROW PER QUERY, holding all B batches back to back in BATCH
+     * order; inside batch b's span the matrices are concatenated in MATRIX
+     * order using the SEMANTIC widths (mmcs_mixed_air.h "Public values"), which
+     * is what the mmix instance's opened-row publics are. Batch b's span starts
+     * at `dnac_p2s_mmix_opened_off(b)` and is DNAC_P2S_MMIX_TOTAL_OPENED(b)
+     * long — a ragged [B][max] array would leave dead lanes, and dead lanes in
+     * a statement are exactly what the honest labels keep having to apologise
+     * for, so the spans are exact and the partition is asserted.
+     *
+     * TWO consumers per lane, by construction: batch b's mmix instance
+     * (its opened-row publics) and the oi instance (the p_x of every acc row of
+     * batch b at that matrix's height). That is HONEST LABEL 3's closure. */
+    uint64_t mmix_opened[DNAC_P2S_NUM_QUERIES][DNAC_P2S_MMIX_ALL_OPENED];
     /** PER-QUERY *and* PER-ROUND. Round r's leaf for query q: the arity fp2
      *  evals BASE-flattened (fri_verifier.c:550-555 assembles the row, :568
      *  flattens it, :585-588 opens it). Per round because the walk shifts the
@@ -994,7 +1309,15 @@ typedef struct {
 
 /* ── Pinned-cfg accessors (the dnac_p2b_ref_cfg pattern,
  *    mmcs_air_table.h:232 — one definition, no caller re-declaration) ────── */
-const dnac_p2c_mmix_table_cfg_t *dnac_p2s_mmix_cfg(void);
+/** Input batch `batch`'s cfg. NULL when `batch >= DNAC_P2S_OI_NUM_BATCHES`.
+ *  Takes a batch because the batches differ in OPENED WIDTH — see the file
+ *  header's honest note on which copies are byte-identical and which are not. */
+const dnac_p2c_mmix_table_cfg_t *dnac_p2s_mmix_cfg(size_t batch);
+
+/** Start of input batch `batch`'s span inside one query's `mmix_opened` row, in
+ *  elements. SIZE_MAX when `batch` is out of range. The spans are contiguous,
+ *  in batch order, and together span exactly DNAC_P2S_MMIX_ALL_OPENED. */
+size_t dnac_p2s_mmix_opened_off(size_t batch);
 /** Commit round `round`'s cfg. NULL when `round >= DNAC_P2S_FRI_R`. Takes a
  *  round because the rounds differ in DEPTH — see the file header's honest
  *  note on which copies are byte-identical and which are not. */
@@ -1057,11 +1380,15 @@ dnac_p2s_status_t dnac_p2s_check_tair_pow_pin(const dnac_tair_script_t *s);
  *  they do not choose a security level. */
 const dnac_fri_params_t *dnac_p2s_fri_params(void);
 
-/** One query's consumer snapshots — one per SLOT, so R for the commit rounds.
- *  Each round binds the SAME AIR at a DIFFERENT cfg, which is the case FLEET
- *  034's caller-owned states exist for. */
+/** One query's consumer snapshots — one per SLOT, so B for the input batches
+ *  and R for the commit rounds. Each round AND each batch binds the SAME AIR at
+ *  a DIFFERENT cfg, which is the case FLEET 034's caller-owned states exist
+ *  for: with the retired module-static binding, batch 1's bind would have
+ *  clobbered batch 0's and both instances would have evaluated the last cfg
+ *  bound — at three different opened WIDTHS, which is a live shape mismatch,
+ *  not merely a stale pointer. */
 typedef struct {
-    dnac_mmix_fold_state_t mmix;
+    dnac_mmix_fold_state_t mmix[DNAC_P2S_OI_NUM_BATCHES];
     dnac_mair_fold_state_t mmcs[DNAC_P2S_FRI_R];
     dnac_fair_fold_state_t fri;
     dnac_foi_fold_state_t  oi;
@@ -1069,31 +1396,39 @@ typedef struct {
 
 /**
  * @brief Storage for every instance's fold-state snapshot (FLEET 034, grown to
- *        1 + (R+3)*Q by the multi-query and round-replication slices).
+ *        1 + (B+R+2)*Q by the multi-query, round-replication and input-batch
+ *        replication slices).
  *
  * The fold modules keep NO module-static binding: `<module>_fold_bind` fills a
  * CALLER-OWNED state and points the descriptor's `ctx` at it
  * (stark_constraints.h:299-311). That is precisely what makes Q instances of
- * the SAME AIR possible — and, since this slice, R instances of the mmcs AIR at
- * R DIFFERENT cfgs inside one query: each gets its own snapshot, so round 1's
- * bind cannot clobber round 0's any more than query 1's can clobber query 0's.
+ * the SAME AIR possible — and, since the round slice, R instances of the mmcs
+ * AIR at R DIFFERENT cfgs inside one query, and since this one, B instances of
+ * the mmix AIR at B different cfgs: each gets its own snapshot, so batch 1's
+ * bind cannot clobber batch 0's any more than round 1's can clobber round 0's.
  * This block is all of them, in instance order, so a caller declares ONE object
- * instead of 1 + (R+3)*Q.
+ * instead of 1 + (B+R+2)*Q.
  *
  * Contents are this file's business — declare it, pass it, do not read it.
  *
- * ⚠ SIZE, MEASURED at this pin (Q = 2, R = 3): 11768 bytes, up from 11576
- * before round replication. The R-1 extra mmcs snapshots cost 48 bytes each,
- * which is why replicating the rounds is nearly free here while a query costs
- * ~5.9 KB — `dnac_mmix_fold_state_t` alone is 4000 bytes.
+ * ⚠ SIZE, MEASURED at this pin (Q = 2, B = 3, R = 3): 27768 bytes, up from
+ * 11768 before input-batch replication. The B-1 extra mmix snapshots cost 4000
+ * bytes EACH — `dnac_mmix_fold_state_t` is by far the largest of the five — so
+ * this axis is the expensive one: +8000 bytes per query, against +48 per extra
+ * commit round. The whole entry frame (this block + the 17 descriptors + the
+ * publics) is ~33 KB, MEASURED by the test and printed by it. Still an ordinary
+ * automatic on every target here (the default thread stack is 8 MB on glibc and
+ * 1 MB on Android's bionic — `dnac_p2_fri_statement_verify` is a leaf-ish call
+ * on both), so it stays on the frame; if B or Q grows much further this is the
+ * number that decides otherwise, which is why it is measured rather than
+ * estimated.
  * `dnac_p2_fri_statement_verify` keeps one on its own FRAME, deliberately: a
  * file-scope object would make the entry non-reentrant and give back exactly
  * the shared-binding hazard FLEET 034 removed, and a heap object would add an
  * allocation-failure path to a function whose whole contract is "construct and
- * reject". The whole frame (this block + the 13 descriptors + the publics) is
- * ~15.9 KB, still an ordinary automatic. A caller that cannot afford that
- * should drive `dnac_p2_fri_statement_build_instances` with storage of its own
- * lifetime instead — which is why that entry point is exposed.
+ * reject". A caller that cannot afford the frame should drive
+ * `dnac_p2_fri_statement_build_instances` with storage of its own lifetime
+ * instead — which is why that entry point is exposed.
  */
 typedef struct {
     dnac_tair_fold_state_t       tair;
@@ -1121,6 +1456,12 @@ size_t dnac_p2s_inst_query(uint32_t instance);
  *  ONE decoder for the round axis — nothing else subtracts DNAC_P2S_SLOT_MMCS0
  *  from an instance index. */
 size_t dnac_p2s_inst_round(uint32_t instance);
+
+/** The INPUT BATCH instance `i` models, or SIZE_MAX when `i` is not one of the
+ *  B mmix instances (including the transcript instance and out-of-range). The
+ *  ONE decoder for the batch axis — nothing else subtracts DNAC_P2S_SLOT_MMIX0
+ *  from an instance index. */
+size_t dnac_p2s_inst_batch(uint32_t instance);
 
 /**
  * @brief Build every batch descriptor from the statement — steps 3-6.
@@ -1191,16 +1532,18 @@ dnac_p2s_status_t dnac_p2_fri_statement_build_instances(
  *      ALIASING, not checking:
  *        - SHARED into every query: the ONE `tair_payload` (the s3b source of
  *          every fri instance's betas and every oi instance's alpha), the ONE
- *          `final_poly0`, the ONE `mmix_root`, and `mmcs_root[r]` into BOTH
- *          every query's round-r MMCS instance AND the transcript instance's
- *          round-r digest observe lanes (HONEST LABEL 6's closure);
+ *          `final_poly0`, `mmix_root[b]` into every query's batch-b mmix
+ *          instance, and `mmcs_root[r]` into BOTH every query's round-r MMCS
+ *          instance AND the transcript instance's round-r digest observe lanes
+ *          (HONEST LABEL 6's closure);
  *        - PER QUERY q: `index_bits[q]` into the tair instance's q-th exported
  *          bit block AND into query q's bit/direction regions — round r's dir
  *          region taking the window at `DNAC_P2S_MMCS_BIT_OFF(r)`;
  *          `ro_export[q]` into fri[q]'s f_init + roll-ins and oi[q]'s ro;
- *          `mmix_opened[q]` into mmix[q]'s opened row AND (s2) into oi[q]'s
- *          main-batch p_x publics; `mmcs_opened[q][r]`, `z_pq[q]`,
- *          `pz_shared`, `px_rest[q]`.
+ *          `mmix_opened[q]` at batch b's span into mmix[q][b]'s opened row AND
+ *          (HONEST LABEL 3's closure) into the p_x publics of every oi[q] acc
+ *          row belonging to batch b; `mmcs_opened[q][r]`, `z_pq[q]`,
+ *          `pz_shared`.
  *   7. `dnac_batch_verify` with is_zk = 0, num_random_codewords = 0,
  *      salt_elems = 0 and the pinned outer FRI params.
  * Steps 3-6 are `dnac_p2_fri_statement_build_instances`.
