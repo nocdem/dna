@@ -184,6 +184,27 @@ static const char *WITNESS_DB_SCHEMA =
     "  snapshot_hash      BLOB NOT NULL,"
     "  snapshot_blob      BLOB"
     ");"
+    /* Supply counters. Historically this table was created ONLY by
+     * nodus_witness_supply_init (nodus_witness_db.c:879-888), which runs
+     * at genesis commit — so a node that created its chain DB and then
+     * joined before replaying genesis had no such table at all, and every
+     * supply read/write against it silently no-op'd. Definition is
+     * column-for-column the one in supply_init (including the
+     * total_minted column that the ALTER at nodus_witness_db.c:892-894
+     * back-fills into pre-v0.16 DBs); supply_init's own
+     * CREATE TABLE IF NOT EXISTS stays and is a no-op once we are here.
+     * NO row is inserted: an absent id=1 row is the correct pre-genesis
+     * state, and nodus_witness_supply_get already treats "no row" as
+     * "not initialised" (nodus_witness_db.c:925-928). */
+    "CREATE TABLE IF NOT EXISTS supply_tracking ("
+    "  id INTEGER PRIMARY KEY CHECK(id = 1),"
+    "  genesis_supply INTEGER NOT NULL,"
+    "  total_burned INTEGER NOT NULL DEFAULT 0,"
+    "  total_minted INTEGER NOT NULL DEFAULT 0,"
+    "  current_supply INTEGER NOT NULL,"
+    "  last_tx_hash BLOB NOT NULL,"
+    "  last_sequence INTEGER NOT NULL"
+    ");"
     "CREATE TABLE IF NOT EXISTS validator_stats ("
     "  key TEXT PRIMARY KEY,"
     "  value INTEGER NOT NULL"

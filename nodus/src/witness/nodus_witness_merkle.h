@@ -209,9 +209,17 @@ void nodus_merkle_leaf_value_hash(uint8_t tree_tag,
  * block 1, so any divergence would fork the chain.
  *
  * @param tree_tag  One of NODUS_TREE_TAG_{UTXO,VALIDATOR,DELEGATION,REWARD}
- * @param out_root  [out] 64-byte empty-subtree root
+ * @param out_root  [out] 64-byte empty-subtree root. On failure it is
+ *                  filled with 64 zero bytes so a caller that ignores
+ *                  the return code still gets a deterministic value
+ *                  rather than uninitialised stack — but those zeros
+ *                  are NOT a valid root and must never reach a block.
+ * @return 0 on success, -1 on digest failure (2026-07-31: was void,
+ *         which made a fabricated all-zero root indistinguishable from
+ *         a real one — the one remaining way to emit a state_root the
+ *         caller believed was computed).
  */
-void nodus_merkle_empty_root(uint8_t tree_tag, uint8_t out_root[64]);
+int nodus_merkle_empty_root(uint8_t tree_tag, uint8_t out_root[64]);
 
 /* ── Composite state_root combiner (witness stake v1 / Phase 3 Task 10) ──
  *
@@ -281,8 +289,16 @@ void nodus_merkle_combine_state_root_v2(const uint8_t utxo_root[64],
 
 /* v0.16 — 5-input combiner with outer version byte 0x03 that replaces
  * the reward subtree slot with epoch_state. ALL live-chain callers
- * use this post-wipe. */
-void nodus_merkle_combine_state_root_v3(const uint8_t utxo_root[64],
+ * use this post-wipe.
+ *
+ * Returns 0 on success, -1 on a NULL argument or digest failure; on
+ * failure out_state_root is filled with 64 zero bytes (deterministic,
+ * but NOT a valid root — see nodus_merkle_empty_root). 2026-07-31: was
+ * void. Because compute_state_root then returned 0 unconditionally,
+ * this was the last remaining path that could hand a caller a
+ * fabricated state_root while reporting success, which contradicted
+ * the "exactly one way to emit a state_root" guarantee stated below. */
+int nodus_merkle_combine_state_root_v3(const uint8_t utxo_root[64],
                                          const uint8_t validator_root[64],
                                          const uint8_t delegation_root[64],
                                          const uint8_t epoch_state_root[64],
@@ -316,19 +332,25 @@ int nodus_witness_merkle_compute_epoch_state_root(nodus_witness_t *w,
 /**
  * Compute the chain-level state_root from the current witness state.
  *
- * Wraps compute_utxo_root (for the UTXO subtree) and combines its
- * result with validator/delegation/reward subtree roots via
- * nodus_merkle_combine_state_root. In Phase 3, the validator /
- * delegation / reward subtrees default to nodus_merkle_empty_root
- * for their respective tree tags. Phase 4+ replaces those stubs
- * with real state reads once the DB migration lands.
+ * Combines five subtree roots — utxo, validator, delegation,
+ * epoch_state, chain_config — through
+ * nodus_merkle_combine_state_root_v3. Every one of them is read from
+ * real table state; the "Phase 3 stub" era, in which validator /
+ * delegation / reward defaulted to nodus_merkle_empty_root, is over.
+ *
+ * FAIL-CLOSED (2026-07-31): a fault in ANY subtree, or in the combiner
+ * itself, returns -1 and leaves root_out untouched. There is exactly
+ * one way to emit a state_root — all five subtrees computed from real
+ * data. A caller that gets -1 has no root and must not advertise, vote,
+ * or commit one. An empty TABLE is not a fault: it yields that
+ * subtree's tagged-empty sentinel, which is a real value.
  *
  * Callers that previously used nodus_witness_merkle_compute_utxo_root
  * as the chain state_root MUST migrate to this function — otherwise
  * the chain-header state_root diverges from the design §3.1 formula.
  *
  * @param w         Witness context (uses w->db)
- * @param root_out  [out] 64-byte composite state_root
+ * @param root_out  [out] 64-byte composite state_root; UNTOUCHED on error
  * @return 0 on success, -1 on error
  */
 int nodus_witness_merkle_compute_state_root(nodus_witness_t *w,

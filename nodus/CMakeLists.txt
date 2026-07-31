@@ -695,6 +695,12 @@ add_executable(test_merkle_utxo_root tests/test_merkle_utxo_root.c)
 target_link_libraries(test_merkle_utxo_root nodus dsa nodus)
 add_test(NAME test_merkle_utxo_root COMMAND test_merkle_utxo_root)
 
+# state_root leaf-scan fail-close tests (K3 / K3b — mid-scan step error
+# and malformed row must fail the load, never truncate the leaf set)
+add_executable(test_merkle_scan_fail_close tests/test_merkle_scan_fail_close.c)
+target_link_libraries(test_merkle_scan_fail_close nodus dsa nodus)
+add_test(NAME test_merkle_scan_fail_close COMMAND test_merkle_scan_fail_close)
+
 # RFC 6962 Merkle proof round-trip tests (Phase 2 / Task 2.6)
 add_executable(test_merkle_proof tests/test_merkle_proof.c)
 target_link_libraries(test_merkle_proof nodus dsa nodus)
@@ -776,6 +782,27 @@ add_test(NAME test_witness_merkle COMMAND test_witness_merkle)
 
 # Task 11 — stake/delegation schema migration test
 register_witness_test(test_stake_schema)
+
+# K4 — supply_tracking must exist (and be empty) at chain-DB open time,
+# not only after nodus_witness_supply_init runs at genesis commit
+register_witness_test(test_supply_tracking_schema)
+
+# Round-3 item 6 — chain_config cache must stay COLD after a mid-scan
+# step error instead of serving a partial override set as authoritative
+add_executable(test_chain_config_cache_failclose
+    tests/test_chain_config_cache_failclose.c)
+target_link_libraries(test_chain_config_cache_failclose nodus dsa nodus)
+add_test(NAME test_chain_config_cache_failclose
+         COMMAND test_chain_config_cache_failclose)
+
+# K2 — spend-result failure-path contract: a rolled-back block never
+# produces an APPROVED receipt, and the handlers.c:2161 NULL-message
+# trap stays pinned
+add_executable(test_spend_result_error_status
+    tests/test_spend_result_error_status.c)
+target_link_libraries(test_spend_result_error_status nodus dsa nodus)
+add_test(NAME test_spend_result_error_status
+         COMMAND test_spend_result_error_status)
 
 # Spend replay DB helper test (Fix #4 B)
 add_executable(test_spend_replay tests/test_spend_replay.c)
@@ -940,6 +967,13 @@ register_witness_test(test_commit_atomicity)
 
 # Task 50 — F-CONS-06 mandatory independent state_root recompute on PREVOTE
 register_witness_test(test_prevote_state_root_mutation)
+
+# D1-D4 (2026-07-31) — witness fail-close: every state_root subtree fault
+# returns -1 instead of a substituted tagged-empty sentinel, and
+# supply_get's three-valued contract keeps a DB error from masquerading as
+# pre-genesis. Deterministic fault injection (DROP TABLE on a temp DB).
+# See nodus/docs/plans/2026-07-31-witness-failclose-state-root-design.md
+register_witness_test(test_witness_state_root_failclose)
 
 # Task 51 — committee election (post-commit lookback + state_seed tiebreak)
 register_witness_test(test_committee_election)

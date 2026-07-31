@@ -24,6 +24,7 @@
 
 #include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
 #include "crypto/utils/qgp_bench.h"         /* perf harness — ((void)0) in production */
+#include "crypto/utils/qgp_log.h"           /* QGP_LOG_* (new code; legacy lines use fprintf) */
 
 #define LOG_TAG "WITNESS_DB"
 
@@ -865,17 +866,21 @@ int nodus_witness_supply_init(nodus_witness_t *w, uint64_t total_supply,
                                  const uint8_t *genesis_tx_hash) {
     if (!w || !w->db || !genesis_tx_hash) return -1;
 
-    /* Check if already initialized */
-    sqlite3_stmt *stmt;
-    int rc = sqlite3_prepare_v2(w->db,
-        "SELECT 1 FROM supply_tracking WHERE id = 1", -1, &stmt, NULL);
-    if (rc == SQLITE_OK && sqlite3_step(stmt) == SQLITE_ROW) {
-        sqlite3_finalize(stmt);
-        return -2;  /* Already initialized */
-    }
-    sqlite3_finalize(stmt);
-
-    /* Need the supply_tracking table */
+    /* Schema first, "already initialized" probe SECOND (2026-07-31).
+     *
+     * The order used to be the other way round, which made the ALTER
+     * below unreachable on exactly the DB that needed it: the probe
+     * returns -2 the moment it sees the id = 1 row, so a DB that already
+     * held the row but predated the total_minted column could never gain
+     * it — and under the D1/D2/D3 fail-close chain a missing column now
+     * rejects every block (see migrate_v17_supply_total_minted, which is
+     * the belt to this suspenders: it runs on every chain-DB open, while
+     * this path only runs when commit_genesis calls us).
+     *
+     * Both statements are idempotent, so running them before the probe
+     * costs nothing on an already-initialized DB: CREATE TABLE IF NOT
+     * EXISTS is a no-op, and the ALTER returns "duplicate column name"
+     * which is ignored via the NULL errmsg. */
     sqlite3_exec(w->db,
         "CREATE TABLE IF NOT EXISTS supply_tracking ("
         "  id INTEGER PRIMARY KEY CHECK(id = 1),"
@@ -892,6 +897,16 @@ int nodus_witness_supply_init(nodus_witness_t *w, uint64_t total_supply,
     sqlite3_exec(w->db,
         "ALTER TABLE supply_tracking ADD COLUMN total_minted "
         "INTEGER NOT NULL DEFAULT 0", NULL, NULL, NULL);
+
+    /* Check if already initialized */
+    sqlite3_stmt *stmt;
+    int rc = sqlite3_prepare_v2(w->db,
+        "SELECT 1 FROM supply_tracking WHERE id = 1", -1, &stmt, NULL);
+    if (rc == SQLITE_OK && sqlite3_step(stmt) == SQLITE_ROW) {
+        sqlite3_finalize(stmt);
+        return -2;  /* Already initialized */
+    }
+    sqlite3_finalize(stmt);
 
     rc = sqlite3_prepare_v2(w->db,
         "INSERT INTO supply_tracking "
@@ -910,6 +925,10 @@ int nodus_witness_supply_init(nodus_witness_t *w, uint64_t total_supply,
     return (rc == SQLITE_DONE) ? 0 : -1;
 }
 
+/* D1 (2026-07-31) — three-valued so callers can tell "pre-genesis" from
+ * "DB error". Conflating the two let a transient fault masquerade as a
+ * legitimate empty state and reach state_root / the supply gate. Full
+ * contract on the declaration in nodus_witness_db.h. */
 int nodus_witness_supply_get(nodus_witness_t *w,
                                 nodus_witness_supply_t *out) {
     if (!w || !w->db || !out) return -1;
@@ -919,11 +938,29 @@ int nodus_witness_supply_get(nodus_witness_t *w,
         "SELECT genesis_supply, total_burned, total_minted, current_supply, "
         "       last_sequence "
         "FROM supply_tracking WHERE id = 1", -1, &stmt, NULL);
-    if (rc != SQLITE_OK) return -1;
+    if (rc != SQLITE_OK) {
+        /* Includes "no such table: supply_tracking" and "no such column:
+         * total_minted", both of which are real errors here, NOT an absent
+         * row — the caller must not read them as "pre-genesis".
+         *
+         * MERGE NOTE (2026-07-31): this comment used to say the table is
+         * "created lazily by supply_init". That stopped being true in the
+         * same round — supply_tracking is now part of WITNESS_DB_SCHEMA
+         * (nodus_witness.c), so it exists from the moment the chain DB is
+         * opened and only a genuinely missing/older DB can land here. The
+         * total_minted column is back-filled by
+         * nodus_witness_db_migrate_v17_supply_total_minted on every open. */
+        QGP_LOG_ERROR(LOG_TAG, "supply_get: prepare failed (rc=%d): %s",
+                      rc, sqlite3_errmsg(w->db));
+        return -1;
+    }
 
     rc = sqlite3_step(stmt);
     if (rc != SQLITE_ROW) {
         sqlite3_finalize(stmt);
+        if (rc == SQLITE_DONE) return 1;   /* row genuinely absent */
+        QGP_LOG_ERROR(LOG_TAG, "supply_get: step failed (rc=%d): %s",
+                      rc, sqlite3_errmsg(w->db));
         return -1;
     }
 
@@ -1775,6 +1812,7 @@ static void nodus_witness_db_migrate_v13_client_fields(nodus_witness_t *w);
 static void nodus_witness_db_migrate_v14_chain_def(nodus_witness_t *w);
 static void nodus_witness_db_migrate_v15_stake_delegation(nodus_witness_t *w);
 static void nodus_witness_db_migrate_v16_pbft_state(nodus_witness_t *w);
+static void nodus_witness_db_migrate_v17_supply_total_minted(nodus_witness_t *w);
 
 int nodus_witness_db_migrate_v12(nodus_witness_t *w) {
     if (!w || !w->db) return -1;
@@ -1844,6 +1882,10 @@ int nodus_witness_db_migrate_v12(nodus_witness_t *w) {
 
     /* PR 3 Yol B — pbft_state singleton table (current_view + last_prepared). */
     nodus_witness_db_migrate_v16_pbft_state(w);
+
+    /* 2026-07-31 — supply_tracking.total_minted back-fill, made reachable
+     * on every open (it was unreachable inside supply_init). */
+    nodus_witness_db_migrate_v17_supply_total_minted(w);
 
     return 0;
 }
@@ -1958,6 +2000,65 @@ static void nodus_witness_db_migrate_v16_pbft_state(nodus_witness_t *w) {
                 "sqlite error %d: %s\n", rc, err ? err : "(null)");
         if (err) sqlite3_free(err);
         abort();
+    }
+}
+
+/* Schema v17 migration (2026-07-31) — supply_tracking.total_minted.
+ *
+ * The column arrived in v0.16 with an ALTER inside
+ * nodus_witness_supply_init. That ALTER is UNREACHABLE on exactly the DB
+ * that needs it: supply_init returns -2 ("already initialized") as soon
+ * as it sees the id = 1 row, several statements BEFORE the ALTER. A DB
+ * that already held the row but predated the column could never gain it.
+ *
+ * That was survivable while supply_get treated a failed prepare as
+ * "pre-genesis". It is not any more: supply_get now returns a hard -1 on
+ * prepare failure (D1), the epoch_state leaf loader fails closed on that
+ * (D3), and compute_state_root fails closed on that (D2) — so a missing
+ * column would make the node reject every block and produce no
+ * state_root at all.
+ *
+ * Running it here makes it reachable on EVERY chain-DB open. Inside
+ * supply_init it would only be reachable on a genesis (re-)commit —
+ * commit_genesis is supply_init's sole production caller
+ * (nodus_witness_bft.c:5924), so a plain restart would never repair the
+ * DB.
+ *
+ * HONEST SCOPE: I could not prove such a DB still exists — the chain was
+ * wiped. This is a cheap guard, not the repair of a demonstrated
+ * incident.
+ *
+ * Two tolerated sqlite errors, neither fatal:
+ *   "duplicate column name" — the normal case on every current DB.
+ *   "no such table"         — supply_tracking is created by
+ *                             WITNESS_DB_SCHEMA (which runs before this
+ *                             in witness_db_open_path) and, on older
+ *                             DBs, by supply_init; but hand-built
+ *                             fixtures legitimately lack it (see
+ *                             setup_pre_v12 in
+ *                             tests/test_schema_migration.c:26-65).
+ *                             Aborting the process over an absent table
+ *                             would be a far worse failure than skipping
+ *                             a back-fill that has nothing to back-fill.
+ */
+static void nodus_witness_db_migrate_v17_supply_total_minted(nodus_witness_t *w) {
+    if (!w || !w->db) return;
+    char *err = NULL;
+    int rc = sqlite3_exec(w->db,
+        "ALTER TABLE supply_tracking "
+        "ADD COLUMN total_minted INTEGER NOT NULL DEFAULT 0",
+        NULL, NULL, &err);
+    if (rc != SQLITE_OK) {
+        const char *msg = err ? err : "(null)";
+        if (!strstr(msg, "duplicate column name") &&
+            !strstr(msg, "no such table")) {
+            fprintf(stderr,
+                    "MIGRATION FAILURE: ALTER ADD supply_tracking.total_minted "
+                    "sqlite error %d: %s\n", rc, msg);
+            if (err) sqlite3_free(err);
+            abort();
+        }
+        if (err) sqlite3_free(err);
     }
 }
 

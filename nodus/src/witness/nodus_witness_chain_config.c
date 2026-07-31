@@ -148,7 +148,15 @@ static int cc_cache_warm_from_db(nodus_witness_t *w) {
         return -1;
     }
 
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
+    /* rc carries the step result out of the loop — same shape as
+     * nodus_chain_config_compute_root below (:293). Without it a mid-scan
+     * SQLITE_IOERR / SQLITE_CORRUPT truncated the cache and the function
+     * still marked it warm, so nodus_chain_config_get_u64 served a PARTIAL
+     * override set as authoritative (:184-195) — fee and block-time
+     * parameters silently diverging between nodes, which is a consensus
+     * split with no Byzantine actor. */
+    int rc;
+    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
         int param_id = sqlite3_column_int(stmt, 0);
         if (param_id < 0 || param_id >= 4) continue;  /* defense */
         int slot = w->chain_config_cache_count[param_id];
@@ -160,6 +168,36 @@ static int cc_cache_warm_from_db(nodus_witness_t *w) {
         w->chain_config_cache_count[param_id] = slot + 1;
     }
     sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) {
+        /* Discard the partial fill and stay COLD, so every lookup goes
+         * through the DB-direct fallback (:219-240) instead of being
+         * answered from a truncated override set.
+         *
+         * That is strictly better than serving the partial cache — but it
+         * is NOT a guarantee of correctness, and an earlier version of
+         * this comment wrongly claimed it was ("costs speed, not
+         * correctness"). The fallback is itself FAIL-OPEN: a prepare
+         * failure returns default_value (:227-231), and a failed step
+         * leaves out == default_value because sqlite3_step's result is
+         * only compared against SQLITE_ROW (:236-238). The function
+         * returns uint64_t and has no error channel, so a caller cannot
+         * tell "no override exists" from "the table is unreadable".
+         *
+         * KNOWN REMAINING HOLE: under the same IOERR/CORRUPT class named
+         * above, this node then uses the DEFAULT fee / block-interval /
+         * inflation-start while healthy peers use the override — the same
+         * divergence, relocated one layer down. Closing it means giving
+         * get_u64 an error channel and making its callers fail closed,
+         * which changes a public signature and every call site; that is a
+         * separate change, not this one. */
+        for (int i = 0; i < 4; i++) w->chain_config_cache_count[i] = 0;
+        w->chain_config_cache_warm = false;
+        QGP_LOG_ERROR(LOG_TAG, "cache warm: step failed rc=%d — discarding "
+                      "partial chain_config cache, staying cold", rc);
+        return -1;
+    }
+
     w->chain_config_cache_warm = true;
     return 0;
 }
@@ -195,8 +233,14 @@ uint64_t nodus_chain_config_get_u64(nodus_witness_t *w,
     }
     w->chain_config_cache_misses++;
 
-    /* Cache warm-up failed — fall back to direct DB lookup so we never
-     * return wrong value because of transient cache failure. */
+    /* Cache warm-up failed (or has not run) — fall back to a direct DB
+     * lookup rather than trusting a cache we could not fill.
+     *
+     * ⚠ FAIL-OPEN, and the original wording here ("so we never return a
+     * wrong value because of transient cache failure") was false: both
+     * error exits below yield default_value, which is indistinguishable
+     * from "no override is active". See the KNOWN REMAINING HOLE note in
+     * cc_cache_warm_from_db. */
     const char *sql =
         "SELECT new_value FROM chain_config_history "
         "WHERE param_id = ? AND effective_block <= ? "
@@ -328,8 +372,11 @@ int nodus_chain_config_compute_root(nodus_witness_t *w, uint8_t out_root[64]) {
 
     int result;
     if (n == 0) {
-        nodus_merkle_empty_root(NODUS_TREE_TAG_CHAIN_CONFIG, out_root);
-        result = 0;
+        /* 2026-07-31: empty_root is three-valued now — the sentinel it
+         * writes on digest failure is 64 zeros, which would otherwise
+         * travel into state_root as a real chain_config_root. */
+        result = nodus_merkle_empty_root(NODUS_TREE_TAG_CHAIN_CONFIG,
+                                         out_root);
     } else {
         result = merkle_root_from_leaves(leaves, n, out_root);
     }

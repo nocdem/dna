@@ -257,6 +257,26 @@ typedef struct {
 
 int  nodus_witness_supply_init(nodus_witness_t *w, uint64_t total_supply,
                                  const uint8_t *genesis_tx_hash);
+
+/**
+ * Read the singleton supply_tracking row (id = 1).
+ *
+ * THREE-VALUED (D1, 2026-07-31). Callers MUST distinguish the two
+ * non-success codes; a blanket `!= 0` is a fail-open, because the
+ * counters this row carries are hashed into every epoch_state leaf
+ * (nodus_witness_merkle.c) and therefore into state_root.
+ *
+ * @return  0  row present, *out populated
+ *          1  row genuinely absent — the table exists but holds no
+ *             id = 1 row (sqlite3_step returned SQLITE_DONE). This is
+ *             the pre-genesis state; *out is untouched, so the caller
+ *             must have zeroed it if it intends to use it.
+ *         -1  real error: NULL argument, prepare failure (which
+ *             INCLUDES "no such table: supply_tracking", since the
+ *             table is created lazily by nodus_witness_supply_init),
+ *             or any sqlite3_step return code other than SQLITE_ROW /
+ *             SQLITE_DONE. *out is untouched.
+ */
 int  nodus_witness_supply_get(nodus_witness_t *w,
                                 nodus_witness_supply_t *out);
 int  nodus_witness_supply_add_burned(nodus_witness_t *w, uint64_t fee,

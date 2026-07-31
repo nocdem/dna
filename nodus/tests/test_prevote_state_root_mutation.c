@@ -95,6 +95,95 @@ static int setup_witness(nodus_witness_t *w) {
         ")") != 0) {
         return -1;
     }
+    /* ── state_root subtree tables (2026-07-31) ────────────────────────
+     * The comment above is now only half the story: compute_utxo_root
+     * touches those six columns, but this fixture drives
+     * compute_state_root, which since 2026-07-31 fails CLOSED on every
+     * subtree — a missing table no longer yields a tagged-empty sentinel,
+     * it fails the whole root. The mutation-detection assertions below
+     * are therefore now made against a REAL five-subtree state_root.
+     *
+     * Definitions copied VERBATIM from production so the loaders' column
+     * lists cannot drift away from this fixture:
+     *   validators / delegations / epoch_state / supply_tracking
+     *     — nodus_witness.c WITNESS_DB_SCHEMA :146 / :167 / :181 / :199
+     *   chain_config_history
+     *     — nodus_witness_chain_config.c nodus_chain_config_db_migrate :96
+     *
+     * All are left EMPTY, so each contributes its tagged-empty sentinel —
+     * a REAL computed value. Only utxo_set varies between the two
+     * witnesses the tests build, which is exactly the property the
+     * mutation assertions need. supply_tracking gets no id = 1 row on
+     * purpose: absent is the pre-genesis state, supply_get returns 1, and
+     * the supply gate correctly skips. */
+    if (run_sql(w->db,
+        "CREATE TABLE IF NOT EXISTS validators ("
+        "  pubkey_hash BLOB PRIMARY KEY,"
+        "  pubkey BLOB NOT NULL,"
+        "  self_stake INTEGER NOT NULL,"
+        "  total_delegated INTEGER NOT NULL DEFAULT 0,"
+        "  external_delegated INTEGER NOT NULL DEFAULT 0,"
+        "  commission_bps INTEGER NOT NULL,"
+        "  pending_commission_bps INTEGER NOT NULL DEFAULT 0,"
+        "  pending_effective_block INTEGER NOT NULL DEFAULT 0,"
+        "  status INTEGER NOT NULL,"
+        "  active_since_block INTEGER NOT NULL,"
+        "  unstake_commit_block INTEGER NOT NULL DEFAULT 0,"
+        "  unstake_destination_fp TEXT NOT NULL,"
+        "  unstake_destination_pubkey BLOB NOT NULL,"
+        "  last_validator_update_block INTEGER NOT NULL DEFAULT 0,"
+        "  consecutive_missed_epochs INTEGER NOT NULL DEFAULT 0,"
+        "  last_signed_block INTEGER NOT NULL DEFAULT 0,"
+        "  signed_blocks_this_epoch INTEGER NOT NULL DEFAULT 0"
+        ")") != 0) {
+        return -1;
+    }
+    if (run_sql(w->db,
+        "CREATE TABLE IF NOT EXISTS delegations ("
+        "  delegator_hash BLOB,"
+        "  validator_hash BLOB,"
+        "  delegator_pubkey BLOB NOT NULL,"
+        "  validator_pubkey BLOB NOT NULL,"
+        "  amount INTEGER NOT NULL,"
+        "  delegated_at_block INTEGER NOT NULL,"
+        "  PRIMARY KEY (delegator_hash, validator_hash)"
+        ")") != 0) {
+        return -1;
+    }
+    if (run_sql(w->db,
+        "CREATE TABLE IF NOT EXISTS epoch_state ("
+        "  epoch_start_height INTEGER PRIMARY KEY,"
+        "  epoch_pool_accum   INTEGER NOT NULL DEFAULT 0,"
+        "  snapshot_hash      BLOB NOT NULL,"
+        "  snapshot_blob      BLOB"
+        ")") != 0) {
+        return -1;
+    }
+    if (run_sql(w->db,
+        "CREATE TABLE IF NOT EXISTS supply_tracking ("
+        "  id INTEGER PRIMARY KEY CHECK(id = 1),"
+        "  genesis_supply INTEGER NOT NULL,"
+        "  total_burned INTEGER NOT NULL DEFAULT 0,"
+        "  total_minted INTEGER NOT NULL DEFAULT 0,"
+        "  current_supply INTEGER NOT NULL,"
+        "  last_tx_hash BLOB NOT NULL,"
+        "  last_sequence INTEGER NOT NULL"
+        ")") != 0) {
+        return -1;
+    }
+    if (run_sql(w->db,
+        "CREATE TABLE IF NOT EXISTS chain_config_history ("
+        "    param_id          INTEGER NOT NULL,"
+        "    new_value         INTEGER NOT NULL,"
+        "    effective_block   INTEGER NOT NULL,"
+        "    commit_block      INTEGER NOT NULL,"
+        "    tx_hash           BLOB    NOT NULL,"
+        "    proposal_nonce    INTEGER NOT NULL,"
+        "    created_at_unix   INTEGER NOT NULL,"
+        "    PRIMARY KEY (param_id, effective_block)"
+        ")") != 0) {
+        return -1;
+    }
     return 0;
 }
 

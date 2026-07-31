@@ -261,6 +261,13 @@ static int buf_ensure(uint8_t **buf, size_t *cap, size_t needed) {
     const size_t max_cap = NODUS_MAX_FRAME_TCP + NODUS_FRAME_HEADER_SIZE + 4096;
     if (needed > max_cap) return -1;
     size_t new_cap = *cap;
+    /* A zero cap makes the doubling loop below spin forever — 0 * 2 == 0,
+     * and `needed` is > 0 by the guard above, so the loop can never exit.
+     * Every production connection is constructed with rcap/wcap =
+     * NODUS_TCP_BUF_INIT (conn_alloc), but the invariant belongs HERE,
+     * next to the loop that depends on it: a caller holding a zeroed conn
+     * must get a buffer, not an unkillable spin. */
+    if (new_cap == 0) new_cap = NODUS_TCP_BUF_INIT;
     while (new_cap < needed) new_cap *= 2;
     /* Clamp to max instead of rejecting overshoot from doubling */
     if (new_cap > max_cap) new_cap = max_cap;

@@ -58,10 +58,75 @@ static const char *SCHEMA =
     "  flags INTEGER NOT NULL DEFAULT 0,"
     "  block_height INTEGER NOT NULL DEFAULT 0,"
     "  timestamp INTEGER NOT NULL DEFAULT 0);"
-    "CREATE TABLE validators (pubkey BLOB PRIMARY KEY,"
-    "  status INTEGER NOT NULL DEFAULT 0,"
+    /* ── state_root subtree tables (2026-07-31) ────────────────────────
+     * The 4-column validators stub that used to stand here is gone:
+     * compute_state_root now fails CLOSED on every subtree, so a
+     * validators table missing self_stake / commission_bps / … fails the
+     * loader's 16-column SELECT and takes the whole state_root down with
+     * it. This fixture drives the C3 state_root-divergence halt, which
+     * only triggers once finalize_block has actually computed a root, so
+     * all five tables are load-bearing here.
+     *
+     * Definitions copied VERBATIM from production so the loaders' column
+     * lists cannot drift away from this fixture:
+     *   validators / delegations / epoch_state / supply_tracking
+     *     — nodus_witness.c WITNESS_DB_SCHEMA :146 / :167 / :181 / :199
+     *   chain_config_history
+     *     — nodus_witness_chain_config.c nodus_chain_config_db_migrate :96
+     *
+     * All are left EMPTY, exactly as the stub was — each subtree then
+     * yields its tagged-empty sentinel, a REAL computed value.
+     * supply_tracking gets no id = 1 row on purpose: absent is the
+     * pre-genesis state, nodus_witness_supply_get returns 1 ("row
+     * genuinely absent"), and the supply gate correctly skips. */
+    "CREATE TABLE IF NOT EXISTS validators ("
+    "  pubkey_hash BLOB PRIMARY KEY,"
+    "  pubkey BLOB NOT NULL,"
+    "  self_stake INTEGER NOT NULL,"
+    "  total_delegated INTEGER NOT NULL DEFAULT 0,"
+    "  external_delegated INTEGER NOT NULL DEFAULT 0,"
+    "  commission_bps INTEGER NOT NULL,"
+    "  pending_commission_bps INTEGER NOT NULL DEFAULT 0,"
+    "  pending_effective_block INTEGER NOT NULL DEFAULT 0,"
+    "  status INTEGER NOT NULL,"
+    "  active_since_block INTEGER NOT NULL,"
+    "  unstake_commit_block INTEGER NOT NULL DEFAULT 0,"
+    "  unstake_destination_fp TEXT NOT NULL,"
+    "  unstake_destination_pubkey BLOB NOT NULL,"
+    "  last_validator_update_block INTEGER NOT NULL DEFAULT 0,"
+    "  consecutive_missed_epochs INTEGER NOT NULL DEFAULT 0,"
     "  last_signed_block INTEGER NOT NULL DEFAULT 0,"
-    "  signed_blocks_this_epoch INTEGER NOT NULL DEFAULT 0);";
+    "  signed_blocks_this_epoch INTEGER NOT NULL DEFAULT 0);"
+    "CREATE TABLE IF NOT EXISTS delegations ("
+    "  delegator_hash BLOB,"
+    "  validator_hash BLOB,"
+    "  delegator_pubkey BLOB NOT NULL,"
+    "  validator_pubkey BLOB NOT NULL,"
+    "  amount INTEGER NOT NULL,"
+    "  delegated_at_block INTEGER NOT NULL,"
+    "  PRIMARY KEY (delegator_hash, validator_hash));"
+    "CREATE TABLE IF NOT EXISTS epoch_state ("
+    "  epoch_start_height INTEGER PRIMARY KEY,"
+    "  epoch_pool_accum   INTEGER NOT NULL DEFAULT 0,"
+    "  snapshot_hash      BLOB NOT NULL,"
+    "  snapshot_blob      BLOB);"
+    "CREATE TABLE IF NOT EXISTS supply_tracking ("
+    "  id INTEGER PRIMARY KEY CHECK(id = 1),"
+    "  genesis_supply INTEGER NOT NULL,"
+    "  total_burned INTEGER NOT NULL DEFAULT 0,"
+    "  total_minted INTEGER NOT NULL DEFAULT 0,"
+    "  current_supply INTEGER NOT NULL,"
+    "  last_tx_hash BLOB NOT NULL,"
+    "  last_sequence INTEGER NOT NULL);"
+    "CREATE TABLE IF NOT EXISTS chain_config_history ("
+    "    param_id          INTEGER NOT NULL,"
+    "    new_value         INTEGER NOT NULL,"
+    "    effective_block   INTEGER NOT NULL,"
+    "    commit_block      INTEGER NOT NULL,"
+    "    tx_hash           BLOB    NOT NULL,"
+    "    proposal_nonce    INTEGER NOT NULL,"
+    "    created_at_unix   INTEGER NOT NULL,"
+    "    PRIMARY KEY (param_id, effective_block));";
 
 static int setup_witness(nodus_witness_t *w) {
     memset(w, 0, sizeof(*w));

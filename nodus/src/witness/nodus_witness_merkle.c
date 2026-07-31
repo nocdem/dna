@@ -11,6 +11,7 @@
 #include "nodus/nodus_types.h"
 #include "nodus/nodus_chain_config.h"  /* Hard-Fork v1: chain_config_root in compute_state_root */
 #include "crypto/utils/qgp_bench.h"    /* perf harness — ((void)0) in production */
+#include "crypto/utils/qgp_log.h"      /* QGP_LOG_* (new code; legacy lines use fprintf) */
 
 #include <openssl/evp.h>
 #include <sqlite3.h>
@@ -200,7 +201,12 @@ static int load_utxo_leaves(nodus_witness_t *w,
         return -1;
     }
 
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
+    /* rc carries the step result out of the loop — a mid-scan SQLITE_IOERR
+     * / SQLITE_CORRUPT / SQLITE_FULL truncates the leaf set, and a
+     * truncated leaf set is a silently divergent state_root (chain split
+     * with no Byzantine actor). Same shape as
+     * nodus_chain_config_compute_root (nodus_witness_chain_config.c:293). */
+    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
         if (n >= cap) {
             size_t new_cap = cap * 2;
             uint8_t *new_buf = realloc(buf, new_cap * 64);
@@ -223,12 +229,21 @@ static int load_utxo_leaves(nodus_witness_t *w,
         int thlen = sqlite3_column_bytes(stmt, 4);
         uint32_t output_index = (uint32_t)sqlite3_column_int(stmt, 5);
 
+        /* Fail close, never skip: two nodes holding different corrupt
+         * rows would otherwise each drop a DIFFERENT leaf and report
+         * success, producing two different state_roots from the same
+         * chain. A malformed row is an unusable UTXO set, not a row to
+         * step over. */
         if (!nullifier || nlen != 64 ||
             !owner ||
             !token_id || tlen != 64 ||
             !tx_hash || thlen != 64) {
-            fprintf(stderr, "%s: utxo row malformed, skipping\n", LOG_TAG);
-            continue;
+            QGP_LOG_ERROR(LOG_TAG, "utxo row malformed (nlen=%d tlen=%d "
+                          "thlen=%d owner=%s) — failing utxo leaf load",
+                          nlen, tlen, thlen, owner ? "present" : "NULL");
+            free(buf);
+            sqlite3_finalize(stmt);
+            return -1;
         }
 
         if (nodus_witness_merkle_leaf_hash(nullifier, owner, amount,
@@ -243,6 +258,14 @@ static int load_utxo_leaves(nodus_witness_t *w,
     }
 
     sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "utxo scan step failed rc=%d — leaf set "
+                      "truncated, refusing to report success", rc);
+        free(buf);
+        return -1;
+    }
+
     *leaves_out = buf;
     *count_out = n;
     return 0;
@@ -535,14 +558,30 @@ int nodus_witness_merkle_build_tx_proof(nodus_witness_t *w,
     size_t n = 0;
     ssize_t target_idx = -1;
 
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
+    /* rc carries the step result out of the loop — see load_utxo_leaves.
+     * A truncated TX list yields a proof against a tx_root the block
+     * never had. */
+    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
         if (n >= NODUS_W_MAX_BLOCK_TXS) {
             sqlite3_finalize(stmt);
             return -1; /* block exceeds per-block cap */
         }
+        /* Fail close, never skip. Skipping a row shifts every LATER leaf
+         * down one index, so the proof would be built against a leaf
+         * ordering the block never had — the emitted proof verifies
+         * against nothing, or worse, against a tx_root a peer computed
+         * from the intact table. Same class as the three loader fixes
+         * above; committed_transactions.tx_hash is always written
+         * full-length, so a short blob is corruption, not a legal state. */
         const void *hash_blob = sqlite3_column_blob(stmt, 0);
         int hash_len = sqlite3_column_bytes(stmt, 0);
-        if (!hash_blob || hash_len != 64) continue;
+        if (!hash_blob || hash_len != 64) {
+            QGP_LOG_ERROR(LOG_TAG, "build_tx_proof: malformed tx_hash "
+                          "(len=%d) at index %zu — refusing to build a proof "
+                          "over a re-indexed leaf set", hash_len, n);
+            sqlite3_finalize(stmt);
+            return -1;
+        }
 
         /* Match target against the raw tx_hash BEFORE leaf-tagging so
          * the caller-provided hash is compared in its natural form. */
@@ -558,6 +597,12 @@ int nodus_witness_merkle_build_tx_proof(nodus_witness_t *w,
         n++;
     }
     sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "build_tx_proof step failed rc=%d — TX list "
+                      "truncated, refusing to build a proof", rc);
+        return -1;
+    }
 
     if (n == 0 || target_idx < 0) return -1;
 
@@ -645,23 +690,29 @@ void nodus_merkle_leaf_value_hash(uint8_t tree_tag,
     }
 }
 
-void nodus_merkle_empty_root(uint8_t tree_tag, uint8_t out_root[64]) {
-    if (!out_root) return;
+/* Returns 0 / -1 (2026-07-31). The zero-fill on failure is kept so a
+ * caller that drops the code still sees deterministic bytes, but those
+ * bytes are a sentinel, not a root — every state_root-path caller now
+ * propagates the -1. */
+int nodus_merkle_empty_root(uint8_t tree_tag, uint8_t out_root[64]) {
+    if (!out_root) return -1;
     const uint8_t zero = 0x00;
     EVP_MD_CTX *md = NULL;
     if (sha3_512_init(&md) != 0) {
         merkle_tag_hash_zero_on_fail(out_root);
-        return;
+        return -1;
     }
     if (EVP_DigestUpdate(md, &tree_tag, 1) != 1 ||
         EVP_DigestUpdate(md, &zero, 1) != 1) {
         EVP_MD_CTX_free(md);
         merkle_tag_hash_zero_on_fail(out_root);
-        return;
+        return -1;
     }
     if (sha3_512_final(md, out_root) != 0) {
         merkle_tag_hash_zero_on_fail(out_root);
+        return -1;
     }
+    return 0;
 }
 
 /* ── Composite state_root combiner — LEGACY 4-input (pre Hard-Fork v1) ──
@@ -779,23 +830,26 @@ void nodus_merkle_combine_state_root_v2(const uint8_t utxo_root[64],
  * against v1/v2 roots. combine_v2 stays available as __attribute__((cold))
  * for archive-replay of pre-wipe blocks.
  */
-void nodus_merkle_combine_state_root_v3(const uint8_t utxo_root[64],
-                                         const uint8_t validator_root[64],
-                                         const uint8_t delegation_root[64],
-                                         const uint8_t epoch_state_root[64],
-                                         const uint8_t chain_config_root[64],
-                                         uint8_t out_state_root[64]) {
-    if (!out_state_root) return;
+/* Returns 0 / -1 (2026-07-31) — see the header. The byte-for-byte
+ * formula is UNCHANGED; only the failure signalling is new, so every
+ * existing state_root KAT still holds. */
+int nodus_merkle_combine_state_root_v3(const uint8_t utxo_root[64],
+                                        const uint8_t validator_root[64],
+                                        const uint8_t delegation_root[64],
+                                        const uint8_t epoch_state_root[64],
+                                        const uint8_t chain_config_root[64],
+                                        uint8_t out_state_root[64]) {
+    if (!out_state_root) return -1;
     if (!utxo_root || !validator_root || !delegation_root ||
         !epoch_state_root || !chain_config_root) {
         merkle_tag_hash_zero_on_fail(out_state_root);
-        return;
+        return -1;
     }
 
     EVP_MD_CTX *md = NULL;
     if (sha3_512_init(&md) != 0) {
         merkle_tag_hash_zero_on_fail(out_state_root);
-        return;
+        return -1;
     }
     const uint8_t version = NODUS_STATE_ROOT_VERSION_V3;
     if (EVP_DigestUpdate(md, &version,          1)  != 1 ||
@@ -806,11 +860,13 @@ void nodus_merkle_combine_state_root_v3(const uint8_t utxo_root[64],
         EVP_DigestUpdate(md, chain_config_root, 64) != 1) {
         EVP_MD_CTX_free(md);
         merkle_tag_hash_zero_on_fail(out_state_root);
-        return;
+        return -1;
     }
     if (sha3_512_final(md, out_state_root) != 0) {
         merkle_tag_hash_zero_on_fail(out_state_root);
+        return -1;
     }
+    return 0;
 }
 
 /* ── Stage B.5 — validator_root (real) ─────────────────────────────── */
@@ -865,7 +921,8 @@ static int load_validator_leaves(nodus_witness_t *w,
     uint8_t *buf = malloc(cap * 64);
     if (!buf) { sqlite3_finalize(stmt); return -1; }
 
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
+    /* rc carries the step result out of the loop — see load_utxo_leaves. */
+    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
         if (n >= cap) {
             size_t new_cap = cap * 2;
             uint8_t *new_buf = realloc(buf, new_cap * 64);
@@ -880,12 +937,14 @@ static int load_validator_leaves(nodus_witness_t *w,
         const uint8_t tag = NODUS_TREE_TAG_VALIDATOR;
         EVP_DigestUpdate(md, &tag, 1);
 
+        /* Fail close, never skip — see load_utxo_leaves. */
         const void *pubkey = sqlite3_column_blob(stmt, 0);
         int pk_len = sqlite3_column_bytes(stmt, 0);
         if (!pubkey || pk_len != DNAC_PUBKEY_SIZE) {
             EVP_MD_CTX_free(md);
-            fprintf(stderr, "%s: validator row: bad pubkey\n", LOG_TAG);
-            continue;
+            QGP_LOG_ERROR(LOG_TAG, "validator row: bad pubkey (len=%d) — "
+                          "failing validator leaf load", pk_len);
+            free(buf); sqlite3_finalize(stmt); return -1;
         }
         EVP_DigestUpdate(md, pubkey, DNAC_PUBKEY_SIZE);
 
@@ -913,27 +972,88 @@ static int load_validator_leaves(nodus_witness_t *w,
         be64_into((uint64_t)sqlite3_column_int64(stmt, 9), be);
         EVP_DigestUpdate(md, be, 8);
 
-        /* unstake_destination_fp: 128 ASCII hex chars (fingerprint). Serialize
-         * as a fixed 128-byte window — if the row has fewer chars
-         * (shouldn't happen), pad with 0. */
-        const char *fp = (const char *)sqlite3_column_text(stmt, 10);
+        /* unstake_destination_fp: up to 128 ASCII hex chars (fingerprint),
+         * hashed as a fixed zero-padded 128-byte window — that window IS
+         * the canonical leaf encoding (see the leaf-format comment above).
+         *
+         * Fail close on a SQL NULL and on an over-long value. Both used to
+         * be silent value substitutions of exactly the kind D2/D3 exist to
+         * remove: a NULL hashed 128 zeros, and anything past byte 128 was
+         * truncated away, so two different rows produced the same leaf.
+         *
+         * The NULL test goes through sqlite3_column_type, NOT through the
+         * returned pointer. sqlite3 returns a NULL pointer for a
+         * ZERO-LENGTH value (documented for sqlite3_column_blob), so a
+         * pointer test cannot distinguish "absent" from "empty" — and
+         * here the two must be treated differently. column_type is the
+         * unambiguous signal.
+         *
+         * On an honest chain DB a SQL NULL is in fact UNREACHABLE: the
+         * schema declares this column NOT NULL (nodus_witness.c:158) and
+         * there is no `ALTER TABLE validators` anywhere in nodus/src, so
+         * the constraint cannot have been bypassed by a migration. The
+         * check is defence against a restored/corrupted file, not against
+         * a live writer.
+         *
+         * An EMPTY fp, by contrast, IS reachable and stays legal. It does
+         * NOT come from "never requested unstaking" — an earlier version
+         * of this comment claimed that and it is FALSE: the fp is chosen
+         * at STAKE time and is always a full 128-char hex string
+         * (nodus_witness_bft.c:1455-1456 via qgp_fp_raw_to_hex), and it is
+         * immutable thereafter (dnac/include/dnac/transaction.h:142-144,
+         * "IMMUTABLE post-STAKE (Rule T)"). The field that IS left zero
+         * for a validator that never requested unstaking is
+         * unstake_destination_pubkey (nodus_witness_bft.c:1458-1465) —
+         * see its own check below.
+         * The one production path that yields an empty fp is a genesis
+         * chain_def whose iv_fp begins with a NUL byte: the seeder copies
+         * it verbatim (nodus_witness_genesis_seed.c:117) and
+         * nodus_witness_validator.c:64-66 binds it with length -1
+         * (strlen), storing an empty TEXT value. That row must keep
+         * loading, and it hashes to the same 128 zeros it always did — no
+         * honest leaf changes value here. */
         uint8_t fp_buf[128];
         memset(fp_buf, 0, sizeof(fp_buf));
-        if (fp) {
-            size_t fp_len = strlen(fp);
-            if (fp_len > sizeof(fp_buf)) fp_len = sizeof(fp_buf);
-            memcpy(fp_buf, fp, fp_len);
+        if (sqlite3_column_type(stmt, 10) == SQLITE_NULL) {
+            EVP_MD_CTX_free(md);
+            QGP_LOG_ERROR(LOG_TAG, "validator row: unstake_destination_fp is "
+                          "NULL — refusing to hash a substituted value");
+            free(buf); sqlite3_finalize(stmt); return -1;
+        }
+        {
+            const char *fp = (const char *)sqlite3_column_text(stmt, 10);
+            size_t fp_len = fp ? strlen(fp) : 0;
+            if (fp_len > sizeof(fp_buf)) {
+                EVP_MD_CTX_free(md);
+                QGP_LOG_ERROR(LOG_TAG, "validator row: unstake_destination_fp "
+                              "too long (%zu > %zu) — refusing to truncate "
+                              "inside a state_root leaf",
+                              fp_len, sizeof(fp_buf));
+                free(buf); sqlite3_finalize(stmt); return -1;
+            }
+            if (fp_len > 0) memcpy(fp_buf, fp, fp_len);
         }
         EVP_DigestUpdate(md, fp_buf, sizeof(fp_buf));
 
+        /* unstake_destination_pubkey: always written full-length —
+         * nodus_witness_validator.c:67-69 binds DNAC_PUBKEY_SIZE from a
+         * fixed-size array. This IS the field that stays all-zero for a
+         * validator whose unstake destination is not its own signer key
+         * (nodus_witness_bft.c:1458-1465 populates it only on a match),
+         * but all-zero is still 2592 bytes on disk. So a NULL or a short
+         * blob is corruption, not a legitimate empty state, and hashing
+         * 2592 substituted zeros for it made two nodes with different
+         * corruption agree on nothing. */
         const void *upk = sqlite3_column_blob(stmt, 11);
         int upk_len = sqlite3_column_bytes(stmt, 11);
-        uint8_t upk_buf[DNAC_PUBKEY_SIZE];
-        memset(upk_buf, 0, sizeof(upk_buf));
-        if (upk && upk_len == DNAC_PUBKEY_SIZE) {
-            memcpy(upk_buf, upk, DNAC_PUBKEY_SIZE);
+        if (!upk || upk_len != DNAC_PUBKEY_SIZE) {
+            EVP_MD_CTX_free(md);
+            QGP_LOG_ERROR(LOG_TAG, "validator row: bad "
+                          "unstake_destination_pubkey (len=%d) — failing "
+                          "validator leaf load", upk_len);
+            free(buf); sqlite3_finalize(stmt); return -1;
         }
-        EVP_DigestUpdate(md, upk_buf, DNAC_PUBKEY_SIZE);
+        EVP_DigestUpdate(md, upk, DNAC_PUBKEY_SIZE);
 
         be64_into((uint64_t)sqlite3_column_int64(stmt, 12), be);
         EVP_DigestUpdate(md, be, 8);
@@ -951,6 +1071,14 @@ static int load_validator_leaves(nodus_witness_t *w,
     }
 
     sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "validator scan step failed rc=%d — leaf set "
+                      "truncated, refusing to report success", rc);
+        free(buf);
+        return -1;
+    }
+
     *leaves_out = buf;
     *count_out  = n;
     return 0;
@@ -965,8 +1093,9 @@ int nodus_witness_merkle_compute_validator_root(nodus_witness_t *w,
 
     if (n == 0) {
         free(leaves);
-        nodus_merkle_empty_root(NODUS_TREE_TAG_VALIDATOR, root_out);
-        return 0;
+        /* The sentinel is a REAL root that lands in state_root — a failed
+         * digest here must fail the subtree, not pass 64 zeros through. */
+        return nodus_merkle_empty_root(NODUS_TREE_TAG_VALIDATOR, root_out);
     }
 
     /* RFC 6962 leaf-hash prefix per CVE-2012-2459 closure. */
@@ -1010,7 +1139,8 @@ static int load_delegation_leaves(nodus_witness_t *w,
     uint8_t *buf = malloc(cap * 64);
     if (!buf) { sqlite3_finalize(stmt); return -1; }
 
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
+    /* rc carries the step result out of the loop — see load_utxo_leaves. */
+    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
         if (n >= cap) {
             size_t new_cap = cap * 2;
             uint8_t *new_buf = realloc(buf, new_cap * 64);
@@ -1025,6 +1155,7 @@ static int load_delegation_leaves(nodus_witness_t *w,
         const uint8_t tag = NODUS_TREE_TAG_DELEGATION;
         EVP_DigestUpdate(md, &tag, 1);
 
+        /* Fail close, never skip — see load_utxo_leaves. */
         const void *dpk = sqlite3_column_blob(stmt, 0);
         const void *vpk = sqlite3_column_blob(stmt, 1);
         int dpk_len = sqlite3_column_bytes(stmt, 0);
@@ -1032,8 +1163,10 @@ static int load_delegation_leaves(nodus_witness_t *w,
         if (!dpk || dpk_len != DNAC_PUBKEY_SIZE ||
             !vpk || vpk_len != DNAC_PUBKEY_SIZE) {
             EVP_MD_CTX_free(md);
-            fprintf(stderr, "%s: delegation row: bad pubkey\n", LOG_TAG);
-            continue;
+            QGP_LOG_ERROR(LOG_TAG, "delegation row: bad pubkey "
+                          "(dlen=%d vlen=%d) — failing delegation leaf load",
+                          dpk_len, vpk_len);
+            free(buf); sqlite3_finalize(stmt); return -1;
         }
         EVP_DigestUpdate(md, dpk, DNAC_PUBKEY_SIZE);
         EVP_DigestUpdate(md, vpk, DNAC_PUBKEY_SIZE);
@@ -1051,6 +1184,14 @@ static int load_delegation_leaves(nodus_witness_t *w,
     }
 
     sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "delegation scan step failed rc=%d — leaf set "
+                      "truncated, refusing to report success", rc);
+        free(buf);
+        return -1;
+    }
+
     *leaves_out = buf;
     *count_out  = n;
     return 0;
@@ -1065,8 +1206,8 @@ int nodus_witness_merkle_compute_delegation_root(nodus_witness_t *w,
 
     if (n == 0) {
         free(leaves);
-        nodus_merkle_empty_root(NODUS_TREE_TAG_DELEGATION, root_out);
-        return 0;
+        /* See compute_validator_root — the sentinel is state_root input. */
+        return nodus_merkle_empty_root(NODUS_TREE_TAG_DELEGATION, root_out);
     }
 
     for (size_t i = 0; i < n; i++) {
@@ -1102,11 +1243,24 @@ static int load_epoch_state_leaves(nodus_witness_t *w,
     /* Fetch global total_minted + total_burned once — same for every leaf. */
     nodus_witness_supply_t supply;
     memset(&supply, 0, sizeof(supply));
-    if (nodus_witness_supply_get(w, &supply) != 0) {
-        /* No supply_tracking row yet (pre-genesis). Leaf hashes use zeros
-         * — the table is also empty, so this case produces the tagged-
-         * empty sentinel. */
+    int sup_rc = nodus_witness_supply_get(w, &supply);
+    if (sup_rc < 0) {
+        /* D3 (2026-07-31) — FAIL CLOSE. These counters are hashed into
+         * every epoch_state leaf below (be64 total_minted/total_burned),
+         * so they are inside state_root. Hashing zeros on a DB fault made
+         * this witness emit a structurally valid but DIFFERENT root than
+         * its peers — a chain split with no Byzantine actor. */
+        QGP_LOG_ERROR(LOG_TAG,
+                      "epoch_state leaves: supply_get DB error — refusing "
+                      "to substitute zeroed supply counters");
+        return -1;
     }
+    /* sup_rc == 1: the supply_tracking row is genuinely absent (pre-genesis).
+     * Zeroed counters are then the honest value — nothing has been minted or
+     * burned yet — and `supply` is already zeroed above. The old comment
+     * claimed the epoch_state table "is also empty" so the sentinel path
+     * would be taken anyway; that only holds pre-genesis, and it was the
+     * justification a DB error borrowed to hide behind. */
 
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(w->db,
@@ -1123,7 +1277,8 @@ static int load_epoch_state_leaves(nodus_witness_t *w,
     uint8_t *buf = malloc(cap * 64);
     if (!buf) { sqlite3_finalize(stmt); return -1; }
 
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
+    /* rc carries the step result out of the loop — see load_utxo_leaves. */
+    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
         if (n >= cap) {
             size_t new_cap = cap * 2;
             uint8_t *new_buf = realloc(buf, new_cap * 64);
@@ -1144,12 +1299,24 @@ static int load_epoch_state_leaves(nodus_witness_t *w,
         be64_into((uint64_t)sqlite3_column_int64(stmt, 1), be);
         EVP_DigestUpdate(md, be, 8);
 
+        /* snapshot_hash is always written full-length —
+         * nodus_witness_epoch.c:58-59 binds NODUS_EPOCH_SNAPSHOT_HASH_LEN
+         * (64, nodus_witness_epoch.h:30) — so a NULL or short blob is
+         * corruption, not a legitimate empty state. Substituting 64 zeros
+         * for it put a value in the leaf that no peer could reproduce.
+         * Note sqlite3_column_blob() returns NULL for a zero-length blob,
+         * so `!snap` and "empty" are the same signal here; both are
+         * rejected, which is correct because empty is never written. */
         const void *snap = sqlite3_column_blob(stmt, 2);
         int snap_len = sqlite3_column_bytes(stmt, 2);
-        uint8_t snap_buf[64];
-        memset(snap_buf, 0, sizeof(snap_buf));
-        if (snap && snap_len == 64) memcpy(snap_buf, snap, 64);
-        EVP_DigestUpdate(md, snap_buf, 64);
+        if (!snap || snap_len != 64) {
+            EVP_MD_CTX_free(md);
+            QGP_LOG_ERROR(LOG_TAG, "epoch_state row: bad snapshot_hash "
+                          "(len=%d) — failing epoch_state leaf load",
+                          snap_len);
+            free(buf); sqlite3_finalize(stmt); return -1;
+        }
+        EVP_DigestUpdate(md, snap, 64);
 
         be64_into(supply.total_minted, be);
         EVP_DigestUpdate(md, be, 8);
@@ -1163,6 +1330,14 @@ static int load_epoch_state_leaves(nodus_witness_t *w,
     }
 
     sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "epoch_state scan step failed rc=%d — leaf set "
+                      "truncated, refusing to report success", rc);
+        free(buf);
+        return -1;
+    }
+
     *leaves_out = buf;
     *count_out  = n;
     return 0;
@@ -1177,8 +1352,8 @@ int nodus_witness_merkle_compute_epoch_state_root(nodus_witness_t *w,
 
     if (n == 0) {
         free(leaves);
-        nodus_merkle_empty_root(NODUS_TREE_TAG_EPOCH_STATE, root_out);
-        return 0;
+        /* See compute_validator_root — the sentinel is state_root input. */
+        return nodus_merkle_empty_root(NODUS_TREE_TAG_EPOCH_STATE, root_out);
     }
 
     for (size_t i = 0; i < n; i++) {
@@ -1203,6 +1378,11 @@ int nodus_witness_merkle_compute_epoch_state_root(nodus_witness_t *w,
  *
  * compute_utxo_root remains the authoritative UTXO subtree; proofs built
  * via nodus_witness_merkle_build_proof still anchor there.
+ *
+ * Returns 0 with root_out written, or -1 with root_out UNTOUCHED. There
+ * is exactly one way to emit a state_root: all five subtrees computed
+ * from real data (D2, 2026-07-31). A caller that gets -1 has no root and
+ * must not advertise, vote, or commit one.
  */
 int nodus_witness_merkle_compute_state_root(nodus_witness_t *w,
                                             uint8_t *root_out) {
@@ -1215,34 +1395,65 @@ int nodus_witness_merkle_compute_state_root(nodus_witness_t *w,
         return -1;
     }
 
+    /* D2 (2026-07-31) — every subtree fails CLOSED, symmetric with the
+     * utxo branch above. The four tagged-empty sentinel fallbacks that
+     * used to live here converted a transient DB fault into a
+     * structurally valid but DIVERGENT state_root: the faulting witness
+     * voted a root none of its peers could reproduce. No root at all is
+     * strictly safer than a substituted one — under BFT with 7 witnesses
+     * a silent node is tolerated (f = 2), a lying one forks the chain. */
     uint8_t validator_root[64];
     if (nodus_witness_merkle_compute_validator_root(w, validator_root) != 0) {
-        /* Transient DB fault — fall back to tagged-empty sentinel so a
-         * structurally-valid state_root is still emitted. */
-        nodus_merkle_empty_root(NODUS_TREE_TAG_VALIDATOR, validator_root);
+        QGP_LOG_ERROR(LOG_TAG, "compute_state_root: validator_root failed");
+        QGP_BENCH_END(QGP_BENCH_MERKLE_COMPUTE);
+        return -1;
     }
 
     uint8_t delegation_root[64];
     if (nodus_witness_merkle_compute_delegation_root(w, delegation_root) != 0) {
-        nodus_merkle_empty_root(NODUS_TREE_TAG_DELEGATION, delegation_root);
+        QGP_LOG_ERROR(LOG_TAG, "compute_state_root: delegation_root failed");
+        QGP_BENCH_END(QGP_BENCH_MERKLE_COMPUTE);
+        return -1;
     }
 
     uint8_t epoch_state_root[64];
     if (nodus_witness_merkle_compute_epoch_state_root(w, epoch_state_root) != 0) {
-        nodus_merkle_empty_root(NODUS_TREE_TAG_EPOCH_STATE, epoch_state_root);
+        QGP_LOG_ERROR(LOG_TAG, "compute_state_root: epoch_state_root failed");
+        QGP_BENCH_END(QGP_BENCH_MERKLE_COMPUTE);
+        return -1;
     }
 
     uint8_t chain_config_root[64];
     if (nodus_chain_config_compute_root(w, chain_config_root) != 0) {
-        nodus_merkle_empty_root(NODUS_TREE_TAG_CHAIN_CONFIG, chain_config_root);
+        QGP_LOG_ERROR(LOG_TAG, "compute_state_root: chain_config_root failed");
+        QGP_BENCH_END(QGP_BENCH_MERKLE_COMPUTE);
+        return -1;
     }
 
-    nodus_merkle_combine_state_root_v3(utxo_root,
-                                        validator_root,
-                                        delegation_root,
-                                        epoch_state_root,
-                                        chain_config_root,
-                                        root_out);
+    /* The combiner is the last fabrication hole: on a digest failure it
+     * writes 64 zero bytes into its output, and returning 0 here
+     * regardless would have handed the caller that sentinel as a
+     * state_root.
+     *
+     * Combine into a LOCAL buffer and copy out only on success, so the
+     * "root_out is UNTOUCHED on failure" guarantee this function
+     * documents holds for the combiner leg too — not just for the five
+     * subtree legs, which return before writing anything. A caller's
+     * pre-existing buffer contents are then never silently replaced by
+     * the zero sentinel. */
+    uint8_t combined[64];
+    if (nodus_merkle_combine_state_root_v3(utxo_root,
+                                            validator_root,
+                                            delegation_root,
+                                            epoch_state_root,
+                                            chain_config_root,
+                                            combined) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "compute_state_root: combine_v3 failed — "
+                      "no root emitted");
+        QGP_BENCH_END(QGP_BENCH_MERKLE_COMPUTE);
+        return -1;
+    }
+    memcpy(root_out, combined, 64);
     QGP_BENCH_END(QGP_BENCH_MERKLE_COMPUTE);
     return 0;
 }

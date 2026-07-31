@@ -436,7 +436,25 @@ int nodus_witness_peer_send_ident(nodus_witness_t *w,
     } else {
         /* Phase 3 / Task 10: peer identification advertises the composite
          * state_root (utxo || validator || delegation || reward). */
-        nodus_witness_merkle_compute_state_root(w, msg.ident.state_root);
+        if (nodus_witness_merkle_compute_state_root(w, msg.ident.state_root) != 0) {
+            /* D4 (2026-07-31) — was an unchecked call. Advertise the
+             * all-zero "unknown" checksum, EXPLICITLY: consumers skip a
+             * zero remote_checksum instead of scoring it as agreement or
+             * disagreement (nodus_witness_sync.c:305 and :434), so this
+             * node simply does not contribute to the divergence tally
+             * until it can compute a real root.
+             *
+             * The memset at the top of this function already zeroes msg,
+             * and compute_state_root leaves root_out untouched on failure
+             * — but relying on that pair was implicit correctness, and
+             * D2 made this failure path genuinely reachable. Re-zero so
+             * the guarantee is local and visible. */
+            memset(msg.ident.state_root, 0, NODUS_KEY_BYTES);
+            QGP_LOG_ERROR(LOG_TAG,
+                "IDENT: state_root compute failed — advertising all-zero "
+                "(unknown) checksum at height %llu",
+                (unsigned long long)msg.ident.block_height);
+        }
     }
     msg.ident.current_view = w->current_view;
     msg.ident.roster_size = w->roster.n_witnesses;

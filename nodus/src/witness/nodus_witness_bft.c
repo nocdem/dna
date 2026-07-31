@@ -58,9 +58,17 @@
 
 #define LOG_TAG "WITNESS-BFT"
 
+/* Client spend-result status codes. Mirror of the file-local defines in
+ * nodus_witness_handlers.c:54-56, which is the authority — they are not
+ * published in any header, and nodus_witness_send_spend_result() takes
+ * the status as a plain int. */
+#define DNAC_STATUS_APPROVED   0
+#define DNAC_STATUS_ERROR      2
+
 /* Forward declaration — defined near bft_check_timeout */
 static void round_state_free_batch(nodus_witness_round_state_t *rs);
-static void bft_emit_batch_replies(nodus_witness_t *w);
+static void bft_emit_batch_replies(nodus_witness_t *w, int status,
+                                    const char *error_msg);
 
 /* Phase 6 commit wrappers — defined later in this file. Forward
  * declarations let the Phase 7 / Task 7.6 dispatchers (commit_block,
@@ -891,16 +899,38 @@ static int update_utxo_set(nodus_witness_t *w,
  * when violated; also -1 on internal DB error so the block is
  * rejected rather than committed on stale/partial reads.
  *
+ * D1 (2026-07-31): the "DB error → -1" half of that contract only
+ * became real once nodus_witness_supply_get grew a third return value.
+ * Before it, every failure looked like pre-genesis and the gate was
+ * skipped outright.
+ *
  * Read-only — does not mutate w->db.
  */
-static int check_supply_invariant_v016(nodus_witness_t *w) {
+/* Non-static so test_witness_state_root_failclose.c can pin the D1 gate
+ * directly. Same rationale as the other de-staticed BFT primitives (see
+ * the header block of nodus_witness_bft_internal.h): static + test
+ * linkage do not compose under CMake's normal flow, and the protection
+ * is "no production-facing header references it" rather than the
+ * qualifier. The canonical home for this prototype is
+ * nodus_witness_bft_internal.h — that file was outside this change's
+ * approved whitelist, so the test declares it locally instead. */
+int check_supply_invariant_v016(nodus_witness_t *w) {
     if (!w || !w->db) return -1;
 
     nodus_witness_supply_t sup;
     memset(&sup, 0, sizeof(sup));
     int sup_rc = nodus_witness_supply_get(w, &sup);
-    if (sup_rc != 0) {
-        /* Pre-genesis: the supply_tracking row hasn't been initialized.
+    if (sup_rc < 0) {
+        /* D1 (2026-07-31): a DB error is NOT pre-genesis. Skipping the
+         * gate here would commit the block with the invariant unchecked
+         * — the caller at finalize_block treats non-zero as REJECT. */
+        QGP_LOG_ERROR(LOG_TAG,
+            "SUPPLY INVARIANT: supply_get DB error — gate cannot run, "
+            "rejecting block");
+        return -1;
+    }
+    if (sup_rc == 1) {
+        /* Pre-genesis: the supply_tracking row genuinely does not exist.
          * Nothing to conserve yet — genesis commit populates it. */
         return 0;
     }
@@ -1009,6 +1039,15 @@ bool supply_invariant_violated(nodus_witness_t *w) {
 
     nodus_witness_supply_t sup;
     uint64_t utxo_total = 0;
+    /* D1 review: `== 0` (row present) is the correct predicate under the
+     * three-valued contract and is unchanged by it. This function is the
+     * ADVISORY diagnostic; neither of its two callers can reject a block
+     * on its verdict — finalize_block discards it outright
+     * (`(void)supply_invariant_violated(w)`) and the attribution replay
+     * only emits a per-TX log line on a path that is already returning
+     * -1. So neither an absent row (1) nor a DB error (-1) may be
+     * reported here as a violation. The HARD gate that DOES reject is
+     * check_supply_invariant_v016 above. */
     if (nodus_witness_supply_get(w, &sup) == 0 &&
         nodus_witness_utxo_sum_by_token(w, NULL, &utxo_total) == 0) {
 
@@ -4164,15 +4203,20 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
             w->round_state.batch_entries[i] = entry;
         }
 
-        /* Cleanup on invalid batch */
+        /* Cleanup on invalid batch.
+         *
+         * Use round_state_free_batch rather than the hand-rolled loop this
+         * replaces: that loop freed and NULLed every entry but left
+         * batch_count at the value taken from the proposal (:4119), so the
+         * round went on CLAIMING N entries it no longer held. That is not
+         * cosmetic — we still broadcast a REJECT prevote and stay in the
+         * round, and peers can reach quorum without us, so this node can
+         * still walk PREVOTE → PRECOMMIT → COMMIT and enter the
+         * `batch_count > 0` commit branch with an array of NULLs. The
+         * helper zeroes the count as well, which makes that branch
+         * unreachable for a rejected batch. */
         if (tx_invalid) {
-            for (int i = 0; i < w->round_state.batch_count; i++) {
-                if (w->round_state.batch_entries[i]) {
-                    nodus_witness_mempool_entry_free(
-                        w->round_state.batch_entries[i]);
-                    w->round_state.batch_entries[i] = NULL;
-                }
-            }
+            round_state_free_batch(&w->round_state);
         }
 
         fprintf(stderr, "%s: batch proposal from leader: %d TXs, %s\n",
@@ -4568,7 +4612,19 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
                                 w->round_state.proposal_timestamp,
                                 w->round_state.proposer_id) != 0);
         } else {
-            /* Leader path — this node computes state_root, no expected.
+            /* Own-quorum commit path — NOT leader-only. Any witness that
+             * accumulates a precommit quorum locally arrives here;
+             * handle_vote gates on phase alone (:4368), never on
+             * is_leader. (The old "Leader path" label was misleading, and
+             * it is exactly this property that lets the cluster make
+             * progress when one node suppresses its COMMIT frame below.)
+             *
+             * expected_state_root is NULL: this node computed the root
+             * itself, so there is nothing to compare against — which also
+             * means finalize_block's C3 divergence check is SKIPPED here
+             * (it is gated on expected_state_root != NULL, :3280). Only
+             * the handle_commit path supplies one (:5071).
+             *
              * Pass round_state.block_height (set at handle_propose's A2
              * fix or local round-init) as expected_height. */
             batch_failed = (nodus_witness_commit_batch(w,
@@ -4581,8 +4637,61 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
         }
 
         if (batch_failed) {
-            fprintf(stderr, "%s: BATCH COMMIT FAILED round %lu\n",
-                    LOG_TAG, (unsigned long)w->round_state.round);
+            /* The block did NOT persist — commit_batch / commit_genesis
+             * rolled the whole batch back. Everything below this point
+             * (state_root recompute, COMMIT build, broadcast, cert store,
+             * client replies) describes a block that does not exist:
+             *
+             *   - the COMMIT would carry either the PRE-block state_root
+             *     or, when the recompute itself fails, the 64 zero bytes
+             *     left by the memset of c_msg. Followers compare that
+             *     field literally (finalize_block's C3 check) and latch
+             *     w->safety_halt, and halt_auto_recover is off by default
+             *     (nodus_witness_sync.c) — so one node's LOCAL failure
+             *     would permanently halt the honest majority.
+             *   - the client replies would be signed APPROVED receipts
+             *     for a rolled-back block.
+             *
+             * So: no COMMIT broadcast, no cert store, no APPROVED
+             * receipt. The clients are told ERROR (they re-submit; a
+             * re-proposal of the same entries would need a replay/dedup
+             * design that does not exist yet) and the entries are freed
+             * by bft_emit_batch_replies.
+             *
+             * Everything else is BASELINE behaviour, and deliberately so.
+             * The round is reset exactly the way the fall-through at the
+             * end of this function does it (phase → IDLE, client_conn →
+             * NULL), because an earlier revision of this guard returned
+             * with phase still at COMMIT and that was a real regression:
+             * nodus_witness_bft_check_timeout would then necessarily fire
+             * a VIEW_CHANGE on this node, carrying a w->last_prepared for
+             * the height we just rolled back while every peer that
+             * committed it had cleared theirs — a stale cert that a later
+             * genuine timeout could bind and re-propose, dying on
+             * tx_invalid and burning another view. With phase == IDLE,
+             * check_timeout returns at its first branch (:5752) and no
+             * view change happens here at all.
+             *
+             * w->last_prepared is deliberately NOT cleared: baseline also
+             * kept it across a rolled-back commit, so leaving it is not a
+             * regression, and clearing it is a separate consensus
+             * decision that belongs to its own change. */
+            QGP_LOG_ERROR(LOG_TAG, "BATCH COMMIT FAILED round %lu — no COMMIT "
+                          "broadcast, clients notified, round reset to IDLE",
+                          (unsigned long)w->round_state.round);
+            /* ASCII only: this string goes out on the wire to clients. */
+            bft_emit_batch_replies(w, DNAC_STATUS_ERROR,
+                                   "batch commit failed - block rolled back");
+
+            /* Reset round — mirrors the fall-through path below. */
+            w->round_state.phase = NODUS_W_PHASE_IDLE;
+            w->round_state.client_conn = NULL;
+
+            /* Returns -1 where the fall-through returns 0. That is a
+             * diagnostic distinction only: the single caller discards
+             * this value (nodus_witness.c:937), so it is not a
+             * behavioural difference from baseline. */
+            return -1;
         } else {
             /* Store one commit certificate for the new block. With true
              * multi-tx blocks, batch_count TXs share a single height. */
@@ -4672,14 +4781,64 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
                w->round_state.precommits[i].signature,
                NODUS_SIG_BYTES);
     }
-    if (have_cksum)
+    /* The SECOND entrance to the follower halt (2026-07-31, review round 3).
+     *
+     * The batch_failed guard above covers "the block never persisted". This
+     * covers the other half: the block DID persist, and then the post-commit
+     * recompute at the top of this section failed. `c_msg` was memset to 0,
+     * so broadcasting now would put 64 ZERO bytes in commit.state_root;
+     * every follower compares that field literally in finalize_block's C3
+     * check and latches w->safety_halt, which halt_auto_recover leaves
+     * latched by default. One node's local read fault would stop the honest
+     * majority.
+     *
+     * Both merged hardening rounds widened the fault set that lands here:
+     * K3's step-error checks and D2's four fail-close subtree legs are all
+     * new ways for compute_state_root to return -1.
+     *
+     * Producer-side only: we suppress OUR broadcast. The receiver's literal
+     * comparison stays exactly as it is — teaching it to skip an all-zero
+     * expected_state_root would hand a Byzantine leader a switch to disable
+     * fork detection with a field it fully controls.
+     *
+     * Suppressing does not stall the cluster: this COMMIT branch is not
+     * leader-gated (handle_vote checks phase only, :4368), so every other
+     * witness reaches it on its own precommit quorum, commits locally and
+     * broadcasts its own COMMIT. Our block is already persisted and correct
+     * — only our ability to PROVE it to peers is missing, so everything
+     * else on this path continues: the cert was stored above,
+     * last_committed_round is already advanced, the clients whose TXs did
+     * commit still get their APPROVED receipts below, and the round resets
+     * to IDLE.
+     *
+     * HONEST COST of this choice, stated where it is paid: a peer that
+     * commits through its OWN handle_vote quorum passes NULL as
+     * expected_state_root (:4636), and finalize_block's C3 divergence
+     * check is gated on that argument being non-NULL (:3280) — so it
+     * never runs on that path. The check only runs for a peer that
+     * processes a COMMIT frame via handle_commit, which supplies
+     * cmt->state_root (:5071). Suppressing our frame therefore also
+     * removes the cross-check opportunity for any peer that would have
+     * raced to handle_commit on it. We trade a detection opportunity for
+     * the certainty of not halting the majority with an all-zero root;
+     * the trade is deliberate, not an oversight. */
+    if (have_cksum) {
         memcpy(c_msg.commit.state_root, utxo_cksum, NODUS_KEY_BYTES);
-
-    nodus_witness_bft_broadcast(w, &c_msg);
+        nodus_witness_bft_broadcast(w, &c_msg);
+    } else {
+        QGP_LOG_ERROR(LOG_TAG,
+            "state_root recompute FAILED after commit (round %lu, height "
+            "%llu) — suppressing COMMIT broadcast rather than sending an "
+            "all-zero state_root that would halt every follower. Block is "
+            "persisted locally; peers commit via their own precommit quorum.",
+            (unsigned long)w->round_state.round,
+            (unsigned long long)w->round_state.block_height);
+    }
 
     /* Send client responses. Helper is idempotent — noop if already emitted
-     * (e.g. via handle_commit remote-COMMIT race path). */
-    bft_emit_batch_replies(w);
+     * (e.g. via handle_commit remote-COMMIT race path). Reached only when
+     * the batch committed: the failure branch above returned. */
+    bft_emit_batch_replies(w, DNAC_STATUS_APPROVED, NULL);
     /* Legacy single-TX client response branch deleted in Phase 12 — every
      * round is now batch_count > 0 since Phase 7 removed the single-TX
      * BFT entrypoint. */
@@ -5019,7 +5178,9 @@ int nodus_witness_bft_handle_commit(nodus_witness_t *w,
                     (uint32_t)bi;
             }
         }
-        bft_emit_batch_replies(w);
+        /* Reached only after the remote commit landed locally — a failed
+         * remote commit returned -1 above, before this point. */
+        bft_emit_batch_replies(w, DNAC_STATUS_APPROVED, NULL);
     }
     if (w->round_state.round == hdr->round) {
         w->round_state.phase = NODUS_W_PHASE_IDLE;
@@ -5499,21 +5660,36 @@ static void round_state_free_batch(nodus_witness_round_state_t *rs) {
  * broadcast COMMIT before our handle_vote accumulated its own quorum). Without
  * this, forwarded client spends on the leader node silently drop the
  * w_fwd_rsp reply, and the original client times out at 60s even though the
- * TX committed on-chain in ~1 second. */
-static void bft_emit_batch_replies(nodus_witness_t *w) {
+ * TX committed on-chain in ~1 second.
+ *
+ * `status` is a DNAC spend-result status: DNAC_STATUS_APPROVED on the two
+ * commit paths, DNAC_STATUS_ERROR when the leader's own batch failed and
+ * the block was rolled back. `error_msg` MUST be non-NULL for any
+ * non-APPROVED status — see the guard below. */
+static void bft_emit_batch_replies(nodus_witness_t *w, int status,
+                                    const char *error_msg) {
     if (!w || w->round_state.batch_count <= 0)
         return;
 
-    fprintf(stderr, "%s: emitting client replies for round %lu (%d entries)\n",
+    /* Fail close on the send_spend_result contract: its error branch is
+     * `if (status != DNAC_STATUS_APPROVED && error_msg)`
+     * (nodus_witness_handlers.c:2161) — a non-APPROVED status with a NULL
+     * message falls THROUGH that branch and still emits the signed
+     * receipt. Never let that combination reach the sender. */
+    if (status != DNAC_STATUS_APPROVED && !error_msg)
+        error_msg = "consensus error";
+
+    fprintf(stderr, "%s: emitting client replies for round %lu (%d entries, "
+            "status=%d)\n",
             LOG_TAG, (unsigned long)w->round_state.round,
-            w->round_state.batch_count);
+            w->round_state.batch_count, status);
 
     for (int bi = 0; bi < w->round_state.batch_count; bi++) {
         nodus_witness_mempool_entry_t *e = w->round_state.batch_entries[bi];
         if (!e) continue;
 
         if (e->client_conn && !e->is_forwarded) {
-            nodus_witness_send_spend_result(w, e, 0, NULL);
+            nodus_witness_send_spend_result(w, e, status, error_msg);
         } else if (e->is_forwarded) {
             int fwd_pi = -1;
             for (int pi = 0; pi < w->peer_count; pi++) {
@@ -5538,7 +5714,10 @@ static void bft_emit_batch_replies(nodus_witness_t *w) {
                 fwd_rsp.txn_id = ++w->next_txn_id;
                 snprintf(fwd_rsp.method, sizeof(fwd_rsp.method),
                          "w_fwd_rsp");
-                fwd_rsp.fwd_rsp.status = 0;
+                /* Non-zero status makes the forwarder emit a T2 error to
+                 * the original client instead of a receipt
+                 * (nodus_witness_peer.c:969-987). */
+                fwd_rsp.fwd_rsp.status = (uint32_t)status;
                 memcpy(fwd_rsp.fwd_rsp.tx_hash, e->tx_hash,
                        NODUS_T3_TX_HASH_LEN);
                 /* Phase 13 / Task 13.2 — populate full receipt fields so
