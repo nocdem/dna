@@ -475,7 +475,7 @@
  * PER-BATCH count (2), the correct group TOTAL (6) and the correct group
  * boundary, and mislabels only the internal split. That split carries no
  * semantics FOR THE AIR: `num_matrices*num_points*num_columns` is read ONLY as
- * `batch_sz` for the C5 per-batch lb-zero rule (fri_oi_air.c:164-176), which is
+ * `batch_sz` for the C5 per-batch lb-zero rule (fri_oi_air.c:170-182), which is
  * gated on `cur_is_lb` and therefore never fires for a cfg with no height at
  * log_blowup. What DOES carry semantics — the total and the per-acc-row public
  * slot ORDER — is pinned by the schedule and proved by the test's native replay.
@@ -490,12 +490,46 @@
  * uniform nc = 1 that would read column 0 for BOTH of the quotient batch's two
  * acc rows, silently dropping its second claimed evaluation and duplicating the
  * first. So the per-batch (points, columns) split is pinned SEPARATELY here
- * (DNAC_P2S_OI_BNP / _BNC below), MEASURED per batch by T-REF, and the entry
- * fails closed unless `BNP(b) * BNC(b)` equals the descriptor's `batch_sz` for
- * every b — which is what keeps the uniform descriptor and the real split from
- * disagreeing about the group total. The descriptor itself is UNCHANGED: this
- * is extra information alongside it, not a re-shaping of it (the oi table
- * module owns the descriptor, and this slice does not modify that module).
+ * (DNAC_P2S_OI_BNP / _BNC below). The descriptor itself is UNCHANGED: this is
+ * extra information alongside it, not a re-shaping of it (the oi table module
+ * owns the descriptor, and this slice does not modify that module).
+ *
+ * WHAT IS STILL A LABEL, WHAT IS MEASURED, AND WHERE IT FAILS CLOSED:
+ *
+ *  - STILL A LABEL: the descriptor's (num_matrices, num_points, num_columns)
+ *    split. Both the AIR and the table module read those three ONLY through
+ *    their product (fri_oi_air.c:170, fri_oi_air_table.c:54-64), so no consumer
+ *    can observe the mislabel.
+ *
+ *  - MEASURED, not assumed: T-REF/px re-derives — per batch AND per height —
+ *    the point count and the opened-row width from the fixture JSON and
+ *    compares them against BNP(b) / BNC(b) (test_fri_statement.c:2169-2176),
+ *    then requires at least one batch's real split to DIFFER from the uniform
+ *    descriptor's (:2196), so the per-batch arithmetic cannot be vacuously
+ *    exercised by an s2-shaped fixture.
+ *
+ *  - FAILS CLOSED on TWO equalities, each pinned at build time AND at run time:
+ *      (i)  BNP(b) * BNC(b) == the block size. Build: three array-size asserts
+ *           against ACC_PER_BATCH (fri_statement.c:98-106). Run: step 3a
+ *           against the same constant (:928), and again in the p_x build loop
+ *           against the DESCRIPTOR's own `batch_sz` (:1332) — the second is the
+ *           one that stops a re-shaped descriptor from re-partitioning that
+ *           loop, since it reads the cfg rather than the constant.
+ *      (ii) BNC(b) == DNAC_P2S_MMIX_BW(b), the width of batch b's mmix opened
+ *           row. This is the native's own equality (fri_verifier.c:333 pins the
+ *           opened row length to the claimed-eval count that :469-471 then
+ *           indexes by). Build: fri_statement.c:114-119. Run: `mw != nc` at
+ *           :940 and :1342, against the cfg the bind will actually receive
+ *           (OBL-4-MMIX). Without (ii) the alias would index a lane batch b's
+ *           opened row does not have; without (i) it would index the wrong one.
+ *
+ *  - NOT CLOSED: the uniform descriptor can only describe a group whose B
+ *    blocks are all the SAME size — :1322 forces the group total to be
+ *    B * batch_sz and :1332 forces every batch onto that one `batch_sz`. A
+ *    shape with genuinely different per-batch acc-row counts is therefore
+ *    REJECTED rather than mis-verified, which is the safe direction but is
+ *    still a shape this composition cannot express. If the production re-pin
+ *    (P2e) needs one, the fix belongs in the oi TABLE module, not here.
  *
  * `tests/test_fri_statement.c` re-derives every one of those numbers from the
  * fixture JSON and compares them against the constants below, so the pin cannot

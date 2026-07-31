@@ -137,7 +137,7 @@
  *
  * ── PIN-1-MMIX: DNAC_P2C_MMIX_PREP_ROOT ────────────────────────────────────
  * In DNAC the preprocessed commitment is PROVER-SUPPLIED PROOF DATA: the prover
- * commits its own table (batch_prover.c:787-826) and `dnac_batch_verify` checks
+ * commits its own table (batch_prover.c:815-854) and `dnac_batch_verify` checks
  * only its PRESENCE (batch_verify.c:149). Nothing in the tree compares that root
  * to a pinned value, so an all-zero selector table would satisfy every gated
  * constraint vacuously. Upstream does not have the hole because its preprocessed
@@ -145,7 +145,7 @@
  * — the full argument is at mmcs_air_table.h:73-100, not repeated.
  *
  * DERIVATION (exactly the SHIPPED prover pipeline on a preprocessed matrix,
- * batch_prover.c:807-825 with is_zk = 0, so the pin equals the root that appears
+ * batch_prover.c:835-853 with is_zk = 0, so the pin equals the root that appears
  * in a real proof):
  *
  *   table = dnac_p2c_mmix_table_generate(REFERENCE CONFIG)   // rows x COLS
@@ -155,7 +155,7 @@
  *   DNAC_P2C_MMIX_PREP_ROOT = root.lanes
  *
  * salt_elems = 0 is MANDATORY at commit (salted+preprocessed is fail-closed at
- * batch_prover.c:585-589); the cfg `salt_elems` above is the LEAF-ABSORB count,
+ * batch_prover.c:613-617); the cfg `salt_elems` above is the LEAF-ABSORB count,
  * NOT the commit's hiding-salt count — different roles, the recursion envelope is
  * non-hiding by user lock.
  *
@@ -206,7 +206,7 @@ extern "C" {
 /** Leaf-hash sponge rate (PaddingFreeSponge<Perm,8,4,4>, poseidon2_mmcs.c:21). */
 #define DNAC_P2C_MMIX_SPONGE_RATE ((size_t)4)
 
-/** Smallest committable table height (batch_prover.c:611, stark_prover.h:185).
+/** Smallest committable table height (batch_prover.c:639, stark_prover.h:185).
  *  Unreachable at the bounds below; kept fail-close. */
 #define DNAC_P2C_MMIX_MIN_ROWS ((size_t)2)
 

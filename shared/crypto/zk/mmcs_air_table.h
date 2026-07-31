@@ -66,13 +66,13 @@
  * ── SCHEDULE ───────────────────────────────────────────────────────────────
  *   [leaf rows] [`depth` compress rows] [1 final row] [all-zero padding]
  * padded to the next power of two, minimum 2. The minimum is not cosmetic:
- * `dnac_batch_prove` rejects degree_bits < is_zk + 1 (batch_prover.c:611) and
+ * `dnac_batch_prove` rejects degree_bits < is_zk + 1 (batch_prover.c:639) and
  * `dnac_prover_coset_lde_bitrev` requires height >= 2 (stark_prover.h:185), so
  * a height-1 table cannot be committed at all.
  *
  * ── PIN-1: DNAC_P2B_PREP_ROOT ──────────────────────────────────────────────
  * In DNAC the preprocessed commitment is PROVER-SUPPLIED PROOF DATA: the
- * prover commits its own table (batch_prover.c:820-825) and exports the lanes
+ * prover commits its own table (batch_prover.c:848-853) and exports the lanes
  * (batch_prover.c:161), and `dnac_batch_verify` checks only its PRESENCE
  * against the declared matrix count (batch_verify.c:149). Nothing in the tree
  * compares that root to a pinned value. An all-zero selector table would then
@@ -85,9 +85,9 @@
  * because the preprocessed commitment lives VERIFIER-SIDE in `CommonData`
  * (`GlobalPreprocessed.commitment`, 11cc5849 batch-stark/src/common.rs:47-50).
  * Upstream commits it at setup time; DNAC has no setup time — which is also
- * why `batch_prover.c:581-584` calls preprocessed a setup-time artifact whose
+ * why `batch_prover.c:609-612` calls preprocessed a setup-time artifact whose
  * "stream position would be invented" and fail-closes salted+preprocessed
- * (batch_prover.c:575-590).
+ * (batch_prover.c:603-618).
  *
  * So the pin is a DNAC-OWNED CONSENSUS ARTIFACT, not a port. The future P2b
  * verify entry compares the decoded preprocessed root against
@@ -100,7 +100,7 @@
  * generator fails there.
  *
  * DERIVATION (exactly the pipeline the SHIPPED prover runs on a preprocessed
- * matrix, batch_prover.c:787-826, so the pin equals the root that appears in a
+ * matrix, batch_prover.c:815-854, so the pin equals the root that appears in a
  * real proof — proved by T4, which reads it back out of a real
  * `dnac_batch_prove` proof via `dnac_batch_proof_commits`):
  *
@@ -111,9 +111,9 @@
  *   root  = dnac_p2_mmcs_commit_mixed({lde}, {3}, {H << lb}, 1, ·, NULL)
  *   DNAC_P2B_PREP_ROOT = root.lanes
  *
- * with is_zk = 0 (no ZERO-row padding step, batch_prover.c:795-806) and
+ * with is_zk = 0 (no ZERO-row padding step, batch_prover.c:823-834) and
  * salt_elems = 0 — MANDATORY, since salted+preprocessed is fail-closed at
- * batch_prover.c:585-589, and the recursion envelope is non-hiding by user
+ * batch_prover.c:613-617, and the recursion envelope is non-hiding by user
  * lock.
  *
  * ⚠ HONEST LABEL: this is a MECHANISM pin against a REFERENCE schedule, not
@@ -126,7 +126,7 @@
  * The P2b descriptor MUST set `prep_next = 1`. With `prep_next = 0` the
  * verifier substitutes an ALL-ZERO next-row preprocessed window
  * (batch_verify.c:696-707) while the shipped prover folds the REAL next values
- * unconditionally (batch_prover.c:311-313) — silent vacuity for any gate that
+ * unconditionally (batch_prover.c:334-337) — silent vacuity for any gate that
  * reads the next row. This module cannot enforce a descriptor field; the
  * enforcement belongs to the future P2b entry. What lives here is the
  * EVIDENCE: test_mmcs_air_table T4/N2 proves the flip is detectable — one
@@ -165,7 +165,7 @@ extern "C" {
 /** Leaf-hash sponge rate (PaddingFreeSponge<Perm,8,4,4>, poseidon2_mmcs.c:21). */
 #define DNAC_P2B_SPONGE_RATE 4
 
-/** Smallest committable table height (batch_prover.c:611, stark_prover.h:185). */
+/** Smallest committable table height (batch_prover.c:639, stark_prover.h:185). */
 #define DNAC_P2B_MIN_ROWS ((size_t)2)
 
 /* ── TERMINALITY RESERVE — DO NOT "RECLAIM" THE PADDING ROW ──────────────────
@@ -246,7 +246,7 @@ typedef struct {
  * recursion envelope. Kept as its OWN macro so this module does not drag the
  * FRI-verifier header chain in; the test static-asserts the two are equal, so
  * they cannot drift. The coset shift is GOLDILOCKS_GENERATOR == 7
- * (field_goldilocks.h:48), the shift batch_prover.c:810-811 passes. */
+ * (field_goldilocks.h:48), the shift batch_prover.c:838-839 passes. */
 #define DNAC_P2B_PREP_LOG_BLOWUP ((unsigned)2)
 
 /* PIN-1 — the preprocessed root of the REFERENCE table, 4 Goldilocks lanes.

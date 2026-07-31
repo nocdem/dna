@@ -107,8 +107,8 @@
  *
  * ── PIN-1-P2c: DNAC_P2C_PREP_ROOT ──────────────────────────────────────────
  * In DNAC the preprocessed commitment is PROVER-SUPPLIED PROOF DATA: the prover
- * commits its own table (batch_prover.c:787-826) and exports the lanes
- * (batch_prover.c:825), and `dnac_batch_verify` checks only its PRESENCE
+ * commits its own table (batch_prover.c:815-854) and exports the lanes
+ * (batch_prover.c:853), and `dnac_batch_verify` checks only its PRESENCE
  * against the declared matrix count (batch_verify.c:149). Nothing in the tree
  * compares that root to a pinned value, so an all-zero selector table would
  * satisfy every gated P2c constraint vacuously. Upstream does not have the hole
@@ -118,7 +118,7 @@
  * not repeated here.
  *
  * DERIVATION (exactly the pipeline the SHIPPED prover runs on a preprocessed
- * matrix, batch_prover.c:807-825 with is_zk = 0, so the pin equals the root
+ * matrix, batch_prover.c:835-853 with is_zk = 0, so the pin equals the root
  * that appears in a real proof):
  *
  *   table = dnac_p2c_table_generate(REFERENCE CONFIG)   // H x COLS, H = 32
@@ -128,7 +128,7 @@
  *   DNAC_P2C_PREP_ROOT = root.lanes
  *
  * salt_elems = 0 is MANDATORY (salted+preprocessed is fail-closed at
- * batch_prover.c:585-589) and the recursion envelope is non-hiding by user lock
+ * batch_prover.c:613-617) and the recursion envelope is non-hiding by user lock
  * (design §0.1 :59).
  *
  * ⚠ HONEST LABEL — SAME CAVEAT AS DNAC_P2B_PREP_ROOT (mmcs_air_table.h:119-123):
@@ -220,7 +220,7 @@ extern "C" {
  */
 #define DNAC_P2C_MAX_QUERIES ((size_t)4096)
 
-/** Smallest committable table height (batch_prover.c:611, stark_prover.h:185).
+/** Smallest committable table height (batch_prover.c:639, stark_prover.h:185).
  *  Unreachable at DNAC_P2C_MIN_LGMH (lgmh 2 already needs 1+1+1 = 3 → 4 rows),
  *  kept fail-close. */
 #define DNAC_P2C_MIN_ROWS ((size_t)2)
@@ -369,7 +369,7 @@ typedef struct {
  * recursion envelope. Kept as its OWN macro so this module does not drag the
  * FRI-verifier header chain in; the test static-asserts the two are equal, so
  * they cannot drift. The coset shift is GOLDILOCKS_GENERATOR == 7
- * (field_goldilocks.h:48), the shift batch_prover.c:810-811 passes. */
+ * (field_goldilocks.h:48), the shift batch_prover.c:838-839 passes. */
 #define DNAC_P2C_PREP_LOG_BLOWUP ((unsigned)2)
 
 /* PIN-1-P2c — the preprocessed root of the REFERENCE table, 4 Goldilocks lanes.
@@ -380,7 +380,7 @@ typedef struct {
  * production re-pins at the composition entry (OBL-4c: cfg is pinned
  * INDEPENDENTLY of this root). The runtime KAT (test_fri_air_table T3) binds
  * this constant to the generator through the SHIPPED LDE→commit pipeline
- * (batch_prover.c:787-826); `dnac_p2c_prep_root_check` fail-closes on any
+ * (batch_prover.c:815-854); `dnac_p2c_prep_root_check` fail-closes on any
  * mismatch. Do NOT hand-edit: re-derive via --print-root
  * (the shielded_domsep.h / test_shielded_domsep.c practice). */
 #define DNAC_P2C_PREP_ROOT_LANE0 UINT64_C(0xbc18e697c2e82726)

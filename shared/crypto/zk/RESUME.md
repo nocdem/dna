@@ -1006,6 +1006,55 @@ left is NOT zk work — it is design and consensus work upstream of the circuits
    0 uyarı, ALL GATES GREEN, 1219/0**, `dnac_batch_prove OK — 17 instances`,
    `[skip]` 0. Kontrol 933 → 1219.
 
+   **ATIF TAZELEME + LABEL 5 (2026-07-31, FLEET 038: 1 executor + 1 verifier +
+   ORCHESTRATOR).** Dört kardeş header'daki (`fri_air_table.h`,
+   `mmcs_air_table.h`, `fri_oi_air_table.h`, `mmcs_mixed_air_table.h`)
+   **26 `batch_prover.c:NNN` atfı** doğrulandı: **25 bayattı, 1 zaten doğruydu**
+   (`mmcs_air_table.h:76` → `batch_prover.c:161`, erişimci bloğunda olduğu için
+   kaymamış — executor doğru olanı DÜZELTMEDİ). Kayma çoğunlukla düzgün **+28**,
+   ama biri deseni izlemiyordu: `mmcs_air_table.h:129`'un "prover folds REAL
+   prep-next unconditionally" atfı `:311-313` → **`:334-337`** (körlemesine +28
+   uygulansaydı `perm_loc/perm_nxt` yorumuna düşerdi). **Hiçbir atfın İDDİASI
+   yanlış değildi** — yalnız koordinatlar kaymıştı, yani KAFADAN temizliği değil
+   saf koordinat tazelemesi.
+   ⚠ **SIFIR-KAYMA DİSİPLİNİ UYGULANDI** (FLEET 037'nin dersi): dört header'ın
+   satır sayısı DEĞİŞMEDİ (497/301/553/531), 25 ekleme / 25 silme, her
+   değiştirme aynı karakter genişliğinde. Verifier üç bağımsız mekanik kontrolle
+   doğruladı: satır sayıları, **yorum-arındırılmış içerik byte-özdeş**
+   (`gcc -fpreprocessed -dD -E -P`), ve her yorum-olmayan satır AYNI satır
+   numarasında. Diff'te tek `#define` yok.
+   `fri_statement.h` +34 satır büyüdü ama ağaçtaki TEK satır-numaralı atfı
+   (`RESUME.md:688` → `fri_statement.h:329`) edit bölgesinin (`:478`) ÜSTÜNDE,
+   byte-özdeş kaldı.
+   **LABEL 5 beklenenden farklı çıktı:** FLEET 037 onu zaten yeniden yazmıştı
+   (BNP/BNC pini, `a % nc_b` sütun kuralı, fail-close mevcuttu). Executor
+   "düzeltmek" yerine gerçekten EKSİK olanı buldu: **`BNC(b) == MMIX_BW(b)`
+   eşitliğinin load-bearing olduğu hiç yazılmamıştı** — native'in kendi kuralı
+   (`fri_verifier.c:333` satır uzunluğunu claimed-eval sayısına pinliyor,
+   `:469-471` onunla indeksliyor), derleme-zamanı (`fri_statement.c:114-119`) ve
+   runtime (`:940`, `:1342`) pinli. Ayrıca fail-close yerleri sayıldı ve
+   **iki farklı iddia oldukları** ayırt edildi: `:928` SABİTE karşı, `:1332`
+   descriptor'ın KENDİ `batch_sz`'sine karşı — yalnız ikincisi yeniden
+   şekillenmiş bir cfg'ye direnir. Kalan artık dürüst: uniform descriptor yalnız
+   B bloğu eşit boyutlu grubu tarif edebiliyor, non-uniform olan REDDEDİLİYOR
+   (yanlış doğrulanmıyor).
+   **O6:** verifier **22 CONFIRMED / 0 REFUTED / 0 UNVERIFIABLE**; 14 atfı
+   bağımsız açtı, iki işaretli kenar vakayı da (`:334-337` ve "zaten doğru"
+   olan) teyit etti. ORCHESTRATOR ayrıca `batch_prover.c:161`, `:334-337`,
+   `prep_next` grep'i ve `RESUME.md:688` atfını kendi açtı.
+   **O9:** zk 86 binary 0 uyarı ALL GATES GREEN **1219/0** (yorum-only ⇒ sayı
+   değişmedi, beklenen). Bu beş dosya hiçbir üretim build'inde YOK (grep: nodus
+   ve messenger CMakeLists'te sıfır eşleşme) → konsensüs yüzeyi değişmedi.
+   ▶ **AÇIK BORÇ — AYNI SINIF, DOKUNULMAMIŞ DOSYALARDA.** Verifier kapsam dışı
+   olarak buldu, ORCHESTRATOR üçünü doğruladı: `transcript_air_table.h` 4 atıf
+   (⚠ **s3a'da düzeltilmişti, FLEET 034 TEKRAR bayatlattı** — bu borcun
+   kendiliğinden yeniden doğduğunun kanıtı), `fri_statement.h` 9, `mmcs_air.h` 1
+   (`:311-313`, #16'nın tıpatıp aynısı), `mmcs_air_table.c` 2, `fri_air_table.c`
+   /`fri_oi_air_table.c`/`mmcs_mixed_air_table.c` 1'er, artı 6 test dosyası.
+   ORCHESTRATOR'ın O4 blast radius'u EKSİKTİ (yalnız FLEET 032'nin adlandırdığı
+   dört header grep'lenmişti). Kullanıcı kararı bekliyor: kapsamı genişlet
+   (~250k) / borç olarak bırak / satır-numaralı atıf modelini kalıcı değiştir.
+
    **COMMIT-ROUND REPLİKASYONU + LABEL 6 SHIPPED (2026-07-31, FLEET 036:
    1 executor 2 tur + verifier + zk-auditor + ORCHESTRATOR).**
    Statement artık **tüm R commit turunu** koşuyor (R = LGMH−LB−LFPL = 3):

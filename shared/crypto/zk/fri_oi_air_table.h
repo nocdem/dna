@@ -115,7 +115,7 @@
  *
  * ── PIN-1-OI: DNAC_P2C_OI_PREP_ROOT ────────────────────────────────────────
  * In DNAC the preprocessed commitment is PROVER-SUPPLIED PROOF DATA: the prover
- * commits its own table (batch_prover.c:787-826) and `dnac_batch_verify` checks
+ * commits its own table (batch_prover.c:815-854) and `dnac_batch_verify` checks
  * only its PRESENCE (batch_verify.c:149). Nothing in the tree compares that root
  * to a pinned value, so an all-zero selector table would satisfy every gated
  * open_input constraint vacuously. Upstream does not have the hole because its
@@ -124,7 +124,7 @@
  * mmcs_air_table.h:73-100 and fri_air_table.h:108-118, not repeated.
  *
  * DERIVATION (exactly the SHIPPED prover pipeline on a preprocessed matrix,
- * batch_prover.c:807-825 with is_zk = 0, so the pin equals the root that
+ * batch_prover.c:835-853 with is_zk = 0, so the pin equals the root that
  * appears in a real proof):
  *
  *   table = dnac_p2c_oi_table_generate(REFERENCE CONFIG)   // rows x COLS
@@ -134,7 +134,7 @@
  *   DNAC_P2C_OI_PREP_ROOT = root.lanes
  *
  * salt_elems = 0 is MANDATORY (salted+preprocessed is fail-closed at
- * batch_prover.c:585-589) and the recursion envelope is non-hiding by user lock.
+ * batch_prover.c:613-617) and the recursion envelope is non-hiding by user lock.
  *
  * ⚠ HONEST LABEL — SAME CAVEAT AS DNAC_P2C_PREP_ROOT (fri_air_table.h:134-138):
  * this is a MECHANISM pin against a REFERENCE schedule, NOT the production
@@ -230,7 +230,7 @@ extern "C" {
  */
 #define DNAC_P2C_OI_MAX_QUERIES ((size_t)4096)
 
-/** Smallest committable table height (batch_prover.c:611). Unreachable at the
+/** Smallest committable table height (batch_prover.c:639). Unreachable at the
  *  bounds above; kept fail-close. */
 #define DNAC_P2C_OI_MIN_ROWS ((size_t)2)
 
