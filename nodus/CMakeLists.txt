@@ -975,6 +975,14 @@ register_witness_test(test_prevote_state_root_mutation)
 # See nodus/docs/plans/2026-07-31-witness-failclose-state-root-design.md
 register_witness_test(test_witness_state_root_failclose)
 
+# F1a (2026-07-31) — the PRODUCER of those same rows. A mid-scan step
+# error must not become "the proposer is not a validator" in
+# record_attendance. Same structural fault injection as
+# test_merkle_scan_fail_close. Also carries healthy-path
+# characterisation for nodus_validator_top_n, whose identical fix is
+# PARKED pending its consumers (see the test file's header).
+register_witness_test(test_witness_attendance_scan_failclose)
+
 # Task 51 — committee election (post-commit lookback + state_seed tiebreak)
 register_witness_test(test_committee_election)
 

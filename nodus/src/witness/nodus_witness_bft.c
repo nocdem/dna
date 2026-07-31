@@ -2992,16 +2992,33 @@ static int apply_epoch_settlement(nodus_witness_t *w,
  * we bump its last_signed_block too; only ACTIVE rows are considered
  * at the liveness check, however.
  *
- * Opens its OWN short-lived SQLite transaction separate from the
- * block commit transaction. Rationale: Task 47 closed the block
- * commit transaction inside the three wrapper functions before
- * cert_store is called. A failed attendance update only costs a
- * single block of credit for one validator; the epoch-boundary
- * enforcement gate uses last_signed_block as a monotonic watermark
- * so one missed bump is tolerable (a validator with enough
- * attendance will still clear the threshold).
+ * DRIFT REPAIR (2026-07-31, landed with F1a below): this block used to
+ * claim the function "opens its OWN short-lived SQLite transaction"
+ * and that "one missed bump is tolerable". The C4 fix falsified both —
+ * see the comment above the UPDATE: there is no BEGIN/COMMIT here, the
+ * caller nodus_witness_commit_batch owns the outer transaction so the
+ * counter bump is atomic with the block, and a non-zero return rolls
+ * the whole block back precisely because a missed bump is NOT
+ * tolerable — last_signed_block and
+ * signed_blocks_this_epoch are both hashed into the validator leaf of
+ * state_root (preimage nodus_witness_merkle.c:895-896, digested at
+ * :1062-1065).
  *
- * Returns 0 on success, -1 on DB error.
+ * Returns 0 on success, -1 on DB error. What that -1 MEANS differs by
+ * caller, and the difference is not cosmetic:
+ *
+ *   nodus_witness_commit_batch (this file — grep the call, the line
+ *     moves) — inside the outer block transaction. -1 there is a block
+ *     REJECT: db_rollback runs and the block never lands. A GUARD.
+ *
+ *   sync replay (nodus_witness_sync.c:990) — the outer transaction is
+ *     already CLOSED by then (replay_block → commit_batch → db_commit),
+ *     so nothing here is atomic with the block and -1 cannot undo it.
+ *     It aborts the sync session for an already-committed block. A
+ *     DETECTOR, not a guard.
+ *
+ * Neither caller may report a -1 as success, but only the first can
+ * prevent the divergence; the second can only stop syncing on top of it.
  */
 int nodus_witness_record_attendance(nodus_witness_t *w,
                                       uint64_t block_height,
@@ -3033,7 +3050,7 @@ int nodus_witness_record_attendance(nodus_witness_t *w,
     uint64_t match_last_signed = 0;
     bool matched = false;
 
-    while (sqlite3_step(sel) == SQLITE_ROW) {
+    while ((rc = sqlite3_step(sel)) == SQLITE_ROW) {
         const void *pk = sqlite3_column_blob(sel, 0);
         int pk_len = sqlite3_column_bytes(sel, 0);
         if (!pk || pk_len != DNAC_PUBKEY_SIZE) continue;
@@ -3049,6 +3066,35 @@ int nodus_witness_record_attendance(nodus_witness_t *w,
         break;
     }
     sqlite3_finalize(sel);
+
+    /* F1a — the scan's step result decides whether "no match" is a FACT
+     * or a DB failure wearing its clothes. A mid-scan SQLITE_IOERR /
+     * SQLITE_BUSY / SQLITE_CORRUPT used to leave the loop with
+     * matched == false, which the line below reads as the legitimate
+     * "proposer is not a validator" outcome: this function returned 0,
+     * commit_batch's rollback never fired, and last_signed_block /
+     * signed_blocks_this_epoch stayed put on THIS node while every peer
+     * advanced them. Both columns are hashed into the validator leaf
+     * (preimage nodus_witness_merkle.c:895-896, digested at :1062-1065),
+     * so the miss is a permanently divergent validator_root →
+     * state_root. Same fork mechanism the C4 comment below documents —
+     * C4 hardened the WRITE, this hardens the READ that decides
+     * whether to write.
+     *
+     * GUARDED ON !matched, and that is the whole subtlety: the loop
+     * BREAKS on a hit, so on the success path rc == SQLITE_ROW, not
+     * SQLITE_DONE. A bare `rc != SQLITE_DONE` here would reject every
+     * honest block on every node. !matched is exactly "the loop was not
+     * terminated by our own break", and only then is rc the scan's
+     * terminal code, where SQLITE_DONE means genuine exhaustion and
+     * anything else means the walk died early. */
+    if (!matched && rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG,
+            "record_attendance: validator scan step failed rc=%d at block "
+            "%llu — cannot tell 'not a validator' from a DB failure, "
+            "rejecting", rc, (unsigned long long)block_height);
+        return -1;
+    }
 
     if (!matched) return 0;  /* proposer not a known validator — skip */
     if (block_height <= match_last_signed) return 0;  /* monotonic */

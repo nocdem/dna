@@ -26,6 +26,7 @@
 #include <errno.h>
 
 #include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+#include "crypto/utils/qgp_log.h"           /* QGP_LOG_* (new code; legacy lines use fprintf) */
 
 #define LOG_TAG "WITNESS-SYNC"
 
@@ -964,9 +965,36 @@ int nodus_witness_sync_handle_rsp(nodus_witness_t *w,
          * Symmetry with the BFT-original path is the consensus
          * invariant; both paths must produce byte-identical
          * post-replay state. F2/F5 expose this; pre-PR3 nothing ever
-         * sync-replayed genesis so the asymmetry never surfaced. */
+         * sync-replayed genesis so the asymmetry never surfaced.
+         *
+         * F1b (2026-07-31) — the result is CHECKED. It used to be a bare
+         * call with the return value discarded, so once
+         * nodus_witness_record_attendance learned to distinguish a
+         * mid-scan DB failure from "proposer is not a validator"
+         * (nodus_witness_bft.c F1a), that new -1 would have been
+         * swallowed right here. A DB that cannot answer the attendance
+         * question cannot be trusted to have this node's validator
+         * counters — the exact columns feeding validator_root — agree
+         * with its peers', which is the divergence this comment block
+         * already names. So a failure aborts the sync session, matching
+         * the cert-verify and replay-failure paths above.
+         *
+         * Two things this does NOT do, stated plainly rather than
+         * implied: the block is already durably committed by the time
+         * we get here (replay_block → commit_batch → db_commit), so
+         * this cannot roll it back; and on a healthy DB this call is a
+         * no-op that returns 0 at the monotonic guard, because
+         * commit_batch already credited the same proposer at the same
+         * height INSIDE the block transaction. */
         if (stored_bh > 1) {
-            nodus_witness_record_attendance(w, stored_bh, rsp->proposer_id);
+            if (nodus_witness_record_attendance(w, stored_bh,
+                                                 rsp->proposer_id) != 0) {
+                QGP_LOG_ERROR(LOG_TAG,
+                    "attendance failed at height %llu — aborting sync",
+                    (unsigned long long)stored_bh);
+                w->sync_state.syncing = false;
+                return -1;
+            }
         }
     }
 
