@@ -498,6 +498,104 @@ static void n4_failclose(void)
     CHECK(dnac_p2b_table_rows(&huge) == 0, "N4: absurd width accepted");
 }
 
+/* ==========================================================================
+ * T-RESERVE — the TERMINALITY RESERVE (mmcs_air_table.h).
+ *
+ * The table always leaves at least one all-zero padding row, because the AIR
+ * requires the final row to have a successor (mmcs_air.c:96-101). This gate
+ * makes the property PERMANENT: it is written as an invariant over a sweep, so
+ * "reclaiming" the row — reverting `p2b_pad_pow2(used + 1)` to `(used)` — fails
+ * here rather than surfacing later as an AIR that silently refuses a config.
+ *
+ * The historical trigger is the FRI commit phase's LAST round: leaf 1 (the
+ * 2*arity-lane leaf) at depth log_blowup + log_final_poly_len == 2 gives
+ * used == 4, an exact power of two, which the AIR rejected outright. That is
+ * the (4, 2) row of the sweep below.
+ * ======================================================================== */
+static void t_reserve(void)
+{
+    /* (a) INVARIANT, swept: every accepted config has a padding row, i.e. the
+     * padded height is STRICTLY greater than the scheduled rows. Swept over
+     * both sponge residue classes and every depth up to 12. */
+    size_t exact_cases = 0;
+    for (size_t total = 1; total <= 12; total++) {
+        const size_t w[1] = { total };
+        const size_t leaf = (total % DNAC_P2B_SPONGE_RATE == 0)
+                                ? total / DNAC_P2B_SPONGE_RATE
+                                : total / DNAC_P2B_SPONGE_RATE + 1;
+        for (size_t depth = 1; depth <= 12; depth++) {
+            const dnac_p2b_table_cfg_t cfg = { 1, w, depth };
+            const size_t used = leaf + depth + 1;
+            const size_t rows = dnac_p2b_table_rows(&cfg);
+            size_t pow2 = DNAC_P2B_MIN_ROWS;
+
+            CHECK(rows > used,
+                  "T-RESERVE: total %zu depth %zu -> %zu rows for %zu "
+                  "scheduled — no padding row, the AIR will refuse it", total,
+                  depth, rows, used);
+            /* and the height is still the smallest power of two that fits. */
+            while (pow2 < used + 1) pow2 <<= 1;
+            CHECK(rows == pow2,
+                  "T-RESERVE: total %zu depth %zu -> %zu rows, expected %zu",
+                  total, depth, rows, pow2);
+            /* count the cases the OLD rule would have made exact-fit — these
+             * are precisely the configs the reserve rescues. */
+            {
+                size_t old = DNAC_P2B_MIN_ROWS;
+                while (old < used) old <<= 1;
+                if (old == used) exact_cases++;
+            }
+        }
+    }
+    CHECK(exact_cases > 0,
+          "T-RESERVE: the sweep contains NO exact-fit config — it cannot "
+          "distinguish the reserve from its absence");
+
+    /* (b) STRICT EXTENSION, measured: a config the OLD rule already left room
+     * in keeps EXACTLY its old height. `old_rows` is the pre-fix arithmetic,
+     * written out here so the comparison is against something independent. */
+    for (size_t total = 1; total <= 12; total++) {
+        const size_t w[1] = { total };
+        const size_t leaf = (total % DNAC_P2B_SPONGE_RATE == 0)
+                                ? total / DNAC_P2B_SPONGE_RATE
+                                : total / DNAC_P2B_SPONGE_RATE + 1;
+        for (size_t depth = 1; depth <= 12; depth++) {
+            const dnac_p2b_table_cfg_t cfg = { 1, w, depth };
+            const size_t used = leaf + depth + 1;
+            size_t old_rows = DNAC_P2B_MIN_ROWS;
+            while (old_rows < used) old_rows <<= 1;
+            if (old_rows == used) continue; /* was rejected — allowed to move */
+            CHECK(dnac_p2b_table_rows(&cfg) == old_rows,
+                  "T-RESERVE: total %zu depth %zu moved %zu -> %zu, but it was "
+                  "ACCEPTED before — the change is not a strict extension",
+                  total, depth, old_rows, dnac_p2b_table_rows(&cfg));
+        }
+    }
+
+    /* (c) THE REFERENCE CONFIG DOES NOT MOVE — DNAC_P2B_PREP_ROOT is a
+     * commitment over its table, so a height change here would void the pin.
+     * T3 recomputes the root itself; this names the reason it still matches. */
+    CHECK(dnac_p2b_table_rows(dnac_p2b_ref_cfg()) == DNAC_P2B_REF_ROWS,
+          "T-RESERVE: the REF config's height moved to %zu — PIN-1 is void",
+          dnac_p2b_table_rows(dnac_p2b_ref_cfg()));
+
+    /* (d) THE HISTORICAL DEFECT, by name: the FRI commit phase's last round.
+     * leaf width 2*arity == 4 (one leaf row), depth == log_blowup + lfpl == 2.
+     * `used == 4` is an exact power of two, so before the reserve this cfg
+     * produced a 4-row table whose last row was the FINAL row — and the AIR
+     * refused it, making the last commit round inexpressible. */
+    {
+        const size_t w[1] = { 4 };
+        const dnac_p2b_table_cfg_t last_round = { 1, w, 2 };
+        CHECK(dnac_p2b_table_rows(&last_round) == 8,
+              "T-RESERVE: the last-commit-round cfg (leaf 4, depth 2) has %zu "
+              "rows, expected 8", dnac_p2b_table_rows(&last_round));
+        printf("  T-RESERVE: last-commit-round cfg (leaf width 4, depth 2) "
+               "-> %zu rows (was 4, AIR-rejected)\n",
+               dnac_p2b_table_rows(&last_round));
+    }
+}
+
 int main(void)
 {
     printf("P2b PIN slice — preprocessed row-type table + PIN-1/PIN-2\n");
@@ -506,6 +604,7 @@ int main(void)
     t3_pin_kat();
     t4_roundtrip_and_pin2();
     n4_failclose();
+    t_reserve();
 
     printf("\nmmcs_air_table total  %26d checks\n", g_checks);
     printf("mmcs_air_table failed %26d\n", g_fails);

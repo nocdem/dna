@@ -588,11 +588,17 @@ static int set_pair(const dnac_p2s_statement_t *good,
  *  and a shared static would make the first the second. */
 static const char *inst_name_r(uint32_t i, char *buf, size_t n)
 {
-    static const char *const slot[] = { "mmix", "mmcs", "fri", "oi" };
+    const size_t r = dnac_p2s_inst_round(i);
     if (i == DNAC_P2S_INST_TAIR) {
         snprintf(buf, n, "tair");
+    } else if (r != (size_t)-1) {
+        snprintf(buf, n, "mmcs%zu[q%zu]", r, dnac_p2s_inst_query(i));
     } else if (i < DNAC_P2S_NUM_INSTANCES) {
-        snprintf(buf, n, "%s[q%zu]", slot[dnac_p2s_inst_slot(i)],
+        const uint32_t s = dnac_p2s_inst_slot(i);
+        snprintf(buf, n, "%s[q%zu]",
+                 s == DNAC_P2S_SLOT_MMIX ? "mmix"
+                 : s == DNAC_P2S_SLOT_FRI ? "fri"
+                                          : "oi",
                  dnac_p2s_inst_query(i));
     } else {
         snprintf(buf, n, "inst%u", i);
@@ -608,9 +614,9 @@ static const char *inst_name(uint32_t i)
 }
 
 /* ── The instance MASK vocabulary the multi-query negatives speak in ────────
- * DNAC_P2S_NUM_INSTANCES is 1 + 4*Q and the derived Q ceiling is 7, so 29
- * instances is the most this shape can hold and a uint32_t mask always fits;
- * the static assert says so rather than leaving it to the reader. */
+ * DNAC_P2S_NUM_INSTANCES is 1 + SLOTS*Q and the Q ceiling is derived so that it
+ * never exceeds the batch stack's 32, so a uint32_t mask always fits; the
+ * static assert says so rather than leaving it to the reader. */
 typedef char p2s_mask_fits_assert
     [(DNAC_P2S_NUM_INSTANCES <= 32) ? 1 : -1];
 
@@ -691,13 +697,18 @@ static void check_mask(uint32_t got, uint32_t want, const char *fmt, ...)
  * proved here is the composition claim: the challenger's OWN pops are the values
  * the other four instances consume.
  *
- * The observed lanes: the first RATE observes MUST be the DS prefix (the AIR
- * pins them, transcript_air.c:279); every later observe is a deterministic
- * fixture. Those later observes stand for the commit-phase digests, the final
- * poly and the per-round log_arity — ⚠ they are NOT aliased to `mmcs_root` /
- * `mmix_root`, so "the transcript observed the commitment this proof opens" is
- * NOT closed by this slice. It belongs to the commit-round replication slice,
- * with the rest of the round-1..R-1 seam. Stated rather than implied.
+ * The observed lanes, in three groups (HONEST LABEL 6):
+ *   - the first RATE observes MUST be the DS prefix (the AIR pins them,
+ *     transcript_air.c:279);
+ *   - the R commit-round digest blocks ARE `mmcs_root[r]` — the round
+ *     replication slice's closure. They are fed in from `mmcs_probe_roots`
+ *     BEFORE the challenger runs, so every challenge this transcript squeezes,
+ *     including the query indices, is downstream of the real roots;
+ *   - the final poly and the per-round log_arity keep a deterministic fixture.
+ *     ⚠ Those two are still NOT aliased to anything, and `mmix_root` has no
+ *     observe op at all (its batch is observed during priming, outside this
+ *     script) — that is the residue label 6 still declares. Stated rather than
+ *     implied.
  */
 typedef struct {
     p2s_tair_vec_t   *V;
@@ -736,9 +747,60 @@ static size_t tair_pop_op(const dnac_tair_script_t *s, size_t ordinal)
     return (size_t)-1;
 }
 
+/** The OBSERVE half of the same map, likewise derived HERE by scanning. Used by
+ *  the honest-trace synthesizer (to observe the round roots) and by N-OBSBIND /
+ *  N-OBSDEAD; fri_statement.c has its own independent walk. */
+static size_t tair_obs_op(const dnac_tair_script_t *s, size_t ordinal)
+{
+    size_t seen = 0;
+    for (size_t k = 0; k < s->n_ops; k++) {
+        if (s->ops[k].kind != DNAC_TAIR_OP_OBSERVE) continue;
+        if (seen == ordinal) return k;
+        seen++;
+    }
+    return (size_t)-1;
+}
+
+/**
+ * The R commit-round Merkle ROOTS, probed BEFORE the transcript exists.
+ *
+ * ⚠ ORDERING, and why it is not circular. Closing HONEST LABEL 6 means the
+ * transcript OBSERVES round r's root, so the roots must be known before the
+ * challenger runs — but the query index comes OUT of that challenger. The knot
+ * unties because a round's TREE is index-independent: the shipped builder fills
+ * every cell from `cell(m, r, c)` (tests/test_mmcs_air.c:114-116), so the root
+ * is a function of the cfg alone and opening at index 0 reveals it. What the
+ * index selects is only the opened row and the sibling path.
+ *
+ * That independence is not assumed: `qtraces_build_head` re-derives each round's
+ * root at the query's REAL index and requires it to equal the probe.
+ */
+static int mmcs_probe_roots(uint64_t roots[DNAC_P2S_FRI_R][MAIR_DIGEST_LANES])
+{
+    for (size_t r = 0; r < DNAC_P2S_FRI_R; r++) {
+        const dnac_p2b_table_cfg_t *cfg = dnac_p2s_mmcs_cfg(r);
+        p2s_mmcs_fixture_t F;
+        if (cfg == NULL || !p2s_mmcs_make_fixture(cfg, 0, &F)) {
+            CHECK(0, "tair: could not probe commit round %zu's root", r);
+            return 0;
+        }
+        for (size_t k = 0; k < (size_t)MAIR_DIGEST_LANES; k++) {
+            roots[r][k] = F.root.lanes[k];
+        }
+    }
+    return 1;
+}
+
 /** Replay the pinned script through the shipped challenger and record the
- *  vector the shipped trace builder consumes. */
-static int tair_make_vector(p2s_tair_vec_t *V, const dnac_tair_script_t *s)
+ *  vector the shipped trace builder consumes.
+ *
+ *  `roots` supplies the OBSERVED lanes of each commit round's digest block —
+ *  the HONEST LABEL 6 closure seen from the witness side. Every other non-DS
+ *  observe (the final poly, the per-round log_arity) keeps the deterministic
+ *  fixture, which is exactly the residue that label still declares open. */
+static int tair_make_vector(p2s_tair_vec_t *V, const dnac_tair_script_t *s,
+                            const uint64_t roots[DNAC_P2S_FRI_R]
+                                                [MAIR_DIGEST_LANES])
 {
     dnac_duplex_t ch;
     size_t dup_seen = 0, obs_seen = 0;
@@ -764,9 +826,21 @@ static int tair_make_vector(p2s_tair_vec_t *V, const dnac_tair_script_t *s)
 
         o->dup_index = dup_seen;
         if (op->kind == DNAC_TAIR_OP_OBSERVE) {
-            const uint64_t lane = (obs_seen < (size_t)TAIR_RATE)
-                                      ? DNAC_DUPLEX_DS_PREFIX[obs_seen]
-                                      : tair_obs_fixture(k);
+            /* DS prefix, then the round digests (LABEL 6), then fixtures. The
+             * digest ordinals are re-derived from the script here, exactly as
+             * `fri_statement.c` derives them from its own walk — two
+             * independent implementations of transcript_air_table.c:296-324. */
+            size_t rd = (size_t)-1, rl = 0;
+            uint64_t lane;
+            for (size_t r = 0; r < DNAC_P2S_FRI_R; r++) {
+                for (size_t i = 0; i < (size_t)DNAC_P2M_DIGEST_LANES; i++) {
+                    if (obs_seen == DNAC_P2S_OBS_DIGEST(r, i)) { rd = r; rl = i; }
+                }
+            }
+            lane = (obs_seen < (size_t)TAIR_RATE)
+                       ? DNAC_DUPLEX_DS_PREFIX[obs_seen]
+                       : (rd != (size_t)-1 ? roots[rd][rl]
+                                           : tair_obs_fixture(k));
             snprintf(o->type, sizeof(o->type), "observe");
             o->lane = lane;
             /* The eager duplex fires when this lane FILLS the rate buffer
@@ -822,7 +896,8 @@ static void tair_free(tair_run_t *T)
 
 /** Build the tair honest trace at the PINNED script and extract the F-S values
  *  the other four instances are seeded from. */
-static int tair_build(tair_run_t *T)
+static int tair_build(tair_run_t *T,
+                      const uint64_t roots[DNAC_P2S_FRI_R][MAIR_DIGEST_LANES])
 {
     const dnac_tair_script_t *s = dnac_p2s_tair_script();
 
@@ -841,7 +916,7 @@ static int tair_build(tair_run_t *T)
     T->B->pub = (uint64_t *)calloc((size_t)512, sizeof(uint64_t));
     if (!T->B->trace || !T->B->prep || !T->B->pub) { tair_free(T); return 0; }
 
-    if (!tair_make_vector(T->V, s)) {
+    if (!tair_make_vector(T->V, s, roots)) {
         CHECK(0, "tair: could not synthesize the vector for the pinned script");
         tair_free(T);
         return 0;
@@ -936,7 +1011,6 @@ static int tair_build(tair_run_t *T)
 static void t_const(void)
 {
     const dnac_p2c_mmix_table_cfg_t *mmix = dnac_p2s_mmix_cfg();
-    const dnac_p2b_table_cfg_t      *mmcs = dnac_p2s_mmcs_cfg();
     const dnac_p2c_table_cfg_t      *fri = dnac_p2s_fri_cfg();
     const dnac_p2c_oi_table_cfg_t   *oi = dnac_p2s_oi_cfg();
 
@@ -945,9 +1019,53 @@ static void t_const(void)
     CHECK(dnac_mmix_air_num_publics(mmix) == DNAC_P2S_MMIX_NUM_PUBLICS,
           "T-CONST: mmix publics %zu != pinned %zu",
           dnac_mmix_air_num_publics(mmix), (size_t)DNAC_P2S_MMIX_NUM_PUBLICS);
-    CHECK(dnac_mmcs_air_num_publics(mmcs) == DNAC_P2S_MMCS_NUM_PUBLICS,
-          "T-CONST: mmcs publics %zu != pinned %zu",
-          dnac_mmcs_air_num_publics(mmcs), (size_t)DNAC_P2S_MMCS_NUM_PUBLICS);
+    /* ── the R commit-round cfgs, per round ──────────────────────────────────
+     * The round axis's own T-CONST: each round's cfg must carry the depth the
+     * fold walk gives it, its accessors must agree with the per-round pinned
+     * arithmetic, and the closed-form Σ the flat publics layout is built on
+     * must equal the actual sum. */
+    {
+        size_t sum_pub = 0, sum_depth = 0;
+        CHECK(dnac_p2s_mmcs_cfg(DNAC_P2S_FRI_R) == NULL,
+              "T-CONST: an out-of-range commit round returns a cfg");
+        for (size_t r = 0; r < DNAC_P2S_FRI_R; r++) {
+            const dnac_p2b_table_cfg_t *c = dnac_p2s_mmcs_cfg(r);
+            CHECK(c != NULL, "T-CONST: commit round %zu has no pinned cfg", r);
+            if (!c) continue;
+            CHECK(c->depth == DNAC_P2S_MMCS_DEPTH(r),
+                  "T-CONST: round %zu depth %zu != pinned %zu", r, c->depth,
+                  (size_t)DNAC_P2S_MMCS_DEPTH(r));
+            CHECK(c->widths[0] == DNAC_P2S_MMCS_TOTAL_WIDTH &&
+                      dnac_mmcs_air_total_width(c) ==
+                          DNAC_P2S_MMCS_TOTAL_WIDTH,
+                  "T-CONST: round %zu leaf width is not the arity's", r);
+            CHECK(dnac_mmcs_air_num_publics(c) == DNAC_P2S_MMCS_NUM_PUBLICS(r),
+                  "T-CONST: round %zu publics %zu != pinned %zu", r,
+                  dnac_mmcs_air_num_publics(c),
+                  (size_t)DNAC_P2S_MMCS_NUM_PUBLICS(r));
+            /* BIT_OFF + DEPTH == lgmh: round r's dir window is exactly the
+             * index's remaining high bits (fri_verifier.c:557-558). */
+            CHECK(DNAC_P2S_MMCS_BIT_OFF(r) + DNAC_P2S_MMCS_DEPTH(r) ==
+                      DNAC_P2S_LGMH,
+                  "T-CONST: round %zu's bit window does not end at lgmh", r);
+            sum_pub += DNAC_P2S_MMCS_NUM_PUBLICS(r);
+            sum_depth += DNAC_P2S_MMCS_DEPTH(r);
+        }
+        CHECK(sum_depth == DNAC_P2S_MMCS_SUM_DEPTHS,
+              "T-CONST: Σ depth %zu != the closed form %zu", sum_depth,
+              (size_t)DNAC_P2S_MMCS_SUM_DEPTHS);
+        CHECK(sum_pub == DNAC_P2S_MMCS_ALL_PUBLICS,
+              "T-CONST: Σ mmcs publics %zu != DNAC_P2S_MMCS_ALL_PUBLICS %zu",
+              sum_pub, (size_t)DNAC_P2S_MMCS_ALL_PUBLICS);
+        /* The LAST round must land on the walk's closing height
+         * (fri_verifier.c:609-611) — the arity-equality assumption's visible
+         * consequence, checked rather than left to HONEST LABEL 4's prose. */
+        CHECK(DNAC_P2S_MMCS_DEPTH(DNAC_P2S_FRI_R - 1) ==
+                  DNAC_P2S_LOG_BLOWUP + DNAC_P2S_LFPL,
+              "T-CONST: the last round folds to %zu, not log_final_height %zu",
+              (size_t)DNAC_P2S_MMCS_DEPTH(DNAC_P2S_FRI_R - 1),
+              (size_t)(DNAC_P2S_LOG_BLOWUP + DNAC_P2S_LFPL));
+    }
     CHECK(dnac_fair_num_publics(fri) == DNAC_P2S_FRI_NUM_PUBLICS,
           "T-CONST: fri publics %zu != pinned %zu", dnac_fair_num_publics(fri),
           (size_t)DNAC_P2S_FRI_NUM_PUBLICS);
@@ -973,9 +1091,6 @@ static void t_const(void)
     CHECK(DNAC_P2S_OI_MAIN_ACC + DNAC_P2S_OI_PX_REST == DNAC_P2S_OI_TOTAL_ACC,
           "T-CONST: MAIN_ACC + PX_REST != TOTAL_ACC");
 
-    CHECK(dnac_mmcs_air_total_width(mmcs) == DNAC_P2S_MMCS_TOTAL_WIDTH,
-          "T-CONST: mmcs total_width %zu != pinned %zu",
-          dnac_mmcs_air_total_width(mmcs), (size_t)DNAC_P2S_MMCS_TOTAL_WIDTH);
     CHECK(dnac_mmix_air_total_opened(mmix) == DNAC_P2S_MMIX_TOTAL_OPENED,
           "T-CONST: mmix total_opened %zu != pinned %zu",
           dnac_mmix_air_total_opened(mmix), (size_t)DNAC_P2S_MMIX_TOTAL_OPENED);
@@ -1003,9 +1118,6 @@ static void t_const(void)
               mmix->heights[0] == ((size_t)1u << DNAC_P2S_MMIX_LH0) &&
               mmix->heights[1] == ((size_t)1u << DNAC_P2S_MMIX_LH1),
           "T-CONST: mmix depth/heights inconsistent");
-    CHECK(mmcs->depth == DNAC_P2S_MMCS_DEPTH &&
-              mmcs->widths[0] == DNAC_P2S_MMCS_TOTAL_WIDTH,
-          "T-CONST: mmcs depth/width inconsistent");
 
     /* ── the oi cfg: shape, the DESCENDING height array, and the STATIC
      * cross-cfg consistency the entry checks at step 3a, re-derived here from
@@ -1053,32 +1165,61 @@ static void t_const(void)
  * own rule — 1 producer at index 0, then 1 + 4q + slot — and compared against
  * the module's decoders, so the two are independent.
  */
+/* The preprocessed-table scratch helpers live with the pin pipeline further
+ * down; T-MAP needs them to compare the commit rounds' table CONTENT. */
+static int  p2s_alloc_tables(uint64_t *tab[DNAC_P2S_NUM_INSTANCES]);
+static void p2s_free_tables(uint64_t *tab[DNAC_P2S_NUM_INSTANCES]);
+
 static void t_map(void)
 {
     size_t next = 0;
     size_t seen[DNAC_P2S_NUM_INSTANCES];
 
-    CHECK(DNAC_P2S_NUM_INSTANCES == 1u + 4u * DNAC_P2S_NUM_QUERIES,
-          "T-MAP: %u instances, the map says 1 + 4*Q = %zu",
-          DNAC_P2S_NUM_INSTANCES, (size_t)(1u + 4u * DNAC_P2S_NUM_QUERIES));
+    /* The per-query block is mmix + R commit rounds + fri + oi. Written out
+     * here as `R + 3` so the map's claim is compared against arithmetic this
+     * file does independently, not against DNAC_P2S_SLOTS itself. */
+    CHECK(DNAC_P2S_SLOTS == DNAC_P2S_FRI_R + 3,
+          "T-MAP: %u slots per query, the map says R + 3 = %zu",
+          DNAC_P2S_SLOTS, (size_t)(DNAC_P2S_FRI_R + 3));
+    CHECK(DNAC_P2S_NUM_INSTANCES ==
+              1u + (DNAC_P2S_FRI_R + 3) * DNAC_P2S_NUM_QUERIES,
+          "T-MAP: %u instances, the map says 1 + (R+3)*Q = %zu",
+          DNAC_P2S_NUM_INSTANCES,
+          (size_t)(1u + (DNAC_P2S_FRI_R + 3) * DNAC_P2S_NUM_QUERIES));
     CHECK(DNAC_P2S_INST_TAIR == 0,
           "T-MAP: the transcript instance is not index 0 — its index must be "
           "Q-independent");
+    /* The commit rounds are CONTIGUOUS, ASCENDING, and bracketed by mmix and
+     * fri — the slot order the pin's table sequence depends on. */
+    CHECK(DNAC_P2S_SLOT_MMCS(0) == DNAC_P2S_SLOT_MMIX + 1 &&
+              DNAC_P2S_SLOT_FRI ==
+                  DNAC_P2S_SLOT_MMCS(DNAC_P2S_FRI_R - 1) + 1 &&
+              DNAC_P2S_SLOT_OI == DNAC_P2S_SLOT_FRI + 1,
+          "T-MAP: the commit-round slots are not the contiguous block between "
+          "mmix and fri");
     /* The batch stack's cap, and the ceiling the entry static-asserts against.
-     * Q = 7 is the largest this shape admits: 1 + 4*7 = 29 <= 32. */
-    CHECK(DNAC_P2S_MAX_QUERIES == 7,
-          "T-MAP: the derived Q ceiling is %zu, expected (32-1)/4 = 7",
+     * With R + 3 = 6 consumers per query, Q = 5 is the largest this shape
+     * admits: 1 + 6*5 = 31 <= 32, while 1 + 6*6 = 37 would not fit. */
+    CHECK(DNAC_P2S_MAX_QUERIES == 5,
+          "T-MAP: the derived Q ceiling is %zu, expected (32-1)/(R+3) = 5",
           (size_t)DNAC_P2S_MAX_QUERIES);
+    CHECK(1u + DNAC_P2S_SLOTS * DNAC_P2S_MAX_QUERIES <=
+                  DNAC_P2S_BATCH_MAX_INSTANCES &&
+              1u + DNAC_P2S_SLOTS * (DNAC_P2S_MAX_QUERIES + 1) >
+                  DNAC_P2S_BATCH_MAX_INSTANCES,
+          "T-MAP: the Q ceiling is not the LARGEST Q that fits the cap");
     CHECK(DNAC_P2S_NUM_QUERIES <= DNAC_P2S_MAX_QUERIES &&
               DNAC_P2S_NUM_INSTANCES <= DNAC_P2S_BATCH_MAX_INSTANCES,
           "T-MAP: the pinned Q overruns the batch stack's instance cap");
 
     /* (q, slot) round-trips through the decoders, for EVERY instance. */
     CHECK(dnac_p2s_inst_slot(DNAC_P2S_INST_TAIR) == DNAC_P2S_SLOTS &&
-              dnac_p2s_inst_query(DNAC_P2S_INST_TAIR) == (size_t)-1,
-          "T-MAP: the transcript instance reports a query/slot");
+              dnac_p2s_inst_query(DNAC_P2S_INST_TAIR) == (size_t)-1 &&
+              dnac_p2s_inst_round(DNAC_P2S_INST_TAIR) == (size_t)-1,
+          "T-MAP: the transcript instance reports a query/slot/round");
     CHECK(dnac_p2s_inst_slot(DNAC_P2S_NUM_INSTANCES) == DNAC_P2S_SLOTS &&
               dnac_p2s_inst_query(DNAC_P2S_NUM_INSTANCES) == (size_t)-1 &&
+              dnac_p2s_inst_round(DNAC_P2S_NUM_INSTANCES) == (size_t)-1 &&
               dnac_p2s_num_publics(DNAC_P2S_NUM_INSTANCES) == 0 &&
               dnac_p2s_pub_off(DNAC_P2S_NUM_INSTANCES) == (size_t)-1 &&
               dnac_p2s_prep_rows(DNAC_P2S_NUM_INSTANCES) == 0 &&
@@ -1098,6 +1239,22 @@ static void t_map(void)
                   "(q %zu, slot %u)", i, dnac_p2s_inst_query(i),
                   dnac_p2s_inst_slot(i), q, s);
         }
+        /* The ROUND axis round-trips too, and ONLY the mmcs slots carry one:
+         * a round decoded off mmix / fri / oi would silently point the cfg
+         * lookup at the wrong table. */
+        for (size_t r = 0; r < DNAC_P2S_FRI_R; r++) {
+            const uint32_t i = DNAC_P2S_INST(q, DNAC_P2S_SLOT_MMCS(r));
+            CHECK(dnac_p2s_inst_round(i) == r,
+                  "T-MAP: instance %u decodes to round %zu, built from round "
+                  "%zu", i, dnac_p2s_inst_round(i), r);
+        }
+        CHECK(dnac_p2s_inst_round(DNAC_P2S_INST(q, DNAC_P2S_SLOT_MMIX)) ==
+                      (size_t)-1 &&
+                  dnac_p2s_inst_round(DNAC_P2S_INST(q, DNAC_P2S_SLOT_FRI)) ==
+                      (size_t)-1 &&
+                  dnac_p2s_inst_round(DNAC_P2S_INST(q, DNAC_P2S_SLOT_OI)) ==
+                      (size_t)-1,
+              "T-MAP: a non-mmcs instance of q%zu reports a commit round", q);
     }
     seen[DNAC_P2S_INST_TAIR]++;
     for (uint32_t i = 0; i < DNAC_P2S_NUM_INSTANCES; i++) {
@@ -1118,6 +1275,51 @@ static void t_map(void)
                   s, q);
         }
     }
+    /* But the ROUNDS are NOT copies of one another — the other half of that
+     * honest note, and the reason the pin had to be recomputed.
+     *
+     * ⚠ ROW COUNT DOES NOT DISTINGUISH THEM. Depths 4/3/2 schedule 6/5/4 rows
+     * and the terminality reserve pads all three to 8, so comparing heights
+     * would pass vacuously. What differs is the CONTENT (each round has its own
+     * compress-row count), and that is what the composed pin commits to — so
+     * the tables are compared BYTE FOR BYTE here. Publics still shrink strictly
+     * with the depth, which is the other observable. */
+    for (size_t r = 1; r < DNAC_P2S_FRI_R; r++) {
+        const uint32_t a = DNAC_P2S_INST(0, DNAC_P2S_SLOT_MMCS(r - 1));
+        const uint32_t b = DNAC_P2S_INST(0, DNAC_P2S_SLOT_MMCS(r));
+        CHECK(dnac_p2s_num_publics(b) < dnac_p2s_num_publics(a),
+              "T-MAP: round %zu does not have fewer publics than round %zu — "
+              "the dir regions are not shrinking", r, r - 1);
+    }
+    {
+        uint64_t *tab[DNAC_P2S_NUM_INSTANCES] = { 0 };
+        if (!p2s_alloc_tables(tab) ||
+            dnac_p2_fri_statement_prep_tables(tab) != DNAC_P2S_OK) {
+            CHECK(0, "T-MAP: could not generate the preprocessed tables");
+        } else {
+            for (size_t r = 1; r < DNAC_P2S_FRI_R; r++) {
+                const uint32_t a = DNAC_P2S_INST(0, DNAC_P2S_SLOT_MMCS(r - 1));
+                const uint32_t b = DNAC_P2S_INST(0, DNAC_P2S_SLOT_MMCS(r));
+                const size_t na = dnac_p2s_prep_cells(a);
+                CHECK(na == dnac_p2s_prep_cells(b) &&
+                          memcmp(tab[a], tab[b], na * sizeof(uint64_t)) != 0,
+                      "T-MAP: commit rounds %zu and %zu have BYTE-IDENTICAL "
+                      "tables — the round axis carries no content", r - 1, r);
+            }
+            /* and the Q copies of ONE round ARE byte-identical, which is the
+             * claim the header's honest note makes in the other direction. */
+            for (size_t r = 0; DNAC_P2S_NUM_QUERIES > 1 &&
+                               r < DNAC_P2S_FRI_R; r++) {
+                const uint32_t a = DNAC_P2S_INST(0, DNAC_P2S_SLOT_MMCS(r));
+                const uint32_t b = DNAC_P2S_INST(1, DNAC_P2S_SLOT_MMCS(r));
+                const size_t na = dnac_p2s_prep_cells(a);
+                CHECK(na == dnac_p2s_prep_cells(b) &&
+                          memcmp(tab[a], tab[b], na * sizeof(uint64_t)) == 0,
+                      "T-MAP: the two queries' round-%zu tables differ", r);
+            }
+        }
+        p2s_free_tables(tab);
+    }
 
     /* The flat publics block is an exact, gap-free, in-order PARTITION. */
     for (uint32_t i = 0; i < DNAC_P2S_NUM_INSTANCES; i++) {
@@ -1135,6 +1337,10 @@ static void t_map(void)
               DNAC_P2S_TAIR_NUM_PUBLICS +
                   DNAC_P2S_NUM_QUERIES * DNAC_P2S_QUERY_PUBLICS,
           "T-MAP: TOTAL_PUBLICS is not TAIR + Q*QUERY_PUBLICS");
+    CHECK(DNAC_P2S_QUERY_PUBLICS ==
+              DNAC_P2S_MMIX_NUM_PUBLICS + DNAC_P2S_MMCS_ALL_PUBLICS +
+                  DNAC_P2S_FRI_NUM_PUBLICS + DNAC_P2S_OI_NUM_PUBLICS,
+          "T-MAP: QUERY_PUBLICS is not mmix + Σ mmcs + fri + oi");
 }
 
 /* ═══════════ T-REF/tair — the tair cfg + script come from the s1 pins ══════
@@ -1436,26 +1642,41 @@ static void t_ref(const jv_t *doc)
               (size_t)DNAC_P2S_FRI_R);
     }
 
-    /* --- commit round 0: leaf lanes = 2*arity, depth = lgmh - log_arity --- */
-    {
-        const jv_t *st0 = cpo->items[0];
-        uint64_t la = 0;
-        const jv_t *ipr = jv_get(st0, "opening_proof");
-        const jv_t *sv = jv_get(st0, "sibling_values");
-        CHECK(jv_u64(jv_get(st0, "log_arity"), &la) &&
-                  la == DNAC_P2S_MAX_LOG_ARITY,
-              "T-REF: round-0 log_arity != pinned max_log_arity");
-        CHECK(sv && sv->kind == JV_ARR &&
-                  sv->n == ((size_t)1u << DNAC_P2S_MAX_LOG_ARITY) - 1,
-              "T-REF: round-0 sibling count != arity-1");
-        CHECK(ipr && ipr->kind == JV_ARR && ipr->n == DNAC_P2S_MMCS_DEPTH,
-              "T-REF: round-0 opening depth %zu != pinned %zu",
-              ipr ? ipr->n : (size_t)0, (size_t)DNAC_P2S_MMCS_DEPTH);
-        /* The leaf is the arity fp2 evals BASE-flattened: 2 lanes each. */
-        CHECK(((size_t)2u << DNAC_P2S_MAX_LOG_ARITY) ==
-                  DNAC_P2S_MMCS_TOTAL_WIDTH,
-              "T-REF: 2*arity != pinned mmcs total width");
+    /* --- EVERY commit round: leaf lanes = 2*arity, depth = lgmh - (r+1)*la ---
+     * The round-replication slice's grounding. Until it, only round 0 was
+     * measured, because only round 0 had an instance; now every round has one
+     * and every round's SHAPE is compared against the pinned per-round macro.
+     * The per-round `log_arity` check is also what keeps HONEST LABEL 4 honest:
+     * the entry shifts by the PINNED `max_log_arity` each round, and this is
+     * where the fixture is required to agree — for all R rounds, not just the
+     * first. */
+    if (cpo->n == DNAC_P2S_FRI_R) {
+        for (size_t r = 0; r < DNAC_P2S_FRI_R; r++) {
+            const jv_t *st = cpo->items[r];
+            uint64_t la = 0;
+            const jv_t *ipr = jv_get(st, "opening_proof");
+            const jv_t *sv = jv_get(st, "sibling_values");
+            CHECK(jv_u64(jv_get(st, "log_arity"), &la) &&
+                      la == DNAC_P2S_MAX_LOG_ARITY,
+                  "T-REF: round-%zu log_arity != pinned max_log_arity", r);
+            CHECK(sv && sv->kind == JV_ARR &&
+                      sv->n == ((size_t)1u << DNAC_P2S_MAX_LOG_ARITY) - 1,
+                  "T-REF: round-%zu sibling count != arity-1", r);
+            CHECK(ipr && ipr->kind == JV_ARR &&
+                      ipr->n == DNAC_P2S_MMCS_DEPTH(r),
+                  "T-REF: round-%zu opening depth %zu != pinned %zu", r,
+                  ipr ? ipr->n : (size_t)0, (size_t)DNAC_P2S_MMCS_DEPTH(r));
+        }
+        printf("  [t-ref]  commit rounds: %zu, depths", cpo->n);
+        for (size_t r = 0; r < DNAC_P2S_FRI_R; r++) {
+            printf(" %zu", (size_t)DNAC_P2S_MMCS_DEPTH(r));
+        }
+        printf(" (one mmcs instance each, per query)\n");
     }
+    /* The leaf is the arity fp2 evals BASE-flattened: 2 lanes each, the same
+     * for every round because every round's arity is the pinned one. */
+    CHECK(((size_t)2u << DNAC_P2S_MAX_LOG_ARITY) == DNAC_P2S_MMCS_TOTAL_WIDTH,
+          "T-REF: 2*arity != pinned mmcs total width");
 
     /* --- input batch 0 (the inner MAIN round): widths, heights, depth --- */
     {
@@ -1844,12 +2065,14 @@ static void t_pin_kat(void)
 
 /* ═══════════════════════ the three honest traces ═════════════════════════ */
 
-/** One query's four honest traces. */
+/** One query's honest traces — one per SLOT, so R of them for the mmcs AIR. */
 typedef struct {
     p2s_mmix_fixt_t     mmix_fx;
     p2s_mmix_built_t    mmix;
-    p2s_mmcs_fixture_t  mmcs_fx;
-    p2s_mmcs_built_t    mmcs;
+    /** PER COMMIT ROUND. Round r's fixture opens the round-r tree (its own
+     *  depth) at the round-r folded index, exactly as the entry's alias says. */
+    p2s_mmcs_fixture_t  mmcs_fx[DNAC_P2S_FRI_R];
+    p2s_mmcs_built_t    mmcs[DNAC_P2S_FRI_R];
     p2s_fri_fixture_t   fri_fx;
     p2s_fri_built_t     fri;
     p2s_oi_built_t      oi;
@@ -1861,6 +2084,20 @@ typedef struct {
     tair_run_t tair;
     int        tair_built;
     qtraces_t  q[DNAC_P2S_NUM_QUERIES];
+    /** The fri cfg these traces were BUILT with. Normally the pinned one, but
+     *  N-CFG deliberately builds on an ALTERNATIVE cfg, and a fri builder's
+     *  publics buffer is `calloc(dnac_fair_num_publics(cfg))` — exactly that
+     *  long (tests/test_fri_air.c:184,196). Reading it at the PINNED cfg's
+     *  offsets when it was built with a shorter one is a HEAP OVERREAD, so the
+     *  cfg has to travel with the traces rather than be re-derived. (Latent
+     *  since the N-CFG leg was written: ALT drops the roll-in slots, so its
+     *  final_off is 2 lanes lower than the pinned one and `stmt_from_traces`
+     *  read 2 elements past the allocation. It only surfaced when the heap
+     *  layout changed.) */
+    const dnac_p2c_table_cfg_t *fri_cfg;
+    /** The R commit-round roots, probed BEFORE the transcript so the challenger
+     *  can OBSERVE them (HONEST LABEL 6). Shared across q by construction. */
+    uint64_t mmcs_root[DNAC_P2S_FRI_R][MAIR_DIGEST_LANES];
 } traces_t;
 
 static void traces_free(traces_t *T)
@@ -1868,7 +2105,11 @@ static void traces_free(traces_t *T)
     for (size_t q = 0; q < DNAC_P2S_NUM_QUERIES; q++) {
         qtraces_t *Q = &T->q[q];
         if (Q->built[DNAC_P2S_SLOT_MMIX]) p2s_mmix_built_free(&Q->mmix);
-        if (Q->built[DNAC_P2S_SLOT_MMCS]) p2s_mmcs_built_free(&Q->mmcs);
+        for (size_t r = 0; r < DNAC_P2S_FRI_R; r++) {
+            if (Q->built[DNAC_P2S_SLOT_MMCS(r)]) {
+                p2s_mmcs_built_free(&Q->mmcs[r]);
+            }
+        }
         if (Q->built[DNAC_P2S_SLOT_FRI]) p2s_fri_built_free(&Q->fri);
         if (Q->built[DNAC_P2S_SLOT_OI]) p2s_oi_built_free(&Q->oi);
         memset(Q->built, 0, sizeof(Q->built));
@@ -2031,22 +2272,46 @@ static int qtraces_build_head(traces_t *T, size_t q, uint64_t seed)
     }
     Q->built[DNAC_P2S_SLOT_MMIX] = 1;
 
-    /* mmcs — same anchoring through dnac_p2_mmcs_verify
-     * (test_mmcs_air.c:128-133), at this query's shifted index. */
-    if (!p2s_mmcs_make_fixture(dnac_p2s_mmcs_cfg(),
-                               index >> DNAC_P2S_MAX_LOG_ARITY,
-                               &Q->mmcs_fx)) {
-        printf("  [rt]     q%zu mmcs fixture FAILED\n", q);
-        return 0;
+    /* mmcs, ONE PER COMMIT ROUND — same anchoring through dnac_p2_mmcs_verify
+     * (test_mmcs_air.c:128-133), at THIS round's cfg and THIS round's folded
+     * index. The index a round sees is the start index shifted down once per
+     * preceding round plus its own (fri_verifier.c:558), i.e. by
+     * DNAC_P2S_MMCS_BIT_OFF(r) — the same expression the entry's dir alias
+     * uses, written here from the other side. */
+    for (size_t r = 0; r < DNAC_P2S_FRI_R; r++) {
+        const dnac_p2b_table_cfg_t *cfg = dnac_p2s_mmcs_cfg(r);
+        const uint64_t ridx = index >> DNAC_P2S_MMCS_BIT_OFF(r);
+
+        if (cfg == NULL) {
+            printf("  [rt]     round %zu has no pinned mmcs cfg\n", r);
+            return 0;
+        }
+        if (!p2s_mmcs_make_fixture(cfg, ridx, &Q->mmcs_fx[r])) {
+            printf("  [rt]     q%zu mmcs round %zu fixture FAILED\n", q, r);
+            return 0;
+        }
+        /* LABEL 6's ordering premise, CHECKED not assumed: the root the
+         * transcript already observed (probed at index 0) must be the root this
+         * query's real opening produces. If a round's tree ever became
+         * index-dependent, the transcript would have absorbed a root no walk
+         * verifies against and the alias would be decoration. */
+        {
+            size_t bad = 0;
+            for (size_t k = 0; k < (size_t)MAIR_DIGEST_LANES; k++) {
+                if (Q->mmcs_fx[r].root.lanes[k] != T->mmcs_root[r][k]) bad++;
+            }
+            CHECK(bad == 0,
+                  "RT: q%zu round %zu opens a root the transcript did not "
+                  "observe (%zu lanes differ)", q, r, bad);
+        }
+        if (!p2s_mmcs_build_trace(&Q->mmcs[r], cfg, ridx, Q->mmcs_fx[r].elems,
+                                  Q->mmcs_fx[r].sibs,
+                                  Q->mmcs_fx[r].root.lanes)) {
+            printf("  [rt]     q%zu mmcs round %zu trace FAILED\n", q, r);
+            return 0;
+        }
+        Q->built[DNAC_P2S_SLOT_MMCS(r)] = 1;
     }
-    if (!p2s_mmcs_build_trace(&Q->mmcs, dnac_p2s_mmcs_cfg(),
-                              index >> DNAC_P2S_MAX_LOG_ARITY,
-                              Q->mmcs_fx.elems, Q->mmcs_fx.sibs,
-                              Q->mmcs_fx.root.lanes)) {
-        printf("  [rt]     q%zu mmcs trace FAILED\n", q);
-        return 0;
-    }
-    Q->built[DNAC_P2S_SLOT_MMCS] = 1;
 
     /* oi — a NATIVE-FORMULA REPLAY of fri_open_input over the builder's own
      * deterministic z / p_z fixtures (test_fri_oi_air.c:10-23), at the pinned
@@ -2156,10 +2421,18 @@ static int traces_build(traces_t *T, const dnac_p2c_table_cfg_t *fri_cfg,
     gold_fp2_t target;
 
     memset(T, 0, sizeof(*T));
+    /* Recorded BEFORE anything is built: every later read of a fri builder's
+     * publics must use THIS cfg's offsets, not the pinned cfg's. */
+    T->fri_cfg = fri_cfg;
+
+    /* 0. The commit-round ROOTS, before the transcript — LABEL 6's ordering
+     * requirement (see mmcs_probe_roots). */
+    if (!mmcs_probe_roots(T->mmcs_root)) return 0;
 
     /* tair — the SHIPPED gate's builder over a vector synthesized from the
-     * pinned script. Everything below is seeded from its result. */
-    if (!tair_build(&T->tair)) return 0;
+     * pinned script, OBSERVING those roots. Everything below is seeded from its
+     * result. */
+    if (!tair_build(&T->tair, T->mmcs_root)) return 0;
     T->tair_built = 1;
 
     for (size_t q = 0; q < DNAC_P2S_NUM_QUERIES; q++) {
@@ -2240,8 +2513,11 @@ static int traces_build(traces_t *T, const dnac_p2c_table_cfg_t *fri_cfg,
     for (size_t q = 0; q < DNAC_P2S_NUM_QUERIES; q++) {
         CHECK(p2s_mmix_eval_built(&T->q[q].mmix) == 0,
               "RT: the mmix u64 evaluator rejects q%zu's honest trace", q);
-        CHECK(p2s_mmcs_eval_built(&T->q[q].mmcs) == 0,
-              "RT: the mmcs u64 evaluator rejects q%zu's honest trace", q);
+        for (size_t r = 0; r < DNAC_P2S_FRI_R; r++) {
+            CHECK(p2s_mmcs_eval_built(&T->q[q].mmcs[r]) == 0,
+                  "RT: the mmcs u64 evaluator rejects q%zu round %zu's honest "
+                  "trace", q, r);
+        }
         CHECK(p2s_fri_eval_built(&T->q[q].fri) == 0,
               "RT: the fri u64 evaluator rejects q%zu's honest trace", q);
         CHECK(p2s_oi_eval_b(&T->q[q].oi) == 0,
@@ -2258,7 +2534,9 @@ static int traces_build(traces_t *T, const dnac_p2c_table_cfg_t *fri_cfg,
 /** Fill the statement from every built trace. */
 static void stmt_from_traces(dnac_p2s_statement_t *stmt, const traces_t *T)
 {
-    const dnac_p2c_table_cfg_t *fri = dnac_p2s_fri_cfg();
+    /* The cfg the TRACES were built with — see traces_t::fri_cfg. Using the
+     * pinned cfg here would overread a shorter ALT publics buffer. */
+    const dnac_p2c_table_cfg_t *fri = T->fri_cfg;
     const size_t final_off = dnac_fair_pub_final_off(fri);
     memset(stmt, 0, sizeof(*stmt));
 
@@ -2271,8 +2549,27 @@ static void stmt_from_traces(dnac_p2s_statement_t *stmt, const traces_t *T)
     for (size_t k = 0; k < (size_t)MMIX_DIGEST_LANES; k++) {
         stmt->mmix_root[k] = T->q[0].mmix_fx.root.lanes[k];
     }
-    for (size_t k = 0; k < (size_t)MAIR_DIGEST_LANES; k++) {
-        stmt->mmcs_root[k] = T->q[0].mmcs_fx.root.lanes[k];
+    /* PER ROUND, shared across q. Taken from query 0's round-r fixture and then
+     * required to agree with every other query's — the round-r tree's CONTENT
+     * is index-independent (test_mmcs_air.c:114-116 fills every cell from
+     * `cell(m,r,c)`), so only the opened row and the path move with q. */
+    for (size_t r = 0; r < DNAC_P2S_FRI_R; r++) {
+        for (size_t k = 0; k < (size_t)MAIR_DIGEST_LANES; k++) {
+            stmt->mmcs_root[r][k] = T->q[0].mmcs_fx[r].root.lanes[k];
+        }
+    }
+    /* The R roots must be DISTINCT — the rounds are different trees (different
+     * depths), so a collision would mean the round axis carries no information
+     * and N-OBSBIND / N-RSEP would be measuring nothing. */
+    for (size_t a = 0; a < DNAC_P2S_FRI_R; a++) {
+        for (size_t b = a + 1; b < DNAC_P2S_FRI_R; b++) {
+            int same = 1;
+            for (size_t k = 0; k < (size_t)MAIR_DIGEST_LANES; k++) {
+                if (stmt->mmcs_root[a][k] != stmt->mmcs_root[b][k]) same = 0;
+            }
+            CHECK(!same, "stmt: commit rounds %zu and %zu have the SAME root — "
+                         "the round axis is degenerate", a, b);
+        }
     }
     stmt->final_poly0[0] = T->q[0].fri.pub[final_off];
     stmt->final_poly0[1] = T->q[0].fri.pub[final_off + 1];
@@ -2283,11 +2580,16 @@ static void stmt_from_traces(dnac_p2s_statement_t *stmt, const traces_t *T)
         }
         CHECK(same, "stmt: q%zu commits a DIFFERENT mmix root — the shared "
                     "root field cannot describe both", q);
-        same = 1;
-        for (size_t k = 0; k < (size_t)MAIR_DIGEST_LANES; k++) {
-            if (T->q[q].mmcs_fx.root.lanes[k] != stmt->mmcs_root[k]) same = 0;
+        for (size_t r = 0; r < DNAC_P2S_FRI_R; r++) {
+            same = 1;
+            for (size_t k = 0; k < (size_t)MAIR_DIGEST_LANES; k++) {
+                if (T->q[q].mmcs_fx[r].root.lanes[k] != stmt->mmcs_root[r][k]) {
+                    same = 0;
+                }
+            }
+            CHECK(same, "stmt: q%zu commits a DIFFERENT round-%zu mmcs root", q,
+                  r);
         }
-        CHECK(same, "stmt: q%zu commits a DIFFERENT mmcs root", q);
         CHECK(T->q[q].fri.pub[final_off] == stmt->final_poly0[0] &&
                   T->q[q].fri.pub[final_off + 1] == stmt->final_poly0[1],
               "stmt: q%zu's walk terminal is not the shared final_poly", q);
@@ -2347,8 +2649,10 @@ static void stmt_from_traces(dnac_p2s_statement_t *stmt, const traces_t *T)
                 off += Q->mmix_fx.semw[m];
             }
         }
-        for (size_t c = 0; c < DNAC_P2S_MMCS_TOTAL_WIDTH; c++) {
-            stmt->mmcs_opened[q][c] = Q->mmcs_fx.elems[c];
+        for (size_t r = 0; r < DNAC_P2S_FRI_R; r++) {
+            for (size_t c = 0; c < DNAC_P2S_MMCS_TOTAL_WIDTH; c++) {
+                stmt->mmcs_opened[q][r][c] = Q->mmcs_fx[r].elems[c];
+            }
         }
         /* oi regions, straight off the oi builder's publics — minus alpha,
          * which is the tair payload's now (s3b). `f_init` and the roll-ins
@@ -2416,7 +2720,6 @@ static void t_alias_positive(const dnac_p2s_statement_t *stmt, const traces_t *T
     for (size_t q = 0; q < DNAC_P2S_NUM_QUERIES; q++) {
         const qtraces_t *Q = &T->q[q];
         const gold_fp_t *pm = set_pub(S, DNAC_P2S_INST(q, DNAC_P2S_SLOT_MMIX));
-        const gold_fp_t *pc = set_pub(S, DNAC_P2S_INST(q, DNAC_P2S_SLOT_MMCS));
         const gold_fp_t *pf = set_pub(S, DNAC_P2S_INST(q, DNAC_P2S_SLOT_FRI));
         const gold_fp_t *po = set_pub(S, DNAC_P2S_INST(q, DNAC_P2S_SLOT_OI));
         size_t bad = 0;
@@ -2426,12 +2729,20 @@ static void t_alias_positive(const dnac_p2s_statement_t *stmt, const traces_t *T
         }
         CHECK(bad == 0, "T-ALIAS: %zu mmix[q%zu] publics differ from the "
                         "builder's", bad, q);
-        bad = 0;
-        for (size_t i = 0; i < DNAC_P2S_MMCS_NUM_PUBLICS; i++) {
-            if (gold_fp_to_u64(pc[i]) != Q->mmcs.pub[i]) bad++;
+        /* One comparison per COMMIT ROUND: each round's instance must match the
+         * builder that opened THAT round's tree at THAT round's index. A single
+         * round-0 comparison would pass even if rounds 1..R-1 were fed round
+         * 0's lanes, which is precisely the collapse N-RSEP forbids. */
+        for (size_t r = 0; r < DNAC_P2S_FRI_R; r++) {
+            const gold_fp_t *pc =
+                set_pub(S, DNAC_P2S_INST(q, DNAC_P2S_SLOT_MMCS(r)));
+            bad = 0;
+            for (size_t i = 0; i < DNAC_P2S_MMCS_NUM_PUBLICS(r); i++) {
+                if (gold_fp_to_u64(pc[i]) != Q->mmcs[r].pub[i]) bad++;
+            }
+            CHECK(bad == 0, "T-ALIAS: %zu mmcs%zu[q%zu] publics differ from the "
+                            "builder's", bad, r, q);
         }
-        CHECK(bad == 0, "T-ALIAS: %zu mmcs[q%zu] publics differ from the "
-                        "builder's", bad, q);
         bad = 0;
         for (size_t i = 0; i < DNAC_P2S_FRI_NUM_PUBLICS; i++) {
             if (gold_fp_to_u64(pf[i]) != Q->fri.pub[i]) bad++;
@@ -2598,7 +2909,19 @@ static void t_alias_positive(const dnac_p2s_statement_t *stmt, const traces_t *T
      * (the Q copies of a table are identical), so they are checked per slot and
      * applied to every query's instance. */
     {
-        static const uint32_t want_db[DNAC_P2S_SLOTS] = { 4, 3, 3, 5 };
+        /* mmix, then the R commit rounds, then fri and oi. Every commit round
+         * is 8 rows: depths 4/3/2 schedule 6/5/4 rows and the TERMINALITY
+         * RESERVE (mmcs_air_table.h) pads each to the next power of two ABOVE
+         * that, which is 8 for all three. Same height, DIFFERENT content — the
+         * table-content check below is what carries the round distinctness.
+         * Hard-coded on purpose: deriving them from `dnac_p2s_prep_rows` would
+         * compare the entry against itself. The assert pins the list LENGTH to
+         * the pinned shape, so a change to R fails the build instead of
+         * zero-filling a slot's expectation. */
+        typedef char want_db_matches_slots
+            [(DNAC_P2S_SLOTS == 6 && DNAC_P2S_FRI_R == 3) ? 1 : -1];
+        static const uint32_t want_db[DNAC_P2S_SLOTS] = { 4, 3, 3, 3, 3, 5 };
+        (void)sizeof(want_db_matches_slots);
         CHECK(S->insts[DNAC_P2S_INST_TAIR].degree_bits == 6,
               "T-ALIAS: tair degree_bits %u, expected 6",
               S->insts[DNAC_P2S_INST_TAIR].degree_bits);
@@ -2643,8 +2966,11 @@ static void p2s_fill_witnesses(dnac_batch_pwitness_t *wits, const traces_t *T)
         const qtraces_t *Q = &T->q[q];
         wits[DNAC_P2S_INST(q, DNAC_P2S_SLOT_MMIX)].main_trace = Q->mmix.trace;
         wits[DNAC_P2S_INST(q, DNAC_P2S_SLOT_MMIX)].prep_trace = Q->mmix.prep;
-        wits[DNAC_P2S_INST(q, DNAC_P2S_SLOT_MMCS)].main_trace = Q->mmcs.trace;
-        wits[DNAC_P2S_INST(q, DNAC_P2S_SLOT_MMCS)].prep_trace = Q->mmcs.prep;
+        for (size_t r = 0; r < DNAC_P2S_FRI_R; r++) {
+            const uint32_t i = DNAC_P2S_INST(q, DNAC_P2S_SLOT_MMCS(r));
+            wits[i].main_trace = Q->mmcs[r].trace;
+            wits[i].prep_trace = Q->mmcs[r].prep;
+        }
         wits[DNAC_P2S_INST(q, DNAC_P2S_SLOT_FRI)].main_trace = Q->fri.trace;
         wits[DNAC_P2S_INST(q, DNAC_P2S_SLOT_FRI)].prep_trace = Q->fri.prep;
         wits[DNAC_P2S_INST(q, DNAC_P2S_SLOT_OI)].main_trace = Q->oi.trace;
@@ -2835,6 +3161,18 @@ static void t_steps12_negatives(const dnac_p2s_statement_t *stmt,
         CHECK(stub_run(&bad, &S) == DNAC_P2S_ERR_CANON,
               "N-CANON: a non-canonical mmix root lane was not rejected");
 
+        /* EVERY round's root — the span grew by an axis, and a loop that
+         * stopped at round 0 would leave rounds 1..R-1 unchecked while the
+         * struct's sizeof assert still passed. Last lane of each, so an
+         * off-by-one in the flat span shows up here. */
+        for (size_t r = 0; r < DNAC_P2S_FRI_R; r++) {
+            bad = *stmt;
+            bad.mmcs_root[r][MAIR_DIGEST_LANES - 1] = GOLDILOCKS_P;
+            CHECK(stub_run(&bad, &S) == DNAC_P2S_ERR_CANON,
+                  "N-CANON: a non-canonical round-%zu mmcs root lane was not "
+                  "rejected", r);
+        }
+
         bad = *stmt;
         bad.final_poly0[1] = GOLDILOCKS_P;
         CHECK(stub_run(&bad, &S) == DNAC_P2S_ERR_CANON,
@@ -2859,12 +3197,14 @@ static void t_steps12_negatives(const dnac_p2s_statement_t *stmt,
          * notice, because the struct size is right either way. Each lane picked
          * is the LAST of its row, so an off-by-one in the span shows up here. */
         for (size_t q = 0; q < DNAC_P2S_NUM_QUERIES; q++) {
-            bad = *stmt;
-            bad.mmcs_opened[q][DNAC_P2S_MMCS_TOTAL_WIDTH - 1] =
-                GOLDILOCKS_P + 1;
-            CHECK(stub_run(&bad, &S) == DNAC_P2S_ERR_CANON,
-                  "N-CANON: q%zu's non-canonical mmcs opened lane was not "
-                  "rejected", q);
+            for (size_t r = 0; r < DNAC_P2S_FRI_R; r++) {
+                bad = *stmt;
+                bad.mmcs_opened[q][r][DNAC_P2S_MMCS_TOTAL_WIDTH - 1] =
+                    GOLDILOCKS_P + 1;
+                CHECK(stub_run(&bad, &S) == DNAC_P2S_ERR_CANON,
+                      "N-CANON: q%zu round %zu's non-canonical mmcs opened "
+                      "lane was not rejected", q, r);
+            }
 
             bad = *stmt;
             bad.mmix_opened[q][DNAC_P2S_MMIX_TOTAL_OPENED - 1] = GOLDILOCKS_P;
@@ -3010,7 +3350,7 @@ static void rt1_and_proof_negatives(const dnac_p2s_statement_t *stmt,
            "fri %zu, oi %zu (the batch_prover.c pw cap is lifted)\n",
            dnac_p2s_prep_cols(DNAC_P2S_INST_TAIR),
            dnac_p2s_prep_cols(DNAC_P2S_INST(0, DNAC_P2S_SLOT_MMIX)),
-           dnac_p2s_prep_cols(DNAC_P2S_INST(0, DNAC_P2S_SLOT_MMCS)),
+           dnac_p2s_prep_cols(DNAC_P2S_INST(0, DNAC_P2S_SLOT_MMCS(0))),
            dnac_p2s_prep_cols(DNAC_P2S_INST(0, DNAC_P2S_SLOT_FRI)),
            dnac_p2s_prep_cols(DNAC_P2S_INST(0, DNAC_P2S_SLOT_OI)));
 
@@ -3027,8 +3367,10 @@ static void rt1_and_proof_negatives(const dnac_p2s_statement_t *stmt,
         return;
     }
     printf("  [rt]     dnac_batch_prove OK — %u instances (1 transcript + "
-           "%zu queries x 4), is_zk 0\n",
-           DNAC_P2S_NUM_INSTANCES, (size_t)DNAC_P2S_NUM_QUERIES);
+           "%zu queries x (1 mmix + %zu commit rounds + fri + oi)), "
+           "is_zk 0\n",
+           DNAC_P2S_NUM_INSTANCES, (size_t)DNAC_P2S_NUM_QUERIES,
+           (size_t)DNAC_P2S_FRI_R);
 
     map = dnac_batch_proof_prep_map(proof, &nprep);
     dnac_batch_proof_commits(proof, &cm);
@@ -3110,7 +3452,7 @@ static void rt1_and_proof_negatives(const dnac_p2s_statement_t *stmt,
          * widths (T-MAP asserts that), so one per slot is the full evidence. */
         const uint32_t fri_i = DNAC_P2S_INST(0, DNAC_P2S_SLOT_FRI);
         const uint32_t oi_i = DNAC_P2S_INST(0, DNAC_P2S_SLOT_OI);
-        const uint32_t mmcs_i = DNAC_P2S_INST(0, DNAC_P2S_SLOT_MMCS);
+        const uint32_t mmcs_i = DNAC_P2S_INST(0, DNAC_P2S_SLOT_MMCS(0));
         dnac_batch_verify_status_t bs;
 
         if (set_build(&g_set_a, stmt) == DNAC_P2S_OK) {
@@ -3199,32 +3541,80 @@ static void rt1_and_proof_negatives(const dnac_p2s_statement_t *stmt,
 static void t_query_alias(const dnac_p2s_statement_t *stmt,
                           const dnac_batch_proof_t *proof)
 {
-    /* ── N-QSEP: flip ONE bit of ONE query's index. ─────────────────────────
+    /* ── N-QSEP + N-RSEP/dir: flip ONE bit of ONE query's index. ────────────
      * Expected set, DERIVED (not listed): the transcript instance, because the
      * bit IS its q-th exported public; plus query q's mmix / fri / oi, whose
-     * bit regions are the whole index; plus query q's mmcs only when the bit is
-     * inside the window round 0 consumes — `verify_query` shifts the index down
-     * by log_arity before the MMCS walk (fri_verifier.c:558 with :585-588), so
-     * bit 0 never reaches it. NOTHING of any other query. */
-    for (size_t qq = 0; qq < DNAC_P2S_NUM_QUERIES; qq++) {
-        for (size_t l = 0; l < DNAC_P2S_LGMH; l++) {
-            dnac_p2s_statement_t bad = *stmt;
-            uint32_t want;
+     * bit regions are the whole index; plus EXACTLY THOSE commit rounds whose
+     * dir window contains bit l. `verify_query` shifts the index down by
+     * log_arity once per round before that round's MMCS walk
+     * (fri_verifier.c:558 with :585-588), so round r reads bits from
+     * BIT_OFF(r) = (r+1)*log_arity upward: bit 0 reaches NO round, bit 1 only
+     * round 0, and only the top bit reaches all R. NOTHING of any other query.
+     *
+     * That per-round subset IS the dir-axis half of N-RSEP: a collapse that
+     * fed every round round 0's window would move all R rounds for bit 1 and
+     * none for the top bits, and the exact-set comparison fires either way.
+     * The `hit`/`miss` tallies below make the non-vacuity explicit — if every
+     * bit reached every round the claim would be empty. */
+    {
+        size_t partial = 0;
+        for (size_t qq = 0; qq < DNAC_P2S_NUM_QUERIES; qq++) {
+            for (size_t l = 0; l < DNAC_P2S_LGMH; l++) {
+                dnac_p2s_statement_t bad = *stmt;
+                uint32_t want;
+                size_t hit = 0;
 
-            bad.index_bits[qq][l] ^= 1u;
-            if (!set_pair(stmt, &bad, "N-QSEP")) continue;
+                bad.index_bits[qq][l] ^= 1u;
+                if (!set_pair(stmt, &bad, "N-QSEP")) continue;
 
-            want = P2S_TMASK | P2S_IMASK(qq, DNAC_P2S_SLOT_MMIX) |
-                   P2S_IMASK(qq, DNAC_P2S_SLOT_FRI) |
-                   P2S_IMASK(qq, DNAC_P2S_SLOT_OI);
-            if (l >= DNAC_P2S_MAX_LOG_ARITY &&
-                l < DNAC_P2S_MAX_LOG_ARITY + DNAC_P2S_MMCS_DEPTH) {
-                want |= P2S_IMASK(qq, DNAC_P2S_SLOT_MMCS);
+                want = P2S_TMASK | P2S_IMASK(qq, DNAC_P2S_SLOT_MMIX) |
+                       P2S_IMASK(qq, DNAC_P2S_SLOT_FRI) |
+                       P2S_IMASK(qq, DNAC_P2S_SLOT_OI);
+                for (size_t r = 0; r < DNAC_P2S_FRI_R; r++) {
+                    if (l >= DNAC_P2S_MMCS_BIT_OFF(r) &&
+                        l < DNAC_P2S_MMCS_BIT_OFF(r) +
+                                DNAC_P2S_MMCS_DEPTH(r)) {
+                        want |= P2S_IMASK(qq, DNAC_P2S_SLOT_MMCS(r));
+                        hit++;
+                    }
+                }
+                if (hit > 0 && hit < DNAC_P2S_FRI_R) partial++;
+                check_mask(moved_mask(), want, "N-QSEP: index_bits[q%zu][%zu]",
+                           qq, l);
+                expect_entry_reject(&bad, proof,
+                                    "N-QSEP: index_bits[q%zu][%zu]", qq, l);
             }
-            check_mask(moved_mask(), want, "N-QSEP: index_bits[q%zu][%zu]", qq,
-                       l);
-            expect_entry_reject(&bad, proof, "N-QSEP: index_bits[q%zu][%zu]",
-                                qq, l);
+        }
+        CHECK(partial > 0,
+              "N-RSEP/dir: no index bit reaches a PROPER SUBSET of the commit "
+              "rounds — the round windows are not separated and the exact-set "
+              "check above is vacuous on the round axis");
+    }
+
+    /* ── N-RSEP/opened: round r's LEAF reaches ONLY (query, round). ──────────
+     * The acceptance criterion of the round axis on the data side. Round r's
+     * opened leaf is `mmcs_opened[q][r]`, and nothing else in the composition
+     * reads it — not the other rounds of the same query (they open different
+     * trees at different depths, fri_verifier.c:557-558), not the same round of
+     * another query (that query opens the same tree at ITS index), and not the
+     * fri instance (HONEST LABEL 9: the leaf/fold seam is still open, so a
+     * move here reaching fri would mean an alias nobody built). ── */
+    for (size_t qq = 0; qq < DNAC_P2S_NUM_QUERIES; qq++) {
+        for (size_t r = 0; r < DNAC_P2S_FRI_R; r++) {
+            for (size_t c = 0; c < DNAC_P2S_MMCS_TOTAL_WIDTH; c++) {
+                dnac_p2s_statement_t bad = *stmt;
+                bad.mmcs_opened[qq][r][c] = gold_fp_to_u64(gold_fp_add(
+                    gold_fp_from_u64(bad.mmcs_opened[qq][r][c]),
+                    gold_fp_one()));
+                if (!set_pair(stmt, &bad, "N-RSEP/opened")) continue;
+                check_mask(moved_mask(),
+                           P2S_IMASK(qq, DNAC_P2S_SLOT_MMCS(r)),
+                           "N-RSEP/opened: mmcs_opened[q%zu][r%zu][%zu]", qq, r,
+                           c);
+                expect_entry_reject(&bad, proof,
+                                    "N-RSEP/opened: mmcs_opened[q%zu][r%zu]"
+                                    "[%zu]", qq, r, c);
+            }
         }
     }
 
@@ -3234,13 +3624,12 @@ static void t_query_alias(const dnac_p2s_statement_t *stmt,
      * OBL-P2c-2 shape. ── */
     {
         const dnac_tair_script_t *ts = dnac_p2s_tair_script();
-        uint32_t all_oi = 0, all_fri = 0, all_mmix = 0, all_mmcs = 0;
+        uint32_t all_oi = 0, all_fri = 0, all_mmix = 0;
 
         for (size_t q = 0; q < DNAC_P2S_NUM_QUERIES; q++) {
             all_oi |= P2S_IMASK(q, DNAC_P2S_SLOT_OI);
             all_fri |= P2S_IMASK(q, DNAC_P2S_SLOT_FRI);
             all_mmix |= P2S_IMASK(q, DNAC_P2S_SLOT_MMIX);
-            all_mmcs |= P2S_IMASK(q, DNAC_P2S_SLOT_MMCS);
         }
 
         /* alpha (fri_verifier.c:694) -> EVERY oi instance, and the transcript
@@ -3274,12 +3663,14 @@ static void t_query_alias(const dnac_p2s_statement_t *stmt,
         }
 
         /* final_poly0 -> EVERY fri instance, and NOTHING else.
-         * ⚠ HONEST LABEL: NOT the transcript. The native observes the final
-         * poly (fri_verifier.c:710-713) and the pinned script HAS those observe
-         * ops, but their payload lanes are deterministic fixtures rather than
-         * aliases of this field — the same seam fri_statement.h HONEST LABEL 6
-         * names for the commit digests. So this negative pins "shared across
-         * queries", not "transcript-bound". */
+         * ⚠ HONEST LABEL: NOT the transcript, and the contrast with N-OBSBIND
+         * below is the point. The native observes the final poly
+         * (fri_verifier.c:710-713) and the pinned script HAS those observe ops,
+         * but their payload lanes are still deterministic fixtures rather than
+         * aliases of this field — residue (b) of fri_statement.h HONEST LABEL
+         * 6, which the commit digests no longer share. So this negative pins
+         * "shared across queries"; N-OBSBIND is what pins "transcript-bound",
+         * and it does so for the digests only. */
         for (size_t j = 0; j < 2; j++) {
             dnac_p2s_statement_t bad = *stmt;
             bad.final_poly0[j] = gold_fp_to_u64(gold_fp_add(
@@ -3328,13 +3719,60 @@ static void t_query_alias(const dnac_p2s_statement_t *stmt,
             check_mask(moved_mask(), all_mmix, "N-QSHARED: mmix_root[%zu]", k);
             expect_entry_reject(&bad, proof, "N-QSHARED: mmix_root[%zu]", k);
         }
-        for (size_t k = 0; k < (size_t)MAIR_DIGEST_LANES; k++) {
-            dnac_p2s_statement_t bad = *stmt;
-            bad.mmcs_root[k] = gold_fp_to_u64(gold_fp_add(
-                gold_fp_from_u64(bad.mmcs_root[k]), gold_fp_one()));
-            if (!set_pair(stmt, &bad, "N-QSHARED")) continue;
-            check_mask(moved_mask(), all_mmcs, "N-QSHARED: mmcs_root[%zu]", k);
-            expect_entry_reject(&bad, proof, "N-QSHARED: mmcs_root[%zu]", k);
+        /* ── N-OBSBIND — HONEST LABEL 6's ACCEPTANCE CRITERION, and the round
+         * axis's shared-value leg in one.
+         *
+         * `mmcs_root[r]` has TWO consumers by construction: every query's
+         * round-r MMCS instance (shared across q — one commitment, Q openings)
+         * AND the transcript instance's round-r digest observe lanes, which is
+         * what makes "the challenger absorbed the root this walk verifies
+         * against" true rather than merely plausible (fri_verifier.c:702 vs
+         * :585). So the expected set is {tair} ∪ {mmcs[q][r] : all q}, and
+         * NOTHING of any other round.
+         *
+         * Before the alias existed the tair bit of that set was absent — the
+         * transcript observed a deterministic fixture instead — so this leg is
+         * the one that goes RED without it. The per-round disjointness is the
+         * other half: a root that reached rounds it does not belong to would
+         * mean the digest ordinal map picked the wrong observe block. ── */
+        for (size_t r = 0; r < DNAC_P2S_FRI_R; r++) {
+            uint32_t all_r = 0;
+            for (size_t q = 0; q < DNAC_P2S_NUM_QUERIES; q++) {
+                all_r |= P2S_IMASK(q, DNAC_P2S_SLOT_MMCS(r));
+            }
+            for (size_t k = 0; k < (size_t)MAIR_DIGEST_LANES; k++) {
+                dnac_p2s_statement_t bad = *stmt;
+                bad.mmcs_root[r][k] = gold_fp_to_u64(gold_fp_add(
+                    gold_fp_from_u64(bad.mmcs_root[r][k]), gold_fp_one()));
+                if (!set_pair(stmt, &bad, "N-OBSBIND")) continue;
+                check_mask(moved_mask(), P2S_TMASK | all_r,
+                           "N-OBSBIND: mmcs_root[r%zu][%zu]", r, k);
+                expect_entry_reject(&bad, proof,
+                                    "N-OBSBIND: mmcs_root[r%zu][%zu]", r, k);
+            }
+        }
+
+        /* ── N-OBSDEAD — the other side of the same closure. Once the digest
+         * lanes are sourced from `mmcs_root[r]`, the `tair_payload` lanes at
+         * those op indices are read by NOTHING: the entry overwrites them. That
+         * is stated in the field comment; this asserts it, so "dead" is a
+         * measured property and not a promise. Expected set: the EMPTY set. ── */
+        for (size_t r = 0; r < DNAC_P2S_FRI_R; r++) {
+            for (size_t i = 0; i < (size_t)DNAC_P2M_DIGEST_LANES; i++) {
+                const size_t k = tair_obs_op(ts, DNAC_P2S_OBS_DIGEST(r, i));
+                dnac_p2s_statement_t bad = *stmt;
+                if (k == (size_t)-1 || k >= DNAC_P2S_TAIR_NUM_OPS) {
+                    CHECK(0, "N-OBSDEAD: no observe op for round %zu lane %zu",
+                          r, i);
+                    continue;
+                }
+                bad.tair_payload[k] = gold_fp_to_u64(gold_fp_add(
+                    gold_fp_from_u64(bad.tair_payload[k]), gold_fp_one()));
+                if (!set_pair(stmt, &bad, "N-OBSDEAD")) continue;
+                check_mask(moved_mask(), 0u,
+                           "N-OBSDEAD: tair_payload[digest r%zu lane %zu]", r,
+                           i);
+            }
         }
     }
 
@@ -3346,7 +3784,6 @@ static void t_query_alias(const dnac_p2s_statement_t *stmt,
      * now stated as an exact instance set instead of a pair of booleans. ── */
     for (size_t qq = 0; qq < DNAC_P2S_NUM_QUERIES; qq++) {
         const uint32_t m_mmix = P2S_IMASK(qq, DNAC_P2S_SLOT_MMIX);
-        const uint32_t m_mmcs = P2S_IMASK(qq, DNAC_P2S_SLOT_MMCS);
         const uint32_t m_fri = P2S_IMASK(qq, DNAC_P2S_SLOT_FRI);
         const uint32_t m_oi = P2S_IMASK(qq, DNAC_P2S_SLOT_OI);
 
@@ -3398,17 +3835,9 @@ static void t_query_alias(const dnac_p2s_statement_t *stmt,
                                 "N-QINDEP/px: mmix_opened[q%zu][%zu]", qq, c);
         }
 
-        /* mmcs_opened: exactly one consumer, this query's mmcs instance. */
-        for (size_t c = 0; c < DNAC_P2S_MMCS_TOTAL_WIDTH; c++) {
-            dnac_p2s_statement_t bad = *stmt;
-            bad.mmcs_opened[qq][c] = gold_fp_to_u64(gold_fp_add(
-                gold_fp_from_u64(bad.mmcs_opened[qq][c]), gold_fp_one()));
-            if (!set_pair(stmt, &bad, "N-QINDEP/mmcs")) continue;
-            check_mask(moved_mask(), m_mmcs,
-                       "N-QINDEP/mmcs: mmcs_opened[q%zu][%zu]", qq, c);
-            expect_entry_reject(&bad, proof,
-                                "N-QINDEP/mmcs: mmcs_opened[q%zu][%zu]", qq, c);
-        }
+        /* mmcs_opened's per-query claim is now the (query, round) claim of
+         * N-RSEP/opened above — the same perturbation with a finer expected
+         * set, so it is not repeated here. */
 
         /* px_rest — the honest label under test (s2). It IS consumed, and it
          * reaches ONLY this query's oi instance: not mmix (no commitment binds
@@ -3622,9 +4051,10 @@ int main(int argc, char **argv)
         const uint64_t *ctab[DNAC_P2S_NUM_INSTANCES];
         int ok = p2s_alloc_tables(tab);
 
-        printf("multi-query composed preprocessed root — the PINNED cfg set "
-               "(%u tables: tair, then\n{mmix, mmcs, fri, oi} per query, "
-               "%zu queries),\n", DNAC_P2S_NUM_INSTANCES,
+        printf("multi-query + round-replication composed preprocessed root — "
+               "the PINNED cfg set\n(%u tables: tair, then "
+               "{mmix, mmcs[0..%zu], fri, oi} per query, %zu queries),\n",
+               DNAC_P2S_NUM_INSTANCES, (size_t)DNAC_P2S_FRI_R - 1,
                (size_t)DNAC_P2S_NUM_QUERIES);
         printf("pipeline = batch_prover.c:786-822 with is_zk = 0, blowup %zu\n\n",
                (size_t)DNAC_P2S_LOG_BLOWUP);
@@ -3655,8 +4085,9 @@ int main(int argc, char **argv)
         return 0;
     }
 
-    printf("=== s1b + s1c + s2 + s3b + MULTI-QUERY — FRI-verify statement "
-           "ENTRY (%u instances) ===\n\n", DNAC_P2S_NUM_INSTANCES);
+    printf("=== s1b + s1c + s2 + s3b + MULTI-QUERY + ROUND-REPLICATION — "
+           "FRI-verify statement ENTRY (%u instances) ===\n\n",
+           DNAC_P2S_NUM_INSTANCES);
 
     printf("T-CONST / T-LQ — the pinned arithmetic vs the module accessors\n");
     t_const();

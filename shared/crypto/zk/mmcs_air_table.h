@@ -168,6 +168,45 @@ extern "C" {
 /** Smallest committable table height (batch_prover.c:611, stark_prover.h:185). */
 #define DNAC_P2B_MIN_ROWS ((size_t)2)
 
+/* ── TERMINALITY RESERVE — DO NOT "RECLAIM" THE PADDING ROW ──────────────────
+ *
+ * `dnac_p2b_table_rows` pads `leaf + depth + 1` up to a power of two using
+ * `used + 1`, NOT `used`. The table therefore ALWAYS carries at least one
+ * all-zero padding row after the final row. This looks like one wasted row and
+ * it is not: reverting it makes a whole class of configs inexpressible, and the
+ * failure is silent at the table layer (the generator still succeeds) — it only
+ * surfaces as an AIR that refuses the cfg.
+ *
+ * WHY. `mmcs_air.c:96-101` requires the LAST table row to be entirely zero:
+ * the AIR's terminality argument needs the final row to have a SUCCESSOR, so a
+ * schedule that exactly fills its power-of-two height is rejected there
+ * (`mair_schedule` returns 0, and with it `dnac_mmcs_air_total_width` /
+ * `_num_publics` return 0). That gate is the AIR's, it is correct, and this
+ * module must hand it a schedule it can accept.
+ *
+ * WHAT IT COSTS TO REMOVE IT. The FRI commit-phase MMCS opens round r at depth
+ * `log_folded_height` (fri_verifier.c:557, the height passed to the MMCS at
+ * :585-588), which descends by `log_arity` per round and, by the walk's closing
+ * condition, ends at `log_final_height = log_blowup + log_final_poly_len`
+ * (fri_verifier.c:650 derives it, :609-611 REQUIRES the last round to land on
+ * it). So the LAST commit round of ANY FRI proof has depth `lb + lfpl`. With
+ * the commit-phase leaf being the arity fp2 evals base-flattened (2*arity == 4
+ * lanes at binary folding), `leaf == 1` and `used == 1 + (lb+lfpl) + 1`. Under
+ * the old `p2b_pad_pow2(used)` that is an exact power of two — and therefore
+ * REJECTED by the AIR — whenever `lb + lfpl` is 2, 6, 14 or 30. **2 is the
+ * shipped recursion blowup** (DNAC_P2B_PREP_LOG_BLOWUP below), so the defect
+ * was not a corner case: the last commit round of the pinned FRI shape could
+ * not be arithmetized at all. Found by the P2 composition's commit-round
+ * replication slice, where it blocked instance mmcs[R-1].
+ *
+ * WHY IT IS FREE FOR EVERY CFG THAT ALREADY WORKED. A cfg the AIR accepts today
+ * already satisfies `used < p2b_pad_pow2(used)` (that IS the AIR's condition),
+ * hence `used + 1 <= p2b_pad_pow2(used)` and the padded height is UNCHANGED.
+ * The change is a strict extension: it only moves heights that were rejected.
+ * `DNAC_P2B_PREP_ROOT` is over the REF cfg, whose `used` is 9 and whose height
+ * is 16 both before and after — the pin does not move. Measured by T0/T-RESERVE
+ * in tests/test_mmcs_air_table.c rather than argued. */
+
 /** Fail-close bounds on a config. `depth` is a Merkle height, so it is bounded
  *  by the field's two-adicity exactly as the FRI verifier bounds its global max
  *  height (fri_verifier.c:689, GOLDILOCKS_TWO_ADICITY == 32); past that the

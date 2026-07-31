@@ -418,6 +418,23 @@ static const dnac_p2b_table_cfg_t CFG_B = {2, CFG_B_WIDTHS, 3};
 static const size_t CFG_C_WIDTHS[1] = {2};
 static const dnac_p2b_table_cfg_t CFG_C = {1, CFG_C_WIDTHS, 4};
 
+/* Fourth config — THE TERMINALITY-RESERVE BOUNDARY (mmcs_air_table.h).
+ * ONE matrix of width 4 => total_width 4, an exact multiple of the rate => 1
+ * leaf row; depth 2 => scheduled rows 1 + 2 + 1 = 4, an EXACT power of two.
+ * Before the reserve, `dnac_p2b_table_rows` returned 4 for this and the last
+ * row carried the FINAL row type, so `mair_schedule` (mmcs_air.c:96-101)
+ * refused the config outright: total_width and num_publics both came back 0 and
+ * no trace could be built.
+ *
+ * It is not an arbitrary corner. It IS the FRI commit phase's LAST round: the
+ * commit-phase leaf is the arity fp2 evals base-flattened (2*arity == 4 lanes
+ * at binary folding, fri_verifier.c:564-568) and the last round's depth is
+ * log_final_height == log_blowup + log_final_poly_len (fri_verifier.c:650 with
+ * :609-611), which is 2 at the shipped recursion blowup. Keeping this as an
+ * ACCEPT case is what stops the reserve from being quietly reverted. */
+static const size_t CFG_D_WIDTHS[1] = {4};
+static const dnac_p2b_table_cfg_t CFG_D = {1, CFG_D_WIDTHS, 2};
+
 int main(void) {
     printf("============================================================\n");
     printf("P2b slice 1 — MMCS-verify control-AIR  WIDTH=%zu (%zu control + %d perm)\n",
@@ -485,16 +502,43 @@ int main(void) {
                                                      NULL, 0, &big,
                                                      dummy_pub, T_MAX_PUB));
         }
-        /* A schedule that leaves NO padding row: width 12 => 3 leaf + 4 compress
-         * + 1 final = 8 = 2^3 exactly, so the last row would carry a row type
-         * and the terminality boundary could never hold. Rejected up front. */
+        /* ⚠ RE-ANCHORED by the TERMINALITY RESERVE (mmcs_air_table.h).
+         *
+         * This slot used to hold "schedule with no padding row": width 12 gives
+         * 3 leaf + 4 compress + 1 final = 8 = 2^3 exactly, and the old table
+         * padded to 8, so the last row carried a row type and `mair_schedule`
+         * refused the cfg. THAT CONFIG IS NOW LEGAL — the table reserves a
+         * padding row, so it pads to 16 and the AIR accepts it.
+         *
+         * The old assertion still "passed" after the reserve landed, but for an
+         * unrelated reason (T_MAX_PUB != num_publics, i.e. the wrong-public-
+         * count gate two lines down) — a negative that fires on the wrong gate
+         * is worse than none, so it is replaced rather than deleted quietly.
+         *
+         * What replaces it is the fact the reserve actually establishes: the
+         * exact-fit cfg is ACCEPTED, with a real total_width and public count.
+         * ⚠ CONSEQUENCE, stated honestly: `mair_schedule`'s terminality check
+         * (mmcs_air.c:96-101) is now UNREACHABLE through `dnac_p2b_table_rows`,
+         * because no cfg can produce an exact fit any more. It is DEFENSIVE
+         * ONLY — deliberately left in place, since it guards the AIR against a
+         * future table module, and it is the reason the reserve must not be
+         * "reclaimed". The property that no cfg reaches it is swept by
+         * T-RESERVE in tests/test_mmcs_air_table.c. */
         {
             static const size_t exact[1] = {12};
             const dnac_p2b_table_cfg_t nopad = {1, exact, 4};
-            expect_bad_config("schedule with no padding row",
-                              dnac_mmcs_air_eval_row(dummy_main, NULL, dummy_prep,
-                                                     NULL, 0, &nopad,
-                                                     dummy_pub, T_MAX_PUB));
+            const size_t tw = dnac_mmcs_air_total_width(&nopad);
+            const size_t np = dnac_mmcs_air_num_publics(&nopad);
+            if (tw == 12 && np == MAIR_DIGEST_LANES + 4 + 12 &&
+                dnac_p2b_table_rows(&nopad) == 16) {
+                printf("  [accept] exact-fit schedule now legal (reserve)"
+                       "            OK\n");
+            } else {
+                printf("  [accept] exact-fit schedule now legal (reserve)"
+                       "            FAIL (rows %zu, width %zu, publics %zu)\n",
+                       dnac_p2b_table_rows(&nopad), tw, np);
+                fails++;
+            }
         }
         /* A next MAIN row without a next PREPROCESSED row is the PIN-2 shape
          * (batch_verify.c:696-707 zero-fills it) — rejected, never evaluated. */
@@ -537,6 +581,27 @@ int main(void) {
      * leftover RATE slots (red-verify A1-F3 branch coverage). Index 3 is
      * non-palindromic at depth 4 (asserted above for IDX_A). */
     accept_case(&CFG_C, IDX_A, "one {2}   d4", NULL);
+    /* THE RESERVE BOUNDARY: scheduled rows are an exact power of two, so this
+     * config existed only because the table reserves a padding row. Index 1 at
+     * depth 2 is 10b LSB-first, bitrev 01b = 2 — non-palindromic, so the A1
+     * bit-order guard is live here too. The accessors are checked FIRST: before
+     * the reserve they returned 0 and the accept below would have reported a
+     * generic build failure instead of naming the cause. */
+    {
+        const uint64_t IDX_D = 1;
+        if (bitrev(IDX_D, 2) == IDX_D) {
+            printf("  [accept] reserve index is palindromic (A1 guard)          FAIL\n");
+            fails++;
+        }
+        if (dnac_mmcs_air_total_width(&CFG_D) == 0 ||
+            dnac_mmcs_air_num_publics(&CFG_D) == 0) {
+            printf("  [accept] one {4}   d2  AIR REFUSES the cfg (terminality "
+                   "reserve gone)  FAIL\n");
+            fails++;
+        } else {
+            accept_case(&CFG_D, IDX_D, "one {4}   d2 (rsv)", NULL);
+        }
+    }
 
     /* ══ PHASE 2 — NEGATIVE ══
      * Workhorse: the reference config at the non-palindromic index 3. It has
@@ -909,11 +974,16 @@ int main(void) {
         return 1;
     }
     /* Count claim audited (red-verify A1-F1 caught the previous "7 fail-close
-     * configs" as unsupported): 6 fail-close gates in Gate 0c; N12/N14/N25 are
-     * fail-close IN MECHANISM and counted among the 25 numbered negatives. */
-    printf("P2b MMCS AIR: 5 honest openings accepted (3 configs incl. leaf==1,\n"
-           "  both sponge residue classes, native chain cross-checked) +\n"
-           "  6 fail-close config gates + 25 constraint-form negatives\n"
+     * configs" as unsupported): 5 fail-close gates in Gate 0c; N12/N14/N25 are
+     * fail-close IN MECHANISM and counted among the 25 numbered negatives.
+     * ⚠ 6 -> 5 at the terminality-reserve slice: "schedule with no padding
+     * row" stopped being CONSTRUCTIBLE (the reserve makes every schedule leave
+     * one), so that slot became an ACCEPT — it is counted with the openings,
+     * not with the gates. Re-counted rather than carried over. */
+    printf("P2b MMCS AIR: 6 honest openings accepted (4 configs incl. leaf==1\n"
+           "  and the terminality-reserve boundary, both sponge residue\n"
+           "  classes, native chain cross-checked) +\n"
+           "  5 fail-close config gates + 25 constraint-form negatives\n"
            "  (3 of them fail-close in mechanism) — PASS\n");
     return 0;
 }

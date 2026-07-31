@@ -184,15 +184,26 @@
  *          may legitimately collide. What must not happen is Q consumers all
  *          reading the transcript's q = 0 export block.
  *          DISCHARGED by the composition entry (fri_statement.h): instance
- *          1 + 4q + slot consumes `index_bits[q]`, which IS the transcript
+ *          1 + SLOTS*q + slot consumes `index_bits[q]`, which IS the transcript
  *          instance's q-th exported bit block; the shared three are single
  *          statement fields with no per-query copy. Gate: N-QSEP / N-QSHARED /
  *          N-QINDEP in tests/test_fri_statement.c.
+ *          ⚠ INDEX FORMULA UPDATED by the commit-round replication slice: the
+ *          per-query block is no longer 4 consumers but SLOTS = R + 3 of them
+ *          (mmix, one MMCS instance per commit round, fri, oi), so the stride
+ *          is DNAC_P2S_SLOTS. The obligation itself is unchanged — what it
+ *          requires is the per-query index alias, not a particular stride.
  *
  * ── What slice 1 does NOT do (design §0.5 :393-403) ─────────────────────────
  *   - No MMCS verify. The sibling column `s` is UNCONSTRAINED witness data
  *     until the composition binds it to P2b opened-row publics. Every soundness
  *     claim of this AIR is conditional on that seam.
+ *     ⚠ STILL OPEN after commit-round replication (fri_statement.h HONEST
+ *     LABEL 9). That slice gave every commit round its OWN P2b instance, so the
+ *     opened-row publics this seam needs now EXIST for all R rounds — but no
+ *     alias was built between them and this AIR's `s` / `f` columns, so the two
+ *     may still be given different values for one row. Replication made the
+ *     seam addressable, not closed.
  *   - No transcript binding (alpha is unused in slice 1 — it lives in
  *     open_input); betas / bits / f_init / final_poly arrive as PUBLICS.
  *   - No open_input, no per-height alpha accumulation, no 1/(z-x).

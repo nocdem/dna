@@ -80,7 +80,10 @@ size_t dnac_p2b_table_rows(const dnac_p2b_table_cfg_t *cfg)
     /* leaf + depth + 1 (final). Bounded by MAX_TOTAL_WIDTH/RATE + MAX_DEPTH + 1,
      * so the sum cannot overflow at the accepted bounds. */
     const size_t used = leaf + cfg->depth + 1;
-    return p2b_pad_pow2(used);
+    /* `used + 1`, NOT `used` — the table ALWAYS reserves at least one padding
+     * row. See mmcs_air_table.h "TERMINALITY RESERVE" for why removing this
+     * makes the last FRI commit round inexpressible. */
+    return p2b_pad_pow2(used + 1);
 }
 
 dnac_p2b_table_status_t dnac_p2b_table_generate(

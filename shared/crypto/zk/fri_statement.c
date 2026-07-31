@@ -1,9 +1,11 @@
 /**
  * @file fri_statement.c
- * @brief Composition s1b + s1c + s2 + s3b + MULTI-QUERY — the FRI-verify
- *        statement entry (see fri_statement.h for the pinned cfg derivation,
- *        the instance map, the shared/per-query split that discharges
- *        OBL-P2c-2, the seams still declared, and the one-pin correction).
+ * @brief Composition s1b + s1c + s2 + s3b + MULTI-QUERY + COMMIT-ROUND
+ *        REPLICATION — the FRI-verify statement entry (see fri_statement.h for
+ *        the pinned cfg derivation, the instance map, the shared/per-query and
+ *        per-round splits that discharge OBL-P2c-2 and HONEST LABEL 2, the
+ *        transcript digest alias that closes HONEST LABEL 6, the seams still
+ *        declared, and the one-pin correction).
  *
  * This file CONSTRUCTS and REJECTS. It contains no constraint, no column and no
  * field arithmetic beyond a canonicality comparison: every constraint it relies
@@ -46,10 +48,39 @@ static const dnac_p2c_mmix_table_cfg_t P2S_MMIX_CFG = {
     DNAC_P2S_MMIX_DEPTH, DNAC_P2S_MMIX_SALT_ELEMS
 };
 
+/* ONE cfg per commit round. Only the DEPTH differs — the leaf width is the
+ * arity's, which every round shares (fri_statement.h). Written as an explicit
+ * per-round initializer rather than a loop-filled array so the cfgs keep static
+ * storage AND remain `const`, which is what lets the accessors hand out
+ * pointers with no initialisation order to reason about.
+ *
+ * ⚠ The initializer list is DNAC_P2S_FRI_R long by construction: the assert
+ * below compares the last round's depth against the walk's closing height, and
+ * a shorter list would zero-fill a depth (which every table module rejects) —
+ * but the assert names the failure instead of leaving it to a runtime reject. */
 static const size_t P2S_MMCS_WIDTHS[1] = { DNAC_P2S_MMCS_TOTAL_WIDTH };
-static const dnac_p2b_table_cfg_t P2S_MMCS_CFG = {
-    1, P2S_MMCS_WIDTHS, DNAC_P2S_MMCS_DEPTH
+static const dnac_p2b_table_cfg_t P2S_MMCS_CFG[DNAC_P2S_FRI_R] = {
+    { 1, P2S_MMCS_WIDTHS, DNAC_P2S_MMCS_DEPTH(0) },
+    { 1, P2S_MMCS_WIDTHS, DNAC_P2S_MMCS_DEPTH(1) },
+    { 1, P2S_MMCS_WIDTHS, DNAC_P2S_MMCS_DEPTH(2) }
 };
+
+/* The pinned round count is what the initializer above is written out for; if R
+ * ever moves, this stops the build instead of silently leaving a round's cfg
+ * zeroed (num_matrices 0 / depth 0, which p2b_total_width rejects at runtime —
+ * a reject, but one that names nothing). */
+typedef char p2s_mmcs_cfg_list_matches_r_assert
+    [(DNAC_P2S_FRI_R == 3) ? 1 : -1];
+
+/* The walk closes at log_final_height (fri_verifier.c:609-611), so the LAST
+ * round's folded height must BE that height. Equivalent to "R rounds of
+ * log_arity each consume exactly lgmh - lb - lfpl levels", i.e. the
+ * arity-equality assumption of HONEST LABEL 4 stated as a build gate. */
+typedef char p2s_mmcs_last_depth_is_final_height_assert
+    [(DNAC_P2S_MMCS_DEPTH(DNAC_P2S_FRI_R - 1) ==
+      DNAC_P2S_LOG_BLOWUP + DNAC_P2S_LFPL)
+         ? 1
+         : -1];
 
 static const size_t P2S_FRI_ROLLIN[DNAC_P2S_NUM_ROLLIN] = { DNAC_P2S_ROLLIN_0 };
 static const dnac_p2c_table_cfg_t P2S_FRI_CFG = {
@@ -109,7 +140,11 @@ static const dnac_tair_config_t P2S_TAIR_CFG = {
 };
 
 const dnac_p2c_mmix_table_cfg_t *dnac_p2s_mmix_cfg(void) { return &P2S_MMIX_CFG; }
-const dnac_p2b_table_cfg_t      *dnac_p2s_mmcs_cfg(void) { return &P2S_MMCS_CFG; }
+const dnac_p2b_table_cfg_t *dnac_p2s_mmcs_cfg(size_t round)
+{
+    if (round >= DNAC_P2S_FRI_R) return NULL;
+    return &P2S_MMCS_CFG[round];
+}
 const dnac_p2c_table_cfg_t      *dnac_p2s_fri_cfg(void)  { return &P2S_FRI_CFG;  }
 const dnac_p2c_oi_table_cfg_t   *dnac_p2s_oi_cfg(void)   { return &P2S_OI_CFG;   }
 const dnac_fri_params_t         *dnac_p2s_fri_params(void) { return &P2S_FRI_PARAMS; }
@@ -212,9 +247,10 @@ size_t dnac_p2s_log_num_qc(size_t max_symbolic_degree, int is_zk)
     return p2s_log2_ceil(cd - 1);
 }
 
-/* ── instance -> (query, slot) ───────────────────────────────────────────────
+/* ── instance -> (query, slot, round) ────────────────────────────────────────
  * The ONE place the instance map is decoded. Instance 0 is the transcript (no
- * query, no slot); every other instance is 1 + 4*q + slot. */
+ * query, no slot, no round); every other instance is 1 + SLOTS*q + slot, and a
+ * slot in [SLOT_MMCS0, SLOT_FRI) additionally names a commit round. */
 
 uint32_t dnac_p2s_inst_slot(uint32_t instance)
 {
@@ -234,17 +270,29 @@ size_t dnac_p2s_inst_query(uint32_t instance)
     return (size_t)((instance - 1u) / DNAC_P2S_SLOTS);
 }
 
+size_t dnac_p2s_inst_round(uint32_t instance)
+{
+    const uint32_t slot = dnac_p2s_inst_slot(instance);
+    /* `dnac_p2s_inst_slot` already returns SLOTS (not an mmcs slot) for the
+     * transcript instance and for an out-of-range index, so the predicate
+     * covers both without repeating their tests. */
+    if (!DNAC_P2S_SLOT_IS_MMCS(slot)) return (size_t)-1;
+    return DNAC_P2S_SLOT_ROUND(slot);
+}
+
 /* The pinned cfgs are per SLOT, not per query (the file header's honest note:
  * a table encodes the AIR's SCHEDULE and every query runs the same one), so the
- * geometry accessors below dispatch on the slot and the Q copies of a slot are
- * byte-identical. */
+ * geometry accessors below dispatch on the slot: the Q copies of a slot are
+ * byte-identical, while the R mmcs SLOTS are R different cfgs. The mmcs arm is
+ * an `if` rather than a `case` because its slot is a RANGE. */
 
 size_t dnac_p2s_prep_cols(uint32_t instance)
 {
+    const uint32_t slot = dnac_p2s_inst_slot(instance);
     if (instance == DNAC_P2S_INST_TAIR) return (size_t)TAIR_TBL_COLS;
-    switch (dnac_p2s_inst_slot(instance)) {
+    if (DNAC_P2S_SLOT_IS_MMCS(slot)) return (size_t)DNAC_P2B_TABLE_COLS;
+    switch (slot) {
     case DNAC_P2S_SLOT_MMIX: return (size_t)DNAC_P2C_MMIX_TABLE_COLS;
-    case DNAC_P2S_SLOT_MMCS: return (size_t)DNAC_P2B_TABLE_COLS;
     case DNAC_P2S_SLOT_FRI:  return (size_t)DNAC_P2C_TABLE_COLS;
     case DNAC_P2S_SLOT_OI:   return (size_t)DNAC_P2C_OI_TABLE_COLS;
     default: return 0;
@@ -253,12 +301,23 @@ size_t dnac_p2s_prep_cols(uint32_t instance)
 
 size_t dnac_p2s_prep_rows(uint32_t instance)
 {
+    const uint32_t slot = dnac_p2s_inst_slot(instance);
     if (instance == DNAC_P2S_INST_TAIR) {
         return dnac_tair_table_rows(dnac_p2s_tair_script());
     }
-    switch (dnac_p2s_inst_slot(instance)) {
+    if (DNAC_P2S_SLOT_IS_MMCS(slot)) {
+        /* PER ROUND: the depth differs (4/3/2), so the row CONTENT does. The
+         * heights happen to coincide at 8/8/8 here — leaf == 1 makes
+         * `pad(used + 1)` land on the same power of two for all three — so the
+         * content, not the height, is what separates these commitments.
+         * A NULL cfg would be an out-of-range round, which the slot
+         * predicate has already excluded — the guard is the fail-close rail. */
+        const dnac_p2b_table_cfg_t *c =
+            dnac_p2s_mmcs_cfg(DNAC_P2S_SLOT_ROUND(slot));
+        return (c == NULL) ? 0 : dnac_p2b_table_rows(c);
+    }
+    switch (slot) {
     case DNAC_P2S_SLOT_MMIX: return dnac_p2c_mmix_table_rows(&P2S_MMIX_CFG);
-    case DNAC_P2S_SLOT_MMCS: return dnac_p2b_table_rows(&P2S_MMCS_CFG);
     case DNAC_P2S_SLOT_FRI:  return dnac_p2c_table_rows(&P2S_FRI_CFG);
     case DNAC_P2S_SLOT_OI:   return dnac_p2c_oi_table_rows(&P2S_OI_CFG);
     default: return 0;
@@ -267,10 +326,13 @@ size_t dnac_p2s_prep_rows(uint32_t instance)
 
 size_t dnac_p2s_num_publics(uint32_t instance)
 {
+    const uint32_t slot = dnac_p2s_inst_slot(instance);
     if (instance == DNAC_P2S_INST_TAIR) return DNAC_P2S_TAIR_NUM_PUBLICS;
-    switch (dnac_p2s_inst_slot(instance)) {
+    if (DNAC_P2S_SLOT_IS_MMCS(slot)) {
+        return DNAC_P2S_MMCS_NUM_PUBLICS(DNAC_P2S_SLOT_ROUND(slot));
+    }
+    switch (slot) {
     case DNAC_P2S_SLOT_MMIX: return DNAC_P2S_MMIX_NUM_PUBLICS;
-    case DNAC_P2S_SLOT_MMCS: return DNAC_P2S_MMCS_NUM_PUBLICS;
     case DNAC_P2S_SLOT_FRI:  return DNAC_P2S_FRI_NUM_PUBLICS;
     case DNAC_P2S_SLOT_OI:   return DNAC_P2S_OI_NUM_PUBLICS;
     default: return 0;
@@ -333,11 +395,13 @@ static dnac_p2s_status_t p2s_check_canonical(const dnac_p2s_statement_t *s)
         !p2s_canon_span(&s->px_rest[0][0],
                         DNAC_P2S_NUM_QUERIES * DNAC_P2S_OI_PX_REST) ||
         !p2s_canon_span(s->mmix_root, (size_t)MMIX_DIGEST_LANES) ||
-        !p2s_canon_span(s->mmcs_root, (size_t)MAIR_DIGEST_LANES) ||
+        !p2s_canon_span(&s->mmcs_root[0][0],
+                        DNAC_P2S_FRI_R * (size_t)MAIR_DIGEST_LANES) ||
         !p2s_canon_span(&s->mmix_opened[0][0],
                         DNAC_P2S_NUM_QUERIES * DNAC_P2S_MMIX_TOTAL_OPENED) ||
-        !p2s_canon_span(&s->mmcs_opened[0][0],
-                        DNAC_P2S_NUM_QUERIES * DNAC_P2S_MMCS_TOTAL_WIDTH)) {
+        !p2s_canon_span(&s->mmcs_opened[0][0][0],
+                        DNAC_P2S_NUM_QUERIES * DNAC_P2S_FRI_R *
+                            DNAC_P2S_MMCS_TOTAL_WIDTH)) {
         return DNAC_P2S_ERR_CANON;
     }
 
@@ -369,9 +433,11 @@ typedef char p2s_statement_fully_spanned_assert
           (DNAC_P2S_NUM_QUERIES *
                (DNAC_P2S_LGMH + 2 * DNAC_P2S_OI_TOTAL_ACC +
                 2 * DNAC_P2S_OI_NUM_HEIGHTS + DNAC_P2S_OI_PX_REST +
-                DNAC_P2S_MMIX_TOTAL_OPENED + DNAC_P2S_MMCS_TOTAL_WIDTH) +
+                DNAC_P2S_MMIX_TOTAL_OPENED +
+                DNAC_P2S_FRI_R * DNAC_P2S_MMCS_TOTAL_WIDTH) +
            DNAC_P2S_TAIR_NUM_OPS + 2 + 2 * DNAC_P2S_OI_TOTAL_ACC +
-           (size_t)MMIX_DIGEST_LANES + (size_t)MAIR_DIGEST_LANES))
+           (size_t)MMIX_DIGEST_LANES +
+           DNAC_P2S_FRI_R * (size_t)MAIR_DIGEST_LANES))
          ? 1
          : -1];
 
@@ -388,11 +454,17 @@ typedef char p2s_num_queries_nonzero_assert
 typedef char p2s_px_rest_nonempty_assert
     [(DNAC_P2S_OI_PX_REST >= 1) ? 1 : -1];
 
+/* At least one commit round, or the per-round C arrays (mmcs_root, the fold
+ * states, the cfg list) would have length zero, which is not valid C. R == 0
+ * would also mean a FRI walk with no folds at all. */
+typedef char p2s_fri_r_nonzero_assert [(DNAC_P2S_FRI_R >= 1) ? 1 : -1];
+
 /* The Q CEILING. `dnac_batch_verify` / `dnac_batch_prove` reject an instance
  * count past their (unexported) cap — batch_verify.c:20 + :86 and
- * batch_prover.c:22 + :210/:247, both 32 — so a Q whose 1 + 4*Q overruns it
+ * batch_prover.c:22 + :572, both 32 — so a Q whose 1 + (R+3)*Q overruns it
  * would be a RUNTIME reject on every honest proof. Fail at BUILD time instead.
- * DNAC_P2S_MAX_QUERIES is derived from the mirrored cap, never written out. */
+ * DNAC_P2S_MAX_QUERIES is derived from the mirrored cap and the slot count, so
+ * the ceiling follows R as well as the cap; neither is written out. */
 typedef char p2s_num_queries_fits_batch_assert
     [(DNAC_P2S_NUM_QUERIES <= DNAC_P2S_MAX_QUERIES) ? 1 : -1];
 typedef char p2s_instance_count_fits_batch_assert
@@ -534,6 +606,27 @@ static size_t p2s_tair_pop_op(const dnac_tair_script_t *s, size_t ordinal)
     return (size_t)-1;
 }
 
+/**
+ * The same walk for OBSERVE ops — the map HONEST LABEL 6's closure indexes
+ * through. Ordinals are given by DNAC_P2S_OBS_DIGEST (fri_statement.h), which
+ * mirrors the builder's emission order at transcript_air_table.c:296-324; this
+ * function turns an ordinal into an OP INDEX by scanning, so a PoW witness
+ * observe switched on later shifts the map instead of corrupting it.
+ *
+ * @return the op index, or SIZE_MAX if the script has fewer observes.
+ */
+static size_t p2s_tair_obs_op(const dnac_tair_script_t *s, size_t ordinal)
+{
+    size_t seen = 0;
+    if (s == NULL) return (size_t)-1;
+    for (size_t k = 0; k < s->n_ops; k++) {
+        if (s->ops[k].kind != DNAC_TAIR_OP_OBSERVE) continue;
+        if (seen == ordinal) return k;
+        seen++;
+    }
+    return (size_t)-1;
+}
+
 /** Ordinal of alpha's c0 pop, and of the round-r / query-q pops. Named rather
  *  than inlined so the two consumers below and the test read the SAME map. */
 #define P2S_POP_ALPHA        ((size_t)0)
@@ -551,7 +644,7 @@ static size_t p2s_tair_pop_op(const dnac_tair_script_t *s, size_t ordinal)
  */
 static dnac_p2s_status_t p2s_check_tair_script(const dnac_tair_script_t *s)
 {
-    size_t npops = 0;
+    size_t npops = 0, nobs = 0;
 
     if (s == NULL) return DNAC_P2S_ERR_CFG; /* the builder rejected the cfg */
 
@@ -569,8 +662,51 @@ static dnac_p2s_status_t p2s_check_tair_script(const dnac_tair_script_t *s)
 
     for (size_t k = 0; k < s->n_ops; k++) {
         if (s->ops[k].kind == DNAC_TAIR_OP_SAMPLE && !s->ops[k].is_pow) npops++;
+        if (s->ops[k].kind == DNAC_TAIR_OP_OBSERVE) nobs++;
     }
     if (npops != P2S_POP_TOTAL) return DNAC_P2S_ERR_CFG;
+    /* The observe count the digest ordinals are indexed against — an ordinal
+     * past the end would resolve to SIZE_MAX below, but comparing the totals
+     * catches a script SHAPE change before any ordinal is formed. */
+    if (nobs != DNAC_P2S_TAIR_NUM_OBS) return DNAC_P2S_ERR_CFG;
+
+    /* ── HONEST LABEL 6's structural rail: the block DNAC_P2S_OBS_DIGEST names
+     * for round r really IS round r's commit-digest block.
+     *
+     * The native observes round r's digest and then samples beta_r, inside one
+     * loop iteration (fri_verifier.c:702 then :707), so in SCRIPT ORDER round
+     * r's digest block lies strictly AFTER round r-1's beta pops and strictly
+     * BEFORE round r's. Checking that bracket is what turns the ordinal formula
+     * from an assumption into a verified property: an ordinal that pointed at
+     * the final-poly observes, or at the previous round's block, would fail it.
+     * The lanes must also be contiguous and ascending, since the alias writes
+     * them as a run. ── */
+    for (size_t r = 0; r < DNAC_P2S_FRI_R; r++) {
+        const size_t beta_k = p2s_tair_pop_op(s, P2S_POP_BETA(r));
+        /* The pop the block must come AFTER: round r-1's beta c1, or — for
+         * round 0, which has no predecessor round — alpha's c1, sampled at
+         * fri_verifier.c:694 before the commit loop opens at :700. */
+        const size_t prev_k = p2s_tair_pop_op(
+            s, (r > 0) ? P2S_POP_BETA(r - 1) + 1 : P2S_POP_ALPHA + 1);
+        size_t first = 0, last = 0;
+
+        if (beta_k == (size_t)-1 || prev_k == (size_t)-1) {
+            return DNAC_P2S_ERR_CFG;
+        }
+        for (size_t i = 0; i < (size_t)DNAC_P2M_DIGEST_LANES; i++) {
+            const size_t k = p2s_tair_obs_op(s, DNAC_P2S_OBS_DIGEST(r, i));
+            if (k == (size_t)-1 || k >= DNAC_P2S_TAIR_NUM_OPS) {
+                return DNAC_P2S_ERR_CFG;
+            }
+            if (i == 0) {
+                first = k;
+            } else if (k != last + 1) {
+                return DNAC_P2S_ERR_CFG; /* not one contiguous run */
+            }
+            last = k;
+        }
+        if (last >= beta_k || first <= prev_k) return DNAC_P2S_ERR_CFG;
+    }
 
     /* alpha + the betas are BASE pops: they must export no bits, or the public
      * block would carry lanes the fp2 aliases below silently ignore. */
@@ -715,7 +851,7 @@ static dnac_p2s_status_t p2s_build_query_publics(
     const dnac_tair_script_t *tsc, dnac_batch_vinstance_t *insts,
     gold_fp_t *pub)
 {
-    gold_fp_t *pub_mmix, *pub_mmcs, *pub_fri, *pub_oi;
+    gold_fp_t *pub_mmix, *pub_fri, *pub_oi;
 
     /* BEFORE any offset is formed: `dnac_p2s_pub_off` reports SIZE_MAX for an
      * out-of-range instance, and `pub + SIZE_MAX` would be undefined behaviour
@@ -723,7 +859,6 @@ static dnac_p2s_status_t p2s_build_query_publics(
     if (q >= DNAC_P2S_NUM_QUERIES) return DNAC_P2S_ERR_CFG;
 
     pub_mmix = pub + dnac_p2s_pub_off(DNAC_P2S_INST(q, DNAC_P2S_SLOT_MMIX));
-    pub_mmcs = pub + dnac_p2s_pub_off(DNAC_P2S_INST(q, DNAC_P2S_SLOT_MMCS));
     pub_fri = pub + dnac_p2s_pub_off(DNAC_P2S_INST(q, DNAC_P2S_SLOT_FRI));
     pub_oi = pub + dnac_p2s_pub_off(DNAC_P2S_INST(q, DNAC_P2S_SLOT_OI));
 
@@ -756,33 +891,63 @@ static dnac_p2s_status_t p2s_build_query_publics(
         insts[DNAC_P2S_INST(q, DNAC_P2S_SLOT_MMIX)].public_values = pub_mmix;
     }
 
-    /* mmcs (commit round 0): root ‖ dir ‖ opened.
-     * dir[l] = index_bits[q][log_arity + l]: verify_query shifts the index DOWN
-     * by log_arity (fri_verifier.c:558) BEFORE handing it to the MMCS together
-     * with height 2^log_folded_height (:585-588), so round 0 consumes bits
-     * starting at log_arity over `depth` levels. */
-    {
-        const size_t opened_off = dnac_mmcs_air_pub_opened_off(&P2S_MMCS_CFG);
-        const size_t npub = dnac_mmcs_air_num_publics(&P2S_MMCS_CFG);
-        const size_t total = dnac_mmcs_air_total_width(&P2S_MMCS_CFG);
-        if (npub != DNAC_P2S_MMCS_NUM_PUBLICS ||
+    /* ── mmcs, ONE INSTANCE PER COMMIT ROUND: root ‖ dir ‖ opened.
+     *
+     * ROUND r's three regions and where each comes from:
+     *   root    stmt->mmcs_root[r]   — SHARED across q, DISTINCT across r
+     *                                  (`commit_phase_commits[round]`,
+     *                                  fri_verifier.c:585)
+     *   dir[l]  index_bits[q][BIT_OFF(r) + l] — `verify_query` shifts the index
+     *           DOWN by log_arity once per round (fri_verifier.c:558) BEFORE
+     *           handing it to that round's MMCS together with height
+     *           2^log_folded_height (:585-588), so after r+1 shifts the walk
+     *           reads the index from bit (r+1)*log_arity upward, over that
+     *           round's own `depth` levels. BIT_OFF(r) + DEPTH(r) == lgmh, so
+     *           the window is exactly the index's remaining high bits and the
+     *           bounds check below can never be a silent clamp.
+     *   opened  mmcs_opened[q][r]    — per query AND per round
+     *
+     * Written as a loop over rounds rather than R copies: the ONLY thing that
+     * varies is the cfg, and each round re-checks its own module accessors
+     * against its own pinned arithmetic, so a per-round layout drift is a
+     * reject rather than a misaligned write. ── */
+    for (size_t r = 0; r < DNAC_P2S_FRI_R; r++) {
+        const dnac_p2b_table_cfg_t *cfg = dnac_p2s_mmcs_cfg(r);
+        const uint32_t inst = DNAC_P2S_INST(q, DNAC_P2S_SLOT_MMCS(r));
+        gold_fp_t *pub_mmcs;
+        size_t opened_off, npub, total;
+
+        if (cfg == NULL) return DNAC_P2S_ERR_CFG;
+        pub_mmcs = pub + dnac_p2s_pub_off(inst);
+        opened_off = dnac_mmcs_air_pub_opened_off(cfg);
+        npub = dnac_mmcs_air_num_publics(cfg);
+        total = dnac_mmcs_air_total_width(cfg);
+        if (npub != DNAC_P2S_MMCS_NUM_PUBLICS(r) ||
             total != DNAC_P2S_MMCS_TOTAL_WIDTH ||
-            opened_off != (size_t)MAIR_PUB_DIR_OFF + DNAC_P2S_MMCS_DEPTH) {
+            cfg->depth != DNAC_P2S_MMCS_DEPTH(r) ||
+            opened_off != (size_t)MAIR_PUB_DIR_OFF + DNAC_P2S_MMCS_DEPTH(r)) {
+            return DNAC_P2S_ERR_CFG;
+        }
+        /* The window must END at the last index bit — the BIT_OFF/DEPTH
+         * invariant, asserted here because it is what makes the bit index below
+         * in range for every round. */
+        if (DNAC_P2S_MMCS_BIT_OFF(r) + DNAC_P2S_MMCS_DEPTH(r) !=
+            DNAC_P2S_LGMH) {
             return DNAC_P2S_ERR_CFG;
         }
         for (size_t k = 0; k < (size_t)MAIR_DIGEST_LANES; k++) {
             pub_mmcs[(size_t)MAIR_PUB_ROOT_OFF + k] =
-                gold_fp_from_u64(stmt->mmcs_root[k]); /* SHARED */
+                gold_fp_from_u64(stmt->mmcs_root[r][k]);
         }
-        for (size_t l = 0; l < DNAC_P2S_MMCS_DEPTH; l++) {
+        for (size_t l = 0; l < DNAC_P2S_MMCS_DEPTH(r); l++) {
             pub_mmcs[(size_t)MAIR_PUB_DIR_OFF + l] = gold_fp_from_u64(
-                stmt->index_bits[q][DNAC_P2S_MAX_LOG_ARITY + l]);
+                stmt->index_bits[q][DNAC_P2S_MMCS_BIT_OFF(r) + l]);
         }
         for (size_t c = 0; c < DNAC_P2S_MMCS_TOTAL_WIDTH; c++) {
             pub_mmcs[opened_off + c] =
-                gold_fp_from_u64(stmt->mmcs_opened[q][c]);
+                gold_fp_from_u64(stmt->mmcs_opened[q][r][c]);
         }
-        insts[DNAC_P2S_INST(q, DNAC_P2S_SLOT_MMCS)].public_values = pub_mmcs;
+        insts[inst].public_values = pub_mmcs;
     }
 
     /* fri: bits ‖ beta ‖ f_init ‖ ro ‖ final. bits are query q's FULL index,
@@ -1026,7 +1191,9 @@ dnac_p2s_status_t dnac_p2_fri_statement_build_instances(
      * into `states->q[q]`. That is exactly the property FLEET 034's caller-owned
      * states bought — with the retired module-static binding, query 1's bind
      * would have clobbered query 0's and both instances would have evaluated
-     * the last one bound. ── */
+     * the last one bound. The R mmcs instances of ONE query push that further:
+     * they share neither a state NOR a cfg, so this is the case the ctx
+     * redesign was actually built for (N-CTX-TWO). ── */
     if (dnac_transcript_air_fold_bind(&P2S_TAIR_CFG, tsc, &states->tair,
                                       &insts[DNAC_P2S_INST_TAIR].air) != 0) {
         return DNAC_P2S_ERR_CFG;
@@ -1038,10 +1205,14 @@ dnac_p2s_status_t dnac_p2_fri_statement_build_instances(
                 &insts[DNAC_P2S_INST(q, DNAC_P2S_SLOT_MMIX)].air) != 0) {
             return DNAC_P2S_ERR_CFG;
         }
-        if (dnac_mmcs_air_fold_bind(
-                &P2S_MMCS_CFG, &qs->mmcs,
-                &insts[DNAC_P2S_INST(q, DNAC_P2S_SLOT_MMCS)].air) != 0) {
-            return DNAC_P2S_ERR_CFG;
+        for (size_t r = 0; r < DNAC_P2S_FRI_R; r++) {
+            const dnac_p2b_table_cfg_t *cfg = dnac_p2s_mmcs_cfg(r);
+            if (cfg == NULL) return DNAC_P2S_ERR_CFG;
+            if (dnac_mmcs_air_fold_bind(
+                    cfg, &qs->mmcs[r],
+                    &insts[DNAC_P2S_INST(q, DNAC_P2S_SLOT_MMCS(r))].air) != 0) {
+                return DNAC_P2S_ERR_CFG;
+            }
         }
         if (dnac_fair_fold_bind(
                 &P2S_FRI_CFG, &qs->fri,
@@ -1089,6 +1260,33 @@ dnac_p2s_status_t dnac_p2_fri_statement_build_instances(
         for (size_t k = 0; k < DNAC_P2S_TAIR_NUM_OPS; k++) {
             pub_tair[k] = gold_fp_from_u64(stmt->tair_payload[k]);
         }
+        /* ── HONEST LABEL 6's CLOSURE: the round-r digest observe lanes are
+         * OVERWRITTEN from `mmcs_root[r]`.
+         *
+         * The native observes exactly this object — `dnac_transcript_observe_
+         * digest(transcript, &proof->commit_phase_commits[round])`
+         * (fri_verifier.c:702) — and the SAME array element is what round r's
+         * Merkle walk is checked against (:585). Sourcing both from ONE
+         * statement field is what makes "the challenger absorbed the root this
+         * round verifies against" true BY CONSTRUCTION: there is no second
+         * field for them to disagree in, exactly as `ro_export` leaves no room
+         * between the oi export and the fri seed.
+         *
+         * Written AFTER the payload loop, deliberately: the payload is indexed
+         * by op and copied wholesale, and these lanes are then replaced. That
+         * is why `tair_payload`'s digest lanes are DEAD INPUT (field comment;
+         * gate N-OBSDEAD). Step 3a has already proved each block sits between
+         * the surrounding rounds' beta pops, so the ordinal really names round
+         * r's digest and not some other observe run. ── */
+        for (size_t r = 0; r < DNAC_P2S_FRI_R; r++) {
+            for (size_t i = 0; i < (size_t)DNAC_P2M_DIGEST_LANES; i++) {
+                const size_t k = p2s_tair_obs_op(tsc, DNAC_P2S_OBS_DIGEST(r, i));
+                if (k == (size_t)-1 || k >= DNAC_P2S_TAIR_NUM_OPS) {
+                    return DNAC_P2S_ERR_CFG;
+                }
+                pub_tair[k] = gold_fp_from_u64(stmt->mmcs_root[r][i]);
+            }
+        }
         for (size_t q = 0; q < DNAC_P2S_NUM_QUERIES; q++) {
             const size_t k = p2s_tair_pop_op(tsc, P2S_POP_QUERY(q));
             size_t off;
@@ -1134,17 +1332,17 @@ dnac_p2s_status_t dnac_p2_fri_statement_verify(
 {
     dnac_batch_vinstance_t insts[DNAC_P2S_NUM_INSTANCES];
     /* FLEET 034: the fold-state snapshots the descriptors' `ctx` fields point
-     * at, one per instance (1 + 4*Q since the multi-query slice). SCOPE-LOCAL
+     * at, one per instance (1 + (R+3)*Q since round replication). SCOPE-LOCAL
      * on purpose — it must outlive `insts`, and `insts` dies with this frame,
      * so the two lifetimes are identical by construction. Same rule as the
-     * publics block below (fri_statement.h, which also states the ~11.3 KB size
-     * and why this is neither file-scope nor heap).
+     * publics block below (fri_statement.h, which also states the measured
+     * 11768-byte size and why this is neither file-scope nor heap).
      * ZERO-INITIALISED: a step-3a reject returns before any bind runs, so
      * without this the untouched states would hold indeterminate bytes. Zeroed
      * means UNBOUND, which is the fail-close value. */
     dnac_p2s_fold_states_t states;
     /* ONE flat block, sliced by `dnac_p2s_pub_off` (fri_statement.h): with
-     * 1 + 4*Q instances there is no per-AIR parameter list to write. */
+     * 1 + (R+3)*Q instances there is no per-AIR parameter list to write. */
     gold_fp_t pub[DNAC_P2S_TOTAL_PUBLICS];
     dnac_p2s_status_t st;
     dnac_batch_verify_status_t bs;
@@ -1187,9 +1385,10 @@ dnac_p2s_status_t dnac_p2_fri_statement_verify(
  * pulls in stark_prover.c.
  *
  * One table per INSTANCE, generated from the SLOT's pinned cfg — so the Q
- * copies of a slot come out byte-identical, which is what the file header's
- * honest note describes. Written as a loop over instances rather than a fixed
- * list, so the order lives in `dnac_p2s_inst_slot` alone.
+ * copies of ONE slot come out byte-identical while the R mmcs slots do not,
+ * which is what the file header's honest note describes. Written as a loop over
+ * instances rather than a fixed list, so the order lives in
+ * `dnac_p2s_inst_slot` / `dnac_p2s_inst_round` alone.
  * ======================================================================== */
 
 dnac_p2s_status_t dnac_p2_fri_statement_prep_tables(uint64_t *const *out)
@@ -1201,6 +1400,7 @@ dnac_p2s_status_t dnac_p2_fri_statement_prep_tables(uint64_t *const *out)
 
     for (uint32_t i = 0; i < DNAC_P2S_NUM_INSTANCES; i++) {
         const size_t cells = dnac_p2s_prep_cells(i);
+        const size_t round = dnac_p2s_inst_round(i);
 
         if (i == DNAC_P2S_INST_TAIR) {
             if (dnac_tair_table_generate(dnac_p2s_tair_script(), out[i],
@@ -1209,16 +1409,19 @@ dnac_p2s_status_t dnac_p2_fri_statement_prep_tables(uint64_t *const *out)
             }
             continue;
         }
+        if (round != (size_t)-1) {
+            const dnac_p2b_table_cfg_t *cfg = dnac_p2s_mmcs_cfg(round);
+            if (cfg == NULL ||
+                dnac_p2b_table_generate(cfg, out[i], cells) !=
+                    DNAC_P2B_TABLE_OK) {
+                return DNAC_P2S_ERR_CFG;
+            }
+            continue;
+        }
         switch (dnac_p2s_inst_slot(i)) {
         case DNAC_P2S_SLOT_MMIX:
             if (dnac_p2c_mmix_table_generate(&P2S_MMIX_CFG, out[i], cells) !=
                 DNAC_P2C_MMIX_TABLE_OK) {
-                return DNAC_P2S_ERR_CFG;
-            }
-            break;
-        case DNAC_P2S_SLOT_MMCS:
-            if (dnac_p2b_table_generate(&P2S_MMCS_CFG, out[i], cells) !=
-                DNAC_P2B_TABLE_OK) {
                 return DNAC_P2S_ERR_CFG;
             }
             break;

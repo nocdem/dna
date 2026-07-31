@@ -227,8 +227,13 @@ int main(void) {
          * checked against the 0xA5 sentinel individually rather than by memcmp
          * over the whole struct, because `ctx` is now deliberately written. */
         {
+            /* FLEET 036: this used to be the "no padding row" cfg (depth 4 at
+             * total width 12). The table now ALWAYS reserves a padding row
+             * (mmcs_air_table.c, "TERMINALITY RESERVE"), so that cfg is LEGAL
+             * and can no longer serve as the rejected-bind route. depth 0 is
+             * rejected by `mair_fold_resolve` and is stable under the reserve. */
             static const size_t exact[1] = {12};
-            const dnac_p2b_table_cfg_t nopad = {1, exact, 4};
+            const dnac_p2b_table_cfg_t nopad = {1, exact, 0};
             dnac_stark_air_t sentinel;
             dnac_mair_fold_state_t st;
             memset(&sentinel, 0xA5, sizeof(sentinel));
@@ -315,8 +320,11 @@ int main(void) {
         {
             const size_t np = dnac_mmcs_air_num_publics(A);
             uint64_t *apub = (uint64_t *)calloc(np ? np : 1, sizeof(uint64_t));
-            static const size_t exact[1] = {12}; /* the no-padding-row cfg */
-            const dnac_p2b_table_cfg_t nopad = {1, exact, 4};
+            /* FLEET 036: depth 0, not the old depth-4 "no padding row" cfg —
+             * the terminality reserve made that one legal. See the N-CTX-REJECT
+             * note above. */
+            static const size_t exact[1] = {12};
+            const dnac_p2b_table_cfg_t nopad = {1, exact, 0};
             dnac_stark_air_t air_s;
             dnac_mair_fold_state_t stA, stB;
             memset(&air_s, 0, sizeof(air_s));

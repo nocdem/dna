@@ -917,6 +917,82 @@ left is NOT zk work — it is design and consensus work upstream of the circuits
    label 3'ün input-batch replikasyonu (`px_rest` + opened claims), label 4
    arity-eşitliği, label 5 oi grup-şekli.
 
+   **COMMIT-ROUND REPLİKASYONU + LABEL 6 SHIPPED (2026-07-31, FLEET 036:
+   1 executor 2 tur + verifier + zk-auditor + ORCHESTRATOR).**
+   Statement artık **tüm R commit turunu** koşuyor (R = LGMH−LB−LFPL = 3):
+   per-query blok `{mmix, mmcs[0..R−1], fri, oi}`, `SLOTS = R+3 = 6`, toplam
+   `1 + Q·(R+3)` = **13** instance; Q tavanı `(32−1)/6 = 5`. Tur r'nin mmcs
+   instance'ı YALNIZ kendi verisinden besleniyor: kendi cfg'si, kendi opened
+   satırları, kendi dir bit penceresi, kendi kökü `mmcs_root[r]`.
+   Tur indeksi kaydırması native'den: `fri_verifier.c:557-558` önce
+   `log_folded_height = log_current_height − log_arity`, SONRA `idx >>= log_arity`;
+   `:585-588` MMCS'e post-shift idx + `1<<log_folded_height` veriyor, `:596`
+   ileri taşıyor ⇒ `BIT_OFF(r) = (r+1)·la`, `DEPTH(r) = lgmh − BIT_OFF(r)`
+   (4/3/2). Değişmez `BIT_OFF(R−1)+DEPTH(R−1) == lgmh` hem derleme-zamanı hem
+   runtime assert'li.
+   **HONEST LABEL 6 KAPANDI.** Transcript'in r'nci OBSERVE bloğu artık
+   `mmcs_root[r]`'ye alias'lı — tek kaynak alan, iki tüketici (transcript
+   publics'i + mmcs instance'ı), R turun HEPSİ. Ordinal haritası script
+   üreticisinden OKUNUYOR (`transcript_air_table.c:297-324`), varsayılmıyor:
+   entry observe'ları sayıyor ve her digest koşusunu çevreleyen beta pop'ları
+   arasında BRACKET'liyor. **Gözlemlenebilir kanıt:** alias inince transcript'ten
+   türeyen sorgu indeksleri `13/11` → `26/23` kaydı — challenge'lar artık
+   gözlemlenen köklerin AŞAĞISINDA. Kapanmayanlar adıyla bırakıldı: `mmix_root`'un
+   observe op'u YOK (priming, label 1), final-poly ve log-arity lane'leri düz
+   payload, ve iç proof = statement (wire proof'a bağ yok).
+   Label 2 replikasyon yarısıyla kapandı; leaf↔folded-row artığı **yeni label 9**
+   oldu (`fri_air.h:193-201` aynası). Label 4 güncellendi (arity'ler hâlâ pinli
+   ⇒ entry görevi doğmadı; T-REF artık HER turun arity+derinliğini ölçüyor).
+   Label 3 DÜZELTİLDİ: input-batch replikasyonu commit-round ile **aynı dilim
+   değil** — `qp->input_proof` vs `commit_phase_commits`, farklı eksenler.
+   ⚠ **YOLDA BULUNAN SHIPPED COMPLETENESS DEFEKTİ — `mmcs_air`.**
+   `dnac_p2b_table_rows` = `pad_pow2(leaf + depth + 1)` iken `mair_schedule`
+   (`mmcs_air.c:96-101`) son satırın sıfır-padding olmasını şart koşuyordu.
+   Son commit turunun derinliği DAİMA `lb+lfpl` (`fri_verifier.c:650` + `:609`),
+   pinli/üretim şeklinde 2, ve `leaf=1` ile `used=4` tam kuvvet ⇒ padding yok ⇒
+   **AIR reddediyordu.** Yani `mmcs_air`, `lb+lfpl ∈ {2,6,14,30}` olan hiçbir
+   proof'un son commit turunu ifade edemiyordu — fixture quirk'ü DEĞİL, üretim
+   şekli. FLEET 028/029'daki oi lb-kapısıyla aynı sınıf: dilim kullanmaya
+   kalkınca ortaya çıktı. **DÜZELTME:** `pad_pow2(used)` → `pad_pow2(used + 1)`
+   — tablo artık HER ZAMAN en az bir padding satırı ayırıyor ("TERMINALITY
+   RESERVE", gerekçesi `mmcs_air_table.h`'de). **STRICT EXTENSION, ölçülmüş:**
+   bugün kabul edilen her cfg'de zaten `used < pad(used)` ⇒ `used+1 ≤ pad(used)`
+   ⇒ yükseklik DEĞİŞMİYOR; yalnız `used ∈ {4,8,16,32}` olan 52 çift (eskiden
+   reddedilenler) kabul ediliyor. `DNAC_P2B_PREP_ROOT` HAREKET ETMEDİ (REF:
+   `used=9`, `pad(9)=pad(10)=16`) — runtime KAT ile doğrulandı.
+   Yeni `T-RESERVE` 144 cfg'lik sweep + non-vacuity kontrolü; `test_mmcs_air`'e
+   son-tur şekli `{1,{4},2}` kalıcı **accept** vakası olarak eklendi.
+   ⚠ `mair_schedule`'ın terminality kapısı artık `dnac_p2b_table_rows` üzerinden
+   ERİŞİLEMEZ (savunma amaçlı kalıntı) — ama koruduğu özelliği İKİ CANLI kapı
+   tutuyor: `mmcs_air.c:445-451` (çağıranın verdiği prep_table'ı denetliyor) ve
+   `mmcs_air_fold.c:275` (`when(is_last_row, pl_sum)`, composed proof'ta canlı).
+   Reserve geri alınırsa kapı canlanır ve **fail-close** eder. Reserve'in asla
+   geri alınmaması gerektiği hem header'a hem teste yazıldı.
+   FLEET 034'ün N-CTX-REJECT/N-CTX-STALE guard'ları kötü-cfg olarak tam da bu
+   yasallaşan şekli (`{1,{12},4}`) kullanıyordu ⇒ `depth 0`'a taşındı (guard'ların
+   koruduğu özellik değişmedi, tetikleyicileri güncellendi).
+   **O6 (2 lens + ORCHESTRATOR, çelişki yok):** verifier 4 CONFIRMED / 0 REFUTED
+   (turlar ayrık EVET, label 6 kapandı EVET); zk-auditor 7 GROUNDED / 3 JUDGMENT
+   / **0 KAFADAN** — genişletilen cfg kümesinde **soundness korunuyor**: hiçbir
+   cfg kaybolmuyor, hiçbir kabul yüksekliği oynamıyor, yeni çiftler mevcut
+   `leaf`/`depth` alt sınırlarını düşürmüyor (`leaf=1`,`depth=1` zaten kabuldü),
+   fazladan padding satırında `dir` ve 64 `pos` sıfıra çivili ve serbest kalan
+   permütasyon tanığının tüketicisi yok (H/I/J sıfır kapılı, bus alanları
+   memset). İki lensin de bulduğu belge defektleri (yanlış `8/8/4` satır sayısı —
+   gerçek **8/8/8**, çünkü `leaf=1` üçünü de aynı 2'nin kuvvetine yuvarlıyor; ve
+   bayat placeholder cümlesi) lensler dönmeden ORCHESTRATOR tarafından
+   düzeltildi; denetçinin bağımsız hesabı düzeltmeyi doğruladı.
+   **`DNAC_P2S_PREP_ROOT` 13 tablo üzerinden RE-PIN:** `e53b50ec6809f575 /
+   6962531b63186c2c / b6b24c5508080e1c / 424f1dd15ca4959f` — ORCHESTRATOR
+   bağımsız türetti, executor'ınkiyle lane-lane eşleşti. Diğer dört modül pini
+   byte-özdeş.
+   **O9 ORCHESTRATOR-verified:** zk `make clean && make test` → **86 binary,
+   0 uyarı, ALL GATES GREEN, 933/0**, `dnac_batch_prove OK — 13 instances`.
+   Kontrol sayısı 696 → 933; `test_mmcs_air_table` 53 → 464. Kaybolan kontrol
+   yok (`N-QINDEP/mmcs` → daha ince `N-RSEP/opened`, Q·R·4=24 perturbasyon).
+   `fri_statement`/`fri_air`/`mmcs_air`/`mmcs_air_table` **hiçbir üretim
+   build'inde yok** (grep) → konsensüs yüzeyi değişmedi, version bump YOK.
+
 ### ⚑ CITATION BASELINE — read this before checking any Plonky3 `file:line` in this tree
 
 **The `file:line` citations throughout `shared/crypto/zk/` are against Plonky3
