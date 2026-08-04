@@ -56,9 +56,18 @@ left is NOT zk work — it is design and consensus work upstream of the circuits
    trace columns budgeted), (B) source-split mint (type/inputs/amount each bound in a different
    place than consensus acts on — sighash has no type byte, `serialize.c:704-722` verified),
    (C) transparent leg has no spend authority (Check 3-6 bypass was type-11-safe only via D7.1 empty
-   body). Dispositioned in the doc's new §3.1/§3.2. **OPEN-1 = transparent spend-authority model is a
-   USER crypto decision (signers vs proof-binding) and blocks B2.** Doc revised in place; the
-   8-13-agent CODE red-team is still the SEPARATE later pass (after B2-B5).
+   body). Dispositioned in the doc's new §3.1/§3.2. Crypto decisions then LOCKED (OPEN-1=(a) signers,
+   preimages P-a/P-b/P-c, fee-predicate = pool never debits fee) and §3.3 byte-exact preimages
+   written. **A SECOND design red-team (2026-08-04, 3 lenses, ~547k) came back NOT-GREEN AGAIN
+   (§3.4): 2 CRIT / 10 HIGH pre-dedup.** The headline (CORE-1, all 3 lenses): the preimage spec was
+   grounded on the CLIENT builder `dnac_tx_compute_hash` while consensus recomputes with a SEPARATE
+   mirror `nodus_witness_recompute_tx_hash` (`nodus_witness_verify.c:131-407`) that has no 12/13 arm
+   → F6 closed only for libdna. Plus my own KAFADAN slip (token_id 32 vs 64, transcribed a stale
+   comment — fixed) and deep shipped-substrate fragility (three unbound fee numbers, `nls`/`txd`
+   split, non-callable Checks 3-6). **VERDICT: two rounds, no convergence → boundary PARKED as
+   C3-CUTOVER work, not a C3-prerequisite.** The terminal-constraint CORE survives (sound if
+   passive-slot-zero + range built); it is the substrate wiring that is not ready. The 8-13-agent
+   CODE red-team never runs — there is no code, and B2 is parked.
    ✅ **G-DET-B-0's two hard preconditions are FIXED in-tree (v0.18.19, 2026-07-31, commit
    `4b81ea44` — re-verified 2026-08-04):** `state_root` no longer substitutes tagged-empty
    sentinels on a transient DB fault (fail-close), and `nodus_witness_supply_get` grew a third
