@@ -2,8 +2,25 @@
 
 ## ⏭ WHAT IS LEFT — read this first (2026-07-31)
 
+**F1b+F1c SHIPPED (2026-08-04): `shielded_tree.{c,h}` — the consensus-side depth-24 incremental
+note-commitment Merkle tree, byte-matched to `conf_membership_air`.** Node hash = S0
+`note_merkle_compress` (PaddingFreeSponge<8,4,4>, `note_commit.c:66-80`); walk = LSB-first
+`conf_membership_air.h:12-42` order; empty roots `E_0={0}`, `E_{i+1}=compress(E_i,E_i)`, whole-tree
+empty root `E_24`. Incremental filled-subtrees root O(DEPTH)/append; `shielded_tree_path` extracts
+(leaf,pos,siblings) for the bridge. Capacity=REJECT (user-locked 2026-08-04): append at 2^24 →
+`ERR_FULL`, fail-closed, no wrap. `test_shielded_tree`: **bridge KAT (T3)** feeds the extracted path
+to `conf_membership_air_generate` and asserts its anchor == `shielded_tree_root` byte-for-byte
+(incl. the empty-fill boundary, pos-0 all-empty siblings) + empty-root KAT + incremental-vs-full +
+capacity + edges. ORCHESTRATOR-verified: zk **87 binaries / 0 warnings**, make test exit 0, vectors
+byte-matched. Consensus DB integration (witness anchor/commitment tables) is C3.1, NOT this slice —
+F1b is the pure tree + KAT; nodus does NOT link it yet (grep: zero live consumer). ⚠ executor-flagged
+design note for C3.1: `shielded_tree_path` retains all appended leaves (O(count), ~512 MB at true
+fullness) for path serving; the consensus-critical ROOT is O(DEPTH) and needs no leaf storage — C3.1
+may want the anchor-only tree separated from the path-serving store. Commit pending (consensus-inert,
+no nodus bump — C1 precedent).
+
 **The zk stack itself is GREEN and idle. Nothing in `shared/crypto/zk/` is blocking.**
-`make test` 86 binaries / 0 warnings, 60/60 vectors hash-clean, nodus ctest 132/132. The whole
+`make test` 87 binaries / 0 warnings, vectors hash-clean, nodus ctest 132/132. The whole
 verify stack is consensus-LINKED but consensus-DEAD: type-11 is still REJECT-unconditional
 (`nodus/src/witness/nodus_witness_verify.c:743-753` — verified 2026-07-27, the `return -1` is the
 function's last statement, there is no accept path). **C3 is the door that opens it, and the work
@@ -32,8 +49,16 @@ left is NOT zk work — it is design and consensus work upstream of the circuits
    re-checked facts came back stale or false). User-locked shape: **dedicated TX types 12/13**
    (11 stays byte-identical, D7.1 intact), **two unsigned public slots** `pub_boundary_in/out`
    (publics 43 → 45), and **one combined re-ground with F1's D=24** so the vector regeneration and
-   `num_qc` re-measure are paid once. **Its §3 red-team has NOT been run** — chartered at the
-   consensus row, 8-13 agents, with a mandatory cost gate.
+   `num_qc` re-measure are paid once. **Its DESIGN red-team RAN 2026-08-04 (3 lenses, ~489k tokens)
+   → NOT-GREEN.** 6 CRIT / 5 HIGH pre-dedup, 0 deployed-exploitable. Structural root: the sighash
+   preimage section the doc defers to (§1.4/§4.2/§4.5) was never written. Three CRIT classes:
+   (A) no-mint unenforceable (passive-slot-zero only a parenthetical; 52-bit range asserted but no
+   trace columns budgeted), (B) source-split mint (type/inputs/amount each bound in a different
+   place than consensus acts on — sighash has no type byte, `serialize.c:704-722` verified),
+   (C) transparent leg has no spend authority (Check 3-6 bypass was type-11-safe only via D7.1 empty
+   body). Dispositioned in the doc's new §3.1/§3.2. **OPEN-1 = transparent spend-authority model is a
+   USER crypto decision (signers vs proof-binding) and blocks B2.** Doc revised in place; the
+   8-13-agent CODE red-team is still the SEPARATE later pass (after B2-B5).
    ✅ **G-DET-B-0's two hard preconditions are FIXED in-tree (v0.18.19, 2026-07-31, commit
    `4b81ea44` — re-verified 2026-08-04):** `state_root` no longer substitutes tagged-empty
    sentinels on a transient DB fault (fail-close), and `nodus_witness_supply_get` grew a third

@@ -140,6 +140,7 @@ TESTS = \
     $(BUILD)/test_conf_action_air \
     $(BUILD)/test_conf_action_agg_air \
     $(BUILD)/test_conf_membership_air \
+    $(BUILD)/test_shielded_tree \
     $(BUILD)/test_conf_nullifier_air \
     $(BUILD)/test_logup \
     $(BUILD)/test_logup_bus \
@@ -495,6 +496,16 @@ $(BUILD)/test_conf_action_agg_air: tests/test_conf_action_agg_air.c conf_action_
 # S2 dual-mode C3 — Poseidon2 Merkle-path membership construction gate (is_zk=0).
 $(BUILD)/test_conf_membership_air: tests/test_conf_membership_air.c conf_membership_air.c note_commit.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c poseidon2_goldilocks.c field_goldilocks.c conf_membership_air.h note_commit.h poseidon2_air.h poseidon2_air_cols.h field_goldilocks.h | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) tests/test_conf_membership_air.c conf_membership_air.c note_commit.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c poseidon2_goldilocks.c field_goldilocks.c -o $@
+
+# F1b+F1c — consensus-side depth-24 incremental note-commitment Merkle tree.
+# The BRIDGE KAT (T3) feeds an extracted (leaf,pos,siblings) to
+# conf_membership_air_generate and asserts its anchor == shielded_tree_root
+# byte-for-byte, so this links the SAME poseidon2 + S0 note_commit stack as
+# test_conf_membership_air, plus shielded_tree.c. Sources are named LITERALLY
+# and every one is also a prerequisite, so an edit to any of them relinks (the
+# d4.d AGG_PROVER_SRCS stale-binary lesson).
+$(BUILD)/test_shielded_tree: tests/test_shielded_tree.c shielded_tree.c conf_membership_air.c note_commit.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c poseidon2_goldilocks.c field_goldilocks.c shielded_tree.h conf_membership_air.h note_commit.h poseidon2_air.h poseidon2_air_cols.h field_goldilocks.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_shielded_tree.c shielded_tree.c conf_membership_air.c note_commit.c poseidon2_air.c poseidon2_air_trace.c poseidon2_air_cols.c poseidon2_goldilocks.c field_goldilocks.c -o $@
 
 # S3 dual-mode C4 — nullifier-PRF construction gate (is_zk=0). SHA3 for the
 # DOMSEP derivation check is compile-time; links poseidon2 stack.
