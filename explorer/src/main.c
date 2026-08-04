@@ -25,7 +25,7 @@
 #include "crypto/utils/qgp_log.h"
 #define LOG_TAG "EXPLORER"
 
-#define EXPLORERD_VERSION "0.1.0"
+#define EXPLORERD_VERSION "0.1.1"
 
 #define EXPLORERD_DEFAULT_CONFIG "/etc/dna-explorer.conf"
 #define EXPLORERD_DEFAULT_DB     "/var/lib/dna-explorer/index.db"

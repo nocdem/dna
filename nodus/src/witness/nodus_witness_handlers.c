@@ -1084,8 +1084,16 @@ static void handle_dnac_block(nodus_witness_t *w,
          * can recompute the block's own hash via the canonical preimage
          * (nodus_witness_compute_block_hash_ex) without waiting for the
          * child block's prev_hash. The client decoder has parsed this
-         * key since Phase 7 (nodus_client.c dnac_block state_root arm). */
-        enc_dnac_response(&enc, txn_id, "dnac_block", 10);
+         * key since Phase 7 (nodus_client.c dnac_block state_root arm).
+         *
+         * 2026-08-04: adds an explicit "tx_root" key. The client decoder
+         * fills result.tx_root ONLY from a key named "tx_root"
+         * (nodus_client.c dnac_block tx_root arm) — the legacy "hash"
+         * key lands in result.tx_hash, so without this key every parsed
+         * tx_root was all-zero and the explorer both displayed zero
+         * tx_roots and computed a WRONG tip block hash (tx_root is part
+         * of the block-hash preimage). "hash" stays for compatibility. */
+        enc_dnac_response(&enc, txn_id, "dnac_block", 11);
         cbor_encode_cstr(&enc, "found");
         cbor_encode_bool(&enc, true);
         cbor_encode_cstr(&enc, "height");
@@ -1104,6 +1112,8 @@ static void handle_dnac_block(nodus_witness_t *w,
         cbor_encode_bstr(&enc, blk.prev_hash, NODUS_T3_TX_HASH_LEN);
         cbor_encode_cstr(&enc, "state_root");
         cbor_encode_bstr(&enc, blk.state_root, NODUS_T3_TX_HASH_LEN);
+        cbor_encode_cstr(&enc, "tx_root");
+        cbor_encode_bstr(&enc, blk.tx_root, NODUS_T3_TX_HASH_LEN);
 
         cbor_encode_cstr(&enc, "commit_cert");
         cbor_encode_array(&enc, (size_t)cert_count);
@@ -1186,8 +1196,8 @@ static void handle_dnac_block_range(nodus_witness_t *w,
 
     uint64_t total = nodus_witness_block_height(w);
 
-    /* Encode response (320 per block to fit prev_hash) */
-    size_t buf_size = 512 + ((size_t)count * 320);
+    /* Encode response (400 per block to fit prev_hash + tx_root) */
+    size_t buf_size = 512 + ((size_t)count * 400);
     uint8_t *buf = malloc(buf_size);
     if (!buf) {
         send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
@@ -1211,8 +1221,11 @@ static void handle_dnac_block_range(nodus_witness_t *w,
     for (int i = 0; i < count; i++) {
         /* Phase 1 / Task 1.2: blocks table dropped tx_type; "type" key
          * kept at 0 for client compatibility. New tx_count carries the
-         * block's TX count. */
-        cbor_encode_map(&enc, 7);
+         * block's TX count.
+         * 2026-08-04: adds "tx_root" — same key-mismatch fix as
+         * handle_dnac_block above ("hash" parses into result.tx_hash,
+         * the tx_root arm needs a literal "tx_root" key). */
+        cbor_encode_map(&enc, 8);
         cbor_encode_cstr(&enc, "height");
         cbor_encode_uint(&enc, blocks[i].height);
         cbor_encode_cstr(&enc, "hash");
@@ -1228,6 +1241,8 @@ static void handle_dnac_block_range(nodus_witness_t *w,
                           NODUS_T3_WITNESS_ID_LEN);
         cbor_encode_cstr(&enc, "prev_hash");
         cbor_encode_bstr(&enc, blocks[i].prev_hash, NODUS_T3_TX_HASH_LEN);
+        cbor_encode_cstr(&enc, "tx_root");
+        cbor_encode_bstr(&enc, blocks[i].tx_root, NODUS_T3_TX_HASH_LEN);
     }
 
     size_t rlen = cbor_encoder_len(&enc);

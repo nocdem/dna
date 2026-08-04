@@ -1195,6 +1195,17 @@ static void test_sync_compute_block_hash(void) {
     }
     fill(blk.state_root, 64, 0xB2);
 
+    /* Fail-closed: all-zero tx_root (pre-v0.18.22 witness omits the
+     * explicit "tx_root" response key, field decodes as zeros). A real
+     * tx_root is never all-zero — even an empty block's RFC 6962 root is
+     * SHA3-512(""). Hashing zeros live-produced a wrong tip hash. */
+    memset(blk.tx_root, 0, 64);
+    if (exp_sync_compute_block_hash(42, &blk, got) == 0) {
+        FAIL("all-zero tx_root should fail closed");
+        return;
+    }
+    fill(blk.tx_root, 64, 0xC3);
+
     /* Fail-closed: heights 0 and 1 (genesis needs the chain_def blob the
      * dnac_block response doesn't carry). */
     if (exp_sync_compute_block_hash(1, &blk, got) == 0) { FAIL("height 1 (genesis) should fail closed"); return; }

@@ -1357,9 +1357,9 @@ blockchain view without local verification.
 | TX_QUERY | 144 | `dnac_tx` | Query full TX by hash |
 | TX_RESPONSE | 145 | — | Returns tx_data blob, tx_type, block_height, timestamp |
 | BLOCK_QUERY | 146 | `dnac_block` | Query block by height |
-| BLOCK_RESPONSE | 147 | — | Returns tx_hash, tx_type, timestamp, proposer_id |
+| BLOCK_RESPONSE | 147 | — | Returns tx_root (legacy key `hash` + explicit key `tx_root` since v0.18.22), tx_count, timestamp, proposer_id, prev_hash, state_root (v0.18.18+), commit_cert |
 | BLOCK_RANGE_QUERY | 148 | `dnac_block_range` | Query block range |
-| BLOCK_RANGE_RESPONSE | 149 | — | Returns array of blocks (max 100) |
+| BLOCK_RANGE_RESPONSE | 149 | — | Returns array of blocks (max 100); per-block keys as BLOCK_RESPONSE minus state_root/commit_cert, `tx_root` since v0.18.22 |
 
 ### Client SDK Functions
 

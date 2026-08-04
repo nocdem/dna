@@ -10,12 +10,13 @@
  *      gap in chunks of 100, extracting + inserting each TX.
  *   3. Backfill block headers for every new height observed in step 2.
  *      Each row's OWN block_hash is computed locally at insert when the
- *      dnac_block response carries a non-zero state_root
- *      (exp_sync_compute_block_hash below) — the tip is never left
- *      hash-less. The CHILD block's prev_hash backfill of the PARENT's
- *      block_hash stays as the authoritative overwrite and as the only
- *      path for rows the helper can't compute (genesis at height 1,
- *      pre-upgrade witness serving no state_root).
+ *      dnac_block response carries a non-zero state_root AND a non-zero
+ *      tx_root (exp_sync_compute_block_hash below) — the tip is never
+ *      left hash-less on a current witness. The CHILD block's prev_hash
+ *      backfill of the PARENT's block_hash stays as the authoritative
+ *      overwrite and as the only path for rows the helper can't compute
+ *      (genesis at height 1, pre-v0.18.22 witness serving no
+ *      state_root/tx_root keys).
  *
  * Binding FSM-integration rules (Task 4 security review, G6):
  *   1. On startup, preseed the FSM's ref_chain_id from db meta
@@ -146,7 +147,12 @@ int exp_sync_stale_name(const char *db_path, const uint8_t chain_id[32], char *o
  *   - blk->state_root all-zero: a pre-upgrade witness that doesn't serve
  *     state_root yet (the field decodes as zeros) — hashing a zeroed
  *     state_root would produce a WRONG hash, so fail closed and leave the
- *     row on the child-backfill path.
+ *     row on the child-backfill path;
+ *   - blk->tx_root all-zero (2026-08-04): a pre-v0.18.22 witness omits the
+ *     explicit "tx_root" response key, so the parsed field decodes as
+ *     zeros; a legitimate tx_root is never all-zero (empty block's RFC
+ *     6962 root is SHA3-512("")), and hashing zeros produced a live wrong
+ *     tip hash — fail closed, child-backfill path takes over.
  * @return 0 on success (out filled), -1 otherwise
  */
 int exp_sync_compute_block_hash(uint64_t height,

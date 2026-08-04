@@ -295,6 +295,20 @@ int exp_sync_compute_block_hash(uint64_t height,
     }
     if (all_zero) return -1;
 
+    /* 2026-08-04: same fail-close for an all-zero tx_root. tx_root is in
+     * the block-hash preimage, and a legitimate tx_root is NEVER all-zero
+     * (even an empty block's RFC 6962 root is SHA3-512("")). A zeroed
+     * tx_root means the witness response lacked the explicit "tx_root"
+     * key (pre-v0.18.22 server) — hashing it would produce a WRONG tip
+     * hash, which live-repro'd against the production chain (computed
+     * 889a43… vs true c8d0ed… at height 278). Child-backfill path takes
+     * over instead. */
+    all_zero = 1;
+    for (int i = 0; i < 64; i++) {
+        if (blk->tx_root[i] != 0) { all_zero = 0; break; }
+    }
+    if (all_zero) return -1;
+
     /* dnac_block_t embeds the full genesis chain_def (~75 KiB of witness
      * pubkey slots) — heap-allocate instead of burdening the sync thread's
      * stack. calloc's zero-fill is REQUIRED by dnac_block_compute_hash's

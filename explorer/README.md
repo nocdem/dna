@@ -23,12 +23,16 @@ summary below is grounded in that doc's §7/§8.
   Block headers are backfilled per height via `dnac_block`; each row's OWN
   `block_hash` is computed locally at insert (`exp_sync_compute_block_hash`,
   via libdna's `dnac_block_compute_hash` — same canonical preimage as the
-  witness chain) when the response carries a non-zero `state_root`
-  (witness >= v0.18.18), so the TIP block is never shown hash-less
-  ("pending") on the site. Fallback for genesis (height 1, chain_def not
-  served by `dnac_block`) and pre-v0.18.18 witnesses: the child block's
-  `prev_hash` backfills the parent's hash, which also remains the
-  authoritative overwrite for every height.
+  witness chain) when the response carries a non-zero `state_root` AND a
+  non-zero `tx_root` (witness >= v0.18.22 — older witnesses sent tx_root
+  only under the legacy `"hash"` key, which the client parses into
+  `tx_hash`, so the parsed `tx_root` decoded as zeros and a locally
+  computed hash would be WRONG; both roots are in the preimage), so the
+  TIP block is never shown hash-less ("pending") on the site. Fallback
+  for genesis (height 1, chain_def not served by `dnac_block`) and
+  pre-v0.18.22 witnesses: the child block's `prev_hash` backfills the
+  parent's hash, which also remains the authoritative overwrite for
+  every height.
 - `src/exp_extract.{c,h}` — deserializes raw TX bytes into index rows
   (`exp_tx_row_t` / `exp_io_row_t`), sourcing timestamps only from the
   deserialized TX, never the witness response envelope.

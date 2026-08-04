@@ -3566,6 +3566,13 @@ int nodus_client_dnac_block_range(nodus_client_t *client,
                         cbor_item_t v = cbor_decode_next(&dec);
                         if (v.type == CBOR_ITEM_BSTR && v.bstr.len == NODUS_T3_WITNESS_ID_LEN)
                             memcpy(b->proposer_id, v.bstr.ptr, NODUS_T3_WITNESS_ID_LEN);
+                    } else if (ek.tstr.len == 7 && memcmp(ek.tstr.ptr, "tx_root", 7) == 0) {
+                        /* 2026-08-04: explicit tx_root key (the legacy
+                         * "hash" key lands in tx_hash above). Pre-fix
+                         * servers omit it — tx_root stays zeroed. */
+                        cbor_item_t v = cbor_decode_next(&dec);
+                        if (v.type == CBOR_ITEM_BSTR && v.bstr.len == NODUS_T3_TX_HASH_LEN)
+                            memcpy(b->tx_root, v.bstr.ptr, NODUS_T3_TX_HASH_LEN);
                     } else {
                         cbor_decode_skip(&dec);
                     }
