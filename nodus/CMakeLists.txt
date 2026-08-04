@@ -1006,6 +1006,7 @@ register_witness_test(test_parse_cd_supply)
 
 # Task 59 — BFT roster sourced from committee snapshot (chain-authoritative)
 register_witness_test(test_bft_roster_committee)
+register_witness_test(test_witness_roster_sorted_leader)
 
 # Task 60 — RETIRING validator stays in epoch committee until graduation
 register_witness_test(test_retiring_committee_membership)

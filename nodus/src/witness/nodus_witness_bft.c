@@ -418,9 +418,13 @@ bool nodus_witness_bft_is_leader(nodus_witness_t *w) {
                                          w->server->identity.pk.bytes);
     } else {
         /* Pre-genesis bootstrap: gossip-roster-based leader selection.
-         * Only active for the genesis round itself. */
+         * Only active for the genesis round itself. SORTED rank, not
+         * arrival index — the roster is arrival-ordered between epoch
+         * rebuilds, and two nodes with the same set but different
+         * arrival orders would disagree on the leader (BUGS.md
+         * 2026-08-04). */
         count = (int)w->roster.n_witnesses;
-        my_idx = nodus_witness_roster_find(&w->roster, w->my_id);
+        my_idx = nodus_witness_roster_sorted_find(&w->roster, w->my_id);
     }
 
     if (my_idx < 0 || count <= 0) return false;
@@ -443,6 +447,24 @@ int nodus_witness_roster_find(const nodus_witness_roster_t *roster,
             return (int)i;
     }
     return -1;
+}
+
+int nodus_witness_roster_sorted_find(const nodus_witness_roster_t *roster,
+                                       const uint8_t *witness_id) {
+    if (!roster || !witness_id) return -1;
+    if (nodus_witness_roster_find(roster, witness_id) < 0) return -1;
+
+    /* Rank in the SET, not the array: count of strictly-smaller ids.
+     * Ids are unique (roster_add dup-checks), so no tie-break needed.
+     * O(n) over NODUS_T3_MAX_WITNESSES — same cost class as the linear
+     * roster_find above. */
+    int rank = 0;
+    for (uint32_t i = 0; i < roster->n_witnesses; i++) {
+        if (memcmp(roster->witnesses[i].witness_id, witness_id,
+                   NODUS_T3_WITNESS_ID_LEN) < 0)
+            rank++;
+    }
+    return rank;
 }
 
 int nodus_witness_roster_add(nodus_witness_t *w,
@@ -4008,9 +4030,15 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
             sender_idx = committee_find_pubkey(committee, count,
                                                  w->roster.witnesses[gossip_idx].pubkey);
         } else {
-            /* Pre-genesis bootstrap: leader is a gossip-roster slot. */
+            /* Pre-genesis bootstrap: leader is a gossip-roster slot —
+             * by SORTED rank, mirroring nodus_witness_bft_is_leader's
+             * fallback exactly; the arrival index (gossip_idx) is
+             * node-local and MUST NOT decide leadership (BUGS.md
+             * 2026-08-04: node7 saw the honest proposer at arrival
+             * index 6, every sorted peer at rank 0). */
             count = (int)w->roster.n_witnesses;
-            sender_idx = gossip_idx;
+            sender_idx = nodus_witness_roster_sorted_find(
+                &w->roster, hdr->sender_id);
         }
 
         /* C7 fix: block-height epoch — cluster-agreed, no clock-skew fork risk */

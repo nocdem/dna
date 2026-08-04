@@ -150,14 +150,24 @@ stagef_mk_funded_user() {
     # funded UTXO before declaring failure or re-sending — this both
     # kills the false negative and avoids duplicate fund spends.
     stagef_fund_on_chain() {
-        local owner_fp="$1" db
-        db=$(ls "$BASE_DIR"/node1/data/witness_*.db 2>/dev/null | head -1)
-        [ -n "$db" ] || return 1
-        local n
-        n=$(sqlite3 -readonly "$db" \
-            "SELECT COUNT(*) FROM utxo_set WHERE owner = '$owner_fp';" \
-            2>/dev/null) || return 1
-        [ "${n:-0}" -ge 1 ]
+        # Poll EVERY node's witness DB and succeed on the first hit —
+        # a witness DB only advances via consensus commit, so any copy
+        # showing the UTXO proves the chain committed it. Polling a
+        # single fixed node is wrong whenever a test has PAUSED that
+        # node (test_view_change_fork SIGSTOPs node1): the frozen
+        # replica can never show a late commit, and the old node1-only
+        # check reported "chain verified empty" against a stale file
+        # (BUGS.md 2026-08-04, H1).
+        local owner_fp="$1" node db cnt
+        for node in 1 2 3 4 5 6 7; do
+            db=$(ls "$BASE_DIR/node$node/data"/witness_*.db 2>/dev/null | head -1)
+            [ -n "$db" ] || continue
+            cnt=$(sqlite3 -readonly "$db" \
+                "SELECT COUNT(*) FROM utxo_set WHERE owner = '$owner_fp';" \
+                2>/dev/null) || continue
+            [ "${cnt:-0}" -ge 1 ] && return 0
+        done
+        return 1
     }
     fund_ok=0
     for attempt in 1 2 3; do

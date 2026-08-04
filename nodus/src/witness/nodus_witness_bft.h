@@ -64,6 +64,16 @@ bool nodus_witness_bft_is_leader(nodus_witness_t *w);
 int  nodus_witness_roster_find(const nodus_witness_roster_t *roster,
                                  const uint8_t *witness_id);
 
+/** Rank of witness_id in the roster SET ordered by witness_id (count of
+ * strictly-smaller ids), independent of storage/arrival order. -1 if
+ * absent. The pre-genesis leader fallback MUST use this rank, never the
+ * arrival index: nodus_witness_roster_add appends in authentication
+ * order and only the 60 s epoch rebuild sorts, so two nodes holding the
+ * SAME set can disagree on arrival indices (BUGS.md 2026-08-04 — node7
+ * rejected the genesis PROPOSE it should have voted on). */
+int  nodus_witness_roster_sorted_find(const nodus_witness_roster_t *roster,
+                                        const uint8_t *witness_id);
+
 /** Add witness to roster (no-op if already present). */
 int  nodus_witness_roster_add(nodus_witness_t *w,
                                 const nodus_witness_roster_entry_t *entry);
