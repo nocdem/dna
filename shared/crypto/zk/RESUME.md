@@ -34,12 +34,13 @@ left is NOT zk work — it is design and consensus work upstream of the circuits
    (publics 43 → 45), and **one combined re-ground with F1's D=24** so the vector regeneration and
    `num_qc` re-measure are paid once. **Its §3 red-team has NOT been run** — chartered at the
    consensus row, 8-13 agents, with a mandatory cost gate.
-   ⚠ Two hard preconditions the doc pins as **G-DET-B-0**, because the pool balance would ride the
-   same mechanisms: `state_root` currently substitutes tagged-empty sentinels on a transient DB
-   fault (`nodus_witness_merkle.c:1218-1238`), and `nodus_witness_supply_get` returns an ambiguous
-   -1 that makes the supply gate **skip entirely** (`bft.c:901-906`) while zeroed counters get
-   hashed into every epoch_state leaf (`merkle.c:1105-1109`). Both are live, both are recorded in
-   `nodus/BUGS.md`, **neither is fixed**.
+   ✅ **G-DET-B-0's two hard preconditions are FIXED in-tree (v0.18.19, 2026-07-31, commit
+   `4b81ea44` — re-verified 2026-08-04):** `state_root` no longer substitutes tagged-empty
+   sentinels on a transient DB fault (fail-close), and `nodus_witness_supply_get` grew a third
+   return value so the supply gate now REJECTS on a DB error instead of skipping (the D1 record,
+   `nodus_witness_bft.c:902-905`). Both entries are marked FIXED in `nodus/BUGS.md`. ⚠ Fixed
+   in-tree ≠ live: production still runs a binary built at `2bb59883` (per the `f88a21a1` golden-
+   vector commit), so the v0.18.19/v0.18.20 rolling deploy is still pending.
 
 3. **Why the pool cannot just be bolted on.** Two facts established by reading, not assumed:
    the supply counters `total_minted`/`total_burned` are **inside `state_root`** — hashed
