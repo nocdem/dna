@@ -209,6 +209,27 @@ static const char *WITNESS_DB_SCHEMA =
     "  key TEXT PRIMARY KEY,"
     "  value INTEGER NOT NULL"
     ");"
+    /* ── Ledger V2 S3 — per-epoch validator-set snapshots (INACTIVE).
+     * Rows are written by nodus_witness_vset_insert and read back by
+     * nodus_witness_vset_get / nodus_witness_vset_root. Nothing on the
+     * live consensus path writes or reads this table yet; a later wave
+     * wires the genesis/epoch-boundary calls. Creating it here (rather
+     * than lazily) keeps a node that made its DB before genesis from
+     * silently having no such table — the class of bug the supply_tracking
+     * comment above records.
+     *   epoch_start       EPOCH START HEIGHT, the canonical epoch key
+     *                     (same value as epoch_state.epoch_start_height).
+     *   snapshot_hash     64 bytes, dna_vset_hash of snapshot_blob.
+     *   snapshot_blob     the canonical bytes (shared/dnac/vset_wire.h).
+     *   created_at_height the block height that produced the row —
+     *                     provenance only, never hashed. */
+    "CREATE TABLE IF NOT EXISTS validator_set_snapshots ("
+    "  epoch_start INTEGER PRIMARY KEY,"
+    "  active_count INTEGER NOT NULL,"
+    "  snapshot_hash BLOB NOT NULL,"
+    "  snapshot_blob BLOB NOT NULL,"
+    "  created_at_height INTEGER NOT NULL"
+    ");"
     "INSERT OR IGNORE INTO validator_stats (key, value) VALUES ('active_count', 0);";
 
 /* ── Set chain ID ────────────────────────────────────────────────── */
@@ -1030,6 +1051,16 @@ void nodus_witness_close(nodus_witness_t *witness) {
 
     /* Clear mempool */
     nodus_witness_mempool_clear(&witness->mempool);
+
+    /* S3 — drain the view-change records' heap-owned prepared-sig arrays.
+     * nodus_witness_vc_record_t::prepared::sigs became a heap pointer when
+     * the array grew to DNAC_MAX_ACTIVE_VALIDATORS records (an in-struct
+     * sigs[128] would have been ~76 MB); the whole array is swept here so
+     * a shutdown mid-view-change does not leak. Idempotent — clearing an
+     * already-empty record is a free(NULL) plus a memset. */
+    for (int i = 0; i < DNAC_MAX_ACTIVE_VALIDATORS; i++)
+        nodus_witness_vc_record_clear(&witness->view_changes[i]);
+    witness->view_change_count = 0;
 
     /* Close peer mesh (clears conn references) */
     nodus_witness_peer_close(witness);

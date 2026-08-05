@@ -25,6 +25,8 @@
 #include "dnac/transaction.h"
 #include "dnac/chain_def_codec.h"  /* for optional genesis chain_def payload */
 #include "dnac/chain_config_wire.h"  /* shared CHAIN_CONFIG extension codec */
+#include "dnac/tx_wire.h"          /* S1: shared codec drift-guard pins below */
+#include "dnac/ledger_ids.h"         /* S3: DNA_MAX_ACTIVE_VALIDATORS pin */
 #include <string.h>
 #include <stdlib.h>
 #include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
@@ -49,10 +51,46 @@ const uint8_t DNAC_STAKE_PURPOSE_TAG[DNAC_STAKE_PURPOSE_TAG_LEN] = {
  * drift between libnodus and libdna would silently break consensus. */
 _Static_assert(DNAC_CC_WIRE_SIGNATURE_SIZE == DNAC_SIGNATURE_SIZE,
                "chain_config signature size drift");
-_Static_assert(DNAC_CC_WIRE_COMMITTEE_SIZE == DNAC_COMMITTEE_SIZE,
-               "chain_config committee size drift");
+_Static_assert(DNAC_CC_WIRE_MAX_SLOTS == DNAC_MAX_ACTIVE_VALIDATORS,
+               "chain_config vote-slot cap drift");
 _Static_assert(DNAC_CC_WIRE_MIN_SIGS == DNAC_CHAIN_CONFIG_MIN_SIGS,
                "chain_config min-sigs drift");
+_Static_assert(DNAC_CC_WIRE_MAX_SLOTS == DNAC_CHAIN_CONFIG_MAX_SIGS,
+               "chain_config max-sigs drift");
+
+/* S3 (Ledger V2): dnac.h mirrors DNA_MAX_ACTIVE_VALIDATORS as
+ * DNAC_MAX_ACTIVE_VALIDATORS so it can stay free of shared/ includes. This
+ * translation unit includes BOTH headers and is the single place the mirror
+ * is pinned — if the shared ceiling moves and dnac.h does not, the build
+ * breaks here rather than the two trees disagreeing at runtime. */
+_Static_assert(DNAC_MAX_ACTIVE_VALIDATORS == DNA_MAX_ACTIVE_VALIDATORS,
+               "DNAC_MAX_ACTIVE_VALIDATORS drift vs shared ledger_ids.h");
+_Static_assert(DNAC_CFG_MIN_TARGET_ACTIVE == (uint64_t)DNAC_COMMITTEE_SIZE,
+               "TARGET_ACTIVE_COUNT floor is the DNA initial seat count");
+_Static_assert(DNAC_CFG_MAX_TARGET_ACTIVE ==
+               (uint64_t)DNA_MAX_ACTIVE_VALIDATORS,
+               "TARGET_ACTIVE_COUNT ceiling drift vs shared ledger_ids.h");
+
+/* S1 drift guards — the shared tx_wire codec's mirrored constants must
+ * equal dnac's authoritative values (same pattern as the cc pins above). */
+_Static_assert(DNAC_TXW_HASH_LEN == DNAC_TX_HASH_SIZE, "tx_wire hash size drift");
+_Static_assert(DNAC_TXW_NULLIFIER_LEN == DNAC_NULLIFIER_SIZE, "tx_wire nullifier size drift");
+_Static_assert(DNAC_TXW_TOKEN_ID_LEN == DNAC_TOKEN_ID_SIZE, "tx_wire token_id size drift");
+_Static_assert(DNAC_TXW_FP_LEN == DNAC_FINGERPRINT_SIZE, "tx_wire fingerprint size drift");
+_Static_assert(DNAC_TXW_PK_LEN == DNAC_PUBKEY_SIZE, "tx_wire pubkey size drift");
+_Static_assert(DNAC_TXW_SIG_LEN == DNAC_SIGNATURE_SIZE, "tx_wire signature size drift");
+_Static_assert(DNAC_TXW_MAX_INPUTS == DNAC_TX_MAX_INPUTS, "tx_wire input cap drift");
+_Static_assert(DNAC_TXW_MAX_OUTPUTS == DNAC_TX_MAX_OUTPUTS, "tx_wire output cap drift");
+_Static_assert(DNAC_TXW_MAX_SIGNERS == DNAC_TX_MAX_SIGNERS, "tx_wire signer cap drift");
+_Static_assert(DNAC_TXW_LEGACY_HEADER == DNAC_TX_HEADER_SIZE, "tx_wire header size drift");
+_Static_assert(DNAC_TXW_TYPE_SHIELDED == DNAC_TX_SHIELDED, "tx_wire shielded type drift");
+_Static_assert(DNAC_TXW_SHIELDED_FIXED == DNAC_TX_SHIELDED_FIXED_SIZE,
+               "tx_wire shielded section size drift");
+_Static_assert(DNAC_TXW_STAKE_TAIL ==
+               2 + DNAC_STAKE_UNSTAKE_DEST_FP_SIZE + DNAC_STAKE_PURPOSE_TAG_LEN,
+               "tx_wire stake tail size drift");
+_Static_assert(DNAC_TXW_CC_FIXED == DNAC_CC_WIRE_FIXED_LEN,
+               "tx_wire chain_config fixed size drift");
 
 /* Helper macros for serialization */
 #define WRITE_U8(buf, val) do { *(buf)++ = (uint8_t)(val); } while(0)
@@ -138,7 +176,7 @@ static size_t calc_tx_size(const dnac_transaction_t *tx) {
      * dnac/chain_config_wire.h for the authoritative layout. */
     if (tx->type == DNAC_TX_CHAIN_CONFIG) {
         uint8_t n = tx->chain_config_fields.committee_sig_count;
-        if (n > DNAC_CC_WIRE_COMMITTEE_SIZE) n = DNAC_CC_WIRE_COMMITTEE_SIZE;
+        if (n > DNAC_CC_WIRE_MAX_SLOTS) n = DNAC_CC_WIRE_MAX_SLOTS;
         size += DNAC_CC_WIRE_FIXED_LEN +
                 (size_t)n * DNAC_CC_WIRE_PER_VOTE;
     }
@@ -347,30 +385,35 @@ int dnac_tx_serialize(const dnac_transaction_t *tx,
      * shared/dnac/chain_config_wire.h for the byte layout. */
     if (tx->type == DNAC_TX_CHAIN_CONFIG) {
         const dnac_tx_chain_config_fields_t *cc = &tx->chain_config_fields;
-        dnac_cc_wire_ext_t wire = {
-            .param_id               = cc->param_id,
-            .new_value              = cc->new_value,
-            .effective_block_height = cc->effective_block_height,
-            .proposal_nonce         = cc->proposal_nonce,
-            .signed_at_block        = cc->signed_at_block,
-            .valid_before_block     = cc->valid_before_block,
-            .committee_sig_count    = cc->committee_sig_count,
-        };
-        uint8_t n_wire = wire.committee_sig_count;
-        if (n_wire > DNAC_CC_WIRE_COMMITTEE_SIZE)
-            n_wire = DNAC_CC_WIRE_COMMITTEE_SIZE;
+        /* S3: dnac_cc_wire_ext_t is ~583 KiB — heap, never the stack. */
+        dnac_cc_wire_ext_t *wire = calloc(1, sizeof(*wire));
+        if (!wire) return DNAC_ERROR_OUT_OF_MEMORY;
+        wire->param_id               = cc->param_id;
+        wire->new_value              = cc->new_value;
+        wire->effective_block_height = cc->effective_block_height;
+        wire->proposal_nonce         = cc->proposal_nonce;
+        wire->signed_at_block        = cc->signed_at_block;
+        wire->valid_before_block     = cc->valid_before_block;
+        wire->committee_sig_count    = cc->committee_sig_count;
+
+        uint8_t n_wire = wire->committee_sig_count;
+        if (n_wire > DNAC_CC_WIRE_MAX_SLOTS)
+            n_wire = DNAC_CC_WIRE_MAX_SLOTS;
         for (uint8_t i = 0; i < n_wire; i++) {
-            memcpy(wire.votes[i].witness_id,
+            memcpy(wire->votes[i].witness_id,
                    cc->committee_votes[i].witness_id,
                    DNAC_CC_WIRE_WITNESS_ID_SIZE);
-            memcpy(wire.votes[i].signature,
+            memcpy(wire->votes[i].signature,
                    cc->committee_votes[i].signature,
                    DNAC_CC_WIRE_SIGNATURE_SIZE);
         }
         size_t written = 0;
         size_t cap = buffer_len - (size_t)(ptr - buffer);
-        if (dnac_cc_wire_encode(&wire, ptr, cap, &written) != 0)
+        if (dnac_cc_wire_encode(wire, ptr, cap, &written) != 0) {
+            free(wire);
             return DNAC_ERROR_INVALID_PARAM;
+        }
+        free(wire);
         ptr += written;
     }
 
@@ -601,29 +644,38 @@ int dnac_tx_deserialize(const uint8_t *buffer,
     }
     /* Hard-Fork v1. CHAIN_CONFIG — delegated to shared decoder. */
     if (tx->type == DNAC_TX_CHAIN_CONFIG) {
-        dnac_cc_wire_ext_t wire;
+        /* S3: dnac_cc_wire_ext_t is ~583 KiB — heap, never the stack. */
+        dnac_cc_wire_ext_t *wire = calloc(1, sizeof(*wire));
+        if (!wire) {
+            free(tx);
+            return DNAC_ERROR_OUT_OF_MEMORY;
+        }
         size_t consumed = 0;
         if (dnac_cc_wire_decode(ptr, (size_t)(end - ptr),
-                                 &wire, &consumed) != 0) {
+                                 wire, &consumed) != 0) {
+            free(wire);
             free(tx);
             return DNAC_ERROR_INVALID_PARAM;
         }
         dnac_tx_chain_config_fields_t *cc = &tx->chain_config_fields;
-        cc->param_id               = wire.param_id;
-        cc->new_value              = wire.new_value;
-        cc->effective_block_height = wire.effective_block_height;
-        cc->proposal_nonce         = wire.proposal_nonce;
-        cc->signed_at_block        = wire.signed_at_block;
-        cc->valid_before_block     = wire.valid_before_block;
-        cc->committee_sig_count    = wire.committee_sig_count;
-        for (uint8_t i = 0; i < wire.committee_sig_count; i++) {
+        cc->param_id               = wire->param_id;
+        cc->new_value              = wire->new_value;
+        cc->effective_block_height = wire->effective_block_height;
+        cc->proposal_nonce         = wire->proposal_nonce;
+        cc->signed_at_block        = wire->signed_at_block;
+        cc->valid_before_block     = wire->valid_before_block;
+        cc->committee_sig_count    = wire->committee_sig_count;
+        /* Bounded by the decoder: committee_sig_count <= DNAC_CC_WIRE_MAX_SLOTS,
+         * and committee_votes[] is sized to the same cap. */
+        for (uint8_t i = 0; i < wire->committee_sig_count; i++) {
             memcpy(cc->committee_votes[i].witness_id,
-                   wire.votes[i].witness_id,
+                   wire->votes[i].witness_id,
                    DNAC_CC_WIRE_WITNESS_ID_SIZE);
             memcpy(cc->committee_votes[i].signature,
-                   wire.votes[i].signature,
+                   wire->votes[i].signature,
                    DNAC_CC_WIRE_SIGNATURE_SIZE);
         }
+        free(wire);
         ptr += consumed;
     }
 

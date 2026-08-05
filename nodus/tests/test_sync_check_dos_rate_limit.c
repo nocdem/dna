@@ -65,7 +65,7 @@
 int main(void) {
     printf("\nFaz 1.11 — sync_check DoS rate-limit invariant\n");
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     memset(&w, 0, sizeof(w));
     if (w.sync_state.last_sync_attempt != 0) {
         fprintf(stderr, "expected zero-init last_sync_attempt\n");

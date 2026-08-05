@@ -16,6 +16,10 @@
 #include "crypto/nodus_sign.h"
 #include "nodus/nodus_chain_config.h"  /* derive_witness_id (Faz 4D halt_recovery_check) */
 #include "dnac/transaction.h"   /* DNAC_TX_HEADER_SIZE (v0.17.1) */
+#include "dnac/ledger_ids.h"    /* S3: dna_bft_quorum over the pinned halt set */
+#include "witness/nodus_witness_vset.h"      /* S3: historical-quorum source (1) */
+#include "witness/nodus_witness_committee.h" /* S3: historical-quorum source (2) */
+#include "witness/nodus_witness_genesis_seed.h" /* S3: genesis quorum source (3) */
 
 #include <openssl/evp.h>
 #include <stdio.h>
@@ -288,10 +292,16 @@ void nodus_witness_halt_recovery_check(nodus_witness_t *w) {
     }
     static const uint8_t zero_cksum[NODUS_KEY_BYTES] = {0};
 
-    /* Pre-derive witness_ids for halt_committee pubkeys (~7 SHA3-512). */
-    uint8_t hist_wids[DNAC_COMMITTEE_SIZE][NODUS_T3_WITNESS_ID_LEN];
+    /* Pre-derive witness_ids for halt_committee pubkeys (one SHA3-512
+     * each). S3: bound by the snapshot array's real capacity
+     * (DNAC_MAX_ACTIVE_VALIDATORS = 128 × 32 B = 4 KB — stack is fine),
+     * not by DNAC_COMMITTEE_SIZE, which would silently ignore every
+     * member past the 7th of a larger halt-time set and make the quorum
+     * below uncountable. */
+    uint8_t hist_wids[DNAC_MAX_ACTIVE_VALIDATORS][NODUS_T3_WITNESS_ID_LEN];
     int hist_n = w->halt_committee_count;
-    if (hist_n > DNAC_COMMITTEE_SIZE) hist_n = DNAC_COMMITTEE_SIZE;
+    if (hist_n > DNAC_MAX_ACTIVE_VALIDATORS)
+        hist_n = DNAC_MAX_ACTIVE_VALIDATORS;
     for (int i = 0; i < hist_n; i++) {
         if (nodus_chain_config_derive_witness_id(w->halt_committee_pubkeys[i],
                                                    hist_wids[i]) != 0) {
@@ -324,7 +334,23 @@ void nodus_witness_halt_recovery_check(nodus_witness_t *w) {
         }
     }
 
-    int quorum = (int)w->bft_config.quorum;
+    /* S3 — the quorum must come from the PINNED snapshot's size, not from
+     * the live w->bft_config.
+     *
+     * Both `agree` and `disagree` above are counted ONLY over peers whose
+     * witness_id is in hist_wids, i.e. over the halt-time committee. Using
+     * the current bft_config.quorum against that historical membership is
+     * exactly the current-set substitution S3 forbids: after the halt the
+     * active set may have been resized by governance
+     * (DNAC_CFG_TARGET_ACTIVE_COUNT) or reshaped by boundary flips, and a
+     * SMALLER current set would lower the bar for auto-dropping this
+     * node's DB on the say-so of the halt-time peers — the destructive
+     * direction. dna_bft_quorum is the same (2n)/3+1 formula
+     * nodus_witness_bft_config_init uses (shared/dnac/ledger_ids.h:102).
+     *
+     * hist_n > 0 is guaranteed: halt_committee_count == 0 returned early
+     * at the top of this function as "inconclusive". */
+    int quorum = (int)dna_bft_quorum((uint32_t)hist_n);
     bool clear_quorum = (quorum > 0 && disagree >= quorum && disagree > agree);
 
     /* M-3 expedite: clear quorum bypasses cooldown. */
@@ -865,23 +891,87 @@ int nodus_witness_sync_handle_rsp(nodus_witness_t *w,
     const uint8_t *cert_chain_id =
         (db_height == 1) ? cert_chain_id_zero : w->chain_id;
     {
+        /* ── S3: the quorum for verifying a HISTORICAL block's certs is
+         * the quorum of the set that SIGNED it, never the local
+         * roster-derived bft_config. A joining node's transient mesh
+         * size (e.g. 9 peers up while two candidates bootstrap) must not
+         * decide whether committed history verifies — with the old
+         * `w->bft_config.quorum` a 9-node mesh demanded 7 sigs from a
+         * 7-member epoch's 5-sig block and the sync deadlocked.
+         * Sources, in order:
+         *   1. the persisted validator-set snapshot for the block's
+         *      epoch (committed one epoch ahead — the S3 authority);
+         *   2. no snapshot row: deterministic committee recompute
+         *      (legacy epochs), DIRECT compute — never the per-epoch
+         *      cache, so an empty pre-replay result cannot poison it;
+         *   3. genesis replay (no local validators yet): the seat count
+         *      from the genesis TX's own chain_def — the same bytes
+         *      Rule P verifies during the replay right below, so a
+         *      forged count cannot outlive this block;
+         *   4. legacy roster quorum (pre-genesis harness paths only).
+         * A snapshot row that exists but fails integrity is a FAULT and
+         * the sync fails closed — never a fallback. */
+        uint32_t sync_quorum = w->bft_config.quorum;   /* (4) fallback */
+        {
+            uint64_t e_start = (db_height / (uint64_t)DNAC_EPOCH_LENGTH) *
+                               (uint64_t)DNAC_EPOCH_LENGTH;
+            dna_vset_snapshot_t *snap = NULL;
+            int grc = nodus_witness_vset_get(w, e_start, &snap, NULL);
+            if (grc == 0) {                                      /* (1) */
+                sync_quorum = dna_bft_quorum((uint32_t)snap->active_count);
+                dna_vset_free(&snap);
+            } else if (grc == 1) {
+                nodus_committee_member_t *hist =
+                    calloc((size_t)DNAC_MAX_ACTIVE_VALIDATORS,
+                           sizeof(*hist));
+                int hist_n = 0;
+                if (hist &&
+                    nodus_committee_compute_for_epoch(w, e_start, hist,
+                        DNAC_MAX_ACTIVE_VALIDATORS, &hist_n) == 0 &&
+                    hist_n > 0) {                                /* (2) */
+                    sync_quorum = dna_bft_quorum((uint32_t)hist_n);
+                } else if (rsp->tx_count == 1 &&
+                           rsp->batch_txs[0].tx_type == NODUS_W_TX_GENESIS) {
+                    const uint8_t *cd = NULL; uint32_t cd_len = 0;
+                    uint64_t cd_sup = 0; uint8_t cd_vc = 0;
+                    if (nodus_witness_extract_chain_def(
+                            rsp->batch_txs[0].tx_data,
+                            rsp->batch_txs[0].tx_len, &cd, &cd_len) == 0 &&
+                        cd && cd_len > 0 &&
+                        nodus_witness_parse_cd_supply(cd, (size_t)cd_len,
+                                                      &cd_sup, &cd_vc) == 0 &&
+                        cd_vc > 0) {                             /* (3) */
+                        sync_quorum = dna_bft_quorum((uint32_t)cd_vc);
+                    }
+                }
+                free(hist);
+            } else {
+                fprintf(stderr, "%s: historical validator-set snapshot for "
+                        "epoch %llu is CORRUPT — refusing to verify block "
+                        "%llu\n", LOG_TAG, (unsigned long long)e_start,
+                        (unsigned long long)db_height);
+                w->sync_state.syncing = false;
+                return -1;
+            }
+        }
+
         int verified = nodus_witness_verify_sync_certs(local_block_hash,
                                                          db_height,
                                                          cert_chain_id,
                                                          &w->roster,
                                                          rsp->certs,
                                                          rsp->cert_count,
-                                                         w->bft_config.quorum);
+                                                         sync_quorum);
         if (verified < 0) {
             fprintf(stderr, "%s: cert verify FAILED at height %llu "
                     "(< quorum %u)\n", LOG_TAG,
-                    (unsigned long long)db_height, w->bft_config.quorum);
+                    (unsigned long long)db_height, sync_quorum);
             w->sync_state.syncing = false;
             return -1;
         }
         fprintf(stderr, "%s: block %llu certs verified: %d/%u (quorum=%u)\n",
                 LOG_TAG, (unsigned long long)db_height,
-                verified, rsp->cert_count, w->bft_config.quorum);
+                verified, rsp->cert_count, sync_quorum);
     }
 
     /* Step d — replay every TX in the block via Phase 6 wrappers */

@@ -15,12 +15,15 @@
 #include "witness/nodus_witness.h"
 #include "witness/nodus_witness_db.h"
 #include "witness/nodus_witness_validator.h"
+#include "witness/nodus_witness_vset.h"   /* S3: snapshot-as-authority */
 
 #include "nodus/nodus_types.h"       /* NODUS_TREE_TAG_VALIDATOR */
+#include "nodus/nodus_chain_config.h" /* nodus_chain_config_get_u64 */
 #include "dnac/dnac.h"                /* DNAC_* constants */
 #include "dnac/validator.h"
 #include "crypto/hash/qgp_sha3.h"
 
+#include <sqlite3.h>   /* S3: sqlite_master probe in get_for_block */
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -58,11 +61,37 @@ static int cmp_tiebreak_asc(const void *pa, const void *pb) {
     return memcmp(a->tiebreak, b->tiebreak, 64);
 }
 
+/* S3 — the epoch's target active-set size.
+ *
+ * Keyed on `e_start`, the epoch START height, NOT on the height being
+ * queried: every block of the epoch must read the same value, otherwise a
+ * chain_config row with a mid-epoch effective_block would resize a live
+ * committee. Deterministic cross-node because
+ * nodus_chain_config_get_u64 answers from committed chain_config_history
+ * rows (nodus_witness_chain_config.c:240-268) — the same source the
+ * INFLATION_START_BLOCK consumer uses inside finalize_block
+ * (nodus_witness_bft.c:3230-3234).
+ *
+ * The default is DNAC_COMMITTEE_SIZE, so a chain with no governance row
+ * (every chain today) selects exactly as it did before S3. The clamp is
+ * the release ceiling, defence-in-depth on top of the apply-side range
+ * check in nodus_chain_config_apply. */
+static int committee_target_for_epoch(nodus_witness_t *w, uint64_t e_start) {
+    uint64_t target = nodus_chain_config_get_u64(
+        w, (uint8_t)DNAC_CFG_TARGET_ACTIVE_COUNT, e_start,
+        (uint64_t)DNAC_COMMITTEE_SIZE);
+    if (target < 1) target = 1;
+    if (target > (uint64_t)DNAC_MAX_ACTIVE_VALIDATORS)
+        target = (uint64_t)DNAC_MAX_ACTIVE_VALIDATORS;
+    return (int)target;
+}
+
 /* Copy a work entry into the public member struct. */
 static void emit_member(const committee_work_t *w_in,
                          nodus_committee_member_t *out) {
     memcpy(out->pubkey, w_in->rec->pubkey, DNAC_PUBKEY_SIZE);
     out->total_stake    = w_in->total_stake;
+    out->self_stake     = w_in->rec->self_stake;   /* S3: snapshot self_bond */
     out->commission_bps = w_in->rec->commission_bps;
 }
 
@@ -79,6 +108,10 @@ int nodus_committee_compute_for_epoch(nodus_witness_t *w,
         return nodus_committee_bootstrap_for_epoch(w, e_start, out,
                                                     max_entries, count_out);
     }
+
+    /* S3 — the epoch's target set size, from committed chain state. */
+    int target = committee_target_for_epoch(w, e_start);
+    if (target < max_entries) max_entries = target;
 
     uint64_t lookback_block = e_start - (uint64_t)DNAC_EPOCH_LENGTH - 1ULL;
 
@@ -102,8 +135,28 @@ int nodus_committee_compute_for_epoch(nodus_witness_t *w,
         calloc((size_t)widen, sizeof(*candidates));
     if (!candidates) return -1;
 
+    /* ── S3 tenure anchor fix (found by the 7→9→7 harness) ──────────────
+     * The tenure gate used to compare against LOOKBACK_BLOCK
+     * (e_start − E − 1). That predicate is unsatisfiable in the "gap
+     * epochs": for e_start ∈ (E, 3E] it demands
+     * active_since + 2E ≤ e_start − E − 1, which even the genesis-seeded
+     * validators (active_since = 1) cannot meet — epoch 2E's committee
+     * computed EMPTY. Pre-S3 that empty result silently fell back to the
+     * gossip roster (F17 A5) and was never noticed because no chain had
+     * reached epoch 2E (live devnet: E = 720, height ≈ 350). S3's
+     * fail-closed commit_next turned it into a deterministic stall at
+     * the first boundary that builds a gap-epoch snapshot.
+     *
+     * The Rule R intent is "two full epochs bonded BY THE EPOCH START",
+     * so the tenure anchor is e_start; the state_seed still comes from
+     * the lookback block above (unchanged, grinding resistance intact).
+     * Genesis-seeded validators (active_since ≤ the genesis block) are
+     * the chain's constitutional seed set and are always tenured —
+     * Rule R exists to gate LATER joiners, and without the carve-out
+     * even the anchor fix leaves epoch 2E empty (1 + 2E ≤ 2E fails by
+     * exactly the one block genesis occupies). */
     int cand_count = 0;
-    if (nodus_validator_top_n(w, widen, lookback_block,
+    if (nodus_validator_top_n(w, widen, e_start,
                                candidates, &cand_count) != 0) {
         free(candidates);
         return -1;
@@ -189,7 +242,18 @@ int nodus_committee_bootstrap_for_epoch(nodus_witness_t *w,
                                           int *count_out) {
     if (!w || !out || !count_out || max_entries <= 0) return -1;
     *count_out = 0;
-    (void)e_start;   /* unused: bootstrap always seeds from genesis */
+
+    /* S3 — the bootstrap epoch reads the SAME target at the SAME key
+     * (e_start) as the post-lookback path, so the two never disagree on
+     * how many seats the epoch has. At genesis no chain_config_history
+     * row exists, so this is DNAC_COMMITTEE_SIZE and the bootstrap
+     * committee is exactly what it was before S3.
+     * e_start is otherwise unused here: bootstrap always seeds its
+     * tiebreak from the genesis block's state_root. */
+    {
+        int target = committee_target_for_epoch(w, e_start);
+        if (target < max_entries) max_entries = target;
+    }
 
     /* state_seed from genesis block. If genesis block is not present
      * (fresh DB / pre-genesis state) fall back to an all-zero seed —
@@ -308,30 +372,146 @@ int nodus_committee_get_for_block(nodus_witness_t *w,
             memcpy(out[i].pubkey, w->cached_committee_pubkeys[i],
                    DNAC_PUBKEY_SIZE);
             out[i].total_stake    = w->cached_committee_stakes[i];
+            /* S3 — the real bond, from the parallel array populated on the
+             * miss path below. A cache HIT and a cache MISS must produce
+             * the same member; the old 0-pin here made them differ and
+             * forced nodus_witness_vset_build_for_epoch to bypass the
+             * cache. */
+            out[i].self_stake     = w->cached_committee_self_stakes[i];
             out[i].commission_bps = w->cached_committee_commission_bps[i];
         }
         *count_out = n;
         return 0;
     }
 
-    /* Cache miss — compute and store. */
-    nodus_committee_member_t tmp[DNAC_COMMITTEE_SIZE];
-    int tmp_count = 0;
-    int rc = nodus_committee_compute_for_epoch(w, e_start, tmp,
-                                                  DNAC_COMMITTEE_SIZE,
-                                                  &tmp_count);
-    if (rc != 0) {
-        /* Leave the cache invalid so the next call retries. */
+    /* Cache miss — compute and store.
+     *
+     * S3: DNAC_MAX_ACTIVE_VALIDATORS members are ~334 KB, so the scratch
+     * buffer is HEAP, never a stack array. It is requested at the release
+     * ceiling; compute_for_epoch narrows the result to the epoch's
+     * chain-derived target itself. */
+    nodus_committee_member_t *tmp =
+        calloc((size_t)DNAC_MAX_ACTIVE_VALIDATORS, sizeof(*tmp));
+    if (!tmp) {
         w->cached_committee_epoch_start = UINT64_MAX;
         w->cached_committee_count = 0;
         *count_out = 0;
-        return rc;
+        return -1;
+    }
+    int tmp_count = 0;
+
+    /* ── S3 (ORCHESTRATOR integration): THE PERSISTED SNAPSHOT IS THE
+     * COMMITTEE AUTHORITY for any epoch that has one. ───────────────────
+     *
+     * The row for e_start was frozen ONE EPOCH EARLIER inside the
+     * boundary block's transaction (nodus_witness_vset_commit_next), so
+     * it is committed, byte-identical chain state on every node. Serving
+     * it here (a) makes the voting committee, the boundary status flips
+     * and QC-V2 historical verification consume ONE set — without this,
+     * a mid-epoch DELEGATE/UNSTAKE would let the recompute drift from the
+     * frozen snapshot and the epoch's signers would not match its
+     * committed set; and (b) removes a pre-existing hazard where a node
+     * that restarts mid-epoch recomputed its committee from the CURRENT
+     * table while its peers served their epoch-start cache — two answers
+     * from one chain state.
+     *
+     * Epochs with NO row (pre-S3 history, hand-rolled test fixtures
+     * without the table, pre-genesis) keep the legacy recompute path
+     * byte-identically. A missing TABLE is probed via sqlite_master so a
+     * legacy fixture is "absent", not "fault"; a row that exists but
+     * fails integrity/decoding is a FAULT and the lookup fails closed —
+     * a node that cannot know its committee must not vote.
+     *
+     * Deploy note: consensus deploys are stop-all
+     * (feedback_consensus_deploy_stop_all); a mixed-version cluster where
+     * only some nodes serve from snapshots could disagree on member ORDER
+     * (leader election) if ranking inputs changed mid-epoch. */
+    int served_from_snapshot = 0;
+    if (w->db) {
+        int have_table = 0;
+        sqlite3_stmt *pr = NULL;
+        if (sqlite3_prepare_v2(w->db,
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='validator_set_snapshots'", -1, &pr, NULL)
+            != SQLITE_OK) {
+            /* sqlite_master itself unreadable — a real DB fault. */
+            free(tmp);
+            w->cached_committee_epoch_start = UINT64_MAX;
+            w->cached_committee_count = 0;
+            *count_out = 0;
+            return -1;
+        }
+        int prc = sqlite3_step(pr);
+        sqlite3_finalize(pr);
+        if (prc == SQLITE_ROW) {
+            have_table = 1;
+        } else if (prc != SQLITE_DONE) {
+            free(tmp);
+            w->cached_committee_epoch_start = UINT64_MAX;
+            w->cached_committee_count = 0;
+            *count_out = 0;
+            return -1;
+        }
+
+        if (have_table) {
+            dna_vset_snapshot_t *snap = NULL;
+            int g = nodus_witness_vset_get(w, e_start, &snap, NULL);
+            if (g == 0) {
+                /* decode caps active_count at DNA_MAX_ACTIVE_VALIDATORS,
+                 * and the shared/dnac ceiling equals the dnac one
+                 * (pinned in serialize.c), so this cannot overflow tmp. */
+                for (uint16_t i = 0; i < snap->active_count; i++) {
+                    memcpy(tmp[i].pubkey, snap->entries[i].pubkey,
+                           DNAC_PUBKEY_SIZE);
+                    tmp[i].total_stake    = snap->entries[i].total_stake;
+                    tmp[i].self_stake     = snap->entries[i].self_bond;
+                    tmp[i].commission_bps = snap->entries[i].commission_bps;
+                }
+                tmp_count = (int)snap->active_count;
+                dna_vset_free(&snap);
+                served_from_snapshot = 1;
+            } else if (g != 1) {
+                /* Row exists but is corrupt / DB fault: never fall back
+                 * to a recomputation — that would be the current-set
+                 * substitution the design forbids. */
+                free(tmp);
+                w->cached_committee_epoch_start = UINT64_MAX;
+                w->cached_committee_count = 0;
+                *count_out = 0;
+                return -1;
+            }
+            /* g == 1: no snapshot for this epoch — legacy recompute. */
+        }
+    }
+
+    if (!served_from_snapshot) {
+        int rc = nodus_committee_compute_for_epoch(w, e_start, tmp,
+                                                      DNAC_MAX_ACTIVE_VALIDATORS,
+                                                      &tmp_count);
+        if (rc != 0) {
+            /* Leave the cache invalid so the next call retries. */
+            free(tmp);
+            w->cached_committee_epoch_start = UINT64_MAX;
+            w->cached_committee_count = 0;
+            *count_out = 0;
+            return rc;
+        }
+    }
+    if (tmp_count < 0 || tmp_count > DNAC_MAX_ACTIVE_VALIDATORS) {
+        /* Cannot happen — compute_for_epoch clamps to max_entries. Fail
+         * closed rather than write past the cache arrays. */
+        free(tmp);
+        w->cached_committee_epoch_start = UINT64_MAX;
+        w->cached_committee_count = 0;
+        *count_out = 0;
+        return -1;
     }
 
     for (int i = 0; i < tmp_count; i++) {
         memcpy(w->cached_committee_pubkeys[i], tmp[i].pubkey,
                DNAC_PUBKEY_SIZE);
         w->cached_committee_stakes[i]           = tmp[i].total_stake;
+        w->cached_committee_self_stakes[i]      = tmp[i].self_stake;
         w->cached_committee_commission_bps[i]   = tmp[i].commission_bps;
     }
     w->cached_committee_count = tmp_count;
@@ -342,5 +522,31 @@ int nodus_committee_get_for_block(nodus_witness_t *w,
         out[i] = tmp[i];
     }
     *count_out = n;
+    free(tmp);
+    return 0;
+}
+
+int nodus_committee_get_for_block_alloc(nodus_witness_t *w,
+                                          uint64_t block_height,
+                                          nodus_committee_member_t **members_out,
+                                          int *count_out) {
+    if (!members_out || !count_out) return -1;
+    *members_out = NULL;
+    *count_out   = 0;
+
+    nodus_committee_member_t *members =
+        calloc((size_t)DNAC_MAX_ACTIVE_VALIDATORS, sizeof(*members));
+    if (!members) return -1;
+
+    int count = 0;
+    if (nodus_committee_get_for_block(w, block_height, members,
+                                        DNAC_MAX_ACTIVE_VALIDATORS,
+                                        &count) != 0) {
+        free(members);
+        return -1;
+    }
+
+    *members_out = members;
+    *count_out   = count;
     return 0;
 }

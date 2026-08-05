@@ -9,6 +9,35 @@ This document is the **source of truth** for what DNAC has and what it lacks.
 `ROADMAP.md` and `TODO.md` are historical; consult them only for phase history,
 not current state.
 
+> **Addendum 2026-08-05 — Ledger V2 Season 3 COMPLETE (DNAC v0.18.0-ledgerv2-s3 /
+> nodus v0.19.0).** The header block above still reports the 2026-04-15 wholesale
+> verification pass; only the S3 items below have been re-verified against source
+> on 2026-08-05. Everything else in this file predates stake-delegation v1, the
+> hard-fork mechanism and Ledger V2 S1/S2 and should be treated as historical
+> until the next full pass.
+>
+> - **Dynamic active validator set** — committee size is chain-config param 4
+>   `DNAC_CFG_TARGET_ACTIVE_COUNT`, range `[7, 128]`, SAFETY grace class, sampled
+>   at epoch-start heights (`nodus/src/witness/nodus_witness_committee.c`
+>   `committee_target_for_epoch`).
+> - **Per-epoch validator-set snapshots** — canonical codec
+>   `shared/dnac/vset_wire.h` (tag `"DNA.VSET.v1"`, 78-byte header + 2642 B/entry),
+>   persisted in `validator_set_snapshots`, committed one epoch ahead at every
+>   boundary and at genesis. **The snapshot is the committee authority**
+>   (`nodus_committee_get_for_block`, `nodus_witness_vset_apply_boundary_flips`).
+> - **`DNAC_VALIDATOR_ELIGIBLE = 4`** — bonded + tenured but not seated this
+>   epoch; boundary flips move `ACTIVE ↔ ELIGIBLE`.
+> - **Extra self-bond** — `bond = Σnative_in − Σnative_out − committed_fee`,
+>   required `>= DNAC_SELF_STAKE_AMOUNT`; graduation repays the actual bond.
+> - **Quorum from the governing set** — `dna_bft_quorum(n) = (2n)/3+1`
+>   (`shared/dnac/ledger_ids.h`) in chain-config apply, halt recovery and SYNC
+>   cert verification. The fixed `[5, 7]` threshold is gone.
+> - **INACTIVE V2 layers** — QC V2 (`shared/dnac/qc_v2.h`, 216-byte
+>   `"DNA.CERT.v2"` preimage) and `validator_set_root`
+>   (`"DNA.VSLEAF.v1"`/`"DNA.VSNODE.v1"`, `shared/dnac/ledger_roots_v2.h`) are
+>   built and tested but feed only the inactive V2 hierarchy; the live 144-byte
+>   cert path and the v3 five-input `state_root` are byte-identically unchanged.
+
 ---
 
 ## Architecture (current)

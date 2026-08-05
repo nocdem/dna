@@ -59,7 +59,16 @@ extern "C" {
 #define DNAC_ERROR_NOT_IMPLEMENTED     -22  /* Feature not yet implemented */
 #define DNAC_ERROR_OVERFLOW            -23  /* Integer overflow in amount arithmetic */
 
-/* Genesis configuration — unanimous (N/N) enforced server-side */
+/* Genesis configuration — unanimous (N/N) enforced server-side.
+ *
+ * S1 (Ledger V2, Addendum #2 B1): this is the OFFICIAL DNA-MAINNET manifest
+ * value and the DNA fixture DEFAULT — not a universal protocol law. The
+ * per-chain authority is the committed chain_def.initial_supply_raw
+ * (validated by genesis Rule P.2 on both client and witness; seeds
+ * supply_tracking.genesis_supply). Remaining macro consumers are the DNA
+ * fixture default (genesis_prepare.c), the legacy no-chain_def archive
+ * path (genesis.c), and one witness sanity cap (bft.c delegation bound) —
+ * full migration to manifest-sourced state completes in Season 6. */
 #define DNAC_DEFAULT_TOTAL_SUPPLY      100000000000000000ULL  /* 1B DNAC (10^17 raw, 8 decimals) */
 
 /* ============================================================================
@@ -116,7 +125,15 @@ extern "C" {
  * Stake & Delegation (v1)
  * ========================================================================== */
 
-/** Fixed self-stake amount per validator: exactly 10,000,000 DNAC */
+/** Fixed self-stake amount per validator: exactly 10,000,000 DNAC.
+ *
+ * S1 (Ledger V2, Addendum #2 B1): OFFICIAL DNA-MAINNET manifest value
+ * (= 1% of the DNA genesis supply), not a universal protocol law. The
+ * chain_def carries NO min_self_bond field yet, so every consumer of this
+ * macro (stake builder/verify, genesis Rule P.2 bond term on both client
+ * and witness, witness stake apply/unstake return/genesis seeding, CLI
+ * display) stays macro-sourced until the Season-6 manifest adds the field
+ * — explicitly deferred, no unverified runtime fallback introduced. */
 #define DNAC_SELF_STAKE_AMOUNT       (10000000ULL * 100000000ULL)   /* 10M × 10^8 raw */
 
 /** Minimum TX fee enforced at verify time (v0.17.1+).
@@ -145,16 +162,43 @@ extern "C" {
  *
  * chain_config_tx grace periods and settlement attendance window are
  * decoupled into their own constants below so they can be tuned
- * independently. */
+ * independently.
+ *
+ * The #ifndef is a test-harness compile-time override (e.g.
+ * -DDNAC_EPOCH_LENGTH=15 for the Genesis Protocol short-epoch scenarios);
+ * production builds never define these — the stagef harness docs are the
+ * only consumer. The default value is unchanged. */
+#ifndef DNAC_EPOCH_LENGTH
 #define DNAC_EPOCH_LENGTH            720
+#endif
 
 /** Minimum tenure in pending pool before committee eligibility (Rule R) —
  *  derived from EPOCH_LENGTH so the "pending-then-eligible" two-epoch
  *  discipline scales with the committee rotation cadence. */
 #define DNAC_MIN_TENURE_BLOCKS       (2 * DNAC_EPOCH_LENGTH)
 
-/** Fixed committee size (v1; v2 sortition may vary) */
+/** DNA's official INITIAL seat count, and the minimum-seats policy value.
+ *
+ * S3 (Ledger V2): this is NO LONGER "the" committee size. It is (a) the
+ * number of validator seats the DNA genesis manifest bootstraps and
+ * (b) the smallest active set this release's governance will accept
+ * (see DNAC_CFG_MIN_TARGET_ACTIVE). The size of the set that actually
+ * governs a given height comes from chain state, never from this macro. */
 #define DNAC_COMMITTEE_SIZE          7
+
+/** Upper bound on the ACTIVE validator set for this software release.
+ *
+ * Mirrors DNA_MAX_ACTIVE_VALIDATORS in shared/dnac/ledger_ids.h — pinned by
+ * a _Static_assert in dnac/src/transaction/serialize.c (the one translation
+ * unit that includes both headers). Duplicated rather than included so
+ * dnac.h stays free of shared/ dependencies, exactly like the nodus-side
+ * CC_* mirror macros.
+ *
+ * This is a SAFETY/RESOURCE ceiling for this release (memory, wire sizing,
+ * DoS bounds), NOT a permanent protocol maximum. Raising it is a coordinated
+ * software upgrade, never a wire-format change: every encoded count is
+ * already wide enough. */
+#define DNAC_MAX_ACTIVE_VALIDATORS   128
 
 /** Liveness threshold: fraction of epoch blocks a committee member must sign
  *  (in basis points — 8000 = 80%) to earn rewards that epoch (Rule N) */
@@ -175,13 +219,28 @@ extern "C" {
 #define DNAC_SETTLEMENT_ATTENDANCE_WINDOW_BLOCKS  120
 
 /** chain_config_tx grace — ergonomic params (MAX_TXS).
- *  Propose → effective gap must be >= this many blocks. */
+ *  Propose → effective gap must be >= this many blocks.
+ *
+ *  The #ifndef is a test-harness compile-time override (e.g.
+ *  -DDNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS=15 alongside a short
+ *  DNAC_EPOCH_LENGTH for the Genesis Protocol short-epoch scenarios);
+ *  production builds never define these — the stagef harness docs are the
+ *  only consumer. The default value is unchanged. */
+#ifndef DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS
 #define DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS  720      /* 1 hour */
+#endif
 
 /** chain_config_tx grace — safety-critical params (BLOCK_INTERVAL,
- *  INFLATION_START). Decoupled from EPOCH_LENGTH so it can be tuned
- *  independently; 24 hours gives operators + auditors time to react. */
+ *  INFLATION_START, TARGET_ACTIVE_COUNT). Decoupled from EPOCH_LENGTH so it
+ *  can be tuned independently; 24 hours gives operators + auditors time to
+ *  react.
+ *
+ *  Same test-harness compile-time override contract as
+ *  DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS above; production builds never
+ *  define it and the default value is unchanged. */
+#ifndef DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS
 #define DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS     17280    /* 24 hours */
+#endif
 
 /* ============================================================================
  * Block-Reward Inflation (v1) — validator incentive
@@ -336,7 +395,8 @@ typedef enum {
     DNAC_CFG_MAX_TXS_PER_BLOCK     = 1,  /**< overrides chain_def.max_txs_per_block */
     DNAC_CFG_BLOCK_INTERVAL_SEC    = 2,  /**< overrides chain_def.block_interval_sec */
     DNAC_CFG_INFLATION_START_BLOCK = 3,  /**< overrides default 1 (0 = inflation off) */
-    DNAC_CFG_PARAM_MAX_ID          = DNAC_CFG_INFLATION_START_BLOCK
+    DNAC_CFG_TARGET_ACTIVE_COUNT   = 4,  /**< S3: target size of the active validator set */
+    DNAC_CFG_PARAM_MAX_ID          = DNAC_CFG_TARGET_ACTIVE_COUNT
 } dnac_chain_config_param_id_t;
 
 /** Value range bounds — consensus-critical (client + witness reject out-of-range).
@@ -347,9 +407,37 @@ typedef enum {
 #define DNAC_CFG_MAX_BLOCK_INTERVAL_SEC     15ULL   /* Q6 default — tightened from 60 */
 #define DNAC_CFG_MAX_INFLATION_START_BLOCK  281474976710656ULL  /* 2^48 */
 
-/** BFT supermajority threshold for chain_config_tx (2f+1 for N=DNAC_COMMITTEE_SIZE=7). */
+/** TARGET_ACTIVE_COUNT range (S3, param_id 4): [7, 128].
+ *
+ *  MIN = DNAC_COMMITTEE_SIZE — the OFFICIAL DNA minimum initial-seat policy,
+ *  not a universal protocol law. A generic per-manifest minimum arrives with
+ *  the Season-6 manifest; until then governance may not shrink the DNA chain
+ *  below its bootstrap seat count.
+ *  MAX = DNAC_MAX_ACTIVE_VALIDATORS — this release's resource ceiling.
+ *
+ *  EFFECTIVITY: the value is SAMPLED ONLY at epoch-start heights by the
+ *  committee-selection path (wired in a later S3 wave), so it is
+ *  epoch-boundary-effective by construction — a mid-epoch effective_block
+ *  cannot resize a live committee.
+ *  GRACE CLASS: SAFETY-CRITICAL (same tier as BLOCK_INTERVAL_SEC and
+ *  INFLATION_START_BLOCK — DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS). */
+#define DNAC_CFG_MIN_TARGET_ACTIVE          ((uint64_t)DNAC_COMMITTEE_SIZE)
+#define DNAC_CFG_MAX_TARGET_ACTIVE          ((uint64_t)DNAC_MAX_ACTIVE_VALIDATORS)
+
+/** chain_config_tx vote-count SHAPE bounds — NOT the quorum rule.
+ *
+ *  MAX is the wire/struct slot cap: no proposal can carry more votes than
+ *  the release supports active validators. MIN stays 5 as a cheap floor
+ *  because the committee can never be smaller than DNAC_COMMITTEE_SIZE = 7
+ *  in this release and dna_bft_quorum(7) == 5, so a sub-5 proposal can never
+ *  reach quorum at any legal set size.
+ *
+ *  The BINDING threshold is witness-side: dna_bft_quorum(committee_count)
+ *  over the committee governing the signing height
+ *  (nodus_witness_chain_config.c::nodus_chain_config_apply). At N=7 that is
+ *  exactly 5 — the live chain's behaviour is unchanged. */
 #define DNAC_CHAIN_CONFIG_MIN_SIGS          5
-#define DNAC_CHAIN_CONFIG_MAX_SIGS          DNAC_COMMITTEE_SIZE
+#define DNAC_CHAIN_CONFIG_MAX_SIGS          DNAC_MAX_ACTIVE_VALIDATORS
 
 /**
  * @brief Unspent Transaction Output
@@ -812,16 +900,23 @@ int dnac_validator_update(dnac_context_t *ctx,
  * @brief Submit a DNAC_TX_CHAIN_CONFIG TX (Hard-Fork v1 Stage E).
  *
  * Committee-voted consensus parameter change. Caller has already
- * collected >= DNAC_CHAIN_CONFIG_MIN_SIGS (5) Dilithium5 signatures
- * from distinct committee members over the proposal preimage
- * (typically via the Stage C.2 w_cc_vote_req RPC or the Stage C
- * local sign primitive for the proposer's own vote).
+ * collected enough Dilithium5 signatures from distinct committee members
+ * over the proposal preimage (typically via the Stage C.2 w_cc_vote_req
+ * RPC or the Stage C local sign primitive for the proposer's own vote).
+ *
+ * "Enough" is decided witness-side: dna_bft_quorum(committee_count) over
+ * the committee governing the signing height. This client entry only
+ * enforces the SHAPE bounds [DNAC_CHAIN_CONFIG_MIN_SIGS,
+ * DNAC_CHAIN_CONFIG_MAX_SIGS]; a proposal that satisfies them can still be
+ * rejected for missing quorum. At the DNA chain's 7 seats the quorum is 5,
+ * which is what the shape floor already demands.
  *
  * Fee-only TX with no non-change outputs; the override row is written
  * to chain_config_history by the witness at state-apply time.
  *
  * @param ctx              DNAC context
- * @param param_id         dnac_chain_config_param_id_t value (1..3)
+ * @param param_id         dnac_chain_config_param_id_t value
+ *                         (1..DNAC_CFG_PARAM_MAX_ID)
  * @param new_value        Per-param range-checked in dnac_tx_verify_chain_config_rules
  * @param effective_block  Block height at which override activates
  *                         (witness enforces >= commit + grace tier)
@@ -831,7 +926,9 @@ int dnac_validator_update(dnac_context_t *ctx,
  * @param valid_before     Freshness expiry (witness rejects if
  *                         commit_block > this)
  * @param votes            Array of collected (witness_id, signature) tuples
- * @param vote_count       Number of votes — must be in [5, 7]
+ * @param vote_count       Number of votes — must be in
+ *                         [DNAC_CHAIN_CONFIG_MIN_SIGS,
+ *                          DNAC_CHAIN_CONFIG_MAX_SIGS] = [5, 128]
  * @param callback         Completion callback (can be NULL)
  * @param user_data        Callback user data
  * @return DNAC_SUCCESS or error code
@@ -958,9 +1055,13 @@ int dnac_validator_list(dnac_context_t *ctx,
  * DNAC_COMMITTEE_SIZE; callers must trust *count_out rather than
  * assuming a full committee.
  *
+ * S3 (Ledger V2): the active set is dynamic, so the caller contract is
+ * now the release ceiling. out[] holds up to DNAC_MAX_ACTIVE_VALIDATORS
+ * entries (~336 KB) — HEAP-allocate it, never a stack array.
+ *
  * @param ctx        DNAC context
- * @param out        Caller-allocated array of >= DNAC_COMMITTEE_SIZE
- *                   entries
+ * @param out        Caller-allocated array of >=
+ *                   DNAC_MAX_ACTIVE_VALIDATORS entries (heap)
  * @param count_out  Number of committee members returned (always
  *                   written)
  * @return DNAC_SUCCESS once wired, DNAC_ERROR_NOT_IMPLEMENTED until

@@ -122,7 +122,8 @@ void nodus_witness_peer_conn_closed(nodus_witness_t *w,
  * @param w             Witness context (DB must be open)
  * @param block_height  Block to look up the committee for
  * @param out           Caller-allocated array of >= max_entries members
- * @param max_entries   out[] capacity (usually DNAC_COMMITTEE_SIZE)
+ * @param max_entries   out[] capacity (heap-size it to
+ *                      DNAC_MAX_ACTIVE_VALIDATORS — S3 dynamic set)
  * @param count_out     [out] Number of members populated (may be 0)
  * @return 0 on success, -1 on error
  */

@@ -35,7 +35,7 @@ int main(void) {
     /* Create witness + open chain DB (reuses the schema in
      * nodus_witness.c WITNESS_DB_SCHEMA, which includes epoch_state
      * from Stage B.1). */
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     memset(&w, 0, sizeof(w));
     snprintf(w.data_path, sizeof(w.data_path), "%s", data_path);
 

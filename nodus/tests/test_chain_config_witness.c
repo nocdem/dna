@@ -9,10 +9,16 @@
  *   - compute_root: tagged empty sentinel (CC-AUDIT-003)
  *   - compute_root: determinism + row-mutation sensitivity
  *   - 5-input combiner: version byte binding + order sensitivity vs legacy 4-input
+ *   - S3: param 4 (TARGET_ACTIVE_COUNT) is reachable through the override
+ *     cache and contributes to chain_config_root
  *
  * Full apply-path end-to-end (Dilithium5 vote verification against a
  * seeded committee) is deferred to Stage C integration tests once the
  * vote-collect RPC is wired.
+ *
+ * FIXTURE (S3): nodus_witness_t is multi-MB and grew again with the
+ * active-validator generalization — calloc, never the stack. Same rule as
+ * test_chain_config_cache_failclose.c.
  */
 
 #define NODUS_WITNESS_INTERNAL_API 1
@@ -42,9 +48,12 @@
 /* Bring up a witness with a fresh data_path and chain DB; the
  * nodus_witness_create_chain_db call runs the full migration chain
  * including our new nodus_chain_config_db_migrate. Returns data_path
- * so the test can tear it down. */
-static void setup_witness(nodus_witness_t *w, char data_path[64]) {
-    memset(w, 0, sizeof(*w));
+ * so the test can tear it down.
+ *
+ * The context is HEAP allocated (see the FIXTURE note in the file header). */
+static nodus_witness_t *setup_witness(char data_path[64]) {
+    nodus_witness_t *w = calloc(1, sizeof(*w));
+    CHECK(w != NULL);
     snprintf(data_path, 64, "/tmp/test_chain_config_XXXXXX");
     CHECK(mkdtemp(data_path) != NULL);
     snprintf(w->data_path, sizeof(w->data_path), "%s", data_path);
@@ -52,10 +61,12 @@ static void setup_witness(nodus_witness_t *w, char data_path[64]) {
     memset(chain_id, 0xC1, sizeof(chain_id));
     CHECK(nodus_witness_create_chain_db(w, chain_id) == 0);
     CHECK(w->db != NULL);
+    return w;
 }
 
 static void teardown_witness(nodus_witness_t *w, const char *data_path) {
     if (w && w->db) { sqlite3_close(w->db); w->db = NULL; }
+    free(w);
     char cmd[512];
     snprintf(cmd, sizeof(cmd), "rm -rf '%s'", data_path);
     int rc = system(cmd);
@@ -92,76 +103,71 @@ static void direct_insert(nodus_witness_t *w,
 int main(void) {
     /* Test 1: migration creates the table; idempotent. */
     {
-        nodus_witness_t w;
         char data_path[64];
-        setup_witness(&w, data_path);
+        nodus_witness_t *w = setup_witness(data_path);
         const char *q =
             "SELECT COUNT(*) FROM sqlite_master "
             "WHERE type='table' AND name='chain_config_history'";
         sqlite3_stmt *st = NULL;
-        CHECK(sqlite3_prepare_v2(w.db, q, -1, &st, NULL) == SQLITE_OK);
+        CHECK(sqlite3_prepare_v2(w->db, q, -1, &st, NULL) == SQLITE_OK);
         CHECK(sqlite3_step(st) == SQLITE_ROW);
         int count = sqlite3_column_int(st, 0);
         sqlite3_finalize(st);
         CHECK(count == 1);
-        CHECK(nodus_chain_config_db_migrate(&w) == 0);   /* idempotent */
-        teardown_witness(&w, data_path);
+        CHECK(nodus_chain_config_db_migrate(w) == 0);   /* idempotent */
+        teardown_witness(w, data_path);
     }
 
     /* Test 2: empty-table lookup returns default_value. */
     {
-        nodus_witness_t w;
         char data_path[64];
-        setup_witness(&w, data_path);
-        CHECK(nodus_chain_config_get_u64(&w, DNAC_CFG_MAX_TXS_PER_BLOCK,
+        nodus_witness_t *w = setup_witness(data_path);
+        CHECK(nodus_chain_config_get_u64(w, DNAC_CFG_MAX_TXS_PER_BLOCK,
                                            1000, 42ULL) == 42ULL);
-        CHECK(nodus_chain_config_get_u64(&w, DNAC_CFG_INFLATION_START_BLOCK,
+        CHECK(nodus_chain_config_get_u64(w, DNAC_CFG_INFLATION_START_BLOCK,
                                            5000, 1ULL) == 1ULL);
-        teardown_witness(&w, data_path);
+        teardown_witness(w, data_path);
     }
 
     /* Test 3: single INSERT, lookup semantics before/at/after effective. */
     {
-        nodus_witness_t w;
         char data_path[64];
-        setup_witness(&w, data_path);
-        direct_insert(&w, DNAC_CFG_MAX_TXS_PER_BLOCK,
+        nodus_witness_t *w = setup_witness(data_path);
+        direct_insert(w, DNAC_CFG_MAX_TXS_PER_BLOCK,
                        5ULL, 1000ULL, 800ULL, 0xABCDULL);
 
-        CHECK(nodus_chain_config_get_u64(&w, DNAC_CFG_MAX_TXS_PER_BLOCK,
+        CHECK(nodus_chain_config_get_u64(w, DNAC_CFG_MAX_TXS_PER_BLOCK,
                                            999ULL,  10ULL) == 10ULL);
-        CHECK(nodus_chain_config_get_u64(&w, DNAC_CFG_MAX_TXS_PER_BLOCK,
+        CHECK(nodus_chain_config_get_u64(w, DNAC_CFG_MAX_TXS_PER_BLOCK,
                                            1000ULL, 10ULL) == 5ULL);
-        CHECK(nodus_chain_config_get_u64(&w, DNAC_CFG_MAX_TXS_PER_BLOCK,
+        CHECK(nodus_chain_config_get_u64(w, DNAC_CFG_MAX_TXS_PER_BLOCK,
                                            9999ULL, 10ULL) == 5ULL);
-        CHECK(nodus_chain_config_get_u64(&w, DNAC_CFG_BLOCK_INTERVAL_SEC,
+        CHECK(nodus_chain_config_get_u64(w, DNAC_CFG_BLOCK_INTERVAL_SEC,
                                            9999ULL, 5ULL) == 5ULL);
-        teardown_witness(&w, data_path);
+        teardown_witness(w, data_path);
     }
 
     /* Test 4: monotonic latest-effective-wins. */
     {
-        nodus_witness_t w;
         char data_path[64];
-        setup_witness(&w, data_path);
-        direct_insert(&w, DNAC_CFG_MAX_TXS_PER_BLOCK, 3ULL, 1000ULL, 800ULL,  0x1ULL);
-        direct_insert(&w, DNAC_CFG_MAX_TXS_PER_BLOCK, 7ULL, 2000ULL, 1500ULL, 0x2ULL);
-        CHECK(nodus_chain_config_get_u64(&w, DNAC_CFG_MAX_TXS_PER_BLOCK,
+        nodus_witness_t *w = setup_witness(data_path);
+        direct_insert(w, DNAC_CFG_MAX_TXS_PER_BLOCK, 3ULL, 1000ULL, 800ULL,  0x1ULL);
+        direct_insert(w, DNAC_CFG_MAX_TXS_PER_BLOCK, 7ULL, 2000ULL, 1500ULL, 0x2ULL);
+        CHECK(nodus_chain_config_get_u64(w, DNAC_CFG_MAX_TXS_PER_BLOCK,
                                            1500ULL, 99ULL) == 3ULL);
-        CHECK(nodus_chain_config_get_u64(&w, DNAC_CFG_MAX_TXS_PER_BLOCK,
+        CHECK(nodus_chain_config_get_u64(w, DNAC_CFG_MAX_TXS_PER_BLOCK,
                                            2000ULL, 99ULL) == 7ULL);
-        CHECK(nodus_chain_config_get_u64(&w, DNAC_CFG_MAX_TXS_PER_BLOCK,
+        CHECK(nodus_chain_config_get_u64(w, DNAC_CFG_MAX_TXS_PER_BLOCK,
                                            5000ULL, 99ULL) == 7ULL);
-        teardown_witness(&w, data_path);
+        teardown_witness(w, data_path);
     }
 
     /* Test 5: compute_root on empty table = tagged empty sentinel. */
     {
-        nodus_witness_t w;
         char data_path[64];
-        setup_witness(&w, data_path);
+        nodus_witness_t *w = setup_witness(data_path);
         uint8_t root_empty[64];
-        CHECK(nodus_chain_config_compute_root(&w, root_empty) == 0);
+        CHECK(nodus_chain_config_compute_root(w, root_empty) == 0);
 
         uint8_t expected[64];
         nodus_merkle_empty_root(NODUS_TREE_TAG_CHAIN_CONFIG, expected);
@@ -169,32 +175,31 @@ int main(void) {
 
         uint8_t zeros[64] = {0};
         CHECK(memcmp(root_empty, zeros, 64) != 0);
-        teardown_witness(&w, data_path);
+        teardown_witness(w, data_path);
     }
 
     /* Test 6: compute_root determinism + sensitivity. */
     {
-        nodus_witness_t w;
         char data_path[64];
-        setup_witness(&w, data_path);
-        direct_insert(&w, DNAC_CFG_MAX_TXS_PER_BLOCK, 5ULL, 1000ULL, 800ULL,  0x11ULL);
-        direct_insert(&w, DNAC_CFG_BLOCK_INTERVAL_SEC, 3ULL, 2000ULL, 1500ULL, 0x22ULL);
+        nodus_witness_t *w = setup_witness(data_path);
+        direct_insert(w, DNAC_CFG_MAX_TXS_PER_BLOCK, 5ULL, 1000ULL, 800ULL,  0x11ULL);
+        direct_insert(w, DNAC_CFG_BLOCK_INTERVAL_SEC, 3ULL, 2000ULL, 1500ULL, 0x22ULL);
         uint8_t r1[64], r2[64];
-        CHECK(nodus_chain_config_compute_root(&w, r1) == 0);
-        CHECK(nodus_chain_config_compute_root(&w, r2) == 0);
+        CHECK(nodus_chain_config_compute_root(w, r1) == 0);
+        CHECK(nodus_chain_config_compute_root(w, r2) == 0);
         CHECK(memcmp(r1, r2, 64) == 0);
 
         char *err = NULL;
-        int srv = sqlite3_exec(w.db,
+        int srv = sqlite3_exec(w->db,
             "UPDATE chain_config_history SET new_value = 99 "
             "WHERE param_id = 1", NULL, NULL, &err);
         CHECK(srv == SQLITE_OK);
         if (err) sqlite3_free(err);
 
         uint8_t r3[64];
-        CHECK(nodus_chain_config_compute_root(&w, r3) == 0);
+        CHECK(nodus_chain_config_compute_root(w, r3) == 0);
         CHECK(memcmp(r1, r3, 64) != 0);
-        teardown_witness(&w, data_path);
+        teardown_witness(w, data_path);
     }
 
     /* Test 7: 5-input combiner domain separation vs legacy 4-input. */
@@ -232,6 +237,92 @@ int main(void) {
                                             delegation_root, reward_root,
                                             cc_root_2, v2_b);
         CHECK(memcmp(v2, v2_b, 64) != 0);
+    }
+
+    /* Test 8 (S3): param 4 = TARGET_ACTIVE_COUNT is REACHABLE.
+     *
+     * Pre-S3 the override cache was dimensioned to a literal 4 and
+     * nodus_chain_config_get_u64 short-circuited every param_id >= 4 to
+     * default_value. If either literal survived the generalization, the
+     * assertions below return the default and fail — this is the direct
+     * regression pin for the cache-dimension change. */
+    {
+        char data_path[64];
+        nodus_witness_t *w = setup_witness(data_path);
+
+        /* Cold cache, DB-direct path. */
+        CHECK(nodus_chain_config_get_u64(w, DNAC_CFG_TARGET_ACTIVE_COUNT,
+                                           1000ULL, 7ULL) == 7ULL);
+
+        direct_insert(w, DNAC_CFG_TARGET_ACTIVE_COUNT,
+                       21ULL, 5000ULL, 4000ULL, 0x44ULL);
+        w->chain_config_cache_warm = false;   /* force a re-warm over the new row */
+
+        /* Before / at / after the effective height. */
+        CHECK(nodus_chain_config_get_u64(w, DNAC_CFG_TARGET_ACTIVE_COUNT,
+                                           4999ULL, 7ULL) == 7ULL);
+        CHECK(nodus_chain_config_get_u64(w, DNAC_CFG_TARGET_ACTIVE_COUNT,
+                                           5000ULL, 7ULL) == 21ULL);
+        CHECK(nodus_chain_config_get_u64(w, DNAC_CFG_TARGET_ACTIVE_COUNT,
+                                           9999ULL, 7ULL) == 21ULL);
+
+        /* Served from the warm cache (not just the DB fallback), and the
+         * param-4 row really occupies a cache slot. */
+        CHECK(w->chain_config_cache_warm);
+        CHECK(w->chain_config_cache_count[DNAC_CFG_TARGET_ACTIVE_COUNT] == 1);
+
+        /* Latest-effective-wins holds for the new param too. */
+        direct_insert(w, DNAC_CFG_TARGET_ACTIVE_COUNT,
+                       128ULL, 9000ULL, 8000ULL, 0x55ULL);
+        w->chain_config_cache_warm = false;
+        CHECK(nodus_chain_config_get_u64(w, DNAC_CFG_TARGET_ACTIVE_COUNT,
+                                           8999ULL, 7ULL) == 21ULL);
+        CHECK(nodus_chain_config_get_u64(w, DNAC_CFG_TARGET_ACTIVE_COUNT,
+                                           9000ULL, 7ULL) == 128ULL);
+
+        /* Still out of range one past the allowlist — the guard moved, it
+         * did not disappear. */
+        CHECK(nodus_chain_config_get_u64(w,
+                                           (uint8_t)(DNAC_CFG_PARAM_MAX_ID + 1),
+                                           9999ULL, 1234ULL) == 1234ULL);
+
+        teardown_witness(w, data_path);
+    }
+
+    /* Test 9 (S3): a param-4 row changes chain_config_root, i.e. the new
+     * parameter is bound into state_root like every other override. A
+     * governed parameter that did NOT contribute would let two witnesses
+     * hold different active-set targets under an identical state_root. */
+    {
+        char data_path[64];
+        nodus_witness_t *w = setup_witness(data_path);
+
+        uint8_t r_before[64], r_after[64], r_again[64];
+        direct_insert(w, DNAC_CFG_MAX_TXS_PER_BLOCK, 5ULL, 1000ULL, 800ULL, 0x11ULL);
+        CHECK(nodus_chain_config_compute_root(w, r_before) == 0);
+
+        direct_insert(w, DNAC_CFG_TARGET_ACTIVE_COUNT,
+                       21ULL, 5000ULL, 4000ULL, 0x66ULL);
+        CHECK(nodus_chain_config_compute_root(w, r_after) == 0);
+        CHECK(memcmp(r_before, r_after, 64) != 0);
+
+        /* Deterministic: same rows, same root. */
+        CHECK(nodus_chain_config_compute_root(w, r_again) == 0);
+        CHECK(memcmp(r_after, r_again, 64) == 0);
+
+        /* And the param-4 VALUE is bound, not just its presence. */
+        char *err = NULL;
+        int srv = sqlite3_exec(w->db,
+            "UPDATE chain_config_history SET new_value = 22 "
+            "WHERE param_id = 4", NULL, NULL, &err);
+        CHECK(srv == SQLITE_OK);
+        if (err) sqlite3_free(err);
+
+        uint8_t r_mut[64];
+        CHECK(nodus_chain_config_compute_root(w, r_mut) == 0);
+        CHECK(memcmp(r_after, r_mut, 64) != 0);
+
+        teardown_witness(w, data_path);
     }
 
     printf("test_chain_config_witness: ALL CHECKS PASSED\n");

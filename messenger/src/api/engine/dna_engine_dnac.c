@@ -720,8 +720,16 @@ void dna_handle_dnac_get_committee(dna_engine_t *engine, dna_task_t *task) {
             DNA_ENGINE_ERROR_NOT_INITIALIZED, NULL, 0, task->user_data);
         return;
     }
-    dnac_validator_list_entry_t buf[DNAC_COMMITTEE_SIZE];
-    memset(buf, 0, sizeof(buf));
+    /* S3: the contract is now >= DNAC_MAX_ACTIVE_VALIDATORS entries
+     * (~336 KB) — heap, never the stack; this runs on an engine worker
+     * thread (Android pthread stacks are 1 MB). */
+    dnac_validator_list_entry_t *buf =
+        calloc((size_t)DNAC_MAX_ACTIVE_VALIDATORS, sizeof(*buf));
+    if (!buf) {
+        task->callback.dnac_validator_list(task->request_id,
+            DNA_ENGINE_ERROR_INIT, NULL, 0, task->user_data);
+        return;
+    }
     int count = 0;
     int ret = dnac_get_committee(ctx, buf, &count);
     if (ret != DNAC_SUCCESS) {
@@ -729,9 +737,11 @@ void dna_handle_dnac_get_committee(dna_engine_t *engine, dna_task_t *task) {
                       ret, dnac_error_string(ret));
         task->callback.dnac_validator_list(task->request_id, ret, NULL, 0,
                                             task->user_data);
+        free(buf);
         return;
     }
     emit_validator_list(task, buf, count);
+    free(buf);
 }
 
 /* --- My Delegations (stake-delegation v1 query) --- */

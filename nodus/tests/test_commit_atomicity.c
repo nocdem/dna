@@ -211,7 +211,7 @@ static nodus_witness_mempool_entry_t *make_entry(uint8_t marker) {
 static void test_happy_path(void) {
     printf("  happy path: commit_batch(1 TX) writes block + clears flag\n");
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     CHECK(setup_witness(&w) == 0);
 
     CHECK_EQ(w.in_block_transaction, false);
@@ -236,7 +236,7 @@ static void test_happy_path(void) {
 static void test_finalize_without_wrapper(void) {
     printf("  guard: finalize_block called outside transaction is rejected\n");
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     CHECK(setup_witness(&w) == 0);
 
     uint8_t tx_hash[64];
@@ -255,7 +255,7 @@ static void test_finalize_without_wrapper(void) {
 static void test_mid_batch_abort_rolls_back(void) {
     printf("  abort: second TX NULL entry -> full rollback, no block row\n");
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     CHECK(setup_witness(&w) == 0);
 
     CHECK_EQ(count_rows(&w, "SELECT COUNT(*) FROM blocks"), 0);
@@ -282,7 +282,7 @@ static void test_mid_batch_abort_rolls_back(void) {
 static void test_manual_rollback_restores_state(void) {
     printf("  manual: begin + rollback restores pre-block state\n");
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     CHECK(setup_witness(&w) == 0);
 
     {

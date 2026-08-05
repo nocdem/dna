@@ -99,7 +99,7 @@ static void test_proof_round_trip(uint8_t lo, uint8_t hi, const char *label) {
     snprintf(name, sizeof(name), "proof round-trip %s", label);
     TEST(name);
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup_witness(&w) != 0) { FAIL("setup"); return; }
 
     for (uint8_t m = lo; m <= hi; m++) {
@@ -142,7 +142,7 @@ static void test_proof_round_trip(uint8_t lo, uint8_t hi, const char *label) {
 static void test_proof_rejects_wrong_leaf(void) {
     TEST("verify_proof rejects a tampered leaf");
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup_witness(&w) != 0) { FAIL("setup"); return; }
 
     for (uint8_t m = 0x40; m <= 0x47; m++) {

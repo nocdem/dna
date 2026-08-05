@@ -407,10 +407,15 @@ int dnac_tx_verify_validator_update_rules_internal(const dnac_transaction_t *tx)
  *                                 witness-side monotonicity rule Q5 kicks
  *                                 the "can't set to 0 once enabled" check
  *                                 on top of this)
+ *       TARGET_ACTIVE_COUNT    : [DNAC_CFG_MIN_TARGET_ACTIVE=7,
+ *                                 DNAC_CFG_MAX_TARGET_ACTIVE=128]  (S3)
  *   - signed_at_block > 0                (CC-AUDIT-008)
  *   - valid_before_block > effective_block_height
  *   - valid_before_block > signed_at_block
- *   - committee_sig_count ∈ [5, 7]
+ *   - committee_sig_count ∈ [DNAC_CHAIN_CONFIG_MIN_SIGS,
+ *                            DNAC_CHAIN_CONFIG_MAX_SIGS] = [5, 128]
+ *     (SHAPE only — the quorum rule is witness-side, see the notes on
+ *      DNAC_CHAIN_CONFIG_MIN_SIGS in dnac.h)
  *   - committee_votes[0..sig_count-1].witness_id pairwise distinct
  */
 static int verify_chain_config_rules(const dnac_transaction_t *tx) {
@@ -459,6 +464,17 @@ static int verify_chain_config_rules(const dnac_transaction_t *tx) {
                 return DNAC_ERROR_INVALID_PARAM;
             }
             break;
+        case DNAC_CFG_TARGET_ACTIVE_COUNT:
+            if (cc->new_value < DNAC_CFG_MIN_TARGET_ACTIVE ||
+                cc->new_value > DNAC_CFG_MAX_TARGET_ACTIVE) {
+                QGP_LOG_ERROR(LOG_TAG,
+                              "CHAIN_CONFIG: TARGET_ACTIVE_COUNT=%llu out of [%llu,%llu]",
+                              (unsigned long long)cc->new_value,
+                              (unsigned long long)DNAC_CFG_MIN_TARGET_ACTIVE,
+                              (unsigned long long)DNAC_CFG_MAX_TARGET_ACTIVE);
+                return DNAC_ERROR_INVALID_PARAM;
+            }
+            break;
         default:
             return DNAC_ERROR_INVALID_PARAM;  /* Unreachable given bound check above */
     }
@@ -487,7 +503,11 @@ static int verify_chain_config_rules(const dnac_transaction_t *tx) {
         return DNAC_ERROR_INVALID_PARAM;
     }
 
-    /* Committee-sig count within BFT supermajority window (5..7). */
+    /* Committee-sig count within the SHAPE window (5..128). This is a cheap
+     * structural bound, NOT the quorum decision: the binding rule is
+     * dna_bft_quorum(committee_count) evaluated witness-side against the
+     * committee governing the signing height. At the DNA chain's 7 seats
+     * that quorum is 5, so the observable client behaviour is unchanged. */
     if (cc->committee_sig_count < DNAC_CHAIN_CONFIG_MIN_SIGS ||
         cc->committee_sig_count > DNAC_CHAIN_CONFIG_MAX_SIGS) {
         QGP_LOG_ERROR(LOG_TAG,

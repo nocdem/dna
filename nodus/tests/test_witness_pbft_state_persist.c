@@ -118,7 +118,7 @@ static void test_pbft_state_table_created(void) {
     sqlite3 *db = NULL;
     if (setup_pre_v12(&db) != 0) { FAIL("setup"); return; }
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     memset(&w, 0, sizeof(w));
     w.db = db;
 
@@ -153,7 +153,7 @@ static void test_pbft_state_singleton_constraint(void) {
     sqlite3 *db = NULL;
     if (setup_pre_v12(&db) != 0) { FAIL("setup"); return; }
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     memset(&w, 0, sizeof(w));
     w.db = db;
 
@@ -199,7 +199,7 @@ static void test_pbft_state_migration_idempotent(void) {
     sqlite3 *db = NULL;
     if (setup_pre_v12(&db) != 0) { FAIL("setup"); return; }
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     memset(&w, 0, sizeof(w));
     w.db = db;
 

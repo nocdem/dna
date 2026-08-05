@@ -13,6 +13,8 @@
  */
 
 #include "nodus/nodus_chain_config.h"
+#include "dnac/dnac.h"          /* S3: param ids + shape bounds */
+#include "dnac/ledger_ids.h"    /* S3: dna_bft_quorum, DNA_MAX_ACTIVE_VALIDATORS */
 #include "crypto/sign/qgp_dilithium.h"
 
 #include <stdio.h>
@@ -170,6 +172,85 @@ int main(void) {
         CHECK(nodus_chain_config_derive_witness_id(pk_a, wid_a) == 0);
         CHECK(nodus_chain_config_derive_witness_id(pk_b, wid_b) == 0);
         CHECK(memcmp(wid_a, wid_b, NODUS_CC_WITNESS_ID_SIZE) != 0);
+    }
+
+    /* Test 7 (S3): a param-4 (TARGET_ACTIVE_COUNT) proposal produces a
+     * distinct, deterministic digest. The signing surface must cover the
+     * new param id — a digest that ignored param_id would let a vote
+     * collected for one parameter be replayed onto another. */
+    {
+        uint8_t d_p3[NODUS_CC_DIGEST_SIZE], d_p4[NODUS_CC_DIGEST_SIZE];
+        CHECK(nodus_chain_config_compute_digest(
+                  chain_id, (uint8_t)DNAC_CFG_INFLATION_START_BLOCK,
+                  64, 20000, 0x77ULL, 1000, 30000, d_p3) == 0);
+        CHECK(nodus_chain_config_compute_digest(
+                  chain_id, (uint8_t)DNAC_CFG_TARGET_ACTIVE_COUNT,
+                  64, 20000, 0x77ULL, 1000, 30000, d_p4) == 0);
+        CHECK(memcmp(d_p3, d_p4, NODUS_CC_DIGEST_SIZE) != 0);
+
+        /* Deterministic across calls (no time / no randomness). */
+        uint8_t d_p4b[NODUS_CC_DIGEST_SIZE];
+        CHECK(nodus_chain_config_compute_digest(
+                  chain_id, (uint8_t)DNAC_CFG_TARGET_ACTIVE_COUNT,
+                  64, 20000, 0x77ULL, 1000, 30000, d_p4b) == 0);
+        CHECK(memcmp(d_p4, d_p4b, NODUS_CC_DIGEST_SIZE) == 0);
+
+        /* new_value is bound: 7 seats vs 128 seats are different proposals. */
+        uint8_t d_min[NODUS_CC_DIGEST_SIZE], d_max[NODUS_CC_DIGEST_SIZE];
+        CHECK(nodus_chain_config_compute_digest(
+                  chain_id, (uint8_t)DNAC_CFG_TARGET_ACTIVE_COUNT,
+                  DNAC_CFG_MIN_TARGET_ACTIVE, 20000, 0x77ULL, 1000, 30000,
+                  d_min) == 0);
+        CHECK(nodus_chain_config_compute_digest(
+                  chain_id, (uint8_t)DNAC_CFG_TARGET_ACTIVE_COUNT,
+                  DNAC_CFG_MAX_TARGET_ACTIVE, 20000, 0x77ULL, 1000, 30000,
+                  d_max) == 0);
+        CHECK(memcmp(d_min, d_max, NODUS_CC_DIGEST_SIZE) != 0);
+    }
+
+    /* Test 8 (S3): the quorum formula that REPLACED the hardcoded 5-of-7
+     * threshold in nodus_chain_config_apply.
+     *
+     * The load-bearing claim of the whole generalization is the first
+     * assertion: at the live chain's 7 seats, dna_bft_quorum(7) is exactly
+     * the old DNAC_CHAIN_CONFIG_MIN_SIGS, so no live behaviour moved.
+     *
+     * SCOPE (honest): this pins the FORMULA, not the apply-path wiring.
+     * Exercising nodus_chain_config_apply needs a seeded validator DB plus
+     * real Dilithium5 votes from a synthesized committee of size N; no
+     * fixture in this tree builds a dynamic-N committee, so the "4 verified
+     * rejects / 5 accepts at N=7" and "sig_count > committee_count rejects"
+     * behaviours are NOT covered by a unit test here. They are covered
+     * end-to-end by the Genesis Protocol harness at N=7 only. */
+    {
+        /* Historical rule preserved, both spellings of the constant. */
+        CHECK(dna_bft_quorum(DNAC_COMMITTEE_SIZE) == DNAC_CHAIN_CONFIG_MIN_SIGS);
+        CHECK(dna_bft_quorum(7) == 5);
+
+        /* floor(2n/3)+1 across the supported range. */
+        CHECK(dna_bft_quorum(1)   == 1);
+        CHECK(dna_bft_quorum(4)   == 3);
+        CHECK(dna_bft_quorum(10)  == 7);
+        CHECK(dna_bft_quorum(21)  == 15);
+        CHECK(dna_bft_quorum(100) == 67);
+        CHECK(dna_bft_quorum(DNA_MAX_ACTIVE_VALIDATORS) == 86);
+
+        /* Strict BFT safety property: quorum is always a supermajority
+         * (> 2n/3) and never exceeds n, for every legal set size. */
+        for (uint32_t n = 1; n <= DNA_MAX_ACTIVE_VALIDATORS; n++) {
+            uint32_t q = dna_bft_quorum(n);
+            CHECK(q <= n);
+            CHECK(3u * q > 2u * n);
+            /* Monotonic non-decreasing — a bigger committee never lowers
+             * the bar, so growing the active set cannot weaken the vote. */
+            if (n > 1) CHECK(q >= dna_bft_quorum(n - 1));
+        }
+
+        /* The wire/shape floor stays below the quorum at the smallest legal
+         * committee, which is what makes MIN_SIGS == 5 a safe early reject. */
+        CHECK(DNAC_CHAIN_CONFIG_MIN_SIGS <=
+              (int)dna_bft_quorum(DNAC_COMMITTEE_SIZE));
+        CHECK(DNAC_CHAIN_CONFIG_MAX_SIGS == DNA_MAX_ACTIVE_VALIDATORS);
     }
 
     printf("test_chain_config_votes: ALL CHECKS PASSED\n");

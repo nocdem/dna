@@ -41,10 +41,17 @@
 /* Faz 4.4 (commit ee9bbc18) + Faz 3.5 shipped: halt_committee_pubkeys
  * snapshot at halt_block_height + replay path historical lookup.
  * Concrete coverage here: lock the wire-layer field invariant — the
- * snapshot array is sized for DNAC_COMMITTEE_SIZE × DNAC_PUBKEY_SIZE
+ * snapshot array is sized for the release's active-validator ceiling
  * and zero-initializes (no leftover roster). Quorum-evaluation
  * behavioral matrix needs peer-state mocking; covered by stagef
- * harness and test_validator_db (committee@height query). */
+ * harness and test_validator_db (committee@height query).
+ *
+ * S3 re-anchor: the array grew DNAC_COMMITTEE_SIZE → the dynamic
+ * ceiling DNAC_MAX_ACTIVE_VALIDATORS. Sizing it to 7 would have silently
+ * truncated the pinned halt-time set on any chain with a larger active
+ * set, and nodus_witness_halt_recovery_check derives its quorum from
+ * halt_committee_count — a truncated snapshot would mean a quorum
+ * computed over a set that is not the one that halted. */
 
 #define NODUS_WITNESS_INTERNAL_API 1
 
@@ -65,16 +72,22 @@
 int main(void) {
     printf("\nFaz 1.8 — halt_committee_pubkeys historical snapshot\n");
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     memset(&w, 0, sizeof(w));
 
-    /* Snapshot exists, sized for DNAC_COMMITTEE_SIZE × DNAC_PUBKEY_SIZE */
+    /* Snapshot exists, sized for the S3 ceiling × DNAC_PUBKEY_SIZE. */
     CHECK(sizeof(w.halt_committee_pubkeys) ==
-          (size_t)DNAC_COMMITTEE_SIZE * (size_t)DNAC_PUBKEY_SIZE);
+          (size_t)DNAC_MAX_ACTIVE_VALIDATORS * (size_t)DNAC_PUBKEY_SIZE);
+    /* It must be able to hold the largest set the chain can elect —
+     * DNAC_CFG_MAX_TARGET_ACTIVE is the governance ceiling, and a
+     * snapshot smaller than that would truncate silently. */
+    CHECK(sizeof(w.halt_committee_pubkeys) >=
+          (size_t)DNAC_CFG_MAX_TARGET_ACTIVE * (size_t)DNAC_PUBKEY_SIZE);
 
     /* Zero-init invariant — no leftover roster bleeding into recovery */
     for (size_t i = 0;
-         i < (size_t)DNAC_COMMITTEE_SIZE * (size_t)DNAC_PUBKEY_SIZE; i++) {
+         i < (size_t)DNAC_MAX_ACTIVE_VALIDATORS * (size_t)DNAC_PUBKEY_SIZE;
+         i++) {
         CHECK(((uint8_t *)w.halt_committee_pubkeys)[i] == 0);
     }
 

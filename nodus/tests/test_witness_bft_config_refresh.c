@@ -166,7 +166,7 @@ static int setup_witness(nodus_witness_t *w) {
 int main(void) {
     printf("\nPR 1 — bft_config follower-path refresh\n");
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     CHECK(setup_witness(&w) == 0);
 
     /* Empty validators table → load_committee_at_height returns count=0

@@ -143,7 +143,7 @@ static int find_pubkey(const nodus_committee_member_t *arr, int count,
 int main(void) {
     /* ── Scenario 4 first: init sentinel (use a fresh, un-opened struct) ── */
     printf("  (4) init sentinel — cached_committee_epoch_start == UINT64_MAX\n");
-    nodus_witness_t w_init;
+    static nodus_witness_t w_init;  /* multi-MB — static storage, not stack */
     memset(&w_init, 0, sizeof(w_init));
     /* The production path runs nodus_witness_init which sets the
      * sentinel. We simulate the relevant bit here without the full
@@ -156,7 +156,7 @@ int main(void) {
     char data_path[] = "/tmp/test_committee_cache_XXXXXX";
     CHECK(mkdtemp(data_path) != NULL);
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     memset(&w, 0, sizeof(w));
     snprintf(w.data_path, sizeof(w.data_path), "%s", data_path);
     /* Apply the same sentinel init the production path does. */

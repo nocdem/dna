@@ -41,6 +41,7 @@
 #include "dnac/dnac.h"            /* DNAC_PROTOCOL_VERSION, DNAC_MIN_FEE_RAW */
 #include "dnac/transaction.h"     /* DNAC_TX_HEADER_SIZE, dnac_tx_read_committed_fee */
 #include "dnac/safe_math.h"       /* safe_add_u64 (SEC-01 consistency check) */
+#include "dnac/tx_wire.h"         /* S1: shared legacy tx-hash (dnac_txw_legacy_tx_hash) */
 
 #include <stdio.h>
 #include <string.h>
@@ -82,6 +83,26 @@
 #define NODUS_T3_MAX_TX_SIGNERS 4
 #define SIGNER_SIZE (NODUS_PK_BYTES + NODUS_SIG_BYTES)
 
+/* S1 drift guards — the shared tx_wire codec's mirrored constants must
+ * equal the nodus-side authoritative values (chain_config_wire.h pattern;
+ * drift between the trees is a compile error, never a silent break). */
+_Static_assert(DNAC_TXW_PK_LEN == NODUS_PK_BYTES, "tx_wire pubkey size drift");
+_Static_assert(DNAC_TXW_SIG_LEN == NODUS_SIG_BYTES, "tx_wire signature size drift");
+_Static_assert(DNAC_TXW_MAX_SIGNERS == NODUS_T3_MAX_TX_SIGNERS, "tx_wire signer cap drift");
+_Static_assert(DNAC_TXW_MAX_INPUTS == NODUS_T3_MAX_TX_INPUTS, "tx_wire input cap drift");
+_Static_assert(DNAC_TXW_MAX_OUTPUTS == NODUS_T3_MAX_TX_OUTPUTS, "tx_wire output cap drift");
+_Static_assert(DNAC_TXW_CC_VOTE_BOUND == NODUS_T3_MAX_WITNESSES, "tx_wire cc vote bound drift");
+/* S3: the release's active-validator ceiling and the T3 wire provisioning
+ * must be ONE number — if either moves without the other, client and
+ * witness would disagree on how many chain-config votes a preimage may
+ * carry (ledger_ids.h names NODUS_T3_MAX_WITNESSES as its anchor). */
+_Static_assert(DNA_MAX_ACTIVE_VALIDATORS == NODUS_T3_MAX_WITNESSES,
+               "active-validator ceiling drift vs T3 wire provisioning");
+_Static_assert(DNAC_TXW_LEGACY_HEADER == DNAC_TX_HEADER_SIZE, "tx_wire header size drift");
+_Static_assert(DNAC_TXW_TYPE_SHIELDED == NODUS_W_TX_SHIELDED, "tx_wire shielded type drift");
+_Static_assert(DNAC_TXW_SHIELDED_FIXED == DNAC_TX_SHIELDED_FIXED_SIZE, "tx_wire shielded size drift");
+_Static_assert(DNAC_TXW3_MAX_TX_SIZE == NODUS_T3_MAX_TX_SIZE, "tx_wire v3 tx-size cap drift");
+
 /* ════════════════════════════════════════════════════════════════════
  * Recompute TX hash from serialized data
  * ════════════════════════════════════════════════════════════════════ */
@@ -110,300 +131,23 @@
 /* Chain ID length (matches DNAC chain_id[32]). */
 #define TX_CHAIN_ID_LEN              32
 
-/* Big-endian u64 writer for preimage encoding. Matches
- * dnac/src/transaction/transaction.c::tx_be64_into. */
-static void be64_into(uint64_t v, uint8_t out[8]) {
-    for (int i = 7; i >= 0; i--) {
-        out[i] = (uint8_t)(v & 0xff);
-        v >>= 8;
-    }
-}
-
-/* LE u64 reader for parsing wire-format timestamp and amounts. The wire
- * format uses native (LE on x86) via memcpy — see
- * dnac/src/transaction/serialize.c WRITE_U64/READ_U64. */
-static uint64_t le64_read(const uint8_t *p) {
-    uint64_t v;
-    memcpy(&v, p, 8);
-    return v;
-}
-
 int nodus_witness_recompute_tx_hash(const uint8_t *chain_id,
                                      const uint8_t *tx_data, uint32_t tx_len,
                                      const uint8_t *signer_pubkeys,
                                      uint8_t signer_count,
                                      uint8_t *hash_out) {
-    if (!chain_id || !tx_data || !hash_out || tx_len < TX_HEADER_SIZE + 1)
-        return -1;
-    if (!signer_pubkeys && signer_count > 0)
-        return -1;
-    if (signer_count > NODUS_T3_MAX_TX_SIGNERS)
-        return -1;
-
-    /* Assemble the canonical preimage in a single growable buffer, then
-     * SHA3-512 it. Upper bound: tx_len (all wire bytes we may echo) +
-     * chain_id(32) + 1 + signer_count * NODUS_PK_BYTES + tx_len (type-spec). */
-    size_t upper = (size_t)tx_len + TX_CHAIN_ID_LEN + 1
-                 + (size_t)NODUS_T3_MAX_TX_SIGNERS * NODUS_PK_BYTES
-                 + (size_t)tx_len;
-    uint8_t *buf = malloc(upper);
-    if (!buf) return -1;
-
-    size_t buf_pos = 0;
-    const uint8_t *p = tx_data;
-    size_t remaining = tx_len;
-
-    /* ── Domain separator (SEC-06, 11 bytes each). A shielded (type-11) TX
-     * hashes under its OWN tag "DNAC_TX_V4\0" so a shielded preimage can
-     * never collide with a V2 preimage — byte-match of libdna
-     * dnac_tx_compute_hash (transaction.c:212-220, re-audit Finding 5).
-     * The type byte is peeked from the wire (entry check guarantees
-     * tx_len >= TX_HEADER_SIZE + 1 > 2). ────────────────────────────── */
-    if (tx_data[1] == TX_TYPE_SHIELDED) {
-        memcpy(buf + buf_pos, DNAC_TX_PREIMAGE_DOMAIN_V4,
-               DNAC_TX_PREIMAGE_DOMAIN_V4_LEN);
-        buf_pos += DNAC_TX_PREIMAGE_DOMAIN_V4_LEN;
-    } else {
-        memcpy(buf + buf_pos, DNAC_TX_PREIMAGE_DOMAIN_V2,
-               DNAC_TX_PREIMAGE_DOMAIN_V2_LEN);
-        buf_pos += DNAC_TX_PREIMAGE_DOMAIN_V2_LEN;
-    }
-
-    /* ── Header: version(u8) || type(u8) || timestamp(u64 BE) || chain_id[32] ── */
-    if (remaining < 10) goto fail;
-    uint8_t version_byte = p[0];
-    uint8_t type_byte    = p[1];
-    uint64_t timestamp   = le64_read(p + 2);
-    p += 10;
-    remaining -= 10;
-
-    buf[buf_pos++] = version_byte;
-    buf[buf_pos++] = type_byte;
-    be64_into(timestamp, buf + buf_pos);
-    buf_pos += 8;
-    memcpy(buf + buf_pos, chain_id, TX_CHAIN_ID_LEN);
-    buf_pos += TX_CHAIN_ID_LEN;
-
-    /* Skip embedded tx_hash (64 bytes) */
-    if (remaining < 64) goto fail;
-    p += 64;
-    remaining -= 64;
-
-    /* ── committed_fee (u64 BE, v0.17.1+) — read from wire, add to preimage ── */
-    if (remaining < 8) goto fail;
-    uint64_t committed_fee = 0;
-    for (int i = 0; i < 8; i++)
-        committed_fee = (committed_fee << 8) | (uint64_t)p[i];
-    be64_into(committed_fee, buf + buf_pos);
-    buf_pos += 8;
-    p += 8;
-    remaining -= 8;
-
-    /* ── Inputs: nullifier(64) || amount(u64 BE) || token_id(64) ── */
-    if (remaining < 1) goto fail;
-    uint8_t input_count = *p++;
-    remaining--;
-    if (input_count > NODUS_T3_MAX_TX_INPUTS) goto fail;
-
-    for (int i = 0; i < input_count; i++) {
-        if (remaining < INPUT_SIZE) goto fail;
-        /* nullifier */
-        memcpy(buf + buf_pos, p, INPUT_NULLIFIER_LEN);
-        buf_pos += INPUT_NULLIFIER_LEN;
-        /* amount: read LE from wire, encode BE into preimage */
-        uint64_t amt = le64_read(p + INPUT_NULLIFIER_LEN);
-        be64_into(amt, buf + buf_pos);
-        buf_pos += 8;
-        /* token_id */
-        memcpy(buf + buf_pos, p + INPUT_NULLIFIER_LEN + 8, INPUT_TOKEN_ID_LEN);
-        buf_pos += INPUT_TOKEN_ID_LEN;
-
-        p += INPUT_SIZE;
-        remaining -= INPUT_SIZE;
-    }
-
-    /* ── Outputs: version(u8) || fp(129) || amount(u64 BE) || token_id(64) ||
-     *           seed(32) || memo_len(u8) || memo(memo_len) ── */
-    if (remaining < 1) goto fail;
-    uint8_t output_count = *p++;
-    remaining--;
-    if (output_count > NODUS_T3_MAX_TX_OUTPUTS) goto fail;
-
-    for (int i = 0; i < output_count; i++) {
-        if (remaining < OUTPUT_FIXED_SIZE) goto fail;
-
-        uint8_t memo_len = p[OUTPUT_FIXED_SIZE - 1];
-        size_t output_total = OUTPUT_FIXED_SIZE + memo_len;
-        if (remaining < output_total) goto fail;
-
-        /* version */
-        buf[buf_pos++] = p[0];
-        /* fp(129) */
-        memcpy(buf + buf_pos, p + OUTPUT_VERSION_LEN, OUTPUT_FP_LEN);
-        buf_pos += OUTPUT_FP_LEN;
-        /* amount: LE on wire → BE in preimage */
-        uint64_t amt = le64_read(p + OUTPUT_VERSION_LEN + OUTPUT_FP_LEN);
-        be64_into(amt, buf + buf_pos);
-        buf_pos += 8;
-        /* token_id + seed */
-        memcpy(buf + buf_pos,
-               p + OUTPUT_VERSION_LEN + OUTPUT_FP_LEN + OUTPUT_AMOUNT_LEN,
-               OUTPUT_TOKEN_ID_LEN + OUTPUT_SEED_LEN);
-        buf_pos += OUTPUT_TOKEN_ID_LEN + OUTPUT_SEED_LEN;
-        /* memo_len */
-        buf[buf_pos++] = memo_len;
-        /* memo bytes */
-        if (memo_len > 0) {
-            memcpy(buf + buf_pos, p + OUTPUT_FIXED_SIZE, memo_len);
-            buf_pos += memo_len;
-        }
-
-        p += output_total;
-        remaining -= output_total;
-    }
-
-    /* ── Signers: signer_count(u8) || signer_pubkeys[0..signer_count] ──
-     * The caller supplies the pubkey concatenation (already extracted from
-     * tx_data). This matches the client-side preimage exactly: signatures
-     * are NOT hashed. */
-    buf[buf_pos++] = signer_count;
-    for (int i = 0; i < signer_count; i++) {
-        memcpy(buf + buf_pos,
-               signer_pubkeys + (size_t)i * NODUS_PK_BYTES,
-               NODUS_PK_BYTES);
-        buf_pos += NODUS_PK_BYTES;
-    }
-
-    /* ── Type-specific appended fields ──
-     * At this point the wire cursor `p` is already positioned after signers
-     * (we walked inputs/outputs above but NOT the wire signers/witnesses
-     * sections — the wire has witnesses then signers between outputs and
-     * the type-specific tail). Rather than re-walk, we jump the wire cursor
-     * past witnesses + signers to reach the appended section. */
-
-    /* Skip witnesses(count + count * (32+sig+8+pk)) on the wire */
-    if (remaining < 1) goto fail;
-    uint8_t witness_count = *p++;
-    remaining--;
-    {
-        size_t witness_size = 32 + NODUS_SIG_BYTES + 8 + NODUS_PK_BYTES;
-        size_t witnesses_total = (size_t)witness_count * witness_size;
-        if (remaining < witnesses_total) goto fail;
-        p += witnesses_total;
-        remaining -= witnesses_total;
-    }
-
-    /* Skip signers on the wire */
-    if (remaining < 1) goto fail;
-    uint8_t wire_signer_count = *p++;
-    remaining--;
-    if (wire_signer_count > NODUS_T3_MAX_TX_SIGNERS) goto fail;
-    {
-        size_t signers_total = (size_t)wire_signer_count * SIGNER_SIZE;
-        if (remaining < signers_total) goto fail;
-        p += signers_total;
-        remaining -= signers_total;
-    }
-
-    /* Per-type appended — wire already encodes u16/u64 BE here, so we can
-     * memcpy directly into the preimage. */
-    if (type_byte == TX_TYPE_STAKE) {
-        size_t need = 2 + TX_STAKE_UNSTAKE_DEST_FP_LEN + TX_STAKE_PURPOSE_TAG_LEN;
-        if (remaining < need) goto fail;
-        memcpy(buf + buf_pos, p, need);
-        buf_pos += need;
-        p += need;
-        remaining -= need;
-    } else if (type_byte == TX_TYPE_DELEGATE) {
-        /* v0.17.1+: DELEGATE appended = validator_pubkey(2592) + delegation_amount(u64 BE). */
-        size_t need = NODUS_PK_BYTES + 8;
-        if (remaining < need) goto fail;
-        memcpy(buf + buf_pos, p, need);
-        buf_pos += need;
-        p += need;
-        remaining -= need;
-    } else if (type_byte == TX_TYPE_UNDELEGATE) {
-        size_t need = NODUS_PK_BYTES + 8;
-        if (remaining < need) goto fail;
-        memcpy(buf + buf_pos, p, need);
-        buf_pos += need;
-        p += need;
-        remaining -= need;
-    } else if (type_byte == TX_TYPE_VALIDATOR_UPDATE) {
-        size_t need = 2 + 8;
-        if (remaining < need) goto fail;
-        memcpy(buf + buf_pos, p, need);
-        buf_pos += need;
-        p += need;
-        remaining -= need;
-    } else if (type_byte == TX_TYPE_CHAIN_CONFIG) {
-        /* Hard-Fork v1 CHAIN_CONFIG variable-length appended:
-         *   param_id(1) + new_value(8) + effective_block(8) +
-         *   proposal_nonce(8) + signed_at_block(8) + valid_before_block(8) +
-         *   committee_sig_count(1) + votes[n] each: witness_id(32) +
-         *   signature(DNAC_SIGNATURE_SIZE = NODUS_SIG_BYTES).
-         * All BE integers on both wire and preimage so we can memcpy. */
-        size_t fixed = 1 + 8 + 8 + 8 + 8 + 8 + 1;
-        if (remaining < fixed) goto fail;
-        memcpy(buf + buf_pos, p, fixed);
-        buf_pos += fixed;
-        uint8_t cc_sig_count = p[fixed - 1];
-        p += fixed;
-        remaining -= fixed;
-        /* Bound check: <= compile-time committee cap, matches client. */
-        if (cc_sig_count > NODUS_T3_MAX_WITNESSES) goto fail;
-        size_t per_vote = 32 + NODUS_SIG_BYTES;
-        size_t votes_total = (size_t)cc_sig_count * per_vote;
-        if (remaining < votes_total) goto fail;
-        if (votes_total > 0) {
-            memcpy(buf + buf_pos, p, votes_total);
-            buf_pos += votes_total;
-            p += votes_total;
-            remaining -= votes_total;
-        }
-    } else if (type_byte == TX_TYPE_SHIELDED) {
-        /* Phase-C C2.2 — V4 shielded statement. The wire section's statement
-         * fields (anchor[4] ‖ num_input ‖ nf_set[4][4] ‖ num_output ‖
-         * output_commit[4][4] ‖ fee ‖ tx_binding[4] — 330 B, all BE, SAME
-         * field order as the preimage) are hashed VERBATIM; fri_proof_len(4)
-         * + the proof blob are NOT hashed (a re-randomized proof of the same
-         * statement is the same TX). Byte-match of libdna
-         * dnac_tx_compute_hash's shielded arm (transaction.c:341-367) over
-         * the serialize.c wire layout (write_shielded_section:166-193). */
-        const size_t stmt_len = (size_t)DNAC_TX_SHIELDED_FIXED_SIZE - 4;
-        if (remaining < (size_t)DNAC_TX_SHIELDED_FIXED_SIZE) goto fail;
-        memcpy(buf + buf_pos, p, stmt_len);
-        buf_pos += stmt_len;
-        uint32_t fri_len = ((uint32_t)p[stmt_len] << 24)
-                         | ((uint32_t)p[stmt_len + 1] << 16)
-                         | ((uint32_t)p[stmt_len + 2] << 8)
-                         |  (uint32_t)p[stmt_len + 3];
-        p += DNAC_TX_SHIELDED_FIXED_SIZE;
-        remaining -= DNAC_TX_SHIELDED_FIXED_SIZE;
-        /* Blob bounds: a truncated shielded TX fails the recompute
-         * (fail-close) instead of silently hashing a malformed wire. */
-        if (remaining < fri_len) goto fail;
-        p += fri_len;
-        remaining -= fri_len;
-    }
-    /* UNSTAKE, GENESIS, SPEND, BURN, TOKEN_CREATE: no appended fields. */
-
-    /* Suppress unused-variable warnings for optimized paths. */
-    (void)version_byte;
-
-    /* Hash the assembled buffer with SHA3-512 */
-    nodus_key_t hash;
-    int rc = nodus_hash(buf, buf_pos, &hash);
-    free(buf);
-
-    if (rc != 0) return -1;
-
-    memcpy(hash_out, hash.bytes, NODUS_KEY_BYTES);
-    return 0;
-
-fail:
-    free(buf);
-    return -1;
+    /* S1 (Ledger V2): the hand-written preimage walk that lived here was
+     * RETIRED — libdna and libnodus now share the single canonical
+     * implementation in shared/dnac/tx_wire.c (dnac_txw_legacy_tx_hash),
+     * an exact port of this function's pre-S1 body. Byte identity is
+     * pinned by test_tx_hash_kat (fixed literals captured from the pre-S1
+     * algorithm before the port went live) and by
+     * test_witness_tx_hash_parity (an independent third implementation of
+     * the same preimage). Semantics are unchanged: the CALLER-SUPPLIED
+     * signer pubkeys are hashed; the wire's own signers section is
+     * length-walked but never hashed. */
+    return dnac_txw_legacy_tx_hash(chain_id, tx_data, (size_t)tx_len,
+                                   signer_pubkeys, signer_count, hash_out);
 }
 
 /* ════════════════════════════════════════════════════════════════════

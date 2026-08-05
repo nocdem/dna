@@ -43,7 +43,7 @@ int main(void) {
     char tmpdir[] = "/tmp/nodus_test_sentinel_XXXXXX";
     CHECK(mkdtemp(tmpdir) != NULL);
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     memset(&w, 0, sizeof(w));
     snprintf(w.data_path, sizeof(w.data_path), "%s", tmpdir);
     memset(w.chain_id, 0xC1, 32);

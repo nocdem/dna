@@ -270,11 +270,13 @@ int nodus_witness_epoch_snapshot_apply(nodus_witness_t *w,
                                         uint64_t epoch_start_height) {
     if (!w || !w->db) return -1;
 
-    nodus_committee_member_t committee[DNAC_COMMITTEE_SIZE];
+    /* S3: DNAC_MAX_ACTIVE_VALIDATORS members are ~334 KB — heap, never
+     * the stack. Freed on every exit path below. */
+    nodus_committee_member_t *committee = NULL;
     int committee_count = 0;
-    int rc = nodus_committee_get_for_block(w, epoch_start_height,
-                                             committee, DNAC_COMMITTEE_SIZE,
-                                             &committee_count);
+    int rc = nodus_committee_get_for_block_alloc(w, epoch_start_height,
+                                                   &committee,
+                                                   &committee_count);
     if (rc != 0 || committee_count == 0) {
         /* Pre-genesis / empty chain: serialize as the canonical empty
          * snapshot (committee_count=0 || delegation_count=0). */
@@ -293,7 +295,7 @@ int nodus_witness_epoch_snapshot_apply(nodus_witness_t *w,
     size_t cap_total = 2 + cap_vals + 4 + cap_dels;
     if (cap_total < 6) cap_total = 6;
     uint8_t *blob = malloc(cap_total);
-    if (!blob) return -1;
+    if (!blob) { free(committee); return -1; }
     size_t w_off = 0;
 
     be16_into((uint16_t)committee_count, blob + w_off); w_off += 2;
@@ -320,7 +322,7 @@ int nodus_witness_epoch_snapshot_apply(nodus_witness_t *w,
 
     dnac_delegation_record_t *dels =
         malloc(NODUS_EPOCH_MAX_DELEGS_PER_VAL * sizeof(*dels));
-    if (!dels) { free(blob); return -1; }
+    if (!dels) { free(blob); free(committee); return -1; }
 
     for (int i = 0; i < committee_count; i++) {
         int dcount = 0;
@@ -341,6 +343,9 @@ int nodus_witness_epoch_snapshot_apply(nodus_witness_t *w,
         }
     }
     free(dels);
+    /* Last use of the committee array — every path below is committee-free. */
+    free(committee);
+    committee = NULL;
 
     be32_into(total_dels, blob + dcount_off);
 

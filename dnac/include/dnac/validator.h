@@ -40,12 +40,50 @@ extern "C" {
  *
  * Values are wire-stable — serialized as a single byte in the validator record
  * and used across CBOR, Merkle, and TX pipelines. Do not renumber.
+ *
+ * ── FULL LIFECYCLE (Ledger V2 S3) ──────────────────────────────────────
+ *
+ *   STAKE (min self-bond)
+ *        │
+ *        ▼
+ *   PENDING            — DERIVED, NOT STORED. A row whose stored status is
+ *                        ACTIVE but whose active_since_block has not yet
+ *                        cleared DNAC_MIN_TENURE_BLOCKS. The committee
+ *                        selector's tenure gate (nodus_validator_top_n)
+ *                        excludes it; no separate byte value exists.
+ *        │ tenure cleared, NOT selected at the boundary
+ *        ▼
+ *   ELIGIBLE  ◄────────────────────┐  not selected at a boundary
+ *        │                         │
+ *        │ selected at a boundary  │
+ *        ▼                         │
+ *   ACTIVE  ───────────────────────┘
+ *        │
+ *        │ UNSTAKE / Rule N
+ *        ▼
+ *   RETIRING → UNSTAKED   |   AUTO_RETIRED
+ *
+ * Membership changes ONLY at epoch boundaries, inside the block DB
+ * transaction (nodus_witness_vset_apply_boundary_flips). Both ACTIVE and
+ * ELIGIBLE are BONDED states: the self-bond stays locked, the bond is
+ * still counted by the supply invariant, and both remain candidates for
+ * the next boundary's selection. The exit rules (UNSTAKE → RETIRING,
+ * VALIDATOR_UPDATE, DELEGATE targeting) treat the two identically;
+ * committee-scoped rules (attendance, Rule N liveness/auto-retire,
+ * reward settlement) apply to ACTIVE only — which is precisely what the
+ * boundary flips make the status byte mean.
  */
 typedef enum {
-    DNAC_VALIDATOR_ACTIVE       = 0,  /**< Eligible for committee selection. */
+    DNAC_VALIDATOR_ACTIVE       = 0,  /**< In the active set of the current epoch. */
     DNAC_VALIDATOR_RETIRING     = 1,  /**< UNSTAKE requested, cooldown in progress. */
     DNAC_VALIDATOR_UNSTAKED     = 2,  /**< Cooldown complete, self-stake withdrawn. */
-    DNAC_VALIDATOR_AUTO_RETIRED = 3   /**< Auto-retired (Rule N liveness failure). */
+    DNAC_VALIDATOR_AUTO_RETIRED = 3,  /**< Auto-retired (Rule N liveness failure). */
+    /** Bonded, tenured, candidate — NOT in the active set of the current
+     *  epoch; bond remains locked. Became distinguishable from ACTIVE in
+     *  Ledger V2 S3: before S3 the active set was always the whole bonded
+     *  set (top-7 of 7), so one value covered both meanings. Appended, so
+     *  every previously encoded byte keeps its meaning. */
+    DNAC_VALIDATOR_ELIGIBLE     = 4
 } dnac_validator_status_t;
 
 /* ============================================================================
@@ -63,7 +101,14 @@ typedef struct {
     /** Validator Dilithium5 pubkey (used for SPEND verify of the locked self-stake UTXO). */
     uint8_t  pubkey[DNAC_PUBKEY_SIZE];
 
-    /** Always DNAC_SELF_STAKE_AMOUNT while active; zeroed post-UNSTAKE. */
+    /** The validator's OWN bond, raw units; zeroed post-UNSTAKE.
+     *
+     * S3 (owner decision O-3): this is >= DNAC_SELF_STAKE_AMOUNT, no longer
+     * exactly equal to it. apply_stake stores the bond the STAKE TX actually
+     * locked (Σnative_in − Σnative_out − committed_fee); every TX the shipped
+     * client builds locks exactly DNAC_SELF_STAKE_AMOUNT, so live values are
+     * unchanged. Consumers that pay the bond back (UNSTAKE graduation) MUST
+     * read this field, never the macro. */
     uint64_t self_stake;
 
     /** Σ of all delegations to this validator (includes self if Rule S ever lifted). */

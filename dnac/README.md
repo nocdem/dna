@@ -1,6 +1,6 @@
 # DNAC - Post-Quantum Zero-Knowledge Cash over DHT
 
-**Version:** v0.17.8-stake.wip | **TX Wire:** v2 (since v0.17.1) | **Protocol Amounts:** v1 (Transparent)
+**Version:** v0.18.0-ledgerv2-s3 | **TX Wire:** v2 (since v0.17.1) | **Protocol Amounts:** v1 (Transparent)
 
 DNAC is a privacy-preserving digital cash system built on top of [DNA Connect](https://github.com/nocdem/dna). It lives in the DNA monorepo at `/opt/dna/dnac/`.
 
@@ -29,7 +29,9 @@ DNAC is a privacy-preserving digital cash system built on top of [DNA Connect](h
 - **Per-Token Balances** - Wallet tracks separate UTXO sets per token_id (v0.13.0)
 - **Name Resolution** - CLI send accepts DNA name, auto-resolves to fingerprint (v0.13.0)
 - **TX Wire v2** - 82-byte header with explicit `committed_fee` field, SEC-06 domain separator, min-fee gate 0.01 DNAC (v0.17.1)
-- **Stake-Delegation v1** - Stake-weighted top-7 committee as BFT voting authority; per-block reward accrual; pull-based `CLAIM_REWARD` (`stake-delegation-v1`, v0.17.x)
+- **Shared TX codec (Ledger V2 S1, 2026-08-05)** - ONE legacy tx-hash preimage implementation for client AND witness (`shared/dnac/tx_wire.c` `dnac_txw_legacy_tx_hash`; the witness's independent hand-written mirror is retired, byte identity pinned by `nodus/tests/test_tx_hash_kat.c` literals captured from the pre-S1 algorithm). Also ships the INACTIVE Transaction Wire V3 codec (106-byte BE header: `wire_version=3 ‖ tx_type ‖ domain_id ‖ pool_id ‖ ruleset_version ‖ statement_version ‖ expiry_height ‖ committed_fee ‖ timestamp ‖ tx_hash[64] ‖ body_len ‖ body`; tx-hash preimage under the 16-byte `DNAC_TX_V5` tag binding chain_id + full context) + canonical `ExecutionContext` (50 B) + canonical IDs (`shared/dnac/ledger_ids.h`: SYSTEM=0, DNA_CORE=1, `DNAC_SHIELDED_POOL_V1`=1). Every active consensus path still gates on wire version 2 — V3 activates only with the Ledger V2 devnet reset. Genesis Rule P.2's supply term now reads the committed `chain_def.initial_supply_raw` on the client too (witness already did), making per-chain supply generic; the 10M self-bond stays macro-pinned until the S6 manifest adds the field.
+- **Stake-Delegation v1** - Stake-ranked committee as BFT voting authority; per-block reward accrual; pull-based `CLAIM_REWARD` (`stake-delegation-v1`, v0.17.x)
+- **Dynamic validator set (Ledger V2 S3, 2026-08-05)** - The committee size is a governance parameter, not a constant: `DNAC_CFG_TARGET_ACTIVE_COUNT` (chain-config param_id **4**, range `[7, 128]` = `[DNAC_COMMITTEE_SIZE, DNAC_MAX_ACTIVE_VALIDATORS]`, SAFETY grace class) is sampled at each **epoch start height**, so it can never resize a live committee mid-epoch. The authoritative membership for an epoch is its **validator-set snapshot** (canonical codec `shared/dnac/vset_wire.h`, tag `"DNA.VSET.v1"` — 78-byte header + 2642 B/entry), frozen one epoch ahead at every boundary and at genesis, and stored in the witness `validator_set_snapshots` table. New validator status **`DNAC_VALIDATOR_ELIGIBLE = 4`** — bonded and tenured but not seated this epoch; boundary flips move `ACTIVE ↔ ELIGIBLE` per the snapshot, `DELEGATE`/`UNSTAKE`/`VALIDATOR_UPDATE` accept `ELIGIBLE` targets, while Rule N liveness and attendance stay `ACTIVE`-scoped. Self-bond is now `>= DNAC_SELF_STAKE_AMOUNT` (10M DNAC) rather than exactly equal, derived from the STAKE TX's own flow (`bond = Σnative_in − Σnative_out − committed_fee`) and stored in `validators.self_stake`; UNSTAKE graduation repays that actual bond. Quorum everywhere is `dna_bft_quorum(n) = (2n)/3+1` over the set governing the height (n=7 ⇒ 5, unchanged on the live chain).
 - **F17 Committee Enforcement** - Genesis committee cache pin, fee_pool rollback on commit failure (nodus v0.15.1)
 - **Hard-Fork Mechanism v1** - `DNAC_TX_CHAIN_CONFIG` allows committee-voted consensus-parameter changes without chain wipe (v0.14+; design: `docs/plans/2026-04-19-hard-fork-mechanism-design.md`)
 - **Merkle State Root** - Block commits include SHA3-512 `state_root` over UTXO/validator/delegation/reward/chain_config roots (v0.11.0; v0.14+ added chain_config input)
@@ -266,8 +268,9 @@ PROPOSE → PREVOTE → PRECOMMIT → COMMIT
 
 | Parameter | Value | Description |
 |-----------|-------|-------------|
-| Witnesses | Dynamic | Discovered at runtime via announcements |
-| Quorum | 2f+1 | PBFT quorum for N = 3f+1 witnesses |
+| Voting authority | Chain-derived | The epoch's validator-set snapshot; the gossip roster is transport-only |
+| Active set size | `DNAC_CFG_TARGET_ACTIVE_COUNT` | Chain-config param 4, `[7, 128]`, sampled at the epoch start height (default 7) |
+| Quorum | `dna_bft_quorum(n) = (2n)/3+1` | `n` = size of the set governing the height (n=7 ⇒ 5) |
 | Leader Election | `(epoch + view) % N` | Rotates hourly |
 
 ### Features
@@ -301,7 +304,7 @@ All blockchain state is stored on BFT witnesses. DHT inbox delivery was removed 
 
 ## Status
 
-**Testnet** - v0.17.8-stake.wip. Not for production use. `stake-delegation-v1` is merged to main and deployed. Runs on a live 7-witness testnet cluster with real tester balances; the active chain ID has rotated through several wipes (each consensus/block-format change requires a stop-all deploy + chain wipe) — query the cluster for the current chain rather than relying on a hardcoded ID here.
+**Testnet** - v0.18.0-ledgerv2-s3. Not for production use. `stake-delegation-v1` is merged to main and deployed. Runs on a live 7-witness testnet cluster with real tester balances; the active chain ID has rotated through several wipes (each consensus/block-format change requires a stop-all deploy + chain wipe) — query the cluster for the current chain rather than relying on a hardcoded ID here.
 
 ### Implemented
 

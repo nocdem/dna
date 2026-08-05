@@ -82,7 +82,8 @@ static int insert_utxo(nodus_witness_t *w, uint8_t marker) {
 static void test_root_independent_of_insertion_order(void) {
     TEST("UTXO root independent of insertion order");
 
-    nodus_witness_t w1, w2;
+    static nodus_witness_t w1, w2;   /* S3: multi-MB — static, never stack;
+                                      * setup_witness memsets both. */
     if (setup_witness(&w1) != 0) { FAIL("setup w1"); return; }
     if (setup_witness(&w2) != 0) { FAIL("setup w2"); sqlite3_close(w1.db); return; }
 
@@ -108,7 +109,8 @@ done:
 static void test_root_changes_on_amount_flip(void) {
     TEST("UTXO root changes when an amount flips by 1");
 
-    nodus_witness_t w1, w2;
+    static nodus_witness_t w1, w2;   /* S3: multi-MB — static, never stack;
+                                      * setup_witness memsets both. */
     if (setup_witness(&w1) != 0) { FAIL("setup w1"); return; }
     if (setup_witness(&w2) != 0) { FAIL("setup w2"); sqlite3_close(w1.db); return; }
 
@@ -136,7 +138,8 @@ done:
 static void test_empty_utxo_set_root_deterministic(void) {
     TEST("empty UTXO set has deterministic non-zero root");
 
-    nodus_witness_t w1, w2;
+    static nodus_witness_t w1, w2;   /* S3: multi-MB — static, never stack;
+                                      * setup_witness memsets both. */
     if (setup_witness(&w1) != 0) { FAIL("setup w1"); return; }
     if (setup_witness(&w2) != 0) { FAIL("setup w2"); sqlite3_close(w1.db); return; }
 

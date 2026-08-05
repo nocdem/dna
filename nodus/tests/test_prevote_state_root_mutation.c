@@ -229,7 +229,7 @@ static int insert_seeded_utxo(nodus_witness_t *w, uint8_t seed,
  * could differ from each other even without a malicious leader. */
 static void test_deterministic_recompute(void) {
     T_START("F-CONS-06: recompute is deterministic");
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup_witness(&w) != 0) { T_FAIL("setup"); return; }
 
     if (insert_seeded_utxo(&w, 0x11, 100) != 0 ||
@@ -261,7 +261,7 @@ static void test_deterministic_recompute(void) {
  * leader's claimed bytes as an input to any further derivation. */
 static void test_mutation_rejects(void) {
     T_START("F-CONS-06: one-byte mutation in leader's claim is rejected");
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup_witness(&w) != 0) { T_FAIL("setup"); return; }
 
     if (insert_seeded_utxo(&w, 0x44, 400) != 0 ||
@@ -309,7 +309,7 @@ static void test_mutation_rejects(void) {
  * state_roots must still differ. */
 static void test_state_drift_detected(void) {
     T_START("F-CONS-06: follower state drift detects stale leader claim");
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup_witness(&w) != 0) { T_FAIL("setup"); return; }
 
     if (insert_seeded_utxo(&w, 0x66, 600) != 0) {
@@ -349,7 +349,7 @@ static void test_state_drift_detected(void) {
  * follower that was mid-wipe. Guard against that regression. */
 static void test_empty_anchor_is_nonzero(void) {
     T_START("F-CONS-06: empty-state root is non-zero and stable");
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup_witness(&w) != 0) { T_FAIL("setup"); return; }
 
     uint8_t root[64];

@@ -75,7 +75,10 @@ int nodus_chain_config_db_migrate(nodus_witness_t *w);
  *   - proposer timer: chain_config_get(BLOCK_INTERVAL_SEC, h, default)
  *
  * @param w              Witness context (w->db must be open).
- * @param param_id       dnac_chain_config_param_id_t value (1..3).
+ * @param param_id       dnac_chain_config_param_id_t value
+ *                       (1..DNAC_CFG_PARAM_MAX_ID; 4 = TARGET_ACTIVE_COUNT
+ *                       since Ledger V2 S3). Out-of-range ids return
+ *                       default_value.
  * @param current_block  Chain height at which to evaluate the override.
  * @param default_value  Returned if no active override exists.
  * @return Active value on success; default_value on no-row / null args.
@@ -121,10 +124,17 @@ int nodus_chain_config_compute_root(nodus_witness_t *w, uint8_t out_root[64]);
  *   4. Grace: effective_block >= commit_block + grace_period_for_param
  *      (Rule CC-C). Ergonomic params (MAX_TXS) use
  *      DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS (1 hour); safety-critical
- *      params (BLOCK_INTERVAL_SEC, INFLATION_START_BLOCK) use
+ *      params (BLOCK_INTERVAL_SEC, INFLATION_START_BLOCK, and — since
+ *      Ledger V2 S3 — TARGET_ACTIVE_COUNT) use
  *      DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS (24 hours).
- *   5. Committee membership: each vote's witness_id MUST be in the
- *      current top-7 committee at commit_block - 1 (Rule CC-F).
+ *   5. Committee membership + quorum (Rule CC-F). The committee governing
+ *      commit_block - 1 is read from chain state; its SIZE is whatever the
+ *      snapshot returns, never a compile-time constant. Two bounds:
+ *        (a) committee_sig_count <= committee_count — a proposal cannot
+ *            carry more votes than that committee has seats;
+ *        (b) verified >= dna_bft_quorum(committee_count).
+ *      At the DNA chain's 7 seats dna_bft_quorum(7) == 5, so this is
+ *      exactly the historical 5-of-7 rule.
  *   6. Signature verify: each committee_votes[i].signature valid against
  *      that witness's Dilithium5 pubkey over the proposal preimage.
  *   7. Monotonicity (Q5 mitigation): once INFLATION_START_BLOCK has been
@@ -261,7 +271,14 @@ int nodus_witness_handle_cc_vote_req(nodus_witness_t *w,
  * ========================================================================== */
 
 #define NODUS_CC_RATE_LIMIT_WINDOW_MS        5000u
-#define NODUS_CC_RATE_LIMIT_MAX_PROPOSERS    7u    /* = DNAC_COMMITTEE_SIZE */
+/* One slot per potentially-active validator (S3: was 7 = the initial seat
+ * count). Sized to DNA_MAX_ACTIVE_VALIDATORS so a committee larger than the
+ * bootstrap 7 cannot force LRU eviction between legitimate proposers. Kept
+ * as a literal — this header is deliberately free of shared/ and dnac/
+ * includes so libnodus builds standalone; the value is pinned against
+ * DNA_MAX_ACTIVE_VALIDATORS by a _Static_assert in
+ * nodus_witness_chain_config.c, alongside the other CC_* mirror pins. */
+#define NODUS_CC_RATE_LIMIT_MAX_PROPOSERS    128u
 
 /** One tracked proposer. `in_use` false = free slot. */
 typedef struct {
@@ -301,9 +318,10 @@ int nodus_cc_rate_limit_check(nodus_cc_rate_limit_table_t *t,
 /**
  * Record an accepted w_cc_vote_req. Upserts into an existing slot if
  * `sender_id` is already tracked, else claims the first free slot, else
- * evicts the oldest entry (LRU) — the table is sized to the committee
- * so eviction only happens if a non-committee witness_id somehow slips
- * through, in which case the oldest legitimate entry is preserved.
+ * evicts the oldest entry (LRU) — the table is sized to the maximum active
+ * validator set, so eviction only happens if a non-committee witness_id
+ * somehow slips through, in which case the oldest legitimate entry is
+ * preserved.
  *
  * The rate_limited_count counter is NOT touched here — only on reject.
  */

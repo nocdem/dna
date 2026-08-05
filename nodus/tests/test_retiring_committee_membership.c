@@ -142,7 +142,7 @@ int main(void) {
     char data_path[] = "/tmp/test_retiring_committee_membership_XXXXXX";
     CHECK(mkdtemp(data_path) != NULL);
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     memset(&w, 0, sizeof(w));
     snprintf(w.data_path, sizeof(w.data_path), "%s", data_path);
     w.cached_committee_epoch_start = UINT64_MAX;

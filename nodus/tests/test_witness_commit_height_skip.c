@@ -68,7 +68,7 @@ static int setup_witness(nodus_witness_t *w, uint64_t initial_height) {
 int main(void) {
     printf("\nFaz 1.1 — round skip detection\n");
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup_witness(&w, 114) != 0) {
         fprintf(stderr, "setup failed\n");
         return 1;

@@ -72,9 +72,13 @@ int nodus_validator_update(nodus_witness_t *w,
  *
  * @return 0 on success, -1 on error.
  */
+/* S3: the third parameter is the TENURE ANCHOR — the epoch start height
+ * (or INT64_MAX from the bootstrap path to disable the gate). The old
+ * lookback anchor made the gap epochs (E, 3E] unsatisfiable; genesis-
+ * seeded rows (active_since_block <= 1) are always tenured. */
 int nodus_validator_top_n(nodus_witness_t *w,
                            int n,
-                           uint64_t lookback_block,
+                           uint64_t tenure_anchor,
                            dnac_validator_record_t *out,
                            int *count_out);
 

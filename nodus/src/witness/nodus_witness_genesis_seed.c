@@ -155,22 +155,45 @@ int nodus_witness_genesis_seed_validators(nodus_witness_t *w,
      * is preserved — subsequent STAKE/DELEGATE do NOT shift the cached
      * roster until the next epoch, eliminating the populate-timing drift
      * that caused state_root divergence under F17 round-start refresh. */
-    nodus_committee_member_t boot[DNAC_COMMITTEE_SIZE];
+    /* S3: heap — DNAC_MAX_ACTIVE_VALIDATORS members are ~334 KB. The
+     * request is made at the release ceiling; compute_for_epoch narrows
+     * the result to the epoch's chain-derived target itself (at genesis
+     * there is no chain_config row, so that is DNAC_COMMITTEE_SIZE). */
+    nodus_committee_member_t *boot =
+        calloc((size_t)DNAC_MAX_ACTIVE_VALIDATORS, sizeof(*boot));
+    if (!boot) {
+        fprintf(stderr, "%s: bootstrap committee alloc failed\n", LOG_TAG);
+        return -1;
+    }
     int boot_count = 0;
     int rc2 = nodus_committee_compute_for_epoch(w, 0ULL, boot,
-                                                  DNAC_COMMITTEE_SIZE,
+                                                  DNAC_MAX_ACTIVE_VALIDATORS,
                                                   &boot_count);
     if (rc2 != 0) {
         fprintf(stderr, "%s: committee_compute_for_epoch(0) failed rc=%d\n",
                 LOG_TAG, rc2);
+        free(boot);
+        return -1;
+    }
+    if (boot_count < 0 || boot_count > DNAC_MAX_ACTIVE_VALIDATORS) {
+        fprintf(stderr, "%s: bootstrap committee count %d out of range\n",
+                LOG_TAG, boot_count);
+        free(boot);
         return -1;
     }
     for (int i = 0; i < boot_count; i++) {
         memcpy(w->cached_committee_pubkeys[i], boot[i].pubkey,
                DNAC_PUBKEY_SIZE);
         w->cached_committee_stakes[i]         = boot[i].total_stake;
+        /* S3: the cache now carries the real bond, so a cache HIT and a
+         * cache MISS return identical members (nodus_witness_committee.c
+         * nodus_committee_get_for_block). Seeding it here without the
+         * bond would have re-introduced the asymmetry for the whole
+         * bootstrap epoch. */
+        w->cached_committee_self_stakes[i]    = boot[i].self_stake;
         w->cached_committee_commission_bps[i] = boot[i].commission_bps;
     }
+    free(boot);
     w->cached_committee_count       = boot_count;
     w->cached_committee_epoch_start = 0ULL;
 

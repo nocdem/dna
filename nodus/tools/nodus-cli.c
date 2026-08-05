@@ -18,6 +18,7 @@
 #include "protocol/nodus_tier2.h"
 #include "protocol/nodus_wire.h"
 #include "crypto/nodus_sign.h"
+#include "crypto/hash/qgp_sha3.h"   /* S3: stake verb unstake-dest fp */
 #include "crypto/nodus_identity.h"
 #include "nodus/nodus.h"                    /* Stage E.2 helper + dnac_committee */
 #include "nodus/nodus_types.h"
@@ -848,6 +849,8 @@ static int cc_param_name_to_id(const char *name, uint8_t *out_id) {
         { "block_interval_sec",   DNAC_CFG_BLOCK_INTERVAL_SEC },
         { "INFLATION_START_BLOCK", DNAC_CFG_INFLATION_START_BLOCK },
         { "inflation_start_block", DNAC_CFG_INFLATION_START_BLOCK },
+        { "TARGET_ACTIVE_COUNT",  DNAC_CFG_TARGET_ACTIVE_COUNT },
+        { "target_active_count",  DNAC_CFG_TARGET_ACTIVE_COUNT },
     };
     for (size_t i = 0; i < sizeof(map)/sizeof(map[0]); i++) {
         if (strcmp(name, map[i].n) == 0) { *out_id = map[i].id; return 0; }
@@ -892,8 +895,18 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
         fprintf(stderr,
             "Usage: chain-config propose --param <NAME> --value <N> "
             "--effective <BLOCK> [--nonce <N>]\n"
-            "Params: MAX_TXS_PER_BLOCK, BLOCK_INTERVAL_SEC, "
-            "INFLATION_START_BLOCK\n");
+            "Params (--value range):\n"
+            "  MAX_TXS_PER_BLOCK      [1, %llu]\n"
+            "  BLOCK_INTERVAL_SEC     [%llu, %llu]\n"
+            "  INFLATION_START_BLOCK  [0, %llu]\n"
+            "  TARGET_ACTIVE_COUNT    [%llu, %llu]   "
+            "(active validator set; epoch-boundary effective)\n",
+            (unsigned long long)DNAC_CFG_MAX_TXS_HARD_CAP,
+            (unsigned long long)DNAC_CFG_MIN_BLOCK_INTERVAL_SEC,
+            (unsigned long long)DNAC_CFG_MAX_BLOCK_INTERVAL_SEC,
+            (unsigned long long)DNAC_CFG_MAX_INFLATION_START_BLOCK,
+            (unsigned long long)DNAC_CFG_MIN_TARGET_ACTIVE,
+            (unsigned long long)DNAC_CFG_MAX_TARGET_ACTIVE);
         return 1;
     }
     uint8_t param_id = 0;
@@ -929,17 +942,26 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
     nodus_dnac_utxo_result_t utxos;
     memset(&utxos, 0, sizeof(utxos));
     bool utxos_valid = false;
+    /* S3: heap buffers, declared HERE so every `goto done` below sees
+     * them initialized (a goto over an initialized declaration would
+     * leave the pointer indeterminate at the cleanup label). */
+    nodus_dnac_committee_result_t *committee = NULL;   /* ~370 KB */
+    dnac_chain_config_collected_vote_t *votes = NULL;  /* ~597 KB */
 
-    /* 3. Committee query. */
-    nodus_dnac_committee_result_t committee;
-    memset(&committee, 0, sizeof(committee));
-    if (nodus_client_dnac_committee(&client, &committee) != 0) {
+    /* 3. Committee query. S3: ~370 KB result (entries sized to the
+     * release ceiling, nodus_types.h) — heap, never the stack. */
+    committee = calloc(1, sizeof(*committee));
+    if (!committee) {
+        fprintf(stderr, "out of memory\n");
+        goto done;
+    }
+    if (nodus_client_dnac_committee(&client, committee) != 0) {
         fprintf(stderr, "committee query failed\n");
         goto done;
     }
-    if (committee.count < DNAC_CHAIN_CONFIG_MIN_SIGS) {
+    if (committee->count < DNAC_CHAIN_CONFIG_MIN_SIGS) {
         fprintf(stderr, "Committee size %d < min_sigs %d — quorum impossible\n",
-                committee.count, DNAC_CHAIN_CONFIG_MIN_SIGS);
+                committee->count, DNAC_CHAIN_CONFIG_MIN_SIGS);
         goto done;
     }
 
@@ -951,10 +973,10 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
         goto done;
     }
     int self_idx = -1;
-    for (int i = 0; i < committee.count; i++) {
+    for (int i = 0; i < committee->count; i++) {
         uint8_t m_wid[32];
         if (nodus_chain_config_derive_witness_id(
-                committee.entries[i].pubkey, m_wid) != 0) continue;
+                committee->entries[i].pubkey, m_wid) != 0) continue;
         if (memcmp(m_wid, caller_wid, 32) == 0) { self_idx = i; break; }
     }
     if (self_idx < 0) {
@@ -972,8 +994,8 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
      * valid_before gives plenty of slack for the collect+commit round
      * trip — use the safety grace period as the outer bound so even
      * safety-critical proposals can settle before valid_before lapses. */
-    uint64_t signed_at_block = committee.block_height;
-    uint64_t valid_before = committee.block_height +
+    uint64_t signed_at_block = committee->block_height;
+    uint64_t valid_before = committee->block_height +
                              (uint64_t)DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS;
     if (effective_block <= signed_at_block) {
         fprintf(stderr, "--effective (%llu) must be > current block (%llu)\n",
@@ -1005,10 +1027,21 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
         goto done;
     }
 
-    /* 8. Collect votes. Self-vote first, then fan out via Stage E.2 helper. */
-    dnac_chain_config_collected_vote_t votes[DNAC_COMMITTEE_SIZE];
+    /* 8. Collect votes. Self-vote first, then fan out via Stage E.2 helper.
+     *
+     * S3: sized to the release ceiling and HEAP-allocated — 128 collected
+     * votes are ~597 KB. The static assert pins the committee-query wire
+     * capacity to this buffer so the two can never drift apart again. */
+    _Static_assert(sizeof(((nodus_dnac_committee_result_t *)0)->entries) /
+                   sizeof(((nodus_dnac_committee_result_t *)0)->entries[0])
+                   <= DNAC_MAX_ACTIVE_VALIDATORS,
+                   "committee-query wire outgrew the local vote buffer");
+    votes = calloc((size_t)DNAC_MAX_ACTIVE_VALIDATORS, sizeof(*votes));
+    if (!votes) {
+        fprintf(stderr, "out of memory\n");
+        goto done;
+    }
     int vote_count = 0;
-    memset(votes, 0, sizeof(votes));
 
     if (nodus_chain_config_sign_vote(identity.pk.bytes, identity.sk.bytes,
                                        digest, votes[0].witness_id,
@@ -1029,9 +1062,9 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
     req.signed_at_block        = signed_at_block;
     req.valid_before_block     = valid_before;
 
-    for (int i = 0; i < committee.count; i++) {
+    for (int i = 0; i < committee->count; i++) {
         if (i == self_idx) continue;
-        const nodus_dnac_committee_entry_t *peer = &committee.entries[i];
+        const nodus_dnac_committee_entry_t *peer = &committee->entries[i];
         printf("Requesting vote from peer #%d", i + 1);
         if (peer->address[0]) printf(" (%s)", peer->address);
         printf("... ");
@@ -1049,7 +1082,7 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
                                               supply.chain_id, &req,
                                               5000, &rsp);
         if (vrc == 0 && rsp.accepted) {
-            if (vote_count >= DNAC_COMMITTEE_SIZE) { printf("DROP (full)\n"); continue; }
+            if (vote_count >= DNAC_MAX_ACTIVE_VALIDATORS) { printf("DROP (full)\n"); continue; }
             memcpy(votes[vote_count].witness_id, rsp.witness_id, 32);
             memcpy(votes[vote_count].signature, rsp.signature,
                    DNAC_SIGNATURE_SIZE);
@@ -1210,6 +1243,217 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
 done:
     if (tx) dnac_free_transaction(tx);
     if (utxos_valid) nodus_client_free_utxo_result(&utxos);
+    free(committee);   /* S3: heap committee result (NULL-safe) */
+    free(votes);       /* S3: heap vote buffer (NULL-safe) */
+    nodus_client_close(&client);
+    return rc;
+}
+
+/* ── S3 — `stake` verb ─────────────────────────────────────────────
+ *
+ * Bonds THIS NODE's witness identity (-i dir) as a validator: builds a
+ * DNAC_TX_STAKE whose signer is the node's Dilithium5 key, spending
+ * UTXOs that already sit on the node identity's fingerprint (fund it
+ * first, e.g. `dna send <node_fp> ...`). This is the ops/harness path
+ * that lets a nodus-server join the validator set with the SAME key it
+ * votes with — the wallet CLI's `dna stake` bonds the wallet identity,
+ * which no server runs.
+ *
+ * --bond RAW (default exactly the DNA minimum) supports the S3 extra
+ * self-bond rule: bond = Σin − Σchange − fee, witness requires
+ * bond >= DNAC_SELF_STAKE_AMOUNT. unstake destination = this identity's
+ * own fingerprint. */
+static int cmd_stake(const char *server_ip, uint16_t server_port,
+                     int argc, char **argv, int cmd_start) {
+    uint64_t commission_bps = 500;
+    uint64_t bond_raw = DNAC_SELF_STAKE_AMOUNT;
+
+    for (int i = cmd_start + 1; i < argc; i++) {
+        const char *a = argv[i];
+        if (strcmp(a, "--commission") == 0 && i + 1 < argc) {
+            commission_bps = strtoull(argv[++i], NULL, 10);
+        } else if (strcmp(a, "--bond") == 0 && i + 1 < argc) {
+            bond_raw = strtoull(argv[++i], NULL, 10);
+        } else {
+            fprintf(stderr, "Unknown arg: %s\n"
+                    "Usage: stake [--commission BPS] [--bond RAW>=%llu]\n",
+                    a, (unsigned long long)DNAC_SELF_STAKE_AMOUNT);
+            return 1;
+        }
+    }
+    if (commission_bps > 10000) {
+        fprintf(stderr, "--commission must be 0..10000\n");
+        return 1;
+    }
+    if (bond_raw < DNAC_SELF_STAKE_AMOUNT) {
+        fprintf(stderr, "--bond %llu < minimum self-bond %llu\n",
+                (unsigned long long)bond_raw,
+                (unsigned long long)DNAC_SELF_STAKE_AMOUNT);
+        return 1;
+    }
+
+    nodus_client_t client;
+    nodus_client_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    snprintf(cfg.servers[0].ip, sizeof(cfg.servers[0].ip), "%s", server_ip);
+    cfg.servers[0].port = server_port;
+    cfg.server_count    = 1;
+    cfg.auto_reconnect  = false;
+
+    if (nodus_client_init(&client, &cfg, &identity) != 0) {
+        fprintf(stderr, "client_init failed\n");
+        return 1;
+    }
+    if (nodus_client_connect(&client) != 0) {
+        fprintf(stderr, "client_connect failed\n");
+        nodus_client_close(&client);
+        return 1;
+    }
+
+    int rc = 1;
+    dnac_transaction_t *tx = NULL;
+    nodus_dnac_utxo_result_t utxos;
+    memset(&utxos, 0, sizeof(utxos));
+    bool utxos_valid = false;
+
+    /* Fee + chain_id. */
+    nodus_dnac_fee_info_t fee_info;
+    memset(&fee_info, 0, sizeof(fee_info));
+    if (nodus_client_dnac_fee_info(&client, &fee_info) != 0) {
+        fprintf(stderr, "fee info query failed\n");
+        goto done;
+    }
+    uint64_t fee = fee_info.min_fee;
+
+    nodus_dnac_supply_result_t supply;
+    memset(&supply, 0, sizeof(supply));
+    if (nodus_client_dnac_supply(&client, &supply) != 0) {
+        fprintf(stderr, "supply query (for chain_id) failed\n");
+        goto done;
+    }
+
+    /* UTXO selection: need bond + fee on the NODE identity's fp. */
+    uint64_t need = bond_raw + fee;
+    if (need < bond_raw) { fprintf(stderr, "overflow\n"); goto done; }
+
+    if (nodus_client_dnac_utxo(&client, identity.fingerprint, 100,
+                                 &utxos) != 0) {
+        fprintf(stderr, "utxo query failed\n");
+        goto done;
+    }
+    utxos_valid = true;
+    if (utxos.count == 0) {
+        fprintf(stderr, "No UTXOs on this node identity (%.16s…). Fund it "
+                "first: dna send <node_fp> %llu ...\n",
+                identity.fingerprint, (unsigned long long)need);
+        goto done;
+    }
+
+    static const uint8_t stake_zero_token[DNAC_TOKEN_ID_SIZE] = {0};
+    dnac_utxo_t selected[DNAC_MAX_UTXO_QUERY_RESULTS];
+    int selected_count = 0;
+    uint64_t total_input = 0;
+    for (int i = 0; i < utxos.count && total_input < need; i++) {
+        const nodus_dnac_utxo_entry_t *e = &utxos.entries[i];
+        /* native DNAC only — same filter as the cc-propose verb above */
+        if (memcmp(e->token_id, stake_zero_token, DNAC_TOKEN_ID_SIZE) != 0)
+            continue;
+        dnac_utxo_t *s = &selected[selected_count++];
+        memset(s, 0, sizeof(*s));
+        s->version = 1;
+        memcpy(s->tx_hash, e->tx_hash, DNAC_TX_HASH_SIZE);
+        s->output_index = e->output_index;
+        s->amount       = e->amount;
+        memcpy(s->nullifier, e->nullifier, DNAC_NULLIFIER_SIZE);
+        snprintf(s->owner_fingerprint, sizeof(s->owner_fingerprint), "%s",
+                 identity.fingerprint);
+        total_input += e->amount;
+    }
+    if (total_input < need) {
+        fprintf(stderr, "Insufficient native DNAC: have %llu raw, need %llu\n",
+                (unsigned long long)total_input, (unsigned long long)need);
+        goto done;
+    }
+    uint64_t change = total_input - need;
+
+    /* Build the STAKE TX (mirrors dnac/src/transaction/stake.c). */
+    tx = dnac_tx_create(DNAC_TX_STAKE);
+    if (!tx) { fprintf(stderr, "tx_create failed\n"); goto done; }
+
+    for (int i = 0; i < selected_count; i++) {
+        if (dnac_tx_add_input(tx, &selected[i]) != DNAC_SUCCESS) {
+            fprintf(stderr, "tx_add_input failed\n");
+            goto done;
+        }
+    }
+    if (change > 0) {
+        uint8_t seed_unused[32];
+        if (dnac_tx_add_output(tx, identity.fingerprint, change,
+                                seed_unused) != DNAC_SUCCESS) {
+            fprintf(stderr, "tx_add_output(change) failed\n");
+            goto done;
+        }
+    }
+
+    tx->stake_fields.commission_bps = (uint16_t)commission_bps;
+    /* Unstake destination = this identity's own raw fingerprint
+     * (SHA3-512 of the Dilithium5 pubkey — the same derivation the
+     * hex identity.fingerprint encodes). */
+    qgp_sha3_512(identity.pk.bytes, NODUS_PK_BYTES,
+                 tx->stake_fields.unstake_destination_fp);
+
+    memcpy(tx->chain_id, supply.chain_id, 32);
+    tx->committed_fee = fee;
+
+    memcpy(tx->signers[0].pubkey, identity.pk.bytes, DNAC_PUBKEY_SIZE);
+    tx->signer_count = 1;
+
+    if (dnac_tx_compute_hash(tx, tx->tx_hash) != DNAC_SUCCESS) {
+        fprintf(stderr, "tx_compute_hash failed\n");
+        goto done;
+    }
+
+    nodus_sig_t sender_sig;
+    nodus_sign(&sender_sig, tx->tx_hash, DNAC_TX_HASH_SIZE, &identity.sk);
+    memcpy(tx->signers[0].signature, sender_sig.bytes, DNAC_SIGNATURE_SIZE);
+
+    static uint8_t stake_tx_bytes[DNAC_MAX_TX_SIZE];
+    size_t tx_len = 0;
+    if (dnac_tx_serialize(tx, stake_tx_bytes, sizeof(stake_tx_bytes),
+                            &tx_len) != DNAC_SUCCESS) {
+        fprintf(stderr, "tx_serialize failed\n");
+        goto done;
+    }
+
+    nodus_pubkey_t sender_pk;
+    memcpy(sender_pk.bytes, identity.pk.bytes, NODUS_PK_BYTES);
+
+    nodus_dnac_spend_result_t spend_result;
+    memset(&spend_result, 0, sizeof(spend_result));
+    /* The RPC 'fee' parameter is the DECLARED input-output delta, not the
+     * committed fee: the witness's Check 5 compares it against
+     * Σin − Σout (nodus_witness_verify.c "fee mismatch"), and the wallet
+     * declares exactly that (dnac/src/transaction/builder.c:352-355).
+     * For STAKE the delta is bond + fee. */
+    int srv_rc = nodus_client_dnac_spend(&client, tx->tx_hash, stake_tx_bytes,
+                                           (uint32_t)tx_len, &sender_pk,
+                                           &sender_sig, bond_raw + fee,
+                                           &spend_result);
+    if (srv_rc != 0) {
+        fprintf(stderr, "dnac_spend RPC failed (rc=%d)\n", srv_rc);
+        goto done;
+    }
+
+    printf("\nSTAKE submitted. hash=");
+    for (int i = 0; i < 8; i++) printf("%02x", tx->tx_hash[i]);
+    printf("... bond=%llu fee=%llu change=%llu commission=%llubps\n",
+           (unsigned long long)bond_raw, (unsigned long long)fee,
+           (unsigned long long)change, (unsigned long long)commission_bps);
+    rc = 0;
+
+done:
+    if (tx) dnac_free_transaction(tx);
+    if (utxos_valid) nodus_client_free_utxo_result(&utxos);
     nodus_client_close(&client);
     return rc;
 }
@@ -1233,7 +1477,11 @@ static void usage(const char *prog) {
     fprintf(stderr, "  ch_listen <uuid> [logfile]  Subscribe to channel on TCP 4003, log posts\n");
 #ifdef NODUS_CLI_HAS_DNAC
     fprintf(stderr, "  chain-config propose --param <NAME> --value <N> --effective <BLOCK>\n");
+    fprintf(stderr, "  stake [--commission BPS] [--bond RAW]   Bond this node identity as validator (S3)\n");
     fprintf(stderr, "                              [--nonce <N>]  (committee operator only)\n");
+    fprintf(stderr, "                  NAME: MAX_TXS_PER_BLOCK | BLOCK_INTERVAL_SEC |\n");
+    fprintf(stderr, "                        INFLATION_START_BLOCK | TARGET_ACTIVE_COUNT\n");
+    fprintf(stderr, "                  run without --value for per-param ranges\n");
 #endif
 }
 
@@ -1340,6 +1588,13 @@ int main(int argc, char **argv) {
         }
         int rc = cmd_chain_config_propose(server_ip, server_port,
                                             argc, argv, optind);
+        nodus_identity_clear(&identity);
+        return rc;
+    }
+
+    /* S3 — stake: bond THIS node identity as a validator. */
+    if (strcmp(command, "stake") == 0) {
+        int rc = cmd_stake(server_ip, server_port, argc, argv, optind);
         nodus_identity_clear(&identity);
         return rc;
     }

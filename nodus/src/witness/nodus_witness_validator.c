@@ -302,8 +302,21 @@ int nodus_validator_top_n(nodus_witness_t *w,
         "       consecutive_missed_epochs, last_signed_block,"
         "       signed_blocks_this_epoch "
         "FROM validators "
-        "WHERE status = ? "
-        "  AND active_since_block + ? <= ? "
+        /* S3: the candidate set is every BONDED validator. ACTIVE and
+         * ELIGIBLE are both bonded — ELIGIBLE simply means "not in the
+         * active set of the CURRENT epoch". Filtering on ACTIVE alone
+         * would make the boundary flips absorbing: a validator that lost
+         * its seat once could never be re-selected. RETIRING / UNSTAKED /
+         * AUTO_RETIRED stay excluded (exit states). */
+        "WHERE status IN (?, ?) "
+        /* Tenure (Rule R): bonded two full epochs by the TENURE ANCHOR —
+         * the epoch start height (see the S3 tenure-anchor comment in
+         * nodus_witness_committee.c; the old lookback anchor made the
+         * gap epochs (E, 3E] unsatisfiable even for the seed set).
+         * Genesis-seeded validators (active_since_block <= 1, written by
+         * genesis_seed at block 1) are the constitutional seed set and
+         * are always tenured — Rule R gates LATER joiners. */
+        "  AND (active_since_block + ? <= ? OR active_since_block <= 1) "
         "ORDER BY (self_stake + external_delegated) DESC, pubkey ASC "
         "LIMIT ?",
         -1, &stmt, NULL);
@@ -314,17 +327,29 @@ int nodus_validator_top_n(nodus_witness_t *w,
     }
 
     sqlite3_bind_int(  stmt, 1, (int)DNAC_VALIDATOR_ACTIVE);
-    sqlite3_bind_int64(stmt, 2, (int64_t)DNAC_MIN_TENURE_BLOCKS);
-    sqlite3_bind_int64(stmt, 3, (int64_t)lookback_block);
-    sqlite3_bind_int(  stmt, 4, n);
+    sqlite3_bind_int(  stmt, 2, (int)DNAC_VALIDATOR_ELIGIBLE);
+    sqlite3_bind_int64(stmt, 3, (int64_t)DNAC_MIN_TENURE_BLOCKS);
+    sqlite3_bind_int64(stmt, 4, (int64_t)lookback_block);
+    sqlite3_bind_int(  stmt, 5, n);
 
     int count = 0;
-    while (sqlite3_step(stmt) == SQLITE_ROW && count < n) {
+    int rc_step;
+    while ((rc_step = sqlite3_step(stmt)) == SQLITE_ROW && count < n) {
         if (row_to_record(stmt, &out[count]) != 0) {
             sqlite3_finalize(stmt);
             return -1;
         }
         count++;
+    }
+    /* Fail closed on a mid-scan fault: a truncated candidate set is a
+     * DIFFERENT committee on this node than on its peers, i.e. a
+     * state_root divergence with no Byzantine actor. `count < n` is the
+     * legitimate early exit and leaves rc_step == SQLITE_ROW. */
+    if (count < n && rc_step != SQLITE_DONE) {
+        fprintf(stderr, "%s: top_n scan aborted mid-stream (rc=%d) — "
+                "refusing a truncated candidate set\n", LOG_TAG, rc_step);
+        sqlite3_finalize(stmt);
+        return -1;
     }
 
     sqlite3_finalize(stmt);

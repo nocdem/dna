@@ -2023,11 +2023,12 @@ static void handle_dnac_spend(nodus_witness_t *w,
         struct nodus_tcp_conn *leader_conn = NULL;
         {
             uint64_t next_bh = nodus_witness_block_height(w) + 1;
-            nodus_committee_member_t committee[DNAC_COMMITTEE_SIZE];
+            /* S3: heap — a DNAC_MAX_ACTIVE_VALIDATORS committee is
+             * ~334 KB. Freed on every exit path in this block. */
+            nodus_committee_member_t *committee = NULL;
             int cm_count = 0;
-            (void)nodus_committee_get_for_block(w, next_bh, committee,
-                                                  DNAC_COMMITTEE_SIZE,
-                                                  &cm_count);
+            (void)nodus_committee_get_for_block_alloc(w, next_bh, &committee,
+                                                        &cm_count);
 
             /* C7 fix: block-height epoch — cluster-agreed, no clock-skew fork risk */
             uint64_t epoch = next_bh / (uint64_t)DNAC_EPOCH_LENGTH;
@@ -2039,15 +2040,19 @@ static void handle_dnac_spend(nodus_witness_t *w,
                 int leader_slot = nodus_witness_bft_leader_index(
                     epoch, w->current_view, cm_count);
                 if (leader_slot < 0) {
+                    free(committee);
                     send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
                                 "no leader available");
                     w->pending_forwards[pf_slot].active = false;
                     w->pending_forward_count--;
                     return;
                 }
+                /* NOTE: leader_pk borrows the heap committee below, so the
+                 * free() has to wait until the peer-lookup loop is done. */
                 leader_pk = committee[leader_slot].pubkey;
                 if (memcmp(leader_pk, w->server->identity.pk.bytes,
                             DNAC_PUBKEY_SIZE) == 0) {
+                    free(committee);
                     send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
                                 "we are the leader, nothing to forward");
                     w->pending_forwards[pf_slot].active = false;
@@ -2058,6 +2063,7 @@ static void handle_dnac_spend(nodus_witness_t *w,
                 /* Pre-genesis bootstrap: gossip-roster-based leader. */
                 int gossip_count = (int)w->roster.n_witnesses;
                 if (gossip_count == 0) {
+                    free(committee);
                     send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
                                 "no witnesses known");
                     w->pending_forwards[pf_slot].active = false;
@@ -2070,6 +2076,7 @@ static void handle_dnac_spend(nodus_witness_t *w,
                     &w->roster, w->my_id);
                 if (leader_roster_idx < 0 ||
                     leader_roster_idx == my_roster_idx) {
+                    free(committee);
                     send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
                                 "we are the leader (bootstrap)");
                     w->pending_forwards[pf_slot].active = false;
@@ -2091,6 +2098,10 @@ static void handle_dnac_spend(nodus_witness_t *w,
                     break;
                 }
             }
+            /* leader_pk is dead from here on. */
+            free(committee);
+            committee = NULL;
+            leader_pk = NULL;
         }
 
         if (!leader_conn) {
@@ -2420,8 +2431,17 @@ static void handle_dnac_token_info(nodus_witness_t *w,
  *                 "committee": [
  *                   {"pk": bstr(2592), "stake": u64,
  *                    "comm": u16, "status": u8, "addr": tstr},
- *                   ... up to DNAC_COMMITTEE_SIZE
+ *                   ... one entry per seat of the epoch's active set
  *                 ]}
+ *
+ * S3: the array is COUNT-DRIVEN on the wire, so a governance-widened
+ * committee needs no wire change here — the encoder emits `count`
+ * entries and the client decoder stops at its own struct capacity
+ * (nodus_client.c nodus_client_dnac_committee). The client-side result
+ * struct nodus_dnac_committee_result_t holds NODUS_T3_MAX_WITNESSES
+ * entries (~370 KB — heap-only; its consumers in libdna, the CLI and
+ * nodus-cli were all heapified in the same change), so every seat of a
+ * governance-widened set is visible end-to-end.
  * ════════════════════════════════════════════════════════════════════ */
 
 static void handle_dnac_committee_query(nodus_witness_t *w,
@@ -2432,10 +2452,11 @@ static void handle_dnac_committee_query(nodus_witness_t *w,
     uint64_t epoch_start = (target_h / (uint64_t)DNAC_EPOCH_LENGTH) *
                              (uint64_t)DNAC_EPOCH_LENGTH;
 
-    nodus_committee_member_t committee[DNAC_COMMITTEE_SIZE];
+    /* S3: heap — a DNAC_MAX_ACTIVE_VALIDATORS committee is ~334 KB. */
+    nodus_committee_member_t *committee = NULL;
     int count = 0;
-    int rc = nodus_committee_get_for_block(w, target_h, committee,
-                                             DNAC_COMMITTEE_SIZE, &count);
+    int rc = nodus_committee_get_for_block_alloc(w, target_h, &committee,
+                                                   &count);
     if (rc != 0) {
         send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
                     "committee lookup failed");
@@ -2443,10 +2464,19 @@ static void handle_dnac_committee_query(nodus_witness_t *w,
     }
 
     /* Response: 3 top-level keys; each committee entry packs ~2700 bytes
-     * (2592 pubkey + address 256 + overhead). Budget comfortably. */
-    size_t buf_size = 512 + (size_t)DNAC_COMMITTEE_SIZE * 3200;
+     * (2592 pubkey + address 256 + overhead).
+     *
+     * S3: budgeted from DNAC_MAX_ACTIVE_VALIDATORS, the largest set this
+     * release can elect, so a governance-widened committee cannot overrun
+     * the encoder. The encoder is bounds-checked anyway
+     * (cbor_encoder_len returns 0 on overflow and the caller reports the
+     * error), but sizing to the real ceiling means the answer is a
+     * response rather than an error. ~410 KB, malloc'd and freed on every
+     * path — never the stack. */
+    size_t buf_size = 512 + (size_t)DNAC_MAX_ACTIVE_VALIDATORS * 3200;
     uint8_t *buf = malloc(buf_size);
     if (!buf) {
+        free(committee);
         send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
                     "alloc failed");
         return;
@@ -2509,6 +2539,7 @@ static void handle_dnac_committee_query(nodus_witness_t *w,
     }
 
     free(buf);
+    free(committee);
 }
 
 /* ════════════════════════════════════════════════════════════════════

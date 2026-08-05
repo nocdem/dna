@@ -149,7 +149,7 @@ static int setup_witness(nodus_witness_t *w) {
 int main(void) {
     printf("\nFaz 1.2 — height match → block applied\n");
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     CHECK(setup_witness(&w) == 0);
     CHECK_EQ(w.in_block_transaction, false);
     CHECK_EQ(nodus_witness_block_height(&w), 0);

@@ -21,9 +21,9 @@ extern "C" {
 /* ── Protocol constants ──────────────────────────────────────────── */
 
 #define NODUS_VERSION_MAJOR  0
-#define NODUS_VERSION_MINOR  18
-#define NODUS_VERSION_PATCH  22
-#define NODUS_VERSION_STRING "0.18.22"
+#define NODUS_VERSION_MINOR  19
+#define NODUS_VERSION_PATCH  0
+#define NODUS_VERSION_STRING "0.19.0"
 
 /* Wire frame.
  *
@@ -667,13 +667,22 @@ typedef struct {
     char     address[256];       /* Empty string if unknown. */
 } nodus_dnac_committee_entry_t;
 
-/** Committee query result. Fixed-size entries[] array sized to
- * DNAC_COMMITTEE_SIZE (=7). */
+/** Committee query result.
+ *
+ * S3 (Ledger V2): entries[] is sized to the release's active-validator
+ * ceiling (NODUS_T3_MAX_WITNESSES = 128 — the same number as
+ * DNA_MAX_ACTIVE_VALIDATORS, pinned in nodus_witness_verify.c), not to
+ * the 7 initial seats. The CBOR wire is count-driven; decode stops at
+ * this capacity.
+ *
+ * ⚠ SIZE: ~370 KB. NEVER declare this struct on the stack — heap-allocate
+ * (calloc) at every consumer. libdna consumers run on Android pthread
+ * stacks (1 MB). */
 typedef struct {
     uint64_t block_height;
     uint64_t epoch_start;
     int      count;
-    nodus_dnac_committee_entry_t entries[7];   /* DNAC_COMMITTEE_SIZE */
+    nodus_dnac_committee_entry_t entries[NODUS_T3_MAX_WITNESSES];
 } nodus_dnac_committee_result_t;
 
 /** Validator list entry (Phase 14 / Task 63). Same field layout as

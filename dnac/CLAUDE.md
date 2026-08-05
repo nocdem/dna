@@ -1,10 +1,10 @@
 # DNAC - Development Guidelines
 
-**Last Updated:** 2026-07-22 | **Status:** TESTNET (live 7-witness production cluster) | **Version:** v0.17.8-stake.wip
+**Last Updated:** 2026-08-05 | **Status:** TESTNET (live 7-witness production cluster) | **Version:** v0.18.0-ledgerv2-s3
 
 **Note:** Framework rules (ORCHESTRATOR CYCLE O1-O10, agent classes, identity override, protocol mode, violations) are in root `/opt/dna/CLAUDE.md`. This file contains DNAC-specific guidelines only.
 
-**Stake/delegation v1:** SHIPPED — `stake-delegation-v1` merged to `main` and deployed (stake-weighted top-7 committee, delegation, per-block reward accrual, pull-based claim). Design doc: `dnac/docs/plans/2026-04-17-witness-stake-delegation-design.md` (local-only, gitignored). Sortition v2 (weighted random) is a future follow-up.
+**Stake/delegation v1:** SHIPPED — `stake-delegation-v1` merged to `main` and deployed (stake-ranked committee, delegation, per-block reward accrual, pull-based claim). Ledger V2 S3 (2026-08-05) made the committee size governance-driven (`DNAC_CFG_TARGET_ACTIVE_COUNT`, 7 initial → 128 ceiling) and per-epoch snapshots the membership authority. Design doc: `dnac/docs/plans/2026-04-17-witness-stake-delegation-design.md` (local-only, gitignored). Sortition v2 (weighted random) is a future follow-up.
 
 **Active workstream:** v3 ZK (STARK range proofs) — see "v3 ZK Workstream" section below.
 
@@ -163,8 +163,12 @@ offset  size  field
     ...  ...  chain_def blob     (if has_chain_def)
 ```
 
-**Preimage** (what `dnac_tx_compute_hash` / `nodus_witness_recompute_tx_hash`
-SHA3-512 over, all multi-byte integers BIG-ENDIAN):
+**Preimage** (ONE shared implementation since Ledger V2 S1, 2026-08-05:
+`shared/dnac/tx_wire.c::dnac_txw_legacy_tx_hash` — `dnac_tx_compute_hash`
+serializes-then-delegates and `nodus_witness_recompute_tx_hash` is a thin
+wrapper; the witness's independent hand-written mirror is RETIRED. Byte
+identity pinned by `nodus/tests/test_tx_hash_kat.c` literals captured from
+the pre-S1 algorithm. All multi-byte integers BIG-ENDIAN):
 ```
 "DNAC_TX_V2\0" (11B domain separator, SEC-06) ||
 version || type || timestamp_BE || chain_id[32] || committed_fee_BE ||
@@ -212,14 +216,14 @@ cost hours of debugging. Consolidate via `DNAC_TX_HEADER_SIZE` and
 
 The standalone `dnac-witness` binary was removed in v0.10.3. Witness logic runs inside `nodus-server` via `nodus/src/witness/`.
 
-Since nodus v0.15.0 (F17 committee enforcement), the BFT **voting authority** is the chain-derived top-7 committee — leader election, quorum, and vote counting all consult `nodus_committee_get_for_block()`, not the gossip roster. The **gossip roster** is now transport-only: it serves peer discovery (`dnac_discover_witnesses()`, TCP 4004 handshake) and a `witness_id → pubkey` lookup table, but does not gate consensus participation.
+Since nodus v0.15.0 (F17 committee enforcement), the BFT **voting authority** is the chain-derived committee — leader election, quorum, and vote counting all consult `nodus_committee_get_for_block()`, not the gossip roster. Since Ledger V2 S3 (nodus v0.19.0) that function serves the epoch's committed validator-set snapshot when one exists. The **gossip roster** is now transport-only: it serves peer discovery (`dnac_discover_witnesses()`, TCP 4004 handshake) and a `witness_id → pubkey` lookup table, but does not gate consensus participation.
 
 ### BFT Consensus
 
 | Parameter | Value | Description |
 |-----------|-------|-------------|
-| Leader Election | `(epoch + view) % N` | Rotates each hour |
-| Quorum | `2f+1` | For `N = 3f+1` witnesses |
+| Leader Election | `(epoch + view) % N` | `N` = the active set governing the height; rotates each hour |
+| Quorum | `dna_bft_quorum(n) = (2n)/3+1` | `shared/dnac/ledger_ids.h`; `n` from the epoch's validator-set snapshot, never a compile-time size (n=7 ⇒ 5) |
 | Round Timeout | 5000ms | Triggers view change |
 | Max View Changes | 3 | Per request before error |
 
@@ -227,23 +231,32 @@ Since nodus v0.15.0 (F17 committee enforcement), the BFT **voting authority** is
 
 ---
 
-## Committee, Stake & Delegation (feature branch `stake-delegation-v1`)
+## Committee, Stake & Delegation
 
-The witness roster in `main` is *dynamic* — every online nodus node automatically participates as a witness. On the `stake-delegation-v1` branch this is replaced with a **stake-weighted deterministic top-7 committee** whose membership is derived entirely from on-chain state. Witness discovery and BFT roster both consult chain state — not DHT registrations, not TCP 4002 peer lists.
+The BFT voting authority is a **stake-ranked top-N active validator set** derived entirely from on-chain state. Witness discovery and BFT roster both consult chain state — not DHT registrations, not TCP 4002 peer lists.
 
-**Key properties (v1):**
+Since Ledger V2 S3 the set size `N` is **governance-driven, not a constant**: it is the chain-config parameter `DNAC_CFG_TARGET_ACTIVE_COUNT` (param_id 4), sampled at the **epoch start height** (`nodus_witness_committee.c::committee_target_for_epoch`), defaulting to `DNAC_COMMITTEE_SIZE` = 7 and capped at `DNAC_MAX_ACTIVE_VALIDATORS` = 128. Sampling at the epoch start is what makes the parameter epoch-boundary-effective by construction — a mid-epoch `effective_block` cannot resize a live committee.
+
+**Key properties:**
 
 | Property | Value |
 |----------|-------|
-| Committee size | 7 (top by total stake; self + delegations) |
-| Self-stake | Fixed exactly 10,000,000 DNAC per witness |
+| Committee size | Governance target, top-N by total stake (self + delegations). 7 initial/floor (`DNAC_COMMITTEE_SIZE`), 128 release ceiling (`DNAC_MAX_ACTIVE_VALIDATORS`) |
+| Self-bond | `>= DNAC_SELF_STAKE_AMOUNT` (10,000,000 DNAC). Extra self-bond is allowed (S3 O-3) |
 | Delegator stake | Unbounded (any holder may delegate any amount) |
-| Rotation | Per-epoch, 1 hour (720 blocks × 5 s); deterministic re-rank from chain snapshot |
+| Rotation | Per-epoch, 1 hour (720 blocks × 5 s); membership changes ONLY at epoch boundaries |
+| Authority | The per-epoch validator-set **snapshot**, frozen one epoch ahead |
 | Rewards | Per-block fee-pool accrual, pull-based `CLAIM_REWARD` TX |
 | Commission | Per-validator bps (set via `VALIDATOR_UPDATE`) |
 | Slashing | Not in v1 (deferred to v2 with sortition) |
 
-**New TX types (v0.17):** `STAKE`, `UNSTAKE`, `DELEGATE`, `UNDELEGATE`, `CLAIM_REWARD`, `VALIDATOR_UPDATE`. Existing BFT (PBFT, `N = 3f+1`), multi-signer TX infrastructure (v0.11 `signers[]` array), and Merkle `state_root` are preserved. Roster authority moves from DHT/routing-based auto-join to chain-derived top-7 by total stake, which replaces the paths documented in `nodus/docs/DYNAMIC_WITNESS_DESIGN.md` (now superseded).
+**Snapshot is the authority (S3).** At each boundary the witness freezes the set for the epoch **one ahead** into `validator_set_snapshots` (canonical codec `shared/dnac/vset_wire.h`, tag `"DNA.VSET.v1"`, 78-byte header + 2642 bytes/entry); genesis seeds epochs `0` and `DNAC_EPOCH_LENGTH`. Committee lookup, the boundary status flips, and historical QC verification all consume that one committed set — never a live recomputation, which would drift from the frozen set after any mid-epoch `DELEGATE`/`UNSTAKE`. A snapshot row that fails integrity is a fault: the lookup fails closed.
+
+**Validator status (`dnac/include/dnac/validator.h`).** S3 added `DNAC_VALIDATOR_ELIGIBLE = 4` — bonded and tenured, but **not seated this epoch**; the bond stays locked and the row stays a candidate for the next boundary. Boundary flips move `ACTIVE ↔ ELIGIBLE` per the epoch's snapshot. `DELEGATE`, `UNSTAKE` and `VALIDATOR_UPDATE` accept `ELIGIBLE` targets (both are BONDED states); committee-scoped rules — Rule N liveness / auto-retire, attendance, reward settlement — stay `ACTIVE`-scoped. Values 0-3 (`ACTIVE`, `RETIRING`, `UNSTAKED`, `AUTO_RETIRED`) are unchanged and wire-stable; 4 is appended.
+
+**Self-bond derivation (S3 O-3).** `apply_stake` stores what the STAKE TX actually locked — `bond = Σnative_in − Σnative_out − committed_fee` — into `validators.self_stake`, requiring `bond >= DNAC_SELF_STAKE_AMOUNT` rather than exact equality. Ranking mechanics (self + external delegated) are unchanged. `UNSTAKE` graduation pays back the record's **actual** bond and zeroes `self_stake`, so the supply invariant sees the value in exactly one place.
+
+**TX types (v0.17):** `STAKE`, `UNSTAKE`, `DELEGATE`, `UNDELEGATE`, `CLAIM_REWARD`, `VALIDATOR_UPDATE`. Existing BFT (PBFT, `N = 3f+1`), multi-signer TX infrastructure (v0.11 `signers[]` array), and Merkle `state_root` are preserved. Roster authority is chain-derived, which replaces the paths documented in `nodus/docs/DYNAMIC_WITNESS_DESIGN.md` (now superseded).
 
 See `dnac/docs/plans/2026-04-17-witness-stake-delegation-design.md` for the full design + red-team audit.
 
@@ -251,27 +264,35 @@ See `dnac/docs/plans/2026-04-17-witness-stake-delegation-design.md` for the full
 
 ## Hard-Fork Mechanism v1 (`DNAC_TX_CHAIN_CONFIG`, 2026-04-19)
 
-Committee-voted consensus parameter changes without chain wipe. A 5-of-7
-committee signs a proposal preimage and a `DNAC_TX_CHAIN_CONFIG` TX is
+Committee-voted consensus parameter changes without chain wipe. A quorum of
+the committee signs a proposal preimage and a `DNAC_TX_CHAIN_CONFIG` TX is
 broadcast carrying the votes; on commit the override is stored in
 `chain_config_history` and contributes to `state_root` via
 `chain_config_root`. Consumer sites read active overrides via
 `nodus_chain_config_get_u64(param_id, current_block, default)`.
 
-**Supported parameters (v1):**
+**Supported parameters:**
 
 | param_id | Constant | Range | Consumer |
 |----------|----------|-------|----------|
 | 1 | `DNAC_CFG_MAX_TXS_PER_BLOCK` | `[1, 10]` | BFT batch cap |
 | 2 | `DNAC_CFG_BLOCK_INTERVAL_SEC` | `[1, 15]` | Proposer timer (future) |
 | 3 | `DNAC_CFG_INFLATION_START_BLOCK` | `[0, 2^48]` | Inflation mint |
+| 4 | `DNAC_CFG_TARGET_ACTIVE_COUNT` | `[7, 128]` | committee selection (epoch-start sampled) |
 
 **Consensus rules** (enforced in `nodus_chain_config_apply`):
-- Min 5-of-7 Dilithium5 signatures from CURRENT committee at
-  `commit_block - 1`
-- Grace: `effective_block >= commit_block + EPOCH_LENGTH` (ergonomic
-  params) / `12 × EPOCH_LENGTH` (safety-critical: block_interval,
-  inflation)
+- `dna_bft_quorum(committee_count)` = `(2n)/3+1` Dilithium5 signatures from
+  the committee governing the signing height (`commit_block - 1`). At the
+  DNA chain's 7 seats that is exactly 5, so live behaviour is unchanged;
+  the fixed `[5, 7]` threshold is gone because the set size is dynamic.
+  `DNAC_CHAIN_CONFIG_MIN_SIGS` = 5 / `DNAC_CHAIN_CONFIG_MAX_SIGS` = 128
+  remain *shape* bounds on the wire, not the quorum rule
+- Grace: `effective_block >= commit_block +
+  DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS` (720 blocks = 1 h; ergonomic
+  params) / `DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS` (17280 blocks = 24 h;
+  safety-critical: block_interval, inflation_start, target_active_count).
+  Both are `#ifndef`-guarded so the Genesis Protocol short-epoch harness
+  can override them at compile time; production builds never define them
 - Freshness: `commit_block <= valid_before_block`
 - `INFLATION_START_BLOCK` monotonicity: once non-zero committed, cannot
   be disabled (set to 0) or moved past current_block

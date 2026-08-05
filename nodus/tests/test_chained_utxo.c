@@ -58,7 +58,7 @@ static void marker_nullifier(uint8_t *out, uint8_t marker) {
 static void test_null_batch_ctx_skips_layer3(void) {
     TEST("NULL batch_ctx skips the layer-3 chained check");
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup_witness(&w) != 0) { FAIL("setup"); return; }
 
     uint8_t nf[NODUS_T3_NULLIFIER_LEN];
@@ -79,7 +79,7 @@ static void test_null_batch_ctx_skips_layer3(void) {
 static void test_empty_ctx_passes(void) {
     TEST("empty batch_ctx allows any input nullifier");
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup_witness(&w) != 0) { FAIL("setup"); return; }
 
     nodus_witness_batch_ctx_t ctx;
@@ -103,7 +103,7 @@ static void test_empty_ctx_passes(void) {
 static void test_populated_ctx_rejects_matching_input(void) {
     TEST("populated batch_ctx rejects matching input");
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup_witness(&w) != 0) { FAIL("setup"); return; }
 
     nodus_witness_batch_ctx_t ctx;
@@ -137,7 +137,7 @@ static void test_populated_ctx_rejects_matching_input(void) {
 static void test_transitive_chain_rejected(void) {
     TEST("transitive chain — third input matches third ctx entry");
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup_witness(&w) != 0) { FAIL("setup"); return; }
 
     nodus_witness_batch_ctx_t ctx;
@@ -167,7 +167,7 @@ static void test_transitive_chain_rejected(void) {
 static void test_self_reference_not_flagged(void) {
     TEST("self-reference: input == own future output is NOT flagged");
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup_witness(&w) != 0) { FAIL("setup"); return; }
 
     nodus_witness_batch_ctx_t ctx;

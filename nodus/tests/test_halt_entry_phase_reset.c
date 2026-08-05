@@ -138,7 +138,7 @@ static int setup_witness(nodus_witness_t *w) {
 int main(void) {
     printf("\nFaz 1.17 — halt entry phase reset\n");
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     CHECK(setup_witness(&w) == 0);
 
     nodus_witness_mempool_entry_t e1 = {0};

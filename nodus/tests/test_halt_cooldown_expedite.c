@@ -61,7 +61,7 @@
 int main(void) {
     printf("\nFaz 1.16 — halt cooldown timer field invariant\n");
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     memset(&w, 0, sizeof(w));
 
     /* halt_timestamp zero-init means cooldown elapsed since epoch

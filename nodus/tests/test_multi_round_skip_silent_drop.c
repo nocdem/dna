@@ -74,7 +74,7 @@ int main(void) {
 
     /* Sub-A: syncing=true → silent-drop branch */
     {
-        nodus_witness_t w;
+        static nodus_witness_t w;   /* multi-MB — static storage, not stack */
         if (setup_witness(&w, 110) != 0) return 1;
         w.sync_state.syncing = true;
 
@@ -90,7 +90,7 @@ int main(void) {
 
     /* Sub-B: syncing=false → ERROR + sync_check trigger branch */
     {
-        nodus_witness_t w;
+        static nodus_witness_t w;   /* multi-MB — static storage, not stack */
         if (setup_witness(&w, 110) != 0) return 1;
         w.sync_state.syncing = false;
 

@@ -37,7 +37,7 @@ static void test_null_witness_rejected(void) {
 
 static void test_null_entries_rejected(void) {
     TEST("from_entries rejects NULL entries array");
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     memset(&w, 0, sizeof(w));
     int rc = nodus_witness_bft_start_round_from_entries(&w, NULL, 1);
     if (rc != -1) { FAIL("expected -1"); return; }
@@ -46,7 +46,7 @@ static void test_null_entries_rejected(void) {
 
 static void test_zero_count_rejected(void) {
     TEST("from_entries rejects count=0");
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     memset(&w, 0, sizeof(w));
     nodus_witness_mempool_entry_t *entries[1] = { NULL };
     int rc = nodus_witness_bft_start_round_from_entries(&w, entries, 0);
@@ -56,7 +56,7 @@ static void test_zero_count_rejected(void) {
 
 static void test_negative_count_rejected(void) {
     TEST("from_entries rejects count<0");
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     memset(&w, 0, sizeof(w));
     nodus_witness_mempool_entry_t *entries[1] = { NULL };
     int rc = nodus_witness_bft_start_round_from_entries(&w, entries, -1);

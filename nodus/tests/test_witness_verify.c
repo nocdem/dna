@@ -258,7 +258,7 @@ static int add_nullifier(nodus_witness_t *w, const uint8_t *nullifier) {
 static void test_valid_spend(void) {
     TEST("valid spend TX passes all checks");
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup_witness(&w) != 0) { FAIL("db setup"); return; }
 
     /* Generate sender keypair */
@@ -331,7 +331,7 @@ static void test_valid_spend(void) {
 static void test_tampered_hash(void) {
     TEST("tampered tx_hash is rejected");
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup_witness(&w) != 0) { FAIL("db setup"); return; }
 
     nodus_identity_t sender;
@@ -381,7 +381,7 @@ static void test_tampered_hash(void) {
 static void test_invalid_signature(void) {
     TEST("invalid sender signature is rejected");
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup_witness(&w) != 0) { FAIL("db setup"); return; }
 
     nodus_identity_t sender;
@@ -438,7 +438,7 @@ static void test_invalid_signature(void) {
 static void test_insufficient_balance(void) {
     TEST("insufficient balance is rejected");
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup_witness(&w) != 0) { FAIL("db setup"); return; }
 
     nodus_identity_t sender;
@@ -499,7 +499,7 @@ static void test_insufficient_balance(void) {
 static void test_fee_too_low(void) {
     TEST("fee too low is rejected");
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup_witness(&w) != 0) { FAIL("db setup"); return; }
 
     nodus_identity_t sender;
@@ -564,7 +564,7 @@ static void test_fee_too_low(void) {
 static void test_duplicate_nullifiers(void) {
     TEST("duplicate nullifiers within TX are rejected");
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup_witness(&w) != 0) { FAIL("db setup"); return; }
 
     /* Two identical nullifiers */
@@ -613,7 +613,7 @@ static void test_duplicate_nullifiers(void) {
 static void test_genesis_skips_checks(void) {
     TEST("genesis TX skips sig/balance/fee, verifies hash only");
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup_witness(&w) != 0) { FAIL("db setup"); return; }
 
     /* Genesis has no inputs */
@@ -656,7 +656,7 @@ static void test_genesis_skips_checks(void) {
 static void test_truncated_tx_data(void) {
     TEST("truncated tx_data is rejected");
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup_witness(&w) != 0) { FAIL("db setup"); return; }
 
     /* Only 50 bytes — less than minimum header (DNAC_TX_HEADER_SIZE+1 = 83).
@@ -692,7 +692,7 @@ static void test_truncated_tx_data(void) {
 static void test_double_spend(void) {
     TEST("double-spend returns -2");
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup_witness(&w) != 0) { FAIL("db setup"); return; }
 
     nodus_identity_t sender;
@@ -1064,7 +1064,7 @@ static void run_shielded_case(const char *name, uint64_t committed_fee,
                               int signer_count, int nonzero_unused_slot,
                               const char *want_reason_substr) {
     TEST(name);
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup_witness(&w) != 0) { FAIL("setup"); return; }
 
     uint32_t tx_len = 0;

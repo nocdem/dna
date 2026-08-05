@@ -109,6 +109,16 @@ int nodus_witness_bft_start_round_from_entries(nodus_witness_t *w,
  */
 int nodus_witness_bft_start_round_from_mempool(nodus_witness_t *w);
 
+/* S3 — locate the optional chain_def trailer inside a serialized
+ * genesis TX (pure wire walk; blob points INTO tx_data). Used by
+ * commit_genesis (Rule P.2) and by sync replay to derive the genesis
+ * cert quorum from the chain_def's seat count instead of the local
+ * roster-derived bft_config. @return 0 (blob may be NULL) / -1. */
+int nodus_witness_extract_chain_def(const uint8_t *tx_data,
+                                    uint32_t tx_len,
+                                    const uint8_t **cd_blob_out,
+                                    uint32_t *cd_blob_len_out);
+
 /* Phase 6 commit wrappers — exposed for sync replay (Phase 11 Task
  * 11.4). nodus_witness_commit_block is the deprecated single-TX shim
  * that dispatches to these; sync.c calls them directly. */

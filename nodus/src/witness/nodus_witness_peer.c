@@ -600,13 +600,15 @@ int nodus_witness_peer_handle_ident(nodus_witness_t *w,
      * is a no-op until the chain has any validators. Otherwise,
      * reject ident from any pubkey not in the current committee. */
     {
-        nodus_committee_member_t committee[DNAC_COMMITTEE_SIZE];
+        /* S3: heap — a DNAC_MAX_ACTIVE_VALIDATORS committee is ~334 KB. */
+        nodus_committee_member_t *committee = NULL;
         int cm_count = 0;
-        if (nodus_committee_get_for_block(w,
-                                            nodus_witness_block_height(w) + 1,
-                                            committee,
-                                            DNAC_COMMITTEE_SIZE,
-                                            &cm_count) == 0 && cm_count > 0) {
+        bool reject = false;
+        if (nodus_committee_get_for_block_alloc(w,
+                                                  nodus_witness_block_height(w) + 1,
+                                                  &committee,
+                                                  &cm_count) == 0 &&
+            cm_count > 0) {
             bool in_committee = false;
             for (int i = 0; i < cm_count; i++) {
                 if (memcmp(committee[i].pubkey, ident->pubkey,
@@ -615,16 +617,18 @@ int nodus_witness_peer_handle_ident(nodus_witness_t *w,
                     break;
                 }
             }
-            if (!in_committee) {
-                fprintf(stderr,
-                        "%s: w_ident rejected — peer pubkey not in "
-                        "current committee (transport admission gate)\n",
-                        LOG_TAG);
-                return -1;
-            }
+            reject = !in_committee;
         }
         /* cm_count == 0: pre-genesis / bootstrap — accept liberally so
          * committee can be established. */
+        free(committee);
+        if (reject) {
+            fprintf(stderr,
+                    "%s: w_ident rejected — peer pubkey not in "
+                    "current committee (transport admission gate)\n",
+                    LOG_TAG);
+            return -1;
+        }
     }
 
     /* Fix 3: chain_id quorum tracking — piggybacks on T3 message header */

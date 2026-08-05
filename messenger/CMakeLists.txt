@@ -242,6 +242,21 @@ if(BUILD_SHARED_LIB)
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/delegate.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/validator_update.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/chain_config.c
+        # Ledger V2 S1 correction #3 — libdna OWNS its compile of the shared
+        # TX codec (one source file, one compile unit per library; the same
+        # source sits in NODUS_SOURCES). dnac_tx_compute_hash delegates to
+        # dnac_txw_legacy_tx_hash, and libdna must not depend on the
+        # transitive dht_lib→nodus archive to supply that symbol.
+        ${CMAKE_SOURCE_DIR}/../shared/dnac/tx_wire.c
+        # Ledger V2 S2 — shared V2 root/header codecs (inactive), owned by
+        # libdna the same way as tx_wire.c.
+        ${CMAKE_SOURCE_DIR}/../shared/dnac/ledger_roots_v2.c
+        ${CMAKE_SOURCE_DIR}/../shared/dnac/block_v2.c
+        # Ledger V2 S3 — INACTIVE validator-set snapshot codec + QC V2
+        # (certificate codec + historical verification), owned by libdna
+        # the same way as ledger_roots_v2.c. No consensus caller.
+        ${CMAKE_SOURCE_DIR}/../shared/dnac/vset_wire.c
+        ${CMAKE_SOURCE_DIR}/../shared/dnac/qc_v2.c
         # Note: shared/dnac/chain_config_wire.c (Hard-Fork v1) is linked in
         # via libnodus.a — no separate entry needed here. See nodus/CMakeLists.txt.
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/validator_queries.c
@@ -375,6 +390,21 @@ else()
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/delegate.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/validator_update.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/chain_config.c
+        # Ledger V2 S1 correction #3 — libdna OWNS its compile of the shared
+        # TX codec (one source file, one compile unit per library; the same
+        # source sits in NODUS_SOURCES). dnac_tx_compute_hash delegates to
+        # dnac_txw_legacy_tx_hash, and libdna must not depend on the
+        # transitive dht_lib→nodus archive to supply that symbol.
+        ${CMAKE_SOURCE_DIR}/../shared/dnac/tx_wire.c
+        # Ledger V2 S2 — shared V2 root/header codecs (inactive), owned by
+        # libdna the same way as tx_wire.c.
+        ${CMAKE_SOURCE_DIR}/../shared/dnac/ledger_roots_v2.c
+        ${CMAKE_SOURCE_DIR}/../shared/dnac/block_v2.c
+        # Ledger V2 S3 — INACTIVE validator-set snapshot codec + QC V2
+        # (certificate codec + historical verification), owned by libdna
+        # the same way as ledger_roots_v2.c. No consensus caller.
+        ${CMAKE_SOURCE_DIR}/../shared/dnac/vset_wire.c
+        ${CMAKE_SOURCE_DIR}/../shared/dnac/qc_v2.c
         # Note: shared/dnac/chain_config_wire.c (Hard-Fork v1) is linked in
         # via libnodus.a — no separate entry needed here. See nodus/CMakeLists.txt.
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/validator_queries.c

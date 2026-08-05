@@ -58,7 +58,7 @@ static void test_null_witness_returns_false(void) {
 
 static void test_no_peers_returns_false(void) {
     TEST("peer_count=0 -> false");
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     memset(&w, 0, sizeof(w));
     if (nodus_witness_bootstrap_any_peer_older(&w, V(0, 18, 5))) {
         FAIL("expected false for empty peers");
@@ -69,7 +69,7 @@ static void test_no_peers_returns_false(void) {
 
 static void test_all_peers_same_version_returns_false(void) {
     TEST("all peers at local version -> false");
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     memset(&w, 0, sizeof(w));
     uint32_t v = V(0, 18, 5);
     uint32_t versions[] = {v, v, v, v, v, v, v};
@@ -83,7 +83,7 @@ static void test_all_peers_same_version_returns_false(void) {
 
 static void test_all_peers_newer_returns_false(void) {
     TEST("all peers strictly newer than local -> false");
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     memset(&w, 0, sizeof(w));
     uint32_t newer = V(0, 19, 0);
     uint32_t versions[] = {newer, newer, newer};
@@ -97,7 +97,7 @@ static void test_all_peers_newer_returns_false(void) {
 
 static void test_legacy_zero_version_skipped(void) {
     TEST("peer with remote_nodus_version=0 (not yet identified) -> false");
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     memset(&w, 0, sizeof(w));
     uint32_t versions[] = {0, 0, 0};  /* w_ident not yet completed */
     seed_peers(&w, versions, 3);
@@ -110,7 +110,7 @@ static void test_legacy_zero_version_skipped(void) {
 
 static void test_one_older_peer_returns_true(void) {
     TEST("exactly one peer strictly older than local -> true");
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     memset(&w, 0, sizeof(w));
     uint32_t versions[] = {
         V(0, 18, 5),
@@ -128,7 +128,7 @@ static void test_one_older_peer_returns_true(void) {
 
 static void test_minor_version_older_returns_true(void) {
     TEST("peer with older minor version -> true");
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     memset(&w, 0, sizeof(w));
     uint32_t versions[] = {
         V(0, 18, 5),
@@ -144,7 +144,7 @@ static void test_minor_version_older_returns_true(void) {
 
 static void test_mixed_zeros_and_olders(void) {
     TEST("mix of legacy zeros + one older + one same -> true");
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     memset(&w, 0, sizeof(w));
     uint32_t versions[] = {
         0,             /* legacy / unknown */

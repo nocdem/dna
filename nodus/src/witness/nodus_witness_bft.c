@@ -28,6 +28,7 @@
 #include "witness/nodus_witness_epoch.h"
 #include "witness/nodus_witness_emission.h"
 #include "witness/nodus_witness_genesis_seed.h"
+#include "witness/nodus_witness_vset.h"        /* S3 epoch validator-set lifecycle */
 #include "witness/nodus_witness_sync.h"        /* A2 simetri: active sync_check trigger */
 #include "nodus/nodus_chain_config.h"          /* Hard-Fork v1 apply dispatch */
 #include "protocol/nodus_tier3.h"
@@ -304,6 +305,43 @@ static int load_committee_at_height(nodus_witness_t *w,
                                            max_entries, count_out);
 }
 
+/** Heap-allocating form of load_committee_at_height (S3).
+ *
+ * A DNAC_MAX_ACTIVE_VALIDATORS committee array is ~334 KB, so it cannot
+ * live on the stack. Every consumer in this file that used to declare
+ * `nodus_committee_member_t committee[DNAC_COMMITTEE_SIZE]` uses this
+ * instead; the sizing decision then exists in exactly one place.
+ *
+ * On success *members_out is a calloc'd DNAC_MAX_ACTIVE_VALIDATORS-entry
+ * array the caller MUST free() on EVERY path (count 0 included — the
+ * pre-genesis case still returns 0 with an allocated buffer). On failure
+ * *members_out is NULL and there is nothing to free.
+ *
+ * @return 0 on success (count may be 0 pre-genesis), -1 on error. */
+static int load_committee_at_height_alloc(nodus_witness_t *w,
+                                            uint64_t block_height,
+                                            nodus_committee_member_t **members_out,
+                                            int *count_out) {
+    if (!members_out || !count_out) return -1;
+    *members_out = NULL;
+    *count_out   = 0;
+    if (!w) return -1;
+
+    nodus_committee_member_t *members =
+        calloc((size_t)DNAC_MAX_ACTIVE_VALIDATORS, sizeof(*members));
+    if (!members) return -1;
+
+    int count = 0;
+    if (load_committee_at_height(w, block_height, members,
+                                   DNAC_MAX_ACTIVE_VALIDATORS, &count) != 0) {
+        free(members);
+        return -1;
+    }
+    *members_out = members;
+    *count_out   = count;
+    return 0;
+}
+
 /** Recompute w->bft_config from the committee for `block_height`.
  *
  * Authoritative source for quorum/f_tolerance. Replaces the legacy
@@ -325,12 +363,13 @@ static int load_committee_at_height(nodus_witness_t *w,
 int refresh_bft_config_from_committee(nodus_witness_t *w,
                                        uint64_t block_height) {
     if (!w) return -1;
-    nodus_committee_member_t committee[DNAC_COMMITTEE_SIZE];
+    nodus_committee_member_t *committee = NULL;
     int count = 0;
-    if (load_committee_at_height(w, block_height, committee,
-                                   DNAC_COMMITTEE_SIZE, &count) != 0) {
+    if (load_committee_at_height_alloc(w, block_height, &committee,
+                                         &count) != 0) {
         return -1;
     }
+    free(committee);   /* only the SIZE is needed here */
     if (count == 0) {
         /* F17 A5 bootstrap — pre-genesis fallback to gossip roster. */
         nodus_witness_bft_config_init(&w->bft_config,
@@ -347,13 +386,18 @@ void nodus_witness_bft_config_init(nodus_witness_bft_config_t *cfg,
                                      uint32_t n) {
     if (!cfg) return;
 
-    /* F17 A1 — clamp at committee size. Callers may pass gossip-roster
-     * size (up to NODUS_T3_MAX_WITNESSES = 128) during the A1→A3
-     * interim, but vote arrays only hold DNAC_COMMITTEE_SIZE entries.
-     * Computing quorum against a larger n would yield an unreachable
-     * threshold. A3 will eliminate the gossip-roster path entirely;
-     * this clamp is the safety net until then. */
-    if (n > DNAC_COMMITTEE_SIZE) n = DNAC_COMMITTEE_SIZE;
+    /* S3 — clamp at the release ceiling, not at DNAC_COMMITTEE_SIZE.
+     *
+     * The clamp exists so quorum can never exceed the number of vote
+     * slots that physically exist; those arrays are now
+     * DNAC_MAX_ACTIVE_VALIDATORS-sized (nodus_witness.h round_state), so
+     * that is the correct bound. Clamping at 7 would have been WRONG once
+     * the active set can be larger: a 9-member set would have produced
+     * quorum(7) = 5 instead of quorum(9) = 7, i.e. a quorum smaller than
+     * 2f+1 for the real set — a safety break, not just a liveness quirk.
+     *
+     * n = 7 → 5 and n = 9 → 7; the live 7-node cluster is unaffected. */
+    if (n > DNAC_MAX_ACTIVE_VALIDATORS) n = DNAC_MAX_ACTIVE_VALIDATORS;
 
     cfg->n_witnesses = n;
 
@@ -380,7 +424,20 @@ void nodus_witness_bft_config_init(nodus_witness_bft_config_t *cfg,
      *
      * Production cluster (n=7) is unaffected — both formulas give q=5.
      * Only n=5, 8, 11, ... see a value change. See Phase 8 release
-     * notes; this is a silent security upgrade. */
+     * notes; this is a silent security upgrade.
+     *
+     * ── S3 INVARIANT: ONE VALIDATOR, ONE VOTE ─────────────────────────
+     * `n` is a COUNT of active validators. Neither the quorum nor any
+     * vote tally anywhere in this file is weighted by stake: quorum is a
+     * pure function of n, and handle_vote increments approve_count by 1
+     * per distinct committee pubkey. Stake (self_stake, total_stake,
+     * external_delegated) is read ONLY for committee RANKING
+     * (nodus_witness_committee.c), reward SETTLEMENT
+     * (apply_epoch_settlement) and the supply invariant — never on a
+     * voting or quorum path. Introducing stake weight here would turn a
+     * BFT safety threshold into a plutocratic one and silently break the
+     * 2f+1 intersection argument above. Identical to dna_bft_quorum in
+     * shared/dnac/ledger_ids.h. */
     cfg->f_tolerance = (n - 1) / 3;
     cfg->quorum = (2 * n) / 3 + 1;
 
@@ -408,15 +465,18 @@ bool nodus_witness_bft_is_leader(nodus_witness_t *w) {
      * the next block. F17 A5 bootstrap — if committee empty (pre-
      * genesis), fall back to gossip roster. */
     uint64_t next_bh = nodus_witness_block_height(w) + 1;
-    nodus_committee_member_t committee[DNAC_COMMITTEE_SIZE];
+    nodus_committee_member_t *committee = NULL;
     int count = 0;
     int my_idx = -1;
-    if (load_committee_at_height(w, next_bh, committee,
-                                   DNAC_COMMITTEE_SIZE, &count) == 0 &&
-        count > 0) {
+    int lc_rc = load_committee_at_height_alloc(w, next_bh, &committee, &count);
+    if (lc_rc == 0 && count > 0) {
         my_idx = committee_find_pubkey(committee, count,
                                          w->server->identity.pk.bytes);
+        free(committee);
+        committee = NULL;
     } else {
+        free(committee);
+        committee = NULL;
         /* Pre-genesis bootstrap: gossip-roster-based leader selection.
          * Only active for the genesis round itself. SORTED rank, not
          * arrival index — the roster is arrival-ordered between epoch
@@ -1362,9 +1422,15 @@ static int apply_delegate(nodus_witness_t *w,
                 LOG_TAG, rc);
         return -1;
     }
-    if (v.status != DNAC_VALIDATOR_ACTIVE) {
-        fprintf(stderr, "%s: apply_delegate: validator not ACTIVE (status=%u)\n",
-                LOG_TAG, v.status);
+    /* S3: delegation targets any BONDED validator. ELIGIBLE means "bonded
+     * but not seated this epoch" — refusing it would make a validator that
+     * lost its seat undelegatable, and since ranking is what wins a seat
+     * back, that would be a one-way ratchet out of the active set.
+     * RETIRING / UNSTAKED / AUTO_RETIRED stay rejected (exit states). */
+    if (v.status != DNAC_VALIDATOR_ACTIVE &&
+        v.status != DNAC_VALIDATOR_ELIGIBLE) {
+        fprintf(stderr, "%s: apply_delegate: validator not bonded "
+                "(status=%u)\n", LOG_TAG, v.status);
         return -1;
     }
 
@@ -1439,7 +1505,8 @@ static int apply_delegate(nodus_witness_t *w,
  */
 static int apply_stake(nodus_witness_t *w,
                         const uint8_t *tx_data, uint32_t tx_len,
-                        uint64_t block_height) {
+                        uint64_t block_height,
+                        uint64_t committed_fee) {
     size_t off = 0;
     const uint8_t *signer_pubkey = NULL;
     if (compute_appended_fields_offset(tx_data, tx_len, &off, &signer_pubkey) != 0) {
@@ -1458,10 +1525,57 @@ static int apply_stake(nodus_witness_t *w,
     /* purpose_tag bytes are validated by Phase 7 STAKE verify; we trust
      * them here. */
 
+    /* ── S3 (owner decision O-3): the bond is what the TX actually locked.
+     *
+     * Before S3 this was hardcoded to DNAC_SELF_STAKE_AMOUNT while the TX
+     * could legally carry more inputs than that; the surplus vanished from
+     * the ledger's point of view. The bond is now derived exactly as
+     * DELEGATE derives delegation_amount (see apply_delegate above):
+     *
+     *     bond = Σnative_in − Σnative_out − committed_fee
+     *
+     * with bond >= DNAC_SELF_STAKE_AMOUNT REQUIRED. That minimum is the DNA
+     * self-bond floor and can only be met by the staker's own inputs;
+     * delegation can never contribute any part of it — a delegation is a
+     * different TX type (DNAC_TX_DELEGATE) writing a different table
+     * (delegations), and it lands in external_delegated, never in
+     * self_stake.
+     *
+     * LIVE BEHAVIOUR IS UNCHANGED: the shipped client builds STAKE with
+     * inputs == DNAC_SELF_STAKE_AMOUNT + fee and change outputs covering
+     * the remainder (dnac/src/transaction/transaction.c
+     * dnac_tx_create_stake), so every existing TX yields
+     * bond == DNAC_SELF_STAKE_AMOUNT exactly. */
+    uint64_t input_sum = 0, output_sum = 0;
+    if (sum_native_dnac_in_out(tx_data, tx_len, &input_sum, &output_sum) != 0) {
+        fprintf(stderr, "%s: apply_stake: sum_native_dnac_in_out failed\n",
+                LOG_TAG);
+        return -1;
+    }
+    uint64_t spent = 0;
+    if (safe_add_u64(output_sum, committed_fee, &spent) != 0 ||
+        spent > input_sum) {
+        fprintf(stderr,
+                "%s: apply_stake: native flow does not balance "
+                "(in=%llu out=%llu fee=%llu)\n", LOG_TAG,
+                (unsigned long long)input_sum,
+                (unsigned long long)output_sum,
+                (unsigned long long)committed_fee);
+        return -1;
+    }
+    uint64_t bond = input_sum - spent;
+    if (bond < DNAC_SELF_STAKE_AMOUNT) {
+        fprintf(stderr,
+                "%s: apply_stake: bond %llu < minimum self-bond %llu\n",
+                LOG_TAG, (unsigned long long)bond,
+                (unsigned long long)DNAC_SELF_STAKE_AMOUNT);
+        return -1;
+    }
+
     dnac_validator_record_t v;
     memset(&v, 0, sizeof(v));
     memcpy(v.pubkey, signer_pubkey, DNAC_PUBKEY_SIZE);
-    v.self_stake              = DNAC_SELF_STAKE_AMOUNT;
+    v.self_stake              = bond;
     v.total_delegated         = 0;
     v.external_delegated      = 0;
     v.commission_bps          = commission_bps;
@@ -1542,9 +1656,13 @@ static int apply_unstake(nodus_witness_t *w,
                 LOG_TAG, rc);
         return -1;
     }
-    if (v.status != DNAC_VALIDATOR_ACTIVE) {
-        fprintf(stderr, "%s: apply_unstake: validator not ACTIVE (status=%u)\n",
-                LOG_TAG, v.status);
+    /* S3: a BONDED validator may unstake whether or not it holds a seat
+     * this epoch. Locking ELIGIBLE validators out of the exit path would
+     * strand their bond until they happened to be re-selected. */
+    if (v.status != DNAC_VALIDATOR_ACTIVE &&
+        v.status != DNAC_VALIDATOR_ELIGIBLE) {
+        fprintf(stderr, "%s: apply_unstake: validator not bonded "
+                "(status=%u)\n", LOG_TAG, v.status);
         return -1;
     }
 
@@ -1846,7 +1964,12 @@ static int apply_validator_update(nodus_witness_t *w,
                 LOG_TAG, rc);
         return -1;
     }
+    /* S3: ELIGIBLE joins the updatable set — it is a bonded state, and
+     * commission is exactly what a validator tunes while trying to win a
+     * seat back. RETIRING was already allowed (it keeps paying delegators
+     * through its cooldown); UNSTAKED / AUTO_RETIRED stay rejected. */
     if (v.status != DNAC_VALIDATOR_ACTIVE &&
+        v.status != DNAC_VALIDATOR_ELIGIBLE &&
         v.status != DNAC_VALIDATOR_RETIRING) {
         fprintf(stderr, "%s: apply_validator_update: validator status=%u not updatable\n",
                 LOG_TAG, v.status);
@@ -1979,7 +2102,11 @@ int apply_tx_to_state(nodus_witness_t *w,
      * still have at least one fee input whose nullifier was added. */
     if (!failed && tx_data && tx_len > 0) {
         if (tx_type == NODUS_W_TX_STAKE) {
-            if (apply_stake(w, tx_data, tx_len, block_height) != 0) {
+            /* S3: committed_fee is now an INPUT to STAKE too — the bond is
+             * Σnative_in − Σnative_out − committed_fee, the same identity
+             * DELEGATE already used. */
+            if (apply_stake(w, tx_data, tx_len, block_height,
+                             committed_fee) != 0) {
                 failed = true;
             }
         } else if (tx_type == NODUS_W_TX_DELEGATE) {
@@ -2288,7 +2415,12 @@ static int apply_epoch_boundary_transitions(nodus_witness_t *w,
         sqlite3_stmt *sel = NULL;
         int rc = sqlite3_prepare_v2(
             w->db,
-            "SELECT pubkey FROM validators WHERE status = ?",
+            /* S3 (ORCHESTRATOR integration): ORDER BY is load-bearing —
+             * the loop below assigns per-graduate output_index values, so
+             * the iteration order must be a stable total key on every
+             * node, never table-scan order. */
+            "SELECT pubkey FROM validators WHERE status = ? "
+            "ORDER BY pubkey ASC",
             -1, &sel, NULL);
         if (rc != SQLITE_OK) {
             fprintf(stderr, "%s: epoch_boundary: prepare RETIRING select failed: %s\n",
@@ -2347,15 +2479,33 @@ static int apply_epoch_boundary_transitions(nodus_witness_t *w,
                 return -1;
             }
 
-            /* Emit principal 10M locked UTXO (kind 0x10) — unlock_block =
-             * block_height + cooldown. */
+            /* Emit the principal locked UTXO (kind 0x10) — unlock_block =
+             * block_height + cooldown.
+             *
+             * S3: the amount is the validator record's ACTUAL self_stake,
+             * not the DNAC_SELF_STAKE_AMOUNT literal. With extra self-bond
+             * allowed (apply_stake computes the bond from the TX's native
+             * flow), paying back the literal would either strand the
+             * surplus or mint from nothing — and the supply invariant sums
+             * validators.self_stake, so the ledger would refuse the block
+             * either way. Today every bond equals the literal, so the
+             * emitted amount is unchanged on the live chain. */
+            /* S3 (ORCHESTRATOR integration): output_index is 200 + i, not
+             * the literal 200 — two graduates in one boundary used to
+             * derive IDENTICAL synthetic nullifiers from
+             * (boundary_tx_hash, 200) and the second payout collided.
+             * i is deterministic because the candidate SELECT above is
+             * ORDER BY pubkey ASC. Range stays clear of neighbours:
+             * UNDELEGATE uses 100-101, settlement starts at 400
+             * (NODUS_EPOCH_SETTLE_OUTPUT_INDEX_BASE), and i < 128
+             * (DNAC_MAX_VALIDATORS caps the table) ⇒ 200..327. */
             if (emit_synthetic_utxo_for_fp(
                     w, boundary_tx_hash,
                     (const char *)v.unstake_destination_fp,
-                    DNAC_SELF_STAKE_AMOUNT,
+                    v.self_stake,
                     block_height,
                     /*kind=*/0x10,
-                    /*output_index=*/200,
+                    /*output_index=*/(uint32_t)(200 + i),
                     /*unlock_block=*/block_height + DNAC_UNSTAKE_COOLDOWN_BLOCKS)
                 != 0) {
                 fprintf(stderr, "%s: epoch_boundary: emit principal UTXO failed\n",
@@ -2364,8 +2514,20 @@ static int apply_epoch_boundary_transitions(nodus_witness_t *w,
                 return -1;
             }
 
-            /* Transition RETIRING → UNSTAKED. */
+            /* Transition RETIRING → UNSTAKED, and ZERO the bond.
+             *
+             * S3 (ORCHESTRATOR integration): the bond's value just moved
+             * into the principal UTXO above; leaving it on the record too
+             * double-counts it in check_supply_invariant_v016's
+             * Σ self_stake term (that SUM has no status filter) and the
+             * very block performing the graduation would be rejected.
+             * This was a latent halt on the FIRST-EVER graduation — the
+             * cooldown (17280 blocks) is longer than any test run, so the
+             * path had never executed end-to-end. validator.h has always
+             * documented self_stake as "zeroed post-UNSTAKE"; the code
+             * now implements its own contract. */
             v.status = (uint8_t)DNAC_VALIDATOR_UNSTAKED;
+            v.self_stake = 0;
             rc = nodus_validator_update(w, &v);
             if (rc != 0) {
                 fprintf(stderr, "%s: epoch_boundary: validator_update failed (rc=%d)\n",
@@ -2423,29 +2585,76 @@ static int apply_epoch_boundary_transitions(nodus_witness_t *w,
             epoch_start = block_height - DNAC_EPOCH_LENGTH;
         }
 
-        /* Step 3a: increment consecutive_missed_epochs for ACTIVE
-         * validators whose last_signed_block is older than the past
-         * epoch start. Reset to 0 for those who signed within it. */
-        sqlite3_stmt *inc = NULL;
-        int rc = sqlite3_prepare_v2(w->db,
-            "UPDATE validators "
-            "SET consecutive_missed_epochs = consecutive_missed_epochs + 1 "
-            "WHERE status = ? AND last_signed_block < ? "
-            "  AND active_since_block + ? <= ?",
-            -1, &inc, NULL);
-        if (rc != SQLITE_OK) {
-            fprintf(stderr, "%s: epoch_boundary: prepare miss_inc failed: %s\n",
-                    LOG_TAG, sqlite3_errmsg(w->db));
-            return -1;
+        /* Step 3a: increment consecutive_missed_epochs — S3 fix: ONLY for
+         * the past epoch's BASE LEADER, and only if it never signed.
+         *
+         * ⚠ Found by the S3 7→9→7 harness (pre-existing, latent): the
+         * attendance watermark is written by record_attendance for the
+         * block PROPOSER alone (the precommit voter set is node-local and
+         * non-deterministic — see its comment), while the leader is
+         * (epoch + view) % n — ONE base proposer per EPOCH. Blaming every
+         * ACTIVE validator whose watermark is stale therefore auto-retired
+         * ALL non-leaders after DNAC_AUTO_RETIRE_EPOCHS (observed live in
+         * the harness: 6 of 9 validators AUTO_RETIRED by epoch 5). No real
+         * chain had ever crossed enough boundaries for this to fire — the
+         * live devnet (E = 720) has never reached block 2880.
+         *
+         * A validator can only MISS an epoch in which it HAD a proposer
+         * slot. The base leader for the past epoch is deterministic from
+         * committed state (committee(epoch_start) + (epoch_num % n)), so
+         * every node blames the same validator or none. A leader that was
+         * view-changed around all epoch keeps a stale watermark and is
+         * rightly blamed; everyone else has no slot and no blame. Rule N
+         * still evicts persistently dead LEADERS, which is its purpose. */
+        const uint8_t *past_leader_pk = NULL;
+        nodus_committee_member_t *past_cm = NULL;
+        {
+            int past_n = 0;
+            if (nodus_committee_get_for_block_alloc(w, epoch_start,
+                                                    &past_cm, &past_n) != 0) {
+                fprintf(stderr, "%s: epoch_boundary: past-epoch committee "
+                        "lookup failed — cannot run Rule N\n", LOG_TAG);
+                return -1;
+            }
+            if (past_n > 0) {
+                uint64_t epoch_num = epoch_start / (uint64_t)DNAC_EPOCH_LENGTH;
+                past_leader_pk =
+                    past_cm[(size_t)(epoch_num % (uint64_t)past_n)].pubkey;
+            }
+            /* past_n == 0: pre-genesis fixture epochs — nobody had a
+             * slot, nobody is blamed. */
         }
-        sqlite3_bind_int(inc, 1, (int)DNAC_VALIDATOR_ACTIVE);
-        sqlite3_bind_int64(inc, 2, (int64_t)epoch_start);
-        /* MIN_TENURE gate: a validator that just staked in the epoch
-         * being evaluated cannot be blamed for missing it. */
-        sqlite3_bind_int64(inc, 3, (int64_t)DNAC_MIN_TENURE_BLOCKS);
-        sqlite3_bind_int64(inc, 4, (int64_t)block_height);
-        rc = sqlite3_step(inc);
-        sqlite3_finalize(inc);
+        int rc;
+        if (past_leader_pk) {
+            sqlite3_stmt *inc = NULL;
+            rc = sqlite3_prepare_v2(w->db,
+                "UPDATE validators "
+                "SET consecutive_missed_epochs = consecutive_missed_epochs + 1 "
+                "WHERE status = ? AND last_signed_block < ? "
+                "  AND active_since_block + ? <= ? "
+                "  AND pubkey = ?",
+                -1, &inc, NULL);
+            if (rc != SQLITE_OK) {
+                fprintf(stderr, "%s: epoch_boundary: prepare miss_inc failed: %s\n",
+                        LOG_TAG, sqlite3_errmsg(w->db));
+                free(past_cm);
+                return -1;
+            }
+            sqlite3_bind_int(inc, 1, (int)DNAC_VALIDATOR_ACTIVE);
+            sqlite3_bind_int64(inc, 2, (int64_t)epoch_start);
+            /* MIN_TENURE gate: a validator that just staked in the epoch
+             * being evaluated cannot be blamed for missing it. */
+            sqlite3_bind_int64(inc, 3, (int64_t)DNAC_MIN_TENURE_BLOCKS);
+            sqlite3_bind_int64(inc, 4, (int64_t)block_height);
+            sqlite3_bind_blob(inc, 5, past_leader_pk, DNAC_PUBKEY_SIZE,
+                              SQLITE_STATIC);
+            rc = sqlite3_step(inc);
+            sqlite3_finalize(inc);
+        } else {
+            rc = SQLITE_DONE;   /* no slot existed → no blame this epoch */
+        }
+        free(past_cm);
+        past_cm = NULL;
         if (rc != SQLITE_DONE) {
             fprintf(stderr, "%s: epoch_boundary: miss_inc step failed (rc=%d)\n",
                     LOG_TAG, rc);
@@ -2548,6 +2757,47 @@ static int apply_epoch_boundary_transitions(nodus_witness_t *w,
      * on w->cached_committee_* and consumes the post-commit lookback
      * snapshot defined in §3.6. BFT roster wiring (Task 59) consumes
      * the same accessor. */
+
+    /* ─────── 5. S3 validator-set lifecycle ───────
+     *
+     * ORDER IS LOAD-BEARING. The full boundary sequence is now:
+     *
+     *   1. pending-commission activation
+     *   2. RETIRING → UNSTAKED graduation (+ active_count decrement)
+     *   3. Rule N liveness: miss-increment / reset / AUTO_RETIRE
+     *   4. (committee election — demand-driven, no work here)
+     *   5a. apply_boundary_flips   ← THIS EPOCH's membership
+     *   5b. commit_next            ← NEXT EPOCH's frozen set
+     *
+     * 5a runs after 1-3 so the flips see the final bonded set for this
+     * boundary (a validator that graduated or auto-retired in step 2/3 is
+     * no longer ACTIVE/ELIGIBLE and is therefore not flipped at all).
+     *
+     * 5b runs after 5a because it RANKS over the post-flip state:
+     * nodus_validator_top_n selects on status IN (ACTIVE, ELIGIBLE), so
+     * running it first would rank against the previous epoch's status
+     * assignment. Ranking after the flips makes the (k+1)E snapshot a
+     * function of the state this block actually committed.
+     *
+     * Both live inside finalize_block's transaction, so the BFT-original
+     * path, the genesis path and the sync-replay path all execute them
+     * identically — the same reason this whole function lives here rather
+     * than in a commit wrapper. Either failing returns -1, which
+     * finalize_block propagates into the caller's rollback: no partial
+     * membership change is ever committed, and the node simply does not
+     * vote for the block. */
+    if (nodus_witness_vset_apply_boundary_flips(w, block_height) != 0) {
+        fprintf(stderr,
+                "%s: epoch_boundary: validator-set flips failed at h=%llu\n",
+                LOG_TAG, (unsigned long long)block_height);
+        return -1;
+    }
+    if (nodus_witness_vset_commit_next(w, block_height) != 0) {
+        fprintf(stderr,
+                "%s: epoch_boundary: next-epoch validator-set commit failed "
+                "at h=%llu\n", LOG_TAG, (unsigned long long)block_height);
+        return -1;
+    }
 
     return 0;
 }
@@ -2664,7 +2914,8 @@ static int collect_delegations_for_validator(
  * 7 committee validators × 65 (1 commission + 64 delegations) = 455
  * UTXOs. We start synthetic output_index at 400 to stay clear of the
  * UNDELEGATE principal/reward range (100-101) and the
- * apply_epoch_boundary_transitions RETIRING graduation range (200-201). */
+ * apply_epoch_boundary_transitions RETIRING graduation range
+ * (200 + i, i < DNAC_MAX_VALIDATORS ⇒ 200-327). */
 #define NODUS_EPOCH_SETTLE_OUTPUT_INDEX_BASE 400
 
 /* Settlement-loop-optimised variant of emit_synthetic_utxo that reuses a
@@ -2840,12 +3091,32 @@ static int apply_epoch_settlement(nodus_witness_t *w,
          * with a count-based 80%-of-expected-proposer-slots threshold:
          *
          *   per-validator expected proposer slots per epoch
-         *     = EPOCH_LENGTH / COMMITTEE_SIZE (round-robin leader).
+         *     = EPOCH_LENGTH / active_set_size (round-robin leader).
          *   required slots = expected * LIVENESS_THRESHOLD_BPS / 10000.
          *   present if signed_blocks_this_epoch >= required.
          *
          * Rearranged for exact integer math (no division, no truncation):
-         *   signed * COMMITTEE_SIZE * 10000 >= EPOCH_LENGTH * THRESHOLD_BPS.
+         *   signed * active_set_size * 10000 >= EPOCH_LENGTH * THRESHOLD_BPS.
+         *
+         * ── S3: THE DENOMINATOR IS THE EPOCH'S OWN SET SIZE ────────────
+         * This used to be the DNAC_COMMITTEE_SIZE literal. With a dynamic
+         * active set that literal is simply the WRONG number: at 21 seats
+         * the round-robin gives each member ~EPOCH_LENGTH/21 proposal
+         * slots, so requiring 80% of EPOCH_LENGTH/7 would burn every
+         * honest validator's share.
+         *
+         * `committee_count` is the size of the set THIS epoch actually
+         * had: it is decoded from the epoch_state snapshot_blob captured
+         * at the epoch's first block by nodus_witness_epoch_snapshot_apply
+         * (nodus_witness_epoch.c:299) and is the very list being iterated
+         * here. It is therefore (a) the historical value, not a
+         * current-set substitution, and (b) byte-identical on every node,
+         * because the snapshot is part of the committed epoch_state row
+         * that feeds state_root. Guaranteed non-zero: the
+         * committee_count == 0 early return above already handled that.
+         *
+         * On the live 7-seat chain committee_count == 7, so the product
+         * is unchanged.
          *
          * The counter is incremented by nodus_witness_record_attendance
          * only for the block proposer (deterministic across all nodes
@@ -2862,7 +3133,7 @@ static int apply_epoch_settlement(nodus_witness_t *w,
             present = true;
         } else if (nodus_validator_get(w, vpk, &current_v) == 0) {
             uint64_t lhs = current_v.signed_blocks_this_epoch *
-                           (uint64_t)DNAC_COMMITTEE_SIZE * 10000ULL;
+                           (uint64_t)committee_count * 10000ULL;
             uint64_t rhs = (uint64_t)DNAC_EPOCH_LENGTH *
                            (uint64_t)DNAC_LIVENESS_THRESHOLD_BPS;
             if (lhs >= rhs) {
@@ -3065,6 +3336,15 @@ int nodus_witness_record_attendance(nodus_witness_t *w,
                 LOG_TAG, sqlite3_errmsg(w->db));
         return -1;
     }
+    /* S3: ELIGIBLE is deliberately NOT in this filter. Attendance is
+     * COMMITTEE-scoped — it credits the block's proposer, and only a
+     * member of the epoch's active set can be elected proposer
+     * (nodus_witness_bft_leader_index over the committee). RETIRING is
+     * here because a RETIRING validator keeps its seat for the rest of
+     * the epoch. At an epoch-boundary block the ordering also works out:
+     * commit_batch calls record_attendance BEFORE finalize_block, so
+     * this scan still sees the ENDING epoch's statuses, which is the
+     * epoch the proposer actually served. */
     sqlite3_bind_int(sel, 1, (int)DNAC_VALIDATOR_ACTIVE);
     sqlite3_bind_int(sel, 2, (int)DNAC_VALIDATOR_RETIRING);
 
@@ -3208,6 +3488,44 @@ int finalize_block(nodus_witness_t *w,
     if (apply_epoch_boundary_transitions(w, expected_height) != 0) {
         fprintf(stderr, "%s: finalize_block: epoch_boundary failed\n",
                 LOG_TAG);
+        return -1;
+    }
+
+    /* S3 — genesis validator-set snapshots (no-op at every other height).
+     *
+     * PLACED HERE, not in nodus_witness_commit_genesis, on purpose:
+     * finalize_block is the single point BOTH genesis paths pass through.
+     * The BFT-original genesis and the sync replay of genesis both call
+     * nodus_witness_commit_genesis (handle_commit in this file, and
+     * nodus_witness_sync.c:910-916 which dispatches a lone GENESIS tx to
+     * the same wrapper), and that wrapper's only block-writing step is
+     * this finalize_block call. Hooking the wrapper instead would have
+     * been equivalent today but fragile: the sync.c:975-1005 comment
+     * records the class of bug where a step lands on one commit path and
+     * not the other, and the two DBs then differ forever.
+     *
+     * Ordering inside the transaction: genesis validator seeding
+     * (nodus_witness_genesis_seed_validators) and the genesis_state /
+     * supply_tracking writes all happen BEFORE this call, so the builder
+     * sees the seeded validators. The block row itself is written at the
+     * end of this function, which is fine — the snapshot builder reads
+     * validators, not blocks (its bootstrap tiebreak deliberately falls
+     * back to the all-zero seed; see nodus_witness_vset_commit_genesis).
+     *
+     * The genesis condition is height 1 AND a chain_def payload: both
+     * real genesis paths (BFT-original and sync replay) reach this call
+     * through nodus_witness_commit_genesis, which is the ONLY caller
+     * that passes a non-NULL chain_def_blob (bft.c commit_genesis;
+     * commit_batch always passes NULL). Height alone would be wrong —
+     * unit fixtures legitimately finalize ordinary txs at height 1
+     * against an unseeded validators table, and a real chain's height-1
+     * block without a chain_def does not exist on any live path (Rule P
+     * has required the chain_def since Task 56; the legacy no-chain_def
+     * archive chains are dead and never replay through here). */
+    if (chain_def_blob != NULL &&
+        nodus_witness_vset_commit_genesis(w, expected_height) != 0) {
+        fprintf(stderr, "%s: finalize_block: genesis validator-set "
+                "snapshot failed\n", LOG_TAG);
         return -1;
     }
 
@@ -3369,17 +3687,20 @@ int finalize_block(nodus_witness_t *w,
          * spawned during halt window cannot influence the vote.
          * Failure to capture (DB error, etc) leaves halt_committee_
          * count = 0 → halt_recovery_check treats as inconclusive. */
-        nodus_committee_member_t halt_cm[DNAC_COMMITTEE_SIZE];
+        nodus_committee_member_t *halt_cm = NULL;
         int halt_cm_count = 0;
-        if (nodus_committee_get_for_block(w, expected_height, halt_cm,
-                                            DNAC_COMMITTEE_SIZE,
-                                            &halt_cm_count) == 0) {
+        if (nodus_committee_get_for_block_alloc(w, expected_height, &halt_cm,
+                                                  &halt_cm_count) == 0) {
+            if (halt_cm_count > DNAC_MAX_ACTIVE_VALIDATORS)
+                halt_cm_count = DNAC_MAX_ACTIVE_VALIDATORS;
             w->halt_committee_count = halt_cm_count;
-            for (int i = 0; i < halt_cm_count && i < DNAC_COMMITTEE_SIZE; i++) {
+            for (int i = 0; i < halt_cm_count; i++) {
                 memcpy(w->halt_committee_pubkeys[i], halt_cm[i].pubkey,
                        DNAC_PUBKEY_SIZE);
             }
+            free(halt_cm);
         } else {
+            free(halt_cm);
             w->halt_committee_count = 0;
             fprintf(stderr,
                 "%s: halt committee snapshot failed at h=%llu — "
@@ -4014,7 +4335,7 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
      * genesis), fall back to gossip roster. */
     {
         uint64_t next_bh = nodus_witness_block_height(w) + 1;
-        nodus_committee_member_t committee[DNAC_COMMITTEE_SIZE];
+        nodus_committee_member_t *committee = NULL;
         int count = 0;
         int sender_idx = -1;
 
@@ -4024,12 +4345,16 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
             return -1;
         }
 
-        if (load_committee_at_height(w, next_bh, committee,
-                                       DNAC_COMMITTEE_SIZE, &count) == 0 &&
+        if (load_committee_at_height_alloc(w, next_bh, &committee,
+                                             &count) == 0 &&
             count > 0) {
             sender_idx = committee_find_pubkey(committee, count,
                                                  w->roster.witnesses[gossip_idx].pubkey);
+            free(committee);
+            committee = NULL;
         } else {
+            free(committee);
+            committee = NULL;
             /* Pre-genesis bootstrap: leader is a gossip-roster slot —
              * by SORTED rank, mirroring nodus_witness_bft_is_leader's
              * fallback exactly; the arrival index (gossip_idx) is
@@ -4467,20 +4792,25 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
      * sufficient authorization (gossip peer = legitimate pre-genesis
      * witness). Only active for the genesis round itself. */
     {
-        nodus_committee_member_t committee[DNAC_COMMITTEE_SIZE];
+        nodus_committee_member_t *committee = NULL;
         int count = 0;
-        if (load_committee_at_height(w, w->round_state.round, committee,
-                                       DNAC_COMMITTEE_SIZE, &count) == 0 &&
+        if (load_committee_at_height_alloc(w, w->round_state.round,
+                                             &committee, &count) == 0 &&
             count > 0) {
-            if (committee_find_pubkey(committee, count, sender_pk) < 0) {
+            int found = committee_find_pubkey(committee, count, sender_pk);
+            free(committee);
+            if (found < 0) {
                 fprintf(stderr,
                         "%s: vote from non-committee member (round=%llu)\n",
                         LOG_TAG,
                         (unsigned long long)w->round_state.round);
                 return -1;
             }
+        } else {
+            /* pre-genesis (count 0) or lookup error: gossip_idx check
+             * above is sufficient authorization. */
+            free(committee);
         }
-        /* else: pre-genesis, gossip_idx check above is sufficient. */
     }
 
     /* C5 — verify PREVOTE cert_sig against PREPARED preimage when the
@@ -4515,10 +4845,19 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
         }
     }
 
-    /* Record vote — vote arrays sized to DNAC_COMMITTEE_SIZE per F17
-     * A1 (committee is the voting authority). Reject if somehow we've
-     * accumulated more votes than committee slots. */
-    if (*vote_count >= DNAC_COMMITTEE_SIZE)
+    /* Record vote.
+     *
+     * S3 — this bound is the ARRAY capacity (DNAC_MAX_ACTIVE_VALIDATORS,
+     * nodus_witness.h round_state), a memory-safety backstop only. The
+     * SEMANTIC bound is still the committee size, and it is enforced
+     * strictly earlier in this function, before any slot is written:
+     *   - the committee-membership gate above rejects (-1) any sender
+     *     whose pubkey is not in load_committee_at_height's result, and
+     *   - the pubkey dedup loop above returns 0 for a repeat sender.
+     * Together those two make vote_count <= committee_count. Reaching
+     * this line with a full array therefore means an invariant broke, so
+     * it stays a hard reject rather than a silent drop. */
+    if (*vote_count >= DNAC_MAX_ACTIVE_VALIDATORS)
         return -1;
 
     memcpy(votes[*vote_count].voter_id, hdr->sender_id,
@@ -4586,9 +4925,16 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
         w->last_prepared.round = w->round_state.round;
         memcpy(w->last_prepared.tx_hash, w->round_state.tx_hash,
                NODUS_T3_TX_HASH_LEN);
+        /* S3 — the bound is the DESTINATION array's capacity.
+         * w->last_prepared.sigs is DNAC_MAX_ACTIVE_VALIDATORS entries; the
+         * loop used to stop at NODUS_T3_MAX_WITNESSES (128) against a
+         * literal-64 array, an overflow that was unreachable only because
+         * prevote_count could not exceed 7. Both are now the same
+         * constant, and the source array (prevotes) has the same
+         * capacity. */
         uint32_t collected = 0;
         for (int i = 0; i < w->round_state.prevote_count &&
-                        collected < NODUS_T3_MAX_WITNESSES; i++) {
+                        collected < DNAC_MAX_ACTIVE_VALIDATORS; i++) {
             if (w->round_state.prevotes[i].vote != NODUS_W_VOTE_APPROVE)
                 continue;
             memcpy(w->last_prepared.sigs[collected].voter_id,
@@ -5268,6 +5614,61 @@ int nodus_witness_bft_handle_commit(nodus_witness_t *w,
  * View change
  * ════════════════════════════════════════════════════════════════════ */
 
+/* S3 — the ONE owner of nodus_witness_vc_record_t::prepared::sigs.
+ *
+ * Every site that used to `memset` a view-change record calls this
+ * instead; a bare memset would drop the heap pointer on the floor. The
+ * post-condition is the same as the old memset's: a fully zeroed record
+ * with has_prepared == false, n_sigs == 0 and sigs == NULL.
+ *
+ * Declared in nodus_witness.h so nodus_witness_close can drain the array
+ * at shutdown. NULL-safe; idempotent (free(NULL) is a no-op and the
+ * pointer is re-nulled by the memset). */
+void nodus_witness_vc_record_clear(nodus_witness_vc_record_t *vc) {
+    if (!vc) return;
+    free(vc->prepared.sigs);
+    memset(vc, 0, sizeof(*vc));
+}
+
+/* Allocate a view-change record's prepared-sig array (S3).
+ *
+ * Replaces the in-struct array the copy loops used to write into. Any
+ * previous allocation on the slot is released first, so a slot can be
+ * re-filled without leaking. `*n_io` is clamped IN PLACE to
+ * DNAC_MAX_ACTIVE_VALIDATORS so the caller's copy loop and the array
+ * agree on the bound. `*n_io == 0` leaves the slot with sigs == NULL /
+ * n_sigs == 0.
+ *
+ * The caller fills the entries field-by-field: the sources (the
+ * anonymous struct inside w->last_prepared, and nodus_t3_viewchg_t's
+ * wire array) have the same LAYOUT but are distinct TYPES, so a bulk
+ * memcpy between them would be type punning rather than a copy.
+ *
+ * @return 0 on success, -1 on allocation failure (slot left empty and
+ *         has_prepared cleared — a cert we cannot store is a cert we
+ *         must not claim to hold). */
+static int vc_record_alloc_sigs(nodus_witness_vc_record_t *vc,
+                                  uint32_t *n_io) {
+    if (!vc || !n_io) return -1;
+    free(vc->prepared.sigs);
+    vc->prepared.sigs   = NULL;
+    vc->prepared.n_sigs = 0;
+
+    if (*n_io > (uint32_t)DNAC_MAX_ACTIVE_VALIDATORS)
+        *n_io = (uint32_t)DNAC_MAX_ACTIVE_VALIDATORS;
+    if (*n_io == 0) return 0;
+
+    nodus_witness_prepared_sig_t *arr = calloc((size_t)*n_io, sizeof(*arr));
+    if (!arr) {
+        vc->prepared.has_prepared = false;
+        *n_io = 0;
+        return -1;
+    }
+    vc->prepared.sigs   = arr;
+    vc->prepared.n_sigs = *n_io;
+    return 0;
+}
+
 int nodus_witness_bft_initiate_view_change(nodus_witness_t *w) {
     if (!w) return -1;
 
@@ -5283,7 +5684,9 @@ int nodus_witness_bft_initiate_view_change(nodus_witness_t *w) {
      * w->last_prepared into view_changes[0].prepared so the quorum scan
      * (if we turn out to be the new leader) finds our prepared cert
      * alongside peers'. */
-    memset(&w->view_changes[0], 0, sizeof(w->view_changes[0]));
+    /* S3: clear, not memset — the slot may still own a sigs allocation
+     * from a previous view change. */
+    nodus_witness_vc_record_clear(&w->view_changes[0]);
     memcpy(w->view_changes[0].voter_id, w->my_id,
            NODUS_T3_WITNESS_ID_LEN);
     w->view_changes[0].target_view = w->view_change_target;
@@ -5294,19 +5697,22 @@ int nodus_witness_bft_initiate_view_change(nodus_witness_t *w) {
         w->view_changes[0].prepared.view = w->last_prepared.view;
         memcpy(w->view_changes[0].prepared.tx_hash,
                w->last_prepared.tx_hash, NODUS_T3_TX_HASH_LEN);
-        /* vc_record.prepared.sigs[] is DNAC_COMMITTEE_SIZE-capped (see
-         * nodus_witness.h note on stack budget). Cap the copy count
-         * and store the capped value in n_sigs. */
+        /* S3: sigs is heap-owned and sized to the actual cert, clamped to
+         * the release ceiling. The old DNAC_COMMITTEE_SIZE cap is gone —
+         * a 128-member set's quorum needs 86 sigs. */
         uint32_t stored = w->last_prepared.n_sigs;
-        if (stored > DNAC_COMMITTEE_SIZE) stored = DNAC_COMMITTEE_SIZE;
-        w->view_changes[0].prepared.n_sigs = stored;
-        for (uint32_t i = 0; i < stored; i++) {
-            memcpy(w->view_changes[0].prepared.sigs[i].voter_id,
-                   w->last_prepared.sigs[i].voter_id,
-                   NODUS_T3_WITNESS_ID_LEN);
-            memcpy(w->view_changes[0].prepared.sigs[i].signature,
-                   w->last_prepared.sigs[i].signature,
-                   NODUS_SIG_BYTES);
+        if (vc_record_alloc_sigs(&w->view_changes[0], &stored) != 0) {
+            fprintf(stderr, "%s: view_change: prepared-sig alloc failed — "
+                    "self-record carries no prepared cert\n", LOG_TAG);
+        } else {
+            for (uint32_t i = 0; i < stored; i++) {
+                memcpy(w->view_changes[0].prepared.sigs[i].voter_id,
+                       w->last_prepared.sigs[i].voter_id,
+                       NODUS_T3_WITNESS_ID_LEN);
+                memcpy(w->view_changes[0].prepared.sigs[i].signature,
+                       w->last_prepared.sigs[i].signature,
+                       NODUS_SIG_BYTES);
+            }
         }
     }
     w->view_change_count = 1;
@@ -5372,12 +5778,17 @@ int nodus_witness_bft_handle_viewchg(nodus_witness_t *w,
     const uint8_t *sender_pk = w->roster.witnesses[gossip_idx].pubkey;
     {
         uint64_t next_bh = nodus_witness_block_height(w) + 1;
-        nodus_committee_member_t committee[DNAC_COMMITTEE_SIZE];
+        nodus_committee_member_t *committee = NULL;
         int count = 0;
-        if (load_committee_at_height(w, next_bh, committee,
-                                       DNAC_COMMITTEE_SIZE, &count) == 0 &&
+        bool reject = false;
+        if (load_committee_at_height_alloc(w, next_bh, &committee,
+                                             &count) == 0 &&
             count > 0 &&
             committee_find_pubkey(committee, count, sender_pk) < 0) {
+            reject = true;
+        }
+        free(committee);
+        if (reject) {
             fprintf(stderr,
                     "%s: VIEW_CHANGE from non-committee sender\n", LOG_TAG);
             return -1;
@@ -5397,8 +5808,12 @@ int nodus_witness_bft_handle_viewchg(nodus_witness_t *w,
         /* C5 — wipe stale prepared data from previous (lower) target so
          * it cannot leak into the new target's quorum scan. Otherwise a
          * racing attacker could get a lower-target prepared cert counted
-         * at a higher target's NEW_VIEW scan. */
-        memset(w->view_changes, 0, sizeof(w->view_changes));
+         * at a higher target's NEW_VIEW scan.
+         *
+         * S3: per-record clear, NOT a memset of the array — each record
+         * may own a heap sigs allocation. */
+        for (int i = 0; i < DNAC_MAX_ACTIVE_VALIDATORS; i++)
+            nodus_witness_vc_record_clear(&w->view_changes[i]);
     }
 
     /* Record vote if for current target */
@@ -5412,9 +5827,13 @@ int nodus_witness_bft_handle_viewchg(nodus_witness_t *w,
             return 0;
     }
 
-    if (w->view_change_count < DNAC_COMMITTEE_SIZE) {
+    /* S3: the slot bound is the ARRAY capacity — view-change quorum is
+     * dna_bft_quorum(active_set_size), which at n = 128 is 86, so a
+     * DNAC_COMMITTEE_SIZE bound would silently drop the votes that reach
+     * quorum on a large active set. */
+    if (w->view_change_count < DNAC_MAX_ACTIVE_VALIDATORS) {
         int slot = w->view_change_count;
-        memset(&w->view_changes[slot], 0, sizeof(w->view_changes[slot]));
+        nodus_witness_vc_record_clear(&w->view_changes[slot]);
         memcpy(w->view_changes[slot].voter_id,
                hdr->sender_id, NODUS_T3_WITNESS_ID_LEN);
         w->view_changes[slot].target_view = vc->new_view;
@@ -5434,11 +5853,11 @@ int nodus_witness_bft_handle_viewchg(nodus_witness_t *w,
                                             vc->prepared_height,
                                             vc->prepared_tx_hash,
                                             prep_preimage) == 0) {
-                nodus_committee_member_t p_committee[DNAC_COMMITTEE_SIZE];
+                nodus_committee_member_t *p_committee = NULL;
                 int p_count = 0;
-                bool have_committee = (load_committee_at_height(w,
-                    vc->prepared_height, p_committee,
-                    DNAC_COMMITTEE_SIZE, &p_count) == 0 && p_count > 0);
+                bool have_committee = (load_committee_at_height_alloc(w,
+                    vc->prepared_height, &p_committee, &p_count) == 0 &&
+                    p_count > 0);
                 uint32_t verified = 0;
                 uint32_t n_sigs = vc->prepared_n_sigs;
                 if (n_sigs > NODUS_T3_MAX_WITNESSES)
@@ -5478,35 +5897,46 @@ int nodus_witness_bft_handle_viewchg(nodus_witness_t *w,
                         verified++;
                     }
                 }
+                free(p_committee);
+                p_committee = NULL;
+
                 if (verified >= w->bft_config.quorum) {
                     /* Cert is quorum-valid; store full prepared data so
-                     * the leader scan can consider this entry. vc_record
-                     * sigs[] is DNAC_COMMITTEE_SIZE-capped (stack budget),
-                     * so cap the stored count here — wire can carry up
-                     * to NODUS_T3_MAX_WITNESSES but we only keep enough
-                     * to cover committee-sized quorum. */
+                     * the leader scan can consider this entry.
+                     *
+                     * S3: sigs is heap-owned and sized to the cert, so the
+                     * old DNAC_COMMITTEE_SIZE truncation is gone — keeping
+                     * only 7 of a 128-member set's 86-sig quorum would
+                     * have made the stored cert unverifiable downstream.
+                     * The remaining clamp is the release ceiling, applied
+                     * inside vc_record_alloc_sigs. */
                     uint32_t stored = n_sigs;
-                    if (stored > DNAC_COMMITTEE_SIZE) stored = DNAC_COMMITTEE_SIZE;
                     w->view_changes[slot].prepared.has_prepared = true;
                     w->view_changes[slot].prepared.height =
                         vc->prepared_height;
                     w->view_changes[slot].prepared.view = vc->prepared_view;
                     memcpy(w->view_changes[slot].prepared.tx_hash,
                            vc->prepared_tx_hash, NODUS_T3_TX_HASH_LEN);
-                    w->view_changes[slot].prepared.n_sigs = stored;
-                    for (uint32_t si = 0; si < stored; si++) {
-                        memcpy(w->view_changes[slot].prepared.sigs[si].voter_id,
-                               vc->prepared_sigs[si].voter_id,
-                               NODUS_T3_WITNESS_ID_LEN);
-                        memcpy(w->view_changes[slot].prepared.sigs[si].signature,
-                               vc->prepared_sigs[si].signature,
-                               NODUS_SIG_BYTES);
+                    if (vc_record_alloc_sigs(&w->view_changes[slot],
+                                               &stored) != 0) {
+                        fprintf(stderr, "%s: C5 prepared-sig alloc failed — "
+                                "cert from gossip %d dropped\n",
+                                LOG_TAG, gossip_idx);
+                    } else {
+                        for (uint32_t si = 0; si < stored; si++) {
+                            memcpy(w->view_changes[slot].prepared.sigs[si].voter_id,
+                                   vc->prepared_sigs[si].voter_id,
+                                   NODUS_T3_WITNESS_ID_LEN);
+                            memcpy(w->view_changes[slot].prepared.sigs[si].signature,
+                                   vc->prepared_sigs[si].signature,
+                                   NODUS_SIG_BYTES);
+                        }
+                        fprintf(stderr, "%s: C5 accepted prepared cert from "
+                                "gossip %d (height=%llu view=%u verified=%u/%u)\n",
+                                LOG_TAG, gossip_idx,
+                                (unsigned long long)vc->prepared_height,
+                                vc->prepared_view, verified, n_sigs);
                     }
-                    fprintf(stderr, "%s: C5 accepted prepared cert from "
-                            "gossip %d (height=%llu view=%u verified=%u/%u)\n",
-                            LOG_TAG, gossip_idx,
-                            (unsigned long long)vc->prepared_height,
-                            vc->prepared_view, verified, n_sigs);
                 } else {
                     fprintf(stderr, "%s: C5 prepared cert from gossip %d "
                             "below quorum (verified=%u/%u req=%u) — ignoring\n",
@@ -5606,7 +6036,7 @@ int nodus_witness_bft_handle_newview(nodus_witness_t *w,
      * for the new view. F17 A5 bootstrap — fall back to gossip roster
      * when committee is empty (pre-genesis). */
     uint64_t next_bh = nodus_witness_block_height(w) + 1;
-    nodus_committee_member_t committee[DNAC_COMMITTEE_SIZE];
+    nodus_committee_member_t *committee = NULL;
     int count = 0;
     int sender_idx = -1;
 
@@ -5616,8 +6046,7 @@ int nodus_witness_bft_handle_newview(nodus_witness_t *w,
         return -1;
     }
 
-    if (load_committee_at_height(w, next_bh, committee,
-                                   DNAC_COMMITTEE_SIZE, &count) == 0 &&
+    if (load_committee_at_height_alloc(w, next_bh, &committee, &count) == 0 &&
         count > 0) {
         sender_idx = committee_find_pubkey(committee, count,
                                              w->roster.witnesses[gossip_idx].pubkey);
@@ -5626,6 +6055,8 @@ int nodus_witness_bft_handle_newview(nodus_witness_t *w,
         count = (int)w->roster.n_witnesses;
         sender_idx = gossip_idx;
     }
+    free(committee);
+    committee = NULL;
 
     /* C7 fix: block-height epoch — cluster-agreed, no clock-skew fork risk */
     uint64_t epoch = next_bh / (uint64_t)DNAC_EPOCH_LENGTH;
@@ -5865,6 +6296,57 @@ void nodus_witness_bft_check_timeout(nodus_witness_t *w) {
  * add the public wiring.
  */
 
+/* S3 — locate the optional chain_def trailer inside a serialized
+ * genesis TX. Extracted from commit_genesis (the walk is byte-identical
+ * to the one that lived inline there) so the sync path can derive the
+ * genesis cert quorum from the SAME bytes Rule P verifies. Pure wire
+ * walk, no state. @return 0 (blob out, may be NULL when absent) / -1
+ * on NULL args. */
+int nodus_witness_extract_chain_def(const uint8_t *tx_data,
+                                    uint32_t tx_len,
+                                    const uint8_t **cd_blob_out,
+                                    uint32_t *cd_blob_len_out) {
+    if (!tx_data || !cd_blob_out || !cd_blob_len_out) return -1;
+    *cd_blob_out = NULL;
+    *cd_blob_len_out = 0;
+
+    const uint8_t *p = tx_data;
+    const uint8_t *end = tx_data + tx_len;
+    if (tx_len >= DNAC_TX_HEADER_SIZE) {
+        p += DNAC_TX_HEADER_SIZE;  /* v2 header: version + type + timestamp + tx_hash + committed_fee */
+        if (p < end) {
+            uint8_t ic = *p++; p += (size_t)ic * (64 + 8 + 64); /* inputs */
+        }
+        if (p < end) {
+            uint8_t oc = *p++;
+            for (int oi = 0; oi < oc && p < end; oi++) {
+                p += 1 + 129 + 8 + 64 + 32; /* version+fp+amt+token+seed */
+                if (p < end) { uint8_t ml = *p++; p += ml; } /* memo */
+            }
+        }
+        if (p < end) {
+            uint8_t wc = *p++; p += (size_t)wc * (32 + NODUS_SIG_BYTES + 8 + NODUS_PK_BYTES); /* witnesses */
+        }
+        if (p < end) {
+            uint8_t sc = *p++; p += (size_t)sc * (NODUS_PK_BYTES + NODUS_SIG_BYTES); /* signers */
+        }
+        /* Now at has_chain_def flag byte */
+        if (p < end) {
+            uint8_t has_cd = *p++;
+            if (has_cd && p + 4 <= end) {
+                uint32_t cd_len = (uint32_t)p[0] | ((uint32_t)p[1] << 8)
+                                | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+                p += 4;
+                if (p + cd_len <= end) {
+                    *cd_blob_out = p;
+                    *cd_blob_len_out = cd_len;
+                }
+            }
+        }
+    }
+    return 0;
+}
+
 /* Task 6.1 — single-TX genesis commit with chain DB bootstrap. */
 int nodus_witness_commit_genesis(nodus_witness_t *w,
                                    const uint8_t *tx_hash,
@@ -5904,50 +6386,18 @@ int nodus_witness_commit_genesis(nodus_witness_t *w,
     /* Extract chain_def trailer from genesis TX (if anchored genesis).
      * Moved BEFORE apply_tx_to_state so Rule P.2 can reject ghost-stake
      * genesis TXs before any state mutation — see
-     * dnac/docs/plans/2026-04-19-genesis-ghost-stake-fix.md. */
+     * dnac/docs/plans/2026-04-19-genesis-ghost-stake-fix.md.
+     * S3: the walk itself moved into nodus_witness_extract_chain_def so
+     * the sync path can reuse it for genesis cert-quorum derivation. */
     const uint8_t *cd_blob = NULL;
     uint32_t cd_blob_len = 0;
     uint64_t cd_supply = 0;
     uint8_t  cd_vcount = 0;
-    {
-        /* Walk TX wire format to find the optional chain_def trailer
-         * appended after sender_signature by the v2 serialize path. */
-        const uint8_t *p = tx_data;
-        const uint8_t *end = tx_data + tx_len;
-        if (tx_len >= DNAC_TX_HEADER_SIZE) {
-            p += DNAC_TX_HEADER_SIZE;  /* v2 header: version + type + timestamp + tx_hash + committed_fee */
-            if (p < end) {
-                uint8_t ic = *p++; p += (size_t)ic * (64 + 8 + 64); /* inputs */
-            }
-            if (p < end) {
-                uint8_t oc = *p++;
-                for (int oi = 0; oi < oc && p < end; oi++) {
-                    p += 1 + 129 + 8 + 64 + 32; /* version+fp+amt+token+seed */
-                    if (p < end) { uint8_t ml = *p++; p += ml; } /* memo */
-                }
-            }
-            if (p < end) {
-                uint8_t wc = *p++; p += (size_t)wc * (32 + NODUS_SIG_BYTES + 8 + NODUS_PK_BYTES); /* witnesses */
-            }
-            if (p < end) {
-                uint8_t sc = *p++; p += (size_t)sc * (NODUS_PK_BYTES + NODUS_SIG_BYTES); /* signers */
-            }
-            /* Now at has_chain_def flag byte */
-            if (p < end) {
-                uint8_t has_cd = *p++;
-                if (has_cd && p + 4 <= end) {
-                    cd_blob_len = (uint32_t)p[0] | ((uint32_t)p[1] << 8)
-                                | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
-                    p += 4;
-                    if (p + cd_blob_len <= end) {
-                        cd_blob = p;
-                        QGP_LOG_INFO(LOG_TAG, "Genesis TX carries chain_def trailer (%u bytes)", cd_blob_len);
-                    } else {
-                        cd_blob_len = 0;
-                    }
-                }
-            }
-        }
+    if (nodus_witness_extract_chain_def(tx_data, tx_len,
+                                        &cd_blob, &cd_blob_len) == 0 &&
+        cd_blob) {
+        QGP_LOG_INFO(LOG_TAG, "Genesis TX carries chain_def trailer (%u bytes)",
+                     cd_blob_len);
     }
 
     /* Rule P.2 — outputs_sum + initial_validator_count * SELF_STAKE ==

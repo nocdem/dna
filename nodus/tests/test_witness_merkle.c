@@ -180,7 +180,7 @@ err:
 
 static void test_empty_set(void) {
     T_START("empty UTXO set -> leaf_hash(empty)");
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup_witness(&w) != 0) { T_FAIL("setup"); return; }
 
     uint8_t root[64];
@@ -201,7 +201,7 @@ static void test_empty_set(void) {
 
 static void test_single_leaf(void) {
     T_START("single leaf -> root = leaf_hash(composite)");
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup_witness(&w) != 0) { T_FAIL("setup"); return; }
 
     if (insert_seeded(&w, 0x01, 1000) != 0) {
@@ -231,7 +231,7 @@ static void test_single_leaf(void) {
 
 static void test_two_leaves(void) {
     T_START("two leaves -> inner_hash(lh(l0), lh(l1))");
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup_witness(&w) != 0) { T_FAIL("setup"); return; }
 
     /* Insert in reverse order - ORDER BY nullifier should sort them */
@@ -262,7 +262,7 @@ static void test_two_leaves(void) {
 
 static void test_three_leaves_rfc6962_split(void) {
     T_START("three leaves -> RFC 6962 split (k=2)");
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup_witness(&w) != 0) { T_FAIL("setup"); return; }
 
     insert_seeded(&w, 0x01, 100);
@@ -300,7 +300,8 @@ static void test_three_leaves_rfc6962_split(void) {
 
 static void test_determinism(void) {
     T_START("determinism: insert order irrelevant");
-    nodus_witness_t w1, w2;
+    static nodus_witness_t w1, w2;   /* S3: multi-MB — static, never stack;
+                                      * fixture memsets both. */
     if (setup_witness(&w1) != 0) { T_FAIL("setup1"); return; }
     if (setup_witness(&w2) != 0) {
         T_FAIL("setup2"); cleanup_witness(&w1); return;
@@ -330,7 +331,7 @@ static void test_determinism(void) {
 
 static void test_stress_1000(void) {
     T_START("stress: 1000 leaves compute cleanly");
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup_witness(&w) != 0) { T_FAIL("setup"); return; }
 
     run_sql(w.db, "BEGIN TRANSACTION");
@@ -363,7 +364,7 @@ static void test_stress_1000(void) {
 
 static void test_proof_roundtrip(void) {
     T_START("proof round-trip: build + verify every leaf");
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup_witness(&w) != 0) { T_FAIL("setup"); return; }
 
     const int N = 7; /* odd count exercises odd-dup path */
@@ -406,7 +407,7 @@ static void test_proof_roundtrip(void) {
 
 static void test_proof_tamper(void) {
     T_START("tampered proof -> verify fails");
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup_witness(&w) != 0) { T_FAIL("setup"); return; }
 
     for (int i = 0; i < 5; i++)

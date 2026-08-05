@@ -64,7 +64,7 @@ static int unique_identified_peers(const nodus_witness_t *w) {
 static void test_single_peer_baseline(void) {
     TEST("baseline: one peer_ensure creates exactly one identified slot");
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     memset(&w, 0, sizeof(w));
 
     uint8_t id[NODUS_T3_WITNESS_ID_LEN];
@@ -83,7 +83,7 @@ static void test_single_peer_baseline(void) {
 static void test_distinct_peers_distinct_slots(void) {
     TEST("distinct witness_ids create distinct slots");
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     memset(&w, 0, sizeof(w));
 
     uint8_t id1[NODUS_T3_WITNESS_ID_LEN], id2[NODUS_T3_WITNESS_ID_LEN];
@@ -103,7 +103,7 @@ static void test_distinct_peers_distinct_slots(void) {
 static void test_reconnect_same_peer_dedupes(void) {
     TEST("reconnect: dead conn adopted by new conn, no new slot");
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     memset(&w, 0, sizeof(w));
 
     uint8_t id[NODUS_T3_WITNESS_ID_LEN];
@@ -132,7 +132,7 @@ static void test_reconnect_same_peer_dedupes(void) {
 static void test_second_inbound_keeps_existing(void) {
     TEST("second inbound on live peer: kept, no duplicate slot");
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     memset(&w, 0, sizeof(w));
 
     uint8_t id[NODUS_T3_WITNESS_ID_LEN];
@@ -157,7 +157,7 @@ static void test_second_inbound_keeps_existing(void) {
 static void test_orphan_slot_from_init(void) {
     TEST("orphan slot (zero witness_id) + peer_ensure same conn");
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     memset(&w, 0, sizeof(w));
 
     /* Simulate nodus_witness_peer_init: a slot for a seed address is

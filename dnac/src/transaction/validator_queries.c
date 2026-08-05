@@ -19,6 +19,7 @@
 #include "crypto/utils/qgp_log.h"
 #include "nodus/nodus.h"
 
+#include <stdlib.h>
 #include <string.h>
 
 #define LOG_TAG "DNAC_VALIDATOR_QUERIES"
@@ -86,25 +87,33 @@ int dnac_get_committee(dnac_context_t *ctx,
     if (!count_out) return DNAC_ERROR_INVALID_PARAM;
 
     *count_out = 0;
-    memset(out, 0, (size_t)DNAC_COMMITTEE_SIZE * sizeof(*out));
+    /* S3: the caller contract widened with the dynamic active set —
+     * out[] is >= DNAC_MAX_ACTIVE_VALIDATORS entries (dnac.h doc). */
+    memset(out, 0, (size_t)DNAC_MAX_ACTIVE_VALIDATORS * sizeof(*out));
 
     nodus_client_t *client = nodus_singleton_get();
     if (!client) return DNAC_ERROR_NOT_INITIALIZED;
 
+    /* S3: the result struct is ~370 KB (entries sized to the release
+     * ceiling) — heap, never the stack; libdna runs on 1 MB Android
+     * pthread stacks. */
+    nodus_dnac_committee_result_t *result = calloc(1, sizeof(*result));
+    if (!result) return DNAC_ERROR_OUT_OF_MEMORY;
+
     nodus_singleton_lock();
-    nodus_dnac_committee_result_t result;
-    int rc = nodus_client_dnac_committee(client, &result);
+    int rc = nodus_client_dnac_committee(client, result);
     nodus_singleton_unlock();
 
     if (rc != 0) {
         QGP_LOG_ERROR(LOG_TAG, "committee RPC failed: %d", rc);
+        free(result);
         return DNAC_ERROR_NETWORK;
     }
 
-    int n = result.count < DNAC_COMMITTEE_SIZE ?
-             result.count : DNAC_COMMITTEE_SIZE;
+    int n = result->count < DNAC_MAX_ACTIVE_VALIDATORS ?
+             result->count : DNAC_MAX_ACTIVE_VALIDATORS;
     for (int i = 0; i < n; i++) {
-        nodus_dnac_committee_entry_t *src = &result.entries[i];
+        nodus_dnac_committee_entry_t *src = &result->entries[i];
         dnac_validator_list_entry_t *dst = &out[i];
         memcpy(dst->pubkey, src->pubkey, DNAC_PUBKEY_SIZE);
         dst->self_stake         = 0;   /* committee entry reports aggregate */
@@ -114,6 +123,7 @@ int dnac_get_committee(dnac_context_t *ctx,
         dst->active_since_block = 0;
     }
     *count_out = n;
+    free(result);
 
     return DNAC_SUCCESS;
 }

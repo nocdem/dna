@@ -191,7 +191,7 @@ static int seed_utxo(nodus_witness_t *w, uint8_t marker) {
 static void test_finalize_block_no_proposer_is_noop(void) {
     TEST("finalize_block with NULL proposer_id is a no-op");
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup_full_witness(&w) != 0) { FAIL("setup"); return; }
 
     int rc = finalize_block(&w, NULL, 0, NULL, 0, 0, NULL, 0, NULL);
@@ -212,7 +212,7 @@ static void test_finalize_block_no_proposer_is_noop(void) {
 static void test_finalize_block_writes_row(void) {
     TEST("finalize_block writes a block row with tx_root and state_root");
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup_full_witness(&w) != 0) { FAIL("setup"); return; }
 
     if (seed_utxo(&w, 0x33) != 0) { FAIL("seed"); sqlite3_close(w.db); return; }
@@ -272,7 +272,7 @@ done:
 static void test_finalize_block_rejects_zero_tx_count(void) {
     TEST("finalize_block rejects tx_count=0 with non-NULL proposer");
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup_full_witness(&w) != 0) { FAIL("setup"); return; }
     seed_utxo(&w, 0x10);
 

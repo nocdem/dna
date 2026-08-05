@@ -116,7 +116,7 @@ static void test_have_chain_branch_reaches_done(void) {
     sqlite3 *db = NULL;
     if (setup_schema(&db) != 0) { FAIL("schema setup"); return; }
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     memset(&w, 0, sizeof(w));
     w.db = db;
 
@@ -154,7 +154,7 @@ static void test_have_chain_sets_settle_window(void) {
     sqlite3 *db = NULL;
     if (setup_schema(&db) != 0) { FAIL("schema setup"); return; }
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     memset(&w, 0, sizeof(w));
     w.db = db;
 
@@ -222,7 +222,7 @@ static void test_c1_gate_rejects_short_seed_list(void) {
     sqlite3 *db = NULL;
     if (setup_schema(&db) != 0) { FAIL("schema setup"); return; }
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     memset(&w, 0, sizeof(w));
     w.db = db;
     nodus_server_t *srv = make_server_with_seeds(DNAC_COMMITTEE_SIZE - 1);
@@ -251,7 +251,7 @@ static void test_discover_entry_with_full_committee(void) {
     sqlite3 *db = NULL;
     if (setup_schema(&db) != 0) { FAIL("schema setup"); return; }
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     memset(&w, 0, sizeof(w));
     w.db = db;
     nodus_server_t *srv = make_server_with_seeds(DNAC_COMMITTEE_SIZE);

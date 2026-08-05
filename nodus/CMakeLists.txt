@@ -120,6 +120,25 @@ set(NODUS_SOURCES
     # the CHAIN_CONFIG TX extension block encoder/decoder shared with dnac)
     ${SHARED_DIR}/dnac/chain_config_wire.c
 
+    # Ledger V2 S1 — shared TX codec: ExecutionContext + Wire V3 (inactive
+    # until the V2 devnet reset) + the ONE legacy tx-hash implementation
+    # (dnac_txw_legacy_tx_hash) both libdna and the witness call.
+    ${SHARED_DIR}/dnac/tx_wire.c
+
+    # Ledger V2 S2 — INACTIVE tagged root hierarchy + BlockHeader V2 codec
+    # (shared canonical hashing) and the witness-side V2 root loaders
+    # (tests/harness only; no consensus path calls them).
+    ${SHARED_DIR}/dnac/ledger_roots_v2.c
+    ${SHARED_DIR}/dnac/block_v2.c
+    src/witness/nodus_witness_roots_v2.c
+
+    # Ledger V2 S3 — INACTIVE validator-set snapshot codec + QC V2
+    # (certificate codec and historical verification). No consensus path
+    # calls either; the live 144-byte cert path (nodus_witness_cert.c)
+    # is untouched. Same ownership pattern as ledger_roots_v2.c.
+    ${SHARED_DIR}/dnac/vset_wire.c
+    ${SHARED_DIR}/dnac/qc_v2.c
+
     # Shared crypto (standalone only — messenger tree provides these via dht_lib)
     ${SHARED_CRYPTO_SOURCES}
 )
@@ -155,6 +174,10 @@ if(NOT WIN32)
         src/witness/nodus_witness_epoch.c
         src/witness/nodus_witness_emission.c
         src/witness/nodus_witness_committee.c
+        # Ledger V2 S3 — validator-set snapshot persistence + builder
+        # (INACTIVE). Placed here, not in the common list, because it
+        # calls nodus_committee_compute_for_epoch directly.
+        src/witness/nodus_witness_vset.c
         src/witness/nodus_witness_genesis_seed.c
         src/witness/nodus_witness_chain_config.c
         src/witness/nodus_witness_bootstrap.c
@@ -557,6 +580,77 @@ add_test(NAME test_witness_verify COMMAND test_witness_verify)
 add_executable(test_witness_tx_hash_parity tests/test_witness_tx_hash_parity.c)
 target_link_libraries(test_witness_tx_hash_parity nodus dsa nodus crypto)
 add_test(NAME test_witness_tx_hash_parity COMMAND test_witness_tx_hash_parity)
+
+# Ledger V2 S1 — legacy tx-hash KAT: links the REAL client implementation
+# (dnac transaction.c/serialize.c, nodus-cli precedent) alongside the witness
+# recompute and the shared codec; pins fixed hash literals captured from the
+# pre-S1 struct-walk algorithm.
+# NOTE: sources listed explicitly — the DNAC_TX_WIRE_SOURCES variable is
+# set() further down this file (nodus-cli section) and would expand EMPTY
+# here (CMake evaluates top-to-bottom).
+add_executable(test_tx_hash_kat tests/test_tx_hash_kat.c
+    ${MONOREPO_ROOT}/dnac/src/transaction/transaction.c
+    ${MONOREPO_ROOT}/dnac/src/transaction/serialize.c
+    ${MONOREPO_ROOT}/dnac/src/ledger/chain_def_codec.c)
+target_link_libraries(test_tx_hash_kat nodus dsa nodus crypto)
+add_test(NAME test_tx_hash_kat COMMAND test_tx_hash_kat)
+
+# Ledger V2 S1 — Wire V3 + ExecutionContext codec tests (byte-literal KATs,
+# mutation sweep, truncation/trailing/version negatives).
+add_executable(test_tx_wire_v3 tests/test_tx_wire_v3.c)
+target_link_libraries(test_tx_wire_v3 nodus dsa nodus)
+add_test(NAME test_tx_wire_v3 COMMAND test_tx_wire_v3)
+
+# Ledger V2 S1 — per-chain parameter boundary: chain_def-committed supply
+# drives genesis Rule P.2 and the chain identity (genesis block hash).
+add_executable(test_chain_params tests/test_chain_params.c
+    ${MONOREPO_ROOT}/dnac/src/transaction/block.c
+    ${MONOREPO_ROOT}/dnac/src/ledger/chain_def_codec.c)
+target_link_libraries(test_chain_params nodus dsa nodus crypto)
+add_test(NAME test_chain_params COMMAND test_chain_params)
+
+# Ledger V2 S2 — inactive tagged root hierarchy: oracle-pinned KATs,
+# witness loaders over real sqlite state, 7/7 determinism.
+add_executable(test_roots_v2 tests/test_roots_v2.c)
+target_link_libraries(test_roots_v2 nodus dsa nodus crypto)
+add_test(NAME test_roots_v2 COMMAND test_roots_v2)
+
+# Ledger V2 S2 — BlockHeader V2 codec: oracle-pinned KATs, mutation sweep,
+# strict negatives, deterministic fuzz.
+add_executable(test_block_v2 tests/test_block_v2.c)
+target_link_libraries(test_block_v2 nodus dsa nodus crypto)
+add_test(NAME test_block_v2 COMMAND test_block_v2)
+
+# Ledger V2 S3 — validator-set snapshot codec: oracle-pinned KATs,
+# round-trip byte identity, bounds/duplicate/ruleset/seed negatives.
+add_executable(test_vset_wire tests/test_vset_wire.c)
+target_link_libraries(test_vset_wire nodus dsa nodus crypto)
+add_test(NAME test_vset_wire COMMAND test_vset_wire)
+
+# Ledger V2 S3 — QC V2: preimage KAT, quorum table, and a REAL-KEY
+# adversarial suite (non-member, duplicate, unsorted, wrong-context,
+# key-rotation) plus an informational N=30 verify benchmark.
+add_executable(test_qc_v2 tests/test_qc_v2.c)
+target_link_libraries(test_qc_v2 nodus dsa nodus crypto)
+add_test(NAME test_qc_v2 COMMAND test_qc_v2)
+
+# Ledger V2 S3 — snapshot persistence: insert/get round-trip, conflict
+# detection, corruption fail-close, oracle-pinned validator_set_root,
+# insertion-order independence, reopen, and the committee builder.
+add_executable(test_vset_persist tests/test_vset_persist.c)
+target_link_libraries(test_vset_persist nodus dsa nodus crypto)
+add_test(NAME test_vset_persist COMMAND test_vset_persist)
+
+# Ledger V2 S3 wave 2 — epoch-boundary validator-set lifecycle:
+# commit_next (freeze + idempotence + conflict), boundary flips
+# (ACTIVE↔ELIGIBLE, bonds/active_count untouched, idempotence, missing
+# snapshot no-op, audit cross-check fail-close), TARGET_ACTIVE_COUNT
+# grow/shrink, PENDING exclusion, extra self-bond ranking, one-validator-
+# one-vote, insertion-order independence, and DB-fault fail-close.
+# Uses NODUS_WITNESS_INTERNAL_API (chain_config cache flag + internal
+# witness headers), so it goes through register_witness_test.
+register_witness_test(test_vset_boundary)
+target_link_libraries(test_vset_boundary crypto)
 
 # Witness chain DB archive test (Fix 1 — orphan DB prevention)
 add_executable(test_witness_chain_archive tests/test_witness_chain_archive.c)

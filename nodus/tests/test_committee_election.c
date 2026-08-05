@@ -155,7 +155,7 @@ int main(void) {
     char data_path[] = "/tmp/test_committee_election_XXXXXX";
     CHECK(mkdtemp(data_path) != NULL);
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     memset(&w, 0, sizeof(w));
     snprintf(w.data_path, sizeof(w.data_path), "%s", data_path);
 
@@ -267,11 +267,14 @@ int main(void) {
 
     /* ── Scenario 3: MIN_TENURE filter ──────────────────────────── */
     printf("  (3) MIN_TENURE filter excludes a fresh validator\n");
-    /* Validator staked at block (lookback - MIN_TENURE + 1) fails the
-     * strict-less-than test: active_since + MIN_TENURE = lookback+1 > lookback. */
+    /* S3: the tenure ANCHOR is e_start (not lookback) — see
+     * nodus_witness_committee.c. A validator staked at
+     * (e_start - MIN_TENURE + 1) fails: active_since + MIN_TENURE
+     * = e_start + 1 > e_start. Both boundaries are >> 1, so the genesis
+     * carve-out (active_since <= 1) does not apply. */
     dnac_validator_record_t v_fresh;
     init_validator(&v_fresh, 0x66,
-                    lookback - (uint64_t)DNAC_MIN_TENURE_BLOCKS + 1,
+                    e_start - (uint64_t)DNAC_MIN_TENURE_BLOCKS + 1,
                     10000, 0, DNAC_VALIDATOR_ACTIVE);
     CHECK_EQ(nodus_validator_insert(&w, &v_fresh), 0);
 
@@ -290,8 +293,10 @@ int main(void) {
             -1, &stmt, NULL);
         CHECK_EQ(rc, SQLITE_OK);
         sqlite3_bind_int  (stmt, 1, (int)DNAC_VALIDATOR_ACTIVE);
+        /* S3: clears at the e_start anchor — active_since + MIN_TENURE
+         * == e_start <= e_start. */
         sqlite3_bind_int64(stmt, 2,
-                (int64_t)(lookback - (uint64_t)DNAC_MIN_TENURE_BLOCKS));
+                (int64_t)(e_start - (uint64_t)DNAC_MIN_TENURE_BLOCKS));
         sqlite3_bind_blob (stmt, 3, v_fresh.pubkey, DNAC_PUBKEY_SIZE,
                            SQLITE_STATIC);
         CHECK_EQ(sqlite3_step(stmt), SQLITE_DONE);
@@ -336,7 +341,7 @@ int main(void) {
     char data_path_b[] = "/tmp/test_committee_bootstrap_XXXXXX";
     CHECK(mkdtemp(data_path_b) != NULL);
 
-    nodus_witness_t wb;
+    static nodus_witness_t wb;  /* multi-MB — static storage, not stack */
     memset(&wb, 0, sizeof(wb));
     snprintf(wb.data_path, sizeof(wb.data_path), "%s", data_path_b);
     uint8_t chain_id_b[16];
@@ -379,17 +384,24 @@ int main(void) {
     CHECK(find_pubkey(out, count, 0x71) == 1);
 
     /* Scenario B3: e_start = EPOCH_LENGTH + 1 → FIRST non-bootstrap
-     * epoch. Lookback = 0 (genesis block). MIN_TENURE check applies:
-     * active_since=1 + 240 = 241 > 0 → both validators filtered out.
-     * This is the ugly corner the design carves out (only chain_def
-     * bootstrap validators survive the transition). Verify behaviour:
-     * committee is empty until validators accumulate tenure. */
-    printf("  (B3) non-bootstrap — lookback=0 excludes fresh validators\n");
+     * epoch. Lookback = 0 (genesis block).
+     *
+     * S3 (was: "committee empty until validators accumulate tenure").
+     * That old behaviour was the exact "gap epoch" defect the S3
+     * tenure-anchor + genesis carve-out fixed: the seed validators
+     * (active_since_block <= 1) are the constitutional set and are
+     * ALWAYS tenured, so they survive the bootstrap → non-bootstrap
+     * transition instead of leaving the chain leaderless. Pre-S3 this
+     * empty result was silently masked by a gossip-roster fallback and
+     * never observed live (the devnet never reached E+1 with E=720). */
+    printf("  (B3) non-bootstrap — genesis seed set stays tenured (S3)\n");
     CHECK_EQ(nodus_committee_compute_for_epoch(&wb,
                                                  (uint64_t)DNAC_EPOCH_LENGTH + 1,
                                                  out,
                                                  DNAC_COMMITTEE_SIZE, &count), 0);
-    CHECK_EQ(count, 0);
+    CHECK_EQ(count, 2);
+    CHECK(find_pubkey(out, count, 0x72) == 0);
+    CHECK(find_pubkey(out, count, 0x71) == 1);
 
     /* Scenario B4: bootstrap tiebreak also uses state_seed. Add two
      * tied-stake validators; check that ordering matches the manual
@@ -427,7 +439,7 @@ int main(void) {
     printf("  (B5) bootstrap with missing genesis block — zero seed\n");
     char data_path_c[] = "/tmp/test_committee_nogenesis_XXXXXX";
     CHECK(mkdtemp(data_path_c) != NULL);
-    nodus_witness_t wc;
+    static nodus_witness_t wc;  /* multi-MB — static storage, not stack */
     memset(&wc, 0, sizeof(wc));
     snprintf(wc.data_path, sizeof(wc.data_path), "%s", data_path_c);
     uint8_t chain_id_c[16];

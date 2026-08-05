@@ -99,7 +99,7 @@ static void fill_tx_hash(uint8_t marker, uint8_t out[64]) {
 
 static void test_positive_round_trip(void) {
     TEST("build_tx_proof round-trip (4 TXs, block 1)");
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup_witness(&w) != 0) FAIL("setup");
 
     /* 4 TXs in block 1 at indices 0..3 with distinct markers. */
@@ -154,7 +154,7 @@ static void test_positive_round_trip(void) {
 
 static void test_all_indices(void) {
     TEST("build_tx_proof every index (4 TXs)");
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup_witness(&w) != 0) FAIL("setup");
 
     const uint8_t markers[4] = { 0x10, 0x11, 0x12, 0x13 };
@@ -190,7 +190,7 @@ static void test_all_indices(void) {
 
 static void test_tampered_sibling_rejected(void) {
     TEST("tampered sibling - verify rejects");
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup_witness(&w) != 0) FAIL("setup");
 
     const uint8_t markers[4] = { 0x50, 0x51, 0x52, 0x53 };
@@ -227,7 +227,7 @@ static void test_tampered_sibling_rejected(void) {
 
 static void test_tampered_target_rejected(void) {
     TEST("tampered target - verify rejects");
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup_witness(&w) != 0) FAIL("setup");
 
     const uint8_t markers[4] = { 0x60, 0x61, 0x62, 0x63 };
@@ -263,7 +263,7 @@ static void test_tampered_target_rejected(void) {
 
 static void test_unknown_tx_not_found(void) {
     TEST("unknown tx_hash - build_tx_proof returns -1");
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup_witness(&w) != 0) FAIL("setup");
 
     if (insert_tx(&w, 0x70, 5, 0) != 0 ||
@@ -289,7 +289,7 @@ static void test_unknown_tx_not_found(void) {
 
 static void test_wrong_block_not_found(void) {
     TEST("wrong block_height - build_tx_proof returns -1");
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup_witness(&w) != 0) FAIL("setup");
 
     if (insert_tx(&w, 0x80, 9, 0) != 0) {

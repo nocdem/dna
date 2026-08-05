@@ -182,19 +182,33 @@ typedef struct {
      * bft_start_round_internal from entries[0]->tx_type. */
     uint8_t     tx_type;
 
-    /* Votes — sized to DNAC_COMMITTEE_SIZE per F17: consensus is
-     * committee-bound, so vote arrays hold at most committee-many
-     * entries. Previously these were NODUS_T3_MAX_WITNESSES (128)
-     * legacy gossip-roster cap, which cost ~1.7 MB per round_state
-     * after A1's pubkey widening — enough to stack-overflow test
-     * binaries that allocate nodus_witness_t on the stack. Type
-     * enforces F17 invariant: "vote_count can never exceed committee
-     * size." */
-    nodus_witness_vote_record_t prevotes[DNAC_COMMITTEE_SIZE];
+    /* Votes — sized to DNAC_MAX_ACTIVE_VALIDATORS (S3).
+     *
+     * Consensus is committee-bound, so a vote array holds at most
+     * active-set-many entries. Before S3 the active set was fixed at
+     * DNAC_COMMITTEE_SIZE and these arrays were sized to it; with a
+     * dynamic active set the SEMANTIC bound is the size of the set
+     * governing the round, and the STRUCTURAL bound is this release's
+     * ceiling. Sizing to the ceiling is required for correctness: at
+     * n = 128 the quorum is dna_bft_quorum(128) = 86, so a 7-slot array
+     * would make quorum unreachable.
+     *
+     * The semantic bound is still enforced, and it is enforced BEFORE a
+     * vote ever reaches these slots — handle_vote rejects any sender whose
+     * pubkey is not in the committee for the round
+     * (nodus_witness_bft.c, committee_find_pubkey gate) and dedups by
+     * pubkey, so vote_count cannot exceed the committee size. The array
+     * bound below is the memory-safety backstop only.
+     *
+     * nodus_witness_t is HEAP-allocated in production
+     * (nodus/src/server/nodus_server.c:6078 calloc) — never a stack
+     * object. Test fixtures must do the same (calloc) or use static
+     * storage. */
+    nodus_witness_vote_record_t prevotes[DNAC_MAX_ACTIVE_VALIDATORS];
     int         prevote_count;
     int         prevote_approve_count;
 
-    nodus_witness_vote_record_t precommits[DNAC_COMMITTEE_SIZE];
+    nodus_witness_vote_record_t precommits[DNAC_MAX_ACTIVE_VALIDATORS];
     int         precommit_count;
     int         precommit_approve_count;
 
@@ -223,6 +237,12 @@ typedef struct {
 
 /* ── View change record ──────────────────────────────────────────── */
 
+/** One (voter_id, signature) pair of a PBFT prepared certificate. */
+typedef struct {
+    uint8_t voter_id[NODUS_T3_WITNESS_ID_LEN];
+    uint8_t signature[NODUS_SIG_BYTES];
+} nodus_witness_prepared_sig_t;
+
 typedef struct {
     uint32_t    target_view;
     uint8_t     voter_id[NODUS_T3_WITNESS_ID_LEN];
@@ -236,26 +256,42 @@ typedef struct {
      * fewer than quorum-many valid sigs. Used by the new-leader scan at
      * view-change quorum to pick the PBFT reproposal (highest height).
      *
-     * sigs[] is sized to DNAC_COMMITTEE_SIZE (not NODUS_T3_MAX_WITNESSES)
-     * because prepared is committee-bound like prevotes/precommits —
-     * at most 2f+1 sigs fit. view_changes[DNAC_COMMITTEE_SIZE] × sigs
-     * [NODUS_T3_MAX_WITNESSES=64] would have blown past the stack
-     * budget of tests that stack-allocate nodus_witness_t (see F17 A1
-     * note above). Wire format stays NODUS_T3_MAX_WITNESSES-sized
-     * (nodus_tier3.h); handle_viewchg caps the decode loop at
-     * DNAC_COMMITTEE_SIZE when copying into this struct. */
+     * S3 — sigs[] is a HEAP POINTER, not an in-struct array. The record
+     * array below grew from DNAC_COMMITTEE_SIZE to
+     * DNAC_MAX_ACTIVE_VALIDATORS, and an in-struct
+     * sigs[DNAC_MAX_ACTIVE_VALIDATORS] would make the product
+     * 128 records × 128 sigs × 4659 B ≈ 76 MB of witness state that is
+     * empty in every round that does not view-change.
+     *
+     * OWNERSHIP: allocated (checked, at most DNAC_MAX_ACTIVE_VALIDATORS
+     * entries) by the two sites that accept a prepared cert —
+     * nodus_witness_bft_initiate_view_change (self-record into slot 0)
+     * and nodus_witness_bft_handle_viewchg (peer cert, after quorum
+     * verify). Released ONLY by nodus_witness_vc_record_clear, which is
+     * the single replacement for what used to be a memset of the record:
+     * every reset / reuse / target-change site and nodus_witness_close
+     * call it. n_sigs is 0 whenever sigs is NULL and vice versa.
+     *
+     * The record is therefore NOT memcpy-able and NOT serializable as
+     * raw bytes; nothing persists it (grep: view_changes appears only in
+     * nodus_witness_bft.c). Wire format is unchanged and stays
+     * NODUS_T3_MAX_WITNESSES-sized (nodus_tier3.h). */
     struct {
         bool       has_prepared;
         uint64_t   height;
         uint32_t   view;
         uint8_t    tx_hash[NODUS_T3_TX_HASH_LEN];
         uint32_t   n_sigs;
-        struct {
-            uint8_t voter_id[NODUS_T3_WITNESS_ID_LEN];
-            uint8_t signature[NODUS_SIG_BYTES];
-        } sigs[DNAC_COMMITTEE_SIZE];
+        nodus_witness_prepared_sig_t *sigs;   /* heap, n_sigs entries */
     } prepared;
 } nodus_witness_vc_record_t;
+
+/**
+ * Release a view-change record's heap-owned prepared sigs and zero the
+ * record. THE ONLY correct way to reset a nodus_witness_vc_record_t —
+ * a bare memset would leak the sigs allocation.
+ */
+void nodus_witness_vc_record_clear(nodus_witness_vc_record_t *vc);
 
 /* ── Witness peer connection ─────────────────────────────────────── */
 
@@ -328,8 +364,13 @@ typedef struct nodus_witness {
     uint64_t    last_committed_round;
     nodus_witness_round_state_t round_state;
 
-    /* View change tracking */
-    nodus_witness_vc_record_t view_changes[DNAC_COMMITTEE_SIZE];
+    /* View change tracking. S3: sized to DNAC_MAX_ACTIVE_VALIDATORS —
+     * view-change quorum is dna_bft_quorum(active_set_size), which at
+     * n = 128 is 86, so a 7-slot array would make a view change
+     * unreachable on a large active set. Each record's prepared.sigs is
+     * heap-owned; clear a slot ONLY through
+     * nodus_witness_vc_record_clear. */
+    nodus_witness_vc_record_t view_changes[DNAC_MAX_ACTIVE_VALIDATORS];
     int         view_change_count;
     uint32_t    view_change_target;
     bool        view_change_in_progress;
@@ -390,13 +431,16 @@ typedef struct nodus_witness {
      *     restart warms from DB which has the (maybe) committed state.
      *     No stale cache can survive a restart.
      *
-     * Sized to hold 3 params × 64 rows — far more than any chain
-     * governance would ever produce. */
+     * Sized to hold every governed param × 64 rows — far more than any
+     * chain governance would ever produce. The first dimension is derived
+     * from DNAC_CFG_PARAM_MAX_ID (index 0 is unused, param ids start at 1)
+     * so adding a param id cannot leave the new param silently
+     * unreachable behind a stale literal. */
     struct {
         uint64_t new_value;
         uint64_t effective_block;
-    }           chain_config_cache[4 /* DNAC_CFG_PARAM_MAX_ID + 1 */][64];
-    int         chain_config_cache_count[4];   /* rows per param */
+    }           chain_config_cache[DNAC_CFG_PARAM_MAX_ID + 1][64];
+    int         chain_config_cache_count[DNAC_CFG_PARAM_MAX_ID + 1]; /* rows per param */
     bool        chain_config_cache_warm;
 
     /* Startup chain_id quorum verification (Fix 3 — fork detection).
@@ -467,14 +511,24 @@ typedef struct nodus_witness {
      * include. Callers MUST go through the get_for_block accessor
      * rather than touching these fields directly.
      *
-     * DNAC_COMMITTEE_SIZE (7) members × (2592 pubkey + 8 stake + 2
-     * commission + padding) ≈ 18.4 KB. Kept in-struct rather than
-     * malloc-d because nodus_witness_t itself is already heap-allocated. */
+     * S3: sized to DNAC_MAX_ACTIVE_VALIDATORS (128) members ×
+     * (2592 pubkey + 8 total_stake + 8 self_stake + 2 commission) ≈
+     * 333 KB. Kept in-struct rather than malloc-d because
+     * nodus_witness_t itself is already heap-allocated
+     * (nodus/src/server/nodus_server.c:6078).
+     *
+     * cached_committee_self_stakes is the S3 addition that closes the
+     * cache's old asymmetry: before it, a cache HIT reported
+     * nodus_committee_member_t.self_stake as 0 while a cache MISS
+     * reported the real bond. A cache hit must produce the same answer
+     * as a cache miss (root CLAUDE.md, "Verify cache symmetry"), so the
+     * bond now has its own parallel array and both paths agree. */
     uint64_t        cached_committee_epoch_start;
     int             cached_committee_count;
-    uint8_t         cached_committee_pubkeys[DNAC_COMMITTEE_SIZE][DNAC_PUBKEY_SIZE];
-    uint64_t        cached_committee_stakes[DNAC_COMMITTEE_SIZE];
-    uint16_t        cached_committee_commission_bps[DNAC_COMMITTEE_SIZE];
+    uint8_t         cached_committee_pubkeys[DNAC_MAX_ACTIVE_VALIDATORS][DNAC_PUBKEY_SIZE];
+    uint64_t        cached_committee_stakes[DNAC_MAX_ACTIVE_VALIDATORS];
+    uint64_t        cached_committee_self_stakes[DNAC_MAX_ACTIVE_VALIDATORS];
+    uint16_t        cached_committee_commission_bps[DNAC_MAX_ACTIVE_VALIDATORS];
 
     /* Witness database (separate from DHT storage) */
     sqlite3     *db;
@@ -515,7 +569,13 @@ typedef struct nodus_witness {
      * halt-recovery quorum tally. Mirrors cached_committee_pubkeys
      * pattern below to avoid pulling nodus_committee_member_t into
      * this header. */
-    uint8_t     halt_committee_pubkeys[DNAC_COMMITTEE_SIZE][DNAC_PUBKEY_SIZE];
+    /* S3: sized to DNAC_MAX_ACTIVE_VALIDATORS (≈332 KB in-struct). The
+     * halt-recovery quorum is derived from halt_committee_count — the
+     * PINNED snapshot's size — not from the live bft_config, because
+     * checking a CURRENT quorum against a HISTORICAL membership is the
+     * current-set substitution S3 forbids
+     * (nodus_witness_sync.c::nodus_witness_halt_recovery_check). */
+    uint8_t     halt_committee_pubkeys[DNAC_MAX_ACTIVE_VALIDATORS][DNAC_PUBKEY_SIZE];
     int         halt_committee_count;
 
     /* C5 — PBFT prepared-cert tracker.
@@ -525,7 +585,23 @@ typedef struct nodus_witness {
      * Cleared on successful commit_batch of that block, or on a NEW_VIEW
      * that rolls past this height. Carried on VIEW_CHANGE so the new
      * leader respects the "re-propose highest prepared or null" rule.
-     */
+     *
+     * S3 — sigs[] is sized to DNAC_MAX_ACTIVE_VALIDATORS. It used to be a
+     * literal 64 (mislabelled "NODUS_T3_MAX_WITNESSES", which is 128), so
+     * the populate loop's own bound of NODUS_T3_MAX_WITNESSES was already
+     * 2× the array; that was unreachable only because prevote_count was
+     * capped at 7. With a dynamic active set both bounds are now the same
+     * named constant.
+     *
+     * ⚠ This one STAYS IN-STRUCT and is deliberately NOT a heap pointer,
+     * unlike nodus_witness_vc_record_t::prepared::sigs. The whole struct
+     * is persisted as RAW BYTES into pbft_state.last_prepared_blob
+     * (nodus_witness_db.c:2095) and restored with memcpy (:2137); a
+     * pointer field there would be written to disk and read back dangling.
+     * The size change is absorbed by the loader's existing
+     * blob_len != sizeof(w->last_prepared) guard (:2136-2147), which
+     * discards the row and leaves present=false — the documented
+     * migration mechanism for exactly this (:2071-2074). */
     struct {
         bool      present;
         uint64_t  height;
@@ -536,7 +612,7 @@ typedef struct nodus_witness {
         struct {
             uint8_t voter_id[32];                 /* NODUS_T3_WITNESS_ID_LEN */
             uint8_t signature[4627];              /* NODUS_SIG_BYTES */
-        } sigs[64];                                /* NODUS_T3_MAX_WITNESSES */
+        } sigs[DNAC_MAX_ACTIVE_VALIDATORS];
     } last_prepared;
 
     /* C5 — NEW_VIEW re-proposal binding.

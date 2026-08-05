@@ -184,7 +184,7 @@ static nodus_witness_mempool_entry_t *make_entry(uint8_t marker) {
 static void test_replay_block_out_of_order_rejected(void) {
     TEST("replay_block rejects out-of-order sync_rsp height");
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup_witness(&w) != 0) { FAIL("setup"); return; }
 
     nodus_witness_mempool_entry_t *e = make_entry(0x11);
@@ -213,7 +213,7 @@ done:
 static void test_commit_batch_empty_or_bad_count_rejected(void) {
     TEST("commit_batch rejects empty and oversize batches");
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup_witness(&w) != 0) { FAIL("setup"); return; }
 
     uint8_t proposer[32];
@@ -236,7 +236,7 @@ static void test_commit_batch_empty_or_bad_count_rejected(void) {
 static void test_commit_batch_single_tx_writes_block(void) {
     TEST("commit_batch(1 TX) writes one block row");
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup_witness(&w) != 0) { FAIL("setup"); return; }
 
     nodus_witness_mempool_entry_t *e = make_entry(0x22);
@@ -268,7 +268,7 @@ done:
 static void test_replay_block_in_order_succeeds(void) {
     TEST("replay_block(local+1) succeeds");
 
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup_witness(&w) != 0) { FAIL("setup"); return; }
 
     nodus_witness_mempool_entry_t *e = make_entry(0x33);

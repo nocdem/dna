@@ -34,7 +34,7 @@ static void test_null_witness_rejected(void) {
 
 static void test_empty_mempool_rejected(void) {
     TEST("from_mempool returns -1 on empty mempool");
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     memset(&w, 0, sizeof(w));
     /* mempool.count == 0 (zero-initialized) */
     int rc = nodus_witness_bft_start_round_from_mempool(&w);

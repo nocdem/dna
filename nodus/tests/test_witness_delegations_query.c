@@ -91,7 +91,7 @@ static int seed_row(nodus_witness_t *w, uint8_t del_marker,
 
 static void test_empty_returns_zero(void) {
     TEST("empty table -> count 0");
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup(&w) != 0) { FAIL("setup"); return; }
 
     uint8_t pubkey[DNAC_PUBKEY_SIZE];
@@ -110,7 +110,7 @@ done:
 
 static void test_one_row_round_trip(void) {
     TEST("one row seeded -> count 1, fields match");
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup(&w) != 0) { FAIL("setup"); return; }
 
     if (seed_row(&w, 0xAA, 0xBB, 1234567890ULL, 42) != 0) {
@@ -137,7 +137,7 @@ done:
 
 static void test_unrelated_delegator_empty(void) {
     TEST("query with unrelated pubkey -> count 0");
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup(&w) != 0) { FAIL("setup"); return; }
 
     if (seed_row(&w, 0xAA, 0xBB, 100, 1) != 0) {
@@ -160,7 +160,7 @@ done:
 
 static void test_two_rows_same_delegator(void) {
     TEST("two rows same delegator -> count 2");
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup(&w) != 0) { FAIL("setup"); return; }
 
     if (seed_row(&w, 0xAA, 0xB1, 100, 1) != 0) {
@@ -186,7 +186,7 @@ done:
 
 static void test_other_delegator_not_leaked(void) {
     TEST("other delegator row excluded from our result");
-    nodus_witness_t w;
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
     if (setup(&w) != 0) { FAIL("setup"); return; }
 
     /* Two delegators, three rows total. Our query must see only its own. */

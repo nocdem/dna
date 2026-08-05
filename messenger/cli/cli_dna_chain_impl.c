@@ -1950,16 +1950,20 @@ static int query_current_block_height(uint64_t *out_height) {
         return -1;
     }
 
-    nodus_dnac_committee_result_t res = {0};
+    /* S3: ~370 KB struct (entries sized to the release ceiling) — heap. */
+    nodus_dnac_committee_result_t *res = calloc(1, sizeof(*res));
+    if (!res) return -1;
     nodus_singleton_lock();
-    int rc = nodus_client_dnac_committee(client, &res);
+    int rc = nodus_client_dnac_committee(client, res);
     nodus_singleton_unlock();
     if (rc != 0) {
         fprintf(stderr,
                 "Error: nodus_client_dnac_committee failed (%d)\n", rc);
+        free(res);
         return -1;
     }
-    *out_height = res.block_height;
+    *out_height = res->block_height;
+    free(res);
     return 0;
 }
 
@@ -2040,6 +2044,7 @@ static const char *validator_status_str(uint8_t status) {
         case DNAC_VALIDATOR_RETIRING:     return "RETIRING";
         case DNAC_VALIDATOR_UNSTAKED:     return "UNSTAKED";
         case DNAC_VALIDATOR_AUTO_RETIRED: return "AUTO_RETIRED";
+        case DNAC_VALIDATOR_ELIGIBLE:     return "ELIGIBLE";  /* S3 */
         default:                          return "?";
     }
 }
@@ -2112,24 +2117,30 @@ int dna_chain_cmd_committee(dnac_context_t *ctx) {
         return 1;
     }
 
-    nodus_dnac_committee_result_t res = {0};
+    /* S3: ~370 KB struct (entries sized to the release ceiling) — heap. */
+    nodus_dnac_committee_result_t *res = calloc(1, sizeof(*res));
+    if (!res) {
+        fprintf(stderr, "Error: out of memory\n");
+        return 1;
+    }
     nodus_singleton_lock();
-    int rc = nodus_client_dnac_committee(client, &res);
+    int rc = nodus_client_dnac_committee(client, res);
     nodus_singleton_unlock();
     if (rc != 0) {
         fprintf(stderr,
                 "Error: nodus_client_dnac_committee failed (%d)\n", rc);
+        free(res);
         return 1;
     }
 
     printf("DNAC Committee (epoch_start=%" PRIu64 ", head=%" PRIu64 ")\n",
-           res.epoch_start, res.block_height);
+           res->epoch_start, res->block_height);
     printf("%-4s  %-16s  %-14s  %-18s  %-6s  %s\n",
            "SLOT", "PUBKEY", "STATUS", "TOTAL_STAKE", "COMM%", "ADDRESS");
     printf("----  ----------------  --------------  ------------------"
            "  ------  ----------------------------------\n");
-    for (int i = 0; i < res.count; i++) {
-        const nodus_dnac_committee_entry_t *e = &res.entries[i];
+    for (int i = 0; i < res->count; i++) {
+        const nodus_dnac_committee_entry_t *e = &res->entries[i];
         char pk_short[17];
         pubkey_short(e->pubkey, pk_short);
         char stake_str[32];
@@ -2141,6 +2152,7 @@ int dna_chain_cmd_committee(dnac_context_t *ctx) {
                (double)e->commission_bps / 100.0,
                e->address[0] ? e->address : "(unknown)");
     }
+    free(res);
     return 0;
 }
 
