@@ -334,7 +334,15 @@ static const char *SCHEMA_SQL =
     "CREATE TABLE IF NOT EXISTS validator_set_snapshots ("
     "  epoch_start INTEGER PRIMARY KEY, active_count INTEGER NOT NULL,"
     "  snapshot_hash BLOB NOT NULL, snapshot_blob BLOB NOT NULL,"
-    "  created_at_height INTEGER NOT NULL);";
+    "  created_at_height INTEGER NOT NULL);"
+    /* S4: the domain-registry leg is real (nodus_witness_domreg_root).
+     * These fixtures leave the table EMPTY, and an empty registry yields
+     * exactly the DNA_V2_EMPTY_DOMREG tagged root the S2 placeholder
+     * produced, so every expectation in this file is unchanged.
+     * Registry-bearing coverage lives in test_domreg.c. */
+    "CREATE TABLE IF NOT EXISTS domain_registry ("
+    "  domain_id INTEGER PRIMARY KEY, record BLOB NOT NULL,"
+    "  current_manifest BLOB NOT NULL, pending_manifest BLOB);";
 
 static int setup_w(nodus_witness_t **w_out) {
     nodus_witness_t *w = calloc(1, sizeof(*w));   /* multi-MB: heap-alloc */

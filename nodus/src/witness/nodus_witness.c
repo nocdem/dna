@@ -230,6 +230,33 @@ static const char *WITNESS_DB_SCHEMA =
     "  snapshot_blob BLOB NOT NULL,"
     "  created_at_height INTEGER NOT NULL"
     ");"
+
+    /* Ledger V2 S4 (INACTIVE until the V2 devnet reset) — domain registry.
+     *   record            the 223-byte canonical DomainRegistryRecord
+     *                     (shared/dnac/domain_wire.h); decoded + validated
+     *                     fail-closed on every read.
+     *   current_manifest  canonical DomainManifest bytes; its DOMMAN hash
+     *                     must equal the record's current_manifest_hash.
+     *   pending_manifest  canonical bytes of a pending upgrade target, or
+     *                     NULL; present IFF the record says so. */
+    "CREATE TABLE IF NOT EXISTS domain_registry ("
+    "  domain_id INTEGER PRIMARY KEY,"
+    "  record BLOB NOT NULL,"
+    "  current_manifest BLOB NOT NULL,"
+    "  pending_manifest BLOB"
+    ");"
+
+    /* Ledger V2 S4 — validator runtime-readiness signals, keyed by the
+     * proposal digest they are cast for. The 4844-byte wire signal is
+     * stored verbatim; the PRIMARY KEY makes a duplicate (proposal, voter)
+     * structurally unable to increase any count. */
+    "CREATE TABLE IF NOT EXISTS domain_readiness ("
+    "  proposal_digest BLOB NOT NULL,"
+    "  voter_id BLOB NOT NULL,"
+    "  signal BLOB NOT NULL,"
+    "  PRIMARY KEY (proposal_digest, voter_id)"
+    ");"
+
     "INSERT OR IGNORE INTO validator_stats (key, value) VALUES ('active_count', 0);";
 
 /* ── Set chain ID ────────────────────────────────────────────────── */

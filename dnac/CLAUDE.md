@@ -1,10 +1,10 @@
 # DNAC - Development Guidelines
 
-**Last Updated:** 2026-08-05 | **Status:** TESTNET (live 7-witness production cluster) | **Version:** v0.18.0-ledgerv2-s3
+**Last Updated:** 2026-08-05 | **Status:** TESTNET (live 7-witness production cluster) | **Version:** v0.18.1-ledgerv2-s4
 
 **Note:** Framework rules (ORCHESTRATOR CYCLE O1-O10, agent classes, identity override, protocol mode, violations) are in root `/opt/dna/CLAUDE.md`. This file contains DNAC-specific guidelines only.
 
-**Stake/delegation v1:** SHIPPED — `stake-delegation-v1` merged to `main` and deployed (stake-ranked committee, delegation, per-block reward accrual, pull-based claim). Ledger V2 S3 (2026-08-05) made the committee size governance-driven (`DNAC_CFG_TARGET_ACTIVE_COUNT`, 7 initial → 128 ceiling) and per-epoch snapshots the membership authority. Design doc: `dnac/docs/plans/2026-04-17-witness-stake-delegation-design.md` (local-only, gitignored). Sortition v2 (weighted random) is a future follow-up.
+**Stake/delegation v1:** SHIPPED — `stake-delegation-v1` merged to `main` and deployed (stake-ranked committee, delegation, per-block reward accrual, pull-based claim). Ledger V2 S3 (2026-08-05) made the committee size governance-driven (`DNAC_CFG_TARGET_ACTIVE_COUNT`, 7 initial → 128 ceiling) and per-epoch snapshots the membership authority. Design doc: `dnac/docs/plans/2026-04-17-witness-stake-delegation-design.md` (local-only, gitignored). Sortition v2 (weighted random) is a future follow-up. Ledger V2 S4 (2026-08-05) added the INACTIVE domain registry: canonical DomainManifest/registry/readiness codec (`shared/dnac/domain_wire.{h,c}`), the compiled NATIVE_BUILTIN runtime table + fail-closed exact-tuple lookup (`nodus/src/witness/nodus_witness_runtime.{h,c}`), the staged activation scheduler (`nodus_witness_domreg.{h,c}` — quorum schedules, all-active activates, 2-epoch deadline, non-slashing unready exclusion via the ordinary S3 transition, set-change/ruleset boundaries never shared) and inactive V2 semantic admission (Type 11 still REJECT; 12-14 unavailable). No live consensus path touched.
 
 **Active workstream:** v3 ZK (STARK range proofs) — see "v3 ZK Workstream" section below.
 

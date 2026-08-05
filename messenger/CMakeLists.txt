@@ -257,6 +257,9 @@ if(BUILD_SHARED_LIB)
         # the same way as ledger_roots_v2.c. No consensus caller.
         ${CMAKE_SOURCE_DIR}/../shared/dnac/vset_wire.c
         ${CMAKE_SOURCE_DIR}/../shared/dnac/qc_v2.c
+        # Ledger V2 S4 — INACTIVE domain manifest/registry/readiness codec,
+        # owned by libdna the same way as ledger_roots_v2.c. No consensus caller.
+        ${CMAKE_SOURCE_DIR}/../shared/dnac/domain_wire.c
         # Note: shared/dnac/chain_config_wire.c (Hard-Fork v1) is linked in
         # via libnodus.a — no separate entry needed here. See nodus/CMakeLists.txt.
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/validator_queries.c
@@ -405,6 +408,9 @@ else()
         # the same way as ledger_roots_v2.c. No consensus caller.
         ${CMAKE_SOURCE_DIR}/../shared/dnac/vset_wire.c
         ${CMAKE_SOURCE_DIR}/../shared/dnac/qc_v2.c
+        # Ledger V2 S4 — INACTIVE domain manifest/registry/readiness codec,
+        # owned by libdna the same way as ledger_roots_v2.c. No consensus caller.
+        ${CMAKE_SOURCE_DIR}/../shared/dnac/domain_wire.c
         # Note: shared/dnac/chain_config_wire.c (Hard-Fork v1) is linked in
         # via libnodus.a — no separate entry needed here. See nodus/CMakeLists.txt.
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/validator_queries.c

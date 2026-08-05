@@ -52,8 +52,11 @@ int nodus_witness_supply_root_v2(nodus_witness_t *w, uint8_t out[64]);
  *  table. That table is empty until a later wave wires the genesis /
  *  epoch-boundary snapshot writes, and an empty table returns exactly the
  *  DNA_V2_EMPTY_VSET tagged root the S2 placeholder returned — so this
- *  root is byte-unchanged for every pre-snapshot chain. The S4/S6 legs
- *  (domain_registry, manifest) are still tagged-empty placeholders. */
+ *  root is byte-unchanged for every pre-snapshot chain. The
+ *  domain-registry leg is REAL since S4 (nodus_witness_domreg_root; an
+ *  empty registry table returns exactly the old tagged-empty root, so
+ *  pre-registry chains are byte-unchanged). Only the S6 manifest leg is
+ *  still a tagged-empty placeholder. */
 int nodus_witness_system_root_v2(nodus_witness_t *w, uint8_t out[64]);
 
 /** core_state_root per the V2 composition (S6/S7/O-7 legs tagged-empty). */

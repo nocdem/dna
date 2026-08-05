@@ -38,6 +38,45 @@ not current state.
 >   built and tested but feed only the inactive V2 hierarchy; the live 144-byte
 >   cert path and the v3 five-input `state_root` are byte-identically unchanged.
 
+> **Addendum 2026-08-05 — Ledger V2 Season 4 COMPLETE (DNAC v0.18.1-ledgerv2-s4 /
+> nodus v0.19.1). INACTIVE — no live consensus path touched.**
+>
+> - **DomainManifest v1 + canonical domain codec** — `shared/dnac/domain_wire.{h,c}`:
+>   versioned manifest (BE, 199 + tx_type_count bytes, tag `"DNA.DOMMAN.v1"`),
+>   RulesetDescriptor digest (`"DNA.RULESET.v1"`), 223-byte
+>   DomainRegistryRecord (leaf `"DNA.DRLEAF.v1"`, node `"DNA.DRNODE.v1"`,
+>   empty root = the frozen S2 `"DNA.E.DOMREG.v1"`), proposal digest
+>   (`"DNA.DOMPROP.v1"`) and the 233-byte readiness preimage
+>   (`"DNA.DOMRDY.v1"`, Dilithium5-signed, 4844-byte wire). Enum value 0 is
+>   INVALID everywhere (fail-closed on zeroed memory).
+> - **Compiled NATIVE_BUILTIN runtime table** —
+>   `nodus/src/witness/nodus_witness_runtime.{h,c}`: exact-tuple lookup on
+>   `(domain_id, runtime_kind, runtime_abi, ruleset_version, ruleset_hash)`;
+>   SYSTEM + DNA_CORE only; pinned descriptor digests re-derived by
+>   `nodus_witness_runtime_selfcheck()`; no closest-version, no implicit
+>   latest; the S5 apply/root hooks are declared but must be NULL.
+> - **Domain registry + staged activation scheduler** —
+>   `nodus/src/witness/nodus_witness_domreg.{h,c}` over new tables
+>   `domain_registry` / `domain_readiness` (`nodus_witness.c` schema):
+>   register / propose / signal / schedule / cancel / pause / resume /
+>   retire; readiness quorum `floor(2N/3)+1` schedules, ALL-ACTIVE readiness
+>   activates; two-epoch deadline (`sched + 2E`); Stage-C unready exclusion
+>   through the ordinary S3 snapshot transition (non-slashing, floor-guarded);
+>   set-change and ruleset activation never share a boundary; postponement is
+>   exactly one epoch at a time; historical-snapshot authority pinned.
+> - **V2 semantic admission (inactive)** — `nodus_witness_domreg_admit_v2`:
+>   chain/domain/status/ruleset/runtime/ownership/statement/pool/quota gates;
+>   **Type 11 stays REJECT (C3 stop) and types 12-14 stay unavailable** at
+>   this boundary too.
+> - **Registry root live in the INACTIVE hierarchy** — the
+>   `domain_registry_root` leg of `nodus_witness_system_root_v2` is real
+>   (`nodus_witness_domreg_root`); an empty registry yields the byte-identical
+>   S2 placeholder root, so every pre-registry chain is unchanged.
+> - **Tests** — `nodus/tests/test_domain_wire.c` (oracle-pinned KATs +
+>   62,000-mutant deterministic fuzz), `test_domain_runtime.c`,
+>   `test_domreg.c` (real keys, N=7/9 quorum, restart identity,
+>   cross-node root determinism). nodus ctest 152/152.
+
 ---
 
 ## Architecture (current)

@@ -132,12 +132,24 @@ set(NODUS_SOURCES
     ${SHARED_DIR}/dnac/block_v2.c
     src/witness/nodus_witness_roots_v2.c
 
+    # Ledger V2 S4 — INACTIVE compiled NATIVE_BUILTIN runtime table
+    # (exact-tuple lookup, fail-closed; SYSTEM + DNA_CORE only) + the
+    # domain registry (persistence, staged activation scheduler,
+    # readiness accounting, registry root).
+    src/witness/nodus_witness_runtime.c
+    src/witness/nodus_witness_domreg.c
+
     # Ledger V2 S3 — INACTIVE validator-set snapshot codec + QC V2
     # (certificate codec and historical verification). No consensus path
     # calls either; the live 144-byte cert path (nodus_witness_cert.c)
     # is untouched. Same ownership pattern as ledger_roots_v2.c.
     ${SHARED_DIR}/dnac/vset_wire.c
     ${SHARED_DIR}/dnac/qc_v2.c
+
+    # Ledger V2 S4 — INACTIVE domain manifest / registry / readiness codec
+    # (canonical encodings + tagged hashes). No consensus path calls it;
+    # same ownership pattern as ledger_roots_v2.c.
+    ${SHARED_DIR}/dnac/domain_wire.c
 
     # Shared crypto (standalone only — messenger tree provides these via dht_lib)
     ${SHARED_CRYPTO_SOURCES}
@@ -633,6 +645,26 @@ add_test(NAME test_vset_wire COMMAND test_vset_wire)
 add_executable(test_qc_v2 tests/test_qc_v2.c)
 target_link_libraries(test_qc_v2 nodus dsa nodus crypto)
 add_test(NAME test_qc_v2 COMMAND test_qc_v2)
+
+# Ledger V2 S4 — domain manifest/registry/readiness codec: oracle-pinned
+# KATs, round-trip byte identity, unknown-enum / ordering / coherence
+# negatives, empty-registry root == frozen S2 placeholder.
+add_executable(test_domain_wire tests/test_domain_wire.c)
+target_link_libraries(test_domain_wire nodus dsa nodus crypto)
+add_test(NAME test_domain_wire COMMAND test_domain_wire)
+
+# Ledger V2 S4 — NATIVE_BUILTIN runtime table: self-check (pinned digest ==
+# fresh recomputation), per-axis lookup refusal, admission incl. the C3
+# type-11 stop, cost declarations, test-only third runtime extensibility.
+add_executable(test_domain_runtime tests/test_domain_runtime.c)
+target_link_libraries(test_domain_runtime nodus dsa nodus crypto)
+add_test(NAME test_domain_runtime COMMAND test_domain_runtime)
+
+# Ledger V2 S4 — domain registry + staged activation scheduler: real
+# witness DB, real Dilithium5 readiness signals, every replay axis, N=7/9
+# quorum arithmetic, Stage C exclusions + floor guard, Stage D/E boundary
+# (postpone / separation / activate), restart identity.
+register_witness_test(test_domreg)
 
 # Ledger V2 S3 — snapshot persistence: insert/get round-trip, conflict
 # detection, corruption fail-close, oracle-pinned validator_set_root,

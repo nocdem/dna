@@ -13,6 +13,7 @@
 #include "witness/nodus_witness_db.h"
 #include "witness/nodus_witness_merkle.h"
 #include "witness/nodus_witness_vset.h"
+#include "witness/nodus_witness_domreg.h"
 #include "nodus/nodus_chain_config.h"
 #include "crypto/utils/qgp_log.h"
 
@@ -268,7 +269,12 @@ int nodus_witness_system_root_v2(nodus_witness_t *w, uint8_t out[64]) {
      * so a pre-snapshot chain's system_state_root is byte-unchanged. */
     if (nodus_witness_vset_root(w, vset) != 0)
         return -1;
-    if (dna_v2_empty_root(DNA_V2_EMPTY_DOMREG, domreg) != 0)
+    /* S4: the domain-registry leg is REAL — nodus_witness_domreg_root
+     * over the domain_registry table. An empty table (every pre-V2 chain)
+     * returns exactly the DNA_V2_EMPTY_DOMREG tagged root the S2
+     * placeholder returned, so this root is byte-unchanged for every
+     * pre-registry chain. */
+    if (nodus_witness_domreg_root(w, domreg) != 0)
         return -1;
     if (dna_v2_empty_root(DNA_V2_EMPTY_MANIFEST, manifest) != 0)
         return -1;
