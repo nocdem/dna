@@ -24,6 +24,12 @@ static const uint8_t TAG_DRLEAF[TAG_LEN]  = "DNA.DRLEAF.v1\0\0";
 static const uint8_t TAG_DRNODE[TAG_LEN]  = "DNA.DRNODE.v1\0\0";
 static const uint8_t TAG_DOMRDY[TAG_LEN]  = "DNA.DOMRDY.v1\0\0";
 static const uint8_t TAG_DOMPROP[TAG_LEN] = "DNA.DOMPROP.v1\0";
+/* S5 tags */
+static const uint8_t TAG_DUPD[TAG_LEN]    = "DNA.DUPD.v1\0\0\0\0";
+static const uint8_t TAG_DUNODE[TAG_LEN]  = "DNA.DUNODE.v1\0\0";
+static const uint8_t TAG_E_DUPD[TAG_LEN]  = "DNA.E.DUPD.v1\0\0";
+static const uint8_t TAG_DTXB[TAG_LEN]    = "DNA.DTXB.v1\0\0\0\0";
+static const uint8_t TAG_E_DUPDPRV[TAG_LEN] = "DNA.E.DUPDPRV.v1";
 
 static void put_be16(uint16_t v, uint8_t out[2]) {
     out[0] = (uint8_t)(v >> 8); out[1] = (uint8_t)v;
@@ -457,6 +463,169 @@ int dna_domrdy_encode(const dna_readiness_signal_t *s,
     domrdy_fields_encode(s, out);
     memcpy(out + (DNA_DOMRDY_PREIMAGE_LEN - TAG_LEN), s->signature,
            DNA_DOM_SIG_LEN);
+    return 0;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+ * 5. DomainUpdate v1 + domain_updates_root + touched-list (S5)
+ * ════════════════════════════════════════════════════════════════════ */
+
+int dna_dupd_validate(const dna_domain_update_t *u) {
+    if (!u) return -1;
+    if (u->update_version != DNA_DUPD_VERSION) return -1;
+    if (u->old_height == UINT64_MAX) return -1;          /* +1 overflow    */
+    if (u->new_height != u->old_height + 1) return -1;
+    return 0;
+}
+
+int dna_dupd_encode(const dna_domain_update_t *u,
+                    uint8_t out[DNA_DUPD_ENC_LEN]) {
+    if (!out || dna_dupd_validate(u) != 0) return -1;
+    uint8_t *p = out;
+    put_be32(u->update_version, p);                p += 4;
+    put_be32(u->domain_id, p);                     p += 4;
+    put_be64(u->old_height, p);                    p += 8;
+    put_be64(u->new_height, p);                    p += 8;
+    put_be64(u->global_height, p);                 p += 8;
+    memcpy(p, u->pre_root, DNA_V2_ROOT_LEN);       p += DNA_V2_ROOT_LEN;
+    memcpy(p, u->post_root, DNA_V2_ROOT_LEN);      p += DNA_V2_ROOT_LEN;
+    memcpy(p, u->tx_batch_root, DNA_V2_ROOT_LEN);  p += DNA_V2_ROOT_LEN;
+    put_be32(u->ruleset_version, p);               p += 4;
+    memcpy(p, u->ruleset_hash, DNA_DOM_HASH_LEN);  p += DNA_DOM_HASH_LEN;
+    put_be32(u->res_tx_count, p);                  p += 4;
+    put_be64(u->res_verify_cost, p);               p += 8;
+    memcpy(p, u->prev_update_hash, DNA_V2_ROOT_LEN);
+    p += DNA_V2_ROOT_LEN;
+    return (size_t)(p - out) == DNA_DUPD_ENC_LEN ? 0 : -1;
+}
+
+int dna_dupd_decode(const uint8_t *src, size_t len,
+                    dna_domain_update_t *out) {
+    if (!src || !out || len != DNA_DUPD_ENC_LEN) return -1;
+    dna_domain_update_t u;
+    memset(&u, 0, sizeof(u));
+    const uint8_t *p = src;
+    u.update_version = get_be32(p);                p += 4;
+    u.domain_id      = get_be32(p);                p += 4;
+    u.old_height     = get_be64(p);                p += 8;
+    u.new_height     = get_be64(p);                p += 8;
+    u.global_height  = get_be64(p);                p += 8;
+    memcpy(u.pre_root, p, DNA_V2_ROOT_LEN);        p += DNA_V2_ROOT_LEN;
+    memcpy(u.post_root, p, DNA_V2_ROOT_LEN);       p += DNA_V2_ROOT_LEN;
+    memcpy(u.tx_batch_root, p, DNA_V2_ROOT_LEN);   p += DNA_V2_ROOT_LEN;
+    u.ruleset_version = get_be32(p);               p += 4;
+    memcpy(u.ruleset_hash, p, DNA_DOM_HASH_LEN);   p += DNA_DOM_HASH_LEN;
+    u.res_tx_count   = get_be32(p);                p += 4;
+    u.res_verify_cost = get_be64(p);               p += 8;
+    memcpy(u.prev_update_hash, p, DNA_V2_ROOT_LEN);
+    p += DNA_V2_ROOT_LEN;
+    if ((size_t)(p - src) != DNA_DUPD_ENC_LEN) return -1;
+    if (dna_dupd_validate(&u) != 0) return -1;
+    *out = u;
+    return 0;
+}
+
+int dna_dupd_hash(const dna_domain_update_t *u,
+                  uint8_t out[DNA_V2_ROOT_LEN]) {
+    if (!out) return -1;
+    uint8_t pre[TAG_LEN + DNA_DUPD_ENC_LEN];
+    memcpy(pre, TAG_DUPD, TAG_LEN);
+    if (dna_dupd_encode(u, pre + TAG_LEN) != 0) return -1;
+    return qgp_sha3_512(pre, sizeof(pre), out) == 0 ? 0 : -1;
+}
+
+int dna_dupd_prev_genesis(uint8_t out[DNA_V2_ROOT_LEN]) {
+    if (!out) return -1;
+    return qgp_sha3_512(TAG_E_DUPDPRV, TAG_LEN, out) == 0 ? 0 : -1;
+}
+
+int dna_v2_tx_batch_root(const uint8_t (*tx_ids)[DNA_V2_ROOT_LEN],
+                         uint32_t n, uint8_t out[DNA_V2_ROOT_LEN]) {
+    if (!out || (n > 0 && !tx_ids)) return -1;
+    size_t pre_len = (size_t)TAG_LEN + 4 + (size_t)n * DNA_V2_ROOT_LEN;
+    uint8_t *pre = (uint8_t *)malloc(pre_len);
+    if (!pre) return -1;
+    memcpy(pre, TAG_DTXB, TAG_LEN);
+    put_be32(n, pre + TAG_LEN);
+    for (uint32_t i = 0; i < n; i++)
+        memcpy(pre + TAG_LEN + 4 + (size_t)i * DNA_V2_ROOT_LEN, tx_ids[i],
+               DNA_V2_ROOT_LEN);
+    int rc = qgp_sha3_512(pre, pre_len, out) == 0 ? 0 : -1;
+    free(pre);
+    return rc;
+}
+
+int dna_v2_domain_updates_root(const dna_domain_update_t *updates, size_t n,
+                               uint8_t out[DNA_V2_ROOT_LEN]) {
+    if (!out || (n > 0 && !updates)) return -1;
+    if (n == 0)
+        return qgp_sha3_512(TAG_E_DUPD, TAG_LEN, out) == 0 ? 0 : -1;
+
+    for (size_t i = 1; i < n; i++)
+        if (updates[i - 1].domain_id >= updates[i].domain_id) return -1;
+
+    uint8_t (*level)[DNA_V2_ROOT_LEN] = malloc(n * sizeof(*level));
+    if (!level) return -1;
+    int rc = 0;
+    for (size_t i = 0; i < n; i++)
+        if (dna_dupd_hash(&updates[i], level[i]) != 0) { rc = -1; break; }
+    size_t cnt = n;
+    while (rc == 0 && cnt > 1) {
+        size_t next = 0;
+        for (size_t i = 0; i + 1 < cnt; i += 2) {
+            uint8_t pre[TAG_LEN + 2 * DNA_V2_ROOT_LEN];
+            memcpy(pre, TAG_DUNODE, TAG_LEN);
+            memcpy(pre + TAG_LEN, level[i], DNA_V2_ROOT_LEN);
+            memcpy(pre + TAG_LEN + DNA_V2_ROOT_LEN, level[i + 1],
+                   DNA_V2_ROOT_LEN);
+            if (qgp_sha3_512(pre, sizeof(pre), level[next]) != 0) {
+                rc = -1;
+                break;
+            }
+            next++;
+        }
+        if (rc != 0) break;
+        if (cnt & 1) {
+            memcpy(level[next], level[cnt - 1], DNA_V2_ROOT_LEN);
+            next++;
+        }
+        cnt = next;
+    }
+    if (rc == 0)
+        memcpy(out, level[0], DNA_V2_ROOT_LEN);
+    free(level);
+    return rc;
+}
+
+size_t dna_touched_encoded_len(uint16_t n) {
+    if (n == 0 || n > DNA_TOUCHED_MAX) return 0;
+    return 2 + (size_t)n * 4;
+}
+
+int dna_touched_encode(const uint32_t *domain_ids, uint16_t n,
+                       uint8_t *dst, size_t cap, size_t *written) {
+    size_t need = dna_touched_encoded_len(n);
+    if (need == 0 || !domain_ids || !dst || cap < need) return -1;
+    for (size_t i = 1; i < n; i++)
+        if (domain_ids[i - 1] >= domain_ids[i]) return -1;
+    put_be16(n, dst);
+    for (size_t i = 0; i < n; i++)
+        put_be32(domain_ids[i], dst + 2 + i * 4);
+    if (written) *written = need;
+    return 0;
+}
+
+int dna_touched_decode(const uint8_t *src, size_t len,
+                       uint32_t *ids_out, uint16_t *n_out) {
+    if (!src || !ids_out || !n_out || len < 2) return -1;
+    uint16_t n = get_be16(src);
+    if (n == 0 || n > DNA_TOUCHED_MAX) return -1;
+    if (len != 2 + (size_t)n * 4) return -1;
+    for (size_t i = 0; i < n; i++) {
+        ids_out[i] = get_be32(src + 2 + i * 4);
+        if (i > 0 && ids_out[i - 1] >= ids_out[i]) return -1;
+    }
+    *n_out = n;
     return 0;
 }
 

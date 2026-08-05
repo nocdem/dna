@@ -62,6 +62,13 @@ int nodus_witness_system_root_v2(nodus_witness_t *w, uint8_t out[64]);
 /** core_state_root per the V2 composition (S6/S7/O-7 legs tagged-empty). */
 int nodus_witness_core_root_v2(nodus_witness_t *w, uint8_t out[64]);
 
+/** S5 — SYSTEM runtime-owned genesis PAYLOAD root ("DNA.SYSPAYL.v1"):
+ *  the six runtime legs WITHOUT domain_registry_root/manifest_root. The
+ *  genesis-cycle break: DomainManifest.genesis_state_root is THIS value
+ *  for SYSTEM (dna_v2_system_payload_root in shared/dnac). */
+int nodus_witness_system_payload_root_v2(nodus_witness_t *w,
+                                         uint8_t out[64]);
+
 /** Full assembly: SYSTEM + CORE DomainHeads → domains_root →
  *  global_state_root. Optional component outputs (any may be NULL). */
 int nodus_witness_global_root_v2(nodus_witness_t *w,

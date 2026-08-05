@@ -372,6 +372,117 @@ int dna_domrdy_encode(const dna_readiness_signal_t *s,
 int dna_domrdy_decode(const uint8_t *src, size_t len,
                       dna_readiness_signal_t *out);
 
+/* ══════════════════════════════════════════════════════════════════════
+ * 5. DomainUpdate v1 + domain_updates_root + touched-list (Ledger V2 S5)
+ * ════════════════════════════════════════════════════════════════════ */
+
+/*
+ * ── S5 TAG TABLE (16 bytes, zero-padded; all JUDGMENT, versioned) ─────
+ *   "DNA.DUPD.v1"      DomainUpdate hash
+ *   "DNA.DUNODE.v1"    domain_updates_root inner node
+ *   "DNA.E.DUPD.v1"    EMPTY domain_updates_root (block touching nothing)
+ *   "DNA.DTXB.v1"      per-domain ordered tx-batch commitment
+ *   "DNA.E.DUPDPRV.v1" genesis previous-update linkage (16 chars exact)
+ *
+ * ── DomainUpdate v1 canonical layout (368 bytes, fixed, BE) ───────────
+ *   off   0  update_version    u32 (= 1)
+ *   off   4  domain_id         u32
+ *   off   8  old_height        u64
+ *   off  16  new_height        u64   (MUST equal old_height + 1)
+ *   off  24  global_height     u64
+ *   off  32  pre_root[64]
+ *   off  96  post_root[64]
+ *   off 160  tx_batch_root[64]      ("DNA.DTXB.v1" commitment below)
+ *   off 224  ruleset_version   u32
+ *   off 228  ruleset_hash[64]
+ *   off 292  res_tx_count      u32
+ *   off 296  res_verify_cost   u64
+ *   off 304  prev_update_hash[64]   (genesis: dna_dupd_prev_genesis)
+ *   total 368
+ *   update_hash = SHA3-512("DNA.DUPD.v1" ‖ the 368 canonical bytes)
+ *
+ * ── tx-batch commitment ───────────────────────────────────────────────
+ *   SHA3-512("DNA.DTXB.v1" ‖ count u32 BE ‖ tx_id[64] × count) — the
+ *   domain-LOCAL order (deterministic: the block's canonical order
+ *   restricted to this domain). count 0 is legal (a mandatory
+ *   deterministic transition with no carrying tx).
+ *
+ * ── domain_updates_root ───────────────────────────────────────────────
+ *   Leaves = update hashes of the TOUCHED domains only, STRICTLY
+ *   ascending domain_id (duplicates/order violations reject); inner =
+ *   SHA3-512("DNA.DUNODE.v1" ‖ L ‖ R), odd node PROMOTED; n == 1 → the
+ *   leaf; n == 0 → SHA3-512 of the "DNA.E.DUPD.v1" tag alone.
+ *
+ * ── touched-domain list (v2_tx_index canonical form) ──────────────────
+ *   count u16 BE ‖ domain_id u32 BE × count, STRICTLY ascending;
+ *   count ∈ [1, DNA_TOUCHED_MAX]; decode rejects duplicates, descending
+ *   order, zero count and any length mismatch.
+ */
+
+#define DNA_DUPD_VERSION   1u
+#define DNA_DUPD_ENC_LEN   368
+#define DNA_TOUCHED_MAX    64   /* sanity cap on touched domains per tx  */
+
+typedef struct {
+    uint32_t update_version;               /* must be 1                  */
+    uint32_t domain_id;
+    uint64_t old_height;
+    uint64_t new_height;                   /* must be old_height + 1     */
+    uint64_t global_height;
+    uint8_t  pre_root[DNA_V2_ROOT_LEN];
+    uint8_t  post_root[DNA_V2_ROOT_LEN];
+    uint8_t  tx_batch_root[DNA_V2_ROOT_LEN];
+    uint32_t ruleset_version;
+    uint8_t  ruleset_hash[DNA_DOM_HASH_LEN];
+    uint32_t res_tx_count;
+    uint64_t res_verify_cost;
+    uint8_t  prev_update_hash[DNA_V2_ROOT_LEN];
+} dna_domain_update_t;
+
+/** Structural validation: version 1; new_height == old_height + 1 (with
+ *  overflow guard). @return 0 / -1. */
+int dna_dupd_validate(const dna_domain_update_t *u);
+
+/** Canonical 368-byte encode; rejects anything validate rejects. */
+int dna_dupd_encode(const dna_domain_update_t *u,
+                    uint8_t out[DNA_DUPD_ENC_LEN]);
+
+/** Strict decode of EXACTLY 368 bytes + full validation. */
+int dna_dupd_decode(const uint8_t *src, size_t len,
+                    dna_domain_update_t *out);
+
+/** update_hash = SHA3-512("DNA.DUPD.v1" ‖ canonical bytes). 0 / -1. */
+int dna_dupd_hash(const dna_domain_update_t *u,
+                  uint8_t out[DNA_V2_ROOT_LEN]);
+
+/** Genesis previous-update linkage: SHA3-512("DNA.E.DUPDPRV.v1"). */
+int dna_dupd_prev_genesis(uint8_t out[DNA_V2_ROOT_LEN]);
+
+/** SHA3-512("DNA.DTXB.v1" ‖ count u32 BE ‖ tx_ids). tx_ids may be NULL
+ *  iff n == 0. @return 0 / -1. */
+int dna_v2_tx_batch_root(const uint8_t (*tx_ids)[DNA_V2_ROOT_LEN],
+                         uint32_t n, uint8_t out[DNA_V2_ROOT_LEN]);
+
+/**
+ * domain_updates_root over TOUCHED updates, strictly ascending domain_id;
+ * n == 0 yields the tagged empty root. @return 0 / -1.
+ */
+int dna_v2_domain_updates_root(const dna_domain_update_t *updates, size_t n,
+                               uint8_t out[DNA_V2_ROOT_LEN]);
+
+/** Encoded length of a touched list of n domains (0 on invalid n). */
+size_t dna_touched_encoded_len(uint16_t n);
+
+/** Canonical touched-list encode: count u16 BE + u32 BE ids strictly
+ *  ascending; n ∈ [1, DNA_TOUCHED_MAX]. @return 0 / -1. */
+int dna_touched_encode(const uint32_t *domain_ids, uint16_t n,
+                       uint8_t *dst, size_t cap, size_t *written);
+
+/** Strict decode (exact length, ascent, bounds). `ids_out` must hold
+ *  DNA_TOUCHED_MAX entries. @return 0 with *n_out set, -1. */
+int dna_touched_decode(const uint8_t *src, size_t len,
+                       uint32_t *ids_out, uint16_t *n_out);
+
 #ifdef __cplusplus
 }
 #endif

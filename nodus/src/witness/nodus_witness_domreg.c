@@ -8,6 +8,7 @@
 
 #include "witness/nodus_witness_domreg.h"
 #include "witness/nodus_witness_runtime.h"
+#include "witness/nodus_witness_roots_v2.h"
 
 #include <sqlite3.h>
 #include <stdlib.h>
@@ -286,8 +287,13 @@ int nodus_witness_domreg_root(nodus_witness_t *w, uint8_t out[64]) {
 
 /* ── Genesis / registration ─────────────────────────────────────────── */
 
-/* Build the initial manifest for one builtin runtime entry. */
+/* Build the initial manifest for one builtin runtime entry.
+ * `genesis_payload_root` is the domain's RUNTIME-OWNED genesis payload
+ * root (S5 cycle break — see dna_v2_system_payload_root): for SYSTEM the
+ * six-leg payload root, for DNA_CORE the full core_state_root (no
+ * self-reference exists, so its payload IS its state root). */
 static void manifest_from_runtime(const nodus_domain_runtime_t *rt,
+                                  const uint8_t genesis_payload_root[64],
                                   dna_domain_manifest_t *m) {
     memset(m, 0, sizeof(*m));
     m->manifest_version = DNA_DOMMAN_VERSION;
@@ -297,9 +303,7 @@ static void manifest_from_runtime(const nodus_domain_runtime_t *rt,
     m->runtime_abi = rt->runtime_abi;
     m->ruleset_version = rt->ruleset_version;
     memcpy(m->ruleset_hash, rt->ruleset_hash, DNA_DOM_HASH_LEN);
-    /* genesis_state_root: DOCUMENTED S5 PLACEHOLDER (all-zero) — the real
-     * initial domain state roots are defined by the S5 atomic-apply season
-     * and validated at the V2 genesis event. */
+    memcpy(m->genesis_state_root, genesis_payload_root, DNA_DOM_HASH_LEN);
     m->tx_type_count = rt->descriptor.tx_type_count;
     memcpy(m->tx_types, rt->descriptor.tx_types,
            rt->descriptor.tx_type_count);
@@ -319,9 +323,18 @@ int nodus_witness_domreg_init_genesis(nodus_witness_t *w) {
     const nodus_domain_runtime_t *table = nodus_runtime_builtin_table(&n);
     if (!table || n != 2) return -1;
 
+    /* Real genesis payload roots (S5 cycle break) — computed BEFORE any
+     * registry row exists, from the runtime-owned state only. */
+    uint8_t sys_payload[64], core_payload[64];
+    if (nodus_witness_system_payload_root_v2(w, sys_payload) != 0) return -1;
+    if (nodus_witness_core_root_v2(w, core_payload) != 0) return -1;
+
     for (size_t i = 0; i < n; i++) {
         dna_domain_manifest_t m;
-        manifest_from_runtime(&table[i], &m);
+        manifest_from_runtime(&table[i],
+                              table[i].domain_id == DNA_DOMAIN_SYSTEM
+                                  ? sys_payload : core_payload,
+                              &m);
 
         dna_domreg_record_t rec;
         memset(&rec, 0, sizeof(rec));

@@ -77,6 +77,39 @@ not current state.
 >   `test_domreg.c` (real keys, N=7/9 quorum, restart identity,
 >   cross-node root determinism). nodus ctest 152/152.
 
+> **Addendum 2026-08-05 — Ledger V2 Season 5 COMPLETE (DNAC v0.18.2-ledgerv2-s5 /
+> nodus v0.19.2). INACTIVE — no live consensus path touched.**
+>
+> - **Versioned schema + atomic migration** — `nodus_witness_v2_schema.{h,c}`:
+>   `PRAGMA user_version = 5`; one BEGIN IMMEDIATE migration (six `v2_*`
+>   tables + `utxo_set.domain_id` NOT NULL DEFAULT 1 = DNA_CORE backfill);
+>   fresh/S4/legacy paths; per-stage failure = full rollback; unknown
+>   version fails closed (`test_v2_schema`, 26 checks).
+> - **DomainUpdate v1** — `shared/dnac/domain_wire.{h,c}`: 368-byte canonical
+>   record (tags `DNA.DUPD.v1`, `DNA.DUNODE.v1`, `DNA.E.DUPD.v1`,
+>   `DNA.DTXB.v1`, `DNA.E.DUPDPRV.v1`), oracle KATs + 20k-mutant fuzz.
+> - **Atomic apply engine** — `nodus_witness_v2_apply.{h,c}`: ONE SQLite
+>   transaction per global block; phase order SYSTEM → cross → domain-local
+>   ASC → roots → updates/heads/history → indices → metadata → supply gate →
+>   COMMIT; 15 deterministic fault points with FULL-DB-DIGEST rollback proof;
+>   replay/idempotency matrix; untouched-domain guard (undeclared mutation =
+>   cross-domain substitution rejects); declared no-ops reject (no fake
+>   updates); per-domain quotas + global tx cap + verify budget
+>   (`test_v2_apply`, 78 checks).
+> - **V2 supply gate** — `nodus_witness_v2_supply_check`: genesis+minted−burned
+>   == Σutxo + Σself_stake + Σtotal_delegated + Σepoch_pool + shielded(≡0;
+>   any shielded/pool table = reject); checked arithmetic; official DNA
+>   numbers test-pinned: raw 100000000000000000 total, 7 × 1000000000000000
+>   bonds CARVED (additive 70M violates), 93000000000000000 transparent.
+> - **Genesis-root cycle break** — `DNA.SYSPAYL.v1`
+>   (`dna_v2_system_payload_root` + witness loader): manifest
+>   `genesis_state_root` = runtime-owned payload root (SYSTEM excludes
+>   registry/manifest commitments; CORE = full core root); final head root =
+>   full 8-leg composition. Dependency DAG proven in-test; no zero
+>   placeholder remains; independent fixtures land byte-identical roots.
+> - nodus ctest **154/154**; messenger 35/35; zk 87 GREEN, zero vector
+>   change; ASAN+UBSAN clean; Type 11 REJECT everywhere.
+
 ---
 
 ## Architecture (current)

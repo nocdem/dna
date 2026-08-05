@@ -139,6 +139,11 @@ set(NODUS_SOURCES
     src/witness/nodus_witness_runtime.c
     src/witness/nodus_witness_domreg.c
 
+    # Ledger V2 S5 — INACTIVE versioned schema/migration + atomic
+    # global-block apply engine + V2 supply gate.
+    src/witness/nodus_witness_v2_schema.c
+    src/witness/nodus_witness_v2_apply.c
+
     # Ledger V2 S3 — INACTIVE validator-set snapshot codec + QC V2
     # (certificate codec and historical verification). No consensus path
     # calls either; the live 144-byte cert path (nodus_witness_cert.c)
@@ -665,6 +670,17 @@ add_test(NAME test_domain_runtime COMMAND test_domain_runtime)
 # quorum arithmetic, Stage C exclusions + floor guard, Stage D/E boundary
 # (postpone / separation / activate), restart identity.
 register_witness_test(test_domreg)
+
+# Ledger V2 S5 — versioned schema + atomic migration: fresh/S4/legacy
+# paths, per-stage failure rollback, idempotency, restart, UTXO domain
+# ownership backfill, unknown-version fail-close, no CPUNK.
+register_witness_test(test_v2_schema)
+
+# Ledger V2 S5 — atomic apply engine: genesis-root cycle proof, heads/
+# updates, replay matrix, cross-domain atomicity, 15-point fault-injection
+# with full-DB digest rollback proof, resource limits, official 1B/70M
+# supply conservation.
+register_witness_test(test_v2_apply)
 
 # Ledger V2 S3 — snapshot persistence: insert/get round-trip, conflict
 # detection, corruption fail-close, oracle-pinned validator_set_root,

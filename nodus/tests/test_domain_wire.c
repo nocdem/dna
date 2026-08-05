@@ -637,6 +637,178 @@ static int test_fuzz(void) {
     return 0;
 }
 
+/* ── 8 (S5): DomainUpdate v1 + updates-root + batch + touched list ──── */
+static const char *KAT_DUPD =
+    "39374e8fe212c79aa83975196df641e75f1cff2fd336ca4c4962844de722a98f"
+    "15c952b3d0c0338d4680cea7a34dbf42453ff016db9f581d821927b049642cf3";
+static const char *KAT_DUPD_ROOT2 =
+    "1a9121b81c9d2b4aedbd84ab5499e3a1e76471b646c4aac42c81c19a4395a5b6"
+    "ec5920e6351ae72a84b7584cc1dad0c9aa9bb28936e1b440d6d75453b77d925a";
+static const char *KAT_E_DUPD =
+    "661f403d91d807631ab6bcc82d34116780623aa35479c753fc1d53a722fa58bc"
+    "61939dc88f51e2824ac76c8da4d11edc5beb54a0e3e222e2606320baf68de841";
+static const char *KAT_DUPDPRV =
+    "9a2b387a8f162537e34930735a2b6aff574a50eb2859092638e9ba9b990b6b49"
+    "aa0530becb8ec0d6e1a65ca4e1f7193f8d072f212646c2511167bac08d24b152";
+static const char *KAT_TXB0 =
+    "89f16287a04aef5a0fc88da194f4e734ba32931ee7792c5aff90a49e8a3ace7d"
+    "a51ac40f890610eb5faa9b343fa93b119adf8a7ed990f7ade65b009d0bc09066";
+static const char *KAT_TXB2 =
+    "b8b2e55498259aa1bf3e725e7bfd0bfe98783d6f778775951b04608ccb4e84ab"
+    "e326d4e9b7eb461680e4e81bbbcab27021909a87852fea964da2db07c08995b5";
+
+static void fixture_update_a(dna_domain_update_t *u) {
+    memset(u, 0, sizeof(*u));
+    u->update_version = DNA_DUPD_VERSION;
+    u->domain_id = 0;
+    u->old_height = 4;
+    u->new_height = 5;
+    u->global_height = 100;
+    memset(u->pre_root, 0x11, 64);
+    memset(u->post_root, 0x22, 64);
+    memset(u->tx_batch_root, 0x33, 64);
+    u->ruleset_version = 1;
+    memset(u->ruleset_hash, 0x44, 64);
+    u->res_tx_count = 3;
+    u->res_verify_cost = 7;
+    dna_dupd_prev_genesis(u->prev_update_hash);
+}
+
+static void fixture_update_b(dna_domain_update_t *u) {
+    memset(u, 0, sizeof(*u));
+    u->update_version = DNA_DUPD_VERSION;
+    u->domain_id = 1;
+    u->old_height = 9;
+    u->new_height = 10;
+    u->global_height = 100;
+    memset(u->pre_root, 0x55, 64);
+    memset(u->post_root, 0x66, 64);
+    memset(u->tx_batch_root, 0x77, 64);
+    u->ruleset_version = 2;
+    memset(u->ruleset_hash, 0x88, 64);
+    u->res_tx_count = 1;
+    u->res_verify_cost = 2;
+    memset(u->prev_update_hash, 0x99, 64);
+}
+
+static int test_domain_update(void) {
+    uint8_t h[64];
+    /* genesis prev-linkage KAT */
+    CHECK(dna_dupd_prev_genesis(h) == 0, "prev genesis"); OK();
+    CHECK(hex_eq(h, KAT_DUPDPRV, "prev genesis"), "prev KAT"); OK();
+
+    dna_domain_update_t a, b;
+    fixture_update_a(&a);
+    fixture_update_b(&b);
+    CHECK(dna_dupd_hash(&a, h) == 0, "dupd hash"); OK();
+    CHECK(hex_eq(h, KAT_DUPD, "dupd A"), "dupd A KAT"); OK();
+
+    /* round-trip byte identity + exact length */
+    uint8_t enc[DNA_DUPD_ENC_LEN], enc2[DNA_DUPD_ENC_LEN];
+    CHECK(dna_dupd_encode(&a, enc) == 0, "encode"); OK();
+    dna_domain_update_t rt;
+    CHECK(dna_dupd_decode(enc, sizeof(enc), &rt) == 0, "decode"); OK();
+    CHECK(dna_dupd_encode(&rt, enc2) == 0 &&
+          memcmp(enc, enc2, sizeof(enc)) == 0, "round-trip"); OK();
+    CHECK(dna_dupd_decode(enc, sizeof(enc) - 1, &rt) != 0, "short"); OK();
+
+    /* validate negatives: version, height rule, +1 overflow */
+    dna_domain_update_t n = a;
+    n.update_version = 2;
+    CHECK(dna_dupd_validate(&n) != 0, "v2 accepted"); OK();
+    n = a; n.new_height = n.old_height;        /* no advance */
+    CHECK(dna_dupd_validate(&n) != 0, "height skip accepted"); OK();
+    n = a; n.new_height = n.old_height + 2;    /* double advance */
+    CHECK(dna_dupd_validate(&n) != 0, "double advance accepted"); OK();
+    n = a; n.old_height = UINT64_MAX; n.new_height = 0;
+    CHECK(dna_dupd_validate(&n) != 0, "height overflow accepted"); OK();
+
+    /* updates root: 2 leaves KAT, single-leaf == leaf, empty KAT,
+     * duplicate/descending reject */
+    dna_domain_update_t both[2];
+    both[0] = a; both[1] = b;
+    CHECK(dna_v2_domain_updates_root(both, 2, h) == 0, "root2"); OK();
+    CHECK(hex_eq(h, KAT_DUPD_ROOT2, "updates root2"), "root2 KAT"); OK();
+    uint8_t leaf_a[64];
+    CHECK(dna_dupd_hash(&a, leaf_a) == 0, "leaf a");
+    CHECK(dna_v2_domain_updates_root(both, 1, h) == 0 &&
+          memcmp(h, leaf_a, 64) == 0, "root1 != leaf"); OK();
+    CHECK(dna_v2_domain_updates_root(NULL, 0, h) == 0, "empty root"); OK();
+    CHECK(hex_eq(h, KAT_E_DUPD, "empty updates"), "empty KAT"); OK();
+    both[0] = b; both[1] = a;                  /* descending */
+    CHECK(dna_v2_domain_updates_root(both, 2, h) != 0, "descending ok'd");
+    OK();
+    both[0] = a; both[1] = a;                  /* duplicate */
+    CHECK(dna_v2_domain_updates_root(both, 2, h) != 0, "duplicate ok'd");
+    OK();
+
+    /* tx-batch commitment KATs (0 and 2 ids) + order sensitivity */
+    uint8_t ids[2][64];
+    memset(ids[0], 0xA1, 64);
+    memset(ids[1], 0xB2, 64);
+    CHECK(dna_v2_tx_batch_root(NULL, 0, h) == 0, "txb0"); OK();
+    CHECK(hex_eq(h, KAT_TXB0, "batch 0"), "txb0 KAT"); OK();
+    CHECK(dna_v2_tx_batch_root(ids, 2, h) == 0, "txb2"); OK();
+    CHECK(hex_eq(h, KAT_TXB2, "batch 2"), "txb2 KAT"); OK();
+    uint8_t swapped[2][64];
+    memcpy(swapped[0], ids[1], 64);
+    memcpy(swapped[1], ids[0], 64);
+    uint8_t h2[64];
+    CHECK(dna_v2_tx_batch_root(swapped, 2, h2) == 0 &&
+          memcmp(h, h2, 64) != 0, "batch order-insensitive"); OK();
+
+    /* touched-domain list */
+    const uint32_t tds[3] = { 0, 1, 7 };
+    uint8_t tl[2 + 4 * DNA_TOUCHED_MAX];
+    size_t w = 0;
+    CHECK(dna_touched_encode(tds, 3, tl, sizeof(tl), &w) == 0 &&
+          w == 14, "touched encode"); OK();
+    uint32_t ids_out[DNA_TOUCHED_MAX];
+    uint16_t n_out = 0;
+    CHECK(dna_touched_decode(tl, w, ids_out, &n_out) == 0 && n_out == 3 &&
+          ids_out[2] == 7, "touched decode"); OK();
+    CHECK(dna_touched_decode(tl, w - 1, ids_out, &n_out) != 0,
+          "touched short"); OK();
+    const uint32_t dup[2] = { 1, 1 };
+    CHECK(dna_touched_encode(dup, 2, tl, sizeof(tl), &w) != 0,
+          "touched dup"); OK();
+    const uint32_t desc[2] = { 2, 1 };
+    CHECK(dna_touched_encode(desc, 2, tl, sizeof(tl), &w) != 0,
+          "touched desc"); OK();
+    CHECK(dna_touched_encode(tds, 0, tl, sizeof(tl), &w) != 0,
+          "touched zero"); OK();
+
+    /* deterministic fuzz over the 368-byte decoder (seeded, no RNG) */
+    {
+        uint64_t s = 0x53355F44555044ULL;
+        #define XR() (s ^= s << 13, s ^= s >> 7, s ^= s << 17, s)
+        uint8_t m[DNA_DUPD_ENC_LEN];
+        dna_domain_update_t t;
+        for (int it = 0; it < 10000; it++) {
+            memcpy(m, enc, sizeof(m));
+            m[XR() % sizeof(m)] ^= (uint8_t)(XR() | 1);
+            if (dna_dupd_decode(m, sizeof(m), &t) == 0) {
+                uint8_t re[DNA_DUPD_ENC_LEN];
+                CHECK(dna_dupd_encode(&t, re) == 0 &&
+                      memcmp(re, m, sizeof(m)) == 0,
+                      "dupd mutation canonicality");
+            }
+        }
+        for (int it = 0; it < 10000; it++) {
+            for (size_t i = 0; i < sizeof(m); i++) m[i] = (uint8_t)XR();
+            if (dna_dupd_decode(m, sizeof(m), &t) == 0) {
+                uint8_t re[DNA_DUPD_ENC_LEN];
+                CHECK(dna_dupd_encode(&t, re) == 0 &&
+                      memcmp(re, m, sizeof(m)) == 0,
+                      "dupd random canonicality");
+            }
+        }
+        #undef XR
+        OK();
+    }
+    return 0;
+}
+
 int main(void) {
     if (test_manifest()) return 1;
     if (test_ruleset_desc()) return 1;
@@ -644,6 +816,7 @@ int main(void) {
     if (test_proposal_digest()) return 1;
     if (test_readiness()) return 1;
     if (test_fuzz()) return 1;
+    if (test_domain_update()) return 1;
     printf("test_domain_wire: ALL %d checks passed\n", g_checks);
     return 0;
 }

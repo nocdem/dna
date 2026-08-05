@@ -250,6 +250,28 @@ int nodus_witness_supply_root_v2(nodus_witness_t *w, uint8_t out[64]) {
 
 /* ── Composition ────────────────────────────────────────────────────── */
 
+int nodus_witness_system_payload_root_v2(nodus_witness_t *w,
+                                         uint8_t out[64]) {
+    if (!w || !out) return -1;
+    uint8_t validator_root[64], delegation_root[64], epoch_v2[64];
+    uint8_t chain_config_root[64], vset[64], supply[64];
+    if (nodus_witness_merkle_compute_validator_root(w, validator_root) != 0)
+        return -1;
+    if (nodus_witness_merkle_compute_delegation_root(w, delegation_root) != 0)
+        return -1;
+    if (nodus_witness_epoch_root_v2(w, epoch_v2) != 0)
+        return -1;
+    if (nodus_chain_config_compute_root(w, chain_config_root) != 0)
+        return -1;
+    if (nodus_witness_vset_root(w, vset) != 0)
+        return -1;
+    if (nodus_witness_supply_root_v2(w, supply) != 0)
+        return -1;
+    return dna_v2_system_payload_root(validator_root, delegation_root,
+                                      epoch_v2, chain_config_root, vset,
+                                      supply, out);
+}
+
 int nodus_witness_system_root_v2(nodus_witness_t *w, uint8_t out[64]) {
     if (!w || !out) return -1;
     uint8_t validator_root[64], delegation_root[64], epoch_v2[64];

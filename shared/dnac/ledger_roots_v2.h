@@ -244,6 +244,32 @@ int dna_v2_core_root(const uint8_t utxo_root[64],
 int dna_v2_global_root(const uint8_t domains_root[64],
                        uint8_t out[DNA_V2_ROOT_LEN]);
 
+/* ── SYSTEM runtime-owned genesis payload root (Ledger V2 S5) ─────────
+ *
+ * Tag "DNA.SYSPAYL.v1" (16 bytes, zero-padded — S5 JUDGMENT tag).
+ *
+ *   system_payload_root = SHA3-512("DNA.SYSPAYL.v1" ‖ validator_root
+ *       ‖ delegation_root ‖ epoch_state_root_v2 ‖ chain_config_root
+ *       ‖ validator_set_root ‖ supply_root)
+ *
+ * This is dna_v2_system_root MINUS the two container legs
+ * (domain_registry_root, manifest_root) under a DISTINCT tag. It exists
+ * to break the genesis cycle: a DomainManifest's `genesis_state_root` is
+ * defined as the domain's RUNTIME-OWNED genesis payload root — it never
+ * covers a structure that commits that domain's own manifest, so
+ *   payload → manifest hash → registry root → FINAL system root
+ * is a DAG, not a cycle. (DNA_CORE has no such self-reference: its
+ * payload root IS its full core_state_root — the generic rule holds
+ * trivially.) The FINAL SYSTEM DomainHead.state_root remains the full
+ * 8-leg dna_v2_system_root. */
+int dna_v2_system_payload_root(const uint8_t validator_root[64],
+                               const uint8_t delegation_root[64],
+                               const uint8_t epoch_state_root_v2[64],
+                               const uint8_t chain_config_root[64],
+                               const uint8_t validator_set_root[64],
+                               const uint8_t supply_root[64],
+                               uint8_t out[DNA_V2_ROOT_LEN]);
+
 #ifdef __cplusplus
 }
 #endif

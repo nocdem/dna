@@ -325,3 +325,29 @@ int dna_v2_global_root(const uint8_t domains_root[64],
     memcpy(pre + TAG_LEN, domains_root, DNA_V2_ROOT_LEN);
     return qgp_sha3_512(pre, sizeof(pre), out) == 0 ? 0 : -1;
 }
+
+/* ── SYSTEM payload root (S5 genesis cycle break) ───────────────────── */
+
+static const uint8_t TAG_SYSPAYL[TAG_LEN] = "DNA.SYSPAYL.v1\0";
+
+int dna_v2_system_payload_root(const uint8_t validator_root[64],
+                               const uint8_t delegation_root[64],
+                               const uint8_t epoch_state_root_v2[64],
+                               const uint8_t chain_config_root[64],
+                               const uint8_t validator_set_root[64],
+                               const uint8_t supply_root[64],
+                               uint8_t out[DNA_V2_ROOT_LEN]) {
+    if (!validator_root || !delegation_root || !epoch_state_root_v2 ||
+        !chain_config_root || !validator_set_root || !supply_root || !out)
+        return -1;
+    uint8_t pre[TAG_LEN + 6 * DNA_V2_ROOT_LEN];
+    memcpy(pre, TAG_SYSPAYL, TAG_LEN);
+    const uint8_t *parts[6] = {
+        validator_root, delegation_root, epoch_state_root_v2,
+        chain_config_root, validator_set_root, supply_root
+    };
+    for (int i = 0; i < 6; i++)
+        memcpy(pre + TAG_LEN + (size_t)i * DNA_V2_ROOT_LEN, parts[i],
+               DNA_V2_ROOT_LEN);
+    return qgp_sha3_512(pre, sizeof(pre), out) == 0 ? 0 : -1;
+}
