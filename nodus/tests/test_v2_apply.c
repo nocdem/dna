@@ -270,7 +270,10 @@ static int head_height(nodus_witness_t *w, int dom, uint64_t *out) {
 int main(void) {
     fixture_t fx;
     CHECK(fx_open(&fx) == 0, "fixture"); OK();
-    CHECK(nodus_witness_db_migrate_v2s5(fx.w) == 0, "migrate"); OK();
+    /* S6: the apply engine + V2 genesis now require schema version 6
+     * (the migration includes the S5 stage; every S5 root below is
+     * byte-unchanged because the S6 tables are empty). */
+    CHECK(nodus_witness_db_migrate_v2s6(fx.w) == 0, "migrate"); OK();
 
     /* ── 1. genesis + cycle proof ───────────────────────────────────── */
     /* independent PRE-registry recomputation of both payload roots */
@@ -346,7 +349,7 @@ int main(void) {
     {
         fixture_t fb;
         CHECK(fx_open(&fb) == 0, "fixture b");
-        CHECK(nodus_witness_db_migrate_v2s5(fb.w) == 0, "migrate b");
+        CHECK(nodus_witness_db_migrate_v2s6(fb.w) == 0, "migrate b");
         CHECK(nodus_witness_v2_genesis(fb.w, gen_id, vset, 0) == 0,
               "genesis b");
         uint8_t sys_b[64];
@@ -642,7 +645,7 @@ int main(void) {
     /* ── 7. supply (official DNA numbers) ───────────────────────────── */
     fixture_t fs;
     CHECK(fx_open(&fs) == 0, "supply fixture"); OK();
-    CHECK(nodus_witness_db_migrate_v2s5(fs.w) == 0, "migrate");
+    CHECK(nodus_witness_db_migrate_v2s6(fs.w) == 0, "migrate");
 
     /* 1B total; 7 × 10M self-bonds CARVED; remainder 930M as UTXOs.
      * Production supply_tracking schema (nodus_witness.c): id=1 CHECK,

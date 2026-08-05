@@ -144,6 +144,13 @@ set(NODUS_SOURCES
     src/witness/nodus_witness_v2_schema.c
     src/witness/nodus_witness_v2_apply.c
 
+    # Ledger V2 S6 — INACTIVE generic genesis/distribution manifest +
+    # claim codec (shared) and the witness-side manifest/claims module
+    # (real manifest_root/claims_root legs, distribution accounting,
+    # claim pipeline). No consensus caller.
+    ${SHARED_DIR}/dnac/manifest_wire.c
+    src/witness/nodus_witness_v2_claims.c
+
     # Ledger V2 S3 — INACTIVE validator-set snapshot codec + QC V2
     # (certificate codec and historical verification). No consensus path
     # calls either; the live 144-byte cert path (nodus_witness_cert.c)
@@ -681,6 +688,21 @@ register_witness_test(test_v2_schema)
 # with full-DB digest rollback proof, resource limits, official 1B/70M
 # supply conservation.
 register_witness_test(test_v2_apply)
+
+# Ledger V2 S6 — generic manifest/snapshot/claim codec: round-trips,
+# per-field root sensitivity, strict-decode negatives, deterministic
+# mutant fuzz, snapshot ordering/duplicates, shape-derived inclusion
+# proofs, checked conversion arithmetic, frozen empty-root identity.
+add_executable(test_manifest_wire tests/test_manifest_wire.c)
+target_link_libraries(test_manifest_wire nodus dsa nodus crypto)
+add_test(NAME test_manifest_wire COMMAND test_manifest_wire)
+
+# Ledger V2 S6 — witness manifest/claims integration: v6 migration,
+# genesis fixtures (absent/present distribution), claim lifecycle +
+# adversarial matrix (substitution / replay / early / late / duplicate /
+# spent-after-restart), fault-injection digest rollback, one-owner
+# supply conservation, insertion-order-independent claims_root.
+register_witness_test(test_v2_claims)
 
 # Ledger V2 S3 — snapshot persistence: insert/get round-trip, conflict
 # detection, corruption fail-close, oracle-pinned validator_set_root,

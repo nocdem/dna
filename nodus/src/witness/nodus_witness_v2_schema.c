@@ -200,3 +200,88 @@ int nodus_witness_db_migrate_v2s5_ex(nodus_witness_t *w,
 int nodus_witness_db_migrate_v2s5(nodus_witness_t *w) {
     return nodus_witness_db_migrate_v2s5_ex(w, V2MIG_FAIL_NONE);
 }
+
+/* ── S6: the three generic manifest/claim tables (5 → 6) ────────────── */
+
+static const char *V2S6_TABLES_DDL =
+    "CREATE TABLE IF NOT EXISTS v2_manifests ("
+    "  manifest_seq INTEGER PRIMARY KEY,"
+    "  manifest_hash BLOB NOT NULL UNIQUE,"
+    "  manifest BLOB NOT NULL,"
+    "  committed_height INTEGER NOT NULL"
+    ");"
+    "CREATE TABLE IF NOT EXISTS v2_dist_state ("
+    "  manifest_seq INTEGER PRIMARY KEY,"
+    "  remaining INTEGER NOT NULL"
+    ");"
+    "CREATE TABLE IF NOT EXISTS v2_claims_spent ("
+    "  nullifier BLOB PRIMARY KEY,"
+    "  manifest_seq INTEGER NOT NULL,"
+    "  leaf_index INTEGER NOT NULL,"
+    "  amount INTEGER NOT NULL,"
+    "  claimed_height INTEGER NOT NULL,"
+    "  utxo_id BLOB NOT NULL"
+    ");";
+
+int nodus_witness_db_migrate_v2s6_ex(nodus_witness_t *w,
+                                     nodus_v2s6_mig_fail_t fail_at) {
+    if (!w || !w->db) return -1;
+
+    uint32_t ver = 0;
+    if (nodus_witness_db_schema_version(w, &ver) != 0) return -1;
+    if (ver == NODUS_V2_SCHEMA_VERSION_S6) return 0;     /* idempotent    */
+    if (ver == 0) {
+        /* Fresh/legacy: reach version 5 first (its own atomic txn — a
+         * crash between the stages leaves a VALID version-5 schema and
+         * re-running resumes here). */
+        if (nodus_witness_db_migrate_v2s5(w) != 0) return -1;
+        ver = NODUS_V2_SCHEMA_VERSION;
+    }
+    if (ver != NODUS_V2_SCHEMA_VERSION) {
+        /* Unknown/newer schema: this build must not touch it. */
+        QGP_LOG_ERROR(LOG_TAG,
+                      "unknown schema version %u — refusing S6 migration",
+                      ver);
+        return -1;
+    }
+
+    if (exec_sql(w, "BEGIN IMMEDIATE") != 0) return -1;
+
+    int ok = 0;
+    do {
+        if (fail_at == V2S6MIG_FAIL_AFTER_BEGIN) break;
+
+        if (exec_sql(w, V2S6_TABLES_DDL) != 0) break;
+        if (fail_at == V2S6MIG_FAIL_AFTER_TABLES) break;
+
+        /* Verify the schema actually materialized. */
+        static const char *required[] = {
+            "v2_manifests", "v2_dist_state", "v2_claims_spent"
+        };
+        int verified = 1;
+        for (size_t i = 0;
+             i < sizeof(required) / sizeof(required[0]) && verified; i++)
+            if (table_exists(w, required[i]) != 1) verified = 0;
+        if (!verified) break;
+        if (fail_at == V2S6MIG_FAIL_AFTER_VERIFY) break;
+
+        if (exec_sql(w, "PRAGMA user_version = 6") != 0) break;
+        if (fail_at == V2S6MIG_FAIL_BEFORE_COMMIT) break;
+
+        ok = 1;
+    } while (0);
+
+    if (!ok) {
+        (void)exec_sql(w, "ROLLBACK");
+        return -1;
+    }
+    if (exec_sql(w, "COMMIT") != 0) {
+        (void)exec_sql(w, "ROLLBACK");
+        return -1;
+    }
+    return 0;
+}
+
+int nodus_witness_db_migrate_v2s6(nodus_witness_t *w) {
+    return nodus_witness_db_migrate_v2s6_ex(w, V2S6MIG_FAIL_NONE);
+}

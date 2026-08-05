@@ -45,8 +45,10 @@ extern "C" {
 #define DNA_EXPIRY_WIRE_LEN        8   /* u64 BE */
 
 /* ── Locked initial execution domains (architecture report §4-§5;
- *    locked by the Season-1 charter — SYSTEM and DNA_CORE only).
- *    There is NO CPUNK domain and no CPUNK identifier of any kind. ── */
+ *    locked by the Season-1 charter). Only SYSTEM and DNA_CORE are
+ *    assigned initially; Ledger V2 is consumer-neutral and any further
+ *    domain arrives through the generic domain-registry path, never as
+ *    a compile-time constant. ── */
 #define DNA_DOMAIN_SYSTEM   ((uint32_t)0)
 #define DNA_DOMAIN_CORE     ((uint32_t)1)
 

@@ -24,6 +24,10 @@
  *   5.  cross-domain ops (touched_n > 1)                  [F3]
  *   6.  domain-local batches, domain_id ASC               [F4 per batch]
  *       (all op SQL has now run)                          [F5 "UTXO"]
+ *   6b. S6 generic claims (DNA_CORE state transitions; admit → spend
+ *       insert [F16] → transparent output [F17] → distribution-state
+ *       decrement [F18]; fault points fire after the named stage of
+ *       claim `fail_claim_index`)
  *   7.  supply gate (post-stage)                          [F6 "supply"]
  *   8.  domain state roots (SYSTEM + CORE) + the UNTOUCHED-DOMAIN GUARD:
  *       an untouched domain's recomputed root MUST equal its persisted
@@ -86,6 +90,13 @@
  *    + Σ validators.self_stake               [validator bond locked]
  *    + Σ validators.total_delegated          [delegation locked]
  *    + Σ epoch_state.epoch_pool_accum        [accrued-unsettled rewards]
+ *    + Σ v2_dist_state.remaining             [S6: the ONE generic
+ *                                             unclaimed-distribution
+ *                                             owner — genesis allocation
+ *                                             enters HERE, a claim MOVES
+ *                                             value from here to a
+ *                                             transparent UTXO, never
+ *                                             minting or burning]
  *    + shielded_pool_balance                 [FIXED 0 until C3 —
  *                                             enforced: no shielded pool
  *                                             state table may exist]
@@ -103,6 +114,7 @@
 
 #include "witness/nodus_witness.h"
 #include "dnac/domain_wire.h"
+#include "dnac/manifest_wire.h"
 
 #include <stdint.h>
 #include <stddef.h>
@@ -132,7 +144,12 @@ typedef enum {
     V2AP_FAIL_AFTER_BLOCK_META = 12,
     V2AP_FAIL_BEFORE_COMMIT = 13,
     V2AP_FAIL_COMMIT = 14,              /* simulated COMMIT failure      */
-    V2AP_FAIL_AFTER_COMMIT = 15         /* pre-cache crash window → rc 2 */
+    V2AP_FAIL_AFTER_COMMIT = 15,        /* pre-cache crash window → rc 2 */
+    /* S6 claim stages (fire after the named stage of the claim at
+     * index blk->fail_claim_index) */
+    V2AP_FAIL_AFTER_CLAIM_SPEND = 16,   /* spent-claim insert done       */
+    V2AP_FAIL_AFTER_CLAIM_UTXO = 17,    /* transparent output created    */
+    V2AP_FAIL_AFTER_CLAIM_STATE = 18    /* remaining decremented         */
 } nodus_v2_apply_fail_t;
 
 /** One controlled test-only state transition ("transaction"). */
@@ -154,6 +171,10 @@ typedef struct {
     uint8_t  vset_hash[64];
     const nodus_v2_op_t *ops;
     size_t   n_ops;
+    /* S6 generic claims (DNA_CORE; processed INSIDE the one block
+     * transaction, phase 6b). NULL/0 = none. */
+    const dna_claim_t *claims;
+    size_t   n_claims;
     /* Follower-mode expected roots — any NULL = leader mode (fill). A
      * non-NULL expectation that mismatches the recomputation rejects the
      * whole block. */
@@ -164,6 +185,7 @@ typedef struct {
     /* Fault injection */
     nodus_v2_apply_fail_t fail_at;
     uint32_t fail_domain_batch;         /* domain_id for point 4         */
+    uint32_t fail_claim_index;          /* claim index for points 16-18  */
     /* Outputs (valid on rc 0/2) */
     uint8_t  out_tx_root[64];
     uint8_t  out_dupd_root[64];
@@ -187,6 +209,25 @@ int nodus_witness_v2_genesis(nodus_witness_t *w,
                              const uint8_t genesis_block_id[64],
                              const uint8_t vset_hash[64],
                              uint64_t epoch);
+
+/**
+ * S6 variant: additionally commits ONE canonical GenesisManifest v1
+ * (manifest_seq 0, height 0) inside the same genesis transaction,
+ * BEFORE the root computation — so the genesis SYSTEM head root
+ * commits the REAL manifest_root. `manifest_bytes` NULL/0 keeps the
+ * legacy no-manifest genesis (manifest_root stays the tagged-empty
+ * leg). The manifest's domain set is cross-checked against the domain
+ * registry and its genesis supply against supply_tracking; a present
+ * distribution section seeds the unclaimed-distribution state
+ * (v2_dist_state) that the supply gate then owns. Same return contract
+ * as nodus_witness_v2_genesis.
+ */
+int nodus_witness_v2_genesis_ex(nodus_witness_t *w,
+                                const uint8_t genesis_block_id[64],
+                                const uint8_t vset_hash[64],
+                                uint64_t epoch,
+                                const uint8_t *manifest_bytes,
+                                size_t manifest_len);
 
 /**
  * Apply one V2 global block (header contract).

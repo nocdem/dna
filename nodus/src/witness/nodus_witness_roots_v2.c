@@ -14,6 +14,7 @@
 #include "witness/nodus_witness_merkle.h"
 #include "witness/nodus_witness_vset.h"
 #include "witness/nodus_witness_domreg.h"
+#include "witness/nodus_witness_v2_claims.h"
 #include "nodus/nodus_chain_config.h"
 #include "crypto/utils/qgp_log.h"
 
@@ -298,7 +299,12 @@ int nodus_witness_system_root_v2(nodus_witness_t *w, uint8_t out[64]) {
      * pre-registry chain. */
     if (nodus_witness_domreg_root(w, domreg) != 0)
         return -1;
-    if (dna_v2_empty_root(DNA_V2_EMPTY_MANIFEST, manifest) != 0)
+    /* S6: the manifest leg is REAL — nodus_witness_manifest_root_v2
+     * over the v2_manifests table. An absent (pre-S6) or empty table
+     * returns exactly the DNA_V2_EMPTY_MANIFEST tagged root the S2
+     * placeholder returned, so this root is byte-unchanged for every
+     * pre-manifest chain. */
+    if (nodus_witness_manifest_root_v2(w, manifest) != 0)
         return -1;
     if (nodus_witness_supply_root_v2(w, supply) != 0)
         return -1;
@@ -316,7 +322,10 @@ int nodus_witness_core_root_v2(nodus_witness_t *w, uint8_t out[64]) {
         return -1;
     if (dna_v2_empty_root(DNA_V2_EMPTY_POOLS, pools) != 0)
         return -1;
-    if (dna_v2_empty_root(DNA_V2_EMPTY_CLAIMS, claims) != 0)
+    /* S6: the claims leg is REAL — nodus_witness_claims_root_v2 over
+     * the v2_claims_spent table. Absent/empty tables reproduce the S2
+     * tagged-empty root byte-identically (pre-S6 chains unchanged). */
+    if (nodus_witness_claims_root_v2(w, claims) != 0)
         return -1;
     if (dna_v2_empty_root(DNA_V2_EMPTY_NAMES, names) != 0)
         return -1;

@@ -17,8 +17,35 @@
  * SQLite — it rolls back with the enclosing transaction):
  *   0  every pre-S5 database (fresh, legacy/V1, or S4 — none ever set it)
  *   5  Ledger V2 S5 schema present
+ *   6  Ledger V2 S6 schema present (S5 + the three generic
+ *      manifest/claim tables below)
  * Any OTHER value is unknown/newer state and FAILS CLOSED: this build
  * refuses to touch a database whose schema it does not understand.
+ *
+ * ── S6 migration (nodus_witness_db_migrate_v2s6) ──────────────────────
+ * Version 0 first runs the (atomic) S5 migration, then ONE atomic
+ * BEGIN IMMEDIATE … COMMIT performs 5 → 6, in order:
+ *   1. create the three S6 tables (IF NOT EXISTS);
+ *   2. verify every required table actually exists;
+ *   3. PRAGMA user_version = 6.
+ * ANY failure rolls the 5 → 6 transaction back (a crash between the two
+ * stages leaves a VALID version-5 database; re-running resumes).
+ * Re-running after success is a no-op. Version 6 is required by the S6
+ * apply engine and V2 genesis; any other value fails closed.
+ *
+ * ── S6 tables (generic names only) ────────────────────────────────────
+ *   v2_manifests     manifest_seq PK · manifest_hash UNIQUE (64) ·
+ *                    manifest (canonical GenesisManifest v1 bytes) ·
+ *                    committed_height — the committed manifest set;
+ *                    manifest_root is computed over it
+ *   v2_dist_state    manifest_seq PK · remaining — the generic
+ *                    unclaimed-distribution amount (the ONE supply
+ *                    owner of unclaimed genesis-distribution value)
+ *   v2_claims_spent  nullifier PK (64) · manifest_seq · leaf_index ·
+ *                    amount · claimed_height · utxo_id (64) — the
+ *                    spent-claim set; claims_root is computed over it
+ *                    and every row deterministically reconstructs its
+ *                    claim effect
  *
  * ── Migration (nodus_witness_db_migrate_v2s5) ─────────────────────────
  * One atomic BEGIN IMMEDIATE … COMMIT containing, in order:
@@ -83,6 +110,9 @@ extern "C" {
 /** The S5 schema version stored in PRAGMA user_version. */
 #define NODUS_V2_SCHEMA_VERSION  5u
 
+/** The S6 schema version — required by the S6 apply engine/genesis. */
+#define NODUS_V2_SCHEMA_VERSION_S6  6u
+
 /** Deterministic fault-injection stages for the migration tests. */
 typedef enum {
     V2MIG_FAIL_NONE = 0,
@@ -92,6 +122,16 @@ typedef enum {
     V2MIG_FAIL_AFTER_VERIFY,      /* schema verification passed           */
     V2MIG_FAIL_BEFORE_COMMIT      /* user_version written, pre-COMMIT     */
 } nodus_v2_mig_fail_t;
+
+/** Deterministic fault-injection stages for the S6 migration tests
+ *  (the 5 → 6 transaction only — the embedded S5 stage has its own). */
+typedef enum {
+    V2S6MIG_FAIL_NONE = 0,
+    V2S6MIG_FAIL_AFTER_BEGIN,     /* after BEGIN, before any DDL          */
+    V2S6MIG_FAIL_AFTER_TABLES,    /* three S6 tables created              */
+    V2S6MIG_FAIL_AFTER_VERIFY,    /* schema verification passed           */
+    V2S6MIG_FAIL_BEFORE_COMMIT    /* user_version written, pre-COMMIT     */
+} nodus_v2s6_mig_fail_t;
 
 /** Read the schema version. @return 0 with *out set, -1 on fault. */
 int nodus_witness_db_schema_version(nodus_witness_t *w, uint32_t *out);
@@ -107,6 +147,20 @@ int nodus_witness_db_migrate_v2s5(nodus_witness_t *w);
 /** Test variant: abort deterministically at `fail_at` (rolls back, -1). */
 int nodus_witness_db_migrate_v2s5_ex(nodus_witness_t *w,
                                      nodus_v2_mig_fail_t fail_at);
+
+/**
+ * Atomic S6 migration (header contract above). Version 0 runs the S5
+ * migration first (its own atomic transaction), then 5 → 6 atomically.
+ * @return 0 migrated or already at version 6 (idempotent);
+ *         -1 failure (full rollback of the running stage) — including
+ *         an UNKNOWN user_version (neither 0, 5 nor 6): fail closed.
+ */
+int nodus_witness_db_migrate_v2s6(nodus_witness_t *w);
+
+/** Test variant: abort deterministically at `fail_at` inside the 5 → 6
+ *  transaction (rolls back, -1; the DB stays a valid version-5 schema). */
+int nodus_witness_db_migrate_v2s6_ex(nodus_witness_t *w,
+                                     nodus_v2s6_mig_fail_t fail_at);
 
 #ifdef __cplusplus
 }

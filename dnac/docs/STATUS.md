@@ -110,6 +110,54 @@ not current state.
 > - nodus ctest **154/154**; messenger 35/35; zk 87 GREEN, zero vector
 >   change; ASAN+UBSAN clean; Type 11 REJECT everywhere.
 
+> **Addendum 2026-08-05 — Ledger V2 Season 6 COMPLETE (DNAC v0.18.3-ledgerv2-s6 /
+> nodus v0.19.3). INACTIVE — no live consensus path touched; types 12-14
+> stay UNASSIGNED (a claim has NO live transaction type).**
+>
+> - **Generic genesis/distribution manifest** — `shared/dnac/manifest_wire.{h,c}`:
+>   GenesisManifest v1 (tag `DNA.GMAN.v1`; strict BE codec; presence byte
+>   controls the distribution section's EXISTENCE — no hidden defaults;
+>   unknown versions/enums/presence values fail closed; commits genesis
+>   supply, the SYSTEM+DNA_CORE DomainManifest hashes — `DomainManifest v1`
+>   UNCHANGED — and, when present: opaque source tag + source commitment
+>   metadata, snapshot root, leaf count, exact conversion + FLOOR rounding,
+>   excluded amount, total claimable, claim window, auth/fee/post-deadline
+>   modes). NO chain_id field: chain_id = genesis_block_id[0..31] is
+>   derived OVER the manifest bytes (block_v2.h) — embedding one would be
+>   circular. Consumer-neutral: no project name/domain/policy anywhere.
+> - **Distribution snapshot + inclusion proofs** — generic leaves
+>   (`DNA.DSLEAF/DSNODE.v1`: opaque length-prefixed source id, source
+>   amount, dest binding = SHA3-512(recipient pubkey)); canonical
+>   length-aware source-id order, duplicates reject; promote-odd Merkle;
+>   proofs carry sibling hashes only — the shape derives from
+>   (index, leaf_count), count mismatch rejects.
+> - **Generic claims** — `DNA.CLAIM.v1` signed preimage (ML-DSA-87,
+>   DNA-native mode 1 only), nullifier `DNA.CLNUL.v1` from the committed
+>   leaf context (chain ‖ manifest ‖ source id), deterministic output id
+>   `DNA.CLUTXO.v1`; claims_root `DNA.CLLEAF/CLNODE.v1` sorted by
+>   nullifier (insertion-order independent); empty roots byte-identical to
+>   the frozen S2 `DNA.E.MANIF.v1`/`DNA.E.CLAIMS.v1` placeholders.
+> - **Witness integration** — schema v6 (`v2_manifests`, `v2_dist_state`,
+>   `v2_claims_spent`; atomic 5→6, unknown fails closed); REAL
+>   manifest_root (SYSTEM leg) + claims_root (DNA_CORE leg) replacing only
+>   the S6 tagged-empty placeholders; claims execute INSIDE the one S5
+>   BEGIN IMMEDIATE (admit → spend insert [F16] → transparent DNA_CORE
+>   output [F17] → remaining decrement [F18], all digest-proven rollback);
+>   supply equation gains exactly one owner: `genesis + minted − burned ==
+>   Σutxo + Σself_stake + Σdelegated + Σepoch_pool + unclaimed_distribution
+>   + shielded(≡0)` — a claim MOVES value, never mints (supply_tracking
+>   untouched, overdraw of a lying manifest rejects).
+> - **Post-deadline v1 = RETAIN only**: late claims reject, remaining state
+>   retained; any burn/transfer/disposition is an OPEN future versioned
+>   mode (fail-closed today).
+> - `test_manifest_wire` 97 checks (round-trips, per-field sensitivity,
+>   truncation sweeps, 40k deterministic mutants, proof shapes 1..9);
+>   `test_v2_claims` 54 checks (v6 migration matrix, twin-fixture root
+>   identity, full adversarial matrix incl. destination substitution /
+>   cross-chain replay / early / late / duplicate / spent-after-restart,
+>   insertion-order independence, never-mint). nodus ctest **156/156**;
+>   messenger 35/35; ASAN+UBSAN clean; Type 11 REJECT everywhere.
+
 ---
 
 ## Architecture (current)

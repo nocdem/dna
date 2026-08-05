@@ -9,6 +9,7 @@
 
 #include "witness/nodus_witness_v2_apply.h"
 #include "witness/nodus_witness_v2_schema.h"
+#include "witness/nodus_witness_v2_claims.h"
 #include "witness/nodus_witness_domreg.h"
 #include "witness/nodus_witness_roots_v2.h"
 #include "witness/nodus_witness_db.h"
@@ -87,7 +88,7 @@ int nodus_witness_v2_supply_check(nodus_witness_t *w) {
     if (sup.total_burned > expected) return -1;   /* underflow            */
     expected -= sup.total_burned;
 
-    uint64_t utxo = 0, bonds = 0, delegated = 0, pool = 0;
+    uint64_t utxo = 0, bonds = 0, delegated = 0, pool = 0, unclaimed = 0;
     /* the production helper OWNS the native-token representation rule —
      * one authority, never a parallel SQL mirror */
     if (nodus_witness_utxo_sum_by_token(w, NULL, &utxo) != 0) return -1;
@@ -97,6 +98,9 @@ int nodus_witness_v2_supply_check(nodus_witness_t *w) {
               &delegated) != 0) return -1;
     if (sum_q(w, "SELECT COALESCE(SUM(epoch_pool_accum),0) FROM epoch_state",
               &pool) != 0) return -1;
+    /* S6: the ONE generic unclaimed-distribution owner (absent table =
+     * honest pre-S6 zero; DB fault fails the gate). */
+    if (nodus_witness_v2_unclaimed_total(w, &unclaimed) != 0) return -1;
 
     const uint64_t shielded = 0;         /* FIXED until C3 — see above    */
 
@@ -107,16 +111,20 @@ int nodus_witness_v2_supply_check(nodus_witness_t *w) {
     observed += delegated;
     if (pool > UINT64_MAX - observed) return -1;
     observed += pool;
+    if (unclaimed > UINT64_MAX - observed) return -1;
+    observed += unclaimed;
     if (shielded > UINT64_MAX - observed) return -1;
     observed += shielded;
 
     if (expected != observed) {
         QGP_LOG_ERROR(LOG_TAG,
             "SUPPLY V2 VIOLATION: expected=%llu observed=%llu "
-            "(utxo=%llu bonds=%llu delegated=%llu pool=%llu shielded=0)",
+            "(utxo=%llu bonds=%llu delegated=%llu pool=%llu "
+            "unclaimed=%llu shielded=0)",
             (unsigned long long)expected, (unsigned long long)observed,
             (unsigned long long)utxo, (unsigned long long)bonds,
-            (unsigned long long)delegated, (unsigned long long)pool);
+            (unsigned long long)delegated, (unsigned long long)pool,
+            (unsigned long long)unclaimed);
         return -1;
     }
     return 0;
@@ -229,10 +237,21 @@ int nodus_witness_v2_genesis(nodus_witness_t *w,
                              const uint8_t genesis_block_id[64],
                              const uint8_t vset_hash[64],
                              uint64_t epoch) {
+    return nodus_witness_v2_genesis_ex(w, genesis_block_id, vset_hash,
+                                       epoch, NULL, 0);
+}
+
+int nodus_witness_v2_genesis_ex(nodus_witness_t *w,
+                                const uint8_t genesis_block_id[64],
+                                const uint8_t vset_hash[64],
+                                uint64_t epoch,
+                                const uint8_t *manifest_bytes,
+                                size_t manifest_len) {
     if (!w || !w->db || !genesis_block_id || !vset_hash) return -1;
+    if ((manifest_bytes == NULL) != (manifest_len == 0)) return -1;
     uint32_t ver = 0;
     if (nodus_witness_db_schema_version(w, &ver) != 0 ||
-        ver != NODUS_V2_SCHEMA_VERSION)
+        ver != NODUS_V2_SCHEMA_VERSION_S6)
         return -1;
 
     /* Idempotency: a committed height-0 row decides. */
@@ -259,6 +278,20 @@ int nodus_witness_v2_genesis(nodus_witness_t *w,
     do {
         /* Registry with REAL payload-root manifests (cycle break). */
         if (nodus_witness_domreg_init_genesis(w) != 0) break;
+
+        /* S6: commit the canonical genesis manifest (seq 0, height 0)
+         * BEFORE the root computation — the SYSTEM head root below then
+         * commits the REAL manifest_root. NON-CIRCULAR by construction:
+         * the manifest commits the DomainManifest hashes, whose
+         * genesis_state_root legs are the RUNTIME-OWNED payload roots
+         * ("DNA.SYSPAYL.v1" — no registry/manifest leg), so
+         *   payload → DomainManifest hash → GenesisManifest hash →
+         *   manifest_root → FINAL system root
+         * stays a DAG with no fixed point. */
+        if (manifest_bytes &&
+            nodus_witness_v2_manifest_commit(w, manifest_bytes,
+                                             manifest_len, 0, 0) != 0)
+            break;
 
         /* Final genesis heads: SYSTEM = FULL 8-leg root (registry rows
          * now exist), CORE = core root. Registry record status feeds the
@@ -385,7 +418,7 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
 
     uint32_t ver = 0;
     if (nodus_witness_db_schema_version(w, &ver) != 0 ||
-        ver != NODUS_V2_SCHEMA_VERSION)
+        ver != NODUS_V2_SCHEMA_VERSION_S6)
         return -1;
 
     /* ── 0. replay / linkage (read-only, pre-transaction) ───────────── */
@@ -449,6 +482,7 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
         { .domain_id = DNA_DOMAIN_SYSTEM },
         { .domain_id = DNA_DOMAIN_CORE }
     };
+    uint8_t claim_nuls[MAX_OPS][64];
     /* duplicate tx_id in the block */
     for (size_t i = 0; i < blk->n_ops; i++)
         for (size_t j = i + 1; j < blk->n_ops; j++)
@@ -505,6 +539,31 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
             return -1;
     }
 
+    /* ── S6 claims: bounds + in-block duplicate nullifiers (pre-txn,
+     * read-only). The nullifier is a pure function of the claim's
+     * committed leaf context, so the duplicate scan needs no DB. ────── */
+    if (blk->n_claims > 0) {
+        if (!blk->claims || blk->n_claims > MAX_OPS) return -1;
+        for (size_t i = 0; i < blk->n_claims; i++) {
+            const dna_claim_t *c = &blk->claims[i];
+            if (dna_claim_validate(c) != 0) return -1;
+            if (dna_claim_nullifier(c->chain_id, c->manifest_seq,
+                                    c->source_id, c->source_id_len,
+                                    claim_nuls[i]) != 0)
+                return -1;
+            for (size_t j = 0; j < i; j++)
+                if (memcmp(claim_nuls[i], claim_nuls[j], 64) == 0) {
+                    QGP_LOG_ERROR(LOG_TAG,
+                        "duplicate claim in one block — rejected");
+                    return -1;
+                }
+        }
+        /* A claim IS a DNA_CORE state transition (new output +
+         * claims_root move) — the block declares CORE touched by
+         * carrying claims at all. */
+        acc[1].touched = 1;
+    }
+
     /* pre-block heads (also the pre-state for the untouched guard) */
     dna_v2_domain_head_t head[2];
     for (int d = 0; d < 2; d++)
@@ -545,6 +604,37 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
             goto fail;
     }
     FAIL_POINT(V2AP_FAIL_AFTER_UTXO);
+
+    /* 6b. S6 generic claims — DNA_CORE transitions inside THE txn.
+     * Sequential processing makes intra-block accounting exact: a later
+     * claim's remaining-value check sees every earlier decrement. */
+    for (size_t i = 0; i < blk->n_claims; i++) {
+        const dna_claim_t *c = &blk->claims[i];
+        uint64_t converted = 0;
+        uint8_t nul[64];
+        if (nodus_witness_v2_claim_admit(w, c, blk->global_height,
+                                         &converted, nul) != 0)
+            goto fail;
+        if (memcmp(nul, claim_nuls[i], 64) != 0) goto fail;
+        if (nodus_witness_v2_claim_spend_insert(w, c, nul, converted,
+                                                blk->global_height) != 0)
+            goto fail;
+        if (blk->fail_at == V2AP_FAIL_AFTER_CLAIM_SPEND &&
+            blk->fail_claim_index == (uint32_t)i)
+            goto fail;
+        if (nodus_witness_v2_claim_utxo_create(w, c, nul, converted,
+                                               blk->global_height) != 0)
+            goto fail;
+        if (blk->fail_at == V2AP_FAIL_AFTER_CLAIM_UTXO &&
+            blk->fail_claim_index == (uint32_t)i)
+            goto fail;
+        if (nodus_witness_v2_claim_state_update(w, c->manifest_seq,
+                                                converted) != 0)
+            goto fail;
+        if (blk->fail_at == V2AP_FAIL_AFTER_CLAIM_STATE &&
+            blk->fail_claim_index == (uint32_t)i)
+            goto fail;
+    }
 
     /* 7. supply gate (post-stage) */
     if (nodus_witness_v2_supply_check(w) != 0) goto fail;
