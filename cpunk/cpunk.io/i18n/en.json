@@ -242,6 +242,7 @@
   "nav.terms": "Terms of Service",
   "nav.trade": "Trade CPUNK",
   "nav.wallet": "Wallet",
+  "nav.wiki": "Wiki",
   "nodus_page.arch.desc": "The Nodus network operates using a three-tier architecture designed to separate core network operations, client access, and validation.",
   "nodus_page.arch.label": "Architecture",
   "nodus_page.arch.tier1_desc1": "The node backbone of the network. Nodus nodes communicate directly with each other using TCP and UDP.",

@@ -242,6 +242,7 @@
   "nav.terms": "Termini di Servizio",
   "nav.trade": "Compra CPUNK",
   "nav.wallet": "Wallet",
+  "nav.wiki": "Wiki",
   "nodus_page.arch.desc": "La rete Nodus opera con un'architettura a tre livelli progettata per separare le operazioni di rete principali, l'accesso client e la validazione.",
   "nodus_page.arch.label": "Architettura",
   "nodus_page.arch.tier1_desc1": "La dorsale di nodi della rete. I nodi Nodus comunicano direttamente tra loro tramite TCP e UDP.",

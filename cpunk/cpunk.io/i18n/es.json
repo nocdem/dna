@@ -242,6 +242,7 @@
   "nav.terms": "Términos de servicio",
   "nav.trade": "Comprar CPUNK",
   "nav.wallet": "Billetera",
+  "nav.wiki": "Wiki",
   "nodus_page.arch.desc": "La red Nodus opera con una arquitectura de tres niveles diseñada para separar las operaciones centrales de la red, el acceso de clientes y la validación.",
   "nodus_page.arch.label": "Arquitectura",
   "nodus_page.arch.tier1_desc1": "La columna vertebral de la red. Los nodos Nodus se comunican directamente entre sí mediante TCP y UDP.",

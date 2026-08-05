@@ -242,6 +242,7 @@
   "nav.terms": "شروط الخدمة",
   "nav.trade": "تداول CPUNK",
   "nav.wallet": "المحفظة",
+  "nav.wiki": "ويكي",
   "nodus_page.arch.desc": "تعمل شبكة Nodus بهندسة ثلاثية الطبقات مصمّمة لفصل عمليات الشبكة الأساسية عن وصول العملاء والتحقق.",
   "nodus_page.arch.label": "البنية",
   "nodus_page.arch.tier1_desc1": "العمود الفقري للشبكة. تتواصل عُقَد Nodus مباشرة مع بعضها عبر TCP وUDP.",

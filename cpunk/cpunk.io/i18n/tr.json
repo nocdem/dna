@@ -242,6 +242,7 @@
   "nav.terms": "Hizmet Şartları",
   "nav.trade": "CPUNK Al-Sat",
   "nav.wallet": "Cüzdan",
+  "nav.wiki": "Wiki",
   "nodus_page.arch.desc": "Nodus ağı, temel ağ işlemlerini, istemci erişimini ve doğrulamayı birbirinden ayırmak üzere tasarlanmış üç katmanlı bir mimaride çalışır.",
   "nodus_page.arch.label": "Mimari",
   "nodus_page.arch.tier1_desc1": "Ağın omurgası. Nodus düğümleri birbirleriyle doğrudan TCP ve UDP üzerinden iletişim kurar.",

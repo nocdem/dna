@@ -242,6 +242,7 @@
   "nav.terms": "服务条款",
   "nav.trade": "交易 CPUNK",
   "nav.wallet": "钱包",
+  "nav.wiki": "维基",
   "nodus_page.arch.desc": "Nodus 网络采用三层架构，分别处理核心网络操作、客户端接入和验证。",
   "nodus_page.arch.label": "架构",
   "nodus_page.arch.tier1_desc1": "网络的节点骨干。Nodus 节点通过 TCP 和 UDP 直接互联通信。",

@@ -242,6 +242,7 @@
   "nav.terms": "Servicevoorwaarden",
   "nav.trade": "CPUNK Verhandelen",
   "nav.wallet": "Wallet",
+  "nav.wiki": "Wiki",
   "nodus_page.arch.desc": "Het Nodus-netwerk werkt met een drielaagse architectuur die kernnetwerkoperaties, clienttoegang en validatie van elkaar scheidt.",
   "nodus_page.arch.label": "Architectuur",
   "nodus_page.arch.tier1_desc1": "De node-backbone van het netwerk. Nodus-nodes communiceren onderling via TCP en UDP.",

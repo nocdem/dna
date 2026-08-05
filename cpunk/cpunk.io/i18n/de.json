@@ -242,6 +242,7 @@
   "nav.terms": "Nutzungsbedingungen",
   "nav.trade": "CPUNK handeln",
   "nav.wallet": "Wallet",
+  "nav.wiki": "Wiki",
   "nodus_page.arch.desc": "Das Nodus-Netzwerk arbeitet mit einer Drei-Ebenen-Architektur, die Netzwerkoperationen, Client-Zugriff und Validierung voneinander trennt.",
   "nodus_page.arch.label": "Architektur",
   "nodus_page.arch.tier1_desc1": "Das Knotenrückgrat des Netzwerks. Nodus-Knoten kommunizieren direkt miteinander über TCP und UDP.",
