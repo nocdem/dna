@@ -158,6 +158,97 @@ not current state.
 >   insertion-order independence, never-mint). nodus ctest **156/156**;
 >   messenger 35/35; ASAN+UBSAN clean; Type 11 REJECT everywhere.
 
+> **Addendum 2026-08-06 — Ledger V2 GENERICITY CORRECTION (uncommitted
+> correction pass over S1-S6; INACTIVE layer only, no live consensus path
+> touched, no version bump).** The S6 report's `domain_id = 1 (schema
+> default)` claim-output rule violated the locked generic architecture;
+> this pass removed every such default and re-pinned the affected S6
+> fixtures:
+>
+> - **Explicit distribution target** — GenesisManifest v1 distribution
+>   section now commits `target_domain_id` (u32 BE) + bounded opaque
+>   `target_asset_ref` (1..64 B; the CORE runtime reads it as the
+>   EXISTING 64-byte token_id namespace, native-only in v1). Unknown /
+>   inactive / unregistered / hookless / asset-incompatible targets fail
+>   closed at manifest commit AND claim time.
+> - **Consensus identity** — a claim references its manifest BY
+>   MANIFEST HASH; `manifest_seq` is demoted to an internal DB locator
+>   (keys no signature, nullifier, root or replay check). Nullifier v1 =
+>   SHA3-512(`DNA.CLNUL.v1` ‖ chain_id ‖ manifest_hash ‖ target_domain_id
+>   ‖ target_asset_len ‖ target_asset_ref ‖ snapshot leaf hash) —
+>   nullifiers of different domains/assets structurally cannot collide.
+>   manifest_root sorts by manifest_hash bytes; claims_root leaves commit
+>   manifest_hash + target_domain_id, and each RUNTIME owns the
+>   claims_root over the claims targeting ITS domain.
+> - **Runtime dispatch** — the generic claim engine routes an admitted
+>   claim through the registered TARGET runtime's `claim_apply` hook
+>   (new runtime hooks: `state_root` / `asset_check` / `claim_apply` /
+>   `invariant`); the engine never creates an output or picks a domain.
+>   The S5 apply engine + V2 genesis are registry-driven (any registered
+>   domain set), domain roots dispatch through `state_root`.
+> - **No domain defaults** — `utxo_set` rebuilt with `domain_id NOT NULL`
+>   and NO schema default (legacy → CORE is an explicit one-time
+>   migration literal); `v2_blocks` dropped the named `system_root` /
+>   `core_root` columns (global structures carry generic commitments
+>   only); `v2_dist_state`/`v2_claims_spent` are keyed by committed
+>   identity + explicit target.
+> - **Supply** — `nodus_witness_v2_supply_check` is now a runtime-owned
+>   invariant DISPATCHER; the DNAC equation lives in the CORE runtime
+>   hook and never sums another domain's asset (the codec's
+>   `total_claimable <= genesis_supply` cross-asset comparison was
+>   removed — native backing is the CORE invariant's job).
+> - **Tests** — `test_manifest_wire` 104, `test_v2_schema` 28,
+>   `test_v2_apply` 78, `test_v2_claims` 73 (new GENERICITY suite:
+>   synthetic registered domains T3/T4, non-CORE targets through the
+>   runtime hook, per-domain claims_root, no cross-asset summation, no
+>   default domain, 3-domain fault rollback, sidecar-claim reject,
+>   4-domain coexistence with zero Header/BlockID/schema change),
+>   `test_domain_runtime` 44. nodus ctest **156/156**; messenger 35/35;
+>   ASAN+UBSAN clean on the affected suites. Gate
+>   `DEFERRED-V2-GATE-S3-LIVE-SHRINK-CRASH` unchanged (OPEN).
+
+> **Addendum 2026-08-06 — Ledger V2 GENERICITY CORRECTION pass 2
+> (uncommitted, on top of pass 1; INACTIVE layer only, schema stays v6,
+> no version bump). Two locked owner decisions implemented:**
+>
+> - **Native supply ownership → DNA_CORE.** `supply_root`
+>   (genesis/minted/burned) moved OUT of `system_state_root` (now 7
+>   legs) INTO `core_state_root` (now 6 legs, supply last);
+>   `DNA.SYSPAYL.v1` payload root is 5 legs. Composition KATs re-pinned
+>   through the same independent python3 sha3_512 oracle (it reproduces
+>   the retired 8-leg/5-leg literals byte-exactly). Issuance mutation
+>   moves the CORE root only (test-pinned); mint-into-epoch-pool is a
+>   generic cross-domain op updating BOTH DomainUpdates atomically; fee
+>   burn is CORE-local; an issuance mutation not declaring CORE trips
+>   the untouched-domain guard; cross-move faults roll both domains
+>   back (digest-proven). No framework-global "every domain has a
+>   supply root" assumption exists — the leg lives inside CORE's own
+>   root composition.
+> - **Canonical DomainHead lifecycle.** The "synthesized pre-head on
+>   first touch" rule is GONE. One canonical activation constructor
+>   (engine `head_activate`) creates the head in the exact activation
+>   block: root = runtime state root, whose activation-payload form
+>   (new OPTIONAL `payload_root` runtime hook — SYSTEM's cycle-break
+>   composition; NULL = state root) MUST equal the registry-committed
+>   `genesis_state_root`; height 0; last_updated = activation height;
+>   status ACTIVE; height-0 history row. Genesis uses the same
+>   constructor for genesis-ACTIVE domains; registered-not-ACTIVE
+>   domains are registry-only (no head, absent from domains_root, no
+>   execution). ACTIVE ⇒ exactly one persisted head + one resolvable
+>   runtime, else consensus failure; PAUSED/RETIRED heads carried
+>   byte-unchanged without the runtime; resume fail-closed; RETIRED
+>   terminal; unknown lifecycle values fail closed; activation atomic
+>   with the SYSTEM registry transition (fault-injected, digest-proven);
+>   twin-node byte-identical activation heads/roots; restart identity
+>   before and after activation.
+> - **Tests** — `test_roots_v2` 122 (new 7/6-leg KATs + supply-ownership
+>   root checks), `test_v2_apply` 88 (supply-ownership integration:
+>   mint/settle/burn/undeclared-issuance-guard/cross-move faults),
+>   `test_v2_claims` 97 (full lifecycle matrix). nodus ctest
+>   **156/156**; messenger 35/35; ASAN+UBSAN clean on all affected
+>   suites. Gate `DEFERRED-V2-GATE-S3-LIVE-SHRINK-CRASH` unchanged
+>   (OPEN).
+
 ---
 
 ## Architecture (current)

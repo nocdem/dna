@@ -271,6 +271,8 @@ int dna_v2_domains_root(const dna_v2_domain_head_t *heads, size_t n,
 
 /* ── Composition ────────────────────────────────────────────────────── */
 
+/* supply_root is a CORE leg, never a SYSTEM leg: native issuance is the
+ * DNA_CORE runtime's asset commitment (header ownership note). */
 int dna_v2_system_root(const uint8_t validator_root[64],
                        const uint8_t delegation_root[64],
                        const uint8_t epoch_state_root_v2[64],
@@ -278,20 +280,19 @@ int dna_v2_system_root(const uint8_t validator_root[64],
                        const uint8_t validator_set_root[64],
                        const uint8_t domain_registry_root[64],
                        const uint8_t manifest_root[64],
-                       const uint8_t supply_root[64],
                        uint8_t out[DNA_V2_ROOT_LEN]) {
     if (!validator_root || !delegation_root || !epoch_state_root_v2 ||
         !chain_config_root || !validator_set_root || !domain_registry_root ||
-        !manifest_root || !supply_root || !out)
+        !manifest_root || !out)
         return -1;
-    uint8_t pre[TAG_LEN + 8 * DNA_V2_ROOT_LEN];
+    uint8_t pre[TAG_LEN + 7 * DNA_V2_ROOT_LEN];
     memcpy(pre, TAG_SYS, TAG_LEN);
-    const uint8_t *parts[8] = {
+    const uint8_t *parts[7] = {
         validator_root, delegation_root, epoch_state_root_v2,
         chain_config_root, validator_set_root, domain_registry_root,
-        manifest_root, supply_root
+        manifest_root
     };
-    for (int i = 0; i < 8; i++)
+    for (int i = 0; i < 7; i++)
         memcpy(pre + TAG_LEN + (size_t)i * DNA_V2_ROOT_LEN, parts[i],
                DNA_V2_ROOT_LEN);
     return qgp_sha3_512(pre, sizeof(pre), out) == 0 ? 0 : -1;
@@ -302,16 +303,18 @@ int dna_v2_core_root(const uint8_t utxo_root[64],
                      const uint8_t pools_root[64],
                      const uint8_t claims_root[64],
                      const uint8_t name_root[64],
+                     const uint8_t supply_root[64],
                      uint8_t out[DNA_V2_ROOT_LEN]) {
     if (!utxo_root || !token_root || !pools_root || !claims_root ||
-        !name_root || !out)
+        !name_root || !supply_root || !out)
         return -1;
-    uint8_t pre[TAG_LEN + 5 * DNA_V2_ROOT_LEN];
+    uint8_t pre[TAG_LEN + 6 * DNA_V2_ROOT_LEN];
     memcpy(pre, TAG_CORE, TAG_LEN);
-    const uint8_t *parts[5] = {
-        utxo_root, token_root, pools_root, claims_root, name_root
+    const uint8_t *parts[6] = {
+        utxo_root, token_root, pools_root, claims_root, name_root,
+        supply_root
     };
-    for (int i = 0; i < 5; i++)
+    for (int i = 0; i < 6; i++)
         memcpy(pre + TAG_LEN + (size_t)i * DNA_V2_ROOT_LEN, parts[i],
                DNA_V2_ROOT_LEN);
     return qgp_sha3_512(pre, sizeof(pre), out) == 0 ? 0 : -1;
@@ -335,18 +338,17 @@ int dna_v2_system_payload_root(const uint8_t validator_root[64],
                                const uint8_t epoch_state_root_v2[64],
                                const uint8_t chain_config_root[64],
                                const uint8_t validator_set_root[64],
-                               const uint8_t supply_root[64],
                                uint8_t out[DNA_V2_ROOT_LEN]) {
     if (!validator_root || !delegation_root || !epoch_state_root_v2 ||
-        !chain_config_root || !validator_set_root || !supply_root || !out)
+        !chain_config_root || !validator_set_root || !out)
         return -1;
-    uint8_t pre[TAG_LEN + 6 * DNA_V2_ROOT_LEN];
+    uint8_t pre[TAG_LEN + 5 * DNA_V2_ROOT_LEN];
     memcpy(pre, TAG_SYSPAYL, TAG_LEN);
-    const uint8_t *parts[6] = {
+    const uint8_t *parts[5] = {
         validator_root, delegation_root, epoch_state_root_v2,
-        chain_config_root, validator_set_root, supply_root
+        chain_config_root, validator_set_root
     };
-    for (int i = 0; i < 6; i++)
+    for (int i = 0; i < 5; i++)
         memcpy(pre + TAG_LEN + (size_t)i * DNA_V2_ROOT_LEN, parts[i],
                DNA_V2_ROOT_LEN);
     return qgp_sha3_512(pre, sizeof(pre), out) == 0 ? 0 : -1;

@@ -18,6 +18,10 @@
 
 /* The six S5 tables. IF NOT EXISTS keeps re-entry harmless; the explicit
  * verification step below makes "silently did nothing" impossible. */
+/* v2_blocks carries GENERIC commitments only (tx / updates / domains /
+ * global). Per-domain state roots live in v2_domain_heads /
+ * v2_root_history keyed by explicit domain_id — a global structure never
+ * carries a named-domain field. */
 static const char *V2_TABLES_DDL =
     "CREATE TABLE IF NOT EXISTS v2_blocks ("
     "  global_height INTEGER PRIMARY KEY,"
@@ -27,8 +31,6 @@ static const char *V2_TABLES_DDL =
     "  tx_root BLOB NOT NULL,"
     "  domain_updates_root BLOB NOT NULL,"
     "  domains_root BLOB NOT NULL,"
-    "  system_root BLOB NOT NULL,"
-    "  core_root BLOB NOT NULL,"
     "  global_root BLOB NOT NULL,"
     "  vset_hash BLOB NOT NULL,"
     "  tx_count INTEGER NOT NULL,"
@@ -154,14 +156,74 @@ int nodus_witness_db_migrate_v2s5_ex(nodus_witness_t *w,
         if (exec_sql(w, V2_TABLES_DDL) != 0) break;
         if (fail_at == V2MIG_FAIL_AFTER_TABLES) break;
 
-        /* Legacy backfill: every pre-existing UTXO becomes DNA_CORE-owned
-         * through the NOT NULL DEFAULT — one owner, never nullable. */
+        /* Domain ownership of the UTXO table: rebuild utxo_set with an
+         * EXPLICIT `domain_id INTEGER NOT NULL` column and NO schema
+         * default — ownership is written by every insert, never implied.
+         * The legacy assignment (pre-existing DNA rows → the configured
+         * legacy CORE domain, id 1) is the EXPLICIT `, 1` in the copy
+         * SELECT below: a one-time migration rule, not a lasting
+         * default. Fail-closed: the live column set must match the
+         * pinned production layout exactly before the rebuild. */
         int has = utxo_has_domain_col(w);
         if (has < 0) break;
-        if (has == 0 &&
-            exec_sql(w, "ALTER TABLE utxo_set ADD COLUMN domain_id "
-                        "INTEGER NOT NULL DEFAULT 1") != 0)
-            break;
+        if (has == 0) {
+            static const char *expect_cols[] = {
+                "nullifier", "owner", "amount", "token_id", "tx_hash",
+                "output_index", "block_height", "created_at",
+                "unlock_block"
+            };
+            sqlite3_stmt *ti = NULL;
+            if (sqlite3_prepare_v2(w->db, "PRAGMA table_info(utxo_set)",
+                                   -1, &ti, NULL) != SQLITE_OK)
+                break;
+            size_t ci = 0;
+            int rc2, cols_ok = 1;
+            while ((rc2 = sqlite3_step(ti)) == SQLITE_ROW) {
+                const unsigned char *nm = sqlite3_column_text(ti, 1);
+                if (ci >= sizeof(expect_cols) / sizeof(expect_cols[0]) ||
+                    !nm || strcmp((const char *)nm, expect_cols[ci]) != 0) {
+                    cols_ok = 0;
+                    break;
+                }
+                ci++;
+            }
+            sqlite3_finalize(ti);
+            if (!cols_ok || rc2 != SQLITE_DONE ||
+                ci != sizeof(expect_cols) / sizeof(expect_cols[0])) {
+                QGP_LOG_ERROR(LOG_TAG, "utxo_set column drift — refusing "
+                              "the domain-ownership rebuild");
+                break;
+            }
+            if (exec_sql(w,
+                "CREATE TABLE utxo_set_v2mig ("
+                "  nullifier BLOB PRIMARY KEY,"
+                "  owner TEXT NOT NULL,"
+                "  amount INTEGER NOT NULL,"
+                "  token_id BLOB NOT NULL DEFAULT x'"
+                "0000000000000000000000000000000000000000000000000000000000000000"
+                "0000000000000000000000000000000000000000000000000000000000000000"
+                "',"
+                "  tx_hash BLOB NOT NULL,"
+                "  output_index INTEGER NOT NULL,"
+                "  block_height INTEGER NOT NULL DEFAULT 0,"
+                "  created_at INTEGER NOT NULL DEFAULT 0,"
+                "  unlock_block INTEGER NOT NULL DEFAULT 0,"
+                "  domain_id INTEGER NOT NULL"
+                ");"
+                "INSERT INTO utxo_set_v2mig (nullifier, owner, amount, "
+                "token_id, tx_hash, output_index, block_height, "
+                "created_at, unlock_block, domain_id) "
+                "SELECT nullifier, owner, amount, token_id, tx_hash, "
+                "output_index, block_height, created_at, unlock_block, 1 "
+                "FROM utxo_set;"
+                "DROP TABLE utxo_set;"
+                "ALTER TABLE utxo_set_v2mig RENAME TO utxo_set;"
+                "CREATE INDEX IF NOT EXISTS idx_utxo_owner "
+                "ON utxo_set(owner);"
+                "CREATE INDEX IF NOT EXISTS idx_utxo_token "
+                "ON utxo_set(token_id);") != 0)
+                break;
+        }
         if (fail_at == V2MIG_FAIL_AFTER_ALTER) break;
 
         /* Verify the schema actually materialized — a DDL that silently
@@ -203,24 +265,34 @@ int nodus_witness_db_migrate_v2s5(nodus_witness_t *w) {
 
 /* ── S6: the three generic manifest/claim tables (5 → 6) ────────────── */
 
+/* Generic distribution/claim state is namespaced by COMMITTED identity:
+ * manifest_hash (the distribution id), target_domain_id and
+ * target_asset_ref. manifest_seq survives only in v2_manifests as an
+ * internal database locator — it keys NOTHING generic and appears in no
+ * signature, nullifier or root. No column here carries a domain
+ * default: ownership is written explicitly on every insert. */
 static const char *V2S6_TABLES_DDL =
     "CREATE TABLE IF NOT EXISTS v2_manifests ("
-    "  manifest_seq INTEGER PRIMARY KEY,"
-    "  manifest_hash BLOB NOT NULL UNIQUE,"
+    "  manifest_seq INTEGER PRIMARY KEY,"      /* LOCAL locator only     */
+    "  manifest_hash BLOB NOT NULL UNIQUE,"    /* committed identity     */
     "  manifest BLOB NOT NULL,"
     "  committed_height INTEGER NOT NULL"
     ");"
     "CREATE TABLE IF NOT EXISTS v2_dist_state ("
-    "  manifest_seq INTEGER PRIMARY KEY,"
+    "  manifest_hash BLOB PRIMARY KEY,"
+    "  target_domain_id INTEGER NOT NULL,"
+    "  target_asset_ref BLOB NOT NULL,"
     "  remaining INTEGER NOT NULL"
     ");"
     "CREATE TABLE IF NOT EXISTS v2_claims_spent ("
     "  nullifier BLOB PRIMARY KEY,"
-    "  manifest_seq INTEGER NOT NULL,"
+    "  manifest_hash BLOB NOT NULL,"
+    "  target_domain_id INTEGER NOT NULL,"
+    "  target_asset_ref BLOB NOT NULL,"
     "  leaf_index INTEGER NOT NULL,"
     "  amount INTEGER NOT NULL,"
     "  claimed_height INTEGER NOT NULL,"
-    "  utxo_id BLOB NOT NULL"
+    "  output_id BLOB NOT NULL"                /* runtime-owned identity */
     ");";
 
 int nodus_witness_db_migrate_v2s6_ex(nodus_witness_t *w,

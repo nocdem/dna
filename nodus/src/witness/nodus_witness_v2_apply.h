@@ -22,14 +22,31 @@
  *   3.  resource pre-scan + quota enforcement (BEFORE any mutation)
  *   4.  SYSTEM-phase ops (touched == {SYSTEM})            [F2]
  *   5.  cross-domain ops (touched_n > 1)                  [F3]
- *   6.  domain-local batches, domain_id ASC               [F4 per batch]
+ *   6.  domain-local batches, EVERY registered domain, domain_id ASC
+ *                                                         [F4 per batch]
  *       (all op SQL has now run)                          [F5 "UTXO"]
- *   6b. S6 generic claims (DNA_CORE state transitions; admit → spend
- *       insert [F16] → transparent output [F17] → distribution-state
+ *   6b. S6 generic claims: admit (committed manifest names the TARGET
+ *       domain + asset; the registered target runtime is resolved
+ *       through the generic registry path) → target-runtime output
+ *       [F16] → spent-claim insert [F17] → distribution-state
  *       decrement [F18]; fault points fire after the named stage of
- *       claim `fail_claim_index`)
+ *       claim `fail_claim_index`. The engine never creates an output
+ *       or picks a domain itself.
+ *   6c. LIFECYCLE re-scan (canonical DomainHead lifecycle): re-read the
+ *       registry; a domain whose status became ACTIVE with no committed
+ *       head gets its ONE deterministic activation head HERE (height 0,
+ *       root = runtime state root bound to the registry-committed
+ *       genesis_state_root, last_updated = this block, status ACTIVE,
+ *       height-0 history row) — atomic with the SYSTEM registry
+ *       transition, entering domains_root in this same block. A resume
+ *       (PAUSED→ACTIVE) fails closed unless the exact runtime tuple
+ *       resolves; a vanished registry row rejects; heads are NEVER
+ *       synthesized anywhere else. Execution authority remains the
+ *       BLOCK-ENTRY status: nothing executes in its own activation
+ *       block.
  *   7.  supply gate (post-stage)                          [F6 "supply"]
- *   8.  domain state roots (SYSTEM + CORE) + the UNTOUCHED-DOMAIN GUARD:
+ *   8.  domain state roots — dispatched through each REGISTERED
+ *       runtime's state_root hook — + the UNTOUCHED-DOMAIN GUARD:
  *       an untouched domain's recomputed root MUST equal its persisted
  *       head root — an op that mutated a domain it did not declare
  *       (cross-domain substitution) rejects the whole block  [F7]
@@ -81,30 +98,26 @@
  * NODUS_V2_GLOBAL_VERIFY_BUDGET (test-level JUDGMENT constant; the
  * consensus value is OPEN until S9 pins real weights).
  *
- * ── Supply gate (V2) ──────────────────────────────────────────────────
- * nodus_witness_v2_supply_check enforces, with checked arithmetic:
- *
- *   supply_tracking.genesis_supply + supply_tracking.total_minted
- *     − supply_tracking.total_burned
- *   == Σ utxo_set.amount (native)            [transparent spendable]
- *    + Σ validators.self_stake               [validator bond locked]
- *    + Σ validators.total_delegated          [delegation locked]
- *    + Σ epoch_state.epoch_pool_accum        [accrued-unsettled rewards]
- *    + Σ v2_dist_state.remaining             [S6: the ONE generic
- *                                             unclaimed-distribution
- *                                             owner — genesis allocation
- *                                             enters HERE, a claim MOVES
- *                                             value from here to a
- *                                             transparent UTXO, never
- *                                             minting or burning]
- *    + shielded_pool_balance                 [FIXED 0 until C3 —
- *                                             enforced: no shielded pool
- *                                             state table may exist]
- *
- * Burned DNAC is the explicit conservation sink on the expected side
- * (subtracted from issued), so historical issuance always reconciles:
- * genesis + minted == live + burned. The gate runs at V2 genesis,
- * pre-apply, post-stage, pre-commit, and is re-runnable after restart.
+ * ── Supply gate (V2) — runtime-owned invariant DISPATCH ───────────────
+ * nodus_witness_v2_supply_check is a DISPATCHER, not an equation: it
+ * iterates the registered domains (falling back to the compiled native
+ * runtime table on a pre-registry database) and calls each runtime's
+ * OWN invariant hook. Heterogeneous domain assets are NEVER summed into
+ * one global equation:
+ *   - SYSTEM declares no asset state (NULL hook);
+ *   - the native CORE runtime enforces the DNAC conservation equation
+ *     (genesis + minted − burned == Σ CORE utxo + Σ self_stake +
+ *     Σ delegated + Σ epoch_pool + unclaimed CORE-NATIVE distribution +
+ *     shielded ≡ 0), including a fail-closed guard that no foreign
+ *     domain owns a utxo_set row and no shielded/pool table exists —
+ *     see nodus_rt_core_invariant (nodus_witness_v2_claims.c);
+ *   - a registered ACTIVE domain whose runtime this build cannot
+ *     resolve FAILS the gate (unknown state is never "conserved");
+ *   - future runtimes enforce their own assets through the same hook.
+ * A claim MOVES value between two owners of the SAME target-domain
+ * asset (unclaimed distribution → target-runtime output) — it never
+ * mints or burns. The gate runs at V2 genesis, pre-apply, post-stage,
+ * pre-commit, and is re-runnable after restart.
  *
  * @file nodus_witness_v2_apply.h
  */
@@ -147,8 +160,8 @@ typedef enum {
     V2AP_FAIL_AFTER_COMMIT = 15,        /* pre-cache crash window → rc 2 */
     /* S6 claim stages (fire after the named stage of the claim at
      * index blk->fail_claim_index) */
-    V2AP_FAIL_AFTER_CLAIM_SPEND = 16,   /* spent-claim insert done       */
-    V2AP_FAIL_AFTER_CLAIM_UTXO = 17,    /* transparent output created    */
+    V2AP_FAIL_AFTER_CLAIM_OUTPUT = 16,  /* target-runtime output created */
+    V2AP_FAIL_AFTER_CLAIM_SPEND = 17,   /* spent-claim insert done       */
     V2AP_FAIL_AFTER_CLAIM_STATE = 18    /* remaining decremented         */
 } nodus_v2_apply_fail_t;
 
@@ -171,8 +184,9 @@ typedef struct {
     uint8_t  vset_hash[64];
     const nodus_v2_op_t *ops;
     size_t   n_ops;
-    /* S6 generic claims (DNA_CORE; processed INSIDE the one block
-     * transaction, phase 6b). NULL/0 = none. */
+    /* S6 generic claims (routed to each claim's COMMITTED target
+     * runtime; processed INSIDE the one block transaction, phase 6b).
+     * NULL/0 = none. */
     const dna_claim_t *claims;
     size_t   n_claims;
     /* Follower-mode expected roots — any NULL = leader mode (fill). A
@@ -197,12 +211,18 @@ typedef struct {
 int nodus_witness_v2_supply_check(nodus_witness_t *w);
 
 /**
- * V2 genesis: requires schema version 5; one atomic transaction seeding
+ * V2 genesis: requires schema version 6; one atomic transaction seeding
  * the domain registry (REAL payload-root manifests — the S5 cycle
- * break), the two genesis DomainHeads (height 0; SYSTEM head root = the
- * FULL 8-leg system root computed AFTER the registry rows exist; CORE
- * head root = core_state_root), the height-0 v2_blocks row (empty
- * tx/update roots), both root-history rows, and the supply gate.
+ * break), then ONE canonical ACTIVATION DomainHead per registered
+ * domain whose status is ACTIVE (the genesis block IS those domains'
+ * activation block: height 0, root = the runtime's state root — whose
+ * activation payload form must equal the registry-committed
+ * genesis_state_root — last_updated 0, status ACTIVE, height-0 history
+ * row; SYSTEM's head root is the FULL 7-leg system root computed AFTER
+ * the registry rows exist). A registered-but-not-ACTIVE domain exists
+ * only in the registry: no head, absent from domains_root. Then the
+ * height-0 v2_blocks row (empty tx/update roots) and the supply gate.
+ * The domain count is whatever the registry holds — never a fixed two.
  * Idempotent-or-conflict (byte-identical re-run 0 / diverging -2 / -1).
  */
 int nodus_witness_v2_genesis(nodus_witness_t *w,

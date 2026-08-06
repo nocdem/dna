@@ -88,8 +88,10 @@ static int tagged_merkle(const uint8_t node_tag[TAG_LEN],
 /* Fixed byte counts (header layout table). */
 #define GMAN_HEAD_LEN        14   /* version(4) + supply(8) + count(2)   */
 #define GMAN_DOMREF_LEN      68   /* id(4) + hash(64)                    */
-#define GMAN_DIST_FIXED_LEN  132  /* everything in the dist section
-                                   * except the two variable byte runs   */
+#define GMAN_DIST_FIXED_LEN  138  /* everything in the dist section
+                                   * except the three variable byte runs
+                                   * (target_asset_ref / source_tag /
+                                   * source_commit)                      */
 
 int dna_gman_validate(const dna_gman_t *m) {
     if (!m) return -1;
@@ -106,23 +108,33 @@ int dna_gman_validate(const dna_gman_t *m) {
         static const uint8_t zroot[DNA_V2_ROOT_LEN] = {0};
         static const uint8_t ztag[DNA_GMAN_SRCTAG_MAX] = {0};
         static const uint8_t zcommit[DNA_GMAN_SRCCOMMIT_MAX] = {0};
+        static const uint8_t zasset[DNA_GMAN_ASSETREF_MAX] = {0};
         if (m->dist_version != 0 || m->source_tag_len != 0 ||
             m->source_commit_len != 0 || m->leaf_count != 0 ||
             m->conv_numerator != 0 || m->conv_denominator != 0 ||
             m->rounding_mode != 0 || m->excluded_amount != 0 ||
             m->total_claimable != 0 || m->claim_start_height != 0 ||
             m->claim_end_height != 0 || m->auth_mode != 0 ||
-            m->fee_mode != 0 || m->post_deadline_mode != 0)
+            m->fee_mode != 0 || m->post_deadline_mode != 0 ||
+            m->target_domain_id != 0 || m->target_asset_len != 0)
             return -1;
         if (memcmp(m->snapshot_root, zroot, sizeof(zroot)) != 0) return -1;
         if (memcmp(m->source_tag, ztag, sizeof(ztag)) != 0) return -1;
         if (memcmp(m->source_commit, zcommit, sizeof(zcommit)) != 0)
+            return -1;
+        if (memcmp(m->target_asset_ref, zasset, sizeof(zasset)) != 0)
             return -1;
         return 0;
     }
     if (m->dist_present != 1) return -1;       /* unknown presence value */
 
     if (m->dist_version != DNA_DIST_VERSION) return -1;
+    /* target_domain_id: any registered u32 — registration, activation and
+     * runtime compatibility are witness-side fail-closed checks; the
+     * codec commits the EXPLICIT value (no structural default exists). */
+    if (m->target_asset_len < 1 ||
+        m->target_asset_len > DNA_GMAN_ASSETREF_MAX)
+        return -1;
     if (m->source_tag_len < 1 || m->source_tag_len > DNA_GMAN_SRCTAG_MAX)
         return -1;
     if (m->source_commit_len > DNA_GMAN_SRCCOMMIT_MAX) return -1;
@@ -130,7 +142,13 @@ int dna_gman_validate(const dna_gman_t *m) {
     if (m->conv_numerator < 1 || m->conv_denominator < 1) return -1;
     if (m->rounding_mode != DNA_DISTROUND_FLOOR) return -1;
     if (m->total_claimable < 1) return -1;
-    if (m->total_claimable > m->genesis_supply_raw) return -1;
+    /* NO total_claimable ⋚ genesis_supply comparison here: the two are
+     * denominated in DIFFERENT units unless the target asset happens to
+     * be the chain's native one — one asset equation is never applied
+     * to heterogeneous targets. The native backing of a NATIVE-asset
+     * distribution is enforced by the target runtime's conservation
+     * invariant (supply gate), which rejects a lying manifest at
+     * commit/genesis time. */
     if (m->claim_start_height > m->claim_end_height) return -1;
     if (m->auth_mode != DNA_CLAIMAUTH_DNA_NATIVE) return -1;
     if (m->fee_mode != DNA_CLAIMFEE_NONE) return -1;
@@ -143,8 +161,8 @@ size_t dna_gman_encoded_len(const dna_gman_t *m) {
     size_t len = GMAN_HEAD_LEN +
                  (size_t)m->domain_count * GMAN_DOMREF_LEN + 1;
     if (m->dist_present == 1)
-        len += GMAN_DIST_FIXED_LEN + m->source_tag_len +
-               m->source_commit_len;
+        len += GMAN_DIST_FIXED_LEN + m->target_asset_len +
+               m->source_tag_len + m->source_commit_len;
     return len;
 }
 
@@ -165,6 +183,10 @@ int dna_gman_encode(const dna_gman_t *m,
     *p++ = m->dist_present;
     if (m->dist_present == 1) {
         put_be32(m->dist_version, p);                    p += 4;
+        put_be32(m->target_domain_id, p);                p += 4;
+        put_be16(m->target_asset_len, p);                p += 2;
+        memcpy(p, m->target_asset_ref, m->target_asset_len);
+        p += m->target_asset_len;
         put_be16(m->source_tag_len, p);                  p += 2;
         memcpy(p, m->source_tag, m->source_tag_len);
         p += m->source_tag_len;
@@ -208,8 +230,16 @@ int dna_gman_decode(const uint8_t *src, size_t len, dna_gman_t *out) {
     }
     out->dist_present = src[off++];
     if (out->dist_present == 1) {
-        if (len - off < 4 + 2) return -1;
+        if (len - off < 4 + 4 + 2) return -1;
         out->dist_version = get_be32(src + off);   off += 4;
+        out->target_domain_id = get_be32(src + off); off += 4;
+        out->target_asset_len = get_be16(src + off); off += 2;
+        if (out->target_asset_len < 1 ||
+            out->target_asset_len > DNA_GMAN_ASSETREF_MAX)
+            return -1;
+        if (len - off < (size_t)out->target_asset_len + 2) return -1;
+        memcpy(out->target_asset_ref, src + off, out->target_asset_len);
+        off += out->target_asset_len;
         out->source_tag_len = get_be16(src + off); off += 2;
         if (out->source_tag_len < 1 ||
             out->source_tag_len > DNA_GMAN_SRCTAG_MAX)
@@ -219,8 +249,9 @@ int dna_gman_decode(const uint8_t *src, size_t len, dna_gman_t *out) {
         off += out->source_tag_len;
         out->source_commit_len = get_be16(src + off); off += 2;
         if (out->source_commit_len > DNA_GMAN_SRCCOMMIT_MAX) return -1;
-        /* remaining fixed bytes after the two variable runs:
-         * 132 total fixed − ver(4) − taglen(2) − commitlen(2) = 124 */
+        /* remaining fixed bytes after the three variable runs:
+         * 138 total fixed − ver(4) − target_dom(4) − assetlen(2)
+         * − taglen(2) − commitlen(2) = 124 */
         if (len - off < (size_t)out->source_commit_len + 124) return -1;
         memcpy(out->source_commit, src + off, out->source_commit_len);
         off += out->source_commit_len;
@@ -261,25 +292,28 @@ int dna_gman_hash(const dna_gman_t *m, uint8_t out[DNA_V2_ROOT_LEN]) {
     return rc == 0 ? 0 : -1;
 }
 
-int dna_v2_manifest_root(const uint32_t *seqs,
-                         const uint8_t (*manifest_hashes)[DNA_V2_ROOT_LEN],
+int dna_v2_manifest_root(const uint8_t (*manifest_hashes)[DNA_V2_ROOT_LEN],
                          size_t n, uint8_t out[DNA_V2_ROOT_LEN]) {
-    if (!out || (n > 0 && (!seqs || !manifest_hashes))) return -1;
+    if (!out || (n > 0 && !manifest_hashes)) return -1;
     if (n == 0)
         return dna_v2_empty_root(DNA_V2_EMPTY_MANIFEST, out);
 
-    /* Strictly ascending manifest_seq: rejects duplicates AND any
-     * non-canonical order, so no input ordering can influence the root. */
+    /* Strictly ascending manifest_hash bytes — the COMMITTED identity is
+     * the canonical sort key (a database sequence number is a local
+     * locator and never enters a consensus commitment). Rejects
+     * duplicates AND any non-canonical order, so no input ordering can
+     * influence the root. */
     for (size_t i = 1; i < n; i++)
-        if (seqs[i - 1] >= seqs[i]) return -1;
+        if (memcmp(manifest_hashes[i - 1], manifest_hashes[i],
+                   DNA_V2_ROOT_LEN) >= 0)
+            return -1;
 
     uint8_t (*level)[DNA_V2_ROOT_LEN] = malloc(n * sizeof(*level));
     if (!level) return -1;
     for (size_t i = 0; i < n; i++) {
-        uint8_t pre[TAG_LEN + 4 + DNA_V2_ROOT_LEN];
+        uint8_t pre[TAG_LEN + DNA_V2_ROOT_LEN];
         memcpy(pre, TAG_MANLEAF, TAG_LEN);
-        put_be32(seqs[i], pre + TAG_LEN);
-        memcpy(pre + TAG_LEN + 4, manifest_hashes[i], DNA_V2_ROOT_LEN);
+        memcpy(pre + TAG_LEN, manifest_hashes[i], DNA_V2_ROOT_LEN);
         if (qgp_sha3_512(pre, sizeof(pre), level[i]) != 0) {
             free(level);
             return -1;
@@ -508,7 +542,7 @@ int dna_claim_encode(const dna_claim_t *c,
     uint8_t *p = dst;
     put_be32(c->claim_version, p);                     p += 4;
     memcpy(p, c->chain_id, DNA_CHAIN_ID_LEN);          p += DNA_CHAIN_ID_LEN;
-    put_be32(c->manifest_seq, p);                      p += 4;
+    memcpy(p, c->manifest_hash, DNA_V2_ROOT_LEN);      p += DNA_V2_ROOT_LEN;
     put_be64(c->leaf_index, p);                        p += 8;
     put_be16(c->source_id_len, p);                     p += 2;
     memcpy(p, c->source_id, c->source_id_len);         p += c->source_id_len;
@@ -532,11 +566,12 @@ int dna_claim_decode(const uint8_t *src, size_t len, dna_claim_t *out) {
     memset(out, 0, sizeof(*out));
 
     size_t off = 0;
-    if (len < 4 + DNA_CHAIN_ID_LEN + 4 + 8 + 2) return -1;
+    if (len < 4 + DNA_CHAIN_ID_LEN + DNA_V2_ROOT_LEN + 8 + 2) return -1;
     out->claim_version = get_be32(src);          off += 4;
     memcpy(out->chain_id, src + off, DNA_CHAIN_ID_LEN);
     off += DNA_CHAIN_ID_LEN;
-    out->manifest_seq = get_be32(src + off);     off += 4;
+    memcpy(out->manifest_hash, src + off, DNA_V2_ROOT_LEN);
+    off += DNA_V2_ROOT_LEN;
     out->leaf_index = get_be64(src + off);       off += 8;
     out->source_id_len = get_be16(src + off);    off += 2;
     if (out->source_id_len < 1 || out->source_id_len > DNA_DIST_SRCID_MAX)
@@ -576,7 +611,7 @@ int dna_claim_preimage(const dna_claim_t *c,
     memcpy(p, TAG_CLAIM, TAG_LEN);                     p += TAG_LEN;
     put_be32(c->claim_version, p);                     p += 4;
     memcpy(p, c->chain_id, DNA_CHAIN_ID_LEN);          p += DNA_CHAIN_ID_LEN;
-    put_be32(c->manifest_seq, p);                      p += 4;
+    memcpy(p, c->manifest_hash, DNA_V2_ROOT_LEN);      p += DNA_V2_ROOT_LEN;
     put_be64(c->leaf_index, p);                        p += 8;
     put_be16(c->source_id_len, p);                     p += 2;
     memcpy(p, c->source_id, c->source_id_len);         p += c->source_id_len;
@@ -587,18 +622,28 @@ int dna_claim_preimage(const dna_claim_t *c,
 }
 
 int dna_claim_nullifier(const uint8_t chain_id[DNA_CHAIN_ID_LEN],
-                        uint32_t manifest_seq,
-                        const uint8_t *source_id, uint16_t source_id_len,
+                        const uint8_t manifest_hash[DNA_V2_ROOT_LEN],
+                        uint32_t target_domain_id,
+                        const uint8_t *target_asset_ref,
+                        uint16_t target_asset_len,
+                        const uint8_t leaf_hash[DNA_V2_ROOT_LEN],
                         uint8_t out[DNA_V2_ROOT_LEN]) {
-    if (!chain_id || !source_id || !out) return -1;
-    if (source_id_len < 1 || source_id_len > DNA_DIST_SRCID_MAX) return -1;
-    uint8_t pre[TAG_LEN + DNA_CHAIN_ID_LEN + 4 + 2 + DNA_DIST_SRCID_MAX];
+    if (!chain_id || !manifest_hash || !target_asset_ref || !leaf_hash ||
+        !out)
+        return -1;
+    if (target_asset_len < 1 || target_asset_len > DNA_GMAN_ASSETREF_MAX)
+        return -1;
+    uint8_t pre[TAG_LEN + DNA_CHAIN_ID_LEN + DNA_V2_ROOT_LEN + 4 + 2 +
+                DNA_GMAN_ASSETREF_MAX + DNA_V2_ROOT_LEN];
     uint8_t *p = pre;
     memcpy(p, TAG_CLNUL, TAG_LEN);               p += TAG_LEN;
     memcpy(p, chain_id, DNA_CHAIN_ID_LEN);       p += DNA_CHAIN_ID_LEN;
-    put_be32(manifest_seq, p);                   p += 4;
-    put_be16(source_id_len, p);                  p += 2;
-    memcpy(p, source_id, source_id_len);         p += source_id_len;
+    memcpy(p, manifest_hash, DNA_V2_ROOT_LEN);   p += DNA_V2_ROOT_LEN;
+    put_be32(target_domain_id, p);               p += 4;
+    put_be16(target_asset_len, p);               p += 2;
+    memcpy(p, target_asset_ref, target_asset_len);
+    p += target_asset_len;
+    memcpy(p, leaf_hash, DNA_V2_ROOT_LEN);       p += DNA_V2_ROOT_LEN;
     return qgp_sha3_512(pre, (size_t)(p - pre), out) == 0 ? 0 : -1;
 }
 
@@ -618,11 +663,13 @@ int dna_claim_utxo_id(const uint8_t nullifier[DNA_V2_ROOT_LEN],
 int dna_claims_leaf_hash(const dna_claims_entry_t *e,
                          uint8_t out[DNA_V2_ROOT_LEN]) {
     if (!e || !out) return -1;
-    uint8_t pre[TAG_LEN + DNA_V2_ROOT_LEN + 4 + 8 + 8 + 8];
+    uint8_t pre[TAG_LEN + DNA_V2_ROOT_LEN + DNA_V2_ROOT_LEN + 4 + 8 + 8 +
+                8];
     uint8_t *p = pre;
     memcpy(p, TAG_CLLEAF, TAG_LEN);                    p += TAG_LEN;
     memcpy(p, e->nullifier, DNA_V2_ROOT_LEN);          p += DNA_V2_ROOT_LEN;
-    put_be32(e->manifest_seq, p);                      p += 4;
+    memcpy(p, e->manifest_hash, DNA_V2_ROOT_LEN);      p += DNA_V2_ROOT_LEN;
+    put_be32(e->target_domain_id, p);                  p += 4;
     put_be64(e->leaf_index, p);                        p += 8;
     put_be64(e->amount, p);                            p += 8;
     put_be64(e->claimed_height, p);                    p += 8;

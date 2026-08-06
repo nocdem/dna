@@ -34,24 +34,30 @@
  * apply engine and V2 genesis; any other value fails closed.
  *
  * ── S6 tables (generic names only) ────────────────────────────────────
- *   v2_manifests     manifest_seq PK · manifest_hash UNIQUE (64) ·
+ *   v2_manifests     manifest_seq PK (INTERNAL LOCATOR ONLY — appears in
+ *                    no signature, nullifier, root or replay key) ·
+ *                    manifest_hash UNIQUE (64, the COMMITTED identity) ·
  *                    manifest (canonical GenesisManifest v1 bytes) ·
  *                    committed_height — the committed manifest set;
- *                    manifest_root is computed over it
- *   v2_dist_state    manifest_seq PK · remaining — the generic
- *                    unclaimed-distribution amount (the ONE supply
- *                    owner of unclaimed genesis-distribution value)
- *   v2_claims_spent  nullifier PK (64) · manifest_seq · leaf_index ·
- *                    amount · claimed_height · utxo_id (64) — the
- *                    spent-claim set; claims_root is computed over it
- *                    and every row deterministically reconstructs its
- *                    claim effect
+ *                    manifest_root is computed over the hashes
+ *   v2_dist_state    manifest_hash PK · target_domain_id ·
+ *                    target_asset_ref · remaining — unclaimed
+ *                    distribution value, namespaced by committed
+ *                    identity + explicit target domain/asset (each
+ *                    target runtime owns the rows targeting it; no
+ *                    domain default exists)
+ *   v2_claims_spent  nullifier PK (64) · manifest_hash · target_domain_id
+ *                    · target_asset_ref · leaf_index · amount ·
+ *                    claimed_height · output_id (64, the target
+ *                    runtime's domain-local output identity) — the
+ *                    spent-claim set; each runtime's claims_root is
+ *                    computed over the rows targeting ITS domain
  *
  * ── Migration (nodus_witness_db_migrate_v2s5) ─────────────────────────
  * One atomic BEGIN IMMEDIATE … COMMIT containing, in order:
  *   1. create the six v2_* tables (IF NOT EXISTS);
- *   2. ALTER TABLE utxo_set ADD COLUMN domain_id INTEGER NOT NULL
- *      DEFAULT 1 — every existing (legacy) UTXO is thereby owned by
+ *   2. rebuild utxo_set with domain_id INTEGER NOT NULL and NO default;
+ *      the copy SELECT assigns every existing (legacy) UTXO to
  *      DNA_CORE exactly once; the guard tolerates an already-present
  *      column (re-entry) and nothing else;
  *   3. verify every required table + column actually exists (a DDL that
@@ -63,19 +69,24 @@
  * variant exposes deterministic fault-injection stages for the tests.
  *
  * ── UTXO domain ownership ─────────────────────────────────────────────
- * utxo_set.domain_id: NOT NULL, single column ⇒ exactly one owning domain
- * per UTXO, never nullable, never duplicated. Initial mapping: every
- * existing native/token UTXO → DNA_CORE (1). SYSTEM owns no spendable
- * UTXOs (current source defines no consensus-owned spendable class —
- * verified: bonds/delegations live in validators/delegations tables, not
- * utxo_set). There is no CPUNK ownership.
+ * utxo_set.domain_id: NOT NULL, single column, NO SCHEMA DEFAULT ⇒
+ * exactly one owning domain per UTXO, written EXPLICITLY by every
+ * insert. The migration rebuilds the table; the one-time legacy
+ * assignment (pre-existing DNA rows → the configured legacy CORE
+ * domain, id 1) is an explicit literal in the copy SELECT — a migration
+ * rule, never a lasting default. SYSTEM owns no spendable UTXOs
+ * (verified: bonds/delegations live in validators/delegations tables,
+ * not utxo_set).
  *
  * ── v2_* tables (columns/keys) ────────────────────────────────────────
  *   v2_blocks           global_height PK · block_id UNIQUE · prev_block_id
  *                       · epoch · tx_root · domain_updates_root ·
- *                       domains_root · system_root · core_root ·
- *                       global_root · vset_hash · tx_count · qc (NULL
- *                       until QC V2 activates — slot only)
+ *                       domains_root · global_root · vset_hash ·
+ *                       tx_count · qc (NULL until QC V2 activates — slot
+ *                       only). GENERIC commitments only: per-domain
+ *                       roots live in v2_domain_heads/v2_root_history —
+ *                       no named-domain column exists in any global
+ *                       structure.
  *   v2_domain_heads     domain_id PK · head (89-byte S2 canonical
  *                       encoding, dna_v2_domain_head_encode) ·
  *                       domain_height + last_updated_global mirrors

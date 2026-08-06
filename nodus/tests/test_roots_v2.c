@@ -75,8 +75,15 @@ static const char *KAT_EPOCH_ROOT   = "1837965787d805678abfe86ea24e898546a3e7d17
 static const char *KAT_DOMHEAD_SYS  = "e675d070c918dedf23fa5d1ebf8d2381345705b316ffb1340e85738b50b6e01d7753a3e0ef456f3ff588fddcd4bba1c35a1edf7274ee46c48d2bd988b645b0b5";
 static const char *KAT_DOMAINS_2    = "bba32c948f2851a85dae113c7b27258d27f4a292ee423faca3a072f5e31634bcd80bb608386d0b664c934db4997539b0c02599c8ee1a5430dea4e5d68430838a";
 static const char *KAT_DOMAINS_3    = "823492dabf1bddd0b76b907d31233e4affeaf5b4f85caaccf55488eb5f6af5ad04d3c7993d38472887915535ec6a6cd608d8688ac8c7d6daa40efd0105c97d4e";
-static const char *KAT_SYSTEM       = "673b7a1e99ad40c4a41d3a9484043ea8f157fe428ccdf988d4a57f7f4ca15fad13685758c4698d1f549890cbe1d6378f7035af69733ce0679c44008afc0a8eae";
-static const char *KAT_CORE         = "b35098ed2cedf5e19f2921e9226a952327cbc22247cfca205cd81c2ca6d775a54da830eba59804df2d42446ba384f8daf6e3e601887b6cada1f8b00a7981ab21";
+/* GENERICITY CORRECTION re-pin (supply ownership): system_state_root is
+ * now SEVEN legs (the native supply leg moved OUT — issuance is the
+ * DNA_CORE runtime's asset commitment) and core_state_root is SIX legs
+ * (supply appended last). Both literals re-derived with the SAME
+ * independent python3 sha3_512 oracle as the S2 originals; the oracle
+ * reproduces the retired 8-leg/5-leg values byte-exactly
+ * (673b7a1e… / b35098ed…), proving derivation continuity. */
+static const char *KAT_SYSTEM       = "5de7c65076b43e882f7cf814971dce313ce35d39573c5bf73f78b420c5611986f5c9bcfe01b0841af5c9ef6ae469ea00b96067c3ddbf888b5d947e40572d6e57";
+static const char *KAT_CORE         = "ccaae1c6ced38cfd93a99f9a15f26c490c15fd343d18f9232116bab6d7ba1f7fc918b7a324b071cda8b6a556dbb89226da6082f9efc55aa2667659c2f4f8db3e";
 static const char *KAT_GLOBAL       = "0c0d2fce1984bf15c2e5841eeef72a067aefe4cdf8790a713332f09326393f79185dc7277f3d403a6f9d47fbfc68b049ddb117a654f2da59e0e4218e45f7e681";
 
 /* ── Fixture token leaves (must mirror the oracle) ──────────────────── */
@@ -235,29 +242,33 @@ static int test_shared_layer(void) {
         CHECK(dna_v2_domains_root(d, 0, h) != 0, "empty domains ok'd"); OK();
     }
 
-    /* Composition KATs + full subroot mutation sweep. */
+    /* Composition KATs + full subroot mutation sweep. SYSTEM = 7 legs
+     * (validator/delegation/epoch/chain_config/vset/domreg/manifest);
+     * CORE = 6 legs (utxo/token/pools/claims/names/SUPPLY — native
+     * issuance is CORE's own asset commitment). */
     {
-        uint8_t legs[8][64];
-        for (int i = 0; i < 8; i++) fill(legs[i], 64, (uint8_t)(0x90 + i));
+        uint8_t legs[7][64];
+        for (int i = 0; i < 7; i++) fill(legs[i], 64, (uint8_t)(0x90 + i));
         CHECK(dna_v2_system_root(legs[0], legs[1], legs[2], legs[3], legs[4],
-                                 legs[5], legs[6], legs[7], h) == 0, "sys");
+                                 legs[5], legs[6], h) == 0, "sys");
         CHECK(hex_eq(h, KAT_SYSTEM, "system"), "system KAT"); OK();
-        for (int i = 0; i < 8; i++) {
+        for (int i = 0; i < 7; i++) {
             legs[i][0] ^= 1;
             CHECK(dna_v2_system_root(legs[0], legs[1], legs[2], legs[3],
-                                     legs[4], legs[5], legs[6], legs[7],
+                                     legs[4], legs[5], legs[6],
                                      h2) == 0 && memcmp(h, h2, 64) != 0,
                   "system leg not bound"); OK();
             legs[i][0] ^= 1;
         }
-        uint8_t cl[5][64];
-        for (int i = 0; i < 5; i++) fill(cl[i], 64, (uint8_t)(0xB0 + i));
-        CHECK(dna_v2_core_root(cl[0], cl[1], cl[2], cl[3], cl[4], h) == 0,
-              "core");
+        uint8_t cl[6][64];
+        for (int i = 0; i < 6; i++) fill(cl[i], 64, (uint8_t)(0xB0 + i));
+        CHECK(dna_v2_core_root(cl[0], cl[1], cl[2], cl[3], cl[4], cl[5],
+                               h) == 0, "core");
         CHECK(hex_eq(h, KAT_CORE, "core"), "core KAT"); OK();
-        for (int i = 0; i < 5; i++) {
+        for (int i = 0; i < 6; i++) {
             cl[i][0] ^= 1;
-            CHECK(dna_v2_core_root(cl[0], cl[1], cl[2], cl[3], cl[4], h2) == 0
+            CHECK(dna_v2_core_root(cl[0], cl[1], cl[2], cl[3], cl[4],
+                                   cl[5], h2) == 0
                   && memcmp(h, h2, 64) != 0, "core leg not bound"); OK();
             cl[i][0] ^= 1;
         }
@@ -466,6 +477,34 @@ static int test_loaders(void) {
         CHECK(nodus_witness_supply_root_v2(wa, h) == 0, "supply root");
         CHECK(dna_v2_supply_root(100000000000000000ULL, 0, 0, expect) == 0 &&
               memcmp(h, expect, 64) == 0, "db supply root mismatch"); OK();
+    }
+
+    /* SUPPLY OWNERSHIP (locked correction): mutating native issuance
+     * counters changes the DNA_CORE state root and does NOT change the
+     * SYSTEM state root — SYSTEM no longer commits the supply leg. */
+    {
+        uint8_t sys0[64], core0[64], sys1[64], core1[64];
+        CHECK(nodus_witness_system_root_v2(wa, sys0) == 0 &&
+              nodus_witness_core_root_v2(wa, core0) == 0, "roots before");
+        CHECK(run_sql(wa->db,
+              "UPDATE supply_tracking SET total_minted = total_minted + 7")
+                  == 0, "mint mutation");
+        CHECK(nodus_witness_system_root_v2(wa, sys1) == 0 &&
+              nodus_witness_core_root_v2(wa, core1) == 0, "roots after");
+        CHECK(memcmp(core0, core1, 64) != 0,
+              "issuance mutation must change the CORE root"); OK();
+        CHECK(memcmp(sys0, sys1, 64) == 0,
+              "issuance mutation must NOT change the SYSTEM root"); OK();
+        CHECK(run_sql(wa->db,
+              "UPDATE supply_tracking SET total_burned = total_burned + 3")
+                  == 0, "burn mutation");
+        uint8_t core2[64];
+        CHECK(nodus_witness_core_root_v2(wa, core2) == 0 &&
+              memcmp(core1, core2, 64) != 0,
+              "burn must change the CORE root"); OK();
+        CHECK(run_sql(wa->db,
+              "UPDATE supply_tracking SET total_minted = total_minted - 7, "
+              "total_burned = total_burned - 3") == 0, "restore");
     }
 
     /* Full assembly runs on real state. */

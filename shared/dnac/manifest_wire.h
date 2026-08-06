@@ -101,6 +101,20 @@
  *                                     present; any other value rejects)
  *   ── distribution section (present IFF dist_present == 1) ───────────
  *   dist_version        u32  (= 1)
+ *   target_domain_id    u32  (the EXPLICIT registered domain the claimed
+ *                             value lands in — the generic ledger layer
+ *                             NEVER defaults a distribution target; an
+ *                             unknown / inactive / unregistered /
+ *                             incompatible target fails closed at commit
+ *                             and at claim time)
+ *   target_asset_len    u16  (1..DNA_GMAN_ASSETREF_MAX) ‖ target_asset_ref
+ *                            (bounded canonical asset reference,
+ *                             interpreted ONLY by the target runtime.
+ *                             The native DNA_CORE runtime interprets it
+ *                             as the EXISTING 64-byte token_id namespace
+ *                             — 64 zero bytes = native DNAC, the only
+ *                             value the v1 CORE runtime accepts. No new
+ *                             token namespace is introduced.)
  *   source_tag_len      u16  (1..DNA_GMAN_SRCTAG_MAX) ‖ source_tag
  *                            (OPAQUE source-network tag)
  *   source_commit_len   u16  (0..DNA_GMAN_SRCCOMMIT_MAX) ‖ source_commit
@@ -112,9 +126,13 @@
  *   rounding_mode       u8   (1 = FLOOR; only value in v1)
  *   excluded_amount     u64  (source units excluded from the snapshot —
  *                            committed reconstruction data)
- *   total_claimable     u64  (>= 1, destination base units; MUST equal
+ *   total_claimable     u64  (>= 1, TARGET-ASSET base units; MUST equal
  *                            the checked sum of every leaf's converted
- *                            amount AND MUST be <= genesis_supply_raw)
+ *                            amount. NOT compared against
+ *                            genesis_supply_raw here: the units differ
+ *                            unless the target asset is the native one,
+ *                            and native backing is enforced by the
+ *                            target runtime's conservation invariant)
  *   claim_start_height  u64  ┐ inclusive claim window
  *   claim_end_height    u64  ┘ (start <= end required)
  *   auth_mode           u8   (1 = DNA-native Dilithium5; only value)
@@ -128,10 +146,11 @@
  *   manifest_hash = SHA3-512("DNA.GMAN.v1" ‖ the canonical bytes)
  *
  * ── manifest_root ─────────────────────────────────────────────────────
- *   leaf  = SHA3-512("DNA.MANLEAF.v1" ‖ manifest_seq u32 BE
- *                    ‖ manifest_hash[64])
+ *   leaf  = SHA3-512("DNA.MANLEAF.v1" ‖ manifest_hash[64])
  *   inner = SHA3-512("DNA.MANNODE.v1" ‖ left[64] ‖ right[64])
- *   leaves strictly ascending manifest_seq; odd node PROMOTED unchanged;
+ *   leaves strictly ascending by manifest_hash BYTES (the committed
+ *   identity — a database sequence number is a LOCAL locator and never
+ *   enters a consensus commitment); odd node PROMOTED unchanged;
  *   n == 1 → the leaf; n == 0 → dna_v2_empty_root(DNA_V2_EMPTY_MANIFEST)
  *   — byte-identical to the S2/S5 placeholder, so every pre-manifest
  *   chain's system_state_root is unchanged.
@@ -175,10 +194,13 @@
  *   off  0  claim_version   u32 (= 1)
  *   off  4  chain_id[32]        (dna_bh2_derive_chain_id of the genesis
  *                                BlockID — binds the claim to ONE chain)
- *   off 36  manifest_seq    u32 (identifies the committed manifest)
- *   off 40  leaf_index      u64 (< the manifest's leaf_count)
- *   off 48  source_id_len   u16 ‖ source_id (1..DNA_DIST_SRCID_MAX)
- *   then    source_amount   u64
+ *   off 36  manifest_hash[64]   (the COMMITTED GenesisManifest identity —
+ *                                the manifest's own tagged hash. A local
+ *                                database sequence number is NEVER a
+ *                                claim's manifest reference.)
+ *   off 100 leaf_index      u64 (< the manifest's leaf_count)
+ *   then    source_id_len   u16 ‖ source_id (1..DNA_DIST_SRCID_MAX)
+ *           source_amount   u64
  *           dest_binding[64]
  *           n_siblings      u16 (0..DNA_DIST_PROOF_MAX) ‖ sibling[64] × n
  *           auth_mode       u8  (1 = DNA-native Dilithium5; must equal
@@ -190,31 +212,43 @@
  *
  *   Signed preimage (variable length, tag-prefixed):
  *     "DNA.CLAIM.v1"(16) ‖ claim_version u32 ‖ chain_id[32]
- *     ‖ manifest_seq u32 ‖ leaf_index u64 ‖ source_id_len u16
+ *     ‖ manifest_hash[64] ‖ leaf_index u64 ‖ source_id_len u16
  *     ‖ source_id ‖ source_amount u64 ‖ dest_binding[64]
  *   (The Merkle proof and the key material are NOT signed: the proof is
  *   verified against the committed snapshot root and the key is
- *   authenticated by hashing to dest_binding.)
+ *   authenticated by hashing to dest_binding. target_domain_id and
+ *   target_asset_ref are committed INSIDE manifest_hash, so the
+ *   signature binds them transitively; the nullifier binds them
+ *   explicitly as well.)
  *
- *   Nullifier (spent-claim key) — derived from the COMMITTED LEAF
- *   CONTEXT only, independent of proof bytes and key material:
- *     SHA3-512("DNA.CLNUL.v1" ‖ chain_id[32] ‖ manifest_seq u32
- *              ‖ source_id_len u16 ‖ source_id)
- *   One leaf ⇒ one nullifier ⇒ claimable exactly once per chain and
- *   manifest; replay across chains or manifests changes the nullifier
- *   AND invalidates the signature.
+ *   Nullifier (spent-claim key) — derived from the COMMITTED context
+ *   only, independent of proof bytes and key material:
+ *     SHA3-512("DNA.CLNUL.v1" ‖ chain_id[32] ‖ manifest_hash[64]
+ *              ‖ target_domain_id u32 ‖ target_asset_len u16
+ *              ‖ target_asset_ref ‖ leaf_hash[64])
+ *   where leaf_hash is the committed DistributionLeaf hash
+ *   ("DNA.DSLEAF.v1"). One leaf ⇒ one nullifier ⇒ claimable exactly
+ *   once per (chain, manifest, target domain, target asset); replay
+ *   across chains, manifests, domains or assets changes the nullifier
+ *   AND (chain/manifest) invalidates the signature. Nullifiers of
+ *   different target domains/assets can never collide.
  *
- *   Claim-output UTXO identity (deterministic):
+ *   Claim-output identity (deterministic; the NATIVE CORE runtime uses
+ *   it as its UTXO id — other runtimes derive their own output ids):
  *     SHA3-512("DNA.CLUTXO.v1" ‖ nullifier[64])
  *
  * ── claims_root ───────────────────────────────────────────────────────
- *   leaf  = SHA3-512("DNA.CLLEAF.v1" ‖ nullifier[64] ‖ manifest_seq u32
- *                    ‖ leaf_index u64 ‖ amount u64 ‖ claimed_height u64)
+ *   leaf  = SHA3-512("DNA.CLLEAF.v1" ‖ nullifier[64] ‖ manifest_hash[64]
+ *                    ‖ target_domain_id u32 ‖ leaf_index u64 ‖ amount u64
+ *                    ‖ claimed_height u64)
  *   inner = SHA3-512("DNA.CLNODE.v1" ‖ left[64] ‖ right[64])
  *   leaves strictly ascending by nullifier bytes (so the root is
  *   INSERTION-ORDER INDEPENDENT by construction); odd node PROMOTED;
  *   n == 1 → the leaf; n == 0 → dna_v2_empty_root(DNA_V2_EMPTY_CLAIMS) —
- *   byte-identical to the S2/S5 placeholder.
+ *   byte-identical to the S2/S5 placeholder. Each runtime commits the
+ *   claims_root over the spent claims TARGETING ITS OWN DOMAIN — the
+ *   claims commitment belongs to the target runtime, never globally to
+ *   one hard-coded domain.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -238,6 +272,9 @@ extern "C" {
 #define DNA_GMAN_MAX_DOMAINS    64
 #define DNA_GMAN_SRCTAG_MAX     64
 #define DNA_GMAN_SRCCOMMIT_MAX  256
+#define DNA_GMAN_ASSETREF_MAX   64     /* bounded opaque asset reference;
+                                        * 64 covers the existing 64-byte
+                                        * token_id namespace exactly      */
 #define DNA_DIST_VERSION        1u
 #define DNA_DIST_SRCID_MAX      128
 #define DNA_DIST_MAX_LEAVES     (1ull << 32)
@@ -276,6 +313,9 @@ typedef struct {
     uint8_t  dist_present;                     /* 0/1                     */
     /* distribution section — MUST be all-zero when dist_present == 0 */
     uint32_t dist_version;                     /* must be 1 when present  */
+    uint32_t target_domain_id;                 /* EXPLICIT target domain  */
+    uint16_t target_asset_len;                 /* 1..DNA_GMAN_ASSETREF_MAX*/
+    uint8_t  target_asset_ref[DNA_GMAN_ASSETREF_MAX];  /* runtime-owned   */
     uint16_t source_tag_len;                   /* 1..DNA_GMAN_SRCTAG_MAX  */
     uint8_t  source_tag[DNA_GMAN_SRCTAG_MAX];
     uint16_t source_commit_len;                /* 0..DNA_GMAN_SRCCOMMIT_MAX */
@@ -286,7 +326,7 @@ typedef struct {
     uint64_t conv_denominator;                 /* >= 1                    */
     uint8_t  rounding_mode;                    /* DNA_DISTROUND_*         */
     uint64_t excluded_amount;
-    uint64_t total_claimable;                  /* >= 1, <= genesis supply */
+    uint64_t total_claimable;                  /* >= 1, target-asset units*/
     uint64_t claim_start_height;
     uint64_t claim_end_height;                 /* >= claim_start_height   */
     uint8_t  auth_mode;                        /* DNA_CLAIMAUTH_*         */
@@ -316,12 +356,12 @@ int dna_gman_decode(const uint8_t *src, size_t len, dna_gman_t *out);
 int dna_gman_hash(const dna_gman_t *m, uint8_t out[DNA_V2_ROOT_LEN]);
 
 /**
- * manifest_root over committed manifests, strictly ascending
- * manifest_seq (duplicates reject); n == 0 yields the frozen S2
- * tagged-empty root (DNA_V2_EMPTY_MANIFEST). @return 0 / -1.
+ * manifest_root over committed manifests, strictly ascending by
+ * manifest_hash BYTES (duplicates reject — the committed identity is
+ * the sort key, never a local database sequence); n == 0 yields the
+ * frozen S2 tagged-empty root (DNA_V2_EMPTY_MANIFEST). @return 0 / -1.
  */
-int dna_v2_manifest_root(const uint32_t *seqs,
-                         const uint8_t (*manifest_hashes)[DNA_V2_ROOT_LEN],
+int dna_v2_manifest_root(const uint8_t (*manifest_hashes)[DNA_V2_ROOT_LEN],
                          size_t n, uint8_t out[DNA_V2_ROOT_LEN]);
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -404,13 +444,13 @@ int dna_dist_proof_verify(const uint8_t root[DNA_V2_ROOT_LEN],
  * 3. Claim v1
  * ════════════════════════════════════════════════════════════════════ */
 
-/* preimage = tag(16) + ver(4) + chain(32) + seq(4) + idx(8) + len(2)
- *          + source_id + amount(8) + dest(64) */
+/* preimage = tag(16) + ver(4) + chain(32) + manifest_hash(64) + idx(8)
+ *          + len(2) + source_id + amount(8) + dest(64) */
 #define DNA_CLAIM_PREIMAGE_MAX \
-    (16 + 4 + 32 + 4 + 8 + 2 + DNA_DIST_SRCID_MAX + 8 + 64)
+    (16 + 4 + 32 + 64 + 8 + 2 + DNA_DIST_SRCID_MAX + 8 + 64)
 
 #define DNA_CLAIM_FIXED_LEN \
-    (4 + 32 + 4 + 8 + 2 + 8 + 64 + 2 + 1 + DNA_CLAIM_PUBKEY_LEN + \
+    (4 + 32 + 64 + 8 + 2 + 8 + 64 + 2 + 1 + DNA_CLAIM_PUBKEY_LEN + \
      DNA_CLAIM_SIG_LEN)
 #define DNA_CLAIM_MAX_WIRE \
     ((size_t)DNA_CLAIM_FIXED_LEN + DNA_DIST_SRCID_MAX + \
@@ -419,7 +459,7 @@ int dna_dist_proof_verify(const uint8_t root[DNA_V2_ROOT_LEN],
 typedef struct {
     uint32_t claim_version;                    /* must be 1               */
     uint8_t  chain_id[DNA_CHAIN_ID_LEN];
-    uint32_t manifest_seq;
+    uint8_t  manifest_hash[DNA_V2_ROOT_LEN];   /* committed identity      */
     uint64_t leaf_index;
     uint16_t source_id_len;                    /* 1..DNA_DIST_SRCID_MAX   */
     uint8_t  source_id[DNA_DIST_SRCID_MAX];
@@ -451,15 +491,23 @@ int dna_claim_preimage(const dna_claim_t *c,
                        uint8_t out[DNA_CLAIM_PREIMAGE_MAX],
                        size_t *out_len);
 
-/** Nullifier = SHA3-512("DNA.CLNUL.v1" ‖ chain_id ‖ manifest_seq
- *  ‖ source_id_len ‖ source_id). @return 0 / -1. */
+/** Nullifier = SHA3-512("DNA.CLNUL.v1" ‖ chain_id ‖ manifest_hash
+ *  ‖ target_domain_id u32 ‖ target_asset_len u16 ‖ target_asset_ref
+ *  ‖ leaf_hash). All inputs are COMMITTED data (manifest hash, target
+ *  domain/asset from the manifest, the snapshot leaf hash) — a local
+ *  database sequence never participates. @return 0 / -1. */
 int dna_claim_nullifier(const uint8_t chain_id[DNA_CHAIN_ID_LEN],
-                        uint32_t manifest_seq,
-                        const uint8_t *source_id, uint16_t source_id_len,
+                        const uint8_t manifest_hash[DNA_V2_ROOT_LEN],
+                        uint32_t target_domain_id,
+                        const uint8_t *target_asset_ref,
+                        uint16_t target_asset_len,
+                        const uint8_t leaf_hash[DNA_V2_ROOT_LEN],
                         uint8_t out[DNA_V2_ROOT_LEN]);
 
-/** Deterministic claim-output UTXO identity:
- *  SHA3-512("DNA.CLUTXO.v1" ‖ nullifier[64]). @return 0 / -1. */
+/** Deterministic claim-output identity:
+ *  SHA3-512("DNA.CLUTXO.v1" ‖ nullifier[64]). The NATIVE CORE runtime
+ *  uses it as its UTXO id; a non-native runtime derives its own output
+ *  identity. @return 0 / -1. */
 int dna_claim_utxo_id(const uint8_t nullifier[DNA_V2_ROOT_LEN],
                       uint8_t out[DNA_V2_ROOT_LEN]);
 
@@ -469,7 +517,8 @@ int dna_claim_utxo_id(const uint8_t nullifier[DNA_V2_ROOT_LEN],
 
 typedef struct {
     uint8_t  nullifier[DNA_V2_ROOT_LEN];       /* canonical key           */
-    uint32_t manifest_seq;
+    uint8_t  manifest_hash[DNA_V2_ROOT_LEN];   /* committed identity      */
+    uint32_t target_domain_id;                 /* owning target domain    */
     uint64_t leaf_index;
     uint64_t amount;                           /* converted (dest units)  */
     uint64_t claimed_height;

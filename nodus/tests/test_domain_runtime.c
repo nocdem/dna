@@ -41,9 +41,17 @@ int main(void) {
     CHECK(t && n == 2, "builtin table shape"); OK();
     CHECK(t[0].domain_id == DNA_DOMAIN_SYSTEM &&
           t[1].domain_id == DNA_DOMAIN_CORE, "builtin ids"); OK();
-    CHECK(t[0].apply_reserved == NULL && t[0].root_reserved == NULL &&
-          t[1].apply_reserved == NULL && t[1].root_reserved == NULL,
-          "S5 hooks must be NULL in S4"); OK();
+    CHECK(t[0].apply_reserved == NULL && t[1].apply_reserved == NULL,
+          "S9 apply hook must stay NULL"); OK();
+    /* the REAL runtime boundary: every runtime owns its state root;
+     * only claim-capable runtimes carry the claim hooks (SYSTEM is
+     * never a distribution target; CORE is) */
+    CHECK(t[0].state_root != NULL && t[1].state_root != NULL,
+          "state_root hooks present"); OK();
+    CHECK(t[0].asset_check == NULL && t[0].claim_apply == NULL &&
+          t[0].invariant == NULL, "SYSTEM: no claim/asset hooks"); OK();
+    CHECK(t[1].asset_check != NULL && t[1].claim_apply != NULL &&
+          t[1].invariant != NULL, "CORE: claim + invariant hooks"); OK();
 
     const nodus_domain_runtime_t *sys = &t[0], *core = &t[1];
 

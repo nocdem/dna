@@ -388,6 +388,13 @@ typedef struct nodus_witness {
     /* Zone chain ID */
     uint8_t     chain_id[32];
 
+    /* Ledger V2 (INACTIVE) — optional domain-runtime table override.
+     * NULL = the compiled production table (nodus_runtime_builtin_table).
+     * Tests inject synthetic runtimes here to exercise the GENERIC
+     * registry/dispatch boundary; production never sets it. */
+    const struct nodus_domain_runtime *v2_runtime_table;
+    size_t                             v2_runtime_table_n;
+
     /* CC-OPS-005 / Q17 — chain_config observability counters.
      *
      * Framework-agnostic: plain uint64_t counters on the witness struct,

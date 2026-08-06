@@ -220,15 +220,43 @@ int main(void) {
     CHECK(count_q(fx.w->db,
           "SELECT COUNT(*) FROM utxo_set WHERE domain_id IS NULL", &n) == 0
           && n == 0, "nullable ownership"); OK();
-    /* fresh creation carries ownership too (explicit + default) */
+    /* NO permanent domain default exists: an insert that does not name
+     * its owning domain FAILS (NOT NULL, no default) — ownership is
+     * always explicit on the generic path. */
+    {
+        char *err = NULL;
+        CHECK(sqlite3_exec(fx.w->db,
+            "INSERT INTO utxo_set (nullifier, owner, amount, token_id, "
+            " tx_hash, output_index, block_height, created_at, "
+            "unlock_block) "
+            "VALUES (x'03', 'fpC', 7, x'00', x'cc', 0, 2, 0, 0)",
+            NULL, NULL, &err) != SQLITE_OK,
+            "ownerless insert must fail");
+        sqlite3_free(err);
+        OK();
+    }
+    /* the schema itself carries no default for domain_id */
+    {
+        sqlite3_stmt *st = NULL;
+        CHECK(sqlite3_prepare_v2(fx.w->db,
+              "SELECT dflt_value FROM pragma_table_info('utxo_set') "
+              "WHERE name='domain_id'", -1, &st, NULL) == SQLITE_OK &&
+              sqlite3_step(st) == SQLITE_ROW &&
+              sqlite3_column_type(st, 0) == SQLITE_NULL,
+              "domain_id must have NO schema default");
+        sqlite3_finalize(st);
+        OK();
+    }
+    /* an EXPLICITLY-owned insert works */
     CHECK(run_sql(fx.w->db,
         "INSERT INTO utxo_set (nullifier, owner, amount, token_id, "
-        " tx_hash, output_index, block_height, created_at, unlock_block) "
-        "VALUES (x'03', 'fpC', 7, x'00', x'cc', 0, 2, 0, 0)") == 0,
-        "post-mig insert");
+        " tx_hash, output_index, block_height, created_at, unlock_block, "
+        "domain_id) "
+        "VALUES (x'03', 'fpC', 7, x'00', x'cc', 0, 2, 0, 0, 1)") == 0,
+        "explicit-owner insert");
     CHECK(count_q(fx.w->db,
           "SELECT domain_id FROM utxo_set WHERE nullifier = x'03'", &n) == 0
-          && n == 1, "fresh UTXO default ownership"); OK();
+          && n == 1, "explicit UTXO ownership"); OK();
 
     /* ── 6. restart keeps version + schema + ownership ──────────────── */
     CHECK(fx_reopen(&fx) == 0, "reopen");

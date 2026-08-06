@@ -290,8 +290,9 @@ int nodus_witness_domreg_root(nodus_witness_t *w, uint8_t out[64]) {
 /* Build the initial manifest for one builtin runtime entry.
  * `genesis_payload_root` is the domain's RUNTIME-OWNED genesis payload
  * root (S5 cycle break — see dna_v2_system_payload_root): for SYSTEM the
- * six-leg payload root, for DNA_CORE the full core_state_root (no
- * self-reference exists, so its payload IS its state root). */
+ * five-leg payload root (native supply is a CORE commitment, not a
+ * SYSTEM leg), for DNA_CORE the full core_state_root (no self-reference
+ * exists, so its payload IS its state root). */
 static void manifest_from_runtime(const nodus_domain_runtime_t *rt,
                                   const uint8_t genesis_payload_root[64],
                                   dna_domain_manifest_t *m) {

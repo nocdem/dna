@@ -234,12 +234,13 @@ static void mk_op(nodus_v2_op_t *op, uint8_t idfill, const char *sql,
 }
 
 /* deterministic test mutations (the v1 merkle loader enforces 64-byte
- * nullifier/token_id/tx_hash widths — zeroblob-padded literals) */
+ * nullifier/token_id/tx_hash widths — zeroblob-padded literals).
+ * domain_id is EXPLICIT: the migrated utxo_set carries no default. */
 #define SQL_CORE_UTXO(nul, amt) \
     "INSERT INTO utxo_set (nullifier, owner, amount, token_id, tx_hash, " \
-    "output_index, block_height, created_at, unlock_block) VALUES " \
-    "(zeroblob(63)||x'" nul "', 'fp', " #amt ", zeroblob(64), " \
-    "zeroblob(63)||x'aa', 0, 1, 0, 0)"
+    "output_index, block_height, created_at, unlock_block, domain_id) " \
+    "VALUES (zeroblob(63)||x'" nul "', 'fp', " #amt ", zeroblob(64), " \
+    "zeroblob(63)||x'aa', 0, 1, 0, 0, 1)"
 /* PK is (param_id, effective_block) — the nonce digit keys both. */
 #define SQL_SYS_CC(nonce) \
     "INSERT INTO chain_config_history (param_id, new_value, " \
@@ -668,9 +669,10 @@ int main(void) {
     }
     CHECK(run_sql(fs.w->db,
         "INSERT INTO utxo_set (nullifier, owner, amount, token_id, "
-        "tx_hash, output_index, block_height, created_at, unlock_block) "
+        "tx_hash, output_index, block_height, created_at, unlock_block, "
+        "domain_id) "
         "VALUES (zeroblob(63)||x'01', 'genesis', 93000000000000000, "
-        "zeroblob(64), zeroblob(63)||x'aa', 0, 0, 0, 0)") == 0,
+        "zeroblob(64), zeroblob(63)||x'aa', 0, 0, 0, 0, 1)") == 0,
         "930M utxo");
     CHECK(nodus_witness_v2_supply_check(fs.w) == 0,
           "official 1B/70M carve-out does not conserve"); OK();
@@ -678,9 +680,10 @@ int main(void) {
     /* ADDITIVE 70M (on top of 1B) must violate */
     CHECK(run_sql(fs.w->db,
         "INSERT INTO utxo_set (nullifier, owner, amount, token_id, "
-        "tx_hash, output_index, block_height, created_at, unlock_block) "
+        "tx_hash, output_index, block_height, created_at, unlock_block, "
+        "domain_id) "
         "VALUES (zeroblob(63)||x'02', 'bogus', 7000000000000000, "
-        "zeroblob(64), zeroblob(63)||x'bb', 0, 0, 0, 0)") == 0,
+        "zeroblob(64), zeroblob(63)||x'bb', 0, 0, 0, 0, 1)") == 0,
         "additive");
     CHECK(nodus_witness_v2_supply_check(fs.w) != 0,
           "additive 70M conserved"); OK();
@@ -793,6 +796,116 @@ int main(void) {
           "supply-breaking block accepted"); OK();
     CHECK(db_state_digest(fs.w, sdg2) == 0 && memcmp(sdg, sdg2, 64) == 0,
           "supply-breaking block leaked state"); OK();
+
+    /* ── 8. SUPPLY OWNERSHIP (locked correction): native issuance is a
+     * DNA_CORE commitment. A SYSTEM-side value movement (mint into the
+     * epoch pool, pool settlement) touches BOTH domains atomically
+     * through the GENERIC touched mechanism; a fee burn is CORE-local
+     * (both of its buckets — the UTXO and the burned counter — are
+     * CORE-owned); an undeclared issuance mutation trips the untouched-
+     * domain guard on CORE. ─────────────────────────────────────────── */
+    {
+        /* (a) MINT: total_minted (CORE issuance) + epoch pool (SYSTEM
+         * accrual) — one cross-domain op, two DomainUpdates, conserved. */
+        nodus_v2_op_t mint;
+        mk_op(&mint, 0x91,
+              "UPDATE supply_tracking SET total_minted = total_minted + 500;"
+              "UPDATE epoch_state SET epoch_pool_accum = "
+              "epoch_pool_accum + 500 WHERE epoch_start_height = 0",
+              2, 0, 1);
+        nodus_v2_block_t mb;
+        mk_block(&mb, 1, &mint, 1);
+        CHECK(nodus_witness_v2_apply_block(fs.w, &mb) == 0, "mint block");
+        CHECK(q1(fs.w, "SELECT COUNT(*) FROM v2_domain_updates "
+                       "WHERE global_height=1") == 2,
+              "mint must update BOTH domains atomically"); OK();
+        CHECK(q1(fs.w, "SELECT total_minted FROM supply_tracking")
+                  == 3200 + 500, "minted exactly once");
+        CHECK(nodus_witness_v2_supply_check(fs.w) == 0, "mint conserves");
+        OK();
+
+        /* (b) SETTLE: pool (SYSTEM) → transparent UTXO (CORE): a native
+         * value MOVE between a SYSTEM-owned and a CORE-owned bucket —
+         * both domains touched, total supply unchanged. */
+        nodus_v2_op_t settle;
+        mk_op(&settle, 0x92,
+              "UPDATE epoch_state SET epoch_pool_accum = "
+              "epoch_pool_accum - 500 WHERE epoch_start_height = 0;"
+              "UPDATE utxo_set SET amount = amount + 500 "
+              "WHERE nullifier = zeroblob(63)||x'01'",
+              2, 0, 1);
+        mk_block(&mb, 2, &settle, 1);
+        CHECK(nodus_witness_v2_apply_block(fs.w, &mb) == 0, "settle block");
+        CHECK(q1(fs.w, "SELECT COUNT(*) FROM v2_domain_updates "
+                       "WHERE global_height=2") == 2,
+              "settle must update BOTH domains"); OK();
+        CHECK(nodus_witness_v2_supply_check(fs.w) == 0,
+              "cross-domain move conserves total supply"); OK();
+
+        /* (c) BURN: fee UTXO decrement + burned counter — BOTH buckets
+         * are CORE-owned now, so the burn is a CORE-LOCAL transition
+         * (exactly one DomainUpdate; SYSTEM does not move). */
+        uint64_t sys_h_burn = q1(fs.w,
+            "SELECT domain_height FROM v2_domain_heads WHERE domain_id=0");
+        nodus_v2_op_t burn;
+        mk_op(&burn, 0x93,
+              "UPDATE utxo_set SET amount = amount - 100 "
+              "WHERE nullifier = zeroblob(63)||x'01';"
+              "UPDATE supply_tracking SET total_burned = total_burned + 100",
+              1, 1, 0);
+        mk_block(&mb, 3, &burn, 1);
+        CHECK(nodus_witness_v2_apply_block(fs.w, &mb) == 0, "burn block");
+        CHECK(q1(fs.w, "SELECT COUNT(*) FROM v2_domain_updates "
+                       "WHERE global_height=3") == 1,
+              "burn is CORE-local: exactly one update"); OK();
+        CHECK(q1(fs.w, "SELECT domain_height FROM v2_domain_heads "
+                       "WHERE domain_id=0") == sys_h_burn,
+              "burn must not advance SYSTEM"); OK();
+        CHECK(q1(fs.w, "SELECT total_burned FROM supply_tracking")
+                  == 1000000 + 100,      /* fixture's prior fee burn + 100 */
+              "burned exactly once");
+        CHECK(nodus_witness_v2_supply_check(fs.w) == 0, "burn conserves");
+        OK();
+
+        /* (d) an issuance mutation NOT declaring CORE trips the
+         * untouched-domain guard (the counters are CORE-committed). */
+        uint8_t g0[64], g1[64];
+        CHECK(db_state_digest(fs.w, g0) == 0, "digest");
+        nodus_v2_op_t sneak;
+        mk_op(&sneak, 0x94,
+              SQL_SYS_CC(7) ";"
+              "UPDATE supply_tracking SET total_minted = total_minted + 1",
+              1, 0, 0);                    /* declares SYSTEM only */
+        mk_block(&mb, 4, &sneak, 1);
+        CHECK(nodus_witness_v2_apply_block(fs.w, &mb) == -1,
+              "undeclared issuance mutation accepted"); OK();
+        CHECK(db_state_digest(fs.w, g1) == 0 && memcmp(g0, g1, 64) == 0,
+              "undeclared issuance mutation leaked state"); OK();
+
+        /* (e) fault during a cross-domain native move rolls BOTH
+         * domains, heads, roots, accounting and metadata back. */
+        nodus_v2_op_t mint2;
+        mk_op(&mint2, 0x95,
+              "UPDATE supply_tracking SET total_minted = total_minted + 9;"
+              "UPDATE epoch_state SET epoch_pool_accum = "
+              "epoch_pool_accum + 9 WHERE epoch_start_height = 0",
+              2, 0, 1);
+        static const nodus_v2_apply_fail_t xpts[] = {
+            V2AP_FAIL_AFTER_CROSS, V2AP_FAIL_AFTER_SUPPLY_MUT,
+            V2AP_FAIL_AFTER_UPDATES, V2AP_FAIL_AFTER_HEADS,
+            V2AP_FAIL_AFTER_BLOCK_META, V2AP_FAIL_BEFORE_COMMIT
+        };
+        for (size_t i = 0; i < sizeof(xpts) / sizeof(xpts[0]); i++) {
+            mk_block(&mb, 4, &mint2, 1);
+            mb.fail_at = xpts[i];
+            CHECK(nodus_witness_v2_apply_block(fs.w, &mb) == -1,
+                  "cross-move fault did not fail");
+            CHECK(db_state_digest(fs.w, g1) == 0 &&
+                  memcmp(g0, g1, 64) == 0,
+                  "cross-move fault leaked one domain's half");
+        }
+        OK();
+    }
     fx_close(&fs);
 
     printf("test_v2_apply: ALL %d checks passed\n", g_checks);

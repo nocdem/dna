@@ -27,9 +27,11 @@
  * exercised through the *_in() variants over a caller-supplied table and
  * is NEVER part of this production table.
  *
- * S5 boundary: the apply/root hooks are declared but MUST be NULL in S4 —
- * the atomic global-block apply pipeline is Season-5 scope, and
- * nodus_witness_runtime_selfcheck() enforces their absence.
+ * S5/S6 boundary: the state_root / asset_check / claim_apply / invariant
+ * hooks are the REAL native-runtime boundary the generic executor
+ * dispatches through — it holds no per-domain branch of its own. The
+ * transaction-apply hook (apply_reserved) remains reserved for S9 and
+ * MUST stay NULL; nodus_witness_runtime_selfcheck() enforces the shape.
  *
  * @file nodus_witness_runtime.h
  */
@@ -79,12 +81,56 @@ typedef int (*nodus_rt_admit_fn)(const struct nodus_domain_runtime *rt,
 typedef int (*nodus_rt_cost_fn)(const struct nodus_domain_runtime *rt,
                                 uint8_t tx_type, uint32_t *cost_out);
 
-/** RESERVED Season-5 hooks (atomic apply / domain state root). Declared so
- *  the boundary shape is fixed now; MUST be NULL in S4. */
+/* The witness handle every stateful hook receives. Forward-declared so
+ * this header stays witness-free; the hook implementations live in the
+ * witness tree and cast/use it there. */
+struct nodus_witness;
+
+/** RESERVED Season-9 hook (real transaction apply semantics). Declared so
+ *  the boundary shape is fixed; MUST be NULL until S9. */
 typedef int (*nodus_rt_apply_fn)(const struct nodus_domain_runtime *rt,
                                  void *apply_ctx);
+
+/** Domain state root — the runtime OWNS its state-root composition; the
+ *  generic executor consumes the 64-byte result as an OPAQUE value.
+ *  @return 0 with out_root filled, -1 fail-closed. */
 typedef int (*nodus_rt_root_fn)(const struct nodus_domain_runtime *rt,
+                                struct nodus_witness *w,
                                 uint8_t out_root[64]);
+
+/** One admitted distribution claim, as handed to the TARGET runtime.
+ *  Every field is committed data — the generic engine derived it from
+ *  the committed manifest + verified claim, never from a default. */
+typedef struct {
+    const uint8_t *nullifier;       /* [64] committed claim identity      */
+    const uint8_t *dest_binding;    /* [64] SHA3-512(recipient pk)        */
+    uint64_t       amount;          /* converted, target-domain units     */
+    const uint8_t *asset_ref;       /* committed target_asset_ref         */
+    uint16_t       asset_ref_len;
+    uint64_t       global_height;
+} nodus_rt_claim_t;
+
+/** Validate one committed target_asset_ref for this runtime (pure —
+ *  no state). Fail-closed: a runtime without this hook, or a ref it
+ *  does not recognise, cannot be a distribution target. */
+typedef int (*nodus_rt_asset_fn)(const struct nodus_domain_runtime *rt,
+                                 const uint8_t *asset_ref, uint16_t len);
+
+/** Apply one admitted claim INSIDE the caller's transaction: validate
+ *  the asset/destination representation, create the DOMAIN-LOCAL output
+ *  and return its deterministic 64-byte output identity. The generic
+ *  engine never creates an output itself. @return 0 / -1. */
+typedef int (*nodus_rt_claim_fn)(const struct nodus_domain_runtime *rt,
+                                 struct nodus_witness *w,
+                                 const nodus_rt_claim_t *claim,
+                                 uint8_t out_output_id[64]);
+
+/** Runtime-owned conservation/supply invariant over the runtime's OWN
+ *  assets. The generic gate dispatches; it never sums heterogeneous
+ *  domain assets into one equation. NULL = the runtime declares no
+ *  asset state (e.g. SYSTEM). @return 0 holds / -1 violated or fault. */
+typedef int (*nodus_rt_invariant_fn)(const struct nodus_domain_runtime *rt,
+                                     struct nodus_witness *w);
 
 typedef struct nodus_domain_runtime {
     /* ── identity tuple (ALL five axes must match exactly) ──────────── */
@@ -98,8 +144,20 @@ typedef struct nodus_domain_runtime {
     /* ── function table ─────────────────────────────────────────────── */
     nodus_rt_admit_fn admit;
     nodus_rt_cost_fn  tx_cost;
-    nodus_rt_apply_fn apply_reserved;    /* S5 — NULL in S4               */
-    nodus_rt_root_fn  root_reserved;     /* S5 — NULL in S4               */
+    nodus_rt_apply_fn apply_reserved;    /* S9 — NULL until then          */
+    nodus_rt_root_fn      state_root;    /* domain state root (S5/S6)     */
+    /* OPTIONAL activation payload root: the value compared against the
+     * registry-committed genesis_state_root when this domain's
+     * DomainHead is created at ACTIVATION. NULL = the state root itself
+     * (the generic case — a runtime whose state root contains no
+     * self-referencing container legs). SYSTEM sets it to the
+     * "DNA.SYSPAYL.v1" payload root (the S5 genesis cycle break) — the
+     * ONE protocol-special composition, kept inside SYSTEM's runtime
+     * entry so the generic engine never branches on a domain id. */
+    nodus_rt_root_fn      payload_root;
+    nodus_rt_asset_fn     asset_check;   /* NULL = never a claim target   */
+    nodus_rt_claim_fn     claim_apply;   /* NULL = never a claim target   */
+    nodus_rt_invariant_fn invariant;     /* NULL = no asset state         */
 } nodus_domain_runtime_t;
 
 /**
@@ -132,11 +190,35 @@ const nodus_domain_runtime_t *nodus_runtime_builtin_table(size_t *n_out);
  *   - descriptor identity fields (domain_id / runtime_abi /
  *     ruleset_version) equal the entry's tuple fields;
  *   - runtime_kind is NATIVE_BUILTIN;
- *   - admit and tx_cost are present; apply/root hooks are NULL (S4);
- *   - exactly SYSTEM and DNA_CORE are present, ascending by domain_id.
+ *   - admit, tx_cost and state_root are present; apply_reserved is NULL
+ *     (S9); asset_check and claim_apply are present or absent TOGETHER
+ *     (a runtime is a claim target only when it can both validate the
+ *     asset and create the output);
+ *   - exactly the CONFIGURED native runtimes (initially SYSTEM and
+ *     DNA_CORE) are present, ascending by domain_id.
  * @return 0 healthy, -1 on the first violation.
  */
 int nodus_witness_runtime_selfcheck(void);
+
+/* ── Native-runtime hook implementations (witness tree) ───────────────
+ * Referenced by the compiled table; implemented in
+ * nodus_witness_v2_claims.c so this module stays free of witness/db
+ * dependencies. These are the ONLY places that know SYSTEM's / CORE's
+ * concrete state composition — the generic executor calls hooks only. */
+int nodus_rt_system_state_root(const nodus_domain_runtime_t *rt,
+                               struct nodus_witness *w, uint8_t out[64]);
+int nodus_rt_system_payload_root(const nodus_domain_runtime_t *rt,
+                                 struct nodus_witness *w, uint8_t out[64]);
+int nodus_rt_core_state_root(const nodus_domain_runtime_t *rt,
+                             struct nodus_witness *w, uint8_t out[64]);
+int nodus_rt_core_asset_check(const nodus_domain_runtime_t *rt,
+                              const uint8_t *asset_ref, uint16_t len);
+int nodus_rt_core_claim_apply(const nodus_domain_runtime_t *rt,
+                              struct nodus_witness *w,
+                              const nodus_rt_claim_t *claim,
+                              uint8_t out_output_id[64]);
+int nodus_rt_core_invariant(const nodus_domain_runtime_t *rt,
+                            struct nodus_witness *w);
 
 #ifdef __cplusplus
 }

@@ -51,12 +51,22 @@
  *   system_state_root = SHA3-512("DNA.SYS.v1"  ‖ validator_root[64]
  *       ‖ delegation_root[64] ‖ epoch_state_root_v2[64]
  *       ‖ chain_config_root[64] ‖ validator_set_root[64]
- *       ‖ domain_registry_root[64] ‖ manifest_root[64] ‖ supply_root[64])
+ *       ‖ domain_registry_root[64] ‖ manifest_root[64])
  *   core_state_root   = SHA3-512("DNA.CORE.v1" ‖ utxo_root[64]
- *       ‖ token_root[64] ‖ pools_root[64] ‖ claims_root[64] ‖ name_root[64])
+ *       ‖ token_root[64] ‖ pools_root[64] ‖ claims_root[64]
+ *       ‖ name_root[64] ‖ supply_root[64])
  *   global_state_root = SHA3-512("DNA.GLOBAL.v1" ‖ domains_root[64])
  *   supply_root       = SHA3-512("DNA.SUPPLY.v1" ‖ genesis_supply_raw(8 BE)
  *       ‖ total_minted_raw(8 BE) ‖ total_burned_raw(8 BE))
+ *
+ *   SUPPLY OWNERSHIP (genericity correction, locked): the native DNAC
+ *   issuance counters (genesis/minted/burned) are the NATIVE ASSET's
+ *   commitment and the native asset belongs to the DNA_CORE runtime —
+ *   supply_root is therefore a leg of core_state_root, NOT of
+ *   system_state_root. This is a property of the CORE runtime's OWN
+ *   root composition, not a framework rule: no generic structure
+ *   assumes every domain has a supply leg; a future runtime commits
+ *   its own asset state however its state root defines it.
  *   DomainHead hash   = SHA3-512("DNA.DOMHEAD.v1" ‖ domain_id(4 BE)
  *       ‖ domain_state_root[64] ‖ domain_height(8 BE)
  *       ‖ last_updated_global_height(8 BE) ‖ ruleset_version(4 BE)
@@ -231,7 +241,6 @@ int dna_v2_system_root(const uint8_t validator_root[64],
                        const uint8_t validator_set_root[64],
                        const uint8_t domain_registry_root[64],
                        const uint8_t manifest_root[64],
-                       const uint8_t supply_root[64],
                        uint8_t out[DNA_V2_ROOT_LEN]);
 
 int dna_v2_core_root(const uint8_t utxo_root[64],
@@ -239,6 +248,7 @@ int dna_v2_core_root(const uint8_t utxo_root[64],
                      const uint8_t pools_root[64],
                      const uint8_t claims_root[64],
                      const uint8_t name_root[64],
+                     const uint8_t supply_root[64],
                      uint8_t out[DNA_V2_ROOT_LEN]);
 
 int dna_v2_global_root(const uint8_t domains_root[64],
@@ -250,7 +260,7 @@ int dna_v2_global_root(const uint8_t domains_root[64],
  *
  *   system_payload_root = SHA3-512("DNA.SYSPAYL.v1" ‖ validator_root
  *       ‖ delegation_root ‖ epoch_state_root_v2 ‖ chain_config_root
- *       ‖ validator_set_root ‖ supply_root)
+ *       ‖ validator_set_root)
  *
  * This is dna_v2_system_root MINUS the two container legs
  * (domain_registry_root, manifest_root) under a DISTINCT tag. It exists
@@ -258,16 +268,20 @@ int dna_v2_global_root(const uint8_t domains_root[64],
  * defined as the domain's RUNTIME-OWNED genesis payload root — it never
  * covers a structure that commits that domain's own manifest, so
  *   payload → manifest hash → registry root → FINAL system root
- * is a DAG, not a cycle. (DNA_CORE has no such self-reference: its
- * payload root IS its full core_state_root — the generic rule holds
- * trivially.) The FINAL SYSTEM DomainHead.state_root remains the full
- * 8-leg dna_v2_system_root. */
+ * is a DAG, not a cycle. (The native supply_root is NOT a leg here:
+ * issuance belongs to DNA_CORE, whose payload root IS its full
+ * core_state_root — no self-reference exists for CORE, so the generic
+ * rule holds trivially.) The FINAL SYSTEM DomainHead.state_root remains
+ * the full 7-leg dna_v2_system_root. At domain ACTIVATION the payload
+ * root is the value compared against the registry-committed
+ * genesis_state_root (the runtime's optional payload_root hook —
+ * nodus_witness_runtime.h; a runtime without the hook compares its
+ * state_root directly). */
 int dna_v2_system_payload_root(const uint8_t validator_root[64],
                                const uint8_t delegation_root[64],
                                const uint8_t epoch_state_root_v2[64],
                                const uint8_t chain_config_root[64],
                                const uint8_t validator_set_root[64],
-                               const uint8_t supply_root[64],
                                uint8_t out[DNA_V2_ROOT_LEN]);
 
 #ifdef __cplusplus

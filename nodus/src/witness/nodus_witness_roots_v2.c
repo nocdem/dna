@@ -255,7 +255,7 @@ int nodus_witness_system_payload_root_v2(nodus_witness_t *w,
                                          uint8_t out[64]) {
     if (!w || !out) return -1;
     uint8_t validator_root[64], delegation_root[64], epoch_v2[64];
-    uint8_t chain_config_root[64], vset[64], supply[64];
+    uint8_t chain_config_root[64], vset[64];
     if (nodus_witness_merkle_compute_validator_root(w, validator_root) != 0)
         return -1;
     if (nodus_witness_merkle_compute_delegation_root(w, delegation_root) != 0)
@@ -266,18 +266,15 @@ int nodus_witness_system_payload_root_v2(nodus_witness_t *w,
         return -1;
     if (nodus_witness_vset_root(w, vset) != 0)
         return -1;
-    if (nodus_witness_supply_root_v2(w, supply) != 0)
-        return -1;
     return dna_v2_system_payload_root(validator_root, delegation_root,
                                       epoch_v2, chain_config_root, vset,
-                                      supply, out);
+                                      out);
 }
 
 int nodus_witness_system_root_v2(nodus_witness_t *w, uint8_t out[64]) {
     if (!w || !out) return -1;
     uint8_t validator_root[64], delegation_root[64], epoch_v2[64];
     uint8_t chain_config_root[64], vset[64], domreg[64], manifest[64];
-    uint8_t supply[64];
     if (nodus_witness_merkle_compute_validator_root(w, validator_root) != 0)
         return -1;
     if (nodus_witness_merkle_compute_delegation_root(w, delegation_root) != 0)
@@ -306,16 +303,18 @@ int nodus_witness_system_root_v2(nodus_witness_t *w, uint8_t out[64]) {
      * pre-manifest chain. */
     if (nodus_witness_manifest_root_v2(w, manifest) != 0)
         return -1;
-    if (nodus_witness_supply_root_v2(w, supply) != 0)
-        return -1;
+    /* GENERICITY CORRECTION (locked): the native supply_root is NOT a
+     * SYSTEM leg — issuance belongs to the DNA_CORE runtime and is
+     * committed by ITS state root below. */
     return dna_v2_system_root(validator_root, delegation_root, epoch_v2,
                               chain_config_root, vset, domreg, manifest,
-                              supply, out);
+                              out);
 }
 
 int nodus_witness_core_root_v2(nodus_witness_t *w, uint8_t out[64]) {
     if (!w || !out) return -1;
     uint8_t utxo_root[64], token_root[64], pools[64], claims[64], names[64];
+    uint8_t supply[64];
     if (nodus_witness_merkle_compute_utxo_root(w, utxo_root) != 0)
         return -1;
     if (nodus_witness_token_root_v2(w, token_root) != 0)
@@ -323,13 +322,39 @@ int nodus_witness_core_root_v2(nodus_witness_t *w, uint8_t out[64]) {
     if (dna_v2_empty_root(DNA_V2_EMPTY_POOLS, pools) != 0)
         return -1;
     /* S6: the claims leg is REAL — nodus_witness_claims_root_v2 over
-     * the v2_claims_spent table. Absent/empty tables reproduce the S2
-     * tagged-empty root byte-identically (pre-S6 chains unchanged). */
-    if (nodus_witness_claims_root_v2(w, claims) != 0)
+     * the v2_claims_spent rows TARGETING THIS DOMAIN (each runtime owns
+     * the claims commitment of its own domain — this is the CORE
+     * runtime's root, so it covers CORE-targeted claims only).
+     * Absent/empty tables reproduce the S2 tagged-empty root
+     * byte-identically (pre-S6 chains unchanged). */
+    if (nodus_witness_claims_root_v2(w, DNA_DOMAIN_CORE, claims) != 0)
         return -1;
     if (dna_v2_empty_root(DNA_V2_EMPTY_NAMES, names) != 0)
         return -1;
-    return dna_v2_core_root(utxo_root, token_root, pools, claims, names, out);
+    /* Native issuance (genesis/minted/burned) is the CORE runtime's OWN
+     * asset commitment — the supply leg lives HERE (locked ownership). */
+    if (nodus_witness_supply_root_v2(w, supply) != 0)
+        return -1;
+    return dna_v2_core_root(utxo_root, token_root, pools, claims, names,
+                            supply, out);
+}
+
+/* Decode the 89-byte canonical head blob (layout: ledger_roots_v2.h). */
+static void head_blob_decode(const uint8_t enc[DNA_V2_DOMHEAD_ENC_LEN],
+                             dna_v2_domain_head_t *h) {
+    memset(h, 0, sizeof(*h));
+    h->domain_id = ((uint32_t)enc[0] << 24) | ((uint32_t)enc[1] << 16) |
+                   ((uint32_t)enc[2] << 8) | enc[3];
+    memcpy(h->domain_state_root, enc + 4, 64);
+    for (int i = 0; i < 8; i++)
+        h->domain_height = (h->domain_height << 8) | enc[68 + i];
+    for (int i = 0; i < 8; i++)
+        h->last_updated_global_height =
+            (h->last_updated_global_height << 8) | enc[76 + i];
+    h->ruleset_version = ((uint32_t)enc[84] << 24) |
+                         ((uint32_t)enc[85] << 16) |
+                         ((uint32_t)enc[86] << 8) | enc[87];
+    h->status = enc[88];
 }
 
 int nodus_witness_global_root_v2(nodus_witness_t *w,
@@ -342,18 +367,82 @@ int nodus_witness_global_root_v2(nodus_witness_t *w,
     if (nodus_witness_system_root_v2(w, sys) != 0) return -1;
     if (nodus_witness_core_root_v2(w, core) != 0) return -1;
 
-    /* S2 fixture DomainHeads — real head persistence is Season 5. */
-    dna_v2_domain_head_t heads[2];
-    memset(heads, 0, sizeof(heads));
-    heads[0].domain_id = DNA_DOMAIN_SYSTEM;
-    memcpy(heads[0].domain_state_root, sys, 64);
-    heads[0].ruleset_version = 1;
-    heads[1].domain_id = DNA_DOMAIN_CORE;
-    memcpy(heads[1].domain_state_root, core, 64);
-    heads[1].ruleset_version = 1;
+    /* When S5 head persistence exists (v2_domain_heads with rows), the
+     * COMMITTED heads are the authority — ANY registered domain count,
+     * never a fixed two. The pre-S5 fixture composition below survives
+     * only for head-less databases (byte-identical to the frozen S2
+     * KATs). Probe fault ≠ empty: fail closed. */
+    int have_heads = 0;
+    {
+        sqlite3_stmt *chk = NULL;
+        if (sqlite3_prepare_v2(w->db,
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND "
+                "name='v2_domain_heads'", -1, &chk, NULL) != SQLITE_OK)
+            return -1;
+        int rc = sqlite3_step(chk);
+        sqlite3_finalize(chk);
+        if (rc == SQLITE_ROW) {
+            sqlite3_stmt *cnt = NULL;
+            if (sqlite3_prepare_v2(w->db,
+                    "SELECT COUNT(*) FROM v2_domain_heads", -1, &cnt,
+                    NULL) != SQLITE_OK)
+                return -1;
+            rc = sqlite3_step(cnt);
+            if (rc != SQLITE_ROW) { sqlite3_finalize(cnt); return -1; }
+            have_heads = sqlite3_column_int64(cnt, 0) > 0;
+            sqlite3_finalize(cnt);
+        } else if (rc != SQLITE_DONE) {
+            return -1;
+        }
+    }
 
-    if (dna_v2_domains_root(heads, 2, domains) != 0) return -1;
-    if (dna_v2_global_root(domains, out_global) != 0) return -1;
+    if (have_heads) {
+        sqlite3_stmt *st = NULL;
+        if (sqlite3_prepare_v2(w->db,
+                "SELECT head FROM v2_domain_heads ORDER BY domain_id ASC",
+                -1, &st, NULL) != SQLITE_OK)
+            return -1;
+        size_t cap = 4, n = 0;
+        dna_v2_domain_head_t *heads = malloc(cap * sizeof(*heads));
+        if (!heads) { sqlite3_finalize(st); return -1; }
+        int rc, fail = 0;
+        while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+            if (n >= cap) {
+                size_t nc = cap * 2;
+                dna_v2_domain_head_t *nh =
+                    realloc(heads, nc * sizeof(*nh));
+                if (!nh) { free(heads); sqlite3_finalize(st); return -1; }
+                heads = nh; cap = nc;
+            }
+            if (sqlite3_column_bytes(st, 0) != DNA_V2_DOMHEAD_ENC_LEN) {
+                fail = 1;
+                break;
+            }
+            head_blob_decode(sqlite3_column_blob(st, 0), &heads[n]);
+            n++;
+        }
+        if (!fail && rc != SQLITE_DONE) fail = 1;
+        sqlite3_finalize(st);
+        int ret = -1;
+        if (!fail && dna_v2_domains_root(heads, n, domains) == 0 &&
+            dna_v2_global_root(domains, out_global) == 0)
+            ret = 0;
+        free(heads);
+        if (ret != 0) return -1;
+    } else {
+        /* Pre-S5 fixture composition (frozen S2 KAT behavior). */
+        dna_v2_domain_head_t heads[2];
+        memset(heads, 0, sizeof(heads));
+        heads[0].domain_id = DNA_DOMAIN_SYSTEM;
+        memcpy(heads[0].domain_state_root, sys, 64);
+        heads[0].ruleset_version = 1;
+        heads[1].domain_id = DNA_DOMAIN_CORE;
+        memcpy(heads[1].domain_state_root, core, 64);
+        heads[1].ruleset_version = 1;
+        if (dna_v2_domains_root(heads, 2, domains) != 0) return -1;
+        if (dna_v2_global_root(domains, out_global) != 0) return -1;
+    }
+
     if (out_domains) memcpy(out_domains, domains, 64);
     if (out_system)  memcpy(out_system, sys, 64);
     if (out_core)    memcpy(out_core, core, 64);

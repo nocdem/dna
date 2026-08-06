@@ -132,7 +132,11 @@ static const nodus_domain_runtime_t BUILTIN[] = {
         .admit = rt_admit_common,
         .tx_cost = sys_cost,
         .apply_reserved = NULL,
-        .root_reserved  = NULL
+        .state_root   = nodus_rt_system_state_root,
+        .payload_root = nodus_rt_system_payload_root,  /* cycle break   */
+        .asset_check = NULL,     /* SYSTEM is never a distribution target */
+        .claim_apply = NULL,
+        .invariant   = NULL      /* SYSTEM declares no asset state        */
     },
     {
         .domain_id       = DNA_DOMAIN_CORE,
@@ -152,7 +156,11 @@ static const nodus_domain_runtime_t BUILTIN[] = {
         .admit = rt_admit_common,
         .tx_cost = core_cost,
         .apply_reserved = NULL,
-        .root_reserved  = NULL
+        .state_root   = nodus_rt_core_state_root,
+        .payload_root = NULL,    /* generic: payload ≡ state root         */
+        .asset_check = nodus_rt_core_asset_check,
+        .claim_apply = nodus_rt_core_claim_apply,
+        .invariant   = nodus_rt_core_invariant
     }
 };
 #define BUILTIN_COUNT (sizeof(BUILTIN) / sizeof(BUILTIN[0]))
@@ -232,7 +240,11 @@ int nodus_witness_runtime_selfcheck(void) {
         const nodus_domain_runtime_t *rt = &t[i];
         if (rt->runtime_kind != DNA_RUNTIME_NATIVE_BUILTIN) return -1;
         if (!rt->admit || !rt->tx_cost) return -1;
-        if (rt->apply_reserved || rt->root_reserved) return -1;   /* S4 */
+        if (rt->apply_reserved) return -1;             /* S9 — reserved  */
+        if (!rt->state_root) return -1;                /* root is REAL   */
+        /* claim-target capability is all-or-nothing */
+        if ((rt->asset_check == NULL) != (rt->claim_apply == NULL))
+            return -1;
         /* descriptor identity must equal the tuple identity */
         if (rt->descriptor.domain_id != rt->domain_id) return -1;
         if (rt->descriptor.runtime_abi != rt->runtime_abi) return -1;

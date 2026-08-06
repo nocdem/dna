@@ -65,6 +65,11 @@ static void fixture_present(dna_gman_t *m) {
     fixture_absent(m);
     m->dist_present = 1;
     m->dist_version = DNA_DIST_VERSION;
+    /* the EXPLICIT committed target: domain + opaque asset reference
+     * (here the 64-byte native token id shape the CORE runtime reads) */
+    m->target_domain_id = DNA_DOMAIN_CORE;
+    m->target_asset_len = 64;
+    memset(m->target_asset_ref, 0, 64);
     m->source_tag_len = 12;
     memcpy(m->source_tag, "test-network", 12);
     m->source_commit_len = 32;
@@ -152,6 +157,13 @@ static int test_field_sensitivity(void) {
     SENS(t.domains[1].manifest_hash[63] ^= 1);
     SENS(t.domain_count = 3; t.domains[2].domain_id = 9;
          memset(t.domains[2].manifest_hash, 0x77, 64));
+    /* the distribution TARGET is committed data: changing the domain or
+     * the asset reference (bytes OR length) changes the manifest hash */
+    SENS(t.target_domain_id = 7);
+    SENS(t.target_asset_ref[0] ^= 1);
+    SENS(t.target_asset_len = 5;
+         memset(t.target_asset_ref, 0, sizeof(t.target_asset_ref));
+         memcpy(t.target_asset_ref, "T3AST", 5));
     SENS(t.source_tag[0] ^= 1);
     SENS(t.source_tag_len = 13; t.source_tag[12] = 'x');
     SENS(t.source_commit[31] ^= 1);
@@ -205,6 +217,9 @@ static int test_rejects(void) {
     REJ(t.domain_count = DNA_GMAN_MAX_DOMAINS + 1, "over-cap domains");
     REJ(t.domains[0].domain_id = 1, "first not SYSTEM");
     REJ(t.domains[1].domain_id = 0, "duplicate/descending domain");
+    REJ(t.target_asset_len = 0, "zero asset ref");
+    REJ(t.target_asset_len = DNA_GMAN_ASSETREF_MAX + 1,
+        "over-cap asset ref");
     REJ(t.source_tag_len = 0, "zero source tag");
     REJ(t.source_tag_len = DNA_GMAN_SRCTAG_MAX + 1, "over-cap tag");
     REJ(t.source_commit_len = DNA_GMAN_SRCCOMMIT_MAX + 1, "over-cap commit");
@@ -212,8 +227,9 @@ static int test_rejects(void) {
     REJ(t.conv_numerator = 0, "zero numerator");
     REJ(t.conv_denominator = 0, "zero denominator");
     REJ(t.total_claimable = 0, "zero total");
-    REJ(t.total_claimable = t.genesis_supply_raw + 1,
-        "total exceeds genesis supply");
+    /* total > genesis_supply is NOT a codec reject: the two are
+     * different units for a non-native target asset; the native case
+     * is enforced by the target runtime's conservation invariant. */
     REJ(t.claim_start_height = 101, "end before start");
     #undef REJ
 
@@ -226,6 +242,9 @@ static int test_rejects(void) {
         OK(); \
     } while (0)
     REJA(a.dist_version = 1, "absent: version residue");
+    REJA(a.target_domain_id = 1, "absent: target domain residue");
+    REJA(a.target_asset_len = 1, "absent: asset len residue");
+    REJA(a.target_asset_ref[0] = 1, "absent: asset byte residue");
     REJA(a.source_tag_len = 1, "absent: tag len residue");
     REJA(a.source_tag[0] = 1, "absent: tag byte residue");
     REJA(a.source_commit[5] = 1, "absent: commit byte residue");
@@ -318,7 +337,7 @@ static int test_fuzz(void) {
         memset(&c, 0, sizeof(c));
         c.claim_version = DNA_CLAIM_VERSION;
         memset(c.chain_id, 0x21, sizeof(c.chain_id));
-        c.manifest_seq = 0;
+        memset(c.manifest_hash, 0x37, sizeof(c.manifest_hash));
         c.leaf_index = 1;
         c.source_id_len = 5;
         memcpy(c.source_id, "alpha", 5);
@@ -556,7 +575,7 @@ static void fixture_claim(dna_claim_t *c) {
     memset(c, 0, sizeof(*c));
     c->claim_version = DNA_CLAIM_VERSION;
     memset(c->chain_id, 0x21, sizeof(c->chain_id));
-    c->manifest_seq = 3;
+    memset(c->manifest_hash, 0x37, sizeof(c->manifest_hash));
     c->leaf_index = 2;
     c->source_id_len = 5;
     memcpy(c->source_id, "alpha", 5);
@@ -617,6 +636,14 @@ static int test_claim_codec(void) {
     CHECK(dna_claim_preimage(&t, p2, &pl2) == 0 &&
           (pl1 != pl2 || memcmp(p1, p2, pl1) != 0),
           "preimage sensitive to leaf index");
+    /* the manifest identity is signed — and it COMMITS the target
+     * domain + asset, so changing either changes the manifest hash and
+     * therefore the signature preimage */
+    fixture_claim(&t);
+    t.manifest_hash[0] ^= 1;
+    CHECK(dna_claim_preimage(&t, p2, &pl2) == 0 &&
+          (pl1 != pl2 || memcmp(p1, p2, pl1) != 0),
+          "preimage sensitive to manifest identity");
     /* the proof and key material are NOT in the preimage */
     fixture_claim(&t);
     t.siblings[0][0] ^= 1;
@@ -626,24 +653,47 @@ static int test_claim_codec(void) {
           memcmp(p1, p2, pl1) == 0, "proof/key not signed");
     OK();
 
-    /* nullifier: deterministic; distinct per chain / manifest / source */
+    /* nullifier: deterministic; distinct per chain / manifest / target
+     * domain / target asset / leaf — claims of different domains or
+     * assets can NEVER collide. */
     uint8_t n1[64], n2[64];
-    CHECK(dna_claim_nullifier(c.chain_id, c.manifest_seq, c.source_id,
-                              c.source_id_len, n1) == 0, "nullifier");
-    CHECK(dna_claim_nullifier(c.chain_id, c.manifest_seq, c.source_id,
-                              c.source_id_len, n2) == 0 &&
+    uint8_t leaf_h[64], asset[64];
+    memset(leaf_h, 0x5C, 64);
+    memset(asset, 0, 64);
+    CHECK(dna_claim_nullifier(c.chain_id, c.manifest_hash, 1, asset, 64,
+                              leaf_h, n1) == 0, "nullifier");
+    CHECK(dna_claim_nullifier(c.chain_id, c.manifest_hash, 1, asset, 64,
+                              leaf_h, n2) == 0 &&
           memcmp(n1, n2, 64) == 0, "nullifier deterministic");
     uint8_t other_chain[32];
     memset(other_chain, 0x22, 32);
-    CHECK(dna_claim_nullifier(other_chain, c.manifest_seq, c.source_id,
-                              c.source_id_len, n2) == 0 &&
+    CHECK(dna_claim_nullifier(other_chain, c.manifest_hash, 1, asset, 64,
+                              leaf_h, n2) == 0 &&
           memcmp(n1, n2, 64) != 0, "chain changes nullifier");
-    CHECK(dna_claim_nullifier(c.chain_id, c.manifest_seq + 1, c.source_id,
-                              c.source_id_len, n2) == 0 &&
+    uint8_t other_mh[64];
+    memcpy(other_mh, c.manifest_hash, 64);
+    other_mh[0] ^= 1;
+    CHECK(dna_claim_nullifier(c.chain_id, other_mh, 1, asset, 64,
+                              leaf_h, n2) == 0 &&
           memcmp(n1, n2, 64) != 0, "manifest changes nullifier");
-    CHECK(dna_claim_nullifier(c.chain_id, c.manifest_seq,
-                              (const uint8_t *)"alphb", 5, n2) == 0 &&
-          memcmp(n1, n2, 64) != 0, "source changes nullifier");
+    CHECK(dna_claim_nullifier(c.chain_id, c.manifest_hash, 7, asset, 64,
+                              leaf_h, n2) == 0 &&
+          memcmp(n1, n2, 64) != 0, "target domain changes nullifier");
+    uint8_t asset2[64];
+    memcpy(asset2, asset, 64);
+    asset2[0] = 0x01;
+    CHECK(dna_claim_nullifier(c.chain_id, c.manifest_hash, 1, asset2, 64,
+                              leaf_h, n2) == 0 &&
+          memcmp(n1, n2, 64) != 0, "target asset changes nullifier");
+    CHECK(dna_claim_nullifier(c.chain_id, c.manifest_hash, 1, asset, 5,
+                              leaf_h, n2) == 0 &&
+          memcmp(n1, n2, 64) != 0, "asset length changes nullifier");
+    uint8_t leaf_h2[64];
+    memcpy(leaf_h2, leaf_h, 64);
+    leaf_h2[0] ^= 1;
+    CHECK(dna_claim_nullifier(c.chain_id, c.manifest_hash, 1, asset, 64,
+                              leaf_h2, n2) == 0 &&
+          memcmp(n1, n2, 64) != 0, "leaf hash changes nullifier");
     OK();
 
     /* UTXO id: deterministic function of the nullifier */
@@ -665,7 +715,7 @@ static int test_roots(void) {
           memcmp(e1, e2, 64) == 0, "empty claims == frozen placeholder");
     OK();
     uint8_t m1[64], m2[64];
-    CHECK(dna_v2_manifest_root(NULL, NULL, 0, m1) == 0,
+    CHECK(dna_v2_manifest_root(NULL, 0, m1) == 0,
           "empty manifest root");
     CHECK(dna_v2_empty_root(DNA_V2_EMPTY_MANIFEST, m2) == 0 &&
           memcmp(m1, m2, 64) == 0, "empty manifest == frozen placeholder");
@@ -676,7 +726,8 @@ static int test_roots(void) {
     memset(e, 0, sizeof(e));
     for (int i = 0; i < 3; i++) {
         memset(e[i].nullifier, 0x10 * (i + 1), 64);
-        e[i].manifest_seq = 0;
+        memset(e[i].manifest_hash, 0x60 + i, 64);
+        e[i].target_domain_id = 1;
         e[i].leaf_index = (uint64_t)i;
         e[i].amount = 10 + (uint64_t)i;
         e[i].claimed_height = 5;
@@ -699,22 +750,33 @@ static int test_roots(void) {
     bad[1].claimed_height += 1;
     CHECK(dna_claims_root(bad, 3, r2) == 0 && memcmp(r1, r2, 64) != 0,
           "height changes claims root");
+    memcpy(bad, e, sizeof(bad));
+    bad[1].manifest_hash[0] ^= 1;
+    CHECK(dna_claims_root(bad, 3, r2) == 0 && memcmp(r1, r2, 64) != 0,
+          "manifest hash changes claims root");
+    memcpy(bad, e, sizeof(bad));
+    bad[1].target_domain_id = 7;
+    CHECK(dna_claims_root(bad, 3, r2) == 0 && memcmp(r1, r2, 64) != 0,
+          "target domain changes claims root");
     OK();
 
-    /* manifest_root: ordered seqs only; hash sensitive */
-    uint32_t seqs[2] = {0, 1};
+    /* manifest_root: strictly ascending by manifest_hash bytes — the
+     * committed identity is the ONLY sort key */
     uint8_t mh[2][64];
     memset(mh[0], 0x71, 64);
     memset(mh[1], 0x72, 64);
-    CHECK(dna_v2_manifest_root(seqs, mh, 2, r1) == 0, "manifest root");
-    uint32_t badseqs[2] = {1, 0};
-    CHECK(dna_v2_manifest_root(badseqs, mh, 2, r2) != 0,
-          "unsorted seqs reject");
-    uint32_t dupseqs[2] = {0, 0};
-    CHECK(dna_v2_manifest_root(dupseqs, mh, 2, r2) != 0,
-          "duplicate seqs reject");
-    mh[1][0] ^= 1;
-    CHECK(dna_v2_manifest_root(seqs, mh, 2, r2) == 0 &&
+    CHECK(dna_v2_manifest_root(mh, 2, r1) == 0, "manifest root");
+    uint8_t badmh[2][64];
+    memcpy(badmh[0], mh[1], 64);
+    memcpy(badmh[1], mh[0], 64);
+    CHECK(dna_v2_manifest_root(badmh, 2, r2) != 0,
+          "unsorted hashes reject");
+    memcpy(badmh[0], mh[0], 64);
+    memcpy(badmh[1], mh[0], 64);
+    CHECK(dna_v2_manifest_root(badmh, 2, r2) != 0,
+          "duplicate hashes reject");
+    mh[1][63] ^= 1;
+    CHECK(dna_v2_manifest_root(mh, 2, r2) == 0 &&
           memcmp(r1, r2, 64) != 0, "hash changes manifest root");
     OK();
     return 0;

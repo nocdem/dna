@@ -1,7 +1,9 @@
 /**
  * Nodus — Ledger V2 Season 6: witness-side manifest persistence, real
- * manifest_root / claims_root legs, distribution accounting and the
- * generic claim pipeline (INACTIVE). Contract: nodus_witness_v2_claims.h.
+ * manifest_root / per-domain claims_root legs, distribution accounting,
+ * generic runtime resolution, the generic claim pipeline, and the
+ * NATIVE SYSTEM/CORE runtime-hook implementations (INACTIVE).
+ * Contract: nodus_witness_v2_claims.h / nodus_witness_runtime.h.
  *
  * Every reader follows the fail-closed shape of
  * nodus_chain_config_compute_root: the step loop's final rc is checked
@@ -16,6 +18,7 @@
 #include "witness/nodus_witness_v2_claims.h"
 #include "witness/nodus_witness_db.h"
 #include "witness/nodus_witness_domreg.h"
+#include "witness/nodus_witness_roots_v2.h"
 
 #include "dnac/block_v2.h"
 #include "dnac/domain_wire.h"
@@ -24,6 +27,7 @@
 #include "crypto/utils/qgp_log.h"
 
 #include <sqlite3.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -43,6 +47,22 @@ static int table_exists(nodus_witness_t *w, const char *name) {
     return rc == SQLITE_DONE ? 0 : -1;
 }
 
+/* 1 = utxo_set has a domain_id column, 0 = not, -1 = fault. */
+static int utxo_has_domain_col(nodus_witness_t *w) {
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db, "PRAGMA table_info(utxo_set)", -1, &st,
+                           NULL) != SQLITE_OK)
+        return -1;
+    int found = 0, rc;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        const unsigned char *name = sqlite3_column_text(st, 1);
+        if (name && strcmp((const char *)name, "domain_id") == 0) found = 1;
+    }
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE) return -1;
+    return found;
+}
+
 /* ── manifest_root ──────────────────────────────────────────────────── */
 
 int nodus_witness_manifest_root_v2(nodus_witness_t *w, uint8_t out[64]) {
@@ -55,41 +75,28 @@ int nodus_witness_manifest_root_v2(nodus_witness_t *w, uint8_t out[64]) {
 
     sqlite3_stmt *st = NULL;
     int rc = sqlite3_prepare_v2(w->db,
-        "SELECT manifest_seq, manifest_hash FROM v2_manifests "
-        "ORDER BY manifest_seq ASC", -1, &st, NULL);
+        "SELECT manifest_hash FROM v2_manifests "
+        "ORDER BY manifest_hash ASC", -1, &st, NULL);
     if (rc != SQLITE_OK) return -1;
 
     size_t cap = 4, n = 0;
-    uint32_t *seqs = malloc(cap * sizeof(uint32_t));
     uint8_t (*hashes)[64] = malloc(cap * sizeof(*hashes));
-    if (!seqs || !hashes) {
-        free(seqs); free(hashes); sqlite3_finalize(st);
-        return -1;
-    }
+    if (!hashes) { sqlite3_finalize(st); return -1; }
     int fail = 0;
     while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
         if (n >= cap) {
             size_t nc = cap * 2;
-            uint32_t *ns = realloc(seqs, nc * sizeof(uint32_t));
             uint8_t (*nh)[64] = realloc(hashes, nc * sizeof(*nh));
-            if (!ns || !nh) {
-                free(ns ? ns : seqs);
-                free(nh ? nh : hashes);
-                sqlite3_finalize(st);
-                return -1;
-            }
-            seqs = ns; hashes = nh; cap = nc;
+            if (!nh) { free(hashes); sqlite3_finalize(st); return -1; }
+            hashes = nh; cap = nc;
         }
-        sqlite3_int64 seq = sqlite3_column_int64(st, 0);
-        const void *h = sqlite3_column_blob(st, 1);
-        if (seq < 0 || seq > (sqlite3_int64)UINT32_MAX ||
-            !h || sqlite3_column_bytes(st, 1) != 64) {
+        const void *h = sqlite3_column_blob(st, 0);
+        if (!h || sqlite3_column_bytes(st, 0) != 64) {
             QGP_LOG_ERROR(LOG_TAG,
                           "manifest row %zu malformed — failing root", n);
             fail = 1;
             break;
         }
-        seqs[n] = (uint32_t)seq;
         memcpy(hashes[n], h, 64);
         n++;
     }
@@ -102,15 +109,15 @@ int nodus_witness_manifest_root_v2(nodus_witness_t *w, uint8_t out[64]) {
 
     int ret = -1;
     if (!fail)
-        ret = dna_v2_manifest_root(seqs, hashes, n, out);
-    free(seqs);
+        ret = dna_v2_manifest_root(hashes, n, out);
     free(hashes);
     return ret;
 }
 
-/* ── claims_root ────────────────────────────────────────────────────── */
+/* ── claims_root (per target domain — the runtime owns its claims) ──── */
 
-int nodus_witness_claims_root_v2(nodus_witness_t *w, uint8_t out[64]) {
+int nodus_witness_claims_root_v2(nodus_witness_t *w, uint32_t domain_id,
+                                 uint8_t out[64]) {
     if (!w || !w->db || !out) return -1;
 
     int has = table_exists(w, "v2_claims_spent");
@@ -120,10 +127,12 @@ int nodus_witness_claims_root_v2(nodus_witness_t *w, uint8_t out[64]) {
 
     sqlite3_stmt *st = NULL;
     int rc = sqlite3_prepare_v2(w->db,
-        "SELECT nullifier, manifest_seq, leaf_index, amount, "
-        "claimed_height FROM v2_claims_spent ORDER BY nullifier ASC",
+        "SELECT nullifier, manifest_hash, leaf_index, amount, "
+        "claimed_height FROM v2_claims_spent "
+        "WHERE target_domain_id = ?1 ORDER BY nullifier ASC",
         -1, &st, NULL);
     if (rc != SQLITE_OK) return -1;
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)domain_id);
 
     size_t cap = 4, n = 0;
     dna_claims_entry_t *entries = malloc(cap * sizeof(*entries));
@@ -137,12 +146,12 @@ int nodus_witness_claims_root_v2(nodus_witness_t *w, uint8_t out[64]) {
             entries = ne; cap = nc;
         }
         const void *nul = sqlite3_column_blob(st, 0);
-        sqlite3_int64 seq = sqlite3_column_int64(st, 1);
+        const void *mh  = sqlite3_column_blob(st, 1);
         sqlite3_int64 idx = sqlite3_column_int64(st, 2);
         sqlite3_int64 amt = sqlite3_column_int64(st, 3);
         sqlite3_int64 hgt = sqlite3_column_int64(st, 4);
         if (!nul || sqlite3_column_bytes(st, 0) != 64 ||
-            seq < 0 || seq > (sqlite3_int64)UINT32_MAX ||
+            !mh || sqlite3_column_bytes(st, 1) != 64 ||
             idx < 0 || amt < 1 || hgt < 0) {
             QGP_LOG_ERROR(LOG_TAG,
                           "claim row %zu malformed — failing root", n);
@@ -150,7 +159,8 @@ int nodus_witness_claims_root_v2(nodus_witness_t *w, uint8_t out[64]) {
             break;
         }
         memcpy(entries[n].nullifier, nul, 64);
-        entries[n].manifest_seq = (uint32_t)seq;
+        memcpy(entries[n].manifest_hash, mh, 64);
+        entries[n].target_domain_id = domain_id;
         entries[n].leaf_index = (uint64_t)idx;
         entries[n].amount = (uint64_t)amt;
         entries[n].claimed_height = (uint64_t)hgt;
@@ -189,6 +199,34 @@ int nodus_witness_v2_chain_id(nodus_witness_t *w,
      * a committed genesis has no identity to bind a claim to. */
     sqlite3_finalize(st);
     return ret;
+}
+
+/* ── generic runtime resolution (registry → tuple → compiled table) ─── */
+
+int nodus_witness_v2_runtime_for(nodus_witness_t *w, uint32_t domain_id,
+                                 int require_active,
+                                 const nodus_domain_runtime_t **out) {
+    if (!w || !out) return -1;
+    *out = NULL;
+
+    dna_domreg_record_t rec;
+    dna_domain_manifest_t man;
+    if (nodus_witness_domreg_get(w, domain_id, &rec, &man, NULL) != 0)
+        return -1;                      /* unknown domain OR fault       */
+    if (require_active && rec.status != DNA_DOMST_ACTIVE)
+        return -1;                      /* inactive target fails closed  */
+
+    const nodus_domain_runtime_t *table = w->v2_runtime_table;
+    size_t n = w->v2_runtime_table_n;
+    if (!table)
+        table = nodus_runtime_builtin_table(&n);
+
+    const nodus_domain_runtime_t *rt = nodus_runtime_lookup_in(
+        table, n, domain_id, man.runtime_kind, man.runtime_abi,
+        man.ruleset_version, man.ruleset_hash);
+    if (!rt) return -1;                 /* tuple not carried — fail-close */
+    *out = rt;
+    return 0;
 }
 
 /* ── manifest persistence ───────────────────────────────────────────── */
@@ -248,10 +286,43 @@ int nodus_witness_v2_manifest_commit(nodus_witness_t *w,
         }
     }
 
+    /* Distribution target: explicit, registered, ACTIVE, runtime-backed,
+     * asset accepted by the TARGET runtime. The generic layer never
+     * assumes a target — every leg fails closed. */
+    if (m.dist_present == 1) {
+        int in_set = 0;
+        for (uint16_t i = 0; i < m.domain_count; i++)
+            if (m.domains[i].domain_id == m.target_domain_id) in_set = 1;
+        if (!in_set) {
+            QGP_LOG_ERROR(LOG_TAG, "distribution target domain %u not in "
+                          "the manifest domain set", m.target_domain_id);
+            return -1;
+        }
+        const nodus_domain_runtime_t *rt = NULL;
+        if (nodus_witness_v2_runtime_for(w, m.target_domain_id, 1, &rt)
+            != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "distribution target domain %u has no "
+                          "resolvable ACTIVE runtime", m.target_domain_id);
+            return -1;
+        }
+        if (!rt->asset_check || !rt->claim_apply) {
+            QGP_LOG_ERROR(LOG_TAG, "target runtime %u cannot accept "
+                          "distribution claims", m.target_domain_id);
+            return -1;
+        }
+        if (rt->asset_check(rt, m.target_asset_ref, m.target_asset_len)
+            != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "target runtime %u rejected the "
+                          "committed asset reference", m.target_domain_id);
+            return -1;
+        }
+    }
+
     uint8_t mh[64];
     if (dna_gman_hash(&m, mh) != 0) return -1;
 
-    /* Duplicate seq rejects via the PRIMARY KEY (plain INSERT). */
+    /* Duplicate identity rejects via the UNIQUE manifest_hash (and the
+     * PK on the internal locator). */
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(w->db,
             "INSERT INTO v2_manifests (manifest_seq, manifest_hash, "
@@ -268,16 +339,33 @@ int nodus_witness_v2_manifest_commit(nodus_witness_t *w,
 
     if (m.dist_present == 1) {
         if (sqlite3_prepare_v2(w->db,
-                "INSERT INTO v2_dist_state (manifest_seq, remaining) "
-                "VALUES (?1, ?2)", -1, &st, NULL) != SQLITE_OK)
+                "INSERT INTO v2_dist_state (manifest_hash, "
+                "target_domain_id, target_asset_ref, remaining) "
+                "VALUES (?1, ?2, ?3, ?4)", -1, &st, NULL) != SQLITE_OK)
             return -1;
-        sqlite3_bind_int64(st, 1, (sqlite3_int64)manifest_seq);
-        sqlite3_bind_int64(st, 2, (sqlite3_int64)m.total_claimable);
+        sqlite3_bind_blob(st, 1, mh, 64, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st, 2, (sqlite3_int64)m.target_domain_id);
+        sqlite3_bind_blob(st, 3, m.target_asset_ref, m.target_asset_len,
+                          SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st, 4, (sqlite3_int64)m.total_claimable);
         rc = sqlite3_step(st);
         sqlite3_finalize(st);
         if (rc != SQLITE_DONE) return -1;
     }
     return 0;
+}
+
+static int manifest_row_decode(sqlite3_stmt *st, dna_gman_t *out) {
+    const void *bytes = sqlite3_column_blob(st, 0);
+    int blen = sqlite3_column_bytes(st, 0);
+    const void *sh = sqlite3_column_blob(st, 1);
+    if (bytes && blen > 0 && sh && sqlite3_column_bytes(st, 1) == 64 &&
+        dna_gman_decode(bytes, (size_t)blen, out) == 0) {
+        uint8_t h[64];
+        if (dna_gman_hash(out, h) == 0 && memcmp(h, sh, 64) == 0)
+            return 0;                    /* stored bytes re-hash verified */
+    }
+    return -1;
 }
 
 int nodus_witness_v2_manifest_load(nodus_witness_t *w,
@@ -292,26 +380,38 @@ int nodus_witness_v2_manifest_load(nodus_witness_t *w,
     sqlite3_bind_int64(st, 1, (sqlite3_int64)manifest_seq);
     int rc = sqlite3_step(st);
     if (rc == SQLITE_DONE) { sqlite3_finalize(st); return 1; }
-    int ret = -1;
-    if (rc == SQLITE_ROW) {
-        const void *bytes = sqlite3_column_blob(st, 0);
-        int blen = sqlite3_column_bytes(st, 0);
-        const void *sh = sqlite3_column_blob(st, 1);
-        if (bytes && blen > 0 && sh && sqlite3_column_bytes(st, 1) == 64 &&
-            dna_gman_decode(bytes, (size_t)blen, out) == 0) {
-            uint8_t h[64];
-            if (dna_gman_hash(out, h) == 0 && memcmp(h, sh, 64) == 0)
-                ret = 0;                 /* stored bytes re-hash verified */
-        }
-    }
+    int ret = (rc == SQLITE_ROW) ? manifest_row_decode(st, out) : -1;
     sqlite3_finalize(st);
     return ret;
 }
 
-/* ── unclaimed-distribution total ───────────────────────────────────── */
+int nodus_witness_v2_manifest_load_by_hash(nodus_witness_t *w,
+                                           const uint8_t hash[64],
+                                           dna_gman_t *out) {
+    if (!w || !w->db || !hash || !out) return -1;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT manifest, manifest_hash FROM v2_manifests "
+            "WHERE manifest_hash = ?1", -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_blob(st, 1, hash, 64, SQLITE_TRANSIENT);
+    int rc = sqlite3_step(st);
+    if (rc == SQLITE_DONE) { sqlite3_finalize(st); return 1; }
+    int ret = (rc == SQLITE_ROW) ? manifest_row_decode(st, out) : -1;
+    sqlite3_finalize(st);
+    return ret;
+}
 
-int nodus_witness_v2_unclaimed_total(nodus_witness_t *w, uint64_t *out) {
-    if (!w || !w->db || !out) return -1;
+/* ── unclaimed-distribution total (per target domain + asset) ───────── */
+
+int nodus_witness_v2_unclaimed_total(nodus_witness_t *w,
+                                     uint32_t target_domain_id,
+                                     const uint8_t *target_asset_ref,
+                                     uint16_t target_asset_len,
+                                     uint64_t *out) {
+    if (!w || !w->db || !target_asset_ref || target_asset_len == 0 ||
+        !out)
+        return -1;
 
     int has = table_exists(w, "v2_dist_state");
     if (has < 0) return -1;
@@ -319,9 +419,13 @@ int nodus_witness_v2_unclaimed_total(nodus_witness_t *w, uint64_t *out) {
 
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(w->db,
-            "SELECT remaining FROM v2_dist_state ORDER BY manifest_seq",
-            -1, &st, NULL) != SQLITE_OK)
+            "SELECT remaining FROM v2_dist_state "
+            "WHERE target_domain_id = ?1 AND target_asset_ref = ?2 "
+            "ORDER BY manifest_hash", -1, &st, NULL) != SQLITE_OK)
         return -1;
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)target_domain_id);
+    sqlite3_bind_blob(st, 2, target_asset_ref, target_asset_len,
+                      SQLITE_TRANSIENT);
     uint64_t sum = 0;
     int rc;
     while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
@@ -344,9 +448,9 @@ int nodus_witness_v2_unclaimed_total(nodus_witness_t *w, uint64_t *out) {
 int nodus_witness_v2_claim_admit(nodus_witness_t *w,
                                  const dna_claim_t *c,
                                  uint64_t global_height,
-                                 uint64_t *out_converted,
-                                 uint8_t out_nullifier[64]) {
-    if (!w || !w->db || !c || !out_converted || !out_nullifier) return -1;
+                                 nodus_v2_claim_admit_t *out) {
+    if (!w || !w->db || !c || !out) return -1;
+    memset(out, 0, sizeof(*out));
 
     /* 1. structural validation */
     if (dna_claim_validate(c) != 0) return -1;
@@ -360,9 +464,10 @@ int nodus_witness_v2_claim_admit(nodus_witness_t *w,
         return -1;
     }
 
-    /* 3. committed manifest */
+    /* 3. committed manifest BY HASH (the committed identity) */
     dna_gman_t m;
-    int mrc = nodus_witness_v2_manifest_load(w, c->manifest_seq, &m);
+    int mrc = nodus_witness_v2_manifest_load_by_hash(w, c->manifest_hash,
+                                                     &m);
     if (mrc != 0) return -1;            /* absent AND fault both reject  */
     if (m.dist_present != 1) return -1; /* no distribution to claim from */
     if (c->auth_mode != m.auth_mode) return -1;
@@ -419,10 +524,24 @@ int nodus_witness_v2_claim_admit(nodus_witness_t *w,
         }
     }
 
-    /* 8. nullifier — already spent rejects */
+    /* 8. TARGET runtime: registered, ACTIVE, locally compiled, claim
+     *    hooks present, committed asset accepted. The generic engine
+     *    NEVER picks a domain — the committed manifest names it. */
+    const nodus_domain_runtime_t *rt = NULL;
+    if (nodus_witness_v2_runtime_for(w, m.target_domain_id, 1, &rt) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "claim target domain %u has no resolvable "
+                      "ACTIVE runtime — rejected", m.target_domain_id);
+        return -1;
+    }
+    if (!rt->asset_check || !rt->claim_apply) return -1;
+    if (rt->asset_check(rt, m.target_asset_ref, m.target_asset_len) != 0)
+        return -1;
+
+    /* 9. nullifier from the COMMITTED context — already spent rejects */
     uint8_t nul[64];
-    if (dna_claim_nullifier(c->chain_id, c->manifest_seq, c->source_id,
-                            c->source_id_len, nul) != 0)
+    if (dna_claim_nullifier(c->chain_id, c->manifest_hash,
+                            m.target_domain_id, m.target_asset_ref,
+                            m.target_asset_len, leaf_hash, nul) != 0)
         return -1;
     {
         sqlite3_stmt *st = NULL;
@@ -437,14 +556,14 @@ int nodus_witness_v2_claim_admit(nodus_witness_t *w,
         if (rc != SQLITE_DONE) return -1;       /* fault ≠ "not spent"   */
     }
 
-    /* 9. the distribution must cover it — a claim can never mint */
+    /* 10. the distribution must cover it — a claim can never mint */
     {
         sqlite3_stmt *st = NULL;
         if (sqlite3_prepare_v2(w->db,
                 "SELECT remaining FROM v2_dist_state "
-                "WHERE manifest_seq = ?1", -1, &st, NULL) != SQLITE_OK)
+                "WHERE manifest_hash = ?1", -1, &st, NULL) != SQLITE_OK)
             return -1;
-        sqlite3_bind_int64(st, 1, (sqlite3_int64)c->manifest_seq);
+        sqlite3_bind_blob(st, 1, c->manifest_hash, 64, SQLITE_TRANSIENT);
         int rc = sqlite3_step(st);
         sqlite3_int64 rem = (rc == SQLITE_ROW)
                                 ? sqlite3_column_int64(st, 0) : -1;
@@ -457,93 +576,75 @@ int nodus_witness_v2_claim_admit(nodus_witness_t *w,
         }
     }
 
-    *out_converted = converted;
-    memcpy(out_nullifier, nul, 64);
+    out->converted = converted;
+    memcpy(out->nullifier, nul, 64);
+    memcpy(out->manifest_hash, c->manifest_hash, 64);
+    out->target_domain_id = m.target_domain_id;
+    out->target_asset_len = m.target_asset_len;
+    memcpy(out->target_asset_ref, m.target_asset_ref, m.target_asset_len);
+    out->rt = rt;
     return 0;
+}
+
+int nodus_witness_v2_claim_output_create(nodus_witness_t *w,
+                                         const dna_claim_t *c,
+                                         const nodus_v2_claim_admit_t *a,
+                                         uint64_t global_height,
+                                         uint8_t out_output_id[64]) {
+    if (!w || !w->db || !c || !a || !a->rt || !a->rt->claim_apply ||
+        !out_output_id || a->converted == 0)
+        return -1;
+    nodus_rt_claim_t rc_ctx;
+    memset(&rc_ctx, 0, sizeof(rc_ctx));
+    rc_ctx.nullifier = a->nullifier;
+    rc_ctx.dest_binding = c->dest_binding;
+    rc_ctx.amount = a->converted;
+    rc_ctx.asset_ref = a->target_asset_ref;
+    rc_ctx.asset_ref_len = a->target_asset_len;
+    rc_ctx.global_height = global_height;
+    return a->rt->claim_apply(a->rt, w, &rc_ctx, out_output_id);
 }
 
 int nodus_witness_v2_claim_spend_insert(nodus_witness_t *w,
                                         const dna_claim_t *c,
-                                        const uint8_t nullifier[64],
-                                        uint64_t converted,
+                                        const nodus_v2_claim_admit_t *a,
+                                        const uint8_t output_id[64],
                                         uint64_t global_height) {
-    if (!w || !w->db || !c || !nullifier || converted == 0) return -1;
-    uint8_t utxo_id[64];
-    if (dna_claim_utxo_id(nullifier, utxo_id) != 0) return -1;
+    if (!w || !w->db || !c || !a || !output_id || a->converted == 0)
+        return -1;
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(w->db,
-            "INSERT INTO v2_claims_spent (nullifier, manifest_seq, "
-            "leaf_index, amount, claimed_height, utxo_id) "
-            "VALUES (?1, ?2, ?3, ?4, ?5, ?6)", -1, &st, NULL)
+            "INSERT INTO v2_claims_spent (nullifier, manifest_hash, "
+            "target_domain_id, target_asset_ref, leaf_index, amount, "
+            "claimed_height, output_id) "
+            "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)", -1, &st, NULL)
         != SQLITE_OK)
         return -1;
-    sqlite3_bind_blob(st, 1, nullifier, 64, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(st, 2, (sqlite3_int64)c->manifest_seq);
-    sqlite3_bind_int64(st, 3, (sqlite3_int64)c->leaf_index);
-    sqlite3_bind_int64(st, 4, (sqlite3_int64)converted);
-    sqlite3_bind_int64(st, 5, (sqlite3_int64)global_height);
-    sqlite3_bind_blob(st, 6, utxo_id, 64, SQLITE_TRANSIENT);
+    sqlite3_bind_blob(st, 1, a->nullifier, 64, SQLITE_TRANSIENT);
+    sqlite3_bind_blob(st, 2, a->manifest_hash, 64, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 3, (sqlite3_int64)a->target_domain_id);
+    sqlite3_bind_blob(st, 4, a->target_asset_ref, a->target_asset_len,
+                      SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 5, (sqlite3_int64)c->leaf_index);
+    sqlite3_bind_int64(st, 6, (sqlite3_int64)a->converted);
+    sqlite3_bind_int64(st, 7, (sqlite3_int64)global_height);
+    sqlite3_bind_blob(st, 8, output_id, 64, SQLITE_TRANSIENT);
     int rc = sqlite3_step(st);
     sqlite3_finalize(st);
     return rc == SQLITE_DONE ? 0 : -1;  /* dup nullifier = PK constraint */
 }
 
-int nodus_witness_v2_claim_utxo_create(nodus_witness_t *w,
-                                       const dna_claim_t *c,
-                                       const uint8_t nullifier[64],
-                                       uint64_t converted,
-                                       uint64_t global_height) {
-    if (!w || !w->db || !c || !nullifier || converted == 0) return -1;
-
-    uint8_t utxo_id[64];
-    if (dna_claim_utxo_id(nullifier, utxo_id) != 0) return -1;
-
-    /* owner = the 128-char lowercase-hex form of dest_binding — the
-     * existing DNA fingerprint discipline (wallet.c: exactly 128
-     * lowercase hex chars). */
-    char owner[129];
-    static const char hexd[] = "0123456789abcdef";
-    for (int i = 0; i < 64; i++) {
-        owner[i * 2]     = hexd[c->dest_binding[i] >> 4];
-        owner[i * 2 + 1] = hexd[c->dest_binding[i] & 0x0f];
-    }
-    owner[128] = '\0';
-
-    /* STRICT insert (the stock helper's INSERT OR IGNORE would silently
-     * swallow a duplicate output). created_at is pinned to 0: a claim
-     * output is a deterministic consensus artifact — a wall-clock byte
-     * here would be node-divergent state. domain_id takes the schema
-     * default 1 = DNA_CORE (the S5 single-owner column). */
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(w->db,
-            "INSERT INTO utxo_set (nullifier, owner, amount, token_id, "
-            "tx_hash, output_index, block_height, created_at, "
-            "unlock_block) VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, 0, 0)",
-            -1, &st, NULL) != SQLITE_OK)
-        return -1;
-    static const uint8_t native_token[64] = {0};
-    sqlite3_bind_blob(st, 1, utxo_id, 64, SQLITE_TRANSIENT);
-    sqlite3_bind_text(st, 2, owner, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(st, 3, (sqlite3_int64)converted);
-    sqlite3_bind_blob(st, 4, native_token, 64, SQLITE_TRANSIENT);
-    sqlite3_bind_blob(st, 5, nullifier, 64, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(st, 6, (sqlite3_int64)global_height);
-    int rc = sqlite3_step(st);
-    sqlite3_finalize(st);
-    return rc == SQLITE_DONE ? 0 : -1;
-}
-
 int nodus_witness_v2_claim_state_update(nodus_witness_t *w,
-                                        uint32_t manifest_seq,
+                                        const uint8_t manifest_hash[64],
                                         uint64_t converted) {
-    if (!w || !w->db || converted == 0) return -1;
+    if (!w || !w->db || !manifest_hash || converted == 0) return -1;
 
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(w->db,
-            "SELECT remaining FROM v2_dist_state WHERE manifest_seq = ?1",
+            "SELECT remaining FROM v2_dist_state WHERE manifest_hash = ?1",
             -1, &st, NULL) != SQLITE_OK)
         return -1;
-    sqlite3_bind_int64(st, 1, (sqlite3_int64)manifest_seq);
+    sqlite3_bind_blob(st, 1, manifest_hash, 64, SQLITE_TRANSIENT);
     int rc = sqlite3_step(st);
     sqlite3_int64 rem = (rc == SQLITE_ROW) ? sqlite3_column_int64(st, 0)
                                            : -1;
@@ -553,12 +654,245 @@ int nodus_witness_v2_claim_state_update(nodus_witness_t *w,
 
     if (sqlite3_prepare_v2(w->db,
             "UPDATE v2_dist_state SET remaining = ?1 "
-            "WHERE manifest_seq = ?2", -1, &st, NULL) != SQLITE_OK)
+            "WHERE manifest_hash = ?2", -1, &st, NULL) != SQLITE_OK)
         return -1;
     sqlite3_bind_int64(st, 1, (sqlite3_int64)((uint64_t)rem - converted));
-    sqlite3_bind_int64(st, 2, (sqlite3_int64)manifest_seq);
+    sqlite3_bind_blob(st, 2, manifest_hash, 64, SQLITE_TRANSIENT);
     rc = sqlite3_step(st);
     int changed = sqlite3_changes(w->db);
     sqlite3_finalize(st);
     return (rc == SQLITE_DONE && changed == 1) ? 0 : -1;
+}
+
+/* ═════════════════════════════════════════════════════════════════════
+ * NATIVE runtime-hook implementations (nodus_witness_runtime.h table).
+ *
+ * These are the ONLY places that know the concrete SYSTEM/CORE state
+ * composition. The generic executor dispatches through the hook table;
+ * it holds no per-domain branch. Allowed concrete behavior: SYSTEM is
+ * the mandatory protocol domain; the native DNA_CORE runtime implements
+ * UTXO / token / DNAC supply rules inside its own module.
+ * ═══════════════════════════════════════════════════════════════════ */
+
+int nodus_rt_system_state_root(const nodus_domain_runtime_t *rt,
+                               struct nodus_witness *w, uint8_t out[64]) {
+    (void)rt;
+    return nodus_witness_system_root_v2((nodus_witness_t *)w, out);
+}
+
+/* The activation payload root — the S5 genesis cycle break: SYSTEM's
+ * registry-committed genesis_state_root is this payload composition
+ * (no registry/manifest container legs), never the full state root. */
+int nodus_rt_system_payload_root(const nodus_domain_runtime_t *rt,
+                                 struct nodus_witness *w, uint8_t out[64]) {
+    (void)rt;
+    return nodus_witness_system_payload_root_v2((nodus_witness_t *)w, out);
+}
+
+int nodus_rt_core_state_root(const nodus_domain_runtime_t *rt,
+                             struct nodus_witness *w, uint8_t out[64]) {
+    (void)rt;
+    return nodus_witness_core_root_v2((nodus_witness_t *)w, out);
+}
+
+/* The CORE asset namespace IS the existing 64-byte token_id namespace.
+ * v1 accepts ONLY the native DNAC id (64 zero bytes): a non-native
+ * token distribution is a FUTURE versioned mode — fail-closed today. */
+int nodus_rt_core_asset_check(const nodus_domain_runtime_t *rt,
+                              const uint8_t *asset_ref, uint16_t len) {
+    (void)rt;
+    if (!asset_ref || len != 64) return -1;
+    for (uint16_t i = 0; i < len; i++)
+        if (asset_ref[i] != 0) return -1;
+    return 0;
+}
+
+int nodus_rt_core_claim_apply(const nodus_domain_runtime_t *rt,
+                              struct nodus_witness *wv,
+                              const nodus_rt_claim_t *claim,
+                              uint8_t out_output_id[64]) {
+    nodus_witness_t *w = (nodus_witness_t *)wv;
+    if (!rt || !w || !w->db || !claim || !claim->nullifier ||
+        !claim->dest_binding || !out_output_id || claim->amount == 0)
+        return -1;
+    /* the runtime re-validates ITS asset — never trusts the caller */
+    if (nodus_rt_core_asset_check(rt, claim->asset_ref,
+                                  claim->asset_ref_len) != 0)
+        return -1;
+
+    uint8_t utxo_id[64];
+    if (dna_claim_utxo_id(claim->nullifier, utxo_id) != 0) return -1;
+
+    /* owner = the 128-char lowercase-hex form of dest_binding — the
+     * existing DNA fingerprint discipline (wallet.c: exactly 128
+     * lowercase hex chars). */
+    char owner[129];
+    static const char hexd[] = "0123456789abcdef";
+    for (int i = 0; i < 64; i++) {
+        owner[i * 2]     = hexd[claim->dest_binding[i] >> 4];
+        owner[i * 2 + 1] = hexd[claim->dest_binding[i] & 0x0f];
+    }
+    owner[128] = '\0';
+
+    /* STRICT insert (the stock helper's INSERT OR IGNORE would silently
+     * swallow a duplicate output). created_at is pinned to 0: a claim
+     * output is a deterministic consensus artifact — a wall-clock byte
+     * here would be node-divergent state. domain_id is written
+     * EXPLICITLY by this runtime for ITS OWN domain — no schema default
+     * exists. */
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "INSERT INTO utxo_set (nullifier, owner, amount, token_id, "
+            "tx_hash, output_index, block_height, created_at, "
+            "unlock_block, domain_id) "
+            "VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, 0, 0, ?7)",
+            -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    static const uint8_t native_token[64] = {0};
+    sqlite3_bind_blob(st, 1, utxo_id, 64, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 2, owner, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 3, (sqlite3_int64)claim->amount);
+    sqlite3_bind_blob(st, 4, native_token, 64, SQLITE_TRANSIENT);
+    sqlite3_bind_blob(st, 5, claim->nullifier, 64, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 6, (sqlite3_int64)claim->global_height);
+    sqlite3_bind_int64(st, 7, (sqlite3_int64)rt->domain_id);
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE) return -1;
+    memcpy(out_output_id, utxo_id, 64);
+    return 0;
+}
+
+/* Sum one u64 aggregate; fail-closed (D1: DB error is never a value). */
+static int sum_q(nodus_witness_t *w, const char *sql, uint64_t *out) {
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db, sql, -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    int rc = sqlite3_step(st);
+    if (rc != SQLITE_ROW) { sqlite3_finalize(st); return -1; }
+    sqlite3_int64 v = sqlite3_column_int64(st, 0);
+    sqlite3_finalize(st);
+    if (v < 0) return -1;
+    *out = (uint64_t)v;
+    return 0;
+}
+
+/**
+ * The DNAC conservation invariant — owned by the CORE runtime (DNAC is
+ * CORE's native asset; this equation is NOT a universal rule for other
+ * domains, and the generic gate never applies it to them):
+ *
+ *   genesis + minted − burned ==
+ *       Σ utxo (native, CORE-owned) + Σ self_stake + Σ delegated
+ *     + Σ epoch_pool + unclaimed CORE-native distribution
+ *     + shielded (≡ 0 until C3 — a shielded/pool table existing at all
+ *       is a reject)
+ *
+ * Foreign-domain rows in utxo_set FAIL the invariant (fail-closed): the
+ * v1 UTXO table is this runtime's domain-local state; another runtime's
+ * value must live in its own namespace, never silently summed here.
+ */
+int nodus_rt_core_invariant(const nodus_domain_runtime_t *rt,
+                            struct nodus_witness *wv) {
+    nodus_witness_t *w = (nodus_witness_t *)wv;
+    if (!rt || !w || !w->db) return -1;
+
+    /* C3 stop: NO shielded pool state may exist. */
+    {
+        sqlite3_stmt *st = NULL;
+        if (sqlite3_prepare_v2(w->db,
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND "
+                "(LOWER(name) LIKE '%shielded%' OR "
+                " LOWER(name) LIKE 'pool_%')", -1, &st, NULL) != SQLITE_OK)
+            return -1;
+        int rc = sqlite3_step(st);
+        int n = (rc == SQLITE_ROW) ? sqlite3_column_int(st, 0) : -1;
+        sqlite3_finalize(st);
+        if (n != 0) {
+            QGP_LOG_ERROR(LOG_TAG,
+                "CORE INVARIANT: shielded/pool state table present (%d) — "
+                "C3 is inactive, rejecting", n);
+            return -1;
+        }
+    }
+
+    /* Ownership guard: every utxo_set row must belong to THIS domain
+     * (when the domain column exists — a pre-S5 DB is all-CORE by the
+     * legacy definition). A foreign row is unknown value: fail closed,
+     * never sum it. */
+    {
+        int has = utxo_has_domain_col(w);
+        if (has < 0) return -1;
+        if (has == 1) {
+            char sql[128];
+            snprintf(sql, sizeof(sql),
+                     "SELECT COUNT(*) FROM utxo_set WHERE domain_id != %u",
+                     rt->domain_id);
+            uint64_t foreign = 0;
+            if (sum_q(w, sql, &foreign) != 0) return -1;
+            if (foreign != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "CORE INVARIANT: %llu utxo rows "
+                              "owned by a foreign domain — rejecting",
+                              (unsigned long long)foreign);
+                return -1;
+            }
+        }
+    }
+
+    nodus_witness_supply_t sup;
+    memset(&sup, 0, sizeof(sup));
+    int sup_rc = nodus_witness_supply_get(w, &sup);
+    if (sup_rc < 0) return -1;           /* DB error is never a value     */
+    if (sup_rc == 1) return 0;           /* honest pre-genesis            */
+
+    uint64_t expected = sup.genesis_supply;
+    if (sup.total_minted > UINT64_MAX - expected) return -1;
+    expected += sup.total_minted;
+    if (sup.total_burned > expected) return -1;   /* underflow            */
+    expected -= sup.total_burned;
+
+    uint64_t utxo = 0, bonds = 0, delegated = 0, pool = 0, unclaimed = 0;
+    /* the production helper OWNS the native-token representation rule —
+     * one authority, never a parallel SQL mirror */
+    if (nodus_witness_utxo_sum_by_token(w, NULL, &utxo) != 0) return -1;
+    if (sum_q(w, "SELECT COALESCE(SUM(self_stake),0) FROM validators",
+              &bonds) != 0) return -1;
+    if (sum_q(w, "SELECT COALESCE(SUM(total_delegated),0) FROM validators",
+              &delegated) != 0) return -1;
+    if (sum_q(w, "SELECT COALESCE(SUM(epoch_pool_accum),0) FROM epoch_state",
+              &pool) != 0) return -1;
+    /* Unclaimed distribution value TARGETING THIS RUNTIME'S NATIVE
+     * ASSET only — a distribution targeting another domain/asset is
+     * that runtime's invariant, never summed here. */
+    static const uint8_t native_token[64] = {0};
+    if (nodus_witness_v2_unclaimed_total(w, rt->domain_id, native_token,
+                                         64, &unclaimed) != 0)
+        return -1;
+
+    const uint64_t shielded = 0;         /* FIXED until C3 — see above    */
+
+    uint64_t observed = utxo;
+    if (bonds > UINT64_MAX - observed) return -1;
+    observed += bonds;
+    if (delegated > UINT64_MAX - observed) return -1;
+    observed += delegated;
+    if (pool > UINT64_MAX - observed) return -1;
+    observed += pool;
+    if (unclaimed > UINT64_MAX - observed) return -1;
+    observed += unclaimed;
+    if (shielded > UINT64_MAX - observed) return -1;
+    observed += shielded;
+
+    if (expected != observed) {
+        QGP_LOG_ERROR(LOG_TAG,
+            "CORE INVARIANT VIOLATION: expected=%llu observed=%llu "
+            "(utxo=%llu bonds=%llu delegated=%llu pool=%llu "
+            "unclaimed=%llu shielded=0)",
+            (unsigned long long)expected, (unsigned long long)observed,
+            (unsigned long long)utxo, (unsigned long long)bonds,
+            (unsigned long long)delegated, (unsigned long long)pool,
+            (unsigned long long)unclaimed);
+        return -1;
+    }
+    return 0;
 }
