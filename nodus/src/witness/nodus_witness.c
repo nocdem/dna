@@ -13,6 +13,7 @@
 #include "witness/nodus_witness_sync.h"
 #include "witness/nodus_witness_mempool.h"
 #include "witness/nodus_witness_bootstrap.h"
+#include "witness/nodus_witness_v2_pools.h"  /* S7 startup check      */
 #include "nodus/nodus_chain_config.h"  /* Stage C.2 vote-req handler */
 #include "crypto/utils/qgp_log.h"
 #include "crypto/hash/qgp_sha3.h"
@@ -493,6 +494,21 @@ int nodus_witness_create_chain_db(nodus_witness_t *witness,
         return -1;
 
     nodus_witness_set_chain_id(witness, chain_id);
+
+    /* Ledger V2 S7 — fail-closed pool-state startup verification:
+     * full ordered nullifier-log replay + derived note-table shape,
+     * ONCE per database open, BEFORE the witness may validate or
+     * apply any Ledger V2 block. A pre-v7 database (every live chain
+     * today) passes vacuously; a v7 database whose committed pool
+     * state disagrees with its tables is refused — never repaired. */
+    if (nodus_witness_v2_pools_startup_check(witness) != 0) {
+        fprintf(stderr, "%s: S7 pool-state startup verification FAILED "
+                "for %s — refusing the database (fail closed)\n",
+                LOG_TAG, db_path);
+        sqlite3_close(witness->db);
+        witness->db = NULL;
+        return -1;
+    }
 
     /* PR 3 Yol B — transition bootstrap state to DONE the moment a
      * valid chain DB exists, regardless of which path created it.

@@ -19,6 +19,7 @@
 #include "witness/nodus_witness_db.h"
 #include "witness/nodus_witness_domreg.h"
 #include "witness/nodus_witness_roots_v2.h"
+#include "witness/nodus_witness_v2_pools.h"
 
 #include "dnac/block_v2.h"
 #include "dnac/domain_wire.h"
@@ -785,8 +786,15 @@ static int sum_q(nodus_witness_t *w, const char *sql, uint64_t *out) {
  *   genesis + minted − burned ==
  *       Σ utxo (native, CORE-owned) + Σ self_stake + Σ delegated
  *     + Σ epoch_pool + unclaimed CORE-native distribution
- *     + shielded (≡ 0 until C3 — a shielded/pool table existing at all
- *       is a reject)
+ *     + Σ balance of THIS domain's pools configured for the native
+ *       asset (S7 — real committed pool balances; the previous
+ *       "shielded ≡ 0, no pool table may exist" placeholder is
+ *       replaced. Foreign-ASSET pools of this domain and every
+ *       foreign-DOMAIN pool are excluded: their value is another
+ *       asset's/runtime's conservation, never summed here. Pool
+ *       commitments and nullifiers do not themselves move supply;
+ *       admission is still C3-rejected, so live pool balances remain
+ *       zero until then.)
  *
  * Foreign-domain rows in utxo_set FAIL the invariant (fail-closed): the
  * v1 UTXO table is this runtime's domain-local state; another runtime's
@@ -796,25 +804,6 @@ int nodus_rt_core_invariant(const nodus_domain_runtime_t *rt,
                             struct nodus_witness *wv) {
     nodus_witness_t *w = (nodus_witness_t *)wv;
     if (!rt || !w || !w->db) return -1;
-
-    /* C3 stop: NO shielded pool state may exist. */
-    {
-        sqlite3_stmt *st = NULL;
-        if (sqlite3_prepare_v2(w->db,
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND "
-                "(LOWER(name) LIKE '%shielded%' OR "
-                " LOWER(name) LIKE 'pool_%')", -1, &st, NULL) != SQLITE_OK)
-            return -1;
-        int rc = sqlite3_step(st);
-        int n = (rc == SQLITE_ROW) ? sqlite3_column_int(st, 0) : -1;
-        sqlite3_finalize(st);
-        if (n != 0) {
-            QGP_LOG_ERROR(LOG_TAG,
-                "CORE INVARIANT: shielded/pool state table present (%d) — "
-                "C3 is inactive, rejecting", n);
-            return -1;
-        }
-    }
 
     /* Ownership guard: every utxo_set row must belong to THIS domain
      * (when the domain column exists — a pre-S5 DB is all-CORE by the
@@ -869,7 +858,15 @@ int nodus_rt_core_invariant(const nodus_domain_runtime_t *rt,
                                          64, &unclaimed) != 0)
         return -1;
 
-    const uint64_t shielded = 0;         /* FIXED until C3 — see above    */
+    /* S7: the REAL committed pool bucket — Σ balance over THIS domain's
+     * pools configured for the native asset (checked add inside; absent
+     * v2_pools table = honest pre-S7 zero; DB fault = -1, never a
+     * value). */
+    uint64_t shielded = 0;
+    if (nodus_witness_v2_pool_balance_total(w, rt->domain_id,
+                                            native_token, 64,
+                                            &shielded) != 0)
+        return -1;
 
     uint64_t observed = utxo;
     if (bonds > UINT64_MAX - observed) return -1;

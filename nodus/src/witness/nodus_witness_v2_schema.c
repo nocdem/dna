@@ -357,3 +357,177 @@ int nodus_witness_db_migrate_v2s6_ex(nodus_witness_t *w,
 int nodus_witness_db_migrate_v2s6(nodus_witness_t *w) {
     return nodus_witness_db_migrate_v2s6_ex(w, V2S6MIG_FAIL_NONE);
 }
+
+/* ── S7: the four generic pool-state tables (6 → 7) ─────────────────── */
+
+/* Generic pool state is namespaced by (domain_id, pool_id) — a pool id
+ * is unique only INSIDE its owning domain. No column carries a domain,
+ * pool or asset default: ownership is written explicitly on every
+ * insert. v2_pool_notes is the DERIVED O(count) commitment list (path
+ * serving / recovery); the consensus O(D) state lives in v2_pools. */
+static const char *V2S7_TABLES_DDL =
+    "CREATE TABLE IF NOT EXISTS v2_pools ("
+    "  domain_id INTEGER NOT NULL,"
+    "  pool_id INTEGER NOT NULL,"
+    "  config_version INTEGER NOT NULL,"
+    "  tree_depth INTEGER NOT NULL,"
+    "  history_limit INTEGER NOT NULL,"
+    "  asset_ref BLOB NOT NULL,"
+    "  note_count INTEGER NOT NULL,"
+    "  note_root BLOB NOT NULL,"
+    "  frontier BLOB NOT NULL,"
+    "  nul_count INTEGER NOT NULL,"
+    "  nul_root BLOB NOT NULL,"
+    "  balance INTEGER NOT NULL,"
+    "  hist_count INTEGER NOT NULL,"
+    "  hist_next_seq INTEGER NOT NULL,"
+    "  PRIMARY KEY (domain_id, pool_id)"
+    ");"
+    "CREATE TABLE IF NOT EXISTS v2_pool_notes ("
+    "  domain_id INTEGER NOT NULL,"
+    "  pool_id INTEGER NOT NULL,"
+    "  position INTEGER NOT NULL,"
+    "  commitment BLOB NOT NULL,"
+    "  global_height INTEGER NOT NULL,"
+    "  tx_index INTEGER NOT NULL,"
+    "  output_slot INTEGER NOT NULL,"
+    "  PRIMARY KEY (domain_id, pool_id, position)"
+    ");"
+    "CREATE TABLE IF NOT EXISTS v2_pool_nullifiers ("
+    "  domain_id INTEGER NOT NULL,"
+    "  pool_id INTEGER NOT NULL,"
+    "  nullifier BLOB NOT NULL,"
+    "  position INTEGER NOT NULL,"
+    "  global_height INTEGER NOT NULL,"
+    "  tx_index INTEGER NOT NULL,"
+    "  input_slot INTEGER NOT NULL,"
+    "  PRIMARY KEY (domain_id, pool_id, nullifier),"
+    "  UNIQUE (domain_id, pool_id, position)"
+    ");"
+    "CREATE TABLE IF NOT EXISTS v2_pool_roots ("
+    "  domain_id INTEGER NOT NULL,"
+    "  pool_id INTEGER NOT NULL,"
+    "  seq INTEGER NOT NULL,"
+    "  note_root BLOB NOT NULL,"
+    "  global_height INTEGER NOT NULL,"
+    "  PRIMARY KEY (domain_id, pool_id, seq),"
+    "  UNIQUE (domain_id, pool_id, note_root)"
+    ");";
+
+/* 1 = the table's column-name sequence matches `cols` exactly,
+ * 0 = drift/partial/missing, -1 = fault. A DDL that silently did
+ * nothing — or a pre-existing table with a different shape — must not
+ * be reported as a migrated schema. */
+static int table_cols_exact(nodus_witness_t *w, const char *table,
+                            const char *const *cols, size_t n_cols) {
+    char sql[128];
+    snprintf(sql, sizeof(sql), "PRAGMA table_info(\"%s\")", table);
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db, sql, -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    size_t ci = 0;
+    int rc, ok = 1;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        const unsigned char *nm = sqlite3_column_text(st, 1);
+        if (ci >= n_cols || !nm ||
+            strcmp((const char *)nm, cols[ci]) != 0) {
+            ok = 0;
+            break;
+        }
+        ci++;
+    }
+    sqlite3_finalize(st);
+    if (!ok) return 0;
+    if (rc != SQLITE_DONE) return -1;
+    return ci == n_cols ? 1 : 0;
+}
+
+int nodus_witness_db_migrate_v2s7_ex(nodus_witness_t *w,
+                                     nodus_v2s7_mig_fail_t fail_at) {
+    if (!w || !w->db) return -1;
+
+    uint32_t ver = 0;
+    if (nodus_witness_db_schema_version(w, &ver) != 0) return -1;
+    if (ver == NODUS_V2_SCHEMA_VERSION_S7) return 0;     /* idempotent    */
+    if (ver == 0 || ver == NODUS_V2_SCHEMA_VERSION) {
+        /* Fresh/legacy/S5: reach version 6 first (its own atomic
+         * stage chain — a crash leaves a VALID intermediate version
+         * and re-running resumes here). */
+        if (nodus_witness_db_migrate_v2s6(w) != 0) return -1;
+        ver = NODUS_V2_SCHEMA_VERSION_S6;
+    }
+    if (ver != NODUS_V2_SCHEMA_VERSION_S6) {
+        /* Unknown/newer schema (8+): this build must not touch it. */
+        QGP_LOG_ERROR(LOG_TAG,
+                      "unknown schema version %u — refusing S7 migration",
+                      ver);
+        return -1;
+    }
+
+    if (exec_sql(w, "BEGIN IMMEDIATE") != 0) return -1;
+
+    int ok = 0;
+    do {
+        if (fail_at == V2S7MIG_FAIL_AFTER_BEGIN) break;
+
+        if (exec_sql(w, V2S7_TABLES_DDL) != 0) break;
+        if (fail_at == V2S7MIG_FAIL_AFTER_TABLES) break;
+
+        /* Verify the schema actually materialized with EXACTLY the
+         * expected shape — column drift and partial tables reject. */
+        static const char *const pools_cols[] = {
+            "domain_id", "pool_id", "config_version", "tree_depth",
+            "history_limit", "asset_ref", "note_count", "note_root",
+            "frontier", "nul_count", "nul_root", "balance",
+            "hist_count", "hist_next_seq"
+        };
+        static const char *const notes_cols[] = {
+            "domain_id", "pool_id", "position", "commitment",
+            "global_height", "tx_index", "output_slot"
+        };
+        static const char *const nuls_cols[] = {
+            "domain_id", "pool_id", "nullifier", "position",
+            "global_height", "tx_index", "input_slot"
+        };
+        static const char *const roots_cols[] = {
+            "domain_id", "pool_id", "seq", "note_root", "global_height"
+        };
+        int verified = 1;
+        if (table_cols_exact(w, "v2_pools", pools_cols,
+                sizeof(pools_cols) / sizeof(pools_cols[0])) != 1)
+            verified = 0;
+        if (verified && table_cols_exact(w, "v2_pool_notes", notes_cols,
+                sizeof(notes_cols) / sizeof(notes_cols[0])) != 1)
+            verified = 0;
+        if (verified && table_cols_exact(w, "v2_pool_nullifiers",
+                nuls_cols, sizeof(nuls_cols) / sizeof(nuls_cols[0])) != 1)
+            verified = 0;
+        if (verified && table_cols_exact(w, "v2_pool_roots", roots_cols,
+                sizeof(roots_cols) / sizeof(roots_cols[0])) != 1)
+            verified = 0;
+        if (!verified) {
+            QGP_LOG_ERROR(LOG_TAG, "S7 schema shape drift — refusing");
+            break;
+        }
+        if (fail_at == V2S7MIG_FAIL_AFTER_VERIFY) break;
+
+        if (exec_sql(w, "PRAGMA user_version = 7") != 0) break;
+        if (fail_at == V2S7MIG_FAIL_BEFORE_COMMIT) break;
+
+        ok = 1;
+    } while (0);
+
+    if (!ok) {
+        (void)exec_sql(w, "ROLLBACK");
+        return -1;
+    }
+    if (exec_sql(w, "COMMIT") != 0) {
+        (void)exec_sql(w, "ROLLBACK");
+        return -1;
+    }
+    return 0;
+}
+
+int nodus_witness_db_migrate_v2s7(nodus_witness_t *w) {
+    return nodus_witness_db_migrate_v2s7_ex(w, V2S7MIG_FAIL_NONE);
+}

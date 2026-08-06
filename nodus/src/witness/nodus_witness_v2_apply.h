@@ -32,6 +32,21 @@
  *       decrement [F18]; fault points fire after the named stage of
  *       claim `fail_claim_index`. The engine never creates an output
  *       or picks a domain itself.
+ *   6p. S7 pool-state batches (INACTIVE test/fixture surface — future
+ *       S9 transaction semantics will construct these): each batch is
+ *       one pool's canonical mutations for this block, processed in
+ *       strictly ascending (domain_id, pool_id) order through
+ *       nodus_witness_v2_pool_apply — commitment inserts [F19] →
+ *       frontier/root/count update [F20] → nullifier inserts [F21] →
+ *       nullifier-root update [F22] → balance update [F23] → history
+ *       append [F24] → history eviction [F25]; fault points fire
+ *       after the named stage of batch `fail_pool_index`. Carrying a
+ *       batch declares its (already ACTIVE, runtime-backed) owning
+ *       domain touched. The engine knows no pool internals — ordering,
+ *       capacity, canonicity, duplicate and collision rules live in
+ *       the pool module. pools_root recomputation rides the existing
+ *       domain-root phase [F7]; DomainHead/history/global metadata
+ *       persistence ride [F9]/[F10]/[F12].
  *   6c. LIFECYCLE re-scan (canonical DomainHead lifecycle): re-read the
  *       registry; a domain whose status became ACTIVE with no committed
  *       head gets its ONE deterministic activation head HERE (height 0,
@@ -126,6 +141,7 @@
 #define NODUS_WITNESS_V2_APPLY_H
 
 #include "witness/nodus_witness.h"
+#include "witness/nodus_witness_v2_pools.h"
 #include "dnac/domain_wire.h"
 #include "dnac/manifest_wire.h"
 
@@ -162,7 +178,16 @@ typedef enum {
      * index blk->fail_claim_index) */
     V2AP_FAIL_AFTER_CLAIM_OUTPUT = 16,  /* target-runtime output created */
     V2AP_FAIL_AFTER_CLAIM_SPEND = 17,   /* spent-claim insert done       */
-    V2AP_FAIL_AFTER_CLAIM_STATE = 18    /* remaining decremented         */
+    V2AP_FAIL_AFTER_CLAIM_STATE = 18,   /* remaining decremented         */
+    /* S7 pool stages (fire after the named stage of the pool batch at
+     * index blk->fail_pool_index; S1-S6 ids above are FROZEN) */
+    V2AP_FAIL_AFTER_POOL_COMMITS = 19,  /* v2_pool_notes rows inserted   */
+    V2AP_FAIL_AFTER_POOL_FRONTIER = 20, /* frontier/root/count updated   */
+    V2AP_FAIL_AFTER_POOL_NULLS = 21,    /* nullifier rows inserted       */
+    V2AP_FAIL_AFTER_POOL_NULROOT = 22,  /* nullifier root/count updated  */
+    V2AP_FAIL_AFTER_POOL_BALANCE = 23,  /* pool balance updated          */
+    V2AP_FAIL_AFTER_POOL_HISTORY = 24,  /* history entry appended        */
+    V2AP_FAIL_AFTER_POOL_EVICT = 25     /* oldest history entry evicted  */
 } nodus_v2_apply_fail_t;
 
 /** One controlled test-only state transition ("transaction"). */
@@ -189,6 +214,11 @@ typedef struct {
      * NULL/0 = none. */
     const dna_claim_t *claims;
     size_t   n_claims;
+    /* S7 pool-state batches (INACTIVE test/fixture surface; processed
+     * INSIDE the one block transaction, phase 6p; strictly ascending
+     * (domain_id, pool_id) — duplicates reject). NULL/0 = none. */
+    const nodus_v2_pool_mut_t *pool_muts;
+    size_t   n_pool_muts;
     /* Follower-mode expected roots — any NULL = leader mode (fill). A
      * non-NULL expectation that mismatches the recomputation rejects the
      * whole block. */
@@ -200,6 +230,7 @@ typedef struct {
     nodus_v2_apply_fail_t fail_at;
     uint32_t fail_domain_batch;         /* domain_id for point 4         */
     uint32_t fail_claim_index;          /* claim index for points 16-18  */
+    uint32_t fail_pool_index;           /* batch index for points 19-25  */
     /* Outputs (valid on rc 0/2) */
     uint8_t  out_tx_root[64];
     uint8_t  out_dupd_root[64];
@@ -211,7 +242,7 @@ typedef struct {
 int nodus_witness_v2_supply_check(nodus_witness_t *w);
 
 /**
- * V2 genesis: requires schema version 6; one atomic transaction seeding
+ * V2 genesis: requires schema version 7; one atomic transaction seeding
  * the domain registry (REAL payload-root manifests — the S5 cycle
  * break), then ONE canonical ACTIVATION DomainHead per registered
  * domain whose status is ACTIVE (the genesis block IS those domains'

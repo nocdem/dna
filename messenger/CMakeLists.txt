@@ -263,6 +263,10 @@ if(BUILD_SHARED_LIB)
         # Ledger V2 S6 — INACTIVE generic genesis/distribution manifest +
         # claim codec, owned by libdna the same way as domain_wire.c.
         ${CMAKE_SOURCE_DIR}/../shared/dnac/manifest_wire.c
+        # Ledger V2 S7 — INACTIVE canonical shielded-pool state
+        # commitments (pure SHA3-512, zk-include-free), owned by libdna
+        # the same way as manifest_wire.c. No consensus caller.
+        ${CMAKE_SOURCE_DIR}/../shared/dnac/pool_wire.c
         # Note: shared/dnac/chain_config_wire.c (Hard-Fork v1) is linked in
         # via libnodus.a — no separate entry needed here. See nodus/CMakeLists.txt.
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/validator_queries.c
@@ -417,6 +421,10 @@ else()
         # Ledger V2 S6 — INACTIVE generic genesis/distribution manifest +
         # claim codec, owned by libdna the same way as domain_wire.c.
         ${CMAKE_SOURCE_DIR}/../shared/dnac/manifest_wire.c
+        # Ledger V2 S7 — INACTIVE canonical shielded-pool state
+        # commitments (pure SHA3-512, zk-include-free), owned by libdna
+        # the same way as manifest_wire.c. No consensus caller.
+        ${CMAKE_SOURCE_DIR}/../shared/dnac/pool_wire.c
         # Note: shared/dnac/chain_config_wire.c (Hard-Fork v1) is linked in
         # via libnodus.a — no separate entry needed here. See nodus/CMakeLists.txt.
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/validator_queries.c

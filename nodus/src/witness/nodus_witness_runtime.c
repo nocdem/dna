@@ -136,7 +136,8 @@ static const nodus_domain_runtime_t BUILTIN[] = {
         .payload_root = nodus_rt_system_payload_root,  /* cycle break   */
         .asset_check = NULL,     /* SYSTEM is never a distribution target */
         .claim_apply = NULL,
-        .invariant   = NULL      /* SYSTEM declares no asset state        */
+        .invariant   = NULL,     /* SYSTEM declares no asset state        */
+        .state_init  = NULL      /* SYSTEM initializes no activation state*/
     },
     {
         .domain_id       = DNA_DOMAIN_CORE,
@@ -160,7 +161,8 @@ static const nodus_domain_runtime_t BUILTIN[] = {
         .payload_root = NULL,    /* generic: payload ≡ state root         */
         .asset_check = nodus_rt_core_asset_check,
         .claim_apply = nodus_rt_core_claim_apply,
-        .invariant   = nodus_rt_core_invariant
+        .invariant   = nodus_rt_core_invariant,
+        .state_init  = nodus_rt_core_state_init   /* S7: native pool     */
     }
 };
 #define BUILTIN_COUNT (sizeof(BUILTIN) / sizeof(BUILTIN[0]))

@@ -271,16 +271,33 @@ static int head_height(nodus_witness_t *w, int dom, uint64_t *out) {
 int main(void) {
     fixture_t fx;
     CHECK(fx_open(&fx) == 0, "fixture"); OK();
-    /* S6: the apply engine + V2 genesis now require schema version 6
-     * (the migration includes the S5 stage; every S5 root below is
-     * byte-unchanged because the S6 tables are empty). */
-    CHECK(nodus_witness_db_migrate_v2s6(fx.w) == 0, "migrate"); OK();
+    /* S7: the apply engine + V2 genesis now require schema version 7
+     * (the migration includes the S5/S6 stages; every S5/S6 root below
+     * is byte-unchanged because the S6/S7 tables start empty — the
+     * CORE pool enters only at genesis, through state_init). */
+    CHECK(nodus_witness_db_migrate_v2s7(fx.w) == 0, "migrate"); OK();
 
     /* ── 1. genesis + cycle proof ───────────────────────────────────── */
-    /* independent PRE-registry recomputation of both payload roots */
+    /* independent PRE-registry recomputation of both payload roots.
+     * S7: genesis initializes the CORE runtime's configured native
+     * pool (state_init) BEFORE committing the registry's
+     * genesis_state_root, so the committed CORE payload includes the
+     * pool. Reproduce that state independently here: create the SAME
+     * canonical pool on this pre-genesis database (idempotent — the
+     * genesis hook re-runs it as a no-op) and recompute. */
     uint8_t sys_payload_pre[64], core_pre[64];
     CHECK(nodus_witness_system_payload_root_v2(fx.w, sys_payload_pre) == 0,
           "payload pre"); OK();
+    {
+        size_t nrt = 0;
+        const nodus_domain_runtime_t *rt_tab =
+            nodus_runtime_builtin_table(&nrt);
+        CHECK(rt_tab && nrt == 2 && rt_tab[1].state_init != NULL,
+              "CORE state_init hook missing");
+        CHECK(rt_tab[1].state_init(&rt_tab[1],
+                                   (struct nodus_witness *)fx.w, 0) == 0,
+              "pre-genesis CORE state_init");
+    }
     CHECK(nodus_witness_core_root_v2(fx.w, core_pre) == 0, "core pre");
 
     uint8_t gen_id[64], vset[64];
@@ -350,7 +367,7 @@ int main(void) {
     {
         fixture_t fb;
         CHECK(fx_open(&fb) == 0, "fixture b");
-        CHECK(nodus_witness_db_migrate_v2s6(fb.w) == 0, "migrate b");
+        CHECK(nodus_witness_db_migrate_v2s7(fb.w) == 0, "migrate b");
         CHECK(nodus_witness_v2_genesis(fb.w, gen_id, vset, 0) == 0,
               "genesis b");
         uint8_t sys_b[64];
@@ -646,7 +663,7 @@ int main(void) {
     /* ── 7. supply (official DNA numbers) ───────────────────────────── */
     fixture_t fs;
     CHECK(fx_open(&fs) == 0, "supply fixture"); OK();
-    CHECK(nodus_witness_db_migrate_v2s6(fs.w) == 0, "migrate");
+    CHECK(nodus_witness_db_migrate_v2s7(fs.w) == 0, "migrate");
 
     /* 1B total; 7 × 10M self-bonds CARVED; remainder 930M as UTXOs.
      * Production supply_tracking schema (nodus_witness.c): id=1 CHECK,
@@ -772,12 +789,26 @@ int main(void) {
     CHECK(run_sql(fs.w->db,
         "UPDATE supply_tracking SET total_minted = 3200") == 0, "restore");
     CHECK(nodus_witness_v2_supply_check(fs.w) == 0, "restore broke"); OK();
-    /* shielded state must not exist */
-    CHECK(run_sql(fs.w->db, "CREATE TABLE pool_state (x INTEGER)") == 0,
-          "mk pool");
+    /* S7: the "no pool table may exist" C3 placeholder is REPLACED by
+     * real committed pool balances — an UNBACKED native pool balance
+     * (value from nowhere) must fail the equation, and zeroing it must
+     * restore conservation. */
+    CHECK(run_sql(fs.w->db,
+        "INSERT INTO v2_pools (domain_id, pool_id, config_version, "
+        "tree_depth, history_limit, asset_ref, note_count, note_root, "
+        "frontier, nul_count, nul_root, balance, hist_count, "
+        "hist_next_seq) VALUES (1, 9, 1, 24, 720, zeroblob(64), 0, "
+        "zeroblob(32), zeroblob(768), 0, zeroblob(64), 5, 1, 1)") == 0,
+          "mk pool row");
     CHECK(nodus_witness_v2_supply_check(fs.w) != 0,
-          "shielded pool state tolerated"); OK();
-    CHECK(run_sql(fs.w->db, "DROP TABLE pool_state") == 0, "drop pool");
+          "unbacked pool balance tolerated"); OK();
+    CHECK(run_sql(fs.w->db,
+        "UPDATE v2_pools SET balance = 0 WHERE pool_id = 9") == 0,
+          "zero pool");
+    CHECK(nodus_witness_v2_supply_check(fs.w) == 0,
+          "zero pool balance broke conservation"); OK();
+    CHECK(run_sql(fs.w->db, "DELETE FROM v2_pools WHERE pool_id = 9")
+          == 0, "drop pool row");
     /* restart invariant */
     CHECK(fx_reopen(&fs) == 0, "reopen");
     CHECK(nodus_witness_v2_supply_check(fs.w) == 0, "restart broke"); OK();

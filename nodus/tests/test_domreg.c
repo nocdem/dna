@@ -51,6 +51,7 @@
 #include "witness/nodus_witness_domreg.h"
 #include "witness/nodus_witness_runtime.h"
 #include "witness/nodus_witness_roots_v2.h"
+#include "witness/nodus_witness_v2_schema.h"
 
 #include "dnac/dnac.h"
 #include "dnac/domain_wire.h"
@@ -161,6 +162,15 @@ static int fx_open(fixture_t *fx) {
     snprintf(fx->w->data_path, sizeof(fx->w->data_path), "%s", fx->dir);
     memset(fx->chain_id16, 0x11, sizeof(fx->chain_id16));
     if (nodus_witness_create_chain_db(fx->w, fx->chain_id16) != 0) {
+        rmrf(fx->dir); free(fx->w); fx->w = NULL;
+        return -1;
+    }
+    /* S7: the genesis registry path runs the runtimes' activation-time
+     * state_init hooks (the CORE hook creates its configured pool),
+     * which require the v7 schema — exactly as production V2 genesis
+     * does. */
+    if (nodus_witness_db_migrate_v2s7(fx->w) != 0) {
+        sqlite3_close(fx->w->db);
         rmrf(fx->dir); free(fx->w); fx->w = NULL;
         return -1;
     }

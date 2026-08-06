@@ -324,6 +324,20 @@ int nodus_witness_domreg_init_genesis(nodus_witness_t *w) {
     const nodus_domain_runtime_t *table = nodus_runtime_builtin_table(&n);
     if (!table || n != 2) return -1;
 
+    /* S7: activation-time domain-state initialization runs FIRST —
+     * inside the caller's genesis transaction, BEFORE the payload
+     * roots below are evaluated and committed — so the registry's
+     * genesis_state_root and the head_activate comparison see the
+     * SAME initialized state (the CORE hook creates its configured
+     * native shielded pool; the hook is idempotent-or-conflict, so
+     * head_activate calling it again inside this transaction is a
+     * no-op). Generic dispatch — no domain branch. */
+    for (size_t i = 0; i < n; i++)
+        if (table[i].state_init &&
+            table[i].state_init(&table[i], (struct nodus_witness *)w, 0)
+                != 0)
+            return -1;
+
     /* Real genesis payload roots (S5 cycle break) — computed BEFORE any
      * registry row exists, from the runtime-owned state only. */
     uint8_t sys_payload[64], core_payload[64];

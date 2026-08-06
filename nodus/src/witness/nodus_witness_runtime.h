@@ -132,6 +132,20 @@ typedef int (*nodus_rt_claim_fn)(const struct nodus_domain_runtime *rt,
 typedef int (*nodus_rt_invariant_fn)(const struct nodus_domain_runtime *rt,
                                      struct nodus_witness *w);
 
+/** OPTIONAL activation-time domain-state initialization (Ledger V2
+ *  S7): runs INSIDE the caller's transaction BEFORE the activation
+ *  state/payload roots are evaluated, both at V2 genesis (before the
+ *  registry commits genesis_state_root) and inside the canonical
+ *  activation constructor — so the committed genesis root and the
+ *  activation comparison see the SAME initialized state. MUST be
+ *  idempotent-or-conflict (an activation calls it after the genesis
+ *  path already ran it). NULL = the runtime initializes no state. The
+ *  CORE implementation creates the configured native shielded pool
+ *  (nodus_witness_v2_pools.c). @return 0 / -1 (fail-closed). */
+typedef int (*nodus_rt_state_init_fn)(const struct nodus_domain_runtime *rt,
+                                      struct nodus_witness *w,
+                                      uint64_t activation_global_height);
+
 typedef struct nodus_domain_runtime {
     /* ── identity tuple (ALL five axes must match exactly) ──────────── */
     uint32_t domain_id;
@@ -158,6 +172,7 @@ typedef struct nodus_domain_runtime {
     nodus_rt_asset_fn     asset_check;   /* NULL = never a claim target   */
     nodus_rt_claim_fn     claim_apply;   /* NULL = never a claim target   */
     nodus_rt_invariant_fn invariant;     /* NULL = no asset state         */
+    nodus_rt_state_init_fn state_init;   /* NULL = no activation state    */
 } nodus_domain_runtime_t;
 
 /**
@@ -219,6 +234,11 @@ int nodus_rt_core_claim_apply(const nodus_domain_runtime_t *rt,
                               uint8_t out_output_id[64]);
 int nodus_rt_core_invariant(const nodus_domain_runtime_t *rt,
                             struct nodus_witness *w);
+/* S7 — implemented in nodus_witness_v2_pools.c (the CORE runtime's
+ * pool policy: the configured native D=24 shielded pool). */
+int nodus_rt_core_state_init(const nodus_domain_runtime_t *rt,
+                             struct nodus_witness *w,
+                             uint64_t activation_global_height);
 
 #ifdef __cplusplus
 }

@@ -249,6 +249,71 @@ not current state.
 >   suites. Gate `DEFERRED-V2-GATE-S3-LIVE-SHRINK-CRASH` unchanged
 >   (OPEN).
 
+> **Addendum 2026-08-06 — Ledger V2 Season 7 COMPLETE (DNAC
+> v0.18.4-ledgerv2-s7 / nodus v0.19.4). INACTIVE — consensus-owned
+> D=24 pool state only; NO shielded transaction activates; Type 11
+> stays REJECT; types 12-14 stay UNASSIGNED; C3 remains parked.**
+>
+> - **Shared codec** — `shared/dnac/pool_wire.{h,c}` (pure SHA3-512,
+>   zk-include-free; libnodus + libdna): pool config hash
+>   (`DNA.POOLCFG.v1` — pins pool id, config version, depth 24 and the
+>   consensus-committed history limit), pool leaf (`DNA.POOLLEAF.v1`,
+>   272-B field payload / 288-B hashed preimage incl. the 16-B tag),
+>   per-domain pools_root (`DNA.POOLNODE.v1`; zero
+>   pools = frozen S2 `DNA.E.POOLS.v1` byte-identical), incremental
+>   nullifier accumulator (`DNA.PNUL.v1`/`DNA.E.PNUL.v1` — O(1) per
+>   insert, never an unbounded rehash), bounded history commitment
+>   (`DNA.PHIST.v1`/`DNA.E.PHIST.v1`). Lane encoding = 4 canonical
+>   Goldilocks u64 BE (the shielded-TX wire encoding).
+> - **Witness pool module** — `nodus_witness_v2_pools.{h,c}`: appends
+>   THROUGH the shipped `shielded_tree` (capacity 2^24, FULL rejects
+>   before mutation); persists the O(D) frontier/count/root and
+>   mutually verifies them on every load (fail-closed, no silent
+>   rebuild); canonical `(tx index, slot)` mutation order; devnet
+>   **R = 720** finalized-root window (mainnet R OPEN) with
+>   single-oldest eviction, quiet blocks consuming nothing,
+>   reappearance fail-close and retained-window anchor authority
+>   (`nodus_witness_v2_pool_anchor_check` — read-only, NO live
+>   caller); strict nullifier inserts namespaced `(domain, pool)`;
+>   checked u64 balance (INT64_MAX storage bound). Correction pass
+>   (2026-08-06): `nodus_witness_v2_pools_startup_check` — production
+>   startup gate in `nodus_witness_create_chain_db`, once per DB open:
+>   full ordered nullifier-log replay per pool (contiguous positions
+>   from 0, canonical bytes, replayed `DNA.PNUL.v1` root == committed
+>   root/count) + derived note-table shape (COUNT/MIN/MAX/canonical);
+>   mismatch refuses the DB fail-closed, never repairs; pre-v7 DBs
+>   pass vacuously; per-block insert stays O(1). Eviction semantics
+>   clarified: duplicate detection covers the RETAINED window only —
+>   evicted-root non-reproducibility is a cryptographic assumption of
+>   the append-only tree, not a stored permanent history. Leaf
+>   preimage arithmetic corrected in docs: 272-B field payload, 288-B
+>   hashed preimage incl. tag (code always hashed 288 — doc-only).
+> - **Schema v7** — `v2_pools` / `v2_pool_notes` (DERIVED path-serving
+>   list) / `v2_pool_nullifiers` / `v2_pool_roots`; atomic 6→7 with
+>   exact column-shape verification, stage fault injection, v8+ fail
+>   closed. Apply engine + V2 genesis now require v7.
+> - **Apply + supply** — pool batches ride the ONE block transaction
+>   (phase 6p, fault points **F19-F25**, digest-proven rollback;
+>   S1-S6 fault ids frozen); the CORE runtime instantiates its
+>   configured native pool (`DNAC_SHIELDED_POOL_V1`, D=24, R=720)
+>   through the new generic OPTIONAL `state_init` activation hook
+>   (genesis pre-registry + idempotent in `head_activate`);
+>   `pools_root` is a REAL core leg and `shielded ≡ 0` is REPLACED by
+>   real committed native-asset pool balances (foreign asset/domain
+>   excluded; the "no pool table may exist" guard retired).
+> - **Tests** — NEW `test_v2_pools` (175 checks, 10 groups:
+>   python-reproduced outer KATs, bridge identity with shielded_tree
+>   E_24, anchor matrix, canonical-order rejects, synthetic
+>   near-capacity frontier, nullifier namespacing/accumulator,
+>   limit-3 eviction/expiry/rollback, balance/root ownership, engine
+>   supply-move fixtures + follower order-divergence reject +
+>   F19-F25 digest rollback, v7 migration matrix + column drift,
+>   inactivity boundary). nodus ctest **157/157**; messenger 35/35;
+>   zk `make test` ALL GATES GREEN (no vector touched); ASAN+UBSAN
+>   clean on the 8 affected suites; Stage F 7-node harness scripts
+>   7/7 state_root identical. Gate
+>   `DEFERRED-V2-GATE-S3-LIVE-SHRINK-CRASH` unchanged (OPEN).
+
 ---
 
 ## Architecture (current)

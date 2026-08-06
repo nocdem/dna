@@ -151,6 +151,16 @@ set(NODUS_SOURCES
     ${SHARED_DIR}/dnac/manifest_wire.c
     src/witness/nodus_witness_v2_claims.c
 
+    # Ledger V2 S7 — INACTIVE shielded-pool state: canonical pool
+    # commitments (shared codec) and the witness-side pool module
+    # (D=24 frontier persistence, finalized-root history + anchors,
+    # nullifier set, pool balance, real per-domain pools_root, the
+    # CORE runtime's pool policy). No consensus caller; Type 11 stays
+    # REJECT. The D=24 tree primitive itself (shielded_tree.c +
+    # note_commit.c) joins the zk block below (Poseidon2 dependency).
+    ${SHARED_DIR}/dnac/pool_wire.c
+    src/witness/nodus_witness_v2_pools.c
+
     # Ledger V2 S3 — INACTIVE validator-set snapshot codec + QC V2
     # (certificate codec and historical verification). No consensus path
     # calls either; the live 144-byte cert path (nodus_witness_cert.c)
@@ -283,6 +293,11 @@ if(NOT WIN32)
         ${SHARED_DIR}/crypto/zk/poseidon2_air_trace.c
         ${SHARED_DIR}/crypto/zk/poseidon2_air_cols.c
         ${SHARED_DIR}/crypto/zk/poseidon2_goldilocks.c
+        # Ledger V2 S7: the consensus-side D=24 note-commitment tree
+        # (F1b/F1c) + its Poseidon2 sponge/compress — the authoritative
+        # pool tree primitive nodus_witness_v2_pools.c appends through.
+        ${SHARED_DIR}/crypto/zk/note_commit.c
+        ${SHARED_DIR}/crypto/zk/shielded_tree.c
     )
 endif()
 
@@ -703,6 +718,7 @@ add_test(NAME test_manifest_wire COMMAND test_manifest_wire)
 # spent-after-restart), fault-injection digest rollback, one-owner
 # supply conservation, insertion-order-independent claims_root.
 register_witness_test(test_v2_claims)
+register_witness_test(test_v2_pools)
 
 # Ledger V2 S3 — snapshot persistence: insert/get round-trip, conflict
 # detection, corruption fail-close, oracle-pinned validator_set_root,

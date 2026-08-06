@@ -381,6 +381,17 @@ static int head_activate(nodus_witness_t *w, dom_ctx_t *d,
                          uint64_t global_height) {
     if (!d || !d->rt || d->status != DNA_DOMST_ACTIVE) return -1;
 
+    /* S7: the runtime's activation-time state initialization (if any)
+     * runs BEFORE the roots are evaluated — deterministic, inside THE
+     * transaction, idempotent when the genesis path already ran it.
+     * Heads are still never synthesized: this initializes the
+     * runtime's OWN domain state, then the ONE constructor below
+     * builds the head from it. */
+    if (d->rt->state_init &&
+        d->rt->state_init(d->rt, (struct nodus_witness *)w,
+                          global_height) != 0)
+        return -1;
+
     uint8_t sr[64], chk[64];
     if (d->rt->state_root(d->rt, w, sr) != 0) return -1;
     if (d->rt->payload_root) {
@@ -455,7 +466,7 @@ int nodus_witness_v2_genesis_ex(nodus_witness_t *w,
     if ((manifest_bytes == NULL) != (manifest_len == 0)) return -1;
     uint32_t ver = 0;
     if (nodus_witness_db_schema_version(w, &ver) != 0 ||
-        ver != NODUS_V2_SCHEMA_VERSION_S6)
+        ver != NODUS_V2_SCHEMA_VERSION_S7)
         return -1;
 
     /* Idempotency: a committed height-0 row decides. */
@@ -599,13 +610,45 @@ int nodus_witness_v2_genesis_ex(nodus_witness_t *w,
 #define FAIL_POINT(pt) \
     do { if (blk->fail_at == (pt)) goto fail; } while (0)
 
+/* S7: map the pool module's mutation stages onto this engine's fault
+ * points — a stage "fires" (aborts the batch, rolling the ONE block
+ * transaction back) when the block requests the matching point for the
+ * batch index being applied. */
+typedef struct {
+    const nodus_v2_block_t *blk;
+    size_t index;
+} pool_fault_ctx_t;
+
+static int pool_stage_fault(void *ud, nodus_v2_pool_stage_t s) {
+    const pool_fault_ctx_t *c = (const pool_fault_ctx_t *)ud;
+    if (c->blk->fail_pool_index != (uint32_t)c->index) return 0;
+    switch (s) {
+        case NODUS_V2_POOL_STAGE_COMMITS:
+            return c->blk->fail_at == V2AP_FAIL_AFTER_POOL_COMMITS;
+        case NODUS_V2_POOL_STAGE_FRONTIER:
+            return c->blk->fail_at == V2AP_FAIL_AFTER_POOL_FRONTIER;
+        case NODUS_V2_POOL_STAGE_NULLS:
+            return c->blk->fail_at == V2AP_FAIL_AFTER_POOL_NULLS;
+        case NODUS_V2_POOL_STAGE_NULROOT:
+            return c->blk->fail_at == V2AP_FAIL_AFTER_POOL_NULROOT;
+        case NODUS_V2_POOL_STAGE_BALANCE:
+            return c->blk->fail_at == V2AP_FAIL_AFTER_POOL_BALANCE;
+        case NODUS_V2_POOL_STAGE_HISTORY:
+            return c->blk->fail_at == V2AP_FAIL_AFTER_POOL_HISTORY;
+        case NODUS_V2_POOL_STAGE_EVICT:
+            return c->blk->fail_at == V2AP_FAIL_AFTER_POOL_EVICT;
+        default:
+            return 1;                    /* unknown stage: fail closed   */
+    }
+}
+
 int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
     if (!w || !w->db || !blk || (blk->n_ops > 0 && !blk->ops)) return -1;
     if (blk->n_ops > MAX_OPS) return -1;
 
     uint32_t ver = 0;
     if (nodus_witness_db_schema_version(w, &ver) != 0 ||
-        ver != NODUS_V2_SCHEMA_VERSION_S6)
+        ver != NODUS_V2_SCHEMA_VERSION_S7)
         return -1;
 
     /* ── 0. replay / linkage (read-only, pre-transaction) ───────────── */
@@ -784,6 +827,33 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
         }
     }
 
+    /* ── S7 pool batches: shape + canonical batch order + touched
+     * owning domains (pre-txn, read-only). Ordering, canonicity,
+     * duplicate and capacity rules live in the pool module; the engine
+     * only enforces the cross-batch order and domain authority. ───── */
+    if (blk->n_pool_muts > 0) {
+        if (!blk->pool_muts || blk->n_pool_muts > MAX_OPS) RETURN_FAIL;
+        for (size_t i = 0; i < blk->n_pool_muts; i++) {
+            const nodus_v2_pool_mut_t *m = &blk->pool_muts[i];
+            if (nodus_witness_v2_pool_mut_validate(m) != 0) RETURN_FAIL;
+            if (i > 0) {
+                const nodus_v2_pool_mut_t *p = &blk->pool_muts[i - 1];
+                /* strictly ascending (domain_id, pool_id): duplicates
+                 * (two batches for one pool = ambiguous final root)
+                 * and non-canonical order both reject */
+                if (p->domain_id > m->domain_id ||
+                    (p->domain_id == m->domain_id &&
+                     p->pool_id >= m->pool_id))
+                    RETURN_FAIL;
+            }
+            /* a pool batch IS a state transition of its owning domain */
+            dom_ctx_t *d = dom_for(doms, n_dom, m->domain_id);
+            if (!d || d->status != DNA_DOMST_ACTIVE || !d->rt)
+                RETURN_FAIL;
+            d->touched = 1;
+        }
+    }
+
 #undef RETURN_FAIL
 
     /* ── 1. THE transaction ─────────────────────────────────────────── */
@@ -853,6 +923,18 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
             goto fail;
         if (blk->fail_at == V2AP_FAIL_AFTER_CLAIM_STATE &&
             blk->fail_claim_index == (uint32_t)i)
+            goto fail;
+    }
+
+    /* 6p. S7 pool-state batches — canonical (domain_id, pool_id) order
+     * (validated pre-txn), each applied atomically INSIDE the one
+     * transaction through the pool module; the stage callback maps the
+     * pool stages onto this engine's S7 fault points (19-25). */
+    for (size_t i = 0; i < blk->n_pool_muts; i++) {
+        pool_fault_ctx_t pfc = { blk, i };
+        if (nodus_witness_v2_pool_apply(w, &blk->pool_muts[i],
+                                        blk->global_height,
+                                        pool_stage_fault, &pfc) != 0)
             goto fail;
     }
 

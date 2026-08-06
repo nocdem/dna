@@ -15,6 +15,7 @@
 #include "witness/nodus_witness_vset.h"
 #include "witness/nodus_witness_domreg.h"
 #include "witness/nodus_witness_v2_claims.h"
+#include "witness/nodus_witness_v2_pools.h"
 #include "nodus/nodus_chain_config.h"
 #include "crypto/utils/qgp_log.h"
 
@@ -319,7 +320,12 @@ int nodus_witness_core_root_v2(nodus_witness_t *w, uint8_t out[64]) {
         return -1;
     if (nodus_witness_token_root_v2(w, token_root) != 0)
         return -1;
-    if (dna_v2_empty_root(DNA_V2_EMPTY_POOLS, pools) != 0)
+    /* S7: the pools leg is REAL — nodus_witness_pools_root_v2 over the
+     * v2_pools rows OWNED BY THIS DOMAIN (each runtime commits the pool
+     * state of its own domain; a foreign domain's pool can never enter
+     * this root). An absent table (pre-S7 DB) or a zero-pool domain
+     * reproduces the frozen S2 tagged-empty root byte-identically. */
+    if (nodus_witness_pools_root_v2(w, DNA_DOMAIN_CORE, pools) != 0)
         return -1;
     /* S6: the claims leg is REAL — nodus_witness_claims_root_v2 over
      * the v2_claims_spent rows TARGETING THIS DOMAIN (each runtime owns

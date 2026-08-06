@@ -19,8 +19,11 @@
  *   5  Ledger V2 S5 schema present
  *   6  Ledger V2 S6 schema present (S5 + the three generic
  *      manifest/claim tables below)
+ *   7  Ledger V2 S7 schema present (S6 + the four generic pool-state
+ *      tables below)
  * Any OTHER value is unknown/newer state and FAILS CLOSED: this build
- * refuses to touch a database whose schema it does not understand.
+ * refuses to touch a database whose schema it does not understand
+ * (version 8+ rejects — no forward compatibility is ever assumed).
  *
  * ── S6 migration (nodus_witness_db_migrate_v2s6) ──────────────────────
  * Version 0 first runs the (atomic) S5 migration, then ONE atomic
@@ -52,6 +55,42 @@
  *                    runtime's domain-local output identity) — the
  *                    spent-claim set; each runtime's claims_root is
  *                    computed over the rows targeting ITS domain
+ *
+ * ── S7 migration (nodus_witness_db_migrate_v2s7) ──────────────────────
+ * Version 0/5 first runs the (atomic) S6 migration chain, then ONE
+ * atomic BEGIN IMMEDIATE … COMMIT performs 6 → 7, in order:
+ *   1. create the four S7 tables (IF NOT EXISTS);
+ *   2. verify every required table exists AND carries EXACTLY the
+ *      expected column sequence (column drift / partial tables reject);
+ *   3. PRAGMA user_version = 7.
+ * ANY failure rolls the 6 → 7 transaction back (a crash between stages
+ * leaves a VALID version-6 database; re-running resumes). Re-running at
+ * version 7 is a no-op. Version 8+ fails closed. The S7 apply engine
+ * and V2 genesis require version 7.
+ *
+ * ── S7 tables (generic pool state — namespaced (domain_id, pool_id);
+ *    NO domain or pool default exists anywhere) ───────────────────────
+ *   v2_pools            (domain_id, pool_id) PK · config_version ·
+ *                       tree_depth · history_limit · asset_ref (opaque,
+ *                       target-runtime-interpreted) · note_count ·
+ *                       note_root (32 = 4 u64 BE canonical lanes) ·
+ *                       frontier (D×32 canonical filled-subtree blob;
+ *                       non-meaningful levels zeroed) · nul_count ·
+ *                       nul_root (64) · balance · hist_count ·
+ *                       hist_next_seq — the O(D) consensus pool state
+ *   v2_pool_notes       (domain_id, pool_id, position) PK · commitment
+ *                       (32) · global_height · tx_index · output_slot —
+ *                       the O(count) DERIVED/rebuildable commitment
+ *                       list for future path serving; NOT independently
+ *                       committed by pools_root (count+root are)
+ *   v2_pool_nullifiers  (domain_id, pool_id, nullifier) PK ·
+ *                       position UNIQUE per pool · global_height ·
+ *                       tx_index · input_slot — strict-insert spent set
+ *   v2_pool_roots       (domain_id, pool_id, seq) PK · note_root
+ *                       (UNIQUE per pool among retained) ·
+ *                       global_height — the retained newest-R
+ *                       finalized-root window (R consensus-committed in
+ *                       the pool config)
  *
  * ── Migration (nodus_witness_db_migrate_v2s5) ─────────────────────────
  * One atomic BEGIN IMMEDIATE … COMMIT containing, in order:
@@ -121,8 +160,11 @@ extern "C" {
 /** The S5 schema version stored in PRAGMA user_version. */
 #define NODUS_V2_SCHEMA_VERSION  5u
 
-/** The S6 schema version — required by the S6 apply engine/genesis. */
+/** The S6 schema version. */
 #define NODUS_V2_SCHEMA_VERSION_S6  6u
+
+/** The S7 schema version — required by the apply engine/genesis. */
+#define NODUS_V2_SCHEMA_VERSION_S7  7u
 
 /** Deterministic fault-injection stages for the migration tests. */
 typedef enum {
@@ -172,6 +214,31 @@ int nodus_witness_db_migrate_v2s6(nodus_witness_t *w);
  *  transaction (rolls back, -1; the DB stays a valid version-5 schema). */
 int nodus_witness_db_migrate_v2s6_ex(nodus_witness_t *w,
                                      nodus_v2s6_mig_fail_t fail_at);
+
+/** Deterministic fault-injection stages for the S7 migration tests
+ *  (the 6 → 7 transaction only — earlier stages have their own). */
+typedef enum {
+    V2S7MIG_FAIL_NONE = 0,
+    V2S7MIG_FAIL_AFTER_BEGIN,     /* after BEGIN, before any DDL          */
+    V2S7MIG_FAIL_AFTER_TABLES,    /* four S7 tables created               */
+    V2S7MIG_FAIL_AFTER_VERIFY,    /* schema-shape verification passed     */
+    V2S7MIG_FAIL_BEFORE_COMMIT    /* user_version written, pre-COMMIT     */
+} nodus_v2s7_mig_fail_t;
+
+/**
+ * Atomic S7 migration (header contract above). Version 0/5 runs the S6
+ * migration chain first (its own atomic transactions), then 6 → 7
+ * atomically.
+ * @return 0 migrated or already at version 7 (idempotent);
+ *         -1 failure (full rollback of the running stage) — including
+ *         an UNKNOWN user_version (neither 0, 5, 6 nor 7): fail closed.
+ */
+int nodus_witness_db_migrate_v2s7(nodus_witness_t *w);
+
+/** Test variant: abort deterministically at `fail_at` inside the 6 → 7
+ *  transaction (rolls back, -1; the DB stays a valid version-6 schema). */
+int nodus_witness_db_migrate_v2s7_ex(nodus_witness_t *w,
+                                     nodus_v2s7_mig_fail_t fail_at);
 
 #ifdef __cplusplus
 }
