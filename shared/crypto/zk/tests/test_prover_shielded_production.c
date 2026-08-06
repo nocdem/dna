@@ -9,7 +9,8 @@
  *   T1  height pin: dnac_agg_prover_prove_production REJECTS log_height != 10
  *       (the C1 fixed H=1024 pin; a smaller trace would be rejected by the
  *       verifier's committed-height==11 guard, so the entry fails close).
- *   T2  production prove: 1-input action (IN 100 = OUT 70 + FEE 30, D=4) at
+ *   T2  production prove: 1-input action (IN 100 = OUT 70 + OUT 30, fee 30
+ *       supplied as the S8 public inst.fee, D = CONF_AGG_TREE_DEPTH) at
  *       h=1024, OS-entropy draws AND leaf salts (genuinely salted, M3b),
  *       pinned params (num_queries=100, log_final_poly_len=0, query_pow=16
  *       -> 216-bit conjectured soundness). Internally self-verified (FRI with
@@ -34,20 +35,30 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "conf_action_agg_air.h" /* CONF_AGG_TREE_DEPTH (D = 24 since S8) */
 #include "conf_action_air.h"
 #include "note_commit.h"
 #include "shielded_fri_params.h"
 #include "stark_prover_agg.h"
 #include "zk_entropy.h"
 
+/* Sibling-array stride: D levels x 4 lanes per note-block (D = 24 since S8
+ * Gate 2 — sized by the MACRO, never a literal 4). */
+#define PS_SIB_STRIDE ((size_t)CONF_AGG_TREE_DEPTH * 4)
+#define PS_SIB_LEN    (3 * PS_SIB_STRIDE)
+
 /* The 1-input action instance (== dump_conf_action_agg_air_zk note set): the
- * witness data is height-independent; only the padding grows to H=1024. */
+ * witness data is height-independent; only the padding grows to H=1024.
+ * ⚠ S8 Gate 2: note 2 WAS a CONF_ACTION_ROLE_FEE block. IS_FEE is pinned ZERO
+ * and generate rejects a FEE-role note, so it is now a second OUTPUT of the
+ * SAME value (the set stays conserving) and the fee reaches the statement as
+ * the independent public inst.fee (set in main). */
 static void build_notes(uint64_t value[3], uint8_t roles[3], uint64_t pos[3],
                         uint64_t nk[12], uint64_t ak[12], uint64_t addr[12],
-                        uint64_t rcm[6], uint64_t memb_siblings[48]) {
+                        uint64_t rcm[6], uint64_t *memb_siblings) {
     const uint64_t v[3] = {100, 70, 30};
     const uint8_t r[3] = {CONF_ACTION_ROLE_INPUT, CONF_ACTION_ROLE_OUTPUT,
-                          CONF_ACTION_ROLE_FEE};
+                          CONF_ACTION_ROLE_OUTPUT};
     const uint64_t p[3] = {5, 0, 0};
     /* F3: nk/ak are 4 Goldilocks lanes PER NOTE ([blk*4+lane], instance doc
      * stark_prover_agg.h:72-73; generate reads nk[i*4+j] for EVERY note,
@@ -60,11 +71,6 @@ static void build_notes(uint64_t value[3], uint8_t roles[3], uint64_t pos[3],
     const uint64_t ad[12] = {0, 0, 0, 0, 0xAA01, 0xAA02, 0xAA03, 0xAA04,
                              0xFEE1, 0xFEE2, 0xFEE3, 0xFEE4};
     const uint64_t rc[6] = {0x11, 0x12, 0x21, 0x22, 0x31, 0x32};
-    const uint64_t sib[48] = {
-        0x1001, 0x1002, 0x1003, 0x1004, 0x2001, 0x2002, 0x2003, 0x2004,
-        0x3001, 0x3002, 0x3003, 0x3004, 0x4001, 0x4002, 0x4003, 0x4004,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
     memcpy(value, v, sizeof v);
     memcpy(roles, r, sizeof r);
     memcpy(pos, p, sizeof p);
@@ -72,7 +78,15 @@ static void build_notes(uint64_t value[3], uint8_t roles[3], uint64_t pos[3],
     memcpy(ak, a, sizeof a);
     memcpy(addr, ad, sizeof ad);
     memcpy(rcm, rc, sizeof rc);
-    memcpy(memb_siblings, sib, 48 * sizeof(uint64_t));
+    /* Block 0 (the only INPUT) walks D levels. The pre-S8 fixture spelled out
+     * 4 literal levels {0x(L+1)001..0x(L+1)004}; the SAME rule now fills all D,
+     * so levels 0-3 stay byte-identical. Blocks 1/2 are OUTPUTs — their sibling
+     * slots are never read, so they stay zero. */
+    memset(memb_siblings, 0, PS_SIB_LEN * sizeof(uint64_t));
+    for (unsigned L = 0; L < (unsigned)CONF_AGG_TREE_DEPTH; L++)
+        for (unsigned j = 0; j < 4; j++)
+            memb_siblings[(size_t)L * 4 + j] =
+                (uint64_t)0x1000 * (L + 1) + 0x0001 + (uint64_t)j;
 }
 
 int main(void) {
@@ -89,7 +103,7 @@ int main(void) {
     int fails = 0;
 
     uint64_t value[3], pos[3], nk[12], ak[12], addr[12], rcm[6],
-        memb_siblings[48];
+        memb_siblings[PS_SIB_LEN];
     uint8_t roles[3];
     build_notes(value, roles, pos, nk, ak, addr, rcm, memb_siblings);
     static const uint64_t kat_txbind[4] = {
@@ -108,6 +122,13 @@ int main(void) {
     inst.num_notes = 3;
     inst.memb_siblings = memb_siblings;
     inst.tx_binding = kat_txbind;
+    /* S8 Gate 2: the note set is value-CONSERVING, so both transparent legs are
+     * 0 (== the historical BAL == 0 terminal); the fee is now an independent
+     * public taken from inst.fee (stark_prover_agg.h:102-114), carrying the
+     * value the retired FEE-role note used to hold. */
+    inst.boundary_in = 0;
+    inst.boundary_out = 0;
+    inst.fee = 30;
 
     /* ── T1: height pin — anything but the C1 fixed H=1024 fails close. ── */
     {

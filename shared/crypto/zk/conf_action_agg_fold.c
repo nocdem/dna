@@ -29,8 +29,11 @@ static inline gold_fp2_t fp2u(uint64_t v) {
 }
 
 void dnac_conf_action_agg_fold_air_eval(dnac_stark_folder_t *f) {
-    /* ── C1 reuse: emits every conf_action constraint on [0,813) in the SAME
-     * order as the oracle's ConfActionAir.eval(builder). ── */
+    /* ── C1 reuse: emits every conf_action constraint on [0,1002) in the SAME
+     * order as the oracle's ConfActionAir.eval(builder). It runs on THIS
+     * folder, so its S8 last-row terminal reads THIS descriptor's `ctx`
+     * (CONF_AGGZK_PUB_BIN / _BOUT) and THIS instance's publics — that is the
+     * intent, and it is what keeps the terminal in its C1 emission slot. ── */
     dnac_conf_action_fold_air_eval(f);
 
     const gold_fp2_t *L = f->trace_local;
@@ -281,7 +284,12 @@ void dnac_conf_action_agg_fold_air_eval(dnac_stark_folder_t *f) {
      *    closes A-6 GAP3 output side — output_commit + fee are circuit-emitted,
      *    balance-bound publics). EMISSION ORDER mirrors the oracle exactly. ── */
     const gold_fp2_t num_output_pub = gold_fp2_from_base(PUB[CONF_AGGZK_PUB_NUMOUT]);
+    /* S8 Gate-2: `fee` is NO LONGER eval-read (the fee left the balance; it is
+     * FS/sighash-bound only, exactly like tx_binding). The slot and this read
+     * are KEPT so the public layout stays self-documenting at its pinned index;
+     * the deliberate non-use is marked below. */
     const gold_fp2_t fee_pub = gold_fp2_from_base(PUB[CONF_AGGZK_PUB_FEE]);
+    (void)fee_pub;
     const gold_fp2_t is_output = L[CONF_ACTION_ISOUT_OFF];
     const gold_fp2_t is_fee = L[CONF_ACTION_ISFEE_OFF];
     /* N_output first row: N_output == PHI0·IS_OUTPUT. */
@@ -325,9 +333,14 @@ void dnac_conf_action_agg_fold_air_eval(dnac_stark_folder_t *f) {
             osum = gold_fp2_add(osum, L[CONF_AGGZK_OSLOTSEL_OFF + s]);
         dnac_stark_folder_assert_zero(f, gold_fp2_mul(gate_out, gold_fp2_sub(osum, one)));
     }
-    /* Fee promotion: fee_pub == Σ(IS_FEE·value) via the FEE_ACC accumulator — binds
-     * fee EVEN WHEN there is no FEE block (⇒ fee_pub forced 0), closing the fee-pool
-     * mint. Increment at each FEE block's φ=0 row: next.PHI0·next.IS_FEE·next.value. */
+    /* Fee accumulator. S8 Gate-2: IS_FEE is pinned ZERO in the C1 evaluator, so
+     * every increment term PHI0·IS_FEE·value is identically 0 and the ONLY
+     * satisfiable accumulator is the all-zero one — the last-row constraint is
+     * therefore `FEE_ACC == 0`, NOT `FEE_ACC == fee_pub`. The first-row and
+     * transition constraints are UNCHANGED (they are what force the zero to
+     * hold row-by-row rather than only at the end), and the COLUMN stays: the
+     * trace width is frozen. Increment at each φ=0 row:
+     * next.PHI0·next.IS_FEE·next.value. */
     dnac_stark_folder_when(
         f, f->is_first_row,
         gold_fp2_sub(L[CONF_AGGZK_FEEACC_OFF],
@@ -337,14 +350,31 @@ void dnac_conf_action_agg_fold_air_eval(dnac_stark_folder_t *f) {
         gold_fp2_sub(gold_fp2_sub(N[CONF_AGGZK_FEEACC_OFF], L[CONF_AGGZK_FEEACC_OFF]),
                      gold_fp2_mul(gold_fp2_mul(N[CONF_ACTION_PHI0_OFF], N[CONF_ACTION_ISFEE_OFF]),
                                   N[CONF_ACTION_VALUE_OFF])));
-    dnac_stark_folder_when(f, f->is_last_row,
-                           gold_fp2_sub(L[CONF_AGGZK_FEEACC_OFF], fee_pub));
+    dnac_stark_folder_when(f, f->is_last_row, L[CONF_AGGZK_FEEACC_OFF]);
 }
 
+/* S8 Gate-2 boundary binding for the REUSED C1 evaluator's last-row terminal:
+ * BAL == PUB[BOUT] − PUB[BIN]. Module-static and const — it is pure layout, the
+ * same for every instance of this AIR, so (unlike the P2 fold states) there is
+ * no per-instance cfg and no bind/disarm lifecycle. It satisfies the
+ * dnac_stark_air_t::ctx LIFETIME contract trivially (static storage duration).
+ *
+ * INDEX SAFETY is discharged HERE, at compile time — `air_eval` has no error
+ * channel, so a range check at eval time is not available. */
+static const dnac_conf_action_bnd_ctx_t CONF_AGG_BND_CTX = {
+    CONF_AGGZK_PUB_BIN,  /* 39 */
+    CONF_AGGZK_PUB_BOUT, /* 40 */
+};
+_Static_assert(CONF_AGGZK_PUB_BIN < CONF_AGGZK_NUM_PUBLICS &&
+                   CONF_AGGZK_PUB_BOUT < CONF_AGGZK_NUM_PUBLICS,
+               "S8 boundary public indices must be inside the public vector");
+
 const dnac_stark_air_t DNAC_CONF_ACTION_AGG_FOLD_AIR = {
-    CONF_AGGZK_WIDTH,        /* main_width = 2318 (post-F3; S4c routing + fee acc) */
-    CONF_AGGZK_NUM_PUBLICS,  /* 43 */
+    CONF_AGGZK_WIDTH,        /* main_width = 2378 (D=24; S4c routing + fee acc) */
+    CONF_AGGZK_NUM_PUBLICS,  /* 45 (S8: + boundary_in, boundary_out) */
     1,                       /* main_next: C1 counter/freeze + membership chaining + N_input/N_output */
     dnac_conf_action_agg_fold_air_eval,
-    NULL, /* ctx: this AIR has no cfg state — its eval never reads folder->ctx */
+    /* ctx: the S8 boundary-public index pair. The eval body here never reads it
+     * — the REUSED C1 evaluator does, off the SAME folder. */
+    &CONF_AGG_BND_CTX,
 };

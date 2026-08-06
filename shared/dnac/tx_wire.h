@@ -308,6 +308,234 @@ int dnac_txw_legacy_tx_hash(const uint8_t chain_id[DNA_CHAIN_ID_LEN],
                             uint8_t signer_count,
                             uint8_t hash_out[DNAC_TXW_HASH_LEN]);
 
+/* ══════════════════════════════════════════════════════════════════════
+ * 4. V3 shielded body codec (Ledger V2 Season 8 — INACTIVE)
+ *
+ * The canonical fixed 359-byte shielded statement section carried in a
+ * Transaction Wire V3 body (§2), followed by the opaque FRI blob. It is a
+ * NEW section, not a re-versioning of anything: the legacy 334-byte V2
+ * shielded section (DNAC_TXW_SHIELDED_FIXED, dnac
+ * DNAC_TX_SHIELDED_FIXED_SIZE) is FROZEN byte-for-byte and its type-11
+ * transactions stay unconditionally rejected by live consensus. Nothing
+ * here is reachable from any live path.
+ *
+ * Sections 1-3 above are UNCHANGED by S8 — no generic helper
+ * (dna_exec_context_*, dnac_txw3_encode/_decode/_tx_hash) grew a
+ * transaction-type branch, and no legacy byte moved.
+ *
+ * ── V3 shielded body layout (offsets from the START of the V3 body;
+ *    every multi-byte integer BIG-ENDIAN) ─────────────────────────────
+ *   off   0  len   1  sect_version      = DNAC_TXW3_SECT_VERSION (0x02)
+ *   off   1  len  32  anchor[4]           (4 × u64 BE lanes)
+ *   off  33  len   1  num_input           (0..4)
+ *   off  34  len 128  nf_set[4][4]        (slots ≥ num_input all-zero)
+ *   off 162  len   1  num_output          (0..4)
+ *   off 163  len 128  output_commit[4][4] (slots ≥ num_output all-zero)
+ *   off 291  len   8  fee            u64 BE
+ *   off 299  len   8  boundary_in    u64 BE
+ *   off 307  len   8  boundary_out   u64 BE
+ *   off 315  len   8  expiry_height  u64 BE
+ *   off 323  len  32  tx_binding[4]
+ *   off 355  len   4  fri_len        u32 BE
+ *   off 359  len fri_len  FRI proof blob
+ *   body_len == DNAC_TXW3_SHIELDED_FIXED + fri_len, EXACT — a short body
+ *   and a body with trailing bytes are both decode rejects.
+ *
+ * ── Field authority (fee / expiry_height) ─────────────────────────────
+ * The V3 HEADER is AUTHORITATIVE for committed_fee and expiry_height —
+ * it is what the fee-pool and expiry logic read, and it is what the V5
+ * tx-hash binds. The section's `fee` / `expiry_height` are FAIL-CLOSED
+ * MIRRORS: they exist because the proof statement binds them (they are
+ * inside the sighash_v5 preimage), and dnac_txw3_shielded_check_header()
+ * must agree before a statement may be admitted. Direction is one-way:
+ * a mismatch REJECTS; the section never overrides the header.
+ *
+ * ── Canonicality (identical on encode and decode) ─────────────────────
+ *   - sect_version == 0x02;
+ *   - num_input ≤ 4, num_output ≤ 4 (num_input == 0 is LEGAL — the
+ *     shield case — and is NOT a reject);
+ *   - all 40 lanes (anchor 4, nf_set 16, output_commit 16, tx_binding 4)
+ *     canonical Goldilocks elements (< p = 0xFFFFFFFF00000001);
+ *   - every lane of an UNUSED slot (index ≥ its count) is zero;
+ *   - num_input == 0 ⇒ anchor is all-zero (FROZEN: a zero-input
+ *     statement proves no membership, so it carries no anchor);
+ *   - boundary_in < 2^63 and boundary_out < 2^63 (FROZEN verifier-side
+ *     range enforcement — the transparent-leg amounts stay well inside
+ *     the signed range every downstream sum uses);
+ *   - fri_len != 0.
+ * ════════════════════════════════════════════════════════════════════ */
+
+/** Shielded statement section version carried at body offset 0. */
+#define DNAC_TXW3_SECT_VERSION   2
+/** Lanes per anchor/nullifier/commitment/tx_binding value (mirror of
+ *  DNAC_SHIELDED_LANES, dnac/include/dnac/transaction.h). */
+#define DNAC_TXW3_SHIELDED_LANES        4
+/** Aggregate statement slot bounds (mirrors of DNAC_SHIELDED_MAX_INPUTS /
+ *  DNAC_SHIELDED_MAX_OUTPUTS — a wire bound above the AIR's would accept
+ *  a set no proof can bind). */
+#define DNAC_TXW3_SHIELDED_MAX_INPUTS   4
+#define DNAC_TXW3_SHIELDED_MAX_OUTPUTS  4
+/** Fixed (proof-independent) size of the V3 shielded section:
+ *  1+32+1+128+1+128+8+8+8+8+32+4 = 359. Pinned by a _Static_assert in
+ *  tx_wire.c. Distinct from — and no replacement for — the frozen legacy
+ *  334-byte section (DNAC_TXW_SHIELDED_FIXED). */
+#define DNAC_TXW3_SHIELDED_FIXED 359
+
+typedef struct {
+    uint8_t  sect_version;                 /* must be 2                    */
+    uint64_t anchor[DNAC_TXW3_SHIELDED_LANES];
+    uint8_t  num_input;                    /* 0..4                         */
+    uint64_t nf_set[DNAC_TXW3_SHIELDED_MAX_INPUTS][DNAC_TXW3_SHIELDED_LANES];
+    uint8_t  num_output;                   /* 0..4                         */
+    uint64_t output_commit[DNAC_TXW3_SHIELDED_MAX_OUTPUTS][DNAC_TXW3_SHIELDED_LANES];
+    uint64_t fee;                          /* mirror of header committed_fee */
+    uint64_t boundary_in;                  /* transparent → pool, < 2^63   */
+    uint64_t boundary_out;                 /* pool → transparent, < 2^63   */
+    uint64_t expiry_height;                /* mirror of header expiry_height */
+    uint64_t tx_binding[DNAC_TXW3_SHIELDED_LANES];
+    uint32_t fri_len;                      /* blob length; the bytes are
+                                            * passed separately and are NOT
+                                            * owned by this struct         */
+} dnac_txw3_shielded_t;
+
+/**
+ * Canonical encode of the shielded section + FRI blob.
+ * `fri_len` MUST equal st->fri_len (a disagreement between the two is a
+ * reject, never a silent pick). Refuses to emit a non-canonical section:
+ * every rule in the canonicality list above is enforced here exactly as
+ * decode enforces it.
+ * Rejects: NULL args (fri included — fri_len == 0 is not canonical),
+ * fri_len != st->fri_len, any canonicality violation, dst_cap short.
+ * @return 0 on success (*written_out = 359 + fri_len), -1 otherwise.
+ */
+int dnac_txw3_shielded_encode(const dnac_txw3_shielded_t *st,
+                              const uint8_t *fri, uint32_t fri_len,
+                              uint8_t *dst, size_t dst_cap,
+                              size_t *written_out);
+
+/**
+ * Strict canonical decode of a V3 shielded body.
+ * On success fills *out and returns a pointer INTO `body` for the FRI
+ * bytes (*fri_out, *fri_len_out) — no allocation, mirroring
+ * dnac_txw3_decode. On any rejection *out is zeroed (fail closed).
+ * @return 0 / -1.
+ */
+int dnac_txw3_shielded_decode(const uint8_t *body, uint32_t body_len,
+                              dnac_txw3_shielded_t *out,
+                              const uint8_t **fri_out, uint32_t *fri_len_out);
+
+/**
+ * Fee/expiry mirror equality between the AUTHORITATIVE V3 header and the
+ * shielded section (authority direction documented above).
+ * @return 0 only when hdr->committed_fee == st->fee AND
+ *         hdr->expiry_height == st->expiry_height; -1 otherwise
+ *         (NULL included).
+ */
+int dnac_txw3_shielded_check_header(const dnac_txw3_header_t *hdr,
+                                    const dnac_txw3_shielded_t *st);
+
+/* ══════════════════════════════════════════════════════════════════════
+ * 5. sighash_v5 — the canonical proof-binding preimage (S8, INACTIVE)
+ *
+ * The ONE preimage a Ledger V2 shielded statement is bound to. It is a
+ * NEW domain: the frozen sighash_v4 (DNAC_SIGHASH_DOMAIN_V4,
+ * dnac_tx_shielded_sighash) is untouched and keeps binding the legacy
+ * type-11 statement.
+ *
+ * ── sighash_v5 preimage (581 bytes, absolute offsets; every multi-byte
+ *    integer BIG-ENDIAN) ──────────────────────────────────────────────
+ *   off   0  len 16  DNAC_SIGHASH_V5_TAG ("DNAC_SIGHASH_V5" + one 0x00)
+ *   off  16  len 50  ExecutionContext, canonical encoding produced by
+ *                    dna_exec_context_encode (§1 — NOT re-implemented):
+ *                      off  16  chain_id[32]
+ *                      off  48  domain_id          u32 BE
+ *                      off  52  pool_id            u32 BE
+ *                      off  56  tx_type            u8
+ *                      off  57  wire_version       u8
+ *                      off  58  ruleset_version    u32 BE
+ *                      off  62  statement_version  u32 BE
+ *   off  66  len  1  sect_version   (0x02 for this statement)
+ *   off  67  len 64  ruleset_hash   (caller-supplied — the active
+ *                    registry/runtime ruleset digest; the codec never
+ *                    derives or judges it)
+ *   off 131  len 32  anchor[4]
+ *   off 163  len  1  num_input
+ *   off 164  len128  nf_set[4][4]        (slots ≥ num_input all-zero)
+ *   off 292  len  1  num_output
+ *   off 293  len128  output_commit[4][4] (slots ≥ num_output all-zero)
+ *   off 421  len  8  boundary_in    u64 BE
+ *   off 429  len  8  boundary_out   u64 BE
+ *   off 437  len  8  fee            u64 BE
+ *   off 445  len  8  expiry_height  u64 BE
+ *   off 453  len 64  tleg_commit    (transparent-leg commitment)
+ *   off 517  len 64  ct_commit      (ciphertext commitment)
+ *   total 581 = DNAC_SIGHASH_V5_PREIMAGE_LEN
+ *   hash = SHA3-512(preimage)   (qgp_sha3_512)
+ *
+ * NOTE the field ORDER differs from the wire section's (§4): the section
+ * carries fee ‖ boundary_in ‖ boundary_out, the preimage carries
+ * boundary_in ‖ boundary_out ‖ fee. Both layouts are frozen as written —
+ * neither is derived from the other.
+ *
+ * tx_binding is deliberately ABSENT from the preimage: tx_binding is the
+ * mapped image of this sighash, so including it would be circular.
+ *
+ * Domain/pool are NEVER hardcoded here: every one of them arrives through
+ * the caller's ExecutionContext.
+ *
+ * ── S8 tagged-empty commitments ───────────────────────────────────────
+ * S8 always uses the EMPTY transparent-leg and ciphertext commitments.
+ * Following the S2 tagged-empty convention (pool_wire.h), an empty set is
+ * SHA3-512 of its 16-byte zero-padded tag ALONE — never an all-zero
+ * digest, which no tag can produce:
+ *   "DNA.E.TLEG.v1"   empty transparent-leg commitment
+ *   "DNA.E.CTC.v1"    empty ciphertext commitment
+ * ════════════════════════════════════════════════════════════════════ */
+
+#define DNAC_SIGHASH_V5_TAG_LEN 16
+/** 16-byte zero-padded V5 sighash-domain tag ("DNAC_SIGHASH_V5" + one
+ *  0x00 pad). Distinct from DNAC_TXW_V5_TAG: one tag per hash purpose. */
+extern const uint8_t DNAC_SIGHASH_V5_TAG[DNAC_SIGHASH_V5_TAG_LEN];
+
+/** Exact sighash_v5 preimage length (= 581; pinned by a _Static_assert
+ *  in tx_wire.c and re-checked at the final write offset there). */
+#define DNAC_SIGHASH_V5_PREIMAGE_LEN                                       \
+    (DNAC_SIGHASH_V5_TAG_LEN + DNA_EXEC_CTX_WIRE_LEN + 1 + 64 + 32 + 1 +   \
+     128 + 1 + 128 + 8 + 8 + 8 + 8 + 64 + 64)
+
+/**
+ * Canonical shielded statement sighash (preimage above).
+ *
+ * Fail-closed on: any NULL argument; a context failing
+ * dna_exec_context_validate; num_input > 4; num_output > 4; any anchor /
+ * nf_set / output_commit lane ≥ the Goldilocks modulus; any nonzero lane
+ * in a slot at or beyond its count; boundary_in ≥ 2^63; boundary_out ≥
+ * 2^63; a preimage that did not land exactly on
+ * DNAC_SIGHASH_V5_PREIMAGE_LEN.
+ *
+ * st->tx_binding, st->sect_version and st->fri_len are NOT read (the
+ * preimage's sect_version is the explicit parameter, and tx_binding is
+ * this hash's image) — so this function's accept set is deliberately a
+ * superset of dnac_txw3_shielded_encode's: the wire codec is the stricter
+ * of the two, never the looser.
+ *
+ * @return 0 on success (out_sighash[64] filled), -1 otherwise.
+ */
+int dnac_sighash_v5(const dna_exec_context_t *ctx, uint8_t sect_version,
+                    const uint8_t ruleset_hash[DNAC_TXW_HASH_LEN],
+                    const dnac_txw3_shielded_t *st,
+                    const uint8_t tleg_commit[DNAC_TXW_HASH_LEN],
+                    const uint8_t ct_commit[DNAC_TXW_HASH_LEN],
+                    uint8_t out_sighash[DNAC_TXW_HASH_LEN]);
+
+/** Empty transparent-leg commitment = SHA3-512("DNA.E.TLEG.v1" tag
+ *  alone, 16 bytes). @return 0 / -1. */
+int dnac_tleg_commit_empty(uint8_t out[DNAC_TXW_HASH_LEN]);
+
+/** Empty ciphertext commitment = SHA3-512("DNA.E.CTC.v1" tag alone,
+ *  16 bytes). @return 0 / -1. */
+int dnac_ct_commit_empty(uint8_t out[DNAC_TXW_HASH_LEN]);
+
 #ifdef __cplusplus
 }
 #endif

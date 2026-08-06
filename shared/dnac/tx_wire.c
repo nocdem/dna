@@ -489,3 +489,291 @@ fail:
     free(buf);
     return -1;
 }
+
+/* ══════════════════════════════════════════════════════════════════════
+ * 4. V3 shielded body codec (Season 8) + 5. sighash_v5
+ *
+ * INACTIVE: nothing live reaches either. The legacy section above is
+ * untouched — the frozen 334-byte V2 shielded section and its V4 tag
+ * keep their exact pre-S8 behavior, and no generic §1/§2 helper grew a
+ * transaction-type branch. Layouts: tx_wire.h §4/§5.
+ * ════════════════════════════════════════════════════════════════════ */
+
+/* Preimage/section arithmetic is pinned, not assumed. */
+_Static_assert(DNAC_TXW3_SHIELDED_FIXED ==
+                   1 + 32 + 1 + 128 + 1 + 128 + 8 + 8 + 8 + 8 + 32 + 4,
+               "V3 shielded section layout drifted from 359 bytes");
+_Static_assert(DNAC_TXW3_SHIELDED_FIXED == 359,
+               "V3 shielded section length drifted");
+_Static_assert(DNAC_SIGHASH_V5_PREIMAGE_LEN == 581,
+               "sighash_v5 preimage length drifted from 581 bytes");
+/* The lane counts the 32/128-byte spans above encode. */
+_Static_assert(DNAC_TXW3_SHIELDED_LANES == 4 &&
+                   DNAC_TXW3_SHIELDED_MAX_INPUTS == 4 &&
+                   DNAC_TXW3_SHIELDED_MAX_OUTPUTS == 4,
+               "shielded lane/slot mirrors drifted from the AIR bounds");
+/* The legacy section stays frozen alongside — a change to either constant
+ * must be a deliberate, visible break, never a silent one. */
+_Static_assert(DNAC_TXW_SHIELDED_FIXED == 334,
+               "frozen legacy shielded section size moved");
+
+/** Goldilocks modulus. Mirrors GOLDILOCKS_P
+ *  (shared/crypto/zk/field_goldilocks.h) and DNA_POOL_FE_P
+ *  (shared/dnac/pool_wire.h:133); kept local so this translation unit
+ *  stays include-free of both trees. */
+#define TXW3_FE_P            ((uint64_t)0xFFFFFFFF00000001ULL)
+/** FROZEN verifier-side bound on the transparent-leg boundary amounts:
+ *  both MUST be < 2^63, so every downstream signed sum stays in range. */
+#define TXW3_BOUNDARY_BOUND  ((uint64_t)1 << 63)
+/** fri_len offset inside the fixed section (= 355, the last 4 bytes). */
+#define TXW3_SECT_FRILEN_OFF (DNAC_TXW3_SHIELDED_FIXED - 4)
+_Static_assert(TXW3_SECT_FRILEN_OFF == 355, "fri_len offset drifted");
+
+/* S2 tagged-empty commitments — the tag ALONE is hashed (never an
+ * all-zero digest, which no tag can produce). Each tag is EXACTLY 16
+ * bytes, zero-padded ASCII, same rule as pool_wire.c. */
+static const uint8_t TAG_E_TLEG[DNAC_SIGHASH_V5_TAG_LEN] = "DNA.E.TLEG.v1\0\0";
+static const uint8_t TAG_E_CTC[DNAC_SIGHASH_V5_TAG_LEN]  = "DNA.E.CTC.v1\0\0\0";
+
+const uint8_t DNAC_SIGHASH_V5_TAG[DNAC_SIGHASH_V5_TAG_LEN] = {
+    'D','N','A','C','_','S','I','G','H','A','S','H','_','V','5', 0
+};
+
+/* Write 4 Goldilocks lanes as 32 bytes, u64 BE per lane. */
+static void txw3_put_lanes(const uint64_t lanes[DNAC_TXW3_SHIELDED_LANES],
+                           uint8_t *out) {
+    for (unsigned j = 0; j < DNAC_TXW3_SHIELDED_LANES; j++)
+        put_be64(lanes[j], out + (size_t)j * 8);
+}
+
+/* Read 4 Goldilocks lanes from 32 bytes, u64 BE per lane. */
+static void txw3_get_lanes(const uint8_t *in,
+                           uint64_t lanes[DNAC_TXW3_SHIELDED_LANES]) {
+    for (unsigned j = 0; j < DNAC_TXW3_SHIELDED_LANES; j++)
+        lanes[j] = get_be64(in + (size_t)j * 8);
+}
+
+/**
+ * Canonicality rules shared by sighash_v5 and the section codec — the
+ * statement fields that appear in BOTH the preimage and the wire, in the
+ * order tx_wire.h documents them:
+ *   counts ≤ 4 · anchor/nf_set/output_commit lanes < p · unused slots
+ *   all-zero · boundary_in/out < 2^63.
+ * @return 0 / -1.
+ */
+static int txw3_stmt_common_ok(const dnac_txw3_shielded_t *st) {
+    if (st->num_input  > DNAC_TXW3_SHIELDED_MAX_INPUTS)  return -1;
+    if (st->num_output > DNAC_TXW3_SHIELDED_MAX_OUTPUTS) return -1;
+
+    for (unsigned j = 0; j < DNAC_TXW3_SHIELDED_LANES; j++)
+        if (st->anchor[j] >= TXW3_FE_P) return -1;
+
+    for (unsigned s = 0; s < DNAC_TXW3_SHIELDED_MAX_INPUTS; s++)
+        for (unsigned j = 0; j < DNAC_TXW3_SHIELDED_LANES; j++) {
+            if (st->nf_set[s][j] >= TXW3_FE_P) return -1;
+            if (s >= (unsigned)st->num_input && st->nf_set[s][j] != 0)
+                return -1;
+        }
+
+    for (unsigned s = 0; s < DNAC_TXW3_SHIELDED_MAX_OUTPUTS; s++)
+        for (unsigned j = 0; j < DNAC_TXW3_SHIELDED_LANES; j++) {
+            if (st->output_commit[s][j] >= TXW3_FE_P) return -1;
+            if (s >= (unsigned)st->num_output && st->output_commit[s][j] != 0)
+                return -1;
+        }
+
+    if (st->boundary_in  >= TXW3_BOUNDARY_BOUND) return -1;
+    if (st->boundary_out >= TXW3_BOUNDARY_BOUND) return -1;
+    return 0;
+}
+
+/**
+ * Full section canonicality — the shared rules PLUS the wire-only ones.
+ * The complete ordered reject list (encode and decode run the identical
+ * sequence, so a section that decodes always re-encodes byte-identically
+ * and one that would not is never emitted):
+ *   1. sect_version != 2
+ *   2. num_input > 4 / num_output > 4        (txw3_stmt_common_ok)
+ *   3. anchor/nf_set/output_commit lane ≥ p  (txw3_stmt_common_ok)
+ *   4. nonzero lane in an unused slot        (txw3_stmt_common_ok)
+ *   5. boundary_in ≥ 2^63 / boundary_out ≥ 2^63 (txw3_stmt_common_ok)
+ *   6. tx_binding lane ≥ p
+ *   7. num_input == 0 with a nonzero anchor lane
+ *   8. fri_len == 0
+ * num_input == 0 is LEGAL (the shield case) and is never a reject on its
+ * own — only a zero-input statement carrying a nonzero anchor is.
+ * @return 0 / -1.
+ */
+static int txw3_section_ok(const dnac_txw3_shielded_t *st) {
+    if (st->sect_version != DNAC_TXW3_SECT_VERSION) return -1;
+    if (txw3_stmt_common_ok(st) != 0) return -1;
+
+    for (unsigned j = 0; j < DNAC_TXW3_SHIELDED_LANES; j++)
+        if (st->tx_binding[j] >= TXW3_FE_P) return -1;
+
+    /* FROZEN: a zero-input statement proves no membership, so it carries
+     * no anchor — the all-zero anchor is the only canonical form. */
+    if (st->num_input == 0)
+        for (unsigned j = 0; j < DNAC_TXW3_SHIELDED_LANES; j++)
+            if (st->anchor[j] != 0) return -1;
+
+    if (st->fri_len == 0) return -1;
+    return 0;
+}
+
+int dnac_txw3_shielded_encode(const dnac_txw3_shielded_t *st,
+                              const uint8_t *fri, uint32_t fri_len,
+                              uint8_t *dst, size_t dst_cap,
+                              size_t *written_out) {
+    if (!st || !fri || !dst || !written_out) return -1;
+    /* The struct's fri_len and the passed length are two statements of
+     * one fact: a disagreement rejects, neither side silently wins. */
+    if (fri_len != st->fri_len) return -1;
+    if (txw3_section_ok(st) != 0) return -1;   /* covers fri_len == 0 */
+
+    /* Checked arithmetic, same shape as dnac_txw3_encoded_size. */
+    size_t fixed = (size_t)DNAC_TXW3_SHIELDED_FIXED;
+    if (fri_len > SIZE_MAX - fixed) return -1;
+    size_t need = fixed + (size_t)fri_len;
+    if (dst_cap < need) return -1;
+
+    uint8_t *p = dst;
+    *p++ = st->sect_version;                            /* off   0 */
+    txw3_put_lanes(st->anchor, p);           p += 32;   /* off   1 */
+    *p++ = st->num_input;                               /* off  33 */
+    for (unsigned s = 0; s < DNAC_TXW3_SHIELDED_MAX_INPUTS; s++) {
+        txw3_put_lanes(st->nf_set[s], p);    p += 32;   /* off  34 */
+    }
+    *p++ = st->num_output;                              /* off 162 */
+    for (unsigned s = 0; s < DNAC_TXW3_SHIELDED_MAX_OUTPUTS; s++) {
+        txw3_put_lanes(st->output_commit[s], p); p += 32; /* off 163 */
+    }
+    put_be64(st->fee, p);                    p += 8;    /* off 291 */
+    put_be64(st->boundary_in, p);            p += 8;    /* off 299 */
+    put_be64(st->boundary_out, p);           p += 8;    /* off 307 */
+    put_be64(st->expiry_height, p);          p += 8;    /* off 315 */
+    txw3_put_lanes(st->tx_binding, p);       p += 32;   /* off 323 */
+    put_be32(fri_len, p);                    p += 4;    /* off 355 */
+    /* final-offset proof: the fixed section is EXACTLY 359 bytes — a
+     * drifted field width cannot be emitted silently */
+    if ((size_t)(p - dst) != (size_t)DNAC_TXW3_SHIELDED_FIXED) return -1;
+
+    memcpy(dst + DNAC_TXW3_SHIELDED_FIXED, fri, fri_len); /* off 359 */
+    *written_out = need;
+    return 0;
+}
+
+int dnac_txw3_shielded_decode(const uint8_t *body, uint32_t body_len,
+                              dnac_txw3_shielded_t *out,
+                              const uint8_t **fri_out, uint32_t *fri_len_out) {
+    if (!body || !out || !fri_out || !fri_len_out) return -1;
+    if (body_len < (uint32_t)DNAC_TXW3_SHIELDED_FIXED) return -1;  /* short */
+
+    uint32_t fri_len = get_be32(body + TXW3_SECT_FRILEN_OFF);   /* off 355 */
+    /* Subtraction (never 359 + fri_len) so the length equality cannot be
+     * defeated by a wrapping u32: truncated AND trailing-byte bodies both
+     * fail here. */
+    if (body_len - (uint32_t)DNAC_TXW3_SHIELDED_FIXED != fri_len) return -1;
+
+    memset(out, 0, sizeof(*out));
+    const uint8_t *p = body;
+    out->sect_version = *p++;                            /* off   0 */
+    txw3_get_lanes(p, out->anchor);          p += 32;    /* off   1 */
+    out->num_input = *p++;                               /* off  33 */
+    for (unsigned s = 0; s < DNAC_TXW3_SHIELDED_MAX_INPUTS; s++) {
+        txw3_get_lanes(p, out->nf_set[s]);   p += 32;    /* off  34 */
+    }
+    out->num_output = *p++;                              /* off 162 */
+    for (unsigned s = 0; s < DNAC_TXW3_SHIELDED_MAX_OUTPUTS; s++) {
+        txw3_get_lanes(p, out->output_commit[s]); p += 32; /* off 163 */
+    }
+    out->fee           = get_be64(p);        p += 8;     /* off 291 */
+    out->boundary_in   = get_be64(p);        p += 8;     /* off 299 */
+    out->boundary_out  = get_be64(p);        p += 8;     /* off 307 */
+    out->expiry_height = get_be64(p);        p += 8;     /* off 315 */
+    txw3_get_lanes(p, out->tx_binding);      p += 32;    /* off 323 */
+    out->fri_len       = get_be32(p);        p += 4;     /* off 355 */
+
+    if ((size_t)(p - body) != (size_t)DNAC_TXW3_SHIELDED_FIXED ||
+        txw3_section_ok(out) != 0) {
+        memset(out, 0, sizeof(*out));                    /* fail closed */
+        return -1;
+    }
+
+    *fri_out     = body + DNAC_TXW3_SHIELDED_FIXED;      /* off 359 */
+    *fri_len_out = fri_len;
+    return 0;
+}
+
+int dnac_txw3_shielded_check_header(const dnac_txw3_header_t *hdr,
+                                    const dnac_txw3_shielded_t *st) {
+    /* One-way: the HEADER is authoritative for both numbers (tx_wire.h
+     * §4 "Field authority"). A mismatch rejects; the section's mirrors
+     * never override the header. */
+    if (!hdr || !st) return -1;
+    if (hdr->committed_fee != st->fee) return -1;
+    if (hdr->expiry_height != st->expiry_height) return -1;
+    return 0;
+}
+
+int dnac_sighash_v5(const dna_exec_context_t *ctx, uint8_t sect_version,
+                    const uint8_t ruleset_hash[DNAC_TXW_HASH_LEN],
+                    const dnac_txw3_shielded_t *st,
+                    const uint8_t tleg_commit[DNAC_TXW_HASH_LEN],
+                    const uint8_t ct_commit[DNAC_TXW_HASH_LEN],
+                    uint8_t out_sighash[DNAC_TXW_HASH_LEN]) {
+    if (!ctx || !ruleset_hash || !st || !tleg_commit || !ct_commit ||
+        !out_sighash)
+        return -1;
+    if (dna_exec_context_validate(ctx) != 0) return -1;
+    if (txw3_stmt_common_ok(st) != 0) return -1;
+
+    uint8_t pre[DNAC_SIGHASH_V5_PREIMAGE_LEN];
+    uint8_t *p = pre;
+    memcpy(p, DNAC_SIGHASH_V5_TAG, DNAC_SIGHASH_V5_TAG_LEN);       /* off   0 */
+    p += DNAC_SIGHASH_V5_TAG_LEN;
+    /* The ONE ExecutionContext encoder (§1) — domain, pool and chain all
+     * arrive from the caller's context; nothing is hardcoded here. */
+    if (dna_exec_context_encode(ctx, p) != 0) return -1;           /* off  16 */
+    p += DNA_EXEC_CTX_WIRE_LEN;
+    *p++ = sect_version;                                           /* off  66 */
+    memcpy(p, ruleset_hash, DNAC_TXW_HASH_LEN);
+    p += DNAC_TXW_HASH_LEN;                                        /* off  67 */
+    txw3_put_lanes(st->anchor, p);            p += 32;             /* off 131 */
+    *p++ = st->num_input;                                          /* off 163 */
+    for (unsigned s = 0; s < DNAC_TXW3_SHIELDED_MAX_INPUTS; s++) {
+        txw3_put_lanes(st->nf_set[s], p);     p += 32;             /* off 164 */
+    }
+    *p++ = st->num_output;                                         /* off 292 */
+    for (unsigned s = 0; s < DNAC_TXW3_SHIELDED_MAX_OUTPUTS; s++) {
+        txw3_put_lanes(st->output_commit[s], p); p += 32;          /* off 293 */
+    }
+    /* NOTE the order: the preimage carries boundary_in ‖ boundary_out ‖
+     * fee, the wire section carries fee first. Both are frozen. */
+    put_be64(st->boundary_in, p);             p += 8;              /* off 421 */
+    put_be64(st->boundary_out, p);            p += 8;              /* off 429 */
+    put_be64(st->fee, p);                     p += 8;              /* off 437 */
+    put_be64(st->expiry_height, p);           p += 8;              /* off 445 */
+    memcpy(p, tleg_commit, DNAC_TXW_HASH_LEN);
+    p += DNAC_TXW_HASH_LEN;                                        /* off 453 */
+    memcpy(p, ct_commit, DNAC_TXW_HASH_LEN);
+    p += DNAC_TXW_HASH_LEN;                                        /* off 517 */
+    /* final-offset proof: the bytes written are EXACTLY the declared
+     * 581-byte preimage — a drifted field width cannot hash silently */
+    if ((size_t)(p - pre) != (size_t)DNAC_SIGHASH_V5_PREIMAGE_LEN) return -1;
+
+    return qgp_sha3_512(pre, DNAC_SIGHASH_V5_PREIMAGE_LEN, out_sighash) == 0
+               ? 0 : -1;
+}
+
+int dnac_tleg_commit_empty(uint8_t out[DNAC_TXW_HASH_LEN]) {
+    if (!out) return -1;
+    return qgp_sha3_512(TAG_E_TLEG, DNAC_SIGHASH_V5_TAG_LEN, out) == 0
+               ? 0 : -1;
+}
+
+int dnac_ct_commit_empty(uint8_t out[DNAC_TXW_HASH_LEN]) {
+    if (!out) return -1;
+    return qgp_sha3_512(TAG_E_CTC, DNAC_SIGHASH_V5_TAG_LEN, out) == 0
+               ? 0 : -1;
+}

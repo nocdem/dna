@@ -6,7 +6,7 @@
  * constants and the two AIR-specific stages swapped (S1 trace = the
  * CONF_AGGZK_WIDTH-wide ZK generator agg_zk_generate, S6 quotient =
  * dnac_conf_action_agg_fold_air_eval
- * with the 43 public values). SALT (P4): optional M3b leaf-salt via
+ * with the 45 public values). SALT (P4): optional M3b leaf-salt via
  * instance.salt_draws (SE=0 when NULL => byte-identical unsalted). See stark_prover_agg.h.
  *
  * Copyright (c) 2026 nocdem
@@ -39,10 +39,15 @@
 #define A_NUM_QC 8u
 #define A_LOG_NUM_QC 2u
 #define A_NUM_RANDOM 4u
-#define A_W ((size_t)CONF_AGGZK_WIDTH)     /* 2318 (post-F3) */
-#define A_RAND_W (A_W + A_NUM_RANDOM)      /* 2322 */
+#define A_W ((size_t)CONF_AGGZK_WIDTH)     /* 2378 (S8 Gate 2, D=24) */
+#define A_RAND_W (A_W + A_NUM_RANDOM)      /* 2382 */
 #define A_CW ((size_t)2 + A_NUM_RANDOM)    /* 6 */
-#define A_NUM_PUBLICS ((size_t)CONF_AGGZK_NUM_PUBLICS) /* 43 (S4c) */
+#define A_NUM_PUBLICS ((size_t)CONF_AGGZK_NUM_PUBLICS) /* 45 (S4c + S8 Gate 2) */
+/* S8 Gate 2 B2 range on the two TRANSPARENT legs — the SAME bound the consensus
+ * entry enforces (SV_BOUNDARY_LIMIT, shielded_verify.c). Emitting a public
+ * outside it would produce a proof that is honest but permanently unverifiable,
+ * so the generator fail-closes instead. 2^63 < p ⇒ this also gives canonicality. */
+#define A_BOUNDARY_LIMIT (UINT64_C(1) << 63)
 #define A_SALT_ELEMS 2u                    /* P4: M3b leaf-salt (128-bit nominal), mirror C_SALT_ELEMS */
 
 /* ── Phase-P: runtime FRI config (the pipeline is parametric over these; the
@@ -90,15 +95,20 @@ AGG_CT_ASSERT((size_t)A_SALT_ELEMS == DNAC_SHIELDED_SALT_ELEMS,
  * DNAC_SHIELDED_NUM_RANDOM and this prover emits A_NUM_RANDOM. */
 AGG_CT_ASSERT((size_t)A_NUM_RANDOM == DNAC_SHIELDED_NUM_RANDOM,
               num_random_matches_consensus_pin);
+/* S8 Gate 2 froze the statement at 45 publics. The consensus entry recomputes
+ * exactly that many from the wire (SV_NUM_PUBLICS assert, shielded_verify.c), so
+ * a drift on this side would make prover and verifier prime different
+ * transcripts — pin both ends. */
+AGG_CT_ASSERT(A_NUM_PUBLICS == 45, publics_pinned_45);
 
 /* d4.c-2: the aggregate proof is now a THIN WRAPPER over a batched proof
  * (dnac_batch_prove, 1-instance is_zk=1) — the v3 S1-S13 uni-stark pipeline is
- * retired. The wrapper owns the batched proof + the 43 publics agg_zk_generate
+ * retired. The wrapper owns the batched proof + the 45 publics agg_zk_generate
  * computed + the FRI params it was proved with (for re-verify + wire encode);
  * every accessor reads straight from the batched proof. */
 struct dnac_agg_prover_proof_s {
     dnac_batch_proof_t *bp;              /* owns the whole batched proof         */
-    gold_fp_t publics[A_NUM_PUBLICS];    /* 43, from agg_zk_generate             */
+    gold_fp_t publics[A_NUM_PUBLICS];    /* 45, from agg_zk_generate             */
     size_t base_degree_bits;             /* log_height                           */
     size_t degree_bits;                  /* log_height + A_IS_ZK                  */
     dnac_fri_params_t params;            /* the params bp was proved with        */
@@ -110,11 +120,19 @@ static uint64_t p2out(const uint64_t *blk, unsigned k) {
     return blk[p2air_end_post_off(P2AIR_HALF_FULL_ROUNDS - 1, (size_t)k)];
 }
 
-/* ── S1: the CONF_AGGZK_WIDTH-wide (2318 post-F3) ZK trace — byte-matches
+/* ── S1: the CONF_AGGZK_WIDTH-wide (2378 at D=24) ZK trace — byte-matches
  * generate_conf_action_agg_trace.
  * C1 scatter + membership walk (φ∈[1,D]) + nullifier sponge (φ=D+1) + the
  * is_zero SELECTOR columns (is_nf / is_lvl / active_lvl / N_input / slot_sel).
- * Also computes the 43 public values (anchor / num_input / nf_slots). ── */
+ * Also computes the 45 public values (anchor / num_input / nf_slots / output
+ * routing / fee / the two boundary legs / tx_binding).
+ *
+ * ZERO INPUT blocks is a supported shape (S8 Gate 2 SHIELD): the pass-2 loop
+ * simply never runs, so anchor stays all-zero, num_input stays 0, every nf slot
+ * stays 0, and memb_siblings is never dereferenced (its NULL check lives INSIDE
+ * the INPUT branch). Pass 1 is already role-conditional — with no INPUT block
+ * n_in_acc stays 0, so every SLOT_SEL is 0 and every ACTIVE_LVL is 0, leaving
+ * the membership constraints inert. ── */
 static bool agg_zk_generate(unsigned log_height,
                             const dnac_agg_prover_instance_t *inst,
                             uint64_t *trace_out, gold_fp_t *pub_out) {
@@ -122,12 +140,28 @@ static bool agg_zk_generate(unsigned log_height,
     const size_t K = CONF_ACTION_K;
     const unsigned D = CONF_AGGZK_D;
 
+    /* S8 Gate 2 honest-prover precondition, alongside the value < 2^52 / lane
+     * canonicality preconditions conf_action_air_generate enforces: both
+     * transparent legs must sit in the frozen B2 range the consensus entry
+     * requires, or the resulting proof could never be accepted. */
+    if (inst->boundary_in >= A_BOUNDARY_LIMIT ||
+        inst->boundary_out >= A_BOUNDARY_LIMIT) {
+        return false;
+    }
+    /* The fee is a PUBLIC field element now that it left the balance AIR, so it
+     * must be canonical or the emitted public cannot equal the verifier's
+     * (which rejects a non-canonical wire fee with ERR_NONCANONICAL). */
+    if (inst->fee >= GOLDILOCKS_P) {
+        return false;
+    }
+
     uint64_t *c1 =
         (uint64_t *)calloc(rows * CONF_ACTION_WIDTH, sizeof(uint64_t));
     if (!c1) return false;
     if (!conf_action_air_generate(log_height, inst->value, inst->addr, inst->rcm,
                                   inst->roles, inst->pos, inst->nk, inst->ak,
-                                  inst->num_notes, c1)) {
+                                  inst->num_notes, inst->boundary_in,
+                                  inst->boundary_out, c1)) {
         free(c1);
         return false;
     }
@@ -322,10 +356,18 @@ static bool agg_zk_generate(unsigned log_height,
         num_output++;
     }
     pub_out[CONF_AGGZK_PUB_NUMOUT] = gold_fp_from_u64(num_output);
-    {
-        const uint64_t *lastrow = trace_out + (rows - 1) * CONF_AGGZK_WIDTH;
-        pub_out[CONF_AGGZK_PUB_FEE] = gold_fp_from_u64(lastrow[CONF_AGGZK_FEEACC_OFF]);
-    }
+    /* S8 Gate-2: the fee public comes from the INSTANCE, not from the trace.
+     * It used to be read off the last row's FEE_ACC column, but IS_FEE is now
+     * pinned ZERO in the C1 evaluator, so FEE_ACC is identically zero and that
+     * read would emit fee == 0 for every proof while the consensus entry builds
+     * the public from the wire's real sf->fee — every honest proof would fail
+     * the constraint check. The fee is FS/sighash-bound only now (no in-circuit
+     * consumer), exactly like tx_binding. */
+    pub_out[CONF_AGGZK_PUB_FEE] = gold_fp_from_u64(inst->fee);
+    /* ── S8 Gate 2 boundary publics: the two TRANSPARENT legs, taken verbatim
+     *    from the instance (range-checked at entry) at their FROZEN indices. ── */
+    pub_out[CONF_AGGZK_PUB_BIN] = gold_fp_from_u64(inst->boundary_in);
+    pub_out[CONF_AGGZK_PUB_BOUT] = gold_fp_from_u64(inst->boundary_out);
     for (unsigned j = 0; j < CONF_AGGZK_MEMB_LANES; j++)
         pub_out[CONF_AGGZK_PUB_TXBIND + j] =
             gold_fp_from_u64(inst->tx_binding ? inst->tx_binding[j] : 0); /* FS-observed */
@@ -333,7 +375,7 @@ static bool agg_zk_generate(unsigned log_height,
 }
 
 /* ── d4.c-2: the pinned 1-instance aggregate batched descriptor. The AIR is
- * DNAC_CONF_ACTION_AGG_FOLD_AIR; is_zk=1, log_num_qc=2 (num_qc=8), 43 publics,
+ * DNAC_CONF_ACTION_AGG_FOLD_AIR; is_zk=1, log_num_qc=2 (num_qc=8), 45 publics,
  * NO lookups / preprocessed / permutation. Both the prove delegation and the
  * re-verify build exactly this. ── */
 static void agg_fill_vinstance(dnac_batch_vinstance_t *vi, size_t degree_bits,
@@ -425,7 +467,7 @@ void dnac_agg_prover_proof_free(dnac_agg_prover_proof_t *p) {
 }
 
 /* ── d4.c-2: prove by DELEGATING to dnac_batch_prove (1-instance is_zk=1 batch).
- * agg_zk_generate builds the raw 2318-wide witness + the 43 publics; the batched
+ * agg_zk_generate builds the raw 2378-wide witness + the 45 publics; the batched
  * prover does the whole pipeline and SELF-VERIFIES. SE = A_SALT_ELEMS iff
  * inst->salt_draws is set (unsalted otherwise, byte-identical). fs_publics_
  * override != NULL is the C2.1 CRIT-1 forge (test-wire only): the FS observes
@@ -468,7 +510,7 @@ static dnac_prover_status_t agg_prove_cfg(
     uint64_t *raw_trace = (uint64_t *)malloc(height * A_W * sizeof(uint64_t));
     if (raw_trace == NULL) { free(p); return DNAC_PROVER_ERR_PARAM; }
 
-    /* ── S1: raw witness + the 43 publics (agg_zk_generate zero-fills the whole
+    /* ── S1: raw witness + the 45 publics (agg_zk_generate zero-fills the whole
      * trace; the pubs live in the calloc'd struct so unused slots stay 0). ── */
     if (!agg_zk_generate(inst->log_height, inst, raw_trace, p->publics)) {
         rc = DNAC_PROVER_ERR_RANGE;

@@ -23,19 +23,25 @@
  *       UNCHANGED.
  *   T2  fail-closed NULL contract. Was "NULL out_fri_status must not swallow
  *       the verdict"; the v4 entry returns its verdict by value, so the
- *       equivalent contract is that a NULL required argument fail-closes ->
- *       DNAC_SHIELDED_VERIFY_ERR_NULL.
+ *       equivalent contract is that a NULL required argument fail-closes.
+ *       ⚠ LEDGER-V2 S8 Gate 2 SPLIT this into two codes: a NULL `sf` is still
+ *       DNAC_SHIELDED_VERIFY_ERR_NULL, but the second argument is no longer a
+ *       chain_id — it is the dnac_shielded_verify_ctx_t, and a NULL context
+ *       means "no declared statement version", i.e.
+ *       DNAC_SHIELDED_VERIFY_ERR_STATEMENT_VERSION (shielded_verify.h:128-136).
  *   T3  garbage proof bytes are rejected by the decoder. Was BAD_MAGIC at the
  *       codec; on the v4 entry every codec error is folded into the single
  *       DNAC_SHIELDED_VERIFY_ERR_DECODE class (shielded_verify.h:83), so the
  *       assertion is DECODE. Reaching the decoder at all requires a wire
  *       statement that passes canonicalization + fee + txbind, so this case
- *       ALSO exercises the linked libdna sighash_v4 + conf_txbind_map forward
+ *       ALSO exercises the linked shared sighash_v5 + conf_txbind_map forward
  *       (T5 only proves they reject).
  *   T4  truncated DZKF header -> the same DECODE class, via a different
  *       decoder branch (magic OK, length/version truncated).
  *   T5  (C2.1) the cheap wire-side fail-close branches reject on their
- *       DISTINCT codes (NULL / oversize / count / fee / txbind). Positive
+ *       DISTINCT codes (NULL / oversize / count / fee / txbind). ⚠ S8: the
+ *       count probe moved from num_input == 0 (now the LEGAL SHIELD shape) to
+ *       num_input == MAX+1. Positive
  *       accept KATs (real production proof) live in the zk suite
  *       (shared/crypto/zk tests/test_shielded_verify.c) — they need a prover.
  *
@@ -51,19 +57,56 @@
 #include <string.h>
 
 #include "conf_txbind.h"
+#include "dnac/tx_wire.h" /* dna_exec_context_t + dnac_sighash_v5 (SHARED codec) */
 #include "shielded_fri_params.h"
 #include "shielded_verify.h"
 
 /* Build a statement whose tx_binding MATCHES its own sighash, so
  * dnac_shielded_verify_statement runs past canonicalization / fee / txbind and
  * actually reaches the DZKF v4 decode of sf->fri_proof. Returns 0 on success.
- * Uses the LINKED libdna dnac_tx_shielded_sighash + conf_txbind_map — never a
- * re-implementation (G-DET-2). */
+ * S8 Gate 2: the binding moved off the libdna sighash_v4 symbol onto the SHARED
+ * sighash_v5 codec (shared/dnac/tx_wire.c, compiled into libnodus AND libdna) —
+ * assembled exactly as shielded_verify.c:222-270 does, with wire_version and
+ * sect_version PINNED and tx_binding excluded from its own preimage. Uses the
+ * LINKED codec + conf_txbind_map, never a re-implementation (G-DET-2). */
 static int zl_bind_statement(dnac_tx_shielded_fields_t *sf,
-                             const uint8_t chain_id[32]) {
+                             const dnac_shielded_verify_ctx_t *vctx) {
+    dna_exec_context_t ectx;
+    if (dna_exec_context_init(&ectx, vctx->chain_id, vctx->domain_id,
+                              vctx->pool_id, vctx->tx_type,
+                              (uint8_t)DNAC_TXW3_WIRE_VERSION,
+                              vctx->ruleset_version,
+                              vctx->statement_version) != 0)
+        return -1;
+
+    dnac_txw3_shielded_t st;
+    memset(&st, 0, sizeof st);
+    st.sect_version = (uint8_t)DNAC_TXW3_SECT_VERSION;
+    for (unsigned j = 0; j < DNAC_SHIELDED_LANES; j++)
+        st.anchor[j] = sf->anchor[j];
+    st.num_input = sf->num_input;
+    for (unsigned s = 0; s < DNAC_SHIELDED_MAX_INPUTS; s++)
+        for (unsigned j = 0; j < DNAC_SHIELDED_LANES; j++)
+            st.nf_set[s][j] = sf->nf_set[s][j];
+    st.num_output = sf->num_output;
+    for (unsigned s = 0; s < DNAC_SHIELDED_MAX_OUTPUTS; s++)
+        for (unsigned j = 0; j < DNAC_SHIELDED_LANES; j++)
+            st.output_commit[s][j] = sf->output_commit[s][j];
+    st.fee = sf->fee;
+    st.boundary_in = sf->boundary_in;
+    st.boundary_out = sf->boundary_out;
+    st.expiry_height = sf->expiry_height;
+    st.fri_len = sf->fri_proof_len;
+
+    uint8_t tleg[DNAC_TXW_HASH_LEN], ctc[DNAC_TXW_HASH_LEN];
+    if (dnac_tleg_commit_empty(tleg) != 0 || dnac_ct_commit_empty(ctc) != 0)
+        return -1;
+
     uint8_t  sighash[CONF_TXBIND_SIGHASH_LEN];
     uint64_t txbind[CONF_TXBIND_LANES];
-    if (dnac_tx_shielded_sighash(sf, chain_id, sighash) != 0) return -1;
+    if (dnac_sighash_v5(&ectx, (uint8_t)DNAC_TXW3_SECT_VERSION,
+                        vctx->ruleset_hash, &st, tleg, ctc, sighash) != 0)
+        return -1;
     if (!conf_txbind_map(sighash, txbind)) return -1;
     for (unsigned j = 0; j < CONF_TXBIND_LANES; j++) sf->tx_binding[j] = txbind[j];
     return 0;
@@ -89,36 +132,60 @@ int main(void) {
         if (!ok) fails++;
     }
 
-    /* Shared chain_id + a STATEMENT-CONSISTENT wire struct for T3/T4: its
-     * tx_binding is derived from its own sighash_v4, so the verify runs past
-     * canonicalization / fee / txbind and reaches the DZKF v4 decode. */
-    uint8_t chain_id[32];
-    memset(chain_id, 0xC1, sizeof chain_id);
+    /* S8 Gate 2: the consensus-authoritative binding context replaces the bare
+     * chain_id. Values are arbitrary-but-fixed — this gate proves the chain
+     * LINKS and fails closed, not that any particular context is admissible. */
+    dnac_shielded_verify_ctx_t vctx;
+    memset(&vctx, 0, sizeof vctx);
+    memset(vctx.chain_id, 0xC1, sizeof vctx.chain_id);
+    vctx.domain_id = DNA_DOMAIN_CORE;
+    vctx.pool_id = DNAC_SHIELDED_POOL_V1;
+    vctx.tx_type = (uint8_t)DNAC_TXW_TYPE_SHIELDED; /* 11 */
+    vctx.ruleset_version = 1u;
+    vctx.statement_version = DNAC_SHIELDED_STATEMENT_VERSION;
+    memset(vctx.ruleset_hash, 0x5A, sizeof vctx.ruleset_hash);
 
+    /* A STATEMENT-CONSISTENT wire struct for T3/T4: its tx_binding is derived
+     * from its own sighash_v5, so the verify runs past canonicalization / fee /
+     * txbind and reaches the DZKF v4 decode. Both transparent legs are inside
+     * the frozen B2 range, so the S8 boundary gate does not fire first. */
     dnac_tx_shielded_fields_t bound;
     memset(&bound, 0, sizeof bound);
     bound.num_input = 1;
     bound.num_output = 1;
     bound.fee = 42;
-    const int bound_ok = zl_bind_statement(&bound, chain_id) == 0;
+    bound.boundary_in = 0;
+    bound.boundary_out = 0;
+    bound.expiry_height = 0;
+    const int bound_ok = zl_bind_statement(&bound, &vctx) == 0;
     if (!bound_ok) {
-        printf("  !! sighash_v4/txbind fixture FAILED — T3/T4 cannot run\n");
+        printf("  !! sighash_v5/txbind fixture FAILED — T3/T4 cannot run\n");
         fails++;
     }
 
     /* T2: fail-closed NULL contract (red-team S0-M4). The v4 entry returns its
      * verdict by value, so the contract is: a missing REQUIRED argument must
-     * reject, never be treated as "nothing to check". */
+     * reject, never be treated as "nothing to check".
+     * ⚠ S8 Gate 2 CHANGED the second leg's expected code. It used to be
+     * `dnac_shielded_verify_statement(&sf, NULL, 42) == ERR_NULL` with a bare
+     * chain_id in that slot; the second argument is now the CONTEXT, and a NULL
+     * context is ERR_STATEMENT_VERSION (there is no declared version at all —
+     * shielded_verify.c:157-160). A wrong declared version is the same class,
+     * asserted here too so the version pin itself is linked in. */
     {
         dnac_tx_shielded_fields_t sf = bound;
         uint8_t junk[8] = {0};
         sf.fri_proof = junk;
         sf.fri_proof_len = sizeof junk;
-        int ok = dnac_shielded_verify_statement(NULL, chain_id, 42) ==
+        dnac_shielded_verify_ctx_t badv = vctx;
+        badv.statement_version = DNAC_SHIELDED_STATEMENT_VERSION + 1u;
+        int ok = dnac_shielded_verify_statement(NULL, &vctx, 42) ==
                      DNAC_SHIELDED_VERIFY_ERR_NULL &&
                  dnac_shielded_verify_statement(&sf, NULL, 42) ==
-                     DNAC_SHIELDED_VERIFY_ERR_NULL;
-        printf("  T2 NULL sf / NULL chain_id -> ERR_NULL            %s\n",
+                     DNAC_SHIELDED_VERIFY_ERR_STATEMENT_VERSION &&
+                 dnac_shielded_verify_statement(&sf, &badv, 42) ==
+                     DNAC_SHIELDED_VERIFY_ERR_STATEMENT_VERSION;
+        printf("  T2 NULL sf -> ERR_NULL; NULL/bad vctx -> VERSION  %s\n",
                ok ? "PASS" : "FAIL");
         if (!ok) fails++;
     }
@@ -133,7 +200,7 @@ int main(void) {
         sf.fri_proof = junk;
         sf.fri_proof_len = sizeof junk;
         int ok = bound_ok &&
-                 dnac_shielded_verify_statement(&sf, chain_id, 42) ==
+                 dnac_shielded_verify_statement(&sf, &vctx, 42) ==
                      DNAC_SHIELDED_VERIFY_ERR_DECODE;
         printf("  T3 garbage proof wire -> ERR_DECODE (bad magic)   %s\n",
                ok ? "PASS" : "FAIL");
@@ -148,15 +215,15 @@ int main(void) {
         sf.fri_proof = hdr;
         sf.fri_proof_len = sizeof hdr;
         int ok = bound_ok &&
-                 dnac_shielded_verify_statement(&sf, chain_id, 42) ==
+                 dnac_shielded_verify_statement(&sf, &vctx, 42) ==
                      DNAC_SHIELDED_VERIFY_ERR_DECODE;
         printf("  T4 truncated DZKF header -> ERR_DECODE            %s\n",
                ok ? "PASS" : "FAIL");
         if (!ok) fails++;
     }
 
-    /* T5 (C2.1): the consensus statement-verify entry + its linked libdna
-     * sighash chain link out of libnodus.a, and the cheap wire-side
+    /* T5 (C2.1): the consensus statement-verify entry + its linked SHARED
+     * sighash_v5 chain link out of libnodus.a, and the cheap wire-side
      * fail-close branches fire on their DISTINCT codes. No real proof here
      * (prover is client-side, deliberately absent from libnodus) — the
      * accept KAT lives in the zk suite. */
@@ -179,31 +246,37 @@ int main(void) {
         {
             dnac_tx_shielded_fields_t t = sf;
             t.fri_proof = NULL;
-            ok = ok && dnac_shielded_verify_statement(&t, chain_id, 42) ==
+            ok = ok && dnac_shielded_verify_statement(&t, &vctx, 42) ==
                            DNAC_SHIELDED_VERIFY_ERR_NULL;
         }
         /* oversize length fail-closes before any blob read */
         {
             dnac_tx_shielded_fields_t t = sf;
             t.fri_proof_len = 0xFFFFFFFFu;
-            ok = ok && dnac_shielded_verify_statement(&t, chain_id, 42) ==
+            ok = ok && dnac_shielded_verify_statement(&t, &vctx, 42) ==
                            DNAC_SHIELDED_VERIFY_ERR_OVERSIZE;
         }
-        /* count range */
+        /* count range.
+         * ⚠ S8 Gate 2 CHANGED this leg. It used to set num_input = 0 and expect
+         * ERR_COUNT; num_input == 0 is now the LEGAL SHIELD shape
+         * (shielded_verify.c:162-169), so the out-of-range probe moved to the
+         * UPPER bound. The zero-input semantics (nf slots / anchor) are asserted
+         * in the zk suite's T-S1/T-S2, not here — this file stays a linkage +
+         * fail-close gate. */
         {
             dnac_tx_shielded_fields_t t = sf;
-            t.num_input = 0;
-            ok = ok && dnac_shielded_verify_statement(&t, chain_id, 42) ==
+            t.num_input = DNAC_SHIELDED_MAX_INPUTS + 1;
+            ok = ok && dnac_shielded_verify_statement(&t, &vctx, 42) ==
                            DNAC_SHIELDED_VERIFY_ERR_COUNT;
         }
         /* fee != committed_fee (D7.2) — ERR_FEE, so the fee gate fires
          * BEFORE the txbind recompute */
-        ok = ok && dnac_shielded_verify_statement(&sf, chain_id, 41) ==
+        ok = ok && dnac_shielded_verify_statement(&sf, &vctx, 41) ==
                        DNAC_SHIELDED_VERIFY_ERR_FEE;
-        /* txbind mismatch — executes the LINKED dnac_tx_shielded_sighash +
+        /* txbind mismatch — executes the LINKED dnac_sighash_v5 +
          * conf_txbind_map over the wire fields (all-zero tx_binding cannot
          * match a real digest mapping except with prob ~2^-256) */
-        ok = ok && dnac_shielded_verify_statement(&sf, chain_id, 42) ==
+        ok = ok && dnac_shielded_verify_statement(&sf, &vctx, 42) ==
                        DNAC_SHIELDED_VERIFY_ERR_TXBIND;
         printf("  T5 C2.1 statement-verify chain links, fails closed %s\n",
                ok ? "PASS" : "FAIL");

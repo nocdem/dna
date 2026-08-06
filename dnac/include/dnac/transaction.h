@@ -102,6 +102,18 @@ typedef struct {
     uint64_t tx_binding[DNAC_SHIELDED_LANES];                               /**< = conf_txbind_map(sighash_v4); bytes at S5 */
     uint8_t *fri_proof;                                                     /**< opaque is_zk=1 aggregate proof blob (owned) */
     uint32_t fri_proof_len;                                                 /**< blob length in bytes */
+    /* ── Ledger V2 S8 additions — APPENDED, V3-ONLY ──────────────────────
+     * Carried by the V3 shielded body ONLY (shared/dnac/tx_wire.h §4,
+     * DNAC_TXW3_SHIELDED_FIXED = 359) and bound by sighash_v5 (§5).
+     * They are NOT part of the frozen legacy 334-byte V2 shielded section:
+     * DNAC_TX_SHIELDED_FIXED_SIZE is unchanged, the V2 read/write path
+     * (serialize.c read_shielded_section / write_shielded_section) never
+     * touches these three fields, and every legacy byte and the V4
+     * tx-hash/sighash preimages stay byte-identical. Appended at the end so
+     * no existing field's offset or meaning moves. */
+    uint64_t boundary_in;                                                   /**< V3 only: transparent → pool amount (< 2^63) */
+    uint64_t boundary_out;                                                  /**< V3 only: pool → transparent amount (< 2^63) */
+    uint64_t expiry_height;                                                 /**< V3 only: mirror of the V3 header expiry_height (header authoritative) */
 } dnac_tx_shielded_fields_t;
 
 /* Fixed (proof-independent) wire size of the shielded section, BIG-ENDIAN:

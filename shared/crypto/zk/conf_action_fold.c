@@ -256,6 +256,12 @@ void dnac_conf_action_fold_air_eval(dnac_stark_folder_t *f) {
         f, is_real,
         gold_fp2_add(gold_fp2_add(L[CONF_ACTION_ISIN_OFF], L[CONF_ACTION_ISOUT_OFF]),
                      L[CONF_ACTION_ISFEE_OFF]));
+    /* S8 Gate-2: IS_FEE PINNED ZERO — the fee LEFT the balance (FS/sighash-bound
+     * only, never a summand). Zero-PIN, NOT a column removal: the trace width is
+     * frozen. The ROLE sum above is UNCHANGED (so a FEE-tagged block is now
+     * simply unsatisfiable), and E14 below is UNCHANGED — with IS_FEE ≡ 0 its
+     * BALCON·(ISIN−ISOUT−ISFEE) is identically BALCON·(ISIN−ISOUT). */
+    dnac_stark_folder_assert_zero(f, L[CONF_ACTION_ISFEE_OFF]);
     /* PHI0 is_zero(phi). */
     {
         const gold_fp2_t phi0 = L[CONF_ACTION_PHI0_OFF];
@@ -285,7 +291,25 @@ void dnac_conf_action_fold_air_eval(dnac_stark_folder_t *f) {
         f, f->is_transition,
         gold_fp2_sub(gold_fp2_sub(N[CONF_ACTION_BAL_OFF], L[CONF_ACTION_BAL_OFF]),
                      gold_fp2_mul(N[CONF_ACTION_BALCOEF_OFF], N[CONF_ACTION_VALUE_OFF])));
-    dnac_stark_folder_when(f, f->is_last_row, L[CONF_ACTION_BAL_OFF]);
+    /* S8 Gate-2 TERMINAL: last row BAL == boundary_out − boundary_in, where the
+     * two turnstile publics are named by the OPTIONAL caller-owned ctx. ctx ==
+     * NULL (standalone C1, 0 publics) ⇒ delta ZERO ⇒ the historical BAL == 0.
+     * The constraint keeps this EMISSION POSITION in both modes — the alpha-fold
+     * is order-sensitive and the aggregate reuses this evaluator verbatim.
+     * Index safety is a COMPILE-TIME duty of the installing descriptor
+     * (_Static_assert at DNAC_CONF_ACTION_AGG_FOLD_AIR); `air_eval` has no
+     * error channel to range-check them at eval time. */
+    {
+        const dnac_conf_action_bnd_ctx_t *const bnd =
+            (const dnac_conf_action_bnd_ctx_t *)f->ctx;
+        gold_fp2_t delta = gold_fp2_zero();
+        if (bnd != NULL)
+            delta = gold_fp2_sub(
+                gold_fp2_from_base(f->public_values[bnd->idx_boundary_out]),
+                gold_fp2_from_base(f->public_values[bnd->idx_boundary_in]));
+        dnac_stark_folder_when(f, f->is_last_row,
+                               gold_fp2_sub(L[CONF_ACTION_BAL_OFF], delta));
+    }
 
     /* E17 role selectors per-block const (non-wrap transition). */
     {
@@ -310,5 +334,9 @@ const dnac_stark_air_t DNAC_CONF_ACTION_FOLD_AIR = {
     CONF_ACTION_FOLD_NUM_PUBLICS, /* 0 */
     1,                           /* main_next: counter/freeze/carry/BAL read next */
     dnac_conf_action_fold_air_eval,
-    NULL, /* ctx: this AIR has no cfg state — its eval never reads folder->ctx */
+    /* ctx: NULL for the STANDALONE C1 — no boundary publics, so the S8 terminal
+     * degenerates to the historical last-row BAL == 0 and this AIR keeps its 0
+     * public values. The AGGREGATE descriptor installs a
+     * dnac_conf_action_bnd_ctx_t here instead (conf_action_agg_fold.c). */
+    NULL,
 };

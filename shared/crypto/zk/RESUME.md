@@ -1,6 +1,77 @@
-# RESUME — DNAC v3 ZK stack (CURRENT STATUS: 2026-07-29)
+# RESUME — DNAC v3 ZK stack (CURRENT STATUS: 2026-08-06)
 
-## ⏭ WHAT IS LEFT — read this first (2026-07-31)
+## ⛳ CURRENT STATE — Ledger V2 S8 (2026-08-06). AUTHORITATIVE; supersedes every earlier figure below.
+
+**Everything further down this file is a HISTORICAL session record.** Where it states 43 publics,
+D=4, or trace width 2318/1946/1915, those are PRE-S8 values, true when written and retained as
+before-state evidence. They are NOT the current design. The current values are here, each citable
+in source.
+
+### Statement and AIR (uncommitted working tree; nothing committed)
+| Property | Value | Source |
+|---|---|---|
+| Public count | **45** | `conf_action_agg_fold.h` `CONF_AGGZK_NUM_PUBLICS` |
+| Membership depth | **D = 24** | `conf_action_agg_air.h` `CONF_AGG_TREE_DEPTH` |
+| Proven-AIR trace width | **2378** (= 2306 + 3·D) | `conf_action_agg_fold.h` `CONF_AGGZK_WIDTH` |
+| Construction-gate width | 2287 (D-independent, unchanged) | `conf_action_agg_air.h` `CONF_AGG_WIDTH` |
+| Quotient chunks | **num_qc = 8**, independently MEASURED by the Rust oracle | `dump-conf-action-agg-air-zk` output |
+| Public layout | anchor 0-3 · num_input 4 · nf_slot 5-20 · num_output 21 · output_commit 22-37 · **fee 38 · boundary_in 39 · boundary_out 40** · tx_binding 41-44 | `conf_action_agg_fold.h` `CONF_AGGZK_PUB_*` |
+
+- **Fee is PUBLIC and transaction-bound, but is NOT part of private AIR conservation.** It has no
+  in-circuit consumer: it is bound by `sighash_v5` → `tx_binding`, by the header/section mirror
+  equality, and by the verifier recomputing it from the wire. The prover takes it from
+  `dnac_agg_prover_instance_t.fee`, never from `FEE_ACC`.
+- **`IS_FEE == 0` is CONSTRAINED**, with exactly one owner per implementation:
+  `conf_action_fold.c` (proven AIR), `conf_action_air.c` (construction gate), and the Rust oracle.
+  The columns were retained rather than deleted so the frozen width 2378 is preserved.
+- **Private conservation is `Σ private_inputs + boundary_in = Σ private_outputs + boundary_out`**,
+  enforced as the last-row terminal `BAL == boundary_out − boundary_in`
+  (`conf_action_fold.c`, via the caller-owned `dnac_conf_action_bnd_ctx_t` in `folder->ctx`;
+  `ctx == NULL` ⇒ delta 0 ⇒ standalone C1 keeps its historical `BAL == 0` behaviour).
+- **Boundary values are verifier-range-checked `< 2^63`** at the wire layer
+  (`shielded_verify.c` → `DNAC_SHIELDED_VERIFY_ERR_BOUNDARY`; `tx_wire.c` section decode).
+- **Zero private inputs are legal** (the SHIELD shape). A zero-input statement MUST carry an
+  all-zero anchor (`DNAC_SHIELDED_VERIFY_ERR_ANCHOR`).
+- **`OBL-S8-B2-REC`**: any future recursive/aggregating verifier must enforce the same boundary
+  range, or an explicitly proven equivalent. This is a FUTURE OBLIGATION, not a defect in the
+  current native S8 verifier, which enforces it directly.
+
+### Version namespaces — independent, do not conflate
+- **Ledger V2** = the multi-domain ledger architecture.
+- **Wire V3** = the new transaction carrier format (`dnac_txw3_*`). It is NOT "Ledger V3".
+- **Shielded section version = `0x02`** (`DNAC_TXW3_SECT_VERSION`), 359-byte fixed section.
+- **Shielded statement version = 1** (`DNAC_SHIELDED_STATEMENT_VERSION`, u32 in the canonical
+  `dna_exec_context_t`).
+- **`sighash_v5`** = the 581-byte statement-binding preimage/hash version (`dnac_sighash_v5`).
+- **Legacy wire V2 is byte-identical and permanently REJECTED for Type 11.** Its 334-byte shielded
+  section and `DNAC_TX_V4` tag are frozen and untouched; the 359-byte S8 section is a V3 body
+  object and does not replace them.
+
+### The S8 pin event (ONE logical event)
+- 7 existing vectors replaced, **2 zero-input vectors added** ⇒ **9 semantic vectors**.
+- `tools/vectors/.expected_hashes` is the mandatory DERIVED integrity manifest — not a tenth
+  vector ⇒ **10 tracked pin-event artifacts total**. Adding it COMPLETED the same logical pin
+  event; it was not a second regeneration.
+- The remaining **53** vector artifacts are byte-identical.
+- Independent grounding source: **Rust/Plonky3 @ `11cc5849`** (v0.6.2). Two clean deterministic
+  generations produced byte-identical artifacts before replacement.
+
+### Admission and scope — READ THIS BEFORE ASSUMING ANYTHING WORKS
+- **Type 11 still ends in unconditional consensus REJECT** (`nodus_witness_verify.c`
+  `verify_shielded_tx`; `nodus_witness_runtime.c` `rt_admit_common`).
+- **Wire V3 remains rejected by live admission** (every path still gates on wire version byte 2).
+- **Types 12–14 remain UNASSIGNED.**
+- S8 implemented and pinned the **statement/wire substrate only**. **S9, S10, wallet scanning,
+  pool application, consensus application and C3 activation have NOT begun.**
+- **No shielded transaction is usable today.** Nothing in this stack is reachable from consensus.
+
+### Carried blockers (exactly two)
+- **`DEFERRED-V2-GATE-S3-LIVE-SHRINK-CRASH`** — OPEN; blocks the relevant live activation path.
+- **`OBL-S8-B2-REC`** — future recursion obligation (above), not a current defect.
+
+---
+
+## ⏭ WHAT IS LEFT — read this first (2026-07-31; PRE-S8 — see the S8 block above)
 
 **F1b+F1c SHIPPED (2026-08-04): `shielded_tree.{c,h}` — the consensus-side depth-24 incremental
 note-commitment Merkle tree, byte-matched to `conf_membership_air`.** Node hash = S0

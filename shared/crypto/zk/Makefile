@@ -761,7 +761,8 @@ $(BUILD)/test_prover_shielded_production: tests/test_prover_shielded_production.
 DNAC_INCLUDES = -I/opt/dna/dnac/include
 DNAC_SIGHASH_SRCS = /opt/dna/dnac/src/transaction/serialize.c \
                     /opt/dna/dnac/src/ledger/chain_def_codec.c \
-                    /opt/dna/shared/dnac/chain_config_wire.c
+                    /opt/dna/shared/dnac/chain_config_wire.c \
+                    /opt/dna/shared/dnac/tx_wire.c
 
 # conf_txbind.c pulls conf_root_air (bound-root fold); keccak_ref comes via
 # the transcript stack already in AGG_PROVER_SRCS.
