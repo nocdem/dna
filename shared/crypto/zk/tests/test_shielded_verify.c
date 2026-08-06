@@ -236,6 +236,15 @@ int main(void) {
     vctx.ruleset_version = 1u;
     vctx.statement_version = DNAC_SHIELDED_STATEMENT_VERSION;
     for (unsigned i = 0; i < 64; i++) vctx.ruleset_hash[i] = (uint8_t)(0x5A + i);
+    /* S9 CORRECTION PASS: the transparent-leg commitment is now CALLER-supplied
+     * (dnac_shielded_verify_ctx_t.tleg_commit). Every fixture in this file is a
+     * type-11 statement, which carries no transparent leg, so the canonical
+     * TAGGED-EMPTY digest is the right value — byte-identical to what the entry
+     * used to compute for itself, hence every KAT below is unchanged. */
+    if (dnac_tleg_commit_empty(vctx.tleg_commit) != 0) {
+        fprintf(stderr, "tleg_commit_empty failed\n");
+        return 1;
+    }
 
     dnac_agg_prover_instance_t inst;
     memset(&inst, 0, sizeof inst);

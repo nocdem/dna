@@ -472,8 +472,16 @@ int dnac_tx_deserialize(const uint8_t *buffer,
      * Hard-Fork v1 adds DNAC_TX_CHAIN_CONFIG (10).
      * Dual-mode S5 adds DNAC_TX_SHIELDED (11) — additive: a node built WITHOUT
      * this change still rejects type 11 (fail-closed), so V4 stays inert on the
-     * live chain until S6. */
-    if (tx->type > DNAC_TX_SHIELDED) {
+     * live chain until S6.
+     *
+     * Ledger V2 S9: the LEGACY V2 WIRE ACCEPTANCE SET IS FROZEN AT 0..11. The
+     * bound is the LITERAL 11 — deliberately NOT DNAC_TX_SHIELDED and NOT the
+     * enum tail. dnac_tx_type_t now continues past 11 (DNAC_TX_SHIELD = 12,
+     * DNAC_TX_UNSHIELD = 13), and those types are V3-ONLY: they must stay
+     * UNDESERIALIZABLE here. Tracking the enum would silently widen this wire
+     * on every future append, so this bound must never be expressed in terms
+     * of it. */
+    if (tx->type > 11) {
         free(tx);
         return DNAC_ERROR_INVALID_PARAM;
     }

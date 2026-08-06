@@ -1,10 +1,10 @@
 # DNAC - Development Guidelines
 
-**Last Updated:** 2026-08-06 | **Status:** TESTNET (live 7-witness production cluster) | **Version:** v0.18.4-ledgerv2-s7
+**Last Updated:** 2026-08-06 | **Status:** TESTNET (live 7-witness production cluster) | **Version:** v0.18.5-ledgerv2-s9
 
 **Note:** Framework rules (ORCHESTRATOR CYCLE O1-O10, agent classes, identity override, protocol mode, violations) are in root `/opt/dna/CLAUDE.md`. This file contains DNAC-specific guidelines only.
 
-**Stake/delegation v1:** SHIPPED — `stake-delegation-v1` merged to `main` and deployed (stake-ranked committee, delegation, per-block reward accrual, pull-based claim). Ledger V2 S3 (2026-08-05) made the committee size governance-driven (`DNAC_CFG_TARGET_ACTIVE_COUNT`, 7 initial → 128 ceiling) and per-epoch snapshots the membership authority. Design doc: `dnac/docs/plans/2026-04-17-witness-stake-delegation-design.md` (local-only, gitignored). Sortition v2 (weighted random) is a future follow-up. Ledger V2 S4 (2026-08-05) added the INACTIVE domain registry: canonical DomainManifest/registry/readiness codec (`shared/dnac/domain_wire.{h,c}`), the compiled NATIVE_BUILTIN runtime table + fail-closed exact-tuple lookup (`nodus/src/witness/nodus_witness_runtime.{h,c}`), the staged activation scheduler (`nodus_witness_domreg.{h,c}` — quorum schedules, all-active activates, 2-epoch deadline, non-slashing unready exclusion via the ordinary S3 transition, set-change/ruleset boundaries never shared) and inactive V2 semantic admission (Type 11 still REJECT; 12-14 unavailable). No live consensus path touched. Ledger V2 S5 (2026-08-05) added the INACTIVE persistence + atomic-apply foundation: versioned schema (PRAGMA user_version = 5, atomic fail-closed migration, `utxo_set.domain_id` ownership backfill → DNA_CORE), canonical `DomainUpdate v1` (368 B, tags `DNA.DUPD/DUNODE/E.DUPD/DTXB/E.DUPDPRV.v1`), the single-transaction global-block apply engine (`nodus_witness_v2_apply.{h,c}` — 15 deterministic fault points, full-DB-digest rollback proof, replay/idempotency matrix, untouched-domain guard, per-domain + global resource enforcement), the V2 supply gate (1B/70M carve-out, shielded balance structurally zero) and the genesis-root cycle break (`DNA.SYSPAYL.v1` payload root: manifest.genesis_state_root = runtime-owned payload root, final head root = full 8-leg system root — a DAG, no fixed point). Ledger V2 S6 (2026-08-05) added the INACTIVE generic genesis/distribution manifest + claim layer: GenesisManifest v1 (`shared/dnac/manifest_wire.{h,c}`, tag `DNA.GMAN.v1` — versioned, presence-byte distribution section, fail-closed enums, consumer-neutral; NO chain_id field since chain_id derives from a hash over the manifest bytes), generic snapshot leaves + shape-derived inclusion proofs (`DNA.DSLEAF/DSNODE.v1`), DNA-native claims with committed-leaf-context nullifiers (`DNA.CLAIM/CLNUL/CLUTXO.v1`), REAL manifest_root/claims_root legs (empty = the frozen S2 placeholders byte-identically), schema v6 (`v2_manifests`/`v2_dist_state`/`v2_claims_spent`), claims inside the ONE S5 apply transaction (3 new fault points), and the supply equation's single new owner `unclaimed_distribution` (a claim moves value, never mints). Post-deadline v1 = RETAIN only; types 12-14 still unassigned; no live consensus path touched. A Ledger V2 **genericity correction pass** (2026-08-06) then removed every domain default from the generic layer: distributions commit an EXPLICIT `target_domain_id` + bounded opaque `target_asset_ref`; claims reference the manifest BY HASH (`manifest_seq` demoted to an internal DB locator) and their nullifiers bind chain ‖ manifest_hash ‖ target domain ‖ target asset ‖ leaf hash; the claim engine routes through the registered TARGET runtime's `claim_apply` hook (never creating an output or picking a domain itself); `utxo_set.domain_id` lost its schema default (explicit ownership, legacy → CORE as a one-time migration literal); `v2_blocks` dropped its named `system_root`/`core_root` columns; the supply gate became a runtime-owned invariant dispatcher (the DNAC equation lives in the CORE runtime hook and never sums another domain's asset); the S5 apply engine + V2 genesis are registry-driven for any registered domain set. Correction pass 2 (2026-08-06) locked two owner decisions: **native supply ownership → DNA_CORE** (`supply_root` moved out of `system_state_root` — now 7 legs — into `core_state_root` — now 6 legs; `DNA.SYSPAYL.v1` is 5 legs; issuance mutations move only the CORE root, SYSTEM↔CORE native moves are generic cross-domain ops, fee burn is CORE-local) and the **canonical DomainHead lifecycle** (no synthesized heads: one activation constructor creates the height-0 head in the exact activation block, root bound to the registry-committed `genesis_state_root` via the optional `payload_root` runtime hook; ACTIVE requires persisted head + resolvable runtime else consensus failure; PAUSED/RETIRED heads carried byte-unchanged without the runtime; RETIRED terminal; unknown states fail closed). Ledger V2 S7 (2026-08-06) added the INACTIVE **D=24 production pool state**: canonical pool-state commitments (`shared/dnac/pool_wire.{h,c}` — tags `DNA.POOLCFG/POOLLEAF/POOLNODE/PNUL/PHIST.v1`, empty `DNA.E.PNUL/E.PHIST.v1`, zero-pool domain = frozen S2 `DNA.E.POOLS.v1` byte-identical; note roots/commitments/nullifiers = 4 canonical Goldilocks lanes u64 BE, the shielded-wire encoding), the witness pool module (`nodus_witness_v2_pools.{h,c}` — O(D) frontier persistence appending THROUGH the shipped `shielded_tree`, fail-closed frontier↔count↔root mutual verification, derived `v2_pool_notes` path-serving list, canonical `(tx index, slot)` mutation order, devnet **R=720** finalized-root history with single-oldest eviction + retained-window anchor authority + reappearance fail-close, O(1) incremental nullifier accumulator with strict inserts, checked u64 balance), schema **v7** (`v2_pools`/`v2_pool_notes`/`v2_pool_nullifiers`/`v2_pool_roots`, atomic 6→7, exact column-shape verify, stage faults, v8+ fail-closed), apply phase 6p + fault points **F19-F25** (S1-S6 ids frozen), the REAL per-domain `pools_root` leg, the supply equation's `shielded ≡ 0` placeholder REPLACED by real committed native-asset pool balances (foreign asset/domain excluded), and the generic OPTIONAL `state_init` activation hook through which the CORE runtime instantiates its configured native pool (`DNAC_SHIELDED_POOL_V1`, D=24, R=720) at genesis/activation — before the registry commits `genesis_state_root`, idempotent inside `head_activate`. Mainnet R remains OPEN. Type 11 still REJECT; 12-14 unassigned; no live consensus path calls any pool mutation; the S3 live-shrink/crash activation gate is unchanged.
+**Stake/delegation v1:** SHIPPED — `stake-delegation-v1` merged to `main` and deployed (stake-ranked committee, delegation, per-block reward accrual, pull-based claim). Ledger V2 S3 (2026-08-05) made the committee size governance-driven (`DNAC_CFG_TARGET_ACTIVE_COUNT`, 7 initial → 128 ceiling) and per-epoch snapshots the membership authority. Design doc: `dnac/docs/plans/2026-04-17-witness-stake-delegation-design.md` (local-only, gitignored). Sortition v2 (weighted random) is a future follow-up. Ledger V2 S4 (2026-08-05) added the INACTIVE domain registry: canonical DomainManifest/registry/readiness codec (`shared/dnac/domain_wire.{h,c}`), the compiled NATIVE_BUILTIN runtime table + fail-closed exact-tuple lookup (`nodus/src/witness/nodus_witness_runtime.{h,c}`), the staged activation scheduler (`nodus_witness_domreg.{h,c}` — quorum schedules, all-active activates, 2-epoch deadline, non-slashing unready exclusion via the ordinary S3 transition, set-change/ruleset boundaries never shared) and inactive V2 semantic admission (Type 11 still REJECT; 12-14 unavailable). No live consensus path touched. Ledger V2 S5 (2026-08-05) added the INACTIVE persistence + atomic-apply foundation: versioned schema (PRAGMA user_version = 5, atomic fail-closed migration, `utxo_set.domain_id` ownership backfill → DNA_CORE), canonical `DomainUpdate v1` (368 B, tags `DNA.DUPD/DUNODE/E.DUPD/DTXB/E.DUPDPRV.v1`), the single-transaction global-block apply engine (`nodus_witness_v2_apply.{h,c}` — 15 deterministic fault points, full-DB-digest rollback proof, replay/idempotency matrix, untouched-domain guard, per-domain + global resource enforcement), the V2 supply gate (1B/70M carve-out, shielded balance structurally zero) and the genesis-root cycle break (`DNA.SYSPAYL.v1` payload root: manifest.genesis_state_root = runtime-owned payload root, final head root = full 8-leg system root — a DAG, no fixed point). Ledger V2 S6 (2026-08-05) added the INACTIVE generic genesis/distribution manifest + claim layer: GenesisManifest v1 (`shared/dnac/manifest_wire.{h,c}`, tag `DNA.GMAN.v1` — versioned, presence-byte distribution section, fail-closed enums, consumer-neutral; NO chain_id field since chain_id derives from a hash over the manifest bytes), generic snapshot leaves + shape-derived inclusion proofs (`DNA.DSLEAF/DSNODE.v1`), DNA-native claims with committed-leaf-context nullifiers (`DNA.CLAIM/CLNUL/CLUTXO.v1`), REAL manifest_root/claims_root legs (empty = the frozen S2 placeholders byte-identically), schema v6 (`v2_manifests`/`v2_dist_state`/`v2_claims_spent`), claims inside the ONE S5 apply transaction (3 new fault points), and the supply equation's single new owner `unclaimed_distribution` (a claim moves value, never mints). Post-deadline v1 = RETAIN only; types 12-14 still unassigned; no live consensus path touched. A Ledger V2 **genericity correction pass** (2026-08-06) then removed every domain default from the generic layer: distributions commit an EXPLICIT `target_domain_id` + bounded opaque `target_asset_ref`; claims reference the manifest BY HASH (`manifest_seq` demoted to an internal DB locator) and their nullifiers bind chain ‖ manifest_hash ‖ target domain ‖ target asset ‖ leaf hash; the claim engine routes through the registered TARGET runtime's `claim_apply` hook (never creating an output or picking a domain itself); `utxo_set.domain_id` lost its schema default (explicit ownership, legacy → CORE as a one-time migration literal); `v2_blocks` dropped its named `system_root`/`core_root` columns; the supply gate became a runtime-owned invariant dispatcher (the DNAC equation lives in the CORE runtime hook and never sums another domain's asset); the S5 apply engine + V2 genesis are registry-driven for any registered domain set. Correction pass 2 (2026-08-06) locked two owner decisions: **native supply ownership → DNA_CORE** (`supply_root` moved out of `system_state_root` — now 7 legs — into `core_state_root` — now 6 legs; `DNA.SYSPAYL.v1` is 5 legs; issuance mutations move only the CORE root, SYSTEM↔CORE native moves are generic cross-domain ops, fee burn is CORE-local) and the **canonical DomainHead lifecycle** (no synthesized heads: one activation constructor creates the height-0 head in the exact activation block, root bound to the registry-committed `genesis_state_root` via the optional `payload_root` runtime hook; ACTIVE requires persisted head + resolvable runtime else consensus failure; PAUSED/RETIRED heads carried byte-unchanged without the runtime; RETIRED terminal; unknown states fail closed). Ledger V2 S7 (2026-08-06) added the INACTIVE **D=24 production pool state**: canonical pool-state commitments (`shared/dnac/pool_wire.{h,c}` — tags `DNA.POOLCFG/POOLLEAF/POOLNODE/PNUL/PHIST.v1`, empty `DNA.E.PNUL/E.PHIST.v1`, zero-pool domain = frozen S2 `DNA.E.POOLS.v1` byte-identical; note roots/commitments/nullifiers = 4 canonical Goldilocks lanes u64 BE, the shielded-wire encoding), the witness pool module (`nodus_witness_v2_pools.{h,c}` — O(D) frontier persistence appending THROUGH the shipped `shielded_tree`, fail-closed frontier↔count↔root mutual verification, derived `v2_pool_notes` path-serving list, canonical `(tx index, slot)` mutation order, devnet **R=720** finalized-root history with single-oldest eviction + retained-window anchor authority + reappearance fail-close, O(1) incremental nullifier accumulator with strict inserts, checked u64 balance), schema **v7** (`v2_pools`/`v2_pool_notes`/`v2_pool_nullifiers`/`v2_pool_roots`, atomic 6→7, exact column-shape verify, stage faults, v8+ fail-closed), apply phase 6p + fault points **F19-F25** (S1-S6 ids frozen), the REAL per-domain `pools_root` leg, the supply equation's `shielded ≡ 0` placeholder REPLACED by real committed native-asset pool balances (foreign asset/domain excluded), and the generic OPTIONAL `state_init` activation hook through which the CORE runtime instantiates its configured native pool (`DNAC_SHIELDED_POOL_V1`, D=24, R=720) at genesis/activation — before the registry commits `genesis_state_root`, idempotent inside `head_activate`. Mainnet R remains OPEN. Type 11 still REJECT; 12-14 unassigned; no live consensus path calls any pool mutation; the S3 live-shrink/crash activation gate is unchanged. Ledger V2 **S9 Gate 2** (2026-08-06, slices W0-W5) added the INACTIVE **SHIELD/UNSHIELD V3 wire + native stateless verification substrate**: tx types `DNAC_TX_SHIELD = 12` / `DNAC_TX_UNSHIELD = 13` appended to `dnac_tx_type_t` (`dnac/include/dnac/dnac.h`), mirrored as `NODUS_W_TX_SHIELD`/`NODUS_W_TX_UNSHIELD` (`nodus/src/witness/nodus_witness.h`) and OWNED by `DNA_DOMAIN_CORE` via new `dna_tx_type_owner()` rows (`shared/dnac/ledger_ids.h`) — type 14 stays UNASSIGNED, type 8 stays retired, and the legacy V2 deserialize type gate (`dnac/src/transaction/serialize.c`) became the LITERAL `11` rather than the enum tail so the frozen V2 acceptance set can never widen when the enum grows; the S8 V3 shielded-body codec's test debt closed (`dnac_txw3_shielded_encode`/`_decode`/`_check_header` shipped with zero callers and zero tests — `nodus/tests/test_tx_wire_v3.c` now carries round-trips, a byte-exact offset KAT and the full negative matrix, plus a fail-close repair to `dnac_txw3_shielded_decode` whose two early length rejects returned without zeroing `*out`); the canonical **transparent-leg section v1** (`shared/dnac/tx_wire.{h,c}` §6 — `tleg_version(1)=0x01 ‖ num_tin ‖ nullifier[64]×num_tin` STRICTLY ASCENDING `‖ num_tout ‖ (fp[129] ‖ amount u64 BE ≥1 ‖ seed[32])×num_tout ‖ num_signers ‖ (pubkey[2592] ‖ signature[4627])×num_signers`, `LEG_LEN = 4 + 64·num_tin + 169·num_tout + 7219·num_signers`, worst legal leg 32,608 B; a PREFIX decode reporting `consumed` — the caller hands the remainder to the shielded decoder — and POLICY-NEUTRAL by construction: no tx_type/domain/pool branch, the per-type count windows are native rules) with its commitment `dnac_tleg_commit` = SHA3-512 over the 16-byte tag `"DNA.TLEG.v1"`+5×0x00 ‖ counts ‖ inputs ‖ outputs ‖ signer PUBKEYS — signatures deliberately EXCLUDED (a signature cannot cover itself, and the commitment must be computable before signing), `tleg_version` and `tx_type` excluded too (framing; tx_type is bound once by `sighash_v5`'s ExecutionContext) — filling the frozen `sighash_v5` slot at preimage **offset 453** so **no offset, length, tag or field of `sighash_v5` moves and no vector moves**, with the empty form `"DNA.E.TLEG.v1"` a distinct domain; the **native stateless verifier** `dnac_v3_native_verify_stateless` (`shared/crypto/zk/native_verify_v3.{c,h}`, ZERO production callers) with its frozen check order and per-type policy (11: priv 1..4/1..4, boundary_in 0, boundary_out == committed_fee · 12 SHIELD: priv_in 0 with all-zero anchor and nullifier slots, priv_out 1..4, num_tin ≥1, num_signers ≥1, boundary_out 0, boundary_in ≥1 · 13 UNSHIELD: priv_in 1..4, priv_out 0..1, num_tin 0, num_signers 0, exactly one transparent output, boundary_in 0, boundary_out == recipient_amount + committed_fee, checked add) and seven APPENDED status classes (values 0..17 UNMOVED; 18 `ERR_TLEG_DECODE`, 19 `ERR_TLEG_ORDER` RESERVED-never-assigned, 20 `ERR_TYPE_RULE`, 21 `ERR_TLEG_ARITH`, 22 `ERR_SIG`, 23 `ERR_NF_DUP`, 24 `ERR_TIMESTAMP`); and the CORE runtime descriptor (`nodus/src/witness/nodus_witness_runtime.c`) now owning `{1,2,3,11,12,13}` with rule ids 5/6 appended (`DNA_CORERULE_SHIELD_C3_REJECT`, `DNA_CORERULE_UNSHIELD_C3_REJECT`), `rt_admit_common` hard-stopping 11, 12 AND 13 unconditionally BEFORE the pool rule so `DNAC_SHIELDED_POOL_V1` can never become an admit path, declared work units 12=101 / 13=100 (unreachable while admission rejects), and `CORE_RULESET_HASH` consequently RE-DERIVED (`13bc5fa9…669ada` → `e0a0bc43…6ee77429`; the SYSTEM digest is UNCHANGED). **Nothing is activated:** Type 11 still terminates in an unconditional REJECT, 12/13 are defined and owned but REJECT-unconditional, the V3 wire is still rejected by every live admission path (all gate on wire version byte 2), and no consensus path calls any of it.
 
 **Active workstream:** v3 ZK (STARK range proofs) — see "v3 ZK Workstream" section below.
 
@@ -181,7 +181,18 @@ type_specific_appended_fields
 **Min-fee gate:** non-GENESIS TXs must have `committed_fee >= DNAC_MIN_FEE_RAW`.
 Witness `verify.c::Check 0` rejects before expensive Dilithium5 sig verify.
 
-### Shielded TX (type 11, dual-mode V4 — Phase-C, NOT live)
+### Shielded TX — two frozen lanes, NEITHER live
+
+There are **two independent shielded lanes** and they must never be conflated:
+lane A is the legacy V2 carrier (below, frozen byte-for-byte), lane B is the
+Wire V3 carrier the Ledger V2 work builds on. Both are consensus-DEAD today.
+
+#### Lane A — legacy V2 wire, type 11, dual-mode V4 (Phase-C, frozen)
+
+**SCOPE: this paragraph describes ONLY the legacy V2 carrier** (`version` byte
+2, 82-byte header, `DNAC_TX_V4` preimage tag). It is frozen and permanently
+REJECTED for type 11; the S8/S9 V3 objects in lane B do not replace or modify
+any of it.
 
 `DNAC_TX_SHIELDED = 11` (S5, 2026-07-17) keeps the 82-byte header but: the
 tx-hash preimage uses its OWN domain tag `"DNAC_TX_V4\0"`; transparent
@@ -201,6 +212,123 @@ linked): `dnac_shielded_verify_statement` (`shared/crypto/zk/shielded_verify.h`)
 atomically with the shielded apply case + state_root v4. Full design:
 `dnac/docs/plans/2026-07-17-dm-s5-v4-wire-design.md` + `2026-07-22-c2-*.md`
 (local-only).
+
+#### Lane B — Wire V3 shielded body + transparent leg (Ledger V2 S8 + S9, INACTIVE)
+
+**Wire V3 is a different carrier, not a new version of lane A** — its own
+header and codec live in `shared/dnac/tx_wire.{h,c}` (Ledger V2 S1), and
+"Wire V3" is not "Ledger V3". Its objects:
+
+- **V3 shielded body (S8)** — a **359-byte** fixed section, section version
+  `0x02` (`DNAC_TXW3_SECT_VERSION`), codec `dnac_txw3_shielded_encode` /
+  `_decode` / `_check_header` in `shared/dnac/tx_wire.{h,c}` §4. It shipped
+  with **zero callers and zero tests**; S9 W1 closed that debt in
+  `nodus/tests/test_tx_wire_v3.c` (round-trips for the transfer shape, the
+  zero-input SHIELD shape and 4-in/4-out at the canonical lane maximum `p−1`;
+  a byte-exact offset KAT against hand-written literals; the full
+  encode/decode negative matrix) and repaired a fail-close hole: the decoder's
+  two early length rejects returned without zeroing `*out`, contradicting the
+  header's "zeroed on any rejection" contract.
+- **Statement binding = `sighash_v5`** (`dnac_sighash_v5`), NOT lane A's
+  `sighash_v4`. Its layout is FROZEN and S9 moved nothing in it: the
+  transparent-leg commitment fills the already-reserved slot at preimage
+  **offset 453**, so no offset, length, tag or field of `sighash_v5` moves and
+  **no vector moves**. `tx_type` is bound once, by `sighash_v5`'s
+  ExecutionContext.
+- **Transparent-leg section v1 (S9 W2)** — `shared/dnac/tx_wire.{h,c}` §6:
+  `tleg_version(1)=0x01 ‖ num_tin(1) ‖ nullifier[64]×num_tin` (**strictly
+  ascending**) `‖ num_tout(1) ‖ (fp[129] ‖ amount u64 BE ≥1 ‖ seed[32])×num_tout
+  ‖ num_signers(1) ‖ (pubkey[2592] ‖ signature[4627])×num_signers`;
+  `LEG_LEN = 4 + 64·num_tin + 169·num_tout + 7219·num_signers`, worst legal leg
+  **32,608 B**. Unlike §2/§4 this is a **PREFIX** decode: it walks ONE leg and
+  reports `consumed`, and the caller hands the remainder to the shielded
+  decoder. It is **policy-neutral** — no tx_type/domain/pool branch lives in
+  the codec; the per-type count windows are native rules. Commitment
+  `dnac_tleg_commit` = SHA3-512 over the 16-byte tag `"DNA.TLEG.v1"`+5×`0x00`
+  ‖ counts ‖ inputs ‖ outputs ‖ signer **PUBKEYS** — signatures deliberately
+  EXCLUDED (a signature cannot cover itself, and the commitment must be
+  computable before signing); `tleg_version` and `tx_type` excluded as framing.
+  The empty form `"DNA.E.TLEG.v1"` is a distinct domain.
+- **Types 12/13 (S9 W0)** — `DNAC_TX_SHIELD = 12`, `DNAC_TX_UNSHIELD = 13`
+  appended to `dnac_tx_type_t` (`dnac/include/dnac/dnac.h`), mirrored as
+  `NODUS_W_TX_SHIELD`/`NODUS_W_TX_UNSHIELD` and owned by `DNA_DOMAIN_CORE`
+  (`dna_tx_type_owner()`, `shared/dnac/ledger_ids.h`). **Type 14 stays
+  UNASSIGNED; type 8 stays retired.** The legacy V2 deserialize type gate in
+  `serialize.c` is now the LITERAL `11`, deliberately **not** the enum tail, so
+  the frozen V2 acceptance set (0..11, with 11 rejected downstream) cannot
+  widen when the enum grows. `nodus_witness_verify.c` gained a NAMED reject
+  branch for 12/13 in the same position as the type-11 dispatch — the verdict
+  is unchanged (both already died as a fallthrough), only the diagnosis is new.
+- **Native stateless verifier (S9 W3)** —
+  `dnac_v3_native_verify_stateless(tx_bytes, tx_len, nctx, out)` in
+  `shared/crypto/zk/native_verify_v3.{c,h}`, **zero production callers**.
+  Frozen check order: generic decode → type gate `{11,12,13}` → body split
+  (leg for 12/13) → ExecutionContext/context match → fee+expiry mirrors +
+  min-fee floor → per-type count windows and boundary equalities →
+  transparent-leg commitment → `sighash_v5` → `tx_binding` equality → type-12
+  signature verification → in-TX private nullifier distinctness → proof →
+  exported deferred-state expectations. Per-type policy — **11**: `priv_in`
+  1..4, `priv_out` 1..4, `boundary_in == 0`, `boundary_out == committed_fee`;
+  **12 (SHIELD)**: `priv_in == 0` (all-zero anchor, all-zero nullifier slots),
+  `priv_out` 1..4, `num_tin ≥ 1`, `num_signers ≥ 1`, `boundary_out == 0`,
+  `boundary_in ≥ 1`; **13 (UNSHIELD)**: `priv_in` 1..4, `priv_out` 0..1,
+  `num_tin == 0`, `num_signers == 0`, exactly one transparent output,
+  `boundary_in == 0`, `boundary_out == recipient_amount + committed_fee`
+  (checked add). All transparent sums are checked; overflow rejects. Seven
+  status classes APPENDED to `dnac_shielded_verify_status_t` (0..17 UNMOVED):
+  18 `ERR_TLEG_DECODE`, 19 `ERR_TLEG_ORDER` (reserved), 20 `ERR_TYPE_RULE`, 21
+  `ERR_TLEG_ARITH`, 22 `ERR_SIG`, 23 `ERR_NF_DUP`, 24 `ERR_TIMESTAMP`.
+
+**Seams — one closed by the correction pass, two open:**
+1. Type-12 Dilithium5 verification is a **caller-supplied function pointer**
+   (the standalone zk build cannot link `qgp_dsa87_verify` without dragging in
+   the vendored dsa library and its circular `randombytes` dependency). A NULL
+   verifier on type 12 yields `ERR_SIG` — **never a skip**. Still open
+   (`OBL-S9-SIGFN-PIN`): the wiring slice must pin the real symbol.
+2. ✔ **CLOSED by the S9 CORRECTION PASS (2026-08-06).** Types 12/13 used to get
+   no proof verification at all, because `dnac_shielded_verify_statement`
+   derived the leg commitment itself (always tagged-empty) and a populated leg
+   therefore mis-bound. The commitment moved into
+   `dnac_shielded_verify_ctx_t.tleg_commit`, so the native verifier computes it
+   once — tagged-empty for 11, real `DNA.TLEG.v1` for 12/13 — and **all three
+   types now run the same real aggregate verifier**. `ERR_PROOF_DEFERRED` is
+   DELETED and value 24 now carries `ERR_TIMESTAMP`. Proven with runtime-
+   generated real proofs in `test_native_verify_v3_proofs` (11, 12, 13-with-
+   change and 13-without-change all reach OK; leg substitution, boundary
+   substitution, an empty-leg-on-populated-statement and an all-zero
+   `tleg_commit` all reject). The frozen 581-byte `sighash_v5`, the 45 publics,
+   D, the width, the FRI params and every vector are UNCHANGED.
+3. `ERR_TLEG_ORDER` (19) is **RESERVED — declared, never assigned**: the shared
+   codec folds ordering and duplicate rejects into a single `-1`, so the native
+   layer cannot distinguish them. Reserved rather than reused so a future codec
+   that reports ordering separately can take the value without renumbering.
+
+**Timestamp rule (S9 correction, closes `OBL-S9-TS-BIND`):** for types 11/12/13
+the V3 header `timestamp` is **consensus-inert and pinned to 0**; a non-zero
+value is `ERR_TIMESTAMP` (24), returned before any proof work. `sighash_v5`
+excludes consensus-time fields and type-12 signers sign `sighash_v5`, so a free
+timestamp would be a wire byte nothing binds — a relayer could re-stamp a signed
+transaction into a different txid for the same statement. The preimage is NOT
+enlarged; the generic codec stays policy-neutral; `expiry_height` is untouched.
+
+⚠ **`OBL-S9-CARRIER-CAP` (measured, blocks activation):** a production aggregate
+proof is **2,474,998 B**; a type-11 V3 body would need 2,475,357 B against
+`DNAC_TXW3_MAX_BODY_LEN = 65,426` — **37.8× over**. No production shielded
+transaction can be framed as a V3 transaction today. This is a pre-existing
+carrier constraint (raising the cap is a consensus-relevant wire change owned by
+the activation season), and it is a further independent reason 11/12/13 cannot
+be admitted. Pinned by cases C-1/C-2 of the real-proof gate.
+
+**Admission (S9 W4):** the compiled CORE runtime descriptor owns
+`{1,2,3,11,12,13}` with rule ids 5/6 appended (`DNA_CORERULE_SHIELD_C3_REJECT`,
+`DNA_CORERULE_UNSHIELD_C3_REJECT`); `rt_admit_common` hard-stops 11, 12 AND 13
+unconditionally and that stop sits **BEFORE** the pool rule, so
+`DNAC_SHIELDED_POOL_V1` can never become an admit path. Declared work units are
+12 = 101 / 13 = 100 (unreachable while admission rejects). Because the
+RulesetDescriptor digest commits the rule and type lists, `CORE_RULESET_HASH`
+was RE-DERIVED (`13bc5fa9…669ada` → `e0a0bc43…6ee77429`); the **SYSTEM digest is
+UNCHANGED**. The V3 wire itself is still rejected by every live admission path
+(all gate on wire version byte 2).
 
 **When bumping header size again:** grep every `\b<old_size>\b` and
 `tx_len [<>] <old_size>` literal across `dnac/src/transaction/` AND

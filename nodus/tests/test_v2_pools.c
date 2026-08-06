@@ -1477,10 +1477,17 @@ static int t_inactivity(void) {
           "type 11 admitted (C3 stop broken)"); OK();
     CHECK(core->admit(core, 11, DNA_POOL_NONE) == -1,
           "type 11 admitted without pool"); OK();
-    CHECK(dna_tx_type_owner(12) == DNA_TX_OWNER_NONE &&
-          dna_tx_type_owner(13) == DNA_TX_OWNER_NONE &&
+    /* S9: 12/13 are assigned (SHIELD/UNSHIELD, DNA_CORE, V3-only, REJECT until
+     * activation). Since W4 the CORE descriptor OWNS them, so admission no
+     * longer fails on non-ownership — it fails on the explicit hard stop in
+     * rt_admit_common, which covers 11/12/13 and runs BEFORE the pool rule. */
+    CHECK(dna_tx_type_owner(12) == DNA_DOMAIN_CORE &&
+          dna_tx_type_owner(13) == DNA_DOMAIN_CORE &&
           dna_tx_type_owner(14) == DNA_TX_OWNER_NONE,
-          "types 12-14 assigned"); OK();
+          "types 12-14 ownership (S9)"); OK();
+    CHECK(core->admit(core, 12, DNAC_SHIELDED_POOL_V1) == -1 &&
+          core->admit(core, 13, DNAC_SHIELDED_POOL_V1) == -1,
+          "types 12/13 admitted (S9 REJECT posture broken)"); OK();
     CHECK(nodus_witness_runtime_selfcheck() == 0, "selfcheck"); OK();
     return 0;
 }

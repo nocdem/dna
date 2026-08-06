@@ -104,6 +104,14 @@ typedef struct {
  * C3's first commit, atomically with the shielded apply case + state_root
  * v4 (C2 design v2 CRIT-2/G-SEC-7/G-SEC-9). */
 #define NODUS_W_TX_SHIELDED         11
+/* Ledger V2 S9 — pool boundary crossings. MUST equal DNAC_TX_SHIELD = 12 /
+ * DNAC_TX_UNSHIELD = 13 (dnac_tx_type_t, dnac/include/dnac/dnac.h). Both are
+ * V3-ONLY: they are carried exclusively by the V3 wire and are inadmissible on
+ * the legacy V2 wire, whose acceptance set is FROZEN at 0..11. Admission is
+ * REJECT-unconditional until activation — nodus_witness_verify.c rejects them
+ * by name right after the tx-hash check. Type 14 stays UNASSIGNED. */
+#define NODUS_W_TX_SHIELD           12
+#define NODUS_W_TX_UNSHIELD         13
 
 /* ── Vote types ──────────────────────────────────────────────────── */
 

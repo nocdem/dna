@@ -4,11 +4,19 @@
  *        implementation (INACTIVE).
  *
  * See nodus_witness_runtime.h. The pinned ruleset digests below were
- * produced by the INDEPENDENT python3 oracle (scratchpad s4_oracle.py,
- * KAT_RS_SYSTEM / KAT_RS_CORE) over the canonical descriptor layouts in
- * shared/dnac/domain_wire.h — and nodus_witness_runtime_selfcheck()
- * re-derives them through the C encoder on every run, so oracle, encoder
- * and table can never drift apart silently.
+ * produced by an INDEPENDENT python3 oracle over the canonical descriptor
+ * layout in shared/dnac/domain_wire.h (S4: scratchpad s4_oracle.py;
+ * CORE re-derived for S9 W4 by s9_w4_ruleset_oracle.py, which reproduces
+ * BOTH S4 pins byte-exactly before emitting the new one) — and
+ * nodus_witness_runtime_selfcheck() re-derives them through the C encoder
+ * on every run, so oracle, encoder and table can never drift apart
+ * silently. The same literals are pinned again in
+ * nodus/tests/test_domain_runtime.c (KAT_RS_SYSTEM / KAT_RS_CORE).
+ *
+ * S9 (W4): DNA_CORE's descriptor OWNS tx types 12 (SHIELD) and 13
+ * (UNSHIELD) alongside 11 (SHIELDED) so the domain boundary is
+ * expressible — admission REJECTS all three unconditionally until the
+ * single atomic C3 activation gate.
  *
  * @file nodus_witness_runtime.c
  */
@@ -26,11 +34,26 @@ static const uint32_t SYS_RULES[6] = {
 };
 static const uint8_t SYS_TYPES[6] = { 4, 5, 6, 7, 9, 10 };
 
-static const uint32_t CORE_RULES[4] = {
+/* Ledger V2 S9 — rule ids for the V3 boundary types 12 (SHIELD) and 13
+ * (UNSHIELD), continuing the DNA_CORERULE_* namespace and its strictly
+ * ascending order (nodus_witness_runtime.h holds ids 1-4). Like
+ * DNA_CORERULE_SHIELDED_C3_REJECT, each names the SHIPPED behavior rather
+ * than the intended one: both types are owned so the domain boundary is
+ * expressible, and both are REJECTED unconditionally until the single
+ * atomic C3 activation flip. The descriptor digest commits the VALUES
+ * (5, 6), never the declaration site. */
+#define DNA_CORERULE_SHIELD_C3_REJECT   ((uint32_t)5)
+#define DNA_CORERULE_UNSHIELD_C3_REJECT ((uint32_t)6)
+
+static const uint32_t CORE_RULES[6] = {
     DNA_CORERULE_SPEND, DNA_CORERULE_BURN, DNA_CORERULE_TOKEN_CREATE,
-    DNA_CORERULE_SHIELDED_C3_REJECT
+    DNA_CORERULE_SHIELDED_C3_REJECT, DNA_CORERULE_SHIELD_C3_REJECT,
+    DNA_CORERULE_UNSHIELD_C3_REJECT
 };
-static const uint8_t CORE_TYPES[4] = { 1, 2, 3, 11 };
+/* ASCENDING is load-bearing twice over: rt_owns_type() stops at the first
+ * greater element, and dna_ruleset_desc_hash() refuses a non-ascending
+ * list outright (shared/dnac/domain_wire.c:207-208). */
+static const uint8_t CORE_TYPES[6] = { 1, 2, 3, 11, 12, 13 };
 
 /* Pinned digests — python3 oracle KAT_RS_SYSTEM / KAT_RS_CORE. */
 static const uint8_t SYS_RULESET_HASH[DNA_DOM_HASH_LEN] = {
@@ -43,25 +66,29 @@ static const uint8_t SYS_RULESET_HASH[DNA_DOM_HASH_LEN] = {
     0xd2, 0xe7, 0x79, 0x00, 0xae, 0x8d, 0xb2, 0x71,
     0x26, 0x2c, 0xc8, 0x9e, 0x40, 0x13, 0x4c, 0xce
 };
+/* RE-DERIVED for S9 W4: adding tx_types 12/13 (and their two rule ids)
+ * changes the descriptor, hence the digest, by construction. The S4 value
+ * 13bc5fa9…9ada is dead. SYSTEM's descriptor was NOT touched, so
+ * SYS_RULESET_HASH above is byte-identical to the S4 pin. */
 static const uint8_t CORE_RULESET_HASH[DNA_DOM_HASH_LEN] = {
-    0x13, 0xbc, 0x5f, 0xa9, 0x69, 0x20, 0xf8, 0x8f,
-    0xcd, 0x5d, 0x3d, 0xe8, 0xee, 0x2f, 0x37, 0xcd,
-    0x20, 0xc5, 0xe7, 0xd0, 0x2d, 0x9d, 0x9c, 0xc5,
-    0xed, 0xd8, 0x9a, 0x8e, 0xd3, 0x93, 0x2c, 0x04,
-    0x72, 0x7c, 0x2f, 0xdb, 0xf3, 0xf2, 0x12, 0x95,
-    0x8d, 0x62, 0x8b, 0xbe, 0xaf, 0x08, 0x06, 0xda,
-    0x1c, 0xd6, 0x7c, 0xb7, 0xc2, 0xda, 0xc0, 0x64,
-    0x1e, 0xb9, 0xbd, 0x56, 0x70, 0x66, 0x9a, 0xda
+    0xe0, 0xa0, 0xbc, 0x43, 0x44, 0xde, 0xa9, 0x72,
+    0xdd, 0xf1, 0xcc, 0xa9, 0xb6, 0x3e, 0xac, 0xfe,
+    0x08, 0x02, 0x89, 0x7f, 0x4a, 0xfb, 0x2b, 0x8b,
+    0x6a, 0x71, 0xed, 0x84, 0x5a, 0xdf, 0xe4, 0x11,
+    0x3c, 0xc7, 0xb8, 0xd8, 0x12, 0xa4, 0x94, 0x82,
+    0xbf, 0xfe, 0x9c, 0x8b, 0x48, 0xa7, 0xf1, 0x1f,
+    0xa7, 0x32, 0xeb, 0xf9, 0xaf, 0xe6, 0x83, 0x3d,
+    0x4a, 0xfc, 0x57, 0x83, 0x6e, 0xe7, 0x74, 0x29
 };
 
 /* ── Function tables ────────────────────────────────────────────────── */
 
 /* Both runtimes share one shape: a type is admissible iff the descriptor
- * owns it AND the pool rule for that type holds. The ONLY pool-carrying
- * type in this release is 11 (shielded, pool DNAC_SHIELDED_POOL_V1) —
- * and 11 is consensus-REJECTED until C3, enforced HERE as well as in the
- * legacy admission gate, so the C3 stop cannot be bypassed through the
- * new boundary. */
+ * owns it AND the pool rule for that type holds. The pool-carrying types
+ * in this release are 11 (SHIELDED), 12 (SHIELD) and 13 (UNSHIELD), all
+ * on pool DNAC_SHIELDED_POOL_V1 — and all three are consensus-REJECTED
+ * until C3, enforced HERE as well as in the legacy admission gate, so the
+ * stop cannot be bypassed through the new boundary. */
 static int rt_owns_type(const nodus_domain_runtime_t *rt, uint8_t tx_type) {
     const dna_ruleset_desc_t *d = &rt->descriptor;
     for (size_t i = 0; i < d->tx_type_count; i++) {
@@ -74,9 +101,14 @@ static int rt_owns_type(const nodus_domain_runtime_t *rt, uint8_t tx_type) {
 static int rt_admit_common(const nodus_domain_runtime_t *rt,
                            uint8_t tx_type, uint32_t pool_id) {
     if (!rt || !rt_owns_type(rt, tx_type)) return -1;
-    if (tx_type == 11) {
-        /* C3 HARD STOP: type 11 stays consensus-rejected. The pool rule is
-         * stated for completeness but unreachable past the stop. */
+    if (tx_type == 11 || tx_type == 12 || tx_type == 13) {
+        /* C3/ACTIVATION HARD STOP (S9 posture): the descriptor OWNS 11
+         * SHIELDED, 12 SHIELD and 13 UNSHIELD so the domain boundary is
+         * expressible and testable — but all three stay REJECTED
+         * unconditionally until the single atomic activation gate flips
+         * them together with the shielded apply case. The stop comes
+         * BEFORE the pool rule precisely so that carrying the legitimate
+         * DNAC_SHIELDED_POOL_V1 id can never become an admit path. */
         (void)pool_id;
         return -1;
     }
@@ -103,6 +135,15 @@ static int core_cost(const nodus_domain_runtime_t *rt,
         case 11: *cost_out = 100; return 0;   /* STARK batch verify class —
                                                * declared, unreachable
                                                * until C3 (admit rejects) */
+        case 12: *cost_out = 101; return 0;   /* SHIELD: same STARK class
+                                               * plus one unit for its
+                                               * transparent Dilithium5
+                                               * spend authority — declared,
+                                               * unreachable until C3      */
+        case 13: *cost_out = 100; return 0;   /* UNSHIELD: STARK class only
+                                               * (authority is the proof,
+                                               * no transparent signer) —
+                                               * declared, unreachable      */
         default: *cost_out = 1;   return 0;   /* SPEND / BURN              */
     }
 }
@@ -151,8 +192,8 @@ static const nodus_domain_runtime_t BUILTIN[] = {
             .name = "DNA_CORE",
             .runtime_abi = NODUS_DOMAIN_RUNTIME_ABI_V1,
             .ruleset_version = 1,
-            .rule_count = 4, .rule_ids = CORE_RULES,
-            .tx_type_count = 4, .tx_types = CORE_TYPES
+            .rule_count = 6, .rule_ids = CORE_RULES,
+            .tx_type_count = 6, .tx_types = CORE_TYPES
         },
         .admit = rt_admit_common,
         .tx_cost = core_cost,

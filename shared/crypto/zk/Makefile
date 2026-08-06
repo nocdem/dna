@@ -112,6 +112,8 @@ TESTS = \
     $(BUILD)/test_prover_agg \
     $(BUILD)/test_prover_shielded_production \
     $(BUILD)/test_shielded_verify \
+    $(BUILD)/test_native_verify_v3 \
+    $(BUILD)/test_native_verify_v3_proofs \
     $(BUILD)/test_prover_salted_commit \
     $(BUILD)/test_zk_entropy \
     $(BUILD)/test_prover_trace \
@@ -772,6 +774,38 @@ CONF_TXBIND_DEPS = conf_root_air.c conf_commit_air.c conf_balance_air.c keccak_r
 $(BUILD)/test_shielded_verify: tests/test_shielded_verify.c shielded_verify.c shielded_verify.h conf_txbind.c conf_txbind.h $(CONF_TXBIND_DEPS) stark_prover_agg.h stark_prover_agg.c conf_action_agg_fold.h conf_action_agg_fold.c conf_action_fold.c poseidon2_fold.c stark_constraints.c $(ACTION_AIR_STACK) $(PROVER_STACK) fri_verifier.c fri_proof_codec.c shielded_fri_params.c zk_entropy.c batch_prover.c batch_verify.c batch_priming.c logup_bus.c logup.c $(DNAC_SIGHASH_SRCS) | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) $(DNAC_INCLUDES) tests/test_shielded_verify.c shielded_verify.c conf_txbind.c $(CONF_TXBIND_DEPS) $(AGG_PROVER_SRCS) $(DNAC_SIGHASH_SRCS) $(SHA3_SRC) $(LDLIBS) -o $@
 
+# ── Ledger V2 S9 W3: the NATIVE stateless V3 verifier ──────────────────────
+# native_verify_v3.c sits ABOVE shielded_verify.c: it decodes a whole V3
+# transaction, applies the per-type native rules the policy-neutral codec does
+# not own, and forwards the type-11 proof verdict to
+# dnac_shielded_verify_statement — so this binary needs the SAME link set as
+# test_shielded_verify (that entry's whole chain) plus the new TU.
+#
+# $(DNAC_SIGHASH_SRCS) carries shared/dnac/tx_wire.c (the V3 header/section/leg
+# codec + sighash_v5 + the leg commitment) and $(DNAC_INCLUDES) is what resolves
+# "dnac/dnac.h" / "dnac/transaction.h" / "dnac/safe_math.h". Both are defined
+# just above, with test_shielded_verify.
+#
+# NO signature source is linked, and none is needed: the type-12 verifier is a
+# caller-supplied function pointer (native_verify_v3.h SEAM 1) and this gate
+# supplies a deterministic stub. Pulling qgp_dilithium.c in here would drag the
+# whole vendored dsa library plus `randombytes` — the dependency nodus's own
+# build calls circular (nodus/CMakeLists.txt:449).
+#
+# Prerequisites list exactly what the command line links (the d4.d
+# AGG_PROVER_SRCS stale-binary lesson): $(AGG_PROVER_SRCS) is defined at the TOP
+# of this file, well above this rule, so it cannot expand to an empty list.
+$(BUILD)/test_native_verify_v3: tests/test_native_verify_v3.c native_verify_v3.c native_verify_v3.h shielded_verify.c shielded_verify.h conf_txbind.c conf_txbind.h $(CONF_TXBIND_DEPS) $(AGG_PROVER_SRCS) $(DNAC_SIGHASH_SRCS) | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) $(DNAC_INCLUDES) tests/test_native_verify_v3.c native_verify_v3.c shielded_verify.c conf_txbind.c $(CONF_TXBIND_DEPS) $(AGG_PROVER_SRCS) $(DNAC_SIGHASH_SRCS) $(SHA3_SRC) $(LDLIBS) -o $@
+
+# ── S9 CORRECTION PASS: the REAL-PROOF gate for types 11/12/13 ────────────
+# Same link set as test_native_verify_v3 — it exercises the same entry — but
+# this binary PROVES at runtime (dnac_agg_prover_prove_production), which is why
+# it is zk-ONLY: the prover is absent from libnodus, so a proof-generating gate
+# cannot ride the dual-build test. No tracked vector is read or written.
+$(BUILD)/test_native_verify_v3_proofs: tests/test_native_verify_v3_proofs.c native_verify_v3.c native_verify_v3.h shielded_verify.c shielded_verify.h conf_txbind.c conf_txbind.h $(CONF_TXBIND_DEPS) $(AGG_PROVER_SRCS) $(DNAC_SIGHASH_SRCS) | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) $(DNAC_INCLUDES) tests/test_native_verify_v3_proofs.c native_verify_v3.c shielded_verify.c conf_txbind.c $(CONF_TXBIND_DEPS) $(AGG_PROVER_SRCS) $(DNAC_SIGHASH_SRCS) $(SHA3_SRC) $(LDLIBS) -o $@
+
 $(BUILD)/test_prover_salted_commit: tests/test_prover_salted_commit.c stark_prover.h $(CONF_AIR_STACK) $(PROVER_STACK) | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) tests/test_prover_salted_commit.c $(CONF_AIR_STACK) $(PROVER_STACK) $(SHA3_SRC) $(LDLIBS) -o $@
 
@@ -1256,6 +1290,16 @@ test: all
 	@echo "  CRIT-1 FRI-passes-but-constraint-fails isolator"
 	@echo "============================================================"
 	@$(BUILD)/test_shielded_verify
+	@echo
+	@echo "============================================================"
+	@echo "Ledger V2 S9 W3 — NATIVE stateless V3 verifier (types 11/12/13)"
+	@echo "  per-type count windows + boundary equalities + checked"
+	@echo "  transparent arithmetic + leg commitment + sighash_v5 binding"
+	@echo "  + type-12 signature hook + in-TX nullifier dedup."
+	@echo "  ZERO production callers (native_verify_v3.h six-stop proof);"
+	@echo "  types 12/13 stop at the documented PROOF_DEFERRED seam."
+	@echo "============================================================"
+	@$(BUILD)/test_native_verify_v3
 	@echo
 	@echo "============================================================"
 	@echo "S2 dual-mode C3 — Poseidon2 Merkle-path membership (is_zk=0)"

@@ -141,13 +141,103 @@ typedef enum {
                                                  amounts, so a value at or above
                                                  2^63 could wrap the balance
                                                  identity in the field.           */
-    DNAC_SHIELDED_VERIFY_ERR_ANCHOR = 17      /* num_input == 0 but an anchor lane
+    DNAC_SHIELDED_VERIFY_ERR_ANCHOR = 17,     /* num_input == 0 but an anchor lane
                                                  is non-zero. A zero-input
                                                  statement proves NO membership,
                                                  so it must carry the all-zero
                                                  anchor; 0 is never a real tree
                                                  root, so the zero anchor cannot
                                                  be confused with one.            */
+    /* ── Ledger V2 S9 Gate 2 (W3) — the NATIVE stateless verifier's classes
+     * (native_verify_v3.h). APPENDED: 0..17 above keep their values, so no
+     * shipped KAT, log line or vector changes meaning. They are declared in
+     * this shared enum rather than a private one because both entries return
+     * the SAME status type — dnac_v3_native_verify_stateless forwards
+     * dnac_shielded_verify_statement's verdict verbatim for type 11, and one
+     * status space is what makes that forwarding lossless. ── */
+    DNAC_SHIELDED_VERIFY_ERR_TLEG_DECODE = 18,
+                                              /* the transparent-leg section
+                                                 (tx_wire.h §6, types 12/13)
+                                                 failed dnac_txw3_tleg_decode:
+                                                 truncation at any field
+                                                 boundary, tleg_version != 1, a
+                                                 count over its cap, a
+                                                 non-ascending or duplicate
+                                                 input nullifier, or a
+                                                 zero-amount output.             */
+    DNAC_SHIELDED_VERIFY_ERR_TLEG_ORDER = 19,
+                                              /* RESERVED — DECLARED, NEVER
+                                                 ASSIGNED (the same discipline
+                                                 as the retired 10/11/12 above).
+                                                 The S9 design allocated a
+                                                 distinct class for
+                                                 "transparent inputs not
+                                                 strictly ascending / duplicated",
+                                                 but the shared codec folds that
+                                                 reject into its single -1
+                                                 (txw3_tleg_ok, tx_wire.c:847-850),
+                                                 so the native layer cannot
+                                                 distinguish it and reports
+                                                 ERR_TLEG_DECODE. The value is
+                                                 reserved rather than reused so
+                                                 a future codec that reports an
+                                                 ordering status separately can
+                                                 take it without renumbering.    */
+    DNAC_SHIELDED_VERIFY_ERR_TYPE_RULE = 20,  /* a PER-TYPE native rule failed:
+                                                 an unknown/unsupported tx_type,
+                                                 a count outside its per-type
+                                                 window, or a per-type boundary
+                                                 equality (11: b_in == 0 and
+                                                 b_out == fee · 12: b_out == 0
+                                                 and b_in >= 1 · 13: b_out ==
+                                                 recipient amount + fee). These
+                                                 are RUNTIME rules; the codec is
+                                                 policy-neutral by design.       */
+    DNAC_SHIELDED_VERIFY_ERR_TLEG_ARITH = 21, /* a CHECKED transparent sum
+                                                 overflowed u64 (safe_add_u64).
+                                                 Never a wrapped accept.         */
+    DNAC_SHIELDED_VERIFY_ERR_SIG = 22,        /* type-12 spend authorization: a
+                                                 signer's Dilithium5 signature
+                                                 over sighash_v5 did not verify,
+                                                 or the caller supplied no
+                                                 verifier at all (a missing
+                                                 checker is a REJECT, never a
+                                                 skip).                          */
+    DNAC_SHIELDED_VERIFY_ERR_NF_DUP = 23,     /* two identical PRIVATE nullifiers
+                                                 inside one transaction — a
+                                                 self-double-spend, decidable
+                                                 without any chain state.        */
+    DNAC_SHIELDED_VERIFY_ERR_TIMESTAMP = 24   /* S9 CORRECTION PASS: the V3
+                                                 header `timestamp` of a type
+                                                 11/12/13 transaction was not
+                                                 zero. For the shielded types
+                                                 the field is CONSENSUS-INERT
+                                                 and its sole canonical value is
+                                                 0, so the wire carries no
+                                                 unbound mutable byte: nothing
+                                                 reads it, and a non-zero value
+                                                 could otherwise be re-stamped
+                                                 by a relayer into a different
+                                                 txid for the SAME accepted
+                                                 statement (the transparent leg
+                                                 is signed over sighash_v5,
+                                                 which by design excludes
+                                                 consensus-time fields). Checked
+                                                 BEFORE any proof work — it is a
+                                                 wire-canonicality rule, not a
+                                                 cryptographic one. This closes
+                                                 OBL-S9-TS-BIND without touching
+                                                 the frozen 581-byte preimage.
+                                                 ⚠ Value 24 previously named
+                                                 ERR_PROOF_DEFERRED, which is
+                                                 DELETED — types 12/13 now run
+                                                 the real aggregate proof
+                                                 verifier, so the class is dead.
+                                                 The reuse is safe because no
+                                                 build carrying the old meaning
+                                                 was ever committed or shipped;
+                                                 19 stays RESERVED because its
+                                                 class genuinely exists.         */
 } dnac_shielded_verify_status_t;
 
 /**
@@ -185,6 +275,33 @@ typedef struct {
     uint32_t ruleset_version;   /**< ACTIVE ruleset version                     */
     uint32_t statement_version; /**< MUST be DNAC_SHIELDED_STATEMENT_VERSION    */
     uint8_t  ruleset_hash[64];  /**< ACTIVE ruleset hash (registry/runtime)     */
+    /**
+     * S9 CORRECTION PASS — the EXPLICIT transparent-leg commitment that fills
+     * the frozen sighash_v5 slot at preimage offset 453.
+     *
+     * This entry used to derive the value itself, unconditionally calling
+     * dnac_tleg_commit_empty(). That hard-wired the statement to transactions
+     * with NO transparent leg, so an honest SHIELD/UNSHIELD (types 12/13),
+     * whose leg digest is a REAL DNA.TLEG.v1 commitment, could only ever fail
+     * binding. The value is now supplied by the caller, which is the only
+     * layer that knows the transaction's shape:
+     *   - type 11 supplies the canonical TAGGED-EMPTY digest
+     *     (dnac_tleg_commit_empty, tx_wire.h §5);
+     *   - types 12/13 supply dnac_tleg_commit() over their actual leg
+     *     (tx_wire.h §6).
+     * FAIL-CLOSED BY CONSTRUCTION: the field is by value, so a caller that
+     * forgets it presents 64 zero bytes — which no tag can produce (the
+     * tagged-empty convention exists precisely so an all-zero digest is not a
+     * legal commitment). The sighash then differs, tx_binding differs, and the
+     * statement is REJECTED with ERR_TXBIND. There is no default and no
+     * NULL-means-empty shortcut.
+     *
+     * The 581-byte sighash_v5 preimage, its offsets, its tag and the 45-public
+     * layout are UNCHANGED — only the VALUE written into an already-frozen
+     * slot varies, exactly as tx_wire.h §5 anticipated ("S9/S10 supply real
+     * digests through these SAME two parameters").
+     */
+    uint8_t  tleg_commit[64];
 } dnac_shielded_verify_ctx_t;
 
 /**

@@ -531,3 +531,53 @@ To re-verify any "shipped" claim above, grep these anchors in source:
 | Wallet bootstrap | `dnac/src/wallet/wallet.c` — `bootstrap_trusted_state()` |
 | UTXO verify in sync | `dnac/src/nodus/tcp_client.c` — `dnac_utxo_verify_anchored` call site |
 | No TX_STAKE | `dnac/include/dnac/dnac.h` (grep TX_STAKE → 0 hits) |
+
+---
+
+> **Addendum 2026-08-06 — Ledger V2 Season 8 + Season 9 Gate 2 (+ correction
+> pass). DNAC v0.18.5-ledgerv2-s9 / nodus v0.19.5. INACTIVE throughout.**
+>
+> **S8** froze the shielded STATEMENT: 45 publics (fee 38 / boundary_in 39 /
+> boundary_out 40 / tx_binding 41-44), membership depth D = 24, zk trace width
+> 2378 (construction gate 2287), num_qc 8, conservation
+> `Σ private_in + boundary_in = Σ private_out + boundary_out` with the fee
+> public-but-outside the private AIR relation, both transparent legs
+> verifier-range-checked `< 2^63`, zero private inputs legal (the SHIELD shape,
+> requiring an all-zero anchor and all-zero nullifier slots), the 581-byte
+> `sighash_v5` binding preimage, and the 359-byte V3 shielded body section
+> (`sect_version 0x02`). Pin event: 9 semantic vectors + `.expected_hashes`.
+> The legacy V2 lane (334-byte section, `DNAC_TX_V4` tag) stays byte-identical
+> and permanently REJECTED for type 11.
+>
+> **S9 Gate 2** added the SHIELD/UNSHIELD wire and native stateless
+> verification substrate: tx types `DNAC_TX_SHIELD = 12` /
+> `DNAC_TX_UNSHIELD = 13` (owned by DNA_CORE; type 14 stays UNASSIGNED, type 8
+> stays retired; the legacy V2 deserialize gate is now the literal `11` so the
+> frozen V2 acceptance set cannot widen with the enum), the transparent-leg
+> section v1 + its `DNA.TLEG.v1` commitment filling the already-frozen
+> `sighash_v5` slot at preimage offset 453, the native stateless verifier
+> `dnac_v3_native_verify_stateless` with per-type count windows and boundary
+> equalities, seven appended status classes (0..17 unmoved), and CORE runtime
+> ownership of `{1,2,3,11,12,13}` with the hard stop placed BEFORE the pool
+> rule (`CORE_RULESET_HASH` re-derived; the SYSTEM digest unchanged).
+>
+> **The correction pass (same day)** closed the proof seam — the transparent-leg
+> commitment became caller-supplied, so types 11, 12 AND 13 all run the real
+> aggregate verifier and reach internal VALID under runtime-generated real
+> proofs — and closed `OBL-S9-TS-BIND` by pinning the V3 header `timestamp` to
+> 0 for the shielded types (consensus-inert; non-zero is `ERR_TIMESTAMP`,
+> returned before any proof work). **No AIR, public layout, proof parameter,
+> vector or `sighash_v5` field moved in either season's later work.**
+>
+> ⚠ **`OBL-S9-CARRIER-CAP` — measured, blocks activation:** a production
+> aggregate proof is 2,474,998 B; a type-11 V3 body would need 2,475,357 B
+> against `DNAC_TXW3_MAX_BODY_LEN` = 65,426 — **37.8× over the cap**. No real
+> shielded transaction can be framed on the V3 wire until the activation season
+> resolves the carrier (larger cap, recursion/compression, or an out-of-band
+> proof channel).
+>
+> **Activation state unchanged:** Type 11 terminates in an unconditional
+> REJECT; types 12/13 are defined and owned but REJECT-unconditional; the V3
+> wire is rejected by every live admission path (all gate on wire version byte
+> 2); `dnac_v3_native_verify_stateless` has ZERO production callers.
+> Gate `DEFERRED-V2-GATE-S3-LIVE-SHRINK-CRASH` remains OPEN and unchanged.

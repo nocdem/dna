@@ -45,8 +45,51 @@
  *       accept KATs (real production proof) live in the zk suite
  *       (shared/crypto/zk tests/test_shielded_verify.c) — they need a prover.
  *
+ * ── LEDGER V2 S9 Gate 2 (W5, 2026-08-06) — the SECOND chain this gate holds ──
+ * W3 put shared/crypto/zk/native_verify_v3.c into NODUS_SOURCES
+ * (nodus/CMakeLists.txt:298) and gave it its own BEHAVIORAL gate,
+ * test_native_verify_v3 (nodus/CMakeLists.txt:479-483). What was missing is the
+ * thing THIS file exists for: nothing forced native_verify_v3.o out of
+ * libnodus.a, so a source dropped from that list would have surfaced at
+ * activation rather than as a link error — exactly the C1 surprise described
+ * above, one layer up.
+ *   T6  (linkage) calls dnac_v3_native_verify_stateless, which pulls
+ *       native_verify_v3.o and with it the V3 header codec, the transparent-leg
+ *       decoder + dnac_tleg_commit, and the shared sighash_v5 / conf_txbind_map
+ *       path that entry binds against. Only the entry's OWN fail-close contract
+ *       is asserted, on inputs that cannot go flaky: NULL tx_bytes, tx_len == 0
+ *       and a NULL context are each DNAC_SHIELDED_VERIFY_ERR_NULL
+ *       (native_verify_v3.c:125-126); a buffer shorter than the 110-byte V3
+ *       header is ERR_DECODE (dnac_txw3_decode rejects src_len <
+ *       DNAC_TXW3_BODY_OFF at tx_wire.c:194, folded at native_verify_v3.c:134);
+ *       and the `out` export is left ZEROED on that reject, because the entry
+ *       zeroes it before examining a single byte (native_verify_v3.c:124), so
+ *       no reject path can leave a caller reading stale expectations.
+ *       The BEHAVIORAL matrix — per-type count/boundary windows, type-12
+ *       signatures, in-TX nullifier dedup — is deliberately NOT duplicated
+ *       here; it lives in test_native_verify_v3 (74 checks), and two copies
+ *       would be two things to keep in sync.
+ *   T7  (posture pin) the S9 status SPACE, which is all this binary can
+ *       honestly prove about the admission posture. The classes W3 APPENDED
+ *       (18..24) are pinned to their exact numeric values, because "0..17 above
+ *       keep their values" (shielded_verify.h:152-153) is precisely what keeps
+ *       every shipped KAT, log line and vector meaning what it did; and
+ *       ERR_TIMESTAMP (24, the S9-correction reuse of the slot that briefly
+ *       held the now-deleted ERR_PROOF_DEFERRED) is pinned NON-ZERO against
+ *       OK == 0, so no reject in the space can be read as an accept by a
+ *       caller testing `== OK`.
+ *       ⚠ HONEST SCOPE: a status-space pin is NOT a consensus assertion. That
+ *       types 11/12/13 stay unadmittable rests on the six independent stops
+ *       enumerated at native_verify_v3.h:30-54 (wire version · the frozen V2
+ *       type literal · the type-11 terminal reject · runtime admission · the
+ *       DOMREG statement_version gate · no production caller) — every one of
+ *       them lives in a witness translation unit this binary does not build,
+ *       so none of them is asserted, or faked, here.
+ *
  * NO consensus behavior is exercised — nothing in the witness calls these yet
- * (C2.2 wires the unconditional type-11 REJECT; the accept-flip is C3).
+ * (C2.2 wires the unconditional type-11 REJECT; the accept-flip is C3), and S9
+ * W5 does not change that: dnac_v3_native_verify_stateless still has ZERO
+ * production callers — after this file its callers are exactly two unit tests.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: Apache-2.0
@@ -58,6 +101,7 @@
 
 #include "conf_txbind.h"
 #include "dnac/tx_wire.h" /* dna_exec_context_t + dnac_sighash_v5 (SHARED codec) */
+#include "native_verify_v3.h" /* S9 W5: dnac_v3_native_verify_stateless */
 #include "shielded_fri_params.h"
 #include "shielded_verify.h"
 
@@ -144,6 +188,13 @@ int main(void) {
     vctx.ruleset_version = 1u;
     vctx.statement_version = DNAC_SHIELDED_STATEMENT_VERSION;
     memset(vctx.ruleset_hash, 0x5A, sizeof vctx.ruleset_hash);
+    /* S9 CORRECTION PASS: the leg commitment is caller-supplied. These are
+     * type-11 fixtures (no transparent leg) ⇒ the canonical tagged-empty
+     * digest, which is what the entry used to derive internally. */
+    if (dnac_tleg_commit_empty(vctx.tleg_commit) != 0) {
+        printf("  tleg_commit_empty failed\n");
+        return 1;
+    }
 
     /* A STATEMENT-CONSISTENT wire struct for T3/T4: its tx_binding is derived
      * from its own sighash_v5, so the verify runs past canonicalization / fee /
@@ -279,6 +330,94 @@ int main(void) {
         ok = ok && dnac_shielded_verify_statement(&sf, &vctx, 42) ==
                        DNAC_SHIELDED_VERIFY_ERR_TXBIND;
         printf("  T5 C2.1 statement-verify chain links, fails closed %s\n",
+               ok ? "PASS" : "FAIL");
+        if (!ok) fails++;
+    }
+
+    /* T6 (Ledger V2 S9 W5): the NATIVE stateless V3 entry links out of
+     * libnodus.a and fails closed. CALLING it is the point — with
+     * native_verify_v3.c missing from NODUS_SOURCES this is an unresolved
+     * symbol at link time, not a surprise at activation. The asserted verdicts
+     * are the two cheapest STABLE ones (no honest transaction is built here);
+     * the behavioral matrix belongs to test_native_verify_v3. */
+    {
+        /* The same arbitrary-but-fixed context as above, in the native entry's
+         * own struct. sig_verify stays NULL: it is REQUIRED only for type 12,
+         * and no probe below gets PAST the decode, let alone to a signature. */
+        dnac_v3_native_ctx_t nctx;
+        memset(&nctx, 0, sizeof nctx);
+        memcpy(nctx.chain_id, vctx.chain_id, sizeof nctx.chain_id);
+        nctx.domain_id         = vctx.domain_id;
+        nctx.pool_id           = vctx.pool_id;
+        nctx.ruleset_version   = vctx.ruleset_version;
+        nctx.statement_version = vctx.statement_version;
+        memcpy(nctx.ruleset_hash, vctx.ruleset_hash, sizeof nctx.ruleset_hash);
+        nctx.sig_verify        = NULL;
+
+        /* Shorter than the 110-byte V3 header (DNAC_TXW3_BODY_OFF), so the
+         * decode rejects on LENGTH before it reads the version byte. */
+        uint8_t junk[16];
+        memset(junk, 0xA5, sizeof junk);
+
+        /* Poisoned on purpose: the entry must zero the whole export before it
+         * looks at the transaction, so this must come back all-zero. */
+        dnac_v3_native_out_t out;
+        memset(&out, 0xEE, sizeof out);
+
+        int ok = dnac_v3_native_verify_stateless(NULL, sizeof junk, &nctx,
+                                                 NULL) ==
+                     DNAC_SHIELDED_VERIFY_ERR_NULL &&
+                 dnac_v3_native_verify_stateless(junk, 0, &nctx, NULL) ==
+                     DNAC_SHIELDED_VERIFY_ERR_NULL &&
+                 dnac_v3_native_verify_stateless(junk, sizeof junk, NULL,
+                                                 NULL) ==
+                     DNAC_SHIELDED_VERIFY_ERR_NULL &&
+                 dnac_v3_native_verify_stateless(junk, sizeof junk, &nctx,
+                                                 &out) ==
+                     DNAC_SHIELDED_VERIFY_ERR_DECODE;
+        /* ... and that reject left NO stale expectation behind. Guarded by ok
+         * so a short-circuited chain cannot read the un-passed poison. */
+        if (ok) {
+            const uint8_t *p = (const uint8_t *)&out;
+            for (size_t i = 0; i < sizeof out; i++)
+                if (p[i] != 0) { ok = 0; break; }
+        }
+        printf("  T6 W5 native V3 entry links, fails closed        %s\n",
+               ok ? "PASS" : "FAIL");
+        if (!ok) fails++;
+    }
+
+    /* T7 (Ledger V2 S9 W5): posture pin over the STATUS SPACE — see the header
+     * block's HONEST SCOPE note; this is a numbering/verdict-class pin, NOT a
+     * claim that consensus rejects anything (that lives in translation units
+     * this binary does not build). */
+    {
+        int ok = /* the shipped block kept its numbering — the promise the W3
+                  * append rests on (shielded_verify.h:152-153) */
+                 DNAC_SHIELDED_VERIFY_OK == 0 &&
+                 DNAC_SHIELDED_VERIFY_ERR_NULL == 1 &&
+                 DNAC_SHIELDED_VERIFY_ERR_DECODE == 8 &&
+                 DNAC_SHIELDED_VERIFY_ERR_STATEMENT_VERSION == 15 &&
+                 /* the W3 classes at their frozen values; 19 is RESERVED and
+                  * never assigned, pinned so it cannot be silently reused */
+                 DNAC_SHIELDED_VERIFY_ERR_TLEG_DECODE == 18 &&
+                 DNAC_SHIELDED_VERIFY_ERR_TLEG_ORDER == 19 &&
+                 DNAC_SHIELDED_VERIFY_ERR_TYPE_RULE == 20 &&
+                 DNAC_SHIELDED_VERIFY_ERR_TLEG_ARITH == 21 &&
+                 DNAC_SHIELDED_VERIFY_ERR_SIG == 22 &&
+                 DNAC_SHIELDED_VERIFY_ERR_NF_DUP == 23 &&
+                 /* S9 CORRECTION PASS: 24 was ERR_PROOF_DEFERRED, which is
+                  * DELETED — types 12/13 now run the real aggregate verifier,
+                  * so the class is dead. The value now carries ERR_TIMESTAMP
+                  * (the header timestamp of a shielded type must be 0). Safe to
+                  * reuse: no build carrying the old meaning was ever committed.
+                  * 19 stays RESERVED because its class genuinely exists. */
+                 DNAC_SHIELDED_VERIFY_ERR_TIMESTAMP == 24 &&
+                 /* OK is the only zero in the space, so no caller testing
+                  * `== OK` can read any reject as an accept. */
+                 DNAC_SHIELDED_VERIFY_ERR_TIMESTAMP !=
+                     DNAC_SHIELDED_VERIFY_OK;
+        printf("  T7 S9 status space: OK==0, every class is a REJECT %s\n",
                ok ? "PASS" : "FAIL");
         if (!ok) fails++;
     }

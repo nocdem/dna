@@ -666,7 +666,17 @@ int dnac_txw3_shielded_encode(const dnac_txw3_shielded_t *st,
 int dnac_txw3_shielded_decode(const uint8_t *body, uint32_t body_len,
                               dnac_txw3_shielded_t *out,
                               const uint8_t **fri_out, uint32_t *fri_len_out) {
-    if (!body || !out || !fri_out || !fri_len_out) return -1;
+    /* Fail closed FIRST (S9 W2 repair, widened by the O6 verifier's C5):
+     * the header promises "on ANY rejection *out is zeroed". The length
+     * rejects below used to return with *out untouched, and the NULL-argument
+     * check used to run BEFORE the memset — so a call with a valid `out` but
+     * a NULL `fri_out`/`fri_len_out` also left stale statement fields behind.
+     * `out` is now NULL-checked on its own, zeroed immediately, and only then
+     * are the remaining arguments judged: every reject below this point,
+     * including the NULL-argument one, leaves *out zeroed. */
+    if (!out) return -1;
+    memset(out, 0, sizeof(*out));
+    if (!body || !fri_out || !fri_len_out) return -1;
     if (body_len < (uint32_t)DNAC_TXW3_SHIELDED_FIXED) return -1;  /* short */
 
     uint32_t fri_len = get_be32(body + TXW3_SECT_FRILEN_OFF);   /* off 355 */
@@ -675,7 +685,6 @@ int dnac_txw3_shielded_decode(const uint8_t *body, uint32_t body_len,
      * fail here. */
     if (body_len - (uint32_t)DNAC_TXW3_SHIELDED_FIXED != fri_len) return -1;
 
-    memset(out, 0, sizeof(*out));
     const uint8_t *p = body;
     out->sect_version = *p++;                            /* off   0 */
     txw3_get_lanes(p, out->anchor);          p += 32;    /* off   1 */
@@ -776,4 +785,271 @@ int dnac_ct_commit_empty(uint8_t out[DNAC_TXW_HASH_LEN]) {
     if (!out) return -1;
     return qgp_sha3_512(TAG_E_CTC, DNAC_SIGHASH_V5_TAG_LEN, out) == 0
                ? 0 : -1;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+ * 6. Transparent-leg section v1 + its commitment (Season 9 — INACTIVE)
+ *
+ * Layout, canonicality and the commitment preimage: tx_wire.h §6. Nothing
+ * above this point moved for S9 except the fail-close repair inside
+ * dnac_txw3_shielded_decode (the memset now runs before the first reject);
+ * the §4 layout and the §5 preimage are byte-unchanged.
+ *
+ * POLICY-NEUTRAL by construction: not one function below reads a
+ * transaction type, domain or pool. Per-type count windows are native
+ * rules and are enforced by the type-specific caller, never here.
+ *
+ * This block lives at the END of the file DELIBERATELY: growing prose or
+ * code above shifts every `tx_wire.c:NNN` citation in the tests and design
+ * docs and silently staleness them. New sections append.
+ * ════════════════════════════════════════════════════════════════════ */
+
+/* Leg arithmetic is pinned, not assumed. */
+_Static_assert(DNAC_TXW3_TLEG_TOUT_LEN == 169,
+               "transparent output size drifted from fp+amount+seed = 169");
+/* Identical to the legacy signers section's pair (TXW_SIGNER_SIZE,
+ * tx_wire.c:269) — deliberately the same Dilithium5 material. */
+_Static_assert(DNAC_TXW3_TLEG_SIGNER_LEN == 7219,
+               "transparent signer size drifted from pubkey+signature = 7219");
+_Static_assert(DNAC_TXW3_TLEG_FIXED == 1 + 1 + 1 + 1,
+               "leg overhead drifted from version + three count bytes");
+_Static_assert(DNAC_TXW3_TLEG_MAX_LEN == 32608,
+               "worst-case leg length drifted from 4+1024+2704+28876");
+/* The structural caps are what bound every length sum below by
+ * DNAC_TXW3_TLEG_MAX_LEN, so none of them can overflow. A worst-case leg
+ * must additionally still leave room for the §4 section inside a V3 body —
+ * if this ever fails, no 12/13 transaction could be framed at all. */
+_Static_assert(DNAC_TXW3_TLEG_MAX_LEN + DNAC_TXW3_SHIELDED_FIXED
+                   < DNAC_TXW3_MAX_BODY_LEN,
+               "worst-case leg + shielded section no longer fits a V3 body");
+
+/* POPULATED transparent-leg tag — EXACTLY 16 bytes, zero-padded ASCII,
+ * same rule as TAG_E_TLEG (tx_wire.c:535). The two are DISTINCT domains:
+ * "DNA.E.TLEG.v1" commits the ABSENCE of a leg, "DNA.TLEG.v1" commits a
+ * present one, so no leg can ever collide with the empty commitment. */
+static const uint8_t TAG_TLEG[DNAC_SIGHASH_V5_TAG_LEN] = "DNA.TLEG.v1\0\0\0\0";
+
+/**
+ * The ONE transparent-leg canonicality rule list — encode, decode and the
+ * commitment all run it, so the three can never disagree about which legs
+ * exist. Ordered exactly as tx_wire.h §6 documents:
+ *   1. tleg_version != 1
+ *   2. num_tin > 16 / num_tout > 16 / num_signers > 4   (structural caps)
+ *   3. input nullifiers not STRICTLY ascending (memcmp) — this single
+ *      comparison rejects both a mis-ordered set and an in-leg duplicate
+ *   4. an output with amount == 0
+ * Deliberately ABSENT: any per-type count window (native-layer rule) and
+ * any judgment of slots at or beyond a count (they are not on the wire).
+ * @return 0 / -1.
+ */
+static int txw3_tleg_ok(const dnac_txw3_tleg_t *t) {
+    if (t->tleg_version != DNAC_TXW3_TLEG_VERSION) return -1;
+    if (t->num_tin     > DNAC_TXW_MAX_INPUTS)      return -1;
+    if (t->num_tout    > DNAC_TXW_MAX_OUTPUTS)     return -1;
+    if (t->num_signers > DNAC_TXW_MAX_SIGNERS)     return -1;
+
+    for (unsigned i = 1; i < (unsigned)t->num_tin; i++)
+        if (memcmp(t->tin_nullifier[i - 1], t->tin_nullifier[i],
+                   DNAC_TXW_NULLIFIER_LEN) >= 0)
+            return -1;   /* equal (duplicate) or descending */
+
+    for (unsigned i = 0; i < (unsigned)t->num_tout; i++)
+        if (t->tout[i].amount == 0) return -1;
+
+    return 0;
+}
+
+int dnac_txw3_tleg_encoded_size(uint8_t num_tin, uint8_t num_tout,
+                                uint8_t num_signers, size_t *out) {
+    if (!out) return -1;
+    *out = 0;   /* no stale length survives a reject */
+    if (num_tin     > DNAC_TXW_MAX_INPUTS)  return -1;
+    if (num_tout    > DNAC_TXW_MAX_OUTPUTS) return -1;
+    if (num_signers > DNAC_TXW_MAX_SIGNERS) return -1;
+    /* Bounded by DNAC_TXW3_TLEG_MAX_LEN (32608) by the caps just checked —
+     * the _Static_asserts above are what make this addition safe. */
+    *out = (size_t)DNAC_TXW3_TLEG_FIXED
+         + (size_t)num_tin     * DNAC_TXW_NULLIFIER_LEN
+         + (size_t)num_tout    * DNAC_TXW3_TLEG_TOUT_LEN
+         + (size_t)num_signers * DNAC_TXW3_TLEG_SIGNER_LEN;
+    return 0;
+}
+
+int dnac_txw3_tleg_encode(const dnac_txw3_tleg_t *t,
+                          uint8_t *dst, size_t dst_cap, size_t *written_out) {
+    if (!t || !dst || !written_out) return -1;
+    if (txw3_tleg_ok(t) != 0) return -1;   /* never emit a non-canonical leg */
+
+    size_t need = 0;
+    if (dnac_txw3_tleg_encoded_size(t->num_tin, t->num_tout, t->num_signers,
+                                    &need) != 0)
+        return -1;
+    if (dst_cap < need) return -1;
+
+    uint8_t *p = dst;
+    *p++ = t->tleg_version;                                    /* off 0 */
+    *p++ = t->num_tin;                                         /* off 1 */
+    for (unsigned i = 0; i < (unsigned)t->num_tin; i++) {      /* off 2 */
+        memcpy(p, t->tin_nullifier[i], DNAC_TXW_NULLIFIER_LEN);
+        p += DNAC_TXW_NULLIFIER_LEN;
+    }
+    *p++ = t->num_tout;
+    for (unsigned i = 0; i < (unsigned)t->num_tout; i++) {
+        memcpy(p, t->tout[i].fp, DNAC_TXW_FP_LEN);   p += DNAC_TXW_FP_LEN;
+        put_be64(t->tout[i].amount, p);              p += 8;
+        memcpy(p, t->tout[i].nullifier_seed, DNAC_TXW_SEED_LEN);
+        p += DNAC_TXW_SEED_LEN;
+    }
+    *p++ = t->num_signers;
+    for (unsigned i = 0; i < (unsigned)t->num_signers; i++) {
+        memcpy(p, t->signer[i].pubkey, DNAC_TXW_PK_LEN);  p += DNAC_TXW_PK_LEN;
+        memcpy(p, t->signer[i].signature, DNAC_TXW_SIG_LEN);
+        p += DNAC_TXW_SIG_LEN;
+    }
+    /* final-offset proof: the walk landed EXACTLY on the length the three
+     * counts predict — a drifted field width cannot be emitted silently */
+    if ((size_t)(p - dst) != need) return -1;
+
+    *written_out = need;
+    return 0;
+}
+
+int dnac_txw3_tleg_decode(const uint8_t *body, size_t body_len,
+                          dnac_txw3_tleg_t *out, size_t *consumed_out) {
+    /* Fail closed FIRST: every reject below leaves *out fully zeroed, so a
+     * caller can never read a half-walked leg. This also zeroes the slots
+     * at or beyond each count, which is what makes a decoded leg re-encode
+     * byte-identically. The walk copies fields into *out as it goes, so a
+     * reject discovered AFTER a copy re-zeroes through `goto fail` — a bare
+     * `return -1` past this point would leave the copied prefix visible.
+     * O6 verifier C5: `out` is NULL-checked ALONE and zeroed before the
+     * other arguments are judged, so even a NULL `body`/`consumed_out`
+     * reject honours the header's "on ANY rejection" contract. */
+    if (!out) return -1;
+    memset(out, 0, sizeof(*out));
+    if (!body || !consumed_out) return -1;
+
+    /* The two leading bytes are what the whole walk is sized from. */
+    if (body_len < 2) return -1;
+    if (body[0] != DNAC_TXW3_TLEG_VERSION) return -1;
+    uint8_t num_tin = body[1];
+    if (num_tin > DNAC_TXW_MAX_INPUTS) return -1;   /* cap before indexing */
+
+    /* Bound checks use the SUBTRACTION form (never off + need) against the
+     * invariant off <= body_len, so no length arithmetic can wrap. */
+    size_t off  = 2;
+    size_t need = (size_t)num_tin * DNAC_TXW_NULLIFIER_LEN;
+    if (body_len - off < need) return -1;
+    for (unsigned i = 0; i < (unsigned)num_tin; i++)
+        memcpy(out->tin_nullifier[i],
+               body + off + (size_t)i * DNAC_TXW_NULLIFIER_LEN,
+               DNAC_TXW_NULLIFIER_LEN);
+    off += need;
+
+    if (body_len - off < 1) goto fail;
+    uint8_t num_tout = body[off++];
+    if (num_tout > DNAC_TXW_MAX_OUTPUTS) goto fail;
+    need = (size_t)num_tout * DNAC_TXW3_TLEG_TOUT_LEN;
+    if (body_len - off < need) goto fail;
+    for (unsigned i = 0; i < (unsigned)num_tout; i++) {
+        const uint8_t *q = body + off + (size_t)i * DNAC_TXW3_TLEG_TOUT_LEN;
+        memcpy(out->tout[i].fp, q, DNAC_TXW_FP_LEN);
+        out->tout[i].amount = get_be64(q + DNAC_TXW_FP_LEN);
+        memcpy(out->tout[i].nullifier_seed, q + DNAC_TXW_FP_LEN + 8,
+               DNAC_TXW_SEED_LEN);
+    }
+    off += need;
+
+    if (body_len - off < 1) goto fail;
+    uint8_t num_signers = body[off++];
+    if (num_signers > DNAC_TXW_MAX_SIGNERS) goto fail;
+    need = (size_t)num_signers * DNAC_TXW3_TLEG_SIGNER_LEN;
+    if (body_len - off < need) goto fail;
+    for (unsigned i = 0; i < (unsigned)num_signers; i++) {
+        const uint8_t *q = body + off + (size_t)i * DNAC_TXW3_TLEG_SIGNER_LEN;
+        memcpy(out->signer[i].pubkey, q, DNAC_TXW_PK_LEN);
+        memcpy(out->signer[i].signature, q + DNAC_TXW_PK_LEN, DNAC_TXW_SIG_LEN);
+    }
+    off += need;
+
+    out->tleg_version = body[0];
+    out->num_tin      = num_tin;
+    out->num_tout     = num_tout;
+    out->num_signers  = num_signers;
+
+    /* Same rule list encode runs — ordering/duplicates and zero amounts are
+     * only decidable once the fields are in hand. */
+    size_t expect = 0;
+    if (dnac_txw3_tleg_encoded_size(num_tin, num_tout, num_signers,
+                                    &expect) != 0 ||
+        expect != off || txw3_tleg_ok(out) != 0) {
+        goto fail;
+    }
+
+    /* PREFIX decode: body_len may legitimately exceed `off` — the bytes
+     * past it belong to the shielded section the caller decodes next, and
+     * are neither read nor judged here (tx_wire.h §6). */
+    *consumed_out = off;
+    return 0;
+
+fail:
+    /* The ONE reject exit for every check that can fire after a field has
+     * been copied into *out. Re-zeroing here is what makes the header's
+     * "on ANY rejection *out is zeroed" true for a leg truncated in the
+     * middle of its walk — the leading memset alone cannot, because the
+     * nullifier/output/signer copies happen before these checks run. */
+    memset(out, 0, sizeof(*out));
+    return -1;
+}
+
+int dnac_tleg_commit(const dnac_txw3_tleg_t *t,
+                     uint8_t out[DNAC_TXW_HASH_LEN]) {
+    if (!t || !out) return -1;
+    if (txw3_tleg_ok(t) != 0) return -1;   /* a non-canonical leg must not hash */
+
+    /* Preimage (tx_wire.h §6): tag ‖ counts ‖ inputs ‖ outputs ‖ signer
+     * PUBKEYS. Signatures and tleg_version are deliberately excluded.
+     * Worst case 16 + 1 + 1024 + 1 + 2704 + 1 + 10368 = 14115 bytes —
+     * heap, not stack, matching dnac_txw3_tx_hash (tx_wire.c:237). */
+    size_t pre_len = (size_t)DNAC_SIGHASH_V5_TAG_LEN
+                   + 1 + (size_t)t->num_tin     * DNAC_TXW_NULLIFIER_LEN
+                   + 1 + (size_t)t->num_tout    * DNAC_TXW3_TLEG_TOUT_LEN
+                   + 1 + (size_t)t->num_signers * DNAC_TXW_PK_LEN;
+    uint8_t *pre = (uint8_t *)malloc(pre_len);
+    if (!pre) return -1;
+
+    uint8_t *p = pre;
+    memcpy(p, TAG_TLEG, DNAC_SIGHASH_V5_TAG_LEN);
+    p += DNAC_SIGHASH_V5_TAG_LEN;
+    *p++ = t->num_tin;
+    for (unsigned i = 0; i < (unsigned)t->num_tin; i++) {
+        memcpy(p, t->tin_nullifier[i], DNAC_TXW_NULLIFIER_LEN);
+        p += DNAC_TXW_NULLIFIER_LEN;
+    }
+    *p++ = t->num_tout;
+    for (unsigned i = 0; i < (unsigned)t->num_tout; i++) {
+        memcpy(p, t->tout[i].fp, DNAC_TXW_FP_LEN);   p += DNAC_TXW_FP_LEN;
+        put_be64(t->tout[i].amount, p);              p += 8;
+        memcpy(p, t->tout[i].nullifier_seed, DNAC_TXW_SEED_LEN);
+        p += DNAC_TXW_SEED_LEN;
+    }
+    *p++ = t->num_signers;
+    for (unsigned i = 0; i < (unsigned)t->num_signers; i++) {
+        /* PUBKEY ONLY — the signature is excluded (tx_wire.h §6). */
+        memcpy(p, t->signer[i].pubkey, DNAC_TXW_PK_LEN);
+        p += DNAC_TXW_PK_LEN;
+    }
+    /* final-offset proof: the preimage is EXACTLY the declared length —
+     * a drifted field width cannot hash silently */
+    if ((size_t)(p - pre) != pre_len) {
+        memset(pre, 0, pre_len);
+        free(pre);
+        return -1;
+    }
+
+    int rc = qgp_sha3_512(pre, pre_len, out);
+    /* Transaction material hygiene: wipe the temporary preimage. */
+    memset(pre, 0, pre_len);
+    free(pre);
+    return (rc == 0) ? 0 : -1;
 }

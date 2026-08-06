@@ -536,6 +536,189 @@ int dnac_tleg_commit_empty(uint8_t out[DNAC_TXW_HASH_LEN]);
  *  16 bytes). @return 0 / -1. */
 int dnac_ct_commit_empty(uint8_t out[DNAC_TXW_HASH_LEN]);
 
+/* ══════════════════════════════════════════════════════════════════════
+ * 6. Transparent-leg section v1 (Ledger V2 Season 9 — INACTIVE)
+ *
+ * The canonical variable-length transparent section a Transaction Wire V3
+ * body may carry AHEAD of the §4 shielded section. It is a NEW section:
+ * nothing above it moved, the frozen §4 layout is untouched, and no live
+ * consensus path decodes a V3 body at all.
+ *
+ * ── POLICY NEUTRALITY (S8 §C.10 discipline, tx_wire.h:144-158) ─────────
+ * This codec has NO transaction-type, domain, or pool branch and MUST NOT
+ * grow one. It enforces STRUCTURE only:
+ *   - the version byte, the three structural caps, the input ordering rule
+ *     and the zero-amount rule.
+ * Per-type COUNT WINDOWS are NOT codec rules and are deliberately absent —
+ * "this type needs at least one transparent input", "this type carries
+ * exactly one output", "this type may not carry signers" are NATIVE
+ * (runtime/admission) rules that live at the type-specific call sites. A
+ * structurally canonical leg that no transaction type would accept still
+ * encodes, decodes and commits here; rejecting it is the caller's job.
+ *
+ * ── Layout (offsets from the START of the leg; integers BIG-ENDIAN) ────
+ *   off 0    len 1              tleg_version = DNAC_TXW3_TLEG_VERSION (1)
+ *   off 1    len 1              num_tin          (≤ DNAC_TXW_MAX_INPUTS)
+ *   off 2    len 64·num_tin     tin nullifiers, each 64 B, STRICTLY
+ *                               ASCENDING lexicographic (memcmp) — equal
+ *                               or descending neighbours are non-canonical,
+ *                               which makes an in-leg duplicate spend a
+ *                               decode reject for free
+ *            len 1              num_tout         (≤ DNAC_TXW_MAX_OUTPUTS)
+ *            per tout, 169 B:   fp[129] ‖ amount u64 BE ‖ seed[32]
+ *                               amount MUST be ≥ 1 (a zero-value output is
+ *                               a reject, never an encoding). NO token_id
+ *                               (the asset is native-pinned) and NO memo.
+ *            len 1              num_signers      (≤ DNAC_TXW_MAX_SIGNERS)
+ *            per signer, 7219 B: pubkey[2592] ‖ signature[4627]
+ *
+ *   LEG_LEN = DNAC_TXW3_TLEG_FIXED (4 = version + the three count bytes)
+ *           + 64·num_tin + 169·num_tout + 7219·num_signers
+ *   The three counts determine the length exactly; the decoder walks it.
+ *
+ * ── PREFIX decode (unlike §2/§4, which are EXACT-length) ───────────────
+ * dnac_txw3_tleg_decode walks exactly ONE leg starting at body[0] and
+ * reports how many bytes it consumed. It does NOT require
+ * consumed == body_len, because the leg is a PREFIX of a larger body: the
+ * caller hands the remainder (body + consumed, body_len − consumed) to
+ * dnac_txw3_shielded_decode, whose own EXACT length equality is what
+ * rejects a truncated or trailing-byte body. Splitting the body is a
+ * type-specific (native-layer) step, not something this codec decides.
+ *
+ * ── Unused array slots ────────────────────────────────────────────────
+ * The struct holds fixed arrays sized at the caps, but only the first
+ * num_* entries of each exist on the wire and in the commitment. Slots at
+ * or beyond a count are NOT emitted, NOT hashed, and NOT judged — decode
+ * zeroes the whole struct first, so a decoded leg always re-encodes
+ * byte-identically.
+ * ════════════════════════════════════════════════════════════════════ */
+
+/** Transparent-leg section version carried at leg offset 0. */
+#define DNAC_TXW3_TLEG_VERSION      1
+/** Per-output wire size: fp(129) + amount(8) + nullifier_seed(32) = 169. */
+#define DNAC_TXW3_TLEG_TOUT_LEN     (DNAC_TXW_FP_LEN + 8 + DNAC_TXW_SEED_LEN)
+/** Per-signer wire size: pubkey(2592) + signature(4627) = 7219. Same pair
+ *  the legacy signers section carries (TXW_SIGNER_SIZE, tx_wire.c:269). */
+#define DNAC_TXW3_TLEG_SIGNER_LEN   (DNAC_TXW_PK_LEN + DNAC_TXW_SIG_LEN)
+/** Count-independent overhead: tleg_version + num_tin + num_tout +
+ *  num_signers = 4 bytes. A 0/0/0 leg is exactly these 4 bytes. */
+#define DNAC_TXW3_TLEG_FIXED        4
+/** Largest structurally legal leg (16 in / 16 out / 4 signers):
+ *  4 + 1024 + 2704 + 28876 = 32608. Pinned by a _Static_assert in
+ *  tx_wire.c; it is what bounds every length computation here. */
+#define DNAC_TXW3_TLEG_MAX_LEN                                             \
+    ((size_t)DNAC_TXW3_TLEG_FIXED                                          \
+     + (size_t)DNAC_TXW_MAX_INPUTS  * DNAC_TXW_NULLIFIER_LEN               \
+     + (size_t)DNAC_TXW_MAX_OUTPUTS * DNAC_TXW3_TLEG_TOUT_LEN              \
+     + (size_t)DNAC_TXW_MAX_SIGNERS * DNAC_TXW3_TLEG_SIGNER_LEN)
+
+/** One transparent output: owner fingerprint, amount, nullifier seed.
+ *  Mirrors the legacy transparent output MINUS version/token_id/memo. */
+typedef struct {
+    uint8_t  fp[DNAC_TXW_FP_LEN];               /* 129 — owner fingerprint */
+    uint64_t amount;                            /* MUST be >= 1            */
+    uint8_t  nullifier_seed[DNAC_TXW_SEED_LEN]; /* 32                      */
+} dnac_txw3_tout_t;
+
+/** One transparent signer: the authorizing Dilithium5 keypair material.
+ *  The PUBKEY is committed (dnac_tleg_commit); the SIGNATURE is not. */
+typedef struct {
+    uint8_t pubkey[DNAC_TXW_PK_LEN];      /* 2592 */
+    uint8_t signature[DNAC_TXW_SIG_LEN];  /* 4627 */
+} dnac_txw3_signer_t;
+
+/**
+ * A decoded transparent leg.
+ *
+ * SIZE: the arrays are fixed at the structural caps, so one of these is
+ * roughly 32 KB of storage (1024 B of nullifiers + 16 padded outputs +
+ * 4 × 7219 B of signer material). That is fine on a desktop/server stack
+ * but is NOT something to place on a small thread stack (Android bionic
+ * gives a pthread 1 MB by default) — heap-allocate it if in doubt, and
+ * never put two of them in one frame casually.
+ */
+typedef struct {
+    uint8_t  tleg_version;                      /* must be 1 */
+    uint8_t  num_tin;                           /* 0..16     */
+    uint8_t  tin_nullifier[DNAC_TXW_MAX_INPUTS][DNAC_TXW_NULLIFIER_LEN];
+    uint8_t  num_tout;                          /* 0..16     */
+    dnac_txw3_tout_t tout[DNAC_TXW_MAX_OUTPUTS];
+    uint8_t  num_signers;                       /* 0..4      */
+    dnac_txw3_signer_t signer[DNAC_TXW_MAX_SIGNERS];
+} dnac_txw3_tleg_t;
+
+/**
+ * Exact encoded leg size for the three counts, with the structural caps
+ * enforced (they are what makes the sum unable to overflow: it is bounded
+ * by DNAC_TXW3_TLEG_MAX_LEN).
+ * @return 0 on success (size in *out), -1 on NULL *out or any count over
+ *         its cap (*out set to 0 first, so a caller that ignores the
+ *         return value cannot read a stale length).
+ */
+int dnac_txw3_tleg_encoded_size(uint8_t num_tin, uint8_t num_tout,
+                                uint8_t num_signers, size_t *out);
+
+/**
+ * Canonical encode of one transparent leg.
+ * Refuses to emit anything the decoder would reject — the SAME ordered
+ * rule list runs on both entries (tleg_version != 1, a count over its cap,
+ * a non-ascending or duplicate input nullifier, a zero-amount output), so
+ * a leg that decodes always re-encodes byte-identically and one that would
+ * not is never produced.
+ * Rejects additionally: NULL args, dst_cap short of the exact length.
+ * @return 0 on success (*written_out = LEG_LEN), -1 otherwise.
+ */
+int dnac_txw3_tleg_encode(const dnac_txw3_tleg_t *t,
+                          uint8_t *dst, size_t dst_cap, size_t *written_out);
+
+/**
+ * Strict canonical PREFIX decode of one transparent leg from body[0].
+ *
+ * On success fills *out and reports the consumed length in *consumed_out;
+ * body_len may exceed it (see the PREFIX note above) — the bytes past
+ * *consumed_out are neither read nor judged here.
+ * On ANY rejection *out is zeroed (fail closed — the zeroing happens
+ * FIRST, before the first byte is examined, so no reject path can leave
+ * caller memory partially populated) and *consumed_out is untouched.
+ * Rejects: NULL args, truncation at any field boundary, tleg_version != 1,
+ * a count over its cap, non-ascending or duplicate input nullifiers, a
+ * zero-amount output.
+ * @return 0 / -1.
+ */
+int dnac_txw3_tleg_decode(const uint8_t *body, size_t body_len,
+                          dnac_txw3_tleg_t *out, size_t *consumed_out);
+
+/**
+ * POPULATED transparent-leg commitment — the value that fills the frozen
+ * sighash_v5 slot at preimage offset 453 when a transaction carries a
+ * transparent leg. (An ABSENT leg uses dnac_tleg_commit_empty and its own
+ * "DNA.E.TLEG.v1" tag: two distinct domains, so an empty leg and a
+ * populated-but-empty-looking one can never collide.)
+ *
+ * ── Preimage (exact bytes) ────────────────────────────────────────────
+ *   "DNA.TLEG.v1" + 5×0x00                        (16)
+ *   ‖ num_tin u8  ‖ nullifier[64] × num_tin       (ascending, as on wire)
+ *   ‖ num_tout u8 ‖ (fp[129] ‖ amount u64 BE ‖ seed[32]) × num_tout
+ *   ‖ num_signers u8 ‖ pubkey[2592] × num_signers
+ *   hash = SHA3-512(preimage) → the 64-byte commitment
+ *
+ * ── Two deliberate exclusions ─────────────────────────────────────────
+ *   - SIGNATURES are NOT committed; signer PUBKEYS are. This is the frozen
+ *     legacy tx-hash discipline (tx_wire.h:80-82): a signature cannot
+ *     cover itself, and the commitment must be computable BEFORE signing
+ *     because it is what the signers sign (through sighash_v5).
+ *   - tleg_version is NOT committed: it is wire framing, and the wire
+ *     bytes it frames are re-derived from this struct on every path.
+ *     tx_type is NOT committed either: sighash_v5 binds it once, in its
+ *     ExecutionContext block (preimage offset 56) — one source, so a
+ *     type-12 leg replayed as type-13 already yields a different sighash.
+ *
+ * A non-canonical leg MUST NOT hash: this runs the same rule list as
+ * encode/decode and fails closed first.
+ * @return 0 on success (out[64] filled), -1 otherwise (NULL included).
+ */
+int dnac_tleg_commit(const dnac_txw3_tleg_t *t, uint8_t out[DNAC_TXW_HASH_LEN]);
+
 #ifdef __cplusplus
 }
 #endif

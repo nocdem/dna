@@ -65,7 +65,7 @@ extern "C" {
  * Records which domain owns each existing numeric tx type. Domain ROUTING
  * IS NOT ENFORCED in S1 — admission still runs the legacy per-type checks;
  * enforcement arrives with the domain registry (Season 4). Numeric type
- * values mirror dnac/include/dnac/dnac.h:313-323 and are pinned by
+ * values mirror dnac_tx_type_t (dnac/include/dnac/dnac.h) and are pinned by
  * _Static_asserts at the dnac side (serialize.c).
  *
  *   type  0 GENESIS           protocol bootstrap special case (no domain)
@@ -81,8 +81,14 @@ extern "C" {
  *   type 10 CHAIN_CONFIG      SYSTEM
  *   type 11 SHIELDED          DNA_CORE (pool DNAC_SHIELDED_POOL_V1; REJECT-only
  *                             until C3 — admission gate untouched by S1)
- *   types 12..14              UNASSIGNED (owner decision O-5 open; reserved
- *                             candidates SHIELD/UNSHIELD/GENESIS_CLAIM)
+ *   type 12 SHIELD            DNA_CORE (pool DNAC_SHIELDED_POOL_V1) — transparent
+ *                             → shielded boundary crossing. V3-ONLY: never valid
+ *                             on the legacy V2 wire (acceptance set frozen at
+ *                             0..11); REJECT-only until activation
+ *   type 13 UNSHIELD          DNA_CORE (pool DNAC_SHIELDED_POOL_V1) — shielded
+ *                             → transparent boundary crossing. V3-ONLY, same
+ *                             freeze and REJECT-only posture as type 12
+ *   type 14                   UNASSIGNED
  */
 #define DNA_TX_OWNER_NONE     ((uint32_t)0xFFFFFFFFu) /* bootstrap / unassigned */
 
@@ -110,7 +116,8 @@ static inline uint32_t dna_bft_quorum(uint32_t n) {
  *  Pure metadata — NOT an admission or routing gate in S1. */
 static inline uint32_t dna_tx_type_owner(uint8_t tx_type) {
     switch (tx_type) {
-        case 1: case 2: case 3: case 11: return DNA_DOMAIN_CORE;
+        case 1: case 2: case 3: case 11:
+        case 12: case 13:                return DNA_DOMAIN_CORE;
         case 4: case 5: case 6: case 7:
         case 9: case 10:                 return DNA_DOMAIN_SYSTEM;
         default:                         return DNA_TX_OWNER_NONE;

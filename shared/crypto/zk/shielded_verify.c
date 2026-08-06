@@ -251,17 +251,31 @@ dnac_shielded_verify_status_t dnac_shielded_verify_statement(
      * self-reference no honest prover could satisfy. Same discipline as the V3
      * tx_hash, which is excluded from its own preimage (tx_wire.h). */
 
-    uint8_t tleg_commit[CONF_TXBIND_SIGHASH_LEN];
+    /* S9 CORRECTION PASS — the transparent-leg commitment is CALLER-SUPPLIED
+     * (vctx->tleg_commit), not derived here. This entry used to call
+     * dnac_tleg_commit_empty() unconditionally, which silently restricted the
+     * statement to transactions with NO transparent leg: an honest SHIELD or
+     * UNSHIELD, whose leg digest is a real DNA.TLEG.v1 commitment, could never
+     * bind. The caller (the per-type native verifier) is the only layer that
+     * knows the shape, so it supplies the digest: the tagged-empty form for
+     * type 11, the real leg commitment for 12/13. A caller that supplies
+     * nothing presents 64 zero bytes, which no tag can produce — the sighash
+     * then differs and the statement fails ERR_TXBIND below. Fail-closed, no
+     * default.
+     *
+     * ct_commit stays the frozen TAGGED-EMPTY value: S9 activates no
+     * ciphertext bundle, and the slot remains bound so S10 can populate it
+     * without a statement re-pin. The preimage layout, length, offsets and
+     * tag are UNCHANGED (tx_wire.h §5). */
     uint8_t ct_commit[CONF_TXBIND_SIGHASH_LEN];
-    if (dnac_tleg_commit_empty(tleg_commit) != 0 ||
-        dnac_ct_commit_empty(ct_commit) != 0) {
+    if (dnac_ct_commit_empty(ct_commit) != 0) {
         return DNAC_SHIELDED_VERIFY_ERR_TXBIND;
     }
 
     uint8_t  sighash[CONF_TXBIND_SIGHASH_LEN];
     uint64_t txbind[CONF_TXBIND_LANES];
     if (dnac_sighash_v5(&ectx, (uint8_t)DNAC_TXW3_SECT_VERSION,
-                        vctx->ruleset_hash, &st, tleg_commit, ct_commit,
+                        vctx->ruleset_hash, &st, vctx->tleg_commit, ct_commit,
                         sighash) != 0) {
         return DNAC_SHIELDED_VERIFY_ERR_TXBIND;
     }

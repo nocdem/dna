@@ -379,9 +379,17 @@ typedef enum {
     DNAC_TX_UNDELEGATE       = 7,   /**< Delegator withdraws delegation (unbonding) */
     DNAC_TX_VALIDATOR_UPDATE = 9,   /**< Update validator metadata (commission, moniker, etc.) */
     DNAC_TX_CHAIN_CONFIG     = 10,  /**< Committee-voted consensus parameter change (hard-fork mechanism v1) */
-    DNAC_TX_SHIELDED         = 11   /**< Dual-mode shielded (confidential) TX — carries a STARK proof
+    DNAC_TX_SHIELDED         = 11,  /**< Dual-mode shielded (confidential) TX — carries a STARK proof
                                      *   over a hidden note set (dual-mode S5). ADDITIVE: not valid on
                                      *   the live chain until S6 (fail-closed rejected today). */
+    DNAC_TX_SHIELD           = 12,  /**< V3-ONLY: transparent → shielded pool boundary crossing
+                                     *   (Ledger V2 S9). Carried ONLY by the V3 wire — inadmissible on
+                                     *   the legacy V2 wire, whose acceptance set is FROZEN at 0..11.
+                                     *   REJECT-unconditional until activation. */
+    DNAC_TX_UNSHIELD         = 13   /**< V3-ONLY: shielded pool → transparent boundary crossing
+                                     *   (Ledger V2 S9). Same freeze as DNAC_TX_SHIELD: never valid on
+                                     *   the legacy V2 wire, REJECT-unconditional until activation.
+                                     *   Type 14 stays UNASSIGNED. */
 } dnac_tx_type_t;
 
 /* ============================================================================

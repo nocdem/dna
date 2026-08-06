@@ -601,6 +601,27 @@ int nodus_witness_verify_transaction(nodus_witness_t *w,
         return -1;
     }
 
+    /* ── Ledger V2 S9: V3-only types (12/13) named reject ────────
+     * SHIELD/UNSHIELD are carried ONLY by the V3 wire; the legacy V2 wire
+     * acceptance set is frozen at 0..11. These types already died here as a
+     * FALLTHROUGH (no per-type lane, no runtime ownership, deserialize gate
+     * rejects the type byte client-side) — this branch only makes the reject
+     * NAMED rather than implicit, so a 12/13 attempt is diagnosable. Placed
+     * right after Check 2 exactly like the type-11 dispatch below, leaving the
+     * tx-hash-integrity ordering argument unchanged, and firing on EITHER the
+     * caller-declared type or the WIRE type byte for the same forged-pair
+     * reason. Admission stays REJECT-unconditional until activation. */
+    if (tx_type == NODUS_W_TX_SHIELD   || tx_data[1] == NODUS_W_TX_SHIELD ||
+        tx_type == NODUS_W_TX_UNSHIELD || tx_data[1] == NODUS_W_TX_UNSHIELD) {
+        unsigned offending =
+            (tx_type == NODUS_W_TX_SHIELD || tx_type == NODUS_W_TX_UNSHIELD)
+                ? (unsigned)tx_type : (unsigned)tx_data[1];
+        snprintf(reject_reason, reason_size,
+                 "type %u is V3-only (SHIELD/UNSHIELD); legacy V2 wire admission is frozen",
+                 offending);
+        return -1;
+    }
+
     /* ── Phase-C C2.2: shielded (type-11) dispatch ───────────────
      * Right after Check 2 (the V4 tx-hash bound the full shielded
      * statement above); REPLACES-and-RETURNS Checks 3-6 (design v2

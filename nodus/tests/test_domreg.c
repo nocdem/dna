@@ -292,7 +292,11 @@ int main(void) {
           "SYSTEM manifest hash != runtime table"); OK();
     CHECK(nodus_witness_domreg_get(fx.w, DNA_DOMAIN_CORE, &rec, &man,
                                    NULL) == 0, "get CORE"); OK();
-    CHECK(man.tx_type_count == 4 && man.tx_types[3] == 11,
+    /* S9 W4: CORE owns {1,2,3,11,12,13} — the genesis manifest copies the
+     * runtime descriptor verbatim (nodus_witness_domreg.c), so this count
+     * tracks the descriptor. 12/13 are OWNED but REJECT-unconditional. */
+    CHECK(man.tx_type_count == 6 && man.tx_types[3] == 11 &&
+          man.tx_types[4] == 12 && man.tx_types[5] == 13,
           "CORE ownership drifted"); OK();
     CHECK(nodus_witness_domreg_get(fx.w, 99, &rec, NULL, NULL) == 1,
           "phantom domain found"); OK();

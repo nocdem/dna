@@ -1,5 +1,193 @@
 # RESUME — DNAC v3 ZK stack (CURRENT STATUS: 2026-08-06)
 
+## ⛳ NEWEST LAYER — Ledger V2 S9 Gate 2 (2026-08-06), slices W0–W5. INACTIVE.
+
+**S9 adds a substrate layer on top of S8. It moves NOTHING that S8 froze.** No statement, no AIR,
+no public, no vector, and no `sighash_v5` offset/length/tag/field changed — every figure in the S8
+block below STANDS. Read the S8 block for the statement; read this block for the wire and the
+native verifier around it.
+
+### Admission and scope — READ THIS FIRST
+- **Type 11 still ends in an unconditional consensus REJECT.**
+- **Types 12/13 are now ASSIGNED and OWNED, but REJECT-unconditional.** Being defined is not being
+  live.
+- **Wire V3 is still rejected by every live admission path** (all of them gate on wire version
+  byte 2).
+- **No consensus path calls any of W0–W5.** Nothing here is reachable from consensus.
+- Type **14 remains UNASSIGNED**; type 8 remains retired.
+
+### W0 — type assignments
+- `DNAC_TX_SHIELD = 12` / `DNAC_TX_UNSHIELD = 13` appended to `dnac_tx_type_t`
+  (`dnac/include/dnac/dnac.h`), mirrored as `NODUS_W_TX_SHIELD` / `NODUS_W_TX_UNSHIELD`
+  (`nodus/src/witness/nodus_witness.h`); ownership rows added to `dna_tx_type_owner()`
+  (`shared/dnac/ledger_ids.h`) → `DNA_DOMAIN_CORE`.
+- The legacy V2 deserialize type gate (`dnac/src/transaction/serialize.c`) is now the **LITERAL
+  `11`**, deliberately NOT the enum tail, so the frozen V2 acceptance set (0..11, with 11 rejected
+  downstream) can never widen when the enum grows.
+- `nodus_witness_verify.c` gained a **NAMED** reject branch for 12/13, placed right after the
+  tx-hash check — the same position as the type-11 dispatch. The verdict is unchanged (both types
+  already died as a fallthrough); only the diagnosis is new.
+
+### W1 — V3 shielded-body codec test debt closed
+`dnac_txw3_shielded_encode` / `_decode` / `_check_header` shipped in S8 with **zero callers and
+zero tests**. `nodus/tests/test_tx_wire_v3.c` now covers round-trips (transfer shape, the
+zero-input SHIELD shape, 4-in/4-out at the canonical lane maximum `p−1`), a **byte-exact offset
+KAT against hand-written literals**, and the full encode/decode negative matrix.
+
+### W2 — transparent-leg section v1 + its commitment (`shared/dnac/tx_wire.{h,c}` §6, INACTIVE)
+- Layout: `tleg_version(1)=0x01 ‖ num_tin(1) ‖ nullifier[64]×num_tin` (**STRICTLY ASCENDING**)
+  `‖ num_tout(1) ‖ (fp[129] ‖ amount u64 BE ≥1 ‖ seed[32])×num_tout ‖ num_signers(1) ‖
+  (pubkey[2592] ‖ signature[4627])×num_signers`.
+- `LEG_LEN = 4 + 64·num_tin + 169·num_tout + 7219·num_signers`; worst legal leg **32,608 B**.
+- **PREFIX decode** — unlike the exact-length §2/§4 decoders it walks ONE leg and reports
+  `consumed`; the caller hands the remainder to the shielded decoder.
+- **POLICY-NEUTRAL**: no tx_type / domain / pool branch in the codec. The per-type count windows
+  are native rules, not codec rules.
+- Commitment `dnac_tleg_commit` = SHA3-512 over tag `"DNA.TLEG.v1"`+5×`0x00` (16 B) ‖ counts ‖
+  inputs ‖ outputs ‖ signer **PUBKEYS**. **Signatures are deliberately EXCLUDED** — a signature
+  cannot cover itself, and the commitment must be computable before signing. `tleg_version` and
+  `tx_type` are excluded too (framing; and `tx_type` is bound once by `sighash_v5`'s
+  ExecutionContext).
+- It fills the **frozen `sighash_v5` slot at preimage offset 453**. No offset, length, tag or
+  field of `sighash_v5` moves; **no vector moves.** The empty form (`"DNA.E.TLEG.v1"`) remains a
+  distinct domain.
+- Also in W2: a **fail-close repair** to `dnac_txw3_shielded_decode` — its two early length
+  rejects returned without zeroing `*out`, contradicting the header's "zeroed on any rejection"
+  contract.
+
+### W3 — the native stateless verifier (`native_verify_v3.{c,h}`, INACTIVE, ZERO production callers)
+`dnac_v3_native_verify_stateless(tx_bytes, tx_len, nctx, out)` decodes a whole V3 transaction and
+applies, in a **frozen order**: generic decode → type gate `{11,12,13}` → body split (leg for
+12/13) → ExecutionContext/context match → fee+expiry mirrors + min-fee floor → per-type count
+windows and boundary equalities → transparent-leg commitment → `sighash_v5` → `tx_binding`
+equality → type-12 signature verification → in-TX private nullifier distinctness → proof →
+exported deferred-state expectations.
+
+| Type | Private in | Private out | Transparent | Boundary |
+|---|---|---|---|---|
+| **11** | 1..4 | 1..4 | — | `boundary_in == 0`, `boundary_out == committed_fee` |
+| **12 SHIELD** | **0** (all-zero anchor, all-zero nullifier slots) | 1..4 | `num_tin ≥ 1`, `num_signers ≥ 1` | `boundary_out == 0`, `boundary_in ≥ 1` |
+| **13 UNSHIELD** | 1..4 | 0..1 | `num_tin == 0`, `num_signers == 0`, exactly ONE transparent output | `boundary_in == 0`, `boundary_out == recipient_amount + committed_fee` (checked add) |
+
+All transparent sums are checked; overflow rejects.
+
+Seven status classes **APPENDED** to `dnac_shielded_verify_status_t` — **values 0..17 are
+UNMOVED**:
+
+| Value | Status | Note |
+|---|---|---|
+| 18 | `ERR_TLEG_DECODE` | |
+| 19 | `ERR_TLEG_ORDER` | **RESERVED — declared, never assigned** (see seam 3) |
+| 20 | `ERR_TYPE_RULE` | |
+| 21 | `ERR_TLEG_ARITH` | |
+| 22 | `ERR_SIG` | |
+| 23 | `ERR_NF_DUP` | |
+| 24 | `ERR_TIMESTAMP` | S9 CORRECTION: header timestamp of a shielded type must be 0. Reuses the slot that briefly held the now-deleted `ERR_PROOF_DEFERRED` |
+
+**SEAMS — one CLOSED by the correction pass, two open:**
+1. **Type-12 Dilithium5 verification is a CALLER-SUPPLIED function pointer.** The standalone zk
+   build cannot link `qgp_dsa87_verify` without dragging in the vendored dsa library and its
+   circular `randombytes` dependency. A **NULL verifier on type 12 is `ERR_SIG` — never a skip.**
+   Still open as `OBL-S9-SIGFN-PIN`.
+2. ✔ **CLOSED — S9 CORRECTION PASS (2026-08-06).** Types 12/13 used to receive NO proof
+   verification, because `dnac_shielded_verify_statement` derived the leg commitment itself
+   (always TAGGED-EMPTY) so a populated leg mis-bound by construction. The commitment moved into
+   `dnac_shielded_verify_ctx_t.tleg_commit`: the native verifier computes it once — tagged-empty
+   for 11, real `DNA.TLEG.v1` for 12/13 — and **all three types now run the same real aggregate
+   verifier**. `ERR_PROOF_DEFERRED` is DELETED. Proven with runtime-generated real proofs
+   (`test_native_verify_v3_proofs`: 11, 12, 13-with-change and 13-without-change all reach OK;
+   proof tamper, leg substitution, boundary substitution, empty-leg-on-populated-statement and an
+   all-zero `tleg_commit` all reject). **The frozen 581-byte `sighash_v5`, the 45 publics, D, the
+   width, the FRI params and every vector are UNCHANGED** — only the VALUE in an already-frozen
+   slot varies.
+3. **`ERR_TLEG_ORDER` is reserved rather than reused.** The shared codec folds ordering and
+   duplicate rejects into one `-1`, so the native layer cannot distinguish them. Reserving the
+   value lets a future codec that reports ordering separately take it **without renumbering**.
+
+### W4 — CORE runtime ownership (`nodus/src/witness/nodus_witness_runtime.c`)
+- The compiled CORE descriptor now owns `{1,2,3,11,12,13}`, with rule ids 5/6 appended
+  (`DNA_CORERULE_SHIELD_C3_REJECT`, `DNA_CORERULE_UNSHIELD_C3_REJECT`).
+- `rt_admit_common` hard-stops 11, 12 AND 13 unconditionally, and the stop sits **BEFORE the pool
+  rule**, so `DNAC_SHIELDED_POOL_V1` can never become an admit path.
+- Declared work units: 12 = 101 / 13 = 100 (unreachable while admission rejects).
+- The RulesetDescriptor digest commits the rule and type lists ⇒ **`CORE_RULESET_HASH` was
+  RE-DERIVED**: old `13bc5fa9…669ada` → new
+  `e0a0bc4344dea972ddf1cca9b63eacfe0802897f4afb2b8b6a71ed845adfe4113cc7b8d812a49482bffe9c8b48a7f11fa732ebf9afe6833d4afc57836ee77429`.
+  **The SYSTEM digest is UNCHANGED.** The new value was produced by an independent `python3`
+  transcription of `dna_ruleset_desc_hash` and re-derived a second time by the ORCHESTRATOR, whose
+  oracle also reproduced the shipped SYSTEM pin and the pre-S9 CORE pin byte-exactly as control
+  legs.
+
+### W5 — linkage gate (`nodus/tests/test_zk_link.c`)
+- **T6** calls the native entry so `native_verify_v3.o` is forced out of `libnodus.a` — fail-close
+  probes only.
+- **T7** pins the status space: 0..17 unmoved, 18–24 by exact value, and
+  `ERR_TIMESTAMP != OK` so no reject can be read as an accept.
+- Both are explicitly labelled a **status-space pin, NOT a consensus assertion.**
+
+### ORCHESTRATOR-verified (S9 Gate 2)
+zk `make test` **EXIT 0 / ALL GATES GREEN**, including the vector-integrity gate — **no vector
+changed**. New `test_native_verify_v3` gate **74/74**; `test_tx_wire_v3` **424 checks**; nodus
+build **0 warnings** + **ctest 158/158**; messenger/libdna build **0 warnings**. ASAN+UBSAN over
+both new surfaces (native verifier + V3/leg codec): **zero findings**.
+
+### O6 independent review (2 READ-ONLY lenses) and what it changed
+`verifier` 7 CONFIRMED / **1 REFUTED** / 1 partly unverifiable; `zk-auditor` 11 GROUNDED /
+6 JUDGMENT / **0 KAFADAN**, and it re-derived the new CORE ruleset digest independently (with the
+SYSTEM pin and the pre-S9 CORE pin reproduced as control legs).
+- **The REFUTED claim was a real defect and is FIXED:** both `dnac_txw3_tleg_decode` and
+  `dnac_txw3_shielded_decode` ran their NULL-argument check BEFORE the `memset`, so a call with a
+  valid `out` but another argument NULL returned with the caller's buffer STALE — contradicting the
+  header's "on ANY rejection `*out` is zeroed". `out` is now NULL-checked alone and zeroed first;
+  5 regression checks added (419 → 424).
+- **Two stale comments corrected** (the repo's zero-drift rule): `native_verify_v3.h`'s six-stop
+  proof still claimed 12/13 were rejected because they were ABSENT from the CORE descriptor — W4
+  made CORE own them, and the explicit hard stop is what carries the reject; and a W0-era comment
+  in `test_v2_pools.c` said the same.
+- **Six obligations OPENED for activation**, none blocking this inactive slice: `OBL-S9-TS-BIND`
+  (the V3 header `timestamp` is bound by NEITHER the leg digest nor `sighash_v5`, and type-12
+  signers sign the sighash — so a third party can re-stamp a signed transaction into a different
+  txid for the same statement; legacy V2 signed its timestamp), `OBL-S9-TXID-RECOMPUTE`,
+  `OBL-S9-RETURN-FIRST`, `OBL-S9-TLEG-V2-TAG`, `OBL-S9-SIGFN-PIN`, `OBL-S9-DIGEST-MIGRATION`.
+  Full text: the S9 Gate 1 freeze report §J′ (local, gitignored).
+
+### S9 closeout — two findings recorded here because the reports are gitignored
+
+**1. Multi-private-input proving: FIXTURE DEFECT, not a production defect.** Every ≥2-private-input
+proof attempt failed in a scratch measurement fixture. Root cause, source-grounded: an INPUT note's
+tree leaf is `note_commit(value, DERIVED_addr, rcm)` where
+`DERIVED_addr = conf_action_derive_addr(ak, nk)` (`conf_action_air.c`, the F3 3-permutation
+spend-auth sponge) — the caller-supplied `addr` field is IGNORED for INPUT notes. The oracle shows
+this by passing `addr: [0;4]` for them (`tools/plonky3_oracle/src/main.rs` `agg_input_note_cm`), and
+the canonical C KAT does the same (`tests/test_prover_agg.c:261`). The fixture skipped the derive
+step, so its tree leaves were not the leaves the AIR computes. It is invisible at ONE input because
+the anchor is an OUTPUT of the circuit (any self-consistent path is accepted); at ≥2 inputs every
+walk must converge on ONE anchor, which mismatched leaves make impossible. **The production prover
+behaved correctly — it rejected what it should reject.** After correcting the fixture only:
+**22/22 shapes prove and verify** (T11 1-4 in × 1-4 out, T12 0-in × 1-4 out, T13 1-4 in × 0/1
+change), two generations each, **all exactly 2,474,998 B, zero deviations**. No production source,
+test or vector was changed. Existing `2in`/`4in` KATs were also confirmed to mean **multiple private
+inputs inside ONE 45-public statement** (`test_prover_agg.c:243-244`, `num_notes = 5` with four
+`ROLE_INPUT`), i.e. the canonical multi-input reference already existed and was never misunderstood.
+
+**2. Proof size: ACTIVATION-BLOCKING ARCHITECTURAL OBLIGATION `OBL-S9-PROOF-SIZE`.**
+A production aggregate proof is **2,474,998 B**, invariant across every shape. Exact decomposition
+(99.977% accounted): **per-query material is 96.86%**, of which the opened main-trace rows alone are
+**78.74% (1,948,800 B)** — the law is **`num_queries × trace_width`** (100 × 2378 × 8), with Merkle
+paths a distant 15% and everything else under 4%. Consequences: the V3 carrier cannot frame a
+shielded transaction (`OBL-S9-CARRIER-CAP`, 37.8× the body cap), and a per-block budget question
+follows from it. **The repository contains partial in-AIR FRI-verification components
+(`transcript_air`, `mmcs_air`, `mmcs_mixed_air`, `fri_air`, `fri_oi_air`) and a composition
+VERIFIER (`dnac_p2_fri_statement_verify`), but NO recursive PROVER** — repo-wide grep for
+`recursive_prove`/`outer_prove`/`wrap_prove`/`dnac_p2_prove`/`recursion_prove` returns nothing. So
+no outer proof can be produced or measured today, and no compression ratio may be claimed.
+⚠ Recursion does not escape the size law; it re-applies it to a wider multi-instance circuit
+(the transcript AIR alone is 281 columns with a 180-column embed), so a sub-64 KiB outer proof is an
+**open empirical question**, not an expectation. Activation requires resolving this before any
+carrier, block-budget, transport or mempool decision is meaningful.
+
+---
+
 ## ⛳ CURRENT STATE — Ledger V2 S8 (2026-08-06). AUTHORITATIVE; supersedes every earlier figure below.
 
 **Everything further down this file is a HISTORICAL session record.** Where it states 43 publics,
@@ -60,9 +248,14 @@ in source.
 - **Type 11 still ends in unconditional consensus REJECT** (`nodus_witness_verify.c`
   `verify_shielded_tx`; `nodus_witness_runtime.c` `rt_admit_common`).
 - **Wire V3 remains rejected by live admission** (every path still gates on wire version byte 2).
-- **Types 12–14 remain UNASSIGNED.**
+- **Types 12–14 remain UNASSIGNED.** *(Status superseded by the S9 W0 block above — 12/13 are now
+  ASSIGNED and CORE-OWNED but REJECT-unconditional; 14 stays UNASSIGNED. Every S8 figure is
+  unaffected.)*
 - S8 implemented and pinned the **statement/wire substrate only**. **S9, S10, wallet scanning,
-  pool application, consensus application and C3 activation have NOT begun.**
+  pool application, consensus application and C3 activation have NOT begun.** *(Superseded in part:
+  S9 **Gate 2** — slices W0–W5, the SHIELD/UNSHIELD wire + native stateless verification substrate
+  — has landed, INACTIVE. S10, wallet scanning, pool application, consensus application and C3
+  activation have still NOT begun.)*
 - **No shielded transaction is usable today.** Nothing in this stack is reachable from consensus.
 
 ### Carried blockers (exactly two)

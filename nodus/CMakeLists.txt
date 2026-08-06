@@ -275,7 +275,27 @@ if(NOT WIN32)
     # d4.d (2026-07-26): stark_priming.c DROPPED from this list — the v3
     # uni-stark priming module is deleted; nothing in the nodus source set ever
     # called it (the batched path primes inside batch_priming.c).
+    # ── Ledger V2 S9 Gate 2 W3 (2026-08-06): the NATIVE stateless V3
+    # verifier. native_verify_v3.c sits ABOVE shielded_verify.c — it decodes a
+    # whole Transaction Wire V3 transaction (header ‖ optional transparent leg ‖
+    # shielded section), applies the per-type count/boundary rules the
+    # policy-neutral shared codec deliberately does not own, recomputes the
+    # transparent-leg commitment + sighash_v5 + tx_binding, runs the type-12
+    # signature check through a CALLER-SUPPLIED verifier (so this library links
+    # no signature source of its own) and exports the deferred S10 state
+    # expectations. It needs nothing beyond what shielded_verify.c already
+    # pulls: shared/dnac/tx_wire.c is in NODUS_SOURCES above and dnac/include is
+    # on the target's include path.
+    #
+    # CONSENSUS-INERT, and structurally so: NOTHING calls
+    # dnac_v3_native_verify_stateless from any admission, mempool, BFT or apply
+    # path — the six independent stops that keep types 11/12/13 unadmittable are
+    # enumerated with file:line in native_verify_v3.h. Compiling it here is the
+    # same linkage-without-consumption seam that already carries
+    # dnac_shielded_verify_statement (C2.1 above): a missing source shows up as
+    # a LINK error in the gate below, not as a surprise at activation.
     list(APPEND NODUS_SOURCES
+        ${SHARED_DIR}/crypto/zk/native_verify_v3.c
         ${SHARED_DIR}/crypto/zk/shielded_verify.c
         ${SHARED_DIR}/crypto/zk/batch_verify.c
         ${SHARED_DIR}/crypto/zk/batch_priming.c
@@ -445,6 +465,22 @@ add_executable(test_zk_link tests/test_zk_link.c
 target_link_libraries(test_zk_link nodus dsa nodus)
 target_include_directories(test_zk_link PRIVATE ${SHARED_DIR}/crypto/zk)
 add_test(NAME test_zk_link COMMAND test_zk_link)
+
+# Ledger V2 S9 W3 — the NATIVE stateless V3 verifier gate.
+# The test source lives beside the module it exercises
+# (shared/crypto/zk/tests/), the same place the standalone zk suite runs it
+# from, so ONE test file serves both builds and the two cannot drift.
+# It links only `nodus`: shared/dnac/tx_wire.c (the V3 codec + sighash_v5 + the
+# transparent-leg commitment) and native_verify_v3.c are both in NODUS_SOURCES,
+# and the type-12 signature verifier is a caller-supplied function pointer the
+# test fills with its own deterministic stub — so no dnac source and no
+# signature source is compiled alongside. `dsa` is repeated after `nodus` for
+# the same circular dependency the neighbouring gates carry.
+add_executable(test_native_verify_v3
+    ${SHARED_DIR}/crypto/zk/tests/test_native_verify_v3.c)
+target_link_libraries(test_native_verify_v3 nodus dsa nodus)
+target_include_directories(test_native_verify_v3 PRIVATE ${SHARED_DIR}/crypto/zk)
+add_test(NAME test_native_verify_v3 COMMAND test_native_verify_v3)
 
 # C2 domain separation test (needs extra nodus for dsa -> qgp_randombytes -> nodus circular dep)
 add_executable(test_sign_domain_separation tests/test_sign_domain_separation.c)
