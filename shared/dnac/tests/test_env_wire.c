@@ -27,6 +27,7 @@
 
 #include "dnac/env_wire.h"
 
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -514,41 +515,17 @@ static void test_accept_boundaries(void) {
 }
 
 /**
- * A SELF-CONSISTENT over-cap envelope: 65 legs, every blob empty, so
- * ENV_LEN == 43 + 30*65 == 1993 is internally consistent. Unlike the
- * leg-count mutations in the reject sweep — which flip the count inside a
- * 3-leg buffer and are therefore rejected by call_base or the exact-length
- * rule whatever the count guard does — this envelope is well-formed in
- * every respect except the count, so it reaches the count guard.
+ * Build a canonical `n`-leg header region into `m` (caller sizes it).
  *
- * HONEST LABEL — what this does NOT prove. Removing
- *     if (n == 0 || n > DNA_ENV_MAX_LEGS) return -1;
- * does NOT make this test fail: dna_env_view_t.leg[] is immediately
- * followed by call_off[] inside the SAME struct, so the 65th leg write
- * lands intra-allocation (invisible to ASan) and the resulting corruption
- * still ends in a reject. Verified by building that exact mutant — it
- * passed. The guard's memory-safety role is therefore NOT observable from
- * a decode-level test; it rests on the DNA_ENV_MAX_LEGS bound being
- * checked before the walk, which is a code-reading obligation, not a
- * black-box one. This test pins the REJECT VERDICT for an over-cap
- * envelope; it does not pin the bounds check behind it.
+ * PRECONDITION: n <= 256. domain_id is written as a single low byte, so
+ * beyond 256 the ids would wrap, stop being strictly ascending, and the
+ * envelope would be rejected for the WRONG reason.
  */
-static void expect_decode_reject(const uint8_t *src, size_t len,
-                                 const char *what);
-
-static void test_leg_count_guard_is_load_bearing(void) {
-    const uint16_t n = DNA_ENV_MAX_LEGS + 1;          /* 65 */
-    const size_t len = (size_t)DNA_ENV_FIXED_HEAD +
-                       (size_t)n * DNA_ENV_LEG_HDR_LEN;
-    CHECK(len == 1993);
-
-    /* "DNA.ENVWIRE.v1" zero-padded to 16 — written literally so this test
-     * does not depend on any other fixture in the file. */
+static void build_over_cap_envelope(uint8_t *m, uint16_t n) {
+    CHECK(n <= 256);
     static const uint8_t family[DNA_ENV_WIRE_FAMILY_LEN] = {
         'D','N','A','.','E','N','V','W','I','R','E','.','v','1', 0, 0
     };
-    uint8_t *m = calloc(1, len);
-    MUST_ALLOC(m);
     memcpy(m, family, DNA_ENV_WIRE_FAMILY_LEN);
     m[16] = DNA_ENV_VERSION;
     m[41] = (uint8_t)(n >> 8);
@@ -560,11 +537,144 @@ static void test_leg_count_guard_is_load_bearing(void) {
         h[11] = 1;            /* ruleset_version                          */
         h[12] = DNA_ENV_ACCESS_INVOKE;
         h[13] = 1;            /* auth_kind non-zero                       */
-        /* call_len, auth_len, res_* stay 0 — no payload, so the declared
-         * length is exactly the header region. */
+        /* call_len, auth_len and the reservations stay 0. */
     }
-    expect_decode_reject(m, len, "65 legs, self-consistent length");
+}
+
+/**
+ * Reject + the FULL failure-state contract, checked field by field.
+ * Never a struct memcmp: dna_env_leg_hdr_t carries padding after its two
+ * uint8_t fields, and a padding-sensitive compare is not an assertion
+ * about the nine wire fields.
+ */
+static void expect_reject_and_untouched(const uint8_t *src, size_t len,
+                                        const char *what) {
+    dna_env_view_t *v = malloc(sizeof(*v));
+    MUST_ALLOC(v);
+    memset(v, 0xAA, sizeof(*v));
+
+    int rc = dna_env_decode(src, len, v);
+    if (rc != -1) {
+        fprintf(stderr, "FAIL %s: decode returned %d, expected -1 "
+                        "(leg_count=%u env_len=%zu)\n",
+                what, rc, v->leg_count, v->env_len);
+        failures++;
+    }
+    /* Envelope metadata. */
+    CHECK(v->envelope_version    == 0);
+    CHECK(v->expiry_height       == 0);
+    CHECK(v->fee_amount          == 0);
+    CHECK(v->res_max_total_units == 0);
+    CHECK(v->leg_count           == 0);
+    /* Borrowed-buffer state. */
+    CHECK(v->buf     == NULL);
+    CHECK(v->env_len == 0);
+    /* Every leg slot and both offset arrays, field by field. */
+    for (uint16_t i = 0; i < DNA_ENV_MAX_LEGS; i++) {
+        CHECK(v->leg[i].domain_id            == 0);
+        CHECK(v->leg[i].runtime_op           == 0);
+        CHECK(v->leg[i].ruleset_version      == 0);
+        CHECK(v->leg[i].access_mode          == 0);
+        CHECK(v->leg[i].auth_kind            == 0);
+        CHECK(v->leg[i].call_len             == 0);
+        CHECK(v->leg[i].auth_len             == 0);
+        CHECK(v->leg[i].res_max_effects      == 0);
+        CHECK(v->leg[i].res_max_effect_bytes == 0);
+        CHECK(v->call_off[i] == 0);
+        CHECK(v->auth_off[i] == 0);
+    }
+    free(v);
+}
+
+/*
+ * Case (b) below is only the ACCEPTING length for an unbounded decoder
+ * while leg[DNA_ENV_MAX_LEGS] aliases call_off[0] exactly. If
+ * dna_env_leg_hdr_t ever changes shape that stops being true, the 3*1993
+ * arithmetic silently stops biting and this test goes quietly vacuous
+ * again. Pin the layout so the rot is a build failure, not a silence.
+ */
+_Static_assert(offsetof(dna_env_view_t, leg) +
+                   (size_t)DNA_ENV_MAX_LEGS * sizeof(dna_env_leg_hdr_t) ==
+               offsetof(dna_env_view_t, call_off),
+               "leg[DNA_ENV_MAX_LEGS] must alias call_off[0]: the 65-leg "
+               "mutation proof depends on it");
+
+/**
+ * The leg-count upper bound, pinned NON-VACUOUSLY.
+ *
+ * The bound
+ *     if (n == 0 || n > DNA_ENV_MAX_LEGS) return -1;
+ * is memory-safety load-bearing: dna_env_view_t.leg[] holds
+ * DNA_ENV_MAX_LEGS entries while the wire count is u16, so a 65-leg
+ * envelope walks one slot past the array. leg[64] aliases call_off[0..7]
+ * EXACTLY (asserted above), so the overflow is INTRA-object — ASan
+ * cannot see it.
+ *
+ * Two envelopes are needed, and the second is the one that bites:
+ *
+ *  (a) 1993 bytes = 43 + 65*30, fully self-consistent, every non-count
+ *      field canonical. Nothing but the count can explain a rejection.
+ *      With the bound removed this STILL rejects, because the aliased
+ *      65th header makes the length walk overshoot — so (a) alone is
+ *      vacuous. It is kept because it is the canonical statement of the
+ *      rule, and because it proves the rejection is not caused by some
+ *      unrelated malformed field.
+ *
+ *  (b) 3 * 1993 = 5979 bytes, same header. With the bound removed the
+ *      walk reads the 65th leg's call_len and auth_len out of
+ *      call_off[4] and call_off[5], both of which hold call_base (1993);
+ *      the accumulator therefore lands on exactly 3*1993, the length
+ *      check passes, and the final-offset proof passes too because it
+ *      compares the same aliased value against itself. An unbounded
+ *      decoder ACCEPTS this envelope and publishes a view reporting
+ *      leg_count == 65. The real decoder rejects it at the count bound
+ *      before touching anything.
+ *
+ * Both cases assert the failure contract FIELD-BY-FIELD (never a struct
+ * memcmp): rc == -1 and every semantic output field still zero, which is
+ * what "rejection happens before any output is populated" means. Against
+ * a decoder with the bound removed, case (b) fails on rc and on
+ * leg_count/env_len/buf and on the leg and offset arrays.
+ */
+static void test_leg_count_guard_is_load_bearing(void) {
+    const uint16_t over = DNA_ENV_MAX_LEGS + 1;              /* 65 */
+    const size_t base = (size_t)DNA_ENV_FIXED_HEAD +
+                        (size_t)over * DNA_ENV_LEG_HDR_LEN;
+    CHECK(base == 1993);                       /* 43 + 65*30 */
+
+    /* The accept side of the same bound: exactly DNA_ENV_MAX_LEGS legs,
+     * zero payload, must round-trip and be exactly 43 + 64*30 bytes. */
+    {
+        fixture_t *f = fx_new(DNA_ENV_MAX_LEGS);
+        for (uint16_t i = 0; i < DNA_ENV_MAX_LEGS; i++) {
+            fx_set_call(f, i, 0, 0);
+            fx_set_auth(f, i, 0, 0);
+        }
+        uint8_t *a = buf_new();
+        size_t la = 0;
+        CHECK(fx_encode(f, a, (size_t)DNA_ENV_MAX_TOTAL_LEN, &la) == 0);
+        CHECK(la == 1963);                     /* 43 + 64*30 */
+        roundtrip(f, "64 legs, zero payload, exactly 1963 bytes");
+        free(a);
+        fx_free(f);
+    }
+
+    /* (a) canonical self-consistent 65-leg envelope. */
+    uint8_t *m = calloc(1, base);
+    MUST_ALLOC(m);
+    build_over_cap_envelope(m, over);
+    expect_reject_and_untouched(m, base, "65 legs, self-consistent 1993 B");
     free(m);
+
+    /* (b) the case an unbounded decoder ACCEPTS — see the block comment. */
+    const size_t big = 3 * base;
+    CHECK(big == 5979);
+    uint8_t *g = calloc(1, big);
+    MUST_ALLOC(g);
+    build_over_cap_envelope(g, over);
+    expect_reject_and_untouched(g, big, "65 legs, 5979 B (unbounded decoder "
+                                        "would ACCEPT this)");
+    free(g);
 }
 
 static void test_max_size_envelope(void) {
