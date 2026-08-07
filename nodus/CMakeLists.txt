@@ -130,6 +130,13 @@ set(NODUS_SOURCES
     # tx_id). A separate wire family from V3; nothing calls it yet.
     ${SHARED_DIR}/dnac/env_wire.c
 
+    # Ledger V2 — INACTIVE deterministic envelope PREFLIGHT: the frozen
+    # order in which the four commitments above are derived, plus the
+    # expiry and contextual-ruleset gates. Adds no preimage of its own and
+    # holds no state; the DERIVED tx_id is the only transaction identity
+    # it knows.
+    ${SHARED_DIR}/dnac/env_preflight.c
+
     # Ledger V2 S2 — INACTIVE tagged root hierarchy + BlockHeader V2 codec
     # (shared canonical hashing) and the witness-side V2 root loaders
     # (tests/harness only; no consensus path calls them).
@@ -155,6 +162,13 @@ set(NODUS_SOURCES
     # claim pipeline). No consensus caller.
     ${SHARED_DIR}/dnac/manifest_wire.c
     src/witness/nodus_witness_v2_claims.c
+
+    # Ledger V2 — INACTIVE witness-side envelope preflight SEAM: candidate
+    # envelope bytes + the DERIVED chain id (never the legacy 16-byte one)
+    # + the contextual ruleset table -> derived transaction identities.
+    # Read-only; the apply engine still takes caller-supplied tx_ids (the
+    # six later switch sites are enumerated in the header).
+    src/witness/nodus_witness_v2_env.c
 
     # Ledger V2 S7 — INACTIVE shielded-pool state: canonical pool
     # commitments (shared codec) and the witness-side pool module
@@ -904,6 +918,22 @@ add_test(NAME test_cc_wire COMMAND test_cc_wire)
 add_executable(test_env_wire ${SHARED_DIR}/dnac/tests/test_env_wire.c)
 target_link_libraries(test_env_wire nodus)
 add_test(NAME test_env_wire COMMAND test_env_wire)
+
+# Ledger V2 — deterministic envelope PREFLIGHT (INACTIVE): the locked
+# expiry comparison against the CANDIDATE height, full 32-byte chain-id
+# binding (bytes 16 and 31 are the truncation-regression detectors),
+# contextual-ruleset gates, fail-closed zeroing, and seeded property
+# batteries. KATs are pinned from env_preflight_oracle.py.
+add_executable(test_env_preflight ${SHARED_DIR}/dnac/tests/test_env_preflight.c)
+target_link_libraries(test_env_preflight nodus)
+add_test(NAME test_env_preflight COMMAND test_env_preflight)
+
+# Ledger V2 — the witness-side envelope preflight SEAM (INACTIVE): derived
+# chain-id authority, cross-chain / cross-ruleset identity separation,
+# forged-duplicate impossibility, and batch-failure non-publication.
+add_executable(test_v2_env_preflight tests/test_v2_env_preflight.c)
+target_link_libraries(test_v2_env_preflight nodus dsa nodus)
+add_test(NAME test_v2_env_preflight COMMAND test_v2_env_preflight)
 
 # Hard-Fork v1 Stage E.2 — tier-3 client helper guard-path tests
 add_executable(test_cc_client tests/test_cc_client.c)
