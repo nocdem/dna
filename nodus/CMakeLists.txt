@@ -125,6 +125,11 @@ set(NODUS_SOURCES
     # (dnac_txw_legacy_tx_hash) both libdna and the witness call.
     ${SHARED_DIR}/dnac/tx_wire.c
 
+    # Ledger V2 K1 — INACTIVE generic transaction ENVELOPE codec + the four
+    # commitment helpers (call_commit / auth_context_commit / auth_digest /
+    # tx_id). A separate wire family from V3; nothing calls it yet.
+    ${SHARED_DIR}/dnac/env_wire.c
+
     # Ledger V2 S2 — INACTIVE tagged root hierarchy + BlockHeader V2 codec
     # (shared canonical hashing) and the witness-side V2 root loaders
     # (tests/harness only; no consensus path calls them).
@@ -893,6 +898,12 @@ add_test(NAME test_chain_config_votes COMMAND test_chain_config_votes)
 add_executable(test_cc_wire ${SHARED_DIR}/dnac/tests/test_cc_wire.c)
 target_link_libraries(test_cc_wire nodus)
 add_test(NAME test_cc_wire COMMAND test_cc_wire)
+
+# Ledger V2 K1 — generic ENVELOPE codec + commitment helpers (INACTIVE).
+# KATs are pinned from an independent python3 hashlib.sha3_512 oracle.
+add_executable(test_env_wire ${SHARED_DIR}/dnac/tests/test_env_wire.c)
+target_link_libraries(test_env_wire nodus)
+add_test(NAME test_env_wire COMMAND test_env_wire)
 
 # Hard-Fork v1 Stage E.2 — tier-3 client helper guard-path tests
 add_executable(test_cc_client tests/test_cc_client.c)

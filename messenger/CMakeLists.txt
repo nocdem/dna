@@ -248,6 +248,10 @@ if(BUILD_SHARED_LIB)
         # dnac_txw_legacy_tx_hash, and libdna must not depend on the
         # transitive dht_lib→nodus archive to supply that symbol.
         ${CMAKE_SOURCE_DIR}/../shared/dnac/tx_wire.c
+        # Ledger V2 K1 — INACTIVE generic transaction ENVELOPE codec + the
+        # four commitment helpers, owned by libdna the same way as tx_wire.c.
+        # A separate wire family from V3; no caller yet.
+        ${CMAKE_SOURCE_DIR}/../shared/dnac/env_wire.c
         # Ledger V2 S2 — shared V2 root/header codecs (inactive), owned by
         # libdna the same way as tx_wire.c.
         ${CMAKE_SOURCE_DIR}/../shared/dnac/ledger_roots_v2.c
@@ -406,6 +410,10 @@ else()
         # dnac_txw_legacy_tx_hash, and libdna must not depend on the
         # transitive dht_lib→nodus archive to supply that symbol.
         ${CMAKE_SOURCE_DIR}/../shared/dnac/tx_wire.c
+        # Ledger V2 K1 — INACTIVE generic transaction ENVELOPE codec + the
+        # four commitment helpers, owned by libdna the same way as tx_wire.c.
+        # A separate wire family from V3; no caller yet.
+        ${CMAKE_SOURCE_DIR}/../shared/dnac/env_wire.c
         # Ledger V2 S2 — shared V2 root/header codecs (inactive), owned by
         # libdna the same way as tx_wire.c.
         ${CMAKE_SOURCE_DIR}/../shared/dnac/ledger_roots_v2.c
