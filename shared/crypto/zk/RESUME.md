@@ -3885,3 +3885,93 @@ Owed without compensation per user instruction 2026-05-23. Sequence (each requir
 4. **F7 (NEVER IMPLEMENTED):** `test_air_column_layout` must exist for the rewritten range_proof to assert § 4.5 binding column contract.
 5. **'M' tautology trap (filed 2026-05-22, deleted 2026-05-23):** rewritten range_proof must source `commitments[]` from TX-wire public input, NEVER from witness self-population.
 6. **AIR witness memory:** Plonky3 keccak-air is ~21 KB per row × 24 rows ≈ 500 KB per Keccak-f. Reasonable for stack OR heap; heap is the conservative default.
+
+---
+
+# S10 CLOSEOUT CHECKPOINT (2026-08-07) — ZK PARKED
+
+This section is a durable checkpoint, not an implementation claim and not an authority over
+source. Full analysis: `dnac/docs/plans/2026-08-07-ledgerv2-s10-proof-architecture-report.md`
+(local-only, gitignored — Gate 1 §0–F + Gate 2 §N–S + Appendices X/Y with embedded
+calculators).
+
+## S10 baseline (unchanged by S10 — all verified from source at HEAD `89dc4118`)
+
+- Current production aggregate proof remains exactly **2,474,998 B** for every legal shape;
+  the byte model tiles it exactly (fixed 77,798 + 100 × 23,972; zero unattributed bytes —
+  S9's 572 B gap closed).
+- The 22 legal shielded shapes (T11 1-4×1-4, T12 0×1-4, T13 1×0/1) remain proven under the
+  EXISTING implementation; current proof size is shape-independent.
+- Security parameters unchanged: Q=100, log_blowup=2, lfpl=0, query-PoW 16, commit-PoW 0,
+  binary MMCS/folding, Poseidon2 W8/R4, SE=2, nrc=4 (`shielded_fri_params.h`).
+- Type 11/12/13 production admission remains **REJECT** (`nodus_witness_runtime.c`
+  rt_admit_common hard stop). Transaction cap 65,536 and all transport caps unchanged.
+
+## Selected future direction
+
+**E.2+ = multiplexed/verticalized aggregate AIR + canonical root-scoped batched Merkle
+multiproof / path deduplication.**
+
+- Recursion is NOT the selected next implementation step (no outer prover exists; modeled
+  outer proofs 200–400 KB with the in-tree format — no better than E.2+ at far higher cost).
+- FRI retuning is NOT approved (any Q<~92 costs ~0.78 proven bits/query; lb≠2 proven floor
+  underived — Gate 1 §A.2).
+- A SmallWood-class small-instance PCS is a NAMED FALLBACK only if E.2+ later fails
+  implementation measurement.
+- The 256 KiB stretch target was NOT met by this architecture family at locked security.
+
+## Conditional result (Gate 2, corrected at closeout)
+
+`CONDITIONAL FEASIBILITY GO — E.2+ MEETS THE 512 KiB FULL-T12 TARGET IN THE CURRENT
+CONSERVATIVE DESIGN MODEL. IMPLEMENTATION, SOUNDNESS REVIEW AND MEASUREMENT REMAIN OPEN.`
+
+All values below are CONDITIONAL on the proposed width, height, quotient count and the
+provisional DZKF-v5 codec framing (model values, unmeasured):
+
+- Selected design point: W′=320 (itemized census ≈306), base height 2^9 / committed 2^10,
+  n_qc=8, Q=100/lb=2 byte-identical.
+- Corrected proof worst case: **440,766 B** (min 18,830 / expected 417,766; the 192 B
+  multiproof framing enumerated exactly: 8 global + 3×8 input-tree counts + 10×16 round
+  framing — provisional field widths).
+- Corrected full worst-case Type 12: **473,843 B** (overhead 33,077 re-derived; T11 441,235,
+  T12 min-leg 448,522, T13 441,408).
+- 512 KiB target: **met in-model** (473,843 ≤ 524,288). Exact hard-target width envelope:
+  W′≤380 @ n_qc=8/h2^9 · W′≤318 @ n_qc=16/h2^9 · W′≤344 @ n_qc=8/h2^10.
+- 450 KiB engineering target: **met at the design point** (440,766 ≤ 460,800); at n_qc=16 it
+  would require W′≤281 — n_qc=8 is necessary for the preferred point, not for the ceiling.
+- Security: ZERO parameter changes; the multiproof is a serialization change with a
+  verification-equivalence reduction argument (report §P), no new assumptions.
+
+## Implementation obligations (all seven OPEN)
+
+1. Actual implemented AIR width remains within the accepted envelope.
+2. Degree analysis confirms the quotient chunk count.
+3. The scheduled program (≤240 real Poseidon2 perms worst-case, from source census) fits the
+   selected height with shape-independent padding.
+4. The shared Poseidon2 embed retains COMPLETE and SOUND constraints for every former block.
+5. The canonical multiproof implementation matches the model (rules P1–P12).
+6. DZKF version (4→5) and AIR/verifier identity binding are finalized.
+7. Real proof size, prover time, verifier time and memory are measured.
+
+## Parking state
+
+`ZK PARKED AT S10 CONDITIONAL FEASIBILITY GO`
+
+- No E.2+ production code exists. No E.2+ proof has been produced. No vectors were
+  regenerated. No security parameters were changed. C3 remains inactive. Shielded admission
+  remains fail-closed.
+
+## Conditions for resuming ZK implementation
+
+E.2+ implementation begins only after the Ledger V2 foundations it binds to are frozen
+(mainnet activation NOT required — the consensus/wire foundations are):
+
+1. Global BlockHeader and BlockID format.
+2. QC and validator-set interaction.
+3. Chain/domain/pool ID encoding.
+4. Transaction execution context.
+5. Proof-system and proof-format version binding.
+6. Global/domain state-root hierarchy.
+7. Database schema and migration.
+8. Atomic global-block apply and rollback.
+9. Supply ownership/accounting boundaries.
