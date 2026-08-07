@@ -284,6 +284,8 @@ int nodus_witness_runtime_selfcheck(void) {
         if (rt->runtime_kind != DNA_RUNTIME_NATIVE_BUILTIN) return -1;
         if (!rt->admit || !rt->tx_cost) return -1;
         if (rt->apply_reserved) return -1;             /* S9 — reserved  */
+        if (rt->adapter) return -1;            /* typed-effect boundary —
+                                                * no production adapter yet */
         if (!rt->state_root) return -1;                /* root is REAL   */
         /* claim-target capability is all-or-nothing */
         if ((rt->asset_check == NULL) != (rt->claim_apply == NULL))

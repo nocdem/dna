@@ -252,6 +252,10 @@ if(BUILD_SHARED_LIB)
         # four commitment helpers, owned by libdna the same way as tx_wire.c.
         # A separate wire family from V3; no caller yet.
         ${CMAKE_SOURCE_DIR}/../shared/dnac/env_wire.c
+        # Ledger V2 — INACTIVE generic typed-effect RESULT codec (generic
+        # CREATE/SET/DELETE mutations over opaque keys/values), owned by
+        # libdna the same way as env_wire.c. No caller yet.
+        ${CMAKE_SOURCE_DIR}/../shared/dnac/effect_wire.c
         # Ledger V2 — INACTIVE deterministic envelope preflight over those
         # helpers (derived tx_id, expiry + contextual-ruleset gates),
         # owned by libdna the same way as env_wire.c. No caller yet.
@@ -418,6 +422,10 @@ else()
         # four commitment helpers, owned by libdna the same way as tx_wire.c.
         # A separate wire family from V3; no caller yet.
         ${CMAKE_SOURCE_DIR}/../shared/dnac/env_wire.c
+        # Ledger V2 — INACTIVE generic typed-effect RESULT codec (generic
+        # CREATE/SET/DELETE mutations over opaque keys/values), owned by
+        # libdna the same way as env_wire.c. No caller yet.
+        ${CMAKE_SOURCE_DIR}/../shared/dnac/effect_wire.c
         # Ledger V2 — INACTIVE deterministic envelope preflight over those
         # helpers (derived tx_id, expiry + contextual-ruleset gates),
         # owned by libdna the same way as env_wire.c. No caller yet.

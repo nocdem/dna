@@ -130,6 +130,13 @@ set(NODUS_SOURCES
     # tx_id). A separate wire family from V3; nothing calls it yet.
     ${SHARED_DIR}/dnac/env_wire.c
 
+    # Ledger V2 — INACTIVE generic TYPED-EFFECT RESULT codec: the canonical,
+    # bounded representation of the state mutations one leg proposes
+    # (CREATE/SET/DELETE over opaque keys/values namespaced by a compiled
+    # adapter op id). Carries no domain id and no commitment; nothing calls
+    # it yet.
+    ${SHARED_DIR}/dnac/effect_wire.c
+
     # Ledger V2 — INACTIVE deterministic envelope PREFLIGHT: the frozen
     # order in which the four commitments above are derived, plus the
     # expiry and contextual-ruleset gates. Adds no preimage of its own and
@@ -169,6 +176,12 @@ set(NODUS_SOURCES
     # Read-only; the apply engine still takes caller-supplied tx_ids (the
     # six later switch sites are enumerated in the header).
     src/witness/nodus_witness_v2_env.c
+
+    # Ledger V2 — INACTIVE typed-effect / compiled STORAGE-ADAPTER
+    # boundary: op resolution, adapter self-check, the one precondition
+    # decision table and the validate/apply walks. No consensus caller;
+    # the production runtime table registers no adapter.
+    src/witness/nodus_witness_v2_adapter.c
 
     # Ledger V2 S7 — INACTIVE shielded-pool state: canonical pool
     # commitments (shared codec) and the witness-side pool module
@@ -775,6 +788,13 @@ add_test(NAME test_manifest_wire COMMAND test_manifest_wire)
 register_witness_test(test_v2_claims)
 register_witness_test(test_v2_pools)
 
+# Ledger V2 — generic typed-effect + compiled storage-adapter boundary
+# (INACTIVE): adapter registration through the five-axis runtime lookup,
+# probe/eval/mutate precondition truth, fault-vs-missing distinction,
+# domain authority, and the impossibility of SQL/table selection through
+# the public surface.
+register_witness_test(test_v2_effects)
+
 # Ledger V2 S3 — snapshot persistence: insert/get round-trip, conflict
 # detection, corruption fail-close, oracle-pinned validator_set_root,
 # insertion-order independence, reopen, and the committee builder.
@@ -918,6 +938,16 @@ add_test(NAME test_cc_wire COMMAND test_cc_wire)
 add_executable(test_env_wire ${SHARED_DIR}/dnac/tests/test_env_wire.c)
 target_link_libraries(test_env_wire nodus)
 add_test(NAME test_env_wire COMMAND test_env_wire)
+
+# Ledger V2 — generic typed-effect RESULT codec (INACTIVE): canonicality,
+# the kind/precondition legality biconditional, reserved-field discipline,
+# the total order + cross-kind logical-key uniqueness, the 65536-byte cap
+# from both sides, and seeded property batteries.
+# KATs are pinned from an independent python3 hashlib.sha3_512 oracle,
+# effect_wire_oracle.py.
+add_executable(test_effect_wire ${SHARED_DIR}/dnac/tests/test_effect_wire.c)
+target_link_libraries(test_effect_wire nodus)
+add_test(NAME test_effect_wire COMMAND test_effect_wire)
 
 # Ledger V2 — deterministic envelope PREFLIGHT (INACTIVE): the locked
 # expiry comparison against the CANDIDATE height, full 32-byte chain-id

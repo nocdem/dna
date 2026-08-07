@@ -86,6 +86,12 @@ typedef int (*nodus_rt_cost_fn)(const struct nodus_domain_runtime *rt,
  * witness tree and cast/use it there. */
 struct nodus_witness;
 
+/* The compiled storage adapter a runtime MAY register (Ledger V2
+ * typed-effect boundary, nodus_witness_v2_adapter.h). Forward-declared
+ * for the same reason: this header describes the runtime's shape, never
+ * the adapter's contents. */
+struct nodus_domain_adapter;
+
 /** RESERVED Season-9 hook (real transaction apply semantics). Declared so
  *  the boundary shape is fixed; MUST be NULL until S9. */
 typedef int (*nodus_rt_apply_fn)(const struct nodus_domain_runtime *rt,
@@ -173,6 +179,13 @@ typedef struct nodus_domain_runtime {
     nodus_rt_claim_fn     claim_apply;   /* NULL = never a claim target   */
     nodus_rt_invariant_fn invariant;     /* NULL = no asset state         */
     nodus_rt_state_init_fn state_init;   /* NULL = no activation state    */
+    /* OPTIONAL compiled storage adapter (Ledger V2 typed-effect boundary,
+     * nodus_witness_v2_adapter.h). Registered HERE so an adapter resolves
+     * only through the five-axis exact-tuple lookup — never through a
+     * second caller-controlled path. MUST stay NULL in the compiled
+     * production table until the CORE/SYSTEM hook-migration season
+     * (selfcheck enforces it, same discipline as apply_reserved). */
+    const struct nodus_domain_adapter *adapter;
 } nodus_domain_runtime_t;
 
 /**
@@ -206,9 +219,10 @@ const nodus_domain_runtime_t *nodus_runtime_builtin_table(size_t *n_out);
  *     ruleset_version) equal the entry's tuple fields;
  *   - runtime_kind is NATIVE_BUILTIN;
  *   - admit, tx_cost and state_root are present; apply_reserved is NULL
- *     (S9); asset_check and claim_apply are present or absent TOGETHER
- *     (a runtime is a claim target only when it can both validate the
- *     asset and create the output);
+ *     (S9) and adapter is NULL (typed-effect boundary — no production
+ *     migration yet); asset_check and claim_apply are present or absent
+ *     TOGETHER (a runtime is a claim target only when it can both
+ *     validate the asset and create the output);
  *   - exactly the CONFIGURED native runtimes (initially SYSTEM and
  *     DNA_CORE) are present, ascending by domain_id.
  * @return 0 healthy, -1 on the first violation.
