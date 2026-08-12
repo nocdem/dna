@@ -29,9 +29,27 @@
  *
  * S5/S6 boundary: the state_root / asset_check / claim_apply / invariant
  * hooks are the REAL native-runtime boundary the generic executor
- * dispatches through — it holds no per-domain branch of its own. The
- * transaction-apply hook (apply_reserved) remains reserved for S9 and
- * MUST stay NULL; nodus_witness_runtime_selfcheck() enforces the shape.
+ * dispatches through — it holds no per-domain branch of its own.
+ *
+ * EXECUTION boundary (Ledger V2 execution season): the old reserved
+ * apply hook is REPLACED by the real typed pair below — read_plan (the
+ * deterministic mediated-read request phase) and exec (native compiled
+ * execution of one preflighted envelope leg, returning ONLY a canonical
+ * "DNA.EFFRES.v1" typed-effect result). Both MUST stay NULL in the
+ * compiled production table until the CORE/SYSTEM hook-migration season;
+ * nodus_witness_runtime_selfcheck() enforces the shape. A runtime whose
+ * exec is NULL cannot execute envelope legs at all — the engine fails
+ * that leg closed (there is no fallback execution path of any kind).
+ *
+ * METERING authority (same season): a runtime MAY carry the exact
+ * metering policy its descriptor commits (meter_policy_digest,
+ * domain_wire.h). The SYSTEM entry — the mandatory protocol domain —
+ * carries THE block metering policy: the engine's block-start snapshot
+ * takes its pricing authority from the resolved SYSTEM runtime, verifies
+ * the seal AND the descriptor-committed identity digest, and from
+ * nothing else. Because the descriptor hash is matched five-axis-exactly
+ * by every validator, two validators claiming the same SYSTEM ruleset
+ * identity structurally cannot price differently.
  *
  * @file nodus_witness_runtime.h
  */
@@ -43,6 +61,8 @@
 #include <stddef.h>
 
 #include "dnac/domain_wire.h"
+#include "dnac/res_meter.h"     /* dna_meter_policy_t + the env/effect
+                                 * codec views the execution hooks borrow */
 
 #ifdef __cplusplus
 extern "C" {
@@ -81,8 +101,9 @@ typedef int (*nodus_rt_admit_fn)(const struct nodus_domain_runtime *rt,
  *
  *  AUTHORITY NOTE (metering season): this hook is a per-tx-TYPE
  *  classification for the LEGACY pre-envelope admission surface
- *  (nodus_witness_domreg.c admission; the nodus_v2_op_t.verify_cost test
- *  shapes). It is NOT a price authority for the Ledger V2 envelope lane:
+ *  (nodus_witness_domreg.c admission; the raw-SQL op scaffold that also
+ *  consumed it is retired). It is NOT a price authority for the Ledger
+ *  V2 envelope lane:
  *  envelope legs are keyed by runtime_op and priced EXCLUSIVELY by the
  *  engine-supplied block-start policy snapshot
  *  (shared/dnac/res_meter.h — dna_meter_policy_t.w_op), which this hook
@@ -102,10 +123,96 @@ struct nodus_witness;
  * the adapter's contents. */
 struct nodus_domain_adapter;
 
-/** RESERVED Season-9 hook (real transaction apply semantics). Declared so
- *  the boundary shape is fixed; MUST be NULL until S9. */
-typedef int (*nodus_rt_apply_fn)(const struct nodus_domain_runtime *rt,
-                                 void *apply_ctx);
+/* ── The typed EXECUTION boundary (Ledger V2 execution season) ────────
+ *
+ * A runtime executes ONE preflighted envelope leg through the two hooks
+ * below. Everything it may consume is handed to it explicitly; it
+ * receives NO witness handle, NO database, NO clock, NO RNG — so the
+ * only inputs a leg's execution can depend on are the envelope bytes,
+ * the engine-derived context and the engine-mediated read results, all
+ * of which are byte-identical on every honest node. */
+
+/** Largest mediated-read request list one leg may emit. Mirrors the
+ *  engine's own batch bound (NODUS_V2_ENV_BATCH_MAX == the apply
+ *  engine's MAX_OPS == 16) — an engine array bound, not a priced
+ *  policy; a plan exceeding it is rejected, never truncated. */
+#define NODUS_RT_MAX_READS 16
+
+/** One typed mediated-read request: a compiled adapter operation id plus
+ *  an opaque canonical key — NOTHING else can be asked for. */
+typedef struct {
+    uint32_t op_id;                       /* compiled adapter op          */
+    uint16_t key_len;                     /* 1..DNA_EFFECT_MAX_KEY_LEN    */
+    uint8_t  key[DNA_EFFECT_MAX_KEY_LEN];
+} nodus_rt_read_req_t;
+
+/** One bounded typed mediated-read result. `present` distinguishes a
+ *  MISSING row (present == 0, value_len == 0 — a successful read of an
+ *  absent key) from a present one; a storage/node FAULT never produces
+ *  a result at all (the engine aborts its own operation instead — the
+ *  fault-vs-verdict rule). */
+typedef struct {
+    uint8_t  present;                     /* 0 or 1                       */
+    uint32_t value_len;                   /* 0..DNA_EFFECT_MAX_VALUE_LEN  */
+    uint8_t  value[DNA_EFFECT_MAX_VALUE_LEN];
+} nodus_rt_read_res_t;
+
+/** The engine-owned execution context for one leg. Every pointer is a
+ *  BORROWED engine buffer, valid for the hook call only. All identity
+ *  material is ENGINE-DERIVED (env_preflight.h): tx_id and the two
+ *  commitments are derived from the envelope bytes + chain identity +
+ *  contextual rulesets — a runtime can bind to them but can never
+ *  choose them. HONEST LABEL: these are DERIVED COMMITMENTS, not
+ *  verified authorizations — auth_kind interpretation and signature
+ *  verification are a later season's obligation (nodus_witness_v2_env.h
+ *  "NOT implemented this season"). */
+typedef struct {
+    const uint8_t *chain_id;              /* [DNA_CHAIN_ID_LEN]           */
+    uint64_t       global_height;         /* the block being applied      */
+    uint64_t       epoch;                 /* DERIVED from global block
+                                           * count — never wall clock     */
+    const uint8_t *tx_id;                 /* [64] engine-derived identity */
+    const uint8_t *auth_context_commit;   /* [64] derived commitment      */
+    const uint8_t *leg_auth_digest;       /* [64] this leg's derived
+                                           * commitment                   */
+} nodus_rt_exec_ctx_t;
+
+/**
+ * Deterministic mediated-read REQUEST phase for one leg. Emits at most
+ * `max_reqs` typed requests (strictly ascending by (op_id, key) under
+ * the effect-wire key order — duplicates and disorder are engine
+ * rejects). NULL = the runtime reads nothing. The request list must be
+ * a pure function of (envelope bytes, leg, ctx) — it runs before any
+ * storage is touched. @return 0 with *n_out set, -1 = this leg is not
+ * plannable under the domain's rules (a deterministic VERDICT).
+ */
+typedef int (*nodus_rt_read_plan_fn)(const struct nodus_domain_runtime *rt,
+                                     const dna_env_view_t *env,
+                                     uint16_t leg_index,
+                                     const nodus_rt_exec_ctx_t *ctx,
+                                     nodus_rt_read_req_t *reqs_out,
+                                     uint16_t max_reqs,
+                                     uint16_t *n_out);
+
+/**
+ * Native compiled execution of one preflighted leg. Consumes the
+ * borrowed envelope view, the engine context and the bounded mediated
+ * read results; produces ONLY canonical "DNA.EFFRES.v1" result bytes in
+ * the engine's buffer (strictly decoded and validated by the engine
+ * before anything is charged or applied). It must not return SQL, a
+ * domain id, weights, table names, roots, a transaction identity, or
+ * callback addresses — the result codec cannot carry any of them, which
+ * is the point. @return 0 with *res_len_out set, -1 = the leg is
+ * rejected under the domain's rules (a deterministic VERDICT).
+ */
+typedef int (*nodus_rt_exec_fn)(const struct nodus_domain_runtime *rt,
+                                const dna_env_view_t *env,
+                                uint16_t leg_index,
+                                const nodus_rt_exec_ctx_t *ctx,
+                                const nodus_rt_read_res_t *reads,
+                                uint16_t n_reads,
+                                uint8_t *res_out, size_t res_cap,
+                                size_t *res_len_out);
 
 /** Domain state root — the runtime OWNS its state-root composition; the
  *  generic executor consumes the 64-byte result as an OPAQUE value.
@@ -174,7 +281,13 @@ typedef struct nodus_domain_runtime {
     /* ── function table ─────────────────────────────────────────────── */
     nodus_rt_admit_fn admit;
     nodus_rt_cost_fn  tx_cost;
-    nodus_rt_apply_fn apply_reserved;    /* S9 — NULL until then          */
+    /* The typed EXECUTION boundary (header block above). MUST stay NULL
+     * in the compiled production table until the CORE/SYSTEM
+     * hook-migration season — selfcheck enforces it. NULL exec = this
+     * runtime cannot execute envelope legs (engine fails the leg
+     * closed); NULL read_plan = it reads nothing. */
+    nodus_rt_read_plan_fn read_plan;
+    nodus_rt_exec_fn      exec;
     nodus_rt_root_fn      state_root;    /* domain state root (S5/S6)     */
     /* OPTIONAL activation payload root: the value compared against the
      * registry-committed genesis_state_root when this domain's
@@ -194,8 +307,16 @@ typedef struct nodus_domain_runtime {
      * only through the five-axis exact-tuple lookup — never through a
      * second caller-controlled path. MUST stay NULL in the compiled
      * production table until the CORE/SYSTEM hook-migration season
-     * (selfcheck enforces it, same discipline as apply_reserved). */
+     * (selfcheck enforces it, same discipline as read_plan/exec). */
     const struct nodus_domain_adapter *adapter;
+    /* OPTIONAL committed metering policy (header block above). Presence
+     * is COUPLED to the descriptor: meter_policy != NULL exactly when
+     * descriptor.meter_policy_digest is non-zero, and the policy's
+     * dna_meter_policy_digest MUST equal that committed digest —
+     * selfcheck and the engine snapshot both enforce it. The SYSTEM
+     * entry carries THE block policy; no caller and no envelope can
+     * substitute another. */
+    const dna_meter_policy_t *meter_policy;
 } nodus_domain_runtime_t;
 
 /**
@@ -228,11 +349,17 @@ const nodus_domain_runtime_t *nodus_runtime_builtin_table(size_t *n_out);
  *   - descriptor identity fields (domain_id / runtime_abi /
  *     ruleset_version) equal the entry's tuple fields;
  *   - runtime_kind is NATIVE_BUILTIN;
- *   - admit, tx_cost and state_root are present; apply_reserved is NULL
- *     (S9) and adapter is NULL (typed-effect boundary — no production
+ *   - admit, tx_cost and state_root are present; read_plan, exec and
+ *     adapter are ALL NULL (typed execution boundary — no production
  *     migration yet); asset_check and claim_apply are present or absent
  *     TOGETHER (a runtime is a claim target only when it can both
  *     validate the asset and create the output);
+ *   - metering-policy coupling: meter_policy present exactly when the
+ *     descriptor's meter_policy_digest is non-zero; a present policy
+ *     passes dna_meter_policy_check AND its dna_meter_policy_digest
+ *     equals the descriptor-committed digest byte-exactly; the SYSTEM
+ *     entry (the block-policy authority) carries one, DNA_CORE carries
+ *     none — the exact configured shape, like the entry list itself;
  *   - exactly the CONFIGURED native runtimes (initially SYSTEM and
  *     DNA_CORE) are present, ascending by domain_id.
  * @return 0 healthy, -1 on the first violation.

@@ -259,13 +259,31 @@ int dna_domman_hash(const dna_domain_manifest_t *m,
 int dna_domman_owns_type(const dna_domain_manifest_t *m, uint8_t tx_type);
 
 /* ══════════════════════════════════════════════════════════════════════
- * 2. RulesetDescriptor v1
+ * 2. RulesetDescriptor v2
+ *
+ * v2 (Ledger V2 execution season) APPENDS meter_policy_digest to the v1
+ * layout and retires v1: descriptor_version 1 is REJECTED everywhere (the
+ * layer is inactive with zero live consumers, so there is no v1 data to
+ * migrate — carrying a dead version would be dead code). The digest is
+ * what makes the metering policy CONSENSUS-BOUND: a validator matches a
+ * ruleset only on the exact descriptor hash, the hash commits the policy
+ * digest, and the digest commits every weight (res_meter.h
+ * dna_meter_policy_digest) — so two validators claiming the same ruleset
+ * identity structurally cannot price differently.
+ *
+ * An ALL-ZERO meter_policy_digest means "this ruleset declares no
+ * metering policy" (a domain that is priced under another authority —
+ * the engine takes the block policy from the SYSTEM ruleset, the one
+ * mandatory protocol domain). Non-zero means the runtime carrying this
+ * descriptor MUST carry the exact policy whose identity digest matches
+ * (enforced by nodus_witness_runtime_selfcheck and by the engine's
+ * block-start snapshot).
  * ════════════════════════════════════════════════════════════════════ */
 
-#define DNA_RULESET_DESC_VERSION 1u
+#define DNA_RULESET_DESC_VERSION 2u
 
 typedef struct {
-    uint32_t descriptor_version;               /* must be 1                */
+    uint32_t descriptor_version;               /* must be 2                */
     uint32_t domain_id;
     uint8_t  name[DNA_DOM_NAME_LEN];
     uint32_t runtime_abi;
@@ -274,10 +292,18 @@ typedef struct {
     const uint32_t *rule_ids;                  /* strictly ascending       */
     uint16_t tx_type_count;                    /* 0..DNA_DOM_MAX_TX_TYPES  */
     const uint8_t *tx_types;                   /* strictly ascending       */
+    uint8_t  meter_policy_digest[DNA_DOM_HASH_LEN]; /* dna_meter_policy_digest
+                                                * of the committed policy;
+                                                * ALL-ZERO = none declared */
 } dna_ruleset_desc_t;
 
-/** ruleset_hash = SHA3-512("DNA.RULESET.v1" ‖ canonical descriptor bytes).
- *  Rejects (-1): NULL, bad version, non-canonical name, over-cap or
+/** ruleset_hash = SHA3-512("DNA.RULESET.v1" ‖ canonical descriptor bytes,
+ *  v2 layout: version(4) ‖ domain_id(4) ‖ name(32) ‖ abi(4) ‖
+ *  ruleset_version(4) ‖ rule_count(2) ‖ rule_ids ‖ tx_type_count(2) ‖
+ *  tx_types ‖ meter_policy_digest(64)). The 16-byte tag names the object
+ *  FAMILY; the version field inside the preimage is what versions the
+ *  layout, so v1 and v2 descriptors can never collide.
+ *  Rejects (-1): NULL, version != 2, non-canonical name, over-cap or
  *  non-ascending lists (NULL list allowed iff its count is 0). */
 int dna_ruleset_desc_hash(const dna_ruleset_desc_t *d,
                           uint8_t out[DNA_DOM_HASH_LEN]);

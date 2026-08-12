@@ -777,8 +777,19 @@ register_witness_test(test_v2_schema)
 # Ledger V2 S5 — atomic apply engine: genesis-root cycle proof, heads/
 # updates, replay matrix, cross-domain atomicity, 15-point fault-injection
 # with full-DB digest rollback proof, resource limits, official 1B/70M
-# supply conservation.
+# supply conservation. Execution season: blocks carry ENVELOPES through
+# the typed runtime path (v2_exec_fixture.h scripted runtimes).
 register_witness_test(test_v2_apply)
+
+# Ledger V2 execution season — the engine-level adversarial matrix of
+# the typed execution path: block-count epoch gates, fail-closed local
+# index, frozen-snapshot resolution (per-axis mismatch, stale ruleset,
+# READ legs, op ownership), metering authority (SYSTEM-committed policy
+# only; decoy/mutated policies; inert tx_cost; exact-fit budgets),
+# engine-mediated reads (canonical order, same-block observation),
+# hostile runtime results (verdict -1 vs node fault -2), determinism
+# twins + restart.
+register_witness_test(test_v2_exec)
 
 # Ledger V2 S6 — generic manifest/snapshot/claim codec: round-trips,
 # per-field root sensitivity, strict-decode negatives, deterministic

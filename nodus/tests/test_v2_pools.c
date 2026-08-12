@@ -50,6 +50,8 @@
 #include "witness/nodus_witness_domreg.h"
 #include "witness/nodus_witness_roots_v2.h"
 
+#include "v2_exec_fixture.h"
+
 #include "dnac/pool_wire.h"
 #include "dnac/ledger_roots_v2.h"
 #include "crypto/hash/qgp_sha3.h"
@@ -1067,20 +1069,33 @@ static int seed_small_supply(fixture_t *fx) {
     return run_sql(fx->w->db,
         "INSERT INTO utxo_set (nullifier, owner, amount, token_id, "
         "tx_hash, output_index, block_height, created_at, unlock_block, "
-        "domain_id) VALUES (zeroblob(63)||x'01', 'fp', 1000, "
-        "zeroblob(64), zeroblob(63)||x'aa', 0, 0, 0, 0, 1)");
+        "domain_id) VALUES (CAST(zeroblob(63)||x'01' AS BLOB), 'fp', "
+        "1000, zeroblob(64), zeroblob(63)||x'aa', 0, 0, 0, 0, 1)");
 }
 
 static void mk_block(nodus_v2_block_t *b, uint64_t h,
-                     const nodus_v2_op_t *ops, size_t n) {
+                     const nodus_v2_envelope_t *envs, size_t n) {
     memset(b, 0, sizeof(*b));
     b->global_height = h;
     b->epoch = 0;
     mk_id(b->block_id, (uint8_t)(0xB0 + h));
     mk_id(b->prev_block_id, h == 1 ? 0xEE : (uint8_t)(0xB0 + h - 1));
     mk_id(b->vset_hash, 0x77);
-    b->ops = ops;
-    b->n_ops = n;
+    b->envs = envs;
+    b->n_envs = n;
+}
+
+/* CORE envelope: SET the fixture UTXO (key 63×00 + 0x01) to an ABSOLUTE
+ * amount through the typed adapter — the old raw-SQL "UPDATE utxo_set
+ * SET amount = N" op, typed. */
+static int env_utxo_abs(v2x_env_t *e, uint64_t amount) {
+    uint8_t key[64] = { 0 };
+    key[63] = 0x01;
+    uint8_t val[8];
+    for (int i = 0; i < 8; i++)
+        val[i] = (uint8_t)(amount >> (56 - 8 * i));
+    return v2x_env1(e, 1, 1, V2X_OP_UTXO, DNA_EFFECT_SET,
+                    DNA_EFFECT_PRE_EXISTS, key, 64, val, 8);
 }
 
 static int t_engine(void) {
@@ -1102,16 +1117,14 @@ static int t_engine(void) {
     uint8_t sys_pre[64];
     CHECK(nodus_witness_system_root_v2(fe.w, sys_pre) == 0, "sys pre");
 
+    CHECK(v2x_table_init(fe.w) == 0, "scripted table fe");
+    CHECK(v2x_table_init(fe2.w) == 0, "scripted table fe2");
+
     /* block 1: transparent → pool (5 units), one commitment + one
      * nullifier ride along */
-    nodus_v2_op_t op1;
-    memset(&op1, 0, sizeof(op1));
-    memset(op1.tx_id, 0xA1, 64);
-    op1.touched[0] = 1;
-    op1.touched_n = 1;
-    op1.sql = "UPDATE utxo_set SET amount = 995 "
-              "WHERE nullifier = zeroblob(63)||x'01'";
-    op1.verify_cost = 1;
+    static v2x_env_t eop1;
+    CHECK(env_utxo_abs(&eop1, 995) == 0, "eop1");
+    nodus_v2_envelope_t vop1 = { eop1.bytes, eop1.len };
     nodus_v2_pool_out_t o1;
     nodus_v2_pool_in_t in1;
     mk_out(&o1, 0x800, 0, 0);
@@ -1123,7 +1136,7 @@ static int t_engine(void) {
     pm1.balance_add = 5;
 
     nodus_v2_block_t b1;
-    mk_block(&b1, 1, &op1, 1);
+    mk_block(&b1, 1, &vop1, 1);
     b1.pool_muts = &pm1;
     b1.n_pool_muts = 1;
     CHECK(nodus_witness_v2_apply_block(fe.w, &b1) == 0,
@@ -1147,19 +1160,14 @@ static int t_engine(void) {
           "independent DBs diverged"); OK();
 
     /* block 2: pool → transparent (exact reverse) */
-    nodus_v2_op_t op2;
-    memset(&op2, 0, sizeof(op2));
-    memset(op2.tx_id, 0xA2, 64);
-    op2.touched[0] = 1;
-    op2.touched_n = 1;
-    op2.sql = "UPDATE utxo_set SET amount = 1000 "
-              "WHERE nullifier = zeroblob(63)||x'01'";
-    op2.verify_cost = 1;
+    static v2x_env_t eop2;
+    CHECK(env_utxo_abs(&eop2, 1000) == 0, "eop2");
+    nodus_v2_envelope_t vop2 = { eop2.bytes, eop2.len };
     nodus_v2_pool_mut_t pm2;
     mut_init(&pm2, 1, 1);
     pm2.balance_sub = 5;
     nodus_v2_block_t b2;
-    mk_block(&b2, 2, &op2, 1);
+    mk_block(&b2, 2, &vop2, 1);
     b2.pool_muts = &pm2;
     b2.n_pool_muts = 1;
     CHECK(nodus_witness_v2_apply_block(fe.w, &b2) == 0,
@@ -1209,14 +1217,9 @@ static int t_engine(void) {
     /* follower order-divergence reject: same mutations, different
      * canonical assignment, expected root from the OTHER node */
     {
-        nodus_v2_op_t op3;
-        memset(&op3, 0, sizeof(op3));
-        memset(op3.tx_id, 0xA3, 64);
-        op3.touched[0] = 1;
-        op3.touched_n = 1;
-        op3.sql = "UPDATE utxo_set SET amount = 990 "
-                  "WHERE nullifier = zeroblob(63)||x'01'";
-        op3.verify_cost = 1;
+        static v2x_env_t eop3;
+        CHECK(env_utxo_abs(&eop3, 990) == 0, "eop3");
+        nodus_v2_envelope_t vop3 = { eop3.bytes, eop3.len };
         nodus_v2_pool_out_t two_a[2], two_b[2];
         mk_out(&two_a[0], 0x810, 0, 0);
         mk_out(&two_a[1], 0x811, 0, 1);
@@ -1233,13 +1236,13 @@ static int t_engine(void) {
         pmb.balance_add = 10;
 
         nodus_v2_block_t ba;
-        mk_block(&ba, 3, &op3, 1);
+        mk_block(&ba, 3, &vop3, 1);
         ba.pool_muts = &pma;
         ba.n_pool_muts = 1;
         CHECK(nodus_witness_v2_apply_block(fe.w, &ba) == 0, "leader");
         OK();
         nodus_v2_block_t bb;
-        mk_block(&bb, 2, &op3, 1);      /* fe2 is at height 1            */
+        mk_block(&bb, 2, &vop3, 1);     /* fe2 is at height 1            */
         /* fe2's height-2 prev id */
         mk_id(bb.prev_block_id, 0xB1);
         mk_id(bb.block_id, 0xB2);
@@ -1264,18 +1267,20 @@ static int t_engine(void) {
         nodus_v2_pool_state_t pre_ps, post_ps;
         CHECK(nodus_witness_v2_pool_load(fe.w, 1, 1, &pre_ps) == 0,
               "pre");
-        nodus_v2_op_t sop;
-        memset(&sop, 0, sizeof(sop));
-        memset(sop.tx_id, 0xA4, 64);
-        sop.touched[0] = 0;
-        sop.touched_n = 1;
-        sop.sql = "INSERT INTO chain_config_history (param_id, "
-                  "new_value, effective_block, commit_block, tx_hash, "
-                  "proposal_nonce, created_at_unix) "
-                  "VALUES (2, 5, 999991, 1, x'cc', 1, 0)";
-        sop.verify_cost = 1;
+        static v2x_env_t esop;
+        {
+            uint8_t skey[12];
+            v2x_put32(skey, 2);
+            v2x_put64(skey + 4, 999991);
+            uint8_t sval[8];
+            v2x_put64(sval, 5);
+            CHECK(v2x_env1(&esop, 0, 1, V2X_OP_CC, DNA_EFFECT_CREATE,
+                           DNA_EFFECT_PRE_ABSENT, skey, 12, sval, 8)
+                      == 0, "esop");
+        }
+        nodus_v2_envelope_t vsop = { esop.bytes, esop.len };
         nodus_v2_block_t bs;
-        mk_block(&bs, 4, &sop, 1);
+        mk_block(&bs, 4, &vsop, 1);
         mk_id(bs.prev_block_id, 0xB3);
         CHECK(nodus_witness_v2_apply_block(fe.w, &bs) == 0, "sys block");
         OK();

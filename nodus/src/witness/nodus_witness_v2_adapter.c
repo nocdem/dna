@@ -259,6 +259,61 @@ nodus_adapter_status_t nodus_witness_v2_effects_validate(
     return NODUS_ADAPTER_OK;
 }
 
+/* ── Mediated read (contract: nodus_witness_v2_adapter.h) ───────────── */
+
+nodus_adapter_status_t nodus_witness_v2_read_one(
+        struct nodus_witness *w,
+        const struct nodus_domain_runtime *rt,
+        const nodus_rt_read_req_t *req,
+        nodus_rt_read_res_t *res_out) {
+
+    if (!res_out) return NODUS_ADAPTER_ERR_ARG;
+    memset(res_out, 0, sizeof(*res_out));
+    if (!w || !rt || !req) return NODUS_ADAPTER_ERR_ARG;
+
+    const nodus_domain_adapter_t *ad = rt->adapter;
+    if (!ad || !ad->read) return NODUS_ADAPTER_ERR_NO_ADAPTER;
+    if (nodus_adapter_selfcheck(ad) != 0) return NODUS_ADAPTER_ERR_ARG;
+
+    const nodus_adapter_op_t *op = nodus_adapter_op_lookup(ad, req->op_id);
+    if (!op) return NODUS_ADAPTER_ERR_UNKNOWN_OP;
+
+    if (req->key_len < 1 || req->key_len > DNA_EFFECT_MAX_KEY_LEN ||
+        req->key_len < op->key_len_min || req->key_len > op->key_len_max)
+        return NODUS_ADAPTER_ERR_SHAPE;
+
+    int present = 0;
+    uint32_t vlen = 0;
+    nodus_adapter_status_t st = ad->read(ad, w,
+                                         /* the ONE source of the domain */
+                                         rt->domain_id, op,
+                                         req->key, req->key_len,
+                                         &present, res_out->value,
+                                         DNA_EFFECT_MAX_VALUE_LEN, &vlen);
+    if (st != NODUS_ADAPTER_OK) {
+        /* {OK, ERR_STORAGE_FAULT} is the whole contract; anything else
+         * is a broken compiled adapter on THIS node — coerced, exactly
+         * as probe/mutate coerce. */
+        memset(res_out, 0, sizeof(*res_out));
+        return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+    }
+    /* Out-of-contract FACTS are node faults too: present outside {0,1},
+     * a value over the op's own bound or the codec cap, or bytes
+     * reported on an absent row. */
+    if ((present != 0 && present != 1) ||
+        vlen > DNA_EFFECT_MAX_VALUE_LEN ||
+        vlen > op->value_len_max ||
+        (present == 0 && vlen != 0)) {
+        memset(res_out, 0, sizeof(*res_out));
+        return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+    }
+    res_out->present = (uint8_t)present;
+    res_out->value_len = vlen;
+    if (present == 0)
+        memset(res_out->value, 0, sizeof(res_out->value));
+    return NODUS_ADAPTER_OK;
+}
+
 /* ── Generic apply ──────────────────────────────────────────────────── */
 
 nodus_adapter_status_t nodus_witness_v2_effects_apply(

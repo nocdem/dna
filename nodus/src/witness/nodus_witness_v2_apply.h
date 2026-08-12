@@ -5,26 +5,67 @@
  *
  * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
  * No live consensus path calls anything here. Tests (and later the V2
- * devnet reset) drive it. Real transaction SEMANTICS are Season-9 work:
- * this engine executes CONTROLLED TEST-ONLY state transitions
- * (nodus_v2_op_t.sql) to prove the persistence, ordering, atomicity,
- * rollback, resource and supply machinery — exactly the S5 charter.
+ * devnet reset) drive it. The caller-shaped raw-SQL op scaffold
+ * (nodus_v2_op_t.sql) is RETIRED: a block carries ENVELOPES
+ * (nodus_v2_envelope_t — bytes and length, nothing else), and every
+ * state transition they cause runs through ONE typed, mediated, metered
+ * path:
+ *
+ *   envelope bytes → canonical preflight (dna_env_preflight) →
+ *   ENGINE-DERIVED transaction identity → exact five-axis runtime
+ *   resolution from the FROZEN block-start snapshot → deterministic
+ *   reservation (res_meter) → mediated reads (adapter `read`, engine-
+ *   charged) → native compiled runtime execution (nodus_rt_exec_fn) →
+ *   canonical "DNA.EFFRES.v1" typed result → strict decode + adapter
+ *   validation → deterministic charging → storage-adapter application →
+ *   domain/global roots → persistence → ONE outer COMMIT.
+ *
+ * There is NO second execution path and NO raw-SQL fallback inside this
+ * engine boundary: no V2 request, runtime result or effect can carry
+ * SQL text, a table name, a schema string, an SQLite handle or a
+ * callback address — the envelope and effect codecs cannot represent
+ * them. The only SQL in this file is the ENGINE'S OWN persistence
+ * (heads/updates/history/indices/metadata and BEGIN/COMMIT/ROLLBACK),
+ * compiled into the engine, never accepted from a caller or a runtime.
  * ════════════════════════════════════════════════════════════════════════
  *
  * ── One atomic SQLite transaction per global block ────────────────────
  * nodus_witness_v2_apply_block OWNS the single BEGIN IMMEDIATE. Every
  * helper below it runs inside that transaction and never commits on its
- * own. Phase order (prompt §9/§10):
+ * own. Phase order:
  *
  *   0.  replay/linkage checks against v2_blocks (read-only, pre-BEGIN)
+ *   0a. FROZEN BLOCK-START EXECUTION SNAPSHOT (read-only, pre-BEGIN):
+ *       registered-domain working set (strict ACTIVE preconditions),
+ *       per-domain contextual ruleset table, derived chain id, epoch
+ *       DERIVED FROM GLOBAL BLOCK COUNT (blk->epoch must equal
+ *       global_height / DNAC_EPOCH_LENGTH — never a clock), the block
+ *       metering policy from the resolved SYSTEM runtime (seal +
+ *       descriptor-committed identity digest verified), and the
+ *       global/per-domain unit budgets. EVERY transaction in the block
+ *       resolves against this one snapshot: no mid-block mutation can
+ *       change a later transaction's ruleset, price or authority, and
+ *       the caller can neither supply nor override any of it.
+ *   0b. envelope preflight + RESERVATION of the whole canonical batch
+ *       (nodus_witness_v2_env_preflight_reserve_batch — derived ids,
+ *       batch dedup, deterministic sequential reservation)      [F26]
+ *       + per-leg execution admission: block-entry ACTIVE domain,
+ *       resolvable runtime WITH an exec hook, INVOKE access (READ legs
+ *       are rejected this season — an admission rule for a later
+ *       season, honest label below), runtime_op OWNED by the domain's
+ *       committed ruleset (descriptor rule_ids), per-domain tx quota.
  *   1.  BEGIN IMMEDIATE                                   [F1]
  *   2.  supply gate (pre-apply)
- *   3.  resource pre-scan + quota enforcement (BEFORE any mutation)
- *   4.  SYSTEM-phase ops (touched == {SYSTEM})            [F2]
- *   5.  cross-domain ops (touched_n > 1)                  [F3]
- *   6.  domain-local batches, EVERY registered domain, domain_id ASC
+ *   4.  SYSTEM-phase envelopes (single leg, SYSTEM)       [F2]
+ *   5.  cross-domain envelopes (leg_count > 1)            [F3]
+ *   6.  domain-local envelopes, EVERY registered domain, domain_id ASC
  *                                                         [F4 per batch]
- *       (all op SQL has now run)                          [F5 "UTXO"]
+ *       Each envelope executes as: meter activate → per leg (ascending
+ *       domain_id by envelope construction): mediated read plan +
+ *       engine-charged reads → native exec → strict result decode →
+ *       adapter validation → effect charge → adapter application →
+ *       meter finalize                          [F27 after the envelope
+ *       at fail_env_index]                                [F5 "UTXO"]
  *   6b. S6 generic claims: admit (committed manifest names the TARGET
  *       domain + asset; the registered target runtime is resolved
  *       through the generic registry path) → target-runtime output
@@ -81,7 +122,47 @@
  * counters, registry, updates, heads, history, indices, metadata) — the
  * tests prove it by byte-comparing table dumps and roots, not by return
  * codes. There are no authoritative V2 in-memory caches to un-publish;
- * the reconstruct-on-restart path is the table state itself.
+ * the reconstruct-on-restart path is the table state itself. The
+ * IN-MEMORY meter/budget state rolls back too: on every rejection the
+ * engine aborts every non-terminal meter, which restores the engine-
+ * owned budget byte-identically — no reservation is ever stranded and
+ * no meter is left RESERVED or ACTIVE.
+ *
+ * ── FAULT vs VERDICT (the return-code contract) ───────────────────────
+ * -1 is a CONSENSUS VERDICT: a deterministic function of (committed
+ * state, block bytes) — every honest node computes the same rejection.
+ * -2 is a NODE-LOCAL FAULT: this node could not compute (storage fault,
+ * hash-backend failure, allocation failure, broken compiled table,
+ * meter accounting FAULT). Both roll back completely; a consensus
+ * caller MUST fail its own operation on -2 (do not vote), never convert
+ * it into a transaction/block rejection — the env_preflight.h ERR_HASH
+ * rule, engine-wide.
+ *
+ * CONSERVATIVE CLASSIFICATION SEAM: nodus_witness_v2_runtime_for
+ * conflates "tuple not carried by this build" with a node-local domreg
+ * read fault (one -1). Everywhere the engine re-resolves a runtime
+ * INSIDE the block (the 6c lifecycle re-scan, the phase-8 root pass) a
+ * NULL result is therefore classified -2 — the SAFE direction: the
+ * deterministic unsupported-tuple case also reads as "do not vote"
+ * rather than risking one starved witness voting reject. The
+ * deterministic VERDICTS about resolvability live in the pre-BEGIN
+ * admission scan (strict doms_load + per-leg checks).
+ *
+ * ── HONEST LABELS (what this engine still does NOT do) ────────────────
+ *   - AUTHORIZATION: auth_kind interpretation and signature verification
+ *     stay with a later season. The exec context hands runtimes DERIVED
+ *     commitments (tx_id, auth_context_commit, leg auth_digest), never a
+ *     verified authorization.
+ *   - READ-access legs: DNA_ENV_ACCESS_READ legs are REJECTED at the
+ *     execution boundary this season (fail-closed); their admission
+ *     semantics are a later season's rule. Metering already prices them
+ *     (res_meter.h honest label), so no pricing question is left open.
+ *   - PER-DOMAIN UNIT QUOTAS: manifest v1 commits quota_verify_cost
+ *     (u32). Where non-zero it is used as that domain's per-block unit
+ *     budget; 0 = the global unit budget governs. Denominating committed
+ *     quotas in envelope-lane units (rather than the legacy tx_cost work
+ *     units, which the envelope lane never consults) is the documented
+ *     interim rule until the devnet reset pins real economics.
  *
  * ── Replay / idempotency (checked BEFORE the transaction) ─────────────
  *   same height, byte-identical BlockID already committed → rc 1, NO
@@ -92,26 +173,31 @@
  *   wrong prev_block_id (must equal the previous row's block_id) → reject.
  *
  * ── Touched-domain definition ─────────────────────────────────────────
- * touched(block) = the UNION of the DECLARED touched lists of the block's
- * ops. A rejected transaction never reaches the op list; an op that
- * declares a domain but does not change its state still touches it (its
- * update carries the unchanged-root transition post == pre is REJECTED —
- * see below); an op that CHANGES a domain it did not declare is caught by
- * the untouched-domain guard. An untouched domain gets NO update, NO
- * head write, NO history row and its domain_height does not move —
- * SYSTEM does not advance merely because the global height advanced.
- * (A touched domain whose recomputed root equals its head root is a
- * DECLARED no-op: the engine rejects the block — no fake empty updates.)
+ * touched(block) = the UNION of the LEG DOMAINS of the block's included
+ * envelopes (an envelope's legs are strictly ascending by domain_id —
+ * the DECLARED touched set IS the leg list) ∪ the claims' committed
+ * TARGET domains ∪ the pool batches' owning domains. A domain a leg
+ * addresses without changing its state still touches it (post == pre is
+ * REJECTED — a DECLARED no-op, no fake empty updates); a runtime that
+ * CHANGES a domain its leg did not address is caught by the
+ * untouched-domain guard (cross-domain substitution rejects the block).
+ * An untouched domain gets NO update, NO head write, NO history row and
+ * its domain_height does not move — SYSTEM does not advance merely
+ * because the global height advanced.
  *
- * ── Resources (S4 quotas; weights stay S4 placeholders — OPEN) ────────
- * An op's verify_cost is charged to EVERY domain it touches (each domain
- * accounts the verification work imposed on it) — the one canonical
- * cross-domain rule. res_tx_count increments likewise. Checked
- * arithmetic throughout; per-domain quotas from the S4 registry
- * manifests (0 = the global cap/budget governs — never "unlimited");
- * global caps: chain-config MAX_TXS_PER_BLOCK and
- * NODUS_V2_GLOBAL_VERIFY_BUDGET (test-level JUDGMENT constant; the
- * consensus value is OPEN until S9 pins real weights).
+ * ── Resources (deterministic metering — res_meter.h authority model) ──
+ * Every included envelope is priced EXCLUSIVELY by the frozen block-
+ * start policy snapshot (the SYSTEM ruleset's committed policy): plan →
+ * reserve (full declared ceiling from the global unit budget, per-leg
+ * static units from each leg domain's budget) → activate → per-read and
+ * per-result charges → finalize (unused units released) — abort on any
+ * rejection restores everything. No caller, envelope, runtime or legacy
+ * tx_cost hook can feed or override a price; no domain borrows from
+ * another. Checked u64 arithmetic throughout. Global caps: chain-config
+ * MAX_TXS_PER_BLOCK and NODUS_V2_GLOBAL_UNIT_BUDGET (JUDGMENT constant;
+ * the consensus value is OPEN until the devnet reset pins economics);
+ * per-domain budgets from the committed manifest quota (honest label
+ * above).
  *
  * ── Supply gate (V2) — runtime-owned invariant DISPATCH ───────────────
  * nodus_witness_v2_supply_check is a DISPATCHER, not an equation: it
@@ -142,8 +228,11 @@
 
 #include "witness/nodus_witness.h"
 #include "witness/nodus_witness_v2_pools.h"
+#include "witness/nodus_witness_v2_env.h"   /* nodus_v2_envelope_t + the
+                                             * preflight/reserve seam    */
 #include "dnac/domain_wire.h"
 #include "dnac/manifest_wire.h"
+#include "dnac/dnac.h"                      /* DNAC_EPOCH_LENGTH         */
 
 #include <stdint.h>
 #include <stddef.h>
@@ -152,9 +241,29 @@
 extern "C" {
 #endif
 
-/** Global verify-work budget per block — TEST-LEVEL JUDGMENT constant;
- *  the consensus value is OPEN until S9 pins real cost weights. */
-#define NODUS_V2_GLOBAL_VERIFY_BUDGET  1000u
+/** Global per-block unit budget for the envelope lane — JUDGMENT
+ *  constant sized so placeholder-weight envelopes (Dilithium5-scale
+ *  auth blobs at w_authbyte 1) fit comfortably; the consensus value is
+ *  OPEN until the devnet reset pins real economics. Never a price: it
+ *  bounds what a block may reserve, the policy alone prices. */
+#define NODUS_V2_GLOBAL_UNIT_BUDGET  1000000u
+
+/**
+ * The canonical epoch of a global block height — GLOBAL BLOCK COUNT
+ * divided by the compile-time epoch length, the SAME convention the
+ * shipped consensus surfaces use (leader election
+ * nodus_witness_bft.c:492 `epoch = next_bh / DNAC_EPOCH_LENGTH`; epoch
+ * start = floor multiple, boundary at height % LEN == 0 — genesis
+ * height 0 is epoch 0, the first boundary is DNAC_EPOCH_LENGTH itself).
+ * No clock, no timestamp, no domain_height enters this function — a
+ * machine's clock cannot move its epoch. (The ledger_entries surface
+ * carries a DIVERGENT legacy convention, (h-1)/LEN at
+ * nodus_witness_db.c:369-370; it is NOT adopted here and unifying it is
+ * that surface's own migration.)
+ */
+static inline uint64_t nodus_v2_epoch_for_height(uint64_t global_height) {
+    return global_height / (uint64_t)DNAC_EPOCH_LENGTH;
+}
 
 /** Deterministic fault-injection points (prompt §11, 15 points). */
 typedef enum {
@@ -187,28 +296,38 @@ typedef enum {
     V2AP_FAIL_AFTER_POOL_NULROOT = 22,  /* nullifier root/count updated  */
     V2AP_FAIL_AFTER_POOL_BALANCE = 23,  /* pool balance updated          */
     V2AP_FAIL_AFTER_POOL_HISTORY = 24,  /* history entry appended        */
-    V2AP_FAIL_AFTER_POOL_EVICT = 25     /* oldest history entry evicted  */
+    V2AP_FAIL_AFTER_POOL_EVICT = 25,    /* oldest history entry evicted  */
+    /* Execution-season stages (S1-S7 ids above are FROZEN) */
+    V2AP_FAIL_AFTER_ENV_RESERVE = 26,   /* whole batch preflighted +
+                                         * reserved (pre-BEGIN; proves
+                                         * meter abort + budget restore) */
+    V2AP_FAIL_AFTER_ENV_EXEC = 27       /* the envelope at
+                                         * blk->fail_env_index fully
+                                         * executed + finalized          */
 } nodus_v2_apply_fail_t;
 
-/** One controlled test-only state transition ("transaction"). */
-typedef struct {
-    uint8_t  tx_id[64];                 /* global transaction identity   */
-    uint32_t touched[DNA_TOUCHED_MAX];  /* DECLARED touched domains, ASC */
-    uint16_t touched_n;                 /* 1..DNA_TOUCHED_MAX            */
-    const char *sql;                    /* executed inside THE txn; NULL
-                                         * = pure declaration            */
-    uint32_t verify_cost;               /* declared work units           */
-} nodus_v2_op_t;
+/*
+ * The caller-shaped raw-SQL operation type (nodus_v2_op_t: tx_id / sql /
+ * verify_cost) is RETIRED. A block carries nodus_v2_envelope_t — bytes
+ * and length, NOTHING else: no identity field, no SQL, no cost, no
+ * touched list. Identity is DERIVED, the touched set is the leg list,
+ * and the price comes from the frozen policy snapshot.
+ */
 
 /** One V2 global block for the engine. */
 typedef struct {
     uint64_t global_height;
-    uint64_t epoch;
+    uint64_t epoch;                     /* MUST equal
+                                         * nodus_v2_epoch_for_height(
+                                         *   global_height) — verified,
+                                         * never trusted               */
     uint8_t  block_id[64];
     uint8_t  prev_block_id[64];
     uint8_t  vset_hash[64];
-    const nodus_v2_op_t *ops;
-    size_t   n_ops;
+    /* Included envelopes, in canonical batch order (the order IS the
+     * intra-phase execution and index order). NULL/0 = none. */
+    const nodus_v2_envelope_t *envs;
+    size_t   n_envs;
     /* S6 generic claims (routed to each claim's COMMITTED target
      * runtime; processed INSIDE the one block transaction, phase 6b).
      * NULL/0 = none. */
@@ -231,6 +350,7 @@ typedef struct {
     uint32_t fail_domain_batch;         /* domain_id for point 4         */
     uint32_t fail_claim_index;          /* claim index for points 16-18  */
     uint32_t fail_pool_index;           /* batch index for points 19-25  */
+    uint32_t fail_env_index;            /* envelope index for point 27   */
     /* Outputs (valid on rc 0/2) */
     uint8_t  out_tx_root[64];
     uint8_t  out_dupd_root[64];
@@ -259,7 +379,11 @@ int nodus_witness_v2_supply_check(nodus_witness_t *w);
 int nodus_witness_v2_genesis(nodus_witness_t *w,
                              const uint8_t genesis_block_id[64],
                              const uint8_t vset_hash[64],
-                             uint64_t epoch);
+                             uint64_t epoch);   /* MUST be 0: genesis is
+                                                 * height 0 and the epoch
+                                                 * is DERIVED (0/LEN == 0)
+                                                 * — any other value is
+                                                 * rejected              */
 
 /**
  * S6 variant: additionally commits ONE canonical GenesisManifest v1
@@ -284,9 +408,26 @@ int nodus_witness_v2_genesis_ex(nodus_witness_t *w,
  * Apply one V2 global block (header contract).
  * @return 0 committed; 1 idempotent replay (no writes); 2 committed but
  *         the post-commit/pre-cache crash window fired (state IS
- *         committed; restart reconstructs it); -1 rejected + rolled back.
+ *         committed; restart reconstructs it); -1 CONSENSUS-VERDICT
+ *         rejection, rolled back; -2 NODE-LOCAL FAULT, rolled back —
+ *         this node could not compute; a consensus caller fails its own
+ *         operation (does not vote) and never converts -2 into a
+ *         rejection (FAULT vs VERDICT block above).
  */
 int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk);
+
+/**
+ * ENGINE-INTERNAL, exposed for direct test: find `tx_id` in a domain's
+ * per-block ordered id list. A MISS FAILS CLOSED (-1, *lidx_out
+ * untouched) — it must NEVER alias local index 0: the pre-execution-
+ * season code defaulted a miss to lidx = 0 silently
+ * (nodus_witness_v2_env.h documented it as the migration hazard), and
+ * this helper is the one place the answer is computed.
+ * @return 0 with *lidx_out set / -1.
+ */
+int nodus_witness_v2_local_index_find(const uint8_t ids[][64], uint32_t n,
+                                      const uint8_t tx_id[64],
+                                      uint32_t *lidx_out);
 
 #ifdef __cplusplus
 }

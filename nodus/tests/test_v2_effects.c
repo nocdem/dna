@@ -283,6 +283,82 @@ static nodus_adapter_status_t t5_mutate(const nodus_domain_adapter_t *ad,
 }
 
 /**
+ * Read: the mediated-read boundary (execution season) — the stored
+ * VALUE, scoped by the authoritative domain, absent row = a successful
+ * present==0 read, sqlite error = STORAGE FAULT and never "absent".
+ */
+static int g_read_calls = 0;
+
+static nodus_adapter_status_t t5_read(const nodus_domain_adapter_t *ad,
+                                      struct nodus_witness *ww,
+                                      uint32_t domain_id,
+                                      const nodus_adapter_op_t *op,
+                                      const uint8_t *key, uint16_t key_len,
+                                      int *present, uint8_t *value,
+                                      uint32_t cap, uint32_t *vlen) {
+    (void)ad; (void)op;
+    nodus_witness_t *w = (nodus_witness_t *)ww;
+    if (!w || !w->db || !key) return NODUS_ADAPTER_ERR_ARG;
+    g_read_calls++;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT v FROM t5_effect_state WHERE domain_id=?1 AND k=?2",
+            -1, &st, NULL) != SQLITE_OK)
+        return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)domain_id);
+    sqlite3_bind_blob(st, 2, key, (int)key_len, SQLITE_TRANSIENT);
+    nodus_adapter_status_t out = NODUS_ADAPTER_ERR_STORAGE_FAULT;
+    int rc = sqlite3_step(st);
+    if (rc == SQLITE_ROW) {
+        const void *vb = sqlite3_column_blob(st, 0);
+        int vl = sqlite3_column_bytes(st, 0);
+        if (vl >= 0 && (uint32_t)vl <= cap) {
+            if (vl > 0) memcpy(value, vb, (size_t)vl);
+            *present = 1;
+            *vlen = (uint32_t)vl;
+            out = NODUS_ADAPTER_OK;
+        }
+    } else if (rc == SQLITE_DONE) {
+        *present = 0;
+        *vlen = 0;
+        out = NODUS_ADAPTER_OK;
+    }
+    sqlite3_finalize(st);
+    return out;
+}
+
+/* A ROGUE read: a status outside {OK, ERR_STORAGE_FAULT} — must be
+ * COERCED. */
+static nodus_adapter_status_t rogue_read(const nodus_domain_adapter_t *ad,
+                                         struct nodus_witness *ww,
+                                         uint32_t domain_id,
+                                         const nodus_adapter_op_t *op,
+                                         const uint8_t *key,
+                                         uint16_t key_len, int *present,
+                                         uint8_t *value, uint32_t cap,
+                                         uint32_t *vlen) {
+    (void)ad; (void)ww; (void)domain_id; (void)op; (void)key;
+    (void)key_len; (void)present; (void)value; (void)cap; (void)vlen;
+    return NODUS_ADAPTER_ERR_PRECOND_MISSING;    /* out of contract */
+}
+
+/* A LYING read: says OK but reports facts outside the contract. */
+static nodus_adapter_status_t lying_read(const nodus_domain_adapter_t *ad,
+                                         struct nodus_witness *ww,
+                                         uint32_t domain_id,
+                                         const nodus_adapter_op_t *op,
+                                         const uint8_t *key,
+                                         uint16_t key_len, int *present,
+                                         uint8_t *value, uint32_t cap,
+                                         uint32_t *vlen) {
+    (void)ad; (void)ww; (void)domain_id; (void)op; (void)key;
+    (void)key_len; (void)value; (void)cap;
+    *present = 2;                                /* not 0/1            */
+    *vlen = 0;
+    return NODUS_ADAPTER_OK;
+}
+
+/**
  * A ROGUE probe: answers with a PRECONDITION status, which is outside the
  * probe contract {OK, ERR_STORAGE_FAULT}. The generic layer must COERCE
  * it to ERR_STORAGE_FAULT — a broken compiled adapter is a node fault,
@@ -325,7 +401,8 @@ static const nodus_domain_adapter_t T5_ADAPTER = {
     .ops = T5_OPS,
     .n_ops = 2,
     .probe = t5_probe,
-    .mutate = t5_mutate
+    .mutate = t5_mutate,
+    .read = t5_read
 };
 
 /* ── synthetic runtimes T5 / T6 over the extended table ─────────────── */
@@ -1664,11 +1741,110 @@ static int test_purity_and_args(void) {
 
 /* ── main ───────────────────────────────────────────────────────────── */
 
+/* ── the mediated-read boundary (nodus_witness_v2_read_one) ────────── */
+static int test_mediated_read(void) {
+    fixture_t fx;
+    CHECK(fx_open(&fx) == 0, "fixture");
+    fx.w->v2_runtime_table = g_ext_table;
+    fx.w->v2_runtime_table_n = g_ext_n;
+    const nodus_domain_runtime_t *rt = lookup_ext(&g_ext_table[2]);
+    CHECK(rt != NULL, "T5 resolves");
+    struct nodus_witness *W = (struct nodus_witness *)fx.w;
+
+    /* seed one row IN T5's domain and a decoy in T6's */
+    CHECK(run_sql(fx.w->db,
+          "INSERT INTO t5_effect_state (domain_id, k, v, version) "
+          "VALUES (11, x'aa', x'0102', 1)") == 0, "seed");
+    CHECK(run_sql(fx.w->db,
+          "INSERT INTO t5_effect_state (domain_id, k, v, version) "
+          "VALUES (13, x'ab', x'ff', 1)") == 0, "decoy");
+
+    nodus_rt_read_req_t req;
+    memset(&req, 0, sizeof(req));
+    req.op_id = 1;
+    req.key_len = 1;
+    req.key[0] = 0xAA;
+    nodus_rt_read_res_t *res = malloc(sizeof(*res));
+    CHECK(res != NULL, "alloc");
+
+    /* PRESENT: value copied whole */
+    CHECK(nodus_witness_v2_read_one(W, rt, &req, res) ==
+          NODUS_ADAPTER_OK, "present read");
+    CHECK(res->present == 1 && res->value_len == 2 &&
+          res->value[0] == 0x01 && res->value[1] == 0x02,
+          "present read value"); OK();
+
+    /* MISSING: a SUCCESSFUL read of an absent key — never a fault */
+    req.key[0] = 0xBB;
+    CHECK(nodus_witness_v2_read_one(W, rt, &req, res) ==
+          NODUS_ADAPTER_OK, "missing read");
+    CHECK(res->present == 0 && res->value_len == 0, "missing shape");
+    OK();
+
+    /* DOMAIN SCOPE: T6's row is invisible through T5's runtime — the
+     * authoritative domain is rt->domain_id, nothing else */
+    req.key[0] = 0xAB;
+    CHECK(nodus_witness_v2_read_one(W, rt, &req, res) ==
+          NODUS_ADAPTER_OK && res->present == 0,
+          "cross-domain row leaked through a read"); OK();
+
+    /* UNKNOWN OP + key bounds */
+    req.op_id = 7;
+    req.key[0] = 0xAA;
+    CHECK(nodus_witness_v2_read_one(W, rt, &req, res) ==
+          NODUS_ADAPTER_ERR_UNKNOWN_OP, "unknown op resolves"); OK();
+    req.op_id = 2;                       /* narrow op: key 8..8          */
+    req.key_len = 1;
+    CHECK(nodus_witness_v2_read_one(W, rt, &req, res) ==
+          NODUS_ADAPTER_ERR_SHAPE, "key below the op floor"); OK();
+    req.op_id = 1;
+    req.key_len = 0;
+    CHECK(nodus_witness_v2_read_one(W, rt, &req, res) ==
+          NODUS_ADAPTER_ERR_SHAPE, "zero-length key"); OK();
+    req.key_len = 1;
+
+    /* NO read fn: fail closed, never "absent" */
+    {
+        nodus_domain_adapter_t noread = T5_ADAPTER;
+        noread.read = NULL;
+        nodus_domain_runtime_t rt2 = *rt;
+        rt2.adapter = &noread;
+        CHECK(nodus_witness_v2_read_one(W, &rt2, &req, res) ==
+              NODUS_ADAPTER_ERR_NO_ADAPTER, "no read fn fails closed");
+        OK();
+    }
+    /* ROGUE status + LYING facts: both coerced to STORAGE FAULT */
+    {
+        nodus_domain_adapter_t bad = T5_ADAPTER;
+        bad.read = rogue_read;
+        nodus_domain_runtime_t rt2 = *rt;
+        rt2.adapter = &bad;
+        CHECK(nodus_witness_v2_read_one(W, &rt2, &req, res) ==
+              NODUS_ADAPTER_ERR_STORAGE_FAULT, "rogue status coerced");
+        bad.read = lying_read;
+        CHECK(nodus_witness_v2_read_one(W, &rt2, &req, res) ==
+              NODUS_ADAPTER_ERR_STORAGE_FAULT, "lying facts coerced");
+        CHECK(res->present == 0 && res->value_len == 0,
+              "failed read published bytes"); OK();
+    }
+    /* STORAGE FAULT: dropped table — and NEVER an absent row */
+    CHECK(run_sql(fx.w->db, "DROP TABLE t5_effect_state") == 0, "drop");
+    CHECK(nodus_witness_v2_read_one(W, rt, &req, res) ==
+          NODUS_ADAPTER_ERR_STORAGE_FAULT, "fault is a FAULT");
+    CHECK(res->present == 0 && res->value_len == 0,
+          "faulted read left bytes"); OK();
+
+    free(res);
+    fx_close(&fx);
+    return 0;
+}
+
 int main(void) {
     if (ext_table_init() != 0) {
         fprintf(stderr, "ext_table_init failed\n");
         return 1;
     }
+    if (test_mediated_read()) return 1;
     if (test_adapter_authority()) return 1;
     if (test_end_to_end_registry()) return 1;
     if (test_domain_authority()) return 1;

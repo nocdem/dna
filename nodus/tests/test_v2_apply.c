@@ -1,6 +1,15 @@
 /**
- * Nodus — Ledger V2 S5: atomic apply engine, genesis roots, supply gate,
- * rollback and cross-domain atomicity (INACTIVE layer).
+ * Nodus — Ledger V2: atomic apply engine on the TYPED EXECUTION PATH
+ * (execution season), genesis roots, supply gate, rollback and
+ * cross-domain atomicity (INACTIVE layer).
+ *
+ * The raw-SQL op scaffold is gone: every block below carries ENVELOPES,
+ * whose state transitions run through preflight → derived identity →
+ * frozen-snapshot runtime resolution → reservation → native scripted
+ * exec → typed-effect decode/validate/charge → adapter application
+ * (fixture: v2_exec_fixture.h — builtin-copied SYSTEM/CORE runtimes
+ * with compiled test adapters over the same tables the old SQL ops
+ * mutated).
  *
  * Rollback claims are NEVER made from return codes alone: db_state_digest
  * serializes EVERY table (sorted names, rows by rowid, typed column
@@ -9,35 +18,27 @@
  *
  * Sections:
  *   1. Genesis: migrate + v2_genesis; idempotent / conflicting re-run;
- *      GENESIS-ROOT CYCLE PROOF — manifest.genesis_state_root(SYSTEM) ==
- *      the independently recomputed pre-registry PAYLOAD root, CORE's ==
- *      pre-registry core root, the FINAL head root differs from the
- *      payload (registry committed), full recomputation of system/
- *      domains/global roots equals the stored bytes, no all-zero
- *      placeholder anywhere, and an INDEPENDENT second fixture lands on
- *      byte-identical roots.
+ *      DERIVED-EPOCH gate (nonzero genesis epoch rejects); GENESIS-ROOT
+ *      CYCLE PROOF (unchanged from S5/S7).
  *   2. Heads/updates: initial heads; CORE-only block (SYSTEM does not
- *      advance); SYSTEM-only block; two-tx one-update; declared-no-op
- *      rejects; undeclared mutation (cross-domain substitution) rejects;
- *      root-history linkage; restart reconstructs identical heads.
+ *      advance); SYSTEM-only block; two-tx one-update with DERIVED-id
+ *      local indices; declared-no-op rejects (empty typed result);
+ *      undeclared mutation (adapter domain-escape) rejects; wrong
+ *      expected root; wrong block epoch rejects.
  *   3. Replay: idempotent re-apply (rc 1, digest unchanged), same-height
  *      conflict, height gap, wrong prev, reused BlockID.
- *   4. Cross-domain atomicity: one op touches SYSTEM+CORE → both commit
- *      (one tx identity, two local indices); fault after SYSTEM phase and
- *      after the CORE batch → NEITHER commits.
- *   5. Fault injection F1..F14 on a rich block: rc −1 and the FULL DB
- *      digest is byte-identical; F15: rc 2, state committed, restart
- *      reconstructs it and re-apply is idempotent.
- *   6. Resource limits: global tx cap; global verify budget; per-domain
- *      quota (consistent fixture-written CORE manifest with quota 1 /
- *      cost 5); rejected block leaves usage state unchanged.
- *   7. Supply (fixture 2, official DNA numbers): 1B raw total,
- *      7 × 10M self-bonds CARVED (additive 70M violates), remaining 930M
- *      as transparent UTXOs; bucket moves conserve; fee burn exactly
- *      once (double burn violates); reward mint path; underflow /
- *      overflow; duplicate / missing ownership; shielded state must not
- *      exist; restart invariant; engine block that breaks supply rolls
- *      back completely.
+ *   4. Cross-domain atomicity: one envelope with SYSTEM+CORE legs →
+ *      both commit (one DERIVED identity, two local indices); faults →
+ *      NEITHER commits.
+ *   5. Fault injection F1..F14 + F26 (post-reserve) + F27 (post-env-
+ *      exec) on a rich block: rc −1 and the FULL DB digest is
+ *      byte-identical; F15: rc 2, committed, restart reconstructs.
+ *   6. Resource limits: global tx cap; global UNIT budget (reservation
+ *      ceiling); per-domain tx quota and per-domain unit budget from a
+ *      consistent fixture-written CORE manifest.
+ *   7. Supply (fixture 2, official DNA numbers): unchanged direct-SQL
+ *      invariant matrix + engine blocks (inflate/mint/settle/burn/
+ *      sneak/fault-loop) now driven through typed effects.
  *
  * @file test_v2_apply.c
  */
@@ -54,6 +55,8 @@
 
 #include "dnac/domain_wire.h"
 #include "crypto/hash/qgp_sha3.h"
+
+#include "v2_exec_fixture.h"
 
 #include <dirent.h>
 #include <stdio.h>
@@ -119,9 +122,15 @@ static int fx_open(fixture_t *fx) {
 }
 
 static int fx_reopen(fixture_t *fx) {
+    const nodus_domain_runtime_t *tbl = fx->w->v2_runtime_table;
+    size_t tbl_n = fx->w->v2_runtime_table_n;
     sqlite3_close(fx->w->db);
     fx->w->db = NULL;
-    return nodus_witness_create_chain_db(fx->w, fx->chain_id16);
+    int rc = nodus_witness_create_chain_db(fx->w, fx->chain_id16);
+    fx->w->v2_runtime_table = tbl;      /* the scripted table survives a
+                                         * restart like compiled code    */
+    fx->w->v2_runtime_table_n = tbl_n;
+    return rc;
 }
 
 static void fx_close(fixture_t *fx) {
@@ -205,48 +214,127 @@ done:
     return out_rc;
 }
 
-/* ── block helpers ──────────────────────────────────────────────────── */
+/* ── block + envelope helpers ───────────────────────────────────────── */
 static void mk_id(uint8_t out[64], uint8_t fill) { memset(out, fill, 64); }
 
 static void mk_block(nodus_v2_block_t *b, uint64_t h,
-                     const nodus_v2_op_t *ops, size_t n) {
+                     const nodus_v2_envelope_t *envs, size_t n) {
     memset(b, 0, sizeof(*b));
     b->global_height = h;
-    b->epoch = 0;
+    b->epoch = nodus_v2_epoch_for_height(h);
     mk_id(b->block_id, (uint8_t)(0xB0 + h));
     mk_id(b->prev_block_id, h == 1 ? 0xEE : (uint8_t)(0xB0 + h - 1));
     mk_id(b->vset_hash, 0x77);
-    b->ops = ops;
-    b->n_ops = n;
+    b->envs = envs;
+    b->n_envs = n;
 }
 
-static void mk_op(nodus_v2_op_t *op, uint8_t idfill, const char *sql,
-                  uint32_t cost, uint32_t d0, int both) {
-    memset(op, 0, sizeof(*op));
-    memset(op->tx_id, idfill, 64);
-    op->sql = sql;
-    op->verify_cost = cost;
-    if (both) {
-        op->touched[0] = 0; op->touched[1] = 1; op->touched_n = 2;
-    } else {
-        op->touched[0] = d0; op->touched_n = 1;
-    }
+/* One CORE UTXO CREATE envelope: 64-byte key = 63 zeros + last byte. */
+static int env_core_utxo_create(v2x_env_t *e, uint8_t keylast,
+                                uint64_t amount) {
+    uint8_t key[64] = { 0 };
+    key[63] = keylast;
+    uint8_t val[8];
+    v2x_put64(val, amount);
+    uint8_t res[512];
+    size_t rl = 0;
+    if (v2x_eff1(res, sizeof(res), V2X_OP_UTXO, DNA_EFFECT_CREATE,
+                 DNA_EFFECT_PRE_ABSENT, key, 64, val, 8, &rl) != 0)
+        return -1;
+    uint8_t call[600];
+    uint32_t cl = v2x_script_build(call, sizeof(call), NULL, 0, res, rl);
+    if (!cl) return -1;
+    v2x_leg_t leg = { 1, 1, call, cl, 4, 2048 };
+    return v2x_env_build(e, &leg, 1);
 }
 
-/* deterministic test mutations (the v1 merkle loader enforces 64-byte
- * nullifier/token_id/tx_hash widths — zeroblob-padded literals).
- * domain_id is EXPLICIT: the migrated utxo_set carries no default. */
-#define SQL_CORE_UTXO(nul, amt) \
-    "INSERT INTO utxo_set (nullifier, owner, amount, token_id, tx_hash, " \
-    "output_index, block_height, created_at, unlock_block, domain_id) " \
-    "VALUES (zeroblob(63)||x'" nul "', 'fp', " #amt ", zeroblob(64), " \
-    "zeroblob(63)||x'aa', 0, 1, 0, 0, 1)"
-/* PK is (param_id, effective_block) — the nonce digit keys both. */
-#define SQL_SYS_CC(nonce) \
-    "INSERT INTO chain_config_history (param_id, new_value, " \
-    "effective_block, commit_block, tx_hash, proposal_nonce, " \
-    "created_at_unix) VALUES (2, 5, 99999" #nonce ", 1, x'cc', " \
-    #nonce ", 0)"
+/* One CORE UTXO SET envelope (absolute amount). */
+static int env_core_utxo_set(v2x_env_t *e, uint8_t keylast,
+                             uint64_t amount) {
+    uint8_t key[64] = { 0 };
+    key[63] = keylast;
+    uint8_t val[8];
+    v2x_put64(val, amount);
+    uint8_t res[512];
+    size_t rl = 0;
+    if (v2x_eff1(res, sizeof(res), V2X_OP_UTXO, DNA_EFFECT_SET,
+                 DNA_EFFECT_PRE_EXISTS, key, 64, val, 8, &rl) != 0)
+        return -1;
+    uint8_t call[600];
+    uint32_t cl = v2x_script_build(call, sizeof(call), NULL, 0, res, rl);
+    if (!cl) return -1;
+    v2x_leg_t leg = { 1, 1, call, cl, 4, 2048 };
+    return v2x_env_build(e, &leg, 1);
+}
+
+/* One SYSTEM chain-config CREATE envelope. */
+static int env_sys_cc(v2x_env_t *e, uint64_t effblock, uint64_t value) {
+    uint8_t key[12];
+    v2x_put32(key, 2);                  /* param_id 2                    */
+    v2x_put64(key + 4, effblock);
+    uint8_t val[8];
+    v2x_put64(val, value);
+    uint8_t res[512];
+    size_t rl = 0;
+    if (v2x_eff1(res, sizeof(res), V2X_OP_CC, DNA_EFFECT_CREATE,
+                 DNA_EFFECT_PRE_ABSENT, key, 12, val, 8, &rl) != 0)
+        return -1;
+    uint8_t call[600];
+    uint32_t cl = v2x_script_build(call, sizeof(call), NULL, 0, res, rl);
+    if (!cl) return -1;
+    v2x_leg_t leg = { 0, 1, call, cl, 4, 2048 };
+    return v2x_env_build(e, &leg, 1);
+}
+
+/* Cross-domain envelope: SYSTEM cc-insert leg + CORE utxo-create leg. */
+static int env_cross_cc_utxo(v2x_env_t *e, uint64_t effblock,
+                             uint8_t keylast, uint64_t amount) {
+    uint8_t skey[12];
+    v2x_put32(skey, 2);
+    v2x_put64(skey + 4, effblock);
+    uint8_t sval[8];
+    v2x_put64(sval, 5);
+    uint8_t sres[512];
+    size_t srl = 0;
+    if (v2x_eff1(sres, sizeof(sres), V2X_OP_CC, DNA_EFFECT_CREATE,
+                 DNA_EFFECT_PRE_ABSENT, skey, 12, sval, 8, &srl) != 0)
+        return -1;
+    uint8_t scall[600];
+    uint32_t scl = v2x_script_build(scall, sizeof(scall), NULL, 0,
+                                    sres, srl);
+
+    uint8_t ckey[64] = { 0 };
+    ckey[63] = keylast;
+    uint8_t cval[8];
+    v2x_put64(cval, amount);
+    uint8_t cres[512];
+    size_t crl = 0;
+    if (v2x_eff1(cres, sizeof(cres), V2X_OP_UTXO, DNA_EFFECT_CREATE,
+                 DNA_EFFECT_PRE_ABSENT, ckey, 64, cval, 8, &crl) != 0)
+        return -1;
+    uint8_t ccall[600];
+    uint32_t ccl = v2x_script_build(ccall, sizeof(ccall), NULL, 0,
+                                    cres, crl);
+    if (!scl || !ccl) return -1;
+    v2x_leg_t legs[2] = {
+        { 0, 1, scall, scl, 4, 2048 },
+        { 1, 1, ccall, ccl, 4, 2048 }
+    };
+    return v2x_env_build(e, legs, 2);
+}
+
+/* CORE-leg envelope carrying an EMPTY typed result (declared no-op). */
+static int env_core_empty(v2x_env_t *e) {
+    uint8_t res[64];
+    size_t rl = 0;
+    if (dna_effect_result_encode(NULL, 0, res, sizeof(res), &rl) != 0)
+        return -1;
+    uint8_t call[128];
+    uint32_t cl = v2x_script_build(call, sizeof(call), NULL, 0, res, rl);
+    if (!cl) return -1;
+    v2x_leg_t leg = { 1, 1, call, cl, 4, 2048 };
+    return v2x_env_build(e, &leg, 1);
+}
 
 static uint64_t q1(nodus_witness_t *w, const char *sql) {
     sqlite3_stmt *st = NULL;
@@ -268,23 +356,60 @@ static int head_height(nodus_witness_t *w, int dom, uint64_t *out) {
     return *out == UINT64_MAX ? -1 : 0;
 }
 
+/* ── ROGUE SYSTEM adapter: mutate escapes into CORE's utxo_set ───────
+ * (the cross-domain-substitution fixture — the untouched-domain guard
+ * must reject the block; amount 0 so the supply equation stays silent
+ * and ONLY the guard can be the rejector). */
+static nodus_adapter_status_t rogue_sys_mutate(
+        const nodus_domain_adapter_t *ad, struct nodus_witness *wns,
+        uint32_t dom, const nodus_adapter_op_t *op, uint8_t kind,
+        const uint8_t *key, uint16_t key_len,
+        const uint8_t *value, uint32_t value_len) {
+    nodus_adapter_status_t st = v2x_sys_mutate(ad, wns, dom, op, kind,
+                                               key, key_len, value,
+                                               value_len);
+    if (st != NODUS_ADAPTER_OK) return st;
+    nodus_witness_t *w = (nodus_witness_t *)wns;
+    if (run_sql(w->db,
+            "INSERT INTO utxo_set (nullifier, owner, amount, token_id, "
+            "tx_hash, output_index, block_height, created_at, "
+            "unlock_block, domain_id) VALUES (zeroblob(63)||x'e0', "
+            "'rogue', 0, zeroblob(64), zeroblob(63)||x'aa', 0, 1, 0, 0, "
+            "1)") != 0)
+        return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+    return NODUS_ADAPTER_OK;
+}
+
+static const nodus_domain_adapter_t ROGUE_SYS_ADAPTER = {
+    .adapter_version = NODUS_DOMAIN_ADAPTER_V1,
+    .ops = V2X_SYS_OPS,
+    .n_ops = 3,
+    .probe = v2x_sys_probe,
+    .mutate = rogue_sys_mutate,
+    .read = v2x_sys_read
+};
+
+static nodus_domain_runtime_t g_rogue_table[2];
+
+static void rogue_table_arm(nodus_witness_t *w) {
+    memcpy(g_rogue_table, g_v2x_table, sizeof(g_rogue_table));
+    g_rogue_table[0].adapter = &ROGUE_SYS_ADAPTER;
+    w->v2_runtime_table = g_rogue_table;
+    w->v2_runtime_table_n = 2;
+}
+
+static void rogue_table_disarm(nodus_witness_t *w) {
+    w->v2_runtime_table = g_v2x_table;
+    w->v2_runtime_table_n = 2;
+}
+
 int main(void) {
     fixture_t fx;
     CHECK(fx_open(&fx) == 0, "fixture"); OK();
-    /* S7: the apply engine + V2 genesis now require schema version 7
-     * (the migration includes the S5/S6 stages; every S5/S6 root below
-     * is byte-unchanged because the S6/S7 tables start empty — the
-     * CORE pool enters only at genesis, through state_init). */
     CHECK(nodus_witness_db_migrate_v2s7(fx.w) == 0, "migrate"); OK();
+    CHECK(v2x_table_init(fx.w) == 0, "scripted table"); OK();
 
     /* ── 1. genesis + cycle proof ───────────────────────────────────── */
-    /* independent PRE-registry recomputation of both payload roots.
-     * S7: genesis initializes the CORE runtime's configured native
-     * pool (state_init) BEFORE committing the registry's
-     * genesis_state_root, so the committed CORE payload includes the
-     * pool. Reproduce that state independently here: create the SAME
-     * canonical pool on this pre-genesis database (idempotent — the
-     * genesis hook re-runs it as a no-op) and recompute. */
     uint8_t sys_payload_pre[64], core_pre[64];
     CHECK(nodus_witness_system_payload_root_v2(fx.w, sys_payload_pre) == 0,
           "payload pre"); OK();
@@ -303,6 +428,10 @@ int main(void) {
     uint8_t gen_id[64], vset[64];
     mk_id(gen_id, 0xEE);
     mk_id(vset, 0x77);
+    /* DERIVED-EPOCH gate: a genesis claiming any epoch other than the
+     * derivation of height 0 (== 0) is rejected outright. */
+    CHECK(nodus_witness_v2_genesis(fx.w, gen_id, vset, 1) == -1,
+          "nonzero genesis epoch accepted"); OK();
     CHECK(nodus_witness_v2_genesis(fx.w, gen_id, vset, 0) == 0, "genesis");
     OK();
     CHECK(nodus_witness_v2_genesis(fx.w, gen_id, vset, 0) == 0,
@@ -319,62 +448,64 @@ int main(void) {
           "get core man");
     uint8_t zero64[64];
     memset(zero64, 0, 64);
-    /* no zero placeholder */
     CHECK(memcmp(sys_man.genesis_state_root, zero64, 64) != 0,
           "SYSTEM gsr is a zero placeholder"); OK();
     CHECK(memcmp(core_man.genesis_state_root, zero64, 64) != 0,
           "CORE gsr is a zero placeholder"); OK();
-    /* cycle break: manifest gsr == PRE-registry payload roots */
     CHECK(memcmp(sys_man.genesis_state_root, sys_payload_pre, 64) == 0,
           "SYSTEM gsr != payload root"); OK();
     CHECK(memcmp(core_man.genesis_state_root, core_pre, 64) == 0,
-          "CORE gsr != core payload"); OK();
-    /* the FINAL head root commits the registry ⇒ differs from payload */
-    uint8_t sys_head_root[64];
+          "CORE gsr != core payload root"); OK();
+
+    /* stored roots equal an independent full recomputation */
     {
+        uint8_t sys_full[64];
+        CHECK(nodus_witness_system_root_v2(fx.w, sys_full) == 0,
+              "sys full");
+        CHECK(memcmp(sys_full, sys_payload_pre, 64) != 0,
+              "final root did not commit the registry"); OK();
         sqlite3_stmt *st = NULL;
         CHECK(sqlite3_prepare_v2(fx.w->db,
-              "SELECT head FROM v2_domain_heads WHERE domain_id=0", -1,
-              &st, NULL) == SQLITE_OK, "prep");
+              "SELECT head FROM v2_domain_heads WHERE domain_id=0",
+              -1, &st, NULL) == SQLITE_OK, "prep");
         CHECK(sqlite3_step(st) == SQLITE_ROW, "sys head row");
-        memcpy(sys_head_root,
+        uint8_t stored_sys[64];
+        memcpy(stored_sys,
                (const uint8_t *)sqlite3_column_blob(st, 0) + 4, 64);
         sqlite3_finalize(st);
-    }
-    CHECK(memcmp(sys_head_root, sys_payload_pre, 64) != 0,
-          "final SYSTEM root == payload (registry not committed?)"); OK();
-    /* independent recomputation == stored bytes (system/global) */
-    uint8_t sys_now[64];
-    CHECK(nodus_witness_system_root_v2(fx.w, sys_now) == 0, "sys now");
-    CHECK(memcmp(sys_now, sys_head_root, 64) == 0,
-          "stored SYSTEM head != recomputation"); OK();
-    {
-        uint8_t stored_g[64], stored_d[64];
-        sqlite3_stmt *st = NULL;
+        CHECK(memcmp(stored_sys, sys_full, 64) == 0,
+              "stored SYSTEM head != full recomputation"); OK();
+        uint8_t stored_d[64], stored_g[64];
         CHECK(sqlite3_prepare_v2(fx.w->db,
-              "SELECT domains_root, global_root FROM v2_blocks "
-              "WHERE global_height=0", -1, &st, NULL) == SQLITE_OK, "prep");
+              "SELECT domains_root, global_root FROM v2_blocks WHERE "
+              "global_height=0", -1, &st, NULL) == SQLITE_OK, "prep");
         CHECK(sqlite3_step(st) == SQLITE_ROW, "gen row");
         memcpy(stored_d, sqlite3_column_blob(st, 0), 64);
         memcpy(stored_g, sqlite3_column_blob(st, 1), 64);
         sqlite3_finalize(st);
-        uint8_t g2[64];
-        CHECK(dna_v2_global_root(stored_d, g2) == 0 &&
-              memcmp(g2, stored_g, 64) == 0,
-              "global root recomputation mismatch"); OK();
+        uint8_t re_d[64], re_g[64];
+        CHECK(nodus_witness_global_root_v2(fx.w, re_g, re_d, NULL, NULL)
+                  == 0, "recompute");
+        CHECK(memcmp(stored_d, re_d, 64) == 0 &&
+              memcmp(stored_g, re_g, 64) == 0,
+              "genesis roots != recomputation"); OK();
     }
-    /* independent second fixture → byte-identical genesis roots */
+
+    /* an INDEPENDENT second fixture lands on byte-identical roots */
     {
-        fixture_t fb;
-        CHECK(fx_open(&fb) == 0, "fixture b");
-        CHECK(nodus_witness_db_migrate_v2s7(fb.w) == 0, "migrate b");
-        CHECK(nodus_witness_v2_genesis(fb.w, gen_id, vset, 0) == 0,
-              "genesis b");
-        uint8_t sys_b[64];
-        CHECK(nodus_witness_system_root_v2(fb.w, sys_b) == 0, "sys b");
-        CHECK(memcmp(sys_b, sys_head_root, 64) == 0,
-              "independent fixture roots diverge"); OK();
-        fx_close(&fb);
+        fixture_t fx2;
+        CHECK(fx_open(&fx2) == 0, "fx2");
+        CHECK(nodus_witness_db_migrate_v2s7(fx2.w) == 0, "migrate2");
+        CHECK(v2x_table_init(fx2.w) == 0, "table2");
+        CHECK(nodus_witness_v2_genesis(fx2.w, gen_id, vset, 0) == 0,
+              "genesis2");
+        uint8_t g1[64], g2[64];
+        CHECK(nodus_witness_global_root_v2(fx.w, g1, NULL, NULL, NULL)
+                  == 0 &&
+              nodus_witness_global_root_v2(fx2.w, g2, NULL, NULL, NULL)
+                  == 0 && memcmp(g1, g2, 64) == 0,
+              "independent genesis roots diverged"); OK();
+        fx_close(&fx2);
     }
 
     /* ── 2+3. heads / updates / replay ──────────────────────────────── */
@@ -384,11 +515,15 @@ int main(void) {
     OK();
 
     /* block 1: CORE-only */
-    nodus_v2_op_t op1;
-    mk_op(&op1, 0x01, SQL_CORE_UTXO("01", 100), 1, 1, 0);
+    static v2x_env_t e1;
+    CHECK(env_core_utxo_create(&e1, 0x01, 100) == 0, "env1");
+    nodus_v2_envelope_t v1 = { e1.bytes, e1.len };
     nodus_v2_block_t b1;
-    mk_block(&b1, 1, &op1, 1);
+    mk_block(&b1, 1, &v1, 1);
     CHECK(nodus_witness_v2_apply_block(fx.w, &b1) == 0, "block 1"); OK();
+    CHECK(q1(fx.w, "SELECT amount FROM utxo_set WHERE "
+                   "nullifier=CAST(zeroblob(63)||x'01' AS BLOB)") == 100,
+          "typed effect did not land"); OK();
     CHECK(head_height(fx.w, 0, &h_sys) == 0 && h_sys == 0,
           "SYSTEM advanced while untouched"); OK();
     CHECK(head_height(fx.w, 1, &h_core) == 0 && h_core == 1, "core h1");
@@ -415,53 +550,96 @@ int main(void) {
     rb.block_id[0] ^= 1;                       /* same height, diff id  */
     CHECK(nodus_witness_v2_apply_block(fx.w, &rb) == -1,
           "conflicting height accepted"); OK();
-    nodus_v2_op_t opx;
-    mk_op(&opx, 0x0F, SQL_CORE_UTXO("0f", 5), 1, 1, 0);
+    static v2x_env_t ex;
+    CHECK(env_core_utxo_create(&ex, 0x0f, 5) == 0, "envx");
+    nodus_v2_envelope_t vx = { ex.bytes, ex.len };
     nodus_v2_block_t bx;
-    mk_block(&bx, 3, &opx, 1);                 /* gap                    */
+    mk_block(&bx, 3, &vx, 1);                  /* gap                    */
     CHECK(nodus_witness_v2_apply_block(fx.w, &bx) == -1, "gap accepted");
     OK();
-    mk_block(&bx, 2, &opx, 1);
+    mk_block(&bx, 2, &vx, 1);
     bx.prev_block_id[0] ^= 1;                  /* wrong prev             */
     CHECK(nodus_witness_v2_apply_block(fx.w, &bx) == -1,
           "wrong prev accepted"); OK();
-    mk_block(&bx, 2, &opx, 1);
+    mk_block(&bx, 2, &vx, 1);
     memcpy(bx.block_id, b1.block_id, 64);      /* reused BlockID         */
     CHECK(nodus_witness_v2_apply_block(fx.w, &bx) == -1,
           "reused BlockID accepted"); OK();
+    /* wrong DECLARED epoch: the derivation is the authority */
+    mk_block(&bx, 2, &vx, 1);
+    bx.epoch = 1;                              /* height 2 is epoch 0    */
+    CHECK(nodus_witness_v2_apply_block(fx.w, &bx) == -1,
+          "wrong block epoch accepted"); OK();
     CHECK(db_state_digest(fx.w, dg2) == 0 && memcmp(dg, dg2, 64) == 0,
           "rejected blocks wrote state"); OK();
 
     /* block 2: SYSTEM-only */
-    nodus_v2_op_t op2;
-    mk_op(&op2, 0x02, SQL_SYS_CC(1), 1, 0, 0);
+    static v2x_env_t e2;
+    CHECK(env_sys_cc(&e2, 999991, 5) == 0, "env2");
+    nodus_v2_envelope_t v2 = { e2.bytes, e2.len };
     nodus_v2_block_t b2;
-    mk_block(&b2, 2, &op2, 1);
+    mk_block(&b2, 2, &v2, 1);
     CHECK(nodus_witness_v2_apply_block(fx.w, &b2) == 0, "block 2"); OK();
     CHECK(head_height(fx.w, 0, &h_sys) == 0 && h_sys == 1, "sys h1"); OK();
     CHECK(head_height(fx.w, 1, &h_core) == 0 && h_core == 1,
           "core advanced while untouched"); OK();
 
-    /* block 3: two CORE txs → ONE update, local indices 0 and 1 */
-    nodus_v2_op_t two[2];
-    mk_op(&two[0], 0x31, SQL_CORE_UTXO("31", 10), 1, 1, 0);
-    mk_op(&two[1], 0x32, SQL_CORE_UTXO("32", 20), 2, 1, 0);
+    /* block 3: two CORE txs → ONE update, DERIVED-id local indices */
+    static v2x_env_t e31, e32;
+    CHECK(env_core_utxo_create(&e31, 0x31, 10) == 0, "env31");
+    CHECK(env_core_utxo_create(&e32, 0x32, 20) == 0, "env32");
+    nodus_v2_envelope_t v3[2] = {
+        { e31.bytes, e31.len }, { e32.bytes, e32.len }
+    };
+    /* learn the DERIVED ids through the (pure, read-only) preflight
+     * seam, with the same contextual ruleset table the engine builds */
+    uint8_t id31[64], id32[64];
+    {
+        dna_env_leg_ctx_t rs[2];
+        rs[0].domain_id = 0;
+        rs[0].ruleset_version = sys_man.ruleset_version;
+        memcpy(rs[0].ruleset_hash, sys_man.ruleset_hash, 64);
+        rs[1].domain_id = 1;
+        rs[1].ruleset_version = core_man.ruleset_version;
+        memcpy(rs[1].ruleset_hash, core_man.ruleset_hash, 64);
+        dna_env_preflight_t *pf = calloc(2, sizeof(*pf));
+        CHECK(pf != NULL, "pf alloc");
+        CHECK(nodus_witness_v2_env_preflight_batch(fx.w, 3, rs, 2, v3, 2,
+                                                   pf, NULL, NULL)
+                  == NODUS_V2_ENV_OK, "preflight ids");
+        memcpy(id31, pf[0].tx_id, 64);
+        memcpy(id32, pf[1].tx_id, 64);
+        free(pf);
+    }
     nodus_v2_block_t b3;
-    mk_block(&b3, 3, two, 2);
+    mk_block(&b3, 3, v3, 2);
     CHECK(nodus_witness_v2_apply_block(fx.w, &b3) == 0, "block 3"); OK();
     CHECK(q1(fx.w, "SELECT COUNT(*) FROM v2_domain_updates "
                    "WHERE global_height=3") == 1, "one update for 2 tx");
     OK();
-    CHECK(q1(fx.w, "SELECT COUNT(*) FROM v2_tx_local_index "
-                   "WHERE domain_id=1 AND domain_height=2") == 2 &&
-          q1(fx.w, "SELECT local_index FROM v2_tx_local_index "
-                   "WHERE tx_id=x'"
-                   "32323232323232323232323232323232"
-                   "32323232323232323232323232323232"
-                   "32323232323232323232323232323232"
-                   "32323232323232323232323232323232' AND domain_id=1")
-              == 1, "local indices wrong"); OK();
-    /* update carries the summed resources */
+    {
+        /* the persisted ids ARE the derived ids, in batch order */
+        sqlite3_stmt *st = NULL;
+        CHECK(sqlite3_prepare_v2(fx.w->db,
+              "SELECT tx_id, local_index FROM v2_tx_local_index WHERE "
+              "domain_id=1 AND domain_height=2 ORDER BY local_index",
+              -1, &st, NULL) == SQLITE_OK, "prep li");
+        CHECK(sqlite3_step(st) == SQLITE_ROW &&
+              sqlite3_column_bytes(st, 0) == 64 &&
+              memcmp(sqlite3_column_blob(st, 0), id31, 64) == 0 &&
+              sqlite3_column_int64(st, 1) == 0, "local index 0");
+        CHECK(sqlite3_step(st) == SQLITE_ROW &&
+              memcmp(sqlite3_column_blob(st, 0), id32, 64) == 0 &&
+              sqlite3_column_int64(st, 1) == 1, "local index 1");
+        CHECK(sqlite3_step(st) == SQLITE_DONE, "exactly two");
+        sqlite3_finalize(st);
+        OK();
+    }
+    /* update carries the summed ACTUAL consumed units: per envelope,
+     * with every placeholder weight 1 and one 1-effect result —
+     *   fixed  = w_op(1) + call_len + auth_len(1)
+     *   charge = n_eff(1) + res_len
+     * (no reads). call/res lengths are read back from the encoding. */
     {
         sqlite3_stmt *st = NULL;
         CHECK(sqlite3_prepare_v2(fx.w->db,
@@ -473,29 +651,41 @@ int main(void) {
                               (size_t)sqlite3_column_bytes(st, 0), &u) == 0,
               "upd decode");
         sqlite3_finalize(st);
-        CHECK(u.res_tx_count == 2 && u.res_verify_cost == 3 &&
+        dna_env_view_t vv;
+        CHECK(dna_env_decode(e31.bytes, e31.len, &vv) == 0, "dec31");
+        uint64_t call_len = vv.leg[0].call_len;
+        uint64_t res_len = call_len - 2;      /* script: 0 reads + tail */
+        uint64_t per_env = (1 + call_len + 1) + (1 + res_len);
+        CHECK(u.res_tx_count == 2 &&
+              u.res_verify_cost == 2 * per_env &&
               u.old_height == 1 && u.new_height == 2,
               "update resource/height fields wrong"); OK();
     }
 
-    /* declared no-op rejects (no fake updates) */
+    /* declared no-op rejects (empty typed result, no fake updates) */
     CHECK(db_state_digest(fx.w, dg) == 0, "digest");
-    nodus_v2_op_t noop;
-    mk_op(&noop, 0x40, NULL, 1, 1, 0);
+    static v2x_env_t enoop;
+    CHECK(env_core_empty(&enoop) == 0, "enoop");
+    nodus_v2_envelope_t vnoop = { enoop.bytes, enoop.len };
     nodus_v2_block_t b4;
-    mk_block(&b4, 4, &noop, 1);
+    mk_block(&b4, 4, &vnoop, 1);
     CHECK(nodus_witness_v2_apply_block(fx.w, &b4) == -1,
           "declared no-op produced an update"); OK();
-    /* undeclared mutation rejects (cross-domain substitution guard) */
-    nodus_v2_op_t subst;
-    mk_op(&subst, 0x41, SQL_CORE_UTXO("41", 5), 1, 0, 0); /* declares SYS */
-    mk_block(&b4, 4, &subst, 1);
+    /* undeclared mutation rejects (adapter domain-escape caught by the
+     * untouched-domain guard) */
+    rogue_table_arm(fx.w);
+    static v2x_env_t erogue;
+    CHECK(env_sys_cc(&erogue, 999992, 5) == 0, "erogue");
+    nodus_v2_envelope_t vrogue = { erogue.bytes, erogue.len };
+    mk_block(&b4, 4, &vrogue, 1);
     CHECK(nodus_witness_v2_apply_block(fx.w, &b4) == -1,
           "undeclared CORE mutation accepted"); OK();
+    rogue_table_disarm(fx.w);
     /* wrong expected root rejects */
-    nodus_v2_op_t ok4;
-    mk_op(&ok4, 0x42, SQL_CORE_UTXO("42", 5), 1, 1, 0);
-    mk_block(&b4, 4, &ok4, 1);
+    static v2x_env_t eok4;
+    CHECK(env_core_utxo_create(&eok4, 0x42, 5) == 0, "eok4");
+    nodus_v2_envelope_t vok4 = { eok4.bytes, eok4.len };
+    mk_block(&b4, 4, &vok4, 1);
     uint8_t bad_root[64];
     memset(bad_root, 0xDD, 64);
     b4.expect_global_root = bad_root;
@@ -505,11 +695,11 @@ int main(void) {
           "rejected block 4 candidates wrote state"); OK();
 
     /* ── 4. cross-domain atomicity ──────────────────────────────────── */
-    nodus_v2_op_t cross;
-    mk_op(&cross, 0x50,
-          SQL_SYS_CC(2) ";" SQL_CORE_UTXO("50", 30), 2, 0, 1);
+    static v2x_env_t ecross;
+    CHECK(env_cross_cc_utxo(&ecross, 999992, 0x50, 30) == 0, "ecross");
+    nodus_v2_envelope_t vcross = { ecross.bytes, ecross.len };
     nodus_v2_block_t b4c;
-    mk_block(&b4c, 4, &cross, 1);
+    mk_block(&b4c, 4, &vcross, 1);
     CHECK(nodus_witness_v2_apply_block(fx.w, &b4c) == 0, "cross block");
     OK();
     CHECK(head_height(fx.w, 0, &h_sys) == 0 && h_sys == 2 &&
@@ -517,42 +707,41 @@ int main(void) {
           "cross block heights"); OK();
     CHECK(q1(fx.w, "SELECT COUNT(*) FROM v2_domain_updates "
                    "WHERE global_height=4") == 2, "two updates"); OK();
-    CHECK(q1(fx.w, "SELECT COUNT(*) FROM v2_tx_index WHERE tx_id=x'"
-                   "50505050505050505050505050505050"
-                   "50505050505050505050505050505050"
-                   "50505050505050505050505050505050"
-                   "50505050505050505050505050505050'") == 1 &&
-          q1(fx.w, "SELECT COUNT(*) FROM v2_tx_local_index WHERE tx_id=x'"
-                   "50505050505050505050505050505050"
-                   "50505050505050505050505050505050"
-                   "50505050505050505050505050505050"
-                   "50505050505050505050505050505050'") == 2,
+    CHECK(q1(fx.w, "SELECT COUNT(*) FROM v2_tx_index WHERE "
+                   "global_height=4") == 1 &&
+          q1(fx.w, "SELECT COUNT(*) FROM v2_tx_local_index WHERE "
+                   "domain_height=3 AND domain_id=1") +
+          q1(fx.w, "SELECT COUNT(*) FROM v2_tx_local_index WHERE "
+                   "domain_height=2 AND domain_id=0") == 2,
           "one identity, two local indices"); OK();
 
     /* fault after SYSTEM phase / after CORE batch → NEITHER commits */
     CHECK(db_state_digest(fx.w, dg) == 0, "digest");
-    nodus_v2_op_t cross2;
-    mk_op(&cross2, 0x51,
-          SQL_SYS_CC(3) ";" SQL_CORE_UTXO("51", 40), 2, 0, 1);
+    static v2x_env_t ecross2;
+    CHECK(env_cross_cc_utxo(&ecross2, 999993, 0x51, 40) == 0, "ecross2");
+    nodus_v2_envelope_t vcross2 = { ecross2.bytes, ecross2.len };
     nodus_v2_block_t b5;
-    mk_block(&b5, 5, &cross2, 1);
+    mk_block(&b5, 5, &vcross2, 1);
     b5.fail_at = V2AP_FAIL_AFTER_SYSTEM;
     CHECK(nodus_witness_v2_apply_block(fx.w, &b5) == -1, "F2 cross");
     CHECK(db_state_digest(fx.w, dg2) == 0 && memcmp(dg, dg2, 64) == 0,
           "SYSTEM half survived"); OK();
-    mk_block(&b5, 5, &cross2, 1);
+    mk_block(&b5, 5, &vcross2, 1);
     b5.fail_at = V2AP_FAIL_AFTER_DOMAIN_BATCH;
     b5.fail_domain_batch = 1;
     CHECK(nodus_witness_v2_apply_block(fx.w, &b5) == -1, "F4 cross");
     CHECK(db_state_digest(fx.w, dg2) == 0 && memcmp(dg, dg2, 64) == 0,
           "CORE half survived"); OK();
 
-    /* ── 5. fault injection F1..F14 (rich block), then F15 ──────────── */
-    nodus_v2_op_t rich[3];
-    mk_op(&rich[0], 0x61, SQL_SYS_CC(4), 1, 0, 0);
-    mk_op(&rich[1], 0x62,
-          SQL_SYS_CC(5) ";" SQL_CORE_UTXO("62", 11), 2, 0, 1);
-    mk_op(&rich[2], 0x63, SQL_CORE_UTXO("63", 12), 1, 1, 0);
+    /* ── 5. fault injection F1..F14 + F26/F27 (rich block), then F15 ── */
+    static v2x_env_t er1, er2, er3;
+    CHECK(env_sys_cc(&er1, 999994, 5) == 0, "er1");
+    CHECK(env_cross_cc_utxo(&er2, 999995, 0x62, 11) == 0, "er2");
+    CHECK(env_core_utxo_create(&er3, 0x63, 12) == 0, "er3");
+    nodus_v2_envelope_t rich[3] = {
+        { er1.bytes, er1.len }, { er2.bytes, er2.len },
+        { er3.bytes, er3.len }
+    };
     for (int f = V2AP_FAIL_AFTER_BEGIN; f <= V2AP_FAIL_COMMIT; f++) {
         nodus_v2_block_t bf;
         mk_block(&bf, 5, rich, 3);
@@ -564,6 +753,23 @@ int main(void) {
               memcmp(dg, dg2, 64) == 0, "fault point leaked state");
     }
     OK();
+    /* F26: whole batch reserved, then abort — nothing persists and the
+     * next run of the same block succeeds (budget restoration proven
+     * observationally: a stranded reservation would starve it) */
+    {
+        nodus_v2_block_t bf;
+        mk_block(&bf, 5, rich, 3);
+        bf.fail_at = V2AP_FAIL_AFTER_ENV_RESERVE;
+        CHECK(nodus_witness_v2_apply_block(fx.w, &bf) == -1, "F26 rc");
+        CHECK(db_state_digest(fx.w, dg2) == 0 &&
+              memcmp(dg, dg2, 64) == 0, "F26 leaked state"); OK();
+        mk_block(&bf, 5, rich, 3);
+        bf.fail_at = V2AP_FAIL_AFTER_ENV_EXEC;
+        bf.fail_env_index = 1;
+        CHECK(nodus_witness_v2_apply_block(fx.w, &bf) == -1, "F27 rc");
+        CHECK(db_state_digest(fx.w, dg2) == 0 &&
+              memcmp(dg, dg2, 64) == 0, "F27 leaked state"); OK();
+    }
     /* F15: committed, pre-cache crash window */
     nodus_v2_block_t b5f;
     mk_block(&b5f, 5, rich, 3);
@@ -571,7 +777,6 @@ int main(void) {
     CHECK(nodus_witness_v2_apply_block(fx.w, &b5f) == 2, "F15 rc"); OK();
     CHECK(q1(fx.w, "SELECT COUNT(*) FROM v2_blocks WHERE global_height=5")
               == 1, "F15 not committed"); OK();
-    /* restart reconstructs the committed state; replay is idempotent */
     uint8_t dg_committed[64];
     CHECK(db_state_digest(fx.w, dg_committed) == 0, "digest");
     CHECK(fx_reopen(&fx) == 0, "reopen after F15");
@@ -586,76 +791,98 @@ int main(void) {
     /* ── 6. resource limits ─────────────────────────────────────────── */
     CHECK(db_state_digest(fx.w, dg) == 0, "digest");
     {   /* global tx cap (10) */
-        nodus_v2_op_t many[11];
+        static v2x_env_t many[11];
+        nodus_v2_envelope_t vm[11];
         for (int i = 0; i < 11; i++) {
-            char *sql = NULL;   /* declaration-only ops still count */
-            mk_op(&many[i], (uint8_t)(0x70 + i), sql, 1, 1, 0);
+            CHECK(env_core_utxo_create(&many[i], (uint8_t)(0x70 + i), 1)
+                      == 0, "env many");
+            vm[i].env_bytes = many[i].bytes;
+            vm[i].env_len = many[i].len;
         }
         nodus_v2_block_t bm;
-        mk_block(&bm, 6, many, 11);
+        mk_block(&bm, 6, vm, 11);
         CHECK(nodus_witness_v2_apply_block(fx.w, &bm) == -1,
               "global tx cap ignored"); OK();
     }
-    {   /* global verify budget */
-        nodus_v2_op_t big;
-        mk_op(&big, 0x7F, SQL_CORE_UTXO("7f", 1), 1001, 1, 0);
+    {   /* global UNIT budget: a reservation ceiling the block budget
+         * cannot cover rejects at reserve */
+        uint8_t key[64] = { 0 };
+        key[63] = 0x7F;
+        uint8_t val[8];
+        v2x_put64(val, 1);
+        uint8_t res[512];
+        size_t rl = 0;
+        CHECK(v2x_eff1(res, sizeof(res), V2X_OP_UTXO, DNA_EFFECT_CREATE,
+                       DNA_EFFECT_PRE_ABSENT, key, 64, val, 8, &rl) == 0,
+              "res");
+        uint8_t call[600];
+        uint32_t cl = v2x_script_build(call, sizeof(call), NULL, 0, res,
+                                       rl);
+        CHECK(cl != 0, "call");
+        v2x_leg_t leg = { 1, 1, call, cl, 4, 2048 };
+        static v2x_env_t ebig;
+        CHECK(v2x_env_build_ex(&ebig, (uint64_t)NODUS_V2_GLOBAL_UNIT_BUDGET
+                               + 1, 0, 0, &leg, 1) == 0, "ebig");
+        nodus_v2_envelope_t vb = { ebig.bytes, ebig.len };
         nodus_v2_block_t bb;
-        mk_block(&bb, 6, &big, 1);
+        mk_block(&bb, 6, &vb, 1);
         CHECK(nodus_witness_v2_apply_block(fx.w, &bb) == -1,
-              "global budget ignored"); OK();
+              "global unit budget ignored"); OK();
     }
-    {   /* per-domain quota via a CONSISTENT fixture-written manifest */
+    {   /* per-domain quota + unit budget via a CONSISTENT
+         * fixture-written CORE manifest */
         dna_domain_manifest_t qman = core_man;
         qman.quota_tx_per_block = 1;
-        qman.quota_verify_cost = 5;
+        qman.quota_verify_cost = 0;      /* tx-count quota only first    */
         uint8_t enc[DNA_DOMMAN_MAX_ENC_LEN], mh[64];
         size_t el = 0;
-        CHECK(dna_domman_encode(&qman, enc, sizeof(enc), &el) == 0, "enc");
-        CHECK(dna_domman_hash(&qman, mh) == 0, "hash");
         dna_domreg_record_t rec;
-        CHECK(nodus_witness_domreg_get(fx.w, 1, &rec, NULL, NULL) == 0,
-              "rec");
-        memcpy(rec.current_manifest_hash, mh, 64);
         uint8_t recb[DNA_DOMREG_REC_ENC_LEN];
-        CHECK(dna_domreg_record_encode(&rec, recb) == 0, "recb");
         sqlite3_stmt *st = NULL;
-        CHECK(sqlite3_prepare_v2(fx.w->db,
-              "UPDATE domain_registry SET record=?1, current_manifest=?2 "
-              "WHERE domain_id=1", -1, &st, NULL) == SQLITE_OK, "prep");
-        sqlite3_bind_blob(st, 1, recb, sizeof(recb), SQLITE_TRANSIENT);
-        sqlite3_bind_blob(st, 2, enc, (int)el, SQLITE_TRANSIENT);
-        CHECK(sqlite3_step(st) == SQLITE_DONE, "update");
-        sqlite3_finalize(st);
+#define WRITE_CORE_MAN(M) do { \
+        CHECK(dna_domman_encode((M), enc, sizeof(enc), &el) == 0, "enc"); \
+        CHECK(dna_domman_hash((M), mh) == 0, "hash"); \
+        CHECK(nodus_witness_domreg_get(fx.w, 1, &rec, NULL, NULL) == 0, \
+              "rec"); \
+        memcpy(rec.current_manifest_hash, mh, 64); \
+        CHECK(dna_domreg_record_encode(&rec, recb) == 0, "recb"); \
+        CHECK(sqlite3_prepare_v2(fx.w->db, \
+              "UPDATE domain_registry SET record=?1, current_manifest=?2 " \
+              "WHERE domain_id=1", -1, &st, NULL) == SQLITE_OK, "prep"); \
+        sqlite3_bind_blob(st, 1, recb, sizeof(recb), SQLITE_TRANSIENT); \
+        sqlite3_bind_blob(st, 2, enc, (int)el, SQLITE_TRANSIENT); \
+        CHECK(sqlite3_step(st) == SQLITE_DONE, "update"); \
+        sqlite3_finalize(st); \
+} while (0)
+        WRITE_CORE_MAN(&qman);
 
-        nodus_v2_op_t d2[2];
-        mk_op(&d2[0], 0x81, SQL_CORE_UTXO("81", 1), 1, 1, 0);
-        mk_op(&d2[1], 0x82, SQL_CORE_UTXO("82", 1), 1, 1, 0);
+        static v2x_env_t eq1, eq2;
+        CHECK(env_core_utxo_create(&eq1, 0x81, 1) == 0, "eq1");
+        CHECK(env_core_utxo_create(&eq2, 0x82, 1) == 0, "eq2");
+        nodus_v2_envelope_t vq[2] = {
+            { eq1.bytes, eq1.len }, { eq2.bytes, eq2.len }
+        };
         nodus_v2_block_t bq;
-        mk_block(&bq, 6, d2, 2);
+        mk_block(&bq, 6, vq, 2);
         CHECK(nodus_witness_v2_apply_block(fx.w, &bq) == -1,
               "per-domain tx quota ignored"); OK();
-        nodus_v2_op_t costly;
-        mk_op(&costly, 0x83, SQL_CORE_UTXO("83", 1), 6, 1, 0);
-        mk_block(&bq, 6, &costly, 1);
+
+        /* per-domain UNIT budget: quota_verify_cost is the committed
+         * per-block unit budget — 5 units cannot cover any real leg's
+         * static reservation */
+        qman.quota_tx_per_block = 0;
+        qman.quota_verify_cost = 5;
+        WRITE_CORE_MAN(&qman);
+        static v2x_env_t eqc;
+        CHECK(env_core_utxo_create(&eqc, 0x83, 1) == 0, "eqc");
+        nodus_v2_envelope_t vqc = { eqc.bytes, eqc.len };
+        mk_block(&bq, 6, &vqc, 1);
         CHECK(nodus_witness_v2_apply_block(fx.w, &bq) == -1,
-              "per-domain cost quota ignored"); OK();
+              "per-domain unit budget ignored"); OK();
         /* restore the genesis manifest (consistent again) */
-        uint8_t enc0[DNA_DOMMAN_MAX_ENC_LEN], mh0[64];
-        size_t el0 = 0;
-        CHECK(dna_domman_encode(&core_man, enc0, sizeof(enc0), &el0) == 0 &&
-              dna_domman_hash(&core_man, mh0) == 0, "enc0");
-        memcpy(rec.current_manifest_hash, mh0, 64);
-        CHECK(dna_domreg_record_encode(&rec, recb) == 0, "recb0");
-        CHECK(sqlite3_prepare_v2(fx.w->db,
-              "UPDATE domain_registry SET record=?1, current_manifest=?2 "
-              "WHERE domain_id=1", -1, &st, NULL) == SQLITE_OK, "prep0");
-        sqlite3_bind_blob(st, 1, recb, sizeof(recb), SQLITE_TRANSIENT);
-        sqlite3_bind_blob(st, 2, enc0, (int)el0, SQLITE_TRANSIENT);
-        CHECK(sqlite3_step(st) == SQLITE_DONE, "restore");
-        sqlite3_finalize(st);
+        WRITE_CORE_MAN(&core_man);
+#undef WRITE_CORE_MAN
     }
-    /* rejected blocks left resource/usage state unchanged (digest holds
-     * for everything except the two manifest writes we restored) */
     CHECK(db_state_digest(fx.w, dg2) == 0 && memcmp(dg, dg2, 64) == 0,
           "resource rejections leaked state"); OK();
     fx_close(&fx);
@@ -664,10 +891,8 @@ int main(void) {
     fixture_t fs;
     CHECK(fx_open(&fs) == 0, "supply fixture"); OK();
     CHECK(nodus_witness_db_migrate_v2s7(fs.w) == 0, "migrate");
+    CHECK(v2x_table_init(fs.w) == 0, "scripted table (supply)");
 
-    /* 1B total; 7 × 10M self-bonds CARVED; remainder 930M as UTXOs.
-     * Production supply_tracking schema (nodus_witness.c): id=1 CHECK,
-     * genesis/burned/minted + current_supply/last_tx_hash/last_sequence. */
     CHECK(run_sql(fs.w->db,
         "INSERT INTO supply_tracking (id, genesis_supply, total_burned, "
         "total_minted, current_supply, last_tx_hash, last_sequence) "
@@ -688,7 +913,7 @@ int main(void) {
         "INSERT INTO utxo_set (nullifier, owner, amount, token_id, "
         "tx_hash, output_index, block_height, created_at, unlock_block, "
         "domain_id) "
-        "VALUES (zeroblob(63)||x'01', 'genesis', 93000000000000000, "
+        "VALUES (CAST(zeroblob(63)||x'01' AS BLOB), 'genesis', 93000000000000000, "
         "zeroblob(64), zeroblob(63)||x'aa', 0, 0, 0, 0, 1)") == 0,
         "930M utxo");
     CHECK(nodus_witness_v2_supply_check(fs.w) == 0,
@@ -699,19 +924,19 @@ int main(void) {
         "INSERT INTO utxo_set (nullifier, owner, amount, token_id, "
         "tx_hash, output_index, block_height, created_at, unlock_block, "
         "domain_id) "
-        "VALUES (zeroblob(63)||x'02', 'bogus', 7000000000000000, "
+        "VALUES (CAST(zeroblob(63)||x'02' AS BLOB), 'bogus', 7000000000000000, "
         "zeroblob(64), zeroblob(63)||x'bb', 0, 0, 0, 0, 1)") == 0,
         "additive");
     CHECK(nodus_witness_v2_supply_check(fs.w) != 0,
           "additive 70M conserved"); OK();
     CHECK(run_sql(fs.w->db,
-        "DELETE FROM utxo_set WHERE nullifier=zeroblob(63)||x'02'") == 0, "undo");
+        "DELETE FROM utxo_set WHERE nullifier=CAST(zeroblob(63)||x'02' AS BLOB)") == 0, "undo");
     CHECK(nodus_witness_v2_supply_check(fs.w) == 0, "restore"); OK();
 
     /* transparent → self-bond lock (move, no mint) + unlock */
     CHECK(run_sql(fs.w->db,
         "UPDATE utxo_set SET amount = amount - 1000000000000000 "
-        "WHERE nullifier=zeroblob(63)||x'01';"
+        "WHERE nullifier=CAST(zeroblob(63)||x'01' AS BLOB);"
         "UPDATE validators SET self_stake = self_stake + 1000000000000000 "
         "WHERE pubkey_hash=zeroblob(63)||x'a0'") == 0, "lock");
     CHECK(nodus_witness_v2_supply_check(fs.w) == 0, "bond lock broke"); OK();
@@ -719,12 +944,12 @@ int main(void) {
         "UPDATE validators SET self_stake = self_stake - 1000000000000000 "
         "WHERE pubkey_hash=zeroblob(63)||x'a0';"
         "UPDATE utxo_set SET amount = amount + 1000000000000000 "
-        "WHERE nullifier=zeroblob(63)||x'01'") == 0, "unlock");
+        "WHERE nullifier=CAST(zeroblob(63)||x'01' AS BLOB)") == 0, "unlock");
     CHECK(nodus_witness_v2_supply_check(fs.w) == 0, "unlock broke"); OK();
     /* delegation lock (classification change, not total) */
     CHECK(run_sql(fs.w->db,
         "UPDATE utxo_set SET amount = amount - 10000000000 "
-        "WHERE nullifier=zeroblob(63)||x'01';"
+        "WHERE nullifier=CAST(zeroblob(63)||x'01' AS BLOB);"
         "UPDATE validators SET total_delegated = total_delegated + "
         "10000000000 WHERE pubkey_hash=zeroblob(63)||x'a1'") == 0, "delegate");
     CHECK(nodus_witness_v2_supply_check(fs.w) == 0, "delegation broke");
@@ -732,7 +957,7 @@ int main(void) {
     /* fee burn EXACTLY once */
     CHECK(run_sql(fs.w->db,
         "UPDATE utxo_set SET amount = amount - 1000000 "
-        "WHERE nullifier=zeroblob(63)||x'01';"
+        "WHERE nullifier=CAST(zeroblob(63)||x'01' AS BLOB);"
         "UPDATE supply_tracking SET total_burned = total_burned + 1000000")
         == 0, "burn");
     CHECK(nodus_witness_v2_supply_check(fs.w) == 0, "single burn broke");
@@ -755,7 +980,7 @@ int main(void) {
         "UPDATE epoch_state SET epoch_pool_accum = 0 "
         "WHERE epoch_start_height = 0;"
         "UPDATE utxo_set SET amount = amount + 3200 "
-        "WHERE nullifier=zeroblob(63)||x'01'") == 0, "settle");
+        "WHERE nullifier=CAST(zeroblob(63)||x'01' AS BLOB)") == 0, "settle");
     CHECK(nodus_witness_v2_supply_check(fs.w) == 0, "settle broke"); OK();
     /* duplicate ownership: value in a UTXO AND a bond simultaneously */
     CHECK(run_sql(fs.w->db,
@@ -768,12 +993,12 @@ int main(void) {
         "WHERE pubkey_hash=zeroblob(63)||x'a2'") == 0, "undo");
     /* missing ownership */
     CHECK(run_sql(fs.w->db,
-        "UPDATE utxo_set SET amount = amount - 5 WHERE nullifier=zeroblob(63)||x'01'")
+        "UPDATE utxo_set SET amount = amount - 5 WHERE nullifier=CAST(zeroblob(63)||x'01' AS BLOB)")
         == 0, "vanish");
     CHECK(nodus_witness_v2_supply_check(fs.w) != 0, "vanished conserved");
     OK();
     CHECK(run_sql(fs.w->db,
-        "UPDATE utxo_set SET amount = amount + 5 WHERE nullifier=zeroblob(63)||x'01'")
+        "UPDATE utxo_set SET amount = amount + 5 WHERE nullifier=CAST(zeroblob(63)||x'01' AS BLOB)")
         == 0, "undo");
     /* underflow / overflow */
     CHECK(run_sql(fs.w->db,
@@ -789,10 +1014,7 @@ int main(void) {
     CHECK(run_sql(fs.w->db,
         "UPDATE supply_tracking SET total_minted = 3200") == 0, "restore");
     CHECK(nodus_witness_v2_supply_check(fs.w) == 0, "restore broke"); OK();
-    /* S7: the "no pool table may exist" C3 placeholder is REPLACED by
-     * real committed pool balances — an UNBACKED native pool balance
-     * (value from nowhere) must fail the equation, and zeroing it must
-     * restore conservation. */
+    /* unbacked native pool balance must fail the equation */
     CHECK(run_sql(fs.w->db,
         "INSERT INTO v2_pools (domain_id, pool_id, config_version, "
         "tree_depth, history_limit, asset_ref, note_count, note_root, "
@@ -813,59 +1035,95 @@ int main(void) {
     CHECK(fx_reopen(&fs) == 0, "reopen");
     CHECK(nodus_witness_v2_supply_check(fs.w) == 0, "restart broke"); OK();
 
-    /* an engine block that BREAKS supply rolls back completely:
-     * (needs v2 genesis on this populated fixture) */
+    /* an engine block that BREAKS supply rolls back completely */
     CHECK(nodus_witness_v2_genesis(fs.w, gen_id, vset, 0) == 0,
           "supply-fixture genesis"); OK();
     uint8_t sdg[64], sdg2[64];
     CHECK(db_state_digest(fs.w, sdg) == 0, "digest");
-    nodus_v2_op_t inflate;
-    mk_op(&inflate, 0x90, SQL_CORE_UTXO("90", 999), 1, 1, 0);
+    static v2x_env_t einf;
+    CHECK(env_core_utxo_create(&einf, 0x90, 999) == 0, "einf");
+    nodus_v2_envelope_t vinf = { einf.bytes, einf.len };
     nodus_v2_block_t sb;
-    mk_block(&sb, 1, &inflate, 1);
+    mk_block(&sb, 1, &vinf, 1);
     CHECK(nodus_witness_v2_apply_block(fs.w, &sb) == -1,
           "supply-breaking block accepted"); OK();
     CHECK(db_state_digest(fs.w, sdg2) == 0 && memcmp(sdg, sdg2, 64) == 0,
           "supply-breaking block leaked state"); OK();
 
-    /* ── 8. SUPPLY OWNERSHIP (locked correction): native issuance is a
-     * DNA_CORE commitment. A SYSTEM-side value movement (mint into the
-     * epoch pool, pool settlement) touches BOTH domains atomically
-     * through the GENERIC touched mechanism; a fee burn is CORE-local
-     * (both of its buckets — the UTXO and the burned counter — are
-     * CORE-owned); an undeclared issuance mutation trips the untouched-
-     * domain guard on CORE. ─────────────────────────────────────────── */
+    /* ── 8. SUPPLY OWNERSHIP through TYPED cross-domain envelopes ───── */
     {
-        /* (a) MINT: total_minted (CORE issuance) + epoch pool (SYSTEM
-         * accrual) — one cross-domain op, two DomainUpdates, conserved. */
-        nodus_v2_op_t mint;
-        mk_op(&mint, 0x91,
-              "UPDATE supply_tracking SET total_minted = total_minted + 500;"
-              "UPDATE epoch_state SET epoch_pool_accum = "
-              "epoch_pool_accum + 500 WHERE epoch_start_height = 0",
-              2, 0, 1);
+        /* (a) MINT: total_minted (CORE, SUPPLY_SET absolute) + epoch
+         * pool (SYSTEM, EPOCH_SET absolute) — one cross-domain
+         * envelope, two DomainUpdates, conserved. */
+        uint64_t minted = q1(fs.w, "SELECT total_minted FROM "
+                                   "supply_tracking");
+        uint64_t accum = q1(fs.w, "SELECT epoch_pool_accum FROM "
+                                  "epoch_state WHERE epoch_start_height=0");
+        uint8_t skey[8], sval[8], ckey[1] = { 1 }, cval[8];
+        v2x_put64(skey, 0);
+        v2x_put64(sval, accum + 500);
+        v2x_put64(cval, minted + 500);
+        uint8_t sres[256], cres[256];
+        size_t srl = 0, crl = 0;
+        CHECK(v2x_eff1(sres, sizeof(sres), V2X_OP_EPOCH, DNA_EFFECT_SET,
+                       DNA_EFFECT_PRE_EXISTS, skey, 8, sval, 8, &srl)
+                  == 0, "sres");
+        CHECK(v2x_eff1(cres, sizeof(cres), V2X_OP_SUPPLY, DNA_EFFECT_SET,
+                       DNA_EFFECT_PRE_EXISTS, ckey, 1, cval, 8, &crl)
+                  == 0, "cres");
+        uint8_t scall[400], ccall[400];
+        uint32_t scl = v2x_script_build(scall, sizeof(scall), NULL, 0,
+                                        sres, srl);
+        uint32_t ccl = v2x_script_build(ccall, sizeof(ccall), NULL, 0,
+                                        cres, crl);
+        CHECK(scl && ccl, "calls");
+        v2x_leg_t mlegs[2] = {
+            { 0, 1, scall, scl, 4, 2048 },
+            { 1, 1, ccall, ccl, 4, 2048 }
+        };
+        static v2x_env_t emint;
+        CHECK(v2x_env_build(&emint, mlegs, 2) == 0, "emint");
+        nodus_v2_envelope_t vmint = { emint.bytes, emint.len };
         nodus_v2_block_t mb;
-        mk_block(&mb, 1, &mint, 1);
+        mk_block(&mb, 1, &vmint, 1);
         CHECK(nodus_witness_v2_apply_block(fs.w, &mb) == 0, "mint block");
         CHECK(q1(fs.w, "SELECT COUNT(*) FROM v2_domain_updates "
                        "WHERE global_height=1") == 2,
               "mint must update BOTH domains atomically"); OK();
         CHECK(q1(fs.w, "SELECT total_minted FROM supply_tracking")
-                  == 3200 + 500, "minted exactly once");
+                  == minted + 500, "minted exactly once");
         CHECK(nodus_witness_v2_supply_check(fs.w) == 0, "mint conserves");
         OK();
 
-        /* (b) SETTLE: pool (SYSTEM) → transparent UTXO (CORE): a native
-         * value MOVE between a SYSTEM-owned and a CORE-owned bucket —
-         * both domains touched, total supply unchanged. */
-        nodus_v2_op_t settle;
-        mk_op(&settle, 0x92,
-              "UPDATE epoch_state SET epoch_pool_accum = "
-              "epoch_pool_accum - 500 WHERE epoch_start_height = 0;"
-              "UPDATE utxo_set SET amount = amount + 500 "
-              "WHERE nullifier = zeroblob(63)||x'01'",
-              2, 0, 1);
-        mk_block(&mb, 2, &settle, 1);
+        /* (b) SETTLE: pool (SYSTEM) → transparent UTXO (CORE). */
+        uint64_t amt = q1(fs.w, "SELECT amount FROM utxo_set WHERE "
+                                "nullifier=CAST(zeroblob(63)||x'01' AS BLOB)");
+        uint8_t s2val[8], c2key[64] = { 0 }, c2val[8];
+        c2key[63] = 0x01;
+        v2x_put64(s2val, accum + 500 - 500);   /* back to entry accum */
+        v2x_put64(c2val, amt + 500);
+        uint8_t s2res[256], c2res[256];
+        size_t s2rl = 0, c2rl = 0;
+        CHECK(v2x_eff1(s2res, sizeof(s2res), V2X_OP_EPOCH,
+                       DNA_EFFECT_SET, DNA_EFFECT_PRE_EXISTS, skey, 8,
+                       s2val, 8, &s2rl) == 0, "s2res");
+        CHECK(v2x_eff1(c2res, sizeof(c2res), V2X_OP_UTXO, DNA_EFFECT_SET,
+                       DNA_EFFECT_PRE_EXISTS, c2key, 64, c2val, 8,
+                       &c2rl) == 0, "c2res");
+        uint8_t s2call[400], c2call[400];
+        uint32_t s2cl = v2x_script_build(s2call, sizeof(s2call), NULL, 0,
+                                         s2res, s2rl);
+        uint32_t c2cl = v2x_script_build(c2call, sizeof(c2call), NULL, 0,
+                                         c2res, c2rl);
+        CHECK(s2cl && c2cl, "calls2");
+        v2x_leg_t slegs[2] = {
+            { 0, 1, s2call, s2cl, 4, 2048 },
+            { 1, 1, c2call, c2cl, 4, 2048 }
+        };
+        static v2x_env_t esettle;
+        CHECK(v2x_env_build(&esettle, slegs, 2) == 0, "esettle");
+        nodus_v2_envelope_t vsettle = { esettle.bytes, esettle.len };
+        mk_block(&mb, 2, &vsettle, 1);
         CHECK(nodus_witness_v2_apply_block(fs.w, &mb) == 0, "settle block");
         CHECK(q1(fs.w, "SELECT COUNT(*) FROM v2_domain_updates "
                        "WHERE global_height=2") == 2,
@@ -873,18 +1131,47 @@ int main(void) {
         CHECK(nodus_witness_v2_supply_check(fs.w) == 0,
               "cross-domain move conserves total supply"); OK();
 
-        /* (c) BURN: fee UTXO decrement + burned counter — BOTH buckets
-         * are CORE-owned now, so the burn is a CORE-LOCAL transition
-         * (exactly one DomainUpdate; SYSTEM does not move). */
+        /* (c) BURN: CORE-LOCAL — one leg, TWO effects (utxo decrement +
+         * burned counter), exactly one DomainUpdate. */
         uint64_t sys_h_burn = q1(fs.w,
             "SELECT domain_height FROM v2_domain_heads WHERE domain_id=0");
-        nodus_v2_op_t burn;
-        mk_op(&burn, 0x93,
-              "UPDATE utxo_set SET amount = amount - 100 "
-              "WHERE nullifier = zeroblob(63)||x'01';"
-              "UPDATE supply_tracking SET total_burned = total_burned + 100",
-              1, 1, 0);
-        mk_block(&mb, 3, &burn, 1);
+        uint64_t amt2 = q1(fs.w, "SELECT amount FROM utxo_set WHERE "
+                                 "nullifier=CAST(zeroblob(63)||x'01' AS BLOB)");
+        uint64_t burned = q1(fs.w, "SELECT total_burned FROM "
+                                   "supply_tracking");
+        uint8_t bkey[64] = { 0 }, bval[8], b2key[1] = { 2 }, b2val[8];
+        bkey[63] = 0x01;
+        v2x_put64(bval, amt2 - 100);
+        v2x_put64(b2val, burned + 100);
+        dna_effect_in_t burn_effs[2];
+        memset(burn_effs, 0, sizeof(burn_effs));
+        burn_effs[0].hdr.op_id = V2X_OP_UTXO;
+        burn_effs[0].hdr.effect_kind = DNA_EFFECT_SET;
+        burn_effs[0].hdr.precond_tag = DNA_EFFECT_PRE_EXISTS;
+        burn_effs[0].hdr.key_len = 64;
+        burn_effs[0].hdr.value_len = 8;
+        burn_effs[0].key = bkey;
+        burn_effs[0].value = bval;
+        burn_effs[1].hdr.op_id = V2X_OP_SUPPLY;
+        burn_effs[1].hdr.effect_kind = DNA_EFFECT_SET;
+        burn_effs[1].hdr.precond_tag = DNA_EFFECT_PRE_EXISTS;
+        burn_effs[1].hdr.key_len = 1;
+        burn_effs[1].hdr.value_len = 8;
+        burn_effs[1].key = b2key;
+        burn_effs[1].value = b2val;
+        uint8_t bres[512];
+        size_t brl = 0;
+        CHECK(v2x_effres(bres, sizeof(bres), burn_effs, 2, &brl) == 0,
+              "bres");
+        uint8_t bcall[700];
+        uint32_t bcl = v2x_script_build(bcall, sizeof(bcall), NULL, 0,
+                                        bres, brl);
+        CHECK(bcl != 0, "bcall");
+        v2x_leg_t bleg = { 1, 1, bcall, bcl, 4, 2048 };
+        static v2x_env_t eburn;
+        CHECK(v2x_env_build(&eburn, &bleg, 1) == 0, "eburn");
+        nodus_v2_envelope_t vburn = { eburn.bytes, eburn.len };
+        mk_block(&mb, 3, &vburn, 1);
         CHECK(nodus_witness_v2_apply_block(fs.w, &mb) == 0, "burn block");
         CHECK(q1(fs.w, "SELECT COUNT(*) FROM v2_domain_updates "
                        "WHERE global_height=3") == 1,
@@ -893,42 +1180,66 @@ int main(void) {
                        "WHERE domain_id=0") == sys_h_burn,
               "burn must not advance SYSTEM"); OK();
         CHECK(q1(fs.w, "SELECT total_burned FROM supply_tracking")
-                  == 1000000 + 100,      /* fixture's prior fee burn + 100 */
-              "burned exactly once");
+                  == burned + 100, "burned exactly once");
         CHECK(nodus_witness_v2_supply_check(fs.w) == 0, "burn conserves");
         OK();
 
-        /* (d) an issuance mutation NOT declaring CORE trips the
-         * untouched-domain guard (the counters are CORE-committed). */
+        /* (d) an adapter escape that mutates CORE without declaring it
+         * trips the untouched-domain guard. */
         uint8_t g0[64], g1[64];
         CHECK(db_state_digest(fs.w, g0) == 0, "digest");
-        nodus_v2_op_t sneak;
-        mk_op(&sneak, 0x94,
-              SQL_SYS_CC(7) ";"
-              "UPDATE supply_tracking SET total_minted = total_minted + 1",
-              1, 0, 0);                    /* declares SYSTEM only */
-        mk_block(&mb, 4, &sneak, 1);
+        rogue_table_arm(fs.w);
+        static v2x_env_t esneak;
+        CHECK(env_sys_cc(&esneak, 999997, 5) == 0, "esneak");
+        nodus_v2_envelope_t vsneak = { esneak.bytes, esneak.len };
+        mk_block(&mb, 4, &vsneak, 1);
         CHECK(nodus_witness_v2_apply_block(fs.w, &mb) == -1,
               "undeclared issuance mutation accepted"); OK();
+        rogue_table_disarm(fs.w);
         CHECK(db_state_digest(fs.w, g1) == 0 && memcmp(g0, g1, 64) == 0,
               "undeclared issuance mutation leaked state"); OK();
 
         /* (e) fault during a cross-domain native move rolls BOTH
          * domains, heads, roots, accounting and metadata back. */
-        nodus_v2_op_t mint2;
-        mk_op(&mint2, 0x95,
-              "UPDATE supply_tracking SET total_minted = total_minted + 9;"
-              "UPDATE epoch_state SET epoch_pool_accum = "
-              "epoch_pool_accum + 9 WHERE epoch_start_height = 0",
-              2, 0, 1);
+        uint64_t minted2 = q1(fs.w, "SELECT total_minted FROM "
+                                    "supply_tracking");
+        uint64_t accum2 = q1(fs.w, "SELECT epoch_pool_accum FROM "
+                                   "epoch_state WHERE "
+                                   "epoch_start_height=0");
+        uint8_t m2sval[8], m2cval[8];
+        v2x_put64(m2sval, accum2 + 9);
+        v2x_put64(m2cval, minted2 + 9);
+        uint8_t m2sres[256], m2cres[256];
+        size_t m2srl = 0, m2crl = 0;
+        CHECK(v2x_eff1(m2sres, sizeof(m2sres), V2X_OP_EPOCH,
+                       DNA_EFFECT_SET, DNA_EFFECT_PRE_EXISTS, skey, 8,
+                       m2sval, 8, &m2srl) == 0, "m2sres");
+        CHECK(v2x_eff1(m2cres, sizeof(m2cres), V2X_OP_SUPPLY,
+                       DNA_EFFECT_SET, DNA_EFFECT_PRE_EXISTS, ckey, 1,
+                       m2cval, 8, &m2crl) == 0, "m2cres");
+        uint8_t m2scall[400], m2ccall[400];
+        uint32_t m2scl = v2x_script_build(m2scall, sizeof(m2scall), NULL,
+                                          0, m2sres, m2srl);
+        uint32_t m2ccl = v2x_script_build(m2ccall, sizeof(m2ccall), NULL,
+                                          0, m2cres, m2crl);
+        CHECK(m2scl && m2ccl, "m2 calls");
+        v2x_leg_t m2legs[2] = {
+            { 0, 1, m2scall, m2scl, 4, 2048 },
+            { 1, 1, m2ccall, m2ccl, 4, 2048 }
+        };
+        static v2x_env_t emint2;
+        CHECK(v2x_env_build(&emint2, m2legs, 2) == 0, "emint2");
+        nodus_v2_envelope_t vmint2 = { emint2.bytes, emint2.len };
         static const nodus_v2_apply_fail_t xpts[] = {
             V2AP_FAIL_AFTER_CROSS, V2AP_FAIL_AFTER_SUPPLY_MUT,
             V2AP_FAIL_AFTER_UPDATES, V2AP_FAIL_AFTER_HEADS,
-            V2AP_FAIL_AFTER_BLOCK_META, V2AP_FAIL_BEFORE_COMMIT
+            V2AP_FAIL_AFTER_BLOCK_META, V2AP_FAIL_BEFORE_COMMIT,
+            V2AP_FAIL_AFTER_ENV_RESERVE, V2AP_FAIL_AFTER_ENV_EXEC
         };
         for (size_t i = 0; i < sizeof(xpts) / sizeof(xpts[0]); i++) {
-            mk_block(&mb, 4, &mint2, 1);
+            mk_block(&mb, 4, &vmint2, 1);
             mb.fail_at = xpts[i];
+            mb.fail_env_index = 0;
             CHECK(nodus_witness_v2_apply_block(fs.w, &mb) == -1,
                   "cross-move fault did not fail");
             CHECK(db_state_digest(fs.w, g1) == 0 &&
@@ -936,6 +1247,13 @@ int main(void) {
                   "cross-move fault leaked one domain's half");
         }
         OK();
+        /* determinism after failed attempts: the same block with no
+         * fault commits, proving no meter/budget residue from the
+         * rejected attempts survived */
+        mk_block(&mb, 4, &vmint2, 1);
+        CHECK(nodus_witness_v2_apply_block(fs.w, &mb) == 0,
+              "post-fault clean apply"); OK();
+        CHECK(nodus_witness_v2_supply_check(fs.w) == 0, "conserved");
     }
     fx_close(&fs);
 

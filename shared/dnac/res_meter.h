@@ -41,13 +41,17 @@
  *    check and every consumer rejects. HONEST LABEL: the seal is a LOCAL
  *    INTEGRITY CHECKSUM. It is never serialized to any wire, never enters
  *    any consensus commitment, and claims nothing cryptographic beyond
- *    tamper-evidence of an in-memory struct.
+ *    tamper-evidence of an in-memory struct. The CONSENSUS identity of a
+ *    policy is the SEPARATE dna_meter_policy_digest below (its own tag,
+ *    seal field excluded) — that digest, not the seal, is what a ruleset
+ *    descriptor commits (domain_wire.h meter_policy_digest).
  *
  * 4. THE LEGACY tx_cost RUNTIME HOOK IS NOT AN AUTHORITY HERE. The
- *    nodus_rt_cost_fn hook (nodus_witness_runtime.h:81) declares
+ *    nodus_rt_cost_fn hook (nodus_witness_runtime.h) declares
  *    per-tx-TYPE work units for the pre-envelope admission surface
- *    (nodus_witness_domreg.c admission, nodus_v2_op_t.verify_cost test
- *    shapes). The envelope lane is keyed by runtime_op and priced ONLY by
+ *    (nodus_witness_domreg.c admission — the raw-SQL op scaffold that
+ *    also consumed it is retired). The envelope lane is keyed by
+ *    runtime_op and priced ONLY by
  *    this policy's w_op table; tx_cost is never consulted by anything in
  *    this module, and this module never overrides tx_cost's inactive
  *    legacy surface. One lane, one authority each — the hook migration
@@ -248,6 +252,32 @@ int dna_meter_policy_seal(dna_meter_policy_t *p);
 /** Verify version + recompute the seal. @return 0 valid / -1 invalid. */
 int dna_meter_policy_check(const dna_meter_policy_t *p);
 
+/**
+ * The policy IDENTITY digest — the value a consensus structure commits
+ * when it binds itself to one exact metering policy (Ledger V2: the
+ * RulesetDescriptor's meter_policy_digest field, domain_wire.h):
+ *
+ *   digest = SHA3-512( "DNA.METPOLID.v1"(16, zero-padded)
+ *     ‖ policy_version u32 BE ‖ w_base ‖ w_callbyte ‖ w_authbyte
+ *     ‖ w_effect ‖ w_effectbyte ‖ w_read ‖ w_write (u64 BE each)
+ *     ‖ w_op[0..255] (u64 BE each) ‖ op_present[0..3] (u64 BE each) )
+ *
+ * Same canonical field serialization as the seal, DIFFERENT tag, and the
+ * seal field is NOT part of the preimage: the digest identifies the
+ * WEIGHTS, independently of whether or when the in-memory struct was
+ * sealed. Two policies with identical weights have one identity; any
+ * weight or presence-bit difference changes it. Unlike the seal, this
+ * value MAY enter consensus commitments — committing it is exactly how
+ * "two validators claiming the same ruleset identity cannot price
+ * differently" becomes structural.
+ *
+ * Rejects (-1): NULL p or out, policy_version not accepted; `out` is
+ * untouched on every reject this module decides (the dna_effect_value_hash
+ * backend-fault caveat applies here too).
+ * @return 0 / -1.
+ */
+int dna_meter_policy_digest(const dna_meter_policy_t *p, uint8_t out[64]);
+
 /** Authoritative weight lookup. @return 0 with *w_out set; -1 when the
  *  op is out of range or its presence bit is clear (*w_out zeroed). */
 int dna_meter_op_weight(const dna_meter_policy_t *p, uint32_t runtime_op,
@@ -256,8 +286,8 @@ int dna_meter_op_weight(const dna_meter_policy_t *p, uint32_t runtime_op,
 /* ── Block budget view ─────────────────────────────────────────────── */
 
 /** Largest per-domain budget table. Mirrors the shipped per-transaction
- *  64-caps (DNA_ENV_MAX_LEGS, env_wire.h:192; DNA_TOUCHED_MAX,
- *  domain_wire.h:424). */
+ *  64-caps: DNA_ENV_MAX_LEGS (env_wire.h) and DNA_TOUCHED_MAX
+ *  (domain_wire.h). */
 #define DNA_METER_MAX_DOMAINS  DNA_ENV_MAX_LEGS
 
 typedef struct {
@@ -388,9 +418,21 @@ _Static_assert(sizeof(dna_meter_t) <= 4096,
  * Rejects: everything plan build rejects, plus ERR_STATE (meter not
  * ZERO), ERR_DOMAIN (budget malformed, or a leg's domain has no budget
  * entry), ERR_GLOBAL_BUDGET / ERR_DOMAIN_BUDGET (exact-fit passes;
- * one unit short rejects). On EVERY reject the meter is re-zeroed and
- * the budget is byte-identical to entry. This is the ONLY path that
- * debits a reservation — there is no second reserve implementation.
+ * one unit short rejects).
+ *
+ * REJECT OUTPUT — two distinct cases (the ZERO-state gate at the top of
+ * res_meter.c dna_meter_reserve; pinned by test_res_meter's
+ * "ERR_STATE leaves a live meter untouched" byte-compare):
+ *   - ERR_STATE fires on a meter that is NOT in the ZERO state, and it
+ *     leaves that meter — and any reservation it holds — UNTOUCHED.
+ *     Zeroing a RESERVED or ACTIVE meter here would strand the budget
+ *     units its reservation took (only finalize/abort may release them);
+ *   - every reject PAST the ZERO-state gate re-zeroes the meter. The
+ *     meter was in the ZERO state on entry, so the re-zero publishes
+ *     nothing and releases nothing.
+ * In both cases the budget is byte-identical to entry. This is the ONLY
+ * path that debits a reservation — there is no second reserve
+ * implementation.
  */
 dna_meter_status_t dna_meter_reserve(dna_meter_t *m,
                                      const dna_meter_policy_t *pol,

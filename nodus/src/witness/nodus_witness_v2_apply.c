@@ -18,6 +18,7 @@
 #include "witness/nodus_witness_v2_apply.h"
 #include "witness/nodus_witness_v2_schema.h"
 #include "witness/nodus_witness_v2_claims.h"
+#include "witness/nodus_witness_v2_adapter.h"
 #include "witness/nodus_witness_runtime.h"
 #include "witness/nodus_witness_domreg.h"
 #include "witness/nodus_witness_roots_v2.h"
@@ -256,7 +257,10 @@ typedef struct {
     int      touched;
     uint8_t  tx_ids[MAX_OPS][64];       /* local order                   */
     uint32_t n_tx;
-    uint32_t res_cost;                  /* checked accumulation          */
+    uint64_t res_cost;                  /* checked accumulation of ACTUAL
+                                         * consumed units (the
+                                         * DomainUpdate res_verify_cost
+                                         * field is u64 on the wire)     */
     int      root_known;
     uint8_t  root_now[64];
     dna_v2_domain_head_t newhead;
@@ -464,6 +468,10 @@ int nodus_witness_v2_genesis_ex(nodus_witness_t *w,
                                 size_t manifest_len) {
     if (!w || !w->db || !genesis_block_id || !vset_hash) return -1;
     if ((manifest_bytes == NULL) != (manifest_len == 0)) return -1;
+    /* The genesis epoch is DERIVED, not trusted: height 0 sits in epoch
+     * nodus_v2_epoch_for_height(0) == 0 under the block-count rule. Any
+     * other caller value is a rejection, never a stored lie. */
+    if (epoch != nodus_v2_epoch_for_height(0)) return -1;
     uint32_t ver = 0;
     if (nodus_witness_db_schema_version(w, &ver) != 0 ||
         ver != NODUS_V2_SCHEMA_VERSION_S7)
@@ -642,13 +650,220 @@ static int pool_stage_fault(void *ud, nodus_v2_pool_stage_t s) {
     }
 }
 
+/* ── The typed execution pipeline (contract: nodus_witness_v2_apply.h) ─
+ *
+ * FAULT vs VERDICT: every failure in this half of the file exits through
+ * exactly one of two labels — `fail` (consensus VERDICT, rc -1) or
+ * `fail_fault` (node-local FAULT, rc -2). Both roll the ONE transaction
+ * back and abort every non-terminal meter; they differ only in what the
+ * caller may conclude. Classification rule: a deterministic function of
+ * (committed state, block bytes) is a verdict; storage/hash/alloc/
+ * compiled-table failures are faults. HONEST LABEL: the S6 claim and S7
+ * pool subpaths and the supply gate keep their pre-season conflated -1
+ * helpers — inside them a database fault and a semantic rejection are
+ * not yet distinguishable, so their failures conservatively exit
+ * through `fail` exactly as before this season; precise classification
+ * there is that surface's own migration. */
+
+int nodus_witness_v2_local_index_find(const uint8_t ids[][64], uint32_t n,
+                                      const uint8_t tx_id[64],
+                                      uint32_t *lidx_out) {
+    if (!ids || !tx_id || !lidx_out) return -1;
+    for (uint32_t k = 0; k < n; k++)
+        if (memcmp(ids[k], tx_id, 64) == 0) {
+            *lidx_out = k;
+            return 0;
+        }
+    return -1;   /* a MISS FAILS CLOSED — it never aliases index 0 */
+}
+
+/** Abort every meter still holding a reservation (RESERVED or ACTIVE).
+ *  FINALIZED/ABORTED/ZERO meters are left alone — double release is a
+ *  lifecycle violation, not cleanup. */
+static void meters_abort_all(dna_meter_t *m, size_t n) {
+    if (!m) return;
+    for (size_t i = 0; i < n; i++)
+        if (m[i].state == DNA_METER_ST_RESERVED ||
+            m[i].state == DNA_METER_ST_ACTIVE)
+            (void)dna_meter_abort(&m[i]);
+}
+
+/** Does the domain's COMMITTED ruleset own this runtime_op? The rule-id
+ *  list of the checked-in descriptor is the ownership authority — the
+ *  same list the ruleset_hash commits, so ownership can never drift
+ *  from the identity every validator matched. Ascending list, early
+ *  stop (the rt_owns_type shape). */
+static int rt_owns_runtime_op(const nodus_domain_runtime_t *rt,
+                              uint32_t runtime_op) {
+    const dna_ruleset_desc_t *d = &rt->descriptor;
+    for (size_t i = 0; i < d->rule_count; i++) {
+        if (d->rule_ids[i] == runtime_op) return 1;
+        if (d->rule_ids[i] > runtime_op) break;
+    }
+    return 0;
+}
+
+/** Canonical mediated-read request order: op_id ascending, then key
+ *  bytes lexicographic (memcmp over the common prefix; shorter first;
+ *  full equality = duplicate). Mirrors the effect-wire record order so
+ *  ONE ordering discipline governs both request and result spaces.
+ *  @return <0 / 0 (equal = duplicate) / >0. */
+static int read_req_cmp(const nodus_rt_read_req_t *a,
+                        const nodus_rt_read_req_t *b) {
+    if (a->op_id != b->op_id) return a->op_id < b->op_id ? -1 : 1;
+    uint16_t min = a->key_len < b->key_len ? a->key_len : b->key_len;
+    int c = memcmp(a->key, b->key, min);
+    if (c != 0) return c;
+    if (a->key_len != b->key_len) return a->key_len < b->key_len ? -1 : 1;
+    return 0;
+}
+
+/**
+ * Execute ONE preflighted, reserved envelope inside THE transaction:
+ * activate → per leg (reads → native exec → strict decode → charge →
+ * adapter apply) → finalize → per-domain consumed-unit accounting.
+ * @return 0 / -1 verdict / -2 node fault. On ANY failure the caller
+ * rolls the whole block back — there is no partial-envelope outcome.
+ */
+static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
+                        const uint8_t chain_id[DNA_CHAIN_ID_LEN],
+                        uint64_t epoch,
+                        dom_ctx_t *doms, size_t n_dom,
+                        const dna_env_preflight_t *pf, dna_meter_t *m,
+                        nodus_rt_read_res_t *reads, uint8_t *resbuf) {
+    /* RESERVED → ACTIVE. The reservation covered the fixed work by
+     * construction, so any failure here is an accounting invariant
+     * fault of this node, never a budget verdict. */
+    if (dna_meter_activate(m) != DNA_METER_OK) return -2;
+
+    const dna_env_view_t *v = &pf->view;
+    for (uint16_t l = 0; l < v->leg_count; l++) {
+        dom_ctx_t *d = dom_for(doms, n_dom, v->leg[l].domain_id);
+        if (!d || !d->rt || !d->rt->exec) return -2;  /* admission-scan
+                                         * invariant — defensive        */
+        const nodus_domain_runtime_t *rt = d->rt;
+
+        nodus_rt_exec_ctx_t ctx;
+        memset(&ctx, 0, sizeof(ctx));
+        ctx.chain_id            = chain_id;
+        ctx.global_height       = blk->global_height;
+        ctx.epoch               = epoch;
+        ctx.tx_id               = pf->tx_id;
+        ctx.auth_context_commit = pf->auth_context_commit;
+        ctx.leg_auth_digest     = pf->auth_digest[l];
+
+        /* ── mediated reads: request phase → engine-charged execution ─
+         * TRUST NOTE: the count/length rejects below detect a hook that
+         * LIES about how much it wrote; they cannot detect a compiled
+         * hook that ignores the caps it was handed and scribbles past
+         * its buffer — an in-process C function pointer is inside the
+         * trust boundary by construction (nodus_witness_v2_adapter.h
+         * "broken TRUSTED component"). The caps are the contract; the
+         * checks are tamper-evidence, not memory safety. */
+        uint16_t n_reads = 0;
+        if (rt->read_plan) {
+            nodus_rt_read_req_t reqs[NODUS_RT_MAX_READS];
+            memset(reqs, 0, sizeof(reqs));
+            uint16_t nr = 0;
+            if (rt->read_plan(rt, v, l, &ctx, reqs, NODUS_RT_MAX_READS,
+                              &nr) != 0)
+                return -1;               /* deterministic refusal        */
+            if (nr > NODUS_RT_MAX_READS) return -1;   /* over-plan       */
+            for (uint16_t r = 0; r < nr; r++) {
+                if (reqs[r].key_len < 1 ||
+                    reqs[r].key_len > DNA_EFFECT_MAX_KEY_LEN)
+                    return -1;
+                /* strictly ascending (op_id, key): duplicates AND
+                 * disorder both reject — an ambiguous read list has no
+                 * canonical charge order */
+                if (r > 0 && read_req_cmp(&reqs[r - 1], &reqs[r]) >= 0)
+                    return -1;
+            }
+            for (uint16_t r = 0; r < nr; r++) {
+                nodus_adapter_status_t ast =
+                    nodus_witness_v2_read_one(w, rt, &reqs[r], &reads[r]);
+                if (ast == NODUS_ADAPTER_ERR_STORAGE_FAULT ||
+                    ast == NODUS_ADAPTER_ERR_ARG)
+                    return -2;           /* node fault, never "absent"   */
+                if (ast != NODUS_ADAPTER_OK)
+                    return -1;           /* NO_ADAPTER/UNKNOWN_OP/SHAPE:
+                                          * deterministic verdict        */
+                /* exactly ONE w_read per executed read, from the sealed
+                 * plan-pinned policy — the engine is the only charger */
+                dna_meter_status_t ms =
+                    dna_meter_charge_read(m, d->domain_id);
+                if (ms == DNA_METER_ERR_FAULT) return -2;
+                if (ms != DNA_METER_OK) return -1;    /* budget verdict  */
+            }
+            n_reads = nr;
+        }
+
+        /* ── native compiled execution → canonical result bytes ─────── */
+        size_t rl = 0;
+        memset(resbuf, 0, DNA_EFFECT_MAX_TOTAL_LEN);
+        if (rt->exec(rt, v, l, &ctx, reads, n_reads,
+                     resbuf, DNA_EFFECT_MAX_TOTAL_LEN, &rl) != 0)
+            return -1;                   /* deterministic refusal        */
+        if (rl > DNA_EFFECT_MAX_TOTAL_LEN) return -1;
+
+        /* exact-length strict decode: canonical order, logical-key
+         * uniqueness, kind/precondition legality — all codec-enforced;
+         * a malformed result from a compiled runtime is the same bytes
+         * on every node, hence a VERDICT */
+        dna_effect_view_t ev;
+        if (dna_effect_result_decode(resbuf, rl, &ev) != 0) return -1;
+
+        /* charge BEFORE mutation (the season's step order): w_effect ×
+         * actual count + w_effectbyte × actual canonical bytes, gated
+         * by the leg's declared ceilings */
+        dna_meter_status_t ms = dna_meter_charge_effects(m, d->domain_id,
+                                                         &ev);
+        if (ms == DNA_METER_ERR_FAULT) return -2;
+        if (ms != DNA_METER_OK) return -1;
+
+        /* adapter application: validate → probe → the ONE precondition
+         * decision table → mutate, all through the runtime's compiled
+         * adapter, scoped by rt->domain_id and nothing else */
+        uint16_t fidx = 0;
+        nodus_adapter_status_t ast =
+            nodus_witness_v2_effects_apply(w, rt, &ev, &fidx);
+        if (ast == NODUS_ADAPTER_ERR_STORAGE_FAULT ||
+            ast == NODUS_ADAPTER_ERR_ARG)
+            return -2;                   /* node fault                   */
+        if (ast != NODUS_ADAPTER_OK) return -1;   /* precondition etc.   */
+    }
+
+    /* ACTIVE → FINALIZED: unused units return to the budgets. */
+    if (dna_meter_finalize(m) != DNA_METER_OK) return -2;
+
+    /* Per-domain consumed-unit accounting for the DomainUpdate resource
+     * fields (ACTUAL consumed units, not the reservation). Bounded by
+     * the block budgets, but checked anyway — one arithmetic
+     * discipline. */
+    for (uint16_t l = 0; l < v->leg_count; l++) {
+        dom_ctx_t *d = dom_for(doms, n_dom, v->leg[l].domain_id);
+        if (!d) return -2;
+        if (dna_ck_add_u64(d->res_cost, m->dom_consumed[l],
+                           &d->res_cost) != 0)
+            return -2;
+    }
+    return 0;
+}
+
 int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
-    if (!w || !w->db || !blk || (blk->n_ops > 0 && !blk->ops)) return -1;
-    if (blk->n_ops > MAX_OPS) return -1;
+    if (!w || !w->db || !blk || (blk->n_envs > 0 && !blk->envs)) return -1;
+    if (blk->n_envs > NODUS_V2_ENV_BATCH_MAX) return -1;
 
     uint32_t ver = 0;
     if (nodus_witness_db_schema_version(w, &ver) != 0 ||
         ver != NODUS_V2_SCHEMA_VERSION_S7)
+        return -1;
+
+    /* ── epoch: DERIVED from the global block count, never trusted ────
+     * blk->epoch is caller-carried block material; it MUST equal the
+     * canonical derivation or the block is a lie about its own epoch.
+     * No clock, no timestamp, no domain_height participates. */
+    if (blk->epoch != nodus_v2_epoch_for_height(blk->global_height))
         return -1;
 
     /* ── 0. replay / linkage (read-only, pre-transaction) ───────────── */
@@ -658,7 +873,7 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
         if (sqlite3_prepare_v2(w->db,
                 "SELECT block_id FROM v2_blocks WHERE global_height = ?1",
                 -1, &st, NULL) != SQLITE_OK)
-            return -1;
+            return -2;
         sqlite3_bind_int64(st, 1, (sqlite3_int64)blk->global_height);
         int rc = sqlite3_step(st);
         if (rc == SQLITE_ROW) {
@@ -669,34 +884,34 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
             return same ? 1 : -1;       /* idempotent / conflicting      */
         }
         sqlite3_finalize(st);
-        if (rc != SQLITE_DONE) return -1;
+        if (rc != SQLITE_DONE) return -2;
 
         /* same BlockID at another height? */
         if (sqlite3_prepare_v2(w->db,
                 "SELECT 1 FROM v2_blocks WHERE block_id = ?1", -1, &st,
                 NULL) != SQLITE_OK)
-            return -1;
+            return -2;
         sqlite3_bind_blob(st, 1, blk->block_id, 64, SQLITE_TRANSIENT);
         rc = sqlite3_step(st);
         sqlite3_finalize(st);
         if (rc == SQLITE_ROW) return -1;
-        if (rc != SQLITE_DONE) return -1;
+        if (rc != SQLITE_DONE) return -2;
 
         /* height continuity + prev linkage */
         uint64_t maxh = 0;
         if (sum_q(w, "SELECT COALESCE(MAX(global_height),0) FROM v2_blocks",
                   &maxh) != 0)
-            return -1;
+            return -2;
         uint64_t rows = 0;
         if (sum_q(w, "SELECT COUNT(*) FROM v2_blocks", &rows) != 0)
-            return -1;
+            return -2;
         if (rows == 0) return -1;       /* genesis must exist first      */
         if (blk->global_height != maxh + 1) return -1;   /* gap/behind   */
 
         if (sqlite3_prepare_v2(w->db,
                 "SELECT block_id FROM v2_blocks WHERE global_height = ?1",
                 -1, &st, NULL) != SQLITE_OK)
-            return -1;
+            return -2;
         sqlite3_bind_int64(st, 1, (sqlite3_int64)maxh);
         rc = sqlite3_step(st);
         int prev_ok = (rc == SQLITE_ROW &&
@@ -707,95 +922,194 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
         if (!prev_ok) return -1;
     }
 
-    /* ── the registered domain working set (read-only, pre-txn) ───────
-     * STRICT lifecycle preconditions: every ACTIVE domain must hold
-     * exactly one persisted DomainHead and resolve exactly one runtime
-     * — anything else is consensus failure, never repaired here. */
+    /* ── 0a. FROZEN BLOCK-START EXECUTION SNAPSHOT (read-only) ────────
+     * Registered-domain working set (STRICT lifecycle preconditions),
+     * contextual ruleset table, derived chain id, the SYSTEM-committed
+     * metering policy and the unit budgets — built ONCE, before any
+     * mutation, used by every transaction in the block. Nothing the
+     * block executes can change what a later transaction in the SAME
+     * block resolves. */
     dom_ctx_t *doms = calloc(MAX_DOMS, sizeof(*doms));
-    if (!doms) return -1;
+    if (!doms) return -2;
     size_t n_dom = 0;
     if (doms_load(w, doms, &n_dom, /*strict_active=*/1) != 0) {
         free(doms);
-        return -1;
+        return -2;   /* registry/head/runtime state unreadable or broken
+                      * on THIS node — never a statement about the block */
     }
 
-#define RETURN_FAIL do { free(doms); return -1; } while (0)
+    uint8_t chain_id[DNA_CHAIN_ID_LEN];
+    if (nodus_witness_v2_chain_id(w, chain_id) != 0) {
+        free(doms);
+        return -2;   /* linkage proved genesis exists; an underivable
+                      * chain id here is a node-local read failure       */
+    }
 
-    /* ── op classification + resource pre-scan (no mutation yet) ────── */
-    uint8_t claim_nuls[MAX_OPS][64];
-    /* duplicate tx_id in the block */
-    for (size_t i = 0; i < blk->n_ops; i++)
-        for (size_t j = i + 1; j < blk->n_ops; j++)
-            if (memcmp(blk->ops[i].tx_id, blk->ops[j].tx_id, 64) == 0)
-                RETURN_FAIL;
-
-    uint64_t global_cost = 0;
-    for (size_t i = 0; i < blk->n_ops; i++) {
-        const nodus_v2_op_t *op = &blk->ops[i];
-        if (op->touched_n == 0 || op->touched_n > DNA_TOUCHED_MAX)
-            RETURN_FAIL;
-        for (uint16_t t = 0; t < op->touched_n; t++) {
-            if (t > 0 && op->touched[t - 1] >= op->touched[t])
-                RETURN_FAIL;
-            dom_ctx_t *d = dom_for(doms, n_dom, op->touched[t]);
-            /* an op may touch only a REGISTERED domain with an ACTIVE,
-             * locally resolvable runtime — fail-closed, never "the
-             * engine knows domains 0 and 1" */
-            if (!d || d->status != DNA_DOMST_ACTIVE || !d->rt)
-                RETURN_FAIL;
-            d->touched = 1;
-            if (d->n_tx >= MAX_OPS) RETURN_FAIL;
-            memcpy(d->tx_ids[d->n_tx++], op->tx_id, 64);
-            /* the ONE canonical cross-domain rule: cost charged to EVERY
-             * touched domain */
-            uint64_t nc = (uint64_t)d->res_cost + op->verify_cost;
-            if (nc > UINT32_MAX) RETURN_FAIL;
-            d->res_cost = (uint32_t)nc;
+    /* Contextual ruleset table: one entry per block-entry-ACTIVE,
+     * runtime-backed domain, ascending by construction (doms[] is ASC).
+     * A leg addressing any OTHER domain dies in the preflight seam
+     * (ERR_CTX_MISSING) — the caller cannot widen this table. */
+    dna_env_leg_ctx_t rulesets[MAX_DOMS];
+    size_t n_rulesets = 0;
+    /* The engine-owned unit budgets for this block. Per-domain budget =
+     * the committed manifest quota where non-zero (denominated in
+     * units — the header's honest label), else the global constant. */
+    dna_meter_budget_t budget;
+    memset(&budget, 0, sizeof(budget));
+    budget.global_remaining = NODUS_V2_GLOBAL_UNIT_BUDGET;
+    for (size_t i = 0; i < n_dom; i++) {
+        if (doms[i].status != DNA_DOMST_ACTIVE || !doms[i].rt) continue;
+        if (n_rulesets >= MAX_DOMS ||
+            budget.n_domains >= DNA_METER_MAX_DOMAINS) {
+            free(doms);
+            return -2;                   /* engine bound — resource fault */
         }
-        if (op->verify_cost > UINT64_MAX - global_cost) RETURN_FAIL;
-        global_cost += op->verify_cost;
+        rulesets[n_rulesets].domain_id       = doms[i].domain_id;
+        rulesets[n_rulesets].ruleset_version = doms[i].man.ruleset_version;
+        memcpy(rulesets[n_rulesets].ruleset_hash, doms[i].man.ruleset_hash,
+               DNA_ENV_RULESET_HASH_LEN);
+        n_rulesets++;
+        budget.dom[budget.n_domains].domain_id = doms[i].domain_id;
+        budget.dom[budget.n_domains].remaining_units =
+            doms[i].man.quota_verify_cost != 0
+                ? (uint64_t)doms[i].man.quota_verify_cost
+                : (uint64_t)NODUS_V2_GLOBAL_UNIT_BUDGET;
+        budget.n_domains++;
     }
 
-    /* global caps: MAX_TXS chain-config param + the verify budget */
+    /* THE block metering policy: the resolved SYSTEM runtime's compiled
+     * policy, verified against BOTH its seal and the descriptor-
+     * committed identity digest. SYSTEM is the mandatory protocol
+     * domain (genesis enforces it ACTIVE), so a block on a chain whose
+     * SYSTEM is not executable is unappliable. A missing, unsealed,
+     * mutated or digest-mismatched policy is a BROKEN COMPILED TABLE on
+     * this node — a fault: this node must not vote, and it must
+     * certainly not improvise a price table. */
+    const dna_meter_policy_t *policy = NULL;
+    {
+        dom_ctx_t *sys = dom_for(doms, n_dom, DNA_DOMAIN_SYSTEM);
+        if (!sys || sys->status != DNA_DOMST_ACTIVE || !sys->rt) {
+            free(doms);
+            return -1;   /* chain state: SYSTEM not ACTIVE/backed        */
+        }
+        uint8_t zero[DNA_DOM_HASH_LEN] = { 0 };
+        uint8_t pd[64];
+        if (!sys->rt->meter_policy ||
+            memcmp(sys->rt->descriptor.meter_policy_digest, zero,
+                   DNA_DOM_HASH_LEN) == 0 ||
+            dna_meter_policy_check(sys->rt->meter_policy) != 0 ||
+            dna_meter_policy_digest(sys->rt->meter_policy, pd) != 0 ||
+            memcmp(pd, sys->rt->descriptor.meter_policy_digest, 64) != 0) {
+            free(doms);
+            return -2;
+        }
+        policy = sys->rt->meter_policy;
+    }
+
+    /* ── 0b. envelope preflight + reservation (whole canonical batch) ─
+     * Heap allocations: the preflight results are multi-KB each
+     * (env_preflight.h size audit) and the read/result buffers are the
+     * codec maxima — none of it belongs on the stack. */
+    dna_env_preflight_t *pf = NULL;
+    dna_meter_t *meters = NULL;
+    nodus_rt_read_res_t *reads = NULL;
+    uint8_t *resbuf = NULL;
+    uint8_t claim_nuls[MAX_OPS][64];
+    int env_phase[NODUS_V2_ENV_BATCH_MAX];
+    memset(env_phase, 0, sizeof(env_phase));
+
+    if (blk->n_envs > 0) {
+        pf     = calloc(blk->n_envs, sizeof(*pf));
+        meters = calloc(blk->n_envs, sizeof(*meters));
+        reads  = calloc(NODUS_RT_MAX_READS, sizeof(*reads));
+        resbuf = calloc(1, DNA_EFFECT_MAX_TOTAL_LEN);
+        if (!pf || !meters || !reads || !resbuf) goto fail_fault_pre;
+    }
+
+#define RET_VERDICT do { goto fail_verdict_pre; } while (0)
+
+    if (blk->n_envs > 0) {
+        size_t fidx = 0;
+        dna_env_preflight_status_t pfst = DNA_ENV_PF_OK;
+        dna_meter_status_t mst = DNA_METER_OK;
+        nodus_v2_env_status_t est = nodus_witness_v2_env_preflight_reserve_batch(
+            w, blk->global_height, rulesets, n_rulesets, policy, &budget,
+            blk->envs, blk->n_envs, pf, meters, &fidx, &pfst, &mst);
+        if (est != NODUS_V2_ENV_OK) {
+            /* FAULT vs VERDICT routing of the seam's rejection: an
+             * ERR_HASH preflight and a meter accounting FAULT are this
+             * node failing to compute; everything else — malformed
+             * bytes, expiry, unregistered domain, derived-id duplicate,
+             * budget misfit, absent op weight — is deterministic. */
+            if ((est == NODUS_V2_ENV_ERR_PREFLIGHT &&
+                 pfst == DNA_ENV_PF_ERR_HASH) ||
+                (est == NODUS_V2_ENV_ERR_METER &&
+                 mst == DNA_METER_ERR_FAULT) ||
+                est == NODUS_V2_ENV_ERR_CHAIN)
+                goto fail_fault_pre;
+            RET_VERDICT;
+        }
+        if (blk->fail_at == V2AP_FAIL_AFTER_ENV_RESERVE) RET_VERDICT;
+
+        /* Per-leg execution admission against the SNAPSHOT (block-entry
+         * status is the executability authority): ACTIVE + runtime +
+         * exec hook + INVOKE access + runtime_op OWNED by the committed
+         * ruleset. Fills the per-domain derived-id lists — the ONLY
+         * source the index/root phases consume. */
+        for (size_t i = 0; i < blk->n_envs; i++) {
+            const dna_env_view_t *v = &pf[i].view;
+            int is_sys = (v->leg_count == 1 &&
+                          v->leg[0].domain_id == DNA_DOMAIN_SYSTEM);
+            env_phase[i] = is_sys ? 0 : (v->leg_count > 1 ? 1 : 2);
+            for (uint16_t l = 0; l < v->leg_count; l++) {
+                dom_ctx_t *d = dom_for(doms, n_dom, v->leg[l].domain_id);
+                if (!d || d->pre_status != DNA_DOMST_ACTIVE || !d->rt)
+                    RET_VERDICT;
+                if (!d->rt->exec) RET_VERDICT;   /* no execution hook =
+                                                  * leg fails closed     */
+                if (v->leg[l].access_mode != DNA_ENV_ACCESS_INVOKE)
+                    RET_VERDICT;                 /* READ legs: later
+                                                  * season (honest label)*/
+                if (!rt_owns_runtime_op(d->rt, v->leg[l].runtime_op))
+                    RET_VERDICT;                 /* op not in the
+                                                  * committed ruleset    */
+                d->touched = 1;
+                if (d->n_tx >= MAX_OPS) RET_VERDICT;
+                memcpy(d->tx_ids[d->n_tx++], pf[i].tx_id, 64);
+            }
+        }
+    }
+
+    /* global tx-count cap (chain config) + per-domain tx quotas */
     {
         uint64_t cap = nodus_chain_config_get_u64(w,
             DNAC_CFG_MAX_TXS_PER_BLOCK, blk->global_height,
             DNAC_CFG_MAX_TXS_HARD_CAP);
         if (cap == 0 || cap > DNAC_CFG_MAX_TXS_HARD_CAP)
             cap = DNAC_CFG_MAX_TXS_HARD_CAP;
-        if ((uint64_t)blk->n_ops > cap) RETURN_FAIL;
-        if (global_cost > NODUS_V2_GLOBAL_VERIFY_BUDGET) RETURN_FAIL;
+        if ((uint64_t)blk->n_envs > cap) RET_VERDICT;
     }
-
-    /* per-domain quotas from the ACTIVE registry manifests (0 = the
-     * global cap/budget governs — enforced just above, never
-     * "unlimited") */
     for (size_t i = 0; i < n_dom; i++) {
         dom_ctx_t *d = &doms[i];
         if (!d->touched) continue;
         if (d->man.quota_tx_per_block != 0 &&
             d->n_tx > (uint32_t)d->man.quota_tx_per_block)
-            RETURN_FAIL;
-        if (d->man.quota_verify_cost != 0 &&
-            d->res_cost > d->man.quota_verify_cost)
-            RETURN_FAIL;
+            RET_VERDICT;
     }
 
     /* ── S6 claims: bounds + in-block duplicate nullifiers + touched
-     * TARGET domains (pre-txn, read-only). The nullifier derives from
-     * the COMMITTED manifest context, so the committed manifest is
-     * loaded (read-only) here; an unknown manifest rejects exactly as
-     * admit would. ─────────────────────────────────────────────────── */
+     * TARGET domains (pre-txn, read-only) — unchanged from S6; its
+     * helpers keep the conflated -1 (header HONEST LABEL). ──────────── */
     if (blk->n_claims > 0) {
-        if (!blk->claims || blk->n_claims > MAX_OPS) RETURN_FAIL;
+        if (!blk->claims || blk->n_claims > MAX_OPS) RET_VERDICT;
         for (size_t i = 0; i < blk->n_claims; i++) {
             const dna_claim_t *c = &blk->claims[i];
-            if (dna_claim_validate(c) != 0) RETURN_FAIL;
+            if (dna_claim_validate(c) != 0) RET_VERDICT;
             dna_gman_t m;
             if (nodus_witness_v2_manifest_load_by_hash(w,
                     c->manifest_hash, &m) != 0)
-                RETURN_FAIL;
-            if (m.dist_present != 1) RETURN_FAIL;
+                RET_VERDICT;
+            if (m.dist_present != 1) RET_VERDICT;
             dna_dist_leaf_t leaf;
             memset(&leaf, 0, sizeof(leaf));
             leaf.leaf_version = DNA_DIST_VERSION;
@@ -804,87 +1118,96 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
             leaf.source_amount = c->source_amount;
             memcpy(leaf.dest_binding, c->dest_binding, 64);
             uint8_t leaf_hash[64];
-            if (dna_dist_leaf_hash(&leaf, leaf_hash) != 0) RETURN_FAIL;
+            if (dna_dist_leaf_hash(&leaf, leaf_hash) != 0) RET_VERDICT;
             if (dna_claim_nullifier(c->chain_id, c->manifest_hash,
                                     m.target_domain_id,
                                     m.target_asset_ref,
                                     m.target_asset_len, leaf_hash,
                                     claim_nuls[i]) != 0)
-                RETURN_FAIL;
+                RET_VERDICT;
             for (size_t j = 0; j < i; j++)
                 if (memcmp(claim_nuls[i], claim_nuls[j], 64) == 0) {
-                    QGP_LOG_ERROR(LOG_TAG,
+                    QGP_LOG_ERROR(LOG_TAG, "%s",
                         "duplicate claim in one block — rejected");
-                    RETURN_FAIL;
+                    RET_VERDICT;
                 }
-            /* A claim IS a state transition of its COMMITTED target
-             * domain — the block declares that domain touched by
-             * carrying the claim. The engine never assumes a target. */
             dom_ctx_t *d = dom_for(doms, n_dom, m.target_domain_id);
             if (!d || d->status != DNA_DOMST_ACTIVE || !d->rt)
-                RETURN_FAIL;
+                RET_VERDICT;
             d->touched = 1;
         }
     }
 
     /* ── S7 pool batches: shape + canonical batch order + touched
-     * owning domains (pre-txn, read-only). Ordering, canonicity,
-     * duplicate and capacity rules live in the pool module; the engine
-     * only enforces the cross-batch order and domain authority. ───── */
+     * owning domains (pre-txn, read-only) — unchanged from S7. ─────── */
     if (blk->n_pool_muts > 0) {
-        if (!blk->pool_muts || blk->n_pool_muts > MAX_OPS) RETURN_FAIL;
+        if (!blk->pool_muts || blk->n_pool_muts > MAX_OPS) RET_VERDICT;
         for (size_t i = 0; i < blk->n_pool_muts; i++) {
             const nodus_v2_pool_mut_t *m = &blk->pool_muts[i];
-            if (nodus_witness_v2_pool_mut_validate(m) != 0) RETURN_FAIL;
+            if (nodus_witness_v2_pool_mut_validate(m) != 0) RET_VERDICT;
             if (i > 0) {
                 const nodus_v2_pool_mut_t *p = &blk->pool_muts[i - 1];
-                /* strictly ascending (domain_id, pool_id): duplicates
-                 * (two batches for one pool = ambiguous final root)
-                 * and non-canonical order both reject */
                 if (p->domain_id > m->domain_id ||
                     (p->domain_id == m->domain_id &&
                      p->pool_id >= m->pool_id))
-                    RETURN_FAIL;
+                    RET_VERDICT;
             }
-            /* a pool batch IS a state transition of its owning domain */
             dom_ctx_t *d = dom_for(doms, n_dom, m->domain_id);
             if (!d || d->status != DNA_DOMST_ACTIVE || !d->rt)
-                RETURN_FAIL;
+                RET_VERDICT;
             d->touched = 1;
         }
     }
 
-#undef RETURN_FAIL
+#undef RET_VERDICT
 
     /* ── 1. THE transaction ─────────────────────────────────────────── */
-    if (exec_sql(w, "BEGIN IMMEDIATE") != 0) { free(doms); return -1; }
+    if (exec_sql(w, "BEGIN IMMEDIATE") != 0) goto fail_fault_pre;
     FAIL_POINT(V2AP_FAIL_AFTER_BEGIN);
 
     /* 2. supply gate (pre-apply) */
     if (nodus_witness_v2_supply_check(w) != 0) goto fail;
 
-    /* 4-6. op execution in the canonical phase order */
-    for (size_t i = 0; i < blk->n_ops; i++) {   /* SYSTEM-local          */
-        const nodus_v2_op_t *op = &blk->ops[i];
-        if (op->touched_n == 1 && op->touched[0] == DNA_DOMAIN_SYSTEM &&
-            op->sql && exec_sql(w, op->sql) != 0)
+    /* 4-6. ENVELOPE EXECUTION in the canonical phase order: SYSTEM-
+     * local first, then cross-domain, then domain-local ascending by
+     * domain_id — intra-phase in batch order. Sequential execution
+     * inside the ONE transaction is what makes a later envelope's
+     * mediated reads observe an earlier envelope's canonical
+     * mutations. */
+    for (size_t i = 0; i < blk->n_envs; i++) {          /* SYSTEM-local  */
+        if (env_phase[i] != 0) continue;
+        int rc = exec_one_env(w, blk, chain_id, blk->epoch, doms, n_dom,
+                              &pf[i], &meters[i], reads, resbuf);
+        if (rc == -2) goto fail_fault;
+        if (rc != 0) goto fail;
+        if (blk->fail_at == V2AP_FAIL_AFTER_ENV_EXEC &&
+            blk->fail_env_index == (uint32_t)i)
             goto fail;
     }
     FAIL_POINT(V2AP_FAIL_AFTER_SYSTEM);
-    for (size_t i = 0; i < blk->n_ops; i++) {   /* cross-domain          */
-        const nodus_v2_op_t *op = &blk->ops[i];
-        if (op->touched_n > 1 && op->sql && exec_sql(w, op->sql) != 0)
+    for (size_t i = 0; i < blk->n_envs; i++) {          /* cross-domain  */
+        if (env_phase[i] != 1) continue;
+        int rc = exec_one_env(w, blk, chain_id, blk->epoch, doms, n_dom,
+                              &pf[i], &meters[i], reads, resbuf);
+        if (rc == -2) goto fail_fault;
+        if (rc != 0) goto fail;
+        if (blk->fail_at == V2AP_FAIL_AFTER_ENV_EXEC &&
+            blk->fail_env_index == (uint32_t)i)
             goto fail;
     }
     FAIL_POINT(V2AP_FAIL_AFTER_CROSS);
     for (size_t di = 0; di < n_dom; di++) {     /* domain-local, id ASC  */
         dom_ctx_t *d = &doms[di];
-        for (size_t i = 0; i < blk->n_ops; i++) {
-            const nodus_v2_op_t *op = &blk->ops[i];
-            if (op->touched_n == 1 &&
-                op->touched[0] == d->domain_id &&
-                d->domain_id != DNA_DOMAIN_SYSTEM &&
-                op->sql && exec_sql(w, op->sql) != 0)
+        for (size_t i = 0; i < blk->n_envs; i++) {
+            if (env_phase[i] != 2) continue;
+            if (pf[i].view.leg[0].domain_id != d->domain_id) continue;
+            int rc = exec_one_env(w, blk, chain_id, blk->epoch, doms,
+                                  n_dom, &pf[i], &meters[i], reads,
+                                  resbuf);
+            if (rc == -2) goto fail_fault;
+            if (rc != 0) goto fail;
+            if (blk->fail_at == V2AP_FAIL_AFTER_ENV_EXEC &&
+                blk->fail_env_index == (uint32_t)i)
                 goto fail;
         }
         if (blk->fail_at == V2AP_FAIL_AFTER_DOMAIN_BATCH &&
@@ -894,9 +1217,7 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
     FAIL_POINT(V2AP_FAIL_AFTER_UTXO);
 
     /* 6b. S6 generic claims — routed to each claim's COMMITTED target
-     * runtime inside THE txn. Sequential processing makes intra-block
-     * accounting exact: a later claim's remaining-value check sees
-     * every earlier decrement. */
+     * runtime inside THE txn (unchanged from S6). */
     for (size_t i = 0; i < blk->n_claims; i++) {
         const dna_claim_t *c = &blk->claims[i];
         nodus_v2_claim_admit_t adm;
@@ -926,10 +1247,7 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
             goto fail;
     }
 
-    /* 6p. S7 pool-state batches — canonical (domain_id, pool_id) order
-     * (validated pre-txn), each applied atomically INSIDE the one
-     * transaction through the pool module; the stage callback maps the
-     * pool stages onto this engine's S7 fault points (19-25). */
+    /* 6p. S7 pool-state batches (unchanged from S7). */
     for (size_t i = 0; i < blk->n_pool_muts; i++) {
         pool_fault_ctx_t pfc = { blk, i };
         if (nodus_witness_v2_pool_apply(w, &blk->pool_muts[i],
@@ -938,32 +1256,15 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
             goto fail;
     }
 
-    /* 6c. LIFECYCLE re-scan: the block's SYSTEM/cross ops may have
-     * registered domains or moved registry lifecycle states. Re-read
-     * the registry and reconcile against the block-entry view:
-     *   - a pre-block domain missing from the registry now: reject
-     *     (a committed head must never silently drop from
-     *     domains_root);
-     *   - post-status ACTIVE without a head: this block IS the domain's
-     *     activation block — the canonical constructor creates the ONE
-     *     deterministic height-0 head (bound to the committed
-     *     genesis_state_root) and it enters domains_root here;
-     *   - post-status ACTIVE with a head (a PAUSED→ACTIVE resume or a
-     *     domain that stayed ACTIVE): the head is CARRIED unchanged;
-     *     fail closed unless the exact runtime tuple still resolves;
-     *   - PAUSED / RETIRED / REGISTERED / SCHEDULED: head (if any)
-     *     carried byte-unchanged, no execution was admitted (touched
-     *     required block-entry ACTIVE), heights never advance;
-     *   - unknown lifecycle values already failed closed in the scan.
-     * Execution authority stays the BLOCK-ENTRY status: a domain
-     * activated here executes nothing before its next block. */
+    /* 6c. LIFECYCLE re-scan (unchanged from S5/S6: canonical DomainHead
+     * lifecycle; execution authority stays the BLOCK-ENTRY status). */
     {
         dom_ctx_t *post = calloc(MAX_DOMS, sizeof(*post));
         size_t n_post = 0;
-        if (!post) goto fail;
+        if (!post) goto fail_fault;
         if (doms_load(w, post, &n_post, /*strict_active=*/0) != 0) {
             free(post);
-            goto fail;
+            goto fail_fault;
         }
         for (size_t i = 0; i < n_post; i++) {
             dom_ctx_t *p = &post[i];
@@ -974,8 +1275,6 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
                 p->n_tx = pre->n_tx;
                 memcpy(p->tx_ids, pre->tx_ids, sizeof(p->tx_ids));
                 p->res_cost = pre->res_cost;
-                /* RETIRED is TERMINAL: no reactivation, no other
-                 * transition — fail closed. */
                 if (pre->status == DNA_DOMST_RETIRED &&
                     p->status != DNA_DOMST_RETIRED) {
                     QGP_LOG_ERROR(LOG_TAG, "domain %u left RETIRED — "
@@ -985,23 +1284,29 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
                     goto fail;
                 }
             } else {
-                /* registered THIS block: no pre-entry, nothing could
-                 * have touched it (fail-closed by the pre-scan). */
-                p->pre_status = p->status;   /* non-ACTIVE by definition
-                                              * of a fresh registration
-                                              * path; ACTIVE handled as
-                                              * activation below        */
+                p->pre_status = p->status;
                 if (p->has_head) { free(post); goto fail; }
                 if (p->status == DNA_DOMST_ACTIVE)
                     p->pre_status = DNA_DOMST_REGISTERED;
             }
             if (p->status == DNA_DOMST_ACTIVE) {
-                if (!p->rt) { free(post); goto fail; }   /* incl. resume */
+                if (!p->rt) {
+                    /* Mid-block re-resolution failure (incl. resume).
+                     * nodus_witness_v2_runtime_for conflates "tuple not
+                     * carried" with a node-local domreg read fault, so
+                     * this is classified NODE-LOCAL (the SAFE
+                     * direction): a witness that cannot resolve must
+                     * not vote — silence is tolerated, a confident
+                     * reject is not. The deterministic unsupported-
+                     * tuple case therefore also reads as -2 here; the
+                     * deterministic VERDICTS live in the pre-BEGIN
+                     * admission scan. */
+                    free(post);
+                    goto fail_fault;
+                }
                 if (!p->has_head) {
                     if (pre && pre->status == DNA_DOMST_ACTIVE) {
-                        free(post);          /* pre-ACTIVE headless was
-                                              * rejected already —
-                                              * defensive fail-close    */
+                        free(post);
                         goto fail;
                     }
                     if (head_activate(w, p, blk->global_height) != 0) {
@@ -1011,7 +1316,6 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
                 }
             }
         }
-        /* every pre-block domain must still exist */
         for (size_t i = 0; i < n_dom; i++)
             if (!dom_for(post, n_post, doms[i].domain_id)) {
                 free(post);
@@ -1026,12 +1330,7 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
     if (nodus_witness_v2_supply_check(w) != 0) goto fail;
     FAIL_POINT(V2AP_FAIL_AFTER_SUPPLY_MUT);
 
-    /* 8. domain roots (runtime-dispatched) + untouched-domain guard.
-     * Root recomputation covers the domains that were EXECUTABLE this
-     * block (block-entry ACTIVE); a domain activated this block already
-     * carries its canonical activation root; PAUSED/RETIRED heads are
-     * carried without recomputation (no runtime execution required to
-     * carry an opaque committed head). */
+    /* 8. domain roots (runtime-dispatched) + untouched-domain guard. */
     for (size_t i = 0; i < n_dom; i++) {
         dom_ctx_t *d = &doms[i];
         d->root_known = 0;
@@ -1041,8 +1340,15 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
             continue;
         }
         if (d->pre_status == DNA_DOMST_ACTIVE) {
-            if (!d->rt) goto fail;      /* was executable — must verify */
-            if (d->rt->state_root(d->rt, w, d->root_now) != 0) goto fail;
+            if (!d->rt) goto fail_fault; /* was executable at block entry
+                                         * (strict doms_load proved the
+                                         * runtime) — losing it mid-block
+                                         * is the conflated re-resolution
+                                         * seam above: node-local, never
+                                         * a verdict                     */
+            if (d->rt->state_root(d->rt, w, d->root_now) != 0)
+                goto fail_fault;        /* the runtime could not compute
+                                         * its own root — node fault    */
             d->root_known = 1;
         }
         if (d->touched && !d->root_known) goto fail;
@@ -1073,26 +1379,29 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
             d->upd.global_height = blk->global_height;
             memcpy(d->upd.pre_root, d->head.domain_state_root, 64);
             memcpy(d->upd.post_root, d->root_now, 64);
-            if (dna_v2_tx_batch_root(d->tx_ids, d->n_tx,
-                                     d->upd.tx_batch_root) != 0)
-                goto fail;
+            if (dna_v2_tx_batch_root(
+                    (const uint8_t (*)[64])d->tx_ids, d->n_tx,
+                    d->upd.tx_batch_root) != 0)
+                goto fail_fault;
             d->upd.ruleset_version = d->man.ruleset_version;
             memcpy(d->upd.ruleset_hash, d->man.ruleset_hash, 64);
             d->upd.res_tx_count = d->n_tx;
-            d->upd.res_verify_cost = d->res_cost;
+            d->upd.res_verify_cost = d->res_cost;   /* ACTUAL consumed
+                                         * units (env legs; claims/pools
+                                         * ride their own accounting)   */
             if (prev_update_hash(w, d->domain_id,
                                  d->upd.prev_update_hash) != 0)
-                goto fail;
-            if (dna_dupd_hash(&d->upd, d->upd_hash) != 0) goto fail;
+                goto fail_fault;
+            if (dna_dupd_hash(&d->upd, d->upd_hash) != 0) goto fail_fault;
 
             uint8_t enc[DNA_DUPD_ENC_LEN];
-            if (dna_dupd_encode(&d->upd, enc) != 0) goto fail;
+            if (dna_dupd_encode(&d->upd, enc) != 0) goto fail_fault;
             sqlite3_stmt *st = NULL;
             if (sqlite3_prepare_v2(w->db,
                     "INSERT INTO v2_domain_updates (global_height, "
                     "domain_id, upd, upd_hash) VALUES (?1, ?2, ?3, ?4)",
                     -1, &st, NULL) != SQLITE_OK)
-                goto fail;
+                goto fail_fault;
             sqlite3_bind_int64(st, 1, (sqlite3_int64)blk->global_height);
             sqlite3_bind_int64(st, 2, (sqlite3_int64)d->domain_id);
             sqlite3_bind_blob(st, 3, enc, DNA_DUPD_ENC_LEN,
@@ -1100,7 +1409,7 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
             sqlite3_bind_blob(st, 4, d->upd_hash, 64, SQLITE_TRANSIENT);
             int rc = sqlite3_step(st);
             sqlite3_finalize(st);
-            if (rc != SQLITE_DONE) goto fail;
+            if (rc != SQLITE_DONE) goto fail_fault;
             n_upd++;
         }
         (void)n_upd;
@@ -1117,7 +1426,7 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
             d->newhead.last_updated_global_height = blk->global_height;
             d->newhead.status = d->status;
             d->newhead.ruleset_version = d->man.ruleset_version;
-            if (head_store(w, &d->newhead) != 0) goto fail;
+            if (head_store(w, &d->newhead) != 0) goto fail_fault;
         }
     }
     FAIL_POINT(V2AP_FAIL_AFTER_HEADS);
@@ -1132,7 +1441,7 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
                 "global_height, state_root, upd_hash, ruleset_version, "
                 "ruleset_hash) VALUES (?1,?2,?3,?4,?5,?6,?7)", -1, &st,
                 NULL) != SQLITE_OK)
-            goto fail;
+            goto fail_fault;
         sqlite3_bind_int64(st, 1, (sqlite3_int64)d->domain_id);
         sqlite3_bind_int64(st, 2, (sqlite3_int64)d->newhead.domain_height);
         sqlite3_bind_int64(st, 3, (sqlite3_int64)blk->global_height);
@@ -1144,76 +1453,83 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
                           SQLITE_TRANSIENT);
         int rc = sqlite3_step(st);
         sqlite3_finalize(st);
-        if (rc != SQLITE_DONE) goto fail;
+        if (rc != SQLITE_DONE) goto fail_fault;
     }
     FAIL_POINT(V2AP_FAIL_AFTER_HISTORY);
 
-    /* 12. transaction indices (global order = the phase order above) */
+    /* 12. transaction indices — DERIVED identities ONLY (pf[i].tx_id);
+     * global order = the phase order above. */
     {
         uint32_t gidx = 0;
-        for (int phase = 0; phase < 3 /* sys, cross, local */; phase++) {
-            for (size_t i = 0; i < blk->n_ops; i++) {
-                const nodus_v2_op_t *op = &blk->ops[i];
-                int is_sys = (op->touched_n == 1 &&
-                              op->touched[0] == DNA_DOMAIN_SYSTEM);
-                int is_cross = (op->touched_n > 1);
-                int in_phase = (phase == 0 && is_sys) ||
-                               (phase == 1 && is_cross) ||
-                               (phase == 2 && !is_sys && !is_cross);
-                if (!in_phase) continue;
+        for (int phase = 0; phase < 3; phase++) {
+            for (size_t i = 0; i < blk->n_envs; i++) {
+                if (env_phase[i] != phase) continue;
+                const dna_env_view_t *v = &pf[i].view;
 
+                uint32_t touched_ids[DNA_ENV_MAX_LEGS];
+                for (uint16_t t = 0; t < v->leg_count; t++)
+                    touched_ids[t] = v->leg[t].domain_id;
                 uint8_t tl[2 + 4 * DNA_TOUCHED_MAX];
                 size_t tw = 0;
-                if (dna_touched_encode(op->touched, op->touched_n, tl,
+                if (v->leg_count > DNA_TOUCHED_MAX) goto fail;
+                if (dna_touched_encode(touched_ids,
+                                       (uint16_t)v->leg_count, tl,
                                        sizeof(tl), &tw) != 0)
-                    goto fail;
-                uint32_t owner = (op->touched_n == 1)
-                                     ? op->touched[0] : DNA_TX_OWNER_NONE;
+                    goto fail_fault;
+                uint32_t owner = (v->leg_count == 1)
+                                     ? v->leg[0].domain_id
+                                     : DNA_TX_OWNER_NONE;
                 sqlite3_stmt *st = NULL;
                 if (sqlite3_prepare_v2(w->db,
                         "INSERT INTO v2_tx_index (global_height, "
                         "global_index, tx_id, owner_domain, touched, "
                         "wire_version) VALUES (?1,?2,?3,?4,?5,3)",
                         -1, &st, NULL) != SQLITE_OK)
-                    goto fail;
+                    goto fail_fault;
                 sqlite3_bind_int64(st, 1,
                                    (sqlite3_int64)blk->global_height);
                 sqlite3_bind_int64(st, 2, (sqlite3_int64)gidx);
-                sqlite3_bind_blob(st, 3, op->tx_id, 64, SQLITE_TRANSIENT);
+                sqlite3_bind_blob(st, 3, pf[i].tx_id, 64,
+                                  SQLITE_TRANSIENT);
                 sqlite3_bind_int64(st, 4, (sqlite3_int64)owner);
                 sqlite3_bind_blob(st, 5, tl, (int)tw, SQLITE_TRANSIENT);
                 int rc = sqlite3_step(st);
                 sqlite3_finalize(st);
-                if (rc != SQLITE_DONE) goto fail;   /* dup tx_id, etc.  */
+                if (rc != SQLITE_DONE) goto fail_fault;
                 gidx++;
 
-                /* deterministic local index per touched domain */
-                for (uint16_t t = 0; t < op->touched_n; t++) {
-                    dom_ctx_t *d = dom_for(doms, n_dom, op->touched[t]);
-                    if (!d) goto fail;
+                /* deterministic local index per leg domain: the lookup
+                 * FAILS CLOSED — a miss can never alias index 0
+                 * (nodus_witness_v2_local_index_find), and because the
+                 * id lists were filled from these same derived ids, a
+                 * miss here is an engine invariant broken on THIS node,
+                 * not a block property. */
+                for (uint16_t t = 0; t < v->leg_count; t++) {
+                    dom_ctx_t *d = dom_for(doms, n_dom,
+                                           v->leg[t].domain_id);
+                    if (!d) goto fail_fault;
                     uint32_t lidx = 0;
-                    for (uint32_t k = 0; k < d->n_tx; k++)
-                        if (memcmp(d->tx_ids[k], op->tx_id, 64) == 0) {
-                            lidx = k;
-                            break;
-                        }
+                    if (nodus_witness_v2_local_index_find(
+                            (const uint8_t (*)[64])d->tx_ids, d->n_tx,
+                            pf[i].tx_id, &lidx) != 0)
+                        goto fail_fault;
                     sqlite3_stmt *ls = NULL;
                     if (sqlite3_prepare_v2(w->db,
                             "INSERT INTO v2_tx_local_index (tx_id, "
                             "domain_id, domain_height, local_index) "
                             "VALUES (?1,?2,?3,?4)", -1, &ls, NULL)
                         != SQLITE_OK)
-                        goto fail;
-                    sqlite3_bind_blob(ls, 1, op->tx_id, 64,
+                        goto fail_fault;
+                    sqlite3_bind_blob(ls, 1, pf[i].tx_id, 64,
                                       SQLITE_TRANSIENT);
                     sqlite3_bind_int64(ls, 2,
-                                       (sqlite3_int64)op->touched[t]);
+                        (sqlite3_int64)v->leg[t].domain_id);
                     sqlite3_bind_int64(ls, 3,
                         (sqlite3_int64)d->newhead.domain_height);
                     sqlite3_bind_int64(ls, 4, (sqlite3_int64)lidx);
                     rc = sqlite3_step(ls);
                     sqlite3_finalize(ls);
-                    if (rc != SQLITE_DONE) goto fail;
+                    if (rc != SQLITE_DONE) goto fail_fault;
                 }
             }
         }
@@ -1222,41 +1538,26 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
 
     /* 13. block-level roots + expectation compare + metadata */
     {
-        uint8_t all_ids[MAX_OPS][64];
+        uint8_t all_ids[NODUS_V2_ENV_BATCH_MAX][64];
         uint32_t n_all = 0;
-        /* global order again (phase order) */
         for (int phase = 0; phase < 3; phase++)
-            for (size_t i = 0; i < blk->n_ops; i++) {
-                const nodus_v2_op_t *op = &blk->ops[i];
-                int is_sys = (op->touched_n == 1 &&
-                              op->touched[0] == DNA_DOMAIN_SYSTEM);
-                int is_cross = (op->touched_n > 1);
-                int in_phase = (phase == 0 && is_sys) ||
-                               (phase == 1 && is_cross) ||
-                               (phase == 2 && !is_sys && !is_cross);
-                if (in_phase)
-                    memcpy(all_ids[n_all++], op->tx_id, 64);
-            }
-        if (dna_v2_tx_batch_root(all_ids, n_all, blk->out_tx_root) != 0)
-            goto fail;
+            for (size_t i = 0; i < blk->n_envs; i++)
+                if (env_phase[i] == phase)
+                    memcpy(all_ids[n_all++], pf[i].tx_id, 64);
+        if (dna_v2_tx_batch_root(
+                n_all ? (const uint8_t (*)[64])all_ids : NULL, n_all,
+                blk->out_tx_root) != 0)
+            goto fail_fault;
 
-        /* domain_updates_root over the touched updates (ASC by
-         * construction — doms[] is ASC) */
         dna_domain_update_t upd_sorted[MAX_DOMS];
         size_t n_upd = 0;
         for (size_t i = 0; i < n_dom; i++)
             if (doms[i].touched)
                 upd_sorted[n_upd++] = doms[i].upd;
-        if (dna_v2_domain_updates_root(upd_sorted, n_upd,
+        if (dna_v2_domain_updates_root(n_upd ? upd_sorted : NULL, n_upd,
                                        blk->out_dupd_root) != 0)
-            goto fail;
+            goto fail_fault;
 
-        /* domains_root over the COMMITTED domain heads — head-driven,
-         * never fixed to a count: every persisted head (any lifecycle
-         * state — PAUSED and RETIRED heads stay committed unchanged,
-         * a domain activated THIS block enters here). A registered but
-         * never-activated domain has no head and is absent. Order is
-         * ASC by construction. */
         dna_v2_domain_head_t root_heads[MAX_DOMS];
         size_t n_heads = 0;
         for (size_t i = 0; i < n_dom; i++)
@@ -1264,10 +1565,10 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
                 root_heads[n_heads++] = doms[i].newhead;
         if (dna_v2_domains_root(root_heads, n_heads,
                                 blk->out_domains_root) != 0)
-            goto fail;
+            goto fail_fault;
         if (dna_v2_global_root(blk->out_domains_root,
                                blk->out_global_root) != 0)
-            goto fail;
+            goto fail_fault;
 
         if (blk->expect_tx_root &&
             memcmp(blk->expect_tx_root, blk->out_tx_root, 64) != 0)
@@ -1290,7 +1591,7 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
                 "domains_root, global_root, vset_hash, tx_count, qc) "
                 "VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,NULL)",
                 -1, &st, NULL) != SQLITE_OK)
-            goto fail;
+            goto fail_fault;
         sqlite3_bind_int64(st, 1, (sqlite3_int64)blk->global_height);
         sqlite3_bind_blob(st, 2, blk->block_id, 64, SQLITE_TRANSIENT);
         sqlite3_bind_blob(st, 3, blk->prev_block_id, 64, SQLITE_TRANSIENT);
@@ -1305,7 +1606,7 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
         sqlite3_bind_int64(st, 10, (sqlite3_int64)n_all);
         int rc = sqlite3_step(st);
         sqlite3_finalize(st);
-        if (rc != SQLITE_DONE) goto fail;
+        if (rc != SQLITE_DONE) goto fail_fault;
     }
     FAIL_POINT(V2AP_FAIL_AFTER_BLOCK_META);
 
@@ -1317,16 +1618,44 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
     if (blk->fail_at == V2AP_FAIL_COMMIT) goto fail;
     if (exec_sql(w, "COMMIT") != 0) {
         (void)exec_sql(w, "ROLLBACK");
-        free(doms);
-        return -1;
+        goto fail_fault_committed;      /* commit itself failed: node    */
     }
+    free(pf); free(meters); free(reads); free(resbuf);
     free(doms);
     if (blk->fail_at == V2AP_FAIL_AFTER_COMMIT)
         return 2;                        /* committed; pre-cache window  */
     return 0;
 
+/* ── the two rejection exits (contract in the header) ────────────────
+ * Meter/budget rollback: aborting every non-terminal meter restores the
+ * engine-owned budget byte-identically (res_meter abort contract); the
+ * budget itself is per-block and dies with this frame, so no residue
+ * can reach a later block either way. */
 fail:
     (void)exec_sql(w, "ROLLBACK");
+    meters_abort_all(meters, blk->n_envs);
+    free(pf); free(meters); free(reads); free(resbuf);
     free(doms);
     return -1;
+
+fail_fault:
+    (void)exec_sql(w, "ROLLBACK");
+fail_fault_committed:
+    meters_abort_all(meters, blk->n_envs);
+    free(pf); free(meters); free(reads); free(resbuf);
+    free(doms);
+    return -2;
+
+/* pre-transaction exits (nothing to roll back in the database) */
+fail_verdict_pre:
+    meters_abort_all(meters, blk->n_envs);
+    free(pf); free(meters); free(reads); free(resbuf);
+    free(doms);
+    return -1;
+
+fail_fault_pre:
+    meters_abort_all(meters, blk->n_envs);
+    free(pf); free(meters); free(reads); free(resbuf);
+    free(doms);
+    return -2;
 }

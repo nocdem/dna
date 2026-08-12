@@ -812,6 +812,25 @@ int main(void) {
           == 0, "cost 9+1 <= 10 rejected"); OK();
     CHECK(nodus_witness_domreg_admit_v2(fx.w, chain, &ctx, 0, 10, NULL)
           != 0, "cost quota exceeded but admitted"); OK();
+    /* used_tx_count WRAPAROUND matrix (execution-season fix): the old
+     * `used + 1 > quota` predicate wrapped at UINT32_MAX (used+1 == 0)
+     * and admitted past a full quota. The predicate is now `used >=
+     * quota` — same meaning everywhere in range, no wrap at the top.
+     * Admission is read-only, so byte-identical state is proven by
+     * digesting the registry around the calls. */
+    {
+        uint8_t d0[64], d1[64];
+        CHECK(nodus_witness_domreg_root(fx.w, d0) == 0, "digest");
+        CHECK(nodus_witness_domreg_admit_v2(fx.w, chain, &ctx,
+                                            UINT32_MAX - 1, 0, NULL)
+              != 0, "UINT32_MAX-1 over a quota of 5 admitted"); OK();
+        CHECK(nodus_witness_domreg_admit_v2(fx.w, chain, &ctx,
+                                            UINT32_MAX, 0, NULL)
+              != 0, "UINT32_MAX wrapped past the quota"); OK();
+        CHECK(nodus_witness_domreg_root(fx.w, d1) == 0 &&
+              memcmp(d0, d1, 64) == 0,
+              "admission rejection mutated state"); OK();
+    }
 
     /* paused domain rejects its transactions */
     CHECK(nodus_witness_domreg_op_pause(fx.w, DNA_DOMAIN_CORE) == 0,

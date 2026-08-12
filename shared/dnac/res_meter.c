@@ -50,8 +50,13 @@ int dna_ck_sub_u64(uint64_t a, uint64_t b, uint64_t *out) {
 
 /* ── Policy ─────────────────────────────────────────────────────────── */
 
-/* 16-byte zero-padded ASCII tag (the env_wire.h tag discipline). */
-static const uint8_t METER_POLICY_TAG[16] = "DNA.METPOL.v1";
+/* 16-byte zero-padded ASCII tags (the env_wire.h tag discipline).
+ * SEAL = the local integrity checksum; ID = the consensus identity a
+ * ruleset descriptor commits (res_meter.h dna_meter_policy_digest).
+ * Distinct tags so the two values can never be confused for each other
+ * even though they serialize the same canonical fields. */
+static const uint8_t METER_POLICY_TAG[16]    = "DNA.METPOL.v1";
+static const uint8_t METER_POLICY_ID_TAG[16] = "DNA.METPOLID.v1";
 
 /* Seal preimage: tag(16) + version(4) + 7 scalar weights (56)
  * + 256 op weights (2048) + 4 mask words (32) = 2156 bytes. */
@@ -73,11 +78,13 @@ static void put_u64be(uint8_t *p, uint64_t v) {
     p[6] = (uint8_t)(v >> 8);  p[7] = (uint8_t)v;
 }
 
-/** Canonical serialization + SHA3-512 into out[64]. @return 0 / -1. */
-static int policy_digest(const dna_meter_policy_t *p, uint8_t out[64]) {
+/** Canonical field serialization under `tag` + SHA3-512 into out[64].
+ *  The seal field is never part of the preimage. @return 0 / -1. */
+static int policy_hash_tagged(const dna_meter_policy_t *p,
+                              const uint8_t tag[16], uint8_t out[64]) {
     uint8_t pre[METER_SEAL_PREIMAGE_LEN];
     size_t off = 0;
-    memcpy(pre + off, METER_POLICY_TAG, 16); off += 16;
+    memcpy(pre + off, tag, 16); off += 16;
     put_u32be(pre + off, p->policy_version);  off += 4;
     put_u64be(pre + off, p->w_base);          off += 8;
     put_u64be(pre + off, p->w_callbyte);      off += 8;
@@ -105,14 +112,20 @@ int dna_meter_op_set(dna_meter_policy_t *p, uint32_t runtime_op, uint64_t w) {
 
 int dna_meter_policy_seal(dna_meter_policy_t *p) {
     if (!p || p->policy_version != DNA_METER_POLICY_VERSION) return -1;
-    return policy_digest(p, p->seal);
+    return policy_hash_tagged(p, METER_POLICY_TAG, p->seal);
 }
 
 int dna_meter_policy_check(const dna_meter_policy_t *p) {
     uint8_t d[64];
     if (!p || p->policy_version != DNA_METER_POLICY_VERSION) return -1;
-    if (policy_digest(p, d) != 0) return -1;
+    if (policy_hash_tagged(p, METER_POLICY_TAG, d) != 0) return -1;
     return memcmp(d, p->seal, 64) == 0 ? 0 : -1;
+}
+
+int dna_meter_policy_digest(const dna_meter_policy_t *p, uint8_t out[64]) {
+    if (!p || !out || p->policy_version != DNA_METER_POLICY_VERSION)
+        return -1;
+    return policy_hash_tagged(p, METER_POLICY_ID_TAG, out);
 }
 
 int dna_meter_op_weight(const dna_meter_policy_t *p, uint32_t runtime_op,

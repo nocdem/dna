@@ -29,9 +29,10 @@ def be64(x):
     return struct.pack(">Q", x)
 
 
-def seal(version, w_base, w_callbyte, w_authbyte, w_effect, w_effectbyte,
-         w_read, w_write, w_op, present_bits):
-    tag = b"DNA.METPOL.v1" + b"\x00" * 3
+def policy_hash(tag_str, version, w_base, w_callbyte, w_authbyte,
+                w_effect, w_effectbyte, w_read, w_write, w_op,
+                present_bits):
+    tag = tag_str.encode() + b"\x00" * (16 - len(tag_str))
     assert len(tag) == 16
     present = [0, 0, 0, 0]
     for b in present_bits:
@@ -45,6 +46,18 @@ def seal(version, w_base, w_callbyte, w_authbyte, w_effect, w_effectbyte,
         pre += be64(m)
     assert len(pre) == 2156, len(pre)
     return hashlib.sha3_512(pre).hexdigest()
+
+
+def seal(*args):
+    """The LOCAL integrity checksum ("DNA.METPOL.v1")."""
+    return policy_hash("DNA.METPOL.v1", *args)
+
+
+def identity(*args):
+    """The CONSENSUS identity digest ("DNA.METPOLID.v1", execution
+    season): same canonical fields, DIFFERENT tag, seal field excluded
+    by construction (it is not part of the serialization)."""
+    return policy_hash("DNA.METPOLID.v1", *args)
 
 
 def main():
@@ -63,7 +76,9 @@ def main():
     w_op[0] = 50
     w_op[1] = 60
     w_op[255] = 2 ** 63
-    print("seal =", seal(1, 7, 1, 2, 100, 3, 5, 11, w_op, (0, 1, 255)))
+    print("seal     =", seal(1, 7, 1, 2, 100, 3, 5, 11, w_op, (0, 1, 255)))
+    print("identity =", identity(1, 7, 1, 2, 100, 3, 5, 11, w_op,
+                                 (0, 1, 255)))
 
 
 if __name__ == "__main__":

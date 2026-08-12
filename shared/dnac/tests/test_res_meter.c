@@ -67,6 +67,12 @@ static int g_checks = 0;
 static const char K_SEAL_HEX[] =
     "9ce81d5f448dcfb7d38f9ecafb3a6265c79eeeed3daeba91dd58c14d7beaacff"
     "099e571e2f82ea85d91eb159d536c9d2feea174571f705f2ae69625921bbe343";
+/* The CONSENSUS identity digest of the same fixture policy
+ * ("DNA.METPOLID.v1", execution season — the value a RulesetDescriptor
+ * commits). Distinct tag ⇒ distinct value from the seal. */
+static const char K_IDENT_HEX[] =
+    "21b6e52c90cb3341dae0c6574313f4ad4b2caed8c4ee993f0d5b6ff7c95a195d"
+    "219bc262a188d0e9301b6e9f2f18d7488d170eab09d134f0897415a4fa9976d6";
 
 /* THE fixture policy — mirrored in res_meter_oracle.py. w_op[255] is
  * deliberately above 2^32: a truncation anywhere in the policy path
@@ -232,6 +238,35 @@ static void test_policy(void) {
         snprintf(hex + 2 * i, 3, "%02x", p->seal[i]);
     CHECK(strcmp(hex, K_SEAL_HEX) == 0);
     CHECK(dna_meter_policy_check(p) == 0);
+
+    /* the IDENTITY digest (execution season): oracle-pinned, distinct
+     * from the seal, and INDEPENDENT of the seal field — it identifies
+     * the weights, not the in-memory checksum state */
+    {
+        uint8_t id[64], id2[64];
+        CHECK(dna_meter_policy_digest(p, id) == 0);
+        for (int i = 0; i < 64; i++)
+            snprintf(hex + 2 * i, 3, "%02x", id[i]);
+        CHECK(strcmp(hex, K_IDENT_HEX) == 0);
+        CHECK(memcmp(id, p->seal, 64) != 0);   /* different tags        */
+        uint8_t seal_save[64];
+        memcpy(seal_save, p->seal, 64);
+        memset(p->seal, 0xEE, 64);             /* scribble the seal     */
+        CHECK(dna_meter_policy_digest(p, id2) == 0);
+        CHECK(memcmp(id, id2, 64) == 0);       /* identity unmoved      */
+        memcpy(p->seal, seal_save, 64);
+        /* any weight difference moves the identity */
+        p->w_read++;
+        CHECK(dna_meter_policy_digest(p, id2) == 0);
+        CHECK(memcmp(id, id2, 64) != 0);
+        p->w_read--;
+        /* rejects */
+        CHECK(dna_meter_policy_digest(NULL, id) == -1);
+        CHECK(dna_meter_policy_digest(p, NULL) == -1);
+        p->policy_version = 9;
+        CHECK(dna_meter_policy_digest(p, id) == -1);
+        p->policy_version = DNA_METER_POLICY_VERSION;
+    }
 
     /* post-seal mutation of ANY priced field is detected */
     p->w_effect++;
@@ -556,8 +591,19 @@ static void test_meter_lifecycle(void) {
     CHECK(bud.dom[0].remaining_units == 32);      /* 900 - 868           */
     CHECK(bud.dom[1].remaining_units == 400);     /* bystander untouched */
 
-    /* reserve twice rejects */
-    CHECK(dna_meter_reserve(&m, pol, &view, &bud) == DNA_METER_ERR_STATE);
+    /* reserve twice rejects — and "ERR_STATE leaves a live meter
+     * untouched": a re-zero here would strand the reservation the
+     * budget already recorded (res_meter.h reject-output contract) */
+    {
+        dna_meter_t before;
+        memcpy(&before, &m, sizeof(m));
+        dna_meter_budget_t bud_before = bud;
+        CHECK(dna_meter_reserve(&m, pol, &view, &bud) ==
+              DNA_METER_ERR_STATE);
+        CHECK(memcmp(&before, &m, sizeof(m)) == 0);
+        CHECK(memcmp(&bud_before, &bud, sizeof(bud)) == 0);
+        CHECK(m.state == DNA_METER_ST_RESERVED);   /* still RESERVED    */
+    }
 
     /* activate: base 7 (global only) + fixed 68 (domain 5) */
     CHECK(dna_meter_activate(&m) == DNA_METER_OK);

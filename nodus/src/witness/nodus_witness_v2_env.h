@@ -12,40 +12,29 @@
  * ════════════════════════════════════════════════════════════════════════
  *
  * ── Why this module exists ────────────────────────────────────────────
- * The S5 apply engine currently accepts a transaction identity from its
- * CALLER (nodus_v2_op_t.tx_id, nodus_witness_v2_apply.h:195). That is a
- * test-surface shape: a caller-asserted id cannot be checked against the
- * bytes it claims to identify, so two different transactions could be
- * presented under one id, or one transaction under two. This seam removes
- * the choice — an id here is DERIVED from the envelope bytes, the chain
- * identity and the contextual ruleset set, and from nothing else.
+ * The S5 apply engine used to accept a transaction identity from its
+ * CALLER (the retired nodus_v2_op_t.tx_id). That was a test-surface
+ * shape: a caller-asserted id cannot be checked against the bytes it
+ * claims to identify, so two different transactions could be presented
+ * under one id, or one transaction under two. This seam removes the
+ * choice — an id here is DERIVED from the envelope bytes, the chain
+ * identity and the contextual ruleset set, and from nothing else. The
+ * execution-season engine consumes ONLY these derived identities.
  *
  * Note that nodus_v2_envelope_t deliberately has NO tx_id field. The
  * absence is the mechanism: there is no way to hand this API an identity,
  * so there is no way for a caller-chosen one to reach the engine.
  *
- * ── The later switch sites (derived-ID adoption; NOT done this season) ─
- * When the engine moves off caller-supplied ids, exactly these six places
- * in nodus_witness_v2_apply.c consume nodus_v2_op_t.tx_id and must read
- * the derived dna_env_preflight_t.tx_id instead:
- *
- *   :727-730  in-block duplicate-identity check (the pairwise memcmp)
- *   :748      per-domain tx id lists (dom_ctx_t.tx_ids, feeds :1076)
- *   :1076     per-domain tx_batch_root (dna_v2_tx_batch_root over that
- *             domain's ids — a DomainUpdate field, consensus material)
- *   :1182     v2_tx_index insert (the global transaction index blob)
- *   :1194-1199 local-index MATCH: op->tx_id is memcmp'd against
- *             dom_ctx_t.tx_ids to derive local_index — and a match miss
- *             silently defaults to lidx = 0 rather than rejecting.
- *             Guaranteed-by-construction today (:748 fills the array
- *             from the same ops); a migration that switches :748 and
- *             this site on different schedules turns the miss into a
- *             SILENT wrong index. Migrate them together.
- *   :1207     v2_tx_local_index insert (per-domain local index blob)
- *   :1240     the block-level tx_root over all ids in phase order
- *
- * Every one of those is consensus material, which is why the switch is
- * its own slice with its own tests rather than a drive-by change here.
+ * ── The switch sites (derived-ID adoption — DONE, execution season) ────
+ * The apply engine now consumes ONLY the derived dna_env_preflight_t
+ * identities: batch dedup is this seam's ERR_DUP, the per-domain id
+ * lists / tx_batch_root / v2_tx_index / v2_tx_local_index / block
+ * tx_root are all filled from pf[i].tx_id, and the old silent
+ * `lidx = 0` local-index default is retired — the lookup is the
+ * fail-closed helper nodus_witness_v2_local_index_find
+ * (nodus_witness_v2_apply.h): a miss rejects, it never aliases
+ * transaction zero. nodus_v2_op_t itself (the caller-asserted-id,
+ * raw-SQL op shape) no longer exists.
  *
  * ── NOT implemented this season (the caller's remaining obligations) ───
  * A NODUS_V2_ENV_OK from this seam means "these envelopes are well-formed,

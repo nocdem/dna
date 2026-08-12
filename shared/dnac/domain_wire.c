@@ -189,7 +189,7 @@ int dna_domman_owns_type(const dna_domain_manifest_t *m, uint8_t tx_type) {
 }
 
 /* ══════════════════════════════════════════════════════════════════════
- * 2. RulesetDescriptor v1
+ * 2. RulesetDescriptor v2 (v1 retired — domain_wire.h §2)
  * ════════════════════════════════════════════════════════════════════ */
 
 int dna_ruleset_desc_hash(const dna_ruleset_desc_t *d,
@@ -209,7 +209,8 @@ int dna_ruleset_desc_hash(const dna_ruleset_desc_t *d,
 
     size_t enc_len = 4 + 4 + DNA_DOM_NAME_LEN + 4 + 4
                    + 2 + (size_t)d->rule_count * 4
-                   + 2 + (size_t)d->tx_type_count;
+                   + 2 + (size_t)d->tx_type_count
+                   + DNA_DOM_HASH_LEN;          /* v2: meter_policy_digest */
     uint8_t *pre = (uint8_t *)malloc(TAG_LEN + enc_len);
     if (!pre) return -1;
     uint8_t *p = pre;
@@ -226,6 +227,8 @@ int dna_ruleset_desc_hash(const dna_ruleset_desc_t *d,
     put_be16(d->tx_type_count, p);                 p += 2;
     for (size_t i = 0; i < d->tx_type_count; i++)
         *p++ = d->tx_types[i];
+    memcpy(p, d->meter_policy_digest, DNA_DOM_HASH_LEN);
+    p += DNA_DOM_HASH_LEN;                         /* v2 appended field    */
 
     int rc = -1;
     if ((size_t)(p - pre) == TAG_LEN + enc_len)

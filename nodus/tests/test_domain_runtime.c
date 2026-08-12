@@ -38,36 +38,52 @@ static int g_checks = 0;
 #define OK() do { g_checks++; } while (0)
 
 /* Ruleset digests as produced by the INDEPENDENT python3 oracle over the
- * "DNA.RULESET.v1" descriptor layout (shared/dnac/domain_wire.c:210-232) —
- * never copied out of the C encoder. selfcheck() already proves
- * pinned-constant == fresh C recomputation; these literals additionally
- * pin BOTH against the oracle, so a descriptor edit cannot silently move a
- * digest by re-deriving the constant from the same (possibly wrong) code.
+ * "DNA.RULESET.v1" descriptor layout — never copied out of the C
+ * encoder. selfcheck() already proves pinned-constant == fresh C
+ * recomputation; these literals additionally pin BOTH against the
+ * oracle, so a descriptor edit cannot silently move a digest by
+ * re-deriving the constant from the same (possibly wrong) code.
  *
- * SYSTEM is UNCHANGED by S9 W4 — its descriptor was not touched, so this
- * literal is byte-identical to the S4 pin and MUST stay so. */
+ * RE-DERIVED for the EXECUTION SEASON (RulesetDescriptor v2): the
+ * descriptor now APPENDS the committed meter_policy_digest, so BOTH
+ * digests move by construction. SYSTEM's commits its compiled metering
+ * policy's identity digest (KAT_METPOL_SYSTEM below); CORE's commits
+ * the all-zero "no policy declared" field. The S9 values
+ * (f2dcdefa…4cce / e0a0bc43…7429) are DEAD. Oracle:
+ * scratchpad exec_season_oracle.py. */
 static const uint8_t KAT_RS_SYSTEM[DNA_DOM_HASH_LEN] = {
-    0xf2, 0xdc, 0xde, 0xfa, 0x62, 0x38, 0x38, 0xd5,
-    0xe2, 0x3f, 0x71, 0xb6, 0x55, 0x72, 0xab, 0xb5,
-    0x2b, 0xd3, 0xa1, 0x91, 0xfd, 0x30, 0x72, 0x77,
-    0x7e, 0x4b, 0xdb, 0xef, 0x4b, 0xcd, 0xdc, 0x07,
-    0x46, 0x0a, 0x9d, 0xe1, 0xf0, 0xeb, 0x2a, 0xba,
-    0x21, 0xd2, 0x1f, 0xed, 0xdd, 0x4b, 0x2b, 0xcb,
-    0xd2, 0xe7, 0x79, 0x00, 0xae, 0x8d, 0xb2, 0x71,
-    0x26, 0x2c, 0xc8, 0x9e, 0x40, 0x13, 0x4c, 0xce
+    0x89, 0x36, 0x22, 0x13, 0x54, 0xc3, 0xc3, 0xe9,
+    0x39, 0xda, 0xa3, 0xd2, 0x61, 0x7d, 0x3b, 0x74,
+    0x9e, 0xa7, 0x01, 0x19, 0x4c, 0x80, 0x4a, 0x0f,
+    0x91, 0x75, 0xd8, 0xb5, 0xb6, 0x3e, 0xba, 0x46,
+    0x0b, 0x56, 0x22, 0x02, 0x11, 0x6b, 0x9e, 0x65,
+    0xc0, 0xeb, 0x68, 0x27, 0x3f, 0xf1, 0xa2, 0x90,
+    0xe7, 0x91, 0x00, 0xe7, 0xe0, 0x3b, 0xdd, 0x11,
+    0x50, 0x47, 0x86, 0x5a, 0x6b, 0x78, 0x96, 0xc2
 };
-/* CORE — RE-DERIVED for S9 W4 (rule_ids {1..6}, tx_types {1,2,3,11,12,13}).
- * The S4 value 13bc5fa9… is DEAD: adding the two boundary types changes the
- * descriptor, hence the digest, by construction. */
 static const uint8_t KAT_RS_CORE[DNA_DOM_HASH_LEN] = {
-    0xe0, 0xa0, 0xbc, 0x43, 0x44, 0xde, 0xa9, 0x72,
-    0xdd, 0xf1, 0xcc, 0xa9, 0xb6, 0x3e, 0xac, 0xfe,
-    0x08, 0x02, 0x89, 0x7f, 0x4a, 0xfb, 0x2b, 0x8b,
-    0x6a, 0x71, 0xed, 0x84, 0x5a, 0xdf, 0xe4, 0x11,
-    0x3c, 0xc7, 0xb8, 0xd8, 0x12, 0xa4, 0x94, 0x82,
-    0xbf, 0xfe, 0x9c, 0x8b, 0x48, 0xa7, 0xf1, 0x1f,
-    0xa7, 0x32, 0xeb, 0xf9, 0xaf, 0xe6, 0x83, 0x3d,
-    0x4a, 0xfc, 0x57, 0x83, 0x6e, 0xe7, 0x74, 0x29
+    0xad, 0x98, 0xa0, 0x36, 0xca, 0x2e, 0x2d, 0x92,
+    0xf1, 0x27, 0x42, 0x33, 0xd6, 0x65, 0x13, 0xbc,
+    0x80, 0x01, 0xbc, 0xc6, 0x9d, 0xd8, 0xb8, 0x5a,
+    0x6a, 0x2a, 0x05, 0x90, 0x1b, 0x83, 0xe0, 0x63,
+    0x40, 0xd0, 0x25, 0x30, 0xad, 0x8b, 0x93, 0xe4,
+    0x1b, 0xa4, 0x1b, 0x1e, 0xeb, 0xad, 0x2f, 0xcf,
+    0x20, 0x2e, 0xd7, 0x50, 0x05, 0x07, 0x5b, 0xb8,
+    0x73, 0xfe, 0x54, 0xe0, 0x88, 0xa8, 0xe6, 0xf3
+};
+/* The SYSTEM metering policy's IDENTITY digest ("DNA.METPOLID.v1",
+ * version 1, seven scalar weights = 1, ops 1..6 authoritative with
+ * weight 1) — the value SYSTEM's v2 descriptor commits. Oracle-derived,
+ * like the two above. */
+static const uint8_t KAT_METPOL_SYSTEM[DNA_DOM_HASH_LEN] = {
+    0xfa, 0xd5, 0x72, 0xe9, 0xda, 0x29, 0xb6, 0xba,
+    0x9e, 0x1d, 0xe4, 0x90, 0x3e, 0x27, 0x99, 0xe0,
+    0xbb, 0x91, 0xaf, 0xcc, 0xad, 0xa3, 0x40, 0x03,
+    0x50, 0xfb, 0x43, 0xdf, 0xb7, 0x65, 0xcb, 0xda,
+    0xa8, 0xb1, 0x6f, 0x12, 0x95, 0x73, 0xb7, 0x83,
+    0xae, 0xe5, 0x53, 0x2a, 0x4f, 0x40, 0xf8, 0xcb,
+    0x70, 0x74, 0x29, 0x45, 0xa8, 0xb5, 0xc5, 0x63,
+    0x9a, 0x52, 0xd4, 0xc2, 0x05, 0xf4, 0x05, 0x37
 };
 
 /* The checked-in descriptors' committed lists (S9 W4 truth). */
@@ -83,8 +99,36 @@ int main(void) {
     CHECK(t && n == 2, "builtin table shape"); OK();
     CHECK(t[0].domain_id == DNA_DOMAIN_SYSTEM &&
           t[1].domain_id == DNA_DOMAIN_CORE, "builtin ids"); OK();
-    CHECK(t[0].apply_reserved == NULL && t[1].apply_reserved == NULL,
-          "S9 apply hook must stay NULL"); OK();
+    /* the typed execution surface must stay NULL in production until
+     * the CORE/SYSTEM hook-migration season */
+    CHECK(t[0].read_plan == NULL && t[1].read_plan == NULL &&
+          t[0].exec == NULL && t[1].exec == NULL &&
+          t[0].adapter == NULL && t[1].adapter == NULL,
+          "production execution surface must stay NULL"); OK();
+    /* metering-policy coupling: SYSTEM carries THE block policy, its
+     * identity digest is descriptor-committed and oracle-pinned; CORE
+     * declares none (all-zero digest, NULL policy) */
+    {
+        uint8_t zero[DNA_DOM_HASH_LEN] = { 0 };
+        uint8_t pd[64];
+        CHECK(t[0].meter_policy != NULL, "SYSTEM policy missing"); OK();
+        CHECK(dna_meter_policy_check(t[0].meter_policy) == 0,
+              "SYSTEM policy seal invalid"); OK();
+        CHECK(dna_meter_policy_digest(t[0].meter_policy, pd) == 0 &&
+              memcmp(pd, KAT_METPOL_SYSTEM, 64) == 0,
+              "SYSTEM policy identity != oracle pin"); OK();
+        CHECK(memcmp(t[0].descriptor.meter_policy_digest,
+                     KAT_METPOL_SYSTEM, 64) == 0,
+              "SYSTEM descriptor does not commit the policy identity");
+        OK();
+        CHECK(t[1].meter_policy == NULL &&
+              memcmp(t[1].descriptor.meter_policy_digest, zero, 64) == 0,
+              "CORE must declare no metering policy"); OK();
+        /* the policy digest and the local seal are DIFFERENT values
+         * (different tags): the seal stays a local checksum */
+        CHECK(memcmp(t[0].meter_policy->seal, pd, 64) != 0,
+              "seal and identity digest collided"); OK();
+    }
     /* the REAL runtime boundary: every runtime owns its state root;
      * only claim-capable runtimes carry the claim hooks (SYSTEM is
      * never a distribution target; CORE is) */
@@ -123,10 +167,11 @@ int main(void) {
     /* digests against the INDEPENDENT oracle (selfcheck only proves
      * pinned == fresh-C; this proves both == the oracle) */
     CHECK(memcmp(sys->ruleset_hash, KAT_RS_SYSTEM, DNA_DOM_HASH_LEN) == 0,
-          "SYSTEM ruleset digest MOVED — SYSTEM descriptor was untouched");
+          "SYSTEM ruleset digest != the execution-season v2 oracle value");
     OK();
     CHECK(memcmp(core->ruleset_hash, KAT_RS_CORE, DNA_DOM_HASH_LEN) == 0,
-          "CORE ruleset digest != re-derived S9 W4 oracle value"); OK();
+          "CORE ruleset digest != the execution-season v2 oracle value");
+    OK();
     CHECK(memcmp(sys->ruleset_hash, core->ruleset_hash,
                  DNA_DOM_HASH_LEN) != 0, "the two digests collided"); OK();
 

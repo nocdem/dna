@@ -63,9 +63,13 @@ static const char *KAT_MAN_A =
 static const char *KAT_MAN_B =
     "44993d0388a3e775249544b159bde74ada723408b621b689bf823a35e8406f49"
     "ac1bb7d30fa9d14236e0363fb976b0d649b780fcc4fa5521cedfc7cd22315eb1";
+/* RE-DERIVED for the execution season: RulesetDescriptor v2 appends the
+ * committed meter_policy_digest (all-zero in this fixture) and bumps the
+ * version field to 2 — the hash moves by construction. Oracle:
+ * scratchpad exec_season_oracle.py. */
 static const char *KAT_DESC =
-    "b764a7436beadf63f2e877f964a6b37a544ca52b626dbe79d26bf1a123199534"
-    "521f4298a7e865f1e41e0df3fb27bf43ad9ad9697497a19802dbd282f5377720";
+    "c691708f054d410ef623cbf1555d58d12b96882596c23a4a94598ee17859a708"
+    "d5e55575245168cbecac38601995d610b58ab6f03c21009f40d7980af5e65259";
 static const char *KAT_LEAF_SYS =
     "e818427a14fdf97b4d9bea4462ba9847dab5bb841319f7fb9612d79c0b356884"
     "da09606ca423f2669a54c1b2e26ee8e27e112ed01e4d1f32d7a040f3a06ae3c5";
@@ -243,21 +247,36 @@ static int test_ruleset_desc(void) {
     const uint8_t types[4] = { 1, 2, 3, 11 };
     dna_ruleset_desc_t d;
     memset(&d, 0, sizeof(d));
-    d.descriptor_version = 1;
+    d.descriptor_version = 2;            /* v2 (execution season)        */
     d.domain_id = 1;
     memcpy(d.name, "DNA_CORE", 8);
     d.runtime_abi = 1;
     d.ruleset_version = 2;
     d.rule_count = 3;  d.rule_ids = rules;
     d.tx_type_count = 4; d.tx_types = types;
+    /* meter_policy_digest stays all-zero: "no policy declared" is a
+     * legal committed value (the memset above IS the fixture) */
 
     uint8_t h[64];
     CHECK(dna_ruleset_desc_hash(&d, h) == 0, "desc hash"); OK();
     CHECK(hex_eq(h, KAT_DESC, "ruleset descriptor"), "desc KAT"); OK();
 
+    /* the digest COMMITS the policy identity: flipping one byte of
+     * meter_policy_digest must move the hash */
+    {
+        dna_ruleset_desc_t p = d;
+        p.meter_policy_digest[0] ^= 1;
+        uint8_t h2[64];
+        CHECK(dna_ruleset_desc_hash(&p, h2) == 0, "desc hash 2");
+        CHECK(memcmp(h, h2, 64) != 0,
+              "meter_policy_digest not committed"); OK();
+    }
+
     dna_ruleset_desc_t n = d;
-    n.descriptor_version = 2;
-    CHECK(dna_ruleset_desc_hash(&n, h) != 0, "desc v2 accepted"); OK();
+    n.descriptor_version = 1;            /* v1 is RETIRED               */
+    CHECK(dna_ruleset_desc_hash(&n, h) != 0, "desc v1 accepted"); OK();
+    n = d; n.descriptor_version = 3;
+    CHECK(dna_ruleset_desc_hash(&n, h) != 0, "desc v3 accepted"); OK();
     const uint32_t bad_rules[3] = { 100, 100, 300 };
     n = d; n.rule_ids = bad_rules;
     CHECK(dna_ruleset_desc_hash(&n, h) != 0, "dup rule accepted"); OK();

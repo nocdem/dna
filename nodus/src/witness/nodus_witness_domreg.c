@@ -868,11 +868,16 @@ int nodus_witness_domreg_admit_v2(nodus_witness_t *w,
     /* 9. runtime-level admission: pool legality + the C3 type-11 stop */
     if (rt->admit(rt, ctx->tx_type, ctx->pool_id) != 0) return -1;
 
-    /* 10. quotas (0 = bounded only by the global block caps) */
+    /* 10. quotas (0 = bounded only by the global block caps).
+     * The tx-count gate is "would used + 1 exceed the quota", written
+     * WITHOUT the +1: at used_tx_count == UINT32_MAX the old
+     * `used_tx_count + 1` wrapped to 0 and admitted past a full quota.
+     * `used >= quota` is the same predicate over the whole u32 range —
+     * no widening, no wrap. */
     uint32_t cost = 0;
     if (rt->tx_cost(rt, ctx->tx_type, &cost) != 0) return -1;
     if (cur.quota_tx_per_block != 0 &&
-        used_tx_count + 1 > (uint32_t)cur.quota_tx_per_block)
+        used_tx_count >= (uint32_t)cur.quota_tx_per_block)
         return -1;
     if (cur.quota_verify_cost != 0) {
         uint64_t total = (uint64_t)used_verify_cost + (uint64_t)cost;

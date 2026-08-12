@@ -75,6 +75,8 @@
 #include "witness/nodus_witness_roots_v2.h"
 #include "nodus/nodus_chain_config.h"
 
+#include "v2_exec_fixture.h"
+
 #include "dnac/manifest_wire.h"
 #include "dnac/domain_wire.h"
 #include "dnac/block_v2.h"
@@ -411,6 +413,91 @@ static int t3_invariant(const nodus_domain_runtime_t *rt,
     return 0;                           /* T3's asset is fully internal  */
 }
 
+/* ── T3/T4 test adapter (execution season): one compiled adapter for
+ * both synthetic domains — the table is picked from the AUTHORITATIVE
+ * domain id the boundary hands in (7 → t3_state, 9 → t4_state), which
+ * is exactly the domain-scoping discipline a real adapter must apply.
+ * op 1: CREATE, key = 64-byte id, value = amount u64 BE ‖ asset bytes. */
+#define TN_OP_PUT 1u
+
+static const char *tn_table_for(uint32_t dom) {
+    return dom == T3_DOMAIN ? "t3_state"
+         : dom == T4_DOMAIN ? "t4_state" : NULL;
+}
+
+static nodus_adapter_status_t tn_probe(
+        const nodus_domain_adapter_t *ad, struct nodus_witness *wns,
+        uint32_t dom, const nodus_adapter_op_t *op,
+        const uint8_t *key, uint16_t key_len,
+        nodus_adapter_row_facts_t *f) {
+    (void)ad; (void)op;
+    const char *tbl = tn_table_for(dom);
+    if (!tbl) return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+    nodus_witness_t *w = (nodus_witness_t *)wns;
+    char sql[96];
+    snprintf(sql, sizeof(sql), "SELECT amount FROM %s WHERE id=?1", tbl);
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db, sql, -1, &st, NULL) != SQLITE_OK)
+        return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+    sqlite3_bind_blob(st, 1, key, key_len, SQLITE_TRANSIENT);
+    int rc = sqlite3_step(st);
+    if (rc == SQLITE_ROW) {
+        f->exists = 1;
+        f->version = (uint64_t)sqlite3_column_int64(st, 0);
+    } else if (rc == SQLITE_DONE) {
+        f->exists = 0;
+    } else {
+        sqlite3_finalize(st);
+        return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+    }
+    sqlite3_finalize(st);
+    return NODUS_ADAPTER_OK;
+}
+
+static nodus_adapter_status_t tn_mutate(
+        const nodus_domain_adapter_t *ad, struct nodus_witness *wns,
+        uint32_t dom, const nodus_adapter_op_t *op, uint8_t kind,
+        const uint8_t *key, uint16_t key_len,
+        const uint8_t *value, uint32_t value_len) {
+    (void)ad; (void)op;
+    if (kind != DNA_EFFECT_CREATE || value_len < 8)
+        return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+    const char *tbl = tn_table_for(dom);
+    if (!tbl) return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+    nodus_witness_t *w = (nodus_witness_t *)wns;
+    uint64_t amt = 0;
+    for (int i = 0; i < 8; i++) amt = (amt << 8) | value[i];
+    char sql[128];
+    snprintf(sql, sizeof(sql),
+             "INSERT INTO %s (id, amount, asset) VALUES (?1, ?2, ?3)",
+             tbl);
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db, sql, -1, &st, NULL) != SQLITE_OK)
+        return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+    sqlite3_bind_blob(st, 1, key, key_len, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 2, (sqlite3_int64)amt);
+    sqlite3_bind_blob(st, 3, value + 8, (int)(value_len - 8),
+                      SQLITE_TRANSIENT);
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    return rc == SQLITE_DONE ? NODUS_ADAPTER_OK
+                             : NODUS_ADAPTER_ERR_STORAGE_FAULT;
+}
+
+static const nodus_adapter_op_t TN_OPS[1] = {
+    { TN_OP_PUT, NODUS_ADAPTER_KIND_BIT(DNA_EFFECT_CREATE),
+      NODUS_ADAPTER_PRECOND_BIT(DNA_EFFECT_PRE_ABSENT), 64, 64, 8, 64 }
+};
+
+static const nodus_domain_adapter_t TN_ADAPTER = {
+    .adapter_version = NODUS_DOMAIN_ADAPTER_V1,
+    .ops = TN_OPS,
+    .n_ops = 1,
+    .probe = tn_probe,
+    .mutate = tn_mutate,
+    .read = NULL                        /* T3/T4 serve no mediated reads */
+};
+
 /* Build the extended runtime table: the two production natives + the
  * synthetic ones. NOTHING in a Header, BlockID, QC or schema changes to
  * carry them — that is the point. */
@@ -424,6 +511,14 @@ static int ext_table_init(void) {
     if (!b || n != 2) return -1;
     memcpy(&g_ext_table[0], &b[0], sizeof(b[0]));
     memcpy(&g_ext_table[1], &b[1], sizeof(b[1]));
+    /* the scripted execution surface (execution season) — the identity
+     * tuples stay byte-identical to the builtins */
+    g_ext_table[0].read_plan = v2x_read_plan;
+    g_ext_table[0].exec = v2x_exec;
+    g_ext_table[0].adapter = &V2X_SYS_ADAPTER;
+    g_ext_table[1].read_plan = v2x_read_plan;
+    g_ext_table[1].exec = v2x_exec;
+    g_ext_table[1].adapter = &V2X_CORE_ADAPTER;
 
     memset(&g_ext_table[2], 0, sizeof(g_ext_table[2]));
     g_ext_table[2].domain_id = T3_DOMAIN;
@@ -448,6 +543,9 @@ static int ext_table_init(void) {
     g_ext_table[2].asset_check = t3_asset_check;
     g_ext_table[2].claim_apply = t3_claim_apply;
     g_ext_table[2].invariant = t3_invariant;
+    g_ext_table[2].read_plan = v2x_read_plan;
+    g_ext_table[2].exec = v2x_exec;
+    g_ext_table[2].adapter = &TN_ADAPTER;
 
     memcpy(&g_ext_table[3], &g_ext_table[2], sizeof(g_ext_table[2]));
     g_ext_table[3].domain_id = T4_DOMAIN;
@@ -705,6 +803,71 @@ static void mk_claim_block(nodus_v2_block_t *b, uint64_t h,
     b->n_claims = n_claims;
 }
 
+/* One-envelope block (typed path). The envelope buffer must OUTLIVE the
+ * apply call (view lifetime rule), so callers pass persistent v2x_env_t
+ * storage and this helper only wires the reference. */
+static nodus_v2_envelope_t g_env_ref;
+
+static void mk_env_block(nodus_v2_block_t *b, uint64_t h,
+                         const uint8_t gid[64], const v2x_env_t *e) {
+    mk_claim_block(b, h, gid, NULL, 0);
+    if (e) {
+        g_env_ref.env_bytes = e->bytes;
+        g_env_ref.env_len = e->len;
+        b->envs = &g_env_ref;
+        b->n_envs = 1;
+    }
+}
+
+/* SYSTEM envelope: registry lifecycle transition through the typed
+ * DOMREG_SET adapter op (the old status_update_sql op, typed).
+ * `expiry` doubles as a distinctness salt: two lifecycle transitions
+ * that would otherwise carry byte-identical envelopes (e.g. an
+ * ACTIVATE and a later RESUME to the same record bytes) would derive
+ * ONE tx_id — and the committed transaction index correctly refuses an
+ * identity replay. Distinct transactions must be distinct bytes. */
+static int env_status(v2x_env_t *e, nodus_witness_t *w, uint32_t dom,
+                      uint8_t status, uint64_t expiry) {
+    dna_domreg_record_t rec;
+    if (nodus_witness_domreg_get(w, dom, &rec, NULL, NULL) != 0) return -1;
+    rec.status = status;
+    uint8_t recb[DNA_DOMREG_REC_ENC_LEN];
+    if (dna_domreg_record_encode(&rec, recb) != 0) return -1;
+    uint8_t key[4];
+    v2x_put32(key, dom);
+    dna_effect_in_t eff;
+    memset(&eff, 0, sizeof(eff));
+    eff.hdr.op_id = V2X_OP_DOMREG;
+    eff.hdr.effect_kind = DNA_EFFECT_SET;
+    eff.hdr.precond_tag = DNA_EFFECT_PRE_EXISTS;
+    eff.hdr.key_len = 4;
+    eff.hdr.value_len = DNA_DOMREG_REC_ENC_LEN;
+    eff.key = key;
+    eff.value = recb;
+    uint8_t res[1024];
+    size_t rl = 0;
+    if (dna_effect_result_encode(&eff, 1, res, sizeof(res), &rl) != 0)
+        return -1;
+    uint8_t call[1200];
+    uint32_t cl = v2x_script_build(call, sizeof(call), NULL, 0, res, rl);
+    if (!cl) return -1;
+    v2x_leg_t leg = { 0, 1, call, cl, 4, 2048 };
+    return v2x_env_build_ex(e, 200000, expiry, 0, &leg, 1);
+}
+
+/* T3/T4 envelope: one synthetic-domain row through the TN adapter. */
+static int env_tn_put(v2x_env_t *e, uint32_t dom, uint8_t keylast,
+                      uint64_t amount, const uint8_t asset5[5]) {
+    uint8_t key[64] = { 0 };
+    key[63] = keylast;
+    uint8_t val[13];
+    for (int i = 0; i < 8; i++)
+        val[i] = (uint8_t)(amount >> (56 - 8 * i));
+    memcpy(val + 8, asset5, 5);
+    return v2x_env1(e, dom, 1, TN_OP_PUT, DNA_EFFECT_CREATE,
+                    DNA_EFFECT_PRE_ABSENT, key, 64, val, 13);
+}
+
 static int utxo_row(nodus_witness_t *w, const uint8_t id[64],
                     uint64_t *amount, uint64_t *domain,
                     uint64_t *created_at, char owner[130]) {
@@ -755,10 +918,15 @@ static int claim_ids(const dna_claim_t *c, uint32_t target_domain,
 /* apply a block that must REJECT, digest-proven no-op */
 static int expect_reject(nodus_witness_t *w, nodus_v2_block_t *b,
                          const char *msg) {
+    /* Both rejection classes count here — a consensus VERDICT (-1) and
+     * a node-local FAULT (-2, e.g. this build cannot resolve an ACTIVE
+     * domain's runtime) — because what THESE tests pin is the fail-
+     * closed no-op: nothing persisted either way (digest-proven). */
     uint8_t d0[64], d1[64];
     if (db_state_digest(w, d0) != 0) return 1;
-    if (nodus_witness_v2_apply_block(w, b) != -1) {
-        fprintf(stderr, "expected reject: %s\n", msg);
+    int rc = nodus_witness_v2_apply_block(w, b);
+    if (rc != -1 && rc != -2) {
+        fprintf(stderr, "expected reject: %s (rc %d)\n", msg, rc);
         return 1;
     }
     if (db_state_digest(w, d1) != 0) return 1;
@@ -1615,30 +1783,30 @@ static int test_generic_t3(void) {
     {
         dna_claim_t c1;
         CHECK(make_claim(&c1, 1, chain, mh) == 0, "claim1");
-        nodus_v2_op_t ops[2];
-        memset(&ops[0], 0, sizeof(ops[0]));
-        memset(ops[0].tx_id, 0x61, 64);
-        ops[0].touched[0] = 0;
-        ops[0].touched_n = 1;
-        ops[0].sql =
-            "INSERT INTO chain_config_history (param_id, new_value, "
-            "effective_block, commit_block, tx_hash, proposal_nonce, "
-            "created_at_unix) VALUES (2, 5, 999991, 1, x'cc', 1, 0)";
-        ops[0].verify_cost = 1;
-        memset(&ops[1], 0, sizeof(ops[1]));
-        memset(ops[1].tx_id, 0x62, 64);
-        ops[1].touched[0] = 1;
-        ops[1].touched_n = 1;
-        ops[1].sql =
-            "INSERT INTO utxo_set (nullifier, owner, amount, token_id, "
-            "tx_hash, output_index, block_height, created_at, "
-            "unlock_block, domain_id) VALUES (zeroblob(63)||x'71', 'fp', "
-            "0, zeroblob(64), zeroblob(63)||x'aa', 0, 1, 0, 0, 1)";
-        ops[1].verify_cost = 1;
+        static v2x_env_t e3s, e3c;
+        {
+            uint8_t skey[12];
+            v2x_put32(skey, 2);
+            v2x_put64(skey + 4, 999991);
+            uint8_t sval[8];
+            v2x_put64(sval, 5);
+            CHECK(v2x_env1(&e3s, 0, 1, V2X_OP_CC, DNA_EFFECT_CREATE,
+                           DNA_EFFECT_PRE_ABSENT, skey, 12, sval, 8)
+                      == 0, "e3s");
+            uint8_t ckey[64] = { 0 };
+            ckey[63] = 0x71;
+            uint8_t cval[8] = { 0 };     /* amount 0: supply-silent      */
+            CHECK(v2x_env1(&e3c, 1, 1, V2X_OP_UTXO, DNA_EFFECT_CREATE,
+                           DNA_EFFECT_PRE_ABSENT, ckey, 64, cval, 8)
+                      == 0, "e3c");
+        }
+        nodus_v2_envelope_t v3d[2] = {
+            { e3s.bytes, e3s.len }, { e3c.bytes, e3c.len }
+        };
         nodus_v2_block_t bb;
         mk_claim_block(&bb, 2, gid, &c1, 1);
-        bb.ops = ops;
-        bb.n_ops = 2;
+        bb.envs = v3d;
+        bb.n_envs = 2;
         bb.fail_at = V2AP_FAIL_BEFORE_COMMIT;
         CHECK(expect_reject(fx.w, &bb, "3-domain fault") == 0,
               "SYSTEM+CORE+T3 fault rolls the whole block back");
@@ -1753,21 +1921,17 @@ static int test_generic_coexistence(void) {
           "four heads, zero header/schema changes");
     OK();
 
-    /* a T3-targeted claim and a T4-touching op coexist in one block */
+    /* a T3-targeted claim and a T4-touching envelope coexist in one
+     * block */
     dna_claim_t c0;
     CHECK(make_claim(&c0, 0, chain, mh) == 0, "claim0");
-    nodus_v2_op_t op;
-    memset(&op, 0, sizeof(op));
-    memset(op.tx_id, 0x81, 64);
-    op.touched[0] = T4_DOMAIN;
-    op.touched_n = 1;
-    op.sql = "INSERT INTO t4_state (id, amount, asset) VALUES "
-             "(zeroblob(63)||x'01', 5, x'5434415354')";
-    op.verify_cost = 1;
+    static v2x_env_t et4;
+    CHECK(env_tn_put(&et4, T4_DOMAIN, 0x01, 5, T4_ASSET) == 0, "et4");
     nodus_v2_block_t b;
     mk_claim_block(&b, 1, gid, &c0, 1);
-    b.ops = &op;
-    b.n_ops = 1;
+    nodus_v2_envelope_t vt4 = { et4.bytes, et4.len };
+    b.envs = &vt4;
+    b.n_envs = 1;
     CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0, "mixed block");
     CHECK(q1(fx.w, "SELECT COUNT(*) FROM t3_state") == 1 &&
           q1(fx.w, "SELECT COUNT(*) FROM t4_state") == 1,
@@ -1846,32 +2010,6 @@ static int lifecycle_genesis(fixture_t *fx, uint8_t out_gid[64]) {
                                        mbytes, mlen);
 }
 
-static void mk_op_block(nodus_v2_block_t *b, uint64_t h,
-                        const uint8_t gid[64], nodus_v2_op_t *op) {
-    mk_claim_block(b, h, gid, NULL, 0);
-    b->ops = op;
-    b->n_ops = op ? 1 : 0;
-}
-
-static void mk_sys_op(nodus_v2_op_t *op, uint8_t fill_id,
-                      const char *sql) {
-    memset(op, 0, sizeof(*op));
-    memset(op->tx_id, fill_id, 64);
-    op->touched[0] = 0;
-    op->touched_n = 1;
-    op->sql = sql;
-    op->verify_cost = 1;
-}
-
-static void mk_t3_op(nodus_v2_op_t *op, uint8_t fill_id,
-                     const char *sql) {
-    memset(op, 0, sizeof(*op));
-    memset(op->tx_id, fill_id, 64);
-    op->touched[0] = T3_DOMAIN;
-    op->touched_n = 1;
-    op->sql = sql;
-    op->verify_cost = 1;
-}
 
 static int test_lifecycle(void) {
     fixture_t fx;
@@ -1884,12 +2022,10 @@ static int test_lifecycle(void) {
     CHECK(q1(fx.w, "SELECT COUNT(*) FROM v2_domain_heads") == 2,
           "registered domain must have NO head before activation");
     CHECK(head_blob(fx.w, T3_DOMAIN, blob) == 1, "T3 head absent"); OK();
-    nodus_v2_op_t op;
+    static v2x_env_t et3;
     nodus_v2_block_t b;
-    mk_t3_op(&op, 0xA0,
-             "INSERT INTO t3_state (id, amount, asset) VALUES "
-             "(zeroblob(63)||x'01', 5, x'5433415354')");
-    mk_op_block(&b, 1, gid, &op);
+    CHECK(env_tn_put(&et3, T3_DOMAIN, 0x01, 5, T3_ASSET) == 0, "et3");
+    mk_env_block(&b, 1, gid, &et3);
     CHECK(expect_reject(fx.w, &b, "pre-activation execution") == 0,
           "pre-activation execution rejects"); OK();
 
@@ -1904,15 +2040,14 @@ static int test_lifecycle(void) {
     /* ACTIVATION BLOCK: the SYSTEM registry transition + the canonical
      * height-zero head, atomically. First with an injected fault —
      * registry transition, head, roots and metadata ALL roll back. */
-    char *act_sql = status_update_sql(fx.w, T3_DOMAIN, DNA_DOMST_ACTIVE);
-    CHECK(act_sql != NULL, "act sql");
-    nodus_v2_op_t act;
-    mk_sys_op(&act, 0xA1, act_sql);
-    mk_op_block(&b, 1, gid, &act);
+    static v2x_env_t eact;
+    CHECK(env_status(&eact, fx.w, T3_DOMAIN, DNA_DOMST_ACTIVE, 0) == 0,
+          "eact");
+    mk_env_block(&b, 1, gid, &eact);
     b.fail_at = V2AP_FAIL_BEFORE_COMMIT;
     CHECK(expect_reject(fx.w, &b, "activation fault") == 0,
           "activation fault rolls back registry+head+roots+meta"); OK();
-    mk_op_block(&b, 1, gid, &act);
+    mk_env_block(&b, 1, gid, &eact);
     CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0, "activation block");
     OK();
 
@@ -1951,12 +2086,21 @@ static int test_lifecycle(void) {
         uint8_t gid2[64];
         CHECK(lifecycle_genesis(&ft, gid2) == 0, "twin genesis");
         CHECK(memcmp(gid, gid2, 64) == 0, "twin chains identical");
-        char *act2 = status_update_sql(ft.w, T3_DOMAIN, DNA_DOMST_ACTIVE);
-        CHECK(act2 != NULL, "twin act sql");
-        nodus_v2_op_t a2;
-        mk_sys_op(&a2, 0xA1, act2);
+        static v2x_env_t eact2;
+        static nodus_v2_envelope_t eref2;
+        CHECK(env_status(&eact2, ft.w, T3_DOMAIN, DNA_DOMST_ACTIVE, 0)
+                  == 0, "twin act env");
+        /* twin determinism guard: an identical sequence must build a
+         * byte-identical envelope, or the derived ids diverge */
+        CHECK(eact2.len == eact.len &&
+              memcmp(eact2.bytes, eact.bytes, eact.len) == 0,
+              "twin activation envelopes diverged");
         nodus_v2_block_t b2;
-        mk_op_block(&b2, 1, gid2, &a2);
+        mk_claim_block(&b2, 1, gid2, NULL, 0);
+        eref2.env_bytes = eact2.bytes;
+        eref2.env_len = eact2.len;
+        b2.envs = &eref2;
+        b2.n_envs = 1;
         CHECK(nodus_witness_v2_apply_block(ft.w, &b2) == 0, "twin apply");
         uint8_t tb[DNA_V2_DOMHEAD_ENC_LEN];
         CHECK(head_blob(ft.w, T3_DOMAIN, tb) == 0 &&
@@ -1968,10 +2112,8 @@ static int test_lifecycle(void) {
                      == 0 &&
               memcmp(ga, gb, 64) == 0, "twin global roots identical");
         OK();
-        free(act2);
         fx_close(&ft);
     }
-    free(act_sql);
 
     /* restart AFTER activation reproduces identical heads + roots */
     {
@@ -1989,10 +2131,7 @@ static int test_lifecycle(void) {
 
     /* FIRST EXECUTION does not synthesize or replace the head — it
      * advances it through the pinned DomainUpdate rules (0 → 1). */
-    mk_t3_op(&op, 0xA2,
-             "INSERT INTO t3_state (id, amount, asset) VALUES "
-             "(zeroblob(63)||x'01', 5, x'5433415354')");
-    mk_op_block(&b, 2, gid, &op);
+    mk_env_block(&b, 2, gid, &et3);      /* the pre-activation envelope */
     CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0, "first execution");
     CHECK(head_blob(fx.w, T3_DOMAIN, blob) == 0 &&
           be64_at(blob + 68) == 1 && be64_at(blob + 76) == 2,
@@ -2000,8 +2139,9 @@ static int test_lifecycle(void) {
     CHECK(q1(fx.w, "SELECT COUNT(*) FROM v2_root_history WHERE "
                    "domain_id=7") == 2, "history 0 and 1"); OK();
 
-    /* UNTOUCHED ACTIVE: exact head + height retained byte-identically */
-    mk_op_block(&b, 3, gid, NULL);
+    /* UNTOUCHED ACTIVE: exact head + height retained byte-identically
+     * (an empty block touches nothing — still a legal block). */
+    mk_env_block(&b, 3, gid, NULL);
     CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0, "spacer");
     CHECK(head_blob(fx.w, T3_DOMAIN, blob2) == 0 &&
           memcmp(blob, blob2, DNA_V2_DOMHEAD_ENC_LEN) == 0,
@@ -2009,51 +2149,43 @@ static int test_lifecycle(void) {
 
     /* PAUSE: head carried byte-unchanged, no execution, no advance —
      * and carrying it does NOT require the runtime. */
-    char *pause_sql = status_update_sql(fx.w, T3_DOMAIN,
-                                        DNA_DOMST_PAUSED);
-    CHECK(pause_sql != NULL, "pause sql");
-    nodus_v2_op_t pz;
-    mk_sys_op(&pz, 0xA4, pause_sql);
-    mk_op_block(&b, 4, gid, &pz);
+    static v2x_env_t epause;
+    CHECK(env_status(&epause, fx.w, T3_DOMAIN, DNA_DOMST_PAUSED, 0) == 0,
+          "epause");
+    mk_env_block(&b, 4, gid, &epause);
     CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0, "pause block");
-    free(pause_sql);
     CHECK(head_blob(fx.w, T3_DOMAIN, blob2) == 0 &&
           memcmp(blob, blob2, DNA_V2_DOMHEAD_ENC_LEN) == 0,
           "PAUSED head remains committed unchanged"); OK();
-    mk_t3_op(&op, 0xA5,
-             "INSERT INTO t3_state (id, amount, asset) VALUES "
-             "(zeroblob(63)||x'02', 5, x'5433415354')");
-    mk_op_block(&b, 5, gid, &op);
+    static v2x_env_t et3b;
+    CHECK(env_tn_put(&et3b, T3_DOMAIN, 0x02, 5, T3_ASSET) == 0, "et3b");
+    mk_env_block(&b, 5, gid, &et3b);
     CHECK(expect_reject(fx.w, &b, "paused execution") == 0,
           "PAUSED admits no execution"); OK();
     /* runtime withdrawn while paused: blocks still apply (the opaque
      * head is carried without executing or recomputing the runtime) */
     fx.w->v2_runtime_table_n = 2;
-    mk_op_block(&b, 5, gid, NULL);
+    mk_env_block(&b, 5, gid, NULL);
     CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
           "paused head carried without its runtime"); OK();
 
     /* RESUME fails closed without the exact runtime; succeeds with it —
      * and the head is CARRIED, never rebuilt. */
-    char *resume_sql = status_update_sql(fx.w, T3_DOMAIN,
-                                         DNA_DOMST_ACTIVE);
-    CHECK(resume_sql != NULL, "resume sql");
-    nodus_v2_op_t rz;
-    mk_sys_op(&rz, 0xA6, resume_sql);
-    mk_op_block(&b, 6, gid, &rz);
+    static v2x_env_t eresume;
+    CHECK(env_status(&eresume, fx.w, T3_DOMAIN, DNA_DOMST_ACTIVE, 1000)
+              == 0, "eresume");     /* distinct bytes ⇒ distinct tx_id */
+    mk_env_block(&b, 6, gid, &eresume);
     CHECK(expect_reject(fx.w, &b, "resume without runtime") == 0,
           "resume fails closed without the runtime"); OK();
     fx.w->v2_runtime_table_n = g_ext_n;
-    mk_op_block(&b, 6, gid, &rz);
+    mk_env_block(&b, 6, gid, &eresume);
     CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0, "resume block");
-    free(resume_sql);
     CHECK(head_blob(fx.w, T3_DOMAIN, blob2) == 0 &&
           memcmp(blob, blob2, DNA_V2_DOMHEAD_ENC_LEN) == 0,
           "resume carries the head unchanged"); OK();
-    mk_t3_op(&op, 0xA7,
-             "INSERT INTO t3_state (id, amount, asset) VALUES "
-             "(zeroblob(63)||x'03', 5, x'5433415354')");
-    mk_op_block(&b, 7, gid, &op);
+    static v2x_env_t et3c;
+    CHECK(env_tn_put(&et3c, T3_DOMAIN, 0x03, 5, T3_ASSET) == 0, "et3c");
+    mk_env_block(&b, 7, gid, &et3c);
     CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
           "executable after resume");
     CHECK(head_blob(fx.w, T3_DOMAIN, blob) == 0 && be64_at(blob + 68) == 2,
@@ -2061,33 +2193,26 @@ static int test_lifecycle(void) {
 
     /* RETIRE: final head stays committed permanently; no execution; no
      * reactivation (terminal); roots reproducible after restart. */
-    char *retire_sql = status_update_sql(fx.w, T3_DOMAIN,
-                                         DNA_DOMST_RETIRED);
-    CHECK(retire_sql != NULL, "retire sql");
-    nodus_v2_op_t tz;
-    mk_sys_op(&tz, 0xA8, retire_sql);
-    mk_op_block(&b, 8, gid, &tz);
+    static v2x_env_t eretire;
+    CHECK(env_status(&eretire, fx.w, T3_DOMAIN, DNA_DOMST_RETIRED, 0)
+              == 0, "eretire");
+    mk_env_block(&b, 8, gid, &eretire);
     CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0, "retire block");
-    free(retire_sql);
     CHECK(head_blob(fx.w, T3_DOMAIN, blob2) == 0 &&
           memcmp(blob, blob2, DNA_V2_DOMHEAD_ENC_LEN) == 0,
           "RETIRED head remains committed unchanged"); OK();
-    mk_t3_op(&op, 0xA9,
-             "INSERT INTO t3_state (id, amount, asset) VALUES "
-             "(zeroblob(63)||x'04', 5, x'5433415354')");
-    mk_op_block(&b, 9, gid, &op);
+    static v2x_env_t et3d;
+    CHECK(env_tn_put(&et3d, T3_DOMAIN, 0x04, 5, T3_ASSET) == 0, "et3d");
+    mk_env_block(&b, 9, gid, &et3d);
     CHECK(expect_reject(fx.w, &b, "retired execution") == 0,
           "RETIRED admits no execution"); OK();
     {
-        char *react_sql = status_update_sql(fx.w, T3_DOMAIN,
-                                            DNA_DOMST_ACTIVE);
-        CHECK(react_sql != NULL, "react sql");
-        nodus_v2_op_t xz;
-        mk_sys_op(&xz, 0xAA, react_sql);
-        mk_op_block(&b, 9, gid, &xz);
+        static v2x_env_t ereact;
+        CHECK(env_status(&ereact, fx.w, T3_DOMAIN, DNA_DOMST_ACTIVE,
+                         2000) == 0, "ereact");
+        mk_env_block(&b, 9, gid, &ereact);
         CHECK(expect_reject(fx.w, &b, "retired reactivation") == 0,
               "RETIRED is terminal — reactivation rejects"); OK();
-        free(react_sql);
     }
     {
         uint8_t g2[64], g2b[64];
@@ -2121,7 +2246,7 @@ static int test_lifecycle(void) {
         sqlite3_bind_blob(st, 1, bad, sizeof(bad), SQLITE_TRANSIENT);
         CHECK(sqlite3_step(st) == SQLITE_DONE, "patch");
         sqlite3_finalize(st);
-        mk_op_block(&b, 9, gid, NULL);
+        mk_env_block(&b, 9, gid, NULL);
         CHECK(expect_reject(fx.w, &b, "unknown lifecycle") == 0,
               "unknown lifecycle value fails closed"); OK();
         CHECK(sqlite3_prepare_v2(fx.w->db,
@@ -2150,7 +2275,7 @@ static int test_lifecycle(void) {
         CHECK(run_sql(fx.w->db,
               "DELETE FROM v2_domain_heads WHERE domain_id=1") == 0,
               "delete");
-        mk_op_block(&b, 9, gid, NULL);
+        mk_env_block(&b, 9, gid, NULL);
         CHECK(expect_reject(fx.w, &b, "ACTIVE missing head") == 0,
               "ACTIVE domain with missing head rejects"); OK();
         CHECK(sqlite3_prepare_v2(fx.w->db,
@@ -2169,7 +2294,7 @@ static int test_lifecycle(void) {
      * table — SYSTEM alone remains). */
     {
         fx.w->v2_runtime_table_n = 1;   /* SYSTEM only */
-        mk_op_block(&b, 9, gid, NULL);
+        mk_env_block(&b, 9, gid, NULL);
         CHECK(expect_reject(fx.w, &b, "ACTIVE unresolved runtime") == 0,
               "ACTIVE domain with unresolved runtime rejects"); OK();
         fx.w->v2_runtime_table_n = g_ext_n;

@@ -91,6 +91,12 @@
 #include <stddef.h>
 
 #include "dnac/effect_wire.h"
+#include "witness/nodus_witness_runtime.h"  /* nodus_rt_read_req_t /
+                                             * nodus_rt_read_res_t (the
+                                             * mediated-read helper below);
+                                             * runtime.h only FORWARD-
+                                             * declares this adapter, so
+                                             * the include is acyclic */
 
 #ifdef __cplusplus
 extern "C" {
@@ -208,6 +214,33 @@ typedef nodus_adapter_status_t (*nodus_adapter_probe_fn)(
     nodus_adapter_row_facts_t *facts_out);
 
 /**
+ * Read one row's VALUE for the mediated-read boundary (Ledger V2
+ * execution season).
+ *
+ * @param authoritative_domain_id ALWAYS the resolved runtime's own
+ *        domain_id — the adapter must scope its read by it, never by
+ *        anything derived from a request.
+ * @param present_out  0 or 1. A MISSING row is a SUCCESSFUL read with
+ *        present == 0 and *value_len_out == 0 — it is NEVER a fault, and
+ *        a fault is NEVER reported as absence (the probe rule).
+ * @param value_out    caller buffer of `value_cap` bytes; on present == 1
+ *        the stored value is copied whole. A stored value that does not
+ *        fit `value_cap`, or that exceeds DNA_EFFECT_MAX_VALUE_LEN, is a
+ *        STORAGE FAULT — this node's storage holds a row outside the
+ *        compiled contract; truncating it would hand the runtime a value
+ *        that is not the stored one.
+ * @return NODUS_ADAPTER_OK or NODUS_ADAPTER_ERR_STORAGE_FAULT. As with
+ *         probe/mutate, the generic layer COERCES any other return to
+ *         ERR_STORAGE_FAULT.
+ */
+typedef nodus_adapter_status_t (*nodus_adapter_read_fn)(
+    const struct nodus_domain_adapter *ad, struct nodus_witness *w,
+    uint32_t authoritative_domain_id, const nodus_adapter_op_t *op,
+    const uint8_t *key, uint16_t key_len,
+    int *present_out, uint8_t *value_out, uint32_t value_cap,
+    uint32_t *value_len_out);
+
+/**
  * Perform one ALREADY-VALIDATED mutation inside the CALLER's transaction.
  *
  * Shape, kind, precondition form and the precondition itself have all
@@ -246,6 +279,10 @@ typedef struct nodus_domain_adapter {
     size_t n_ops;
     nodus_adapter_probe_fn  probe;  /* both mandatory                       */
     nodus_adapter_mutate_fn mutate;
+    nodus_adapter_read_fn   read;   /* OPTIONAL. NULL = this runtime serves
+                                     * no mediated reads: a read request
+                                     * against it fails closed
+                                     * (ERR_NO_ADAPTER), never "absent".    */
 } nodus_domain_adapter_t;
 
 /**
@@ -394,6 +431,46 @@ nodus_adapter_status_t nodus_witness_v2_effects_apply(
     const struct nodus_domain_runtime *rt,
     const dna_effect_view_t *v,
     uint16_t *fail_index_out);
+
+/**
+ * Execute ONE typed mediated-read request through the resolved runtime's
+ * compiled adapter (Ledger V2 execution season).
+ *
+ * Order (first failure wins):
+ *   1. `w`, `rt`, `req`, `res_out` non-NULL              -> ERR_ARG;
+ *   2. `rt->adapter` present AND its `read` fn present   -> ERR_NO_ADAPTER
+ *      when either is absent (a runtime without a read path serves no
+ *      mediated reads — fail closed, never "absent");
+ *   3. adapter selfcheck                                 -> ERR_ARG;
+ *   4. req->op_id resolves in the adapter's ops[]        -> ERR_UNKNOWN_OP;
+ *   5. req->key_len in [1, DNA_EFFECT_MAX_KEY_LEN] AND inside the op's
+ *      OWN inclusive key bounds                          -> ERR_SHAPE;
+ *   6. the compiled read runs, scoped by `rt->domain_id` and NOTHING
+ *      else — no parameter exists through which a caller, a runtime or
+ *      a request could supply a different domain. Any status outside
+ *      {OK, ERR_STORAGE_FAULT} is COERCED to ERR_STORAGE_FAULT (the
+ *      probe/mutate rule); an out-of-contract RESULT (present not 0/1,
+ *      value_len over the op's value_len_max or over the codec cap, a
+ *      non-zero value_len on an absent row) is ERR_STORAGE_FAULT too —
+ *      the compiled adapter is broken on THIS node.
+ *
+ * On NODUS_ADAPTER_OK, *res_out carries present + the bounded value
+ * copy (zeroed first — an absent row leaves it all-zero with
+ * value_len 0). On every failure *res_out is fully zeroed: a failed
+ * read publishes no bytes.
+ *
+ * MISSING row (OK, present 0) / FAILED PRECONDITION (not expressible
+ * here — reads carry none) / STORAGE FAULT (ERR_STORAGE_FAULT) remain
+ * distinct by construction. This function never charges the meter —
+ * the ENGINE charges exactly one w_read per executed read
+ * (nodus_witness_v2_apply.c), so the charge cannot be duplicated or
+ * skipped by an adapter.
+ */
+nodus_adapter_status_t nodus_witness_v2_read_one(
+    struct nodus_witness *w,
+    const struct nodus_domain_runtime *rt,
+    const nodus_rt_read_req_t *req,
+    nodus_rt_read_res_t *res_out);
 
 #ifdef __cplusplus
 }

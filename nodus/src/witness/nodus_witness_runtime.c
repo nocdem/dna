@@ -5,13 +5,15 @@
  *
  * See nodus_witness_runtime.h. The pinned ruleset digests below were
  * produced by an INDEPENDENT python3 oracle over the canonical descriptor
- * layout in shared/dnac/domain_wire.h (S4: scratchpad s4_oracle.py;
- * CORE re-derived for S9 W4 by s9_w4_ruleset_oracle.py, which reproduces
- * BOTH S4 pins byte-exactly before emitting the new one) — and
+ * layout in shared/dnac/domain_wire.h (execution season: scratchpad
+ * exec_season_oracle.py over the v2 layout, which also derives the
+ * SYSTEM meter-policy identity digest; earlier pins came from
+ * s4_oracle.py / s9_w4_ruleset_oracle.py and are retired) — and
  * nodus_witness_runtime_selfcheck() re-derives them through the C encoder
  * on every run, so oracle, encoder and table can never drift apart
  * silently. The same literals are pinned again in
- * nodus/tests/test_domain_runtime.c (KAT_RS_SYSTEM / KAT_RS_CORE).
+ * nodus/tests/test_domain_runtime.c (KAT_RS_SYSTEM / KAT_RS_CORE /
+ * KAT_METPOL_SYSTEM).
  *
  * S9 (W4): DNA_CORE's descriptor OWNS tx types 12 (SHIELD) and 13
  * (UNSHIELD) alongside 11 (SHIELDED) so the domain boundary is
@@ -55,30 +57,68 @@ static const uint32_t CORE_RULES[6] = {
  * list outright (shared/dnac/domain_wire.c:207-208). */
 static const uint8_t CORE_TYPES[6] = { 1, 2, 3, 11, 12, 13 };
 
-/* Pinned digests — python3 oracle KAT_RS_SYSTEM / KAT_RS_CORE. */
-static const uint8_t SYS_RULESET_HASH[DNA_DOM_HASH_LEN] = {
-    0xf2, 0xdc, 0xde, 0xfa, 0x62, 0x38, 0x38, 0xd5,
-    0xe2, 0x3f, 0x71, 0xb6, 0x55, 0x72, 0xab, 0xb5,
-    0x2b, 0xd3, 0xa1, 0x91, 0xfd, 0x30, 0x72, 0x77,
-    0x7e, 0x4b, 0xdb, 0xef, 0x4b, 0xcd, 0xdc, 0x07,
-    0x46, 0x0a, 0x9d, 0xe1, 0xf0, 0xeb, 0x2a, 0xba,
-    0x21, 0xd2, 0x1f, 0xed, 0xdd, 0x4b, 0x2b, 0xcb,
-    0xd2, 0xe7, 0x79, 0x00, 0xae, 0x8d, 0xb2, 0x71,
-    0x26, 0x2c, 0xc8, 0x9e, 0x40, 0x13, 0x4c, 0xce
+/* ── The compiled SYSTEM metering policy (execution season) ───────────
+ *
+ * PLACEHOLDER ECONOMICS, JUDGMENT-labelled exactly like the S4 tx_cost
+ * values: every scalar weight is 1 and runtime ops 1..6 (the union of
+ * the two descriptors' rule-id ranges) are authoritative with weight 1.
+ * The devnet reset repins real economics behind a new policy digest —
+ * which re-derives the SYSTEM ruleset hash by construction, making any
+ * price change a visible committed event.
+ *
+ * The identity digest below (SYS_METER_POLICY_DIGEST) was produced by an
+ * INDEPENDENT python3 oracle (scratchpad exec_season_oracle.py) over the
+ * canonical "DNA.METPOLID.v1" preimage, and selfcheck re-derives it
+ * through the C serializer on every run. */
+static dna_meter_policy_t g_sys_policy;
+static int g_sys_policy_ready = 0;          /* 0 until built+sealed OK   */
+
+static const uint8_t SYS_METER_POLICY_DIGEST[DNA_DOM_HASH_LEN] = {
+    0xfa, 0xd5, 0x72, 0xe9, 0xda, 0x29, 0xb6, 0xba,
+    0x9e, 0x1d, 0xe4, 0x90, 0x3e, 0x27, 0x99, 0xe0,
+    0xbb, 0x91, 0xaf, 0xcc, 0xad, 0xa3, 0x40, 0x03,
+    0x50, 0xfb, 0x43, 0xdf, 0xb7, 0x65, 0xcb, 0xda,
+    0xa8, 0xb1, 0x6f, 0x12, 0x95, 0x73, 0xb7, 0x83,
+    0xae, 0xe5, 0x53, 0x2a, 0x4f, 0x40, 0xf8, 0xcb,
+    0x70, 0x74, 0x29, 0x45, 0xa8, 0xb5, 0xc5, 0x63,
+    0x9a, 0x52, 0xd4, 0xc2, 0x05, 0xf4, 0x05, 0x37
 };
-/* RE-DERIVED for S9 W4: adding tx_types 12/13 (and their two rule ids)
- * changes the descriptor, hence the digest, by construction. The S4 value
- * 13bc5fa9…9ada is dead. SYSTEM's descriptor was NOT touched, so
- * SYS_RULESET_HASH above is byte-identical to the S4 pin. */
+
+static int sys_policy_build(dna_meter_policy_t *p) {
+    memset(p, 0, sizeof(*p));
+    p->policy_version = DNA_METER_POLICY_VERSION;
+    p->w_base = 1; p->w_callbyte = 1; p->w_authbyte = 1;
+    p->w_effect = 1; p->w_effectbyte = 1; p->w_read = 1; p->w_write = 1;
+    for (uint32_t op = 1; op <= 6; op++)
+        if (dna_meter_op_set(p, op, 1) != 0) return -1;
+    return dna_meter_policy_seal(p);
+}
+
+/* Pinned digests — python3 oracle (scratchpad exec_season_oracle.py),
+ * RE-DERIVED for the execution season: RulesetDescriptor v2 appends the
+ * committed meter_policy_digest, so BOTH digests move by construction.
+ * The S9 values (SYSTEM f2dcdefa…4cce / CORE e0a0bc43…7429) are dead.
+ * SYSTEM's digest commits SYS_METER_POLICY_DIGEST; CORE's commits the
+ * all-zero "no policy declared" field. */
+static const uint8_t SYS_RULESET_HASH[DNA_DOM_HASH_LEN] = {
+    0x89, 0x36, 0x22, 0x13, 0x54, 0xc3, 0xc3, 0xe9,
+    0x39, 0xda, 0xa3, 0xd2, 0x61, 0x7d, 0x3b, 0x74,
+    0x9e, 0xa7, 0x01, 0x19, 0x4c, 0x80, 0x4a, 0x0f,
+    0x91, 0x75, 0xd8, 0xb5, 0xb6, 0x3e, 0xba, 0x46,
+    0x0b, 0x56, 0x22, 0x02, 0x11, 0x6b, 0x9e, 0x65,
+    0xc0, 0xeb, 0x68, 0x27, 0x3f, 0xf1, 0xa2, 0x90,
+    0xe7, 0x91, 0x00, 0xe7, 0xe0, 0x3b, 0xdd, 0x11,
+    0x50, 0x47, 0x86, 0x5a, 0x6b, 0x78, 0x96, 0xc2
+};
 static const uint8_t CORE_RULESET_HASH[DNA_DOM_HASH_LEN] = {
-    0xe0, 0xa0, 0xbc, 0x43, 0x44, 0xde, 0xa9, 0x72,
-    0xdd, 0xf1, 0xcc, 0xa9, 0xb6, 0x3e, 0xac, 0xfe,
-    0x08, 0x02, 0x89, 0x7f, 0x4a, 0xfb, 0x2b, 0x8b,
-    0x6a, 0x71, 0xed, 0x84, 0x5a, 0xdf, 0xe4, 0x11,
-    0x3c, 0xc7, 0xb8, 0xd8, 0x12, 0xa4, 0x94, 0x82,
-    0xbf, 0xfe, 0x9c, 0x8b, 0x48, 0xa7, 0xf1, 0x1f,
-    0xa7, 0x32, 0xeb, 0xf9, 0xaf, 0xe6, 0x83, 0x3d,
-    0x4a, 0xfc, 0x57, 0x83, 0x6e, 0xe7, 0x74, 0x29
+    0xad, 0x98, 0xa0, 0x36, 0xca, 0x2e, 0x2d, 0x92,
+    0xf1, 0x27, 0x42, 0x33, 0xd6, 0x65, 0x13, 0xbc,
+    0x80, 0x01, 0xbc, 0xc6, 0x9d, 0xd8, 0xb8, 0x5a,
+    0x6a, 0x2a, 0x05, 0x90, 0x1b, 0x83, 0xe0, 0x63,
+    0x40, 0xd0, 0x25, 0x30, 0xad, 0x8b, 0x93, 0xe4,
+    0x1b, 0xa4, 0x1b, 0x1e, 0xeb, 0xad, 0x2f, 0xcf,
+    0x20, 0x2e, 0xd7, 0x50, 0x05, 0x07, 0x5b, 0xb8,
+    0x73, 0xfe, 0x54, 0xe0, 0x88, 0xa8, 0xe6, 0xf3
 };
 
 /* ── Function tables ────────────────────────────────────────────────── */
@@ -172,13 +212,20 @@ static const nodus_domain_runtime_t BUILTIN[] = {
         },
         .admit = rt_admit_common,
         .tx_cost = sys_cost,
-        .apply_reserved = NULL,
+        .read_plan = NULL,       /* typed execution boundary — no        */
+        .exec      = NULL,       /* production migration yet             */
         .state_root   = nodus_rt_system_state_root,
         .payload_root = nodus_rt_system_payload_root,  /* cycle break   */
         .asset_check = NULL,     /* SYSTEM is never a distribution target */
         .claim_apply = NULL,
         .invariant   = NULL,     /* SYSTEM declares no asset state        */
-        .state_init  = NULL      /* SYSTEM initializes no activation state*/
+        .state_init  = NULL,     /* SYSTEM initializes no activation state*/
+        .adapter     = NULL,
+        .meter_policy = NULL     /* &g_sys_policy — bound in table_get()
+                                  * after the seal (array-field literals
+                                  * cannot name it here; the descriptor's
+                                  * meter_policy_digest is copied there
+                                  * for the same reason as ruleset_hash) */
     },
     {
         .domain_id       = DNA_DOMAIN_CORE,
@@ -197,13 +244,16 @@ static const nodus_domain_runtime_t BUILTIN[] = {
         },
         .admit = rt_admit_common,
         .tx_cost = core_cost,
-        .apply_reserved = NULL,
+        .read_plan = NULL,       /* typed execution boundary — no        */
+        .exec      = NULL,       /* production migration yet             */
         .state_root   = nodus_rt_core_state_root,
         .payload_root = NULL,    /* generic: payload ≡ state root         */
         .asset_check = nodus_rt_core_asset_check,
         .claim_apply = nodus_rt_core_claim_apply,
         .invariant   = nodus_rt_core_invariant,
-        .state_init  = nodus_rt_core_state_init   /* S7: native pool     */
+        .state_init  = nodus_rt_core_state_init,  /* S7: native pool     */
+        .adapter     = NULL,
+        .meter_policy = NULL     /* CORE declares no policy (zero digest)*/
     }
 };
 #define BUILTIN_COUNT (sizeof(BUILTIN) / sizeof(BUILTIN[0]))
@@ -227,6 +277,17 @@ static const nodus_domain_runtime_t *table_get(size_t *n_out) {
         for (size_t i = 0; i < BUILTIN_COUNT; i++)
             memcpy(g_table[i].ruleset_hash, builtin_pinned_hash(i),
                    DNA_DOM_HASH_LEN);
+        /* SYSTEM carries THE block metering policy: build + seal the
+         * compiled policy and bind the descriptor-committed identity
+         * digest. A build/seal failure leaves g_sys_policy_ready 0 and
+         * meter_policy NULL — selfcheck and every engine consumer then
+         * fail closed (an unsealed policy prices nothing). */
+        g_sys_policy_ready = (sys_policy_build(&g_sys_policy) == 0);
+        if (g_sys_policy_ready)
+            g_table[0].meter_policy = &g_sys_policy;
+        memcpy(g_table[0].descriptor.meter_policy_digest,
+               SYS_METER_POLICY_DIGEST, DNA_DOM_HASH_LEN);
+        /* CORE's descriptor keeps the all-zero "no policy" digest. */
         g_table_ready = 1;
     }
     if (n_out) *n_out = BUILTIN_COUNT;
@@ -283,7 +344,9 @@ int nodus_witness_runtime_selfcheck(void) {
         const nodus_domain_runtime_t *rt = &t[i];
         if (rt->runtime_kind != DNA_RUNTIME_NATIVE_BUILTIN) return -1;
         if (!rt->admit || !rt->tx_cost) return -1;
-        if (rt->apply_reserved) return -1;             /* S9 — reserved  */
+        if (rt->read_plan || rt->exec) return -1;      /* typed execution
+                                                * boundary — no production
+                                                * migration yet            */
         if (rt->adapter) return -1;            /* typed-effect boundary —
                                                 * no production adapter yet */
         if (!rt->state_root) return -1;                /* root is REAL   */
@@ -294,6 +357,27 @@ int nodus_witness_runtime_selfcheck(void) {
         if (rt->descriptor.domain_id != rt->domain_id) return -1;
         if (rt->descriptor.runtime_abi != rt->runtime_abi) return -1;
         if (rt->descriptor.ruleset_version != rt->ruleset_version) return -1;
+        /* metering-policy coupling: presence ⇔ non-zero committed
+         * digest; a present policy passes its self-check AND its
+         * identity digest equals the descriptor-committed one. */
+        {
+            uint8_t zero[DNA_DOM_HASH_LEN] = { 0 };
+            int declared = memcmp(rt->descriptor.meter_policy_digest, zero,
+                                  DNA_DOM_HASH_LEN) != 0;
+            if (declared != (rt->meter_policy != NULL)) return -1;
+            if (rt->meter_policy) {
+                uint8_t pd[64];
+                if (dna_meter_policy_check(rt->meter_policy) != 0) return -1;
+                if (dna_meter_policy_digest(rt->meter_policy, pd) != 0)
+                    return -1;
+                if (memcmp(pd, rt->descriptor.meter_policy_digest, 64) != 0)
+                    return -1;
+            }
+        }
+        /* the exact configured policy shape: SYSTEM (the block-policy
+         * authority) carries one, CORE none */
+        if (i == 0 && (!g_sys_policy_ready || !rt->meter_policy)) return -1;
+        if (i == 1 && rt->meter_policy) return -1;
         /* pinned digest must equal a FRESH recomputation */
         uint8_t fresh[DNA_DOM_HASH_LEN];
         if (dna_ruleset_desc_hash(&rt->descriptor, fresh) != 0) return -1;
