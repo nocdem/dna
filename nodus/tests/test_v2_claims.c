@@ -513,9 +513,11 @@ static int ext_table_init(void) {
     memcpy(&g_ext_table[1], &b[1], sizeof(b[1]));
     /* the scripted execution surface (execution season) — the identity
      * tuples stay byte-identical to the builtins */
+    g_ext_table[0].auth = v2x_auth;
     g_ext_table[0].read_plan = v2x_read_plan;
     g_ext_table[0].exec = v2x_exec;
     g_ext_table[0].adapter = &V2X_SYS_ADAPTER;
+    g_ext_table[1].auth = v2x_auth;
     g_ext_table[1].read_plan = v2x_read_plan;
     g_ext_table[1].exec = v2x_exec;
     g_ext_table[1].adapter = &V2X_CORE_ADAPTER;
@@ -543,6 +545,7 @@ static int ext_table_init(void) {
     g_ext_table[2].asset_check = t3_asset_check;
     g_ext_table[2].claim_apply = t3_claim_apply;
     g_ext_table[2].invariant = t3_invariant;
+    g_ext_table[2].auth = v2x_auth;
     g_ext_table[2].read_plan = v2x_read_plan;
     g_ext_table[2].exec = v2x_exec;
     g_ext_table[2].adapter = &TN_ADAPTER;

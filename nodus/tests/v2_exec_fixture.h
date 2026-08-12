@@ -34,6 +34,7 @@
 #include "witness/nodus_witness_v2_adapter.h"
 #include "dnac/env_wire.h"
 #include "dnac/effect_wire.h"
+#include "crypto/hash/qgp_sha3.h"   /* v2x_auth pseudo-signer fp */
 
 #include <sqlite3.h>
 #include <stdint.h>
@@ -412,6 +413,27 @@ static const nodus_domain_adapter_t V2X_SYS_ADAPTER = {
     .read = v2x_sys_read
 };
 
+/* ── scripted AUTH hook (native auth season) ─────────────────────────
+ * The production entries now bind the REAL nodus_rt_auth_dsa87_v1; the
+ * scripted table replaces it with a stub that accepts ANY non-empty
+ * auth_data and reports one deterministic pseudo-signer (fp = SHA3-512
+ * of the auth bytes), so the pre-auth-season scripted tests keep their
+ * envelope shapes. Tests of the REAL boundary drive the builtin table
+ * (test_v2_native.c), never this stub. */
+static int v2x_auth(const nodus_domain_runtime_t *rt,
+                    const dna_env_view_t *env, uint16_t leg,
+                    const nodus_rt_exec_ctx_t *ctx,
+                    nodus_rt_auth_verdict_t *out) {
+    (void)rt; (void)ctx;
+    memset(out, 0, sizeof(*out));
+    if (leg >= env->leg_count || env->leg[leg].auth_len == 0) return -1;
+    if (qgp_sha3_512(env->buf + env->auth_off[leg],
+                     env->leg[leg].auth_len, out->signer_fp[0]) != 0)
+        return -2;
+    out->n_signers = 1;
+    return 0;
+}
+
 /* ── the scripted read_plan / exec pair ────────────────────────────── */
 
 /** Walk the call_data script's read section. @return 0 with *tail /
@@ -493,9 +515,11 @@ static int v2x_table_init(struct nodus_witness *wns) {
     if (!b || n != 2) return -1;
     memcpy(&g_v2x_table[0], &b[0], sizeof(b[0]));
     memcpy(&g_v2x_table[1], &b[1], sizeof(b[1]));
+    g_v2x_table[0].auth = v2x_auth;
     g_v2x_table[0].read_plan = v2x_read_plan;
     g_v2x_table[0].exec = v2x_exec;
     g_v2x_table[0].adapter = &V2X_SYS_ADAPTER;
+    g_v2x_table[1].auth = v2x_auth;
     g_v2x_table[1].read_plan = v2x_read_plan;
     g_v2x_table[1].exec = v2x_exec;
     g_v2x_table[1].adapter = &V2X_CORE_ADAPTER;

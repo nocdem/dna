@@ -164,6 +164,7 @@ set(NODUS_SOURCES
     # domain registry (persistence, staged activation scheduler,
     # readiness accounting, registry root).
     src/witness/nodus_witness_runtime.c
+    src/witness/nodus_witness_rt_native.c
     src/witness/nodus_witness_domreg.c
 
     # Ledger V2 S5 — INACTIVE versioned schema/migration + atomic
@@ -790,6 +791,7 @@ register_witness_test(test_v2_apply)
 # hostile runtime results (verdict -1 vs node fault -2), determinism
 # twins + restart.
 register_witness_test(test_v2_exec)
+register_witness_test(test_v2_native)
 
 # Ledger V2 S6 — generic manifest/snapshot/claim codec: round-trips,
 # per-field root sensitivity, strict-decode negatives, deterministic

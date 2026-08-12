@@ -718,18 +718,31 @@ static int read_req_cmp(const nodus_rt_read_req_t *a,
     return 0;
 }
 
+/* Fires a native-auth-season per-leg fault point for THIS envelope. */
+#define ENV_FAIL_POINT(pt)                                              \
+    do {                                                                \
+        if (blk->fail_at == (pt) &&                                     \
+            blk->fail_env_index == (uint32_t)env_index)                 \
+            return -1;                                                  \
+    } while (0)
+
 /**
- * Execute ONE preflighted, reserved envelope inside THE transaction:
- * activate → per leg (reads → native exec → strict decode → charge →
- * adapter apply) → finalize → per-domain consumed-unit accounting.
+ * Execute ONE preflighted, reserved, AUTH-VERIFIED envelope inside THE
+ * transaction: activate → per leg (verified-verdict bind → reads →
+ * native exec → strict decode → charge → adapter apply) → finalize →
+ * per-domain consumed-unit accounting. `auths` is the engine-owned
+ * verdict array the pre-BEGIN authorization stage filled (one slot per
+ * (envelope, leg), indexed env_index * DNA_ENV_MAX_LEGS + leg).
  * @return 0 / -1 verdict / -2 node fault. On ANY failure the caller
  * rolls the whole block back — there is no partial-envelope outcome.
  */
 static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
+                        size_t env_index,
                         const uint8_t chain_id[DNA_CHAIN_ID_LEN],
                         uint64_t epoch,
                         dom_ctx_t *doms, size_t n_dom,
                         const dna_env_preflight_t *pf, dna_meter_t *m,
+                        const nodus_rt_auth_verdict_t *auths,
                         nodus_rt_read_res_t *reads, uint8_t *resbuf) {
     /* RESERVED → ACTIVE. The reservation covered the fixed work by
      * construction, so any failure here is an accounting invariant
@@ -743,6 +756,14 @@ static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
                                          * invariant — defensive        */
         const nodus_domain_runtime_t *rt = d->rt;
 
+        /* The ENGINE-owned verified verdict for THIS leg. The pre-BEGIN
+         * authorization stage rejected the block unless every leg
+         * verified, so an empty slot here is an engine invariant broken
+         * on this node — a fault, never a verdict. */
+        const nodus_rt_auth_verdict_t *av =
+            &auths[env_index * DNA_ENV_MAX_LEGS + l];
+        if (av->n_signers < 1) return -2;
+
         nodus_rt_exec_ctx_t ctx;
         memset(&ctx, 0, sizeof(ctx));
         ctx.chain_id            = chain_id;
@@ -751,6 +772,7 @@ static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
         ctx.tx_id               = pf->tx_id;
         ctx.auth_context_commit = pf->auth_context_commit;
         ctx.leg_auth_digest     = pf->auth_digest[l];
+        ctx.auth                = av;
 
         /* ── mediated reads: request phase → engine-charged execution ─
          * TRUST NOTE: the count/length rejects below detect a hook that
@@ -765,9 +787,10 @@ static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
             nodus_rt_read_req_t reqs[NODUS_RT_MAX_READS];
             memset(reqs, 0, sizeof(reqs));
             uint16_t nr = 0;
-            if (rt->read_plan(rt, v, l, &ctx, reqs, NODUS_RT_MAX_READS,
-                              &nr) != 0)
-                return -1;               /* deterministic refusal        */
+            int prc = rt->read_plan(rt, v, l, &ctx, reqs,
+                                    NODUS_RT_MAX_READS, &nr);
+            if (prc == -2) return -2;    /* hook backend: node fault     */
+            if (prc != 0) return -1;     /* deterministic refusal        */
             if (nr > NODUS_RT_MAX_READS) return -1;   /* over-plan       */
             for (uint16_t r = 0; r < nr; r++) {
                 if (reqs[r].key_len < 1 ||
@@ -779,6 +802,7 @@ static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
                 if (r > 0 && read_req_cmp(&reqs[r - 1], &reqs[r]) >= 0)
                     return -1;
             }
+            ENV_FAIL_POINT(V2AP_FAIL_AFTER_READ_PLAN);
             for (uint16_t r = 0; r < nr; r++) {
                 nodus_adapter_status_t ast =
                     nodus_witness_v2_read_one(w, rt, &reqs[r], &reads[r]);
@@ -796,15 +820,20 @@ static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
                 if (ms != DNA_METER_OK) return -1;    /* budget verdict  */
             }
             n_reads = nr;
+            ENV_FAIL_POINT(V2AP_FAIL_AFTER_READS);
         }
 
         /* ── native compiled execution → canonical result bytes ─────── */
         size_t rl = 0;
         memset(resbuf, 0, DNA_EFFECT_MAX_TOTAL_LEN);
-        if (rt->exec(rt, v, l, &ctx, reads, n_reads,
-                     resbuf, DNA_EFFECT_MAX_TOTAL_LEN, &rl) != 0)
-            return -1;                   /* deterministic refusal        */
+        {
+            int xrc = rt->exec(rt, v, l, &ctx, reads, n_reads,
+                               resbuf, DNA_EFFECT_MAX_TOTAL_LEN, &rl);
+            if (xrc == -2) return -2;    /* hook backend: node fault     */
+            if (xrc != 0) return -1;     /* deterministic refusal        */
+        }
         if (rl > DNA_EFFECT_MAX_TOTAL_LEN) return -1;
+        ENV_FAIL_POINT(V2AP_FAIL_AFTER_EXEC_HOOK);
 
         /* exact-length strict decode: canonical order, logical-key
          * uniqueness, kind/precondition legality — all codec-enforced;
@@ -812,6 +841,7 @@ static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
          * on every node, hence a VERDICT */
         dna_effect_view_t ev;
         if (dna_effect_result_decode(resbuf, rl, &ev) != 0) return -1;
+        ENV_FAIL_POINT(V2AP_FAIL_AFTER_EFFECT_DECODE);
 
         /* charge BEFORE mutation (the season's step order): w_effect ×
          * actual count + w_effectbyte × actual canonical bytes, gated
@@ -820,6 +850,7 @@ static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
                                                          &ev);
         if (ms == DNA_METER_ERR_FAULT) return -2;
         if (ms != DNA_METER_OK) return -1;
+        ENV_FAIL_POINT(V2AP_FAIL_AFTER_EFFECT_CHARGE);
 
         /* adapter application: validate → probe → the ONE precondition
          * decision table → mutate, all through the runtime's compiled
@@ -1014,6 +1045,7 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
     dna_meter_t *meters = NULL;
     nodus_rt_read_res_t *reads = NULL;
     uint8_t *resbuf = NULL;
+    nodus_rt_auth_verdict_t *auths = NULL;   /* [n_envs × MAX_LEGS]      */
     uint8_t claim_nuls[MAX_OPS][64];
     int env_phase[NODUS_V2_ENV_BATCH_MAX];
     memset(env_phase, 0, sizeof(env_phase));
@@ -1023,7 +1055,10 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
         meters = calloc(blk->n_envs, sizeof(*meters));
         reads  = calloc(NODUS_RT_MAX_READS, sizeof(*reads));
         resbuf = calloc(1, DNA_EFFECT_MAX_TOTAL_LEN);
-        if (!pf || !meters || !reads || !resbuf) goto fail_fault_pre;
+        auths  = calloc((size_t)blk->n_envs * DNA_ENV_MAX_LEGS,
+                        sizeof(*auths));
+        if (!pf || !meters || !reads || !resbuf || !auths)
+            goto fail_fault_pre;
     }
 
 #define RET_VERDICT do { goto fail_verdict_pre; } while (0)
@@ -1067,6 +1102,10 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
                     RET_VERDICT;
                 if (!d->rt->exec) RET_VERDICT;   /* no execution hook =
                                                   * leg fails closed     */
+                if (!d->rt->auth) RET_VERDICT;   /* no authorization
+                                                  * hook = leg fails
+                                                  * closed (a commitment
+                                                  * is not a verdict)    */
                 if (v->leg[l].access_mode != DNA_ENV_ACCESS_INVOKE)
                     RET_VERDICT;                 /* READ legs: later
                                                   * season (honest label)*/
@@ -1078,6 +1117,39 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
                 memcpy(d->tx_ids[d->n_tx++], pf[i].tx_id, 64);
             }
         }
+
+        /* ── VERIFIED AUTHORIZATION (pre-BEGIN, whole batch) ──────────
+         * The engine turns every leg's authorization COMMITMENT into a
+         * VERDICT before anything executes or mutates: the resolved
+         * runtime's auth hook parses the leg's auth_data under its
+         * auth_kind and verifies every signature against the
+         * ENGINE-derived leg auth_digest. Verdicts live in the
+         * engine-owned `auths` array — immutable for the rest of the
+         * block — and are the ONLY authorization input exec ever sees
+         * (ctx->auth). A rejection here is deterministic (same bytes,
+         * same verdict on every node); a hook backend failure (-2) is a
+         * node fault. No charge is taken: authorization work was priced
+         * once by w_authbyte at reservation. */
+        for (size_t i = 0; i < blk->n_envs; i++) {
+            const dna_env_view_t *v = &pf[i].view;
+            for (uint16_t l = 0; l < v->leg_count; l++) {
+                dom_ctx_t *d = dom_for(doms, n_dom, v->leg[l].domain_id);
+                if (!d || !d->rt || !d->rt->auth) goto fail_fault_pre;
+                nodus_rt_exec_ctx_t actx;
+                memset(&actx, 0, sizeof(actx));
+                actx.chain_id            = chain_id;
+                actx.global_height       = blk->global_height;
+                actx.epoch               = blk->epoch;
+                actx.tx_id               = pf[i].tx_id;
+                actx.auth_context_commit = pf[i].auth_context_commit;
+                actx.leg_auth_digest     = pf[i].auth_digest[l];
+                int arc = d->rt->auth(d->rt, v, l, &actx,
+                                      &auths[i * DNA_ENV_MAX_LEGS + l]);
+                if (arc == -2) goto fail_fault_pre;
+                if (arc != 0) RET_VERDICT;
+            }
+        }
+        if (blk->fail_at == V2AP_FAIL_AFTER_AUTH) RET_VERDICT;
     }
 
     /* global tx-count cap (chain config) + per-domain tx quotas */
@@ -1176,8 +1248,9 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
      * mutations. */
     for (size_t i = 0; i < blk->n_envs; i++) {          /* SYSTEM-local  */
         if (env_phase[i] != 0) continue;
-        int rc = exec_one_env(w, blk, chain_id, blk->epoch, doms, n_dom,
-                              &pf[i], &meters[i], reads, resbuf);
+        int rc = exec_one_env(w, blk, i, chain_id, blk->epoch, doms,
+                              n_dom, &pf[i], &meters[i], auths, reads,
+                              resbuf);
         if (rc == -2) goto fail_fault;
         if (rc != 0) goto fail;
         if (blk->fail_at == V2AP_FAIL_AFTER_ENV_EXEC &&
@@ -1187,8 +1260,9 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
     FAIL_POINT(V2AP_FAIL_AFTER_SYSTEM);
     for (size_t i = 0; i < blk->n_envs; i++) {          /* cross-domain  */
         if (env_phase[i] != 1) continue;
-        int rc = exec_one_env(w, blk, chain_id, blk->epoch, doms, n_dom,
-                              &pf[i], &meters[i], reads, resbuf);
+        int rc = exec_one_env(w, blk, i, chain_id, blk->epoch, doms,
+                              n_dom, &pf[i], &meters[i], auths, reads,
+                              resbuf);
         if (rc == -2) goto fail_fault;
         if (rc != 0) goto fail;
         if (blk->fail_at == V2AP_FAIL_AFTER_ENV_EXEC &&
@@ -1201,9 +1275,9 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
         for (size_t i = 0; i < blk->n_envs; i++) {
             if (env_phase[i] != 2) continue;
             if (pf[i].view.leg[0].domain_id != d->domain_id) continue;
-            int rc = exec_one_env(w, blk, chain_id, blk->epoch, doms,
-                                  n_dom, &pf[i], &meters[i], reads,
-                                  resbuf);
+            int rc = exec_one_env(w, blk, i, chain_id, blk->epoch,
+                                  doms, n_dom, &pf[i], &meters[i],
+                                  auths, reads, resbuf);
             if (rc == -2) goto fail_fault;
             if (rc != 0) goto fail;
             if (blk->fail_at == V2AP_FAIL_AFTER_ENV_EXEC &&
@@ -1620,7 +1694,7 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
         (void)exec_sql(w, "ROLLBACK");
         goto fail_fault_committed;      /* commit itself failed: node    */
     }
-    free(pf); free(meters); free(reads); free(resbuf);
+    free(pf); free(meters); free(reads); free(resbuf); free(auths);
     free(doms);
     if (blk->fail_at == V2AP_FAIL_AFTER_COMMIT)
         return 2;                        /* committed; pre-cache window  */
@@ -1634,7 +1708,7 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
 fail:
     (void)exec_sql(w, "ROLLBACK");
     meters_abort_all(meters, blk->n_envs);
-    free(pf); free(meters); free(reads); free(resbuf);
+    free(pf); free(meters); free(reads); free(resbuf); free(auths);
     free(doms);
     return -1;
 
@@ -1642,20 +1716,20 @@ fail_fault:
     (void)exec_sql(w, "ROLLBACK");
 fail_fault_committed:
     meters_abort_all(meters, blk->n_envs);
-    free(pf); free(meters); free(reads); free(resbuf);
+    free(pf); free(meters); free(reads); free(resbuf); free(auths);
     free(doms);
     return -2;
 
 /* pre-transaction exits (nothing to roll back in the database) */
 fail_verdict_pre:
     meters_abort_all(meters, blk->n_envs);
-    free(pf); free(meters); free(reads); free(resbuf);
+    free(pf); free(meters); free(reads); free(resbuf); free(auths);
     free(doms);
     return -1;
 
 fail_fault_pre:
     meters_abort_all(meters, blk->n_envs);
-    free(pf); free(meters); free(reads); free(resbuf);
+    free(pf); free(meters); free(reads); free(resbuf); free(auths);
     free(doms);
     return -2;
 }

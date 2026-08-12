@@ -24,6 +24,11 @@
  */
 
 #include "nodus_witness_runtime.h"
+#include "nodus_witness_v2_adapter.h"   /* nodus_adapter_selfcheck — the
+                                         * adapter contract is pure
+                                         * compiled data + fn pointers,
+                                         * so this module stays free of
+                                         * witness/db dependencies       */
 
 #include <string.h>
 
@@ -212,15 +217,20 @@ static const nodus_domain_runtime_t BUILTIN[] = {
         },
         .admit = rt_admit_common,
         .tx_cost = sys_cost,
-        .read_plan = NULL,       /* typed execution boundary — no        */
-        .exec      = NULL,       /* production migration yet             */
+        /* Native auth season: the REAL compiled execution surface.
+         * read_plan/exec implement exactly DNA_SYSRULE_CHAIN_CONFIG;
+         * every other owned runtime_op deterministically rejects inside
+         * the hooks until its own migration slice. */
+        .auth      = nodus_rt_auth_dsa87_v1,
+        .read_plan = nodus_rt_system_read_plan,
+        .exec      = nodus_rt_system_exec,
         .state_root   = nodus_rt_system_state_root,
         .payload_root = nodus_rt_system_payload_root,  /* cycle break   */
         .asset_check = NULL,     /* SYSTEM is never a distribution target */
         .claim_apply = NULL,
         .invariant   = NULL,     /* SYSTEM declares no asset state        */
         .state_init  = NULL,     /* SYSTEM initializes no activation state*/
-        .adapter     = NULL,
+        .adapter     = &NODUS_RT_SYSTEM_ADAPTER,
         .meter_policy = NULL     /* &g_sys_policy — bound in table_get()
                                   * after the seal (array-field literals
                                   * cannot name it here; the descriptor's
@@ -244,15 +254,18 @@ static const nodus_domain_runtime_t BUILTIN[] = {
         },
         .admit = rt_admit_common,
         .tx_cost = core_cost,
-        .read_plan = NULL,       /* typed execution boundary — no        */
-        .exec      = NULL,       /* production migration yet             */
+        /* Native auth season: DNA_CORERULE_SPEND only (header rule
+         * above); shared auth_kind-1 implementation. */
+        .auth      = nodus_rt_auth_dsa87_v1,
+        .read_plan = nodus_rt_core_read_plan,
+        .exec      = nodus_rt_core_exec,
         .state_root   = nodus_rt_core_state_root,
         .payload_root = NULL,    /* generic: payload ≡ state root         */
         .asset_check = nodus_rt_core_asset_check,
         .claim_apply = nodus_rt_core_claim_apply,
         .invariant   = nodus_rt_core_invariant,
         .state_init  = nodus_rt_core_state_init,  /* S7: native pool     */
-        .adapter     = NULL,
+        .adapter     = &NODUS_RT_CORE_ADAPTER,
         .meter_policy = NULL     /* CORE declares no policy (zero digest)*/
     }
 };
@@ -344,11 +357,13 @@ int nodus_witness_runtime_selfcheck(void) {
         const nodus_domain_runtime_t *rt = &t[i];
         if (rt->runtime_kind != DNA_RUNTIME_NATIVE_BUILTIN) return -1;
         if (!rt->admit || !rt->tx_cost) return -1;
-        if (rt->read_plan || rt->exec) return -1;      /* typed execution
-                                                * boundary — no production
-                                                * migration yet            */
-        if (rt->adapter) return -1;            /* typed-effect boundary —
-                                                * no production adapter yet */
+        /* Native auth season: both production runtimes own executable
+         * operations, so the FULL execution surface must be present and
+         * healthy — a missing authorization/read/exec hook or a broken
+         * compiled adapter is a broken table, never a soft skip. */
+        if (!rt->auth || !rt->read_plan || !rt->exec) return -1;
+        if (!rt->adapter) return -1;
+        if (nodus_adapter_selfcheck(rt->adapter) != 0) return -1;
         if (!rt->state_root) return -1;                /* root is REAL   */
         /* claim-target capability is all-or-nothing */
         if ((rt->asset_check == NULL) != (rt->claim_apply == NULL))

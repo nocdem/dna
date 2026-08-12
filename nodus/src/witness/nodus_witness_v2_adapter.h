@@ -312,7 +312,13 @@ const nodus_adapter_op_t *nodus_adapter_op_lookup(
  *   - every op: `allowed_kinds` nonzero and within NODUS_ADAPTER_KINDS_ALL,
  *     `allowed_preconds` nonzero and within NODUS_ADAPTER_PRECONDS_ALL —
  *     an op that permits no kind or no precondition is a dead op, and a
- *     mask with an undefined bit set is a mask this build cannot honour;
+ *     mask with an undefined bit set is a mask this build cannot honour.
+ *     EXCEPTION (native auth season): `allowed_kinds == 0` declares a
+ *     READ-ONLY op — it serves only the mediated-read boundary, an
+ *     effect naming it dies as ERR_KIND (deterministic verdict), and
+ *     its `allowed_preconds` must be 0 too (a precondition with no
+ *     mutable kind is dead weight); the blob bounds still apply, now
+ *     bounding read keys and read-result sizes;
  *   - every op: the masks must be SATISFIABLE under the codec's
  *     CREATE <=> ABSENT biconditional — an allowed CREATE requires
  *     ABSENT allowed, allowed SET/DELETE require some EXISTS* allowed,

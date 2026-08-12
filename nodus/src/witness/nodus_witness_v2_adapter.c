@@ -45,7 +45,21 @@ int nodus_adapter_selfcheck(const nodus_domain_adapter_t *ad) {
          * descent, so one op_id can never resolve two ways. */
         if (i > 0 && op->op_id <= ad->ops[i - 1].op_id) return -1;
 
-        if (op->allowed_kinds == 0) return -1;
+        if (op->allowed_kinds == 0) {
+            /* READ-ONLY op (native auth season): serves ONLY the
+             * mediated-read boundary. It can never be named by an
+             * effect — validate's kind test fails against an empty mask
+             * (ERR_KIND, a deterministic verdict) — so a precondition
+             * mask on it would be dead weight: require it empty too.
+             * The blob bounds still apply (they bound read keys and
+             * read-result sizes). */
+            if (op->allowed_preconds != 0) return -1;
+            if (op->key_len_min > op->key_len_max) return -1;
+            if (op->key_len_max > DNA_EFFECT_MAX_KEY_LEN) return -1;
+            if (op->value_len_min > op->value_len_max) return -1;
+            if (op->value_len_max > DNA_EFFECT_MAX_VALUE_LEN) return -1;
+            continue;
+        }
         if ((op->allowed_kinds & (uint8_t)~NODUS_ADAPTER_KINDS_ALL) != 0)
             return -1;
         if (op->allowed_preconds == 0) return -1;

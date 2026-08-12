@@ -157,15 +157,52 @@ typedef struct {
     uint8_t  value[DNA_EFFECT_MAX_VALUE_LEN];
 } nodus_rt_read_res_t;
 
+/* ── The verified AUTHORIZATION boundary (native auth season) ─────────
+ *
+ * An authorization COMMITMENT (leg_auth_digest) is not a VERDICT. The
+ * engine turns commitments into verdicts by invoking the resolved
+ * runtime's `auth` hook BEFORE any execution or mutation; the verdict
+ * it produces is ENGINE-OWNED, immutable for the rest of the block, and
+ * handed back to read_plan/exec as `ctx->auth`. No envelope field, no
+ * caller parameter and no runtime return value can substitute for it:
+ * a leg whose auth hook did not return 0 never reaches execution.
+ *
+ * auth_kind 1 is the ONE supported scheme this release:
+ *   NODUS_RT_AUTHKIND_DSA87_MULTI_V1 — auth_data =
+ *     signer_count u8 (1..NODUS_RT_AUTH_MAX_SIGNERS)
+ *     ‖ signer_count × ( pubkey[2592] ‖ signature[4627] )
+ *   with pubkeys STRICTLY ascending (memcmp — duplicates and disorder
+ *   reject, so exactly ONE encoding exists per signer set), each
+ *   signature an ML-DSA-87 signature over the 64-byte engine-derived
+ *   leg auth_digest (env_wire.h "DNA.ENVAUTH.v1": binds chain identity,
+ *   expiry, fee, resource ceilings, every leg's domain / runtime_op /
+ *   ruleset identity / call bytes through auth_context_commit — so
+ *   changing ANY of them invalidates every signature). Every other
+ *   auth_kind value REJECTS (unsupported scheme, fail-closed).
+ * Verification work is priced by w_authbyte at reservation — the hook
+ * charges nothing, so authorization is never charged twice. */
+#define NODUS_RT_AUTHKIND_DSA87_MULTI_V1  ((uint8_t)1)
+#define NODUS_RT_AUTH_MAX_SIGNERS         8
+#define NODUS_RT_AUTH_SIGNER_LEN          (2592u + 4627u)   /* pk ‖ sig  */
+
+/** The engine-owned verdict of ONE leg's verified authorization. Only
+ *  the engine writes it (through the resolved auth hook); runtimes read
+ *  it through ctx->auth. */
+typedef struct {
+    uint16_t n_signers;                  /* 1..NODUS_RT_AUTH_MAX_SIGNERS */
+    uint8_t  signer_fp[NODUS_RT_AUTH_MAX_SIGNERS][64]; /* SHA3-512(pk)   */
+} nodus_rt_auth_verdict_t;
+
 /** The engine-owned execution context for one leg. Every pointer is a
  *  BORROWED engine buffer, valid for the hook call only. All identity
  *  material is ENGINE-DERIVED (env_preflight.h): tx_id and the two
  *  commitments are derived from the envelope bytes + chain identity +
  *  contextual rulesets — a runtime can bind to them but can never
- *  choose them. HONEST LABEL: these are DERIVED COMMITMENTS, not
- *  verified authorizations — auth_kind interpretation and signature
- *  verification are a later season's obligation (nodus_witness_v2_env.h
- *  "NOT implemented this season"). */
+ *  choose them. `auth` is the ENGINE-owned VERIFIED verdict of this
+ *  leg's authorization (native auth season): NULL only while the auth
+ *  hook itself runs; non-NULL for read_plan/exec, whose ownership /
+ *  authority decisions MUST bind to it and to nothing carried by the
+ *  envelope bytes. */
 typedef struct {
     const uint8_t *chain_id;              /* [DNA_CHAIN_ID_LEN]           */
     uint64_t       global_height;         /* the block being applied      */
@@ -175,7 +212,26 @@ typedef struct {
     const uint8_t *auth_context_commit;   /* [64] derived commitment      */
     const uint8_t *leg_auth_digest;       /* [64] this leg's derived
                                            * commitment                   */
+    const nodus_rt_auth_verdict_t *auth;  /* engine-VERIFIED verdict      */
 } nodus_rt_exec_ctx_t;
+
+/**
+ * Verified authorization of one leg. Parses the leg's auth_data under
+ * its auth_kind, verifies every signature against the ENGINE-derived
+ * ctx->leg_auth_digest, and fills the verdict. PURE: no witness, no
+ * database, no clock, no RNG — the only inputs are the borrowed
+ * envelope view and the engine context, so two nodes produce the same
+ * verdict for the same bytes.
+ * @return 0 verified (out filled); -1 deterministic REJECT (unsupported
+ * scheme, malformed layout, zero/duplicate/disordered pubkey, any
+ * signature invalid — out zeroed); -2 NODE FAULT (hash backend failure
+ * — never converted into a verdict).
+ */
+typedef int (*nodus_rt_auth_fn)(const struct nodus_domain_runtime *rt,
+                                const dna_env_view_t *env,
+                                uint16_t leg_index,
+                                const nodus_rt_exec_ctx_t *ctx,
+                                nodus_rt_auth_verdict_t *out);
 
 /**
  * Deterministic mediated-read REQUEST phase for one leg. Emits at most
@@ -184,7 +240,9 @@ typedef struct {
  * rejects). NULL = the runtime reads nothing. The request list must be
  * a pure function of (envelope bytes, leg, ctx) — it runs before any
  * storage is touched. @return 0 with *n_out set, -1 = this leg is not
- * plannable under the domain's rules (a deterministic VERDICT).
+ * plannable under the domain's rules (a deterministic VERDICT), -2 =
+ * NODE FAULT (a hook-internal backend failure — the engine fails its
+ * own operation, it never converts -2 into a verdict).
  */
 typedef int (*nodus_rt_read_plan_fn)(const struct nodus_domain_runtime *rt,
                                      const dna_env_view_t *env,
@@ -203,7 +261,8 @@ typedef int (*nodus_rt_read_plan_fn)(const struct nodus_domain_runtime *rt,
  * domain id, weights, table names, roots, a transaction identity, or
  * callback addresses — the result codec cannot carry any of them, which
  * is the point. @return 0 with *res_len_out set, -1 = the leg is
- * rejected under the domain's rules (a deterministic VERDICT).
+ * rejected under the domain's rules (a deterministic VERDICT), -2 =
+ * NODE FAULT (hook-internal backend failure — never a verdict).
  */
 typedef int (*nodus_rt_exec_fn)(const struct nodus_domain_runtime *rt,
                                 const dna_env_view_t *env,
@@ -281,11 +340,18 @@ typedef struct nodus_domain_runtime {
     /* ── function table ─────────────────────────────────────────────── */
     nodus_rt_admit_fn admit;
     nodus_rt_cost_fn  tx_cost;
-    /* The typed EXECUTION boundary (header block above). MUST stay NULL
-     * in the compiled production table until the CORE/SYSTEM
-     * hook-migration season — selfcheck enforces it. NULL exec = this
-     * runtime cannot execute envelope legs (engine fails the leg
-     * closed); NULL read_plan = it reads nothing. */
+    /* The verified AUTHORIZATION boundary (native auth season). The
+     * engine invokes it BEFORE any execution or mutation; a leg whose
+     * auth hook is absent or does not return 0 fails closed. */
+    nodus_rt_auth_fn      auth;
+    /* The typed EXECUTION boundary (header block above). Native auth
+     * season: the production SYSTEM and DNA_CORE entries carry REAL
+     * compiled implementations (SYSTEM: DNA_SYSRULE_CHAIN_CONFIG;
+     * DNA_CORE: DNA_CORERULE_SPEND — every other owned runtime_op is a
+     * deterministic reject inside the hooks until its own migration
+     * slice). NULL exec = this runtime cannot execute envelope legs
+     * (engine fails the leg closed); NULL read_plan = it reads
+     * nothing. */
     nodus_rt_read_plan_fn read_plan;
     nodus_rt_exec_fn      exec;
     nodus_rt_root_fn      state_root;    /* domain state root (S5/S6)     */
@@ -302,12 +368,12 @@ typedef struct nodus_domain_runtime {
     nodus_rt_claim_fn     claim_apply;   /* NULL = never a claim target   */
     nodus_rt_invariant_fn invariant;     /* NULL = no asset state         */
     nodus_rt_state_init_fn state_init;   /* NULL = no activation state    */
-    /* OPTIONAL compiled storage adapter (Ledger V2 typed-effect boundary,
+    /* Compiled storage adapter (Ledger V2 typed-effect boundary,
      * nodus_witness_v2_adapter.h). Registered HERE so an adapter resolves
      * only through the five-axis exact-tuple lookup — never through a
-     * second caller-controlled path. MUST stay NULL in the compiled
-     * production table until the CORE/SYSTEM hook-migration season
-     * (selfcheck enforces it, same discipline as read_plan/exec). */
+     * second caller-controlled path. Native auth season: BOTH production
+     * entries carry their compiled adapter (selfcheck enforces presence
+     * + adapter selfcheck, replacing the pre-migration all-NULL rule). */
     const struct nodus_domain_adapter *adapter;
     /* OPTIONAL committed metering policy (header block above). Presence
      * is COUPLED to the descriptor: meter_policy != NULL exactly when
@@ -349,9 +415,12 @@ const nodus_domain_runtime_t *nodus_runtime_builtin_table(size_t *n_out);
  *   - descriptor identity fields (domain_id / runtime_abi /
  *     ruleset_version) equal the entry's tuple fields;
  *   - runtime_kind is NATIVE_BUILTIN;
- *   - admit, tx_cost and state_root are present; read_plan, exec and
- *     adapter are ALL NULL (typed execution boundary — no production
- *     migration yet); asset_check and claim_apply are present or absent
+ *   - admit, tx_cost and state_root are present; auth, read_plan, exec
+ *     and adapter are ALL PRESENT (native auth season: both production
+ *     runtimes own executable operations, so a missing execution or
+ *     authorization hook is a broken table) and the compiled adapter
+ *     passes nodus_adapter_selfcheck; asset_check and claim_apply are
+ *     present or absent
  *     TOGETHER (a runtime is a claim target only when it can both
  *     validate the asset and create the output);
  *   - metering-policy coupling: meter_policy present exactly when the
@@ -390,6 +459,43 @@ int nodus_rt_core_invariant(const nodus_domain_runtime_t *rt,
 int nodus_rt_core_state_init(const nodus_domain_runtime_t *rt,
                              struct nodus_witness *w,
                              uint64_t activation_global_height);
+
+/* ── Native auth season: production execution surface ─────────────────
+ * Implemented in nodus_witness_rt_native.c. The shared auth hook is the
+ * ONE compiled implementation of auth_kind 1 (both production entries
+ * reference the same symbol — scheme verification cannot fork per
+ * domain); the per-domain read_plan/exec pairs implement exactly
+ * DNA_SYSRULE_CHAIN_CONFIG (SYSTEM) and DNA_CORERULE_SPEND (DNA_CORE)
+ * and deterministically reject every other owned runtime_op. The
+ * compiled adapters are exported so tests can drive them directly. */
+int nodus_rt_auth_dsa87_v1(const nodus_domain_runtime_t *rt,
+                           const dna_env_view_t *env, uint16_t leg_index,
+                           const nodus_rt_exec_ctx_t *ctx,
+                           nodus_rt_auth_verdict_t *out);
+int nodus_rt_core_read_plan(const nodus_domain_runtime_t *rt,
+                            const dna_env_view_t *env, uint16_t leg_index,
+                            const nodus_rt_exec_ctx_t *ctx,
+                            nodus_rt_read_req_t *reqs_out,
+                            uint16_t max_reqs, uint16_t *n_out);
+int nodus_rt_core_exec(const nodus_domain_runtime_t *rt,
+                       const dna_env_view_t *env, uint16_t leg_index,
+                       const nodus_rt_exec_ctx_t *ctx,
+                       const nodus_rt_read_res_t *reads, uint16_t n_reads,
+                       uint8_t *res_out, size_t res_cap,
+                       size_t *res_len_out);
+int nodus_rt_system_read_plan(const nodus_domain_runtime_t *rt,
+                              const dna_env_view_t *env, uint16_t leg_index,
+                              const nodus_rt_exec_ctx_t *ctx,
+                              nodus_rt_read_req_t *reqs_out,
+                              uint16_t max_reqs, uint16_t *n_out);
+int nodus_rt_system_exec(const nodus_domain_runtime_t *rt,
+                         const dna_env_view_t *env, uint16_t leg_index,
+                         const nodus_rt_exec_ctx_t *ctx,
+                         const nodus_rt_read_res_t *reads, uint16_t n_reads,
+                         uint8_t *res_out, size_t res_cap,
+                         size_t *res_len_out);
+extern const struct nodus_domain_adapter NODUS_RT_CORE_ADAPTER;
+extern const struct nodus_domain_adapter NODUS_RT_SYSTEM_ADAPTER;
 
 #ifdef __cplusplus
 }

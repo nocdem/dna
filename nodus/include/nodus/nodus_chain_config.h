@@ -171,6 +171,30 @@ int nodus_chain_config_apply(nodus_witness_t *w,
 #define NODUS_CC_WITNESS_ID_SIZE 32    /* first 32B of SHA3-512(pubkey) */
 
 /**
+ * The SCALAR half of the CHAIN_CONFIG local rules: param allowlist,
+ * per-param value bounds, and the signing/validity window shape
+ * (signed_at != 0; valid_before > effective; valid_before > signed_at).
+ * Pure function — the ONE authority both the legacy apply path
+ * (verify_cc_local_rules) and the Ledger V2 native SYSTEM runtime
+ * consume, so the rule set cannot fork between lanes. Vote-shape rules
+ * (sig-count window, distinct witness_ids) and the quorum decision are
+ * deliberately NOT here — they need the committee context.
+ * @return 0 legal / -1.
+ */
+int nodus_chain_config_scalar_rules(uint8_t param_id, uint64_t new_value,
+                                    uint64_t signed_at_block,
+                                    uint64_t valid_before_block,
+                                    uint64_t effective_block_height);
+
+/**
+ * Per-param grace minimum in blocks (Q4 Option B tiers): the earliest
+ * legal effective_block_height for a proposal committed at height H is
+ * H + nodus_chain_config_grace_for_param(param_id). Pure function,
+ * exported for the same single-authority reason.
+ */
+uint64_t nodus_chain_config_grace_for_param(uint8_t param_id);
+
+/**
  * Compute the proposal-preimage digest that committee members sign.
  *
  *   digest = SHA3-512( DNAC_CHAIN_CONFIG_PURPOSE_TAG(16) || chain_id(32) ||

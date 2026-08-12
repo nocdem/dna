@@ -484,34 +484,67 @@ static int parse_cc_fields(const uint8_t *tx_data, uint32_t tx_len, size_t off,
                                 out, &consumed);
 }
 
-/* Client-side local rule subset (mirror of dnac_tx_verify_chain_config_rules
- * in dnac/src/transaction/verify.c). Returns 0 on success. */
-static int verify_cc_local_rules(const dnac_cc_wire_ext_t *cc) {
-    if (cc->param_id < 1 || cc->param_id > CC_PARAM_MAX_ID) return -1;
+/* The SCALAR half of the CHAIN_CONFIG local rules — param allowlist +
+ * per-param value bounds + the signing/validity window shape. Exported
+ * (nodus_chain_config.h) so the Ledger V2 native SYSTEM runtime
+ * (nodus_witness_rt_native.c) consumes the SAME authority instead of a
+ * drift-prone mirror; verify_cc_local_rules below layers the vote-shape
+ * rules (sig-count window, pairwise-distinct witness_ids) on top. */
+int nodus_chain_config_scalar_rules(uint8_t param_id, uint64_t new_value,
+                                    uint64_t signed_at_block,
+                                    uint64_t valid_before_block,
+                                    uint64_t effective_block_height) {
+    if (param_id < 1 || param_id > CC_PARAM_MAX_ID) return -1;
 
-    switch (cc->param_id) {
+    switch (param_id) {
         case CC_PARAM_MAX_TXS:
-            if (cc->new_value < 1ULL || cc->new_value > CC_MAX_TXS_HARD_CAP)
+            if (new_value < 1ULL || new_value > CC_MAX_TXS_HARD_CAP)
                 return -1;
             break;
         case CC_PARAM_BLOCK_INTERVAL:
-            if (cc->new_value < CC_MIN_BLOCK_INTERVAL_SEC ||
-                cc->new_value > CC_MAX_BLOCK_INTERVAL_SEC) return -1;
+            if (new_value < CC_MIN_BLOCK_INTERVAL_SEC ||
+                new_value > CC_MAX_BLOCK_INTERVAL_SEC) return -1;
             break;
         case CC_PARAM_INFLATION_START:
-            if (cc->new_value > CC_MAX_INFLATION_START) return -1;
+            if (new_value > CC_MAX_INFLATION_START) return -1;
             break;
         case CC_PARAM_TARGET_ACTIVE:
-            if (cc->new_value < CC_MIN_TARGET_ACTIVE ||
-                cc->new_value > CC_MAX_TARGET_ACTIVE) return -1;
+            if (new_value < CC_MIN_TARGET_ACTIVE ||
+                new_value > CC_MAX_TARGET_ACTIVE) return -1;
             break;
         default:
             return -1;
     }
 
-    if (cc->signed_at_block == 0) return -1;
-    if (cc->valid_before_block <= cc->effective_block_height) return -1;
-    if (cc->valid_before_block <= cc->signed_at_block) return -1;
+    if (signed_at_block == 0) return -1;
+    if (valid_before_block <= effective_block_height) return -1;
+    if (valid_before_block <= signed_at_block) return -1;
+    return 0;
+}
+
+/* Per-param grace minimum, exported for the same single-authority
+ * reason (the static grace_period_for_param below stays as the local
+ * alias so existing call sites are untouched). */
+uint64_t nodus_chain_config_grace_for_param(uint8_t param_id) {
+    switch (param_id) {
+        case CC_PARAM_BLOCK_INTERVAL:
+        case CC_PARAM_INFLATION_START:
+        case CC_PARAM_TARGET_ACTIVE:
+            return (uint64_t)DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS;
+        case CC_PARAM_MAX_TXS:
+        default:
+            return (uint64_t)DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS;
+    }
+}
+
+/* Client-side local rule subset (mirror of dnac_tx_verify_chain_config_rules
+ * in dnac/src/transaction/verify.c). Returns 0 on success. */
+static int verify_cc_local_rules(const dnac_cc_wire_ext_t *cc) {
+    if (nodus_chain_config_scalar_rules(cc->param_id, cc->new_value,
+                                        cc->signed_at_block,
+                                        cc->valid_before_block,
+                                        cc->effective_block_height) != 0)
+        return -1;
     /* SHAPE window only. The quorum decision lives in
      * nodus_chain_config_apply, which needs the committee snapshot this
      * pure-function check does not have. */
@@ -889,15 +922,7 @@ static int derive_witness_id(const uint8_t pubkey[CC_PUBKEY_SIZE],
  * 24-hour notice window to provision or retire validator capacity before
  * the change activates. */
 static uint64_t grace_period_for_param(uint8_t param_id) {
-    switch (param_id) {
-        case CC_PARAM_BLOCK_INTERVAL:
-        case CC_PARAM_INFLATION_START:
-        case CC_PARAM_TARGET_ACTIVE:
-            return (uint64_t)DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS;
-        case CC_PARAM_MAX_TXS:
-        default:
-            return (uint64_t)DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS;
-    }
+    return nodus_chain_config_grace_for_param(param_id);
 }
 
 int nodus_chain_config_apply(nodus_witness_t *w,

@@ -721,22 +721,31 @@ static int test_adapter_authority(void) {
           "k1 stored verbatim at version 1");
     OK();
 
-    /* a runtime with NO adapter fails closed — and the PRODUCTION table
-     * is exactly such a table (selfcheck enforces it) */
+    /* a runtime with NO adapter fails closed. Native auth season: the
+     * production table now CARRIES compiled adapters (selfcheck
+     * enforces presence), so the adapterless shape is exercised through
+     * a stripped COPY of the CORE entry — the fail-closed contract is
+     * unchanged, only its production instance is gone. */
     size_t bn = 0;
     const nodus_domain_runtime_t *builtin = nodus_runtime_builtin_table(&bn);
     CHECK(builtin != NULL && bn == 2, "builtin table");
-    CHECK(builtin[0].adapter == NULL && builtin[1].adapter == NULL,
-          "no production runtime carries an adapter");
+    CHECK(builtin[0].adapter != NULL && builtin[1].adapter != NULL,
+          "production runtimes must carry their compiled adapters");
     CHECK(nodus_witness_runtime_selfcheck() == 0,
           "production selfcheck still green with the new field");
-    fi = 0xFFFF;
-    CHECK(nodus_witness_v2_effects_validate(&builtin[1], &r.view, &fi) ==
-          NODUS_ADAPTER_ERR_NO_ADAPTER, "CORE has no adapter");
-    CHECK(fi == 0, "result-level reject reports index 0");
-    CHECK(nodus_witness_v2_effects_apply((struct nodus_witness *)fx.w,
-                                         &builtin[1], &r.view, NULL) ==
-          NODUS_ADAPTER_ERR_NO_ADAPTER, "apply refuses an adapterless rt");
+    {
+        nodus_domain_runtime_t stripped;
+        memcpy(&stripped, &builtin[1], sizeof(stripped));
+        stripped.adapter = NULL;
+        fi = 0xFFFF;
+        CHECK(nodus_witness_v2_effects_validate(&stripped, &r.view, &fi) ==
+              NODUS_ADAPTER_ERR_NO_ADAPTER, "adapterless rt fails closed");
+        CHECK(fi == 0, "result-level reject reports index 0");
+        CHECK(nodus_witness_v2_effects_apply((struct nodus_witness *)fx.w,
+                                             &stripped, &r.view, NULL) ==
+              NODUS_ADAPTER_ERR_NO_ADAPTER,
+              "apply refuses an adapterless rt");
+    }
     OK();
 
     /* an unknown op never resolves to a "closest" one */

@@ -23,6 +23,7 @@
  */
 
 #include "../src/witness/nodus_witness_runtime.h"
+#include "../src/witness/nodus_witness_v2_adapter.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -99,12 +100,24 @@ int main(void) {
     CHECK(t && n == 2, "builtin table shape"); OK();
     CHECK(t[0].domain_id == DNA_DOMAIN_SYSTEM &&
           t[1].domain_id == DNA_DOMAIN_CORE, "builtin ids"); OK();
-    /* the typed execution surface must stay NULL in production until
-     * the CORE/SYSTEM hook-migration season */
-    CHECK(t[0].read_plan == NULL && t[1].read_plan == NULL &&
-          t[0].exec == NULL && t[1].exec == NULL &&
-          t[0].adapter == NULL && t[1].adapter == NULL,
-          "production execution surface must stay NULL"); OK();
+    /* native auth season: the production execution surface is REAL —
+     * both entries carry the shared auth_kind-1 hook, their compiled
+     * read_plan/exec pair and a selfcheck-passing compiled adapter
+     * (the pre-migration all-NULL pin is retired with the migration) */
+    CHECK(t[0].auth == nodus_rt_auth_dsa87_v1 &&
+          t[1].auth == nodus_rt_auth_dsa87_v1,
+          "shared auth_kind-1 hook missing"); OK();
+    CHECK(t[0].read_plan == nodus_rt_system_read_plan &&
+          t[0].exec == nodus_rt_system_exec &&
+          t[0].adapter == &NODUS_RT_SYSTEM_ADAPTER,
+          "SYSTEM execution surface"); OK();
+    CHECK(t[1].read_plan == nodus_rt_core_read_plan &&
+          t[1].exec == nodus_rt_core_exec &&
+          t[1].adapter == &NODUS_RT_CORE_ADAPTER,
+          "CORE execution surface"); OK();
+    CHECK(nodus_adapter_selfcheck(t[0].adapter) == 0 &&
+          nodus_adapter_selfcheck(t[1].adapter) == 0,
+          "production adapters fail their selfcheck"); OK();
     /* metering-policy coupling: SYSTEM carries THE block policy, its
      * identity digest is descriptor-committed and oracle-pinned; CORE
      * declares none (all-zero digest, NULL policy) */

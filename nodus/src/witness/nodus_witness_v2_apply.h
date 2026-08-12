@@ -301,9 +301,19 @@ typedef enum {
     V2AP_FAIL_AFTER_ENV_RESERVE = 26,   /* whole batch preflighted +
                                          * reserved (pre-BEGIN; proves
                                          * meter abort + budget restore) */
-    V2AP_FAIL_AFTER_ENV_EXEC = 27       /* the envelope at
+    V2AP_FAIL_AFTER_ENV_EXEC = 27,      /* the envelope at
                                          * blk->fail_env_index fully
                                          * executed + finalized          */
+    /* Native-auth-season stages (26/27 above are FROZEN). 28 fires
+     * pre-BEGIN after the WHOLE batch's authorization verdicts were
+     * verified; 29-33 fire INSIDE the transaction after the named
+     * per-leg stage of the envelope at blk->fail_env_index. */
+    V2AP_FAIL_AFTER_AUTH = 28,          /* all auth verdicts verified    */
+    V2AP_FAIL_AFTER_READ_PLAN = 29,     /* read plan emitted + validated */
+    V2AP_FAIL_AFTER_READS = 30,         /* mediated reads done + charged */
+    V2AP_FAIL_AFTER_EXEC_HOOK = 31,     /* native exec returned          */
+    V2AP_FAIL_AFTER_EFFECT_DECODE = 32, /* strict result decode done     */
+    V2AP_FAIL_AFTER_EFFECT_CHARGE = 33  /* effect charge done            */
 } nodus_v2_apply_fail_t;
 
 /*
