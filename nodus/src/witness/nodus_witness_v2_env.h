@@ -112,6 +112,7 @@
 
 #include "witness/nodus_witness.h"
 #include "dnac/env_preflight.h"
+#include "dnac/res_meter.h"
 
 #include <stdint.h>
 #include <stddef.h>
@@ -156,7 +157,11 @@ typedef enum {
                                     * in the context table                 */
     NODUS_V2_ENV_ERR_PREFLIGHT,    /* dna_env_preflight rejected — the
                                     * exact reason is in pf_status_out     */
-    NODUS_V2_ENV_ERR_DUP           /* duplicate DERIVED tx_id in the batch */
+    NODUS_V2_ENV_ERR_DUP,          /* duplicate DERIVED tx_id in the batch */
+    NODUS_V2_ENV_ERR_METER         /* metering/reservation rejected — the
+                                    * exact reason is in meter_status_out.
+                                    * APPENDED for the metering season;
+                                    * every earlier value is unmoved.     */
 } nodus_v2_env_status_t;
 
 /**
@@ -237,6 +242,75 @@ nodus_v2_env_status_t nodus_witness_v2_env_preflight_batch(
     dna_env_preflight_t *out,
     size_t *fail_index_out,
     dna_env_preflight_status_t *pf_status_out);
+
+/**
+ * Preflight a batch AND reserve its deterministic resource plans — the
+ * METERING season's seam entry (INACTIVE; no live consensus caller).
+ *
+ * ── FROZEN behaviour ──────────────────────────────────────────────────
+ *   1. `out` NULL, `meters_out` NULL, or n_envs outside
+ *      [1, NODUS_V2_ENV_BATCH_MAX] -> ERR_ARG WITHOUT touching either
+ *      caller buffer (the unvalidated-count rule of the base entry).
+ *      Once legal, BOTH arrays are zeroed in full.
+ *   2. `policy` / `budget` NULL -> ERR_ARG.
+ *   3. The ENTIRE base preflight runs first, unchanged:
+ *      nodus_witness_v2_env_preflight_batch — derived chain id (never
+ *      the legacy half-zero w->chain_id), strict decode, expiry against
+ *      the candidate height, positional contexts, commitments, DERIVED
+ *      tx_id batch dedup. Its rejection propagates verbatim (same
+ *      status, same fail_index_out / pf_status_out meaning), with
+ *      meters_out zeroed too.
+ *   4. Policy self-check (dna_meter_policy_check) — failure ->
+ *      ERR_METER with *meter_status_out = DNA_METER_ERR_POLICY. One
+ *      check for the whole batch; dna_meter_reserve re-runs it per
+ *      envelope (defence in depth, same frozen answer).
+ *   5. Per envelope, in index order: dna_meter_reserve(&meters_out[i],
+ *      policy, &out[i].view, budget) — plan build + ATOMIC debit of the
+ *      global ceiling and each leg's static units. Envelope i+1 is
+ *      therefore judged against the budget AFTER envelope i's
+ *      reservation: a batch reserves sequentially and deterministically.
+ *   6. NODUS_V2_ENV_OK. On success `budget` holds the post-reservation
+ *      remainders and each meters_out[i] is RESERVED, bound to `budget`,
+ *      carrying its immutable plan.
+ *
+ * ON ANY REJECTION past the step-1 gates: BOTH arrays are fully zeroed
+ * AND `budget` is restored byte-identically to its entry value (the
+ * partial reservations of earlier envelopes are released by struct
+ * restore — deterministic, no partial batch publishes anything).
+ *
+ * The metering verdict changes NOTHING about the base contract: batch
+ * dedup still uses only engine-derived transaction ids, and the caller
+ * still receives the verified preflight results — now paired with their
+ * reservation meters — only on a fully green batch.
+ *
+ * @param policy           engine-supplied SEALED policy snapshot
+ *                         (res_meter.h authority model). BORROWED for
+ *                         the call only; the plans pin their weights.
+ * @param budget           engine-owned remaining block/domain budget
+ *                         view; mutated ONLY on NODUS_V2_ENV_OK.
+ *                         BORROWED by every returned meter (res_meter.h
+ *                         lifetime rule).
+ * @param meters_out       caller array of n_envs meters; each RESERVED
+ *                         on success. Zeroed on every post-gate reject.
+ * @param meter_status_out OPTIONAL. MEANINGFUL ONLY when the return is
+ *                         ERR_METER; DNA_METER_OK otherwise. Written
+ *                         only after the step-1 gates.
+ * Remaining parameters: identical to nodus_witness_v2_env_preflight_batch,
+ * including fail_index_out's batch-level-reject reading of 0.
+ * @return a nodus_v2_env_status_t.
+ */
+nodus_v2_env_status_t nodus_witness_v2_env_preflight_reserve_batch(
+    nodus_witness_t *w,
+    uint64_t proposed_global_height,
+    const dna_env_leg_ctx_t *rulesets, size_t n_rulesets,
+    const dna_meter_policy_t *policy,
+    dna_meter_budget_t *budget,
+    const nodus_v2_envelope_t *envs, size_t n_envs,
+    dna_env_preflight_t *out,
+    dna_meter_t *meters_out,
+    size_t *fail_index_out,
+    dna_env_preflight_status_t *pf_status_out,
+    dna_meter_status_t *meter_status_out);
 
 #ifdef __cplusplus
 }

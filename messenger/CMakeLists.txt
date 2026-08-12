@@ -260,6 +260,11 @@ if(BUILD_SHARED_LIB)
         # helpers (derived tx_id, expiry + contextual-ruleset gates),
         # owned by libdna the same way as env_wire.c. No caller yet.
         ${CMAKE_SOURCE_DIR}/../shared/dnac/env_preflight.c
+        # Ledger V2 — INACTIVE deterministic resource metering + reservation
+        # (checked u64 arithmetic, sealed policy snapshot, reservation plans,
+        # meter lifecycle), owned by libdna the same way as env_wire.c.
+        # No caller yet.
+        ${CMAKE_SOURCE_DIR}/../shared/dnac/res_meter.c
         # Ledger V2 S2 — shared V2 root/header codecs (inactive), owned by
         # libdna the same way as tx_wire.c.
         ${CMAKE_SOURCE_DIR}/../shared/dnac/ledger_roots_v2.c
@@ -430,6 +435,11 @@ else()
         # helpers (derived tx_id, expiry + contextual-ruleset gates),
         # owned by libdna the same way as env_wire.c. No caller yet.
         ${CMAKE_SOURCE_DIR}/../shared/dnac/env_preflight.c
+        # Ledger V2 — INACTIVE deterministic resource metering + reservation
+        # (checked u64 arithmetic, sealed policy snapshot, reservation plans,
+        # meter lifecycle), owned by libdna the same way as env_wire.c.
+        # No caller yet.
+        ${CMAKE_SOURCE_DIR}/../shared/dnac/res_meter.c
         # Ledger V2 S2 — shared V2 root/header codecs (inactive), owned by
         # libdna the same way as tx_wire.c.
         ${CMAKE_SOURCE_DIR}/../shared/dnac/ledger_roots_v2.c

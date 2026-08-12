@@ -185,3 +185,76 @@ fail_dup:
     memset(out, 0, n_envs * sizeof(*out));
     return NODUS_V2_ENV_ERR_DUP;
 }
+
+nodus_v2_env_status_t nodus_witness_v2_env_preflight_reserve_batch(
+        nodus_witness_t *w,
+        uint64_t proposed_global_height,
+        const dna_env_leg_ctx_t *rulesets, size_t n_rulesets,
+        const dna_meter_policy_t *policy,
+        dna_meter_budget_t *budget,
+        const nodus_v2_envelope_t *envs, size_t n_envs,
+        dna_env_preflight_t *out,
+        dna_meter_t *meters_out,
+        size_t *fail_index_out,
+        dna_env_preflight_status_t *pf_status_out,
+        dna_meter_status_t *meter_status_out) {
+
+    /* Step 1 — the unvalidated-count rule, extended to BOTH caller
+     * arrays: nothing is written through an unchecked length or a NULL
+     * pointer. These three rejects touch neither buffer. */
+    if (!out || !meters_out) return NODUS_V2_ENV_ERR_ARG;
+    if (n_envs == 0 || n_envs > NODUS_V2_ENV_BATCH_MAX)
+        return NODUS_V2_ENV_ERR_ARG;
+    memset(meters_out, 0, n_envs * sizeof(*meters_out));
+    /* `out` is zeroed by the base entry below (or by the fail exits). */
+
+    if (meter_status_out) *meter_status_out = DNA_METER_OK;
+
+    /* Step 2. */
+    if (!policy || !budget) {
+        memset(out, 0, n_envs * sizeof(*out));
+        if (fail_index_out) *fail_index_out = 0;
+        if (pf_status_out)  *pf_status_out  = DNA_ENV_PF_OK;
+        return NODUS_V2_ENV_ERR_ARG;
+    }
+
+    /* Step 3 — the ENTIRE base preflight, unchanged. Its rejects
+     * propagate verbatim; meters_out is already zeroed. */
+    nodus_v2_env_status_t st = nodus_witness_v2_env_preflight_batch(
+        w, proposed_global_height, rulesets, n_rulesets, envs, n_envs,
+        out, fail_index_out, pf_status_out);
+    if (st != NODUS_V2_ENV_OK) return st;
+
+    /* Step 4 — one policy check for the whole batch. */
+    if (dna_meter_policy_check(policy) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "metering policy failed its self-check — "
+                      "rejecting %zu envelope(s)", n_envs);
+        memset(out, 0, n_envs * sizeof(*out));
+        memset(meters_out, 0, n_envs * sizeof(*meters_out));
+        if (fail_index_out)   *fail_index_out   = 0;
+        if (meter_status_out) *meter_status_out = DNA_METER_ERR_POLICY;
+        return NODUS_V2_ENV_ERR_METER;
+    }
+
+    /* Step 5 — sequential reservation. The snapshot makes the batch
+     * atomic: any failure restores the caller's budget byte-identically
+     * (deterministic release of every earlier envelope's reservation)
+     * and publishes nothing. ~1 KB automatic, no recursion. */
+    dna_meter_budget_t snapshot = *budget;
+    for (size_t i = 0; i < n_envs; i++) {
+        dna_meter_status_t ms = dna_meter_reserve(&meters_out[i], policy,
+                                                  &out[i].view, budget);
+        if (ms != DNA_METER_OK) {
+            QGP_LOG_ERROR(LOG_TAG, "reservation rejected at batch index "
+                          "%zu (meter status %d)", i, (int)ms);
+            *budget = snapshot;
+            memset(out, 0, n_envs * sizeof(*out));
+            memset(meters_out, 0, n_envs * sizeof(*meters_out));
+            if (fail_index_out)   *fail_index_out   = i;
+            if (meter_status_out) *meter_status_out = ms;
+            return NODUS_V2_ENV_ERR_METER;
+        }
+    }
+
+    return NODUS_V2_ENV_OK;
+}

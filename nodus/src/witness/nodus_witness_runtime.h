@@ -77,7 +77,17 @@ typedef int (*nodus_rt_admit_fn)(const struct nodus_domain_runtime *rt,
 
 /** Deterministic verification-cost declaration (work units) for one type.
  *  @return 0 with *cost_out set, -1 for a type this runtime does not own
- *  (fail-closed — an unknown type has NO cost, not a default one). */
+ *  (fail-closed — an unknown type has NO cost, not a default one).
+ *
+ *  AUTHORITY NOTE (metering season): this hook is a per-tx-TYPE
+ *  classification for the LEGACY pre-envelope admission surface
+ *  (nodus_witness_domreg.c admission; the nodus_v2_op_t.verify_cost test
+ *  shapes). It is NOT a price authority for the Ledger V2 envelope lane:
+ *  envelope legs are keyed by runtime_op and priced EXCLUSIVELY by the
+ *  engine-supplied block-start policy snapshot
+ *  (shared/dnac/res_meter.h — dna_meter_policy_t.w_op), which this hook
+ *  can neither feed nor override. The hook migration that retires this
+ *  surface onto the envelope lane is a later season's work. */
 typedef int (*nodus_rt_cost_fn)(const struct nodus_domain_runtime *rt,
                                 uint8_t tx_type, uint32_t *cost_out);
 

@@ -144,6 +144,14 @@ set(NODUS_SOURCES
     # it knows.
     ${SHARED_DIR}/dnac/env_preflight.c
 
+    # Ledger V2 — INACTIVE deterministic resource METERING + RESERVATION:
+    # checked u64 arithmetic, the sealed engine-supplied policy snapshot,
+    # the pure reservation-plan calculation, and the per-transaction meter
+    # lifecycle over global + per-domain block budgets. Prices come from
+    # the policy only — no caller-supplied cost value exists. No live
+    # consensus caller.
+    ${SHARED_DIR}/dnac/res_meter.c
+
     # Ledger V2 S2 — INACTIVE tagged root hierarchy + BlockHeader V2 codec
     # (shared canonical hashing) and the witness-side V2 root loaders
     # (tests/harness only; no consensus path calls them).
@@ -964,6 +972,24 @@ add_test(NAME test_env_preflight COMMAND test_env_preflight)
 add_executable(test_v2_env_preflight tests/test_v2_env_preflight.c)
 target_link_libraries(test_v2_env_preflight nodus dsa nodus)
 add_test(NAME test_v2_env_preflight COMMAND test_v2_env_preflight)
+
+# Ledger V2 — deterministic resource METERING + RESERVATION (INACTIVE):
+# checked-arithmetic boundaries, the sealed policy snapshot (KAT pinned
+# from res_meter_oracle.py), the locked static-units formula from both
+# sides of every bound, meter lifecycle + budget isolation, actual-vs-
+# declared effect charging, and seeded property batteries against an
+# independent hi/lo-u64 wide-arithmetic model.
+add_executable(test_res_meter ${SHARED_DIR}/dnac/tests/test_res_meter.c)
+target_link_libraries(test_res_meter nodus)
+add_test(NAME test_res_meter COMMAND test_res_meter)
+
+# Ledger V2 — the metered seam entry (INACTIVE): base-preflight
+# equivalence, sequential batch reservation, budget restore + full-batch
+# zeroing on any failure, policy-authority (envelope ceilings cannot
+# reprice), and the no-live-caller guarantee.
+add_executable(test_v2_env_meter tests/test_v2_env_meter.c)
+target_link_libraries(test_v2_env_meter nodus dsa nodus)
+add_test(NAME test_v2_env_meter COMMAND test_v2_env_meter)
 
 # Hard-Fork v1 Stage E.2 — tier-3 client helper guard-path tests
 add_executable(test_cc_client tests/test_cc_client.c)
