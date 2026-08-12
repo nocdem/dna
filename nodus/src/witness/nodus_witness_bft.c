@@ -964,9 +964,8 @@ static int update_utxo_set(nodus_witness_t *w,
  */
 /* v0.16 Stage F.1 — HARD supply invariant check.
  *
- * Replaces the pre-v0.16 advisory invariant (which used
- * dnac_total_minted_at against the old 16-DNAC halving curve). The
- * new model is bookkeeping-closed:
+ * Replaces the pre-v0.16 advisory invariant (which used the old
+ * 16-DNAC halving curve). The new model is bookkeeping-closed:
  *
  *   expected = genesis_supply + total_minted − total_burned
  *   observed = Σ utxo_set.amount (native DNAC only)
@@ -1142,7 +1141,7 @@ bool supply_invariant_violated(nodus_witness_t *w) {
          * latter requires aggregating validator/delegation tables — left as
          * a Phase 10+ TODO; for now this check is advisory. */
         uint64_t block_h  = nodus_witness_block_height(w);
-        uint64_t minted   = dnac_total_minted_at(block_h, 1ULL);
+        uint64_t minted   = nodus_emission_total_minted(block_h, 1ULL);
         uint64_t effective = sup.genesis_supply;
         /* Saturating add to guard against a pathological mint overflow. */
         if (minted > UINT64_MAX - effective) effective = UINT64_MAX;

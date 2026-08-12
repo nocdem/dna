@@ -61,6 +61,46 @@ int main(void) {
     for (uint64_t h = 0; h < 10; h++) sum += nodus_emission_per_block(h);
     CHECK_EQ(sum, 10 * 32ULL * UNIT);
 
+    /* ── nodus_emission_total_minted: the advisory's 32-curve cumulative.
+     * BRUTE-FORCE EQUIVALENCE — the closed-form window arithmetic MUST
+     * equal Σ nodus_emission_per_block(h) block-by-block, at every
+     * halving boundary and across the perpetual floor (6+ years). This
+     * is the property the advisory supply diagnostic relies on. */
+    {
+        uint64_t brute = 0;
+        for (uint64_t h = 1; h <= 6 * BY + 137; h++) {
+            brute += nodus_emission_per_block(h);
+            /* spot-check the closed form at boundaries + a scatter of
+             * offsets, all against the running brute sum (start = 1) */
+            if (h == 1 || h == BY - 1 || h == BY || h == BY + 1 ||
+                h == 2 * BY || h == 3 * BY || h == 4 * BY ||
+                h == 5 * BY - 1 || h == 5 * BY || h == 5 * BY + 1 ||
+                h == 6 * BY || h == 6 * BY + 137)
+                CHECK_EQ(nodus_emission_total_minted(h, 1ULL), brute);
+        }
+        /* disabled / out-of-range contract */
+        CHECK_EQ(nodus_emission_total_minted(1000, 0ULL), 0ULL);
+        CHECK_EQ(nodus_emission_total_minted(5, 10ULL), 0ULL);
+        /* start_block > 1: a window that begins mid-curve (blocks
+         * [BY, 2*BY-1] all at 16 DNAC) */
+        CHECK_EQ(nodus_emission_total_minted(2 * BY - 1, BY),
+                 (uint64_t)BY * 16ULL * UNIT);
+        /* whole first five halving windows, start = 0 excluded via
+         * start = 1: block 0 is not minted, so Y1 window contributes
+         * (BY-1) blocks at 32 DNAC — proven equal to the brute sum
+         * above; here assert the full-through-floor cumulative at the
+         * 5*BY boundary equals 32-curve five-year total minus block 0 */
+        {
+            uint64_t y5 = nodus_emission_total_minted(5 * BY - 1, 1ULL);
+            uint64_t expect = ((uint64_t)BY - 1) * 32ULL * UNIT      /* Y1 */
+                            + (uint64_t)BY * 16ULL * UNIT            /* Y2 */
+                            + (uint64_t)BY *  8ULL * UNIT            /* Y3 */
+                            + (uint64_t)BY *  4ULL * UNIT            /* Y4 */
+                            + (uint64_t)BY *  2ULL * UNIT;           /* Y5 */
+            CHECK_EQ(y5, expect);
+        }
+    }
+
     printf("test_emission_boundaries: ALL CHECKS PASSED\n");
     return 0;
 }

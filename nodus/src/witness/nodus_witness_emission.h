@@ -56,6 +56,26 @@ extern "C" {
  */
 uint64_t nodus_emission_per_block(uint64_t block_height);
 
+/**
+ * Cumulative DNAC minted, in raw units, by summing
+ * nodus_emission_per_block(h) over every minted height h in
+ * [start_block, block_height] inclusive — the EXACT total the live
+ * per-block mint accrues (nodus_witness_bft.c finalize_block mints
+ * emission at every height >= inflation_start; genesis height 0 is not
+ * minted when start_block >= 1).
+ *
+ *   start_block == 0 (inflation disabled) or block_height < start_block
+ *     -> 0
+ *
+ * This is the 32-curve counterpart of the retired dnac_total_minted_at
+ * (dnac.h, 16-curve). Deterministic, pure, checked (saturates at
+ * UINT64_MAX rather than wrapping). Used by the advisory supply
+ * diagnostic; it is NOT a consensus gate (the HARD gate is bookkeeping-
+ * closed and does not consult a mint curve at all).
+ */
+uint64_t nodus_emission_total_minted(uint64_t block_height,
+                                     uint64_t start_block);
+
 #ifdef __cplusplus
 }
 #endif

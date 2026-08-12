@@ -243,99 +243,19 @@ extern "C" {
 #endif
 
 /* ============================================================================
- * Block-Reward Inflation (v1) — validator incentive
+ * Block-Reward Inflation — RETIRED here; see nodus_witness_emission.{h,c}
  *
- * Halving is pinned to BLOCK COUNT, not real time. If the block interval
- * is tuned down later (e.g. 5s → 2.5s), halving cycles compress in real
- * time but the per-block reward curve stays identical — tokenomics stay
- * predictable from the ledger's own clock, independent of transport
- * latency choices.
- *
- * Schedule: halving every DNAC_HALVING_INTERVAL_BLOCKS, floor at 1 DNAC.
- *   halving 0:  16 DNAC/block
- *   halving 1:   8 DNAC/block
- *   halving 2:   4 DNAC/block
- *   halving 3:   2 DNAC/block
- *   halving 4+:  1 DNAC/block   (permanent floor)
- *
- * Per-halving mint: BASE × INTERVAL (halving 0 = 16 × 6.307M = 100.9M DNAC).
- * First-4-halving total: ~189M DNAC. Thereafter 1 × INTERVAL per halving
- * window, forever — sustainable perpetual validator incentive.
- *
- * At the current 5s block interval, INTERVAL = 6,307,200 blocks ≈ 1 year,
- * matching Bitcoin-style annual halving. At 2.5s, the same INTERVAL is
- * ~6 months. At 2s, ~4.8 months. Tune block interval per performance
- * needs without touching the halving-curve semantics.
- *
- * Minted DNAC flows into block_fee_pool and is distributed through the
- * existing Phase 9 Task 49 committee-reward pipeline (proportional to
- * total_stake, minus validator commission).
+ * The v1 inline curve that lived here (16-DNAC base, 4 halvings,
+ * dnac_block_reward / dnac_total_minted_at / DNAC_INFLATION_*_REWARD /
+ * DNAC_HALVING_INTERVAL_BLOCKS) was superseded by the v0.16 per-block
+ * emission redesign and is deleted. The LIVE, deployed schedule is the
+ * 32-DNAC / 5-halving curve in nodus/src/witness/nodus_witness_emission.h
+ * (DNAC_BLOCKS_PER_YEAR 6,307,200, base 32, floor 1) driven by
+ * nodus_emission_per_block / nodus_emission_total_minted. Halving is
+ * pinned to BLOCK COUNT, not wall time, so retuning the block interval
+ * compresses/expands the halving cadence in real time without moving the
+ * per-block reward curve. See project memory: DNAC inflation DEPLOYED.
  * ========================================================================== */
-
-/** Base block reward at inflation_start_block (16 DNAC × 10^8 raw). */
-#define DNAC_INFLATION_BASE_REWARD   (16ULL * 100000000ULL)
-
-/** Floor block reward after halving converges (1 DNAC × 10^8 raw). */
-#define DNAC_INFLATION_FLOOR_REWARD  (1ULL * 100000000ULL)
-
-/** Blocks between successive halvings — tokenomic clock, block-count based
- *  (NOT seconds-based). 6,307,200 is ≈ 1 year at the current 5s interval;
- *  if the block interval is retuned the halving cycle compresses/expands
- *  in real time but the per-block reward curve is unchanged. */
-#define DNAC_HALVING_INTERVAL_BLOCKS 6307200ULL
-
-/**
- * @brief Block reward at a given chain height (deterministic).
- *
- * Returns raw DNAC to mint at @p block_height. Before @p start_block,
- * or when start_block == 0 (disabled), returns 0. Halves every
- * DNAC_HALVING_INTERVAL_BLOCKS blocks until reaching
- * DNAC_INFLATION_FLOOR_REWARD, then stays at the floor forever.
- *
- * Implemented `static inline` so both dnac and nodus (whose build does
- * not compile dnac sources) get the same codepath without duplicating
- * translation units. Math is tight — loops only in total_minted_at.
- */
-static inline uint64_t dnac_block_reward(uint64_t block_height,
-                                           uint64_t start_block) {
-    if (start_block == 0 || block_height < start_block) return 0;
-    uint64_t elapsed  = block_height - start_block;
-    uint64_t halvings = elapsed / DNAC_HALVING_INTERVAL_BLOCKS;
-    /* log2(BASE/FLOOR) = 4 halvings (16→8→4→2→1). Floor thereafter. */
-    if (halvings >= 4) return DNAC_INFLATION_FLOOR_REWARD;
-    uint64_t reward = DNAC_INFLATION_BASE_REWARD >> halvings;
-    if (reward < DNAC_INFLATION_FLOOR_REWARD) reward = DNAC_INFLATION_FLOOR_REWARD;
-    return reward;
-}
-
-/**
- * @brief Cumulative DNAC minted from @p start_block through @p block_height
- *        inclusive (used by supply invariant).
- *
- * Deterministic — every witness reaches the same value for the same
- * (height, start) pair, so supply-invariant consensus is preserved.
- */
-static inline uint64_t dnac_total_minted_at(uint64_t block_height,
-                                              uint64_t start_block) {
-    if (start_block == 0 || block_height < start_block) return 0;
-    uint64_t elapsed = block_height - start_block;
-    uint64_t total   = 0;
-    uint64_t reward  = DNAC_INFLATION_BASE_REWARD;
-    for (int h = 0; h < 4; h++) {
-        if (elapsed == 0) return total;
-        uint64_t window_blocks = (elapsed >= DNAC_HALVING_INTERVAL_BLOCKS)
-                                  ? DNAC_HALVING_INTERVAL_BLOCKS : elapsed;
-        total   += reward * window_blocks;
-        elapsed -= window_blocks;
-        reward >>= 1;
-        if (reward < DNAC_INFLATION_FLOOR_REWARD) {
-            reward = DNAC_INFLATION_FLOOR_REWARD;
-            break;
-        }
-    }
-    if (elapsed > 0) total += DNAC_INFLATION_FLOOR_REWARD * elapsed;
-    return total;
-}
 
 /** Maximum commission in basis points (100% = 10000) */
 #define DNAC_COMMISSION_BPS_MAX      10000

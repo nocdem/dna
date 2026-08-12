@@ -70,7 +70,8 @@ int nodus_chain_config_db_migrate(nodus_witness_t *w);
  * returns `default_value`.
  *
  * Consumer sites (Stage D):
- *   - dnac_block_reward(h, chain_config_get(INFLATION_START_BLOCK, h, 1))
+ *   - inflation gate: chain_config_get(INFLATION_START_BLOCK, h, 1) then
+ *     nodus_emission_per_block(h) (nodus_witness_emission.h)
  *   - max batch size clamp: chain_config_get(MAX_TXS_PER_BLOCK, h, default)
  *   - proposer timer: chain_config_get(BLOCK_INTERVAL_SEC, h, default)
  *
