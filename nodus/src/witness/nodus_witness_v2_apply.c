@@ -860,10 +860,20 @@ static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
 
         /* adapter application: validate → probe → the ONE precondition
          * decision table → mutate, all through the runtime's compiled
-         * adapter, scoped by rt->domain_id and nothing else */
+         * adapter, scoped by rt->domain_id and nothing else. Fault
+         * point 37 (burn season) injects a MID-EFFECT-LIST stop after
+         * the named applied effect; the ERR_INJECTED it produces rides
+         * the ordinary deterministic-verdict abort below, so rollback
+         * is proven through the same path every real rejection takes. */
         uint16_t fidx = 0;
+        uint32_t stop_after = UINT32_MAX;
+        if (blk->fail_at == V2AP_FAIL_AFTER_EFFECT_APPLY &&
+            blk->fail_env_index == (uint32_t)env_index &&
+            blk->fail_effect_index < ev.effect_count)
+            stop_after = blk->fail_effect_index;
         nodus_adapter_status_t ast =
-            nodus_witness_v2_effects_apply(w, rt, &ev, &fidx);
+            nodus_witness_v2_effects_apply_ex(w, rt, &ev, &fidx,
+                                              stop_after);
         if (ast == NODUS_ADAPTER_ERR_STORAGE_FAULT ||
             ast == NODUS_ADAPTER_ERR_ARG)
             return -2;                   /* node fault                   */

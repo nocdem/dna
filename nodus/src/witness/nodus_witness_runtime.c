@@ -125,8 +125,9 @@ static const uint8_t SYS_RULESET_HASH[DNA_DOM_HASH_LEN] = {
     /* capacity season — ruleset_version 2 (CHAIN_CONFIG call v2 +
      * auth carrier v2) committing the v2 policy digest above; same
      * oracle + control legs. The exec-season value 89362213…96c2 is
-     * dead. CORE is UNCHANGED (its descriptor bytes did not move —
-     * selfcheck's fresh re-derivation proves it every run). */
+     * dead. (CORE moved later, in the burn season — see the CORE pin
+     * below; SYSTEM is untouched by that season and this value
+     * stands.) */
     0x9f, 0xc5, 0x39, 0x4e, 0x60, 0xe0, 0xd9, 0x80,
     0xae, 0xe5, 0x5b, 0x5a, 0xa7, 0x1c, 0x4f, 0x9c,
     0x84, 0xcd, 0x45, 0x1f, 0x08, 0xd2, 0x76, 0xcf,
@@ -137,14 +138,29 @@ static const uint8_t SYS_RULESET_HASH[DNA_DOM_HASH_LEN] = {
     0xdd, 0x17, 0x13, 0x46, 0x8c, 0xce, 0x24, 0xbb
 };
 static const uint8_t CORE_RULESET_HASH[DNA_DOM_HASH_LEN] = {
-    0xad, 0x98, 0xa0, 0x36, 0xca, 0x2e, 0x2d, 0x92,
-    0xf1, 0x27, 0x42, 0x33, 0xd6, 0x65, 0x13, 0xbc,
-    0x80, 0x01, 0xbc, 0xc6, 0x9d, 0xd8, 0xb8, 0x5a,
-    0x6a, 0x2a, 0x05, 0x90, 0x1b, 0x83, 0xe0, 0x63,
-    0x40, 0xd0, 0x25, 0x30, 0xad, 0x8b, 0x93, 0xe4,
-    0x1b, 0xa4, 0x1b, 0x1e, 0xeb, 0xad, 0x2f, 0xcf,
-    0x20, 0x2e, 0xd7, 0x50, 0x05, 0x07, 0x5b, 0xb8,
-    0x73, 0xfe, 0x54, 0xe0, 0x88, 0xa8, 0xe6, 0xf3
+    /* burn season — CORE ruleset_version 1 → 2: runtime ops 2 (BURN)
+     * and 3 (TOKEN_CREATE) become EXECUTABLE (they were deterministic
+     * rejects inside the hooks). Enabling a previously rejected op
+     * changes the accepted runtime semantics, and no separate versioned
+     * activation mechanism commits that change — the exact-tuple
+     * identity IS the activation mechanism — so the version advances
+     * and the digest moves by construction (the descriptor commits
+     * ruleset_version; the rule/type lists and the zero policy digest
+     * are byte-identical). The retired CORE v1 resolves NOTHING: v1
+     * legs are never reinterpreted (the SYSTEM v1 retirement
+     * precedent). Oracle: scratchpad burn_tc_season_oracle.py, whose
+     * control legs reproduced BOTH shipped pins (SYSTEM v2 9fc5394e…
+     * and the retired CORE v1 ad98a036…e6f3) before this value was
+     * accepted; selfcheck re-derives it through the C encoder on every
+     * run. */
+    0x74, 0x6f, 0x58, 0x4a, 0xc0, 0x99, 0x64, 0x3d,
+    0x63, 0x14, 0x6b, 0xad, 0x02, 0x9c, 0xf9, 0xfd,
+    0xeb, 0x67, 0x9a, 0x83, 0x0d, 0x5a, 0x3f, 0x4f,
+    0x2a, 0x32, 0x7c, 0x26, 0xf3, 0xca, 0x0f, 0x10,
+    0x45, 0x76, 0x3f, 0x0e, 0xa9, 0x2d, 0x28, 0xaf,
+    0xf6, 0xfc, 0xa5, 0xd4, 0xcd, 0x20, 0xa5, 0x21,
+    0xb5, 0xa3, 0xac, 0xc6, 0x49, 0x15, 0xe1, 0xdd,
+    0x9f, 0x35, 0xe2, 0x1a, 0x41, 0xce, 0x67, 0xa1
 };
 
 /* ── Function tables ────────────────────────────────────────────────── */
@@ -272,22 +288,28 @@ static const nodus_domain_runtime_t BUILTIN[] = {
     {
         .domain_id       = DNA_DOMAIN_CORE,
         .runtime_kind    = DNA_RUNTIME_NATIVE_BUILTIN,
+        /* ruleset_version 2 — burn season: runtime ops 2 (BURN) and 3
+         * (TOKEN_CREATE) became executable (they deterministically
+         * rejected under v1). The runtime-op semantic axis IS the
+         * ruleset version (exact-tuple lookup), so v1 legs resolve
+         * NOTHING — old CORE envelopes are never reinterpreted. */
         .runtime_abi     = NODUS_DOMAIN_RUNTIME_ABI_V1,
-        .ruleset_version = 1,
+        .ruleset_version = 2,
         .ruleset_hash    = { 0 },
         .descriptor = {
             .descriptor_version = DNA_RULESET_DESC_VERSION,
             .domain_id = DNA_DOMAIN_CORE,
             .name = "DNA_CORE",
             .runtime_abi = NODUS_DOMAIN_RUNTIME_ABI_V1,
-            .ruleset_version = 1,
+            .ruleset_version = 2,
             .rule_count = 6, .rule_ids = CORE_RULES,
             .tx_type_count = 6, .tx_types = CORE_TYPES
         },
         .admit = rt_admit_common,
         .tx_cost = core_cost,
-        /* Native auth season: DNA_CORERULE_SPEND only (header rule
-         * above); shared auth implementation. */
+        /* Burn season: DNA_CORERULE_SPEND + DNA_CORERULE_BURN +
+         * DNA_CORERULE_TOKEN_CREATE (ops 4..6 still reject inside the
+         * hooks); shared auth implementation. */
         .auth      = nodus_rt_auth_dsa87_v1,
         /* capacity season: CORE consumes ordinary multi-signer
          * authorization ONLY — no CORE operation reads committee

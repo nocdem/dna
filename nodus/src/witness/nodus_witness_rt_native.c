@@ -11,7 +11,8 @@
  * stays unassigned — nothing in this file touches shielded state.
  * ════════════════════════════════════════════════════════════════════════
  *
- * WHAT IS IMPLEMENTED (exactly two source-existing operations):
+ * WHAT IS IMPLEMENTED (four source-existing operations — the burn
+ * season adds 3 and 4):
  *
  *   1. SYSTEM  / DNA_SYSRULE_CHAIN_CONFIG (runtime_op 6, legacy tx 10):
  *      the committee-voted consensus-parameter change. The SOURCE
@@ -38,6 +39,42 @@
  *      enforced as a conjunction so neither can silently drift), and the
  *      fee is BURNED exactly once into supply_tracking.total_burned
  *      (route_tx_fee → nodus_witness_supply_add_burned semantics).
+ *
+ *   3. DNA_CORE / DNA_CORERULE_BURN (runtime_op 2, legacy tx 2): the
+ *      explicit native destruction. The legacy lane has NO type-2
+ *      branch anywhere — verify runs the SAME SPEND balance path
+ *      (nodus_witness_verify.c:791-866) and apply the SAME
+ *      update_utxo_set + route_tx_fee (nodus_witness_bft.c:752-921),
+ *      so a legacy "burn" IS a fee-shaped destruction into the ONE
+ *      committed counter supply_tracking.total_burned. The V2 call
+ *      splits the DECLARATION (explicit burn_amount, >= 1) from the
+ *      fee while preserving the exact accounting bucket:
+ *      Σnative_in == Σnative_out + fee + burn_amount, and
+ *      total_burned += fee + burn_amount (one SET). Non-native tokens
+ *      must balance exactly — an explicit TOKEN burn is inexpressible
+ *      in the legacy lane (nothing ever decrements tokens.supply) and
+ *      is fail-closed here, never invented.
+ *
+ *   4. DNA_CORE / DNA_CORERULE_TOKEN_CREATE (runtime_op 3, legacy
+ *      tx 3): custom-token registration. Source semantics preserved:
+ *      output[0] is the token genesis output and the registry commits
+ *      exactly its (token_id, amount, fp) (nodus_witness_bft.c:
+ *      2243-2281); the creation fee must meet the shipped
+ *      NODUS_W_TOKEN_CREATE_FEE floor (verify.c:776-789) and equal
+ *      what the native inputs release (the block-level supply
+ *      invariant rule, enforced per transaction here); metadata bounds
+ *      are the client builder's (token_create.c:52-56 — name 1..32,
+ *      symbol 1..8, decimals <= 18; JUDGMENT: the legacy witness never
+ *      checked them). Honest fail-closed divergences: duplicate
+ *      token_id REJECTS (legacy INSERT OR IGNORE dropped it silently),
+ *      the token id must not be the native all-zero id, funding inputs
+ *      must be native, non-genesis outputs native-only, and the
+ *      registry row's timestamp is written 0 (wall-clock audit column,
+ *      EXCLUDED from the token merkle leaf — roots_v2.c:36-37). The
+ *      token id itself stays an OPAQUE caller-chosen 64-byte value,
+ *      exactly the legacy wire behavior (the client derives it from a
+ *      wall clock CLIENT-side; consensus never re-derives it — chain
+ *      binding rides the envelope identities, not the token id).
  *
  * Every OTHER runtime_op the two descriptors own is a DETERMINISTIC
  * REJECT in these hooks until its own migration slice — ownership is
@@ -73,6 +110,22 @@
  *               ‖ amount u64 BE
  *               ‖ token_id[64]            all-zero = native DNAC
  *               ‖ seed[32] )
+ *
+ * BURN call v1 (exact length = 2 + 64*in + 232*out + 8 — burn season;
+ * CORE ruleset_version 2 enables ops 2 and 3, see runtime.c):
+ *   the SPEND transfer section (in_count 1..15, out_count 0..16 — a
+ *   full-value burn creates nothing) ‖ burn_amount u64 BE (>= 1; a
+ *   zero burn IS a SPEND and has exactly one canonical encoding)
+ *
+ * TOKEN_CREATE call v1 (exact length = 109-fixed-max + 64*in + 232*out
+ * — burn season):
+ *   token_id[64]  (the NEW token — never the all-zero native id)
+ *   ‖ name_len u8 (1..32) ‖ name  (printable ASCII minus ':')
+ *   ‖ sym_len  u8 (1..8)  ‖ sym   (same rule)
+ *   ‖ decimals u8 (0..18)
+ *   ‖ transfer section (in_count 1..14 — the read budget funds 14
+ *     input reads + 1 supply read + 1 registry read; out_count 1..16,
+ *     output[0] = the token genesis output, outputs[1..] native)
  *
  * CHAIN_CONFIG call v2 (exact length = 41 — capacity season; SYSTEM
  * ruleset_version 2 IS the call-format version, the repository's
@@ -185,6 +238,23 @@ static void rtn_put32(uint8_t *p, uint32_t v) {
 #define RTN_SPEND_MAX_IN      15u  /* NODUS_RT_MAX_READS - 1 supply read */
 #define RTN_SPEND_MAX_OUT     16u  /* NODUS_T3_MAX_TX_OUTPUTS            */
 #define RTN_SPEND_OUT_LEN     232u /* fp128 + amount8 + token64 + seed32 */
+/* BURN call v1 = the SPEND transfer surface + one explicit trailing
+ * burn_amount u64 (burn season). Same read budget, and out_count may be
+ * 0 (a full-value burn creates nothing). */
+#define RTN_BURN_MAX_IN       RTN_SPEND_MAX_IN
+#define RTN_BURN_MAX_OUT      RTN_SPEND_MAX_OUT
+/* TOKEN_CREATE call v1 (burn season): the read budget funds in_count
+ * input reads + 1 supply read + 1 token-registry read, so the input
+ * ceiling narrows to NODUS_RT_MAX_READS(16) − 2 = 14 (the SPEND 15-of-16
+ * honest-narrowing precedent). Field bounds are the CLIENT builder's
+ * rules (dnac/src/transaction/token_create.c:52-56 — the one shipped
+ * producer; the legacy witness never checked them: JUDGMENT, fail-closed
+ * direction). */
+#define RTN_TC_MAX_IN         14u
+#define RTN_TC_MAX_OUT        16u  /* NODUS_T3_MAX_TX_OUTPUTS            */
+#define RTN_TC_NAME_MAX       32u
+#define RTN_TC_SYM_MAX        8u
+#define RTN_TC_DECIMALS_MAX   18u
 /** CHAIN_CONFIG call v2: the canonical PROPOSAL, nothing else (header
  *  block — approval evidence lives in auth_kind 2). Exact length. */
 #define RTN_CC_CALL_LEN  41u
@@ -208,17 +278,36 @@ _Static_assert(700914u + DNA_ENV_LEG_HDR_LEN +
                    (1u + (unsigned)NODUS_RT_AUTH_MAX_SIGNERS *
                              NODUS_RT_AUTH_SIGNER_LEN) == 813904u,
                "worst-case CC+SPEND two-leg envelope drifted");
+/* Burn season: the worst CORE leg is now TOKEN_CREATE (its call is 43
+ * bytes longer than the maximal SPEND call: 109 fixed + 14*64 + 16*232
+ * = 4717 vs 4674), so the worst framing-legal envelope is CC + one
+ * maximal TOKEN_CREATE leg. The BURN call (SPEND + 8) sits between the
+ * two and is dominated. */
+_Static_assert((64u + 1u + RTN_TC_NAME_MAX + 1u + RTN_TC_SYM_MAX + 1u +
+                1u + RTN_TC_MAX_IN * 64u +
+                1u + RTN_TC_MAX_OUT * RTN_SPEND_OUT_LEN) == 4717u,
+               "maximal TOKEN_CREATE call drifted");
+_Static_assert(700914u + DNA_ENV_LEG_HDR_LEN + 4717u +
+                   (1u + (unsigned)NODUS_RT_AUTH_MAX_SIGNERS *
+                             NODUS_RT_AUTH_SIGNER_LEN) == 813947u,
+               "worst-case CC+TOKEN_CREATE two-leg envelope drifted");
 /* "Worst case" means worst FRAMING-AND-ALLOWLIST-legal: the two legs'
  * fee rules are mutually exclusive at exec (SYSTEM requires fee 0, the
- * SPEND floors require fee >= 1), so the composition can never execute —
+ * CORE floors require fee >= 1), so the composition can never execute —
  * the ceiling deliberately over-covers, which is the conservative
  * direction for an admission bound. */
-_Static_assert(813904u <= (unsigned)DNA_ENV_MAX_TOTAL_LEN,
+_Static_assert(813947u <= (unsigned)DNA_ENV_MAX_TOTAL_LEN,
                "envelope ceiling no longer contains the worst legal "
                "envelope — re-derive DNA_ENV_MAX_TOTAL_LEN");
-_Static_assert(813904u > (unsigned)DNA_ENV_MAX_TOTAL_LEN / 2u,
+_Static_assert(813947u > (unsigned)DNA_ENV_MAX_TOTAL_LEN / 2u,
                "the ceiling is no longer the SMALLEST containing power "
                "of two — re-derive DNA_ENV_MAX_TOTAL_LEN");
+/* TOKEN_CREATE checks ONLY its own creation floor: that is sound iff the
+ * creation fee dominates BOTH generic floors — pinned, not assumed. */
+_Static_assert(NODUS_W_TOKEN_CREATE_FEE >= DNAC_MIN_FEE_RAW &&
+                   NODUS_W_TOKEN_CREATE_FEE >= NODUS_W_BASE_TX_FEE,
+               "the TOKEN_CREATE fee floor no longer dominates the "
+               "generic fee floors — re-derive the rtn_tc_exec fee gate");
 
 /* ── Capacity-season tags (each EXACTLY 16 bytes, zero-padded ASCII —
  *    the env_wire.c discipline; collision-scanned against the full
@@ -430,13 +519,16 @@ int nodus_rt_auth_dsa87_v1(const nodus_domain_runtime_t *rt,
 }
 
 /* ══════════════════════════════════════════════════════════════════════
- * DNA_CORE — DNA_CORERULE_SPEND
+ * DNA_CORE — DNA_CORERULE_SPEND / DNA_CORERULE_BURN /
+ *            DNA_CORERULE_TOKEN_CREATE (burn season)
  * ════════════════════════════════════════════════════════════════════ */
 
 /* Compiled CORE adapter op ids (this adapter's own namespace). */
 #define RTN_CORE_OP_UTXO    1u   /* CREATE + mediated read: utxo_set row */
 #define RTN_CORE_OP_UTXDEL  2u   /* DELETE: utxo_set row                 */
 #define RTN_CORE_OP_SUPPLY  3u   /* SET + mediated read: burned counter  */
+#define RTN_CORE_OP_TOKEN   4u   /* CREATE + mediated read: tokens row
+                                  * (burn season — TOKEN_CREATE registry)*/
 
 /* The canonical UTXO record value (exact 284 bytes):
  *   [0..127]   owner fingerprint, exactly 128 lowercase-hex chars
@@ -465,6 +557,56 @@ int nodus_rt_auth_dsa87_v1(const nodus_domain_runtime_t *rt,
  * slice consumes; selector 1 = total_minted is reserved, unimplemented). */
 #define RTN_SUPPLY_SEL_BURNED 2u
 
+/* The canonical token-registry record value (exact 188 bytes — burn
+ * season). Exactly the `tokens` columns the token merkle leaf consumes
+ * (token_id ‖ name ‖ symbol ‖ decimals ‖ supply ‖ creator_fp ‖ flags ‖
+ * block_height — nodus_witness_roots_v2.c:36-37); the wall-clock
+ * `timestamp` column is deliberately EXCLUDED (audit-only; leaf-excluded)
+ * and the adapter writes it 0 — deterministic lane, exactly the
+ * created_at rule for utxo rows. Name/symbol are zero-padded to their
+ * maxima so exactly ONE encoding exists per registry row (padding bytes
+ * MUST be zero — validated on both build and fetch).
+ *   [0..7]     supply        u64 BE (the registered initial supply)
+ *   [8]        decimals      u8
+ *   [9]        flags         u8     (0 this release — no flag semantics)
+ *   [10..17]   block_height  u64 BE
+ *   [18..145]  creator_fp    128 lowercase-hex chars
+ *   [146]      name_len      u8     1..32
+ *   [147..178] name          32 B, zero-padded past name_len
+ *   [179]      symbol_len    u8     1..8
+ *   [180..187] symbol        8 B, zero-padded past symbol_len
+ *
+ * ⚠ MIGRATION OBLIGATION (review round, MEDIUM — owned by the V2
+ * ACTIVATION season, not this slice): the `tokens` table is shared with
+ * the LIVE legacy lane, whose writer never enforced this slice's write
+ * rules. A legacy chain can therefore hold (a) token UTXO value whose
+ * id has NO registry row (the legacy memo parse was conditional,
+ * bft.c:2254-2272 — registration silently skipped), (b) duplicate
+ * registrations dropped by INSERT OR IGNORE while the second genesis
+ * UTXO was still created, and (c) rows whose name/symbol exceed the
+ * 32/8 bounds (the legacy memo carrier allowed up to ~253 bytes). Under
+ * (a)/(b) the V2 registry-absent read cannot distinguish "never
+ * registered" from "value already exists"; under (c)
+ * rtn_core_token_fetch fails CLOSED (node fault) for that id. All
+ * deterministic across nodes (no split; a liveness/griefing edge on
+ * specific ids at worst). The activation/migration season must
+ * reconcile the tokens table (register-or-quarantine orphaned token
+ * value, bound legacy rows) BEFORE the V2 lane goes live. There is
+ * also NO committed cross-check that a registered supply equals the
+ * token's UTXO sum in EITHER lane (both supply gates are native-only);
+ * the identity holds inductively through this slice's per-transaction
+ * rules and any future token-moving op must preserve it explicitly. */
+#define RTN_TOKEN_REC_LEN     188u
+#define RTN_TOKEN_SUPPLY_OFF  0u
+#define RTN_TOKEN_DEC_OFF     8u
+#define RTN_TOKEN_FLAGS_OFF   9u
+#define RTN_TOKEN_BH_OFF      10u
+#define RTN_TOKEN_CFP_OFF     18u
+#define RTN_TOKEN_NLEN_OFF    146u
+#define RTN_TOKEN_NAME_OFF    147u
+#define RTN_TOKEN_SLEN_OFF    179u
+#define RTN_TOKEN_SYM_OFF     180u
+
 /* SPEND call v1 bounds: RTN_SPEND_MAX_IN / _MAX_OUT / _OUT_LEN — defined
  * with the capacity-derivation asserts near the top of this file (they
  * participate in the envelope-ceiling arithmetic). */
@@ -485,41 +627,177 @@ static int rtn_hex_lower_ok(const uint8_t *p, size_t n) {
     return 1;
 }
 
+/* Parse + validate ONE transfer section (`in_count u8 ‖ nullifiers ‖
+ * out_count u8 ‖ output records`) at p[0..len) — the surface SPEND,
+ * BURN and TOKEN_CREATE share (burn season: factored out of the SPEND
+ * parser byte-for-byte). Enforces strictly ascending inputs (canonical
+ * form + free dedup), exactly-128 lowercase-hex owner fingerprints and
+ * a non-zero amount — the transparent-leg §6 rule (tx_wire.h:
+ * `amount u64 BE ≥1`): a zero-value output names dust the ledger would
+ * carry forever (R2/R4 review convergence; the legacy lane had no floor
+ * — honest, fail-closed divergence).
+ * @param min_out 0 only for BURN (a full-value burn creates nothing).
+ * @return consumed byte count (> 0), or 0 = deterministic reject. */
+static size_t rtn_xfer_section_parse(const uint8_t *p, size_t len,
+                                     uint8_t max_in, uint8_t max_out,
+                                     uint8_t min_out,
+                                     rtn_spend_call_t *c) {
+    if (len < 2) return 0;
+    uint8_t ic = p[0];
+    if (ic < 1 || ic > max_in) return 0;
+    size_t off = 1 + (size_t)ic * 64u;
+    if (len < off + 1) return 0;
+    uint8_t oc = p[off];
+    if (oc < min_out || oc > max_out) return 0;
+    size_t need = off + 1 + (size_t)oc * RTN_SPEND_OUT_LEN;
+    if (len < need) return 0;
+    c->in_count = ic;
+    c->out_count = oc;
+    c->ins = p + 1;
+    c->outs = p + off + 1;
+    for (uint8_t i = 1; i < ic; i++)
+        if (memcmp(c->ins + (size_t)(i - 1) * 64,
+                   c->ins + (size_t)i * 64, 64) >= 0)
+            return 0;
+    for (uint8_t o = 0; o < oc; o++) {
+        const uint8_t *rec = c->outs + (size_t)o * RTN_SPEND_OUT_LEN;
+        if (!rtn_hex_lower_ok(rec, 128)) return 0;
+        if (rtn_get64(rec + 128) == 0) return 0;
+    }
+    return need;
+}
+
 /* Strict SPEND call parse — the ONE decoder both hooks consume.
  * @return 0 / -1 (deterministic reject). */
 static int rtn_spend_parse(const dna_env_view_t *env, uint16_t leg,
                            rtn_spend_call_t *c) {
     const uint8_t *p = env->buf + env->call_off[leg];
     uint32_t len = env->leg[leg].call_len;
-    if (len < 2) return -1;
-    uint8_t ic = p[0];
-    if (ic < 1 || ic > RTN_SPEND_MAX_IN) return -1;
-    size_t off = 1 + (size_t)ic * 64u;
-    if (len < off + 1) return -1;
-    uint8_t oc = p[off];
-    if (oc < 1 || oc > RTN_SPEND_MAX_OUT) return -1;
-    if ((size_t)len != off + 1 + (size_t)oc * RTN_SPEND_OUT_LEN)
+    size_t used = rtn_xfer_section_parse(p, len, RTN_SPEND_MAX_IN,
+                                         RTN_SPEND_MAX_OUT, 1, c);
+    if (used == 0 || used != (size_t)len)
         return -1;                       /* exact length, never a prefix */
-    c->in_count = ic;
-    c->out_count = oc;
-    c->ins = p + 1;
-    c->outs = p + off + 1;
-    /* inputs strictly ascending (canonical form + free dedup) */
-    for (uint8_t i = 1; i < ic; i++)
-        if (memcmp(c->ins + (size_t)(i - 1) * 64,
-                   c->ins + (size_t)i * 64, 64) >= 0)
-            return -1;
-    /* outputs: exactly-128 lowercase-hex owner fingerprints, and a
-     * non-zero amount — the transparent-leg §6 rule (tx_wire.h:
-     * `amount u64 BE ≥1`): a zero-value output names dust the ledger
-     * would carry forever (R2/R4 review convergence; the legacy lane
-     * had no floor — honest, fail-closed divergence) */
-    for (uint8_t o = 0; o < oc; o++) {
-        const uint8_t *rec = c->outs + (size_t)o * RTN_SPEND_OUT_LEN;
-        if (!rtn_hex_lower_ok(rec, 128)) return -1;
-        if (rtn_get64(rec + 128) == 0) return -1;
+    return 0;
+}
+
+/* Strict BURN call v1 parse (burn season): transfer section ‖ explicit
+ * `burn_amount u64 BE` (>= 1 — a zero burn IS a SPEND and has exactly
+ * one canonical encoding, the SPEND call). out_count 0 is legal: a
+ * full-value burn creates nothing. @return 0 / -1. */
+static int rtn_burn_parse(const dna_env_view_t *env, uint16_t leg,
+                          rtn_spend_call_t *c, uint64_t *burn_out) {
+    const uint8_t *p = env->buf + env->call_off[leg];
+    uint32_t len = env->leg[leg].call_len;
+    size_t used = rtn_xfer_section_parse(p, len, RTN_BURN_MAX_IN,
+                                         RTN_BURN_MAX_OUT, 0, c);
+    if (used == 0 || (size_t)len != used + 8)
+        return -1;                       /* exact length, never a prefix */
+    uint64_t b = rtn_get64(p + used);
+    if (b == 0) return -1;
+    *burn_out = b;
+    return 0;
+}
+
+/* TOKEN_CREATE call v1 (burn season). */
+typedef struct {
+    const uint8_t *token_id;             /* [64] the NEW token id        */
+    const uint8_t *name;                 /* name_len bytes               */
+    const uint8_t *sym;                  /* sym_len bytes                */
+    uint8_t  name_len, sym_len, decimals;
+    rtn_spend_call_t xfer;               /* funding inputs + outputs     */
+} rtn_tc_call_t;
+
+/* Registry text rule: printable ASCII (0x20..0x7e) minus ':'. Grounded
+ * two ways: the legacy carrier was the memo string "name:symbol:decimals"
+ * parsed with strchr (nodus_witness_bft.c:2264-2272), so a ':' or NUL
+ * inside either field was UNREPRESENTABLE; and the token merkle-leaf
+ * loader reads both columns via strlen (nodus_witness_roots_v2.c:96-98),
+ * so an embedded NUL would silently truncate what the root commits.
+ * Restricting the remainder to printable ASCII is the fail-closed
+ * narrowing (JUDGMENT — the legacy witness checked nothing else). */
+static int rtn_tc_text_ok(const uint8_t *p, size_t n) {
+    for (size_t i = 0; i < n; i++)
+        if (p[i] < 0x20 || p[i] > 0x7e || p[i] == ':')
+            return 0;
+    return 1;
+}
+
+/* Strict TOKEN_CREATE call v1 parse:
+ *   token_id[64] ‖ name_len u8 (1..32) ‖ name ‖ sym_len u8 (1..8) ‖ sym
+ *   ‖ decimals u8 (0..18) ‖ transfer section (in 1..14, out 1..16)
+ * output[0] IS the token genesis output — the legacy apply registers
+ * exactly output[0]'s (token_id, amount, fp) (nodus_witness_bft.c:
+ * 2243-2281) — so its token_id must equal the declared new token, and
+ * every OTHER output must be native change: a second output carrying
+ * the new token would inflate the token's UTXO sum above the registered
+ * supply, and any third token has no funding leg here (fail-closed —
+ * the legacy verify summed tokens blindly, verify.c:753-758).
+ * @return 0 / -1. */
+static int rtn_tc_parse(const dna_env_view_t *env, uint16_t leg,
+                        rtn_tc_call_t *t) {
+    static const uint8_t native_tok[64] = { 0 };
+    const uint8_t *p = env->buf + env->call_off[leg];
+    uint32_t len = env->leg[leg].call_len;
+    size_t off = 0;
+    if (len < 64 + 2) return -1;
+    t->token_id = p;
+    off += 64;
+    if (memcmp(t->token_id, native_tok, 64) == 0)
+        return -1;                       /* the native id is not a token */
+    uint8_t nl = p[off++];
+    if (nl < 1 || nl > RTN_TC_NAME_MAX) return -1;
+    if ((size_t)len < off + nl + 1) return -1;
+    t->name = p + off;
+    t->name_len = nl;
+    off += nl;
+    uint8_t sl = p[off++];
+    if (sl < 1 || sl > RTN_TC_SYM_MAX) return -1;
+    if ((size_t)len < off + sl + 1) return -1;
+    t->sym = p + off;
+    t->sym_len = sl;
+    off += sl;
+    t->decimals = p[off++];
+    if (t->decimals > RTN_TC_DECIMALS_MAX) return -1;
+    if (!rtn_tc_text_ok(t->name, nl) || !rtn_tc_text_ok(t->sym, sl))
+        return -1;
+    size_t used = rtn_xfer_section_parse(p + off, len - off,
+                                         RTN_TC_MAX_IN, RTN_TC_MAX_OUT,
+                                         1, &t->xfer);
+    if (used == 0 || off + used != (size_t)len)
+        return -1;                       /* exact length, never a prefix */
+    const uint8_t *o0 = t->xfer.outs;
+    if (memcmp(o0 + 136, t->token_id, 64) != 0)
+        return -1;                       /* output[0] carries the token  */
+    /* Registered supply is stored in an SQLite INTEGER column; a value
+     * above INT64_MAX would round-trip negative and poison every later
+     * read of the row (the fetch fails closed on negatives). Bound it
+     * at the source — the S7 pool-balance INT64_MAX storage-bound
+     * precedent. */
+    if (rtn_get64(o0 + 128) > (uint64_t)INT64_MAX)
+        return -1;
+    for (uint8_t o = 1; o < t->xfer.out_count; o++) {
+        const uint8_t *rec = t->xfer.outs + (size_t)o * RTN_SPEND_OUT_LEN;
+        if (memcmp(rec + 136, native_tok, 64) != 0)
+            return -1;                   /* change is native-only        */
     }
     return 0;
+}
+
+/* Emit the shared transfer-read prefix: one UTXO read per input (keys
+ * already strictly ascending by the parse) then the ONE burned-counter
+ * read — ascending (op_id, key), the engine's canonical order. */
+static void rtn_xfer_reads(const rtn_spend_call_t *c,
+                           nodus_rt_read_req_t *reqs_out) {
+    for (uint8_t i = 0; i < c->in_count; i++) {
+        memset(&reqs_out[i], 0, sizeof(reqs_out[i]));
+        reqs_out[i].op_id = RTN_CORE_OP_UTXO;
+        reqs_out[i].key_len = 64;
+        memcpy(reqs_out[i].key, c->ins + (size_t)i * 64, 64);
+    }
+    memset(&reqs_out[c->in_count], 0, sizeof(reqs_out[0]));
+    reqs_out[c->in_count].op_id = RTN_CORE_OP_SUPPLY;
+    reqs_out[c->in_count].key_len = 1;
+    reqs_out[c->in_count].key[0] = RTN_SUPPLY_SEL_BURNED;
 }
 
 int nodus_rt_core_read_plan(const nodus_domain_runtime_t *rt,
@@ -530,24 +808,45 @@ int nodus_rt_core_read_plan(const nodus_domain_runtime_t *rt,
     (void)rt;
     if (!env || !ctx || !reqs_out || !n_out) return -2;
     if (leg_index >= env->leg_count) return -2;
-    if (env->leg[leg_index].runtime_op != DNA_CORERULE_SPEND)
-        return -1;                       /* un-migrated op: fail closed  */
-    rtn_spend_call_t c;
-    if (rtn_spend_parse(env, leg_index, &c) != 0) return -1;
-    uint16_t need = (uint16_t)(c.in_count + 1);
-    if (need > max_reqs) return -1;
-    for (uint8_t i = 0; i < c.in_count; i++) {
-        memset(&reqs_out[i], 0, sizeof(reqs_out[i]));
-        reqs_out[i].op_id = RTN_CORE_OP_UTXO;
-        reqs_out[i].key_len = 64;
-        memcpy(reqs_out[i].key, c.ins + (size_t)i * 64, 64);
+    switch (env->leg[leg_index].runtime_op) {
+    case DNA_CORERULE_SPEND: {
+        rtn_spend_call_t c;
+        if (rtn_spend_parse(env, leg_index, &c) != 0) return -1;
+        uint16_t need = (uint16_t)(c.in_count + 1);
+        if (need > max_reqs) return -1;
+        rtn_xfer_reads(&c, reqs_out);
+        *n_out = need;
+        return 0;
     }
-    memset(&reqs_out[c.in_count], 0, sizeof(reqs_out[0]));
-    reqs_out[c.in_count].op_id = RTN_CORE_OP_SUPPLY;
-    reqs_out[c.in_count].key_len = 1;
-    reqs_out[c.in_count].key[0] = RTN_SUPPLY_SEL_BURNED;
-    *n_out = need;
-    return 0;
+    case DNA_CORERULE_BURN: {
+        rtn_spend_call_t c;
+        uint64_t burn = 0;
+        if (rtn_burn_parse(env, leg_index, &c, &burn) != 0) return -1;
+        (void)burn;                      /* validated; consumed at exec  */
+        uint16_t need = (uint16_t)(c.in_count + 1);
+        if (need > max_reqs) return -1;
+        rtn_xfer_reads(&c, reqs_out);
+        *n_out = need;
+        return 0;
+    }
+    case DNA_CORERULE_TOKEN_CREATE: {
+        rtn_tc_call_t t;
+        if (rtn_tc_parse(env, leg_index, &t) != 0) return -1;
+        /* inputs + supply + the registry-uniqueness read (op 4 last —
+         * ascending op_id keeps the canonical request order) */
+        uint16_t need = (uint16_t)(t.xfer.in_count + 2);
+        if (need > max_reqs) return -1;
+        rtn_xfer_reads(&t.xfer, reqs_out);
+        memset(&reqs_out[t.xfer.in_count + 1], 0, sizeof(reqs_out[0]));
+        reqs_out[t.xfer.in_count + 1].op_id = RTN_CORE_OP_TOKEN;
+        reqs_out[t.xfer.in_count + 1].key_len = 64;
+        memcpy(reqs_out[t.xfer.in_count + 1].key, t.token_id, 64);
+        *n_out = need;
+        return 0;
+    }
+    default:
+        return -1;                       /* un-migrated op: fail closed  */
+    }
 }
 
 /* One (token_id → in/out sums) accumulator slot. */
@@ -575,38 +874,148 @@ static int rtn_tok_add(rtn_tok_sum_t *t, size_t *n, size_t cap,
     return 0;
 }
 
-int nodus_rt_core_exec(const nodus_domain_runtime_t *rt,
-                       const dna_env_view_t *env, uint16_t leg_index,
-                       const nodus_rt_exec_ctx_t *ctx,
-                       const nodus_rt_read_res_t *reads, uint16_t n_reads,
-                       uint8_t *res_out, size_t res_cap,
-                       size_t *res_len_out) {
-    (void)rt;
-    if (!env || !ctx || !ctx->intent_id || !res_out || !res_len_out)
-        return -2;
-    if (leg_index >= env->leg_count) return -2;
-    if (env->leg[leg_index].runtime_op != DNA_CORERULE_SPEND) return -1;
-
-    rtn_spend_call_t c;
-    if (rtn_spend_parse(env, leg_index, &c) != 0) return -1;
-
-    /* The ENGINE-verified authorization verdict is the ONLY ownership
-     * authority. A commitment without a verdict never reaches here —
-     * the engine refuses to execute an unverified leg — and this hook
-     * additionally fails closed on a missing/empty verdict. */
-    if (!ctx->auth || ctx->auth->n_signers < 1 ||
-        ctx->auth->n_signers > NODUS_RT_AUTH_MAX_SIGNERS)
-        return -1;
-    if (!reads || n_reads != (uint16_t)(c.in_count + 1)) return -2;
-
-    /* lowercase-hex fingerprints of the VERIFIED signers */
+/* lowercase-hex fingerprints of the VERIFIED signers (shared by every
+ * CORE exec path — ownership binds to the engine verdict, never to
+ * envelope bytes). */
+static void rtn_signer_fps(const nodus_rt_exec_ctx_t *ctx,
+                           uint8_t sfp[][128]) {
     static const char hexd[] = "0123456789abcdef";
-    uint8_t sfp[NODUS_RT_AUTH_MAX_SIGNERS][128];
     for (uint16_t s = 0; s < ctx->auth->n_signers; s++)
         for (int b = 0; b < 64; b++) {
             sfp[s][2 * b]     = (uint8_t)hexd[ctx->auth->signer_fp[s][b] >> 4];
             sfp[s][2 * b + 1] = (uint8_t)hexd[ctx->auth->signer_fp[s][b] & 0xF];
         }
+}
+
+/* Deterministic output identities — the SOURCE derivation
+ * SHA3-512(fp_128hex ‖ seed_32) (the shipped update_utxo_set rule,
+ * nodus_witness_bft.c:850-861) — plus the duplicate-identity reject
+ * (fail-closed divergence: legacy utxo_add dropped duplicates silently).
+ * Fills nul[o] per output and sorted[] (output indices ascending by id).
+ * @return 0 / -1 duplicate / -2 hash backend fault. */
+static int rtn_out_ids(const rtn_spend_call_t *c,
+                       uint8_t nul[][64], uint8_t *sorted) {
+    for (uint8_t o = 0; o < c->out_count; o++) {
+        uint8_t pre[160];
+        const uint8_t *rec = c->outs + (size_t)o * RTN_SPEND_OUT_LEN;
+        memcpy(pre, rec, 128);                       /* fp (128 hex)     */
+        memcpy(pre + 128, rec + 200, 32);            /* seed             */
+        if (qgp_sha3_512(pre, sizeof(pre), nul[o]) != 0) return -2;
+        sorted[o] = o;
+    }
+    for (uint8_t a = 1; a < c->out_count; a++) {     /* insertion sort   */
+        uint8_t key = sorted[a];
+        int b = a - 1;
+        while (b >= 0 && memcmp(nul[sorted[b]], nul[key], 64) > 0) {
+            sorted[b + 1] = sorted[b];
+            b--;
+        }
+        sorted[b + 1] = key;
+    }
+    for (uint8_t a = 1; a < c->out_count; a++)
+        if (memcmp(nul[sorted[a - 1]], nul[sorted[a]], 64) == 0)
+            return -1;                   /* duplicate output identity    */
+    return 0;
+}
+
+/* Append one canonical UTXO CREATE record/effect (shared builder). */
+static void rtn_utxo_create_eff(dna_effect_in_t *eff, uint8_t *v,
+                                const uint8_t *rec, uint8_t o,
+                                const uint8_t *out_id,
+                                const nodus_rt_exec_ctx_t *ctx) {
+    memcpy(v + RTN_UTXO_OWNER_OFF, rec, 128);
+    memcpy(v + RTN_UTXO_AMOUNT_OFF, rec + 128, 8);   /* already BE   */
+    memcpy(v + RTN_UTXO_TOKEN_OFF, rec + 136, 64);
+    /* PROVENANCE = the canonical INTENT identity (intent season):
+     * this row is consensus state (the UTXO merkle leaf commits
+     * tx_hash — nodus_witness_merkle.c:136), so two valid
+     * authorization realizations of the same operation must write
+     * byte-identical rows. The full-wire ctx->wire_id would differ
+     * between them and fork the CORE state root. */
+    memcpy(v + RTN_UTXO_TXH_OFF, ctx->intent_id, 64);
+    rtn_put32(v + RTN_UTXO_OIDX_OFF, (uint32_t)o);
+    rtn_put64(v + RTN_UTXO_BH_OFF, ctx->global_height);
+    rtn_put64(v + RTN_UTXO_UNLOCK_OFF, 0);           /* legacy: all
+                                      * non-UNSTAKE outputs unlocked */
+    eff->hdr.op_id = RTN_CORE_OP_UTXO;
+    eff->hdr.effect_kind = DNA_EFFECT_CREATE;
+    eff->hdr.precond_tag = DNA_EFFECT_PRE_ABSENT;
+    eff->hdr.key_len = 64;
+    eff->hdr.value_len = RTN_UTXO_REC_LEN;
+    eff->key = out_id;
+    eff->value = v;
+}
+
+/* Append the ONE burned-counter SET, bound to the observed pre-state
+ * counter (EXISTS_VERSION). `burn_total` = everything this leg destroys
+ * (SPEND: the fee; BURN: fee + explicit burn_amount — ONE counter, the
+ * legacy accounting: route_tx_fee adds every destroyed value to
+ * supply_tracking.total_burned regardless of tx_type,
+ * nodus_witness_bft.c:731-733; no separate explicit-burn bucket exists
+ * in committed state and inventing one would be a schema/protocol
+ * change). @return 0 / -1 verdict / -2 fault. */
+static int rtn_supply_burn_eff(dna_effect_in_t *eff, uint8_t supv[8],
+                               const nodus_rt_read_res_t *r,
+                               uint64_t burn_total) {
+    if (!r->present) return -1;          /* no supply row: unfunded chain*/
+    if (r->value_len != 8) return -2;
+    uint64_t burned_old = rtn_get64(r->value);
+    uint64_t burned_new;
+    if (dna_ck_add_u64(burned_old, burn_total, &burned_new) != 0)
+        return -1;
+    rtn_put64(supv, burned_new);
+    eff->hdr.op_id = RTN_CORE_OP_SUPPLY;
+    eff->hdr.effect_kind = DNA_EFFECT_SET;
+    eff->hdr.precond_tag = DNA_EFFECT_PRE_EXISTS_VERSION;
+    eff->hdr.expected_version = burned_old;
+    eff->hdr.key_len = 1;
+    eff->hdr.value_len = 8;
+    eff->key = (const uint8_t *)"\x02";
+    eff->value = supv;
+    return 0;
+}
+
+/* Append one input DELETE, bound by EXISTS_VHASH to the exact record
+ * the mediated read observed — the read and the mutation cannot
+ * disagree about the row. @return 0 / -2 fault. */
+static int rtn_utxo_delete_eff(dna_effect_in_t *eff, uint8_t dvh[64],
+                               const nodus_rt_read_res_t *r,
+                               const uint8_t *key) {
+    if (dna_effect_value_hash(r->value, RTN_UTXO_REC_LEN, dvh) != 0)
+        return -2;
+    eff->hdr.op_id = RTN_CORE_OP_UTXDEL;
+    eff->hdr.effect_kind = DNA_EFFECT_DELETE;
+    eff->hdr.precond_tag = DNA_EFFECT_PRE_EXISTS_VHASH;
+    memcpy(eff->hdr.expected_vhash, dvh, 64);
+    eff->hdr.key_len = 64;
+    eff->hdr.value_len = 0;
+    eff->key = key;
+    eff->value = NULL;
+    return 0;
+}
+
+/* The shared transparent-transfer executor — SPEND (burn_amount == 0)
+ * and BURN (burn_amount >= 1, parsed from the call) differ ONLY in the
+ * native conservation equation and the burned-counter delta:
+ *   SPEND:  Σnative_in == Σnative_out + fee            ; burned += fee
+ *   BURN:   Σnative_in == Σnative_out + fee + burn     ; burned += fee+burn
+ * Every non-native token balances EXACTLY in both — an explicit token
+ * burn is NOT expressible: the legacy lane cannot represent one either
+ * (its verify sums tokens blindly, verify.c:753-758, and nothing ever
+ * decrements tokens.supply — a token-value imbalance would break the
+ * per-token registered-supply identity the registry commits), so V2
+ * fails it closed rather than inventing token-supply mechanics.
+ * @return 0 / -1 verdict / -2 node fault. */
+static int rtn_xfer_exec(const rtn_spend_call_t *c, uint64_t burn_amount,
+                         const dna_env_view_t *env,
+                         const nodus_rt_exec_ctx_t *ctx,
+                         const nodus_rt_read_res_t *reads, uint16_t n_reads,
+                         uint8_t *res_out, size_t res_cap,
+                         size_t *res_len_out) {
+    if (!reads || n_reads != (uint16_t)(c->in_count + 1)) return -2;
+
+    uint8_t sfp[NODUS_RT_AUTH_MAX_SIGNERS][128];
+    rtn_signer_fps(ctx, sfp);
 
     static const uint8_t native_token[64] = { 0 };
     rtn_tok_sum_t toks[RTN_SPEND_MAX_IN + RTN_SPEND_MAX_OUT + 1];
@@ -618,7 +1027,7 @@ int nodus_rt_core_exec(const nodus_domain_runtime_t *rt,
     n_toks = 1;
 
     /* ── inputs: exist, unlocked, OWNED BY A VERIFIED SIGNER ────────── */
-    for (uint8_t i = 0; i < c.in_count; i++) {
+    for (uint8_t i = 0; i < c->in_count; i++) {
         const nodus_rt_read_res_t *r = &reads[i];
         if (!r->present) return -1;      /* missing OR already spent     */
         if (r->value_len != RTN_UTXO_REC_LEN) return -2;   /* own adapter
@@ -640,22 +1049,24 @@ int nodus_rt_core_exec(const nodus_domain_runtime_t *rt,
     }
 
     /* ── outputs ────────────────────────────────────────────────────── */
-    for (uint8_t o = 0; o < c.out_count; o++) {
-        const uint8_t *rec = c.outs + (size_t)o * RTN_SPEND_OUT_LEN;
+    for (uint8_t o = 0; o < c->out_count; o++) {
+        const uint8_t *rec = c->outs + (size_t)o * RTN_SPEND_OUT_LEN;
         if (rtn_tok_add(toks, &n_toks,
                         sizeof(toks) / sizeof(toks[0]),
                         rec + 136, rtn_get64(rec + 128), 0) != 0)
             return -1;
     }
 
-    /* ── conservation: native pays the fee, every token balances ────── */
+    /* ── conservation: native pays fee + burn, every token balances ─── */
     uint64_t fee = env->fee_amount;
     if (fee < DNAC_MIN_FEE_RAW || fee < NODUS_W_BASE_TX_FEE)
         return -1;                       /* BOTH shipped floors          */
+    uint64_t destroyed;                  /* fee + explicit burn          */
+    if (dna_ck_add_u64(fee, burn_amount, &destroyed) != 0) return -1;
     for (size_t t = 0; t < n_toks; t++) {
         if (memcmp(toks[t].token, native_token, 64) == 0) {
             uint64_t need;
-            if (dna_ck_add_u64(toks[t].out_sum, fee, &need) != 0)
+            if (dna_ck_add_u64(toks[t].out_sum, destroyed, &need) != 0)
                 return -1;
             if (toks[t].in_sum != need) return -1;   /* value mismatch /
                                           * fee != committed declaration */
@@ -667,26 +1078,10 @@ int nodus_rt_core_exec(const nodus_domain_runtime_t *rt,
     /* ── deterministic output identities + duplicate reject ─────────── */
     uint8_t nul[RTN_SPEND_MAX_OUT][64];
     uint8_t sorted[RTN_SPEND_MAX_OUT];   /* output index, sorted by nul  */
-    for (uint8_t o = 0; o < c.out_count; o++) {
-        uint8_t pre[160];
-        const uint8_t *rec = c.outs + (size_t)o * RTN_SPEND_OUT_LEN;
-        memcpy(pre, rec, 128);                       /* fp (128 hex)     */
-        memcpy(pre + 128, rec + 200, 32);            /* seed             */
-        if (qgp_sha3_512(pre, sizeof(pre), nul[o]) != 0) return -2;
-        sorted[o] = o;
+    if (c->out_count > 0) {
+        int rc = rtn_out_ids(c, nul, sorted);
+        if (rc != 0) return rc;
     }
-    for (uint8_t a = 1; a < c.out_count; a++) {      /* insertion sort   */
-        uint8_t key = sorted[a];
-        int b = a - 1;
-        while (b >= 0 && memcmp(nul[sorted[b]], nul[key], 64) > 0) {
-            sorted[b + 1] = sorted[b];
-            b--;
-        }
-        sorted[b + 1] = key;
-    }
-    for (uint8_t a = 1; a < c.out_count; a++)
-        if (memcmp(nul[sorted[a - 1]], nul[sorted[a]], 64) == 0)
-            return -1;                   /* duplicate output identity    */
 
     /* ── canonical typed-effect result ──────────────────────────────── */
     dna_effect_in_t effs[RTN_SPEND_MAX_OUT + 1 + RTN_SPEND_MAX_IN];
@@ -697,67 +1092,25 @@ int nodus_rt_core_exec(const nodus_domain_runtime_t *rt,
     memset(effs, 0, sizeof(effs));
 
     /* CREATEs first (kind 1), keys ascending */
-    for (uint8_t a = 0; a < c.out_count; a++) {
+    for (uint8_t a = 0; a < c->out_count; a++) {
         uint8_t o = sorted[a];
-        const uint8_t *rec = c.outs + (size_t)o * RTN_SPEND_OUT_LEN;
-        uint8_t *v = crv[a];
-        memcpy(v + RTN_UTXO_OWNER_OFF, rec, 128);
-        memcpy(v + RTN_UTXO_AMOUNT_OFF, rec + 128, 8);   /* already BE   */
-        memcpy(v + RTN_UTXO_TOKEN_OFF, rec + 136, 64);
-        /* PROVENANCE = the canonical INTENT identity (intent season):
-         * this row is consensus state (the UTXO merkle leaf commits
-         * tx_hash — nodus_witness_merkle.c:136), so two valid
-         * authorization realizations of the same SPEND must write
-         * byte-identical rows. The full-wire ctx->wire_id would differ
-         * between them and fork the CORE state root. */
-        memcpy(v + RTN_UTXO_TXH_OFF, ctx->intent_id, 64);
-        rtn_put32(v + RTN_UTXO_OIDX_OFF, (uint32_t)o);
-        rtn_put64(v + RTN_UTXO_BH_OFF, ctx->global_height);
-        rtn_put64(v + RTN_UTXO_UNLOCK_OFF, 0);           /* legacy: all
-                                          * non-UNSTAKE outputs unlocked */
-        effs[ne].hdr.op_id = RTN_CORE_OP_UTXO;
-        effs[ne].hdr.effect_kind = DNA_EFFECT_CREATE;
-        effs[ne].hdr.precond_tag = DNA_EFFECT_PRE_ABSENT;
-        effs[ne].hdr.key_len = 64;
-        effs[ne].hdr.value_len = RTN_UTXO_REC_LEN;
-        effs[ne].key = nul[o];
-        effs[ne].value = v;
+        rtn_utxo_create_eff(&effs[ne], crv[a],
+                            c->outs + (size_t)o * RTN_SPEND_OUT_LEN, o,
+                            nul[o], ctx);
         ne++;
     }
     /* the ONE burn (kind 2), bound to the observed pre-state counter */
     {
-        const nodus_rt_read_res_t *r = &reads[c.in_count];
-        if (!r->present) return -1;      /* no supply row: unfunded chain*/
-        if (r->value_len != 8) return -2;
-        uint64_t burned_old = rtn_get64(r->value);
-        uint64_t burned_new;
-        if (dna_ck_add_u64(burned_old, fee, &burned_new) != 0) return -1;
-        rtn_put64(supv, burned_new);
-        effs[ne].hdr.op_id = RTN_CORE_OP_SUPPLY;
-        effs[ne].hdr.effect_kind = DNA_EFFECT_SET;
-        effs[ne].hdr.precond_tag = DNA_EFFECT_PRE_EXISTS_VERSION;
-        effs[ne].hdr.expected_version = burned_old;
-        effs[ne].hdr.key_len = 1;
-        effs[ne].hdr.value_len = 8;
-        effs[ne].key = (const uint8_t *)"\x02";
-        effs[ne].value = supv;
+        int rc = rtn_supply_burn_eff(&effs[ne], supv, &reads[c->in_count],
+                                     destroyed);
+        if (rc != 0) return rc;
         ne++;
     }
-    /* DELETEs last (kind 3), keys ascending (= input order), each bound
-     * by EXISTS_VHASH to the exact record the mediated read observed —
-     * the read and the mutation cannot disagree about the row */
-    for (uint8_t i = 0; i < c.in_count; i++) {
-        if (dna_effect_value_hash(reads[i].value, RTN_UTXO_REC_LEN,
-                                  dvh[i]) != 0)
+    /* DELETEs last (kind 3), keys ascending (= input order) */
+    for (uint8_t i = 0; i < c->in_count; i++) {
+        if (rtn_utxo_delete_eff(&effs[ne], dvh[i], &reads[i],
+                                c->ins + (size_t)i * 64) != 0)
             return -2;
-        effs[ne].hdr.op_id = RTN_CORE_OP_UTXDEL;
-        effs[ne].hdr.effect_kind = DNA_EFFECT_DELETE;
-        effs[ne].hdr.precond_tag = DNA_EFFECT_PRE_EXISTS_VHASH;
-        memcpy(effs[ne].hdr.expected_vhash, dvh[i], 64);
-        effs[ne].hdr.key_len = 64;
-        effs[ne].hdr.value_len = 0;
-        effs[ne].key = c.ins + (size_t)i * 64;
-        effs[ne].value = NULL;
         ne++;
     }
 
@@ -766,6 +1119,212 @@ int nodus_rt_core_exec(const nodus_domain_runtime_t *rt,
         return -2;                       /* unreachable for a leg this
                                           * function built: node fault   */
     return 0;
+}
+
+/* TOKEN_CREATE executor (burn season). Source semantics preserved:
+ * inputs are the NATIVE fee payment (the client builder funds exactly
+ * the creation fee from native UTXOs, dnac/src/transaction/
+ * token_create.c:98-123 — a non-native input is fail-closed here,
+ * where the legacy verify summed it blindly); output[0] is the token
+ * genesis output whose (token_id, amount, fp) the registry commits
+ * (nodus_witness_bft.c:2243-2281: supply = output[0].amount,
+ * creator_fp = output[0].fp); the creation fee must meet the shipped
+ * NODUS_W_TOKEN_CREATE_FEE floor (verify.c:776-789 checks BOTH
+ * total_input and declared_fee against it) and — the block-level rule
+ * the legacy supply invariant enforces (bft.c:998) — equal exactly what
+ * the native inputs release: Σnative_in == Σnative_out + fee. Registry
+ * uniqueness is a HARD reject (fail-closed divergence from the legacy
+ * INSERT OR IGNORE, nodus_witness_db.c:1503 — silently dropping a
+ * registration under an existing id is the duplicate-output bug class).
+ * @return 0 / -1 verdict / -2 node fault. */
+static int rtn_tc_exec(const rtn_tc_call_t *t,
+                       const dna_env_view_t *env,
+                       const nodus_rt_exec_ctx_t *ctx,
+                       const nodus_rt_read_res_t *reads, uint16_t n_reads,
+                       uint8_t *res_out, size_t res_cap,
+                       size_t *res_len_out) {
+    const rtn_spend_call_t *c = &t->xfer;
+    if (!reads || n_reads != (uint16_t)(c->in_count + 2)) return -2;
+
+    uint8_t sfp[NODUS_RT_AUTH_MAX_SIGNERS][128];
+    rtn_signer_fps(ctx, sfp);
+
+    static const uint8_t native_token[64] = { 0 };
+
+    /* ── registry uniqueness: the token read MUST be absent ─────────── */
+    {
+        const nodus_rt_read_res_t *r = &reads[c->in_count + 1];
+        if (r->present) return -1;       /* duplicate token id           */
+    }
+
+    /* ── inputs: exist, unlocked, owned, NATIVE-only ────────────────── */
+    uint64_t native_in = 0;
+    for (uint8_t i = 0; i < c->in_count; i++) {
+        const nodus_rt_read_res_t *r = &reads[i];
+        if (!r->present) return -1;      /* missing OR already spent     */
+        if (r->value_len != RTN_UTXO_REC_LEN) return -2;
+        const uint8_t *rec = r->value;
+        uint64_t unlock = rtn_get64(rec + RTN_UTXO_UNLOCK_OFF);
+        if (unlock >= ctx->global_height) return -1;
+        int owned = 0;
+        for (uint16_t s = 0; s < ctx->auth->n_signers && !owned; s++)
+            if (memcmp(rec + RTN_UTXO_OWNER_OFF, sfp[s], 128) == 0)
+                owned = 1;
+        if (!owned) return -1;           /* wrong owner                  */
+        if (memcmp(rec + RTN_UTXO_TOKEN_OFF, native_token, 64) != 0)
+            return -1;                   /* fee funding is native-only   */
+        if (dna_ck_add_u64(native_in,
+                           rtn_get64(rec + RTN_UTXO_AMOUNT_OFF),
+                           &native_in) != 0)
+            return -1;
+    }
+
+    /* ── fee + conservation ─────────────────────────────────────────── */
+    uint64_t fee = env->fee_amount;
+    if (fee < NODUS_W_TOKEN_CREATE_FEE)
+        return -1;                       /* the shipped creation floor —
+                                          * itself far above the generic
+                                          * DNAC_MIN_FEE_RAW /
+                                          * NODUS_W_BASE_TX_FEE floors   */
+    uint64_t native_out = 0;             /* outputs[1..] are native by
+                                          * the parse; output[0] is the
+                                          * new token's genesis supply   */
+    for (uint8_t o = 1; o < c->out_count; o++) {
+        const uint8_t *rec = c->outs + (size_t)o * RTN_SPEND_OUT_LEN;
+        if (dna_ck_add_u64(native_out, rtn_get64(rec + 128),
+                           &native_out) != 0)
+            return -1;
+    }
+    {
+        uint64_t need;
+        if (dna_ck_add_u64(native_out, fee, &need) != 0) return -1;
+        if (native_in != need) return -1;    /* fee != what inputs release.
+                                          * FAIL-CLOSED NARROWING (review
+                                          * round): legacy never enforced
+                                          * this per transaction — its
+                                          * verify checked only the two
+                                          * fee floors, and only the
+                                          * block-level native supply
+                                          * gate caught the imbalance by
+                                          * rejecting the WHOLE block.
+                                          * Same accepted block set,
+                                          * finer rejection granularity. */
+    }
+
+    /* ── output identities + duplicate reject (all outputs, token
+     *    genesis included — the legacy update_utxo_set derives every
+     *    output's identity the same way) ──────────────────────────── */
+    uint8_t nul[RTN_SPEND_MAX_OUT][64];
+    uint8_t sorted[RTN_SPEND_MAX_OUT];
+    {
+        int rc = rtn_out_ids(c, nul, sorted);
+        if (rc != 0) return rc;
+    }
+
+    /* ── canonical typed-effect result ──────────────────────────────── */
+    dna_effect_in_t effs[RTN_TC_MAX_OUT + 2 + RTN_TC_MAX_IN];
+    uint8_t crv[RTN_TC_MAX_OUT][RTN_UTXO_REC_LEN];
+    uint8_t tokv[RTN_TOKEN_REC_LEN];
+    uint8_t dvh[RTN_TC_MAX_IN][64];
+    uint8_t supv[8];
+    uint16_t ne = 0;
+    memset(effs, 0, sizeof(effs));
+    memset(tokv, 0, sizeof(tokv));
+
+    /* CREATEs first (kind 1): op 1 utxo rows (keys ascending), then the
+     * op 4 registry row — ascending op_id inside the kind, the effect
+     * codec's canonical order */
+    for (uint8_t a = 0; a < c->out_count; a++) {
+        uint8_t o = sorted[a];
+        rtn_utxo_create_eff(&effs[ne], crv[a],
+                            c->outs + (size_t)o * RTN_SPEND_OUT_LEN, o,
+                            nul[o], ctx);
+        ne++;
+    }
+    {
+        const uint8_t *o0 = c->outs;     /* the token genesis output     */
+        rtn_put64(tokv + RTN_TOKEN_SUPPLY_OFF, rtn_get64(o0 + 128));
+        tokv[RTN_TOKEN_DEC_OFF] = t->decimals;
+        tokv[RTN_TOKEN_FLAGS_OFF] = 0;   /* no flag semantics shipped    */
+        rtn_put64(tokv + RTN_TOKEN_BH_OFF, ctx->global_height);
+        memcpy(tokv + RTN_TOKEN_CFP_OFF, o0, 128);   /* creator = o0 fp  */
+        tokv[RTN_TOKEN_NLEN_OFF] = t->name_len;
+        memcpy(tokv + RTN_TOKEN_NAME_OFF, t->name, t->name_len);
+        tokv[RTN_TOKEN_SLEN_OFF] = t->sym_len;
+        memcpy(tokv + RTN_TOKEN_SYM_OFF, t->sym, t->sym_len);
+        effs[ne].hdr.op_id = RTN_CORE_OP_TOKEN;
+        effs[ne].hdr.effect_kind = DNA_EFFECT_CREATE;
+        effs[ne].hdr.precond_tag = DNA_EFFECT_PRE_ABSENT;   /* uniqueness
+                                          * re-checked at apply          */
+        effs[ne].hdr.key_len = 64;
+        effs[ne].hdr.value_len = RTN_TOKEN_REC_LEN;
+        effs[ne].key = t->token_id;
+        effs[ne].value = tokv;
+        ne++;
+    }
+    /* the ONE fee burn (kind 2) */
+    {
+        int rc = rtn_supply_burn_eff(&effs[ne], supv, &reads[c->in_count],
+                                     fee);
+        if (rc != 0) return rc;
+        ne++;
+    }
+    /* DELETEs last (kind 3) */
+    for (uint8_t i = 0; i < c->in_count; i++) {
+        if (rtn_utxo_delete_eff(&effs[ne], dvh[i], &reads[i],
+                                c->ins + (size_t)i * 64) != 0)
+            return -2;
+        ne++;
+    }
+
+    if (dna_effect_result_encode(effs, ne, res_out, res_cap,
+                                 res_len_out) != 0)
+        return -2;
+    return 0;
+}
+
+int nodus_rt_core_exec(const nodus_domain_runtime_t *rt,
+                       const dna_env_view_t *env, uint16_t leg_index,
+                       const nodus_rt_exec_ctx_t *ctx,
+                       const nodus_rt_read_res_t *reads, uint16_t n_reads,
+                       uint8_t *res_out, size_t res_cap,
+                       size_t *res_len_out) {
+    (void)rt;
+    if (!env || !ctx || !ctx->intent_id || !res_out || !res_len_out)
+        return -2;
+    if (leg_index >= env->leg_count) return -2;
+
+    /* The ENGINE-verified authorization verdict is the ONLY ownership
+     * authority. A commitment without a verdict never reaches here —
+     * the engine refuses to execute an unverified leg — and this hook
+     * additionally fails closed on a missing/empty verdict. */
+    if (!ctx->auth || ctx->auth->n_signers < 1 ||
+        ctx->auth->n_signers > NODUS_RT_AUTH_MAX_SIGNERS)
+        return -1;
+
+    switch (env->leg[leg_index].runtime_op) {
+    case DNA_CORERULE_SPEND: {
+        rtn_spend_call_t c;
+        if (rtn_spend_parse(env, leg_index, &c) != 0) return -1;
+        return rtn_xfer_exec(&c, 0, env, ctx, reads, n_reads,
+                             res_out, res_cap, res_len_out);
+    }
+    case DNA_CORERULE_BURN: {
+        rtn_spend_call_t c;
+        uint64_t burn = 0;
+        if (rtn_burn_parse(env, leg_index, &c, &burn) != 0) return -1;
+        return rtn_xfer_exec(&c, burn, env, ctx, reads, n_reads,
+                             res_out, res_cap, res_len_out);
+    }
+    case DNA_CORERULE_TOKEN_CREATE: {
+        rtn_tc_call_t t;
+        if (rtn_tc_parse(env, leg_index, &t) != 0) return -1;
+        return rtn_tc_exec(&t, env, ctx, reads, n_reads,
+                           res_out, res_cap, res_len_out);
+    }
+    default:
+        return -1;                       /* un-migrated op: fail closed  */
+    }
 }
 
 /* ── The compiled CORE storage adapter ──────────────────────────────── */
@@ -824,6 +1383,100 @@ static int rtn_core_utxo_fetch(nodus_witness_t *w, uint32_t dom,
     return out;
 }
 
+/* Build the canonical 188-byte registry record from one tokens row.
+ * Fail-closed on every malformed shape (the rtn_core_row_record rule:
+ * a corrupt row is never surfaced as a value). The `tokens` table is
+ * CORE-LOCAL LEGACY STATE with no domain_id column — it is reachable
+ * only through THIS adapter, which only the compiled DNA_CORE runtime
+ * entry binds, so the domain scope is the binding itself.
+ * 0 = record built, 1 = absent, -1 = fault. */
+static int rtn_core_token_fetch(nodus_witness_t *w, const uint8_t *key,
+                                uint16_t key_len,
+                                uint8_t rec[RTN_TOKEN_REC_LEN]) {
+    if (key_len != 64) return -1;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT name, symbol, decimals, supply, creator_fp, flags, "
+            "block_height FROM tokens WHERE token_id = ?1",
+            -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_blob(st, 1, key, 64, SQLITE_TRANSIENT);
+    int rc = sqlite3_step(st);
+    if (rc == SQLITE_DONE) {
+        sqlite3_finalize(st);
+        return 1;
+    }
+    if (rc != SQLITE_ROW) {
+        sqlite3_finalize(st);
+        return -1;
+    }
+    const unsigned char *name = sqlite3_column_text(st, 0);
+    const unsigned char *sym  = sqlite3_column_text(st, 1);
+    const unsigned char *cfp  = sqlite3_column_text(st, 4);
+    size_t nl = name ? strlen((const char *)name) : 0;
+    size_t sl = sym ? strlen((const char *)sym) : 0;
+    sqlite3_int64 dec = sqlite3_column_int64(st, 2);
+    sqlite3_int64 sup = sqlite3_column_int64(st, 3);
+    sqlite3_int64 flg = sqlite3_column_int64(st, 5);
+    sqlite3_int64 bh  = sqlite3_column_int64(st, 6);
+    int out = -1;
+    if (name && sym && cfp && strlen((const char *)cfp) == 128 &&
+        nl >= 1 && nl <= RTN_TC_NAME_MAX &&
+        sl >= 1 && sl <= RTN_TC_SYM_MAX &&
+        dec >= 0 && dec <= 255 && flg >= 0 && flg <= 255 &&
+        sup >= 0 && bh >= 0) {
+        memset(rec, 0, RTN_TOKEN_REC_LEN);
+        rtn_put64(rec + RTN_TOKEN_SUPPLY_OFF, (uint64_t)sup);
+        rec[RTN_TOKEN_DEC_OFF] = (uint8_t)dec;
+        rec[RTN_TOKEN_FLAGS_OFF] = (uint8_t)flg;
+        rtn_put64(rec + RTN_TOKEN_BH_OFF, (uint64_t)bh);
+        memcpy(rec + RTN_TOKEN_CFP_OFF, cfp, 128);
+        rec[RTN_TOKEN_NLEN_OFF] = (uint8_t)nl;
+        memcpy(rec + RTN_TOKEN_NAME_OFF, name, nl);
+        rec[RTN_TOKEN_SLEN_OFF] = (uint8_t)sl;
+        memcpy(rec + RTN_TOKEN_SYM_OFF, sym, sl);
+        out = 0;
+    }
+    sqlite3_finalize(st);
+    return out;
+}
+
+/* Validate one canonical 188-byte registry record on the MUTATE side:
+ * exactly ONE encoding per row — lengths in range, zero padding
+ * actually zero, canonical text, AND the numeric storage bounds
+ * (supply/block_height fit the SQLite INTEGER column, decimals within
+ * the client rule, flags 0 — no flag semantics shipped). The fetch
+ * side (rtn_core_token_fetch) enforces the SHAPE bounds (lengths,
+ * non-negative integers) but deliberately NOT the text canonicality —
+ * legacy-lane rows never faced these write rules and must stay
+ * readable (review round: the two validators are asymmetric BY
+ * DESIGN, each honest about its own side). */
+static int rtn_token_rec_ok(const uint8_t *v) {
+    uint8_t nl = v[RTN_TOKEN_NLEN_OFF];
+    uint8_t sl = v[RTN_TOKEN_SLEN_OFF];
+    if (nl < 1 || nl > RTN_TC_NAME_MAX) return 0;
+    if (sl < 1 || sl > RTN_TC_SYM_MAX) return 0;
+    if (!rtn_tc_text_ok(v + RTN_TOKEN_NAME_OFF, nl) ||
+        !rtn_tc_text_ok(v + RTN_TOKEN_SYM_OFF, sl))
+        return 0;
+    for (size_t i = RTN_TOKEN_NAME_OFF + nl;
+         i < RTN_TOKEN_NAME_OFF + RTN_TC_NAME_MAX; i++)
+        if (v[i] != 0) return 0;
+    for (size_t i = RTN_TOKEN_SYM_OFF + sl; i < RTN_TOKEN_REC_LEN; i++)
+        if (v[i] != 0) return 0;
+    if (!rtn_hex_lower_ok(v + RTN_TOKEN_CFP_OFF, 128)) return 0;
+    /* numeric storage bounds — a value above INT64_MAX would round-trip
+     * negative through the INTEGER column and poison every later fetch
+     * of the row (the parse-side gate is the first defense; this is the
+     * mutate-side mirror the review round asked for) */
+    if (rtn_get64(v + RTN_TOKEN_SUPPLY_OFF) > (uint64_t)INT64_MAX)
+        return 0;
+    if (rtn_get64(v + RTN_TOKEN_BH_OFF) > (uint64_t)INT64_MAX) return 0;
+    if (v[RTN_TOKEN_DEC_OFF] > RTN_TC_DECIMALS_MAX) return 0;
+    if (v[RTN_TOKEN_FLAGS_OFF] != 0) return 0;
+    return 1;
+}
+
 /* 0 = value fetched, 1 = absent, -1 = fault. */
 static int rtn_core_burned_fetch(nodus_witness_t *w, uint64_t *out) {
     sqlite3_stmt *st = NULL;
@@ -879,6 +1532,19 @@ static nodus_adapter_status_t rtn_core_probe(
         }
         return NODUS_ADAPTER_OK;
     }
+    if (op->op_id == RTN_CORE_OP_TOKEN) {
+        uint8_t rec[RTN_TOKEN_REC_LEN];
+        int rc = rtn_core_token_fetch(w, key, key_len, rec);
+        if (rc < 0) return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        f->exists = (rc == 0);
+        if (f->exists) {
+            f->version = rtn_get64(rec + RTN_TOKEN_SUPPLY_OFF);
+            if (dna_effect_value_hash(rec, RTN_TOKEN_REC_LEN,
+                                      f->value_hash) != 0)
+                return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        }
+        return NODUS_ADAPTER_OK;
+    }
     return NODUS_ADAPTER_ERR_STORAGE_FAULT;
 }
 
@@ -914,6 +1580,18 @@ static nodus_adapter_status_t rtn_core_read(
         rtn_put64(value, v);
         *present = 1;
         *vlen = 8;
+        return NODUS_ADAPTER_OK;
+    }
+    if (op->op_id == RTN_CORE_OP_TOKEN) {
+        uint8_t rec[RTN_TOKEN_REC_LEN];
+        int rc = rtn_core_token_fetch(w, key, key_len, rec);
+        if (rc < 0) return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        if (rc == 1) return NODUS_ADAPTER_OK;        /* absent           */
+        if (cap < RTN_TOKEN_REC_LEN)
+            return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        memcpy(value, rec, RTN_TOKEN_REC_LEN);
+        *present = 1;
+        *vlen = RTN_TOKEN_REC_LEN;
         return NODUS_ADAPTER_OK;
     }
     return NODUS_ADAPTER_ERR_STORAGE_FAULT;
@@ -980,6 +1658,43 @@ static nodus_adapter_status_t rtn_core_mutate(
                 -1, &st, NULL) != SQLITE_OK)
             return NODUS_ADAPTER_ERR_STORAGE_FAULT;
         sqlite3_bind_int64(st, 1, (sqlite3_int64)rtn_get64(value));
+    } else if (op->op_id == RTN_CORE_OP_TOKEN &&
+               kind == DNA_EFFECT_CREATE) {
+        if (key_len != 64 || value_len != RTN_TOKEN_REC_LEN || !value ||
+            !rtn_token_rec_ok(value))
+            return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        /* STRICT insert — never the legacy INSERT OR IGNORE
+         * (nodus_witness_db.c:1503): the ABSENT precondition already
+         * ruled inside this transaction, so a conflicting row here is a
+         * broken invariant on THIS node, never a silent drop.
+         * timestamp is written 0: deterministic lane, audit-only column
+         * EXCLUDED from the token merkle leaf
+         * (nodus_witness_roots_v2.c:36-37). */
+        if (sqlite3_prepare_v2(w->db,
+                "INSERT INTO tokens (token_id, name, symbol, decimals, "
+                "supply, creator_fp, flags, block_height, timestamp) "
+                "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0)",
+                -1, &st, NULL) != SQLITE_OK)
+            return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        sqlite3_bind_blob(st, 1, key, 64, SQLITE_TRANSIENT);
+        sqlite3_bind_text(st, 2,
+                          (const char *)(value + RTN_TOKEN_NAME_OFF),
+                          (int)value[RTN_TOKEN_NLEN_OFF],
+                          SQLITE_TRANSIENT);
+        sqlite3_bind_text(st, 3,
+                          (const char *)(value + RTN_TOKEN_SYM_OFF),
+                          (int)value[RTN_TOKEN_SLEN_OFF],
+                          SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st, 4, (sqlite3_int64)value[RTN_TOKEN_DEC_OFF]);
+        sqlite3_bind_int64(st, 5,
+            (sqlite3_int64)rtn_get64(value + RTN_TOKEN_SUPPLY_OFF));
+        sqlite3_bind_text(st, 6,
+                          (const char *)(value + RTN_TOKEN_CFP_OFF), 128,
+                          SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st, 7,
+                           (sqlite3_int64)value[RTN_TOKEN_FLAGS_OFF]);
+        sqlite3_bind_int64(st, 8,
+            (sqlite3_int64)rtn_get64(value + RTN_TOKEN_BH_OFF));
     } else {
         return NODUS_ADAPTER_ERR_STORAGE_FAULT;
     }
@@ -991,7 +1706,7 @@ static nodus_adapter_status_t rtn_core_mutate(
     return NODUS_ADAPTER_OK;
 }
 
-static const nodus_adapter_op_t RTN_CORE_OPS[3] = {
+static const nodus_adapter_op_t RTN_CORE_OPS[4] = {
     { RTN_CORE_OP_UTXO,
       NODUS_ADAPTER_KIND_BIT(DNA_EFFECT_CREATE),
       NODUS_ADAPTER_PRECOND_BIT(DNA_EFFECT_PRE_ABSENT),
@@ -1006,13 +1721,18 @@ static const nodus_adapter_op_t RTN_CORE_OPS[3] = {
       NODUS_ADAPTER_KIND_BIT(DNA_EFFECT_SET),
       (uint8_t)(NODUS_ADAPTER_PRECOND_BIT(DNA_EFFECT_PRE_EXISTS) |
                 NODUS_ADAPTER_PRECOND_BIT(DNA_EFFECT_PRE_EXISTS_VERSION)),
-      1, 1, 8, 8 }
+      1, 1, 8, 8 },
+    /* burn season — the TOKEN_CREATE registry row (tokens table) */
+    { RTN_CORE_OP_TOKEN,
+      NODUS_ADAPTER_KIND_BIT(DNA_EFFECT_CREATE),
+      NODUS_ADAPTER_PRECOND_BIT(DNA_EFFECT_PRE_ABSENT),
+      64, 64, RTN_TOKEN_REC_LEN, RTN_TOKEN_REC_LEN }
 };
 
 const nodus_domain_adapter_t NODUS_RT_CORE_ADAPTER = {
     .adapter_version = NODUS_DOMAIN_ADAPTER_V1,
     .ops = RTN_CORE_OPS,
-    .n_ops = 3,
+    .n_ops = 4,
     .probe = rtn_core_probe,
     .mutate = rtn_core_mutate,
     .read = rtn_core_read

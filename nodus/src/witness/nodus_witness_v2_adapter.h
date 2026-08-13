@@ -141,7 +141,17 @@ typedef enum {
     NODUS_ADAPTER_ERR_PRECOND_MISSING = 8,  /* SET/DELETE: key absent       */
     NODUS_ADAPTER_ERR_PRECOND_VERSION = 9,  /* expected_version mismatch    */
     NODUS_ADAPTER_ERR_PRECOND_HASH    = 10, /* expected value-hash mismatch */
-    NODUS_ADAPTER_ERR_STORAGE_FAULT   = 11  /* DB/storage fault — NODE-local*/
+    NODUS_ADAPTER_ERR_STORAGE_FAULT   = 11, /* DB/storage fault — NODE-local*/
+    NODUS_ADAPTER_ERR_INJECTED        = 12  /* TEST-ONLY fault injection
+                                             * fired (the _ex stop index).
+                                             * Produced ONLY by the generic
+                                             * driver effects_apply_ex —
+                                             * never by a compiled
+                                             * probe/read/mutate hook; the
+                                             * engine converts it into the
+                                             * ordinary abort + rollback
+                                             * path (burn season, fault
+                                             * point 37)                    */
 } nodus_adapter_status_t;
 
 /* ── Permission bitmasks ─────────────────────────────────────────────────
@@ -437,6 +447,23 @@ nodus_adapter_status_t nodus_witness_v2_effects_apply(
     const struct nodus_domain_runtime *rt,
     const dna_effect_view_t *v,
     uint16_t *fail_index_out);
+
+/**
+ * Fault-injection variant (burn season — apply fault point 37): behaves
+ * exactly like nodus_witness_v2_effects_apply, but AFTER the mutate of
+ * effect index `stop_after_effect` has been applied it stops and
+ * returns NODUS_ADAPTER_ERR_INJECTED with *fail_index_out set — a
+ * MID-EFFECT-LIST interruption whose rollback the caller's transaction
+ * must prove. UINT32_MAX = never fire (the plain entry delegates here).
+ * Production code paths always pass UINT32_MAX; the status is never
+ * produced by a compiled adapter.
+ */
+nodus_adapter_status_t nodus_witness_v2_effects_apply_ex(
+    struct nodus_witness *w,
+    const struct nodus_domain_runtime *rt,
+    const dna_effect_view_t *v,
+    uint16_t *fail_index_out,
+    uint32_t stop_after_effect);
 
 /**
  * Execute ONE typed mediated-read request through the resolved runtime's

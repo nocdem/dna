@@ -25,7 +25,7 @@ DNAC is a privacy-preserving digital cash system built on top of [DNA Connect](h
 - **TX Query Protocol** - Clients retrieve full transaction data by hash from witnesses (v0.10.0)
 - **Block Query Protocol** - Clients query blocks by height or range from witnesses (v0.10.0)
 - **Multi-Token Support** - Custom token creation with per-token UTXO tracking (v0.13.0)
-- **Token Creation** - TX_TOKEN_CREATE transaction type with 1 DNAC fee burn (v0.13.0)
+- **Token Creation** - TX_TOKEN_CREATE transaction type with a 10M-DNAC creation-fee burn (`NODUS_W_TOKEN_CREATE_FEE`, 1% of genesis supply; the original v0.13.0 fee was 1 DNAC)
 - **Per-Token Balances** - Wallet tracks separate UTXO sets per token_id (v0.13.0)
 - **Name Resolution** - CLI send accepts DNA name, auto-resolves to fingerprint (v0.13.0)
 - **TX Wire v2** - 82-byte header with explicit `committed_fee` field, SEC-06 domain separator, min-fee gate 0.01 DNAC (v0.17.1)
@@ -374,7 +374,7 @@ All blockchain state is stored on BFT witnesses. DHT inbox delivery was removed 
 - [x] Commit certificates — 2f+1 PRECOMMIT signatures stored per block (v0.12.0)
 - [x] Remote transaction history via witnesses (v0.12.1)
 - [x] Multi-token UTXO tracking — per-token balances and UTXO sets (v0.13.0)
-- [x] TX_TOKEN_CREATE — custom token creation with 1 DNAC fee burn (v0.13.0)
+- [x] TX_TOKEN_CREATE — custom token creation with a 10M-DNAC creation-fee burn (shipped v0.13.0 at 1 DNAC; fee raised to `NODUS_W_TOKEN_CREATE_FEE` = 10M DNAC)
 - [x] Token-aware TX builder — UTXO selection by token_id (v0.13.0)
 - [x] CLI send by DNA name — auto-resolve to fingerprint (v0.13.0)
 

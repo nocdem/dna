@@ -74,10 +74,23 @@ int main(void) {
                            (2u + 15u * 64u + 16u * 232u) +
                            (1u + 15u * signer);
         CHECK(cc_single == 700914u, "single-leg worst case drifted");
-        CHECK(two_leg == 813904u, "two-leg worst case drifted");
-        CHECK(two_leg <= DNA_ENV_MAX_TOTAL_LEN,
+        CHECK(two_leg == 813904u, "two-leg CC+SPEND shape drifted");
+        /* burn season: TOKEN_CREATE is now the worst CORE leg (109-byte
+         * fixed head + 14 inputs + 16 outputs = 4717 call bytes, 43 over
+         * the maximal SPEND call; the BURN call, SPEND + 8, sits between
+         * and is dominated) */
+        uint64_t tc_call = 64u + 1u + 32u + 1u + 8u + 1u +
+                           1u + 14u * 64u + 1u + 16u * 232u;
+        uint64_t two_leg_tc = cc_single + 30u + tc_call +
+                              (1u + 15u * signer);
+        CHECK(tc_call == 4717u, "maximal TOKEN_CREATE call drifted");
+        CHECK(two_leg_tc == 813947u,
+              "two-leg CC+TOKEN_CREATE worst case drifted");
+        CHECK(two_leg_tc > two_leg,
+              "TOKEN_CREATE must dominate the SPEND shape");
+        CHECK(two_leg_tc <= DNA_ENV_MAX_TOTAL_LEN,
               "ceiling no longer contains the worst case");
-        CHECK(two_leg > (DNA_ENV_MAX_TOTAL_LEN / 2u),
+        CHECK(two_leg_tc > (DNA_ENV_MAX_TOTAL_LEN / 2u),
               "2^19 would already contain the worst case — the ceiling "
               "is no longer the SMALLEST containing power of two");
     }

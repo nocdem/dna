@@ -68,14 +68,19 @@ static const uint8_t KAT_RS_SYSTEM[DNA_DOM_HASH_LEN] = {
     0xdd, 0x17, 0x13, 0x46, 0x8c, 0xce, 0x24, 0xbb
 };
 static const uint8_t KAT_RS_CORE[DNA_DOM_HASH_LEN] = {
-    0xad, 0x98, 0xa0, 0x36, 0xca, 0x2e, 0x2d, 0x92,
-    0xf1, 0x27, 0x42, 0x33, 0xd6, 0x65, 0x13, 0xbc,
-    0x80, 0x01, 0xbc, 0xc6, 0x9d, 0xd8, 0xb8, 0x5a,
-    0x6a, 0x2a, 0x05, 0x90, 0x1b, 0x83, 0xe0, 0x63,
-    0x40, 0xd0, 0x25, 0x30, 0xad, 0x8b, 0x93, 0xe4,
-    0x1b, 0xa4, 0x1b, 0x1e, 0xeb, 0xad, 0x2f, 0xcf,
-    0x20, 0x2e, 0xd7, 0x50, 0x05, 0x07, 0x5b, 0xb8,
-    0x73, 0xfe, 0x54, 0xe0, 0x88, 0xa8, 0xe6, 0xf3
+    /* burn season — CORE ruleset_version 2 (BURN + TOKEN_CREATE become
+     * executable). Independent oracle: scratchpad
+     * burn_tc_season_oracle.py, whose control legs reproduced BOTH
+     * prior pins (SYSTEM v2 + the retired CORE v1 ad98a036…e6f3) before
+     * this value was accepted. */
+    0x74, 0x6f, 0x58, 0x4a, 0xc0, 0x99, 0x64, 0x3d,
+    0x63, 0x14, 0x6b, 0xad, 0x02, 0x9c, 0xf9, 0xfd,
+    0xeb, 0x67, 0x9a, 0x83, 0x0d, 0x5a, 0x3f, 0x4f,
+    0x2a, 0x32, 0x7c, 0x26, 0xf3, 0xca, 0x0f, 0x10,
+    0x45, 0x76, 0x3f, 0x0e, 0xa9, 0x2d, 0x28, 0xaf,
+    0xf6, 0xfc, 0xa5, 0xd4, 0xcd, 0x20, 0xa5, 0x21,
+    0xb5, 0xa3, 0xac, 0xc6, 0x49, 0x15, 0xe1, 0xdd,
+    0x9f, 0x35, 0xe2, 0x1a, 0x41, 0xce, 0x67, 0xa1
 };
 /* The SYSTEM metering policy's IDENTITY digest ("DNA.METPOLID.v1",
  * POLICY VERSION 2 — capacity season: seven scalar weights = 1,
@@ -208,31 +213,37 @@ int main(void) {
                                sys->ruleset_hash) == NULL,
           "retired SYSTEM ruleset v1 resolved"); OK();
     hit = nodus_runtime_lookup(DNA_DOMAIN_CORE, DNA_RUNTIME_NATIVE_BUILTIN,
-                               NODUS_DOMAIN_RUNTIME_ABI_V1, 1,
+                               NODUS_DOMAIN_RUNTIME_ABI_V1, 2,
                                core->ruleset_hash);
-    CHECK(hit == core, "CORE exact lookup"); OK();
+    CHECK(hit == core, "CORE exact lookup (ruleset v2)"); OK();
+    /* the RETIRED CORE ruleset v1 resolves NOTHING — old CORE legs name
+     * it and die here, never get reinterpreted (burn season) */
+    CHECK(nodus_runtime_lookup(DNA_DOMAIN_CORE, DNA_RUNTIME_NATIVE_BUILTIN,
+                               NODUS_DOMAIN_RUNTIME_ABI_V1, 1,
+                               core->ruleset_hash) == NULL,
+          "retired CORE ruleset v1 resolved"); OK();
 
     /* unknown domain */
     CHECK(nodus_runtime_lookup(7, DNA_RUNTIME_NATIVE_BUILTIN,
-                               NODUS_DOMAIN_RUNTIME_ABI_V1, 1,
+                               NODUS_DOMAIN_RUNTIME_ABI_V1, 2,
                                core->ruleset_hash) == NULL,
           "unknown domain hit"); OK();
     /* wrong runtime kind (unknown kind 2 and invalid 0) */
     CHECK(nodus_runtime_lookup(DNA_DOMAIN_CORE, 2,
-                               NODUS_DOMAIN_RUNTIME_ABI_V1, 1,
+                               NODUS_DOMAIN_RUNTIME_ABI_V1, 2,
                                core->ruleset_hash) == NULL,
           "wrong kind hit"); OK();
     CHECK(nodus_runtime_lookup(DNA_DOMAIN_CORE, DNA_RUNTIME_INVALID,
-                               NODUS_DOMAIN_RUNTIME_ABI_V1, 1,
+                               NODUS_DOMAIN_RUNTIME_ABI_V1, 2,
                                core->ruleset_hash) == NULL,
           "invalid kind hit"); OK();
     /* wrong ABI */
     CHECK(nodus_runtime_lookup(DNA_DOMAIN_CORE, DNA_RUNTIME_NATIVE_BUILTIN,
-                               2, 1, core->ruleset_hash) == NULL,
+                               2, 2, core->ruleset_hash) == NULL,
           "wrong ABI hit"); OK();
-    /* wrong ruleset version — no "closest", no "latest" */
+    /* wrong (future) ruleset version — no "closest", no "latest" */
     CHECK(nodus_runtime_lookup(DNA_DOMAIN_CORE, DNA_RUNTIME_NATIVE_BUILTIN,
-                               NODUS_DOMAIN_RUNTIME_ABI_V1, 2,
+                               NODUS_DOMAIN_RUNTIME_ABI_V1, 3,
                                core->ruleset_hash) == NULL,
           "wrong ruleset version hit"); OK();
     /* one-bit ruleset-hash mismatch */
@@ -240,13 +251,13 @@ int main(void) {
     memcpy(flipped, core->ruleset_hash, DNA_DOM_HASH_LEN);
     flipped[0] ^= 0x01;
     CHECK(nodus_runtime_lookup(DNA_DOMAIN_CORE, DNA_RUNTIME_NATIVE_BUILTIN,
-                               NODUS_DOMAIN_RUNTIME_ABI_V1, 1,
+                               NODUS_DOMAIN_RUNTIME_ABI_V1, 2,
                                flipped) == NULL,
           "one-bit hash mismatch hit"); OK();
     memcpy(flipped, core->ruleset_hash, DNA_DOM_HASH_LEN);
     flipped[DNA_DOM_HASH_LEN - 1] ^= 0x80;
     CHECK(nodus_runtime_lookup(DNA_DOMAIN_CORE, DNA_RUNTIME_NATIVE_BUILTIN,
-                               NODUS_DOMAIN_RUNTIME_ABI_V1, 1,
+                               NODUS_DOMAIN_RUNTIME_ABI_V1, 2,
                                flipped) == NULL,
           "last-bit hash mismatch hit"); OK();
 

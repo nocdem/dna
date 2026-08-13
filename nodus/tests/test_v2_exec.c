@@ -386,7 +386,9 @@ static int test_resolution(void) {
         memset(&leg, 0, sizeof(leg));
         leg.hdr.domain_id = 1;
         leg.hdr.runtime_op = 1;
-        leg.hdr.ruleset_version = 2;     /* NOT the committed version    */
+        leg.hdr.ruleset_version = 1;     /* NOT the committed version —
+                                          * the RETIRED pre-burn-season
+                                          * CORE v1 resolves nothing     */
         leg.hdr.access_mode = DNA_ENV_ACCESS_INVOKE;
         leg.hdr.auth_kind = 1;
         leg.hdr.call_len = cl;

@@ -335,6 +335,16 @@ nodus_adapter_status_t nodus_witness_v2_effects_apply(
         const struct nodus_domain_runtime *rt,
         const dna_effect_view_t *v,
         uint16_t *fail_index_out) {
+    return nodus_witness_v2_effects_apply_ex(w, rt, v, fail_index_out,
+                                             UINT32_MAX);
+}
+
+nodus_adapter_status_t nodus_witness_v2_effects_apply_ex(
+        struct nodus_witness *w,
+        const struct nodus_domain_runtime *rt,
+        const dna_effect_view_t *v,
+        uint16_t *fail_index_out,
+        uint32_t stop_after_effect) {
 
     if (fail_index_out) *fail_index_out = 0;
     if (!w) return NODUS_ADAPTER_ERR_ARG;
@@ -393,6 +403,15 @@ nodus_adapter_status_t nodus_witness_v2_effects_apply(
              * it is. */
             if (fail_index_out) *fail_index_out = i;
             return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        }
+
+        /* Burn season — fault point 37: stop MID-LIST, after the named
+         * effect's mutation has been applied inside the caller's still
+         * open transaction. Test-only (UINT32_MAX on every production
+         * path). */
+        if ((uint32_t)i == stop_after_effect) {
+            if (fail_index_out) *fail_index_out = i;
+            return NODUS_ADAPTER_ERR_INJECTED;
         }
     }
 

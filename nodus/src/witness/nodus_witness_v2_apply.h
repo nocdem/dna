@@ -352,7 +352,16 @@ typedef enum {
      * inserted and BEFORE the wire indices — proves an interrupted
      * block commits NEITHER identity index. */
     V2AP_FAIL_AFTER_INTENT_GUARD = 35,
-    V2AP_FAIL_AFTER_INTENT_INDEX = 36
+    V2AP_FAIL_AFTER_INTENT_INDEX = 36,
+    /* Burn-season stage (35/36 above are FROZEN). Fires INSIDE the
+     * transaction after the adapter APPLIED the effect at index
+     * blk->fail_effect_index of a leg of the envelope at
+     * blk->fail_env_index (the first leg with that many effects) —
+     * mid-effect-list injection, so a block interrupted BETWEEN a leg's
+     * mutations (after the UTXO deletes but before the burned-counter
+     * SET, after the token-registry insert but before the fee burn, …)
+     * provably leaves the database digest byte-identical. */
+    V2AP_FAIL_AFTER_EFFECT_APPLY = 37
 } nodus_v2_apply_fail_t;
 
 /*
@@ -400,6 +409,7 @@ typedef struct {
     uint32_t fail_claim_index;          /* claim index for points 16-18  */
     uint32_t fail_pool_index;           /* batch index for points 19-25  */
     uint32_t fail_env_index;            /* envelope index for point 27   */
+    uint32_t fail_effect_index;         /* effect index for point 37     */
     /* Outputs (valid on rc 0/2) */
     uint8_t  out_tx_root[64];
     uint8_t  out_dupd_root[64];

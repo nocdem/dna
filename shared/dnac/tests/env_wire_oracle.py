@@ -38,8 +38,15 @@ def capacity_derivation():
     two_leg = cc_single + 30 + (2 + 15 * 64 + 16 * 232) + (1 + 15 * signer)
     assert cc_single == 700914, cc_single
     assert two_leg == 813904, two_leg
-    assert 2 ** 19 < two_leg <= 2 ** 20 == MAX_TOTAL_LEN
-    return cc_single, two_leg
+    # burn season: TOKEN_CREATE (109-byte fixed head, 14 in / 16 out) is
+    # now the worst CORE leg — 4717 call bytes, 43 over the maximal
+    # SPEND call; the BURN call (SPEND + 8) is dominated.
+    tc_call = 64 + 1 + 32 + 1 + 8 + 1 + 1 + 14 * 64 + 1 + 16 * 232
+    two_leg_tc = cc_single + 30 + tc_call + (1 + 15 * signer)
+    assert tc_call == 4717, tc_call
+    assert two_leg_tc == 813947, two_leg_tc
+    assert 2 ** 19 < two_leg_tc <= 2 ** 20 == MAX_TOTAL_LEN
+    return cc_single, two_leg_tc
 
 
 capacity_derivation()

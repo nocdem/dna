@@ -449,13 +449,13 @@ typedef struct nodus_domain_runtime {
      * declares {1,2}; CORE declares {1}. */
     uint32_t              allowed_auth_kinds;
     /* The typed EXECUTION boundary (header block above). Native auth
-     * season: the production SYSTEM and DNA_CORE entries carry REAL
-     * compiled implementations (SYSTEM: DNA_SYSRULE_CHAIN_CONFIG;
-     * DNA_CORE: DNA_CORERULE_SPEND — every other owned runtime_op is a
-     * deterministic reject inside the hooks until its own migration
-     * slice). NULL exec = this runtime cannot execute envelope legs
-     * (engine fails the leg closed); NULL read_plan = it reads
-     * nothing. */
+     * season installed the real hooks; the burn season completed the
+     * transparent CORE set (SYSTEM: DNA_SYSRULE_CHAIN_CONFIG; DNA_CORE:
+     * DNA_CORERULE_SPEND + DNA_CORERULE_BURN + DNA_CORERULE_TOKEN_CREATE
+     * — every other owned runtime_op is a deterministic reject inside
+     * the hooks until its own migration slice). NULL exec = this
+     * runtime cannot execute envelope legs (engine fails the leg
+     * closed); NULL read_plan = it reads nothing. */
     nodus_rt_read_plan_fn read_plan;
     nodus_rt_exec_fn      exec;
     nodus_rt_root_fn      state_root;    /* domain state root (S5/S6)     */
@@ -570,10 +570,12 @@ int nodus_rt_core_state_init(const nodus_domain_runtime_t *rt,
  * Implemented in nodus_witness_rt_native.c. The shared auth hook is the
  * ONE compiled implementation of auth_kind 1 (both production entries
  * reference the same symbol — scheme verification cannot fork per
- * domain); the per-domain read_plan/exec pairs implement exactly
- * DNA_SYSRULE_CHAIN_CONFIG (SYSTEM) and DNA_CORERULE_SPEND (DNA_CORE)
- * and deterministically reject every other owned runtime_op. The
- * compiled adapters are exported so tests can drive them directly. */
+ * domain); the per-domain read_plan/exec pairs implement
+ * DNA_SYSRULE_CHAIN_CONFIG (SYSTEM) and — since the burn season, under
+ * CORE ruleset_version 2 — DNA_CORERULE_SPEND, DNA_CORERULE_BURN and
+ * DNA_CORERULE_TOKEN_CREATE (DNA_CORE), and deterministically reject
+ * every other owned runtime_op. The compiled adapters are exported so
+ * tests can drive them directly. */
 int nodus_rt_auth_dsa87_v1(const nodus_domain_runtime_t *rt,
                            const dna_env_view_t *env, uint16_t leg_index,
                            const nodus_rt_exec_ctx_t *ctx,
