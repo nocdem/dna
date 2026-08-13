@@ -21,9 +21,11 @@
  *      manifest/claim tables below)
  *   7  Ledger V2 S7 schema present (S6 + the four generic pool-state
  *      tables below)
+ *   8  Ledger V2 intent-season schema present (S7 + v2_intent_index —
+ *      the semantic transaction index; see the S8 block below)
  * Any OTHER value is unknown/newer state and FAILS CLOSED: this build
  * refuses to touch a database whose schema it does not understand
- * (version 8+ rejects — no forward compatibility is ever assumed).
+ * (version 9+ rejects — no forward compatibility is ever assumed).
  *
  * ── S6 migration (nodus_witness_db_migrate_v2s6) ──────────────────────
  * Version 0 first runs the (atomic) S5 migration, then ONE atomic
@@ -135,13 +137,21 @@
  *   v2_root_history     (domain_id, domain_height) PK · global_height ·
  *                       state_root · upd_hash · ruleset_version ·
  *                       ruleset_hash — append-only under commits
- *   v2_tx_index         (global_height, global_index) PK · tx_id UNIQUE ·
+ *   v2_tx_index         (global_height, global_index) PK · tx_id UNIQUE
+ *                       (the FULL-WIRE identity — env_preflight wire_id;
+ *                       the column name is the frozen S5 shape) ·
  *                       owner_domain (DNA_TX_OWNER_NONE sentinel when a
  *                       cross-domain tx has no single owner — never NULL)
  *                       · touched (canonical list: count u16 BE + u32 BE
  *                       ids strictly ascending) · wire_version
  *   v2_tx_local_index   (domain_id, domain_height, local_index) PK ·
- *                       (tx_id, domain_id) UNIQUE
+ *                       (tx_id, domain_id) UNIQUE — tx_id is the
+ *                       FULL-WIRE identity here too
+ *   v2_intent_index     intent_id PK (64, the canonical WITNESS-
+ *                       INDEPENDENT semantic identity, dna_env_intent_id)
+ *                       · tx_id UNIQUE (64, the ONE accepted full-wire
+ *                       realization) · global_height · global_index —
+ *                       S8, the semantic replay backstop
  *
  * @file nodus_witness_v2_schema.h
  */
@@ -163,8 +173,12 @@ extern "C" {
 /** The S6 schema version. */
 #define NODUS_V2_SCHEMA_VERSION_S6  6u
 
-/** The S7 schema version — required by the apply engine/genesis. */
+/** The S7 schema version. */
 #define NODUS_V2_SCHEMA_VERSION_S7  7u
+
+/** The S8 schema version (intent season) — required by the apply
+ *  engine/genesis. */
+#define NODUS_V2_SCHEMA_VERSION_S8  8u
 
 /** Deterministic fault-injection stages for the migration tests. */
 typedef enum {
@@ -239,6 +253,43 @@ int nodus_witness_db_migrate_v2s7(nodus_witness_t *w);
  *  transaction (rolls back, -1; the DB stays a valid version-6 schema). */
 int nodus_witness_db_migrate_v2s7_ex(nodus_witness_t *w,
                                      nodus_v2s7_mig_fail_t fail_at);
+
+/** Deterministic fault-injection stages for the S8 migration tests
+ *  (the 7 → 8 transaction only — earlier stages have their own). */
+typedef enum {
+    V2S8MIG_FAIL_NONE = 0,
+    V2S8MIG_FAIL_AFTER_BEGIN,     /* after BEGIN, before any DDL          */
+    V2S8MIG_FAIL_AFTER_TABLES,    /* v2_intent_index created              */
+    V2S8MIG_FAIL_AFTER_VERIFY,    /* schema-shape verification passed     */
+    V2S8MIG_FAIL_BEFORE_COMMIT    /* user_version written, pre-COMMIT     */
+} nodus_v2s8_mig_fail_t;
+
+/**
+ * Atomic S8 migration (intent season). Version 0/5/6 runs the S7
+ * migration chain first (its own atomic transactions), then 7 → 8
+ * atomically: create v2_intent_index (intent_id BLOB PK — the canonical
+ * witness-independent identity; tx_id BLOB UNIQUE — the ONE accepted
+ * full-wire realization; global_height; global_index), verify the exact
+ * column shape, set user_version = 8.
+ *
+ * FAILS CLOSED (pre-BEGIN, read-only) on a POPULATED v2_tx_index: an
+ * intent_id is derivable only from the original envelope bytes, which
+ * the wire index does not store, so committed pre-S8 transactions cannot
+ * be backfilled — migrating anyway would leave them silently unguarded
+ * against semantic replay. No live chain carries V2 rows (inactive
+ * surface; the devnet reset starts fresh).
+ *
+ * @return 0 migrated or already at version 8 (idempotent);
+ *         -1 failure (full rollback of the running stage) — including an
+ *         UNKNOWN user_version (neither 0, 5, 6, 7 nor 8) and the
+ *         populated-wire-index refusal above: fail closed.
+ */
+int nodus_witness_db_migrate_v2s8(nodus_witness_t *w);
+
+/** Test variant: abort deterministically at `fail_at` inside the 7 → 8
+ *  transaction (rolls back, -1; the DB stays a valid version-7 schema). */
+int nodus_witness_db_migrate_v2s8_ex(nodus_witness_t *w,
+                                     nodus_v2s8_mig_fail_t fail_at);
 
 #ifdef __cplusplus
 }

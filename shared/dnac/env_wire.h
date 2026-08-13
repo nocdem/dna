@@ -41,7 +41,9 @@
  *   "DNA.ENVCALL.v1"  per-leg call commitment
  *   "DNA.ENVCTX.v1"   authorization-context commitment
  *   "DNA.ENVAUTH.v1"  per-leg authorization digest (what a signer signs)
- *   "DNA.ENVTXID.v1"  transaction id
+ *   "DNA.ENVTXID.v1"  transaction id (FULL-WIRE identity — wire_id)
+ *   "DNA.ENVILEG.v1"  per-leg canonical INTENT projection (intent season)
+ *   "DNA.ENVINTID.v1" canonical intent id (intent_id)
  *
  * ── Canonical wire layout ──────────────────────────────────────────────
  * Fixed header (DNA_ENV_FIXED_HEAD = 43 bytes)
@@ -102,6 +104,32 @@
  *   tx_id = SHA3-512( "DNA.ENVTXID.v1"(16) ‖ auth_context_commit(64)
  *     ‖ env_len(4) ‖ env_bytes(env_len) )
  *
+ *   intent_leg_commit[i] = SHA3-512( "DNA.ENVILEG.v1"(16)
+ *     ‖ domain_id(4) ‖ runtime_op(4) ‖ ruleset_version(4)
+ *     ‖ access_mode(1) ‖ auth_kind(1) ‖ res_max_effects(4)
+ *     ‖ res_max_effect_bytes(4) ‖ call_commit[i](64) )
+ *                                            — fixed 102-byte preimage
+ *   NESTING IS DELIBERATE: call_commit already canonically commits
+ *   domain_id, runtime_op, ruleset_version, the CONTEXTUAL ruleset_hash,
+ *   access_mode, call_len and every call byte (one legal encoding, tagged)
+ *   — nesting it keeps the intent derivation acyclic and avoids hashing a
+ *   megabyte call payload a second time. The identity-relevant leg fields
+ *   are restated explicitly in front of it as defence in depth. auth_kind
+ *   is COMMITTED (it selects authorization SEMANTICS); auth_len is the ONE
+ *   AUTHCTX leg field EXCLUDED (it is witness cardinality, i.e. evidence).
+ *
+ *   intent_id = SHA3-512( "DNA.ENVINTID.v1"(16)
+ *     ‖ wire_family(16) ‖ envelope_version(1) ‖ chain_id(32)
+ *     ‖ expiry_height(8) ‖ fee_amount(8) ‖ res_max_total_units(8)
+ *     ‖ leg_count(2) ‖ intent_leg_commit[0..n-1](64 each) )
+ *   The CANONICAL, AUTHORIZATION-WITNESS-INDEPENDENT identity of the
+ *   requested execution: two envelopes whose semantic content is identical
+ *   derive the SAME intent_id no matter which valid signatures, committee
+ *   subsets or witness lengths authorize them. NOTHING of auth_data,
+ *   auth_len, signer sets or signature randomness enters this preimage.
+ *   Dependency direction: call bytes → call_commit → intent_leg_commit →
+ *   intent_id; auth bytes reach tx_id (wire_id) ONLY.
+ *
  * ── NON-CIRCULARITY (the load-bearing property) ────────────────────────
  * `auth_data` bytes appear in NEITHER call_commit, NOR AUTHCTX_BYTES, NOR
  * auth_digest. Only their LENGTH (auth_len) and their KIND (auth_kind) are
@@ -112,9 +140,13 @@
  *
  * `auth_data` bytes are covered EXACTLY ONCE, inside tx_id, via the
  * complete env_bytes. tx_id is therefore a commitment to the FINAL,
- * fully-authorized transaction; auth_context_commit / auth_digest are
- * commitments to the transaction's INTENT. Mutating auth_data changes
- * tx_id ONLY, and leaves every auth_digest byte-identical (pinned by
+ * fully-authorized transaction — the FULL-WIRE identity (wire_id).
+ * auth_context_commit / auth_digest are SIGNING commitments to the
+ * transaction's intent, but auth_context_commit is NOT a valid intent
+ * IDENTITY: it commits per-leg auth_len, so a different valid witness
+ * cardinality still moves it. The witness-independent identity is
+ * intent_id (above): mutating auth_data changes tx_id ONLY and leaves
+ * every auth_digest AND intent_id byte-identical (pinned by
  * test_env_wire).
  *
  * ── runtime_op: 4 wire bytes, 0..255 accepted ──────────────────────────
@@ -394,6 +426,37 @@ int dna_env_auth_digest(const uint8_t auth_context_commit[DNA_ENV_HASH_LEN],
 int dna_env_tx_id(const uint8_t auth_context_commit[DNA_ENV_HASH_LEN],
                   const uint8_t *env_bytes, size_t env_len,
                   uint8_t out[DNA_ENV_HASH_LEN]);
+
+/**
+ * intent_leg_commit[leg_index] — the canonical semantic projection of ONE
+ * leg (intent season; preimage in the layout block above).
+ *
+ * @param call_commit this leg's call_commit as produced by
+ *                    dna_env_call_commit — the nested canonical digest of
+ *                    (domain, op, ruleset id+hash, access, call bytes).
+ * @return 0 / -1 (NULL args, uninitialised view, leg_index out of range).
+ */
+int dna_env_intent_leg_commit(const dna_env_view_t *v, uint16_t leg_index,
+                              const uint8_t call_commit[DNA_ENV_HASH_LEN],
+                              uint8_t out[DNA_ENV_HASH_LEN]);
+
+/**
+ * intent_id — the canonical AUTHORIZATION-WITNESS-INDEPENDENT identity of
+ * the requested execution (intent season; preimage in the layout block
+ * above). Same global-context fields as AUTHCTX_BYTES, same leg ORDER,
+ * but each leg enters through its intent_leg_commit — auth_len and every
+ * authorization byte are excluded by construction.
+ *
+ * @param chain_id           CONTEXTUAL 32-byte chain identity (replay
+ *                           separation across chains).
+ * @param intent_leg_commits leg_count entries, entry i being
+ *                           intent_leg_commit[i].
+ * @return 0 / -1. On ANY failure *out is zeroed.
+ */
+int dna_env_intent_id(const dna_env_view_t *v,
+                      const uint8_t chain_id[DNA_ENV_CHAIN_ID_LEN],
+                      const uint8_t (*intent_leg_commits)[DNA_ENV_HASH_LEN],
+                      uint8_t out[DNA_ENV_HASH_LEN]);
 
 #ifdef __cplusplus
 }

@@ -898,8 +898,12 @@ int nodus_witness_v2_pools_startup_check(nodus_witness_t *w) {
 
     uint32_t ver = 0;
     if (nodus_witness_db_schema_version(w, &ver) != 0) return -1;
-    if (ver != NODUS_V2_SCHEMA_VERSION_S7)
-        return 0;                        /* pre-v7: no pool state        */
+    if (ver != NODUS_V2_SCHEMA_VERSION_S7 &&
+        ver != NODUS_V2_SCHEMA_VERSION_S8)
+        return 0;                        /* pre-v7: no pool state (the
+                                          * S8 intent schema CONTAINS the
+                                          * S7 pool tables — the check
+                                          * must keep running there)     */
 
     /* One consistent read snapshot for the whole pass. SAVEPOINT (not
      * BEGIN) so the pass also composes under a caller-held
@@ -984,7 +988,8 @@ static int pool_hist_commit(nodus_witness_t *w,
     sqlite3_finalize(st);
     int ret = -1;
     if (!fail && n == ps->hist_count)
-        ret = dna_pool_hist_commit(seqs, roots, n, out);
+        ret = dna_pool_hist_commit(
+            seqs, (const uint8_t (*)[DNA_POOL_NOTE_LEN])roots, n, out);
     free(seqs);
     free(roots);
     return ret;
@@ -1159,11 +1164,13 @@ int nodus_rt_core_state_init(const nodus_domain_runtime_t *rt,
     nodus_witness_t *w = (nodus_witness_t *)wv;
     if (!rt || !w || !w->db) return -1;
 
-    /* Pool state requires the S7 schema — an activation on an older
-     * schema fails closed, never a partial init. */
+    /* Pool state requires the S7 pool tables (present in S7 and S8) —
+     * an activation on an older schema fails closed, never a partial
+     * init. */
     uint32_t ver = 0;
     if (nodus_witness_db_schema_version(w, &ver) != 0 ||
-        ver != NODUS_V2_SCHEMA_VERSION_S7)
+        (ver != NODUS_V2_SCHEMA_VERSION_S7 &&
+         ver != NODUS_V2_SCHEMA_VERSION_S8))
         return -1;
 
     for (size_t i = 0;

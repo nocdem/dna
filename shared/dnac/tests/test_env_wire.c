@@ -210,6 +210,8 @@ typedef struct {
     uint8_t  ctx[HASH_LEN];
     uint8_t  auth[DNA_ENV_MAX_LEGS][HASH_LEN];
     uint8_t  txid[HASH_LEN];
+    uint8_t  ileg[DNA_ENV_MAX_LEGS][HASH_LEN];   /* intent season */
+    uint8_t  intent[HASH_LEN];                   /* intent season */
     uint8_t *bytes;      /* the encoded envelope (heap) */
     size_t   len;
     uint16_t n;
@@ -244,6 +246,11 @@ static digests_t *fx_digests(const fixture_t *f) {
         CHECK(dna_env_auth_digest(d->ctx, i, f->hdr[i].domain_id,
                                   f->hdr[i].runtime_op, d->auth[i]) == 0);
     CHECK(dna_env_tx_id(d->ctx, d->bytes, d->len, d->txid) == 0);
+    for (uint16_t i = 0; i < f->n; i++)
+        CHECK(dna_env_intent_leg_commit(v, i, d->call[i], d->ileg[i]) == 0);
+    CHECK(dna_env_intent_id(v, f->chain_id,
+                            (const uint8_t (*)[HASH_LEN])d->ileg,
+                            d->intent) == 0);
     free(v);
     return d;
 }
@@ -1426,6 +1433,41 @@ static const uint8_t KAT_TX_ID[HASH_LEN] = {
     0x6f, 0xaf, 0xec, 0x4b, 0xc6, 0x1b, 0x94, 0xc7
 };
 
+/* KAT: pinned by the ORCHESTRATOR from the INDEPENDENT intent oracle
+ * (env_intent_oracle.py — python3 hashlib.sha3_512), which also
+ * re-derives the frozen KAT_TX_ID above from its own encoding code and
+ * asserts it byte-identical (the full-wire identity did not move). */
+static const uint8_t KAT_INTENT_LEG_0[HASH_LEN] = {
+    0x29, 0x55, 0x91, 0x33, 0x4a, 0x65, 0xe8, 0x41,
+    0xdf, 0x87, 0x39, 0xa3, 0x01, 0x66, 0x90, 0x57,
+    0x4d, 0xd3, 0x93, 0xf1, 0xee, 0x28, 0x72, 0x22,
+    0x32, 0xe7, 0xe6, 0xd3, 0x5a, 0x7a, 0xf2, 0x7e,
+    0xbd, 0xcf, 0xae, 0x49, 0xb9, 0xa1, 0x29, 0xcc,
+    0x58, 0xa4, 0xff, 0x85, 0x03, 0xe8, 0xc4, 0xc7,
+    0xc5, 0xc4, 0xe2, 0xa4, 0x4f, 0x4c, 0xea, 0xa1,
+    0x9a, 0x93, 0x68, 0xce, 0x5c, 0xca, 0xf8, 0xaf
+};
+static const uint8_t KAT_INTENT_LEG_1[HASH_LEN] = {
+    0xe0, 0xde, 0xff, 0xde, 0x78, 0xba, 0x45, 0x78,
+    0x7d, 0xe7, 0xa2, 0x5c, 0x4d, 0xbe, 0xd4, 0xf7,
+    0x33, 0x0f, 0x4f, 0x18, 0x4b, 0xf7, 0xe5, 0x28,
+    0xd0, 0x9e, 0x19, 0x45, 0xa4, 0x96, 0x8d, 0x1e,
+    0x47, 0x6a, 0xa5, 0x09, 0x7f, 0xba, 0x7e, 0x14,
+    0x98, 0xf0, 0x62, 0x18, 0x60, 0xb7, 0xf0, 0x26,
+    0x6c, 0x33, 0x89, 0x39, 0x86, 0x3a, 0x66, 0x44,
+    0xaf, 0xb9, 0x30, 0x40, 0x1a, 0xd0, 0xc5, 0x0c
+};
+static const uint8_t KAT_INTENT_ID[HASH_LEN] = {
+    0x01, 0xcb, 0x79, 0x4a, 0xd4, 0xb7, 0x46, 0x0e,
+    0x63, 0x55, 0x7b, 0xe2, 0x19, 0xfc, 0xab, 0x14,
+    0x5e, 0x60, 0x47, 0x01, 0x9b, 0x4b, 0x89, 0x96,
+    0x15, 0xb7, 0x09, 0x10, 0x28, 0x00, 0x50, 0xca,
+    0x04, 0x2b, 0xa4, 0x25, 0x34, 0xe7, 0xeb, 0x9a,
+    0x52, 0xfc, 0x66, 0xda, 0xbd, 0xc5, 0x5c, 0xc6,
+    0x70, 0xf5, 0xb2, 0xd5, 0x5b, 0x13, 0x54, 0xbf,
+    0x19, 0x5e, 0xda, 0xa7, 0xd4, 0x6b, 0xa0, 0x71
+};
+
 /**
  * The exact envelope bytes the fixture below must produce. Left zero-length
  * until the ORCHESTRATOR pins it; the fixture PRINTS its bytes on every run
@@ -1559,9 +1601,155 @@ static void test_kat(void) {
     kat_expect("auth_digest[0]",      d->auth[0], KAT_AUTH_DIGEST_0);
     kat_expect("auth_digest[1]",      d->auth[1], KAT_AUTH_DIGEST_1);
     kat_expect("tx_id",               d->txid,    KAT_TX_ID);
+    kat_expect("intent_leg_commit[0]", d->ileg[0], KAT_INTENT_LEG_0);
+    kat_expect("intent_leg_commit[1]", d->ileg[1], KAT_INTENT_LEG_1);
+    kat_expect("intent_id",           d->intent,  KAT_INTENT_ID);
 
     dg_free(d);
     fx_free(f);
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+ * 8. INTENT IDENTITY (intent season) — witness independence, semantic
+ *    sensitivity, error paths
+ * ════════════════════════════════════════════════════════════════════ */
+
+/** Semantic mutation helper: every mutated fixture must move intent_id
+ *  (named assertion targets for the season's mutation proofs). */
+static void intent_expect_moves(const char *what, const fixture_t *base_f,
+                                const digests_t *base_d, fixture_t *g) {
+    digests_t *d = fx_digests(g);
+    (void)base_f;
+    char label[160];
+    snprintf(label, sizeof(label), "intent semantic [%s]", what);
+    expect(label, d->intent, base_d->intent, 1);
+    dg_free(d);
+    fx_free(g);
+}
+
+static void test_intent_identity(void) {
+    fixture_t *base = kat_fixture();
+    digests_t *d0 = fx_digests(base);
+    fixture_t *g;
+
+    /* ── AUTH EXCLUSION: mutating auth BYTES moves wire_id ONLY ──────
+     * (MUTATION TARGET 1: an intent that included auth_data would fail
+     * the IDENTICAL assertion here.) */
+    g = fx_clone(base);
+    g->auth[0][0] ^= 0xFF;
+    {
+        digests_t *d = fx_digests(g);
+        expect("auth-bytes intent stability", d->intent, d0->intent, 0);
+        expect("auth-bytes leg stability 0", d->ileg[0], d0->ileg[0], 0);
+        expect("auth-bytes leg stability 1", d->ileg[1], d0->ileg[1], 0);
+        expect("auth-bytes wire motion", d->txid, d0->txid, 1);
+        dg_free(d);
+        fx_free(g);
+    }
+
+    /* ── AUTH EXCLUSION: changing auth LENGTH (witness cardinality)
+     * moves wire_id AND the signing commitment — but never intent_id.
+     * This is exactly why auth_context_commit is NOT a valid intent key.
+     * (MUTATION TARGET 2: an intent that included auth_len fails here.) */
+    g = fx_clone(base);
+    fx_set_auth(g, 0, 12, 0xC0);         /* 5 bytes -> 12 bytes          */
+    {
+        digests_t *d = fx_digests(g);
+        expect("auth-len intent stability", d->intent, d0->intent, 0);
+        expect("auth-len wire motion", d->txid, d0->txid, 1);
+        expect("auth-len signing-commit motion", d->ctx, d0->ctx, 1);
+        dg_free(d);
+        fx_free(g);
+    }
+
+    /* ── SEMANTIC SENSITIVITY: every classified semantic field moves
+     * intent_id (the §13 minimum matrix at the codec level; call-bytes
+     * variants are MUTATION TARGETS 3/4/5 for chain, call, ruleset). */
+    g = fx_clone(base); g->chain_id[31] ^= 1;
+    intent_expect_moves("chain_id", base, d0, g);
+    g = fx_clone(base); g->expiry++;
+    intent_expect_moves("expiry", base, d0, g);
+    g = fx_clone(base); g->fee++;
+    intent_expect_moves("fee", base, d0, g);
+    g = fx_clone(base); g->res_total++;
+    intent_expect_moves("res_max_total_units", base, d0, g);
+    g = fx_clone(base); g->n = 1;        /* drop leg 1: count + order    */
+    intent_expect_moves("leg_count", base, d0, g);
+    g = fx_clone(base); g->hdr[0].domain_id = 2;
+    intent_expect_moves("domain_id", base, d0, g);
+    g = fx_clone(base); g->hdr[0].runtime_op = 8;
+    intent_expect_moves("runtime_op", base, d0, g);
+    g = fx_clone(base); g->hdr[0].ruleset_version = 4;
+    intent_expect_moves("ruleset_version", base, d0, g);
+    g = fx_clone(base); g->rh[0][0] ^= 1;
+    intent_expect_moves("ruleset_hash", base, d0, g);
+    g = fx_clone(base); g->hdr[0].access_mode = DNA_ENV_ACCESS_READ;
+    intent_expect_moves("access_mode", base, d0, g);
+    g = fx_clone(base); g->hdr[0].auth_kind = 3;
+    intent_expect_moves("auth_kind", base, d0, g);
+    g = fx_clone(base); g->hdr[0].res_max_effects++;
+    intent_expect_moves("res_max_effects", base, d0, g);
+    g = fx_clone(base); g->hdr[0].res_max_effect_bytes++;
+    intent_expect_moves("res_max_effect_bytes", base, d0, g);
+    g = fx_clone(base); g->call[0][7] ^= 1;
+    intent_expect_moves("call_bytes", base, d0, g);
+    g = fx_clone(base); fx_set_call(g, 0, 9, 0x00);
+    intent_expect_moves("call_len", base, d0, g);
+
+    /* ── ERROR PATHS: both new helpers fail closed and ZERO the output
+     * identity (the season rule — stricter than the older helpers'
+     * leave-untouched convention, deliberately). */
+    {
+        uint8_t out[HASH_LEN];
+        dna_env_view_t *v = calloc(1, sizeof(*v));
+        MUST_ALLOC(v);
+        CHECK(dna_env_decode(d0->bytes, d0->len, v) == 0);
+
+        memset(out, 0xEE, sizeof(out));
+        CHECK(dna_env_intent_leg_commit(NULL, 0, d0->call[0], out) == -1);
+        CHECK(is_zero(out, HASH_LEN));               /* zeroed on reject */
+        memset(out, 0xEE, sizeof(out));
+        CHECK(dna_env_intent_leg_commit(v, 0, NULL, out) == -1);
+        CHECK(is_zero(out, HASH_LEN));
+        memset(out, 0xEE, sizeof(out));
+        CHECK(dna_env_intent_leg_commit(v, v->leg_count, d0->call[0],
+                                        out) == -1);   /* out of range   */
+        CHECK(is_zero(out, HASH_LEN));
+        CHECK(dna_env_intent_leg_commit(v, 0, d0->call[0], NULL) == -1);
+
+        memset(out, 0xEE, sizeof(out));
+        CHECK(dna_env_intent_id(NULL, base->chain_id,
+                                (const uint8_t (*)[HASH_LEN])d0->ileg,
+                                out) == -1);
+        CHECK(is_zero(out, HASH_LEN));
+        memset(out, 0xEE, sizeof(out));
+        CHECK(dna_env_intent_id(v, NULL,
+                                (const uint8_t (*)[HASH_LEN])d0->ileg,
+                                out) == -1);
+        CHECK(is_zero(out, HASH_LEN));
+        memset(out, 0xEE, sizeof(out));
+        CHECK(dna_env_intent_id(v, base->chain_id, NULL, out) == -1);
+        CHECK(is_zero(out, HASH_LEN));
+        CHECK(dna_env_intent_id(v, base->chain_id,
+                                (const uint8_t (*)[HASH_LEN])d0->ileg,
+                                NULL) == -1);
+
+        /* uninitialised view fails closed */
+        dna_env_view_t z;
+        memset(&z, 0, sizeof(z));
+        memset(out, 0xEE, sizeof(out));
+        CHECK(dna_env_intent_leg_commit(&z, 0, d0->call[0], out) == -1);
+        CHECK(is_zero(out, HASH_LEN));
+        memset(out, 0xEE, sizeof(out));
+        CHECK(dna_env_intent_id(&z, base->chain_id,
+                                (const uint8_t (*)[HASH_LEN])d0->ileg,
+                                out) == -1);
+        CHECK(is_zero(out, HASH_LEN));
+        free(v);
+    }
+
+    dg_free(d0);
+    fx_free(base);
 }
 
 int main(void) {
@@ -1575,6 +1763,7 @@ int main(void) {
     test_commit_rejects();
     test_binding();
     test_kat();
+    test_intent_identity();
 
     if (failures) {
         fprintf(stderr, "test_env_wire: %d check(s) failed\n", failures);

@@ -319,6 +319,137 @@ int main(void) {
         free(w);
     }
 
+    /* ══ INTENT SEASON: the S8 migration matrix (7 → 8) ═════════════ */
+    {
+        fixture_t f8;
+        CHECK(fx_open(&f8) == 0, "fixture 8");
+
+        /* 0 → 8 full chain on a fresh DB */
+        CHECK(nodus_witness_db_migrate_v2s8(f8.w) == 0, "0→8"); OK();
+        CHECK(nodus_witness_db_schema_version(f8.w, &ver) == 0 &&
+              ver == 8, "version != 8"); OK();
+        CHECK(has_table(f8.w->db, "v2_intent_index") == 1,
+              "v2_intent_index missing"); OK();
+
+        /* idempotent re-run */
+        CHECK(nodus_witness_db_migrate_v2s8(f8.w) == 0, "re-run 8"); OK();
+        CHECK(nodus_witness_db_schema_version(f8.w, &ver) == 0 &&
+              ver == 8, "re-run changed version"); OK();
+
+        /* EARLIER seasons' migrations refuse a v8 DB (no forward
+         * reinterpretation) */
+        CHECK(nodus_witness_db_migrate_v2s5(f8.w) == -1, "s5 at 8"); OK();
+        CHECK(nodus_witness_db_migrate_v2s6(f8.w) == -1, "s6 at 8"); OK();
+        CHECK(nodus_witness_db_migrate_v2s7(f8.w) == -1, "s7 at 8"); OK();
+
+        /* UNIQUENESS BACKSTOP: intent_id PK and tx_id UNIQUE both hold */
+        CHECK(run_sql(f8.w->db,
+              "INSERT INTO v2_intent_index (intent_id, tx_id, "
+              "global_height, global_index) "
+              "VALUES (x'01', x'aa', 1, 0)") == 0, "seed intent row"); OK();
+        {
+            char *err = NULL;
+            CHECK(sqlite3_exec(f8.w->db,
+                  "INSERT INTO v2_intent_index (intent_id, tx_id, "
+                  "global_height, global_index) "
+                  "VALUES (x'01', x'bb', 2, 0)", NULL, NULL, &err)
+                  != SQLITE_OK, "duplicate intent_id accepted");
+            sqlite3_free(err);
+            err = NULL;
+            CHECK(sqlite3_exec(f8.w->db,
+                  "INSERT INTO v2_intent_index (intent_id, tx_id, "
+                  "global_height, global_index) "
+                  "VALUES (x'02', x'aa', 2, 0)", NULL, NULL, &err)
+                  != SQLITE_OK, "duplicate wire realization accepted");
+            sqlite3_free(err);
+            OK();
+        }
+        fx_close(&f8);
+    }
+    {
+        /* CONSTRAINT VERIFICATION (review-round fix): a pre-existing
+         * v2_intent_index whose column NAMES match but which lacks the
+         * PK/UNIQUE constraints must REFUSE to migrate — those
+         * constraints are the replay backstop, and CREATE TABLE IF NOT
+         * EXISTS would otherwise adopt the naked table silently. */
+        fixture_t fc;
+        CHECK(fx_open(&fc) == 0, "fixture c");
+        CHECK(nodus_witness_db_migrate_v2s7(fc.w) == 0, "0→7 c"); OK();
+        CHECK(run_sql(fc.w->db,
+              "CREATE TABLE v2_intent_index ("
+              "  intent_id BLOB NOT NULL,"
+              "  tx_id BLOB NOT NULL,"
+              "  global_height INTEGER NOT NULL,"
+              "  global_index INTEGER NOT NULL)") == 0,
+              "plant naked table"); OK();
+        CHECK(nodus_witness_db_migrate_v2s8(fc.w) == -1,
+              "constraint-free intent table migrated"); OK();
+        CHECK(nodus_witness_db_schema_version(fc.w, &ver) == 0 &&
+              ver == 7, "refusal moved version"); OK();
+        CHECK(run_sql(fc.w->db, "DROP TABLE v2_intent_index") == 0,
+              "drop naked table"); OK();
+        CHECK(nodus_witness_db_migrate_v2s8(fc.w) == 0,
+              "7→8 after drop"); OK();
+        fx_close(&fc);
+    }
+    {
+        /* staged fault injection inside 7 → 8: every stage rolls back to
+         * a VALID version-7 schema; the migration then succeeds. */
+        fixture_t f9;
+        CHECK(fx_open(&f9) == 0, "fixture 9");
+        CHECK(nodus_witness_db_migrate_v2s7(f9.w) == 0, "0→7"); OK();
+        for (int stage = V2S8MIG_FAIL_AFTER_BEGIN;
+             stage <= V2S8MIG_FAIL_BEFORE_COMMIT; stage++) {
+            CHECK(nodus_witness_db_migrate_v2s8_ex(f9.w,
+                      (nodus_v2s8_mig_fail_t)stage) == -1,
+                  "staged S8 failure did not fail");
+            CHECK(nodus_witness_db_schema_version(f9.w, &ver) == 0 &&
+                  ver == 7, "failed S8 stage moved the version");
+            CHECK(has_table(f9.w->db, "v2_intent_index") == 0,
+                  "failed S8 stage left the intent table");
+        }
+        OK();
+
+        /* POPULATED-WIRE-INDEX REFUSAL: committed pre-S8 transactions
+         * cannot be backfilled with intent identities — fail closed. */
+        CHECK(run_sql(f9.w->db,
+              "INSERT INTO v2_tx_index (global_height, global_index, "
+              "tx_id, owner_domain, touched, wire_version) "
+              "VALUES (1, 0, x'aa', 0, x'000100000001', 3)") == 0,
+              "seed wire row"); OK();
+        CHECK(nodus_witness_db_migrate_v2s8(f9.w) == -1,
+              "populated wire index migrated"); OK();
+        CHECK(nodus_witness_db_schema_version(f9.w, &ver) == 0 &&
+              ver == 7, "refusal moved the version"); OK();
+        CHECK(has_table(f9.w->db, "v2_intent_index") == 0,
+              "refusal left the intent table"); OK();
+        CHECK(run_sql(f9.w->db, "DELETE FROM v2_tx_index") == 0,
+              "clear wire index"); OK();
+        CHECK(nodus_witness_db_migrate_v2s8(f9.w) == 0,
+              "7→8 after clear"); OK();
+        CHECK(nodus_witness_db_schema_version(f9.w, &ver) == 0 &&
+              ver == 8, "post-clear version"); OK();
+
+        /* restart keeps version + table */
+        CHECK(fx_reopen(&f9) == 0, "reopen 9");
+        CHECK(nodus_witness_db_schema_version(f9.w, &ver) == 0 &&
+              ver == 8, "restart lost v8"); OK();
+        CHECK(has_table(f9.w->db, "v2_intent_index") == 1,
+              "restart lost intent table"); OK();
+        fx_close(&f9);
+    }
+    {
+        /* unknown/newer version (9) fails closed for S8 too */
+        fixture_t fa;
+        CHECK(fx_open(&fa) == 0, "fixture a");
+        CHECK(run_sql(fa.w->db, "PRAGMA user_version = 9") == 0, "set 9");
+        CHECK(nodus_witness_db_migrate_v2s8(fa.w) == -1,
+              "version 9 migrated"); OK();
+        CHECK(nodus_witness_db_schema_version(fa.w, &ver) == 0 &&
+              ver == 9, "version 9 mutated"); OK();
+        fx_close(&fa);
+    }
+
     printf("test_v2_schema: ALL %d checks passed\n", g_checks);
     return 0;
 }

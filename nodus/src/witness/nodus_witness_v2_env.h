@@ -27,14 +27,15 @@
  *
  * ── The switch sites (derived-ID adoption — DONE, execution season) ────
  * The apply engine now consumes ONLY the derived dna_env_preflight_t
- * identities: batch dedup is this seam's ERR_DUP, the per-domain id
- * lists / tx_batch_root / v2_tx_index / v2_tx_local_index / block
- * tx_root are all filled from pf[i].tx_id, and the old silent
- * `lidx = 0` local-index default is retired — the lookup is the
- * fail-closed helper nodus_witness_v2_local_index_find
- * (nodus_witness_v2_apply.h): a miss rejects, it never aliases
- * transaction zero. nodus_v2_op_t itself (the caller-asserted-id,
- * raw-SQL op shape) no longer exists.
+ * identities: batch dedup is this seam's ERR_DUP/ERR_DUP_INTENT, the
+ * per-domain id lists / tx_batch_root / v2_tx_index / v2_tx_local_index /
+ * block tx_root are all filled from pf[i].wire_id (the FULL-WIRE
+ * identity), the semantic replay guard and v2_intent_index are filled
+ * from pf[i].intent_id (intent season), and the old silent `lidx = 0`
+ * local-index default is retired — the lookup is the fail-closed helper
+ * nodus_witness_v2_local_index_find (nodus_witness_v2_apply.h): a miss
+ * rejects, it never aliases transaction zero. nodus_v2_op_t itself (the
+ * caller-asserted-id, raw-SQL op shape) no longer exists.
  *
  * ── NOT implemented this season (the caller's remaining obligations) ───
  * A NODUS_V2_ENV_OK from this seam means "these envelopes are well-formed,
@@ -59,19 +60,15 @@
  *     registry, and proving it is the right snapshot, is the caller's;
  *   - AUTHORIZATION — auth_kind interpretation, signature verification,
  *     and every other question about whether a leg is permitted;
- *   - INTENT-LEVEL REPLAY — the batch dedup key is tx_id, which covers
- *     auth_data; the INTENT commitment (auth_context_commit)
- *     deliberately does not (env_wire.h:105-118). Two envelopes
- *     differing only in auth_data therefore carry ONE authorized intent
- *     under TWO distinct tx_ids, and BOTH pass this dedup (pinned by
- *     test_v2_env_preflight "AUTH-DATA MALLEABILITY"). Byte-level dedup
- *     is what this seam locks; collapsing same-intent envelopes is the
- *     CANONICAL-INTENT-IDENTITY season's obligation — the next season
- *     after the capacity season, which deliberately did NOT close it
- *     (and note auth_context_commit alone is NOT a valid intent key:
- *     it commits per-leg auth_kind and auth_len, so a different valid
- *     signer SUBSET still moves it — the intent season must derive a
- *     witness-independent identity);
+ *   - COMMITTED-INTENT REPLAY ACROSS BLOCKS — in-batch dedup now runs at
+ *     BOTH levels (intent season): wire_id (byte-identical resubmission,
+ *     ERR_DUP) AND intent_id (two authorization realizations of one
+ *     semantic transaction, ERR_DUP_INTENT — the witness-INDEPENDENT
+ *     identity dna_env_intent_id, which auth_context_commit is not: it
+ *     commits per-leg auth_len). What stays with the caller is the
+ *     COMMITTED-set check: whether either identity already committed in
+ *     an EARLIER block (the apply engine's pre-BEGIN replay guard +
+ *     the v2_tx_index/v2_intent_index uniqueness backstops);
  *   - FAULT vs VERDICT — a preflight ERR_HASH is a NODE-LOCAL fault
  *     (see env_preflight.h's ERR_HASH note), not a statement about the
  *     envelope. A consensus caller must fail ITS OWN operation on it
@@ -153,7 +150,7 @@ typedef enum {
                                     * exact reason is in meter_status_out.
                                     * APPENDED for the metering season;
                                     * every earlier value is unmoved.     */
-    NODUS_V2_ENV_ERR_BLOCK_BYTES   /* the batch's summed envelope bytes
+    NODUS_V2_ENV_ERR_BLOCK_BYTES,  /* the batch's summed envelope bytes
                                     * exceed the policy's ABSOLUTE
                                     * max_block_env_bytes bound (or the
                                     * checked sum overflowed). APPENDED
@@ -162,6 +159,13 @@ typedef enum {
                                     * BEFORE any reservation — a byte-
                                     * rejected batch never touches the
                                     * budget.                            */
+    NODUS_V2_ENV_ERR_DUP_INTENT    /* duplicate DERIVED intent_id in the
+                                    * batch: two wire realizations of ONE
+                                    * semantic transaction (e.g. the same
+                                    * envelope under two different valid
+                                    * authorization witnesses). APPENDED
+                                    * for the intent season; every
+                                    * earlier value is unmoved.          */
 } nodus_v2_env_status_t;
 
 /**
@@ -204,9 +208,13 @@ int nodus_witness_v2_block_bytes_check(const size_t *lens, size_t n,
  *   5. A preflight rejection -> ERR_PREFLIGHT, with the shared status in
  *      *pf_status_out and the envelope index in *fail_index_out.
  *   6. Only after ALL envelopes succeed: duplicate detection over the
- *      DERIVED ids, pairwise, EXACTLY DNA_ENV_HASH_LEN bytes. A duplicate
- *      -> ERR_DUP with *fail_index_out set to the SECOND member of the
- *      pair (the first is the one that was already legitimately there).
+ *      DERIVED ids, pairwise, EXACTLY DNA_ENV_HASH_LEN bytes, at BOTH
+ *      identity levels — FIRST wire_id (byte-identical resubmission ->
+ *      ERR_DUP), THEN intent_id (one semantic transaction under two
+ *      authorization realizations -> ERR_DUP_INTENT). *fail_index_out is
+ *      the SECOND member of the pair (the first is the one that was
+ *      already legitimately there). The order is frozen: a batch that is
+ *      duplicated at both levels reports ERR_DUP.
  *   7. NODUS_V2_ENV_OK.
  *
  * ON ANY REJECTION past the out/n_envs gates the ENTIRE out array is

@@ -243,7 +243,7 @@ static int apply_reject(nodus_witness_t *w, nodus_v2_block_t *b,
 /* shared genesis: migrate + scripted table + v2 genesis */
 static int fx_genesis(fixture_t *fx) {
     if (fx_open(fx) != 0) return -1;
-    if (nodus_witness_db_migrate_v2s7(fx->w) != 0) return -1;
+    if (nodus_witness_db_migrate_v2s8(fx->w) != 0) return -1;
     if (v2x_table_init(fx->w) != 0) return -1;
     uint8_t gid[64], vset[64];
     mk_id(gid, 0xEE);

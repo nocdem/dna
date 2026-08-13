@@ -186,7 +186,7 @@ static int all_zero(const uint8_t *b, size_t n) {
 int main(void) {
     fixture_t fx;
     CHECK(fx_open(&fx) == 0, "fixture"); OK();
-    CHECK(nodus_witness_db_migrate_v2s7(fx.w) == 0, "migrate"); OK();
+    CHECK(nodus_witness_db_migrate_v2s8(fx.w) == 0, "migrate"); OK();
 
     uint8_t gen_id[64], vset[64];
     mk_gen_id(gen_id, 0x40);
@@ -270,10 +270,10 @@ int main(void) {
         for (int i = 0; i < 3; i++) {
             CHECK(dna_env_preflight(bufs[i], lens[i], derived, 1, &tab, 1,
                                     ref) == DNA_ENV_PF_OK, "ref preflight");
-            CHECK(memcmp(ref->tx_id, out[i].tx_id, 64) == 0,
+            CHECK(memcmp(ref->wire_id, out[i].wire_id, 64) == 0,
                   "metered seam tx_id != shared recomputation"); OK();
         }
-        CHECK(memcmp(out[0].tx_id, out[1].tx_id, 64) != 0, "dup id"); OK();
+        CHECK(memcmp(out[0].wire_id, out[1].wire_id, 64) != 0, "dup id"); OK();
         free(ref);
     }
 
@@ -488,7 +488,7 @@ int main(void) {
     {
         fixture_t fx2;
         CHECK(fx_open(&fx2) == 0, "fixture 2"); OK();
-        CHECK(nodus_witness_db_migrate_v2s7(fx2.w) == 0, "migrate 2"); OK();
+        CHECK(nodus_witness_db_migrate_v2s8(fx2.w) == 0, "migrate 2"); OK();
         memset(out, 0xAA, sizeof(*out));
         memset(meters, 0xAA, sizeof(*meters));
         CHECK(nodus_witness_v2_env_preflight_reserve_batch(

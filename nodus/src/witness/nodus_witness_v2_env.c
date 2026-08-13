@@ -150,16 +150,31 @@ nodus_v2_env_status_t nodus_witness_v2_env_preflight_batch(
     /* Duplicate detection runs over the DERIVED identities only, and only
      * after every envelope has produced one. EXACTLY DNA_ENV_HASH_LEN
      * bytes are compared: a short compare would let two transactions
-     * sharing a prefix pass as distinct. */
+     * sharing a prefix pass as distinct. Wire-level first (byte-identical
+     * resubmission), then INTENT-level (intent season): two envelopes
+     * differing only in authorization evidence carry ONE intent under two
+     * wire_ids and are ONE semantic transaction — the second is rejected. */
     for (size_t i = 0; i < n_envs; i++)
         for (size_t j = i + 1; j < n_envs; j++)
-            if (memcmp(out[i].tx_id, out[j].tx_id, DNA_ENV_HASH_LEN) == 0) {
-                QGP_LOG_ERROR(LOG_TAG, "duplicate derived tx_id at batch "
+            if (memcmp(out[i].wire_id, out[j].wire_id,
+                       DNA_ENV_HASH_LEN) == 0) {
+                QGP_LOG_ERROR(LOG_TAG, "duplicate derived wire_id at batch "
                               "indices %zu and %zu", i, j);
                 /* the SECOND member: the first occurrence is the one that
                  * was legitimately there */
                 if (fail_index_out) *fail_index_out = j;
                 goto fail_dup;
+            }
+    for (size_t i = 0; i < n_envs; i++)
+        for (size_t j = i + 1; j < n_envs; j++)
+            if (memcmp(out[i].intent_id, out[j].intent_id,
+                       DNA_ENV_HASH_LEN) == 0) {
+                QGP_LOG_ERROR(LOG_TAG, "duplicate derived intent_id at "
+                              "batch indices %zu and %zu (same semantic "
+                              "transaction under different authorization)",
+                              i, j);
+                if (fail_index_out) *fail_index_out = j;
+                goto fail_dup_intent;
             }
 
     return NODUS_V2_ENV_OK;
@@ -184,6 +199,9 @@ fail_preflight:
 fail_dup:
     memset(out, 0, n_envs * sizeof(*out));
     return NODUS_V2_ENV_ERR_DUP;
+fail_dup_intent:
+    memset(out, 0, n_envs * sizeof(*out));
+    return NODUS_V2_ENV_ERR_DUP_INTENT;
 }
 
 int nodus_witness_v2_block_bytes_check(const size_t *lens, size_t n,

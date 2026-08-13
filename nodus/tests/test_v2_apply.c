@@ -406,7 +406,7 @@ static void rogue_table_disarm(nodus_witness_t *w) {
 int main(void) {
     fixture_t fx;
     CHECK(fx_open(&fx) == 0, "fixture"); OK();
-    CHECK(nodus_witness_db_migrate_v2s7(fx.w) == 0, "migrate"); OK();
+    CHECK(nodus_witness_db_migrate_v2s8(fx.w) == 0, "migrate"); OK();
     CHECK(v2x_table_init(fx.w) == 0, "scripted table"); OK();
 
     /* ── 1. genesis + cycle proof ───────────────────────────────────── */
@@ -495,7 +495,7 @@ int main(void) {
     {
         fixture_t fx2;
         CHECK(fx_open(&fx2) == 0, "fx2");
-        CHECK(nodus_witness_db_migrate_v2s7(fx2.w) == 0, "migrate2");
+        CHECK(nodus_witness_db_migrate_v2s8(fx2.w) == 0, "migrate2");
         CHECK(v2x_table_init(fx2.w) == 0, "table2");
         CHECK(nodus_witness_v2_genesis(fx2.w, gen_id, vset, 0) == 0,
               "genesis2");
@@ -607,8 +607,8 @@ int main(void) {
         CHECK(nodus_witness_v2_env_preflight_batch(fx.w, 3, rs, 2, v3, 2,
                                                    pf, NULL, NULL)
                   == NODUS_V2_ENV_OK, "preflight ids");
-        memcpy(id31, pf[0].tx_id, 64);
-        memcpy(id32, pf[1].tx_id, 64);
+        memcpy(id31, pf[0].wire_id, 64);
+        memcpy(id32, pf[1].wire_id, 64);
         free(pf);
     }
     nodus_v2_block_t b3;
@@ -890,7 +890,7 @@ int main(void) {
     /* ── 7. supply (official DNA numbers) ───────────────────────────── */
     fixture_t fs;
     CHECK(fx_open(&fs) == 0, "supply fixture"); OK();
-    CHECK(nodus_witness_db_migrate_v2s7(fs.w) == 0, "migrate");
+    CHECK(nodus_witness_db_migrate_v2s8(fs.w) == 0, "migrate");
     CHECK(v2x_table_init(fs.w) == 0, "scripted table (supply)");
 
     CHECK(run_sql(fs.w->db,

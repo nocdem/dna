@@ -92,10 +92,26 @@ dna_env_preflight_status_t dna_env_preflight(
                                 out->view.leg[i].runtime_op,
                                 out->auth_digest[i]) != 0) goto fail_hash;
 
-    /* Step 9. The DERIVED transaction identity — the only one this API
-     * knows. It covers auth_data exactly once, via the complete bytes. */
+    /* Step 9. The DERIVED FULL-WIRE identity (wire_id — the frozen tx_id
+     * preimage). It covers auth_data exactly once, via the complete
+     * bytes. */
     if (dna_env_tx_id(out->auth_context_commit, env_bytes, env_len,
-                      out->tx_id) != 0) goto fail_hash;
+                      out->wire_id) != 0) goto fail_hash;
+
+    /* Step 10. Per-leg canonical semantic projections — each nests the
+     * leg's already-derived call_commit; no byte is hashed twice. */
+    for (uint16_t i = 0; i < out->view.leg_count; i++)
+        if (dna_env_intent_leg_commit(&out->view, i, out->call_commit[i],
+                                      out->intent_leg_commit[i]) != 0)
+            goto fail_hash;
+
+    /* Step 11. The DERIVED CANONICAL INTENT identity — witness-
+     * independent by construction: nothing derived from auth_len or
+     * auth_data enters its preimage (env_wire.h layout block). */
+    if (dna_env_intent_id(&out->view, chain_id,
+                          (const uint8_t (*)[DNA_ENV_HASH_LEN])
+                              out->intent_leg_commit,
+                          out->intent_id) != 0) goto fail_hash;
 
     return DNA_ENV_PF_OK;
 

@@ -51,8 +51,8 @@
  * auth_context_commit (env_wire.h) — the chain identity, expiry, fee,
  * resource ceilings, and every leg's domain / runtime_op / ruleset
  * identity / call bytes. Changing ANY of them invalidates every
- * signature; the signature bytes themselves are covered only by tx_id
- * (non-circularity). The verdict is ENGINE-owned: the caller cannot
+ * signature; the signature bytes themselves are covered only by the
+ * full-wire wire_id (non-circularity). The verdict is ENGINE-owned: the caller cannot
  * supply one (no envelope field exists), the runtime cannot declare one
  * (exec only READS ctx->auth), and authorization work is priced once by
  * w_authbyte at reservation (no second charge anywhere).
@@ -442,7 +442,9 @@ int nodus_rt_auth_dsa87_v1(const nodus_domain_runtime_t *rt,
  *   [0..127]   owner fingerprint, exactly 128 lowercase-hex chars
  *   [128..135] amount        u64 BE
  *   [136..199] token_id      64 B (all-zero = native DNAC)
- *   [200..263] tx_hash       64 B (V2: the engine-derived tx_id)
+ *   [200..263] tx_hash       64 B (V2: the engine-derived INTENT
+ *                            identity ctx->intent_id — witness-stable
+ *                            provenance; NEVER the full-wire wire_id)
  *   [264..267] output_index  u32 BE
  *   [268..275] block_height  u64 BE
  *   [276..283] unlock_block  u64 BE
@@ -580,7 +582,8 @@ int nodus_rt_core_exec(const nodus_domain_runtime_t *rt,
                        uint8_t *res_out, size_t res_cap,
                        size_t *res_len_out) {
     (void)rt;
-    if (!env || !ctx || !ctx->tx_id || !res_out || !res_len_out) return -2;
+    if (!env || !ctx || !ctx->intent_id || !res_out || !res_len_out)
+        return -2;
     if (leg_index >= env->leg_count) return -2;
     if (env->leg[leg_index].runtime_op != DNA_CORERULE_SPEND) return -1;
 
@@ -701,7 +704,13 @@ int nodus_rt_core_exec(const nodus_domain_runtime_t *rt,
         memcpy(v + RTN_UTXO_OWNER_OFF, rec, 128);
         memcpy(v + RTN_UTXO_AMOUNT_OFF, rec + 128, 8);   /* already BE   */
         memcpy(v + RTN_UTXO_TOKEN_OFF, rec + 136, 64);
-        memcpy(v + RTN_UTXO_TXH_OFF, ctx->tx_id, 64);
+        /* PROVENANCE = the canonical INTENT identity (intent season):
+         * this row is consensus state (the UTXO merkle leaf commits
+         * tx_hash — nodus_witness_merkle.c:136), so two valid
+         * authorization realizations of the same SPEND must write
+         * byte-identical rows. The full-wire ctx->wire_id would differ
+         * between them and fork the CORE state root. */
+        memcpy(v + RTN_UTXO_TXH_OFF, ctx->intent_id, 64);
         rtn_put32(v + RTN_UTXO_OIDX_OFF, (uint32_t)o);
         rtn_put64(v + RTN_UTXO_BH_OFF, ctx->global_height);
         rtn_put64(v + RTN_UTXO_UNLOCK_OFF, 0);           /* legacy: all
@@ -1025,10 +1034,13 @@ const nodus_domain_adapter_t NODUS_RT_CORE_ADAPTER = {
  *   [0..7]   new_value       u64 BE
  *   [8..15]  commit_block    u64 BE (the executing global height)
  *   [16..23] proposal_nonce  u64 BE
- *   [24..87] tx_hash         64 B  (V2: the engine-derived tx_id)
+ *   [24..87] tx_hash         64 B  (V2: the engine-derived INTENT
+ *                            identity ctx->intent_id — witness-stable
+ *                            provenance; NEVER the full-wire wire_id)
  * Exactly the columns the chain-config merkle leaf consumes
  * (param_id/new_value/effective/commit_block/nonce —
- * nodus_witness_chain_config.c:389) plus the audit tx_hash;
+ * nodus_witness_chain_config.c:389) plus the provenance tx_hash (leaf-
+ * excluded, but a consensus-owned row — intent keeps it twin-stable);
  * created_at_unix is written 0 (deterministic lane, audit-only). */
 #define RTN_CC_VAL_LEN   88u
 #define RTN_CC_KEY_LEN   12u     /* param_id u32 BE ‖ effective u64 BE  */
@@ -1093,7 +1105,7 @@ int nodus_rt_system_exec(const nodus_domain_runtime_t *rt,
                          uint8_t *res_out, size_t res_cap,
                          size_t *res_len_out) {
     (void)rt;
-    if (!env || !ctx || !ctx->tx_id || !ctx->chain_id || !res_out ||
+    if (!env || !ctx || !ctx->intent_id || !ctx->chain_id || !res_out ||
         !res_len_out)
         return -2;
     if (leg_index >= env->leg_count) return -2;
@@ -1160,7 +1172,11 @@ int nodus_rt_system_exec(const nodus_domain_runtime_t *rt,
     rtn_put64(val, c.new_value);
     rtn_put64(val + 8, H);
     rtn_put64(val + 16, c.nonce);
-    memcpy(val + 24, ctx->tx_id, 64);
+    /* PROVENANCE = the canonical INTENT identity (intent season): the
+     * cc merkle leaf excludes tx_hash (audit column), but the row is a
+     * consensus-owned record — two valid committee subsets approving the
+     * same proposal must commit byte-identical rows. */
+    memcpy(val + 24, ctx->intent_id, 64);
 
     dna_effect_in_t eff;
     memset(&eff, 0, sizeof(eff));

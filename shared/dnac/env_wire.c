@@ -42,6 +42,14 @@ static const uint8_t TAG_ENV_AUTH[DNA_ENV_TAG_LEN] = {
 static const uint8_t TAG_ENV_TXID[DNA_ENV_TAG_LEN] = {
     'D','N','A','.','E','N','V','T','X','I','D','.','v','1', 0, 0
 };
+/** "DNA.ENVILEG.v1" (14 chars) + 2 zero bytes (intent season). */
+static const uint8_t TAG_ENV_ILEG[DNA_ENV_TAG_LEN] = {
+    'D','N','A','.','E','N','V','I','L','E','G','.','v','1', 0, 0
+};
+/** "DNA.ENVINTID.v1" (15 chars) + 1 zero byte (intent season). */
+static const uint8_t TAG_ENV_INTENT[DNA_ENV_TAG_LEN] = {
+    'D','N','A','.','E','N','V','I','N','T','I','D','.','v','1', 0
+};
 
 /* ── Preimage geometry (internal; the header documents the layouts) ─── */
 
@@ -60,6 +68,15 @@ static const uint8_t TAG_ENV_TXID[DNA_ENV_TAG_LEN] = {
 #define ENV_AUTH_PRE_LEN       90
 /** tx_id preimage without the envelope bytes: 16+64+4. */
 #define ENV_TXID_PRE_FIXED     84
+/** intent_leg_commit preimage, fixed: 16+4+4+4+1+1+4+4+64 (intent
+ *  season — auth_len is EXCLUDED by construction, auth_kind included). */
+#define ENV_ILEG_PRE_LEN       102
+/** intent_id preimage head: tag(16) + family(16) + ver(1) + chain(32)
+ *  + expiry(8) + fee(8) + res(8) + count(2). */
+#define ENV_INTENT_PRE_FIXED   91
+/** Largest intent_id preimage (n = DNA_ENV_MAX_LEGS legs of 64 B). */
+#define ENV_INTENT_PRE_MAX \
+    (ENV_INTENT_PRE_FIXED + DNA_ENV_HASH_LEN * DNA_ENV_MAX_LEGS)
 
 /* ── Layout arithmetic is pinned, not assumed ───────────────────────── */
 _Static_assert(DNA_ENV_FIXED_HEAD ==
@@ -81,6 +98,23 @@ _Static_assert(ENV_AUTH_PRE_LEN == DNA_ENV_TAG_LEN + DNA_ENV_HASH_LEN +
                "auth_digest preimage drifted");
 _Static_assert(ENV_TXID_PRE_FIXED == DNA_ENV_TAG_LEN + DNA_ENV_HASH_LEN + 4,
                "tx_id fixed preimage drifted");
+_Static_assert(ENV_ILEG_PRE_LEN == DNA_ENV_TAG_LEN + 4 + 4 + 4 + 1 + 1 +
+                   4 + 4 + DNA_ENV_HASH_LEN,
+               "intent_leg_commit preimage drifted (must be 102)");
+/* The intent leg projection is the 94-byte AUTHCTX leg segment MINUS the
+ * 4-byte auth_len MINUS the 4-byte call_len (call_len is committed inside
+ * the nested call_commit) PLUS the 16-byte tag: 94 - 4 - 4 + 16 = 102.
+ * This identity is the auditable statement that auth_len is the ONE
+ * envelope field excluded from intent identity. */
+_Static_assert(ENV_ILEG_PRE_LEN == ENV_AUTHCTX_LEG - 4 - 4 + DNA_ENV_TAG_LEN,
+               "intent leg projection no longer AUTHCTX-minus-auth_len");
+_Static_assert(ENV_INTENT_PRE_FIXED == DNA_ENV_TAG_LEN +
+                   DNA_ENV_WIRE_FAMILY_LEN + 1 + DNA_ENV_CHAIN_ID_LEN +
+                   8 + 8 + 8 + 2,
+               "intent_id preimage head drifted (must be 91)");
+/* intent_id builds its preimage on the STACK; 4187 bytes worst case. */
+_Static_assert(ENV_INTENT_PRE_MAX == 4187,
+               "intent_id max preimage drifted (91 + 64*64)");
 /* The leg count is u16 on the wire; the ceiling must fit that width. */
 _Static_assert(DNA_ENV_MAX_LEGS > 0 && DNA_ENV_MAX_LEGS <= 0xFFFF,
                "leg ceiling does not fit the u16 count");
@@ -535,4 +569,92 @@ int dna_env_tx_id(const uint8_t auth_context_commit[DNA_ENV_HASH_LEN],
     memset(pre, 0, pre_len);
     free(pre);
     return rc;
+}
+
+int dna_env_intent_leg_commit(const dna_env_view_t *v, uint16_t leg_index,
+                              const uint8_t call_commit[DNA_ENV_HASH_LEN],
+                              uint8_t out[DNA_ENV_HASH_LEN]) {
+    /* Fail closed: the output identity is zeroed BEFORE any other check,
+     * so no failure path can leave a stale digest usable (season rule:
+     * failure zeroes the output identity). */
+    if (out) memset(out, 0, DNA_ENV_HASH_LEN);
+    if (!v || !call_commit || !out) return -1;
+    if (!v->buf) return -1;                       /* uninitialised view    */
+    if (v->leg_count == 0 || v->leg_count > DNA_ENV_MAX_LEGS) return -1;
+    if (leg_index >= v->leg_count) return -1;
+
+    const dna_env_leg_hdr_t *h = &v->leg[leg_index];
+
+    /* STACK: fixed 102-byte preimage. auth_len is DELIBERATELY absent —
+     * it is authorization-witness cardinality, not semantics (the
+     * _Static_assert above pins the arithmetic of that exclusion).
+     * call_len and the call bytes enter through the nested call_commit. */
+    uint8_t pre[ENV_ILEG_PRE_LEN];
+    uint8_t *p = pre;
+    memcpy(p, TAG_ENV_ILEG, DNA_ENV_TAG_LEN);  p += DNA_ENV_TAG_LEN;
+    put_be32(h->domain_id, p);                 p += 4;
+    put_be32(h->runtime_op, p);                p += 4;
+    put_be32(h->ruleset_version, p);           p += 4;
+    *p++ = h->access_mode;
+    *p++ = h->auth_kind;
+    put_be32(h->res_max_effects, p);           p += 4;
+    put_be32(h->res_max_effect_bytes, p);      p += 4;
+    memcpy(p, call_commit, DNA_ENV_HASH_LEN);  p += DNA_ENV_HASH_LEN;
+
+    /* final-offset proof */
+    if ((size_t)(p - pre) != (size_t)ENV_ILEG_PRE_LEN) return -1;
+
+    if (qgp_sha3_512(pre, (size_t)ENV_ILEG_PRE_LEN, out) != 0) {
+        /* a backend fault may have written a partial digest before its
+         * own reject — the season rule is "failure zeroes the output
+         * identity", so re-zero rather than rely on the caller */
+        memset(out, 0, DNA_ENV_HASH_LEN);
+        return -1;
+    }
+    return 0;
+}
+
+int dna_env_intent_id(const dna_env_view_t *v,
+                      const uint8_t chain_id[DNA_ENV_CHAIN_ID_LEN],
+                      const uint8_t (*intent_leg_commits)[DNA_ENV_HASH_LEN],
+                      uint8_t out[DNA_ENV_HASH_LEN]) {
+    /* Fail closed FIRST (season rule: failure zeroes the output identity). */
+    if (out) memset(out, 0, DNA_ENV_HASH_LEN);
+    if (!v || !chain_id || !intent_leg_commits || !out) return -1;
+    if (!v->buf) return -1;                       /* uninitialised view    */
+    if (v->leg_count == 0 || v->leg_count > DNA_ENV_MAX_LEGS) return -1;
+
+    /* STACK: bounded by ENV_INTENT_PRE_MAX = 4187 bytes (_Static_assert
+     * above is the justification). The global fields mirror AUTHCTX_BYTES
+     * exactly (family marker as a FIELD, the view's version byte, the
+     * full contextual chain id) — the per-leg segments are the ONLY
+     * difference, and they carry no authorization evidence. */
+    uint8_t pre[ENV_INTENT_PRE_MAX];
+    size_t pre_len = (size_t)ENV_INTENT_PRE_FIXED +
+                     (size_t)v->leg_count * (size_t)DNA_ENV_HASH_LEN;
+
+    uint8_t *p = pre;
+    memcpy(p, TAG_ENV_INTENT, DNA_ENV_TAG_LEN); p += DNA_ENV_TAG_LEN;
+    memcpy(p, TAG_ENV_FAMILY, DNA_ENV_WIRE_FAMILY_LEN);
+    p += DNA_ENV_WIRE_FAMILY_LEN;
+    *p++ = v->envelope_version;
+    memcpy(p, chain_id, DNA_ENV_CHAIN_ID_LEN);  p += DNA_ENV_CHAIN_ID_LEN;
+    put_be64(v->expiry_height, p);              p += 8;
+    put_be64(v->fee_amount, p);                 p += 8;
+    put_be64(v->res_max_total_units, p);        p += 8;
+    put_be16(v->leg_count, p);                  p += 2;
+
+    for (uint16_t i = 0; i < v->leg_count; i++) {
+        memcpy(p, intent_leg_commits[i], DNA_ENV_HASH_LEN);
+        p += DNA_ENV_HASH_LEN;
+    }
+
+    /* final-offset proof */
+    if ((size_t)(p - pre) != pre_len) return -1;
+
+    if (qgp_sha3_512(pre, pre_len, out) != 0) {
+        memset(out, 0, DNA_ENV_HASH_LEN);   /* same fail-closed rule */
+        return -1;
+    }
+    return 0;
 }

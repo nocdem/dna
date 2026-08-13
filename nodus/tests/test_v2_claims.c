@@ -745,7 +745,7 @@ static int dist_genesis(fixture_t *fx, uint64_t total, uint64_t start_h,
                         uint64_t end_h, const char *tag,
                         uint8_t out_chain[32], uint8_t out_gid[64],
                         uint8_t out_mh[64]) {
-    if (nodus_witness_db_migrate_v2s7(fx->w) != 0) return -1;
+    if (nodus_witness_db_migrate_v2s8(fx->w) != 0) return -1;
     if (seed_supply(fx->w, 1000, 1000 - total) != 0) return -1;
     uint8_t sys_h[64], core_h[64];
     if (domman_hashes(fx->w, sys_h, core_h) != 0) return -1;
@@ -1021,7 +1021,7 @@ static int absent_genesis(fixture_t *fx, uint8_t out_sys[64],
                           uint8_t out_core[64], uint8_t out_glob[64],
                           uint8_t out_manroot[64]) {
     if (fx_open(fx) != 0) return -1;
-    if (nodus_witness_db_migrate_v2s7(fx->w) != 0) return -1;
+    if (nodus_witness_db_migrate_v2s8(fx->w) != 0) return -1;
     uint8_t sys_h[64], core_h[64];
     if (domman_hashes(fx->w, sys_h, core_h) != 0) return -1;
     dna_gman_t m;
@@ -1484,7 +1484,7 @@ static int test_never_mint(void) {
 static int genesis_expect_fail(dna_gman_t *m, int seed, const char *msg) {
     fixture_t fx;
     if (fx_open(&fx) != 0) return 1;
-    if (nodus_witness_db_migrate_v2s7(fx.w) != 0) { fx_close(&fx); return 1; }
+    if (nodus_witness_db_migrate_v2s8(fx.w) != 0) { fx_close(&fx); return 1; }
     if (seed && seed_supply(fx.w, 1000, 968) != 0) { fx_close(&fx); return 1; }
     uint8_t sys_h[64], core_h[64];
     if (domman_hashes(fx.w, sys_h, core_h) != 0) { fx_close(&fx); return 1; }
@@ -1622,7 +1622,7 @@ static int t3_genesis(fixture_t *fx, uint8_t out_chain[32],
     if (fx_open(fx) != 0) return -1;
     fx->w->v2_runtime_table = g_ext_table;
     fx->w->v2_runtime_table_n = g_ext_n;
-    if (nodus_witness_db_migrate_v2s7(fx->w) != 0) return -1;
+    if (nodus_witness_db_migrate_v2s8(fx->w) != 0) return -1;
     if (run_sql(fx->w->db,
             "CREATE TABLE t3_state (id BLOB PRIMARY KEY, "
             "amount INTEGER NOT NULL, asset BLOB NOT NULL)") != 0)
@@ -1893,7 +1893,7 @@ static int test_generic_coexistence(void) {
     CHECK(fx_open(&fx) == 0, "fixture");
     fx.w->v2_runtime_table = g_ext_table;
     fx.w->v2_runtime_table_n = g_ext_n;
-    CHECK(nodus_witness_db_migrate_v2s7(fx.w) == 0, "migrate");
+    CHECK(nodus_witness_db_migrate_v2s8(fx.w) == 0, "migrate");
     CHECK(run_sql(fx.w->db,
         "CREATE TABLE t3_state (id BLOB PRIMARY KEY, "
         "amount INTEGER NOT NULL, asset BLOB NOT NULL);"
@@ -1992,7 +1992,7 @@ static int lifecycle_genesis(fixture_t *fx, uint8_t out_gid[64]) {
     if (fx_open(fx) != 0) return -1;
     fx->w->v2_runtime_table = g_ext_table;
     fx->w->v2_runtime_table_n = g_ext_n;
-    if (nodus_witness_db_migrate_v2s7(fx->w) != 0) return -1;
+    if (nodus_witness_db_migrate_v2s8(fx->w) != 0) return -1;
     if (run_sql(fx->w->db,
             "CREATE TABLE t3_state (id BLOB PRIMARY KEY, "
             "amount INTEGER NOT NULL, asset BLOB NOT NULL)") != 0)

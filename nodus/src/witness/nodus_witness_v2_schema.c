@@ -190,8 +190,8 @@ int nodus_witness_db_migrate_v2s5_ex(nodus_witness_t *w,
             sqlite3_finalize(ti);
             if (!cols_ok || rc2 != SQLITE_DONE ||
                 ci != sizeof(expect_cols) / sizeof(expect_cols[0])) {
-                QGP_LOG_ERROR(LOG_TAG, "utxo_set column drift — refusing "
-                              "the domain-ownership rebuild");
+                QGP_LOG_ERROR(LOG_TAG, "%s", "utxo_set column drift — "
+                              "refusing the domain-ownership rebuild");
                 break;
             }
             if (exec_sql(w,
@@ -506,7 +506,7 @@ int nodus_witness_db_migrate_v2s7_ex(nodus_witness_t *w,
                 sizeof(roots_cols) / sizeof(roots_cols[0])) != 1)
             verified = 0;
         if (!verified) {
-            QGP_LOG_ERROR(LOG_TAG, "S7 schema shape drift — refusing");
+            QGP_LOG_ERROR(LOG_TAG, "%s", "S7 schema shape drift — refusing");
             break;
         }
         if (fail_at == V2S7MIG_FAIL_AFTER_VERIFY) break;
@@ -530,4 +530,198 @@ int nodus_witness_db_migrate_v2s7_ex(nodus_witness_t *w,
 
 int nodus_witness_db_migrate_v2s7(nodus_witness_t *w) {
     return nodus_witness_db_migrate_v2s7_ex(w, V2S7MIG_FAIL_NONE);
+}
+
+/* ── S8: the semantic-intent index (7 → 8, intent season) ───────────── */
+
+/* v2_intent_index is the SEMANTIC transaction index: intent_id is the
+ * canonical authorization-witness-independent identity (dna_env_intent_id)
+ * and the PRIMARY KEY — a committed intent exists at most once per chain.
+ * tx_id is the accepted FULL-WIRE realization of that intent (the same
+ * value v2_tx_index carries) and is UNIQUE — one intent, one accepted
+ * wire realization, and one wire realization can never serve two intents.
+ * Both uniqueness constraints are the fail-closed DATABASE backstop
+ * behind the apply engine's pre-BEGIN replay guard. */
+static const char *V2S8_TABLES_DDL =
+    "CREATE TABLE IF NOT EXISTS v2_intent_index ("
+    "  intent_id BLOB NOT NULL PRIMARY KEY,"
+    "  tx_id BLOB NOT NULL UNIQUE,"
+    "  global_height INTEGER NOT NULL,"
+    "  global_index INTEGER NOT NULL"
+    ");";
+
+/* 1 = v2_intent_index carries EXACTLY the two uniqueness constraints the
+ * replay backstop leans on (intent_id PRIMARY KEY; ONE unique index over
+ * exactly tx_id), 0 = missing/different, -1 = fault. Column NAMES alone
+ * are not shape: the DDL is CREATE TABLE IF NOT EXISTS, so a
+ * pre-existing constraint-free table with matching names would otherwise
+ * migrate with NO database backstop behind the pre-BEGIN replay guard
+ * (intent-season review finding — this check closes it). */
+static int s8_intent_constraints_ok(nodus_witness_t *w) {
+    /* intent_id must be the single-column PRIMARY KEY: PRAGMA table_info
+     * pk ordinal 1 on intent_id, 0 on every other column. */
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "PRAGMA table_info(\"v2_intent_index\")", -1, &st, NULL)
+        != SQLITE_OK)
+        return -1;
+    int rc, ok = 1, saw_intent = 0;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        const unsigned char *nm = sqlite3_column_text(st, 1);
+        int pk = sqlite3_column_int(st, 5);
+        if (!nm) { ok = 0; break; }
+        if (strcmp((const char *)nm, "intent_id") == 0) {
+            saw_intent = 1;
+            if (pk != 1) { ok = 0; break; }
+        } else if (pk != 0) {
+            ok = 0;
+            break;
+        }
+    }
+    sqlite3_finalize(st);
+    if (ok && rc != SQLITE_DONE) return -1;
+    if (!ok || !saw_intent) return 0;
+
+    /* Exactly ONE declared UNIQUE index (origin 'u'), covering exactly
+     * the single column tx_id. (The PRIMARY KEY's own sqlite_autoindex
+     * reports origin 'pk' and is accounted above.) */
+    if (sqlite3_prepare_v2(w->db,
+            "PRAGMA index_list(\"v2_intent_index\")", -1, &st, NULL)
+        != SQLITE_OK)
+        return -1;
+    int n_unique_u = 0;
+    char uname[128] = { 0 };
+    ok = 1;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        int is_unique = sqlite3_column_int(st, 2);
+        const unsigned char *origin = sqlite3_column_text(st, 3);
+        if (!origin) { ok = 0; break; }
+        if (is_unique && strcmp((const char *)origin, "u") == 0) {
+            const unsigned char *nm = sqlite3_column_text(st, 1);
+            if (!nm) { ok = 0; break; }
+            n_unique_u++;
+            snprintf(uname, sizeof(uname), "%s", (const char *)nm);
+        }
+    }
+    sqlite3_finalize(st);
+    if (ok && rc != SQLITE_DONE) return -1;
+    if (!ok || n_unique_u != 1) return 0;
+
+    char sql[192];
+    snprintf(sql, sizeof(sql), "PRAGMA index_info(\"%s\")", uname);
+    if (sqlite3_prepare_v2(w->db, sql, -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    int n_cols = 0;
+    ok = 1;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        const unsigned char *cn = sqlite3_column_text(st, 2);
+        if (!cn || strcmp((const char *)cn, "tx_id") != 0) { ok = 0; break; }
+        n_cols++;
+    }
+    sqlite3_finalize(st);
+    if (ok && rc != SQLITE_DONE) return -1;
+    return (ok && n_cols == 1) ? 1 : 0;
+}
+
+int nodus_witness_db_migrate_v2s8_ex(nodus_witness_t *w,
+                                     nodus_v2s8_mig_fail_t fail_at) {
+    if (!w || !w->db) return -1;
+
+    uint32_t ver = 0;
+    if (nodus_witness_db_schema_version(w, &ver) != 0) return -1;
+    if (ver == NODUS_V2_SCHEMA_VERSION_S8) return 0;     /* idempotent    */
+    if (ver == 0 || ver == NODUS_V2_SCHEMA_VERSION ||
+        ver == NODUS_V2_SCHEMA_VERSION_S6) {
+        /* Fresh/legacy/S5/S6: reach version 7 first (its own atomic
+         * stage chain — a crash leaves a VALID intermediate version and
+         * re-running resumes here). */
+        if (nodus_witness_db_migrate_v2s7(w) != 0) return -1;
+        ver = NODUS_V2_SCHEMA_VERSION_S7;
+    }
+    if (ver != NODUS_V2_SCHEMA_VERSION_S7) {
+        /* Unknown/newer schema (9+): this build must not touch it. */
+        QGP_LOG_ERROR(LOG_TAG,
+                      "unknown schema version %u — refusing S8 migration",
+                      ver);
+        return -1;
+    }
+
+    /* FAIL CLOSED on a populated wire index (read-only, pre-BEGIN —
+     * nothing to roll back): an intent_id can only be derived from the
+     * ORIGINAL envelope bytes, which v2_tx_index does not store, so a
+     * database that already committed V2 transactions cannot be
+     * backfilled with their intent identities. Migrating it anyway would
+     * leave every pre-migration intent silently unguarded against
+     * semantic replay. No live chain carries V2 rows (the surface is
+     * inactive; the devnet reset starts fresh), so the honest answer to
+     * a populated index is refusal, not a hole. */
+    {
+        sqlite3_stmt *st = NULL;
+        if (sqlite3_prepare_v2(w->db,
+                "SELECT COUNT(*) FROM v2_tx_index", -1, &st, NULL)
+            != SQLITE_OK)
+            return -1;
+        int rc = sqlite3_step(st);
+        sqlite3_int64 rows =
+            (rc == SQLITE_ROW) ? sqlite3_column_int64(st, 0) : -1;
+        sqlite3_finalize(st);
+        if (rows < 0) return -1;
+        if (rows > 0) {
+            QGP_LOG_ERROR(LOG_TAG,
+                          "v2_tx_index holds %lld committed row(s) whose "
+                          "intent identities cannot be derived — refusing "
+                          "S8 migration (fail closed)",
+                          (long long)rows);
+            return -1;
+        }
+    }
+
+    if (exec_sql(w, "BEGIN IMMEDIATE") != 0) return -1;
+
+    int ok = 0;
+    do {
+        if (fail_at == V2S8MIG_FAIL_AFTER_BEGIN) break;
+
+        if (exec_sql(w, V2S8_TABLES_DDL) != 0) break;
+        if (fail_at == V2S8MIG_FAIL_AFTER_TABLES) break;
+
+        /* Verify the schema actually materialized with EXACTLY the
+         * expected shape — column drift and partial tables reject. */
+        static const char *const intent_cols[] = {
+            "intent_id", "tx_id", "global_height", "global_index"
+        };
+        if (table_cols_exact(w, "v2_intent_index", intent_cols,
+                sizeof(intent_cols) / sizeof(intent_cols[0])) != 1) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "S8 schema shape drift — refusing");
+            break;
+        }
+        /* Names are necessary, not sufficient: the uniqueness
+         * CONSTRAINTS are the replay backstop, so their existence is
+         * verified explicitly (helper doc above). */
+        if (s8_intent_constraints_ok(w) != 1) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "v2_intent_index lacks the "
+                          "declared uniqueness constraints — refusing");
+            break;
+        }
+        if (fail_at == V2S8MIG_FAIL_AFTER_VERIFY) break;
+
+        if (exec_sql(w, "PRAGMA user_version = 8") != 0) break;
+        if (fail_at == V2S8MIG_FAIL_BEFORE_COMMIT) break;
+
+        ok = 1;
+    } while (0);
+
+    if (!ok) {
+        (void)exec_sql(w, "ROLLBACK");
+        return -1;
+    }
+    if (exec_sql(w, "COMMIT") != 0) {
+        (void)exec_sql(w, "ROLLBACK");
+        return -1;
+    }
+    return 0;
+}
+
+int nodus_witness_db_migrate_v2s8(nodus_witness_t *w) {
+    return nodus_witness_db_migrate_v2s8_ex(w, V2S8MIG_FAIL_NONE);
 }

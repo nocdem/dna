@@ -4,11 +4,14 @@
  *
  * One function turns raw envelope bytes plus two CONTEXTUAL inputs (the
  * chain identity and the per-leg contextual ruleset identities) into the
- * complete typed commitment set of that transaction — including the
- * DERIVED transaction id, which is the ONLY transaction identity this API
- * knows. There is no caller-supplied transaction-ID parameter anywhere in
- * this header: an id that is claimed rather than derived is a forgery
- * surface, so the type system simply does not offer one.
+ * complete typed commitment set of that transaction — including BOTH
+ * DERIVED transaction identities: the FULL-WIRE wire_id (commits every
+ * envelope byte, authorization included) and the authorization-witness-
+ * independent intent_id (intent season). They are the ONLY transaction
+ * identities this API knows. There is no caller-supplied identity
+ * parameter anywhere in this header: an id that is claimed rather than
+ * derived is a forgery surface, so the type system simply does not offer
+ * one — for either identity.
  *
  * ACTIVATION: INACTIVE. No live consensus path calls anything here; the
  * active chain keeps the legacy V2 wire, the v3 five-input state_root and
@@ -39,16 +42,17 @@
  *     env_wire.c:97. Nothing here recurses.
  *
  * Two nodes handed the same bytes and the same contextual inputs therefore
- * produce byte-identical results, which is the whole point: the derived
- * tx_id is consensus material.
+ * produce byte-identical results, which is the whole point: both derived
+ * identities (wire_id and intent_id) are consensus material.
  *
  * ── LIFETIME RULE (inherited, and it applies to the RESULT too) ────────
  * dna_env_preflight_t embeds a dna_env_view_t, and that view BORROWS
  * `env_bytes` exactly as dna_env_decode's does (env_wire.h:240-251).
  * The result is valid ONLY while the caller's envelope buffer stays alive
  * AND unmodified. The commitment arrays (call_commit / auth_context_commit
- * / auth_digest / tx_id) are owned COPIES and stay valid regardless — it
- * is the `view` member, and only that member, that dangles.
+ * / auth_digest / wire_id / intent_leg_commit / intent_id) are owned
+ * COPIES and stay valid regardless — it is the `view` member, and only
+ * that member, that dangles.
  *
  * ── HONEST LABEL: what the preflight does NOT decide ───────────────────
  * Everything the codec declines to check (env_wire.h:125-136) it also
@@ -137,15 +141,28 @@ typedef struct {
     uint8_t call_commit[DNA_ENV_MAX_LEGS][DNA_ENV_HASH_LEN];
     uint8_t auth_context_commit[DNA_ENV_HASH_LEN];
     uint8_t auth_digest[DNA_ENV_MAX_LEGS][DNA_ENV_HASH_LEN];
-    uint8_t tx_id[DNA_ENV_HASH_LEN];   /* THE authoritative transaction id */
+    /** THE authoritative FULL-WIRE transaction identity ("DNA.ENVTXID.v1"
+     *  — commits every canonical envelope byte, authorization evidence
+     *  included). Named wire_id so no engine consumer can confuse it with
+     *  the witness-independent intent identity below (intent season). */
+    uint8_t wire_id[DNA_ENV_HASH_LEN];
+    /** Per-leg canonical semantic projections ("DNA.ENVILEG.v1"). */
+    uint8_t intent_leg_commit[DNA_ENV_MAX_LEGS][DNA_ENV_HASH_LEN];
+    /** THE canonical AUTHORIZATION-WITNESS-INDEPENDENT intent identity
+     *  ("DNA.ENVINTID.v1" — env_wire.h layout block): identical for every
+     *  valid authorization realization of the same requested execution.
+     *  Drives semantic deduplication and consensus-state provenance;
+     *  NEVER block data or byte availability (that is wire_id's job). */
+    uint8_t intent_id[DNA_ENV_HASH_LEN];
 } dna_env_preflight_t;
 
 /* Explicit size audit. MEASURED on this build (x86-64, gcc, printed by
- * test_env_preflight): 10936 bytes — view 2616 + call_commit 4096 +
- * auth_context_commit 64 + auth_digest 4096 + tx_id 64. Multi-KB is why
- * every caller and every test HEAP-allocates this type instead of putting
- * it on the stack, and why the batch seam bounds its array. The ceiling is
- * a tripwire on a field being added carelessly, not a tuned limit. */
+ * test_env_preflight): 15096 bytes — view 2616 + call_commit 4096 +
+ * auth_context_commit 64 + auth_digest 4096 + wire_id 64 +
+ * intent_leg_commit 4096 + intent_id 64. Multi-KB is why every caller and
+ * every test HEAP-allocates this type instead of putting it on the stack,
+ * and why the batch seam bounds its array. The ceiling is a tripwire on a
+ * field being added carelessly, not a tuned limit. */
 _Static_assert(sizeof(dna_env_preflight_t) <= 16384,
                "dna_env_preflight_t grew past its audited size ceiling");
 
@@ -188,15 +205,19 @@ _Static_assert(sizeof(dna_env_preflight_t) <= 16384,
  *      enters here in FULL — all 32 bytes, no truncation, no C-string
  *      handling, no host-word comparison; failure -> ERR_HASH.
  *   8. auth_digest[i] for every leg; any failure -> ERR_HASH.
- *   9. tx_id over auth_context_commit + the complete env_bytes;
- *      failure -> ERR_HASH.
- *  10. DNA_ENV_PF_OK.
+ *   9. wire_id (the frozen tx_id preimage, "DNA.ENVTXID.v1") over
+ *      auth_context_commit + the complete env_bytes; failure -> ERR_HASH.
+ *  10. intent_leg_commit[i] for every leg, via dna_env_intent_leg_commit
+ *      with that leg's already-derived call_commit; failure -> ERR_HASH.
+ *  11. intent_id, via dna_env_intent_id over the same contextual chain_id
+ *      and the ordered leg projections; failure -> ERR_HASH.
+ *  12. DNA_ENV_PF_OK.
  *
  * ON EVERY FAILURE after step 0 the ENTIRE *out is zeroed AGAIN before
  * returning, so no usable partial result can ever escape — the same
  * discipline the codec's own reject exit applies (env_wire.c:353-359).
  * A zeroed result is unmistakable: view.leg_count == 0, view.buf == NULL,
- * tx_id all zero.
+ * wire_id AND intent_id all zero.
  *
  * @param env_bytes             the exact candidate envelope bytes;
  *                              BORROWED by out->view on success.

@@ -258,7 +258,9 @@ typedef struct {
     int      activated;                 /* head CREATED in this block    */
     dna_v2_domain_head_t head;          /* pre-block (or activation) head*/
     int      touched;
-    uint8_t  tx_ids[MAX_OPS][64];       /* local order                   */
+    uint8_t  wire_ids[MAX_OPS][64];     /* local order — FULL-WIRE ids
+                                         * (feeds tx_batch_root + the
+                                         * local index, wire by design)  */
     uint32_t n_tx;
     uint64_t res_cost;                  /* checked accumulation of ACTUAL
                                          * consumed units (the
@@ -477,7 +479,7 @@ int nodus_witness_v2_genesis_ex(nodus_witness_t *w,
     if (epoch != nodus_v2_epoch_for_height(0)) return -1;
     uint32_t ver = 0;
     if (nodus_witness_db_schema_version(w, &ver) != 0 ||
-        ver != NODUS_V2_SCHEMA_VERSION_S7)
+        ver != NODUS_V2_SCHEMA_VERSION_S8)
         return -1;
 
     /* Idempotency: a committed height-0 row decides. */
@@ -669,11 +671,11 @@ static int pool_stage_fault(void *ud, nodus_v2_pool_stage_t s) {
  * there is that surface's own migration. */
 
 int nodus_witness_v2_local_index_find(const uint8_t ids[][64], uint32_t n,
-                                      const uint8_t tx_id[64],
+                                      const uint8_t wire_id[64],
                                       uint32_t *lidx_out) {
-    if (!ids || !tx_id || !lidx_out) return -1;
+    if (!ids || !wire_id || !lidx_out) return -1;
     for (uint32_t k = 0; k < n; k++)
-        if (memcmp(ids[k], tx_id, 64) == 0) {
+        if (memcmp(ids[k], wire_id, 64) == 0) {
             *lidx_out = k;
             return 0;
         }
@@ -772,7 +774,8 @@ static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
         ctx.chain_id            = chain_id;
         ctx.global_height       = blk->global_height;
         ctx.epoch               = epoch;
-        ctx.tx_id               = pf->tx_id;
+        ctx.wire_id             = pf->wire_id;
+        ctx.intent_id           = pf->intent_id;
         ctx.auth_context_commit = pf->auth_context_commit;
         ctx.leg_auth_digest     = pf->auth_digest[l];
         ctx.auth                = av;
@@ -890,7 +893,7 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
 
     uint32_t ver = 0;
     if (nodus_witness_db_schema_version(w, &ver) != 0 ||
-        ver != NODUS_V2_SCHEMA_VERSION_S7)
+        ver != NODUS_V2_SCHEMA_VERSION_S8)
         return -1;
 
     /* ── epoch: DERIVED from the global block count, never trusted ────
@@ -1097,6 +1100,43 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
         }
         if (blk->fail_at == V2AP_FAIL_AFTER_ENV_RESERVE) RET_VERDICT;
 
+        /* ── COMMITTED-IDENTITY REPLAY GUARD (intent season, pre-BEGIN,
+         * read-only) ──────────────────────────────────────────────────
+         * Deterministic VERDICTS against the committed indices, checked
+         * per envelope in batch order — FIRST the intent (semantic
+         * replay: the same requested execution may commit ONCE per
+         * chain, no matter which valid authorization realizes it; a
+         * matching intent is NEVER evidence of authorization — the
+         * whole candidate block still rejects), THEN the wire id
+         * (byte-identical resubmission in a NEW block — distinct from
+         * phase-0 whole-block idempotent replay, which already returned
+         * rc 1 before this point). Both fire through RET_VERDICT so the
+         * batch reservation is released and the budget restored
+         * byte-identically. The v2_intent_index / v2_tx_index UNIQUE
+         * constraints remain the fail-closed database backstop behind
+         * this guard. A storage error here is a node fault (a guard
+         * that cannot read must not vote). */
+        for (size_t i = 0; i < blk->n_envs; i++) {
+            static const char *const guard_sql[2] = {
+                "SELECT 1 FROM v2_intent_index WHERE intent_id = ?1",
+                "SELECT 1 FROM v2_tx_index WHERE tx_id = ?1"
+            };
+            const uint8_t *guard_id[2] = { pf[i].intent_id,
+                                           pf[i].wire_id };
+            for (int g = 0; g < 2; g++) {
+                sqlite3_stmt *st = NULL;
+                if (sqlite3_prepare_v2(w->db, guard_sql[g], -1, &st,
+                                       NULL) != SQLITE_OK)
+                    goto fail_fault_pre;
+                sqlite3_bind_blob(st, 1, guard_id[g], 64, SQLITE_STATIC);
+                int rc = sqlite3_step(st);
+                sqlite3_finalize(st);
+                if (rc == SQLITE_ROW) RET_VERDICT;   /* already committed */
+                if (rc != SQLITE_DONE) goto fail_fault_pre;
+            }
+        }
+        if (blk->fail_at == V2AP_FAIL_AFTER_INTENT_GUARD) RET_VERDICT;
+
         /* Per-leg execution admission against the SNAPSHOT (block-entry
          * status is the executability authority): ACTIVE + runtime +
          * exec hook + INVOKE access + runtime_op OWNED by the committed
@@ -1140,7 +1180,7 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
                 }
                 d->touched = 1;
                 if (d->n_tx >= MAX_OPS) RET_VERDICT;
-                memcpy(d->tx_ids[d->n_tx++], pf[i].tx_id, 64);
+                memcpy(d->wire_ids[d->n_tx++], pf[i].wire_id, 64);
             }
         }
 
@@ -1224,7 +1264,8 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
                 actx.chain_id            = chain_id;
                 actx.global_height       = blk->global_height;
                 actx.epoch               = blk->epoch;
-                actx.tx_id               = pf[i].tx_id;
+                actx.wire_id             = pf[i].wire_id;
+                actx.intent_id           = pf[i].intent_id;
                 actx.auth_context_commit = pf[i].auth_context_commit;
                 actx.leg_auth_digest     = pf[i].auth_digest[l];
                 /* the resolved snapshot view, ONLY for the kind that
@@ -1436,7 +1477,7 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
                 p->pre_status = pre->status;
                 p->touched = pre->touched;
                 p->n_tx = pre->n_tx;
-                memcpy(p->tx_ids, pre->tx_ids, sizeof(p->tx_ids));
+                memcpy(p->wire_ids, pre->wire_ids, sizeof(p->wire_ids));
                 p->res_cost = pre->res_cost;
                 if (pre->status == DNA_DOMST_RETIRED &&
                     p->status != DNA_DOMST_RETIRED) {
@@ -1543,7 +1584,7 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
             memcpy(d->upd.pre_root, d->head.domain_state_root, 64);
             memcpy(d->upd.post_root, d->root_now, 64);
             if (dna_v2_tx_batch_root(
-                    (const uint8_t (*)[64])d->tx_ids, d->n_tx,
+                    (const uint8_t (*)[64])d->wire_ids, d->n_tx,
                     d->upd.tx_batch_root) != 0)
                 goto fail_fault;
             d->upd.ruleset_version = d->man.ruleset_version;
@@ -1620,8 +1661,43 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
     }
     FAIL_POINT(V2AP_FAIL_AFTER_HISTORY);
 
-    /* 12. transaction indices — DERIVED identities ONLY (pf[i].tx_id);
-     * global order = the phase order above. */
+    /* 12. transaction indices — DERIVED identities ONLY; global order =
+     * the phase order above. TWO indices per transaction (intent
+     * season): the SEMANTIC index first (v2_intent_index — intent_id PK
+     * + the ONE accepted wire realization), then the WIRE indices
+     * (v2_tx_index / v2_tx_local_index from pf[i].wire_id). All inside
+     * the ONE block transaction, so either both identities commit or
+     * neither does; the UNIQUE constraints are the fail-closed backstop
+     * behind the pre-BEGIN replay guard (a violation here means the
+     * guard's read and this write disagree — an engine/storage fault on
+     * THIS node, not a block property). */
+    {
+        uint32_t gidx = 0;
+        for (int phase = 0; phase < 3; phase++) {
+            for (size_t i = 0; i < blk->n_envs; i++) {
+                if (env_phase[i] != phase) continue;
+                sqlite3_stmt *st = NULL;
+                if (sqlite3_prepare_v2(w->db,
+                        "INSERT INTO v2_intent_index (intent_id, tx_id, "
+                        "global_height, global_index) "
+                        "VALUES (?1,?2,?3,?4)", -1, &st, NULL)
+                    != SQLITE_OK)
+                    goto fail_fault;
+                sqlite3_bind_blob(st, 1, pf[i].intent_id, 64,
+                                  SQLITE_TRANSIENT);
+                sqlite3_bind_blob(st, 2, pf[i].wire_id, 64,
+                                  SQLITE_TRANSIENT);
+                sqlite3_bind_int64(st, 3,
+                                   (sqlite3_int64)blk->global_height);
+                sqlite3_bind_int64(st, 4, (sqlite3_int64)gidx);
+                int rc = sqlite3_step(st);
+                sqlite3_finalize(st);
+                if (rc != SQLITE_DONE) goto fail_fault;
+                gidx++;
+            }
+        }
+    }
+    FAIL_POINT(V2AP_FAIL_AFTER_INTENT_INDEX);
     {
         uint32_t gidx = 0;
         for (int phase = 0; phase < 3; phase++) {
@@ -1652,7 +1728,7 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
                 sqlite3_bind_int64(st, 1,
                                    (sqlite3_int64)blk->global_height);
                 sqlite3_bind_int64(st, 2, (sqlite3_int64)gidx);
-                sqlite3_bind_blob(st, 3, pf[i].tx_id, 64,
+                sqlite3_bind_blob(st, 3, pf[i].wire_id, 64,
                                   SQLITE_TRANSIENT);
                 sqlite3_bind_int64(st, 4, (sqlite3_int64)owner);
                 sqlite3_bind_blob(st, 5, tl, (int)tw, SQLITE_TRANSIENT);
@@ -1673,8 +1749,8 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
                     if (!d) goto fail_fault;
                     uint32_t lidx = 0;
                     if (nodus_witness_v2_local_index_find(
-                            (const uint8_t (*)[64])d->tx_ids, d->n_tx,
-                            pf[i].tx_id, &lidx) != 0)
+                            (const uint8_t (*)[64])d->wire_ids, d->n_tx,
+                            pf[i].wire_id, &lidx) != 0)
                         goto fail_fault;
                     sqlite3_stmt *ls = NULL;
                     if (sqlite3_prepare_v2(w->db,
@@ -1683,7 +1759,7 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
                             "VALUES (?1,?2,?3,?4)", -1, &ls, NULL)
                         != SQLITE_OK)
                         goto fail_fault;
-                    sqlite3_bind_blob(ls, 1, pf[i].tx_id, 64,
+                    sqlite3_bind_blob(ls, 1, pf[i].wire_id, 64,
                                       SQLITE_TRANSIENT);
                     sqlite3_bind_int64(ls, 2,
                         (sqlite3_int64)v->leg[t].domain_id);
@@ -1706,7 +1782,7 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
         for (int phase = 0; phase < 3; phase++)
             for (size_t i = 0; i < blk->n_envs; i++)
                 if (env_phase[i] == phase)
-                    memcpy(all_ids[n_all++], pf[i].tx_id, 64);
+                    memcpy(all_ids[n_all++], pf[i].wire_id, 64);
         if (dna_v2_tx_batch_root(
                 n_all ? (const uint8_t (*)[64])all_ids : NULL, n_all,
                 blk->out_tx_root) != 0)

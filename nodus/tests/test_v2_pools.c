@@ -295,7 +295,7 @@ static void lanes_be(const uint64_t lanes[4], uint8_t out[32]) {
 }
 
 static int genesis(fixture_t *fx) {
-    if (nodus_witness_db_migrate_v2s7(fx->w) != 0) return -1;
+    if (nodus_witness_db_migrate_v2s8(fx->w) != 0) return -1;
     uint8_t gid[64], vset[64];
     mk_id(gid, 0xEE);
     mk_id(vset, 0x77);
@@ -396,10 +396,12 @@ static int t_kats(void) {
     uint64_t seqs2[2] = { 3, 5 };
     uint8_t roots2[2][32];
     memset(roots2, 0, sizeof(roots2));
-    CHECK(dna_pool_hist_commit(seqs2, roots2, 2, acc) == -1,
+    CHECK(dna_pool_hist_commit(seqs2, (const uint8_t (*)[32])roots2, 2,
+                               acc) == -1,
           "gapped history window accepted"); OK();
     uint64_t seqs3[2] = { 3, 4 };
-    CHECK(dna_pool_hist_commit(seqs3, roots2, 2, acc) == 0,
+    CHECK(dna_pool_hist_commit(seqs3, (const uint8_t (*)[32])roots2, 2,
+                               acc) == 0,
           "contiguous window rejected"); OK();
     CHECK(dna_pool_hist_commit(NULL, NULL, 0, acc) == 0 &&
           memcmp(acc, KAT_E_PHIST, 64) == 0, "empty window"); OK();
@@ -1102,7 +1104,7 @@ static int t_engine(void) {
     printf("8: engine — supply moves, follower reject, fault points\n");
     fixture_t fe, fe2;
     CHECK(fx_open(&fe) == 0, "fx e");
-    CHECK(nodus_witness_db_migrate_v2s7(fe.w) == 0, "migrate");
+    CHECK(nodus_witness_db_migrate_v2s8(fe.w) == 0, "migrate");
     CHECK(seed_small_supply(&fe) == 0, "seed");
     uint8_t gid[64], vset[64];
     mk_id(gid, 0xEE);
@@ -1110,7 +1112,7 @@ static int t_engine(void) {
     CHECK(nodus_witness_v2_genesis(fe.w, gid, vset, 0) == 0, "genesis");
     OK();
     CHECK(fx_open(&fe2) == 0, "fx e2");
-    CHECK(nodus_witness_db_migrate_v2s7(fe2.w) == 0, "migrate2");
+    CHECK(nodus_witness_db_migrate_v2s8(fe2.w) == 0, "migrate2");
     CHECK(seed_small_supply(&fe2) == 0, "seed2");
     CHECK(nodus_witness_v2_genesis(fe2.w, gid, vset, 0) == 0, "genesis2");
 
@@ -1315,7 +1317,7 @@ static int t_engine(void) {
      * pool BEFORE genesis, exactly like the module tests). */
     fixture_t ff;
     CHECK(fx_open(&ff) == 0, "fx f");
-    CHECK(nodus_witness_db_migrate_v2s7(ff.w) == 0, "migrate f");
+    CHECK(nodus_witness_db_migrate_v2s8(ff.w) == 0, "migrate f");
     CHECK(seed_small_supply(&ff) == 0, "seed f");
     {
         /* pre-genesis: create the limit-3 pool so the genesis CORE

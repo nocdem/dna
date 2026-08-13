@@ -235,6 +235,48 @@ static const uint8_t K_PF_TX_ID[64] = {
     0xb1, 0xb4, 0x7a, 0x9c, 0x92, 0x3d, 0xa0, 0xd3,
     0x38, 0x3c, 0xa3, 0x40, 0x09, 0x44, 0xb4, 0x05
 };
+/* intent season: pinned from the SAME independent oracle run that
+ * reproduced the frozen K_PF_TX_ID above byte-identically. */
+static const uint8_t K_PF_ILEG0[64] = {
+    0x86, 0x75, 0x14, 0x84, 0x90, 0x97, 0xee, 0xfe,
+    0xd6, 0x7a, 0xac, 0x37, 0xe7, 0x0e, 0xff, 0xf4,
+    0x9d, 0x4b, 0x15, 0x6d, 0x90, 0x21, 0x96, 0xb4,
+    0xbd, 0xd3, 0x52, 0x18, 0x1d, 0x1d, 0xe1, 0xcf,
+    0x62, 0x6b, 0x54, 0xe7, 0x28, 0x7d, 0x8c, 0xce,
+    0x24, 0x53, 0xbf, 0x59, 0xd9, 0xd4, 0xe6, 0x58,
+    0x16, 0x7a, 0xc3, 0x0a, 0xad, 0x34, 0xad, 0xb1,
+    0x09, 0xad, 0xc7, 0x6b, 0xfd, 0x07, 0xb6, 0xf9
+};
+static const uint8_t K_PF_ILEG1[64] = {
+    0xec, 0x47, 0x0e, 0xf5, 0x00, 0xf5, 0x24, 0xb4,
+    0x1c, 0xc7, 0x6c, 0x38, 0xef, 0x01, 0xa2, 0x77,
+    0x32, 0x37, 0x6d, 0x06, 0x49, 0xb4, 0x4d, 0x6a,
+    0x87, 0x71, 0x7a, 0x74, 0x73, 0x2a, 0xed, 0x51,
+    0xa0, 0xa0, 0x7d, 0x17, 0xf6, 0x21, 0x18, 0x6c,
+    0x3b, 0x01, 0x09, 0x64, 0x56, 0xa3, 0xbf, 0x63,
+    0xc0, 0x81, 0x34, 0x88, 0xac, 0x80, 0xea, 0x3e,
+    0x98, 0x3f, 0xc7, 0x7a, 0xd7, 0x9d, 0x25, 0x7e
+};
+static const uint8_t K_PF_ILEG2[64] = {
+    0xa8, 0xbc, 0xf4, 0xde, 0xbd, 0x5c, 0xfb, 0x88,
+    0x8f, 0x12, 0x77, 0xa5, 0x35, 0x40, 0x85, 0x2a,
+    0x7e, 0xe3, 0xd2, 0xe8, 0x43, 0xe9, 0x7f, 0x18,
+    0xc4, 0x19, 0x46, 0x0f, 0x2c, 0x48, 0xeb, 0x9c,
+    0xe9, 0x6a, 0x37, 0x3f, 0x16, 0xfb, 0x22, 0x45,
+    0x40, 0x43, 0x54, 0x40, 0x27, 0xa6, 0x9e, 0xc1,
+    0x3a, 0xce, 0x78, 0x37, 0x07, 0x23, 0x13, 0xba,
+    0x79, 0xdb, 0x34, 0x3e, 0xf4, 0x3c, 0x67, 0x57
+};
+static const uint8_t K_PF_INTENT_ID[64] = {
+    0xf8, 0xc2, 0x6e, 0x87, 0x1b, 0x9a, 0x4b, 0x58,
+    0x6c, 0x6f, 0xc0, 0x05, 0x6f, 0xeb, 0x95, 0x75,
+    0x3e, 0x6e, 0x7f, 0x23, 0x20, 0xe6, 0xcd, 0x85,
+    0xe8, 0x88, 0x74, 0x3b, 0x36, 0xc3, 0x10, 0x92,
+    0x68, 0x09, 0x34, 0x8b, 0x02, 0x82, 0x49, 0x34,
+    0xe3, 0xcc, 0x28, 0xba, 0x2a, 0x6b, 0x16, 0xe0,
+    0xcb, 0x4d, 0xee, 0x8d, 0xd6, 0xfe, 0x6f, 0x8f,
+    0xb6, 0x63, 0x8a, 0xff, 0x08, 0x25, 0x1a, 0x16
+};
 /* chain-id single-byte mutations (+1 mod 256) — each MUST move authctx,
  * every auth_digest and tx_id, and MUST NOT move any call_commit
  * (chain_id is absent from the call preimage, env_wire.h:78-84). */
@@ -758,14 +800,14 @@ static void test_chain_id_binding(void) {
         for (uint16_t i = 0; i < 3; i++)
             CHECK(memcmp(r->pf->auth_digest[i], base->pf->auth_digest[i],
                          HASH_LEN) != 0);
-        CHECK(memcmp(r->pf->tx_id, base->pf->tx_id, HASH_LEN) != 0);
+        CHECK(memcmp(r->pf->wire_id, base->pf->wire_id, HASH_LEN) != 0);
 
         /* and they move to the values the INDEPENDENT oracle predicts */
         expect_kat("chain-mutation authctx",  r->pf->auth_context_commit,
                    mut[m].authctx);
         expect_kat("chain-mutation digest0",  r->pf->auth_digest[0],
                    mut[m].digest0);
-        expect_kat("chain-mutation tx_id",    r->pf->tx_id, mut[m].txid);
+        expect_kat("chain-mutation tx_id",    r->pf->wire_id, mut[m].txid);
 
         run_free(r);
         fx_free(g);
@@ -808,7 +850,7 @@ static void test_ruleset_binding(void) {
         for (uint16_t i = 0; i < 3; i++)
             CHECK(memcmp(r->pf->auth_digest[i], base->pf->auth_digest[i],
                          HASH_LEN) != 0);
-        CHECK(memcmp(r->pf->tx_id, base->pf->tx_id, HASH_LEN) != 0);
+        CHECK(memcmp(r->pf->wire_id, base->pf->wire_id, HASH_LEN) != 0);
         /* the wire bytes are untouched: ruleset_hash is CONTEXTUAL */
         CHECK(memcmp(r->bytes, base->bytes, base->len) == 0);
         run_free(r);
@@ -823,7 +865,7 @@ static void test_ruleset_binding(void) {
         run_t *r = fx_run(g, 0);
         CHECK(r->st == DNA_ENV_PF_OK);
         CHECK(memcmp(r->bytes, base->bytes, base->len) != 0);
-        CHECK(memcmp(r->pf->tx_id, base->pf->tx_id, HASH_LEN) != 0);
+        CHECK(memcmp(r->pf->wire_id, base->pf->wire_id, HASH_LEN) != 0);
         run_free(r);
         fx_free(g);
     }
@@ -938,12 +980,22 @@ static void test_kat(void) {
     expect_kat("auth_digest[0]",      r->pf->auth_digest[0], K_PF_AUTH_DIGEST0);
     expect_kat("auth_digest[1]",      r->pf->auth_digest[1], K_PF_AUTH_DIGEST1);
     expect_kat("auth_digest[2]",      r->pf->auth_digest[2], K_PF_AUTH_DIGEST2);
-    expect_kat("tx_id",               r->pf->tx_id,          K_PF_TX_ID);
+    expect_kat("tx_id",               r->pf->wire_id,          K_PF_TX_ID);
+    expect_kat("intent_leg_commit[0]", r->pf->intent_leg_commit[0],
+               K_PF_ILEG0);
+    expect_kat("intent_leg_commit[1]", r->pf->intent_leg_commit[1],
+               K_PF_ILEG1);
+    expect_kat("intent_leg_commit[2]", r->pf->intent_leg_commit[2],
+               K_PF_ILEG2);
+    expect_kat("intent_id",           r->pf->intent_id,      K_PF_INTENT_ID);
 
     /* Unused slots stay zero — no stale digest is readable past leg_count. */
     CHECK(all_zero(r->pf->call_commit[3], HASH_LEN));
     CHECK(all_zero(r->pf->auth_digest[3], HASH_LEN));
     CHECK(all_zero(r->pf->call_commit[DNA_ENV_MAX_LEGS - 1], HASH_LEN));
+    CHECK(all_zero(r->pf->intent_leg_commit[3], HASH_LEN));
+    CHECK(all_zero(r->pf->intent_leg_commit[DNA_ENV_MAX_LEGS - 1],
+                   HASH_LEN));
 
     /* The view describes the envelope, field by field (never a struct
      * memcmp: padding is not part of the contract). */
@@ -989,7 +1041,7 @@ static void test_commitment_invariants(void) {
         for (uint16_t i = 0; i < 3; i++)
             CHECK(memcmp(r->pf->auth_digest[i], base->pf->auth_digest[i],
                          HASH_LEN) != 0);
-        CHECK(memcmp(r->pf->tx_id, base->pf->tx_id, HASH_LEN) != 0);
+        CHECK(memcmp(r->pf->wire_id, base->pf->wire_id, HASH_LEN) != 0);
         run_free(r);
         fx_free(g);
     }
@@ -1009,7 +1061,7 @@ static void test_commitment_invariants(void) {
         for (uint16_t i = 0; i < 3; i++)
             CHECK(memcmp(r->pf->auth_digest[i], base->pf->auth_digest[i],
                          HASH_LEN) != 0);
-        CHECK(memcmp(r->pf->tx_id, base->pf->tx_id, HASH_LEN) != 0);
+        CHECK(memcmp(r->pf->wire_id, base->pf->wire_id, HASH_LEN) != 0);
         run_free(r);
         fx_free(g);
     }
@@ -1030,14 +1082,17 @@ static void test_commitment_invariants(void) {
         for (uint16_t i = 0; i < 3; i++)
             CHECK(memcmp(r->pf->auth_digest[i], base->pf->auth_digest[i],
                          HASH_LEN) != 0);
-        CHECK(memcmp(r->pf->tx_id, base->pf->tx_id, HASH_LEN) != 0);
+        CHECK(memcmp(r->pf->wire_id, base->pf->wire_id, HASH_LEN) != 0);
         run_free(r);
         fx_free(g);
     }
 
-    /* THE NON-CIRCULARITY PIN: auth_data moves tx_id and NOTHING else.
+    /* THE NON-CIRCULARITY PIN: auth_data moves wire_id and NOTHING else.
      * If this ever breaks, a leg's authorization would have to sign a
-     * value that depends on the signature itself (env_wire.h:105-118). */
+     * value that depends on the signature itself (env_wire.h:105-118).
+     * Intent season: "nothing else" now explicitly includes BOTH intent
+     * projections — this is the preflight-level witness-independence
+     * twin (same intent, different wire realization). */
     {
         fixture_t *g = fx_clone(f);
         g->auth[0][2] = (uint8_t)(g->auth[0][2] + 1u);
@@ -1051,7 +1106,39 @@ static void test_commitment_invariants(void) {
         for (uint16_t i = 0; i < 3; i++)
             CHECK(memcmp(r->pf->auth_digest[i], base->pf->auth_digest[i],
                          HASH_LEN) == 0);
-        CHECK(memcmp(r->pf->tx_id, base->pf->tx_id, HASH_LEN) != 0);
+        CHECK(memcmp(r->pf->wire_id, base->pf->wire_id, HASH_LEN) != 0);
+        for (uint16_t i = 0; i < 3; i++)
+            CHECK(memcmp(r->pf->intent_leg_commit[i],
+                         base->pf->intent_leg_commit[i], HASH_LEN) == 0);
+        CHECK(memcmp(r->pf->intent_id, base->pf->intent_id,
+                     HASH_LEN) == 0);
+        run_free(r);
+        fx_free(g);
+    }
+
+    /* AUTH-LENGTH (witness cardinality) twin: a different auth_len moves
+     * wire_id AND the signing commitment (auth_context_commit commits
+     * auth_len) — but NEVER intent_id. This is the exact property that
+     * disqualified auth_context_commit as an intent key. */
+    {
+        fixture_t *g = fx_clone(f);
+        {
+            uint32_t nl = g->hdr[0].auth_len + 4;
+            uint8_t *na = malloc(nl);
+            MUST_ALLOC(na);
+            for (uint32_t j = 0; j < nl; j++)
+                na[j] = (uint8_t)(0xD0 + j);
+            free(g->auth[0]);
+            g->auth[0] = na;
+            g->hdr[0].auth_len = nl;
+        }
+        run_t *r = fx_run(g, 1000);
+        CHECK(r->st == DNA_ENV_PF_OK);
+        CHECK(memcmp(r->pf->auth_context_commit,
+                     base->pf->auth_context_commit, HASH_LEN) != 0);
+        CHECK(memcmp(r->pf->wire_id, base->pf->wire_id, HASH_LEN) != 0);
+        CHECK(memcmp(r->pf->intent_id, base->pf->intent_id,
+                     HASH_LEN) == 0);
         run_free(r);
         fx_free(g);
     }
@@ -1259,7 +1346,7 @@ static void prop_envelope_mutations(void) {
             CHECK(st == DNA_ENV_PF_OK);
             /* NO mutation may leave the identity unchanged: tx_id covers
              * the complete envelope bytes. */
-            CHECK(memcmp(pf->tx_id, base->pf->tx_id, HASH_LEN) != 0);
+            CHECK(memcmp(pf->wire_id, base->pf->wire_id, HASH_LEN) != 0);
         }
         if (failures != before) { seed_note("envelope-mutation", it); break; }
     }
@@ -1295,7 +1382,7 @@ static void prop_chain_id_mutations(void) {
         CHECK(st == DNA_ENV_PF_OK);
         CHECK(memcmp(pf->auth_context_commit,
                      base->pf->auth_context_commit, HASH_LEN) != 0);
-        CHECK(memcmp(pf->tx_id, base->pf->tx_id, HASH_LEN) != 0);
+        CHECK(memcmp(pf->wire_id, base->pf->wire_id, HASH_LEN) != 0);
         /* EVERY byte position matters, including 16..31 */
         for (uint16_t i = 0; i < 3; i++)
             CHECK(memcmp(pf->call_commit[i], base->pf->call_commit[i],
@@ -1367,7 +1454,7 @@ static void prop_context_permutations(void) {
         int identity = (a == 0 && b == 1 && c == 2 && d == 3);
         if (identity) {
             CHECK(st == DNA_ENV_PF_OK);
-            CHECK(memcmp(pf->tx_id, base->pf->tx_id, HASH_LEN) == 0);
+            CHECK(memcmp(pf->wire_id, base->pf->wire_id, HASH_LEN) == 0);
             accepted++;
         } else {
             /* Legs are strictly ascending by domain_id, so ANY non-identity
@@ -1452,7 +1539,7 @@ static void test_determinism(void) {
     }
     CHECK(memcmp(a->pf->auth_context_commit, b->pf->auth_context_commit,
                  HASH_LEN) == 0);
-    CHECK(memcmp(a->pf->tx_id, b->pf->tx_id, HASH_LEN) == 0);
+    CHECK(memcmp(a->pf->wire_id, b->pf->wire_id, HASH_LEN) == 0);
     CHECK(a->pf->view.leg_count == b->pf->view.leg_count);
     CHECK(a->pf->view.expiry_height == b->pf->view.expiry_height);
     CHECK(a->pf->view.fee_amount == b->pf->view.fee_amount);
@@ -1463,7 +1550,7 @@ static void test_determinism(void) {
     /* The height is NOT part of any commitment — only of the gate. */
     run_t *c = fx_run(f, 0);
     CHECK(c->st == DNA_ENV_PF_OK);
-    CHECK(memcmp(c->pf->tx_id, a->pf->tx_id, HASH_LEN) == 0);
+    CHECK(memcmp(c->pf->wire_id, a->pf->wire_id, HASH_LEN) == 0);
     CHECK(memcmp(c->pf->auth_context_commit, a->pf->auth_context_commit,
                  HASH_LEN) == 0);
 

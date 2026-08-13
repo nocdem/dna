@@ -286,6 +286,10 @@ static uint8_t g_nul_a[64], g_nul_b[64], g_nul_c[64], g_nul_lock[64];
  * effective 0) is committed BEFORE genesis, so the committee target
  * derivation (committee_target_for_epoch) resolves nval — the SOURCE
  * path, not a test shortcut. */
+static uint8_t g_gid_fill = 0xEE;   /* genesis id fill — the cross-chain
+                                     * intent test overrides it to build
+                                     * a fixture on a DIFFERENT chain    */
+
 static int fx_genesis_n(fixture_t *fx, const char *tag,
                         const uint8_t (*vkeys)[2592], int nval) {
     fx->w = calloc(1, sizeof(*fx->w));
@@ -302,7 +306,7 @@ static int fx_genesis_n(fixture_t *fx, const char *tag,
     if (nodus_witness_create_chain_db(fx->w, fx->chain_id16) != 0)
         return -1;
     if (nodus_chain_config_db_migrate(fx->w) != 0) return -1;
-    if (nodus_witness_db_migrate_v2s7(fx->w) != 0) return -1;
+    if (nodus_witness_db_migrate_v2s8(fx->w) != 0) return -1;
 
     if (nval != 7) {
         char sql[256];
@@ -343,7 +347,7 @@ static int fx_genesis_n(fixture_t *fx, const char *tag,
     if (seed_utxo(fx, 8, UTXO_C, 0xC1, 0, g_nul_c) != 0) return -1;
 
     uint8_t gid[64], vset[64];
-    mk_id(gid, 0xEE);
+    mk_id(gid, g_gid_fill);
     mk_id(vset, 0x77);
     if (nodus_witness_v2_genesis(fx->w, gid, vset, 0) != 0) return -1;
     if (nodus_witness_v2_chain_id(fx->w, fx->chain_id) != 0) return -1;
@@ -1041,11 +1045,13 @@ static int test_auth(void) {
           "valid authorization must commit");
     OK();
 
-    /* AUTH-DATA MALLEABILITY TWIN (the residual intent-dedup seam,
-     * labeled): Dilithium signing is randomized, so re-signing the SAME
-     * intent yields a second envelope with a DIFFERENT tx_id. It must
-     * not double-spend: the first commit consumed the inputs, so the
-     * twin dies as missing-input. */
+    /* AUTH-DATA MALLEABILITY TWIN (CLOSED by the intent season):
+     * Dilithium signing is randomized, so re-signing the SAME intent
+     * yields a second envelope with a DIFFERENT wire_id. It must not
+     * double-spend — and BOTH guards would now kill it: the committed-
+     * intent replay guard (fires first, pre-BEGIN) and the spent-input
+     * guard (the first commit consumed the inputs). This is the season's
+     * "SPEND replay where both guards would reject" case. */
     {
         env_t twin;
         CHECK(spend_env(&fx, &twin, ins, 1, outs, 2, FEE_MIN, s7, 1,
@@ -1929,8 +1935,12 @@ static int test_core_spend(void) {
             sqlite3_bind_blob(st, 1, n1, 64, SQLITE_TRANSIENT);
             CHECK(sqlite3_step(st) == SQLITE_ROW &&
                   sqlite3_column_bytes(st, 0) == 64 &&
-                  memcmp(sqlite3_column_blob(st, 0), pf->tx_id, 64) == 0,
-                  "output provenance is the DERIVED transaction id");
+                  memcmp(sqlite3_column_blob(st, 0), pf->intent_id,
+                         64) == 0,
+                  "output provenance is the DERIVED INTENT identity");
+            /* and it is NOT the full-wire identity (intent season) */
+            CHECK(memcmp(pf->intent_id, pf->wire_id, 64) != 0,
+                  "intent and wire identities are distinct values");
             sqlite3_finalize(st);
             free(pf);
             OK();
@@ -2334,6 +2344,464 @@ static int test_engine(void) {
     return 0;
 }
 
+/* ══ 7. CANONICAL INTENT IDENTITY (intent season) ══════════════════ */
+
+/* Digest ONLY the consensus-owned state tables (rowid order — both twin
+ * fixtures execute identical operation sequences, so rowids align). The
+ * wire/audit surfaces (v2_blocks, v2_tx_index, v2_domain_updates,
+ * v2_root_history, and v2_intent_index's tx_id column) are EXPECTED to
+ * differ between authorization twins and are deliberately excluded. */
+static int consensus_state_digest(nodus_witness_t *w, uint8_t out[64]) {
+    static const char *const tables[] = {
+        "utxo_set", "supply_tracking", "chain_config_history",
+        "v2_domain_heads", "v2_dist_state", "v2_claims_spent",
+        "v2_pools", "v2_pool_nullifiers"
+    };
+    dyn_t d = { 0 };
+    int out_rc = -1;
+    for (size_t t = 0; t < sizeof(tables) / sizeof(tables[0]); t++) {
+        char sql[128];
+        snprintf(sql, sizeof(sql), "SELECT * FROM \"%s\" ORDER BY rowid",
+                 tables[t]);
+        sqlite3_stmt *rs = NULL;
+        if (sqlite3_prepare_v2(w->db, sql, -1, &rs, NULL) != SQLITE_OK)
+            goto done;
+        if (dyn_put(&d, tables[t], strlen(tables[t]) + 1) != 0) {
+            sqlite3_finalize(rs);
+            goto done;
+        }
+        int rrc;
+        while ((rrc = sqlite3_step(rs)) == SQLITE_ROW) {
+            int nc = sqlite3_column_count(rs);
+            for (int c = 0; c < nc; c++) {
+                uint8_t ty = (uint8_t)sqlite3_column_type(rs, c);
+                if (dyn_put(&d, &ty, 1) != 0) { sqlite3_finalize(rs);
+                                                goto done; }
+                if (ty == SQLITE_NULL) continue;
+                const void *bp = sqlite3_column_blob(rs, c);
+                uint32_t bl = (uint32_t)sqlite3_column_bytes(rs, c);
+                if (dyn_put(&d, &bl, 4) != 0 ||
+                    (bl > 0 && dyn_put(&d, bp, bl) != 0)) {
+                    sqlite3_finalize(rs);
+                    goto done;
+                }
+            }
+        }
+        sqlite3_finalize(rs);
+        if (rrc != SQLITE_DONE) goto done;
+    }
+    out_rc = qgp_sha3_512(d.buf ? d.buf : (const uint8_t *)"", d.len, out)
+                 == 0 ? 0 : -1;
+done:
+    free(d.buf);
+    return out_rc;
+}
+
+/* Derive both identities of an envelope's bytes exactly as the engine
+ * does (single-leg CORE or SYSTEM fixture shapes). */
+static int derive_ids(fixture_t *fx, const env_t *e, uint32_t domain,
+                      uint8_t wire_out[64], uint8_t intent_out[64]) {
+    size_t n = 0;
+    const nodus_domain_runtime_t *bt = nodus_runtime_builtin_table(&n);
+    if (!bt || n != 2) return -1;
+    const nodus_domain_runtime_t *rt =
+        domain == DNA_DOMAIN_SYSTEM ? &bt[0] : &bt[1];
+    dna_env_leg_ctx_t lctx;
+    memset(&lctx, 0, sizeof(lctx));
+    lctx.domain_id = domain;
+    lctx.ruleset_version = rt->ruleset_version;
+    memcpy(lctx.ruleset_hash, rt->ruleset_hash, 64);
+    dna_env_preflight_t *pf = calloc(1, sizeof(*pf));
+    if (!pf) return -1;
+    int rc = -1;
+    if (dna_env_preflight(e->bytes, e->len, fx->chain_id, 1, &lctx, 1,
+                          pf) == DNA_ENV_PF_OK) {
+        memcpy(wire_out, pf->wire_id, 64);
+        memcpy(intent_out, pf->intent_id, 64);
+        rc = 0;
+    }
+    free(pf);
+    return rc;
+}
+
+static int test_intent_engine(void) {
+    int s7[1] = { 7 };
+    out_spec_t outs[2] = {
+        { 8, 2000000, 0x01, NULL },
+        { 7, 2000000, 0x02, NULL }
+    };
+    uint8_t ins[1][64];
+    int rc = 0;
+
+    /* ── SPEND TWIN EXECUTION across independent identical fixtures:
+     * realization A on fixture A, a DIFFERENT valid signature
+     * realization of the SAME intent on fixture B. Consensus state and
+     * roots must match byte-for-byte; the wire surfaces must not. ──── */
+    {
+        fixture_t a, b2;
+        CHECK(fx_genesis(&a, "intA") == 0, "genesis A");
+        CHECK(fx_genesis(&b2, "intB") == 0, "genesis B");
+        memcpy(ins[0], g_nul_a, 64);
+        env_t ea, eb;
+        CHECK(spend_env(&a, &ea, ins, 1, outs, 2, FEE_MIN, s7, 1,
+                        NULL) == 0, "build A");
+        CHECK(spend_env(&b2, &eb, ins, 1, outs, 2, FEE_MIN, s7, 1,
+                        NULL) == 0, "build B");
+        CHECK(ea.len == eb.len && memcmp(ea.bytes, eb.bytes, ea.len) != 0,
+              "randomized signing must give distinct realizations");
+        OK();
+
+        uint8_t wa[64], ia[64], wb[64], ib[64];
+        CHECK(derive_ids(&a, &ea, DNA_DOMAIN_CORE, wa, ia) == 0 &&
+              derive_ids(&b2, &eb, DNA_DOMAIN_CORE, wb, ib) == 0,
+              "derive");
+        CHECK(memcmp(ia, ib, 64) == 0, "twins must share ONE intent_id");
+        CHECK(memcmp(wa, wb, 64) != 0, "twins must have DISTINCT wire_ids");
+        OK();
+
+        nodus_v2_envelope_t va = { ea.bytes, ea.len };
+        nodus_v2_envelope_t vb = { eb.bytes, eb.len };
+        nodus_v2_block_t ba, bb;
+        mk_block(&ba, 1, &va, 1);
+        mk_block(&bb, 1, &vb, 1);
+        mk_id(bb.block_id, 0xC1);       /* different wire ⇒ a different
+                                         * block — ids must not collide  */
+        CHECK(nodus_witness_v2_apply_block(a.w, &ba) == 0, "A commits");
+        CHECK(nodus_witness_v2_apply_block(b2.w, &bb) == 0, "B commits");
+        OK();
+
+        /* consensus partition: state + state-bearing roots IDENTICAL */
+        uint8_t da[64], db[64];
+        CHECK(consensus_state_digest(a.w, da) == 0 &&
+              consensus_state_digest(b2.w, db) == 0, "digest");
+        CHECK(memcmp(da, db, 64) == 0,
+              "consensus state tables must be byte-identical across "
+              "authorization twins");
+        CHECK(memcmp(ba.out_domains_root, bb.out_domains_root, 64) == 0 &&
+              memcmp(ba.out_global_root, bb.out_global_root, 64) == 0,
+              "domain/global roots must be twin-identical");
+        /* wire partition: full-wire tx roots DIFFER (correct, §11) */
+        CHECK(memcmp(ba.out_tx_root, bb.out_tx_root, 64) != 0,
+              "wire tx roots must differ between twins");
+        OK();
+
+        /* the semantic index carries the SAME intent under each fixture's
+         * OWN wire realization */
+        {
+            sqlite3_stmt *st = NULL;
+            CHECK(sqlite3_prepare_v2(a.w->db,
+                  "SELECT intent_id, tx_id FROM v2_intent_index",
+                  -1, &st, NULL) == SQLITE_OK &&
+                  sqlite3_step(st) == SQLITE_ROW &&
+                  memcmp(sqlite3_column_blob(st, 0), ia, 64) == 0 &&
+                  memcmp(sqlite3_column_blob(st, 1), wa, 64) == 0,
+                  "A's intent row");
+            sqlite3_finalize(st);
+            st = NULL;
+            CHECK(sqlite3_prepare_v2(b2.w->db,
+                  "SELECT intent_id, tx_id FROM v2_intent_index",
+                  -1, &st, NULL) == SQLITE_OK &&
+                  sqlite3_step(st) == SQLITE_ROW &&
+                  memcmp(sqlite3_column_blob(st, 0), ib, 64) == 0 &&
+                  memcmp(sqlite3_column_blob(st, 1), wb, 64) == 0,
+                  "B's intent row");
+            sqlite3_finalize(st);
+            OK();
+        }
+
+        /* UTXO provenance is the intent — byte-identical rows, and NOT
+         * either wire id */
+        {
+            sqlite3_stmt *st = NULL;
+            CHECK(sqlite3_prepare_v2(a.w->db,
+                  "SELECT tx_hash FROM utxo_set WHERE block_height=1 "
+                  "LIMIT 1", -1, &st, NULL) == SQLITE_OK &&
+                  sqlite3_step(st) == SQLITE_ROW &&
+                  memcmp(sqlite3_column_blob(st, 0), ia, 64) == 0,
+                  "UTXO provenance == intent_id");
+            sqlite3_finalize(st);
+            OK();
+        }
+
+        /* ── COMMITTED-INTENT REPLAY, later block, THIRD realization —
+         * rejected by the intent guard with digest-identical rollback
+         * (both the intent guard and the spent-input guard would kill
+         * it; the intent guard fires first, pre-BEGIN). ────────────── */
+        {
+            env_t ec;
+            CHECK(spend_env(&a, &ec, ins, 1, outs, 2, FEE_MIN, s7, 1,
+                            NULL) == 0, "build C");
+            CHECK(memcmp(ec.bytes, ea.bytes, ea.len) != 0, "distinct");
+            nodus_v2_envelope_t vc = { ec.bytes, ec.len };
+            nodus_v2_block_t bc;
+            mk_block(&bc, 2, &vc, 1);
+            CHECK(apply_reject(a.w, &bc, &rc) == 0 && rc == -1,
+                  "committed intent under a new witness must reject");
+            OK();
+
+            /* REOPEN: the guard reads COMMITTED state — protection
+             * survives a database restart */
+            CHECK(fx_reopen(&a) == 0, "reopen");
+            nodus_v2_block_t bd;
+            mk_block(&bd, 2, &vc, 1);
+            CHECK(apply_reject(a.w, &bd, &rc) == 0 && rc == -1,
+                  "intent replay protection must survive reopen");
+            OK();
+
+            /* byte-identical committed-block replay is STILL idempotent
+             * (whole-block matrix runs before the intent guard) */
+            nodus_v2_block_t be;
+            mk_block(&be, 1, &va, 1);
+            CHECK(nodus_witness_v2_apply_block(a.w, &be) == 1,
+                  "committed-block replay stays idempotent");
+            OK();
+
+            /* RESURRECTED-INPUT REPLAY — the case where the intent guard
+             * is the ONLY thing standing: fixture surgery re-creates the
+             * spent input (and keeps the supply identity consistent), so
+             * a same-intent/different-witness realization would EXECUTE
+             * CLEANLY if the guard keyed on the wrong identity. It must
+             * still reject as a VERDICT (-1) with a digest-identical
+             * rollback — a guard that missed would instead die on the
+             * v2_intent_index UNIQUE backstop as a node fault (-2), or
+             * worse, double-apply. */
+            {
+                CHECK(seed_utxo(&a, 7, UTXO_A, 0xA1, 0, ins[0]) == 0,
+                      "resurrect spent input");
+                /* also remove block 1's created outputs, so the replay's
+                 * CREATEs face ABSENT keys — under a mutant guard the
+                 * whole execution would go clean and the UNIQUE backstop
+                 * (a -2 fault, not a -1 verdict) would be the only thing
+                 * left. Net utxo delta = +UTXO_A − (2×2,000,000) =
+                 * +FEE_MIN; genesis is rebalanced by exactly that so the
+                 * CORE conservation identity keeps holding. */
+                CHECK(run_sql(a.w->db,
+                      "DELETE FROM utxo_set WHERE block_height = 1") == 0,
+                      "clear block-1 outputs");
+                char sql[256];
+                snprintf(sql, sizeof(sql),
+                         "UPDATE supply_tracking SET "
+                         "genesis_supply = genesis_supply + %llu, "
+                         "current_supply = current_supply + %llu",
+                         (unsigned long long)FEE_MIN,
+                         (unsigned long long)FEE_MIN);
+                CHECK(run_sql(a.w->db, sql) == 0, "rebalance supply");
+                env_t ef;
+                CHECK(spend_env(&a, &ef, ins, 1, outs, 2, FEE_MIN, s7, 1,
+                                NULL) == 0, "build F");
+                nodus_v2_envelope_t vf = { ef.bytes, ef.len };
+                nodus_v2_block_t bf2;
+                mk_block(&bf2, 2, &vf, 1);
+                CHECK(apply_reject(a.w, &bf2, &rc) == 0 && rc == -1,
+                      "resurrected-input intent replay must reject as a "
+                      "verdict — the intent guard, not the backstop");
+                OK();
+            }
+        }
+        fx_close(&a);
+        fx_close(&b2);
+    }
+
+    /* ── CHAIN_CONFIG TWINS: same proposal, two different valid
+     * committee subsets (exact quorum {0..4} vs {1..5}, and the
+     * all-validator set) — one intent; SYSTEM state twin-identical. ── */
+    {
+        fixture_t a, b2, c;
+        CHECK(fx_genesis(&a, "ccA") == 0, "genesis ccA");
+        CHECK(fx_genesis(&b2, "ccB") == 0, "genesis ccB");
+        CHECK(fx_genesis(&c, "ccC") == 0, "genesis ccC");
+        int q1v[5] = { 0, 1, 2, 3, 4 };
+        int q2v[5] = { 1, 2, 3, 4, 5 };
+        int q7v[7] = { 0, 1, 2, 3, 4, 5, 6 };
+        env_t ea, eb, ec;
+        CHECK(cc_env(&a, &ea, 1, 1, 5, 1000, 0x42, 1, 2000, q1v, 5, 0,
+                     NULL, NULL) == 0, "build ccA");
+        CHECK(cc_env(&b2, &eb, 1, 1, 5, 1000, 0x42, 1, 2000, q2v, 5, 0,
+                     NULL, NULL) == 0, "build ccB");
+        CHECK(cc_env(&c, &ec, 1, 1, 5, 1000, 0x42, 1, 2000, q7v, 7, 0,
+                     NULL, NULL) == 0, "build ccC (all validators)");
+
+        uint8_t wa[64], ia[64], wb[64], ib[64], wc[64], ic[64];
+        CHECK(derive_ids(&a, &ea, DNA_DOMAIN_SYSTEM, wa, ia) == 0 &&
+              derive_ids(&b2, &eb, DNA_DOMAIN_SYSTEM, wb, ib) == 0,
+              "derive cc");
+        CHECK(memcmp(ia, ib, 64) == 0,
+              "different committee subsets: ONE intent");
+        CHECK(memcmp(wa, wb, 64) != 0,
+              "different committee subsets: DISTINCT wire ids");
+        /* all-N approval set: DIFFERENT auth_len — intent still equal */
+        CHECK(derive_ids(&c, &ec, DNA_DOMAIN_SYSTEM, wc, ic) == 0,
+              "derive ccC");
+        CHECK(memcmp(ia, ic, 64) == 0,
+              "exact quorum vs all-validator set: ONE intent");
+        CHECK(memcmp(wa, wc, 64) != 0, "distinct wire id (all-N)");
+        OK();
+
+        nodus_v2_envelope_t va = { ea.bytes, ea.len };
+        nodus_v2_envelope_t vb = { eb.bytes, eb.len };
+        nodus_v2_envelope_t vc = { ec.bytes, ec.len };
+        nodus_v2_block_t ba, bb, bc;
+        mk_block(&ba, 1, &va, 1);
+        mk_block(&bb, 1, &vb, 1);
+        mk_block(&bc, 1, &vc, 1);
+        mk_id(bb.block_id, 0xC2);
+        mk_id(bc.block_id, 0xC3);
+        CHECK(nodus_witness_v2_apply_block(a.w, &ba) == 0, "ccA commits");
+        CHECK(nodus_witness_v2_apply_block(b2.w, &bb) == 0, "ccB commits");
+        CHECK(nodus_witness_v2_apply_block(c.w, &bc) == 0, "ccC commits");
+        OK();
+
+        uint8_t da[64], db[64], dc[64];
+        CHECK(consensus_state_digest(a.w, da) == 0 &&
+              consensus_state_digest(b2.w, db) == 0 &&
+              consensus_state_digest(c.w, dc) == 0, "digest cc");
+        CHECK(memcmp(da, db, 64) == 0 && memcmp(da, dc, 64) == 0,
+              "SYSTEM consensus state must be identical across committee "
+              "subsets (incl. the cc history row's intent provenance)");
+        CHECK(memcmp(ba.out_domains_root, bb.out_domains_root, 64) == 0 &&
+              memcmp(ba.out_domains_root, bc.out_domains_root, 64) == 0,
+              "SYSTEM roots twin-identical");
+        CHECK(memcmp(ba.out_tx_root, bb.out_tx_root, 64) != 0,
+              "cc wire tx roots differ");
+        OK();
+
+        /* the committed history row's provenance IS the intent */
+        {
+            sqlite3_stmt *st = NULL;
+            CHECK(sqlite3_prepare_v2(a.w->db,
+                  "SELECT tx_hash FROM chain_config_history WHERE "
+                  "param_id=1 AND effective_block=1000",
+                  -1, &st, NULL) == SQLITE_OK &&
+                  sqlite3_step(st) == SQLITE_ROW &&
+                  memcmp(sqlite3_column_blob(st, 0), ia, 64) == 0,
+                  "cc history provenance == intent_id");
+            sqlite3_finalize(st);
+            OK();
+        }
+
+        /* NO-INPUT SYSTEM REPLAY: the same proposal under yet another
+         * valid subset in a LATER block — an inputless transaction has
+         * no spent-row guard, so the intent guard is the ONLY semantic
+         * protection. It must reject with rollback. */
+        {
+            env_t er;
+            int q3v[5] = { 2, 3, 4, 5, 6 };
+            CHECK(cc_env(&a, &er, 2, 1, 5, 1000, 0x42, 1, 2000, q3v, 5,
+                         0, NULL, NULL) == 0, "build replay");
+            nodus_v2_envelope_t vr = { er.bytes, er.len };
+            nodus_v2_block_t br;
+            mk_block(&br, 2, &vr, 1);
+            CHECK(apply_reject(a.w, &br, &rc) == 0 && rc == -1,
+                  "no-input SYSTEM intent replay must reject");
+            OK();
+        }
+
+        /* MATCHING INTENT IS NEVER EVIDENCE OF AUTHORIZATION: a
+         * realization of the already-committed intent carrying an
+         * INVALID signature must reject as a VERDICT (-1) — never
+         * commit, never soften to a fault. */
+        {
+            env_t ebad;
+            int q4v[5] = { 0, 1, 2, 3, 4 };
+            sign_opt_t so;
+            memset(&so, 0, sizeof(so));
+            so.break_sig = 1;
+            CHECK(cc_env(&a, &ebad, 2, 1, 5, 1000, 0x42, 1, 2000, q4v,
+                         5, 0, NULL, &so) == 0, "build bad-sig replay");
+            nodus_v2_envelope_t vb2 = { ebad.bytes, ebad.len };
+            nodus_v2_block_t bb2;
+            mk_block(&bb2, 2, &vb2, 1);
+            CHECK(apply_reject(a.w, &bb2, &rc) == 0 && rc == -1,
+                  "matching intent is never evidence of authorization");
+            OK();
+        }
+        fx_close(&a);
+        fx_close(&b2);
+        fx_close(&c);
+    }
+
+    /* ── CROSS-CHAIN: the same semantic content on another chain is a
+     * DIFFERENT intent (chain_id is in the preimage) — and the foreign
+     * envelope still dies on the chain binding (signature over the
+     * foreign chain's digest). ─────────────────────────────────────── */
+    {
+        fixture_t a, o;
+        CHECK(fx_genesis(&a, "xcA") == 0, "genesis xcA");
+        /* a SECOND CHAIN: same keys, same funded state, different
+         * committed genesis id ⇒ different derived chain id */
+        g_gid_fill = 0xEF;
+        int orc = fx_genesis(&o, "xcO");
+        g_gid_fill = 0xEE;
+        CHECK(orc == 0, "genesis xcO (other chain)");
+        memcpy(ins[0], g_nul_a, 64);
+        env_t ea;
+        CHECK(spend_env(&a, &ea, ins, 1, outs, 2, FEE_MIN, s7, 1,
+                        NULL) == 0, "build xc");
+        uint8_t wa[64], ia[64], wo[64], io[64];
+        CHECK(derive_ids(&a, &ea, DNA_DOMAIN_CORE, wa, ia) == 0, "ids A");
+        CHECK(memcmp(a.chain_id, o.chain_id, 32) != 0,
+              "fixtures must be different chains");
+        CHECK(derive_ids(&o, &ea, DNA_DOMAIN_CORE, wo, io) == 0, "ids O");
+        CHECK(memcmp(ia, io, 64) != 0,
+              "cross-chain: intents must differ");
+        OK();
+        /* the foreign chain still REJECTS the envelope: its auth digest
+         * differs, so every signature fails verification. prev links to
+         * chain O's OWN genesis id so the block reaches the auth stage
+         * rather than dying at height linkage. */
+        nodus_v2_envelope_t va = { ea.bytes, ea.len };
+        nodus_v2_block_t bo;
+        mk_block(&bo, 1, &va, 1);
+        mk_id(bo.prev_block_id, 0xEF);
+        CHECK(apply_reject(o.w, &bo, &rc) == 0 && rc == -1,
+              "cross-chain replay must fail the chain binding");
+        OK();
+        fx_close(&a);
+        fx_close(&o);
+    }
+
+    /* ── FAULT POINTS F35 (post-guard, pre-BEGIN) and F36 (after the
+     * intent-index insert, inside the transaction): full digest
+     * rollback, no identity index rows, clean retry commits. ───────── */
+    {
+        fixture_t fx;
+        CHECK(fx_genesis(&fx, "f3536") == 0, "genesis f");
+        memcpy(ins[0], g_nul_a, 64);
+        env_t e;
+        CHECK(spend_env(&fx, &e, ins, 1, outs, 2, FEE_MIN, s7, 1,
+                        NULL) == 0, "build f");
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        nodus_v2_block_t b;
+
+        mk_block(&b, 1, &ve, 1);
+        b.fail_at = V2AP_FAIL_AFTER_INTENT_GUARD;
+        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+              "F35 must reject with digest-identical rollback");
+        OK();
+        mk_block(&b, 1, &ve, 1);
+        b.fail_at = V2AP_FAIL_AFTER_INTENT_INDEX;
+        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+              "F36 must reject with digest-identical rollback");
+        /* the interrupted block committed NEITHER identity index */
+        CHECK(q1(fx.w, "SELECT COUNT(*) FROM v2_intent_index") == 0,
+              "F36 left an intent row");
+        CHECK(q1(fx.w, "SELECT COUNT(*) FROM v2_tx_index") == 0,
+              "F36 left a wire row");
+        OK();
+        /* clean retry commits, and BOTH indices land atomically */
+        mk_block(&b, 1, &ve, 1);
+        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+              "clean retry after faults must commit");
+        CHECK(q1(fx.w, "SELECT COUNT(*) FROM v2_intent_index") == 1 &&
+              q1(fx.w, "SELECT COUNT(*) FROM v2_tx_index") == 1,
+              "both identity indices committed");
+        OK();
+        fx_close(&fx);
+    }
+
+    return 0;
+}
+
 int main(void) {
     if (keys_init() != 0) {
         fprintf(stderr, "keygen failed\n");
@@ -2345,6 +2813,7 @@ int main(void) {
     if (test_committee_capacity() != 0) return 1;
     if (test_core_spend() != 0) return 1;
     if (test_engine() != 0) return 1;
+    if (test_intent_engine() != 0) return 1;
     printf("test_v2_native: ALL OK (%d checks)\n", g_checks);
     return 0;
 }

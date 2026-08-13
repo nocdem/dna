@@ -29,11 +29,17 @@ TAG_CALL    = b"DNA.ENVCALL.v1".ljust(16, b"\0")
 TAG_AUTHCTX = b"DNA.ENVCTX.v1".ljust(16, b"\0")
 TAG_AUTH    = b"DNA.ENVAUTH.v1".ljust(16, b"\0")
 TAG_TXID    = b"DNA.ENVTXID.v1".ljust(16, b"\0")
+TAG_ILEG    = b"DNA.ENVILEG.v1".ljust(16, b"\0")     # intent season
+TAG_INTENT  = b"DNA.ENVINTID.v1".ljust(16, b"\0")    # intent season
 
 ENV_VERSION   = 1
 FIXED_HEAD    = 43
 LEG_HDR_LEN   = 30
-MAX_TOTAL_LEN = 65536
+MAX_TOTAL_LEN = 1048576   # capacity season: DNA_ENV_MAX_TOTAL_LEN = 2^20
+                          # (was 65536 pre-capacity — spec-drift repaired
+                          # in the intent season; used only by the
+                          # fixture-legality assert, no digest depends
+                          # on it)
 MAX_LEGS      = 64
 
 ACCESS_READ   = 1
@@ -150,6 +156,28 @@ class Envelope:
         assert len(pre) == 84 + len(env)
         return sha3(pre)
 
+    # ── intent season (spec transcription, matching env_intent_oracle.py):
+    # the canonical AUTHORIZATION-WITNESS-INDEPENDENT identity. auth_len
+    # and auth_data appear NOWHERE below.
+    def intent_leg_commit(self, i):
+        lg = self.legs[i]
+        pre = (TAG_ILEG + be32(lg.domain_id) + be32(lg.runtime_op) +
+               be32(lg.ruleset_version) + be8(lg.access_mode) +
+               be8(lg.auth_kind) + be32(lg.res_max_effects) +
+               be32(lg.res_max_effect_bytes) + self.call_commit(i))
+        assert len(pre) == 102, len(pre)
+        return sha3(pre)
+
+    def intent_id(self):
+        n = len(self.legs)
+        pre = (TAG_INTENT + WIRE_FAMILY + be8(ENV_VERSION) + self.chain_id +
+               be64(self.expiry_height) + be64(self.fee_amount) +
+               be64(self.res_max_total_units) + be16(n))
+        assert len(pre) == 91
+        for i in range(n):
+            pre += self.intent_leg_commit(i)
+        return sha3(pre)
+
 
 def c_array(name, data):
     """Emit in this tree's pinned-literal style (8 bytes per line, matching
@@ -217,6 +245,9 @@ def main():
     for i in range(3):
         print(c_array("K_PF_AUTH_DIGEST%d" % i, env.auth_digest(i)))
     print(c_array("K_PF_TX_ID", env.tx_id()))
+    for i in range(3):
+        print(c_array("K_PF_ILEG%d" % i, env.intent_leg_commit(i)))
+    print(c_array("K_PF_INTENT_ID", env.intent_id()))
 
     # -- chain-id mutation battery ---------------------------------------
     # Bytes 16 and 31 are the TRUNCATION detectors: an implementation that
@@ -250,7 +281,18 @@ def main():
         assert m.auth_digest(i) == env.auth_digest(i), \
             "auth_data must NOT affect any auth_digest"
     assert m.tx_id() != env.tx_id(), "auth_data MUST affect tx_id"
+    assert m.intent_id() == env.intent_id(), \
+        "auth_data must NOT affect intent_id"
     print("/* oracle self-check: auth_data affects tx_id ONLY — OK */")
+
+    m = copy.deepcopy(env)
+    m.legs[0].auth_data = env.legs[0].auth_data + b"\x00\x11\x22"
+    assert m.tx_id() != env.tx_id()
+    assert m.auth_context_commit() != env.auth_context_commit()
+    assert m.intent_id() == env.intent_id(), \
+        "auth_len must NOT affect intent_id"
+    print("/* oracle self-check: auth_len moves tx_id + authctx, never "
+          "intent_id — OK */")
 
     m = copy.deepcopy(env)
     m.legs[1].ruleset_hash = flip(env.legs[1].ruleset_hash, 7)

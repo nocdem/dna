@@ -230,7 +230,7 @@ static int batch_zeroed(const dna_env_preflight_t *out, size_t n) {
 int main(void) {
     fixture_t fx;
     CHECK(fx_open(&fx) == 0, "fixture"); OK();
-    CHECK(nodus_witness_db_migrate_v2s7(fx.w) == 0, "migrate"); OK();
+    CHECK(nodus_witness_db_migrate_v2s8(fx.w) == 0, "migrate"); OK();
 
     uint8_t gen_id[64], vset[64];
     mk_gen_id(gen_id, 0x40);
@@ -290,9 +290,9 @@ int main(void) {
           "optional outs not cleared"); OK();
 
     /* three DISTINCT derived identities */
-    CHECK(memcmp(out[0].tx_id, out[1].tx_id, 64) != 0, "tx0 == tx1"); OK();
-    CHECK(memcmp(out[1].tx_id, out[2].tx_id, 64) != 0, "tx1 == tx2"); OK();
-    CHECK(memcmp(out[0].tx_id, out[2].tx_id, 64) != 0, "tx0 == tx2"); OK();
+    CHECK(memcmp(out[0].wire_id, out[1].wire_id, 64) != 0, "tx0 == tx1"); OK();
+    CHECK(memcmp(out[1].wire_id, out[2].wire_id, 64) != 0, "tx1 == tx2"); OK();
+    CHECK(memcmp(out[0].wire_id, out[2].wire_id, 64) != 0, "tx0 == tx2"); OK();
 
     /* SEAM <-> SHARED agreement: each equals a direct recomputation with
      * the chain id nodus_witness_v2_chain_id produced. */
@@ -304,7 +304,7 @@ int main(void) {
         for (int i = 0; i < 3; i++) {
             CHECK(dna_env_preflight(bufs[i], lens[i], derived, 1, &tab, 1,
                                     ref) == DNA_ENV_PF_OK, "ref preflight");
-            CHECK(memcmp(ref->tx_id, out[i].tx_id, 64) == 0,
+            CHECK(memcmp(ref->wire_id, out[i].wire_id, 64) == 0,
                   "seam tx_id != shared recomputation"); OK();
             CHECK(memcmp(ref->auth_context_commit,
                          out[i].auth_context_commit, 64) == 0,
@@ -315,7 +315,7 @@ int main(void) {
          * this is the truncation-regression detector */
         CHECK(dna_env_preflight(e0, l0, legacy, 1, &tab, 1, ref)
               == DNA_ENV_PF_OK, "legacy preflight");
-        CHECK(memcmp(ref->tx_id, out[0].tx_id, 64) != 0,
+        CHECK(memcmp(ref->wire_id, out[0].wire_id, 64) != 0,
               "seam used the LEGACY chain id"); OK();
         free(ref);
     }
@@ -324,7 +324,7 @@ int main(void) {
     {
         fixture_t fb;
         CHECK(fx_open(&fb) == 0, "fixture b");
-        CHECK(nodus_witness_db_migrate_v2s7(fb.w) == 0, "migrate b");
+        CHECK(nodus_witness_db_migrate_v2s8(fb.w) == 0, "migrate b");
         uint8_t gen_b[64];
         mk_gen_id(gen_b, 0x80);          /* a different chain entirely */
         CHECK(nodus_witness_v2_genesis(fb.w, gen_b, vset, 0) == 0,
@@ -336,7 +336,7 @@ int main(void) {
         CHECK(nodus_witness_v2_env_preflight_batch(fb.w, 1, &tab, 1, &one, 1,
                                                    ob, NULL, NULL)
               == NODUS_V2_ENV_OK, "batch b"); OK();
-        CHECK(memcmp(ob->tx_id, out[0].tx_id, 64) != 0,
+        CHECK(memcmp(ob->wire_id, out[0].wire_id, 64) != 0,
               "same identity on two different chains"); OK();
         free(ob);
         fx_close(&fb);
@@ -355,7 +355,7 @@ int main(void) {
         CHECK(nodus_witness_v2_env_preflight_batch(fx.w, 1, &other, 1, &one,
                                                    1, o2, NULL, NULL)
               == NODUS_V2_ENV_OK, "cross-ruleset batch"); OK();
-        CHECK(memcmp(o2->tx_id, out[0].tx_id, 64) != 0,
+        CHECK(memcmp(o2->wire_id, out[0].wire_id, 64) != 0,
               "ruleset hash does not bind the identity"); OK();
         free(o2);
     }
@@ -377,20 +377,22 @@ int main(void) {
         CHECK(nodus_witness_v2_env_preflight_batch(fx.w, 1, &tab, 1, two, 2,
                                                    o2, NULL, NULL)
               == NODUS_V2_ENV_OK, "prefix-identical pair rejected"); OK();
-        CHECK(memcmp(o2[0].tx_id, o2[1].tx_id, 64) != 0,
+        CHECK(memcmp(o2[0].wire_id, o2[1].wire_id, 64) != 0,
               "prefix-identical envelopes share an identity"); OK();
         free(o2);
     }
 
-    /* ── 6b. AUTH-DATA MALLEABILITY — an HONEST PIN, not a defense ────
-     * Two envelopes differing ONLY in auth_data derive DISTINCT tx_ids
-     * (tx_id covers the complete bytes) while sharing ONE
-     * auth_context_commit (auth_data is deliberately outside the intent
-     * commitment — env_wire.h:105-118). The batch dedup key is tx_id, so
-     * BOTH are accepted here: byte-level dedup does NOT collapse
-     * same-intent envelopes whose auth bytes differ. Intent-level replay
-     * is the EXECUTION season's obligation (nodus_witness_v2_env.h) —
-     * this test pins the mechanism so that obligation stays visible. */
+    /* ── 6b. AUTH-DATA MALLEABILITY — CLOSED (intent season) ──────────
+     * Two envelopes differing ONLY in auth_data derive DISTINCT wire_ids
+     * (the full-wire identity covers the complete bytes) but ONE
+     * intent_id (authorization evidence is outside the intent preimage —
+     * env_wire.h). The seam's dedup now runs at BOTH levels, so the pair
+     * that the capacity season honestly pinned as "BOTH accepted" is now
+     * REJECTED as ERR_DUP_INTENT with the SECOND member accused: one
+     * semantic transaction cannot enter a batch twice, no matter how it
+     * is authorized. Derived individually (batch of one each), the two
+     * realizations prove the identity split: same intent_id, different
+     * wire_id, same auth_context_commit. */
     {
         static const uint8_t authA[16] = { 0x11, 0x11, 0x11, 0x11,
                                            0x11, 0x11, 0x11, 0x11,
@@ -407,17 +409,43 @@ int main(void) {
         CHECK(la == lb && memcmp(ea, eb, la) != 0,
               "auth pair not distinct"); OK();
 
-        dna_env_preflight_t *o2 = calloc(2, sizeof(*o2));
+        dna_env_preflight_t *o2 = malloc(2 * sizeof(*o2));
         CHECK(o2 != NULL, "auth o2 alloc");
+        memset(o2, 0xAA, 2 * sizeof(*o2));   /* DIRTY: zeroing is proven */
         nodus_v2_envelope_t two[2] = { { ea, la }, { eb, lb } };
+        size_t fidx = 99;
         CHECK(nodus_witness_v2_env_preflight_batch(fx.w, 1, &tab, 1, two, 2,
-                                                   o2, NULL, NULL)
-              == NODUS_V2_ENV_OK, "auth-differing pair rejected"); OK();
-        CHECK(memcmp(o2[0].tx_id, o2[1].tx_id, 64) != 0,
-              "auth mutation did not move tx_id"); OK();
-        CHECK(memcmp(o2[0].auth_context_commit, o2[1].auth_context_commit,
+                                                   o2, &fidx, NULL)
+              == NODUS_V2_ENV_ERR_DUP_INTENT,
+              "auth-differing same-intent pair accepted"); OK();
+        CHECK(fidx == 1, "second member not accused"); OK();
+        /* rejection published nothing — FULL raw scan of both entries
+         * over a pre-dirtied buffer (the file's own discipline; a
+         * partial-memset mutant cannot pass a single-field sample) */
+        CHECK(batch_zeroed(o2, 2),
+              "rejected batch leaked a result"); OK();
+
+        /* Individually the two realizations are both valid — and their
+         * identities split exactly as the dual-identity model demands. */
+        dna_env_preflight_t *oa = calloc(1, sizeof(*oa));
+        dna_env_preflight_t *ob = calloc(1, sizeof(*ob));
+        CHECK(oa && ob, "single alloc");
+        nodus_v2_envelope_t onea[1] = { { ea, la } };
+        nodus_v2_envelope_t oneb[1] = { { eb, lb } };
+        CHECK(nodus_witness_v2_env_preflight_batch(fx.w, 1, &tab, 1, onea,
+                                                   1, oa, NULL, NULL)
+              == NODUS_V2_ENV_OK, "realization A rejected"); OK();
+        CHECK(nodus_witness_v2_env_preflight_batch(fx.w, 1, &tab, 1, oneb,
+                                                   1, ob, NULL, NULL)
+              == NODUS_V2_ENV_OK, "realization B rejected"); OK();
+        CHECK(memcmp(oa->wire_id, ob->wire_id, 64) != 0,
+              "auth mutation did not move wire_id"); OK();
+        CHECK(memcmp(oa->intent_id, ob->intent_id, 64) == 0,
+              "auth mutation moved intent_id"); OK();
+        CHECK(memcmp(oa->auth_context_commit, ob->auth_context_commit,
                      64) == 0,
-              "auth mutation moved the INTENT commitment"); OK();
+              "auth mutation moved the signing commitment"); OK();
+        free(ob); free(oa);
         free(o2);
         free(eb); free(ea);
     }
@@ -745,7 +773,7 @@ int main(void) {
     {
         fixture_t fc;
         CHECK(fx_open(&fc) == 0, "fixture c");
-        CHECK(nodus_witness_db_migrate_v2s7(fc.w) == 0, "migrate c"); OK();
+        CHECK(nodus_witness_db_migrate_v2s8(fc.w) == 0, "migrate c"); OK();
         /* schema present, NO genesis committed => no chain identity */
         uint8_t probe[DNA_CHAIN_ID_LEN];
         CHECK(nodus_witness_v2_chain_id(fc.w, probe) != 0,

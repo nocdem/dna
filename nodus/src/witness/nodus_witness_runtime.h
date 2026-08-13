@@ -266,20 +266,36 @@ typedef struct {
 
 /** The engine-owned execution context for one leg. Every pointer is a
  *  BORROWED engine buffer, valid for the hook call only. All identity
- *  material is ENGINE-DERIVED (env_preflight.h): tx_id and the two
- *  commitments are derived from the envelope bytes + chain identity +
- *  contextual rulesets — a runtime can bind to them but can never
- *  choose them. `auth` is the ENGINE-owned VERIFIED verdict of this
- *  leg's authorization (native auth season): NULL only while the auth
- *  hook itself runs; non-NULL for read_plan/exec, whose ownership /
- *  authority decisions MUST bind to it and to nothing carried by the
- *  envelope bytes. */
+ *  material is ENGINE-DERIVED (env_preflight.h): both identities and
+ *  the two commitments are derived from the envelope bytes + chain
+ *  identity + contextual rulesets — a runtime can bind to them but can
+ *  never choose, return or override them (the effect/result codec
+ *  cannot carry an identity, which is the point). `auth` is the
+ *  ENGINE-owned VERIFIED verdict of this leg's authorization (native
+ *  auth season): NULL only while the auth hook itself runs; non-NULL
+ *  for read_plan/exec, whose ownership / authority decisions MUST bind
+ *  to it and to nothing carried by the envelope bytes.
+ *
+ *  IDENTITY SELECTION RULE (intent season): `wire_id` is the FULL-WIRE
+ *  identity (commits authorization bytes — different valid witnesses,
+ *  different wire_id); `intent_id` is the canonical WITNESS-INDEPENDENT
+ *  identity. Anything a runtime persists into CONSENSUS STATE (rows
+ *  that feed a state root, provenance columns, replay-relevant records)
+ *  MUST use intent_id; wire_id exists for wire/audit binding only. The
+ *  former ambiguous `tx_id` member is deliberately RENAMED so no hook
+ *  can select a provenance identity without naming its semantics. */
 typedef struct {
     const uint8_t *chain_id;              /* [DNA_CHAIN_ID_LEN]           */
     uint64_t       global_height;         /* the block being applied      */
     uint64_t       epoch;                 /* DERIVED from global block
                                            * count — never wall clock     */
-    const uint8_t *tx_id;                 /* [64] engine-derived identity */
+    const uint8_t *wire_id;               /* [64] engine-derived FULL-WIRE
+                                           * identity (frozen tx_id
+                                           * preimage)                    */
+    const uint8_t *intent_id;             /* [64] engine-derived canonical
+                                           * intent identity — the ONLY
+                                           * identity consensus-state
+                                           * provenance may commit        */
     const uint8_t *auth_context_commit;   /* [64] derived commitment      */
     const uint8_t *leg_auth_digest;       /* [64] this leg's derived
                                            * commitment                   */

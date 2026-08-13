@@ -47,8 +47,16 @@
  *       change a later transaction's ruleset, price or authority, and
  *       the caller can neither supply nor override any of it.
  *   0b. envelope preflight + RESERVATION of the whole canonical batch
- *       (nodus_witness_v2_env_preflight_reserve_batch — derived ids,
- *       batch dedup, deterministic sequential reservation)      [F26]
+ *       (nodus_witness_v2_env_preflight_reserve_batch — BOTH derived
+ *       identities per envelope, batch dedup at wire AND intent level,
+ *       deterministic sequential reservation)                   [F26]
+ *       + COMMITTED-IDENTITY REPLAY GUARD (intent season): each
+ *       envelope's intent_id then wire_id checked read-only against
+ *       v2_intent_index / v2_tx_index — a hit is a deterministic
+ *       VERDICT (a committed intent may commit ONCE per chain, under
+ *       exactly one wire realization; matching intent is never
+ *       evidence of authorization). Budget restored byte-identically
+ *       on rejection.                                           [F35]
  *       + per-leg execution admission: block-entry ACTIVE domain,
  *       resolvable runtime WITH an exec hook, INVOKE access (READ legs
  *       are rejected this season — an admission rule for a later
@@ -109,7 +117,9 @@
  *   9.  DomainUpdate build + verify + persist (touched only)  [F8]
  *   10. DomainHead write                                   [F9]
  *   11. root history append                                [F10]
- *   12. global + local transaction indices                 [F11]
+ *   12. transaction indices: SEMANTIC first (v2_intent_index —
+ *       intent_id PK + its ONE accepted wire realization)  [F36]
+ *       then WIRE (v2_tx_index + v2_tx_local_index)        [F11]
  *   13. domain_updates_root + domains_root + global root; compare every
  *       caller-expected root; v2_blocks metadata insert    [F12]
  *   14. supply gate (pre-commit)                           [F13]
@@ -149,10 +159,13 @@
  * admission scan (strict doms_load + per-leg checks).
  *
  * ── HONEST LABELS (what this engine still does NOT do) ────────────────
- *   - AUTHORIZATION: auth_kind interpretation and signature verification
- *     stay with a later season. The exec context hands runtimes DERIVED
- *     commitments (tx_id, auth_context_commit, leg auth_digest), never a
- *     verified authorization.
+ *   (DRIFT REPAIR, intent season: the former "authorization stays with a
+ *   later season" label was stale — the native-auth season shipped the
+ *   verified boundary. Authorization is now verified pre-BEGIN into the
+ *   engine-owned verdict array; the exec context hands runtimes BOTH
+ *   derived identities — wire_id, intent_id — plus the commitments and
+ *   the verified verdict, and consensus-state provenance binds
+ *   intent_id only.)
  *   - READ-access legs: DNA_ENV_ACCESS_READ legs are REJECTED at the
  *     execution boundary this season (fail-closed); their admission
  *     semantics are a later season's rule. Metering already prices them
@@ -171,6 +184,16 @@
  *   same BlockID at another height → reject;
  *   height gap (height != max_committed + 1) → reject;
  *   wrong prev_block_id (must equal the previous row's block_id) → reject.
+ *   TRANSACTION-LEVEL (intent season, after the whole-block matrix —
+ *   exact committed-block replay therefore stays idempotent, rc 1):
+ *   an envelope whose intent_id is already committed → reject (semantic
+ *     replay — including under a DIFFERENT valid authorization witness,
+ *     and in ANY later block);
+ *   an envelope whose wire_id is already committed → reject (the intent
+ *     guard subsumes this for byte-identical envelopes; the wire check
+ *     is the independent second leg);
+ *   both backstopped by the v2_intent_index / v2_tx_index UNIQUE
+ *     constraints inside the block transaction.
  *
  * ── Touched-domain definition ─────────────────────────────────────────
  * touched(block) = the UNION of the LEG DOMAINS of the block's included
@@ -319,7 +342,17 @@ typedef enum {
      * fixed into the engine-owned view — proves that a block failing
      * right after snapshot resolution leaves the database digest, the
      * unit budget and every index byte-identical. */
-    V2AP_FAIL_AFTER_CC_SNAPSHOT = 34
+    V2AP_FAIL_AFTER_CC_SNAPSHOT = 34,
+    /* Intent-season stages (34 above is FROZEN). 35 fires pre-BEGIN
+     * after the committed-identity replay guard passed (both identities
+     * of every envelope checked against v2_intent_index / v2_tx_index)
+     * — proves the guard's rejection path releases the batch
+     * reservation and restores the budget byte-identically. 36 fires
+     * INSIDE the transaction after the v2_intent_index rows were
+     * inserted and BEFORE the wire indices — proves an interrupted
+     * block commits NEITHER identity index. */
+    V2AP_FAIL_AFTER_INTENT_GUARD = 35,
+    V2AP_FAIL_AFTER_INTENT_INDEX = 36
 } nodus_v2_apply_fail_t;
 
 /*
@@ -378,7 +411,7 @@ typedef struct {
 int nodus_witness_v2_supply_check(nodus_witness_t *w);
 
 /**
- * V2 genesis: requires schema version 7; one atomic transaction seeding
+ * V2 genesis: requires schema version 8; one atomic transaction seeding
  * the domain registry (REAL payload-root manifests — the S5 cycle
  * break), then ONE canonical ACTIVATION DomainHead per registered
  * domain whose status is ACTIVE (the genesis block IS those domains'
@@ -433,16 +466,16 @@ int nodus_witness_v2_genesis_ex(nodus_witness_t *w,
 int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk);
 
 /**
- * ENGINE-INTERNAL, exposed for direct test: find `tx_id` in a domain's
- * per-block ordered id list. A MISS FAILS CLOSED (-1, *lidx_out
- * untouched) — it must NEVER alias local index 0: the pre-execution-
- * season code defaulted a miss to lidx = 0 silently
- * (nodus_witness_v2_env.h documented it as the migration hazard), and
- * this helper is the one place the answer is computed.
+ * ENGINE-INTERNAL, exposed for direct test: find `wire_id` (the
+ * FULL-WIRE identity) in a domain's per-block ordered id list. A MISS
+ * FAILS CLOSED (-1, *lidx_out untouched) — it must NEVER alias local
+ * index 0: the pre-execution-season code defaulted a miss to lidx = 0
+ * silently (nodus_witness_v2_env.h documented it as the migration
+ * hazard), and this helper is the one place the answer is computed.
  * @return 0 with *lidx_out set / -1.
  */
 int nodus_witness_v2_local_index_find(const uint8_t ids[][64], uint32_t n,
-                                      const uint8_t tx_id[64],
+                                      const uint8_t wire_id[64],
                                       uint32_t *lidx_out);
 
 #ifdef __cplusplus
