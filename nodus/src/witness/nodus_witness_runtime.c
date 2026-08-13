@@ -148,30 +148,30 @@ static int sys_policy_build(dna_meter_policy_t *p) {
  * SYSTEM's digest commits SYS_METER_POLICY_DIGEST; CORE's commits the
  * all-zero "no policy declared" field. */
 static const uint8_t SYS_RULESET_HASH[DNA_DOM_HASH_LEN] = {
-    /* O11 — SYSTEM ruleset_version 2 → 3: runtime op 1
-     * (DNA_SYSRULE_STAKE) becomes EXECUTABLE (it was a deterministic
-     * reject inside the hooks), and the committed metering policy moved
-     * with the op set above. Enabling a previously rejected op changes
-     * the accepted runtime semantics, and no separate versioned
-     * activation mechanism commits that change — the exact-tuple
-     * identity IS the activation mechanism — so the version advances and
-     * the digest moves by construction (the descriptor commits
-     * ruleset_version AND meter_policy_digest; the rule list {1..6} and
-     * the type list {4,5,6,7,9,10} are byte-identical, ops 2..5 are
-     * still owned and still reject). The retired SYSTEM v2 resolves
-     * NOTHING: v2 legs are never reinterpreted (the v1 retirement
-     * precedent). Oracle: scratchpad o11_season_oracle.py, whose control
-     * legs reproduced BOTH shipped pins (SYSTEM v2 9fc5394e…24bb and
-     * CORE v2 746f584a…67a1) before these values were accepted;
-     * selfcheck re-derives them through the C encoder on every run. */
-    0xd0, 0x65, 0xe2, 0xe1, 0x71, 0x96, 0x02, 0x21,
-    0xe3, 0xb7, 0x9a, 0xfd, 0xed, 0x78, 0xb8, 0x28,
-    0x9b, 0x20, 0xcc, 0xf1, 0x83, 0xfb, 0x1c, 0x17,
-    0x23, 0xb5, 0x8c, 0x35, 0x18, 0x0c, 0x69, 0x57,
-    0xc1, 0xd9, 0x50, 0xe3, 0x77, 0x7b, 0x25, 0x14,
-    0xf2, 0xb0, 0x10, 0x8d, 0xa6, 0xed, 0x9c, 0xee,
-    0x69, 0xd9, 0xf7, 0x3e, 0x8c, 0xbf, 0x49, 0x66,
-    0xc2, 0x66, 0x8f, 0xd9, 0x89, 0x86, 0x6d, 0x64
+    /* O12 — SYSTEM ruleset_version 3 → 4: runtime op 5
+     * (DNA_SYSRULE_VALIDATOR_UPDATE) becomes EXECUTABLE (it was a
+     * deterministic reject inside the hooks under v3). Enabling a
+     * previously rejected op changes the accepted runtime semantics,
+     * and no separate versioned activation mechanism commits that
+     * change — the exact-tuple identity IS the activation mechanism —
+     * so the version advances and the digest moves by construction (the
+     * descriptor commits ruleset_version; the rule list {1..6}, the
+     * type list {4,5,6,7,9,10} and the meter-policy digest are all
+     * byte-identical to v3 — op 5 was already priced by the 1..7 policy
+     * rows above). The retired SYSTEM v3 (like v2 and v1) resolves
+     * NOTHING: old SYSTEM legs are never reinterpreted. Oracle:
+     * scratchpad o12_season_oracle.py, whose control legs reproduced
+     * BOTH shipped O11 pins (SYSTEM v3 d065e2e1…6d64 and CORE v3
+     * ed4b1bcd…4437) before this value was accepted; selfcheck
+     * re-derives it through the C encoder on every run. */
+    0x4f, 0xe7, 0x6f, 0xed, 0x43, 0xef, 0x37, 0x25,
+    0x94, 0x71, 0x3e, 0x97, 0xf6, 0xff, 0xf4, 0x68,
+    0x4d, 0xba, 0x3d, 0x37, 0x8c, 0xa2, 0x32, 0x01,
+    0xfe, 0xd6, 0x31, 0x4b, 0x81, 0x47, 0xe1, 0xce,
+    0x57, 0x1a, 0x4f, 0xec, 0xd8, 0x17, 0x0b, 0xfa,
+    0xd5, 0x5c, 0xb6, 0x86, 0x16, 0x2e, 0xbb, 0x1d,
+    0xf4, 0x62, 0xa4, 0xf2, 0x44, 0xbc, 0xf9, 0xc2,
+    0x38, 0x87, 0xeb, 0x7d, 0x14, 0x7a, 0x77, 0x36
 };
 static const uint8_t CORE_RULESET_HASH[DNA_DOM_HASH_LEN] = {
     /* O11 — CORE ruleset_version 2 → 3: the rule list GREW to {1..7}
@@ -266,22 +266,20 @@ static const nodus_domain_runtime_t BUILTIN[] = {
     {
         .domain_id       = DNA_DOMAIN_SYSTEM,
         .runtime_kind    = DNA_RUNTIME_NATIVE_BUILTIN,
-        /* ruleset_version 3 — O11: the STAKE LIFECYCLE ruleset. Runtime
-         * ops 1..4 (STAKE / DELEGATE / UNSTAKE / UNDELEGATE) are
-         * EXECUTABLE under v3 — all four deterministically rejected
-         * under v2 — and the committed metering policy gained op 7.
-         * Enabling previously rejected ops changes the accepted
-         * semantics of this ruleset and no separate versioned activation
-         * mechanism exists (the exact-tuple identity IS the mechanism),
-         * so the version advanced ONCE for the whole set: v3 has never
-         * been a partial ruleset on any chain, exactly as CORE v2
-         * covered BURN and TOKEN_CREATE together. Op 5
-         * (VALIDATOR_UPDATE) still rejects inside the hooks and its
-         * migration will advance the version again. The retired v2 (like
-         * v1) resolves NOTHING: old SYSTEM legs are never
+        /* ruleset_version 4 — O12: the FULL validator-record ruleset.
+         * Runtime op 5 (VALIDATOR_UPDATE) is EXECUTABLE under v4 — it
+         * was a deterministic reject under v3, which enabled ops 1..4
+         * (the O11 stake lifecycle). Enabling a previously rejected op
+         * changes the accepted semantics of this ruleset and no
+         * separate versioned activation mechanism exists (the
+         * exact-tuple identity IS the mechanism), so the version
+         * advances and the digest moves by construction. Every SYSTEM
+         * record op (1..5) plus CHAIN_CONFIG (6) now executes; no owned
+         * SYSTEM op rejects-by-default any more. The retired v3 (like
+         * v2 and v1) resolves NOTHING: old SYSTEM legs are never
          * reinterpreted. */
         .runtime_abi     = NODUS_DOMAIN_RUNTIME_ABI_V1,
-        .ruleset_version = 3,
+        .ruleset_version = 4,
         .ruleset_hash    = { 0 },   /* set via memcpy-free static init below
                                      * is impossible for a named array —
                                      * selfcheck compares against the pinned
@@ -292,17 +290,16 @@ static const nodus_domain_runtime_t BUILTIN[] = {
             .domain_id = DNA_DOMAIN_SYSTEM,
             .name = "SYSTEM",
             .runtime_abi = NODUS_DOMAIN_RUNTIME_ABI_V1,
-            .ruleset_version = 3,
+            .ruleset_version = 4,
             .rule_count = 6, .rule_ids = SYS_RULES,
             .tx_type_count = 6, .tx_types = SYS_TYPES
         },
         .admit = rt_admit_common,
         .tx_cost = sys_cost,
         /* The REAL compiled execution surface. read_plan/exec implement
-         * the whole O11 stake lifecycle (DNA_SYSRULE_STAKE / DELEGATE /
-         * UNSTAKE / UNDELEGATE) plus DNA_SYSRULE_CHAIN_CONFIG; op 5
-         * (VALIDATOR_UPDATE) deterministically rejects inside the hooks
-         * until its own migration slice. */
+         * every owned SYSTEM op: the O11 stake lifecycle
+         * (DNA_SYSRULE_STAKE / DELEGATE / UNSTAKE / UNDELEGATE), the O12
+         * VALIDATOR_UPDATE (op 5) and DNA_SYSRULE_CHAIN_CONFIG. */
         .auth      = nodus_rt_auth_dsa87_v1,
         /* capacity season: SYSTEM legs may carry the ordinary submitter
          * scheme AND the committee-indexed carrier. */

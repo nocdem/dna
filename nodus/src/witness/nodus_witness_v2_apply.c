@@ -19,6 +19,7 @@
 #include "witness/nodus_witness_v2_schema.h"
 #include "witness/nodus_witness_v2_claims.h"
 #include "witness/nodus_witness_v2_adapter.h"
+#include "witness/nodus_witness_v2_epoch.h"    /* O12 S2: the boundary  */
 #include "witness/nodus_witness_runtime.h"
 #include "witness/nodus_witness_domreg.h"
 #include "witness/nodus_witness_roots_v2.h"
@@ -650,6 +651,34 @@ static int pool_stage_fault(void *ud, nodus_v2_pool_stage_t s) {
             return c->blk->fail_at == V2AP_FAIL_AFTER_POOL_HISTORY;
         case NODUS_V2_POOL_STAGE_EVICT:
             return c->blk->fail_at == V2AP_FAIL_AFTER_POOL_EVICT;
+        default:
+            return 1;                    /* unknown stage: fail closed   */
+    }
+}
+
+/* O12 S2: the same mapping for the epoch-boundary module's stages. The
+ * per-graduate stages fire on candidate index 0 only — see the F40/F41
+ * note on the fault enum (nodus_witness_v2_apply.h). */
+static int epoch_stage_fault(void *ud, nodus_v2_epoch_stage_t s,
+                             uint32_t graduate_index) {
+    const nodus_v2_block_t *blk = (const nodus_v2_block_t *)ud;
+    switch (s) {
+        case NODUS_V2_EPST_COMMISSIONS:
+            return blk->fail_at == V2AP_FAIL_AFTER_EPOCH_COMMISSIONS;
+        case NODUS_V2_EPST_GRAD_RELEASE:
+            return graduate_index == 0 &&
+                   blk->fail_at == V2AP_FAIL_AFTER_FIRST_GRAD_RELEASE;
+        case NODUS_V2_EPST_GRAD_APPLIED:
+            return graduate_index == 0 &&
+                   blk->fail_at == V2AP_FAIL_AFTER_FIRST_GRAD_APPLIED;
+        case NODUS_V2_EPST_GRAD_BATCH:
+            return blk->fail_at == V2AP_FAIL_AFTER_GRAD_BATCH;
+        case NODUS_V2_EPST_BOUNDARY_FLIPS:
+            return blk->fail_at == V2AP_FAIL_AFTER_BOUNDARY_FLIPS;
+        case NODUS_V2_EPST_SNAPSHOT_BUILD:
+            return blk->fail_at == V2AP_FAIL_AFTER_SNAPSHOT_BUILD;
+        case NODUS_V2_EPST_SNAPSHOT_PERSIST:
+            return blk->fail_at == V2AP_FAIL_AFTER_SNAPSHOT_PERSIST;
         default:
             return 1;                    /* unknown stage: fail closed   */
     }
@@ -1552,6 +1581,49 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
         free(doms);
         doms = post;
         n_dom = n_post;
+    }
+
+    /* 6e. O12 S2 EPOCH BOUNDARY — engine-MANDATORY, not caller-declared.
+     * A no-op on every non-boundary height, so it runs unconditionally
+     * (including for a ZERO-envelope block: nothing earlier in this
+     * function short-circuits an empty batch — every envelope stage is
+     * guarded by `blk->n_envs > 0`). It sits AFTER the claim/pool phases
+     * and the lifecycle re-scan (so `doms` is the post-scan working set)
+     * and BEFORE the supply gate, so the gate covers the graduation's
+     * self_stake → UTXO bucket move inside this very block.
+     *
+     * There is no verdict class at a boundary — its input is committed
+     * state and the height alone — so any failure is a NODE FAULT
+     * (contract: nodus_witness_v2_epoch.h). */
+    {
+        nodus_v2_epoch_result_t ep;
+        if (nodus_witness_v2_epoch_boundary_apply(w, blk->global_height,
+                                                  chain_id,
+                                                  epoch_stage_fault, blk,
+                                                  &ep) != 0)
+            goto fail_fault;
+        if (ep.fired) {
+            /* TOUCHED DECLARATION. The boundary moves consensus state
+             * that feeds domain roots: `validators` and
+             * `validator_set_snapshots` are legs of system_state_root
+             * (nodus_witness_roots_v2.c:279-311), and a graduation
+             * release writes `utxo_set`, a leg of core_state_root. The
+             * untouched-domain guard below would otherwise reject the
+             * block. CORE is declared ONLY when a graduate actually
+             * released — declaring it on a graduate-free boundary would
+             * trip the "declared but changed nothing" reject instead. */
+            dom_ctx_t *dsys = dom_for(doms, n_dom, DNA_DOMAIN_SYSTEM);
+            if (!dsys) goto fail_fault;   /* a boundary mutated SYSTEM
+                                           * state on a chain with no
+                                           * SYSTEM domain: unresolvable
+                                           * on THIS node, fail closed  */
+            dsys->touched = 1;
+            if (ep.n_graduates > 0) {
+                dom_ctx_t *dcore = dom_for(doms, n_dom, DNA_DOMAIN_CORE);
+                if (!dcore) goto fail_fault;
+                dcore->touched = 1;
+            }
+        }
     }
 
     /* 7. supply gate (post-stage) */

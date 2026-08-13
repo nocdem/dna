@@ -375,7 +375,33 @@ typedef enum {
      * neither half survives: a validator row without its bond, or a
      * spent input without its record, would be a torn cross-domain
      * transition. */
-    V2AP_FAIL_AFTER_LEG_APPLY = 38
+    V2AP_FAIL_AFTER_LEG_APPLY = 38,
+    /* O12 S2 epoch-boundary stages (38 above is FROZEN). All seven fire
+     * INSIDE the transaction, from the boundary module's stage callback
+     * (nodus_witness_v2_epoch.h nodus_v2_epoch_stage_t) — the module owns
+     * the stages, this enum owns the numbering, exactly as F19-F25 map
+     * the S7 pool stages. They only ever fire on a block whose height IS
+     * an epoch boundary; on any other height the boundary is a no-op and
+     * none of them is reachable.
+     *
+     * F40/F41 fire on the FIRST graduate (candidate index 0) — the
+     * boundary allocates no per-graduate index field on the block because
+     * its write order is fixed by the ORDER BY pubkey ASC candidate scan
+     * and the first graduate is the point where an interrupt can leave a
+     * release UTXO without its record transition.
+     *
+     * F44/F45 straddle the next-epoch snapshot: F44 fires with every
+     * build INPUT final and NOTHING built or persisted, F45 after the
+     * source function built AND persisted it (the source builds and
+     * persists atomically — the honest label is in
+     * nodus_witness_v2_epoch.h). */
+    V2AP_FAIL_AFTER_EPOCH_COMMISSIONS  = 39, /* pending commissions in   */
+    V2AP_FAIL_AFTER_FIRST_GRAD_RELEASE = 40, /* graduate 0 release UTXO  */
+    V2AP_FAIL_AFTER_FIRST_GRAD_APPLIED = 41, /* graduate 0 row + counter */
+    V2AP_FAIL_AFTER_GRAD_BATCH         = 42, /* every graduate applied   */
+    V2AP_FAIL_AFTER_BOUNDARY_FLIPS     = 43, /* membership flips applied */
+    V2AP_FAIL_AFTER_SNAPSHOT_BUILD     = 44, /* build inputs final       */
+    V2AP_FAIL_AFTER_SNAPSHOT_PERSIST   = 45  /* snapshot row written     */
 } nodus_v2_apply_fail_t;
 
 /*

@@ -1,0 +1,540 @@
+/**
+ * Nodus — Ledger V2 O12 S2: the engine-mandatory epoch-boundary
+ * transition for the (INACTIVE) V2 apply engine.
+ *
+ * Contract, transition order, grad_id derivation, the Rule-N
+ * non-migration label and both activation obligations are documented in
+ * nodus_witness_v2_epoch.h. Every source anchor cited here is a file:line
+ * in THIS tree.
+ *
+ * Copyright (c) 2026 nocdem — SPDX-License-Identifier: MIT
+ */
+
+#include "witness/nodus_witness_v2_epoch.h"
+#include "witness/nodus_witness_validator.h"
+#include "witness/nodus_witness_vset.h"
+
+#include "dnac/dnac.h"                 /* DNAC_EPOCH_LENGTH, cooldown    */
+#include "dnac/validator.h"            /* dnac_validator_record_t        */
+#include "nodus/nodus_types.h"         /* NODUS_TREE_TAG_VALIDATOR       */
+#include "crypto/hash/qgp_sha3.h"
+#include "crypto/utils/qgp_log.h"
+
+#include <sqlite3.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define LOG_TAG "W_V2EPOCH"
+
+/* The stored SQLite INTEGER bound. Anything above it round-trips
+ * NEGATIVE and would poison every later read — the rtn_token_rec_ok /
+ * rtn_val_rec_ok storage-bound discipline (nodus_witness_rt_native.c
+ * :3903-3905, :3918-3919). */
+#define V2EP_STORE_MAX  ((uint64_t)INT64_MAX)
+
+/* ── little BE helpers ─────────────────────────────────────────────── */
+
+static void v2ep_put32(uint8_t *p, uint32_t v) {
+    p[0] = (uint8_t)(v >> 24); p[1] = (uint8_t)(v >> 16);
+    p[2] = (uint8_t)(v >> 8);  p[3] = (uint8_t)v;
+}
+
+static void v2ep_put64(uint8_t *p, uint64_t v) {
+    for (int i = 0; i < 8; i++) p[i] = (uint8_t)(v >> (56 - 8 * i));
+}
+
+/* ── canonical identities (pure, no DB) ────────────────────────────── */
+
+int nodus_witness_v2_epoch_grad_id(const uint8_t chain_id[DNA_CHAIN_ID_LEN],
+                                   uint64_t global_height,
+                                   const uint8_t *validator_pubkey,
+                                   uint8_t out_grad_id[64]) {
+    if (!chain_id || !validator_pubkey || !out_grad_id) return -2;
+
+    /* pubkey_hash = SHA3-512(NODUS_TREE_TAG_VALIDATOR ‖ pubkey) — the
+     * SOURCE validators-table key derivation (nodus_types.h:189,
+     * documented nodus_witness_validator.h:31-37). */
+    uint8_t pk_pre[1 + DNAC_PUBKEY_SIZE];
+    pk_pre[0] = (uint8_t)NODUS_TREE_TAG_VALIDATOR;
+    memcpy(pk_pre + 1, validator_pubkey, DNAC_PUBKEY_SIZE);
+    uint8_t pubkey_hash[64];
+    if (qgp_sha3_512(pk_pre, sizeof(pk_pre), pubkey_hash) != 0) return -2;
+
+    /* tag(16) ‖ chain_id(32) ‖ domain(4) ‖ height(8) ‖ pubkey_hash(64) */
+    uint8_t pre[NODUS_V2_EPGRAD_TAG_LEN + DNA_CHAIN_ID_LEN + 4 + 8 + 64];
+    memset(pre, 0, sizeof(pre));
+    memcpy(pre, NODUS_V2_EPGRAD_TAG, sizeof(NODUS_V2_EPGRAD_TAG) - 1);
+    size_t off = NODUS_V2_EPGRAD_TAG_LEN;
+    memcpy(pre + off, chain_id, DNA_CHAIN_ID_LEN);  off += DNA_CHAIN_ID_LEN;
+    v2ep_put32(pre + off, DNA_DOMAIN_CORE);         off += 4;
+    v2ep_put64(pre + off, global_height);           off += 8;
+    memcpy(pre + off, pubkey_hash, 64);             off += 64;
+
+    return qgp_sha3_512(pre, off, out_grad_id) == 0 ? 0 : -2;
+}
+
+int nodus_witness_v2_epoch_grad_nullifier(const uint8_t grad_id[64],
+                                          uint8_t out_nullifier[64]) {
+    if (!grad_id || !out_nullifier) return -2;
+    /* SOURCE synthetic-UTXO derivation, bft.c:1772-1781. */
+    uint8_t pre[64 + 1 + 4];
+    memcpy(pre, grad_id, 64);
+    pre[64] = NODUS_V2_EPGRAD_KIND;
+    v2ep_put32(pre + 65, NODUS_V2_EPGRAD_OUT_IDX);
+    return qgp_sha3_512(pre, sizeof(pre), out_nullifier) == 0 ? 0 : -2;
+}
+
+/* ── committed-row shape validation ────────────────────────────────── */
+
+/* 128 lowercase-hex characters, NUL-terminated in the record. Mirrors
+ * rtn_hex_lower_ok (nodus_witness_rt_native.c:1059-1066) + the
+ * NUL-termination the legacy writer guarantees (bft.c:1591). */
+static int v2ep_fp_ok(const uint8_t *fp) {
+    for (size_t i = 0; i < 128; i++) {
+        uint8_t c = fp[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return 0;
+    }
+    return fp[128] == 0;
+}
+
+/* The graduation's WRITABLE-SHAPE check on a committed validators row.
+ * Same conditions rtn_val_rec_ok enforces on the canonical record blob
+ * (nodus_witness_rt_native.c:3906-3933) — expressed against the decoded
+ * struct because this module never encodes one. A failure here is a
+ * FAULT, not a verdict: see the header's obligation 1. @return 1/0. */
+static int v2ep_val_rec_ok(const dnac_validator_record_t *v) {
+    const uint64_t u64s[] = {
+        v->self_stake, v->total_delegated, v->external_delegated,
+        v->pending_effective_block, v->active_since_block,
+        v->unstake_commit_block, v->last_validator_update_block,
+        v->consecutive_missed_epochs
+    };
+    for (size_t i = 0; i < sizeof(u64s) / sizeof(u64s[0]); i++)
+        if (u64s[i] > V2EP_STORE_MAX) return 0;
+    if (v->commission_bps > DNAC_COMMISSION_BPS_MAX ||
+        v->pending_commission_bps > DNAC_COMMISSION_BPS_MAX)
+        return 0;
+    if (v->status > (uint8_t)DNAC_VALIDATOR_ELIGIBLE) return 0;
+    return v2ep_fp_ok(v->unstake_destination_fp);
+}
+
+/* ── stage 1: pending commission activation ────────────────────────── */
+
+/* bft.c:2379-2402 shape with ONE deliberate, labeled DIVERGENCE in the
+ * match predicate — `<=` instead of the legacy `=`:
+ *
+ * ⚠ LEGACY DEAD PATH (found by the O12 R3 review): the writer stores
+ * pending_effective_block = max(next_boundary, H+E), which is ALWAYS
+ * H+E (boundary = floor(H/E)*E + E <= H+E, equality iff H % E == 0 —
+ * the "unreachable max arm" label at rtn_vupd_exec). H+E is a multiple
+ * of E iff H is, so for every ordinary off-boundary submission the
+ * stored value is NOT boundary-aligned, and the legacy activator's
+ * equality match (bft.c:2386, behind the :2358 boundary gate) can NEVER
+ * fire: a commission increase is silently stranded forever. The V2
+ * activator honors the documented INTENT instead — "defer one full
+ * epoch of delegator notice, effective at a boundary" (bft.c:1917-1919,
+ * design §3.9) — by activating at the FIRST boundary >= the stored
+ * height. Deterministic (pure function of committed state + h); the
+ * legacy lane keeps its own behavior (BUGS.md entry).
+ *
+ * rc checked against SQLITE_DONE, so a mid-statement I/O error can
+ * never read as "nothing to activate" (v0.18.19: a DB failure is never
+ * a value). */
+static int v2ep_activate_commissions(nodus_witness_t *w, uint64_t h) {
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "UPDATE validators "
+            "SET commission_bps = pending_commission_bps, "
+            "    pending_commission_bps = 0, "
+            "    pending_effective_block = 0 "
+            "WHERE pending_effective_block != 0 "
+            "  AND pending_effective_block <= ?1 "
+            "  AND pending_commission_bps != 0",
+            -1, &st, NULL) != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "commission prepare failed: %s",
+                      sqlite3_errmsg(w->db));
+        return -2;
+    }
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)h);
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "commission step failed (rc=%d): %s", rc,
+                      sqlite3_errmsg(w->db));
+        return -2;
+    }
+    return 0;
+}
+
+/* ── stage 2 helpers ───────────────────────────────────────────────── */
+
+/* 0 = no such row, 1 = present, -2 = fault (a probe fault is never
+ * "absent" — the table_exists discipline, v2_apply.c:69-70). */
+static int v2ep_utxo_present(nodus_witness_t *w, const uint8_t nul[64]) {
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT 1 FROM utxo_set WHERE nullifier = ?1", -1, &st, NULL)
+        != SQLITE_OK)
+        return -2;
+    sqlite3_bind_blob(st, 1, nul, 64, SQLITE_TRANSIENT);
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    if (rc == SQLITE_ROW) return 1;
+    return rc == SQLITE_DONE ? 0 : -2;
+}
+
+/* The release UTXO. Column set, order and encodings are EXACTLY the CORE
+ * adapter's RTN_CORE_OP_UTXO CREATE insert (nodus_witness_rt_native.c
+ * :2368-2393) — one canonical row shape for the V2 lane, never a second
+ * convention: created_at pinned 0 (deterministic lane, audit-only column
+ * excluded from the UTXO merkle leaf), token_id the all-zero native id,
+ * domain_id bound EXPLICITLY (no schema default,
+ * nodus_witness_v2_schema.c:211). */
+static int v2ep_release_utxo(nodus_witness_t *w,
+                             const uint8_t nullifier[64],
+                             const uint8_t grad_id[64],
+                             const uint8_t *owner_fp128,
+                             uint64_t amount,
+                             uint64_t block_height,
+                             uint64_t unlock_block) {
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "INSERT INTO utxo_set (nullifier, owner, amount, "
+            "token_id, tx_hash, output_index, block_height, "
+            "created_at, unlock_block, domain_id) "
+            "VALUES (?1, ?2, ?3, zeroblob(64), ?4, ?5, ?6, 0, ?7, ?8)",
+            -1, &st, NULL) != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "release prepare failed: %s",
+                      sqlite3_errmsg(w->db));
+        return -2;
+    }
+    sqlite3_bind_blob(st, 1, nullifier, 64, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 2, (const char *)owner_fp128, 128,
+                      SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 3, (sqlite3_int64)amount);
+    sqlite3_bind_blob(st, 4, grad_id, 64, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 5, (sqlite3_int64)NODUS_V2_EPGRAD_OUT_IDX);
+    sqlite3_bind_int64(st, 6, (sqlite3_int64)block_height);
+    sqlite3_bind_int64(st, 7, (sqlite3_int64)unlock_block);
+    sqlite3_bind_int64(st, 8, (sqlite3_int64)DNA_DOMAIN_CORE);
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE || sqlite3_changes(w->db) != 1) {
+        QGP_LOG_ERROR(LOG_TAG, "release insert failed (rc=%d): %s", rc,
+                      sqlite3_errmsg(w->db));
+        return -2;
+    }
+    return 0;
+}
+
+/* active_count -= 1, READ FIRST and bound to the observed value (the
+ * O11 STATS EXISTS_VERSION discipline: an absolute write bound to what
+ * this transaction observed, never a blind relative UPDATE). Going below
+ * zero is a fault — bft.c:2538-2553 decrements unconditionally, which on
+ * a corrupt counter would store a negative value and poison
+ * nodus_validator_active_count for every later reader. */
+static int v2ep_active_count_dec(nodus_witness_t *w) {
+    int cur = 0;
+    if (nodus_validator_active_count(w, &cur) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "%s", "active_count read failed");
+        return -2;
+    }
+    if (cur <= 0) {
+        QGP_LOG_ERROR(LOG_TAG,
+                      "active_count %d cannot absorb a graduation", cur);
+        return -2;
+    }
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "UPDATE validator_stats SET value = ?1 "
+            "WHERE key = 'active_count' AND value = ?2", -1, &st, NULL)
+        != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "active_count prepare failed: %s",
+                      sqlite3_errmsg(w->db));
+        return -2;
+    }
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)(cur - 1));
+    sqlite3_bind_int64(st, 2, (sqlite3_int64)cur);
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE || sqlite3_changes(w->db) != 1) {
+        QGP_LOG_ERROR(LOG_TAG, "active_count dec failed (rc=%d)", rc);
+        return -2;
+    }
+    return 0;
+}
+
+/* ── stage 2: RETIRING → UNSTAKED graduation ───────────────────────── */
+
+static int v2ep_graduate(nodus_witness_t *w, uint64_t h,
+                         const uint8_t chain_id[DNA_CHAIN_ID_LEN],
+                         nodus_v2_epoch_fault_fn fault, void *ud,
+                         uint32_t *n_out) {
+    /* Candidates collected FIRST — a SELECT statement cannot stay open
+     * across the UPDATEs that follow on the same table (bft.c:2406-2407).
+     * ORDER BY pubkey ASC is the stable total key on every node
+     * (bft.c:2417-2422); the V2 grad_id no longer DEPENDS on the rank,
+     * but a deterministic scan order still fixes the write order and
+     * therefore the stage-fault indices. */
+    uint8_t (*cand)[DNAC_PUBKEY_SIZE] =
+        calloc(DNAC_MAX_VALIDATORS, DNAC_PUBKEY_SIZE);
+    if (!cand) return -2;
+    size_t n = 0;
+    int ret = -2;
+    int rc = SQLITE_OK;
+
+    sqlite3_stmt *sel = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT pubkey FROM validators WHERE status = ?1 "
+            "ORDER BY pubkey ASC", -1, &sel, NULL) != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "RETIRING prepare failed: %s",
+                      sqlite3_errmsg(w->db));
+        goto done;
+    }
+    sqlite3_bind_int(sel, 1, (int)DNAC_VALIDATOR_RETIRING);
+    while ((rc = sqlite3_step(sel)) == SQLITE_ROW) {
+        const void *pk = sqlite3_column_blob(sel, 0);
+        int pk_len = sqlite3_column_bytes(sel, 0);
+        if (!pk || pk_len != DNAC_PUBKEY_SIZE) {
+            QGP_LOG_ERROR(LOG_TAG, "RETIRING pubkey wrong size (%d)",
+                          pk_len);
+            sqlite3_finalize(sel);
+            goto done;
+        }
+        if (n >= (size_t)DNAC_MAX_VALIDATORS) {
+            /* The table itself is capped at DNAC_MAX_VALIDATORS; more
+             * RETIRING rows than that means the cap was already broken
+             * (bft.c:2497-2500 relies on the same bound). */
+            QGP_LOG_ERROR(LOG_TAG, "%s",
+                          "more RETIRING rows than DNAC_MAX_VALIDATORS");
+            sqlite3_finalize(sel);
+            goto done;
+        }
+        memcpy(cand[n++], pk, DNAC_PUBKEY_SIZE);
+    }
+    sqlite3_finalize(sel);
+    if (rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "RETIRING scan failed (rc=%d): %s", rc,
+                      sqlite3_errmsg(w->db));
+        goto done;
+    }
+
+    for (size_t i = 0; i < n; i++) {
+        dnac_validator_record_t v;
+        if (nodus_validator_get(w, cand[i], &v) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "graduate row unreadable");
+            goto done;
+        }
+        /* ACTIVATION OBLIGATION 1 (header): a legacy-malformed row is
+         * refused, never paid out to and never rewritten. */
+        if (!v2ep_val_rec_ok(&v)) {
+            QGP_LOG_ERROR(LOG_TAG, "%s",
+                          "graduate row is legacy-malformed: refusing "
+                          "the boundary (activation obligation 1)");
+            goto done;
+        }
+
+        uint8_t grad_id[64], nul[64];
+        if (nodus_witness_v2_epoch_grad_id(chain_id, h, v.pubkey,
+                                           grad_id) != 0 ||
+            nodus_witness_v2_epoch_grad_nullifier(grad_id, nul) != 0)
+            goto done;
+
+        int present = v2ep_utxo_present(w, nul);
+        if (present != 0) {
+            /* present == 1: the SHA3 input domains of the CORE spend
+             * derivation, the O11 SYSFUND release and DNA.EPGRAD.v1 are
+             * disjoint, so this cannot arise from ordinary operation —
+             * only local corruption. present == -2: probe fault. */
+            QGP_LOG_ERROR(LOG_TAG,
+                          "graduation id already present (rc=%d)",
+                          present);
+            goto done;
+        }
+
+        /* unlock = H + cooldown, CHECKED, and bounded by the SQLite
+         * storage maximum: an unlock height that round-trips negative
+         * would make the row spendable forever. */
+        uint64_t unlock = h + (uint64_t)DNAC_UNSTAKE_COOLDOWN_BLOCKS;
+        if (unlock < h || unlock > V2EP_STORE_MAX) {
+            QGP_LOG_ERROR(LOG_TAG, "%s",
+                          "unlock height overflows the storage bound");
+            goto done;
+        }
+        if (h > V2EP_STORE_MAX) goto done;
+
+        /* S3 rule (bft.c:2482-2491): the ACTUAL self_stake, never the
+         * DNAC_SELF_STAKE_AMOUNT literal — paying the literal would
+         * strand a surplus bond or mint from nothing, and either way the
+         * supply invariant (which sums validators.self_stake) refuses
+         * the block. */
+        if (v2ep_release_utxo(w, nul, grad_id, v.unstake_destination_fp,
+                              v.self_stake, h, unlock) != 0)
+            goto done;
+        if (fault && fault(ud, NODUS_V2_EPST_GRAD_RELEASE, (uint32_t)i))
+            goto done;
+
+        /* RETIRING → UNSTAKED and ZERO the bond: its value just moved
+         * into the release UTXO, and leaving it on the record too would
+         * double-count it in the supply invariant's Σ self_stake term
+         * (bft.c:2516-2536). Nothing else on the row moves. */
+        v.status = (uint8_t)DNAC_VALIDATOR_UNSTAKED;
+        v.self_stake = 0;
+        if (nodus_validator_update(w, &v) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "graduate row update failed");
+            goto done;
+        }
+        if (v2ep_active_count_dec(w) != 0) goto done;
+        if (fault && fault(ud, NODUS_V2_EPST_GRAD_APPLIED, (uint32_t)i))
+            goto done;
+    }
+
+    *n_out = (uint32_t)n;
+    ret = 0;
+done:
+    free(cand);
+    return ret;
+}
+
+/* ── entry point ───────────────────────────────────────────────────── */
+
+int nodus_witness_v2_epoch_boundary_apply(
+        nodus_witness_t *w, uint64_t global_height,
+        const uint8_t chain_id[DNA_CHAIN_ID_LEN],
+        nodus_v2_epoch_fault_fn fault, void *fault_ud,
+        nodus_v2_epoch_result_t *out) {
+    if (!w || !w->db || !chain_id || !out) return -2;
+    memset(out, 0, sizeof(*out));
+
+    /* GATE — bft.c:2358 mirror. Height 0 is genesis (pre-boundary); the
+     * first real boundary is DNAC_EPOCH_LENGTH itself. Height only: no
+     * clock, no timestamp, no domain height. */
+    if (global_height == 0 ||
+        (global_height % (uint64_t)DNAC_EPOCH_LENGTH) != 0)
+        return 0;
+    out->fired = 1;
+
+    if (v2ep_activate_commissions(w, global_height) != 0) return -2;
+    if (fault && fault(fault_ud, NODUS_V2_EPST_COMMISSIONS, UINT32_MAX))
+        return -2;
+
+    if (v2ep_graduate(w, global_height, chain_id, fault, fault_ud,
+                      &out->n_graduates) != 0)
+        return -2;
+    if (fault && fault(fault_ud, NODUS_V2_EPST_GRAD_BATCH, UINT32_MAX))
+        return -2;
+
+    /* RULE N is deliberately NOT migrated — header, "RULE N: NOT
+     * MIGRATED". The attendance watermark this transition reads is
+     * written only by the live BFT commit path, which the inactive
+     * engine never runs. */
+
+    /* Boundary flips consume the snapshot frozen one epoch earlier; an
+     * ABSENT snapshot row is a documented NO-OP inside the source
+     * function (nodus_witness_vset.h:183-187), never an invented set. */
+    if (nodus_witness_vset_apply_boundary_flips(w, global_height) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "%s", "boundary flips failed");
+        return -2;
+    }
+    if (fault && fault(fault_ud, NODUS_V2_EPST_BOUNDARY_FLIPS, UINT32_MAX))
+        return -2;
+
+    /* Every INPUT to the next snapshot is now final (graduations
+     * applied, flips applied) and nothing is built or persisted yet —
+     * the honest position of the engine's F44 (header note). */
+    if (fault && fault(fault_ud, NODUS_V2_EPST_SNAPSHOT_BUILD, UINT32_MAX))
+        return -2;
+
+    /* Builds over the POST-flip POST-graduation state and keys the
+     * target size on the NEXT epoch's start height; insert is
+     * idempotent-or-conflict, so a diverging snapshot for the same epoch
+     * fails the block (nodus_witness_vset.h:203-221). */
+    if (nodus_witness_vset_commit_next(w, global_height) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "%s", "next-epoch snapshot commit failed");
+        return -2;
+    }
+    if (fault && fault(fault_ud, NODUS_V2_EPST_SNAPSHOT_PERSIST, UINT32_MAX))
+        return -2;
+
+    QGP_LOG_DEBUG(LOG_TAG, "boundary at %llu applied (%u graduates)",
+                  (unsigned long long)global_height,
+                  (unsigned)out->n_graduates);
+    return 0;
+}
+
+/* ── O12 S3: the snapshot authority resolver ────────────────────────
+ * Contract, the "no N parameter by construction" argument, the
+ * one-canonical-key rule and the explicit contrast against the legacy
+ * fallback chain (nodus_witness_sync.c:900-913) are in the header.
+ * Return convention here is the QUERY lane's 0/1/-1, NOT the boundary
+ * transition's 0/-2 — also documented there. */
+
+int nodus_witness_v2_epoch_authority_for_epoch(
+        nodus_witness_t *w, uint64_t epoch_start,
+        dna_vset_snapshot_t **snap_out, uint32_t *n_out,
+        uint32_t *quorum_out) {
+    if (!w || !w->db) return -1;
+
+    /* ONE canonical key. A non-multiple is not "an epoch we have no row
+     * for" (which would be rc 1, a legitimate terminal answer) — it is a
+     * malformed question, and answering it would let two spellings of
+     * one epoch become two keys. */
+    if ((epoch_start % (uint64_t)DNAC_EPOCH_LENGTH) != 0) {
+        QGP_LOG_ERROR(LOG_TAG,
+                      "epoch_start %llu is not a multiple of the epoch "
+                      "length — not a canonical epoch key",
+                      (unsigned long long)epoch_start);
+        return -1;
+    }
+
+    /* The ONLY source. nodus_witness_vset_get re-hashes the stored bytes,
+     * strict-decodes them and cross-checks the blob's epoch and count
+     * against the row BEFORE returning anything, so a corrupt row
+     * arrives here as -1 and can never become a set size. Nothing in
+     * this function reads the `validators` table — the CURRENT set is
+     * structurally unreachable. */
+    dna_vset_snapshot_t *snap = NULL;
+    int rc = nodus_witness_vset_get(w, epoch_start, &snap, NULL);
+    if (rc == 1) return 1;               /* TERMINAL: no authority       */
+    if (rc != 0 || !snap) {
+        QGP_LOG_ERROR(LOG_TAG,
+                      "epoch %llu: snapshot unreadable (rc=%d) — no "
+                      "authority may be inferred",
+                      (unsigned long long)epoch_start, rc);
+        return -1;
+    }
+
+    /* active_count is a u16 bounded by DNA_MAX_ACTIVE_VALIDATORS and
+     * proven nonzero by the codec (dna_vset_alloc/decode both reject 0),
+     * so the quorum is always >= 1. Belt-and-braces: a zero here would
+     * mean the codec's own invariant broke, and a quorum of 1 over an
+     * empty set is the one answer that must never be produced. */
+    if (snap->active_count == 0 ||
+        snap->active_count > DNA_MAX_ACTIVE_VALIDATORS) {
+        QGP_LOG_ERROR(LOG_TAG, "epoch %llu: decoded active_count %u is "
+                      "outside the codec's own bounds",
+                      (unsigned long long)epoch_start,
+                      (unsigned)snap->active_count);
+        dna_vset_free(&snap);
+        return -1;
+    }
+
+    uint32_t n = (uint32_t)snap->active_count;
+    if (n_out)      *n_out = n;
+    if (quorum_out) *quorum_out = dna_bft_quorum(n);
+    if (snap_out)   *snap_out = snap;
+    else            dna_vset_free(&snap);
+    return 0;
+}
+
+int nodus_witness_v2_epoch_authority_for_height(
+        nodus_witness_t *w, uint64_t global_height,
+        dna_vset_snapshot_t **snap_out, uint32_t *n_out,
+        uint32_t *quorum_out) {
+    /* Division only — the key is always <= the height, so there is no
+     * height (UINT64_MAX included) this can overflow. Delegating rather
+     * than duplicating means a height and its epoch cannot diverge. */
+    return nodus_witness_v2_epoch_authority_for_epoch(
+        w, nodus_v2_epoch_start_for_height(global_height),
+        snap_out, n_out, quorum_out);
+}

@@ -59,6 +59,20 @@
  *      cross-chain independence + binding, reversed leg order at BOTH
  *      the encoder and the decoder, the wall-clock structural pin, and
  *      one operation at each of epoch LEN-1 / LEN / LEN+1).
+ *   9. (§17-§18, O12 S1) SYSTEM slice — VALIDATOR_UPDATE (runtime_op 5,
+ *      legacy tx 9): the first record op whose funding leg moves NO
+ *      value (lock = release = 0). Positives for all three commission
+ *      transitions (decrease / equal / increase), ELIGIBLE and RETIRING
+ *      updaters, sequential updates and fee-only conservation; a
+ *      12-case negative matrix (unknown validator, UNSTAKED,
+ *      AUTO_RETIRED, bps > 10000, call length ±1, all-zero identity,
+ *      valid-signature-wrong-identity, kind-2 carriage, both single-leg
+ *      forms, foreign sibling); ACTIVE-SET immutability,
+ *      committed-intent replay, cross-chain separation and the
+ *      twin-execution determinism check. §18 adds the hook-level pins
+ *      the block layer cannot separate — above all the one-epoch
+ *      deferral arithmetic at epoch LEN-1 / LEN / LEN+1, where the next
+ *      boundary and H + epoch coincide.
  *
  * @file test_v2_native.c
  */
@@ -1201,14 +1215,14 @@ static int test_authority(void) {
     /* un-migrated runtime_ops deterministically reject (owned but not
      * yet implemented — incl. the SHIELDED/SHIELD/UNSHIELD rule ids, so
      * types 11/12/13 stay dead through this lane too).
-     * O11 note: SYSTEM ops 1..4 (the whole stake lifecycle) and CORE op
-     * 7 (SYSFUND) ARE implemented now, and both loops still hold for the
-     * right reason — every one of these legs carries a 1-byte call,
-     * which no compiled parser accepts, and each staking op
-     * additionally requires the 2-leg envelope shape a single-leg
-     * envelope cannot have. The loops therefore pin "unimplemented op
-     * rejects" for SYSTEM 5 and CORE 2..6, and "malformed call / wrong
-     * envelope shape rejects" for SYSTEM 1..4. */
+     * O11/O12 note: SYSTEM ops 1..5 (the stake lifecycle plus
+     * VALIDATOR_UPDATE) and CORE op 7 (SYSFUND) ARE implemented now, and
+     * both loops still hold for the right reason — every one of these
+     * legs carries a 1-byte call, which no compiled parser accepts, and
+     * each validator-record op additionally requires the 2-leg envelope
+     * shape a single-leg envelope cannot have. The loops therefore pin
+     * "unimplemented op rejects" for CORE 2..6, and "malformed call /
+     * wrong envelope shape rejects" for SYSTEM 1..5. */
     for (uint32_t op = 2; op <= 6; op++) {
         CHECK(env_build_signed(&fx, &e, DNA_DOMAIN_CORE, op,
                                (const uint8_t *)"x", 1, FEE_MIN, 0, 4,
@@ -5330,13 +5344,17 @@ static int test_o11_hook_pins(void) {
      * CHAIN_CONFIG leg dies on its own rules (fee != 0, quorum) before
      * leg1 is ever reached; and a C13 whose leg0 survives is
      * structurally inexpressible (CC requires fee 0, SYSFUND requires
-     * fee >= the floor). Both foreign SYSTEM ops are exercised: 5
-     * (VALIDATOR_UPDATE — owned, un-migrated) and 6 (CHAIN_CONFIG — the
-     * live one, so the gate must discriminate stake ops from EXECUTABLE
-     * ops, not merely from dead ones). */
+     * fee >= the floor). Two foreign SYSTEM ops are exercised: 6
+     * (CHAIN_CONFIG — the live one, so the gate must discriminate the
+     * validator-record family from EXECUTABLE ops, not merely from dead
+     * ones) and 7 (an id no compiled SYSTEM ruleset owns at all).
+     * O12 S1 NOTE: op 5 (VALIDATOR_UPDATE) used to sit in this list as
+     * the "owned but un-migrated" case. It has JOINED the family this
+     * season — its funding sibling is legal (fee-only, lock = 0) — so it
+     * is no longer a foreign sibling and was replaced by op 7. */
     {
-        static const uint32_t foreign[2] = { DNA_SYSRULE_VALIDATOR_UPDATE,
-                                             DNA_SYSRULE_CHAIN_CONFIG };
+        static const uint32_t foreign[2] = { DNA_SYSRULE_CHAIN_CONFIG,
+                                             7u };
         for (int i = 0; i < 2; i++) {
             dna_env_view_t v2 = v;
             nodus_rt_read_res_t r2[NODUS_RT_MAX_READS];
@@ -5448,9 +5466,18 @@ static int test_o11_hook_pins(void) {
 #define TVAL_SELF_OFF    2592u
 #define TVAL_TOT_OFF     2600u
 #define TVAL_EXT_OFF     2608u
+/* the commission window (O12 S1 — restated independently, same rule as
+ * the offsets above: the production macros are not exported and an
+ * independent restatement is what catches a silent layout move) */
+#define TVAL_COMM_OFF    2616u
+#define TVAL_PCOMM_OFF   2618u
+#define TVAL_PEFF_OFF    2620u
 #define TVAL_STATUS_OFF  2628u
 #define TVAL_SINCE_OFF   2629u
 #define TVAL_UCOMMIT_OFF 2637u
+#define TVAL_DFP_OFF     2645u
+#define TVAL_DPK_OFF     2773u
+#define TVAL_LASTUPD_OFF 5365u
 #define TDEL_REC_LEN     5200u
 #define TDEL_AMT_OFF     5184u
 #define TDEL_AT_OFF      5192u
@@ -5487,6 +5514,22 @@ static uint32_t unstake_call_build(uint8_t *dst, size_t cap,
     if (cap < 2592) return 0;
     memcpy(dst, g_pk[validator], 2592);
     return 2592;
+}
+
+/* VALIDATOR_UPDATE call v1 (exact 2594 B — O12 S1): identity_pubkey
+ * ‖ new_commission_bps u16 BE. The legacy wire's trailing
+ * signed_at_block[8] is DELIBERATELY ABSENT (bft.c:1913 carried it;
+ * bft.c:1932/1951 never read it — the V2 envelope owns freshness), which
+ * is exactly why 2602 must NOT decode: the ±1 length matrix in §17 pins
+ * that this decoder accepts one length and one length only. */
+#define TVUPD_CALL_LEN   2594u
+static uint32_t vupd_call_build(uint8_t *dst, size_t cap, int validator,
+                                uint32_t bps) {
+    if (cap < 2594) return 0;
+    memcpy(dst, g_pk[validator], 2592);
+    dst[2592] = (uint8_t)(bps >> 8);
+    dst[2593] = (uint8_t)bps;
+    return 2594;
 }
 
 /* the delegations composite key: BOTH halves use the DELEGATION tag
@@ -6895,8 +6938,9 @@ static int test_o11_fault_matrix(void) {
 
 /* ══ 15. O11 S5 — the VALIDATOR-SET FIREWALL ═══════════════════════
  *
- * Season §11: none of the four stake-lifecycle operations may touch the
- * validator-SET machinery. They write validator/delegation ROWS; the
+ * Season §11 (+ O12 S1): none of the five SYSTEM validator-record
+ * operations — the four stake-lifecycle ops and VALIDATOR_UPDATE — may
+ * touch the validator-SET machinery. They write ROWS; the
  * SET (who is seated, for which epoch) is frozen in
  * validator_set_snapshots and consumed by committee resolution. The
  * distinction is the whole reason a mid-epoch STAKE cannot change who
@@ -7081,9 +7125,18 @@ static int test_o11_vset_firewall(void) {
     CHECK(supply_identity_holds(fx.w), "firewall run supply identity");
     OK();
 
-    /* ── 5. VALIDATOR_UPDATE (SYSTEM op 5) stays DEAD through V2 ────── */
+    /* ── 5. VALIDATOR_UPDATE (SYSTEM op 5) — O12 S1 makes it LIVE, and
+     *    the firewall must survive it too.
+     *
+     * The two rejects first (they leave f9c unspent, so the live update
+     * below is not funded by a rolled-back input): an UNSTAKE-shaped
+     * 2592-byte call in the op-5 record slot decodes as NOTHING (the op
+     * accepts 2594 and only 2594), and the single-leg form has no
+     * funding sibling. Then the real thing: validator 1 is RETIRING
+     * after step 4 — a bonded exit state that keeps paying delegators
+     * through its cooldown, so it is still allowed to tune commission
+     * (bft.c:1966-1976). Its row moves; the SET must not. ─────────── */
     {
-        /* the 2-leg staking shape with op 5 in the record slot */
         uint32_t sl = unstake_call_build(scall, sizeof(scall), 1);
         uint32_t fl = fund_call(fcall, sizeof(fcall), f9c, 9, DLG_CHANGE,
                                 0x59);
@@ -7094,7 +7147,7 @@ static int test_o11_vset_firewall(void) {
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 5, &ve, 1);
         CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
-              "VALIDATOR_UPDATE with a funding sibling must reject");
+              "a 2592-byte call in the op-5 slot must reject");
         OK();
         /* and single-leg */
         CHECK(env_build_signed(&fx, &e, DNA_DOMAIN_SYSTEM,
@@ -7105,7 +7158,25 @@ static int test_o11_vset_firewall(void) {
         mk_block(&b, 5, &v2, 1);
         CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
               "single-leg VALIDATOR_UPDATE must reject"); OK();
+        /* the LIVE update */
+        uint32_t vl = vupd_call_build(scall, sizeof(scall), 1, 750);
+        fl = fund_call(fcall, sizeof(fcall), f9c, 9, DLG_CHANGE, 0x5B);
+        CHECK(vl && fl, "call");
+        CHECK(two_leg_build(&fx, &e, DNA_SYSRULE_VALIDATOR_UPDATE, scall,
+                            vl, DNA_CORERULE_SYSFUND, fcall, fl, FEE_MIN,
+                            s1, 1, s9, 1, NULL) == 0, "build");
+        nodus_v2_envelope_t vv = { e.bytes, e.len };
+        mk_block(&b, 5, &vv, 1);
+        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+              "a RETIRING validator's commission update commits"); OK();
+        uint8_t vk1[64], v[TVAL_REC_LEN];
+        CHECK(val_key(1, vk1) == 0 &&
+              sysrow_read(fx.w, 4, vk1, 64, v, TVAL_REC_LEN) == 1, "row");
+        CHECK(v[TVAL_STATUS_OFF] == 1 &&
+              tbe64(v + TVAL_PEFF_OFF) == 5 + (uint64_t)DNAC_EPOCH_LENGTH,
+              "the deferral landed and the exit state did not move"); OK();
     }
+    FIREWALL_HOLDS("after VALIDATOR_UPDATE");
     /* ── 6. types 11/12/13 still REJECT at admission (cheap re-pin) ─── */
     {
         size_t n = 0;
@@ -7368,14 +7439,20 @@ static int test_o11_global(void) {
     }
 
     /* ── 5. EPOCH BOUNDARY: the same operation at LEN-1, LEN, LEN+1 ──
-     * The V2 engine has no epoch-boundary phase of its own (the vset
-     * rotation lives in the legacy finalize path), so the property
-     * under test is that a staking envelope behaves IDENTICALLY across
-     * the boundary and that blk->epoch is the derived value at each
-     * height. Driving there needs DNAC_EPOCH_LENGTH-2 empty blocks;
-     * that empty blocks commit at all is asserted explicitly below, so
-     * if this engine ever refuses them the failure names itself rather
-     * than silently skipping the boundary. ────────────────────────── */
+     * O12 S2 gave the V2 engine an epoch-boundary phase of its own
+     * (nodus_witness_v2_epoch.c: commissions → graduation → flips →
+     * commit_next), so the boundary block at LEN now ALSO freezes the
+     * snapshot for epoch 2·LEN — which needs the legacy `blocks` row at
+     * the lookback height LEN−1 (committee.c:116-125; the V2-native
+     * seed source is an ACTIVATION-SEASON obligation, see the module
+     * header). The fixture plants that row below, exactly as
+     * test_v2_epoch does. The property under test is unchanged: a
+     * staking envelope behaves IDENTICALLY across the boundary and
+     * blk->epoch is the derived value at each height. Driving there
+     * needs DNAC_EPOCH_LENGTH-2 empty blocks; that empty blocks commit
+     * at all is asserted explicitly below, so if this engine ever
+     * refuses them the failure names itself rather than silently
+     * skipping the boundary. ──────────────────────────────────────── */
     {
         fixture_t fx;
         env_t e;
@@ -7419,6 +7496,27 @@ static int test_o11_global(void) {
         for (int i = 0; i < 3; i++)
             CHECK(seed_funding(&fx, delegators[i], DLG_FUND,
                                (uint8_t)(0x70 + i), f[i]) == 0, "fund");
+        /* O12 S2: the boundary block at LEN freezes snapshot(2·LEN),
+         * whose committee compute reads the LEGACY blocks row at the
+         * lookback height (state_seed tiebreak, committee.c:116-125).
+         * Plant it — `blocks` is legacy block storage, not a V2 root
+         * leg, so the out-of-band insert cannot trip the guard. */
+        {
+            sqlite3_stmt *st = NULL;
+            CHECK(sqlite3_prepare_v2(fx.w->db,
+                "INSERT OR IGNORE INTO blocks (height, tx_root, "
+                "tx_count, timestamp, proposer_id, prev_hash, "
+                "state_root, created_at) VALUES (?1, zeroblob(64), 0, "
+                "0, zeroblob(32), zeroblob(64), ?2, 0)",
+                -1, &st, NULL) == SQLITE_OK, "lookback prep");
+            uint8_t sr[64];
+            memset(sr, 0x5A, sizeof(sr));
+            sqlite3_bind_int64(st, 1,
+                (sqlite3_int64)((uint64_t)DNAC_EPOCH_LENGTH - 1));
+            sqlite3_bind_blob(st, 2, sr, 64, SQLITE_TRANSIENT);
+            CHECK(sqlite3_step(st) == SQLITE_DONE, "lookback row");
+            sqlite3_finalize(st);
+        }
         /* three identical-shaped delegations at LEN-1, LEN, LEN+1 */
         for (int i = 0; i < 3; i++) {
             uint64_t h = (uint64_t)DNAC_EPOCH_LENGTH - 1 + (uint64_t)i;
@@ -7464,6 +7562,920 @@ static int test_o11_global(void) {
     return 0;
 }
 
+/* ══ 17. SYSTEM slice — VALIDATOR_UPDATE (O12 S1) ══════════════════
+ *
+ * The validator's own commission change, migrated from
+ * apply_validator_update (nodus_witness_bft.c:1934-2003) onto the 2-leg
+ * validator-record envelope. It is the first record op whose funding leg
+ * moves NO value at all: lock = release = 0, so the CORE sibling is a
+ * pure fee payment.
+ *
+ * What this section pins that no earlier one can:
+ *   - the three-way commission transition (decrease / equal / increase)
+ *     and the ONE-EPOCH deferral arithmetic, including its behaviour ON
+ *     an epoch boundary;
+ *   - that a transition touches the commission window and
+ *     last_validator_update_block and NOTHING else — asserted by a
+ *     FULL-RECORD byte comparison against the record the mediated read
+ *     observed, with only the named columns patched;
+ *   - that the ACTIVE SET is untouched (snapshots + epoch_state).
+ *
+ * ⚠ ARITHMETIC LABEL, stated once here and once at rtn_vupd_exec: the
+ * source deferral is max(next_epoch_boundary, H + E) and the BOUNDARY
+ * ARM IS UNREACHABLE. next_epoch_boundary = floor(H/E)*E + E and
+ * floor(H/E)*E <= H, so the boundary can never EXCEED H + E; it EQUALS
+ * it exactly when H is a multiple of E. The tests below therefore pin
+ * the two reachable cases — off-boundary (H + E strictly greater) and
+ * on-boundary (the two expressions coincide) — rather than pretending a
+ * third exists. The ternary is nevertheless preserved verbatim in the
+ * runtime, so if E ever becomes per-epoch state the pin still applies to
+ * the code the source wrote. */
+
+/* Insert one extra validator row in a given status with ZERO self_stake.
+ * Zero is load-bearing twice: the CORE supply identity sums self_stake
+ * (a nonzero bond would need a matching genesis bump), and the committee
+ * recompute orders by (self_stake + external_delegated) DESC with
+ * LIMIT target, so a 0-stake row can never displace one of the seven
+ * genesis validators. The destination fingerprint is a REAL 128-char
+ * lowercase hex window — the writable-shape verdict rightly freezes
+ * anything else (fx_genesis_n carries the same note). */
+static int seed_validator(fixture_t *fx, int k, int status, uint32_t bps) {
+    static const char hexd[] = "0123456789abcdef";
+    dnac_validator_record_t v;
+    uint8_t fpr[64];
+    memset(&v, 0, sizeof(v));
+    memcpy(v.pubkey, g_pk[k], 2592);
+    v.self_stake = 0;
+    v.status = (uint8_t)status;
+    v.commission_bps = (uint16_t)bps;
+    v.active_since_block = 1;
+    if (qgp_sha3_512(g_pk[k], 2592, fpr) != 0) return -1;
+    for (int b = 0; b < 64; b++) {
+        v.unstake_destination_fp[2 * b]     = hexd[fpr[b] >> 4];
+        v.unstake_destination_fp[2 * b + 1] = hexd[fpr[b] & 0xF];
+    }
+    v.unstake_destination_fp[128] = '\0';
+    return nodus_validator_insert(fx->w, &v);
+}
+
+/* Force one validator row's commission window out of band (pre-block, the
+ * §13 status-seeding precedent). */
+static int set_commission(fixture_t *fx, const uint8_t pkh[64],
+                          uint32_t cur, uint32_t pending, uint64_t peff) {
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(fx->w->db,
+            "UPDATE validators SET commission_bps = ?1, "
+            "pending_commission_bps = ?2, pending_effective_block = ?3 "
+            "WHERE pubkey_hash = ?4", -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)cur);
+    sqlite3_bind_int64(st, 2, (sqlite3_int64)pending);
+    sqlite3_bind_int64(st, 3, (sqlite3_int64)peff);
+    sqlite3_bind_blob(st, 4, pkh, 64, SQLITE_TRANSIENT);
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    return rc == SQLITE_DONE ? 0 : -1;
+}
+
+/* Every column of a validator record EXCEPT the four this op may write.
+ * A transition that quietly moves a fifth column fails here — this is
+ * the "NOTHING ELSE MOVES" assertion, done positively (compare the whole
+ * 5397-byte record) rather than by listing what to check. @return 0 =
+ * every untouched column is byte-identical. */
+static int vupd_only_commission_moved(const uint8_t *before,
+                                      const uint8_t *after) {
+    uint8_t a[TVAL_REC_LEN], b[TVAL_REC_LEN];
+    memcpy(a, before, TVAL_REC_LEN);
+    memcpy(b, after, TVAL_REC_LEN);
+    /* blank the four writable columns in BOTH copies, then demand the
+     * remaining 5387 bytes are identical */
+    memset(a + TVAL_COMM_OFF, 0, 2);
+    memset(b + TVAL_COMM_OFF, 0, 2);
+    memset(a + TVAL_PCOMM_OFF, 0, 2);
+    memset(b + TVAL_PCOMM_OFF, 0, 2);
+    memset(a + TVAL_PEFF_OFF, 0, 8);
+    memset(b + TVAL_PEFF_OFF, 0, 8);
+    memset(a + TVAL_LASTUPD_OFF, 0, 8);
+    memset(b + TVAL_LASTUPD_OFF, 0, 8);
+    return memcmp(a, b, TVAL_REC_LEN) == 0 ? 0 : -1;
+}
+
+/* The commission window as three numbers, straight off a stored row. */
+typedef struct { uint32_t cur, pending; uint64_t peff, last_upd; } vwin_t;
+static void vupd_window(const uint8_t *rec, vwin_t *w) {
+    w->cur      = ((uint32_t)rec[TVAL_COMM_OFF] << 8) |
+                  rec[TVAL_COMM_OFF + 1];
+    w->pending  = ((uint32_t)rec[TVAL_PCOMM_OFF] << 8) |
+                  rec[TVAL_PCOMM_OFF + 1];
+    w->peff     = tbe64(rec + TVAL_PEFF_OFF);
+    w->last_upd = tbe64(rec + TVAL_LASTUPD_OFF);
+}
+
+/* Build the canonical VALIDATOR_UPDATE envelope: leg0 = op 5 signed by
+ * the validator itself, leg1 = the FEE-ONLY funding leg signed by whoever
+ * owns the input. */
+static int vupd_env(fixture_t *fx, env_t *e, int validator, uint32_t bps,
+                    const uint8_t in[64], int funder, uint8_t seed,
+                    uint64_t fee, const two_opt_t *opt) {
+    static uint8_t vcall[4096], fcall[8192];
+    int sv[1], sf[1];
+    uint32_t vl = vupd_call_build(vcall, sizeof(vcall), validator, bps);
+    uint32_t fl = fund_call(fcall, sizeof(fcall), in, funder, DLG_CHANGE,
+                            seed);
+    if (!vl || !fl) return -1;
+    sv[0] = validator;
+    sf[0] = funder;
+    return two_leg_build(fx, e, DNA_SYSRULE_VALIDATOR_UPDATE, vcall, vl,
+                         DNA_CORERULE_SYSFUND, fcall, fl, fee, sv, 1,
+                         sf, 1, opt);
+}
+
+/* the stored amount of one UTXO, by its nullifier (UINT64_MAX = absent) */
+static uint64_t utxo_amount_of(nodus_witness_t *w, const uint8_t nul[64]) {
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT amount FROM utxo_set WHERE nullifier = ?1",
+            -1, &st, NULL) != SQLITE_OK)
+        return UINT64_MAX;
+    sqlite3_bind_blob(st, 1, nul, 64, SQLITE_TRANSIENT);
+    uint64_t v = UINT64_MAX;
+    if (sqlite3_step(st) == SQLITE_ROW)
+        v = (uint64_t)sqlite3_column_int64(st, 0);
+    sqlite3_finalize(st);
+    return v;
+}
+
+/* the four seeded non-committee rows */
+#define VU_ELIGIBLE  12
+#define VU_RETIRING  13
+#define VU_UNSTAKED  14
+#define VU_AUTORET   15
+
+static int vupd_fixture(fixture_t *fx, const char *tag) {
+    uint8_t pkh[7][64];
+    if (fx_genesis(fx, tag) != 0) return -1;
+    /* freeze the SET through the SOURCE genesis hook FIRST, so committee
+     * resolution serves the frozen row and the extra rows below cannot
+     * be mistaken for a set change (the §15 seeding note) */
+    if (nodus_witness_vset_commit_genesis(fx->w, 1) != 0) return -1;
+    for (int k = 0; k < 7; k++)
+        if (val_key(k, pkh[k]) != 0) return -1;
+    /* key 0: a real current rate PLUS a stale pending entry — a decrease
+     * must clear it. key 1: the same, for the EQUAL path. */
+    if (set_commission(fx, pkh[0], 3000, 9999, 12345) != 0) return -1;
+    if (set_commission(fx, pkh[1], 3000, 4444, 777) != 0) return -1;
+    /* key 6 keeps commission 0 — the increase path */
+    if (seed_validator(fx, VU_ELIGIBLE, DNAC_VALIDATOR_ELIGIBLE, 500) != 0)
+        return -1;
+    if (seed_validator(fx, VU_RETIRING, DNAC_VALIDATOR_RETIRING, 500) != 0)
+        return -1;
+    if (seed_validator(fx, VU_UNSTAKED, DNAC_VALIDATOR_UNSTAKED, 500) != 0)
+        return -1;
+    if (seed_validator(fx, VU_AUTORET, DNAC_VALIDATOR_AUTO_RETIRED, 500)
+        != 0)
+        return -1;
+    return 0;
+}
+
+static int test_system_validator_update(void) {
+    fixture_t fx;
+    env_t e;
+    static env_t e_p6;                /* P6's exact bytes, for the
+                                       * byte-identical replay leg      */
+    nodus_v2_block_t b;
+    int rc = 0;
+    static uint8_t vcall[4096], fcall[8192];
+    uint8_t fneg[64], fpos[8][64];
+    uint8_t pkh0[64], pkh1[64], pkh6[64], pkhE[64], pkhR[64], pkhU[64],
+            pkhA[64];
+    uint8_t before[TVAL_REC_LEN], after[TVAL_REC_LEN];
+    vwin_t w;
+
+    CHECK(vupd_fixture(&fx, "vupd") == 0, "genesis");
+    CHECK(val_key(0, pkh0) == 0 && val_key(1, pkh1) == 0 &&
+          val_key(6, pkh6) == 0 && val_key(VU_ELIGIBLE, pkhE) == 0 &&
+          val_key(VU_RETIRING, pkhR) == 0 &&
+          val_key(VU_UNSTAKED, pkhU) == 0 &&
+          val_key(VU_AUTORET, pkhA) == 0, "keys");
+    CHECK(seed_funding(&fx, 9, NOLOCK_FUND, 0x90, fneg) == 0, "fund neg");
+    for (int i = 0; i < 8; i++)
+        CHECK(seed_funding(&fx, 9, NOLOCK_FUND, (uint8_t)(0x91 + i),
+                           fpos[i]) == 0, "fund pos");
+
+    /* the frozen SET surfaces, captured before anything executes */
+    uint8_t vset0[64], epoch0[64];
+    CHECK(table_digest(fx.w, "validator_set_snapshots", vset0) == 0 &&
+          table_digest(fx.w, "epoch_state", epoch0) == 0, "capture");
+    CHECK(q1(fx.w, "SELECT COUNT(*) FROM validator_set_snapshots") == 2,
+          "the set really is frozen (2 seeded epochs)"); OK();
+
+    /* ══ NEGATIVES — every one a digest-proven no-op at height 1 ══════
+     * They all name the SAME unspent funding input, which stays unspent
+     * precisely because they all reject. */
+
+    /* N1 UNKNOWN validator: the stray key has no validator row at all */
+    {
+        CHECK(vupd_env(&fx, &e, K_STRAY, 500, fneg, 9, 0xA0, FEE_MIN,
+                       NULL) == 0, "build");
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block(&b, 1, &ve, 1);
+        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+              "N1 unknown validator must reject"); OK();
+    }
+    /* N2 UNSTAKED and N3 AUTO_RETIRED: frozen stake, frozen commission
+     * (bft.c:1970-1976). Both rows EXIST and are otherwise well-formed,
+     * so status is the only violated rule. */
+    {
+        CHECK(vupd_env(&fx, &e, VU_UNSTAKED, 100, fneg, 9, 0xA1, FEE_MIN,
+                       NULL) == 0, "build");
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block(&b, 1, &ve, 1);
+        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+              "N2 an UNSTAKED validator must not update"); OK();
+    }
+    {
+        CHECK(vupd_env(&fx, &e, VU_AUTORET, 100, fneg, 9, 0xA2, FEE_MIN,
+                       NULL) == 0, "build");
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block(&b, 1, &ve, 1);
+        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+              "N3 an AUTO_RETIRED validator must not update"); OK();
+    }
+    /* N4 bps above the source bound (bft.c:1953-1957) */
+    {
+        CHECK(vupd_env(&fx, &e, 0, DNAC_COMMISSION_BPS_MAX + 1, fneg, 9,
+                       0xA3, FEE_MIN, NULL) == 0, "build");
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block(&b, 1, &ve, 1);
+        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+              "N4 commission_bps > 10000 must reject"); OK();
+    }
+    /* N5/N6 call length ±1: EXACT 2594, never a prefix and never a
+     * suffix. 2595 is also the shape a caller would produce by starting
+     * to re-append the retired signed_at_block field. */
+    {
+        static const uint32_t lens[2] = { 2593u, 2595u };
+        int sv[1] = { 0 }, sf[1] = { 9 };
+        for (int i = 0; i < 2; i++) {
+            uint32_t fl;
+            CHECK(vupd_call_build(vcall, sizeof(vcall), 0, 500) == 2594,
+                  "call");
+            vcall[2594] = 0x00;          /* the +1 byte, if used         */
+            fl = fund_call(fcall, sizeof(fcall), fneg, 9, DLG_CHANGE,
+                           (uint8_t)(0xA4 + i));
+            CHECK(fl, "fund call");
+            CHECK(two_leg_build(&fx, &e, DNA_SYSRULE_VALIDATOR_UPDATE,
+                                vcall, lens[i], DNA_CORERULE_SYSFUND,
+                                fcall, fl, FEE_MIN, sv, 1, sf, 1,
+                                NULL) == 0, "build");
+            nodus_v2_envelope_t ve = { e.bytes, e.len };
+            mk_block(&b, 1, &ve, 1);
+            CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+                  "N5/N6 a call length other than 2594 must reject");
+        }
+        OK();
+    }
+    /* N7 ALL-ZERO identity pubkey (a well-formed 2594-byte call whose
+     * identity no key can own) */
+    {
+        int sv[1] = { 0 }, sf[1] = { 9 };
+        uint32_t fl;
+        memset(vcall, 0, 2594);
+        vcall[2592] = 0;
+        vcall[2593] = 100;
+        fl = fund_call(fcall, sizeof(fcall), fneg, 9, DLG_CHANGE, 0xA6);
+        CHECK(fl, "fund call");
+        CHECK(two_leg_build(&fx, &e, DNA_SYSRULE_VALIDATOR_UPDATE, vcall,
+                            2594, DNA_CORERULE_SYSFUND, fcall, fl,
+                            FEE_MIN, sv, 1, sf, 1, NULL) == 0, "build");
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block(&b, 1, &ve, 1);
+        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+              "N7 an all-zero identity pubkey must reject"); OK();
+    }
+    /* N8 WRONG SIGNER: the call names validator 0, the record leg is
+     * signed by key 1 — a fully VALID kind-1 signature over the right
+     * digest by the wrong identity. The authorization boundary accepts
+     * it (key 1 really signed); the CALL-IDENTITY binding at exec is
+     * what kills it. Pinned in isolation at the hook layer below. */
+    {
+        int sv[1] = { 1 }, sf[1] = { 9 };
+        uint32_t vl = vupd_call_build(vcall, sizeof(vcall), 0, 100);
+        uint32_t fl = fund_call(fcall, sizeof(fcall), fneg, 9, DLG_CHANGE,
+                                0xA7);
+        CHECK(vl && fl, "call");
+        CHECK(two_leg_build(&fx, &e, DNA_SYSRULE_VALIDATOR_UPDATE, vcall,
+                            vl, DNA_CORERULE_SYSFUND, fcall, fl, FEE_MIN,
+                            sv, 1, sf, 1, NULL) == 0, "build");
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block(&b, 1, &ve, 1);
+        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+              "N8 a valid signature by the wrong identity must reject");
+        OK();
+    }
+    /* N9 KIND-2 CARRIAGE on the record leg: SYSTEM's allowlist permits
+     * it, the OP refuses it. (The hook-level pin below separates the
+     * exec refusal from the authorization layer's own kind-2 parse.) */
+    {
+        two_opt_t o;
+        memset(&o, 0, sizeof(o));
+        o.sys_auth_kind = NODUS_RT_AUTHKIND_DSA87_CC_V1;
+        CHECK(vupd_env(&fx, &e, 0, 100, fneg, 9, 0xA8, FEE_MIN, &o) == 0,
+              "build");
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block(&b, 1, &ve, 1);
+        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+              "N9 kind-2 carriage on an op-5 leg must reject"); OK();
+    }
+    /* N10 SINGLE-LEG SYSTEM: a record with no funding partner */
+    {
+        int sv[1] = { 0 };
+        uint32_t vl = vupd_call_build(vcall, sizeof(vcall), 0, 100);
+        CHECK(vl, "call");
+        CHECK(env_build_signed(&fx, &e, DNA_DOMAIN_SYSTEM,
+                               DNA_SYSRULE_VALIDATOR_UPDATE, vcall, vl,
+                               0, 0, 8, 16384, sv, 1, NULL) == 0, "build");
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block(&b, 1, &ve, 1);
+        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+              "N10 single-leg VALIDATOR_UPDATE must reject"); OK();
+    }
+    /* N11 SINGLE-LEG SYSFUND: funding with no record partner */
+    {
+        int sf[1] = { 9 };
+        uint32_t fl = fund_call(fcall, sizeof(fcall), fneg, 9, DLG_CHANGE,
+                                0xA9);
+        CHECK(fl, "call");
+        CHECK(env_build_signed(&fx, &e, DNA_DOMAIN_CORE,
+                               DNA_CORERULE_SYSFUND, fcall, fl, FEE_MIN,
+                               0, 40, 16384, sf, 1, NULL) == 0, "build");
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block(&b, 1, &ve, 1);
+        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+              "N11 single-leg SYSFUND must reject"); OK();
+    }
+    /* N12 SIBLING MISMATCH: a well-formed op-5 record leg paired with a
+     * CORE SPEND instead of the funding op. Unlike §11's C13 this one is
+     * NOT ambiguous about where it dies — leg0 executes first, and leg0's
+     * own shape gate requires leg1 to be DNA_CORERULE_SYSFUND. */
+    {
+        int sv[1] = { 0 }, sf[1] = { 9 };
+        uint32_t vl = vupd_call_build(vcall, sizeof(vcall), 0, 100);
+        uint32_t fl = fund_call(fcall, sizeof(fcall), fneg, 9, DLG_CHANGE,
+                                0xAA);
+        CHECK(vl && fl, "call");
+        CHECK(two_leg_build(&fx, &e, DNA_SYSRULE_VALIDATOR_UPDATE, vcall,
+                            vl, DNA_CORERULE_SPEND, fcall, fl, FEE_MIN,
+                            sv, 1, sf, 1, NULL) == 0, "build");
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block(&b, 1, &ve, 1);
+        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+              "N12 a non-SYSFUND sibling must reject"); OK();
+    }
+    /* the whole negative matrix left the chain untouched */
+    CHECK(q1(fx.w, "SELECT total_burned FROM supply_tracking") == 0 &&
+          utxo_rows(fx.w, fneg) == 1,
+          "the negative matrix burned nothing and spent nothing"); OK();
+
+    /* ══ POSITIVES ═══════════════════════════════════════════════════ */
+
+    /* P1 DECREASE — immediate, and the stale pending entry is CLEARED */
+    {
+        CHECK(sysrow_read(fx.w, 4, pkh0, 64, before, TVAL_REC_LEN) == 1,
+              "before");
+        CHECK(vupd_env(&fx, &e, 0, 1000, fpos[0], 9, 0xB0, FEE_MIN,
+                       NULL) == 0, "build");
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block(&b, 1, &ve, 1);
+        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+              "P1 a decrease commits"); OK();
+        CHECK(sysrow_read(fx.w, 4, pkh0, 64, after, TVAL_REC_LEN) == 1,
+              "after");
+        vupd_window(after, &w);
+        CHECK(w.cur == 1000 && w.pending == 0 && w.peff == 0 &&
+              w.last_upd == 1,
+              "P1 immediate rate, pending cleared, Rule K stamped"); OK();
+        CHECK(vupd_only_commission_moved(before, after) == 0,
+              "P1 no other column moved"); OK();
+        /* fee-only conservation: the change output exists, the input is
+         * gone, and EXACTLY the fee was burned */
+        uint8_t chg[64];
+        CHECK(out_nul(9, 0xB0, chg) == 0, "change id");
+        CHECK(utxo_rows(fx.w, chg) == 1 && utxo_rows(fx.w, fpos[0]) == 0,
+              "P1 change created, funding input consumed"); OK();
+        CHECK(q1(fx.w, "SELECT total_burned FROM supply_tracking") ==
+                  FEE_MIN &&
+              utxo_amount_of(fx.w, chg) == DLG_CHANGE,
+              "P1 exactly the fee burned, exactly the change created");
+        OK();
+        CHECK(supply_identity_holds(fx.w), "P1 supply identity"); OK();
+    }
+    /* P2 EQUAL — falls through the decrease branch: the current rate does
+     * not move and the stale pending entry is dropped (bft.c:1922-1924) */
+    {
+        CHECK(sysrow_read(fx.w, 4, pkh1, 64, before, TVAL_REC_LEN) == 1,
+              "before");
+        vupd_window(before, &w);
+        CHECK(w.cur == 3000 && w.pending == 4444 && w.peff == 777,
+              "P2 precondition: a stale pending entry exists"); OK();
+        CHECK(vupd_env(&fx, &e, 1, 3000, fpos[1], 9, 0xB1, FEE_MIN,
+                       NULL) == 0, "build");
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block(&b, 2, &ve, 1);
+        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+              "P2 an equal update commits"); OK();
+        CHECK(sysrow_read(fx.w, 4, pkh1, 64, after, TVAL_REC_LEN) == 1,
+              "after");
+        vupd_window(after, &w);
+        CHECK(w.cur == 3000 && w.pending == 0 && w.peff == 0 &&
+              w.last_upd == 2,
+              "P2 rate unchanged, pending cleared"); OK();
+        CHECK(vupd_only_commission_moved(before, after) == 0,
+              "P2 no other column moved"); OK();
+    }
+    /* P3 INCREASE off a boundary — DEFERRED exactly one epoch, current
+     * rate untouched. H = 3, so H + E strictly exceeds the next epoch
+     * boundary and the max selects H + E. */
+    {
+        CHECK(sysrow_read(fx.w, 4, pkh6, 64, before, TVAL_REC_LEN) == 1,
+              "before");
+        CHECK(vupd_env(&fx, &e, 6, 2500, fpos[2], 9, 0xB2, FEE_MIN,
+                       NULL) == 0, "build");
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block(&b, 3, &ve, 1);
+        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+              "P3 an increase commits"); OK();
+        CHECK(sysrow_read(fx.w, 4, pkh6, 64, after, TVAL_REC_LEN) == 1,
+              "after");
+        vupd_window(after, &w);
+        CHECK(w.cur == 0 && w.pending == 2500 &&
+              w.peff == 3 + (uint64_t)DNAC_EPOCH_LENGTH && w.last_upd == 3,
+              "P3 deferred one full epoch, current rate untouched"); OK();
+        CHECK(vupd_only_commission_moved(before, after) == 0,
+              "P3 no other column moved"); OK();
+    }
+    /* P4 an ELIGIBLE validator may update (a seat-less bonded validator
+     * tunes commission trying to win a seat back — bft.c:1966-1969) */
+    {
+        CHECK(sysrow_read(fx.w, 4, pkhE, 64, before, TVAL_REC_LEN) == 1,
+              "before");
+        CHECK(vupd_env(&fx, &e, VU_ELIGIBLE, 200, fpos[3], 9, 0xB3,
+                       FEE_MIN, NULL) == 0, "build");
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block(&b, 4, &ve, 1);
+        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+              "P4 an ELIGIBLE validator's update commits"); OK();
+        CHECK(sysrow_read(fx.w, 4, pkhE, 64, after, TVAL_REC_LEN) == 1,
+              "after");
+        vupd_window(after, &w);
+        CHECK(w.cur == 200 && w.pending == 0 && w.last_upd == 4 &&
+              after[TVAL_STATUS_OFF] == (uint8_t)DNAC_VALIDATOR_ELIGIBLE,
+              "P4 rate moved, status did NOT"); OK();
+        CHECK(vupd_only_commission_moved(before, after) == 0,
+              "P4 no other column moved"); OK();
+    }
+    /* P5 a RETIRING validator may update (it keeps paying delegators
+     * through its cooldown) — and this one INCREASES, so the deferral
+     * lands on an exit-state row without disturbing the exit */
+    {
+        CHECK(sysrow_read(fx.w, 4, pkhR, 64, before, TVAL_REC_LEN) == 1,
+              "before");
+        CHECK(vupd_env(&fx, &e, VU_RETIRING, 900, fpos[4], 9, 0xB4,
+                       FEE_MIN, NULL) == 0, "build");
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block(&b, 5, &ve, 1);
+        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+              "P5 a RETIRING validator's update commits"); OK();
+        CHECK(sysrow_read(fx.w, 4, pkhR, 64, after, TVAL_REC_LEN) == 1,
+              "after");
+        vupd_window(after, &w);
+        CHECK(w.cur == 500 && w.pending == 900 &&
+              w.peff == 5 + (uint64_t)DNAC_EPOCH_LENGTH && w.last_upd == 5 &&
+              after[TVAL_STATUS_OFF] == (uint8_t)DNAC_VALIDATOR_RETIRING,
+              "P5 deferral set, exit state untouched"); OK();
+        CHECK(vupd_only_commission_moved(before, after) == 0,
+              "P5 no other column moved"); OK();
+    }
+    /* P6 SEQUENTIAL updates: validator 0 again, in a later block. Rule K's
+     * stamp must ADVANCE, and the second transition must read the row the
+     * FIRST one wrote (1000, not the seeded 3000) — an increase relative
+     * to the current committed value. */
+    {
+        CHECK(sysrow_read(fx.w, 4, pkh0, 64, before, TVAL_REC_LEN) == 1,
+              "before");
+        vupd_window(before, &w);
+        CHECK(w.cur == 1000 && w.last_upd == 1,
+              "P6 precondition: P1's row is what P6 reads"); OK();
+        CHECK(vupd_env(&fx, &e_p6, 0, 1200, fpos[5], 9, 0xB5, FEE_MIN,
+                       NULL) == 0, "build");
+        nodus_v2_envelope_t ve = { e_p6.bytes, e_p6.len };
+        mk_block(&b, 6, &ve, 1);
+        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+              "P6 a second update commits"); OK();
+        CHECK(sysrow_read(fx.w, 4, pkh0, 64, after, TVAL_REC_LEN) == 1,
+              "after");
+        vupd_window(after, &w);
+        CHECK(w.cur == 1000 && w.pending == 1200 &&
+              w.peff == 6 + (uint64_t)DNAC_EPOCH_LENGTH && w.last_upd == 6,
+              "P6 last_validator_update_block advanced"); OK();
+        CHECK(vupd_only_commission_moved(before, after) == 0,
+              "P6 no other column moved"); OK();
+    }
+    /* six committed envelopes, six fees, nothing else destroyed */
+    CHECK(q1(fx.w, "SELECT total_burned FROM supply_tracking") ==
+              6 * FEE_MIN,
+          "fee-only: exactly one fee burned per committed update"); OK();
+    CHECK(supply_identity_holds(fx.w), "supply identity"); OK();
+
+    /* ══ ACTIVE-SET IMMUTABILITY ══════════════════════════════════════
+     * Six commission changes later, the SET machinery is byte-identical:
+     * a commission change is not a set change. */
+    {
+        uint8_t d1[64];
+        CHECK(table_digest(fx.w, "validator_set_snapshots", d1) == 0 &&
+              memcmp(d1, vset0, 64) == 0,
+              "validator_set_snapshots must be byte-identical"); OK();
+        CHECK(table_digest(fx.w, "epoch_state", d1) == 0 &&
+              memcmp(d1, epoch0, 64) == 0,
+              "epoch_state must be byte-identical"); OK();
+        CHECK(val_col(fx.w, pkh0, "self_stake") == VAL_BOND &&
+              val_col(fx.w, pkh0, "status") ==
+                  (uint64_t)DNAC_VALIDATOR_ACTIVE &&
+              val_col(fx.w, pkh0, "total_delegated") == 0 &&
+              val_col(fx.w, pkh0, "external_delegated") == 0,
+              "stake and status did not move"); OK();
+        CHECK(active_count(fx.w) == 0,
+              "validator_stats.active_count did not move"); OK();
+    }
+
+    /* ══ REPLAY ═══════════════════════════════════════════════════════
+     * HONEST LABEL (the §11 C19 caveat, verbatim in force here): the
+     * committed-identity guard fires pre-BEGIN, AND the funding input
+     * this envelope names was consumed by P6, so a mutant that removed
+     * the guard would still see the leg reject on a missing input. The
+     * two rules are CO-SUFFICIENT and this test does not separate them —
+     * an intent twin of a committed record envelope necessarily re-spends
+     * the same UTXO. The guard is pinned in isolation by §7. What IS
+     * separated here is the IDENTITY behaviour: an extra funding witness
+     * must not move intent_id and must move wire_id. */
+    {
+        static env_t twin;               /* 128 KiB — off the stack     */
+        uint8_t w0[64], i0[64], wt[64], it[64];
+        int sv[1] = { 0 }, sf2[2] = { 9, 11 };
+        uint32_t vl = vupd_call_build(vcall, sizeof(vcall), 0, 1200);
+        uint32_t fl = fund_call(fcall, sizeof(fcall), fpos[5], 9,
+                                DLG_CHANGE, 0xB5);
+        CHECK(vl && fl, "call");
+        /* BYTE-IDENTICAL replay of P6 in a LATER block: the very bytes
+         * that committed at height 6 */
+        nodus_v2_envelope_t ve = { e_p6.bytes, e_p6.len };
+        mk_block(&b, 7, &ve, 1);
+        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+              "a committed update intent must not replay"); OK();
+        CHECK(derive_ids2(&fx, &e_p6, w0, i0) == 0, "ids");
+        /* the AUTH TWIN: one more valid funding signer, same intent */
+        CHECK(two_leg_build(&fx, &twin, DNA_SYSRULE_VALIDATOR_UPDATE,
+                            vcall, vl, DNA_CORERULE_SYSFUND, fcall, fl,
+                            FEE_MIN, sv, 1, sf2, 2, NULL) == 0, "build");
+        CHECK(derive_ids2(&fx, &twin, wt, it) == 0, "ids");
+        CHECK(memcmp(it, i0, 64) == 0,
+              "an extra witness must NOT move the intent id"); OK();
+        CHECK(memcmp(wt, w0, 64) != 0, "it MUST move the wire id"); OK();
+        nodus_v2_envelope_t vt = { twin.bytes, twin.len };
+        mk_block(&b, 7, &vt, 1);
+        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+              "the auth twin must reject on the committed intent"); OK();
+    }
+    fx_close(&fx);
+
+    /* ══ CROSS-CHAIN ══════════════════════════════════════════════════
+     * The same semantic update is a DIFFERENT intent on a different
+     * chain, and one chain's bytes never authorize on another. */
+    {
+        fixture_t a, o;
+        static env_t ea, eo;             /* 128 KiB each — off the stack */
+        uint8_t fa[64], fo[64], ia[64], wa[64], io[64], wo[64];
+        CHECK(vupd_fixture(&a, "vuxcA") == 0, "genesis A");
+        g_gid_fill = 0xF6;
+        int orc = vupd_fixture(&o, "vuxcO");
+        g_gid_fill = 0xEE;
+        CHECK(orc == 0, "genesis O");
+        CHECK(memcmp(a.chain_id, o.chain_id, 32) != 0,
+              "the fixtures must be different chains"); OK();
+        CHECK(seed_funding(&a, 9, NOLOCK_FUND, 0xC0, fa) == 0, "fund A");
+        CHECK(seed_funding(&o, 9, NOLOCK_FUND, 0xC0, fo) == 0, "fund O");
+        CHECK(memcmp(fa, fo, 64) == 0,
+              "the funding ids coincide, so the replay is a pure "
+              "chain-binding test"); OK();
+        CHECK(vupd_env(&a, &ea, 0, 1000, fa, 9, 0xC1, FEE_MIN, NULL) == 0 &&
+              vupd_env(&o, &eo, 0, 1000, fo, 9, 0xC1, FEE_MIN, NULL) == 0,
+              "build");
+        CHECK(derive_ids2(&a, &ea, wa, ia) == 0 &&
+              derive_ids2(&o, &eo, wo, io) == 0, "ids");
+        CHECK(memcmp(ia, io, 64) != 0,
+              "the same update has DIFFERENT intents on different chains");
+        OK();
+        nodus_v2_envelope_t va = { ea.bytes, ea.len };
+        nodus_v2_envelope_t vo = { eo.bytes, eo.len };
+        mk_block(&b, 1, &va, 1);
+        CHECK(nodus_witness_v2_apply_block(a.w, &b) == 0, "A commits");
+        mk_block(&b, 1, &vo, 1);
+        mk_id(b.prev_block_id, 0xF6);
+        CHECK(nodus_witness_v2_apply_block(o.w, &b) == 0, "O commits");
+        OK();
+        {
+            fixture_t o2;
+            g_gid_fill = 0xF7;
+            int o2rc = vupd_fixture(&o2, "vuxcO2");
+            g_gid_fill = 0xEE;
+            CHECK(o2rc == 0, "genesis O2");
+            uint8_t f2[64];
+            CHECK(seed_funding(&o2, 9, NOLOCK_FUND, 0xC0, f2) == 0, "fund");
+            mk_block(&b, 1, &va, 1);
+            mk_id(b.prev_block_id, 0xF7);
+            CHECK(apply_reject(o2.w, &b, &rc) == 0 && rc == -1,
+                  "chain A's bytes must fail chain O2's binding"); OK();
+            fx_close(&o2);
+        }
+        fx_close(&a);
+        fx_close(&o);
+    }
+
+    /* ══ TWIN EXECUTION (the §7 convention) ═══════════════════════════
+     * Two independent fixtures, two DIFFERENT valid signature
+     * realizations of ONE intent. Consensus state, the validator record
+     * itself and the domain/global roots must be byte-identical; the
+     * wire tx roots must not be. */
+    {
+        fixture_t a, b2;
+        static env_t ea, eb;             /* 128 KiB each — off the stack */
+        uint8_t fa[64], fb[64], wa[64], ia[64], wb[64], ib[64];
+        nodus_v2_block_t ba, bb;
+        CHECK(vupd_fixture(&a, "vutwA") == 0, "genesis A");
+        CHECK(vupd_fixture(&b2, "vutwB") == 0, "genesis B");
+        CHECK(seed_funding(&a, 9, NOLOCK_FUND, 0xD0, fa) == 0, "fund A");
+        CHECK(seed_funding(&b2, 9, NOLOCK_FUND, 0xD0, fb) == 0, "fund B");
+        CHECK(vupd_env(&a, &ea, 6, 2500, fa, 9, 0xD1, FEE_MIN, NULL) == 0 &&
+              vupd_env(&b2, &eb, 6, 2500, fb, 9, 0xD1, FEE_MIN, NULL) == 0,
+              "build");
+        CHECK(ea.len == eb.len && memcmp(ea.bytes, eb.bytes, ea.len) != 0,
+              "randomized signing must give distinct realizations"); OK();
+        CHECK(derive_ids2(&a, &ea, wa, ia) == 0 &&
+              derive_ids2(&b2, &eb, wb, ib) == 0, "ids");
+        CHECK(memcmp(ia, ib, 64) == 0 && memcmp(wa, wb, 64) != 0,
+              "update twins: one intent, two wires"); OK();
+        nodus_v2_envelope_t va = { ea.bytes, ea.len };
+        nodus_v2_envelope_t vb = { eb.bytes, eb.len };
+        mk_block(&ba, 1, &va, 1);
+        mk_block(&bb, 1, &vb, 1);
+        mk_id(bb.block_id, 0xD7);
+        CHECK(nodus_witness_v2_apply_block(a.w, &ba) == 0, "A commits");
+        CHECK(nodus_witness_v2_apply_block(b2.w, &bb) == 0, "B commits");
+        OK();
+        uint8_t da[64], db[64];
+        CHECK(consensus_state_digest(a.w, da) == 0 &&
+              consensus_state_digest(b2.w, db) == 0, "digest");
+        CHECK(memcmp(da, db, 64) == 0,
+              "update twins: consensus state identical"); OK();
+        /* `validators` is not in consensus_state_digest's list — compare
+         * the record this op actually wrote, byte for byte */
+        {
+            uint8_t ra[TVAL_REC_LEN], rb[TVAL_REC_LEN], k6[64];
+            CHECK(val_key(6, k6) == 0, "key");
+            CHECK(sysrow_read(a.w, 4, k6, 64, ra, TVAL_REC_LEN) == 1 &&
+                  sysrow_read(b2.w, 4, k6, 64, rb, TVAL_REC_LEN) == 1,
+                  "rows");
+            CHECK(memcmp(ra, rb, TVAL_REC_LEN) == 0,
+                  "update twins: the validator record is byte-identical");
+            OK();
+        }
+        CHECK(memcmp(ba.out_domains_root, bb.out_domains_root, 64) == 0 &&
+              memcmp(ba.out_global_root, bb.out_global_root, 64) == 0,
+              "update twins: roots identical"); OK();
+        CHECK(memcmp(ba.out_tx_root, bb.out_tx_root, 64) != 0,
+              "update twins: wire tx roots differ"); OK();
+        fx_close(&a);
+        fx_close(&b2);
+    }
+    return 0;
+}
+
+/* ══ 18. O12 S1 HOOK-LEVEL pins for VALIDATOR_UPDATE ═══════════════
+ *
+ * Seams the block layer cannot separate, because the next layer produces
+ * the same block verdict:
+ *   - the ONE-EPOCH deferral arithmetic at heights the block layer would
+ *     need a 720-block drive to reach (H = E-1 / E / E+1), including the
+ *     ON-BOUNDARY case where next_epoch_boundary and H + E coincide;
+ *   - the call-identity binding: a LEGITIMATE one-signer verdict naming
+ *     the wrong identity dies at exec, not at the authorization boundary;
+ *   - the read plan's exact shape (one mediated read, no counter, no
+ *     delegation count);
+ *   - kind-2 refusal at exec, with a verdict the auth layer would have
+ *     accepted. */
+static int test_vupd_hook_pins(void) {
+    fixture_t fx;
+    env_t e;
+    static uint8_t res[DNA_EFFECT_MAX_TOTAL_LEN];
+    size_t rl = 0;
+    size_t n = 0;
+    const nodus_domain_runtime_t *bt = nodus_runtime_builtin_table(&n);
+    const nodus_domain_runtime_t *sys, *core;
+    uint8_t f9[64], iid[64];
+    nodus_rt_read_req_t reqs[NODUS_RT_MAX_READS];
+    nodus_rt_read_res_t reads[NODUS_RT_MAX_READS];
+    uint16_t nr = 0;
+    nodus_rt_auth_verdict_t av;
+    nodus_rt_exec_ctx_t ctx;
+    dna_env_view_t v;
+
+    CHECK(bt && n == 2, "table");
+    sys = &bt[0];
+    core = &bt[1];
+    CHECK(vupd_fixture(&fx, "vuhk") == 0, "genesis");
+    CHECK(seed_funding(&fx, 9, NOLOCK_FUND, 0xE0, f9) == 0, "fund");
+    /* validator 6 starts at commission 0, so every bps > 0 below is an
+     * INCREASE and exercises the deferral arm */
+    CHECK(vupd_env(&fx, &e, 6, 2500, f9, 9, 0xE1, FEE_MIN, NULL) == 0,
+          "build");
+    CHECK(dna_env_decode(e.bytes, e.len, &v) == 0, "decode");
+
+    memset(&av, 0, sizeof(av));
+    av.n_signers = 1;
+    CHECK(qgp_sha3_512(g_pk[6], 2592, av.signer_fp[0]) == 0, "fp");
+    memset(iid, 0x51, sizeof(iid));
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.chain_id = fx.chain_id;
+    ctx.global_height = 1;
+    ctx.intent_id = iid;
+    ctx.wire_id = iid;
+    ctx.auth = &av;
+
+    /* the honest round-trip first, so every negative below is a real
+     * difference rather than a broken harness */
+    CHECK(nodus_rt_system_read_plan(sys, &v, 0, &ctx, reqs,
+                                    NODUS_RT_MAX_READS, &nr) == 0 &&
+          nr == 1 && reqs[0].op_id == 4 && reqs[0].key_len == 64,
+          "H1 op 5 plans EXACTLY one validator read"); OK();
+    memset(reads, 0, sizeof(reads));
+    CHECK(nodus_witness_v2_read_one(fx.w, sys, &reqs[0], &reads[0])
+              == NODUS_ADAPTER_OK && reads[0].present == 1 &&
+          reads[0].value_len == TVAL_REC_LEN, "mediated read"); OK();
+    CHECK(nodus_rt_system_exec(sys, &v, 0, &ctx, reads, nr, res,
+                              sizeof(res), &rl) == 0,
+          "H2 the honest hook-level update accepts"); OK();
+
+    /* the effect this op emits: ONE vhash-bound SET of the validator row,
+     * and nothing else */
+    {
+        dna_effect_view_t ev;
+        CHECK(dna_effect_result_decode(res, rl, &ev) == 0 &&
+              ev.effect_count == 1, "decode result"); OK();
+        CHECK(ev.eff[0].op_id == 4 &&
+              ev.eff[0].effect_kind == DNA_EFFECT_SET &&
+              ev.eff[0].precond_tag == DNA_EFFECT_PRE_EXISTS_VHASH &&
+              ev.eff[0].key_len == 64 &&
+              ev.eff[0].value_len == TVAL_REC_LEN,
+              "H3 exactly one EXISTS_VHASH-bound validator SET"); OK();
+        CHECK(vupd_only_commission_moved(reads[0].value,
+                                         ev.buf + ev.val_off[0]) == 0,
+              "H3 the emitted record differs ONLY in the commission "
+              "window"); OK();
+    }
+
+    /* H4 the deferral arithmetic across the epoch boundary. The block
+     * layer would need a 720-block drive to reach these heights; the
+     * arithmetic is a pure function of ctx->global_height, so it is
+     * pinned here directly.
+     *   H = E-1  → boundary E,    H+E = 2E-1  → max = 2E-1  (off)
+     *   H = E    → boundary 2E,   H+E = 2E    → max = 2E    (COINCIDE)
+     *   H = E+1  → boundary 2E,   H+E = 2E+1  → max = 2E+1  (off)
+     * The middle row is the on-boundary case; note it is the ONLY height
+     * class where the two expressions agree, and the boundary never
+     * EXCEEDS H+E — see the section header's arithmetic label. */
+    {
+        const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
+        const uint64_t hs[4]   = { 1, E - 1, E, E + 1 };
+        for (int i = 0; i < 4; i++) {
+            dna_effect_view_t ev;
+            uint64_t H = hs[i];
+            uint64_t boundary = ((H / E) + 1) * E;
+            uint64_t want = boundary > H + E ? boundary : H + E;
+            ctx.global_height = H;
+            CHECK(nodus_rt_system_exec(sys, &v, 0, &ctx, reads, nr, res,
+                                      sizeof(res), &rl) == 0, "exec");
+            CHECK(dna_effect_result_decode(res, rl, &ev) == 0 &&
+                  ev.effect_count == 1, "decode");
+            const uint8_t *nv = ev.buf + ev.val_off[0];
+            vwin_t w;
+            vupd_window(nv, &w);
+            CHECK(w.cur == 0 && w.pending == 2500 && w.peff == want &&
+                  w.last_upd == H,
+                  "H4 the deferral is max(next boundary, H + epoch)");
+            CHECK(w.peff == H + E,
+                  "H4 the boundary arm never exceeds H + epoch");
+        }
+        OK();
+        ctx.global_height = 1;
+    }
+
+    /* H5 CALL-IDENTITY BINDING: a perfectly legitimate one-signer verdict
+     * that names ANOTHER validator. The authorization boundary would have
+     * accepted this (key 0 could really have signed); exec refuses it
+     * because the row a record op writes derives from CALL bytes only. */
+    {
+        nodus_rt_auth_verdict_t bad;
+        memcpy(&bad, &av, sizeof(bad));
+        CHECK(qgp_sha3_512(g_pk[0], 2592, bad.signer_fp[0]) == 0, "fp");
+        ctx.auth = &bad;
+        CHECK(nodus_rt_system_exec(sys, &v, 0, &ctx, reads, nr, res,
+                                  sizeof(res), &rl) == -1,
+              "H5 a valid verdict for the wrong identity must reject");
+        OK();
+        ctx.auth = &av;
+    }
+    /* H6 EXTRA SIGNER: two verified signers, one of them the right
+     * identity. The op requires EXACTLY one, so a twin cannot write a
+     * divergent row — it cannot write at all. */
+    {
+        nodus_rt_auth_verdict_t two;
+        memcpy(&two, &av, sizeof(two));
+        two.n_signers = 2;
+        CHECK(qgp_sha3_512(g_pk[9], 2592, two.signer_fp[1]) == 0, "fp");
+        ctx.auth = &two;
+        CHECK(nodus_rt_system_exec(sys, &v, 0, &ctx, reads, nr, res,
+                                  sizeof(res), &rl) == -1,
+              "H6 a second verified signer must reject"); OK();
+        ctx.auth = &av;
+    }
+    /* H7 KIND-2 CARRIAGE at exec, with an otherwise perfect verdict */
+    {
+        dna_env_view_t v2 = v;
+        v2.leg[0].auth_kind = NODUS_RT_AUTHKIND_DSA87_CC_V1;
+        CHECK(nodus_rt_system_exec(sys, &v2, 0, &ctx, reads, nr, res,
+                                  sizeof(res), &rl) == -1,
+              "H7 kind-2 carriage on an op-5 leg must reject at exec");
+        OK();
+    }
+    /* H8 SINGLE-LEG: both hooks refuse a record leg with no partner */
+    {
+        dna_env_view_t v2 = v;
+        uint16_t nr2 = 0;
+        v2.leg_count = 1;
+        CHECK(nodus_rt_system_read_plan(sys, &v2, 0, &ctx, reqs,
+                                        NODUS_RT_MAX_READS, &nr2) == -1,
+              "H8 single-leg op 5 must fail to plan"); OK();
+        CHECK(nodus_rt_system_exec(sys, &v2, 0, &ctx, reads, nr, res,
+                                  sizeof(res), &rl) == -1,
+              "H8 single-leg op 5 must fail to exec"); OK();
+    }
+    /* H9 ABSENT row: a missing validator is a deterministic VERDICT, not
+     * a create and not a node fault */
+    {
+        nodus_rt_read_res_t r2[NODUS_RT_MAX_READS];
+        memcpy(r2, reads, sizeof(r2));
+        r2[0].present = 0;
+        r2[0].value_len = 0;
+        CHECK(nodus_rt_system_exec(sys, &v, 0, &ctx, r2, nr, res,
+                                  sizeof(res), &rl) == -1,
+              "H9 a missing validator row must reject as a verdict"); OK();
+    }
+    /* H10 the CORE funding hook ACCEPTS op 5 as a sibling — it joined
+     * the validator-record family this season — and plans the ordinary
+     * input + burned-counter pair. This is the positive counterpart of
+     * the §12 P5 foreign-sibling loop, which op 5 left when it became
+     * legal. */
+    {
+        uint16_t nr2 = 0;
+        CHECK(nodus_rt_core_read_plan(core, &v, 1, &ctx, reqs,
+                                      NODUS_RT_MAX_READS, &nr2) == 0 &&
+              nr2 == 2,
+              "H10 SYSFUND plans under an op-5 sibling"); OK();
+    }
+    /* H11 a MALFORMED op-5 record leg poisons its sibling too: the CORE
+     * hook decodes the flow through the SAME parser, so a bad record call
+     * can never be paired with a good funding leg */
+    {
+        dna_env_view_t v2 = v;
+        uint16_t nr2 = 0;
+        v2.leg[0].call_len = TVUPD_CALL_LEN - 1;
+        CHECK(nodus_rt_core_read_plan(core, &v2, 1, &ctx, reqs,
+                                      NODUS_RT_MAX_READS, &nr2) == 0,
+              "H11 the CORE plan does not decode the sibling call");
+        memset(reads, 0, sizeof(reads));
+        for (uint16_t r = 0; r < nr2; r++)
+            CHECK(nodus_witness_v2_read_one(fx.w, core, &reqs[r],
+                                            &reads[r]) == NODUS_ADAPTER_OK,
+                  "read");
+        CHECK(nodus_rt_core_exec(core, &v2, 1, &ctx, reads, nr2, res,
+                                 sizeof(res), &rl) == -1,
+              "H11 a truncated op-5 sibling must reject the funding leg");
+        OK();
+    }
+    fx_close(&fx);
+    return 0;
+}
+
 int main(void) {
     if (keys_init() != 0) {
         fprintf(stderr, "keygen failed\n");
@@ -7487,6 +8499,8 @@ int main(void) {
     if (test_o11_fault_matrix() != 0) return 1;
     if (test_o11_vset_firewall() != 0) return 1;
     if (test_o11_global() != 0) return 1;
+    if (test_system_validator_update() != 0) return 1;
+    if (test_vupd_hook_pins() != 0) return 1;
     printf("test_v2_native: ALL OK (%d checks)\n", g_checks);
     return 0;
 }

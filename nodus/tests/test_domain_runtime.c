@@ -55,19 +55,20 @@ static int g_checks = 0;
  * (f2dcdefa…4cce / e0a0bc43…7429) are DEAD. Oracle:
  * scratchpad exec_season_oracle.py. */
 static const uint8_t KAT_RS_SYSTEM[DNA_DOM_HASH_LEN] = {
-    /* O11 re-derivation: SYSTEM ruleset_version 3 (runtime op 1
-     * DNA_SYSRULE_STAKE becomes EXECUTABLE) committing the re-priced
-     * policy identity digest (ops 1..7). Oracle: scratchpad
-     * o11_season_oracle.py, control-legged against BOTH shipped pins.
-     * The capacity-season value 9fc5394e…24bb is DEAD. */
-    0xd0, 0x65, 0xe2, 0xe1, 0x71, 0x96, 0x02, 0x21,
-    0xe3, 0xb7, 0x9a, 0xfd, 0xed, 0x78, 0xb8, 0x28,
-    0x9b, 0x20, 0xcc, 0xf1, 0x83, 0xfb, 0x1c, 0x17,
-    0x23, 0xb5, 0x8c, 0x35, 0x18, 0x0c, 0x69, 0x57,
-    0xc1, 0xd9, 0x50, 0xe3, 0x77, 0x7b, 0x25, 0x14,
-    0xf2, 0xb0, 0x10, 0x8d, 0xa6, 0xed, 0x9c, 0xee,
-    0x69, 0xd9, 0xf7, 0x3e, 0x8c, 0xbf, 0x49, 0x66,
-    0xc2, 0x66, 0x8f, 0xd9, 0x89, 0x86, 0x6d, 0x64
+    /* O12 re-derivation: SYSTEM ruleset_version 4 (runtime op 5
+     * DNA_SYSRULE_VALIDATOR_UPDATE becomes EXECUTABLE; rule/type lists
+     * and the meter-policy digest byte-identical to v3). Oracle:
+     * scratchpad o12_season_oracle.py, control-legged against BOTH
+     * shipped O11 pins (SYSTEM v3 d065e2e1…6d64, CORE v3 ed4b1bcd…4437).
+     * The O11 value d065e2e1…6d64 is DEAD. */
+    0x4f, 0xe7, 0x6f, 0xed, 0x43, 0xef, 0x37, 0x25,
+    0x94, 0x71, 0x3e, 0x97, 0xf6, 0xff, 0xf4, 0x68,
+    0x4d, 0xba, 0x3d, 0x37, 0x8c, 0xa2, 0x32, 0x01,
+    0xfe, 0xd6, 0x31, 0x4b, 0x81, 0x47, 0xe1, 0xce,
+    0x57, 0x1a, 0x4f, 0xec, 0xd8, 0x17, 0x0b, 0xfa,
+    0xd5, 0x5c, 0xb6, 0x86, 0x16, 0x2e, 0xbb, 0x1d,
+    0xf4, 0x62, 0xa4, 0xf2, 0x44, 0xbc, 0xf9, 0xc2,
+    0x38, 0x87, 0xeb, 0x7d, 0x14, 0x7a, 0x77, 0x36
 };
 static const uint8_t KAT_RS_CORE[DNA_DOM_HASH_LEN] = {
     /* O11 — CORE ruleset_version 3: the rule list GREW to {1..7}
@@ -109,7 +110,7 @@ static const uint8_t CORE_TYPES_EXP[6] = { 1, 2, 3, 11, 12, 13 };
 static const uint32_t CORE_RULES_EXP[7] = { 1, 2, 3, 4, 5, 6, 7 };
 static const uint32_t SYS_RULES_EXP[6]  = { 1, 2, 3, 4, 5, 6 };
 /* The compiled ruleset versions this build ships (O11). */
-#define SYS_RSV  3u
+#define SYS_RSV  4u    /* O12: op 5 VALIDATOR_UPDATE executable */
 #define CORE_RSV 3u
 
 int main(void) {
@@ -202,7 +203,7 @@ int main(void) {
     /* the compiled versions the whole slice hangs from */
     CHECK(sys->ruleset_version == SYS_RSV &&
           sys->descriptor.ruleset_version == SYS_RSV,
-          "SYSTEM ruleset_version != 3 (O11)"); OK();
+          "SYSTEM ruleset_version != 4 (O12)"); OK();
     CHECK(core->ruleset_version == CORE_RSV &&
           core->descriptor.ruleset_version == CORE_RSV,
           "CORE ruleset_version != 3 (O11)"); OK();
@@ -231,9 +232,10 @@ int main(void) {
     hit = nodus_runtime_lookup(DNA_DOMAIN_SYSTEM, DNA_RUNTIME_NATIVE_BUILTIN,
                                NODUS_DOMAIN_RUNTIME_ABI_V1, SYS_RSV,
                                sys->ruleset_hash);
-    CHECK(hit == sys, "SYSTEM exact lookup (ruleset v3)"); OK();
+    CHECK(hit == sys, "SYSTEM exact lookup (ruleset v4)"); OK();
     /* EVERY retired SYSTEM ruleset resolves NOTHING — a leg naming v1
-     * (CHAIN_CONFIG call v1) or v2 (call v2, STAKE not yet executable)
+     * (CHAIN_CONFIG call v1), v2 (call v2, STAKE not yet executable) or
+     * v3 (O11 stake lifecycle, VALIDATOR_UPDATE not yet executable)
      * dies here and is never reinterpreted under the current rules */
     CHECK(nodus_runtime_lookup(DNA_DOMAIN_SYSTEM, DNA_RUNTIME_NATIVE_BUILTIN,
                                NODUS_DOMAIN_RUNTIME_ABI_V1, 1,
@@ -243,6 +245,10 @@ int main(void) {
                                NODUS_DOMAIN_RUNTIME_ABI_V1, 2,
                                sys->ruleset_hash) == NULL,
           "retired SYSTEM ruleset v2 resolved (O11)"); OK();
+    CHECK(nodus_runtime_lookup(DNA_DOMAIN_SYSTEM, DNA_RUNTIME_NATIVE_BUILTIN,
+                               NODUS_DOMAIN_RUNTIME_ABI_V1, 3,
+                               sys->ruleset_hash) == NULL,
+          "retired SYSTEM ruleset v3 resolved (O12)"); OK();
     hit = nodus_runtime_lookup(DNA_DOMAIN_CORE, DNA_RUNTIME_NATIVE_BUILTIN,
                                NODUS_DOMAIN_RUNTIME_ABI_V1, CORE_RSV,
                                core->ruleset_hash);

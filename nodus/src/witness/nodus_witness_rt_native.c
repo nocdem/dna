@@ -11,8 +11,8 @@
  * stays unassigned — nothing in this file touches shielded state.
  * ════════════════════════════════════════════════════════════════════════
  *
- * WHAT IS IMPLEMENTED (six source-existing operations — the burn season
- * added 3 and 4, O11 adds 5 and 6):
+ * WHAT IS IMPLEMENTED (source-existing operations only — the burn season
+ * added 3 and 4, O11 added 5-7, O12 S1 adds 8):
  *
  *   1. SYSTEM  / DNA_SYSRULE_CHAIN_CONFIG (runtime_op 6, legacy tx 10):
  *      the committee-voted consensus-parameter change. The SOURCE
@@ -113,18 +113,33 @@
  *      DNA_SYSRULE_UNDELEGATE (4) (legacy tx 5/6/7 — O11 S2+S3): the
  *      rest of the stake lifecycle, each documented at its own executor
  *      (rtn_delegate_exec / rtn_unstake_exec / rtn_undelegate_exec) with
- *      the apply_* site it preserves. All four SYSTEM ops share the
- *      2-leg envelope shape, the one-signer call-identity authority rule
- *      and the CORE funding leg; they differ only in which rows they
- *      read and which columns they move. Every validator/delegation row
- *      they write is built FROM the record the mediated read observed
- *      and bound to it by EXISTS_VHASH, so a transition can only change
- *      the columns it names.
+ *      the apply_* site it preserves. All five SYSTEM record ops (1-5)
+ *      share the 2-leg envelope shape, the one-signer call-identity
+ *      authority rule and the CORE funding leg; they differ only in which
+ *      rows they read and which columns they move. Every
+ *      validator/delegation row they write is built FROM the record the
+ *      mediated read observed and bound to it by EXISTS_VHASH, so a
+ *      transition can only change the columns it names.
+ *
+ *   8. SYSTEM / DNA_SYSRULE_VALIDATOR_UPDATE (runtime_op 5, legacy tx 9
+ *      — O12 S1): the validator's own commission change. Source
+ *      semantics preserved from apply_validator_update
+ *      (nodus_witness_bft.c:1934-2003): the row must exist and be in an
+ *      updatable status (ACTIVE / ELIGIBLE / RETIRING — UNSTAKED and
+ *      AUTO_RETIRED have frozen stake, :1970-1976); an INCREASE is
+ *      DEFERRED one full epoch of delegator notice
+ *      (pending_commission_bps + pending_effective_block, :1978-1987);
+ *      a DECREASE (or an equal value) takes effect immediately and
+ *      CLEARS any stale pending entry (:1987-1992); and
+ *      last_validator_update_block always records the executing height
+ *      (Rule K cooldown, :1993). Nothing else moves — no stake, no
+ *      delegation total, no counter, no supply, no snapshot. Its funding
+ *      leg is FEE-ONLY (lock = release = 0, the UNSTAKE shape).
  *
  * Every OTHER runtime_op the two descriptors own is a DETERMINISTIC
  * REJECT in these hooks until its own migration slice — ownership is
- * expressible, execution is fail-closed. Today that is SYSTEM 5
- * (VALIDATOR_UPDATE) and CORE 4..6 (the three C3 boundary rules).
+ * expressible, execution is fail-closed. Today that is CORE 4..6 (the
+ * three C3 boundary rules).
  *
  * ── The verified authorization boundary ───────────────────────────────
  * nodus_rt_auth_dsa87_v1 is the ONE compiled implementation of
@@ -187,9 +202,23 @@
  *                     ‖ amount u64                                 = 5192
  *   UNSTAKE    (op 3) validator_pubkey[2592]                       = 2592
  *   UNDELEGATE (op 4) same layout as DELEGATE                      = 5192
- * All four EXECUTE (S1 shipped op 1; S2+S3 the rest). The CORE funding
- * leg derives its lock/release from these same layouts, through the same
- * compiled parsers.
+ *   VALIDATOR_UPDATE (op 5, O12 S1)
+ *                     identity_pubkey[2592] ‖ new_commission_bps u16
+ *                                                                 = 2594
+ * All five EXECUTE (S1 shipped op 1; S2+S3 the rest; O12 S1 op 5). The
+ * CORE funding leg derives its lock/release from these same layouts,
+ * through the same compiled parsers.
+ *
+ * ⚠ DELIBERATELY DROPPED on V2 — the legacy VALIDATOR_UPDATE wire also
+ * carried `signed_at_block[8 BE]` after the bps field (bft.c:1913,
+ * 1944). The witness NEVER read it: apply_validator_update decodes the
+ * bps and states outright that signed_at_block is "a verify-time field
+ * (freshness); not consumed here" (bft.c:1932, 1951). On V2 that role
+ * belongs to the ENVELOPE — expiry_height is committed by
+ * auth_context_commit and the committed-intent replay guard closes
+ * re-submission — so carrying a second, runtime-owned freshness field
+ * would be inventing a rule the source never enforced and giving one
+ * intent many encodings. The call is 2594 bytes, exactly.
  *
  * CHAIN_CONFIG call v2 (exact length = 41 — capacity season; SYSTEM
  * ruleset_version IS the call-format version, the repository's
@@ -589,17 +618,18 @@ int nodus_rt_auth_dsa87_v1(const nodus_domain_runtime_t *rt,
 }
 
 /* ══════════════════════════════════════════════════════════════════════
- * The SYSTEM stake-lifecycle CALL layer (O11) — decoded by BOTH domains
+ * The SYSTEM validator-record CALL layer (O11; O12 S1 appends op 5) —
+ * decoded by BOTH domains
  *
  * Placed AHEAD of the DNA_CORE section deliberately: the CORE funding op
  * DNA_CORERULE_SYSFUND carries NO amounts of its own — what a staking
  * envelope LOCKS or RELEASES is derived from the SIBLING SYSTEM leg's
- * CALL BYTES. Both hooks therefore decode these four layouts through the
+ * CALL BYTES. Both hooks therefore decode these five layouts through the
  * SAME compiled parsers, so no second decoder exists that could disagree
- * with the first about what a staking leg requested (the record leg and
+ * with the first about what a record leg requested (the record leg and
  * the funding leg are one intent, split across two domains).
  *
- * All BE, all EXACT-LENGTH (a prefix is never accepted), all four bound
+ * All BE, all EXACT-LENGTH (a prefix is never accepted), all five bound
  * by DNAC_PUBKEY_SIZE so a key-size change re-derives them visibly.
  * ════════════════════════════════════════════════════════════════════ */
 
@@ -614,12 +644,23 @@ int nodus_rt_auth_dsa87_v1(const nodus_domain_runtime_t *rt,
  *  the same three fields — one layout, two ops, never one "generic"
  *  op with a mode byte). */
 #define RTN_SYS_UNDELEGATE_CALL_LEN  RTN_SYS_DELEGATE_CALL_LEN
+/** VALIDATOR_UPDATE (op 5, O12 S1): identity_pubkey ‖
+ *  new_commission_bps u16. The legacy wire's trailing signed_at_block[8]
+ *  is DELIBERATELY DROPPED — see the "DELIBERATELY DROPPED" block in the
+ *  file header for why (the witness never read it; the ENVELOPE owns
+ *  freshness on V2). */
+#define RTN_SYS_VUPD_CALL_LEN        ((uint32_t)DNAC_PUBKEY_SIZE + 2u)
 _Static_assert(RTN_SYS_STAKE_CALL_LEN == 2666u,
                "STAKE call length drifted");
 _Static_assert(RTN_SYS_DELEGATE_CALL_LEN == 5192u,
                "DELEGATE/UNDELEGATE call length drifted");
 _Static_assert(RTN_SYS_UNSTAKE_CALL_LEN == 2592u,
                "UNSTAKE call length drifted");
+_Static_assert(RTN_SYS_VUPD_CALL_LEN == 2594u,
+               "VALIDATOR_UPDATE call length drifted");
+_Static_assert(RTN_SYS_VUPD_CALL_LEN < RTN_SYS_DELEGATE_CALL_LEN,
+               "VALIDATOR_UPDATE is no longer dominated by the DELEGATE "
+               "call — re-derive the worst-case envelope asserts below");
 
 /* ── O11 capacity derivation — the governing worst case ──────────────
  * Every bound enters BY MACRO (the capacity-season discipline). The
@@ -681,6 +722,11 @@ typedef struct {
     uint64_t       amount;
 } rtn_deleg_call_t;
 
+typedef struct {
+    const uint8_t *validator_pubkey;     /* [DNAC_PUBKEY_SIZE]           */
+    uint16_t       new_commission_bps;
+} rtn_vupd_call_t;
+
 static int rtn_stake_parse(const uint8_t *p, uint32_t len,
                            rtn_stake_call_t *c) {
     if (len != RTN_SYS_STAKE_CALL_LEN) return -1;
@@ -701,9 +747,41 @@ static int rtn_deleg_parse(const uint8_t *p, uint32_t len,
     return 0;
 }
 
-/** The four runtime ops this layer decodes (SYS_RULES 1..4). */
+/**
+ * VALIDATOR_UPDATE (op 5, O12 S1). Three rejects live in the DECODER
+ * rather than in exec, so BOTH domains' hooks agree about a malformed
+ * record call before either of them writes anything:
+ *   - exact length (never a prefix, never the legacy 2602-byte form);
+ *   - new_commission_bps <= DNAC_COMMISSION_BPS_MAX — the bound
+ *     apply_validator_update itself enforces (bft.c:1953-1957), so this
+ *     one is SOURCE-preserved rather than the labeled narrowing STAKE
+ *     carries;
+ *   - an all-zero identity pubkey: no ML-DSA-87 key hashes to the
+ *     fingerprint of the zero key that any signer could produce, so an
+ *     all-zero identity can only ever be a malformed call. Fail-closed at
+ *     the decoder instead of relying on the authority gate's memcmp.
+ * @return 0 / -1 deterministic reject.
+ */
+static int rtn_vupd_parse(const uint8_t *p, uint32_t len,
+                          rtn_vupd_call_t *c) {
+    static const uint8_t zero_pk[DNAC_PUBKEY_SIZE] = { 0 };
+    if (len != RTN_SYS_VUPD_CALL_LEN) return -1;
+    if (memcmp(p, zero_pk, DNAC_PUBKEY_SIZE) == 0) return -1;
+    c->validator_pubkey    = p;
+    c->new_commission_bps  = (uint16_t)(((uint16_t)p[DNAC_PUBKEY_SIZE] << 8) |
+                                        p[DNAC_PUBKEY_SIZE + 1]);
+    if (c->new_commission_bps > DNAC_COMMISSION_BPS_MAX) return -1;
+    return 0;
+}
+
+/** The five runtime ops this layer decodes (SYS_RULES 1..5). O12 S1
+ *  appends VALIDATOR_UPDATE: it is not a stake-lifecycle transition, but
+ *  it IS a validator-record op and shares the family's whole envelope
+ *  contract — the 2-leg shape, the one-signer call-identity authority
+ *  rule and the CORE funding sibling (fee-only, lock = release = 0). The
+ *  range check stays contiguous because the SYS_RULES ids are. */
 static int rtn_sys_is_stake_op(uint32_t op) {
-    return op >= DNA_SYSRULE_STAKE && op <= DNA_SYSRULE_UNDELEGATE;
+    return op >= DNA_SYSRULE_STAKE && op <= DNA_SYSRULE_VALIDATOR_UPDATE;
 }
 
 /**
@@ -714,7 +792,10 @@ static int rtn_sys_is_stake_op(uint32_t op) {
  * verdict only GATES it (see rtn_sys_stake_auth). Per legacy site:
  * STAKE signer[0] = staker (bft.c:1576), DELEGATE = delegator
  * (bft.c:1443), UNSTAKE = the validator itself (bft.c:1652),
- * UNDELEGATE = delegator (bft.c:1845).
+ * UNDELEGATE = delegator (bft.c:1845), VALIDATOR_UPDATE = the validator
+ * itself (bft.c:1939-1960 resolves the row by the SIGNER's pubkey — the
+ * legacy wire had no identity field at all, so a V2 call that carries one
+ * must bind it to the signer, which rtn_sys_stake_auth does).
  * @return 0 with *pk_out borrowed from the call / -1 reject.
  */
 static int rtn_sys_call_identity(uint32_t op, const uint8_t *p,
@@ -737,6 +818,12 @@ static int rtn_sys_call_identity(uint32_t op, const uint8_t *p,
         if (len != RTN_SYS_UNSTAKE_CALL_LEN) return -1;
         *pk_out = p;
         return 0;
+    case DNA_SYSRULE_VALIDATOR_UPDATE: {
+        rtn_vupd_call_t c;
+        if (rtn_vupd_parse(p, len, &c) != 0) return -1;
+        *pk_out = c.validator_pubkey;
+        return 0;
+    }
     default:
         return -1;
     }
@@ -753,6 +840,10 @@ static int rtn_sys_call_identity(uint32_t op, const uint8_t *p,
  *               reproduced here)
  *   UNDELEGATE  lock = 0         release = amount (immediate principal
  *               return, bft.c:1873-1877 — Rule O is client-lane only)
+ *   VALIDATOR_UPDATE
+ *               lock = 0         release = 0  (O12 S1: a commission
+ *               change moves NO value at all — the funding leg exists
+ *               only to pay the fee, exactly the UNSTAKE lock=0 side)
  * @return 0 / -1 (unparseable or foreign op).
  */
 static int rtn_sys_call_flow(uint32_t op, const uint8_t *p, uint32_t len,
@@ -779,6 +870,10 @@ static int rtn_sys_call_flow(uint32_t op, const uint8_t *p, uint32_t len,
         if (rtn_deleg_parse(p, len, &c) != 0) return -1;
         *release_out = c.amount;
         return 0;
+    }
+    case DNA_SYSRULE_VALIDATOR_UPDATE: {
+        rtn_vupd_call_t c;
+        return rtn_vupd_parse(p, len, &c);   /* fee-only: both stay 0    */
     }
     default:
         return -1;
@@ -1166,7 +1261,9 @@ static int rtn_sysfund_parse(const dna_env_view_t *env, uint16_t leg,
 
 /* The canonical 2-leg staking envelope shape, checked from the CORE
  * side — the mirror of rtn_sys_stake_shape: leg1 is THIS leg, leg0 is a
- * SYSTEM stake-lifecycle record leg. @return 0 / -1. */
+ * SYSTEM validator-record leg (ops 1..5 — rtn_sys_is_stake_op; O12 S1
+ * added VALIDATOR_UPDATE, whose flow is lock = release = 0, so this leg
+ * degenerates to a pure fee payment there). @return 0 / -1. */
 static int rtn_sysfund_shape(const dna_env_view_t *env, uint16_t leg_index) {
     if (env->leg_count != 2 || leg_index != 1) return -1;
     if (env->leg[0].domain_id != DNA_DOMAIN_SYSTEM) return -1;
@@ -2695,6 +2792,30 @@ static int rtn_unstake_read_plan(const dna_env_view_t *env,
     return 0;
 }
 
+/* VALIDATOR_UPDATE (O12 S1) read plan: ONE mediated read — the validator
+ * row named by the call's identity pubkey. It is the only row this op
+ * touches; nothing else is consulted (no counter, no delegation count, no
+ * snapshot), because nothing else moves. */
+static int rtn_vupd_read_plan(const dna_env_view_t *env,
+                              uint16_t leg_index,
+                              nodus_rt_read_req_t *reqs_out,
+                              uint16_t max_reqs, uint16_t *n_out) {
+    rtn_vupd_call_t c;
+    if (rtn_sys_stake_shape(env, leg_index) != 0) return -1;
+    if (rtn_vupd_parse(env->buf + env->call_off[leg_index],
+                       env->leg[leg_index].call_len, &c) != 0)
+        return -1;
+    if (max_reqs < 1) return -1;
+    memset(&reqs_out[0], 0, sizeof(reqs_out[0]));
+    reqs_out[0].op_id = RTN_SYS_OP_VAL;
+    reqs_out[0].key_len = (uint16_t)RTN_VAL_KEY_LEN;
+    if (rtn_tag_key(NODUS_TREE_TAG_VALIDATOR, c.validator_pubkey,
+                    reqs_out[0].key) != 0)
+        return -2;                           /* hash backend: NODE fault */
+    *n_out = 1;
+    return 0;
+}
+
 int nodus_rt_system_read_plan(const nodus_domain_runtime_t *rt,
                               const dna_env_view_t *env, uint16_t leg_index,
                               const nodus_rt_exec_ctx_t *ctx,
@@ -2714,12 +2835,13 @@ int nodus_rt_system_read_plan(const nodus_domain_runtime_t *rt,
     case DNA_SYSRULE_UNSTAKE:
         return rtn_unstake_read_plan(env, leg_index, reqs_out, max_reqs,
                                      n_out);
+    case DNA_SYSRULE_VALIDATOR_UPDATE:
+        return rtn_vupd_read_plan(env, leg_index, reqs_out, max_reqs,
+                                  n_out);
     case DNA_SYSRULE_CHAIN_CONFIG:
         break;                           /* falls through to the CC plan */
     default:
-        return -1;                       /* un-migrated op: fail closed —
-                                          * VALIDATOR_UPDATE (5) lands in
-                                          * its own season               */
+        return -1;                       /* un-migrated op: fail closed  */
     }
     rtn_cc_call_t c;
     if (rtn_cc_parse(env, leg_index, &c) != 0) return -1;
@@ -3266,6 +3388,161 @@ static int rtn_undelegate_exec(const dna_env_view_t *env,
     return 0;
 }
 
+/* The epoch length is a DIVISOR below and a summand above; a zero or
+ * negative value would be a division fault, not a verdict. */
+_Static_assert((uint64_t)DNAC_EPOCH_LENGTH > 0,
+               "DNAC_EPOCH_LENGTH must be positive — the deferral "
+               "boundary divides by it");
+
+/**
+ * DNA_SYSRULE_VALIDATOR_UPDATE (O12 S1) — a validator changes its own
+ * commission.
+ *
+ * Source semantics preserved from apply_validator_update
+ * (nodus_witness_bft.c:1934-2003):
+ *   - the row must EXIST (:1959-1965 — a missing validator is a
+ *     deterministic reject, never a create);
+ *   - and be UPDATABLE: ACTIVE / ELIGIBLE / RETIRING (:1966-1976).
+ *     ELIGIBLE is exactly what a seat-less validator tunes while trying
+ *     to win a seat back and RETIRING keeps paying delegators through
+ *     its cooldown; UNSTAKED / AUTO_RETIRED have frozen stake;
+ *   - new > current is an INCREASE and is DEFERRED a full epoch of
+ *     delegator notice: pending_commission_bps := new and
+ *     pending_effective_block := max(next_epoch_boundary, H + epoch)
+ *     (:1978-1987). The CURRENT rate does not move;
+ *   - new <= current (a decrease, or an equal value) takes effect
+ *     IMMEDIATELY and CLEARS any stale pending entry (:1987-1992). Equal
+ *     deliberately falls through the decrease branch — that is the legacy
+ *     behaviour and its only net effect is dropping a pending change
+ *     (:1922-1924);
+ *   - last_validator_update_block := H on BOTH paths (Rule K cooldown,
+ *     :1993).
+ *
+ * NOTHING ELSE MOVES. status, self_stake, both delegation totals,
+ * active_since / unstake_commit, the unstake destination pair and the
+ * Rule N counters are all carried through from the record the mediated
+ * read observed, and the SET is bound to that record by EXISTS_VHASH, so
+ * the transition CANNOT change a column it does not name. There is no
+ * supply movement, no validator_stats.active_count movement and no
+ * snapshot / epoch interaction — a commission change is not a set change
+ * (nodus_witness_vset.c owns membership, and it reads none of these
+ * columns).
+ *
+ * The bps bound (:1953-1957) lives in rtn_vupd_parse, so the sibling
+ * funding leg rejects a malformed record call through the same decoder.
+ *
+ * @return 0 / -1 verdict / -2 node fault.
+ */
+static int rtn_vupd_exec(const dna_env_view_t *env, uint16_t leg_index,
+                         const nodus_rt_exec_ctx_t *ctx,
+                         const nodus_rt_read_res_t *reads,
+                         uint16_t n_reads,
+                         uint8_t *res_out, size_t res_cap,
+                         size_t *res_len_out) {
+    rtn_vupd_call_t c;
+    uint8_t vfp[64];
+    if (rtn_sys_stake_shape(env, leg_index) != 0) return -1;
+    if (rtn_vupd_parse(env->buf + env->call_off[leg_index],
+                       env->leg[leg_index].call_len, &c) != 0)
+        return -1;
+    {
+        int rc = rtn_sys_stake_auth(env, leg_index, ctx, vfp);
+        if (rc != 0) return rc;          /* identity = the validator     */
+    }
+
+    uint64_t H = ctx->global_height;
+    if (H > (uint64_t)INT64_MAX)
+        return -1;                       /* last_validator_update_block is
+                                          * an SQLite INTEGER column;
+                                          * bounded at the SOURCE so the
+                                          * rejection is a VERDICT, not
+                                          * the mutate side's node-fault
+                                          * class (rtn_stake_exec
+                                          * precedent)                   */
+
+    /* ── the one mediated read ──────────────────────────────────────── */
+    if (n_reads != 1 || !reads) return -2;
+    const nodus_rt_read_res_t *vr = &reads[0];
+    if (!vr->present) return -1;         /* unknown validator (:1961-65) */
+    if (vr->value_len != RTN_VAL_REC_LEN) return -2;
+    if (memcmp(vr->value + RTN_VAL_PK_OFF, c.validator_pubkey,
+               DNAC_PUBKEY_SIZE) != 0)
+        return -2;                       /* the row this node served does
+                                          * not match the key it was
+                                          * fetched by: broken storage on
+                                          * THIS node, never a verdict   */
+    {
+        uint8_t st = vr->value[RTN_VAL_STATUS_OFF];
+        if (st != (uint8_t)DNAC_VALIDATOR_ACTIVE &&
+            st != (uint8_t)DNAC_VALIDATOR_ELIGIBLE &&
+            st != (uint8_t)DNAC_VALIDATOR_RETIRING)
+            return -1;                   /* :1970-1976                   */
+    }
+    {
+        rtn_spend_call_t fc;
+        if (rtn_sysfund_parse(env, 1, &fc) != 0) return -1;
+    }
+
+    uint8_t vkey[RTN_VAL_KEY_LEN];
+    if (rtn_tag_key(NODUS_TREE_TAG_VALIDATOR, c.validator_pubkey,
+                    vkey) != 0)
+        return -2;
+    /* writable-shape VERDICT (the fault-class block above
+     * rtn_delegate_exec): a legacy-malformed row is write-frozen */
+    if (!rtn_val_rec_ok(vr->value, vkey)) return -1;
+
+    /* ── the transition, built FROM the observed record ─────────────── */
+    uint8_t vnew[RTN_VAL_REC_LEN];
+    memcpy(vnew, vr->value, RTN_VAL_REC_LEN);
+    uint32_t cur = ((uint32_t)vnew[RTN_VAL_COMM_OFF] << 8) |
+                   vnew[RTN_VAL_COMM_OFF + 1];
+    if ((uint32_t)c.new_commission_bps > cur) {
+        uint64_t plus_epoch = 0, boundary = 0;
+        if (rtn_add_bounded(H, (uint64_t)DNAC_EPOCH_LENGTH,
+                            &plus_epoch) != 0)
+            return -1;                   /* the storage bound again, as a
+                                          * VERDICT                      */
+        boundary = (H / (uint64_t)DNAC_EPOCH_LENGTH) *
+                   (uint64_t)DNAC_EPOCH_LENGTH;   /* <= H: no overflow   */
+        if (rtn_add_bounded(boundary, (uint64_t)DNAC_EPOCH_LENGTH,
+                            &boundary) != 0)
+            return -1;
+        /* max(next_epoch_boundary, H + epoch), reproduced EXACTLY as
+         * bft.c:1984-1986 writes it.
+         * ⚠ ARITHMETIC NOTE (O12 S1, honest label): the boundary arm is
+         * UNREACHABLE. boundary = floor(H/E)*E + E and floor(H/E)*E <= H,
+         * so boundary <= H + E always, with equality exactly when H is a
+         * multiple of E. The ternary therefore always selects H + E and
+         * the two agree on an epoch boundary. It is preserved verbatim
+         * anyway — the source is the authority, an "equivalent"
+         * simplification here would be a semantic claim this slice has no
+         * mandate to make, and if E ever becomes per-epoch state the two
+         * expressions stop coinciding. */
+        uint64_t peff = boundary > plus_epoch ? boundary : plus_epoch;
+        vnew[RTN_VAL_PCOMM_OFF]     = (uint8_t)(c.new_commission_bps >> 8);
+        vnew[RTN_VAL_PCOMM_OFF + 1] = (uint8_t)c.new_commission_bps;
+        rtn_put64(vnew + RTN_VAL_PEFF_OFF, peff);
+        /* commission_bps is deliberately NOT touched on this path */
+    } else {
+        vnew[RTN_VAL_COMM_OFF]      = (uint8_t)(c.new_commission_bps >> 8);
+        vnew[RTN_VAL_COMM_OFF + 1]  = (uint8_t)c.new_commission_bps;
+        vnew[RTN_VAL_PCOMM_OFF]     = 0;
+        vnew[RTN_VAL_PCOMM_OFF + 1] = 0;
+        rtn_put64(vnew + RTN_VAL_PEFF_OFF, 0);
+    }
+    rtn_put64(vnew + RTN_VAL_LASTUPD_OFF, H);      /* Rule K (:1993)     */
+
+    dna_effect_in_t eff;
+    memset(&eff, 0, sizeof(eff));
+    if (rtn_row_set_eff(&eff, RTN_SYS_OP_VAL, vr, RTN_VAL_REC_LEN, vkey,
+                        (uint16_t)RTN_VAL_KEY_LEN, vnew) != 0)
+        return -2;
+    if (dna_effect_result_encode(&eff, 1, res_out, res_cap,
+                                 res_len_out) != 0)
+        return -2;
+    return 0;
+}
+
 int nodus_rt_system_exec(const nodus_domain_runtime_t *rt,
                          const dna_env_view_t *env, uint16_t leg_index,
                          const nodus_rt_exec_ctx_t *ctx,
@@ -3290,6 +3567,9 @@ int nodus_rt_system_exec(const nodus_domain_runtime_t *rt,
     case DNA_SYSRULE_UNDELEGATE:
         return rtn_undelegate_exec(env, leg_index, ctx, reads, n_reads,
                                    res_out, res_cap, res_len_out);
+    case DNA_SYSRULE_VALIDATOR_UPDATE:
+        return rtn_vupd_exec(env, leg_index, ctx, reads, n_reads,
+                             res_out, res_cap, res_len_out);
     case DNA_SYSRULE_CHAIN_CONFIG:
         break;                           /* falls through to CC exec     */
     default:

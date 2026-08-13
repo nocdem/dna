@@ -172,6 +172,14 @@ set(NODUS_SOURCES
     src/witness/nodus_witness_v2_schema.c
     src/witness/nodus_witness_v2_apply.c
 
+    # Ledger V2 O12 S2 — INACTIVE engine-mandatory epoch-boundary
+    # transition (pending-commission activation, RETIRING -> UNSTAKED
+    # graduation with its canonical per-record release identity, then
+    # the S3 boundary flips + next-epoch snapshot). Mirrors the legacy
+    # apply_epoch_boundary_transitions; the legacy lane is untouched and
+    # remains the only boundary a running chain executes.
+    src/witness/nodus_witness_v2_epoch.c
+
     # Ledger V2 S6 — INACTIVE generic genesis/distribution manifest +
     # claim codec (shared) and the witness-side manifest/claims module
     # (real manifest_root/claims_root legs, distribution accounting,
@@ -813,6 +821,18 @@ add_test(NAME test_manifest_wire COMMAND test_manifest_wire)
 # supply conservation, insertion-order-independent claims_root.
 register_witness_test(test_v2_claims)
 register_witness_test(test_v2_pools)
+
+# Ledger V2 O12 S2 — the engine-mandatory epoch boundary: the derivation
+# matrix (fires exactly at H % E == 0, H > 0), RETIRING graduation
+# (actual-bond release UTXO, independently re-derived grad_id, bond
+# zeroing, exact active_count decrement, supply invariant), no double
+# graduation across replay and later boundaries, multi-graduate
+# insertion-order independence, the zero-envelope boundary block,
+# pending-commission timing, the flip predicate (no resurrection),
+# commit_next rebuild identity + conflict, fault points F39-F45 with
+# full-DB-digest rollback and clean-retry twin identity, restart
+# persistence, and the malformed-row refusal.
+register_witness_test(test_v2_epoch)
 
 # Ledger V2 — generic typed-effect + compiled storage-adapter boundary
 # (INACTIVE): adapter registration through the five-axis runtime lookup,
