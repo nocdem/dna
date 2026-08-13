@@ -69,6 +69,18 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+/* O11: the compiled ruleset version for a builtin domain. Admission
+ * contexts must track the COMPILED table, never a literal — the burn
+ * season (CORE 1→2) and the stake-lifecycle season (both 2→3) each
+ * stale-broke literals here. */
+static uint32_t compiled_rsv(uint32_t domain_id) {
+    size_t n = 0;
+    const nodus_domain_runtime_t *t = nodus_runtime_builtin_table(&n);
+    for (size_t i = 0; i < n; i++)
+        if (t[i].domain_id == domain_id) return t[i].ruleset_version;
+    return 0;
+}
+
 #define CHECK(cond, msg) do { \
     if (!(cond)) { \
         fprintf(stderr, "CHECK failed at %s:%d: %s\n", __FILE__, __LINE__, (msg)); \
@@ -575,8 +587,9 @@ int main(void) {
           "built signal rejected"); OK();
 
     /* an ABSENT tuple must be refused by the local gate: cancel, then
-     * re-propose with ruleset_version 3 (not compiled in — the burn
-     * season made v2 the compiled CORE version) */
+     * re-propose with a FUTURE ruleset_version (compiled + 1 — never in
+     * the table; O11 re-anchored this off the literal `3`, which the
+     * stake-lifecycle season made the compiled CORE version) */
     CHECK(nodus_witness_domreg_get(fx.w, DNA_DOMAIN_CORE, &rec, NULL, NULL)
           == 0, "get");
     uint8_t digc[64];
@@ -584,7 +597,7 @@ int main(void) {
     CHECK(nodus_witness_domreg_op_cancel(fx.w, DNA_DOMAIN_CORE, digc) == 0,
           "cancel CORE"); OK();
     dna_domain_manifest_t core_v2 = core_cur;
-    core_v2.ruleset_version = 3;
+    core_v2.ruleset_version = core_cur.ruleset_version + 1;
     core_v2.quota_verify_cost = 9;
     CHECK(nodus_witness_domreg_op_propose(fx.w, chain, DNA_DOMAIN_CORE,
                                           &core_v2, 3, ep(20)) == 0,
@@ -740,10 +753,13 @@ int main(void) {
     dna_exec_context_t ctx;
     uint32_t cost = 0;
 
-    /* correct: SPEND (type 1) in ACTIVE DNA_CORE, pool 0, ruleset 2
-     * (burn season: CORE ruleset v2) */
+    /* correct: SPEND (type 1) in ACTIVE DNA_CORE, pool 0, at the
+     * COMPILED ruleset version (derived, never a literal) */
+    const uint32_t core_rsv = compiled_rsv(DNA_DOMAIN_CORE);
+    const uint32_t sys_rsv  = compiled_rsv(DNA_DOMAIN_SYSTEM);
+    CHECK(core_rsv > 0 && sys_rsv > 0, "compiled versions resolve");
     CHECK(dna_exec_context_init(&ctx, chain, DNA_DOMAIN_CORE, DNA_POOL_NONE,
-                                1, 3, 2, 0) == 0, "ctx init");
+                                1, 3, core_rsv, 0) == 0, "ctx init");
     CHECK(nodus_witness_domreg_admit_v2(fx.w, chain, &ctx, 0, 0, &cost)
           == 0 && cost == 1, "SPEND admission failed"); OK();
     /* the RETIRED CORE ruleset v1 no longer admits anything */
@@ -751,10 +767,10 @@ int main(void) {
                                 1, 3, 1, 0) == 0, "ctx init");
     CHECK(nodus_witness_domreg_admit_v2(fx.w, chain, &ctx, 0, 0, NULL)
           != 0, "retired CORE ruleset v1 admitted"); OK();
-    /* SYSTEM STAKE admits (SYSTEM is ruleset v2 since the capacity
-     * season; a v1 SYSTEM context resolves nothing — pinned below) */
+    /* SYSTEM STAKE admits at the compiled SYSTEM version (v3 since the
+     * stake-lifecycle season; retired v1/v2 pinned below) */
     CHECK(dna_exec_context_init(&ctx, chain, DNA_DOMAIN_SYSTEM,
-                                DNA_POOL_NONE, 4, 3, 2, 0) == 0, "ctx");
+                                DNA_POOL_NONE, 4, 3, sys_rsv, 0) == 0, "ctx");
     CHECK(nodus_witness_domreg_admit_v2(fx.w, chain, &ctx, 0, 0, NULL)
           == 0, "STAKE admission failed"); OK();
     /* the RETIRED SYSTEM ruleset v1 no longer admits anything */
@@ -762,15 +778,27 @@ int main(void) {
                                 DNA_POOL_NONE, 4, 3, 1, 0) == 0, "ctx");
     CHECK(nodus_witness_domreg_admit_v2(fx.w, chain, &ctx, 0, 0, NULL)
           != 0, "retired SYSTEM ruleset v1 admitted"); OK();
+    /* the RETIRED previous versions (compiled − 1) admit nothing (O11:
+     * both domains advanced 2 → 3; v2 must resolve nothing) */
+    CHECK(dna_exec_context_init(&ctx, chain, DNA_DOMAIN_CORE,
+                                DNA_POOL_NONE, 1, 3, core_rsv - 1, 0) == 0,
+          "ctx");
+    CHECK(nodus_witness_domreg_admit_v2(fx.w, chain, &ctx, 0, 0, NULL)
+          != 0, "retired CORE ruleset v2 admitted"); OK();
+    CHECK(dna_exec_context_init(&ctx, chain, DNA_DOMAIN_SYSTEM,
+                                DNA_POOL_NONE, 4, 3, sys_rsv - 1, 0) == 0,
+          "ctx");
+    CHECK(nodus_witness_domreg_admit_v2(fx.w, chain, &ctx, 0, 0, NULL)
+          != 0, "retired SYSTEM ruleset v2 admitted"); OK();
 
     /* wrong chain */
     CHECK(dna_exec_context_init(&ctx, chain2, DNA_DOMAIN_CORE,
-                                DNA_POOL_NONE, 1, 3, 2, 0) == 0, "ctx");
+                                DNA_POOL_NONE, 1, 3, core_rsv, 0) == 0, "ctx");
     CHECK(nodus_witness_domreg_admit_v2(fx.w, chain, &ctx, 0, 0, NULL)
           != 0, "wrong chain admitted"); OK();
     /* wrong domain/type combination (SPEND routed to SYSTEM) */
     CHECK(dna_exec_context_init(&ctx, chain, DNA_DOMAIN_SYSTEM,
-                                DNA_POOL_NONE, 1, 3, 2, 0) == 0, "ctx");
+                                DNA_POOL_NONE, 1, 3, sys_rsv, 0) == 0, "ctx");
     CHECK(nodus_witness_domreg_admit_v2(fx.w, chain, &ctx, 0, 0, NULL)
           != 0, "cross-domain type admitted"); OK();
     /* unknown domain */
@@ -781,43 +809,48 @@ int main(void) {
 
     /* TYPE 11 stays rejected — the C3 hard stop through the V2 boundary */
     CHECK(dna_exec_context_init(&ctx, chain, DNA_DOMAIN_CORE,
-                                DNAC_SHIELDED_POOL_V1, 11, 3, 2, 0) == 0,
-          "ctx");
+                                DNAC_SHIELDED_POOL_V1, 11, 3, core_rsv, 0)
+          == 0, "ctx");
     CHECK(nodus_witness_domreg_admit_v2(fx.w, chain, &ctx, 0, 0, NULL)
           != 0, "TYPE 11 ADMITTED — C3 stop broken"); OK();
     CHECK(dna_exec_context_init(&ctx, chain, DNA_DOMAIN_CORE,
-                                DNA_POOL_NONE, 11, 3, 2, 0) == 0, "ctx");
+                                DNA_POOL_NONE, 11, 3, core_rsv, 0) == 0,
+          "ctx");
     CHECK(nodus_witness_domreg_admit_v2(fx.w, chain, &ctx, 0, 0, NULL)
           != 0, "TYPE 11 (pool 0) ADMITTED"); OK();
     /* types 12/13/14 remain unavailable */
     for (uint8_t t = 12; t <= 14; t++) {
         CHECK(dna_exec_context_init(&ctx, chain, DNA_DOMAIN_CORE,
-                                    DNA_POOL_NONE, t, 3, 2, 0) == 0, "ctx");
+                                    DNA_POOL_NONE, t, 3, core_rsv, 0) == 0,
+              "ctx");
         CHECK(nodus_witness_domreg_admit_v2(fx.w, chain, &ctx, 0, 0, NULL)
               != 0, "reserved type admitted");
     }
     OK();
 
-    /* ruleset_version mismatch (a FUTURE version — v2 is committed) */
+    /* ruleset_version mismatch (a FUTURE version — compiled + 1) */
     CHECK(dna_exec_context_init(&ctx, chain, DNA_DOMAIN_CORE,
-                                DNA_POOL_NONE, 1, 3, 3, 0) == 0, "ctx");
+                                DNA_POOL_NONE, 1, 3, core_rsv + 1, 0) == 0,
+          "ctx");
     CHECK(nodus_witness_domreg_admit_v2(fx.w, chain, &ctx, 0, 0, NULL)
           != 0, "wrong ruleset admitted"); OK();
     /* statement_version nonzero on a transparent type */
     CHECK(dna_exec_context_init(&ctx, chain, DNA_DOMAIN_CORE,
-                                DNA_POOL_NONE, 1, 3, 2, 7) == 0, "ctx");
+                                DNA_POOL_NONE, 1, 3, core_rsv, 7) == 0,
+          "ctx");
     CHECK(nodus_witness_domreg_admit_v2(fx.w, chain, &ctx, 0, 0, NULL)
           != 0, "ghost statement admitted"); OK();
     /* illegal pool on a transparent type */
     CHECK(dna_exec_context_init(&ctx, chain, DNA_DOMAIN_CORE,
-                                DNAC_SHIELDED_POOL_V1, 1, 3, 2, 0) == 0,
-          "ctx");
+                                DNAC_SHIELDED_POOL_V1, 1, 3, core_rsv, 0)
+          == 0, "ctx");
     CHECK(nodus_witness_domreg_admit_v2(fx.w, chain, &ctx, 0, 0, NULL)
           != 0, "pooled SPEND admitted"); OK();
 
     /* quotas: CORE's upgraded manifest pins tx/block = 5, cost = 10 */
     CHECK(dna_exec_context_init(&ctx, chain, DNA_DOMAIN_CORE,
-                                DNA_POOL_NONE, 1, 3, 2, 0) == 0, "ctx");
+                                DNA_POOL_NONE, 1, 3, core_rsv, 0) == 0,
+          "ctx");
     CHECK(nodus_witness_domreg_admit_v2(fx.w, chain, &ctx, 4, 0, NULL)
           == 0, "under-quota rejected"); OK();
     CHECK(nodus_witness_domreg_admit_v2(fx.w, chain, &ctx, 5, 0, NULL)

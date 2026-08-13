@@ -20,6 +20,16 @@
  * expressible — admission REJECTS all three unconditionally until the
  * single atomic C3 activation gate.
  *
+ * O11 (stake lifecycle): BOTH rulesets advance 2 → 3. SYSTEM enables
+ * runtime ops 1..4 (STAKE / DELEGATE / UNSTAKE / UNDELEGATE) and
+ * re-prices its metering policy over ops 1..7; CORE APPENDS rule 7
+ * (DNA_CORERULE_SYSFUND, the staking funding/release leg) and enables
+ * it. The version advanced ONCE for the whole op set. Neither tx_type list
+ * moves — runtime_op and tx_type are different axes. All three pinned
+ * digests were re-derived by the O11 oracle (scratchpad
+ * o11_season_oracle.py), whose control legs reproduced the shipped
+ * capacity-season SYSTEM pin and burn-season CORE pin first.
+ *
  * @file nodus_witness_runtime.c
  */
 
@@ -52,10 +62,15 @@ static const uint8_t SYS_TYPES[6] = { 4, 5, 6, 7, 9, 10 };
 #define DNA_CORERULE_SHIELD_C3_REJECT   ((uint32_t)5)
 #define DNA_CORERULE_UNSHIELD_C3_REJECT ((uint32_t)6)
 
-static const uint32_t CORE_RULES[6] = {
+/* O11 appends DNA_CORERULE_SYSFUND (7, declared in the header — both
+ * domains' hooks name it): the CORE funding/release half of every SYSTEM
+ * stake-lifecycle envelope. The tx_type list is UNCHANGED — runtime_op
+ * and tx_type are different axes, and this op carries no legacy type of
+ * its own (the staking types 4..7 are SYSTEM's). */
+static const uint32_t CORE_RULES[7] = {
     DNA_CORERULE_SPEND, DNA_CORERULE_BURN, DNA_CORERULE_TOKEN_CREATE,
     DNA_CORERULE_SHIELDED_C3_REJECT, DNA_CORERULE_SHIELD_C3_REJECT,
-    DNA_CORERULE_UNSHIELD_C3_REJECT
+    DNA_CORERULE_UNSHIELD_C3_REJECT, DNA_CORERULE_SYSFUND
 };
 /* ASCENDING is load-bearing twice over: rt_owns_type() stops at the first
  * greater element, and dna_ruleset_desc_hash() refuses a non-ascending
@@ -79,19 +94,24 @@ static dna_meter_policy_t g_sys_policy;
 static int g_sys_policy_ready = 0;          /* 0 until built+sealed OK   */
 
 static const uint8_t SYS_METER_POLICY_DIGEST[DNA_DOM_HASH_LEN] = {
-    /* capacity season — policy v2 (max_block_env_bytes appended);
-     * oracle: scratchpad capacity_season_oracle.py, whose control legs
-     * reproduced BOTH shipped pins (old SYSTEM policy fad572e9… and
-     * the S9→exec CORE ruleset hash) before this value was accepted.
-     * The old v1 digest fad572e9…0537 is dead. */
-    0xdf, 0xeb, 0xb8, 0x2a, 0x55, 0x2d, 0xcd, 0xb0,
-    0xac, 0x4e, 0x25, 0x81, 0x5e, 0x41, 0x84, 0x82,
-    0xf0, 0x27, 0xa3, 0xce, 0x0c, 0xc8, 0x81, 0x09,
-    0xc0, 0x45, 0xb7, 0x43, 0x9a, 0x9d, 0xce, 0x49,
-    0xe3, 0x7c, 0x65, 0xc4, 0x32, 0x0a, 0xdb, 0xcd,
-    0xf9, 0xdd, 0xca, 0x01, 0xd2, 0xcf, 0x05, 0x6d,
-    0x32, 0xbc, 0x9c, 0x20, 0xa1, 0x59, 0x0f, 0xe6,
-    0x7b, 0x35, 0x78, 0x66, 0xee, 0x27, 0xc2, 0xde
+    /* O11 — the policy SHAPE is unchanged (still v2, same seven scalar
+     * weights, same max_block_env_bytes); the AUTHORITATIVE OP SET grew
+     * to 1..7 because DNA_CORERULE_SYSFUND must be priced (an op with no
+     * committed weight is an "absent op weight" reject at reservation,
+     * nodus_witness_v2_apply.c). The identity digest commits w_op and the
+     * presence bitmap, so it moves by construction. Oracle: scratchpad
+     * o11_season_oracle.py, whose control legs reproduced the shipped
+     * pins first; selfcheck re-derives this value through the C
+     * serializer on every run. The capacity-season digest dfebb82a…c2de
+     * and the v1 digest fad572e9…0537 are both dead. */
+    0x8d, 0x03, 0x8f, 0x1e, 0xc6, 0x08, 0xbe, 0x54,
+    0x7b, 0xf9, 0x8a, 0xfe, 0x2d, 0xf0, 0x53, 0x2b,
+    0x4a, 0x94, 0xa7, 0xa0, 0x42, 0xa9, 0xd9, 0xd8,
+    0x6b, 0x7a, 0x0f, 0xb1, 0xab, 0x51, 0xed, 0xaf,
+    0xbc, 0x43, 0x64, 0xdc, 0x38, 0x91, 0xc3, 0x6b,
+    0xfb, 0xc4, 0x43, 0x32, 0x2f, 0x2a, 0x3b, 0x0b,
+    0x44, 0xc8, 0x23, 0x16, 0xbd, 0x78, 0x42, 0xfd,
+    0x7f, 0xfb, 0xec, 0x2d, 0x19, 0xf1, 0xf5, 0xcc
 };
 
 static int sys_policy_build(dna_meter_policy_t *p) {
@@ -101,8 +121,9 @@ static int sys_policy_build(dna_meter_policy_t *p) {
     p->w_effect = 1; p->w_effectbyte = 1; p->w_read = 1; p->w_write = 1;
     /* The ABSOLUTE per-block V2 envelope byte bound (policy v2 field —
      * res_meter.h). 2 MiB = 2 * DNA_ENV_MAX_TOTAL_LEN: admits at least
-     * TWO worst-case legal envelopes (813,904 B each — the derivation
-     * pinned in nodus_witness_rt_native.c) per block while bounding a
+     * TWO worst-case legal envelopes (819,098 B each since O11 — the
+     * derivation pinned in nodus_witness_rt_native.c, "O11 capacity
+     * derivation") per block while bounding a
      * full block's admitted envelope bytes to 2 MiB — a block can never
      * carry the 1 MiB envelope maximum repeatedly up to the 16-slot
      * batch/tx-count cap (16 MiB). JUDGMENT value, same placeholder
@@ -110,7 +131,12 @@ static int sys_policy_build(dna_meter_policy_t *p) {
      * economics behind a new policy digest. Raw wire-byte bound,
      * separate from the unit budget by construction. */
     p->max_block_env_bytes = 2u * DNA_ENV_MAX_TOTAL_LEN;
-    for (uint32_t op = 1; op <= 6; op++)
+    /* O11: the authoritative op set is the UNION of the two descriptors'
+     * rule-id ranges, which grew to 1..7 when DNA_CORERULE_SYSFUND was
+     * appended to CORE_RULES. An op with no committed weight has NO
+     * price at all (fail-closed: reservation rejects it), so a missing
+     * row here would make every staking envelope unreservable. */
+    for (uint32_t op = 1; op <= 7; op++)
         if (dna_meter_op_set(p, op, 1) != 0) return -1;
     return dna_meter_policy_seal(p);
 }
@@ -122,45 +148,49 @@ static int sys_policy_build(dna_meter_policy_t *p) {
  * SYSTEM's digest commits SYS_METER_POLICY_DIGEST; CORE's commits the
  * all-zero "no policy declared" field. */
 static const uint8_t SYS_RULESET_HASH[DNA_DOM_HASH_LEN] = {
-    /* capacity season — ruleset_version 2 (CHAIN_CONFIG call v2 +
-     * auth carrier v2) committing the v2 policy digest above; same
-     * oracle + control legs. The exec-season value 89362213…96c2 is
-     * dead. (CORE moved later, in the burn season — see the CORE pin
-     * below; SYSTEM is untouched by that season and this value
-     * stands.) */
-    0x9f, 0xc5, 0x39, 0x4e, 0x60, 0xe0, 0xd9, 0x80,
-    0xae, 0xe5, 0x5b, 0x5a, 0xa7, 0x1c, 0x4f, 0x9c,
-    0x84, 0xcd, 0x45, 0x1f, 0x08, 0xd2, 0x76, 0xcf,
-    0xfe, 0x21, 0x29, 0xd1, 0xfc, 0x95, 0x7f, 0x6f,
-    0x35, 0x40, 0xa0, 0x33, 0x6c, 0xc8, 0x0e, 0xc5,
-    0x30, 0x98, 0xa8, 0x97, 0x40, 0x40, 0xad, 0x7f,
-    0x40, 0x8b, 0xa5, 0x9d, 0x88, 0x5d, 0x17, 0xac,
-    0xdd, 0x17, 0x13, 0x46, 0x8c, 0xce, 0x24, 0xbb
+    /* O11 — SYSTEM ruleset_version 2 → 3: runtime op 1
+     * (DNA_SYSRULE_STAKE) becomes EXECUTABLE (it was a deterministic
+     * reject inside the hooks), and the committed metering policy moved
+     * with the op set above. Enabling a previously rejected op changes
+     * the accepted runtime semantics, and no separate versioned
+     * activation mechanism commits that change — the exact-tuple
+     * identity IS the activation mechanism — so the version advances and
+     * the digest moves by construction (the descriptor commits
+     * ruleset_version AND meter_policy_digest; the rule list {1..6} and
+     * the type list {4,5,6,7,9,10} are byte-identical, ops 2..5 are
+     * still owned and still reject). The retired SYSTEM v2 resolves
+     * NOTHING: v2 legs are never reinterpreted (the v1 retirement
+     * precedent). Oracle: scratchpad o11_season_oracle.py, whose control
+     * legs reproduced BOTH shipped pins (SYSTEM v2 9fc5394e…24bb and
+     * CORE v2 746f584a…67a1) before these values were accepted;
+     * selfcheck re-derives them through the C encoder on every run. */
+    0xd0, 0x65, 0xe2, 0xe1, 0x71, 0x96, 0x02, 0x21,
+    0xe3, 0xb7, 0x9a, 0xfd, 0xed, 0x78, 0xb8, 0x28,
+    0x9b, 0x20, 0xcc, 0xf1, 0x83, 0xfb, 0x1c, 0x17,
+    0x23, 0xb5, 0x8c, 0x35, 0x18, 0x0c, 0x69, 0x57,
+    0xc1, 0xd9, 0x50, 0xe3, 0x77, 0x7b, 0x25, 0x14,
+    0xf2, 0xb0, 0x10, 0x8d, 0xa6, 0xed, 0x9c, 0xee,
+    0x69, 0xd9, 0xf7, 0x3e, 0x8c, 0xbf, 0x49, 0x66,
+    0xc2, 0x66, 0x8f, 0xd9, 0x89, 0x86, 0x6d, 0x64
 };
 static const uint8_t CORE_RULESET_HASH[DNA_DOM_HASH_LEN] = {
-    /* burn season — CORE ruleset_version 1 → 2: runtime ops 2 (BURN)
-     * and 3 (TOKEN_CREATE) become EXECUTABLE (they were deterministic
-     * rejects inside the hooks). Enabling a previously rejected op
-     * changes the accepted runtime semantics, and no separate versioned
-     * activation mechanism commits that change — the exact-tuple
-     * identity IS the activation mechanism — so the version advances
-     * and the digest moves by construction (the descriptor commits
-     * ruleset_version; the rule/type lists and the zero policy digest
-     * are byte-identical). The retired CORE v1 resolves NOTHING: v1
-     * legs are never reinterpreted (the SYSTEM v1 retirement
-     * precedent). Oracle: scratchpad burn_tc_season_oracle.py, whose
-     * control legs reproduced BOTH shipped pins (SYSTEM v2 9fc5394e…
-     * and the retired CORE v1 ad98a036…e6f3) before this value was
-     * accepted; selfcheck re-derives it through the C encoder on every
-     * run. */
-    0x74, 0x6f, 0x58, 0x4a, 0xc0, 0x99, 0x64, 0x3d,
-    0x63, 0x14, 0x6b, 0xad, 0x02, 0x9c, 0xf9, 0xfd,
-    0xeb, 0x67, 0x9a, 0x83, 0x0d, 0x5a, 0x3f, 0x4f,
-    0x2a, 0x32, 0x7c, 0x26, 0xf3, 0xca, 0x0f, 0x10,
-    0x45, 0x76, 0x3f, 0x0e, 0xa9, 0x2d, 0x28, 0xaf,
-    0xf6, 0xfc, 0xa5, 0xd4, 0xcd, 0x20, 0xa5, 0x21,
-    0xb5, 0xa3, 0xac, 0xc6, 0x49, 0x15, 0xe1, 0xdd,
-    0x9f, 0x35, 0xe2, 0x1a, 0x41, 0xce, 0x67, 0xa1
+    /* O11 — CORE ruleset_version 2 → 3: the rule list GREW to {1..7}
+     * (DNA_CORERULE_SYSFUND appended) and op 7 became executable. Adding
+     * an owned op changes the accepted runtime semantics exactly as
+     * enabling one does, and the descriptor commits the rule list
+     * itself, so the digest moves twice over. The tx_type list
+     * {1,2,3,11,12,13} and the all-zero "no policy declared" digest are
+     * byte-identical. The retired CORE v2 resolves NOTHING: v2 legs are
+     * never reinterpreted. Same oracle + control legs as the SYSTEM pin
+     * above; the burn-season value 746f584a…67a1 is dead. */
+    0xed, 0x4b, 0x1b, 0xcd, 0xf0, 0xe8, 0xf7, 0x8f,
+    0x0b, 0x64, 0x98, 0x5e, 0x42, 0xd4, 0x1d, 0x51,
+    0x81, 0xed, 0xd5, 0xd4, 0x85, 0x94, 0xbc, 0xeb,
+    0x73, 0xbf, 0x5e, 0xfb, 0x6a, 0xda, 0x08, 0x38,
+    0x8d, 0x6f, 0xb6, 0xba, 0x04, 0x92, 0xf8, 0xbd,
+    0xca, 0x21, 0x2a, 0x5d, 0xda, 0x87, 0x79, 0xe7,
+    0x45, 0x13, 0xc5, 0x21, 0x0b, 0xc4, 0xba, 0xa2,
+    0xf7, 0x0b, 0xf3, 0x8c, 0xb2, 0x63, 0x44, 0x37
 };
 
 /* ── Function tables ────────────────────────────────────────────────── */
@@ -236,14 +266,22 @@ static const nodus_domain_runtime_t BUILTIN[] = {
     {
         .domain_id       = DNA_DOMAIN_SYSTEM,
         .runtime_kind    = DNA_RUNTIME_NATIVE_BUILTIN,
-        /* ruleset_version 2 — capacity season: the CHAIN_CONFIG call
-         * format changed (v2 = proposal-only, 41 bytes; approval
-         * evidence moved to auth_kind 2) and the committed meter policy
-         * moved to policy v2 (max_block_env_bytes). The runtime-call
-         * version axis IS the ruleset version (exact-tuple lookup), so
-         * v1 legs resolve NOTHING — old bytes are never reinterpreted. */
+        /* ruleset_version 3 — O11: the STAKE LIFECYCLE ruleset. Runtime
+         * ops 1..4 (STAKE / DELEGATE / UNSTAKE / UNDELEGATE) are
+         * EXECUTABLE under v3 — all four deterministically rejected
+         * under v2 — and the committed metering policy gained op 7.
+         * Enabling previously rejected ops changes the accepted
+         * semantics of this ruleset and no separate versioned activation
+         * mechanism exists (the exact-tuple identity IS the mechanism),
+         * so the version advanced ONCE for the whole set: v3 has never
+         * been a partial ruleset on any chain, exactly as CORE v2
+         * covered BURN and TOKEN_CREATE together. Op 5
+         * (VALIDATOR_UPDATE) still rejects inside the hooks and its
+         * migration will advance the version again. The retired v2 (like
+         * v1) resolves NOTHING: old SYSTEM legs are never
+         * reinterpreted. */
         .runtime_abi     = NODUS_DOMAIN_RUNTIME_ABI_V1,
-        .ruleset_version = 2,
+        .ruleset_version = 3,
         .ruleset_hash    = { 0 },   /* set via memcpy-free static init below
                                      * is impossible for a named array —
                                      * selfcheck compares against the pinned
@@ -254,16 +292,17 @@ static const nodus_domain_runtime_t BUILTIN[] = {
             .domain_id = DNA_DOMAIN_SYSTEM,
             .name = "SYSTEM",
             .runtime_abi = NODUS_DOMAIN_RUNTIME_ABI_V1,
-            .ruleset_version = 2,
+            .ruleset_version = 3,
             .rule_count = 6, .rule_ids = SYS_RULES,
             .tx_type_count = 6, .tx_types = SYS_TYPES
         },
         .admit = rt_admit_common,
         .tx_cost = sys_cost,
-        /* Native auth season: the REAL compiled execution surface.
-         * read_plan/exec implement exactly DNA_SYSRULE_CHAIN_CONFIG;
-         * every other owned runtime_op deterministically rejects inside
-         * the hooks until its own migration slice. */
+        /* The REAL compiled execution surface. read_plan/exec implement
+         * the whole O11 stake lifecycle (DNA_SYSRULE_STAKE / DELEGATE /
+         * UNSTAKE / UNDELEGATE) plus DNA_SYSRULE_CHAIN_CONFIG; op 5
+         * (VALIDATOR_UPDATE) deterministically rejects inside the hooks
+         * until its own migration slice. */
         .auth      = nodus_rt_auth_dsa87_v1,
         /* capacity season: SYSTEM legs may carry the ordinary submitter
          * scheme AND the committee-indexed carrier. */
@@ -288,28 +327,30 @@ static const nodus_domain_runtime_t BUILTIN[] = {
     {
         .domain_id       = DNA_DOMAIN_CORE,
         .runtime_kind    = DNA_RUNTIME_NATIVE_BUILTIN,
-        /* ruleset_version 2 — burn season: runtime ops 2 (BURN) and 3
-         * (TOKEN_CREATE) became executable (they deterministically
-         * rejected under v1). The runtime-op semantic axis IS the
-         * ruleset version (exact-tuple lookup), so v1 legs resolve
-         * NOTHING — old CORE envelopes are never reinterpreted. */
+        /* ruleset_version 3 — O11: the rule list GREW (op 7,
+         * DNA_CORERULE_SYSFUND) and that op is executable. Adding an
+         * owned op changes this ruleset's accepted semantics exactly as
+         * enabling one does, and the exact-tuple identity IS the
+         * activation mechanism, so the version advances. The retired v2
+         * (like v1) resolves NOTHING — old CORE envelopes are never
+         * reinterpreted. */
         .runtime_abi     = NODUS_DOMAIN_RUNTIME_ABI_V1,
-        .ruleset_version = 2,
+        .ruleset_version = 3,
         .ruleset_hash    = { 0 },
         .descriptor = {
             .descriptor_version = DNA_RULESET_DESC_VERSION,
             .domain_id = DNA_DOMAIN_CORE,
             .name = "DNA_CORE",
             .runtime_abi = NODUS_DOMAIN_RUNTIME_ABI_V1,
-            .ruleset_version = 2,
-            .rule_count = 6, .rule_ids = CORE_RULES,
+            .ruleset_version = 3,
+            .rule_count = 7, .rule_ids = CORE_RULES,
             .tx_type_count = 6, .tx_types = CORE_TYPES
         },
         .admit = rt_admit_common,
         .tx_cost = core_cost,
-        /* Burn season: DNA_CORERULE_SPEND + DNA_CORERULE_BURN +
-         * DNA_CORERULE_TOKEN_CREATE (ops 4..6 still reject inside the
-         * hooks); shared auth implementation. */
+        /* O11: DNA_CORERULE_SPEND + DNA_CORERULE_BURN +
+         * DNA_CORERULE_TOKEN_CREATE + DNA_CORERULE_SYSFUND (ops 4..6
+         * still reject inside the hooks); shared auth implementation. */
         .auth      = nodus_rt_auth_dsa87_v1,
         /* capacity season: CORE consumes ordinary multi-signer
          * authorization ONLY — no CORE operation reads committee

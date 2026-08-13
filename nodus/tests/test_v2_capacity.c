@@ -88,9 +88,40 @@ int main(void) {
               "two-leg CC+TOKEN_CREATE worst case drifted");
         CHECK(two_leg_tc > two_leg,
               "TOKEN_CREATE must dominate the SPEND shape");
-        CHECK(two_leg_tc <= DNA_ENV_MAX_TOTAL_LEN,
+        /* O11 (stake-lifecycle season): the CC shapes are now DOMINATED.
+         * The worst single leg is a SYSTEM DELEGATE/UNDELEGATE leg —
+         * call 5192 (two ML-DSA-87 pubkeys + amount) — under the SAME
+         * maximal kind-2 blob (SYSTEM's allowlist permits carriage; the
+         * op's exec rejects kind 2 only after admission/authorization
+         * priced it). The worst envelope pairs it with its mandatory
+         * CORE SYSFUND sibling (transfer-section call 4674, 15-signer
+         * kind-1). Third derivation: rt_native.c "O11 capacity
+         * derivation" asserts; second: env_wire_oracle.py. */
+        uint64_t dlg_call = 2592u + 2592u + 8u;
+        uint64_t dlg_single = 43u + 30u + dlg_call + (1u + 15u * signer) +
+                              (2u + (uint64_t)DNA_MAX_ACTIVE_VALIDATORS *
+                                        appr);
+        uint64_t dlg_two = dlg_single + 30u +
+                           (2u + 15u * 64u + 16u * 232u) +
+                           (1u + 15u * signer);
+        /* ⚠ the SYSFUND sibling is a read_plan/exec rule, NOT an
+         * admission rule — so the largest ADMISSION-legal CORE partner
+         * is TOKEN_CREATE (4717), and the mixed pair governs (O11 R1
+         * review finding; the SYSFUND pair is pinned as dominated). */
+        uint64_t dlg_two_tc = dlg_single + 30u + tc_call +
+                              (1u + 15u * signer);
+        CHECK(dlg_call == 5192u, "DELEGATE call arithmetic drifted");
+        CHECK(dlg_single == 706065u,
+              "single-leg stake-lifecycle worst case drifted");
+        CHECK(dlg_two == 819055u,
+              "two-leg DELEGATE+SYSFUND shape drifted (dominated)");
+        CHECK(dlg_two_tc == 819098u,
+              "two-leg DELEGATE+TOKEN_CREATE worst case drifted");
+        CHECK(dlg_two_tc > dlg_two && dlg_two_tc > two_leg_tc,
+              "the mixed DELEGATE+TOKEN_CREATE shape must dominate");
+        CHECK(dlg_two_tc <= DNA_ENV_MAX_TOTAL_LEN,
               "ceiling no longer contains the worst case");
-        CHECK(two_leg_tc > (DNA_ENV_MAX_TOTAL_LEN / 2u),
+        CHECK(dlg_two_tc > (DNA_ENV_MAX_TOTAL_LEN / 2u),
               "2^19 would already contain the worst case — the ceiling "
               "is no longer the SMALLEST containing power of two");
     }

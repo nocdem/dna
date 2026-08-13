@@ -45,8 +45,27 @@ def capacity_derivation():
     two_leg_tc = cc_single + 30 + tc_call + (1 + 15 * signer)
     assert tc_call == 4717, tc_call
     assert two_leg_tc == 813947, two_leg_tc
-    assert 2 ** 19 < two_leg_tc <= 2 ** 20 == MAX_TOTAL_LEN
-    return cc_single, two_leg_tc
+    # O11 (stake-lifecycle season): the CC shapes are DOMINATED. The
+    # worst single leg is a SYSTEM DELEGATE/UNDELEGATE leg (call 5192 =
+    # two ML-DSA-87 pubkeys + u64 amount) under the same maximal kind-2
+    # blob — allowlist-legal carriage the op's exec rejects only after
+    # the block priced it — and the worst envelope pairs it with the
+    # mandatory CORE SYSFUND sibling (SPEND-shape call 4674, 15-signer
+    # kind-1). Third derivation: rt_native.c "O11 capacity derivation".
+    dlg_call = 2592 + 2592 + 8
+    dlg_single = 43 + 30 + dlg_call + (1 + 15 * signer) + (2 + 128 * appr)
+    dlg_two = dlg_single + 30 + (2 + 15 * 64 + 16 * 232) + (1 + 15 * signer)
+    # The SYSFUND-sibling rule lives in read_plan/exec, not admission, so
+    # the largest ADMISSION-legal CORE partner is TOKEN_CREATE and the
+    # mixed pair governs (O11 R1 review finding).
+    dlg_two_tc = dlg_single + 30 + tc_call + (1 + 15 * signer)
+    assert dlg_call == 5192, dlg_call
+    assert dlg_single == 706065, dlg_single
+    assert dlg_two == 819055, dlg_two          # dominated shape, pinned
+    assert dlg_two_tc == 819098, dlg_two_tc    # the governing worst case
+    assert dlg_two_tc > dlg_two > two_leg_tc
+    assert 2 ** 19 < dlg_two_tc <= 2 ** 20 == MAX_TOTAL_LEN
+    return cc_single, dlg_two_tc
 
 
 capacity_derivation()

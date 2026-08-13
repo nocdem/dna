@@ -87,6 +87,19 @@ extern "C" {
 /** Type 11 admission stays consensus-REJECTED until C3 — the rule exists
  *  so the descriptor honestly names the shipped behavior. */
 #define DNA_CORERULE_SHIELDED_C3_REJECT ((uint32_t)4)
+/* Rule ids 5 and 6 (DNA_CORERULE_SHIELD_C3_REJECT /
+ * DNA_CORERULE_UNSHIELD_C3_REJECT) are declared in
+ * nodus_witness_runtime.c next to the descriptor that names them — the
+ * digest commits the VALUES, never the declaration site. */
+/** O11 — the staking-lifecycle FUNDING/RELEASE coupling leg: the CORE
+ *  half of every SYSTEM stake-lifecycle envelope. It consumes the
+ *  transparent inputs that fund a lock (STAKE bond / DELEGATE amount),
+ *  pays the fee, and creates the release UTXO an UNDELEGATE returns —
+ *  amounts are NEVER in its own call, they are derived from the SIBLING
+ *  SYSTEM leg's call bytes, so record and funding cannot disagree. It is
+ *  declared HERE (not in runtime.c) because both the CORE hook and the
+ *  SYSTEM stake hooks name it when they check their sibling leg. */
+#define DNA_CORERULE_SYSFUND         ((uint32_t)7)
 
 struct nodus_domain_runtime;
 
@@ -204,8 +217,13 @@ typedef struct {
  *   only "these seats signed THIS leg's digest", which binds the op but
  *   certifies no policy. Every FUTURE SYSTEM op migrated onto kind 2
  *   must decide its own authority rule in ITS exec (the CHAIN_CONFIG
- *   quorum gate is the precedent, not an inherited default); today ops
- *   1..5 deterministically reject before any verdict is consumed.
+ *   quorum gate is the precedent, not an inherited default). O11 is the
+ *   first exercise of that rule: all four stake-lifecycle ops (1..4)
+ *   decide their own authority (exactly ONE signer whose fingerprint
+ *   equals SHA3-512 of the identity pubkey CARRIED IN THE CALL) and
+ *   therefore REJECT a kind-2 leg at exec — carriage is permitted by the
+ *   runtime's allowlist, authority is never inherited from it. Op 5
+ *   still deterministically rejects before any verdict is consumed.
  *   COORDINATION NOTE (honest label): auth_len is bound by the leg
  *   auth_digest through AUTHCTX_BYTES, and kind-2 auth_len depends on
  *   the final (signer_count, approval_count) pair — so the exact
@@ -450,10 +468,13 @@ typedef struct nodus_domain_runtime {
     uint32_t              allowed_auth_kinds;
     /* The typed EXECUTION boundary (header block above). Native auth
      * season installed the real hooks; the burn season completed the
-     * transparent CORE set (SYSTEM: DNA_SYSRULE_CHAIN_CONFIG; DNA_CORE:
-     * DNA_CORERULE_SPEND + DNA_CORERULE_BURN + DNA_CORERULE_TOKEN_CREATE
-     * — every other owned runtime_op is a deterministic reject inside
-     * the hooks until its own migration slice). NULL exec = this
+     * transparent CORE set; O11 opened the staking lane. Executable
+     * today — SYSTEM: the whole stake lifecycle DNA_SYSRULE_STAKE /
+     * DELEGATE / UNSTAKE / UNDELEGATE (1..4) + DNA_SYSRULE_CHAIN_CONFIG;
+     * DNA_CORE: DNA_CORERULE_SPEND + DNA_CORERULE_BURN +
+     * DNA_CORERULE_TOKEN_CREATE + DNA_CORERULE_SYSFUND. Every other
+     * owned runtime_op (SYSTEM 5, CORE 4..6) is a deterministic reject
+     * inside the hooks until its own migration slice. NULL exec = this
      * runtime cannot execute envelope legs (engine fails the leg
      * closed); NULL read_plan = it reads nothing. */
     nodus_rt_read_plan_fn read_plan;
@@ -570,10 +591,12 @@ int nodus_rt_core_state_init(const nodus_domain_runtime_t *rt,
  * Implemented in nodus_witness_rt_native.c. The shared auth hook is the
  * ONE compiled implementation of auth_kind 1 (both production entries
  * reference the same symbol — scheme verification cannot fork per
- * domain); the per-domain read_plan/exec pairs implement
- * DNA_SYSRULE_CHAIN_CONFIG (SYSTEM) and — since the burn season, under
- * CORE ruleset_version 2 — DNA_CORERULE_SPEND, DNA_CORERULE_BURN and
- * DNA_CORERULE_TOKEN_CREATE (DNA_CORE), and deterministically reject
+ * domain); the per-domain read_plan/exec pairs implement — since O11,
+ * under SYSTEM ruleset_version 3 — the stake lifecycle
+ * DNA_SYSRULE_STAKE / DELEGATE / UNSTAKE / UNDELEGATE and
+ * DNA_SYSRULE_CHAIN_CONFIG (SYSTEM) and — under CORE ruleset_version 3
+ * — DNA_CORERULE_SPEND, DNA_CORERULE_BURN, DNA_CORERULE_TOKEN_CREATE
+ * and DNA_CORERULE_SYSFUND (DNA_CORE), and deterministically reject
  * every other owned runtime_op. The compiled adapters are exported so
  * tests can drive them directly. */
 int nodus_rt_auth_dsa87_v1(const nodus_domain_runtime_t *rt,

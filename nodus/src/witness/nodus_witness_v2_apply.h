@@ -71,7 +71,8 @@
  *       Each envelope executes as: meter activate → per leg (ascending
  *       domain_id by envelope construction): mediated read plan +
  *       engine-charged reads → native exec → strict result decode →
- *       adapter validation → effect charge → adapter application →
+ *       adapter validation → effect charge → adapter application
+ *       [F37 mid-effect-list, F38 BETWEEN legs of the same envelope] →
  *       meter finalize                          [F27 after the envelope
  *       at fail_env_index]                                [F5 "UTXO"]
  *   6b. S6 generic claims: admit (committed manifest names the TARGET
@@ -361,7 +362,20 @@ typedef enum {
      * mutations (after the UTXO deletes but before the burned-counter
      * SET, after the token-registry insert but before the fee burn, …)
      * provably leaves the database digest byte-identical. */
-    V2AP_FAIL_AFTER_EFFECT_APPLY = 37
+    V2AP_FAIL_AFTER_EFFECT_APPLY = 37,
+    /* O11 stake-lifecycle stage (37 above is FROZEN). Fires INSIDE the
+     * transaction after the leg at blk->fail_leg_index of the envelope
+     * at blk->fail_env_index has FULLY applied its effects and BEFORE
+     * the next leg of the same envelope runs. Where F37 interrupts one
+     * leg MID-mutation, this interrupts BETWEEN legs — the
+     * HALF-ENVELOPE point that only exists for a cross-domain envelope.
+     * A staking envelope injected at leg 0 has written its SYSTEM
+     * record rows (validator / delegation / counter) and has NOT yet
+     * consumed the CORE funding inputs; the proof obligation is that
+     * neither half survives: a validator row without its bond, or a
+     * spent input without its record, would be a torn cross-domain
+     * transition. */
+    V2AP_FAIL_AFTER_LEG_APPLY = 38
 } nodus_v2_apply_fail_t;
 
 /*
@@ -410,6 +424,7 @@ typedef struct {
     uint32_t fail_pool_index;           /* batch index for points 19-25  */
     uint32_t fail_env_index;            /* envelope index for point 27   */
     uint32_t fail_effect_index;         /* effect index for point 37     */
+    uint32_t fail_leg_index;            /* leg index for point 38        */
     /* Outputs (valid on rc 0/2) */
     uint8_t  out_tx_root[64];
     uint8_t  out_dupd_root[64];

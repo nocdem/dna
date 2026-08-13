@@ -878,6 +878,20 @@ static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
             ast == NODUS_ADAPTER_ERR_ARG)
             return -2;                   /* node fault                   */
         if (ast != NODUS_ADAPTER_OK) return -1;   /* precondition etc.   */
+
+        /* F38 (O11): the leg at blk->fail_leg_index has now FULLY
+         * applied every one of its effects, and the NEXT leg of the same
+         * envelope has not started. This is the HALF-ENVELOPE point: for
+         * a cross-domain staking envelope it fires between the SYSTEM
+         * record leg's row writes and the CORE funding leg, so a test
+         * can prove that a record without its funding (or funding
+         * without its record) never survives. It rides the ordinary
+         * deterministic-verdict abort, exactly like F37, so the rollback
+         * it proves is the one every real rejection takes. */
+        if (blk->fail_at == V2AP_FAIL_AFTER_LEG_APPLY &&
+            blk->fail_env_index == (uint32_t)env_index &&
+            blk->fail_leg_index == (uint32_t)l)
+            return -1;
     }
 
     /* ACTIVE → FINALIZED: unused units return to the budgets. */

@@ -11,8 +11,8 @@
  * stays unassigned — nothing in this file touches shielded state.
  * ════════════════════════════════════════════════════════════════════════
  *
- * WHAT IS IMPLEMENTED (four source-existing operations — the burn
- * season adds 3 and 4):
+ * WHAT IS IMPLEMENTED (six source-existing operations — the burn season
+ * added 3 and 4, O11 adds 5 and 6):
  *
  *   1. SYSTEM  / DNA_SYSRULE_CHAIN_CONFIG (runtime_op 6, legacy tx 10):
  *      the committee-voted consensus-parameter change. The SOURCE
@@ -76,9 +76,55 @@
  *      wall clock CLIENT-side; consensus never re-derives it — chain
  *      binding rides the envelope identities, not the token id).
  *
+ *   5. SYSTEM / DNA_SYSRULE_STAKE (runtime_op 1, legacy tx 4 — O11):
+ *      validator registration. Source semantics preserved from
+ *      apply_stake (nodus_witness_bft.c:1505-1620): bond >=
+ *      DNAC_SELF_STAKE_AMOUNT (:1568), a new ACTIVE row with
+ *      active_since = the executing height (:1583), the unstake
+ *      destination fingerprint stored as 128 hex chars and the
+ *      destination PUBKEY populated only when the fingerprint derives
+ *      from the staker's own key (:1596-1600), every other column zero,
+ *      validator_stats.active_count + 1 (:1610), and Rule I (one row per
+ *      pubkey) as a mediated ABSENT read plus the CREATE/ABSENT
+ *      precondition behind it. LABELED NARROWING: commission_bps <=
+ *      DNAC_COMMISSION_BPS_MAX is now WITNESS-enforced — the legacy
+ *      apply copied it unchecked and only the client lane bounded it.
+ *
+ *   6. DNA_CORE / DNA_CORERULE_SYSFUND (runtime_op 7 — O11): the
+ *      funding/release half of every SYSTEM stake-lifecycle envelope.
+ *      It carries NO amounts: the lock (STAKE bond / DELEGATE amount)
+ *      and the release (UNDELEGATE amount) are derived from the SIBLING
+ *      SYSTEM leg's call bytes, so record and funding cannot disagree
+ *      and neither leg can be replayed against a different partner. It
+ *      enforces the legacy consistency equation with the state amount
+ *      named on the side it belongs to —
+ *      Σnative_in == Σchange + fee + lock — and burns the fee and ONLY
+ *      the fee (a lock MOVES value into a supply bucket the conservation
+ *      equation already counts; a RELEASE is not netted against the
+ *      funding inputs at all — see rtn_sysfund_exec). The release UTXO
+ *      reproduces the shipped synthetic-UTXO derivation
+ *      (emit_synthetic_utxo, bft.c:1720-1729): kind 0x01, output_index
+ *      100, unlock 0, owner = the delegator's fingerprint. LABELED
+ *      NARROWING: native-token-only on both sides (the legacy staking
+ *      applies summed only native DNAC and silently ignored any other
+ *      token riding along).
+ *
+ *   7. SYSTEM / DNA_SYSRULE_DELEGATE (2) · DNA_SYSRULE_UNSTAKE (3) ·
+ *      DNA_SYSRULE_UNDELEGATE (4) (legacy tx 5/6/7 — O11 S2+S3): the
+ *      rest of the stake lifecycle, each documented at its own executor
+ *      (rtn_delegate_exec / rtn_unstake_exec / rtn_undelegate_exec) with
+ *      the apply_* site it preserves. All four SYSTEM ops share the
+ *      2-leg envelope shape, the one-signer call-identity authority rule
+ *      and the CORE funding leg; they differ only in which rows they
+ *      read and which columns they move. Every validator/delegation row
+ *      they write is built FROM the record the mediated read observed
+ *      and bound to it by EXISTS_VHASH, so a transition can only change
+ *      the columns it names.
+ *
  * Every OTHER runtime_op the two descriptors own is a DETERMINISTIC
  * REJECT in these hooks until its own migration slice — ownership is
- * expressible, execution is fail-closed.
+ * expressible, execution is fail-closed. Today that is SYSTEM 5
+ * (VALIDATOR_UPDATE) and CORE 4..6 (the three C3 boundary rules).
  *
  * ── The verified authorization boundary ───────────────────────────────
  * nodus_rt_auth_dsa87_v1 is the ONE compiled implementation of
@@ -127,8 +173,26 @@
  *     input reads + 1 supply read + 1 registry read; out_count 1..16,
  *     output[0] = the token genesis output, outputs[1..] native)
  *
+ * SYSFUND call v1 (exact length = 2 + 64*in + 232*out — O11): EXACTLY
+ * the SPEND transfer section, in_count 1..15, out_count 0..16 (a bond
+ * that consumes the whole input set creates no change — the BURN
+ * precedent), every output NATIVE. No amount field of its own.
+ *
+ * SYSTEM stake-lifecycle calls v1 (O11 — all BE, all exact-length; the
+ * shared decoder block below the auth section holds the parsers, since
+ * both domains' hooks consume them):
+ *   STAKE      (op 1) staker_pubkey[2592] ‖ commission_bps u16
+ *                     ‖ bond u64 ‖ unstake_destination_fp[64 raw] = 2666
+ *   DELEGATE   (op 2) delegator_pubkey[2592] ‖ validator_pubkey[2592]
+ *                     ‖ amount u64                                 = 5192
+ *   UNSTAKE    (op 3) validator_pubkey[2592]                       = 2592
+ *   UNDELEGATE (op 4) same layout as DELEGATE                      = 5192
+ * All four EXECUTE (S1 shipped op 1; S2+S3 the rest). The CORE funding
+ * leg derives its lock/release from these same layouts, through the same
+ * compiled parsers.
+ *
  * CHAIN_CONFIG call v2 (exact length = 41 — capacity season; SYSTEM
- * ruleset_version 2 IS the call-format version, the repository's
+ * ruleset_version IS the call-format version, the repository's
  * versioning axis for runtime-call semantics):
  *   param_id u8 ‖ new_value u64 ‖ effective u64 ‖ nonce u64
  *   ‖ signed_at u64 ‖ valid_before u64
@@ -202,6 +266,7 @@
 #include "nodus/nodus_chain_config.h"
 
 #include "dnac/dnac.h"                 /* DNAC_MIN_FEE_RAW, DNAC_CFG_*   */
+#include "dnac/validator.h"            /* DNAC_VALIDATOR_ACTIVE (O11)    */
 #include "dnac/ledger_ids.h"           /* dna_bft_quorum                 */
 #include "dnac/effect_wire.h"
 #include "dnac/res_meter.h"            /* dna_ck_add_u64                 */
@@ -291,17 +356,22 @@ _Static_assert(700914u + DNA_ENV_LEG_HDR_LEN + 4717u +
                    (1u + (unsigned)NODUS_RT_AUTH_MAX_SIGNERS *
                              NODUS_RT_AUTH_SIGNER_LEN) == 813947u,
                "worst-case CC+TOKEN_CREATE two-leg envelope drifted");
-/* "Worst case" means worst FRAMING-AND-ALLOWLIST-legal: the two legs'
- * fee rules are mutually exclusive at exec (SYSTEM requires fee 0, the
- * CORE floors require fee >= 1), so the composition can never execute —
- * the ceiling deliberately over-covers, which is the conservative
- * direction for an admission bound. */
-_Static_assert(813947u <= (unsigned)DNA_ENV_MAX_TOTAL_LEN,
-               "envelope ceiling no longer contains the worst legal "
-               "envelope — re-derive DNA_ENV_MAX_TOTAL_LEN");
-_Static_assert(813947u > (unsigned)DNA_ENV_MAX_TOTAL_LEN / 2u,
-               "the ceiling is no longer the SMALLEST containing power "
-               "of two — re-derive DNA_ENV_MAX_TOTAL_LEN");
+/* "Worst case" means worst FRAMING-AND-ALLOWLIST-legal: an envelope the
+ * pre-BEGIN admission scan and the authorization stage accept and the
+ * block therefore RESERVES AND PAYS FOR, whether or not exec later
+ * rejects it (the CC+TC pair above can never execute — fee rules are
+ * mutually exclusive; the O11 stake shapes below verify their kind-2
+ * signatures and die only at exec's own authority rule). Over-covering
+ * is the conservative direction for an admission bound.
+ *
+ * O11: the CC-carrying shapes above are now DOMINATED — a SYSTEM
+ * DELEGATE/UNDELEGATE leg carries a 5192-byte call under the same
+ * maximal kind-2 blob (SYSTEM's allowlist permits carriage; the op's
+ * exec rejects kind 2, AFTER the block already accounted for it). The
+ * governing worst-case asserts live with the stake call macros below
+ * (search: "O11 capacity derivation"); the two shapes here stay pinned
+ * as identities because the oracle and test_v2_capacity re-derive both
+ * as control legs. */
 /* TOKEN_CREATE checks ONLY its own creation floor: that is sound iff the
  * creation fee dominates BOTH generic floors — pinned, not assumed. */
 _Static_assert(NODUS_W_TOKEN_CREATE_FEE >= DNAC_MIN_FEE_RAW &&
@@ -519,8 +589,281 @@ int nodus_rt_auth_dsa87_v1(const nodus_domain_runtime_t *rt,
 }
 
 /* ══════════════════════════════════════════════════════════════════════
+ * The SYSTEM stake-lifecycle CALL layer (O11) — decoded by BOTH domains
+ *
+ * Placed AHEAD of the DNA_CORE section deliberately: the CORE funding op
+ * DNA_CORERULE_SYSFUND carries NO amounts of its own — what a staking
+ * envelope LOCKS or RELEASES is derived from the SIBLING SYSTEM leg's
+ * CALL BYTES. Both hooks therefore decode these four layouts through the
+ * SAME compiled parsers, so no second decoder exists that could disagree
+ * with the first about what a staking leg requested (the record leg and
+ * the funding leg are one intent, split across two domains).
+ *
+ * All BE, all EXACT-LENGTH (a prefix is never accepted), all four bound
+ * by DNAC_PUBKEY_SIZE so a key-size change re-derives them visibly.
+ * ════════════════════════════════════════════════════════════════════ */
+
+/** STAKE (op 1): staker_pubkey ‖ commission_bps u16 ‖ bond u64 ‖
+ *  unstake_destination_fp[64 RAW SHA3-512 bytes]. */
+#define RTN_SYS_STAKE_CALL_LEN       ((uint32_t)DNAC_PUBKEY_SIZE + 2u + 8u + 64u)
+/** DELEGATE (op 2): delegator_pubkey ‖ validator_pubkey ‖ amount u64. */
+#define RTN_SYS_DELEGATE_CALL_LEN    (2u * (uint32_t)DNAC_PUBKEY_SIZE + 8u)
+/** UNSTAKE (op 3): validator_pubkey. */
+#define RTN_SYS_UNSTAKE_CALL_LEN     ((uint32_t)DNAC_PUBKEY_SIZE)
+/** UNDELEGATE (op 4): same shape as DELEGATE (a different rule reading
+ *  the same three fields — one layout, two ops, never one "generic"
+ *  op with a mode byte). */
+#define RTN_SYS_UNDELEGATE_CALL_LEN  RTN_SYS_DELEGATE_CALL_LEN
+_Static_assert(RTN_SYS_STAKE_CALL_LEN == 2666u,
+               "STAKE call length drifted");
+_Static_assert(RTN_SYS_DELEGATE_CALL_LEN == 5192u,
+               "DELEGATE/UNDELEGATE call length drifted");
+_Static_assert(RTN_SYS_UNSTAKE_CALL_LEN == 2592u,
+               "UNSTAKE call length drifted");
+
+/* ── O11 capacity derivation — the governing worst case ──────────────
+ * Every bound enters BY MACRO (the capacity-season discipline). The
+ * worst framing-and-allowlist-legal SINGLE leg is a SYSTEM DELEGATE /
+ * UNDELEGATE leg (call 5192 — the longest call any compiled runtime
+ * accepts) under the maximal kind-2 authorization blob (15-signer
+ * submitter body + all 128 release-ceiling approvals — SYSTEM's
+ * allowlist permits the CARRIAGE; the op's exec rejects kind 2 only
+ * after admission and authorization already priced it). The worst
+ * envelope pairs it with the largest CORE leg the same standard admits.
+ * ⚠ That is TOKEN_CREATE (call 4717), NOT the SYSFUND sibling (4674):
+ * the SYSFUND-sibling requirement lives in the read_plan/exec hooks
+ * (rtn_sys_stake_shape), NOT in rt_admit_common — admission inspects
+ * only (tx_type, pool), so a {DELEGATE(kind-2), TOKEN_CREATE(kind-1)}
+ * envelope is admission-legal, PRICED at reservation, and dies only at
+ * exec (O11 R1 review finding: the originally pinned SYSFUND pairing,
+ * 819,055 B, is DOMINATED by the mixed shape below).
+ * Re-derived independently by test_v2_capacity.c and
+ * shared/dnac/tests/env_wire_oracle.py — all three must agree. */
+_Static_assert((unsigned)DNA_ENV_FIXED_HEAD + DNA_ENV_LEG_HDR_LEN +
+                   RTN_SYS_DELEGATE_CALL_LEN +
+                   ((1u + (unsigned)NODUS_RT_AUTH_MAX_SIGNERS *
+                              NODUS_RT_AUTH_SIGNER_LEN) +
+                    (2u + (unsigned)DNA_MAX_ACTIVE_VALIDATORS *
+                              NODUS_RT_AUTH_APPROVAL_LEN)) == 706065u,
+               "worst-case single-leg stake-lifecycle envelope drifted");
+_Static_assert((2u + RTN_SPEND_MAX_IN * 64u +
+                RTN_SPEND_MAX_OUT * RTN_SPEND_OUT_LEN) == 4674u,
+               "maximal SYSFUND/SPEND transfer-section call drifted");
+_Static_assert(706065u + DNA_ENV_LEG_HDR_LEN + 4674u +
+                   (1u + (unsigned)NODUS_RT_AUTH_MAX_SIGNERS *
+                             NODUS_RT_AUTH_SIGNER_LEN) == 819055u,
+               "DELEGATE+SYSFUND two-leg shape drifted (dominated)");
+_Static_assert(706065u + DNA_ENV_LEG_HDR_LEN + 4717u +
+                   (1u + (unsigned)NODUS_RT_AUTH_MAX_SIGNERS *
+                             NODUS_RT_AUTH_SIGNER_LEN) == 819098u,
+               "worst-case DELEGATE+TOKEN_CREATE two-leg envelope "
+               "drifted");
+_Static_assert(819098u > 819055u && 819098u > 813947u,
+               "the mixed DELEGATE+TOKEN_CREATE shape no longer "
+               "dominates — re-derive which pair governs the ceiling");
+_Static_assert(819098u <= (unsigned)DNA_ENV_MAX_TOTAL_LEN,
+               "envelope ceiling no longer contains the worst legal "
+               "envelope — re-derive DNA_ENV_MAX_TOTAL_LEN");
+_Static_assert(819098u > (unsigned)DNA_ENV_MAX_TOTAL_LEN / 2u,
+               "the ceiling is no longer the SMALLEST containing power "
+               "of two — re-derive DNA_ENV_MAX_TOTAL_LEN");
+
+typedef struct {
+    const uint8_t *staker_pubkey;        /* [DNAC_PUBKEY_SIZE]           */
+    uint16_t       commission_bps;
+    uint64_t       bond;
+    const uint8_t *dest_fp;              /* [64] RAW fingerprint bytes   */
+} rtn_stake_call_t;
+
+typedef struct {
+    const uint8_t *delegator_pubkey;     /* [DNAC_PUBKEY_SIZE]           */
+    const uint8_t *validator_pubkey;     /* [DNAC_PUBKEY_SIZE]           */
+    uint64_t       amount;
+} rtn_deleg_call_t;
+
+static int rtn_stake_parse(const uint8_t *p, uint32_t len,
+                           rtn_stake_call_t *c) {
+    if (len != RTN_SYS_STAKE_CALL_LEN) return -1;
+    c->staker_pubkey  = p;
+    c->commission_bps = (uint16_t)(((uint16_t)p[DNAC_PUBKEY_SIZE] << 8) |
+                                   p[DNAC_PUBKEY_SIZE + 1]);
+    c->bond           = rtn_get64(p + DNAC_PUBKEY_SIZE + 2);
+    c->dest_fp        = p + DNAC_PUBKEY_SIZE + 10;
+    return 0;
+}
+
+static int rtn_deleg_parse(const uint8_t *p, uint32_t len,
+                           rtn_deleg_call_t *c) {
+    if (len != RTN_SYS_DELEGATE_CALL_LEN) return -1;
+    c->delegator_pubkey = p;
+    c->validator_pubkey = p + DNAC_PUBKEY_SIZE;
+    c->amount           = rtn_get64(p + 2 * DNAC_PUBKEY_SIZE);
+    return 0;
+}
+
+/** The four runtime ops this layer decodes (SYS_RULES 1..4). */
+static int rtn_sys_is_stake_op(uint32_t op) {
+    return op >= DNA_SYSRULE_STAKE && op <= DNA_SYSRULE_UNDELEGATE;
+}
+
+/**
+ * The AUTHORIZING identity of one stake-lifecycle op, taken from its
+ * CALL bytes — never from the envelope's authorization section. The call
+ * is intent-committed (dna_env_call_commit → intent_leg_commit), so the
+ * identity a row is written for is fixed BEFORE any witness signs; the
+ * verdict only GATES it (see rtn_sys_stake_auth). Per legacy site:
+ * STAKE signer[0] = staker (bft.c:1576), DELEGATE = delegator
+ * (bft.c:1443), UNSTAKE = the validator itself (bft.c:1652),
+ * UNDELEGATE = delegator (bft.c:1845).
+ * @return 0 with *pk_out borrowed from the call / -1 reject.
+ */
+static int rtn_sys_call_identity(uint32_t op, const uint8_t *p,
+                                 uint32_t len, const uint8_t **pk_out) {
+    switch (op) {
+    case DNA_SYSRULE_STAKE: {
+        rtn_stake_call_t c;
+        if (rtn_stake_parse(p, len, &c) != 0) return -1;
+        *pk_out = c.staker_pubkey;
+        return 0;
+    }
+    case DNA_SYSRULE_DELEGATE:
+    case DNA_SYSRULE_UNDELEGATE: {
+        rtn_deleg_call_t c;
+        if (rtn_deleg_parse(p, len, &c) != 0) return -1;
+        *pk_out = c.delegator_pubkey;
+        return 0;
+    }
+    case DNA_SYSRULE_UNSTAKE:
+        if (len != RTN_SYS_UNSTAKE_CALL_LEN) return -1;
+        *pk_out = p;
+        return 0;
+    default:
+        return -1;
+    }
+}
+
+/**
+ * The value flow one stake-lifecycle op imposes on its CORE funding leg,
+ * derived from the SYSTEM call bytes alone (design §4.3):
+ *   STAKE       lock = bond      release = 0
+ *   DELEGATE    lock = amount    release = 0
+ *   UNSTAKE     lock = 0         release = 0  (fee-only funding; the
+ *               principal is released at epoch-boundary graduation,
+ *               bft.c:2404-2560 — a DEFERRED season, not silently
+ *               reproduced here)
+ *   UNDELEGATE  lock = 0         release = amount (immediate principal
+ *               return, bft.c:1873-1877 — Rule O is client-lane only)
+ * @return 0 / -1 (unparseable or foreign op).
+ */
+static int rtn_sys_call_flow(uint32_t op, const uint8_t *p, uint32_t len,
+                             uint64_t *lock_out, uint64_t *release_out) {
+    *lock_out = 0;
+    *release_out = 0;
+    switch (op) {
+    case DNA_SYSRULE_STAKE: {
+        rtn_stake_call_t c;
+        if (rtn_stake_parse(p, len, &c) != 0) return -1;
+        *lock_out = c.bond;
+        return 0;
+    }
+    case DNA_SYSRULE_DELEGATE: {
+        rtn_deleg_call_t c;
+        if (rtn_deleg_parse(p, len, &c) != 0) return -1;
+        *lock_out = c.amount;
+        return 0;
+    }
+    case DNA_SYSRULE_UNSTAKE:
+        return len == RTN_SYS_UNSTAKE_CALL_LEN ? 0 : -1;
+    case DNA_SYSRULE_UNDELEGATE: {
+        rtn_deleg_call_t c;
+        if (rtn_deleg_parse(p, len, &c) != 0) return -1;
+        *release_out = c.amount;
+        return 0;
+    }
+    default:
+        return -1;
+    }
+}
+
+/**
+ * The tag-prefixed row key SHA3-512(tree_tag ‖ pubkey) — byte-identical
+ * to nodus_merkle_leaf_key(tag, pubkey, DNAC_PUBKEY_SIZE, out), which is
+ * what nodus_witness_validator.c compute_pubkey_hash and
+ * nodus_witness_delegation.c delegation_row_hash both call. Reproduced
+ * here for two reasons: a hook receives NO witness handle (and the
+ * merkle module is a witness module), and nodus_merkle_leaf_key
+ * ZERO-FILLS its output on a digest failure and returns void — a hook
+ * must fail closed instead, never publish a substituted key.
+ * @return 0 / -2 hash-backend NODE fault.
+ */
+static int rtn_tag_key(uint8_t tree_tag, const uint8_t *pubkey,
+                       uint8_t out[64]) {
+    uint8_t pre[1 + DNAC_PUBKEY_SIZE];
+    pre[0] = tree_tag;
+    memcpy(pre + 1, pubkey, DNAC_PUBKEY_SIZE);
+    return qgp_sha3_512(pre, sizeof(pre), out) == 0 ? 0 : -2;
+}
+
+/**
+ * The canonical 2-leg staking envelope shape, checked from the SYSTEM
+ * side (design §4.1): leg0 = the SYSTEM record leg, leg1 = the CORE
+ * DNA_CORERULE_SYSFUND funding leg. Single-leg forms and every other
+ * sibling REJECT — a record without funding, or funding without a
+ * record, is not expressible. Legs are strictly ascending by domain_id
+ * (env_wire.h), and DNA_DOMAIN_SYSTEM < DNA_DOMAIN_CORE, so this is the
+ * ONLY legal ordering.
+ * @return 0 / -1 deterministic reject.
+ */
+static int rtn_sys_stake_shape(const dna_env_view_t *env,
+                               uint16_t leg_index) {
+    if (!rtn_sys_is_stake_op(env->leg[leg_index].runtime_op)) return -1;
+    if (env->leg_count != 2 || leg_index != 0) return -1;
+    if (env->leg[1].domain_id != DNA_DOMAIN_CORE) return -1;
+    if (env->leg[1].runtime_op != DNA_CORERULE_SYSFUND) return -1;
+    return 0;
+}
+
+/**
+ * The authority rule EVERY stake-lifecycle op decides for itself
+ * (runtime.h auth-kind-2 SCOPING NOTE): the leg must carry the ordinary
+ * submitter scheme, the verdict must name EXACTLY ONE verified signer,
+ * and that signer's fingerprint must equal SHA3-512 of the identity
+ * pubkey the CALL carries. Consequences, both deliberate:
+ *   - a kind-2 leg REJECTS here (SYSTEM's allowlist permits CARRIAGE;
+ *     committee approval certifies no staking policy);
+ *   - an extra-signer kind-1 twin REJECTS rather than writing a
+ *     divergent row — the consensus row derives from call bytes only,
+ *     so twin-stability is structural and this gate keeps the accepted
+ *     witness set canonical too.
+ * The identity comes from rtn_sys_call_identity, so the op → signer
+ * mapping exists in exactly one place for all four operations.
+ * @param fp_out receives SHA3-512(identity pubkey) (the caller reuses
+ *        it — STAKE compares it against the destination fingerprint).
+ * @return 0 / -1 verdict / -2 hash-backend NODE fault.
+ */
+static int rtn_sys_stake_auth(const dna_env_view_t *env, uint16_t leg_index,
+                              const nodus_rt_exec_ctx_t *ctx,
+                              uint8_t fp_out[64]) {
+    const uint8_t *identity_pk = NULL;
+    if (!ctx->auth) return -1;
+    if (env->leg[leg_index].auth_kind != NODUS_RT_AUTHKIND_DSA87_MULTI_V1)
+        return -1;
+    if (ctx->auth->n_signers != 1) return -1;
+    if (rtn_sys_call_identity(env->leg[leg_index].runtime_op,
+                              env->buf + env->call_off[leg_index],
+                              env->leg[leg_index].call_len,
+                              &identity_pk) != 0)
+        return -1;
+    if (qgp_sha3_512(identity_pk, DNAC_PUBKEY_SIZE, fp_out) != 0)
+        return -2;
+    if (memcmp(fp_out, ctx->auth->signer_fp[0], 64) != 0) return -1;
+    return 0;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
  * DNA_CORE — DNA_CORERULE_SPEND / DNA_CORERULE_BURN /
- *            DNA_CORERULE_TOKEN_CREATE (burn season)
+ *            DNA_CORERULE_TOKEN_CREATE (burn season) /
+ *            DNA_CORERULE_SYSFUND (O11)
  * ════════════════════════════════════════════════════════════════════ */
 
 /* Compiled CORE adapter op ids (this adapter's own namespace). */
@@ -783,6 +1126,54 @@ static int rtn_tc_parse(const dna_env_view_t *env, uint16_t leg,
     return 0;
 }
 
+/* ── DNA_CORERULE_SYSFUND (O11) — the staking funding/release leg ────
+ *
+ * call v1 = EXACTLY the SPEND transfer section, and nothing else:
+ *   in_count u8 1..15 ‖ nullifiers (strictly ascending)
+ *   ‖ out_count u8 0..16 ‖ change outputs
+ * out_count 0 is legal (a bond that consumes the whole input set creates
+ * no change — the BURN precedent). There are NO amount fields: what this
+ * leg locks or releases comes from the SIBLING SYSTEM leg's call bytes
+ * (rtn_sys_call_flow), so the two legs cannot disagree about the amount
+ * and neither leg can be replayed against a different partner.
+ *
+ * NATIVE-ONLY (LABELED NARROWING): every change output must carry the
+ * all-zero native token id. The legacy staking applies were token-BLIND
+ * — apply_stake / apply_delegate / apply_undelegate all derive their
+ * amounts through sum_native_dnac_in_out (nodus_witness_bft.c:1391,
+ * 1548) and simply ignore any other token that rode along, so a custom
+ * token could enter or leave a staking transaction unaccounted. The four
+ * staking identities are native-only by construction; carrying a foreign
+ * token here is fail-closed rather than silently unbalanced. (Inputs are
+ * checked in exec against the same rule, where the mediated read holds
+ * the stored token id.)
+ * @return 0 / -1 deterministic reject. */
+static int rtn_sysfund_parse(const dna_env_view_t *env, uint16_t leg,
+                             rtn_spend_call_t *c) {
+    static const uint8_t native_tok[64] = { 0 };
+    const uint8_t *p = env->buf + env->call_off[leg];
+    uint32_t len = env->leg[leg].call_len;
+    size_t used = rtn_xfer_section_parse(p, len, RTN_SPEND_MAX_IN,
+                                         RTN_SPEND_MAX_OUT, 0, c);
+    if (used == 0 || used != (size_t)len)
+        return -1;                       /* exact length, never a prefix */
+    for (uint8_t o = 0; o < c->out_count; o++)
+        if (memcmp(c->outs + (size_t)o * RTN_SPEND_OUT_LEN + 136,
+                   native_tok, 64) != 0)
+            return -1;                   /* native-only (label above)    */
+    return 0;
+}
+
+/* The canonical 2-leg staking envelope shape, checked from the CORE
+ * side — the mirror of rtn_sys_stake_shape: leg1 is THIS leg, leg0 is a
+ * SYSTEM stake-lifecycle record leg. @return 0 / -1. */
+static int rtn_sysfund_shape(const dna_env_view_t *env, uint16_t leg_index) {
+    if (env->leg_count != 2 || leg_index != 1) return -1;
+    if (env->leg[0].domain_id != DNA_DOMAIN_SYSTEM) return -1;
+    if (!rtn_sys_is_stake_op(env->leg[0].runtime_op)) return -1;
+    return 0;
+}
+
 /* Emit the shared transfer-read prefix: one UTXO read per input (keys
  * already strictly ascending by the parse) then the ONE burned-counter
  * read — ascending (op_id, key), the engine's canonical order. */
@@ -844,6 +1235,19 @@ int nodus_rt_core_read_plan(const nodus_domain_runtime_t *rt,
         *n_out = need;
         return 0;
     }
+    case DNA_CORERULE_SYSFUND: {
+        rtn_spend_call_t c;
+        if (rtn_sysfund_shape(env, leg_index) != 0) return -1;
+        if (rtn_sysfund_parse(env, leg_index, &c) != 0) return -1;
+        /* the SPEND read shape exactly: one UTXO read per input plus the
+         * ONE burned-counter read (the release UTXO is CREATED, never
+         * read) */
+        uint16_t need = (uint16_t)(c.in_count + 1);
+        if (need > max_reqs) return -1;
+        rtn_xfer_reads(&c, reqs_out);
+        *n_out = need;
+        return 0;
+    }
     default:
         return -1;                       /* un-migrated op: fail closed  */
     }
@@ -874,17 +1278,25 @@ static int rtn_tok_add(rtn_tok_sum_t *t, size_t *n, size_t cap,
     return 0;
 }
 
+/* The ONE raw-fingerprint → 128-char lowercase-hex conversion in this
+ * file (the qgp_fp_raw_to_hex form the legacy lane writes into every
+ * owner / fingerprint TEXT column, minus its NUL — these buffers are
+ * fixed-width fields, never C strings). */
+static void rtn_fp_hex(const uint8_t raw[64], uint8_t out[128]) {
+    static const char hexd[] = "0123456789abcdef";
+    for (int b = 0; b < 64; b++) {
+        out[2 * b]     = (uint8_t)hexd[raw[b] >> 4];
+        out[2 * b + 1] = (uint8_t)hexd[raw[b] & 0xF];
+    }
+}
+
 /* lowercase-hex fingerprints of the VERIFIED signers (shared by every
  * CORE exec path — ownership binds to the engine verdict, never to
  * envelope bytes). */
 static void rtn_signer_fps(const nodus_rt_exec_ctx_t *ctx,
                            uint8_t sfp[][128]) {
-    static const char hexd[] = "0123456789abcdef";
     for (uint16_t s = 0; s < ctx->auth->n_signers; s++)
-        for (int b = 0; b < 64; b++) {
-            sfp[s][2 * b]     = (uint8_t)hexd[ctx->auth->signer_fp[s][b] >> 4];
-            sfp[s][2 * b + 1] = (uint8_t)hexd[ctx->auth->signer_fp[s][b] & 0xF];
-        }
+        rtn_fp_hex(ctx->auth->signer_fp[s], sfp[s]);
 }
 
 /* Deterministic output identities — the SOURCE derivation
@@ -1283,6 +1695,247 @@ static int rtn_tc_exec(const rtn_tc_call_t *t,
     return 0;
 }
 
+/* The release UTXO's provenance constants — the SOURCE synthetic-UTXO
+ * derivation of the legacy UNDELEGATE payout (emit_synthetic_utxo,
+ * nodus_witness_bft.c:1720-1729 + the call site at :1873-1877): kind
+ * byte 0x01 = "principal", output_index 100 = the high base that can
+ * never collide with a wire output index (which start at 0 and are
+ * bounded by RTN_SPEND_MAX_OUT). */
+#define RTN_SYSFUND_REL_KIND   ((uint8_t)0x01)
+#define RTN_SYSFUND_REL_INDEX  ((uint32_t)100)
+_Static_assert(RTN_SYSFUND_REL_INDEX >= RTN_SPEND_MAX_OUT,
+               "the release output index can collide with a wire output");
+
+/* The staking funding/release executor (O11) — the CORE half of every
+ * SYSTEM stake-lifecycle envelope.
+ *
+ * It owns exactly the transparent value movement the legacy applies
+ * performed through update_utxo_set + route_tx_fee, with the amounts
+ * taken from the SIBLING SYSTEM leg instead of inferred:
+ *
+ *   Σnative_in == Σchange_out + fee + lock                 (checked u64)
+ *
+ * which is the legacy consistency equation with the state amount named
+ * explicitly on the side it belongs to: apply_delegate enforces
+ * in == out + fee + delegation_amount (bft.c:1397-1414), apply_stake
+ * derives bond = in − out − fee and requires bond >= the self-bond floor
+ * (bft.c:1548-1570), apply_undelegate emits the principal as a synthetic
+ * UTXO outside the wire outputs (bft.c:1873-1877). Everything DESTROYED
+ * is the fee and only the fee: a lock MOVES value into
+ * validators.self_stake / delegations.amount (both supply buckets,
+ * v2_claims.c:787), it is never burned.
+ *
+ * @return 0 / -1 verdict / -2 node fault. */
+static int rtn_sysfund_exec(const rtn_spend_call_t *c,
+                            const dna_env_view_t *env,
+                            const nodus_rt_exec_ctx_t *ctx,
+                            const nodus_rt_read_res_t *reads,
+                            uint16_t n_reads,
+                            uint8_t *res_out, size_t res_cap,
+                            size_t *res_len_out) {
+    if (!reads || n_reads != (uint16_t)(c->in_count + 1)) return -2;
+
+    /* ── the SIBLING SYSTEM leg decides the flow, from CALL BYTES ───── */
+    const uint8_t *spc = env->buf + env->call_off[0];
+    uint32_t       spl = env->leg[0].call_len;
+    uint64_t lock = 0, release = 0;
+    if (rtn_sys_call_flow(env->leg[0].runtime_op, spc, spl, &lock,
+                          &release) != 0)
+        return -1;                       /* unparseable record leg       */
+
+    uint8_t sfp[NODUS_RT_AUTH_MAX_SIGNERS][128];
+    rtn_signer_fps(ctx, sfp);
+    static const uint8_t native_token[64] = { 0 };
+
+    /* ── inputs: exist, unlocked, OWNED BY A VERIFIED SIGNER, NATIVE ── */
+    uint64_t native_in = 0;
+    for (uint8_t i = 0; i < c->in_count; i++) {
+        const nodus_rt_read_res_t *r = &reads[i];
+        if (!r->present) return -1;      /* missing OR already spent     */
+        if (r->value_len != RTN_UTXO_REC_LEN) return -2;   /* own adapter
+                                          * out of contract: node fault  */
+        const uint8_t *rec = r->value;
+        uint64_t unlock = rtn_get64(rec + RTN_UTXO_UNLOCK_OFF);
+        if (unlock >= ctx->global_height) return -1;   /* the legacy
+                                          * unlock > tip gate, verbatim  */
+        int owned = 0;
+        for (uint16_t s = 0; s < ctx->auth->n_signers && !owned; s++)
+            if (memcmp(rec + RTN_UTXO_OWNER_OFF, sfp[s], 128) == 0)
+                owned = 1;
+        if (!owned) return -1;           /* wrong owner                  */
+        /* HONEST LABEL (O11 R2): the funding owners are THIS leg's
+         * verified signers; the record identity is the SIBLING leg's.
+         * Third-party funding (F funds X's bond/delegation) is therefore
+         * expressible — as it already was on the legacy WITNESS surface
+         * (multi-signer wire, inputs owned by ANY signer,
+         * nodus_witness_verify.c CRITICAL-4 loop; only the CLIENT lane
+         * pinned signer_count==1). X still signs the record leg and the
+         * lock still binds to X's identity, so this widens who may PAY,
+         * never who OWNS. */
+        if (memcmp(rec + RTN_UTXO_TOKEN_OFF, native_token, 64) != 0)
+            return -1;                   /* native-only (rtn_sysfund_parse
+                                          * carries the same label)      */
+        if (dna_ck_add_u64(native_in,
+                           rtn_get64(rec + RTN_UTXO_AMOUNT_OFF),
+                           &native_in) != 0)
+            return -1;
+    }
+
+    /* ── fee floors (BOTH shipped, as a conjunction) ────────────────── */
+    uint64_t fee = env->fee_amount;
+    if (fee < DNAC_MIN_FEE_RAW || fee < NODUS_W_BASE_TX_FEE)
+        return -1;
+
+    /* ── conservation, checked u64 ──────────────────────────────────── */
+    uint64_t change_out = 0;
+    for (uint8_t o = 0; o < c->out_count; o++) {
+        const uint8_t *rec = c->outs + (size_t)o * RTN_SPEND_OUT_LEN;
+        if (dna_ck_add_u64(change_out, rtn_get64(rec + 128),
+                           &change_out) != 0)
+            return -1;
+    }
+    {
+        /* Σnative_in == Σchange_out + fee + lock.
+         *
+         * `release` is DELIBERATELY ABSENT from this equation. A release
+         * does not fund anything: it MOVES value out of the delegated
+         * bucket into a brand-new UTXO, and BOTH sides of that move sit
+         * outside the funding inputs — the SYSTEM leg decrements
+         * validators.total_delegated by exactly the amount this leg
+         * creates as the release UTXO. Netting it against the funding
+         * inputs would count the released value twice in Σutxo and break
+         * the CORE supply identity (v2_claims.c:787).
+         *
+         * Derivation, per op (matches the season design's supply map):
+         *   STAKE/DELEGATE  Σutxo −(lock+fee), bucket +lock, burned +fee
+         *   UNSTAKE         Σutxo −fee,                      burned +fee
+         *   UNDELEGATE      Σutxo +(release−fee), delegated −release,
+         *                                                    burned +fee
+         * each of which is exactly this equation plus the SYSTEM leg's
+         * bucket move. The legacy lane enforced the same thing implicitly:
+         * apply_undelegate performs NO balance check of its own, the
+         * generic update_utxo_set/route_tx_fee path balances
+         * Σin == Σout + fee, and emit_synthetic_utxo's principal
+         * (bft.c:1873-1877) is covered by the delegation-row decrement. */
+        uint64_t rhs = 0;
+        if (dna_ck_add_u64(change_out, fee, &rhs) != 0) return -1;
+        if (dna_ck_add_u64(rhs, lock, &rhs) != 0) return -1;
+        if (native_in != rhs) return -1; /* value mismatch / fee != the
+                                          * committed declaration        */
+    }
+
+    /* ── the release UTXO (UNDELEGATE only) ─────────────────────────── */
+    uint8_t rel_id[64];
+    uint8_t rel_rec[RTN_SPEND_OUT_LEN];
+    memset(rel_id, 0, sizeof(rel_id));
+    memset(rel_rec, 0, sizeof(rel_rec));
+    if (release > 0) {
+        /* identity = SHA3-512(tx_hash ‖ kind ‖ u32be(index)) with
+         * tx_hash = the canonical INTENT identity: this row is consensus
+         * state (the UTXO merkle leaf commits tx_hash), so two valid
+         * authorization realizations must derive the SAME nullifier. */
+        uint8_t pre[64 + 1 + 4];
+        memcpy(pre, ctx->intent_id, 64);
+        pre[64] = RTN_SYSFUND_REL_KIND;
+        rtn_put32(pre + 65, RTN_SYSFUND_REL_INDEX);
+        if (qgp_sha3_512(pre, sizeof(pre), rel_id) != 0) return -2;
+        /* owner = the DELEGATOR named in the SYSTEM call (bft.c:1873
+         * pays signer_pubkey; here the call-carried identity, which the
+         * SYSTEM leg's own auth gate binds to the verified signer) */
+        rtn_deleg_call_t d;
+        if (rtn_deleg_parse(spc, spl, &d) != 0) return -1;
+        uint8_t ofp[64];
+        if (qgp_sha3_512(d.delegator_pubkey, DNAC_PUBKEY_SIZE, ofp) != 0)
+            return -2;
+        rtn_fp_hex(ofp, rel_rec);                    /* owner fp (128)   */
+        rtn_put64(rel_rec + 128, release);           /* amount           */
+        /* token stays the 64 native zeros; the seed window is unused —
+         * this row's identity is passed explicitly, not derived from a
+         * seed (the synthetic-UTXO rule, not the wire-output rule) */
+    }
+
+    /* ── the CREATE run: change outputs AND the release UTXO ─────────
+     * All of them are (DNA_EFFECT_CREATE, RTN_CORE_OP_UTXO) records, and
+     * the effect codec orders records by (kind, op_id, key) STRICTLY
+     * ascending (effect_wire.h "CANONICAL ORDER"). They are therefore
+     * ONE key-sorted run, NOT "the change outputs, then the release":
+     * the release id sorts wherever its bytes fall. The duplicate check
+     * covers the release id too and returns a VERDICT — letting the
+     * encoder catch it would surface an attacker-reachable collision as
+     * a node fault (-2), which is the wrong class. */
+    uint8_t        nul[RTN_SPEND_MAX_OUT + 1][64];
+    const uint8_t *crec[RTN_SPEND_MAX_OUT + 1];
+    uint8_t        cidx[RTN_SPEND_MAX_OUT + 1];
+    uint8_t        order[RTN_SPEND_MAX_OUT + 1];
+    uint8_t        nc = 0;
+    for (uint8_t o = 0; o < c->out_count; o++) {
+        const uint8_t *rec = c->outs + (size_t)o * RTN_SPEND_OUT_LEN;
+        uint8_t pre[160];
+        memcpy(pre, rec, 128);                       /* fp (128 hex)     */
+        memcpy(pre + 128, rec + 200, 32);            /* seed             */
+        if (qgp_sha3_512(pre, sizeof(pre), nul[nc]) != 0) return -2;
+        crec[nc] = rec;
+        cidx[nc] = o;
+        order[nc] = nc;
+        nc++;
+    }
+    if (release > 0) {
+        memcpy(nul[nc], rel_id, 64);
+        crec[nc] = rel_rec;
+        cidx[nc] = (uint8_t)RTN_SYSFUND_REL_INDEX;
+        order[nc] = nc;
+        nc++;
+    }
+    for (uint8_t a = 1; a < nc; a++) {               /* insertion sort   */
+        uint8_t key = order[a];
+        int b = a - 1;
+        while (b >= 0 && memcmp(nul[order[b]], nul[key], 64) > 0) {
+            order[b + 1] = order[b];
+            b--;
+        }
+        order[b + 1] = key;
+    }
+    for (uint8_t a = 1; a < nc; a++)
+        if (memcmp(nul[order[a - 1]], nul[order[a]], 64) == 0)
+            return -1;                   /* duplicate output identity    */
+
+    /* ── canonical typed-effect result ──────────────────────────────── */
+    dna_effect_in_t effs[RTN_SPEND_MAX_OUT + 2 + RTN_SPEND_MAX_IN];
+    uint8_t crv[RTN_SPEND_MAX_OUT + 1][RTN_UTXO_REC_LEN];
+    uint8_t dvh[RTN_SPEND_MAX_IN][64];
+    uint8_t supv[8];
+    uint16_t ne = 0;
+    memset(effs, 0, sizeof(effs));
+
+    for (uint8_t a = 0; a < nc; a++) {               /* CREATEs (kind 1) */
+        uint8_t s = order[a];
+        rtn_utxo_create_eff(&effs[ne], crv[a], crec[s], cidx[s],
+                            nul[s], ctx);
+        ne++;
+    }
+    /* the ONE burn (kind 2): the FEE ONLY. A locked bond is not
+     * destroyed — it moves into a validator/delegation bucket the supply
+     * equation already counts. */
+    {
+        int rc = rtn_supply_burn_eff(&effs[ne], supv, &reads[c->in_count],
+                                     fee);
+        if (rc != 0) return rc;
+        ne++;
+    }
+    for (uint8_t i = 0; i < c->in_count; i++) {      /* DELETEs (kind 3) */
+        if (rtn_utxo_delete_eff(&effs[ne], dvh[i], &reads[i],
+                                c->ins + (size_t)i * 64) != 0)
+            return -2;
+        ne++;
+    }
+
+    if (dna_effect_result_encode(effs, ne, res_out, res_cap,
+                                 res_len_out) != 0)
+        return -2;                       /* unreachable for a leg this
+                                          * function built: node fault   */
+    return 0;
+}
+
 int nodus_rt_core_exec(const nodus_domain_runtime_t *rt,
                        const dna_env_view_t *env, uint16_t leg_index,
                        const nodus_rt_exec_ctx_t *ctx,
@@ -1321,6 +1974,13 @@ int nodus_rt_core_exec(const nodus_domain_runtime_t *rt,
         if (rtn_tc_parse(env, leg_index, &t) != 0) return -1;
         return rtn_tc_exec(&t, env, ctx, reads, n_reads,
                            res_out, res_cap, res_len_out);
+    }
+    case DNA_CORERULE_SYSFUND: {
+        rtn_spend_call_t c;
+        if (rtn_sysfund_shape(env, leg_index) != 0) return -1;
+        if (rtn_sysfund_parse(env, leg_index, &c) != 0) return -1;
+        return rtn_sysfund_exec(&c, env, ctx, reads, n_reads,
+                                res_out, res_cap, res_len_out);
     }
     default:
         return -1;                       /* un-migrated op: fail closed  */
@@ -1739,7 +2399,7 @@ const nodus_domain_adapter_t NODUS_RT_CORE_ADAPTER = {
 };
 
 /* ══════════════════════════════════════════════════════════════════════
- * SYSTEM — DNA_SYSRULE_CHAIN_CONFIG
+ * SYSTEM — DNA_SYSRULE_STAKE (O11) / DNA_SYSRULE_CHAIN_CONFIG
  * ════════════════════════════════════════════════════════════════════ */
 
 #define RTN_SYS_OP_CC        1u  /* CREATE: chain_config_history row     */
@@ -1749,6 +2409,99 @@ const nodus_domain_adapter_t NODUS_RT_CORE_ADAPTER = {
  * (auth_kind 2), so the exec phase no longer reads the committee at
  * all. The id is not reused. */
 #define RTN_SYS_OP_CCLATEST  3u  /* READ-ONLY: latest nonzero value      */
+/* O11 — the stake-lifecycle rows. Ids are APPENDED strictly ascending;
+ * 1 and 3 are frozen (an op id is part of every committed effect). */
+#define RTN_SYS_OP_VAL       4u  /* CREATE|SET + read: validators row    */
+#define RTN_SYS_OP_DELEG     5u  /* CREATE|SET|DELETE + read: delegation */
+#define RTN_SYS_OP_DELEGCNT  6u  /* READ-ONLY: delegations by validator  */
+#define RTN_SYS_OP_STATS     7u  /* SET + read: validator_stats counter  */
+
+/* The canonical validator record (exact 5397 bytes — O11). It is
+ * EXACTLY the sixteen columns the validator merkle leaf hashes, in leaf
+ * order (nodus_witness_merkle.c:880-896 / load_validator_leaves), so the
+ * mediated read serves precisely what the state root commits and nothing
+ * else. The `pubkey_hash` PK is the effect KEY, not part of the value
+ * (it is a pure function of the pubkey — rtn_tag_key).
+ *   [0..2591]     pubkey                       DNAC_PUBKEY_SIZE
+ *   [2592..2599]  self_stake                   u64 BE
+ *   [2600..2607]  total_delegated              u64 BE
+ *   [2608..2615]  external_delegated           u64 BE
+ *   [2616..2617]  commission_bps               u16 BE
+ *   [2618..2619]  pending_commission_bps       u16 BE
+ *   [2620..2627]  pending_effective_block      u64 BE
+ *   [2628]        status                       u8
+ *   [2629..2636]  active_since_block           u64 BE
+ *   [2637..2644]  unstake_commit_block         u64 BE
+ *   [2645..2772]  unstake_destination_fp       128 B, the ZERO-PADDED
+ *                 window the leaf hashes (merkle.c:975-1036) — NOT a C
+ *                 string; a legacy row shorter than 128 chars pads with
+ *                 zeros exactly as the leaf loader does
+ *   [2773..5364]  unstake_destination_pubkey   DNAC_PUBKEY_SIZE
+ *   [5365..5372]  last_validator_update_block  u64 BE
+ *   [5373..5380]  consecutive_missed_epochs    u64 BE
+ *   [5381..5388]  last_signed_block            u64 BE
+ *   [5389..5396]  signed_blocks_this_epoch     u64 BE
+ *
+ * ⚠ SPEC NOTE: the O11 design doc §4.4 states this total as 5417. The
+ * field list it enumerates (identical to the one above, and to the
+ * merkle leaf) sums to 5397 — 2×2592 + 128 + 10×u64 + 2×u16 + 1×u8.
+ * There is no sixteen-column layout that reaches 5417 and no consumer of
+ * the stated total, so the LAYOUT is authoritative and the record is
+ * 5397 bytes; padding twenty meaningless bytes to match the prose would
+ * put un-derived bytes inside a hashed value. */
+#define RTN_VAL_PK_OFF        0u
+#define RTN_VAL_SELF_OFF      ((uint32_t)DNAC_PUBKEY_SIZE)
+#define RTN_VAL_TOTDEL_OFF    (RTN_VAL_SELF_OFF + 8u)
+#define RTN_VAL_EXTDEL_OFF    (RTN_VAL_TOTDEL_OFF + 8u)
+#define RTN_VAL_COMM_OFF      (RTN_VAL_EXTDEL_OFF + 8u)
+#define RTN_VAL_PCOMM_OFF     (RTN_VAL_COMM_OFF + 2u)
+#define RTN_VAL_PEFF_OFF      (RTN_VAL_PCOMM_OFF + 2u)
+#define RTN_VAL_STATUS_OFF    (RTN_VAL_PEFF_OFF + 8u)
+#define RTN_VAL_SINCE_OFF     (RTN_VAL_STATUS_OFF + 1u)
+#define RTN_VAL_UCOMMIT_OFF   (RTN_VAL_SINCE_OFF + 8u)
+#define RTN_VAL_DFP_OFF       (RTN_VAL_UCOMMIT_OFF + 8u)
+#define RTN_VAL_DFP_LEN       128u
+#define RTN_VAL_DPK_OFF       (RTN_VAL_DFP_OFF + RTN_VAL_DFP_LEN)
+#define RTN_VAL_LASTUPD_OFF   (RTN_VAL_DPK_OFF + (uint32_t)DNAC_PUBKEY_SIZE)
+#define RTN_VAL_MISSED_OFF    (RTN_VAL_LASTUPD_OFF + 8u)
+#define RTN_VAL_LSIGNED_OFF   (RTN_VAL_MISSED_OFF + 8u)
+#define RTN_VAL_SIGNEP_OFF    (RTN_VAL_LSIGNED_OFF + 8u)
+#define RTN_VAL_REC_LEN       (RTN_VAL_SIGNEP_OFF + 8u)
+_Static_assert(RTN_VAL_REC_LEN == 5397u,
+               "validator record layout drifted — re-derive from the "
+               "merkle leaf column list");
+_Static_assert(RTN_VAL_REC_LEN <= (uint32_t)DNA_EFFECT_MAX_VALUE_LEN,
+               "validator record no longer fits one typed effect value");
+#define RTN_VAL_KEY_LEN       64u   /* the validator-tree leaf key       */
+
+/* The canonical delegation record (exact 5200 bytes — O11): exactly the
+ * four columns the delegation merkle leaf hashes, in leaf order
+ * (nodus_witness_merkle.c:1116-1119). The composite key is the PK pair,
+ * not part of the value.
+ *   [0..2591]     delegator_pubkey   DNAC_PUBKEY_SIZE
+ *   [2592..5183]  validator_pubkey   DNAC_PUBKEY_SIZE
+ *   [5184..5191]  amount             u64 BE
+ *   [5192..5199]  delegated_at_block u64 BE */
+#define RTN_DEL_DPK_OFF       0u
+#define RTN_DEL_VPK_OFF       ((uint32_t)DNAC_PUBKEY_SIZE)
+#define RTN_DEL_AMT_OFF       (2u * (uint32_t)DNAC_PUBKEY_SIZE)
+#define RTN_DEL_AT_OFF        (RTN_DEL_AMT_OFF + 8u)
+#define RTN_DEL_REC_LEN       (RTN_DEL_AT_OFF + 8u)
+_Static_assert(RTN_DEL_REC_LEN == 5200u, "delegation record drifted");
+_Static_assert(RTN_DEL_REC_LEN <= (uint32_t)DNA_EFFECT_MAX_VALUE_LEN,
+               "delegation record no longer fits one typed effect value");
+/** delegator_hash[64] ‖ validator_hash[64] — the delegations PK, in the
+ *  same order the shipped table declares it (nodus_witness_delegation.c
+ *  delegation_row_hash on each side). Exactly DNA_EFFECT_MAX_KEY_LEN. */
+#define RTN_DEL_KEY_LEN       128u
+_Static_assert(RTN_DEL_KEY_LEN <= (uint32_t)DNA_EFFECT_MAX_KEY_LEN,
+               "delegation key no longer fits the effect codec");
+
+/** validator_stats selector: 1 = 'active_count' (the ONE counter this
+ *  slice consumes; the table is a key/value store, so the selector byte
+ *  is the compiled name→key mapping and an unknown selector fails
+ *  closed). */
+#define RTN_STATS_SEL_ACTIVE  1u
 
 /* CC row canonical value (exact 88 bytes):
  *   [0..7]   new_value       u64 BE
@@ -1787,6 +2540,161 @@ static int rtn_cc_parse(const dna_env_view_t *env, uint16_t leg,
     return 0;
 }
 
+/* The delegations composite key: delegator_hash ‖ validator_hash, each
+ * SHA3-512(NODUS_TREE_TAG_DELEGATION ‖ pubkey). BOTH halves use the
+ * DELEGATION tag — nodus_witness_delegation.c delegation_row_hash
+ * (:37-42) wraps nodus_merkle_leaf_key with that one tag for the
+ * delegator side AND the validator side, which is why a validator's
+ * delegations key half is NOT its validator-tree leaf key.
+ * @return 0 / -2 hash-backend NODE fault. */
+static int rtn_deleg_key(const uint8_t *dpk, const uint8_t *vpk,
+                         uint8_t out[RTN_DEL_KEY_LEN]) {
+    if (rtn_tag_key(NODUS_TREE_TAG_DELEGATION, dpk, out) != 0) return -2;
+    if (rtn_tag_key(NODUS_TREE_TAG_DELEGATION, vpk, out + 64) != 0)
+        return -2;
+    return 0;
+}
+
+/* Checked add PLUS the SQLite INTEGER storage bound, as ONE verdict.
+ * Every u64 column these ops write round-trips through an INTEGER
+ * column, so a value above INT64_MAX would come back negative and
+ * poison every later read; bounding it at the source keeps the
+ * rejection a VERDICT instead of the mutate-side node fault
+ * (the rtn_stake_exec / rtn_tc_parse precedent). @return 0 / -1. */
+static int rtn_add_bounded(uint64_t a, uint64_t b, uint64_t *out) {
+    if (dna_ck_add_u64(a, b, out) != 0) return -1;
+    if (*out > (uint64_t)INT64_MAX) return -1;
+    return 0;
+}
+
+/* Bind one SET to the EXACT record the mediated read observed: the new
+ * value is built FROM that record by the caller, and the precondition is
+ * that record's value hash, so (a) a transition can only change the
+ * columns it explicitly writes and (b) the read and the mutation can
+ * never disagree about the row (the rtn_utxo_delete_eff discipline,
+ * generalized to the SYSTEM rows). @return 0 / -2 node fault. */
+static int rtn_row_set_eff(dna_effect_in_t *eff, uint32_t op_id,
+                           const nodus_rt_read_res_t *r, uint32_t rec_len,
+                           const uint8_t *key, uint16_t key_len,
+                           const uint8_t *newrec) {
+    if (r->value_len != rec_len) return -2;
+    if (dna_effect_value_hash(r->value, rec_len,
+                              eff->hdr.expected_vhash) != 0)
+        return -2;
+    eff->hdr.op_id = op_id;
+    eff->hdr.effect_kind = DNA_EFFECT_SET;
+    eff->hdr.precond_tag = DNA_EFFECT_PRE_EXISTS_VHASH;
+    eff->hdr.key_len = key_len;
+    eff->hdr.value_len = rec_len;
+    eff->key = key;
+    eff->value = newrec;
+    return 0;
+}
+
+/* The delegation-row DELETE, bound the same way (a fully drained
+ * delegation is REMOVED — bft.c:1879-1881). @return 0 / -2. */
+static int rtn_deleg_del_eff(dna_effect_in_t *eff,
+                             const nodus_rt_read_res_t *r,
+                             const uint8_t *key) {
+    if (r->value_len != RTN_DEL_REC_LEN) return -2;
+    if (dna_effect_value_hash(r->value, RTN_DEL_REC_LEN,
+                              eff->hdr.expected_vhash) != 0)
+        return -2;
+    eff->hdr.op_id = RTN_SYS_OP_DELEG;
+    eff->hdr.effect_kind = DNA_EFFECT_DELETE;
+    eff->hdr.precond_tag = DNA_EFFECT_PRE_EXISTS_VHASH;
+    eff->hdr.key_len = (uint16_t)RTN_DEL_KEY_LEN;
+    eff->hdr.value_len = 0;
+    eff->key = key;
+    eff->value = NULL;
+    return 0;
+}
+
+/* STAKE (O11) read plan: the validator row this operation creates (Rule
+ * I — it must be ABSENT) and the active-validator counter it increments.
+ * Ascending (op_id, key) by construction: op 4 before op 7. */
+static int rtn_stake_read_plan(const dna_env_view_t *env,
+                               uint16_t leg_index,
+                               nodus_rt_read_req_t *reqs_out,
+                               uint16_t max_reqs, uint16_t *n_out) {
+    rtn_stake_call_t c;
+    if (rtn_sys_stake_shape(env, leg_index) != 0) return -1;
+    if (rtn_stake_parse(env->buf + env->call_off[leg_index],
+                        env->leg[leg_index].call_len, &c) != 0)
+        return -1;
+    if (max_reqs < 2) return -1;
+    memset(&reqs_out[0], 0, sizeof(reqs_out[0]));
+    reqs_out[0].op_id = RTN_SYS_OP_VAL;
+    reqs_out[0].key_len = (uint16_t)RTN_VAL_KEY_LEN;
+    if (rtn_tag_key(NODUS_TREE_TAG_VALIDATOR, c.staker_pubkey,
+                    reqs_out[0].key) != 0)
+        return -2;                       /* hash backend: NODE fault     */
+    memset(&reqs_out[1], 0, sizeof(reqs_out[1]));
+    reqs_out[1].op_id = RTN_SYS_OP_STATS;
+    reqs_out[1].key_len = 1;
+    reqs_out[1].key[0] = RTN_STATS_SEL_ACTIVE;
+    *n_out = 2;
+    return 0;
+}
+
+/* DELEGATE / UNDELEGATE (O11) share ONE read plan: the target validator
+ * row and the (delegator, validator) delegation row. Ascending
+ * (op_id, key) by construction: op 4 before op 5. */
+static int rtn_deleg_pair_read_plan(const dna_env_view_t *env,
+                                    uint16_t leg_index,
+                                    nodus_rt_read_req_t *reqs_out,
+                                    uint16_t max_reqs, uint16_t *n_out) {
+    rtn_deleg_call_t c;
+    if (rtn_sys_stake_shape(env, leg_index) != 0) return -1;
+    if (rtn_deleg_parse(env->buf + env->call_off[leg_index],
+                        env->leg[leg_index].call_len, &c) != 0)
+        return -1;
+    if (max_reqs < 2) return -1;
+    memset(&reqs_out[0], 0, sizeof(reqs_out[0]));
+    reqs_out[0].op_id = RTN_SYS_OP_VAL;
+    reqs_out[0].key_len = (uint16_t)RTN_VAL_KEY_LEN;
+    if (rtn_tag_key(NODUS_TREE_TAG_VALIDATOR, c.validator_pubkey,
+                    reqs_out[0].key) != 0)
+        return -2;
+    memset(&reqs_out[1], 0, sizeof(reqs_out[1]));
+    reqs_out[1].op_id = RTN_SYS_OP_DELEG;
+    reqs_out[1].key_len = (uint16_t)RTN_DEL_KEY_LEN;
+    if (rtn_deleg_key(c.delegator_pubkey, c.validator_pubkey,
+                      reqs_out[1].key) != 0)
+        return -2;
+    *n_out = 2;
+    return 0;
+}
+
+/* UNSTAKE (O11) read plan: the validator's own row and Rule A's input —
+ * how many delegations still reference it. Ascending: op 4 before op 6.
+ * The two keys are DIFFERENT derivations of the same pubkey (validator
+ * tree tag vs delegation row tag) — see rtn_deleg_key. */
+static int rtn_unstake_read_plan(const dna_env_view_t *env,
+                                 uint16_t leg_index,
+                                 nodus_rt_read_req_t *reqs_out,
+                                 uint16_t max_reqs, uint16_t *n_out) {
+    const uint8_t *vpk = NULL;
+    if (rtn_sys_stake_shape(env, leg_index) != 0) return -1;
+    if (rtn_sys_call_identity(DNA_SYSRULE_UNSTAKE,
+                              env->buf + env->call_off[leg_index],
+                              env->leg[leg_index].call_len, &vpk) != 0)
+        return -1;
+    if (max_reqs < 2) return -1;
+    memset(&reqs_out[0], 0, sizeof(reqs_out[0]));
+    reqs_out[0].op_id = RTN_SYS_OP_VAL;
+    reqs_out[0].key_len = (uint16_t)RTN_VAL_KEY_LEN;
+    if (rtn_tag_key(NODUS_TREE_TAG_VALIDATOR, vpk, reqs_out[0].key) != 0)
+        return -2;
+    memset(&reqs_out[1], 0, sizeof(reqs_out[1]));
+    reqs_out[1].op_id = RTN_SYS_OP_DELEGCNT;
+    reqs_out[1].key_len = 64;
+    if (rtn_tag_key(NODUS_TREE_TAG_DELEGATION, vpk, reqs_out[1].key) != 0)
+        return -2;
+    *n_out = 2;
+    return 0;
+}
+
 int nodus_rt_system_read_plan(const nodus_domain_runtime_t *rt,
                               const dna_env_view_t *env, uint16_t leg_index,
                               const nodus_rt_exec_ctx_t *ctx,
@@ -1795,8 +2703,24 @@ int nodus_rt_system_read_plan(const nodus_domain_runtime_t *rt,
     (void)rt;
     if (!env || !ctx || !reqs_out || !n_out) return -2;
     if (leg_index >= env->leg_count) return -2;
-    if (env->leg[leg_index].runtime_op != DNA_SYSRULE_CHAIN_CONFIG)
-        return -1;                       /* un-migrated op: fail closed  */
+    switch (env->leg[leg_index].runtime_op) {
+    case DNA_SYSRULE_STAKE:
+        return rtn_stake_read_plan(env, leg_index, reqs_out, max_reqs,
+                                   n_out);
+    case DNA_SYSRULE_DELEGATE:
+    case DNA_SYSRULE_UNDELEGATE:
+        return rtn_deleg_pair_read_plan(env, leg_index, reqs_out,
+                                        max_reqs, n_out);
+    case DNA_SYSRULE_UNSTAKE:
+        return rtn_unstake_read_plan(env, leg_index, reqs_out, max_reqs,
+                                     n_out);
+    case DNA_SYSRULE_CHAIN_CONFIG:
+        break;                           /* falls through to the CC plan */
+    default:
+        return -1;                       /* un-migrated op: fail closed —
+                                          * VALIDATOR_UPDATE (5) lands in
+                                          * its own season               */
+    }
     rtn_cc_call_t c;
     if (rtn_cc_parse(env, leg_index, &c) != 0) return -1;
     if (ctx->global_height == 0) return -1;   /* no governing committee
@@ -1818,6 +2742,530 @@ int nodus_rt_system_read_plan(const nodus_domain_runtime_t *rt,
     return 0;
 }
 
+/**
+ * DNA_SYSRULE_STAKE (O11) — validator registration.
+ *
+ * Source semantics preserved from apply_stake (nodus_witness_bft.c:
+ * 1505-1620): the bond is what the transaction actually locked and must
+ * meet the self-bond floor DNAC_SELF_STAKE_AMOUNT (:1568); the new row
+ * is created ACTIVE with active_since = the executing height (:1583-84);
+ * the unstake destination fingerprint is stored as 128 hex chars
+ * (:1595, qgp_fp_raw_to_hex) and the destination PUBKEY is populated
+ * ONLY when the fingerprint derives from the staker's own key
+ * (:1596-1600), staying all-zero otherwise; every remaining column is
+ * zero; validator_stats.active_count is incremented by exactly one
+ * (:1610). Rule I — one validator row per pubkey — is the INSERT's
+ * primary key in the legacy lane (validator.c returns -2 on
+ * SQLITE_CONSTRAINT, bft.c:1602 rejects); here it is the mediated read
+ * (row must be ABSENT) AND the CREATE/ABSENT precondition behind it.
+ *
+ * The bond itself is not moved here: the CORE DNA_CORERULE_SYSFUND leg
+ * consumes the inputs and derives its lock from THIS call's bond field,
+ * which is why the sibling leg's call must parse before anything is
+ * written (a record leg whose funding leg is malformed must not commit).
+ *
+ * @return 0 / -1 verdict / -2 node fault.
+ */
+static int rtn_stake_exec(const dna_env_view_t *env, uint16_t leg_index,
+                          const nodus_rt_exec_ctx_t *ctx,
+                          const nodus_rt_read_res_t *reads,
+                          uint16_t n_reads,
+                          uint8_t *res_out, size_t res_cap,
+                          size_t *res_len_out) {
+    rtn_stake_call_t c;
+    if (rtn_sys_stake_shape(env, leg_index) != 0) return -1;
+    if (rtn_stake_parse(env->buf + env->call_off[leg_index],
+                        env->leg[leg_index].call_len, &c) != 0)
+        return -1;
+
+    /* ── authority: exactly one verified signer, and it is the staker ─ */
+    uint8_t staker_fp[64];
+    {
+        int rc = rtn_sys_stake_auth(env, leg_index, ctx, staker_fp);
+        if (rc != 0) return rc;
+    }
+
+    /* ── scalar rules ───────────────────────────────────────────────── */
+    if (c.commission_bps > DNAC_COMMISSION_BPS_MAX)
+        return -1;                       /* LABELED NARROWING: the legacy
+                                          * apply_stake copied
+                                          * commission_bps into the row
+                                          * unchecked (bft.c:1541, 1581)
+                                          * — the 0..10000 bound existed
+                                          * only in the CLIENT lane
+                                          * (dnac verify.c / transaction.h
+                                          * :495). Witness-enforced here,
+                                          * fail-closed direction.       */
+    if (c.bond < DNAC_SELF_STAKE_AMOUNT)
+        return -1;                       /* the self-bond floor (:1568)  */
+    if (c.bond > (uint64_t)INT64_MAX)
+        return -1;                       /* self_stake is stored in an
+                                          * SQLite INTEGER column; a value
+                                          * above INT64_MAX would
+                                          * round-trip negative and poison
+                                          * every later read of the row.
+                                          * Bounded at the SOURCE so the
+                                          * rejection is a VERDICT — the
+                                          * mutate-side mirror in
+                                          * rtn_val_rec_ok is a node-fault
+                                          * class and must not be the
+                                          * first line of defence (the
+                                          * rtn_tc_parse precedent).      */
+
+    /* ── mediated reads ─────────────────────────────────────────────── */
+    if (n_reads != 2 || !reads) return -2;
+    if (reads[0].present) return -1;     /* Rule I: this pubkey already
+                                          * has a validator row — reject
+                                          * whatever its status is, the
+                                          * legacy INSERT would too      */
+    if (!reads[1].present) return -1;    /* no active_count row: a chain
+                                          * whose validator_stats seed is
+                                          * missing cannot be counted     */
+    if (reads[1].value_len != 8) return -2;   /* own adapter out of
+                                          * contract: node fault         */
+    uint64_t count_old = rtn_get64(reads[1].value);
+    uint64_t count_new;
+    if (dna_ck_add_u64(count_old, 1, &count_new) != 0) return -1;
+    if (count_new > (uint64_t)INT64_MAX) return -1;   /* same storage
+                                          * bound, same VERDICT class     */
+
+    /* ── the SIBLING funding leg must be a well-formed SYSFUND call ─── */
+    {
+        rtn_spend_call_t fc;
+        if (rtn_sysfund_parse(env, 1, &fc) != 0) return -1;
+    }
+
+    /* ── the canonical validator record ─────────────────────────────── */
+    uint8_t key[RTN_VAL_KEY_LEN];
+    uint8_t val[RTN_VAL_REC_LEN];
+    if (rtn_tag_key(NODUS_TREE_TAG_VALIDATOR, c.staker_pubkey, key) != 0)
+        return -2;
+    memset(val, 0, sizeof(val));
+    memcpy(val + RTN_VAL_PK_OFF, c.staker_pubkey, DNAC_PUBKEY_SIZE);
+    rtn_put64(val + RTN_VAL_SELF_OFF, c.bond);
+    /* total_delegated / external_delegated / pending_* / unstake_commit
+     * / the Rule N counters all stay 0 — a fresh validator has no
+     * delegation, no pending change and no attendance history */
+    val[RTN_VAL_COMM_OFF]     = (uint8_t)(c.commission_bps >> 8);
+    val[RTN_VAL_COMM_OFF + 1] = (uint8_t)c.commission_bps;
+    val[RTN_VAL_STATUS_OFF]   = (uint8_t)DNAC_VALIDATOR_ACTIVE;
+    rtn_put64(val + RTN_VAL_SINCE_OFF, ctx->global_height);
+    rtn_fp_hex(c.dest_fp, val + RTN_VAL_DFP_OFF);
+    if (memcmp(staker_fp, c.dest_fp, 64) == 0)
+        memcpy(val + RTN_VAL_DPK_OFF, c.staker_pubkey, DNAC_PUBKEY_SIZE);
+    /* else: all-zero destination pubkey, exactly bft.c:1596-1600 — the
+     * post-cooldown payout then has no pre-verified key and the
+     * graduation season must resolve one. `staker_fp` is SHA3-512 of the
+     * staker pubkey, already derived by the authority gate. */
+
+    /* ── effects: CREATE the row (kind 1), then SET the counter (kind
+     *    2) — the effect codec's canonical order is kind-major, so this
+     *    is the only legal sequence for this pair. ─────────────────── */
+    uint8_t statk[1] = { (uint8_t)RTN_STATS_SEL_ACTIVE };
+    uint8_t statv[8];
+    rtn_put64(statv, count_new);
+    dna_effect_in_t effs[2];
+    memset(effs, 0, sizeof(effs));
+    effs[0].hdr.op_id = RTN_SYS_OP_VAL;
+    effs[0].hdr.effect_kind = DNA_EFFECT_CREATE;
+    effs[0].hdr.precond_tag = DNA_EFFECT_PRE_ABSENT;   /* Rule I backstop*/
+    effs[0].hdr.key_len = (uint16_t)RTN_VAL_KEY_LEN;
+    effs[0].hdr.value_len = RTN_VAL_REC_LEN;
+    effs[0].key = key;
+    effs[0].value = val;
+    effs[1].hdr.op_id = RTN_SYS_OP_STATS;
+    effs[1].hdr.effect_kind = DNA_EFFECT_SET;
+    effs[1].hdr.precond_tag = DNA_EFFECT_PRE_EXISTS_VERSION;
+    effs[1].hdr.expected_version = count_old;   /* bound to the OBSERVED
+                                          * counter — the supply-counter
+                                          * pattern (rtn_supply_burn_eff)*/
+    effs[1].hdr.key_len = 1;
+    effs[1].hdr.value_len = 8;
+    effs[1].key = statk;
+    effs[1].value = statv;
+    if (dna_effect_result_encode(effs, 2, res_out, res_cap,
+                                 res_len_out) != 0)
+        return -2;
+    return 0;
+}
+
+/* O11 integration fix (ORCHESTRATOR, fault-class): the canonical
+ * writable-shape rules, defined with the compiled adapter below. An exec
+ * that REWRITES an observed row must decide the row's writability as a
+ * VERDICT (-1): whether a committed row satisfies the V2 canonical shape
+ * is a deterministic property of committed state — every honest node
+ * sees the same row — so surfacing it only through the mutate side's
+ * NODE-FAULT class (rtn_val_rec_ok inside rtn_sys_mutate →
+ * ERR_STORAGE_FAULT → -2 "do not vote") would turn a legacy-malformed
+ * row into a liveness stop an attacker can trigger by targeting it.
+ * The mutate-side check remains as defence in depth; THIS check is the
+ * first line, in the verdict class. A row that fails it is READ-legal
+ * (roots still commit it) but WRITE-frozen for V2 until the activation
+ * season's reconciliation (the migration-obligation block below). */
+static int rtn_val_rec_ok(const uint8_t *v, const uint8_t *key);
+static int rtn_del_rec_ok(const uint8_t *v, const uint8_t *key);
+
+/**
+ * DNA_SYSRULE_DELEGATE (O11) — bond someone else's stake to a validator.
+ *
+ * Source semantics preserved from apply_delegate (nodus_witness_bft.c:
+ * 1336-1495): Rule S rejects self-delegation by comparing the two
+ * pubkeys directly (:1356); the amount is EXPLICIT on the wire and must
+ * be non-zero and within total supply (:1374-1383); the target must
+ * exist and be BONDED — ACTIVE or ELIGIBLE, so a validator that merely
+ * lost its seat stays delegatable while RETIRING / UNSTAKED /
+ * AUTO_RETIRED do not (:1424-1434); an existing delegation is TOPPED UP
+ * rather than replaced, with delegated_at_block REFRESHED to the
+ * executing height (:1448-1470); and both validator totals rise by the
+ * amount, external_delegated included, because Rule S makes every
+ * delegation external (:1476-1486).
+ *
+ * HONEST LABEL (not a narrowing — a deliberate NON-adoption): the
+ * client lane's 100-DNAC MIN_DELEGATION (dnac/src/transaction/verify.c)
+ * is NOT enforced here. The witness minimum is 1 (:1374 rejects only
+ * zero) and the shipped witness code is the authority for what the
+ * chain accepts; importing a client-side floor would reject
+ * transactions the live lane commits.
+ *
+ * @return 0 / -1 verdict / -2 node fault.
+ */
+static int rtn_delegate_exec(const dna_env_view_t *env, uint16_t leg_index,
+                             const nodus_rt_exec_ctx_t *ctx,
+                             const nodus_rt_read_res_t *reads,
+                             uint16_t n_reads,
+                             uint8_t *res_out, size_t res_cap,
+                             size_t *res_len_out) {
+    rtn_deleg_call_t c;
+    uint8_t dfp[64];
+    if (rtn_sys_stake_shape(env, leg_index) != 0) return -1;
+    if (rtn_deleg_parse(env->buf + env->call_off[leg_index],
+                        env->leg[leg_index].call_len, &c) != 0)
+        return -1;
+    {
+        int rc = rtn_sys_stake_auth(env, leg_index, ctx, dfp);
+        if (rc != 0) return rc;          /* identity = the delegator     */
+    }
+
+    /* ── scalar rules ───────────────────────────────────────────────── */
+    if (memcmp(c.delegator_pubkey, c.validator_pubkey,
+               DNAC_PUBKEY_SIZE) == 0)
+        return -1;                       /* Rule S: no self-delegation   */
+    if (c.amount < 1 || c.amount > DNAC_DEFAULT_TOTAL_SUPPLY)
+        return -1;                       /* :1374-1383                   */
+
+    /* ── mediated reads ─────────────────────────────────────────────── */
+    if (n_reads != 2 || !reads) return -2;
+    const nodus_rt_read_res_t *vr = &reads[0], *dr = &reads[1];
+    if (!vr->present) return -1;         /* unknown validator            */
+    if (vr->value_len != RTN_VAL_REC_LEN) return -2;
+    if (memcmp(vr->value + RTN_VAL_PK_OFF, c.validator_pubkey,
+               DNAC_PUBKEY_SIZE) != 0)
+        return -2;                       /* the row this node served does
+                                          * not match the key it was
+                                          * fetched by: broken storage on
+                                          * THIS node, never a verdict   */
+    {
+        uint8_t st = vr->value[RTN_VAL_STATUS_OFF];
+        if (st != (uint8_t)DNAC_VALIDATOR_ACTIVE &&
+            st != (uint8_t)DNAC_VALIDATOR_ELIGIBLE)
+            return -1;                   /* not BONDED (:1429-1434)      */
+    }
+    {
+        rtn_spend_call_t fc;
+        if (rtn_sysfund_parse(env, 1, &fc) != 0) return -1;
+    }
+
+    uint8_t vkey[RTN_VAL_KEY_LEN], dkey[RTN_DEL_KEY_LEN];
+    if (rtn_tag_key(NODUS_TREE_TAG_VALIDATOR, c.validator_pubkey,
+                    vkey) != 0)
+        return -2;
+    if (rtn_deleg_key(c.delegator_pubkey, c.validator_pubkey, dkey) != 0)
+        return -2;
+    /* writable-shape VERDICT on every row this op rewrites (fault-class
+     * block above): a legacy-malformed validator row is write-frozen */
+    if (!rtn_val_rec_ok(vr->value, vkey)) return -1;
+    if (dr->present) {
+        if (dr->value_len != RTN_DEL_REC_LEN) return -2;
+        if (!rtn_del_rec_ok(dr->value, dkey)) return -1;
+    }
+
+    /* ── validator totals: built FROM the observed record, so every
+     *    other column is carried through byte-for-byte ──────────────── */
+    uint8_t vnew[RTN_VAL_REC_LEN];
+    memcpy(vnew, vr->value, RTN_VAL_REC_LEN);
+    {
+        uint64_t tot, ext;
+        if (rtn_add_bounded(rtn_get64(vnew + RTN_VAL_TOTDEL_OFF),
+                            c.amount, &tot) != 0)
+            return -1;
+        if (rtn_add_bounded(rtn_get64(vnew + RTN_VAL_EXTDEL_OFF),
+                            c.amount, &ext) != 0)
+            return -1;
+        rtn_put64(vnew + RTN_VAL_TOTDEL_OFF, tot);
+        rtn_put64(vnew + RTN_VAL_EXTDEL_OFF, ext);
+    }
+
+    /* ── the delegation row: top-up or create ───────────────────────── */
+    uint8_t dnew[RTN_DEL_REC_LEN];
+    int topup = dr->present ? 1 : 0;
+    if (topup) {
+        if (dr->value_len != RTN_DEL_REC_LEN) return -2;
+        if (memcmp(dr->value + RTN_DEL_DPK_OFF, c.delegator_pubkey,
+                   DNAC_PUBKEY_SIZE) != 0 ||
+            memcmp(dr->value + RTN_DEL_VPK_OFF, c.validator_pubkey,
+                   DNAC_PUBKEY_SIZE) != 0)
+            return -2;                   /* key/row disagreement: fault  */
+        memcpy(dnew, dr->value, RTN_DEL_REC_LEN);
+        uint64_t amt;
+        if (rtn_add_bounded(rtn_get64(dnew + RTN_DEL_AMT_OFF), c.amount,
+                            &amt) != 0)
+            return -1;
+        rtn_put64(dnew + RTN_DEL_AMT_OFF, amt);
+    } else {
+        memset(dnew, 0, sizeof(dnew));
+        memcpy(dnew + RTN_DEL_DPK_OFF, c.delegator_pubkey,
+               DNAC_PUBKEY_SIZE);
+        memcpy(dnew + RTN_DEL_VPK_OFF, c.validator_pubkey,
+               DNAC_PUBKEY_SIZE);
+        rtn_put64(dnew + RTN_DEL_AMT_OFF, c.amount);
+    }
+    /* delegated_at_block := the executing height on BOTH paths — the
+     * top-up REFRESHES it (:1468), which is the legacy behavior and
+     * imposes a fresh hold period on the whole position */
+    rtn_put64(dnew + RTN_DEL_AT_OFF, ctx->global_height);
+
+    /* ── effects (the codec's kind-major canonical order) ───────────── */
+    dna_effect_in_t effs[2];
+    memset(effs, 0, sizeof(effs));
+    if (topup) {
+        /* both SET (kind 2) ⇒ ordered by op id: validator, then row */
+        if (rtn_row_set_eff(&effs[0], RTN_SYS_OP_VAL, vr,
+                            RTN_VAL_REC_LEN, vkey,
+                            (uint16_t)RTN_VAL_KEY_LEN, vnew) != 0)
+            return -2;
+        if (rtn_row_set_eff(&effs[1], RTN_SYS_OP_DELEG, dr,
+                            RTN_DEL_REC_LEN, dkey,
+                            (uint16_t)RTN_DEL_KEY_LEN, dnew) != 0)
+            return -2;
+    } else {
+        /* CREATE (kind 1) sorts before SET (kind 2) regardless of op */
+        effs[0].hdr.op_id = RTN_SYS_OP_DELEG;
+        effs[0].hdr.effect_kind = DNA_EFFECT_CREATE;
+        effs[0].hdr.precond_tag = DNA_EFFECT_PRE_ABSENT;
+        effs[0].hdr.key_len = (uint16_t)RTN_DEL_KEY_LEN;
+        effs[0].hdr.value_len = RTN_DEL_REC_LEN;
+        effs[0].key = dkey;
+        effs[0].value = dnew;
+        if (rtn_row_set_eff(&effs[1], RTN_SYS_OP_VAL, vr,
+                            RTN_VAL_REC_LEN, vkey,
+                            (uint16_t)RTN_VAL_KEY_LEN, vnew) != 0)
+            return -2;
+    }
+    if (dna_effect_result_encode(effs, 2, res_out, res_cap,
+                                 res_len_out) != 0)
+        return -2;
+    return 0;
+}
+
+/**
+ * DNA_SYSRULE_UNSTAKE (O11) — request retirement.
+ *
+ * Source semantics preserved from apply_unstake (nodus_witness_bft.c:
+ * 1637-1694): the requester IS the validator; the row must exist and be
+ * BONDED (ACTIVE or ELIGIBLE — a validator without a seat this epoch
+ * must still be able to exit, :1661-1666); Rule A requires that NO
+ * delegation still references it (:1670-1681); and exactly two columns
+ * move — status := RETIRING and unstake_commit_block := the executing
+ * height (:1683-1684).
+ *
+ * DEFERRED, and deliberately NOT reproduced here: the principal itself.
+ * self_stake stays untouched and validator_stats.active_count is NOT
+ * decremented — the legacy lane releases the bond and drops the counter
+ * at the EPOCH BOUNDARY graduation (bft.c:2404-2560), which emits the
+ * principal UTXO locked +17280 blocks to unstake_destination_fp. That
+ * transition belongs to the epoch-transition season; inventing it here
+ * would release value the chain has not yet agreed to release.
+ *
+ * @return 0 / -1 verdict / -2 node fault.
+ */
+static int rtn_unstake_exec(const dna_env_view_t *env, uint16_t leg_index,
+                            const nodus_rt_exec_ctx_t *ctx,
+                            const nodus_rt_read_res_t *reads,
+                            uint16_t n_reads,
+                            uint8_t *res_out, size_t res_cap,
+                            size_t *res_len_out) {
+    const uint8_t *vpk = NULL;
+    uint8_t vfp[64];
+    if (rtn_sys_stake_shape(env, leg_index) != 0) return -1;
+    if (rtn_sys_call_identity(DNA_SYSRULE_UNSTAKE,
+                              env->buf + env->call_off[leg_index],
+                              env->leg[leg_index].call_len, &vpk) != 0)
+        return -1;
+    {
+        int rc = rtn_sys_stake_auth(env, leg_index, ctx, vfp);
+        if (rc != 0) return rc;          /* identity = the validator     */
+    }
+
+    if (n_reads != 2 || !reads) return -2;
+    const nodus_rt_read_res_t *vr = &reads[0], *cr = &reads[1];
+    if (!vr->present) return -1;         /* unknown validator            */
+    if (vr->value_len != RTN_VAL_REC_LEN) return -2;
+    if (memcmp(vr->value + RTN_VAL_PK_OFF, vpk, DNAC_PUBKEY_SIZE) != 0)
+        return -2;
+    {
+        uint8_t st = vr->value[RTN_VAL_STATUS_OFF];
+        if (st != (uint8_t)DNAC_VALIDATOR_ACTIVE &&
+            st != (uint8_t)DNAC_VALIDATOR_ELIGIBLE)
+            return -1;                   /* not BONDED — this also makes
+                                          * a repeated UNSTAKE reject    */
+    }
+    /* the delegation COUNT always answers (0 is a VALUE, not absence),
+     * so an absent result means the adapter broke its own contract */
+    if (!cr->present || cr->value_len != 8) return -2;
+    if (rtn_get64(cr->value) != 0) return -1;      /* Rule A            */
+    {
+        rtn_spend_call_t fc;
+        if (rtn_sysfund_parse(env, 1, &fc) != 0) return -1;
+    }
+
+    uint8_t vkey[RTN_VAL_KEY_LEN], vnew[RTN_VAL_REC_LEN];
+    if (rtn_tag_key(NODUS_TREE_TAG_VALIDATOR, vpk, vkey) != 0) return -2;
+    /* writable-shape VERDICT (fault-class block above) */
+    if (!rtn_val_rec_ok(vr->value, vkey)) return -1;
+    memcpy(vnew, vr->value, RTN_VAL_REC_LEN);
+    vnew[RTN_VAL_STATUS_OFF] = (uint8_t)DNAC_VALIDATOR_RETIRING;
+    rtn_put64(vnew + RTN_VAL_UCOMMIT_OFF, ctx->global_height);
+
+    dna_effect_in_t eff;
+    memset(&eff, 0, sizeof(eff));
+    if (rtn_row_set_eff(&eff, RTN_SYS_OP_VAL, vr, RTN_VAL_REC_LEN, vkey,
+                        (uint16_t)RTN_VAL_KEY_LEN, vnew) != 0)
+        return -2;
+    if (dna_effect_result_encode(&eff, 1, res_out, res_cap,
+                                 res_len_out) != 0)
+        return -2;
+    return 0;
+}
+
+/**
+ * DNA_SYSRULE_UNDELEGATE (O11) — withdraw delegated principal.
+ *
+ * Source semantics preserved from apply_undelegate (nodus_witness_bft.c:
+ * 1820-1908): the delegation must exist and 0 < amount <= its amount
+ * (:1851-1858); the validator row must exist but its STATUS IS NOT
+ * GATED — the legacy comment (:1818-1821) states the rule outright, so
+ * delegators of a RETIRING / UNSTAKED / AUTO_RETIRED validator can
+ * always pull their principal; a fully drained row is DELETED, a partial
+ * one keeps everything except the reduced amount — delegated_at_block is
+ * NOT refreshed on this path (:1883-1884 mutates only `d.amount` and
+ * writes the record back); and both validator totals fall by the amount
+ * with an explicit underflow reject (:1893-1897).
+ *
+ * The RELEASE is not built here: the CORE DNA_CORERULE_SYSFUND leg
+ * creates the principal UTXO from the SAME call bytes
+ * (rtn_sys_call_flow), and the value it creates is exactly the amount
+ * this leg removes from the delegated bucket — which is why the funding
+ * equation does not net a release against its inputs.
+ *
+ * STALE-COMMENT NOTE: apply_undelegate's own doc comment describes a
+ * reward accumulator and TWO synthetic UTXOs. The CODE emits only the
+ * principal (v0.16 push-settlement removed the accumulator); the code is
+ * authoritative and the comment is stale.
+ *
+ * @return 0 / -1 verdict / -2 node fault.
+ */
+static int rtn_undelegate_exec(const dna_env_view_t *env,
+                               uint16_t leg_index,
+                               const nodus_rt_exec_ctx_t *ctx,
+                               const nodus_rt_read_res_t *reads,
+                               uint16_t n_reads,
+                               uint8_t *res_out, size_t res_cap,
+                               size_t *res_len_out) {
+    rtn_deleg_call_t c;
+    uint8_t dfp[64];
+    if (rtn_sys_stake_shape(env, leg_index) != 0) return -1;
+    if (rtn_deleg_parse(env->buf + env->call_off[leg_index],
+                        env->leg[leg_index].call_len, &c) != 0)
+        return -1;
+    {
+        int rc = rtn_sys_stake_auth(env, leg_index, ctx, dfp);
+        if (rc != 0) return rc;          /* identity = the delegator     */
+    }
+
+    if (n_reads != 2 || !reads) return -2;
+    const nodus_rt_read_res_t *vr = &reads[0], *dr = &reads[1];
+    if (!dr->present) return -1;         /* unknown delegation           */
+    if (dr->value_len != RTN_DEL_REC_LEN) return -2;
+    if (memcmp(dr->value + RTN_DEL_DPK_OFF, c.delegator_pubkey,
+               DNAC_PUBKEY_SIZE) != 0 ||
+        memcmp(dr->value + RTN_DEL_VPK_OFF, c.validator_pubkey,
+               DNAC_PUBKEY_SIZE) != 0)
+        return -2;                       /* key/row disagreement: fault  */
+    uint64_t have = rtn_get64(dr->value + RTN_DEL_AMT_OFF);
+    if (c.amount < 1 || c.amount > have) return -1;   /* :1851-1858     */
+    if (!vr->present) return -1;         /* the totals have no owner     */
+    if (vr->value_len != RTN_VAL_REC_LEN) return -2;
+    if (memcmp(vr->value + RTN_VAL_PK_OFF, c.validator_pubkey,
+               DNAC_PUBKEY_SIZE) != 0)
+        return -2;
+    /* NO status gate here — see the header block (:1818-1821). */
+    {
+        rtn_spend_call_t fc;
+        if (rtn_sysfund_parse(env, 1, &fc) != 0) return -1;
+    }
+
+    uint64_t tot = rtn_get64(vr->value + RTN_VAL_TOTDEL_OFF);
+    uint64_t ext = rtn_get64(vr->value + RTN_VAL_EXTDEL_OFF);
+    if (tot < c.amount || ext < c.amount)
+        return -1;                       /* underflow (:1893-1897): the
+                                          * totals and the row disagree —
+                                          * malformed legacy state fails
+                                          * closed, it is never repaired */
+
+    uint8_t vkey[RTN_VAL_KEY_LEN], dkey[RTN_DEL_KEY_LEN];
+    if (rtn_tag_key(NODUS_TREE_TAG_VALIDATOR, c.validator_pubkey,
+                    vkey) != 0)
+        return -2;
+    if (rtn_deleg_key(c.delegator_pubkey, c.validator_pubkey, dkey) != 0)
+        return -2;
+    /* writable-shape VERDICT on both rewritten rows (fault-class block
+     * above) — the delegation row is rewritten on the partial path and
+     * deleted on the drain path; the gate applies to both (a DELETE of
+     * a malformed row would still leave a rewritten validator row) */
+    if (!rtn_val_rec_ok(vr->value, vkey)) return -1;
+    if (!rtn_del_rec_ok(dr->value, dkey)) return -1;
+
+    uint8_t vnew[RTN_VAL_REC_LEN];
+    memcpy(vnew, vr->value, RTN_VAL_REC_LEN);
+    rtn_put64(vnew + RTN_VAL_TOTDEL_OFF, tot - c.amount);
+    rtn_put64(vnew + RTN_VAL_EXTDEL_OFF, ext - c.amount);
+
+    dna_effect_in_t effs[2];
+    uint8_t dnew[RTN_DEL_REC_LEN];
+    memset(effs, 0, sizeof(effs));
+    /* SET (kind 2) always precedes DELETE (kind 3); the partial path's
+     * two SETs order by op id (4 before 5) */
+    if (rtn_row_set_eff(&effs[0], RTN_SYS_OP_VAL, vr, RTN_VAL_REC_LEN,
+                        vkey, (uint16_t)RTN_VAL_KEY_LEN, vnew) != 0)
+        return -2;
+    if (c.amount == have) {
+        if (rtn_deleg_del_eff(&effs[1], dr, dkey) != 0) return -2;
+    } else {
+        memcpy(dnew, dr->value, RTN_DEL_REC_LEN);
+        rtn_put64(dnew + RTN_DEL_AMT_OFF, have - c.amount);
+        /* delegated_at_block is NOT touched — a partial withdrawal does
+         * not restart the position's clock (:1883-1884) */
+        if (rtn_row_set_eff(&effs[1], RTN_SYS_OP_DELEG, dr,
+                            RTN_DEL_REC_LEN, dkey,
+                            (uint16_t)RTN_DEL_KEY_LEN, dnew) != 0)
+            return -2;
+    }
+    if (dna_effect_result_encode(effs, 2, res_out, res_cap,
+                                 res_len_out) != 0)
+        return -2;
+    return 0;
+}
+
 int nodus_rt_system_exec(const nodus_domain_runtime_t *rt,
                          const dna_env_view_t *env, uint16_t leg_index,
                          const nodus_rt_exec_ctx_t *ctx,
@@ -1829,8 +3277,24 @@ int nodus_rt_system_exec(const nodus_domain_runtime_t *rt,
         !res_len_out)
         return -2;
     if (leg_index >= env->leg_count) return -2;
-    if (env->leg[leg_index].runtime_op != DNA_SYSRULE_CHAIN_CONFIG)
-        return -1;
+    switch (env->leg[leg_index].runtime_op) {
+    case DNA_SYSRULE_STAKE:
+        return rtn_stake_exec(env, leg_index, ctx, reads, n_reads,
+                              res_out, res_cap, res_len_out);
+    case DNA_SYSRULE_DELEGATE:
+        return rtn_delegate_exec(env, leg_index, ctx, reads, n_reads,
+                                 res_out, res_cap, res_len_out);
+    case DNA_SYSRULE_UNSTAKE:
+        return rtn_unstake_exec(env, leg_index, ctx, reads, n_reads,
+                                res_out, res_cap, res_len_out);
+    case DNA_SYSRULE_UNDELEGATE:
+        return rtn_undelegate_exec(env, leg_index, ctx, reads, n_reads,
+                                   res_out, res_cap, res_len_out);
+    case DNA_SYSRULE_CHAIN_CONFIG:
+        break;                           /* falls through to CC exec     */
+    default:
+        return -1;                       /* un-migrated op: fail closed  */
+    }
 
     rtn_cc_call_t c;
     if (rtn_cc_parse(env, leg_index, &c) != 0) return -1;
@@ -1954,6 +3418,258 @@ static int rtn_sys_cc_fetch(nodus_witness_t *w, const uint8_t *key,
     return out;
 }
 
+/* ── O11 stake-lifecycle row access ──────────────────────────────────
+ *
+ * The validators / delegations / validator_stats tables are SYSTEM-LOCAL
+ * LEGACY STATE with no domain_id column — they are reachable only
+ * through THIS adapter, which only the compiled SYSTEM runtime entry
+ * binds, so the domain scope IS the binding (the `tokens` precedent).
+ *
+ * ⚠ MIGRATION OBLIGATION (owned by the V2 ACTIVATION season, not this
+ * slice — the tokens-table precedent): these three tables are shared
+ * with the LIVE legacy lane, whose writers never faced this slice's
+ * write rules. A legacy chain can hold rows the V2 mutate side would
+ * refuse (a commission_bps above 10000 — apply_stake never bounded it;
+ * an unstake_destination_fp that is not 128 lowercase hex — the genesis
+ * seeder copies a chain_def iv_fp verbatim, genesis_seed.c:117). Such
+ * rows still READ (the fetch side deliberately enforces only the SHAPE
+ * bounds the merkle leaf loader enforces, so the mediated read can serve
+ * exactly what the state root already commits) but cannot be rewritten
+ * by a V2 effect. Single-lane cutover must reconcile them before
+ * activation.
+ * ⚠ (O11 R2 finding) The freeze notably reaches UNDELEGATE: a
+ * delegator to a malformed-row validator cannot exit through V2 until
+ * reconciliation, whereas the legacy lane guarantees the exit is never
+ * blocked (bft.c:1816-1818). The reconciliation owner must repair such
+ * rows BEFORE cutover precisely so that guarantee survives. */
+
+/* Build the canonical 5397-byte validator record from one row statement.
+ * Column order = the SELECT below = the merkle leaf order. Fail-closed
+ * on every malformed shape, exactly the checks load_validator_leaves
+ * makes before hashing (merkle.c:941-1056) — a corrupt row is never
+ * surfaced as a value. @return 0 / -1 malformed. */
+static int rtn_sys_val_row(sqlite3_stmt *st, uint8_t rec[RTN_VAL_REC_LEN]) {
+    const uint8_t *pk  = sqlite3_column_blob(st, 0);
+    const uint8_t *dpk = sqlite3_column_blob(st, 11);
+    if (!pk || sqlite3_column_bytes(st, 0) != DNAC_PUBKEY_SIZE) return -1;
+    if (!dpk || sqlite3_column_bytes(st, 11) != DNAC_PUBKEY_SIZE) return -1;
+    /* the fingerprint window: a SQL NULL is refused (never a substituted
+     * 128 zeros) and an over-long value is refused (never truncated
+     * inside a hashed value) — merkle.c:1017-1034. An EMPTY or short
+     * value is legal and zero-pads, exactly as the leaf loader does. */
+    if (sqlite3_column_type(st, 10) == SQLITE_NULL) return -1;
+    const char *fp = (const char *)sqlite3_column_text(st, 10);
+    size_t fp_len = fp ? strlen(fp) : 0;
+    if (fp_len > RTN_VAL_DFP_LEN) return -1;
+    /* a NEGATIVE stored integer is a malformed row (the
+     * rtn_core_row_record rule); the two bps columns and the status byte
+     * additionally have to fit their wire widths */
+    sqlite3_int64 self = sqlite3_column_int64(st, 1);
+    sqlite3_int64 totd = sqlite3_column_int64(st, 2);
+    sqlite3_int64 extd = sqlite3_column_int64(st, 3);
+    sqlite3_int64 comm = sqlite3_column_int64(st, 4);
+    sqlite3_int64 pcom = sqlite3_column_int64(st, 5);
+    sqlite3_int64 peff = sqlite3_column_int64(st, 6);
+    sqlite3_int64 stat = sqlite3_column_int64(st, 7);
+    sqlite3_int64 sinc = sqlite3_column_int64(st, 8);
+    sqlite3_int64 ucom = sqlite3_column_int64(st, 9);
+    sqlite3_int64 lupd = sqlite3_column_int64(st, 12);
+    sqlite3_int64 miss = sqlite3_column_int64(st, 13);
+    sqlite3_int64 lsig = sqlite3_column_int64(st, 14);
+    sqlite3_int64 sepo = sqlite3_column_int64(st, 15);
+    if (self < 0 || totd < 0 || extd < 0 || peff < 0 || sinc < 0 ||
+        ucom < 0 || lupd < 0 || miss < 0 || lsig < 0 || sepo < 0)
+        return -1;
+    if (comm < 0 || comm > UINT16_MAX || pcom < 0 || pcom > UINT16_MAX)
+        return -1;
+    if (stat < 0 || stat > UINT8_MAX) return -1;
+    memset(rec, 0, RTN_VAL_REC_LEN);
+    memcpy(rec + RTN_VAL_PK_OFF, pk, DNAC_PUBKEY_SIZE);
+    rtn_put64(rec + RTN_VAL_SELF_OFF, (uint64_t)self);
+    rtn_put64(rec + RTN_VAL_TOTDEL_OFF, (uint64_t)totd);
+    rtn_put64(rec + RTN_VAL_EXTDEL_OFF, (uint64_t)extd);
+    rec[RTN_VAL_COMM_OFF]      = (uint8_t)((uint64_t)comm >> 8);
+    rec[RTN_VAL_COMM_OFF + 1]  = (uint8_t)comm;
+    rec[RTN_VAL_PCOMM_OFF]     = (uint8_t)((uint64_t)pcom >> 8);
+    rec[RTN_VAL_PCOMM_OFF + 1] = (uint8_t)pcom;
+    rtn_put64(rec + RTN_VAL_PEFF_OFF, (uint64_t)peff);
+    rec[RTN_VAL_STATUS_OFF] = (uint8_t)stat;
+    rtn_put64(rec + RTN_VAL_SINCE_OFF, (uint64_t)sinc);
+    rtn_put64(rec + RTN_VAL_UCOMMIT_OFF, (uint64_t)ucom);
+    if (fp_len > 0) memcpy(rec + RTN_VAL_DFP_OFF, fp, fp_len);
+    memcpy(rec + RTN_VAL_DPK_OFF, dpk, DNAC_PUBKEY_SIZE);
+    rtn_put64(rec + RTN_VAL_LASTUPD_OFF, (uint64_t)lupd);
+    rtn_put64(rec + RTN_VAL_MISSED_OFF, (uint64_t)miss);
+    rtn_put64(rec + RTN_VAL_LSIGNED_OFF, (uint64_t)lsig);
+    rtn_put64(rec + RTN_VAL_SIGNEP_OFF, (uint64_t)sepo);
+    return 0;
+}
+
+/* 0 = record built, 1 = absent, -1 = fault. */
+static int rtn_sys_val_fetch(nodus_witness_t *w, const uint8_t *key,
+                             uint16_t key_len,
+                             uint8_t rec[RTN_VAL_REC_LEN]) {
+    if (key_len != RTN_VAL_KEY_LEN) return -1;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT pubkey, self_stake, total_delegated, "
+            "external_delegated, commission_bps, pending_commission_bps, "
+            "pending_effective_block, status, active_since_block, "
+            "unstake_commit_block, unstake_destination_fp, "
+            "unstake_destination_pubkey, last_validator_update_block, "
+            "consecutive_missed_epochs, last_signed_block, "
+            "signed_blocks_this_epoch FROM validators "
+            "WHERE pubkey_hash = ?1", -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_blob(st, 1, key, RTN_VAL_KEY_LEN, SQLITE_TRANSIENT);
+    int rc = sqlite3_step(st);
+    int out;
+    if (rc == SQLITE_ROW)
+        out = rtn_sys_val_row(st, rec) == 0 ? 0 : -1;
+    else
+        out = rc == SQLITE_DONE ? 1 : -1;
+    sqlite3_finalize(st);
+    return out;
+}
+
+/* 0 = record built, 1 = absent, -1 = fault. */
+static int rtn_sys_del_fetch(nodus_witness_t *w, const uint8_t *key,
+                             uint16_t key_len,
+                             uint8_t rec[RTN_DEL_REC_LEN]) {
+    if (key_len != RTN_DEL_KEY_LEN) return -1;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT delegator_pubkey, validator_pubkey, amount, "
+            "delegated_at_block FROM delegations "
+            "WHERE delegator_hash = ?1 AND validator_hash = ?2",
+            -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_blob(st, 1, key, 64, SQLITE_TRANSIENT);
+    sqlite3_bind_blob(st, 2, key + 64, 64, SQLITE_TRANSIENT);
+    int rc = sqlite3_step(st);
+    int out = -1;
+    if (rc == SQLITE_ROW) {
+        const uint8_t *dpk = sqlite3_column_blob(st, 0);
+        const uint8_t *vpk = sqlite3_column_blob(st, 1);
+        sqlite3_int64 amt = sqlite3_column_int64(st, 2);
+        sqlite3_int64 at  = sqlite3_column_int64(st, 3);
+        if (dpk && sqlite3_column_bytes(st, 0) == DNAC_PUBKEY_SIZE &&
+            vpk && sqlite3_column_bytes(st, 1) == DNAC_PUBKEY_SIZE &&
+            amt >= 0 && at >= 0) {
+            memset(rec, 0, RTN_DEL_REC_LEN);
+            memcpy(rec + RTN_DEL_DPK_OFF, dpk, DNAC_PUBKEY_SIZE);
+            memcpy(rec + RTN_DEL_VPK_OFF, vpk, DNAC_PUBKEY_SIZE);
+            rtn_put64(rec + RTN_DEL_AMT_OFF, (uint64_t)amt);
+            rtn_put64(rec + RTN_DEL_AT_OFF, (uint64_t)at);
+            out = 0;
+        }
+    } else if (rc == SQLITE_DONE) {
+        out = 1;
+    }
+    sqlite3_finalize(st);
+    return out;
+}
+
+/* Rule-A input: how many delegations reference one validator. Mirrors
+ * nodus_delegation_count_by_validator (delegation.c:297-330) but keyed
+ * by the row hash directly — the hook has the hash, never the pubkey's
+ * table row. A COUNT always yields exactly one row.
+ * @return 0 with *out set / -1 fault. */
+static int rtn_sys_delegcnt_fetch(nodus_witness_t *w, const uint8_t *key,
+                                  uint16_t key_len, uint64_t *out) {
+    if (key_len != 64) return -1;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT COUNT(*) FROM delegations WHERE validator_hash = ?1",
+            -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_blob(st, 1, key, 64, SQLITE_TRANSIENT);
+    int rc = sqlite3_step(st);
+    int ret = -1;
+    if (rc == SQLITE_ROW) {
+        sqlite3_int64 n = sqlite3_column_int64(st, 0);
+        if (n >= 0) { *out = (uint64_t)n; ret = 0; }
+    }
+    sqlite3_finalize(st);
+    return ret;
+}
+
+/* 0 = value fetched, 1 = absent, -1 = fault. */
+static int rtn_sys_stats_fetch(nodus_witness_t *w, const uint8_t *key,
+                               uint16_t key_len, uint64_t *out) {
+    if (key_len != 1 || key[0] != RTN_STATS_SEL_ACTIVE) return -1;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT value FROM validator_stats WHERE key = 'active_count'",
+            -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    int rc = sqlite3_step(st);
+    int ret;
+    if (rc == SQLITE_ROW) {
+        sqlite3_int64 v = sqlite3_column_int64(st, 0);
+        ret = v < 0 ? -1 : 0;            /* negative counter = malformed */
+        if (ret == 0) *out = (uint64_t)v;
+    } else {
+        ret = rc == SQLITE_DONE ? 1 : -1;
+    }
+    sqlite3_finalize(st);
+    return ret;
+}
+
+/* Validate one canonical validator record on the MUTATE side: exactly
+ * ONE encoding per row, and the KEY and the VALUE cannot disagree (the
+ * key is SHA3-512(tag ‖ pubkey) of the pubkey the record carries — so a
+ * caller cannot file a validator's record under another's identity).
+ * Numeric columns must fit the SQLite INTEGER storage bound, or they
+ * would round-trip negative and poison every later fetch (the
+ * rtn_token_rec_ok discipline). @return 1 ok / 0 reject. */
+static int rtn_val_rec_ok(const uint8_t *v, const uint8_t *key) {
+    static const uint32_t u64_offs[] = {
+        RTN_VAL_SELF_OFF, RTN_VAL_TOTDEL_OFF, RTN_VAL_EXTDEL_OFF,
+        RTN_VAL_PEFF_OFF, RTN_VAL_SINCE_OFF, RTN_VAL_UCOMMIT_OFF,
+        RTN_VAL_LASTUPD_OFF, RTN_VAL_MISSED_OFF, RTN_VAL_LSIGNED_OFF,
+        RTN_VAL_SIGNEP_OFF
+    };
+    uint8_t want[64];
+    if (rtn_tag_key(NODUS_TREE_TAG_VALIDATOR, v + RTN_VAL_PK_OFF,
+                    want) != 0)
+        return 0;
+    if (memcmp(want, key, 64) != 0) return 0;
+    for (size_t i = 0; i < sizeof(u64_offs) / sizeof(u64_offs[0]); i++)
+        if (rtn_get64(v + u64_offs[i]) > (uint64_t)INT64_MAX) return 0;
+    if (!rtn_hex_lower_ok(v + RTN_VAL_DFP_OFF, RTN_VAL_DFP_LEN)) return 0;
+    {
+        uint32_t comm = ((uint32_t)v[RTN_VAL_COMM_OFF] << 8) |
+                        v[RTN_VAL_COMM_OFF + 1];
+        uint32_t pcom = ((uint32_t)v[RTN_VAL_PCOMM_OFF] << 8) |
+                        v[RTN_VAL_PCOMM_OFF + 1];
+        if (comm > DNAC_COMMISSION_BPS_MAX ||
+            pcom > DNAC_COMMISSION_BPS_MAX)
+            return 0;
+    }
+    if (v[RTN_VAL_STATUS_OFF] > (uint8_t)DNAC_VALIDATOR_ELIGIBLE)
+        return 0;                        /* undefined lifecycle value    */
+    return 1;
+}
+
+/* The delegation mirror of rtn_val_rec_ok: BOTH halves of the composite
+ * key must be the tagged hashes of the two pubkeys the record carries.
+ * @return 1 ok / 0 reject. */
+static int rtn_del_rec_ok(const uint8_t *v, const uint8_t *key) {
+    uint8_t want[64];
+    if (rtn_tag_key(NODUS_TREE_TAG_DELEGATION, v + RTN_DEL_DPK_OFF,
+                    want) != 0)
+        return 0;
+    if (memcmp(want, key, 64) != 0) return 0;
+    if (rtn_tag_key(NODUS_TREE_TAG_DELEGATION, v + RTN_DEL_VPK_OFF,
+                    want) != 0)
+        return 0;
+    if (memcmp(want, key + 64, 64) != 0) return 0;
+    if (rtn_get64(v + RTN_DEL_AMT_OFF) > (uint64_t)INT64_MAX) return 0;
+    if (rtn_get64(v + RTN_DEL_AT_OFF) > (uint64_t)INT64_MAX) return 0;
+    return 1;
+}
+
 static nodus_adapter_status_t rtn_sys_probe(
         const nodus_domain_adapter_t *ad, struct nodus_witness *wns,
         uint32_t dom, const nodus_adapter_op_t *op,
@@ -1961,19 +3677,63 @@ static nodus_adapter_status_t rtn_sys_probe(
         nodus_adapter_row_facts_t *f) {
     (void)ad; (void)dom;
     nodus_witness_t *w = (nodus_witness_t *)wns;
-    if (op->op_id != RTN_SYS_OP_CC || key_len != RTN_CC_KEY_LEN)
-        return NODUS_ADAPTER_ERR_STORAGE_FAULT;   /* read-only ops have
-                                          * no probe surface             */
-    uint8_t val[RTN_CC_VAL_LEN];
-    int rc = rtn_sys_cc_fetch(w, key, val);
-    if (rc < 0) return NODUS_ADAPTER_ERR_STORAGE_FAULT;
-    f->exists = (rc == 0);
-    if (f->exists) {
-        f->version = rtn_get64(val);
-        if (dna_effect_value_hash(val, RTN_CC_VAL_LEN, f->value_hash) != 0)
+    if (op->op_id == RTN_SYS_OP_CC) {
+        if (key_len != RTN_CC_KEY_LEN)
             return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        uint8_t val[RTN_CC_VAL_LEN];
+        int rc = rtn_sys_cc_fetch(w, key, val);
+        if (rc < 0) return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        f->exists = (rc == 0);
+        if (f->exists) {
+            f->version = rtn_get64(val);
+            if (dna_effect_value_hash(val, RTN_CC_VAL_LEN,
+                                      f->value_hash) != 0)
+                return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        }
+        return NODUS_ADAPTER_OK;
     }
-    return NODUS_ADAPTER_OK;
+    if (op->op_id == RTN_SYS_OP_VAL) {
+        uint8_t rec[RTN_VAL_REC_LEN];
+        int rc = rtn_sys_val_fetch(w, key, key_len, rec);
+        if (rc < 0) return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        f->exists = (rc == 0);
+        if (f->exists) {
+            f->version = rtn_get64(rec + RTN_VAL_SELF_OFF);
+            if (dna_effect_value_hash(rec, RTN_VAL_REC_LEN,
+                                      f->value_hash) != 0)
+                return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        }
+        return NODUS_ADAPTER_OK;
+    }
+    if (op->op_id == RTN_SYS_OP_DELEG) {
+        uint8_t rec[RTN_DEL_REC_LEN];
+        int rc = rtn_sys_del_fetch(w, key, key_len, rec);
+        if (rc < 0) return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        f->exists = (rc == 0);
+        if (f->exists) {
+            f->version = rtn_get64(rec + RTN_DEL_AMT_OFF);
+            if (dna_effect_value_hash(rec, RTN_DEL_REC_LEN,
+                                      f->value_hash) != 0)
+                return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        }
+        return NODUS_ADAPTER_OK;
+    }
+    if (op->op_id == RTN_SYS_OP_STATS) {
+        uint64_t v = 0;
+        int rc = rtn_sys_stats_fetch(w, key, key_len, &v);
+        if (rc < 0) return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        f->exists = (rc == 0);
+        if (f->exists) {
+            uint8_t vb[8];
+            rtn_put64(vb, v);
+            f->version = v;
+            if (dna_effect_value_hash(vb, 8, f->value_hash) != 0)
+                return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        }
+        return NODUS_ADAPTER_OK;
+    }
+    return NODUS_ADAPTER_ERR_STORAGE_FAULT;   /* read-only ops (3, 6)
+                                          * have no probe surface        */
 }
 
 static nodus_adapter_status_t rtn_sys_read(
@@ -2024,7 +3784,98 @@ static nodus_adapter_status_t rtn_sys_read(
         return rc == SQLITE_DONE ? NODUS_ADAPTER_OK
                                  : NODUS_ADAPTER_ERR_STORAGE_FAULT;
     }
+    if (op->op_id == RTN_SYS_OP_VAL) {
+        uint8_t rec[RTN_VAL_REC_LEN];
+        int rc = rtn_sys_val_fetch(w, key, key_len, rec);
+        if (rc < 0) return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        if (rc == 1) return NODUS_ADAPTER_OK;        /* absent           */
+        if (cap < RTN_VAL_REC_LEN)
+            return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        memcpy(value, rec, RTN_VAL_REC_LEN);
+        *present = 1;
+        *vlen = RTN_VAL_REC_LEN;
+        return NODUS_ADAPTER_OK;
+    }
+    if (op->op_id == RTN_SYS_OP_DELEG) {
+        uint8_t rec[RTN_DEL_REC_LEN];
+        int rc = rtn_sys_del_fetch(w, key, key_len, rec);
+        if (rc < 0) return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        if (rc == 1) return NODUS_ADAPTER_OK;        /* absent           */
+        if (cap < RTN_DEL_REC_LEN)
+            return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        memcpy(value, rec, RTN_DEL_REC_LEN);
+        *present = 1;
+        *vlen = RTN_DEL_REC_LEN;
+        return NODUS_ADAPTER_OK;
+    }
+    if (op->op_id == RTN_SYS_OP_DELEGCNT) {
+        uint64_t n = 0;
+        if (rtn_sys_delegcnt_fetch(w, key, key_len, &n) != 0)
+            return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        if (cap < 8) return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        rtn_put64(value, n);
+        *present = 1;                    /* a COUNT always answers — 0
+                                          * delegations is a VALUE, not
+                                          * an absent row                */
+        *vlen = 8;
+        return NODUS_ADAPTER_OK;
+    }
+    if (op->op_id == RTN_SYS_OP_STATS) {
+        uint64_t v = 0;
+        int rc = rtn_sys_stats_fetch(w, key, key_len, &v);
+        if (rc < 0) return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        if (rc == 1) return NODUS_ADAPTER_OK;        /* absent           */
+        if (cap < 8) return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        rtn_put64(value, v);
+        *present = 1;
+        *vlen = 8;
+        return NODUS_ADAPTER_OK;
+    }
     return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+}
+
+/* Bind the fifteen mutable validator columns of an INSERT/UPDATE
+ * statement starting at parameter `start`, in the order
+ * nodus_witness_validator.c bind_validator_mutable_fields uses (the
+ * schema's column order) — the record's own field order is the MERKLE
+ * order, which differs only in that the key is not a value field. */
+static void rtn_sys_val_bind(sqlite3_stmt *st, int start,
+                             const uint8_t *v) {
+    sqlite3_bind_int64(st, start + 0,
+        (sqlite3_int64)rtn_get64(v + RTN_VAL_SELF_OFF));
+    sqlite3_bind_int64(st, start + 1,
+        (sqlite3_int64)rtn_get64(v + RTN_VAL_TOTDEL_OFF));
+    sqlite3_bind_int64(st, start + 2,
+        (sqlite3_int64)rtn_get64(v + RTN_VAL_EXTDEL_OFF));
+    sqlite3_bind_int64(st, start + 3, (sqlite3_int64)(
+        ((uint32_t)v[RTN_VAL_COMM_OFF] << 8) | v[RTN_VAL_COMM_OFF + 1]));
+    sqlite3_bind_int64(st, start + 4, (sqlite3_int64)(
+        ((uint32_t)v[RTN_VAL_PCOMM_OFF] << 8) | v[RTN_VAL_PCOMM_OFF + 1]));
+    sqlite3_bind_int64(st, start + 5,
+        (sqlite3_int64)rtn_get64(v + RTN_VAL_PEFF_OFF));
+    sqlite3_bind_int64(st, start + 6,
+        (sqlite3_int64)v[RTN_VAL_STATUS_OFF]);
+    sqlite3_bind_int64(st, start + 7,
+        (sqlite3_int64)rtn_get64(v + RTN_VAL_SINCE_OFF));
+    sqlite3_bind_int64(st, start + 8,
+        (sqlite3_int64)rtn_get64(v + RTN_VAL_UCOMMIT_OFF));
+    /* the fingerprint column is TEXT: the V2 write side always produces
+     * a full 128-char lowercase-hex window (rtn_val_rec_ok enforces it),
+     * so the fixed length is bound explicitly — never strlen, which
+     * would stop at a NUL a corrupt value could carry */
+    sqlite3_bind_text(st, start + 9,
+        (const char *)(v + RTN_VAL_DFP_OFF), (int)RTN_VAL_DFP_LEN,
+        SQLITE_TRANSIENT);
+    sqlite3_bind_blob(st, start + 10, v + RTN_VAL_DPK_OFF,
+                      DNAC_PUBKEY_SIZE, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, start + 11,
+        (sqlite3_int64)rtn_get64(v + RTN_VAL_LASTUPD_OFF));
+    sqlite3_bind_int64(st, start + 12,
+        (sqlite3_int64)rtn_get64(v + RTN_VAL_MISSED_OFF));
+    sqlite3_bind_int64(st, start + 13,
+        (sqlite3_int64)rtn_get64(v + RTN_VAL_LSIGNED_OFF));
+    sqlite3_bind_int64(st, start + 14,
+        (sqlite3_int64)rtn_get64(v + RTN_VAL_SIGNEP_OFF));
 }
 
 static nodus_adapter_status_t rtn_sys_mutate(
@@ -2034,24 +3885,142 @@ static nodus_adapter_status_t rtn_sys_mutate(
         const uint8_t *value, uint32_t value_len) {
     (void)ad; (void)dom;
     nodus_witness_t *w = (nodus_witness_t *)wns;
-    if (op->op_id != RTN_SYS_OP_CC || kind != DNA_EFFECT_CREATE ||
-        key_len != RTN_CC_KEY_LEN || value_len != RTN_CC_VAL_LEN || !value)
-        return NODUS_ADAPTER_ERR_STORAGE_FAULT;
     sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(w->db,
-            "INSERT INTO chain_config_history (param_id, new_value, "
-            "effective_block, commit_block, tx_hash, proposal_nonce, "
-            "created_at_unix) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0)",
-            -1, &st, NULL) != SQLITE_OK)
+    int cc_row = 0;                      /* invalidate the warm cc cache */
+    if (op->op_id == RTN_SYS_OP_CC && kind == DNA_EFFECT_CREATE) {
+        if (key_len != RTN_CC_KEY_LEN || value_len != RTN_CC_VAL_LEN ||
+            !value)
+            return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        if (sqlite3_prepare_v2(w->db,
+                "INSERT INTO chain_config_history (param_id, new_value, "
+                "effective_block, commit_block, tx_hash, proposal_nonce, "
+                "created_at_unix) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0)",
+                -1, &st, NULL) != SQLITE_OK)
+            return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        sqlite3_bind_int64(st, 1, (sqlite3_int64)(
+            ((uint32_t)key[0] << 24) | ((uint32_t)key[1] << 16) |
+            ((uint32_t)key[2] << 8) | (uint32_t)key[3]));
+        sqlite3_bind_int64(st, 2, (sqlite3_int64)rtn_get64(value));
+        sqlite3_bind_int64(st, 3, (sqlite3_int64)rtn_get64(key + 4));
+        sqlite3_bind_int64(st, 4, (sqlite3_int64)rtn_get64(value + 8));
+        sqlite3_bind_blob(st, 5, value + 24, 64, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st, 6, (sqlite3_int64)rtn_get64(value + 16));
+        cc_row = 1;
+    } else if (op->op_id == RTN_SYS_OP_VAL && kind == DNA_EFFECT_CREATE) {
+        if (key_len != RTN_VAL_KEY_LEN || value_len != RTN_VAL_REC_LEN ||
+            !value || !rtn_val_rec_ok(value, key))
+            return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        /* STRICT insert — the ABSENT precondition already ruled inside
+         * this transaction, so a conflicting row here is a broken
+         * invariant on THIS node, never a silent drop (the legacy lane
+         * mapped the constraint to a -2 return, validator.c:183). */
+        if (sqlite3_prepare_v2(w->db,
+                "INSERT INTO validators (pubkey_hash, pubkey, "
+                "self_stake, total_delegated, external_delegated, "
+                "commission_bps, pending_commission_bps, "
+                "pending_effective_block, status, active_since_block, "
+                "unstake_commit_block, unstake_destination_fp, "
+                "unstake_destination_pubkey, "
+                "last_validator_update_block, consecutive_missed_epochs, "
+                "last_signed_block, signed_blocks_this_epoch) "
+                "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, "
+                "?12, ?13, ?14, ?15, ?16, ?17)",
+                -1, &st, NULL) != SQLITE_OK)
+            return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        sqlite3_bind_blob(st, 1, key, RTN_VAL_KEY_LEN, SQLITE_TRANSIENT);
+        sqlite3_bind_blob(st, 2, value + RTN_VAL_PK_OFF, DNAC_PUBKEY_SIZE,
+                          SQLITE_TRANSIENT);
+        rtn_sys_val_bind(st, 3, value);
+    } else if (op->op_id == RTN_SYS_OP_VAL && kind == DNA_EFFECT_SET) {
+        if (key_len != RTN_VAL_KEY_LEN || value_len != RTN_VAL_REC_LEN ||
+            !value || !rtn_val_rec_ok(value, key))
+            return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        /* the pubkey is NOT updatable: it is what the key hashes, and
+         * rtn_val_rec_ok already proved the two agree */
+        if (sqlite3_prepare_v2(w->db,
+                "UPDATE validators SET self_stake = ?1, "
+                "total_delegated = ?2, external_delegated = ?3, "
+                "commission_bps = ?4, pending_commission_bps = ?5, "
+                "pending_effective_block = ?6, status = ?7, "
+                "active_since_block = ?8, unstake_commit_block = ?9, "
+                "unstake_destination_fp = ?10, "
+                "unstake_destination_pubkey = ?11, "
+                "last_validator_update_block = ?12, "
+                "consecutive_missed_epochs = ?13, last_signed_block = ?14, "
+                "signed_blocks_this_epoch = ?15 WHERE pubkey_hash = ?16",
+                -1, &st, NULL) != SQLITE_OK)
+            return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        rtn_sys_val_bind(st, 1, value);
+        sqlite3_bind_blob(st, 16, key, RTN_VAL_KEY_LEN, SQLITE_TRANSIENT);
+    } else if (op->op_id == RTN_SYS_OP_DELEG &&
+               kind == DNA_EFFECT_CREATE) {
+        if (key_len != RTN_DEL_KEY_LEN || value_len != RTN_DEL_REC_LEN ||
+            !value || !rtn_del_rec_ok(value, key))
+            return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        if (sqlite3_prepare_v2(w->db,
+                "INSERT INTO delegations (delegator_hash, "
+                "validator_hash, delegator_pubkey, validator_pubkey, "
+                "amount, delegated_at_block) "
+                "VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                -1, &st, NULL) != SQLITE_OK)
+            return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        sqlite3_bind_blob(st, 1, key, 64, SQLITE_TRANSIENT);
+        sqlite3_bind_blob(st, 2, key + 64, 64, SQLITE_TRANSIENT);
+        sqlite3_bind_blob(st, 3, value + RTN_DEL_DPK_OFF, DNAC_PUBKEY_SIZE,
+                          SQLITE_TRANSIENT);
+        sqlite3_bind_blob(st, 4, value + RTN_DEL_VPK_OFF, DNAC_PUBKEY_SIZE,
+                          SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st, 5,
+            (sqlite3_int64)rtn_get64(value + RTN_DEL_AMT_OFF));
+        sqlite3_bind_int64(st, 6,
+            (sqlite3_int64)rtn_get64(value + RTN_DEL_AT_OFF));
+    } else if (op->op_id == RTN_SYS_OP_DELEG && kind == DNA_EFFECT_SET) {
+        if (key_len != RTN_DEL_KEY_LEN || value_len != RTN_DEL_REC_LEN ||
+            !value || !rtn_del_rec_ok(value, key))
+            return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        if (sqlite3_prepare_v2(w->db,
+                "UPDATE delegations SET amount = ?1, "
+                "delegated_at_block = ?2 "
+                "WHERE delegator_hash = ?3 AND validator_hash = ?4",
+                -1, &st, NULL) != SQLITE_OK)
+            return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        sqlite3_bind_int64(st, 1,
+            (sqlite3_int64)rtn_get64(value + RTN_DEL_AMT_OFF));
+        sqlite3_bind_int64(st, 2,
+            (sqlite3_int64)rtn_get64(value + RTN_DEL_AT_OFF));
+        sqlite3_bind_blob(st, 3, key, 64, SQLITE_TRANSIENT);
+        sqlite3_bind_blob(st, 4, key + 64, 64, SQLITE_TRANSIENT);
+    } else if (op->op_id == RTN_SYS_OP_DELEG &&
+               kind == DNA_EFFECT_DELETE) {
+        if (key_len != RTN_DEL_KEY_LEN)
+            return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        if (sqlite3_prepare_v2(w->db,
+                "DELETE FROM delegations WHERE delegator_hash = ?1 AND "
+                "validator_hash = ?2", -1, &st, NULL) != SQLITE_OK)
+            return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        sqlite3_bind_blob(st, 1, key, 64, SQLITE_TRANSIENT);
+        sqlite3_bind_blob(st, 2, key + 64, 64, SQLITE_TRANSIENT);
+    } else if (op->op_id == RTN_SYS_OP_STATS && kind == DNA_EFFECT_SET) {
+        if (key_len != 1 || key[0] != RTN_STATS_SEL_ACTIVE ||
+            value_len != 8 || !value)
+            return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        if (rtn_get64(value) > (uint64_t)INT64_MAX)
+            return NODUS_ADAPTER_ERR_STORAGE_FAULT;   /* would round-trip
+                                          * negative through the INTEGER
+                                          * column and poison the fetch  */
+        /* ABSOLUTE new counter, bound by the effect's EXISTS_VERSION
+         * precondition to the value the mediated read observed — never
+         * the legacy read-modify-write "value = value + 1"
+         * (bft.c:1611), which is not expressible as a typed effect and
+         * cannot be replay-checked. */
+        if (sqlite3_prepare_v2(w->db,
+                "UPDATE validator_stats SET value = ?1 "
+                "WHERE key = 'active_count'", -1, &st, NULL) != SQLITE_OK)
+            return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        sqlite3_bind_int64(st, 1, (sqlite3_int64)rtn_get64(value));
+    } else {
         return NODUS_ADAPTER_ERR_STORAGE_FAULT;
-    sqlite3_bind_int64(st, 1, (sqlite3_int64)(
-        ((uint32_t)key[0] << 24) | ((uint32_t)key[1] << 16) |
-        ((uint32_t)key[2] << 8) | (uint32_t)key[3]));
-    sqlite3_bind_int64(st, 2, (sqlite3_int64)rtn_get64(value));
-    sqlite3_bind_int64(st, 3, (sqlite3_int64)rtn_get64(key + 4));
-    sqlite3_bind_int64(st, 4, (sqlite3_int64)rtn_get64(value + 8));
-    sqlite3_bind_blob(st, 5, value + 24, 64, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(st, 6, (sqlite3_int64)rtn_get64(value + 16));
+    }
     int rc = sqlite3_step(st);
     sqlite3_finalize(st);
     if (rc != SQLITE_DONE) return NODUS_ADAPTER_ERR_STORAGE_FAULT;
@@ -2061,23 +4030,47 @@ static nodus_adapter_status_t rtn_sys_mutate(
      * committed row must invalidate the warm lookup cache BEFORE the
      * outer transaction commits; on rollback a cold cache merely
      * re-warms from the database, which will not hold the row */
-    w->chain_config_cache_warm = false;
+    if (cc_row) w->chain_config_cache_warm = false;
     return NODUS_ADAPTER_OK;
 }
 
-static const nodus_adapter_op_t RTN_SYS_OPS[2] = {
+static const nodus_adapter_op_t RTN_SYS_OPS[6] = {
     { RTN_SYS_OP_CC,
       NODUS_ADAPTER_KIND_BIT(DNA_EFFECT_CREATE),
       NODUS_ADAPTER_PRECOND_BIT(DNA_EFFECT_PRE_ABSENT),
       RTN_CC_KEY_LEN, RTN_CC_KEY_LEN, RTN_CC_VAL_LEN, RTN_CC_VAL_LEN },
     /* op 2 (committee read) RETIRED — capacity season; id not reused */
-    { RTN_SYS_OP_CCLATEST,  0, 0, 1, 1, 0, 8 }
+    { RTN_SYS_OP_CCLATEST,  0, 0, 1, 1, 0, 8 },
+    /* O11 — the stake-lifecycle rows */
+    { RTN_SYS_OP_VAL,
+      (uint8_t)(NODUS_ADAPTER_KIND_BIT(DNA_EFFECT_CREATE) |
+                NODUS_ADAPTER_KIND_BIT(DNA_EFFECT_SET)),
+      (uint8_t)(NODUS_ADAPTER_PRECOND_BIT(DNA_EFFECT_PRE_ABSENT) |
+                NODUS_ADAPTER_PRECOND_BIT(DNA_EFFECT_PRE_EXISTS_VHASH)),
+      (uint16_t)RTN_VAL_KEY_LEN, (uint16_t)RTN_VAL_KEY_LEN,
+      RTN_VAL_REC_LEN, RTN_VAL_REC_LEN },
+    /* DELETE is allowed here and nowhere else in this table: a fully
+     * drained delegation is REMOVED (bft.c:1880), so value_len_min must
+     * be 0 for that kind to be shapeable at all (adapter selfcheck). */
+    { RTN_SYS_OP_DELEG,
+      (uint8_t)(NODUS_ADAPTER_KIND_BIT(DNA_EFFECT_CREATE) |
+                NODUS_ADAPTER_KIND_BIT(DNA_EFFECT_SET) |
+                NODUS_ADAPTER_KIND_BIT(DNA_EFFECT_DELETE)),
+      (uint8_t)(NODUS_ADAPTER_PRECOND_BIT(DNA_EFFECT_PRE_ABSENT) |
+                NODUS_ADAPTER_PRECOND_BIT(DNA_EFFECT_PRE_EXISTS_VHASH)),
+      (uint16_t)RTN_DEL_KEY_LEN, (uint16_t)RTN_DEL_KEY_LEN,
+      0, RTN_DEL_REC_LEN },
+    { RTN_SYS_OP_DELEGCNT,  0, 0, 64, 64, 0, 8 },
+    { RTN_SYS_OP_STATS,
+      NODUS_ADAPTER_KIND_BIT(DNA_EFFECT_SET),
+      NODUS_ADAPTER_PRECOND_BIT(DNA_EFFECT_PRE_EXISTS_VERSION),
+      1, 1, 8, 8 }
 };
 
 const nodus_domain_adapter_t NODUS_RT_SYSTEM_ADAPTER = {
     .adapter_version = NODUS_DOMAIN_ADAPTER_V1,
     .ops = RTN_SYS_OPS,
-    .n_ops = 2,
+    .n_ops = 6,
     .probe = rtn_sys_probe,
     .mutate = rtn_sys_mutate,
     .read = rtn_sys_read

@@ -6,9 +6,11 @@
  *      S5 hooks absent; the checked-in descriptors' rule/type lists and
  *      both ruleset digests pinned against the INDEPENDENT python oracle
  *      (S9 W4 re-derivation — SYSTEM's digest MUST NOT move).
- *   2. Exact-tuple lookup: SYSTEM and DNA_CORE hit; then every axis
- *      mutated one at a time MUST miss — unknown domain, wrong kind,
- *      wrong ABI, wrong ruleset version, one-bit ruleset-hash flip.
+ *   2. Exact-tuple lookup: SYSTEM and DNA_CORE hit at the CURRENT
+ *      ruleset version (O11: both are 3); then every axis mutated one at
+ *      a time MUST miss — unknown domain, wrong kind, wrong ABI, EVERY
+ *      retired ruleset version (v1 and v2, both domains), a future
+ *      version, one-bit ruleset-hash flip.
  *   3. Admission: owned transparent types admit with pool 0; foreign type
  *      rejects; nonzero pool rejects; TYPES 11, 12 AND 13 REJECT with any
  *      pool value (the C3/activation hard stop).
@@ -53,55 +55,62 @@ static int g_checks = 0;
  * (f2dcdefa…4cce / e0a0bc43…7429) are DEAD. Oracle:
  * scratchpad exec_season_oracle.py. */
 static const uint8_t KAT_RS_SYSTEM[DNA_DOM_HASH_LEN] = {
-    /* CAPACITY SEASON re-derivation: SYSTEM ruleset_version 2 (call v2,
-     * auth carrier v2) committing the POLICY V2 identity digest
-     * (max_block_env_bytes appended). Oracle: scratchpad
-     * capacity_season_oracle.py, control-legged against BOTH shipped
-     * pins. The exec-season value 89362213…96c2 is DEAD. */
-    0x9f, 0xc5, 0x39, 0x4e, 0x60, 0xe0, 0xd9, 0x80,
-    0xae, 0xe5, 0x5b, 0x5a, 0xa7, 0x1c, 0x4f, 0x9c,
-    0x84, 0xcd, 0x45, 0x1f, 0x08, 0xd2, 0x76, 0xcf,
-    0xfe, 0x21, 0x29, 0xd1, 0xfc, 0x95, 0x7f, 0x6f,
-    0x35, 0x40, 0xa0, 0x33, 0x6c, 0xc8, 0x0e, 0xc5,
-    0x30, 0x98, 0xa8, 0x97, 0x40, 0x40, 0xad, 0x7f,
-    0x40, 0x8b, 0xa5, 0x9d, 0x88, 0x5d, 0x17, 0xac,
-    0xdd, 0x17, 0x13, 0x46, 0x8c, 0xce, 0x24, 0xbb
+    /* O11 re-derivation: SYSTEM ruleset_version 3 (runtime op 1
+     * DNA_SYSRULE_STAKE becomes EXECUTABLE) committing the re-priced
+     * policy identity digest (ops 1..7). Oracle: scratchpad
+     * o11_season_oracle.py, control-legged against BOTH shipped pins.
+     * The capacity-season value 9fc5394e…24bb is DEAD. */
+    0xd0, 0x65, 0xe2, 0xe1, 0x71, 0x96, 0x02, 0x21,
+    0xe3, 0xb7, 0x9a, 0xfd, 0xed, 0x78, 0xb8, 0x28,
+    0x9b, 0x20, 0xcc, 0xf1, 0x83, 0xfb, 0x1c, 0x17,
+    0x23, 0xb5, 0x8c, 0x35, 0x18, 0x0c, 0x69, 0x57,
+    0xc1, 0xd9, 0x50, 0xe3, 0x77, 0x7b, 0x25, 0x14,
+    0xf2, 0xb0, 0x10, 0x8d, 0xa6, 0xed, 0x9c, 0xee,
+    0x69, 0xd9, 0xf7, 0x3e, 0x8c, 0xbf, 0x49, 0x66,
+    0xc2, 0x66, 0x8f, 0xd9, 0x89, 0x86, 0x6d, 0x64
 };
 static const uint8_t KAT_RS_CORE[DNA_DOM_HASH_LEN] = {
-    /* burn season — CORE ruleset_version 2 (BURN + TOKEN_CREATE become
-     * executable). Independent oracle: scratchpad
-     * burn_tc_season_oracle.py, whose control legs reproduced BOTH
-     * prior pins (SYSTEM v2 + the retired CORE v1 ad98a036…e6f3) before
-     * this value was accepted. */
-    0x74, 0x6f, 0x58, 0x4a, 0xc0, 0x99, 0x64, 0x3d,
-    0x63, 0x14, 0x6b, 0xad, 0x02, 0x9c, 0xf9, 0xfd,
-    0xeb, 0x67, 0x9a, 0x83, 0x0d, 0x5a, 0x3f, 0x4f,
-    0x2a, 0x32, 0x7c, 0x26, 0xf3, 0xca, 0x0f, 0x10,
-    0x45, 0x76, 0x3f, 0x0e, 0xa9, 0x2d, 0x28, 0xaf,
-    0xf6, 0xfc, 0xa5, 0xd4, 0xcd, 0x20, 0xa5, 0x21,
-    0xb5, 0xa3, 0xac, 0xc6, 0x49, 0x15, 0xe1, 0xdd,
-    0x9f, 0x35, 0xe2, 0x1a, 0x41, 0xce, 0x67, 0xa1
+    /* O11 — CORE ruleset_version 3: the rule list GREW to {1..7}
+     * (DNA_CORERULE_SYSFUND, the staking funding/release leg) and that
+     * op is executable. Same oracle + control legs as the SYSTEM pin;
+     * the burn-season value 746f584a…67a1 is DEAD. */
+    0xed, 0x4b, 0x1b, 0xcd, 0xf0, 0xe8, 0xf7, 0x8f,
+    0x0b, 0x64, 0x98, 0x5e, 0x42, 0xd4, 0x1d, 0x51,
+    0x81, 0xed, 0xd5, 0xd4, 0x85, 0x94, 0xbc, 0xeb,
+    0x73, 0xbf, 0x5e, 0xfb, 0x6a, 0xda, 0x08, 0x38,
+    0x8d, 0x6f, 0xb6, 0xba, 0x04, 0x92, 0xf8, 0xbd,
+    0xca, 0x21, 0x2a, 0x5d, 0xda, 0x87, 0x79, 0xe7,
+    0x45, 0x13, 0xc5, 0x21, 0x0b, 0xc4, 0xba, 0xa2,
+    0xf7, 0x0b, 0xf3, 0x8c, 0xb2, 0x63, 0x44, 0x37
 };
 /* The SYSTEM metering policy's IDENTITY digest ("DNA.METPOLID.v1",
- * POLICY VERSION 2 — capacity season: seven scalar weights = 1,
- * max_block_env_bytes = 2*2^20 appended after w_write, ops 1..6
- * authoritative with weight 1) — the value SYSTEM's descriptor commits.
- * Oracle-derived, like the two above; the v1 value fad572e9…0537 is
- * DEAD. */
+ * POLICY VERSION 2 — seven scalar weights = 1, max_block_env_bytes =
+ * 2*2^20 after w_write, and — since O11 — ops 1..**7** authoritative
+ * with weight 1, because DNA_CORERULE_SYSFUND must be priced) — the
+ * value SYSTEM's descriptor commits. Oracle-derived, like the two
+ * above; the capacity-season value dfebb82a…c2de is DEAD. */
 static const uint8_t KAT_METPOL_SYSTEM[DNA_DOM_HASH_LEN] = {
-    0xdf, 0xeb, 0xb8, 0x2a, 0x55, 0x2d, 0xcd, 0xb0,
-    0xac, 0x4e, 0x25, 0x81, 0x5e, 0x41, 0x84, 0x82,
-    0xf0, 0x27, 0xa3, 0xce, 0x0c, 0xc8, 0x81, 0x09,
-    0xc0, 0x45, 0xb7, 0x43, 0x9a, 0x9d, 0xce, 0x49,
-    0xe3, 0x7c, 0x65, 0xc4, 0x32, 0x0a, 0xdb, 0xcd,
-    0xf9, 0xdd, 0xca, 0x01, 0xd2, 0xcf, 0x05, 0x6d,
-    0x32, 0xbc, 0x9c, 0x20, 0xa1, 0x59, 0x0f, 0xe6,
-    0x7b, 0x35, 0x78, 0x66, 0xee, 0x27, 0xc2, 0xde
+    0x8d, 0x03, 0x8f, 0x1e, 0xc6, 0x08, 0xbe, 0x54,
+    0x7b, 0xf9, 0x8a, 0xfe, 0x2d, 0xf0, 0x53, 0x2b,
+    0x4a, 0x94, 0xa7, 0xa0, 0x42, 0xa9, 0xd9, 0xd8,
+    0x6b, 0x7a, 0x0f, 0xb1, 0xab, 0x51, 0xed, 0xaf,
+    0xbc, 0x43, 0x64, 0xdc, 0x38, 0x91, 0xc3, 0x6b,
+    0xfb, 0xc4, 0x43, 0x32, 0x2f, 0x2a, 0x3b, 0x0b,
+    0x44, 0xc8, 0x23, 0x16, 0xbd, 0x78, 0x42, 0xfd,
+    0x7f, 0xfb, 0xec, 0x2d, 0x19, 0xf1, 0xf5, 0xcc
 };
 
-/* The checked-in descriptors' committed lists (S9 W4 truth). */
+/* The checked-in descriptors' committed lists (S9 W4 truth; O11 did NOT
+ * move either list — runtime_op and tx_type are different axes). */
 static const uint8_t SYS_TYPES_EXP[6]  = { 4, 5, 6, 7, 9, 10 };
 static const uint8_t CORE_TYPES_EXP[6] = { 1, 2, 3, 11, 12, 13 };
+/* The CORE rule list the O11 digest commits: {1..7}, strictly ascending
+ * (dna_ruleset_desc_hash refuses anything else). */
+static const uint32_t CORE_RULES_EXP[7] = { 1, 2, 3, 4, 5, 6, 7 };
+static const uint32_t SYS_RULES_EXP[6]  = { 1, 2, 3, 4, 5, 6 };
+/* The compiled ruleset versions this build ships (O11). */
+#define SYS_RSV  3u
+#define CORE_RSV 3u
 
 int main(void) {
     /* ── 1. self-check ──────────────────────────────────────────────── */
@@ -172,14 +181,31 @@ int main(void) {
     OK();
     CHECK(memcmp(sys->descriptor.tx_types, SYS_TYPES_EXP,
                  sizeof(SYS_TYPES_EXP)) == 0,
-          "SYSTEM type list changed — S9 W4 must not touch SYSTEM"); OK();
-    /* S9 W4: CORE owns the two V3 boundary types as well */
-    CHECK(core->descriptor.rule_count == 6 &&
+          "SYSTEM type list changed — S9 W4 / O11 must not touch it");
+    OK();
+    CHECK(memcmp(sys->descriptor.rule_ids, SYS_RULES_EXP,
+                 sizeof(SYS_RULES_EXP)) == 0,
+          "SYSTEM rule list != {1..6} — O11 enables op 1, it adds none");
+    OK();
+    /* S9 W4: CORE owns the two V3 boundary types as well.
+     * O11: CORE's RULE list grew to seven (DNA_CORERULE_SYSFUND); its
+     * TYPE list did not move — the funding leg carries no legacy type. */
+    CHECK(core->descriptor.rule_count == 7 &&
           core->descriptor.tx_type_count == 6, "CORE descriptor counts");
     OK();
+    CHECK(memcmp(core->descriptor.rule_ids, CORE_RULES_EXP,
+                 sizeof(CORE_RULES_EXP)) == 0,
+          "CORE rule list != {1..7} (O11 appended SYSFUND)"); OK();
     CHECK(memcmp(core->descriptor.tx_types, CORE_TYPES_EXP,
                  sizeof(CORE_TYPES_EXP)) == 0,
           "CORE type list != {1,2,3,11,12,13}"); OK();
+    /* the compiled versions the whole slice hangs from */
+    CHECK(sys->ruleset_version == SYS_RSV &&
+          sys->descriptor.ruleset_version == SYS_RSV,
+          "SYSTEM ruleset_version != 3 (O11)"); OK();
+    CHECK(core->ruleset_version == CORE_RSV &&
+          core->descriptor.ruleset_version == CORE_RSV,
+          "CORE ruleset_version != 3 (O11)"); OK();
     /* ascending order is load-bearing: rt_owns_type breaks early on a
      * greater element, and dna_ruleset_desc_hash rejects a non-ascending
      * list outright */
@@ -203,47 +229,55 @@ int main(void) {
     /* ── 2. exact lookup + per-axis refusal ─────────────────────────── */
     const nodus_domain_runtime_t *hit;
     hit = nodus_runtime_lookup(DNA_DOMAIN_SYSTEM, DNA_RUNTIME_NATIVE_BUILTIN,
-                               NODUS_DOMAIN_RUNTIME_ABI_V1, 2,
+                               NODUS_DOMAIN_RUNTIME_ABI_V1, SYS_RSV,
                                sys->ruleset_hash);
-    CHECK(hit == sys, "SYSTEM exact lookup (ruleset v2)"); OK();
-    /* the RETIRED SYSTEM ruleset v1 resolves NOTHING — old CHAIN_CONFIG
-     * call-v1 legs name it and die here, never get reinterpreted */
+    CHECK(hit == sys, "SYSTEM exact lookup (ruleset v3)"); OK();
+    /* EVERY retired SYSTEM ruleset resolves NOTHING — a leg naming v1
+     * (CHAIN_CONFIG call v1) or v2 (call v2, STAKE not yet executable)
+     * dies here and is never reinterpreted under the current rules */
     CHECK(nodus_runtime_lookup(DNA_DOMAIN_SYSTEM, DNA_RUNTIME_NATIVE_BUILTIN,
                                NODUS_DOMAIN_RUNTIME_ABI_V1, 1,
                                sys->ruleset_hash) == NULL,
           "retired SYSTEM ruleset v1 resolved"); OK();
-    hit = nodus_runtime_lookup(DNA_DOMAIN_CORE, DNA_RUNTIME_NATIVE_BUILTIN,
+    CHECK(nodus_runtime_lookup(DNA_DOMAIN_SYSTEM, DNA_RUNTIME_NATIVE_BUILTIN,
                                NODUS_DOMAIN_RUNTIME_ABI_V1, 2,
+                               sys->ruleset_hash) == NULL,
+          "retired SYSTEM ruleset v2 resolved (O11)"); OK();
+    hit = nodus_runtime_lookup(DNA_DOMAIN_CORE, DNA_RUNTIME_NATIVE_BUILTIN,
+                               NODUS_DOMAIN_RUNTIME_ABI_V1, CORE_RSV,
                                core->ruleset_hash);
-    CHECK(hit == core, "CORE exact lookup (ruleset v2)"); OK();
-    /* the RETIRED CORE ruleset v1 resolves NOTHING — old CORE legs name
-     * it and die here, never get reinterpreted (burn season) */
+    CHECK(hit == core, "CORE exact lookup (ruleset v3)"); OK();
+    /* likewise for CORE: v1 (pre-burn) and v2 (pre-SYSFUND) are dead */
     CHECK(nodus_runtime_lookup(DNA_DOMAIN_CORE, DNA_RUNTIME_NATIVE_BUILTIN,
                                NODUS_DOMAIN_RUNTIME_ABI_V1, 1,
                                core->ruleset_hash) == NULL,
           "retired CORE ruleset v1 resolved"); OK();
+    CHECK(nodus_runtime_lookup(DNA_DOMAIN_CORE, DNA_RUNTIME_NATIVE_BUILTIN,
+                               NODUS_DOMAIN_RUNTIME_ABI_V1, 2,
+                               core->ruleset_hash) == NULL,
+          "retired CORE ruleset v2 resolved (O11)"); OK();
 
     /* unknown domain */
     CHECK(nodus_runtime_lookup(7, DNA_RUNTIME_NATIVE_BUILTIN,
-                               NODUS_DOMAIN_RUNTIME_ABI_V1, 2,
+                               NODUS_DOMAIN_RUNTIME_ABI_V1, CORE_RSV,
                                core->ruleset_hash) == NULL,
           "unknown domain hit"); OK();
     /* wrong runtime kind (unknown kind 2 and invalid 0) */
     CHECK(nodus_runtime_lookup(DNA_DOMAIN_CORE, 2,
-                               NODUS_DOMAIN_RUNTIME_ABI_V1, 2,
+                               NODUS_DOMAIN_RUNTIME_ABI_V1, CORE_RSV,
                                core->ruleset_hash) == NULL,
           "wrong kind hit"); OK();
     CHECK(nodus_runtime_lookup(DNA_DOMAIN_CORE, DNA_RUNTIME_INVALID,
-                               NODUS_DOMAIN_RUNTIME_ABI_V1, 2,
+                               NODUS_DOMAIN_RUNTIME_ABI_V1, CORE_RSV,
                                core->ruleset_hash) == NULL,
           "invalid kind hit"); OK();
     /* wrong ABI */
     CHECK(nodus_runtime_lookup(DNA_DOMAIN_CORE, DNA_RUNTIME_NATIVE_BUILTIN,
-                               2, 2, core->ruleset_hash) == NULL,
+                               2, CORE_RSV, core->ruleset_hash) == NULL,
           "wrong ABI hit"); OK();
     /* wrong (future) ruleset version — no "closest", no "latest" */
     CHECK(nodus_runtime_lookup(DNA_DOMAIN_CORE, DNA_RUNTIME_NATIVE_BUILTIN,
-                               NODUS_DOMAIN_RUNTIME_ABI_V1, 3,
+                               NODUS_DOMAIN_RUNTIME_ABI_V1, CORE_RSV + 1,
                                core->ruleset_hash) == NULL,
           "wrong ruleset version hit"); OK();
     /* one-bit ruleset-hash mismatch */
@@ -251,13 +285,13 @@ int main(void) {
     memcpy(flipped, core->ruleset_hash, DNA_DOM_HASH_LEN);
     flipped[0] ^= 0x01;
     CHECK(nodus_runtime_lookup(DNA_DOMAIN_CORE, DNA_RUNTIME_NATIVE_BUILTIN,
-                               NODUS_DOMAIN_RUNTIME_ABI_V1, 2,
+                               NODUS_DOMAIN_RUNTIME_ABI_V1, CORE_RSV,
                                flipped) == NULL,
           "one-bit hash mismatch hit"); OK();
     memcpy(flipped, core->ruleset_hash, DNA_DOM_HASH_LEN);
     flipped[DNA_DOM_HASH_LEN - 1] ^= 0x80;
     CHECK(nodus_runtime_lookup(DNA_DOMAIN_CORE, DNA_RUNTIME_NATIVE_BUILTIN,
-                               NODUS_DOMAIN_RUNTIME_ABI_V1, 2,
+                               NODUS_DOMAIN_RUNTIME_ABI_V1, CORE_RSV,
                                flipped) == NULL,
           "last-bit hash mismatch hit"); OK();
 
