@@ -65,14 +65,14 @@ static int g_checks = 0;
 
 /* ORACLE: python3 res_meter_oracle.py (independent hashlib.sha3_512). */
 static const char K_SEAL_HEX[] =
-    "9ce81d5f448dcfb7d38f9ecafb3a6265c79eeeed3daeba91dd58c14d7beaacff"
-    "099e571e2f82ea85d91eb159d536c9d2feea174571f705f2ae69625921bbe343";
+    "92c9cb0ee923a85fce08df55594c131374bd993bb46bd739f5a5219e39545cb4"
+    "61b5e10191482cb55b4171c2eb37c06b797848b1d2902eecb450423b7c037040";
 /* The CONSENSUS identity digest of the same fixture policy
  * ("DNA.METPOLID.v1", execution season — the value a RulesetDescriptor
  * commits). Distinct tag ⇒ distinct value from the seal. */
 static const char K_IDENT_HEX[] =
-    "21b6e52c90cb3341dae0c6574313f4ad4b2caed8c4ee993f0d5b6ff7c95a195d"
-    "219bc262a188d0e9301b6e9f2f18d7488d170eab09d134f0897415a4fa9976d6";
+    "159d3ad24c5c45c50bb71a8cdc0594ab18eb12c69df132439fb1fa51f4ddb196"
+    "425753a84c8d5d969f5379bc11f7db4e3acdd8dd28d08bb8e8fcf1078a3b360a";
 
 /* THE fixture policy — mirrored in res_meter_oracle.py. w_op[255] is
  * deliberately above 2^32: a truncation anywhere in the policy path
@@ -87,6 +87,9 @@ static void fixture_policy(dna_meter_policy_t *p) {
     p->w_effectbyte = 3;
     p->w_read       = 5;
     p->w_write      = 11;
+    /* policy v2 (capacity season): a distinctive fixture bound so the
+     * KAT covers the appended field with a value no other field holds */
+    p->max_block_env_bytes = 123456789;
     CHECK(dna_meter_op_set(p, 0, 50) == 0);
     CHECK(dna_meter_op_set(p, 1, 60) == 0);
     CHECK(dna_meter_op_set(p, 255, (uint64_t)1 << 63) == 0);
@@ -281,12 +284,41 @@ static void test_policy(void) {
     p->op_present[0] ^= ((uint64_t)1 << 9);
     CHECK(dna_meter_policy_check(p) == 0);
 
-    /* version discipline */
-    p->policy_version = 2;
+    /* version discipline: the RETIRED v1 and an unknown future version
+     * both reject (capacity season: only v2 seals/checks/digests) */
+    p->policy_version = 1;
+    CHECK(dna_meter_policy_seal(p) == -1);
+    CHECK(dna_meter_policy_check(p) == -1);
+    p->policy_version = 3;
     CHECK(dna_meter_policy_seal(p) == -1);
     CHECK(dna_meter_policy_check(p) == -1);
     p->policy_version = DNA_METER_POLICY_VERSION;
     CHECK(dna_meter_policy_seal(p) == 0);
+
+    /* v2 shape discipline: max_block_env_bytes == 0 is NOT a policy —
+     * an unbounded block must fail closed at the source (seal, check
+     * AND digest all reject it) */
+    {
+        uint64_t save_mb = p->max_block_env_bytes;
+        uint8_t d0[64];
+        p->max_block_env_bytes = 0;
+        CHECK(dna_meter_policy_seal(p) == -1);
+        CHECK(dna_meter_policy_check(p) == -1);
+        CHECK(dna_meter_policy_digest(p, d0) == -1);
+        p->max_block_env_bytes = save_mb;
+        CHECK(dna_meter_policy_seal(p) == 0);
+        CHECK(dna_meter_policy_check(p) == 0);
+        /* and the bound is part of the identity: moving it moves the
+         * digest */
+        uint8_t d1[64], d2[64];
+        CHECK(dna_meter_policy_digest(p, d1) == 0);
+        p->max_block_env_bytes = save_mb + 1;
+        CHECK(dna_meter_policy_seal(p) == 0);
+        CHECK(dna_meter_policy_digest(p, d2) == 0);
+        CHECK(memcmp(d1, d2, 64) != 0);
+        p->max_block_env_bytes = save_mb;
+        CHECK(dna_meter_policy_seal(p) == 0);
+    }
 
     /* weight authority: present-with-zero prices; absent rejects */
     uint64_t w = 0xDEAD;
@@ -397,6 +429,7 @@ static void test_plan_build(void) {
         MUST_ALLOC(z);
         memset(z, 0, sizeof(*z));
         z->policy_version = DNA_METER_POLICY_VERSION;
+        z->max_block_env_bytes = 1;      /* v2 shape: nonzero required   */
         CHECK(dna_meter_op_set(z, 4, 0) == 0);
         CHECK(dna_meter_policy_seal(z) == 0);
         leg_spec_t ls = { 3, 4, 100, 100, 64, 65536 };
@@ -443,6 +476,7 @@ static void test_plan_build(void) {
         /* w_callbyte * call_len */
         memset(h, 0, sizeof(*h));
         h->policy_version = DNA_METER_POLICY_VERSION;
+        h->max_block_env_bytes = 1;      /* v2 shape: nonzero required  */
         h->w_callbyte = UINT64_MAX / 2;
         CHECK(dna_meter_op_set(h, 0, 0) == 0);
         CHECK(dna_meter_policy_seal(h) == 0);
@@ -455,6 +489,7 @@ static void test_plan_build(void) {
         /* w_authbyte * auth_len */
         memset(h, 0, sizeof(*h));
         h->policy_version = DNA_METER_POLICY_VERSION;
+        h->max_block_env_bytes = 1;      /* v2 shape: nonzero required  */
         h->w_authbyte = UINT64_MAX / 2;
         CHECK(dna_meter_op_set(h, 0, 0) == 0);
         CHECK(dna_meter_policy_seal(h) == 0);
@@ -467,6 +502,7 @@ static void test_plan_build(void) {
         /* w_effect * res_max_effects */
         memset(h, 0, sizeof(*h));
         h->policy_version = DNA_METER_POLICY_VERSION;
+        h->max_block_env_bytes = 1;      /* v2 shape: nonzero required  */
         h->w_effect = UINT64_MAX / 2;
         CHECK(dna_meter_op_set(h, 0, 0) == 0);
         CHECK(dna_meter_policy_seal(h) == 0);
@@ -479,6 +515,7 @@ static void test_plan_build(void) {
         /* w_effectbyte * res_max_effect_bytes */
         memset(h, 0, sizeof(*h));
         h->policy_version = DNA_METER_POLICY_VERSION;
+        h->max_block_env_bytes = 1;      /* v2 shape: nonzero required  */
         h->w_effectbyte = UINT64_MAX / 2;
         CHECK(dna_meter_op_set(h, 0, 0) == 0);
         CHECK(dna_meter_policy_seal(h) == 0);
@@ -491,6 +528,7 @@ static void test_plan_build(void) {
         /* per-leg sum: w_op = UINT64_MAX plus a nonzero call term */
         memset(h, 0, sizeof(*h));
         h->policy_version = DNA_METER_POLICY_VERSION;
+        h->max_block_env_bytes = 1;      /* v2 shape: nonzero required  */
         h->w_callbyte = 1;
         CHECK(dna_meter_op_set(h, 0, UINT64_MAX) == 0);
         CHECK(dna_meter_policy_seal(h) == 0);
@@ -503,6 +541,7 @@ static void test_plan_build(void) {
         /* envelope sum: two 2^63 legs + w_base */
         memset(h, 0, sizeof(*h));
         h->policy_version = DNA_METER_POLICY_VERSION;
+        h->max_block_env_bytes = 1;      /* v2 shape: nonzero required  */
         h->w_base = 1;
         CHECK(dna_meter_op_set(h, 0, (uint64_t)1 << 63) == 0);
         CHECK(dna_meter_policy_seal(h) == 0);
@@ -1081,6 +1120,7 @@ static void test_property_formula(void) {
         pol->w_effectbyte = WPICK();
         pol->w_read       = WPICK();
         pol->w_write      = WPICK();
+        pol->max_block_env_bytes = 1;    /* v2 shape: nonzero required  */
         uint64_t wop[3];
         for (int i = 0; i < 3; i++) {
             wop[i] = WPICK();
@@ -1353,6 +1393,7 @@ static void test_review_hardenings(void) {
         MUST_ALLOC(h);
         memset(h, 0, sizeof(*h));
         h->policy_version = DNA_METER_POLICY_VERSION;
+        h->max_block_env_bytes = 1;      /* v2 shape: nonzero required  */
         h->w_base = 1;
         h->w_read = UINT64_MAX;
         CHECK(dna_meter_op_set(h, 0, 0) == 0);

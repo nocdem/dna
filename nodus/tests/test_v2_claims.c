@@ -546,6 +546,10 @@ static int ext_table_init(void) {
     g_ext_table[2].claim_apply = t3_claim_apply;
     g_ext_table[2].invariant = t3_invariant;
     g_ext_table[2].auth = v2x_auth;
+    /* capacity season: a synthetic runtime must declare its auth-kind
+     * allowlist or the engine's admission scan rejects every leg */
+    g_ext_table[2].allowed_auth_kinds =
+        NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_MULTI_V1);
     g_ext_table[2].read_plan = v2x_read_plan;
     g_ext_table[2].exec = v2x_exec;
     g_ext_table[2].adapter = &TN_ADAPTER;
@@ -774,8 +778,8 @@ static int make_claim(dna_claim_t *c, int leaf, const uint8_t chain[32],
     c->source_amount = g_leaf[leaf].source_amount;
     memcpy(c->dest_binding, g_leaf[leaf].dest_binding, 64);
     uint16_t ns = 0;
-    if (dna_dist_proof_build(g_leaf_hash, N_LEAVES, (uint64_t)leaf,
-                             c->siblings, &ns) != 0)
+    if (dna_dist_proof_build((const uint8_t (*)[64])g_leaf_hash, N_LEAVES,
+                             (uint64_t)leaf, c->siblings, &ns) != 0)
         return -1;
     c->n_siblings = ns;
     c->auth_mode = DNA_CLAIMAUTH_DNA_NATIVE;
@@ -1060,7 +1064,8 @@ static int test_absent_fixture(void) {
     CHECK(dna_gman_hash(&stored, mh) == 0, "stored hash");
     uint8_t mhs[1][64];
     memcpy(mhs[0], mh, 64);
-    CHECK(dna_v2_manifest_root(mhs, 1, man_rec) == 0 &&
+    CHECK(dna_v2_manifest_root((const uint8_t (*)[64])mhs, 1,
+                               man_rec) == 0 &&
           memcmp(man_rec, man_a, 64) == 0,
           "manifest root reconstruction");
     OK();

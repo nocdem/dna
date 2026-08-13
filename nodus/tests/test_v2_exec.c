@@ -306,22 +306,22 @@ static int test_local_index(void) {
     uint8_t probe[64];
     uint32_t lidx = 0xDEAD;
     memset(probe, 0x22, 64);
-    CHECK(nodus_witness_v2_local_index_find(ids, 3, probe, &lidx) == 0 &&
+    CHECK(nodus_witness_v2_local_index_find((const uint8_t (*)[64])ids,3, probe, &lidx) == 0 &&
           lidx == 1, "hit index 1"); OK();
     memset(probe, 0x33, 64);
-    CHECK(nodus_witness_v2_local_index_find(ids, 3, probe, &lidx) == 0 &&
+    CHECK(nodus_witness_v2_local_index_find((const uint8_t (*)[64])ids,3, probe, &lidx) == 0 &&
           lidx == 2, "hit index 2"); OK();
     /* THE pin: a miss FAILS and never aliases index 0 */
     memset(probe, 0x44, 64);
     lidx = 0xDEAD;
-    CHECK(nodus_witness_v2_local_index_find(ids, 3, probe, &lidx) == -1,
+    CHECK(nodus_witness_v2_local_index_find((const uint8_t (*)[64])ids,3, probe, &lidx) == -1,
           "miss did not fail closed");
     CHECK(lidx == 0xDEAD, "miss wrote an index"); OK();
-    CHECK(nodus_witness_v2_local_index_find(ids, 0, probe, &lidx) == -1,
+    CHECK(nodus_witness_v2_local_index_find((const uint8_t (*)[64])ids,0, probe, &lidx) == -1,
           "empty list"); OK();
     CHECK(nodus_witness_v2_local_index_find(NULL, 3, probe, &lidx) == -1 &&
-          nodus_witness_v2_local_index_find(ids, 3, NULL, &lidx) == -1 &&
-          nodus_witness_v2_local_index_find(ids, 3, probe, NULL) == -1,
+          nodus_witness_v2_local_index_find((const uint8_t (*)[64])ids,3, NULL, &lidx) == -1 &&
+          nodus_witness_v2_local_index_find((const uint8_t (*)[64])ids,3, probe, NULL) == -1,
           "NULL args"); OK();
     return 0;
 }
@@ -614,6 +614,7 @@ static int decoy_policy_build(void) {
     g_decoy_policy.w_effectbyte = 999;
     g_decoy_policy.w_read = 999;
     g_decoy_policy.w_write = 999;
+    g_decoy_policy.max_block_env_bytes = 999999;   /* policy v2 field   */
     for (uint32_t op = 1; op <= 6; op++)
         if (dna_meter_op_set(&g_decoy_policy, op, 999) != 0) return -1;
     return dna_meter_policy_seal(&g_decoy_policy);

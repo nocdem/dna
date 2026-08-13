@@ -17,7 +17,8 @@
  *      byte-identical. If that ever breaks, a leg's authorization would
  *      have to sign a value that depends on the signature itself.
  *
- * Buffers are HEAP allocated throughout: DNA_ENV_MAX_TOTAL_LEN is 64 KiB
+ * Buffers are HEAP allocated throughout: DNA_ENV_MAX_TOTAL_LEN is 1 MiB
+ * (capacity season — every boundary below scales with the constant)
  * and the fixture struct carries 64 ruleset hashes, so the stack-local
  * shape used by smaller wire tests would not be safe here.
  *
@@ -690,7 +691,7 @@ static void test_max_size_envelope(void) {
     size_t la = 0;
     CHECK(fx_encode(f, a, (size_t)DNA_ENV_MAX_TOTAL_LEN, &la) == 0);
     CHECK(la == (size_t)DNA_ENV_MAX_TOTAL_LEN);
-    roundtrip(f, "exactly 65536 bytes");
+    roundtrip(f, "exactly DNA_ENV_MAX_TOTAL_LEN bytes");
 
     /* One byte more must be rejected by BOTH directions. */
     fixture_t *g = fx_clone(f);

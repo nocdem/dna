@@ -530,10 +530,30 @@ static int v2x_table_init(struct nodus_witness *wns) {
 
 /* ── envelope / call / effect builders ─────────────────────────────── */
 
+/* Fixture envelope buffer — DELIBERATELY NOT DNA_ENV_MAX_TOTAL_LEN:
+ * the capacity season grew the ceiling to 1 MiB, and sizing every
+ * fixture envelope to it would put megabyte objects in test frames /
+ * BSS ("avoid stack allocation proportional to the V2 maximum").
+ * Fixture shapes are small; ceiling-boundary tests heap-allocate their
+ * own buffers (test_v2_capacity.c). */
+#define V2X_ENV_BUF_LEN 65536u
+
 typedef struct {
-    uint8_t bytes[DNA_ENV_MAX_TOTAL_LEN];
+    uint8_t bytes[V2X_ENV_BUF_LEN];
     size_t  len;
 } v2x_env_t;
+
+/** The compiled table's ruleset version for one domain (SYSTEM moved to
+ *  v2 in the capacity season; a fixture envelope must name the version
+ *  the genesis-committed registry manifest carries or die in preflight
+ *  as ERR_CTX_VERSION). */
+static uint32_t v2x_ruleset_version_for(uint32_t domain_id) {
+    size_t n = 0;
+    const nodus_domain_runtime_t *b = nodus_runtime_builtin_table(&n);
+    for (size_t i = 0; b && i < n; i++)
+        if (b[i].domain_id == domain_id) return b[i].ruleset_version;
+    return 1;
+}
 
 typedef struct {
     uint32_t domain_id;
@@ -556,7 +576,8 @@ static int v2x_env_build_ex(v2x_env_t *e, uint64_t ceiling,
     for (uint16_t i = 0; i < n; i++) {
         in[i].hdr.domain_id = legs[i].domain_id;
         in[i].hdr.runtime_op = legs[i].runtime_op;
-        in[i].hdr.ruleset_version = 1;
+        in[i].hdr.ruleset_version =
+            v2x_ruleset_version_for(legs[i].domain_id);
         in[i].hdr.access_mode = DNA_ENV_ACCESS_INVOKE;
         in[i].hdr.auth_kind = 1;
         in[i].hdr.call_len = legs[i].call_len;

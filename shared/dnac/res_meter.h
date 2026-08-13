@@ -193,11 +193,20 @@ int dna_ck_sub_u64(uint64_t a, uint64_t b, uint64_t *out);
 
 /* ── Policy snapshot ───────────────────────────────────────────────── */
 
-/** Only policy version this release seals or accepts. */
-#define DNA_METER_POLICY_VERSION  1
+/** Only policy version this release seals or accepts.
+ *
+ *  v2 (capacity season) APPENDS `max_block_env_bytes` — the ABSOLUTE
+ *  per-block Ledger V2 envelope byte bound — to the struct and to both
+ *  canonical preimages (seal + identity digest, field order below). v1
+ *  is RETIRED, the RulesetDescriptor v2 precedent (domain_wire.h:264):
+ *  Ledger V2 is inactive, no committed v1 policy digest exists anywhere,
+ *  and an ambiguous dual-version decode would be a hidden reinterpration
+ *  surface. A v1 struct no longer seals, checks or digests. */
+#define DNA_METER_POLICY_VERSION  2
 
 /** Weight-table index space == the envelope's accepted runtime_op range
- *  (env_wire.h:195 — ops 0..255 inclusive). */
+ *  (DNA_ENV_MAX_RUNTIME_OP, env_wire.h — ops 0..255 inclusive; cited by
+ *  symbol, not line: the header grows). */
 #define DNA_METER_OP_SPACE        (DNA_ENV_MAX_RUNTIME_OP + 1)
 
 /** Presence-mask words: DNA_METER_OP_SPACE bits in u64 words. */
@@ -228,6 +237,17 @@ typedef struct {
     uint64_t w_effectbyte;                       /* per canonical result byte*/
     uint64_t w_read;                             /* per mediated read        */
     uint64_t w_write;                            /* per mediated write       */
+    /* v2 (capacity season): the ABSOLUTE per-block V2 envelope byte
+     * bound — sum(env_len) of every envelope in one global block must
+     * fit under it (INCLUSIVE), checked with dna_ck_add_u64 BEFORE any
+     * reservation (nodus_witness_v2_env.c). NOT a unit weight and NOT a
+     * substitute for the unit budget: it caps raw admitted WIRE BYTES so
+     * a block cannot carry the 1 MiB envelope maximum
+     * (DNA_ENV_MAX_TOTAL_LEN) repeatedly up to the transaction-count
+     * cap, whatever the unit economics say. 0 is INVALID — a zeroed
+     * struct admits no block (fail-closed); seal/check/digest all
+     * reject it. */
+    uint64_t max_block_env_bytes;
     uint64_t w_op[DNA_METER_OP_SPACE];           /* per-op weight            */
     uint64_t op_present[DNA_METER_OP_MASK_WORDS];/* authoritative-weight bits*/
     uint8_t  seal[64];                           /* SHA3-512, see seal()     */
@@ -240,10 +260,16 @@ int dna_meter_op_set(dna_meter_policy_t *p, uint32_t runtime_op, uint64_t w);
 /**
  * Seal the policy: seal = SHA3-512( "DNA.METPOL.v1"(16, zero-padded)
  *   ‖ policy_version u32 BE ‖ w_base ‖ w_callbyte ‖ w_authbyte
- *   ‖ w_effect ‖ w_effectbyte ‖ w_read ‖ w_write (u64 BE each)
+ *   ‖ w_effect ‖ w_effectbyte ‖ w_read ‖ w_write
+ *   ‖ max_block_env_bytes (u64 BE each — v2 appends the byte bound HERE,
+ *   directly after the scalar weights, before the op table)
  *   ‖ w_op[0..255] (u64 BE each) ‖ op_present[0..3] (u64 BE each) ).
- * Preimage is exactly 16 + 4 + 7*8 + 256*8 + 4*8 = 2156 bytes, built in
- * a stack buffer. Rejects (-1): NULL p, policy_version not accepted.
+ * Preimage is exactly 16 + 4 + 8*8 + 256*8 + 4*8 = 2164 bytes, built in
+ * a stack buffer. Rejects (-1): NULL p, policy_version not accepted,
+ * max_block_env_bytes == 0 (an unbounded-block policy must not even
+ * seal). The tag deliberately stays "DNA.METPOL.v1": the version FIELD
+ * inside the preimage is the discriminator, and no v1 preimage was ever
+ * committed anywhere (Ledger V2 inactive).
  * HONEST LABEL: local integrity checksum only — never wire-serialized,
  * never part of any consensus commitment.
  */
@@ -259,8 +285,10 @@ int dna_meter_policy_check(const dna_meter_policy_t *p);
  *
  *   digest = SHA3-512( "DNA.METPOLID.v1"(16, zero-padded)
  *     ‖ policy_version u32 BE ‖ w_base ‖ w_callbyte ‖ w_authbyte
- *     ‖ w_effect ‖ w_effectbyte ‖ w_read ‖ w_write (u64 BE each)
- *     ‖ w_op[0..255] (u64 BE each) ‖ op_present[0..3] (u64 BE each) )
+ *     ‖ w_effect ‖ w_effectbyte ‖ w_read ‖ w_write
+ *     ‖ max_block_env_bytes (u64 BE each — the v2 field, same position
+ *     as in the seal preimage) ‖ w_op[0..255] (u64 BE each)
+ *     ‖ op_present[0..3] (u64 BE each) )
  *
  * Same canonical field serialization as the seal, DIFFERENT tag, and the
  * seal field is NOT part of the preimage: the digest identifies the

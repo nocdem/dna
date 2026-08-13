@@ -166,18 +166,44 @@ extern "C" {
 #define DNA_ENV_LEG_HDR_LEN        30   /* 4+4+4+1+1+4+4+4+4             */
 
 /**
- * Largest total envelope encoding, INCLUSIVE.
+ * Largest total envelope encoding, INCLUSIVE — the VERSIONED Ledger V2
+ * envelope-family capacity bound (capacity season).
  *
- * DERIVED (documented, deliberately NOT included): 65536 is the shipped
- * per-transaction wire ceiling — NODUS_T3_MAX_TX_SIZE
- * (nodus/include/nodus/nodus_types.h:157) and its libdna mirror
- * DNAC_TXW3_MAX_TX_SIZE (shared/dnac/tx_wire.h:211). The value is restated
- * here as a standalone literal so this header stays free of any nodus
- * dependency (same rule as ledger_ids.h / chain_config_wire.h). If the
- * transaction ceiling ever moves, this constant is a coordinated change,
- * not an automatic one.
+ * DERIVED, twice (an independent python oracle reproduces the same
+ * numbers — shared/dnac/tests/env_wire_oracle.py): 2^20 is the smallest
+ * power of two that contains the worst-case LEGAL envelope the two
+ * production runtimes can require this release:
+ *
+ *   CHAIN_CONFIG carrying EVERY approval of the release validator
+ *   ceiling (128, DNA_MAX_ACTIVE_VALIDATORS) under the committee-indexed
+ *   auth carrier v2, single leg:            700,914 bytes
+ *   the same plus a maximal 15-distinct-owner SPEND leg (the largest
+ *   legal multi-leg composition under the per-runtime auth-kind
+ *   allowlists):                            813,904 bytes
+ *
+ *   524,288 = 2^19 < 813,904 <= 2^20 = 1,048,576.
+ *
+ * The shape arithmetic is pinned by _Static_asserts next to the
+ * constants it derives from (nodus_witness_rt_native.c — this header
+ * stays free of any nodus dependency, the ledger_ids.h rule).
+ *
+ * This bound is a RELEASE RESOURCE CEILING of envelope version
+ * DNA_ENV_VERSION — technical, version-aware, upgradeable by a
+ * coordinated software release; it is NOT validator-governance policy
+ * and NOT a protocol maximum.
+ *
+ * DELIBERATELY DECOUPLED from the legacy per-transaction wire ceiling:
+ * the legacy semantic limit stays EXACTLY 65,536 bytes
+ * (NODUS_T3_MAX_TX_SIZE, nodus/include/nodus/nodus_types.h:157, and its
+ * libdna mirror DNAC_TXW3_MAX_TX_SIZE, shared/dnac/tx_wire.h:211) and no
+ * legacy ingress, decode, mempool or verify path widens because this
+ * constant grew. An envelope is classified by its leading 16-byte wire
+ * family marker ("DNA.ENVWIRE.v1", byte offset 0) BEFORE any
+ * length-driven allocation, so a future V2 carrier can select this bound
+ * only after positive classification — a legacy frame can never
+ * accidentally be sized against it.
  */
-#define DNA_ENV_MAX_TOTAL_LEN      65536u
+#define DNA_ENV_MAX_TOTAL_LEN      1048576u
 
 /**
  * Largest leg count, INCLUSIVE.

@@ -74,18 +74,36 @@
  *               ‖ token_id[64]            all-zero = native DNAC
  *               ‖ seed[32] )
  *
- * CHAIN_CONFIG call v1 (exact length = 42 + 7219*votes):
+ * CHAIN_CONFIG call v2 (exact length = 41 — capacity season; SYSTEM
+ * ruleset_version 2 IS the call-format version, the repository's
+ * versioning axis for runtime-call semantics):
  *   param_id u8 ‖ new_value u64 ‖ effective u64 ‖ nonce u64
- *   ‖ signed_at u64 ‖ valid_before u64 ‖ vote_count u8 (5..8)
- *   ‖ vote_count × ( pubkey[2592] ‖ signature[4627] )
- *   Votes carry the FULL pubkey (the legacy cc wire carries witness_id
- *   and resolves pubkeys from the committee snapshot; here membership
- *   is checked against the mediated committee witness-id read and the
- *   signature against the carried pubkey — same authority, one read).
- *   The vote cap 8 is the envelope-ceiling fit (DNA_ENV_MAX_TOTAL_LEN);
- *   with quorum floor 5 the 7-seat devnet committee is fully covered;
- *   committees needing quorum > 8 are NOT expressible on envelope v1
- *   (honest label — a versioned envelope change, not a silent cap).
+ *   ‖ signed_at u64 ‖ valid_before u64
+ *   The call now carries ONLY the canonical proposal. Committee
+ *   approval evidence — formerly vote_count(5..8) × (pubkey ‖ sig)
+ *   INSIDE these call bytes, capped by the old 64 KiB envelope fit —
+ *   moved into versioned AUTHORIZATION evidence: auth_kind 2
+ *   (NODUS_RT_AUTHKIND_DSA87_CC_V1, nodus_witness_runtime.h), which
+ *   references the ENGINE-resolved governing snapshot by index and so
+ *   scales to the full release validator ceiling
+ *   (DNA_MAX_ACTIVE_VALIDATORS) under the derived 1 MiB envelope bound.
+ *   The v1 call format is RETIRED with SYSTEM ruleset v1 (no committed
+ *   consumer exists — Ledger V2 is inactive); v1 bytes are never
+ *   reinterpreted: a v1 leg names ruleset_version 1, which no compiled
+ *   runtime resolves any more.
+ *
+ * ── Capacity derivation (the DNA_ENV_MAX_TOTAL_LEN proof) ─────────────
+ * The _Static_asserts below pin the worst-case LEGAL envelope shapes
+ * against the constants they derive from; the independent oracle
+ * (shared/dnac/tests/env_wire_oracle.py) reproduces the same numbers:
+ *   single leg, CHAIN_CONFIG carrying ALL 128 release-ceiling approvals:
+ *     43 + 30 + 41 + (1 + 15×7219) + (2 + 128×4629) = 700,914
+ *   plus a maximal 15-distinct-owner / 16-output SPEND leg (the largest
+ *   legal multi-leg composition under the per-runtime auth-kind
+ *   allowlists — CORE legs carry kind 1 only):
+ *     + 30 + (2 + 15×64 + 16×232) + (1 + 15×7219) = 813,904
+ *   both <= 1,048,576 = DNA_ENV_MAX_TOTAL_LEN = 2^20 (the smallest
+ *   power of two containing the worst case).
  *
  * ── Honest divergences from the legacy lane (all fail-closed) ─────────
  *   - PER-TOKEN conservation: Σin == Σout per non-native token and
@@ -128,12 +146,10 @@
 #include "witness/nodus_witness.h"
 #include "witness/nodus_witness_runtime.h"
 #include "witness/nodus_witness_v2_adapter.h"
-#include "witness/nodus_witness_committee.h"
 #include "nodus/nodus_chain_config.h"
 
 #include "dnac/dnac.h"                 /* DNAC_MIN_FEE_RAW, DNAC_CFG_*   */
 #include "dnac/ledger_ids.h"           /* dna_bft_quorum                 */
-#include "dnac/chain_config_wire.h"    /* DNAC_CC_WIRE_MIN_SIGS          */
 #include "dnac/effect_wire.h"
 #include "dnac/res_meter.h"            /* dna_ck_add_u64                 */
 #include "crypto/hash/qgp_sha3.h"
@@ -158,8 +174,159 @@ static void rtn_put32(uint8_t *p, uint32_t v) {
 }
 
 /* ══════════════════════════════════════════════════════════════════════
- * The shared auth_kind-1 implementation (contract: runtime.h)
+ * The shared authorization implementation — kinds 1 and 2
+ * (contract: runtime.h; ONE compiled symbol for both production
+ * entries, so scheme verification cannot fork per domain)
  * ════════════════════════════════════════════════════════════════════ */
+
+/* The operation-shape bounds participate in the capacity derivation, so
+ * they are defined HERE, ahead of the asserts that consume them (their
+ * consumers live in the CORE/SYSTEM sections below). */
+#define RTN_SPEND_MAX_IN      15u  /* NODUS_RT_MAX_READS - 1 supply read */
+#define RTN_SPEND_MAX_OUT     16u  /* NODUS_T3_MAX_TX_OUTPUTS            */
+#define RTN_SPEND_OUT_LEN     232u /* fp128 + amount8 + token64 + seed32 */
+/** CHAIN_CONFIG call v2: the canonical PROPOSAL, nothing else (header
+ *  block — approval evidence lives in auth_kind 2). Exact length. */
+#define RTN_CC_CALL_LEN  41u
+
+/* Capacity-derivation pins (header block above). Every participating
+ * bound enters BY MACRO — a drift in any of them re-derives, or breaks,
+ * the envelope ceiling visibly (review finding: literals would go
+ * drift-blind on the call-shape side). */
+_Static_assert(NODUS_RT_AUTH_APPROVAL_LEN == 2u + (unsigned)NODUS_CC_SIG_SIZE,
+               "kind-2 approval unit drifted");
+_Static_assert((unsigned)DNA_ENV_FIXED_HEAD + DNA_ENV_LEG_HDR_LEN +
+                   RTN_CC_CALL_LEN +
+                   (1u + (unsigned)NODUS_RT_AUTH_MAX_SIGNERS *
+                             NODUS_RT_AUTH_SIGNER_LEN) +
+                   (2u + (unsigned)DNA_MAX_ACTIVE_VALIDATORS *
+                             NODUS_RT_AUTH_APPROVAL_LEN) == 700914u,
+               "worst-case single-leg CHAIN_CONFIG envelope drifted");
+_Static_assert(700914u + DNA_ENV_LEG_HDR_LEN +
+                   (2u + RTN_SPEND_MAX_IN * 64u +
+                    RTN_SPEND_MAX_OUT * RTN_SPEND_OUT_LEN) +
+                   (1u + (unsigned)NODUS_RT_AUTH_MAX_SIGNERS *
+                             NODUS_RT_AUTH_SIGNER_LEN) == 813904u,
+               "worst-case CC+SPEND two-leg envelope drifted");
+/* "Worst case" means worst FRAMING-AND-ALLOWLIST-legal: the two legs'
+ * fee rules are mutually exclusive at exec (SYSTEM requires fee 0, the
+ * SPEND floors require fee >= 1), so the composition can never execute —
+ * the ceiling deliberately over-covers, which is the conservative
+ * direction for an admission bound. */
+_Static_assert(813904u <= (unsigned)DNA_ENV_MAX_TOTAL_LEN,
+               "envelope ceiling no longer contains the worst legal "
+               "envelope — re-derive DNA_ENV_MAX_TOTAL_LEN");
+_Static_assert(813904u > (unsigned)DNA_ENV_MAX_TOTAL_LEN / 2u,
+               "the ceiling is no longer the SMALLEST containing power "
+               "of two — re-derive DNA_ENV_MAX_TOTAL_LEN");
+
+/* ── Capacity-season tags (each EXACTLY 16 bytes, zero-padded ASCII —
+ *    the env_wire.c discipline; collision-scanned against the full
+ *    "DNA.*" namespace, 64 tags at introduction time). ──────────────── */
+
+/** "DNA.CCSET.v1" (12 chars) + 4 zero bytes — resolved-committee-set
+ *  hash. */
+static const uint8_t TAG_CCSET[16] = {
+    'D','N','A','.','C','C','S','E','T','.','v','1', 0, 0, 0, 0
+};
+/** "DNA.CCAPPR.v1" (13 chars) + 3 zero bytes — committee approval
+ *  digest. */
+static const uint8_t TAG_CCAPPR[16] = {
+    'D','N','A','.','C','C','A','P','P','R','.','v','1', 0, 0, 0
+};
+
+int nodus_rt_committee_set_hash(const uint8_t (*fps)[64], uint32_t count,
+                                uint8_t out[64]) {
+    if (!fps || !out) return -1;
+    if (count == 0 || count > DNA_MAX_ACTIVE_VALIDATORS) return -1;
+    /* preimage: tag(16) ‖ count u16 BE ‖ count × fp[64] — the fps in
+     * COMMITTEE ORDER (the stake-ranked order the resolution returns),
+     * so the hash commits both membership AND seat positions. Stack:
+     * 18 + 128×64 = 8210 bytes max. */
+    uint8_t pre[16 + 2 + (size_t)DNA_MAX_ACTIVE_VALIDATORS * 64];
+    size_t off = 0;
+    memcpy(pre + off, TAG_CCSET, 16); off += 16;
+    pre[off++] = (uint8_t)(count >> 8);
+    pre[off++] = (uint8_t)count;
+    for (uint32_t i = 0; i < count; i++) {
+        memcpy(pre + off, fps[i], 64);
+        off += 64;
+    }
+    return qgp_sha3_512(pre, off, out) == 0 ? 0 : -1;
+}
+
+int nodus_rt_cc_approval_digest(const uint8_t leg_auth_digest[64],
+                                const uint8_t set_hash[64],
+                                uint64_t epoch, uint16_t index,
+                                uint8_t out[64]) {
+    if (!leg_auth_digest || !set_hash || !out) return -1;
+    /* preimage: tag(16) ‖ leg_auth_digest(64) ‖ set_hash(64)
+     * ‖ epoch u64 BE ‖ index u16 BE = 154 bytes. Binds everything the
+     * submitter signature binds (through leg_auth_digest →
+     * auth_context_commit: chain, domain, runtime_op, ruleset identity,
+     * proposal call bytes, fee, expiry, resource ceilings) PLUS the
+     * exact governing snapshot (set hash + epoch) and the signer's own
+     * seat — a vote cannot be replayed against another committee,
+     * another epoch, or from another seat. */
+    uint8_t pre[16 + 64 + 64 + 8 + 2];
+    size_t off = 0;
+    memcpy(pre + off, TAG_CCAPPR, 16); off += 16;
+    memcpy(pre + off, leg_auth_digest, 64); off += 64;
+    memcpy(pre + off, set_hash, 64); off += 64;
+    rtn_put64(pre + off, epoch); off += 8;
+    pre[off++] = (uint8_t)(index >> 8);
+    pre[off++] = (uint8_t)index;
+    if (off != sizeof(pre)) return -1;   /* final-offset proof           */
+    return qgp_sha3_512(pre, off, out) == 0 ? 0 : -1;
+}
+
+/**
+ * Parse + verify the SUBMITTER section (the whole kind-1 body; kind 2's
+ * leading section). Fills the verdict's signer fields.
+ * @param exact  non-zero = the section must consume alen EXACTLY
+ *               (kind 1); zero = a tail may follow (kind 2).
+ * @return 0 with *consumed_out set / -1 reject / -2 node fault.
+ */
+static int rtn_auth_submitters(const uint8_t *a, uint32_t alen,
+                               const uint8_t digest[64], int exact,
+                               nodus_rt_auth_verdict_t *out,
+                               uint64_t *consumed_out) {
+    if (alen < 1) return -1;
+    uint32_t n = a[0];
+    if (n < 1 || n > NODUS_RT_AUTH_MAX_SIGNERS) return -1;
+    /* checked framing arithmetic (mutation target: a truncating
+     * multiply must break the LEGAL maximum shape, not overflow) */
+    uint64_t body = 0, need = 0;
+    if (dna_ck_mul_u64((uint64_t)n, NODUS_RT_AUTH_SIGNER_LEN, &body) != 0 ||
+        dna_ck_add_u64(1u, body, &need) != 0)
+        return -1;
+    if (exact ? ((uint64_t)alen != need) : ((uint64_t)alen < need))
+        return -1;
+    const uint8_t *prev_pk = NULL;
+    for (uint32_t i = 0; i < n; i++) {
+        const uint8_t *pk  = a + 1 + (size_t)i * NODUS_RT_AUTH_SIGNER_LEN;
+        const uint8_t *sig = pk + NODUS_CC_PUBKEY_SIZE;
+        /* zero-pubkey reject (the verify.c:657 discipline: first 32
+         * bytes all zero marks a null key) */
+        int allz = 1;
+        for (int k = 0; k < 32 && allz; k++)
+            if (pk[k] != 0) allz = 0;
+        if (allz) return -1;
+        /* strictly ascending pubkeys: ONE canonical encoding per signer
+         * set — duplicates and disorder both reject */
+        if (prev_pk && memcmp(prev_pk, pk, NODUS_CC_PUBKEY_SIZE) >= 0)
+            return -1;
+        prev_pk = pk;
+        if (qgp_dsa87_verify(sig, NODUS_CC_SIG_SIZE, digest, 64, pk) != 0)
+            return -1;                   /* invalid signature: reject    */
+        if (qgp_sha3_512(pk, NODUS_CC_PUBKEY_SIZE,
+                         out->signer_fp[i]) != 0)
+            return -2;                   /* hash backend: NODE fault     */
+    }
+    out->n_signers = (uint16_t)n;
+    *consumed_out = need;
+    return 0;
+}
 
 int nodus_rt_auth_dsa87_v1(const nodus_domain_runtime_t *rt,
                            const dna_env_view_t *env, uint16_t leg_index,
@@ -171,45 +338,95 @@ int nodus_rt_auth_dsa87_v1(const nodus_domain_runtime_t *rt,
     if (leg_index >= env->leg_count || !env->buf) return -2;
 
     const dna_env_leg_hdr_t *h = &env->leg[leg_index];
-    if (h->auth_kind != NODUS_RT_AUTHKIND_DSA87_MULTI_V1)
-        return -1;                       /* unsupported scheme: reject   */
-
     const uint8_t *a = env->buf + env->auth_off[leg_index];
     uint32_t alen = h->auth_len;
-    if (alen < 1) return -1;
-    uint32_t n = a[0];
-    if (n < 1 || n > NODUS_RT_AUTH_MAX_SIGNERS) return -1;
-    if (alen != 1u + n * NODUS_RT_AUTH_SIGNER_LEN) return -1;
 
-    const uint8_t *prev_pk = NULL;
-    for (uint32_t i = 0; i < n; i++) {
-        const uint8_t *pk  = a + 1 + (size_t)i * NODUS_RT_AUTH_SIGNER_LEN;
-        const uint8_t *sig = pk + NODUS_CC_PUBKEY_SIZE;
-        /* zero-pubkey reject (the verify.c:657 discipline) */
-        int allz = 1;
-        for (int k = 0; k < 32 && allz; k++)
-            if (pk[k] != 0) allz = 0;
-        if (allz) { memset(out, 0, sizeof(*out)); return -1; }
-        /* strictly ascending pubkeys: ONE canonical encoding per signer
-         * set — duplicates and disorder both reject */
-        if (prev_pk && memcmp(prev_pk, pk, NODUS_CC_PUBKEY_SIZE) >= 0) {
+    if (h->auth_kind == NODUS_RT_AUTHKIND_DSA87_MULTI_V1) {
+        uint64_t consumed = 0;
+        int rc = rtn_auth_submitters(a, alen, ctx->leg_auth_digest,
+                                     /*exact=*/1, out, &consumed);
+        if (rc != 0) { memset(out, 0, sizeof(*out)); return rc; }
+        return 0;
+    }
+
+    if (h->auth_kind == NODUS_RT_AUTHKIND_DSA87_CC_V1) {
+        /* the ENGINE-resolved governing snapshot is this kind's one
+         * extra input; the engine provides it for every kind-2 leg, so
+         * a missing view is a broken engine invariant on THIS node */
+        const nodus_rt_committee_t *cm = ctx->committee;
+        if (!cm) { memset(out, 0, sizeof(*out)); return -2; }
+        if (cm->count == 0 || cm->count > DNA_MAX_ACTIVE_VALIDATORS ||
+            !cm->pubkeys) {
+            /* a chain with no committee cannot carry committee
+             * evidence — deterministic reject, never a fault */
             memset(out, 0, sizeof(*out));
             return -1;
         }
-        prev_pk = pk;
-        if (qgp_dsa87_verify(sig, NODUS_CC_SIG_SIZE,
-                             ctx->leg_auth_digest, 64, pk) != 0) {
+
+        uint64_t consumed = 0;
+        int rc = rtn_auth_submitters(a, alen, ctx->leg_auth_digest,
+                                     /*exact=*/0, out, &consumed);
+        if (rc != 0) { memset(out, 0, sizeof(*out)); return rc; }
+
+        /* approval section: count u16 BE ‖ count × (idx u16 ‖ sig) —
+         * EXACT framing, checked arithmetic throughout */
+        if ((uint64_t)alen < consumed + 2) {
             memset(out, 0, sizeof(*out));
-            return -1;                   /* invalid signature: reject    */
+            return -1;
         }
-        if (qgp_sha3_512(pk, NODUS_CC_PUBKEY_SIZE,
-                         out->signer_fp[i]) != 0) {
+        const uint8_t *ap = a + consumed;
+        uint32_t ac = ((uint32_t)ap[0] << 8) | ap[1];
+        if (ac < 1 || ac > cm->count) {
             memset(out, 0, sizeof(*out));
-            return -2;                   /* hash backend: NODE fault     */
+            return -1;                   /* more approvals than seats    */
         }
+        uint64_t abody = 0, total = 0;
+        if (dna_ck_mul_u64((uint64_t)ac, NODUS_RT_AUTH_APPROVAL_LEN,
+                           &abody) != 0 ||
+            dna_ck_add_u64(consumed + 2, abody, &total) != 0 ||
+            (uint64_t)alen != total) {
+            memset(out, 0, sizeof(*out));
+            return -1;                   /* truncated / trailing bytes   */
+        }
+        int32_t prev_idx = -1;
+        for (uint32_t v = 0; v < ac; v++) {
+            const uint8_t *slot = ap + 2 +
+                                  (size_t)v * NODUS_RT_AUTH_APPROVAL_LEN;
+            uint16_t idx = (uint16_t)(((uint16_t)slot[0] << 8) | slot[1]);
+            /* STRICTLY increasing seats: duplicates and disorder reject
+             * — one-validator-one-vote is structural, not counted */
+            if ((int32_t)idx <= prev_idx) {
+                memset(out, 0, sizeof(*out));
+                return -1;
+            }
+            prev_idx = (int32_t)idx;
+            if ((uint32_t)idx >= cm->count) {
+                memset(out, 0, sizeof(*out));
+                return -1;               /* seat outside the snapshot    */
+            }
+            uint8_t adigest[64];
+            if (nodus_rt_cc_approval_digest(ctx->leg_auth_digest,
+                                            cm->set_hash, cm->epoch, idx,
+                                            adigest) != 0) {
+                memset(out, 0, sizeof(*out));
+                return -2;               /* hash backend: NODE fault     */
+            }
+            /* the pubkey comes from the SNAPSHOT — the wire carries
+             * only the seat index */
+            const uint8_t *pk = cm->pubkeys +
+                                (size_t)idx * NODUS_CC_PUBKEY_SIZE;
+            if (qgp_dsa87_verify(slot + 2, NODUS_CC_SIG_SIZE, adigest,
+                                 64, pk) != 0) {
+                memset(out, 0, sizeof(*out));
+                return -1;               /* invalid approval: reject     */
+            }
+        }
+        out->n_approvals = (uint16_t)ac;
+        out->committee_n = (uint16_t)cm->count;
+        return 0;
     }
-    out->n_signers = (uint16_t)n;
-    return 0;
+
+    return -1;                           /* unsupported scheme: reject   */
 }
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -246,10 +463,9 @@ int nodus_rt_auth_dsa87_v1(const nodus_domain_runtime_t *rt,
  * slice consumes; selector 1 = total_minted is reserved, unimplemented). */
 #define RTN_SUPPLY_SEL_BURNED 2u
 
-/* SPEND call v1 bounds (header block above). */
-#define RTN_SPEND_MAX_IN      15u  /* NODUS_RT_MAX_READS - 1 supply read */
-#define RTN_SPEND_MAX_OUT     16u  /* NODUS_T3_MAX_TX_OUTPUTS            */
-#define RTN_SPEND_OUT_LEN     232u /* fp128 + amount8 + token64 + seed32 */
+/* SPEND call v1 bounds: RTN_SPEND_MAX_IN / _MAX_OUT / _OUT_LEN — defined
+ * with the capacity-derivation asserts near the top of this file (they
+ * participate in the envelope-ceiling arithmetic). */
 
 typedef struct {
     uint8_t        in_count;
@@ -798,7 +1014,11 @@ const nodus_domain_adapter_t NODUS_RT_CORE_ADAPTER = {
  * ════════════════════════════════════════════════════════════════════ */
 
 #define RTN_SYS_OP_CC        1u  /* CREATE: chain_config_history row     */
-#define RTN_SYS_OP_COMMITTEE 2u  /* READ-ONLY: witness-id list at height */
+/* op id 2 (the mediated committee witness-id read) is RETIRED with the
+ * capacity season: committee membership and signatures verify at the
+ * AUTHORIZATION boundary against the engine-resolved snapshot
+ * (auth_kind 2), so the exec phase no longer reads the committee at
+ * all. The id is not reused. */
 #define RTN_SYS_OP_CCLATEST  3u  /* READ-ONLY: latest nonzero value      */
 
 /* CC row canonical value (exact 88 bytes):
@@ -813,41 +1033,25 @@ const nodus_domain_adapter_t NODUS_RT_CORE_ADAPTER = {
 #define RTN_CC_VAL_LEN   88u
 #define RTN_CC_KEY_LEN   12u     /* param_id u32 BE ‖ effective u64 BE  */
 
-#define RTN_CC_VOTE_LEN  (NODUS_CC_PUBKEY_SIZE + NODUS_CC_SIG_SIZE)
-#define RTN_CC_MIN_VOTES DNAC_CC_WIRE_MIN_SIGS       /* 5 — shape floor */
-#define RTN_CC_MAX_VOTES 8u      /* envelope-ceiling fit (header block) */
-#define RTN_CC_FIXED_LEN 42u
-
-/* the committee read serves at most this many 32-byte witness ids —
- * DNA_MAX_ACTIVE_VALIDATORS(128) × 32 = 4096 ≤ the op's value bound */
-#define RTN_CC_COMMITTEE_MAX_VAL (32u * DNA_MAX_ACTIVE_VALIDATORS)
+/* CHAIN_CONFIG call v2 exact length: RTN_CC_CALL_LEN — defined with the
+ * capacity-derivation asserts near the top of this file. */
 
 typedef struct {
     uint8_t  param_id;
     uint64_t new_value, effective, nonce, signed_at, valid_before;
-    uint8_t  vote_count;
-    const uint8_t *votes;                /* vote_count × RTN_CC_VOTE_LEN */
 } rtn_cc_call_t;
 
 static int rtn_cc_parse(const dna_env_view_t *env, uint16_t leg,
                         rtn_cc_call_t *c) {
     const uint8_t *p = env->buf + env->call_off[leg];
     uint32_t len = env->leg[leg].call_len;
-    if (len < RTN_CC_FIXED_LEN) return -1;
+    if (len != RTN_CC_CALL_LEN) return -1;   /* exact, never a prefix    */
     c->param_id     = p[0];
     c->new_value    = rtn_get64(p + 1);
     c->effective    = rtn_get64(p + 9);
     c->nonce        = rtn_get64(p + 17);
     c->signed_at    = rtn_get64(p + 25);
     c->valid_before = rtn_get64(p + 33);
-    c->vote_count   = p[41];
-    if (c->vote_count < RTN_CC_MIN_VOTES ||
-        c->vote_count > RTN_CC_MAX_VOTES)
-        return -1;
-    if ((size_t)len != RTN_CC_FIXED_LEN +
-                       (size_t)c->vote_count * RTN_CC_VOTE_LEN)
-        return -1;
-    c->votes = p + RTN_CC_FIXED_LEN;
     return 0;
 }
 
@@ -863,20 +1067,20 @@ int nodus_rt_system_read_plan(const nodus_domain_runtime_t *rt,
         return -1;                       /* un-migrated op: fail closed  */
     rtn_cc_call_t c;
     if (rtn_cc_parse(env, leg_index, &c) != 0) return -1;
-    if (ctx->global_height == 0) return -1;   /* no signing-height
-                                          * committee below genesis      */
+    if (ctx->global_height == 0) return -1;   /* no governing committee
+                                          * below genesis                */
+    /* capacity season: the committee is no longer a mediated read —
+     * membership and approvals verified at the AUTH boundary against
+     * the engine-resolved snapshot. The one remaining read is the
+     * INFLATION_START monotonicity input. */
     uint16_t need = (uint16_t)(c.param_id == DNAC_CFG_INFLATION_START_BLOCK
-                                   ? 2 : 1);
+                                   ? 1 : 0);
     if (need > max_reqs) return -1;
-    memset(&reqs_out[0], 0, sizeof(reqs_out[0]));
-    reqs_out[0].op_id = RTN_SYS_OP_COMMITTEE;
-    reqs_out[0].key_len = 8;
-    rtn_put64(reqs_out[0].key, ctx->global_height - 1);
-    if (need == 2) {
-        memset(&reqs_out[1], 0, sizeof(reqs_out[1]));
-        reqs_out[1].op_id = RTN_SYS_OP_CCLATEST;
-        reqs_out[1].key_len = 1;
-        reqs_out[1].key[0] = c.param_id;
+    if (need == 1) {
+        memset(&reqs_out[0], 0, sizeof(reqs_out[0]));
+        reqs_out[0].op_id = RTN_SYS_OP_CCLATEST;
+        reqs_out[0].key_len = 1;
+        reqs_out[0].key[0] = c.param_id;
     }
     *n_out = need;
     return 0;
@@ -900,6 +1104,18 @@ int nodus_rt_system_exec(const nodus_domain_runtime_t *rt,
     if (rtn_cc_parse(env, leg_index, &c) != 0) return -1;
     if (!ctx->auth || ctx->auth->n_signers < 1) return -1;   /* verified
                                           * submitter authorization      */
+    /* ── committee quorum — the SOURCE authority, from the ENGINE
+     * verdict (capacity season): the auth boundary verified every
+     * approval signature against the engine-resolved governing snapshot
+     * (kind 2), counted the DISTINCT seats into n_approvals and
+     * recorded the resolved committee size. No envelope byte, no
+     * runtime and no caller supplies either number. A kind-1 leg
+     * arrives here with n_approvals == 0 and fails exactly like an
+     * under-quorum vote set. Exact quorum passes; quorum-1 fails. */
+    if (ctx->auth->committee_n < 1) return -1;
+    if ((uint32_t)ctx->auth->n_approvals <
+        dna_bft_quorum((uint32_t)ctx->auth->committee_n))
+        return -1;                       /* Rule CC-F quorum             */
     if (env->fee_amount != 0) return -1;      /* header block: no SYSTEM
                                           * fee sink exists this season  */
 
@@ -923,51 +1139,13 @@ int nodus_rt_system_exec(const nodus_domain_runtime_t *rt,
     }
 
     uint16_t expect_reads =
-        (uint16_t)(c.param_id == DNAC_CFG_INFLATION_START_BLOCK ? 2 : 1);
-    if (!reads || n_reads != expect_reads) return -2;
-
-    /* ── committee membership + quorum (the SOURCE authority) ───────── */
-    const nodus_rt_read_res_t *cm = &reads[0];
-    if (!cm->present) return -1;         /* chain has no committee       */
-    if (cm->value_len == 0 || cm->value_len % 32 != 0 ||
-        cm->value_len > RTN_CC_COMMITTEE_MAX_VAL)
-        return -2;                       /* own adapter out of contract  */
-    uint32_t committee_n = cm->value_len / 32;
-    if ((uint32_t)c.vote_count > committee_n) return -1;   /* CC-F shape */
-
-    uint8_t digest[64];
-    if (nodus_chain_config_compute_digest(ctx->chain_id, c.param_id,
-                                          c.new_value, c.effective,
-                                          c.nonce, c.signed_at,
-                                          c.valid_before, digest) != 0)
-        return -2;                       /* hash backend: node fault     */
-
-    uint8_t seen_ids[RTN_CC_MAX_VOTES][32];
-    for (uint8_t v = 0; v < c.vote_count; v++) {
-        const uint8_t *pk  = c.votes + (size_t)v * RTN_CC_VOTE_LEN;
-        const uint8_t *sig = pk + NODUS_CC_PUBKEY_SIZE;
-        uint8_t full[64];
-        if (qgp_sha3_512(pk, NODUS_CC_PUBKEY_SIZE, full) != 0) return -2;
-        memcpy(seen_ids[v], full, 32);
-        /* pairwise-distinct voters (verify_cc_local_rules discipline) */
-        for (uint8_t u = 0; u < v; u++)
-            if (memcmp(seen_ids[u], seen_ids[v], 32) == 0) return -1;
-        /* membership in the SIGNING-HEIGHT committee */
-        int member = 0;
-        for (uint32_t m = 0; m < committee_n && !member; m++)
-            if (memcmp(cm->value + (size_t)m * 32, seen_ids[v], 32) == 0)
-                member = 1;
-        if (!member) return -1;
-        if (qgp_dsa87_verify(sig, NODUS_CC_SIG_SIZE, digest,
-                             sizeof(digest), pk) != 0)
-            return -1;
-    }
-    if ((uint32_t)c.vote_count < dna_bft_quorum(committee_n))
-        return -1;                       /* Rule CC-F quorum             */
+        (uint16_t)(c.param_id == DNAC_CFG_INFLATION_START_BLOCK ? 1 : 0);
+    if (n_reads != expect_reads) return -2;
+    if (expect_reads > 0 && !reads) return -2;
 
     /* ── INFLATION_START monotonicity (Q5 / CC-GOV-001, 1:1) ────────── */
     if (c.param_id == DNAC_CFG_INFLATION_START_BLOCK) {
-        const nodus_rt_read_res_t *mono = &reads[1];
+        const nodus_rt_read_res_t *mono = &reads[0];
         if (mono->present) {
             if (mono->value_len != 8) return -2;
             if (c.new_value == 0) return -1;   /* cannot disable         */
@@ -1084,39 +1262,6 @@ static nodus_adapter_status_t rtn_sys_read(
         *vlen = RTN_CC_VAL_LEN;
         return NODUS_ADAPTER_OK;
     }
-    if (op->op_id == RTN_SYS_OP_COMMITTEE) {
-        if (key_len != 8) return NODUS_ADAPTER_ERR_STORAGE_FAULT;
-        uint64_t h = rtn_get64(key);
-        nodus_committee_member_t *mem =
-            calloc((size_t)DNA_MAX_ACTIVE_VALIDATORS, sizeof(*mem));
-        if (!mem) return NODUS_ADAPTER_ERR_STORAGE_FAULT;
-        int count = 0;
-        if (nodus_committee_get_for_block(w, h, mem,
-                                          DNA_MAX_ACTIVE_VALIDATORS,
-                                          &count) != 0) {
-            free(mem);
-            return NODUS_ADAPTER_ERR_STORAGE_FAULT;
-        }
-        if (count <= 0) { free(mem); return NODUS_ADAPTER_OK; } /* absent:
-                                          * a chain with no committee    */
-        if ((uint32_t)count * 32u > cap) {
-            free(mem);
-            return NODUS_ADAPTER_ERR_STORAGE_FAULT;
-        }
-        for (int i = 0; i < count; i++) {
-            uint8_t full[64];
-            if (qgp_sha3_512(mem[i].pubkey, NODUS_CC_PUBKEY_SIZE,
-                             full) != 0) {
-                free(mem);
-                return NODUS_ADAPTER_ERR_STORAGE_FAULT;
-            }
-            memcpy(value + (size_t)i * 32, full, 32);
-        }
-        free(mem);
-        *present = 1;
-        *vlen = (uint32_t)count * 32u;
-        return NODUS_ADAPTER_OK;
-    }
     if (op->op_id == RTN_SYS_OP_CCLATEST) {
         if (key_len != 1) return NODUS_ADAPTER_ERR_STORAGE_FAULT;
         sqlite3_stmt *st = NULL;
@@ -1184,19 +1329,19 @@ static nodus_adapter_status_t rtn_sys_mutate(
     return NODUS_ADAPTER_OK;
 }
 
-static const nodus_adapter_op_t RTN_SYS_OPS[3] = {
+static const nodus_adapter_op_t RTN_SYS_OPS[2] = {
     { RTN_SYS_OP_CC,
       NODUS_ADAPTER_KIND_BIT(DNA_EFFECT_CREATE),
       NODUS_ADAPTER_PRECOND_BIT(DNA_EFFECT_PRE_ABSENT),
       RTN_CC_KEY_LEN, RTN_CC_KEY_LEN, RTN_CC_VAL_LEN, RTN_CC_VAL_LEN },
-    { RTN_SYS_OP_COMMITTEE, 0, 0, 8, 8, 0, RTN_CC_COMMITTEE_MAX_VAL },
+    /* op 2 (committee read) RETIRED — capacity season; id not reused */
     { RTN_SYS_OP_CCLATEST,  0, 0, 1, 1, 0, 8 }
 };
 
 const nodus_domain_adapter_t NODUS_RT_SYSTEM_ADAPTER = {
     .adapter_version = NODUS_DOMAIN_ADAPTER_V1,
     .ops = RTN_SYS_OPS,
-    .n_ops = 3,
+    .n_ops = 2,
     .probe = rtn_sys_probe,
     .mutate = rtn_sys_mutate,
     .read = rtn_sys_read

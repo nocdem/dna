@@ -23,9 +23,12 @@
 #include "witness/nodus_witness_domreg.h"
 #include "witness/nodus_witness_roots_v2.h"
 #include "witness/nodus_witness_db.h"
+#include "witness/nodus_witness_committee.h"   /* capacity season: the
+                                        * governing snapshot resolution */
 #include "nodus/nodus_chain_config.h"
 
 #include "dnac/dnac.h"                 /* DNAC_CFG_* */
+#include "crypto/hash/qgp_sha3.h"      /* committee member fingerprints */
 #include "crypto/utils/qgp_log.h"
 
 #include <sqlite3.h>
@@ -1046,9 +1049,17 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
     nodus_rt_read_res_t *reads = NULL;
     uint8_t *resbuf = NULL;
     nodus_rt_auth_verdict_t *auths = NULL;   /* [n_envs × MAX_LEGS]      */
+    /* capacity season: the ENGINE-resolved governing committee snapshot
+     * for auth_kind-2 legs — resolved lazily ONCE per block (heap: up to
+     * 128 × 2592 B of pubkeys; never on the stack). */
+    uint8_t *cm_pubkeys = NULL;
+    uint8_t (*cm_fps)[64] = NULL;
+    nodus_rt_committee_t cmview;
+    memset(&cmview, 0, sizeof(cmview));
     uint8_t claim_nuls[MAX_OPS][64];
     int env_phase[NODUS_V2_ENV_BATCH_MAX];
     memset(env_phase, 0, sizeof(env_phase));
+    int need_committee = 0;              /* any leg carries auth_kind 2  */
 
     if (blk->n_envs > 0) {
         pf     = calloc(blk->n_envs, sizeof(*pf));
@@ -1112,10 +1123,83 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
                 if (!rt_owns_runtime_op(d->rt, v->leg[l].runtime_op))
                     RET_VERDICT;                 /* op not in the
                                                   * committed ruleset    */
+                /* capacity season: the runtime's auth-kind ALLOWLIST,
+                 * enforced BEFORE any authorization work — a runtime
+                 * that never consumes committee approvals cannot be
+                 * made to carry (or pay for) an approval blob. The
+                 * shift guard keeps kinds >= 32 out of UB; they are
+                 * unsupported anyway. */
+                {
+                    uint8_t ak = v->leg[l].auth_kind;
+                    if (ak >= 32 ||
+                        (d->rt->allowed_auth_kinds &
+                         NODUS_RT_AUTHKIND_BIT(ak)) == 0)
+                        RET_VERDICT;
+                    if (ak == NODUS_RT_AUTHKIND_DSA87_CC_V1)
+                        need_committee = 1;
+                }
                 d->touched = 1;
                 if (d->n_tx >= MAX_OPS) RET_VERDICT;
                 memcpy(d->tx_ids[d->n_tx++], pf[i].tx_id, 64);
             }
+        }
+
+        /* ── GOVERNING COMMITTEE SNAPSHOT (capacity season, pre-BEGIN) ─
+         * Resolved ONCE per block, only when some leg carries the
+         * committee-indexed carrier: nodus_committee_get_for_block at
+         * the governing height H-1 — the SAME authority the legacy
+         * chain-config apply consults (nodus_witness_chain_config.c
+         * lookup_height = commit_block - 1). The transaction can
+         * neither carry nor select it: nothing in the envelope names an
+         * epoch, a height or a set hash — approvals merely FAIL against
+         * the wrong snapshot. A lookup FAULT is node-local (-2, do not
+         * vote); an EMPTY committee is deterministic chain state and
+         * flows into the view (the auth hook rejects kind-2 legs on
+         * count == 0). */
+        if (need_committee) {
+            nodus_committee_member_t *mem = NULL;
+            int cm_count = 0;
+            if (blk->global_height == 0) RET_VERDICT;   /* below genesis */
+            if (nodus_committee_get_for_block_alloc(
+                    w, blk->global_height - 1, &mem, &cm_count) != 0)
+                goto fail_fault_pre;
+            if (cm_count < 0 || cm_count > DNA_MAX_ACTIVE_VALIDATORS) {
+                free(mem);
+                goto fail_fault_pre;     /* out-of-contract resolution   */
+            }
+            if (cm_count > 0) {
+                cm_pubkeys = malloc((size_t)cm_count *
+                                    NODUS_CC_PUBKEY_SIZE);
+                cm_fps = malloc((size_t)cm_count * 64);
+                if (!cm_pubkeys || !cm_fps) {
+                    free(mem);
+                    goto fail_fault_pre;
+                }
+                for (int ci = 0; ci < cm_count; ci++) {
+                    memcpy(cm_pubkeys +
+                               (size_t)ci * NODUS_CC_PUBKEY_SIZE,
+                           mem[ci].pubkey, NODUS_CC_PUBKEY_SIZE);
+                    if (qgp_sha3_512(mem[ci].pubkey,
+                                     NODUS_CC_PUBKEY_SIZE,
+                                     cm_fps[ci]) != 0) {
+                        free(mem);
+                        goto fail_fault_pre;
+                    }
+                }
+                if (nodus_rt_committee_set_hash(
+                        (const uint8_t (*)[64])cm_fps,
+                        (uint32_t)cm_count, cmview.set_hash) != 0) {
+                    free(mem);
+                    goto fail_fault_pre;
+                }
+                cmview.pubkeys = cm_pubkeys;
+                cmview.fps = (const uint8_t (*)[64])cm_fps;
+            }
+            free(mem);
+            cmview.count = (uint32_t)cm_count;
+            cmview.epoch =
+                nodus_v2_epoch_for_height(blk->global_height - 1);
+            if (blk->fail_at == V2AP_FAIL_AFTER_CC_SNAPSHOT) RET_VERDICT;
         }
 
         /* ── VERIFIED AUTHORIZATION (pre-BEGIN, whole batch) ──────────
@@ -1143,6 +1227,11 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
                 actx.tx_id               = pf[i].tx_id;
                 actx.auth_context_commit = pf[i].auth_context_commit;
                 actx.leg_auth_digest     = pf[i].auth_digest[l];
+                /* the resolved snapshot view, ONLY for the kind that
+                 * consumes it (runtime.h ctx contract) */
+                actx.committee =
+                    v->leg[l].auth_kind == NODUS_RT_AUTHKIND_DSA87_CC_V1
+                        ? &cmview : NULL;
                 int arc = d->rt->auth(d->rt, v, l, &actx,
                                       &auths[i * DNA_ENV_MAX_LEGS + l]);
                 if (arc == -2) goto fail_fault_pre;
@@ -1695,6 +1784,7 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
         goto fail_fault_committed;      /* commit itself failed: node    */
     }
     free(pf); free(meters); free(reads); free(resbuf); free(auths);
+    free(cm_pubkeys); free(cm_fps);
     free(doms);
     if (blk->fail_at == V2AP_FAIL_AFTER_COMMIT)
         return 2;                        /* committed; pre-cache window  */
@@ -1709,6 +1799,7 @@ fail:
     (void)exec_sql(w, "ROLLBACK");
     meters_abort_all(meters, blk->n_envs);
     free(pf); free(meters); free(reads); free(resbuf); free(auths);
+    free(cm_pubkeys); free(cm_fps);
     free(doms);
     return -1;
 
@@ -1717,6 +1808,7 @@ fail_fault:
 fail_fault_committed:
     meters_abort_all(meters, blk->n_envs);
     free(pf); free(meters); free(reads); free(resbuf); free(auths);
+    free(cm_pubkeys); free(cm_fps);
     free(doms);
     return -2;
 
@@ -1724,12 +1816,14 @@ fail_fault_committed:
 fail_verdict_pre:
     meters_abort_all(meters, blk->n_envs);
     free(pf); free(meters); free(reads); free(resbuf); free(auths);
+    free(cm_pubkeys); free(cm_fps);
     free(doms);
     return -1;
 
 fail_fault_pre:
     meters_abort_all(meters, blk->n_envs);
     free(pf); free(meters); free(reads); free(resbuf); free(auths);
+    free(cm_pubkeys); free(cm_fps);
     free(doms);
     return -2;
 }

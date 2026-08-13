@@ -65,11 +65,13 @@
  *     differing only in auth_data therefore carry ONE authorized intent
  *     under TWO distinct tx_ids, and BOTH pass this dedup (pinned by
  *     test_v2_env_preflight "AUTH-DATA MALLEABILITY"). Byte-level dedup
- *     is what this season locks; collapsing same-intent envelopes —
- *     via auth_context_commit equality, auth-kind canonicality, or
- *     state-level conflict — is the EXECUTION/AUTHORIZATION seasons'
- *     obligation. The intent key is already computed and exported in
- *     dna_env_preflight_t precisely so that caller need not rederive it;
+ *     is what this seam locks; collapsing same-intent envelopes is the
+ *     CANONICAL-INTENT-IDENTITY season's obligation — the next season
+ *     after the capacity season, which deliberately did NOT close it
+ *     (and note auth_context_commit alone is NOT a valid intent key:
+ *     it commits per-leg auth_kind and auth_len, so a different valid
+ *     signer SUBSET still moves it — the intent season must derive a
+ *     witness-independent identity);
  *   - FAULT vs VERDICT — a preflight ERR_HASH is a NODE-LOCAL fault
  *     (see env_preflight.h's ERR_HASH note), not a statement about the
  *     envelope. A consensus caller must fail ITS OWN operation on it
@@ -147,11 +149,34 @@ typedef enum {
     NODUS_V2_ENV_ERR_PREFLIGHT,    /* dna_env_preflight rejected — the
                                     * exact reason is in pf_status_out     */
     NODUS_V2_ENV_ERR_DUP,          /* duplicate DERIVED tx_id in the batch */
-    NODUS_V2_ENV_ERR_METER         /* metering/reservation rejected — the
+    NODUS_V2_ENV_ERR_METER,        /* metering/reservation rejected — the
                                     * exact reason is in meter_status_out.
                                     * APPENDED for the metering season;
                                     * every earlier value is unmoved.     */
+    NODUS_V2_ENV_ERR_BLOCK_BYTES   /* the batch's summed envelope bytes
+                                    * exceed the policy's ABSOLUTE
+                                    * max_block_env_bytes bound (or the
+                                    * checked sum overflowed). APPENDED
+                                    * for the capacity season; every
+                                    * earlier value is unmoved. Fires
+                                    * BEFORE any reservation — a byte-
+                                    * rejected batch never touches the
+                                    * budget.                            */
 } nodus_v2_env_status_t;
+
+/**
+ * PURE checked block-byte admission: sum the n envelope lengths with
+ * dna_ck_add_u64 and compare against the INCLUSIVE absolute bound.
+ * Exposed so the arithmetic is directly unit-testable with synthetic
+ * lengths (no envelopes needed) — the reserve seam below is its one
+ * production caller.
+ *
+ * @return 0 admitted (sum <= max_block_env_bytes, no overflow);
+ *         -1 rejected (NULL lens with n>0, n == 0, bound == 0, checked
+ *         overflow, or sum above the bound).
+ */
+int nodus_witness_v2_block_bytes_check(const size_t *lens, size_t n,
+                                       uint64_t max_block_env_bytes);
 
 /**
  * Preflight a whole batch of candidate envelopes against ONE chain
@@ -253,6 +278,25 @@ nodus_v2_env_status_t nodus_witness_v2_env_preflight_batch(
  *      ERR_METER with *meter_status_out = DNA_METER_ERR_POLICY. One
  *      check for the whole batch; dna_meter_reserve re-runs it per
  *      envelope (defence in depth, same frozen answer).
+ *   4b. ABSOLUTE BLOCK-BYTE ADMISSION (capacity season): the checked sum
+ *      of every ACCEPTED envelope's exact byte length
+ *      (out[i].view.env_len) must fit the policy's
+ *      max_block_env_bytes (INCLUSIVE) —
+ *      nodus_witness_v2_block_bytes_check. Failure ->
+ *      ERR_BLOCK_BYTES. ORDER IS LOAD-BEARING: this fires BEFORE any
+ *      reservation, so a byte-rejected batch cannot partially consume —
+ *      or even transiently touch — the unit budget, and the distinct
+ *      status cannot be masked by unit exhaustion (at placeholder
+ *      weight-1 economics w_authbyte×bytes ≈ bytes, so a post-reserve
+ *      check could never fire). This is a RAW WIRE-BYTE bound, separate
+ *      from metered execution units by construction.
+ *      HONEST LABEL (review note, unreachable today): the base
+ *      preflight in step 3 derives every envelope's commitments BEFORE
+ *      this gate can reject the batch — worst case 16 × 1 MiB of SHA3
+ *      work pre-gate. Inherent (dedup needs tx_id) and unreachable
+ *      while no transport admits > 64 KiB frames; the season that
+ *      wires a live V2 ingress MUST add its own per-frame byte check
+ *      ahead of this seam rather than rely on the per-block sum here.
  *   5. Per envelope, in index order: dna_meter_reserve(&meters_out[i],
  *      policy, &out[i].view, budget) — plan build + ATOMIC debit of the
  *      global ceiling and each leg's static units. Envelope i+1 is

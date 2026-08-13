@@ -313,7 +313,13 @@ typedef enum {
     V2AP_FAIL_AFTER_READS = 30,         /* mediated reads done + charged */
     V2AP_FAIL_AFTER_EXEC_HOOK = 31,     /* native exec returned          */
     V2AP_FAIL_AFTER_EFFECT_DECODE = 32, /* strict result decode done     */
-    V2AP_FAIL_AFTER_EFFECT_CHARGE = 33  /* effect charge done            */
+    V2AP_FAIL_AFTER_EFFECT_CHARGE = 33, /* effect charge done            */
+    /* Capacity-season stage (28-33 above are FROZEN). Fires pre-BEGIN
+     * after the governing committee snapshot was resolved, hashed and
+     * fixed into the engine-owned view — proves that a block failing
+     * right after snapshot resolution leaves the database digest, the
+     * unit budget and every index byte-identical. */
+    V2AP_FAIL_AFTER_CC_SNAPSHOT = 34
 } nodus_v2_apply_fail_t;
 
 /*

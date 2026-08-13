@@ -79,21 +79,37 @@ static dna_meter_policy_t g_sys_policy;
 static int g_sys_policy_ready = 0;          /* 0 until built+sealed OK   */
 
 static const uint8_t SYS_METER_POLICY_DIGEST[DNA_DOM_HASH_LEN] = {
-    0xfa, 0xd5, 0x72, 0xe9, 0xda, 0x29, 0xb6, 0xba,
-    0x9e, 0x1d, 0xe4, 0x90, 0x3e, 0x27, 0x99, 0xe0,
-    0xbb, 0x91, 0xaf, 0xcc, 0xad, 0xa3, 0x40, 0x03,
-    0x50, 0xfb, 0x43, 0xdf, 0xb7, 0x65, 0xcb, 0xda,
-    0xa8, 0xb1, 0x6f, 0x12, 0x95, 0x73, 0xb7, 0x83,
-    0xae, 0xe5, 0x53, 0x2a, 0x4f, 0x40, 0xf8, 0xcb,
-    0x70, 0x74, 0x29, 0x45, 0xa8, 0xb5, 0xc5, 0x63,
-    0x9a, 0x52, 0xd4, 0xc2, 0x05, 0xf4, 0x05, 0x37
+    /* capacity season — policy v2 (max_block_env_bytes appended);
+     * oracle: scratchpad capacity_season_oracle.py, whose control legs
+     * reproduced BOTH shipped pins (old SYSTEM policy fad572e9… and
+     * the S9→exec CORE ruleset hash) before this value was accepted.
+     * The old v1 digest fad572e9…0537 is dead. */
+    0xdf, 0xeb, 0xb8, 0x2a, 0x55, 0x2d, 0xcd, 0xb0,
+    0xac, 0x4e, 0x25, 0x81, 0x5e, 0x41, 0x84, 0x82,
+    0xf0, 0x27, 0xa3, 0xce, 0x0c, 0xc8, 0x81, 0x09,
+    0xc0, 0x45, 0xb7, 0x43, 0x9a, 0x9d, 0xce, 0x49,
+    0xe3, 0x7c, 0x65, 0xc4, 0x32, 0x0a, 0xdb, 0xcd,
+    0xf9, 0xdd, 0xca, 0x01, 0xd2, 0xcf, 0x05, 0x6d,
+    0x32, 0xbc, 0x9c, 0x20, 0xa1, 0x59, 0x0f, 0xe6,
+    0x7b, 0x35, 0x78, 0x66, 0xee, 0x27, 0xc2, 0xde
 };
 
 static int sys_policy_build(dna_meter_policy_t *p) {
     memset(p, 0, sizeof(*p));
-    p->policy_version = DNA_METER_POLICY_VERSION;
+    p->policy_version = DNA_METER_POLICY_VERSION;   /* v2 — capacity season */
     p->w_base = 1; p->w_callbyte = 1; p->w_authbyte = 1;
     p->w_effect = 1; p->w_effectbyte = 1; p->w_read = 1; p->w_write = 1;
+    /* The ABSOLUTE per-block V2 envelope byte bound (policy v2 field —
+     * res_meter.h). 2 MiB = 2 * DNA_ENV_MAX_TOTAL_LEN: admits at least
+     * TWO worst-case legal envelopes (813,904 B each — the derivation
+     * pinned in nodus_witness_rt_native.c) per block while bounding a
+     * full block's admitted envelope bytes to 2 MiB — a block can never
+     * carry the 1 MiB envelope maximum repeatedly up to the 16-slot
+     * batch/tx-count cap (16 MiB). JUDGMENT value, same placeholder
+     * class as the weight-1 economics: the devnet reset repins real
+     * economics behind a new policy digest. Raw wire-byte bound,
+     * separate from the unit budget by construction. */
+    p->max_block_env_bytes = 2u * DNA_ENV_MAX_TOTAL_LEN;
     for (uint32_t op = 1; op <= 6; op++)
         if (dna_meter_op_set(p, op, 1) != 0) return -1;
     return dna_meter_policy_seal(p);
@@ -106,14 +122,19 @@ static int sys_policy_build(dna_meter_policy_t *p) {
  * SYSTEM's digest commits SYS_METER_POLICY_DIGEST; CORE's commits the
  * all-zero "no policy declared" field. */
 static const uint8_t SYS_RULESET_HASH[DNA_DOM_HASH_LEN] = {
-    0x89, 0x36, 0x22, 0x13, 0x54, 0xc3, 0xc3, 0xe9,
-    0x39, 0xda, 0xa3, 0xd2, 0x61, 0x7d, 0x3b, 0x74,
-    0x9e, 0xa7, 0x01, 0x19, 0x4c, 0x80, 0x4a, 0x0f,
-    0x91, 0x75, 0xd8, 0xb5, 0xb6, 0x3e, 0xba, 0x46,
-    0x0b, 0x56, 0x22, 0x02, 0x11, 0x6b, 0x9e, 0x65,
-    0xc0, 0xeb, 0x68, 0x27, 0x3f, 0xf1, 0xa2, 0x90,
-    0xe7, 0x91, 0x00, 0xe7, 0xe0, 0x3b, 0xdd, 0x11,
-    0x50, 0x47, 0x86, 0x5a, 0x6b, 0x78, 0x96, 0xc2
+    /* capacity season — ruleset_version 2 (CHAIN_CONFIG call v2 +
+     * auth carrier v2) committing the v2 policy digest above; same
+     * oracle + control legs. The exec-season value 89362213…96c2 is
+     * dead. CORE is UNCHANGED (its descriptor bytes did not move —
+     * selfcheck's fresh re-derivation proves it every run). */
+    0x9f, 0xc5, 0x39, 0x4e, 0x60, 0xe0, 0xd9, 0x80,
+    0xae, 0xe5, 0x5b, 0x5a, 0xa7, 0x1c, 0x4f, 0x9c,
+    0x84, 0xcd, 0x45, 0x1f, 0x08, 0xd2, 0x76, 0xcf,
+    0xfe, 0x21, 0x29, 0xd1, 0xfc, 0x95, 0x7f, 0x6f,
+    0x35, 0x40, 0xa0, 0x33, 0x6c, 0xc8, 0x0e, 0xc5,
+    0x30, 0x98, 0xa8, 0x97, 0x40, 0x40, 0xad, 0x7f,
+    0x40, 0x8b, 0xa5, 0x9d, 0x88, 0x5d, 0x17, 0xac,
+    0xdd, 0x17, 0x13, 0x46, 0x8c, 0xce, 0x24, 0xbb
 };
 static const uint8_t CORE_RULESET_HASH[DNA_DOM_HASH_LEN] = {
     0xad, 0x98, 0xa0, 0x36, 0xca, 0x2e, 0x2d, 0x92,
@@ -199,8 +220,14 @@ static const nodus_domain_runtime_t BUILTIN[] = {
     {
         .domain_id       = DNA_DOMAIN_SYSTEM,
         .runtime_kind    = DNA_RUNTIME_NATIVE_BUILTIN,
+        /* ruleset_version 2 — capacity season: the CHAIN_CONFIG call
+         * format changed (v2 = proposal-only, 41 bytes; approval
+         * evidence moved to auth_kind 2) and the committed meter policy
+         * moved to policy v2 (max_block_env_bytes). The runtime-call
+         * version axis IS the ruleset version (exact-tuple lookup), so
+         * v1 legs resolve NOTHING — old bytes are never reinterpreted. */
         .runtime_abi     = NODUS_DOMAIN_RUNTIME_ABI_V1,
-        .ruleset_version = 1,
+        .ruleset_version = 2,
         .ruleset_hash    = { 0 },   /* set via memcpy-free static init below
                                      * is impossible for a named array —
                                      * selfcheck compares against the pinned
@@ -211,7 +238,7 @@ static const nodus_domain_runtime_t BUILTIN[] = {
             .domain_id = DNA_DOMAIN_SYSTEM,
             .name = "SYSTEM",
             .runtime_abi = NODUS_DOMAIN_RUNTIME_ABI_V1,
-            .ruleset_version = 1,
+            .ruleset_version = 2,
             .rule_count = 6, .rule_ids = SYS_RULES,
             .tx_type_count = 6, .tx_types = SYS_TYPES
         },
@@ -222,6 +249,11 @@ static const nodus_domain_runtime_t BUILTIN[] = {
          * every other owned runtime_op deterministically rejects inside
          * the hooks until its own migration slice. */
         .auth      = nodus_rt_auth_dsa87_v1,
+        /* capacity season: SYSTEM legs may carry the ordinary submitter
+         * scheme AND the committee-indexed carrier. */
+        .allowed_auth_kinds =
+            NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_MULTI_V1) |
+            NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_CC_V1),
         .read_plan = nodus_rt_system_read_plan,
         .exec      = nodus_rt_system_exec,
         .state_root   = nodus_rt_system_state_root,
@@ -255,8 +287,14 @@ static const nodus_domain_runtime_t BUILTIN[] = {
         .admit = rt_admit_common,
         .tx_cost = core_cost,
         /* Native auth season: DNA_CORERULE_SPEND only (header rule
-         * above); shared auth_kind-1 implementation. */
+         * above); shared auth implementation. */
         .auth      = nodus_rt_auth_dsa87_v1,
+        /* capacity season: CORE consumes ordinary multi-signer
+         * authorization ONLY — no CORE operation reads committee
+         * approvals, so a CORE leg can never be made to carry (or a
+         * block to pay for) a committee-approval blob. */
+        .allowed_auth_kinds =
+            NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_MULTI_V1),
         .read_plan = nodus_rt_core_read_plan,
         .exec      = nodus_rt_core_exec,
         .state_root   = nodus_rt_core_state_root,
@@ -362,6 +400,16 @@ int nodus_witness_runtime_selfcheck(void) {
          * healthy — a missing authorization/read/exec hook or a broken
          * compiled adapter is a broken table, never a soft skip. */
         if (!rt->auth || !rt->read_plan || !rt->exec) return -1;
+        /* capacity season: the auth-kind allowlist is part of the
+         * table's health — a runtime accepting no kind cannot authorize
+         * anything (broken), and a bit naming an uncompiled kind would
+         * admit legs the shared implementation must reject. The exact
+         * configured shape is pinned below with the policy shape. */
+        if (rt->allowed_auth_kinds == 0) return -1;
+        if (rt->allowed_auth_kinds &
+            ~(NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_MULTI_V1) |
+              NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_CC_V1)))
+            return -1;
         if (!rt->adapter) return -1;
         if (nodus_adapter_selfcheck(rt->adapter) != 0) return -1;
         if (!rt->state_root) return -1;                /* root is REAL   */
@@ -393,6 +441,15 @@ int nodus_witness_runtime_selfcheck(void) {
          * authority) carries one, CORE none */
         if (i == 0 && (!g_sys_policy_ready || !rt->meter_policy)) return -1;
         if (i == 1 && rt->meter_policy) return -1;
+        /* the exact configured auth-kind shape (header contract):
+         * SYSTEM {1,2} — submitter + committee carrier; CORE {1} */
+        if (i == 0 && rt->allowed_auth_kinds !=
+                (NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_MULTI_V1) |
+                 NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_CC_V1)))
+            return -1;
+        if (i == 1 && rt->allowed_auth_kinds !=
+                NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_MULTI_V1))
+            return -1;
         /* pinned digest must equal a FRESH recomputation */
         uint8_t fresh[DNA_DOM_HASH_LEN];
         if (dna_ruleset_desc_hash(&rt->descriptor, fresh) != 0) return -1;

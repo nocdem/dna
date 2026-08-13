@@ -58,12 +58,13 @@ int dna_ck_sub_u64(uint64_t a, uint64_t b, uint64_t *out) {
 static const uint8_t METER_POLICY_TAG[16]    = "DNA.METPOL.v1";
 static const uint8_t METER_POLICY_ID_TAG[16] = "DNA.METPOLID.v1";
 
-/* Seal preimage: tag(16) + version(4) + 7 scalar weights (56)
- * + 256 op weights (2048) + 4 mask words (32) = 2156 bytes. */
+/* Seal preimage: tag(16) + version(4) + 7 scalar weights + the v2
+ * max_block_env_bytes bound (8*8 = 64) + 256 op weights (2048)
+ * + 4 mask words (32) = 2164 bytes. */
 #define METER_SEAL_PREIMAGE_LEN \
-    (16u + 4u + 7u * 8u + (unsigned)DNA_METER_OP_SPACE * 8u + \
+    (16u + 4u + 8u * 8u + (unsigned)DNA_METER_OP_SPACE * 8u + \
      (unsigned)DNA_METER_OP_MASK_WORDS * 8u)
-_Static_assert(METER_SEAL_PREIMAGE_LEN == 2156u,
+_Static_assert(METER_SEAL_PREIMAGE_LEN == 2164u,
                "policy seal preimage layout drifted");
 
 static void put_u32be(uint8_t *p, uint32_t v) {
@@ -93,6 +94,10 @@ static int policy_hash_tagged(const dna_meter_policy_t *p,
     put_u64be(pre + off, p->w_effectbyte);    off += 8;
     put_u64be(pre + off, p->w_read);          off += 8;
     put_u64be(pre + off, p->w_write);         off += 8;
+    /* v2: the absolute block byte bound, directly after the scalar
+     * weights (res_meter.h preimage doc — the ONE serialization both
+     * the seal and the identity digest share). */
+    put_u64be(pre + off, p->max_block_env_bytes); off += 8;
     for (size_t i = 0; i < DNA_METER_OP_SPACE; i++) {
         put_u64be(pre + off, p->w_op[i]); off += 8;
     }
@@ -110,20 +115,30 @@ int dna_meter_op_set(dna_meter_policy_t *p, uint32_t runtime_op, uint64_t w) {
     return 0;
 }
 
+/* v2 shape gate shared by seal/check/digest: a policy whose absolute
+ * block byte bound is 0 would admit no block if honored — and every
+ * block if a consumer forgot the check. Fail closed at the source: it
+ * is not a policy at all. */
+static int policy_shape_ok(const dna_meter_policy_t *p) {
+    if (p->policy_version != DNA_METER_POLICY_VERSION) return -1;
+    if (p->max_block_env_bytes == 0) return -1;
+    return 0;
+}
+
 int dna_meter_policy_seal(dna_meter_policy_t *p) {
-    if (!p || p->policy_version != DNA_METER_POLICY_VERSION) return -1;
+    if (!p || policy_shape_ok(p) != 0) return -1;
     return policy_hash_tagged(p, METER_POLICY_TAG, p->seal);
 }
 
 int dna_meter_policy_check(const dna_meter_policy_t *p) {
     uint8_t d[64];
-    if (!p || p->policy_version != DNA_METER_POLICY_VERSION) return -1;
+    if (!p || policy_shape_ok(p) != 0) return -1;
     if (policy_hash_tagged(p, METER_POLICY_TAG, d) != 0) return -1;
     return memcmp(d, p->seal, 64) == 0 ? 0 : -1;
 }
 
 int dna_meter_policy_digest(const dna_meter_policy_t *p, uint8_t out[64]) {
-    if (!p || !out || p->policy_version != DNA_METER_POLICY_VERSION)
+    if (!p || !out || policy_shape_ok(p) != 0)
         return -1;
     return policy_hash_tagged(p, METER_POLICY_ID_TAG, out);
 }

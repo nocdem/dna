@@ -96,9 +96,23 @@ _Static_assert((size_t)DNA_ENV_FIXED_HEAD +
  * justification for that choice — 6107 bytes worst case. */
 _Static_assert(ENV_AUTHCTX_PRE_MAX == 6107,
                "auth_context_commit max preimage drifted (91 + 94*64)");
-/* tx_id and call_commit preimages are HEAP (up to ~64 KB). */
-_Static_assert(ENV_TXID_PRE_FIXED + (size_t)DNA_ENV_MAX_TOTAL_LEN == 65620,
-               "tx_id max preimage drifted (84 + 65536)");
+/* tx_id and call_commit preimages are HEAP (up to ~1 MiB — the
+ * capacity-season envelope ceiling; nothing here scales the STACK with
+ * it: the one stack preimage, auth_context_commit, is leg-count-bounded
+ * at 6107 bytes above). */
+_Static_assert(ENV_TXID_PRE_FIXED + (size_t)DNA_ENV_MAX_TOTAL_LEN ==
+                   1048660,
+               "tx_id max preimage drifted (84 + 1048576)");
+/* The ceiling is the capacity-season derived bound (env_wire.h block):
+ * the smallest power of two containing the worst-case legal envelope. */
+_Static_assert(DNA_ENV_MAX_TOTAL_LEN == 1048576u &&
+                   (DNA_ENV_MAX_TOTAL_LEN &
+                    (DNA_ENV_MAX_TOTAL_LEN - 1u)) == 0,
+               "envelope ceiling must stay the derived power of two");
+/* Every stored blob offset is u32 (dna_env_view_t.call_off/auth_off):
+ * the ceiling must fit that width with room for the length addition. */
+_Static_assert((uint64_t)DNA_ENV_MAX_TOTAL_LEN <= 0xFFFFFFFFull,
+               "envelope ceiling exceeds the u32 offset space");
 
 /* ── Fixed-width big-endian helpers ─────────────────────────────────── */
 
@@ -497,8 +511,10 @@ int dna_env_tx_id(const uint8_t auth_context_commit[DNA_ENV_HASH_LEN],
     if (env_len < (size_t)DNA_ENV_FIXED_HEAD) return -1;
     if (env_len > (size_t)DNA_ENV_MAX_TOTAL_LEN) return -1;
 
-    /* HEAP: up to 65620 bytes — tx_wire.c:236-247 pattern. This is the ONE
-     * preimage that covers auth_data, and it covers it exactly once. */
+    /* HEAP: up to ENV_TXID_PRE_FIXED + DNA_ENV_MAX_TOTAL_LEN = 1,048,660
+     * bytes (the capacity-season ceiling; the _Static_assert above pins
+     * the number) — tx_wire.c:236-247 pattern. This is the ONE preimage
+     * that covers auth_data, and it covers it exactly once. */
     size_t pre_len = (size_t)ENV_TXID_PRE_FIXED + env_len;
     uint8_t *pre = (uint8_t *)malloc(pre_len);
     if (!pre) return -1;

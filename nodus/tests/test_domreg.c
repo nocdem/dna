@@ -682,7 +682,8 @@ int main(void) {
     CHECK(nodus_witness_domreg_exclusions_at(fx.w, ep(12), snap9, 7,
                                              excl, 16, &n_excl) == 0, "ex");
     dna_vset_snapshot_t *filtered =
-        nodus_witness_domreg_filter_snapshot(snap9, excl, n_excl);
+        nodus_witness_domreg_filter_snapshot(
+            snap9, (const uint8_t (*)[32])excl, n_excl);
     CHECK(filtered != NULL && filtered->active_count == 7, "filter"); OK();
     for (int i = 0; i < 7; i++) {
         CHECK(memcmp(filtered->entries[i].voter_id, ks[i].voter, 32) == 0,
@@ -743,11 +744,17 @@ int main(void) {
                                 1, 3, 1, 0) == 0, "ctx init");
     CHECK(nodus_witness_domreg_admit_v2(fx.w, chain, &ctx, 0, 0, &cost)
           == 0 && cost == 1, "SPEND admission failed"); OK();
-    /* SYSTEM STAKE admits */
+    /* SYSTEM STAKE admits (SYSTEM is ruleset v2 since the capacity
+     * season; a v1 SYSTEM context resolves nothing — pinned below) */
+    CHECK(dna_exec_context_init(&ctx, chain, DNA_DOMAIN_SYSTEM,
+                                DNA_POOL_NONE, 4, 3, 2, 0) == 0, "ctx");
+    CHECK(nodus_witness_domreg_admit_v2(fx.w, chain, &ctx, 0, 0, NULL)
+          == 0, "STAKE admission failed"); OK();
+    /* the RETIRED SYSTEM ruleset v1 no longer admits anything */
     CHECK(dna_exec_context_init(&ctx, chain, DNA_DOMAIN_SYSTEM,
                                 DNA_POOL_NONE, 4, 3, 1, 0) == 0, "ctx");
     CHECK(nodus_witness_domreg_admit_v2(fx.w, chain, &ctx, 0, 0, NULL)
-          == 0, "STAKE admission failed"); OK();
+          != 0, "retired SYSTEM ruleset v1 admitted"); OK();
 
     /* wrong chain */
     CHECK(dna_exec_context_init(&ctx, chain2, DNA_DOMAIN_CORE,
@@ -756,7 +763,7 @@ int main(void) {
           != 0, "wrong chain admitted"); OK();
     /* wrong domain/type combination (SPEND routed to SYSTEM) */
     CHECK(dna_exec_context_init(&ctx, chain, DNA_DOMAIN_SYSTEM,
-                                DNA_POOL_NONE, 1, 3, 1, 0) == 0, "ctx");
+                                DNA_POOL_NONE, 1, 3, 2, 0) == 0, "ctx");
     CHECK(nodus_witness_domreg_admit_v2(fx.w, chain, &ctx, 0, 0, NULL)
           != 0, "cross-domain type admitted"); OK();
     /* unknown domain */

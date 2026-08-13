@@ -16,15 +16,18 @@
  *   2. RUNTIME AUTHORITY — five-axis exact lookup misses per axis;
  *      missing auth/exec hooks fail closed; un-migrated runtime_ops
  *      (CORE 2..6, SYSTEM 1..5) deterministically reject.
- *   3. SYSTEM slice — CHAIN_CONFIG: positive quorum commit + activation
- *      semantics + SYSTEM-root movement + untouched CORE; non-member
- *      vote, bad vote signature, validity-window shape, FRESHNESS
- *      (commit height past valid_before), grace violation, duplicate
+ *   3. SYSTEM slice — CHAIN_CONFIG under the capacity-season carrier
+ *      v2 (proposal-only call, auth_kind-2 committee approvals):
+ *      positive quorum commit + activation semantics + SYSTEM-root
+ *      movement + untouched CORE; the committee-approval matrix
+ *      (quorum-1 IS reachable now — the old wire floor is retired with
+ *      the vote wire — plus duplicate/unsorted/out-of-range seats,
+ *      count/framing/truncation/trailing, wrong member, wrong epoch,
+ *      wrong set hash, kind-1-no-approvals, allowlist), snapshot
+ *      ROTATION, validity-window shape, FRESHNESS, grace, duplicate
  *      (param, effective), INFLATION_START monotonicity, nonzero
- *      fee_amount — all reject with digest-proven rollback. (A
- *      sub-quorum vote set is UNREACHABLE on a 7-seat committee: the
- *      wire floor DNAC_CC_WIRE_MIN_SIGS = 5 equals dna_bft_quorum(7) —
- *      the quorum comparison becomes load-bearing at >= 8 seats.)
+ *      fee_amount — rejects digest-proven; CC fault matrix F26/F28/
+ *      F34/F13/F14.
  *   4. CORE slice — SPEND: valid transfer + change; multi-input/multi-
  *      owner; exact-value; fee burned exactly once; per-token
  *      conservation; duplicate/missing/spent inputs; wrong owner;
@@ -47,6 +50,8 @@
 #include "witness/nodus_witness_runtime.h"
 #include "witness/nodus_witness_v2_adapter.h"
 #include "witness/nodus_witness_validator.h"
+#include "witness/nodus_witness_committee.h"   /* carrier v2: learn the
+                                        * resolved governing committee  */
 #include "nodus/nodus_chain_config.h"
 
 #include "dnac/dnac.h"
@@ -76,10 +81,13 @@ static int g_checks = 0;
 #define OK() do { g_checks++; } while (0)
 
 /* ── keys (generated once; both twin fixtures share them) ──────────── */
-#define N_KEYS 10                 /* 0..6 committee, 7..8 users, 9 stray */
+#define N_KEYS 17                 /* 0..6 committee, 7..15 users (15
+                                   * distinct owners = keys 0..14 for
+                                   * the max-cardinality SPEND), 16 stray*/
 static uint8_t g_pk[N_KEYS][2592];
 static uint8_t g_sk[N_KEYS][4896];
 static char    g_fp[N_KEYS][129]; /* lowercase hex, NUL-terminated       */
+#define K_STRAY (N_KEYS - 1)      /* never seated, never funded          */
 
 static int keys_init(void) {
     static const char hexd[] = "0123456789abcdef";
@@ -267,14 +275,19 @@ static int seed_utxo(fixture_t *fx, int k, uint64_t amount,
 #define UTXO_A   5000000ULL
 #define UTXO_B   3000000ULL
 #define UTXO_C   2000000ULL
-#define G_SUPPLY (UTXO_A + UTXO_B + UTXO_C + 7 * VAL_BOND)
 #define FEE_MIN  1000000ULL       /* == DNAC_MIN_FEE_RAW == BASE_TX_FEE  */
 
 static uint8_t g_nul_a[64], g_nul_b[64], g_nul_c[64], g_nul_lock[64];
 
-/* full fixture: schema v7 + 7-validator committee + funded CORE state +
- * V2 genesis over the PRODUCTION builtin table */
-static int fx_genesis(fixture_t *fx, const char *tag) {
+/* full fixture, GENERALIZED over the validator set (capacity season):
+ * schema v7 + nval-validator committee from a caller key table +
+ * funded CORE state + V2 genesis over the PRODUCTION builtin table.
+ * For nval != 7 a TARGET_ACTIVE_COUNT chain-config row (param 4,
+ * effective 0) is committed BEFORE genesis, so the committee target
+ * derivation (committee_target_for_epoch) resolves nval — the SOURCE
+ * path, not a test shortcut. */
+static int fx_genesis_n(fixture_t *fx, const char *tag,
+                        const uint8_t (*vkeys)[2592], int nval) {
     fx->w = calloc(1, sizeof(*fx->w));
     if (!fx->w) return -1;
     /* the live constructor's cache sentinel (nodus_witness.c:649) — a
@@ -291,11 +304,21 @@ static int fx_genesis(fixture_t *fx, const char *tag) {
     if (nodus_chain_config_db_migrate(fx->w) != 0) return -1;
     if (nodus_witness_db_migrate_v2s7(fx->w) != 0) return -1;
 
-    /* 7 ACTIVE validators = the bootstrap committee (keys 0..6) */
-    for (int i = 0; i < 7; i++) {
+    if (nval != 7) {
+        char sql[256];
+        snprintf(sql, sizeof(sql),
+                 "INSERT INTO chain_config_history (param_id, new_value, "
+                 "effective_block, commit_block, tx_hash, proposal_nonce, "
+                 "created_at_unix) VALUES (4, %d, 0, 0, zeroblob(64), "
+                 "1, 0)", nval);
+        if (run_sql(fx->w->db, sql) != 0) return -1;
+    }
+
+    /* nval ACTIVE validators = the bootstrap committee */
+    for (int i = 0; i < nval; i++) {
         dnac_validator_record_t v;
         memset(&v, 0, sizeof(v));
-        memcpy(v.pubkey, g_pk[i], 2592);
+        memcpy(v.pubkey, vkeys[i], 2592);
         v.self_stake = VAL_BOND;
         v.status = DNAC_VALIDATOR_ACTIVE;
         v.active_since_block = 1;
@@ -303,14 +326,16 @@ static int fx_genesis(fixture_t *fx, const char *tag) {
     }
     /* funded supply: genesis == Σutxo + Σbonds (CORE invariant) */
     {
+        uint64_t supply = UTXO_A + UTXO_B + UTXO_C +
+                          (uint64_t)nval * VAL_BOND;
         char sql[256];
         snprintf(sql, sizeof(sql),
                  "INSERT INTO supply_tracking (id, genesis_supply, "
                  "total_burned, total_minted, current_supply, "
                  "last_tx_hash, last_sequence) VALUES (1, %llu, 0, 0, "
                  "%llu, zeroblob(64), 0)",
-                 (unsigned long long)G_SUPPLY,
-                 (unsigned long long)G_SUPPLY);
+                 (unsigned long long)supply,
+                 (unsigned long long)supply);
         if (run_sql(fx->w->db, sql) != 0) return -1;
     }
     if (seed_utxo(fx, 7, UTXO_A, 0xA1, 0, g_nul_a) != 0) return -1;
@@ -323,6 +348,10 @@ static int fx_genesis(fixture_t *fx, const char *tag) {
     if (nodus_witness_v2_genesis(fx->w, gid, vset, 0) != 0) return -1;
     if (nodus_witness_v2_chain_id(fx->w, fx->chain_id) != 0) return -1;
     return 0;
+}
+
+static int fx_genesis(fixture_t *fx, const char *tag) {
+    return fx_genesis_n(fx, tag, (const uint8_t (*)[2592])g_pk, 7);
 }
 
 static void fx_close(fixture_t *fx) {
@@ -342,8 +371,16 @@ static int fx_reopen(fixture_t *fx) {
 
 /* ── envelope builders with REAL signatures ─────────────────────────── */
 
+/* Standard-shape envelope buffer — NOT the 1 MiB V2 ceiling (capacity
+ * season): sizing every test envelope to DNA_ENV_MAX_TOTAL_LEN would
+ * put megabyte objects on test stacks. The ceiling-shape tests
+ * heap-allocate their own buffers. 128 KiB covers every standard shape
+ * here (largest: 7-committee all-N CC ≈ 40 KiB; 15-owner SPEND ≈
+ * 113 KiB). */
+#define NATIVE_ENV_BUF 131072u
+
 typedef struct {
-    uint8_t bytes[DNA_ENV_MAX_TOTAL_LEN];
+    uint8_t bytes[NATIVE_ENV_BUF];
     size_t  len;
 } env_t;
 
@@ -384,13 +421,13 @@ static int env_build_signed(fixture_t *fx, env_t *e,
     memset(&o, 0, sizeof(o));
     if (opt_in) o = *opt_in;
 
-    if (n_signers < 1 || n_signers > 8) return -1;
+    if (n_signers < 1 || n_signers > 15) return -1;   /* scheme cap 15 */
     uint32_t auth_len = 1 + (uint32_t)n_signers * 7219u;
     uint8_t *auth = calloc(1, auth_len);
     if (!auth) return -1;
 
     /* ascending-pubkey signer order (canonical) */
-    int ord[8];
+    int ord[15];
     for (int i = 0; i < n_signers; i++) ord[i] = signers[i];
     for (int a = 1; a < n_signers; a++)
         for (int b = a; b > 0 &&
@@ -412,7 +449,8 @@ static int env_build_signed(fixture_t *fx, env_t *e,
     memset(&leg, 0, sizeof(leg));
     leg.hdr.domain_id = domain_id;
     leg.hdr.runtime_op = runtime_op;
-    leg.hdr.ruleset_version = 1;
+    /* capacity season: SYSTEM is ruleset v2, CORE stays v1 */
+    leg.hdr.ruleset_version = domain_id == DNA_DOMAIN_SYSTEM ? 2 : 1;
     leg.hdr.access_mode = DNA_ENV_ACCESS_INVOKE;
     leg.hdr.auth_kind = o.auth_kind ? o.auth_kind : 1;
     leg.hdr.call_len = call_len;
@@ -451,7 +489,7 @@ static int env_build_signed(fixture_t *fx, env_t *e,
     if (o.call_flip || o.expiry_delta) {
         /* rebuild a TWIN view over mutated bytes and commit over那 —
          * only the signed digest moves, the emitted envelope stays */
-        static uint8_t twin[DNA_ENV_MAX_TOTAL_LEN];
+        static uint8_t twin[NATIVE_ENV_BUF];
         memcpy(twin, e->bytes, e->len);
         if (o.call_flip) twin[v.call_off[0]] ^= 0x01;
         if (o.expiry_delta) {
@@ -519,9 +557,13 @@ typedef struct {
     const uint8_t *token;         /* NULL = native                        */
 } out_spec_t;
 
+/* `ins_v` is really `const uint8_t (*)[64]` — taken as const void* so
+ * every call site can hand a non-const array without the pre-C2X
+ * pedantic qualifier diagnostic (strict-C11 gate). */
 static uint32_t spend_call_build(uint8_t *dst, size_t cap,
-                                 const uint8_t (*ins)[64], int n_in,
+                                 const void *ins_v, int n_in,
                                  const out_spec_t *outs, int n_out) {
+    const uint8_t (*ins)[64] = (const uint8_t (*)[64])ins_v;
     size_t need = 2 + (size_t)n_in * 64 + (size_t)n_out * 232;
     if (need > cap) return 0;
     dst[0] = (uint8_t)n_in;
@@ -558,41 +600,291 @@ static int out_nul(int owner, uint8_t seed_byte, uint8_t nul[64]) {
     return qgp_sha3_512(pre, sizeof(pre), nul);
 }
 
-/* CHAIN_CONFIG call v1 builder: votes signed by committee key indices */
-static uint32_t cc_call_build(fixture_t *fx, uint8_t *dst, size_t cap,
-                              uint8_t param, uint64_t new_value,
-                              uint64_t effective, uint64_t nonce,
-                              uint64_t signed_at, uint64_t valid_before,
-                              const int *voters, int n_votes,
-                              int bad_sig_at, const uint8_t *alt_chain) {
-    size_t need = 42 + (size_t)n_votes * 7219;
-    if (need > cap) return 0;
+/* ── CHAIN_CONFIG carrier v2 machinery (capacity season) ──────────────
+ * call v2 = the 41-byte PROPOSAL; committee approvals ride auth_kind 2:
+ *   submitter_count u8 ‖ submitters × (pk ‖ sig)
+ *   ‖ approval_count u16 BE ‖ approvals × (seat u16 BE ‖ sig)
+ * The test LEARNS the resolved committee from the same authority the
+ * engine consults (nodus_committee_get_for_block at H-1), then signs
+ * every approval digest INDEPENDENTLY (its own preimage constants would
+ * defeat the purpose — it calls the exported helpers, which the oracle
+ * side of the season pins). */
+
+/* proposal-only call v2 */
+static uint32_t cc_call_build(uint8_t *dst, size_t cap, uint8_t param,
+                              uint64_t new_value, uint64_t effective,
+                              uint64_t nonce, uint64_t signed_at,
+                              uint64_t valid_before) {
+    if (cap < 41) return 0;
     dst[0] = param;
     uint64_t vals[5] = { new_value, effective, nonce, signed_at,
                          valid_before };
     for (int f = 0; f < 5; f++)
         for (int i = 0; i < 8; i++)
             dst[1 + f * 8 + i] = (uint8_t)(vals[f] >> (56 - 8 * i));
-    dst[41] = (uint8_t)n_votes;
-    uint8_t digest[64];
-    if (nodus_chain_config_compute_digest(
-            alt_chain ? alt_chain : fx->chain_id, param, new_value,
-            effective, nonce, signed_at, valid_before, digest) != 0)
-        return 0;
-    for (int v = 0; v < n_votes; v++) {
-        uint8_t *slot = dst + 42 + (size_t)v * 7219;
-        memcpy(slot, g_pk[voters[v]], 2592);
-        size_t siglen = 4627;
-        if (qgp_dsa87_sign(slot + 2592, &siglen, digest, 64,
-                           g_sk[voters[v]]) != 0 || siglen != 4627)
-            return 0;
-        if (v == bad_sig_at) slot[2592] ^= 0x01;
+    return 41;
+}
+
+/* the learned governing committee (engine authority, test-side view) */
+typedef struct {
+    uint32_t count;
+    uint64_t epoch;
+    uint8_t  set_hash[64];
+    /* seat index of each of a caller-supplied key table (-1 unseated) */
+    int      seat_of[256];
+    nodus_committee_member_t *mem;      /* calloc'd, caller frees        */
+} cc_view_t;
+
+static int cc_learn(fixture_t *fx, uint64_t exec_h,
+                    const uint8_t (*keys)[2592], int n_keys,
+                    cc_view_t *v) {
+    memset(v, 0, sizeof(*v));
+    for (int i = 0; i < 256; i++) v->seat_of[i] = -1;
+    int count = 0;
+    if (exec_h == 0) return -1;
+    if (nodus_committee_get_for_block_alloc(fx->w, exec_h - 1, &v->mem,
+                                            &count) != 0 || count <= 0)
+        return -1;
+    v->count = (uint32_t)count;
+    v->epoch = nodus_v2_epoch_for_height(exec_h - 1);
+    uint8_t (*fps)[64] = calloc((size_t)count, 64);
+    if (!fps) return -1;
+    for (int i = 0; i < count; i++) {
+        if (qgp_sha3_512(v->mem[i].pubkey, 2592, fps[i]) != 0) {
+            free(fps);
+            return -1;
+        }
+        for (int k = 0; k < n_keys && k < 256; k++)
+            if (memcmp(v->mem[i].pubkey, keys[k], 2592) == 0)
+                v->seat_of[k] = i;
     }
-    return (uint32_t)need;
+    int rc = nodus_rt_committee_set_hash((const uint8_t (*)[64])fps,
+                                         v->count, v->set_hash);
+    free(fps);
+    return rc;
+}
+
+/* corruption knobs for the approval section */
+typedef struct {
+    int      bad_sig_at;      /* approval slot to bit-flip, -1 = none    */
+    int      dup_seat;        /* slot1 gets slot0's seat (duplicate)     */
+    int      unsorted;        /* emit approvals in DESCENDING seat order */
+    int      seat_override;   /* >=0: force slot0's WIRE seat to this    */
+    int64_t  epoch_delta;     /* sign for epoch + delta                  */
+    int      set_hash_flip;   /* sign against a bit-flipped set hash     */
+    int      trailing_byte;   /* append one byte after the last approval */
+    int      truncate;        /* drop the last byte                      */
+    int      count_delta;     /* add to the DECLARED approval count      */
+    int      sign_with;       /* >0: sign every approval with THIS key   */
+} cc_opt_t;
+
+/* Build a SYSTEM CHAIN_CONFIG envelope under carrier v2 into an
+ * arbitrary buffer (heap for the ceiling shapes). voters = KEY indices
+ * into `keys`/`sks`; the submitter is always keys[submitter_key].
+ * `so` mutates what the leg digest is derived over (the kind-1 test
+ * machinery, reused verbatim so the whole substitution matrix applies
+ * to approvals too). */
+static int cc_build(fixture_t *fx, uint8_t *buf, size_t cap, size_t *len,
+                    uint64_t exec_h,
+                    const uint8_t (*keys)[2592],
+                    const uint8_t (*sks)[4896], int n_keys,
+                    int submitter_key,
+                    uint8_t param, uint64_t new_value, uint64_t effective,
+                    uint64_t nonce, uint64_t signed_at,
+                    uint64_t valid_before, uint64_t fee,
+                    uint64_t res_ceiling,
+                    const int *voters, int n_votes,
+                    const cc_opt_t *cc_in, const sign_opt_t *so_in) {
+    cc_opt_t co;
+    sign_opt_t so;
+    memset(&co, 0, sizeof(co));
+    co.bad_sig_at = -1;
+    co.seat_override = -1;
+    if (cc_in) co = *cc_in;
+    memset(&so, 0, sizeof(so));
+    if (so_in) so = *so_in;
+
+    cc_view_t cv;
+    if (cc_learn(fx, exec_h, keys, n_keys, &cv) != 0) return -1;
+
+    uint8_t call[41];
+    if (cc_call_build(call, sizeof(call), param, new_value, effective,
+                      nonce, signed_at, valid_before) != 41) {
+        free(cv.mem);
+        return -1;
+    }
+
+    /* seats of the voters, ascending (canonical), then options */
+    int seats[256];
+    if (n_votes < 1 || n_votes > 200) { free(cv.mem); return -1; }
+    for (int i = 0; i < n_votes; i++) {
+        seats[i] = cv.seat_of[voters[i]];
+        if (seats[i] < 0) { free(cv.mem); return -1; }  /* unseated key */
+    }
+    for (int a = 1; a < n_votes; a++)
+        for (int b2 = a; b2 > 0 && seats[b2 - 1] > seats[b2]; b2--) {
+            int t = seats[b2];
+            seats[b2] = seats[b2 - 1];
+            seats[b2 - 1] = t;
+        }
+    if (co.dup_seat && n_votes >= 2) seats[1] = seats[0];
+    if (co.unsorted && n_votes >= 2) {
+        int t = seats[0];
+        seats[0] = seats[n_votes - 1];
+        seats[n_votes - 1] = t;
+    }
+    /* override lands on the LAST slot so ascending order stays intact —
+     * the range violation is then not entangled with the ordering rule
+     * (review finding 1b). The zero-signature residue on an unmapped
+     * seat is STRUCTURAL: no key owns a seat outside the snapshot, so a
+     * "valid signature for an out-of-range seat" cannot exist — range
+     * gate and signature verify are deliberately co-sufficient
+     * (defense in depth), and the range gate fires first. */
+    if (co.seat_override >= 0) seats[n_votes - 1] = co.seat_override;
+
+    uint32_t declared = (uint32_t)((int)n_votes + co.count_delta);
+    /* the FULL canonical layout is always materialised; truncate /
+     * trailing mutate only the DECLARED length (the encoder copies
+     * auth_len bytes of the oversized buffer, so no writer can overrun
+     * a shortened allocation) */
+    uint32_t full_len = 1 + 7219u              /* one submitter          */
+                        + 2 + (uint32_t)n_votes * 4629u;
+    uint32_t auth_len = full_len;
+    if (co.trailing_byte) auth_len += 1;
+    if (co.truncate) auth_len -= 1;
+
+    uint8_t *auth = calloc(1, (size_t)full_len + 1);
+    if (!auth) { free(cv.mem); return -1; }
+
+    dna_env_leg_in_t leg;
+    memset(&leg, 0, sizeof(leg));
+    leg.hdr.domain_id = DNA_DOMAIN_SYSTEM;
+    leg.hdr.runtime_op = DNA_SYSRULE_CHAIN_CONFIG;
+    leg.hdr.ruleset_version = 2;
+    leg.hdr.access_mode = DNA_ENV_ACCESS_INVOKE;
+    leg.hdr.auth_kind = so.auth_kind ? so.auth_kind : 2;
+    leg.hdr.call_len = 41;
+    leg.hdr.auth_len = auth_len;
+    leg.hdr.res_max_effects = 4;
+    leg.hdr.res_max_effect_bytes = 2048;
+    leg.call_data = call;
+    leg.auth_data = auth;
+    dna_env_in_t in;
+    memset(&in, 0, sizeof(in));
+    in.fee_amount = fee;
+    in.res_max_total_units = res_ceiling;
+    in.leg_count = 1;
+    in.legs = &leg;
+    if (dna_env_encode(&in, buf, cap, len) != 0) {
+        free(auth);
+        free(cv.mem);
+        return -1;
+    }
+
+    /* the LEG digest (what the submitter signs and what every approval
+     * hangs from) — with the sign_opt substitutions applied, exactly
+     * like env_build_signed */
+    dna_env_view_t v;
+    if (dna_env_decode(buf, *len, &v) != 0) { free(auth); free(cv.mem);
+                                              return -1; }
+    size_t bn = 0;
+    const nodus_domain_runtime_t *bt = nodus_runtime_builtin_table(&bn);
+    const uint8_t *rs_hash = so.ruleset_hash ? so.ruleset_hash
+                                             : bt[0].ruleset_hash;
+    const uint8_t *chain = so.chain_id ? so.chain_id : fx->chain_id;
+    uint8_t call_commit[64], acc[64], digest[64];
+    if (so.call_flip) {
+        static uint8_t twin[NATIVE_ENV_BUF];
+        if (*len > sizeof(twin)) { free(auth); free(cv.mem); return -1; }
+        memcpy(twin, buf, *len);
+        twin[v.call_off[0]] ^= 0x01;
+        dna_env_view_t tv;
+        if (dna_env_decode(twin, *len, &tv) != 0 ||
+            dna_env_call_commit(&tv, 0, rs_hash, call_commit) != 0 ||
+            dna_env_auth_context_commit(&tv, chain,
+                (const uint8_t (*)[64])call_commit, acc) != 0) {
+            free(auth); free(cv.mem);
+            return -1;
+        }
+    } else if (dna_env_call_commit(&v, 0, rs_hash, call_commit) != 0 ||
+               dna_env_auth_context_commit(&v, chain,
+                   (const uint8_t (*)[64])call_commit, acc) != 0) {
+        free(auth); free(cv.mem);
+        return -1;
+    }
+    if (dna_env_auth_digest(acc, 0, DNA_DOMAIN_SYSTEM,
+                            DNA_SYSRULE_CHAIN_CONFIG, digest) != 0) {
+        free(auth); free(cv.mem);
+        return -1;
+    }
+
+    /* submitter section */
+    auth[0] = 1;
+    memcpy(auth + 1, keys[submitter_key], 2592);
+    {
+        size_t siglen = 4627;
+        if (qgp_dsa87_sign(auth + 1 + 2592, &siglen, digest, 64,
+                           sks[submitter_key]) != 0 || siglen != 4627) {
+            free(auth); free(cv.mem);
+            return -1;
+        }
+    }
+    /* approval section */
+    {
+        uint8_t *ap = auth + 1 + 7219;
+        ap[0] = (uint8_t)(declared >> 8);
+        ap[1] = (uint8_t)declared;
+        uint8_t sh[64];
+        memcpy(sh, cv.set_hash, 64);
+        if (co.set_hash_flip) sh[0] ^= 0x01;
+        uint64_t ep = (uint64_t)((int64_t)cv.epoch + co.epoch_delta);
+        for (int i = 0; i < n_votes; i++) {
+            uint8_t *slot = ap + 2 + (size_t)i * 4629;
+            /* the WIRE seat (post-options); the SIGNING seat is the
+             * same value — a wrong wire seat therefore also signs for
+             * that wrong seat, and dies on membership/verify */
+            uint16_t seat = (uint16_t)seats[i];
+            slot[0] = (uint8_t)(seat >> 8);
+            slot[1] = (uint8_t)seat;
+            uint8_t adig[64];
+            if (nodus_rt_cc_approval_digest(digest, sh, ep, seat,
+                                            adig) != 0) {
+                free(auth); free(cv.mem);
+                return -1;
+            }
+            /* sign with the key that OWNS the seat (learned), unless
+             * overridden */
+            int signer_key = co.sign_with > 0 ? co.sign_with : -1;
+            if (signer_key < 0) {
+                for (int k = 0; k < n_keys; k++)
+                    if (cv.seat_of[k] == (int)seat) { signer_key = k;
+                                                      break; }
+            }
+            if (signer_key < 0) {
+                /* a seat no test key owns (override outside the map):
+                 * leave the zero signature — it cannot verify anyway */
+                continue;
+            }
+            size_t siglen = 4627;
+            if (qgp_dsa87_sign(slot + 2, &siglen, adig, 64,
+                               sks[signer_key]) != 0 || siglen != 4627) {
+                free(auth); free(cv.mem);
+                return -1;
+            }
+            if (co.bad_sig_at == i) slot[2] ^= 0x01;
+        }
+    }
+
+    /* re-encode with the real auth bytes (same lengths, same commits) */
+    leg.auth_data = auth;
+    int rc = dna_env_encode(&in, buf, cap, len);
+    free(auth);
+    free(cv.mem);
+    return rc;
 }
 
 static int spend_env(fixture_t *fx, env_t *e,
-                     const uint8_t (*ins)[64], int n_in,
+                     const void *ins, int n_in,
                      const out_spec_t *outs, int n_out, uint64_t fee,
                      const int *signers, int n_signers,
                      const sign_opt_t *opt) {
@@ -605,20 +897,18 @@ static int spend_env(fixture_t *fx, env_t *e,
                             n_signers, opt);
 }
 
-static int cc_env(fixture_t *fx, env_t *e, uint8_t param, uint64_t value,
-                  uint64_t effective, uint64_t nonce, uint64_t signed_at,
+/* standard-fixture convenience wrapper (7-committee, submitter key 0) */
+static int cc_env(fixture_t *fx, env_t *e, uint64_t exec_h,
+                  uint8_t param, uint64_t value, uint64_t effective,
+                  uint64_t nonce, uint64_t signed_at,
                   uint64_t valid_before, const int *voters, int n_votes,
-                  int bad_sig_at, const uint8_t *alt_chain, uint64_t fee,
-                  const sign_opt_t *opt) {
-    static uint8_t call[65536];
-    uint32_t cl = cc_call_build(fx, call, sizeof(call), param, value,
-                                effective, nonce, signed_at, valid_before,
-                                voters, n_votes, bad_sig_at, alt_chain);
-    if (!cl) return -1;
-    int submitter[1] = { 0 };
-    return env_build_signed(fx, e, DNA_DOMAIN_SYSTEM,
-                            DNA_SYSRULE_CHAIN_CONFIG, call, cl, fee, 0,
-                            4, 2048, submitter, 1, opt);
+                  uint64_t fee, const cc_opt_t *co,
+                  const sign_opt_t *so) {
+    return cc_build(fx, e->bytes, sizeof(e->bytes), &e->len, exec_h,
+                    (const uint8_t (*)[2592])g_pk,
+                    (const uint8_t (*)[4896])g_sk, N_KEYS, 0,
+                    param, value, effective, nonce, signed_at,
+                    valid_before, fee, 200000, voters, n_votes, co, so);
 }
 
 /* current head root of a domain */
@@ -679,8 +969,10 @@ static int test_auth(void) {
     neg[1].o.break_sig = 1;
     neg[2].name = "malformed key (bit flip after signing)";
     neg[2].o.break_key = 1;
-    neg[3].name = "unsupported auth scheme (kind 2)";
-    neg[3].o.auth_kind = 2;
+    neg[3].name = "auth kind outside CORE's allowlist (kind 2)";
+    neg[3].o.auth_kind = 2;       /* capacity season: kind 2 EXISTS but
+                                   * only SYSTEM declares it — a CORE
+                                   * leg carrying it dies at admission  */
     neg[4].name = "zero pubkey";
     neg[4].o.zero_key = 1;
     neg[5].name = "commitment without verification (garbage auth)";
@@ -872,6 +1164,8 @@ static int test_system_cc(void) {
     fixture_t fx;
     CHECK(fx_genesis(&fx, "cc") == 0, "genesis");
     int voters5[5] = { 0, 1, 2, 3, 4 };
+    int voters4[4] = { 0, 1, 2, 3 };
+    int voters7[7] = { 0, 1, 2, 3, 4, 5, 6 };
     env_t e;
     nodus_v2_block_t b;
     int rc = 0;
@@ -880,39 +1174,143 @@ static int test_system_cc(void) {
     CHECK(head_root(fx.w, 0, sys_r0) == 0 &&
           head_root(fx.w, 1, core_r0) == 0, "roots");
 
-    /* negatives first (state untouched, digest-proven) */
-    struct {
-        const char *name;
-        uint8_t param; uint64_t val, eff, vb; int nv, bad_at;
-        const uint8_t *alt_chain; uint64_t fee; int voters[5];
-    } neg[6] = {
-        { "non-member vote", 1, 5, 1000, 2000, 5, -1, NULL, 0,
-          { 0, 1, 2, 3, 9 } },                    /* key 9 not seated    */
-        { "bad vote signature", 1, 5, 1000, 2000, 5, 2, NULL, 0,
-          { 0, 1, 2, 3, 4 } },
-        { "cross-chain votes", 1, 5, 1000, 2000, 5, -1,
-          (const uint8_t *)"\x99\x99\x99\x99\x99\x99\x99\x99\x99\x99"
-          "\x99\x99\x99\x99\x99\x99\x99\x99\x99\x99\x99\x99\x99\x99"
-          "\x99\x99\x99\x99\x99\x99\x99\x99", 0, { 0, 1, 2, 3, 4 } },
-        { "validity-window shape (valid_before <= effective)", 1, 5,
-          1000, 0, 5, -1, NULL, 0, { 0, 1, 2, 3, 4 } },  /* vb=0 dies at
-                                          * the SCALAR window rule; the
-                                          * real freshness gate is
-                                          * exercised at H=3 below      */
-        { "grace violation (effective too soon)", 1, 5, 100, 2000, 5,
-          -1, NULL, 0, { 0, 1, 2, 3, 4 } },
-        { "nonzero fee on a SYSTEM leg", 1, 5, 1000, 2000, 5, -1, NULL,
-          FEE_MIN, { 0, 1, 2, 3, 4 } },
-    };
-    for (int i = 0; i < 6; i++) {
-        CHECK(cc_env(&fx, &e, neg[i].param, neg[i].val, neg[i].eff, 0x42,
-                     1, neg[i].vb, neg[i].voters, neg[i].nv,
-                     neg[i].bad_at, neg[i].alt_chain, neg[i].fee, NULL)
-                  == 0, "build");
-        nodus_v2_envelope_t ve = { e.bytes, e.len };
-        mk_block(&b, 1, &ve, 1);
-        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1, neg[i].name);
-        OK();
+    /* ── scalar/economic negatives (call rules, unchanged authority) ── */
+    {
+        struct {
+            const char *name;
+            uint64_t eff, vb, fee;
+        } sneg[3] = {
+            { "validity-window shape (valid_before <= effective)",
+              1000, 0, 0 },              /* vb=0 dies at the SCALAR
+                                          * window rule; the real
+                                          * freshness gate runs at H=3  */
+            { "grace violation (effective too soon)", 100, 2000, 0 },
+            { "nonzero fee on a SYSTEM leg", 1000, 2000, FEE_MIN },
+        };
+        for (int i = 0; i < 3; i++) {
+            CHECK(cc_env(&fx, &e, 1, 1, 5, sneg[i].eff, 0x42, 1,
+                         sneg[i].vb, voters5, 5, sneg[i].fee, NULL,
+                         NULL) == 0, "build");
+            nodus_v2_envelope_t ve = { e.bytes, e.len };
+            mk_block(&b, 1, &ve, 1);
+            CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+                  sneg[i].name);
+            OK();
+        }
+    }
+
+    /* ── the COMMITTEE-APPROVAL matrix (carrier v2) ─────────────────── */
+    {
+        struct {
+            const char *name;
+            const int *voters; int nv;
+            cc_opt_t co;
+            sign_opt_t so;
+        } cneg[14];
+        memset(cneg, 0, sizeof(cneg));
+        for (int i = 0; i < 14; i++) {
+            cneg[i].voters = voters5;
+            cneg[i].nv = 5;
+            cneg[i].co.bad_sig_at = -1;
+            cneg[i].co.seat_override = -1;
+        }
+        cneg[0].name = "quorum minus one (4 of 7)";
+        cneg[0].voters = voters4; cneg[0].nv = 4;
+        cneg[1].name = "bad approval signature (bit flip)";
+        cneg[1].co.bad_sig_at = 2;
+        cneg[2].name = "duplicate snapshot index";
+        cneg[2].co.dup_seat = 1;
+        cneg[3].name = "unsorted snapshot indices";
+        cneg[3].co.unsorted = 1;
+        /* the two range entries carry FIVE approvals (quorum met) with
+         * only the LAST seat out of range — sub-quorum can no longer be
+         * the reason (review finding 1b); the zero-sig residue is the
+         * structural defense-in-depth documented at cc_build */
+        cneg[4].name = "index == committee size";
+        cneg[4].co.seat_override = 7;
+        cneg[5].name = "index beyond committee size";
+        cneg[5].co.seat_override = 200;
+        /* count > N is STRUCTURALLY co-sufficient with framing: 8 slots
+         * cannot be carried as 7 — the count gate is simply the first
+         * to fire */
+        cneg[6].name = "approval count greater than committee";
+        cneg[6].voters = voters7; cneg[6].nv = 7;
+        cneg[6].co.count_delta = 1;
+        cneg[7].name = "count/framing mismatch (declared < carried)";
+        cneg[7].co.count_delta = -1;
+        cneg[8].name = "truncated approval bytes";
+        cneg[8].co.truncate = 1;
+        cneg[9].name = "trailing bytes after the approvals";
+        cneg[9].co.trailing_byte = 1;
+        cneg[10].name = "wrong committee member (unseated key signs)";
+        cneg[10].co.sign_with = K_STRAY;
+        cneg[11].name = "wrong governing epoch (signed for epoch+1)";
+        cneg[11].co.epoch_delta = 1;
+        cneg[12].name = "wrong snapshot identity (set-hash flip)";
+        cneg[12].co.set_hash_flip = 1;
+        static uint8_t other_chain2[32];
+        memset(other_chain2, 0x99, 32);
+        cneg[13].name = "cross-chain envelope (decided at the SUBMITTER "
+                        "signature; approvals inherit the same chain "
+                        "binding transitively via leg_auth_digest)";
+        cneg[13].so.chain_id = other_chain2;
+        for (int i = 0; i < 14; i++) {
+            CHECK(cc_env(&fx, &e, 1, 1, 5, 1000, 0x42, 1, 2000,
+                         cneg[i].voters, cneg[i].nv, 0, &cneg[i].co,
+                         &cneg[i].so) == 0, "build");
+            nodus_v2_envelope_t ve = { e.bytes, e.len };
+            mk_block(&b, 1, &ve, 1);
+            CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+                  cneg[i].name);
+            OK();
+        }
+        /* proposal substitution: approvals bind the CALL BYTES through
+         * the leg digest — signing over a flipped call invalidates
+         * every signature (submitter AND approvals) */
+        {
+            sign_opt_t so;
+            memset(&so, 0, sizeof(so));
+            so.call_flip = 1;
+            CHECK(cc_env(&fx, &e, 1, 1, 5, 1000, 0x42, 1, 2000, voters5,
+                         5, 0, NULL, &so) == 0, "build");
+            nodus_v2_envelope_t ve = { e.bytes, e.len };
+            mk_block(&b, 1, &ve, 1);
+            CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+                  "proposal substitution invalidates the approvals");
+            OK();
+        }
+        /* a KIND-1 CHAIN_CONFIG leg carries NO approvals: the verdict
+         * has n_approvals == 0 / committee_n == 0 and exec rejects at
+         * the quorum gate — approvals cannot be implied */
+        {
+            uint8_t call41[41];
+            CHECK(cc_call_build(call41, sizeof(call41), 1, 5, 1000, 0x42,
+                                1, 2000) == 41, "call");
+            int sub[1] = { 0 };
+            CHECK(env_build_signed(&fx, &e, DNA_DOMAIN_SYSTEM,
+                                   DNA_SYSRULE_CHAIN_CONFIG, call41, 41,
+                                   0, 0, 4, 2048, sub, 1, NULL) == 0,
+                  "build");
+            nodus_v2_envelope_t ve = { e.bytes, e.len };
+            mk_block(&b, 1, &ve, 1);
+            CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+                  "kind-1 CC leg (no approvals) fails the quorum gate");
+            OK();
+        }
+        /* an auth kind outside the runtime's allowlist dies at
+         * admission (unknown kind 3 on a SYSTEM leg) */
+        {
+            sign_opt_t so;
+            memset(&so, 0, sizeof(so));
+            so.auth_kind = 3;
+            CHECK(cc_env(&fx, &e, 1, 1, 5, 1000, 0x42, 1, 2000, voters5,
+                         5, 0, NULL, &so) == 0, "build");
+            nodus_v2_envelope_t ve = { e.bytes, e.len };
+            mk_block(&b, 1, &ve, 1);
+            CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+                  "auth kind outside the allowlist must reject");
+            OK();
+        }
     }
 
     /* INFLATION_START monotonicity: a prior nonzero row is seeded, so
@@ -922,16 +1320,16 @@ static int test_system_cc(void) {
         "effective_block, commit_block, tx_hash, proposal_nonce, "
         "created_at_unix) VALUES (3, 900000, 500000, 0, zeroblob(64), "
         "7, 0)") == 0, "seed inflation row");
-    CHECK(cc_env(&fx, &e, 3, 0, 20000, 0x43, 1, 30000, voters5, 5, -1,
-                 NULL, 0, NULL) == 0, "build");
+    CHECK(cc_env(&fx, &e, 1, 3, 0, 20000, 0x43, 1, 30000, voters5, 5, 0,
+                 NULL, NULL) == 0, "build");
     {
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
         CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
               "monotonicity: cannot disable once enabled");
         OK();
-        CHECK(cc_env(&fx, &e, 3, 999, 20000, 0x44, 1, 30000, voters5, 5,
-                     -1, NULL, 0, NULL) == 0, "build");
+        CHECK(cc_env(&fx, &e, 1, 3, 999, 20000, 0x44, 1, 30000, voters5,
+                     5, 0, NULL, NULL) == 0, "build");
         nodus_v2_envelope_t v2e = { e.bytes, e.len };
         mk_block(&b, 1, &v2e, 1);
         CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
@@ -940,8 +1338,8 @@ static int test_system_cc(void) {
     }
 
     /* POSITIVE: quorum (5 of 7) commits; scheduled activation holds */
-    CHECK(cc_env(&fx, &e, 1, 5, 1000, 0x42, 1, 2000, voters5, 5, -1,
-                 NULL, 0, NULL) == 0, "build");
+    CHECK(cc_env(&fx, &e, 1, 1, 5, 1000, 0x42, 1, 2000, voters5, 5, 0,
+                 NULL, NULL) == 0, "build");
     {
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 1, &ve, 1);
@@ -988,8 +1386,8 @@ static int test_system_cc(void) {
     }
     /* a second scheduled transition commits at H=2 so the chain reaches
      * a height where the FRESHNESS gate becomes reachable */
-    CHECK(cc_env(&fx, &e, 1, 6, 1001, 0x77, 1, 2000, voters5, 5, -1,
-                 NULL, 0, NULL) == 0, "build");
+    CHECK(cc_env(&fx, &e, 2, 1, 6, 1001, 0x77, 1, 2000, voters5, 5, 0,
+                 NULL, NULL) == 0, "build");
     {
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 2, &ve, 1);
@@ -1001,8 +1399,8 @@ static int test_system_cc(void) {
      * commit height rejects at the freshness mirror, with the scalar
      * window intact (vb 2 > effective 1 > 0, signed_at 1 < vb) —
      * reachable only at H > vb, hence the H=3 placement */
-    CHECK(cc_env(&fx, &e, 1, 5, 1, 0x88, 1, 2, voters5, 5, -1,
-                 NULL, 0, NULL) == 0, "build");
+    CHECK(cc_env(&fx, &e, 3, 1, 5, 1, 0x88, 1, 2, voters5, 5, 0,
+                 NULL, NULL) == 0, "build");
     {
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 3, &ve, 1);
@@ -1011,8 +1409,8 @@ static int test_system_cc(void) {
         OK();
     }
     /* duplicate (param, effective) is a replayed transition — rejects */
-    CHECK(cc_env(&fx, &e, 1, 5, 1000, 0x99, 2, 2000, voters5, 5, -1,
-                 NULL, 0, NULL) == 0, "build");
+    CHECK(cc_env(&fx, &e, 3, 1, 5, 1000, 0x99, 2, 2000, voters5, 5, 0,
+                 NULL, NULL) == 0, "build");
     {
         nodus_v2_envelope_t ve = { e.bytes, e.len };
         mk_block(&b, 3, &ve, 1);
@@ -1020,7 +1418,209 @@ static int test_system_cc(void) {
               "duplicate (param, effective) must reject");
         OK();
     }
+
+    /* ── SNAPSHOT ROTATION (wrong historical snapshot) ──────────────────
+     * Approvals signed against the OLD resolved committee must die once
+     * the governing set changes: key 6 rotates OUT, key 15 rotates IN
+     * (a validator-table swap + committee-cache invalidation — the
+     * bootstrap resolution recomputes from the table). The signed set
+     * hash and every seat mapping then disagree with the engine's
+     * resolution. The voters (keys 0..4) are all STILL seated — only
+     * the SNAPSHOT identity moved, so this isolates the snapshot
+     * binding, not membership. */
+    {
+        env_t *stale = malloc(sizeof(*stale));
+        CHECK(stale != NULL, "alloc");
+        CHECK(cc_env(&fx, stale, 3, 1, 7, 3000, 0xAB, 3, 4000, voters5,
+                     5, 0, NULL, NULL) == 0, "build stale");
+        /* rotate: 6 out, 15 in */
+        sqlite3_stmt *st = NULL;
+        CHECK(sqlite3_prepare_v2(fx.w->db,
+              "UPDATE validators SET pubkey=?1 WHERE pubkey=?2",
+              -1, &st, NULL) == SQLITE_OK, "prep");
+        sqlite3_bind_blob(st, 1, g_pk[15], 2592, SQLITE_TRANSIENT);
+        sqlite3_bind_blob(st, 2, g_pk[6], 2592, SQLITE_TRANSIENT);
+        CHECK(sqlite3_step(st) == SQLITE_DONE, "rotate");
+        sqlite3_finalize(st);
+        fx.w->cached_committee_epoch_start = UINT64_MAX;   /* cold cache */
+        nodus_v2_envelope_t ve = { stale->bytes, stale->len };
+        mk_block(&b, 3, &ve, 1);
+        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+              "stale-snapshot approvals must reject after rotation");
+        OK();
+        /* the ROTATED-IN validator signs under the NEW snapshot: fresh
+         * approvals with key 15 in the set commit */
+        int votersr[5] = { 0, 1, 2, 3, 15 };
+        CHECK(cc_env(&fx, stale, 3, 1, 7, 3000, 0xAB, 3, 4000, votersr,
+                     5, 0, NULL, NULL) == 0, "build fresh");
+        nodus_v2_envelope_t vf = { stale->bytes, stale->len };
+        mk_block(&b, 3, &vf, 1);
+        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+              "rotated-in committee signs under the new snapshot");
+        OK();
+        free(stale);
+    }
+
+    /* ── CC fault-injection matrix (capacity-season stages) ──────────── */
+    {
+        static const nodus_v2_apply_fail_t cpts[5] = {
+            V2AP_FAIL_AFTER_ENV_RESERVE, V2AP_FAIL_AFTER_AUTH,
+            V2AP_FAIL_AFTER_CC_SNAPSHOT, V2AP_FAIL_BEFORE_COMMIT,
+            V2AP_FAIL_COMMIT
+        };
+        int votersr[5] = { 0, 1, 2, 3, 15 };
+        for (int p = 0; p < 5; p++) {
+            CHECK(cc_env(&fx, &e, 4, 1, 8, 4000, 0xC0 + (uint64_t)p, 4,
+                         5000, votersr, 5, 0, NULL, NULL) == 0, "build");
+            nodus_v2_envelope_t ve = { e.bytes, e.len };
+            mk_block(&b, 4, &ve, 1);
+            b.fail_at = cpts[p];
+            b.fail_env_index = 0;
+            CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+                  "CC fault point must roll back byte-identically");
+            OK();
+        }
+        /* clean re-apply commits (budgets and snapshot state intact) */
+        CHECK(cc_env(&fx, &e, 4, 1, 8, 4000, 0xC9, 4, 5000, votersr, 5,
+                     0, NULL, NULL) == 0, "build");
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block(&b, 4, &ve, 1);
+        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+              "clean re-apply after CC faults must commit");
+        OK();
+    }
     fx_close(&fx);
+    return 0;
+}
+
+/* ══ 3b. COMMITTEE CAPACITY — source-derived boundaries ═════════════ */
+
+/* Committee sizes derived from the SOURCE constants, not prose:
+ *   - genesis floor: DNAC_COMMITTEE_SIZE = 7, quorum dna_bft_quorum(7)
+ *   - the FIRST committee whose quorum exceeds the RETIRED cap (8):
+ *     smallest N with dna_bft_quorum(N) > 8  →  N = 12 (quorum 9)
+ *   - the release technical ceiling: DNA_MAX_ACTIVE_VALIDATORS = 128,
+ *     quorum dna_bft_quorum(128) = 86
+ * The 128-seat leg runs REAL ML-DSA-87 end-to-end (128 keypairs, 128
+ * approval signatures verified through the whole engine path). */
+static uint8_t g_bpk[DNA_MAX_ACTIVE_VALIDATORS][2592];
+static uint8_t g_bsk[DNA_MAX_ACTIVE_VALIDATORS][4896];
+
+static int test_committee_capacity(void) {
+    /* derive the boundary sizes from source and re-verify the formula
+     * independently (floor(2N/3)+1 in integer arithmetic) */
+    uint32_t n_first = 0;
+    for (uint32_t n = 8; n <= 32; n++)
+        if (dna_bft_quorum(n) > 8) { n_first = n; break; }
+    CHECK(n_first == 12, "first quorum > 8 committee derives to 12");
+    CHECK(dna_bft_quorum(12) == 9, "quorum(12)");
+    CHECK(dna_bft_quorum(7) == (2u * 7u) / 3u + 1u &&
+          dna_bft_quorum(7) == 5, "independent quorum recheck (7)");
+    CHECK(dna_bft_quorum(DNA_MAX_ACTIVE_VALIDATORS) ==
+              (2u * DNA_MAX_ACTIVE_VALIDATORS) / 3u + 1u &&
+          dna_bft_quorum(DNA_MAX_ACTIVE_VALIDATORS) == 86,
+          "independent quorum recheck (release ceiling)");
+    OK();
+
+    /* ── N = 12: the OLD cap 8 is provably gone ─────────────────────── */
+    {
+        fixture_t fx;
+        int q9[9], q8[8];
+        for (int i = 0; i < 9; i++) q9[i] = i;
+        for (int i = 0; i < 8; i++) q8[i] = i;
+        /* first 12 test keys as validators */
+        CHECK(fx_genesis_n(&fx, "cap12", (const uint8_t (*)[2592])g_pk,
+                           12) == 0, "genesis 12");
+        env_t e;
+        nodus_v2_block_t b;
+        int rc = 0;
+        /* quorum(12) = 9 > the retired cap 8: NINE approvals commit */
+        CHECK(cc_env(&fx, &e, 1, 1, 5, 1000, 0x42, 1, 2000, q9, 9, 0,
+                     NULL, NULL) == 0, "build 9");
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block(&b, 1, &ve, 1);
+        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+              "quorum 9 of 12 commits — the old 8-vote cap is gone");
+        OK();
+        /* quorum-1 = 8 (the exact retired cap) fails */
+        CHECK(cc_env(&fx, &e, 2, 1, 6, 3000, 0x43, 1, 4000, q8, 8, 0,
+                     NULL, NULL) == 0, "build 8");
+        nodus_v2_envelope_t v8 = { e.bytes, e.len };
+        mk_block(&b, 2, &v8, 1);
+        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+              "8 of 12 (quorum-1) must reject");
+        OK();
+        fx_close(&fx);
+    }
+
+    /* ── N = 128 (the release ceiling), REAL ML-DSA-87 end-to-end ───── */
+    {
+        for (int i = 0; i < DNA_MAX_ACTIVE_VALIDATORS; i++)
+            if (qgp_dsa87_keypair(g_bpk[i], g_bsk[i]) != 0) {
+                fprintf(stderr, "big keygen failed\n");
+                return 1;
+            }
+        fixture_t fx;
+        CHECK(fx_genesis_n(&fx, "cap128", (const uint8_t (*)[2592])g_bpk,
+                           DNA_MAX_ACTIVE_VALIDATORS) == 0,
+              "genesis 128");
+        /* the ceiling-shape envelopes exceed the standard buffer — heap
+         * (never the stack; capacity-season discipline) */
+        size_t cap = DNA_ENV_MAX_TOTAL_LEN;
+        uint8_t *buf = malloc(cap);
+        CHECK(buf != NULL, "alloc");
+        size_t elen = 0;
+        int voters[DNA_MAX_ACTIVE_VALIDATORS];
+        nodus_v2_block_t b;
+        int rc = 0;
+        const uint32_t Q = dna_bft_quorum(DNA_MAX_ACTIVE_VALIDATORS);
+
+        /* ALL 128 distinct approvals — the worst-case legal envelope
+         * shape of the DNA_ENV_MAX_TOTAL_LEN derivation — commits */
+        for (int i = 0; i < 128; i++) voters[i] = i;
+        CHECK(cc_build(&fx, buf, cap, &elen, 1,
+                       (const uint8_t (*)[2592])g_bpk,
+                       (const uint8_t (*)[4896])g_bsk, 128, 0,
+                       1, 5, 1000, 0x42, 1, 2000, 0, 750000,
+                       voters, 128, NULL, NULL) == 0, "build 128");
+        CHECK(elen > 590000 && elen <= DNA_ENV_MAX_TOTAL_LEN,
+              "all-N envelope is a ceiling-class shape");
+        {
+            nodus_v2_envelope_t ve = { buf, elen };
+            mk_block(&b, 1, &ve, 1);
+            CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+                  "ALL 128 release-ceiling approvals commit");
+            OK();
+        }
+        /* EXACT quorum (86) commits */
+        CHECK(cc_build(&fx, buf, cap, &elen, 2,
+                       (const uint8_t (*)[2592])g_bpk,
+                       (const uint8_t (*)[4896])g_bsk, 128, 0,
+                       1, 6, 3000, 0x43, 2, 4000, 0, 750000,
+                       voters, (int)Q, NULL, NULL) == 0, "build 86");
+        {
+            nodus_v2_envelope_t ve = { buf, elen };
+            mk_block(&b, 2, &ve, 1);
+            CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+                  "exact release-ceiling quorum (86 of 128) commits");
+            OK();
+        }
+        /* quorum-1 (85) rejects */
+        CHECK(cc_build(&fx, buf, cap, &elen, 3,
+                       (const uint8_t (*)[2592])g_bpk,
+                       (const uint8_t (*)[4896])g_bsk, 128, 0,
+                       1, 7, 5000, 0x44, 3, 6000, 0, 750000,
+                       voters, (int)Q - 1, NULL, NULL) == 0, "build 85");
+        {
+            nodus_v2_envelope_t ve = { buf, elen };
+            mk_block(&b, 3, &ve, 1);
+            CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+                  "quorum-1 (85 of 128) must reject");
+            OK();
+        }
+        free(buf);
+        fx_close(&fx);
+    }
     return 0;
 }
 
@@ -1030,7 +1630,6 @@ static int test_core_spend(void) {
     fixture_t fx;
     CHECK(fx_genesis(&fx, "spend") == 0, "genesis");
     int s7[1] = { 7 };
-    int s8[1] = { 8 };
     int s78[2] = { 7, 8 };
     env_t e;
     nodus_v2_block_t b;
@@ -1058,7 +1657,8 @@ static int test_core_spend(void) {
                            { 7, 2000000, 0x02, NULL } };
     struct {
         const char *name;
-        const uint8_t (*ins)[64]; int n_in;
+        const void *ins; int n_in;      /* really (*)[64] — see the
+                                         * spend_call_build shim         */
         out_spec_t outs[3]; int n_out;
         uint64_t fee; const int *signers; int n_signers;
     } neg[6];
@@ -1072,7 +1672,7 @@ static int test_core_spend(void) {
     neg[0].outs[0] = o_ok[0]; neg[0].n_out = 1;
     neg[0].fee = FEE_MIN; neg[0].signers = s7; neg[0].n_signers = 1;
     neg[1].name = "wrong owner (signer does not own the input)";
-    neg[1].ins = (const uint8_t (*)[64])g_nul_c; neg[1].n_in = 1;
+    neg[1].ins = g_nul_c; neg[1].n_in = 1;
     /* BALANCED on purpose (in 2M = out 1M + fee 1M): ownership is the
      * ONLY violated rule, so this cannot pass vacuously through the
      * conservation check */
@@ -1415,6 +2015,198 @@ static int test_core_spend(void) {
         OK();
     }
 
+    /* ── SIGNER CARDINALITY (capacity season: the derived cap 15) ───── */
+    {
+        /* 15 inputs, EVERY input owned by a DISTINCT signer — the
+         * structural maximum the NODUS_RT_AUTH_MAX_SIGNERS derivation
+         * names. 15 keys, 15 real signatures, engine-verified. */
+        fixture_t fs;
+        CHECK(fx_genesis(&fs, "sig15") == 0, "genesis");
+        uint8_t nul15[15][64];
+        uint64_t extra = 0;
+        for (int i = 0; i < 15; i++) {
+            CHECK(seed_utxo(&fs, i, 1000000, (uint8_t)(0xD0 + i), 0,
+                            nul15[i]) == 0, "seed");
+            extra += 1000000;
+        }
+        {
+            char sql[192];
+            snprintf(sql, sizeof(sql),
+                     "UPDATE supply_tracking SET genesis_supply = "
+                     "genesis_supply + %llu, current_supply = "
+                     "current_supply + %llu WHERE id = 1",
+                     (unsigned long long)extra, (unsigned long long)extra);
+            CHECK(run_sql(fs.w->db, sql) == 0, "supply seed");
+        }
+        int s15[15];
+        for (int i = 0; i < 15; i++) s15[i] = i;
+        out_spec_t o15[1] = { { 7, 15 * 1000000ULL - FEE_MIN, 0x31,
+                                NULL } };
+        env_t *e15 = malloc(sizeof(*e15));
+        CHECK(e15 != NULL, "alloc");
+        CHECK(spend_env(&fs, e15, (const uint8_t (*)[64])nul15, 15, o15,
+                        1, FEE_MIN, s15, 15, NULL) == 0, "build 15x15");
+        {
+            nodus_v2_envelope_t ve = { e15->bytes, e15->len };
+            nodus_v2_block_t bs;
+            mk_block(&bs, 1, &ve, 1);
+            CHECK(nodus_witness_v2_apply_block(fs.w, &bs) == 0,
+                  "15 inputs / 15 distinct owners must commit");
+            CHECK(supply_identity_holds(fs.w), "identity");
+            OK();
+        }
+        /* ONE signer covering 15 owned inputs — no duplicate signatures
+         * required (signer cardinality derives from unique owners, not
+         * input count) */
+        uint8_t nul1[15][64];
+        extra = 0;
+        for (int i = 0; i < 15; i++) {
+            CHECK(seed_utxo(&fs, 7, 500000, (uint8_t)(0x50 + i), 0,
+                            nul1[i]) == 0, "seed");
+            extra += 500000;
+        }
+        {
+            char sql[192];
+            snprintf(sql, sizeof(sql),
+                     "UPDATE supply_tracking SET genesis_supply = "
+                     "genesis_supply + %llu, current_supply = "
+                     "current_supply + %llu WHERE id = 1",
+                     (unsigned long long)extra, (unsigned long long)extra);
+            CHECK(run_sql(fs.w->db, sql) == 0, "supply seed");
+        }
+        out_spec_t o1x[1] = { { 8, 15 * 500000ULL - FEE_MIN, 0x32,
+                                NULL } };
+        CHECK(spend_env(&fs, e15, (const uint8_t (*)[64])nul1, 15, o1x,
+                        1, FEE_MIN, s7, 1, NULL) == 0, "build 15x1");
+        {
+            nodus_v2_envelope_t ve = { e15->bytes, e15->len };
+            nodus_v2_block_t bs;
+            mk_block(&bs, 2, &ve, 1);
+            CHECK(nodus_witness_v2_apply_block(fs.w, &bs) == 0,
+                  "one signer authorizing 15 owned inputs must commit");
+            OK();
+        }
+        /* an EXTRA unrelated signer is legal under kind 1 (every
+         * signature verifies; ownership needs only that each input's
+         * owner is AMONG the verified signers) — pinned as ACCEPT so a
+         * future minimality rule is a visible change, not drift */
+        {
+            uint8_t nx[1][64];
+            CHECK(seed_utxo(&fs, 7, 2 * FEE_MIN, 0x66, 0, nx[0]) == 0,
+                  "seed");
+            char sql[192];
+            snprintf(sql, sizeof(sql),
+                     "UPDATE supply_tracking SET genesis_supply = "
+                     "genesis_supply + %llu, current_supply = "
+                     "current_supply + %llu WHERE id = 1",
+                     (unsigned long long)(2 * FEE_MIN),
+                     (unsigned long long)(2 * FEE_MIN));
+            CHECK(run_sql(fs.w->db, sql) == 0, "supply seed");
+            int s79[2] = { 7, 9 };       /* 9 owns nothing here          */
+            out_spec_t ox[1] = { { 8, FEE_MIN, 0x67, NULL } };
+            CHECK(spend_env(&fs, e15, nx, 1, ox, 1, FEE_MIN, s79, 2,
+                            NULL) == 0, "build");
+            nodus_v2_envelope_t ve = { e15->bytes, e15->len };
+            nodus_v2_block_t bs;
+            mk_block(&bs, 3, &ve, 1);
+            CHECK(nodus_witness_v2_apply_block(fs.w, &bs) == 0,
+                  "extra unrelated signer is pinned ACCEPT");
+            OK();
+        }
+        /* ONE ABOVE the derived bound: a raw 16-signer kind-1 blob is a
+         * parse-level reject (count > NODUS_RT_AUTH_MAX_SIGNERS) */
+        {
+            uint32_t alen = 1 + 16u * 7219u;
+            uint8_t *auth = calloc(1, alen);
+            CHECK(auth != NULL, "alloc");
+            auth[0] = 16;
+            for (int i = 0; i < 16; i++)   /* distinct non-zero prefixes */
+                memset(auth + 1 + (size_t)i * 7219, (uint8_t)(i + 1), 64);
+            uint8_t call[8192];
+            uint32_t cl = spend_call_build(call, sizeof(call),
+                                           (const uint8_t (*)[64])nul15,
+                                           1, o_ok, 2);
+            CHECK(cl > 0, "call");
+            dna_env_leg_in_t leg;
+            memset(&leg, 0, sizeof(leg));
+            leg.hdr.domain_id = DNA_DOMAIN_CORE;
+            leg.hdr.runtime_op = DNA_CORERULE_SPEND;
+            leg.hdr.ruleset_version = 1;
+            leg.hdr.access_mode = DNA_ENV_ACCESS_INVOKE;
+            leg.hdr.auth_kind = 1;
+            leg.hdr.call_len = cl;
+            leg.hdr.auth_len = alen;
+            leg.hdr.res_max_effects = 40;
+            leg.hdr.res_max_effect_bytes = 16384;
+            leg.call_data = call;
+            leg.auth_data = auth;
+            dna_env_in_t in;
+            memset(&in, 0, sizeof(in));
+            in.fee_amount = FEE_MIN;
+            in.res_max_total_units = 200000;
+            in.leg_count = 1;
+            in.legs = &leg;
+            CHECK(dna_env_encode(&in, e15->bytes, sizeof(e15->bytes),
+                                 &e15->len) == 0, "encode");
+            free(auth);
+            nodus_v2_envelope_t ve = { e15->bytes, e15->len };
+            nodus_v2_block_t bs;
+            mk_block(&bs, 4, &ve, 1);
+            CHECK(apply_reject(fs.w, &bs, &rc) == 0 && rc == -1,
+                  "16 signers (one above the derived bound) must reject");
+            OK();
+        }
+        /* NARROW ZERO-PREFIX key: first 32 bytes zero, remainder alive.
+         * The scheme's null-key discipline keys on the 32-byte prefix
+         * (no honest ML-DSA-87 key has a zero rho), so this dies at the
+         * PARSE level — before any signature math. Pinned so the guard
+         * cannot silently narrow. */
+        {
+            uint32_t alen = 1 + 7219u;
+            uint8_t *auth = calloc(1, alen);
+            CHECK(auth != NULL, "alloc");
+            auth[0] = 1;
+            memset(auth + 1, 0, 32);                 /* zero prefix      */
+            memset(auth + 1 + 32, 0xA7, 2592 - 32);  /* alive remainder  */
+            memset(auth + 1 + 2592, 0xB1, 4627);     /* garbage sig      */
+            uint8_t call[8192];
+            uint32_t cl = spend_call_build(call, sizeof(call),
+                                           (const uint8_t (*)[64])nul15,
+                                           1, o_ok, 2);
+            CHECK(cl > 0, "call");
+            dna_env_leg_in_t leg;
+            memset(&leg, 0, sizeof(leg));
+            leg.hdr.domain_id = DNA_DOMAIN_CORE;
+            leg.hdr.runtime_op = DNA_CORERULE_SPEND;
+            leg.hdr.ruleset_version = 1;
+            leg.hdr.access_mode = DNA_ENV_ACCESS_INVOKE;
+            leg.hdr.auth_kind = 1;
+            leg.hdr.call_len = cl;
+            leg.hdr.auth_len = alen;
+            leg.hdr.res_max_effects = 40;
+            leg.hdr.res_max_effect_bytes = 16384;
+            leg.call_data = call;
+            leg.auth_data = auth;
+            dna_env_in_t in;
+            memset(&in, 0, sizeof(in));
+            in.fee_amount = FEE_MIN;
+            in.res_max_total_units = 200000;
+            in.leg_count = 1;
+            in.legs = &leg;
+            CHECK(dna_env_encode(&in, e15->bytes, sizeof(e15->bytes),
+                                 &e15->len) == 0, "encode");
+            free(auth);
+            nodus_v2_envelope_t ve = { e15->bytes, e15->len };
+            nodus_v2_block_t bs;
+            mk_block(&bs, 4, &ve, 1);
+            CHECK(apply_reject(fs.w, &bs, &rc) == 0 && rc == -1,
+                  "zero-prefix pubkey must reject at the parse level");
+            OK();
+        }
+        free(e15);
+        fx_close(&fs);
+    }
+
     /* checked-add overflow across inputs: THREE INT64_MAX utxos (each
      * individually representable and non-negative, so the malformed-row
      * guard passes) whose sum crosses UINT64_MAX at the third input —
@@ -1550,6 +2342,7 @@ int main(void) {
     if (test_auth() != 0) return 1;
     if (test_authority() != 0) return 1;
     if (test_system_cc() != 0) return 1;
+    if (test_committee_capacity() != 0) return 1;
     if (test_core_spend() != 0) return 1;
     if (test_engine() != 0) return 1;
     printf("test_v2_native: ALL OK (%d checks)\n", g_checks);

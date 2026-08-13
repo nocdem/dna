@@ -186,14 +186,19 @@ extern "C" {
  *     touching domains.
  *
  *   DNA_EFFECT_MAX_TOTAL_LEN  65536 (INCLUSIVE)
- *     Mirrors DNA_ENV_MAX_TOTAL_LEN (shared/dnac/env_wire.h:180), which
- *     itself restates the shipped per-transaction wire ceiling
- *     NODUS_T3_MAX_TX_SIZE (nodus/include/nodus/nodus_types.h:157). A
- *     result describing one leg of a transaction cannot usefully exceed
- *     the transaction ceiling. Restated as a standalone literal so this
- *     header stays free of any nodus dependency (same rule as
- *     ledger_ids.h / chain_config_wire.h): if the transaction ceiling ever
- *     moves, this is a coordinated change, never an automatic one.
+ *     The RESULT-side byte ceiling. Historically this mirrored
+ *     DNA_ENV_MAX_TOTAL_LEN while both restated the legacy 64 KiB wire
+ *     ceiling; the capacity season DECOUPLED them — the ENVELOPE ceiling
+ *     is now the derived 1 MiB V2 bound (env_wire.h), grown for
+ *     AUTHORIZATION bytes (committee approvals, multi-signer blobs),
+ *     which never re-appear in a typed-effect result. The state a legal
+ *     leg mutates is unchanged by that growth, so the RESULT bound
+ *     deliberately stays at the legacy 65,536 (still the
+ *     NODUS_T3_MAX_TX_SIZE class of magnitude,
+ *     nodus/include/nodus/nodus_types.h:157). Standalone literal so this
+ *     header stays free of any nodus dependency (ledger_ids.h rule);
+ *     moving it is a versioned, coordinated change behind
+ *     result_version, never an automatic one.
  *
  *   DNA_EFFECT_MAX_KEY_LEN    128 (minimum 1)
  *     Covers every current domain-local key shape: the 64-byte hash

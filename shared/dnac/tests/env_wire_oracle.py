@@ -22,7 +22,27 @@ TAG_TXID      = b"DNA.ENVTXID.v1".ljust(16, b"\0")
 ENV_VERSION      = 1
 FIXED_HEAD       = 43
 LEG_HDR_LEN      = 30
-MAX_TOTAL_LEN    = 65536
+MAX_TOTAL_LEN    = 1048576   # capacity season: the derived 2^20 V2 bound
+
+
+def capacity_derivation():
+    """Capacity-season worst-case arithmetic — the INDEPENDENT second
+    derivation of DNA_ENV_MAX_TOTAL_LEN cited by env_wire.h and
+    nodus_witness_rt_native.c. Recomputed here from the participating
+    source constants (ML-DSA-87 pk 2592 / sig 4627; committee ceiling
+    128; signer cap 15; SPEND shape 15 in / 16 out / 232 B out; CC call
+    v2 = 41 B); the C-side third derivation is test_v2_capacity.c."""
+    signer = 2592 + 4627          # kind-1 unit (pk + sig)
+    appr = 2 + 4627               # kind-2 approval unit (seat + sig)
+    cc_single = 43 + 30 + 41 + (1 + 15 * signer) + (2 + 128 * appr)
+    two_leg = cc_single + 30 + (2 + 15 * 64 + 16 * 232) + (1 + 15 * signer)
+    assert cc_single == 700914, cc_single
+    assert two_leg == 813904, two_leg
+    assert 2 ** 19 < two_leg <= 2 ** 20 == MAX_TOTAL_LEN
+    return cc_single, two_leg
+
+
+capacity_derivation()
 MAX_LEGS         = 64
 
 assert len(WIRE_FAMILY) == 16 and len(TAG_CALL) == 16

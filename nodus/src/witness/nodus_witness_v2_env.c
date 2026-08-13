@@ -186,6 +186,19 @@ fail_dup:
     return NODUS_V2_ENV_ERR_DUP;
 }
 
+int nodus_witness_v2_block_bytes_check(const size_t *lens, size_t n,
+                                       uint64_t max_block_env_bytes) {
+    if (n == 0 || !lens) return -1;
+    if (max_block_env_bytes == 0) return -1;   /* an unbounded block is
+                                                * not a configuration    */
+    uint64_t sum = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (dna_ck_add_u64(sum, (uint64_t)lens[i], &sum) != 0)
+            return -1;                          /* checked overflow       */
+    }
+    return sum <= max_block_env_bytes ? 0 : -1;
+}
+
 nodus_v2_env_status_t nodus_witness_v2_env_preflight_reserve_batch(
         nodus_witness_t *w,
         uint64_t proposed_global_height,
@@ -234,6 +247,28 @@ nodus_v2_env_status_t nodus_witness_v2_env_preflight_reserve_batch(
         if (fail_index_out)   *fail_index_out   = 0;
         if (meter_status_out) *meter_status_out = DNA_METER_ERR_POLICY;
         return NODUS_V2_ENV_ERR_METER;
+    }
+
+    /* Step 4b — ABSOLUTE block-byte admission (capacity season), BEFORE
+     * any reservation: a byte-rejected batch never touches the unit
+     * budget, and the distinct status cannot be masked by unit
+     * exhaustion (header doc — the order is load-bearing). The lengths
+     * summed are the DECODE-ACCEPTED exact lengths, not the caller's
+     * claims: preflight proved env_len == the length the bytes imply. */
+    {
+        size_t lens[NODUS_V2_ENV_BATCH_MAX];
+        for (size_t i = 0; i < n_envs; i++)
+            lens[i] = out[i].view.env_len;
+        if (nodus_witness_v2_block_bytes_check(lens, n_envs,
+                policy->max_block_env_bytes) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "block byte bound rejected the batch "
+                          "(%zu envelope(s), bound %llu)", n_envs,
+                          (unsigned long long)policy->max_block_env_bytes);
+            memset(out, 0, n_envs * sizeof(*out));
+            memset(meters_out, 0, n_envs * sizeof(*meters_out));
+            if (fail_index_out) *fail_index_out = 0;
+            return NODUS_V2_ENV_ERR_BLOCK_BYTES;
+        }
     }
 
     /* Step 5 — sequential reservation. The snapshot makes the batch

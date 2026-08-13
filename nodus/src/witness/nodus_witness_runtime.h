@@ -167,8 +167,9 @@ typedef struct {
  * caller parameter and no runtime return value can substitute for it:
  * a leg whose auth hook did not return 0 never reaches execution.
  *
- * auth_kind 1 is the ONE supported scheme this release:
- *   NODUS_RT_AUTHKIND_DSA87_MULTI_V1 — auth_data =
+ * TWO supported schemes this release (capacity season):
+ *
+ *   auth_kind 1 — NODUS_RT_AUTHKIND_DSA87_MULTI_V1: auth_data =
  *     signer_count u8 (1..NODUS_RT_AUTH_MAX_SIGNERS)
  *     ‖ signer_count × ( pubkey[2592] ‖ signature[4627] )
  *   with pubkeys STRICTLY ascending (memcmp — duplicates and disorder
@@ -177,20 +178,90 @@ typedef struct {
  *   leg auth_digest (env_wire.h "DNA.ENVAUTH.v1": binds chain identity,
  *   expiry, fee, resource ceilings, every leg's domain / runtime_op /
  *   ruleset identity / call bytes through auth_context_commit — so
- *   changing ANY of them invalidates every signature). Every other
- *   auth_kind value REJECTS (unsupported scheme, fail-closed).
+ *   changing ANY of them invalidates every signature).
+ *
+ *   auth_kind 2 — NODUS_RT_AUTHKIND_DSA87_CC_V1 (the committee-indexed
+ *   authorization CARRIER, capacity season): auth_data =
+ *     the ENTIRE kind-1 body (the SUBMITTER section, same rules)
+ *     ‖ approval_count u16 BE (1..committee_n)
+ *     ‖ approval_count × ( snapshot_index u16 BE ‖ signature[4627] )
+ *   Approvals reference the ENGINE-resolved governing committee snapshot
+ *   by POSITION — the committee pubkeys are NEVER carried on the wire
+ *   (they are already consensus state). Indices STRICTLY increasing
+ *   (duplicates and disorder reject — one-validator-one-vote is
+ *   structural), every index < committee count, count <= committee
+ *   count, exact framing (checked length arithmetic — truncation and
+ *   trailing bytes reject). Each approval signature is ML-DSA-87 over
+ *   the engine-derived APPROVAL DIGEST (nodus_witness_rt_native.c
+ *   "DNA.CCAPPR.v1": leg auth_digest ‖ resolved-set hash ‖ governing
+ *   epoch ‖ signer index — so an approval binds everything the
+ *   submitter signature binds PLUS the exact governing snapshot and the
+ *   signer's own seat). QUORUM IS NOT DECIDED HERE: the hook verifies
+ *   EVIDENCE and counts it into the verdict; the consuming runtime_op
+ *   (CHAIN_CONFIG exec) compares against dna_bft_quorum(committee_n).
+ *   SCOPING NOTE (capacity-season review finding, fail-closed today):
+ *   the scheme is deliberately runtime_op-AGNOSTIC — a verdict says
+ *   only "these seats signed THIS leg's digest", which binds the op but
+ *   certifies no policy. Every FUTURE SYSTEM op migrated onto kind 2
+ *   must decide its own authority rule in ITS exec (the CHAIN_CONFIG
+ *   quorum gate is the precedent, not an inherited default); today ops
+ *   1..5 deterministically reject before any verdict is consumed.
+ *   COORDINATION NOTE (honest label): auth_len is bound by the leg
+ *   auth_digest through AUTHCTX_BYTES, and kind-2 auth_len depends on
+ *   the final (signer_count, approval_count) pair — so the exact
+ *   signer/approval SET must be fixed before anyone signs; adding or
+ *   dropping one approval afterwards invalidates every signature. Same
+ *   property kind 1 already has for its signer set; it is the seam the
+ *   intent-identity season inherits, not a soundness hole.
+ *
+ * Every other auth_kind value REJECTS (unsupported scheme, fail-closed),
+ * and a runtime accepts only the kinds its allowed_auth_kinds mask
+ * declares (table field below).
  * Verification work is priced by w_authbyte at reservation — the hook
  * charges nothing, so authorization is never charged twice. */
 #define NODUS_RT_AUTHKIND_DSA87_MULTI_V1  ((uint8_t)1)
-#define NODUS_RT_AUTH_MAX_SIGNERS         8
+#define NODUS_RT_AUTHKIND_DSA87_CC_V1     ((uint8_t)2)
+/** DERIVED, not chosen: the largest signer cardinality any compiled
+ *  runtime can legally require. CORE SPEND accepts up to 15 inputs
+ *  (RTN_SPEND_MAX_IN, nodus_witness_rt_native.c — the mediated-read
+ *  budget), and every input may be owned by a DISTINCT signer, so the
+ *  scheme must represent 15; SYSTEM's operations need only an ordinary
+ *  submitter (1). One signer covering several owned inputs needs no
+ *  duplicate signature (ownership matches any verified fp), so 15 is
+ *  the exact structural maximum, not a headroom guess. */
+#define NODUS_RT_AUTH_MAX_SIGNERS         15
 #define NODUS_RT_AUTH_SIGNER_LEN          (2592u + 4627u)   /* pk ‖ sig  */
+/** One kind-2 approval: snapshot_index u16 BE ‖ ML-DSA-87 signature. */
+#define NODUS_RT_AUTH_APPROVAL_LEN        (2u + 4627u)
+/** Per-runtime auth-kind allowlist bits (allowed_auth_kinds). */
+#define NODUS_RT_AUTHKIND_BIT(k)          ((uint32_t)1u << (k))
+
+/** The ENGINE-resolved governing committee snapshot view handed to the
+ *  authorization hook for kind-2 legs (ctx->committee). Engine-owned,
+ *  borrowed for the call; built ONCE per block from
+ *  nodus_committee_get_for_block at the governing height (H-1) — a
+ *  transaction can neither carry nor select it. count == 0 means the
+ *  chain has no committee (a deterministic parse-level REJECT for any
+ *  kind-2 leg, never a fault). */
+typedef struct {
+    uint32_t count;                /* members; 0 = no committee          */
+    uint64_t epoch;                /* nodus_v2_epoch_for_height(H-1)     */
+    uint8_t  set_hash[64];         /* "DNA.CCSET.v1" resolved-set hash   */
+    const uint8_t *pubkeys;        /* count × 2592, contiguous           */
+    const uint8_t (*fps)[64];      /* count × SHA3-512(pubkey)           */
+} nodus_rt_committee_t;
 
 /** The engine-owned verdict of ONE leg's verified authorization. Only
  *  the engine writes it (through the resolved auth hook); runtimes read
- *  it through ctx->auth. */
+ *  it through ctx->auth. Kind 1 leaves the approval fields ZERO; kind 2
+ *  fills them from the verified committee evidence. */
 typedef struct {
     uint16_t n_signers;                  /* 1..NODUS_RT_AUTH_MAX_SIGNERS */
     uint8_t  signer_fp[NODUS_RT_AUTH_MAX_SIGNERS][64]; /* SHA3-512(pk)   */
+    /* capacity season — committee approval evidence (kind 2 only):      */
+    uint16_t n_approvals;                /* verified DISTINCT approvals  */
+    uint16_t committee_n;                /* resolved committee size the
+                                          * approvals verified against   */
 } nodus_rt_auth_verdict_t;
 
 /** The engine-owned execution context for one leg. Every pointer is a
@@ -213,6 +284,12 @@ typedef struct {
     const uint8_t *leg_auth_digest;       /* [64] this leg's derived
                                            * commitment                   */
     const nodus_rt_auth_verdict_t *auth;  /* engine-VERIFIED verdict      */
+    /* capacity season: the ENGINE-resolved governing committee snapshot
+     * view (type doc above). Non-NULL exactly while the AUTH hook of a
+     * leg whose auth_kind needs it runs (kind 2); NULL everywhere else —
+     * read_plan/exec consume committee FACTS only through the verdict
+     * (n_approvals / committee_n), never the raw snapshot. */
+    const nodus_rt_committee_t *committee;
 } nodus_rt_exec_ctx_t;
 
 /**
@@ -344,6 +421,17 @@ typedef struct nodus_domain_runtime {
      * engine invokes it BEFORE any execution or mutation; a leg whose
      * auth hook is absent or does not return 0 fails closed. */
     nodus_rt_auth_fn      auth;
+    /* Per-runtime auth-kind ALLOWLIST (capacity season): bit k set =
+     * this runtime's legs may carry auth_kind k
+     * (NODUS_RT_AUTHKIND_BIT). Enforced by the engine's pre-BEGIN
+     * admission scan BEFORE any authorization work, so a runtime that
+     * never consumes committee approvals (CORE) cannot be made to carry
+     * — and its blocks cannot be made to pay for — a 128-approval blob:
+     * the worst-case LEGAL envelope stays exactly the enumerated shapes
+     * the DNA_ENV_MAX_TOTAL_LEN derivation contains. 0 is INVALID
+     * (selfcheck rejects a runtime that accepts no kind). SYSTEM
+     * declares {1,2}; CORE declares {1}. */
+    uint32_t              allowed_auth_kinds;
     /* The typed EXECUTION boundary (header block above). Native auth
      * season: the production SYSTEM and DNA_CORE entries carry REAL
      * compiled implementations (SYSTEM: DNA_SYSRULE_CHAIN_CONFIG;
@@ -412,6 +500,8 @@ const nodus_domain_runtime_t *nodus_runtime_builtin_table(size_t *n_out);
  * Self-check of the production table, fail-closed:
  *   - every entry's pinned ruleset_hash equals a FRESH
  *     dna_ruleset_desc_hash of its checked-in descriptor;
+ *   - allowed_auth_kinds is non-zero, names only compiled kinds (1/2),
+ *     and matches the configured shape exactly: SYSTEM {1,2}, CORE {1};
  *   - descriptor identity fields (domain_id / runtime_abi /
  *     ruleset_version) equal the entry's tuple fields;
  *   - runtime_kind is NATIVE_BUILTIN;
@@ -472,6 +562,26 @@ int nodus_rt_auth_dsa87_v1(const nodus_domain_runtime_t *rt,
                            const dna_env_view_t *env, uint16_t leg_index,
                            const nodus_rt_exec_ctx_t *ctx,
                            nodus_rt_auth_verdict_t *out);
+/** "DNA.CCSET.v1" resolved-committee-set hash over the fps in committee
+ *  (stake-ranked) order — the ONE derivation the engine, the auth hook
+ *  and every signer share. Preimage: tag(16) ‖ count u16 BE ‖ count ×
+ *  SHA3-512(pubkey)[64]. HONEST LABEL: this hashes the RESOLVED
+ *  committee (nodus_committee_get_for_block's answer), NOT the persisted
+ *  "DNA.VSET.v1" snapshot row — the bootstrap path has no row, and
+ *  every honest node resolves the same members in the same order, which
+ *  is what makes the value consensus-safe. @return 0 / -1. */
+int nodus_rt_committee_set_hash(const uint8_t (*fps)[64], uint32_t count,
+                                uint8_t out[64]);
+/** "DNA.CCAPPR.v1" committee approval digest — what one committee seat
+ *  signs under auth_kind 2. Preimage (154 B): tag(16) ‖
+ *  leg_auth_digest(64) ‖ set_hash(64) ‖ epoch u64 BE ‖ index u16 BE,
+ *  with epoch = nodus_v2_epoch_for_height(H-1) for execution height H
+ *  (verbatim the engine's committee-resolution expression).
+ *  @return 0 / -1. */
+int nodus_rt_cc_approval_digest(const uint8_t leg_auth_digest[64],
+                                const uint8_t set_hash[64],
+                                uint64_t epoch, uint16_t index,
+                                uint8_t out[64]);
 int nodus_rt_core_read_plan(const nodus_domain_runtime_t *rt,
                             const dna_env_view_t *env, uint16_t leg_index,
                             const nodus_rt_exec_ctx_t *ctx,

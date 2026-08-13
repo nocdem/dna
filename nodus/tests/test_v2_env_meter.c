@@ -171,6 +171,10 @@ static void mk_policy(dna_meter_policy_t *p) {
     p->w_effectbyte = 1;
     p->w_read       = 5;
     p->w_write      = 9;
+    /* policy v2 (capacity season): a generous fixture block-byte bound
+     * so the existing unit-accounting scenarios are undisturbed; the
+     * block-byte matrix below shrinks it deliberately. */
+    p->max_block_env_bytes = 1u << 20;
     (void)dna_meter_op_set(p, 1, 3);
 }
 
@@ -495,6 +499,67 @@ int main(void) {
               all_zero((const uint8_t *)meters, sizeof(*meters)),
               "arrays not zeroed on ERR_CHAIN"); OK();
         fx_close(&fx2);
+    }
+
+    /* ── 9. ABSOLUTE BLOCK-BYTE BOUND (capacity season) ───────────────
+     * The distinct ERR_BLOCK_BYTES status, its BEFORE-any-reservation
+     * ordering, and the pure checked-sum helper. */
+    {
+        /* 9a. the pure helper: inclusive fit, one-over, checked
+         * overflow, degenerate shapes */
+        size_t twol[2] = { 10, 20 };
+        CHECK(nodus_witness_v2_block_bytes_check(twol, 2, 30) == 0,
+              "sum exactly at the bound admits (inclusive)"); OK();
+        CHECK(nodus_witness_v2_block_bytes_check(twol, 2, 29) == -1,
+              "one byte over the bound rejects"); OK();
+        size_t ovl[2] = { SIZE_MAX, 2 };
+        CHECK(nodus_witness_v2_block_bytes_check(ovl, 2,
+                  UINT64_MAX) == -1,
+              "checked-add overflow rejects (never wraps)"); OK();
+        CHECK(nodus_witness_v2_block_bytes_check(NULL, 1, 100) == -1 &&
+              nodus_witness_v2_block_bytes_check(twol, 0, 100) == -1 &&
+              nodus_witness_v2_block_bytes_check(twol, 2, 0) == -1,
+              "NULL / empty / zero-bound all reject"); OK();
+
+        /* 9b. the seam: a bound of exactly (l0 + l1) admits the
+         * two-envelope batch and rejects the three-envelope one with
+         * the DISTINCT status — BEFORE any reservation, so the budget
+         * is byte-identical (the byte verdict can never be masked by
+         * unit exhaustion). */
+        memset(&bud, 0, sizeof(bud));
+        bud.global_remaining = 1000;
+        bud.n_domains = 1;
+        bud.dom[0].domain_id = 1;
+        bud.dom[0].remaining_units = 300;
+        pol->max_block_env_bytes = (uint64_t)l0 + (uint64_t)l1;
+        CHECK(dna_meter_policy_seal(pol) == 0, "reseal"); OK();
+        memcpy(&entry_bud, &bud, sizeof(bud));
+        CHECK(nodus_witness_v2_env_preflight_reserve_batch(
+                  fx.w, 1, &tab, 1, pol, &bud, envs, 2, out, meters,
+                  &fail_idx, &pf_st, &ms) == NODUS_V2_ENV_OK,
+              "batch exactly at the byte bound reserves"); OK();
+        for (size_t i = 0; i < 2; i++)
+            dna_meter_abort(&meters[i]);   /* restore for the next leg  */
+        CHECK(memcmp(&entry_bud, &bud, sizeof(bud)) == 0,
+              "abort restored the budget byte-identically"); OK();
+        memcpy(&entry_bud, &bud, sizeof(bud));
+        CHECK(nodus_witness_v2_env_preflight_reserve_batch(
+                  fx.w, 1, &tab, 1, pol, &bud, envs, 3, out, meters,
+                  &fail_idx, &pf_st, &ms) == NODUS_V2_ENV_ERR_BLOCK_BYTES,
+              "sum above the bound returns the DISTINCT byte status");
+        OK();
+        CHECK(memcmp(&entry_bud, &bud, sizeof(bud)) == 0,
+              "byte-rejected batch never touched the budget"); OK();
+        CHECK(all_zero((const uint8_t *)out, 3 * sizeof(*out)) &&
+              all_zero((const uint8_t *)meters, 3 * sizeof(*meters)),
+              "byte-rejected batch publishes nothing"); OK();
+        /* 9c. a zero-bound policy cannot even reseal — the fail-closed
+         * source rule (res_meter policy shape) */
+        pol->max_block_env_bytes = 0;
+        CHECK(dna_meter_policy_seal(pol) == -1,
+              "zero byte bound is not a policy"); OK();
+        pol->max_block_env_bytes = 1u << 20;
+        CHECK(dna_meter_policy_seal(pol) == 0, "restore"); OK();
     }
 
     free(out);

@@ -793,6 +793,11 @@ register_witness_test(test_v2_apply)
 register_witness_test(test_v2_exec)
 register_witness_test(test_v2_native)
 
+# Ledger V2 capacity season — legacy 64 KiB vs derived 1 MiB V2 ceiling:
+# constant separation, independent worst-case arithmetic, wire-family
+# classification in both directions, ceiling-boundary encode/decode.
+register_witness_test(test_v2_capacity)
+
 # Ledger V2 S6 — generic manifest/snapshot/claim codec: round-trips,
 # per-field root sensitivity, strict-decode negatives, deterministic
 # mutant fuzz, snapshot ordering/duplicates, shape-derived inclusion
