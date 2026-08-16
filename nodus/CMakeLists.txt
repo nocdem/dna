@@ -179,6 +179,7 @@ set(NODUS_SOURCES
     # apply_epoch_boundary_transitions; the legacy lane is untouched and
     # remains the only boundary a running chain executes.
     src/witness/nodus_witness_v2_epoch.c
+    src/witness/nodus_witness_v2_qc.c
 
     # Ledger V2 S6 — INACTIVE generic genesis/distribution manifest +
     # claim codec (shared) and the witness-side manifest/claims module
@@ -833,6 +834,7 @@ register_witness_test(test_v2_pools)
 # full-DB-digest rollback and clean-retry twin identity, restart
 # persistence, and the malformed-row refusal.
 register_witness_test(test_v2_epoch)
+register_witness_test(test_v2_qc_authority)
 
 # Ledger V2 — generic typed-effect + compiled storage-adapter boundary
 # (INACTIVE): adapter registration through the five-axis runtime lookup,

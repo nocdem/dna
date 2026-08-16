@@ -1,18 +1,27 @@
 /**
- * Nodus — Ledger V2 S2: BlockHeader V2 + BlockID V2 tests (INACTIVE codec).
+ * Nodus — Ledger V2 O13: BlockHeader v3 + BlockID v3 tests (INACTIVE codec).
  *
- * KATs pinned from the independent python3 sha3_512 oracle (S2 report):
- * the 349-byte encoding (offset spot-checks + digest pin), BlockID, the
- * genesis BlockID + full-32-byte chain-id derivation, and the manifest-
- * mutation variant. Plus: strict decode negatives, a full field-mutation
- * sweep, and a DETERMINISTIC (seeded xorshift) fuzz pass over the decoder
- * and the domains-root input path — no RNG, byte-reproducible.
+ * KATs pinned from the independent python3 oracle
+ * shared/dnac/tests/block_v3_oracle.py, which reproduces all FIVE shipped
+ * v2 pins as CONTROL LEGS before emitting a single v3 vector (it refuses
+ * to emit otherwise) — so these numbers are independently derived, not
+ * echoed back from the implementation under test.
+ *
+ * Covers: the 413-byte encoding (offset spot-checks + digest pin), BlockID,
+ * the genesis BlockID + full-32-byte chain-id derivation, the manifest-
+ * mutation variant, the O13 domain_updates_root binding (incl. the tagged
+ * EMPTY root that distinguishes a zero-envelope block from a missing body),
+ * retired-vs-unknown version rejection as two distinct classes, strict
+ * decode negatives, a full field-mutation sweep, and a DETERMINISTIC
+ * (seeded xorshift) fuzz pass over the decoder and the domains-root input
+ * path — no RNG, byte-reproducible.
  *
  * @file test_block_v2.c
  */
 
 #include "dnac/block_v2.h"
 #include "dnac/ledger_roots_v2.h"
+#include "dnac/domain_wire.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -47,31 +56,41 @@ static int hex_eq(const uint8_t *h, size_t n, const char *hex, const char *what)
     return 1;
 }
 
-/* python3-oracle literals */
+/* python3-oracle literals (block_v3_oracle.py, control legs green) */
 static const char *KAT_ENC_SHA =
-    "6b57e520049189934aea09aded30538f1d87f59a39a4e94ab3be2313d4985793"
-    "14451a5bf3da3807764bb7dddefc09c14b41dceb710486992001f4b51ac9ef3b";
+    "30dee8495558347b4b0ca920553e80a2643c101b3b4b53efe4300dd806f98c56"
+    "f814d62e66c5eafcbc06e3bc9634d1f25dfd29472fe0ad243357c261598062d4";
 static const char *KAT_BLOCK_ID =
-    "d7beb71ce44dc5b4676cf5f247e5210f2199a089cd10111303c20fe581c2f1da"
-    "437997018d2936183900b82e85b71aa2d0ae013fb2fe953e0dbdc49ec98150be";
+    "1403cb75a0e1d58f54c0987e2ffe5400e42b0bc382c70ce4e82b09e6baa9a2d0"
+    "a077b07ccba8ae5926ff5beb60efbc4d1041258131a841f07d6793ae7dbed17e";
 static const char *KAT_GENESIS_ID =
-    "d4485cd6f0b044ad760742ca124f9633ae32c38aaf7257c8c860432c1f03ea38"
-    "4bfec62599589bb593af1c2a1786f481637a3f79d5b627e87dae59a15ea17e47";
+    "e68a2623907a0929c3fd8bd246a262481802f4fa76f48e7f226a73101fb2feee"
+    "c4ffc869ad98c91515b3af798414da27297dfb8161289502466a8099ed8ea683";
 static const char *KAT_GENESIS_CHAIN =
-    "d4485cd6f0b044ad760742ca124f9633ae32c38aaf7257c8c860432c1f03ea38";
+    "e68a2623907a0929c3fd8bd246a262481802f4fa76f48e7f226a73101fb2feee";
 static const char *KAT_GENESIS_ID_MUT =
-    "e902ef055f75ecbf083b0bf0c1c143bbf252d09db203e650a824374df6c23da7"
-    "1716fa1bd3c1e20fe83cae136955b47c69c6ace0dd488cfd0b1177a17000c6d5";
+    "29675a73b74d6f25b07238e669377b635d4f095224fcfc2d398bb1c24426693e"
+    "ac37bc4b3c0975811f609a82beb75e13a08a9419b1c595f6336e7b1def6a2794";
+/* O13: the tagged EMPTY domain_updates_root ("DNA.E.DUPD.v1"), and the
+ * BlockID of an otherwise-identical header carrying it. A zero-envelope
+ * block MUST be distinguishable from one that touched domains. */
+static const char *KAT_EMPTY_DUPD_ROOT =
+    "661f403d91d807631ab6bcc82d34116780623aa35479c753fc1d53a722fa58bc"
+    "61939dc88f51e2824ac76c8da4d11edc5beb54a0e3e222e2606320baf68de841";
+static const char *KAT_BLOCK_ID_EMPTY_DUPD =
+    "f49eb47f15b113ea1034ce2fb39d1e5f1ec510712d969ef00f65cccc2410f9e2"
+    "def4284ee4c514d78d66bf281629bcdab4571b2a05d04da33c5e2334e337d43f";
 
 static void base_header(dna_block_header_v2_t *h) {
     memset(h, 0, sizeof(*h));
-    h->header_version = 2;
+    h->header_version = DNA_BH2_VERSION;
     fill(h->chain_id, 32, 0xA0);
     h->block_height = 5;
     h->epoch = 2;
     fill(h->prev_block_id, 64, 0xC0);
     fill(h->global_state_root, 64, 0xD0);
     fill(h->tx_root, 64, 0xE0);
+    fill(h->domain_updates_root, 64, 0x55);
     fill(h->validator_set_hash, 64, 0xF0);
     h->tx_count = 3;
     fill(h->proposer_id, 32, 0x11);
@@ -79,7 +98,7 @@ static void base_header(dna_block_header_v2_t *h) {
 }
 
 /* The encoding is pinned two ways: OFFSET SPOT-CHECKS (every field at its
- * documented offset, literal bytes) + a digest of the full 349 bytes
+ * documented offset, literal bytes) + a digest of the full 413 bytes
  * pinned from the python oracle. */
 #include "crypto/hash/qgp_sha3.h"
 
@@ -89,8 +108,10 @@ int main(void) {
     uint8_t enc[DNA_BH2_ENC_SIZE];
     CHECK(dna_bh2_encode(&h, enc) == 0, "encode"); OK();
 
-    /* Offset spot checks per the documented table. */
-    CHECK(enc[0] == 2, "version @0"); OK();
+    /* Offset spot checks per the documented v3 table. */
+    CHECK(DNA_BH2_ENC_SIZE == 413 && DNA_BH2_BOUND_SIZE == 405,
+          "v3 sizes drifted"); OK();
+    CHECK(enc[0] == 3, "version @0"); OK();
     CHECK(enc[1] == 0xA0 && enc[32] == (uint8_t)(0xA0 + 31 * 7),
           "chain_id @1"); OK();
     CHECK(enc[33] == 0 && enc[40] == 5, "height BE @33"); OK();
@@ -98,10 +119,11 @@ int main(void) {
     CHECK(enc[49] == 0xC0, "prev @49"); OK();
     CHECK(enc[113] == 0xD0, "gsr @113"); OK();
     CHECK(enc[177] == 0xE0, "tx_root @177"); OK();
-    CHECK(enc[241] == 0xF0, "vset @241"); OK();
-    CHECK(enc[305] == 0 && enc[308] == 3, "tx_count BE @305"); OK();
-    CHECK(enc[309] == 0x11, "proposer @309"); OK();
-    CHECK(enc[341] == 0x01 && enc[348] == 0x08, "timestamp BE @341"); OK();
+    CHECK(enc[241] == 0x55, "domain_updates_root @241"); OK();
+    CHECK(enc[305] == 0xF0, "vset @305"); OK();
+    CHECK(enc[369] == 0 && enc[372] == 3, "tx_count BE @369"); OK();
+    CHECK(enc[373] == 0x11, "proposer @373"); OK();
+    CHECK(enc[405] == 0x01 && enc[412] == 0x08, "timestamp BE @405"); OK();
 
     /* Whole-encoding digest pinned from the oracle. */
     uint8_t dg[64];
@@ -111,10 +133,11 @@ int main(void) {
     /* Round trip. */
     dna_block_header_v2_t back;
     CHECK(dna_bh2_decode(enc, sizeof(enc), &back) == 0, "decode"); OK();
-    CHECK(back.header_version == 2 && back.block_height == 5 &&
+    CHECK(back.header_version == 3 && back.block_height == 5 &&
           back.epoch == 2 && back.tx_count == 3 &&
           back.timestamp == h.timestamp &&
           memcmp(back.chain_id, h.chain_id, 32) == 0 &&
+          memcmp(back.domain_updates_root, h.domain_updates_root, 64) == 0 &&
           memcmp(back.validator_set_hash, h.validator_set_hash, 64) == 0,
           "round trip"); OK();
 
@@ -143,6 +166,15 @@ int main(void) {
         base_header(&m); m.tx_root[5] ^= 1;
         CHECK(dna_bh2_block_id(&m, id2) == 0 && memcmp(id, id2, 64) != 0,
               "tx_root unbound"); OK();
+        /* O13: the domain-update commitment MUST be bound. This is the
+         * defect v3 exists to close — under v2 the whole DomainUpdate set
+         * could be substituted without moving the BlockID. */
+        base_header(&m); m.domain_updates_root[5] ^= 1;
+        CHECK(dna_bh2_block_id(&m, id2) == 0 && memcmp(id, id2, 64) != 0,
+              "domain_updates_root unbound"); OK();
+        base_header(&m); m.domain_updates_root[63] ^= 0x80;
+        CHECK(dna_bh2_block_id(&m, id2) == 0 && memcmp(id, id2, 64) != 0,
+              "domain_updates_root last byte unbound"); OK();
         base_header(&m); m.validator_set_hash[5] ^= 1;
         CHECK(dna_bh2_block_id(&m, id2) == 0 && memcmp(id, id2, 64) != 0,
               "vset unbound"); OK();
@@ -156,28 +188,84 @@ int main(void) {
         base_header(&m); m.timestamp ^= 0xFFFF;
         CHECK(dna_bh2_block_id(&m, id2) == 0 && memcmp(id, id2, 64) == 0,
               "timestamp leaked into BlockID"); OK();
-        /* version gate on hashing */
+        /* version gate on hashing: the RETIRED version must not be
+         * hashable under the new layout, nor may any unknown version. */
+        base_header(&m); m.header_version = DNA_BH2_VERSION_RETIRED;
+        CHECK(dna_bh2_block_id(&m, id2) != 0, "retired v2 header hashed"); OK();
         base_header(&m); m.header_version = 1;
         CHECK(dna_bh2_block_id(&m, id2) != 0, "v1 header hashed"); OK();
+        base_header(&m); m.header_version = 4;
+        CHECK(dna_bh2_block_id(&m, id2) != 0, "v4 header hashed"); OK();
+    }
+
+    /* O13 — zero-envelope vs populated. The tagged empty domain-updates
+     * root is a REAL value the codec must carry, and it must produce a
+     * DIFFERENT BlockID from any populated update set. Both the root
+     * itself and the resulting id are oracle-pinned; the root is ALSO
+     * cross-checked against the production dna_v2_domain_updates_root(),
+     * so the test cannot drift from the shipped derivation. */
+    {
+        uint8_t empty_root[64];
+        CHECK(dna_v2_domain_updates_root(NULL, 0, empty_root) == 0,
+              "empty dupd root"); OK();
+        CHECK(hex_eq(empty_root, 64, KAT_EMPTY_DUPD_ROOT, "empty dupd root"),
+              "empty dupd KAT"); OK();
+
+        dna_block_header_v2_t z;
+        base_header(&z);
+        memcpy(z.domain_updates_root, empty_root, 64);
+        uint8_t zid[64];
+        CHECK(dna_bh2_block_id(&z, zid) == 0, "zero-envelope id");
+        CHECK(hex_eq(zid, 64, KAT_BLOCK_ID_EMPTY_DUPD, "zero-envelope id"),
+              "zero-envelope id KAT"); OK();
+        CHECK(memcmp(zid, id, 64) != 0,
+              "zero-envelope block collides with a touching block"); OK();
+
+        /* An all-zero root is NOT the empty root — a caller that simply
+         * zeroed the field must not be mistaken for a legitimate
+         * zero-envelope block. */
+        dna_block_header_v2_t zz;
+        base_header(&zz);
+        memset(zz.domain_updates_root, 0, 64);
+        uint8_t zzid[64];
+        CHECK(dna_bh2_block_id(&zz, zzid) == 0, "zeroed field id");
+        CHECK(memcmp(zzid, zid, 64) != 0,
+              "all-zero field aliases the tagged empty root"); OK();
     }
 
     /* Decode negatives: truncation at every boundary class, trailing,
-     * unknown versions. */
+     * retired and unknown versions. */
     {
         dna_block_header_v2_t t;
-        const size_t cuts[7] = { 0, 1, 33, 113, 305, 341, 348 };
-        for (int i = 0; i < 7; i++) {
+        /* Boundaries: empty, after version, each 64-byte field start, the
+         * bound/timestamp seam, and one byte short of the full encoding. */
+        const size_t cuts[9] = { 0, 1, 33, 113, 241, 305, 369, 405, 412 };
+        for (int i = 0; i < 9; i++) {
             CHECK(dna_bh2_decode(enc, cuts[i], &t) != 0, "truncated ok'd"); OK();
         }
         uint8_t big[DNA_BH2_ENC_SIZE + 1];
         memcpy(big, enc, sizeof(enc)); big[DNA_BH2_ENC_SIZE] = 0;
         CHECK(dna_bh2_decode(big, sizeof(big), &t) != 0, "trailing ok'd"); OK();
         uint8_t bad[DNA_BH2_ENC_SIZE];
+        /* RETIRED version — a distinct class from "unknown": these bytes
+         * were once valid and must never be reinterpreted under v3. */
+        memcpy(bad, enc, sizeof(bad)); bad[0] = DNA_BH2_VERSION_RETIRED;
+        CHECK(dna_bh2_decode(bad, sizeof(bad), &t) != 0, "retired v2 ok'd");
+        OK();
+        /* UNKNOWN versions, below and above the current one. */
+        memcpy(bad, enc, sizeof(bad)); bad[0] = 0;
+        CHECK(dna_bh2_decode(bad, sizeof(bad), &t) != 0, "v0 ok'd"); OK();
         memcpy(bad, enc, sizeof(bad)); bad[0] = 1;
         CHECK(dna_bh2_decode(bad, sizeof(bad), &t) != 0, "v1 ok'd"); OK();
-        memcpy(bad, enc, sizeof(bad)); bad[0] = 3;
-        CHECK(dna_bh2_decode(bad, sizeof(bad), &t) != 0, "v3 ok'd"); OK();
+        memcpy(bad, enc, sizeof(bad)); bad[0] = 4;
+        CHECK(dna_bh2_decode(bad, sizeof(bad), &t) != 0, "v4 ok'd"); OK();
+        memcpy(bad, enc, sizeof(bad)); bad[0] = 0xFF;
+        CHECK(dna_bh2_decode(bad, sizeof(bad), &t) != 0, "v255 ok'd"); OK();
         CHECK(dna_bh2_decode(NULL, sizeof(enc), &t) != 0, "null ok'd"); OK();
+
+        /* A v2-LENGTH buffer (349 bytes) must reject on length alone,
+         * before any version consideration — no auto-detection by size. */
+        CHECK(dna_bh2_decode(enc, 349, &t) != 0, "v2-length buffer ok'd"); OK();
     }
 
     /* Genesis: explicit semantics, manifest binding, 32-byte chain id. */
@@ -252,14 +340,37 @@ int main(void) {
             size_t len = (size_t)(XRND() % (sizeof(buf) + 1));
             for (size_t i = 0; i < len; i++) buf[i] = (uint8_t)XRND();
             int rc = dna_bh2_decode(buf, len, &t);
-            /* Structural invariant: success ⇒ exact size + version 2. */
+            /* Structural invariant: success ⇒ exact size + the CURRENT
+             * version (never the retired one, never an unknown one). */
             if (rc == 0) {
                 decoded++;
-                CHECK(len == (size_t)DNA_BH2_ENC_SIZE && buf[0] == 2,
+                CHECK(len == (size_t)DNA_BH2_ENC_SIZE &&
+                      buf[0] == DNA_BH2_VERSION,
                       "fuzz decode invariant");
             }
         }
         OK();
+        /* The random loop above essentially never produces a decodable
+         * frame (it must hit BOTH the exact 413-byte length AND a leading
+         * version byte), so on its own the success branch is unreachable
+         * and the invariant would be vacuous — it would never execute even
+         * if it asserted something false. Drive it deliberately: feed the
+         * VALID encoding so the branch is taken at least once, and require
+         * that it was. */
+        {
+            int before = decoded;
+            for (int it = 0; it < 3; it++) {
+                if (dna_bh2_decode(enc, sizeof(enc), &t) == 0) {
+                    decoded++;
+                    CHECK(sizeof(enc) == (size_t)DNA_BH2_ENC_SIZE &&
+                          enc[0] == DNA_BH2_VERSION,
+                          "driven fuzz invariant");
+                }
+            }
+            CHECK(decoded > before,
+                  "fuzz success branch never executed (vacuous invariant)");
+            OK();
+        }
         /* Structured mutations of a valid frame: decode either rejects or
          * re-encodes byte-identically (canonicality). */
         for (int it = 0; it < 5000; it++) {
