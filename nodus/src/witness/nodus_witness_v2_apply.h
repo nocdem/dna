@@ -256,6 +256,9 @@
                                              * preflight/reserve seam    */
 #include "dnac/domain_wire.h"
 #include "dnac/manifest_wire.h"
+#include "dnac/block_v2.h"                  /* O14: the engine OWNS the
+                                             * canonical header v3 and
+                                             * the BlockID it persists   */
 #include "dnac/dnac.h"                      /* DNAC_EPOCH_LENGTH         */
 
 #include <stdint.h>
@@ -401,7 +404,17 @@ typedef enum {
     V2AP_FAIL_AFTER_GRAD_BATCH         = 42, /* every graduate applied   */
     V2AP_FAIL_AFTER_BOUNDARY_FLIPS     = 43, /* membership flips applied */
     V2AP_FAIL_AFTER_SNAPSHOT_BUILD     = 44, /* build inputs final       */
-    V2AP_FAIL_AFTER_SNAPSHOT_PERSIST   = 45  /* snapshot row written     */
+    V2AP_FAIL_AFTER_SNAPSHOT_PERSIST   = 45, /* snapshot row written     */
+
+    /* O14 — the identity seam inside phase 13. F46 fires with the
+     * canonical header v3 fully reconstructed from locally derived
+     * results and NOTHING hashed or written; F47 after the final
+     * BlockID has been recomputed and checked against the caller's
+     * assertion, still before the v2_blocks row exists. Together they
+     * bracket the exact window in which an interrupt could otherwise
+     * leave a persisted id that no execution result produced. */
+    V2AP_FAIL_AFTER_HEADER_BUILD       = 46, /* header bytes final       */
+    V2AP_FAIL_AFTER_BLOCK_ID           = 47  /* BlockID recomputed       */
 } nodus_v2_apply_fail_t;
 
 /*
@@ -412,16 +425,53 @@ typedef enum {
  * and the price comes from the frozen policy snapshot.
  */
 
-/** One V2 global block for the engine. */
+/**
+ * One V2 global block for the engine.
+ *
+ * ── O14: THE ENGINE OWNS THE BLOCK IDENTITY ───────────────────────────
+ * There is NO caller-supplied `block_id`, `prev_block_id` or `vset_hash`
+ * input any more. The engine DERIVES every canonical header-v3 field and
+ * computes the BlockID it persists; a caller may only ASSERT what it
+ * expects, through the `expect_*` pointers, and a mismatch rejects the
+ * block BEFORE commit. No field has two authoritative producers.
+ *
+ * Field authority classification (prompt §9):
+ *   header_version      fixed protocol value  (DNA_BH2_VERSION)
+ *   chain_id            committed pre-state   (nodus_witness_v2_chain_id)
+ *   block_height        block input           (global_height)
+ *   epoch               committed pre-state   (nodus_v2_epoch_for_height,
+ *                                              VERIFIED against `epoch`)
+ *   prev_block_id       committed pre-state   (the previous v2_blocks row)
+ *   global_state_root   execution             (out_global_root)
+ *   tx_root             execution             (out_tx_root)
+ *   domain_updates_root execution             (out_dupd_root)
+ *   validator_set_hash  committed pre-state   (the block-start authority
+ *                                              snapshot, re-hashed here)
+ *   tx_count            execution             (the derived batch size)
+ *   proposer_id         block input           (below)
+ *   timestamp           block input           (below; EXCLUDED from the
+ *                                              BlockID — PR2 discipline)
+ *
+ * The only two header fields a caller still supplies are the two the
+ * engine cannot possibly derive: `proposer_id` and `timestamp`.
+ */
 typedef struct {
     uint64_t global_height;
     uint64_t epoch;                     /* MUST equal
                                          * nodus_v2_epoch_for_height(
                                          *   global_height) — verified,
                                          * never trusted               */
-    uint8_t  block_id[64];
-    uint8_t  prev_block_id[64];
-    uint8_t  vset_hash[64];
+    /* ── Header material the engine CANNOT derive ─────────────────── */
+    uint8_t  proposer_id[32];
+    uint64_t timestamp;                 /* informational; NOT in BlockID */
+
+    /* ── Equality ASSERTIONS — never authority. NULL = derive only.
+     * A non-NULL pointer that disagrees with the locally derived result
+     * REJECTS the block before any commit (the follower/verification
+     * mode; NULL throughout is leader/derivation mode). */
+    const uint8_t *expect_prev_block_id;
+    const uint8_t *expect_vset_hash;
+    const uint8_t *expect_block_id;
     /* Included envelopes, in canonical batch order (the order IS the
      * intra-phase execution and index order). NULL/0 = none. */
     const nodus_v2_envelope_t *envs;
@@ -443,6 +493,15 @@ typedef struct {
     const uint8_t *expect_dupd_root;
     const uint8_t *expect_domains_root;
     const uint8_t *expect_global_root;
+    /* OPTIONAL opaque finalization certificate (the encoded QC V2), bound
+     * into the SAME v2_blocks INSERT as the block it certifies. The
+     * engine does not parse or verify it — verification is the caller's
+     * (nodus_witness_v2_finalize.c), which runs it BEFORE any durable
+     * mutation. Carrying it here rather than writing it afterwards is
+     * what keeps "commit once" true: there is no window in which a
+     * committed block lacks its certificate. NULL/0 = store SQL NULL. */
+    const uint8_t *qc_bytes;
+    size_t   qc_len;
     /* Fault injection */
     nodus_v2_apply_fail_t fail_at;
     uint32_t fail_domain_batch;         /* domain_id for point 4         */
@@ -451,11 +510,23 @@ typedef struct {
     uint32_t fail_env_index;            /* envelope index for point 27   */
     uint32_t fail_effect_index;         /* effect index for point 37     */
     uint32_t fail_leg_index;            /* leg index for point 38        */
-    /* Outputs (valid on rc 0/2) */
+    /* ── Outputs ───────────────────────────────────────────────────────
+     * Roots/header/identity are valid on rc 0/2 (committed). On rc 1
+     * (idempotent replay) `out_block_id`, `out_prev_block_id` and
+     * `out_header` are served from the ALREADY-COMMITTED row, so a
+     * caller can still compare the certified id against the stored one
+     * without the engine re-executing anything. */
     uint8_t  out_tx_root[64];
     uint8_t  out_dupd_root[64];
     uint8_t  out_domains_root[64];
     uint8_t  out_global_root[64];
+    uint8_t  out_prev_block_id[64];
+    uint8_t  out_vset_hash[64];
+    /* The canonical 413-byte header v3 the engine built from LOCALLY
+     * DERIVED results, and the BlockID over its 405 bound bytes. This
+     * id — never an input byte — is what `v2_blocks.block_id` stores. */
+    uint8_t  out_header[DNA_BH2_ENC_SIZE];
+    uint8_t  out_block_id[DNA_BH2_ID_LEN];
 } nodus_v2_block_t;
 
 /** V2 supply-conservation gate (header equation). @return 0 / -1. */

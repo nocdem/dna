@@ -110,6 +110,8 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include "v2_genesis_fixture.h"
+
 #define CHECK(cond, msg) do { \
     if (!(cond)) { \
         fprintf(stderr, "CHECK failed at %s:%d: %s\n", __FILE__, __LINE__, (msg)); \
@@ -264,9 +266,7 @@ static void mk_block(nodus_v2_block_t *b, uint64_t h,
     memset(b, 0, sizeof(*b));
     b->global_height = h;
     b->epoch = nodus_v2_epoch_for_height(h);
-    mk_id(b->block_id, (uint8_t)(0xB0 + h));
-    mk_id(b->prev_block_id, h == 1 ? 0xEE : (uint8_t)(0xB0 + h - 1));
-    mk_id(b->vset_hash, 0x77);
+    /* O14 leader mode: identity is DERIVED, never carried. */
     b->envs = envs;
     b->n_envs = n;
 }
@@ -326,9 +326,13 @@ static uint8_t g_nul_a[64], g_nul_b[64], g_nul_c[64], g_nul_lock[64];
  * effective 0) is committed BEFORE genesis, so the committee target
  * derivation (committee_target_for_epoch) resolves nval — the SOURCE
  * path, not a test shortcut. */
-static uint8_t g_gid_fill = 0xEE;   /* genesis id fill — the cross-chain
-                                     * intent test overrides it to build
-                                     * a fixture on a DIFFERENT chain    */
+/* O14: the genesis BlockID is DERIVED, so a fixture can no longer be put
+ * on a different chain by naming a different id. It is differentiated by
+ * genesis CONTENT instead — this fill seeds the genesis validator-set
+ * hash, which is a bound header field, so changing it changes the
+ * derived genesis BlockID and therefore the derived chain id. Same
+ * cross-chain intent, now earned rather than asserted. */
+static uint8_t g_gid_fill = 0xEE;
 
 static int fx_genesis_n(fixture_t *fx, const char *tag,
                         const uint8_t (*vkeys)[2592], int nval) {
@@ -346,7 +350,7 @@ static int fx_genesis_n(fixture_t *fx, const char *tag,
     if (nodus_witness_create_chain_db(fx->w, fx->chain_id16) != 0)
         return -1;
     if (nodus_chain_config_db_migrate(fx->w) != 0) return -1;
-    if (nodus_witness_db_migrate_v2s8(fx->w) != 0) return -1;
+    if (nodus_witness_db_migrate_v2s9(fx->w) != 0) return -1;
 
     if (nval != 7) {
         char sql[256];
@@ -375,6 +379,17 @@ static int fx_genesis_n(fixture_t *fx, const char *tag,
         v.self_stake = VAL_BOND;
         v.status = DNAC_VALIDATOR_ACTIVE;
         v.active_since_block = 1;
+        /* O14: genesis binds the COMMITTED validator-set hash, so a
+         * fixture on "another chain" must commit a DIFFERENT set. Vary
+         * commission_bps — it is carried into the snapshot entry
+         * (nodus_witness_vset.c:363) so it moves the set hash, the
+         * genesis BlockID and the chain id — while leaving the signing
+         * pubkeys untouched, which the real-key QC/approval matrices
+         * depend on. Only the NON-default chains differ, so the ordinary
+         * fixture's commission stays exactly 0 and the
+         * commission-semantics tests are untouched. */
+        v.commission_bps = (g_gid_fill == 0xEE) ? 0
+                                                : (uint16_t)g_gid_fill;
         if (qgp_sha3_512(vkeys[i], 2592, fpr) != 0) return -1;
         for (int b2 = 0; b2 < 64; b2++) {
             v.unstake_destination_fp[2 * b2]     = hexd[fpr[b2] >> 4];
@@ -401,10 +416,14 @@ static int fx_genesis_n(fixture_t *fx, const char *tag,
     if (seed_utxo(fx, 7, UTXO_B, 0xA2, 0, g_nul_b) != 0) return -1;
     if (seed_utxo(fx, 8, UTXO_C, 0xC1, 0, g_nul_c) != 0) return -1;
 
-    uint8_t gid[64], vset[64];
-    mk_id(gid, g_gid_fill);
-    mk_id(vset, 0x77);
-    if (nodus_witness_v2_genesis(fx->w, gid, vset, 0) != 0) return -1;
+    /* O14: the chain is differentiated by the committed VALIDATOR SET,
+     * since genesis must bind the committed authority. This fixture
+     * seeds its own real-key validators above, so vary the set by also
+     * seeding a filler keyed on g_gid_fill BEFORE genesis. */
+    uint8_t vset[64];
+    mk_id(vset, g_gid_fill);
+    if (v2x_seed_authority_fill(fx->w, g_gid_fill) != 0) return -1;
+    if (v2x_genesis_min(fx->w, vset, NULL, NULL) != 0) return -1;
     if (nodus_witness_v2_chain_id(fx->w, fx->chain_id) != 0) return -1;
     return 0;
 }
@@ -1510,13 +1529,19 @@ static int test_system_cc(void) {
 
     /* ── SNAPSHOT ROTATION (wrong historical snapshot) ──────────────────
      * Approvals signed against the OLD resolved committee must die once
-     * the governing set changes: key 6 rotates OUT, key 15 rotates IN
-     * (a validator-table swap + committee-cache invalidation — the
-     * bootstrap resolution recomputes from the table). The signed set
-     * hash and every seat mapping then disagree with the engine's
-     * resolution. The voters (keys 0..4) are all STILL seated — only
-     * the SNAPSHOT identity moved, so this isolates the snapshot
-     * binding, not membership. */
+     * the governing set changes: key 6 rotates OUT, key 15 rotates IN.
+     * The voters (keys 0..4) are all STILL seated — only the SNAPSHOT
+     * identity moved, so this isolates the snapshot binding, not
+     * membership.
+     *
+     * O14: the rotation is now applied to the COMMITTED SNAPSHOT, not
+     * just the validators table. Before O14 these fixtures carried no
+     * snapshot at all, so committee resolution fell back to recomputing
+     * from the live table and a bare table swap was enough. Now the
+     * frozen snapshot IS the authority — and correctly SURVIVES a live
+     * table edit — so the set has to be re-frozen for the governing
+     * identity to actually move. That makes this test exercise the real
+     * authority mechanism instead of a recompute fallback. */
     {
         env_t *stale = malloc(sizeof(*stale));
         CHECK(stale != NULL, "alloc");
@@ -1531,6 +1556,12 @@ static int test_system_cc(void) {
         sqlite3_bind_blob(st, 2, g_pk[6], 2592, SQLITE_TRANSIENT);
         CHECK(sqlite3_step(st) == SQLITE_DONE, "rotate");
         sqlite3_finalize(st);
+        /* Re-freeze the governing set over the rotated table, so the
+         * RESOLVED authority genuinely changes (see the note above). */
+        CHECK(run_sql(fx.w->db, "DELETE FROM validator_set_snapshots") == 0,
+              "clear snapshots");
+        CHECK(nodus_witness_vset_commit_genesis(fx.w, 1) == 0,
+              "re-freeze rotated set");
         fx.w->cached_committee_epoch_start = UINT64_MAX;   /* cold cache */
         nodus_v2_envelope_t ve = { stale->bytes, stale->len };
         mk_block(&b, 3, &ve, 1);
@@ -2408,16 +2439,24 @@ static int test_engine(void) {
               "twin fixtures must land on byte-identical roots");
         OK();
         /* identical replay short-circuits BEFORE any expectation is
-         * consulted (same height + same block id ⇒ rc 1, no writes) */
+         * consulted (same height + asserted committed id ⇒ rc 1, no
+         * writes). O14 D6: the id is ENGINE-derived, so the replay
+         * asserts the one the engine actually committed. */
+        uint8_t idc[64];
+        CHECK(v2x_block_id_at(c.w, 1, idc) == 0, "read committed id (c)");
         nodus_v2_block_t bf;
         mk_block(&bf, 1, &ve, 1);
+        bf.expect_block_id = idc;
         CHECK(nodus_witness_v2_apply_block(c.w, &bf) == 1,
               "identical replay is idempotent (rc 1)");
         OK();
         /* restart: reopen the DB and replay the committed block */
         CHECK(fx_reopen(&a) == 0, "reopen");
+        uint8_t ida[64];
+        CHECK(v2x_block_id_at(a.w, 1, ida) == 0, "read committed id (a)");
         nodus_v2_block_t br;
         mk_block(&br, 1, &ve, 1);
+        br.expect_block_id = ida;
         CHECK(nodus_witness_v2_apply_block(a.w, &br) == 1,
               "post-restart replay is idempotent (rc 1)");
         OK();
@@ -2547,8 +2586,10 @@ static int test_intent_engine(void) {
         nodus_v2_block_t ba, bb;
         mk_block(&ba, 1, &va, 1);
         mk_block(&bb, 1, &vb, 1);
-        mk_id(bb.block_id, 0xC1);       /* different wire ⇒ a different
-                                         * block — ids must not collide  */
+        /* O14: no id is assigned. Different wire ⇒ different tx_root ⇒
+         * the engine DERIVES different BlockIDs. What the test used to
+         * assert by construction is now a property of the engine, and
+         * the digest comparison below is what proves it. */
         CHECK(nodus_witness_v2_apply_block(a.w, &ba) == 0, "A commits");
         CHECK(nodus_witness_v2_apply_block(b2.w, &bb) == 0, "B commits");
         OK();
@@ -2633,8 +2674,11 @@ static int test_intent_engine(void) {
 
             /* byte-identical committed-block replay is STILL idempotent
              * (whole-block matrix runs before the intent guard) */
+            uint8_t id1[64];
+            CHECK(v2x_block_id_at(a.w, 1, id1) == 0, "read committed id1");
             nodus_v2_block_t be;
             mk_block(&be, 1, &va, 1);
+            be.expect_block_id = id1;
             CHECK(nodus_witness_v2_apply_block(a.w, &be) == 1,
                   "committed-block replay stays idempotent");
             OK();
@@ -2727,8 +2771,7 @@ static int test_intent_engine(void) {
         mk_block(&ba, 1, &va, 1);
         mk_block(&bb, 1, &vb, 1);
         mk_block(&bc, 1, &vc, 1);
-        mk_id(bb.block_id, 0xC2);
-        mk_id(bc.block_id, 0xC3);
+        /* O14: ids are engine-derived — see the twin note above. */
         CHECK(nodus_witness_v2_apply_block(a.w, &ba) == 0, "ccA commits");
         CHECK(nodus_witness_v2_apply_block(b2.w, &bb) == 0, "ccB commits");
         CHECK(nodus_witness_v2_apply_block(c.w, &bc) == 0, "ccC commits");
@@ -2835,7 +2878,8 @@ static int test_intent_engine(void) {
         nodus_v2_envelope_t va = { ea.bytes, ea.len };
         nodus_v2_block_t bo;
         mk_block(&bo, 1, &va, 1);
-        mk_id(bo.prev_block_id, 0xEF);
+        /* O14: prev is DERIVED from chain O's own committed genesis, so
+         * the block reaches the auth stage without being told to. */
         CHECK(apply_reject(o.w, &bo, &rc) == 0 && rc == -1,
               "cross-chain replay must fail the chain binding");
         OK();
@@ -3380,7 +3424,7 @@ static int test_core_burn(void) {
         nodus_v2_block_t ba, bb;
         mk_block(&ba, 1, &va, 1);
         mk_block(&bb, 1, &vb, 1);
-        mk_id(bb.block_id, 0xC4);
+        /* O14: ids are engine-derived — see the twin note above. */
         CHECK(nodus_witness_v2_apply_block(a.w, &ba) == 0, "A commits");
         CHECK(nodus_witness_v2_apply_block(b2.w, &bb) == 0, "B commits");
         uint8_t da[64], db[64];
@@ -3414,7 +3458,7 @@ static int test_core_burn(void) {
         nodus_v2_envelope_t va = { ea.bytes, ea.len };
         nodus_v2_block_t bo;
         mk_block(&bo, 1, &va, 1);
-        mk_id(bo.prev_block_id, 0xF0);
+        /* O14: prev is DERIVED from chain O2's own committed genesis. */
         CHECK(apply_reject(o2.w, &bo, &rc) == 0 && rc == -1,
               "cross-chain burn replay must fail the chain binding");
         OK();
@@ -4156,7 +4200,7 @@ static int test_core_token_create(void) {
                                       { ea2.bytes, ea2.len } };
         nodus_v2_block_t b2;
         mk_block(&b2, 1, vb, 2);
-        mk_id(b2.block_id, 0xC5);
+        /* O14: id derived by the engine. */
         CHECK(nodus_witness_v2_apply_block(xb.w, &b2) == 0, "B commits");
         CHECK(memcmp(b1.out_domains_root, b2.out_domains_root, 64) == 0 &&
               memcmp(b1.out_global_root, b2.out_global_root, 64) == 0,
@@ -4191,7 +4235,7 @@ static int test_core_token_create(void) {
         nodus_v2_envelope_t va = { ea.bytes, ea.len };
         nodus_v2_block_t bo;
         mk_block(&bo, 1, &va, 1);
-        mk_id(bo.prev_block_id, 0xF1);
+        /* O14: prev derived from this chain's own committed genesis. */
         CHECK(apply_reject(o2.w, &bo, &rc) == 0 && rc == -1,
               "cross-chain creation replay must fail the chain binding");
         OK();
@@ -4226,7 +4270,7 @@ static int test_core_token_create(void) {
         nodus_v2_block_t ba, bb;
         mk_block(&ba, 1, &va, 1);
         mk_block(&bb, 1, &vb, 1);
-        mk_id(bb.block_id, 0xC6);
+        /* O14: id derived by the engine. */
         CHECK(nodus_witness_v2_apply_block(a.w, &ba) == 0, "A commits");
         CHECK(nodus_witness_v2_apply_block(b2.w, &bb) == 0, "B commits");
         uint8_t da[64], db[64];
@@ -6734,10 +6778,8 @@ static void mk_block_h(nodus_v2_block_t *b, uint64_t h,
     memset(b, 0, sizeof(*b));
     b->global_height = h;
     b->epoch = nodus_v2_epoch_for_height(h);
-    mk_id_h(b->block_id, h);
-    if (h == 1) mk_id(b->prev_block_id, g_gid_fill);
-    else mk_id_h(b->prev_block_id, h - 1);
-    mk_id(b->vset_hash, 0x77);          /* the mk_block value            */
+    /* O14 leader mode: identity is DERIVED — no id, parent or set hash
+     * is carried. The parent chain follows the committed rows. */
     b->envs = envs;
     b->n_envs = n;
 }
@@ -7283,7 +7325,7 @@ static int test_o11_global(void) {
         mk_block(&b, 1, &va, 1);
         CHECK(nodus_witness_v2_apply_block(a.w, &b) == 0, "A commits");
         mk_block(&b, 1, &vo, 1);
-        mk_id(b.prev_block_id, 0xF2);
+        /* O14: prev derived from this chain's own committed genesis. */
         CHECK(nodus_witness_v2_apply_block(o.w, &b) == 0, "O commits");
         OK();
         /* chain A's exact bytes on chain O: every signature was made
@@ -7297,7 +7339,7 @@ static int test_o11_global(void) {
             uint8_t f2[64];
             CHECK(seed_funding(&o2, 9, DLG_FUND, 0x63, f2) == 0, "fund");
             mk_block(&b, 1, &va, 1);
-            mk_id(b.prev_block_id, 0xF3);
+            /* O14: prev derived from the committed parent. */
             CHECK(apply_reject(o2.w, &b, &rc) == 0 && rc == -1,
                   "chain A's bytes must fail chain O2's binding"); OK();
             fx_close(&o2);
@@ -8180,7 +8222,7 @@ static int test_system_validator_update(void) {
         mk_block(&b, 1, &va, 1);
         CHECK(nodus_witness_v2_apply_block(a.w, &b) == 0, "A commits");
         mk_block(&b, 1, &vo, 1);
-        mk_id(b.prev_block_id, 0xF6);
+        /* O14: prev derived from this chain's own committed genesis. */
         CHECK(nodus_witness_v2_apply_block(o.w, &b) == 0, "O commits");
         OK();
         {
@@ -8192,7 +8234,7 @@ static int test_system_validator_update(void) {
             uint8_t f2[64];
             CHECK(seed_funding(&o2, 9, NOLOCK_FUND, 0xC0, f2) == 0, "fund");
             mk_block(&b, 1, &va, 1);
-            mk_id(b.prev_block_id, 0xF7);
+            /* O14: prev derived from the committed parent. */
             CHECK(apply_reject(o2.w, &b, &rc) == 0 && rc == -1,
                   "chain A's bytes must fail chain O2's binding"); OK();
             fx_close(&o2);
@@ -8228,7 +8270,7 @@ static int test_system_validator_update(void) {
         nodus_v2_envelope_t vb = { eb.bytes, eb.len };
         mk_block(&ba, 1, &va, 1);
         mk_block(&bb, 1, &vb, 1);
-        mk_id(bb.block_id, 0xD7);
+        /* O14: id derived by the engine. */
         CHECK(nodus_witness_v2_apply_block(a.w, &ba) == 0, "A commits");
         CHECK(nodus_witness_v2_apply_block(b2.w, &bb) == 0, "B commits");
         OK();

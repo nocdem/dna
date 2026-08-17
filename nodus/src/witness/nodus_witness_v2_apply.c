@@ -29,6 +29,7 @@
 #include "nodus/nodus_chain_config.h"
 
 #include "dnac/dnac.h"                 /* DNAC_CFG_* */
+#include "dnac/qc_v2.h"                /* DNA_QC_V2_MAX_ENC_LEN bound  */
 #include "crypto/hash/qgp_sha3.h"      /* committee member fingerprints */
 #include "crypto/utils/qgp_log.h"
 
@@ -472,7 +473,11 @@ int nodus_witness_v2_genesis_ex(nodus_witness_t *w,
                                 uint64_t epoch,
                                 const uint8_t *manifest_bytes,
                                 size_t manifest_len) {
-    if (!w || !w->db || !genesis_block_id || !vset_hash) return -1;
+    /* O14: `genesis_block_id` is an ASSERTION, not an input — NULL is
+     * legal and means leader/derivation mode (the engine derives the id
+     * and the caller reads it back from the committed row). It is never
+     * the stored value in either mode. */
+    if (!w || !w->db || !vset_hash) return -1;
     if ((manifest_bytes == NULL) != (manifest_len == 0)) return -1;
     /* The genesis epoch is DERIVED, not trusted: height 0 sits in epoch
      * nodus_v2_epoch_for_height(0) == 0 under the block-count rule. Any
@@ -480,7 +485,7 @@ int nodus_witness_v2_genesis_ex(nodus_witness_t *w,
     if (epoch != nodus_v2_epoch_for_height(0)) return -1;
     uint32_t ver = 0;
     if (nodus_witness_db_schema_version(w, &ver) != 0 ||
-        ver != NODUS_V2_SCHEMA_VERSION_S8)
+        ver != NODUS_V2_SCHEMA_VERSION_S9)
         return -1;
 
     /* Idempotency: a committed height-0 row decides. */
@@ -492,9 +497,13 @@ int nodus_witness_v2_genesis_ex(nodus_witness_t *w,
             return -1;
         int rc = sqlite3_step(st);
         if (rc == SQLITE_ROW) {
+            /* Leader mode (no assertion) treats an existing genesis as
+             * already done — the row IS the committed identity and no
+             * caller value competes with it. */
             int same = (sqlite3_column_bytes(st, 0) == 64 &&
-                        memcmp(sqlite3_column_blob(st, 0),
-                               genesis_block_id, 64) == 0);
+                        (genesis_block_id == NULL ||
+                         memcmp(sqlite3_column_blob(st, 0),
+                                genesis_block_id, 64) == 0));
             sqlite3_finalize(st);
             return same ? 0 : -2;
         }
@@ -579,19 +588,105 @@ int nodus_witness_v2_genesis_ex(nodus_witness_t *w,
             break;
         }
 
+        /* ── O14: THE ENGINE OWNS THE GENESIS IDENTITY TOO ─────────────
+         * The genesis header is fully determined by committed material:
+         * height 0, epoch 0, an ALL-ZERO chain_id (the id does not exist
+         * yet — zeroing it in the preimage is what breaks the
+         * circularity), an all-zero parent, the empty tx/update roots
+         * computed just above, the derived global root, the governing
+         * set hash, tx_count 0 and NO proposer (the engine stores none
+         * for genesis, which is exactly why block_v2.c:133 declines to
+         * constrain proposer_id).
+         *
+         * MANIFEST REQUIRED — labeled, fail-closed. The canonical
+         * genesis preimage takes the manifest bytes as an EXPLICIT input
+         * (block_v2.h:79-85; dna_bh2_genesis_block_id rejects a NULL or
+         * empty manifest). A genesis with no manifest therefore has NO
+         * defined identity under the O13 spec, and the engine will not
+         * invent one — nor will it fall back to storing whatever id a
+         * caller handed it, which is the whole point of this season.
+         * The no-manifest convenience form now rejects. */
+        if (!manifest_bytes || manifest_len == 0) {
+            free(doms);
+            break;
+        }
+
+        uint8_t zero64[64];
+        memset(zero64, 0, sizeof(zero64));
+
+        dna_block_header_v2_t ghdr;
+        memset(&ghdr, 0, sizeof(ghdr));
+        ghdr.header_version = DNA_BH2_VERSION;
+        /* chain_id, prev_block_id and proposer_id stay all-zero */
+        ghdr.block_height = 0;
+        ghdr.epoch        = 0;
+        memcpy(ghdr.global_state_root,   global_root, 64);
+        memcpy(ghdr.tx_root,             tx_root,     64);
+        memcpy(ghdr.domain_updates_root, dupd_root,   64);
+        /* validator_set_hash: an ASSERTION here too, not a source.
+         * `vset_hash` arrives as a raw parameter, and binding it into
+         * the genesis identity unchecked would make this the ONE header
+         * field with two authoritative producers — derived from the
+         * committed snapshot on the apply path, caller-chosen here —
+         * contradicting the field-authority claim in the struct comment.
+         * When genesis authority IS already committed (the ordinary
+         * case: nodus_witness_vset_commit_genesis seeds epoch 0 before
+         * genesis), require the parameter to equal it. If no snapshot is
+         * committed yet, there is nothing to check against and the
+         * parameter stands — an honestly labelled bootstrap gap, not a
+         * silent one. (O14 review R1-F2.) */
+        {
+            dna_vset_snapshot_t *gsnap = NULL;
+            uint32_t gn = 0, gq = 0;
+            int garc = nodus_witness_v2_epoch_authority_for_height(
+                           w, 0, &gsnap, &gn, &gq);
+            if (garc == 0 && gsnap) {
+                uint8_t committed_vsh[DNA_VSET_HASH_LEN];
+                int ghrc = dna_vset_hash(gsnap, committed_vsh);
+                dna_vset_free(&gsnap);
+                if (ghrc != 0) { free(doms); break; }
+                if (memcmp(committed_vsh, vset_hash,
+                           DNA_VSET_HASH_LEN) != 0) {
+                    free(doms);
+                    break;      /* genesis named a foreign validator set */
+                }
+            } else {
+                dna_vset_free(&gsnap);
+                if (garc < 0) { free(doms); break; }   /* read fault */
+            }
+        }
+        memcpy(ghdr.validator_set_hash,  vset_hash,   64);
+        ghdr.tx_count  = 0;
+        ghdr.timestamp = 0;
+
+        uint8_t gen_hdr_enc[DNA_BH2_ENC_SIZE];
+        uint8_t derived_gid[DNA_BH2_ID_LEN];
+        if (dna_bh2_encode(&ghdr, gen_hdr_enc) != 0) { free(doms); break; }
+        if (dna_bh2_genesis_block_id(&ghdr, manifest_bytes, manifest_len,
+                                     derived_gid) != 0) {
+            free(doms);
+            break;
+        }
+        /* The parameter is an ASSERTION, never the stored value. NULL =
+         * leader mode: derive and commit, the caller reads it back. */
+        if (genesis_block_id &&
+            memcmp(genesis_block_id, derived_gid, 64) != 0) {
+            free(doms);
+            break;
+        }
+
         sqlite3_stmt *st = NULL;
         if (sqlite3_prepare_v2(w->db,
                 "INSERT INTO v2_blocks (global_height, block_id, "
                 "prev_block_id, epoch, tx_root, domain_updates_root, "
-                "domains_root, global_root, vset_hash, tx_count, qc) "
-                "VALUES (0,?1,?2,?3,?4,?5,?6,?7,?8,0,NULL)",
+                "domains_root, global_root, vset_hash, tx_count, header, "
+                "qc) "
+                "VALUES (0,?1,?2,?3,?4,?5,?6,?7,?8,0,?9,NULL)",
                 -1, &st, NULL) != SQLITE_OK) {
             free(doms);
             break;
         }
-        uint8_t zero64[64];
-        memset(zero64, 0, sizeof(zero64));
-        sqlite3_bind_blob(st, 1, genesis_block_id, 64, SQLITE_TRANSIENT);
+        sqlite3_bind_blob(st, 1, derived_gid, 64, SQLITE_TRANSIENT);
         sqlite3_bind_blob(st, 2, zero64, 64, SQLITE_TRANSIENT);
         sqlite3_bind_int64(st, 3, (sqlite3_int64)epoch);
         sqlite3_bind_blob(st, 4, tx_root, 64, SQLITE_TRANSIENT);
@@ -599,6 +694,8 @@ int nodus_witness_v2_genesis_ex(nodus_witness_t *w,
         sqlite3_bind_blob(st, 6, domains_root, 64, SQLITE_TRANSIENT);
         sqlite3_bind_blob(st, 7, global_root, 64, SQLITE_TRANSIENT);
         sqlite3_bind_blob(st, 8, vset_hash, 64, SQLITE_TRANSIENT);
+        sqlite3_bind_blob(st, 9, gen_hdr_enc, DNA_BH2_ENC_SIZE,
+                          SQLITE_TRANSIENT);
         int rc = sqlite3_step(st);
         sqlite3_finalize(st);
         free(doms);
@@ -941,13 +1038,30 @@ static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
 }
 
 int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
-    if (!w || !w->db || !blk || (blk->n_envs > 0 && !blk->envs)) return -1;
+    /* A NULL/misused argument is a LOCAL programming fault, not a
+     * statement about a block — there is no block here to judge.
+     * Reporting it as a verdict would make a node with a caller bug vote
+     * a perfectly valid block invalid. Same reasoning, and now the same
+     * classification, as nodus_witness_v2_qc.c:24-30. (O14 review R2-F5:
+     * this guard had returned -1 since S5, which contradicted the
+     * convention the engine states in its own header.) */
+    if (!w || !w->db || !blk || (blk->n_envs > 0 && !blk->envs)) return -2;
+    /* An over-large batch IS a property of the block: verdict. */
     if (blk->n_envs > NODUS_V2_ENV_BATCH_MAX) return -1;
 
+    /* THIS NODE'S schema level is not a property of the block. A read
+     * fault and a version mismatch are both node-local: the block may be
+     * perfectly valid and every peer at the right schema will commit it.
+     * Returning -1 here would make a lagging or mis-migrated node
+     * declare a valid, quorum-certified block CONSENSUS-INVALID — and
+     * deterministically, on every block, because the S9 migration
+     * refuses a populated v2_blocks by design. Abstain instead.
+     * (O14 review R2-F1; the -1 predates O14, but O14 is what gives the
+     * code a production relay that re-exports it as a verdict.) */
     uint32_t ver = 0;
     if (nodus_witness_db_schema_version(w, &ver) != 0 ||
-        ver != NODUS_V2_SCHEMA_VERSION_S8)
-        return -1;
+        ver != NODUS_V2_SCHEMA_VERSION_S9)
+        return -2;
 
     /* ── epoch: DERIVED from the global block count, never trusted ────
      * blk->epoch is caller-carried block material; it MUST equal the
@@ -956,36 +1070,71 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
     if (blk->epoch != nodus_v2_epoch_for_height(blk->global_height))
         return -1;
 
-    /* ── 0. replay / linkage (read-only, pre-transaction) ───────────── */
+    /* ── 0. replay / linkage (read-only, pre-transaction) ─────────────
+     * O14: the caller no longer supplies an identity. `expect_block_id`
+     * is an ASSERTION, and the only thing it may unlock here is the
+     * idempotent fast path — a caller that claims the id of the block
+     * already committed at this height gets rc 1 and NO writes.
+     *
+     * LEADER/DERIVATION MODE (expect_block_id == NULL) has no id to
+     * probe with, so it has no fast path: any row already at this height
+     * is a conflict, caught by the height-continuity check below
+     * (global_height != maxh + 1). The asymmetry is deliberate and
+     * tested — see the header. It cannot produce divergent identities
+     * because neither mode ever PERSISTS anything but the engine's own
+     * phase-13 computation.
+     *
+     * The "same BlockID at another height" check moved to phase 13,
+     * where the REAL id is known: checking a caller's claim here would
+     * have been checking the wrong value in leader mode and no value at
+     * all in the mode that matters. */
     {
         sqlite3_stmt *st = NULL;
-        /* same height? */
-        if (sqlite3_prepare_v2(w->db,
-                "SELECT block_id FROM v2_blocks WHERE global_height = ?1",
-                -1, &st, NULL) != SQLITE_OK)
-            return -2;
-        sqlite3_bind_int64(st, 1, (sqlite3_int64)blk->global_height);
-        int rc = sqlite3_step(st);
-        if (rc == SQLITE_ROW) {
-            int same = (sqlite3_column_bytes(st, 0) == 64 &&
-                        memcmp(sqlite3_column_blob(st, 0), blk->block_id,
-                               64) == 0);
+        int rc;
+        if (blk->expect_block_id) {
+            if (sqlite3_prepare_v2(w->db,
+                    "SELECT block_id, prev_block_id, header FROM v2_blocks "
+                    "WHERE global_height = ?1",
+                    -1, &st, NULL) != SQLITE_OK)
+                return -2;
+            sqlite3_bind_int64(st, 1, (sqlite3_int64)blk->global_height);
+            rc = sqlite3_step(st);
+            if (rc == SQLITE_ROW) {
+                /* A malformed committed id is THIS NODE's corruption,
+                 * not a statement about the incoming block — classify it
+                 * with the other malformed-column checks below (-2), not
+                 * as "conflicting" (-1). Otherwise a node with one bad
+                 * local row declares a valid, quorum-certified block
+                 * consensus-invalid while healthy peers return rc 1.
+                 * (O14 review R1-F1.) */
+                if (sqlite3_column_bytes(st, 0) != 64) {
+                    sqlite3_finalize(st);
+                    return -2;
+                }
+                int same = (memcmp(sqlite3_column_blob(st, 0),
+                                   blk->expect_block_id, 64) == 0);
+                if (same) {
+                    /* Serve the COMMITTED identity so the caller can
+                     * still compare its certificate against the stored
+                     * block without the engine re-executing anything. */
+                    if (sqlite3_column_bytes(st, 1) != 64 ||
+                        sqlite3_column_bytes(st, 2) != DNA_BH2_ENC_SIZE) {
+                        sqlite3_finalize(st);
+                        return -2;      /* malformed committed row       */
+                    }
+                    memcpy(blk->out_block_id,
+                           sqlite3_column_blob(st, 0), 64);
+                    memcpy(blk->out_prev_block_id,
+                           sqlite3_column_blob(st, 1), 64);
+                    memcpy(blk->out_header,
+                           sqlite3_column_blob(st, 2), DNA_BH2_ENC_SIZE);
+                }
+                sqlite3_finalize(st);
+                return same ? 1 : -1;   /* idempotent / conflicting      */
+            }
             sqlite3_finalize(st);
-            return same ? 1 : -1;       /* idempotent / conflicting      */
+            if (rc != SQLITE_DONE) return -2;
         }
-        sqlite3_finalize(st);
-        if (rc != SQLITE_DONE) return -2;
-
-        /* same BlockID at another height? */
-        if (sqlite3_prepare_v2(w->db,
-                "SELECT 1 FROM v2_blocks WHERE block_id = ?1", -1, &st,
-                NULL) != SQLITE_OK)
-            return -2;
-        sqlite3_bind_blob(st, 1, blk->block_id, 64, SQLITE_TRANSIENT);
-        rc = sqlite3_step(st);
-        sqlite3_finalize(st);
-        if (rc == SQLITE_ROW) return -1;
-        if (rc != SQLITE_DONE) return -2;
 
         /* height continuity + prev linkage */
         uint64_t maxh = 0;
@@ -998,6 +1147,8 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
         if (rows == 0) return -1;       /* genesis must exist first      */
         if (blk->global_height != maxh + 1) return -1;   /* gap/behind   */
 
+        /* prev_block_id is DERIVED from the previous committed row — the
+         * caller may only assert it. */
         if (sqlite3_prepare_v2(w->db,
                 "SELECT block_id FROM v2_blocks WHERE global_height = ?1",
                 -1, &st, NULL) != SQLITE_OK)
@@ -1005,11 +1156,15 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
         sqlite3_bind_int64(st, 1, (sqlite3_int64)maxh);
         rc = sqlite3_step(st);
         int prev_ok = (rc == SQLITE_ROW &&
-                       sqlite3_column_bytes(st, 0) == 64 &&
-                       memcmp(sqlite3_column_blob(st, 0),
-                              blk->prev_block_id, 64) == 0);
+                       sqlite3_column_bytes(st, 0) == 64);
+        if (prev_ok)
+            memcpy(blk->out_prev_block_id, sqlite3_column_blob(st, 0), 64);
         sqlite3_finalize(st);
-        if (!prev_ok) return -1;
+        if (!prev_ok) return -2;        /* missing/malformed parent row  */
+        if (blk->expect_prev_block_id &&
+            memcmp(blk->expect_prev_block_id, blk->out_prev_block_id, 64)
+                != 0)
+            return -1;                  /* asserted a foreign parent     */
     }
 
     /* ── 0a. FROZEN BLOCK-START EXECUTION SNAPSHOT (read-only) ────────
@@ -1033,6 +1188,39 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
         free(doms);
         return -2;   /* linkage proved genesis exists; an underivable
                       * chain id here is a node-local read failure       */
+    }
+
+    /* ── BLOCK-START VALIDATOR AUTHORITY (O14) ────────────────────────
+     * The governing snapshot is resolved HERE — pre-BEGIN, before this
+     * block mutates anything and in particular BEFORE the epoch boundary
+     * runs commit_next. That ordering is the whole point: a block is
+     * verified against the authority the chain had committed when the
+     * block STARTED, so the snapshot a boundary block itself creates can
+     * never be the snapshot that validates it. `validator_set_hash` is
+     * derived from this and from nothing else; the caller may assert it
+     * (expect_vset_hash) but cannot supply it.
+     *
+     * An absent/unreadable snapshot is a NODE FAULT (-2), never a
+     * verdict — the O12 resolver contract and the same reasoning as
+     * nodus_witness_v2_qc.h: a node that cannot know who was permitted
+     * to sign must abstain, not declare a valid block invalid. */
+    {
+        dna_vset_snapshot_t *snap = NULL;
+        uint32_t vn = 0, vq = 0;
+        if (nodus_witness_v2_epoch_authority_for_height(
+                w, blk->global_height, &snap, &vn, &vq) != 0 || !snap) {
+            dna_vset_free(&snap);
+            free(doms);
+            return -2;
+        }
+        int hrc = dna_vset_hash(snap, blk->out_vset_hash);
+        dna_vset_free(&snap);
+        if (hrc != 0) { free(doms); return -2; }
+        if (blk->expect_vset_hash &&
+            memcmp(blk->expect_vset_hash, blk->out_vset_hash, 64) != 0) {
+            free(doms);
+            return -1;      /* asserted a foreign validator set          */
+        }
     }
 
     /* Contextual ruleset table: one entry per block-entry-ACTIVE,
@@ -1919,17 +2107,70 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
             memcmp(blk->expect_global_root, blk->out_global_root, 64) != 0)
             goto fail;
 
+        /* ── O14: THE ENGINE BUILDS THE HEADER AND OWNS THE BlockID ────
+         * Every field below comes from a LOCALLY DERIVED result or from
+         * committed pre-state — not one byte is copied from a caller
+         * identity input, because no such input exists any more. The
+         * caller's `expect_block_id` is compared AFTER the fact and can
+         * only reject; it can never become the stored value. */
+        dna_block_header_v2_t hdr;
+        memset(&hdr, 0, sizeof(hdr));
+        hdr.header_version = DNA_BH2_VERSION;
+        memcpy(hdr.chain_id, chain_id, DNA_CHAIN_ID_LEN);
+        hdr.block_height = blk->global_height;
+        hdr.epoch        = blk->epoch;      /* verified vs the derivation
+                                             * at function entry        */
+        memcpy(hdr.prev_block_id,       blk->out_prev_block_id, 64);
+        memcpy(hdr.global_state_root,   blk->out_global_root,   64);
+        memcpy(hdr.tx_root,             blk->out_tx_root,       64);
+        memcpy(hdr.domain_updates_root, blk->out_dupd_root,     64);
+        memcpy(hdr.validator_set_hash,  blk->out_vset_hash,     64);
+        hdr.tx_count = n_all;
+        memcpy(hdr.proposer_id, blk->proposer_id, 32);
+        hdr.timestamp = blk->timestamp;
+
+        if (dna_bh2_encode(&hdr, blk->out_header) != 0) goto fail_fault;
+        FAIL_POINT(V2AP_FAIL_AFTER_HEADER_BUILD);
+
+        if (dna_bh2_block_id(&hdr, blk->out_block_id) != 0) goto fail_fault;
+
+        /* The assertion, checked against the DERIVED id. A follower whose
+         * proposer lied about ANY committed header field — a root, the
+         * parent, the validator set, the tx count, the proposer — lands
+         * here with a different id and the block dies before COMMIT. */
+        if (blk->expect_block_id &&
+            memcmp(blk->expect_block_id, blk->out_block_id, 64) != 0)
+            goto fail;
+        FAIL_POINT(V2AP_FAIL_AFTER_BLOCK_ID);
+
+        /* Same BlockID already committed at ANOTHER height? Checked here,
+         * on the REAL id, rather than pre-BEGIN on a caller's claim. The
+         * UNIQUE constraint backstops it; doing it explicitly keeps the
+         * classification a VERDICT instead of a constraint-shaped fault. */
         sqlite3_stmt *st = NULL;
+        if (sqlite3_prepare_v2(w->db,
+                "SELECT 1 FROM v2_blocks WHERE block_id = ?1", -1, &st,
+                NULL) != SQLITE_OK)
+            goto fail_fault;
+        sqlite3_bind_blob(st, 1, blk->out_block_id, 64, SQLITE_TRANSIENT);
+        int drc = sqlite3_step(st);
+        sqlite3_finalize(st);
+        if (drc == SQLITE_ROW) goto fail;
+        if (drc != SQLITE_DONE) goto fail_fault;
+
+        st = NULL;
         if (sqlite3_prepare_v2(w->db,
                 "INSERT INTO v2_blocks (global_height, block_id, "
                 "prev_block_id, epoch, tx_root, domain_updates_root, "
-                "domains_root, global_root, vset_hash, tx_count, qc) "
-                "VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,NULL)",
+                "domains_root, global_root, vset_hash, tx_count, header, "
+                "qc) "
+                "VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
                 -1, &st, NULL) != SQLITE_OK)
             goto fail_fault;
         sqlite3_bind_int64(st, 1, (sqlite3_int64)blk->global_height);
-        sqlite3_bind_blob(st, 2, blk->block_id, 64, SQLITE_TRANSIENT);
-        sqlite3_bind_blob(st, 3, blk->prev_block_id, 64, SQLITE_TRANSIENT);
+        sqlite3_bind_blob(st, 2, blk->out_block_id, 64, SQLITE_TRANSIENT);
+        sqlite3_bind_blob(st, 3, blk->out_prev_block_id, 64,
+                          SQLITE_TRANSIENT);
         sqlite3_bind_int64(st, 4, (sqlite3_int64)blk->epoch);
         sqlite3_bind_blob(st, 5, blk->out_tx_root, 64, SQLITE_TRANSIENT);
         sqlite3_bind_blob(st, 6, blk->out_dupd_root, 64, SQLITE_TRANSIENT);
@@ -1937,8 +2178,26 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
                           SQLITE_TRANSIENT);
         sqlite3_bind_blob(st, 8, blk->out_global_root, 64,
                           SQLITE_TRANSIENT);
-        sqlite3_bind_blob(st, 9, blk->vset_hash, 64, SQLITE_TRANSIENT);
+        sqlite3_bind_blob(st, 9, blk->out_vset_hash, 64, SQLITE_TRANSIENT);
         sqlite3_bind_int64(st, 10, (sqlite3_int64)n_all);
+        sqlite3_bind_blob(st, 11, blk->out_header, DNA_BH2_ENC_SIZE,
+                          SQLITE_TRANSIENT);
+        /* qc_len is unvalidated caller input at THIS boundary — the
+         * engine stores the certificate opaquely and never parses it, so
+         * nothing upstream has bounded it. An unchecked size_t → int
+         * narrowing would hand sqlite3_bind_blob a negative length,
+         * which is undefined. Bound it explicitly; anything larger than
+         * a maximal QC cannot be a certificate. (O14 review R1-F5.) */
+        if (blk->qc_bytes && blk->qc_len) {
+            if (blk->qc_len > (size_t)DNA_QC_V2_MAX_ENC_LEN) {
+                sqlite3_finalize(st);
+                goto fail;
+            }
+            sqlite3_bind_blob(st, 12, blk->qc_bytes, (int)blk->qc_len,
+                              SQLITE_TRANSIENT);
+        } else {
+            sqlite3_bind_null(st, 12);
+        }
         int rc = sqlite3_step(st);
         sqlite3_finalize(st);
         if (rc != SQLITE_DONE) goto fail_fault;

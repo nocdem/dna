@@ -14,6 +14,7 @@
 #include "witness/nodus_witness_mempool.h"
 #include "witness/nodus_witness_bootstrap.h"
 #include "witness/nodus_witness_v2_pools.h"  /* S7 startup check      */
+#include "witness/nodus_witness_v2_finalize.h" /* O14 version firewall */
 #include "nodus/nodus_chain_config.h"  /* Stage C.2 vote-req handler */
 #include "crypto/utils/qgp_log.h"
 #include "crypto/hash/qgp_sha3.h"
@@ -503,6 +504,23 @@ int nodus_witness_create_chain_db(nodus_witness_t *witness,
      * state disagrees with its tables is refused — never repaired. */
     if (nodus_witness_v2_pools_startup_check(witness) != 0) {
         fprintf(stderr, "%s: S7 pool-state startup verification FAILED "
+                "for %s — refusing the database (fail closed)\n",
+                LOG_TAG, db_path);
+        sqlite3_close(witness->db);
+        witness->db = NULL;
+        return -1;
+    }
+
+    /* Ledger V2 O14 — assert this build's V2 version firewall at open:
+     * a RETIRED (v2) header and an UNKNOWN header must both be verdicts
+     * and must never be reinterpreted under the v3 layout, and a NULL
+     * argument must stay a node fault. PURE and INERT — every probe
+     * returns from the version dispatch, so no snapshot is resolved, no
+     * certificate verified, no row read and no schema version required.
+     * A legacy database passes exactly as a v9 one does; a legacy chain's
+     * open must never come to depend on Ledger V2 state. */
+    if (nodus_witness_v2_finalize_selfcheck(witness) != 0) {
+        fprintf(stderr, "%s: V2 header version firewall SELFCHECK FAILED "
                 "for %s — refusing the database (fail closed)\n",
                 LOG_TAG, db_path);
         sqlite3_close(witness->db);

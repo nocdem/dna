@@ -47,6 +47,7 @@
 #include "crypto/hash/qgp_sha3.h"
 
 #include "v2_exec_fixture.h"
+#include "v2_genesis_fixture.h"
 
 #include <dirent.h>
 #include <stdio.h>
@@ -210,9 +211,7 @@ static void mk_block(nodus_v2_block_t *b, uint64_t h,
     memset(b, 0, sizeof(*b));
     b->global_height = h;
     b->epoch = nodus_v2_epoch_for_height(h);
-    mk_id(b->block_id, (uint8_t)(0xB0 + h));
-    mk_id(b->prev_block_id, h == 1 ? 0xEE : (uint8_t)(0xB0 + h - 1));
-    mk_id(b->vset_hash, 0x77);
+    /* O14 leader mode: identity is DERIVED, never carried. */
     b->envs = envs;
     b->n_envs = n;
 }
@@ -243,12 +242,12 @@ static int apply_reject(nodus_witness_t *w, nodus_v2_block_t *b,
 /* shared genesis: migrate + scripted table + v2 genesis */
 static int fx_genesis(fixture_t *fx) {
     if (fx_open(fx) != 0) return -1;
-    if (nodus_witness_db_migrate_v2s8(fx->w) != 0) return -1;
+    if (nodus_witness_db_migrate_v2s9(fx->w) != 0) return -1;
     if (v2x_table_init(fx->w) != 0) return -1;
-    uint8_t gid[64], vset[64];
-    mk_id(gid, 0xEE);
+    uint8_t vset[64];
     mk_id(vset, 0x77);
-    return nodus_witness_v2_genesis(fx->w, gid, vset, 0);
+    /* O14: the genesis BlockID is DERIVED by the engine, not chosen. */
+    return v2x_genesis_min(fx->w, vset, NULL, NULL);
 }
 
 /* one CORE UTXO CREATE envelope with an arbitrary key byte + amount */
@@ -1179,9 +1178,13 @@ static int test_determinism(void) {
     CHECK(fx_reopen(&fa) == 0, "reopen");
     CHECK(nodus_witness_global_root_v2(fa.w, g1, NULL, NULL, NULL) == 0 &&
           memcmp(g0, g1, 64) == 0, "restart roots diverged"); OK();
-    /* replay after restart is idempotent */
+    /* replay after restart is idempotent — O14 D6: the no-write path is
+     * follower mode, so assert the id the engine derived pre-restart. */
+    uint8_t id2[64];
+    CHECK(v2x_block_id_at(fa.w, 2, id2) == 0, "read committed id2");
     nodus_v2_block_t br;
     mk_block(&br, 2, &v3, 1);
+    br.expect_block_id = id2;
     CHECK(nodus_witness_v2_apply_block(fa.w, &br) == 1, "replay"); OK();
     fx_close(&fa);
     fx_close(&fb);

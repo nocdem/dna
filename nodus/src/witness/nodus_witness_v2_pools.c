@@ -899,7 +899,8 @@ int nodus_witness_v2_pools_startup_check(nodus_witness_t *w) {
     uint32_t ver = 0;
     if (nodus_witness_db_schema_version(w, &ver) != 0) return -1;
     if (ver != NODUS_V2_SCHEMA_VERSION_S7 &&
-        ver != NODUS_V2_SCHEMA_VERSION_S8)
+        ver != NODUS_V2_SCHEMA_VERSION_S8 &&
+        ver != NODUS_V2_SCHEMA_VERSION_S9)
         return 0;                        /* pre-v7: no pool state (the
                                           * S8 intent schema CONTAINS the
                                           * S7 pool tables — the check
@@ -1164,13 +1165,14 @@ int nodus_rt_core_state_init(const nodus_domain_runtime_t *rt,
     nodus_witness_t *w = (nodus_witness_t *)wv;
     if (!rt || !w || !w->db) return -1;
 
-    /* Pool state requires the S7 pool tables (present in S7 and S8) —
-     * an activation on an older schema fails closed, never a partial
-     * init. */
+    /* Pool state requires the S7 pool tables (present in S7, S8 and S9 —
+     * each later schema CONTAINS the earlier ones) — an activation on an
+     * older schema fails closed, never a partial init. */
     uint32_t ver = 0;
     if (nodus_witness_db_schema_version(w, &ver) != 0 ||
         (ver != NODUS_V2_SCHEMA_VERSION_S7 &&
-         ver != NODUS_V2_SCHEMA_VERSION_S8))
+         ver != NODUS_V2_SCHEMA_VERSION_S8 &&
+         ver != NODUS_V2_SCHEMA_VERSION_S9))
         return -1;
 
     for (size_t i = 0;

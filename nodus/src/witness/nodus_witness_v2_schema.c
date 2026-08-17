@@ -725,3 +725,120 @@ int nodus_witness_db_migrate_v2s8_ex(nodus_witness_t *w,
 int nodus_witness_db_migrate_v2s8(nodus_witness_t *w) {
     return nodus_witness_db_migrate_v2s8_ex(w, V2S8MIG_FAIL_NONE);
 }
+
+/* ── O14 (8 → 9): v2_blocks carries the canonical header bytes ───────
+ * Rebuild rather than ALTER: the column is NOT NULL and SQLite cannot
+ * add a NOT NULL column without a default — and a defaulted header is
+ * precisely the silent hole this column exists to close. Safe because
+ * the migration refuses to run on a populated table (below). */
+static const char *const V2S9_TABLES_DDL =
+    "DROP TABLE IF EXISTS v2_blocks;"
+    "CREATE TABLE v2_blocks ("
+    "  global_height INTEGER PRIMARY KEY,"
+    "  block_id BLOB NOT NULL UNIQUE,"
+    "  prev_block_id BLOB NOT NULL,"
+    "  epoch INTEGER NOT NULL,"
+    "  tx_root BLOB NOT NULL,"
+    "  domain_updates_root BLOB NOT NULL,"
+    "  domains_root BLOB NOT NULL,"
+    "  global_root BLOB NOT NULL,"
+    "  vset_hash BLOB NOT NULL,"
+    "  tx_count INTEGER NOT NULL,"
+    "  header BLOB NOT NULL,"
+    "  qc BLOB"
+    ");";
+
+int nodus_witness_db_migrate_v2s9_ex(nodus_witness_t *w,
+                                     nodus_v2s9_mig_fail_t fail_at) {
+    if (!w || !w->db) return -1;
+
+    uint32_t ver = 0;
+    if (nodus_witness_db_schema_version(w, &ver) != 0) return -1;
+    if (ver == NODUS_V2_SCHEMA_VERSION_S9) return 0;     /* idempotent    */
+    if (ver == 0 || ver == NODUS_V2_SCHEMA_VERSION ||
+        ver == NODUS_V2_SCHEMA_VERSION_S6 ||
+        ver == NODUS_V2_SCHEMA_VERSION_S7) {
+        /* Reach version 8 first (its own atomic stage chain — a crash
+         * leaves a VALID intermediate version and re-running resumes). */
+        if (nodus_witness_db_migrate_v2s8(w) != 0) return -1;
+        ver = NODUS_V2_SCHEMA_VERSION_S8;
+    }
+    if (ver != NODUS_V2_SCHEMA_VERSION_S8) {
+        /* Unknown/newer schema (10+): this build must not touch it. */
+        QGP_LOG_ERROR(LOG_TAG,
+                      "unknown schema version %u — refusing S9 migration",
+                      ver);
+        return -1;
+    }
+
+    /* FAIL CLOSED on a populated block table (read-only, pre-BEGIN —
+     * nothing to roll back). The canonical header bytes of a committed
+     * block cannot be reconstructed from the columns that were kept:
+     * header_version, chain_id, proposer_id and timestamp were never
+     * stored, and three of those four sit INSIDE the 405 BlockID-bound
+     * bytes. A backfill would have to invent them, and every restart
+     * check over the result would be verifying fiction. */
+    {
+        sqlite3_stmt *st = NULL;
+        if (sqlite3_prepare_v2(w->db,
+                "SELECT COUNT(*) FROM v2_blocks", -1, &st, NULL)
+            != SQLITE_OK)
+            return -1;
+        int rc = sqlite3_step(st);
+        sqlite3_int64 rows =
+            (rc == SQLITE_ROW) ? sqlite3_column_int64(st, 0) : -1;
+        sqlite3_finalize(st);
+        if (rows < 0) return -1;
+        if (rows > 0) {
+            QGP_LOG_ERROR(LOG_TAG,
+                          "v2_blocks holds %lld committed row(s) whose "
+                          "canonical header bytes cannot be derived — "
+                          "refusing S9 migration (fail closed)",
+                          (long long)rows);
+            return -1;
+        }
+    }
+
+    if (exec_sql(w, "BEGIN IMMEDIATE") != 0) return -1;
+
+    int ok = 0;
+    do {
+        if (fail_at == V2S9MIG_FAIL_AFTER_BEGIN) break;
+
+        if (exec_sql(w, V2S9_TABLES_DDL) != 0) break;
+        if (fail_at == V2S9MIG_FAIL_AFTER_TABLES) break;
+
+        /* Verify the schema actually materialized with EXACTLY the
+         * expected shape — column drift and partial tables reject. */
+        static const char *const block_cols[] = {
+            "global_height", "block_id", "prev_block_id", "epoch",
+            "tx_root", "domain_updates_root", "domains_root",
+            "global_root", "vset_hash", "tx_count", "header", "qc"
+        };
+        if (table_cols_exact(w, "v2_blocks", block_cols,
+                sizeof(block_cols) / sizeof(block_cols[0])) != 1) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "S9 schema shape drift — refusing");
+            break;
+        }
+        if (fail_at == V2S9MIG_FAIL_AFTER_VERIFY) break;
+
+        if (exec_sql(w, "PRAGMA user_version = 9") != 0) break;
+        if (fail_at == V2S9MIG_FAIL_BEFORE_COMMIT) break;
+
+        ok = 1;
+    } while (0);
+
+    if (!ok) {
+        (void)exec_sql(w, "ROLLBACK");
+        return -1;
+    }
+    if (exec_sql(w, "COMMIT") != 0) {
+        (void)exec_sql(w, "ROLLBACK");
+        return -1;
+    }
+    return 0;
+}
+
+int nodus_witness_db_migrate_v2s9(nodus_witness_t *w) {
+    return nodus_witness_db_migrate_v2s9_ex(w, V2S9MIG_FAIL_NONE);
+}

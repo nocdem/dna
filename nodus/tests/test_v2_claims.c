@@ -76,6 +76,7 @@
 #include "nodus/nodus_chain_config.h"
 
 #include "v2_exec_fixture.h"
+#include "v2_genesis_fixture.h"
 
 #include "dnac/manifest_wire.h"
 #include "dnac/domain_wire.h"
@@ -660,6 +661,11 @@ static int domman_hash_of(nodus_witness_t *w, uint32_t dom,
 
 static int domman_hashes(nodus_witness_t *w, uint8_t sys_h[64],
                          uint8_t core_h[64]) {
+    /* O14: seed the committed validator authority BEFORE the registry
+     * commits genesis_state_root — the vset leg feeds the SYSTEM payload
+     * root, and genesis_ex re-derives it and byte-compares. Every V2
+     * block also needs a resolvable snapshot to be applied at all. */
+    if (v2x_seed_authority(w) != 0) return -1;
     if (nodus_witness_domreg_init_genesis(w) != 0) return -1;
     if (domman_hash_of(w, DNA_DOMAIN_SYSTEM, sys_h) != 0) return -1;
     return domman_hash_of(w, DNA_DOMAIN_CORE, core_h);
@@ -707,13 +713,46 @@ static void gman_dist(dna_gman_t *m, uint64_t total,
 
 /* Genesis BlockID through the REAL derivation: BlockHeader V2 with the
  * all-zero chain_id ‖ the canonical manifest bytes (block_v2.h). */
-static int genesis_id_of(const uint8_t *mbytes, size_t mlen,
-                         uint8_t out_id[64], uint8_t out_chain[32]) {
-    dna_block_header_v2_t h;
-    memset(&h, 0, sizeof(h));
-    h.header_version = DNA_BH2_VERSION;      /* height 0, zero chain_id */
-    if (dna_bh2_genesis_block_id(&h, mbytes, mlen, out_id) != 0) return -1;
-    return dna_bh2_derive_chain_id(out_id, out_chain);
+/* ── O14: the genesis identity is DERIVED, not predicted ─────────────
+ * The retired `genesis_id_of` used to compute the genesis BlockID from a
+ * header with ZEROED roots and hand it to genesis_ex as the id to store.
+ * The engine now builds the genesis header from its OWN derived global
+ * root and binds that into the preimage, so a zero-root prediction can
+ * never match. Commit with the assertion omitted and read the committed
+ * identity back — chain_id is the id's first 32 bytes (block_v2.h).
+ *
+ * Also seeds the committed validator authority every V2 block needs
+ * (v2x_seed_authority) BEFORE genesis, since the vset leg feeds the
+ * SYSTEM payload root that genesis re-derives and byte-compares. */
+static int commit_genesis_read(fixture_t *fx, const uint8_t *mbytes,
+                               size_t mlen, uint8_t out_gid[64],
+                               uint8_t out_chain[32]) {
+    uint8_t vset[64], gid[64];
+    memset(vset, 0x77, 64);
+    /* O14 review R1-F2: genesis binds validator_set_hash into the chain
+     * identity and the engine requires it to EQUAL the committed epoch-0
+     * authority, so hand over the COMMITTED hash rather than a chosen
+     * one. (v2x_seed_authority already ran in domman_hashes.) */
+    {
+        dna_vset_snapshot_t *s0 = NULL;
+        uint32_t sn = 0, sq = 0;
+        if (nodus_witness_v2_epoch_authority_for_height(fx->w, 0, &s0,
+                                                        &sn, &sq) == 0 &&
+            s0) {
+            int hrc = dna_vset_hash(s0, vset);
+            dna_vset_free(&s0);
+            if (hrc != 0) return -1;
+        } else {
+            dna_vset_free(&s0);
+        }
+    }
+    if (nodus_witness_v2_genesis_ex(fx->w, NULL, vset, 0, mbytes, mlen)
+        != 0)
+        return -1;
+    if (v2x_block_id_at(fx->w, 0, gid) != 0) return -1;
+    if (out_gid)   memcpy(out_gid, gid, 64);
+    if (out_chain) memcpy(out_chain, gid, 32);
+    return 0;
 }
 
 /* Seed supply so that genesis + minted − burned == utxo + unclaimed
@@ -745,7 +784,7 @@ static int dist_genesis(fixture_t *fx, uint64_t total, uint64_t start_h,
                         uint64_t end_h, const char *tag,
                         uint8_t out_chain[32], uint8_t out_gid[64],
                         uint8_t out_mh[64]) {
-    if (nodus_witness_db_migrate_v2s8(fx->w) != 0) return -1;
+    if (nodus_witness_db_migrate_v2s9(fx->w) != 0) return -1;
     if (seed_supply(fx->w, 1000, 1000 - total) != 0) return -1;
     uint8_t sys_h[64], core_h[64];
     if (domman_hashes(fx->w, sys_h, core_h) != 0) return -1;
@@ -757,11 +796,7 @@ static int dist_genesis(fixture_t *fx, uint64_t total, uint64_t start_h,
     size_t mlen = 0;
     if (dna_gman_encode(&m, mbytes, sizeof(mbytes), &mlen) != 0) return -1;
     if (out_mh && dna_gman_hash(&m, out_mh) != 0) return -1;
-    uint8_t vset[64];
-    memset(vset, 0x77, 64);
-    if (genesis_id_of(mbytes, mlen, out_gid, out_chain) != 0) return -1;
-    return nodus_witness_v2_genesis_ex(fx->w, out_gid, vset, 0,
-                                       mbytes, mlen);
+    return commit_genesis_read(fx, mbytes, mlen, out_gid, out_chain);
 }
 
 /* ── claim + block builders ─────────────────────────────────────────── */
@@ -802,10 +837,8 @@ static void mk_claim_block(nodus_v2_block_t *b, uint64_t h,
     memset(b, 0, sizeof(*b));
     b->global_height = h;
     b->epoch = 0;
-    mk_id(b->block_id, (uint8_t)(0xB0 + h));
-    if (h == 1) memcpy(b->prev_block_id, gen_id, 64);
-    else mk_id(b->prev_block_id, (uint8_t)(0xB0 + h - 1));
-    mk_id(b->vset_hash, 0x77);
+    /* O14 leader mode: identity is DERIVED, never carried. */
+    (void)gen_id;
     b->claims = claims;
     b->n_claims = n_claims;
 }
@@ -1021,7 +1054,7 @@ static int absent_genesis(fixture_t *fx, uint8_t out_sys[64],
                           uint8_t out_core[64], uint8_t out_glob[64],
                           uint8_t out_manroot[64]) {
     if (fx_open(fx) != 0) return -1;
-    if (nodus_witness_db_migrate_v2s8(fx->w) != 0) return -1;
+    if (nodus_witness_db_migrate_v2s9(fx->w) != 0) return -1;
     uint8_t sys_h[64], core_h[64];
     if (domman_hashes(fx->w, sys_h, core_h) != 0) return -1;
     dna_gman_t m;
@@ -1029,12 +1062,8 @@ static int absent_genesis(fixture_t *fx, uint8_t out_sys[64],
     uint8_t mbytes[8192];
     size_t mlen = 0;
     if (dna_gman_encode(&m, mbytes, sizeof(mbytes), &mlen) != 0) return -1;
-    uint8_t gid[64], chain[32], vset[64];
-    memset(vset, 0x77, 64);
-    if (genesis_id_of(mbytes, mlen, gid, chain) != 0) return -1;
-    if (nodus_witness_v2_genesis_ex(fx->w, gid, vset, 0, mbytes, mlen)
-        != 0)
-        return -1;
+    uint8_t gid[64], chain[32];
+    if (commit_genesis_read(fx, mbytes, mlen, gid, chain) != 0) return -1;
     if (nodus_witness_system_root_v2(fx->w, out_sys) != 0) return -1;
     if (nodus_witness_core_root_v2(fx->w, out_core) != 0) return -1;
     if (nodus_witness_global_root_v2(fx->w, out_glob, NULL, NULL, NULL)
@@ -1375,10 +1404,14 @@ static int test_dist_lifecycle(void) {
         CHECK(expect_reject(fx.w, &bb, "spent after restart") == 0,
               "spent restart");
         OK();
-        /* idempotent replay of the committed h=2 block */
+        /* idempotent replay of the committed h=2 block — O14 D6: the
+         * no-write path is follower mode, so assert the derived id. */
         dna_claim_t two2[2];
         two2[0] = c0; two2[1] = c1;
+        uint8_t id2[64];
+        CHECK(v2x_block_id_at(fx.w, 2, id2) == 0, "read committed id2");
         mk_claim_block(&bb, 2, gid, two2, 2);
+        bb.expect_block_id = id2;
         CHECK(nodus_witness_v2_apply_block(fx.w, &bb) == 1,
               "identical replay rc 1");
         OK();
@@ -1484,7 +1517,7 @@ static int test_never_mint(void) {
 static int genesis_expect_fail(dna_gman_t *m, int seed, const char *msg) {
     fixture_t fx;
     if (fx_open(&fx) != 0) return 1;
-    if (nodus_witness_db_migrate_v2s8(fx.w) != 0) { fx_close(&fx); return 1; }
+    if (nodus_witness_db_migrate_v2s9(fx.w) != 0) { fx_close(&fx); return 1; }
     if (seed && seed_supply(fx.w, 1000, 968) != 0) { fx_close(&fx); return 1; }
     uint8_t sys_h[64], core_h[64];
     if (domman_hashes(fx.w, sys_h, core_h) != 0) { fx_close(&fx); return 1; }
@@ -1501,13 +1534,13 @@ static int genesis_expect_fail(dna_gman_t *m, int seed, const char *msg) {
         fx_close(&fx);
         return 1;
     }
-    uint8_t gid[64], chain[32], vset[64];
+    uint8_t vset[64];
     memset(vset, 0x77, 64);
-    if (genesis_id_of(mbytes, mlen, gid, chain) != 0) { fx_close(&fx); return 1; }
-
+    /* O14: assertion omitted — this genesis must be rejected on its own
+     * (lying) manifest, not because an id failed to match. */
     uint8_t d0[64], d1[64];
     if (db_state_digest(fx.w, d0) != 0) { fx_close(&fx); return 1; }
-    if (nodus_witness_v2_genesis_ex(fx.w, gid, vset, 0, mbytes, mlen)
+    if (nodus_witness_v2_genesis_ex(fx.w, NULL, vset, 0, mbytes, mlen)
         != -1) {
         fprintf(stderr, "genesis should fail: %s\n", msg);
         fx_close(&fx);
@@ -1622,7 +1655,7 @@ static int t3_genesis(fixture_t *fx, uint8_t out_chain[32],
     if (fx_open(fx) != 0) return -1;
     fx->w->v2_runtime_table = g_ext_table;
     fx->w->v2_runtime_table_n = g_ext_n;
-    if (nodus_witness_db_migrate_v2s8(fx->w) != 0) return -1;
+    if (nodus_witness_db_migrate_v2s9(fx->w) != 0) return -1;
     if (run_sql(fx->w->db,
             "CREATE TABLE t3_state (id BLOB PRIMARY KEY, "
             "amount INTEGER NOT NULL, asset BLOB NOT NULL)") != 0)
@@ -1644,11 +1677,7 @@ static int t3_genesis(fixture_t *fx, uint8_t out_chain[32],
     size_t mlen = 0;
     if (dna_gman_encode(&m, mbytes, sizeof(mbytes), &mlen) != 0) return -1;
     if (dna_gman_hash(&m, out_mh) != 0) return -1;
-    uint8_t vset[64];
-    memset(vset, 0x77, 64);
-    if (genesis_id_of(mbytes, mlen, out_gid, out_chain) != 0) return -1;
-    return nodus_witness_v2_genesis_ex(fx->w, out_gid, vset, 0,
-                                       mbytes, mlen);
+    return commit_genesis_read(fx, mbytes, mlen, out_gid, out_chain);
 }
 
 static int test_generic_t3(void) {
@@ -1893,7 +1922,7 @@ static int test_generic_coexistence(void) {
     CHECK(fx_open(&fx) == 0, "fixture");
     fx.w->v2_runtime_table = g_ext_table;
     fx.w->v2_runtime_table_n = g_ext_n;
-    CHECK(nodus_witness_db_migrate_v2s8(fx.w) == 0, "migrate");
+    CHECK(nodus_witness_db_migrate_v2s9(fx.w) == 0, "migrate");
     CHECK(run_sql(fx.w->db,
         "CREATE TABLE t3_state (id BLOB PRIMARY KEY, "
         "amount INTEGER NOT NULL, asset BLOB NOT NULL);"
@@ -1920,11 +1949,9 @@ static int test_generic_coexistence(void) {
     CHECK(dna_gman_encode(&m, mbytes, sizeof(mbytes), &mlen) == 0, "enc");
     uint8_t mh[64];
     CHECK(dna_gman_hash(&m, mh) == 0, "mh");
-    uint8_t gid[64], chain[32], vset[64];
-    memset(vset, 0x77, 64);
-    CHECK(genesis_id_of(mbytes, mlen, gid, chain) == 0, "gid");
-    CHECK(nodus_witness_v2_genesis_ex(fx.w, gid, vset, 0, mbytes, mlen)
-              == 0, "4-domain genesis");
+    uint8_t gid[64], chain[32];
+    CHECK(commit_genesis_read(&fx, mbytes, mlen, gid, chain) == 0,
+          "4-domain genesis");
     CHECK(q1(fx.w, "SELECT COUNT(*) FROM v2_domain_heads") == 4,
           "four heads, zero header/schema changes");
     OK();
@@ -1992,7 +2019,7 @@ static int lifecycle_genesis(fixture_t *fx, uint8_t out_gid[64]) {
     if (fx_open(fx) != 0) return -1;
     fx->w->v2_runtime_table = g_ext_table;
     fx->w->v2_runtime_table_n = g_ext_n;
-    if (nodus_witness_db_migrate_v2s8(fx->w) != 0) return -1;
+    if (nodus_witness_db_migrate_v2s9(fx->w) != 0) return -1;
     if (run_sql(fx->w->db,
             "CREATE TABLE t3_state (id BLOB PRIMARY KEY, "
             "amount INTEGER NOT NULL, asset BLOB NOT NULL)") != 0)
@@ -2011,11 +2038,8 @@ static int lifecycle_genesis(fixture_t *fx, uint8_t out_gid[64]) {
     uint8_t mbytes[8192];
     size_t mlen = 0;
     if (dna_gman_encode(&m, mbytes, sizeof(mbytes), &mlen) != 0) return -1;
-    uint8_t vset[64], chain[32];
-    memset(vset, 0x77, 64);
-    if (genesis_id_of(mbytes, mlen, out_gid, chain) != 0) return -1;
-    return nodus_witness_v2_genesis_ex(fx->w, out_gid, vset, 0,
-                                       mbytes, mlen);
+    uint8_t chain[32];
+    return commit_genesis_read(fx, mbytes, mlen, out_gid, chain);
 }
 
 

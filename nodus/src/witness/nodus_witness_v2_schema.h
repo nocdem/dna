@@ -176,9 +176,31 @@ extern "C" {
 /** The S7 schema version. */
 #define NODUS_V2_SCHEMA_VERSION_S7  7u
 
-/** The S8 schema version (intent season) — required by the apply
- *  engine/genesis. */
+/** The S8 schema version (intent season). */
 #define NODUS_V2_SCHEMA_VERSION_S8  8u
+
+/**
+ * The O14 schema version (block-identity season) — required by the apply
+ * engine/genesis.
+ *
+ * ADDS `v2_blocks.header BLOB NOT NULL`: the canonical 413-byte
+ * BlockHeader v3 the engine built from LOCALLY DERIVED results. Before
+ * O14 the row carried only the decomposed commitment columns, which
+ * CANNOT reconstruct the header — `header_version`, `chain_id`,
+ * `proposer_id` and `timestamp` were nowhere in the table, and three of
+ * those four are inside the 405 BlockID-bound bytes. Storing the exact
+ * bytes is what makes "the stored header reproduces the same BlockID
+ * after restart" a checkable property rather than an assumption.
+ *
+ * FAILS CLOSED (pre-BEGIN) on a POPULATED `v2_blocks`, exactly as S8
+ * refuses a populated `v2_tx_index` and for the same reason: a committed
+ * block's header bytes cannot be back-derived from the columns that were
+ * kept, so migrating anyway would leave rows whose stored identity
+ * nothing can re-verify. No live chain carries V2 rows (the surface is
+ * inactive; the devnet reset starts fresh), so refusal is the honest
+ * answer rather than a NULL hole in the identity chain.
+ */
+#define NODUS_V2_SCHEMA_VERSION_S9  9u
 
 /** Deterministic fault-injection stages for the migration tests. */
 typedef enum {
@@ -290,6 +312,45 @@ int nodus_witness_db_migrate_v2s8(nodus_witness_t *w);
  *  transaction (rolls back, -1; the DB stays a valid version-7 schema). */
 int nodus_witness_db_migrate_v2s8_ex(nodus_witness_t *w,
                                      nodus_v2s8_mig_fail_t fail_at);
+
+/** Deterministic fault-injection stages for the O14 migration tests
+ *  (the 8 → 9 transaction only — earlier stages have their own). */
+typedef enum {
+    V2S9MIG_FAIL_NONE = 0,
+    V2S9MIG_FAIL_AFTER_BEGIN,     /* after BEGIN, before any DDL          */
+    V2S9MIG_FAIL_AFTER_TABLES,    /* v2_blocks rebuilt with `header`      */
+    V2S9MIG_FAIL_AFTER_VERIFY,    /* schema-shape verification passed     */
+    V2S9MIG_FAIL_BEFORE_COMMIT    /* user_version written, pre-COMMIT     */
+} nodus_v2s9_mig_fail_t;
+
+/**
+ * Atomic O14 migration (block-identity season). Version 0/5/6/7 runs the
+ * S8 migration chain first (its own atomic transactions), then 8 → 9
+ * atomically: rebuild `v2_blocks` carrying the new `header BLOB NOT NULL`
+ * column, verify the exact column shape, set user_version = 9.
+ *
+ * The table is REBUILT rather than ALTERed because the column is
+ * NOT NULL and SQLite cannot add a NOT NULL column without a default —
+ * and a defaulted header would be exactly the silent hole this column
+ * exists to close. The rebuild is safe precisely because the migration
+ * refuses to run on a populated table.
+ *
+ * FAILS CLOSED (pre-BEGIN, read-only) on a POPULATED v2_blocks: the
+ * canonical header bytes of an already-committed block cannot be
+ * reconstructed from the decomposed columns (proposer_id and timestamp
+ * were never stored, and proposer_id is BlockID-bound), so a backfill
+ * would have to invent them.
+ *
+ * @return 0 migrated or already at version 9 (idempotent);
+ *         -1 failure (full rollback of the running stage) — including an
+ *         UNKNOWN user_version and the populated-blocks refusal above.
+ */
+int nodus_witness_db_migrate_v2s9(nodus_witness_t *w);
+
+/** Test variant: abort deterministically at `fail_at` inside the 8 → 9
+ *  transaction (rolls back, -1; the DB stays a valid version-8 schema). */
+int nodus_witness_db_migrate_v2s9_ex(nodus_witness_t *w,
+                                     nodus_v2s9_mig_fail_t fail_at);
 
 #ifdef __cplusplus
 }

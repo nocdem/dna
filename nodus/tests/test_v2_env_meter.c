@@ -49,6 +49,8 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include "v2_genesis_fixture.h"
+
 #define CHECK(cond, msg) do { \
     if (!(cond)) { \
         fprintf(stderr, "CHECK failed at %s:%d: %s\n", __FILE__, __LINE__, (msg)); \
@@ -186,12 +188,13 @@ static int all_zero(const uint8_t *b, size_t n) {
 int main(void) {
     fixture_t fx;
     CHECK(fx_open(&fx) == 0, "fixture"); OK();
-    CHECK(nodus_witness_db_migrate_v2s8(fx.w) == 0, "migrate"); OK();
+    CHECK(nodus_witness_db_migrate_v2s9(fx.w) == 0, "migrate"); OK();
 
     uint8_t gen_id[64], vset[64];
-    mk_gen_id(gen_id, 0x40);
+    (void)mk_gen_id;
     memset(vset, 0x77, sizeof(vset));
-    CHECK(nodus_witness_v2_genesis(fx.w, gen_id, vset, 0) == 0, "genesis");
+    /* O14: the genesis BlockID is DERIVED by the engine. */
+    CHECK(v2x_genesis_min(fx.w, vset, gen_id, NULL) == 0, "genesis");
     OK();
 
     dna_env_leg_ctx_t tab;
@@ -488,7 +491,7 @@ int main(void) {
     {
         fixture_t fx2;
         CHECK(fx_open(&fx2) == 0, "fixture 2"); OK();
-        CHECK(nodus_witness_db_migrate_v2s8(fx2.w) == 0, "migrate 2"); OK();
+        CHECK(nodus_witness_db_migrate_v2s9(fx2.w) == 0, "migrate 2"); OK();
         memset(out, 0xAA, sizeof(*out));
         memset(meters, 0xAA, sizeof(*meters));
         CHECK(nodus_witness_v2_env_preflight_reserve_batch(

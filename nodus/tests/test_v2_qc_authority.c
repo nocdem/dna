@@ -209,11 +209,16 @@ static int seed_snapshot(fixture_t *fx, const dna_vset_snapshot_t *snap,
 static int seed_genesis_block(fixture_t *fx) {
     sqlite3_stmt *st = NULL;
     int rc = sqlite3_prepare_v2(fx->w->db,
+        /* O14 schema v9 carries the canonical header bytes. This fixture
+         * only needs a genesis ROW so the chain id derives; it never
+         * reads the header back, so a well-sized placeholder is honest
+         * here — the header/BlockID agreement itself is proven in
+         * test_block_v2 and the apply-engine tests. */
         "INSERT INTO v2_blocks (global_height, block_id, prev_block_id, "
         " epoch, tx_root, domain_updates_root, domains_root, global_root, "
-        " vset_hash, tx_count, qc) "
+        " vset_hash, tx_count, header, qc) "
         "VALUES (0, ?1, zeroblob(64), 0, zeroblob(64), zeroblob(64), "
-        " zeroblob(64), zeroblob(64), zeroblob(64), 0, NULL)",
+        " zeroblob(64), zeroblob(64), zeroblob(64), 0, zeroblob(413), NULL)",
         -1, &st, NULL);
     if (rc != SQLITE_OK) return -1;
     sqlite3_bind_blob(st, 1, fx->genesis_id, 64, SQLITE_TRANSIENT);
@@ -233,7 +238,7 @@ static int fx_open(fixture_t *fx, const char *tag) {
     memset(fx->chain_id16, 0x4E, sizeof(fx->chain_id16));
     if (nodus_witness_create_chain_db(fx->w, fx->chain_id16) != 0) return -1;
     if (nodus_chain_config_db_migrate(fx->w) != 0) return -1;
-    if (nodus_witness_db_migrate_v2s8(fx->w) != 0) return -1;
+    if (nodus_witness_db_migrate_v2s9(fx->w) != 0) return -1;
 
     /* A genesis id whose bytes are distinctive, so a chain-id mismatch is
      * obvious rather than accidentally zero. */

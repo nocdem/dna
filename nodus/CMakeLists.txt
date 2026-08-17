@@ -180,6 +180,7 @@ set(NODUS_SOURCES
     # remains the only boundary a running chain executes.
     src/witness/nodus_witness_v2_epoch.c
     src/witness/nodus_witness_v2_qc.c
+    src/witness/nodus_witness_v2_finalize.c
 
     # Ledger V2 S6 — INACTIVE generic genesis/distribution manifest +
     # claim codec (shared) and the witness-side manifest/claims module
@@ -835,6 +836,23 @@ register_witness_test(test_v2_pools)
 # persistence, and the malformed-row refusal.
 register_witness_test(test_v2_epoch)
 register_witness_test(test_v2_qc_authority)
+register_witness_test(test_v2_finalize)
+
+# Ledger V2 O14 — LINK GATE for the production V2 acceptance seam.
+#
+# A source-level test cannot prove this: the test binaries link libnodus
+# directly and call the seam themselves, so they stay green even if
+# nothing in the SERVER references it and the linker drops the object.
+# This asserts the property that actually matters — that
+# nodus_witness_v2_finalize_block is present in the linked production
+# server AND that its machine code calls nodus_witness_v2_qc_verify.
+# Removing the startup selfcheck (or the TU from the link) makes this
+# test fail by name rather than silently making the seam dead code.
+add_test(NAME test_v2_seam_linked
+         COMMAND sh -c
+         "objdump -t '$<TARGET_FILE:nodus-server>' | grep -q 'nodus_witness_v2_finalize_block' \
+          && objdump -t '$<TARGET_FILE:nodus-server>' | grep -q 'nodus_witness_v2_qc_verify' \
+          && objdump -d '$<TARGET_FILE:nodus-server>' | grep -q 'call.*<nodus_witness_v2_qc_verify>'")
 
 # Ledger V2 — generic typed-effect + compiled storage-adapter boundary
 # (INACTIVE): adapter registration through the five-axis runtime lookup,

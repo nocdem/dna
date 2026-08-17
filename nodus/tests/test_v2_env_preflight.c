@@ -55,6 +55,8 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include "v2_genesis_fixture.h"
+
 #define CHECK(cond, msg) do { \
     if (!(cond)) { \
         fprintf(stderr, "CHECK failed at %s:%d: %s\n", __FILE__, __LINE__, (msg)); \
@@ -230,12 +232,13 @@ static int batch_zeroed(const dna_env_preflight_t *out, size_t n) {
 int main(void) {
     fixture_t fx;
     CHECK(fx_open(&fx) == 0, "fixture"); OK();
-    CHECK(nodus_witness_db_migrate_v2s8(fx.w) == 0, "migrate"); OK();
+    CHECK(nodus_witness_db_migrate_v2s9(fx.w) == 0, "migrate"); OK();
 
     uint8_t gen_id[64], vset[64];
-    mk_gen_id(gen_id, 0x40);
+    (void)mk_gen_id;
     memset(vset, 0x77, sizeof(vset));
-    CHECK(nodus_witness_v2_genesis(fx.w, gen_id, vset, 0) == 0, "genesis");
+    /* O14: the genesis BlockID is DERIVED by the engine. */
+    CHECK(v2x_genesis_min(fx.w, vset, gen_id, NULL) == 0, "genesis");
     OK();
 
     dna_env_leg_ctx_t tab;
@@ -324,10 +327,15 @@ int main(void) {
     {
         fixture_t fb;
         CHECK(fx_open(&fb) == 0, "fixture b");
-        CHECK(nodus_witness_db_migrate_v2s8(fb.w) == 0, "migrate b");
-        uint8_t gen_b[64];
-        mk_gen_id(gen_b, 0x80);          /* a different chain entirely */
-        CHECK(nodus_witness_v2_genesis(fb.w, gen_b, vset, 0) == 0,
+        CHECK(nodus_witness_db_migrate_v2s9(fb.w) == 0, "migrate b");
+        uint8_t gen_b[64], vset_b[64];
+        /* O14: a different chain comes from a different committed
+         * VALIDATOR SET — genesis binds the committed authority, so a
+         * different set yields a different vset hash, genesis BlockID
+         * and chain id. Seed it before genesis. */
+        memset(vset_b, 0x80, sizeof(vset_b));
+        CHECK(v2x_seed_authority_fill(fb.w, 0x80) == 0, "seed set b");
+        CHECK(v2x_genesis_min(fb.w, vset_b, gen_b, NULL) == 0,
               "genesis b");
 
         dna_env_preflight_t *ob = calloc(1, sizeof(*ob));
@@ -773,7 +781,7 @@ int main(void) {
     {
         fixture_t fc;
         CHECK(fx_open(&fc) == 0, "fixture c");
-        CHECK(nodus_witness_db_migrate_v2s8(fc.w) == 0, "migrate c"); OK();
+        CHECK(nodus_witness_db_migrate_v2s9(fc.w) == 0, "migrate c"); OK();
         /* schema present, NO genesis committed => no chain identity */
         uint8_t probe[DNA_CHAIN_ID_LEN];
         CHECK(nodus_witness_v2_chain_id(fc.w, probe) != 0,

@@ -79,6 +79,8 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include "v2_genesis_fixture.h"
+
 #define CHECK(cond, msg) do { \
     if (!(cond)) { \
         fprintf(stderr, "CHECK failed at %s:%d: %s\n", \
@@ -272,10 +274,7 @@ static void mk_block(nodus_v2_block_t *b, uint64_t h) {
     memset(b, 0, sizeof(*b));
     b->global_height = h;
     b->epoch = nodus_v2_epoch_for_height(h);
-    mk_block_id(b->block_id, h);
-    if (h == 1) memset(b->prev_block_id, 0xEE, 64);
-    else        mk_block_id(b->prev_block_id, h - 1);
-    mk_id(b->vset_hash, 0x77);
+    /* O14 leader mode: identity is DERIVED, never carried. */
     b->envs = NULL;
     b->n_envs = 0;                       /* ZERO-ENVELOPE by design      */
 }
@@ -415,7 +414,7 @@ static int fx_genesis(fixture_t *fx, const char *tag,
     memset(fx->chain_id16, 0x4E, sizeof(fx->chain_id16));
     if (nodus_witness_create_chain_db(fx->w, fx->chain_id16) != 0) return -1;
     if (nodus_chain_config_db_migrate(fx->w) != 0) return -1;
-    if (nodus_witness_db_migrate_v2s8(fx->w) != 0) return -1;
+    if (nodus_witness_db_migrate_v2s9(fx->w) != 0) return -1;
 
     uint64_t bonds = 0;
     for (size_t i = 0; i < n_spec; i++) {
@@ -463,10 +462,10 @@ static int fx_genesis(fixture_t *fx, const char *tag,
 /* Stage 2 — see the two-stage note above. Every direct write to a
  * consensus table must ALREADY have happened when this returns. */
 static int fx_v2_genesis(fixture_t *fx) {
-    uint8_t gid[64], vset[64];
-    mk_id(gid, 0xEE);
+    uint8_t vset[64];
     mk_id(vset, 0x77);
-    if (nodus_witness_v2_genesis(fx->w, gid, vset, 0) != 0) return -1;
+    /* O14: the genesis BlockID is DERIVED by the engine, not chosen. */
+    if (v2x_genesis_min(fx->w, vset, NULL, NULL) != 0) return -1;
     if (nodus_witness_v2_chain_id(fx->w, fx->chain_id) != 0) return -1;
     fx->height = 0;
     return 0;
@@ -1065,8 +1064,17 @@ static int test_boundary_chain(void) {
     {
         uint8_t d0[64], d1[64];
         CHECK(db_state_digest(fx.w, d0) == 0, "digest");
+        /* O14 D6: the rc-1 idempotent path is FOLLOWER-mode only — it
+         * needs an asserted id to probe with. Read the committed id of
+         * the boundary block and assert it. (The leader-mode arm, which
+         * has no id and therefore dies on height continuity, is covered
+         * separately in test_v2_apply.) */
+        uint8_t committed_id[64];
+        CHECK(v2x_block_id_at(fx.w, E, committed_id) == 0,
+              "read committed boundary id");
         nodus_v2_block_t rb;
         mk_block(&rb, E);
+        rb.expect_block_id = committed_id;
         int rc = nodus_witness_v2_apply_block(fx.w, &rb);
         CHECK(rc == 1, "byte-identical replay is the no-write idempotent "
                        "path");
@@ -1668,7 +1676,7 @@ static int fx_bare(fixture_t *fx, const char *tag) {
     memset(fx->chain_id16, 0x4E, sizeof(fx->chain_id16));
     if (nodus_witness_create_chain_db(fx->w, fx->chain_id16) != 0) return -1;
     if (nodus_chain_config_db_migrate(fx->w) != 0) return -1;
-    if (nodus_witness_db_migrate_v2s8(fx->w) != 0) return -1;
+    if (nodus_witness_db_migrate_v2s9(fx->w) != 0) return -1;
     return 0;
 }
 

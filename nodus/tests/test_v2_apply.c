@@ -57,6 +57,7 @@
 #include "crypto/hash/qgp_sha3.h"
 
 #include "v2_exec_fixture.h"
+#include "v2_genesis_fixture.h"
 
 #include <dirent.h>
 #include <stdio.h>
@@ -217,14 +218,17 @@ done:
 /* ── block + envelope helpers ───────────────────────────────────────── */
 static void mk_id(uint8_t out[64], uint8_t fill) { memset(out, fill, 64); }
 
+/* O14 LEADER/DERIVATION MODE: a block carries NO identity. The engine
+ * derives prev_block_id from the committed parent, validator_set_hash
+ * from the block-start authority snapshot, and the BlockID from the
+ * canonical header it builds out of its own execution results. A test
+ * that wants to ASSERT one of those sets the matching expect_* pointer;
+ * fabricating an id is no longer expressible. */
 static void mk_block(nodus_v2_block_t *b, uint64_t h,
                      const nodus_v2_envelope_t *envs, size_t n) {
     memset(b, 0, sizeof(*b));
     b->global_height = h;
     b->epoch = nodus_v2_epoch_for_height(h);
-    mk_id(b->block_id, (uint8_t)(0xB0 + h));
-    mk_id(b->prev_block_id, h == 1 ? 0xEE : (uint8_t)(0xB0 + h - 1));
-    mk_id(b->vset_hash, 0x77);
     b->envs = envs;
     b->n_envs = n;
 }
@@ -406,10 +410,15 @@ static void rogue_table_disarm(nodus_witness_t *w) {
 int main(void) {
     fixture_t fx;
     CHECK(fx_open(&fx) == 0, "fixture"); OK();
-    CHECK(nodus_witness_db_migrate_v2s8(fx.w) == 0, "migrate"); OK();
+    CHECK(nodus_witness_db_migrate_v2s9(fx.w) == 0, "migrate"); OK();
     CHECK(v2x_table_init(fx.w) == 0, "scripted table"); OK();
 
     /* ── 1. genesis + cycle proof ───────────────────────────────────── */
+    /* O14: seed the committed validator authority BEFORE capturing the
+     * payload roots — the validator/vset legs are part of the SYSTEM
+     * payload root, so seeding after the capture would move the root out
+     * from under the cycle proof below. */
+    CHECK(v2x_seed_authority(fx.w) == 0, "seed authority"); OK();
     uint8_t sys_payload_pre[64], core_pre[64];
     CHECK(nodus_witness_system_payload_root_v2(fx.w, sys_payload_pre) == 0,
           "payload pre"); OK();
@@ -426,19 +435,40 @@ int main(void) {
     CHECK(nodus_witness_core_root_v2(fx.w, core_pre) == 0, "core pre");
 
     uint8_t gen_id[64], vset[64];
-    mk_id(gen_id, 0xEE);
     mk_id(vset, 0x77);
+    /* O14: a genesis with NO manifest bytes has no canonical identity —
+     * the genesis preimage takes the manifest as an explicit input — so
+     * the no-manifest form now fails closed rather than storing an id
+     * the caller chose. */
+    CHECK(nodus_witness_v2_genesis(fx.w, NULL, vset, 0) == -1,
+          "no-manifest genesis accepted"); OK();
     /* DERIVED-EPOCH gate: a genesis claiming any epoch other than the
      * derivation of height 0 (== 0) is rejected outright. */
-    CHECK(nodus_witness_v2_genesis(fx.w, gen_id, vset, 1) == -1,
+    CHECK(nodus_witness_v2_genesis(fx.w, NULL, vset, 1) == -1,
           "nonzero genesis epoch accepted"); OK();
-    CHECK(nodus_witness_v2_genesis(fx.w, gen_id, vset, 0) == 0, "genesis");
+    /* O14 review R1-F2: genesis binds validator_set_hash into the chain
+     * identity. If it were a free caller parameter it would be the ONE
+     * header field with two authoritative producers — derived from the
+     * committed snapshot on the apply path, chosen here. It must EQUAL
+     * the committed epoch-0 authority. A foreign set rejects. */
+    {
+        uint8_t foreign[64];
+        memset(foreign, 0x5C, sizeof(foreign));
+        CHECK(nodus_witness_v2_genesis_ex(fx.w, NULL, foreign, 0,
+                                          (const uint8_t *)"m", 1) == -1,
+              "genesis bound a foreign validator_set_hash"); OK();
+    }
+    CHECK(v2x_genesis_min(fx.w, vset, gen_id, NULL) == 0, "genesis");
     OK();
-    CHECK(nodus_witness_v2_genesis(fx.w, gen_id, vset, 0) == 0,
+    /* Idempotent re-run: asserting the DERIVED id succeeds. */
+    CHECK(v2x_genesis_min(fx.w, vset, NULL, NULL) == 0,
           "genesis not idempotent"); OK();
+    /* A genesis asserting a DIFFERENT id than the committed one. */
     uint8_t gen_id2[64];
-    mk_id(gen_id2, 0xEF);
-    CHECK(nodus_witness_v2_genesis(fx.w, gen_id2, vset, 0) == -2,
+    memcpy(gen_id2, gen_id, 64);
+    gen_id2[0] ^= 1;
+    CHECK(nodus_witness_v2_genesis_ex(fx.w, gen_id2, vset, 0,
+                                      (const uint8_t *)"x", 1) == -2,
           "conflicting genesis accepted"); OK();
 
     dna_domain_manifest_t sys_man, core_man;
@@ -495,9 +525,9 @@ int main(void) {
     {
         fixture_t fx2;
         CHECK(fx_open(&fx2) == 0, "fx2");
-        CHECK(nodus_witness_db_migrate_v2s8(fx2.w) == 0, "migrate2");
+        CHECK(nodus_witness_db_migrate_v2s9(fx2.w) == 0, "migrate2");
         CHECK(v2x_table_init(fx2.w) == 0, "table2");
-        CHECK(nodus_witness_v2_genesis(fx2.w, gen_id, vset, 0) == 0,
+        CHECK(v2x_genesis_min(fx2.w, vset, NULL, NULL) == 0,
               "genesis2");
         uint8_t g1[64], g2[64];
         CHECK(nodus_witness_global_root_v2(fx.w, g1, NULL, NULL, NULL)
@@ -541,15 +571,39 @@ int main(void) {
     /* replay matrix */
     uint8_t dg[64], dg2[64];
     CHECK(db_state_digest(fx.w, dg) == 0, "digest");
+    /* The id block 1 actually committed — ENGINE-derived, not chosen. */
+    uint8_t b1_id[64];
+    memcpy(b1_id, b1.out_block_id, 64);
+
+    /* FOLLOWER-MODE idempotent replay: asserting the committed id at the
+     * committed height is the ONLY way to reach rc 1. The engine serves
+     * the stored identity back without re-executing. */
     nodus_v2_block_t rb = b1;
+    rb.expect_block_id = b1_id;
     CHECK(nodus_witness_v2_apply_block(fx.w, &rb) == 1,
           "identical replay not idempotent"); OK();
+    CHECK(memcmp(rb.out_block_id, b1_id, 64) == 0,
+          "rc1 did not serve the committed id"); OK();
     CHECK(db_state_digest(fx.w, dg2) == 0 && memcmp(dg, dg2, 64) == 0,
           "idempotent replay wrote state"); OK();
+
+    /* LEADER MODE at an already-committed height has NO fast path (D6):
+     * with nothing asserted there is no id to probe with, so it dies on
+     * height continuity instead. The asymmetry is deliberate — both arms
+     * refuse to write, which is the property that matters. */
     rb = b1;
-    rb.block_id[0] ^= 1;                       /* same height, diff id  */
+    rb.expect_block_id = NULL;
+    CHECK(nodus_witness_v2_apply_block(fx.w, &rb) == -1,
+          "leader-mode committed height accepted"); OK();
+
+    uint8_t bad_id[64];
+    memcpy(bad_id, b1_id, 64);
+    bad_id[0] ^= 1;                            /* same height, diff id  */
+    rb = b1;
+    rb.expect_block_id = bad_id;
     CHECK(nodus_witness_v2_apply_block(fx.w, &rb) == -1,
           "conflicting height accepted"); OK();
+
     static v2x_env_t ex;
     CHECK(env_core_utxo_create(&ex, 0x0f, 5) == 0, "envx");
     nodus_v2_envelope_t vx = { ex.bytes, ex.len };
@@ -558,11 +612,17 @@ int main(void) {
     CHECK(nodus_witness_v2_apply_block(fx.w, &bx) == -1, "gap accepted");
     OK();
     mk_block(&bx, 2, &vx, 1);
-    bx.prev_block_id[0] ^= 1;                  /* wrong prev             */
+    uint8_t wrong_prev[64];
+    memset(wrong_prev, 0x5A, 64);              /* wrong prev             */
+    bx.expect_prev_block_id = wrong_prev;
     CHECK(nodus_witness_v2_apply_block(fx.w, &bx) == -1,
           "wrong prev accepted"); OK();
+    /* A block at height 2 asserting block 1's id: the DERIVED id cannot
+     * equal it, so the assertion fails before commit. (The engine also
+     * refuses a genuinely duplicate derived id in phase 13, which no
+     * input can force — that is the point.) */
     mk_block(&bx, 2, &vx, 1);
-    memcpy(bx.block_id, b1.block_id, 64);      /* reused BlockID         */
+    bx.expect_block_id = b1_id;
     CHECK(nodus_witness_v2_apply_block(fx.w, &bx) == -1,
           "reused BlockID accepted"); OK();
     /* wrong DECLARED epoch: the derivation is the authority */
@@ -783,10 +843,19 @@ int main(void) {
     CHECK(db_state_digest(fx.w, dg2) == 0 &&
           memcmp(dg_committed, dg2, 64) == 0,
           "restart lost committed state"); OK();
+    /* O14 D6 + §15 restart/recompute: after the crash window and a
+     * reopen, replaying the SAME block against the id the engine derived
+     * before the crash is the idempotent no-write path, and the engine
+     * serves that stored identity back from the committed row. */
+    uint8_t id5[64];
+    CHECK(v2x_block_id_at(fx.w, 5, id5) == 0, "read committed id5");
     nodus_v2_block_t b5r;
     mk_block(&b5r, 5, rich, 3);
+    b5r.expect_block_id = id5;
     CHECK(nodus_witness_v2_apply_block(fx.w, &b5r) == 1,
           "post-crash replay applied twice"); OK();
+    CHECK(memcmp(b5r.out_block_id, id5, 64) == 0,
+          "restart served a different identity"); OK();
 
     /* ── 6. resource limits ─────────────────────────────────────────── */
     CHECK(db_state_digest(fx.w, dg) == 0, "digest");
@@ -890,7 +959,7 @@ int main(void) {
     /* ── 7. supply (official DNA numbers) ───────────────────────────── */
     fixture_t fs;
     CHECK(fx_open(&fs) == 0, "supply fixture"); OK();
-    CHECK(nodus_witness_db_migrate_v2s8(fs.w) == 0, "migrate");
+    CHECK(nodus_witness_db_migrate_v2s9(fs.w) == 0, "migrate");
     CHECK(v2x_table_init(fs.w) == 0, "scripted table (supply)");
 
     CHECK(run_sql(fs.w->db,
@@ -1036,7 +1105,7 @@ int main(void) {
     CHECK(nodus_witness_v2_supply_check(fs.w) == 0, "restart broke"); OK();
 
     /* an engine block that BREAKS supply rolls back completely */
-    CHECK(nodus_witness_v2_genesis(fs.w, gen_id, vset, 0) == 0,
+    CHECK(v2x_genesis_min(fs.w, vset, NULL, NULL) == 0,
           "supply-fixture genesis"); OK();
     uint8_t sdg[64], sdg2[64];
     CHECK(db_state_digest(fs.w, sdg) == 0, "digest");

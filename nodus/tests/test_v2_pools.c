@@ -51,6 +51,7 @@
 #include "witness/nodus_witness_roots_v2.h"
 
 #include "v2_exec_fixture.h"
+#include "v2_genesis_fixture.h"
 
 #include "dnac/pool_wire.h"
 #include "dnac/ledger_roots_v2.h"
@@ -295,11 +296,11 @@ static void lanes_be(const uint64_t lanes[4], uint8_t out[32]) {
 }
 
 static int genesis(fixture_t *fx) {
-    if (nodus_witness_db_migrate_v2s8(fx->w) != 0) return -1;
-    uint8_t gid[64], vset[64];
-    mk_id(gid, 0xEE);
+    if (nodus_witness_db_migrate_v2s9(fx->w) != 0) return -1;
+    uint8_t vset[64];
     mk_id(vset, 0x77);
-    return nodus_witness_v2_genesis(fx->w, gid, vset, 0);
+    /* O14: the genesis BlockID is DERIVED by the engine, not chosen. */
+    return v2x_genesis_min(fx->w, vset, NULL, NULL);
 }
 
 /* one pool batch inside an explicit transaction (module-level tests) */
@@ -1080,9 +1081,7 @@ static void mk_block(nodus_v2_block_t *b, uint64_t h,
     memset(b, 0, sizeof(*b));
     b->global_height = h;
     b->epoch = 0;
-    mk_id(b->block_id, (uint8_t)(0xB0 + h));
-    mk_id(b->prev_block_id, h == 1 ? 0xEE : (uint8_t)(0xB0 + h - 1));
-    mk_id(b->vset_hash, 0x77);
+    /* O14 leader mode: identity is DERIVED, never carried. */
     b->envs = envs;
     b->n_envs = n;
 }
@@ -1104,17 +1103,17 @@ static int t_engine(void) {
     printf("8: engine — supply moves, follower reject, fault points\n");
     fixture_t fe, fe2;
     CHECK(fx_open(&fe) == 0, "fx e");
-    CHECK(nodus_witness_db_migrate_v2s8(fe.w) == 0, "migrate");
+    CHECK(nodus_witness_db_migrate_v2s9(fe.w) == 0, "migrate");
     CHECK(seed_small_supply(&fe) == 0, "seed");
     uint8_t gid[64], vset[64];
     mk_id(gid, 0xEE);
     mk_id(vset, 0x77);
-    CHECK(nodus_witness_v2_genesis(fe.w, gid, vset, 0) == 0, "genesis");
+    CHECK(v2x_genesis_min(fe.w, vset, gid, NULL) == 0, "genesis");
     OK();
     CHECK(fx_open(&fe2) == 0, "fx e2");
-    CHECK(nodus_witness_db_migrate_v2s8(fe2.w) == 0, "migrate2");
+    CHECK(nodus_witness_db_migrate_v2s9(fe2.w) == 0, "migrate2");
     CHECK(seed_small_supply(&fe2) == 0, "seed2");
-    CHECK(nodus_witness_v2_genesis(fe2.w, gid, vset, 0) == 0, "genesis2");
+    CHECK(v2x_genesis_min(fe2.w, vset, NULL, NULL) == 0, "genesis2");
 
     uint8_t sys_pre[64];
     CHECK(nodus_witness_system_root_v2(fe.w, sys_pre) == 0, "sys pre");
@@ -1245,9 +1244,7 @@ static int t_engine(void) {
         OK();
         nodus_v2_block_t bb;
         mk_block(&bb, 2, &vop3, 1);     /* fe2 is at height 1            */
-        /* fe2's height-2 prev id */
-        mk_id(bb.prev_block_id, 0xB1);
-        mk_id(bb.block_id, 0xB2);
+        /* O14: prev and id are both derived from committed state. */
         bb.pool_muts = &pmb;
         bb.n_pool_muts = 1;
         bb.expect_global_root = ba.out_global_root;
@@ -1283,7 +1280,7 @@ static int t_engine(void) {
         nodus_v2_envelope_t vsop = { esop.bytes, esop.len };
         nodus_v2_block_t bs;
         mk_block(&bs, 4, &vsop, 1);
-        mk_id(bs.prev_block_id, 0xB3);
+        /* O14: prev derived from the committed parent. */
         CHECK(nodus_witness_v2_apply_block(fe.w, &bs) == 0, "sys block");
         OK();
         CHECK(sqlite3_prepare_v2(fe.w->db,
@@ -1317,7 +1314,7 @@ static int t_engine(void) {
      * pool BEFORE genesis, exactly like the module tests). */
     fixture_t ff;
     CHECK(fx_open(&ff) == 0, "fx f");
-    CHECK(nodus_witness_db_migrate_v2s8(ff.w) == 0, "migrate f");
+    CHECK(nodus_witness_db_migrate_v2s9(ff.w) == 0, "migrate f");
     CHECK(seed_small_supply(&ff) == 0, "seed f");
     {
         /* pre-genesis: create the limit-3 pool so the genesis CORE
@@ -1332,7 +1329,7 @@ static int t_engine(void) {
         CHECK(nodus_witness_v2_pool_create(ff.w, &p7, 0) == 0, "p7");
         CHECK(run_sql(ff.w->db, "COMMIT") == 0, "commit");
     }
-    CHECK(nodus_witness_v2_genesis(ff.w, gid, vset, 0) == 0,
+    CHECK(v2x_genesis_min(ff.w, vset, gid, NULL) == 0,
           "genesis f");
     /* drive the pool to its history limit with three blocks */
     for (uint64_t k = 1; k <= 3; k++) {
@@ -1372,7 +1369,7 @@ static int t_engine(void) {
     for (size_t i = 0; i < sizeof(points) / sizeof(points[0]); i++) {
         nodus_v2_block_t bf;
         mk_block(&bf, 4, NULL, 0);
-        mk_id(bf.prev_block_id, 0xB3);
+        /* O14: prev derived from the committed parent. */
         bf.pool_muts = &fpm;
         bf.n_pool_muts = 1;
         bf.fail_at = points[i];
@@ -1386,7 +1383,7 @@ static int t_engine(void) {
     /* the clean run commits — the eviction really happened */
     nodus_v2_block_t bf;
     mk_block(&bf, 4, NULL, 0);
-    mk_id(bf.prev_block_id, 0xB3);
+    /* O14: prev derived from the committed parent. */
     bf.pool_muts = &fpm;
     bf.n_pool_muts = 1;
     CHECK(nodus_witness_v2_apply_block(ff.w, &bf) == 0, "clean"); OK();
