@@ -375,15 +375,20 @@ static int t_reject_matrix(void) {
         memcpy(bad, hdr, sizeof(bad));
         bad[0] = DNA_BH2_VERSION_RETIRED;
         REJECT(follower_finalize(&b, bad, sizeof(bad), qc, qlen, 1, NULL),
-               -1, "retired header version accepted");
+               NODUS_V2_RETIRED_VERSION, "retired header version accepted");
     }
     /* UNKNOWN version — separately rejected. */
     {
         uint8_t bad[DNA_BH2_ENC_SIZE];
         memcpy(bad, hdr, sizeof(bad));
         bad[0] = (uint8_t)(DNA_BH2_VERSION + 7);
+        /* O15A: a DIFFERENT class from the retired version above. The two
+         * assertions together are what prove the seam can actually tell
+         * "your software is too old for this block" from "too new" —
+         * previously both were -1 and the distinction existed only in a
+         * log line. */
         REJECT(follower_finalize(&b, bad, sizeof(bad), qc, qlen, 1, NULL),
-               -1, "unknown header version accepted");
+               NODUS_V2_UNSUPPORTED_VERSION, "unknown header version accepted");
     }
     /* Truncated header — no size auto-detection. */
     REJECT(follower_finalize(&b, hdr, DNA_BH2_ENC_SIZE - 1, qc, qlen, 1,

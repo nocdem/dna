@@ -139,15 +139,27 @@
  * owned budget byte-identically — no reservation is ever stranded and
  * no meter is left RESERVED or ACTIVE.
  *
- * ── FAULT vs VERDICT (the return-code contract) ───────────────────────
- * -1 is a CONSENSUS VERDICT: a deterministic function of (committed
- * state, block bytes) — every honest node computes the same rejection.
- * -2 is a NODE-LOCAL FAULT: this node could not compute (storage fault,
- * hash-backend failure, allocation failure, broken compiled table,
- * meter accounting FAULT). Both roll back completely; a consensus
- * caller MUST fail its own operation on -2 (do not vote), never convert
- * it into a transaction/block rejection — the env_preflight.h ERR_HASH
- * rule, engine-wide.
+ * ── FAULT vs VERDICT vs DEFERRAL (the return-code contract) ───────────
+ * The named values are nodus_v2_result_t (nodus_witness_v2_result.h).
+ *
+ * -1 CONSENSUS_INVALID is a VERDICT: a deterministic function of
+ * (committed state, block bytes) — every honest node computes the same
+ * rejection.
+ * -2 INTERNAL_FAULT is a NODE-LOCAL FAULT: this node could not compute
+ * (storage fault, hash-backend failure, allocation failure, broken
+ * compiled table, meter accounting FAULT).
+ * -3 NOT_YET_LINKABLE is a DEFERRAL, added by O15A: the block's height is
+ * beyond the next expected one, or no genesis is committed here, so the
+ * required predecessor state is absent and NOTHING was judged. It is not
+ * a rejection and must never be reported as one — a node that is merely
+ * behind produces it for bytes that synced peers accept. Note the
+ * boundary: a block AT or BELOW the head is evaluable now and gets a
+ * verdict; only a block ahead of the chain is deferred.
+ *
+ * All three roll back completely. A consensus caller MUST fail its own
+ * operation on -2 and -3 (do not vote), and never convert either into a
+ * transaction/block rejection — the env_preflight.h ERR_HASH rule,
+ * engine-wide.
  *
  * CONSERVATIVE CLASSIFICATION SEAM: nodus_witness_v2_runtime_for
  * conflates "tuple not carried by this build" with a node-local domreg
@@ -251,6 +263,7 @@
 #define NODUS_WITNESS_V2_APPLY_H
 
 #include "witness/nodus_witness.h"
+#include "witness/nodus_witness_v2_result.h"
 #include "witness/nodus_witness_v2_pools.h"
 #include "witness/nodus_witness_v2_env.h"   /* nodus_v2_envelope_t + the
                                              * preflight/reserve seam    */
@@ -472,7 +485,33 @@ typedef struct {
     const uint8_t *expect_prev_block_id;
     const uint8_t *expect_vset_hash;
     const uint8_t *expect_block_id;
-    /* Included envelopes, in canonical batch order (the order IS the
+    /* ── HOW THE THREE CONTENT CHANNELS REACH THE BLOCK IDENTITY ──────
+     * O15A §10 mapped this, because the three below are NOT bound the
+     * same way and a reader could easily assume they are:
+     *
+     *   envs      DOUBLY bound — `tx_root` is built from envelope
+     *             wire_ids, so the exact canonical bytes are committed
+     *             in the header directly, AND their effects move the
+     *             state roots.
+     *   claims    bound TRANSITIVELY ONLY. A claim's canonical semantic
+     *             identity is its nullifier (DNA.CLNUL.v1 over chain,
+     *             manifest hash, target domain, target asset and leaf —
+     *             all committed values), and claims_root is a leg of the
+     *             target domain's state root. Claims are not
+     *             transactions and never enter tx_root.
+     *   pool_muts bound TRANSITIVELY ONLY, through pools_root.
+     *
+     * The consequence, stated so it is not rediscovered as a surprise:
+     * changing any CONSENSUS-RELEVANT claim or pool field changes a root
+     * and therefore the BlockID, but two different AUTHORIZATION
+     * WITNESSES for the same claim produce the same identity. That is the
+     * intent-season property (consensus state binds intent, not witness)
+     * applied to claims, not an oversight — and the substitute witness
+     * must still verify, so nothing unauthorized becomes acceptable.
+     * Reconstructing the claim/pool INPUT bytes from committed state is a
+     * sync concern and is deliberately out of scope here.
+     *
+     * Included envelopes, in canonical batch order (the order IS the
      * intra-phase execution and index order). NULL/0 = none. */
     const nodus_v2_envelope_t *envs;
     size_t   n_envs;

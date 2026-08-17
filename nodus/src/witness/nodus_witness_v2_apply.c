@@ -479,6 +479,17 @@ int nodus_witness_v2_genesis_ex(nodus_witness_t *w,
      * the stored value in either mode. */
     if (!w || !w->db || !vset_hash) return -1;
     if ((manifest_bytes == NULL) != (manifest_len == 0)) return -1;
+    /* O15A (reviewer NOTE): the manifest is required on EVERY path, not
+     * just when creating a genesis. The fresh path already refuses a
+     * no-manifest genesis because such a genesis has no defined identity
+     * (see the fail-closed check before the header is built). Leaving the
+     * idempotent path unguarded meant the manifest-divergence check could
+     * be skipped simply by passing NULL, and the SAME call would then
+     * return success against a committed chain while failing closed on a
+     * fresh one. A caller that cannot present the manifest cannot assert
+     * agreement with it, so it is refused rather than told "already
+     * done". */
+    if (!manifest_bytes || manifest_len == 0) return -1;
     /* The genesis epoch is DERIVED, not trusted: height 0 sits in epoch
      * nodus_v2_epoch_for_height(0) == 0 under the block-count rule. Any
      * other caller value is a rejection, never a stored lie. */
@@ -505,7 +516,53 @@ int nodus_witness_v2_genesis_ex(nodus_witness_t *w,
                          memcmp(sqlite3_column_blob(st, 0),
                                 genesis_block_id, 64) == 0));
             sqlite3_finalize(st);
-            return same ? 0 : -2;
+            if (!same) return -2;
+
+            /* ── O15A: THE MANIFEST MUST AGREE TOO ────────────────────
+             * Deciding on the BlockID alone was a hole. In leader mode
+             * `genesis_block_id` is NULL, so `same` above is
+             * unconditionally true and this function returned SUCCESS
+             * without ever looking at `manifest_bytes` — a node
+             * re-running genesis with a COMPLETELY DIFFERENT manifest was
+             * told it had succeeded. `epoch` and `vset_hash` were both
+             * validated; the manifest, which the genesis identity is
+             * derived FROM, was not.
+             *
+             * The committed bytes are authoritative: the presented
+             * manifest must equal them exactly. A caller-provided
+             * manifest never becomes the truth, and a mismatch fails
+             * closed rather than being repaired or ignored. */
+            if (manifest_bytes && manifest_len > 0) {
+                sqlite3_stmt *ms = NULL;
+                if (sqlite3_prepare_v2(w->db,
+                        "SELECT manifest FROM v2_manifests "
+                        "WHERE committed_height = 0 "
+                        "ORDER BY manifest_seq ASC LIMIT 1",
+                        -1, &ms, NULL) != SQLITE_OK)
+                    return -2;
+                int mrc = sqlite3_step(ms);
+                if (mrc != SQLITE_ROW) {
+                    /* A committed genesis with no committed genesis
+                     * manifest is malformed local state, not a verdict
+                     * on the caller's bytes. */
+                    sqlite3_finalize(ms);
+                    return -2;
+                }
+                int          stored_len = sqlite3_column_bytes(ms, 0);
+                const void  *stored     = sqlite3_column_blob(ms, 0);
+                int agree = (stored != NULL &&
+                             (size_t)stored_len == manifest_len &&
+                             memcmp(stored, manifest_bytes,
+                                    manifest_len) == 0);
+                sqlite3_finalize(ms);
+                if (!agree) {
+                    QGP_LOG_ERROR(LOG_TAG, "%s",
+                        "genesis manifest diverges from the committed one "
+                        "— refusing (fail closed)");
+                    return -2;
+                }
+            }
+            return 0;
         }
         sqlite3_finalize(st);
         if (rc != SQLITE_DONE) return -1;
@@ -544,7 +601,15 @@ int nodus_witness_v2_genesis_ex(nodus_witness_t *w,
          * no head, absent from domains_root, cannot execute. */
         dom_ctx_t *doms = calloc(MAX_DOMS, sizeof(*doms));
         size_t n_dom = 0;
-        if (!doms) break;
+        /* O15A (reviewer R1): an allocation failure is a NODE-LOCAL
+         * FAULT. `break` would fold it into the generic genesis -1
+         * below and report running out of memory as a consensus
+         * judgement — the exact defect this season closes in the QC
+         * verifier, and the one the comment further down already names. */
+        if (!doms) {
+            (void)exec_sql(w, "ROLLBACK");
+            return NODUS_V2_INTERNAL_FAULT;
+        }
         if (doms_load(w, doms, &n_dom, /*strict_active=*/0) != 0) {
             free(doms);
             break;
@@ -555,7 +620,12 @@ int nodus_witness_v2_genesis_ex(nodus_witness_t *w,
             break;
         }
         heads = calloc(n_dom, sizeof(*heads));
-        if (!heads) { free(doms); break; }
+        /* Same class as `doms` above: allocation failure is a fault. */
+        if (!heads) {
+            free(doms);
+            (void)exec_sql(w, "ROLLBACK");
+            return NODUS_V2_INTERNAL_FAULT;
+        }
 
         int all_ok = 1;
         size_t n_heads = 0;
@@ -644,7 +714,17 @@ int nodus_witness_v2_genesis_ex(nodus_witness_t *w,
                 uint8_t committed_vsh[DNA_VSET_HASH_LEN];
                 int ghrc = dna_vset_hash(gsnap, committed_vsh);
                 dna_vset_free(&gsnap);
-                if (ghrc != 0) { free(doms); break; }
+                /* O15A: dna_vset_hash allocates, so its failure is a
+                 * NODE-LOCAL FAULT. Breaking here would fold it into the
+                 * generic genesis -1 below and report an allocation
+                 * failure as a consensus judgement — the same defect
+                 * this season closes in the QC verifier. Genesis has no
+                 * verdict-class input for this condition at all. */
+                if (ghrc != 0) {
+                    free(doms);
+                    (void)exec_sql(w, "ROLLBACK");
+                    return NODUS_V2_INTERNAL_FAULT;
+                }
                 if (memcmp(committed_vsh, vset_hash,
                            DNA_VSET_HASH_LEN) != 0) {
                     free(doms);
@@ -1144,8 +1224,42 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
         uint64_t rows = 0;
         if (sum_q(w, "SELECT COUNT(*) FROM v2_blocks", &rows) != 0)
             return -2;
-        if (rows == 0) return -1;       /* genesis must exist first      */
-        if (blk->global_height != maxh + 1) return -1;   /* gap/behind   */
+
+        /* O15A — the linkage classes, in this order deliberately.
+         *
+         * Height 0 is tested FIRST and is a VERDICT, not a deferral:
+         * genesis has its own entry point (nodus_witness_v2_genesis_ex),
+         * so a height-0 block arriving here is a statement about THIS
+         * block — it cannot be applied through this path at all — and no
+         * amount of waiting for predecessors would ever make it valid. */
+        if (blk->global_height == 0) return NODUS_V2_CONSENSUS_INVALID;
+
+        /* No genesis committed HERE yet. The block may be perfectly
+         * valid; this node simply has no chain to link it onto. That is
+         * absent predecessor state, not a defect in the block. */
+        if (rows == 0) return NODUS_V2_NOT_YET_LINKABLE;
+
+        /* maxh + 1 would wrap at UINT64_MAX and make an impossible height
+         * look like the expected next one. Checked before it is used. */
+        if (maxh == UINT64_MAX) return NODUS_V2_INTERNAL_FAULT;
+
+        /* AHEAD of our chain: we cannot evaluate it yet, because the
+         * predecessors it builds on are absent here. A node that is
+         * merely behind reports this while synced peers accept the very
+         * same bytes, so it must never be a verdict, must not commit,
+         * must not advance a head and must not be held against the peer.
+         * Fetching the gap is a SYNC concern and is deliberately not
+         * implemented here. */
+        if (blk->global_height > maxh + 1) return NODUS_V2_NOT_YET_LINKABLE;
+
+        /* AT or BEHIND the head: evaluable right now, so it gets a real
+         * verdict. In follower mode a block at a committed height was
+         * already resolved above as replay-or-conflict; reaching here
+         * means a hole in the local chain or, in leader mode, a height
+         * already committed — the source-pinned asymmetry documented at
+         * the top of this block. */
+        if (blk->global_height != maxh + 1)
+            return NODUS_V2_CONSENSUS_INVALID;
 
         /* prev_block_id is DERIVED from the previous committed row — the
          * caller may only assert it. */

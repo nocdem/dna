@@ -318,6 +318,11 @@ int nodus_witness_db_migrate_v2s8_ex(nodus_witness_t *w,
 typedef enum {
     V2S9MIG_FAIL_NONE = 0,
     V2S9MIG_FAIL_AFTER_BEGIN,     /* after BEGIN, before any DDL          */
+    V2S9MIG_FAIL_AFTER_REVALIDATE,/* O15A: in-transaction re-validation
+                                   * passed, still before any mutation —
+                                   * the point that proves the protected
+                                   * snapshot was taken and nothing has
+                                   * been dropped yet                     */
     V2S9MIG_FAIL_AFTER_TABLES,    /* v2_blocks rebuilt with `header`      */
     V2S9MIG_FAIL_AFTER_VERIFY,    /* schema-shape verification passed     */
     V2S9MIG_FAIL_BEFORE_COMMIT    /* user_version written, pre-COMMIT     */

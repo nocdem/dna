@@ -140,6 +140,9 @@ int dna_qc_v2_encode(const dna_qc_v2_t *qc,
  * bounds-checked and the exact length verified BEFORE any allocation; the
  * strict sort/duplicate rule is then enforced on the decoded certs.
  * @param out [out] heap QC on success, untouched on failure.
+ *
+ * @return 0 accept, -1 REJECT (the bytes are bad), -2 FAULT (this process
+ *         could not decide — see the fault/reject split below).
  */
 int dna_qc_v2_decode(const uint8_t *src, size_t len, dna_qc_v2_t **out);
 
@@ -173,7 +176,36 @@ int dna_qc_v2_decode(const uint8_t *src, size_t len, dna_qc_v2_t **out);
  *
  * Stake is never consulted: one validator = one vote.
  *
- * @return 0 accept, -1 reject.
+ * ── REJECT vs FAULT (O15A) ──────────────────────────────────────────────
+ * These functions return THREE classes, not two. The distinction is not
+ * cosmetic: -1 is a claim about the certificate, and -2 is a confession
+ * about this process.
+ *
+ *   -1 REJECT: the QC does not carry quorum, is unsorted or duplicated, is
+ *      over the wrong identity, names a non-member, or carries a bad
+ *      signature. Attacker-controlled input. Deterministic: every honest
+ *      node given the same bytes and the same snapshot agrees.
+ *
+ *   -2 FAULT: this process could not complete the check — a memory
+ *      allocation failed, or a hashing backend failed. NOTHING was learned
+ *      about the certificate. A caller MUST NOT count this as a negative
+ *      vote or treat the block as invalid.
+ *
+ * Before O15A both returned -1, so a node under memory pressure would
+ * declare a valid, quorum-certified block CONSENSUS-INVALID — determin-
+ * istically, and differently from its peers. The failing allocation sits
+ * inside dna_vset_hash, whose result this function recomputes as a
+ * deliberate redundant defence; the caller's own copy of that same call
+ * was already classified as a fault, so one verification was reporting the
+ * one function two different ways.
+ *
+ * The signature check itself is untouched and stays -1: a bad signature is
+ * the verdict this function exists to deliver. The per-cert loop allocates
+ * nothing (the preimage is a stack buffer, dna_cert_v2_preimage is pure
+ * byte layout, and qgp_dsa87_verify wraps a stack-based reference
+ * implementation), so no allocation failure can masquerade as one.
+ *
+ * @return 0 accept, -1 reject, -2 fault.
  */
 int dna_qc_v2_verify(const dna_qc_v2_t *qc,
                      const uint8_t block_id[DNA_CERT_V2_BLOCK_ID_LEN],

@@ -29,38 +29,42 @@ int nodus_witness_v2_finalize_block(nodus_witness_t *w,
     /* A NULL argument is a LOCAL programming fault, not a statement
      * about a block — there is no block here to judge. Same reasoning as
      * nodus_witness_v2_qc.c:24-30. */
-    if (!w || !w->db || !header_bytes || !qc_bytes || !blk) return -2;
-    if (qc_len == 0) return -1;
+    if (!w || !w->db || !header_bytes || !qc_bytes || !blk)
+        return NODUS_V2_INTERNAL_FAULT;
+    if (qc_len == 0) return NODUS_V2_CONSENSUS_INVALID;
 
     /* ── 1. EXPLICIT VERSION DISPATCH ─────────────────────────────────
      * On the ENCODED byte, before any structural interpretation. The
      * retired version and any unknown version are two distinct classes,
      * both fail-closed, and NEITHER falls back to the legacy path: a
      * legacy block does not reach this function at all. */
-    if (header_len == 0) return -1;
+    if (header_len == 0) return NODUS_V2_CONSENSUS_INVALID;
     if (header_bytes[0] == DNA_BH2_VERSION_RETIRED) {
         QGP_LOG_WARN(LOG_TAG, "%s",
                      "retired header version 2 — rejected, never "
                      "reinterpreted under the v3 layout");
-        return -1;
+        return NODUS_V2_RETIRED_VERSION;
     }
     if (header_bytes[0] != DNA_BH2_VERSION) {
         QGP_LOG_WARN(LOG_TAG, "unknown header version %u — rejected",
                      (unsigned)header_bytes[0]);
-        return -1;
+        return NODUS_V2_UNSUPPORTED_VERSION;
     }
 
     /* ── 2. Strict decode: EXACTLY 413 bytes, no size auto-detection. */
     dna_block_header_v2_t hdr;
-    if (dna_bh2_decode(header_bytes, header_len, &hdr) != 0) return -1;
+    if (dna_bh2_decode(header_bytes, header_len, &hdr) != 0)
+        return NODUS_V2_CONSENSUS_INVALID;
 
     /* The header describes the block the caller handed us; a header for
      * some OTHER height is not this block's certificate. */
-    if (hdr.block_height != blk->global_height) return -1;
+    if (hdr.block_height != blk->global_height)
+        return NODUS_V2_CONSENSUS_INVALID;
 
     /* ── 3. The claimed BlockID, computed ONCE from the decoded header. */
     uint8_t claimed_id[DNA_BH2_ID_LEN];
-    if (dna_bh2_block_id(&hdr, claimed_id) != 0) return -2;  /* hash fault */
+    if (dna_bh2_block_id(&hdr, claimed_id) != 0)
+        return NODUS_V2_INTERNAL_FAULT;                      /* hash fault */
 
     /* ── 4. Certificate verification against COMMITTED authority.
      * This is the production call the season exists to create. The
@@ -71,20 +75,29 @@ int nodus_witness_v2_finalize_block(nodus_witness_t *w,
      * can be proposed from here — the function takes no snapshot, no set
      * hash, no N and no quorum parameter. */
     dna_qc_v2_t *qc = NULL;
-    if (dna_qc_v2_decode(qc_bytes, qc_len, &qc) != 0 || !qc) return -1;
+    {
+        /* O15A: the decoder distinguishes bad bytes from an allocation
+         * failure, and that distinction must survive the seam. A -1 says
+         * the certificate is malformed; a -2 says this node ran out of
+         * memory and learned nothing. Collapsing them here would put the
+         * fault back exactly where the previous contract lost it. */
+        int drc = dna_qc_v2_decode(qc_bytes, qc_len, &qc);
+        if (drc == NODUS_V2_INTERNAL_FAULT) return NODUS_V2_INTERNAL_FAULT;
+        if (drc != 0 || !qc) return NODUS_V2_CONSENSUS_INVALID;
+    }
 
     int vrc = nodus_witness_v2_qc_verify(w, &hdr, qc);
     dna_qc_v2_free(&qc);
-    if (vrc == -2) {
+    if (vrc == NODUS_V2_INTERNAL_FAULT) {
         /* FAULT, never downgraded: this node cannot decide. Returning -1
          * here would make a node that merely lacks the epoch's snapshot
          * declare a valid block invalid. */
         QGP_LOG_WARN(LOG_TAG, "%s",
                      "QC verification could not be decided on this node "
                      "(fault) — abstaining, not rejecting");
-        return -2;
+        return NODUS_V2_INTERNAL_FAULT;
     }
-    if (vrc != 0) return -1;
+    if (vrc != NODUS_V2_ACCEPTED) return NODUS_V2_CONSENSUS_INVALID;
 
     /* ── 5. Everything above is read-only. No durable mutation has
      * happened, so a rejection here leaves the database byte-identical.
@@ -112,8 +125,13 @@ int nodus_witness_v2_finalize_block(nodus_witness_t *w,
     blk->qc_bytes               = qc_bytes;
     blk->qc_len                 = qc_len;
 
+    /* Every non-success class passes through UNCHANGED — including
+     * NODUS_V2_NOT_YET_LINKABLE, which the engine now reports for a block
+     * whose predecessors this node does not hold. Flattening it here into
+     * a verdict would recreate, one layer up, the confusion the engine was
+     * just taught to avoid. */
     int arc = nodus_witness_v2_apply_block(w, blk);
-    if (arc != 0 && arc != 1 && arc != 2) return arc;   /* -1 / -2 as-is */
+    if (!nodus_v2_result_is_accepted(arc)) return arc;
 
     /* ── 7. The id the QC certified MUST be the id that is stored.
      * On rc 0/2 the engine derived it from its own execution results; on
@@ -124,7 +142,7 @@ int nodus_witness_v2_finalize_block(nodus_witness_t *w,
         QGP_LOG_ERROR(LOG_TAG, "%s",
                       "engine-derived BlockID differs from the certified "
                       "id — rejecting");
-        return -1;
+        return NODUS_V2_CONSENSUS_INVALID;
     }
 
     /* ── 8. STORED-BYTES INTEGRITY (§8): the header the engine persisted
@@ -141,13 +159,13 @@ int nodus_witness_v2_finalize_block(nodus_witness_t *w,
             || dna_bh2_block_id(&stored, restored_id) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "%s",
                           "stored header bytes do not decode — refusing");
-            return -2;
+            return NODUS_V2_INTERNAL_FAULT;
         }
         if (memcmp(restored_id, blk->out_block_id, DNA_BH2_ID_LEN) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "%s",
                           "stored header bytes do not reproduce the "
                           "stored BlockID — refusing");
-            return -2;
+            return NODUS_V2_INTERNAL_FAULT;
         }
     }
     return arc;
@@ -167,21 +185,28 @@ int nodus_witness_v2_finalize_selfcheck(nodus_witness_t *w) {
     uint8_t hdr[DNA_BH2_ENC_SIZE];
     memset(hdr, 0, sizeof(hdr));
 
-    /* RETIRED version 2 — a verdict, and never reinterpreted as v3. */
+    /* RETIRED version 2 — a verdict, and never reinterpreted as v3.
+     * O15A: asserted by its OWN class, so this probe now proves the two
+     * version failures are genuinely distinguishable rather than merely
+     * both non-zero. Under the old contract both returned -1 and this
+     * check could not tell them apart at all. */
     hdr[0] = DNA_BH2_VERSION_RETIRED;
     if (nodus_witness_v2_finalize_block(w, hdr, sizeof(hdr), qc_stub,
-                                        sizeof(qc_stub), &probe) != -1)
+                                        sizeof(qc_stub), &probe)
+        != NODUS_V2_RETIRED_VERSION)
         return -1;
 
-    /* UNKNOWN version — a separate fail-closed class, same verdict. */
+    /* UNKNOWN version — a separate fail-closed class. */
     hdr[0] = (uint8_t)(DNA_BH2_VERSION + 1);
     if (nodus_witness_v2_finalize_block(w, hdr, sizeof(hdr), qc_stub,
-                                        sizeof(qc_stub), &probe) != -1)
+                                        sizeof(qc_stub), &probe)
+        != NODUS_V2_UNSUPPORTED_VERSION)
         return -1;
 
     /* A NULL argument is a node FAULT, never a verdict about a block. */
     if (nodus_witness_v2_finalize_block(w, NULL, 0, qc_stub,
-                                        sizeof(qc_stub), &probe) != -2)
+                                        sizeof(qc_stub), &probe)
+        != NODUS_V2_INTERNAL_FAULT)
         return -1;
 
     return 0;

@@ -793,6 +793,23 @@ void nodus_witness_test_inject_drop(nodus_witness_drop_predicate_t pred);
  * Filename: witness_<chain_id_hex>.db in data directory.
  * Sets chain_id and opens the new database.
  */
+/**
+ * ENGINE-INTERNAL, exposed for direct test (the precedent is
+ * nodus_witness_v2_local_index_find). The RESTART path: scan
+ * `witness->data_path` for a `witness_<32 hex>.db`, adopt the
+ * lexicographically smallest valid name, open it, and run the SAME
+ * post-open integrity gate `nodus_witness_create_chain_db` runs.
+ *
+ * O15A made three guarantees testable here: the gate is not skipped on
+ * restart; a filename that does not carry exactly 32 hex characters is
+ * IGNORED rather than parsed into a zero-padded chain id; and selection
+ * follows a stable total order over names instead of readdir order.
+ *
+ * @return 0 with the database open and `chain_id` set, -1 when no usable
+ *         chain database was found (pre-genesis) or the gate refused one.
+ */
+int nodus_witness_scan_chain_db(nodus_witness_t *witness);
+
 int nodus_witness_create_chain_db(nodus_witness_t *witness,
                                     const uint8_t *chain_id);
 

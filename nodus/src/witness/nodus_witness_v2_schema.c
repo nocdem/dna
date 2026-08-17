@@ -771,13 +771,10 @@ int nodus_witness_db_migrate_v2s9_ex(nodus_witness_t *w,
         return -1;
     }
 
-    /* FAIL CLOSED on a populated block table (read-only, pre-BEGIN —
-     * nothing to roll back). The canonical header bytes of a committed
-     * block cannot be reconstructed from the columns that were kept:
-     * header_version, chain_id, proposer_id and timestamp were never
-     * stored, and three of those four sit INSIDE the 405 BlockID-bound
-     * bytes. A backfill would have to invent them, and every restart
-     * check over the result would be verifying fiction. */
+    /* An early, CHEAP rejection so the common failure does not have to
+     * take a write lock. It decides NOTHING: the authoritative check is
+     * re-run inside the transaction below, and only that one is trusted.
+     * See the TOCTOU note there. */
     {
         sqlite3_stmt *st = NULL;
         if (sqlite3_prepare_v2(w->db,
@@ -802,8 +799,65 @@ int nodus_witness_db_migrate_v2s9_ex(nodus_witness_t *w,
     if (exec_sql(w, "BEGIN IMMEDIATE") != 0) return -1;
 
     int ok = 0;
+    int already = 0;
     do {
         if (fail_at == V2S9MIG_FAIL_AFTER_BEGIN) break;
+
+        /* ── O15A: RE-VALIDATE EVERY LOAD-BEARING CONDITION HERE ──────
+         * The state that was validated MUST be the state that is
+         * migrated. Every check above ran before BEGIN IMMEDIATE took
+         * its write lock, so between reading them and mutating there was
+         * a window in which another connection could commit. That is not
+         * a theoretical concern here: the DDL below begins with
+         * `DROP TABLE IF EXISTS v2_blocks`, so a block committed inside
+         * that window would be destroyed by a migration that had already
+         * concluded the table was empty — and those canonical header
+         * bytes are, by this migration's own reasoning, unrecoverable.
+         *
+         * Re-reading under the lock closes it: from BEGIN IMMEDIATE
+         * onwards no other connection can write, so what is observed
+         * here is what gets migrated. A concurrent writer must now land
+         * either wholly before this snapshot (and be seen) or wholly
+         * after the migration commits — never between.
+         *
+         * Note this is NOT "the earlier check, repeated": the earlier one
+         * is an optimisation, this one is the decision. */
+        uint32_t ver_tx = 0;
+        if (nodus_witness_db_schema_version(w, &ver_tx) != 0) break;
+        if (ver_tx == NODUS_V2_SCHEMA_VERSION_S9) {
+            /* Another connection completed this migration while we were
+             * queuing for the lock. Nothing to do, and NOT an error — the
+             * post-condition the caller asked for already holds. */
+            already = 1;
+            break;
+        }
+        if (ver_tx != NODUS_V2_SCHEMA_VERSION_S8) {
+            QGP_LOG_ERROR(LOG_TAG,
+                          "schema version changed to %u under the "
+                          "migration — refusing (fail closed)", ver_tx);
+            break;
+        }
+
+        {
+            sqlite3_stmt *st = NULL;
+            if (sqlite3_prepare_v2(w->db,
+                    "SELECT COUNT(*) FROM v2_blocks", -1, &st, NULL)
+                != SQLITE_OK)
+                break;
+            int rc = sqlite3_step(st);
+            sqlite3_int64 rows =
+                (rc == SQLITE_ROW) ? sqlite3_column_int64(st, 0) : -1;
+            sqlite3_finalize(st);
+            if (rows < 0) break;
+            if (rows > 0) {
+                QGP_LOG_ERROR(LOG_TAG,
+                              "v2_blocks gained %lld row(s) between the "
+                              "preflight and the migration — refusing "
+                              "(fail closed)", (long long)rows);
+                break;
+            }
+        }
+        if (fail_at == V2S9MIG_FAIL_AFTER_REVALIDATE) break;
 
         if (exec_sql(w, V2S9_TABLES_DDL) != 0) break;
         if (fail_at == V2S9MIG_FAIL_AFTER_TABLES) break;
@@ -828,6 +882,12 @@ int nodus_witness_db_migrate_v2s9_ex(nodus_witness_t *w,
         ok = 1;
     } while (0);
 
+    /* The migration was already done by someone else: release the lock
+     * without writing, and report the post-condition as satisfied. */
+    if (already) {
+        (void)exec_sql(w, "ROLLBACK");
+        return 0;
+    }
     if (!ok) {
         (void)exec_sql(w, "ROLLBACK");
         return -1;

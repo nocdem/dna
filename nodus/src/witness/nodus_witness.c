@@ -25,6 +25,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <ctype.h>
 #include <stdlib.h>
 #include <dirent.h>
 #include <errno.h>
@@ -347,52 +348,145 @@ static int witness_db_open_path(nodus_witness_t *witness, const char *db_path) {
  * derive new chain_id from genesis TX data in DB and rename file.
  * Not needed yet — all current deployments are pre-genesis. */
 
-static int witness_scan_chain_db(nodus_witness_t *witness) {
+/* ── O15A: the ONE post-open integrity gate ──────────────────────────
+ *
+ * Every path that brings a chain database to a usable state must run the
+ * SAME checks. Before O15A these two lived inline in
+ * nodus_witness_create_chain_db only, so an ordinary RESTART — which
+ * reaches the database through witness_scan_chain_db instead — ran
+ * neither, and a database that would have been refused at creation was
+ * accepted on every subsequent boot. Restart is the common case, since
+ * creation happens once.
+ *
+ * Both checks are legacy-safe by construction, which is why they can be
+ * hoisted onto the live restart path without changing how a legacy chain
+ * opens: the S7 pool check passes vacuously on a pre-v7 database, and the
+ * O14 selfcheck is pure and inert (every probe returns from the version
+ * dispatch, so it resolves no snapshot, verifies no certificate, reads no
+ * row and requires no schema version).
+ *
+ * On failure the database is CLOSED and refused — never repaired.
+ * Returns 0 when the database may be used, -1 when it must not be.
+ */
+static int witness_post_open_gate(nodus_witness_t *witness,
+                                  const char *db_path) {
+    /* Ledger V2 S7 — fail-closed pool-state startup verification:
+     * full ordered nullifier-log replay + derived note-table shape,
+     * BEFORE the witness may validate or apply any Ledger V2 block. */
+    if (nodus_witness_v2_pools_startup_check(witness) != 0) {
+        fprintf(stderr, "%s: S7 pool-state startup verification FAILED "
+                "for %s — refusing the database (fail closed)\n",
+                LOG_TAG, db_path);
+        sqlite3_close(witness->db);
+        witness->db = NULL;
+        return -1;
+    }
+
+    /* Ledger V2 O14 — assert this build's V2 version firewall at open:
+     * a RETIRED (v2) header and an UNKNOWN header must both be verdicts
+     * and must never be reinterpreted under the v3 layout, and a NULL
+     * argument must stay a node fault. */
+    if (nodus_witness_v2_finalize_selfcheck(witness) != 0) {
+        fprintf(stderr, "%s: V2 header version firewall SELFCHECK FAILED "
+                "for %s — refusing the database (fail closed)\n",
+                LOG_TAG, db_path);
+        sqlite3_close(witness->db);
+        witness->db = NULL;
+        return -1;
+    }
+    return 0;
+}
+
+/* Parse the canonical 16-byte chain id out of a `witness_<hex>.db` name.
+ *
+ * O15A — FAIL CLOSED. The canonical chain id is exactly 16 bytes
+ * (nodus_witness_set_chain_id), so the filename must carry exactly 32 hex
+ * characters. The previous parse accepted any even-ish length from 2 to
+ * 64, took `hex_len / 2` bytes and left the remainder ZERO, and on a bad
+ * digit it simply stopped and kept what it had — so a truncated or
+ * garbled filename produced a partially-zero chain id that was then
+ * installed as this node's identity without complaint.
+ *
+ * Returns 0 and fills `out16` only for a fully valid name.
+ */
+static int witness_chain_id_from_name(const char *d_name, uint8_t out16[16]) {
+    if (strncmp(d_name, "witness_", 8) != 0) return -1;
+    const char *hex_start = d_name + 8;
+    const char *dot = strstr(hex_start, ".db");
+    if (!dot) return -1;
+    if (dot[3] != '\0') return -1;            /* reject .db-wal / .db-shm */
+    if ((size_t)(dot - hex_start) != 32) return -1;   /* EXACTLY 16 bytes */
+
+    for (size_t i = 0; i < 16; i++) {
+        unsigned int byte;
+        char pair[3] = { hex_start[i * 2], hex_start[i * 2 + 1], '\0' };
+        /* O15A (reviewer R1): LOWERCASE ONLY. isxdigit alone would accept
+         * 'A'-'F', giving a second, non-canonical filename for the same
+         * chain — and since selection takes the lexicographically
+         * smallest name, an uppercase alias sorts BEFORE the canonical
+         * lowercase one and would win. create_chain_db always writes
+         * lowercase ("%02x"), so anything else is not a name this node
+         * produced. */
+        if (!isxdigit((unsigned char)pair[0]) ||
+            !isxdigit((unsigned char)pair[1]))
+            return -1;                        /* a bad digit is a REJECT */
+        if (isupper((unsigned char)pair[0]) || isupper((unsigned char)pair[1]))
+            return -1;                        /* non-canonical alias      */
+        if (sscanf(pair, "%2x", &byte) != 1) return -1;
+        out16[i] = (uint8_t)byte;
+    }
+    return 0;
+}
+
+int nodus_witness_scan_chain_db(nodus_witness_t *witness) {
+    if (!witness) return -1;
     const char *data_path = witness->data_path;
     DIR *dir = opendir(data_path);
     if (!dir) return -1;
 
+    /* O15A — DETERMINISTIC SELECTION.
+     *
+     * This loop used to take the FIRST match from readdir, whose order is
+     * filesystem-defined and not a stable total key. The comment on
+     * witness_archive_stale_chain_dbs records that this exact behaviour
+     * once activated the wrong chain from a stale file (EU-6, 2026-04-10);
+     * the mitigation then was to archive stale files, which removes the
+     * usual cause without making the choice itself deterministic. Two
+     * nodes with the same directory contents must reach the same
+     * decision, so the candidates are collected and the
+     * lexicographically smallest name is chosen.
+     */
+    char best[256];
+    int  have_best = 0;
     struct dirent *entry;
     while ((entry = readdir(dir)) != NULL) {
-        /* Match witness_<hex>.db */
-        if (strncmp(entry->d_name, "witness_", 8) != 0) continue;
-        const char *hex_start = entry->d_name + 8;
-        const char *dot = strstr(hex_start, ".db");
-        if (!dot || dot == hex_start) continue;
-
-        size_t hex_len = (size_t)(dot - hex_start);
-        if (hex_len < 2 || hex_len > 64) continue;
-
-        /* Parse chain_id from hex prefix in filename */
-        uint8_t chain_id[32] = {0};
-        size_t bytes = hex_len / 2;
-        if (bytes > 32) bytes = 32;
-        for (size_t i = 0; i < bytes; i++) {
-            unsigned int byte;
-            if (sscanf(hex_start + i * 2, "%2x", &byte) != 1) break;
-            chain_id[i] = (uint8_t)byte;
-        }
-
-        /* Open this chain DB */
-        char db_path[512];
-        snprintf(db_path, sizeof(db_path), "%s/%s", data_path, entry->d_name);
-
-        if (witness_db_open_path(witness, db_path) == 0) {
-            nodus_witness_set_chain_id(witness, chain_id);
-
-            char hex[17];
-            for (int i = 0; i < 8; i++)
-                snprintf(hex + i * 2, 3, "%02x", chain_id[i]);
-            fprintf(stderr, "%s: loaded chain %s from %s\n",
-                    LOG_TAG, hex, entry->d_name);
-
-            closedir(dir);
-            return 0;
+        uint8_t probe[16];
+        if (witness_chain_id_from_name(entry->d_name, probe) != 0) continue;
+        if (!have_best || strcmp(entry->d_name, best) < 0) {
+            snprintf(best, sizeof(best), "%s", entry->d_name);
+            have_best = 1;
         }
     }
-
     closedir(dir);
-    return -1;  /* No chain DB found — pre-genesis */
+    if (!have_best) return -1;      /* No chain DB found — pre-genesis */
+
+    uint8_t chain_id[16];
+    if (witness_chain_id_from_name(best, chain_id) != 0) return -1;
+
+    char db_path[512];
+    snprintf(db_path, sizeof(db_path), "%s/%s", data_path, best);
+    if (witness_db_open_path(witness, db_path) != 0) return -1;
+
+    /* O15A: the restart path now runs the SAME gate as creation. */
+    if (witness_post_open_gate(witness, db_path) != 0) return -1;
+
+    nodus_witness_set_chain_id(witness, chain_id);
+
+    char hex[17];
+    for (int i = 0; i < 8; i++)
+        snprintf(hex + i * 2, 3, "%02x", chain_id[i]);
+    fprintf(stderr, "%s: loaded chain %s from %s\n", LOG_TAG, hex, best);
+    return 0;
 }
 
 /* ── Archive stale chain DB files (Fix 1 — prevent orphan forks) ──
@@ -496,37 +590,10 @@ int nodus_witness_create_chain_db(nodus_witness_t *witness,
 
     nodus_witness_set_chain_id(witness, chain_id);
 
-    /* Ledger V2 S7 — fail-closed pool-state startup verification:
-     * full ordered nullifier-log replay + derived note-table shape,
-     * ONCE per database open, BEFORE the witness may validate or
-     * apply any Ledger V2 block. A pre-v7 database (every live chain
-     * today) passes vacuously; a v7 database whose committed pool
-     * state disagrees with its tables is refused — never repaired. */
-    if (nodus_witness_v2_pools_startup_check(witness) != 0) {
-        fprintf(stderr, "%s: S7 pool-state startup verification FAILED "
-                "for %s — refusing the database (fail closed)\n",
-                LOG_TAG, db_path);
-        sqlite3_close(witness->db);
-        witness->db = NULL;
-        return -1;
-    }
-
-    /* Ledger V2 O14 — assert this build's V2 version firewall at open:
-     * a RETIRED (v2) header and an UNKNOWN header must both be verdicts
-     * and must never be reinterpreted under the v3 layout, and a NULL
-     * argument must stay a node fault. PURE and INERT — every probe
-     * returns from the version dispatch, so no snapshot is resolved, no
-     * certificate verified, no row read and no schema version required.
-     * A legacy database passes exactly as a v9 one does; a legacy chain's
-     * open must never come to depend on Ledger V2 state. */
-    if (nodus_witness_v2_finalize_selfcheck(witness) != 0) {
-        fprintf(stderr, "%s: V2 header version firewall SELFCHECK FAILED "
-                "for %s — refusing the database (fail closed)\n",
-                LOG_TAG, db_path);
-        sqlite3_close(witness->db);
-        witness->db = NULL;
-        return -1;
-    }
+    /* O15A: the SAME gate the restart path runs — see
+     * witness_post_open_gate. Previously these two checks lived here
+     * only, which is exactly how an ordinary restart came to skip them. */
+    if (witness_post_open_gate(witness, db_path) != 0) return -1;
 
     /* PR 3 Yol B — transition bootstrap state to DONE the moment a
      * valid chain DB exists, regardless of which path created it.
@@ -729,7 +796,7 @@ int nodus_witness_init(nodus_witness_t *witness,
     /* Scan for existing chain DB (witness_<chain_id>.db).
      * If found: opens DB + sets chain_id.
      * If not found: db = NULL (pre-genesis state, waiting for genesis TX). */
-    if (witness_scan_chain_db(witness) != 0) {
+    if (nodus_witness_scan_chain_db(witness) != 0) {
         fprintf(stderr, "%s: no chain DB found — pre-genesis state\n", LOG_TAG);
     }
 

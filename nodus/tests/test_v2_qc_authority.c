@@ -386,13 +386,23 @@ int main(void) {
         CHECK(nodus_witness_v2_qc_verify(fx.w, &bad, qc) == -1,
               "cross-chain header accepted"); OK();
 
-        /* Retired and unknown header versions. */
+        /* Retired and unknown header versions. O15A: each has its OWN
+         * class, so this verifier reports them distinguishably even
+         * though the finalize seam dispatches on the encoded byte before
+         * reaching here — a second caller must not silently lose the
+         * distinction. Both remain VERDICTS. */
         bad = hdr; bad.header_version = DNA_BH2_VERSION_RETIRED;
-        CHECK(nodus_witness_v2_qc_verify(fx.w, &bad, qc) == -1,
+        CHECK(nodus_witness_v2_qc_verify(fx.w, &bad, qc)
+                  == NODUS_V2_RETIRED_VERSION,
               "retired header version accepted"); OK();
         bad = hdr; bad.header_version = 4;
-        CHECK(nodus_witness_v2_qc_verify(fx.w, &bad, qc) == -1,
+        CHECK(nodus_witness_v2_qc_verify(fx.w, &bad, qc)
+                  == NODUS_V2_UNSUPPORTED_VERSION,
               "unknown header version accepted"); OK();
+        CHECK(NODUS_V2_RETIRED_VERSION != NODUS_V2_UNSUPPORTED_VERSION &&
+              nodus_v2_result_is_verdict(NODUS_V2_RETIRED_VERSION) &&
+              nodus_v2_result_is_verdict(NODUS_V2_UNSUPPORTED_VERSION),
+              "the two version classes must stay distinct verdicts"); OK();
 
         /* NULL arguments are node-local FAULTS (-2), not verdicts. There is
          * no block to judge, so a caller bug must make this node abstain,

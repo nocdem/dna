@@ -180,6 +180,7 @@ set(NODUS_SOURCES
     # remains the only boundary a running chain executes.
     src/witness/nodus_witness_v2_epoch.c
     src/witness/nodus_witness_v2_qc.c
+    src/witness/nodus_witness_v2_preflight.c
     src/witness/nodus_witness_v2_finalize.c
 
     # Ledger V2 S6 — INACTIVE generic genesis/distribution manifest +
@@ -759,6 +760,54 @@ add_test(NAME test_vset_wire COMMAND test_vset_wire)
 add_executable(test_qc_v2 tests/test_qc_v2.c)
 target_link_libraries(test_qc_v2 nodus dsa nodus crypto)
 add_test(NAME test_qc_v2 COMMAND test_qc_v2)
+
+# Ledger V2 O15A — obligation 1: an allocation failure in or beneath the
+# QC path is a NODE FAULT, never a consensus verdict. malloc/calloc are
+# interposed at LINK time (--wrap) so the code under test is the
+# PRODUCTION code, unmodified: no test-only allocation hook is compiled
+# into the shipped library. The interposer is armed around the exact call
+# under test and fails the Nth allocation inside that window, and the
+# sweep covers every site the path actually reaches. Each fault assertion
+# is paired with its converse (malformed bytes must still be a VERDICT) so
+# the suite cannot pass by turning everything into a fault.
+add_executable(test_v2_qc_alloc_fault tests/test_v2_qc_alloc_fault.c)
+target_link_libraries(test_v2_qc_alloc_fault nodus dsa nodus crypto)
+target_link_options(test_v2_qc_alloc_fault PRIVATE
+                    -Wl,--wrap=malloc -Wl,--wrap=calloc)
+add_test(NAME test_v2_qc_alloc_fault COMMAND test_v2_qc_alloc_fault)
+
+# Ledger V2 O15A — obligation 5: the state validated for migration must be
+# the state migrated. Uses a SECOND sqlite3 connection to the same file
+# (not a second handle) to write at the migration seam, because the v8->v9
+# migration DROPs and rebuilds v2_blocks and its safety rests entirely on
+# the table being empty. O14 rated this LOW on the grounds that no second
+# writer exists today — a deployment property, not a code property — so
+# the invariant is tested directly instead of assumed.
+add_executable(test_v2_migration_toctou tests/test_v2_migration_toctou.c)
+target_link_libraries(test_v2_migration_toctou nodus dsa nodus crypto)
+add_test(NAME test_v2_migration_toctou COMMAND test_v2_migration_toctou)
+
+# Ledger V2 O15A — obligation 6: the RESTART path runs the same post-open
+# integrity gate as creation. It previously ran neither check, so a
+# database that would have been refused at creation was accepted on every
+# subsequent boot — and restarts vastly outnumber creations. Also pins the
+# two companion defects in the same scanner: the filename chain-id parse
+# now fails closed, and selection follows a stable total order over names
+# rather than readdir order (first-match-wins once activated the wrong
+# chain in production — see witness_archive_stale_chain_dbs).
+add_executable(test_v2_restart_gate tests/test_v2_restart_gate.c)
+target_link_libraries(test_v2_restart_gate nodus dsa nodus crypto)
+add_test(NAME test_v2_restart_gate COMMAND test_v2_restart_gate)
+
+# Ledger V2 O15A — obligation 7 (and obligation 8's fail-closed gate): the
+# activation-readiness preflight. The properties under test are that it
+# does not WRITE (proven by whole-database digest, not by reading the
+# code), that it is deterministic across runs, that it reports every issue
+# in canonical order instead of stopping at the first, and that it can
+# never report ready while Rule N has no attendance source.
+add_executable(test_v2_preflight tests/test_v2_preflight.c)
+target_link_libraries(test_v2_preflight nodus dsa nodus crypto)
+add_test(NAME test_v2_preflight COMMAND test_v2_preflight)
 
 # Ledger V2 S4 — domain manifest/registry/readiness codec: oracle-pinned
 # KATs, round-trip byte identity, unknown-enum / ordering / coherence

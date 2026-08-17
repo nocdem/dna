@@ -463,6 +463,37 @@ int main(void) {
     /* Idempotent re-run: asserting the DERIVED id succeeds. */
     CHECK(v2x_genesis_min(fx.w, vset, NULL, NULL) == 0,
           "genesis not idempotent"); OK();
+
+    /* ── O15A obligation 3: GENESIS MANIFEST DIVERGENCE ───────────────
+     * The idempotency probe used to decide on the BlockID ALONE. In
+     * leader mode (NULL assertion) that made the comparison
+     * unconditionally true, so re-running genesis with a DIFFERENT
+     * manifest returned SUCCESS and the presented bytes were never
+     * examined — even though the genesis identity is derived from them.
+     * The committed manifest is authoritative and a divergent one must
+     * fail closed. */
+    {
+        static const uint8_t other_manifest[] =
+            "this is definitively not the committed genesis manifest";
+        CHECK(nodus_witness_v2_genesis_ex(fx.w, NULL, vset, 0,
+                                          other_manifest,
+                                          sizeof(other_manifest)) == -2,
+              "a DIVERGENT genesis manifest was accepted"); OK();
+        /* And the converse, so the check above cannot pass by refusing
+         * everything: presenting the manifest that WAS committed still
+         * succeeds. */
+        CHECK(v2x_genesis_min(fx.w, vset, NULL, NULL) == 0,
+              "the committed manifest must still be accepted"); OK();
+
+        /* O15A (reviewer NOTE): the manifest cannot be OMITTED to skip
+         * the divergence check. A caller that presents no manifest
+         * cannot assert agreement with the committed one, so it is
+         * refused on the idempotent path exactly as on a fresh chain —
+         * previously this returned SUCCESS and bypassed the check. */
+        CHECK(nodus_witness_v2_genesis(fx.w, NULL, vset, 0) == -1,
+              "a no-manifest genesis must be refused even once genesis "
+              "is already committed"); OK();
+    }
     /* A genesis asserting a DIFFERENT id than the committed one. */
     uint8_t gen_id2[64];
     memcpy(gen_id2, gen_id, 64);
@@ -608,9 +639,79 @@ int main(void) {
     CHECK(env_core_utxo_create(&ex, 0x0f, 5) == 0, "envx");
     nodus_v2_envelope_t vx = { ex.bytes, ex.len };
     nodus_v2_block_t bx;
+    /* O15A: a height GAP is NOT a verdict. The block may be perfectly
+     * valid — this node just lacks its predecessors — so it must come
+     * back as NOT_YET_LINKABLE and must be distinguishable from an
+     * invalid block. Asserting the exact class (not merely "non-zero")
+     * is the point: under the old contract this returned the same -1 as
+     * a genuinely invalid block, and no test could tell them apart. */
     mk_block(&bx, 3, &vx, 1);                  /* gap                    */
-    CHECK(nodus_witness_v2_apply_block(fx.w, &bx) == -1, "gap accepted");
+    CHECK(nodus_witness_v2_apply_block(fx.w, &bx) == NODUS_V2_NOT_YET_LINKABLE,
+          "height gap must be NOT_YET_LINKABLE, not a verdict");
     OK();
+
+    /* ── O15A §9: the LINKAGE CLASS MATRIX ────────────────────────────
+     * The whole point of the split is that these situations are told
+     * apart. Asserting each by its EXACT class is what makes the suite
+     * able to fail if any two are ever merged again — a `!= 0` check
+     * here would pass under the very defect this closes. */
+    {
+        uint8_t lg[64], lg2[64];
+        CHECK(db_state_digest(fx.w, lg) == 0, "linkage digest"); OK();
+
+        /* A FAR-future height is the same class as a one-block gap:
+         * still absent predecessor state, still no judgement. */
+        mk_block(&bx, 1000000, &vx, 1);
+        CHECK(nodus_witness_v2_apply_block(fx.w, &bx)
+                  == NODUS_V2_NOT_YET_LINKABLE,
+              "large height gap must be NOT_YET_LINKABLE"); OK();
+
+        /* Height 0 is a VERDICT, not a deferral, and the ordering is
+         * deliberate: genesis has its own entry point, so no amount of
+         * waiting for predecessors could ever make this acceptable. */
+        mk_block(&bx, 0, &vx, 1);
+        CHECK(nodus_witness_v2_apply_block(fx.w, &bx)
+                  == NODUS_V2_CONSENSUS_INVALID,
+              "height 0 through apply_block must be a verdict"); OK();
+
+        /* STALE — at or below the head — is evaluable NOW, so it earns a
+         * real verdict. This is the boundary that must never drift into
+         * the deferral class: a block we can already judge is judged. */
+        mk_block(&bx, 1, &vx, 1);
+        bx.expect_block_id = NULL;
+        CHECK(nodus_witness_v2_apply_block(fx.w, &bx)
+                  == NODUS_V2_CONSENSUS_INVALID,
+              "stale height must stay a verdict, not NOT_YET_LINKABLE");
+        OK();
+
+        /* None of the above may touch a single byte of state. */
+        CHECK(db_state_digest(fx.w, lg2) == 0 && memcmp(lg, lg2, 64) == 0,
+              "linkage classification wrote state"); OK();
+
+        /* The classifiers must agree with the values, so a future edit
+         * cannot move a class between families unnoticed. */
+        CHECK(!nodus_v2_result_is_verdict(NODUS_V2_NOT_YET_LINKABLE),
+              "NOT_YET_LINKABLE must never be a verdict"); OK();
+        CHECK(!nodus_v2_result_is_verdict(NODUS_V2_INTERNAL_FAULT),
+              "INTERNAL_FAULT must never be a verdict"); OK();
+        CHECK(nodus_v2_result_is_undecided(NODUS_V2_NOT_YET_LINKABLE) &&
+              nodus_v2_result_is_undecided(NODUS_V2_INTERNAL_FAULT),
+              "both undecided classes must classify as undecided"); OK();
+        CHECK(nodus_v2_result_is_verdict(NODUS_V2_CONSENSUS_INVALID) &&
+              nodus_v2_result_is_verdict(NODUS_V2_RETIRED_VERSION) &&
+              nodus_v2_result_is_verdict(NODUS_V2_UNSUPPORTED_VERSION),
+              "the three verdict classes must classify as verdicts"); OK();
+        CHECK(!nodus_v2_result_is_accepted(NODUS_V2_NOT_YET_LINKABLE),
+              "NOT_YET_LINKABLE must never count as accepted"); OK();
+
+        /* Every class is distinct — the property the old contract could
+         * not hold, since three of these shared the value -1. */
+        CHECK(NODUS_V2_NOT_YET_LINKABLE != NODUS_V2_CONSENSUS_INVALID &&
+              NODUS_V2_NOT_YET_LINKABLE != NODUS_V2_INTERNAL_FAULT &&
+              NODUS_V2_RETIRED_VERSION  != NODUS_V2_UNSUPPORTED_VERSION &&
+              NODUS_V2_RETIRED_VERSION  != NODUS_V2_CONSENSUS_INVALID,
+              "result classes must be pairwise distinct"); OK();
+    }
     mk_block(&bx, 2, &vx, 1);
     uint8_t wrong_prev[64];
     memset(wrong_prev, 0x5A, 64);              /* wrong prev             */

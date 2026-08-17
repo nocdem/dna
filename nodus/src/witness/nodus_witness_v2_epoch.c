@@ -123,19 +123,36 @@ static int v2ep_val_rec_ok(const dnac_validator_record_t *v) {
 /* bft.c:2379-2402 shape with ONE deliberate, labeled DIVERGENCE in the
  * match predicate — `<=` instead of the legacy `=`:
  *
- * ⚠ LEGACY DEAD PATH (found by the O12 R3 review): the writer stores
- * pending_effective_block = max(next_boundary, H+E), which is ALWAYS
- * H+E (boundary = floor(H/E)*E + E <= H+E, equality iff H % E == 0 —
- * the "unreachable max arm" label at rtn_vupd_exec). H+E is a multiple
- * of E iff H is, so for every ordinary off-boundary submission the
- * stored value is NOT boundary-aligned, and the legacy activator's
- * equality match (bft.c:2386, behind the :2358 boundary gate) can NEVER
- * fire: a commission increase is silently stranded forever. The V2
- * activator honors the documented INTENT instead — "defer one full
- * epoch of delegator notice, effective at a boundary" (bft.c:1917-1919,
- * design §3.9) — by activating at the FIRST boundary >= the stored
- * height. Deterministic (pure function of committed state + h); the
- * legacy lane keeps its own behavior (BUGS.md entry).
+ * ⚠ LEGACY ARRIVAL-HEIGHT DEPENDENCE (found by the O12 R3 review;
+ * RESTATED PRECISELY by O15A — the earlier wording was overstated).
+ *
+ * The writer stores pending_effective_block = max(next_boundary, H+E),
+ * which is ALWAYS H+E: next_boundary = floor(H/E)*E + E <= H+E, with
+ * equality iff H % E == 0, so the max's boundary arm is provably dead
+ * (the "unreachable max arm" label at rtn_vupd_exec).
+ *
+ * The legacy activator (bft.c:2386, behind the :2358 boundary gate)
+ * matches pending_effective_block == block_height EXACTLY, and only runs
+ * at boundaries. So activation happens iff H0 + E is boundary-aligned,
+ * i.e. iff **H0 % E == 0** — iff the VALIDATOR_UPDATE was applied in a
+ * block whose height is itself an exact epoch boundary.
+ *
+ * CORRECTION: O12 recorded this as "can NEVER fire" and a commission
+ * increase being "silently stranded forever". That is too strong. It
+ * fires for 1 submission height in every E, and strands the other E-1.
+ * The defect is real and consequential — whether a governance change
+ * takes effect depends on which block happened to include it — but it is
+ * arrival-height dependent, not universally dead. It is deterministic
+ * across nodes (every node sees the same height), so it is an
+ * economics/governance bug, NOT a chain-split risk.
+ *
+ * The V2 activator honors the documented INTENT instead — "defer one
+ * full epoch of delegator notice, effective at a boundary"
+ * (bft.c:1917-1919, design §3.9) — by activating at the FIRST boundary
+ * >= the stored height. Deterministic (pure function of committed state
+ * and h). The legacy lane keeps its own behaviour: changing it would
+ * alter currently accepted consensus semantics on a live chain, which is
+ * a hard fork and is not O15A's to make (local BUGS.md entry).
  *
  * rc checked against SQLITE_DONE, so a mid-statement I/O error can
  * never read as "nothing to activate" (v0.18.19: a DB failure is never

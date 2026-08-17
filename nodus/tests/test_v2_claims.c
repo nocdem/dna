@@ -1478,6 +1478,48 @@ static int test_order_independence(void) {
           nodus_witness_global_root_v2(fb.w, gb, NULL, NULL, NULL) == 0 &&
           memcmp(ga, gb, 64) == 0, "global root order independent");
     OK();
+
+    /* ── O15A obligation 4: THE BINDING DIRECTION ─────────────────────
+     * Everything above proves the roots are STABLE — twins agree, order
+     * does not matter. That is only half the property, and on its own it
+     * is satisfied by a root that ignores claims entirely.
+     *
+     * A block carries claims in their OWN array; they never enter
+     * tx_root (only envelopes do). Their sole path to the block identity
+     * is claims_root -> the target domain's state root -> domains_root ->
+     * global_state_root -> BlockID. So the claim set MUST move the
+     * global root, or claims would be carried by a block whose identity
+     * does not depend on them at all.
+     *
+     * Compared against a third fixture that applied NO claims. */
+    {
+        fixture_t fc;
+        uint8_t chC[32], gidC[64], mhC[64];
+        CHECK(fx_open(&fc) == 0, "fixture C");
+        CHECK(dist_genesis(&fc, 32, 1, 9, "testnet-generic", chC, gidC,
+                           mhC) == 0, "genesis C");
+        /* C is the SAME twin chain — identical genesis, identical
+         * manifest — so any root difference below can ONLY come from the
+         * claims A applied and C did not. */
+        CHECK(memcmp(chA, chC, 32) == 0 && memcmp(gidA, gidC, 64) == 0,
+              "C is a twin of A");
+
+        uint8_t rc_[64], cc_[64], gc[64];
+        CHECK(nodus_witness_claims_root_v2(fc.w, DNA_DOMAIN_CORE, rc_) == 0,
+              "C claims_root");
+        CHECK(memcmp(ra, rc_, 64) != 0,
+              "CLAIMS DO NOT REACH claims_root — a claimed and an "
+              "unclaimed twin share a root");
+        CHECK(nodus_witness_core_root_v2(fc.w, cc_) == 0 &&
+              memcmp(ca, cc_, 64) != 0,
+              "claims do not reach the CORE state root");
+        CHECK(nodus_witness_global_root_v2(fc.w, gc, NULL, NULL, NULL) == 0 &&
+              memcmp(ga, gc, 64) != 0,
+              "claims do not reach the GLOBAL state root — a block's "
+              "identity would not depend on its own claims");
+        OK();
+        fx_close(&fc);
+    }
     fx_close(&fa);
     fx_close(&fb);
     return 0;

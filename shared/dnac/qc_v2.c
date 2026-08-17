@@ -141,7 +141,10 @@ int dna_qc_v2_encode(const dna_qc_v2_t *qc,
 }
 
 int dna_qc_v2_decode(const uint8_t *src, size_t len, dna_qc_v2_t **out) {
-    if (!src || !out) return -1;
+    /* A NULL argument is a caller bug — there is no certificate here to
+     * judge, so it cannot be a reject. (O15A: the same reasoning the
+     * witness wrapper already applied to its own NULL guard.) */
+    if (!src || !out) return -2;
 
     /* Bounds + exact length BEFORE allocation. */
     if (len < (size_t)DNA_QC_V2_HDR_LEN) return -1;
@@ -152,8 +155,11 @@ int dna_qc_v2_decode(const uint8_t *src, size_t len, dna_qc_v2_t **out) {
                   (size_t)n * (size_t)DNA_QC_V2_CERT_LEN;
     if (len != need) return -1;   /* truncation AND trailing bytes reject */
 
+    /* `n` was bounds-checked above, so dna_qc_v2_alloc's only remaining
+     * failure mode here is an allocation failure — a node-local fault,
+     * never a statement about these bytes. */
     dna_qc_v2_t *qc = dna_qc_v2_alloc(n);
-    if (!qc) return -1;
+    if (!qc) return -2;
 
     const uint8_t *p = src + DNA_QC_V2_HDR_LEN;
     for (size_t i = 0; i < (size_t)n; i++) {
@@ -179,12 +185,21 @@ int dna_qc_v2_verify(const dna_qc_v2_t *qc,
                      const uint8_t chain_id[DNA_CHAIN_ID_LEN],
                      const uint8_t header_vset_hash[DNA_CERT_V2_VSET_HASH_LEN],
                      const dna_vset_snapshot_t *snapshot) {
+    /* A NULL argument is a caller bug, not a bad certificate. */
     if (!qc || !block_id || !chain_id || !header_vset_hash || !snapshot)
-        return -1;
+        return -2;
 
-    /* ── 1. The snapshot is trusted ONLY if it IS the committed set. ── */
+    /* ── 1. The snapshot is trusted ONLY if it IS the committed set. ──
+     *
+     * dna_vset_hash allocates its preimage buffer, so its failure is a
+     * NODE-LOCAL FAULT and must be reported as one. Returning -1 here —
+     * as this line did before O15A — meant that under memory pressure a
+     * node declared a valid, quorum-certified block consensus-invalid.
+     * The caller performs this identical hash itself and already
+     * classified its failure as a fault; this recomputation is a
+     * deliberate redundant defence, so the two must agree. */
     uint8_t computed[DNA_VSET_HASH_LEN];
-    if (dna_vset_hash(snapshot, computed) != 0) return -1;
+    if (dna_vset_hash(snapshot, computed) != 0) return -2;
     if (memcmp(computed, header_vset_hash, DNA_VSET_HASH_LEN) != 0) return -1;
 
     /* ── 2. Quorum is derived from the SNAPSHOT's size, never from a
@@ -220,9 +235,15 @@ int dna_qc_v2_verify(const dna_qc_v2_t *qc,
          *      that is what makes historical verification key-rotation
          *      safe. Any failure rejects the whole QC. ── */
         uint8_t pre[DNA_CERT_V2_PREIMAGE_LEN];
+        /* Pure byte layout over non-NULL inputs: this can only fail on a
+         * NULL argument or a compile-time layout drift, both local
+         * conditions rather than anything the certificate did. */
         if (dna_cert_v2_preimage(block_id, c->voter_id, height, chain_id,
                                  header_vset_hash, pre) != 0)
-            return -1;
+            return -2;
+        /* THE verdict this function exists to deliver. Deliberately -1:
+         * the signature check allocates nothing, so no fault can hide
+         * behind it. */
         if (qgp_dsa87_verify(c->sig, DNA_CERT_V2_SIG_LEN,
                              pre, DNA_CERT_V2_PREIMAGE_LEN,
                              member->pubkey) != 0)

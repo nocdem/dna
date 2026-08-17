@@ -31,7 +31,15 @@ int nodus_witness_v2_qc_verify(nodus_witness_t *w,
 
     /* 1. Version gate. The retired version and any unknown version both
      *    fail closed; a v2 header must never be reinterpreted here. */
-    if (hdr->header_version != DNA_BH2_VERSION) return -1;
+    /* O15A (reviewer R1): report the two version classes the season
+     * created, not a generic verdict. The seam dispatches on the encoded
+     * byte before reaching here, so this is currently unreachable through
+     * it — but a SECOND caller of this function would otherwise silently
+     * lose the retired-vs-unsupported distinction. */
+    if (hdr->header_version == DNA_BH2_VERSION_RETIRED)
+        return NODUS_V2_RETIRED_VERSION;
+    if (hdr->header_version != DNA_BH2_VERSION)
+        return NODUS_V2_UNSUPPORTED_VERSION;
 
     /* 2. The epoch field is VERIFIED, not trusted. Derived purely from
      *    the global height and the committed epoch length, so a header
@@ -86,9 +94,24 @@ int nodus_witness_v2_qc_verify(nodus_witness_t *w,
 
     /* 7. Signature/membership/quorum verification against the resolved
      *    snapshot. Quorum is derived inside from the snapshot's
-     *    active_count; stake is never consulted. */
-    rc = (dna_qc_v2_verify(qc, block_id, hdr->block_height, chain_id,
-                           resolved_hash, snap) == 0) ? 0 : -1;
+     *    active_count; stake is never consulted.
+     *
+     *    O15A: the verifier reports THREE classes, and this call site is
+     *    the reason that matters. It used to collapse every non-zero
+     *    return into -1, so an allocation failure inside the verifier's
+     *    own dna_vset_hash — the very call this function performs forty
+     *    lines above and correctly classifies as a fault — came back out
+     *    here as CONSENSUS_INVALID. The map below is three-way, and the
+     *    default for anything unrecognised is a fault, not a verdict:
+     *    an unknown code is by definition something this node does not
+     *    understand, which is exactly when it must abstain. */
+    {
+        int qrc = dna_qc_v2_verify(qc, block_id, hdr->block_height,
+                                   chain_id, resolved_hash, snap);
+        if (qrc == 0)                              rc = NODUS_V2_ACCEPTED;
+        else if (qrc == NODUS_V2_CONSENSUS_INVALID) rc = NODUS_V2_CONSENSUS_INVALID;
+        else                                        rc = NODUS_V2_INTERNAL_FAULT;
+    }
 
 done:
     dna_vset_free(&snap);

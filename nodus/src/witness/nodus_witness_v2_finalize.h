@@ -47,26 +47,41 @@
  *   7. Require the engine's independently derived BlockID to equal the
  *      one the QC certified.
  *
- * ── FAULT vs VERDICT ───────────────────────────────────────────────────
- * The engine convention, preserved end to end:
- *   0  accept (committed)
- *   1  idempotent replay — already committed, nothing written
- *  -1  VERDICT: this block is invalid as judged against COMMITTED chain
- *      state. Every honest node with the same committed state agrees.
- *      CAVEAT (O14 review R2-F4): the apply engine also returns -1 for
- *      local SEQUENCING conditions — notably a height gap, "not the next
- *      block in MY chain" — which a node that is merely behind will
- *      report while synced peers accept the same bytes. A caller must
- *      NOT read -1 as proof of proposer misbehaviour, and must not
- *      blacklist on it. Splitting that into its own not-yet-linkable
- *      code is deferred design, not something to fake here.
- *  -2  FAULT: THIS NODE could not decide (no committed authority for the
- *      epoch, storage/hash/alloc failure). The caller must not vote and
- *      must never convert -2 into a rejection.
- * A -2 from the QC verifier surfaces as -2 here. It is never folded into
- * a reject: a node that cannot learn who was permitted to sign has to
- * stay silent, because silence is survivable at f=2 and a confident
- * wrong answer forks the chain.
+ * ── THE RESULT CLASSES ─────────────────────────────────────────────────
+ * The full contract is `nodus_witness_v2_result.h` (nodus_v2_result_t);
+ * this seam returns those values unchanged. In summary:
+ *
+ *   NODUS_V2_ACCEPTED (0) / IDEMPOTENT_REPLAY (1) / ACCEPTED_PRECACHE (2)
+ *      the block was accepted.
+ *   NODUS_V2_CONSENSUS_INVALID (-1) / RETIRED_VERSION (-4) /
+ *   UNSUPPORTED_VERSION (-5)
+ *      VERDICTS: deterministic judgements about the block. Every honest
+ *      node with the same committed state agrees. Only these may be held
+ *      against the peer that offered the block.
+ *   NODUS_V2_NOT_YET_LINKABLE (-3)
+ *      NO judgement. Required predecessor state is absent HERE, so the
+ *      block could not be evaluated. It may be perfectly valid.
+ *   NODUS_V2_INTERNAL_FAULT (-2)
+ *      NO judgement. THIS NODE could not compute — absent committed
+ *      authority for the epoch, storage, hashing or allocation failure.
+ *
+ * O15A CLOSED A HAZARD HERE. Until this season the apply engine returned
+ * -1 for local SEQUENCING conditions as well as for genuine invalidity,
+ * so a height gap — "not the next block in MY chain" — was indistinguish-
+ * able from "this block is bad". A node that was merely behind reported
+ * the same code that synced peers never produced for those bytes, and a
+ * caller that blacklisted on -1 would have punished honest proposers for
+ * its own lag. That caveat used to live in this comment because the type
+ * system had no way to express it; it is now NODUS_V2_NOT_YET_LINKABLE,
+ * and the rule is enforced by the type rather than by the reader.
+ *
+ * Neither -2 nor -3 is ever folded into a reject. A node that cannot
+ * learn who was permitted to sign, or that does not yet hold the block's
+ * predecessors, has to stay silent: silence is survivable at f=2, and a
+ * confident wrong answer forks the chain.
+ *
+ * Requesting or queueing the history behind a -3 is a SYNC concern and is
+ * deliberately not implemented here.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -102,7 +117,9 @@ extern "C" {
  * @param qc_bytes     canonical encoded QC V2.
  * @param qc_len       length of `qc_bytes`.
  * @param blk          the block content; identity outputs are filled.
- * @return 0 committed / 1 idempotent replay / -1 verdict / -2 fault.
+ * @return a nodus_v2_result_t. Callers MUST distinguish the classes and
+ *         must not collapse them into accept/reject — see the class list
+ *         above and nodus_witness_v2_result.h.
  */
 int nodus_witness_v2_finalize_block(nodus_witness_t *w,
                                     const uint8_t *header_bytes,
@@ -117,19 +134,20 @@ int nodus_witness_v2_finalize_block(nodus_witness_t *w,
  * Runs from nodus_witness_create_chain_db, beside the S7 pool check, and
  * drives the REAL entry point above with committed-state-free inputs.
  *
- * HONEST SCOPE (O14 review R3-F3): that is the DB-CREATION path only.
- * `witness_scan_chain_db` opens an existing chain DB by another route and
- * runs neither this check nor the S7 pool check — so "once per database
- * open" would be wrong. It matters little for THIS check, which is pure
- * and build-dependent rather than data-dependent (a broken build is
- * broken on every path, and the link edge it secures is a compile-time
- * property), but the claim is stated accurately rather than
- * conveniently. The S7 bypass on the same path is a pre-existing seam.
+ * SCOPE (O14 review R3-F3, CLOSED by O15A): O14 recorded that this ran on
+ * the DB-CREATION path only, because `witness_scan_chain_db` — the
+ * RESTART route — opened an existing chain database without running
+ * either this check or the S7 pool check. That seam is now closed: both
+ * paths go through the single `witness_post_open_gate`
+ * (nodus_witness.c), so "once per database open" is accurate for both,
+ * and the S7 bypass on the restart path is closed with it.
  *
  * Probes:
- *   - a RETIRED (v2) header byte must be a verdict (-1);
- *   - an UNKNOWN header byte must be a verdict (-1);
- *   - a NULL argument must be a node fault (-2), not a verdict.
+ *   - a RETIRED (v2) header byte must be NODUS_V2_RETIRED_VERSION;
+ *   - an UNKNOWN header byte must be NODUS_V2_UNSUPPORTED_VERSION —
+ *     a DIFFERENT class, so this probe also proves the two remain
+ *     distinguishable rather than merely both non-zero;
+ *   - a NULL argument must be NODUS_V2_INTERNAL_FAULT, not a verdict.
  *
  * PURE and INERT by construction: every probe returns from the version
  * dispatch or the NULL guard, so it resolves no snapshot, verifies no

@@ -54,6 +54,7 @@
 #include "dnac/block_v2.h"
 #include "dnac/qc_v2.h"
 #include "witness/nodus_witness.h"
+#include "witness/nodus_witness_v2_result.h"
 
 #ifdef __cplusplus
 extern "C" {
