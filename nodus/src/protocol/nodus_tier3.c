@@ -70,6 +70,15 @@ nodus_t3_msg_type_t nodus_t3_method_to_type(const char *method) {
     if (strcmp(method, "w_chain_r") == 0)     return NODUS_T3_CHAIN_R;
     if (strcmp(method, "w_genesis_req") == 0) return NODUS_T3_GENESIS_REQ;
     if (strcmp(method, "w_genesis_rsp") == 0) return NODUS_T3_GENESIS_RSP;
+    /* Ledger V2 O15B — PRODUCTION-DORMANT verbs. Recognising a method name
+     * is not dispatching it: every one of these ends at the activation
+     * gate, which can never open in this build. Naming them here means an
+     * unknown verb and a not-active verb are distinguishable, instead of
+     * both dying as "unknown" and hiding which one happened. */
+    if (strcmp(method, "w_v2_block") == 0)     return NODUS_T3_V2_BLOCK;
+    if (strcmp(method, "w_v2_head") == 0)      return NODUS_T3_V2_HEAD;
+    if (strcmp(method, "w_v2_range_q") == 0)   return NODUS_T3_V2_RANGE_REQ;
+    if (strcmp(method, "w_v2_range_r") == 0)   return NODUS_T3_V2_RANGE_RSP;
     return 0;
 }
 

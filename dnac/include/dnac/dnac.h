@@ -385,6 +385,23 @@ struct dnac_utxo {
     uint64_t received_at;                        /**< Unix timestamp when received */
     uint64_t spent_at;                           /**< Unix timestamp when spent (0 if unspent) */
 
+    /**
+     * O15B §7 — chain height at or after which consensus will accept this
+     * coin as a spend input. 0 = spendable now (every ordinary output).
+     *
+     * Non-zero only for the post-UNSTAKE principal release, which consensus
+     * locks for DNAC_UNSTAKE_COOLDOWN_BLOCKS. Spending a coin whose
+     * unlock_block exceeds the current chain height is rejected by EVERY
+     * honest validator (Rule D, nodus_witness_verify.c:730), so a wallet
+     * that selects one produces a transaction that can never commit — the
+     * submitter sees only a timeout, on every retry, forever.
+     *
+     * Sourced from the witness `dnac_utxo` response key "ub". A pre-O15B
+     * witness omits it and this stays 0, which reproduces the old behaviour
+     * against an old server without pretending to be correct there.
+     */
+    uint64_t unlock_block;
+
     /* Phase 12 — Anchored verification state (runtime-only, NOT persisted).
      * true  = this UTXO has a valid Merkle proof against a BFT-anchored
      *         state_root (dnac_utxo_verify_anchored succeeded).

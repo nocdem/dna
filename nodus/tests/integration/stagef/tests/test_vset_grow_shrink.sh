@@ -127,12 +127,41 @@ status_counts() {
 info "epoch length: $E_LEN (harness) — verifying against binary"
 rows=$(sqlite3 "$(node1_db)" \
   "SELECT epoch_start FROM validator_set_snapshots ORDER BY epoch_start;")
-exp_rows=$(printf '0\n%s' "$E_LEN")
-if [ "$rows" != "$exp_rows" ]; then
+
+# O15B §7 / §16 — THE CHECK WAS ORDER-DEPENDENT, AND THE ORDER CHANGED.
+#
+# It required the snapshot table to hold EXACTLY {0, E_LEN}, the two epochs
+# genesis seeds (nodus_witness_vset_commit_genesis). That is only true on a
+# freshly created chain. Every epoch boundary since then has committed
+# another snapshot (nodus_witness_vset_commit_next), and this scenario runs
+# LAST in the alphabetical order genesis_protocol.sh uses — so by the time
+# it runs, on a short-epoch harness, the table holds dozens of rows and the
+# equality can never hold.
+#
+# It was failing for a reason that had nothing to do with what it tests,
+# and its message blamed the build ("short-epoch binary not in use?"),
+# which sent readers looking in the wrong place entirely.
+#
+# The PROPERTY it actually wanted is that the binary's epoch length matches
+# the harness's. That is checked directly and order-independently: genesis
+# seeds epoch 0 and epoch E_LEN, so BOTH must be present whatever else has
+# accumulated, and no snapshot may sit at a non-multiple of E_LEN.
+have_0=$(printf '%s\n' "$rows" | grep -cx '0' || true)
+have_e=$(printf '%s\n' "$rows" | grep -cx "$E_LEN" || true)
+if [ "${have_0:-0}" -lt 1 ] || [ "${have_e:-0}" -lt 1 ]; then
     echo "  stored snapshot epochs: $(echo $rows | tr '\n' ' ')" >&2
-    fail "genesis snapshots do not match STAGEF_EPOCH_LENGTH=$E_LEN — \
-short-epoch binary not in use? (expected epochs 0 and $E_LEN)"
+    fail "genesis snapshots missing epoch 0 and/or $E_LEN — \
+short-epoch binary not in use? (STAGEF_EPOCH_LENGTH=$E_LEN)"
 fi
+for _e in $rows; do
+    if [ $(( _e % E_LEN )) -ne 0 ]; then
+        echo "  stored snapshot epochs: $(echo $rows | tr '\n' ' ')" >&2
+        fail "snapshot at epoch_start=$_e is not a multiple of \
+STAGEF_EPOCH_LENGTH=$E_LEN — the binary and the harness disagree"
+    fi
+done
+info "snapshot epochs present: $(echo $rows | tr '\n' ' ')"
+stagef_sentinel SETUP_OK
 assert_snapshots_identical "A/genesis"
 assert_state_root_identical "A/genesis"
 
@@ -241,6 +270,8 @@ info "9 bonded validators on every node"
 assert_state_root_identical "D/staked"
 
 # ── E. grow: TARGET_ACTIVE_COUNT = 9 ────────────────────────────────
+# O15B §7 — the operation under test begins here.
+stagef_sentinel TARGET_REACHED
 
 H=$(head_height)
 # effective: a boundary far enough out to clear grace(15) + one full epoch
@@ -343,9 +374,11 @@ while [ $t -lt 300 ]; do
     sleep 5; t=$((t + 5))
 done
 [ "${vh:-0}" -ge "$ref_h" ] || fail "node$victim did not catch up ($vh < $ref_h)"
+stagef_sentinel ASSERT_RUN
 assert_snapshots_identical "G/crash-recovery"
 assert_state_root_identical "G/crash-recovery"
 
+stagef_sentinel PASS
 echo ""
 echo "[PASS] 7→9→7 dynamic validator set: snapshots, flips, bonds, "
 echo "       state_root and crash recovery all identical across nodes"

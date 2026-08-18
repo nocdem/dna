@@ -9,6 +9,7 @@
 #include "witness/nodus_witness_v2_schema.h"
 
 #include <sqlite3.h>
+#include <limits.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -132,6 +133,74 @@ static int exec_sql(nodus_witness_t *w, const char *sql) {
     return 0;
 }
 
+/* Committed rows in v2_tx_index. >= 0 count, -1 on ANY fault.
+ *
+ * O15B §9 — a fault is deliberately NOT zero. This number decides whether a
+ * migration that cannot be undone may proceed, so "the table could not be
+ * read" must never be answered with "the table is empty". */
+static int s8_tx_index_rows(nodus_witness_t *w) {
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db, "SELECT COUNT(*) FROM v2_tx_index",
+                           -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    int rc = sqlite3_step(st);
+    sqlite3_int64 rows = (rc == SQLITE_ROW) ? sqlite3_column_int64(st, 0) : -1;
+    sqlite3_finalize(st);
+    if (rows < 0) return -1;
+    return (rows > INT_MAX) ? INT_MAX : (int)rows;
+}
+
+/* ── O15B §9: the schema-version re-read every migration owes ─────────
+ *
+ * Every pre-BEGIN `PRAGMA user_version` read decides NOTHING. It is a cheap
+ * early-out that runs while no lock is held, so between it and
+ * `BEGIN IMMEDIATE` another connection may complete an arbitrary number of
+ * migrations. Two concrete consequences, both real before this season:
+ *
+ *  - DOWNGRADE. We read 7, park on BEGIN IMMEDIATE, a peer migrates 7→8→9,
+ *    we wake and stamp `PRAGMA user_version = 8` over a version-9 schema.
+ *    The database then advertises a version whose tables it no longer has.
+ *  - LOST REFUSAL. S8 refuses to run against a populated `v2_tx_index`
+ *    because committed intents cannot be back-derived. It counted the rows
+ *    pre-BEGIN, so a transaction committed in the window slipped past the
+ *    very guard that exists to catch it.
+ *
+ * O15A closed exactly this for the 8→9 migration. This helper generalises
+ * the fix so S5-S8 cannot drift back: the version is re-read INSIDE the
+ * write transaction, where `BEGIN IMMEDIATE` guarantees no other writer can
+ * intervene between the check and the mutation.
+ *
+ * Returns:
+ *   1  proceed — the database is still at `expect_from`
+ *   0  ALREADY DONE — a concurrent writer reached `expect_to` first. This is
+ *      idempotent SUCCESS, not an error: the caller wanted the database at
+ *      `expect_to`, and it is. Refusing here would turn a benign race into a
+ *      startup failure.
+ *  -1  refuse — any other version, or a read fault.
+ */
+static int mig_revalidate_version(nodus_witness_t *w,
+                                  uint32_t expect_from,
+                                  uint32_t expect_to,
+                                  const char *stage) {
+    uint32_t now = 0;
+    if (nodus_witness_db_schema_version(w, &now) != 0) {
+        QGP_LOG_ERROR(LOG_TAG,
+                      "%s: in-transaction schema re-read failed", stage);
+        return -1;
+    }
+    if (now == expect_from) return 1;
+    if (now == expect_to) {
+        QGP_LOG_INFO(LOG_TAG,
+                     "%s: another writer completed this migration first "
+                     "(version %u) — idempotent success", stage, now);
+        return 0;
+    }
+    QGP_LOG_ERROR(LOG_TAG,
+                  "%s: schema moved to %u under us (expected %u) — refusing",
+                  stage, now, expect_from);
+    return -1;
+}
+
 int nodus_witness_db_migrate_v2s5_ex(nodus_witness_t *w,
                                      nodus_v2_mig_fail_t fail_at) {
     if (!w || !w->db) return -1;
@@ -152,6 +221,20 @@ int nodus_witness_db_migrate_v2s5_ex(nodus_witness_t *w,
     int ok = 0;
     do {
         if (fail_at == V2MIG_FAIL_AFTER_BEGIN) break;
+
+        /* O15B §9 — the pre-BEGIN version read decided nothing. */
+        int rv = mig_revalidate_version(w, 0, NODUS_V2_SCHEMA_VERSION, "S5");
+        if (rv < 0) break;
+        if (rv == 0) {
+            /* A peer finished this migration while we waited for the
+             * write lock. Nothing was written here, so release the lock
+             * rather than COMMIT an empty transaction, and report the
+             * success the caller actually asked for: the database is at
+             * the target version. */
+            (void)exec_sql(w, "ROLLBACK");
+            return 0;
+        }
+        if (fail_at == V2MIG_FAIL_AFTER_REVALIDATE) break;
 
         if (exec_sql(w, V2_TABLES_DDL) != 0) break;
         if (fail_at == V2MIG_FAIL_AFTER_TABLES) break;
@@ -323,6 +406,21 @@ int nodus_witness_db_migrate_v2s6_ex(nodus_witness_t *w,
     do {
         if (fail_at == V2S6MIG_FAIL_AFTER_BEGIN) break;
 
+        /* O15B §9 — the pre-BEGIN version read decided nothing. */
+        int rv = mig_revalidate_version(w, NODUS_V2_SCHEMA_VERSION,
+                                        NODUS_V2_SCHEMA_VERSION_S6, "S6");
+        if (rv < 0) break;
+        if (rv == 0) {
+            /* A peer finished this migration while we waited for the
+             * write lock. Nothing was written here, so release the lock
+             * rather than COMMIT an empty transaction, and report the
+             * success the caller actually asked for: the database is at
+             * the target version. */
+            (void)exec_sql(w, "ROLLBACK");
+            return 0;
+        }
+        if (fail_at == V2S6MIG_FAIL_AFTER_REVALIDATE) break;
+
         if (exec_sql(w, V2S6_TABLES_DDL) != 0) break;
         if (fail_at == V2S6MIG_FAIL_AFTER_TABLES) break;
 
@@ -469,6 +567,21 @@ int nodus_witness_db_migrate_v2s7_ex(nodus_witness_t *w,
     int ok = 0;
     do {
         if (fail_at == V2S7MIG_FAIL_AFTER_BEGIN) break;
+
+        /* O15B §9 — the pre-BEGIN version read decided nothing. */
+        int rv = mig_revalidate_version(w, NODUS_V2_SCHEMA_VERSION_S6,
+                                        NODUS_V2_SCHEMA_VERSION_S7, "S7");
+        if (rv < 0) break;
+        if (rv == 0) {
+            /* A peer finished this migration while we waited for the
+             * write lock. Nothing was written here, so release the lock
+             * rather than COMMIT an empty transaction, and report the
+             * success the caller actually asked for: the database is at
+             * the target version. */
+            (void)exec_sql(w, "ROLLBACK");
+            return 0;
+        }
+        if (fail_at == V2S7MIG_FAIL_AFTER_REVALIDATE) break;
 
         if (exec_sql(w, V2S7_TABLES_DDL) != 0) break;
         if (fail_at == V2S7MIG_FAIL_AFTER_TABLES) break;
@@ -646,32 +759,22 @@ int nodus_witness_db_migrate_v2s8_ex(nodus_witness_t *w,
         return -1;
     }
 
-    /* FAIL CLOSED on a populated wire index (read-only, pre-BEGIN —
-     * nothing to roll back): an intent_id can only be derived from the
-     * ORIGINAL envelope bytes, which v2_tx_index does not store, so a
-     * database that already committed V2 transactions cannot be
-     * backfilled with their intent identities. Migrating it anyway would
-     * leave every pre-migration intent silently unguarded against
-     * semantic replay. No live chain carries V2 rows (the surface is
-     * inactive; the devnet reset starts fresh), so the honest answer to
-     * a populated index is refusal, not a hole. */
+    /* Cheap early-out ONLY — this DECIDES NOTHING.
+     *
+     * O15B §9: this count used to be the migration's whole defence and it
+     * ran with no lock held, so a V2 transaction committed between here and
+     * BEGIN IMMEDIATE walked straight past it. The authoritative copy now
+     * runs INSIDE the transaction (below); this one exists purely to avoid
+     * taking a write lock in the common already-populated case. A fault is
+     * still a refusal — an unreadable index is not an empty one. */
     {
-        sqlite3_stmt *st = NULL;
-        if (sqlite3_prepare_v2(w->db,
-                "SELECT COUNT(*) FROM v2_tx_index", -1, &st, NULL)
-            != SQLITE_OK)
-            return -1;
-        int rc = sqlite3_step(st);
-        sqlite3_int64 rows =
-            (rc == SQLITE_ROW) ? sqlite3_column_int64(st, 0) : -1;
-        sqlite3_finalize(st);
+        int rows = s8_tx_index_rows(w);
         if (rows < 0) return -1;
         if (rows > 0) {
-            QGP_LOG_ERROR(LOG_TAG,
-                          "v2_tx_index holds %lld committed row(s) whose "
-                          "intent identities cannot be derived — refusing "
-                          "S8 migration (fail closed)",
-                          (long long)rows);
+            QGP_LOG_ERROR(LOG_TAG, "%s",
+                          "v2_tx_index holds committed row(s) whose intent "
+                          "identities cannot be derived — refusing S8 "
+                          "migration (fail closed, pre-BEGIN early-out)");
             return -1;
         }
     }
@@ -681,6 +784,40 @@ int nodus_witness_db_migrate_v2s8_ex(nodus_witness_t *w,
     int ok = 0;
     do {
         if (fail_at == V2S8MIG_FAIL_AFTER_BEGIN) break;
+
+        /* O15B §9 — BOTH pre-BEGIN reads are re-taken here, under the write
+         * lock, where nothing can commit between the check and the DDL. */
+        int rv = mig_revalidate_version(w, NODUS_V2_SCHEMA_VERSION_S7,
+                                        NODUS_V2_SCHEMA_VERSION_S8, "S8");
+        if (rv < 0) break;
+        if (rv == 0) {
+            /* A peer finished this migration while we waited for the
+             * write lock. Nothing was written here, so release the lock
+             * rather than COMMIT an empty transaction, and report the
+             * success the caller actually asked for: the database is at
+             * the target version. */
+            (void)exec_sql(w, "ROLLBACK");
+            return 0;
+        }
+
+        /* FAIL CLOSED on a populated wire index: an intent_id can only be
+         * derived from the ORIGINAL envelope bytes, which v2_tx_index does
+         * not store, so a database that already committed V2 transactions
+         * cannot be backfilled with their intent identities. Migrating it
+         * anyway would leave every pre-migration intent silently unguarded
+         * against semantic replay. */
+        {
+            int rows = s8_tx_index_rows(w);
+            if (rows < 0) break;
+            if (rows > 0) {
+                QGP_LOG_ERROR(LOG_TAG,
+                              "v2_tx_index gained %d committed row(s) after "
+                              "the pre-BEGIN check — refusing S8 migration "
+                              "(fail closed, in-transaction)", rows);
+                break;
+            }
+        }
+        if (fail_at == V2S8MIG_FAIL_AFTER_REVALIDATE) break;
 
         if (exec_sql(w, V2S8_TABLES_DDL) != 0) break;
         if (fail_at == V2S8MIG_FAIL_AFTER_TABLES) break;

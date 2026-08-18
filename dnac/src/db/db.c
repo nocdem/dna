@@ -259,6 +259,42 @@ int dnac_db_init(sqlite3 *db) {
         dnac_db_set_version(db, 6);
     }
 
+    /* v7 (O15B §7): UTXO cooldown lock height.
+     *
+     * Consensus rejects a spend whose input is still inside its post-UNSTAKE
+     * cooldown (Rule D, nodus_witness_verify.c:730). The wallet had no
+     * column for that height, so coin selection could — and did — pick a
+     * locked coin and build a transaction all seven validators rejected;
+     * the submitter saw only "Operation timed out", on every retry.
+     *
+     * DEFAULT 0 = spendable, which is the true value for every ordinary
+     * output and reproduces existing behaviour for rows written before this
+     * migration. Those rows are corrected on the next `dna sync`, because
+     * the store path below now UPDATES this column on conflict instead of
+     * silently ignoring the row. */
+    if (current_version < 7) {
+        static const char *const v7_stmts[] = {
+            "ALTER TABLE dnac_utxos ADD COLUMN unlock_block INTEGER NOT NULL DEFAULT 0;",
+            NULL
+        };
+
+        for (int i = 0; v7_stmts[i] != NULL; i++) {
+            rc = sqlite3_exec(db, v7_stmts[i], NULL, NULL, &err_msg);
+            if (rc != SQLITE_OK) {
+                /* Idempotent — a partially applied migration may already
+                 * have added the column. Anything else fails closed. */
+                if (err_msg && strstr(err_msg, "duplicate column") == NULL) {
+                    QGP_LOG_ERROR(LOG_TAG, "DB migration v7 error: %s", err_msg);
+                    sqlite3_free(err_msg);
+                    return DNAC_ERROR_DATABASE;
+                }
+                sqlite3_free(err_msg);
+                err_msg = NULL;
+            }
+        }
+        dnac_db_set_version(db, 7);
+    }
+
     return DNAC_SUCCESS;
 }
 
@@ -297,10 +333,24 @@ static int dnac_db_set_version(sqlite3 *db, int version) {
 int dnac_db_store_utxo(sqlite3 *db, const dnac_utxo_t *utxo) {
     if (!db || !utxo) return DNAC_ERROR_INVALID_PARAM;
 
+    /* O15B §7 — the lock height is REFRESHED on conflict.
+     *
+     * Callers use this as an INSERT-OR-IGNORE ("won't overwrite existing
+     * entries", tcp_client.c). That is right for the immutable fields — a
+     * UTXO's amount, owner and token never change — but wrong for
+     * unlock_block, whose correct value may simply not have been KNOWN when
+     * the row was first written: rows created before schema v7, or synced
+     * from a pre-O15B witness, carry the default 0 and would keep claiming
+     * to be spendable forever. `nullifier` is the table's UNIQUE key, so the
+     * conflict target is exact and the update touches nothing else.
+     *
+     * The value is monotone in practice (a coin's cooldown is fixed at
+     * creation), so this converges to the truth and never oscillates. */
     const char *sql =
         "INSERT INTO dnac_utxos "
-        "(tx_hash, output_index, amount, nullifier, owner_fingerprint, status, received_at, token_id) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
+        "(tx_hash, output_index, amount, nullifier, owner_fingerprint, status, received_at, token_id, unlock_block) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(nullifier) DO UPDATE SET unlock_block = excluded.unlock_block";
 
     sqlite3_stmt *stmt = NULL;
     int rc = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
@@ -314,6 +364,7 @@ int dnac_db_store_utxo(sqlite3 *db, const dnac_utxo_t *utxo) {
     sqlite3_bind_int(stmt, 6, utxo->status);
     sqlite3_bind_int64(stmt, 7, utxo->received_at);
     sqlite3_bind_blob(stmt, 8, utxo->token_id, DNAC_TOKEN_ID_SIZE, SQLITE_STATIC);
+    sqlite3_bind_int64(stmt, 9, (sqlite3_int64)utxo->unlock_block);
 
     rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
@@ -356,7 +407,7 @@ int dnac_db_get_unspent_utxos(sqlite3 *db,
 
     const char *select_sql =
         "SELECT tx_hash, output_index, amount, nullifier, owner_fingerprint, "
-        "status, received_at, spent_at, token_id "
+        "status, received_at, spent_at, token_id, unlock_block "
         "FROM dnac_utxos WHERE owner_fingerprint = ? AND status = 0 "
         "ORDER BY amount ASC";
 
@@ -384,6 +435,12 @@ int dnac_db_get_unspent_utxos(sqlite3 *db,
         if (tid && sqlite3_column_bytes(stmt, 8) == DNAC_TOKEN_ID_SIZE) {
             memcpy(utxos[i].token_id, tid, DNAC_TOKEN_ID_SIZE);
         }
+        /* O15B §7 — a negative stored height must never wrap to a huge u64
+         * and read as "unlocked long ago". Treat a malformed row as locked
+         * forever: refusing to spend a coin we cannot classify is recoverable,
+         * spending one consensus rejects is not. */
+        sqlite3_int64 ub = sqlite3_column_int64(stmt, 9);
+        utxos[i].unlock_block = (ub < 0) ? UINT64_MAX : (uint64_t)ub;
         i++;
     }
     sqlite3_finalize(stmt);
@@ -1063,6 +1120,77 @@ int dnac_db_set_stored_chain_id(sqlite3 *db, const uint8_t *chain_id) {
 
     sqlite3_bind_blob(stmt, 1, chain_id, 32, SQLITE_STATIC);
 
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    return (rc == SQLITE_DONE) ? DNAC_SUCCESS : DNAC_ERROR_DATABASE;
+}
+
+/* ============================================================================
+ * O15B §7: observed chain height
+ *
+ * The height the witness reported in the SAME `dnac_utxo` response that
+ * produced the current UTXO snapshot. Coin selection compares each coin's
+ * unlock_block against it to reproduce, client-side, the rule consensus
+ * enforces (Rule D, nodus_witness_verify.c:730).
+ *
+ * WRITER AND READER SEE THE SAME DERIVATION, deliberately: the height and the
+ * coins are committed together from one response, never mixed across syncs.
+ * A stale height is CONSERVATIVE — the chain only advances, so an out-of-date
+ * height can only classify a coin as still-locked when it has just unlocked.
+ * That delays a spend by one sync; the opposite error builds a transaction
+ * every validator rejects.
+ * ========================================================================== */
+
+int dnac_db_get_observed_height(sqlite3 *db, uint64_t *height_out) {
+    if (!db || !height_out) return DNAC_ERROR_INVALID_PARAM;
+    *height_out = 0;
+
+    const char *sql =
+        "SELECT value FROM dnac_wallet_config WHERE key = 'observed_height'";
+    sqlite3_stmt *stmt = NULL;
+
+    int rc = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return DNAC_ERROR_DATABASE;
+
+    rc = sqlite3_step(stmt);
+    if (rc != SQLITE_ROW) {
+        sqlite3_finalize(stmt);
+        return DNAC_ERROR_NOT_FOUND;
+    }
+
+    const void *blob = sqlite3_column_blob(stmt, 0);
+    int blob_size = sqlite3_column_bytes(stmt, 0);
+    if (!blob || blob_size != 8) {
+        sqlite3_finalize(stmt);
+        return DNAC_ERROR_DATABASE;
+    }
+
+    /* Big-endian, so the stored bytes do not depend on the host. */
+    const uint8_t *b = (const uint8_t *)blob;
+    uint64_t h = 0;
+    for (int i = 0; i < 8; i++) h = (h << 8) | b[i];
+    *height_out = h;
+
+    sqlite3_finalize(stmt);
+    return DNAC_SUCCESS;
+}
+
+int dnac_db_set_observed_height(sqlite3 *db, uint64_t height) {
+    if (!db) return DNAC_ERROR_INVALID_PARAM;
+
+    uint8_t b[8];
+    for (int i = 0; i < 8; i++) b[i] = (uint8_t)(height >> (56 - 8 * i));
+
+    const char *sql =
+        "INSERT OR REPLACE INTO dnac_wallet_config (key, value) "
+        "VALUES ('observed_height', ?)";
+    sqlite3_stmt *stmt = NULL;
+
+    int rc = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return DNAC_ERROR_DATABASE;
+
+    sqlite3_bind_blob(stmt, 1, b, 8, SQLITE_TRANSIENT);
     rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
 

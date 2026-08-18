@@ -145,7 +145,40 @@ typedef enum {
      * Fail-closed, and deliberately a different class from
      * NODUS_V2_RETIRED_VERSION.
      */
-    NODUS_V2_UNSUPPORTED_VERSION = -5
+    NODUS_V2_UNSUPPORTED_VERSION = -5,
+
+    /* ── REFUSAL: the lane is not active here ─────────────────────── */
+
+    /**
+     * Ledger V2 is NOT ACTIVATED on this node, so nothing about the block
+     * was examined. O15B.
+     *
+     * This is NOT a verdict and NOT a deferral. It is a statement about
+     * THIS NODE'S CONFIGURATION, and it is the only correct answer while
+     * the activation gate is closed:
+     *
+     *   - It is not INVALID. The bytes were never parsed for validity; a
+     *     node that has not activated a lane has no opinion about traffic
+     *     on it, and every activated peer may accept the very same block.
+     *     Collapsing this into a rejection would let an unactivated node
+     *     manufacture evidence against honest proposers — the exact defect
+     *     class O15A closed for -1 versus -3.
+     *   - It is not NOT_YET_LINKABLE. That says "I lack the predecessor
+     *     state"; this says "I will not look, at any height, until
+     *     activation authority and preflight readiness both exist".
+     *   - The peer MUST NOT be penalised, blacklisted, or scored. Offering
+     *     a V2 block to a node that has not activated V2 is not
+     *     misbehaviour.
+     *   - The block MUST NOT enter an orphan or future queue. A queue
+     *     entry is work an unactivated node has no reason to do and a
+     *     resource an unactivated node has no reason to spend; queueing
+     *     would also mean an inactive lane could be made to consume memory
+     *     by anyone who can reach the port.
+     *
+     * Returned BEFORE any peer acknowledgement, any consensus work and any
+     * database mutation — see nodus_witness_v2_gate.h.
+     */
+    NODUS_V2_NOT_ACTIVE          = -6
 } nodus_v2_result_t;
 
 /**
@@ -170,6 +203,34 @@ static inline int nodus_v2_result_is_verdict(int rc) {
     return rc == NODUS_V2_CONSENSUS_INVALID ||
            rc == NODUS_V2_RETIRED_VERSION ||
            rc == NODUS_V2_UNSUPPORTED_VERSION;
+}
+
+/**
+ * True when the result says nothing about the block or the peer, because
+ * this node has not activated the lane. O15B.
+ *
+ * Kept as its own predicate rather than folded into `is_undecided` on
+ * purpose: an undecided node WANTED to decide and could not, so retrying,
+ * syncing, or waiting are all sensible responses. A NOT_ACTIVE node did not
+ * try and will not try, so the only correct responses are to drop the input
+ * and to leave the peer's reputation untouched.
+ */
+static inline int nodus_v2_result_is_not_active(int rc) {
+    return rc == NODUS_V2_NOT_ACTIVE;
+}
+
+/**
+ * True when the peer that offered this block may be held responsible for
+ * it. The single predicate every network caller should use before applying
+ * ANY peer policy — scoring, disconnect, blacklist, rate-limit.
+ *
+ * Exactly `is_verdict`. It exists as a separate name because the network
+ * layer asks a different question from the engine's, and because a reviewer
+ * reading a peer-policy call site should see the intent rather than have to
+ * re-derive that -2, -3 and -6 are all "not the peer's fault".
+ */
+static inline int nodus_v2_result_blames_peer(int rc) {
+    return nodus_v2_result_is_verdict(rc);
 }
 
 /**

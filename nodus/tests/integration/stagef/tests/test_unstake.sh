@@ -40,6 +40,8 @@ stagef_dna_as "$TEST_HOME" -q dna stake > "$BASE_DIR/test_unstake_prestake.log" 
     exit 2
 }
 sleep 8
+# O15B §7 — the fixture (funded AND staked test user) is in place.
+stagef_sentinel SETUP_OK
 
 bash "$(dirname "$0")/../stagef_diff.sh" "pre-UNSTAKE"
 
@@ -52,8 +54,10 @@ stagef_dna_as "$TEST_HOME" -q dna unstake \
     tail -10 "$BASE_DIR/test_unstake.log" >&2
     exit 3
 }
+stagef_sentinel TARGET_REACHED
 sleep 8
 bash "$(dirname "$0")/../stagef_diff.sh" "post-UNSTAKE"
+stagef_sentinel ASSERT_RUN
 
 # Verify validator status = RETIRING (1) on every node and
 # unstake_commit_block is non-zero + identical across nodes.
@@ -83,4 +87,5 @@ for n in $(seq 1 "$STAGEF_COMMITTEE_SIZE"); do
 done
 
 echo ""
+stagef_sentinel PASS
 echo "[PASS] UNSTAKE consensus intact — validator RETIRING at block $first_ucb across $STAGEF_COMMITTEE_SIZE nodes"

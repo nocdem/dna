@@ -22,6 +22,10 @@ fi
 # Create a fresh funded test user — avoids contaminating stagef_user state
 # and sidesteps ordering collisions with test_delegate_to_retiring.
 TEST_HOME=$(stagef_mk_funded_user "stake" 1200000000000000) || exit 1
+# O15B §7 — the fixture exists and its funding is confirmed COMMITTED AND
+# SPENDABLE on chain (stagef_mk_funded_user now proves both before it
+# returns, on the success path as well as the failure path).
+stagef_sentinel SETUP_OK
 
 # Baseline state_root (post-fund — test user's funding block already landed).
 bash "$(dirname "$0")/../stagef_diff.sh" "baseline"
@@ -44,9 +48,18 @@ stagef_dna_as "$TEST_HOME" -q dna stake \
     tail -10 "$BASE_DIR/test_stake.log" >&2
     exit 2
 }
+# O15B §7 — the operation under test was actually performed.
+stagef_sentinel TARGET_REACHED
+
 # Wait a few block intervals for BFT commit.
 sleep 8
 bash "$(dirname "$0")/../stagef_diff.sh" "post-STAKE"
+
+# O15B §7 — from here on the terminal consensus assertions execute. A run
+# that reaches this mark and then exits non-zero is a real disagreement; a
+# run that exits 0 WITHOUT it never checked anything and the runner now
+# reports that as a failure rather than a pass.
+stagef_sentinel ASSERT_RUN
 
 # Verify validator_tree grew by exactly 1 on every node.
 for n in $(seq 1 "$STAGEF_COMMITTEE_SIZE"); do
@@ -75,5 +88,6 @@ for n in $(seq 1 "$STAGEF_COMMITTEE_SIZE"); do
     fi
 done
 
+stagef_sentinel PASS
 echo ""
 echo "[PASS] STAKE consensus intact across $STAGEF_COMMITTEE_SIZE nodes"

@@ -98,6 +98,19 @@ typedef struct {
     uint8_t     tx_hash[NODUS_T3_TX_HASH_LEN];
     uint32_t    output_index;
     uint64_t    block_height;
+    /* O15B §7 — the height at or after which this coin becomes spendable.
+     * 0 = spendable now (every ordinary output). Non-zero only for the
+     * post-UNSTAKE principal release, which consensus locks for
+     * DNAC_UNSTAKE_COOLDOWN_BLOCKS.
+     *
+     * This field exists because consensus REJECTS a spend of a locked coin
+     * (Rule D, nodus_witness_verify.c:730) while the wallet that chose it
+     * had no way to know it was locked: the column was never selected here,
+     * never carried on the dnac_utxo wire, and has no counterpart in the
+     * client's own UTXO table. Coin selection therefore built transactions
+     * that all seven validators were guaranteed to reject, and the submitter
+     * observed only a 60 s timeout. */
+    uint64_t    unlock_block;
 } nodus_witness_utxo_entry_t;
 
 int  nodus_witness_utxo_by_owner(nodus_witness_t *w, const char *owner,

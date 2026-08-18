@@ -28,6 +28,14 @@ if [ -z "$V0_PUBKEY" ]; then
     exit 1
 fi
 
+# O15B §7 — this scenario spends from stagef_user directly rather than
+# through stagef_mk_funded_user, which is exactly why it broke: by the time
+# it runs, test_delegate_to_retiring has UNSTAKED, minting a cooldown-locked
+# release coin into that same wallet. Coin selection had no notion of a
+# lock, chose it, and every validator rejected the transaction — surfacing
+# here as "delegate submit failed".
+stagef_sentinel SETUP_OK
+
 # Baseline state_root (post-genesis).
 bash "$(dirname "$0")/../stagef_diff.sh" "baseline"
 
@@ -53,8 +61,19 @@ stagef_dna -q dna undelegate "$V0_PUBKEY" 200000000000000 \
     tail -10 "$BASE_DIR/test_undelegate.log" >&2
     exit 3
 }
+stagef_sentinel TARGET_REACHED
 sleep 8
+# ASSERT_RUN must be recorded BEFORE the assertion, not after.
+#
+# stagef_diff.sh IS this scenario's terminal assertion, and it aborts the
+# script under `set -euo pipefail`. Marking afterwards meant a genuine
+# state_root divergence exited with marks `SETUP_OK TARGET_REACHED` — which
+# reads as "the fixture broke", the exact misdiagnosis the sentinels exist
+# to prevent. The mark states that the assertion is ABOUT TO RUN; whether it
+# passes is carried by the exit code. (Review R3.)
+stagef_sentinel ASSERT_RUN
 bash "$(dirname "$0")/../stagef_diff.sh" "post-UNDELEGATE"
 
+stagef_sentinel PASS
 echo ""
 echo "[PASS] DELEGATE + UNDELEGATE consensus intact across 3 nodes"

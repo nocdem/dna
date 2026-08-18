@@ -683,6 +683,33 @@ typedef struct nodus_witness {
     uint64_t    bootstrap_last_heartbeat_log_ms;
 
     bool        running;
+
+    /* ── Ledger V2 ingress reachability (O15B) ───────────────────────
+     *
+     * `v2_ingress_armed` is the ONLY thing that makes a V2 wire message
+     * dispatchable on this node. It is set exclusively by
+     * nodus_witness_v2_ingress_arm(), which refuses unless the activation
+     * gate is OPEN — and the gate can never be OPEN in this build (no
+     * committed activation authority exists, and the preflight is
+     * structurally never ready). See nodus_witness_v2_gate.h.
+     *
+     * It is deliberately a RUNTIME field and not a persisted one: a
+     * database bit would be an operator override by another name, and the
+     * ruling for this season forbids any such bypass. It is also what
+     * preflight issue 13 (INGRESS_ENABLED) is COMPUTED from, so the
+     * preflight reports what this node is actually doing rather than
+     * arguing from the structural claim that ingress code does not exist
+     * — a claim O15B itself retired by writing that code.
+     *
+     * `v2_gate_test_*` exist only in builds that define
+     * NODUS_V2_TEST_AUTHORITY (test targets only; absent from libnodus and
+     * nodus-server, proven by `nm` in test_v2_gate_linked). They are
+     * declared unconditionally so the struct layout does not depend on a
+     * build flag — a layout that changed with a test macro would make
+     * every test exercise a different object than production does. */
+    bool        v2_ingress_armed;
+    bool        v2_gate_test_authority;
+    bool        v2_gate_test_allow_unready;
 } nodus_witness_t;
 
 /* Phase 4 / Task 4.2 — intra-batch chained-UTXO context.

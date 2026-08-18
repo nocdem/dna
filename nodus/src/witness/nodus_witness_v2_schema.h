@@ -209,7 +209,12 @@ typedef enum {
     V2MIG_FAIL_AFTER_TABLES,      /* six tables created                   */
     V2MIG_FAIL_AFTER_ALTER,       /* utxo_set.domain_id added             */
     V2MIG_FAIL_AFTER_VERIFY,      /* schema verification passed           */
-    V2MIG_FAIL_BEFORE_COMMIT      /* user_version written, pre-COMMIT     */
+    V2MIG_FAIL_BEFORE_COMMIT,     /* user_version written, pre-COMMIT     */
+    /* O15B §9 — APPENDED, deliberately not inserted after AFTER_BEGIN
+     * where it happens in execution order: the values above are pinned by
+     * shipped tests, and renumbering them to make the enum read
+     * chronologically would silently re-target every existing fault case. */
+    V2MIG_FAIL_AFTER_REVALIDATE   /* in-transaction version re-read passed */
 } nodus_v2_mig_fail_t;
 
 /** Deterministic fault-injection stages for the S6 migration tests
@@ -219,7 +224,8 @@ typedef enum {
     V2S6MIG_FAIL_AFTER_BEGIN,     /* after BEGIN, before any DDL          */
     V2S6MIG_FAIL_AFTER_TABLES,    /* three S6 tables created              */
     V2S6MIG_FAIL_AFTER_VERIFY,    /* schema verification passed           */
-    V2S6MIG_FAIL_BEFORE_COMMIT    /* user_version written, pre-COMMIT     */
+    V2S6MIG_FAIL_BEFORE_COMMIT,   /* user_version written, pre-COMMIT     */
+    V2S6MIG_FAIL_AFTER_REVALIDATE /* O15B: in-txn version re-read passed  */
 } nodus_v2s6_mig_fail_t;
 
 /** Read the schema version. @return 0 with *out set, -1 on fault. */
@@ -258,7 +264,8 @@ typedef enum {
     V2S7MIG_FAIL_AFTER_BEGIN,     /* after BEGIN, before any DDL          */
     V2S7MIG_FAIL_AFTER_TABLES,    /* four S7 tables created               */
     V2S7MIG_FAIL_AFTER_VERIFY,    /* schema-shape verification passed     */
-    V2S7MIG_FAIL_BEFORE_COMMIT    /* user_version written, pre-COMMIT     */
+    V2S7MIG_FAIL_BEFORE_COMMIT,   /* user_version written, pre-COMMIT     */
+    V2S7MIG_FAIL_AFTER_REVALIDATE /* O15B: in-txn version re-read passed  */
 } nodus_v2s7_mig_fail_t;
 
 /**
@@ -283,7 +290,11 @@ typedef enum {
     V2S8MIG_FAIL_AFTER_BEGIN,     /* after BEGIN, before any DDL          */
     V2S8MIG_FAIL_AFTER_TABLES,    /* v2_intent_index created              */
     V2S8MIG_FAIL_AFTER_VERIFY,    /* schema-shape verification passed     */
-    V2S8MIG_FAIL_BEFORE_COMMIT    /* user_version written, pre-COMMIT     */
+    V2S8MIG_FAIL_BEFORE_COMMIT,   /* user_version written, pre-COMMIT     */
+    /* O15B §9 — fires after BOTH in-transaction re-checks: the schema
+     * version AND the populated-`v2_tx_index` refusal, which used to run
+     * pre-BEGIN where a concurrent commit could slip past it. */
+    V2S8MIG_FAIL_AFTER_REVALIDATE
 } nodus_v2s8_mig_fail_t;
 
 /**

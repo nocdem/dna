@@ -102,6 +102,98 @@ stagef_dna() {
 }
 
 # ──────────────────────────────────────────────────────────────────────
+# O15B §7 — REACHABILITY SENTINELS
+#
+# A scenario that dies in setup and a scenario that ran its real consensus
+# assertion both exit non-zero, and before this they were indistinguishable
+# in the summary. That is how five scenarios could fail for one shared
+# setup reason while the suite reported five independent consensus test
+# failures — and, worse, how a scenario whose setup silently degraded could
+# report PASS without ever reaching the thing it exists to check.
+#
+# Every scenario now records how far it got. Four ordered marks:
+#
+#   SETUP_OK        fixtures exist: funded users, validators, whatever the
+#                   scenario needs before it can do its real work.
+#   TARGET_REACHED  the operation under test was actually performed.
+#   ASSERT_RUN      the terminal assertion executed (it may still fail).
+#   PASS            the scenario succeeded.
+#
+# The marks are files, so they survive the subshell each scenario runs in
+# and can be read by the runner after the fact. `genesis_protocol.sh`
+# reports them per scenario and treats a PASS with no ASSERT_RUN as a
+# FAILURE — a green scenario that never reached its assertion is not
+# coverage, and saying so is the whole point.
+# ──────────────────────────────────────────────────────────────────────
+
+# Directory holding this run's sentinel marks.
+#
+# RESOLVED FRESH ON EVERY CALL, from the pointer file first.
+#
+# The first version read `${BASE_DIR:-/tmp}`, captured when the caller
+# sourced this file — and that made the whole gate INERT in a full run.
+# genesis_protocol.sh sources this at script top, BEFORE Phase 2 brings the
+# cluster up, and at that moment /tmp/stagef_current does not exist (the
+# defensive stagef_down.sh removed it). So the runner's BASE_DIR stayed
+# unset, stagef_up.sh set its own in a CHILD process, and the runner went on
+# looking in /tmp/sentinels while every scenario wrote to
+# $NEW_BASE/sentinels. Every scenario read back NONE, was classified
+# UNINSTRUMENTED, and the "PASS without ASSERT_RUN is a FAILURE" conversion
+# could never fire. It worked only in --scenarios mode, where the pointer
+# already existed at source time — which is exactly how it was tested.
+# Review R3 found this.
+stagef_sentinel_dir() {
+    local base="${BASE_DIR:-}"
+    if [ -f "$STAGEF_POINTER" ]; then
+        base="$(cat "$STAGEF_POINTER" 2>/dev/null || true)"
+    fi
+    echo "${base:-/tmp}/sentinels"
+}
+
+# stagef_sentinel MARK  — record that this scenario reached MARK.
+# The scenario name is derived from $0 so no scenario has to repeat it.
+#
+# The FIRST mark of a scenario TRUNCATES its file. Appending unconditionally
+# meant marks accumulated across repeated `--scenarios` runs against one live
+# harness: a scenario that recorded ASSERT_RUN on run 1 and skipped it on
+# run 2 still showed the mark, masking precisely the regression the gate
+# exists to catch (review R3). SETUP_OK is every instrumented scenario's
+# first mark, so truncating on it starts each run clean.
+stagef_sentinel() {
+    local mark="$1"
+    local name
+    name="$(basename "${0:-unknown}" .sh)"
+    local dir
+    dir="$(stagef_sentinel_dir)"
+    mkdir -p "$dir" 2>/dev/null || return 0
+    if [ "$mark" = "SETUP_OK" ]; then
+        printf '%s\n' "$mark" > "$dir/$name"
+    else
+        printf '%s\n' "$mark" >> "$dir/$name"
+    fi
+    return 0
+}
+
+# stagef_sentinel_has NAME MARK — 0 if scenario NAME recorded MARK.
+stagef_sentinel_has() {
+    local dir
+    dir="$(stagef_sentinel_dir)"
+    [ -f "$dir/$1" ] || return 1
+    grep -qx "$2" "$dir/$1"
+}
+
+# stagef_sentinel_summary NAME — the marks NAME recorded, space separated.
+stagef_sentinel_summary() {
+    local dir
+    dir="$(stagef_sentinel_dir)"
+    if [ -f "$dir/$1" ]; then
+        tr '\n' ' ' < "$dir/$1"
+    else
+        printf 'NONE'
+    fi
+}
+
+# ──────────────────────────────────────────────────────────────────────
 # Test-user helpers — for tests that need their own validator state
 # without contaminating or depending on stagef_user.
 # ──────────────────────────────────────────────────────────────────────
@@ -158,13 +250,34 @@ stagef_mk_funded_user() {
         # replica can never show a late commit, and the old node1-only
         # check reported "chain verified empty" against a stale file
         # (BUGS.md 2026-08-04, H1).
-        local owner_fp="$1" node db cnt
+        #
+        # O15B §7 — the UTXO must be SPENDABLE, not merely present.
+        # Counting rows was not enough: consensus rejects a spend whose
+        # input is still inside its post-UNSTAKE cooldown (Rule D,
+        # nodus_witness_verify.c:730), so a funded user holding only
+        # locked coins would pass this check and then fail every
+        # subsequent operation with an unexplained timeout. That is
+        # exactly the failure this season root-caused. The predicate is
+        # now the same one consensus applies: unlock_block <= the
+        # chain's current height.
+        # The chain head column is `blocks.height` (see the witness schema:
+        # `CREATE TABLE blocks (height INTEGER PRIMARY KEY AUTOINCREMENT, ...)`).
+        # An empty result from either query is treated as "not yet", never as
+        # success — a query that cannot run must not read as a confirmation.
+        local owner_fp="$1" node db cnt height
         for node in 1 2 3 4 5 6 7; do
             db=$(ls "$BASE_DIR/node$node/data"/witness_*.db 2>/dev/null | head -1)
             [ -n "$db" ] || continue
-            cnt=$(sqlite3 -readonly "$db" \
-                "SELECT COUNT(*) FROM utxo_set WHERE owner = '$owner_fp';" \
+            height=$(sqlite3 -readonly "$db" \
+                "SELECT COALESCE(MAX(height),0) FROM blocks;" \
                 2>/dev/null) || continue
+            [ -n "$height" ] || continue
+            cnt=$(sqlite3 -readonly "$db" \
+                "SELECT COUNT(*) FROM utxo_set
+                  WHERE owner = '$owner_fp'
+                    AND COALESCE(unlock_block,0) <= $height;" \
+                2>/dev/null) || continue
+            [ -n "$cnt" ] || continue
             [ "${cnt:-0}" -ge 1 ] && return 0
         done
         return 1
@@ -173,8 +286,25 @@ stagef_mk_funded_user() {
     for attempt in 1 2 3; do
         if stagef_dna -q dna send "$fp" "$fund_raw" "stagef_fund_$label" \
                 > "$test_home/fund.log" 2>&1; then
-            fund_ok=1
-            break
+            # O15B §7 — A CLI SUCCESS IS NOT A COMMIT.
+            #
+            # This branch used to set fund_ok=1 on the exit code alone, so
+            # the helper's guarantee depended on the CLI's opinion. The
+            # chain is the authority in BOTH directions: a CLI failure may
+            # still have committed (the pre-existing false negative this
+            # code already handled), and a CLI success must still be
+            # confirmed before anything is built on top of it. Confirming
+            # only failures left the success path unproven.
+            chain_deadline=$(( SECONDS + 45 ))
+            while [ $SECONDS -lt $chain_deadline ]; do
+                if stagef_fund_on_chain "$fp"; then
+                    fund_ok=1
+                    break
+                fi
+                sleep 2
+            done
+            [ "$fund_ok" -eq 1 ] && break
+            echo "[warn] stagef_mk_funded_user: CLI reported success but no SPENDABLE UTXO appeared on chain for $label (attempt $attempt)" >&2
         fi
         # CLI said failure — ask the chain before believing it. Poll up
         # to 45 s (covers round timeout + view change + commit lag).
@@ -199,7 +329,27 @@ stagef_mk_funded_user() {
         tail -10 "$test_home/fund.log" >&2
         return 1
     fi
-    sleep 8
+    # O15B §7 — EXPLICIT CONFIRMATION, NOT A GUESS.
+    #
+    # This was `sleep 8`. A fixed sleep is a bet that the cluster is done
+    # in eight seconds; it is too long when things are healthy and silently
+    # wrong when they are not, and §7 forbids replacing a readiness
+    # condition with a timing guess. The condition is the one that
+    # actually matters — the funded UTXO is committed AND spendable — and
+    # it has already been established above by stagef_fund_on_chain, so
+    # this is a short bounded re-confirmation that the state is still
+    # there rather than a wait for it to appear.
+    fund_stable=0
+    stable_deadline=$(( SECONDS + 20 ))
+    while [ $SECONDS -lt $stable_deadline ]; do
+        if stagef_fund_on_chain "$fp"; then fund_stable=1; break; fi
+        sleep 1
+    done
+    if [ "$fund_stable" -eq 0 ]; then
+        echo "[FAIL] stagef_mk_funded_user: funded UTXO for $label did not remain spendable on chain" >&2
+        return 1
+    fi
+
     # Sync the new user's wallet so subsequent CLI calls see the incoming
     # UTXO. Without this, the next `dna stake` fails with "Insufficient
     # funds" even though the chain has the fund TX committed.

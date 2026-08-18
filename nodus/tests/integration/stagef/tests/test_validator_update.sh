@@ -37,6 +37,8 @@ stagef_dna_as "$TEST_HOME" -q dna stake > "$BASE_DIR/test_vu_prestake.log" 2>&1 
     exit 2
 }
 sleep 8
+# O15B §7 — funded AND staked test user in place.
+stagef_sentinel SETUP_OK
 
 bash "$(dirname "$0")/../stagef_diff.sh" "pre-VALIDATOR_UPDATE"
 
@@ -56,8 +58,10 @@ stagef_dna_as "$TEST_HOME" -q dna validator-update --commission-bps "$NEW_BPS" \
     tail -10 "$BASE_DIR/test_validator_update.log" >&2
     exit 3
 }
+stagef_sentinel TARGET_REACHED
 sleep 8
 bash "$(dirname "$0")/../stagef_diff.sh" "post-VALIDATOR_UPDATE"
+stagef_sentinel ASSERT_RUN
 
 # Verify pending_commission_bps = $NEW_BPS and pending_effective_block
 # is non-zero + identical across all 7 nodes.
@@ -86,4 +90,5 @@ for n in $(seq 1 "$STAGEF_COMMITTEE_SIZE"); do
 done
 
 echo ""
+stagef_sentinel PASS
 echo "[PASS] VALIDATOR_UPDATE consensus intact — pending $NEW_BPS bps at block $(echo "$first_row" | cut -d'|' -f2) across $STAGEF_COMMITTEE_SIZE nodes"

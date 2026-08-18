@@ -33,6 +33,31 @@ FAILED_TESTS=()
 
 banner() { printf '\n=== %s ===\n' "$*"; }
 
+# O15B §7 — REACHABILITY, REPORTED PER SCENARIO.
+#
+# An exit code alone cannot distinguish "setup failed" from "the consensus
+# assertion ran and disagreed", and it cannot detect the worse case: a
+# scenario that returns 0 without ever reaching the thing it exists to
+# check. Both were live before this season — five scenarios failed for one
+# shared setup reason and were reported as five independent consensus
+# failures.
+#
+# Scenarios record marks via stagef_sentinel (stagef_env.sh). This reads
+# them back and classifies the run. A PASS that never recorded ASSERT_RUN
+# is converted to a FAILURE: a green scenario that skipped its terminal
+# assertion is not coverage, and calling it a pass is how coverage silently
+# evaporates.
+#
+# A scenario that records NOTHING is reported as UNINSTRUMENTED rather than
+# failed — the sentinels are being adopted, and a scenario that predates
+# them still runs its real assertions. That distinction is stated here so a
+# reader is not misled into thinking every green run is proven.
+STAGEF_ENV="$HERE/stagef_env.sh"
+# shellcheck source=/dev/null
+. "$STAGEF_ENV" 2>/dev/null || true
+
+UNINSTRUMENTED=0
+
 run_one() {
     local path="$1"
     local name
@@ -41,14 +66,42 @@ run_one() {
     out="$(bash "$path" 2>&1)"
     local rc=$?
 
+    local marks
+    marks="$(stagef_sentinel_summary "$name" 2>/dev/null || printf 'NONE')"
+    local reached_assert=0 instrumented=1
+    case "$marks" in
+        NONE|'') instrumented=0 ;;
+    esac
+    if stagef_sentinel_has "$name" ASSERT_RUN 2>/dev/null; then
+        reached_assert=1
+    fi
+
     if [ $rc -eq 0 ]; then
-        printf '  [PASS] %s\n' "$name"
+        if [ $instrumented -eq 1 ] && [ $reached_assert -eq 0 ]; then
+            printf '  [FAIL] %s (rc=0 but NEVER REACHED ITS TERMINAL ASSERTION; marks: %s)\n' \
+                   "$name" "$marks"
+            printf -- '--- begin full output ---\n'
+            printf '%s\n' "$out"
+            printf -- '--- end full output ---\n'
+            FAIL=$((FAIL + 1))
+            FAILED_TESTS+=("$name (vacuous pass)")
+            return
+        fi
+        if [ $instrumented -eq 0 ]; then
+            printf '  [PASS] %s (UNINSTRUMENTED — no reachability sentinels)\n' "$name"
+            UNINSTRUMENTED=$((UNINSTRUMENTED + 1))
+        else
+            printf '  [PASS] %s (marks: %s)\n' "$name" "$marks"
+        fi
         PASS=$((PASS + 1))
     elif [ $rc -eq 99 ]; then
         printf '  [SKIP] %s (rc=99)\n' "$name"
         SKIP=$((SKIP + 1))
     else
-        printf '  [FAIL] %s (rc=%d)\n' "$name" "$rc"
+        # The marks are the diagnosis: they say WHERE it stopped, which is
+        # the difference between "the fixture broke" and "consensus
+        # disagreed" — a distinction the exit code cannot carry.
+        printf '  [FAIL] %s (rc=%d; reached: %s)\n' "$name" "$rc" "$marks"
         printf -- '--- begin full output ---\n'
         printf '%s\n' "$out"
         printf -- '--- end full output ---\n'
@@ -130,6 +183,11 @@ else
 fi
 
 banner "Genesis Protocol result: $PASS PASS / $FAIL FAIL / $SKIP SKIP"
+if [ "$UNINSTRUMENTED" -gt 0 ]; then
+    printf '%s scenario(s) carry NO reachability sentinels — their PASS is\n' \
+           "$UNINSTRUMENTED"
+    printf 'an exit code, not a proof that a terminal assertion ran.\n'
+fi
 if [ $FAIL -gt 0 ]; then
     printf 'Failed tests:\n'
     for name in "${FAILED_TESTS[@]}"; do

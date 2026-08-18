@@ -104,6 +104,31 @@ static uint8_t g_quorum_cid[32];
 static uint8_t g_quorum_cdh[64];
 static bool    g_quorum_set = false;
 static bool    g_genesis_req_sent = false;
+/* Monotonic deadline after which an UNANSWERED w_genesis_req is re-sent.
+ *
+ * O15B — this exists because `g_genesis_req_sent` is cleared ONLY when a
+ * RESPONSE arrives (the four handle_genesis_rsp reject paths). Nothing
+ * cleared it when no response ever came, so a single lost request left the
+ * node in FETCH_GENESIS forever.
+ *
+ * That hole was invisible for as long as `send_genesis_req` mistakenly
+ * returned -1 on success: the flag was then never set at all, and the node
+ * re-sent on EVERY bootstrap tick — an accidental retry loop that happened
+ * to paper over the missing timeout. Repairing the return check (correctly)
+ * removed the accident and exposed the hole as a live hang: the Genesis
+ * Protocol harness caught it immediately, with `node9 did not sync genesis
+ * in 900s` while node8 — whose request happened to be answered — synced
+ * fine.
+ *
+ * So the retry is now DELIBERATE and BOUNDED, instead of accidental and
+ * every-tick. */
+static uint64_t g_genesis_req_deadline_ms = 0;
+
+/* How long to wait for a w_genesis_rsp before re-requesting. Comfortably
+ * longer than a healthy round trip (the response carries the chain_def
+ * blob, up to NODUS_W_MAX_CHAIN_DEF_BLOB), and far shorter than the
+ * harness's 900 s sync window, so several attempts fit inside it. */
+#define NODUS_W_GENESIS_REQ_RETRY_MS 5000ULL
 
 /* ── Local helpers ───────────────────────────────────────────────── */
 
@@ -215,7 +240,12 @@ static int broadcast_chain_q(nodus_witness_t *w) {
         if (!w->peers[i].identified) continue;
         if (w->peers[i].auth_state != PEER_AUTH_OK) continue;
         if (!w->peers[i].conn) continue;
-        if (nodus_tcp_send(w->peers[i].conn, buf, len) > 0) sent++;
+        /* O15B §11 — `nodus_tcp_send` returns 0 on SUCCESS, not a byte
+         * count. `> 0` therefore never fired and `sent` was permanently 0,
+         * so the diagnostic below reported "sent=0" on every healthy
+         * broadcast. Corrected while auditing this function as a caller of
+         * the send contract this season changed. */
+        if (nodus_tcp_send(w->peers[i].conn, buf, len) == 0) sent++;
     }
     fprintf(stderr,
             "WITNESS-BOOTSTRAP: w_chain_q broadcast attempt=%d "
@@ -293,7 +323,17 @@ static int send_genesis_req(nodus_witness_t *w) {
                 "WITNESS-BOOTSTRAP: encode w_genesis_req failed\n");
         return -1;
     }
-    if (nodus_tcp_send(conn, buf, len) <= 0) return -1;
+    /* O15B §11 — same contract error, and here it had teeth: `<= 0` is TRUE
+     * on success (0), so this function returned -1 for every successful
+     * send. Its only caller sets `g_genesis_req_sent` on a 0 return
+     * (nodus_witness_bootstrap.c, FETCH_GENESIS branch), so the flag was
+     * never set and the node re-sent w_genesis_req on every bootstrap tick.
+     *
+     * Pre-existing, and NOT worsened by this season's change (before it,
+     * send returned 0 for a dead peer too, so `<= 0` was equally wrong).
+     * Fixed here because leaving a caller that misreads a contract I
+     * deliberately narrowed is exactly the shortcut this tree forbids. */
+    if (nodus_tcp_send(conn, buf, len) != 0) return -1;
 
     fprintf(stderr,
             "WITNESS-BOOTSTRAP: w_genesis_req sent to first agreeing "
@@ -544,10 +584,22 @@ void nodus_witness_bootstrap_tick(nodus_witness_t *w) {
         /* Once in FETCH_GENESIS, fire one w_genesis_req per round
          * entry. handle_genesis_rsp validates + advances or falls
          * back to DISCOVER. */
-        if (w->bootstrap_state == (int)NODUS_W_BOOTSTRAP_FETCH_GENESIS &&
-            !g_genesis_req_sent) {
-            if (send_genesis_req(w) == 0) {
+        if (w->bootstrap_state == (int)NODUS_W_BOOTSTRAP_FETCH_GENESIS) {
+            /* Re-send when the previous request went unanswered past its
+             * deadline. Without this a single lost w_genesis_req strands
+             * the node in FETCH_GENESIS permanently — nothing else clears
+             * `g_genesis_req_sent` except an arriving response. */
+            if (g_genesis_req_sent && now >= g_genesis_req_deadline_ms) {
+                fprintf(stderr,
+                        "WITNESS-BOOTSTRAP: w_genesis_req unanswered after "
+                        "%llu ms — re-requesting\n",
+                        (unsigned long long)NODUS_W_GENESIS_REQ_RETRY_MS);
+                g_genesis_req_sent = false;
+            }
+            if (!g_genesis_req_sent && send_genesis_req(w) == 0) {
                 g_genesis_req_sent = true;
+                g_genesis_req_deadline_ms =
+                    now + NODUS_W_GENESIS_REQ_RETRY_MS;
             }
         }
         return;

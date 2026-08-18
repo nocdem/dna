@@ -307,7 +307,12 @@ int nodus_witness_utxo_by_owner(nodus_witness_t *w, const char *owner,
 
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(w->db,
-        "SELECT nullifier, owner, amount, token_id, tx_hash, output_index, block_height "
+        /* O15B §7: unlock_block is SELECTed so the caller can tell a
+         * spendable coin from one still inside its post-UNSTAKE cooldown.
+         * Omitting it is what let the wallet build transactions consensus
+         * was guaranteed to reject (Rule D, nodus_witness_verify.c:730). */
+        "SELECT nullifier, owner, amount, token_id, tx_hash, output_index, "
+        "block_height, unlock_block "
         "FROM utxo_set WHERE owner = ? LIMIT ?", -1, &stmt, NULL);
     if (rc != SQLITE_OK) return -1;
 
@@ -344,10 +349,30 @@ int nodus_witness_utxo_by_owner(nodus_witness_t *w, const char *owner,
 
         e->output_index = (uint32_t)sqlite3_column_int(stmt, 5);
         e->block_height = (uint64_t)sqlite3_column_int64(stmt, 6);
+
+        /* O15B §7 — a NEGATIVE stored integer must never surface as a huge
+         * u64. The same fail-closed discipline the native adapter row
+         * readers already apply (nodus_witness_rt_native.c, review round R4):
+         * a malformed row is reported as locked-forever rather than as
+         * spendable, because the failure mode of guessing wrong here is a
+         * transaction every validator rejects. */
+        sqlite3_int64 ub = sqlite3_column_int64(stmt, 7);
+        e->unlock_block = (ub < 0) ? UINT64_MAX : (uint64_t)ub;
         count++;
     }
 
+    /* O15B §7 — a mid-scan SQLITE_IOERR/SQLITE_CORRUPT used to truncate the
+     * result set and still return success, so a wallet could sync a PARTIAL
+     * UTXO list and believe it complete. Fail closed instead: an incomplete
+     * answer is not an answer. (nodus/CLAUDE.md, "A DB failure is never a
+     * value" — the unguarded `while (sqlite3_step(...) == SQLITE_ROW)` shape.) */
+    int step_rc = sqlite3_reset(stmt);
     sqlite3_finalize(stmt);
+    if (step_rc != SQLITE_OK) {
+        *count_out = 0;
+        return -1;
+    }
+
     *count_out = count;
     return 0;
 }

@@ -203,6 +203,39 @@ CREATE TABLE committed_transactions (
 CREATE INDEX idx_ctx_height ON committed_transactions(block_height);
 ```
 
+### Coin selection and the cooldown lock (O15B, 2026-08-18)
+
+Consensus refuses to spend a UTXO that is still inside its post-UNSTAKE
+cooldown — Rule D, `nodus/src/witness/nodus_witness_verify.c:730`:
+
+```c
+if (utxo_unlock_block > current_block)   /* reject */
+```
+
+The wallet honours the same rule, and must: a transaction that spends a
+locked coin is rejected by **every** validator, so it can never reach quorum
+and never commits. Before O15B the client had no way to know — the height was
+not selected by the witness query, not carried on the wire, and had no local
+column — so it built such transactions and the user saw only
+`Operation timed out`, identically on every retry.
+
+- **Wire**: the `dnac_utxo` response carries `"ub"` (the coin's
+  `unlock_block`) alongside the existing top-level `block_height`. This is a
+  **client-server RPC field only** — no consensus wire, transaction format,
+  block header or root is affected. It is a pure CBOR map addition, so an
+  older client that skips unknown keys is unaffected; against a pre-O15B
+  witness the key is absent and the client behaves exactly as it did before.
+- **Wallet**: `dnac_utxos.unlock_block` (schema **v7**), refreshed on conflict
+  so rows written before the migration self-correct on the next `dna sync`.
+- **Selection**: `dnac_wallet_select_utxos{,_token}` skip any coin with
+  `unlock_block > observed_height`, where the height is the one the witness
+  reported in the SAME response the coins came from
+  (`dnac_db_{get,set}_observed_height`). A stale height is conservative —
+  the chain only advances, so it can only delay a spend by one sync, never
+  admit an unspendable coin.
+- A wallet holding only locked coins reports `DNAC_ERROR_INSUFFICIENT_FUNDS`
+  rather than building a transaction that cannot commit.
+
 ### Wallet Address
 
 The wallet address is a **SHA3-512 hash of the Dilithium5 public key**:

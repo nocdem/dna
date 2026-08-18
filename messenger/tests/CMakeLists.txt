@@ -132,6 +132,23 @@ target_link_libraries(test_seal_authorship ${TEST_LIBS})
 add_test(NAME test_seal_authorship COMMAND test_seal_authorship)
 
 # =============================================================================
+# Test: O15B §7 — locked-UTXO coin selection
+# =============================================================================
+# Consensus rejects a spend whose input is still inside its post-UNSTAKE
+# cooldown (Rule D, nodus_witness_verify.c:730). The wallet had no column,
+# no wire field and no query for that height, so it built transactions all
+# seven validators were guaranteed to reject — and the submitter saw only
+# "Operation timed out", on every retry. This pins the schema, the storage
+# round trip, the re-sync refresh and the observed-height accessors.
+add_executable(test_wallet_locked_utxo test_wallet_locked_utxo.c)
+# dnac headers: the wallet compiles into libdna, but dnac/include is not on
+# the suite-wide include path (no other test reaches into it).
+target_include_directories(test_wallet_locked_utxo PRIVATE
+                           ${DNA_ROOT}/../dnac/include)
+target_link_libraries(test_wallet_locked_utxo ${TEST_LIBS})
+add_test(NAME test_wallet_locked_utxo COMMAND test_wallet_locked_utxo)
+
+# =============================================================================
 # Test: Key Encryption (PBKDF2 + AES-256-GCM)
 # =============================================================================
 add_executable(test_key_encryption test_key_encryption.c)

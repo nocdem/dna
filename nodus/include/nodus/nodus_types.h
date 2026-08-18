@@ -22,8 +22,8 @@ extern "C" {
 
 #define NODUS_VERSION_MAJOR  0
 #define NODUS_VERSION_MINOR  19
-#define NODUS_VERSION_PATCH  6
-#define NODUS_VERSION_STRING "0.19.6"
+#define NODUS_VERSION_PATCH  7
+#define NODUS_VERSION_STRING "0.19.7"
 
 /* Wire frame.
  *
@@ -431,6 +431,27 @@ typedef struct {
     uint8_t  tx_hash[NODUS_T3_TX_HASH_LEN];
     uint32_t output_index;
     uint64_t block_height;
+
+    /* O15B §7 — wire key "ub". The height at or after which consensus will
+     * accept this coin as a spend input; 0 means spendable now.
+     *
+     * A coin with unlock_block > result.block_height is INSIDE its
+     * post-UNSTAKE cooldown and every honest validator will reject a
+     * transaction that spends it (Rule D, nodus_witness_verify.c:730).
+     * Selecting one produces a transaction that cannot commit at any
+     * timeout, on any node, ever — which is precisely the failure this
+     * field exists to make impossible.
+     *
+     * BACKWARD COMPATIBILITY, AND WHY THE DEFAULT IS THE UNSAFE ONE:
+     * a pre-O15B witness does not send "ub", so this stays 0 = "spendable".
+     * That reproduces exactly today's behaviour against an old server — it
+     * does not make it correct there. Defaulting to "locked" instead would
+     * make every coin unspendable against every older witness, which is a
+     * worse failure and would also be wrong for the overwhelming majority
+     * of coins, whose true unlock_block IS 0. The honest statement is:
+     * against a pre-O15B witness the client cannot know, and behaves as it
+     * did before. */
+    uint64_t unlock_block;
 
     /* Anchored Merkle proof (Task 38). Empty/zero if the witness did not
      * ship a proof (backward compat with pre-Phase 7 servers). */

@@ -19,6 +19,7 @@
 #include "witness/nodus_witness_v2_apply.h"
 #include "witness/nodus_witness_v2_claims.h"
 #include "witness/nodus_witness_v2_epoch.h"
+#include "witness/nodus_witness_v2_gate.h"
 #include "witness/nodus_witness_v2_schema.h"
 #include "crypto/utils/qgp_log.h"
 
@@ -290,15 +291,61 @@ int nodus_witness_v2_preflight(nodus_witness_t *w,
      */
     pf_add(out, NODUS_V2_PF_RULE_N_ATTENDANCE_SOURCE_ABSENT);
 
-    /* ── 9. INGRESS must remain closed ────────────────────────────────
-     * Ingress is closed STRUCTURALLY, not by a flag: no protocol, server,
-     * client or transport translation unit references any Ledger V2
-     * identity object, so no wire message can express a v3 block. There
-     * is deliberately no runtime switch to read here — a flag would be a
-     * way to turn it on. The condition is enforced by the build and by
-     * the §21 firewall grep, and this issue exists so the report has a
-     * stable identifier for it should a future build introduce one.
+    /* ── 9. INGRESS must not be reachable ─────────────────────────────
+     *
+     * O15A left this issue DECLARED BUT NEVER RAISED, and said so: ingress
+     * was closed STRUCTURALLY, because no protocol/server/client/transport
+     * translation unit referenced any Ledger V2 identity object, so there
+     * was nothing to compute and no switch to read.
+     *
+     * O15B RETIRED THAT ARGUMENT BY WRITING THE INGRESS CODE. The V2 wire
+     * codec, the ingress adapter and the sync path now exist and are
+     * linked, so "no wire message can express a v3 block" is no longer
+     * true, and an issue that merely asserts the old reasoning would be
+     * reporting a fact that expired.
+     *
+     * So it is now COMPUTED, from what this node is ACTUALLY DOING:
+     * `nodus_witness_v2_ingress_is_armed()` — the runtime flag that is the
+     * sole thing making a V2 frame dispatchable, and which
+     * `nodus_witness_v2_ingress_arm()` refuses to set unless the
+     * activation gate is OPEN.
+     *
+     * Note carefully what is NOT the condition: COMPILING the ingress code
+     * does not count as enabled ingress, and neither does linking it. If
+     * it did, this issue would fire on every node from this season onward
+     * and would say nothing. The condition is reachability at run time.
+     *
+     * The issue is raised when ingress is reachable while the gate is not
+     * OPEN — the state that must never occur, and the one a future build
+     * could reach by arming without authority. Reachability WITH an open
+     * gate is the activated configuration and is not an issue; it is also
+     * unreachable in this build, because the gate can never open.
      */
+    /* NON-RECURSIVE BY CONSTRUCTION. The gate is (authority AND preflight
+     * readiness), and we ARE the readiness half — calling
+     * nodus_witness_v2_gate_state() here would call straight back into this
+     * function and never terminate. So the "would the gate be open?"
+     * condition is assembled locally from its two independent parts:
+     *
+     *   authority : nodus_witness_v2_gate_authority_present() — the half
+     *               that does not consult the preflight, exposed for
+     *               exactly this reason.
+     *   readiness : `out->n_issues == 0` RIGHT HERE. This check is the
+     *               LAST one in the function, so every other issue has
+     *               already been recorded; an empty list at this point is
+     *               precisely what `ready` will be set to two lines below.
+     *
+     * Placing this check last is therefore load-bearing, not cosmetic. */
+    if (nodus_witness_v2_ingress_is_armed(w)) {
+        int would_open = nodus_witness_v2_gate_authority_present(w) &&
+                         (out->n_issues == 0);
+        if (!would_open) {
+            QGP_LOG_ERROR(LOG_TAG, "%s",
+                          "V2 ingress is ARMED while the activation gate is "
+                          "not OPEN — activation must not proceed");
+            pf_add(out, NODUS_V2_PF_INGRESS_ENABLED);
+        }
+    }
 
     out->ready = (out->n_issues == 0);
     return 0;

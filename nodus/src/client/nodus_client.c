@@ -2506,6 +2506,15 @@ int nodus_client_dnac_utxo(nodus_client_t *client,
                         cbor_item_t v = cbor_decode_next(&dec);
                         if (v.type == CBOR_ITEM_UINT)
                             e->block_height = v.uint_val;
+                    } else if (ek.tstr.len == 2 &&
+                               memcmp(ek.tstr.ptr, "ub", 2) == 0) {
+                        /* O15B §7 — cooldown lock height. Absent from a
+                         * pre-O15B witness, in which case the memset above
+                         * leaves it 0; see nodus_types.h for why 0 is the
+                         * right default and what it does and does not mean. */
+                        cbor_item_t v = cbor_decode_next(&dec);
+                        if (v.type == CBOR_ITEM_UINT)
+                            e->unlock_block = v.uint_val;
                     } else if (ek.tstr.len == 4 &&
                                memcmp(ek.tstr.ptr, "pr_s", 4) == 0) {
                         /* Phase 7 / Task 38: flat sibling buffer

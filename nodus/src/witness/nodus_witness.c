@@ -15,6 +15,9 @@
 #include "witness/nodus_witness_bootstrap.h"
 #include "witness/nodus_witness_v2_pools.h"  /* S7 startup check      */
 #include "witness/nodus_witness_v2_finalize.h" /* O14 version firewall */
+#include "witness/nodus_witness_v2_gate.h"      /* O15B activation gate  */
+#include "witness/nodus_witness_v2_ingress.h"   /* O15B ingress arming   */
+#include "witness/nodus_witness_v2_preflight.h" /* O15A readiness report */
 #include "nodus/nodus_chain_config.h"  /* Stage C.2 vote-req handler */
 #include "crypto/utils/qgp_log.h"
 #include "crypto/hash/qgp_sha3.h"
@@ -394,6 +397,57 @@ static int witness_post_open_gate(nodus_witness_t *witness,
         witness->db = NULL;
         return -1;
     }
+
+    /* ── Ledger V2 O15B — ACTIVATION ORDERING, ENFORCED HERE ──────────
+     *
+     * O15B built the V2 network surface (wire codec, ingress adapter,
+     * bounded sync) and ships it PRODUCTION-DORMANT. This block is where
+     * "dormant" is established on every database open, in the order §12
+     * requires: the node is DISARMED first, the preflight then runs, and
+     * only a passing gate could arm anything — so ingress can never become
+     * reachable before readiness has been evaluated.
+     *
+     * Explicitly disarming rather than relying on zero-initialisation is
+     * deliberate: this runs on REOPEN as well as creation, and a handle
+     * reused across a close/open must not inherit an armed flag from a
+     * previous life.
+     *
+     * The arm attempt is REAL, not a formality. It drives the production
+     * gate on every open, so if a future change ever made the gate open
+     * without committed authority, this would arm a node and the preflight
+     * would immediately raise INGRESS_ENABLED — instead of the condition
+     * going unnoticed because nothing exercised it.
+     *
+     * A refusal is the EXPECTED outcome and is NOT an error: the database
+     * is fine, this build simply cannot activate Ledger V2. It never
+     * refuses the database, because a legacy chain's open must not come to
+     * depend on Ledger V2 state.
+     */
+    nodus_witness_v2_ingress_disarm(witness);
+
+    nodus_v2_preflight_report_t pf;
+    if (nodus_witness_v2_preflight(witness, &pf) == 0) {
+        if (!pf.ready) {
+            fprintf(stderr,
+                    "%s: Ledger V2 NOT ACTIVATED — preflight reports %zu "
+                    "blocking issue(s); first: %s\n",
+                    LOG_TAG, pf.n_issues,
+                    pf.n_issues ? nodus_witness_v2_preflight_issue_name(
+                                      pf.issues[0])
+                                : "none");
+        }
+    } else {
+        fprintf(stderr, "%s: Ledger V2 preflight could not be evaluated — "
+                "treating as NOT READY\n", LOG_TAG);
+    }
+
+    if (nodus_witness_v2_ingress_arm(witness) != 0) {
+        fprintf(stderr, "%s: Ledger V2 ingress remains CLOSED (gate: %s)\n",
+                LOG_TAG,
+                nodus_witness_v2_gate_state_name(
+                    nodus_witness_v2_gate_state(witness)));
+    }
+
     return 0;
 }
 

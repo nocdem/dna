@@ -182,6 +182,17 @@ set(NODUS_SOURCES
     src/witness/nodus_witness_v2_qc.c
     src/witness/nodus_witness_v2_preflight.c
     src/witness/nodus_witness_v2_finalize.c
+    # Ledger V2 O15B — the ONE production activation gate, the ingress
+    # adapter it guards, and bounded sync. All PRODUCTION-DORMANT: the gate
+    # can never open in this build (no committed activation authority
+    # exists, and the preflight is structurally never ready), so no V2
+    # frame is ever dispatched. NODUS_V2_TEST_AUTHORITY — the test-only
+    # fixture that can grant synthetic authority — is deliberately NOT
+    # defined on this target; see test_v2_gate_linked, which proves with
+    # `nm` that the symbol is absent from libnodus and nodus-server.
+    src/witness/nodus_witness_v2_gate.c
+    src/witness/nodus_witness_v2_ingress.c
+    src/witness/nodus_witness_v2_sync2.c
 
     # Ledger V2 S6 — INACTIVE generic genesis/distribution manifest +
     # claim codec (shared) and the witness-side manifest/claims module
@@ -219,6 +230,12 @@ set(NODUS_SOURCES
     # is untouched. Same ownership pattern as ledger_roots_v2.c.
     ${SHARED_DIR}/dnac/vset_wire.c
     ${SHARED_DIR}/dnac/qc_v2.c
+
+    # Ledger V2 O15B — canonical BlockMessage v1 wire codec. Structure and
+    # bounds ONLY: it computes no consensus value and touches no committed
+    # state, so it can never become a second engine. Production-dormant with
+    # the rest of the V2 network surface (nodus_witness_v2_gate.c).
+    ${SHARED_DIR}/dnac/blockmsg_v2.c
 
     # Ledger V2 S4 — INACTIVE domain manifest / registry / readiness codec
     # (canonical encodings + tagged hashes). No consensus path calls it;
@@ -786,6 +803,68 @@ add_test(NAME test_v2_qc_alloc_fault COMMAND test_v2_qc_alloc_fault)
 add_executable(test_v2_migration_toctou tests/test_v2_migration_toctou.c)
 target_link_libraries(test_v2_migration_toctou nodus dsa nodus crypto)
 add_test(NAME test_v2_migration_toctou COMMAND test_v2_migration_toctou)
+
+# Ledger V2 O15B — the activation gate, ingress reachability and the
+# network result algebra.
+#
+# NODUS_V2_TEST_AUTHORITY is defined HERE AND NOWHERE ELSE among the
+# targets this project ships. It compiles in the test-only fixture that can
+# grant synthetic activation authority, which is the only way the ARMED
+# ingress/sync paths can be exercised at all — production can never reach
+# them, and shipping them unexercised would be its own hazard.
+#
+# The symbol's ABSENCE from libnodus and nodus-server is not argued from
+# this line; test_v2_gate_linked proves it with `nm` against the linked
+# binaries, so a future edit that leaks the macro onto a library target
+# fails a test rather than passing review.
+#
+# The gate TU is compiled INTO THIS TEST BINARY, with the macro, rather than
+# into libnodus. That is what makes the absence proof airtight instead of
+# merely configured: the fixture's DEFINITION exists nowhere else, so no
+# combination of link flags can pull it into a shipped artefact. libnodus is
+# STATIC, so the linker resolves the gate symbols from this object and never
+# extracts the archive member — one definition, no duplicates.
+#
+# The first attempt defined the macro only for the test's own translation
+# unit, which compiled but did not link: the declaration was visible and the
+# definition was (correctly) absent from libnodus. That failure is the same
+# fact this arrangement now relies on.
+add_executable(test_v2_gate
+               tests/test_v2_gate.c
+               src/witness/nodus_witness_v2_gate.c)
+target_compile_definitions(test_v2_gate PRIVATE NODUS_V2_TEST_AUTHORITY=1)
+target_link_libraries(test_v2_gate nodus dsa nodus crypto)
+add_test(NAME test_v2_gate COMMAND test_v2_gate)
+
+# Ledger V2 O15B — canonical BlockMessage v1 codec: round trips, byte-exact
+# offsets, truncation at every boundary, trailing bytes, non-canonical
+# forms, over-cap fields and overflowed lengths.
+add_executable(test_blockmsg_v2 tests/test_blockmsg_v2.c)
+target_link_libraries(test_blockmsg_v2 nodus dsa nodus crypto)
+add_test(NAME test_blockmsg_v2 COMMAND test_blockmsg_v2)
+
+# O15B §8 — the transport must never kill its host process on a peer
+# disconnect, and must never count a partial write as complete.
+#
+# This test deliberately leaves SIGPIPE at its DEFAULT disposition: with a
+# handler installed it would pass even with the MSG_NOSIGNAL fix reverted,
+# which is exactly the wrong test. If the transport ever raises SIGPIPE
+# again, this dies by signal rather than printing a failure.
+add_executable(test_tcp_sigpipe tests/test_tcp_sigpipe.c)
+target_link_libraries(test_tcp_sigpipe nodus dsa nodus crypto)
+add_test(NAME test_tcp_sigpipe COMMAND test_tcp_sigpipe)
+
+# Ledger V2 O15B — LINK GATE. A source-level test cannot prove what is in a
+# shipped binary: this test binary compiles the fixture in on purpose, so
+# its own symbol table says nothing about production. This gate inspects
+# the LINKED libnodus and nodus-server with `nm` and asserts the test-only
+# authority fixture is absent from both, and that the gate itself IS
+# present (so the check cannot pass by looking at the wrong file).
+add_test(NAME test_v2_gate_linked
+         COMMAND ${CMAKE_COMMAND}
+                 -DNODUS_LIB=$<TARGET_FILE:nodus>
+                 -DNODUS_SERVER=$<TARGET_FILE:nodus-server>
+                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/v2_gate_linked.cmake)
 
 # Ledger V2 O15A — obligation 6: the RESTART path runs the same post-open
 # integrity gate as creation. It previously ran neither check, so a

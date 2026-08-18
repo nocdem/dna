@@ -478,6 +478,10 @@ int dnac_wallet_recover_from_witnesses(dnac_context_t *ctx,
         memcpy(utxo.token_id, e->token_id, DNAC_TOKEN_ID_SIZE);
         utxo.status = DNAC_UTXO_UNSPENT;
         utxo.received_at = (uint64_t)time(NULL);
+        /* O15B §7 — carry the cooldown lock through to the wallet so coin
+         * selection can honour Rule D. 0 from a pre-O15B witness that does
+         * not send "ub"; see nodus_types.h for why that default is right. */
+        utxo.unlock_block = e->unlock_block;
         /* Phase 12 Task 64b — anchored UTXO verification.
          *
          * Gated on:
@@ -548,6 +552,12 @@ int dnac_wallet_recover_from_witnesses(dnac_context_t *ctx,
         QGP_LOG_DEBUG(LOG_TAG, "Witness UTXO: amount=%llu, output_index=%u",
                       (unsigned long long)e->amount, e->output_index);
     }
+
+    /* O15B §7 — commit the height from THIS response, after the coins it
+     * described are stored. Reader and writer therefore see one consistent
+     * observation: coin selection compares each coin's unlock_block against
+     * the very height the witness reported alongside it. */
+    dnac_db_set_observed_height(db, result.block_height);
 
     nodus_client_free_utxo_result(&result);
 

@@ -473,7 +473,9 @@ static void handle_dnac_utxo(nodus_witness_t *w,
     uint64_t latest_height = nodus_witness_block_height(w);
 
     /* Per UTXO we encode at worst:
-     *   7 base fields  ≈ 256 B (existing budget)
+     *   8 base fields  ≈ 256 B (O15B §7 added "ub", a u64 ⇒ ≤ 12 B more;
+     *                   the 256 B line item already had ample slack and the
+     *                   2560 B per-entry round-up is unchanged)
      *   pr_s siblings  ≤ 32 * 64  = 2048 B
      *   pr_p / pr_d    ≈ 16 B
      *   sr             ≈ 70 B
@@ -541,7 +543,18 @@ static void handle_dnac_utxo(nodus_witness_t *w,
 
         size_t sibs_len = (size_t)depth * NODUS_MERKLE_HASH_LEN;
 
-        cbor_encode_map(&enc, 11);
+        /* O15B §7 — 12 entries: the 11 shipped fields plus "ub".
+         *
+         * "ub" is the coin's unlock_block. Adding it is a client-server RPC
+         * change only: no consensus wire, no transaction format, no block
+         * header, no root. It is a pure ADDITION to a CBOR map, so an older
+         * client that iterates keys and skips unknown ones is unaffected.
+         *
+         * It is required because the response already carries the chain's
+         * "block_height" but gave the client nothing to compare it against,
+         * so a wallet could not implement the very rule consensus enforces
+         * (Rule D, nodus_witness_verify.c:730). */
+        cbor_encode_map(&enc, 12);
         cbor_encode_cstr(&enc, "n");
         cbor_encode_bstr(&enc, utxos[i].nullifier, NODUS_T3_NULLIFIER_LEN);
         cbor_encode_cstr(&enc, "owner");
@@ -556,6 +569,8 @@ static void handle_dnac_utxo(nodus_witness_t *w,
         cbor_encode_uint(&enc, utxos[i].output_index);
         cbor_encode_cstr(&enc, "bh");
         cbor_encode_uint(&enc, utxos[i].block_height);
+        cbor_encode_cstr(&enc, "ub");
+        cbor_encode_uint(&enc, utxos[i].unlock_block);
         cbor_encode_cstr(&enc, "pr_s");
         cbor_encode_bstr(&enc, siblings, sibs_len);
         cbor_encode_cstr(&enc, "pr_p");

@@ -87,6 +87,24 @@ typedef enum {
     NODUS_T3_CHAIN_R     = 17,  /* peer replies cid + tip + gh + cdh + nonce echo */
     NODUS_T3_GENESIS_REQ = 18,  /* fresh node fetches chain_def + genesis from agreeing peer */
     NODUS_T3_GENESIS_RSP = 19,  /* peer sends chain_def_blob + genesis anchor */
+    /* ── Ledger V2 O15B — PRODUCTION-DORMANT ────────────────────────────
+     *
+     * The verbs a V2 block and a V2 range travel under. They are ASSIGNED
+     * and DECODABLE, and they are never dispatched into consensus on this
+     * build: `nodus_witness_v2_ingress_block()` asks the activation gate
+     * before it looks at a byte, and the gate can never open (no committed
+     * activation authority exists; the preflight is structurally never
+     * ready — nodus_witness_v2_gate.h).
+     *
+     * Assigned rather than left blank so the numbers cannot later be
+     * claimed by something else and so an unknown-verb reject is
+     * distinguishable from a not-active reject. Values are APPENDED; 1-19
+     * do not move.
+     */
+    NODUS_T3_V2_BLOCK    = 20,  /* one finalized Ledger V2 block (BlockMessage v1) */
+    NODUS_T3_V2_HEAD     = 21,  /* head advertisement — a HINT, never authority   */
+    NODUS_T3_V2_RANGE_REQ = 22, /* bounded range request                          */
+    NODUS_T3_V2_RANGE_RSP = 23, /* bounded range response                         */
 } nodus_t3_msg_type_t;
 
 /* ── Common witness header ───────────────────────────────────────── */

@@ -102,6 +102,11 @@ static int seed_v8(fx_t *f) {
     return nodus_witness_db_migrate_v2s8(f->w);
 }
 
+/* O15B §9 — v7 is the S8 migration's input state. */
+static int seed_v7(fx_t *f) {
+    return nodus_witness_db_migrate_v2s7(f->w);
+}
+
 static uint32_t ver_of(fx_t *f) {
     uint32_t v = 0;
     if (nodus_witness_db_schema_version(f->w, &v) != 0) return 0xffffffffu;
@@ -181,6 +186,78 @@ static void *toctou_interloper(void *unused) {
         g_race_insert_rc = (sqlite3_exec(g_race_db, "COMMIT", NULL, NULL,
                                          NULL) == SQLITE_OK)
                                ? SQLITE_OK : -1;
+    g_race_committed = 1;
+    return NULL;
+}
+
+/* ── O15B §9: the same race, one migration earlier ───────────────────
+ *
+ * S8's populated-`v2_tx_index` refusal had the identical defect O15A fixed
+ * in S9, and O15B moved that check inside the transaction. This interloper
+ * commits a v2_tx_index row into the window instead of a v2_blocks row. */
+static int insert_tx_index_row(sqlite3 *db) {
+    static const char *sql =
+        "INSERT INTO v2_tx_index (global_height, global_index, tx_id,"
+        " owner_domain, touched, wire_version)"
+        " VALUES (1, 0, ?1, 1, ?2, 1);";
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK)
+        return SQLITE_ERROR;
+    uint8_t id[64], touched[4];
+    memset(id, 0x5a, sizeof(id));
+    memset(touched, 0, sizeof(touched));
+    sqlite3_bind_blob(st, 1, id, 64, SQLITE_STATIC);
+    sqlite3_bind_blob(st, 2, touched, (int)sizeof(touched), SQLITE_STATIC);
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    return (rc == SQLITE_DONE) ? SQLITE_OK : rc;
+}
+
+static void *toctou_interloper_tx_index(void *unused) {
+    (void)unused;
+    usleep(150000);                       /* 150 ms */
+    g_race_insert_rc = insert_tx_index_row(g_race_db);
+    if (g_race_insert_rc == SQLITE_OK) {
+        g_race_insert_rc = (sqlite3_exec(g_race_db, "COMMIT", NULL, NULL,
+                                         NULL) == SQLITE_OK)
+                               ? SQLITE_OK : -1;
+    } else {
+        /* The write lock MUST be released even when the fixture's own
+         * insert fails, or the migration under test parks on BEGIN
+         * IMMEDIATE until its busy timeout and the failure is reported as
+         * "database is locked" instead of as the fixture bug it is. */
+        (void)sqlite3_exec(g_race_db, "ROLLBACK", NULL, NULL, NULL);
+    }
+    g_race_committed = 1;
+    return NULL;
+}
+
+/* ── O15B §9: the DOWNGRADE race ─────────────────────────────────────
+ *
+ * The other half of the pre-BEGIN read, and the one no row-count check can
+ * catch. This interloper does not insert anything — it ADVANCES THE SCHEMA
+ * VERSION past the migration's target while the migration is parked on
+ * BEGIN IMMEDIATE. The parked thread then wakes still believing the
+ * database is at version 7 and, with only the pre-BEGIN read to go on,
+ * would stamp `PRAGMA user_version = 8` over a version-9 database — which
+ * would then advertise a version whose table shapes it no longer has.
+ *
+ * Driven with raw SQL on an independent connection rather than through a
+ * second witness handle: the point is what the DATABASE does under a
+ * concurrent writer, and sharing a handle across threads would be testing
+ * the fixture instead. */
+static void *downgrade_interloper(void *unused) {
+    (void)unused;
+    usleep(150000);
+    if (sqlite3_exec(g_race_db, "PRAGMA user_version = 9", NULL, NULL, NULL)
+        == SQLITE_OK) {
+        g_race_insert_rc =
+            (sqlite3_exec(g_race_db, "COMMIT", NULL, NULL, NULL) == SQLITE_OK)
+                ? SQLITE_OK : -1;
+    } else {
+        g_race_insert_rc = -1;
+        (void)sqlite3_exec(g_race_db, "ROLLBACK", NULL, NULL, NULL);
+    }
     g_race_committed = 1;
     return NULL;
 }
@@ -326,9 +403,16 @@ int main(void) {
                    "refusal came from the in-transaction re-check\n");
             checks++;
         } else {
-            printf("  [NOT DISCRIMINATING] the interloper committed before "
-                   "the migration's pre-BEGIN read (scheduling); this run "
-                   "does not prove the in-transaction check — rerun\n");
+            /* O15B (review R3): this used to print and fall through, so a
+             * non-discriminating run passed IDENTICALLY to a discriminating
+             * one — and the whole section could then pass with the
+             * in-transaction check deleted, because the pre-BEGIN early-out
+             * would refuse instead. A test whose central property is
+             * optional is not a test of that property. */
+            CHECK(0, "NOT DISCRIMINATING: the interloper committed before "
+                     "the migration's pre-BEGIN read, so this run does not "
+                     "prove the in-transaction check. Scheduling-dependent "
+                     "— rerun; if it persists the interleaving is broken");
         }
         CHECK(ver_of(&f) == NODUS_V2_SCHEMA_VERSION_S8,
               "a refused race must not advance the schema version");
@@ -398,6 +482,220 @@ int main(void) {
         CHECK(nodus_witness_db_migrate_v2s9(f.w) != 0,
               "a newer schema must be refused");
         CHECK(ver_of(&f) == 99, "refusal must not rewrite the version");
+        fx_close(&f);
+    }
+
+    /* ════════════════════════════════════════════════════════════════
+     * O15B §9 — the SAME class, one migration earlier and one axis wider.
+     *
+     * O15A closed the 8 → 9 window. The identical shape was still live in
+     * the 7 → 8 migration, whose populated-`v2_tx_index` refusal also ran
+     * before BEGIN IMMEDIATE, and the schema-version read itself was
+     * unprotected in EVERY migration (S5-S8).
+     * ════════════════════════════════════════════════════════════════ */
+
+    /* ── 7. S8 BASELINE — a clean v7 → v8 migration still works. Without
+     * this, sections 8-10 could all pass on a migration that never runs. */
+    {
+        fx_t f = {0};
+        CHECK(fx_open(&f, "s8base") == 0, "fixture open");
+        CHECK(seed_v7(&f) == 0, "seed v7");
+        CHECK(ver_of(&f) == NODUS_V2_SCHEMA_VERSION_S7, "v7 reached");
+        CHECK(nodus_witness_db_migrate_v2s8(f.w) == 0, "clean S8 migration");
+        CHECK(ver_of(&f) == NODUS_V2_SCHEMA_VERSION_S8, "v8 reached");
+        fx_close(&f);
+    }
+
+    /* ── 8. S8 TOCTOU: a wire-index row committed INSIDE the window.
+     *
+     * Exactly the section-3 interleaving, aimed at the S8 guard. The
+     * migration's pre-BEGIN COUNT reads an EMPTY v2_tx_index (WAL readers
+     * do not block on a writer), parks on BEGIN IMMEDIATE, and the
+     * interloper commits a transaction row and releases the lock.
+     *
+     * The stake is not a dropped table — S8 destroys nothing — but the
+     * SAFETY PROPERTY the refusal exists to hold: an intent_id cannot be
+     * derived from a stored wire id, so a database that migrates with
+     * committed transactions in it leaves every one of them permanently
+     * unguarded against semantic replay. Migrating past this row is
+     * exactly as wrong as dropping it would be, and is silent. */
+    {
+        fx_t f = {0};
+        CHECK(fx_open(&f, "s8race") == 0, "fixture open");
+        CHECK(seed_v7(&f) == 0, "seed v7");
+        (void)sqlite3_exec(f.w->db, "PRAGMA journal_mode=WAL;", NULL, NULL,
+                           NULL);
+        (void)sqlite3_busy_timeout(f.w->db, 5000);
+
+        sqlite3 *db2 = second_connection(&f);
+        CHECK(db2 != NULL, "second connection");
+        (void)sqlite3_busy_timeout(db2, 5000);
+        CHECK(sqlite3_exec(db2, "BEGIN IMMEDIATE", NULL, NULL, NULL)
+                  == SQLITE_OK, "interloper took the write lock");
+
+        g_race_db = db2;
+        g_race_committed = 0;
+        g_race_insert_rc = -1;
+        pthread_t th;
+        CHECK(pthread_create(&th, NULL, toctou_interloper_tx_index, NULL) == 0,
+              "interloper thread");
+
+        g_race_pre_begin_saw_empty = (g_race_committed == 0) ? 1 : 0;
+        int mrc = nodus_witness_db_migrate_v2s8(f.w);
+        pthread_join(th, NULL);
+
+        CHECK(g_race_insert_rc == SQLITE_OK,
+              "the interloper must have committed its tx_index row");
+        CHECK(mrc != 0,
+              "S8 VALIDATED A STALE SNAPSHOT — it must notice, INSIDE the "
+              "transaction, that v2_tx_index is no longer empty");
+        /* Same discrimination discipline as section 3 (O15A reviewer R3):
+         * `mrc != 0` alone would also be satisfied by the pre-BEGIN
+         * early-out if scheduling ran the interloper first. Only a run
+         * whose pre-BEGIN snapshot saw an EMPTY table proves the
+         * in-transaction check. */
+        if (g_race_pre_begin_saw_empty == 1) {
+            printf("  [discriminating] S8 pre-BEGIN saw an EMPTY "
+                   "v2_tx_index, so the refusal came from the "
+                   "in-transaction re-check\n");
+            checks++;
+        } else {
+            CHECK(0, "NOT DISCRIMINATING (S8 tx_index race): the interloper "
+                     "committed before S8's pre-BEGIN read, so the refusal "
+                     "may have come from the early-out — rerun");
+        }
+        CHECK(ver_of(&f) == NODUS_V2_SCHEMA_VERSION_S7,
+              "a refused S8 race must not advance the schema version");
+        CHECK(count_rows(f.w->db, "v2_tx_index") == 1,
+              "THE RACING WRITER'S COMMITTED ROW MUST SURVIVE");
+        sqlite3_close(db2);
+        fx_close(&f);
+    }
+
+    /* ── 9. THE DOWNGRADE RACE — the axis no row count can see.
+     *
+     * The migration reads version 7, parks, and a peer advances the
+     * database to 9 underneath it. Without the in-transaction re-read the
+     * migration would stamp `user_version = 8` over a version-9 schema:
+     * the database would then claim a version whose table shapes it does
+     * not have, and every later version gate would be deciding on a lie.
+     *
+     * Note this is NOT the "newer schema refused" case already covered in
+     * section 6 — there the migration sees the newer version BEFORE it
+     * starts. Here it starts legitimately and the ground moves. */
+    {
+        fx_t f = {0};
+        CHECK(fx_open(&f, "s8dg") == 0, "fixture open");
+        CHECK(seed_v7(&f) == 0, "seed v7");
+        (void)sqlite3_exec(f.w->db, "PRAGMA journal_mode=WAL;", NULL, NULL,
+                           NULL);
+        (void)sqlite3_busy_timeout(f.w->db, 5000);
+
+        sqlite3 *db2 = second_connection(&f);
+        CHECK(db2 != NULL, "second connection");
+        (void)sqlite3_busy_timeout(db2, 5000);
+        CHECK(sqlite3_exec(db2, "BEGIN IMMEDIATE", NULL, NULL, NULL)
+                  == SQLITE_OK, "interloper took the write lock");
+
+        g_race_db = db2;
+        g_race_committed = 0;
+        g_race_insert_rc = -1;
+        pthread_t th;
+        CHECK(pthread_create(&th, NULL, downgrade_interloper, NULL) == 0,
+              "downgrade interloper thread");
+
+        g_race_pre_begin_saw_empty = (g_race_committed == 0) ? 1 : 0;
+        int mrc = nodus_witness_db_migrate_v2s8(f.w);
+        pthread_join(th, NULL);
+
+        CHECK(g_race_insert_rc == SQLITE_OK,
+              "the interloper must have committed the version bump");
+        CHECK(mrc != 0,
+              "S8 MUST REFUSE once the schema moved under it — stamping "
+              "user_version = 8 over a version-9 database is a downgrade");
+        if (g_race_pre_begin_saw_empty == 1) {
+            printf("  [discriminating] S8 pre-BEGIN read version 7, so the "
+                   "refusal came from the in-transaction re-read\n");
+            checks++;
+        } else {
+            CHECK(0, "NOT DISCRIMINATING (downgrade race): the version moved "
+                     "before S8's pre-BEGIN read, so the refusal may have "
+                     "come from the early-out — rerun");
+        }
+        CHECK(ver_of(&f) == 9,
+              "THE PEER'S VERSION MUST SURVIVE — no downgrade to 8");
+        sqlite3_close(db2);
+        fx_close(&f);
+    }
+
+    /* ── 10. A concurrent completion is idempotent SUCCESS, not an error.
+     *
+     * The distinction matters at startup: several witness processes may
+     * open the same database, and the loser of the race must not report a
+     * migration failure and refuse to start. It asked for version 8 and
+     * version 8 is what it got. */
+    {
+        fx_t f = {0};
+        CHECK(fx_open(&f, "s8peer") == 0, "fixture open");
+        CHECK(seed_v7(&f) == 0, "seed v7");
+        CHECK(nodus_witness_db_migrate_v2s8(f.w) == 0, "first S8 migration");
+        CHECK(nodus_witness_db_migrate_v2s8(f.w) == 0,
+              "a second S8 call is idempotent SUCCESS");
+        CHECK(ver_of(&f) == NODUS_V2_SCHEMA_VERSION_S8, "still v8");
+        fx_close(&f);
+    }
+
+    /* ── 11. The new S5-S8 re-validation points roll back cleanly and a
+     * retry from each still reaches its target version. */
+    {
+        fx_t f = {0};
+        CHECK(fx_open(&f, "s8reval") == 0, "fixture open");
+        CHECK(seed_v7(&f) == 0, "seed v7");
+        CHECK(nodus_witness_db_migrate_v2s8_ex(
+                  f.w, V2S8MIG_FAIL_AFTER_REVALIDATE) != 0,
+              "injected abort at S8's re-validation point");
+        CHECK(ver_of(&f) == NODUS_V2_SCHEMA_VERSION_S7,
+              "aborted S8 left the version untouched");
+        CHECK(nodus_witness_db_migrate_v2s8(f.w) == 0,
+              "clean retry after an injected S8 abort");
+        CHECK(ver_of(&f) == NODUS_V2_SCHEMA_VERSION_S8, "retry reached v8");
+        fx_close(&f);
+    }
+    {
+        fx_t f = {0};
+        CHECK(fx_open(&f, "s7reval") == 0, "fixture open");
+        CHECK(nodus_witness_db_migrate_v2s6(f.w) == 0, "seed v6");
+        CHECK(nodus_witness_db_migrate_v2s7_ex(
+                  f.w, V2S7MIG_FAIL_AFTER_REVALIDATE) != 0,
+              "injected abort at S7's re-validation point");
+        CHECK(ver_of(&f) == NODUS_V2_SCHEMA_VERSION_S6,
+              "aborted S7 left the version untouched");
+        CHECK(nodus_witness_db_migrate_v2s7(f.w) == 0, "clean S7 retry");
+        CHECK(ver_of(&f) == NODUS_V2_SCHEMA_VERSION_S7, "retry reached v7");
+        fx_close(&f);
+    }
+    {
+        fx_t f = {0};
+        CHECK(fx_open(&f, "s6reval") == 0, "fixture open");
+        CHECK(nodus_witness_db_migrate_v2s5(f.w) == 0, "seed v5");
+        CHECK(nodus_witness_db_migrate_v2s6_ex(
+                  f.w, V2S6MIG_FAIL_AFTER_REVALIDATE) != 0,
+              "injected abort at S6's re-validation point");
+        CHECK(ver_of(&f) == NODUS_V2_SCHEMA_VERSION,
+              "aborted S6 left the version untouched");
+        CHECK(nodus_witness_db_migrate_v2s6(f.w) == 0, "clean S6 retry");
+        CHECK(ver_of(&f) == NODUS_V2_SCHEMA_VERSION_S6, "retry reached v6");
+        fx_close(&f);
+    }
+    {
+        fx_t f = {0};
+        CHECK(fx_open(&f, "s5reval") == 0, "fixture open");
+        CHECK(nodus_witness_db_migrate_v2s5_ex(
+                  f.w, V2MIG_FAIL_AFTER_REVALIDATE) != 0,
+              "injected abort at S5's re-validation point");
+        CHECK(ver_of(&f) == 0, "aborted S5 left the version at 0");
+        CHECK(nodus_witness_db_migrate_v2s5(f.w) == 0, "clean S5 retry");
+        CHECK(ver_of(&f) == NODUS_V2_SCHEMA_VERSION, "retry reached v5");
         fx_close(&f);
     }
 

@@ -38,6 +38,16 @@
  * The numeric values are part of the contract: tooling and tests pin
  * them. Append new issues at the end; never renumber, never reuse.
  *
+ * ⚠ APPENDING AN ID IS NOT THE SAME AS APPENDING ITS CHECK.
+ * `NODUS_V2_PF_INGRESS_ENABLED` (13) is computed from
+ * `out->n_issues == 0` sampled at its own check site, so that check MUST
+ * remain the LAST one in `nodus_witness_v2_preflight()`. A new issue whose
+ * *check* is placed after it would be invisible to that sample, and an
+ * armed node with authority and only the new issue outstanding would
+ * compute "the gate would be open" and silently fail to raise 13 — the
+ * exact state 13 exists to flag. Add the ENUM VALUE at the end; add the
+ * CHECK before the ingress block. Review R2 raised this drift hazard.
+ *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
  */
