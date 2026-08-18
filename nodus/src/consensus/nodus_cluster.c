@@ -10,6 +10,7 @@
 #include "server/nodus_server.h"
 #include "protocol/nodus_tier1.h"
 #include "core/nodus_routing.h"
+#include "crypto/nodus_sign.h"     /* nodus_hash */
 
 #include <stdio.h>
 #include <string.h>
@@ -84,6 +85,24 @@ void nodus_cluster_init(nodus_cluster_t *cluster, struct nodus_server *srv) {
     cluster->leader_id = s->identity.node_id;
     cluster->is_leader = true;
     cluster->view = 1;
+}
+
+void nodus_cluster_seed_placeholder_id(const char *ip, uint16_t udp_port,
+                                        nodus_key_t *out) {
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    if (!ip) return;
+
+    /* ip[64] from nodus_server_config_t + ":65535" + NUL fits with room
+     * to spare. On truncation the hash is taken over the truncated form,
+     * which is still deterministic for a given input. */
+    char preimage[80];
+    int n = snprintf(preimage, sizeof(preimage), "%s:%u",
+                     ip, (unsigned)udp_port);
+    if (n <= 0) return;
+    if ((size_t)n >= sizeof(preimage)) n = (int)sizeof(preimage) - 1;
+
+    nodus_hash((const uint8_t *)preimage, (size_t)n, out);
 }
 
 void nodus_cluster_add_peer(nodus_cluster_t *cluster,

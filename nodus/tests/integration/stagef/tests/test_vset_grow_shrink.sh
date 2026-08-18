@@ -4,25 +4,35 @@
 #
 # REQUIRES a SHORT-EPOCH nodus build. The harness binaries must be
 # compiled with:
-#     -DDNAC_EPOCH_LENGTH=15
-#     -DDNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS=15
-#     -DDNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS=15
-# (dnac.h S3 #ifndef guards) and STAGEF_EPOCH_LENGTH=15 exported before
-# stagef_up.sh. The script self-checks the binary's epoch length against
+#     -DDNAC_EPOCH_LENGTH=<E>
+#     -DDNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS=<E>
+#     -DDNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS=<E>
+# (dnac.h S3 #ifndef guards) and STAGEF_EPOCH_LENGTH=<E> exported before
+# stagef_up.sh. Section A self-checks the binary's epoch length against
 # the genesis validator-set snapshots and aborts on mismatch.
 #
 # Scenario:
 #   A. genesis snapshots (epochs 0, E) byte-identical across 7 nodes
-#   B. bring up nodes 8 and 9 (join live, sync)
+#   B. bring up nodes 8 and 9 (join live, leave DISCOVER, sync)
 #   C. fund node8/node9 witness identities
 #   D. nodus-cli stake from both node identities → 9 bonded validators
 #   E. chain-config propose TARGET_ACTIVE_COUNT=9 → at the governed
-#      boundary the snapshot holds 9, statuses all ACTIVE, state_root
-#      identical across ALL RUNNING nodes
+#      epoch boundary the snapshot holds 9 (and contains node8 + node9),
+#      statuses all ACTIVE, dynamic quorum moves to 7, state_root and
+#      block identity identical across ALL RUNNING nodes
 #   F. propose TARGET_ACTIVE_COUNT=7 → set shrinks; exactly 2 validators
-#      are ELIGIBLE (status 4) with their 10M bond PRESERVED
+#      are ELIGIBLE (status 4) with their 10M bond PRESERVED, the
+#      demoted pair is absent from the new authoritative snapshot, and
+#      every historical snapshot is byte-unchanged
 #   G. crash injection: kill -9 one committee node across a boundary,
-#      restart, assert identical snapshots + state_root after resync
+#      restart, assert identical snapshots + state_root + block identity
+#      after resync
+#
+# BLOCK PRODUCTION IS TX-DRIVEN. nodus_witness_tick only opens a round
+# when the mempool is non-empty (nodus_witness.c, block-timer branch),
+# so an idle cluster never reaches the next epoch boundary. Every wait
+# for a height in this scenario therefore PUMPS the chain instead of
+# sleeping — a bounded stream of 1-raw sends, one per block.
 #
 # Exit 0 PASS / non-zero FAIL.
 
@@ -43,6 +53,7 @@ FUND_RAW=1000100000000000            # 10,001,000 DNAC (bond + fees + buffer)
 
 fail() { echo "[FAIL] $*" >&2; exit 1; }
 info() { echo "[info] $*"; }
+ok()   { echo "[ok] $*"; }
 
 # ── helpers ─────────────────────────────────────────────────────────
 
@@ -60,21 +71,92 @@ head_height() {
     sqlite3 "$db" "SELECT COALESCE(MAX(height),0) FROM blocks;"
 }
 
-# Wait until node1's head >= $1 (timeout $2 seconds).
-wait_height() {
-    local target="$1" timeout="${2:-300}" t=0 h=0
-    while [ $t -lt "$timeout" ]; do
-        h=$(head_height)
-        [ "$h" -ge "$target" ] && return 0
-        sleep 3; t=$((t + 3))
-    done
-    fail "timeout waiting for height >= $target (at $h)"
+# Raw Dilithium5 public key of a harness node, uppercase hex — the exact
+# byte string the validator row and the snapshot blob carry.
+node_pubkey_hex() {
+    xxd -p -u -c 99999 "$BASE_DIR/node$1/identity/nodus.pk"
 }
 
-# Assert every RUNNING node agrees on (epoch_start|hash) for ALL snapshot
-# rows, and print them. $1 = label.
+# Drive the chain to >= $1 by submitting one minimal TX per block.
+#
+# A blind sleep cannot do this: with no TXs there are no blocks, so the
+# original wait_height could only ever time out once the scenario had
+# stopped generating traffic of its own.
+pump_to_height() {
+    local target="$1" timeout="${2:-600}"
+    local deadline=$(( SECONDS + timeout ))
+    local h; h=$(head_height)
+    local sink; sink=$(cat "$BASE_DIR/node1/identity/nodus.fp")
+    while [ "${h:-0}" -lt "$target" ] && [ $SECONDS -lt $deadline ]; do
+        # SYNC BEFORE EVERY SEND — not only after a failure.
+        #
+        # The wallet spends one coin and books its change locally. If a
+        # submit times out (which happens whenever a BFT round has to be
+        # retried, and the grow/shrink boundaries do retry), the wallet is
+        # left believing its only coin is in flight: every later send then
+        # reports "Insufficient funds" against a wallet that holds the
+        # genesis supply on-chain. Without new transactions the chain
+        # produces no blocks, so the change can never confirm — a deadlock
+        # the pump cannot escape on its own.
+        #
+        # Only `dna sync` re-reads the committed UTXO set and clears that
+        # belief, so it runs unconditionally. A sync-on-failure-only
+        # variant was measurably faster and deadlocked at exactly the
+        # boundary this scenario exists to cross. Slower and deterministic
+        # beats faster and stuck (feedback_dnac_sync_between_sends).
+        stagef_dna -q dna sync >> "$BASE_DIR/vset_pump.log" 2>&1 || true
+        if ! stagef_dna -q dna send "$sink" 1 "pump" \
+               >> "$BASE_DIR/vset_pump.log" 2>&1; then
+            stagef_dna -q dna sync >> "$BASE_DIR/vset_pump.log" 2>&1 || true
+            stagef_dna -q dna send "$sink" 1 "pump" \
+                >> "$BASE_DIR/vset_pump.log" 2>&1 || true
+        fi
+        sleep 6
+        h=$(head_height)
+    done
+    [ "${h:-0}" -ge "$target" ] || fail "pump: height $h < $target (timeout ${timeout}s)"
+    info "pumped to height $h (target $target)"
+}
+
+# Block until every running node holds the SAME head height.
+#
+# Every cross-node assertion below is an equality over committed state.
+# Comparing while one node is a block behind would report a divergence
+# that is really lag — a flaky consensus assertion, which this tree
+# forbids outright. So converge FIRST, on an explicit condition, and keep
+# the deadline only as failure protection.
+converge_heads() {
+    local label="$1" timeout="${2:-300}"
+    local deadline=$(( SECONDS + timeout ))
+    local lo hi
+    while [ $SECONDS -lt $deadline ]; do
+        lo=""; hi=""
+        for n in $(running_nodes); do
+            local db; db=$(stagef_node_chain_db "$n")
+            [ -n "$db" ] || { lo=""; break; }
+            local h; h=$(sqlite3 "$db" \
+                "SELECT COALESCE(MAX(height),0) FROM blocks;" 2>/dev/null || echo "")
+            [ -n "$h" ] || { lo=""; break; }
+            [ -z "$lo" ] && { lo="$h"; hi="$h"; continue; }
+            [ "$h" -lt "$lo" ] && lo="$h"
+            [ "$h" -gt "$hi" ] && hi="$h"
+        done
+        if [ -n "$lo" ] && [ "$lo" = "$hi" ]; then
+            CONVERGED_H="$lo"
+            info "$label: all $(running_nodes | wc -l) nodes at height $lo"
+            return 0
+        fi
+        sleep 3
+    done
+    fail "$label: nodes did not converge (lo=${lo:-?} hi=${hi:-?}) in ${timeout}s"
+}
+CONVERGED_H=0
+
+# Assert every RUNNING node agrees on (epoch_start|active_count|hash) for
+# ALL snapshot rows, and print them. $1 = label.
 assert_snapshots_identical() {
     local label="$1" ref="" cur=""
+    converge_heads "$label"
     for n in $(running_nodes); do
         local db; db=$(stagef_node_chain_db "$n")
         [ -n "$db" ] || fail "$label: node$n has no chain DB"
@@ -88,31 +170,51 @@ assert_snapshots_identical() {
             fail "$label: snapshot divergence on node$n"
         fi
     done
-    info "$label: snapshots identical across $(running_nodes | wc -l) nodes"
+    ok "$label: snapshots identical across $(running_nodes | wc -l) nodes"
     echo "$ref" | sed 's/^/       /' | cut -c1-100
 }
 
 # Assert state_root identical across ALL running nodes at same height.
 assert_state_root_identical() {
-    local label="$1" ref="" first_h=""
-    # Let heights settle: two probes 1s apart until stable.
-    sleep 2
+    local label="$1" ref=""
+    converge_heads "$label"
+    local first_h="$CONVERGED_H"
     for n in $(running_nodes); do
         local db; db=$(stagef_node_chain_db "$n")
-        local row; row=$(sqlite3 "$db" "SELECT height || '|' || \
-            hex(state_root) FROM blocks ORDER BY height DESC LIMIT 1;")
-        local h=${row%%|*} r=${row#*|}
-        if [ -z "$ref" ]; then ref="$r"; first_h="$h"
+        local rr; rr=$(sqlite3 "$db" "SELECT hex(state_root) FROM \
+            blocks WHERE height = $first_h;")
+        [ -n "$rr" ] || fail "$label: node$n missing block $first_h"
+        if [ -z "$ref" ]; then ref="$rr"
         else
-            # nodes may be ±1 block apart transiently; compare the root of
-            # the REFERENCE height on this node instead
-            local rr; rr=$(sqlite3 "$db" "SELECT hex(state_root) FROM \
-                blocks WHERE height = $first_h;")
-            [ -n "$rr" ] || fail "$label: node$n missing block $first_h"
             [ "$rr" == "$ref" ] || fail "$label: state_root divergence at h=$first_h on node$n"
         fi
     done
-    info "$label: state_root identical at h=$first_h across $(running_nodes | wc -l) nodes"
+    ok "$label: state_root identical at h=$first_h across $(running_nodes | wc -l) nodes"
+}
+
+# Assert the committed BLOCK IDENTITY — not just the state_root — is the
+# same on every running node. state_root alone would still agree if two
+# nodes disagreed on the transaction set or the parent link.
+assert_block_identity_identical() {
+    local label="$1"
+    converge_heads "$label"
+    local ref="" ref_h="$CONVERGED_H"
+    for n in $(running_nodes); do
+        local db; db=$(stagef_node_chain_db "$n")
+        local row
+        row=$(sqlite3 "$db" "SELECT height || '|' || hex(tx_root) || '|' || \
+              tx_count || '|' || timestamp || '|' || hex(prev_hash) || '|' || \
+              hex(state_root) || '|' || hex(COALESCE(proposer_id, x'')) \
+              FROM blocks WHERE height = $ref_h;")
+        [ -n "$row" ] || fail "$label: node$n missing block $ref_h"
+        if [ -z "$ref" ]; then ref="$row"
+        elif [ "$row" != "$ref" ]; then
+            echo "--- reference: $ref"
+            echo "--- node$n:    $row"
+            fail "$label: block identity divergence at h=$ref_h on node$n"
+        fi
+    done
+    ok "$label: block identity identical at h=$ref_h across $(running_nodes | wc -l) nodes"
 }
 
 # validator statuses (status -> count) on a node.
@@ -120,6 +222,87 @@ status_counts() {
     sqlite3 "$(stagef_node_chain_db "$1")" \
       "SELECT status || ':' || COUNT(*) FROM validators GROUP BY status ORDER BY status;" \
       | tr '\n' ' '
+}
+
+# Snapshot membership: is this raw pubkey inside the authoritative blob
+# committed for epoch $1?
+snapshot_contains() {
+    local epoch="$1" pk="$2"
+    sqlite3 "$(node1_db)" "SELECT CASE WHEN instr(hex(snapshot_blob), \
+        '$pk') > 0 THEN 1 ELSE 0 END FROM validator_set_snapshots \
+        WHERE epoch_start = $epoch;"
+}
+
+# The authoritative snapshot for the epoch the head is IN must hold
+# exactly the validators whose status byte says ACTIVE, and none of the
+# demoted ones.
+#
+# WHICH snapshot matters. nodus_witness_vset.c flips EVERY bonded row to
+# ELIGIBLE at each boundary and then flips exactly that epoch's snapshot
+# members back to ACTIVE, so the status bytes always describe the epoch
+# containing the head — never an earlier one. With nine bonded validators
+# at an identical 10M bond and seven seats, the seven legitimately ROTATE
+# from epoch to epoch, so an earlier 7-member snapshot names a different
+# seven and comparing against it reports a divergence that does not exist.
+assert_status_matches_epoch_snapshot() {
+    local label="$1" tries=0
+    while [ $tries -lt 5 ]; do
+        local h0 e have a_missing e_present h1
+        h0=$(head_height)
+        e=$(( (h0 / E_LEN) * E_LEN ))
+        have=$(sqlite3 "$(node1_db)" "SELECT COUNT(*) FROM \
+            validator_set_snapshots WHERE epoch_start = $e;")
+        if [ "$have" != "1" ]; then tries=$((tries + 1)); sleep 3; continue; fi
+
+        a_missing=0; e_present=0
+        while read -r pk; do
+            [ -z "$pk" ] && continue
+            [ "$(snapshot_contains "$e" "$pk")" = "1" ] || a_missing=$((a_missing + 1))
+        done <<EOF
+$(sqlite3 "$(node1_db)" "SELECT hex(pubkey) FROM validators WHERE status = 0;")
+EOF
+        while read -r pk; do
+            [ -z "$pk" ] && continue
+            [ "$(snapshot_contains "$e" "$pk")" = "0" ] || e_present=$((e_present + 1))
+        done <<EOF
+$(sqlite3 "$(node1_db)" "SELECT hex(pubkey) FROM validators WHERE status = 4;")
+EOF
+        # If the head crossed a boundary mid-read the two sides came from
+        # different epochs; retry instead of reporting a race as a
+        # divergence.
+        h1=$(head_height)
+        if [ $(( (h1 / E_LEN) * E_LEN )) -ne "$e" ]; then
+            tries=$((tries + 1)); continue
+        fi
+
+        [ "$a_missing" -eq 0 ] || \
+            fail "$label: $a_missing ACTIVE validator(s) absent from the epoch-$e snapshot"
+        [ "$e_present" -eq 0 ] || \
+            fail "$label: $e_present demoted validator(s) still in the epoch-$e snapshot"
+        ok "$label: epoch-$e snapshot holds exactly the ACTIVE set — no demoted member stays authoritative"
+        return 0
+    done
+    fail "$label: statuses and snapshot could not be read inside one epoch"
+}
+
+# Every stored snapshot epoch is a boundary multiple, and the series has
+# no gap and no duplicate — a validator set may only ever change by ONE
+# governed epoch transition at a time.
+assert_snapshot_series_sane() {
+    local label="$1"
+    local rows; rows=$(sqlite3 "$(node1_db)" \
+        "SELECT epoch_start FROM validator_set_snapshots ORDER BY epoch_start;")
+    local prev=""
+    for e in $rows; do
+        [ $(( e % E_LEN )) -eq 0 ] || \
+            fail "$label: snapshot epoch_start=$e is not a multiple of $E_LEN"
+        if [ -n "$prev" ] && [ "$prev" -ne 0 ]; then
+            [ $(( e - prev )) -eq "$E_LEN" ] || \
+                fail "$label: snapshot series jumps $prev -> $e (expected +$E_LEN)"
+        fi
+        prev="$e"
+    done
+    ok "$label: snapshot series is boundary-aligned, gapless and unique"
 }
 
 # ── A. self-check + genesis snapshots ───────────────────────────────
@@ -138,10 +321,6 @@ rows=$(sqlite3 "$(node1_db)" \
 # it runs, on a short-epoch harness, the table holds dozens of rows and the
 # equality can never hold.
 #
-# It was failing for a reason that had nothing to do with what it tests,
-# and its message blamed the build ("short-epoch binary not in use?"),
-# which sent readers looking in the wrong place entirely.
-#
 # The PROPERTY it actually wanted is that the binary's epoch length matches
 # the harness's. That is checked directly and order-independently: genesis
 # seeds epoch 0 and epoch E_LEN, so BOTH must be present whatever else has
@@ -153,17 +332,12 @@ if [ "${have_0:-0}" -lt 1 ] || [ "${have_e:-0}" -lt 1 ]; then
     fail "genesis snapshots missing epoch 0 and/or $E_LEN — \
 short-epoch binary not in use? (STAGEF_EPOCH_LENGTH=$E_LEN)"
 fi
-for _e in $rows; do
-    if [ $(( _e % E_LEN )) -ne 0 ]; then
-        echo "  stored snapshot epochs: $(echo $rows | tr '\n' ' ')" >&2
-        fail "snapshot at epoch_start=$_e is not a multiple of \
-STAGEF_EPOCH_LENGTH=$E_LEN — the binary and the harness disagree"
-    fi
-done
+assert_snapshot_series_sane "A/genesis"
 info "snapshot epochs present: $(echo $rows | tr '\n' ' ')"
 stagef_sentinel SETUP_OK
 assert_snapshots_identical "A/genesis"
 assert_state_root_identical "A/genesis"
+assert_block_identity_identical "A/genesis"
 
 # ── B. nodes 8 and 9 join live ──────────────────────────────────────
 
@@ -173,9 +347,9 @@ for n in $(seq 1 "$STAGEF_COMMITTEE_SIZE"); do
 done
 
 # Nodes join SEQUENTIALLY: two simultaneous DISCOVER nodes pollute each
-# other's peer counts, and the committee nodes only learn a joiner's
-# identity via the periodic (60 s) DHT roster refresh — so each join
-# gets its own settle window.
+# other's peer counts, and the committee side learns a joiner from the
+# DHT nodus:pk registry on its next roster rebuild — so each join gets
+# its own settle window.
 for n in 8 9; do
     node_dir="$BASE_DIR/node$n"
     mkdir -p "$node_dir/identity" "$node_dir/data"
@@ -205,15 +379,39 @@ for n in 8 9; do
     echo $! >> "$BASE_DIR/pids.txt"
     info "node$n spawned pid=$!"
 
-    # Wait for THIS node to bootstrap + sync before starting the next.
-    info "waiting for node$n to sync the chain (roster refresh is 60 s)"
+    # ASSERTION 1 — the joiner must LEAVE DISCOVER. A joiner that never
+    # reaches bootstrap quorum sits in DISCOVER forever and every later
+    # symptom ("did not sync") is downstream of that one fact, so it is
+    # asserted on its own, by the state machine's own terminal log line
+    # (nodus_witness_bootstrap.c: "state=DONE branch=DISCOVER").
+    #
+    # The committee learns a joiner from the DHT nodus:pk registry
+    # (nodus_witness_peer.c rebuild_roster_from_peers) on its 60 s roster
+    # tick, and the joiner's DISCOVER backoff schedule is
+    # 0/30/90/210/450/750 s (BOOTSTRAP_WAIT_SCHEDULE_SEC cumulative), so
+    # a healthy join lands on attempt 3-4. 600 s covers attempt 5.
+    info "waiting for node$n to leave DISCOVER"
+    t=0; left=0
+    while [ $t -lt 600 ]; do
+        if grep -q "state=DONE branch=DISCOVER" "$node_dir/nodus.log" 2>/dev/null; then
+            left=1; break
+        fi
+        sleep 5; t=$((t + 5))
+    done
+    if [ $left -ne 1 ]; then
+        echo "--- node$n bootstrap trace ---" >&2
+        grep "WITNESS-BOOTSTRAP" "$node_dir/nodus.log" | tail -20 >&2
+        for c in $(seq 1 "$STAGEF_COMMITTEE_SIZE"); do
+            echo "  node$c roster: $(grep -c 'roster swap' "$BASE_DIR/node$c/nodus.log") swaps, \
+$(grep -c 'unknown sender' "$BASE_DIR/node$c/nodus.log") unknown-sender drops" >&2
+        done
+        fail "node$n never left DISCOVER (bootstrap quorum not reached in ${t}s)"
+    fi
+    ok "node$n left DISCOVER after ${t}s"
+
+    # ASSERTION 2 — and then reached the synchronisation target.
     t=0; h=0
-    # The joiner's DISCOVER backoff schedule is 0/30/60/120/240/300…s
-    # (nodus_witness_bootstrap.c BOOTSTRAP_WAIT_SCHEDULE_SEC), and the
-    # committee side only learns the joiner via the 60 s roster refresh,
-    # so attempt 5 — the first one that typically lands after inclusion —
-    # fires at ~450 s. 900 s covers attempt 6 as well.
-    while [ $t -lt 900 ]; do
+    while [ $t -lt 300 ]; do
         db=$(stagef_node_chain_db "$n")
         if [ -n "$db" ] && [ -s "$db" ]; then
             h=$(sqlite3 "$db" "SELECT COALESCE(MAX(height),0) FROM blocks;" 2>/dev/null || echo 0)
@@ -221,8 +419,8 @@ for n in 8 9; do
         fi
         sleep 5; t=$((t + 5))
     done
-    [ "${h:-0}" -ge 1 ] || fail "node$n did not sync genesis in 900s"
-    info "node$n synced to h=$h"
+    [ "${h:-0}" -ge 1 ] || fail "node$n left DISCOVER but did not sync genesis in ${t}s"
+    ok "node$n synced to h=$h"
 done
 
 # ── C. fund the two node identities ─────────────────────────────────
@@ -230,10 +428,18 @@ done
 for n in 8 9; do
     fp=$(cat "$BASE_DIR/node$n/identity/nodus.fp")
     info "funding node$n identity ${fp:0:16}… with $FUND_RAW raw"
-    ok=0
+    ok_send=0
+    : > "$BASE_DIR/fund_node$n.log"
     for attempt in 1 2 3; do
+        # SYNC FIRST, every time. The second funding TX spends the change
+        # output of the first, and the wallet cannot select a coin it has
+        # not seen: without this, node9's send failed with
+        # "Error: Insufficient funds" against a wallet holding the entire
+        # genesis supply. (feedback_dnac_sync_between_sends; this section
+        # of the scenario had never executed before O15B.1.)
+        stagef_dna -q dna sync >> "$BASE_DIR/fund_node$n.log" 2>&1 || true
         if stagef_dna -q dna send "$fp" "$FUND_RAW" "bond$n" \
-             > "$BASE_DIR/fund_node$n.log" 2>&1; then ok=1; break; fi
+             >> "$BASE_DIR/fund_node$n.log" 2>&1; then ok_send=1; break; fi
         sleep 6
     done
     # CLI exit code is not the commit truth — verify on-chain (utxo_set
@@ -245,7 +451,7 @@ for n in 8 9; do
             utxo_set WHERE owner = '$fp';" 2>/dev/null || echo 0)
         if [ "${bal:-0}" -ge "$BOND_RAW" ]; then committed=1; break; fi
     done
-    [ "$committed" -eq 1 ] || fail "node$n funding not committed (bal=${bal:-0}, send ok=$ok)"
+    [ "$committed" -eq 1 ] || fail "node$n funding not committed (bal=${bal:-0}, send ok=$ok_send)"
 done
 assert_state_root_identical "C/funding"
 
@@ -266,15 +472,53 @@ for n in $(running_nodes); do
     c=$(sqlite3 "$(stagef_node_chain_db "$n")" "SELECT COUNT(*) FROM validators;")
     [ "$c" -eq 9 ] || fail "node$n validator count $c != 9"
 done
-info "9 bonded validators on every node"
+
+# The count alone would be satisfied by ANY nine rows. Name the two the
+# scenario actually brought in.
+PK8=$(node_pubkey_hex 8)
+PK9=$(node_pubkey_hex 9)
+for pk_label in "8:$PK8" "9:$PK9"; do
+    lbl=${pk_label%%:*}; pk=${pk_label#*:}
+    got=$(sqlite3 "$(node1_db)" \
+        "SELECT COUNT(*) FROM validators WHERE hex(pubkey) = '$pk';")
+    [ "$got" -eq 1 ] || fail "node$lbl identity is not a bonded validator"
+done
+ok "9 bonded validators on every node, including node8 and node9"
 assert_state_root_identical "D/staked"
 
 # ── E. grow: TARGET_ACTIVE_COUNT = 9 ────────────────────────────────
 # O15B §7 — the operation under test begins here.
 stagef_sentinel TARGET_REACHED
 
+# Record the pre-grow authoritative snapshots so section F can prove the
+# historical rows never move.
+PRE_GROW_SERIES=$(sqlite3 "$(node1_db)" "SELECT epoch_start || '|' || \
+    active_count || '|' || hex(snapshot_hash) FROM validator_set_snapshots \
+    ORDER BY epoch_start;")
+
+# A chain-config proposal is a fee-paying TX like any other
+# (nodus_witness_verify.c: committed_fee >= DNAC_MIN_FEE_RAW), and the
+# proposer here is node1's WITNESS identity, not the harness user. Fund
+# it from this scenario rather than inheriting a balance an earlier
+# alphabetically-ordered scenario happened to leave behind — this
+# scenario has to stand on its own when run in isolation.
+V0_FP=$(cat "$BASE_DIR/node1/identity/nodus.fp")
+info "funding node1 witness identity ${V0_FP:0:16}… for the propose fees"
+stagef_dna -q dna sync > "$BASE_DIR/vset_cc_fund.log" 2>&1 || true
+stagef_dna -q dna send "$V0_FP" 100000000 "cc-fee" \
+    >> "$BASE_DIR/vset_cc_fund.log" 2>&1 || true
+cc_funded=0
+for _ in $(seq 1 15); do
+    sleep 4
+    bal=$(sqlite3 "$(node1_db)" "SELECT COALESCE(SUM(amount),0) FROM \
+        utxo_set WHERE owner = '$V0_FP';" 2>/dev/null || echo 0)
+    if [ "${bal:-0}" -ge 100000000 ]; then cc_funded=1; break; fi
+done
+[ "$cc_funded" -eq 1 ] || fail "node1 witness identity not funded (bal=${bal:-0})"
+ok "node1 witness identity funded (${bal} raw)"
+
 H=$(head_height)
-# effective: a boundary far enough out to clear grace(15) + one full epoch
+# effective: a boundary far enough out to clear grace + one full epoch
 EFF=$(( ((H + 2 * E_LEN) / E_LEN + 1) * E_LEN ))
 info "proposing TARGET_ACTIVE_COUNT=9 effective=$EFF (head=$H)"
 "$NODUS_CLI" -s 127.0.0.1 -p "$(stagef_tcp_port 1)" \
@@ -283,28 +527,78 @@ info "proposing TARGET_ACTIVE_COUNT=9 effective=$EFF (head=$H)"
     > "$BASE_DIR/cc_grow.log" 2>&1 || fail "propose grow (see cc_grow.log)"
 
 # The first epoch whose SNAPSHOT can hold 9: built at a boundary B with
-# B+E_LEN >= EFF AND tenure cleared: staked block S needs S + 2E <= lookback.
-# Just poll: wait until some snapshot row has active_count 9.
-info "waiting for a 9-member snapshot"
-t=0; grown_epoch=""
-while [ $t -lt 600 ]; do
+# B+E_LEN >= EFF AND tenure cleared (staked block S needs S + 2E <=
+# lookback). Drive the chain there — nothing else will.
+info "pumping past the governed boundary and waiting for a 9-member snapshot"
+grown_epoch=""
+grow_deadline=$(( SECONDS + 900 ))
+while [ $SECONDS -lt $grow_deadline ]; do
     grown_epoch=$(sqlite3 "$(node1_db)" "SELECT epoch_start FROM \
         validator_set_snapshots WHERE active_count = 9 \
         ORDER BY epoch_start LIMIT 1;")
     [ -n "$grown_epoch" ] && break
-    sleep 5; t=$((t + 5))
+    pump_to_height $(( $(head_height) + E_LEN )) 300
 done
-[ -n "$grown_epoch" ] || fail "no 9-member snapshot appeared in 600s"
+[ -n "$grown_epoch" ] || fail "no 9-member snapshot appeared"
 info "9-member snapshot for epoch $grown_epoch"
 
-# Wait until that epoch is fully underway (boundary applied + a few blocks).
-wait_height $((grown_epoch + 3)) 600
+# GOVERNANCE: the set may only grow at a boundary at or after the height
+# the chain-config proposal made effective. A 9-member snapshot BEFORE
+# that height would mean the active set moved outside the epoch-boundary
+# mechanism.
+[ $(( grown_epoch % E_LEN )) -eq 0 ] || \
+    fail "grow landed at epoch_start=$grown_epoch, not an epoch boundary"
+[ "$grown_epoch" -ge "$EFF" ] || \
+    fail "set grew at epoch $grown_epoch, BEFORE the governed effective height $EFF"
+ok "grow happened at boundary $grown_epoch >= effective $EFF"
+
+# Let the grown epoch actually come into force.
+pump_to_height $(( grown_epoch + 3 )) 600
+assert_snapshot_series_sane "E/grown"
 assert_snapshots_identical "E/grown"
 assert_state_root_identical "E/grown"
+assert_block_identity_identical "E/grown"
+
 sc=$(status_counts 1)
 info "statuses after grow: $sc"
 a9=$(sqlite3 "$(node1_db)" "SELECT COUNT(*) FROM validators WHERE status = 0;")
 [ "$a9" -eq 9 ] || fail "expected 9 ACTIVE after grow, got: $sc"
+
+# MEMBERSHIP: the authoritative snapshot must actually carry the nine
+# ACTIVE keys — including the two this scenario introduced.
+for pk_label in "8:$PK8" "9:$PK9"; do
+    lbl=${pk_label%%:*}; pk=${pk_label#*:}
+    [ "$(snapshot_contains "$grown_epoch" "$pk")" = "1" ] || \
+        fail "node$lbl is ACTIVE but absent from the epoch-$grown_epoch snapshot"
+done
+missing=0
+while read -r pk; do
+    [ -z "$pk" ] && continue
+    [ "$(snapshot_contains "$grown_epoch" "$pk")" = "1" ] || missing=$((missing + 1))
+done <<EOF
+$(sqlite3 "$(node1_db)" "SELECT hex(pubkey) FROM validators WHERE status = 0;")
+EOF
+[ "$missing" -eq 0 ] || fail "$missing ACTIVE validators missing from the epoch-$grown_epoch snapshot"
+ok "epoch-$grown_epoch snapshot carries all 9 ACTIVE members incl. node8 + node9"
+assert_status_matches_epoch_snapshot "E/grown"
+
+# DYNAMIC QUORUM: 9 validators ⇒ (2*9)/3 + 1 = 7. The BFT round logs the
+# quorum it is actually enforcing; it must have moved with the snapshot.
+EXPECT_Q=$(( (2 * 9) / 3 + 1 ))
+q_seen=0
+q_deadline=$(( SECONDS + 300 ))
+while [ $SECONDS -lt $q_deadline ]; do
+    if grep -q "quorum=$EXPECT_Q)" "$BASE_DIR/node1/nodus.log" 2>/dev/null; then
+        q_seen=1; break
+    fi
+    pump_to_height $(( $(head_height) + 1 )) 60
+done
+[ "$q_seen" -eq 1 ] || fail "dynamic quorum never reached $EXPECT_Q after grow \
+(last seen: $(grep -o 'quorum=[0-9]*' "$BASE_DIR/node1/nodus.log" | tail -1))"
+ok "dynamic quorum is $EXPECT_Q, matching the 9-member snapshot"
+
+GROWN_SNAP_HASH=$(sqlite3 "$(node1_db)" "SELECT hex(snapshot_hash) FROM \
+    validator_set_snapshots WHERE epoch_start = $grown_epoch;")
 
 # ── F. shrink: TARGET_ACTIVE_COUNT = 7 ──────────────────────────────
 
@@ -316,21 +610,29 @@ info "proposing TARGET_ACTIVE_COUNT=7 effective=$EFF2 (head=$H)"
     --param TARGET_ACTIVE_COUNT --value 7 --effective "$EFF2" \
     > "$BASE_DIR/cc_shrink.log" 2>&1 || fail "propose shrink (see cc_shrink.log)"
 
-info "waiting for a 7-member snapshot AFTER epoch $grown_epoch"
-t=0; shrunk_epoch=""
-while [ $t -lt 600 ]; do
+info "pumping past the governed boundary and waiting for a 7-member snapshot"
+shrunk_epoch=""
+shrink_deadline=$(( SECONDS + 900 ))
+while [ $SECONDS -lt $shrink_deadline ]; do
     shrunk_epoch=$(sqlite3 "$(node1_db)" "SELECT epoch_start FROM \
         validator_set_snapshots WHERE active_count = 7 \
         AND epoch_start > $grown_epoch ORDER BY epoch_start LIMIT 1;")
     [ -n "$shrunk_epoch" ] && break
-    sleep 5; t=$((t + 5))
+    pump_to_height $(( $(head_height) + E_LEN )) 300
 done
-[ -n "$shrunk_epoch" ] || fail "no post-grow 7-member snapshot in 600s"
+[ -n "$shrunk_epoch" ] || fail "no post-grow 7-member snapshot appeared"
 info "7-member snapshot for epoch $shrunk_epoch"
+[ $(( shrunk_epoch % E_LEN )) -eq 0 ] || \
+    fail "shrink landed at epoch_start=$shrunk_epoch, not an epoch boundary"
+[ "$shrunk_epoch" -ge "$EFF2" ] || \
+    fail "set shrank at epoch $shrunk_epoch, BEFORE the governed effective height $EFF2"
 
-wait_height $((shrunk_epoch + 3)) 600
+pump_to_height $(( shrunk_epoch + 3 )) 600
+assert_snapshot_series_sane "F/shrunk"
 assert_snapshots_identical "F/shrunk"
 assert_state_root_identical "F/shrunk"
+assert_block_identity_identical "F/shrunk"
+
 sc=$(status_counts 1)
 info "statuses after shrink: $sc"
 el=$(sqlite3 "$(node1_db)" "SELECT COUNT(*) FROM validators WHERE status = 4;")
@@ -341,7 +643,37 @@ ac=$(sqlite3 "$(node1_db)" "SELECT COUNT(*) FROM validators WHERE status = 0;")
 badbond=$(sqlite3 "$(node1_db)" "SELECT COUNT(*) FROM validators \
     WHERE status = 4 AND self_stake < $BOND_RAW;")
 [ "$badbond" -eq 0 ] || fail "an ELIGIBLE validator lost its bond"
-info "ELIGIBLE pair keeps its bond"
+ok "ELIGIBLE pair keeps its bond"
+
+# AUTHORITY: a demoted validator must not remain in the authoritative
+# set, and an ACTIVE one must be in it. The snapshot — not the row
+# status — is what the QC is verified against.
+assert_status_matches_epoch_snapshot "F/shrunk"
+
+# And the shrink itself must have dropped exactly two seats: the epoch
+# that first held 7 after the grow carries seven members, no more.
+sc7=$(sqlite3 "$(node1_db)" "SELECT active_count FROM \
+    validator_set_snapshots WHERE epoch_start = $shrunk_epoch;")
+[ "$sc7" -eq 7 ] || fail "epoch-$shrunk_epoch snapshot has active_count=$sc7, expected 7"
+ok "the governed shrink dropped exactly 2 seats at epoch $shrunk_epoch"
+
+# HISTORY: every snapshot committed before the shrink must still read
+# back byte-identically. A later committed set may never rewrite an
+# earlier one.
+NOW_SERIES=$(sqlite3 "$(node1_db)" "SELECT epoch_start || '|' || \
+    active_count || '|' || hex(snapshot_hash) FROM validator_set_snapshots \
+    WHERE epoch_start <= $(echo "$PRE_GROW_SERIES" | tail -1 | cut -d'|' -f1) \
+    ORDER BY epoch_start;")
+[ "$NOW_SERIES" = "$PRE_GROW_SERIES" ] || {
+    echo "--- before grow:"; echo "$PRE_GROW_SERIES"
+    echo "--- now:";         echo "$NOW_SERIES"
+    fail "a historical validator-set snapshot changed"
+}
+STILL_GROWN=$(sqlite3 "$(node1_db)" "SELECT hex(snapshot_hash) FROM \
+    validator_set_snapshots WHERE epoch_start = $grown_epoch;")
+[ "$STILL_GROWN" = "$GROWN_SNAP_HASH" ] || \
+    fail "the 9-member snapshot for epoch $grown_epoch changed after the shrink"
+ok "historical snapshots (incl. the 9-member epoch $grown_epoch) are unchanged"
 
 # ── G. crash injection across a boundary ────────────────────────────
 
@@ -352,7 +684,7 @@ victim_pid=$(pgrep -f "node$victim/identity" | head -1)
 [ -n "$victim_pid" ] || fail "cannot find node$victim pid"
 info "killing node$victim (pid $victim_pid) before boundary $NEXT_B (head=$H)"
 kill -9 "$victim_pid"
-wait_height $((NEXT_B + 2)) 600
+pump_to_height $(( NEXT_B + 2 )) 600
 info "boundary $NEXT_B passed without node$victim — restarting it"
 node_dir="$BASE_DIR/node$victim"
 # shellcheck disable=SC2086
@@ -375,10 +707,15 @@ while [ $t -lt 300 ]; do
 done
 [ "${vh:-0}" -ge "$ref_h" ] || fail "node$victim did not catch up ($vh < $ref_h)"
 stagef_sentinel ASSERT_RUN
+assert_snapshot_series_sane "G/crash-recovery"
 assert_snapshots_identical "G/crash-recovery"
 assert_state_root_identical "G/crash-recovery"
+assert_block_identity_identical "G/crash-recovery"
+assert_status_matches_epoch_snapshot "G/crash-recovery"
 
 stagef_sentinel PASS
 echo ""
-echo "[PASS] 7→9→7 dynamic validator set: snapshots, flips, bonds, "
-echo "       state_root and crash recovery all identical across nodes"
+echo "[PASS] 7→9→7 dynamic validator set: joins left DISCOVER, snapshots,"
+echo "       governed boundary flips, membership, dynamic quorum, bonds,"
+echo "       historical immutability, state_root, block identity and crash"
+echo "       recovery all identical across nodes"

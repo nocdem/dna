@@ -1047,6 +1047,39 @@ target_link_libraries(test_witness_bootstrap_state_machine nodus dsa nodus)
 add_test(NAME test_witness_bootstrap_state_machine
          COMMAND test_witness_bootstrap_state_machine)
 
+# O15B.1 — the seed placeholder node_id must identify an ENDPOINT.
+# Deriving it from the IP alone deduplicated every co-located seed down
+# to one cluster peer, which collapsed the Kademlia routing table and the
+# DHT replication fan-out to one node and stranded a joining witness in
+# bootstrap DISCOVER. See nodus/BUGS.md.
+add_executable(test_cluster_seed_identity
+                tests/test_cluster_seed_identity.c)
+target_link_libraries(test_cluster_seed_identity nodus dsa nodus)
+add_test(NAME test_cluster_seed_identity
+         COMMAND test_cluster_seed_identity)
+
+# O15B.1 — a SIGTERM delivered during nodus_server_init() must not be
+# overwritten by nodus_server_run()'s `running = true`. When it was, the
+# process ignored the signal forever and hung stagef_up.sh in `wait`.
+add_executable(test_server_stop_latch
+                tests/test_server_stop_latch.c)
+target_link_libraries(test_server_stop_latch nodus dsa nodus)
+add_test(NAME test_server_stop_latch
+         COMMAND test_server_stop_latch)
+
+# O15B.1 — replay/live attendance parity at an epoch boundary. The sync
+# path used to credit attendance a SECOND time after replay_block had
+# already computed and committed that block's state_root, mutating two
+# columns inside the validator merkle leaf. A node that crashed near a
+# boundary then diverged on the next block and safety-halted forever.
+add_executable(test_replay_attendance_parity
+                tests/test_replay_attendance_parity.c)
+target_compile_definitions(test_replay_attendance_parity
+                PRIVATE NODUS_WITNESS_INTERNAL_API)
+target_link_libraries(test_replay_attendance_parity nodus dsa nodus)
+add_test(NAME test_replay_attendance_parity
+         COMMAND test_replay_attendance_parity)
+
 # PR 3 / E0 — Orphan bootstrap sentinel cleanup at startup.
 # RED until the GREEN commit replaces the no-op stub in nodus_witness.c.
 add_executable(test_witness_bootstrap_orphan_sentinel

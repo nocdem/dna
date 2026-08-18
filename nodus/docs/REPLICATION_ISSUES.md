@@ -216,3 +216,48 @@ Counter gaps in the log (up to 331) matched pending queue depths during 512KB me
 2. `nodus_tcp.c` decrypt-fail path: remove `rx_counter = 0` reset. If decrypt fails, drop the frame but keep `rx_counter` strictly monotonic. Real in-flight plaintext self-heals; real replays stay detected.
 
 **Verification:** deploy to cluster, check that `[ERR/CH_CRYPTO] Replay detected` rate drops to ~0 on all 7 nodes during media-repl bursts (currently bursty 5-10/min per node).
+
+---
+
+## ISSUE 20: co-located seeds collapsed to ONE replication target — FIXED (O15B.1, 2026-08-18)
+
+**Severity:** High on any single-address cluster (the Genesis Protocol harness, and any
+production deployment that co-locates nodes); latent where every node has its own IP.
+
+**Symptom:** every node logged exactly one
+`CLUSTER: injected <first-seed>:<port> into routing table` and no other, for the whole
+life of the process. DHT values reached one node per PUT, and a newly joined witness's
+`nodus:pk` registry entry never reached the rest of the committee — which stranded it in
+bootstrap `DISCOVER` because `nodus_witness_dispatch_t3` drops T3 messages from a sender
+that is not in the roster, and the roster is built from that registry.
+
+**Location:** `nodus_server.c`, the seed-registration loop in `nodus_server_init`.
+
+**Problem:** a configured seed has no known node_id, so it is registered under a
+placeholder that `nodus_cluster_on_pong` later replaces (matched by ip **and** udp port).
+The placeholder was `nodus_hash(seed_ip_string)` — the host, not the endpoint — while
+`nodus_cluster_add_peer` deduplicates on it (`nodus_cluster.c`, `find_peer`). Seven seeds
+on `127.0.0.1` therefore produced ONE cluster peer; six were dropped without a log line.
+
+**Impact chain:** one cluster peer → the heartbeat pings one node → the only cluster-side
+`nodus_routing_insert` (that peer's ALIVE transition) fills one Kademlia routing slot →
+`nodus_server_replicate_value`'s small-cluster fast path calls
+`nodus_routing_find_closest` on a one-entry table → **R=8 becomes R=1**. The cluster
+became a star through the first seed, and every value's second and later replicas
+depended on the hub's 600 s `NODUS_REPUBLISH_SEC` cycle happening to run in time. That is
+the "usually replicates" shape `nodus/CLAUDE.md` names as forbidden.
+
+**Evidence:** the preserved 9-node run's `nodus.db` tables — the ninth node's `nodus:pk`
+row was present on the hub and on one other node, and absent from the other six, while
+all nine rows were present on the hub.
+
+**Fix:** `nodus_cluster_seed_placeholder_id(ip, udp_port)` hashes `"ip:port"`, so seeds
+that share an address stay distinct. `nodus_server_init` additionally skips a seed equal
+to this node's own `ip:udp_port` — with per-endpoint ids the node would otherwise
+register a phantom peer for itself, ping itself, and leave a placeholder-id entry for its
+own address permanently occupying a routing/replication slot (`nodus_cluster_on_pong`
+rewrites the cluster row's id but never the routing entry).
+
+**Regression test:** `ctest test_cluster_seed_identity` — seven `127.0.0.1` seeds on
+distinct ports must yield `cluster.peer_count == 7`, and the placeholder must differ from
+the host-only hash.

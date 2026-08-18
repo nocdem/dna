@@ -6062,16 +6062,46 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
 
     /* Add seed nodes to cluster.
      * Seeds don't have node_ids yet — they'll be discovered via PING/PONG.
-     * For now, create placeholder node_ids from IP hash. The real node_id
-     * will be learned when the seed responds to our PING. */
-    for (int i = 0; i < config->seed_count; i++) {
-        nodus_key_t seed_id;
-        nodus_hash((const uint8_t *)config->seed_nodes[i],
-                    strlen(config->seed_nodes[i]), &seed_id);
-        nodus_cluster_add_peer(&srv->cluster, &seed_id,
-                              config->seed_nodes[i],
-                              config->seed_ports[i],
-                              config->seed_ports[i] + 2);  /* Peer TCP = UDP + 2 */
+     * For now, create placeholder node_ids from the seed's ENDPOINT. The
+     * real node_id will be learned when the seed responds to our PING.
+     *
+     * O15B.1 — the placeholder used to be a hash of the IP STRING alone,
+     * while nodus_cluster_add_peer deduplicates on the id. Every seed on
+     * a shared address therefore collapsed onto one peer, and six of the
+     * harness's seven seeds were dropped without a word. Downstream that
+     * left one Kademlia routing entry and a DHT replication fan-out of
+     * one, which is what stranded a joining witness in bootstrap
+     * DISCOVER (nodus/BUGS.md). Keyed by ip:udp_port the seeds stay
+     * distinct.
+     *
+     * A node is also NOT its own seed. The Stage F harness — and any
+     * co-located deployment — hands every node the full seed list,
+     * itself included; without this skip the node registers a phantom
+     * peer for its own address, heartbeats itself, and injects a
+     * placeholder-id entry for itself into its own routing table, where
+     * it consumes a replication slot forever (nodus_cluster_on_pong
+     * rewrites the cluster row's id but never the routing entry). */
+    {
+        const char *self_ip = config->external_ip[0] ? config->external_ip
+                                                     : config->bind_ip;
+        for (int i = 0; i < config->seed_count; i++) {
+            if (config->seed_ports[i] == config->udp_port &&
+                strcmp(config->seed_nodes[i], self_ip) == 0) {
+                fprintf(stderr,
+                        "CLUSTER: skipping own address %s:%u in seed list\n",
+                        config->seed_nodes[i],
+                        (unsigned)config->seed_ports[i]);
+                continue;
+            }
+            nodus_key_t seed_id;
+            nodus_cluster_seed_placeholder_id(config->seed_nodes[i],
+                                              config->seed_ports[i],
+                                              &seed_id);
+            nodus_cluster_add_peer(&srv->cluster, &seed_id,
+                                  config->seed_nodes[i],
+                                  config->seed_ports[i],
+                                  config->seed_ports[i] + 2);  /* Peer TCP = UDP + 2 */
+        }
     }
 
     /* Initialize witness module (all nodes are automatic witnesses) */
@@ -6119,6 +6149,18 @@ fail:
 
 int nodus_server_run(nodus_server_t *srv) {
     if (!srv) return -1;
+
+    /* A stop that already arrived must not be resurrected. `running` is
+     * set below, so a SIGTERM delivered while nodus_server_init() was
+     * still working (storage migration, VACUUM, identity generation)
+     * would be overwritten here and the process would then ignore the
+     * signal forever — it never blocks long enough to be interrupted
+     * again, it just polls. See stop_requested in nodus_server.h. */
+    if (srv->stop_requested) {
+        fprintf(stderr, "Nodus: stop requested during init — not starting\n");
+        return 0;
+    }
+
     srv->running = true;
     srv->start_time = (uint64_t)time(NULL);
 
@@ -6132,7 +6174,7 @@ int nodus_server_run(nodus_server_t *srv) {
 #endif
     fprintf(stderr, "  UDP port: %d\n", srv->udp.port);
 
-    while (srv->running) {
+    while (srv->running && !srv->stop_requested) {
         /* Poll client TCP events */
         nodus_tcp_poll(&srv->tcp, 50);
 
@@ -6244,7 +6286,11 @@ int nodus_server_run(nodus_server_t *srv) {
 }
 
 void nodus_server_stop(nodus_server_t *srv) {
-    if (srv) srv->running = false;
+    if (!srv) return;
+    /* Latch FIRST: nodus_server_run() consults stop_requested before it
+     * sets running, so a stop delivered during init is not lost. */
+    srv->stop_requested = 1;
+    srv->running = false;
 }
 
 void nodus_server_close(nodus_server_t *srv) {

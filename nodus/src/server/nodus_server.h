@@ -10,6 +10,8 @@
 #ifndef NODUS_SERVER_H
 #define NODUS_SERVER_H
 
+#include <signal.h>                /* sig_atomic_t — see stop_requested */
+
 #include "nodus/nodus_types.h"
 #include "transport/nodus_tcp.h"
 #include "transport/nodus_udp.h"
@@ -464,6 +466,19 @@ typedef struct nodus_server {
     uint64_t                start_time;
 
     bool                    running;
+
+    /* Set by nodus_server_stop(), which nodus-server calls from its
+     * SIGINT/SIGTERM handler. SEPARATE from `running` because
+     * nodus_server_run() sets `running = true` on entry: a stop that
+     * arrives during nodus_server_init() — which is a long operation
+     * (storage migration, VACUUM, identity generation, witness init) —
+     * would otherwise be overwritten a moment later and the process
+     * would ignore the signal for the rest of its life. The Stage F
+     * harness kills its short-lived identity-generation spawns exactly
+     * in that window, so it hit this intermittently and hung
+     * stagef_up.sh in `wait`. sig_atomic_t because a signal handler
+     * writes it. */
+    volatile sig_atomic_t   stop_requested;
 } nodus_server_t;
 
 /**

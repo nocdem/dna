@@ -225,12 +225,29 @@ echo "[ok] all $STAGEF_COMMITTEE_SIZE nodes listening"
 # 30 s pending-forward timeout. Poll the committee on each node until
 # each reports the full 7-member roster with non-zero quorum, or 30 s
 # elapses. Cheap loop; no impact on stable clusters.
-deadline=$(( SECONDS + 30 ))
+# O15B.1 — 30 s could not be met by construction, so once the grep above
+# was corrected the gate simply warned on every run instead of never
+# matching on every run. The transport roster is rebuilt on a 60 s tick
+# (WITNESS_EPOCH_SECS in nodus_witness.c) and is fed by the DHT nodus:pk
+# registry, itself refreshed on a 60 s cadence — so full convergence
+# cannot be observed inside 30 s. 90 s covers one publish plus one
+# rebuild with margin. Still non-fatal: a slow mesh is a warning, not a
+# reason to refuse to test.
+ROSTER_WAIT="${STAGEF_ROSTER_WAIT:-90}"
+deadline=$(( SECONDS + ROSTER_WAIT ))
 while [ $SECONDS -lt $deadline ]; do
     ready=1
     for n in $(seq 1 "$STAGEF_COMMITTEE_SIZE"); do
         log="$(stagef_node_dir "$n")/nodus.log"
-        if ! grep -q "epoch roster swap: $STAGEF_COMMITTEE_SIZE witnesses, quorum=5" "$log" 2>/dev/null; then
+        # O15B.1 — this grepped for "…witnesses, quorum=5", a string the
+        # server has never emitted: nodus_witness.c logs
+        # "epoch roster swap: %u witnesses (transport)" (and
+        # "deferred roster swap: …" when a round was active). The gate
+        # therefore matched nothing, timed out, and printed the warning
+        # below on EVERY run — a bootstrap readiness check that could not
+        # fail because it could not pass. Match the line the server
+        # actually writes, either variant.
+        if ! grep -qE "roster swap: $STAGEF_COMMITTEE_SIZE witnesses" "$log" 2>/dev/null; then
             ready=0
             break
         fi
@@ -241,7 +258,12 @@ done
 if [ $ready -eq 1 ]; then
     echo "[ok] all $STAGEF_COMMITTEE_SIZE nodes reached roster=$STAGEF_COMMITTEE_SIZE"
 else
-    echo "[warn] not all nodes reached full roster within 30 s; continuing anyway"
+    # Report the deadline that was actually used. The old text said "30 s"
+    # regardless, which was one more thing this gate stated without
+    # checking. Raise STAGEF_ROSTER_WAIT if a slower machine needs longer:
+    # full convergence costs one identity refresh (60 s) plus one roster
+    # rebuild tick (60 s) in the worst case.
+    echo "[warn] not all nodes reached full roster within ${ROSTER_WAIT} s; continuing anyway"
 fi
 
 # Pre-populate known_nodes cache with stagef entries so Source 1 of

@@ -21,8 +21,18 @@
 extern "C" {
 #endif
 
-/** Blocks per tokenomic year at the canonical 5s block interval. */
+/** Blocks per tokenomic year at the canonical 5s block interval.
+ *
+ *  O15B.1 — guarded so a harness build can compile a SHORT tokenomic
+ *  year (-DDNAC_BLOCKS_PER_YEAR=20) and actually cross a halving
+ *  boundary; at the production value the first one sits 6.3M blocks out
+ *  and `test_halving_boundaries` could never run. Same idiom this file
+ *  already uses for DNAC_DECIMAL_UNIT, and dnac.h for
+ *  DNAC_EPOCH_LENGTH. Production builds never define it, so the value
+ *  below is the only one that ships. */
+#ifndef DNAC_BLOCKS_PER_YEAR
 #define DNAC_BLOCKS_PER_YEAR   6307200ULL
+#endif
 
 /** Halving boundary count. Year 0 = 32, year 1 = 16, ... year 5+ = floor. */
 #define DNAC_HALVING_YEARS     5

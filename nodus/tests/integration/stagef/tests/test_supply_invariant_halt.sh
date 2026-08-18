@@ -22,10 +22,40 @@
 #      SIGCONT, submit a block-trigger TX. Most reliable but requires
 #      root on the harness nodes.
 #
-# This stub documents the test and FAILS (exit 99 = TODO) until the
-# chosen injection path is wired up. For now it at least verifies
-# that stagef_diff is intact post-bring-up — baseline consensus
-# health check.
+# O15B.1 — SKIP CLASSIFICATION (capability, not environment noise).
+#
+# This is an INTENTIONAL rc=99, and the reason is that all three
+# injection paths above are out of reach without doing something this
+# tree forbids:
+#
+#   A) A production fault hook that forces supply_tracking.total_minted
+#      is a live path into the very counter the hard gate defends. The
+#      gate must be fail-closed and unreachable from any input; adding a
+#      way to move its input is the opposite of that.
+#   B) A mint-from-thin-air TX is rejected at ADMISSION
+#      (nodus_witness_verify.c), so it never reaches finalize_block and
+#      cannot exercise the gate this scenario is named for.
+#   C) A DB poke reaches the gate, but only by breaking the shared
+#      fixture: the documented contract is "EVERY node logs SUPPLY
+#      INVARIANT VIOLATION and the chain stalls", which means poking all
+#      seven — and genesis_protocol.sh runs eleven further scenarios
+#      against that same cluster afterwards, with no recovery path
+#      (halt_auto_recover defaults off, feedback_genesis_protocol).
+#
+# What this skip does NOT hide:
+#   - the gate itself: check_supply_invariant_v016 has unit coverage in
+#     nodus/tests/test_witness_state_root_failclose.c (fail-close on a DB
+#     error), and the conservation invariant it defends is property-
+#     tested over 3x1000 random TX sequences in
+#     nodus/tests/test_supply_invariant.c;
+#   - bootstrap, validator-set grow/shrink, or any state_root path —
+#     this scenario touches none of them.
+#
+# The script still runs a REAL assertion before skipping: stagef_diff
+# proves state_root is identical across all nodes at this point in the
+# run. Wiring path (C) into a scenario of its own — with its own
+# cluster, poked on all seven nodes, torn down afterwards — is the
+# honest way to close this, and it is not O15B.1's scope.
 #
 # Requires an active Stage F harness (stagef_up.sh).
 
@@ -42,10 +72,15 @@ echo "== Baseline consensus check =="
 bash "$(dirname "$0")/../stagef_diff.sh" "pre-injection" || exit 2
 
 echo ""
-echo "[TODO] supply-invariant injection path not yet wired."
-echo "       The check_supply_invariant_v016 hard gate (Stage F.1)"
-echo "       is ACTIVE on live finalize_block — any real-world supply"
-echo "       drift will halt the chain immediately. This test script"
-echo "       exists to assert the gate fires WHEN the injection path"
-echo "       is added; see top-of-file comments for design options."
+echo "[SKIP] supply-invariant injection is a CAPABILITY this harness does"
+echo "       not have, not an unwritten assertion. Path A needs a"
+echo "       production hook into the counter the gate defends; path B is"
+echo "       rejected at TX admission and never reaches finalize_block;"
+echo "       path C halts the shared 7-node cluster that eleven later"
+echo "       scenarios run against, with no recovery path."
+echo "       The gate is NOT unverified: check_supply_invariant_v016 is"
+echo "       fail-close tested in ctest test_witness_state_root_failclose,"
+echo "       and the conservation invariant is property-tested in ctest"
+echo "       test_supply_invariant. The 7/7 state_root assertion above DID"
+echo "       run. Closing this properly needs its own disposable cluster."
 exit 99

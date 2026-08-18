@@ -1038,54 +1038,59 @@ int nodus_witness_sync_handle_rsp(nodus_witness_t *w,
         }
         nodus_witness_cert_store(w, stored_bh, votes, (int)rsp->cert_count);
 
-        /* Phase 9 / Task 48 — liveness attendance during sync replay.
-         * Credit this block's proposer (deterministic across nodes),
-         * matching the live-follower behavior. Precommit voter set
-         * diverges per node; proposer_id does not.
+        /* O15B.1 — THE POST-ROOT ATTENDANCE WRITE IS GONE.
          *
-         * EXCEPTION: skip for genesis (height == 1). The BFT-original
-         * commit_genesis path does NOT call record_attendance (only
-         * commit_batch does, see nodus_witness_bft.c:5918). If sync
-         * credits the genesis proposer here, the bootstrap-recovered
-         * node's validators table for the genesis row diverges from
-         * peers' (last_signed_block 1 vs 0, signed_blocks_this_epoch
-         * 1 vs 0). That non-determinism propagates into state_root on
-         * the next block under any code path that reads the
-         * validator's signed counters, producing a chain split.
-         * Symmetry with the BFT-original path is the consensus
-         * invariant; both paths must produce byte-identical
-         * post-replay state. F2/F5 expose this; pre-PR3 nothing ever
-         * sync-replayed genesis so the asymmetry never surfaced.
+         * What used to be here: a second nodus_witness_record_attendance()
+         * for this height, AFTER replay_block had already computed and
+         * verified the block's state_root and committed it. It was
+         * justified as a no-op "because commit_batch already credited the
+         * same proposer at the same height INSIDE the block transaction",
+         * with the monotonic guard (nodus_witness_bft.c:3401,
+         * block_height <= last_signed_block) as the thing making it inert.
          *
-         * F1b (2026-07-31) — the result is CHECKED. It used to be a bare
-         * call with the return value discarded, so once
-         * nodus_witness_record_attendance learned to distinguish a
-         * mid-scan DB failure from "proposer is not a validator"
-         * (nodus_witness_bft.c F1a), that new -1 would have been
-         * swallowed right here. A DB that cannot answer the attendance
-         * question cannot be trusted to have this node's validator
-         * counters — the exact columns feeding validator_root — agree
-         * with its peers', which is the divergence this comment block
-         * already names. So a failure aborts the sync session, matching
-         * the cert-verify and replay-failure paths above.
+         * That reasoning holds for an ordinary block and fails at an
+         * epoch boundary. record_attendance only matches validators whose
+         * status is ACTIVE or RETIRING (bft.c:3329-3348), and it runs
+         * BEFORE finalize_block, so at a boundary it sees the ENDING
+         * epoch's statuses. A proposer that was ELIGIBLE in the ending
+         * epoch and is flipped to ACTIVE by that same boundary block is
+         * therefore — canonically, on every node, live and replaying —
+         * given NO credit for it: last_signed_block keeps its old value.
+         * The guard was then wide open (33 <= 14 is false), so this call
+         * fired and wrote last_signed_block and
+         * signed_blocks_this_epoch — both hashed into the validator leaf
+         * (nodus_witness_merkle.c:894-896) — AFTER the root that commits
+         * them had been computed.
          *
-         * Two things this does NOT do, stated plainly rather than
-         * implied: the block is already durably committed by the time
-         * we get here (replay_block → commit_batch → db_commit), so
-         * this cannot roll it back; and on a healthy DB this call is a
-         * no-op that returns 0 at the monotonic guard, because
-         * commit_batch already credited the same proposer at the same
-         * height INSIDE the block transaction. */
-        if (stored_bh > 1) {
-            if (nodus_witness_record_attendance(w, stored_bh,
-                                                 rsp->proposer_id) != 0) {
-                QGP_LOG_ERROR(LOG_TAG,
-                    "attendance failed at height %llu — aborting sync",
-                    (unsigned long long)stored_bh);
-                w->sync_state.syncing = false;
-                return -1;
-            }
-        }
+         * Consequence, observed: a node that crashed at h=30 and
+         * re-synced replayed 31,32,33 with byte-identical roots, ended
+         * h=33 holding a validator row no live node has, and diverged on
+         * the very next block:
+         *   FATAL: state_root DIVERGED at h=34 — local=a3b174bd…
+         *   leader=0ed8d85a… — entering safety halt
+         * The halt was correct; the node could simply never rejoin.
+         *
+         * Proven offline before removal: replaying that chain's canonical
+         * blocks 1..35 through commit_genesis + replay_block — i.e. with
+         * no post-root writer at all — reproduces the healthy node's
+         * state_root at EVERY height, including 33 and 34. So nothing was
+         * relying on this write; canonical attendance is produced
+         * entirely inside commit_batch, before the root.
+         *
+         * No compensating write is added. The invariant this restores:
+         * a field committed by a block's state_root is never mutated
+         * after that root has been calculated.
+         *
+         * Two earlier hardenings of that call are retired with it: the
+         * genesis EXCEPTION (height == 1 was skipped because
+         * commit_genesis does not credit, so crediting here diverged the
+         * bootstrap-recovered node) and F1b's CHECKED return (a DB fault
+         * had to abort the sync session rather than be swallowed). Both
+         * were guards on a write that should not have existed; neither
+         * describes a behaviour that is now missing. Attendance is
+         * credited in exactly one place, inside the block transaction:
+         * nodus_witness_bft.c:6640, before finalize_block. */
+        (void)stored_bh;
     }
 
     /* Update cached state_root (Phase 3 / Task 10: 4-subtree composite). */
