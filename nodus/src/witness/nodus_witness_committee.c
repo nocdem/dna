@@ -21,6 +21,7 @@
 #include "nodus/nodus_chain_config.h" /* nodus_chain_config_get_u64 */
 #include "dnac/dnac.h"                /* DNAC_* constants */
 #include "dnac/validator.h"
+#include "dnac/block_v2.h"            /* O15E: successor seed row checks */
 #include "crypto/hash/qgp_sha3.h"
 
 #include <sqlite3.h>   /* S3: sqlite_master probe in get_for_block */
@@ -86,6 +87,87 @@ static int committee_target_for_epoch(nodus_witness_t *w, uint64_t e_start) {
     return (int)target;
 }
 
+/* ── O15E Faz A — the successor's committed seed row ──────────────────
+ *
+ * On a SUCCESSOR chain the state_seed's authoritative block-identity
+ * source is the committed `v2_blocks` BlockID at the lookback height
+ * (64 bytes — the exact width the tiebreak preimage already consumes).
+ * This closes ACTIVATION OBLIGATION 2 (nodus_witness_v2_epoch.h): the
+ * terminal legacy `blocks` table is NEVER consulted for live successor
+ * committee authority, and an unusable seed row FAILS CLOSED before any
+ * committee is emitted.
+ *
+ * Fail-closed classes, each -1:
+ *   - MISSING: no committed row at the height (a successor produces
+ *     every height contiguously, so absence is a real fault);
+ *   - MALFORMED: block_id not exactly 64 B, header not exactly the
+ *     canonical 413 B, strict-decode reject (retired v2 and unknown
+ *     versions are both rejects inside dna_bh2_decode), or a header
+ *     height disagreeing with the row's key;
+ *   - WRONG CHAIN / FORGED (height > 0): header chain_id must equal the
+ *     node's derived successor chain id, and the BlockID recomputed
+ *     from the stored canonical header must equal the stored block_id.
+ *   - Height 0 (reachable only via a direct e_start == E+1 call — every
+ *     real caller passes epoch starts that are multiples of E): the
+ *     genesis header carries an ALL-ZERO chain_id by construction (the
+ *     identity-circularity break, nodus_witness_v2_apply.c genesis
+ *     path), and its block_id is dna_bh2_genesis_block_id over the
+ *     manifest bytes, NOT header-recomputable here. The arm checks the
+ *     zero chain_id + height and takes the stored id; the committed
+ *     genesis row's authenticity is established by the post-open gate
+ *     probe on every database open (witness_post_open_gate). */
+static int v2_seed_block_id(nodus_witness_t *w, uint64_t height,
+                            uint8_t out[64]) {
+    if (!w || !w->db || !out) return -1;
+
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT block_id, header FROM v2_blocks WHERE global_height = ?",
+            -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_int64(st, 1, (int64_t)height);
+    if (sqlite3_step(st) != SQLITE_ROW) {          /* MISSING */
+        sqlite3_finalize(st);
+        return -1;
+    }
+    const void *id = sqlite3_column_blob(st, 0);
+    int idl        = sqlite3_column_bytes(st, 0);
+    const void *hd = sqlite3_column_blob(st, 1);
+    int hdl        = sqlite3_column_bytes(st, 1);
+    if (!id || idl != DNA_BH2_ID_LEN ||
+        !hd || hdl != DNA_BH2_ENC_SIZE) {          /* MALFORMED */
+        sqlite3_finalize(st);
+        return -1;
+    }
+
+    dna_block_header_v2_t hdr;
+    if (dna_bh2_decode(hd, (size_t)hdl, &hdr) != 0 ||   /* wrong type */
+        hdr.block_height != height) {                   /* wrong row  */
+        sqlite3_finalize(st);
+        return -1;
+    }
+
+    if (height == 0) {
+        static const uint8_t zero32[32] = {0};
+        if (memcmp(hdr.chain_id, zero32, sizeof(zero32)) != 0) {
+            sqlite3_finalize(st);
+            return -1;
+        }
+    } else {
+        uint8_t recomputed[DNA_BH2_ID_LEN];
+        if (memcmp(hdr.chain_id, w->v2_chain32, 32) != 0 ||  /* WRONG CHAIN */
+            dna_bh2_block_id(&hdr, recomputed) != 0 ||
+            memcmp(recomputed, id, DNA_BH2_ID_LEN) != 0) {   /* FORGED */
+            sqlite3_finalize(st);
+            return -1;
+        }
+    }
+
+    memcpy(out, id, DNA_BH2_ID_LEN);
+    sqlite3_finalize(st);
+    return 0;
+}
+
 /* Copy a work entry into the public member struct. */
 static void emit_member(const committee_work_t *w_in,
                          nodus_committee_member_t *out) {
@@ -115,12 +197,31 @@ int nodus_committee_compute_for_epoch(nodus_witness_t *w,
 
     uint64_t lookback_block = e_start - (uint64_t)DNAC_EPOCH_LENGTH - 1ULL;
 
-    /* state_seed = state_root at lookback_block. */
-    nodus_witness_block_t block_info;
-    if (nodus_witness_block_get(w, lookback_block, &block_info) != 0) {
-        fprintf(stderr, "%s: compute_for_epoch: block_get(%llu) failed\n",
-                LOG_TAG, (unsigned long long)lookback_block);
-        return -1;
+    /* state_seed = the authoritative block identity at lookback_block.
+     *
+     * O15E Faz A (locked consensus decision): on a SUCCESSOR the source
+     * is the committed v2_blocks BlockID at the SAME lookback height —
+     * lookback distance, the tiebreak preimage and the selection
+     * algorithm are all UNCHANGED; only the identity source moves.
+     * Missing/malformed/wrong-chain rows fail closed; there is NO
+     * fallback to the terminal legacy `blocks` table on a successor.
+     * Legacy chains keep the byte-identical legacy read below. */
+    uint8_t state_seed[64];
+    if (w->v2_successor) {
+        if (v2_seed_block_id(w, lookback_block, state_seed) != 0) {
+            fprintf(stderr, "%s: compute_for_epoch: V2 seed row at %llu "
+                    "missing or unusable — failing closed\n",
+                    LOG_TAG, (unsigned long long)lookback_block);
+            return -1;
+        }
+    } else {
+        nodus_witness_block_t block_info;
+        if (nodus_witness_block_get(w, lookback_block, &block_info) != 0) {
+            fprintf(stderr, "%s: compute_for_epoch: block_get(%llu) failed\n",
+                    LOG_TAG, (unsigned long long)lookback_block);
+            return -1;
+        }
+        memcpy(state_seed, block_info.state_root, sizeof(state_seed));
     }
 
     /* Widen the initial candidate set so we can re-apply the state_seed
@@ -176,7 +277,7 @@ int nodus_committee_compute_for_epoch(nodus_witness_t *w,
         work[i].rec = &candidates[i];
         work[i].total_stake =
             candidates[i].self_stake + candidates[i].external_delegated;
-        compute_tiebreak_hash(candidates[i].pubkey, block_info.state_root,
+        compute_tiebreak_hash(candidates[i].pubkey, state_seed,
                               work[i].tiebreak);
     }
 

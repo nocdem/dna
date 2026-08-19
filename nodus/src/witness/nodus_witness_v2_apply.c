@@ -497,7 +497,8 @@ int nodus_witness_v2_genesis_ex(nodus_witness_t *w,
     uint32_t ver = 0;
     if (nodus_witness_db_schema_version(w, &ver) != 0 ||
         (ver != NODUS_V2_SCHEMA_VERSION_S9 &&
-         ver != NODUS_V2_SCHEMA_VERSION_S10))
+         ver != NODUS_V2_SCHEMA_VERSION_S10 &&
+         ver != NODUS_V2_SCHEMA_VERSION_S11))
         return -1;
 
     /* Idempotency: a committed height-0 row decides. */
@@ -1148,7 +1149,8 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
     uint32_t ver = 0;
     if (nodus_witness_db_schema_version(w, &ver) != 0 ||
         (ver != NODUS_V2_SCHEMA_VERSION_S9 &&
-         ver != NODUS_V2_SCHEMA_VERSION_S10))
+         ver != NODUS_V2_SCHEMA_VERSION_S10 &&
+         ver != NODUS_V2_SCHEMA_VERSION_S11))
         return -2;
 
     /* ── epoch: DERIVED from the global block count, never trusted ────
@@ -2201,6 +2203,45 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
         }
     }
     FAIL_POINT(V2AP_FAIL_AFTER_TX_INDEX);
+
+    /* 12b. O15E Faz B — canonical envelope byte availability.
+     * The exact WIRE bytes this engine just verified and executed are
+     * persisted inside the SAME block transaction, in canonical batch
+     * order, so a peer can later re-verify and re-apply this block
+     * (BlockMessage v1 = stored header + stored QC + these bytes). The
+     * bytes are the envelope's canonical wire encoding — the identical
+     * bytes both the producer and a remote applier preflighted — never
+     * a struct image. Guarded on the S11 schema: pre-S11 databases
+     * (unit fixtures only; every real successor derives at S11) keep
+     * the exact pre-O15E behavior, and their committed heights are
+     * simply unavailable to serve (fail-closed at the serving seam). */
+    if (ver >= NODUS_V2_SCHEMA_VERSION_S11) {
+        uint32_t gidx = 0;
+        for (int phase = 0; phase < 3; phase++) {
+            for (size_t i = 0; i < blk->n_envs; i++) {
+                if (env_phase[i] != phase) continue;
+                sqlite3_stmt *st = NULL;
+                if (sqlite3_prepare_v2(w->db,
+                        "INSERT INTO v2_tx_bytes (global_height, "
+                        "global_index, tx_id, env) VALUES (?1,?2,?3,?4)",
+                        -1, &st, NULL) != SQLITE_OK)
+                    goto fail_fault;
+                sqlite3_bind_int64(st, 1,
+                                   (sqlite3_int64)blk->global_height);
+                sqlite3_bind_int64(st, 2, (sqlite3_int64)gidx);
+                sqlite3_bind_blob(st, 3, pf[i].wire_id, 64,
+                                  SQLITE_TRANSIENT);
+                sqlite3_bind_blob(st, 4, blk->envs[i].env_bytes,
+                                  (int)blk->envs[i].env_len,
+                                  SQLITE_TRANSIENT);
+                int rc = sqlite3_step(st);
+                sqlite3_finalize(st);
+                if (rc != SQLITE_DONE) goto fail_fault;
+                gidx++;
+            }
+        }
+    }
+    FAIL_POINT(V2AP_FAIL_AFTER_ENV_BYTES);
 
     /* 13. block-level roots + expectation compare + metadata */
     {

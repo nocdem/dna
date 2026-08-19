@@ -50,6 +50,9 @@
 
 #include "witness/nodus_witness.h"
 #include "witness/nodus_witness_v2_result.h"
+#include "protocol/nodus_tier3.h"       /* O15E: verb 20-23 handlers   */
+
+struct nodus_tcp_conn;
 
 #ifdef __cplusplus
 extern "C" {
@@ -150,6 +153,35 @@ int nodus_witness_v2_sync_apply_range(nodus_witness_t *w,
                                       nodus_v2_sync_range_result_t *out);
 
 /**
+ * O15E Faz B — serve ONE committed successor block as an encoded
+ * BlockMessage v1.
+ *
+ * Assembled entirely from committed state: the stored canonical header,
+ * the stored verified QC, and the canonical envelope wire bytes the
+ * apply engine persisted inside the block's own transaction
+ * (v2_tx_bytes, S11). proposer_id and timestamp come from the STORED
+ * header — nothing is invented.
+ *
+ * FAILS CLOSED as a sync source when the block cannot be served
+ * faithfully: no committed row at the height, `qc IS NULL` (committed
+ * but not yet certified — the live lane's legal window), byte records
+ * missing or their count disagreeing with the header's tx_count
+ * (pre-S11 heights), or any malformed stored field. Height 0 is NEVER
+ * served — the genesis has no QC by construction; a joiner acquires the
+ * genesis through the pinned-genesis path, not through BlockMessage.
+ *
+ * @param w        witness handle.
+ * @param height   committed successor height (>= 1).
+ * @param buf_out  [out] malloc'd encoded frame; caller frees.
+ * @param len_out  [out] frame length.
+ * @return 0 served; 1 unavailable (fail-closed, not a fault);
+ *         -1 node-local fault; NODUS_V2_NOT_ACTIVE when the gate is
+ *         closed.
+ */
+int nodus_witness_v2_sync_serve_block(nodus_witness_t *w, uint64_t height,
+                                      uint8_t **buf_out, size_t *len_out);
+
+/**
  * Restart / crash-recovery integrity check for the V2 lane.
  *
  * Re-derives the BlockID of the committed head from its STORED canonical
@@ -169,6 +201,66 @@ int nodus_witness_v2_sync_apply_range(nodus_witness_t *w,
  */
 int nodus_witness_v2_sync_restart_check(nodus_witness_t *w,
                                         uint64_t *bad_height_out);
+
+/* ── O15E Faz B — the network seam (verbs 20-23) ─────────────────────
+ *
+ * All four handlers ask the activation gate BEFORE touching a byte and
+ * answer NOTHING while it is closed (the O15B result algebra: no ack,
+ * no queue, no peer standing). The dispatch layer has already verified
+ * the sender's wsig against the transport roster. Serving is
+ * per-sender rate-limited (the chain_q H-1 sign-amplification
+ * discipline). Requests this node emits are LOCAL policy driven by the
+ * tick — never consensus. */
+
+/** verb 21 — a peer's head advertisement (a HINT). May emit ONE bounded
+ *  w_v2_range_q at the sending peer when behind and idle. */
+void nodus_witness_v2_sync_handle_head(nodus_witness_t *w,
+                                       struct nodus_tcp_conn *conn,
+                                       const nodus_t3_msg_t *msg);
+
+/** verb 22 — a bounded range request; serves committed blocks
+ *  (ascending, contiguous) within the frame/byte budgets. */
+void nodus_witness_v2_sync_handle_range_q(nodus_witness_t *w,
+                                          struct nodus_tcp_conn *conn,
+                                          const nodus_t3_msg_t *msg);
+
+/** verb 23 — a range response; applies IN ORDER through the one engine
+ *  (nodus_witness_v2_sync_apply_range) and re-requests while behind. */
+void nodus_witness_v2_sync_handle_range_r(nodus_witness_t *w,
+                                          struct nodus_tcp_conn *conn,
+                                          const nodus_t3_msg_t *msg);
+
+/** verb 20 — a single-block fetch bound to (chain, height, BlockID);
+ *  answers with a verb-23 response carrying exactly one frame. The
+ *  request refuses to serve a block whose committed BlockID differs
+ *  from the one named — the QC-recovery identity binding. */
+void nodus_witness_v2_sync_handle_block_q(nodus_witness_t *w,
+                                          struct nodus_tcp_conn *conn,
+                                          const nodus_t3_msg_t *msg);
+
+/** verb 24 — a genesis bundle chunk request (O15E Faz D). Serves one
+ *  offset chunk of the persisted canonical bundle to a joiner whose pin
+ *  equals this successor's committed genesis BlockID. Refuses any other
+ *  chain / pin (a bundle is never served for a genesis this node did not
+ *  commit). */
+void nodus_witness_v2_sync_handle_gbundle_q(nodus_witness_t *w,
+                                            struct nodus_tcp_conn *conn,
+                                            const nodus_t3_msg_t *msg);
+
+/** The successor sync driver, called from the witness tick. Successor +
+ *  armed nodes only; self-throttled by monotonic time: broadcasts the
+ *  w_v2_head hint on an interval, expires a timed-out in-flight range
+ *  request, and (O15E Faz C) emits a bounded QC-recovery fetch for the
+ *  lowest committed height whose stored QC is still NULL. Never blocks,
+ *  never loops. */
+void nodus_witness_v2_sync_tick(nodus_witness_t *w);
+
+/** O15E Faz C — the lowest committed successor height (>= 1) whose
+ *  stored QC is NULL, or 0 if every committed block is certified.
+ *  Read-only. The missing-QC detector the tick and startup both use.
+ *  @return 0 with *height_out set (0 = none), -1 on fault. */
+int nodus_witness_v2_qc_first_missing(nodus_witness_t *w,
+                                      uint64_t *height_out);
 
 #ifdef __cplusplus
 }

@@ -45,6 +45,12 @@ const char *nodus_t3_type_to_method(nodus_t3_msg_type_t type) {
         case NODUS_T3_CHAIN_R:     return "w_chain_r";
         case NODUS_T3_GENESIS_REQ: return "w_genesis_req";
         case NODUS_T3_GENESIS_RSP: return "w_genesis_rsp";
+        case NODUS_T3_V2_BLOCK:     return "w_v2_block";
+        case NODUS_T3_V2_HEAD:      return "w_v2_head";
+        case NODUS_T3_V2_RANGE_REQ: return "w_v2_range_q";
+        case NODUS_T3_V2_RANGE_RSP: return "w_v2_range_r";
+        case NODUS_T3_V2_GBUNDLE_REQ: return "w_v2_gbundle_q";
+        case NODUS_T3_V2_GBUNDLE_RSP: return "w_v2_gbundle_r";
         default:                 return NULL;
     }
 }
@@ -79,6 +85,8 @@ nodus_t3_msg_type_t nodus_t3_method_to_type(const char *method) {
     if (strcmp(method, "w_v2_head") == 0)      return NODUS_T3_V2_HEAD;
     if (strcmp(method, "w_v2_range_q") == 0)   return NODUS_T3_V2_RANGE_REQ;
     if (strcmp(method, "w_v2_range_r") == 0)   return NODUS_T3_V2_RANGE_RSP;
+    if (strcmp(method, "w_v2_gbundle_q") == 0) return NODUS_T3_V2_GBUNDLE_REQ;
+    if (strcmp(method, "w_v2_gbundle_r") == 0) return NODUS_T3_V2_GBUNDLE_RSP;
     return 0;
 }
 
@@ -481,6 +489,73 @@ static void enc_w_genesis_rsp_args(cbor_encoder_t *enc,
     cbor_encode_bstr(enc, m->gpid, NODUS_T3_WITNESS_ID_LEN);
 }
 
+/* ── O15E Faz B — Ledger V2 successor sync arg encoders ──────────── */
+
+static void enc_w_v2_block_q_args(cbor_encoder_t *enc,
+                                  const nodus_t3_w_v2_block_q_t *m) {
+    cbor_encode_map(enc, 3);
+    cbor_encode_cstr(enc, "c");  cbor_encode_bstr(enc, m->chain, 32);
+    cbor_encode_cstr(enc, "h");  cbor_encode_uint(enc, m->height);
+    cbor_encode_cstr(enc, "bi"); cbor_encode_bstr(enc, m->block_id, 64);
+}
+
+static void enc_w_v2_head_args(cbor_encoder_t *enc,
+                               const nodus_t3_w_v2_head_t *m) {
+    cbor_encode_map(enc, 4);
+    cbor_encode_cstr(enc, "c");  cbor_encode_bstr(enc, m->chain, 32);
+    cbor_encode_cstr(enc, "g");  cbor_encode_bstr(enc, m->genesis_id, 64);
+    cbor_encode_cstr(enc, "hh"); cbor_encode_uint(enc, m->head);
+    cbor_encode_cstr(enc, "pv"); cbor_encode_uint(enc, m->proto);
+}
+
+static void enc_w_v2_range_q_args(cbor_encoder_t *enc,
+                                  const nodus_t3_w_v2_range_q_t *m) {
+    cbor_encode_map(enc, 4);
+    cbor_encode_cstr(enc, "c");  cbor_encode_bstr(enc, m->chain, 32);
+    cbor_encode_cstr(enc, "g");  cbor_encode_bstr(enc, m->genesis_id, 64);
+    cbor_encode_cstr(enc, "fr"); cbor_encode_uint(enc, m->from);
+    cbor_encode_cstr(enc, "n");  cbor_encode_uint(enc, m->count);
+}
+
+static void enc_w_v2_range_r_args(cbor_encoder_t *enc,
+                                  const nodus_t3_w_v2_range_r_t *m) {
+    /* Frame-length vector as n×u32 BE inside one bstr; frames packed
+     * back-to-back in a second bstr. Caps are enforced in enc_args
+     * BEFORE any byte is emitted. */
+    uint8_t fl[NODUS_T3_V2_RANGE_MAX_FRAMES * 4];
+    for (uint32_t i = 0; i < m->n && i < NODUS_T3_V2_RANGE_MAX_FRAMES; i++) {
+        fl[i * 4 + 0] = (uint8_t)(m->frame_len[i] >> 24);
+        fl[i * 4 + 1] = (uint8_t)(m->frame_len[i] >> 16);
+        fl[i * 4 + 2] = (uint8_t)(m->frame_len[i] >> 8);
+        fl[i * 4 + 3] = (uint8_t)(m->frame_len[i]);
+    }
+    cbor_encode_map(enc, 5);
+    cbor_encode_cstr(enc, "c");  cbor_encode_bstr(enc, m->chain, 32);
+    cbor_encode_cstr(enc, "fr"); cbor_encode_uint(enc, m->from);
+    cbor_encode_cstr(enc, "n");  cbor_encode_uint(enc, m->n);
+    cbor_encode_cstr(enc, "fl"); cbor_encode_bstr(enc, fl, (size_t)m->n * 4);
+    cbor_encode_cstr(enc, "fb");
+    cbor_encode_bstr(enc, m->frames, m->frames_len);
+}
+
+static void enc_w_v2_gbundle_q_args(cbor_encoder_t *enc,
+                                    const nodus_t3_w_v2_gbundle_q_t *m) {
+    cbor_encode_map(enc, 3);
+    cbor_encode_cstr(enc, "c"); cbor_encode_bstr(enc, m->chain, 32);
+    cbor_encode_cstr(enc, "p"); cbor_encode_bstr(enc, m->pin, 64);
+    cbor_encode_cstr(enc, "o"); cbor_encode_uint(enc, m->offset);
+}
+
+static void enc_w_v2_gbundle_r_args(cbor_encoder_t *enc,
+                                    const nodus_t3_w_v2_gbundle_r_t *m) {
+    cbor_encode_map(enc, 5);
+    cbor_encode_cstr(enc, "c"); cbor_encode_bstr(enc, m->chain, 32);
+    cbor_encode_cstr(enc, "p"); cbor_encode_bstr(enc, m->pin, 64);
+    cbor_encode_cstr(enc, "t"); cbor_encode_uint(enc, m->total);
+    cbor_encode_cstr(enc, "o"); cbor_encode_uint(enc, m->offset);
+    cbor_encode_cstr(enc, "d"); cbor_encode_bstr(enc, m->chunk, m->chunk_len);
+}
+
 /* ── Args dispatch ───────────────────────────────────────────────── */
 
 static int enc_args(cbor_encoder_t *enc, const nodus_t3_msg_t *msg) {
@@ -492,6 +567,26 @@ static int enc_args(cbor_encoder_t *enc, const nodus_t3_msg_t *msg) {
         msg->w_genesis_rsp.cdb_len > NODUS_W_MAX_CHAIN_DEF_BLOB) {
         return -1;
     }
+    /* O15E Faz B — sender-side caps on the range response, refused
+     * before any byte is emitted: frame count, per-frame sanity and the
+     * packed-byte budget (the sum of the declared lengths must equal
+     * the packed length exactly — no slack, no truncation). */
+    if (msg->type == NODUS_T3_V2_RANGE_RSP) {
+        const nodus_t3_w_v2_range_r_t *r = &msg->w_v2_range_r;
+        if (r->n > NODUS_T3_V2_RANGE_MAX_FRAMES) return -1;
+        if (r->frames_len > NODUS_T3_V2_RANGE_MAX_BYTES) return -1;
+        if (r->n > 0 && !r->frames) return -1;
+        uint64_t sum = 0;
+        for (uint32_t i = 0; i < r->n; i++) {
+            if (r->frame_len[i] == 0) return -1;
+            sum += (uint64_t)r->frame_len[i];
+        }
+        if (sum != (uint64_t)r->frames_len) return -1;
+    }
+    if (msg->type == NODUS_T3_V2_GBUNDLE_RSP &&
+        (msg->w_v2_gbundle_r.chunk_len > NODUS_T3_V2_GBUNDLE_CHUNK_MAX ||
+         (msg->w_v2_gbundle_r.chunk_len > 0 && !msg->w_v2_gbundle_r.chunk)))
+        return -1;
     cbor_encode_cstr(enc, "a");
     switch (msg->type) {
         case NODUS_T3_PROPOSE:   enc_propose_args(enc, &msg->propose);   break;
@@ -517,6 +612,18 @@ static int enc_args(cbor_encoder_t *enc, const nodus_t3_msg_t *msg) {
             enc_w_genesis_req_args(enc, &msg->w_genesis_req); break;
         case NODUS_T3_GENESIS_RSP:
             enc_w_genesis_rsp_args(enc, &msg->w_genesis_rsp); break;
+        case NODUS_T3_V2_BLOCK:
+            enc_w_v2_block_q_args(enc, &msg->w_v2_block_q);   break;
+        case NODUS_T3_V2_HEAD:
+            enc_w_v2_head_args(enc, &msg->w_v2_head);         break;
+        case NODUS_T3_V2_RANGE_REQ:
+            enc_w_v2_range_q_args(enc, &msg->w_v2_range_q);   break;
+        case NODUS_T3_V2_RANGE_RSP:
+            enc_w_v2_range_r_args(enc, &msg->w_v2_range_r);   break;
+        case NODUS_T3_V2_GBUNDLE_REQ:
+            enc_w_v2_gbundle_q_args(enc, &msg->w_v2_gbundle_q); break;
+        case NODUS_T3_V2_GBUNDLE_RSP:
+            enc_w_v2_gbundle_r_args(enc, &msg->w_v2_gbundle_r); break;
         default: return -1;
     }
     return 0;
@@ -1719,6 +1826,21 @@ static void dec_w_genesis_rsp_args(cbor_decoder_t *dec, size_t count,
 
 /* ── Public decode ───────────────────────────────────────────────── */
 
+/* O15E Faz B decoders — defined after this function, near their
+ * encoder siblings; declared here so the dispatch below can name them. */
+static void dec_w_v2_block_q_args(cbor_decoder_t *dec, size_t count,
+                                  nodus_t3_w_v2_block_q_t *m);
+static void dec_w_v2_head_args(cbor_decoder_t *dec, size_t count,
+                               nodus_t3_w_v2_head_t *m);
+static void dec_w_v2_range_q_args(cbor_decoder_t *dec, size_t count,
+                                  nodus_t3_w_v2_range_q_t *m);
+static void dec_w_v2_range_r_args(cbor_decoder_t *dec, size_t count,
+                                  nodus_t3_w_v2_range_r_t *m);
+static void dec_w_v2_gbundle_q_args(cbor_decoder_t *dec, size_t count,
+                                    nodus_t3_w_v2_gbundle_q_t *m);
+static void dec_w_v2_gbundle_r_args(cbor_decoder_t *dec, size_t count,
+                                    nodus_t3_w_v2_gbundle_r_t *m);
+
 int nodus_t3_decode(const uint8_t *buf, size_t len, nodus_t3_msg_t *msg) {
     if (!buf || !msg) return -1;
     memset(msg, 0, sizeof(*msg));
@@ -1859,6 +1981,29 @@ int nodus_t3_decode(const uint8_t *buf, size_t len, nodus_t3_msg_t *msg) {
                     dec_w_genesis_rsp_args(&dec, args.count,
                                             &msg->w_genesis_rsp);
                     break;
+                case NODUS_T3_V2_BLOCK:
+                    dec_w_v2_block_q_args(&dec, args.count,
+                                          &msg->w_v2_block_q);
+                    break;
+                case NODUS_T3_V2_HEAD:
+                    dec_w_v2_head_args(&dec, args.count, &msg->w_v2_head);
+                    break;
+                case NODUS_T3_V2_RANGE_REQ:
+                    dec_w_v2_range_q_args(&dec, args.count,
+                                          &msg->w_v2_range_q);
+                    break;
+                case NODUS_T3_V2_RANGE_RSP:
+                    dec_w_v2_range_r_args(&dec, args.count,
+                                          &msg->w_v2_range_r);
+                    break;
+                case NODUS_T3_V2_GBUNDLE_REQ:
+                    dec_w_v2_gbundle_q_args(&dec, args.count,
+                                            &msg->w_v2_gbundle_q);
+                    break;
+                case NODUS_T3_V2_GBUNDLE_RSP:
+                    dec_w_v2_gbundle_r_args(&dec, args.count,
+                                            &msg->w_v2_gbundle_r);
+                    break;
                 default:
                     break;
             }
@@ -1870,6 +2015,205 @@ int nodus_t3_decode(const uint8_t *buf, size_t len, nodus_t3_msg_t *msg) {
     }
 
     return dec.error ? -1 : 0;
+}
+
+/* ── O15E Faz B — Ledger V2 successor sync arg decoders ──────────── */
+
+static void dec_w_v2_block_q_args(cbor_decoder_t *dec, size_t count,
+                                  nodus_t3_w_v2_block_q_t *m) {
+    for (size_t i = 0; i < count; i++) {
+        cbor_item_t key = cbor_decode_next(dec);
+        if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(dec); continue; }
+        if (KEY_IS(key, "c")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_BSTR && val.bstr.len == 32)
+                memcpy(m->chain, val.bstr.ptr, 32);
+        } else if (KEY_IS(key, "h")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_UINT) m->height = val.uint_val;
+        } else if (KEY_IS(key, "bi")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_BSTR && val.bstr.len == 64)
+                memcpy(m->block_id, val.bstr.ptr, 64);
+        } else {
+            cbor_decode_skip(dec);
+        }
+    }
+}
+
+static void dec_w_v2_head_args(cbor_decoder_t *dec, size_t count,
+                               nodus_t3_w_v2_head_t *m) {
+    for (size_t i = 0; i < count; i++) {
+        cbor_item_t key = cbor_decode_next(dec);
+        if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(dec); continue; }
+        if (KEY_IS(key, "c")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_BSTR && val.bstr.len == 32)
+                memcpy(m->chain, val.bstr.ptr, 32);
+        } else if (KEY_IS(key, "g")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_BSTR && val.bstr.len == 64)
+                memcpy(m->genesis_id, val.bstr.ptr, 64);
+        } else if (KEY_IS(key, "hh")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_UINT) m->head = val.uint_val;
+        } else if (KEY_IS(key, "pv")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_UINT)
+                m->proto = (uint32_t)val.uint_val;
+        } else {
+            cbor_decode_skip(dec);
+        }
+    }
+}
+
+static void dec_w_v2_range_q_args(cbor_decoder_t *dec, size_t count,
+                                  nodus_t3_w_v2_range_q_t *m) {
+    for (size_t i = 0; i < count; i++) {
+        cbor_item_t key = cbor_decode_next(dec);
+        if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(dec); continue; }
+        if (KEY_IS(key, "c")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_BSTR && val.bstr.len == 32)
+                memcpy(m->chain, val.bstr.ptr, 32);
+        } else if (KEY_IS(key, "g")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_BSTR && val.bstr.len == 64)
+                memcpy(m->genesis_id, val.bstr.ptr, 64);
+        } else if (KEY_IS(key, "fr")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_UINT) m->from = val.uint_val;
+        } else if (KEY_IS(key, "n")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_UINT)
+                m->count = (uint32_t)val.uint_val;
+        } else {
+            cbor_decode_skip(dec);
+        }
+    }
+}
+
+static void dec_w_v2_range_r_args(cbor_decoder_t *dec, size_t count,
+                                  nodus_t3_w_v2_range_r_t *m) {
+    /* Strict caps land HERE, pre-sig-verify (the H-2/A4 discipline):
+     * an oversize or inconsistent response is a decode error and never
+     * reaches the Dilithium5 verify. */
+    for (size_t i = 0; i < count; i++) {
+        cbor_item_t key = cbor_decode_next(dec);
+        if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(dec); continue; }
+        if (KEY_IS(key, "c")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_BSTR && val.bstr.len == 32)
+                memcpy(m->chain, val.bstr.ptr, 32);
+        } else if (KEY_IS(key, "fr")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_UINT) m->from = val.uint_val;
+        } else if (KEY_IS(key, "n")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_UINT) {
+                if (val.uint_val > NODUS_T3_V2_RANGE_MAX_FRAMES) {
+                    dec->error = true;
+                    return;
+                }
+                m->n = (uint32_t)val.uint_val;
+            }
+        } else if (KEY_IS(key, "fl")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_BSTR) {
+                if (val.bstr.len >
+                        (size_t)NODUS_T3_V2_RANGE_MAX_FRAMES * 4 ||
+                    (val.bstr.len % 4) != 0) {
+                    dec->error = true;
+                    return;
+                }
+                for (size_t k = 0; k < val.bstr.len / 4; k++) {
+                    const uint8_t *p = val.bstr.ptr + k * 4;
+                    m->frame_len[k] = ((uint32_t)p[0] << 24) |
+                                      ((uint32_t)p[1] << 16) |
+                                      ((uint32_t)p[2] << 8) |
+                                      (uint32_t)p[3];
+                }
+            }
+        } else if (KEY_IS(key, "fb")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_BSTR) {
+                if (val.bstr.len > NODUS_T3_V2_RANGE_MAX_BYTES) {
+                    dec->error = true;
+                    return;
+                }
+                m->frames = val.bstr.ptr;
+                m->frames_len = (uint32_t)val.bstr.len;
+            }
+        } else {
+            cbor_decode_skip(dec);
+        }
+    }
+    /* Cross-field consistency: the declared lengths must tile the
+     * packed blob exactly, and every frame must be non-empty. */
+    uint64_t sum = 0;
+    for (uint32_t k = 0; k < m->n; k++) {
+        if (m->frame_len[k] == 0) { dec->error = true; return; }
+        sum += (uint64_t)m->frame_len[k];
+    }
+    if (sum != (uint64_t)m->frames_len) { dec->error = true; return; }
+    if (m->n > 0 && !m->frames)         { dec->error = true; return; }
+}
+
+static void dec_w_v2_gbundle_q_args(cbor_decoder_t *dec, size_t count,
+                                    nodus_t3_w_v2_gbundle_q_t *m) {
+    for (size_t i = 0; i < count; i++) {
+        cbor_item_t key = cbor_decode_next(dec);
+        if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(dec); continue; }
+        if (KEY_IS(key, "c")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_BSTR && val.bstr.len == 32)
+                memcpy(m->chain, val.bstr.ptr, 32);
+        } else if (KEY_IS(key, "p")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_BSTR && val.bstr.len == 64)
+                memcpy(m->pin, val.bstr.ptr, 64);
+        } else if (KEY_IS(key, "o")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_UINT) m->offset = val.uint_val;
+        } else {
+            cbor_decode_skip(dec);
+        }
+    }
+}
+
+static void dec_w_v2_gbundle_r_args(cbor_decoder_t *dec, size_t count,
+                                    nodus_t3_w_v2_gbundle_r_t *m) {
+    for (size_t i = 0; i < count; i++) {
+        cbor_item_t key = cbor_decode_next(dec);
+        if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(dec); continue; }
+        if (KEY_IS(key, "c")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_BSTR && val.bstr.len == 32)
+                memcpy(m->chain, val.bstr.ptr, 32);
+        } else if (KEY_IS(key, "p")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_BSTR && val.bstr.len == 64)
+                memcpy(m->pin, val.bstr.ptr, 64);
+        } else if (KEY_IS(key, "t")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_UINT) m->total = val.uint_val;
+        } else if (KEY_IS(key, "o")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_UINT) m->offset = val.uint_val;
+        } else if (KEY_IS(key, "d")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_BSTR) {
+                if (val.bstr.len > NODUS_T3_V2_GBUNDLE_CHUNK_MAX) {
+                    dec->error = true;
+                    return;
+                }
+                m->chunk = val.bstr.ptr;
+                m->chunk_len = (uint32_t)val.bstr.len;
+            }
+        } else {
+            cbor_decode_skip(dec);
+        }
+    }
 }
 
 /* ── Public verify ───────────────────────────────────────────────── */

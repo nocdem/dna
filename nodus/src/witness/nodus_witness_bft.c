@@ -466,6 +466,13 @@ int nodus_witness_bft_leader_index(uint64_t epoch, uint32_t view, int n) {
 bool nodus_witness_bft_is_leader(nodus_witness_t *w) {
     if (!w) return false;
 
+    /* O15E Faz D — a pinned-genesis joiner still fetching/deriving its
+     * genesis (no committed chain yet) is never a leader. Defence in
+     * depth: such a node is not in any committee either, so is_leader
+     * would already return false — but this makes the role-safety
+     * invariant explicit and independent of committee resolution. */
+    if (w->v2_join.active) return false;
+
     /* F17 A3 — leader is determined by the chain-derived committee for
      * the next block. F17 A5 bootstrap — if committee empty (pre-
      * genesis), fall back to gossip roster. */

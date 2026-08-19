@@ -105,6 +105,11 @@ typedef enum {
     NODUS_T3_V2_HEAD     = 21,  /* head advertisement — a HINT, never authority   */
     NODUS_T3_V2_RANGE_REQ = 22, /* bounded range request                          */
     NODUS_T3_V2_RANGE_RSP = 23, /* bounded range response                         */
+    /* O15E Faz D — successor genesis bundle transfer (pinned-genesis
+     * joiner bootstrap). Offset-chunked because a 20-validator bundle
+     * exceeds the 128 KB T3 message bound. */
+    NODUS_T3_V2_GBUNDLE_REQ = 24, /* {chain32, pin64, offset}             */
+    NODUS_T3_V2_GBUNDLE_RSP = 25, /* {chain32, pin64, total, offset, chunk} */
 } nodus_t3_msg_type_t;
 
 /* ── Common witness header ───────────────────────────────────────── */
@@ -507,6 +512,101 @@ typedef struct {
     uint8_t         gpid[NODUS_T3_WITNESS_ID_LEN];      /* genesis proposer_id, 32B */
 } nodus_t3_w_genesis_rsp_t;
 
+/* ── O15E Faz B — Ledger V2 successor sync payloads (verbs 20-23) ───
+ *
+ * Values were assigned in O15B; these are their payload codecs. All
+ * four are SUCCESSOR-scoped: handlers ask the activation gate before
+ * touching a byte, and an unactivated node answers nothing. None of
+ * them carries a vote, so none joins the BFT-protocol-version-gated
+ * set — the BlockMessage's own msg_version and the head hint's "pv"
+ * field version this surface (nodus_witness_v2_sync2.h). */
+
+/** w_v2_block (verb 20): single-block fetch REQUEST. The identity binds
+ * chain + height + the exact BlockID the requester already holds (the
+ * QC-recovery shape: a node that committed the block but missed the
+ * certificate exchange re-fetches THE block it has, for its QC).
+ * The response is a verb-23 w_v2_range_r with n == 1.
+ * Wire keys: "c" (32B), "h" (uint), "bi" (64B). */
+typedef struct {
+    uint8_t     chain[32];
+    uint64_t    height;
+    uint8_t     block_id[64];
+} nodus_t3_w_v2_block_q_t;
+
+/** w_v2_head (verb 21): successor head advertisement — a HINT, never
+ * authority (nodus_witness_v2_sync2.h). Broadcast on the witness tick
+ * and once after each local commit, successor+armed nodes only.
+ * Wire keys: "c" (32B), "g" (64B), "hh" (uint), "pv" (uint). */
+typedef struct {
+    uint8_t     chain[32];
+    uint8_t     genesis_id[64];
+    uint64_t    head;
+    uint32_t    proto;              /* DNA_BLKW_VERSION the sender speaks */
+} nodus_t3_w_v2_head_t;
+
+/** w_v2_range_q (verb 22): bounded range request.
+ * Wire keys: "c" (32B), "g" (64B), "fr" (uint), "n" (uint). */
+typedef struct {
+    uint8_t     chain[32];
+    uint8_t     genesis_id[64];
+    uint64_t    from;
+    uint32_t    count;
+} nodus_t3_w_v2_range_q_t;
+
+/** Per-response frame cap for w_v2_range_r. The BYTE budget is the real
+ * bound; a server sends however many whole frames fit, at most this
+ * many. */
+#define NODUS_T3_V2_RANGE_MAX_FRAMES 8u
+/** Total packed-frame byte budget inside one w_v2_range_r. T3 messages
+ * of this class ride the 1 MB heap encode/verify path
+ * (NODUS_W_MAX_SYNC_RSP_SIZE — the COMMIT/SYNC_RSP precedent,
+ * nodus_witness_bft.c broadcast + nodus_t3_verify's heap sign buffer);
+ * 768 KB leaves ample headroom for the T3 envelope + Dilithium5 wsig.
+ * A single BlockMessage larger than this budget is UNSERVABLE over T3
+ * (named O15E limit — nothing live produces one). */
+#define NODUS_T3_V2_RANGE_MAX_BYTES  786432u
+
+/** w_v2_range_r (verb 23): bounded range response — `n` encoded
+ * BlockMessage v1 frames for CONTIGUOUS ascending heights starting at
+ * `from`. Frames are packed back-to-back in `frames` (zero-copy pointer
+ * into the decode buffer, the w_genesis_rsp cdb pattern); frame i
+ * starts at the sum of the previous lengths.
+ * Wire keys: "c" (32B), "fr" (uint), "n" (uint), "fl" (bstr, n×u32 BE),
+ * "fb" (bstr, packed frames). */
+typedef struct {
+    uint8_t         chain[32];
+    uint64_t        from;
+    uint32_t        n;
+    uint32_t        frame_len[NODUS_T3_V2_RANGE_MAX_FRAMES];
+    const uint8_t  *frames;         /* ptr into decode buf (rx) / caller
+                                     * buffer (tx); packed back-to-back */
+    uint32_t        frames_len;     /* total packed bytes               */
+} nodus_t3_w_v2_range_r_t;
+
+/** O15E Faz D — genesis bundle REQUEST (verb 24). Offset-chunked pull.
+ * Wire keys: "c" (32B), "p" (64B pinned genesis id), "o" (uint offset). */
+typedef struct {
+    uint8_t     chain[32];
+    uint8_t     pin[64];
+    uint64_t    offset;
+} nodus_t3_w_v2_gbundle_q_t;
+
+/** O15E Faz D — genesis bundle RESPONSE (verb 25). One chunk of the
+ * canonical bundle at `offset`; `total` is the full bundle length so the
+ * requester knows when it is complete. `chunk` is a zero-copy pointer
+ * into the decode buffer (the w_genesis_rsp cdb pattern).
+ * Wire keys: "c" (32B), "p" (64B), "t" (uint total), "o" (uint offset),
+ * "d" (bstr chunk). */
+#define NODUS_T3_V2_GBUNDLE_CHUNK_MAX 49152u   /* 48 KB — under 128KB T3  */
+typedef struct {
+    uint8_t         chain[32];
+    uint8_t         pin[64];
+    uint64_t        total;
+    uint64_t        offset;
+    const uint8_t  *chunk;          /* ptr into decode buf              */
+    uint32_t        chunk_len;
+} nodus_t3_w_v2_gbundle_r_t;
+
 /** w_sync_rsp: Full block data for sync (Phase 11 / Task 11.1).
  *
  * Multi-tx replay payload: the sender serializes EVERY committed
@@ -569,6 +669,12 @@ typedef struct {
         nodus_t3_w_chain_r_t     w_chain_r;
         nodus_t3_w_genesis_req_t w_genesis_req;
         nodus_t3_w_genesis_rsp_t w_genesis_rsp;
+        nodus_t3_w_v2_block_q_t  w_v2_block_q;
+        nodus_t3_w_v2_head_t     w_v2_head;
+        nodus_t3_w_v2_range_q_t  w_v2_range_q;
+        nodus_t3_w_v2_range_r_t  w_v2_range_r;
+        nodus_t3_w_v2_gbundle_q_t w_v2_gbundle_q;
+        nodus_t3_w_v2_gbundle_r_t w_v2_gbundle_r;
     };
 } nodus_t3_msg_t;
 

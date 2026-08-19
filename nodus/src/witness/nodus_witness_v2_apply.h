@@ -427,7 +427,14 @@ typedef enum {
      * bracket the exact window in which an interrupt could otherwise
      * leave a persisted id that no execution result produced. */
     V2AP_FAIL_AFTER_HEADER_BUILD       = 46, /* header bytes final       */
-    V2AP_FAIL_AFTER_BLOCK_ID           = 47  /* BlockID recomputed       */
+    V2AP_FAIL_AFTER_BLOCK_ID           = 47, /* BlockID recomputed       */
+
+    /* O15E Faz B — fires with every canonical envelope byte record of
+     * the block written (phase 12b, S11 schema) and nothing of phase 13
+     * (roots/header/identity/metadata) started. Brackets the envelope
+     * persist so an interrupt can never leave byte rows for a block
+     * that was not committed, or a committed block missing its bytes. */
+    V2AP_FAIL_AFTER_ENV_BYTES          = 48  /* envelope bytes persisted */
 } nodus_v2_apply_fail_t;
 
 /*

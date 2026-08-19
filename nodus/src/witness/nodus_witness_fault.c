@@ -86,6 +86,12 @@ static bool fault_armed(void) {
  * deterministic — no timing, no randomness. */
 static uint8_t g_my_tag;
 static int     g_vc_drop_k;
+/* O15E Faz C: victim-scoped drop — when set (>=0), ONLY the node whose
+ * my_id[0] equals this tag actually drops, so a single victim misses
+ * inbound COMMITs while every other node exchanges them and attaches a
+ * QC. -1 = all nodes (the legacy cluster-wide behaviour). Env:
+ * NODUS_FAULT_ONLY_TAG (hex). Test-only build (QGP_FAULT_INJECT). */
+static int     g_only_tag = -1;
 
 static bool vc_sender_dropped(const uint8_t *sender_id) {
     if (g_vc_drop_k <= 0 || !sender_id) return false;
@@ -107,9 +113,15 @@ static bool fault_drop_pred(const void *msg_v, const uint8_t *peer_id) {
         vc_sender_dropped(msg->header.sender_id))
         return true;
 
-    /* Rule 1 — type + view scoped drop (the MED-28 round-failure rule). */
+    /* Rule 1 — type (+ view) scoped drop. COMMIT carries no view the
+     * predicate can key on (it is a finalization certificate, not a
+     * round-state message — nodus_witness_v2_produce.h), so for that
+     * type the drop is type-scoped only. Every other type keeps the
+     * view scope (the MED-28 round-failure rule). */
     if (msg->type != g_drop_type) return false;
-    if (msg->header.view != g_drop_view) return false;
+    if (g_only_tag >= 0 && g_my_tag != (uint8_t)g_only_tag) return false;
+    if (g_drop_type != NODUS_T3_COMMIT &&
+        msg->header.view != g_drop_view) return false;
     return true;
 }
 
@@ -130,6 +142,18 @@ void nodus_witness_fault_init_from_env(const uint8_t *my_id) {
         g_drop_type = NODUS_T3_PRECOMMIT;
     } else if (strcmp(type_s, "prevote") == 0) {
         g_drop_type = NODUS_T3_PREVOTE;
+    } else if (strcmp(type_s, "commit") == 0) {
+        /* O15E Faz C — drop INBOUND COMMIT frames on this node. A
+         * successor commits its own block via its PRECOMMIT quorum
+         * (produce.c own-quorum path), but the DNA.CERT.v2 certificates
+         * that assemble the QC ride peers' COMMIT broadcasts. Dropping
+         * them leaves this node committed-but-uncertified (qc NULL) while
+         * peers, which still exchange COMMITs among themselves, reach
+         * quorum and attach — exactly the missing-QC window Faz C
+         * recovery closes. Not view-scoped: a commit carries no view the
+         * predicate keys on, so any NODUS_FAULT_DROP_VIEW is ignored for
+         * this type and the drop bites until the arm file is removed. */
+        g_drop_type = NODUS_T3_COMMIT;
     } else {
         fprintf(stderr, "%s: unknown NODUS_FAULT_DROP_TYPE='%s' — "
                 "refusing to install a predicate\n", LOG_TAG, type_s);
@@ -141,6 +165,11 @@ void nodus_witness_fault_init_from_env(const uint8_t *my_id) {
     g_vc_drop_k = vck ? (int)strtol(vck, NULL, 10) : 0;
     if (g_vc_drop_k < 0) g_vc_drop_k = 0;
     g_my_tag = my_id ? my_id[0] : 0;
+
+    /* O15E Faz C: victim-scoped drop — only the node whose my_id[0]
+     * matches NODUS_FAULT_ONLY_TAG (hex) actually drops. */
+    const char *only = getenv("NODUS_FAULT_ONLY_TAG");
+    g_only_tag = only ? (int)strtol(only, NULL, 16) : -1;
 
     nodus_witness_test_inject_drop(fault_drop_pred);
     fprintf(stderr, "%s: drop predicate installed (type=%d view=%u "

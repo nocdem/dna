@@ -11,6 +11,7 @@
 
 #include "witness/nodus_witness_v2_finalize.h"
 
+#include <sqlite3.h>
 #include <string.h>
 
 #include "dnac/block_v2.h"
@@ -19,6 +20,42 @@
 #include "crypto/utils/qgp_log.h"
 
 #define LOG_TAG "WITNESS_V2_FINAL"
+
+/* O15E Faz C — idempotent-replay QC heal.
+ *
+ * A node that COMMITTED a block through its own quorum but missed the
+ * post-commit certificate exchange keeps `v2_blocks.qc IS NULL` — the
+ * legal committed-but-uncertified window (produce.h). When that block
+ * later arrives as a full BlockMessage (catch-up, or a targeted
+ * QC-recovery fetch), finalize's engine returns IDEMPOTENT_REPLAY and
+ * writes nothing. By that point the incoming QC has ALREADY passed
+ * nodus_witness_v2_qc_verify against the COMMITTED authority (finalize
+ * step 4) and its claimed BlockID EQUALS the stored id (the engine's
+ * idempotent path only fires on an exact id match), so attaching it is
+ * safe. The UPDATE is guarded `AND qc IS NULL` so a real QC is never
+ * overwritten, and it touches ONLY the qc column — BlockID, roots,
+ * state and every other field are untouched. Idempotent on replay.
+ *
+ * Returns nothing meaningful to the caller's verdict: a heal failure
+ * leaves the row exactly as it was (still NULL) — the block stays
+ * committed, and a later fetch can try again. */
+static void finalize_heal_null_qc(nodus_witness_t *w, uint64_t height,
+                                  const uint8_t block_id[64],
+                                  const uint8_t *qc_bytes, size_t qc_len) {
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "UPDATE v2_blocks SET qc = ?1 "
+            "WHERE global_height = ?2 AND block_id = ?3 AND qc IS NULL",
+            -1, &st, NULL) != SQLITE_OK)
+        return;
+    sqlite3_bind_blob(st, 1, qc_bytes, (int)qc_len, SQLITE_STATIC);
+    sqlite3_bind_int64(st, 2, (sqlite3_int64)height);
+    sqlite3_bind_blob(st, 3, block_id, 64, SQLITE_STATIC);
+    if (sqlite3_step(st) == SQLITE_DONE && sqlite3_changes(w->db) > 0)
+        QGP_LOG_INFO(LOG_TAG, "healed NULL QC at height %llu via replay",
+                     (unsigned long long)height);
+    sqlite3_finalize(st);
+}
 
 int nodus_witness_v2_finalize_block(nodus_witness_t *w,
                                     const uint8_t *header_bytes,
@@ -132,6 +169,16 @@ int nodus_witness_v2_finalize_block(nodus_witness_t *w,
      * just taught to avoid. */
     int arc = nodus_witness_v2_apply_block(w, blk);
     if (!nodus_v2_result_is_accepted(arc)) return arc;
+
+    /* O15E Faz C — a replay of an already-committed block whose stored
+     * QC is NULL heals it with THIS verified certificate. arc == 1
+     * (IDEMPOTENT_REPLAY) means the block was already committed at this
+     * height with this exact id; the QC above already verified against
+     * committed authority. On a fresh commit (arc 0/2) the QC rode the
+     * block's transaction, so there is nothing to heal. */
+    if (arc == NODUS_V2_IDEMPOTENT_REPLAY)
+        finalize_heal_null_qc(w, blk->global_height, claimed_id,
+                              qc_bytes, qc_len);
 
     /* ── 7. The id the QC certified MUST be the id that is stored.
      * On rc 0/2 the engine derived it from its own execution results; on

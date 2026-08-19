@@ -839,6 +839,38 @@ typedef struct nodus_witness {
             uint8_t sig[NODUS_SIG_BYTES];
         } slots[DNAC_MAX_ACTIVE_VALIDATORS];
     } v2_certpool;
+
+    /* O15E Faz B — the successor sync driver's RUNTIME state (never
+     * persisted; LOCAL policy only, nothing here is consensus).
+     * `req_sent_ms` == 0 means no range request is in flight; a
+     * timed-out request simply expires so the next hint can re-arm.
+     * `last_head_ms` throttles the w_v2_head broadcast on the tick.
+     * O15E Faz C adds `last_qcfetch_ms` (the missing-QC detector's
+     * pacing) and `qc_rr` (round-robin peer cursor for w_v2_block). */
+    struct {
+        uint8_t  req_peer[NODUS_T3_WITNESS_ID_LEN];
+        uint64_t req_from;
+        uint32_t req_count;
+        uint64_t req_sent_ms;            /* monotonic; 0 = idle          */
+        uint64_t last_head_ms;
+        uint64_t last_serve_ms;          /* H-1 sign-amplification guard */
+        uint64_t last_qcfetch_ms;
+        uint32_t qc_rr;
+    } v2_sync;
+
+    /* O15E Faz D — pinned-genesis joiner bootstrap RUNTIME state. Active
+     * only on a fresh node with a local pin and no successor chain yet;
+     * cleared the moment the successor DB is adopted (the node then
+     * behaves as an ordinary successor). While `active`, the node MUST
+     * NOT propose or vote (role safety). Nothing here is persisted. */
+    struct {
+        int      active;                 /* 1 = fetching/deriving        */
+        uint8_t  pin[64];                /* local trust anchor (copy)    */
+        uint8_t *acc;                    /* bundle accumulator           */
+        size_t   acc_len;                /* bytes received contiguously  */
+        size_t   acc_total;              /* expected total (0 = unknown) */
+        uint64_t last_req_ms;            /* fetch throttle               */
+    } v2_join;
 } nodus_witness_t;
 
 /* Phase 4 / Task 4.2 — intra-batch chained-UTXO context.

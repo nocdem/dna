@@ -396,6 +396,41 @@ int nodus_witness_db_migrate_v2s10(nodus_witness_t *w);
 int nodus_witness_db_migrate_v2s10_ex(nodus_witness_t *w,
                                       nodus_v2s10_mig_fail_t fail_at);
 
+/* ── S11 migration (O15E Faz B — canonical envelope availability) ─────
+ *
+ * Adds `v2_tx_bytes`: the canonical envelope WIRE bytes of every
+ * transaction the apply engine commits from S11 onward, written inside
+ * the block's ONE transaction (apply.c phase 12) — the byte material a
+ * peer needs to re-verify and re-apply the block (BlockMessage v1
+ * assembly: stored header + stored QC + these bytes).
+ *
+ * Purely ADDITIVE — no table is dropped or rebuilt, so there is no
+ * populated-data refusal. Blocks committed BEFORE this migration have
+ * no rows here and CANNOT be backfilled (the engine never persisted
+ * their input bytes — apply.h labels reconstruction "a sync concern
+ * ... deliberately out of scope"); serving such heights FAILS CLOSED.
+ * Version 12+ fails closed. */
+#define NODUS_V2_SCHEMA_VERSION_S11  11u
+
+typedef enum {
+    V2S11MIG_FAIL_NONE = 0,
+    V2S11MIG_FAIL_AFTER_BEGIN,      /* after BEGIN, before any DDL        */
+    V2S11MIG_FAIL_AFTER_REVALIDATE, /* in-txn version re-read passed      */
+    V2S11MIG_FAIL_AFTER_TABLES,     /* v2_tx_bytes created                */
+    V2S11MIG_FAIL_AFTER_VERIFY,     /* schema-shape verification passed   */
+    V2S11MIG_FAIL_BEFORE_COMMIT     /* user_version written, pre-COMMIT   */
+} nodus_v2s11_mig_fail_t;
+
+/** Atomic O15E migration. Versions below 10 run the S9+S10 chain
+ *  first, then 10 → 11 atomically with the in-transaction
+ *  revalidation. @return 0 migrated or already at 11 (idempotent);
+ *  -1 failure. */
+int nodus_witness_db_migrate_v2s11(nodus_witness_t *w);
+
+/** Test variant: deterministic abort inside the 10 → 11 transaction. */
+int nodus_witness_db_migrate_v2s11_ex(nodus_witness_t *w,
+                                      nodus_v2s11_mig_fail_t fail_at);
+
 #ifdef __cplusplus
 }
 #endif

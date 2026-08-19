@@ -60,12 +60,28 @@ static void usage(const char *prog) {
  * collision with single-char short options. */
 #define LONGOPT_COLD_BOOTSTRAP    1000
 #define LONGOPT_MOCK_NODUS_VER    1001
+#define LONGOPT_V2_GENESIS_PIN    1002
 
 static const struct option g_longopts[] = {
     {"cold-bootstrap",     no_argument,       NULL, LONGOPT_COLD_BOOTSTRAP},
     {"mock-nodus-version", required_argument, NULL, LONGOPT_MOCK_NODUS_VER},
+    {"v2-genesis-pin",     required_argument, NULL, LONGOPT_V2_GENESIS_PIN},
     {0, 0, 0, 0}
 };
+
+/* O15E Faz D — parse a 128-hex-char successor genesis BlockID pin. */
+static int parse_v2_pin(const char *hex, uint8_t out[64]) {
+    if (!hex || strlen(hex) != 128) return -1;
+    for (int i = 0; i < 64; i++) {
+        unsigned v;
+        char b[3] = { hex[i * 2], hex[i * 2 + 1], 0 };
+        char *end = NULL;
+        v = (unsigned)strtoul(b, &end, 16);
+        if (end != b + 2) return -1;
+        out[i] = (uint8_t)v;
+    }
+    return 0;
+}
 
 static int parse_seed(const char *str, char *ip, size_t ip_len, uint16_t *port) {
     const char *colon = strrchr(str, ':');
@@ -188,6 +204,16 @@ int main(int argc, char **argv) {
         case LONGOPT_COLD_BOOTSTRAP:
             config.is_cold_bootstrap = true;
             break;
+        case LONGOPT_V2_GENESIS_PIN:
+            if (parse_v2_pin(optarg, config.v2_genesis_pin) != 0) {
+                fprintf(stderr, "invalid --v2-genesis-pin (need 128 hex "
+                        "chars = a 64-byte successor genesis BlockID)\n");
+                return 1;
+            }
+            config.has_v2_genesis_pin = true;
+            fprintf(stderr, "O15E: pinned-genesis joiner armed "
+                    "(local trust anchor set)\n");
+            break;
         case LONGOPT_MOCK_NODUS_VER: {
             uint32_t mock = (uint32_t)strtoul(optarg, NULL, 0);
             nodus_witness_peer_set_mock_version(mock);
@@ -255,6 +281,17 @@ int main(int argc, char **argv) {
                 nodus_witness_peer_set_mock_version(mock);
                 break;
             }
+            case LONGOPT_V2_GENESIS_PIN:
+                /* O15E Faz D — the re-parse pass (after `config = file_cfg`
+                 * clobbers the first pass) MUST re-apply the pin, or a node
+                 * started with BOTH -c <json> and --v2-genesis-pin loses it
+                 * and never arms the joiner. */
+                if (parse_v2_pin(optarg, config.v2_genesis_pin) != 0) {
+                    fprintf(stderr, "invalid --v2-genesis-pin\n");
+                    return 1;
+                }
+                config.has_v2_genesis_pin = true;
+                break;
             default: break;
             }
         }

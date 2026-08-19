@@ -96,6 +96,16 @@ typedef struct {
      * cold-bootstrap nodes can re-create the cabal vulnerability they
      * mitigate. Operator responsibility, not protocol-enforced. */
     bool        is_cold_bootstrap;
+
+    /* O15E Faz D — local successor genesis PIN for a fresh joiner. When
+     * `has_v2_genesis_pin` is set and the node has no successor chain,
+     * the joiner bootstrap pulls the canonical genesis bundle from a
+     * peer, re-derives the genesis, and adopts it ONLY if the derived
+     * BlockID equals `v2_genesis_pin`. Operator-supplied (CLI/config),
+     * NEVER wire-settable. Without it a fresh node is not a successor
+     * joiner. */
+    bool        has_v2_genesis_pin;
+    uint8_t     v2_genesis_pin[64];
 } nodus_server_config_t;
 
 /* ── Inter-node session (lightweight — rate limiting only, no auth) ── */

@@ -1124,3 +1124,80 @@ int nodus_witness_db_migrate_v2s10_ex(nodus_witness_t *w,
 int nodus_witness_db_migrate_v2s10(nodus_witness_t *w) {
     return nodus_witness_db_migrate_v2s10_ex(w, V2S10MIG_FAIL_NONE);
 }
+
+/* ── S11 (O15E Faz B): canonical envelope byte availability ─────────── */
+
+int nodus_witness_db_migrate_v2s11_ex(nodus_witness_t *w,
+                                      nodus_v2s11_mig_fail_t fail_at) {
+    if (!w || !w->db) return -1;
+
+    uint32_t ver = 0;
+    if (nodus_witness_db_schema_version(w, &ver) != 0) return -1;
+    if (ver == NODUS_V2_SCHEMA_VERSION_S11) return 0;    /* idempotent    */
+    if (ver != NODUS_V2_SCHEMA_VERSION_S10) {
+        if (nodus_witness_db_migrate_v2s10(w) != 0) return -1;
+        ver = NODUS_V2_SCHEMA_VERSION_S10;
+    }
+
+    if (exec_sql(w, "BEGIN IMMEDIATE") != 0) return -1;
+
+    int ok = 0;
+    int already = 0;
+    do {
+        if (fail_at == V2S11MIG_FAIL_AFTER_BEGIN) break;
+
+        /* O15B discipline: the pre-BEGIN read decided nothing. */
+        int rv = mig_revalidate_version(w, NODUS_V2_SCHEMA_VERSION_S10,
+                                        NODUS_V2_SCHEMA_VERSION_S11, "S11");
+        if (rv < 0) break;
+        if (rv == 0) { already = 1; break; }
+        if (fail_at == V2S11MIG_FAIL_AFTER_REVALIDATE) break;
+
+        /* tx_id UNIQUE mirrors v2_tx_index (one committed wire tx, one
+         * byte record); the PK is the canonical batch order the block
+         * message re-assembles in. NO default on any column. */
+        if (exec_sql(w,
+                "CREATE TABLE IF NOT EXISTS v2_tx_bytes ("
+                "  global_height INTEGER NOT NULL,"
+                "  global_index INTEGER NOT NULL,"
+                "  tx_id BLOB NOT NULL UNIQUE,"
+                "  env BLOB NOT NULL,"
+                "  PRIMARY KEY (global_height, global_index)"
+                ")") != 0)
+            break;
+        if (fail_at == V2S11MIG_FAIL_AFTER_TABLES) break;
+
+        static const char *const txb_cols[] = {
+            "global_height", "global_index", "tx_id", "env"
+        };
+        if (table_cols_exact(w, "v2_tx_bytes", txb_cols,
+                sizeof(txb_cols) / sizeof(txb_cols[0])) != 1) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "S11 schema shape drift — refusing");
+            break;
+        }
+        if (fail_at == V2S11MIG_FAIL_AFTER_VERIFY) break;
+
+        if (exec_sql(w, "PRAGMA user_version = 11") != 0) break;
+        if (fail_at == V2S11MIG_FAIL_BEFORE_COMMIT) break;
+
+        ok = 1;
+    } while (0);
+
+    if (already) {
+        (void)exec_sql(w, "ROLLBACK");
+        return 0;
+    }
+    if (!ok) {
+        (void)exec_sql(w, "ROLLBACK");
+        return -1;
+    }
+    if (exec_sql(w, "COMMIT") != 0) {
+        (void)exec_sql(w, "ROLLBACK");
+        return -1;
+    }
+    return 0;
+}
+
+int nodus_witness_db_migrate_v2s11(nodus_witness_t *w) {
+    return nodus_witness_db_migrate_v2s11_ex(w, V2S11MIG_FAIL_NONE);
+}

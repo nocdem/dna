@@ -23,6 +23,7 @@
 #include "witness/nodus_witness_db.h"
 #include "witness/nodus_witness_domreg.h"
 #include "witness/nodus_witness_vset.h"
+#include "witness/nodus_witness_v2_bundle.h"   /* O15E Faz D genesis bundle */
 #include "nodus/nodus_chain_config.h"
 
 #include "dnac/manifest_wire.h"
@@ -317,7 +318,9 @@ int nodus_witness_v2_seam_maybe_derive(nodus_witness_t *w,
     int ok = -1;
     do {
         if (nodus_witness_create_chain_db(w2, prov16) != 0) break;
-        if (nodus_witness_db_migrate_v2s10(w2) != 0) break;
+        /* O15E Faz B: successors derive at S11 so every block they ever
+         * commit carries its canonical envelope bytes (v2_tx_bytes). */
+        if (nodus_witness_db_migrate_v2s11(w2) != 0) break;
         if (nodus_chain_config_db_migrate(w2) != 0) break;
 
         /* ── 5. Carry the committed SYSTEM state. The legacy file path
@@ -486,6 +489,19 @@ int nodus_witness_v2_seam_maybe_derive(nodus_witness_t *w,
         uint8_t chain32[32];
         if (nodus_witness_v2_chain_id(w2, chain32) != 0) break;
         if (out_chain32) memcpy(out_chain32, chain32, 32);
+
+        /* ── 7b. O15E Faz D — persist the canonical genesis bundle NOW,
+         * while the base tables still hold their exact genesis-time
+         * bytes (before any block mutates validators / chain_config).
+         * A fresh joiner re-derives the genesis from these bytes and
+         * proves it against its local pin. Fail-closed: a successor that
+         * cannot serialize its own genesis is not a valid bootstrap
+         * source and the whole derivation aborts. */
+        if (nodus_witness_v2_bundle_persist(w2) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "%s",
+                          "genesis bundle persistence FAILED — ABORT");
+            break;
+        }
 
         /* ── 8. Land the real name in the REAL data_path (rename only
          * after a COMPLETE derivation — same filesystem, atomic). ───── */

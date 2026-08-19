@@ -27,6 +27,8 @@
  * (all legacy lanes refuse) on a default binary too. */
 #include "witness/nodus_witness_v2_seam.h"      /* O15C successor derivation */
 #include "witness/nodus_witness_v2_claims.h"    /* nodus_witness_v2_chain_id */
+#include "witness/nodus_witness_v2_sync2.h"     /* O15E successor sync seam */
+#include "witness/nodus_witness_v2_join.h"      /* O15E pinned-genesis joiner */
 #include "nodus/nodus_chain_config.h"  /* Stage C.2 vote-req handler */
 #include "crypto/utils/qgp_log.h"
 #include "crypto/hash/qgp_sha3.h"
@@ -977,6 +979,12 @@ int nodus_witness_init(nodus_witness_t *witness,
         fprintf(stderr, "%s: no chain DB found — pre-genesis state\n", LOG_TAG);
     }
 
+    /* O15E Faz D — arm the pinned-genesis joiner if this fresh node has
+     * no chain and an operator-supplied successor genesis pin. A no-op
+     * when a chain was found or no pin was given. The joiner tick then
+     * pulls the bundle and adopts on a pin match. */
+    (void)nodus_witness_v2_join_arm(witness);
+
     /* Fix 3: record activation time for the chain_id quorum-check window.
      * Within the first 300s after activation, every incoming w_ident is
      * compared against our local chain_id; if a strict majority of
@@ -1103,6 +1111,16 @@ void nodus_witness_tick(nodus_witness_t *witness) {
 
     /* H-15: Pending forward timeout (30s) */
     (void)nodus_witness_pending_forward_expire(witness, nodus_time_now());
+
+    /* O15E Faz B — successor sync driver: head-hint broadcast +
+     * in-flight range expiry. Self-throttled; a no-op on legacy chains
+     * and on unarmed nodes (the gate is asked inside). */
+    nodus_witness_v2_sync_tick(witness);
+
+    /* O15E Faz D — pinned-genesis joiner: pull the genesis bundle while
+     * a fresh node has a pin but no successor chain yet. No-op once
+     * adopted or when this node is not a joiner. */
+    nodus_witness_v2_join_tick(witness);
 
     /* MED-28: drop the retained reproposal batch once the chain has
      * advanced past its height — the C5 binding it exists to satisfy can
@@ -1445,6 +1463,32 @@ void nodus_witness_dispatch_t3(nodus_witness_t *witness,
         /* Receiver-side: handled by CLI proposer's client helper when
          * it ships in Stage E. A nodus-server that isn't expecting a
          * response (i.e., didn't open the session) can safely ignore. */
+        break;
+
+    /* ── O15E Faz B — Ledger V2 successor sync (verbs 20-23) ─────────
+     * Every handler asks the activation gate before touching a byte;
+     * a non-successor or unarmed node answers NOTHING (no residue). */
+    case NODUS_T3_V2_BLOCK:
+        nodus_witness_v2_sync_handle_block_q(witness, conn, &msg);
+        break;
+    case NODUS_T3_V2_HEAD:
+        nodus_witness_v2_sync_handle_head(witness, conn, &msg);
+        break;
+    case NODUS_T3_V2_RANGE_REQ:
+        nodus_witness_v2_sync_handle_range_q(witness, conn, &msg);
+        break;
+    case NODUS_T3_V2_RANGE_RSP:
+        nodus_witness_v2_sync_handle_range_r(witness, conn, &msg);
+        break;
+    case NODUS_T3_V2_GBUNDLE_REQ:
+        nodus_witness_v2_sync_handle_gbundle_q(witness, conn, &msg);
+        break;
+    case NODUS_T3_V2_GBUNDLE_RSP:
+        /* Joiner-side accumulation (O15E Faz D) is handled by the joiner
+         * bootstrap module, wired where the joiner state lives; a
+         * committed successor node has nothing to do with a bundle
+         * response. */
+        nodus_witness_v2_join_handle_gbundle_r(witness, conn, &msg);
         break;
 
     default:

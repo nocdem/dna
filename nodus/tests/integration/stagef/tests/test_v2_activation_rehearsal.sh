@@ -676,7 +676,162 @@ TERM_SHA_AFTER=$(sha256sum "$LEGACY_DB_1" | awk '{print $1}')
     fail "terminal V1 database bytes changed across O15D production"
 ok "terminal V1 frozen at $H_ACT; database bytes unchanged"
 
+# ── 12. O15E Faz A: the FIRST successor epoch boundary (H = E) ───────
+# The O15D sections left the successor at tip 5 with E_LEN = 6: the
+# next block IS the boundary. Pre-O15E this halted deterministically
+# (activation obligation 2 — the committee seed read legacy `blocks`).
+# The seed now comes from the committed v2_blocks BlockID at H−1.
+info "O15E Faz A: crossing the first epoch boundary (H=$E_LEN)"
+NONCE=160
+for attempt in 1 2 3; do
+    if submit_envelope "$NONCE"; then break; fi
+    info "boundary submit attempt $attempt failed — retrying"
+    [ "$attempt" = 3 ] && fail "boundary envelope submit failed"
+    sleep 5
+done
+wait_succ_height "$E_LEN" 150 || \
+    fail "the boundary block H=$E_LEN did not commit on all 7"
+assert_succ_block_identity "$E_LEN"
+wait_qc_7 "$E_LEN" 90 || fail "boundary block QC not attached on all 7"
+ok "first epoch boundary crossed: block $E_LEN identical 7/7 + QC"
+
+# The boundary's product: the epoch-2E snapshot, identical 7/7 and
+# seeded from the committed V2 BlockID at H−1 (never legacy blocks).
+E2=$(( 2 * E_LEN ))
+assert_same_succ_7 "epoch-2E validator-set snapshot" \
+    "SELECT epoch_start || '|' || hex(snapshot_hash) \
+     FROM validator_set_snapshots WHERE epoch_start = $E2;" > /dev/null
+ok "epoch-$E2 snapshot committed identically 7/7 (V2-native seed)"
+
+# A block INSIDE the new epoch proves the committee still functions.
+NONCE=170
+for attempt in 1 2 3; do
+    if submit_envelope "$NONCE"; then break; fi
+    [ "$attempt" = 3 ] && fail "post-boundary submit failed"
+    sleep 5
+done
+H_IN1=$(( E_LEN + 1 ))
+wait_succ_height "$H_IN1" 150 || fail "post-boundary block not 7/7"
+assert_succ_block_identity "$H_IN1"
+ok "chain advances inside epoch 1 (height $H_IN1 identical 7/7)"
+
+# ── 13. STOP-ALL restart AROUND the boundary ─────────────────────────
+info "O15E Faz A: stop-all restart just after the boundary"
+for n in $(seq 1 $N); do
+    pid=$(pgrep -f "node$n/identity" | head -1)
+    [ -n "$pid" ] && kill "$pid"
+done
+sleep 4
+for n in $(seq 1 $N); do
+    node_dir="$BASE_DIR/node$n"
+    : > "$node_dir/nodus.restart3.log"
+    # shellcheck disable=SC2086
+    "$STAGEF_NODUS_BIN" -c "$BASE_DIR/nodus.json" -b 127.0.0.1 \
+        -u "$(stagef_udp_port "$n")" -t "$(stagef_tcp_port "$n")" \
+        -p "$(stagef_peer_port "$n")" -C "$(stagef_chan_port "$n")" \
+        -W "$(stagef_witness_port "$n")" \
+        -i "$node_dir/identity" -d "$node_dir/data" \
+        $SEEDS >> "$node_dir/nodus.restart3.log" 2>&1 &
+    echo $! >> "$BASE_DIR/pids.txt"
+done
+for n in $(seq 1 $N); do
+    t=0
+    while [ $t -lt 120 ]; do
+        grep -q "Ledger V2 ingress ARMED (gate OPEN)" \
+            "$BASE_DIR/node$n/nodus.restart3.log" && break
+        sleep 3; t=$((t+3))
+    done
+    grep -q "Ledger V2 ingress ARMED (gate OPEN)" \
+        "$BASE_DIR/node$n/nodus.restart3.log" \
+        || fail "node$n did not re-arm after the boundary restart"
+done
+H_RES=$(assert_same_succ_7 "post-boundary resumed tip" \
+    "SELECT COALESCE(MAX(global_height),0) FROM v2_blocks;")
+[ "$H_RES" = "$H_IN1" ] || fail "restart lost blocks (tip $H_RES)"
+ok "restart around the boundary resumed from tip $H_RES on all 7"
+sleep 5
+
+NONCE=180
+for attempt in 1 2 3; do
+    if submit_envelope "$NONCE"; then break; fi
+    [ "$attempt" = 3 ] && fail "post-restart submit failed"
+    sleep 5
+done
+H_IN2=$(( E_LEN + 2 ))
+wait_succ_height "$H_IN2" 150 || fail "post-restart block not 7/7"
+assert_succ_block_identity "$H_IN2"
+wait_qc_7 "$H_IN2" 90 || fail "post-restart block QC not on all 7"
+ok "production continues after the boundary restart (height $H_IN2)"
+
+# ── 14. Legacy-table poison immunity, proven LIVE across a boundary ──
+# Poison ONE node's (scratch) successor-db legacy `blocks` table at
+# every height the SECOND boundary could look back to, then drive the
+# chain across that boundary: the poisoned node must derive the SAME
+# committee, blocks and snapshot as the other six. The terminal V1
+# database (the separate legacy chain file) is untouched by this.
+info "O15E Faz A: poisoning node7's successor-db legacy blocks table"
+P7_PID=$(pgrep -f "node7/identity" | head -1)
+[ -n "$P7_PID" ] && kill "$P7_PID"
+sleep 3
+P7_DB=$(succ_db 7) || fail "node7 successor db not found"
+# Deterministic poison content: distinct per height, never zero.
+POISON_ROOT=$(printf 'ab%.0s' $(seq 1 64))
+for ph in $(seq 1 $(( E2 + 1 ))); do
+    sqlite3 "$P7_DB" \
+        "INSERT OR REPLACE INTO blocks (height, tx_root, tx_count, \
+         timestamp, prev_hash, state_root) VALUES ($ph, zeroblob(64), 0, \
+         0, zeroblob(64), x'$POISON_ROOT');"
+done
+POISON_N=$(sqlite3 -readonly "$P7_DB" "SELECT COUNT(*) FROM blocks;")
+info "node7 legacy table now carries $POISON_N poisoned row(s)"
+node_dir="$BASE_DIR/node7"
+: > "$node_dir/nodus.poison.log"
+# shellcheck disable=SC2086
+"$STAGEF_NODUS_BIN" -c "$BASE_DIR/nodus.json" -b 127.0.0.1 \
+    -u "$(stagef_udp_port 7)" -t "$(stagef_tcp_port 7)" \
+    -p "$(stagef_peer_port 7)" -C "$(stagef_chan_port 7)" \
+    -W "$(stagef_witness_port 7)" \
+    -i "$node_dir/identity" -d "$node_dir/data" \
+    $SEEDS >> "$node_dir/nodus.poison.log" 2>&1 &
+echo $! >> "$BASE_DIR/pids.txt"
+t=0
+while [ $t -lt 120 ]; do
+    grep -q "Ledger V2 ingress ARMED (gate OPEN)" \
+        "$node_dir/nodus.poison.log" && break
+    sleep 3; t=$((t+3))
+done
+grep -q "Ledger V2 ingress ARMED (gate OPEN)" "$node_dir/nodus.poison.log" \
+    || fail "poisoned node7 did not re-arm"
+sleep 5
+
+# Drive across the SECOND boundary (H = 2E) with the poison in place.
+h=$H_IN2
+while [ "$h" -lt $(( E2 + 1 )) ]; do
+    h=$(( h + 1 ))
+    NONCE=$(( 180 + h ))
+    for attempt in 1 2 3; do
+        if submit_envelope "$NONCE"; then break; fi
+        [ "$attempt" = 3 ] && fail "poison-phase submit failed (h=$h)"
+        sleep 5
+    done
+    wait_succ_height "$h" 150 || fail "block $h not on all 7 (poison phase)"
+    assert_succ_block_identity "$h"
+done
+wait_qc_7 "$E2" 90 || fail "second-boundary block QC not on all 7"
+E3=$(( 3 * E_LEN ))
+assert_same_succ_7 "epoch-3E validator-set snapshot" \
+    "SELECT epoch_start || '|' || hex(snapshot_hash) \
+     FROM validator_set_snapshots WHERE epoch_start = $E3;" > /dev/null
+ok "second boundary crossed WITH a poisoned legacy table: blocks and"
+ok "epoch-$E3 snapshot identical 7/7 — the legacy table is dead on a successor"
+
+# ── 15. Terminal V1 database bytes: still byte-identical ─────────────
+TERM_SHA_FINAL=$(sha256sum "$LEGACY_DB_1" | awk '{print $1}')
+[ "$TERM_SHA_FINAL" = "$TERM_SHA_BEFORE" ] || \
+    fail "terminal V1 database bytes changed across the O15E sections"
+ok "terminal V1 database bytes unchanged end-to-end"
+
 stagef_sentinel ASSERT_RUN
 stagef_sentinel PASS
 echo
-echo "=== O15C ACTIVATION + O15D SUCCESSOR PRODUCTION REHEARSAL PASSED ==="
+echo "=== O15C ACTIVATION + O15D PRODUCTION + O15E FAZ A BOUNDARY REHEARSAL PASSED ==="
