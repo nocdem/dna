@@ -82,6 +82,21 @@ int  nodus_witness_roster_sorted_find(const nodus_witness_roster_t *roster,
 int  nodus_witness_roster_sorted_at(const nodus_witness_roster_t *roster,
                                       int rank);
 
+/** O15C-D.1 — apply the C5 reproposal selection to THIS node.
+ *
+ * Binds to the highest-height prepared certificate among the collected
+ * VIEW_CHANGE records, or clears the binding when none carries one
+ * (bind-or-clear: a stale binding rejects every later proposal).
+ *
+ * Called on every node the moment it advances its own view on quorum.
+ * Before this existed the rule was armed only in handle_newview behind
+ * `new_view > current_view` — a guard that is false precisely because
+ * the node just self-advanced — so the C5 gate never armed on the
+ * common path and a new leader's substituted value would have been
+ * accepted. The leader's NEW_VIEW payload is built from the same
+ * result, so broadcast and enforcement cannot diverge. */
+void nodus_witness_bft_bind_reproposal_from_view_changes(nodus_witness_t *w);
+
 /** MED-28 — release the batch retained for a NEW_VIEW reproposal.
  * Safe to call when nothing is retained. */
 void nodus_witness_retained_batch_clear(nodus_witness_t *w);

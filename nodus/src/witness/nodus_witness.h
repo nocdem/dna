@@ -898,6 +898,17 @@ typedef bool (*nodus_witness_drop_predicate_t)(
     const void *msg, const uint8_t *peer_id);
 
 void nodus_witness_test_inject_drop(nodus_witness_drop_predicate_t pred);
+
+/**
+ * O15C-D.1 — install a drop predicate described by the environment.
+ *
+ * Called from nodus_witness_init. No-op unless NODUS_FAULT_ARM_FILE is
+ * set. Lets the stagef harness — seven separate processes — reach the
+ * partition scenarios this hook was built for, which previously needed
+ * an in-process caller and so were never exercised end to end.
+ * See nodus_witness_fault.c for the arm-file rationale.
+ */
+void nodus_witness_fault_init_from_env(void);
 #endif /* QGP_FAULT_INJECT */
 
 /**

@@ -290,6 +290,10 @@ if(NOT WIN32)
         src/server/nodus_auth.c
         src/server/nodus_presence.c
         src/witness/nodus_witness.c
+        # O15C-D.1 — env-driven fault-injection predicate installer.
+        # Entire TU is #ifdef QGP_FAULT_INJECT; compiles to nothing in
+        # every normal build (and CMake rejects that flag for Release).
+        src/witness/nodus_witness_fault.c
         src/witness/nodus_witness_db.c
         src/witness/nodus_witness_bft.c
         src/witness/nodus_witness_merkle.c
@@ -1608,6 +1612,9 @@ register_witness_test(test_witness_forward_leader_rank)
 # O15C-D — MED-28: the timed-out batch must survive so the NEW_VIEW
 # reproposal binding can actually be satisfied.
 register_witness_test(test_witness_retained_batch)
+# O15C-D.1 — the C5 reproposal rule must arm on the self-advance path a
+# node actually takes through a view change, not only via NEW_VIEW.
+register_witness_test(test_witness_c5_self_bind)
 # O15C-D — MED-27: an accepted dnac_spend must never end without an
 # answer; the 30 s expiry replies instead of dropping the client.
 register_witness_test(test_witness_pending_forward_timeout)

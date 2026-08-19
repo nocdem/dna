@@ -6233,6 +6233,26 @@ static int bft_vc_check_quorum(nodus_witness_t *w) {
             LOG_TAG, w->view_change_target);
 
     w->current_view = w->view_change_target;
+
+    /* O15C-D.1 — C5 SELF-BIND.
+     *
+     * The C5 reproposal rule was armed ONLY in handle_newview, behind
+     * `nv->new_view > w->current_view`. But every node advances its own
+     * view right here on reaching quorum, so by the time the leader's
+     * NEW_VIEW arrives the guard is false and the whole accept block —
+     * including the binding — is skipped, silently and with no log.
+     * Proven on the live seven-node cluster (O15C-D.1): 7/7 nodes
+     * self-advanced, ZERO logged "accepted NEW_VIEW", and the C5 gate in
+     * handle_propose never evaluated once. The rule that is supposed to
+     * stop a new leader substituting a different value for a prepared
+     * one was therefore not being enforced on the common path.
+     *
+     * A node reaching quorum holds the same VIEW_CHANGE records the
+     * leader used, so it can and must apply the same selection itself.
+     * BIND-OR-CLEAR: a stale binding from an earlier view would reject
+     * every future proposal, so "no prepared cert" explicitly clears —
+     * mirroring handle_newview's has_reproposal=false branch. */
+    nodus_witness_bft_bind_reproposal_from_view_changes(w);
     /* H-5: persist new view across restart. */
     nodus_witness_db_save_pbft_state(w);
     w->view_change_in_progress = false;
@@ -6259,26 +6279,15 @@ static int bft_vc_check_quorum(nodus_witness_t *w) {
          * view's first PROPOSE to that tx_hash. If no view_change
          * carried a prepared cert, leave has_reproposal=false (leader
          * is free to propose anything). */
-        int best = -1;
-        uint64_t best_height = 0;
-        for (int i = 0; i < w->view_change_count; i++) {
-            if (!w->view_changes[i].prepared.has_prepared) continue;
-            if (best < 0 ||
-                w->view_changes[i].prepared.height > best_height) {
-                best = i;
-                best_height = w->view_changes[i].prepared.height;
-            }
-        }
-        if (best >= 0) {
+        /* Same selection every node just applied to bind itself, so the
+         * broadcast binding and the local binding cannot diverge. */
+        if (w->reproposal_required) {
             nv.newview.has_reproposal = true;
-            nv.newview.reproposal_height =
-                w->view_changes[best].prepared.height;
-            memcpy(nv.newview.reproposal_tx_hash,
-                   w->view_changes[best].prepared.tx_hash,
+            nv.newview.reproposal_height = w->reproposal_height;
+            memcpy(nv.newview.reproposal_tx_hash, w->reproposal_tx_hash,
                    NODUS_T3_TX_HASH_LEN);
-            fprintf(stderr, "%s: C5 NEW_VIEW reproposal (height=%llu "
-                    "from view_changes[%d])\n", LOG_TAG,
-                    (unsigned long long)best_height, best);
+            fprintf(stderr, "%s: C5 NEW_VIEW reproposal (height=%llu)\n",
+                    LOG_TAG, (unsigned long long)w->reproposal_height);
         } else {
             fprintf(stderr, "%s: C5 NEW_VIEW with no reproposal "
                     "(free leader)\n", LOG_TAG);
@@ -6442,6 +6451,51 @@ int nodus_witness_bft_handle_newview(nodus_witness_t *w,
  * Timeout check (called from nodus_witness_tick)
  * ════════════════════════════════════════════════════════════════════ */
 
+/* O15C-D.1 — C5 reproposal selection, in ONE place.
+ *
+ * Picks the highest-height prepared certificate out of the VIEW_CHANGE
+ * records collected for the view just entered and binds this node to it;
+ * clears the binding when no record carries one. Both the self-bind at
+ * quorum and the leader's NEW_VIEW payload read the result, so a leader
+ * can never broadcast a binding different from the one it enforces.
+ *
+ * ⚠ KNOWN GAP, deliberately preserved rather than redesigned here: ties
+ * are broken first-wins over `view_changes[]`, which is arrival-ordered.
+ * Two prepared certs at the SAME height from different views would make
+ * the selection arrival-dependent. Reaching that needs several failed
+ * views carrying different proposals. This function reproduces the
+ * pre-existing leader rule exactly — changing the rule is a separate
+ * decision; the gap is filed in nodus/BUGS.md. */
+void nodus_witness_bft_bind_reproposal_from_view_changes(nodus_witness_t *w) {
+    if (!w) return;
+
+    int best = -1;
+    uint64_t best_height = 0;
+    for (int i = 0; i < w->view_change_count; i++) {
+        if (!w->view_changes[i].prepared.has_prepared) continue;
+        if (best < 0 || w->view_changes[i].prepared.height > best_height) {
+            best = i;
+            best_height = w->view_changes[i].prepared.height;
+        }
+    }
+
+    if (best < 0) {
+        w->reproposal_required = false;
+        w->reproposal_height = 0;
+        memset(w->reproposal_tx_hash, 0, NODUS_T3_TX_HASH_LEN);
+        return;
+    }
+
+    w->reproposal_required = true;
+    w->reproposal_height = w->view_changes[best].prepared.height;
+    memcpy(w->reproposal_tx_hash, w->view_changes[best].prepared.tx_hash,
+           NODUS_T3_TX_HASH_LEN);
+
+    fprintf(stderr, "%s: C5 self-bound to reproposal (height=%llu from "
+            "view_changes[%d], view=%u)\n", LOG_TAG,
+            (unsigned long long)w->reproposal_height, best, w->current_view);
+}
+
 /* MED-28 — release the retained reproposal batch. */
 void nodus_witness_retained_batch_clear(nodus_witness_t *w) {
     if (!w) return;
@@ -6531,8 +6585,17 @@ int nodus_witness_try_repropose_retained(nodus_witness_t *w,
         return -1;
     }
 
+    /* O15C-D.1 — we ARE the node that satisfied the binding, and our own
+     * PROPOSE never passes through handle_propose's C5 gate, so nothing
+     * else would ever clear it. Left set, the stale binding would reject
+     * the NEXT height's proposal on `next_bh != reproposal_height`. */
+    w->reproposal_required = false;
+    w->reproposal_height = 0;
+    memset(w->reproposal_tx_hash, 0, NODUS_T3_TX_HASH_LEN);
+
     fprintf(stderr, "%s: MED-28 re-proposed retained batch (%d entries, "
-            "height=%llu)\n", LOG_TAG, count, (unsigned long long)height);
+            "height=%llu) — own C5 binding satisfied\n", LOG_TAG, count,
+            (unsigned long long)height);
     return 0;
 }
 
