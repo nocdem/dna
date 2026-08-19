@@ -53,6 +53,24 @@
 #include "dnac/activation_wire.h"
 #include "witness/nodus_witness_v2_activation.h"
 #include "crypto/sign/qgp_dilithium.h"      /* qgp_dsa87_sign (offline votes) */
+/* O15D — `v2-envelope chain-config`: successor-chain envelope builder.
+ * Everything is derived from the COMMITTED successor database (read-only
+ * sqlite open) through the same production authorities the engine uses:
+ * chain id, registry ruleset, committee snapshot, set hash, approval
+ * digests. Offline-signed with operator key dirs (the O15C --keys
+ * pattern); submitted through the ordinary tier-2 dnac_spend lane. */
+#include <sqlite3.h>
+#include "dnac/env_wire.h"
+#include "dnac/env_preflight.h"
+#include "dnac/ledger_ids.h"                /* DNA_DOMAIN_SYSTEM          */
+#include "witness/nodus_witness.h"
+#include "witness/nodus_witness_committee.h"
+#include "witness/nodus_witness_domreg.h"
+#include "witness/nodus_witness_v2_claims.h"   /* nodus_witness_v2_chain_id */
+#include "witness/nodus_witness_v2_produce.h"  /* tip height                */
+#include "witness/nodus_witness_v2_apply.h"    /* nodus_v2_epoch_for_height */
+#include "witness/nodus_witness_runtime.h"     /* set-hash / approval digest */
+#include "crypto/hash/qgp_sha3.h"
 #endif
 
 /* ── Globals ─────────────────────────────────────────────────────── */
@@ -1798,6 +1816,316 @@ done:
     nodus_client_close(&client);
     return rc;
 }
+
+/* ── O15D — `v2-envelope chain-config` (successor rehearsal driver) ──
+ *
+ * Builds the ONE envelope shape a fresh successor can execute: a
+ * single-leg SYSTEM CHAIN_CONFIG (fee 0 — a SYSTEM leg has no fee sink)
+ * under auth_kind 2 (submitter + committee approvals by SEAT against the
+ * committed snapshot). Approvals bind epoch(H−1) + the resolved-set
+ * hash; with every rehearsal height inside the first successor epoch the
+ * snapshot row is the seam-frozen e_start-0 set, so offline approvals
+ * stay valid at whichever height the block lands. Expiry is 0 = none
+ * (env_preflight.h step 3), so an interleaved block cannot strand it.
+ *
+ * The two-pass auth build: auth_len IS committed (auth_context_commit),
+ * so the envelope is first encoded with a zero-filled auth blob of the
+ * EXACT final length, preflighted to derive the leg auth digest, signed,
+ * re-encoded with the real bytes (same length ⇒ same digest), and
+ * re-preflighted as a self-check before submission.
+ */
+static int cmd_v2_envelope(const char *server_ip, uint16_t server_port,
+                           int argc, char **argv, int cmd_start) {
+    const char *sub = (cmd_start + 1 < argc) ? argv[cmd_start + 1] : NULL;
+    const char *db_path = NULL, *keys_csv = NULL;
+    uint64_t param_id = 4;              /* DNAC_CFG_TARGET_ACTIVE_COUNT  */
+    uint64_t new_value = 7;             /* == compiled default: inert    */
+    uint64_t effective = 0, valid_before = 0, nonce = 1;
+
+    for (int i = cmd_start + 2; i < argc; i++) {
+        const char *a = argv[i];
+        if      (!strcmp(a, "--db")    && i + 1 < argc) db_path  = argv[++i];
+        else if (!strcmp(a, "--keys")  && i + 1 < argc) keys_csv = argv[++i];
+        else if (!strcmp(a, "--param") && i + 1 < argc)
+            param_id = strtoull(argv[++i], NULL, 10);
+        else if (!strcmp(a, "--value") && i + 1 < argc)
+            new_value = strtoull(argv[++i], NULL, 10);
+        else if (!strcmp(a, "--effective") && i + 1 < argc)
+            effective = strtoull(argv[++i], NULL, 10);
+        else if (!strcmp(a, "--valid-before") && i + 1 < argc)
+            valid_before = strtoull(argv[++i], NULL, 10);
+        else if (!strcmp(a, "--nonce") && i + 1 < argc)
+            nonce = strtoull(argv[++i], NULL, 10);
+        else { sub = NULL; break; }
+    }
+    if (!sub || strcmp(sub, "chain-config") != 0 || !db_path || !keys_csv) {
+        fprintf(stderr,
+            "Usage: v2-envelope chain-config --db <successor.db> "
+            "--keys <dir1,...,dirN>\n"
+            "       [--param ID --value V --effective H --valid-before H "
+            "--nonce N]\n");
+        return 1;
+    }
+
+    int rc = 1;
+    nodus_witness_t *wr = NULL;
+    nodus_identity_t *keys = NULL;
+    int n_keys = 0;
+    nodus_committee_member_t *committee = NULL;
+    int cm_count = 0;
+    uint8_t *fps = NULL;
+    uint8_t *env_bytes = NULL;
+    uint8_t *auth = NULL;
+    dna_env_preflight_t *pf = NULL;
+
+    keys = calloc(16, sizeof(*keys));
+    if (!keys) return 1;
+    n_keys = act_load_keys(keys_csv, keys, 16);
+    if (n_keys < 1) goto done;
+
+    /* Minimal READ-ONLY witness view over the committed successor DB —
+     * enough for the production authorities used below (they read
+     * w->db and the committee cache). The cache sentinel MUST be
+     * poisoned: a zeroed epoch_start would false-hit for e_start 0. */
+    wr = calloc(1, sizeof(*wr));
+    if (!wr) goto done;
+    wr->cached_committee_epoch_start = UINT64_MAX;
+    wr->cached_committee_count = -1;
+    if (sqlite3_open_v2(db_path, &wr->db, SQLITE_OPEN_READONLY, NULL)
+        != SQLITE_OK || !wr->db) {
+        fprintf(stderr, "cannot open %s read-only\n", db_path);
+        goto done;
+    }
+
+    uint8_t chain32[32];
+    uint64_t tip = 0;
+    if (nodus_witness_v2_chain_id(wr, chain32) != 0 ||
+        nodus_witness_v2_tip_height(wr, &tip) != 0) {
+        fprintf(stderr, "not a committed successor V2 database\n");
+        goto done;
+    }
+
+    dna_domain_manifest_t sys_man;
+    if (nodus_witness_domreg_get(wr, DNA_DOMAIN_SYSTEM, NULL, &sys_man,
+                                 NULL) != 0) {
+        fprintf(stderr, "SYSTEM registry row unreadable\n");
+        goto done;
+    }
+
+    /* The governing committee for inclusion height H = tip+1 is resolved
+     * at H−1 = tip (the engine's expression). */
+    if (nodus_committee_get_for_block_alloc(wr, tip, &committee,
+                                            &cm_count) != 0 ||
+        cm_count < 1) {
+        fprintf(stderr, "committee resolution failed\n");
+        goto done;
+    }
+    uint64_t appr_epoch = nodus_v2_epoch_for_height(tip);
+    uint32_t quorum = dna_bft_quorum((uint32_t)cm_count);
+    if ((uint32_t)(n_keys - 0) < quorum) {
+        fprintf(stderr, "need >= %u approver keys (committee %d), got %d\n",
+                (unsigned)quorum, cm_count, n_keys);
+        goto done;
+    }
+
+    uint8_t set_hash[64];
+    fps = malloc((size_t)cm_count * 64);
+    if (!fps) goto done;
+    for (int i = 0; i < cm_count; i++)
+        if (qgp_sha3_512(committee[i].pubkey, DNAC_PUBKEY_SIZE,
+                         fps + (size_t)i * 64) != 0)
+            goto done;
+    if (nodus_rt_committee_set_hash((const uint8_t (*)[64])fps,
+                                    (uint32_t)cm_count, set_hash) != 0)
+        goto done;
+
+    /* Defaults derived from the committed tip: SAFETY grace floor is
+     * H + grace at the (unknown) inclusion height — parked far beyond
+     * the rehearsal window; valid_before must exceed effective. */
+    if (effective == 0)    effective    = tip + 100000;
+    if (valid_before == 0) valid_before = effective + 100000;
+
+    uint8_t call[41];
+    call[0] = (uint8_t)param_id;
+    for (int i = 0; i < 8; i++) call[1 + i]  = (uint8_t)(new_value    >> (56 - 8 * i));
+    for (int i = 0; i < 8; i++) call[9 + i]  = (uint8_t)(effective    >> (56 - 8 * i));
+    for (int i = 0; i < 8; i++) call[17 + i] = (uint8_t)(nonce        >> (56 - 8 * i));
+    for (int i = 0; i < 8; i++) call[25 + i] = (uint8_t)(1ULL         >> (56 - 8 * i)); /* signed_at = 1 */
+    for (int i = 0; i < 8; i++) call[33 + i] = (uint8_t)(valid_before >> (56 - 8 * i));
+
+    /* auth blob: submitter(1 signer) ‖ approval_count u16 ‖ q × (seat ‖ sig) */
+    uint32_t n_appr = quorum;
+    size_t auth_len = 1 + NODUS_RT_AUTH_SIGNER_LEN + 2 +
+                      (size_t)n_appr * NODUS_RT_AUTH_APPROVAL_LEN;
+    auth = calloc(1, auth_len);
+    if (!auth) goto done;
+
+    dna_env_leg_in_t leg;
+    memset(&leg, 0, sizeof(leg));
+    leg.hdr.domain_id            = DNA_DOMAIN_SYSTEM;
+    leg.hdr.runtime_op           = DNA_SYSRULE_CHAIN_CONFIG;
+    leg.hdr.ruleset_version      = sys_man.ruleset_version;
+    leg.hdr.access_mode          = DNA_ENV_ACCESS_INVOKE;
+    leg.hdr.auth_kind            = NODUS_RT_AUTHKIND_DSA87_CC_V1;
+    leg.hdr.call_len             = sizeof(call);
+    leg.hdr.auth_len             = (uint32_t)auth_len;
+    leg.hdr.res_max_effects      = 4;
+    leg.hdr.res_max_effect_bytes = 4096;
+    leg.call_data = call;
+    leg.auth_data = auth;                    /* pass 1: zero-filled     */
+
+    dna_env_in_t env_in;
+    memset(&env_in, 0, sizeof(env_in));
+    env_in.expiry_height       = 0;          /* none — race-proof       */
+    env_in.fee_amount          = 0;          /* SYSTEM leg rule         */
+    env_in.res_max_total_units = 200000;
+    env_in.leg_count           = 1;
+    env_in.legs                = &leg;
+
+    size_t env_len = 0;
+    if (dna_env_encoded_size(&leg, 1, &env_len) != 0) goto done;
+    env_bytes = malloc(env_len);
+    pf = calloc(1, sizeof(*pf));
+    if (!env_bytes || !pf) goto done;
+
+    dna_env_leg_ctx_t lctx;
+    lctx.domain_id       = DNA_DOMAIN_SYSTEM;
+    lctx.ruleset_version = sys_man.ruleset_version;
+    memcpy(lctx.ruleset_hash, sys_man.ruleset_hash, 64);
+
+    size_t used = 0;
+    if (dna_env_encode(&env_in, env_bytes, env_len, &used) != 0 ||
+        used != env_len) goto done;
+    if (dna_env_preflight(env_bytes, env_len, chain32, tip + 1, &lctx, 1,
+                          pf) != DNA_ENV_PF_OK) {
+        fprintf(stderr, "pass-1 preflight failed\n");
+        goto done;
+    }
+
+    /* Sign: submitter (keys[0]) over the leg auth digest; each approver
+     * over its 154-byte DNA.CCAPPR.v1 digest, sorted by SEAT. */
+    {
+        uint8_t *p = auth;
+        p[0] = 1;
+        memcpy(p + 1, keys[0].pk.bytes, DNAC_PUBKEY_SIZE);
+        size_t sl = 0;
+        if (qgp_dsa87_sign(p + 1 + DNAC_PUBKEY_SIZE, &sl,
+                           pf->auth_digest[0], 64, keys[0].sk.bytes) != 0)
+            goto done;
+        p += 1 + NODUS_RT_AUTH_SIGNER_LEN;
+        p[0] = (uint8_t)(n_appr >> 8);
+        p[1] = (uint8_t)n_appr;
+        p += 2;
+
+        /* seat lookup per key, then emit in strictly ascending seats */
+        int seat_of[16];
+        for (int k = 0; k < (int)n_appr; k++) {
+            seat_of[k] = -1;
+            for (int s = 0; s < cm_count; s++) {
+                if (memcmp(committee[s].pubkey, keys[k].pk.bytes,
+                           DNAC_PUBKEY_SIZE) == 0) { seat_of[k] = s; break; }
+            }
+            if (seat_of[k] < 0) {
+                fprintf(stderr, "key %d is not a committee member\n", k);
+                goto done;
+            }
+        }
+        /* simple selection sort of (seat, key) pairs */
+        for (int a = 0; a < (int)n_appr; a++) {
+            int best = a;
+            for (int b = a + 1; b < (int)n_appr; b++)
+                if (seat_of[b] < seat_of[best]) best = b;
+            int ts = seat_of[a]; seat_of[a] = seat_of[best]; seat_of[best] = ts;
+            nodus_identity_t tk = keys[a]; keys[a] = keys[best]; keys[best] = tk;
+        }
+        for (int k = 0; k < (int)n_appr; k++) {
+            if (k > 0 && seat_of[k] == seat_of[k - 1]) {
+                fprintf(stderr, "duplicate committee seat among keys\n");
+                goto done;
+            }
+            uint8_t adg[64];
+            if (nodus_rt_cc_approval_digest(pf->auth_digest[0], set_hash,
+                                            appr_epoch,
+                                            (uint16_t)seat_of[k],
+                                            adg) != 0)
+                goto done;
+            p[0] = (uint8_t)((uint16_t)seat_of[k] >> 8);
+            p[1] = (uint8_t)seat_of[k];
+            sl = 0;
+            if (qgp_dsa87_sign(p + 2, &sl, adg, 64, keys[k].sk.bytes) != 0)
+                goto done;
+            p += NODUS_RT_AUTH_APPROVAL_LEN;
+        }
+    }
+
+    /* Pass 2: same lengths, real auth bytes — digest-stable by design. */
+    if (dna_env_encode(&env_in, env_bytes, env_len, &used) != 0 ||
+        used != env_len) goto done;
+    if (dna_env_preflight(env_bytes, env_len, chain32, tip + 1, &lctx, 1,
+                          pf) != DNA_ENV_PF_OK) {
+        fprintf(stderr, "pass-2 preflight failed\n");
+        goto done;
+    }
+
+    printf("envelope built: %zu bytes, wire_id=", env_len);
+    for (int i = 0; i < 8; i++) printf("%02x", pf->wire_id[i]);
+    printf("... intent_id=");
+    for (int i = 0; i < 8; i++) printf("%02x", pf->intent_id[i]);
+    printf("...\n");
+
+    /* Submit through the ordinary tier-2 dnac_spend lane. */
+    {
+        nodus_client_t client;
+        nodus_client_config_t cfg;
+        memset(&cfg, 0, sizeof(cfg));
+        snprintf(cfg.servers[0].ip, sizeof(cfg.servers[0].ip), "%s",
+                 server_ip);
+        cfg.servers[0].port = server_port;
+        cfg.server_count    = 1;
+        cfg.auto_reconnect  = false;
+        if (nodus_client_init(&client, &cfg, &identity) != 0 ||
+            nodus_client_connect(&client) != 0) {
+            fprintf(stderr, "client connect failed\n");
+            nodus_client_close(&client);
+            goto done;
+        }
+        nodus_pubkey_t sender_pk;
+        nodus_sig_t sender_sig;
+        memcpy(sender_pk.bytes, identity.pk.bytes, NODUS_PK_BYTES);
+        nodus_sign(&sender_sig, pf->wire_id, 64, &identity.sk);
+        nodus_dnac_spend_result_t sres;
+        memset(&sres, 0, sizeof(sres));
+        int srv_rc = nodus_client_dnac_spend(&client, pf->wire_id,
+                                             env_bytes, (uint32_t)env_len,
+                                             &sender_pk, &sender_sig, 0,
+                                             &sres);
+        nodus_client_close(&client);
+        if (srv_rc != 0 || sres.status != NODUS_DNAC_APPROVED) {
+            fprintf(stderr, "dnac_spend RPC failed (rc=%d status=%d)\n",
+                    srv_rc, (int)sres.status);
+            goto done;
+        }
+        printf("ENVELOPE committed: height=%llu index=%u\n",
+               (unsigned long long)sres.block_height, sres.tx_index);
+    }
+    rc = 0;
+
+done:
+    if (pf) free(pf);
+    if (env_bytes) free(env_bytes);
+    if (auth) free(auth);
+    if (fps) free(fps);
+    free(committee);
+    if (wr) {
+        if (wr->db) sqlite3_close(wr->db);
+        free(wr);
+    }
+    if (keys) {
+        for (int i = 0; i < 16; i++) nodus_identity_clear(&keys[i]);
+        free(keys);
+    }
+    return rc;
+}
 #endif /* NODUS_CLI_HAS_DNAC */
 
 /* ── Usage ───────────────────────────────────────────────────────── */
@@ -1944,6 +2272,14 @@ int main(int argc, char **argv) {
     if (strcmp(command, "v2-activation") == 0) {
         int rc = cmd_v2_activation(server_ip, server_port, argc, argv,
                                    optind);
+        nodus_identity_clear(&identity);
+        return rc;
+    }
+
+    /* O15D — v2-envelope: successor-chain envelope builder/submitter. */
+    if (strcmp(command, "v2-envelope") == 0) {
+        int rc = cmd_v2_envelope(server_ip, server_port, argc, argv,
+                                 optind);
         nodus_identity_clear(&identity);
         return rc;
     }

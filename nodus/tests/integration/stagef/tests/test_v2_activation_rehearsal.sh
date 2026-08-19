@@ -450,7 +450,233 @@ done
 ok "stop-all restart: 7/7 successor, preflight CLEAR, ingress ARMED"
 ok "Rule N (12) retired + ingress (13) clear — gate OPEN on the successor"
 
+# ═════════════════════════════════════════════════════════════════════
+# O15D — successor V2 block production (extends the O15C endpoint; no
+# earlier sentinel is weakened — ASSERT_RUN/PASS still land only after
+# EVERY section below).
+#
+# Block budget: production is proven INSIDE the first successor epoch.
+# The first epoch boundary (H = E_LEN) deterministically halts on the
+# open O12 "activation obligation 2" (vset_commit_next's snapshot seed
+# reads the LEGACY blocks row — committee.c lookback), a consensus
+# decision this season does not own. With E_LEN=6 heights 1..5 are the
+# budget: 3 blocks pre-restart + 2 post-restart.
+# ═════════════════════════════════════════════════════════════════════
+
+[ "$E_LEN" -ge 6 ] || fail "O15D needs STAGEF_EPOCH_LENGTH >= 6 (block budget)"
+
+succ_db_1() { succ_db 1; }
+SUCC_DB_1=$(succ_db 1)
+LEGACY_DB_1="$BASE_DIR/node1/data/$LEGACY_BASENAME"
+
+# Preserve-evidence baseline: the terminal V1 database bytes (main db
+# file only — -wal/-shm are connection artifacts).
+TERM_SHA_BEFORE=$(sha256sum "$LEGACY_DB_1" | awk '{print $1}')
+info "terminal V1 db sha256 = ${TERM_SHA_BEFORE:0:16}..."
+
+succ_height() {   # $1 = node
+    sqlite3 -readonly "$(succ_db "$1")" \
+        "SELECT COALESCE(MAX(global_height),0) FROM v2_blocks;"
+}
+
+# Identical successor value across all 7 (successor DBs, not legacy).
+assert_same_succ_7() {
+    local label="$1" sql="$2"
+    local first="" v
+    for n in $(seq 1 $N); do
+        v=$(sqlite3 -readonly "$(succ_db "$n")" "$sql" 2>/dev/null) \
+            || fail "$label: sqlite failed on node$n"
+        if [ -z "$first" ]; then first="$v"
+        elif [ "$v" != "$first" ]; then
+            fail "$label: node$n ($v) != node1 ($first)"
+        fi
+    done
+    echo "$first"
+}
+
+wait_succ_height() {   # $1 = target, $2 = timeout s
+    local target="$1" timeout="${2:-90}" deadline=$(( SECONDS + ${2:-90} ))
+    while [ $SECONDS -lt $deadline ]; do
+        local lo=999999999
+        for n in $(seq 1 $N); do
+            local h; h=$(succ_height "$n" 2>/dev/null || echo 0)
+            [ "${h:-0}" -lt "$lo" ] && lo="$h"
+        done
+        [ "$lo" -ge "$target" ] && return 0
+        sleep 2
+    done
+    return 1
+}
+
+wait_qc_7() {   # $1 = height, $2 = timeout s
+    local h="$1" deadline=$(( SECONDS + ${2:-60} ))
+    while [ $SECONDS -lt $deadline ]; do
+        local miss=0
+        for n in $(seq 1 $N); do
+            local q
+            q=$(sqlite3 -readonly "$(succ_db "$n")" \
+                "SELECT COUNT(*) FROM v2_blocks WHERE global_height=$h \
+                 AND qc IS NOT NULL;" 2>/dev/null || echo 0)
+            [ "${q:-0}" = "1" ] || { miss=1; break; }
+        done
+        [ "$miss" = "0" ] && return 0
+        sleep 2
+    done
+    return 1
+}
+
+KEYS5="$BASE_DIR/node1/identity"
+for n in 2 3 4 5; do KEYS5="$KEYS5,$BASE_DIR/node$n/identity"; done
+
+submit_envelope() {   # $1 = nonce; submits via node1, forwards to leader
+    "$NODUSCLI" -s 127.0.0.1 -p "$(stagef_tcp_port 1)" \
+        -i "$BASE_DIR/node1/identity" v2-envelope chain-config \
+        --db "$(succ_db 1)" --keys "$KEYS5" --nonce "$1" \
+        >> "$BASE_DIR/o15d_submit.log" 2>&1
+}
+
+assert_succ_block_identity() {   # $1 = height
+    local h="$1"
+    assert_same_succ_7 "successor block $h identity" \
+        "SELECT global_height || '|' || hex(block_id) || '|' || \
+         hex(prev_block_id) || '|' || hex(global_root) || '|' || \
+         hex(vset_hash) || '|' || tx_count \
+         FROM v2_blocks WHERE global_height = $h;" > /dev/null
+    ok "successor block $h identical 7/7 (id/parent/global root/vset)"
+}
+
+# ── 7. First successor post-genesis block ─────────────────────────────
+info "O15D: submitting the smallest successor-valid transaction "\
+"(single-leg SYSTEM CHAIN_CONFIG envelope, fee 0, committee kind-2)"
+NONCE=101
+for attempt in 1 2 3; do
+    if submit_envelope "$NONCE"; then break; fi
+    info "envelope submit attempt $attempt failed — retrying"
+    tail -3 "$BASE_DIR/o15d_submit.log" >&2 || true
+    [ "$attempt" = 3 ] && fail "envelope submit failed after 3 attempts"
+    sleep 5
+done
+wait_succ_height 1 120 || fail "successor block 1 did not commit on all 7"
+assert_succ_block_identity 1
+CCROWS=$(assert_same_succ_7 "cc history row" \
+    "SELECT COUNT(*) FROM chain_config_history WHERE param_id = 4 \
+     AND proposal_nonce = $NONCE;")
+[ "$CCROWS" = "1" ] || fail "committed transaction result missing ($CCROWS)"
+ok "committed transaction result identical 7/7 (chain_config row)"
+wait_qc_7 1 90 || fail "block 1 QC not attached on all 7"
+ok "block 1 QC (DNA.CERT.v2 quorum certificate) attached on all 7"
+
+# ── 8. Multiple additional successor blocks ───────────────────────────
+for h in 2 3; do
+    NONCE=$(( 100 + h * 10 ))
+    for attempt in 1 2 3; do
+        if submit_envelope "$NONCE"; then break; fi
+        info "envelope submit attempt $attempt (h=$h) failed — retrying"
+        [ "$attempt" = 3 ] && fail "envelope submit failed (target h=$h)"
+        sleep 5
+    done
+    wait_succ_height "$h" 120 || fail "successor block $h did not commit 7/7"
+    assert_succ_block_identity "$h"
+    wait_qc_7 "$h" 90 || fail "block $h QC not attached on all 7"
+done
+ok "multiple successor blocks committed (heights 1..3), each QC-attached"
+
+# Domain heads: SYSTEM advanced (CC blocks), CORE untouched since genesis.
+assert_same_succ_7 "SYSTEM domain head" \
+    "SELECT domain_height || '|' || hex(head) FROM v2_domain_heads \
+     WHERE domain_id = 0;" > /dev/null
+CORE_H=$(assert_same_succ_7 "DNA_CORE domain head" \
+    "SELECT domain_height || '|' || hex(head) FROM v2_domain_heads \
+     WHERE domain_id = 1;")
+[ "${CORE_H%%|*}" = "0" ] || fail "untouched CORE advanced: $CORE_H"
+ok "SYSTEM + DNA_CORE domain heads identical 7/7; untouched CORE at 0"
+
+# Authoritative validator-set identity (the governing snapshot row).
+assert_same_succ_7 "validator-set authority" \
+    "SELECT epoch_start || '|' || hex(snapshot_hash) \
+     FROM validator_set_snapshots WHERE epoch_start = 0;" > /dev/null
+ok "authoritative validator-set identity identical 7/7"
+
+# No legacy block ever appeared on the successor.
+LB=$(assert_same_succ_7 "legacy blocks on successor" \
+    "SELECT COALESCE(MAX(height),0) FROM blocks;")
+[ "$LB" = "0" ] || fail "legacy block on successor chain: $LB"
+ok "successor produced ZERO legacy blocks"
+
+# ── 9. Second STOP-ALL restart, from committed successor state ────────
+info "O15D: stop-all restart from the committed successor tip"
+for n in $(seq 1 $N); do
+    pid=$(pgrep -f "node$n/identity" | head -1)
+    [ -n "$pid" ] && kill "$pid"
+done
+sleep 4
+for n in $(seq 1 $N); do
+    node_dir="$BASE_DIR/node$n"
+    : > "$node_dir/nodus.restart2.log"
+    # shellcheck disable=SC2086
+    "$STAGEF_NODUS_BIN" -c "$BASE_DIR/nodus.json" -b 127.0.0.1 \
+        -u "$(stagef_udp_port "$n")" -t "$(stagef_tcp_port "$n")" \
+        -p "$(stagef_peer_port "$n")" -C "$(stagef_chan_port "$n")" \
+        -W "$(stagef_witness_port "$n")" \
+        -i "$node_dir/identity" -d "$node_dir/data" \
+        $SEEDS >> "$node_dir/nodus.restart2.log" 2>&1 &
+    echo $! >> "$BASE_DIR/pids.txt"
+done
+for n in $(seq 1 $N); do
+    t=0
+    while [ $t -lt 120 ]; do
+        grep -q "Ledger V2 ingress ARMED (gate OPEN)" \
+            "$BASE_DIR/node$n/nodus.restart2.log" && break
+        sleep 3; t=$((t+3))
+    done
+    grep -q "Ledger V2 ingress ARMED (gate OPEN)" \
+        "$BASE_DIR/node$n/nodus.restart2.log" \
+        || fail "node$n did not re-arm after the second restart"
+    grep -q "chain role: Ledger V2 SUCCESSOR" \
+        "$BASE_DIR/node$n/nodus.restart2.log" \
+        || fail "node$n did not derive the successor role"
+done
+H_RESUME=$(assert_same_succ_7 "resumed tip" \
+    "SELECT COALESCE(MAX(global_height),0) FROM v2_blocks;")
+[ "$H_RESUME" = "3" ] || fail "restart lost successor blocks (tip $H_RESUME)"
+ok "restart resumed from committed successor tip $H_RESUME on all 7"
+
+# ── 10. Post-restart production continues on the successor ───────────
+sleep 5   # peer mesh re-establishment
+for h in 4 5; do
+    NONCE=$(( 100 + h * 10 ))
+    for attempt in 1 2 3; do
+        if submit_envelope "$NONCE"; then break; fi
+        info "post-restart submit attempt $attempt (h=$h) — retrying"
+        [ "$attempt" = 3 ] && fail "post-restart submit failed (h=$h)"
+        sleep 5
+    done
+    wait_succ_height "$h" 150 || fail "post-restart block $h not 7/7"
+    assert_succ_block_identity "$h"
+done
+wait_qc_7 5 90 || fail "post-restart block 5 QC not attached on all 7"
+ok "post-restart successor blocks committed (heights 4..5), QC-attached"
+
+# ── 11. The terminal V1 chain was never reopened or mutated ──────────
+# (query the LEGACY database explicitly by basename — the generic
+# chain-db picker keys on file size and could select either chain here)
+HL=""
+for n in $(seq 1 $N); do
+    v=$(sqlite3 -readonly "$BASE_DIR/node$n/data/$LEGACY_BASENAME" \
+        "SELECT COALESCE(MAX(height),0) FROM blocks;") \
+        || fail "terminal V1 head: sqlite failed on node$n"
+    if [ -z "$HL" ]; then HL="$v"
+    elif [ "$v" != "$HL" ]; then
+        fail "terminal V1 head differs: node$n $v vs $HL"
+    fi
+done
+[ "$HL" = "$H_ACT" ] || fail "terminal V1 advanced: $HL != $H_ACT"
+TERM_SHA_AFTER=$(sha256sum "$LEGACY_DB_1" | awk '{print $1}')
+[ "$TERM_SHA_AFTER" = "$TERM_SHA_BEFORE" ] || \
+    fail "terminal V1 database bytes changed across O15D production"
+ok "terminal V1 frozen at $H_ACT; database bytes unchanged"
+
 stagef_sentinel ASSERT_RUN
 stagef_sentinel PASS
 echo
-echo "=== O15C ACTIVATION REHEARSAL PASSED ==="
+echo "=== O15C ACTIVATION + O15D SUCCESSOR PRODUCTION REHEARSAL PASSED ==="

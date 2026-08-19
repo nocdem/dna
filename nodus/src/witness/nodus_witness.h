@@ -117,6 +117,16 @@ typedef struct {
  * (NODUS_V2_ACTIVATION_AUTHORITY); production builds reject both. */
 #define NODUS_W_TX_V2_SCHEDULE      15
 #define NODUS_W_TX_V2_READY         16
+/* O15D — TRANSPORT-LOCAL discriminator for a Ledger V2 ENVELOPE riding
+ * the witness mempool / T3 batch surfaces on a SUCCESSOR chain. This is
+ * NOT a chain transaction type: the dnac_tx_type_t space is untouched
+ * (14 stays UNASSIGNED), no wire walker or verify lane keys on it, and
+ * the AUTHORITY for classification is always the envelope's 16-byte
+ * wire-family marker at offset 0 ("DNA.ENVWIRE.v1", env_wire.h) — this
+ * value only labels an entry whose bytes already carried that marker.
+ * Deliberately far outside the chain type space so a collision with a
+ * future chain type is impossible to miss. */
+#define NODUS_W_TX_V2_ENVELOPE      200
 
 /* ── Vote types ──────────────────────────────────────────────────── */
 
@@ -793,6 +803,42 @@ typedef struct nodus_witness {
     bool        v2_ingress_armed;
     bool        v2_gate_test_authority;
     bool        v2_gate_test_allow_unready;
+
+    /* ── Ledger V2 successor production (O15D) ────────────────────────
+     *
+     * `v2_successor` is derived at every database open from COMMITTED
+     * state only (the height-0 successor genesis manifest carrying the
+     * "DNA.LEGACY.TERM.v1" source binding — the same committed authority
+     * the activation gate reads); no env var, flag, config or peer input
+     * can set it. While true, this chain's producer/verify/commit paths
+     * run the Ledger V2 engine and the LEGACY lanes (genesis, spend
+     * apply, legacy sync, legacy cert store) refuse — a successor chain
+     * never produces a legacy block.
+     *
+     * `v2_chain32` caches nodus_witness_v2_chain_id() (derived from the
+     * committed genesis BlockID) for the QC-cert preimages and envelope
+     * admission; valid only while v2_successor is true.
+     *
+     * `v2_certpool` is the bounded per-height DNA.CERT.v2 collection for
+     * the block currently being finalized — the post-commit certificate
+     * exchange that assembles the QC (see nodus_witness_v2_produce.h).
+     * RUNTIME state only: it is rebuilt by the ordinary round flow and
+     * deliberately not persisted. */
+    bool        v2_successor;
+    uint8_t     v2_chain32[32];
+    struct {
+        uint64_t height;                 /* 0 = pool empty               */
+        bool     committed;              /* local block at height landed */
+        bool     qc_attached;            /* QC persisted for this height */
+        uint8_t  local_block_id[64];     /* engine-derived (committed)   */
+        uint8_t  vset_hash[64];          /* engine out_vset_hash         */
+        uint32_t n;
+        struct {
+            uint8_t voter_id[NODUS_T3_WITNESS_ID_LEN];
+            uint8_t block_id[64];        /* the SENDER's claimed id      */
+            uint8_t sig[NODUS_SIG_BYTES];
+        } slots[DNAC_MAX_ACTIVE_VALIDATORS];
+    } v2_certpool;
 } nodus_witness_t;
 
 /* Phase 4 / Task 4.2 — intra-batch chained-UTXO context.

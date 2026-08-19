@@ -42,6 +42,13 @@
 #include "dnac/transaction.h"     /* DNAC_TX_HEADER_SIZE, dnac_tx_read_committed_fee */
 #include "dnac/safe_math.h"       /* safe_add_u64 (SEC-01 consistency check) */
 #include "dnac/tx_wire.h"         /* S1: shared legacy tx-hash (dnac_txw_legacy_tx_hash) */
+/* O15D — successor admission lane */
+#include "dnac/env_wire.h"                    /* family marker, decode   */
+#include "dnac/env_preflight.h"               /* dna_env_preflight_t     */
+#include "witness/nodus_witness_v2_env.h"     /* the engine's seam       */
+#include "witness/nodus_witness_v2_gate.h"    /* armed probe             */
+#include "witness/nodus_witness_domreg.h"     /* committed ruleset ctx   */
+#include <sqlite3.h>                          /* v2_intent_index lookup  */
 
 #include <stdio.h>
 #include <string.h>
@@ -497,6 +504,151 @@ static int verify_shielded_tx(nodus_witness_t *w,
 }
 
 /* ════════════════════════════════════════════════════════════════════
+ * Ledger V2 successor admission (O15D)
+ * ════════════════════════════════════════════════════════════════════
+ *
+ * On a SUCCESSOR chain (w->v2_successor — committed state, derived at
+ * open) this is the ONLY acceptance lane: every legacy wire form, the V3
+ * wire (types 11/12/13) and everything else is refused BY THIS BRANCH,
+ * so a successor can never admit — and therefore never produce — a
+ * legacy transaction. Classification authority is the envelope's leading
+ * 16-byte wire-family marker (env_wire.c:25-27), never a type byte.
+ *
+ * The FULL authorization/execution verdict belongs to the ONE engine at
+ * commit; this lane runs exactly the engine's own pre-commit seam
+ * (nodus_witness_v2_env_preflight_batch: strict decode, contextual
+ * ruleset match against the committed registry, chain binding, expiry
+ * against the candidate height, canonical commitments) plus the two
+ * facts admission owns: the submitted hash must BE the derived wire_id,
+ * and an intent already committed on this chain is refused here rather
+ * than poisoning a whole block at apply. Deterministic from bytes +
+ * committed state in every mode. The outer client transport signature is
+ * deliberately ignored — an envelope carries its own verified
+ * authorization, and a second, unbound signer would add nothing.
+ */
+static int verify_v2_successor_tx(nodus_witness_t *w,
+                                  const uint8_t *tx_data, uint32_t tx_len,
+                                  const uint8_t *tx_hash, uint8_t tx_type,
+                                  char *reject_reason, size_t reason_size) {
+    /* "DNA.ENVWIRE.v1" (14 chars) + 2 zero bytes — pinned at
+     * env_wire.c:25-27; explicit initialisers, padding visible. */
+    static const uint8_t ENV_FAMILY[DNA_ENV_WIRE_FAMILY_LEN] = {
+        'D','N','A','.','E','N','V','W','I','R','E','.','v','1', 0, 0
+    };
+
+    if (!nodus_witness_v2_ingress_is_armed(w)) {
+        snprintf(reject_reason, reason_size,
+                 "successor chain not armed (activation gate closed)");
+        return -1;
+    }
+    if (tx_len < DNA_ENV_WIRE_FAMILY_LEN ||
+        memcmp(tx_data, ENV_FAMILY, DNA_ENV_WIRE_FAMILY_LEN) != 0) {
+        snprintf(reject_reason, reason_size,
+                 "successor chain accepts Ledger V2 envelopes only "
+                 "(wire-family marker absent)");
+        return -1;
+    }
+    if (tx_type != NODUS_W_TX_V2_ENVELOPE) {
+        snprintf(reject_reason, reason_size,
+                 "envelope bytes must ride the V2 envelope entry class");
+        return -1;
+    }
+
+    /* Local view only to learn the leg domains (the seam re-decodes). */
+    dna_env_view_t view;
+    if (dna_env_decode(tx_data, (size_t)tx_len, &view) != 0) {
+        snprintf(reject_reason, reason_size, "envelope decode rejected");
+        return -1;
+    }
+
+    /* Contextual ruleset table from the COMMITTED registry — the same
+     * authority the engine resolves. Envelope legs are strictly
+     * ascending by domain, so the table is ascending by construction. */
+    dna_env_leg_ctx_t rulesets[DNA_ENV_MAX_LEGS];
+    size_t n_rulesets = 0;
+    for (uint16_t l = 0; l < view.leg_count; l++) {
+        if (n_rulesets > 0 &&
+            rulesets[n_rulesets - 1].domain_id == view.leg[l].domain_id)
+            continue;                      /* one entry per domain        */
+        dna_domain_manifest_t man;
+        if (nodus_witness_domreg_get(w, view.leg[l].domain_id, NULL,
+                                     &man, NULL) != 0) {
+            snprintf(reject_reason, reason_size,
+                     "leg %u addresses unregistered domain %u",
+                     (unsigned)l, (unsigned)view.leg[l].domain_id);
+            return -1;
+        }
+        rulesets[n_rulesets].domain_id       = view.leg[l].domain_id;
+        rulesets[n_rulesets].ruleset_version = man.ruleset_version;
+        memcpy(rulesets[n_rulesets].ruleset_hash, man.ruleset_hash,
+               DNA_ENV_RULESET_HASH_LEN);
+        n_rulesets++;
+    }
+    if (n_rulesets == 0) {
+        snprintf(reject_reason, reason_size, "envelope carries no legs");
+        return -1;
+    }
+
+    /* The engine's own seam, over this ONE envelope, at the CANDIDATE
+     * height (multi-KB result — heap, per the repo discipline). */
+    int rc = -1;
+    dna_env_preflight_t *pf = calloc(1, sizeof(*pf));
+    if (!pf) {
+        snprintf(reject_reason, reason_size, "allocation failed");
+        return -1;
+    }
+    do {
+        nodus_v2_envelope_t env = { tx_data, (size_t)tx_len };
+        size_t fail_i = 0;
+        dna_env_preflight_status_t pst = DNA_ENV_PF_OK;
+        uint64_t candidate = nodus_witness_block_height(w) + 1;
+        nodus_v2_env_status_t est = nodus_witness_v2_env_preflight_batch(
+            w, candidate, rulesets, n_rulesets, &env, 1, pf, &fail_i, &pst);
+        if (est != NODUS_V2_ENV_OK) {
+            snprintf(reject_reason, reason_size,
+                     "envelope preflight rejected (seam=%d pf=%d)",
+                     (int)est, (int)pst);
+            break;
+        }
+        if (memcmp(tx_hash, pf->wire_id, NODUS_T3_TX_HASH_LEN) != 0) {
+            snprintf(reject_reason, reason_size,
+                     "submitted hash is not the envelope wire_id");
+            break;
+        }
+        /* Committed-intent replay: refuse at admission what the engine
+         * would refuse (as a whole-block verdict) at apply. Committed
+         * state only — deterministic in VALIDATION mode too. */
+        {
+            sqlite3_stmt *st = NULL;
+            if (sqlite3_prepare_v2(w->db,
+                    "SELECT 1 FROM v2_intent_index WHERE intent_id = ?1",
+                    -1, &st, NULL) != SQLITE_OK) {
+                snprintf(reject_reason, reason_size,
+                         "intent-index lookup failed");
+                break;
+            }
+            sqlite3_bind_blob(st, 1, pf->intent_id, DNA_ENV_HASH_LEN,
+                              SQLITE_STATIC);
+            int srvalidate = sqlite3_step(st);
+            sqlite3_finalize(st);
+            if (srvalidate == SQLITE_ROW) {
+                snprintf(reject_reason, reason_size,
+                         "intent already committed on this chain");
+                break;
+            }
+            if (srvalidate != SQLITE_DONE) {
+                snprintf(reject_reason, reason_size,
+                         "intent-index lookup failed");
+                break;
+            }
+        }
+        rc = 0;
+    } while (0);
+    free(pf);
+    return rc;
+}
+
+/* ════════════════════════════════════════════════════════════════════
  * Full transaction verification
  * ════════════════════════════════════════════════════════════════════ */
 
@@ -512,6 +664,22 @@ int nodus_witness_verify_transaction(nodus_witness_t *w,
     if (!w || !tx_data || !tx_hash) {
         if (reject_reason)
             snprintf(reject_reason, reason_size, "null parameter");
+        return -1;
+    }
+
+    /* ── Ledger V2 O15D: a SUCCESSOR chain has exactly one lane ─────── */
+    if (w->v2_successor) {
+        (void)nullifiers; (void)nullifier_count;
+        (void)client_pubkey; (void)client_signature;
+        (void)declared_fee; (void)mode;
+        return verify_v2_successor_tx(w, tx_data, tx_len, tx_hash,
+                                      tx_type, reject_reason, reason_size);
+    }
+    /* O15D — the transport-local envelope entry class never enters the
+     * legacy lanes: on a legacy chain it is refused by name. */
+    if (tx_type == NODUS_W_TX_V2_ENVELOPE) {
+        snprintf(reject_reason, reason_size,
+                 "V2 envelope entries are successor-chain only");
         return -1;
     }
 

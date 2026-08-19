@@ -1822,6 +1822,19 @@ static void handle_dnac_spend(nodus_witness_t *w,
     }
     uint8_t tx_type = tx_data[1];
 
+    /* ── Ledger V2 O15D — SUCCESSOR submission lane ───────────────────
+     * A successor chain has its genesis in v2_blocks, not in the legacy
+     * genesis_state table, so the legacy genesis prechecks below would
+     * refuse everything ("no genesis yet") — or worse, admit a LEGACY
+     * GENESIS into the successor database. Neither lane exists here:
+     * every submission is classified as a V2 envelope entry and the
+     * successor admission lane (nodus_witness_verify_transaction's
+     * divert) is the sole authority — it verifies the wire-family
+     * marker, the derived wire_id and the committed-state bindings.
+     * Legacy nullifier extraction is skipped (envelopes carry none). */
+    if (w->v2_successor) {
+        tx_type = NODUS_W_TX_V2_ENVELOPE;
+    } else {
     /* Genesis pre-check */
     bool genesis_exists = nodus_witness_genesis_exists(w);
     if (!genesis_exists && tx_type != NODUS_W_TX_GENESIS) {
@@ -1833,6 +1846,7 @@ static void handle_dnac_spend(nodus_witness_t *w,
         send_error(conn, txn_id, NODUS_ERR_ALREADY_EXISTS,
                     "genesis already exists");
         return;
+    }
     }
 
     /* Extract nullifiers from tx_data.
@@ -1848,7 +1862,7 @@ static void handle_dnac_spend(nodus_witness_t *w,
 
     const size_t input_count_offset = DNAC_TX_HEADER_SIZE;
 
-    if (tx_type != NODUS_W_TX_GENESIS) {
+    if (!w->v2_successor && tx_type != NODUS_W_TX_GENESIS) {
         if (tx_len < input_count_offset + 1) {
             send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
                         "tx_data too short for inputs");

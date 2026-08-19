@@ -199,12 +199,27 @@ typedef struct {
     uint8_t         proposer_id[NODUS_T3_WITNESS_ID_LEN];
     uint64_t        block_height;                /* A2 simetrisi (2026-05-02) */
     uint32_t        n_precommits;
-    uint8_t         state_root[NODUS_KEY_BYTES]; /* RFC 6962 Merkle root over UTXO set */
+    uint8_t         state_root[NODUS_KEY_BYTES]; /* RFC 6962 Merkle root over UTXO set;
+                                                  * O15D successor rounds carry the V2
+                                                  * GLOBAL state root here (same
+                                                  * semantic slot, C3-analog compare) */
     nodus_t3_cert_entry_t certs[NODUS_T3_MAX_WITNESSES]; /* Precommit signatures */
 
     int             batch_count;
     nodus_t3_batch_tx_t batch_txs[NODUS_W_MAX_BLOCK_TXS];
     uint8_t         tx_root[NODUS_T3_TX_HASH_LEN];
+
+    /* ── O15D — SUCCESSOR-only OPTIONAL fields (wire keys "vbi"/"vcs").
+     * The sender's engine-derived BlockID and its DNA.CERT.v2 signature
+     * over it (the post-commit QC certificate exchange). Absent on every
+     * legacy round: has_v2_cert stays 0 and the keys are not emitted, so
+     * the legacy commit wire is byte-identical. Receivers treat the pair
+     * as UNTRUSTED collection input — each certificate is verified
+     * against the committed authority snapshot before it can count
+     * toward a QC (nodus_witness_v2_produce.h). */
+    int             has_v2_cert;
+    uint8_t         v2_block_id[NODUS_T3_TX_HASH_LEN];
+    uint8_t         v2_cert_sig[NODUS_SIG_BYTES];
 } nodus_t3_commit_t;
 
 /** w_viewchg: Witness requests view change.

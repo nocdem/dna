@@ -221,6 +221,7 @@ set(NODUS_SOURCES
     ${SHARED_DIR}/dnac/activation_wire.c
     src/witness/nodus_witness_v2_activation.c
     src/witness/nodus_witness_v2_seam.c
+    src/witness/nodus_witness_v2_produce.c
 
     # Ledger V2 S6 — INACTIVE generic genesis/distribution manifest +
     # claim codec (shared) and the witness-side manifest/claims module
@@ -1007,6 +1008,7 @@ register_witness_test(test_v2_pools)
 register_witness_test(test_v2_epoch)
 register_witness_test(test_v2_qc_authority)
 register_witness_test(test_v2_finalize)
+register_witness_test(test_v2_produce)
 
 # Ledger V2 O15C — the committed activation authority: shared codecs +
 # digests (KAT-style sensitivity), schema v10 migration/rollback, the

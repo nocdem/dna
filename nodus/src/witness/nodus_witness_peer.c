@@ -18,6 +18,7 @@
 #include "witness/nodus_witness_db.h"
 #include "witness/nodus_witness_merkle.h"
 #include "witness/nodus_witness_handlers.h"
+#include "witness/nodus_witness_verify.h"      /* O15D successor admission */
 #include "protocol/nodus_tier3.h"
 #include "protocol/nodus_tier2.h"
 #include "server/nodus_server.h"
@@ -863,7 +864,25 @@ int nodus_witness_peer_handle_fwd_req(nodus_witness_t *w,
     uint8_t nullifiers[NODUS_T3_MAX_TX_INPUTS][NODUS_T3_NULLIFIER_LEN];
     uint8_t nullifier_count = 0;
 
-    if (tx_type != NODUS_W_TX_GENESIS) {
+    /* O15D — SUCCESSOR chain: forwarded submissions are V2 envelope
+     * entries (content-classified; no legacy genesis lane, no legacy
+     * nullifier layout). Verified through the ONE admission lane before
+     * the leader's mempool accepts them — an invalid forward must die
+     * here, not take a whole proposed block down with it. */
+    if (w->v2_successor) {
+        char v2_reject[256] = {0};
+        tx_type = NODUS_W_TX_V2_ENVELOPE;
+        if (nodus_witness_verify_transaction(w, fwd->tx_data, fwd->tx_len,
+                fwd->tx_hash, tx_type, NULL, 0, NULL, NULL, fwd->fee,
+                NODUS_WITNESS_VERIFY_ADMISSION,
+                v2_reject, sizeof(v2_reject)) != 0) {
+            fprintf(stderr, "%s: forwarded envelope rejected: %s\n",
+                    LOG_TAG, v2_reject);
+            return -1;
+        }
+    }
+
+    if (!w->v2_successor && tx_type != NODUS_W_TX_GENESIS) {
         if (fwd->tx_len < input_count_offset + 1) return -1;
         nullifier_count = fwd->tx_data[input_count_offset];
         if (nullifier_count > NODUS_T3_MAX_TX_INPUTS) return -1;

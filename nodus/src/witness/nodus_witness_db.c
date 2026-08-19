@@ -785,6 +785,26 @@ int nodus_witness_block_get_genesis(nodus_witness_t *w,
 uint64_t nodus_witness_block_height(nodus_witness_t *w) {
     if (!w || !w->db) return 0;
 
+    /* O15D — on a SUCCESSOR chain the chain height IS the committed V2
+     * height: the legacy `blocks` table is empty by construction and
+     * stays empty forever (the legacy production lane refuses on a
+     * successor), so every consumer of "this chain's height" — the
+     * round anchors, IDENT advertisements, RPC status, forward routing —
+     * must see the v2_blocks tip. Legacy chains take the branch below
+     * byte-identically (v2_successor is false there). */
+    if (w->v2_successor) {
+        sqlite3_stmt *v2 = NULL;
+        if (sqlite3_prepare_v2(w->db,
+                "SELECT COALESCE(MAX(global_height),0) FROM v2_blocks",
+                -1, &v2, NULL) != SQLITE_OK)
+            return 0;
+        uint64_t vh = 0;
+        if (sqlite3_step(v2) == SQLITE_ROW)
+            vh = (uint64_t)sqlite3_column_int64(v2, 0);
+        sqlite3_finalize(v2);
+        return vh;
+    }
+
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(w->db,
         "SELECT MAX(height) FROM blocks", -1, &stmt, NULL);

@@ -413,6 +413,12 @@ static int find_sync_peer(nodus_witness_t *w) {
 void nodus_witness_sync_check(nodus_witness_t *w) {
     if (!w || !w->running) return;
 
+    /* O15D — LEGACY sync never runs on a successor chain: it replays
+     * legacy blocks through the legacy apply, which a successor refuses
+     * by role. Successor catch-up is the (still-dormant) V2 sync lane —
+     * a named open item, not this path. */
+    if (w->v2_successor) return;
+
     /* Only sync during IDLE phase */
     if (w->round_state.phase != NODUS_W_PHASE_IDLE) return;
 
@@ -536,6 +542,9 @@ int nodus_witness_sync_handle_req(nodus_witness_t *w,
                                    struct nodus_tcp_conn *conn,
                                    const nodus_t3_msg_t *msg) {
     if (!w || !conn || !msg) return -1;
+
+    /* O15D — a successor holds no legacy blocks and serves none. */
+    if (w->v2_successor) return -1;
 
     uint64_t height = msg->sync_req.height;
 
@@ -692,6 +701,9 @@ int nodus_witness_sync_handle_req(nodus_witness_t *w,
 int nodus_witness_sync_handle_rsp(nodus_witness_t *w,
                                    const nodus_t3_msg_t *msg) {
     if (!w || !msg) return -1;
+    /* O15D — a successor never legacy-syncs (sync_check refuses, so
+     * syncing can never be true here; belt for a hostile frame). */
+    if (w->v2_successor) return -1;
     if (!w->sync_state.syncing) {
         fprintf(stderr, "%s: received w_sync_rsp but not syncing\n", LOG_TAG);
         return -1;

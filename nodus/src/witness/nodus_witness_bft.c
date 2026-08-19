@@ -31,6 +31,7 @@
 #include "witness/nodus_witness_vset.h"        /* S3 epoch validator-set lifecycle */
 #include "witness/nodus_witness_sync.h"        /* A2 simetri: active sync_check trigger */
 #include "witness/nodus_witness_v2_activation.h" /* O15C activation authority */
+#include "witness/nodus_witness_v2_produce.h"    /* O15D successor rounds */
 #ifdef NODUS_V2_ACTIVATION_AUTHORITY
 #include "witness/nodus_witness_v2_seam.h"       /* O15C successor derivation */
 #endif
@@ -3880,6 +3881,21 @@ static int bft_start_round_internal(nodus_witness_t *w,
         return -1;
     }
 #endif
+    /* O15D — a SUCCESSOR round carries V2 envelope entries and nothing
+     * else: a legacy-typed entry (genesis included) can never open a
+     * round on a successor chain. Content authority stays the wire-family
+     * marker (checked at admission); this is the round-entry backstop. */
+    if (w->v2_successor) {
+        for (int sce = 0; sce < count; sce++) {
+            if (!entries[sce] ||
+                entries[sce]->tx_type != NODUS_W_TX_V2_ENVELOPE) {
+                fprintf(stderr, "%s: successor chain — legacy entry "
+                        "refused at round start (idx %d)\n", LOG_TAG, sce);
+                return -1;
+            }
+        }
+    }
+
     if (refresh_bft_config_from_committee(w, next_bh) != 0) {
         fprintf(stderr, "%s: failed to load committee for block %llu\n",
                 LOG_TAG, (unsigned long long)next_bh);
@@ -4303,6 +4319,43 @@ int nodus_witness_bft_start_round_from_mempool(nodus_witness_t *w) {
         return -1;
     }
 
+    /* O15D — SUCCESSOR batch hygiene: run the engine's own pre-commit
+     * seam over the candidate batch (decode, committed ruleset context,
+     * chain binding, expiry, wire- AND intent-level dedup). An entry the
+     * engine would reject at apply is a WHOLE-BLOCK verdict there, so
+     * the offender is dropped HERE (freed — its submitter re-submits)
+     * and the survivors retried, exactly the staleness-drop discipline
+     * above. Deterministic: bytes + committed state only. */
+    if (w->v2_successor) {
+        for (;;) {
+            int bfail = 0;
+            int brc = nodus_witness_v2_produce_batch_check(w, batch, valid,
+                                                           &bfail);
+            if (brc == 0) break;
+            if (brc != -1 || bfail < 0 || bfail >= valid) {
+                /* node-local fault — requeue everything, no round */
+                for (int i = 0; i < valid; i++) {
+                    if (batch[i] &&
+                        nodus_witness_mempool_add(&w->mempool,
+                                                  batch[i]) != 0)
+                        nodus_witness_mempool_entry_free(batch[i]);
+                }
+                w->mempool.last_block_time_ms = nodus_time_now() * 1000ULL;
+                return -1;
+            }
+            QGP_LOG_WARN(LOG_TAG, "successor batch entry %d rejected by "
+                         "the seam — dropping it", bfail);
+            nodus_witness_mempool_entry_free(batch[bfail]);
+            for (int i = bfail; i < valid - 1; i++)
+                batch[i] = batch[i + 1];
+            valid--;
+            if (valid == 0) {
+                w->mempool.last_block_time_ms = nodus_time_now() * 1000ULL;
+                return -1;
+            }
+        }
+    }
+
     /* Start batch BFT round */
     QGP_BENCH_START(QGP_BENCH_BFT_ROUND);
     int rc = bft_start_round_internal(w, batch, valid);
@@ -4691,6 +4744,26 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
             }
 
             w->round_state.batch_entries[i] = entry;
+        }
+
+        /* O15D — SUCCESSOR follower batch check: the same engine seam
+         * the leader ran (decode, committed ruleset context, chain,
+         * expiry, wire+intent dedup) — deterministic from bytes +
+         * committed state, so every honest follower reaches the same
+         * verdict on the same proposal. A leader proposing a duplicate
+         * intent or a replayed envelope is REJECT-voted here instead of
+         * killing the block at commit. */
+        if (!tx_invalid && w->v2_successor) {
+            int bfail = 0;
+            if (nodus_witness_v2_produce_batch_check(
+                    w, w->round_state.batch_entries,
+                    w->round_state.batch_count, &bfail) != 0) {
+                fprintf(stderr, "%s: successor proposal failed the batch "
+                        "seam (entry %d) — rejecting\n", LOG_TAG, bfail);
+                tx_invalid = true;
+                snprintf(reject_reason, sizeof(reject_reason),
+                         "successor batch seam rejected entry %d", bfail);
+            }
         }
 
         /* Cleanup on invalid batch.
@@ -5241,6 +5314,13 @@ static int bft_handle_vote_inner(nodus_witness_t *w, uint8_t msg_type,
 
     /* next_phase == NODUS_W_PHASE_COMMIT: PRECOMMIT quorum → COMMIT */
 
+    /* O15D — successor-round commit outputs (BlockID, V2 global root,
+     * our QC certificate) — filled by the produce seam and consumed by
+     * the COMMIT broadcast below. Inert on legacy rounds. */
+    nodus_v2_produce_out_t v2out;
+    memset(&v2out, 0, sizeof(v2out));
+    int v2_prc = 1;                    /* 1 = not a successor round */
+
     if (w->round_state.batch_count > 0) {
         /* ── Phase 7 / Task 7.6 — multi-tx block via Phase 6 wrappers ──
          *
@@ -5251,7 +5331,22 @@ static int bft_handle_vote_inner(nodus_witness_t *w, uint8_t msg_type,
          * blocks. Genesis (always batch_count == 1 under this path)
          * routes through commit_genesis which bootstraps the chain DB. */
         bool batch_failed;
-        if (w->round_state.batch_count == 1 &&
+        if (w->v2_successor) {
+            /* ── O15D: THE successor handoff — the agreed batch goes
+             * through the ONE V2 engine (execute + roots + header +
+             * BlockID + atomic persist, all engine-owned). Own-quorum
+             * path: this node derived everything itself, so there is
+             * nothing to assert against (the legacy NULL-
+             * expected_state_root discipline, :5275-5285). */
+            v2_prc = nodus_witness_v2_produce_commit(w,
+                         w->round_state.batch_entries,
+                         w->round_state.batch_count,
+                         w->round_state.block_height,
+                         w->round_state.proposal_timestamp,
+                         w->round_state.proposer_id,
+                         NULL, &v2out);
+            batch_failed = (v2_prc != 0);
+        } else if (w->round_state.batch_count == 1 &&
             w->round_state.batch_entries[0] &&
             w->round_state.batch_entries[0]->tx_type == NODUS_W_TX_GENESIS) {
             nodus_witness_mempool_entry_t *ge =
@@ -5343,10 +5438,16 @@ static int bft_handle_vote_inner(nodus_witness_t *w, uint8_t msg_type,
             return -1;
         } else {
             /* Store one commit certificate for the new block. With true
-             * multi-tx blocks, batch_count TXs share a single height. */
+             * multi-tx blocks, batch_count TXs share a single height.
+             * O15D: successor rounds skip the LEGACY cert table — their
+             * finalization artifact is the QC V2 assembled from the
+             * DNA.CERT.v2 exchange (v2_blocks.qc), and writing legacy
+             * cert rows into a successor database would be exactly the
+             * legacy-lane write the successor role forbids. */
             uint64_t bh = nodus_witness_block_height(w);
-            nodus_witness_cert_store(w, bh, w->round_state.precommits,
-                                      w->round_state.precommit_count);
+            if (!w->v2_successor)
+                nodus_witness_cert_store(w, bh, w->round_state.precommits,
+                                          w->round_state.precommit_count);
 
             /* Phase 9 / Task 48 — liveness attendance.
              * C4 fix: attendance is now credited inside commit_batch
@@ -5365,9 +5466,21 @@ static int bft_handle_vote_inner(nodus_witness_t *w, uint8_t msg_type,
     /* Compute chain state_root (Phase 3 / Task 10: 4-subtree composite).
      * The cached_state_root + COMMIT message field must match what
      * finalize_block wrote into the block row, so we use the same
-     * compute_state_root path here. */
+     * compute_state_root path here.
+     * O15D: on a successor round the root the COMMIT frame must carry is
+     * the ENGINE-derived V2 global state root — the legacy 4-subtree
+     * recompute reads legacy tables a successor never populates, and the
+     * engine already returned the committed value; recomputing anything
+     * else here would be a second engine. */
     uint8_t utxo_cksum[NODUS_KEY_BYTES];
-    bool have_cksum = (nodus_witness_merkle_compute_state_root(w, utxo_cksum) == 0);
+    bool have_cksum;
+    if (w->v2_successor) {
+        memcpy(utxo_cksum, v2out.global_root, NODUS_KEY_BYTES);
+        have_cksum = true;
+    } else {
+        have_cksum =
+            (nodus_witness_merkle_compute_state_root(w, utxo_cksum) == 0);
+    }
     if (have_cksum) {
         char hex[17];
         for (int i = 0; i < 8; i++)
@@ -5420,6 +5533,16 @@ static int bft_handle_vote_inner(nodus_witness_t *w, uint8_t msg_type,
      * check; reuse round_state.block_height which finalize_block also
      * used. */
     c_msg.commit.block_height = w->round_state.block_height;
+    /* O15D — successor rounds carry our DNA.CERT.v2 certificate over the
+     * engine-derived BlockID on the SAME broadcast every node already
+     * makes; peers collect+verify it toward the QC. Legacy rounds leave
+     * has_v2_cert 0 and the wire unchanged. */
+    if (w->v2_successor && v2out.have_cert) {
+        c_msg.commit.has_v2_cert = 1;
+        memcpy(c_msg.commit.v2_block_id, v2out.block_id,
+               NODUS_T3_TX_HASH_LEN);
+        memcpy(c_msg.commit.v2_cert_sig, v2out.cert_sig, NODUS_SIG_BYTES);
+    }
     c_msg.commit.n_precommits = w->round_state.precommit_count;
     for (int i = 0; i < w->round_state.precommit_count &&
                     i < NODUS_T3_MAX_WITNESSES; i++) {
@@ -5524,6 +5647,19 @@ int nodus_witness_bft_handle_commit(nodus_witness_t *w,
     /* CRITICAL-2: Chain ID validation */
     if (!verify_chain_id(w, hdr->chain_id))
         return -1;
+
+    /* O15D — successor QC-certificate collection. MUST run BEFORE the
+     * already-committed early-return below: on a healthy round every
+     * node commits through its OWN quorum first, so by the time peers'
+     * COMMIT frames arrive the round is already committed here — and
+     * those frames are exactly what carries the certificates. The pair
+     * is UNTRUSTED input; the pool verifies each certificate against
+     * the committed authority snapshot before it can count. sender_id
+     * is the snapshot voter-id derivation (SHA3-512(pubkey)[0..31],
+     * nodus_identity.c:42 == vset_wire.h entry rule). */
+    if (w->v2_successor && cmt->batch_count > 0 && cmt->has_v2_cert)
+        nodus_witness_v2_cert_note(w, cmt->block_height, hdr->sender_id,
+                                   cmt->v2_block_id, cmt->v2_cert_sig);
 
     /* Skip if we already committed this round */
     if (hdr->round <= w->last_committed_round) {
@@ -5699,7 +5835,25 @@ int nodus_witness_bft_handle_commit(nodus_witness_t *w,
             }
         }
 
-        if (cmt->batch_count == 1 &&
+        if (w->v2_successor) {
+            /* ── O15D: successor remote-COMMIT path — the same ONE
+             * engine, with the sender's claimed V2 GLOBAL ROOT as the
+             * C3-analog equality assertion: a divergent proposal
+             * REJECTS before any commit (engine expect_* contract),
+             * mirroring the legacy expected_state_root discipline. */
+            nodus_v2_produce_out_t rv2out;
+            int rrc = nodus_witness_v2_produce_commit(w, entry_ptrs,
+                          cmt->batch_count, cmt->block_height,
+                          cmt->proposal_timestamp, cmt->proposer_id,
+                          cmt->state_root, &rv2out);
+            rmt_batch_failed = (rrc != 0);
+            if (!rmt_batch_failed) {
+                /* Locally DERIVED root only (F-CONS-06 discipline). */
+                memcpy(w->cached_state_root, rv2out.global_root,
+                       NODUS_KEY_BYTES);
+                w->cached_state_root_valid = true;
+            }
+        } else if (cmt->batch_count == 1 &&
             local_entries[0].tx_type == NODUS_W_TX_GENESIS) {
             rmt_batch_failed = (nodus_witness_commit_genesis(w,
                                     local_entries[0].tx_hash,
@@ -5732,8 +5886,10 @@ int nodus_witness_bft_handle_commit(nodus_witness_t *w,
         return -1;
     }
 
-    /* Store commit certificates from leader's COMMIT message */
-    if (cmt->n_precommits > 0) {
+    /* Store commit certificates from leader's COMMIT message.
+     * O15D: successor rounds never touch the LEGACY cert table (their
+     * finalization artifact is the QC V2 in v2_blocks.qc). */
+    if (!w->v2_successor && cmt->n_precommits > 0) {
         uint64_t bh = nodus_witness_block_height(w);
         nodus_witness_vote_record_t votes[NODUS_T3_MAX_WITNESSES];
         for (uint32_t i = 0; i < cmt->n_precommits && i < NODUS_T3_MAX_WITNESSES; i++) {
@@ -5774,7 +5930,7 @@ int nodus_witness_bft_handle_commit(nodus_witness_t *w,
      * honest state_root for every downstream consumer (cert preimages,
      * block header assembly, Merkle proof anchoring).
      * Regression: tests/test_prevote_state_root_mutation.c. */
-    {
+    if (!w->v2_successor) {
         uint8_t utxo_cksum[NODUS_KEY_BYTES];
         if (nodus_witness_merkle_compute_state_root(w, utxo_cksum) == 0) {
             char hex[17];

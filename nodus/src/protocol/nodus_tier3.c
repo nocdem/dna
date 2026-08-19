@@ -188,8 +188,12 @@ static void enc_commit_args(cbor_encoder_t *enc, const nodus_t3_commit_t *c) {
     /* Phase 9 / Task 9.4 — wire key bh -> tr, field block_hash -> tx_root.
      * 2026-05-02 — A2 simetri: "bh" key reintroduced as block_height
      * (uint), bumping map size 7 -> 8. Decoder treats absent/zero as
-     * legacy-peer reject signal (mirrors enc_propose_args). */
-    cbor_encode_map(enc, 8);
+     * legacy-peer reject signal (mirrors enc_propose_args).
+     * O15D — successor rounds append the OPTIONAL "vbi"/"vcs" pair (the
+     * sender's V2 BlockID + DNA.CERT.v2 signature; map 8 -> 10). Legacy
+     * rounds never set has_v2_cert, so their bytes do not move — the
+     * has_prepared pattern from enc_viewchg_args. */
+    cbor_encode_map(enc, c->has_v2_cert ? 10 : 8);
     cbor_encode_cstr(enc, "tr");
     cbor_encode_bstr(enc, c->tx_root, NODUS_T3_TX_HASH_LEN);
     cbor_encode_cstr(enc, "bh");
@@ -199,6 +203,12 @@ static void enc_commit_args(cbor_encoder_t *enc, const nodus_t3_commit_t *c) {
     for (int i = 0; i < c->batch_count; i++)
         enc_batch_tx(enc, &c->batch_txs[i]);
     enc_commit_certs(enc, c);
+    if (c->has_v2_cert) {
+        cbor_encode_cstr(enc, "vbi");
+        cbor_encode_bstr(enc, c->v2_block_id, NODUS_T3_TX_HASH_LEN);
+        cbor_encode_cstr(enc, "vcs");
+        cbor_encode_bstr(enc, c->v2_cert_sig, NODUS_SIG_BYTES);
+    }
 }
 
 static void enc_viewchg_args(cbor_encoder_t *enc, const nodus_t3_viewchg_t *v) {
@@ -847,6 +857,25 @@ static void dec_commit_field(cbor_decoder_t *dec, const cbor_item_t *key,
                 cbor_decode_skip(dec);
         }
     }
+    /* O15D — OPTIONAL successor QC-certificate pair. has_v2_cert is set
+     * only when BOTH fields decode at their exact lengths; a lone or
+     * malformed half leaves the pair absent (fail closed, never partial). */
+    else if (KEY_IS(*key, "vbi")) {
+        cbor_item_t val = cbor_decode_next(dec);
+        if (val.type == CBOR_ITEM_BSTR &&
+            val.bstr.len == NODUS_T3_TX_HASH_LEN) {
+            memcpy(c->v2_block_id, val.bstr.ptr, NODUS_T3_TX_HASH_LEN);
+            c->has_v2_cert |= 1;            /* half 1 of 2 */
+        }
+    }
+    else if (KEY_IS(*key, "vcs")) {
+        cbor_item_t val = cbor_decode_next(dec);
+        if (val.type == CBOR_ITEM_BSTR &&
+            val.bstr.len == NODUS_SIG_BYTES) {
+            memcpy(c->v2_cert_sig, val.bstr.ptr, NODUS_SIG_BYTES);
+            c->has_v2_cert |= 2;            /* half 2 of 2 */
+        }
+    }
     else {
         cbor_decode_skip(dec);
     }
@@ -888,6 +917,10 @@ static void dec_commit_args(cbor_decoder_t *dec, size_t count,
             dec_commit_field(dec, &key, c);
         }
     }
+    /* O15D — normalize the optional pair: BOTH halves (bits 1|2) or
+     * neither. A lone half is dropped, so no consumer can ever read a
+     * BlockID with someone else's signature bytes. */
+    c->has_v2_cert = (c->has_v2_cert == 3) ? 1 : 0;
 }
 
 static void dec_viewchg_args(cbor_decoder_t *dec, size_t count,

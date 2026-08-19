@@ -21,8 +21,12 @@
 #ifdef NODUS_V2_ACTIVATION_AUTHORITY
 #include "witness/nodus_witness_v2_schema.h"    /* O15C schema helpers */
 #include "witness/nodus_witness_v2_activation.h" /* O15C activation tables */
-#include "witness/nodus_witness_v2_seam.h"      /* O15C successor derivation */
 #endif
+/* O15D — the successor probe and the committed chain id compile on EVERY
+ * build: chain-role derivation is what makes a successor database inert
+ * (all legacy lanes refuse) on a default binary too. */
+#include "witness/nodus_witness_v2_seam.h"      /* O15C successor derivation */
+#include "witness/nodus_witness_v2_claims.h"    /* nodus_witness_v2_chain_id */
 #include "nodus/nodus_chain_config.h"  /* Stage C.2 vote-req handler */
 #include "crypto/utils/qgp_log.h"
 #include "crypto/hash/qgp_sha3.h"
@@ -474,6 +478,39 @@ static int witness_post_open_gate(nodus_witness_t *witness,
                 LOG_TAG,
                 nodus_witness_v2_gate_state_name(
                     nodus_witness_v2_gate_state(witness)));
+    }
+
+    /* ── Ledger V2 O15D — chain-role derivation, COMMITTED STATE ONLY ──
+     *
+     * A seam SUCCESSOR is recognisable on every build (the probe reads
+     * the committed height-0 genesis manifest's "DNA.LEGACY.TERM.v1"
+     * source binding and compiles always). Deriving the role here — on
+     * BOTH open paths — is what lets every legacy lane refuse on a
+     * successor chain: before this, a default (non-activation) build
+     * pointed at a successor database treated it as an empty legacy
+     * chain and could have committed a LEGACY genesis into it. Now the
+     * successor is inert on such a build (everything refuses), and only
+     * an ARMED node (activation build, gate OPEN) produces V2 blocks.
+     *
+     * A successor whose committed chain id cannot be derived is
+     * malformed and is REFUSED, never half-adopted. */
+    witness->v2_successor = false;
+    memset(witness->v2_chain32, 0, sizeof(witness->v2_chain32));
+    memset(&witness->v2_certpool, 0, sizeof(witness->v2_certpool));
+    if (nodus_witness_v2_seam_is_successor(db_path) == 1) {
+        if (nodus_witness_v2_chain_id(witness,
+                                      witness->v2_chain32) != 0) {
+            fprintf(stderr, "%s: successor chain id underivable for %s — "
+                    "refusing the database (fail closed)\n",
+                    LOG_TAG, db_path);
+            sqlite3_close(witness->db);
+            witness->db = NULL;
+            return -1;
+        }
+        witness->v2_successor = true;
+        fprintf(stderr, "%s: chain role: Ledger V2 SUCCESSOR (legacy "
+                "lanes refuse; production %s)\n", LOG_TAG,
+                witness->v2_ingress_armed ? "ARMED" : "not armed");
     }
 
     return 0;
