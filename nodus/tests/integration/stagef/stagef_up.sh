@@ -180,8 +180,18 @@ EOF
 : > "$BASE_DIR/pids.txt"
 for n in $(seq 1 "$STAGEF_COMMITTEE_SIZE"); do
     node_dir=$(stagef_node_dir "$n")
+    # O15C-D.4 — per-node binary override, so a MIXED-VERSION cluster can
+    # be spawned (e.g. STAGEF_NODUS_BIN_7=/tmp/legacy/nodus-server runs
+    # node 7 on a historical build while the rest run current). Needed to
+    # prove that an incompatible validator cannot silently participate in
+    # consensus. Unset for every node => byte-identical behaviour to
+    # before, so ordinary runs are untouched.
+    eval "node_bin=\${STAGEF_NODUS_BIN_$n:-\$STAGEF_NODUS_BIN}"
+    if [ "$node_bin" != "$STAGEF_NODUS_BIN" ]; then
+        echo "[info] node $n uses OVERRIDE binary: $node_bin"
+    fi
     # shellcheck disable=SC2086
-    "$STAGEF_NODUS_BIN" \
+    "$node_bin" \
         -c "$BASE_DIR/nodus.json" \
         -b 127.0.0.1 \
         -u "$(stagef_udp_port "$n")" \

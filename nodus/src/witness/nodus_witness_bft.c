@@ -6480,6 +6480,29 @@ int nodus_witness_bft_handle_newview(nodus_witness_t *w,
      * disagree about the very same valid NEW_VIEW. The leader now ships
      * the certificate, so every validator verifies the SAME bytes. */
     if (nv->has_reproposal) {
+        /* O15C-D.4 — SCHEMA BOUND TO VERSION, as its own named branch.
+         *
+         * Under protocol v3 the certificate fields are MANDATORY whenever
+         * has_reproposal is set. A v2-shaped NEW_VIEW (digest only) would
+         * otherwise die *incidentally* inside verify_prepared_cert, which
+         * returns false on n_sigs == 0 — and a test aimed at incidental
+         * behaviour proves nothing about the contract. This check exists
+         * so "legacy schema under a v3 header" has a branch of its own,
+         * and so the message is never reinterpreted with local fallback
+         * semantics.
+         *
+         * Note this is reachable even with the dispatch version gate in
+         * place: the gate rejects a v2 HEADER, while this rejects a v3
+         * header carrying v2-shaped ARGS — the self-signed inconsistency
+         * a peer could still construct, since it signs version and args
+         * together. */
+        if (nv->reproposal_n_sigs == 0) {
+            fprintf(stderr, "%s: v%u NEW_VIEW claims a reproposal but "
+                    "carries NO certificate (n_sigs=0) — legacy schema "
+                    "under a current header; rejecting\n", LOG_TAG,
+                    (unsigned)NODUS_T3_BFT_PROTOCOL_VER);
+            return -1;
+        }
         if (!nodus_witness_bft_verify_prepared_cert(
                 w, nv->reproposal_height, nv->reproposal_prepared_view,
                 nv->reproposal_tx_hash, nv->reproposal_sigs,

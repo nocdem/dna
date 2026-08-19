@@ -22,8 +22,8 @@ extern "C" {
 
 #define NODUS_VERSION_MAJOR  0
 #define NODUS_VERSION_MINOR  19
-#define NODUS_VERSION_PATCH  12
-#define NODUS_VERSION_STRING "0.19.12"
+#define NODUS_VERSION_PATCH  13
+#define NODUS_VERSION_STRING "0.19.13"
 
 /* Wire frame.
  *
@@ -162,7 +162,32 @@ extern "C" {
 #define NODUS_T3_VIEWCHG_TIMEOUT_MS 10000
 #define NODUS_T3_MAX_VIEW_CHANGES   3
 #define NODUS_T3_EPOCH_DURATION_SEC 60      /* DNAC epoch = 60s */
-#define NODUS_T3_BFT_PROTOCOL_VER   2
+/* Witness BFT (Tier 3) protocol version — CLUSTER-INTERNAL ONLY.
+ *
+ * 3 (O15C-D.4): NEW_VIEW carries the prepared CERTIFICATE (keys rpv/rns/
+ * rsg, O15C-D.3). Version 2 nodes skip those keys and fall back to the
+ * pre-D.3 local-subset semantics, so the two versions interpret the SAME
+ * NEW_VIEW under DIFFERENT rules. Measured on real binaries: a v2 node
+ * committed byte-identical blocks alongside v3 nodes AND its vote was
+ * counted toward quorum (4 current + 1 legacy = 5 advanced the chain).
+ *
+ * The bump alone changes nothing — `hdr->version` was decoded and never
+ * read. It is the DISCRIMINATOR for the receive-side gate in
+ * nodus_witness_dispatch_t3, which rejects consensus-affecting messages
+ * whose version is not exactly this value, before any BFT state changes.
+ *
+ * ⚠ NOT the frame version. NODUS_FRAME_VERSION (above) is the Tier-1/2
+ * client-facing frame, where a hard cutover was once reverted because it
+ * locked out phone APKs. This constant governs witness traffic on port
+ * 4004 between validators only, so that precedent does not apply.
+ *
+ * ⚠ Bumping REQUIRES a coordinated stop-all of the whole fleet
+ * (feedback_consensus_deploy_stop_all) — a v2 node cannot participate
+ * with v3 nodes by design, which is the entire point.
+ *
+ * Bootstrap messages deliberately carry version 1 and are NOT gated;
+ * they run before a committee exists. */
+#define NODUS_T3_BFT_PROTOCOL_VER   3
 
 /* Token creation fee: 1% of genesis supply (10M DNAC = 10^15 raw for 1B supply) */
 #define NODUS_W_TOKEN_CREATE_FEE  1000000000000000ULL

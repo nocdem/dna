@@ -1260,6 +1260,61 @@ void nodus_witness_dispatch_t3(nodus_witness_t *witness,
         }
     }
 
+    /* ── O15C-D.4 — CONSENSUS PROTOCOL VERSION GATE ──────────────────
+     *
+     * Placed HERE deliberately: after the wsig verification above, so the
+     * version we act on is the AUTHENTICATED one (hdr->version lives
+     * inside the Dilithium5 envelope preimage — nodus_tier3.c enc_wh, via
+     * enc_sign_payload — so a peer signs version and args TOGETHER and
+     * cannot advertise one while another party signs a different one);
+     * and BEFORE nodus_witness_peer_ensure below, which is the first
+     * state mutation on this path. A rejected message therefore leaves
+     * zero residue: no peer registration, no vote, no BFT state.
+     *
+     * WHY THIS EXISTS. O15C-D.3 added three proof-bearing NEW_VIEW keys
+     * (rpv/rns/rsg). CBOR decoders SKIP unknown keys, and nothing read
+     * hdr->version, so a v2 node silently processed a v3 NEW_VIEW under
+     * the pre-D.3 local-subset semantics. Reproduced on real binaries
+     * (bc0ff148 vs c65c8cd1): the legacy node committed byte-identical
+     * blocks AND its vote counted toward quorum — with two current nodes
+     * stopped, 4 current + 1 legacy = 5 advanced the chain. Different
+     * rules, same messages, silent participation.
+     *
+     * SCOPE. Exactly the consensus-affecting set the quarantine switch
+     * below already treats as such — that list is the source's own
+     * definition, not a new judgement. Bootstrap (version 1, runs before
+     * a committee exists), IDENT, roster and sync traffic are NOT gated:
+     * IDENT is not wsig-verified at this point, so its version claim is
+     * unauthenticated and must not be acted on. A stale peer may still
+     * become known to the mesh; it simply cannot influence consensus.
+     *
+     * BOTH directions fail closed: an older version and an unknown newer
+     * version are equally rejected by the exact-match test. */
+    switch (msg.type) {
+    case NODUS_T3_PROPOSE:
+    case NODUS_T3_PREVOTE:
+    case NODUS_T3_PRECOMMIT:
+    case NODUS_T3_COMMIT:
+    case NODUS_T3_VIEWCHG:
+    case NODUS_T3_NEWVIEW:
+    case NODUS_T3_FWD_REQ:
+    case NODUS_T3_FWD_RSP:
+        if (msg.header.version != NODUS_T3_BFT_PROTOCOL_VER) {
+            fprintf(stderr,
+                    "%s: INCOMPATIBLE PEER — dropping %s from roster %d: "
+                    "BFT protocol v%u, this node requires v%u. The peer "
+                    "cannot participate in consensus until both run the "
+                    "same protocol version.\n",
+                    LOG_TAG, msg.method, sender_idx,
+                    (unsigned)msg.header.version,
+                    (unsigned)NODUS_T3_BFT_PROTOCOL_VER);
+            return;
+        }
+        break;
+    default:
+        break;
+    }
+
     /* Register inbound conn as peer so broadcasts reach this sender */
     if (sender_idx >= 0 && conn)
         nodus_witness_peer_ensure(witness, msg.header.sender_id, conn);

@@ -1623,6 +1623,9 @@ register_witness_test(test_witness_c5_tiebreak)
 # on BOTH view-entry paths, and a conflicting value at a height it
 # prepared must be refused (the quorum-intersection refusal).
 register_witness_test(test_witness_newview_convergence)
+# O15C-D.4 — consensus messages from an incompatible protocol version
+# must be rejected before they can change any BFT state.
+register_witness_test(test_witness_protocol_version_gate)
 # O15C-D — MED-27: an accepted dnac_spend must never end without an
 # answer; the 30 s expiry replies instead of dropping the client.
 register_witness_test(test_witness_pending_forward_timeout)
