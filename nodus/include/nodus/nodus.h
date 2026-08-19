@@ -250,6 +250,14 @@ int nodus_client_poll(nodus_client_t *client, int timeout_ms);
  */
 bool nodus_client_is_ready(const nodus_client_t *client);
 
+/** O15C-D — the request/result correlation rule: the pending entry that
+ * is in_use AND holds exactly `txn`, or NULL. A response therefore can
+ * never reach a different request, and a reply arriving after the caller
+ * released its slot matches nothing. Caller holds pending_mutex.
+ * Exposed for the request-lifecycle regression. */
+nodus_pending_t *nodus_client_pending_find(nodus_client_t *client,
+                                             uint32_t txn);
+
 /**
  * Suspend client — close TCP and prevent auto-reconnect.
  * Call when app goes to background to avoid dead sockets.

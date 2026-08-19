@@ -22,6 +22,7 @@ Client → dnac_spend → Leader?
   ├─ YES (non-genesis) → mempool_add (fee-sorted)
   ├─ YES (genesis)     → legacy single-TX BFT (bypass mempool)
   └─ NO               → forward to leader → leader mempool_add
+                        (leader resolved by SORTED RANK — see below)
 
 witness_tick (every ~50ms):
   └─ is_leader? + IDLE? + mempool.count > 0? + 5s elapsed?
@@ -43,6 +44,51 @@ COMMIT:
   - Commit certificates stored for EACH block (state sync compatible)
   - Per-TX client response (direct or forwarded)
 ```
+
+### Leader resolution on the forwarding path (O15C-D)
+
+`nodus_witness_bft_leader_index(epoch, view, n)` returns a slot in the
+witness set **ordered by `witness_id`**, not a position in any local
+array. Resolving that slot back to a witness MUST go through
+`nodus_witness_roster_sorted_find` / `nodus_witness_roster_sorted_at`.
+
+The gossip roster is arrival-ordered between the 60 s epoch rebuilds —
+`nodus_witness_roster_add` appends and only the rebuild qsorts — so two
+nodes holding the *same* witness set can hold it in different array
+orders. Indexing `roster.witnesses[leader_slot]` directly therefore made
+nodes disagree about who the leader was: the forwarder sent `w_fwd_req`
+to a witness that was not the leader, which accepted the TX into its
+mempool and never proposed it. No `w_fwd_rsp` was produced and the
+`pending_forward` expired 30 s later. See `nodus/BUGS.md`, O15C-D.
+
+### Pending-forward expiry (O15C-D)
+
+A forwarded spend that draws no `w_fwd_rsp` within
+`NODUS_W_PENDING_FWD_TIMEOUT_S` (30 s) is answered with an explicit
+`NODUS_ERR_TIMEOUT`, never dropped silently — `dnac_spend` owes the
+caller exactly one terminal answer. The bound MUST stay below the
+client's 60 s `dnac_spend` wait (`nodus_client_dnac_spend`), or the error
+reaches a caller that has already given up and only produces an
+"unknown txn" warning. Enforced by
+`nodus_witness_pending_forward_expire(w, now_s)`, which takes `now_s` as
+a parameter so the contract is testable without a clock.
+
+### View-change batch retention (O15C-D, MED-28)
+
+On round timeout the proposed batch is **moved** into
+`w->retained_batch` (`nodus_witness_retained_batch_take`) rather than
+freed. The C5 reproposal rule binds the new view's first PROPOSE to a
+`(height, tx_root)` *digest*, and `last_prepared` carries the
+certificate but no transaction bytes — so freeing the batch left no copy
+anywhere and the bound height could never be satisfied by anyone.
+
+The new leader calls `nodus_witness_try_repropose_retained()`, handing
+the exact entries to `bft_start_round_from_entries`, which recomputes the
+block hash from the same tx_hashes in the same order — the re-proposed
+`tx_root` therefore equals the bound digest by construction. A leader
+that does not hold the bytes stays silent; its round times out and the
+view rotates. Retention is released when the chain passes the height,
+when a newer timeout supersedes it, and at teardown.
 
 ---
 
@@ -129,9 +175,9 @@ Same `btx`/`bh` extension, plus existing cert/timestamp fields.
 | # | Issue | Fix |
 |---|-------|-----|
 | 1 | Non-atomic batch commit | `commit_block_inner` extracted, single BEGIN/COMMIT |
-| 2 | Memory leak on timeout/view change | `round_state_free_batch()` helper |
+| 2 | Memory leak on timeout/view change | `round_state_free_batch()` helper — **superseded for the round-timeout path by O15C-D**: freeing there destroyed the only copy of a batch a NEW_VIEW could still bind to, so it is now retained (see "View-change batch retention" above). Other call sites unchanged. |
 | 3 | Stale forwarded mempool entries | Drain on epoch boundary |
-| 4 | Stale TX clients no error response | TODO (minor) |
+| 4 | Stale TX clients no error response | **CLOSED by O15C-D** for the forwarded path: expiry now sends `NODUS_ERR_TIMEOUT` (see "Pending-forward expiry" above). |
 | 5 | fprintf instead of QGP_LOG | Replaced in mempool.c |
 
 ### Round 2 (architecture fixes)

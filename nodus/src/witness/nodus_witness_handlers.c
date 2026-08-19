@@ -2085,12 +2085,22 @@ static void handle_dnac_spend(nodus_witness_t *w,
                     w->pending_forward_count--;
                     return;
                 }
-                leader_roster_idx = nodus_witness_bft_leader_index(
+                /* O15C-D — leader_index yields a SLOT in the sorted set,
+                 * not an array position. Resolving it with the arrival
+                 * index made this the last leader-selection site that
+                 * disagreed with nodus_witness_bft_is_leader: a node
+                 * whose roster had a different arrival order forwarded
+                 * the spend to a non-leader, which mempooled it and
+                 * never proposed, so the pending_forward expired with
+                 * no w_fwd_rsp (MED-27's observed symptom). */
+                int leader_slot = nodus_witness_bft_leader_index(
                     epoch, w->current_view, gossip_count);
-                int my_roster_idx = nodus_witness_roster_find(
+                leader_roster_idx = nodus_witness_roster_sorted_at(
+                    &w->roster, leader_slot);
+                int my_slot = nodus_witness_roster_sorted_find(
                     &w->roster, w->my_id);
-                if (leader_roster_idx < 0 ||
-                    leader_roster_idx == my_roster_idx) {
+                if (leader_roster_idx < 0 || leader_slot < 0 ||
+                    leader_slot == my_slot) {
                     free(committee);
                     send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
                                 "we are the leader (bootstrap)");

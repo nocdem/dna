@@ -27,6 +27,7 @@
 #include "crypto/utils/qgp_log.h"
 #include "crypto/hash/qgp_sha3.h"
 #include "protocol/nodus_tier3.h"
+#include "protocol/nodus_tier2.h"  /* MED-27: pending_forward timeout error */
 #include "server/nodus_server.h"
 #include "crypto/nodus_identity.h"
 #include "transport/nodus_tcp.h"
@@ -984,6 +985,60 @@ int nodus_witness_init(nodus_witness_t *witness,
 
 #define WITNESS_EPOCH_SECS  60
 
+/* H-15 / MED-27 (O15C-D) — expire pending forwards older than
+ * NODUS_W_PENDING_FWD_TIMEOUT_S and answer the waiting clients.
+ *
+ * Extracted from nodus_witness_tick so the contract is reachable from a
+ * regression without a live cluster: `now_s` is injected rather than
+ * read from the clock. Returns the number of slots expired.
+ *
+ * The contract being enforced: dnac_spend owes the caller EXACTLY ONE
+ * terminal answer. Before this, expiry dropped the slot silently — the
+ * client stayed blocked until its own 60 s RPC timeout
+ * (nodus_client.c, nodus_client_dnac_spend) with no reason to report,
+ * and pending_forward_count was never decremented here even though
+ * every other clear path decrements it. The 30 s expiry sits well
+ * inside the client's 60 s window, so the error lands on a pending slot
+ * that is still live. */
+int nodus_witness_pending_forward_expire(nodus_witness_t *witness,
+                                           uint64_t now_s) {
+    if (!witness) return 0;
+
+    int expired = 0;
+    for (int pfi = 0; pfi < NODUS_W_MAX_PENDING_FWD; pfi++) {
+        if (!witness->pending_forwards[pfi].active) continue;
+        if (now_s - witness->pending_forwards[pfi].started_at <=
+            NODUS_W_PENDING_FWD_TIMEOUT_S)
+            continue;
+
+        struct nodus_tcp_conn *cc = witness->pending_forwards[pfi].client_conn;
+        uint32_t ctxn = witness->pending_forwards[pfi].client_txn_id;
+
+        fprintf(stderr, "WITNESS: pending_forward[%d] timed out after %ds "
+                "(txn=%u, client=%s)\n", pfi,
+                (int)NODUS_W_PENDING_FWD_TIMEOUT_S, ctxn,
+                cc ? "notified" : "gone");
+
+        witness->pending_forwards[pfi].active = false;
+        witness->pending_forwards[pfi].client_conn = NULL;
+        if (witness->pending_forward_count > 0)
+            witness->pending_forward_count--;
+        expired++;
+
+        if (cc) {
+            uint8_t err_buf[512];
+            size_t err_len = 0;
+            if (nodus_t2_error(ctxn, NODUS_ERR_TIMEOUT,
+                                "leader did not answer forwarded spend "
+                                "in time",
+                                err_buf, sizeof(err_buf), &err_len) == 0 &&
+                err_len > 0)
+                nodus_tcp_send(cc, err_buf, err_len);
+        }
+    }
+    return expired;
+}
+
 void nodus_witness_tick(nodus_witness_t *witness) {
     if (!witness || !witness->running) return;
 
@@ -998,16 +1053,17 @@ void nodus_witness_tick(nodus_witness_t *witness) {
     nodus_witness_bootstrap_tick(witness);
 
     /* H-15: Pending forward timeout (30s) */
-    {
-        uint64_t now_s = nodus_time_now();
-        for (int pfi = 0; pfi < NODUS_W_MAX_PENDING_FWD; pfi++) {
-            if (!witness->pending_forwards[pfi].active) continue;
-            if (now_s - witness->pending_forwards[pfi].started_at > 30) {
-                fprintf(stderr, "WITNESS: pending_forward[%d] timed out after 30s\n", pfi);
-                witness->pending_forwards[pfi].active = false;
-                witness->pending_forwards[pfi].client_conn = NULL;
-            }
-        }
+    (void)nodus_witness_pending_forward_expire(witness, nodus_time_now());
+
+    /* MED-28: drop the retained reproposal batch once the chain has
+     * advanced past its height — the C5 binding it exists to satisfy can
+     * no longer be issued, so holding the entries would leak them. */
+    if (witness->retained_batch.present &&
+        witness->retained_batch.height <= nodus_witness_block_height(witness)) {
+        fprintf(stderr, "WITNESS: MED-28 retained batch superseded "
+                "(height=%llu committed) — releasing\n",
+                (unsigned long long)witness->retained_batch.height);
+        nodus_witness_retained_batch_clear(witness);
     }
 
     /* Block timer: propose batch if mempool has TXs and interval elapsed */
@@ -1303,6 +1359,9 @@ void nodus_witness_close(nodus_witness_t *witness) {
         }
     }
     witness->round_state.batch_count = 0;
+
+    /* MED-28 — same for the retained reproposal batch. */
+    nodus_witness_retained_batch_clear(witness);
 
     /* Clear mempool */
     nodus_witness_mempool_clear(&witness->mempool);

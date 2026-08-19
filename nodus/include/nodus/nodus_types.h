@@ -22,8 +22,8 @@ extern "C" {
 
 #define NODUS_VERSION_MAJOR  0
 #define NODUS_VERSION_MINOR  19
-#define NODUS_VERSION_PATCH  9
-#define NODUS_VERSION_STRING "0.19.9"
+#define NODUS_VERSION_PATCH  10
+#define NODUS_VERSION_STRING "0.19.10"
 
 /* Wire frame.
  *
@@ -178,6 +178,13 @@ extern "C" {
 #define NODUS_W_MAX_MEMPOOL         64      /* max pending TXs in mempool */
 #define NODUS_W_MAX_BLOCK_TXS       10      /* max TXs per batch/block */
 #define NODUS_W_MAX_PENDING_FWD     16      /* max pending forward slots */
+/* MED-27 (O15C-D) — a forwarded spend that draws no w_fwd_rsp within
+ * this many seconds is answered with an explicit error. MUST stay well
+ * below the client's dnac_spend RPC timeout (60 s, nodus_client.c) so
+ * the error reaches a pending slot that is still live; otherwise the
+ * reply arrives after the caller gave up and only produces an
+ * "unknown txn" warning. */
+#define NODUS_W_PENDING_FWD_TIMEOUT_S 30
 
 /* Merkle tree tags (v1 stake/delegation) — domain separators preventing
  * cross-tree leaf-key collisions (F-CRYPTO-04 red-team mitigation).

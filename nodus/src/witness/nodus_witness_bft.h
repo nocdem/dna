@@ -74,6 +74,43 @@ int  nodus_witness_roster_find(const nodus_witness_roster_t *roster,
 int  nodus_witness_roster_sorted_find(const nodus_witness_roster_t *roster,
                                         const uint8_t *witness_id);
 
+/** Inverse of nodus_witness_roster_sorted_find: ARRAY index of the entry
+ * whose id has exactly `rank` strictly-smaller ids in the set, or -1.
+ * Use this — never `witnesses[leader_slot]` — whenever a leader SLOT
+ * produced by nodus_witness_bft_leader_index has to be resolved back to
+ * a roster entry on the pre-genesis fallback. */
+int  nodus_witness_roster_sorted_at(const nodus_witness_roster_t *roster,
+                                      int rank);
+
+/** MED-28 — release the batch retained for a NEW_VIEW reproposal.
+ * Safe to call when nothing is retained. */
+void nodus_witness_retained_batch_clear(nodus_witness_t *w);
+
+/** MED-28 — satisfy a NEW_VIEW reproposal binding from the retained
+ * batch.
+ *
+ * The C5 rule binds the new view's first PROPOSE to a (height, tx_root)
+ * DIGEST, and only a matching PROPOSE clears reproposal_required on the
+ * followers — so a leader that broadcasts a binding it never acts on
+ * wedges that height permanently. Called by the NEW_VIEW leader path
+ * right after the broadcast.
+ *
+ * On a match the retained entries are handed to
+ * nodus_witness_bft_start_round_from_entries, which recomputes the block
+ * hash from the same tx_hashes in the same order — so the re-proposed
+ * tx_root equals the bound digest by construction.
+ *
+ * Ownership: on a match the holder is emptied BEFORE the round starts,
+ * so exactly one owner exists at every instant. If the round refuses the
+ * batch, this function releases the entries itself.
+ *
+ * @return 0 if the reproposal round started; -1 if we do not hold the
+ *         bound batch (caller stays silent and lets the view rotate) or
+ *         the round refused it. */
+int nodus_witness_try_repropose_retained(nodus_witness_t *w,
+                                           uint64_t height,
+                                           const uint8_t *tx_root);
+
 /** Add witness to roster (no-op if already present). */
 int  nodus_witness_roster_add(nodus_witness_t *w,
                                 const nodus_witness_roster_entry_t *entry);

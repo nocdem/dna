@@ -183,6 +183,27 @@ int nodus_witness_replay_block(nodus_witness_t *w,
                                  const uint8_t *proposer_id,
                                  const uint8_t *expected_state_root);
 
+/* MED-28 (O15C-D) — move the current round's batch into the reproposal
+ * holder instead of freeing it.
+ *
+ * Called on round timeout, i.e. exactly when a view change is starting
+ * and a prepared cert may bind the next view's first PROPOSE to this
+ * batch's tx_root. The C5 binding is a DIGEST; last_prepared carries no
+ * transaction bytes, so before this existed the round-timeout free left
+ * NO copy of the bytes anywhere on the network and the bound height
+ * could never be satisfied.
+ *
+ * Ownership TRANSFERS out of round_state (batch_count is left at 0, so
+ * the following round_state reset frees nothing). Only one batch is
+ * held: a newer timeout supersedes and frees an older one, matching the
+ * C5 rule that binds to the HIGHEST prepared height. No-op when the
+ * round holds no batch.
+ *
+ * Exported here for the retention regression only; production callers
+ * are inside nodus_witness_bft.c. Release with
+ * nodus_witness_retained_batch_clear (nodus_witness_bft.h). */
+void nodus_witness_retained_batch_take(nodus_witness_t *w);
+
 /* Phase 9 / Task 48 — nodus_witness_record_attendance is declared
  * publicly in nodus_witness_bft.h. Tests include that header. */
 

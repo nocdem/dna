@@ -202,6 +202,34 @@ static void circuit_reject(nodus_client_t *client, uint64_t cid) {
 
 /* ── Pending slot management ───────────────────────────────────── */
 
+/* O15C-D — the request/result correlation rule, in one place.
+ *
+ * A response is matched to a pending entry ONLY when that entry is
+ * in_use AND its txn is exactly the response's txn_id. Two properties
+ * follow, and together they are why the late "unknown txn" warnings are
+ * an attribution gap rather than a delivery defect:
+ *
+ *   - No misdelivery. A response can only ever reach the entry holding
+ *     its own txn; there is no positional or fallback match.
+ *   - No capture after release. free_pending clears in_use but leaves
+ *     txn set, so a reply that arrives after the caller gave up matches
+ *     nothing — including the case where the slot has since been reused
+ *     for a different request.
+ *
+ * Ids cannot collide within a session: next_txn is monotonic and is
+ * only ever reset in nodus_client_init.
+ *
+ * Caller holds pending_mutex. */
+nodus_pending_t *nodus_client_pending_find(nodus_client_t *client,
+                                             uint32_t txn) {
+    if (!client) return NULL;
+    for (int i = 0; i < NODUS_MAX_PENDING; i++) {
+        if (client->pending[i].in_use && client->pending[i].txn == txn)
+            return &client->pending[i];
+    }
+    return NULL;
+}
+
 static nodus_pending_t *alloc_pending(nodus_client_t *client, uint32_t txn) {
     /* Retry with exponential backoff if all slots are busy (startup burst) */
     const int max_retries = 5;
@@ -270,7 +298,21 @@ static bool wait_response(nodus_client_t *client, nodus_pending_t *req, int time
             elapsed += 50;
         }
     }
-    return atomic_load(&req->ready);
+    /* O15C-D — terminal reason for the pending entry, so a later
+     * "unknown txn" warning is attributable to the request that gave up
+     * rather than left unexplained. One line per abandoned request. */
+    if (!atomic_load(&req->ready)) {
+        QGP_LOG_WARN(LOG_TAG,
+                     "Pending txn %u abandoned: reason=%s after %dms "
+                     "(limit %dms) — a later reply will log as unknown txn",
+                     req->txn,
+                     (!client->conn &&
+                      client->state != NODUS_CLIENT_RECONNECTING)
+                         ? "disconnected" : "timeout",
+                     elapsed, timeout_ms);
+        return false;
+    }
+    return true;
 }
 
 /* ── TCP Callbacks ──────────────────────────────────────────────── */
@@ -476,16 +518,30 @@ static void client_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
 
     /* Find pending slot by txn ID */
     pthread_mutex_lock(&client->pending_mutex);
-    nodus_pending_t *slot = NULL;
-    for (int i = 0; i < NODUS_MAX_PENDING; i++) {
-        if (client->pending[i].in_use && client->pending[i].txn == tmp.txn_id) {
-            slot = &client->pending[i];
-            break;
-        }
-    }
+    nodus_pending_t *slot = nodus_client_pending_find(client, tmp.txn_id);
     if (!slot) {
         pthread_mutex_unlock(&client->pending_mutex);
-        QGP_LOG_WARN(LOG_TAG, "Response for unknown txn %u (no pending slot)", tmp.txn_id);
+        /* O15C-D — correlation itself is sound: next_txn is monotonic per
+         * client (only reset in nodus_client_init) and the match above
+         * also requires in_use, so a response can never be delivered to
+         * the WRONG request. What was missing was attribution: with only
+         * the txn id, a late post-timeout response was indistinguishable
+         * from a deliberate fire-and-forget reply (resubscribe_all sends
+         * LISTEN / CH_SUBSCRIBE with no pending slot by design) or from a
+         * server-side correlation bug. Log the method, the response type
+         * and the highest txn allocated so far — bounded, no payload, no
+         * secret material. next_txn > txn_id means we DID issue it and
+         * gave up on it; next_txn <= txn_id means the id is not ours. */
+        QGP_LOG_WARN(LOG_TAG,
+                     "Response for unknown txn %u (no pending slot): "
+                     "method=%s type=%c next_txn=%u — %s",
+                     tmp.txn_id,
+                     tmp.method[0] ? tmp.method : "(none)",
+                     tmp.type ? tmp.type : '?',
+                     (unsigned)atomic_load(&client->next_txn),
+                     (tmp.txn_id < (uint32_t)atomic_load(&client->next_txn))
+                         ? "late reply to a request we already abandoned"
+                         : "txn id never issued by this client");
         nodus_t2_msg_free(&tmp);
         return;
     }

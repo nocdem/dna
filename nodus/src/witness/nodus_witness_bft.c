@@ -531,6 +531,29 @@ int nodus_witness_roster_sorted_find(const nodus_witness_roster_t *roster,
     return rank;
 }
 
+int nodus_witness_roster_sorted_at(const nodus_witness_roster_t *roster,
+                                     int rank) {
+    if (!roster || rank < 0 || (uint32_t)rank >= roster->n_witnesses)
+        return -1;
+
+    /* Inverse of nodus_witness_roster_sorted_find: the ARRAY index whose
+     * id has exactly `rank` strictly-smaller ids in the set. Ids are
+     * unique (roster_add dup-checks), so exactly one entry qualifies.
+     * O(n^2) over NODUS_T3_MAX_WITNESSES, called only on the pre-genesis
+     * forwarding fallback. */
+    for (uint32_t i = 0; i < roster->n_witnesses; i++) {
+        int r = 0;
+        for (uint32_t j = 0; j < roster->n_witnesses; j++) {
+            if (memcmp(roster->witnesses[j].witness_id,
+                       roster->witnesses[i].witness_id,
+                       NODUS_T3_WITNESS_ID_LEN) < 0)
+                r++;
+        }
+        if (r == rank) return (int)i;
+    }
+    return -1;
+}
+
 int nodus_witness_roster_add(nodus_witness_t *w,
                                const nodus_witness_roster_entry_t *entry) {
     if (!w || !entry) return -1;
@@ -6262,6 +6285,24 @@ static int bft_vc_check_quorum(nodus_witness_t *w) {
         }
 
         nodus_witness_bft_broadcast(w, &nv);
+
+        /* MED-28 — the binding we just broadcast is a DIGEST. Followers
+         * will reject every PROPOSE at this height that does not match
+         * it, and reproposal_required is only cleared by a matching one,
+         * so a leader that does not actually re-propose wedges the
+         * height permanently. If we retained the timed-out batch, re-
+         * propose it now: start_round_from_entries recomputes the block
+         * hash from the same tx_hashes in the same order, so the tx_root
+         * equals the bound digest by construction.
+         *
+         * If we did NOT retain it (we never saw that PROPOSE), we stay
+         * silent: our own round then times out and rotates the view to a
+         * leader that did — standard PBFT liveness, no safety change. */
+        if (nv.newview.has_reproposal) {
+            (void)nodus_witness_try_repropose_retained(
+                w, nv.newview.reproposal_height,
+                nv.newview.reproposal_tx_hash);
+        }
     }
 
     return 0;
@@ -6300,9 +6341,16 @@ int nodus_witness_bft_handle_newview(nodus_witness_t *w,
         sender_idx = committee_find_pubkey(committee, count,
                                              w->roster.witnesses[gossip_idx].pubkey);
     } else {
-        /* Pre-genesis bootstrap: leader is a gossip-roster slot. */
+        /* Pre-genesis bootstrap: leader is a gossip-roster slot — by
+         * SORTED rank, exactly as nodus_witness_bft_is_leader and the
+         * PROPOSE validator (:4421) do. The arrival index (gossip_idx)
+         * is node-local: two nodes holding the same set but different
+         * arrival orders would disagree on who may send NEW_VIEW, so a
+         * node could reject the honest new leader's NEW_VIEW and the
+         * view change would never complete (O15C-D). */
         count = (int)w->roster.n_witnesses;
-        sender_idx = gossip_idx;
+        sender_idx = nodus_witness_roster_sorted_find(&w->roster,
+                                                        hdr->sender_id);
     }
     free(committee);
     committee = NULL;
@@ -6393,6 +6441,100 @@ int nodus_witness_bft_handle_newview(nodus_witness_t *w,
 /* ════════════════════════════════════════════════════════════════════
  * Timeout check (called from nodus_witness_tick)
  * ════════════════════════════════════════════════════════════════════ */
+
+/* MED-28 — release the retained reproposal batch. */
+void nodus_witness_retained_batch_clear(nodus_witness_t *w) {
+    if (!w) return;
+    for (int i = 0; i < w->retained_batch.count; i++) {
+        if (w->retained_batch.entries[i]) {
+            nodus_witness_mempool_entry_free(w->retained_batch.entries[i]);
+            w->retained_batch.entries[i] = NULL;
+        }
+    }
+    memset(&w->retained_batch, 0, sizeof(w->retained_batch));
+}
+
+/* MED-28 — MOVE the current round's batch into the reproposal holder
+ * instead of freeing it. Called on round timeout, i.e. exactly when a
+ * view change is about to start and a prepared cert may bind the next
+ * view's first PROPOSE to this batch's tx_root.
+ *
+ * Ownership transfers: round_state is left with batch_count == 0 so the
+ * subsequent round_state reset frees nothing. Only ONE batch is held —
+ * a newer timeout supersedes an older one, matching the C5 rule that
+ * binds to the HIGHEST prepared height. */
+void nodus_witness_retained_batch_take(nodus_witness_t *w) {
+    if (!w || w->round_state.batch_count <= 0) return;
+
+    nodus_witness_retained_batch_clear(w);
+
+    w->retained_batch.present = true;
+    w->retained_batch.height = w->round_state.block_height;
+    memcpy(w->retained_batch.tx_root, w->round_state.tx_root,
+           NODUS_T3_TX_HASH_LEN);
+    w->retained_batch.count = w->round_state.batch_count;
+    for (int i = 0; i < w->round_state.batch_count; i++) {
+        w->retained_batch.entries[i] = w->round_state.batch_entries[i];
+        w->round_state.batch_entries[i] = NULL;
+    }
+    w->round_state.batch_count = 0;
+
+    fprintf(stderr, "%s: MED-28 retained %d batch entries for reproposal "
+            "(height=%llu)\n", LOG_TAG, w->retained_batch.count,
+            (unsigned long long)w->retained_batch.height);
+}
+
+/* MED-28 — satisfy a NEW_VIEW reproposal binding from the retained
+ * batch. See the declaration in nodus_witness_bft.h for the contract.
+ *
+ * Placed here, next to take/clear, because the three share the single
+ * ownership invariant: exactly one owner of the entries at any moment. */
+int nodus_witness_try_repropose_retained(nodus_witness_t *w,
+                                           uint64_t height,
+                                           const uint8_t *tx_root) {
+    if (!w || !tx_root) return -1;
+
+    if (!w->retained_batch.present ||
+        w->retained_batch.height != height ||
+        memcmp(w->retained_batch.tx_root, tx_root,
+               NODUS_T3_TX_HASH_LEN) != 0) {
+        /* We never saw the PROPOSE this view is bound to. Stay silent
+         * and keep whatever we do hold: our round times out and rotates
+         * the view to a leader that has the bytes. Standard PBFT
+         * liveness — no safety rule is relaxed. */
+        fprintf(stderr, "%s: MED-28 bound to a reproposal we do not hold "
+                "(height=%llu) — staying silent so the view rotates\n",
+                LOG_TAG, (unsigned long long)height);
+        return -1;
+    }
+
+    /* Ownership moves to the round in one step: copy the pointers out,
+     * empty the holder, then hand them over. The holder must be empty
+     * BEFORE the call — start_round_from_entries can re-enter paths that
+     * inspect witness state, and two owners of one entry is exactly the
+     * double-free this repair exists to avoid. */
+    nodus_witness_mempool_entry_t *entries[NODUS_W_MAX_BLOCK_TXS];
+    int count = w->retained_batch.count;
+    for (int i = 0; i < count; i++)
+        entries[i] = w->retained_batch.entries[i];
+    memset(&w->retained_batch, 0, sizeof(w->retained_batch));
+
+    if (nodus_witness_bft_start_round_from_entries(w, entries, count) != 0) {
+        /* The round refused the batch (not leader, round already active,
+         * hash failure). We are now the only owner — release exactly
+         * once. Dropping the retention here is deliberate: a binding we
+         * cannot act on must not pin the entries forever. */
+        fprintf(stderr, "%s: MED-28 reproposal round refused — releasing "
+                "%d entries\n", LOG_TAG, count);
+        for (int i = 0; i < count; i++)
+            nodus_witness_mempool_entry_free(entries[i]);
+        return -1;
+    }
+
+    fprintf(stderr, "%s: MED-28 re-proposed retained batch (%d entries, "
+            "height=%llu)\n", LOG_TAG, count, (unsigned long long)height);
+    return 0;
+}
 
 /* Free any heap-allocated batch entries in round_state */
 static void round_state_free_batch(nodus_witness_round_state_t *rs) {
@@ -6526,7 +6668,10 @@ void nodus_witness_bft_check_timeout(nodus_witness_t *w) {
     }
 
     if (elapsed > w->bft_config.round_timeout_ms) {
-        /* Free batch entries before transitioning — they won't be committed */
+        /* MED-28 — RETAIN, do not free. A view change is starting; if it
+         * completes with a prepared cert the new leader must be able to
+         * re-propose these exact bytes, and no other copy survives. */
+        nodus_witness_retained_batch_take(w);
         round_state_free_batch(&w->round_state);
 
         w->round_state.phase = NODUS_W_PHASE_VIEW_CHANGE;

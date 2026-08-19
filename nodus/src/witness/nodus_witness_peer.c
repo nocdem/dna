@@ -955,61 +955,70 @@ int nodus_witness_peer_handle_fwd_rsp(nodus_witness_t *w,
     fprintf(stderr, "%s: w_fwd_rsp status=%u (%u witness sigs)\n",
             LOG_TAG, rsp->status, rsp->witness_count);
 
-    /* Match pending forward by tx_hash */
-    int pf_idx = -1;
-    for (int i = 0; i < NODUS_W_MAX_PENDING_FWD; i++) {
-        if (w->pending_forwards[i].active &&
-            memcmp(w->pending_forwards[i].tx_hash, rsp->tx_hash,
-                   NODUS_T3_TX_HASH_LEN) == 0) {
-            pf_idx = i;
-            break;
+    /* Match pending forward by tx_hash.
+     *
+     * O15C-D — the same tx_hash can occupy more than one slot: nothing
+     * on the forwarder dedups a client that submits the identical spend
+     * twice (the leader's mempool dedups, but only after the forward).
+     * One w_fwd_rsp is the terminal answer for ALL of them, so resolve
+     * every match; stopping at the first left the rest to expire on the
+     * 30 s timeout. */
+    int matched = 0;
+
+    for (int pf_idx = 0; pf_idx < NODUS_W_MAX_PENDING_FWD; pf_idx++) {
+        if (!w->pending_forwards[pf_idx].active) continue;
+        if (memcmp(w->pending_forwards[pf_idx].tx_hash, rsp->tx_hash,
+                   NODUS_T3_TX_HASH_LEN) != 0) continue;
+
+        struct nodus_tcp_conn *client_conn =
+            w->pending_forwards[pf_idx].client_conn;
+        uint32_t client_txn_id = w->pending_forwards[pf_idx].client_txn_id;
+
+        /* Clear pending forward slot */
+        w->pending_forwards[pf_idx].active = false;
+        w->pending_forwards[pf_idx].client_conn = NULL;
+        if (w->pending_forward_count > 0) w->pending_forward_count--;
+        matched++;
+
+        if (!client_conn) {
+            fprintf(stderr, "%s: w_fwd_rsp client conn gone (slot %d)\n",
+                    LOG_TAG, pf_idx);
+            continue;
         }
+
+        /* Send spend result to original client. Phase 13 / Task 13.2 —
+         * the fwd_rsp wire now carries block_height / tx_index /
+         * chain_id from the leader, so the forwarder can pass the full
+         * receipt through to the client instead of hardcoding 0/0. */
+        if (rsp->status == 0) {
+            nodus_witness_mempool_entry_t stack_entry;
+            memset(&stack_entry, 0, sizeof(stack_entry));
+            memcpy(stack_entry.tx_hash, rsp->tx_hash, NODUS_T3_TX_HASH_LEN);
+            stack_entry.client_conn = client_conn;
+            stack_entry.client_txn_id = client_txn_id;
+            stack_entry.committed_block_height = rsp->block_height;
+            stack_entry.committed_tx_index = rsp->tx_index;
+            nodus_witness_send_spend_result(w, &stack_entry, 0, NULL);
+        } else {
+            /* Send error response */
+            uint8_t err_buf[512];
+            size_t err_len = 0;
+            nodus_t2_error(client_txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                            "consensus rejected",
+                            err_buf, sizeof(err_buf), &err_len);
+            if (err_len > 0)
+                nodus_tcp_send(client_conn, err_buf, err_len);
+        }
+
+        fprintf(stderr, "%s: forwarded spend result to client (txn=%u)\n",
+                LOG_TAG, client_txn_id);
     }
-    if (pf_idx < 0) {
+
+    if (matched == 0) {
         fprintf(stderr, "%s: w_fwd_rsp no matching pending forward\n",
                 LOG_TAG);
         return -1;
     }
-
-    struct nodus_tcp_conn *client_conn = w->pending_forwards[pf_idx].client_conn;
-    uint32_t client_txn_id = w->pending_forwards[pf_idx].client_txn_id;
-
-    /* Clear pending forward slot */
-    w->pending_forwards[pf_idx].active = false;
-    w->pending_forwards[pf_idx].client_conn = NULL;
-    if (w->pending_forward_count > 0) w->pending_forward_count--;
-
-    if (!client_conn) {
-        fprintf(stderr, "%s: w_fwd_rsp client conn gone\n", LOG_TAG);
-        return -1;
-    }
-
-    /* Send spend result to original client. Phase 13 / Task 13.2 — the
-     * fwd_rsp wire now carries block_height / tx_index / chain_id from
-     * the leader, so the forwarder can pass the full receipt through to
-     * the client instead of hardcoding 0/0. */
-    if (rsp->status == 0) {
-        nodus_witness_mempool_entry_t stack_entry;
-        memset(&stack_entry, 0, sizeof(stack_entry));
-        memcpy(stack_entry.tx_hash, rsp->tx_hash, NODUS_T3_TX_HASH_LEN);
-        stack_entry.client_conn = client_conn;
-        stack_entry.client_txn_id = client_txn_id;
-        stack_entry.committed_block_height = rsp->block_height;
-        stack_entry.committed_tx_index = rsp->tx_index;
-        nodus_witness_send_spend_result(w, &stack_entry, 0, NULL);
-    } else {
-        /* Send error response */
-        uint8_t err_buf[512];
-        size_t err_len = 0;
-        nodus_t2_error(client_txn_id, NODUS_ERR_PROTOCOL_ERROR,
-                        "consensus rejected",
-                        err_buf, sizeof(err_buf), &err_len);
-        if (err_len > 0)
-            nodus_tcp_send(client_conn, err_buf, err_len);
-    }
-
-    fprintf(stderr, "%s: forwarded spend result to client (txn=%u)\n",
-            LOG_TAG, client_txn_id);
     return 0;
 }
 

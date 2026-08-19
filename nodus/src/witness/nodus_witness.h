@@ -692,6 +692,32 @@ typedef struct nodus_witness {
     uint64_t    reproposal_height;
     uint8_t     reproposal_tx_hash[NODUS_T3_TX_HASH_LEN];
 
+    /* MED-28 (O15C-D) — retained batch for NEW_VIEW reproposal.
+     *
+     * The C5 rule above binds the new view's first PROPOSE to a
+     * (height, tx_root) DIGEST. last_prepared carries the cert but NOT
+     * the transaction bytes, and the round-timeout path used to free
+     * round_state.batch_entries outright — so once a view change
+     * completed with a prepared cert, NO node held the bytes needed to
+     * satisfy the binding and every proposal at that height was
+     * rejected forever. Retaining the timed-out batch here (ownership
+     * MOVED out of round_state, not copied) lets the new leader
+     * re-propose the exact entries: start_round_from_entries recomputes
+     * block_hash from the same tx_hashes in the same order, so the
+     * tx_root matches the bound digest by construction.
+     *
+     * ⚠ Heap pointers — this struct is in-memory only and must NEVER be
+     * persisted the way last_prepared is (witness.h:672).
+     * Cleared when the chain advances past `height`, or when a newer
+     * batch times out. */
+    struct {
+        bool      present;
+        uint64_t  height;
+        uint8_t   tx_root[NODUS_T3_TX_HASH_LEN];
+        int       count;
+        nodus_witness_mempool_entry_t *entries[NODUS_W_MAX_BLOCK_TXS];
+    } retained_batch;
+
     /* PR 3 Yol B — auto-bootstrap state machine fields.
      *
      * bootstrap_state moves through INIT → HAVE_CHAIN | DISCOVER →
@@ -808,6 +834,14 @@ int nodus_witness_init(nodus_witness_t *witness,
  * Checks BFT timeouts, retries peer connections.
  */
 void nodus_witness_tick(nodus_witness_t *witness);
+
+/** H-15 / MED-27 (O15C-D) — expire pending forwards older than
+ * NODUS_W_PENDING_FWD_TIMEOUT_S and send each waiting client an explicit
+ * NODUS_ERR_TIMEOUT, so an accepted dnac_spend can never end without an
+ * answer. `now_s` is a parameter rather than a clock read so the
+ * contract is testable deterministically. @return slots expired. */
+int nodus_witness_pending_forward_expire(nodus_witness_t *witness,
+                                           uint64_t now_s);
 
 /**
  * Clean up witness resources. Closes DB, clears state.

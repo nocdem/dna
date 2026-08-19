@@ -723,6 +723,16 @@ add_executable(test_client tests/test_client.c)
 target_link_libraries(test_client nodus dsa nodus pthread)
 add_test(NAME test_client COMMAND test_client)
 
+# O15C-D — request/result correlation: a response never reaches the
+# wrong request, and a reply to an abandoned request is not captured.
+# This is what makes the late "unknown txn" warning an attribution gap
+# rather than a delivery defect.
+add_executable(test_client_request_correlation
+    tests/test_client_request_correlation.c)
+target_link_libraries(test_client_request_correlation nodus dsa nodus pthread)
+add_test(NAME test_client_request_correlation
+         COMMAND test_client_request_correlation)
+
 # 2026-07-21 parallel-safety: every server-spawning test now uses a FULLY
 # explicit, test-unique port set (test_server 140xx, test_circuit_live
 # 150xx, test_client 151xx, test_server_init_fail_closes 152xx,
@@ -1592,6 +1602,15 @@ register_witness_test(test_parse_cd_supply)
 # Task 59 — BFT roster sourced from committee snapshot (chain-authoritative)
 register_witness_test(test_bft_roster_committee)
 register_witness_test(test_witness_roster_sorted_leader)
+# O15C-D — the forwarding path's leader slot must resolve by rank, not
+# by arrival index (the mis-forward behind MED-27's silent timeout).
+register_witness_test(test_witness_forward_leader_rank)
+# O15C-D — MED-28: the timed-out batch must survive so the NEW_VIEW
+# reproposal binding can actually be satisfied.
+register_witness_test(test_witness_retained_batch)
+# O15C-D — MED-27: an accepted dnac_spend must never end without an
+# answer; the 30 s expiry replies instead of dropping the client.
+register_witness_test(test_witness_pending_forward_timeout)
 
 # Task 60 — RETIRING validator stays in epoch committee until graduation
 register_witness_test(test_retiring_committee_membership)
