@@ -68,16 +68,52 @@ static bool fault_armed(void) {
     return stat(g_arm_path, &st) == 0;
 }
 
+/* O15C-D.3 — sender-scoped VIEW_CHANGE drop.
+ *
+ * Manufactures GENUINELY DIFFERENT first-2f+1 VIEW_CHANGE collections on
+ * a live cluster, so honest nodes legitimately end up with different (but
+ * individually valid) subsets for the same target view. That is the state
+ * the O15C-D.3 record is about, and it cannot be produced by timing alone
+ * in a reproducible way.
+ *
+ * Env: NODUS_FAULT_DROP_VC_ROTATE=<k>.
+ *
+ * stagef spawns all seven nodes with the SAME environment, so a static
+ * sender list would give every node the same subset — vacuous. The drop
+ * set is therefore derived from each node's OWN id: node X ignores
+ * VIEW_CHANGE from the `k` senders whose id-byte distance from X falls in
+ * [1, k]. One shared env var, a DIFFERENT set on every node, and fully
+ * deterministic — no timing, no randomness. */
+static uint8_t g_my_tag;
+static int     g_vc_drop_k;
+
+static bool vc_sender_dropped(const uint8_t *sender_id) {
+    if (g_vc_drop_k <= 0 || !sender_id) return false;
+    /* Distance in a small ring keyed on the first id byte. Distinct
+     * validators have distinct ids, so distinct nodes drop distinct
+     * senders. */
+    int d = (int)((uint8_t)(sender_id[0] - g_my_tag) % 7u);
+    return d >= 1 && d <= g_vc_drop_k;
+}
+
 static bool fault_drop_pred(const void *msg_v, const uint8_t *peer_id) {
     (void)peer_id;
     const nodus_t3_msg_t *msg = (const nodus_t3_msg_t *)msg_v;
     if (!msg) return false;
+    if (!fault_armed()) return false;
+
+    /* Rule 2 — sender-scoped VIEW_CHANGE drop (differing subsets). */
+    if (msg->type == NODUS_T3_VIEWCHG &&
+        vc_sender_dropped(msg->header.sender_id))
+        return true;
+
+    /* Rule 1 — type + view scoped drop (the MED-28 round-failure rule). */
     if (msg->type != g_drop_type) return false;
     if (msg->header.view != g_drop_view) return false;
-    return fault_armed();
+    return true;
 }
 
-void nodus_witness_fault_init_from_env(void) {
+void nodus_witness_fault_init_from_env(const uint8_t *my_id) {
     const char *arm = getenv("NODUS_FAULT_ARM_FILE");
     if (!arm || !arm[0]) return;          /* not a fault-injection run */
 
@@ -100,9 +136,16 @@ void nodus_witness_fault_init_from_env(void) {
         return;
     }
 
+    /* O15C-D.3 — per-node VIEW_CHANGE drop width (differing subsets). */
+    const char *vck = getenv("NODUS_FAULT_DROP_VC_ROTATE");
+    g_vc_drop_k = vck ? (int)strtol(vck, NULL, 10) : 0;
+    if (g_vc_drop_k < 0) g_vc_drop_k = 0;
+    g_my_tag = my_id ? my_id[0] : 0;
+
     nodus_witness_test_inject_drop(fault_drop_pred);
     fprintf(stderr, "%s: drop predicate installed (type=%d view=%u "
-            "arm_file=%s)\n", LOG_TAG, (int)g_drop_type, g_drop_view,
+            "vc_drop_senders=%d my_tag=%02x arm_file=%s)\n", LOG_TAG,
+            (int)g_drop_type, g_drop_view, g_vc_drop_k, g_my_tag,
             g_arm_path);
 }
 

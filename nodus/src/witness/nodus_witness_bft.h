@@ -82,6 +82,38 @@ int  nodus_witness_roster_sorted_find(const nodus_witness_roster_t *roster,
 int  nodus_witness_roster_sorted_at(const nodus_witness_roster_t *roster,
                                       int rank);
 
+/** O15C-D.3 — verify a prepared certificate presented on the wire.
+ *
+ * True iff at least quorum-many DISTINCT voters' signatures verify
+ * against the 76-byte purpose-0x07 PREPARED preimage for
+ * (view, height, tx_hash), using the same committee/roster key
+ * resolution handle_viewchg applies. Duplicate voters count once.
+ * Anything short of quorum is false — fail-closed. */
+bool nodus_witness_bft_verify_prepared_cert(nodus_witness_t *w,
+                                              uint64_t height,
+                                              uint32_t view,
+                                              const uint8_t *tx_hash,
+                                              const nodus_t3_cert_entry_t *sigs,
+                                              uint32_t n_sigs);
+
+/** O15C-D.3 — the PREPARED-VALUE LOCK.
+ *
+ * True iff this node must refuse `tx_hash` at `height` because it itself
+ * prepared a DIFFERENT value there. Keyed on the node's own
+ * `last_prepared` — its own authenticated evidence, captured at prevote
+ * quorum and persisted across restart — rather than on the node-local
+ * first-2f+1 `view_changes[]` subset, which is frozen at quorum and may
+ * not even contain the node's own certificate.
+ *
+ * This is the refusal quorum intersection depends on: PRECOMMITTER ⇒
+ * CARRIER, so any committed value has >= f+1 honest carriers in every
+ * quorum-sized set, and each of them refuses a conflicting value at that
+ * height. Height-gated so a value learned via SYNC leaves no stale lock.
+ */
+bool nodus_witness_bft_prepared_lock_blocks(const nodus_witness_t *w,
+                                              uint64_t height,
+                                              const uint8_t *tx_hash);
+
 /** O15C-D.1 — apply the C5 reproposal selection to THIS node.
  *
  * Binds to the highest-ranked prepared certificate among the collected

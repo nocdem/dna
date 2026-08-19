@@ -430,6 +430,18 @@ static void test_newview_with_reproposal(void) {
     in.newview.has_reproposal = true;
     in.newview.reproposal_height = 42;
     memset(in.newview.reproposal_tx_hash, 0x88, NODUS_T3_TX_HASH_LEN);
+    /* O15C-D.3 — the message now also carries the CERTIFICATE proving
+     * the reproposal (prepared view + per-voter sigs), so followers
+     * verify the same decision instead of consulting their own frozen
+     * VIEW_CHANGE subset. Round-trip those fields too. */
+    in.newview.reproposal_prepared_view = 3;
+    in.newview.reproposal_n_sigs = 5;
+    for (uint32_t i = 0; i < in.newview.reproposal_n_sigs; i++) {
+        memset(in.newview.reproposal_sigs[i].voter_id,
+               (int)(0xC0 + i), NODUS_T3_WITNESS_ID_LEN);
+        memset(in.newview.reproposal_sigs[i].signature,
+               (int)(0x40 + i), NODUS_SIG_BYTES);
+    }
 
     int rc = roundtrip(&in, &out);
     if (rc != 0) { TEST_FAIL(name, rc == -1 ? "encode failed" : "decode failed"); return; }
@@ -446,6 +458,26 @@ static void test_newview_with_reproposal(void) {
     if (memcmp(out.newview.reproposal_tx_hash, in.newview.reproposal_tx_hash,
                NODUS_T3_TX_HASH_LEN) != 0) {
         TEST_FAIL(name, "reproposal_tx_hash"); return;
+    }
+    /* O15C-D.3 — carried certificate must survive the round trip byte
+     * for byte, or a follower would reject an honest leader's proof. */
+    if (out.newview.reproposal_prepared_view != 3) {
+        TEST_FAIL(name, "reproposal_prepared_view"); return;
+    }
+    if (out.newview.reproposal_n_sigs != in.newview.reproposal_n_sigs) {
+        TEST_FAIL(name, "reproposal_n_sigs"); return;
+    }
+    for (uint32_t i = 0; i < in.newview.reproposal_n_sigs; i++) {
+        if (memcmp(out.newview.reproposal_sigs[i].voter_id,
+                   in.newview.reproposal_sigs[i].voter_id,
+                   NODUS_T3_WITNESS_ID_LEN) != 0) {
+            TEST_FAIL(name, "reproposal_sigs voter_id"); return;
+        }
+        if (memcmp(out.newview.reproposal_sigs[i].signature,
+                   in.newview.reproposal_sigs[i].signature,
+                   NODUS_SIG_BYTES) != 0) {
+            TEST_FAIL(name, "reproposal_sigs signature"); return;
+        }
     }
     if (nodus_t3_verify(&out, &test_id.pk) != 0) {
         TEST_FAIL(name, "wsig verify"); return;

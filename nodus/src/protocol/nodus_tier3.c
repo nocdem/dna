@@ -234,13 +234,36 @@ static void enc_newview_args(cbor_encoder_t *enc, const nodus_t3_newview_t *n) {
     /* C5 — when has_reproposal, emit reproposal_height + reproposal_tx_hash.
      * has_reproposal=false keeps 2-key backward-compat wire (no VIEW_CHANGE
      * carried a prepared cert, so new leader is free). */
-    cbor_encode_map(enc, n->has_reproposal ? 4 : 2);
+    /* O15C-D.3 — with a reproposal the message now also carries the
+     * certificate proving it (prepared view + per-voter sigs), so every
+     * follower verifies the same decision instead of consulting its own
+     * frozen first-2f+1 subset. 7 keys with a reproposal, 2 without. */
+    cbor_encode_map(enc, n->has_reproposal ? 7 : 2);
     cbor_encode_cstr(enc, "nv"); cbor_encode_uint(enc, n->new_view);
     cbor_encode_cstr(enc, "np"); cbor_encode_uint(enc, n->n_proofs);
     if (n->has_reproposal) {
         cbor_encode_cstr(enc, "rh"); cbor_encode_uint(enc, n->reproposal_height);
         cbor_encode_cstr(enc, "rth");
         cbor_encode_bstr(enc, n->reproposal_tx_hash, NODUS_T3_TX_HASH_LEN);
+        cbor_encode_cstr(enc, "rpv");
+        cbor_encode_uint(enc, n->reproposal_prepared_view);
+        cbor_encode_cstr(enc, "rns");
+        cbor_encode_uint(enc, n->reproposal_n_sigs);
+        cbor_encode_cstr(enc, "rsg");
+        {
+            uint32_t ns = n->reproposal_n_sigs;
+            if (ns > NODUS_T3_MAX_WITNESSES) ns = NODUS_T3_MAX_WITNESSES;
+            cbor_encode_array(enc, ns);
+            for (uint32_t i = 0; i < ns; i++) {
+                cbor_encode_map(enc, 2);
+                cbor_encode_cstr(enc, "vid");
+                cbor_encode_bstr(enc, n->reproposal_sigs[i].voter_id,
+                                 NODUS_T3_WITNESS_ID_LEN);
+                cbor_encode_cstr(enc, "sig");
+                cbor_encode_bstr(enc, n->reproposal_sigs[i].signature,
+                                 NODUS_SIG_BYTES);
+            }
+        }
     }
 }
 
@@ -981,6 +1004,50 @@ static void dec_newview_args(cbor_decoder_t *dec, size_t count,
                 memcpy(n->reproposal_tx_hash, val.bstr.ptr,
                        NODUS_T3_TX_HASH_LEN);
                 n->has_reproposal = true;
+            }
+        }
+        /* O15C-D.3 — the carried prepared certificate. Strict: a field
+         * of the wrong type or length is simply not stored, so the
+         * verifier downstream sees an incomplete cert and fails closed
+         * rather than accepting a partially-parsed proof. */
+        else if (KEY_IS(key, "rpv")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_UINT)
+                n->reproposal_prepared_view = (uint32_t)val.uint_val;
+        }
+        else if (KEY_IS(key, "rns")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_UINT &&
+                val.uint_val <= NODUS_T3_MAX_WITNESSES)
+                n->reproposal_n_sigs = (uint32_t)val.uint_val;
+        }
+        else if (KEY_IS(key, "rsg")) {
+            cbor_item_t arr = cbor_decode_next(dec);
+            if (arr.type != CBOR_ITEM_ARRAY) { cbor_decode_skip(dec); continue; }
+            size_t cnt = arr.count;
+            if (cnt > NODUS_T3_MAX_WITNESSES) cnt = NODUS_T3_MAX_WITNESSES;
+            for (size_t j = 0; j < cnt; j++) {
+                cbor_item_t m = cbor_decode_next(dec);
+                if (m.type != CBOR_ITEM_MAP) { cbor_decode_skip(dec); continue; }
+                for (size_t k = 0; k < m.count; k++) {
+                    cbor_item_t mk = cbor_decode_next(dec);
+                    if (mk.type != CBOR_ITEM_TSTR) { cbor_decode_skip(dec); continue; }
+                    if (KEY_IS(mk, "vid")) {
+                        cbor_item_t mv = cbor_decode_next(dec);
+                        if (mv.type == CBOR_ITEM_BSTR &&
+                            mv.bstr.len == NODUS_T3_WITNESS_ID_LEN)
+                            memcpy(n->reproposal_sigs[j].voter_id,
+                                   mv.bstr.ptr, NODUS_T3_WITNESS_ID_LEN);
+                    } else if (KEY_IS(mk, "sig")) {
+                        cbor_item_t mv = cbor_decode_next(dec);
+                        if (mv.type == CBOR_ITEM_BSTR &&
+                            mv.bstr.len == NODUS_SIG_BYTES)
+                            memcpy(n->reproposal_sigs[j].signature,
+                                   mv.bstr.ptr, NODUS_SIG_BYTES);
+                    } else {
+                        cbor_decode_skip(dec);
+                    }
+                }
             }
         }
         else {

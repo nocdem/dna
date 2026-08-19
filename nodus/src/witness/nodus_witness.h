@@ -691,6 +691,12 @@ typedef struct nodus_witness {
     bool        reproposal_required;
     uint64_t    reproposal_height;
     uint8_t     reproposal_tx_hash[NODUS_T3_TX_HASH_LEN];
+    /* O15C-D.3 — the bound certificate's VIEW. Needed for two things:
+     * the D.2 comparator's equal-height discriminator when deciding
+     * whether a NEW_VIEW's carried certificate outranks our own binding,
+     * and locating the matching record when we are the leader shipping
+     * that certificate. Meaningless when reproposal_required is false. */
+    uint32_t    reproposal_prepared_view;
 
     /* MED-28 (O15C-D) — retained batch for NEW_VIEW reproposal.
      *
@@ -908,7 +914,7 @@ void nodus_witness_test_inject_drop(nodus_witness_drop_predicate_t pred);
  * an in-process caller and so were never exercised end to end.
  * See nodus_witness_fault.c for the arm-file rationale.
  */
-void nodus_witness_fault_init_from_env(void);
+void nodus_witness_fault_init_from_env(const uint8_t *my_id);
 #endif /* QGP_FAULT_INJECT */
 
 /**

@@ -5901,6 +5901,73 @@ static int vc_record_alloc_sigs(nodus_witness_vc_record_t *vc,
 /* Forward decl — defined beside handle_viewchg below (O15C-C D1). */
 static int bft_vc_check_quorum(nodus_witness_t *w);
 
+/* O15C-D.3 — record OUR OWN view-change vote, carrying our own
+ * `last_prepared`, into `view_changes[]`.
+ *
+ * APPEND, never clobber: on the join path peer votes already occupy the
+ * slots below `view_change_count`. Idempotent — once our record is
+ * present a second call does nothing.
+ *
+ * ⚠ WHY THIS IS A SHARED HELPER (the O15C-D.3 safety defect). This block
+ * used to live only inside initiate_view_change. A node that reached
+ * view-change quorum from PEER messages before its own round timer fired
+ * never ran it, and afterwards initiate_view_change targets
+ * `current_view + 1` — so the node's own prepared certificate never
+ * entered its own decision. Measured on the production handlers with
+ * real signatures: a node that had PREPARED a value entered the new view
+ * with own_record=0, with_cert=0 and its C5 gate UNARMED at that very
+ * height. Since nothing else consults `last_prepared` at propose/vote
+ * time, it would then vote a conflicting value at a height it prepared —
+ * exactly the refusal quorum intersection relies on, i.e. a fork.
+ * `bft_vc_check_quorum` now calls this too, so a node's own evidence can
+ * never be missing from its own decision on either path. */
+static void bft_self_record_view_change(nodus_witness_t *w) {
+    if (!w) return;
+
+    bool self_recorded = false;
+    for (int i = 0; i < w->view_change_count; i++) {
+        if (memcmp(w->view_changes[i].voter_id, w->my_id,
+                   NODUS_T3_WITNESS_ID_LEN) == 0) {
+            self_recorded = true;
+            break;
+        }
+    }
+    if (self_recorded || w->view_change_count >= DNAC_MAX_ACTIVE_VALIDATORS)
+        return;
+
+    int slot = w->view_change_count;
+    /* S3: clear, not memset — the slot may still own a sigs allocation
+     * from a previous view change. */
+    nodus_witness_vc_record_clear(&w->view_changes[slot]);
+    memcpy(w->view_changes[slot].voter_id, w->my_id,
+           NODUS_T3_WITNESS_ID_LEN);
+    w->view_changes[slot].target_view = w->view_change_target;
+    w->view_changes[slot].last_committed_round = w->last_committed_round;
+
+    if (w->last_prepared.present) {
+        w->view_changes[slot].prepared.has_prepared = true;
+        w->view_changes[slot].prepared.height = w->last_prepared.height;
+        w->view_changes[slot].prepared.view = w->last_prepared.view;
+        memcpy(w->view_changes[slot].prepared.tx_hash,
+               w->last_prepared.tx_hash, NODUS_T3_TX_HASH_LEN);
+        uint32_t stored = w->last_prepared.n_sigs;
+        if (vc_record_alloc_sigs(&w->view_changes[slot], &stored) != 0) {
+            fprintf(stderr, "%s: view_change: prepared-sig alloc failed — "
+                    "self-record carries no prepared cert\n", LOG_TAG);
+        } else {
+            for (uint32_t i = 0; i < stored; i++) {
+                memcpy(w->view_changes[slot].prepared.sigs[i].voter_id,
+                       w->last_prepared.sigs[i].voter_id,
+                       NODUS_T3_WITNESS_ID_LEN);
+                memcpy(w->view_changes[slot].prepared.sigs[i].signature,
+                       w->last_prepared.sigs[i].signature,
+                       NODUS_SIG_BYTES);
+            }
+        }
+    }
+    w->view_change_count++;
+}
+
 int nodus_witness_bft_initiate_view_change(nodus_witness_t *w) {
     if (!w) return -1;
 
@@ -5923,54 +5990,10 @@ int nodus_witness_bft_initiate_view_change(nodus_witness_t *w) {
     }
     w->round_state.phase = NODUS_W_PHASE_VIEW_CHANGE;
 
-    /* Record our own view change vote — APPEND, never clobber: on the
-     * join path peer votes are already recorded below w->view_change_count.
-     * C5 — also self-record our local w->last_prepared into the slot's
-     * .prepared so the quorum scan (if we turn out to be the new leader)
-     * finds our prepared cert alongside peers'. */
-    bool self_recorded = false;
-    for (int i = 0; i < w->view_change_count; i++) {
-        if (memcmp(w->view_changes[i].voter_id, w->my_id,
-                   NODUS_T3_WITNESS_ID_LEN) == 0) {
-            self_recorded = true;
-            break;
-        }
-    }
-    if (!self_recorded && w->view_change_count < DNAC_MAX_ACTIVE_VALIDATORS) {
-        int slot = w->view_change_count;
-        /* S3: clear, not memset — the slot may still own a sigs
-         * allocation from a previous view change. */
-        nodus_witness_vc_record_clear(&w->view_changes[slot]);
-        memcpy(w->view_changes[slot].voter_id, w->my_id,
-               NODUS_T3_WITNESS_ID_LEN);
-        w->view_changes[slot].target_view = w->view_change_target;
-        w->view_changes[slot].last_committed_round = w->last_committed_round;
-        if (w->last_prepared.present) {
-            w->view_changes[slot].prepared.has_prepared = true;
-            w->view_changes[slot].prepared.height = w->last_prepared.height;
-            w->view_changes[slot].prepared.view = w->last_prepared.view;
-            memcpy(w->view_changes[slot].prepared.tx_hash,
-                   w->last_prepared.tx_hash, NODUS_T3_TX_HASH_LEN);
-            /* S3: sigs is heap-owned and sized to the actual cert, clamped
-             * to the release ceiling. The old DNAC_COMMITTEE_SIZE cap is
-             * gone — a 128-member set's quorum needs 86 sigs. */
-            uint32_t stored = w->last_prepared.n_sigs;
-            if (vc_record_alloc_sigs(&w->view_changes[slot], &stored) != 0) {
-                fprintf(stderr, "%s: view_change: prepared-sig alloc failed — "
-                        "self-record carries no prepared cert\n", LOG_TAG);
-            } else {
-                for (uint32_t i = 0; i < stored; i++) {
-                    memcpy(w->view_changes[slot].prepared.sigs[i].voter_id,
-                           w->last_prepared.sigs[i].voter_id,
-                           NODUS_T3_WITNESS_ID_LEN);
-                    memcpy(w->view_changes[slot].prepared.sigs[i].signature,
-                           w->last_prepared.sigs[i].signature,
-                           NODUS_SIG_BYTES);
-                }
-            }
-        }
-        w->view_change_count++;
-    }
+    /* Record our own view-change vote, carrying our own last_prepared.
+     * O15C-D.3 — one shared implementation; bft_vc_check_quorum calls the
+     * same helper so the join path cannot omit our evidence. */
+    bft_self_record_view_change(w);
 
     /* Build and broadcast VIEW_CHANGE */
     nodus_t3_msg_t vc;
@@ -6234,6 +6257,14 @@ static int bft_vc_check_quorum(nodus_witness_t *w) {
 
     w->current_view = w->view_change_target;
 
+    /* O15C-D.3 — our OWN evidence must be in our own decision, on THIS
+     * path too. A node reaching quorum from peer VIEW_CHANGEs alone had
+     * never run initiate_view_change, so its own prepared certificate was
+     * absent from view_changes[] and the binding below was computed
+     * without it. See bft_self_record_view_change for the measured
+     * defect. This must run BEFORE the binding is computed. */
+    bft_self_record_view_change(w);
+
     /* O15C-D.1 — C5 SELF-BIND.
      *
      * The C5 reproposal rule was armed ONLY in handle_newview, behind
@@ -6282,12 +6313,70 @@ static int bft_vc_check_quorum(nodus_witness_t *w) {
         /* Same selection every node just applied to bind itself, so the
          * broadcast binding and the local binding cannot diverge. */
         if (w->reproposal_required) {
+            /* O15C-D.3 — ship the CERTIFICATE, not just the digest, so
+             * every follower verifies the same decision. Locate the
+             * record the binding came from and attach quorum-many
+             * signatures sorted by voter_id (minimal sufficient proof,
+             * one canonical encoding, and it keeps the message inside
+             * NODUS_T3_MAX_MSG_SIZE). If we cannot produce a verifiable
+             * cert we send NOTHING rather than a stripped claim — a
+             * digest nobody can check is exactly the defect being
+             * repaired, and rotation is the safe outcome. */
+            int src = -1;
+            for (int i = 0; i < w->view_change_count; i++) {
+                const nodus_witness_vc_record_t *r = &w->view_changes[i];
+                if (!r->prepared.has_prepared) continue;
+                if (r->prepared.height != w->reproposal_height) continue;
+                if (r->prepared.view != w->reproposal_prepared_view) continue;
+                if (memcmp(r->prepared.tx_hash, w->reproposal_tx_hash,
+                           NODUS_T3_TX_HASH_LEN) != 0) continue;
+                src = i;
+                break;
+            }
+            uint32_t take = 0;
+            if (src >= 0 && w->view_changes[src].prepared.sigs) {
+                uint32_t have = w->view_changes[src].prepared.n_sigs;
+                take = (have > w->bft_config.quorum) ? w->bft_config.quorum
+                                                     : have;
+            }
+            if (take < w->bft_config.quorum) {
+                fprintf(stderr, "%s: C5 cannot prove the reproposal "
+                        "(height=%llu, sigs=%u < quorum=%u) — sending NO "
+                        "NEW_VIEW so the view rotates\n", LOG_TAG,
+                        (unsigned long long)w->reproposal_height, take,
+                        w->bft_config.quorum);
+                return 0;
+            }
+
             nv.newview.has_reproposal = true;
             nv.newview.reproposal_height = w->reproposal_height;
+            nv.newview.reproposal_prepared_view = w->reproposal_prepared_view;
             memcpy(nv.newview.reproposal_tx_hash, w->reproposal_tx_hash,
                    NODUS_T3_TX_HASH_LEN);
-            fprintf(stderr, "%s: C5 NEW_VIEW reproposal (height=%llu)\n",
-                    LOG_TAG, (unsigned long long)w->reproposal_height);
+
+            /* Copy then insertion-sort by voter_id — canonical order. */
+            for (uint32_t i = 0; i < take; i++)
+                nv.newview.reproposal_sigs[i] =
+                    *(const nodus_t3_cert_entry_t *)
+                     (const void *)&w->view_changes[src].prepared.sigs[i];
+            for (uint32_t i = 1; i < take; i++) {
+                nodus_t3_cert_entry_t key = nv.newview.reproposal_sigs[i];
+                int j = (int)i - 1;
+                while (j >= 0 &&
+                       memcmp(nv.newview.reproposal_sigs[j].voter_id,
+                              key.voter_id, NODUS_T3_WITNESS_ID_LEN) > 0) {
+                    nv.newview.reproposal_sigs[j + 1] =
+                        nv.newview.reproposal_sigs[j];
+                    j--;
+                }
+                nv.newview.reproposal_sigs[j + 1] = key;
+            }
+            nv.newview.reproposal_n_sigs = take;
+
+            fprintf(stderr, "%s: C5 NEW_VIEW reproposal (height=%llu "
+                    "prepared_view=%u, carrying %u sigs)\n", LOG_TAG,
+                    (unsigned long long)w->reproposal_height,
+                    w->reproposal_prepared_view, take);
         } else {
             fprintf(stderr, "%s: C5 NEW_VIEW with no reproposal "
                     "(free leader)\n", LOG_TAG);
@@ -6382,39 +6471,93 @@ int nodus_witness_bft_handle_newview(nodus_witness_t *w,
      * prepared cert — accept only if our local view_changes[] also has
      * no prepared entries (otherwise the leader is ignoring evidence
      * we hold). */
+    /* ── O15C-D.3 — VERIFY THE CARRIED CERTIFICATE, do not consult our
+     * own subset. REPLACES (not layers on) the previous local-subset
+     * match, which asked "did I happen to receive a VIEW_CHANGE carrying
+     * this cert?" — a question about message-delivery luck, not about
+     * validity. view_changes[] is a node-local FIRST-2f+1 collection that
+     * FREEZES at quorum, so two honest followers could permanently
+     * disagree about the very same valid NEW_VIEW. The leader now ships
+     * the certificate, so every validator verifies the SAME bytes. */
     if (nv->has_reproposal) {
-        bool match = false;
-        for (int i = 0; i < w->view_change_count; i++) {
-            if (!w->view_changes[i].prepared.has_prepared) continue;
-            if (w->view_changes[i].prepared.height != nv->reproposal_height)
-                continue;
-            if (memcmp(w->view_changes[i].prepared.tx_hash,
-                       nv->reproposal_tx_hash,
-                       NODUS_T3_TX_HASH_LEN) == 0) {
-                match = true;
-                break;
-            }
+        if (!nodus_witness_bft_verify_prepared_cert(
+                w, nv->reproposal_height, nv->reproposal_prepared_view,
+                nv->reproposal_tx_hash, nv->reproposal_sigs,
+                nv->reproposal_n_sigs)) {
+            fprintf(stderr, "%s: NEW_VIEW carried an UNVERIFIABLE prepared "
+                    "cert (height=%llu prepared_view=%u n_sigs=%u) — "
+                    "rejecting\n", LOG_TAG,
+                    (unsigned long long)nv->reproposal_height,
+                    nv->reproposal_prepared_view, nv->reproposal_n_sigs);
+            return -1;
         }
-        if (!match) {
-            fprintf(stderr, "%s: NEW_VIEW reproposal does NOT match any "
-                    "prepared cert in local view_changes — rejecting "
-                    "(height=%llu)\n", LOG_TAG,
+        /* A leader may not bind a height the chain has already passed. */
+        if (nv->reproposal_height <= nodus_witness_block_height(w)) {
+            fprintf(stderr, "%s: NEW_VIEW reproposal height %llu is at or "
+                    "below the committed head — rejecting\n", LOG_TAG,
                     (unsigned long long)nv->reproposal_height);
             return -1;
         }
     } else {
-        /* Leader claims no reproposal. If WE saw a prepared cert in
-         * our view_changes[], the leader is ignoring evidence we hold
-         * — reject. (A buggy or Byzantine leader could pick has=false
-         * to sneak in a fresh proposal even when a prior prepared
-         * existed.) */
-        for (int i = 0; i < w->view_change_count; i++) {
-            if (w->view_changes[i].prepared.has_prepared) {
-                fprintf(stderr, "%s: NEW_VIEW has_reproposal=false but "
-                        "local view_changes[%d] carries prepared — "
-                        "rejecting\n", LOG_TAG, i);
-                return -1;
-            }
+        /* Leader claims no reproposal. Our OWN uncommitted prepared value
+         * is authoritative evidence it must not ignore — and unlike
+         * view_changes[], it cannot go missing through delivery accident.
+         * (Checking the frozen subset here was the D.3 gap: a carrier
+         * with no self-record would have accepted a leader discarding
+         * its own evidence.) */
+        if (w->last_prepared.present &&
+            w->last_prepared.height > nodus_witness_block_height(w)) {
+            fprintf(stderr, "%s: NEW_VIEW has_reproposal=false but WE hold "
+                    "an uncommitted prepared value at height %llu — "
+                    "rejecting\n", LOG_TAG,
+                    (unsigned long long)w->last_prepared.height);
+            return -1;
+        }
+    }
+
+    /* ── O15C-D.3 — ADOPTION AT new_view == current_view ─────────────
+     *
+     * A node that self-advanced on its own view-change quorum has
+     * current_view already equal to nv->new_view, so the `>` guard below
+     * makes the whole accept block a silent no-op — which is precisely
+     * how a follower ended up enforcing a binding derived from its own
+     * frozen subset while the leader proposed a different, equally valid
+     * one. The certificate is now VERIFIED (above), so we can converge on
+     * it rather than on an accident of delivery.
+     *
+     * Adopt iff the verified cert OUTRANKS our own binding under the D.2
+     * canonical order (height, view, tx_hash). If ours strictly outranks
+     * the carried one we keep ours and do NOT reject the view: safety is
+     * held by the prepared-value lock either way, and rotation resolves
+     * the rest. Idempotent — re-adopting the same cert changes nothing,
+     * so a replayed NEW_VIEW is inert. */
+    if (nv->new_view == w->current_view && nv->has_reproposal) {
+        bool adopt = !w->reproposal_required;
+        if (!adopt) {
+            if (nv->reproposal_height != w->reproposal_height)
+                adopt = nv->reproposal_height > w->reproposal_height;
+            else if (nv->reproposal_prepared_view != w->reproposal_prepared_view)
+                adopt = nv->reproposal_prepared_view >
+                        w->reproposal_prepared_view;
+            else
+                adopt = memcmp(nv->reproposal_tx_hash, w->reproposal_tx_hash,
+                               NODUS_T3_TX_HASH_LEN) > 0;
+        }
+        if (adopt) {
+            w->reproposal_required = true;
+            w->reproposal_height = nv->reproposal_height;
+            w->reproposal_prepared_view = nv->reproposal_prepared_view;
+            memcpy(w->reproposal_tx_hash, nv->reproposal_tx_hash,
+                   NODUS_T3_TX_HASH_LEN);
+            fprintf(stderr, "%s: C5 ADOPTED the NEW_VIEW's verified cert "
+                    "(height=%llu prepared_view=%u) at view %u\n", LOG_TAG,
+                    (unsigned long long)nv->reproposal_height,
+                    nv->reproposal_prepared_view, w->current_view);
+        } else {
+            fprintf(stderr, "%s: C5 kept our own binding — it outranks the "
+                    "NEW_VIEW's cert (ours h=%llu v=%u)\n", LOG_TAG,
+                    (unsigned long long)w->reproposal_height,
+                    w->reproposal_prepared_view);
         }
     }
 
@@ -6450,6 +6593,133 @@ int nodus_witness_bft_handle_newview(nodus_witness_t *w,
 /* ════════════════════════════════════════════════════════════════════
  * Timeout check (called from nodus_witness_tick)
  * ════════════════════════════════════════════════════════════════════ */
+
+/* O15C-D.3 — verify a prepared certificate presented on the wire.
+ *
+ * Counts how many of the supplied (voter_id, signature) pairs verify
+ * against the 76-byte purpose-0x07 PREPARED preimage built from
+ * (view, height, tx_hash), resolving each voter's public key through the
+ * committee governing `height`, falling back to the gossip roster on
+ * pre-genesis chains — the SAME resolution and the SAME preimage
+ * handle_viewchg already applies to a VIEW_CHANGE's cert. A duplicate
+ * voter is counted once, so a leader cannot manufacture quorum by
+ * repeating one signature.
+ *
+ * @return true iff at least `w->bft_config.quorum` DISTINCT voters
+ *         verify. Anything short of that — malformed, insufficient,
+ *         unknown voters, wrong preimage — is false, i.e. fail-closed.
+ *
+ * Used by handle_newview to check the certificate the leader now carries
+ * (O15C-D.3 wire), so every validator verifies the SAME decision instead
+ * of consulting its own frozen first-2f+1 subset. */
+bool nodus_witness_bft_verify_prepared_cert(nodus_witness_t *w,
+                                              uint64_t height,
+                                              uint32_t view,
+                                              const uint8_t *tx_hash,
+                                              const nodus_t3_cert_entry_t *sigs,
+                                              uint32_t n_sigs) {
+    if (!w || !tx_hash || !sigs || n_sigs == 0) return false;
+    if (n_sigs > NODUS_T3_MAX_WITNESSES) return false;
+
+    uint8_t prep_preimage[NODUS_WITNESS_PREPARED_PREIMAGE_LEN];
+    if (compute_prepared_preimage(view, height, tx_hash, prep_preimage) != 0)
+        return false;
+
+    nodus_committee_member_t *committee = NULL;
+    int c_count = 0;
+    bool have_committee =
+        (load_committee_at_height_alloc(w, height, &committee, &c_count) == 0 &&
+         c_count > 0);
+
+    uint32_t verified = 0;
+    for (uint32_t i = 0; i < n_sigs; i++) {
+        const uint8_t *vid = sigs[i].voter_id;
+
+        /* Duplicate voters must not inflate the count — otherwise one
+         * valid signature repeated quorum-many times would "prove" a
+         * certificate nobody else signed. */
+        bool dup = false;
+        for (uint32_t j = 0; j < i; j++) {
+            if (memcmp(sigs[j].voter_id, vid, NODUS_T3_WITNESS_ID_LEN) == 0) {
+                dup = true;
+                break;
+            }
+        }
+        if (dup) continue;
+
+        const uint8_t *voter_pk = NULL;
+        if (have_committee) {
+            for (int ci = 0; ci < c_count; ci++) {
+                nodus_key_t fp;
+                if (qgp_sha3_512(committee[ci].pubkey, DNAC_PUBKEY_SIZE,
+                                  fp.bytes) == 0 &&
+                    memcmp(fp.bytes, vid, NODUS_T3_WITNESS_ID_LEN) == 0) {
+                    voter_pk = committee[ci].pubkey;
+                    break;
+                }
+            }
+        }
+        if (!voter_pk) {
+            int ri = nodus_witness_roster_find(&w->roster, vid);
+            if (ri >= 0) voter_pk = w->roster.witnesses[ri].pubkey;
+        }
+        if (!voter_pk) continue;
+
+        nodus_sig_t sig_in;
+        nodus_pubkey_t pk_in;
+        memcpy(sig_in.bytes, sigs[i].signature, NODUS_SIG_BYTES);
+        memcpy(pk_in.bytes, voter_pk, NODUS_PK_BYTES);
+        if (nodus_verify_prepared_vote(&sig_in, prep_preimage,
+                                        sizeof(prep_preimage), &pk_in) == 0)
+            verified++;
+    }
+
+    free(committee);
+    return verified >= w->bft_config.quorum;
+}
+
+/* O15C-D.3 — THE PREPARED-VALUE LOCK.
+ *
+ * Returns true iff this node must REFUSE `tx_hash` at `height` because it
+ * itself prepared a different value there.
+ *
+ * Why `last_prepared` and not `view_changes[]`: `view_changes[]` is a
+ * node-local FIRST-2f+1 subset, frozen at quorum (a later VIEW_CHANGE for
+ * the accepted view is dropped by the `vc->new_view <= current_view`
+ * guard in handle_viewchg). Two honest nodes can therefore hold different
+ * subsets permanently, and a node's own certificate can be missing from
+ * its own subset entirely. `last_prepared` is the node's OWN
+ * authenticated evidence — captured in handle_vote at the same moment it
+ * observes prevote quorum, and persisted across restart in
+ * pbft_state.last_prepared_blob — so it is the only input that cannot be
+ * lost to message-delivery accidents.
+ *
+ * This is the refusal the quorum-intersection safety argument depends on.
+ * PRECOMMIT is sent only on locally observed prevote quorum, and
+ * `last_prepared` is captured in that same block, so PRECOMMITTER ⇒
+ * CARRIER: any committed value has >= 2f+1 carriers, hence >= f+1 honest
+ * carriers inside every quorum-sized set. With this lock each of those
+ * refuses a conflicting value at that height, so a conflicting value
+ * cannot reach quorum — which is what makes the fork unreachable.
+ *
+ * HEIGHT-GATED, deliberately: `last_prepared` is cleared on commit_batch
+ * success but NOT on the sync/replay path (no reference in
+ * nodus_witness_sync.c). A node that learned the block through SYNC would
+ * otherwise carry a stale lock forever and reject every later proposal.
+ * The caller-visible rule is therefore "only while we still hold an
+ * uncommitted prepared value at exactly this height".
+ *
+ * NOT a redesign of PBFT: it enforces the rule the C5 machinery already
+ * intends, using the evidence the node already has. */
+bool nodus_witness_bft_prepared_lock_blocks(const nodus_witness_t *w,
+                                              uint64_t height,
+                                              const uint8_t *tx_hash) {
+    if (!w || !tx_hash) return false;
+    if (!w->last_prepared.present) return false;
+    if (w->last_prepared.height != height) return false;
+    return memcmp(w->last_prepared.tx_hash, tx_hash,
+                  NODUS_T3_TX_HASH_LEN) != 0;
+}
 
 /* O15C-D.1 — C5 reproposal selection, in ONE place.
  *
@@ -6533,6 +6803,7 @@ void nodus_witness_bft_bind_reproposal_from_view_changes(nodus_witness_t *w) {
     if (best < 0) {
         w->reproposal_required = false;
         w->reproposal_height = 0;
+        w->reproposal_prepared_view = 0;
         memset(w->reproposal_tx_hash, 0, NODUS_T3_TX_HASH_LEN);
         return;
     }
@@ -6541,6 +6812,11 @@ void nodus_witness_bft_bind_reproposal_from_view_changes(nodus_witness_t *w) {
     w->reproposal_height = w->view_changes[best].prepared.height;
     memcpy(w->reproposal_tx_hash, w->view_changes[best].prepared.tx_hash,
            NODUS_T3_TX_HASH_LEN);
+    /* O15C-D.3 — remember the cert's view: it is the comparator's
+     * equal-height discriminator when weighing a NEW_VIEW's carried
+     * certificate against this binding, and it identifies the record
+     * whose signatures we ship if we are the new leader. */
+    w->reproposal_prepared_view = w->view_changes[best].prepared.view;
 
     fprintf(stderr, "%s: C5 self-bound to reproposal (height=%llu "
             "prepared_view=%u from view_changes[%d], current_view=%u)\n",
@@ -6643,6 +6919,7 @@ int nodus_witness_try_repropose_retained(nodus_witness_t *w,
      * the NEXT height's proposal on `next_bh != reproposal_height`. */
     w->reproposal_required = false;
     w->reproposal_height = 0;
+    w->reproposal_prepared_view = 0;
     memset(w->reproposal_tx_hash, 0, NODUS_T3_TX_HASH_LEN);
 
     fprintf(stderr, "%s: MED-28 re-proposed retained batch (%d entries, "

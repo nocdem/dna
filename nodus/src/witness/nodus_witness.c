@@ -856,13 +856,6 @@ int nodus_witness_init(nodus_witness_t *witness,
     witness->config = *config;
     witness->running = true;
 
-#ifdef QGP_FAULT_INJECT
-    /* O15C-D.1 — install the env-described T3 drop predicate, if this
-     * process was launched for a fault-injection run. The predicate is
-     * inert until the harness creates its arm file, so genesis (view 0)
-     * commits normally during bring-up. See nodus_witness_fault.c. */
-    nodus_witness_fault_init_from_env();
-#endif
 
     /* Phase 10 / Task 53 — invalidate the committee cache. UINT64_MAX
      * is the sentinel meaning "no epoch cached yet"; a real epoch
@@ -872,6 +865,17 @@ int nodus_witness_init(nodus_witness_t *witness,
 
     /* Setup identity from server keys */
     witness_setup_identity(witness);
+
+#ifdef QGP_FAULT_INJECT
+    /* O15C-D.1 — install the env-described T3 drop predicate, if this
+     * process was launched for a fault-injection run. The predicate is
+     * inert until the harness creates its arm file, so genesis (view 0)
+     * commits normally during bring-up.
+     * O15C-D.3 — placed AFTER witness_setup_identity because the
+     * per-node VIEW_CHANGE drop set derives from our own witness id.
+     * See nodus_witness_fault.c. */
+    nodus_witness_fault_init_from_env(witness->my_id);
+#endif
 
     /* Save data path for chain DB creation on genesis */
     snprintf(witness->data_path, sizeof(witness->data_path), "%s",
@@ -1086,6 +1090,7 @@ void nodus_witness_tick(nodus_witness_t *witness) {
                 (unsigned long long)witness->reproposal_height);
         witness->reproposal_required = false;
         witness->reproposal_height = 0;
+        witness->reproposal_prepared_view = 0;
         memset(witness->reproposal_tx_hash, 0, NODUS_T3_TX_HASH_LEN);
     }
 

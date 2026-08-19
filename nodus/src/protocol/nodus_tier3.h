@@ -238,15 +238,55 @@ typedef struct {
  * has_reproposal=false, no VIEW_CHANGE carried a prepared cert, so the
  * new leader is free to propose any TX from the mempool.
  *
- * n_proofs stays as observability field; quorum is established
- * client-side from the follower's own view_changes[] log, NOT from
- * wire-carried proofs. */
+ * n_proofs stays as observability field.
+ *
+ * ── O15C-D.3 — THE CARRIED PREPARED CERTIFICATE ──────────────────────
+ *
+ * Until O15C-D.3 this message carried the reproposal DIGEST only, and
+ * the comment here said quorum was "established client-side from the
+ * follower's own view_changes[] log, NOT from wire-carried proofs".
+ * That was the convergence defect: `view_changes[]` is a node-local
+ * FIRST-2f+1 subset which freezes at quorum (handle_viewchg drops any
+ * later VIEW_CHANGE for the accepted view), so two honest followers can
+ * permanently hold different subsets and reach different verdicts on the
+ * SAME NEW_VIEW — one matching the digest locally, the other rejecting a
+ * perfectly valid view.
+ *
+ * The message now carries the SELECTED certificate itself, so every
+ * validator verifies the same decision from the same authenticated
+ * bytes instead of consulting its own accident of message delivery:
+ *
+ *   reproposal_prepared_view  the cert's VIEW — the D.2 comparator's
+ *                             equal-height discriminator, and part of
+ *                             the signed PREPARED preimage.
+ *   reproposal_n_sigs         number of per-voter signatures carried.
+ *   reproposal_sigs           (voter_id, signature) pairs over the
+ *                             76-byte purpose-0x07 PREPARED preimage
+ *                             (view ‖ height ‖ tx_hash) — the SAME
+ *                             preimage and verification VIEW_CHANGE
+ *                             already uses. No new preimage, no new
+ *                             domain separation, nothing newly signed:
+ *                             the leader's T3 envelope signature already
+ *                             covers these keys.
+ *
+ * SIZE. One entry is 4659 B, and T3 encodes into NODUS_T3_MAX_MSG_SIZE
+ * (128 KB) — so the sender attaches QUORUM-many signatures (the minimal
+ * sufficient proof), sorted by voter_id for one canonical encoding.
+ * That is comfortable at the shipped n=7 (~22 KB) and bounded around
+ * quorum ~27. This ceiling is PRE-EXISTING — VIEW_CHANGE ships the same
+ * payload — and is filed separately in nodus/BUGS.md, not introduced
+ * here. A cert that will not fit must NEVER be sent as a stripped claim:
+ * the leader fails closed and lets the view rotate. */
 typedef struct {
     uint32_t    new_view;
     uint32_t    n_proofs;
     bool        has_reproposal;
     uint64_t    reproposal_height;
     uint8_t     reproposal_tx_hash[NODUS_T3_TX_HASH_LEN];
+    /* O15C-D.3 — the carried certificate proving the reproposal. */
+    uint32_t    reproposal_prepared_view;
+    uint32_t    reproposal_n_sigs;
+    nodus_t3_cert_entry_t reproposal_sigs[NODUS_T3_MAX_WITNESSES];
 } nodus_t3_newview_t;
 
 /** w_fwd_req: Non-leader forwards client request to leader */

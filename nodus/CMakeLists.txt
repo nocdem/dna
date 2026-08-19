@@ -1619,6 +1619,10 @@ register_witness_test(test_witness_c5_self_bind)
 # (height, view, tx_hash), never arrival order. Includes a two-instance
 # real-signature proof that opposite arrival orders bind identically.
 register_witness_test(test_witness_c5_tiebreak)
+# O15C-D.3 — a node's own prepared evidence must reach its own decision
+# on BOTH view-entry paths, and a conflicting value at a height it
+# prepared must be refused (the quorum-intersection refusal).
+register_witness_test(test_witness_newview_convergence)
 # O15C-D — MED-27: an accepted dnac_spend must never end without an
 # answer; the 30 s expiry replies instead of dropping the client.
 register_witness_test(test_witness_pending_forward_timeout)
