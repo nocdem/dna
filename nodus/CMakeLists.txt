@@ -1615,6 +1615,10 @@ register_witness_test(test_witness_retained_batch)
 # O15C-D.1 — the C5 reproposal rule must arm on the self-advance path a
 # node actually takes through a view change, not only via NEW_VIEW.
 register_witness_test(test_witness_c5_self_bind)
+# O15C-D.2 — the C5 selection must be a canonical total order
+# (height, view, tx_hash), never arrival order. Includes a two-instance
+# real-signature proof that opposite arrival orders bind identically.
+register_witness_test(test_witness_c5_tiebreak)
 # O15C-D — MED-27: an accepted dnac_spend must never end without an
 # answer; the 30 s expiry replies instead of dropping the client.
 register_witness_test(test_witness_pending_forward_timeout)

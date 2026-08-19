@@ -6459,24 +6459,75 @@ int nodus_witness_bft_handle_newview(nodus_witness_t *w,
  * quorum and the leader's NEW_VIEW payload read the result, so a leader
  * can never broadcast a binding different from the one it enforces.
  *
- * ⚠ KNOWN GAP, deliberately preserved rather than redesigned here: ties
- * are broken first-wins over `view_changes[]`, which is arrival-ordered.
- * Two prepared certs at the SAME height from different views would make
- * the selection arrival-dependent. Reaching that needs several failed
- * views carrying different proposals. This function reproduces the
- * pre-existing leader rule exactly — changing the rule is a separate
- * decision; the gap is filed in nodus/BUGS.md. */
+ * ── O15C-D.2 — CANONICAL TOTAL ORDER (was: arrival-order first-wins) ─
+ *
+ * Selection key, strictly descending:
+ *     (prepared.height, prepared.view, prepared.tx_hash)
+ *
+ * Each level has its OWN justification; they are not one arbitrary
+ * tuple picked for convenience.
+ *
+ * 1. HEIGHT — unchanged primary rank. A later sequence number always
+ *    dominates. Untouched by this season.
+ *
+ * 2. VIEW — the PBFT-canonical equal-rank discriminator. Castro-Liskov
+ *    view-change selects, per sequence number, the prepared certificate
+ *    with the HIGHEST VIEW. Ranking by height alone let an arrival-
+ *    ordered pick return a cert from an EARLIER view, which can override
+ *    a value prepared — and possibly committed — in a later one. So the
+ *    old rule was a latent SAFETY hazard, not merely nondeterminism.
+ *    `view` costs nothing to adopt: it is bytes [0..3] of the signed
+ *    PREPARED preimage (compute_prepared_preimage above), so it is
+ *    authenticated by the same 2f+1 signatures that admit the cert, and
+ *    it is already populated on BOTH record paths — self-record from
+ *    w->last_prepared.view, peer record from vc->prepared_view. No new
+ *    field, no wire change, no version boundary.
+ *
+ * 3. TX_HASH (memcmp) — defense in depth ONLY. Two certs sharing
+ *    (height, view) with DIFFERENT hashes would require two 2f+1 prevote
+ *    sets in one view; those sets intersect in >= f+1 validators, so at
+ *    least one honest validator would have prevoted twice in a single
+ *    view. That is impossible with <= f Byzantine validators, so this
+ *    level should never decide anything. It exists so the comparator is
+ *    a TOTAL order regardless: the selection stays deterministic even if
+ *    that assumption is ever broken, rather than silently reverting to
+ *    arrival order at the exact moment the protocol is under attack.
+ *
+ * Why this ordering only became consensus-visible now: the first-wins
+ * rule was written for the NEW_VIEW LEADER, which selected once and
+ * broadcast its pick, so arrival order was node-local and consequence-
+ * free by construction. O15C-D.1's self-bind made EVERY node run this
+ * selection over its OWN arrival-ordered array — which is the moment the
+ * ordering started deciding consensus state on more than one node.
+ *
+ * ⚠ SCOPE, stated honestly: this makes the selection deterministic for
+ * nodes holding the SAME candidate set. Nodes whose first-2f+1
+ * VIEW_CHANGE collections genuinely DIFFER can still bind differently
+ * under any comparator — that is inherent to per-node selection over a
+ * node-local subset, and resolving it is a NEW_VIEW-adoption design
+ * question, filed separately in nodus/BUGS.md. */
+
+/* Strictly-greater comparison on the canonical selection key above.
+ * Returns true iff `a` outranks `b`. Pure; no witness state. */
+static bool c5_cert_outranks(const nodus_witness_vc_record_t *a,
+                               const nodus_witness_vc_record_t *b) {
+    if (a->prepared.height != b->prepared.height)
+        return a->prepared.height > b->prepared.height;
+    if (a->prepared.view != b->prepared.view)
+        return a->prepared.view > b->prepared.view;
+    return memcmp(a->prepared.tx_hash, b->prepared.tx_hash,
+                  NODUS_T3_TX_HASH_LEN) > 0;
+}
+
 void nodus_witness_bft_bind_reproposal_from_view_changes(nodus_witness_t *w) {
     if (!w) return;
 
     int best = -1;
-    uint64_t best_height = 0;
     for (int i = 0; i < w->view_change_count; i++) {
         if (!w->view_changes[i].prepared.has_prepared) continue;
-        if (best < 0 || w->view_changes[i].prepared.height > best_height) {
+        if (best < 0 ||
+            c5_cert_outranks(&w->view_changes[i], &w->view_changes[best]))
             best = i;
-            best_height = w->view_changes[i].prepared.height;
-        }
     }
 
     if (best < 0) {
@@ -6491,9 +6542,10 @@ void nodus_witness_bft_bind_reproposal_from_view_changes(nodus_witness_t *w) {
     memcpy(w->reproposal_tx_hash, w->view_changes[best].prepared.tx_hash,
            NODUS_T3_TX_HASH_LEN);
 
-    fprintf(stderr, "%s: C5 self-bound to reproposal (height=%llu from "
-            "view_changes[%d], view=%u)\n", LOG_TAG,
-            (unsigned long long)w->reproposal_height, best, w->current_view);
+    fprintf(stderr, "%s: C5 self-bound to reproposal (height=%llu "
+            "prepared_view=%u from view_changes[%d], current_view=%u)\n",
+            LOG_TAG, (unsigned long long)w->reproposal_height,
+            w->view_changes[best].prepared.view, best, w->current_view);
 }
 
 /* MED-28 — release the retained reproposal batch. */

@@ -84,9 +84,19 @@ int  nodus_witness_roster_sorted_at(const nodus_witness_roster_t *roster,
 
 /** O15C-D.1 — apply the C5 reproposal selection to THIS node.
  *
- * Binds to the highest-height prepared certificate among the collected
+ * Binds to the highest-ranked prepared certificate among the collected
  * VIEW_CHANGE records, or clears the binding when none carries one
  * (bind-or-clear: a stale binding rejects every later proposal).
+ *
+ * O15C-D.2 — the selection key is the CANONICAL TOTAL ORDER
+ * (height, view, tx_hash), strictly descending, replacing the inherited
+ * height-only rule whose equal-height ties fell back to arrival order.
+ * `view` is the PBFT-canonical discriminator and is authenticated by the
+ * same signatures that admit the cert; tx_hash is a total-order backstop
+ * that quorum intersection should make unreachable. Identical candidate
+ * SETS therefore always produce identical bindings, whatever order the
+ * VIEW_CHANGE messages arrived in. See the definition for the full
+ * per-level justification and the honest scope limit.
  *
  * Called on every node the moment it advances its own view on quorum.
  * Before this existed the rule was armed only in handle_newview behind
