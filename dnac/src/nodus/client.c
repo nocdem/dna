@@ -391,6 +391,8 @@ int dnac_request_genesis(dnac_context_t *ctx, dnac_block_t *block_out) {
 extern int nodus_messenger_get_bootstrap_servers(nodus_server_endpoint_t *out,
                                                   int max_count);
 extern const nodus_identity_t *nodus_messenger_get_identity_ref(void);
+extern int nodus_messenger_get_connected_endpoint(char *ip_out, size_t ip_len,
+                                                   uint16_t *port_out);
 
 /* ── Per-peer genesis fetch helper ──────────────────────────────────
  * Opens a short-lived nodus client against a single endpoint, queries
@@ -501,8 +503,34 @@ int dnac_request_genesis_quorum(dnac_context_t *ctx,
     dnac_block_t *blocks = calloc((size_t)server_count, sizeof(dnac_block_t));
     if (!blocks) return DNAC_ERROR_OUT_OF_MEMORY;
 
+    /* O15C-C D3 — never open a per-peer probe against the endpoint the
+     * SINGLETON is connected to. The probe authenticates with the SAME
+     * fingerprint, and the server keeps exactly one session per
+     * fingerprint (SESSION_EVICT), so the probe's auth kills the
+     * singleton's live session — and the RPC this quorum was a preamble
+     * to (e.g. dnac_spend inside dnac_tx_broadcast) then fails on a
+     * dead connection. Root cause of the "funding/send Network error →
+     * pending-spend 5-min Insufficient-funds poison" chain observed on
+     * the 2026-08-19 rehearsal runs. That endpoint is queried THROUGH
+     * the singleton instead (dnac_request_genesis — same reassembly,
+     * same hash). */
+    char sing_ip[64] = {0};
+    uint16_t sing_port = 0;
+    bool have_singleton_ep =
+        (nodus_messenger_get_connected_endpoint(sing_ip, sizeof(sing_ip),
+                                                 &sing_port) == 0);
+
     int got = 0;
     for (int i = 0; i < server_count; i++) {
+        bool is_singleton_ep = have_singleton_ep &&
+            servers[i].port == sing_port &&
+            strncmp(servers[i].ip, sing_ip, sizeof(sing_ip)) == 0;
+        if (is_singleton_ep) {
+            if (dnac_request_genesis(ctx, &blocks[got]) == DNAC_SUCCESS) {
+                got++;
+            }
+            continue;
+        }
         if (fetch_genesis_from_peer(&servers[i], identity, &blocks[got]) == 0) {
             got++;
         }

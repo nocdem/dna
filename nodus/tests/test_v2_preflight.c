@@ -162,38 +162,42 @@ int main(void) {
         CHECK(r.ready == 0, "a fresh database must not be ready");
     }
 
-    /* ── 5. OBLIGATION 8 — the Rule N gate.
-     * This is how O15A closes Rule N without inventing an attendance
-     * oracle: the rule is not enforced in the V2 boundary, and instead
-     * activation is made structurally impossible while its attendance
-     * source is absent. The issue must be present on EVERY database. */
+    /* ── 5. O15C — issue 12 is RETIRED, and stays retired.
+     * O15A raised RULE_N_ATTENDANCE_SOURCE_ABSENT unconditionally
+     * because the build had no V2 attendance writer; O15C shipped the
+     * writer (nodus_witness_v2_record_attendance inside the apply
+     * engine + the transplanted boundary settlement), which is the
+     * issue's own documented removal condition. It must never be raised
+     * again — a resurrected raise would mean the writer was lost. */
     {
         nodus_v2_preflight_report_t r;
         CHECK(nodus_witness_v2_preflight(f.w, &r) == 0, "run");
-        CHECK(has_issue(&r, NODUS_V2_PF_RULE_N_ATTENDANCE_SOURCE_ABSENT),
-              "RULE N GATE MISSING — V2 could be activated with the rule "
-              "unenforceable");
+        CHECK(!has_issue(&r, NODUS_V2_PF_RULE_N_ATTENDANCE_SOURCE_ABSENT),
+              "issue 12 is retired — the V2 attendance writer exists in "
+              "this build");
         CHECK(r.ready == 0,
-              "ready must be impossible while the Rule N gate stands");
+              "a fresh database is still not ready (schema/genesis)");
     }
 
     /* ── 6. SCHEMA: a database that is not at the activation version is
-     * reported as such, and migrating to v9 clears exactly that issue
-     * while leaving the Rule N gate standing. The pair is what proves
-     * the checks are independent rather than one flag in disguise. */
+     * reported as such, and migrating to v10 (O15C) clears exactly that
+     * issue. v9 — the pre-O15C version — must now be reported
+     * UNSUPPORTED: the activation record has no home there. */
     {
-        nodus_v2_preflight_report_t before_mig, after_mig;
+        nodus_v2_preflight_report_t before_mig, at_v9, after_mig;
         CHECK(nodus_witness_v2_preflight(f.w, &before_mig) == 0, "run");
         CHECK(has_issue(&before_mig, NODUS_V2_PF_SCHEMA_UNSUPPORTED),
               "pre-migration schema must be reported unsupported");
 
         CHECK(nodus_witness_db_migrate_v2s9(f.w) == 0, "migrate to v9");
+        CHECK(nodus_witness_v2_preflight(f.w, &at_v9) == 0, "run");
+        CHECK(has_issue(&at_v9, NODUS_V2_PF_SCHEMA_UNSUPPORTED),
+              "v9 must be UNSUPPORTED since O15C (no activation tables)");
 
+        CHECK(nodus_witness_db_migrate_v2s10(f.w) == 0, "migrate to v10");
         CHECK(nodus_witness_v2_preflight(f.w, &after_mig) == 0, "run");
         CHECK(!has_issue(&after_mig, NODUS_V2_PF_SCHEMA_UNSUPPORTED),
-              "migrating to v9 must clear the schema issue");
-        CHECK(has_issue(&after_mig, NODUS_V2_PF_RULE_N_ATTENDANCE_SOURCE_ABSENT),
-              "the Rule N gate must survive a schema migration");
+              "migrating to v10 must clear the schema issue");
         CHECK(after_mig.ready == 0, "still not ready");
     }
 

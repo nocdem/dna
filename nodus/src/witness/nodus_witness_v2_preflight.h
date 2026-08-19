@@ -94,26 +94,39 @@ typedef enum {
     /** DNAC supply conservation does not hold over committed state. */
     NODUS_V2_PF_SUPPLY_INCONSISTENT           = 11,
     /**
-     * Rule N (liveness / AUTO_RETIRED) has no attendance source under
-     * Ledger V2. `last_signed_block` is written EXCLUSIVELY by the legacy
-     * BFT commit path, so on a V2-only chain the watermark would freeze,
-     * the blamed leader would be charged a miss at every boundary, the
-     * reset would never fire, and validators would be auto-retired for
-     * being unable to prove liveness the engine cannot observe. Both
-     * counters are validators-merkle-leaf fields, so this is committed
-     * consensus state, not bookkeeping.
+     * RETIRED VALUE — kept for id stability, NEVER RAISED since O15C.
      *
-     * O15A deliberately does NOT enforce Rule N in the V2 boundary —
-     * inventing an attendance oracle is the class of fabrication this
-     * tree forbids. Instead the obligation is made structurally
-     * fail-closed here: while this issue stands, the preflight can never
-     * report ready, so V2 cannot be activated with the rule unenforceable.
+     * O15A raised this UNCONDITIONALLY because Ledger V2 had no producer
+     * for `last_signed_block`: enforcing Rule N without its writer would
+     * freeze the watermark and walk the validator set down, and inventing
+     * an attendance oracle is forbidden. O15C supplied the real source:
+     * the V2 apply engine credits the committed header proposer inside
+     * the block transaction, before root computation
+     * (nodus_witness_v2_record_attendance), and the V2 epoch boundary
+     * runs the transplanted leader-blame settlement
+     * (nodus_witness_v2_epoch.c). With the writer in this build, the
+     * obligation the unconditional raise stood for is DISCHARGED — the
+     * check is deleted, the id is not reused.
      */
     NODUS_V2_PF_RULE_N_ATTENDANCE_SOURCE_ABSENT = 12,
     /** V2 external ingress is reachable — activation must not proceed. */
     NODUS_V2_PF_INGRESS_ENABLED               = 13,
     /** A read failed; readiness is UNKNOWN, which is not readiness. */
-    NODUS_V2_PF_INSPECTION_FAULT              = 14
+    NODUS_V2_PF_INSPECTION_FAULT              = 14,
+    /**
+     * O15C — a committed activation record exists but is malformed
+     * (unknown record_version / state, wrong blob widths). A committed
+     * authority this binary cannot interpret must stop it, never be
+     * silently ignored.
+     */
+    NODUS_V2_PF_ACTIVATION_AUTHORITY_MALFORMED = 15,
+    /**
+     * O15C — the committed activation target digest D differs from this
+     * build's compiled target (ruleset tuples / header version / schema
+     * version). The chain scheduled a runtime this binary is not — the
+     * node must not participate in the activation.
+     */
+    NODUS_V2_PF_TARGET_MISMATCH               = 16
 } nodus_v2_pf_issue_t;
 
 /** Upper bound on distinct issues (one slot per id above). */

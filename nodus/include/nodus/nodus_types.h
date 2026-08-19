@@ -22,8 +22,8 @@ extern "C" {
 
 #define NODUS_VERSION_MAJOR  0
 #define NODUS_VERSION_MINOR  19
-#define NODUS_VERSION_PATCH  8
-#define NODUS_VERSION_STRING "0.19.8"
+#define NODUS_VERSION_PATCH  9
+#define NODUS_VERSION_STRING "0.19.9"
 
 /* Wire frame.
  *
@@ -192,6 +192,7 @@ extern "C" {
                                             * kept defined for combine_v2 archive-replay. */
 #define NODUS_TREE_TAG_CHAIN_CONFIG 0x05u  /* Hard-Fork v1 — chain_config_history tree */
 #define NODUS_TREE_TAG_EPOCH_STATE  0x06u  /* v0.16 — push-settlement epoch state tree */
+#define NODUS_TREE_TAG_ACTIVATION   0x07u  /* O15C — Ledger V2 activation authority tree */
 
 /* Composite state_root version byte (CC-AUDIT-002 / Q1 mitigation).
  * Prefixed to the outer SHA3-512 combiner input so cross-version replay
@@ -202,6 +203,10 @@ extern "C" {
 #define NODUS_STATE_ROOT_VERSION_V1 0x01u
 #define NODUS_STATE_ROOT_VERSION_V2 0x02u
 #define NODUS_STATE_ROOT_VERSION_V3 0x03u
+/* O15C — 6-input: appends activation_root (Ledger V2 activation
+ * authority). Computed ONLY by NODUS_V2_ACTIVATION_AUTHORITY builds;
+ * production builds keep emitting v3 byte-identically. */
+#define NODUS_STATE_ROOT_VERSION_V4 0x04u
 
 /* CC-OPS-002 / Q14 — Chain-config schema version advertised in w_ident
  * handshake so binary skew (6-of-7 new binary + 1 old) is detected at

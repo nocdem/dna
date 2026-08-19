@@ -118,6 +118,26 @@ int nodus_messenger_get_bootstrap_servers(nodus_server_endpoint_t *out,
  */
 const nodus_identity_t *nodus_messenger_get_identity_ref(void);
 
+/**
+ * O15C-C D3 — endpoint the READY singleton is currently connected to.
+ *
+ * Quorum fan-outs that open short-lived per-peer clients with the SAME
+ * identity as the singleton MUST NOT open one against this endpoint:
+ * the server keeps exactly one session per fingerprint, so the probe's
+ * auth EVICTS the singleton's live session, and the very next
+ * singleton RPC (e.g. the dnac_spend the fan-out was a preamble to)
+ * finds a dead connection and fails. Callers query this endpoint
+ * THROUGH the singleton instead.
+ *
+ * @param ip_out    Caller buffer for the server IP string
+ * @param ip_len    Capacity of `ip_out`
+ * @param port_out  Receives the server TCP port
+ * @return 0 when the singleton is connected and the endpoint was
+ *         written; -1 otherwise (no singleton / not connected).
+ */
+int nodus_messenger_get_connected_endpoint(char *ip_out, size_t ip_len,
+                                            uint16_t *port_out);
+
 #ifdef __cplusplus
 }
 #endif

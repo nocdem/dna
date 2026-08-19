@@ -11,6 +11,12 @@
 
 #include "witness/nodus_witness_v2_gate.h"
 #include "witness/nodus_witness_v2_preflight.h"
+#ifdef NODUS_V2_ACTIVATION_AUTHORITY
+#include "witness/nodus_witness_v2_activation.h"
+#include "dnac/manifest_wire.h"
+#include <sqlite3.h>
+#include <string.h>
+#endif
 
 #include "crypto/utils/qgp_log.h"
 
@@ -52,6 +58,57 @@ const char *nodus_witness_v2_gate_state_name(nodus_v2_gate_state_t s) {
 int nodus_witness_v2_gate_authority_present(nodus_witness_t *w) {
 #ifdef NODUS_V2_TEST_AUTHORITY
     if (w && w->v2_gate_test_authority) return 1;
+#endif
+#ifdef NODUS_V2_ACTIVATION_AUTHORITY
+    /* O15C — the committed authority this function existed to read.
+     * Compiled ONLY in activation-authority builds (CMake option, OFF by
+     * default): a production binary keeps the constant 0 above, exactly
+     * as O15B shipped it. Two committed forms, both fail-closed:
+     *
+     *  1. The LEGACY chain's activation record in state READY or ACTIVE
+     *     (quorum-scheduled, all-active-readiness — the O15C-A machine).
+     *     SCHEDULED is deliberately NOT authority: collection is not a
+     *     decision.
+     *  2. The SUCCESSOR chain's own committed genesis manifest carrying
+     *     the terminal-legacy source binding (source_tag
+     *     "DNA.LEGACY.TERM.v1") — a V2 chain born by the seam holds its
+     *     authority in the genesis identity itself (manifest hash →
+     *     chain id), which only the committed legacy record could have
+     *     authorized deriving.
+     *
+     * Malformation is NEVER authority (the preflight raises issue 15 and
+     * blocks readiness — the gate then reports NOT_READY/FAULT). */
+    if (w && w->db) {
+        nodus_v2_act_record_t rec;
+        int arc = nodus_witness_v2_activation_get(w, &rec);
+        if (arc == 0 && (rec.state == DNA_ACT_STATE_READY ||
+                         rec.state == DNA_ACT_STATE_ACTIVE))
+            return 1;
+
+        sqlite3_stmt *st = NULL;
+        if (sqlite3_prepare_v2(w->db,
+                "SELECT manifest FROM v2_manifests "
+                "WHERE committed_height = 0 "
+                "ORDER BY manifest_seq ASC LIMIT 1",
+                -1, &st, NULL) == SQLITE_OK) {
+            int have = 0;
+            if (sqlite3_step(st) == SQLITE_ROW) {
+                dna_gman_t m;
+                const void *mb = sqlite3_column_blob(st, 0);
+                int ml = sqlite3_column_bytes(st, 0);
+                if (mb && ml > 0 &&
+                    dna_gman_decode((const uint8_t *)mb, (size_t)ml,
+                                    &m) == 0 &&
+                    m.dist_present == 1 &&
+                    m.source_tag_len == DNA_ACT_SOURCE_TAG_LEN &&
+                    memcmp(m.source_tag, DNA_ACT_SOURCE_TAG,
+                           DNA_ACT_SOURCE_TAG_LEN) == 0)
+                    have = 1;
+            }
+            sqlite3_finalize(st);
+            if (have) return 1;
+        }
+    }
 #else
     (void)w;
 #endif

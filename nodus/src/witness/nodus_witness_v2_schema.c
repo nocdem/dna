@@ -7,6 +7,7 @@
  */
 
 #include "witness/nodus_witness_v2_schema.h"
+#include "witness/nodus_witness_v2_activation.h"  /* S10 DDL single source */
 
 #include <sqlite3.h>
 #include <limits.h>
@@ -1038,4 +1039,88 @@ int nodus_witness_db_migrate_v2s9_ex(nodus_witness_t *w,
 
 int nodus_witness_db_migrate_v2s9(nodus_witness_t *w) {
     return nodus_witness_db_migrate_v2s9_ex(w, V2S9MIG_FAIL_NONE);
+}
+
+/* ═══ S10 — O15C activation authority ═══════════════════════════════════ */
+
+int nodus_witness_db_migrate_v2s10_ex(nodus_witness_t *w,
+                                      nodus_v2s10_mig_fail_t fail_at) {
+    if (!w || !w->db) return -1;
+
+    uint32_t ver = 0;
+    if (nodus_witness_db_schema_version(w, &ver) != 0) return -1;
+    if (ver == NODUS_V2_SCHEMA_VERSION_S10) return 0;    /* idempotent    */
+    if (ver == 0 || ver == NODUS_V2_SCHEMA_VERSION ||
+        ver == NODUS_V2_SCHEMA_VERSION_S6 ||
+        ver == NODUS_V2_SCHEMA_VERSION_S7 ||
+        ver == NODUS_V2_SCHEMA_VERSION_S8) {
+        if (nodus_witness_db_migrate_v2s9(w) != 0) return -1;
+        ver = NODUS_V2_SCHEMA_VERSION_S9;
+    }
+    if (ver != NODUS_V2_SCHEMA_VERSION_S9) {
+        QGP_LOG_ERROR(LOG_TAG,
+                      "unknown schema version %u — refusing S10 migration",
+                      ver);
+        return -1;
+    }
+
+    if (exec_sql(w, "BEGIN IMMEDIATE") != 0) return -1;
+
+    int ok = 0;
+    int already = 0;
+    do {
+        if (fail_at == V2S10MIG_FAIL_AFTER_BEGIN) break;
+
+        /* O15B discipline: the pre-BEGIN read decided nothing. */
+        int rv = mig_revalidate_version(w, NODUS_V2_SCHEMA_VERSION_S9,
+                                        NODUS_V2_SCHEMA_VERSION_S10, "S10");
+        if (rv < 0) break;
+        if (rv == 0) { already = 1; break; }
+        if (fail_at == V2S10MIG_FAIL_AFTER_REVALIDATE) break;
+
+        if (nodus_witness_v2_activation_db_migrate(w) != 0) break;
+        if (fail_at == V2S10MIG_FAIL_AFTER_TABLES) break;
+
+        static const char *const act_cols[] = {
+            "id", "record_version", "state", "chain_id", "target",
+            "activation_height", "original_height", "deadline_height",
+            "schedule_digest", "proposal_nonce", "commit_height",
+            "postpone_count"
+        };
+        static const char *const rdy_cols[] = {
+            "schedule_digest", "voter_id", "signal_version",
+            "signal_epoch", "pubkey", "signature"
+        };
+        if (table_cols_exact(w, "v2_activation", act_cols,
+                sizeof(act_cols) / sizeof(act_cols[0])) != 1 ||
+            table_cols_exact(w, "v2_activation_readiness", rdy_cols,
+                sizeof(rdy_cols) / sizeof(rdy_cols[0])) != 1) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "S10 schema shape drift — refusing");
+            break;
+        }
+        if (fail_at == V2S10MIG_FAIL_AFTER_VERIFY) break;
+
+        if (exec_sql(w, "PRAGMA user_version = 10") != 0) break;
+        if (fail_at == V2S10MIG_FAIL_BEFORE_COMMIT) break;
+
+        ok = 1;
+    } while (0);
+
+    if (already) {
+        (void)exec_sql(w, "ROLLBACK");
+        return 0;
+    }
+    if (!ok) {
+        (void)exec_sql(w, "ROLLBACK");
+        return -1;
+    }
+    if (exec_sql(w, "COMMIT") != 0) {
+        (void)exec_sql(w, "ROLLBACK");
+        return -1;
+    }
+    return 0;
+}
+
+int nodus_witness_db_migrate_v2s10(nodus_witness_t *w) {
+    return nodus_witness_db_migrate_v2s10_ex(w, V2S10MIG_FAIL_NONE);
 }

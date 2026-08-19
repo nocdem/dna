@@ -192,7 +192,11 @@ typedef enum {
     NODUS_V2_EPST_GRAD_BATCH      = 4,  /* every graduate applied        */
     NODUS_V2_EPST_BOUNDARY_FLIPS  = 5,  /* membership flips applied      */
     NODUS_V2_EPST_SNAPSHOT_BUILD  = 6,  /* build INPUTS final (see note) */
-    NODUS_V2_EPST_SNAPSHOT_PERSIST= 7   /* next snapshot built+persisted */
+    NODUS_V2_EPST_SNAPSHOT_PERSIST= 7,  /* next snapshot built+persisted */
+    /* O15C — APPENDED (values above are pinned by shipped tests; the
+     * stage runs BETWEEN graduation and the flips in execution order,
+     * the O15B enum-append discipline). */
+    NODUS_V2_EPST_RULE_N          = 8   /* Rule N settlement applied     */
     /* Values ascend in FIRING order. They are module-internal: the
      * engine maps them onto its own frozen F39-F45 ids BY NAME
      * (nodus_witness_v2_apply.c epoch_stage_fault), so nothing outside
@@ -259,6 +263,26 @@ int nodus_witness_v2_epoch_boundary_apply(nodus_witness_t *w,
                                           nodus_v2_epoch_fault_fn fault,
                                           void *fault_ud,
                                           nodus_v2_epoch_result_t *out);
+
+/**
+ * O15C — the V2 attendance writer (the Rule N source the O15A preflight
+ * issue 12 stood for). Credits ONLY the block's committed header
+ * proposer (`proposer_id` = SHA3-512(pubkey)[0..31]) on ACTIVE/RETIRING
+ * rows, monotonic on last_signed_block. MUST be called inside the apply
+ * engine's single block transaction BEFORE any root computation, and
+ * NOWHERE else — in particular never from a sync/replay side path (the
+ * O15B.1 post-root-mutation invariant).
+ *
+ * @param credited_out optional: 1 when a row was actually updated (the
+ *        caller declares SYSTEM touched exactly then). All-zero or
+ *        unknown proposer, height 0 and the monotonic skip are all
+ *        clean no-ops (0 with *credited_out = 0).
+ * @return 0; -2 node-local fault (DB/hash — do not vote).
+ */
+int nodus_witness_v2_record_attendance(nodus_witness_t *w,
+                                       uint64_t global_height,
+                                       const uint8_t proposer_id[32],
+                                       int *credited_out);
 
 /**
  * The canonical graduation identity, exposed so a test (or a future

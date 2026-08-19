@@ -166,21 +166,23 @@ int main(void) {
               "NULL handle never permits activation");
     }
 
-    /* ── 3. THE PREFLIGHT CAN NEVER REPORT READY ───────────────────────
-     * The second, independent reason the gate cannot open. Rule N has no
-     * attendance source under V2, so this issue stands on EVERY database
-     * — including a freshly created one. */
+    /* ── 3. THE PREFLIGHT IS NOT READY ON A FRESH DATABASE ─────────────
+     * O15C: issue 12 is RETIRED (the V2 attendance writer exists in this
+     * build), so the standing unconditional issue is gone — but a fresh
+     * database is still blocked by real findings (schema, genesis), and
+     * the retired id must never reappear. */
     {
         fx_t f = {0};
         CHECK(fx_open(&f, "pf") == 0, "fixture open");
         nodus_v2_preflight_report_t rep;
         CHECK(nodus_witness_v2_preflight(f.w, &rep) == 0, "preflight ran");
-        CHECK(rep.ready == 0, "preflight must never be ready");
+        CHECK(rep.ready == 0, "a fresh database must not be ready");
         int saw_rule_n = 0;
         for (size_t i = 0; i < rep.n_issues; i++)
             if (rep.issues[i] == NODUS_V2_PF_RULE_N_ATTENDANCE_SOURCE_ABSENT)
                 saw_rule_n = 1;
-        CHECK(saw_rule_n, "RULE_N_ATTENDANCE_SOURCE_ABSENT is raised");
+        CHECK(!saw_rule_n,
+              "retired issue 12 must never be raised again");
         fx_close(&f);
     }
 

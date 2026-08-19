@@ -622,6 +622,32 @@ int nodus_witness_verify_transaction(nodus_witness_t *w,
         return -1;
     }
 
+    /* ── O15C: Ledger V2 activation-authority types (15/16) ──────────
+     * Admitted ONLY by NODUS_V2_ACTIVATION_AUTHORITY builds (a CMake
+     * option OFF by default, set on no production target) — the exact
+     * test-target-only gate O15C-A specified. Without the flag the
+     * reject is NAMED, unconditional and fires on either the declared
+     * or the wire type byte (the 12/13 pattern). With the flag the
+     * transaction continues through the generic checks (signers,
+     * balance, fee) and the full semantic rule set runs at apply time
+     * (nodus_witness_v2_activation_apply*), the CHAIN_CONFIG shape. */
+#ifndef NODUS_V2_ACTIVATION_AUTHORITY
+    if (tx_type == NODUS_W_TX_V2_SCHEDULE ||
+        tx_data[1] == NODUS_W_TX_V2_SCHEDULE ||
+        tx_type == NODUS_W_TX_V2_READY ||
+        tx_data[1] == NODUS_W_TX_V2_READY) {
+        unsigned offending =
+            (tx_type == NODUS_W_TX_V2_SCHEDULE ||
+             tx_type == NODUS_W_TX_V2_READY)
+                ? (unsigned)tx_type : (unsigned)tx_data[1];
+        snprintf(reject_reason, reason_size,
+                 "type %u (V2 activation authority) requires an "
+                 "activation-authority build — rejected",
+                 offending);
+        return -1;
+    }
+#endif
+
     /* ── Phase-C C2.2: shielded (type-11) dispatch ───────────────
      * Right after Check 2 (the V4 tx-hash bound the full shielded
      * statement above); REPLACES-and-RETURNS Checks 3-6 (design v2

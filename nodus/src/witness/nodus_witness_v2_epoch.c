@@ -413,6 +413,208 @@ done:
     return ret;
 }
 
+/* ── O15C: the V2 attendance writer ─────────────────────────────────
+ *
+ * The mirror of nodus_witness_record_attendance (nodus_witness_bft.c
+ * :3356-3428) for the V2 lane: credits ONLY the committed header
+ * proposer (proposer_id = SHA3-512(pubkey)[0..31], a BlockID-bound
+ * field), ACTIVE/RETIRING rows only, monotonic. Runs inside the apply
+ * engine's single block transaction BEFORE any root computation — the
+ * O15B.1 invariant ("a field committed by a block's state_root is never
+ * mutated after that root has been calculated") holds by construction,
+ * and there is deliberately NO sync/replay-side compensating writer:
+ * replay reaches this exact code through the one engine. */
+int nodus_witness_v2_record_attendance(nodus_witness_t *w,
+                                       uint64_t global_height,
+                                       const uint8_t proposer_id[32],
+                                       int *credited_out) {
+    if (credited_out) *credited_out = 0;
+    if (!w || !w->db) return -2;
+    if (!proposer_id || global_height == 0) return 0;
+
+    /* All-zero proposer = no proposer identity committed (fixtures,
+     * genesis) — nothing to credit, deterministically, everywhere. */
+    {
+        int nz = 0;
+        for (int i = 0; i < 32; i++) if (proposer_id[i]) { nz = 1; break; }
+        if (!nz) return 0;
+    }
+
+    sqlite3_stmt *sel = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT pubkey, last_signed_block FROM validators "
+            "WHERE status IN (?, ?)", -1, &sel, NULL) != SQLITE_OK)
+        return -2;
+    sqlite3_bind_int(sel, 1, (int)DNAC_VALIDATOR_ACTIVE);
+    sqlite3_bind_int(sel, 2, (int)DNAC_VALIDATOR_RETIRING);
+
+    uint8_t match_pk[2592];
+    uint64_t match_last = 0;
+    int matched = 0;
+    int rc;
+    while ((rc = sqlite3_step(sel)) == SQLITE_ROW) {
+        const void *pk = sqlite3_column_blob(sel, 0);
+        if (!pk || sqlite3_column_bytes(sel, 0) != (int)sizeof(match_pk))
+            continue;
+        uint8_t digest[64];
+        if (qgp_sha3_512(pk, sizeof(match_pk), digest) != 0) {
+            sqlite3_finalize(sel);
+            return -2;
+        }
+        if (memcmp(digest, proposer_id, 32) != 0) continue;
+        memcpy(match_pk, pk, sizeof(match_pk));
+        match_last = (uint64_t)sqlite3_column_int64(sel, 1);
+        matched = 1;
+        break;
+    }
+    sqlite3_finalize(sel);
+    if (!matched && rc != SQLITE_ROW && rc != SQLITE_DONE) return -2;
+    if (!matched) return 0;                     /* unknown proposer: skip */
+    if (global_height <= match_last) return 0;  /* monotonic             */
+
+    sqlite3_stmt *upd = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "UPDATE validators SET "
+            "  last_signed_block = ?,"
+            "  signed_blocks_this_epoch = signed_blocks_this_epoch + 1 "
+            "WHERE pubkey = ?", -1, &upd, NULL) != SQLITE_OK)
+        return -2;
+    sqlite3_bind_int64(upd, 1, (int64_t)global_height);
+    sqlite3_bind_blob(upd, 2, match_pk, sizeof(match_pk), SQLITE_STATIC);
+    int urc = sqlite3_step(upd);
+    sqlite3_finalize(upd);
+    if (urc != SQLITE_DONE) return -2;
+    if (credited_out) *credited_out = 1;
+    return 0;
+}
+
+/* ── O15C: Rule N settlement (legacy bft.c:2587-2723 transplant) ───── */
+
+static int v2ep_rule_n(nodus_witness_t *w, uint64_t h) {
+    uint64_t epoch_start =
+        (h > (uint64_t)DNAC_EPOCH_LENGTH) ? h - (uint64_t)DNAC_EPOCH_LENGTH
+                                          : 0;
+
+    /* a. Blame the past epoch's BASE LEADER only, from the COMMITTED
+     * snapshot authority (the O12 resolver). Absence = nobody had a
+     * slot = nobody blamed (the legacy past_n == 0 tolerance for
+     * bootstrap/fixture epochs); a FAULT stays a fault. */
+    const uint8_t *leader_pk = NULL;
+    dna_vset_snapshot_t *past = NULL;
+    {
+        uint32_t n = 0, q = 0;
+        int arc = nodus_witness_v2_epoch_authority_for_epoch(w, epoch_start,
+                                                             &past, &n, &q);
+        if (arc < 0) { dna_vset_free(&past); return -1; }
+        if (arc == 0 && past && n > 0) {
+            uint64_t epoch_num = epoch_start / (uint64_t)DNAC_EPOCH_LENGTH;
+            leader_pk = past->entries[(size_t)(epoch_num % n)].pubkey;
+        }
+    }
+
+    int rc;
+    if (leader_pk) {
+        sqlite3_stmt *inc = NULL;
+        if (sqlite3_prepare_v2(w->db,
+                "UPDATE validators "
+                "SET consecutive_missed_epochs = "
+                "    consecutive_missed_epochs + 1 "
+                "WHERE status = ? AND last_signed_block < ? "
+                "  AND active_since_block + ? <= ? "
+                "  AND pubkey = ?", -1, &inc, NULL) != SQLITE_OK) {
+            dna_vset_free(&past);
+            return -1;
+        }
+        sqlite3_bind_int(inc, 1, (int)DNAC_VALIDATOR_ACTIVE);
+        sqlite3_bind_int64(inc, 2, (int64_t)epoch_start);
+        sqlite3_bind_int64(inc, 3, (int64_t)DNAC_MIN_TENURE_BLOCKS);
+        sqlite3_bind_int64(inc, 4, (int64_t)h);
+        sqlite3_bind_blob(inc, 5, leader_pk, 2592, SQLITE_STATIC);
+        rc = sqlite3_step(inc);
+        sqlite3_finalize(inc);
+    } else {
+        rc = SQLITE_DONE;
+    }
+    dna_vset_free(&past);
+    if (rc != SQLITE_DONE) return -1;
+
+    /* b. Reset for attendees. */
+    {
+        sqlite3_stmt *rst = NULL;
+        if (sqlite3_prepare_v2(w->db,
+                "UPDATE validators SET consecutive_missed_epochs = 0 "
+                "WHERE status = ? AND last_signed_block >= ?",
+                -1, &rst, NULL) != SQLITE_OK)
+            return -1;
+        sqlite3_bind_int(rst, 1, (int)DNAC_VALIDATOR_ACTIVE);
+        sqlite3_bind_int64(rst, 2, (int64_t)epoch_start);
+        rc = sqlite3_step(rst);
+        sqlite3_finalize(rst);
+        if (rc != SQLITE_DONE) return -1;
+    }
+
+    /* c. AUTO_RETIRE past the threshold, active_count kept coherent. */
+    {
+        sqlite3_stmt *cnt = NULL;
+        if (sqlite3_prepare_v2(w->db,
+                "SELECT COUNT(*) FROM validators "
+                "WHERE status = ? AND consecutive_missed_epochs >= ?",
+                -1, &cnt, NULL) != SQLITE_OK)
+            return -1;
+        sqlite3_bind_int(cnt, 1, (int)DNAC_VALIDATOR_ACTIVE);
+        sqlite3_bind_int64(cnt, 2, (int64_t)DNAC_AUTO_RETIRE_EPOCHS);
+        int retire_count = -1;
+        if (sqlite3_step(cnt) == SQLITE_ROW)
+            retire_count = sqlite3_column_int(cnt, 0);
+        sqlite3_finalize(cnt);
+        if (retire_count < 0) return -1;
+
+        if (retire_count > 0) {
+            sqlite3_stmt *ar = NULL;
+            if (sqlite3_prepare_v2(w->db,
+                    "UPDATE validators SET status = ? "
+                    "WHERE status = ? AND consecutive_missed_epochs >= ?",
+                    -1, &ar, NULL) != SQLITE_OK)
+                return -1;
+            sqlite3_bind_int(ar, 1, (int)DNAC_VALIDATOR_AUTO_RETIRED);
+            sqlite3_bind_int(ar, 2, (int)DNAC_VALIDATOR_ACTIVE);
+            sqlite3_bind_int64(ar, 3, (int64_t)DNAC_AUTO_RETIRE_EPOCHS);
+            rc = sqlite3_step(ar);
+            sqlite3_finalize(ar);
+            if (rc != SQLITE_DONE) return -1;
+
+            sqlite3_stmt *dec = NULL;
+            if (sqlite3_prepare_v2(w->db,
+                    "UPDATE validator_stats SET value = value - ? "
+                    "WHERE key = 'active_count'", -1, &dec, NULL)
+                != SQLITE_OK)
+                return -1;
+            sqlite3_bind_int(dec, 1, retire_count);
+            rc = sqlite3_step(dec);
+            sqlite3_finalize(dec);
+            if (rc != SQLITE_DONE) return -1;
+
+            QGP_LOG_INFO(LOG_TAG, "Rule N: auto-retired %d validator(s) "
+                         "at boundary %llu", retire_count,
+                         (unsigned long long)h);
+        }
+    }
+
+    /* d. Per-epoch counter reset — every node enters the next epoch with
+     * identical counters (the legacy settlement reset). */
+    {
+        char *err = NULL;
+        if (sqlite3_exec(w->db,
+                "UPDATE validators SET signed_blocks_this_epoch = 0 "
+                "WHERE signed_blocks_this_epoch > 0",
+                NULL, NULL, &err) != SQLITE_OK) {
+            if (err) sqlite3_free(err);
+            return -1;
+        }
+    }
+    return 0;
+}
+
 /* ── entry point ───────────────────────────────────────────────────── */
 
 int nodus_witness_v2_epoch_boundary_apply(
@@ -441,10 +643,25 @@ int nodus_witness_v2_epoch_boundary_apply(
     if (fault && fault(fault_ud, NODUS_V2_EPST_GRAD_BATCH, UINT32_MAX))
         return -2;
 
-    /* RULE N is deliberately NOT migrated — header, "RULE N: NOT
-     * MIGRATED". The attendance watermark this transition reads is
-     * written only by the live BFT commit path, which the inactive
-     * engine never runs. */
+    /* ── RULE N (O15C — the transplanted legacy settlement) ──────────
+     * O12 deliberately skipped Rule N because the V2 lane had no
+     * attendance writer. O15C supplied it
+     * (nodus_witness_v2_record_attendance, called by the apply engine
+     * inside the block transaction, before roots), so the settlement now
+     * runs here with the EXACT legacy semantics
+     * (nodus_witness_bft.c:2587-2723), authority-resolved through the
+     * committed snapshot:
+     *   a. blame ONLY the past epoch's BASE LEADER (snapshot entry
+     *      epoch_num % n) if it never signed in that epoch, tenure-gated;
+     *   b. reset consecutive_missed_epochs for attendees;
+     *   c. AUTO_RETIRE at DNAC_AUTO_RETIRE_EPOCHS, decrementing
+     *      active_count once per flip;
+     *   d. reset every per-epoch signed-block counter for the next epoch.
+     * Ordered BEFORE the flips, mirroring the legacy boundary sequence
+     * (1 commissions → 2 graduation → 3 Rule N → 5a flips → 5b freeze). */
+    if (v2ep_rule_n(w, global_height) != 0) return -2;
+    if (fault && fault(fault_ud, NODUS_V2_EPST_RULE_N, UINT32_MAX))
+        return -2;
 
     /* Boundary flips consume the snapshot frozen one epoch earlier; an
      * ABSENT snapshot row is a documented NO-OP inside the source

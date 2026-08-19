@@ -368,6 +368,34 @@ int nodus_witness_db_migrate_v2s9(nodus_witness_t *w);
 int nodus_witness_db_migrate_v2s9_ex(nodus_witness_t *w,
                                      nodus_v2s9_mig_fail_t fail_at);
 
+/* ── S10 migration (O15C — activation authority) ───────────────────────
+ *
+ * Adds the two activation-authority tables (`v2_activation` singleton +
+ * `v2_activation_readiness`; DDL single-sourced from
+ * nodus_witness_v2_activation_db_migrate). Purely ADDITIVE — no table is
+ * dropped or rebuilt, so there is no populated-data refusal: the new
+ * tables cannot pre-exist with rows on a version-9 database (nothing
+ * below version 10 can write them). Version 11+ fails closed. */
+#define NODUS_V2_SCHEMA_VERSION_S10  10u
+
+typedef enum {
+    V2S10MIG_FAIL_NONE = 0,
+    V2S10MIG_FAIL_AFTER_BEGIN,      /* after BEGIN, before any DDL        */
+    V2S10MIG_FAIL_AFTER_REVALIDATE, /* in-txn version re-read passed      */
+    V2S10MIG_FAIL_AFTER_TABLES,     /* both activation tables created     */
+    V2S10MIG_FAIL_AFTER_VERIFY,     /* schema-shape verification passed   */
+    V2S10MIG_FAIL_BEFORE_COMMIT     /* user_version written, pre-COMMIT   */
+} nodus_v2s10_mig_fail_t;
+
+/** Atomic O15C migration. Version 0/5/6/7/8 runs the S9 chain first,
+ *  then 9 → 10 atomically with the O15B in-transaction revalidation.
+ *  @return 0 migrated or already at 10 (idempotent); -1 failure. */
+int nodus_witness_db_migrate_v2s10(nodus_witness_t *w);
+
+/** Test variant: deterministic abort inside the 9 → 10 transaction. */
+int nodus_witness_db_migrate_v2s10_ex(nodus_witness_t *w,
+                                      nodus_v2s10_mig_fail_t fail_at);
+
 #ifdef __cplusplus
 }
 #endif

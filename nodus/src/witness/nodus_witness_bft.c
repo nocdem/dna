@@ -30,6 +30,10 @@
 #include "witness/nodus_witness_genesis_seed.h"
 #include "witness/nodus_witness_vset.h"        /* S3 epoch validator-set lifecycle */
 #include "witness/nodus_witness_sync.h"        /* A2 simetri: active sync_check trigger */
+#include "witness/nodus_witness_v2_activation.h" /* O15C activation authority */
+#ifdef NODUS_V2_ACTIVATION_AUTHORITY
+#include "witness/nodus_witness_v2_seam.h"       /* O15C successor derivation */
+#endif
 #include "nodus/nodus_chain_config.h"          /* Hard-Fork v1 apply dispatch */
 #include "protocol/nodus_tier3.h"
 #include "server/nodus_server.h"
@@ -2134,6 +2138,22 @@ int apply_tx_to_state(nodus_witness_t *w,
                 failed = true;
             }
         }
+#ifdef NODUS_V2_ACTIVATION_AUTHORITY
+        /* O15C — activation authority (admission is verify-gated to
+         * activation-authority builds; the apply mirrors the
+         * CHAIN_CONFIG lane). */
+        else if (tx_type == NODUS_W_TX_V2_SCHEDULE) {
+            if (nodus_witness_v2_activation_apply(w, tx_data, tx_len,
+                                                  block_height) != 0) {
+                failed = true;
+            }
+        } else if (tx_type == NODUS_W_TX_V2_READY) {
+            if (nodus_witness_v2_activation_apply_ready(w, tx_data, tx_len,
+                                                        block_height) != 0) {
+                failed = true;
+            }
+        }
+#endif
     }
 
     /* Phase 6 / Task 31 — fees no longer decrement current_supply.
@@ -2797,6 +2817,30 @@ static int apply_epoch_boundary_transitions(nodus_witness_t *w,
                 "at h=%llu\n", LOG_TAG, (unsigned long long)block_height);
         return -1;
     }
+
+#ifdef NODUS_V2_ACTIVATION_AUTHORITY
+    /* ─────── 6. O15C — activation state machine ───────
+     * Runs AFTER flips (5a) and the next-epoch freeze (5b), so every
+     * snapshot the readiness predicate consults is committed state, and
+     * still inside finalize_block's transaction BEFORE any state_root
+     * computation — a boundary that flips ACTIVE commits that fact in
+     * the terminal block's own root (O15C-B §4E ordering). */
+    {
+        int activated = 0;
+        if (nodus_witness_v2_activation_on_boundary(w, block_height,
+                                                    &activated) != 0) {
+            fprintf(stderr, "%s: epoch_boundary: activation state machine "
+                    "failed at h=%llu\n", LOG_TAG,
+                    (unsigned long long)block_height);
+            return -1;
+        }
+        if (activated) {
+            fprintf(stderr, "%s: LEDGER V2 ACTIVATION COMMITTED at h=%llu — "
+                    "this is the terminal legacy block\n",
+                    LOG_TAG, (unsigned long long)block_height);
+        }
+    }
+#endif
 
     return 0;
 }
@@ -3802,6 +3846,17 @@ static int bft_start_round_internal(nodus_witness_t *w,
     /* F17 A2 — recompute BFT config from the chain-derived committee
      * for the next block. This is the authoritative quorum source. */
     uint64_t next_bh = nodus_witness_block_height(w) + 1;
+#ifdef NODUS_V2_ACTIVATION_AUTHORITY
+    /* O15C — terminal refusal: with a committed ACTIVE activation record
+     * the legacy chain ends at H_act; a leader must not even open a
+     * round beyond it. Committed state + height only (fail closed). */
+    if (nodus_witness_v2_activation_refuses_height(w, next_bh)) {
+        fprintf(stderr, "%s: legacy chain is TERMINAL — refusing to "
+                "propose block %llu (V2 activation committed)\n",
+                LOG_TAG, (unsigned long long)next_bh);
+        return -1;
+    }
+#endif
     if (refresh_bft_config_from_committee(w, next_bh) != 0) {
         fprintf(stderr, "%s: failed to load committee for block %llu\n",
                 LOG_TAG, (unsigned long long)next_bh);
@@ -3953,6 +4008,9 @@ static int bft_start_round_internal(nodus_witness_t *w,
             "(round %lu, %d TXs, block_hash=%.16s...)\n",
             LOG_TAG, sent, (unsigned long)w->current_round, count,
             "computed");
+
+    /* O15C-C D2 — votes that raced ahead of our own round start. */
+    nodus_witness_bft_drain_vote_buffer(w);
 
     return 0;
 }
@@ -4427,6 +4485,17 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
                     (unsigned long long)expected_height);
             return -1;
         }
+#ifdef NODUS_V2_ACTIVATION_AUTHORITY
+        /* O15C — terminal refusal (follower side): a committed ACTIVE
+         * activation record forbids every height above H_act. */
+        if (nodus_witness_v2_activation_refuses_height(w,
+                                                       prop->block_height)) {
+            fprintf(stderr, "%s: propose rejected — legacy chain is "
+                    "TERMINAL at the committed activation height\n",
+                    LOG_TAG);
+            return -1;
+        }
+#endif
     }
 
     /* Initialize round state from proposal */
@@ -4702,12 +4771,115 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
             my_vote == NODUS_W_VOTE_APPROVE ? "APPROVE" : "REJECT",
             (unsigned long)hdr->round, prop->batch_count, sent);
 
+    /* O15C-C D2 — peers' votes that arrived before this proposal did.
+     * This is the exact loss that starved round 20 of the 2026-08-19
+     * rehearsal: fast peers' PREVOTEs landed while this node was still
+     * settling the previous round and were silently ignored. */
+    nodus_witness_bft_drain_vote_buffer(w);
+
     return 0;
 }
 
 /* ════════════════════════════════════════════════════════════════════
  * Handle PREVOTE / PRECOMMIT
  * ════════════════════════════════════════════════════════════════════ */
+
+/* O15C-C D2 — park one near-future vote in the bounded buffer.
+ * Dedup key is (sender, type, round, view), keep-first, so a repeated
+ * frame can never evict an honest entry. A full buffer drops the new
+ * entry with a log line — bounded memory beats completeness here, and
+ * the sender's vote still counts on every node that was in phase. */
+static void bft_vote_buffer_insert(nodus_witness_t *w, uint8_t msg_type,
+                                   uint64_t round, uint32_t view,
+                                   const uint8_t *sender_id,
+                                   const nodus_t3_vote_t *vote) {
+    int free_slot = -1;
+    for (int i = 0; i < NODUS_W_VOTE_BUFFER_CAP; i++) {
+        nodus_witness_pending_vote_t *e = &w->vote_buffer[i];
+        if (!e->used) {
+            if (free_slot < 0) free_slot = i;
+            continue;
+        }
+        /* Prune entries for rounds that are already settled. */
+        if (e->round <= w->last_committed_round) {
+            e->used = false;
+            if (free_slot < 0) free_slot = i;
+            continue;
+        }
+        if (e->msg_type == msg_type && e->round == round &&
+            e->view == view &&
+            memcmp(e->sender_id, sender_id,
+                   NODUS_T3_WITNESS_ID_LEN) == 0)
+            return;  /* keep-first */
+    }
+    if (free_slot < 0) {
+        fprintf(stderr, "%s: vote buffer full — dropping early %s for "
+                "round %llu\n", LOG_TAG,
+                msg_type == NODUS_T3_PREVOTE ? "PREVOTE" : "PRECOMMIT",
+                (unsigned long long)round);
+        return;
+    }
+    nodus_witness_pending_vote_t *e = &w->vote_buffer[free_slot];
+    memset(e, 0, sizeof(*e));
+    e->used = true;
+    e->msg_type = msg_type;
+    e->round = round;
+    e->view = view;
+    memcpy(e->sender_id, sender_id, NODUS_T3_WITNESS_ID_LEN);
+    memcpy(e->vote_target, vote->vote_target, NODUS_T3_TX_HASH_LEN);
+    e->vote = vote->vote;
+    memcpy(e->reason, vote->reason, sizeof(e->reason));
+    memcpy(e->cert_sig, vote->cert_sig, NODUS_SIG_BYTES);
+    fprintf(stderr, "%s: buffered early %s for round %llu "
+            "(current round %llu, phase %d)\n", LOG_TAG,
+            msg_type == NODUS_T3_PREVOTE ? "PREVOTE" : "PRECOMMIT",
+            (unsigned long long)round,
+            (unsigned long long)w->round_state.round,
+            (int)w->round_state.phase);
+}
+
+static int bft_handle_vote_inner(nodus_witness_t *w, uint8_t msg_type,
+                                 uint64_t round, uint32_t view,
+                                 const uint8_t *sender_id,
+                                 const nodus_t3_vote_t *vote);
+
+void nodus_witness_bft_drain_vote_buffer(nodus_witness_t *w) {
+    if (!w) return;
+    bool progress = true;
+    while (progress) {
+        progress = false;
+        for (int i = 0; i < NODUS_W_VOTE_BUFFER_CAP; i++) {
+            nodus_witness_pending_vote_t *e = &w->vote_buffer[i];
+            if (!e->used) continue;
+            if (e->round <= w->last_committed_round) {
+                e->used = false;
+                continue;
+            }
+            bool eligible =
+                e->round == w->round_state.round &&
+                e->view == w->round_state.view &&
+                ((e->msg_type == NODUS_T3_PREVOTE &&
+                  w->round_state.phase == NODUS_W_PHASE_PREVOTE) ||
+                 (e->msg_type == NODUS_T3_PRECOMMIT &&
+                  w->round_state.phase == NODUS_W_PHASE_PRECOMMIT));
+            if (!eligible) continue;
+            /* Consume before feeding: whatever the handler decides, the
+             * entry had its one chance (mirrors the pre-buffer contract
+             * where an in-phase arrival was judged exactly once). */
+            nodus_witness_pending_vote_t copy = *e;
+            e->used = false;
+            nodus_t3_vote_t v;
+            memset(&v, 0, sizeof(v));
+            memcpy(v.vote_target, copy.vote_target, NODUS_T3_TX_HASH_LEN);
+            v.vote = copy.vote;
+            memcpy(v.reason, copy.reason, sizeof(v.reason));
+            memcpy(v.cert_sig, copy.cert_sig, NODUS_SIG_BYTES);
+            (void)bft_handle_vote_inner(w, copy.msg_type, copy.round,
+                                        copy.view, copy.sender_id, &v);
+            progress = true;
+        }
+    }
+}
 
 int nodus_witness_bft_handle_vote(nodus_witness_t *w,
                                     const nodus_t3_msg_t *msg) {
@@ -4716,7 +4888,6 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
     /* C3 fix: refuse all BFT participation once safety_halt is latched. */
     if (w->safety_halt) return -1;
 
-    const nodus_t3_vote_t *vote = &msg->vote;
     const nodus_t3_header_t *hdr = &msg->header;
 
     /* Replay check */
@@ -4727,9 +4898,45 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
     if (!verify_chain_id(w, hdr->chain_id))
         return -1;
 
+    if (msg->type != NODUS_T3_PREVOTE && msg->type != NODUS_T3_PRECOMMIT)
+        return -1;
+
+    /* O15C-C D2 — near-future votes are buffered, not dropped. Anchor
+     * against the live round when one exists, else the last settled
+     * round (round_state is memset to 0 on some resets). */
+    {
+        uint64_t cur = w->round_state.round;
+        uint64_t anchor = cur > w->last_committed_round
+                              ? cur : w->last_committed_round;
+        bool future_round =
+            hdr->round > cur &&
+            hdr->round <= anchor + NODUS_W_VOTE_BUFFER_ROUND_AHEAD;
+        bool early_precommit =
+            hdr->round == cur && hdr->view == w->round_state.view &&
+            msg->type == NODUS_T3_PRECOMMIT &&
+            w->round_state.phase == NODUS_W_PHASE_PREVOTE;
+        if (future_round || early_precommit) {
+            bft_vote_buffer_insert(w, msg->type, hdr->round, hdr->view,
+                                   hdr->sender_id, &msg->vote);
+            return 0;
+        }
+    }
+
+    int rc = bft_handle_vote_inner(w, msg->type, hdr->round, hdr->view,
+                                   hdr->sender_id, &msg->vote);
+    /* A live vote can flip the phase (PREVOTE quorum → PRECOMMIT), which
+     * can make buffered votes eligible — drain opportunistically. */
+    nodus_witness_bft_drain_vote_buffer(w);
+    return rc;
+}
+
+static int bft_handle_vote_inner(nodus_witness_t *w, uint8_t msg_type,
+                                 uint64_t round, uint32_t view,
+                                 const uint8_t *sender_id,
+                                 const nodus_t3_vote_t *vote) {
     /* Verify round and view match */
-    if (hdr->round != w->round_state.round ||
-        hdr->view != w->round_state.view)
+    if (round != w->round_state.round ||
+        view != w->round_state.view)
         return 0;  /* Stale vote, ignore */
 
     /* Verify tx_hash matches */
@@ -4746,13 +4953,13 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
     nodus_witness_phase_t expected_phase;
     nodus_witness_phase_t next_phase;
 
-    if (msg->type == NODUS_T3_PREVOTE) {
+    if (msg_type == NODUS_T3_PREVOTE) {
         votes = w->round_state.prevotes;
         vote_count = &w->round_state.prevote_count;
         approve_count = &w->round_state.prevote_approve_count;
         expected_phase = NODUS_W_PHASE_PREVOTE;
         next_phase = NODUS_W_PHASE_PRECOMMIT;
-    } else if (msg->type == NODUS_T3_PRECOMMIT) {
+    } else if (msg_type == NODUS_T3_PRECOMMIT) {
         votes = w->round_state.precommits;
         vote_count = &w->round_state.precommit_count;
         approve_count = &w->round_state.precommit_approve_count;
@@ -4770,7 +4977,7 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
      * pubkey mapping, safe by A15 because witness_id = H(pubkey)).
      * Envelope sig already verified against this pubkey at
      * witness.c:657-678 before this handler was invoked. */
-    int gossip_idx = nodus_witness_roster_find(&w->roster, hdr->sender_id);
+    int gossip_idx = nodus_witness_roster_find(&w->roster, sender_id);
     if (gossip_idx < 0) {
         fprintf(stderr, "%s: vote from unknown sender\n", LOG_TAG);
         return -1;
@@ -4816,7 +5023,7 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
      * vote is APPROVE. REJECT votes do not contribute to the prepared
      * cert and senders leave cert_sig=0. Invalid sig on APPROVE drops
      * the entire vote (protocol violation). */
-    if (msg->type == NODUS_T3_PREVOTE &&
+    if (msg_type == NODUS_T3_PREVOTE &&
         vote->vote == NODUS_W_VOTE_APPROVE) {
         uint8_t prep_preimage[NODUS_WITNESS_PREPARED_PREIMAGE_LEN];
         /* A2 fix — verifier and sender BOTH read height from
@@ -4859,7 +5066,7 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
     if (*vote_count >= DNAC_MAX_ACTIVE_VALIDATORS)
         return -1;
 
-    memcpy(votes[*vote_count].voter_id, hdr->sender_id,
+    memcpy(votes[*vote_count].voter_id, sender_id,
            NODUS_T3_WITNESS_ID_LEN);
     memcpy(votes[*vote_count].pubkey, sender_pk, DNAC_PUBKEY_SIZE);
     votes[*vote_count].vote = (nodus_witness_vote_t)vote->vote;
@@ -4867,8 +5074,8 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
      * APPROVE votes also carry a cert_sig (over PREPARED preimage, just
      * verified above) that the PREVOTE-quorum hook copies into
      * w->last_prepared.sigs. REJECT PREVOTE leaves cert_sig=0. */
-    if (msg->type == NODUS_T3_PRECOMMIT ||
-        (msg->type == NODUS_T3_PREVOTE &&
+    if (msg_type == NODUS_T3_PRECOMMIT ||
+        (msg_type == NODUS_T3_PREVOTE &&
          vote->vote == NODUS_W_VOTE_APPROVE)) {
         memcpy(votes[*vote_count].signature, vote->cert_sig,
                NODUS_SIG_BYTES);
@@ -4880,7 +5087,7 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
 
     fprintf(stderr, "%s: %s from gossip %d: %s (approve=%d/%d, quorum=%u)\n",
             LOG_TAG,
-            msg->type == NODUS_T3_PREVOTE ? "PREVOTE" : "PRECOMMIT",
+            msg_type == NODUS_T3_PREVOTE ? "PREVOTE" : "PRECOMMIT",
             gossip_idx,
             vote->vote == NODUS_W_VOTE_APPROVE ? "APPROVE" : "REJECT",
             *approve_count, *vote_count, w->bft_config.quorum);
@@ -4900,7 +5107,7 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
 
     fprintf(stderr, "%s: %s QUORUM! approve=%d >= required=%u\n",
             LOG_TAG,
-            msg->type == NODUS_T3_PREVOTE ? "PREVOTE" : "PRECOMMIT",
+            msg_type == NODUS_T3_PREVOTE ? "PREVOTE" : "PRECOMMIT",
             *approve_count, required);
 
     w->round_state.phase = next_phase;
@@ -5668,53 +5875,79 @@ static int vc_record_alloc_sigs(nodus_witness_vc_record_t *vc,
     return 0;
 }
 
+/* Forward decl — defined beside handle_viewchg below (O15C-C D1). */
+static int bft_vc_check_quorum(nodus_witness_t *w);
+
 int nodus_witness_bft_initiate_view_change(nodus_witness_t *w) {
     if (!w) return -1;
 
-    if (w->view_change_in_progress)
+    /* O15C-C D1 — a node that already broadcast + self-recorded its own
+     * VIEW_CHANGE vote for the current target has nothing left to do.
+     * But a node whose view_change_in_progress was set by RECEIVING a
+     * peer's VIEW_CHANGE (the handle_viewchg join path) has NOT voted
+     * yet: the old unconditional in_progress early-return here silenced
+     * every joiner at its own round timeout — in the 2026-08-19
+     * rehearsal round 20 that muted six of seven voters and made
+     * view-change quorum (5) structurally unreachable (observed 1/5 on
+     * every node). */
+    if (w->view_change_in_progress && w->view_change_voted)
         return 0;
 
-    w->view_change_in_progress = true;
-    w->view_change_target = w->current_view + 1;
-    w->view_change_count = 0;
+    if (!w->view_change_in_progress) {
+        w->view_change_in_progress = true;
+        w->view_change_target = w->current_view + 1;
+        w->view_change_count = 0;
+    }
     w->round_state.phase = NODUS_W_PHASE_VIEW_CHANGE;
 
-    /* Record our own view change vote. C5 — also self-record our local
-     * w->last_prepared into view_changes[0].prepared so the quorum scan
-     * (if we turn out to be the new leader) finds our prepared cert
-     * alongside peers'. */
-    /* S3: clear, not memset — the slot may still own a sigs allocation
-     * from a previous view change. */
-    nodus_witness_vc_record_clear(&w->view_changes[0]);
-    memcpy(w->view_changes[0].voter_id, w->my_id,
-           NODUS_T3_WITNESS_ID_LEN);
-    w->view_changes[0].target_view = w->view_change_target;
-    w->view_changes[0].last_committed_round = w->last_committed_round;
-    if (w->last_prepared.present) {
-        w->view_changes[0].prepared.has_prepared = true;
-        w->view_changes[0].prepared.height = w->last_prepared.height;
-        w->view_changes[0].prepared.view = w->last_prepared.view;
-        memcpy(w->view_changes[0].prepared.tx_hash,
-               w->last_prepared.tx_hash, NODUS_T3_TX_HASH_LEN);
-        /* S3: sigs is heap-owned and sized to the actual cert, clamped to
-         * the release ceiling. The old DNAC_COMMITTEE_SIZE cap is gone —
-         * a 128-member set's quorum needs 86 sigs. */
-        uint32_t stored = w->last_prepared.n_sigs;
-        if (vc_record_alloc_sigs(&w->view_changes[0], &stored) != 0) {
-            fprintf(stderr, "%s: view_change: prepared-sig alloc failed — "
-                    "self-record carries no prepared cert\n", LOG_TAG);
-        } else {
-            for (uint32_t i = 0; i < stored; i++) {
-                memcpy(w->view_changes[0].prepared.sigs[i].voter_id,
-                       w->last_prepared.sigs[i].voter_id,
-                       NODUS_T3_WITNESS_ID_LEN);
-                memcpy(w->view_changes[0].prepared.sigs[i].signature,
-                       w->last_prepared.sigs[i].signature,
-                       NODUS_SIG_BYTES);
-            }
+    /* Record our own view change vote — APPEND, never clobber: on the
+     * join path peer votes are already recorded below w->view_change_count.
+     * C5 — also self-record our local w->last_prepared into the slot's
+     * .prepared so the quorum scan (if we turn out to be the new leader)
+     * finds our prepared cert alongside peers'. */
+    bool self_recorded = false;
+    for (int i = 0; i < w->view_change_count; i++) {
+        if (memcmp(w->view_changes[i].voter_id, w->my_id,
+                   NODUS_T3_WITNESS_ID_LEN) == 0) {
+            self_recorded = true;
+            break;
         }
     }
-    w->view_change_count = 1;
+    if (!self_recorded && w->view_change_count < DNAC_MAX_ACTIVE_VALIDATORS) {
+        int slot = w->view_change_count;
+        /* S3: clear, not memset — the slot may still own a sigs
+         * allocation from a previous view change. */
+        nodus_witness_vc_record_clear(&w->view_changes[slot]);
+        memcpy(w->view_changes[slot].voter_id, w->my_id,
+               NODUS_T3_WITNESS_ID_LEN);
+        w->view_changes[slot].target_view = w->view_change_target;
+        w->view_changes[slot].last_committed_round = w->last_committed_round;
+        if (w->last_prepared.present) {
+            w->view_changes[slot].prepared.has_prepared = true;
+            w->view_changes[slot].prepared.height = w->last_prepared.height;
+            w->view_changes[slot].prepared.view = w->last_prepared.view;
+            memcpy(w->view_changes[slot].prepared.tx_hash,
+                   w->last_prepared.tx_hash, NODUS_T3_TX_HASH_LEN);
+            /* S3: sigs is heap-owned and sized to the actual cert, clamped
+             * to the release ceiling. The old DNAC_COMMITTEE_SIZE cap is
+             * gone — a 128-member set's quorum needs 86 sigs. */
+            uint32_t stored = w->last_prepared.n_sigs;
+            if (vc_record_alloc_sigs(&w->view_changes[slot], &stored) != 0) {
+                fprintf(stderr, "%s: view_change: prepared-sig alloc failed — "
+                        "self-record carries no prepared cert\n", LOG_TAG);
+            } else {
+                for (uint32_t i = 0; i < stored; i++) {
+                    memcpy(w->view_changes[slot].prepared.sigs[i].voter_id,
+                           w->last_prepared.sigs[i].voter_id,
+                           NODUS_T3_WITNESS_ID_LEN);
+                    memcpy(w->view_changes[slot].prepared.sigs[i].signature,
+                           w->last_prepared.sigs[i].signature,
+                           NODUS_SIG_BYTES);
+                }
+            }
+        }
+        w->view_change_count++;
+    }
 
     /* Build and broadcast VIEW_CHANGE */
     nodus_t3_msg_t vc;
@@ -5745,10 +5978,14 @@ int nodus_witness_bft_initiate_view_change(nodus_witness_t *w) {
     }
 
     int sent = nodus_witness_bft_broadcast(w, &vc);
+    w->view_change_voted = true;
 
     fprintf(stderr, "%s: initiated view change to view %u (sent=%d)\n",
             LOG_TAG, w->view_change_target, sent);
-    return 0;
+
+    /* O15C-C D1 — our self-record can be the vote that completes the
+     * quorum (every peer already sent theirs before our timeout fired). */
+    return bft_vc_check_quorum(w);
 }
 
 int nodus_witness_bft_handle_viewchg(nodus_witness_t *w,
@@ -5804,6 +6041,9 @@ int nodus_witness_bft_handle_viewchg(nodus_witness_t *w,
         w->view_change_in_progress = true;
         w->view_change_target = vc->new_view;
         w->view_change_count = 0;
+        /* O15C-C D1 — any vote we broadcast was for the OLD target; the
+         * next initiate (own timeout) must be able to vote again. */
+        w->view_change_voted = false;
         /* C5 — wipe stale prepared data from previous (lower) target so
          * it cannot leak into the new target's quorum scan. Otherwise a
          * racing attacker could get a lower-target prepared cert counted
@@ -5952,7 +6192,16 @@ int nodus_witness_bft_handle_viewchg(nodus_witness_t *w,
             LOG_TAG, gossip_idx, vc->new_view,
             w->view_change_count, w->bft_config.quorum);
 
-    /* Check for quorum */
+    /* Check for quorum (shared with initiate_view_change — O15C-C D1:
+     * the initiator's own self-record can complete the quorum too). */
+    return bft_vc_check_quorum(w);
+}
+
+/* O15C-C D1 — view-change quorum check + completion, factored out of
+ * handle_viewchg so initiate_view_change can complete a quorum that its
+ * own self-record finished. Returns 0 always (diagnostic parity with the
+ * old inline tail). */
+static int bft_vc_check_quorum(nodus_witness_t *w) {
     if ((uint32_t)w->view_change_count < w->bft_config.quorum)
         return 0;
 
@@ -5964,6 +6213,7 @@ int nodus_witness_bft_handle_viewchg(nodus_witness_t *w,
     /* H-5: persist new view across restart. */
     nodus_witness_db_save_pbft_state(w);
     w->view_change_in_progress = false;
+    w->view_change_voted = false;
     w->round_state.phase = NODUS_W_PHASE_IDLE;
 
     /* F17 A4 — if we are the committee-derived new leader for the new
@@ -6268,6 +6518,7 @@ void nodus_witness_bft_check_timeout(nodus_witness_t *w) {
             round_state_free_batch(&w->round_state);
             w->round_state.phase = NODUS_W_PHASE_IDLE;
             w->view_change_in_progress = false;
+            w->view_change_voted = false;
             w->view_change_count = 0;
             memset(&w->round_state, 0, sizeof(w->round_state));
         }
@@ -6729,6 +6980,25 @@ int nodus_witness_commit_batch(nodus_witness_t *w,
             w->safety_halt = true;
             return -1;
         }
+
+#ifdef NODUS_V2_ACTIVATION_AUTHORITY
+        /* O15C — after a DURABLY COMMITTED epoch-boundary block, derive
+         * the successor V2 chain iff this boundary sealed the activation
+         * (record ACTIVE). Idempotent, committed-state driven, and
+         * deliberately AFTER the commit: the derivation reads only
+         * committed rows and must never ride inside the block
+         * transaction it derives from. A failure here does not undo the
+         * committed terminal block — the post-open gate retries the
+         * derivation on the next restart (same committed inputs, same
+         * bytes). */
+        if (bh > 0 && (bh % (uint64_t)DNAC_EPOCH_LENGTH) == 0) {
+            if (nodus_witness_v2_seam_maybe_derive(w, NULL) != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "commit_batch: successor "
+                              "derivation FAILED at h=%llu (will retry "
+                              "at next open)", (unsigned long long)bh);
+            }
+        }
+#endif
     }
     return commit_rc;
 }
@@ -6751,6 +7021,19 @@ int nodus_witness_replay_block(nodus_witness_t *w,
             (unsigned long long)local_height);
         return -1;
     }
+
+#ifdef NODUS_V2_ACTIVATION_AUTHORITY
+    /* O15C — terminal refusal (sync side): once the replayed history has
+     * committed an ACTIVE activation record, no legacy block above H_act
+     * exists on any honest chain; a peer offering one is offering a fork
+     * of a terminal chain. */
+    if (nodus_witness_v2_activation_refuses_height(w, rsp_height)) {
+        QGP_LOG_ERROR(LOG_TAG,
+            "replay_block: legacy chain is TERMINAL — refusing synced "
+            "block h=%llu", (unsigned long long)rsp_height);
+        return -1;
+    }
+#endif
 
     /* replay_block uses the same body as commit_batch — the only
      * difference is the height precondition above. Delegate to avoid

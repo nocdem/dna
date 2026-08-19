@@ -369,6 +369,12 @@ Convenience wrappers around the Nodus singleton for DHT operations, presence, an
 |----------|-------------|
 | `int nodus_ops_put_with_timeout(const uint8_t *key, size_t key_len, const uint8_t *data, size_t data_len, uint32_t ttl, uint64_t vid, int timeout_ms)` | Same as `nodus_ops_put` but overrides the default 10s request timeout. Use for large payloads (debug logs, media) or mobile-link callers that need more time after reconnect bursts. `timeout_ms <= 0` falls back to client default. |
 
+### 12.3b Singleton endpoint introspection (`dht/shared/nodus_init.h`, v0.11.18+)
+
+| Function | Description |
+|----------|-------------|
+| `int nodus_messenger_get_connected_endpoint(char *ip_out, size_t ip_len, uint16_t *port_out)` | Endpoint the READY nodus singleton is currently connected to (live connection, not the possibly-stale config index). Returns 0 with `ip_out`/`port_out` filled, -1 when not connected. O15C-C D3: quorum fan-outs that open short-lived per-peer clients with the same identity MUST route this endpoint's query through the singleton — a rival same-fingerprint session would evict the singleton's session server-side (one session per fingerprint) and the next singleton RPC fails on a dead connection. |
+
 ### 12.4 LISTEN timeout semantics (v0.10.6+)
 
 `nodus_ops_listen()` / `nodus_ops_listen_v2()` treat `NODUS_ERR_TIMEOUT` from the underlying client as a **soft success**: the callback is still installed in the listener table and a valid token is returned. Rationale: when LISTEN times out, the server may already have registered the subscription (only the `listen_ok` response was lost). Discarding the callback would cause silent push-event loss. The nodus client also tracks the key in `listen_keys[]` so `resubscribe_all()` retries the LISTEN on the next reconnect.

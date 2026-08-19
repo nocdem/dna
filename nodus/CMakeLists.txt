@@ -46,6 +46,21 @@ option(NODUS_STANDALONE "Include shared crypto sources and log shim" ON)
 #   shared/crypto/utils/qgp_bench.h
 #   nodus/docs/plans/2026-04-24-perf-harness-design.md
 option(QGP_BENCH "Enable perf bench instrumentation" OFF)
+
+# ── Ledger V2 O15C — activation authority (TEST-ONLY builds) ─────────────
+# OFF by default and set on NO production target or deploy procedure. ON
+# compiles the activation-authority call sites into libnodus and
+# nodus-server (type-15/16 admission, the boundary state machine, terminal
+# refusal, state_root v4 with the activation leg, schema v10 at open, and
+# the seam that derives the successor V2 chain). A binary built with this
+# ON is a REHEARSAL binary, not a production one — normal non-test
+# execution remains unable to activate V2 (O15C-B §7).
+option(NODUS_V2_ACTIVATION "O15C activation-authority build (test-only)" OFF)
+if(NODUS_V2_ACTIVATION)
+    add_compile_definitions(NODUS_V2_ACTIVATION_AUTHORITY=1)
+    message(WARNING "NODUS_V2_ACTIVATION=ON — building a TEST-ONLY "
+                    "Ledger V2 activation-authority binary")
+endif()
 if(QGP_BENCH)
     add_compile_definitions(QGP_BENCH)
 endif()
@@ -193,6 +208,19 @@ set(NODUS_SOURCES
     src/witness/nodus_witness_v2_gate.c
     src/witness/nodus_witness_v2_ingress.c
     src/witness/nodus_witness_v2_sync2.c
+
+    # Ledger V2 O15C — the committed activation authority: shared
+    # record/schedule/readiness codec + witness-side record, root,
+    # type-15/16 apply, boundary state machine and terminal refusal.
+    # ALWAYS COMPILED (unit-testable); every call site that could admit a
+    # type-15/16 tx, run the machine, refuse a height, emit state_root v4
+    # or derive the successor chain compiles ONLY under
+    # NODUS_V2_ACTIVATION_AUTHORITY (the NODUS_V2_ACTIVATION option
+    # below, OFF by default — the exact test-target-only gate O15C-A
+    # specified).
+    ${SHARED_DIR}/dnac/activation_wire.c
+    src/witness/nodus_witness_v2_activation.c
+    src/witness/nodus_witness_v2_seam.c
 
     # Ledger V2 S6 — INACTIVE generic genesis/distribution manifest +
     # claim codec (shared) and the witness-side manifest/claims module
@@ -966,6 +994,24 @@ register_witness_test(test_v2_epoch)
 register_witness_test(test_v2_qc_authority)
 register_witness_test(test_v2_finalize)
 
+# Ledger V2 O15C — the committed activation authority: shared codecs +
+# digests (KAT-style sensitivity), schema v10 migration/rollback, the
+# type-15/16 apply consensus matrices over REAL ML-DSA-87 committee
+# keys, the boundary state machine (SCHEDULED→READY→ACTIVE, bounded
+# postponement, auto-cancel), terminal-height refusal, Stage C
+# exclusions with the floor guard, the V2 attendance writer (Rule N
+# source) and the 6-leg state_root v4 combiner. Runs identically in
+# both build variants — the module is always compiled; only its
+# production call sites are NODUS_V2_ACTIVATION-gated.
+register_witness_test(test_v2_activation)
+# O15C — the activation SEAM: deterministic successor-chain derivation
+# from a terminal legacy chain (terminal source commitment, S6 claim
+# reserve == migratable value, no spendable UTXO copies, claim
+# decrement + duplicate-claim rejection through the REAL apply engine,
+# derivation determinism twins, tamper sensitivity, fail-closed
+# token/malformed-owner classification, restart re-derivation parity).
+register_witness_test(test_v2_seam)
+
 # Ledger V2 O14 — LINK GATE for the production V2 acceptance seam.
 #
 # A source-level test cannot prove this: the test binaries link libnodus
@@ -1036,6 +1082,13 @@ add_executable(test_witness_pbft_state_persist
 target_link_libraries(test_witness_pbft_state_persist nodus dsa nodus)
 add_test(NAME test_witness_pbft_state_persist
          COMMAND test_witness_pbft_state_persist)
+
+# O15C-C — BFT liveness regressions: out-of-order vote buffering (D2)
+# and view-change join suppression (D1). Root-caused from the frozen
+# 2026-08-19 activation-rehearsal round-20 stall evidence.
+add_executable(test_bft_liveness tests/test_bft_liveness.c)
+target_link_libraries(test_bft_liveness nodus dsa nodus)
+add_test(NAME test_bft_liveness COMMAND test_bft_liveness)
 
 # PR 3 Yol B — bootstrap state machine regression.
 # Covers HAVE_CHAIN branch: chain DB present → reaches DONE without

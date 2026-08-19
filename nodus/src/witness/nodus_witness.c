@@ -18,6 +18,11 @@
 #include "witness/nodus_witness_v2_gate.h"      /* O15B activation gate  */
 #include "witness/nodus_witness_v2_ingress.h"   /* O15B ingress arming   */
 #include "witness/nodus_witness_v2_preflight.h" /* O15A readiness report */
+#ifdef NODUS_V2_ACTIVATION_AUTHORITY
+#include "witness/nodus_witness_v2_schema.h"    /* O15C schema helpers */
+#include "witness/nodus_witness_v2_activation.h" /* O15C activation tables */
+#include "witness/nodus_witness_v2_seam.h"      /* O15C successor derivation */
+#endif
 #include "nodus/nodus_chain_config.h"  /* Stage C.2 vote-req handler */
 #include "crypto/utils/qgp_log.h"
 #include "crypto/hash/qgp_sha3.h"
@@ -423,6 +428,28 @@ static int witness_post_open_gate(nodus_witness_t *witness,
      * refuses the database, because a legacy chain's open must not come to
      * depend on Ledger V2 state.
      */
+#ifdef NODUS_V2_ACTIVATION_AUTHORITY
+    /* O15C (test-only builds): an activation-authority SERVER needs the
+     * TWO activation tables in every chain database it opens — and ONLY
+     * those. Deliberately NOT the full v2 ladder: its S5 stage rebuilds
+     * `utxo_set` with `domain_id NOT NULL` and no default, which the
+     * LEGACY writers (genesis, spends) never populate — running it on a
+     * live legacy chain broke the genesis supply invariant on the first
+     * rehearsal bring-up. The ladder belongs to the SUCCESSOR database,
+     * where the seam runs it explicitly and only the V2 engine writes.
+     * Idempotent CREATE IF NOT EXISTS (the chain_config migration
+     * pattern); fail closed on failure. Gated on the server backpointer
+     * so bare test-fixture handles keep exact schema semantics. */
+    if (witness->server &&
+        nodus_witness_v2_activation_db_migrate(witness) != 0) {
+        fprintf(stderr, "%s: activation-table migration FAILED for %s — "
+                "refusing the database (fail closed)\n", LOG_TAG, db_path);
+        sqlite3_close(witness->db);
+        witness->db = NULL;
+        return -1;
+    }
+#endif
+
     nodus_witness_v2_ingress_disarm(witness);
 
     nodus_v2_preflight_report_t pf;
@@ -512,6 +539,10 @@ int nodus_witness_scan_chain_db(nodus_witness_t *witness) {
      */
     char best[256];
     int  have_best = 0;
+#ifdef NODUS_V2_ACTIVATION_AUTHORITY
+    char best_succ[256];
+    int  have_succ = 0;
+#endif
     struct dirent *entry;
     while ((entry = readdir(dir)) != NULL) {
         uint8_t probe[16];
@@ -520,8 +551,32 @@ int nodus_witness_scan_chain_db(nodus_witness_t *witness) {
             snprintf(best, sizeof(best), "%s", entry->d_name);
             have_best = 1;
         }
+#ifdef NODUS_V2_ACTIVATION_AUTHORITY
+        /* O15C — a seam SUCCESSOR (committed genesis manifest bound to a
+         * terminal legacy chain) outranks every legacy candidate: the
+         * committed activation record that authorized deriving it is the
+         * selection authority, not the filename order. Committed bytes
+         * only — the probe decodes the stored manifest. */
+        {
+            char cand[512];
+            snprintf(cand, sizeof(cand), "%s/%s", data_path, entry->d_name);
+            if (nodus_witness_v2_seam_is_successor(cand) == 1 &&
+                (!have_succ || strcmp(entry->d_name, best_succ) < 0)) {
+                snprintf(best_succ, sizeof(best_succ), "%s", entry->d_name);
+                have_succ = 1;
+            }
+        }
+#endif
     }
     closedir(dir);
+#ifdef NODUS_V2_ACTIVATION_AUTHORITY
+    if (have_succ) {
+        snprintf(best, sizeof(best), "%s", best_succ);
+        have_best = 1;
+        fprintf(stderr, "%s: seam successor chain preferred: %s\n",
+                LOG_TAG, best);
+    }
+#endif
     if (!have_best) return -1;      /* No chain DB found — pre-genesis */
 
     uint8_t chain_id[16];
@@ -531,10 +586,28 @@ int nodus_witness_scan_chain_db(nodus_witness_t *witness) {
     snprintf(db_path, sizeof(db_path), "%s/%s", data_path, best);
     if (witness_db_open_path(witness, db_path) != 0) return -1;
 
+    /* O15C — the handle's chain id is installed BEFORE the gate: the
+     * preflight's chain-id agreement check (issue 8) compares the id
+     * DERIVED from committed state against the handle's, and running it
+     * against a still-zeroed handle mis-reported CHAIN_ID_DISAGREEMENT
+     * on every V2 successor restart (found by the O15C rehearsal). The
+     * filename-derived id is available here either way; the gate only
+     * READS it. */
+    nodus_witness_set_chain_id(witness, chain_id);
+
     /* O15A: the restart path now runs the SAME gate as creation. */
     if (witness_post_open_gate(witness, db_path) != 0) return -1;
 
-    nodus_witness_set_chain_id(witness, chain_id);
+#ifdef NODUS_V2_ACTIVATION_AUTHORITY
+    /* O15C — restart-side seam retry: with the chain id installed, a
+     * terminal legacy chain whose successor derivation was interrupted
+     * derives it now, from the same committed inputs (idempotent; a
+     * completed successor short-circuits). Failure is logged, never a
+     * refusal — the legacy DB itself is fine. */
+    if (nodus_witness_v2_seam_maybe_derive(witness, NULL) != 0)
+        fprintf(stderr, "%s: seam successor derivation failed at open "
+                "(will retry next open)\n", LOG_TAG);
+#endif
 
     char hex[17];
     for (int i = 0; i < 8; i++)

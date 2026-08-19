@@ -306,10 +306,17 @@ typedef enum {
                                      *   (Ledger V2 S9). Carried ONLY by the V3 wire — inadmissible on
                                      *   the legacy V2 wire, whose acceptance set is FROZEN at 0..11.
                                      *   REJECT-unconditional until activation. */
-    DNAC_TX_UNSHIELD         = 13   /**< V3-ONLY: shielded pool → transparent boundary crossing
+    DNAC_TX_UNSHIELD         = 13,  /**< V3-ONLY: shielded pool → transparent boundary crossing
                                      *   (Ledger V2 S9). Same freeze as DNAC_TX_SHIELD: never valid on
                                      *   the legacy V2 wire, REJECT-unconditional until activation.
                                      *   Type 14 stays UNASSIGNED. */
+    DNAC_TX_V2_SCHEDULE      = 15,  /**< O15C: quorum-voted Ledger V2 activation SCHEDULE/CANCEL.
+                                     *   Legacy-wire governance type (the CHAIN_CONFIG shape); admitted
+                                     *   ONLY by builds compiled with NODUS_V2_ACTIVATION_AUTHORITY —
+                                     *   production builds reject it unconditionally. 14 SKIPPED on
+                                     *   purpose: it stays unassigned per the S9 pin. */
+    DNAC_TX_V2_READY         = 16   /**< O15C: one validator's signed Ledger V2 readiness signal.
+                                     *   Same admission gate as DNAC_TX_V2_SCHEDULE. */
 } dnac_tx_type_t;
 
 /* ============================================================================

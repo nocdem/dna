@@ -185,6 +185,12 @@ int nodus_witness_bft_handle_newview(nodus_witness_t *w,
 /** Initiate view change (broadcasts VIEW_CHANGE to peers). */
 int nodus_witness_bft_initiate_view_change(nodus_witness_t *w);
 
+/* O15C-C D2 — feed buffered out-of-order PREVOTE/PRECOMMIT votes back
+ * through the ordinary vote handler once the round/phase they belong to
+ * is live. Called automatically at both round starts and after every
+ * live vote; exported so the liveness regression can drive it. */
+void nodus_witness_bft_drain_vote_buffer(nodus_witness_t *w);
+
 /* ── Timeout ─────────────────────────────────────────────────────── */
 
 /** Check for BFT round timeout. Called from nodus_witness_tick(). */

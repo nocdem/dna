@@ -21,6 +21,7 @@
 #include "witness/nodus_witness_v2_epoch.h"
 #include "witness/nodus_witness_v2_gate.h"
 #include "witness/nodus_witness_v2_schema.h"
+#include "witness/nodus_witness_v2_activation.h"
 #include "crypto/utils/qgp_log.h"
 
 #define LOG_TAG "WITNESS_V2_PREFL"
@@ -66,6 +67,9 @@ const char *nodus_witness_v2_preflight_issue_name(nodus_v2_pf_issue_t id) {
         return "RULE_N_ATTENDANCE_SOURCE_ABSENT";
     case NODUS_V2_PF_INGRESS_ENABLED:           return "INGRESS_ENABLED";
     case NODUS_V2_PF_INSPECTION_FAULT:          return "INSPECTION_FAULT";
+    case NODUS_V2_PF_ACTIVATION_AUTHORITY_MALFORMED:
+        return "ACTIVATION_AUTHORITY_MALFORMED";
+    case NODUS_V2_PF_TARGET_MISMATCH:           return "TARGET_MISMATCH";
     }
     return "UNKNOWN";
 }
@@ -110,7 +114,7 @@ int nodus_witness_v2_preflight(nodus_witness_t *w,
         out->ready = 0;
         return 0;
     }
-    if (ver != NODUS_V2_SCHEMA_VERSION_S9)
+    if (ver != NODUS_V2_SCHEMA_VERSION_S10)
         pf_add(out, NODUS_V2_PF_SCHEMA_UNSUPPORTED);
 
     /* ── 2. REQUIRED TABLES ───────────────────────────────────────── */
@@ -119,7 +123,8 @@ int nodus_witness_v2_preflight(nodus_witness_t *w,
             "v2_blocks", "v2_domain_heads", "v2_domain_updates",
             "v2_root_history", "v2_tx_index", "v2_intent_index",
             "v2_manifests", "v2_claims_spent", "validators",
-            "validator_set_snapshots", "supply_tracking"
+            "validator_set_snapshots", "supply_tracking",
+            "v2_activation", "v2_activation_readiness"
         };
         for (size_t i = 0; i < sizeof(required) / sizeof(required[0]); i++) {
             int t = pf_table_exists(w, required[i]);
@@ -271,25 +276,41 @@ int nodus_witness_v2_preflight(nodus_witness_t *w,
     if (have_v2_blocks && nodus_witness_v2_supply_check(w) != 0)
         pf_add(out, NODUS_V2_PF_SUPPLY_INCONSISTENT);
 
-    /* ── 8. RULE N — the structural fail-closed gate ──────────────────
-     * Ledger V2 has NO producer for `validators.last_signed_block`: it is
-     * written exclusively by nodus_witness_record_attendance on the
-     * legacy BFT commit path, and the V2 boundary deliberately does not
-     * touch it or `consecutive_missed_epochs` (both are validators
-     * merkle-leaf fields, so they are committed consensus state).
+    /* ── 8. RULE N — obligation DISCHARGED (O15C) ─────────────────────
+     * O15A raised issue 12 UNCONDITIONALLY because this build had no V2
+     * attendance source. O15C supplied it: the apply engine credits the
+     * committed header proposer inside the one block transaction, before
+     * any root computation (nodus_witness_v2_record_attendance, called
+     * from nodus_witness_v2_apply.c), and the V2 epoch boundary runs the
+     * transplanted leader-blame settlement (nodus_witness_v2_epoch.c —
+     * the legacy bft.c:2587-2723 semantics against the committed
+     * snapshot authority). With the writer present in this build, the
+     * standing issue's own removal condition ("removed when the
+     * live-integration season supplies the writer") is met: the check is
+     * DELETED, the id is retired, never reused.
      *
-     * Enforcing the rule without its writer would freeze the watermark
-     * and auto-retire the blamed leader at every boundary; inventing an
-     * attendance oracle is forbidden. So the obligation lives HERE, as a
-     * standing readiness issue: while it stands the preflight can never
-     * report ready, and V2 cannot be activated with Rule N unenforceable.
-     *
-     * This is UNCONDITIONAL by design. It is not a probe that might pass
-     * — there is no V2 attendance source in this build, so making it
-     * conditional would only create a way to be wrong about it. It is
-     * removed when the live-integration season supplies the writer.
-     */
-    pf_add(out, NODUS_V2_PF_RULE_N_ATTENDANCE_SOURCE_ABSENT);
+     * ── 8b. O15C — committed activation authority sanity ─────────────
+     * A committed record this binary cannot interpret (15), or one
+     * naming a target this binary is not running (16), must block
+     * readiness — the node stays silent rather than participating in an
+     * activation it cannot execute. */
+    {
+        nodus_v2_act_record_t rec;
+        int arc = nodus_witness_v2_activation_get(w, &rec);
+        if (arc < 0) {
+            pf_add(out, NODUS_V2_PF_ACTIVATION_AUTHORITY_MALFORMED);
+        } else if (arc == 0 &&
+                   (rec.state == DNA_ACT_STATE_SCHEDULED ||
+                    rec.state == DNA_ACT_STATE_READY ||
+                    rec.state == DNA_ACT_STATE_ACTIVE)) {
+            uint8_t mine[DNA_ACT_HASH_LEN];
+            if (nodus_witness_v2_activation_compiled_target(mine) != 0) {
+                pf_add(out, NODUS_V2_PF_INSPECTION_FAULT);
+            } else if (memcmp(mine, rec.target, DNA_ACT_HASH_LEN) != 0) {
+                pf_add(out, NODUS_V2_PF_TARGET_MISMATCH);
+            }
+        }
+    }
 
     /* ── 9. INGRESS must not be reachable ─────────────────────────────
      *

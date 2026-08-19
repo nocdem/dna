@@ -496,7 +496,8 @@ int nodus_witness_v2_genesis_ex(nodus_witness_t *w,
     if (epoch != nodus_v2_epoch_for_height(0)) return -1;
     uint32_t ver = 0;
     if (nodus_witness_db_schema_version(w, &ver) != 0 ||
-        ver != NODUS_V2_SCHEMA_VERSION_S9)
+        (ver != NODUS_V2_SCHEMA_VERSION_S9 &&
+         ver != NODUS_V2_SCHEMA_VERSION_S10))
         return -1;
 
     /* Idempotency: a committed height-0 row decides. */
@@ -856,6 +857,12 @@ static int epoch_stage_fault(void *ud, nodus_v2_epoch_stage_t s,
             return blk->fail_at == V2AP_FAIL_AFTER_SNAPSHOT_BUILD;
         case NODUS_V2_EPST_SNAPSHOT_PERSIST:
             return blk->fail_at == V2AP_FAIL_AFTER_SNAPSHOT_PERSIST;
+        case NODUS_V2_EPST_RULE_N:
+            /* O15C — no dedicated injection point: the Rule N rows ride
+             * the same ONE transaction, and the surrounding stages
+             * (GRAD_BATCH before, BOUNDARY_FLIPS after) already prove
+             * the rollback bracket for this region. */
+            return 0;
         default:
             return 1;                    /* unknown stage: fail closed   */
     }
@@ -1140,7 +1147,8 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
      * code a production relay that re-exports it as a verdict.) */
     uint32_t ver = 0;
     if (nodus_witness_db_schema_version(w, &ver) != 0 ||
-        ver != NODUS_V2_SCHEMA_VERSION_S9)
+        (ver != NODUS_V2_SCHEMA_VERSION_S9 &&
+         ver != NODUS_V2_SCHEMA_VERSION_S10))
         return -2;
 
     /* ── epoch: DERIVED from the global block count, never trusted ────
@@ -1883,6 +1891,27 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
         free(doms);
         doms = post;
         n_dom = n_post;
+    }
+
+    /* 6d-bis. O15C ATTENDANCE — the Rule N source. Credits the committed
+     * header proposer INSIDE this one transaction, before the boundary
+     * below and before every root phase (the O15B.1 ordering invariant).
+     * Deterministic: a pure function of committed rows + the
+     * BlockID-bound proposer_id, so live application and replay through
+     * this same engine write identical bytes. SYSTEM is declared touched
+     * exactly when a credit landed (the attendance columns are validator
+     * merkle-leaf fields feeding system_state_root). */
+    {
+        int credited = 0;
+        if (nodus_witness_v2_record_attendance(w, blk->global_height,
+                                               blk->proposer_id,
+                                               &credited) != 0)
+            goto fail_fault;
+        if (credited) {
+            dom_ctx_t *dsys_att = dom_for(doms, n_dom, DNA_DOMAIN_SYSTEM);
+            if (!dsys_att) goto fail_fault;
+            dsys_att->touched = 1;
+        }
     }
 
     /* 6e. O12 S2 EPOCH BOUNDARY — engine-MANDATORY, not caller-declared.

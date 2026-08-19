@@ -112,6 +112,11 @@ typedef struct {
  * by name right after the tx-hash check. Type 14 stays UNASSIGNED. */
 #define NODUS_W_TX_SHIELD           12
 #define NODUS_W_TX_UNSHIELD         13
+/* O15C — Ledger V2 activation authority (legacy-wire governance types).
+ * Type 14 stays UNASSIGNED. Admission is compile-gated
+ * (NODUS_V2_ACTIVATION_AUTHORITY); production builds reject both. */
+#define NODUS_W_TX_V2_SCHEDULE      15
+#define NODUS_W_TX_V2_READY         16
 
 /* ── Vote types ──────────────────────────────────────────────────── */
 
@@ -162,6 +167,28 @@ typedef struct {
      * separately via nodus_witness_verify_sync_certs. */
     uint8_t     pubkey[DNAC_PUBKEY_SIZE];
 } nodus_witness_vote_record_t;
+
+/* ── O15C-C D2 — pending (out-of-order) vote entry ───────────────────
+ * Field-for-field mirror of nodus_t3_vote_t plus the header fields the
+ * vote handler consumes; mirrored rather than embedded so this header
+ * does not grow a protocol/nodus_tier3.h dependency. bft.c copies
+ * field-by-field in both directions (no type punning). */
+#define NODUS_W_VOTE_BUFFER_CAP          32
+/* Only rounds this close ahead of the live/settled round are buffered;
+ * anything further is treated exactly as before (ignored as stale/far). */
+#define NODUS_W_VOTE_BUFFER_ROUND_AHEAD  2
+
+typedef struct {
+    bool        used;
+    uint8_t     msg_type;       /* NODUS_T3_PREVOTE / NODUS_T3_PRECOMMIT */
+    uint64_t    round;
+    uint32_t    view;
+    uint8_t     sender_id[NODUS_T3_WITNESS_ID_LEN];
+    uint8_t     vote_target[NODUS_T3_TX_HASH_LEN];
+    uint32_t    vote;
+    char        reason[256];
+    uint8_t     cert_sig[NODUS_SIG_BYTES];
+} nodus_witness_pending_vote_t;
 
 /* ── Round state ─────────────────────────────────────────────────── */
 
@@ -382,6 +409,30 @@ typedef struct nodus_witness {
     int         view_change_count;
     uint32_t    view_change_target;
     bool        view_change_in_progress;
+    /* O15C-C D1 — whether THIS node has broadcast + self-recorded its
+     * own VIEW_CHANGE vote for view_change_target. Receiving a peer's
+     * VIEW_CHANGE sets view_change_in_progress (the join path), which
+     * used to make nodus_witness_bft_initiate_view_change a silent
+     * no-op at the joiner's own round timeout — six of seven votes were
+     * never sent and view-change quorum was structurally unreachable
+     * (2026-08-19 rehearsal, round 20). Cleared whenever the target
+     * changes, the view change completes, or the view-change timeout
+     * resets to IDLE. In-memory only, never persisted. */
+    bool        view_change_voted;
+
+    /* O15C-C D2 — bounded out-of-order vote buffer. A PREVOTE/PRECOMMIT
+     * that arrives before this node has initialized the round it
+     * belongs to (proposal still in flight), or a PRECOMMIT arriving
+     * while this node is still in PREVOTE phase of the same round, used
+     * to be dropped SILENTLY by handle_vote's round/phase equality
+     * checks. Under timing skew that dropped enough votes to make
+     * quorum unreachable (2026-08-19 rehearsal round 20: three nodes
+     * each missed prevote quorum by exactly one). Near-future votes are
+     * parked here and re-fed through the ordinary vote handler when the
+     * round/phase catches up; replay and chain-id were checked at first
+     * arrival, and cert_sig + committee authorization are checked at
+     * drain time by the ordinary handler. */
+    nodus_witness_pending_vote_t vote_buffer[NODUS_W_VOTE_BUFFER_CAP];
 
     /* BFT config (computed from roster) */
     nodus_witness_bft_config_t  bft_config;
