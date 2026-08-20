@@ -126,6 +126,20 @@ int nodus_witness_vset_insert(nodus_witness_t *w,
     if (blob_len >= (size_t)DNA_VSET_HDR_LEN)
         active_count = (uint16_t)(((uint16_t)blob[8] << 8) | (uint16_t)blob[9]);
 
+    /* O15F Task 1 — THE WRITER GUARD. On a successor no snapshot larger
+     * than NODUS_V2_ACTIVE_SET_MAX may ever be stored: the persisted row
+     * is the sole committee authority, so refusing it here makes every
+     * raw reader safe without a reader-side clamp. Fail-closed (-1);
+     * legacy chains keep the 128 ceiling. */
+    if (w->v2_successor && active_count > NODUS_V2_ACTIVE_SET_MAX) {
+        QGP_LOG_ERROR(LOG_TAG, "epoch %llu: successor snapshot active_count "
+                      "%u exceeds NODUS_V2_ACTIVE_SET_MAX (%d) — refusing "
+                      "to store", (unsigned long long)epoch_start,
+                      (unsigned)active_count, NODUS_V2_ACTIVE_SET_MAX);
+        sqlite3_finalize(st);
+        return -1;
+    }
+
     sqlite3_bind_int64(st, 1, (sqlite3_int64)epoch_start);
     sqlite3_bind_int  (st, 2, (int)active_count);
     sqlite3_bind_blob (st, 3, hash64, DNA_VSET_HASH_LEN, SQLITE_STATIC);
@@ -427,6 +441,12 @@ static int vset_target_for_epoch(nodus_witness_t *w, uint64_t e_start) {
     if (target < 1) target = 1;
     if (target > (uint64_t)DNA_MAX_ACTIVE_VALIDATORS)
         target = (uint64_t)DNA_MAX_ACTIVE_VALIDATORS;
+    /* O15F Task 1 — a successor's active set is capped at
+     * NODUS_V2_ACTIVE_SET_MAX. Mirrors committee_target_for_epoch so the
+     * snapshot builder and the committee selector agree on the seat count.
+     * Legacy chains keep the 128 ceiling above. */
+    if (w->v2_successor && target > (uint64_t)NODUS_V2_ACTIVE_SET_MAX)
+        target = (uint64_t)NODUS_V2_ACTIVE_SET_MAX;
     return (int)target;
 }
 

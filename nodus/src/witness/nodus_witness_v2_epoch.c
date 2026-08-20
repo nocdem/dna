@@ -753,6 +753,21 @@ int nodus_witness_v2_epoch_authority_for_epoch(
         return -1;
     }
 
+    /* O15F Task 1 — defence in depth. A successor snapshot larger than
+     * NODUS_V2_ACTIVE_SET_MAX can never become an authority: the writer
+     * guard (nodus_witness_vset_insert) already refuses to store one, so
+     * a >30 blob here means a corrupt row, which fails closed rather than
+     * seating an oversized committee. Legacy chains keep the 128 bound
+     * enforced above. */
+    if (w->v2_successor && snap->active_count > NODUS_V2_ACTIVE_SET_MAX) {
+        QGP_LOG_ERROR(LOG_TAG, "epoch %llu: successor snapshot active_count "
+                      "%u exceeds NODUS_V2_ACTIVE_SET_MAX (%d) — refusing "
+                      "as authority", (unsigned long long)epoch_start,
+                      (unsigned)snap->active_count, NODUS_V2_ACTIVE_SET_MAX);
+        dna_vset_free(&snap);
+        return -1;
+    }
+
     uint32_t n = (uint32_t)snap->active_count;
     if (n_out)      *n_out = n;
     if (quorum_out) *quorum_out = dna_bft_quorum(n);

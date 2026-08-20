@@ -30,6 +30,7 @@
 #include "dnac/domain_wire.h"
 #include "dnac/ledger_ids.h"
 #include "dnac/vset_wire.h"
+#include "dnac/validator.h"   /* DNAC_VALIDATOR_ACTIVE / _ELIGIBLE (O15F T1) */
 
 #include "crypto/hash/qgp_sha3.h"
 #include "crypto/utils/qgp_log.h"
@@ -318,6 +319,13 @@ int nodus_witness_v2_seam_maybe_derive(nodus_witness_t *w,
     int ok = -1;
     do {
         if (nodus_witness_create_chain_db(w2, prov16) != 0) break;
+        /* O15F Task 1 — mark the provisional handle a successor BEFORE any
+         * validator-set seeding. nodus_witness_vset_commit_genesis (below)
+         * seeds the epoch-0/E snapshots through vset_target_for_epoch and
+         * the writer guard, both gated on v2_successor; without this the
+         * genesis snapshots would seed uncapped (D1#4). Deterministic local
+         * act every node's seam performs identically. */
+        w2->v2_successor = 1;
         /* O15E Faz B: successors derive at S11 so every block they ever
          * commit carries its canonical envelope bytes (v2_tx_bytes). */
         if (nodus_witness_db_migrate_v2s11(w2) != 0) break;
@@ -367,6 +375,45 @@ int nodus_witness_v2_seam_maybe_derive(nodus_witness_t *w,
                 "DETACH DATABASE legacy;") != 0) {
             (void)seam_exec(w2->db, "ROLLBACK");
             break;
+        }
+
+        /* ── O15F Task 1 — successor active-set-maximum reconciliation ──
+         * The successor set is transplanted from the terminal legacy set,
+         * whose size is legal on the legacy lane [7..128] but inexpressible
+         * on a max-30 successor. Enforce the bound BEFORE seeding the
+         * genesis snapshots (below), fail-closed — refusing to derive is
+         * the honest choice; silently seating a >30 set (or silently
+         * clamping a carried target 31->30) is the substitution this tree
+         * bans. Mirrors the token/attendance reconciliations above. */
+        {
+            char sql[192];
+            sqlite3_int64 n_bonded = -1;
+            snprintf(sql, sizeof(sql),
+                     "SELECT COUNT(*) FROM validators WHERE status IN "
+                     "(%d,%d)", (int)DNAC_VALIDATOR_ACTIVE,
+                     (int)DNAC_VALIDATOR_ELIGIBLE);
+            if (seam_count(w2->db, sql, &n_bonded) != 0) break;
+            if (n_bonded > (sqlite3_int64)NODUS_V2_ACTIVE_SET_MAX) {
+                QGP_LOG_ERROR(LOG_TAG, "terminal bonded set %lld exceeds "
+                              "NODUS_V2_ACTIVE_SET_MAX (%d) — ABORTING "
+                              "derivation (fail closed)",
+                              (long long)n_bonded, NODUS_V2_ACTIVE_SET_MAX);
+                break;
+            }
+
+            sqlite3_int64 cc_target = -1;
+            snprintf(sql, sizeof(sql),
+                     "SELECT COALESCE(MAX(new_value),0) FROM "
+                     "chain_config_history WHERE param_id = %d",
+                     (int)DNAC_CFG_TARGET_ACTIVE_COUNT);
+            if (seam_count(w2->db, sql, &cc_target) != 0) break;
+            if (cc_target > (sqlite3_int64)NODUS_V2_ACTIVE_SET_MAX) {
+                QGP_LOG_ERROR(LOG_TAG, "carried TARGET_ACTIVE_COUNT %lld "
+                              "exceeds NODUS_V2_ACTIVE_SET_MAX (%d) — "
+                              "ABORTING derivation (fail closed)",
+                              (long long)cc_target, NODUS_V2_ACTIVE_SET_MAX);
+                break;
+            }
         }
 
         /* ── 6. Authority + registry + manifest + genesis ─────────────

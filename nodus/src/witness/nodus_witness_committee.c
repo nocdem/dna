@@ -84,6 +84,12 @@ static int committee_target_for_epoch(nodus_witness_t *w, uint64_t e_start) {
     if (target < 1) target = 1;
     if (target > (uint64_t)DNAC_MAX_ACTIVE_VALIDATORS)
         target = (uint64_t)DNAC_MAX_ACTIVE_VALIDATORS;
+    /* O15F Task 1 — a successor's active set is capped at
+     * NODUS_V2_ACTIVE_SET_MAX (the seam sets v2_successor before genesis
+     * seeding, so this fires during seeding too). Legacy chains keep the
+     * 128 ceiling above. Mirrors vset_target_for_epoch. */
+    if (w->v2_successor && target > (uint64_t)NODUS_V2_ACTIVE_SET_MAX)
+        target = (uint64_t)NODUS_V2_ACTIVE_SET_MAX;
     return (int)target;
 }
 

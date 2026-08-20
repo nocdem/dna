@@ -128,6 +128,25 @@ typedef struct {
  * future chain type is impossible to miss. */
 #define NODUS_W_TX_V2_ENVELOPE      200
 
+/* O15F Task 1 — the SUCCESSOR active-set maximum.
+ *
+ * THE INVARIANT: on a successor chain no `validator_set_snapshots` row
+ * with active_count > NODUS_V2_ACTIVE_SET_MAX can ever be PERSISTED. The
+ * persisted snapshot is the SOLE committee authority
+ * (nodus_committee_get_for_block serves it RAW to every live consumer),
+ * so bounding every WRITE / SEED / RESOLVE point makes every reader safe
+ * WITHOUT a divergence-prone reader clamp. Enforced fail-closed at the
+ * target clamps (committee_target_for_epoch / vset_target_for_epoch), the
+ * writer (nodus_witness_vset_insert), the resolver
+ * (nodus_witness_v2_epoch_authority_for_epoch) and the seam
+ * (early v2_successor + terminal-set precondition + carried-CC reject).
+ * LEGACY chains keep the DNAC_MAX_ACTIVE_VALIDATORS ceiling byte-for-byte
+ * (every guard is gated on w->v2_successor / the seam's successor build).
+ * 30 <= 128, so all round-state / QC / vote arrays already fit. */
+#define NODUS_V2_ACTIVE_SET_MAX     30
+_Static_assert(NODUS_V2_ACTIVE_SET_MAX <= DNAC_MAX_ACTIVE_VALIDATORS,
+               "successor active-set max exceeds resource ceiling");
+
 /* ── Vote types ──────────────────────────────────────────────────── */
 
 typedef enum {

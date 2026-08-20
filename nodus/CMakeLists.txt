@@ -1041,6 +1041,12 @@ register_witness_test(test_v2_activation)
 # token/malformed-owner classification, restart re-derivation parity).
 register_witness_test(test_v2_seam)
 
+# Ledger V2 O15F Task 1 — the successor active-set maximum (30): target
+# clamp, insert/resolve reject, live serve, and the seam terminal-set +
+# carried-chain_config reconciliation, all fail-closed on a successor and
+# byte-identical (128 ceiling) on legacy.
+register_witness_test(test_v2_active_max)
+
 # Ledger V2 O14 — LINK GATE for the production V2 acceptance seam.
 #
 # A source-level test cannot prove this: the test binaries link libnodus
