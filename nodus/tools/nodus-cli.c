@@ -71,6 +71,7 @@
 #include "witness/nodus_witness_v2_apply.h"    /* nodus_v2_epoch_for_height */
 #include "witness/nodus_witness_runtime.h"     /* set-hash / approval digest */
 #include "crypto/hash/qgp_sha3.h"
+#include "crypto/utils/qgp_fingerprint.h"      /* O15F T6: fp raw<->hex      */
 #endif
 
 /* ── Globals ─────────────────────────────────────────────────────── */
@@ -2126,6 +2127,714 @@ done:
     }
     return rc;
 }
+
+/* ── O15F Task 6 — submission-target parse + shared submit ──────────
+ *
+ * The O15D verbs submit to the outer -s server. T6's verbs additionally
+ * accept `--submit ip:port` to name a target explicitly; when absent they
+ * fall back to the outer -s server. This mirrors cmd_v2_envelope's
+ * dnac_spend lane byte-for-byte (the classification into class 200 /
+ * class 201 is SERVER-side: bytes beginning with the 16-byte envelope
+ * family marker → 200, otherwise → 201, so a claim's canonical bytes —
+ * which begin with claim_version u32 BE, never the marker — divert into
+ * the claim lane without any wire flag). @return 0 / -1. */
+static int t6_resolve_target(const char *submit, const char *def_ip,
+                             uint16_t def_port, char ip_out[64],
+                             uint16_t *port_out) {
+    if (!submit) {
+        if (!def_ip) return -1;
+        snprintf(ip_out, 64, "%s", def_ip);
+        *port_out = def_port;
+        return 0;
+    }
+    const char *colon = strchr(submit, ':');
+    if (colon) {
+        size_t hlen = (size_t)(colon - submit);
+        if (hlen == 0 || hlen >= 64) return -1;
+        memcpy(ip_out, submit, hlen);
+        ip_out[hlen] = '\0';
+        *port_out = (uint16_t)atoi(colon + 1);
+        if (*port_out == 0) return -1;
+    } else {
+        snprintf(ip_out, 64, "%s", submit);
+        *port_out = def_port;
+    }
+    return 0;
+}
+
+/* Submit one transaction (claim bytes OR envelope bytes) through the
+ * ordinary tier-2 dnac_spend lane, signed at the transport layer by
+ * `id`. `tx_hash` is the wire id the server keys the transaction by
+ * (SHA3-512(claim bytes) for a claim; the envelope wire_id for a
+ * stake). @return 0 committed / -1. */
+static int t6_submit(const char *ip, uint16_t port, nodus_identity_t *id,
+                     const uint8_t tx_hash[64], const uint8_t *bytes,
+                     uint32_t len) {
+    nodus_client_t client;
+    nodus_client_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    snprintf(cfg.servers[0].ip, sizeof(cfg.servers[0].ip), "%s", ip);
+    cfg.servers[0].port = port;
+    cfg.server_count    = 1;
+    cfg.auto_reconnect  = false;
+    if (nodus_client_init(&client, &cfg, id) != 0 ||
+        nodus_client_connect(&client) != 0) {
+        fprintf(stderr, "client connect failed (%s:%u)\n", ip, port);
+        nodus_client_close(&client);
+        return -1;
+    }
+    nodus_pubkey_t spk;
+    nodus_sig_t ssig;
+    memcpy(spk.bytes, id->pk.bytes, NODUS_PK_BYTES);
+    nodus_sign(&ssig, tx_hash, 64, &id->sk);
+    nodus_dnac_spend_result_t sres;
+    memset(&sres, 0, sizeof(sres));
+    int rc = nodus_client_dnac_spend(&client, tx_hash, bytes, len, &spk,
+                                     &ssig, 0, &sres);
+    nodus_client_close(&client);
+    if (rc != 0 || sres.status != NODUS_DNAC_APPROVED) {
+        fprintf(stderr, "dnac_spend RPC failed (rc=%d status=%d)\n",
+                rc, (int)sres.status);
+        return -1;
+    }
+    printf("committed: height=%llu index=%u\n",
+           (unsigned long long)sres.block_height, sres.tx_index);
+    return 0;
+}
+
+/* ── O15F Task 6 — `v2-claim` (successor GENESIS_CLAIM builder) ──────
+ *
+ * Re-derives the FULL distribution leaf set from the TERMINAL legacy
+ * database with the SEAM'S EXACT query and leaf construction
+ * (nodus_witness_v2_seam.c:242-271 — source_id = the 64-byte legacy
+ * nullifier, source_amount = amount, dest_binding = owner fp → 64 raw
+ * bytes, version DNA_DIST_VERSION), asserts the recomputed
+ * dna_dist_snapshot_root EQUALS the successor manifest's committed
+ * snapshot_root (proving leaf-set equivalence — a mismatch ABORTS and
+ * never submits a bad proof), selects the caller's leaf(s) by
+ * dest_binding == SHA3-512(pk), builds the Merkle proof, signs the claim
+ * preimage (ML-DSA-87), emits canonical claim bytes and either self-checks
+ * (--dry-run) or submits them (dnac_spend, class-201 server-side).
+ *
+ * Fail-closed leaf derivation (mirrors the seam): a malformed owner fp,
+ * a mid-scan non-64-byte nullifier, a non-positive amount, or a
+ * short/truncated scan ABORTS — a skipped row would shift every later
+ * leaf_index and could never reproduce the committed root, but the abort
+ * is explicit (the silent-substitution ban, root CLAUDE.md).
+ */
+static long claim_derive_legacy_leaves(sqlite3 *legacy,
+                                       dna_dist_leaf_t **leaves_out) {
+    *leaves_out = NULL;
+    sqlite3_int64 n_utxo = 0;
+    {
+        sqlite3_stmt *st = NULL;
+        if (sqlite3_prepare_v2(legacy,
+                "SELECT COUNT(*) FROM utxo_set WHERE amount > 0",
+                -1, &st, NULL) != SQLITE_OK)
+            return -1;
+        if (sqlite3_step(st) == SQLITE_ROW)
+            n_utxo = sqlite3_column_int64(st, 0);
+        sqlite3_finalize(st);
+    }
+    if (n_utxo <= 0 || (uint64_t)n_utxo > DNA_DIST_MAX_LEAVES) return -1;
+
+    dna_dist_leaf_t *leaves = calloc((size_t)n_utxo, sizeof(*leaves));
+    if (!leaves) return -1;
+
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(legacy,
+            "SELECT nullifier, owner, amount FROM utxo_set "
+            "WHERE amount > 0 ORDER BY nullifier ASC",
+            -1, &st, NULL) != SQLITE_OK) {
+        free(leaves);
+        return -1;
+    }
+    size_t n = 0;
+    int rc, bad = 0;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        if (n >= (size_t)n_utxo) { bad = 1; break; }
+        const void *nul = sqlite3_column_blob(st, 0);
+        const unsigned char *own = sqlite3_column_text(st, 1);
+        sqlite3_int64 amt = sqlite3_column_int64(st, 2);
+        if (!nul || sqlite3_column_bytes(st, 0) != 64 || !own || amt <= 0) {
+            bad = 1; break;
+        }
+        dna_dist_leaf_t *L = &leaves[n];
+        L->leaf_version  = DNA_DIST_VERSION;
+        L->source_id_len = 64;
+        memcpy(L->source_id, nul, 64);
+        L->source_amount = (uint64_t)amt;
+        /* seam_fp_to_binding: 128-char lowercase-hex owner → 64 raw. */
+        if (qgp_fp_hex_to_raw((const char *)own, L->dest_binding) != 0) {
+            bad = 1; break;
+        }
+        n++;
+    }
+    sqlite3_finalize(st);
+    if (bad || rc != SQLITE_DONE || n == 0 || n != (size_t)n_utxo) {
+        free(leaves);
+        return -1;
+    }
+    *leaves_out = leaves;
+    return (long)n;
+}
+
+static int cmd_v2_claim(const char *server_ip, uint16_t server_port,
+                        int argc, char **argv, int cmd_start) {
+    const char *legacy_db = NULL, *succ_db = NULL, *keys_csv = NULL;
+    const char *submit = NULL;
+    int dry_run = 0;
+
+    for (int i = cmd_start + 1; i < argc; i++) {
+        const char *a = argv[i];
+        if      (!strcmp(a, "--legacy-db") && i + 1 < argc) legacy_db = argv[++i];
+        else if (!strcmp(a, "--db")        && i + 1 < argc) succ_db   = argv[++i];
+        else if (!strcmp(a, "--keys")      && i + 1 < argc) keys_csv  = argv[++i];
+        else if (!strcmp(a, "--submit")    && i + 1 < argc) submit    = argv[++i];
+        else if (!strcmp(a, "--dry-run"))                   dry_run   = 1;
+        else { legacy_db = NULL; break; }
+    }
+    if (!legacy_db || !succ_db || !keys_csv || (!submit && !dry_run)) {
+        fprintf(stderr,
+            "Usage: v2-claim --legacy-db <terminal.db> --db <successor.db> "
+            "--keys <keydir> (--dry-run | --submit ip:port)\n");
+        return 1;
+    }
+
+    int rc = 1;
+    nodus_witness_t *wr = NULL;
+    nodus_identity_t *keys = NULL;
+    int n_keys = 0;
+    sqlite3 *legacy = NULL;
+    dna_dist_leaf_t *leaves = NULL;
+    uint8_t (*leaf_hashes)[64] = NULL;
+    long n_leaves = 0;
+
+    keys = calloc(4, sizeof(*keys));
+    if (!keys) return 1;
+    n_keys = act_load_keys(keys_csv, keys, 4);
+    if (n_keys != 1) {
+        fprintf(stderr, "v2-claim needs exactly one --keys identity\n");
+        goto done;
+    }
+
+    /* Read-only successor view (cmd_v2_envelope pattern; poisoned cache). */
+    wr = calloc(1, sizeof(*wr));
+    if (!wr) goto done;
+    wr->cached_committee_epoch_start = UINT64_MAX;
+    wr->cached_committee_count = -1;
+    if (sqlite3_open_v2(succ_db, &wr->db, SQLITE_OPEN_READONLY, NULL)
+        != SQLITE_OK || !wr->db) {
+        fprintf(stderr, "cannot open %s read-only\n", succ_db);
+        goto done;
+    }
+
+    uint8_t chain32[DNA_CHAIN_ID_LEN];
+    uint64_t tip = 0;
+    if (nodus_witness_v2_chain_id(wr, chain32) != 0 ||
+        nodus_witness_v2_tip_height(wr, &tip) != 0) {
+        fprintf(stderr, "not a committed successor V2 database\n");
+        goto done;
+    }
+
+    /* The committed GENESIS manifest (locator 0 — nodus_witness_v2_apply.c
+     * commits it at manifest_seq 0). Its snapshot_root is the equivalence
+     * anchor and its distribution parameters drive the claim fields. */
+    dna_gman_t m;
+    if (nodus_witness_v2_manifest_load(wr, 0, &m) != 0) {
+        fprintf(stderr, "successor genesis manifest unreadable\n");
+        goto done;
+    }
+    if (!m.dist_present) {
+        fprintf(stderr, "successor manifest carries no distribution\n");
+        goto done;
+    }
+    uint8_t manifest_hash[64];
+    if (dna_gman_hash(&m, manifest_hash) != 0) goto done;
+
+    /* Re-derive the FULL leaf set from the terminal legacy DB. */
+    if (sqlite3_open_v2(legacy_db, &legacy, SQLITE_OPEN_READONLY, NULL)
+        != SQLITE_OK || !legacy) {
+        fprintf(stderr, "cannot open %s read-only\n", legacy_db);
+        goto done;
+    }
+    n_leaves = claim_derive_legacy_leaves(legacy, &leaves);
+    if (n_leaves < 1) {
+        fprintf(stderr, "legacy leaf-set derivation failed (fail-closed)\n");
+        goto done;
+    }
+    if ((uint64_t)n_leaves != m.leaf_count) {
+        fprintf(stderr, "leaf count %ld != committed leaf_count %llu — "
+                "ABORT (leaf-set mismatch)\n", n_leaves,
+                (unsigned long long)m.leaf_count);
+        goto done;
+    }
+
+    /* Equivalence assertion: the recomputed snapshot_root MUST equal the
+     * committed one, else the leaves this build derived are not the leaves
+     * the chain committed — refuse to submit a proof against a foreign
+     * tree. */
+    uint8_t snap_root[64];
+    if (dna_dist_snapshot_root(leaves, (size_t)n_leaves, snap_root) != 0) {
+        fprintf(stderr, "snapshot root recompute failed\n");
+        goto done;
+    }
+    if (memcmp(snap_root, m.snapshot_root, 64) != 0) {
+        fprintf(stderr, "recomputed snapshot_root != committed — ABORT "
+                "(leaf-set not equivalent to the successor manifest)\n");
+        goto done;
+    }
+
+    leaf_hashes = calloc((size_t)n_leaves, 64);
+    if (!leaf_hashes) goto done;
+    for (long i = 0; i < n_leaves; i++)
+        if (dna_dist_leaf_hash(&leaves[i], leaf_hashes[i]) != 0) goto done;
+
+    /* Caller binding = SHA3-512(pk). */
+    uint8_t my_binding[64];
+    if (qgp_sha3_512(keys[0].pk.bytes, DNAC_PUBKEY_SIZE, my_binding) != 0)
+        goto done;
+
+    /* Optional submission client (opened once, reused per matching leaf). */
+    char sip[64];
+    uint16_t sport = 0;
+    if (!dry_run &&
+        t6_resolve_target(submit, server_ip, server_port, sip, &sport) != 0) {
+        fprintf(stderr, "invalid --submit target\n");
+        goto done;
+    }
+
+    int matched = 0;
+    for (long idx = 0; idx < n_leaves; idx++) {
+        if (memcmp(leaves[idx].dest_binding, my_binding, 64) != 0) continue;
+        matched++;
+
+        dna_claim_t c;
+        memset(&c, 0, sizeof(c));
+        c.claim_version  = DNA_CLAIM_VERSION;
+        memcpy(c.chain_id, chain32, DNA_CHAIN_ID_LEN);
+        memcpy(c.manifest_hash, manifest_hash, 64);
+        c.leaf_index     = (uint64_t)idx;
+        c.source_id_len  = leaves[idx].source_id_len;
+        memcpy(c.source_id, leaves[idx].source_id, leaves[idx].source_id_len);
+        c.source_amount  = leaves[idx].source_amount;
+        memcpy(c.dest_binding, leaves[idx].dest_binding, 64);
+        c.auth_mode      = m.auth_mode;
+        memcpy(c.pubkey, keys[0].pk.bytes, DNA_CLAIM_PUBKEY_LEN);
+        if (dna_dist_proof_build((const uint8_t (*)[64])leaf_hashes,
+                                 (size_t)n_leaves, (uint64_t)idx,
+                                 c.siblings, &c.n_siblings) != 0) {
+            fprintf(stderr, "proof build failed (leaf %ld)\n", idx);
+            goto done;
+        }
+
+        /* Sign the tag-prefixed claim preimage (ML-DSA-87). */
+        uint8_t pre[DNA_CLAIM_PREIMAGE_MAX];
+        size_t pre_len = 0;
+        if (dna_claim_preimage(&c, pre, &pre_len) != 0) goto done;
+        size_t sl = 0;
+        if (qgp_dsa87_sign(c.signature, &sl, pre, pre_len,
+                           keys[0].sk.bytes) != 0 ||
+            sl != DNA_CLAIM_SIG_LEN) {
+            fprintf(stderr, "claim signature failed\n");
+            goto done;
+        }
+
+        /* Canonical bytes + tx hash. */
+        uint8_t bytes[DNA_CLAIM_MAX_WIRE];
+        size_t blen = 0;
+        if (dna_claim_encode(&c, bytes, sizeof(bytes), &blen) != 0) {
+            fprintf(stderr, "claim encode failed\n");
+            goto done;
+        }
+        uint8_t tx_hash[64];
+        if (qgp_sha3_512(bytes, blen, tx_hash) != 0) goto done;
+
+        uint8_t leafh[64], nul[64];
+        if (dna_dist_leaf_hash(&leaves[idx], leafh) != 0 ||
+            dna_claim_nullifier(chain32, manifest_hash, m.target_domain_id,
+                                m.target_asset_ref, m.target_asset_len,
+                                leafh, nul) != 0)
+            goto done;
+
+        if (dry_run) {
+            printf("v2-claim leaf_index=%ld amount=%llu bytes=%zu\n",
+                   idx, (unsigned long long)c.source_amount, blen);
+            printf("  tx_hash=");
+            for (int b = 0; b < 64; b++) printf("%02x", tx_hash[b]);
+            printf("\n  nullifier=");
+            for (int b = 0; b < 64; b++) printf("%02x", nul[b]);
+            printf("\n");
+            /* Local admission self-check through the REAL engine path. */
+            nodus_v2_claim_admit_t adm;
+            memset(&adm, 0, sizeof(adm));
+            if (nodus_witness_v2_claim_admit(wr, &c, tip + 1, &adm) != 0) {
+                fprintf(stderr, "  LOCAL ADMIT: REJECT (leaf %ld)\n", idx);
+                goto done;
+            }
+            printf("  LOCAL ADMIT: OK (converted=%llu)\n",
+                   (unsigned long long)adm.converted);
+        } else {
+            if (t6_submit(sip, sport, &keys[0], tx_hash, bytes,
+                          (uint32_t)blen) != 0)
+                goto done;
+        }
+    }
+    if (!matched) {
+        fprintf(stderr, "no distribution leaf binds this key\n");
+        goto done;
+    }
+    rc = 0;
+
+done:
+    free(leaf_hashes);
+    free(leaves);
+    if (legacy) sqlite3_close(legacy);
+    if (wr) {
+        if (wr->db) sqlite3_close(wr->db);
+        free(wr);
+    }
+    if (keys) {
+        for (int i = 0; i < 4; i++) nodus_identity_clear(&keys[i]);
+        free(keys);
+    }
+    return rc;
+}
+
+/* ── O15F Task 6 — `v2-envelope stake` (O11 two-leg STAKE builder) ───
+ *
+ * Builds the canonical O11 staking envelope entirely from the committed
+ * successor database and the operator key dir: leg0 = SYSTEM STAKE
+ * (runtime_op 1, call = staker_pk[2592] ‖ commission u16 ‖ bond u64 ‖
+ * dest_fp[64 RAW] = 2666, nodus_witness_rt_native.c:199-200), leg1 = CORE
+ * SYSFUND (runtime_op 7, call = the SPEND transfer section funded from the
+ * caller's successor utxo_set rows). Conservation Σin == Σchange + fee +
+ * lock is enforced by the exec (the lock = bond derives from the SYSTEM
+ * sibling); the CLI just supplies inputs summing to bond + fee + change.
+ * fee = max(DNAC_MIN_FEE_RAW, NODUS_W_BASE_TX_FEE). Each leg carries a
+ * kind-1 single-signer auth blob (the staker) over the ENGINE-derived leg
+ * auth_digest — the two-pass build cmd_v2_envelope uses (zero-fill →
+ * preflight → sign → re-encode → re-preflight self-check).
+ *
+ * Reuses cmd_v2_envelope's registry-ruleset lookup, derived chain id,
+ * dna_env_encode, dna_env_preflight self-check and the dnac_spend lane.
+ */
+/* SYSFUND / SPEND transfer-section wire widths (nodus_witness_rt_native.c:
+ * RTN_SPEND_MAX_IN=15, RTN_SPEND_OUT_LEN=232 = fp128 + amount8 + token64 +
+ * seed32; the codec lives behind libnodus so the widths are restated here
+ * with their source citation, not #included). */
+#define T6_SPEND_MAX_IN   15u
+#define T6_SPEND_OUT_LEN  232u
+
+static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
+                        int argc, char **argv, int cmd_start) {
+    const char *db_path = NULL, *keys_csv = NULL, *dest_fp_hex = NULL;
+    const char *submit = NULL;
+    uint64_t bond = 0;
+    uint32_t commission = 0;
+    int dry_run = 0, have_bond = 0, have_comm = 0;
+
+    for (int i = cmd_start + 2; i < argc; i++) {   /* skip the "stake" word */
+        const char *a = argv[i];
+        if      (!strcmp(a, "--db")         && i + 1 < argc) db_path = argv[++i];
+        else if (!strcmp(a, "--keys")       && i + 1 < argc) keys_csv = argv[++i];
+        else if (!strcmp(a, "--bond")       && i + 1 < argc) {
+            bond = strtoull(argv[++i], NULL, 10); have_bond = 1;
+        } else if (!strcmp(a, "--commission") && i + 1 < argc) {
+            commission = (uint32_t)strtoul(argv[++i], NULL, 10); have_comm = 1;
+        } else if (!strcmp(a, "--dest-fp")  && i + 1 < argc) dest_fp_hex = argv[++i];
+        else if (!strcmp(a, "--submit")     && i + 1 < argc) submit = argv[++i];
+        else if (!strcmp(a, "--dry-run"))                    dry_run = 1;
+        else { db_path = NULL; break; }
+    }
+    if (!db_path || !keys_csv || !dest_fp_hex || !have_bond || !have_comm ||
+        (!submit && !dry_run)) {
+        fprintf(stderr,
+            "Usage: v2-envelope stake --db <successor.db> --keys <keydir> "
+            "--bond <raw> --commission <bps> --dest-fp <hex128> "
+            "(--dry-run | --submit ip:port)\n");
+        return 1;
+    }
+    if (commission > 0xFFFFu) {
+        fprintf(stderr, "commission out of range\n");
+        return 1;
+    }
+    uint8_t dest_fp[64];
+    if (qgp_fp_hex_to_raw(dest_fp_hex, dest_fp) != 0) {
+        fprintf(stderr, "--dest-fp must be exactly 128 lowercase hex chars\n");
+        return 1;
+    }
+
+    int rc = 1;
+    nodus_witness_t *wr = NULL;
+    nodus_identity_t *keys = NULL;
+    int n_keys = 0;
+    uint8_t *auth0 = NULL, *auth1 = NULL, *env_bytes = NULL;
+    dna_env_preflight_t *pf = NULL;
+    uint8_t *scall = NULL, *fcall = NULL;
+
+    keys = calloc(4, sizeof(*keys));
+    if (!keys) return 1;
+    n_keys = act_load_keys(keys_csv, keys, 4);
+    if (n_keys != 1) {
+        fprintf(stderr, "v2-envelope stake needs exactly one --keys identity\n");
+        goto done;
+    }
+
+    wr = calloc(1, sizeof(*wr));
+    if (!wr) goto done;
+    wr->cached_committee_epoch_start = UINT64_MAX;
+    wr->cached_committee_count = -1;
+    if (sqlite3_open_v2(db_path, &wr->db, SQLITE_OPEN_READONLY, NULL)
+        != SQLITE_OK || !wr->db) {
+        fprintf(stderr, "cannot open %s read-only\n", db_path);
+        goto done;
+    }
+
+    uint8_t chain32[DNA_CHAIN_ID_LEN];
+    uint64_t tip = 0;
+    if (nodus_witness_v2_chain_id(wr, chain32) != 0 ||
+        nodus_witness_v2_tip_height(wr, &tip) != 0) {
+        fprintf(stderr, "not a committed successor V2 database\n");
+        goto done;
+    }
+
+    dna_domain_manifest_t sys_man, core_man;
+    if (nodus_witness_domreg_get(wr, DNA_DOMAIN_SYSTEM, NULL, &sys_man,
+                                 NULL) != 0 ||
+        nodus_witness_domreg_get(wr, DNA_DOMAIN_CORE, NULL, &core_man,
+                                 NULL) != 0) {
+        fprintf(stderr, "registry ruleset unreadable\n");
+        goto done;
+    }
+
+    /* Staker fingerprint (128 lowercase hex) — the utxo_set owner form and
+     * the change-output owner. */
+    uint8_t staker_raw[64];
+    char staker_fp[QGP_FP_HEX_BUFFER];
+    if (qgp_sha3_512(keys[0].pk.bytes, DNAC_PUBKEY_SIZE, staker_raw) != 0)
+        goto done;
+    qgp_fp_raw_to_hex(staker_raw, staker_fp);
+
+    uint64_t fee = DNAC_MIN_FEE_RAW > NODUS_W_BASE_TX_FEE
+                 ? DNAC_MIN_FEE_RAW : NODUS_W_BASE_TX_FEE;
+    uint64_t need = bond;
+    if (need > UINT64_MAX - fee) { fprintf(stderr, "bond+fee overflow\n"); goto done; }
+    need += fee;
+
+    /* Select native, unlocked, CORE-domain funding inputs owned by the
+     * staker, ascending by nullifier (canonical), until the sum covers
+     * bond + fee. */
+    uint8_t nulls[T6_SPEND_MAX_IN][64];
+    int n_in = 0;
+    uint64_t sum_in = 0;
+    {
+        sqlite3_stmt *st = NULL;
+        if (sqlite3_prepare_v2(wr->db,
+                "SELECT nullifier, amount, token_id, unlock_block "
+                "FROM utxo_set WHERE owner = ?1 AND domain_id = ?2 "
+                "ORDER BY nullifier ASC", -1, &st, NULL) != SQLITE_OK)
+            goto done;
+        sqlite3_bind_text(st, 1, staker_fp, 128, SQLITE_TRANSIENT);
+        sqlite3_bind_int(st, 2, (int)DNA_DOMAIN_CORE);
+        static const uint8_t native_tok[64] = {0};
+        int step, scan_bad = 0;
+        while ((step = sqlite3_step(st)) == SQLITE_ROW &&
+               sum_in < need && n_in < (int)T6_SPEND_MAX_IN) {
+            const void *nul = sqlite3_column_blob(st, 0);
+            sqlite3_int64 amt = sqlite3_column_int64(st, 1);
+            const void *tok = sqlite3_column_blob(st, 2);
+            sqlite3_int64 unlock = sqlite3_column_int64(st, 3);
+            if (!nul || sqlite3_column_bytes(st, 0) != 64 || amt <= 0 ||
+                !tok || sqlite3_column_bytes(st, 2) != 64) {
+                scan_bad = 1; break;
+            }
+            if (memcmp(tok, native_tok, 64) != 0) continue;   /* non-native */
+            if ((uint64_t)unlock > tip) continue;             /* locked     */
+            memcpy(nulls[n_in], nul, 64);
+            if (sum_in > UINT64_MAX - (uint64_t)amt) { scan_bad = 1; break; }
+            sum_in += (uint64_t)amt;
+            n_in++;
+        }
+        sqlite3_finalize(st);
+        if (scan_bad) { fprintf(stderr, "malformed funding row\n"); goto done; }
+    }
+    if (n_in < 1 || sum_in < need) {
+        fprintf(stderr, "insufficient native funding: have %llu, need %llu "
+                "(bond %llu + fee %llu) over %d input(s)\n",
+                (unsigned long long)sum_in, (unsigned long long)need,
+                (unsigned long long)bond, (unsigned long long)fee, n_in);
+        goto done;
+    }
+    uint64_t change = sum_in - need;
+
+    /* leg0 STAKE call (2666): staker_pk ‖ commission u16 ‖ bond u64 ‖
+     * dest_fp[64 RAW]. */
+    scall = calloc(1, 2666);
+    if (!scall) goto done;
+    memcpy(scall, keys[0].pk.bytes, DNAC_PUBKEY_SIZE);
+    scall[2592] = (uint8_t)(commission >> 8);
+    scall[2593] = (uint8_t)commission;
+    for (int i = 0; i < 8; i++) scall[2594 + i] = (uint8_t)(bond >> (56 - 8 * i));
+    memcpy(scall + 2602, dest_fp, 64);
+    uint32_t scall_len = 2666;
+
+    /* leg1 SYSFUND call = SPEND transfer section: in_count ‖ nullifiers
+     * (ascending — the SELECT already returns them so) ‖ out_count ‖
+     * change output (staker fp ‖ change ‖ native token ‖ seed). */
+    size_t fcap = 2 + (size_t)T6_SPEND_MAX_IN * 64 + T6_SPEND_OUT_LEN;
+    fcall = calloc(1, fcap);
+    if (!fcall) goto done;
+    size_t off = 0;
+    fcall[off++] = (uint8_t)n_in;
+    for (int i = 0; i < n_in; i++) { memcpy(fcall + off, nulls[i], 64); off += 64; }
+    uint8_t out_count = change > 0 ? 1 : 0;
+    fcall[off++] = out_count;
+    if (out_count) {
+        /* deterministic change seed = SHA3-512(input nullifiers)[0..31] —
+         * unique per input set, so the derived output id never collides. */
+        uint8_t seed_full[64];
+        if (qgp_sha3_512((const uint8_t *)nulls, (size_t)n_in * 64,
+                         seed_full) != 0) goto done;
+        memcpy(fcall + off, staker_fp, 128);                 /* owner fp   */
+        for (int i = 0; i < 8; i++)
+            fcall[off + 128 + i] = (uint8_t)(change >> (56 - 8 * i));
+        memset(fcall + off + 136, 0, 64);                    /* native tok */
+        memcpy(fcall + off + 200, seed_full, 32);            /* seed       */
+        off += T6_SPEND_OUT_LEN;
+    }
+    uint32_t fcall_len = (uint32_t)off;
+
+    /* ── two-leg envelope, two-pass auth (cmd_v2_envelope pattern) ─── */
+    uint32_t alen0 = 1u + 1u * NODUS_RT_AUTH_SIGNER_LEN;  /* kind-1, 1 sig */
+    uint32_t alen1 = 1u + 1u * NODUS_RT_AUTH_SIGNER_LEN;
+    auth0 = calloc(1, alen0);
+    auth1 = calloc(1, alen1);
+    pf    = calloc(1, sizeof(*pf));
+    if (!auth0 || !auth1 || !pf) goto done;
+
+    dna_env_leg_in_t legs[2];
+    memset(legs, 0, sizeof(legs));
+    legs[0].hdr.domain_id            = DNA_DOMAIN_SYSTEM;
+    legs[0].hdr.runtime_op           = DNA_SYSRULE_STAKE;
+    legs[0].hdr.ruleset_version      = sys_man.ruleset_version;
+    legs[0].hdr.access_mode          = DNA_ENV_ACCESS_INVOKE;
+    legs[0].hdr.auth_kind            = NODUS_RT_AUTHKIND_DSA87_MULTI_V1;
+    legs[0].hdr.call_len             = scall_len;
+    legs[0].hdr.auth_len             = alen0;
+    legs[0].hdr.res_max_effects      = 8;
+    legs[0].hdr.res_max_effect_bytes = 16384;
+    legs[0].call_data = scall;
+    legs[0].auth_data = auth0;
+    legs[1].hdr.domain_id            = DNA_DOMAIN_CORE;
+    legs[1].hdr.runtime_op           = DNA_CORERULE_SYSFUND;
+    legs[1].hdr.ruleset_version      = core_man.ruleset_version;
+    legs[1].hdr.access_mode          = DNA_ENV_ACCESS_INVOKE;
+    legs[1].hdr.auth_kind            = NODUS_RT_AUTHKIND_DSA87_MULTI_V1;
+    legs[1].hdr.call_len             = fcall_len;
+    legs[1].hdr.auth_len             = alen1;
+    legs[1].hdr.res_max_effects      = 40;
+    legs[1].hdr.res_max_effect_bytes = 16384;
+    legs[1].call_data = fcall;
+    legs[1].auth_data = auth1;
+
+    dna_env_in_t env_in;
+    memset(&env_in, 0, sizeof(env_in));
+    env_in.expiry_height       = 0;
+    env_in.fee_amount          = fee;
+    env_in.res_max_total_units = 400000;
+    env_in.leg_count           = 2;
+    env_in.legs                = legs;
+
+    size_t env_len = 0;
+    if (dna_env_encoded_size(legs, 2, &env_len) != 0) goto done;
+    env_bytes = malloc(env_len);
+    if (!env_bytes) goto done;
+
+    dna_env_leg_ctx_t lctx[2];
+    memset(lctx, 0, sizeof(lctx));
+    lctx[0].domain_id       = DNA_DOMAIN_SYSTEM;
+    lctx[0].ruleset_version = sys_man.ruleset_version;
+    memcpy(lctx[0].ruleset_hash, sys_man.ruleset_hash, 64);
+    lctx[1].domain_id       = DNA_DOMAIN_CORE;
+    lctx[1].ruleset_version = core_man.ruleset_version;
+    memcpy(lctx[1].ruleset_hash, core_man.ruleset_hash, 64);
+
+    size_t used = 0;
+    if (dna_env_encode(&env_in, env_bytes, env_len, &used) != 0 ||
+        used != env_len) goto done;
+    if (dna_env_preflight(env_bytes, env_len, chain32, tip + 1, lctx, 2, pf)
+        != DNA_ENV_PF_OK) {
+        fprintf(stderr, "pass-1 preflight failed\n");
+        goto done;
+    }
+
+    /* Sign each leg's auth_digest with the staker sk (kind-1: count=1 ‖
+     * pubkey ‖ sig). One key covers BOTH legs: it is the STAKE identity
+     * AND the owner of the funding inputs. */
+    for (int L = 0; L < 2; L++) {
+        uint8_t *ab = (L == 0) ? auth0 : auth1;
+        ab[0] = 1;
+        memcpy(ab + 1, keys[0].pk.bytes, DNAC_PUBKEY_SIZE);
+        size_t sl = 0;
+        if (qgp_dsa87_sign(ab + 1 + DNAC_PUBKEY_SIZE, &sl, pf->auth_digest[L],
+                           64, keys[0].sk.bytes) != 0 ||
+            sl != 4627) {
+            fprintf(stderr, "leg %d signature failed\n", L);
+            goto done;
+        }
+    }
+
+    if (dna_env_encode(&env_in, env_bytes, env_len, &used) != 0 ||
+        used != env_len) goto done;
+    if (dna_env_preflight(env_bytes, env_len, chain32, tip + 1, lctx, 2, pf)
+        != DNA_ENV_PF_OK) {
+        fprintf(stderr, "pass-2 preflight (self-check) failed\n");
+        goto done;
+    }
+
+    if (dry_run) {
+        printf("v2-envelope stake: %zu bytes, inputs=%d sum_in=%llu "
+               "bond=%llu fee=%llu change=%llu\n", env_len, n_in,
+               (unsigned long long)sum_in, (unsigned long long)bond,
+               (unsigned long long)fee, (unsigned long long)change);
+        printf("  wire_id=");
+        for (int b = 0; b < 64; b++) printf("%02x", pf->wire_id[b]);
+        printf("\n  intent_id=");
+        for (int b = 0; b < 64; b++) printf("%02x", pf->intent_id[b]);
+        printf("\n  PREFLIGHT SELF-CHECK: OK (2 legs SYSTEM STAKE + CORE "
+               "SYSFUND)\n");
+    } else {
+        char sip[64];
+        uint16_t sport = 0;
+        if (t6_resolve_target(submit, server_ip, server_port, sip,
+                              &sport) != 0) {
+            fprintf(stderr, "invalid --submit target\n");
+            goto done;
+        }
+        if (t6_submit(sip, sport, &keys[0], pf->wire_id, env_bytes,
+                      (uint32_t)env_len) != 0)
+            goto done;
+    }
+    rc = 0;
+
+done:
+    free(scall);
+    free(fcall);
+    free(auth0);
+    free(auth1);
+    free(env_bytes);
+    free(pf);
+    if (wr) {
+        if (wr->db) sqlite3_close(wr->db);
+        free(wr);
+    }
+    if (keys) {
+        for (int i = 0; i < 4; i++) nodus_identity_clear(&keys[i]);
+        free(keys);
+    }
+    return rc;
+}
 #endif /* NODUS_CLI_HAS_DNAC */
 
 /* ── Usage ───────────────────────────────────────────────────────── */
@@ -2151,6 +2860,11 @@ static void usage(const char *prog) {
     fprintf(stderr, "                  NAME: MAX_TXS_PER_BLOCK | BLOCK_INTERVAL_SEC |\n");
     fprintf(stderr, "                        INFLATION_START_BLOCK | TARGET_ACTIVE_COUNT\n");
     fprintf(stderr, "                  run without --value for per-param ranges\n");
+    fprintf(stderr, "  v2-claim --legacy-db <t.db> --db <s.db> --keys <dir>\n");
+    fprintf(stderr, "           (--dry-run | --submit ip:port)   Successor GENESIS_CLAIM\n");
+    fprintf(stderr, "  v2-envelope stake --db <s.db> --keys <dir> --bond <raw>\n");
+    fprintf(stderr, "           --commission <bps> --dest-fp <hex128>\n");
+    fprintf(stderr, "           (--dry-run | --submit ip:port)   O11 two-leg STAKE\n");
 #endif
 }
 
@@ -2276,10 +2990,21 @@ int main(int argc, char **argv) {
         return rc;
     }
 
-    /* O15D — v2-envelope: successor-chain envelope builder/submitter. */
+    /* O15D — v2-envelope: successor-chain envelope builder/submitter.
+     * O15F T6 adds the `stake` subcommand (O11 two-leg STAKE). */
     if (strcmp(command, "v2-envelope") == 0) {
-        int rc = cmd_v2_envelope(server_ip, server_port, argc, argv,
-                                 optind);
+        int rc;
+        if (optind + 1 < argc && strcmp(argv[optind + 1], "stake") == 0)
+            rc = cmd_v2_stake(server_ip, server_port, argc, argv, optind);
+        else
+            rc = cmd_v2_envelope(server_ip, server_port, argc, argv, optind);
+        nodus_identity_clear(&identity);
+        return rc;
+    }
+
+    /* O15F T6 — v2-claim: successor GENESIS_CLAIM builder/submitter. */
+    if (strcmp(command, "v2-claim") == 0) {
+        int rc = cmd_v2_claim(server_ip, server_port, argc, argv, optind);
         nodus_identity_clear(&identity);
         return rc;
     }
