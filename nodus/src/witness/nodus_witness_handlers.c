@@ -16,6 +16,7 @@
 #include "witness/nodus_witness_db.h"
 #include "witness/nodus_witness_peer.h"
 #include "witness/nodus_witness_verify.h"
+#include "witness/nodus_witness_v2_produce.h"  /* O15F class 201 helpers */
 #include "witness/nodus_witness_mempool.h"
 #include "witness/nodus_witness_merkle.h"
 #include "witness/nodus_witness_validator.h"
@@ -1831,9 +1832,13 @@ static void handle_dnac_spend(nodus_witness_t *w,
      * successor admission lane (nodus_witness_verify_transaction's
      * divert) is the sole authority — it verifies the wire-family
      * marker, the derived wire_id and the committed-state bindings.
-     * Legacy nullifier extraction is skipped (envelopes carry none). */
+     * Legacy nullifier extraction is skipped (envelopes carry none).
+     *
+     * O15F Task 3 — the entry class is BYTE-DRIVEN: the wire-family marker
+     * at offset 0 selects ENVELOPE (200), everything else CLAIM (201).
+     * The successor admission lane decides validity for both. */
     if (w->v2_successor) {
-        tx_type = NODUS_W_TX_V2_ENVELOPE;
+        tx_type = nodus_witness_v2_classify_entry(tx_data, (uint32_t)tx_len);
     } else {
     /* Genesis pre-check */
     bool genesis_exists = nodus_witness_genesis_exists(w);
@@ -2004,6 +2009,21 @@ static void handle_dnac_spend(nodus_witness_t *w,
         }
         memcpy(entry->tx_data, tx_data, tx_len);
         entry->tx_len = (uint32_t)tx_len;
+        /* O15F Task 3 — record the CLAIM's committed nullifier so batch
+         * selection dedups claims semantically. Verify already admitted it
+         * (so this re-derivation cannot fail on an honest submission); a
+         * failure here is fail-closed — never enqueue a class-201 entry
+         * with nullifier_count == 0 (batch dedup would silently lose it). */
+        if (w->v2_successor && tx_type == NODUS_W_TX_V2_CLAIM) {
+            if (nodus_witness_v2_claim_entry_nullifier(w, entry->tx_data,
+                    entry->tx_len, entry->nullifiers[0]) != 0) {
+                nodus_witness_mempool_entry_free(entry);
+                send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                            "claim nullifier derivation failed");
+                return;
+            }
+            entry->nullifier_count = 1;
+        }
         if (client_pk)
             memcpy(entry->client_pubkey, client_pk, NODUS_PK_BYTES);
         if (client_sig)

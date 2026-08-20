@@ -135,6 +135,32 @@ int nodus_witness_v2_qc_try_attach(nodus_witness_t *w);
 int nodus_witness_v2_tip_height(nodus_witness_t *w, uint64_t *height_out);
 
 /**
+ * Transport-local classification of a successor mempool entry from its
+ * LEADING bytes: an entry beginning with the 16-byte "DNA.ENVWIRE.v1"
+ * family marker (env_wire.c:25-27) is a Ledger V2 ENVELOPE
+ * (NODUS_W_TX_V2_ENVELOPE); anything else on a successor is a CLAIM
+ * (NODUS_W_TX_V2_CLAIM) — strict dna_claim_decode + admission decide its
+ * validity. Deterministic and byte-driven: every honest node classifies
+ * the identical bytes identically, so admission, ingress and round entry
+ * share ONE classification authority. Buffers shorter than the marker
+ * cannot carry it, so they classify as CLAIM (and fail their own decode).
+ */
+uint8_t nodus_witness_v2_classify_entry(const uint8_t *bytes, uint32_t len);
+
+/**
+ * Derive the committed nullifier of a class-201 CLAIM entry from its wire
+ * bytes (READ-ONLY): strict decode then the ONE admission function
+ * (nodus_witness_v2_claim_admit), whose adm.nullifier is exactly the
+ * value the apply engine binds. Used to record the nullifier on the
+ * class-201 mempool entry so batch selection dedups claims semantically.
+ * Fail-closed — a caller MUST NOT enqueue a claim entry if this fails.
+ * @return 0 with out_nullifier filled / -1.
+ */
+int nodus_witness_v2_claim_entry_nullifier(nodus_witness_t *w,
+                                           const uint8_t *bytes, uint32_t len,
+                                           uint8_t out_nullifier[64]);
+
+/**
  * Run the engine's own pre-commit seam over a candidate BATCH of
  * envelope entries at the next successor height: strict decode,
  * contextual ruleset match against the committed registry, chain

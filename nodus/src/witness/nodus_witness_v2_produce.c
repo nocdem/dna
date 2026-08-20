@@ -14,6 +14,7 @@
 #include "witness/nodus_witness_v2_qc.h"
 #include "witness/nodus_witness_v2_result.h"
 #include "witness/nodus_witness_v2_env.h"     /* the pre-commit seam    */
+#include "witness/nodus_witness_v2_claims.h"  /* claim admit (class 201)*/
 #include "witness/nodus_witness_domreg.h"     /* committed ruleset ctx  */
 #include "witness/nodus_witness_db.h"
 #include "server/nodus_server.h"       /* w->server->identity (sign key) */
@@ -22,6 +23,8 @@
 #include "dnac/qc_v2.h"
 #include "dnac/ledger_ids.h"
 #include "dnac/vset_wire.h"
+#include "dnac/env_wire.h"                    /* family marker length   */
+#include "dnac/manifest_wire.h"               /* claim codec (class 201)*/
 
 #include "crypto/hash/qgp_sha3.h"
 #include "crypto/sign/qgp_dilithium.h"
@@ -243,8 +246,57 @@ void nodus_witness_v2_cert_note(nodus_witness_t *w,
         (void)nodus_witness_v2_qc_try_attach(w);
 }
 
+/* ── transport-local classification + claim nullifier (class 201) ───── */
+
+/* Wire family marker: "DNA.ENVWIRE.v1" (14) + 2 zero bytes — pinned at
+ * env_wire.c:25-27; explicit initialisers, padding visible. */
+static const uint8_t PROD_ENV_FAMILY[DNA_ENV_WIRE_FAMILY_LEN] = {
+    'D','N','A','.','E','N','V','W','I','R','E','.','v','1', 0, 0
+};
+
+uint8_t nodus_witness_v2_classify_entry(const uint8_t *bytes, uint32_t len) {
+    if (bytes && len >= DNA_ENV_WIRE_FAMILY_LEN &&
+        memcmp(bytes, PROD_ENV_FAMILY, DNA_ENV_WIRE_FAMILY_LEN) == 0)
+        return NODUS_W_TX_V2_ENVELOPE;
+    return NODUS_W_TX_V2_CLAIM;
+}
+
+int nodus_witness_v2_claim_entry_nullifier(nodus_witness_t *w,
+                                           const uint8_t *bytes, uint32_t len,
+                                           uint8_t out_nullifier[64]) {
+    if (!w || !w->db || !w->v2_successor || !bytes || len == 0 ||
+        !out_nullifier)
+        return -1;
+    dna_claim_t *c = calloc(1, sizeof(*c));   /* large — heap */
+    if (!c) return -1;
+    int rc = -1;
+    if (dna_claim_decode(bytes, (size_t)len, c) == 0) {
+        nodus_v2_claim_admit_t adm;
+        uint64_t candidate = nodus_witness_block_height(w) + 1;
+        if (nodus_witness_v2_claim_admit(w, c, candidate, &adm) == 0) {
+            memcpy(out_nullifier, adm.nullifier, 64);
+            rc = 0;
+        }
+    }
+    free(c);
+    return rc;
+}
+
 /* ── batch pre-check (the engine's seam, at the candidate height) ───── */
 
+/*
+ * A successor batch mixes two transport-local classes: ENVELOPEs (200)
+ * whose validity is the engine's env-preflight seam, and CLAIMs (201)
+ * whose validity is nodus_witness_v2_claim_admit. This pre-check runs
+ * BOTH over their respective subsets, mapping every failure back to the
+ * offender's index in the original batch. It also rejects two claims with
+ * the same committed nullifier IN ONE BATCH — the in-batch dedup the
+ * legacy seen_nullifiers machinery cannot be relied on for on the remote-
+ * COMMIT path (no such loop there), so the apply-level in-block duplicate
+ * reject (nodus_witness_v2_apply.c:1695-1701) stays a BACKSTOP that an
+ * honest leader/follower never reaches. Deterministic: bytes + committed
+ * state only.
+ */
 int nodus_witness_v2_produce_batch_check(nodus_witness_t *w,
                                          nodus_witness_mempool_entry_t **entries,
                                          int count,
@@ -254,74 +306,124 @@ int nodus_witness_v2_produce_batch_check(nodus_witness_t *w,
         count > NODUS_W_MAX_BLOCK_TXS)
         return -2;
 
+    /* Split by class; keep each subset entry's ORIGINAL batch index so a
+     * seam failure names the offender in the caller's array. */
     nodus_v2_envelope_t envs[NODUS_W_MAX_BLOCK_TXS];
+    int env_idx[NODUS_W_MAX_BLOCK_TXS];
+    int n_env = 0;
+    int claim_idx[NODUS_W_MAX_BLOCK_TXS];
+    int n_claim = 0;
     for (int i = 0; i < count; i++) {
-        if (!entries[i] || entries[i]->tx_type != NODUS_W_TX_V2_ENVELOPE ||
-            !entries[i]->tx_data || entries[i]->tx_len == 0) {
+        if (!entries[i] || !entries[i]->tx_data || entries[i]->tx_len == 0) {
             if (fail_index_out) *fail_index_out = i;
             return -1;
         }
-        envs[i].env_bytes = entries[i]->tx_data;
-        envs[i].env_len   = entries[i]->tx_len;
-    }
-
-    /* Contextual ruleset table: one entry per distinct leg domain across
-     * the batch, from the COMMITTED registry (the engine's authority),
-     * sorted ascending as the seam requires. */
-    dna_env_leg_ctx_t rulesets[DNA_ENV_MAX_LEGS];
-    size_t n_rulesets = 0;
-    for (int i = 0; i < count; i++) {
-        dna_env_view_t view;
-        if (dna_env_decode(envs[i].env_bytes, envs[i].env_len,
-                           &view) != 0) {
+        if (entries[i]->tx_type == NODUS_W_TX_V2_ENVELOPE) {
+            envs[n_env].env_bytes = entries[i]->tx_data;
+            envs[n_env].env_len   = entries[i]->tx_len;
+            env_idx[n_env]        = i;
+            n_env++;
+        } else if (entries[i]->tx_type == NODUS_W_TX_V2_CLAIM) {
+            claim_idx[n_claim++] = i;
+        } else {
             if (fail_index_out) *fail_index_out = i;
-            return -1;
-        }
-        for (uint16_t l = 0; l < view.leg_count; l++) {
-            uint32_t dom = view.leg[l].domain_id;
-            size_t k = 0;
-            while (k < n_rulesets && rulesets[k].domain_id < dom) k++;
-            if (k < n_rulesets && rulesets[k].domain_id == dom) continue;
-            if (n_rulesets >= DNA_ENV_MAX_LEGS) {
-                if (fail_index_out) *fail_index_out = i;
-                return -1;
-            }
-            dna_domain_manifest_t man;
-            if (nodus_witness_domreg_get(w, dom, NULL, &man, NULL) != 0) {
-                if (fail_index_out) *fail_index_out = i;
-                return -1;                 /* unregistered domain        */
-            }
-            memmove(&rulesets[k + 1], &rulesets[k],
-                    (n_rulesets - k) * sizeof(rulesets[0]));
-            rulesets[k].domain_id       = dom;
-            rulesets[k].ruleset_version = man.ruleset_version;
-            memcpy(rulesets[k].ruleset_hash, man.ruleset_hash,
-                   DNA_ENV_RULESET_HASH_LEN);
-            n_rulesets++;
+            return -1;                          /* unknown entry class    */
         }
     }
-    if (n_rulesets == 0) return -1;
 
     uint64_t candidate = 0;
     if (nodus_witness_v2_tip_height(w, &candidate) != 0) return -2;
     candidate += 1;
 
-    dna_env_preflight_t *pf =
-        calloc((size_t)count, sizeof(dna_env_preflight_t));
-    if (!pf) return -2;
-    size_t fail_i = 0;
-    dna_env_preflight_status_t pst = DNA_ENV_PF_OK;
-    nodus_v2_env_status_t est = nodus_witness_v2_env_preflight_batch(
-        w, candidate, rulesets, n_rulesets, envs, (size_t)count, pf,
-        &fail_i, &pst);
-    free(pf);
-    if (est != NODUS_V2_ENV_OK) {
-        if (fail_index_out)
-            *fail_index_out = (int)(fail_i < (size_t)count ? fail_i : 0);
-        QGP_LOG_WARN(LOG_TAG, "batch pre-check rejected entry %zu "
-                     "(seam=%d pf=%d)", fail_i, (int)est, (int)pst);
-        return -1;
+    /* ── ENVELOPE subset: the env-preflight seam (wire + intent dedup) ── */
+    if (n_env > 0) {
+        dna_env_leg_ctx_t rulesets[DNA_ENV_MAX_LEGS];
+        size_t n_rulesets = 0;
+        for (int e = 0; e < n_env; e++) {
+            dna_env_view_t view;
+            if (dna_env_decode(envs[e].env_bytes, envs[e].env_len,
+                               &view) != 0) {
+                if (fail_index_out) *fail_index_out = env_idx[e];
+                return -1;
+            }
+            for (uint16_t l = 0; l < view.leg_count; l++) {
+                uint32_t dom = view.leg[l].domain_id;
+                size_t k = 0;
+                while (k < n_rulesets && rulesets[k].domain_id < dom) k++;
+                if (k < n_rulesets && rulesets[k].domain_id == dom) continue;
+                if (n_rulesets >= DNA_ENV_MAX_LEGS) {
+                    if (fail_index_out) *fail_index_out = env_idx[e];
+                    return -1;
+                }
+                dna_domain_manifest_t man;
+                if (nodus_witness_domreg_get(w, dom, NULL, &man, NULL) != 0) {
+                    if (fail_index_out) *fail_index_out = env_idx[e];
+                    return -1;              /* unregistered domain        */
+                }
+                memmove(&rulesets[k + 1], &rulesets[k],
+                        (n_rulesets - k) * sizeof(rulesets[0]));
+                rulesets[k].domain_id       = dom;
+                rulesets[k].ruleset_version = man.ruleset_version;
+                memcpy(rulesets[k].ruleset_hash, man.ruleset_hash,
+                       DNA_ENV_RULESET_HASH_LEN);
+                n_rulesets++;
+            }
+        }
+        if (n_rulesets == 0) {
+            if (fail_index_out) *fail_index_out = env_idx[0];
+            return -1;
+        }
+
+        dna_env_preflight_t *pf =
+            calloc((size_t)n_env, sizeof(dna_env_preflight_t));
+        if (!pf) return -2;
+        size_t fail_i = 0;
+        dna_env_preflight_status_t pst = DNA_ENV_PF_OK;
+        nodus_v2_env_status_t est = nodus_witness_v2_env_preflight_batch(
+            w, candidate, rulesets, n_rulesets, envs, (size_t)n_env, pf,
+            &fail_i, &pst);
+        free(pf);
+        if (est != NODUS_V2_ENV_OK) {
+            if (fail_index_out)
+                *fail_index_out =
+                    env_idx[fail_i < (size_t)n_env ? fail_i : 0];
+            QGP_LOG_WARN(LOG_TAG, "batch pre-check rejected envelope entry "
+                         "%zu (seam=%d pf=%d)", fail_i, (int)est, (int)pst);
+            return -1;
+        }
     }
+
+    /* ── CLAIM subset: per-claim admission + in-batch nullifier dedup ── */
+    if (n_claim > 0) {
+        uint8_t nuls[NODUS_W_MAX_BLOCK_TXS][64];
+        for (int ci = 0; ci < n_claim; ci++) {
+            int oi = claim_idx[ci];
+            dna_claim_t *c = calloc(1, sizeof(*c));   /* large — heap */
+            if (!c) return -2;
+            nodus_v2_claim_admit_t adm;
+            int ok = (dna_claim_decode(entries[oi]->tx_data,
+                                       entries[oi]->tx_len, c) == 0) &&
+                     (nodus_witness_v2_claim_admit(w, c, candidate,
+                                                   &adm) == 0);
+            free(c);
+            if (!ok) {
+                if (fail_index_out) *fail_index_out = oi;
+                QGP_LOG_WARN(LOG_TAG, "batch pre-check rejected claim entry "
+                             "%d (admission)", oi);
+                return -1;
+            }
+            for (int p = 0; p < ci; p++) {
+                if (memcmp(nuls[p], adm.nullifier, 64) == 0) {
+                    if (fail_index_out) *fail_index_out = oi;
+                    QGP_LOG_WARN(LOG_TAG, "batch pre-check: duplicate claim "
+                                 "nullifier in one batch (entry %d)", oi);
+                    return -1;
+                }
+            }
+            memcpy(nuls[ci], adm.nullifier, 64);
+        }
+    }
+
     return 0;
 }
 
@@ -340,14 +442,46 @@ int nodus_witness_v2_produce_commit(nodus_witness_t *w,
         return -2;
     memset(out, 0, sizeof(*out));
 
+    /* Split the agreed batch by transport-local class, preserving batch
+     * order within each channel: ENVELOPEs (200) feed blk->envs[] (doubly
+     * bound via tx_root), CLAIMs (201) are strict-decoded into a heap
+     * dna_claim_t array feeding blk->claims[] (bound transitively via each
+     * target's claims_root). The engine re-admits and executes; claim
+     * order = batch order (canonical, identical on leader and followers
+     * via the voted batch + COMMIT frame). */
     nodus_v2_envelope_t envs[NODUS_W_MAX_BLOCK_TXS];
+    size_t n_env = 0, n_claim = 0;
+    dna_claim_t *claims = NULL;
+    int rc = -2;
     for (int i = 0; i < count; i++) {
         nodus_witness_mempool_entry_t *e = entries[i];
-        if (!e || e->tx_type != NODUS_W_TX_V2_ENVELOPE || !e->tx_data ||
-            e->tx_len == 0)
+        if (!e || !e->tx_data || e->tx_len == 0)
             return -1;                      /* not a successor batch     */
-        envs[i].env_bytes = e->tx_data;
-        envs[i].env_len   = e->tx_len;
+        if (e->tx_type == NODUS_W_TX_V2_ENVELOPE) {
+            envs[n_env].env_bytes = e->tx_data;
+            envs[n_env].env_len   = e->tx_len;
+            n_env++;
+        } else if (e->tx_type == NODUS_W_TX_V2_CLAIM) {
+            n_claim++;
+        } else {
+            return -1;                      /* unknown entry class        */
+        }
+    }
+    if (n_claim > NODUS_W_MAX_BLOCK_TXS) return -1;
+
+    if (n_claim > 0) {
+        claims = calloc(n_claim, sizeof(*claims));   /* large — heap */
+        if (!claims) return -2;
+        size_t ci = 0;
+        for (int i = 0; i < count; i++) {
+            if (entries[i]->tx_type != NODUS_W_TX_V2_CLAIM) continue;
+            if (dna_claim_decode(entries[i]->tx_data, entries[i]->tx_len,
+                                 &claims[ci]) != 0) {
+                free(claims);
+                return -1;                  /* strict decode is a verdict */
+            }
+            ci++;
+        }
     }
 
     /* The engine block: identity is ENGINE-derived; the only header
@@ -355,22 +489,25 @@ int nodus_witness_v2_produce_commit(nodus_witness_t *w,
      * both agreed by the round, identical on every node). The follower
      * assertion channel carries the COMMIT frame's global root. */
     nodus_v2_block_t *blk = calloc(1, sizeof(*blk));
-    if (!blk) return -2;
+    if (!blk) { free(claims); return -2; }
     blk->global_height = height;
     blk->epoch         = nodus_v2_epoch_for_height(height);
     memcpy(blk->proposer_id, proposer_id, 32);
     blk->timestamp     = timestamp;
-    blk->envs          = envs;
-    blk->n_envs        = (size_t)count;
+    blk->envs          = n_env ? envs : NULL;
+    blk->n_envs        = n_env;
+    blk->claims        = claims;            /* NULL when n_claim == 0     */
+    blk->n_claims      = n_claim;
     blk->expect_global_root = expected_global_root;
 
-    int rc = nodus_witness_v2_apply_block(w, blk);
+    rc = nodus_witness_v2_apply_block(w, blk);
 
     if (rc == NODUS_V2_CONSENSUS_INVALID) {
         QGP_LOG_ERROR(LOG_TAG, "successor block %llu REJECTED by the "
                       "engine (deterministic verdict)",
                       (unsigned long long)height);
         free(blk);
+        free(claims);
         return -1;
     }
     if (rc != NODUS_V2_ACCEPTED && rc != NODUS_V2_ACCEPTED_PRECACHE) {
@@ -385,6 +522,7 @@ int nodus_witness_v2_produce_commit(nodus_witness_t *w,
                       "(engine rc=%d — node-local, no verdict)",
                       (unsigned long long)height, rc);
         free(blk);
+        free(claims);
         return -2;
     }
 
@@ -434,8 +572,9 @@ int nodus_witness_v2_produce_commit(nodus_witness_t *w,
     (void)nodus_witness_v2_qc_try_attach(w);
 
     QGP_LOG_INFO(LOG_TAG, "successor block %llu committed through the V2 "
-                 "engine (%d envelope(s))",
-                 (unsigned long long)height, count);
+                 "engine (%zu envelope(s), %zu claim(s))",
+                 (unsigned long long)height, n_env, n_claim);
     free(blk);
+    free(claims);
     return 0;
 }

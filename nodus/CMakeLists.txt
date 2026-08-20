@@ -1012,6 +1012,15 @@ register_witness_test(test_v2_qc_authority)
 register_witness_test(test_v2_finalize)
 register_witness_test(test_v2_produce)
 
+# Ledger V2 O15F Task 3 — successor CLAIM ingress (transport-local class
+# 201): the verify divert (admission incl. canonicality, tx_hash, spent
+# and mempool-pending dedup), produce_batch_check duplicate-nullifier
+# rejection, and a mixed [envelope, claim, claim] produce_commit with
+# leader/follower BlockID identity. Drives the REAL production functions;
+# the successor role is set directly on the handle (the flag wiring is
+# rehearsal-covered), so it runs in both build variants.
+register_witness_test(test_v2_claim_ingress)
+
 # Ledger V2 O15E Faz A — the successor committee seed source (activation
 # obligation 2): committed v2_blocks BlockID at the lookback height,
 # fail-closed integrity matrix, legacy-table immunity on successors,

@@ -1,0 +1,883 @@
+/**
+ * @file nodus/tests/test_v2_claim_ingress.c
+ * @brief Ledger V2 O15F Task 3 — successor CLAIM ingress (transport-local
+ *        class 201) through the REAL production functions: the verify
+ *        divert (admission), the produce batch pre-check, and the produce
+ *        commit handoff.
+ *
+ * Fixture: the test_v2_produce shape (7 REAL ML-DSA-87 validators as the
+ * committed authority snapshot + a server identity so produce can sign its
+ * own DNA.CERT.v2 certificate + the armed successor role flags) LAYERED
+ * with the test_v2_claims present-distribution genesis (a GenesisManifest
+ * carrying a 3-leaf CORE-native distribution) so a claim is admissible.
+ *
+ * The nine cases (Task 3 S1):
+ *   1. valid claim bytes -> class 201 -> nodus_witness_verify_transaction 0;
+ *   2. same leaf re-signed, pending in the mempool -> ADMISSION reject;
+ *   3. one tampered byte -> reject (canonicality re-encode);
+ *   4. already-committed (spent) claim -> reject;
+ *   5. wrong tx_hash -> reject;
+ *   6. envelope bytes as class 201 / claim bytes as class 200 -> reject both;
+ *   7. produce [envelope, claim, claim] -> block commits, claims applied,
+ *      leader/follower derive the SAME BlockID;
+ *   8. two same-nullifier claims -> produce_batch_check rejects (not the
+ *      whole-block apply);
+ *   9. unarmed / legacy handle -> class 201 refused.
+ *
+ * Copyright (c) 2026 nocdem
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#define NODUS_WITNESS_INTERNAL_API 1
+
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sqlite3.h>
+
+#include "crypto/hash/qgp_sha3.h"
+#include "crypto/sign/qgp_dilithium.h"
+
+#include "witness/nodus_witness.h"
+#include "witness/nodus_witness_db.h"
+#include "witness/nodus_witness_v2_schema.h"
+#include "witness/nodus_witness_v2_apply.h"
+#include "witness/nodus_witness_v2_produce.h"
+#include "witness/nodus_witness_v2_claims.h"
+#include "witness/nodus_witness_v2_epoch.h"
+#include "witness/nodus_witness_verify.h"
+#include "witness/nodus_witness_validator.h"
+#include "witness/nodus_witness_vset.h"
+#include "witness/nodus_witness_committee.h"
+#include "witness/nodus_witness_domreg.h"
+#include "witness/nodus_witness_runtime.h"
+#include "witness/nodus_witness_mempool.h"
+#include "server/nodus_server.h"
+#include "nodus/nodus_chain_config.h"
+
+#include "dnac/ledger_ids.h"
+#include "dnac/env_wire.h"
+#include "dnac/env_preflight.h"
+#include "dnac/qc_v2.h"
+#include "dnac/block_v2.h"
+#include "dnac/vset_wire.h"
+#include "dnac/manifest_wire.h"
+#include "dnac/domain_wire.h"
+
+#define CHECK(cond, msg) do { \
+    if (!(cond)) { \
+        fprintf(stderr, "CHECK failed at %s:%d: %s\n", __FILE__, __LINE__, \
+                (msg)); \
+        return 1; \
+    } \
+} while (0)
+
+static int g_checks = 0;
+#define OK() do { g_checks++; } while (0)
+
+/* ── deterministic committee keys (test_v2_produce shape) ───────────── */
+
+#define N_KEYS 7
+
+typedef struct {
+    uint8_t pk[QGP_DSA87_PUBLICKEYBYTES];
+    uint8_t sk[QGP_DSA87_SECRETKEYBYTES];
+    uint8_t voter[32];
+} keyset_t;
+
+static keyset_t g_ks[N_KEYS];
+
+static int make_keys(void) {
+    for (int i = 0; i < N_KEYS; i++) {
+        uint8_t seed[32];
+        memset(seed, (uint8_t)(0x40 + i), sizeof(seed));
+        if (qgp_dsa87_keypair_derand(g_ks[i].pk, g_ks[i].sk, seed) != 0)
+            return -1;
+        uint8_t full[64];
+        if (qgp_sha3_512(g_ks[i].pk, QGP_DSA87_PUBLICKEYBYTES, full) != 0)
+            return -1;
+        memcpy(g_ks[i].voter, full, 32);
+    }
+    return 0;
+}
+
+/* ── deterministic distribution leaves (test_v2_claims shape) ───────── */
+
+#define N_LEAVES 3
+static uint8_t g_pk[N_LEAVES][QGP_DSA87_PUBLICKEYBYTES];
+static uint8_t g_sk[N_LEAVES][QGP_DSA87_SECRETKEYBYTES];
+static dna_dist_leaf_t g_leaf[N_LEAVES];
+static uint8_t g_leaf_hash[N_LEAVES][64];
+static uint8_t g_snapshot_root[64];
+
+static const uint8_t g_native_asset[64] = {0};   /* CORE: native token  */
+
+/* conv 3/2 FLOOR: 10->15, 5->7, 7->10; Sum = 32 */
+static const uint64_t g_src_amount[N_LEAVES] = { 10, 5, 7 };
+static const uint64_t g_conv_amount[N_LEAVES] = { 15, 7, 10 };
+static const char *g_src_id[N_LEAVES] = { "src-alpha", "src-beta", "src-gamma" };
+
+static int keys_init(void) {
+    for (int i = 0; i < N_LEAVES; i++) {
+        uint8_t seed[32];
+        memset(seed, (uint8_t)(0x90 + i), sizeof(seed));
+        if (qgp_dsa87_keypair_derand(g_pk[i], g_sk[i], seed) != 0)
+            return -1;
+        memset(&g_leaf[i], 0, sizeof(g_leaf[i]));
+        g_leaf[i].leaf_version = DNA_DIST_VERSION;
+        g_leaf[i].source_id_len = (uint16_t)strlen(g_src_id[i]);
+        memcpy(g_leaf[i].source_id, g_src_id[i], g_leaf[i].source_id_len);
+        g_leaf[i].source_amount = g_src_amount[i];
+        if (qgp_sha3_512(g_pk[i], QGP_DSA87_PUBLICKEYBYTES,
+                         g_leaf[i].dest_binding) != 0)
+            return -1;
+        if (dna_dist_leaf_hash(&g_leaf[i], g_leaf_hash[i]) != 0)
+            return -1;
+    }
+    if (dna_dist_snapshot_root(g_leaf, N_LEAVES, g_snapshot_root) != 0)
+        return -1;
+    if (dna_dist_check_totals(g_leaf, N_LEAVES, 3, 2,
+                              DNA_DISTROUND_FLOOR, 32) != 0)
+        return -1;
+    return 0;
+}
+
+/* ── fixture ────────────────────────────────────────────────────────── */
+
+typedef struct {
+    nodus_witness_t *w;
+    nodus_server_t  *srv;
+    char             dir[128];
+    uint8_t          chain_id[DNA_CHAIN_ID_LEN];
+    uint8_t          genesis_id[64];
+    uint8_t          manifest_hash[64];
+} fixture_t;
+
+static void rmrf(const char *path) {
+    char cmd[256];
+    snprintf(cmd, sizeof(cmd), "rm -rf '%s'", path);
+    if (system(cmd) != 0) { /* best effort */ }
+}
+
+static int run_sql(sqlite3 *db, const char *sql) {
+    char *err = NULL;
+    int rc = sqlite3_exec(db, sql, NULL, NULL, &err);
+    if (err) sqlite3_free(err);
+    return rc == SQLITE_OK ? 0 : -1;
+}
+
+static uint64_t q1(nodus_witness_t *w, const char *sql) {
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db, sql, -1, &st, NULL) != SQLITE_OK)
+        return UINT64_MAX;
+    uint64_t v = UINT64_MAX;
+    if (sqlite3_step(st) == SQLITE_ROW)
+        v = (uint64_t)sqlite3_column_int64(st, 0);
+    sqlite3_finalize(st);
+    return v;
+}
+
+static int seed_validators(fixture_t *fx) {
+    static const char hexd[] = "0123456789abcdef";
+    for (int i = 0; i < N_KEYS; i++) {
+        dnac_validator_record_t v;
+        memset(&v, 0, sizeof(v));
+        memcpy(v.pubkey, g_ks[i].pk, DNAC_PUBKEY_SIZE);
+        v.self_stake         = 0;
+        v.status             = DNAC_VALIDATOR_ACTIVE;
+        v.active_since_block = 1;
+        uint8_t fpr[64];
+        if (qgp_sha3_512(g_ks[i].pk, DNAC_PUBKEY_SIZE, fpr) != 0) return -1;
+        for (int b = 0; b < 64; b++) {
+            v.unstake_destination_fp[2 * b]     = hexd[fpr[b] >> 4];
+            v.unstake_destination_fp[2 * b + 1] = hexd[fpr[b] & 0xF];
+        }
+        v.unstake_destination_fp[128] = '\0';
+        if (nodus_validator_insert(fx->w, &v) != 0) return -1;
+    }
+    return 0;
+}
+
+/* genesis(1000) = CORE utxo(968) + unclaimed distribution(32) */
+static int seed_supply_dist(nodus_witness_t *w) {
+    if (run_sql(w->db,
+            "INSERT INTO supply_tracking (id, genesis_supply, total_burned, "
+            "total_minted, current_supply, last_tx_hash, last_sequence) "
+            "VALUES (1, 1000, 0, 0, 968, x'00', 0)") != 0)
+        return -1;
+    return run_sql(w->db,
+        "INSERT INTO utxo_set (nullifier, owner, amount, token_id, "
+        "tx_hash, output_index, block_height, created_at, unlock_block, "
+        "domain_id) "
+        "VALUES (zeroblob(63)||x'01', 'genesis', 968, zeroblob(64), "
+        "zeroblob(63)||x'aa', 0, 0, 0, 0, 1)");
+}
+
+/* Build the present-distribution GenesisManifest over the committed
+ * SYSTEM/CORE registry hashes (the CORE-native target, 3-leaf snapshot). */
+static int build_dist_manifest(nodus_witness_t *w, uint8_t *out, size_t cap,
+                               size_t *out_len, uint8_t out_mh[64]) {
+    dna_domain_manifest_t dm;
+    uint8_t sys_h[64], core_h[64];
+    if (nodus_witness_domreg_get(w, DNA_DOMAIN_SYSTEM, NULL, &dm, NULL) != 0)
+        return -1;
+    if (dna_domman_hash(&dm, sys_h) != 0) return -1;
+    if (nodus_witness_domreg_get(w, DNA_DOMAIN_CORE, NULL, &dm, NULL) != 0)
+        return -1;
+    if (dna_domman_hash(&dm, core_h) != 0) return -1;
+
+    dna_gman_t m;
+    memset(&m, 0, sizeof(m));
+    m.manifest_version   = DNA_GMAN_VERSION;
+    m.genesis_supply_raw = 1000;
+    m.domain_count       = 2;
+    m.domains[0].domain_id = DNA_DOMAIN_SYSTEM;
+    memcpy(m.domains[0].manifest_hash, sys_h, 64);
+    m.domains[1].domain_id = DNA_DOMAIN_CORE;
+    memcpy(m.domains[1].manifest_hash, core_h, 64);
+
+    m.dist_present       = 1;
+    m.dist_version       = DNA_DIST_VERSION;
+    m.target_domain_id   = DNA_DOMAIN_CORE;
+    m.target_asset_len   = 64;
+    memcpy(m.target_asset_ref, g_native_asset, 64);
+    m.source_tag_len     = (uint16_t)strlen("testnet-generic");
+    memcpy(m.source_tag, "testnet-generic", m.source_tag_len);
+    m.source_commit_len  = 16;
+    memset(m.source_commit, 0x77, 16);
+    memcpy(m.snapshot_root, g_snapshot_root, 64);
+    m.leaf_count         = N_LEAVES;
+    m.conv_numerator     = 3;
+    m.conv_denominator   = 2;
+    m.rounding_mode      = DNA_DISTROUND_FLOOR;
+    m.excluded_amount    = 4;
+    m.total_claimable    = 32;
+    m.claim_start_height = 1;
+    m.claim_end_height   = 1000000;
+    m.auth_mode          = DNA_CLAIMAUTH_DNA_NATIVE;
+    m.fee_mode           = DNA_CLAIMFEE_NONE;
+    m.post_deadline_mode = DNA_POSTDL_RETAIN;
+
+    if (dna_gman_hash(&m, out_mh) != 0) return -1;
+    return dna_gman_encode(&m, out, cap, out_len);
+}
+
+static int fx_open(fixture_t *fx, const char *tag) {
+    memset(fx, 0, sizeof(*fx));
+    fx->w   = calloc(1, sizeof(*fx->w));
+    fx->srv = calloc(1, sizeof(*fx->srv));
+    if (!fx->w || !fx->srv) return -1;
+    fx->w->cached_committee_epoch_start = UINT64_MAX;
+    snprintf(fx->dir, sizeof(fx->dir), "/tmp/test_v2_claimin_%s_XXXXXX", tag);
+    if (!mkdtemp(fx->dir)) return -1;
+    snprintf(fx->w->data_path, sizeof(fx->w->data_path), "%s", fx->dir);
+
+    uint8_t cid16[16];
+    memset(cid16, 0x5D, sizeof(cid16));
+    if (nodus_witness_create_chain_db(fx->w, cid16) != 0) return -1;
+    if (nodus_chain_config_db_migrate(fx->w) != 0) return -1;
+    if (nodus_witness_db_migrate_v2s9(fx->w) != 0) return -1;
+
+    /* supply + CORE utxo BEFORE the registry commits genesis roots */
+    if (seed_supply_dist(fx->w) != 0) return -1;
+
+    /* committed 7-validator authority BEFORE domreg genesis (the vset leg
+     * feeds the SYSTEM payload root that genesis re-derives). */
+    if (seed_validators(fx) != 0) return -1;
+    if (nodus_witness_vset_commit_genesis(fx->w, 1) != 0) return -1;
+    if (nodus_witness_domreg_init_genesis(fx->w) != 0) return -1;
+
+    uint8_t mbytes[8192];
+    size_t mlen = 0;
+    if (build_dist_manifest(fx->w, mbytes, sizeof(mbytes), &mlen,
+                            fx->manifest_hash) != 0)
+        return -1;
+
+    /* genesis binds the COMMITTED epoch-0 vset hash. */
+    uint8_t vsh[DNA_VSET_HASH_LEN];
+    memset(vsh, 0x77, sizeof(vsh));
+    {
+        dna_vset_snapshot_t *s0 = NULL;
+        uint32_t sn = 0, sq = 0;
+        if (nodus_witness_v2_epoch_authority_for_height(fx->w, 0, &s0, &sn,
+                                                        &sq) == 0 && s0) {
+            int hrc = dna_vset_hash(s0, vsh);
+            dna_vset_free(&s0);
+            if (hrc != 0) return -1;
+        } else {
+            dna_vset_free(&s0);
+            return -1;
+        }
+    }
+    if (nodus_witness_v2_genesis_ex(fx->w, NULL, vsh, 0, mbytes, mlen) != 0)
+        return -1;
+
+    /* read the ENGINE-DERIVED genesis identity back */
+    {
+        sqlite3_stmt *st = NULL;
+        if (sqlite3_prepare_v2(fx->w->db,
+                "SELECT block_id FROM v2_blocks WHERE global_height = 0",
+                -1, &st, NULL) != SQLITE_OK)
+            return -1;
+        int ok = 0;
+        if (sqlite3_step(st) == SQLITE_ROW &&
+            sqlite3_column_bytes(st, 0) == 64) {
+            memcpy(fx->genesis_id, sqlite3_column_blob(st, 0), 64);
+            memcpy(fx->chain_id, fx->genesis_id, 32);
+            ok = 1;
+        }
+        sqlite3_finalize(st);
+        if (!ok) return -1;
+    }
+
+    memcpy(fx->srv->identity.pk.bytes, g_ks[0].pk, NODUS_PK_BYTES);
+    memcpy(fx->srv->identity.sk.bytes, g_ks[0].sk, QGP_DSA87_SECRETKEYBYTES);
+    memcpy(fx->srv->identity.node_id.bytes, g_ks[0].voter, 32);
+    fx->w->server = fx->srv;
+    memcpy(fx->w->my_id, g_ks[0].voter, 32);
+    fx->w->v2_successor = true;
+    memcpy(fx->w->v2_chain32, fx->chain_id, 32);
+    fx->w->v2_ingress_armed = true;
+    return 0;
+}
+
+static void fx_close(fixture_t *fx) {
+    if (fx->w) {
+        nodus_witness_mempool_clear(&fx->w->mempool);
+        if (fx->w->db) sqlite3_close(fx->w->db);
+        free(fx->w);
+        fx->w = NULL;
+    }
+    free(fx->srv);
+    fx->srv = NULL;
+    if (fx->dir[0]) rmrf(fx->dir);
+}
+
+/* ── claim + envelope builders ──────────────────────────────────────── */
+
+static int make_claim(dna_claim_t *c, int leaf, const uint8_t chain[32],
+                      const uint8_t manifest_hash[64]) {
+    memset(c, 0, sizeof(*c));
+    c->claim_version = DNA_CLAIM_VERSION;
+    memcpy(c->chain_id, chain, 32);
+    memcpy(c->manifest_hash, manifest_hash, 64);
+    c->leaf_index = (uint64_t)leaf;
+    c->source_id_len = g_leaf[leaf].source_id_len;
+    memcpy(c->source_id, g_leaf[leaf].source_id, c->source_id_len);
+    c->source_amount = g_leaf[leaf].source_amount;
+    memcpy(c->dest_binding, g_leaf[leaf].dest_binding, 64);
+    uint16_t ns = 0;
+    if (dna_dist_proof_build((const uint8_t (*)[64])g_leaf_hash, N_LEAVES,
+                             (uint64_t)leaf, c->siblings, &ns) != 0)
+        return -1;
+    c->n_siblings = ns;
+    c->auth_mode = DNA_CLAIMAUTH_DNA_NATIVE;
+    memcpy(c->pubkey, g_pk[leaf], QGP_DSA87_PUBLICKEYBYTES);
+    uint8_t pre[DNA_CLAIM_PREIMAGE_MAX];
+    size_t pre_len = 0;
+    if (dna_claim_preimage(c, pre, &pre_len) != 0) return -1;
+    size_t siglen = 0;
+    if (qgp_dsa87_sign(c->signature, &siglen, pre, pre_len,
+                       g_sk[leaf]) != 0 || siglen != DNA_CLAIM_SIG_LEN)
+        return -1;
+    return 0;
+}
+
+/* claim's committed nullifier + output id (as consensus derives them) */
+static int claim_ids(const dna_claim_t *c, uint8_t nul[64], uint8_t oid[64]) {
+    dna_dist_leaf_t leaf;
+    memset(&leaf, 0, sizeof(leaf));
+    leaf.leaf_version = DNA_DIST_VERSION;
+    leaf.source_id_len = c->source_id_len;
+    memcpy(leaf.source_id, c->source_id, c->source_id_len);
+    leaf.source_amount = c->source_amount;
+    memcpy(leaf.dest_binding, c->dest_binding, 64);
+    uint8_t lh[64];
+    if (dna_dist_leaf_hash(&leaf, lh) != 0) return -1;
+    if (dna_claim_nullifier(c->chain_id, c->manifest_hash, DNA_DOMAIN_CORE,
+                            g_native_asset, 64, lh, nul) != 0)
+        return -1;
+    return dna_claim_utxo_id(nul, oid);
+}
+
+/* canonical wire bytes of a claim + its SHA3-512 tx_hash */
+static int encode_claim(const dna_claim_t *c, uint8_t **out, size_t *out_len,
+                        uint8_t hash[64]) {
+    size_t need = dna_claim_encoded_len(c);
+    if (need == 0) return -1;
+    uint8_t *b = malloc(need);
+    if (!b) return -1;
+    size_t wr = 0;
+    if (dna_claim_encode(c, b, need, &wr) != 0 || wr != need) {
+        free(b);
+        return -1;
+    }
+    if (qgp_sha3_512(b, wr, hash) != 0) { free(b); return -1; }
+    *out = b;
+    *out_len = wr;
+    return 0;
+}
+
+/* a class-201 mempool entry carrying the claim bytes (nullifier recorded
+ * exactly as the ingress handler does). tx_data is heap; freed by the
+ * mempool clear / entry free. */
+static nodus_witness_mempool_entry_t *
+mkclaimentry(const uint8_t *bytes, size_t len, const uint8_t hash[64],
+             const uint8_t nullifier[64]) {
+    nodus_witness_mempool_entry_t *e = calloc(1, sizeof(*e));
+    if (!e) return NULL;
+    memcpy(e->tx_hash, hash, 64);
+    e->tx_type = NODUS_W_TX_V2_CLAIM;
+    e->tx_data = malloc(len);
+    if (!e->tx_data) { free(e); return NULL; }
+    memcpy(e->tx_data, bytes, len);
+    e->tx_len = (uint32_t)len;
+    memcpy(e->nullifiers[0], nullifier, 64);
+    e->nullifier_count = 1;
+    return e;
+}
+
+/* ── the smallest successor-valid SYSTEM CHAIN_CONFIG envelope ───────── */
+
+typedef struct {
+    uint8_t *bytes;
+    size_t   len;
+    uint8_t  wire_id[64];
+    uint8_t  intent_id[64];
+} test_env_t;
+
+static int build_cc_env(fixture_t *fx, uint64_t nonce, test_env_t *out) {
+    memset(out, 0, sizeof(*out));
+    const uint8_t *chain32 = fx->chain_id;
+
+    dna_domain_manifest_t sys_man;
+    if (nodus_witness_domreg_get(fx->w, DNA_DOMAIN_SYSTEM, NULL, &sys_man,
+                                 NULL) != 0)
+        return -1;
+
+    uint64_t tip = 0;
+    if (nodus_witness_v2_tip_height(fx->w, &tip) != 0) return -1;
+
+    nodus_committee_member_t *cm = NULL;
+    int cmn = 0;
+    if (nodus_committee_get_for_block_alloc(fx->w, tip, &cm, &cmn) != 0 ||
+        cmn < 1)
+        return -1;
+
+    int rc = -1;
+    uint8_t *fps = malloc((size_t)cmn * 64);
+    dna_env_preflight_t *pf = calloc(1, sizeof(*pf));
+    uint8_t *auth = NULL;
+    uint8_t *env_bytes = NULL;
+    do {
+        if (!fps || !pf) break;
+        uint8_t set_hash[64];
+        int bad = 0;
+        for (int i = 0; i < cmn; i++)
+            if (qgp_sha3_512(cm[i].pubkey, DNAC_PUBKEY_SIZE,
+                             fps + (size_t)i * 64) != 0) { bad = 1; break; }
+        if (bad) break;
+        if (nodus_rt_committee_set_hash((const uint8_t (*)[64])fps,
+                                        (uint32_t)cmn, set_hash) != 0)
+            break;
+        uint64_t appr_epoch = nodus_v2_epoch_for_height(tip);
+        uint32_t quorum = dna_bft_quorum((uint32_t)cmn);
+
+        uint8_t call[41];
+        uint64_t nv = 7, eff = tip + 100000, vb = eff + 100000, sa = 1;
+        call[0] = 4;                    /* DNAC_CFG_TARGET_ACTIVE_COUNT */
+        for (int i = 0; i < 8; i++) call[1 + i]  = (uint8_t)(nv  >> (56 - 8 * i));
+        for (int i = 0; i < 8; i++) call[9 + i]  = (uint8_t)(eff >> (56 - 8 * i));
+        for (int i = 0; i < 8; i++) call[17 + i] = (uint8_t)(nonce >> (56 - 8 * i));
+        for (int i = 0; i < 8; i++) call[25 + i] = (uint8_t)(sa  >> (56 - 8 * i));
+        for (int i = 0; i < 8; i++) call[33 + i] = (uint8_t)(vb  >> (56 - 8 * i));
+
+        size_t auth_len = 1 + NODUS_RT_AUTH_SIGNER_LEN + 2 +
+                          (size_t)quorum * NODUS_RT_AUTH_APPROVAL_LEN;
+        auth = calloc(1, auth_len);
+        if (!auth) break;
+
+        dna_env_leg_in_t leg;
+        memset(&leg, 0, sizeof(leg));
+        leg.hdr.domain_id            = DNA_DOMAIN_SYSTEM;
+        leg.hdr.runtime_op           = DNA_SYSRULE_CHAIN_CONFIG;
+        leg.hdr.ruleset_version      = sys_man.ruleset_version;
+        leg.hdr.access_mode          = DNA_ENV_ACCESS_INVOKE;
+        leg.hdr.auth_kind            = NODUS_RT_AUTHKIND_DSA87_CC_V1;
+        leg.hdr.call_len             = sizeof(call);
+        leg.hdr.auth_len             = (uint32_t)auth_len;
+        leg.hdr.res_max_effects      = 4;
+        leg.hdr.res_max_effect_bytes = 4096;
+        leg.call_data = call;
+        leg.auth_data = auth;
+
+        dna_env_in_t env_in;
+        memset(&env_in, 0, sizeof(env_in));
+        env_in.expiry_height       = 0;
+        env_in.fee_amount          = 0;
+        env_in.res_max_total_units = 200000;
+        env_in.leg_count           = 1;
+        env_in.legs                = &leg;
+
+        size_t env_len = 0;
+        if (dna_env_encoded_size(&leg, 1, &env_len) != 0) break;
+        env_bytes = malloc(env_len);
+        if (!env_bytes) break;
+
+        dna_env_leg_ctx_t lctx;
+        lctx.domain_id       = DNA_DOMAIN_SYSTEM;
+        lctx.ruleset_version = sys_man.ruleset_version;
+        memcpy(lctx.ruleset_hash, sys_man.ruleset_hash, 64);
+
+        size_t used = 0;
+        if (dna_env_encode(&env_in, env_bytes, env_len, &used) != 0 ||
+            used != env_len) break;
+        if (dna_env_preflight(env_bytes, env_len, chain32, tip + 1, &lctx,
+                              1, pf) != DNA_ENV_PF_OK) break;
+
+        uint8_t *p = auth;
+        p[0] = 1;
+        memcpy(p + 1, g_ks[0].pk, DNAC_PUBKEY_SIZE);
+        size_t sl = 0;
+        if (qgp_dsa87_sign(p + 1 + DNAC_PUBKEY_SIZE, &sl,
+                           pf->auth_digest[0], 64, g_ks[0].sk) != 0)
+            break;
+        p += 1 + NODUS_RT_AUTH_SIGNER_LEN;
+        p[0] = (uint8_t)(quorum >> 8);
+        p[1] = (uint8_t)quorum;
+        p += 2;
+
+        uint32_t emitted = 0;
+        for (int s = 0; s < cmn && emitted < quorum; s++) {
+            int ki = -1;
+            for (int k = 0; k < N_KEYS; k++)
+                if (memcmp(cm[s].pubkey, g_ks[k].pk, DNAC_PUBKEY_SIZE) == 0) {
+                    ki = k;
+                    break;
+                }
+            if (ki < 0) { bad = 1; break; }
+            uint8_t adg[64];
+            if (nodus_rt_cc_approval_digest(pf->auth_digest[0], set_hash,
+                                            appr_epoch, (uint16_t)s,
+                                            adg) != 0) { bad = 1; break; }
+            p[0] = (uint8_t)((uint16_t)s >> 8);
+            p[1] = (uint8_t)s;
+            sl = 0;
+            if (qgp_dsa87_sign(p + 2, &sl, adg, 64, g_ks[ki].sk) != 0) {
+                bad = 1;
+                break;
+            }
+            p += NODUS_RT_AUTH_APPROVAL_LEN;
+            emitted++;
+        }
+        if (bad || emitted != quorum) break;
+
+        if (dna_env_encode(&env_in, env_bytes, env_len, &used) != 0 ||
+            used != env_len) break;
+        if (dna_env_preflight(env_bytes, env_len, chain32, tip + 1, &lctx,
+                              1, pf) != DNA_ENV_PF_OK) break;
+
+        out->bytes = env_bytes;
+        out->len   = env_len;
+        memcpy(out->wire_id, pf->wire_id, 64);
+        memcpy(out->intent_id, pf->intent_id, 64);
+        env_bytes = NULL;
+        rc = 0;
+    } while (0);
+
+    free(env_bytes);
+    free(auth);
+    free(pf);
+    free(fps);
+    free(cm);
+    return rc;
+}
+
+static void mkenventry(nodus_witness_mempool_entry_t *e, const test_env_t *env) {
+    memset(e, 0, sizeof(*e));
+    memcpy(e->tx_hash, env->wire_id, 64);
+    e->tx_type = NODUS_W_TX_V2_ENVELOPE;
+    e->tx_data = env->bytes;
+    e->tx_len  = (uint32_t)env->len;
+}
+
+/* ── main ───────────────────────────────────────────────────────────── */
+
+int main(void) {
+    CHECK(make_keys() == 0, "committee keygen");
+    CHECK(keys_init() == 0, "distribution leaves");
+
+    fixture_t A, B;
+    CHECK(fx_open(&A, "a") == 0, "fixture A open"); OK();
+    CHECK(fx_open(&B, "b") == 0, "fixture B open"); OK();
+    CHECK(memcmp(A.genesis_id, B.genesis_id, 64) == 0,
+          "twin fixtures derive the SAME genesis identity"); OK();
+    CHECK(memcmp(A.manifest_hash, B.manifest_hash, 64) == 0,
+          "twin fixtures commit the SAME manifest"); OK();
+
+    /* claim0 encoded once; reused byte-identically by A and B */
+    dna_claim_t c0, c1, c2;
+    CHECK(make_claim(&c0, 0, A.chain_id, A.manifest_hash) == 0, "claim0");
+    CHECK(make_claim(&c1, 1, A.chain_id, A.manifest_hash) == 0, "claim1");
+    CHECK(make_claim(&c2, 2, A.chain_id, A.manifest_hash) == 0, "claim2");
+    OK();
+
+    uint8_t *c0b = NULL, *c1b = NULL, *c2b = NULL;
+    size_t c0n = 0, c1n = 0, c2n = 0;
+    uint8_t c0h[64], c1h[64], c2h[64];
+    CHECK(encode_claim(&c0, &c0b, &c0n, c0h) == 0, "encode c0");
+    CHECK(encode_claim(&c1, &c1b, &c1n, c1h) == 0, "encode c1");
+    CHECK(encode_claim(&c2, &c2b, &c2n, c2h) == 0, "encode c2");
+    OK();
+
+    uint8_t c0nul[64], c0oid[64], c1nul[64], c1oid[64], c2nul[64], c2oid[64];
+    CHECK(claim_ids(&c0, c0nul, c0oid) == 0, "c0 ids");
+    CHECK(claim_ids(&c1, c1nul, c1oid) == 0, "c1 ids");
+    CHECK(claim_ids(&c2, c2nul, c2oid) == 0, "c2 ids");
+    OK();
+
+    char rr[256];
+
+    /* §1 — a valid claim is admitted on the class-201 lane. */
+    CHECK(nodus_witness_verify_transaction(A.w, c0b, (uint32_t)c0n, c0h,
+              NODUS_W_TX_V2_CLAIM, NULL, 0, NULL, NULL, 0,
+              NODUS_WITNESS_VERIFY_VALIDATION, rr, sizeof(rr)) == 0,
+          "valid claim admitted (class 201)"); OK();
+
+    /* §3 — one tampered byte fails the canonicality/decode gate. */
+    {
+        uint8_t *t = malloc(c0n);
+        CHECK(t != NULL, "alloc tamper");
+        memcpy(t, c0b, c0n);
+        t[c0n / 2] ^= 0x01;
+        uint8_t th[64];
+        CHECK(qgp_sha3_512(t, c0n, th) == 0, "tamper hash");
+        CHECK(nodus_witness_verify_transaction(A.w, t, (uint32_t)c0n, th,
+                  NODUS_W_TX_V2_CLAIM, NULL, 0, NULL, NULL, 0,
+                  NODUS_WITNESS_VERIFY_VALIDATION, rr, sizeof(rr)) != 0,
+              "tampered claim refused"); OK();
+        free(t);
+    }
+
+    /* §5 — the submitted hash must be SHA3-512(claim bytes). */
+    {
+        uint8_t bad[64];
+        memset(bad, 0x11, sizeof(bad));
+        CHECK(nodus_witness_verify_transaction(A.w, c0b, (uint32_t)c0n, bad,
+                  NODUS_W_TX_V2_CLAIM, NULL, 0, NULL, NULL, 0,
+                  NODUS_WITNESS_VERIFY_VALIDATION, rr, sizeof(rr)) != 0,
+              "wrong tx_hash refused"); OK();
+    }
+
+    /* §6 — cross-class: claim bytes must NOT ride class 200, and envelope
+     * bytes must NOT ride class 201. */
+    {
+        test_env_t ecc;
+        CHECK(build_cc_env(&A, 1, &ecc) == 0, "build envelope for cross-class");
+        CHECK(nodus_witness_verify_transaction(A.w, c0b, (uint32_t)c0n, c0h,
+                  NODUS_W_TX_V2_ENVELOPE, NULL, 0, NULL, NULL, 0,
+                  NODUS_WITNESS_VERIFY_VALIDATION, rr, sizeof(rr)) != 0,
+              "claim bytes refused as class 200"); OK();
+        CHECK(nodus_witness_verify_transaction(A.w, ecc.bytes,
+                  (uint32_t)ecc.len, ecc.wire_id, NODUS_W_TX_V2_CLAIM,
+                  NULL, 0, NULL, NULL, 0,
+                  NODUS_WITNESS_VERIFY_VALIDATION, rr, sizeof(rr)) != 0,
+              "envelope bytes refused as class 201"); OK();
+        free(ecc.bytes);
+    }
+
+    /* §2 — a re-signed twin of the same leaf, pending in the mempool, is
+     * refused at ADMISSION (nullifier already pending). The scan is
+     * ADMISSION-only: a follower's VALIDATION verdict must never depend on
+     * its own mempool. */
+    {
+        dna_claim_t c0b2;
+        CHECK(make_claim(&c0b2, 0, A.chain_id, A.manifest_hash) == 0,
+              "re-sign leaf0");
+        CHECK(memcmp(c0.signature, c0b2.signature, DNA_CLAIM_SIG_LEN) != 0,
+              "re-sign produced a DIFFERENT signature (non-vacuous)"); OK();
+        uint8_t *c0b2b = NULL; size_t c0b2n = 0; uint8_t c0b2h[64];
+        CHECK(encode_claim(&c0b2, &c0b2b, &c0b2n, c0b2h) == 0, "encode twin");
+
+        nodus_witness_mempool_entry_t *e =
+            mkclaimentry(c0b, c0n, c0h, c0nul);
+        CHECK(e != NULL, "mempool entry");
+        CHECK(nodus_witness_mempool_add(&A.w->mempool, e) == 0,
+              "claim0 pending in mempool");
+
+        CHECK(nodus_witness_verify_transaction(A.w, c0b2b, (uint32_t)c0b2n,
+                  c0b2h, NODUS_W_TX_V2_CLAIM, NULL, 0, NULL, NULL, 0,
+                  NODUS_WITNESS_VERIFY_ADMISSION, rr, sizeof(rr)) != 0,
+              "re-signed twin refused at ADMISSION (nullifier pending)"); OK();
+        /* the same twin is NOT rejected on the pending ground under
+         * VALIDATION — the mempool must not drive a consensus verdict */
+        CHECK(nodus_witness_verify_transaction(A.w, c0b2b, (uint32_t)c0b2n,
+                  c0b2h, NODUS_W_TX_V2_CLAIM, NULL, 0, NULL, NULL, 0,
+                  NODUS_WITNESS_VERIFY_VALIDATION, rr, sizeof(rr)) == 0,
+              "VALIDATION ignores the pending mempool (deterministic)"); OK();
+
+        nodus_witness_mempool_clear(&A.w->mempool);
+        free(c0b2b);
+    }
+
+    /* §8 — two same-nullifier claims in one batch are rejected by
+     * produce_batch_check, BEFORE the whole-block apply backstop. */
+    {
+        nodus_witness_mempool_entry_t *d0 =
+            mkclaimentry(c2b, c2n, c2h, c2nul);
+        nodus_witness_mempool_entry_t *d1 =
+            mkclaimentry(c2b, c2n, c2h, c2nul);
+        CHECK(d0 && d1, "dup claim entries");
+        nodus_witness_mempool_entry_t *dd[2] = { d0, d1 };
+        int fi = -1;
+        CHECK(nodus_witness_v2_produce_batch_check(A.w, dd, 2, &fi) == -1,
+              "duplicate-nullifier claim batch rejected"); OK();
+        CHECK(fi == 1, "offender is the second claim"); OK();
+        nodus_witness_mempool_entry_free(d0);
+        nodus_witness_mempool_entry_free(d1);
+    }
+
+    /* §9 — an unarmed successor refuses class 201; a legacy handle too. */
+    {
+        A.w->v2_ingress_armed = false;
+        CHECK(nodus_witness_verify_transaction(A.w, c0b, (uint32_t)c0n, c0h,
+                  NODUS_W_TX_V2_CLAIM, NULL, 0, NULL, NULL, 0,
+                  NODUS_WITNESS_VERIFY_VALIDATION, rr, sizeof(rr)) != 0,
+              "unarmed successor refuses class 201"); OK();
+        A.w->v2_ingress_armed = true;
+
+        A.w->v2_successor = false;
+        CHECK(nodus_witness_verify_transaction(A.w, c0b, (uint32_t)c0n, c0h,
+                  NODUS_W_TX_V2_CLAIM, NULL, 0, NULL, NULL, 0,
+                  NODUS_WITNESS_VERIFY_VALIDATION, rr, sizeof(rr)) != 0,
+              "legacy handle refuses class 201"); OK();
+        A.w->v2_successor = true;
+    }
+
+    /* §7 — produce a [envelope, claim, claim] block: it commits, both
+     * claims are applied (CORE outputs + reserve decremented), and an
+     * independent follower derives the SAME BlockID. */
+    uint8_t blk1_id[64], blk1_root[64];
+    {
+        test_env_t e1;
+        CHECK(build_cc_env(&A, 7, &e1) == 0, "build envelope for produce");
+
+        nodus_witness_mempool_entry_t ev, cl0, cl1;
+        mkenventry(&ev, &e1);
+        nodus_witness_mempool_entry_t *tmp;
+        tmp = mkclaimentry(c0b, c0n, c0h, c0nul);
+        CHECK(tmp != NULL, "cl0 entry"); cl0 = *tmp; free(tmp);
+        tmp = mkclaimentry(c1b, c1n, c1h, c1nul);
+        CHECK(tmp != NULL, "cl1 entry"); cl1 = *tmp; free(tmp);
+
+        nodus_witness_mempool_entry_t *batch[3] = { &ev, &cl0, &cl1 };
+
+        int fi = -1;
+        CHECK(nodus_witness_v2_produce_batch_check(A.w, batch, 3, &fi) == 0,
+              "mixed [env,claim,claim] batch passes the seam"); OK();
+
+        uint64_t reserve_before = q1(A.w, "SELECT remaining FROM v2_dist_state");
+        CHECK(reserve_before == 32, "distribution reserve at 32");
+
+        nodus_v2_produce_out_t o;
+        CHECK(nodus_witness_v2_produce_commit(A.w, batch, 3, 1, 42,
+                  A.w->my_id, NULL, &o) == 0,
+              "leader commits the mixed block"); OK();
+        memcpy(blk1_id, o.block_id, 64);
+        memcpy(blk1_root, o.global_root, 64);
+
+        uint64_t tip = 0;
+        CHECK(nodus_witness_v2_tip_height(A.w, &tip) == 0 && tip == 1,
+              "tip advanced to 1"); OK();
+
+        /* both claim outputs exist under CORE with the converted amount */
+        {
+            sqlite3_stmt *st = NULL;
+            CHECK(sqlite3_prepare_v2(A.w->db,
+                "SELECT amount, domain_id FROM utxo_set WHERE nullifier = ?1",
+                -1, &st, NULL) == SQLITE_OK, "utxo q0");
+            sqlite3_bind_blob(st, 1, c0oid, 64, SQLITE_TRANSIENT);
+            CHECK(sqlite3_step(st) == SQLITE_ROW &&
+                  (uint64_t)sqlite3_column_int64(st, 0) == g_conv_amount[0] &&
+                  sqlite3_column_int64(st, 1) == (sqlite3_int64)DNA_DOMAIN_CORE,
+                  "claim0 CORE output committed"); OK();
+            sqlite3_finalize(st);
+            CHECK(sqlite3_prepare_v2(A.w->db,
+                "SELECT amount, domain_id FROM utxo_set WHERE nullifier = ?1",
+                -1, &st, NULL) == SQLITE_OK, "utxo q1");
+            sqlite3_bind_blob(st, 1, c1oid, 64, SQLITE_TRANSIENT);
+            CHECK(sqlite3_step(st) == SQLITE_ROW &&
+                  (uint64_t)sqlite3_column_int64(st, 0) == g_conv_amount[1] &&
+                  sqlite3_column_int64(st, 1) == (sqlite3_int64)DNA_DOMAIN_CORE,
+                  "claim1 CORE output committed"); OK();
+            sqlite3_finalize(st);
+        }
+        /* reserve decremented by the two converted amounts */
+        CHECK(q1(A.w, "SELECT remaining FROM v2_dist_state") ==
+                  32 - (g_conv_amount[0] + g_conv_amount[1]),
+              "distribution reserve decremented"); OK();
+        /* both nullifiers now in the spent set */
+        CHECK(q1(A.w, "SELECT COUNT(*) FROM v2_claims_spent") == 2,
+              "two claim nullifiers spent"); OK();
+        /* the CC transaction result committed too */
+        CHECK(q1(A.w, "SELECT COUNT(*) FROM chain_config_history "
+                      "WHERE param_id = 4") == 1,
+              "CHAIN_CONFIG history row committed"); OK();
+        /* supply still balances after value moved */
+        CHECK(nodus_witness_v2_supply_check(A.w) == 0,
+              "supply conserved after claims"); OK();
+
+        /* §7b — an independent follower re-executes the identical batch and
+         * derives the SAME BlockID + global root. */
+        {
+            test_env_t e1b;
+            CHECK(build_cc_env(&B, 7, &e1b) == 0, "follower envelope");
+            /* the follower must carry the LEADER's exact envelope bytes */
+            free(e1b.bytes);
+            e1b.bytes = malloc(e1.len);
+            CHECK(e1b.bytes != NULL, "follower env buf");
+            memcpy(e1b.bytes, e1.bytes, e1.len);
+            e1b.len = e1.len;
+            memcpy(e1b.wire_id, e1.wire_id, 64);
+
+            nodus_witness_mempool_entry_t fev, fcl0, fcl1;
+            mkenventry(&fev, &e1b);
+            tmp = mkclaimentry(c0b, c0n, c0h, c0nul);
+            CHECK(tmp != NULL, "fcl0"); fcl0 = *tmp; free(tmp);
+            tmp = mkclaimentry(c1b, c1n, c1h, c1nul);
+            CHECK(tmp != NULL, "fcl1"); fcl1 = *tmp; free(tmp);
+            nodus_witness_mempool_entry_t *fb[3] = { &fev, &fcl0, &fcl1 };
+
+            nodus_v2_produce_out_t fo;
+            CHECK(nodus_witness_v2_produce_commit(B.w, fb, 3, 1, 42,
+                      A.w->my_id, blk1_root, &fo) == 0,
+                  "follower commits with expected root"); OK();
+            CHECK(memcmp(fo.block_id, blk1_id, 64) == 0,
+                  "leader and follower derive the SAME BlockID"); OK();
+            CHECK(memcmp(fo.global_root, blk1_root, 64) == 0,
+                  "leader and follower derive the SAME global root"); OK();
+
+            free(fev.tx_data);
+            free(fcl0.tx_data);
+            free(fcl1.tx_data);
+        }
+
+        free(ev.tx_data);
+        free(cl0.tx_data);
+        free(cl1.tx_data);
+    }
+
+    /* §4 — a claim already committed at §7 is refused (spent set). */
+    CHECK(nodus_witness_verify_transaction(A.w, c0b, (uint32_t)c0n, c0h,
+              NODUS_W_TX_V2_CLAIM, NULL, 0, NULL, NULL, 0,
+              NODUS_WITNESS_VERIFY_VALIDATION, rr, sizeof(rr)) != 0,
+          "spent claim refused (v2_claims_spent)"); OK();
+
+    free(c0b); free(c1b); free(c2b);
+    fx_close(&A);
+    fx_close(&B);
+
+    printf("test_v2_claim_ingress: %d checks passed\n", g_checks);
+    return 0;
+}

@@ -19,6 +19,7 @@
 #include "witness/nodus_witness_merkle.h"
 #include "witness/nodus_witness_handlers.h"
 #include "witness/nodus_witness_verify.h"      /* O15D successor admission */
+#include "witness/nodus_witness_v2_produce.h"  /* O15F class 201 helpers */
 #include "protocol/nodus_tier3.h"
 #include "protocol/nodus_tier2.h"
 #include "server/nodus_server.h"
@@ -864,19 +865,20 @@ int nodus_witness_peer_handle_fwd_req(nodus_witness_t *w,
     uint8_t nullifiers[NODUS_T3_MAX_TX_INPUTS][NODUS_T3_NULLIFIER_LEN];
     uint8_t nullifier_count = 0;
 
-    /* O15D — SUCCESSOR chain: forwarded submissions are V2 envelope
-     * entries (content-classified; no legacy genesis lane, no legacy
-     * nullifier layout). Verified through the ONE admission lane before
-     * the leader's mempool accepts them — an invalid forward must die
-     * here, not take a whole proposed block down with it. */
+    /* O15D/O15F — SUCCESSOR chain: forwarded submissions are V2 ENVELOPE
+     * (200) or CLAIM (201) entries, BYTE-classified by the wire-family
+     * marker; no legacy genesis lane, no legacy nullifier layout. Verified
+     * through the ONE admission lane before the leader's mempool accepts
+     * them — an invalid forward must die here, not take a whole proposed
+     * block down with it. */
     if (w->v2_successor) {
         char v2_reject[256] = {0};
-        tx_type = NODUS_W_TX_V2_ENVELOPE;
+        tx_type = nodus_witness_v2_classify_entry(fwd->tx_data, fwd->tx_len);
         if (nodus_witness_verify_transaction(w, fwd->tx_data, fwd->tx_len,
                 fwd->tx_hash, tx_type, NULL, 0, NULL, NULL, fwd->fee,
                 NODUS_WITNESS_VERIFY_ADMISSION,
                 v2_reject, sizeof(v2_reject)) != 0) {
-            fprintf(stderr, "%s: forwarded envelope rejected: %s\n",
+            fprintf(stderr, "%s: forwarded V2 entry rejected: %s\n",
                     LOG_TAG, v2_reject);
             return -1;
         }
@@ -945,6 +947,17 @@ int nodus_witness_peer_handle_fwd_req(nodus_witness_t *w,
     if (!entry->tx_data) { free(entry); return -1; }
     memcpy(entry->tx_data, fwd->tx_data, fwd->tx_len);
     entry->tx_len = fwd->tx_len;
+    /* O15F Task 3 — record a forwarded CLAIM's committed nullifier so batch
+     * selection dedups it (verify above already admitted it; a re-derive
+     * failure is fail-closed — never enqueue a 201 entry with count 0). */
+    if (w->v2_successor && tx_type == NODUS_W_TX_V2_CLAIM) {
+        if (nodus_witness_v2_claim_entry_nullifier(w, entry->tx_data,
+                entry->tx_len, entry->nullifiers[0]) != 0) {
+            nodus_witness_mempool_entry_free(entry);
+            return -1;
+        }
+        entry->nullifier_count = 1;
+    }
     if (fwd->client_pubkey)
         memcpy(entry->client_pubkey, fwd->client_pubkey, NODUS_PK_BYTES);
     if (fwd->client_sig)

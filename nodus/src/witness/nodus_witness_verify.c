@@ -45,8 +45,12 @@
 /* O15D — successor admission lane */
 #include "dnac/env_wire.h"                    /* family marker, decode   */
 #include "dnac/env_preflight.h"               /* dna_env_preflight_t     */
+#include "dnac/manifest_wire.h"               /* claim codec (class 201) */
 #include "witness/nodus_witness_v2_env.h"     /* the engine's seam       */
 #include "witness/nodus_witness_v2_gate.h"    /* armed probe             */
+#include "witness/nodus_witness_v2_claims.h"  /* claim admit (class 201) */
+#include "witness/nodus_witness_v2_produce.h" /* class + nullifier helper*/
+#include "witness/nodus_witness_mempool.h"    /* pending-claim scan      */
 #include "witness/nodus_witness_domreg.h"     /* committed ruleset ctx   */
 #include <sqlite3.h>                          /* v2_intent_index lookup  */
 
@@ -504,6 +508,100 @@ static int verify_shielded_tx(nodus_witness_t *w,
 }
 
 /* ════════════════════════════════════════════════════════════════════
+ * Ledger V2 successor CLAIM admission (O15F Task 3, transport class 201)
+ * ════════════════════════════════════════════════════════════════════
+ *
+ * Reached when a successor entry does NOT begin with the envelope wire-
+ * family marker (nodus_witness_v2_classify_entry). A claim is NOT a wire
+ * transaction and carries no client-transport signature; its authority is
+ * the codec + the ONE admission function. Fail-closed:
+ *   - strict dna_claim_decode (exact length, full structural validation);
+ *   - BYTE CANONICALITY: dna_claim_encode of the decoded claim must equal
+ *     the submitted bytes (one accepted encoding per claim);
+ *   - tx_hash == SHA3-512(claim bytes);
+ *   - nodus_witness_v2_claim_admit (chain binding, committed manifest,
+ *     height window, Merkle membership, converted amount, sig+dest, target
+ *     runtime, spent set incl. cross-block, remaining cover);
+ *   - SEMANTIC DEDUP: the spent set is covered by claim_admit; the
+ *     pending-mempool nullifier scan is ADMISSION-ONLY — a follower's
+ *     VALIDATION verdict must depend on bytes + committed state alone,
+ *     never on this node's mempool depth (the F02 discipline), or two
+ *     honest nodes with different pending sets would vote differently.
+ */
+static int verify_v2_successor_claim(nodus_witness_t *w,
+                                     const uint8_t *tx_data, uint32_t tx_len,
+                                     const uint8_t *tx_hash, uint8_t tx_type,
+                                     nodus_witness_verify_mode_t mode,
+                                     char *reject_reason, size_t reason_size) {
+    if (tx_type != NODUS_W_TX_V2_CLAIM) {
+        snprintf(reject_reason, reason_size,
+                 "claim bytes must ride the V2 claim entry class");
+        return -1;
+    }
+
+    dna_claim_t *c = calloc(1, sizeof(*c));        /* large — heap */
+    uint8_t *reenc = malloc(DNA_CLAIM_MAX_WIRE);
+    int rc = -1;
+    do {
+        if (!c || !reenc) {
+            snprintf(reject_reason, reason_size, "allocation failed");
+            break;
+        }
+        if (dna_claim_decode(tx_data, (size_t)tx_len, c) != 0) {
+            snprintf(reject_reason, reason_size, "claim decode rejected");
+            break;
+        }
+        size_t wr = 0;
+        if (dna_claim_encode(c, reenc, DNA_CLAIM_MAX_WIRE, &wr) != 0) {
+            snprintf(reject_reason, reason_size, "claim re-encode failed");
+            break;
+        }
+        if (wr != (size_t)tx_len || memcmp(reenc, tx_data, tx_len) != 0) {
+            snprintf(reject_reason, reason_size,
+                     "claim bytes are not canonical");
+            break;
+        }
+        uint8_t h[64];
+        if (qgp_sha3_512(tx_data, tx_len, h) != 0) {
+            snprintf(reject_reason, reason_size, "claim hash failed");
+            break;
+        }
+        if (memcmp(tx_hash, h, NODUS_T3_TX_HASH_LEN) != 0) {
+            snprintf(reject_reason, reason_size,
+                     "submitted hash is not SHA3-512(claim bytes)");
+            break;
+        }
+        nodus_v2_claim_admit_t adm;
+        uint64_t candidate = nodus_witness_block_height(w) + 1;
+        if (nodus_witness_v2_claim_admit(w, c, candidate, &adm) != 0) {
+            snprintf(reject_reason, reason_size, "claim admission rejected");
+            break;
+        }
+        /* Pending-mempool dedup — ADMISSION mode ONLY (local intake gate).
+         * Cross-block dedup (v2_claims_spent) already ran inside
+         * claim_admit and is unconditional. */
+        if (mode == NODUS_WITNESS_VERIFY_ADMISSION) {
+            for (int i = 0; i < w->mempool.count; i++) {
+                const nodus_witness_mempool_entry_t *e = w->mempool.entries[i];
+                if (e && e->tx_type == NODUS_W_TX_V2_CLAIM &&
+                    e->nullifier_count >= 1 &&
+                    memcmp(e->nullifiers[0], adm.nullifier,
+                           NODUS_T3_NULLIFIER_LEN) == 0) {
+                    snprintf(reject_reason, reason_size,
+                             "claim nullifier already pending in mempool");
+                    goto done;
+                }
+            }
+        }
+        rc = 0;
+    } while (0);
+done:
+    free(reenc);
+    free(c);
+    return rc;
+}
+
+/* ════════════════════════════════════════════════════════════════════
  * Ledger V2 successor admission (O15D)
  * ════════════════════════════════════════════════════════════════════
  *
@@ -511,8 +609,10 @@ static int verify_shielded_tx(nodus_witness_t *w,
  * open) this is the ONLY acceptance lane: every legacy wire form, the V3
  * wire (types 11/12/13) and everything else is refused BY THIS BRANCH,
  * so a successor can never admit — and therefore never produce — a
- * legacy transaction. Classification authority is the envelope's leading
- * 16-byte wire-family marker (env_wire.c:25-27), never a type byte.
+ * legacy transaction. Classification authority is byte-driven
+ * (nodus_witness_v2_classify_entry): the envelope wire-family marker at
+ * offset 0 selects the ENVELOPE lane (200), everything else the CLAIM
+ * lane (201), never a caller-supplied type byte.
  *
  * The FULL authorization/execution verdict belongs to the ONE engine at
  * commit; this lane runs exactly the engine's own pre-commit seam
@@ -529,6 +629,7 @@ static int verify_shielded_tx(nodus_witness_t *w,
 static int verify_v2_successor_tx(nodus_witness_t *w,
                                   const uint8_t *tx_data, uint32_t tx_len,
                                   const uint8_t *tx_hash, uint8_t tx_type,
+                                  nodus_witness_verify_mode_t mode,
                                   char *reject_reason, size_t reason_size) {
     /* "DNA.ENVWIRE.v1" (14 chars) + 2 zero bytes — pinned at
      * env_wire.c:25-27; explicit initialisers, padding visible. */
@@ -541,6 +642,15 @@ static int verify_v2_successor_tx(nodus_witness_t *w,
                  "successor chain not armed (activation gate closed)");
         return -1;
     }
+
+    /* Byte-driven class: the same authority ingress and round entry use. */
+    if (nodus_witness_v2_classify_entry(tx_data, tx_len) ==
+        NODUS_W_TX_V2_CLAIM)
+        return verify_v2_successor_claim(w, tx_data, tx_len, tx_hash,
+                                         tx_type, mode, reject_reason,
+                                         reason_size);
+
+    /* ── ENVELOPE lane (marker present) ─────────────────────────────── */
     if (tx_len < DNA_ENV_WIRE_FAMILY_LEN ||
         memcmp(tx_data, ENV_FAMILY, DNA_ENV_WIRE_FAMILY_LEN) != 0) {
         snprintf(reject_reason, reason_size,
@@ -667,19 +777,22 @@ int nodus_witness_verify_transaction(nodus_witness_t *w,
         return -1;
     }
 
-    /* ── Ledger V2 O15D: a SUCCESSOR chain has exactly one lane ─────── */
+    /* ── Ledger V2 O15D/O15F: a SUCCESSOR chain has exactly one lane ── */
     if (w->v2_successor) {
         (void)nullifiers; (void)nullifier_count;
         (void)client_pubkey; (void)client_signature;
-        (void)declared_fee; (void)mode;
+        (void)declared_fee;
         return verify_v2_successor_tx(w, tx_data, tx_len, tx_hash,
-                                      tx_type, reject_reason, reason_size);
+                                      tx_type, mode, reject_reason,
+                                      reason_size);
     }
-    /* O15D — the transport-local envelope entry class never enters the
-     * legacy lanes: on a legacy chain it is refused by name. */
-    if (tx_type == NODUS_W_TX_V2_ENVELOPE) {
+    /* O15D/O15F — the transport-local envelope (200) and claim (201) entry
+     * classes never enter the legacy lanes: on a legacy chain both are
+     * refused by name. */
+    if (tx_type == NODUS_W_TX_V2_ENVELOPE ||
+        tx_type == NODUS_W_TX_V2_CLAIM) {
         snprintf(reject_reason, reason_size,
-                 "V2 envelope entries are successor-chain only");
+                 "V2 envelope/claim entries are successor-chain only");
         return -1;
     }
 

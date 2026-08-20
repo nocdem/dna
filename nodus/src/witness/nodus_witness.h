@@ -128,6 +128,18 @@ typedef struct {
  * future chain type is impossible to miss. */
 #define NODUS_W_TX_V2_ENVELOPE      200
 
+/* O15F Task 3 — TRANSPORT-LOCAL discriminator for a Ledger V2 CLAIM
+ * riding the witness mempool / T3 batch surfaces on a SUCCESSOR chain.
+ * Like NODUS_W_TX_V2_ENVELOPE this is NOT a chain transaction type: a
+ * claim has NO live wire type (the dnac_tx_type_t space and types 11-14
+ * are untouched), no wire walker keys on it, and the classification
+ * AUTHORITY is byte-driven — an entry whose bytes do NOT begin with the
+ * envelope wire-family marker ("DNA.ENVWIRE.v1", env_wire.c:25-27) on a
+ * successor is a claim; strict dna_claim_decode + admission decide
+ * validity. Deliberately adjacent to 200 and far outside the chain type
+ * space so a collision is impossible to miss. */
+#define NODUS_W_TX_V2_CLAIM         201
+
 /* O15F Task 1 — the SUCCESSOR active-set maximum.
  *
  * THE INVARIANT: on a successor chain no `validator_set_snapshots` row

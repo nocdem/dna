@@ -3888,14 +3888,16 @@ static int bft_start_round_internal(nodus_witness_t *w,
         return -1;
     }
 #endif
-    /* O15D — a SUCCESSOR round carries V2 envelope entries and nothing
-     * else: a legacy-typed entry (genesis included) can never open a
-     * round on a successor chain. Content authority stays the wire-family
-     * marker (checked at admission); this is the round-entry backstop. */
+    /* O15D/O15F — a SUCCESSOR round carries V2 ENVELOPE (200) and CLAIM
+     * (201) entries and nothing else: a legacy-typed entry (genesis
+     * included) can never open a round on a successor chain. Content
+     * authority stays byte-driven (the wire-family marker, checked at
+     * classification/admission); this is the round-entry backstop. */
     if (w->v2_successor) {
         for (int sce = 0; sce < count; sce++) {
             if (!entries[sce] ||
-                entries[sce]->tx_type != NODUS_W_TX_V2_ENVELOPE) {
+                (entries[sce]->tx_type != NODUS_W_TX_V2_ENVELOPE &&
+                 entries[sce]->tx_type != NODUS_W_TX_V2_CLAIM)) {
                 fprintf(stderr, "%s: successor chain — legacy entry "
                         "refused at round start (idx %d)\n", LOG_TAG, sce);
                 return -1;
