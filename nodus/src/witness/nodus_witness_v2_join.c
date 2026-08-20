@@ -131,7 +131,11 @@ static int join_adopt(nodus_witness_t *w) {
     int adopted = -1;
     do {
         if (nodus_witness_create_chain_db(w2, prov16) != 0) break;
-        if (nodus_witness_db_migrate_v2s11(w2) != 0) break;
+        /* O15F Task 4: the joiner re-derives its OWN successor DB and MUST
+         * land at the same schema the seam produces (S12) — otherwise it
+         * would lack v2_claim_counts and could serve no height under the
+         * count-row-driven serving seam. Mirrors nodus_witness_v2_seam.c. */
+        if (nodus_witness_db_migrate_v2s12(w2) != 0) break;
         if (nodus_chain_config_db_migrate(w2) != 0) break;
 
         if (nodus_witness_v2_bundle_apply(w2, bytes, len,

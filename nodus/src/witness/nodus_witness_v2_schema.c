@@ -1201,3 +1201,94 @@ int nodus_witness_db_migrate_v2s11_ex(nodus_witness_t *w,
 int nodus_witness_db_migrate_v2s11(nodus_witness_t *w) {
     return nodus_witness_db_migrate_v2s11_ex(w, V2S11MIG_FAIL_NONE);
 }
+
+/* ── S12 (O15F Task 4): per-block canonical claim byte availability ──── */
+
+int nodus_witness_db_migrate_v2s12_ex(nodus_witness_t *w,
+                                      nodus_v2s12_mig_fail_t fail_at) {
+    if (!w || !w->db) return -1;
+
+    uint32_t ver = 0;
+    if (nodus_witness_db_schema_version(w, &ver) != 0) return -1;
+    if (ver == NODUS_V2_SCHEMA_VERSION_S12) return 0;    /* idempotent    */
+    if (ver != NODUS_V2_SCHEMA_VERSION_S11) {
+        if (nodus_witness_db_migrate_v2s11(w) != 0) return -1;
+        ver = NODUS_V2_SCHEMA_VERSION_S11;
+    }
+
+    if (exec_sql(w, "BEGIN IMMEDIATE") != 0) return -1;
+
+    int ok = 0;
+    int already = 0;
+    do {
+        if (fail_at == V2S12MIG_FAIL_AFTER_BEGIN) break;
+
+        /* O15B discipline: the pre-BEGIN read decided nothing. */
+        int rv = mig_revalidate_version(w, NODUS_V2_SCHEMA_VERSION_S11,
+                                        NODUS_V2_SCHEMA_VERSION_S12, "S12");
+        if (rv < 0) break;
+        if (rv == 0) { already = 1; break; }
+        if (fail_at == V2S12MIG_FAIL_AFTER_REVALIDATE) break;
+
+        /* v2_claim_bytes: PK (global_height, claim_index) is the canonical
+         * block claim order the applier re-executes in; claim_hash =
+         * SHA3-512(claim) is the persisted digest of the SAME canonical
+         * bytes admission verified. NO default on any column.
+         * v2_claim_counts: one row per committed block (PK global_height),
+         * so "zero claims" is distinguishable from "pre-S12 height". */
+        if (exec_sql(w,
+                "CREATE TABLE IF NOT EXISTS v2_claim_bytes ("
+                "  global_height INTEGER NOT NULL,"
+                "  claim_index INTEGER NOT NULL,"
+                "  claim_hash BLOB NOT NULL,"
+                "  claim BLOB NOT NULL,"
+                "  PRIMARY KEY (global_height, claim_index)"
+                ")") != 0)
+            break;
+        if (exec_sql(w,
+                "CREATE TABLE IF NOT EXISTS v2_claim_counts ("
+                "  global_height INTEGER PRIMARY KEY,"
+                "  n_claims INTEGER NOT NULL"
+                ")") != 0)
+            break;
+        if (fail_at == V2S12MIG_FAIL_AFTER_TABLES) break;
+
+        static const char *const cb_cols[] = {
+            "global_height", "claim_index", "claim_hash", "claim"
+        };
+        static const char *const cc_cols[] = {
+            "global_height", "n_claims"
+        };
+        if (table_cols_exact(w, "v2_claim_bytes", cb_cols,
+                sizeof(cb_cols) / sizeof(cb_cols[0])) != 1 ||
+            table_cols_exact(w, "v2_claim_counts", cc_cols,
+                sizeof(cc_cols) / sizeof(cc_cols[0])) != 1) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "S12 schema shape drift — refusing");
+            break;
+        }
+        if (fail_at == V2S12MIG_FAIL_AFTER_VERIFY) break;
+
+        if (exec_sql(w, "PRAGMA user_version = 12") != 0) break;
+        if (fail_at == V2S12MIG_FAIL_BEFORE_COMMIT) break;
+
+        ok = 1;
+    } while (0);
+
+    if (already) {
+        (void)exec_sql(w, "ROLLBACK");
+        return 0;
+    }
+    if (!ok) {
+        (void)exec_sql(w, "ROLLBACK");
+        return -1;
+    }
+    if (exec_sql(w, "COMMIT") != 0) {
+        (void)exec_sql(w, "ROLLBACK");
+        return -1;
+    }
+    return 0;
+}
+
+int nodus_witness_db_migrate_v2s12(nodus_witness_t *w) {
+    return nodus_witness_db_migrate_v2s12_ex(w, V2S12MIG_FAIL_NONE);
+}

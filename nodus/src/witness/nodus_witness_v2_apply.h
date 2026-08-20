@@ -434,7 +434,16 @@ typedef enum {
      * (roots/header/identity/metadata) started. Brackets the envelope
      * persist so an interrupt can never leave byte rows for a block
      * that was not committed, or a committed block missing its bytes. */
-    V2AP_FAIL_AFTER_ENV_BYTES          = 48  /* envelope bytes persisted */
+    V2AP_FAIL_AFTER_ENV_BYTES          = 48, /* envelope bytes persisted */
+
+    /* O15F Task 4 — fires with every canonical claim byte record of the
+     * block written (phase 12c, S12 schema) and nothing of phase 13
+     * (roots/header/identity/metadata) started. Brackets the claim-bytes
+     * persist so an interrupt can never leave claim rows for a block that
+     * was not committed, or a committed block missing its claim bytes.
+     * The count row and the claim rows are one transaction with the
+     * block, so both roll back together. */
+    V2AP_FAIL_AFTER_CLAIM_BYTES        = 49  /* claim bytes persisted    */
 } nodus_v2_apply_fail_t;
 
 /*

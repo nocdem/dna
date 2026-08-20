@@ -498,7 +498,8 @@ int nodus_witness_v2_genesis_ex(nodus_witness_t *w,
     if (nodus_witness_db_schema_version(w, &ver) != 0 ||
         (ver != NODUS_V2_SCHEMA_VERSION_S9 &&
          ver != NODUS_V2_SCHEMA_VERSION_S10 &&
-         ver != NODUS_V2_SCHEMA_VERSION_S11))
+         ver != NODUS_V2_SCHEMA_VERSION_S11 &&
+         ver != NODUS_V2_SCHEMA_VERSION_S12))
         return -1;
 
     /* Idempotency: a committed height-0 row decides. */
@@ -1150,7 +1151,8 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
     if (nodus_witness_db_schema_version(w, &ver) != 0 ||
         (ver != NODUS_V2_SCHEMA_VERSION_S9 &&
          ver != NODUS_V2_SCHEMA_VERSION_S10 &&
-         ver != NODUS_V2_SCHEMA_VERSION_S11))
+         ver != NODUS_V2_SCHEMA_VERSION_S11 &&
+         ver != NODUS_V2_SCHEMA_VERSION_S12))
         return -2;
 
     /* ── epoch: DERIVED from the global block count, never trusted ────
@@ -2242,6 +2244,75 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
         }
     }
     FAIL_POINT(V2AP_FAIL_AFTER_ENV_BYTES);
+
+    /* 12c. O15F Task 4 — per-block canonical claim byte availability.
+     * For EVERY block (claims or not) the claim COUNT is recorded inside
+     * the SAME block transaction, so a serving seam can tell "this block
+     * had zero claims" from "this height predates S12" (the count row is
+     * ABSENT pre-S12 — that height fails closed at the seam). When the
+     * block carries claims, each claim's canonical dna_claim_encode bytes
+     * — the SAME bytes admission verified and the engine re-executes — are
+     * persisted in block claim order (claim_index = the position in
+     * blk->claims), keyed with claim_hash = SHA3-512(bytes). Unlike
+     * envelopes (bound DIRECTLY through tx_root) claims are bound only
+     * TRANSITIVELY (claims_root leg), so these bytes are what a peer needs
+     * to re-derive the claim. Guarded on the S12 schema: pre-S12 databases
+     * (unit fixtures only; every real successor derives at S12) keep the
+     * exact pre-O15F behavior. */
+    if (ver >= NODUS_V2_SCHEMA_VERSION_S12) {
+        {
+            sqlite3_stmt *st = NULL;
+            if (sqlite3_prepare_v2(w->db,
+                    "INSERT INTO v2_claim_counts (global_height, n_claims) "
+                    "VALUES (?1,?2)", -1, &st, NULL) != SQLITE_OK)
+                goto fail_fault;
+            sqlite3_bind_int64(st, 1, (sqlite3_int64)blk->global_height);
+            sqlite3_bind_int64(st, 2, (sqlite3_int64)blk->n_claims);
+            int rc = sqlite3_step(st);
+            sqlite3_finalize(st);
+            if (rc != SQLITE_DONE) goto fail_fault;
+        }
+        for (size_t i = 0; i < blk->n_claims; i++) {
+            /* the SAME canonical encoding admission verified — one
+             * accepted encoding per claim; a re-encode failure here is an
+             * engine invariant broken on THIS node (the claim already
+             * validated + applied), so it is a node fault, not a verdict.
+             * Exact-size heap buffer (worst claim ≈ 11.6 KB — kept off the
+             * already-large apply frame). */
+            size_t need = dna_claim_encoded_len(&blk->claims[i]);
+            if (need == 0) goto fail_fault;
+            uint8_t *cbuf = (uint8_t *)malloc(need);
+            if (!cbuf) goto fail_fault;
+            size_t clen = 0;
+            if (dna_claim_encode(&blk->claims[i], cbuf, need, &clen) != 0 ||
+                clen != need) {
+                free(cbuf);
+                goto fail_fault;
+            }
+            uint8_t chash[64];
+            if (qgp_sha3_512(cbuf, clen, chash) != 0) {
+                free(cbuf);
+                goto fail_fault;
+            }
+            sqlite3_stmt *st = NULL;
+            if (sqlite3_prepare_v2(w->db,
+                    "INSERT INTO v2_claim_bytes (global_height, "
+                    "claim_index, claim_hash, claim) VALUES (?1,?2,?3,?4)",
+                    -1, &st, NULL) != SQLITE_OK) {
+                free(cbuf);
+                goto fail_fault;
+            }
+            sqlite3_bind_int64(st, 1, (sqlite3_int64)blk->global_height);
+            sqlite3_bind_int64(st, 2, (sqlite3_int64)i);
+            sqlite3_bind_blob(st, 3, chash, 64, SQLITE_TRANSIENT);
+            sqlite3_bind_blob(st, 4, cbuf, (int)clen, SQLITE_TRANSIENT);
+            int rc = sqlite3_step(st);
+            sqlite3_finalize(st);
+            free(cbuf);
+            if (rc != SQLITE_DONE) goto fail_fault;
+        }
+    }
+    FAIL_POINT(V2AP_FAIL_AFTER_CLAIM_BYTES);
 
     /* 13. block-level roots + expectation compare + metadata */
     {

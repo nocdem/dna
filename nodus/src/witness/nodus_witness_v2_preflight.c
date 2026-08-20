@@ -114,12 +114,14 @@ int nodus_witness_v2_preflight(nodus_witness_t *w,
         out->ready = 0;
         return 0;
     }
-    /* O15E Faz B: a successor derives at S11 (canonical envelope byte
-     * availability); the activation-authority legacy chain sits at S10.
-     * Both are activation-ready schemas — S11 is a purely additive
-     * superset of S10. Anything else is unsupported. */
+    /* O15F Task 4: a successor derives at S12 (canonical claim byte
+     * availability); O15E S11 (canonical envelope bytes) and the
+     * activation-authority legacy chain at S10 remain accepted. Each is a
+     * purely additive superset of the previous — all activation-ready.
+     * Anything else is unsupported. */
     if (ver != NODUS_V2_SCHEMA_VERSION_S10 &&
-        ver != NODUS_V2_SCHEMA_VERSION_S11)
+        ver != NODUS_V2_SCHEMA_VERSION_S11 &&
+        ver != NODUS_V2_SCHEMA_VERSION_S12)
         pf_add(out, NODUS_V2_PF_SCHEMA_UNSUPPORTED);
 
     /* ── 2. REQUIRED TABLES ───────────────────────────────────────── */

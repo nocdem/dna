@@ -326,9 +326,11 @@ int nodus_witness_v2_seam_maybe_derive(nodus_witness_t *w,
          * genesis snapshots would seed uncapped (D1#4). Deterministic local
          * act every node's seam performs identically. */
         w2->v2_successor = 1;
-        /* O15E Faz B: successors derive at S11 so every block they ever
-         * commit carries its canonical envelope bytes (v2_tx_bytes). */
-        if (nodus_witness_db_migrate_v2s11(w2) != 0) break;
+        /* O15F Task 4: successors derive at S12 so every block they ever
+         * commit carries its canonical envelope bytes (v2_tx_bytes, S11)
+         * AND its per-block claim bytes + count (v2_claim_bytes /
+         * v2_claim_counts, S12). */
+        if (nodus_witness_db_migrate_v2s12(w2) != 0) break;
         if (nodus_chain_config_db_migrate(w2) != 0) break;
 
         /* ── 5. Carry the committed SYSTEM state. The legacy file path

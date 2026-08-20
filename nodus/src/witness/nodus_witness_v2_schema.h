@@ -431,6 +431,50 @@ int nodus_witness_db_migrate_v2s11(nodus_witness_t *w);
 int nodus_witness_db_migrate_v2s11_ex(nodus_witness_t *w,
                                       nodus_v2s11_mig_fail_t fail_at);
 
+/* ── S12 migration (O15F Task 4): per-block canonical claim bytes ─────
+ *
+ * Adds TWO tables recording every committed block's applied claims:
+ *
+ *   v2_claim_bytes   the canonical dna_claim_encode WIRE bytes of every
+ *                    claim the apply engine commits from S12 onward,
+ *                    written inside the block's ONE apply transaction
+ *                    (apply.c phase 12c) in block claim order — the byte
+ *                    material a peer needs to re-verify and re-apply the
+ *                    claim (the SAME canonical bytes admission verified).
+ *   v2_claim_counts  one row per COMMITTED block (claims or not) carrying
+ *                    the block's claim count. The count row is what lets a
+ *                    serving seam distinguish "this block had zero claims"
+ *                    from "this height predates S12" — the latter fails
+ *                    closed (no row), the former serves an empty claim set.
+ *
+ * Purely ADDITIVE — no table is dropped or rebuilt, so there is no
+ * populated-data refusal. Blocks committed BEFORE this migration have no
+ * rows here and CANNOT be backfilled (the engine never persisted their
+ * claim input bytes — apply.h labels claim reconstruction "a sync concern
+ * ... deliberately out of scope"); serving such heights FAILS CLOSED.
+ * Version 13+ fails closed. */
+#define NODUS_V2_SCHEMA_VERSION_S12  12u
+
+typedef enum {
+    V2S12MIG_FAIL_NONE = 0,
+    V2S12MIG_FAIL_AFTER_BEGIN,      /* after BEGIN, before any DDL        */
+    V2S12MIG_FAIL_AFTER_REVALIDATE, /* in-txn version re-read passed      */
+    V2S12MIG_FAIL_AFTER_TABLES,     /* both claim tables created          */
+    V2S12MIG_FAIL_AFTER_VERIFY,     /* schema-shape verification passed   */
+    V2S12MIG_FAIL_BEFORE_COMMIT     /* user_version written, pre-COMMIT   */
+} nodus_v2s12_mig_fail_t;
+
+/** Atomic O15F migration. Versions below 11 run the S9+S10+S11 chain
+ *  first, then 11 → 12 atomically with the in-transaction
+ *  revalidation. @return 0 migrated or already at 12 (idempotent);
+ *  -1 failure (full rollback of the running stage) — including an
+ *  UNKNOWN user_version (13+): fail closed. */
+int nodus_witness_db_migrate_v2s12(nodus_witness_t *w);
+
+/** Test variant: deterministic abort inside the 11 → 12 transaction. */
+int nodus_witness_db_migrate_v2s12_ex(nodus_witness_t *w,
+                                      nodus_v2s12_mig_fail_t fail_at);
+
 #ifdef __cplusplus
 }
 #endif
