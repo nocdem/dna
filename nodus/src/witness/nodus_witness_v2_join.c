@@ -131,6 +131,14 @@ static int join_adopt(nodus_witness_t *w) {
     int adopted = -1;
     do {
         if (nodus_witness_create_chain_db(w2, prov16) != 0) break;
+        /* O15F Task 5 (defence-in-depth): mark the scratch handle a
+         * SUCCESSOR before its genesis re-derivation (bundle_apply →
+         * vset_commit_genesis → genesis_ex), exactly as the seam does
+         * right after create_chain_db (nodus_witness_v2_seam.c). This makes
+         * the D1 max-30 target clamp fire during the joiner's re-derivation
+         * too; correctness is already backstopped by the byte-identical pin
+         * check below, but the guard is now uniform across seam and joiner. */
+        w2->v2_successor = 1;
         /* O15F Task 4: the joiner re-derives its OWN successor DB and MUST
          * land at the same schema the seam produces (S12) — otherwise it
          * would lack v2_claim_counts and could serve no height under the

@@ -13,6 +13,7 @@
 #include "witness/nodus_witness_v2_gate.h"
 #include "witness/nodus_witness_v2_ingress.h"
 #include "witness/nodus_witness_v2_claims.h"
+#include "witness/nodus_witness_v2_schema.h" /* schema version — claim gate */
 #include "witness/nodus_witness_v2_bundle.h"  /* O15E Faz D genesis bundle */
 #include "witness/nodus_witness_bft.h"    /* nodus_witness_bft_broadcast */
 #include "server/nodus_server.h"          /* identity for signed sends   */
@@ -26,6 +27,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "crypto/hash/qgp_sha3.h"         /* claim_hash verify on read   */
 #include "crypto/utils/qgp_log.h"
 
 #define LOG_TAG "W_V2SYNC2"
@@ -299,6 +301,13 @@ int nodus_witness_v2_sync_serve_block(nodus_witness_t *w, uint64_t height,
     uint32_t env_lens[DNA_BLKW_MAX_ENVS];
     uint32_t n_env = 0;
     memset(envs, 0, sizeof(envs));
+    /* ── the canonical CLAIM bytes, in stored claim_index order (O15F D5;
+     * populated only when the block carries claims). ─────────────────── */
+    uint8_t *cbytes[NODUS_W_MAX_BLOCK_TXS];
+    size_t   clens[NODUS_W_MAX_BLOCK_TXS];
+    uint32_t n_cl = 0;
+    memset(cbytes, 0, sizeof(cbytes));
+    uint8_t *blkmsg = NULL;   /* the bare v1 bytes, wrapped iff claims > 0 */
     int rc_out = -1;
     {
         sqlite3_stmt *st = NULL;
@@ -339,7 +348,9 @@ int nodus_witness_v2_sync_serve_block(nodus_witness_t *w, uint64_t height,
         goto out;
     }
 
-    /* ── assemble + encode the canonical BlockMessage v1 ─────────────── */
+    /* ── assemble + encode the canonical BlockMessage v1 (the bare v1
+     * bytes; wrapped in a 0x02 blkframe below iff the block has claims) ─ */
+    size_t blkmsg_len = 0;
     {
         dnac_blkmsg_v2_t m;
         memset(&m, 0, sizeof(m));
@@ -358,21 +369,128 @@ int nodus_witness_v2_sync_serve_block(nodus_witness_t *w, uint64_t height,
 
         size_t need = dnac_blkmsg_v2_encoded_len(&m);
         if (need == 0) goto out;
-        uint8_t *buf = malloc(need);
-        if (!buf) goto out;
-        size_t written = 0;
-        if (dnac_blkmsg_v2_encode(&m, buf, need, &written) != DNAC_BLKW_OK
-            || written != need) {
-            free(buf);
+        blkmsg = malloc(need);
+        if (!blkmsg) goto out;
+        if (dnac_blkmsg_v2_encode(&m, blkmsg, need, &blkmsg_len) != DNAC_BLKW_OK
+            || blkmsg_len != need)
             goto out;
+    }
+
+    /* ── O15F D5: claim carriage decided by the committed count row ──────
+     *
+     * A real successor is derived at S12 and every committed block has a
+     * count row (0 for a claim-free block). The count row is what lets
+     * serving tell "zero claims" from "this height predates S12" WITHOUT
+     * inventing either — both fail closed to rc 1 UNAVAILABLE. */
+    uint32_t schema_ver = 0;
+    if (nodus_witness_db_schema_version(w, &schema_ver) != 0) goto out;
+    if (schema_ver < NODUS_V2_SCHEMA_VERSION_S12) {
+        /* no count table exists — a pre-S12 height, fail-closed (never
+         * reconstructed): the bare v1 bytes are NOT served. */
+        rc_out = 1;
+        goto out;
+    }
+
+    uint64_t n_claims = 0;
+    int have_count = 0;
+    {
+        sqlite3_stmt *st = NULL;
+        if (sqlite3_prepare_v2(w->db,
+                "SELECT n_claims FROM v2_claim_counts WHERE global_height = ?1",
+                -1, &st, NULL) != SQLITE_OK)
+            goto out;
+        sqlite3_bind_int64(st, 1, (sqlite3_int64)height);
+        int rc = sqlite3_step(st);
+        if (rc == SQLITE_ROW) {
+            n_claims  = (uint64_t)sqlite3_column_int64(st, 0);
+            have_count = 1;
+        } else if (rc != SQLITE_DONE) {
+            sqlite3_finalize(st);
+            goto out;                       /* a DB fault is never a value  */
         }
-        *buf_out = buf;
-        *len_out = written;
-        rc_out = 0;
+        sqlite3_finalize(st);
+    }
+    if (!have_count) {
+        /* committed at a height with no count row (pre-S12 block): the
+         * claim bytes were never persisted, UNAVAILABLE, fail-closed. */
+        rc_out = 1;
+        goto out;
+    }
+    if (n_claims == 0) {
+        /* claim-free block: the BARE v1 bytes, byte-identical to O15E. */
+        *buf_out = blkmsg;
+        *len_out = blkmsg_len;
+        blkmsg   = NULL;                    /* ownership transferred        */
+        rc_out   = 0;
+        goto out;
+    }
+    if (n_claims > NODUS_W_MAX_BLOCK_TXS) goto out;   /* corrupt count row  */
+
+    /* ── n>0: read the stored canonical claim bytes in claim_index order,
+     * verifying claim_hash == SHA3-512(bytes) on read (fail-closed on any
+     * mismatch — a persisted digest that no longer matches its bytes is a
+     * fault, never a served value). ─────────────────────────────────── */
+    {
+        sqlite3_stmt *st = NULL;
+        if (sqlite3_prepare_v2(w->db,
+                "SELECT claim_index, claim_hash, claim FROM v2_claim_bytes "
+                "WHERE global_height = ?1 ORDER BY claim_index ASC",
+                -1, &st, NULL) != SQLITE_OK)
+            goto out;
+        sqlite3_bind_int64(st, 1, (sqlite3_int64)height);
+        int rc, bad = 0;
+        while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+            sqlite3_int64 ci = sqlite3_column_int64(st, 0);
+            const void *ch   = sqlite3_column_blob(st, 1);
+            int chl          = sqlite3_column_bytes(st, 1);
+            const void *cvb  = sqlite3_column_blob(st, 2);
+            int cvl          = sqlite3_column_bytes(st, 2);
+            if (n_cl >= (uint32_t)n_claims ||
+                ci != (sqlite3_int64)n_cl ||           /* contiguous 0..    */
+                chl != 64 || !ch ||
+                !cvb || cvl <= 0 ||
+                (size_t)cvl > (size_t)DNA_CLAIM_MAX_WIRE) {
+                bad = 1;
+                break;
+            }
+            uint8_t h[64];
+            if (qgp_sha3_512((const uint8_t *)cvb, (size_t)cvl, h) != 0) {
+                bad = 1;
+                break;
+            }
+            if (memcmp(h, ch, 64) != 0) { bad = 1; break; }
+            cbytes[n_cl] = malloc((size_t)cvl);
+            if (!cbytes[n_cl]) { bad = 1; break; }
+            memcpy(cbytes[n_cl], cvb, (size_t)cvl);
+            clens[n_cl] = (size_t)cvl;
+            n_cl++;
+        }
+        sqlite3_finalize(st);
+        if (bad || (rc != SQLITE_DONE && rc != SQLITE_ROW)) goto out;
+    }
+    /* a present count row with a short/missing byte set is MALFORMED, not
+     * pre-S12: it must fail closed as a fault (rc -1), never rc 1. */
+    if (n_cl != (uint32_t)n_claims) goto out;
+
+    /* ── wrap the bare v1 bytes + the claims into the 0x02 container ──── */
+    {
+        const uint8_t *cptrs[NODUS_W_MAX_BLOCK_TXS];
+        for (uint32_t i = 0; i < n_cl; i++) cptrs[i] = cbytes[i];
+        uint8_t *frame = NULL;
+        size_t   frame_len = 0;
+        if (nodus_witness_v2_blkframe_encode(blkmsg, blkmsg_len,
+                                             cptrs, clens, n_cl,
+                                             &frame, &frame_len) != 0)
+            goto out;
+        *buf_out = frame;
+        *len_out = frame_len;
+        rc_out   = 0;
     }
 
 out:
     for (uint32_t i = 0; i < n_env; i++) free(envs[i]);
+    for (uint32_t i = 0; i < n_cl;  i++) free(cbytes[i]);
+    free(blkmsg);
     free(qc);
     return rc_out;
 }

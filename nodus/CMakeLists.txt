@@ -1056,6 +1056,30 @@ register_witness_test(test_v2_seam)
 # byte-identical (128 ceiling) on legacy.
 register_witness_test(test_v2_active_max)
 
+# Ledger V2 O15F Task 5 — sync/joiner CLAIM carriage (blkframe v2). Two
+# successor twins A (producer) + B (empty at genesis): A commits a claim
+# block + a claim-free block with real QCs; serve yields a 0x02 container
+# for the claim block and a BARE v1 blockmsg for the claim-free one;
+# adversarial containers (claim omitted / extra valid / truncated /
+# trailing) reject with the DB digest byte-unchanged; the honest range
+# brings B to A's head with byte-identical BlockID/roots and equal
+# v2_claim_bytes rows; a reordered-claim container is ACCEPTED on a fresh
+# twin B2 with the identical BlockID (claim order is not consensus-bound);
+# a pre-S12 height (count row absent) serves rc 1.
+#
+# Like test_v2_gate, this compiles the gate TU in WITH NODUS_V2_TEST_AUTHORITY
+# — the ARMED serve/ingress/sync paths cannot answer at all without a gate
+# that opens, and the fixture's synthetic authority exists in this binary
+# and NOWHERE else (test_v2_gate_linked proves the absence from libnodus /
+# nodus-server).
+add_executable(test_v2_sync_claims
+               tests/test_v2_sync_claims.c
+               src/witness/nodus_witness_v2_gate.c)
+target_compile_definitions(test_v2_sync_claims PRIVATE
+               NODUS_WITNESS_INTERNAL_API NODUS_V2_TEST_AUTHORITY=1)
+target_link_libraries(test_v2_sync_claims nodus dsa nodus crypto)
+add_test(NAME test_v2_sync_claims COMMAND test_v2_sync_claims)
+
 # Ledger V2 O14 — LINK GATE for the production V2 acceptance seam.
 #
 # A source-level test cannot prove this: the test binaries link libnodus

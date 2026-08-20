@@ -246,6 +246,118 @@ static void classify(nodus_v2_ingress_outcome_t *out, int rc) {
     out->want_catchup = (rc == NODUS_V2_NOT_YET_LINKABLE) ? 1 : 0;
 }
 
+/* ── blkframe v2 — NODUS-side claim carriage (O15F D5) ─────────────────────
+ *
+ * Contract in nodus_witness_v2_ingress.h. This is a BYTE codec only: like
+ * the v1 BlockMessage decoder it computes no consensus value, and the
+ * carried claims are re-derived and bound by the one engine downstream. */
+
+static void bf_wr_u32be(uint8_t *p, uint32_t v) {
+    p[0] = (uint8_t)(v >> 24); p[1] = (uint8_t)(v >> 16);
+    p[2] = (uint8_t)(v >> 8);  p[3] = (uint8_t)v;
+}
+static uint32_t bf_rd_u32be(const uint8_t *p) {
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+           ((uint32_t)p[2] << 8) | (uint32_t)p[3];
+}
+
+int nodus_witness_v2_blkframe_encode(const uint8_t *blkmsg, size_t blkmsg_len,
+                                     const uint8_t *const *claims,
+                                     const size_t *claim_lens,
+                                     uint32_t n_claims,
+                                     uint8_t **out, size_t *out_len) {
+    if (out)     *out     = NULL;
+    if (out_len) *out_len = 0;
+    if (!blkmsg || blkmsg_len == 0 || !out || !out_len)   return -1;
+    if (blkmsg_len > (size_t)DNA_BLKW_MAX_ENC_LEN)         return -1;
+    if (n_claims > NODUS_W_MAX_BLOCK_TXS)                  return -1;
+    if (n_claims > 0 && (!claims || !claim_lens))          return -1;
+
+    /* total = tag(1) + len(4) + blkmsg + n(4) + Σ( len(4) + claim ). Every
+     * component is bounded (blkmsg <= DNA_BLKW_MAX_ENC_LEN, n <= 10, each
+     * claim <= DNA_CLAIM_MAX_WIRE), so the sum cannot overflow size_t. */
+    size_t total = 1u + 4u + blkmsg_len + 4u;
+    for (uint32_t i = 0; i < n_claims; i++) {
+        size_t cl = claim_lens[i];
+        if (cl == 0 || cl > (size_t)DNA_CLAIM_MAX_WIRE || !claims[i]) return -1;
+        total += 4u + cl;
+    }
+
+    uint8_t *buf = malloc(total);
+    if (!buf) return -1;
+    size_t off = 0;
+    buf[off++] = NODUS_V2_BLKFRAME_TAG;
+    bf_wr_u32be(buf + off, (uint32_t)blkmsg_len); off += 4;
+    memcpy(buf + off, blkmsg, blkmsg_len);        off += blkmsg_len;
+    bf_wr_u32be(buf + off, n_claims);             off += 4;
+    for (uint32_t i = 0; i < n_claims; i++) {
+        bf_wr_u32be(buf + off, (uint32_t)claim_lens[i]); off += 4;
+        memcpy(buf + off, claims[i], claim_lens[i]);     off += claim_lens[i];
+    }
+    *out     = buf;
+    *out_len = total;
+    return 0;
+}
+
+int nodus_witness_v2_blkframe_decode(const uint8_t *frame, size_t frame_len,
+                                     dnac_blkmsg_v2_t *msg_out,
+                                     dna_claim_t *claims_out,
+                                     uint32_t claims_cap,
+                                     uint32_t *n_claims_out) {
+    if (n_claims_out) *n_claims_out = 0;
+    if (!frame || !msg_out || !n_claims_out)         return -1;
+    if (claims_cap > 0 && !claims_out)               return -1;
+
+    /* tag(1) + blkmsg_len(4) minimum */
+    if (frame_len < 5)                               return -1;
+    if (frame[0] != NODUS_V2_BLKFRAME_TAG)           return -1;
+
+    size_t off = 1;
+    uint32_t blkmsg_len = bf_rd_u32be(frame + off);  off += 4;   /* off == 5 */
+    if (blkmsg_len == 0 || blkmsg_len > (uint32_t)DNA_BLKW_MAX_ENC_LEN)
+        return -1;
+    if ((uint64_t)blkmsg_len > (uint64_t)(frame_len - off)) return -1;
+    const uint8_t *bm = frame + off;
+    size_t bml = (size_t)blkmsg_len;
+    off += bml;
+
+    /* the inner block: strict decode + canonical form (one encoding per
+     * block), re-validated by the EXISTING v1 codec — this file never adds
+     * a second block decoder. */
+    if (dnac_blkmsg_v2_decode(bm, bml, msg_out) != DNAC_BLKW_OK) return -1;
+    if (!dnac_blkmsg_v2_reencode_equals(bm, bml))                return -1;
+
+    if ((uint64_t)(frame_len - off) < 4) return -1;
+    uint32_t n = bf_rd_u32be(frame + off); off += 4;
+    if (n > NODUS_W_MAX_BLOCK_TXS || n > claims_cap) return -1;
+
+    for (uint32_t i = 0; i < n; i++) {
+        if ((uint64_t)(frame_len - off) < 4) return -1;
+        uint32_t cl = bf_rd_u32be(frame + off); off += 4;
+        if (cl == 0 || cl > (uint32_t)DNA_CLAIM_MAX_WIRE) return -1;
+        if ((uint64_t)cl > (uint64_t)(frame_len - off))   return -1;
+        const uint8_t *cb = frame + off;
+
+        if (dna_claim_decode(cb, (size_t)cl, &claims_out[i]) != 0) return -1;
+        /* one accepted encoding per claim — CHECK it re-encodes to the exact
+         * input slice (the admission discipline: verify, do not argue). */
+        uint8_t scratch[DNA_CLAIM_MAX_WIRE];
+        size_t need = dna_claim_encoded_len(&claims_out[i]);
+        size_t wr = 0;
+        if (need != (size_t)cl ||
+            dna_claim_encode(&claims_out[i], scratch, sizeof(scratch),
+                             &wr) != 0 ||
+            wr != (size_t)cl ||
+            memcmp(scratch, cb, (size_t)cl) != 0)
+            return -1;
+        off += cl;
+    }
+    if (off != frame_len) return -1;   /* trailing bytes reject */
+
+    *n_claims_out = n;
+    return 0;
+}
+
 int nodus_witness_v2_ingress_block(nodus_witness_t *w,
                                    const uint8_t *peer_id,
                                    const uint8_t *frame, size_t frame_len,
@@ -329,32 +441,63 @@ int nodus_witness_v2_ingress_block(nodus_witness_t *w,
         return out->result;
     }
 
-    /* ── 3. Decode + canonical form ───────────────────────────────────
+    /* ── 3. Decode + canonical form — dispatch on byte 0 ──────────────
      *
-     * The decoder allocates nothing and every length is bounded before it
-     * is used to advance. The re-encode equality check is what makes one
-     * block have exactly one acceptable frame: a decoder can be tolerant
-     * in ways an encoder is not, so the property is verified rather than
-     * assumed. A malformed frame is a TRANSPORT judgement and is kept
+     * A bare BlockMessage v1 starts with `msg_version` == DNA_BLKW_VERSION
+     * (1). A NODUS-side blkframe v2 container (claim carriage, O15F D5)
+     * starts with NODUS_V2_BLKFRAME_TAG (2). Any other lead byte is
+     * neither, and MALFORMED — a v1 decode would reject it on the version
+     * field anyway, but dispatching makes the two shapes explicit.
+     *
+     * Both paths are BYTE codecs: allocate nothing consensus-bearing,
+     * bound every length before advancing, and CHECK the one-encoding
+     * property rather than assume it (a decoder can be tolerant in ways an
+     * encoder is not). A malformed frame is a TRANSPORT judgement, kept
      * distinct from a consensus verdict — it never reached block
-     * semantics. */
+     * semantics. Everything authoritative happens beyond step 4. */
     dnac_blkmsg_v2_t msg;
-    dnac_blkmsg_status_t st = dnac_blkmsg_v2_decode(frame, frame_len, &msg);
-    if (st != DNAC_BLKW_OK) {
-        out->result       = NODUS_V2_CONSENSUS_INVALID;
-        out->peer         = NODUS_V2_PEER_MALFORMED;
-        out->codec_status = (int)st;
-        QGP_LOG_WARN(LOG_TAG, "V2 frame rejected: %s",
-                     dnac_blkmsg_v2_status_name(st));
-        return out->result;
-    }
-    if (!dnac_blkmsg_v2_reencode_equals(frame, frame_len)) {
-        out->result       = NODUS_V2_CONSENSUS_INVALID;
-        out->peer         = NODUS_V2_PEER_MALFORMED;
-        out->codec_status = (int)DNAC_BLKW_ERR_TRAILING;
-        QGP_LOG_WARN(LOG_TAG, "%s",
-                     "V2 frame rejected: non-canonical encoding");
-        return out->result;
+    dna_claim_t     *claims   = NULL;   /* heap: dna_claim_t is ~11.6 KB   */
+    uint32_t         n_claims = 0;
+
+    if (frame[0] == NODUS_V2_BLKFRAME_TAG) {
+        /* Up to NODUS_W_MAX_BLOCK_TXS claims of ~11.6 KB each (~116 KB):
+         * heap, per the repo's heap-fixture discipline, never on the
+         * already-large ingress frame. */
+        claims = calloc(NODUS_W_MAX_BLOCK_TXS, sizeof(*claims));
+        if (!claims) {
+            out->result = NODUS_V2_INTERNAL_FAULT;   /* OURS, not the peer */
+            out->peer   = NODUS_V2_PEER_NONE;
+            return out->result;
+        }
+        if (nodus_witness_v2_blkframe_decode(frame, frame_len, &msg,
+                                             claims, NODUS_W_MAX_BLOCK_TXS,
+                                             &n_claims) != 0) {
+            free(claims);
+            out->result       = NODUS_V2_CONSENSUS_INVALID;
+            out->peer         = NODUS_V2_PEER_MALFORMED;
+            out->codec_status = (int)DNAC_BLKW_ERR_TRAILING;
+            QGP_LOG_WARN(LOG_TAG, "%s",
+                         "V2 blkframe container rejected: strict decode");
+            return out->result;
+        }
+    } else {
+        dnac_blkmsg_status_t st = dnac_blkmsg_v2_decode(frame, frame_len, &msg);
+        if (st != DNAC_BLKW_OK) {
+            out->result       = NODUS_V2_CONSENSUS_INVALID;
+            out->peer         = NODUS_V2_PEER_MALFORMED;
+            out->codec_status = (int)st;
+            QGP_LOG_WARN(LOG_TAG, "V2 frame rejected: %s",
+                         dnac_blkmsg_v2_status_name(st));
+            return out->result;
+        }
+        if (!dnac_blkmsg_v2_reencode_equals(frame, frame_len)) {
+            out->result       = NODUS_V2_CONSENSUS_INVALID;
+            out->peer         = NODUS_V2_PEER_MALFORMED;
+            out->codec_status = (int)DNAC_BLKW_ERR_TRAILING;
+            QGP_LOG_WARN(LOG_TAG, "%s",
+                         "V2 frame rejected: non-canonical encoding");
+            return out->result;
+        }
     }
 
     /* ── 4. THE ONE ENGINE ────────────────────────────────────────────
@@ -381,6 +524,13 @@ int nodus_witness_v2_ingress_block(nodus_witness_t *w,
     memset(&blk, 0, sizeof(blk));
     blk.envs      = msg.env_count ? envs : NULL;
     blk.n_envs    = msg.env_count;
+    /* Carried claims (0x02 container only; NULL for a bare v1 frame). Bound
+     * TRANSITIVELY through claims_root → global root → BlockID → QC: the
+     * engine re-executes them and the header/id equality is the binding.
+     * An omitted / extra / substituted-semantics claim lands on a different
+     * global root and dies at expect_block_id — never commits wrong state. */
+    blk.claims    = n_claims ? claims : NULL;
+    blk.n_claims  = n_claims;
 
     /* `global_height` IS a caller input — see the field-authority table in
      * nodus_witness_v2_apply.h. The seam does NOT derive it: it VERIFIES
@@ -426,10 +576,15 @@ int nodus_witness_v2_ingress_block(nodus_witness_t *w,
         static const uint8_t zero_peer[32] = {0};
         uint64_t local_h = ing_committed_height(w);
         (void)nodus_witness_v2_ingress_queue_prune(w, local_h);
+        /* Park the WHOLE frame (0x01 or 0x02): a re-ingress re-decodes it
+         * from byte 0, so the container's claims are recovered too. */
         out->queued = q_push(peer_id ? peer_id : zero_peer,
                              ing_header_height(msg.header),
                              local_h, frame, frame_len);
     }
 
+    /* The claim array (0x02 path) held only for the finalize call above —
+     * the engine copied/applied what it needed within its ONE transaction. */
+    free(claims);
     return out->result;
 }

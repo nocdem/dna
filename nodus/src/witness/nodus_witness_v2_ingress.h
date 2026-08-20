@@ -82,6 +82,11 @@
 #include "witness/nodus_witness.h"
 #include "witness/nodus_witness_v2_result.h"
 
+/* The blkframe container (O15F D5) carries a canonical BlockMessage v1
+ * plus the block's claim bytes; it needs both codecs' types and bounds. */
+#include "dnac/blockmsg_v2.h"
+#include "dnac/manifest_wire.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -226,6 +231,75 @@ void nodus_witness_v2_ingress_queue_clear(nodus_witness_t *w);
  */
 uint32_t nodus_witness_v2_ingress_queue_prune(nodus_witness_t *w,
                                               uint64_t local_height);
+
+/* ── blkframe v2 — the NODUS-side claim-carriage container (O15F D5) ─────
+ *
+ * `shared/dnac/blockmsg_v2.*` is PROTECTED and stays byte-identical: it
+ * carries only claim-free blocks (`claim_count` still 0). Claims ride a
+ * NODUS-side per-frame container that WRAPS the canonical BlockMessage v1:
+ *
+ *   blkframe := 0x02 ‖ u32be blkmsg_len ‖ blkmsg(canonical v1 bytes)
+ *                    ‖ u32be n_claims
+ *                    ‖ ( u32be claim_len ‖ claim_bytes ) × n_claims
+ *
+ * Byte 0 == NODUS_V2_BLKFRAME_TAG (2) disambiguates from a bare
+ * BlockMessage v1, whose byte 0 is `msg_version` == DNA_BLKW_VERSION (1).
+ * An O15E node receiving a 0x02 frame fail-closes at the v1 blockmsg
+ * decode (2 != 1); no rolling-upgrade claim is made.
+ *
+ * NOTHING RECEIVED IS AUTHORITY. The decoder produces bounded, structurally
+ * valid BYTES; every authoritative commitment is re-derived by the one
+ * engine and compared against the header (the S6 transitive claims_root ‖
+ * global root ‖ BlockID ‖ QC binding). Claim carriage ORDER is NOT
+ * consensus-bound: claims_root sorts by nullifier, so a peer-reordered
+ * container commits identical consensus state (a different availability
+ * index order only).
+ */
+
+/** blkframe container lead byte — distinct from DNA_BLKW_VERSION (1). */
+#define NODUS_V2_BLKFRAME_TAG   0x02u
+
+/**
+ * Encode a blkframe v2 container.
+ *
+ * Heap-allocates `*out` (caller frees). Enforces EVERY bound the decoder
+ * enforces, so a serving node can never emit a frame the decoder would
+ * refuse: `blkmsg_len` in `[1, DNA_BLKW_MAX_ENC_LEN]`, `n_claims` <=
+ * NODUS_W_MAX_BLOCK_TXS, each `claim_len` in `[1, DNA_CLAIM_MAX_WIRE]`.
+ * The claim bytes are copied verbatim — canonicality is the caller's
+ * (they come from the stored canonical `dna_claim_encode` output).
+ *
+ * @return 0 with `*out`/`*out_len` set, or -1 (bad arg / bound / OOM).
+ */
+int nodus_witness_v2_blkframe_encode(const uint8_t *blkmsg, size_t blkmsg_len,
+                                     const uint8_t *const *claims,
+                                     const size_t *claim_lens,
+                                     uint32_t n_claims,
+                                     uint8_t **out, size_t *out_len);
+
+/**
+ * STRICT decode of a blkframe v2 container.
+ *
+ * Rejects unless: byte 0 == NODUS_V2_BLKFRAME_TAG; every length exactly
+ * frames the next field with an overflow-safe walk; the inner BlockMessage
+ * re-validates through the v1 decoder AND `dnac_blkmsg_v2_reencode_equals`
+ * (one encoding per block); `n_claims` <= min(NODUS_W_MAX_BLOCK_TXS,
+ * `claims_cap`); each `claim_len` in `[1, DNA_CLAIM_MAX_WIRE]`; each claim
+ * strict-decodes AND re-encodes byte-identically (one encoding per claim);
+ * and NO trailing bytes remain.
+ *
+ * `*msg_out` is ZERO-COPY: its `header`/`qc`/`env[i].bytes` point INTO
+ * `frame`, valid only while `frame` lives. `claims_out` is a caller-owned
+ * array of capacity `claims_cap` (>= NODUS_W_MAX_BLOCK_TXS); the decoded
+ * claims are copied into it by value (they hold no pointers into `frame`).
+ *
+ * @return 0 with `*msg_out`/`*n_claims_out` set, or -1 on any rejection.
+ */
+int nodus_witness_v2_blkframe_decode(const uint8_t *frame, size_t frame_len,
+                                     dnac_blkmsg_v2_t *msg_out,
+                                     dna_claim_t *claims_out,
+                                     uint32_t claims_cap,
+                                     uint32_t *n_claims_out);
 
 #ifdef __cplusplus
 }
