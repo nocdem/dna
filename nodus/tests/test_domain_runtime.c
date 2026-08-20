@@ -55,20 +55,27 @@ static int g_checks = 0;
  * (f2dcdefa…4cce / e0a0bc43…7429) are DEAD. Oracle:
  * scratchpad exec_season_oracle.py. */
 static const uint8_t KAT_RS_SYSTEM[DNA_DOM_HASH_LEN] = {
-    /* O12 re-derivation: SYSTEM ruleset_version 4 (runtime op 5
-     * DNA_SYSRULE_VALIDATOR_UPDATE becomes EXECUTABLE; rule/type lists
-     * and the meter-policy digest byte-identical to v3). Oracle:
-     * scratchpad o12_season_oracle.py, control-legged against BOTH
-     * shipped O11 pins (SYSTEM v3 d065e2e1…6d64, CORE v3 ed4b1bcd…4437).
-     * The O11 value d065e2e1…6d64 is DEAD. */
-    0x4f, 0xe7, 0x6f, 0xed, 0x43, 0xef, 0x37, 0x25,
-    0x94, 0x71, 0x3e, 0x97, 0xf6, 0xff, 0xf4, 0x68,
-    0x4d, 0xba, 0x3d, 0x37, 0x8c, 0xa2, 0x32, 0x01,
-    0xfe, 0xd6, 0x31, 0x4b, 0x81, 0x47, 0xe1, 0xce,
-    0x57, 0x1a, 0x4f, 0xec, 0xd8, 0x17, 0x0b, 0xfa,
-    0xd5, 0x5c, 0xb6, 0x86, 0x16, 0x2e, 0xbb, 0x1d,
-    0xf4, 0x62, 0xa4, 0xf2, 0x44, 0xbc, 0xf9, 0xc2,
-    0x38, 0x87, 0xeb, 0x7d, 0x14, 0x7a, 0x77, 0x36
+    /* O15F re-derivation: SYSTEM ruleset_version 4 → 5. The V2-lane
+     * CHAIN_CONFIG (runtime op 6) now narrows the accepted
+     * TARGET_ACTIVE_COUNT range to [7..30] (reject 31), which changes the
+     * accepted runtime-op-6 semantics; the version advances and the
+     * digest moves by construction (the descriptor commits
+     * ruleset_version; the rule list {1..6}, the type list
+     * {4,5,6,7,9,10} and the meter-policy digest are all byte-identical
+     * to v4 — the CC range is enforced in the HOOK, not the descriptor).
+     * The retired SYSTEM v4 (like v1/v2/v3) resolves NOTHING. Oracle:
+     * scratchpad o15f_ruleset_oracle.py, whose control legs reproduced
+     * BOTH shipped pins (SYSTEM v4 4fe76fed…7736, CORE v3 ed4b1bcd…4437)
+     * byte-exactly before this value was accepted. The O12 value
+     * 4fe76fed…7736 is DEAD. */
+    0x0e, 0xfc, 0x48, 0xbf, 0x13, 0xb8, 0xda, 0xd5,
+    0x3f, 0x41, 0xb4, 0xe7, 0x62, 0x3c, 0xab, 0xed,
+    0x26, 0x2d, 0x94, 0xb3, 0xbd, 0xae, 0x2a, 0x1a,
+    0x07, 0xf7, 0xe0, 0xc9, 0x39, 0x4c, 0x9f, 0x6c,
+    0xf4, 0xc5, 0x09, 0x6f, 0x98, 0x53, 0xd9, 0xf2,
+    0xb7, 0xae, 0x8d, 0x08, 0x45, 0xea, 0xac, 0xdb,
+    0xf6, 0xd8, 0x59, 0xdf, 0x34, 0xc5, 0xb3, 0xda,
+    0xd1, 0x89, 0x6c, 0x16, 0xb3, 0xf9, 0xf3, 0x50
 };
 static const uint8_t KAT_RS_CORE[DNA_DOM_HASH_LEN] = {
     /* O11 — CORE ruleset_version 3: the rule list GREW to {1..7}
@@ -101,6 +108,22 @@ static const uint8_t KAT_METPOL_SYSTEM[DNA_DOM_HASH_LEN] = {
     0x7f, 0xfb, 0xec, 0x2d, 0x19, 0xf1, 0xf5, 0xcc
 };
 
+/* The RETIRED SYSTEM v4 ruleset digest (the O12 pin, 4fe76fed…7736),
+ * kept ONLY so the retired-tuple lookup below proves the EXACT identity
+ * an old committed v4 SYSTEM leg would name now resolves NOTHING — O15F
+ * narrowed op-6 TARGET_ACTIVE to [7..30] and advanced SYSTEM to v5. This
+ * is NOT a live pin: the compiled table never carries it. */
+static const uint8_t RETIRED_RS_SYSTEM_V4[DNA_DOM_HASH_LEN] = {
+    0x4f, 0xe7, 0x6f, 0xed, 0x43, 0xef, 0x37, 0x25,
+    0x94, 0x71, 0x3e, 0x97, 0xf6, 0xff, 0xf4, 0x68,
+    0x4d, 0xba, 0x3d, 0x37, 0x8c, 0xa2, 0x32, 0x01,
+    0xfe, 0xd6, 0x31, 0x4b, 0x81, 0x47, 0xe1, 0xce,
+    0x57, 0x1a, 0x4f, 0xec, 0xd8, 0x17, 0x0b, 0xfa,
+    0xd5, 0x5c, 0xb6, 0x86, 0x16, 0x2e, 0xbb, 0x1d,
+    0xf4, 0x62, 0xa4, 0xf2, 0x44, 0xbc, 0xf9, 0xc2,
+    0x38, 0x87, 0xeb, 0x7d, 0x14, 0x7a, 0x77, 0x36
+};
+
 /* The checked-in descriptors' committed lists (S9 W4 truth; O11 did NOT
  * move either list — runtime_op and tx_type are different axes). */
 static const uint8_t SYS_TYPES_EXP[6]  = { 4, 5, 6, 7, 9, 10 };
@@ -109,8 +132,8 @@ static const uint8_t CORE_TYPES_EXP[6] = { 1, 2, 3, 11, 12, 13 };
  * (dna_ruleset_desc_hash refuses anything else). */
 static const uint32_t CORE_RULES_EXP[7] = { 1, 2, 3, 4, 5, 6, 7 };
 static const uint32_t SYS_RULES_EXP[6]  = { 1, 2, 3, 4, 5, 6 };
-/* The compiled ruleset versions this build ships (O11). */
-#define SYS_RSV  4u    /* O12: op 5 VALIDATOR_UPDATE executable */
+/* The compiled ruleset versions this build ships. */
+#define SYS_RSV  5u    /* O15F: op 6 CHAIN_CONFIG TARGET_ACTIVE range [7..30] */
 #define CORE_RSV 3u
 
 int main(void) {
@@ -203,7 +226,7 @@ int main(void) {
     /* the compiled versions the whole slice hangs from */
     CHECK(sys->ruleset_version == SYS_RSV &&
           sys->descriptor.ruleset_version == SYS_RSV,
-          "SYSTEM ruleset_version != 4 (O12)"); OK();
+          "SYSTEM ruleset_version != 5 (O15F)"); OK();
     CHECK(core->ruleset_version == CORE_RSV &&
           core->descriptor.ruleset_version == CORE_RSV,
           "CORE ruleset_version != 3 (O11)"); OK();
@@ -232,11 +255,12 @@ int main(void) {
     hit = nodus_runtime_lookup(DNA_DOMAIN_SYSTEM, DNA_RUNTIME_NATIVE_BUILTIN,
                                NODUS_DOMAIN_RUNTIME_ABI_V1, SYS_RSV,
                                sys->ruleset_hash);
-    CHECK(hit == sys, "SYSTEM exact lookup (ruleset v4)"); OK();
+    CHECK(hit == sys, "SYSTEM exact lookup (ruleset v5)"); OK();
     /* EVERY retired SYSTEM ruleset resolves NOTHING — a leg naming v1
-     * (CHAIN_CONFIG call v1), v2 (call v2, STAKE not yet executable) or
-     * v3 (O11 stake lifecycle, VALIDATOR_UPDATE not yet executable)
-     * dies here and is never reinterpreted under the current rules */
+     * (CHAIN_CONFIG call v1), v2 (call v2, STAKE not yet executable),
+     * v3 (O11 stake lifecycle, VALIDATOR_UPDATE not yet executable) or
+     * v4 (O12; CC TARGET_ACTIVE range not yet narrowed) dies here and is
+     * never reinterpreted under the current rules */
     CHECK(nodus_runtime_lookup(DNA_DOMAIN_SYSTEM, DNA_RUNTIME_NATIVE_BUILTIN,
                                NODUS_DOMAIN_RUNTIME_ABI_V1, 1,
                                sys->ruleset_hash) == NULL,
@@ -249,6 +273,18 @@ int main(void) {
                                NODUS_DOMAIN_RUNTIME_ABI_V1, 3,
                                sys->ruleset_hash) == NULL,
           "retired SYSTEM ruleset v3 resolved (O12)"); OK();
+    CHECK(nodus_runtime_lookup(DNA_DOMAIN_SYSTEM, DNA_RUNTIME_NATIVE_BUILTIN,
+                               NODUS_DOMAIN_RUNTIME_ABI_V1, 4,
+                               sys->ruleset_hash) == NULL,
+          "retired SYSTEM ruleset v4 (version axis) resolved (O15F)"); OK();
+    /* the LOAD-BEARING retired-v4 miss: the EXACT tuple an old committed
+     * v4 SYSTEM leg names — version 4 AND its real O12 digest — resolves
+     * NOTHING (the version-axis probe above passes vacuously because the
+     * live hash moved to v5; this one names the true retired identity) */
+    CHECK(nodus_runtime_lookup(DNA_DOMAIN_SYSTEM, DNA_RUNTIME_NATIVE_BUILTIN,
+                               NODUS_DOMAIN_RUNTIME_ABI_V1, 4,
+                               RETIRED_RS_SYSTEM_V4) == NULL,
+          "retired SYSTEM ruleset v4 (exact tuple) resolved (O15F)"); OK();
     hit = nodus_runtime_lookup(DNA_DOMAIN_CORE, DNA_RUNTIME_NATIVE_BUILTIN,
                                NODUS_DOMAIN_RUNTIME_ABI_V1, CORE_RSV,
                                core->ruleset_hash);

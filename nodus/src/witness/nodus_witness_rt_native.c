@@ -3603,6 +3603,19 @@ int nodus_rt_system_exec(const nodus_domain_runtime_t *rt,
                                         c.signed_at, c.valid_before,
                                         c.effective) != 0)
         return -1;
+    /* O15F D2 — V2-lane TARGET_ACTIVE_COUNT range narrowing [7..30].
+     * The shared scalar rule above admits [7..128]; a successor's active
+     * set can never exceed NODUS_V2_ACTIVE_SET_MAX (30, the set-layer
+     * invariant, nodus_witness.h), so a runtime-op-6 CC envelope raising
+     * the target above 30 is a deterministic VERDICT reject. This exec
+     * hook is PURE (no witness handle), so the bound is V2-lane-GLOBAL —
+     * every production V2 chain is a successor, and a 30-bounded fixture
+     * chain is strictly safer; the legacy CC apply path never enters this
+     * hook and keeps [7..128]. The set-layer guards (D1: target clamp /
+     * insert / resolve / seam) are the defense-in-depth backstop. */
+    if (c.param_id == DNAC_CFG_TARGET_ACTIVE_COUNT &&
+        c.new_value > NODUS_V2_ACTIVE_SET_MAX)
+        return -1;
     /* freshness (CC-G) + per-param grace (CC-C), 1:1 from
      * nodus_chain_config_apply */
     if (H > c.valid_before) return -1;

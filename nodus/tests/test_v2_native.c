@@ -1613,6 +1613,76 @@ static int test_system_cc(void) {
     return 0;
 }
 
+/* ══ 3a. O15F — V2-lane TARGET_ACTIVE_COUNT range narrowing [7..30] ═══
+ *
+ * D2: a runtime-op-6 CHAIN_CONFIG envelope raising TARGET_ACTIVE_COUNT
+ * (param 4) above NODUS_V2_ACTIVE_SET_MAX (30) is a deterministic VERDICT
+ * reject — checked in rtn_cc_exec AFTER the shared scalar rules, and the
+ * exec hook is PURE (no witness handle), so the bound is V2-lane-GLOBAL.
+ * The legacy scalar range [7..128] still ADMITS 31 (that is what makes
+ * this the NEW rule); 30 (== max, accept side of the off-by-one) and 20
+ * commit. */
+static int test_system_cc_target_active_max(void) {
+    fixture_t fx;
+    CHECK(fx_genesis(&fx, "ccmax") == 0, "genesis");
+    int voters5[5] = { 0, 1, 2, 3, 4 };
+    env_t e;
+    nodus_v2_block_t b;
+    int rc = 0;
+
+    /* TARGET_ACTIVE_COUNT carries the SAFETY grace class, so `effective`
+     * must clear H + DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS (17280 in the
+     * default build) — 20000/20001 do, at H=1/H=2. valid_before exceeds
+     * both (scalar window + freshness). */
+    const uint64_t EFF0 = 20000, EFF1 = 20001, VB = 30000;
+
+    /* 31 > 30: rejects as a deterministic verdict, DB byte-identical.
+     * The scalar rule [7..128] ACCEPTS 31, so before the D2 narrowing
+     * lands this envelope COMMITS and apply_reject FAILS here — the
+     * failing-test proof. */
+    CHECK(cc_env(&fx, &e, 1, DNAC_CFG_TARGET_ACTIVE_COUNT, 31, EFF0, 0x31,
+                 1, VB, voters5, 5, 0, NULL, NULL) == 0, "build 31");
+    {
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block(&b, 1, &ve, 1);
+        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+              "TARGET_ACTIVE_COUNT=31 must reject (V2-lane max 30)");
+        OK();
+    }
+
+    /* 30 == NODUS_V2_ACTIVE_SET_MAX: commits (accept side; the 31 reject
+     * left no row, so EFF0 is free). */
+    CHECK(cc_env(&fx, &e, 1, DNAC_CFG_TARGET_ACTIVE_COUNT, 30, EFF0, 0x30,
+                 1, VB, voters5, 5, 0, NULL, NULL) == 0, "build 30");
+    {
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block(&b, 1, &ve, 1);
+        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+              "TARGET_ACTIVE_COUNT=30 must commit");
+        OK();
+    }
+    CHECK((uint64_t)q1(fx.w, "SELECT new_value FROM chain_config_history "
+                   "WHERE param_id=4 AND effective_block=20000") == 30,
+          "target=30 row committed"); OK();
+
+    /* 20 < max: commits at H=2 (distinct effective ⇒ distinct PK). */
+    CHECK(cc_env(&fx, &e, 2, DNAC_CFG_TARGET_ACTIVE_COUNT, 20, EFF1, 0x20,
+                 1, VB, voters5, 5, 0, NULL, NULL) == 0, "build 20");
+    {
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block(&b, 2, &ve, 1);
+        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+              "TARGET_ACTIVE_COUNT=20 must commit");
+        OK();
+    }
+    CHECK((uint64_t)q1(fx.w, "SELECT new_value FROM chain_config_history "
+                   "WHERE param_id=4 AND effective_block=20001") == 20,
+          "target=20 row committed"); OK();
+
+    fx_close(&fx);
+    return 0;
+}
+
 /* ══ 3b. COMMITTEE CAPACITY — source-derived boundaries ═════════════ */
 
 /* Committee sizes derived from the SOURCE constants, not prose:
@@ -8526,6 +8596,7 @@ int main(void) {
     if (test_auth() != 0) return 1;
     if (test_authority() != 0) return 1;
     if (test_system_cc() != 0) return 1;
+    if (test_system_cc_target_active_max() != 0) return 1;
     if (test_committee_capacity() != 0) return 1;
     if (test_core_spend() != 0) return 1;
     if (test_engine() != 0) return 1;
