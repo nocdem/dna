@@ -1,72 +1,43 @@
 # DNA Engine Modular Structure
 
 This directory contains the modular DNA Engine implementation.
+`src/api/dna_engine.c` is the core (async task queue, dispatch, events,
+lifecycle); every feature domain lives in its own module file here.
 
-## Current State
+## Modules (current)
 
-**Phase: Modular Extraction Complete** (v0.6.121, current as of 2026-02-22; originally completed at v0.6.70, 2026-01-29)
+23 `dna_engine_*` modules plus 4 support files. The authoritative list
+is the `add_library(dna ...)` source list in `messenger/CMakeLists.txt`.
 
-The DNA Engine has been refactored from a 10,843-line monolith into modular components.
+| Module | Domain |
+|--------|--------|
+| `dna_engine_addressbook.c` | Wallet address book CRUD |
+| `dna_engine_backup.c` | DHT sync for messages, contacts, groups, addressbook |
+| `dna_engine_calls.c` | PQ VoIP call control (Faz A): invite/accept/reject/hangup |
+| `dna_engine_channels.c` | Channel CRUD, posts, subscriptions (**DISABLED** — `DNA_CHANNELS_ENABLED` guard) |
+| `dna_engine_contacts.c` | Contact requests, blocking |
+| `dna_engine_debug_log.c` | Encrypted debug-log send to developer |
+| `dna_engine_dnac.c` | DNA Chain wallet (balance, send, sync, history, UTXOs) |
+| `dna_engine_follow.c` | Follow/unfollow, list, DHT sync |
+| `dna_engine_groups.c` | Group CRUD, GEK encryption, invitations |
+| `dna_engine_helpers.c` | Shared utility functions |
+| `dna_engine_identity.c` | Identity create/load, profiles |
+| `dna_engine_lifecycle.c` | Engine pause/resume (mobile background) |
+| `dna_engine_listeners.c` | DHT key subscriptions (outbox, presence, ACK) |
+| `dna_engine_logging.c` | Log level/tags config, debug log API |
+| `dna_engine_media.c` | Media upload/download, outbox queue |
+| `dna_engine_messaging.c` | Send/receive, conversations, retry |
+| `dna_engine_presence.c` | Heartbeat, presence lookup |
+| `dna_engine_signing.c` | Dilithium5 data signing |
+| `dna_engine_version.c` | Version info, DHT publish/check |
+| `dna_engine_wall.c` | Personal wall posts |
+| `dna_engine_wall_poll.c` | Periodic batch wall polling |
+| `dna_engine_wallet.c` | Multi-chain wallet (Cellframe, ETH, BSC, SOL, TRON) |
+| `dna_engine_workers.c` | Background thread pool |
 
-| Metric | Value |
-|--------|-------|
-| Original monolith | 10,843 lines |
-| Current monolith | 3,093 lines (71% reduction) |
-| Modules extracted | 18 integrated |
-
-## Module Status
-
-| Module | Lines | Status | Functions | Description |
-|--------|-------|--------|-----------|-------------|
-| `dna_engine_feed.c` | 644 | ✅ Integrated | 22 | Feed channels, posts, comments, voting |
-| `dna_engine_presence.c` | 356 | ✅ Integrated | 7 | Presence heartbeat, refresh/lookup, network change |
-| `dna_engine_wallet.c` | 990 | ✅ Integrated | 9 | Multi-chain wallet, balances, transactions |
-| `dna_engine_groups.c` | 485 | ✅ Integrated | 10 | Group CRUD, invitations, subscriptions |
-| `dna_engine_messaging.c` | 578 | ✅ Integrated | 6 | Send/receive, conversations, message retry |
-| `dna_engine_contacts.c` | 700 | ✅ Integrated | 11 | Contact requests, blocking, auto-approval |
-| `dna_engine_identity.c` | 975 | ✅ Integrated | 11 | Identity create/load, profiles, display names |
-| `dna_engine_listeners.c` | 1200 | ✅ Integrated | 14 | Outbox, presence, contact request, ACK listeners |
-| `dna_engine_logging.c` | 212 | ✅ Integrated | 13 | Log level/tags config, debug log API |
-| `dna_engine_addressbook.c` | 403 | ✅ Integrated | 10 | Wallet address book CRUD |
-| `dna_engine_backup.c` | 852 | ✅ Integrated | 14 | Message/contacts/groups/addressbook DHT sync |
-| `dna_engine_lifecycle.c` | 178 | ✅ Integrated | 5 | Engine pause/resume for mobile background |
-| `dna_engine_helpers.c` | 106 | ✅ Integrated | 4 | DHT context, key loading, stabilization |
-| `dna_engine_workers.c` | 113 | ✅ Integrated | 3 | Worker thread pool management |
-| `dna_engine_version.c` | 243 | ✅ Integrated | 4 | Version string, DHT publish/check |
-| `dna_engine_signing.c` | 115 | ✅ Integrated | 2 | Dilithium5 signing for QR Auth |
-| `dna_engine_wall.c` | — | ✅ Integrated | 4 | Wall post, delete, load, timeline |
-| `dna_engine_follow.c` | — | ✅ Integrated | 7 | Follow/unfollow, list, DHT sync |
-| `dna_engine_dnac.c` | — | ✅ Integrated | 8 | DNAC digital cash (balance, send, sync, history, UTXOs, fee) |
-| `dna_engine_calls.c` | — | ✅ Integrated | 4+incoming | PQ VoIP call control (Faz A): invite/accept/reject/hangup + `dna_calls_handle_incoming`. Owns orchestrator + keystore over `dna_call_crypto/fsm/orch` |
-
-## Architecture
-
-```
-src/api/
-├── dna_engine.c              # Monolith (core + dispatchers)
-├── dna_engine_internal.h     # Internal structures and types
-└── engine/
-    ├── README.md             # This file
-    ├── engine_includes.h     # Shared includes for all modules
-    ├── dna_engine_feed.c     # Feed handlers + API
-    ├── dna_engine_presence.c      # P2P handlers + API
-    ├── dna_engine_wallet.c   # Wallet handlers + API
-    ├── dna_engine_groups.c   # Group handlers + API
-    ├── dna_engine_messaging.c # Messaging handlers + API
-    ├── dna_engine_contacts.c # Contact handlers + API
-    ├── dna_engine_identity.c # Identity handlers + API
-    ├── dna_engine_listeners.c # DHT listeners (outbox, presence, ACK)
-    ├── dna_engine_logging.c  # Log config + debug log API
-    ├── dna_engine_addressbook.c # Wallet address book CRUD
-    ├── dna_engine_backup.c   # All DHT sync (messages, contacts, groups, addressbook)
-    ├── dna_engine_lifecycle.c # Engine pause/resume for mobile background
-    ├── dna_engine_helpers.c  # DHT context, key loading, stabilization
-    ├── dna_engine_workers.c  # Worker thread pool management
-    ├── dna_engine_version.c  # DHT version publish/check
-    ├── dna_engine_signing.c  # Dilithium5 signing API
-    ├── dna_engine_follow.c   # Follow system (one-directional)
-    └── dna_engine_dnac.c     # DNAC digital cash wallet
-```
+Support files: `dna_call_crypto.c`, `dna_call_fsm.c`, `dna_call_orch.c`
+(VoIP crypto/FSM/orchestrator used by `dna_engine_calls.c`) and
+`dna_debug_log_wire.c` (debug-log wire format).
 
 ## Module Pattern
 
@@ -109,31 +80,6 @@ dna_request_id_t dna_engine_xxx(dna_engine_t *engine, ...) {
 | Pause/Resume | dna_engine_lifecycle.c | `dna_engine_pause/resume()` |
 | Listeners | dna_engine_listeners.c | `dna_engine_listen_*()`, `dna_engine_start_*_listener()` |
 
-## Build Configuration
-
-All module files are compiled by CMakeLists.txt:
-
-```cmake
-set(DNA_LIB_SOURCES
-    ${DNA_ROOT}/src/api/dna_engine.c
-    ${DNA_ROOT}/src/api/engine/dna_engine_feed.c
-    ${DNA_ROOT}/src/api/engine/dna_engine_presence.c
-    ${DNA_ROOT}/src/api/engine/dna_engine_wallet.c
-    ${DNA_ROOT}/src/api/engine/dna_engine_groups.c
-    ${DNA_ROOT}/src/api/engine/dna_engine_messaging.c
-    ${DNA_ROOT}/src/api/engine/dna_engine_contacts.c
-    ${DNA_ROOT}/src/api/engine/dna_engine_identity.c
-    ${DNA_ROOT}/src/api/engine/dna_engine_listeners.c
-    ${DNA_ROOT}/src/api/engine/dna_engine_logging.c
-    ${DNA_ROOT}/src/api/engine/dna_engine_addressbook.c
-    ${DNA_ROOT}/src/api/engine/dna_engine_backup.c
-    ${DNA_ROOT}/src/api/engine/dna_engine_lifecycle.c
-    ${DNA_ROOT}/src/api/engine/dna_engine_helpers.c
-    ${DNA_ROOT}/src/api/engine/dna_engine_workers.c
-    ${DNA_ROOT}/src/api/engine/dna_engine_dnac.c
-)
-```
-
 ## Shared Header: engine_includes.h
 
 Provides common includes and cross-platform utilities:
@@ -161,14 +107,14 @@ Provides common includes and cross-platform utilities:
 
 2. **Add params** (if needed) to `dna_task_params_t` union
 
-3. **Implement handler** in appropriate module file:
+3. **Implement handler** in the appropriate module file:
    ```c
    void dna_handle_new_operation(dna_engine_t *engine, dna_task_t *task) {
        // Implementation
    }
    ```
 
-4. **Add public API wrapper** in same module file:
+4. **Add public API wrapper** in the same module file:
    ```c
    dna_request_id_t dna_engine_new_operation(dna_engine_t *engine, ...) {
        dna_task_callback_t cb = { .completion = callback };
@@ -188,6 +134,9 @@ Provides common includes and cross-platform utilities:
    dna_request_id_t dna_engine_new_operation(dna_engine_t *engine, ...);
    ```
 
+7. **Update docs** — the matching `messenger/docs/functions/*.md` entry
+   lands in the same commit.
+
 ## Testing
 
 ```bash
@@ -203,23 +152,3 @@ cmake .. && make -j$(nproc)
 # Memory check (if valgrind available)
 valgrind --leak-check=full ./cli/dna-connect-cli whoami
 ```
-
-## Version History
-
-| Version | Changes |
-|---------|---------|
-| v0.6.70 | Extracted version + signing modules; moved presence heartbeat to presence |
-| v0.6.69 | Moved message retry to messaging module (bulletproof delivery) |
-| v0.6.68 | Extracted helpers + workers modules (DHT helpers, thread pool) |
-| v0.6.67 | Extracted lifecycle module (pause/resume for mobile background) |
-| v0.6.66 | Consolidated backup module (message backup, contacts/groups/addressbook sync) |
-| v0.6.65 | Extracted address book module (CRUD, DHT sync) |
-| v0.6.64 | Extracted logging module (log config, debug log API) |
-| v0.6.63 | Extracted listeners module (outbox, presence, contact request, ACK) |
-| v0.6.62 | Moved public API wrappers to P2P and Wallet modules |
-| v0.6.61 | Extracted identity module |
-| v0.6.60 | Extracted contacts module |
-| v0.6.59 | Extracted messaging module |
-| v0.6.58 | Extracted groups module |
-| v0.6.57 | Extracted wallet module |
-| v0.6.56 | Security fixes (strdup NULL checks, buffer overflow, timezone) |

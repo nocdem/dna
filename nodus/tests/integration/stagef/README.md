@@ -45,13 +45,18 @@ Environment:
 | Var | Default | Purpose |
 |---|---|---|
 | `STAGEF_EPOCH_LENGTH` | 15 | Blocks per epoch. Production is 720 (1 hour); 15 keeps epoch-boundary tests under ~75 s each. |
-| `STAGEF_BLOCKS_PER_YEAR` | unset | Required by `test_halving_boundaries.sh` — test skips (rc=99) when unset. |
+| `STAGEF_BLOCKS_PER_YEAR` | unset | `test_halving_boundaries.sh` skips (rc=99) when unset. When set to `<BY>`, the nodus binary must have been compiled with `-DDNAC_BLOCKS_PER_YEAR=<BY>` — the scenario then measures the emission the chain actually credited against the declared schedule; a mismatch is a FAILURE, never a skip. |
+
+Scenario scripts record **reachability sentinels** (`SETUP_OK` /
+`TARGET_REACHED` / `ASSERT_RUN` / `PASS`); the runner converts a PASS
+that never recorded `ASSERT_RUN` into a FAILURE — a scenario that
+skipped its terminal assertion is not coverage.
 
 Runner phases:
 
-1. **Phase 1** — `ctest --output-on-failure` in `nodus/build` (90 unit tests).
+1. **Phase 1** — full nodus `ctest` suite in `nodus/build` (200 registered tests; STUB-by-design skips are recognized, real failures abort).
 2. **Phase 2** — `stagef_down.sh` + `stagef_up.sh` (spawn 7 nodes, submit genesis).
-3. **Phase 3** — every `tests/*.sh` in alphabetical order. Per-test `bash <script>`, exit-code only.
+3. **Phase 3** — every `tests/*.sh` in alphabetical order (25 scenarios). Per-test `bash <script>`, exit-code only.
 4. **Phase 4** — `stagef_down.sh`.
 
 ## Layout

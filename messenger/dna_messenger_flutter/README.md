@@ -2,7 +2,7 @@
 
 Cross-platform UI for DNA Connect built with Flutter and Dart.
 
-**Current Version:** v1.0.0-rc235
+**Current Version:** v1.0.0-rc241
 
 ## Platforms
 

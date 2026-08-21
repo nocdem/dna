@@ -20,8 +20,8 @@ DNA is a suite of decentralized applications built on **NIST-approved post-quant
 | Project | Description | Status |
 |---------|-------------|--------|
 | [**DNA Connect**](messenger/) | End-to-end encrypted communication with multi-chain crypto wallet | RC |
-| [**Nodus**](nodus/) | Post-quantum Kademlia DHT server with cluster management | RC |
-| [**DNAC**](dnac/) | Post-quantum digital cash with BFT witness consensus | Development |
+| [**Nodus**](nodus/) | Post-quantum Kademlia DHT server with embedded BFT witness | RC |
+| [**DNAC**](dnac/) | DNA Chain — post-quantum UTXO blockchain with BFT witness consensus | Testnet |
 | [**CPUNK Platform**](cpunk/) | Quantum-safe community platform | Live |
 
 ---
@@ -36,7 +36,7 @@ DNA is a suite of decentralized applications built on **NIST-approved post-quant
 └──────────┬───────────────────────────────────────────┘
            │ dart:ffi
 ┌──────────▼───────────────────────────────────────────┐
-│  DNA Engine (C) — 22 engine modules                  │
+│  DNA Engine (C) — 23 engine modules                  │
 │  messaging · contacts · groups · wallet · presence   │
 │  identity · backup · lifecycle · version · signing   │
 │  wall · media · follow · dnac · channels + more      │
@@ -52,8 +52,9 @@ DNA is a suite of decentralized applications built on **NIST-approved post-quant
 └──────────────────────────────────────────────────────┘
 
 ┌──────────────────────────────────────────────────────┐
-│  DNAC (C) — Links against libdna                     │
-│  UTXO wallet · BFT witness consensus · Nullifiers    │
+│  DNAC / DNA Chain (C) — client library in libdna     │
+│  UTXO wallet · TX builder · witness RPC client       │
+│  Consensus itself runs in Nodus (nodus/src/witness/) │
 └──────────────────────────────────────────────────────┘
 ```
 
@@ -120,11 +121,15 @@ cd messenger/build && cmake .. && make -j$(nproc)
 # Nodus DHT server
 cd ../../nodus/build && cmake .. && make -j$(nproc)
 
-# DNAC (requires messenger C library built first)
+# DNAC client library (requires messenger C library built first)
 cd ../../dnac/build && cmake .. && make -j$(nproc)
 
+# Re-run the messenger build so dna-connect-cli picks up libdnac.a
+# (the CLI's DNA Chain command group is enabled at configure time)
+cd ../../messenger/build && cmake .. && make -j$(nproc)
+
 # Flutter app (requires C library)
-cd ../../messenger/dna_messenger_flutter
+cd ../dna_messenger_flutter
 flutter pub get && flutter build linux
 ```
 
@@ -147,22 +152,26 @@ dna/
 │   ├── dna_messenger_flutter/ #   Flutter cross-platform app
 │   └── docs/                  #   Documentation
 ├── nodus/                     # Nodus DHT Server
-│   ├── src/                   #   Server, client SDK, protocol, consensus
+│   ├── src/                   #   Server, client SDK, protocol, cluster consensus
+│   ├── src/witness/           #   Embedded DNA Chain witness (BFT consensus)
 │   ├── include/               #   Public headers
-│   └── tests/                 #   Unit + integration tests
+│   └── tests/                 #   Unit + integration tests (Genesis Protocol harness)
 ├── shared/
-│   └── crypto/                # Post-quantum crypto primitives
-│       ├── sign/              #   Dilithium5, secp256k1, Ed25519
-│       ├── enc/               #   Kyber1024, AES-256-GCM
-│       ├── hash/              #   SHA3-512, Keccak-256
-│       ├── key/               #   BIP32, BIP39, PBKDF2
-│       └── utils/             #   Logging, platform abstraction, CSPRNG
-├── dnac/                      # DNA Cash
-│   ├── src/                   #   Wallet, transactions, witness client, CLI
+│   ├── crypto/                # Post-quantum crypto primitives
+│   │   ├── sign/              #   Dilithium5, secp256k1, Ed25519
+│   │   ├── enc/               #   Kyber1024, AES-256-GCM
+│   │   ├── hash/              #   SHA3-512, Keccak-256
+│   │   ├── key/               #   BIP32, BIP39, PBKDF2
+│   │   ├── utils/             #   Logging, platform abstraction, CSPRNG
+│   │   └── zk/                #   STARK proof stack (Plonky3-grounded C ports)
+│   └── dnac/                  # Canonical DNA Chain wire codecs (client + witness)
+├── dnac/                      # DNA Chain client library
+│   ├── src/                   #   Wallet, TX builders, witness RPC client, client-side verify
 │   ├── include/               #   Public headers
 │   └── tests/                 #   Unit tests
-├── explorer/                  # DNAC block explorer daemon (scan.cpunk.io) — read-only indexer + JSON API
+├── explorer/                  # DNA Chain block explorer daemon (scan.cpunk.io) — read-only indexer + JSON API
 ├── cpunk/                     # cpunk.io web platform
+├── scripts/                   # Operational scripts (determinism checks, reporting)
 └── docs/                      # Top-level project documentation
 ```
 
@@ -172,9 +181,9 @@ dna/
 
 | Component | Version |
 |-----------|---------|
-| Messenger C Library | v0.11.17 |
-| Flutter App | v1.0.0-rc240 |
-| Nodus | v0.19.7 |
+| Messenger C Library | v0.11.18 |
+| Flutter App | v1.0.0-rc241 |
+| Nodus | v0.19.16 |
 | DNAC | v0.18.6-ledgerv2-o15b |
 
 ---
@@ -185,7 +194,7 @@ dna/
 |----------|-------------|
 | [Messenger README](messenger/README.md) | Messenger overview, features, build |
 | [Nodus README](nodus/README.md) | DHT server architecture and deployment |
-| [DNAC README](dnac/README.md) | Digital cash architecture, CLI commands, transaction format |
+| [DNAC README](dnac/README.md) | DNA Chain client library, CLI commands, transaction format |
 | [Architecture](messenger/docs/ARCHITECTURE_DETAILED.md) | Detailed system design |
 | [Protocol Specs](messenger/docs/PROTOCOL.md) | Wire formats (Seal, Spillway, Anchor, Atlas, Nexus) |
 | [DNA Engine API](messenger/docs/DNA_ENGINE_API.md) | Core C API reference |

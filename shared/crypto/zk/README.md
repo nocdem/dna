@@ -1,249 +1,76 @@
-# shared/crypto/zk — STARK range proof module (DNAC v3)
+# shared/crypto/zk — STARK proof stack (DNA Chain shielded lane)
 
-**Status (2026-07-12):** v3 ships **transparent**. This ZK stack is a **verify-only,
-parked** foundation (prover [MISSING]; not linked into any consensus binary).
-**Confidential (hidden) amounts are DEFERRED to v4.** The money AIRs' 2026-07
-soundness campaign (2 mints found + fixed, FRI wire-param UB guards, composed
-`range_balance_verify()` door) is COMPLETE and committed on branch
-`zk-range-balance-soundness-hardening`. **Read `RESUME.md` top block FIRST** — it
-is the authoritative current state (where-we-are / what-we-did / what's-next).
-v4 plan: `docs/plans/2026-06-09-v4-confidential-northstar-design.md`.
+A clean-room C implementation of a batched STARK prover + verifier for
+the DNA Chain's shielded transaction lane (Goldilocks field, Poseidon2
+MMCS/transcript, FRI, LogUp lookups, range/balance AIRs, aggregate
+shielded statement verification).
 
----
-
-## PROJECT STATUS, DECISIONS & WHAT'S MISSING
-
-### Where we are (one glance)
-- **Built + grounded + audited:** a complete STARK *verifier* stack + range/balance AIR, every public function oracle byte-matched against Plonky3 (pin `82cfad73`), then hardened by a 2026-07 soundness campaign (13+13+4 subagent audits + 18-member council). `make clean && make test` GREEN, **70 test binaries**, 0 warnings. *(The old "36 gates" figure here was stale long before d4.d; the binary count from `awk '/^TESTS/,/^$/' Makefile | grep -o 'test_[a-z0-9_]*' | sort -u | wc -l` is the counter.)*
-- **Mode = ADDITIVE only:** amounts are **cleartext**; the proof is *redundant* with the witness's native balance check (`nodus/src/witness/nodus_witness_verify.c:672-783` Check 4, native u64, overflow guard `:719`). **No privacy yet.**
-- **Linked into the nodus build but NOT yet called by consensus (Phase-C C1, 2026-07-21; re-based at d4.c/d4.d):** the pinned shielded verify stack is compiled into `libnodus.a` (`nodus/CMakeLists.txt`; messenger inherits via the nodus subtree). No witness code calls it yet — the accept-flip lands at C3. The consensus entry is `dnac_shielded_verify_statement` (`shielded_verify.c`) over `dnac_batch_wire_decode` (DZKF v4) + `dnac_batch_verify`. **d4.d (2026-07-26):** the v3 uni-stark wrappers `dnac_fri_verify_wire` (unpinned test entry) and `dnac_fri_verify_wire_shielded` (pinned v3 entry) are **DELETED from the tree** — not merely compiled out of consensus, so the old M5 `nm` argument is superseded by absence. Prover sources remain standalone-only (wallet side, S7).
-- **Confidential (hidden amounts) = DEFERRED to v4.**
-
-### Decisions & WHY (the load-bearing part)
-
-**D1 — v3 ships transparent; confidential deferred to v4.**
-*Why:* (a) confidential is months away regardless of crypto choice — there is **no prover** (this stack is verify-only) and **no consensus integration**; (b) the old v3 draft was *half-shield* (inputs cleartext) → privacy breaks at first spend, i.e. it would take the **full** soundness risk for only **partial** privacy; (c) the irreducible invisible-inflation risk (D5) is in tension with DNAC's verifiability premise (7/7 `state_root`); (d) no time pressure — v3 works transparent today.
-
-**D2 — Binding a hidden amount (B1) is unavoidably an in-AIR hash, and in-AIR SHA3 has NO grounded reference.**
-*Why:* hash commitments are **not homomorphic** → balance cannot be checked on commitments (unlike EC Pedersen); the amount must be hashed *inside* the proof to bind it to its published commitment. A 2026-06-08 deep-research pass (103 agents, primary-source, adversarially verified) found: **no citable/audited in-AIR FIPS-202 SHA3 *sponge* exists** to port. Plonky3 `keccak-air` is permutation-only (`lib.rs:1`); `symmetric/sponge.rs:19` is out-of-circuit overwrite-mode; the only full in-circuit Keccak sponge (PSE/Scroll) is Halo2/BN254, not AIR/Goldilocks. **No confidential design binds value with in-circuit SHA3** — all use algebraic hashes; SHA2/3 have "prohibitively large STARK complexity" (eprint 2020/948, EF/StarkWare). Full source list: v4 north-star Appendix A.
-
-**D3 — Lock amendment: Poseidon2 for the in-AIR value commitment ONLY.**
-`project_v3_zk_bitcoin_style`'s *"uniform SHA3-512 incl. in-AIR"* → **SHA3 stays for chain / transcript / Merkle / proof-internal**; **Poseidon2** is the in-AIR commitment hash. *Why Poseidon2:* it is the only in-AIR algebraic hash that is both Plonky3-shipped AND the most cryptanalyzed (over Monolith; Rescue has no `rescue-air`). Grounded params: `goldilocks/src/poseidon2.rs` — α=7 (`:70`), RF=8 (`:20-22`), R_P=22 (`:32`), WIDTH∈{8,12,16}; spec **eprint 2023/323**. With `SBOX_REGISTERS=1` constraint degree stays **3** → `num_qc=2` (`poseidon2-air/src/air.rs:305-309`). Cost ≈ 1 row, ~180 cells vs SHA3's 24 rows × 2633 (`keccak_p3_cols.h:22`) — ~350× cheaper.
-
-**D4 — v4 confidential will be FULL-shield (inputs + outputs hidden), not half.**
-*Why:* half-shield = weak privacy for full risk. Confidential is worth doing only fully.
-
-**D5 — Crypto-agility + fallback baked in from day one.**
-*Why:* in confidential mode a soundness break (hash / AIR / proof) → **invisible, unprovable inflation** (hidden amounts can't be summed; no homomorphic supply audit; cf. Monero's inflation-bug class). Mitigation: `hash_id` versioning + a **cleartext fallback switch** (via `DNAC_TX_CHAIN_CONFIG`) that degrades to ADDITIVE so the native Check 4 resumes enforcing visible balance. Base chain (Dilithium5 sigs, SHA3 nullifiers/state_root) is unaffected. Honest limit: fallback stops *future* inflation, not past silent inflation. Detail: v4 north-star §3.
-
-### What we DID (done, grounded)
-> **⚠ This README is a historical planning doc. For the AUTHORITATIVE current
-> state read `RESUME.md`. NOTE (P1c, 2026-07-22): the proof-internal hash was cut
-> over SHA3-512 → Poseidon2 — `sponge_sha3_512` and `merkle_smt` are DELETED;
-> the live transcript is `duplex_challenger` (+`transcript` wrapper) and the live
-> FRI/STARK MMCS is `poseidon2_mmcs` (over `poseidon2_goldilocks`). References
-> below to the SHA3 modules are historical.**
-- **STARK verifier stack (C, pure, no Rust at runtime):** `field_goldilocks`, `zk_field_helpers`, `ntt_goldilocks`, `keccak_ref`, `keccak_p3_{cols,trace,air}`, `duplex_challenger` + `transcript` (P1c: Poseidon2 DuplexChallenger; was `sponge_sha3_512`), `poseidon2_mmcs` (P1c; was `merkle_smt`), `fri_fold`, `fri_verifier` (incl. the FRI terminal-index **P0 fix** + its regression guard), `fri_proof_codec` (DZKF v4), `batch_priming`, `batch_verify`, `stark_constraints`. (d4.d: the v3 uni-stark `stark_priming` + `stark_proof_codec` modules are RETIRED — the batched pipeline primes through `batch_priming` and there is no DZKS wrapper any more.)
-- **LogUp lookup gadget (P2L-a, 2026-07-23; RE-PORTED to Plonky3 v0.6.2 at S2'-c, 2026-07-27):** `logup` — byte-matched port of p3-lookup `LogUpGadget` (aux-trace generation, constraint residuals, ONE per-AIR terminal, cross-AIR terminal-sum check, constraint degrees; `tools/vectors/logup.json`). **v0.6.2 model:** aux width is `num_lookups + 1` — column 0 is ONE shared accumulator and lookup slot `c` owns fraction column `c+1` — and `generate_permutation` returns a single `Option<LookupTerminal>` per AIR instead of a cumulative sum per global lookup. The residual stream splits into `eval_fraction` (one UNGATED `U·f − V` per lookup, on every row) plus `eval_accumulator` (3 selector-gated residuals: first / transition / terminal binding). STANDALONE — the batch-stark proof shape is wired at P2L-c/d (see `dnac/docs/plans/2026-07-23-p2-lookup-design.md`).
-- **LogUp interaction/bus layer (P2L-b, 2026-07-23):** `logup_bus` — builder recording + locals-first column assignment (types.rs:59-89), single-pair challenge DERIVATION (batch-stark `sample_perm_challenges` at v0.6.2 draws ONE `(α,β)` for the WHOLE batch — "two draws, not two per bus" — and separates buses by `prefix[bus] = α + (bus+1)·β^W`, `W = max_message_width`), the FLAT cross-AIR terminal-sum check, and the `Σ weight·height < p` OFFLINE precondition checker (never enforced at runtime in Plonky3 — call it at parameter freeze). `tools/vectors/logup_bus.json`. STANDALONE.
-  **⚠ The F3 framing INVERTED at v0.6.2 (S2'-c) — read this before trusting older notes.** Under 82cfad73 a flat cross-bus total was the soundness hole, so the check had to group per bus. At v0.6.2 the flat total over per-AIR terminals is the CORRECT and only check, because separation moved down into the challenge derivation: the bus offset sits at `β^W`, one power above every payload term, so two different buses cannot produce cancelling contributions (`lookup/src/challenges.rs:19-23`). `dnac_logup_bus_verify_global_sums` is deleted rather than kept as dead code implying a protection that now lives elsewhere. The KAT pins BOTH directions on purpose (`cross_bus_cancel` still cancels with hand-built colliding prefixes; `cross_bus_separated` does not with the derived prefix), so "derivation provides separation" is tested, not assumed.
-- **Batch-stark priming + proof shape (P2L-c, 2026-07-23):** `batch_priming` — the FULL batched Fiat-Shamir order (instance-count/binding preamble, publics before preprocessed, the single-pair α,β squeeze — exactly TWO fp2 for the whole batch, and NOTHING when no instance declares a lookup — then the per-AIR terminals observed before constraint-alpha, random commit iff is_zk; S2'-c re-based this onto v0.6.2 and both changes are transcript-visible) 1:1 with `BatchTranscript` in the verifier's sequence, + the `BatchProof` in-memory shape checks. Vectors gated on REAL `prove_batch`/`verify_batch` runs (`tools/vectors/batch_priming.json`). STANDALONE — the v3 uni-stark priming stays live until the P2L-d cutover (the two transcript orders do NOT byte-match, F2).
-- **Batched STARK verify (P2L-d d2, 2026-07-23):** `batch_verify` — the full `verify_batch` mirror (verifier/mod.rs:29-646): shape/randomization gates → batched priming → N2 opening-round assembly (ζ_next per instance) → hiding merge iff is_zk (zip_eq mirror) → PCS observe + `dnac_fri_verify` (open_input extended to MIXED-height input batches via the d1a mixed MMCS; same-height path byte-stable) → per-instance ζ constraints (air.eval THEN lookups, one acc·α+x stream; EF-window pool eval `dnac_logup_eval_pool_window`; recomposed EF permutation window) → the FLAT cross-AIR terminal sum (S2'-c: `dnac_logup_verify_terminal_sum`, one committed terminal per AIR). KAT `test_batch_verify` verifies all 5 REAL `prove_batch` vectors end-to-end with (α,ζ) byte-match (`tools/vectors/batch_proof.json`). STANDALONE — the DZKF v4 wire codec + shielded_verify re-base land at d4.
-- **Batched STARK prover (P2L-d d3, 2026-07-23):** `batch_prover` — the full `prove_batch` mirror (prover.rs:96-670): priming interleaved with the commits (the composed run wants every commit upfront — the prover can't use it) → mixed-height main/preprocessed/permutation/quotient/random commits (d1a `commit_mixed`) → aux traces (logup `generate_permutation` → flatten → LDE) → lookup'd quotient via ONE serial Horner stream per point (value-equal to `decompose_alpha`'s α^{K−1−i} emission weights, air/symbolic/builder.rs:401-423; perm window (i, i+next_step) mod q_rows) → N2 barycentric opens (full committed width observed, hiding tails split after) → per-height FRI reduced openings (independent α counters) + the mixed commit phase with ROLL-IN (prover.rs:238-245) → query openings (`open_mixed` at per-batch reduced indices) → SELF-VERIFY via `dnac_batch_verify`. KAT `test_batch_prover` re-proves all 5 vectors from scratch and byte-matches EVERYTHING (commits, α/ζ, opened values, the entire FRI proof, the fib_zk hiding rand-openings from the oracle's SmallRng(1) `zk_rng` stream). d4.c adds a SALTED mode (`salt_elems`/`salt_draws`/`fri_salt_draws`, `bp_commit_mixed_salted` — widened `row ‖ SE salt` leaves, salt order grounded to hiding_mmcs.rs:118-131; fail-close salted+prep/lookups) — unsalted path byte-identical. The salted path is KAT-validated at d4.c-1 (`test_batch_shielded_agg`, 5 agg scenarios byte-matched) and d4.c-2 bumped `BP_MAX_QUERIES` 64→128 for the pinned shielded production 100-query params.
-- **DZKF v4 batched-proof wire codec (P2L-d d4.a+b, 2026-07-23):** `fri_proof_codec` gained `dnac_batch_wire_{encode,decode}` + a decoded-package accessor set — the `BatchProof` tuple on the wire (is_zk, num_instances, 5 presence-flagged commits, per-instance UNMERGED opened values + ONE optional `LookupTerminal` each (`u32` count 0/1 then the fp2 — S2'-c; bus names and aux columns left the wire at v0.6.2), rand-openings iff is_zk, FRI params, FriProof; salt tails carried inside the FriProof). **NO opening points on the wire** — the verifier samples ζ itself (`dnac_batch_verify`), closing the v3 H2 wire-coordinate class by construction. Version 4 under the `DZKF` magic; v3↔v4 buffers cross-reject on VERSION. KAT `test_batch_wire`: per scenario decode → the decoded package verifies end-to-end (α,ζ byte-match) → re-encode byte-match → prove-from-scratch → encode → byte-match the oracle's independent second encoder (`wire_v4` in `tools/vectors/batch_proof.json`) + 7 fail-close decode negatives. STANDALONE — `shielded_verify` re-base lands at d4.c (below); v3 retirement at d4.d.
-- **Shielded verify v3→v4 re-base (P2L-d d4.c, 2026-07-26) — CONSENSUS-WIRED:** `dnac_agg_prover_prove`/`_prove_production` now DELEGATE to `dnac_batch_prove` (1-instance is_zk=1 batch; the v3 uni-stark pipeline retired), and `shielded_verify.c` (`dnac_shielded_verify_statement`, the C2.1 consensus entry) re-based onto `dnac_batch_wire_decode` (DZKF v4) + `dnac_batch_verify`. The `batch_verify`/`batch_priming`/`logup`/`logup_bus` stack is therefore NO LONGER standalone — it links into libnodus (`nodus/CMakeLists.txt`, `test_zk_link`). Verifier pins held: is_zk==1, n==1, params-eq→SUBSTITUTE pinned, opened shape (trace 2318, 8 qc, random 2, no prep/perm), SALT_ELEMS==2 on every FRI opening, degree_bits==11 compile-time pin. The v3 wire opening-coordinate check is gone by construction (v4 carries no opening points → the verifier samples ζ; publics-from-wire binding now enforced by FS-divergence inside `dnac_batch_verify`). ORCHESTRATOR-verified: `make test` 80 binaries 0 warn + nodus `ctest` 132/132. Consensus-inert (type-11 still REJECT-unconditional).
-- **v3 uni-stark RETIREMENT (P2L-d d4.d, 2026-07-26):** with the shielded surface fully on v4, the v3 pipeline is deleted rather than left as a second, unreachable verify path. Gone: `stark_priming.{c,h}` (the uni-stark transcript priming), `stark_proof_codec.{c,h}` (the DZKS wrapper), the three single-instance provers `stark_prover_{prove,conf,action}.{c,h}`, the v3 codec surface (`dnac_fri_proof_encode`, the v3 read accessors, `dnac_fri_verify_wire`, `dnac_fri_verify_wire_shielded`), 10 tests, the two `gen-*-wire` vector generators and 9 orphaned vectors. `nodus/CMakeLists.txt` no longer compiles `stark_priming.c`; `nodus/tests/test_zk_link.c` is re-anchored onto `dnac_shielded_verify_statement`. `tools/bench_prover.c` is re-based onto `dnac_batch_prove`/`dnac_batch_verify`. `tests/batch_test_util.h` is now the SINGLE definition of the batch fixtures (`test_batch_verify.c`'s verbatim duplicates removed). **NOTHING of v3 survives** — the decoder went too, together with `test_batch_wire`'s N2a case that was its only caller; the live cross-version guard is the other direction (N2b: a version-3 buffer must be rejected by the v4 decoder, which pins `DNAC_BATCH_WIRE_VERSION`). Two negatives were ADDED (N8/N9) to keep the v4 decoder's allocation guards — `ERR_LENGTH_OVERFLOW` (`rd_count_fixed`/`rd_count_var`) and `ERR_BAD_DEPTH` (`rd_depth`) — under test after the retired `test_fri_proof_codec` took their only coverage with it; both are live on the consensus-linked decode path. Makefile prereq hygiene repaired in the same slice (`AGG_PROVER_SRCS` was defined *after* the recipe that needed it, so its prerequisites silently expanded to empty → stale-binary hazard): 70/70 recipes now have every command-line source as a prerequisite. TESTS: 80 → 70. ORCHESTRATOR-verified GREEN: 70 binaries 0 warn + nodus `ctest` 132/132 + messenger/libdna clean.
-- **Mixed-height Poseidon2 MMCS (P2L-d d1a, 2026-07-23):** `poseidon2_mmcs` gained `commit/open/verify_mixed` — matrices of different power-of-two heights in ONE commitment via layer injection (merkle_tree.rs:127-176; the batched multi-instance shape requires it). Stable tallest-first grouping, per-matrix reduced indices, sibling path = log2(max height). Same-height P1b entries and their KATs unchanged. `tools/vectors/poseidon2_mmcs_mixed.json`.
-- **Range/balance AIR (ADDITIVE):** `range_air` (B/S, **52-bit**), `sum_balance` (I/U/F + N count-bound + P public-bound), combined `range_proof_air` air_eval (**56-col, 61 constraints**: B·52 + S + R + P + I + U + F + CI + CU + CF) — end-to-end C↔Plonky3 byte-matched, then 13-subagent soundness red-team (2026-07-11/12).
-- **B6 (field-wrap) CLOSED (2026-07):** amounts range-checked to **52 bits** (`2^52 < p`; 64-bit was vacuous over Goldilocks → a mint), `N_max=1024` ⇒ `Σ < 2^62 < p`. Plus a public-input bound (`claimed`,`fee` `< 2^62`) closing the fee-term mod-p wraparound the red-team found.
-- **B7 (padding/output-count) CLOSED (2026-07):** `is_real` + `(1−is_real)·amount=0` (P) + `cnt` accumulator binding `Σ is_real` to public `n_real`. `blockers==[B1]` only.
-- **FRI/MMCS verify-surface hardening (S2'-d, 2026-07-27):** the fixes the Plonky3 v0.6.2 migration's red-team surfaced, landed AHEAD of the C re-port because every one of them only rejects malformed proofs — so no KAT vector moves and the tree stays green on its own. Three fail-opens closed: an EMPTY input batch skipped the MMCS verify entirely (upstream verifies unconditionally, 82cfad73 `fri/src/verifier.rs:590-597`); a matrix opened at ZERO points had its wire-declared row width checked against nothing while the row was already hashed into the leaf (upstream `MatrixWithoutOpeningPoints`, v0.6.2 `verifier.rs:698-707`); and `z == x` silently DELETED that matrix's whole claim, because `gold_fp_inv(0)` returns 0 by its own documented contract (`field_goldilocks.c:170-181`) so the quotient — and every term built on it — became zero while `alpha_pow` advanced (upstream `OpeningPointMatchesQueryPoint`, v0.6.2 `verifier.rs:642-662`). One heap overread closed: `opening_proof.depth` was decoded from the wire, the siblings array allocated to exactly it, and then the field was **never read anywhere** — the walk used the verifier-DERIVED height instead, so a short path ran off the end of the allocation with nothing to catch it (query proofs are never observed into the transcript, so the PoW witness still validated). **`dnac_p2_mmcs_verify` / `dnac_p2_mmcs_verify_mixed` now take a `const dnac_p2_proof_t *`** — the C form of upstream's `opening_proof: &[Digest]`, pointer and length inseparable — and enforce `depth == log2(height)` exactly as upstream's `WrongHeight` does (82cfad73 `mmcs.rs:1110-1116` = v0.6.2 `mmcs/batch.rs:174-179`). Finally the row-width authority: under the PaddingFreeSponge leaf the batch is one flat separator-free stream, so `num_claimed_evals = BASE_LEN + tail` with a wire-chosen tail let a prover REPARTITION a same-height group at constant total (the 8 quotient rows as 7,5,6,6,6,6,6,6 rather than 6×8) for a byte-identical leaf under the same root. `dnac_batch_verify` gained two REQUIRED pins, `num_random_codewords` and `salt_elems`, mirroring the prover's own parameters; the salt pin MOVED DOWN out of `shielded_verify.c`, where it had guarded one entry rather than the decode → verify pair, so P2 recursion cannot inherit the gap. ⚠ that pin is **stricter than upstream** — Plonky3's hiding PCS checks only the nesting shape of the random openings (v0.6.2 `hiding_pcs.rs:398-428`), never the per-point tail length. The `FriError` mirror is completed to v0.6.2 (8 new variants: 3 bound to guards DNAC already had, 1 carrying the new `z == x` check, 4 declared with the reason written at each). New negatives: `test_batch_wire` N10-N14 on the live decoded package (74 → 96 checks), `test_fri_verifier_valid` 6 → 8/8.
-- **FRI wire-param UB guards (2026-07-12; bounds tightened + renamed at S2'-d, 2026-07-27):** `fri_verifier` rejects degenerate/UB params — `num_queries==0` (accept-any downgrade) → `DNAC_FRI_ERR_ZERO_QUERIES`, and `log_global_max_height > GOLDILOCKS_TWO_ADICITY` (32) → `DNAC_FRI_ERR_GLOBAL_MAX_HEIGHT_TOO_LARGE`. The bound was `≥ 64` until S2'-d, which only closed the shift-count UB (chain-split class) and left 33..63 accepted — and there `gold_fp_two_adic_generator` returns `gold_fp_one()` (`field_goldilocks.c:206-209`): it does not panic, it degrades. The point that degenerates is the FRI **terminal** one, `two_adic_generator(lgmh)^rev` with no generator coset factor (`fri_terminal_horner_eval`), which past 32 is 1 for every query — so the final polynomial is only ever tested at a single fixed point and the low-degree test stops testing anything. (The per-matrix `x` keeps its GENERATOR factor and its own `log_height`; it is not the one that collapses.) Honest shielded lgmh is 13, and the prover rejects `degree_bits >= 30` outright, so nothing honest comes near. Upstream bounds by `Val::TWO_ADICITY` for the same reason (v0.6.2 `fri/src/verifier.rs:258-268`). The mixed-height batch reject (was a `-DNDEBUG`-strippable `assert`) is superseded by the d1a mixed MMCS; the residual param guard keeps `DNAC_FRI_ERR_UNSUPPORTED_PARAMS`. The FULL production `FriParameters` pin landed 2026-07-16/21: `shielded_fri_params.h` (grounded to Plonky3 `new_benchmark_zk`, config.rs:102-113 — log_blowup 2, 100 queries, 16-bit query-PoW → 216-bit conjectured) is substituted, never wire-read, by the shielded verify entry (`dnac_shielded_verify_statement`, `shielded_verify.c:188-204`/`:252` since d4.c; the v3 `dnac_fri_verify_wire_shielded` that first carried this pin is retired at d4.d); the production prover entry `dnac_agg_prover_prove_production` proves at exactly that set (Phase-P gate `test_prover_shielded_production`).
-- **`range_balance_verify()` composed door (2026-07-12):** the single sound money-gating entry (range B/S first, then balance N/P/I/U/F). `sum_balance` alone accepts the mint witness (KAT E2); the composed door rejects it (KAT E6, mutation-verified).
-- **Fix design + full audit trail:** `dnac/docs/plans/2026-07-11-range-balance-soundness-fix-design.md`.
-- **Research verdict** (in-AIR SHA3 sponge does not exist) + **v4 north-star design doc** (3 mandatory sections + crypto-agility + red-team plan).
-
-### What's MISSING (v4 work items)
-- **Prover** — SHIPPED (this line is historical). FFT/LDE (`ntt_goldilocks`), FRI commit loop (`fri_fold`), quotient computation, trace Merkle (`poseidon2_mmcs`; P1c, was `merkle_smt`), query opening — see `stark_prover*.c` and `RESUME.md`.
-- **2-chunk quotient recompose** (`uni-stark/verifier.rs:59-96`) — shipped API is 1-chunk only (`stark_constraints.h:88-100`). Poseidon2 degree-3 needs it. **[MISSING]**
-- **B1 commitment preimage layout** (fields, rate/capacity, domain-sep, output truncation, `hash_id`) — the old §6.2 draft is INVALIDATED; ground to eprint 2023/323. **[OPEN]**
-- **Full-shield input hiding** (note-commitment tree + nullifier relation). **[OPEN]**
-- **ZK/hiding layer** for real privacy — current STARK is non-ZK (`is_zk=0`), so binding ≠ hiding. **[OPEN]**
-- **Consensus integration** + CMake/libdna link + Genesis 7/7 determinism gate. **[MISSING]**
-
-### Durability
-The stack (114 files) is **git-tracked**. The 2026-07 soundness fixes + regression
-KATs + FRI guards + composed door are committed on branch
-`zk-range-balance-soundness-hardening` (commits `9d07c968`, `80f8888b`). The guards
-against mint-reintroduction are therefore durable — a fresh checkout keeps them.
-(An earlier P7 note claimed the stack was git-untracked; that referred to
-transient uncommitted working-tree edits, since committed — the tracked file set
-was never zero.)
-
----
-
-**Design docs (all local-only, gitignored — read before touching anything here):**
-- `docs/plans/2026-06-09-v4-confidential-northstar-design.md` — **v4 confidential north-star (current direction; read FIRST)**
-- `docs/plans/2026-05-30-dnac-range-proof-air-regrounding.md` — HISTORICAL: the 66-col/68-constraint/B6-B7-open framing here is SUPERSEDED by the 2026-07-11 soundness fix (now 56-col/61-constraint, B6/B7 CLOSED). Read it as history.
-- `dnac/docs/plans/2026-05-21-stark-range-proof-keccak-design.md` — original STARK design (§4.5/§6.2 INVALIDATED — see re-grounding)
-- `dnac/docs/plans/2026-05-26-merkle-mmcs-design.md` — Merkle/MMCS module spec
-- `docs/plans/2026-05-26-transcript-design.md` — Fiat-Shamir transcript spec
-- `docs/plans/2026-05-27-fri-verifier-design.md` — FRI verifier spec (SHIPPED)
-- `docs/plans/2026-05-29-fri-proof-wire-codec-design.md` — proof wire codec (SHIPPED)
-- `docs/plans/2026-05-30-pcs-transcript-priming-design.md` — PCS/STARK priming (SHIPPED)
-- `docs/plans/2026-05-30-stark-constraint-check-implementation-design.md` — generic verify_constraints (SHIPPED)
-
-**Plonky3 reference version pinned:** `82cfad73cd734d37a0d51953094f970c531817ec` (2026-05-20).
+> **AUTHORITATIVE STATUS LIVES IN [`RESUME.md`](RESUME.md).** Read its
+> top block FIRST before touching anything here — per-module state,
+> grounding evidence, audit history and next steps are maintained there,
+> not in this file.
 
 ## What this module is
 
-A clean-room C implementation of a STARK-based zero-knowledge range proof system for DNAC v3 transactions. Hides output amounts behind cryptographic commitments + STARK proofs of well-formedness.
-
-**NOT a port** of any existing library. Plonky3 is used as a *reference / spec / test-vector oracle only* — its Rust source is never copy-pasted into this tree (per `feedback_cellframe_license_risk.md` anti-pattern lesson).
+- A **verify + prove** stack in pure C — no Rust at runtime. The wallet
+  side proves; the witness side verifies.
+- **Plonky3 is the reference oracle, not a dependency**: every public
+  function is byte-matched against test vectors emitted by
+  [`tools/plonky3_oracle/`](tools/plonky3_oracle/README.md), a
+  standalone Rust binary pinned to Plonky3 **tag v0.6.2**
+  (commit `11cc5849`; previous pin `82cfad73` — see the pin-history
+  note in `tools/plonky3_oracle/Cargo.toml`). Plonky3 source is never
+  copy-pasted into this tree.
+- **Consensus-linked but consensus-inert today:** the shielded verify
+  stack (entry `dnac_shielded_verify_statement`, plus the native V3
+  verifier `dnac_v3_native_verify_stateless`) compiles into `libnodus`
+  (`nodus/CMakeLists.txt`), but the witness still rejects shielded
+  transaction types (11/12/13) unconditionally. The accept-flip is a
+  separate, gated activation step.
 
 ## What this module is NOT
 
-- A general STARK framework. The AIR here proves exactly one statement family: amount range + sum balance + commitment binding. No Cairo, no general computation.
-- A recursive STARK system. Cross-TX aggregation is post-v3 work.
-- A SNARK / Bulletproof / KZG system. STARK only; hash-based PQ security only.
-- A Plonky3 Rust binding. We use Rust ONLY in `tools/plonky3_oracle/` to generate test vectors — production C library does not link Rust at runtime.
+- A general STARK framework — the AIRs prove exactly the DNA Chain
+  statement family (range + balance + commitment binding).
+- A SNARK / Bulletproof / KZG system — hash-based PQ security only.
+- A Plonky3 binding — Rust is used only at vector-generation time.
 
-## Directory layout (current — see RESUME.md for grounding evidence per file)
-
-```
-shared/crypto/zk/
-├── README.md                  (this file)
-├── RESUME.md                  per-module status, audit history, rework-owed
-├── Makefile                   build + `make test` harness (65 binaries)
-├── SUBAGENT_AUDIT_2026_05_23.md  evening-of-nuke independent audit record
-│
-├── field_goldilocks.{c,h}     Plonky3-grounded Goldilocks base + ext (fp2)
-├── zk_field_helpers.{c,h}     bit utils + reverse_slice_index_bits + extended_pow
-├── keccak_ref.{c,h}           reference Keccak-f[1600] (OpenSSL + NIST KAT)
-├── keccak_p3_{cols,trace,air}.{c,h}  direct port of Plonky3 keccak-air
-├── ntt_goldilocks.{c,h}       Plonky3 Radix2Dit port (base + ext)
-├── sponge_sha3_512.{c,h}      FIPS-202 SHA3-512 sponge over keccak_p3 backend
-├── transcript.{c,h}           port of Plonky3 SerializingChallenger64 + HashChallenger
-├── merkle_smt.{c,h}           port of Plonky3 MerkleTreeMmcs (single-matrix + Phase 2A batch)
-├── fri_fold.{c,h}             port of Plonky3 TwoAdicFriFolding (fold_row + fold_matrix all branches)
-├── range_air.{c,h}            port of Plonky3 u64_to_bits_le + keccak-air column pattern
-├── sum_balance.{c,h}          port of Plonky3 fib_air accumulator pattern (I constraint DNAC-original)
-│
-├── tests/                     ~35 C ctest-style binaries, all wired into `make test`
-│
-└── tools/
-    ├── plonky3_oracle/        Rust binary that dumps test vectors
-    │   ├── Cargo.toml         pinned to Plonky3 commit 82cfad73
-    │   ├── Cargo.lock         (committed for reproducibility)
-    │   └── src/main.rs        14 dump-* subcommands, one per vector
-    ├── vectors/               JSON test vectors (14 files, all SHA-pinned in .expected_hashes)
-    └── (refs/ holds NIST.FIPS.202.pdf — local-only, SHA-pinned)
-```
-
-### Roadmap notes (PARTIALLY SUPERSEDED — see the top STATUS section + RESUME.md for ground truth)
-
-> Several items below have since SHIPPED (fri_verifier, fri_proof_codec, stark_constraints, keccak_p3_*, sponge, ntt, range_proof_air air_eval) — and a few shipped and were then RETIRED again (stark_priming, stark_proof_codec, the v3 uni-stark provers; d4.d 2026-07-26). The authoritative current state is the **PROJECT STATUS** section at the top of this file. Kept for historical context.
-
-#### (historical) Not yet on disk (next milestones, in design or queued)
-
-- `fri_verifier.{c,h}` — FRI query / verifier port; design at `docs/plans/2026-05-27-fri-verifier-design.md`. Replaces the deleted `fri_commit` + `fri_query` modules (see RESUME.md "Second nuke" section).
-- `range_proof_air.{c,h}` (or equivalent) — Faz 3 close; range proof end-to-end (3.4 rewrite). Blocked on FRI verifier + design doc § 4.5 rewrite.
-- `range_prover` / `range_verifier` / `proof_serialize` (names tentative) — Faz 3 close.
-- DNAC TX wire integration — Faz 4.
-
-The historical "Faz 1 scaffolding" file plan referenced `fri_prover.h`, `fri_verifier.h`, `range_prover.h`, `range_verifier.h`, `proof_serialize.h`, `test_sha3_air.c`, `test_fri.c`, `test_range_proof_e2e.c`; those names are not authoritative — the actual layout will follow the FRI verifier design doc and the Faz 3 rewrite plan.
-
-## Implementation order (Faz 1 scope)
-
-Per design doc § 8 Faz 1:
-
-1. **field_goldilocks** — modular arithmetic + Goldilocks² extension. Plonky3 oracle: test vectors for add, sub, mul, inv, exp; extension multiplication & inversion. Target: ~500-800 LoC C + 100+ ctests. ✅ Sprint 1.2 + 1.3 GREEN — 13,389 cross-validated cases.
-2. **merkle_smt** — binary tree, SHA3-512 (FIPS-202) internal nodes, fixed-depth + indexed leaves + typed null-padding (D4, D4.1 from design doc). Uses `crypto/hash/qgp_sha3.h` from the project root. Target: ~300-400 LoC + 50+ ctests.
-3. **transcript** — Fiat-Shamir per design doc § 4.3 (with F4 fix: chain_id + block_height + tx_index in T₀). SHA3-512 hash chain. Target: ~200-300 LoC + 30+ ctests.
-4. ~~**keccak_air_helpers**~~ — RETIRED per Option B revision 2026-05-21. All hashing is uniform SHA3-512; no separate in-AIR hash module. In-AIR SHA3-512 encoding lives in `range_air.c` (Faz 3 scope).
-5. **plonky3_oracle** — Rust binary cross-validates every C output against Plonky3. Target: ~500 LoC Rust + integration with C tests via JSON vectors. ✅ Sprint 1.1 GREEN — field_ops + field_ext dumps.
-
-**Cross-validation gate:** Every C public function MUST byte-match Plonky3 oracle output for at least 1000 randomized test cases before merging. CI failure if any drift.
-
-## NOT in Faz 1 scope
-
-- FRI prover / verifier (Faz 2).
-- AIR / range proof (Faz 3).
-- DNAC wire integration (Faz 4).
-- CMake build integration with libdna (later — once primitives stable).
-
-## Coding rules specific to this module
-
-- **Determinism is law.** Per design doc § 4 invariants D1-D7, every operation byte-identical across implementations. No `time()`, no `rand()` outside seeded PRNG, no SIMD that changes reduction order.
-- **No copy-paste from Plonky3.** Read for understanding, write from scratch. Faz 1 close: grep this tree for distinctive Plonky3 phrasing; reject any match.
-- **Scalar arithmetic only.** No SIMD in verifier (per F10). Prover may use SIMD later if proven equivalent, but Faz 1 is scalar.
-- **Constant-time where it matters.** Field inversion and SHA3-512 / Keccak-f[1600] permutation should be constant-time (constant-time SHA3 is the existing `crypto/hash/qgp_sha3.c` already); trace generation NEED NOT be constant-time (amounts are private to wallet anyway).
-- **C99 with GNU extensions for `__uint128_t`.** No C++. No Rust at runtime.
-- **Logging via QGP_LOG_*** per project convention. No printf.
-- **Memory: caller-allocated buffers preferred.** No malloc in hot paths if possible.
-
-## Plonky3 oracle build (Faz 1 first action)
+## Build & test
 
 ```bash
-cd /opt/dna/shared/crypto/zk/tools/plonky3_oracle
-cargo build --release --frozen
-./target/release/plonky3_oracle dump-all --out ../vectors/
-```
-
-Cargo.lock pinning ensures bit-reproducible oracle builds. Drift = CI fail.
-
-## Faz 1 — full test pipeline (Sprint 1.6 closure)
-
-```bash
-# Quickest: just run all 4 cross-validation suites using cached vectors.
 cd /opt/dna/shared/crypto/zk
-./run_tests.sh
-
-# Full pipeline: regen vectors from Plonky3 oracle, verify hashes, run tests.
-# Use this on first checkout or after touching tools/plonky3_oracle/.
-./run_tests.sh --regen
+make test        # builds + runs all test binaries (89 currently)
+make clean
 ```
 
-What `run_tests.sh --regen` does:
-
-1. Builds the Rust Plonky3 oracle with `--frozen` (Cargo.lock consistency).
-2. Regenerates all 4 vector JSON files (`tools/vectors/*.json`).
-3. Verifies each JSON's sha256 matches `tools/vectors/.expected_hashes`.
-   - **Drift fails fast** with a clear diff — means Plonky3 upstream or oracle
-     generation changed. Required action: re-pin Plonky3 commit in Cargo.toml
-     and design doc § 0, then update `.expected_hashes` with new hashes.
-4. Builds the 4 C test binaries via `make all`.
-5. Runs `make test` — executes all 4 cross-validation suites and prints
-   `FAZ 1 GATE: ALL GREEN` on success.
-
-## Direct Makefile targets
+Regenerating oracle vectors (only needed after touching the oracle or
+re-pinning Plonky3):
 
 ```bash
-make all       # build all 4 test binaries → build/test_*
-make test      # build + run all suites
-make clean     # remove build/
+./run_tests.sh --regen   # rebuilds the Rust oracle, regenerates + hash-verifies vectors
 ```
 
-## Current status (per `make test` GREEN, see RESUME.md for per-module evidence)
+Vector JSON hashes are pinned in `tools/vectors/.expected_hashes`;
+drift fails fast and means the pin or the oracle changed.
 
-| Module | Vector(s) | Oracle subcommand | C replay test | Grounding |
-|---|---|---|---|---|
-| field_goldilocks (base + ext) | field_ops, field_ext, two_adic_gens | `dump-field-ops`, `dump-field-ext`, `dump-two-adic-gens` | test_field_goldilocks*, test_two_adic_gens | Plonky3 direct call |
-| zk_field_helpers | (none — unit tests) | n/a | test_zk_field_helpers (89/89) | Plonky3 source line-cited per fn |
-| primitive_ops | primitive_ops.json | `dump-primitive-ops` | test_primitive_oracle (31/31) | Plonky3 reverse_slice_index_bits + extended_pow |
-| keccak_ref (SHA3-512 backend) | (NIST KAT inline) | n/a | test_keccak_ref | OpenSSL + NIST KAT |
-| sponge_sha3_512 | sha3_512_sponge.json | `dump-sha3-512-sponge` | test_sponge_sha3_512 (74×3 triple) | Plonky3 sha3 crate + keccak_ref + incremental |
-| keccak_p3 (cols/trace/air) | (trace vs keccak_ref) | n/a | test_keccak_p3 | Direct port of Plonky3 keccak-air |
-| ntt_goldilocks | ntt_goldilocks.json | `dump-ntt-goldilocks` | test_ntt_goldilocks + oracle (64/64) | Plonky3 Radix2Dit::dft + brute-force DFT |
-| range_air | range_air.json | `dump-range-air` | test_range_air + column_layout | Plonky3 u64_to_bits_le + keccak-air |
-| sum_balance | sum_balance.json | `dump-sum-balance` | test_sum_balance + column_layout | Plonky3 fib_air (I constraint DNAC-original) |
-| transcript | transcript.json | `dump-transcript` | test_transcript_oracle (14 cases / 48 ops) | Plonky3 SerializingChallenger64 + HashChallenger |
-| fri_fold (D.1 + D.2 + D.3 + D.4) | fri_fold_row, fri_fold_matrix_loga1, fri_fold_matrix | `dump-fri-fold-row`, `dump-fri-fold-matrix-loga1`, `dump-fri-fold-matrix` | test_fri_fold + 3 oracle tests (3125 + 330 + 1080) | Plonky3 TwoAdicFriFolding |
-| merkle_smt (single-matrix) | merkle_mmcs.json | `dump-merkle-mmcs` | test_merkle_mmcs (501/501) | Plonky3 MerkleTreeMmcs (Strategy C) |
-| merkle_smt (Phase 2A batch) | merkle_mmcs_batch_same_height.json | `dump-merkle-mmcs-batch-same-height` | test_merkle_mmcs_batch (511/511 incl. nm1=1 regression 204/204) | Plonky3 commit_batch / open_batch / verify_batch |
+## Rules specific to this module
 
-`make test` runs ~35 binaries; ~14,000+ byte-match cases GREEN. Vector SHAs pinned in `tools/vectors/.expected_hashes`. (The module table above is partial — see RESUME.md for the full, current per-module list incl. fri_verifier / stark_* / codecs.)
+- **Every cryptographic construct MUST cite a pinned reference**
+  (Plonky3 commit `file:line`, FIPS-202 page, NIST KAT). No invented
+  parameters, domain separators or constructions — see root `CLAUDE.md`
+  (`ANA HEDEF: KAFADAN KRİPTO YASAK`).
+- **Determinism is law.** Byte-identical output across platforms; no
+  `time()`, no unseeded randomness, scalar arithmetic in the verifier.
+- **No copy-paste from Plonky3.** Read for understanding, write from
+  scratch (license hygiene — see `feedback_cellframe_license_risk`).
+- **C99 + `__uint128_t`**, QGP_LOG_* logging, caller-allocated buffers
+  preferred.
+- Cross-validation gate: public functions byte-match the oracle before
+  merging.
 
-## Build integration (deferred)
+## Design docs
 
-Primitives still ship as standalone C files with their own ctests. No integration into `messenger/build` yet. Once the FRI verifier + Faz 3 close are in, we add to `messenger/CMakeLists.txt` and link into libdna.
+Design docs live under `docs/plans/` and `dnac/docs/plans/`
+(**local-only, gitignored** — never `git add`). The historical design
+narrative (which modules shipped, were retired, or superseded) is
+tracked in `RESUME.md`.

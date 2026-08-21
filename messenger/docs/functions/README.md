@@ -1,7 +1,7 @@
 # DNA Connect Function Reference
 
-**Library version at last sweep:** 0.11.5
-**Last audited:** 2026-04-24 (triage via code-hit grep; see commit history for deltas)
+**Library version:** 0.11.18 (entries are updated in the same commit as signature changes — see `git log -- messenger/docs/functions/` for deltas)
+**Last full audit sweep:** 2026-04-24 (triage via code-hit grep)
 **Scope:** Public + static/internal function signatures, organized by module.
 
 This directory provides a function-level reference for the DNA Connect codebase. Functions are grouped by subsystem.

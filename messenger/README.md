@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <a href="#status"><img src="https://img.shields.io/badge/Status-RC%20v1.0.0--rc240-blue" alt="RC"></a>
+  <a href="#status"><img src="https://img.shields.io/badge/Status-RC%20v1.0.0--rc241-blue" alt="RC"></a>
   <a href="#license"><img src="https://img.shields.io/badge/License-Apache%202.0-green" alt="Apache 2.0"></a>
   <a href="#platforms"><img src="https://img.shields.io/badge/Platforms-Android%20|%20Linux%20|%20Windows-orange" alt="Platforms"></a>
   <a href="#security"><img src="https://img.shields.io/badge/Security-NIST%20Category%205-red" alt="NIST Cat 5"></a>
@@ -53,7 +53,7 @@ DNA Connect is a **fully decentralized** communication platform and **multi-chai
 ### Integrated Multi-Chain Wallet
 - **5 external networks + DNAC native:** Cellframe (CF20), Ethereum (ERC20), BNB Smart Chain (BEP20), TRON (TRC20), Solana (SPL), plus **DNAC** (post-quantum native chain, see bullet below)
 - **9+ Tokens:** CPUNK, CELL, KEL, NYS, QEVM, ETH, BNB, SOL, TRX, USDT
-- **DNAC (DNA Cash)** — Post-quantum digital cash with BFT witness consensus
+- **DNAC (DNA Chain)** — Post-quantum UTXO blockchain with BFT witness consensus
 - **Send crypto from chat** — Auto-resolves contact's wallet address
 - **Token swaps** — DEX integration with MEV protection
 - **QR codes** — Easy send/receive
@@ -157,7 +157,7 @@ cd messenger
 
 **Components:**
 - **Flutter App** — Cross-platform UI (Android, Linux, Windows)
-- **C Library** — Core engine with 22 modular handlers (`libdna.so`)
+- **C Library** — Core engine with 23 modular handlers (`libdna.so`)
 - **Nodus** — Pure C Kademlia DHT with cluster replication ([details](../nodus/README.md))
 
 **Engine Modules** (`src/api/engine/`):
@@ -166,10 +166,11 @@ cd messenger
 |--------|--------|
 | `dna_engine_addressbook.c` | Address book management |
 | `dna_engine_backup.c` | DHT sync for all data types |
-| `dna_engine_channels.c` | Channel CRUD, posts, subscriptions |
+| `dna_engine_calls.c` | PQ VoIP call control (signaling, key agreement) |
+| `dna_engine_channels.c` | Channel CRUD, posts, subscriptions (disabled, compile-guarded) |
 | `dna_engine_contacts.c` | Contact requests, blocking |
 | `dna_engine_debug_log.c` | Debug log send/receive |
-| `dna_engine_dnac.c` | DNAC digital cash (balance, send, sync, history) |
+| `dna_engine_dnac.c` | DNA Chain wallet (balance, send, sync, history) |
 | `dna_engine_follow.c` | Follow/unfollow, list, DHT sync |
 | `dna_engine_groups.c` | Group CRUD, GEK encryption, invitations |
 | `dna_engine_helpers.c` | Shared utility functions |
@@ -198,10 +199,10 @@ cd messenger
 
 | Component | Version |
 |-----------|---------|
-| C Library | v0.11.13 |
-| Flutter App | v1.0.0-rc240 |
-| Nodus | v0.18.15 |
-| DNAC | v0.17.8-stake.wip |
+| C Library | v0.11.18 |
+| Flutter App | v1.0.0-rc241 |
+| Nodus | v0.19.16 |
+| DNAC | v0.18.6-ledgerv2-o15b |
 
 ---
 
@@ -217,7 +218,7 @@ cd messenger
 | [Message System](docs/MESSAGE_SYSTEM.md) | Message handling |
 | [Protocol Specs](docs/PROTOCOL.md) | Wire formats |
 | [Nodus](../nodus/README.md) | DHT server |
-| [DNAC](../dnac/README.md) | Digital cash system |
+| [DNAC](../dnac/README.md) | DNA Chain client library |
 
 ---
 

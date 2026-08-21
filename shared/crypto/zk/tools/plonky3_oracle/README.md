@@ -1,6 +1,6 @@
 # plonky3_oracle — DNAC-ZK reference test vector generator
 
-A standalone Rust binary that links Plonky3 (pinned to commit `82cfad73cd734d37a0d51953094f970c531817ec`) and emits JSON test vectors. The C side of `shared/crypto/zk/` consumes these vectors in `ctest` and asserts byte-identical output.
+A standalone Rust binary that links Plonky3 (pinned to tag **v0.6.2**, commit `11cc5849a1b57a2f520d6edc608b9e516517d841`; previous pin `82cfad73` — see the pin-history note in `Cargo.toml`) and emits JSON test vectors. The C side of `shared/crypto/zk/` consumes these vectors in `make test` and asserts byte-identical output.
 
 **Why this exists:** clean-room C implementations of cryptographic primitives have a high bug rate at the bit level. The Plonky3 oracle is the ground-truth reference — if our C output diverges from the oracle by a single byte, that's a determinism violation and a chain-split bug waiting to happen.
 
@@ -43,15 +43,13 @@ cargo run --release -- dump-all --out-dir ../vectors/
 
 Each subcommand writes a single JSON file. Output is pretty-printed for review; C-side tests parse with a streaming JSON parser.
 
-## Sprint status
+## Subcommands
 
-| Subcommand            | Sprint | Status |
-|-----------------------|--------|--------|
-| `dump-field-ops`      | 1.1    | ✅ implemented (this sprint) |
-| `dump-field-ext`      | 1.3    | stub — exits cleanly with message |
-| `dump-merkle`         | 1.4    | stub |
-| `dump-transcript`     | 1.5    | stub |
-| `dump-keccak-air`     | 1.6    | stub |
+The oracle currently implements **52 `dump-*` subcommands** (field ops,
+NTT, Poseidon2, MMCS, FRI folding/verification, LogUp, batch priming,
+full prover stage dumps, aggregate shielded scenarios, ...). The
+authoritative list is the subcommand dispatch in `src/main.rs`; run the
+binary with no arguments to print it.
 
 ## Determinism
 
@@ -59,7 +57,7 @@ Inputs are derived via a deterministic SplitMix64-style mix of (operation_id, ca
 
 Build determinism relies on:
 
-1. **Pinned Plonky3 commit** (`Cargo.toml` `[dependencies]` rev = `82cfad73...`).
+1. **Pinned Plonky3 commit** (`Cargo.toml` `[dependencies]` rev = `11cc5849...` = tag v0.6.2).
 2. **Committed `Cargo.lock`** (after first build).
 3. **`cargo build --release --frozen`** to refuse upstream drift.
 4. **`profile.release` with `codegen-units = 1` + `lto = "fat"`** (already set in `Cargo.toml`).
