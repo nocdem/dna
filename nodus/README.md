@@ -14,20 +14,28 @@
 
 ## What is Nodus?
 
-Nodus is the distributed hash table (DHT) infrastructure for the DNA ecosystem. It provides decentralized storage, replication, and real-time subscriptions — all signed with post-quantum cryptography. The network is open — anyone can run a Nodus node and join.
+Nodus is the distributed hash table (DHT) infrastructure for the DNA ecosystem.
+It provides decentralized storage, replication and real-time subscriptions.
+The software is designed for independently operated nodes; admission and
+reachability of any particular deployment are operational facts, not something
+the source tree alone can prove.
 
 - **Pure C** — No C++ dependencies, minimal footprint
 - **Dilithium5 signatures** — All stored values cryptographically signed using the ML-DSA-87 algorithm profile; no validation or certification claim
-- **Kyber1024 channel encryption** — All client connections encrypted (Kyber round-3 key exchange + AES-256-GCM; *not* ML-KEM/FIPS 203 — see `shared/crypto/enc/qgp_kyber.h`)
+- **Kyber1024 channel encryption** — Authenticated TCP client channels use Kyber round-3 key exchange + AES-256-GCM; UDP 4000 is outside this channel layer (*not* ML-KEM/FIPS 203 — see `shared/crypto/enc/qgp_kyber.h`)
 - **Cluster management** — Heartbeat-based health monitoring with Kademlia replication
 - **512-bit keyspace** — Kademlia routing with k=8 buckets
-- **7-day TTL** — Values persist across restarts with SQLite storage
+- **Configurable TTL** — 7 days is the default; permanent/exclusive values and
+  values with TTL 0 do not expire
 - **CBOR wire format** — Efficient binary serialization
 - **Embedded DNAC witness server** — BFT consensus for digital cash transactions
-- **Circuit relay** — Peer-to-peer VPN mesh with onion-style E2E encryption
+- **Circuit relay** — Peer-to-peer relay with optional per-circuit E2E
+  encryption; it is not onion-routed
 - **Media storage and replication** — Binary blob storage with cluster-wide replication
-- **Multi-token support** — Custom token creation and management via DHT
-- **Open network** — Community-managed, anyone can run a node
+- **DNAC witness integration** — Custom-token state is managed by witness
+  consensus, not by the DHT value store
+- **Independent operation** — The server can be built and operated by third
+  parties; live-network policy is deployment-specific
 
 ---
 
@@ -37,7 +45,7 @@ Nodus is the distributed hash table (DHT) infrastructure for the DNA ecosystem. 
 ┌──────────────────────────────────────────────────────────────────┐
 │                        Nodus Server                              │
 ├──────────────────────────────────────────────────────────────────┤
-│              Kyber1024 Encryption Layer (AES-256-GCM)            │
+│      TCP 4001/4002 Kyber1024 + AES-256-GCM channel layer         │
 ├──────────┬──────────┬──────────┬──────────┬──────────────────────┤
 │ UDP 4000 │ TCP 4001 │ TCP 4002 │ TCP 4003 │ TCP 4004             │
 │ Kademlia │ Client   │ Inter-   │ Channels │ Witness BFT          │
@@ -57,7 +65,7 @@ Nodus is the distributed hash table (DHT) infrastructure for the DNA ecosystem. 
 │  k=8 buckets        │  K-closest repl.     │  PBFT phases         │
 ├─────────────────────┴──────────────────────┴─────────────────────┤
 │  SQLite Storage     │  Presence Table      │  Media Storage       │
-│  7-day TTL          │  45s TTL, p_sync 30s │  Binary blobs        │
+│  per-value TTL      │  45s TTL, p_sync 30s │  Binary blobs        │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -88,7 +96,7 @@ nodus/
 │   ├── channel/     # Channel/subscription system
 │   ├── consensus/   # Cluster health + leader election
 │   ├── crypto/      # Nodus-specific crypto helpers
-│   ├── circuit/     # Circuit relay for P2P VPN mesh (onion-style E2E encryption)
+│   ├── circuit/     # Circuit relay; optional endpoint-to-endpoint encryption
 │   └── witness/     # DNAC BFT witness (embedded in nodus-server, PBFT consensus)
 ├── include/
 │   └── nodus/
@@ -117,22 +125,13 @@ Produces:
 ctest --test-dir nodus/build --output-on-failure
 ```
 
-**Test Coverage:**
-
-| Area | Test Files |
-|------|-----------|
-| Core Kademlia | `test_routing`, `test_routing_stale`, `test_bucket_refresh`, `test_storage`, `test_storage_cleanup`, `test_value`, `test_hashring` |
-| Client SDK | `test_client`, `test_tier2`, `test_tcp`, `test_fetch_batch` |
-| Channels | `test_channel_primary`, `test_channel_protocol`, `test_channel_replication`, `test_channel_ring`, `test_channel_server`, `test_channel_store`, `test_channel_crypto`, `test_channel_encrypted` |
-| Circuits | `test_circuit_wire`, `test_circuit_table`, `test_circuit_ri_wire`, `test_circuit_live`, `test_circuit_cross_live` |
-| Media | `test_media_storage`, `test_media_tier2` |
-| Batch | `test_batch_forward`, `test_batch_forward_live`, `test_batch_real_data` |
-| Auth | `test_inter_auth`, `test_udp_auth`, `test_identity` |
-| Server | `test_server` |
-| Presence | `test_presence` |
-| DHT Features | `test_put_if_newer`, `test_hinted_handoff` |
-| Protocol | `test_tier1`, `test_tier3`, `test_wire`, `test_cbor` |
-| Witness | `test_witness_verify` |
+The standalone CMake tree currently registers 140 CTest entries, including the
+benchmark-labelled tests. Because this count changes as coverage is added, use
+`ctest --test-dir nodus/build -N` for the configured build rather than copying
+an old count into automation. Coverage spans Kademlia/storage, protocol and
+transport, channels, circuits, media, authentication, witness consensus,
+Merkle/state-root logic, staking/delegation, chain configuration and failure
+injection.
 
 Integration tests (Genesis Protocol harness, 7-node localhost):
 ```bash
@@ -172,7 +171,10 @@ Restart=always
 WantedBy=multi-user.target
 ```
 
-### Current Nodes (community-managed)
+### Documented network endpoints
+
+These endpoints are operational configuration carried in the repository.
+Verify reachability and deployed versions independently before relying on them.
 
 | Node | IP | UDP | TCP |
 |------|-----|-----|-----|
@@ -188,7 +190,11 @@ WantedBy=multi-user.target
 
 ## Client SDK
 
-The Nodus client SDK (`include/nodus/nodus.h`) is used by DNA Connect to connect to the DHT network. All connections are encrypted with Kyber1024 key exchange + AES-256-GCM.
+The Nodus client SDK (`include/nodus/nodus.h`) is used by DNA Connect to
+connect to the DHT network. The authenticated TCP client path negotiates a
+Kyber1024 round-3 shared secret and protects subsequent payloads with
+AES-256-GCM. UDP 4000 Kademlia datagrams are framed but are not protected by
+that TCP channel.
 
 ```c
 #include <nodus/nodus.h>
@@ -224,13 +230,24 @@ nodus_client_media_get(client, key, callback, userdata);
 
 ## Kyber Channel Encryption
 
-All TCP connections (ports 4001 and 4002) are encrypted with Kyber1024 key exchange (Kyber **round-3**, NIST Category 5 target — this is *not* ML-KEM-1024 and *not* FIPS 203; the divergences are documented in `shared/crypto/enc/qgp_kyber.h`) followed by AES-256-GCM symmetric encryption. The handshake occurs immediately after TCP connection, before any protocol messages are exchanged. This protects connection content at the cryptographic layer; it does not hide network metadata and is not a claim of independent security certification.
+Authenticated TCP connections on ports 4001 and 4002 negotiate Kyber1024 key
+exchange (Kyber **round-3**, NIST Category 5 target — this is *not*
+ML-KEM-1024 and *not* FIPS 203; the divergences are documented in
+`shared/crypto/enc/qgp_kyber.h`) followed by AES-256-GCM symmetric
+encryption. This protects connection content at the cryptographic layer; it
+does not protect UDP 4000, hide network metadata or constitute an independent
+security certification.
 
 ---
 
 ## Witness System
 
-Nodus embeds a DNAC witness server for BFT consensus on digital cash transactions. The witness runs on TCP port 4004 and implements PBFT (Practical Byzantine Fault Tolerance) with four phases: PROPOSE, PREVOTE, PRECOMMIT, and COMMIT. The leader node collects pending transactions from the mempool and proposes blocks at 5-second intervals (max 10 TXs per round). Non-leader nodes forward received transactions to the current leader.
+Nodus embeds a DNAC witness server for BFT consensus on digital-cash
+transactions. The witness runs on TCP port 4004 and implements PBFT-like
+PROPOSE, PREVOTE, PRECOMMIT and COMMIT phases. The compile-time default proposal
+interval is 5 seconds and the hard batch cap is 10 transactions; active chain
+configuration can change the interval and lower the effective batch maximum.
+Non-leader nodes forward received transactions to the current leader.
 
 Source: `src/witness/`
 
@@ -238,7 +255,14 @@ Source: `src/witness/`
 
 ## Circuit Relay
 
-Nodus provides a peer-to-peer circuit relay for VPN mesh connectivity. Circuits are established via TCP 4001 (`circ_open`, `circ_data`, `circ_close`) and forwarded between nodes via TCP 4002 (`ri_open`, `ri_data`, `ri_close`). End-to-end encryption uses Kyber1024 key exchange, providing onion-style privacy where relay nodes cannot read the payload. See `docs/CIRCUIT_PROTOCOL.md` for the full protocol specification.
+Nodus provides a peer-to-peer circuit relay. Circuits are established via TCP
+4001 (`circ_open`, `circ_data`, `circ_close`) and forwarded between nodes
+via TCP 4002 (`ri_open`, `ri_data`, `ri_close`). Calls opened with
+`nodus_circuit_open_e2e()` use a peer Kyber key and AES-256-GCM so relay nodes
+forward opaque payloads. Plain `nodus_circuit_open()` circuits remain
+cleartext at the relay. This is endpoint-to-endpoint encryption, not per-hop
+onion routing: relay servers still learn the source and destination
+fingerprints. See `docs/CIRCUIT_PROTOCOL.md`.
 
 Source: `src/circuit/`
 
@@ -252,11 +276,12 @@ Source: `src/circuit/`
 | [DHT System](../messenger/docs/DHT_SYSTEM.md) | DHT architecture |
 | [P2P Architecture](../messenger/docs/P2P_ARCHITECTURE.md) | Transport layer |
 | [Architecture](docs/ARCHITECTURE.md) | Nodus system architecture and design |
+| [Bootstrap](docs/BOOTSTRAP.md) | Node bootstrap and peer discovery |
 | [Circuit Protocol](docs/CIRCUIT_PROTOCOL.md) | Circuit relay protocol specification |
-| [Replication Design](docs/REPLICATION_DESIGN.md) | DHT value replication strategy |
-| [Channel Rewrite Design](docs/archive/CHANNEL_REWRITE_DESIGN.md) | Channel TCP 4003 redesign (archived — channels disabled) |
-| [Dynamic Witness Design](docs/DYNAMIC_WITNESS_DESIGN.md) | Witness discovery and roster |
-| [Version Enforcement](docs/PLAN_VERSION_ENFORCEMENT.md) | Version update enforcement plan |
+| [Deployment Runbook](docs/DEPLOY_RUNBOOK.md) | Operational deployment procedure |
+| [Mempool and Block Time](docs/MEMPOOL_BLOCK_TIME.md) | Witness batching and timing |
+| [Replication Issues](docs/REPLICATION_ISSUES.md) | Known replication limitations |
+| [Performance Baselines](docs/perf_baselines/README.md) | Benchmark capture and comparison |
 
 ---
 

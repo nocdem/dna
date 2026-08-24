@@ -31,7 +31,7 @@ metadata disappear.
 | [**DNA Connect**](messenger/) | End-to-end encrypted communication with multi-chain crypto wallet | RC |
 | [**Nodus**](nodus/) | Post-quantum Kademlia DHT server with cluster management | RC |
 | [**DNAC**](dnac/) | Post-quantum digital cash with BFT witness consensus | Development |
-| [**CPUNK Platform**](cpunk/) | Quantum-safe community platform | Live |
+| [**CPUNK Platform**](cpunk/) | Quantum-safe community platform | Source included |
 
 ---
 
@@ -45,7 +45,7 @@ metadata disappear.
 └──────────┬───────────────────────────────────────────┘
            │ dart:ffi
 ┌──────────▼───────────────────────────────────────────┐
-│  DNA Engine (C) — 22 engine modules                  │
+│  DNA Engine (C) — 23 engine modules                  │
 │  messaging · contacts · groups · wallet · presence   │
 │  identity · backup · lifecycle · version · signing   │
 │  wall · media · follow · dnac · channels + more      │
@@ -85,7 +85,7 @@ metadata disappear.
 │  EU-6    │
 └──────────┘
 
-    All values signed with Dilithium5 · 7-day TTL
+    Signed DHT values · 7-day default TTL (permanent types do not expire)
     Tier 1 (UDP 4000): Kademlia — ping, find_node, store, find_value
     Tier 2 (TCP 4001): Client — auth, put, get, listen, presence
 ```
@@ -192,6 +192,12 @@ dna/
 | Nodus | v0.18.22 |
 | DNAC | v0.17.8-stake.wip |
 
+These versions describe the current public source tree. Ledger V2 is under
+development and is not active on the consensus path documented here. A future
+Ledger V2 documentation pass must follow implementation, integration and
+activation testing; this README is not evidence that Ledger V2 is complete or
+deployed.
+
 ---
 
 ## Documentation
@@ -211,13 +217,18 @@ dna/
 
 ## Network
 
-DNA uses the Nodus DHT network. Anyone can run a Nodus node. Nodes store and
+DNA uses the Nodus DHT network. Nodus is designed for independently operated
+nodes. Nodes store and
 replicate encrypted records and cannot decrypt end-to-end encrypted message
 content. They can observe the network and protocol metadata required to accept
 connections and operate the DHT; deployments that require transport anonymity
 need an additional anonymity layer.
 
-### Current Nodes
+### Documented network endpoints
+
+The repository contains the following operational endpoint list. Source code
+cannot prove that an endpoint is currently reachable or running the version in
+this checkout; verify live network state before relying on it.
 
 | Node | Location | IP | UDP | TCP |
 |------|----------|----|-----|-----|

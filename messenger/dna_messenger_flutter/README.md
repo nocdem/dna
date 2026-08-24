@@ -2,27 +2,31 @@
 
 Cross-platform UI for DNA Connect built with Flutter and Dart.
 
-**Current Version:** v1.0.0-rc235
+**Current Version:** v1.0.0-rc240+10591 (from `pubspec.yaml`)
 
 ## Platforms
 
 | Platform | Status |
 |----------|--------|
-| Android | Production |
-| Linux | Production |
-| Windows | Production |
+| Android | RC build target |
+| Linux | RC build target |
+| Windows | RC build target |
 | iOS | Planned |
+
+“Build target” means that platform-specific source is present. It is not a
+production-readiness, store-availability or security-certification claim.
 
 ## Quick Start
 
-Requires the C library to be built first:
+From the repository root, build the C library first:
 
 ```bash
 # Build C library
-cd ../build && cmake .. && make -j$(nproc)
+cmake -S messenger -B messenger/build -DCMAKE_BUILD_TYPE=Release
+cmake --build messenger/build -j"$(nproc)"
 
 # Run Flutter app
-cd ../dna_messenger_flutter
+cd messenger/dna_messenger_flutter
 flutter pub get && flutter run
 ```
 
@@ -32,6 +36,7 @@ flutter pub get && flutter run
 flutter build linux      # Linux desktop
 flutter build apk        # Android APK
 flutter build appbundle  # Android App Bundle (Play Store)
+flutter build windows    # Windows desktop (on a Windows Flutter host)
 ```
 
 ## Architecture

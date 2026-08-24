@@ -5,9 +5,10 @@ Nodus witness cluster over the client SDK, mirrors committed chain content
 into a local sqlite index, and serves it over a small HTTP JSON API. The
 static frontend lives in `cpunk/scan.cpunk.io/` (separate deploy path).
 
-Design doc: `docs/plans/2026-07-21-dnac-explorer-design.md` (local-only, not
-committed — see `feedback_plans_dir_local_only`). Determinism/threat-model
-summary below is grounded in that doc's §7/§8.
+The tracked implementation and tests are the public evidence for the
+determinism and threat-model summary below. The original design notes are not
+part of this repository, so this README does not require them to interpret the
+current source.
 
 ## Component overview
 
@@ -57,9 +58,8 @@ links against `libdna`'s shared crypto + Nodus client SDK — there is no
 separate build tree):
 
 ```bash
-cd /opt/dna/messenger/build
-cmake ..
-make -j$(nproc)
+cmake -S messenger -B messenger/build -DCMAKE_BUILD_TYPE=Release
+cmake --build messenger/build -j"$(nproc)"
 ```
 
 Binary: `messenger/build/explorer/dna-explorerd`
@@ -100,9 +100,9 @@ otherwise be satisfiable by one server listed twice — see
 203.0.113.12 4001
 ```
 
-Production server IPs are **not** committed to this repo — see the internal
-ops reference. Use `<witness-host> 4001` placeholders in any example checked
-into git.
+Production server IPs are **not** committed to this repo. Supply them through
+deployment configuration and use `<witness-host> 4001` placeholders in public
+examples.
 
 ## HTTP API
 
@@ -136,12 +136,13 @@ reopen), and `500` on an internal query failure.
    ```
    First-time setup: create the `dna-explorer` system user, `/var/lib/dna-explorer/`
    (writable by that user), `/etc/dna-explorer.conf` (witness server list —
-   see format above, real IPs from internal ops reference), and install
+   see the format above and supply endpoints operationally), and install
    `deploy/dna-explorerd.service` to `/etc/systemd/system/`, then
    `systemctl daemon-reload && systemctl enable --now dna-explorerd`.
-2. **Frontend (static site):** `scp` each changed file under
-   `cpunk/scan.cpunk.io/` to `/var/www/scan.cpunk.io/` on the web server —
-   **scp only, never rsync** (`feedback_no_rsync`). Files: `index.html`,
+2. **Frontend (static site):** copy each changed file under
+   `cpunk/scan.cpunk.io/` to `/var/www/scan.cpunk.io/` on the web server.
+   Review the exact source and destination before using a synchronizing tool;
+   do not enable destructive deletion implicitly. Files: `index.html`,
    `block.html`, `tx.html`, `address.html`, `app.js`, `style.css`, favicons.
 3. **nginx:** install `deploy/scan.cpunk.io.nginx.conf` to
    `/etc/nginx/sites-available/`, symlink into `sites-enabled/`,
@@ -150,16 +151,14 @@ reopen), and `500` on an internal query failure.
    server, then `certbot --nginx -d scan.cpunk.io` to provision the
    certificate the nginx config's `ssl_certificate` lines reference.
 
-Server deployment (installing the systemd unit, DNS, certbot, enabling the
-service) requires explicit user approval before being executed
-(`feedback_never_deploy_without_permission`) — this README documents the
-procedure, it is not run autonomously.
+Server deployment changes external systems. It must be performed only by an
+authorized operator after reviewing the target host, service and DNS scope.
+This README documents the procedure; it does not authorize a deployment.
 
 ## Determinism & threat model (summary)
 
 The explorer is **outside consensus** — it writes nothing to the chain,
-signs nothing, votes on nothing, and cannot cause a chain split. Full detail:
-`docs/plans/2026-07-21-dnac-explorer-design.md` §7/§8 (local-only).
+signs nothing, votes on nothing, and cannot cause a chain split.
 
 **Determinism (index reproducibility, not consensus):**
 - **D1** — the index DB is a pure function of committed chain content;
@@ -182,9 +181,10 @@ witness):**
   the daemon speaks outbound-only Nodus T2, no inbound path to any witness.
 - **G3** — bounded resource use: nginx `limit_req` on `/api/`; daemon-side
   hard caps (pagination ≤ 100, request line ≤ 8 KB, parameterized SQL only).
-- **G4** — read-only, public data only: no auth, no session, no PII beyond
-  what any public UTXO chain explorer inherently exposes (accepted, mirrors
-  `project_presence_privacy_c12`).
+- **G4** — read-only, public chain data only: no auth and no session. Addresses,
+  amounts and transaction relationships are public in the current transparent
+  DNAC ledger, so the explorer must not be presented as a privacy-preserving
+  view.
 - **G5** — honest trust display: the indexer trusts witness responses (no
   client-side BFT cert re-verification in v1); frontend states data is
   served from the witness cluster.

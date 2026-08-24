@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <em>Your messages and crypto stay private — even against future quantum computers.</em>
+  <em>Encrypted communication built with post-quantum cryptographic primitives.</em>
 </p>
 
 ---
@@ -36,7 +36,9 @@ an operator-run DHT network with post-quantum cryptographic primitives.
 - **End-to-end encryption** with Kyber1024 + AES-256-GCM
 - **1:1 and group chats** with delivery/read receipts
 - **Offline message queue** — Messages wait up to 7 days if you're offline
-- **Group encryption (GEK)** — 200x faster than encrypting per-recipient
+- **Group encryption (GEK)** — Shared group keys avoid repeating a full
+  per-recipient KEM operation for every message; no universal performance
+  multiplier is claimed
 - **Cross-device sync** — Messages and groups sync across all your devices
 - **Voice messages** with waveform visualization
 - **Video and image sharing** via DHT media storage
@@ -56,7 +58,8 @@ an operator-run DHT network with post-quantum cryptographic primitives.
 - **9+ Tokens:** CPUNK, CELL, KEL, NYS, QEVM, ETH, BNB, SOL, TRX, USDT
 - **DNAC (DNA Cash)** — Post-quantum digital cash with BFT witness consensus
 - **Send crypto from chat** — Auto-resolves contact's wallet address
-- **Token swaps** — DEX integration with MEV protection
+- **Token swaps** — DEX integrations; the Ethereum submission path includes a
+  Flashbots Protect option, while protection varies by chain and route
 - **QR codes** — Easy send/receive
 - **Full transaction history**
 
@@ -68,7 +71,9 @@ an operator-run DHT network with post-quantum cryptographic primitives.
 - **Native presence** — Server-side presence tracking
 - **SQLCipher database encryption** — 9 encrypted databases at rest
 - **TEE key wrapping** on Android (AES-256-GCM via Android Keystore)
-- **Kyber1024 channel encryption** — All DHT connections encrypted
+- **Kyber1024 TCP channel encryption** — Authenticated TCP client/inter-node
+  payloads use Kyber round-3 + AES-256-GCM; UDP Kademlia datagrams are not
+  covered by that channel
 - **Debug log system** with hybrid encryption (Kyber1024 + AES-256-GCM)
 
 ---
@@ -86,7 +91,9 @@ the final ML-KEM/FIPS 203 standard.
 | **AES-256-GCM** | NIST | Symmetric encryption |
 | **SHA3-512** | NIST | Hashing |
 
-Your keys never leave your device. Recovery via BIP39 seed phrase.
+Private/secret key operations are performed locally. Recovery is available via
+the BIP39 seed phrase; public keys and fingerprints are intentionally shared as
+protocol identity material.
 
 The repository does not claim an independently validated cryptographic module.
 
@@ -163,7 +170,7 @@ cd messenger
 
 **Components:**
 - **Flutter App** — Cross-platform UI (Android, Linux, Windows)
-- **C Library** — Core engine with 22 modular handlers (`libdna.so`)
+- **C Library** — Core engine with 23 modular handlers (`libdna.so`)
 - **Nodus** — Pure C Kademlia DHT with cluster replication ([details](../nodus/README.md))
 
 **Engine Modules** (`src/api/engine/`):
@@ -172,6 +179,7 @@ cd messenger
 |--------|--------|
 | `dna_engine_addressbook.c` | Address book management |
 | `dna_engine_backup.c` | DHT sync for all data types |
+| `dna_engine_calls.c` | Voice-call signalling and orchestration |
 | `dna_engine_channels.c` | Channel CRUD, posts, subscriptions |
 | `dna_engine_contacts.c` | Contact requests, blocking |
 | `dna_engine_debug_log.c` | Debug log send/receive |

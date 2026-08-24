@@ -1,368 +1,194 @@
-# DNAC - Post-Quantum Zero-Knowledge Cash over DHT
+# DNAC — Post-Quantum Digital Cash with BFT Witness Consensus
 
-**Version:** v0.17.8-stake.wip | **TX Wire:** v2 (since v0.17.1) | **Protocol Amounts:** v1 (Transparent)
+**Version:** v0.17.8-stake.wip | **TX wire:** v2 | **Current amount mode:** transparent
 
-DNAC is a privacy-preserving digital cash system built on top of [DNA Connect](https://github.com/nocdem/dna). It lives in the DNA monorepo at `/opt/dna/dnac/`.
+DNAC is the digital-cash component of the DNA monorepo. The current public
+source uses a transparent UTXO ledger whose authoritative state is maintained
+by BFT witnesses embedded in Nodus. It does not use the DHT as the ledger or
+transaction inbox.
 
-## Features
+DNAC is a development/testnet component, not a production-ready or anonymous
+payment system. Transaction amounts, recipient fingerprints and token IDs are
+present in the current transparent wire format. Nullifiers prevent reuse of a
+spent output; they do not, by themselves, hide the public transaction graph.
 
-- **UTXO Model** - Unspent Transaction Output model for privacy
-- **Dilithium5 Signatures** - Post-quantum digital signatures (NIST Category 5)
-- **Witness-Only Architecture** - All state stored on BFT witnesses, no DHT dependency (v0.12.0)
-- **BFT Consensus** - Byzantine Fault Tolerant witness consensus (PBFT-like)
-- **PBFT Witnessing** - Transactions require PBFT quorum (2f+1) witness attestations
-- **Memo Support** - Optional transaction memos up to 255 bytes (v0.6.0)
-- **Replay Prevention** - Nonce and timestamp-based replay attack prevention (v0.6.0)
-- **Merkle Proofs** - Transaction inclusion proofs via Merkle tree (v0.7.0)
-- **BFT-Signed Epochs** - Epoch roots signed by BFT consensus (v0.7.1)
-- **Block Hash Linking** - Blocks chained via prev_hash (SHA3-512) for chain integrity (v0.12.0)
-- **Commit Certificates** - 2f+1 PRECOMMIT signatures stored per block for trustless verification (v0.12.0)
-- **Shared UTXO Set** - Validators maintain shared UTXO state (v0.8.0). Native-DNAC supply is hard-conserved by the witness supply-invariant gate. **Known gap (2026-07-08):** per-token conservation is NOT yet enforced by consensus — custom (TOKEN_CREATE) tokens can be counterfeited by mixing denominations in a SPEND. Tracked as P1 in `dnac/BUGS.md` / `docs/2026-07-08-project-assessment.md` (C1).
-- **Cross-Identity Sends** - Full TX data through BFT consensus for multi-party transfers (v0.8.0)
-- **Fee Burn Model** - Fees burned (removed from circulation) instead of sent to witnesses (v0.8.1)
-- **Genesis System** - Unanimous witness authorization for token creation (v0.5.0)
-- **Hub/Spoke TX Storage** - Witnesses store full serialized transactions during BFT commit (v0.10.0)
-- **TX Query Protocol** - Clients retrieve full transaction data by hash from witnesses (v0.10.0)
-- **Block Query Protocol** - Clients query blocks by height or range from witnesses (v0.10.0)
-- **Multi-Token Support** - Custom token creation with per-token UTXO tracking (v0.13.0)
-- **Token Creation** - TX_TOKEN_CREATE transaction type with 1 DNAC fee burn (v0.13.0)
-- **Per-Token Balances** - Wallet tracks separate UTXO sets per token_id (v0.13.0)
-- **Name Resolution** - CLI send accepts DNA name, auto-resolves to fingerprint (v0.13.0)
-- **TX Wire v2** - 82-byte header with explicit `committed_fee` field, SEC-06 domain separator, min-fee gate 0.01 DNAC (v0.17.1)
-- **Stake-Delegation v1** - Stake-weighted top-7 committee as BFT voting authority; per-block reward accrual; pull-based `CLAIM_REWARD` (`stake-delegation-v1`, v0.17.x)
-- **F17 Committee Enforcement** - Genesis committee cache pin, fee_pool rollback on commit failure (nodus v0.15.1)
-- **Hard-Fork Mechanism v1** - `DNAC_TX_CHAIN_CONFIG` allows committee-voted consensus-parameter changes without chain wipe (v0.14+; design: `docs/plans/2026-04-19-hard-fork-mechanism-design.md`)
-- **Merkle State Root** - Block commits include SHA3-512 `state_root` over UTXO/validator/delegation/reward/chain_config roots (v0.11.0; v0.14+ added chain_config input)
-- **Inflation Model** - 16→1 DNAC halving schedule shipped in code (`2d344281`/`6cd14f17`); not yet deployed
+## Current implementation
 
-## Protocol Versions
+- **Transparent UTXO ledger** — inputs and outputs carry plaintext amounts and
+  token IDs.
+- **Post-quantum signatures** — Dilithium5 / ML-DSA-87 algorithm profile; no
+  independent validation or certification claim.
+- **Witness-only state** — UTXOs, nullifiers, blocks, transactions, validators,
+  delegations and chain configuration are stored by witnesses.
+- **PBFT-like consensus** — PROPOSE, PREVOTE, PRECOMMIT and COMMIT with a
+  `2f+1` quorum.
+- **View change** — `VIEW_CHANGE` / `NEW_VIEW`, prepared-certificate
+  preservation and timeout-driven leader recovery are implemented and have a
+  Stage F scenario test.
+- **Hash-linked blocks** — block hashes bind the previous hash, transaction
+  root and state root.
+- **Commit certificates** — PRECOMMIT quorum signatures are stored with
+  committed blocks.
+- **State root v3** — commits the UTXO, validator, delegation, epoch-state and
+  chain-configuration subtrees. The former reward subtree is retired.
+- **Push-settlement rewards** — inflation rewards are distributed as UTXOs at
+  epoch boundaries. The former `CLAIM_REWARD` transaction type was removed;
+  wire value 8 remains unused.
+- **Multi-token support** — custom-token creation, token-aware UTXO selection
+  and per-token balances are implemented. `TOKEN_CREATE` burns 10,000,000 DNAC
+  in the current source.
+- **Known custom-token invariant gap** — the per-token supply check is currently
+  advisory/log-only. The hard block-rejection invariant covers native DNAC,
+  so the repository does not claim consensus-enforced custom-token
+  conservation yet.
+- **Chain configuration transactions** — `DNAC_TX_CHAIN_CONFIG` supports
+  committee-voted parameter changes.
 
-| Version | Amounts | ZK Technology | Status |
-|---------|---------|---------------|--------|
-| **v1** | Transparent (plaintext) | None | **Current** |
-| **v2** | Hidden | STARKs (PQ-safe) | Future |
+## Privacy and shielded status
 
-v1 uses transparent amounts for simplicity. v2 will add STARK-based zero-knowledge proofs for amount privacy while maintaining post-quantum security.
+| Path | Source status | Consensus status |
+|------|---------------|------------------|
+| Transparent transactions | Implemented | Accepted by the current witness path |
+| Shielded transaction type 11 | Wire, prover and verifier machinery implemented | Rejected unconditionally until the C3 state transition is implemented |
+| Ledger V2 | Under development outside the current path | Not active or deployed by this source tree |
+
+The STARK implementation lives in [`shared/crypto/zk/`](../shared/crypto/zk/).
+Its verifier stack is linked into Nodus, but the type-11 witness admission path
+ends in a fail-closed rejection. Crypto code being present or linked is not
+evidence that a shielded pool is live.
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                  dna-connect-cli `dna` group                │
-│         (DNAC commands live in dna-connect-cli, the         │
-│          unified messenger CLI — there is no separate       │
-│          dnac-cli binary anymore)                           │
-└─────────────────────────────────────────────────────────────┘
-           │                              │
-           ▼                              ▼
-┌─────────────────────┐        ┌─────────────────────┐
-│      libdna         │◀───────│      libdnac        │
-│  (identity, crypto, │ links  │  (cash + tokens)    │
-│   transport)        │        │                     │
-└─────────────────────┘        └─────────────────────┘
-                                         │
-                                    TCP 4004
-                                         ▼
-                               ┌─────────────────────┐
-                               │  WITNESS SERVERS    │
-                               │ (dynamic roster)    │
-                               │ (PBFT 2f+1 quorum)  │
-                               │ (authoritative UTXO │
-                               │  + block storage)   │
-                               └─────────────────────┘
+```text
+┌──────────────────────────────────────────────────────────────┐
+│               dna-connect-cli `dna` commands                │
+│          (there is no standalone dnac-cli binary)           │
+└──────────────────────────────┬───────────────────────────────┘
+                               │ libdna + libdnac
+                               ▼
+                    ┌──────────────────────┐
+                    │ Nodus witness client │
+                    └──────────┬───────────┘
+                               │ witness RPC / TCP
+                               ▼
+                    ┌──────────────────────┐
+                    │ BFT witness network  │
+                    │ authoritative state  │
+                    └──────────────────────┘
 ```
 
-## Building
+The DHT may still be used by DNA Connect for identity/name resolution, but it
+is not the DNAC consensus database.
 
-### Prerequisites
+## Build
 
-1. Build DNA Connect first (DNAC links against `libdna.so`):
-```bash
-cd /opt/dna/messenger/build
-cmake .. && make -j$(nproc)
-```
-
-2. Install dependencies:
-```bash
-# Debian/Ubuntu
-sudo apt install libssl-dev libsqlite3-dev pkg-config cmake
-```
-
-### Build DNAC
+From the repository root:
 
 ```bash
-cd /opt/dna/dnac/build
-cmake .. && make -j$(nproc)
+# Build libdna first; DNAC links against it.
+cmake -S messenger -B messenger/build -DCMAKE_BUILD_TYPE=Release
+cmake --build messenger/build -j"$(nproc)"
+
+cmake -S dnac -B dnac/build -DCMAKE_BUILD_TYPE=Release
+cmake --build dnac/build -j"$(nproc)"
 ```
 
-This builds:
-- `libdnac.a` — Static library (linked into `dna-connect-cli`)
+The DNAC build produces `libdnac.a`. User-facing commands are provided by
+`messenger/build/cli/dna-connect-cli` under the `dna` command group.
 
-There is **no standalone `dnac-cli` binary**. All DNAC commands are reached through `dna-connect-cli` under the `dna` subcommand group. The dispatcher and command implementations live in `messenger/cli/cli_dna_chain.c`.
+## CLI overview
 
-## CLI Commands
+Run `dna-connect-cli dna help` for the command-specific argument forms in the
+current binary. Major command groups include:
 
-```bash
-# Identity & Info
-dna-connect-cli dna info                    # Wallet info, address, DHT status, balance
-dna-connect-cli dna address                 # Wallet address (fingerprint only)
-dna-connect-cli dna query <name|fp>         # Lookup identity by name or fingerprint
-
-# Wallet
-dna-connect-cli dna balance                 # Wallet balance
-dna-connect-cli dna utxos                   # List UTXOs
-dna-connect-cli dna send <name|fp> <amount> [memo]   # Send payment
-dna-connect-cli dna genesis-create <fp> <amount>     # Create genesis TX
-dna-connect-cli dna genesis-submit <file>            # Submit pre-signed genesis TX
-dna-connect-cli dna sync                    # Sync wallet from network
-
-# History
-dna-connect-cli dna history [n]             # Transaction history (optional: last n)
-dna-connect-cli dna tx <hash>               # Show transaction details
-
-# Token Management
-dna-connect-cli dna token-create <name> <symbol> <supply>  # Create new token
-dna-connect-cli dna token-list                             # List all known tokens
-dna-connect-cli dna token-info <id|symbol>                 # Show token details
-
-# Token-Aware Operations
-dna-connect-cli dna balance --token <token_id>             # Token balance
-dna-connect-cli dna send --token <id> <name|fp> <amount> [memo]  # Send token
-
-# Network
-dna-connect-cli dna witnesses                # Show witness servers
+```text
+dna-connect-cli dna info
+dna-connect-cli dna address
+dna-connect-cli dna query <name|fingerprint>
+dna-connect-cli dna balance
+dna-connect-cli dna balance-of <fingerprint>
+dna-connect-cli dna utxos
+dna-connect-cli dna send <fingerprint> <amount> [memo]
+dna-connect-cli dna send --token <token_id> <fingerprint> <amount> [memo]
+dna-connect-cli dna sync
+dna-connect-cli dna history [limit]
+dna-connect-cli dna tx <hash>
+dna-connect-cli dna witnesses
+dna-connect-cli dna token-create <name> <symbol> <supply>
+dna-connect-cli dna token-list
+dna-connect-cli dna token-info <token_id|symbol>
+dna-connect-cli dna stake ...
+dna-connect-cli dna unstake ...
+dna-connect-cli dna delegate ...
+dna-connect-cli dna undelegate ...
+dna-connect-cli dna validator-list
+dna-connect-cli dna validator-update ...
 ```
 
-## Hub/Spoke Query API (v0.10.0)
+## Current transparent wire
 
-Clients trust witnesses and can query the full blockchain view via the hub/spoke model:
+The v2 transaction header is 82 bytes:
 
-### Transaction Query
-```c
-// Retrieve full serialized TX by hash (caller frees tx_data)
-int dnac_query_transaction(dnac_context_t *ctx,
-                            const uint8_t *tx_hash,
-                            uint8_t **tx_data_out,
-                            uint32_t *tx_len_out,
-                            uint8_t *tx_type_out,
-                            uint64_t *block_height_out);
+```text
+version(1) | type(1) | timestamp(8) | tx_hash(64) | committed_fee(8)
 ```
 
-### Block Query
-```c
-// Query single block by height
-int dnac_query_block(dnac_context_t *ctx,
-                      uint64_t height,
-                      uint8_t *tx_hash_out,
-                      uint8_t *tx_type_out,
-                      uint64_t *timestamp_out,
-                      uint8_t *proposer_out);
+Transparent inputs and outputs include:
 
-// Query block range (max 100 per request)
-int dnac_query_block_range(dnac_context_t *ctx,
-                            uint64_t from_height,
-                            uint64_t to_height,
-                            int *count_out,
-                            uint64_t *total_out);
+```text
+input  = nullifier(64) | amount(8) | token_id(64)
+output = version(1) | recipient_fingerprint(129) | amount(8)
+         | token_id(64) | nullifier_seed(32) | memo_len(1) | memo
 ```
 
-### Wire Protocol (CBOR over Nodus Tier 2)
+The header commits the fee explicitly. Non-genesis transactions must meet the
+current minimum-fee gate of 0.01 DNAC. Type-specific tails exist for staking,
+delegation, validator updates and chain-configuration transactions.
 
-| Message Type | ID | Direction | Description |
-|---|---|---|---|
-| `DNAC_NODUS_MSG_TX_QUERY` | 144 | Client→Witness | Query TX by hash |
-| `DNAC_NODUS_MSG_TX_RESPONSE` | 145 | Witness→Client | Full TX data blob |
-| `DNAC_NODUS_MSG_BLOCK_QUERY` | 146 | Client→Witness | Query block by height |
-| `DNAC_NODUS_MSG_BLOCK_RESPONSE` | 147 | Witness→Client | Block fields |
-| `DNAC_NODUS_MSG_BLOCK_RANGE_QUERY` | 148 | Client→Witness | Query block range |
-| `DNAC_NODUS_MSG_BLOCK_RANGE_RESPONSE` | 149 | Witness→Client | Array of blocks |
+## Consensus and storage
 
-### Witness-Side Storage
+Witnesses are authoritative for:
 
-Witnesses store full serialized `tx_data` in the `committed_transactions` table during BFT commit. Schema:
-```sql
-CREATE TABLE committed_transactions (
-    tx_hash BLOB PRIMARY KEY,
-    tx_type INTEGER NOT NULL,
-    tx_data BLOB NOT NULL,
-    tx_len  INTEGER NOT NULL,
-    block_height INTEGER NOT NULL DEFAULT 0,
-    timestamp INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-);
-CREATE INDEX idx_ctx_height ON committed_transactions(block_height);
-```
+- the UTXO set and nullifier set;
+- full serialized transactions and transaction queries;
+- blocks, transaction roots, state roots and commit certificates;
+- validators, delegations, epoch settlement and chain configuration.
 
-### Wallet Address
+Clients submit to a witness; non-leaders forward the request to the current
+leader. The leader proposes a batch and witnesses execute the PBFT-like voting
+phases. Leader recovery uses the implemented view-change protocol.
 
-The wallet address is a **SHA3-512 hash of the Dilithium5 public key**:
-- 64 bytes = 128 hexadecimal characters
-- Same as DNA Connect identity fingerprint
+## Security scope
 
-## Transaction Format (v2 — since v0.17.1)
+- Dilithium5 signatures authenticate transactions and consensus messages.
+- Nullifiers and witness-side UTXO checks prevent accepted outputs from being
+  spent twice.
+- Database and verification failures on critical paths are intended to fail
+  closed.
+- Native-DNAC supply is checked by the hard supply-invariant gate before block
+  commit.
+- The current transparent ledger does **not** provide amount privacy,
+  recipient anonymity or transaction-graph hiding.
+- “Post-quantum” describes the selected primitives and parameter targets; it is
+  not an independent audit, certification or production-readiness claim.
 
-```
-DNAC TRANSACTION v2:
-┌─────────────────────────────────────────────────────────────┐
-│ HEADER (82 bytes, DNAC_TX_HEADER_SIZE)                      │
-│   version: u8 = 2 (DNAC_PROTOCOL_VERSION)                   │
-│   type: u8 = TX_SPEND | TX_TOKEN_CREATE | TX_STAKE | ...    │
-│   timestamp: u64 (LE on wire, BE in preimage)               │
-│   tx_hash: bytes[64] (SHA3-512 over preimage)               │
-│   committed_fee: u64 BE (v0.17.1+, fee the TX pays)         │
-├─────────────────────────────────────────────────────────────┤
-│ INPUTS: nullifier[64] + amount + token_id[64]               │
-├─────────────────────────────────────────────────────────────┤
-│ OUTPUTS: version + recipient_fp[129] + amount + token_id    │
-│          + seed[32] + memo_len + memo                       │
-│   (token_id = zeros for native DNAC)                        │
-├─────────────────────────────────────────────────────────────┤
-│ BALANCE: sum(inputs) == sum(outputs) + committed_fee         │
-│          (fee is explicit on wire, no longer inferred)      │
-├─────────────────────────────────────────────────────────────┤
-│ WITNESSES: 32B id + Dilithium5 sig + timestamp + pubkey     │
-├─────────────────────────────────────────────────────────────┤
-│ SIGNERS (1..4): Dilithium5 pubkey + signature               │
-├─────────────────────────────────────────────────────────────┤
-│ TYPE-SPECIFIC APPENDED FIELDS                               │
-│   STAKE:      commission_bps + unstake_dest_fp + purpose_tag │
-│   DELEGATE:   validator_pubkey + delegation_amount           │
-│   UNDELEGATE: validator_pubkey + amount                     │
-│   VALIDATOR_UPDATE: new_commission_bps + signed_at_block    │
-│   CHAIN_CONFIG:  param_id + new_value + effective_block     │
-│                  + proposal_nonce + signed_at_block         │
-│                  + valid_before_block + committee_votes[]   │
-├─────────────────────────────────────────────────────────────┤
-│ OPTIONAL: has_chain_def + chain_def blob (genesis TX only)  │
-└─────────────────────────────────────────────────────────────┘
-```
+## Status boundaries
 
-**Preimage domain separator (SEC-06):** `"DNAC_TX_V2\0"` (11B) prevents
-any future version preimage from colliding with v2. All multi-byte
-integers in the preimage are BIG-ENDIAN so the hash is platform-stable.
+The source tree proves implementation and test coverage; it does not prove
+that a public endpoint is reachable, that a particular commit is deployed, or
+that a live chain has a specific current ID or balance. Treat deployment and
+live-network claims as operational state that must be verified separately.
 
-**Min-fee gate:** non-GENESIS TXs must have
-`committed_fee >= DNAC_MIN_FEE_RAW` (0.01 DNAC = 10⁶ raw). Witness
-`nodus_witness_verify.c::Check 0` rejects before Dilithium5 sig verify
-(~500 µs/signer saved on DoS).
-
-## Witness Infrastructure
-
-DNAC uses a dynamic BFT witness roster for double-spend prevention. Witnesses are nodus-server nodes with witness capability, discovered at runtime:
-
-### BFT Consensus Protocol
-
-```
-Client Request → Any Witness → Forward to Leader → Consensus Round → Response
-
-PROPOSE → PREVOTE → PRECOMMIT → COMMIT
-   │         │          │          │
-   └─ Leader broadcasts proposal
-             └─ All witnesses vote
-                       └─ Quorum (2/3) reached
-                                  └─ Nullifier committed, response sent
-```
-
-### Configuration
-
-| Parameter | Value | Description |
-|-----------|-------|-------------|
-| Witnesses | Dynamic | Discovered at runtime via announcements |
-| Quorum | 2f+1 | PBFT quorum for N = 3f+1 witnesses |
-| Leader Election | `(epoch + view) % N` | Rotates hourly |
-
-### Features
-
-- **Embedded in Nodus** - Witness logic runs inside nodus-server process
-- **Nullifier Database** - SQLite-based persistent storage
-- **Request Forwarding** - Non-leaders forward to current leader
-
-### Witness-Only Storage (v0.12.0)
-
-All blockchain state is stored on BFT witnesses. DHT inbox delivery was removed in v0.12.0 — witnesses are the authoritative source for all data:
-- **UTXO set** — maintained by witnesses, clients poll via `dnac_sync_wallet()`
-- **Blocks** — hash-linked chain with commit certificates
-- **Nullifiers** — double-spend prevention
-- **Transaction data** — full serialized TX for client queries
-
-## Security
-
-- **Post-Quantum Signatures**: Dilithium5 for all signatures (NIST Category 5)
-- **Nullifiers**: SHA3-512 hash prevents UTXO tracking
-- **Linkability Prevention**: Nullifiers prevent transaction graph analysis
-- **Double-Spend Prevention**: PBFT quorum (2f+1) witness attestation required
-- **UTXO Validation**: Witnesses verify UTXO legitimacy before voting (v0.8.0)
-- **Fee Burn**: Transaction fees are permanently removed from circulation (v0.8.1)
-- **UTXO Ownership Verification**: Sender fingerprint must match UTXO owner (v0.10.2)
-- **Nullifier Fail-Closed**: DB errors assume nullifier exists to prevent double-spend (v0.10.2)
-- **Chain ID Validation**: All BFT messages validated against zone chain_id to prevent cross-zone replay (v0.10.2)
-- **Secure Nonce Generation**: RNG failure aborts instead of falling back to weak source (v0.10.2)
-- **Overflow Protection**: Safe integer arithmetic for genesis supply and balance calculation (v0.10.2)
-- **COMMIT Signature Verification**: All BFT COMMIT messages require valid Dilithium5 signature (v0.10.2)
-
-## Status
-
-**Testnet** - v0.17.8-stake.wip. Not for production use. `stake-delegation-v1` is merged to main and deployed. Runs on a live 7-witness testnet cluster with real tester balances; the active chain ID has rotated through several wipes (each consensus/block-format change requires a stop-all deploy + chain wipe) — query the cluster for the current chain rather than relying on a hardcoded ID here.
-
-### Implemented
-
-- [x] Core wallet functionality (UTXO management, balance tracking)
-- [x] Send/receive transactions via DHT
-- [x] BFT consensus protocol (PBFT-like, embedded in Nodus)
-- [x] Dynamic witness roster (discovered at runtime)
-- [x] Leader election and request forwarding
-- [x] Double-spend prevention via nullifiers
-- [x] End-to-end integration tests
-- [x] Multi-input double-spend fix (v0.4.0)
-- [x] Genesis transaction with 3-of-3 unanimous authorization (v0.5.0)
-- [x] BFT message signing with Dilithium5 (v0.6.0)
-- [x] Integer overflow protection (v0.6.0)
-- [x] Replay prevention via nonce/timestamp (v0.6.0)
-- [x] Memo support up to 255 bytes (v0.6.0)
-- [x] Merkle tree for transaction inclusion proofs (v0.7.0)
-- [x] Chain synchronization infrastructure (v0.7.0)
-- [x] Ledger confirmation tracking (v0.7.0)
-- [x] BFT-anchored epoch roots (v0.7.1)
-- [x] Shared UTXO set — validators verify UTXO legitimacy before consensus (v0.8.0)
-- [x] Cross-identity sends with full TX data through BFT (v0.8.0)
-- [x] Fee burn model — fees permanently removed from circulation (v0.8.1)
-- [x] Genesis TX verification fix (v0.8.1)
-- [x] Hub/spoke TX storage — witnesses persist full tx_data during BFT commit (v0.10.0)
-- [x] TX query protocol — clients retrieve full transaction by hash (v0.10.0)
-- [x] Block query protocol — clients query blocks by height or range (v0.10.0)
-- [x] P0 Security audit fixes — 3 CRITICAL + 3 HIGH vulnerabilities resolved (v0.10.2)
-- [x] Dead code cleanup — removed ~10K lines of old standalone witness code (v0.10.3)
-- [x] BFT cleanup — removed client-side BFT code (serialize/roster/replay), dynamic witness discovery (v0.11.1)
-- [x] Witness-only architecture — removed DHT inbox dependency, wallet syncs from witnesses (v0.12.0)
-- [x] Block hash linking — prev_hash chain integrity via SHA3-512 (v0.12.0)
-- [x] Commit certificates — 2f+1 PRECOMMIT signatures stored per block (v0.12.0)
-- [x] Remote transaction history via witnesses (v0.12.1)
-- [x] Multi-token UTXO tracking — per-token balances and UTXO sets (v0.13.0)
-- [x] TX_TOKEN_CREATE — custom token creation with 1 DNAC fee burn (v0.13.0)
-- [x] Token-aware TX builder — UTXO selection by token_id (v0.13.0)
-- [x] CLI send by DNA name — auto-resolve to fingerprint (v0.13.0)
-
-### Tested
-
-- [x] GENESIS transaction flow (3-of-3 unanimous)
-- [x] SEND transaction flow
-- [x] Double-spend rejection
-- [x] Multi-input double-spend rejection
-- [x] Service auto-restart on reboot
-- [x] Witness mesh reconnection
-- [x] Security gap fixes (18 test cases in test_gaps.c)
-- [x] Cross-machine send/receive (test_remote.c)
-- [x] Cross-identity supply invariant (4 identities, 10000 supply = 9995.5 UTXOs + 4.5 burned)
-
-### Deferred to v2
-
-- [ ] STARK-based zero-knowledge proofs for amount privacy
-- [ ] View change protocol (leader failure recovery)
+Ledger V2 documentation will be updated after its header/BlockID/QC, BFT,
+network/sync, activation and Testnet 2 gates are complete. Until then, this
+README documents the current public consensus path only.
 
 ## License
 
-Licensed under the [Apache License 2.0](LICENSE). Aligns with the rest of the DNA monorepo (messenger, nodus, shared-crypto). Changed from MIT on 2026-04-24 — the original MIT claim was a footer in the v0.1.0 initial commit without a LICENSE file; Apache 2.0 includes an explicit patent grant which is preferable for a post-quantum blockchain component.
+Licensed under the [Apache License 2.0](LICENSE).
 
-## Related Projects
+## Related documentation
 
-- [DNA Connect](https://github.com/nocdem/dna) - Post-quantum encrypted messenger (monorepo: `/opt/dna/messenger/`)
-- [Nodus](../nodus/) - Post-quantum Kademlia DHT with PBFT consensus (monorepo: `/opt/dna/nodus/`)
+- [DNA repository overview](../README.md)
+- [Nodus](../nodus/README.md)
+- [ZK implementation status](../shared/crypto/zk/README.md)

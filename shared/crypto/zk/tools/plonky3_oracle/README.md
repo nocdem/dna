@@ -1,79 +1,97 @@
-# plonky3_oracle — DNAC-ZK reference test vector generator
+# plonky3_oracle — DNAC reference-vector generator
 
-A standalone Rust binary that links Plonky3 (pinned to commit `82cfad73cd734d37a0d51953094f970c531817ec`) and emits JSON test vectors. The C side of `shared/crypto/zk/` consumes these vectors in `ctest` and asserts byte-identical output.
+`plonky3_oracle` is a build-time Rust program that generates deterministic
+JSON vectors for the C implementation in `shared/crypto/zk/`. It is never
+linked into the production C runtime.
 
-**Why this exists:** clean-room C implementations of cryptographic primitives have a high bug rate at the bit level. The Plonky3 oracle is the ground-truth reference — if our C output diverges from the oracle by a single byte, that's a determinism violation and a chain-split bug waiting to happen.
+## Dependency pin
 
-This oracle is **build-time only**. It is NEVER linked into the runtime DNAC binary. Production C code does not depend on Rust.
+The active Plonky3 pin is defined in `Cargo.toml`:
 
-## Prerequisites
-
-- **Rust toolchain (rustup recommended)**. Tested with Rust 1.85+ (edition 2024 required by `Cargo.toml`).
-- **Network access** during first build (cargo fetches Plonky3 from GitHub).
-- **~2 GB free disk** for build artifacts + Plonky3 source.
-
-Install rustup (one-time, user-local, no root):
-
-```sh
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-. "$HOME/.cargo/env"
-rustup install stable
+```text
+11cc5849a1b57a2f520d6edc608b9e516517d841
 ```
+
+This corresponds to the v0.6.2 line used by the current batch-STARK stack. The
+older `82cfad73` value is a previous pin and is not the active reference.
+`Cargo.lock` is committed and should remain synchronized with
+`Cargo.toml`.
 
 ## Build
 
-```sh
-cd /opt/dna/shared/crypto/zk/tools/plonky3_oracle
-cargo build --release
+From the repository root:
+
+```bash
+cargo build --release --frozen \
+  --manifest-path shared/crypto/zk/tools/plonky3_oracle/Cargo.toml
 ```
 
-First build downloads Plonky3 (~10 MB) plus crate dependencies (~100 MB). Subsequent builds are incremental.
+The first uncached build needs network access to fetch the pinned Git
+dependencies. `--frozen` prevents dependency-resolution drift; it does not
+make an uncached network dependency available offline.
 
-**Important:** After first successful build, **commit `Cargo.lock`** to lock down the full dependency graph. Run `cargo build --release --frozen` thereafter to enforce frozen dependency resolution (CI fails if `Cargo.lock` doesn't match upstream).
+## Commands
 
-## Run
+The oracle now covers field, transcript, Poseidon2/MMCS, FRI, AIR, prover and
+batched-proof scenarios. It is not a field-operations-only Sprint 1 stub.
 
-```sh
-# Emit base-field test vectors (Sprint 1.1 scope).
-cargo run --release -- dump-field-ops --out ../vectors/field_ops.json
+Use the binary's help as the authoritative command list:
 
-# Emit all available vectors (skipping not-yet-implemented dumps).
-cargo run --release -- dump-all --out-dir ../vectors/
+```bash
+cargo run --release --frozen \
+  --manifest-path shared/crypto/zk/tools/plonky3_oracle/Cargo.toml -- --help
 ```
 
-Each subcommand writes a single JSON file. Output is pretty-printed for review; C-side tests parse with a streaming JSON parser.
+Examples:
 
-## Sprint status
+```bash
+# One vector family
+cargo run --release --frozen \
+  --manifest-path shared/crypto/zk/tools/plonky3_oracle/Cargo.toml -- \
+  dump-field-ops --out shared/crypto/zk/tools/vectors/field_ops.json
 
-| Subcommand            | Sprint | Status |
-|-----------------------|--------|--------|
-| `dump-field-ops`      | 1.1    | ✅ implemented (this sprint) |
-| `dump-field-ext`      | 1.3    | stub — exits cleanly with message |
-| `dump-merkle`         | 1.4    | stub |
-| `dump-transcript`     | 1.5    | stub |
-| `dump-keccak-air`     | 1.6    | stub |
+# Regenerate the families included by dump-all
+cargo run --release --frozen \
+  --manifest-path shared/crypto/zk/tools/plonky3_oracle/Cargo.toml -- \
+  dump-all --out-dir shared/crypto/zk/tools/vectors
+```
+
+Some historical subcommands remain as explicit retirement messages so old
+automation fails visibly instead of silently producing obsolete proof-path
+vectors. `dump-all` intentionally omits retired families.
 
 ## Determinism
 
-Inputs are derived via a deterministic SplitMix64-style mix of (operation_id, case_index). No `rand`. No `time`. Same binary → same JSON output, byte-for-byte, on any machine, any architecture, any day.
+- Arithmetic and structural cases use deterministic inputs.
+- Prover/hiding KATs use fixed seeded streams where byte-stable randomness is
+  required.
+- The active Plonky3 commit and dependency graph are pinned.
+- Generated vector hashes are recorded by the parent ZK harness.
 
-Build determinism relies on:
+Fixed seeds are for test-vector reproducibility only. They are not a production
+entropy source.
 
-1. **Pinned Plonky3 commit** (`Cargo.toml` `[dependencies]` rev = `82cfad73...`).
-2. **Committed `Cargo.lock`** (after first build).
-3. **`cargo build --release --frozen`** to refuse upstream drift.
-4. **`profile.release` with `codegen-units = 1` + `lto = "fat"`** (already set in `Cargo.toml`).
+## Regeneration policy
 
-If you suspect oracle non-determinism, hash the JSON output and compare with a teammate's hash. They must match.
+Regenerate and review vectors when:
 
-## When to regenerate vectors
+- the Plonky3 pin changes;
+- the oracle output format changes;
+- a covered C primitive or proof shape changes;
+- a new cross-language KAT is added.
 
-- After bumping Plonky3 commit pin (rare — requires design-doc revision).
-- After changing `CASES_PER_OP` (currently 1024 per operation).
-- After adding new test scenarios to subcommands.
+After regeneration, run:
 
-Regenerated vectors must be committed to `shared/crypto/zk/tools/vectors/` and any drift triggers C-side ctest review.
+```bash
+make -C shared/crypto/zk test
+```
 
-## Why edition 2024
+Any vector or expected-hash drift must be reviewed together with the code or
+parameter change that caused it.
 
-Plonky3 at the pinned commit uses Rust 2024 edition idioms. Matching here avoids workspace-vs-package edition mismatches.
+## Scope
+
+The oracle establishes byte-level agreement for covered cases against a pinned
+reference implementation. It does not establish production readiness, live
+consensus integration, an independent audit, or universal cryptographic
+correctness.

@@ -1,225 +1,82 @@
-# DNA Engine Modular Structure
+# DNA Engine modular structure
 
-This directory contains the modular DNA Engine implementation.
+The DNA Engine C API is split between the core dispatcher
+`src/api/dna_engine.c` and domain modules in this directory.
 
-## Current State
+## Current inventory
 
-**Phase: Modular Extraction Complete** (v0.6.121, current as of 2026-02-22; originally completed at v0.6.70, 2026-01-29)
+This checkout contains **23** `dna_engine_*.c` modules:
 
-The DNA Engine has been refactored from a 10,843-line monolith into modular components.
+| Module | Responsibility |
+|--------|----------------|
+| `dna_engine_addressbook.c` | Wallet address book |
+| `dna_engine_backup.c` | DHT backup and synchronization |
+| `dna_engine_calls.c` | Voice-call signalling and orchestration |
+| `dna_engine_channels.c` | Channels, posts and subscriptions |
+| `dna_engine_contacts.c` | Contacts, requests and blocking |
+| `dna_engine_debug_log.c` | Encrypted debug-log transport |
+| `dna_engine_dnac.c` | DNAC wallet and witness operations |
+| `dna_engine_follow.c` | Follow/unfollow state |
+| `dna_engine_groups.c` | Group lifecycle and GEK operations |
+| `dna_engine_helpers.c` | Shared engine helpers |
+| `dna_engine_identity.c` | Identity creation, loading and profiles |
+| `dna_engine_lifecycle.c` | Pause/resume and background lifecycle |
+| `dna_engine_listeners.c` | DHT subscriptions and event listeners |
+| `dna_engine_logging.c` | Local logging configuration |
+| `dna_engine_media.c` | Media transfer and persistent outbox |
+| `dna_engine_messaging.c` | Direct messaging and retry |
+| `dna_engine_presence.c` | Presence publishing and lookup |
+| `dna_engine_signing.c` | Public engine signing operations |
+| `dna_engine_version.c` | Version publication and checking |
+| `dna_engine_wall.c` | Personal-wall operations |
+| `dna_engine_wall_poll.c` | Wall/feed polling |
+| `dna_engine_wallet.c` | External-chain wallet and swaps |
+| `dna_engine_workers.c` | Worker pool |
 
-| Metric | Value |
-|--------|-------|
-| Original monolith | 10,843 lines |
-| Current monolith | 3,093 lines (71% reduction) |
-| Modules extracted | 18 integrated |
+Do not use old module or line counts as architecture evidence. The tracked
+directory and `messenger/CMakeLists.txt` are authoritative. In particular,
+`dna_engine_feed.c` is not part of the current tree.
 
-## Module Status
+## Ownership model
 
-| Module | Lines | Status | Functions | Description |
-|--------|-------|--------|-----------|-------------|
-| `dna_engine_feed.c` | 644 | ✅ Integrated | 22 | Feed channels, posts, comments, voting |
-| `dna_engine_presence.c` | 356 | ✅ Integrated | 7 | Presence heartbeat, refresh/lookup, network change |
-| `dna_engine_wallet.c` | 990 | ✅ Integrated | 9 | Multi-chain wallet, balances, transactions |
-| `dna_engine_groups.c` | 485 | ✅ Integrated | 10 | Group CRUD, invitations, subscriptions |
-| `dna_engine_messaging.c` | 578 | ✅ Integrated | 6 | Send/receive, conversations, message retry |
-| `dna_engine_contacts.c` | 700 | ✅ Integrated | 11 | Contact requests, blocking, auto-approval |
-| `dna_engine_identity.c` | 975 | ✅ Integrated | 11 | Identity create/load, profiles, display names |
-| `dna_engine_listeners.c` | 1200 | ✅ Integrated | 14 | Outbox, presence, contact request, ACK listeners |
-| `dna_engine_logging.c` | 212 | ✅ Integrated | 13 | Log level/tags config, debug log API |
-| `dna_engine_addressbook.c` | 403 | ✅ Integrated | 10 | Wallet address book CRUD |
-| `dna_engine_backup.c` | 852 | ✅ Integrated | 14 | Message/contacts/groups/addressbook DHT sync |
-| `dna_engine_lifecycle.c` | 178 | ✅ Integrated | 5 | Engine pause/resume for mobile background |
-| `dna_engine_helpers.c` | 106 | ✅ Integrated | 4 | DHT context, key loading, stabilization |
-| `dna_engine_workers.c` | 113 | ✅ Integrated | 3 | Worker thread pool management |
-| `dna_engine_version.c` | 243 | ✅ Integrated | 4 | Version string, DHT publish/check |
-| `dna_engine_signing.c` | 115 | ✅ Integrated | 2 | Dilithium5 signing for QR Auth |
-| `dna_engine_wall.c` | — | ✅ Integrated | 4 | Wall post, delete, load, timeline |
-| `dna_engine_follow.c` | — | ✅ Integrated | 7 | Follow/unfollow, list, DHT sync |
-| `dna_engine_dnac.c` | — | ✅ Integrated | 8 | DNAC digital cash (balance, send, sync, history, UTXOs, fee) |
-| `dna_engine_calls.c` | — | ✅ Integrated | 4+incoming | PQ VoIP call control (Faz A): invite/accept/reject/hangup + `dna_calls_handle_incoming`. Owns orchestrator + keystore over `dna_call_crypto/fsm/orch` |
+| Concern | Location |
+|---------|----------|
+| Engine creation/destruction | `src/api/dna_engine.c` |
+| Task queue and dispatch | `src/api/dna_engine.c` |
+| Internal task/data definitions | `src/api/dna_engine_internal.h` |
+| Public API declarations | `include/dna/dna_engine.h` |
+| Domain handlers and wrappers | `src/api/engine/dna_engine_*.c` |
+| Shared module includes/helpers | `src/api/engine/engine_includes.h` |
 
-## Architecture
+Most modules contain internal `dna_handle_*` task handlers and public
+`dna_engine_*` wrappers. Exceptions should be verified from the module and
+public header rather than inferred from the filename.
 
-```
-src/api/
-├── dna_engine.c              # Monolith (core + dispatchers)
-├── dna_engine_internal.h     # Internal structures and types
-└── engine/
-    ├── README.md             # This file
-    ├── engine_includes.h     # Shared includes for all modules
-    ├── dna_engine_feed.c     # Feed handlers + API
-    ├── dna_engine_presence.c      # P2P handlers + API
-    ├── dna_engine_wallet.c   # Wallet handlers + API
-    ├── dna_engine_groups.c   # Group handlers + API
-    ├── dna_engine_messaging.c # Messaging handlers + API
-    ├── dna_engine_contacts.c # Contact handlers + API
-    ├── dna_engine_identity.c # Identity handlers + API
-    ├── dna_engine_listeners.c # DHT listeners (outbox, presence, ACK)
-    ├── dna_engine_logging.c  # Log config + debug log API
-    ├── dna_engine_addressbook.c # Wallet address book CRUD
-    ├── dna_engine_backup.c   # All DHT sync (messages, contacts, groups, addressbook)
-    ├── dna_engine_lifecycle.c # Engine pause/resume for mobile background
-    ├── dna_engine_helpers.c  # DHT context, key loading, stabilization
-    ├── dna_engine_workers.c  # Worker thread pool management
-    ├── dna_engine_version.c  # DHT version publish/check
-    ├── dna_engine_signing.c  # Dilithium5 signing API
-    ├── dna_engine_follow.c   # Follow system (one-directional)
-    └── dna_engine_dnac.c     # DNAC digital cash wallet
-```
+## Adding or moving an operation
 
-## Module Pattern
+An engine operation normally requires a coordinated update to:
 
-Each module follows this structure:
+1. the task enum and task-parameter union in
+   `src/api/dna_engine_internal.h`;
+2. the handler and public wrapper in the owning module;
+3. the dispatch switch in `src/api/dna_engine.c`;
+4. the declaration in `include/dna/dna_engine.h`;
+5. FFI bindings and tests when the public surface changes;
+6. `messenger/CMakeLists.txt` when a new module file is added.
 
-```c
-/*
- * DNA Engine - [Module] Module
- * Functions:
- *   - dna_handle_xxx()      // Task handlers (internal)
- *   - dna_engine_xxx()      // Public API wrappers
- */
+Keep callback ownership, engine lifetime and worker-thread constraints aligned
+with the neighboring operations in the same module.
 
-#define DNA_ENGINE_XXX_IMPL
-#include "engine_includes.h"
+## Build and test
 
-/* ============ TASK HANDLERS ============ */
-
-void dna_handle_xxx(dna_engine_t *engine, dna_task_t *task) {
-    // Handler implementation
-}
-
-/* ============ PUBLIC API ============ */
-
-dna_request_id_t dna_engine_xxx(dna_engine_t *engine, ...) {
-    // Submits task to engine queue
-    return dna_submit_task(engine, TASK_XXX, &params, cb, user_data);
-}
-```
-
-## Function Ownership
-
-| Category | Location | Pattern |
-|----------|----------|---------|
-| Task handlers | Module files | `dna_handle_*()` |
-| Public API | Module files | `dna_engine_*()` |
-| Task dispatch | dna_engine.c | `dna_execute_task()` |
-| Event system | dna_engine.c | `dna_dispatch_event()` |
-| Lifecycle | dna_engine.c | `dna_engine_create/destroy()` |
-| Pause/Resume | dna_engine_lifecycle.c | `dna_engine_pause/resume()` |
-| Listeners | dna_engine_listeners.c | `dna_engine_listen_*()`, `dna_engine_start_*_listener()` |
-
-## Build Configuration
-
-All module files are compiled by CMakeLists.txt:
-
-```cmake
-set(DNA_LIB_SOURCES
-    ${DNA_ROOT}/src/api/dna_engine.c
-    ${DNA_ROOT}/src/api/engine/dna_engine_feed.c
-    ${DNA_ROOT}/src/api/engine/dna_engine_presence.c
-    ${DNA_ROOT}/src/api/engine/dna_engine_wallet.c
-    ${DNA_ROOT}/src/api/engine/dna_engine_groups.c
-    ${DNA_ROOT}/src/api/engine/dna_engine_messaging.c
-    ${DNA_ROOT}/src/api/engine/dna_engine_contacts.c
-    ${DNA_ROOT}/src/api/engine/dna_engine_identity.c
-    ${DNA_ROOT}/src/api/engine/dna_engine_listeners.c
-    ${DNA_ROOT}/src/api/engine/dna_engine_logging.c
-    ${DNA_ROOT}/src/api/engine/dna_engine_addressbook.c
-    ${DNA_ROOT}/src/api/engine/dna_engine_backup.c
-    ${DNA_ROOT}/src/api/engine/dna_engine_lifecycle.c
-    ${DNA_ROOT}/src/api/engine/dna_engine_helpers.c
-    ${DNA_ROOT}/src/api/engine/dna_engine_workers.c
-    ${DNA_ROOT}/src/api/engine/dna_engine_dnac.c
-)
-```
-
-## Shared Header: engine_includes.h
-
-Provides common includes and cross-platform utilities:
-
-```c
-#include "engine_includes.h"
-
-// Available:
-// - All standard headers (stdio, stdlib, string, time, etc.)
-// - dna_engine_internal.h (engine types, task types)
-// - LOG_TAG definition
-// - safe_timegm() cross-platform UTC time conversion
-// - dna_submit_task() declaration
-```
-
-## Adding a New Handler
-
-1. **Add task type** to `dna_engine_internal.h`:
-   ```c
-   typedef enum {
-       // ...
-       TASK_NEW_OPERATION,
-   } dna_task_type_t;
-   ```
-
-2. **Add params** (if needed) to `dna_task_params_t` union
-
-3. **Implement handler** in appropriate module file:
-   ```c
-   void dna_handle_new_operation(dna_engine_t *engine, dna_task_t *task) {
-       // Implementation
-   }
-   ```
-
-4. **Add public API wrapper** in same module file:
-   ```c
-   dna_request_id_t dna_engine_new_operation(dna_engine_t *engine, ...) {
-       dna_task_callback_t cb = { .completion = callback };
-       return dna_submit_task(engine, TASK_NEW_OPERATION, &params, cb, user_data);
-   }
-   ```
-
-5. **Add dispatch case** in `dna_execute_task()` (dna_engine.c):
-   ```c
-   case TASK_NEW_OPERATION:
-       dna_handle_new_operation(engine, task);
-       break;
-   ```
-
-6. **Declare in header** `include/dna/dna_engine.h`:
-   ```c
-   dna_request_id_t dna_engine_new_operation(dna_engine_t *engine, ...);
-   ```
-
-## Testing
+From the repository root:
 
 ```bash
-# Build
-cd /opt/dna/messenger/build
-cmake .. && make -j$(nproc)
-
-# Verify CLI functions
-./cli/dna-connect-cli whoami
-./cli/dna-connect-cli contacts
-./cli/dna-connect-cli send nocdem "Test"
-
-# Memory check (if valgrind available)
-valgrind --leak-check=full ./cli/dna-connect-cli whoami
+cmake -S messenger -B messenger/build -DCMAKE_BUILD_TYPE=Release
+cmake --build messenger/build -j"$(nproc)"
+ctest --test-dir messenger/build --output-on-failure
 ```
 
-## Version History
-
-| Version | Changes |
-|---------|---------|
-| v0.6.70 | Extracted version + signing modules; moved presence heartbeat to presence |
-| v0.6.69 | Moved message retry to messaging module (bulletproof delivery) |
-| v0.6.68 | Extracted helpers + workers modules (DHT helpers, thread pool) |
-| v0.6.67 | Extracted lifecycle module (pause/resume for mobile background) |
-| v0.6.66 | Consolidated backup module (message backup, contacts/groups/addressbook sync) |
-| v0.6.65 | Extracted address book module (CRUD, DHT sync) |
-| v0.6.64 | Extracted logging module (log config, debug log API) |
-| v0.6.63 | Extracted listeners module (outbox, presence, contact request, ACK) |
-| v0.6.62 | Moved public API wrappers to P2P and Wallet modules |
-| v0.6.61 | Extracted identity module |
-| v0.6.60 | Extracted contacts module |
-| v0.6.59 | Extracted messaging module |
-| v0.6.58 | Extracted groups module |
-| v0.6.57 | Extracted wallet module |
-| v0.6.56 | Security fixes (strdup NULL checks, buffer overflow, timezone) |
+This README describes the current module boundary only. API signatures are
+documented separately under [`messenger/docs/functions/`](../../../docs/functions/README.md)
+and must be checked against the public headers before use.
