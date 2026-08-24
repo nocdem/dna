@@ -393,7 +393,7 @@ One-directional follow system. No approval needed, private to owner.
 
 ---
 
-### DNAC Digital Cash (v0.9.175+)
+### DNAC (DNA Chain) (v0.9.175+)
 
 | Function | Description |
 |----------|-------------|

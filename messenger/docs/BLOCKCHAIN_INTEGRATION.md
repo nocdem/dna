@@ -2,7 +2,7 @@
 
 ## Overview
 
-DNA Connect uses a modular blockchain architecture with 5 wallet chains. Each blockchain is a self-contained module that implements the `blockchain_ops_t` interface. Additionally, DNAC (DNA Cash) provides a native UTXO-based digital cash system over the Nodus DHT.
+DNA Connect uses a modular blockchain architecture with 5 wallet chains. Each blockchain is a self-contained module that implements the `blockchain_ops_t` interface. Additionally, DNAC (DNA Chain) provides a native UTXO blockchain through BFT witnesses embedded in Nodus.
 
 ## Architecture
 
@@ -358,9 +358,9 @@ chain->send(from, to, "0.1", NULL, privkey, 32,
 
 Wallets are managed separately in `blockchain/blockchain_wallet.c`. After adding a chain, update the wallet system to support it.
 
-## DNAC (DNA Cash) Integration
+## DNAC (DNA Chain) Integration
 
-DNAC is a separate UTXO-based digital cash system that operates over the Nodus DHT with BFT witness consensus. Unlike the blockchain wallet chains above (which use `blockchain_ops_t`), DNAC has its own dedicated API and is not part of the blockchain registry.
+DNAC is a native UTXO blockchain whose authoritative state is maintained by BFT witnesses embedded in Nodus. Unlike the external wallet chains above (which use `blockchain_ops_t`), DNAC has its own dedicated API and is not part of the blockchain registry.
 
 ### Architecture
 

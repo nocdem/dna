@@ -1,7 +1,7 @@
 > **⚠️ HISTORICAL — DO NOT USE FOR CURRENT STATE**
 >
 > This roadmap is frozen at **v0.10.2** and reflects the pre-blockchain
-> "DHT cash" architecture that no longer exists. The standalone DHT
+> "DHT ledger" architecture that no longer exists. The standalone DHT
 > transport was removed in v0.12.0; DNAC is now a witness-only PQ
 > blockchain on Nodus BFT.
 >
@@ -13,7 +13,7 @@
 
 # DNAC Implementation Roadmap (HISTORICAL — frozen at v0.10.2)
 
-**Project:** DNAC - Post-Quantum Digital Cash over DHT
+**Project:** DNAC — DNA Chain (historical DHT-ledger implementation)
 **Version:** v0.10.2 (FROZEN — current is v0.14.3, see STATUS.md)
 **Status:** Phase 24 Complete (P0 Security Audit)
 
@@ -21,7 +21,8 @@
 
 ## Overview
 
-DNAC is a post-quantum digital cash system that integrates with DNA Connect:
+DNAC is the DNA Chain project. At this frozen v0.10.2 stage, it used a
+post-quantum UTXO ledger integrated with DNA Connect:
 - **UTXO model** for transactions
 - **DHT** for transport (payments as messages)
 - **Nodus servers** for nullifier witnessing (2-of-3 consensus)
@@ -211,7 +212,7 @@ conservation is enforced by the native cleartext witness check today). Proof siz
 - [x] Documentation: `docs/archive/CLI_COMMANDS.md` (archived 2026-04-24 — CLI now in `dna-connect-cli dna <verb>`)
 
 ### Phase 17: Permanent DHT Storage ✅ COMPLETE (v0.1.29)
-- [x] All DHT data stored permanently (cash doesn't expire)
+- [x] All DHT data stored permanently (payment records do not expire)
 - [x] Payments now permanent
 - [x] Witness attestations permanent
 - [x] Nullifier replication permanent

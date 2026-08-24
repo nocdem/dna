@@ -20,7 +20,7 @@ This document describes how each data type in DNA Connect is stored on the Nodus
 6. [Follow List](#6-follow-list)
 7. [Media Storage](#7-media-storage)
 8. [Debug Log Inbox](#8-debug-log-inbox)
-9. [DNAC (Digital Cash)](#9-dnac-digital-cash)
+9. [DNAC (DNA Chain)](#9-dnac-dna-chain)
 10. [Comparison Table](#10-comparison-table)
 11. [Common Patterns](#11-common-patterns)
 12. [Source File Reference](#12-source-file-reference)
@@ -399,7 +399,7 @@ SHA3-512("dna-debug-inbox" || receiver_fp_raw) → 64-byte DHT key
 
 ---
 
-## 9. DNAC (Digital Cash)
+## 9. DNAC (DNA Chain)
 
 DNAC uses **witness-based BFT consensus**, not DHT storage. Transactions and UTXOs are stored in `witness_<chain_id>.db` on each Nodus witness node, replicated via the BFT protocol on TCP 4004.
 

@@ -30,7 +30,7 @@ metadata disappear.
 |---------|-------------|--------|
 | [**DNA Connect**](messenger/) | End-to-end encrypted communication with multi-chain crypto wallet | RC |
 | [**Nodus**](nodus/) | Post-quantum Kademlia DHT server with cluster management | RC |
-| [**DNAC**](dnac/) | Post-quantum digital cash with BFT witness consensus | Development |
+| [**DNAC**](dnac/) | Post-quantum native UTXO blockchain with BFT witness consensus | Development |
 | [**CPUNK Platform**](cpunk/) | Quantum-safe community platform | Source included |
 
 ---
@@ -172,7 +172,7 @@ dna/
 │       ├── hash/              #   SHA3-512, Keccak-256
 │       ├── key/               #   BIP32, BIP39, PBKDF2
 │       └── utils/             #   Logging, platform abstraction, CSPRNG
-├── dnac/                      # DNA Cash
+├── dnac/                      # DNA Chain
 │   ├── src/                   #   Wallet, transactions, witness client, CLI
 │   ├── include/               #   Public headers
 │   └── tests/                 #   Unit tests
@@ -206,7 +206,7 @@ deployed.
 |----------|-------------|
 | [Messenger README](messenger/README.md) | Messenger overview, features, build |
 | [Nodus README](nodus/README.md) | DHT server architecture and deployment |
-| [DNAC README](dnac/README.md) | Digital cash architecture, CLI commands, transaction format |
+| [DNAC README](dnac/README.md) | DNA Chain architecture, CLI commands, transaction format |
 | [Architecture](messenger/docs/ARCHITECTURE_DETAILED.md) | Detailed system design |
 | [Protocol Specs](messenger/docs/PROTOCOL.md) | Wire formats (Seal, Spillway, Anchor, Atlas, Nexus) |
 | [DNA Engine API](messenger/docs/DNA_ENGINE_API.md) | Core C API reference |

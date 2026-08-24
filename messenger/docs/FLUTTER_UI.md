@@ -255,7 +255,7 @@ final conversationProvider = AsyncNotifierProviderFamily<ConversationNotifier, L
 
 3. **Wallet:**
    - Send tokens with recipient, amount selection
-   - Supported tokens across **5 external chains + DNAC native**: **Cellframe** (CELL, CPUNK, USDC), **Ethereum** (ETH, USDT, USDC), **Solana** (SOL, USDT, USDC), **TRON** (TRX, USDT, USDC), **BSC** (BNB, USDT, USDC), plus **DNAC** (post-quantum native cash)
+   - Supported tokens across **5 external chains + DNAC native**: **Cellframe** (CELL, CPUNK, USDC), **Ethereum** (ETH, USDT, USDC), **Solana** (SOL, USDT, USDC), **TRON** (TRX, USDT, USDC), **BSC** (BNB, USDT, USDC), plus **DNAC** (post-quantum native chain asset)
    - Transaction history UI with address resolution:
      - Resolves `otherAddress` to contact name (via profile wallet fields) or address book label
      - Resolution runs once per fetch, re-resolves reactively when contacts or address book change
@@ -270,7 +270,7 @@ final conversationProvider = AsyncNotifierProviderFamily<ConversationNotifier, L
      - Transfer message JSON includes `token`, `network`, and `chain` fields
      - Transfer bubble with gradient styling and blockchain verification (orange/green/red border)
    - **Note:** "Backbone" network name has been renamed to "Cellframe" throughout the codebase
-   - **DNAC Wallet:** Digital cash (DNAC) integrated via `dna_engine_dnac.c` engine module
+   - **DNAC Wallet:** DNA Chain integration via the `dna_engine_dnac.c` engine module
      - Balance display, send, sync, transaction history, UTXO management
      - Witness-based consensus (not DHT-stored), syncs from nodus witness nodes
 

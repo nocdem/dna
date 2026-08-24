@@ -8,7 +8,7 @@
 
 ## Overview
 
-`dnac-cli` is the command-line interface for DNAC (Post-Quantum Zero-Knowledge Cash). It provides wallet management, identity lookup, and transaction capabilities over the DNA Connect DHT network.
+`dnac-cli` was the command-line interface for DNAC (DNA Chain). This archived version provided wallet management, identity lookup, and transaction capabilities over the DNA Connect DHT network.
 
 ### Installation
 
@@ -278,7 +278,7 @@ All commands interact with the Nodus DHT network via the `nodus_ops` API (OpenDH
 ### Permanent Storage (v0.1.29+)
 
 All DHT data is stored permanently on the Nodus network via the `nodus_ops` API:
-- **Payments**: Never expire (cash doesn't expire)
+- **Payments**: Never expire (payment records do not expire)
 - **Witness attestations**: Permanent record of double-spend prevention
 - **Witness announcements**: Permanent identity publication
 - **Nullifier replication**: Permanent cross-witness sync
@@ -396,7 +396,7 @@ dnac-cli send "$FP" "$AMOUNT"
 | v0.4.0 | 2026-01-23 | Multi-input double-spend vulnerability fix |
 | v0.3.0 | 2026-01-22 | Store change UTXOs locally after send |
 | v0.2.0 | 2026-01-22 | BFT consensus protocol |
-| v0.1.29 | 2026-01-22 | All DHT data now permanent (cash doesn't expire) |
+| v0.1.29 | 2026-01-22 | All DHT data now permanent (payment records do not expire) |
 | v0.1.28 | 2026-01-22 | Added `info`, `address`, `query` commands |
 | v0.1.27 | 2026-01-22 | Witness infrastructure deployment |
 | v0.1.26 | 2026-01-21 | Mint transaction support |

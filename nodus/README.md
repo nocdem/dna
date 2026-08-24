@@ -28,7 +28,7 @@ the source tree alone can prove.
 - **Configurable TTL** — 7 days is the default; permanent/exclusive values and
   values with TTL 0 do not expire
 - **CBOR wire format** — Efficient binary serialization
-- **Embedded DNAC witness server** — BFT consensus for digital cash transactions
+- **Embedded DNAC witness server** — BFT consensus for DNA Chain transactions
 - **Circuit relay** — Peer-to-peer relay with optional per-circuit E2E
   encryption; it is not onion-routed
 - **Media storage and replication** — Binary blob storage with cluster-wide replication
@@ -242,7 +242,7 @@ security certification.
 
 ## Witness System
 
-Nodus embeds a DNAC witness server for BFT consensus on digital-cash
+Nodus embeds a DNAC witness server for BFT consensus on DNA Chain
 transactions. The witness runs on TCP port 4004 and implements PBFT-like
 PROPOSE, PREVOTE, PRECOMMIT and COMMIT phases. The compile-time default proposal
 interval is 5 seconds and the hard batch cap is 10 transactions; active chain

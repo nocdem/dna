@@ -36,7 +36,7 @@ The DNA Engine (`src/api/dna_engine.c`) is a modular async C library with 22 dom
 | `dna_engine_channels.c` | Channel CRUD, posts, subscriptions (**DISABLED** — guarded by `DNA_CHANNELS_ENABLED`) |
 | `dna_engine_contacts.c` | Contact requests, blocking |
 | `dna_engine_debug_log.c` | Encrypted debug-log send to developer (Kyber1024 + AES-256-GCM) |
-| `dna_engine_dnac.c` | DNAC digital cash (balance, send, sync, history, UTXOs) |
+| `dna_engine_dnac.c` | DNA Chain operations (balance, send, sync, history, UTXOs) |
 | `dna_engine_follow.c` | Follow/unfollow, list, DHT sync |
 | `dna_engine_groups.c` | Group CRUD, GEK encryption, invitations |
 | `dna_engine_helpers.c` | Shared utility functions |

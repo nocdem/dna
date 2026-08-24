@@ -733,7 +733,7 @@ git push origin main    # GitHub second (mirror)
 ├── shared/crypto/     # Post-quantum crypto (sign/, enc/, hash/, key/, utils/, zk/)
 ├── messenger/         # DNA Connect - C library + Flutter app
 ├── nodus/             # Nodus - DHT server + client SDK (pure C)
-├── dnac/              # DNA Cash - UTXO digital cash over DHT
+├── dnac/              # DNA Chain - native UTXO blockchain with BFT witnesses
 ├── explorer/          # DNAC block explorer daemon (scan.cpunk.io) — read-only indexer + JSON API
 ├── cpunk/             # cpunk.io website
 ├── scripts/           # Operational scripts (daily summary, etc.)
@@ -765,7 +765,7 @@ git push origin main    # GitHub second (mirror)
        │
   ┌────▼──────────────────────┐    ┌──────────────────┐
   │  shared/crypto/           │    │  dnac/            │
-  │  Kyber1024, Dilithium5,   │◄───│  UTXO cash system │
+  │  Kyber1024, Dilithium5,   │◄───│ Native UTXO chain │
   │  SHA3-512, BIP39, AES-256 │    │  Links libdna     │
   └───────────────────────────┘    └──────────────────┘
 ```
@@ -804,7 +804,7 @@ Nodus is a post-quantum Kademlia DHT with BFT witness consensus. Pure C, no C++ 
 
 ### DNAC Architecture
 
-UTXO-based digital cash with BFT witness consensus. See `dnac/CLAUDE.md` for details.
+Native UTXO blockchain with BFT witness consensus. See `dnac/CLAUDE.md` for details.
 
 - `dnac/src/wallet/` — UTXO management, coin selection, balance
 - `dnac/src/transaction/` — TX building, verification, nullifiers, genesis

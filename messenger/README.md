@@ -56,7 +56,7 @@ an operator-run DHT network with post-quantum cryptographic primitives.
 ### Integrated Multi-Chain Wallet
 - **5 external networks + DNAC native:** Cellframe (CF20), Ethereum (ERC20), BNB Smart Chain (BEP20), TRON (TRC20), Solana (SPL), plus **DNAC** (post-quantum native chain, see bullet below)
 - **9+ Tokens:** CPUNK, CELL, KEL, NYS, QEVM, ETH, BNB, SOL, TRX, USDT
-- **DNAC (DNA Cash)** — Post-quantum digital cash with BFT witness consensus
+- **DNAC (DNA Chain)** — Post-quantum native UTXO blockchain with BFT witness consensus
 - **Send crypto from chat** — Auto-resolves contact's wallet address
 - **Token swaps** — DEX integrations; the Ethereum submission path includes a
   Flashbots Protect option, while protection varies by chain and route
@@ -183,7 +183,7 @@ cd messenger
 | `dna_engine_channels.c` | Channel CRUD, posts, subscriptions |
 | `dna_engine_contacts.c` | Contact requests, blocking |
 | `dna_engine_debug_log.c` | Debug log send/receive |
-| `dna_engine_dnac.c` | DNAC digital cash (balance, send, sync, history) |
+| `dna_engine_dnac.c` | DNA Chain operations (balance, send, sync, history) |
 | `dna_engine_follow.c` | Follow/unfollow, list, DHT sync |
 | `dna_engine_groups.c` | Group CRUD, GEK encryption, invitations |
 | `dna_engine_helpers.c` | Shared utility functions |
@@ -231,7 +231,7 @@ cd messenger
 | [Message System](docs/MESSAGE_SYSTEM.md) | Message handling |
 | [Protocol Specs](docs/PROTOCOL.md) | Wire formats |
 | [Nodus](../nodus/README.md) | DHT server |
-| [DNAC](../dnac/README.md) | Digital cash system |
+| [DNAC](../dnac/README.md) | Native UTXO blockchain |
 
 ---
 

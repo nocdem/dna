@@ -156,7 +156,7 @@ Internal DNA engine implementation with async task queue.
 | `void dna_engine_start_wall_poll(dna_engine_t*)` | Start 5-minute poll timer thread |
 | `void dna_engine_stop_wall_poll(dna_engine_t*)` | Stop poll timer thread |
 
-### DNAC Digital Cash (`dna_engine_dnac.c`)
+### DNAC (DNA Chain) (`dna_engine_dnac.c`)
 
 | Function | Description |
 |----------|-------------|

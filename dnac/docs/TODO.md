@@ -1,7 +1,7 @@
 > **⚠️ HISTORICAL — DO NOT USE FOR CURRENT STATE**
 >
 > This file is frozen at **v0.7.1 / 2026-01-22** and refers to the
-> pre-blockchain DHT cash architecture. Many "shipped" items below
+> pre-blockchain DHT-ledger architecture. Many "shipped" items below
 > have since been removed or replaced (DHT transport removed in v0.12.0,
 > 2-of-3 nodus replaced by 2f+1 BFT, multi-tx blocks added in v0.14.0,
 > Merkle state_root added in v0.11.0).
@@ -172,7 +172,7 @@ Authoritative status: `shared/crypto/zk/RESUME.md` (top block).
 - [x] Documentation: `docs/archive/CLI_COMMANDS.md` (archived 2026-04-24 — CLI now in `dna-connect-cli dna <verb>`)
 
 ### Phase 17: Permanent DHT Storage (v0.1.29) ✅
-- [x] All DHT data stored permanently (cash doesn't expire)
+- [x] All DHT data stored permanently (payment records do not expire)
 - [x] Payments now permanent
 - [x] Witness attestations permanent
 - [x] Nullifier replication permanent

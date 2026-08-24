@@ -1,11 +1,11 @@
-# DNAC — Post-Quantum Digital Cash with BFT Witness Consensus
+# DNAC — DNA Chain
 
 **Version:** v0.17.8-stake.wip | **TX wire:** v2 | **Current amount mode:** transparent
 
-DNAC is the digital-cash component of the DNA monorepo. The current public
-source uses a transparent UTXO ledger whose authoritative state is maintained
-by BFT witnesses embedded in Nodus. It does not use the DHT as the ledger or
-transaction inbox.
+DNAC is the native UTXO blockchain component of the DNA monorepo. The current
+public source uses a transparent UTXO ledger whose authoritative state is
+maintained by BFT witnesses embedded in Nodus. It does not use the DHT as the
+ledger or transaction inbox.
 
 DNAC is a development/testnet component, not a production-ready or anonymous
 payment system. Transaction amounts, recipient fingerprints and token IDs are

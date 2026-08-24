@@ -33,7 +33,7 @@ If a Genesis Protocol harness run is not 7/7 identical `state_root`, that is a d
 
 ## Project Overview
 
-DNAC is a **Post-Quantum Zero-Knowledge Cash** system built on top of DNA Connect.
+DNAC is **DNA Chain**, a post-quantum native UTXO blockchain integrated with DNA Connect.
 
 | Component | Technology |
 |-----------|------------|
@@ -53,7 +53,7 @@ DNAC is a **Post-Quantum Zero-Knowledge Cash** system built on top of DNA Connec
            ▼                              ▼
 ┌─────────────────────┐        ┌─────────────────────┐
 │      libdna         │◀───────│      libdnac        │
-│  (identity, DHT,    │ links  │  (ZK cash system)   │
+│  (identity, DHT,    │ links  │ (native UTXO chain) │
 │   crypto, transport)│        │                     │
 └─────────────────────┘        └─────────────────────┘
                                          │
