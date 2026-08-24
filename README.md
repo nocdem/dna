@@ -6,8 +6,8 @@
 
 <p align="center">
   <a href="#license"><img src="https://img.shields.io/badge/License-Apache%202.0-blue" alt="Apache 2.0"></a>
-  <a href="#status"><img src="https://img.shields.io/badge/Status-RC-orange" alt="RC"></a>
-  <a href="#security"><img src="https://img.shields.io/badge/Security-NIST%20Category%205-red" alt="NIST Cat 5"></a>
+  <a href="#status"><img src="https://img.shields.io/badge/Status-Mixed%20maturity-orange" alt="Mixed maturity"></a>
+  <a href="#security"><img src="https://img.shields.io/badge/Cryptography-Post--quantum-red" alt="Post-quantum cryptography"></a>
   <a href="#platforms"><img src="https://img.shields.io/badge/Platforms-Android%20|%20Linux%20|%20Windows-green" alt="Platforms"></a>
 </p>
 
@@ -15,7 +15,16 @@
 
 ## What is DNA?
 
-DNA is a suite of decentralized applications built on **NIST-approved post-quantum cryptography**. No central servers, no metadata collection, no IP leakage — and protected against both current and future quantum computers.
+DNA is a suite of decentralized applications that combines post-quantum
+cryptography with an operator-run DHT network. Message content is
+end-to-end encrypted and the application does not depend on one central message
+server.
+
+DNA is **not an anonymity network**. A node that accepts a connection can
+observe network metadata such as an IP address, timing and traffic volume, and
+nodes process the protocol metadata required to route, store and expire records.
+The cryptographic boundary protects message content; it does not make transport
+metadata disappear.
 
 | Project | Description | Status |
 |---------|-------------|--------|
@@ -83,13 +92,16 @@ DNA is a suite of decentralized applications built on **NIST-approved post-quant
 
 ---
 
-## Security
+## Cryptography and security scope
 
-**NIST Category 5** — Maximum quantum resistance (256-bit security level).
+Kyber1024 round-3 targets the NIST Category 5 parameter level. This is a
+security-strength target, not a FIPS 203 compliance claim: the KEM in this tree
+is the pre-standard round-3 Kyber construction and does not interoperate with
+ML-KEM-1024.
 
 | Algorithm | Standard | Purpose |
 |-----------|----------|---------|
-| **Kyber1024** | Kyber round-3 (NIST Level 5) — *not* ML-KEM/FIPS 203, see `shared/crypto/enc/qgp_kyber.h` | Key encapsulation |
+| **Kyber1024** | Kyber round-3 (Category 5 target) — **not** ML-KEM/FIPS 203; see `shared/crypto/enc/qgp_kyber.h` | Key encapsulation |
 | **Dilithium5** | ML-DSA-87 (FIPS 204) | Digital signatures |
 | **AES-256-GCM** | NIST | Symmetric encryption |
 | **SHA3-512** | NIST | Hashing |
@@ -115,16 +127,19 @@ git clone https://github.com/nocdem/dna.git
 cd dna
 
 # Messenger C library (build first)
-cd messenger/build && cmake .. && make -j$(nproc)
+cmake -S messenger -B messenger/build -DCMAKE_BUILD_TYPE=Release
+cmake --build messenger/build -j"$(nproc)"
 
 # Nodus DHT server
-cd ../../nodus/build && cmake .. && make -j$(nproc)
+cmake -S nodus -B nodus/build -DCMAKE_BUILD_TYPE=Release
+cmake --build nodus/build -j"$(nproc)"
 
 # DNAC (requires messenger C library built first)
-cd ../../dnac/build && cmake .. && make -j$(nproc)
+cmake -S dnac -B dnac/build -DCMAKE_BUILD_TYPE=Release
+cmake --build dnac/build -j"$(nproc)"
 
 # Flutter app (requires C library)
-cd ../../messenger/dna_messenger_flutter
+cd messenger/dna_messenger_flutter
 flutter pub get && flutter build linux
 ```
 
@@ -174,7 +189,7 @@ dna/
 |-----------|---------|
 | Messenger C Library | v0.11.13 |
 | Flutter App | v1.0.0-rc240 |
-| Nodus | v0.18.16 |
+| Nodus | v0.18.22 |
 | DNAC | v0.17.8-stake.wip |
 
 ---
@@ -196,7 +211,11 @@ dna/
 
 ## Network
 
-DNA uses the Nodus DHT network. Anyone can run a Nodus node — the network is open and community-managed. Nodes store and replicate data but never see message content or metadata.
+DNA uses the Nodus DHT network. Anyone can run a Nodus node. Nodes store and
+replicate encrypted records and cannot decrypt end-to-end encrypted message
+content. They can observe the network and protocol metadata required to accept
+connections and operate the DHT; deployments that require transport anonymity
+need an additional anonymity layer.
 
 ### Current Nodes
 
@@ -234,5 +253,7 @@ DNA uses the Nodus DHT network. Anyone can run a Nodus node — the network is o
 ---
 
 <p align="center">
-  <strong>Release Candidate.</strong> Use with appropriate caution for sensitive communications.
+  <strong>Mixed maturity.</strong> DNA Connect and Nodus are release candidates;
+  DNAC is a development/testnet component. “Release candidate” is not a security
+  certification. Use with appropriate caution for sensitive communications.
 </p>

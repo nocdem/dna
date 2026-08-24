@@ -318,7 +318,7 @@ journalctl `from=<short_fp>` line (still 16 chars) and grep contacts
 
 Post-quantum E2E encrypted messenger with DNA Wallet. **NIST Category 5 security** (256-bit quantum).
 
-**Crypto:** Kyber1024 (ML-KEM-1024), Dilithium5 (ML-DSA-87), AES-256-GCM, SHA3-512
+**Crypto:** Kyber1024 round-3 (not ML-KEM-1024), Dilithium5 (ML-DSA-87), AES-256-GCM, SHA3-512
 
 **Key Features:** E2E encrypted messaging, GEK group encryption, DHT groups, per-identity contacts, user profiles, wall posts, DNA Wallet, DHT-only messaging, offline queueing (7d), BIP39 recovery, SQLite, Flutter UI, Android SDK (JNI)
 

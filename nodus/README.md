@@ -6,8 +6,8 @@
 
 <p align="center">
   <a href="#license"><img src="https://img.shields.io/badge/License-Apache%202.0-blue" alt="Apache 2.0"></a>
-  <a href="#status"><img src="https://img.shields.io/badge/Status-RC%20v0.18.16-orange" alt="RC"></a>
-  <a href="#security"><img src="https://img.shields.io/badge/Crypto-Dilithium5%20(FIPS%20204)-red" alt="Dilithium5"></a>
+  <a href="#status"><img src="https://img.shields.io/badge/Status-RC%20v0.18.22-orange" alt="RC"></a>
+  <a href="#security"><img src="https://img.shields.io/badge/Crypto-Post--quantum-red" alt="Post-quantum cryptography"></a>
 </p>
 
 ---
@@ -17,7 +17,7 @@
 Nodus is the distributed hash table (DHT) infrastructure for the DNA ecosystem. It provides decentralized storage, replication, and real-time subscriptions — all signed with post-quantum cryptography. The network is open — anyone can run a Nodus node and join.
 
 - **Pure C** — No C++ dependencies, minimal footprint
-- **Dilithium5 signatures** — All stored values cryptographically signed (FIPS 204)
+- **Dilithium5 signatures** — All stored values cryptographically signed using the ML-DSA-87 algorithm profile; no validation or certification claim
 - **Kyber1024 channel encryption** — All client connections encrypted (Kyber round-3 key exchange + AES-256-GCM; *not* ML-KEM/FIPS 203 — see `shared/crypto/enc/qgp_kyber.h`)
 - **Cluster management** — Heartbeat-based health monitoring with Kademlia replication
 - **512-bit keyspace** — Kademlia routing with k=8 buckets
@@ -102,9 +102,8 @@ nodus/
 ## Build
 
 ```bash
-cd nodus/build
-cmake ..
-make -j$(nproc)
+cmake -S nodus -B nodus/build -DCMAKE_BUILD_TYPE=Release
+cmake --build nodus/build -j"$(nproc)"
 ```
 
 Produces:
@@ -115,8 +114,7 @@ Produces:
 ## Run Tests
 
 ```bash
-cd nodus/build
-ctest --output-on-failure    # All 41 unit tests
+ctest --test-dir nodus/build --output-on-failure
 ```
 
 **Test Coverage:**
@@ -226,7 +224,7 @@ nodus_client_media_get(client, key, callback, userdata);
 
 ## Kyber Channel Encryption
 
-All TCP connections (ports 4001 and 4002) are encrypted with Kyber1024 key exchange (Kyber **round-3**, NIST Level 5 — this is *not* ML-KEM-1024 and *not* FIPS 203; the divergences are documented in `shared/crypto/enc/qgp_kyber.h`) followed by AES-256-GCM symmetric encryption. The handshake occurs immediately after TCP connection, before any protocol messages are exchanged. This ensures all client operations, inter-node replication, and circuit relay traffic are protected against quantum adversaries.
+All TCP connections (ports 4001 and 4002) are encrypted with Kyber1024 key exchange (Kyber **round-3**, NIST Category 5 target — this is *not* ML-KEM-1024 and *not* FIPS 203; the divergences are documented in `shared/crypto/enc/qgp_kyber.h`) followed by AES-256-GCM symmetric encryption. The handshake occurs immediately after TCP connection, before any protocol messages are exchanged. This protects connection content at the cryptographic layer; it does not hide network metadata and is not a claim of independent security certification.
 
 ---
 

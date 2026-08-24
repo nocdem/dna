@@ -136,7 +136,7 @@ Channel traffic on TCP 4003 can be encrypted using Kyber1024 key encapsulation. 
 | Component | Removed In | Reason |
 |-----------|-----------|--------|
 | Direct P2P TCP messaging | v0.3.154 | DHT-only for privacy |
-| ICE/STUN/TURN | v0.4.61 | Privacy (no IP disclosure) |
+| ICE/STUN/TURN | v0.4.61 | Avoid direct peer IP disclosure; DHT entry nodes still observe client IPs |
 | OpenDHT-PQ | v0.8.0 | Replaced by Nodus |
 | Manual `nodus_client_poll()` cycling | v0.5.6 | Replaced by internal read thread |
 

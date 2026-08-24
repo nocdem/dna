@@ -219,7 +219,8 @@ Abstract API for hardware-backed key wrapping. Android uses TEE via Android Keys
 
 **Directory:** `crypto/enc/kem/`
 
-Internal Kyber1024 (ML-KEM-1024) implementation from pq-crystals reference.
+Internal Kyber1024 round-3 implementation from the pq-crystals reference. It is
+not ML-KEM-1024/FIPS 203 and is not wire-compatible with the final standard.
 
 ### 6.1 KEM API (`kem.h`)
 

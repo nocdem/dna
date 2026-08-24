@@ -1,6 +1,6 @@
 #!/bin/bash
-# DNA Connect — Full setup script for fresh Linux machines
-# Usage: curl -fsSL https://raw.githubusercontent.com/nocdem/dna/main/setup.sh | bash
+# DNA Connect — setup script for fresh Linux machines
+# Usage: clone the repository, inspect this script, then run: bash setup.sh
 
 set -e
 
@@ -101,7 +101,7 @@ cd "$INSTALL_DIR/messenger/build"
 if ctest --output-on-failure 2>&1; then
     info "Tests: PASS"
 else
-    warn "Tests: SOME FAILURES"
+    error "Tests failed; setup is incomplete"
 fi
 
 # ── Done ──────────────────────────────────────────────────────────

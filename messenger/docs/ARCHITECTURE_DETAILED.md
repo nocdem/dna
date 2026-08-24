@@ -35,7 +35,7 @@ DNA Connect is a post-quantum end-to-end encrypted messenger with integrated cry
 
 | Layer | Technology |
 |-------|------------|
-| **Key Encapsulation** | Kyber1024 (ML-KEM-1024) |
+| **Key Encapsulation** | Kyber1024 round-3 (not ML-KEM-1024) |
 | **Digital Signatures** | Dilithium5 (ML-DSA-87) |
 | **Symmetric Encryption** | AES-256-GCM |
 | **Hash Function** | SHA3-512, Keccak-256 (ETH) |
@@ -94,7 +94,7 @@ DNA Connect is a post-quantum end-to-end encrypted messenger with integrated cry
 │   └── dna_engine.c          # Engine implementation
 │
 ├── crypto/                   # Post-quantum cryptography
-│   ├── kem/                  # Kyber1024 (ML-KEM-1024)
+│   ├── kem/                  # Kyber1024 round-3
 │   ├── dsa/                  # Dilithium5 (ML-DSA-87)
 │   ├── cellframe_dilithium/  # Cellframe-compatible DSA
 │   ├── bip39/                # BIP39 mnemonic/seed derivation
@@ -296,7 +296,7 @@ cmake -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK/build/cmake/android.toolchain.cmake \
 
 ## 4. Cryptographic Layer
 
-### 4.1 Kyber1024 (ML-KEM-1024)
+### 4.1 Kyber1024 round-3 (not ML-KEM-1024)
 
 **Location:** `crypto/kem/`
 

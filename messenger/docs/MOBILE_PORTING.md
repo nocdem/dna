@@ -95,7 +95,7 @@ DNA Connect has been successfully ported to Android. The Android SDK provides JN
 
 | Library | Size | Purpose | Mobile Status |
 |---------|------|---------|---------------|
-| `libkem.a` | ~200 KB | Kyber1024 (ML-KEM-1024) | ✅ Pure C |
+| `libkem.a` | ~200 KB | Kyber1024 round-3 (not ML-KEM-1024) | ✅ Pure C |
 | `libdsa.a` | ~300 KB | Dilithium5 (ML-DSA-87) | ✅ Pure C |
 | `libdna.a` | 1.4 MB | Messenger core | ✅ Pure C |
 | `libtransport_lib.a` | ~500 KB | P2P + NAT | ✅ POSIX sockets |

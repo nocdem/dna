@@ -843,7 +843,7 @@ shared/crypto/
 | Algorithm | Header | Sizes |
 |-----------|--------|-------|
 | Dilithium5 (ML-DSA-87) | `crypto/sign/qgp_dilithium.h` | pubkey=2592B, secret=4896B, sig=4627B |
-| Kyber1024 (ML-KEM-1024) | `crypto/enc/qgp_kyber.h` | pubkey=1568B, secret=3168B, ciphertext=1568B |
+| Kyber1024 (round-3; not ML-KEM-1024) | `crypto/enc/qgp_kyber.h` | pubkey=1568B, secret=3168B, ciphertext=1568B |
 | SHA3-512 | `crypto/hash/qgp_sha3.h` | 64-byte digest |
 | Keccak-256 | `crypto/hash/keccak256.h` | 32-byte digest (Ethereum) |
 | secp256k1 ECDSA | `crypto/sign/secp256k1_sign.h` | 65-byte recoverable sig |

@@ -3,8 +3,9 @@
 **Status:** Faz A — call-control plane (signaling + key agreement). Media (audio) is Faz B.
 **Headers:** `src/api/engine/dna_call_crypto.h`, `dna_call_fsm.h`, `dna_call_orch.h`
 **Determinism/security note:** the call path is non-consensus (never touches `state_root`).
-All crypto reuses audited primitives only (ML-KEM-1024, ML-DSA-87, HKDF-SHA3-256, SHA3-512);
-no new primitive. Signaling rides the Seal message channel (see `PROTOCOL.md` §9).
+The call path reuses existing in-tree primitives (Kyber1024 round-3, ML-DSA-87,
+HKDF-SHA3-256 and SHA3-512); it introduces no new primitive. This is not an
+independent audit claim. Signaling rides the Seal message channel (see `PROTOCOL.md` §9).
 
 The headless core (§1–3) is unit-tested in `messenger/tests/test_call_*.c`. The engine module
 (§4) wires it into the live engine: it owns the orchestrator, verifies inbound signatures,
@@ -25,7 +26,7 @@ int dna_call_derive_key(
     const uint8_t caller_fp[64],  // raw Dilithium5 fingerprint (caller)
     const uint8_t callee_fp[64],  // raw fingerprint (callee)
     const uint8_t call_id[16],    // 128-bit per-call id
-    const uint8_t eph_pk[1568],   // ephemeral ML-KEM-1024 public key
+    const uint8_t eph_pk[1568],   // ephemeral Kyber1024 round-3 public key
     uint8_t key_out[32]);         // -> K_call (AES-256)
 ```
 

@@ -234,7 +234,7 @@ The messenger CMake configuration links against the Nodus client library. No sep
 
 1. **Post-Quantum Signatures** - All DHT operations require Dilithium5 (ML-DSA-87) signatures
 2. **Client Authentication** - Dilithium5 challenge/response on TCP connect
-3. **No IP Leakage** - DHT-only mode prevents IP disclosure to third parties
+3. **No direct peer IP disclosure** - Contacts do not receive each other's IPs; connected DHT nodes still observe client IPs and traffic metadata
 4. **Distributed Architecture** - No central servers for message relay
 5. **Cluster Membership** - Node discovery and data replication
 6. **Timestamp-Only Presence** - Online status without IP disclosure

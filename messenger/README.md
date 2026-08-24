@@ -2,14 +2,14 @@
 
 <p align="center">
   <strong>Decentralized Network Applications</strong><br>
-  Quantum-Proof Encrypted Communication with Integrated Multi-Chain Wallet
+  Post-Quantum Encrypted Communication with Integrated Multi-Chain Wallet
 </p>
 
 <p align="center">
   <a href="#status"><img src="https://img.shields.io/badge/Status-RC%20v1.0.0--rc240-blue" alt="RC"></a>
   <a href="#license"><img src="https://img.shields.io/badge/License-Apache%202.0-green" alt="Apache 2.0"></a>
   <a href="#platforms"><img src="https://img.shields.io/badge/Platforms-Android%20|%20Linux%20|%20Windows-orange" alt="Platforms"></a>
-  <a href="#security"><img src="https://img.shields.io/badge/Security-NIST%20Category%205-red" alt="NIST Cat 5"></a>
+  <a href="#security"><img src="https://img.shields.io/badge/Cryptography-Post--quantum-red" alt="Post-quantum cryptography"></a>
 </p>
 
 <p align="center">
@@ -20,12 +20,13 @@
 
 ## What is DNA Connect?
 
-DNA Connect is a **fully decentralized** communication platform and **multi-chain crypto wallet** built with **NIST-approved post-quantum cryptography**.
+DNA Connect is a communication platform and multi-chain crypto wallet built on
+an operator-run DHT network with post-quantum cryptographic primitives.
 
-- **No central servers** — Messages travel through a distributed hash table (DHT)
-- **No IP leakage** — Your real IP is never exposed to contacts or third parties
-- **No metadata collection** — We can't see who talks to whom
-- **Quantum-resistant** — Protected against both current and future quantum attacks
+- **No single central message server** — Messages travel through a distributed hash table (DHT)
+- **End-to-end encrypted content** — DHT nodes cannot decrypt message bodies
+- **Explicit metadata boundary** — Entry nodes can observe IP addresses, timing and traffic volume; nodes process routing and storage metadata
+- **Post-quantum design** — Uses Dilithium5 signatures and round-3 Kyber1024 key encapsulation
 
 ---
 
@@ -60,7 +61,7 @@ DNA Connect is a **fully decentralized** communication platform and **multi-chai
 - **Full transaction history**
 
 ### Privacy-First Architecture
-- **DHT-only transport** — No relay servers that can log traffic
+- **DHT transport** — No single central message relay; participating nodes still observe the metadata needed to operate the network
 - **Nodus DHT network** — Post-quantum Kademlia with cluster replication
 - **Dilithium5 signatures** — All DHT data cryptographically signed
 - **BIP39 recovery** — 24-word seed phrase backup
@@ -74,7 +75,9 @@ DNA Connect is a **fully decentralized** communication platform and **multi-chai
 
 ## Security
 
-**NIST Category 5** — Maximum quantum resistance (256-bit security level)
+The selected parameter sets target NIST security category 5. That target is not
+a security certification, and the Kyber implementation in this tree predates
+the final ML-KEM/FIPS 203 standard.
 
 | Algorithm | Standard | Purpose |
 |-----------|----------|---------|
@@ -84,6 +87,8 @@ DNA Connect is a **fully decentralized** communication platform and **multi-chai
 | **SHA3-512** | NIST | Hashing |
 
 Your keys never leave your device. Recovery via BIP39 seed phrase.
+
+The repository does not claim an independently validated cryptographic module.
 
 **Additional protections:**
 - Signed Kyber handshake with TOFU cache for known nodes
@@ -112,10 +117,11 @@ git clone https://github.com/nocdem/dna.git
 cd dna
 
 # Build C library
-cd messenger/build && cmake .. && make -j$(nproc)
+cmake -S messenger -B messenger/build -DCMAKE_BUILD_TYPE=Release
+cmake --build messenger/build -j"$(nproc)"
 
 # Run Flutter app
-cd ../dna_messenger_flutter
+cd messenger/dna_messenger_flutter
 flutter pub get && flutter run
 ```
 
@@ -200,7 +206,7 @@ cd messenger
 |-----------|---------|
 | C Library | v0.11.13 |
 | Flutter App | v1.0.0-rc240 |
-| Nodus | v0.18.15 |
+| Nodus | v0.18.22 |
 | DNAC | v0.17.8-stake.wip |
 
 ---
@@ -239,5 +245,6 @@ The Flutter application is [source-available (proprietary)](dna_messenger_flutte
 ---
 
 <p align="center">
-  <strong>Release Candidate.</strong> Use with appropriate caution for sensitive communications.
+  <strong>Release Candidate.</strong> This label is not a security certification.
+  Use with appropriate caution for sensitive communications.
 </p>

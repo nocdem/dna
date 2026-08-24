@@ -10,8 +10,8 @@ Quick reference for cryptographic algorithm key and component sizes.
 
 | Algorithm | Component | Size (bytes) | Notes |
 |-----------|-----------|--------------|-------|
-| **Kyber1024** | Public Key | 1568 | ML-KEM-1024 |
-| **Kyber1024** | Private Key | 3168 | ML-KEM-1024 |
+| **Kyber1024** | Public Key | 1568 | Round-3; not ML-KEM-1024 |
+| **Kyber1024** | Private Key | 3168 | Round-3; not ML-KEM-1024 |
 | **Kyber1024** | Ciphertext | 1568 | KEM encapsulation |
 | **Kyber1024** | Shared Secret | 32 | 256-bit symmetric key |
 | **Dilithium5** | Public Key | 2592 | ML-DSA-87 |

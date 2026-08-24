@@ -102,7 +102,7 @@ The Seal Protocol defines the wire format for encrypted messages. Each message i
 
   RECIPIENT ENTRIES (1608 bytes x recipient_count)
   +--------+--------+-----------------------------------------------------+
-  |   0    |  1568  | kyber_ciphertext[1568] (ML-KEM-1024)                |
+  |   0    |  1568  | kyber_ciphertext[1568] (Kyber1024 round-3)          |
   | 1568   |   40   | wrapped_dek[40] (AES-wrapped DEK)                   |
   +--------+--------+-----------------------------------------------------+
 
@@ -146,7 +146,7 @@ typedef struct {
 
 // Recipient entry (1608 bytes)
 typedef struct {
-    uint8_t kyber_ciphertext[1568];  // ML-KEM-1024 ciphertext
+    uint8_t kyber_ciphertext[1568];  // Kyber1024 round-3 ciphertext
     uint8_t wrapped_dek[40];         // AES-wrapped DEK (32+8)
 } messenger_recipient_entry_t;
 
@@ -181,7 +181,7 @@ Example (1 recipient, 100-byte plaintext):
 4. Build payload: `fingerprint || timestamp_be || plaintext`
 5. Encrypt payload with AES-256-GCM (header as AAD)
 6. For each recipient:
-   - ML-KEM-1024 encapsulate -> KEK + ciphertext
+   - Kyber1024 round-3 encapsulate -> KEK + ciphertext
    - AES Key Wrap DEK with KEK -> wrapped_dek
 7. Assemble: `header || recipients || nonce || ciphertext || tag || signature`
 
@@ -350,7 +350,7 @@ typedef struct {
     // ===== MESSENGER KEYS =====
     char fingerprint[129];           // SHA3-512 hex (128 chars + null)
     uint8_t dilithium_pubkey[2592];  // ML-DSA-87 public key
-    uint8_t kyber_pubkey[1568];      // ML-KEM-1024 public key
+    uint8_t kyber_pubkey[1568];      // Kyber1024 round-3 public key
 
     // ===== DNA NAME REGISTRATION =====
     bool has_registered_name;        // true if name registered
@@ -655,7 +655,7 @@ typedef struct {
 typedef enum {
     QGP_KEY_TYPE_INVALID = 0,
     QGP_KEY_TYPE_DSA87   = 1,  // ML-DSA-87 (Dilithium5)
-    QGP_KEY_TYPE_KEM1024 = 2   // ML-KEM-1024 (Kyber1024)
+    QGP_KEY_TYPE_KEM1024 = 2   // Kyber1024 round-3 (not ML-KEM-1024)
 } qgp_key_type_t;
 
 typedef enum {
@@ -692,7 +692,7 @@ Media attachments (voice messages, video clips, images) are stored in DHT using 
 
 | Protocol | Depends On | Used By |
 |----------|------------|---------|
-| **Seal** | ML-KEM-1024, ML-DSA-87, AES-256-GCM | Spillway, Nexus |
+| **Seal** | Kyber1024 round-3, ML-DSA-87, AES-256-GCM | Spillway, Nexus |
 | **Spillway** | Seal, Atlas | P2P Transport |
 | **Anchor** | ML-DSA-87, Atlas | DHT Keyserver |
 | **Atlas** | SHA3-512 | All DHT operations |
@@ -732,7 +732,7 @@ as media references). On updated clients the receive-path router intercepts
 
 | Kind | Extra fields |
 |------|--------------|
-| `INVITE` | `"caller":"<128 hex fp>"`, `"eph_pk":"<base64 1568B ML-KEM-1024 pk>"`, `"cap":{...}` |
+| `INVITE` | `"caller":"<128 hex fp>"`, `"eph_pk":"<base64 1568B Kyber1024 round-3 pk>"`, `"cap":{...}` |
 | `ACCEPT` | `"eph_ct":"<base64 1568B>"`, `"static_ct":"<base64 1568B>"` |
 | `REJECT` / `BUSY` / `END` | `"reason":<int>` |
 | `RINGING` | (base fields only) |
@@ -747,7 +747,7 @@ fetched for the dialed fingerprint, asserting `fp == SHA3-512(pk)`.
 
 ### 9.3 Per-call key agreement (K_call)
 
-The caller mints a per-call **ephemeral** ML-KEM-1024 keypair (in the signed INVITE). The callee
+The caller mints a per-call **ephemeral** Kyber1024 round-3 keypair (in the signed INVITE). The callee
 encapsulates to both the ephemeral pk and the caller's static pk (from the DHT profile),
 returning `eph_ct` + `static_ct` in the signed ACCEPT. Both sides derive:
 
