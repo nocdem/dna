@@ -6505,6 +6505,38 @@ int nodus_witness_bft_initiate_view_change(nodus_witness_t *w) {
          * per-target, so records at other targets simply do not count
          * toward this one. */
     }
+
+    /* P1(a) — ANCHOR THE VIEW CHANGE TO A HEIGHT THAT IS STILL OPEN.
+     *
+     * `round_state.block_height` is written on round ENTRY only
+     * (handle_propose :4636, and the leader's own start path), and the
+     * commit reset at :6254-6257 leaves the finished round's height in
+     * place when it returns the phase to IDLE. So an IDLE node's height
+     * field is the height it LAST worked on — i.e. <= the committed tip.
+     *
+     * Two of this function's three callers already hold tip+1 there and
+     * are unaffected: the own-round-timeout entry (:8011) and the
+     * escalation (:7965) both run from inside a live round. The THIRD —
+     * the f+1 join at :6866, reached from handle_viewchg, which has no
+     * phase gate — can pull a node in straight from IDLE, carrying that
+     * stale height. Without this normalization the P1(b) release below
+     * would read `tip >= block_height` as true on the very next tick and
+     * kill the join before it could vote; the joiner would be silenced
+     * exactly as O15C-C D1 silenced it, one mechanism further along.
+     *
+     * A view change is about the NEXT block, so tip+1 is what the field
+     * means here. Idempotent by construction: a round already anchored
+     * at tip+1 fails the `<=` and is left byte-identical, so the two
+     * in-round callers keep their existing behaviour. It can only ever
+     * RAISE a stale value — handle_propose validates an incoming
+     * proposal's height against the same local next-height, so no
+     * legitimate round is ever anchored above tip+1 for this to lower. */
+    {
+        uint64_t committed_tip = nodus_witness_block_height(w);
+        if (w->round_state.block_height <= committed_tip)
+            w->round_state.block_height = committed_tip + 1;
+    }
+
     w->round_state.phase = NODUS_W_PHASE_VIEW_CHANGE;
 
     /* Record our own view-change vote, carrying our own last_prepared.
@@ -7743,6 +7775,84 @@ static void bft_emit_batch_replies(nodus_witness_t *w, int status,
 
 void nodus_witness_bft_check_timeout(nodus_witness_t *w) {
     if (!w) return;
+
+    /* P1 — MOOT-ROUND RELEASE. The missing sibling of the two other
+     * height-based releases this same tick already performs: the MED-28
+     * retained batch (nodus_witness.c:1128-1134) and the C5 reproposal
+     * binding (nodus_witness.c:1141-1150). Same trigger — "the chain has
+     * reached the height this object was about" — and the same
+     * semantics: the object is now unusable, so let it go.
+     *
+     * THE HOLE IT CLOSES. handle_propose refuses every proposal while
+     * the phase is not IDLE (:4503-4507). The only phase->IDLE reset on
+     * the remote-COMMIT path is gated on `round_state.round ==
+     * hdr->round` (:6254-6257), and handle_commit itself has NO phase
+     * gate — so a node whose round number has fallen behind keeps
+     * applying remote commits (its DB tip advances normally) while its
+     * phase stays pinned. On the 20-node rehearsal three validators sat
+     * at DB tip 42 with round_state.block_height frozen at 36 and phase
+     * 5, rejecting every PROPOSE; the participating set dropped below
+     * quorum and the chain halted for good. A view change that never
+     * assembles quorum reaches the same trap from the other direction:
+     * from VIEW_CHANGE the escalation branch below re-arms forever and
+     * never returns to IDLE.
+     *
+     * THE CONDITION IS THE DEFINITION OF MOOT. `block_height` is the
+     * height this round / view change is trying to decide. Once our OWN
+     * committed chain contains that height, there is nothing left to
+     * decide: the outcome is already final and already ours.
+     * `block_height != 0` keeps a zeroed round_state (a node that has
+     * never run a round) from matching the empty-chain tip of 0.
+     *
+     * WHY IT IS SAFE.
+     *  - The trigger is our own committed chain. That decision is final
+     *    and purely local, so no peer's message and no timing can make
+     *    two honest nodes evaluate it differently at the same height.
+     *  - No vote is emitted here and none is retracted: votes are
+     *    broadcast messages, and dropping local round state does not
+     *    unsay one. A later PROPOSE builds a fresh round from scratch
+     *    (:4620-4645), which overwrites every field cleared here.
+     *  - `current_view` is NOT touched. It is written at exactly five
+     *    places — bft.c:4622 (round entry from a proposal), bft.c:6900
+     *    (view-change quorum), bft.c:7241 (NEW_VIEW accept),
+     *    nodus_witness_peer.c:783 (IDENT adoption) and
+     *    nodus_witness_db.c:2176 (restore) — and none of them is here.
+     *    Leader election therefore sees no change, so this can neither
+     *    invent a leader nor skip one.
+     *  - `view_changes[]`, `last_prepared`, `reproposal_*` and
+     *    `retained_batch` are deliberately left alone: each has its own
+     *    lifecycle (last_prepared is cleared by commit at :8419 and by
+     *    after_successor_commit at :5115; the other two by the height
+     *    guards in the tick cited above). Clearing them here would
+     *    destroy a prepared certificate that a later view may still
+     *    have to honour — the C5 safety property.
+     *  - round_state_free_batch is the same release the round-timeout
+     *    branch below already performs on the same entries (:7975); this
+     *    only reaches it sooner, and only for a height whose block is
+     *    already committed. */
+    if (w->round_state.phase != NODUS_W_PHASE_IDLE &&
+        w->round_state.block_height != 0) {
+        /* The two cheap field tests gate the query, so an IDLE node —
+         * the common case, every tick — still costs no DB round trip. */
+        uint64_t committed_tip = nodus_witness_block_height(w);
+        if (committed_tip >= w->round_state.block_height) {
+            fprintf(stderr, "%s: P1 round at height %llu superseded by "
+                    "committed chain (tip=%llu, phase=%d) — releasing "
+                    "to IDLE\n", LOG_TAG,
+                    (unsigned long long)w->round_state.block_height,
+                    (unsigned long long)committed_tip,
+                    w->round_state.phase);
+            round_state_free_batch(&w->round_state);
+            w->round_state.phase = NODUS_W_PHASE_IDLE;
+            w->round_state.client_conn = NULL;
+            w->view_change_in_progress = false;
+            w->view_change_voted = false;
+            /* Return rather than fall through: the IDLE branch below
+             * would now match and log an "idle_stall" diagnostic
+             * describing a stall that just ended. */
+            return;
+        }
+    }
 
     if (w->round_state.phase == NODUS_W_PHASE_IDLE) {
         /* O15H TEMPORARY DIAGNOSTIC — the whole point of this return is

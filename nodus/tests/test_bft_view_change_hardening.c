@@ -35,6 +35,20 @@
  *        target must vote there (immediately at f+1, or at its own
  *        timeout) rather than jump past it.
  *
+ *  P1 — a node whose round or view change never completes was trapped
+ *       out of consensus FOREVER. handle_propose refuses every proposal
+ *       while the phase is not IDLE, and the only phase->IDLE reset on
+ *       the remote-COMMIT path is gated on the round NUMBER matching —
+ *       which a node left behind never does. handle_commit has no phase
+ *       gate, so such a node keeps applying remote commits and its DB
+ *       tip advances normally while its phase stays pinned. Observed on
+ *       the 20-node rehearsal: three validators at DB tip 42 with
+ *       round_state.block_height frozen at 36 and phase 5, rejecting
+ *       every PROPOSE; the participating set fell below quorum and the
+ *       chain halted permanently. §11 covers the release, its converse,
+ *       and the height normalization that keeps the release from
+ *       killing a view change joined from IDLE.
+ *
  * Fixture style follows test_bft_liveness.c: heap witness (multi-MB),
  * real ML-DSA-87 keys so PREVOTE cert_sig verification is the production
  * check rather than a stub.
@@ -43,6 +57,7 @@
 #include "witness/nodus_witness.h"
 #include "witness/nodus_witness_bft.h"
 #include "witness/nodus_witness_committee.h"
+#include "witness/nodus_witness_db.h"   /* §11 — block_add / block_height */
 #include "witness/nodus_witness_vset.h"
 #include "protocol/nodus_tier3.h"
 #include "crypto/nodus_sign.h"
@@ -277,6 +292,65 @@ static bool deliver_prevote(nodus_witness_t *w, const peer_t *from,
     fprintf(stderr, "deliver_prevote: inconsistent (rc=%d %d->%d)\n",
             rc, before, after);
     exit(1);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+ * §11 helpers — a fixture with a REAL committed tip.
+ *
+ * P1's whole trigger is nodus_witness_block_height(), which answers from
+ * the chain DB (nodus_witness_db.c:785-821). The no-DB fixture above
+ * therefore reports a tip of 0 forever, and EVERY P1 assertion made on
+ * it would pass for the wrong reason: the release's `block_height != 0`
+ * guard alone would carry it, with or without the code under test. §11
+ * needs a DB, and needs the tip to be a number it chose.
+ *
+ * No vset snapshot is written here. With no committee rows the committee
+ * gates take the documented pre-genesis roster fallback (F17 A5) —
+ * exactly what §1-§5 rely on — so §11 varies the HEIGHT and nothing
+ * else. Contrast §6, which exists to vary committee resolution.
+ * ═══════════════════════════════════════════════════════════════════ */
+static void chain_db_open(nodus_witness_t *w, char *dir_template, uint8_t tag)
+{
+    if (mkdtemp(dir_template) == NULL) {
+        fprintf(stderr, "mkdtemp\n"); exit(1);
+    }
+    snprintf(w->data_path, sizeof(w->data_path), "%s", dir_template);
+    /* 16 bytes is the canonical chain_id width; set_chain_id
+     * (nodus_witness.c:290-291) copies 16 and zero-fills to 32. */
+    uint8_t chain_id[16];
+    memset(chain_id, tag, sizeof(chain_id));
+    if (nodus_witness_create_chain_db(w, chain_id) != 0) {
+        fprintf(stderr, "chain db\n"); exit(1);
+    }
+}
+
+static void chain_db_drop(nodus_witness_t *w, const char *dir) {
+    nodus_witness_close(w);
+    fixture_free(w);
+    char cmd[256];
+    snprintf(cmd, sizeof(cmd), "rm -rf %s", dir);
+    if (system(cmd) != 0) { /* best effort cleanup */ }
+}
+
+/* Append `n` blocks through the PRODUCTION writer and return the tip it
+ * produced. The tip is READ BACK rather than assumed: `blocks.height` is
+ * INTEGER PRIMARY KEY AUTOINCREMENT (nodus_witness.c:97-98) and
+ * nodus_witness_block_height answers from v2_blocks instead when
+ * v2_successor is set, so a caller that computed the tip itself could
+ * silently be testing against a tip of 0 — the one value that makes
+ * every §11 assertion vacuous. Callers assert on the returned number. */
+static uint64_t seed_blocks(nodus_witness_t *w, int n) {
+    uint8_t tx_root[NODUS_T3_TX_HASH_LEN];
+    uint8_t state_root[NODUS_T3_TX_HASH_LEN];
+    for (int i = 0; i < n; i++) {
+        memset(tx_root, (uint8_t)(0xA0 + i), sizeof(tx_root));
+        memset(state_root, (uint8_t)(0xB0 + i), sizeof(state_root));
+        if (nodus_witness_block_add(w, tx_root, 1, (uint64_t)(1000 + i),
+                                    w->my_id, state_root, NULL, 0) != 0) {
+            fprintf(stderr, "block_add %d\n", i); exit(1);
+        }
+    }
+    return nodus_witness_block_height(w);
 }
 
 int main(void) {
@@ -849,6 +923,190 @@ int main(void) {
         CHECK(!w->reproposal_required,
               "at a HIGHER target the lower target's certificate is ignored");
         fixture_free(w);
+    }
+
+    /* ── §11 P1 — a round whose height the chain already committed is
+     *            RELEASED, so the node can take the next proposal ──── */
+    printf("§11 P1 — the moot-round release\n");
+    {
+        peer_t b, c; peer_make(&b); peer_make(&c);
+        /* A quorum of 5 against a 3-node roster can never be met, so the
+         * view change started below CANNOT complete. That matters: within
+         * this section's closed world — no messages are delivered, only
+         * check_timeout is called — bft_vc_check_quorum (bft.c:6933) is
+         * the one OTHER reachable path back to IDLE, and the quorum puts
+         * it structurally out of reach. So P1 is the only remaining
+         * explanation for an IDLE phase at the end of this section.
+         * (Globally there are more IDLE resets — the commit reset at
+         * :6254-6257 and handle_newview's — but neither can fire here:
+         * both need an inbound message.) */
+        nodus_witness_t *w = fixture(&self, (peer_t[]){b, c}, 2, 5,
+                                     15000, 10000);
+        char dir[] = "/tmp/test_bft_p1_rel_XXXXXX";
+        chain_db_open(w, dir, 0x11);
+
+        uint64_t tip = seed_blocks(w, 3);
+        CHECK(tip == 3, "seeded chain tip is 3 — NONZERO, which is what "
+                        "keeps this section from passing on the "
+                        "`block_height != 0` guard alone");
+        const uint64_t H = tip + 1;     /* the height this round decides */
+
+        enter_round(w, &self, 6, H, tx_hash);
+        age_phase(w, 16000);
+        nodus_witness_bft_check_timeout(w);
+        CHECK(w->round_state.phase == NODUS_W_PHASE_VIEW_CHANGE,
+              "round timeout moved the phase to VIEW_CHANGE");
+        CHECK(w->view_change_in_progress && w->view_change_voted,
+              "the view change is live and we voted");
+        /* P1(a) IDEMPOTENCE. A round already anchored at tip+1 must come
+         * back out of initiate_view_change unchanged; a normalization
+         * that bumped unconditionally would push this to tip+2 and quietly
+         * break every height-anchored check downstream. */
+        CHECK(w->round_state.block_height == H,
+              "P1(a) left an already-correct anchor alone (H, not H+1)");
+        uint32_t view_before   = w->current_view;
+        uint32_t target_before = w->view_change_target;
+
+        /* The chain reaches H by some OTHER route — a remote COMMIT at a
+         * round number we no longer match, or a SYNC. Neither resets our
+         * phase: the reset at bft.c:6254-6257 requires the round numbers
+         * to be EQUAL, and that is the whole trap. */
+        CHECK(seed_blocks(w, 1) == H, "the chain committed height H");
+
+        /* ONE tick, deliberately NOT aged. The view-change budget is
+         * untouched (10 s, stamped a moment ago), so the escalation
+         * branch cannot be what moves anything here. */
+        nodus_witness_bft_check_timeout(w);
+
+        CHECK(w->round_state.phase == NODUS_W_PHASE_IDLE,
+              "P1 released the moot round to IDLE — precisely the state "
+              "handle_propose (bft.c:4503) demands before it will accept "
+              "a proposal at all");
+        CHECK(!w->view_change_in_progress,
+              "view_change_in_progress cleared with it");
+        CHECK(!w->view_change_voted,
+              "and view_change_voted, so a later target can be voted for");
+        /* ⚠ THE SAFETY ASSERTION. A release that also moved current_view
+         * would be changing the leader without a quorum ever asking —
+         * the one thing a liveness fix must not buy its liveness with. */
+        CHECK(w->current_view == view_before,
+              "current_view is UNTOUCHED — only quorum may advance it");
+        CHECK(w->view_change_target == target_before,
+              "and the target is left for the record set to decide");
+
+        chain_db_drop(w, dir);
+    }
+
+    /* ── §11b P1 converse — the release must not fire ONE BLOCK EARLY ─
+     *
+     * Identical to §11 except that the chain never reaches H. The two
+     * sections differ by exactly one committed block, which is what pins
+     * the trigger at `tip >= block_height` rather than at anything
+     * looser. Without this leg a release that fired unconditionally
+     * would pass §11 and destroy every view change in production. ── */
+    printf("§11b P1 converse — no release while the height is still open\n");
+    {
+        peer_t b, c; peer_make(&b); peer_make(&c);
+        nodus_witness_t *w = fixture(&self, (peer_t[]){b, c}, 2, 5,
+                                     15000, 10000);
+        char dir[] = "/tmp/test_bft_p1_conv_XXXXXX";
+        chain_db_open(w, dir, 0x12);
+
+        uint64_t tip = seed_blocks(w, 3);
+        CHECK(tip == 3, "seeded chain tip is 3 (nonzero — see §11)");
+        const uint64_t H = tip + 1;
+
+        enter_round(w, &self, 6, H, tx_hash);
+        age_phase(w, 16000);
+        nodus_witness_bft_check_timeout(w);
+        CHECK(w->round_state.phase == NODUS_W_PHASE_VIEW_CHANGE,
+              "round timeout moved the phase to VIEW_CHANGE");
+
+        /* THE ONE DIFFERENCE: no block is added. */
+        CHECK(nodus_witness_block_height(w) == H - 1,
+              "the chain is still ONE block short of H");
+
+        nodus_witness_bft_check_timeout(w);
+        CHECK(w->round_state.phase == NODUS_W_PHASE_VIEW_CHANGE,
+              "at tip == H-1 the view change SURVIVES the tick");
+        CHECK(w->view_change_in_progress,
+              "and is still in progress");
+        CHECK(w->view_change_voted,
+              "and our vote still stands");
+
+        chain_db_drop(w, dir);
+    }
+
+    /* ── §11c P1(a) — a view change JOINED FROM IDLE survives the tick ─
+     *
+     * handle_viewchg has no phase gate, so its f+1 join can pull a node
+     * in straight from IDLE. An IDLE node's round_state still carries the
+     * height it LAST worked on — which is <= the committed tip — so
+     * without the P1(a) normalization the joiner enters VIEW_CHANGE
+     * already matching the release's condition and the very next tick
+     * throws it back out. It would be silenced exactly as O15C-C D1
+     * silenced it, one mechanism further along. ─────────────────────── */
+    printf("§11c P1(a) — a view change joined from IDLE is not released\n");
+    {
+        peer_t p[6];
+        for (int i = 0; i < 6; i++) peer_make(&p[i]);
+        /* quorum 5 → join threshold 3. Three peer votes plus our own
+         * self-record is 4, still short of 5 — so the view change stays
+         * OPEN and P1 remains the only thing that could close it. */
+        nodus_witness_t *w = fixture(&self, p, 6, 5, 15000, 10000);
+        char dir[] = "/tmp/test_bft_p1_join_XXXXXX";
+        chain_db_open(w, dir, 0x13);
+
+        uint64_t T = seed_blocks(w, 3);
+        CHECK(T == 3, "seeded chain tip is 3 (nonzero — see §11)");
+
+        /* An IDLE node that JUST COMMITTED height T. The commit reset
+         * (bft.c:6254-6257) puts the phase back to IDLE but leaves the
+         * finished round's height in round_state — so block_height == T
+         * == tip, which is exactly the shape the release matches. */
+        memset(&w->round_state, 0, sizeof(w->round_state));
+        w->round_state.round = 6;
+        w->round_state.block_height = T;
+        w->round_state.phase = NODUS_W_PHASE_IDLE;
+        /* Stamp the clock fresh, so the ONLY thing that could move the
+         * phase on the tick below is the P1 release. */
+        w->round_state.phase_start_time = nodus_time_now() * 1000ULL;
+
+        nodus_t3_msg_t vc;
+        for (int i = 0; i < 3; i++) {
+            fill_viewchg(&vc, w, &p[i], 1);
+            CHECK(nodus_witness_bft_handle_viewchg(w, &vc) == 0,
+                  "peer VIEW_CHANGE at view 1 recorded");
+        }
+        CHECK(w->view_change_voted,
+              "f+1 pulled us into the view change from IDLE");
+        CHECK(w->round_state.phase == NODUS_W_PHASE_VIEW_CHANGE,
+              "and moved our phase to VIEW_CHANGE");
+
+        /* ⚠ THE DISCRIMINATING ASSERTION. Pre-P1(a) the joiner keeps the
+         * committed height T here, and `tip >= block_height` is already
+         * true before it has said a word. */
+        CHECK(w->round_state.block_height == T + 1,
+              "P1(a) re-anchored the joined view change at tip+1");
+
+        /* Re-stamp immediately before the tick. initiate_view_change does
+         * NOT stamp the phase clock, and the adoption block only does so
+         * when the phase is ALREADY VIEW_CHANGE (bft.c:6807-6808) — which
+         * it was not, since we joined from IDLE. So the joiner inherits
+         * whatever clock it had, and this test would otherwise be relying
+         * on a 10 s margin instead of on a fact. With the stamp here the
+         * escalation branch is unreachable BY CONSTRUCTION, and the P1
+         * release is the only thing left that could move the phase. */
+        w->round_state.phase_start_time = nodus_time_now() * 1000ULL;
+        nodus_witness_bft_check_timeout(w);
+        CHECK(w->round_state.phase == NODUS_W_PHASE_VIEW_CHANGE,
+              "the tick did NOT release the freshly joined view change");
+        CHECK(w->view_change_in_progress && w->view_change_voted,
+              "our vote at the joined target still stands");
+        CHECK(w->current_view == 0,
+              "and current_view never moved: only quorum advances it");
+
+        chain_db_drop(w, dir);
     }
 
     printf("PASS test_bft_view_change_hardening\n");
