@@ -174,7 +174,13 @@ typedef struct {
     uint32_t    quorum;             /* 2f+1 */
     uint32_t    round_timeout_ms;
     uint32_t    viewchg_timeout_ms;
-    uint32_t    max_view_changes;
+    /* O15H — `max_view_changes` REMOVED. It was written by
+     * nodus_witness_bft_config_init and read by nothing, anywhere in the
+     * tree. Kept next to the new view-change ESCALATION in
+     * nodus_witness_bft_check_timeout it would read as the bound on that
+     * escalation, which it never was — and a cap there would only
+     * restore the dead end the escalation exists to remove. Deleted
+     * rather than wired up (No Dead Code). */
 } nodus_witness_bft_config_t;
 
 /* ── BFT consensus phase ─────────────────────────────────────────── */

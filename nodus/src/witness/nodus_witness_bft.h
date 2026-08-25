@@ -279,6 +279,37 @@ int nodus_witness_bft_handle_newview(nodus_witness_t *w,
 /** Initiate view change (broadcasts VIEW_CHANGE to peers). */
 int nodus_witness_bft_initiate_view_change(nodus_witness_t *w);
 
+/**
+ * O15H D3/D4 — the post-commit bookkeeping every SUCCESSOR commit path
+ * owes: clear `last_prepared` (the block is durable, the certificate
+ * protecting it is redundant) and refresh `bft_config` from the committee
+ * governing the NEXT height.
+ *
+ * `nodus_witness_commit_batch` does both inline, but successor blocks do
+ * not go through it. THREE paths commit a successor block and each must
+ * call this:
+ *   1. own-quorum        — nodus_witness_bft.c, PRECOMMIT quorum
+ *   2. remote-COMMIT     — nodus_witness_bft.c, handle_commit
+ *   3. sync / QC-recovery — nodus_witness_v2_finalize.c, which calls
+ *      nodus_witness_v2_apply_block DIRECTLY
+ *
+ * ⚠ PATH 3 WAS MISSED, and the 20-node rehearsal showed what that costs.
+ * A node that received a block by SYNC kept `last_prepared` pinned at the
+ * height it had just committed, so it went on advertising a prepared
+ * certificate for an ALREADY-COMMITTED height in every VIEW_CHANGE. Peers
+ * selected that certificate, bound the new view to a committed height,
+ * and rejected the leader's proposal for the real next one:
+ * "C5 PROPOSE does not match NEW_VIEW reproposal (expected_h=37
+ * got_h=37)", views climbing 8 → 18 with no block committed. Its quorum
+ * also never refreshed — the original D3 symptom, on the third path.
+ *
+ * Idempotent, and safe to call after a REPLAY of an already-committed
+ * block: clearing an already-clear slot is a no-op and the refresh reads
+ * committed state. Refresh failure latches safety_halt — a witness that
+ * cannot know its committee must not keep voting.
+ */
+void nodus_witness_bft_after_successor_commit(nodus_witness_t *w);
+
 /* O15C-C D2 — feed buffered out-of-order PREVOTE/PRECOMMIT votes back
  * through the ordinary vote handler once the round/phase they belong to
  * is live. Called automatically at both round starts and after every

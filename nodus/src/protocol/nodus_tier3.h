@@ -25,8 +25,14 @@
 #define NODUS_TIER3_H
 
 #include "nodus/nodus_types.h"
+/* O15H D8 — the V2 envelope family marker + its versioned capacity
+ * bound, for nodus_t3_tx_size_limit below. env_wire.h is dependency-free
+ * by its own rule (it may include ledger_ids.h and nothing from nodus),
+ * so this direction of the include is the safe one. */
+#include "dnac/env_wire.h"
 #include <stdbool.h>
 #include <stdint.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -34,6 +40,36 @@ extern "C" {
 
 /* Maximum encode buffer size (fits any T3 message) */
 #define NODUS_T3_MAX_MSG_SIZE  131072
+
+/* O15H D8 — the family-aware per-transaction size bound, in ONE place.
+ *
+ * Two lanes, two ceilings, one selector. A Ledger V2 envelope is bounded
+ * by its OWN versioned capacity constant (DNA_ENV_MAX_TOTAL_LEN, derived
+ * and oracle-checked in shared/dnac/env_wire.h); everything else keeps
+ * the legacy semantic limit EXACTLY as it was. Selection is by the
+ * leading 16-byte wire-family marker, read before any length-driven
+ * work, so a legacy frame can never be sized against the larger bound
+ * and legacy behaviour is byte-identical.
+ *
+ * Carrying capacity is NOT assumed — it was checked. PROPOSE and COMMIT
+ * already ride the 1 MB heap encode/verify path
+ * (nodus_witness_bft_broadcast + nodus_t3_verify, NODUS_W_MAX_SYNC_RSP_SIZE),
+ * and the one stack buffer that carried a transaction — the w_fwd
+ * forward request in nodus_witness_handlers.c — moved to that same heap
+ * bound with this change. peer.c's three NODUS_T3_MAX_MSG_SIZE buffers
+ * carry w_ident / w_rost_q / w_rost_r, none of which holds a
+ * transaction, so they are untouched.
+ *
+ * NOTE the asymmetry this preserves: raising a bound cannot make a node
+ * accept anything a peer would refuse to produce, because the envelope
+ * decode, admission and the engine's preflight all still apply. It only
+ * stops a node refusing a transaction its own consensus rules require.
+ */
+static inline uint32_t nodus_t3_tx_size_limit(const uint8_t *tx, size_t len)
+{
+    return dna_env_wire_is_envelope(tx, len) ? (uint32_t)DNA_ENV_MAX_TOTAL_LEN
+                                             : (uint32_t)NODUS_T3_MAX_TX_SIZE;
+}
 
 /* Phase 11 / Task 11.3 — three-tier sync_rsp size guard.
  *

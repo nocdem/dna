@@ -17,6 +17,7 @@
 #include "dnac/block_v2.h"
 #include "dnac/qc_v2.h"
 #include "witness/nodus_witness_v2_qc.h"
+#include "witness/nodus_witness_bft.h"   /* O15H D3/D4 post-commit hook */
 #include "crypto/utils/qgp_log.h"
 
 #define LOG_TAG "WITNESS_V2_FINAL"
@@ -169,6 +170,22 @@ int nodus_witness_v2_finalize_block(nodus_witness_t *w,
      * just taught to avoid. */
     int arc = nodus_witness_v2_apply_block(w, blk);
     if (!nodus_v2_result_is_accepted(arc)) return arc;
+
+    /* O15H D3/D4 — THE THIRD SUCCESSOR COMMIT PATH.
+     *
+     * This seam applies a block WITHOUT going through
+     * nodus_witness_commit_batch (legacy) or the BFT round's own commit
+     * sites, so the post-commit bookkeeping those perform — clearing
+     * `last_prepared`, refreshing `bft_config` from the committee for the
+     * next height — has to be performed here too. Leaving it out meant a
+     * node that caught up by SYNC kept advertising a prepared certificate
+     * for a height it had already committed; peers bound the next view to
+     * that committed height and rejected every real proposal, and the
+     * 20-node rehearsal stalled with views climbing 8 → 18. Called for
+     * IDEMPOTENT_REPLAY as well: the helper is idempotent, and a replay
+     * is exactly the case where this node may be learning about a commit
+     * it did not make itself. */
+    nodus_witness_bft_after_successor_commit(w);
 
     /* O15E Faz C — a replay of an already-committed block whose stored
      * QC is NULL heals it with THIS verified certificate. arc == 1

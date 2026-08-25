@@ -844,8 +844,12 @@ int nodus_witness_peer_handle_fwd_req(nodus_witness_t *w,
         return -1;
     }
 
+    /* O15H D8 — family-aware (see nodus_t3_tx_size_limit). A non-leader
+     * forwards the client's transaction here; refusing a V2 envelope
+     * against the legacy ceiling would break governance on exactly the
+     * path a client that reached a follower has to take. */
     if (!fwd->tx_data || fwd->tx_len == 0 ||
-        fwd->tx_len > NODUS_T3_MAX_TX_SIZE) {
+        fwd->tx_len > nodus_t3_tx_size_limit(fwd->tx_data, fwd->tx_len)) {
         fprintf(stderr, "%s: w_fwd_req invalid tx_data\n", LOG_TAG);
         return -1;
     }

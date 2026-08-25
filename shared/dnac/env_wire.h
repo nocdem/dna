@@ -176,6 +176,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <string.h>   /* memcmp — dna_env_wire_is_envelope */
 
 #include "ledger_ids.h"
 
@@ -236,6 +237,45 @@ extern "C" {
  * accidentally be sized against it.
  */
 #define DNA_ENV_MAX_TOTAL_LEN      1048576u
+
+/**
+ * O15H D8 — THE positive classification the paragraph above describes,
+ * in ONE place.
+ *
+ * The bound above was decoupled from the legacy 65,536-byte ceiling so a
+ * V2 carrier could select it "only after positive classification". No
+ * carrier ever did: every live ingress, forward, decode and batch gate
+ * measured V2 envelopes against the LEGACY ceiling, which silently made
+ * committee governance impossible above N=17 — an auth_kind-2
+ * CHAIN_CONFIG envelope carries `quorum` approvals of 4,629 bytes each,
+ * so quorum 13 (N=18) already exceeds 65,536. Measured on the 2026-08-25
+ * 20-node rehearsal: a 72,142-byte envelope, `dnac_spend RPC failed
+ * (rc=5)` = NODUS_ERR_TOO_LARGE.
+ *
+ * Reads at most the leading DNA_ENV_WIRE_FAMILY_LEN bytes and NOTHING
+ * length-driven, so it is safe to call before any allocation or decode —
+ * which is the whole point: the classification must precede the sizing
+ * decision it feeds.
+ *
+ * Deterministic and byte-driven, so every node classifies identical
+ * bytes identically. A legacy transaction cannot begin with this marker
+ * and still decode as a legacy transaction, and bytes that claim to be
+ * an envelope still face the strict envelope decode — claiming the
+ * marker buys a larger buffer, never acceptance.
+ *
+ * @return 1 if `bytes` begins with the "DNA.ENVWIRE.v1" family marker.
+ */
+static inline int dna_env_wire_is_envelope(const uint8_t *bytes, size_t len)
+{
+    /* The marker literal, padding explicit — env_wire.c writes exactly
+     * these 16 bytes at offset 0. */
+    static const uint8_t fam[DNA_ENV_WIRE_FAMILY_LEN] = {
+        'D','N','A','.','E','N','V','W','I','R','E','.','v','1', 0, 0
+    };
+    return (bytes && len >= (size_t)DNA_ENV_WIRE_FAMILY_LEN &&
+            memcmp(bytes, fam, (size_t)DNA_ENV_WIRE_FAMILY_LEN) == 0)
+           ? 1 : 0;
+}
 
 /**
  * Largest leg count, INCLUSIVE.

@@ -791,8 +791,11 @@ static void dec_batch_tx_entry(cbor_decoder_t *dec, size_t count,
         }
         else if (KEY_IS(key, "txd")) {
             cbor_item_t val = cbor_decode_next(dec);
+            /* O15H D8 — family-aware (nodus_t3_tx_size_limit); same
+             * silent-drop shape as the w_fwd decoder below. */
             if (val.type == CBOR_ITEM_BSTR &&
-                val.bstr.len <= NODUS_T3_MAX_TX_SIZE) {
+                val.bstr.len <= nodus_t3_tx_size_limit(val.bstr.ptr,
+                                                         val.bstr.len)) {
                 tx->tx_data = val.bstr.ptr;
                 tx->tx_len = (uint32_t)val.bstr.len;
             }
@@ -1210,8 +1213,14 @@ static void dec_fwd_req_args(cbor_decoder_t *dec, size_t count,
         }
         else if (KEY_IS(key, "txd")) {
             cbor_item_t val = cbor_decode_next(dec);
+            /* O15H D8 — family-aware (nodus_t3_tx_size_limit). An
+             * oversize bstr is DROPPED here rather than rejected, so the
+             * legacy ceiling made a V2 envelope arrive with tx_data
+             * NULL — a silent disappearance one layer below the handler
+             * that would have reported it. */
             if (val.type == CBOR_ITEM_BSTR &&
-                val.bstr.len <= NODUS_T3_MAX_TX_SIZE) {
+                val.bstr.len <= nodus_t3_tx_size_limit(val.bstr.ptr,
+                                                         val.bstr.len)) {
                 f->tx_data = val.bstr.ptr;
                 f->tx_len = (uint32_t)val.bstr.len;
             }

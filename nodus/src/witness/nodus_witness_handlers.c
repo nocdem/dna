@@ -19,6 +19,7 @@
 #include "witness/nodus_witness_v2_produce.h"  /* O15F class 201 helpers */
 #include "witness/nodus_witness_mempool.h"
 #include "witness/nodus_witness_merkle.h"
+#include "witness/nodus_witness_o15h_diag.h"  /* O15H TEMPORARY — revert list in that header */
 #include "witness/nodus_witness_validator.h"
 #include "witness/nodus_witness_delegation.h"
 #include "witness/nodus_witness_committee.h"
@@ -1801,7 +1802,13 @@ static void handle_dnac_spend(nodus_witness_t *w,
                     "missing or invalid tx_hash");
         return;
     }
-    if (tx_len > NODUS_T3_MAX_TX_SIZE) {
+    /* O15H D8 — family-aware. This gate is the one the 2026-08-25
+     * rehearsal died on: a 72,142-byte CHAIN_CONFIG envelope carrying
+     * the N=20 quorum's 14 approvals, refused with NODUS_ERR_TOO_LARGE
+     * against the LEGACY 65,536 ceiling, which made governance
+     * impossible above N=17. Legacy transactions keep that ceiling
+     * exactly. */
+    if (tx_len > nodus_t3_tx_size_limit(tx_data, tx_len)) {
         send_error(conn, txn_id, NODUS_ERR_TOO_LARGE,
                     "transaction too large");
         return;
@@ -2070,6 +2077,15 @@ static void handle_dnac_spend(nodus_witness_t *w,
          * if committee empty (pre-genesis), fall back to gossip-roster-
          * based leader lookup so genesis forwarding works. */
         struct nodus_tcp_conn *leader_conn = NULL;
+#ifdef O15H_DIAG_ENABLED
+        /* O15H TEMPORARY DIAGNOSTIC — see nodus_witness_o15h_diag.h.
+         * Every failure branch below answers the client with the same
+         * NODUS_ERR_INTERNAL_ERROR (rc=8) and prints nothing, so the
+         * observed "44 forwards, 0 successes" could not be attributed to
+         * a branch. This local carries the elected slot out to the
+         * emit point. */
+        int o15h_slot = -1;
+#endif
         {
             uint64_t next_bh = nodus_witness_block_height(w) + 1;
             /* S3: heap — a DNAC_MAX_ACTIVE_VALIDATORS committee is
@@ -2099,6 +2115,9 @@ static void handle_dnac_spend(nodus_witness_t *w,
                 /* NOTE: leader_pk borrows the heap committee below, so the
                  * free() has to wait until the peer-lookup loop is done. */
                 leader_pk = committee[leader_slot].pubkey;
+#ifdef O15H_DIAG_ENABLED
+                o15h_slot = leader_slot;
+#endif
                 if (memcmp(leader_pk, w->server->identity.pk.bytes,
                             DNAC_PUBKEY_SIZE) == 0) {
                     free(committee);
@@ -2157,6 +2176,17 @@ static void handle_dnac_spend(nodus_witness_t *w,
                     break;
                 }
             }
+            /* O15H TEMPORARY DIAGNOSTIC — who the elected leader for
+             * next_bh is, and whether this node can reach it. `tally`
+             * carries the committee size and `quorum` the elected slot;
+             * both are borrowed fields, not their production meaning. */
+            O15H_DIAG(w, "fwd_leader", leader_pk, next_bh, w->current_view,
+                      w->view_change_target, w->round_state.phase,
+                      epoch, 0, "w_fwd_req", 0,
+                      (unsigned)cm_count, (unsigned)(o15h_slot + 1),
+                      leader_conn ? "leader resolved and connected"
+                                  : "leader NOT connected — forward fails");
+
             /* leader_pk is dead from here on. */
             free(committee);
             committee = NULL;
@@ -2197,11 +2227,28 @@ static void handle_dnac_spend(nodus_witness_t *w,
                       sizeof(fwd.header.nonce));
         memcpy(fwd.header.chain_id, w->chain_id, 32);
 
-        uint8_t fwd_buf[NODUS_T3_MAX_MSG_SIZE];
+        /* O15H D8 — HEAP, at the 1 MB bound, not a 128 KB stack array.
+         * This is the ONE stack buffer in the tree that encodes a
+         * message CARRYING a transaction, so it is the one that has to
+         * grow with the family-aware limit above; a V2 envelope may now
+         * legitimately exceed NODUS_T3_MAX_MSG_SIZE, and 1 MB of stack
+         * is not an option. The bound is the same one
+         * nodus_witness_bft_broadcast and nodus_t3_verify already use
+         * for PROPOSE/COMMIT, so producer and verifier agree. */
+        uint8_t *fwd_buf = malloc(NODUS_W_MAX_SYNC_RSP_SIZE);
+        if (!fwd_buf) {
+            send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                        "failed to allocate forward request");
+            w->pending_forwards[pf_slot].active = false;
+            w->pending_forward_count--;
+            return;
+        }
         size_t fwd_len = 0;
 
         if (nodus_t3_encode(&fwd, &w->server->identity.sk,
-                             fwd_buf, sizeof(fwd_buf), &fwd_len) != 0) {
+                             fwd_buf, NODUS_W_MAX_SYNC_RSP_SIZE,
+                             &fwd_len) != 0) {
+            free(fwd_buf);
             send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
                         "failed to encode forward request");
             w->pending_forwards[pf_slot].active = false;
@@ -2209,7 +2256,9 @@ static void handle_dnac_spend(nodus_witness_t *w,
             return;
         }
 
-        if (nodus_tcp_send(leader_conn, fwd_buf, fwd_len) != 0) {
+        int send_rc = nodus_tcp_send(leader_conn, fwd_buf, fwd_len);
+        free(fwd_buf);          /* O15H D8 — heap buffer, every path */
+        if (send_rc != 0) {
             send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
                         "failed to send to leader");
             w->pending_forwards[pf_slot].active = false;

@@ -90,6 +90,38 @@ that does not hold the bytes stays silent; its round times out and the
 view rotates. Retention is released when the chain passes the height,
 when a newer timeout supersedes it, and at teardown.
 
+### The round / view-change clock (O15H)
+
+`nodus_witness_bft_check_timeout` measures **one** clock,
+`round_state.phase_start_time`, against **two** budgets:
+`round_timeout_ms` (15 s) while a round is in flight, and
+`viewchg_timeout_ms` (10 s) once the phase is
+`NODUS_W_PHASE_VIEW_CHANGE`. Because the second budget is the SMALLER of
+the two, the stamp must be reset at every transition or the second budget
+is already spent before it starts. It is now re-stamped at three points:
+
+| Event | Site | Why |
+|---|---|---|
+| Round entry (propose / accept / PREVOTE quorum) | `bft_start_round*`, `handle_propose`, the PREVOTE-quorum hook | the round budget |
+| Round timeout → `NODUS_W_PHASE_VIEW_CHANGE` | `check_timeout` | **O15H D2** — without it the view change inherits the round's 15 s and is aborted on the next ~150 ms tick, wiping `view_change_count` |
+| Adopting a HIGHER view-change target | `handle_viewchg` | **O15H D2** — the tally restarts at zero votes, so the window must restart too |
+
+Resolution is **one second**, not one millisecond: `time_ms()` is
+`nodus_time_now() * 1000`. A 15 s budget therefore fires at an observed
+elapsed of 16000 ms. Any timeout budget added here must be a comfortable
+multiple of one second.
+
+**A stalled view change escalates, it does not abort (O15H D5).** When the
+10 s budget expires without quorum, the node clears the collected
+records, raises `view_change_target` by one and re-broadcasts. It does
+**not** return to IDLE: from IDLE `check_timeout` returns immediately, the
+leader is unchanged (`current_view` only moves on quorum), and nothing
+would ever re-initiate. `current_view` is deliberately untouched on this
+path, so leader election and the C5 binding keep their existing
+preconditions. The retry interval is FIXED rather than backed off —
+per-node backoff is per-node timing state, and divergent timing state
+between witnesses is the failure class this file's rules exist to avoid.
+
 ---
 
 ## Constants

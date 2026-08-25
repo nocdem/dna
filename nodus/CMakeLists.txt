@@ -297,6 +297,7 @@ if(NOT WIN32)
         # Entire TU is #ifdef QGP_FAULT_INJECT; compiles to nothing in
         # every normal build (and CMake rejects that flag for Release).
         src/witness/nodus_witness_fault.c
+        src/witness/nodus_witness_o15h_diag.c   # O15H TEMPORARY — see header
         src/witness/nodus_witness_db.c
         src/witness/nodus_witness_bft.c
         src/witness/nodus_witness_merkle.c
@@ -540,6 +541,24 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release" AND QGP_FAULT_INJECT)
 endif()
 if(QGP_FAULT_INJECT)
     add_compile_definitions(QGP_FAULT_INJECT)
+endif()
+
+# O15H — TEMPORARY diagnostic instrumentation (nodus_witness_o15h_diag.*).
+# Default OFF, so a build without this flag is byte-identical in behaviour
+# to a tree with the instrumentation deleted. Same Release guard as the
+# hooks above: a Release binary has no business writing a per-node
+# diagnostic trace. REVERT: delete this block, the source entry, the two
+# o15h_diag files and every O15H_DIAG(...) call site.
+option(O15H_DIAG "O15H temporary view-change causal tracing (test only)" OFF)
+if(CMAKE_BUILD_TYPE STREQUAL "Release" AND O15H_DIAG)
+    message(FATAL_ERROR
+        "O15H_DIAG must not be set in Release builds — it is temporary "
+        "diagnostic instrumentation, not a product feature")
+endif()
+if(O15H_DIAG)
+    # The gate macro is deliberately NOT named O15H_DIAG: that name is the
+    # call macro in nodus_witness_o15h_diag.h, and defining both collides.
+    add_compile_definitions(O15H_DIAG_ENABLED)
 endif()
 
 function(register_witness_test name)
@@ -1172,6 +1191,14 @@ add_test(NAME test_witness_pbft_state_persist
 add_executable(test_bft_liveness tests/test_bft_liveness.c)
 target_link_libraries(test_bft_liveness nodus dsa nodus)
 add_test(NAME test_bft_liveness COMMAND test_bft_liveness)
+
+# O15H — boundary view-change hardening (D1/D2/D5/D5b). Deterministic
+# regressions for defects the 20-node grow rehearsal cannot discriminate.
+add_executable(test_bft_view_change_hardening
+               tests/test_bft_view_change_hardening.c)
+target_link_libraries(test_bft_view_change_hardening nodus dsa nodus)
+add_test(NAME test_bft_view_change_hardening
+         COMMAND test_bft_view_change_hardening)
 
 # PR 3 Yol B — bootstrap state machine regression.
 # Covers HAVE_CHAIN branch: chain DB present → reaches DONE without

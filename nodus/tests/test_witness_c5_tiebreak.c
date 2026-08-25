@@ -392,9 +392,18 @@ int main(void) {
         CHECK_EQ(nodus_witness_bft_handle_viewchg(b, &vc_old_b), 0);
 
         /* Both must have ADMITTED both certs — otherwise the orderings
-         * are not comparable and this section proves nothing. */
-        CHECK_EQ(a->view_change_count, 2);
-        CHECK_EQ(b->view_change_count, 2);
+         * are not comparable and this section proves nothing.
+         *
+         * O15H D5b — the count is 2 PEER records plus OUR OWN. quorum
+         * here is 3, so the join threshold is ((3-1)/2)+1 = 2: the second
+         * peer VIEW_CHANGE makes f+1 validators asking for this view, and
+         * the node correctly casts its own vote instead of waiting for
+         * its round timeout. The self-record carries no prepared cert
+         * (this fixture never sets last_prepared), so it cannot enter the
+         * selection under test — and slots 0 and 1 are still the two peer
+         * records, in arrival order, which is the variable §7 varies. */
+        CHECK_EQ(a->view_change_count, 3);
+        CHECK_EQ(b->view_change_count, 3);
         int a_prep = 0, b_prep = 0;
         for (int i = 0; i < 2; i++) {
             if (a->view_changes[i].prepared.has_prepared) a_prep++;
@@ -402,6 +411,12 @@ int main(void) {
         }
         CHECK_EQ(a_prep, 2);
         CHECK_EQ(b_prep, 2);
+        /* The self-record must be inert here, or the section's claim
+         * ("both bound to the higher-view cert") could be satisfied by
+         * our own evidence rather than by the ordering-independent
+         * comparator. */
+        CHECK(!a->view_changes[2].prepared.has_prepared);
+        CHECK(!b->view_changes[2].prepared.has_prepared);
 
         /* The arrays really are in opposite orders — otherwise a passing
          * result would be vacuous. */

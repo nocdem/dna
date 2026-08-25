@@ -50,6 +50,8 @@
 #include "crypto/utils/qgp_fingerprint.h"
 
 #include "dnac/dnac.h"
+#include "dnac/ledger_ids.h"     /* O15H C5 — dna_bft_quorum(n) */
+#include "witness/nodus_witness_o15h_diag.h"  /* O15H TEMPORARY tracing */
 #include "dnac/safe_math.h"      /* safe_add_u64 for SEC-01 consistency check */
 #include "dnac/validator.h"
 #include "dnac/transaction.h"   /* DNAC_STAKE_PURPOSE_TAG_LEN */
@@ -414,7 +416,6 @@ void nodus_witness_bft_config_init(nodus_witness_bft_config_t *cfg,
         cfg->quorum = 0;
         cfg->round_timeout_ms = 0;
         cfg->viewchg_timeout_ms = 0;
-        cfg->max_view_changes = 0;
         return;
     }
 
@@ -451,7 +452,6 @@ void nodus_witness_bft_config_init(nodus_witness_bft_config_t *cfg,
     /* Timeouts */
     cfg->round_timeout_ms = NODUS_T3_ROUND_TIMEOUT_MS;
     cfg->viewchg_timeout_ms = NODUS_T3_VIEWCHG_TIMEOUT_MS;
-    cfg->max_view_changes = NODUS_T3_MAX_VIEW_CHANGES;
 }
 
 bool nodus_witness_bft_consensus_active(const nodus_witness_t *w) {
@@ -3995,6 +3995,10 @@ static int bft_start_round_internal(nodus_witness_t *w,
     w->round_state.proposal_timestamp = (uint64_t)time(NULL);
     memcpy(w->round_state.proposer_id, w->my_id, NODUS_T3_WITNESS_ID_LEN);
     w->round_state.phase_start_time = time_ms();
+    O15H_DIAG(w, "round_start_leader", w->my_id, w->round_state.block_height,
+              w->current_view, w->view_change_target, w->round_state.phase,
+              w->round_state.phase_start_time, 0, "PROPOSE", 1,
+              0, w->bft_config.quorum, "leader opened a round");
 
     /* Store batch entries. Genesis is single-TX but flows through the same
      * batch path since 4d8ad851; propagate the entry's actual tx_type so the
@@ -4631,6 +4635,11 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
      * reads from round_state.block_height. */
     w->round_state.block_height = prop->block_height;
     w->round_state.phase_start_time = time_ms();
+    O15H_DIAG(w, "round_start_follower", hdr->sender_id,
+              w->round_state.block_height, w->current_view,
+              w->view_change_target, w->round_state.phase,
+              w->round_state.phase_start_time, 0, "PROPOSE", 0,
+              0, w->bft_config.quorum, "accepted leader proposal");
     w->round_state.proposal_timestamp = hdr->timestamp;
     memcpy(w->round_state.proposer_id, hdr->sender_id,
            NODUS_T3_WITNESS_ID_LEN);
@@ -4712,8 +4721,13 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
                            NODUS_T3_NULLIFIER_LEN);
             }
             entry->tx_type = btx->tx_type;
+            /* O15H D8 — family-aware (nodus_t3_tx_size_limit). This is
+             * the follower's copy-in of a proposed batch entry; sizing a
+             * V2 envelope against the legacy ceiling here would drop the
+             * transaction AFTER the leader had already proposed it. */
             if (btx->tx_data && btx->tx_len > 0 &&
-                btx->tx_len <= NODUS_T3_MAX_TX_SIZE) {
+                btx->tx_len <= nodus_t3_tx_size_limit(btx->tx_data,
+                                                        btx->tx_len)) {
                 entry->tx_data = malloc(btx->tx_len);
                 if (!entry->tx_data) {
                     free(entry);
@@ -5065,6 +5079,55 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
     return rc;
 }
 
+/* O15H D3+D4 — the post-commit bookkeeping the SUCCESSOR path was
+ * missing.
+ *
+ * `nodus_witness_commit_batch` does two things after a durable commit
+ * (:7797, :7819): it clears `last_prepared` and it refreshes
+ * `bft_config` from the committee for the NEXT height. Successor rounds
+ * do not go through commit_batch — both the own-quorum path and the
+ * remote-COMMIT path hand the batch to nodus_witness_v2_produce_commit
+ * instead, and that engine knows nothing about BFT config or the
+ * prepared slot (grep: zero references in nodus_witness_v2_produce.c).
+ * So on a successor chain neither step ever ran. Measured on the
+ * 2026-08-25 20-node rehearsal:
+ *
+ *   D3 — node20 committed height 41 and kept quorum=5, then declared
+ *        "view change quorum! new view: 4" on FIVE votes while node1,
+ *        which had entered round 17 and therefore refreshed via the
+ *        round-start / handle_propose sites, required FOURTEEN. Two
+ *        quorums for one chain state is a split, not a slow node.
+ *   D4 — all 20 nodes committed height 41 before any view-4 traffic,
+ *        yet 14 VIEW_CHANGEs still carried a height=41 prepared cert.
+ *        The tick-time guard at nodus_witness.c:1141 releases the
+ *        resulting binding, so this self-heals today — but it is a
+ *        stale cert circulating through the C5 selection, which is
+ *        exactly what C5 exists to make impossible.
+ *
+ * Refresh failure is latched the same way commit_batch latches it: a
+ * witness that cannot know its committee must not keep voting. */
+void nodus_witness_bft_after_successor_commit(nodus_witness_t *w) {
+    if (!w) return;
+
+    /* D4 — the block is durable; the prepared cert protecting it is
+     * redundant. Persist the cleared slot so a restart cannot re-attach
+     * it to a future VIEW_CHANGE (H-5 discipline, mirrors :7797-7801). */
+    w->last_prepared.present = false;
+    nodus_witness_db_save_pbft_state(w);
+
+    /* D3 — the committee (and therefore the quorum) that governs the
+     * NEXT height. At a growth boundary this is the step that moves a
+     * node from the pre-growth set to the post-growth one. */
+    uint64_t next_bh = nodus_witness_block_height(w) + 1;
+    if (refresh_bft_config_from_committee(w, next_bh) != 0) {
+        QGP_LOG_ERROR(LOG_TAG,
+            "successor commit: bft_config refresh failed (next_bh=%llu) "
+            "— latching safety_halt",
+            (unsigned long long)next_bh);
+        w->safety_halt = true;
+    }
+}
+
 static int bft_handle_vote_inner(nodus_witness_t *w, uint8_t msg_type,
                                  uint64_t round, uint32_t view,
                                  const uint8_t *sender_id,
@@ -5105,8 +5168,19 @@ static int bft_handle_vote_inner(nodus_witness_t *w, uint8_t msg_type,
     }
 
     /* Check phase */
-    if (w->round_state.phase != expected_phase)
+    if (w->round_state.phase != expected_phase) {
+        /* O15H diag — THE vote-loss counter the diagnosis needs: how many
+         * height-42 votes die because this node has already left the
+         * round's phase (typically for VIEW_CHANGE). */
+        O15H_DIAG(w, "vote_drop_phase", sender_id,
+                  w->round_state.block_height, w->current_view,
+                  w->view_change_target, w->round_state.phase,
+                  w->round_state.phase_start_time, 0,
+                  msg_type == NODUS_T3_PREVOTE ? "PREVOTE" : "PRECOMMIT",
+                  0, 0, w->bft_config.quorum,
+                  "wrong phase — vote ignored");
         return 0;  /* Wrong phase, ignore */
+    }
 
     /* F17 A3 — resolve sender's pubkey via gossip roster (witness_id →
      * pubkey mapping, safe by A15 because witness_id = H(pubkey)).
@@ -5135,16 +5209,47 @@ static int bft_handle_vote_inner(nodus_witness_t *w, uint8_t msg_type,
     {
         nodus_committee_member_t *committee = NULL;
         int count = 0;
-        if (load_committee_at_height_alloc(w, w->round_state.round,
+        /* O15H D1 — the authority is the round's BLOCK HEIGHT, not its
+         * ROUND NUMBER.
+         *
+         * load_committee_at_height_alloc takes a block height and
+         * resolves it to an epoch (nodus_witness_committee.c:467:
+         * e_start = height / DNAC_EPOCH_LENGTH * DNAC_EPOCH_LENGTH).
+         * Feeding it `round_state.round` fed it a different scale
+         * entirely: on the 2026-08-25 rehearsal (E=6) round 17 carried
+         * block height 42, so this gate resolved epoch 12 — the
+         * PRE-GROWTH 7-member set — while refresh_bft_config_from_
+         * committee had already set quorum=14 from epoch 42's 20-member
+         * set. Result: 11 of the 13 freshly-activated joiners' PREVOTEs
+         * were rejected here as "non-committee", approve stalled at
+         * 4/14, and the boundary round was not slow but STRUCTURALLY
+         * uncommittable. Every other committee lookup in this file
+         * already passes a height (:4520, :6359, :6436, :6730, :6947);
+         * this was the sole site that did not.
+         *
+         * round_state.block_height is the same source the PREPARED
+         * preimage signs below (the A2 fix), and handle_propose has
+         * already rejected block_height == 0 and any height that is not
+         * the local next height — so verifier and signer cannot drift.
+         *
+         * Behaviour is byte-identical whenever the committee is static
+         * across the two epochs, which is every block the production
+         * legacy chain has ever produced; it differs only across a
+         * committee CHANGE, which is precisely the case that was
+         * broken. */
+        if (load_committee_at_height_alloc(w, w->round_state.block_height,
                                              &committee, &count) == 0 &&
             count > 0) {
             int found = committee_find_pubkey(committee, count, sender_pk);
             free(committee);
             if (found < 0) {
                 fprintf(stderr,
-                        "%s: vote from non-committee member (round=%llu)\n",
+                        "%s: vote from non-committee member "
+                        "(round=%llu height=%llu committee=%d)\n",
                         LOG_TAG,
-                        (unsigned long long)w->round_state.round);
+                        (unsigned long long)w->round_state.round,
+                        (unsigned long long)w->round_state.block_height,
+                        count);
                 return -1;
             }
         } else {
@@ -5247,6 +5352,12 @@ static int bft_handle_vote_inner(nodus_witness_t *w, uint8_t msg_type,
 
     w->round_state.phase = next_phase;
     w->round_state.phase_start_time = time_ms();
+    O15H_DIAG(w, "phase_advance", sender_id, w->round_state.block_height,
+              w->current_view, w->view_change_target, w->round_state.phase,
+              w->round_state.phase_start_time, 0,
+              msg_type == NODUS_T3_PREVOTE ? "PREVOTE" : "PRECOMMIT",
+              0, (unsigned)*approve_count, required,
+              "vote quorum reached, phase advanced");
 
     if (next_phase == NODUS_W_PHASE_PRECOMMIT) {
         /* PREVOTE quorum → send PRECOMMIT */
@@ -5385,6 +5496,12 @@ static int bft_handle_vote_inner(nodus_witness_t *w, uint8_t msg_type,
                          w->round_state.proposer_id,
                          NULL, &v2out);
             batch_failed = (v2_prc != 0);
+            /* O15H D3+D4 — commit_batch's post-commit steps, which this
+             * branch bypasses. Only on success: a failed produce rolled
+             * the block back, so the prepared cert still protects a
+             * height that has not landed. */
+            if (!batch_failed)
+                nodus_witness_bft_after_successor_commit(w);
         } else if (w->round_state.batch_count == 1 &&
             w->round_state.batch_entries[0] &&
             w->round_state.batch_entries[0]->tx_type == NODUS_W_TX_GENESIS) {
@@ -5497,6 +5614,12 @@ static int bft_handle_vote_inner(nodus_witness_t *w, uint8_t msg_type,
                     LOG_TAG, (unsigned long)w->round_state.round,
                     w->round_state.batch_count,
                     (unsigned long long)bh);
+            O15H_DIAG(w, "commit", w->my_id, bh, w->current_view,
+                      w->view_change_target, w->round_state.phase,
+                      w->round_state.phase_start_time,
+                      time_ms() - w->round_state.phase_start_time, "-", 0,
+                      (unsigned)w->round_state.precommit_approve_count,
+                      w->bft_config.quorum, "block committed");
         }
     }
     /* Phase 9 cleanup — legacy single-TX commit branch deleted; every
@@ -5927,6 +6050,10 @@ int nodus_witness_bft_handle_commit(nodus_witness_t *w,
                           cmt->state_root, &rv2out);
             rmt_batch_failed = (rrc != 0);
             if (!rmt_batch_failed) {
+                /* O15H D3+D4 — same post-commit bookkeeping as the
+                 * own-quorum successor path; commit_batch is not on
+                 * this branch either. */
+                nodus_witness_bft_after_successor_commit(w);
                 /* Locally DERIVED root only (F-CONS-06 discipline). */
                 memcpy(w->cached_state_root, rv2out.global_root,
                        NODUS_KEY_BYTES);
@@ -6194,6 +6321,96 @@ static int vc_record_alloc_sigs(nodus_witness_vc_record_t *vc,
 /* Forward decl — defined beside handle_viewchg below (O15C-C D1). */
 static int bft_vc_check_quorum(nodus_witness_t *w);
 
+/* O15H D5b — the f+1 threshold at which we JOIN a view we did not ask
+ * for, DERIVED FROM THE QUORUM IN FORCE.
+ *
+ * f is deliberately NOT read from bft_config.f_tolerance. That field is
+ * a second, separately-written copy of the same fact, and a caller that
+ * sets quorum without it (several test fixtures do) would silently get
+ * f+1 == 1 — a threshold that turns ONE Byzantine message into a
+ * cluster-wide broadcast, which is the exact hazard this threshold
+ * exists to prevent. Deriving it from `quorum` means the number can
+ * never disagree with the quorum every other decision on this path
+ * already uses.
+ *
+ * Exact across the whole supported range, because quorum is
+ * dna_bft_quorum(n) = (2n)/3 + 1 and f_tolerance is (n-1)/3:
+ *   n=4   quorum 3  → (3-1)/2  = 1  = f     n=7   quorum 5  → 2  = f
+ *   n=20  quorum 14 → (14-1)/2 = 6  = f     n=128 quorum 86 → 42 = f
+ *
+ * The floor of 2 is the anti-amplification backstop: below quorum 3 the
+ * formula degenerates to 1, and one message must never be able to make
+ * this node speak. A cluster that small simply falls back to voting at
+ * its own timeout, which is the pre-O15H behaviour and always correct. */
+static uint32_t bft_vc_join_threshold(const nodus_witness_t *w) {
+    uint32_t q = w ? w->bft_config.quorum : 0;
+    uint32_t t = (q > 1) ? ((q - 1) / 2) + 1 : 0;
+    return (t < 2) ? 2 : t;
+}
+
+/* ── O15H D9 — PER-TARGET TALLY OVER PER-VOTER RECORDS ──────────────
+ *
+ * THE DEFECT THIS REPLACES. `view_changes[]` used to be "the votes for
+ * the ONE target we are currently chasing", and any single VIEW_CHANGE
+ * naming a higher view REPLACED that target and cleared the array. One
+ * Byzantine committee member could therefore keep every honest node's
+ * tally at zero forever, simply by announcing target+1 again whenever
+ * the honest nodes started to accumulate — a liveness attack costing one
+ * message per reset, with no honest node able to notice.
+ *
+ * THE NEW INVARIANT: one record per VOTER, holding that voter's HIGHEST
+ * requested target. A voter can move its own opinion and nothing else;
+ * it cannot evict, reset or outnumber anyone. The array is bounded by
+ * the committee size for free, because a repeat sender updates its own
+ * slot instead of taking another.
+ *
+ * "The tally" is then a QUESTION asked of that set — how many voters
+ * currently sit at target T — rather than a counter something can zero.
+ * Adoption needs f+1 voters at T (the same Castro-Liskov condition that
+ * governs when we SPEAK), and completion needs a quorum at T.
+ *
+ * ⚠ THE SAFETY PROPERTY THE OLD WIPE PROVIDED IS PRESERVED, DELIBERATELY
+ * AND ELSEWHERE. Clearing the array on a target change existed so a
+ * prepared certificate attached to a LOWER target could not be counted
+ * in a HIGHER target's C5 selection. Records now survive a target
+ * change, so every C5 consumer FILTERS on target_view ==
+ * view_change_target instead — see
+ * nodus_witness_bft_bind_reproposal_from_view_changes and the NEW_VIEW
+ * source scan. Same guarantee, without a mechanism an attacker can
+ * trigger. */
+
+/* Slot holding `voter_id`, or -1. */
+static int bft_vc_find_voter(const nodus_witness_t *w, const uint8_t *voter_id) {
+    for (int i = 0; i < w->view_change_count; i++) {
+        if (memcmp(w->view_changes[i].voter_id, voter_id,
+                   NODUS_T3_WITNESS_ID_LEN) == 0)
+            return i;
+    }
+    return -1;
+}
+
+/* How many voters currently sit at `target`. */
+static uint32_t bft_vc_tally(const nodus_witness_t *w, uint32_t target) {
+    uint32_t n = 0;
+    for (int i = 0; i < w->view_change_count; i++)
+        if (w->view_changes[i].target_view == target) n++;
+    return n;
+}
+
+/* The highest target above `current_view` that f+1 voters back, or 0 if
+ * none does. Scanning the records rather than tracking a "pending view"
+ * keeps ONE source of truth for what the cluster is asking for. */
+static uint32_t bft_vc_best_supported_target(const nodus_witness_t *w) {
+    uint32_t thr = bft_vc_join_threshold(w);
+    uint32_t best = 0;
+    for (int i = 0; i < w->view_change_count; i++) {
+        uint32_t t = w->view_changes[i].target_view;
+        if (t <= w->current_view || t <= best) continue;
+        if (bft_vc_tally(w, t) >= thr) best = t;
+    }
+    return best;
+}
+
 /* O15C-D.3 — record OUR OWN view-change vote, carrying our own
  * `last_prepared`, into `view_changes[]`.
  *
@@ -6217,18 +6434,20 @@ static int bft_vc_check_quorum(nodus_witness_t *w);
 static void bft_self_record_view_change(nodus_witness_t *w) {
     if (!w) return;
 
-    bool self_recorded = false;
-    for (int i = 0; i < w->view_change_count; i++) {
-        if (memcmp(w->view_changes[i].voter_id, w->my_id,
-                   NODUS_T3_WITNESS_ID_LEN) == 0) {
-            self_recorded = true;
-            break;
-        }
+    /* O15H D9 — UPSERT, not append-if-absent. Under per-voter records
+     * this node keeps ONE slot, and escalation moves that slot's target
+     * rather than adding a second opinion from the same voter. The old
+     * "already present → return" would have frozen our record at the
+     * FIRST target we ever voted for, so every later escalation would
+     * have counted us at a view we had abandoned. */
+    int slot = bft_vc_find_voter(w, w->my_id);
+    if (slot >= 0) {
+        if (w->view_changes[slot].target_view == w->view_change_target)
+            return;                    /* already recorded at this target */
+    } else {
+        if (w->view_change_count >= DNAC_MAX_ACTIVE_VALIDATORS) return;
+        slot = w->view_change_count++;
     }
-    if (self_recorded || w->view_change_count >= DNAC_MAX_ACTIVE_VALIDATORS)
-        return;
-
-    int slot = w->view_change_count;
     /* S3: clear, not memset — the slot may still own a sigs allocation
      * from a previous view change. */
     nodus_witness_vc_record_clear(&w->view_changes[slot]);
@@ -6258,7 +6477,8 @@ static void bft_self_record_view_change(nodus_witness_t *w) {
             }
         }
     }
-    w->view_change_count++;
+    /* O15H D9 — the slot was allocated above (a fresh append bumps the
+     * count there); an upsert into our EXISTING slot must not. */
 }
 
 int nodus_witness_bft_initiate_view_change(nodus_witness_t *w) {
@@ -6279,7 +6499,11 @@ int nodus_witness_bft_initiate_view_change(nodus_witness_t *w) {
     if (!w->view_change_in_progress) {
         w->view_change_in_progress = true;
         w->view_change_target = w->current_view + 1;
-        w->view_change_count = 0;
+        /* O15H D9 — records are NOT cleared. They belong to other
+         * voters, each describing that voter's own current target; our
+         * starting a view change says nothing about theirs. The tally is
+         * per-target, so records at other targets simply do not count
+         * toward this one. */
     }
     w->round_state.phase = NODUS_W_PHASE_VIEW_CHANGE;
 
@@ -6375,43 +6599,60 @@ int nodus_witness_bft_handle_viewchg(nodus_witness_t *w,
     if (vc->new_view <= w->current_view)
         return 0;
 
-    /* Update target if higher */
-    if (!w->view_change_in_progress || vc->new_view > w->view_change_target) {
-        w->view_change_in_progress = true;
-        w->view_change_target = vc->new_view;
-        w->view_change_count = 0;
-        /* O15C-C D1 — any vote we broadcast was for the OLD target; the
-         * next initiate (own timeout) must be able to vote again. */
-        w->view_change_voted = false;
-        /* C5 — wipe stale prepared data from previous (lower) target so
-         * it cannot leak into the new target's quorum scan. Otherwise a
-         * racing attacker could get a lower-target prepared cert counted
-         * at a higher target's NEW_VIEW scan.
+    /* O15H D9 — UPSERT THIS VOTER'S RECORD; adoption is decided AFTER,
+     * from the record set, not by this one message.
+     *
+     * A voter already holding a slot updates it (and only if the new
+     * target is strictly higher — a voter may raise its own ask, never
+     * lower it, so a replayed older message changes nothing). A new
+     * voter takes a free slot. Either way no other voter's record is
+     * touched, which is precisely what the old "clear the array"
+     * adoption made impossible. */
+    int slot = bft_vc_find_voter(w, hdr->sender_id);
+    if (slot >= 0) {
+        /* A voter's record holds its LATEST stated target, in whichever
+         * direction it moved.
          *
-         * S3: per-record clear, NOT a memset of the array — each record
-         * may own a heap sigs allocation. */
-        for (int i = 0; i < DNAC_MAX_ACTIVE_VALIDATORS; i++)
-            nodus_witness_vc_record_clear(&w->view_changes[i]);
-    }
-
-    /* Record vote if for current target */
-    if (vc->new_view != w->view_change_target)
-        return 0;
-
-    /* Duplicate check */
-    for (int i = 0; i < w->view_change_count; i++) {
-        if (memcmp(w->view_changes[i].voter_id, hdr->sender_id,
-                   NODUS_T3_WITNESS_ID_LEN) == 0)
-            return 0;
-    }
-
-    /* S3: the slot bound is the ARRAY capacity — view-change quorum is
-     * dna_bft_quorum(active_set_size), which at n = 128 is 86, so a
-     * DNAC_COMMITTEE_SIZE bound would silently drop the votes that reach
-     * quorum on a large active set. */
-    if (w->view_change_count < DNAC_MAX_ACTIVE_VALIDATORS) {
-        int slot = w->view_change_count;
+         * ⚠ IT USED TO BE "may raise, never lower", and that single word
+         * deadlocked the cluster. D9 deliberately lets a node that ran
+         * ahead FOLLOW the f+1-supported target back DOWN — and when it
+         * did, every peer discarded the announcement as stale, kept
+         * counting it at the target it had abandoned, and the tally at
+         * the real target could never reach quorum. Two rules of the
+         * same design contradicting each other. Reproduced by
+         * test_newview_convergence with k=2 sender-scoped VIEW_CHANGE
+         * drops, where the margin is exactly zero (4 peers + self = the
+         * quorum of 5) so one miscounted voter is enough:
+         * "chain did not advance past 1 within 240 s".
+         *
+         * Taking the latest costs nothing in safety. Replayed old
+         * messages are already refused by is_replay() at the top of this
+         * function, VIEW_CHANGE rides the per-peer TCP witness mesh so a
+         * sender's own messages cannot overtake each other, and a voter
+         * that flaps only ever moves its OWN slot by one — it can no
+         * more reset a tally than it could before. */
+        if (vc->new_view == w->view_changes[slot].target_view)
+            return 0;                  /* duplicate — nothing to record */
+        /* Re-used slot: release any prepared cert it holds. The record
+         * is about to describe a DIFFERENT target, and a cert admitted
+         * for the old one must not survive under the new. */
         nodus_witness_vc_record_clear(&w->view_changes[slot]);
+    } else if (w->view_change_count < DNAC_MAX_ACTIVE_VALIDATORS) {
+        /* S3: the slot bound is the ARRAY capacity — view-change quorum
+         * is dna_bft_quorum(active_set_size), which at n = 128 is 86, so
+         * a DNAC_COMMITTEE_SIZE bound would silently drop the votes that
+         * reach quorum on a large active set. One record per voter keeps
+         * the occupancy bounded by the committee regardless. */
+        slot = w->view_change_count++;
+        nodus_witness_vc_record_clear(&w->view_changes[slot]);
+    } else {
+        fprintf(stderr, "%s: VIEW_CHANGE record array full (%d) — "
+                "dropping vote from gossip %d\n", LOG_TAG,
+                w->view_change_count, gossip_idx);
+        return 0;
+    }
+
+    {
         memcpy(w->view_changes[slot].voter_id,
                hdr->sender_id, NODUS_T3_WITNESS_ID_LEN);
         w->view_changes[slot].target_view = vc->new_view;
@@ -6426,59 +6667,30 @@ int nodus_witness_bft_handle_viewchg(nodus_witness_t *w,
          * (< quorum) is treated as "no prepared" — the vote still
          * counts toward view-change quorum, just not as prepared. */
         if (vc->has_prepared) {
-            uint8_t prep_preimage[NODUS_WITNESS_PREPARED_PREIMAGE_LEN];
-            if (compute_prepared_preimage(vc->prepared_view,
-                                            vc->prepared_height,
-                                            vc->prepared_tx_hash,
-                                            prep_preimage) == 0) {
-                nodus_committee_member_t *p_committee = NULL;
-                int p_count = 0;
-                bool have_committee = (load_committee_at_height_alloc(w,
-                    vc->prepared_height, &p_committee, &p_count) == 0 &&
-                    p_count > 0);
-                uint32_t verified = 0;
-                uint32_t n_sigs = vc->prepared_n_sigs;
-                if (n_sigs > NODUS_T3_MAX_WITNESSES)
-                    n_sigs = NODUS_T3_MAX_WITNESSES;
-                for (uint32_t si = 0; si < n_sigs; si++) {
-                    const uint8_t *vsig = vc->prepared_sigs[si].signature;
-                    const uint8_t *vid = vc->prepared_sigs[si].voter_id;
-                    const uint8_t *voter_pk = NULL;
-                    /* Resolve pubkey: prefer committee, fall back to
-                     * gossip roster for pre-genesis chains. */
-                    if (have_committee) {
-                        for (int ci = 0; ci < p_count; ci++) {
-                            nodus_key_t fp;
-                            if (qgp_sha3_512(p_committee[ci].pubkey,
-                                              DNAC_PUBKEY_SIZE,
-                                              fp.bytes) == 0 &&
-                                memcmp(fp.bytes, vid,
-                                       NODUS_T3_WITNESS_ID_LEN) == 0) {
-                                voter_pk = p_committee[ci].pubkey;
-                                break;
-                            }
-                        }
-                    }
-                    if (!voter_pk) {
-                        int ri = nodus_witness_roster_find(&w->roster, vid);
-                        if (ri >= 0)
-                            voter_pk = w->roster.witnesses[ri].pubkey;
-                    }
-                    if (!voter_pk) continue;
-
-                    nodus_sig_t sig_in;
-                    nodus_pubkey_t pk_in;
-                    memcpy(sig_in.bytes, vsig, NODUS_SIG_BYTES);
-                    memcpy(pk_in.bytes, voter_pk, NODUS_PK_BYTES);
-                    if (nodus_verify_prepared_vote(&sig_in, prep_preimage,
-                            sizeof(prep_preimage), &pk_in) == 0) {
-                        verified++;
-                    }
-                }
-                free(p_committee);
-                p_committee = NULL;
-
-                if (verified >= w->bft_config.quorum) {
+            /* O15H C5 — ONE VERIFIER, not two.
+             *
+             * This block used to carry its OWN copy of the resolve +
+             * verify + count loop, and the copy had drifted from the one
+             * in nodus_witness_bft_verify_prepared_cert: it had NO
+             * duplicate-voter guard, so a single valid signature
+             * repeated quorum-many times "proved" a certificate exactly
+             * one validator had signed. Two implementations of one
+             * safety rule is how that happens, so there is now one. The
+             * shared verifier also carries the C5 authority fix
+             * (membership AND threshold from the committee governing
+             * prepared_height).
+             *
+             * The wire array is already nodus_t3_cert_entry_t, the
+             * verifier's parameter type — no conversion, no punning. */
+            uint32_t n_sigs = vc->prepared_n_sigs;
+            if (n_sigs > NODUS_T3_MAX_WITNESSES)
+                n_sigs = NODUS_T3_MAX_WITNESSES;
+            {
+                bool cert_ok = nodus_witness_bft_verify_prepared_cert(
+                                   w, vc->prepared_height, vc->prepared_view,
+                                   vc->prepared_tx_hash, vc->prepared_sigs,
+                                   n_sigs);
+                if (cert_ok) {
                     /* Cert is quorum-valid; store full prepared data so
                      * the leader scan can consider this entry.
                      *
@@ -6510,26 +6722,117 @@ int nodus_witness_bft_handle_viewchg(nodus_witness_t *w,
                                    NODUS_SIG_BYTES);
                         }
                         fprintf(stderr, "%s: C5 accepted prepared cert from "
-                                "gossip %d (height=%llu view=%u verified=%u/%u)\n",
+                                "gossip %d (height=%llu view=%u sigs=%u)\n",
                                 LOG_TAG, gossip_idx,
                                 (unsigned long long)vc->prepared_height,
-                                vc->prepared_view, verified, n_sigs);
+                                vc->prepared_view, n_sigs);
                     }
                 } else {
+                    /* The verifier already logged verified/required/
+                     * committee size — a second, less informed line here
+                     * would only invite the two to disagree. The vote
+                     * still counts toward view-change quorum; it just
+                     * carries no prepared value. */
                     fprintf(stderr, "%s: C5 prepared cert from gossip %d "
-                            "below quorum (verified=%u/%u req=%u) — ignoring\n",
-                            LOG_TAG, gossip_idx, verified, n_sigs,
-                            w->bft_config.quorum);
+                            "not accepted — vote counts, cert ignored\n",
+                            LOG_TAG, gossip_idx);
                 }
             }
         }
 
-        w->view_change_count++;
     }
 
-    fprintf(stderr, "%s: VIEW_CHANGE from gossip %d: view %u (%d/%u)\n",
-            LOG_TAG, gossip_idx, vc->new_view,
-            w->view_change_count, w->bft_config.quorum);
+    /* O15H D9 — ADOPTION IS A CONCLUSION FROM THE RECORD SET.
+     *
+     * Raise our target to the highest view f+1 voters actually back. One
+     * message can no longer move it, so the reset attack has nothing to
+     * pull. Everything the old adoption block did on a target change
+     * still happens here — the D2 clock restart and re-arming our vote —
+     * but only once the cluster, not one peer, has asked. */
+    {
+        uint32_t supported = bft_vc_best_supported_target(w);
+        /* FOLLOW f+1, IN EITHER DIRECTION. Adopting only UPWARD would
+         * strand a node that escalated on its own timer a step ahead of
+         * everyone else: its target can never come back down, the f+1
+         * sitting one view below can never pull it in, and it waits out
+         * every window alone. `bft_vc_best_supported_target` returns the
+         * HIGHEST target f+1 voters back, which is a deterministic
+         * tie-break — every node computing it over the same records
+         * picks the same view — so following it converges instead of
+         * oscillating. current_view is untouched here, so nothing about
+         * leader election or safety rides on this. */
+        if (supported > w->current_view &&
+            (supported != w->view_change_target ||
+             !w->view_change_in_progress)) {
+            w->view_change_in_progress = true;
+            w->view_change_target = supported;
+            /* O15H D2 (second half) — a new target restarts the window;
+             * inheriting the abandoned target's elapsed time would leave
+             * only a remainder in which to gather a full quorum. Only
+             * while we are in the view-change phase: a node still in
+             * PREVOTE/PRECOMMIT must keep its ROUND clock so its own
+             * round timeout still fires. */
+            if (w->round_state.phase == NODUS_W_PHASE_VIEW_CHANGE)
+                w->round_state.phase_start_time = time_ms();
+            /* O15C-C D1 — any vote we broadcast was for the OLD target;
+             * the next initiate must be able to vote again. */
+            w->view_change_voted = false;
+        }
+    }
+
+    fprintf(stderr, "%s: VIEW_CHANGE from gossip %d: view %u "
+            "(target %u: %u/%u, records %d)\n",
+            LOG_TAG, gossip_idx, vc->new_view, w->view_change_target,
+            bft_vc_tally(w, w->view_change_target),
+            w->bft_config.quorum, w->view_change_count);
+
+    /* O15H D5b — PBFT's f+1 RULE: once f+1 DISTINCT validators have
+     * asked for a view we have not voted for, join them NOW instead of
+     * waiting for our own timeout.
+     *
+     * This is what makes D5's escalation converge. Without it a node
+     * that ADOPTED a higher target from a peer (the block above) records
+     * the peer's vote, wipes its tally and restarts its clock — but
+     * never casts its OWN vote at that target until its own timer
+     * fires, and by then the escalation has moved the nodes that DID
+     * vote on to the next target. The cluster leapfrogs, one step out of
+     * phase, and no target ever accumulates a quorum: precisely the
+     * churn D5 exists to end, re-introduced one level up.
+     *
+     * f+1 rather than 1 is the point. Adopting a TARGET from a single
+     * message is the behaviour this function already had; BROADCASTING
+     * on a single message would let one Byzantine node turn its own
+     * message into N, every time it chose to. f+1 guarantees at least
+     * one HONEST validator genuinely wants this view, which is the
+     * classical Castro-Liskov condition for joining one.
+     *
+     * initiate_view_change self-records, broadcasts, marks us voted and
+     * runs the quorum check itself — so it REPLACES the tail call rather
+     * than preceding it. Calling both would let a completed view change
+     * run its completion twice (bft_vc_check_quorum does not re-guard on
+     * view_change_in_progress) and broadcast two NEW_VIEWs.
+     *
+     * O15H D9 CLOSED the companion hole: the tally is now counted PER
+     * TARGET over per-voter records, so a Byzantine node can move only
+     * its own record and can neither reset the count nor drag the target
+     * on its own. The threshold below is therefore asked of a set that
+     * nothing can zero. */
+    uint32_t join_threshold = bft_vc_join_threshold(w);
+    if (!w->view_change_voted && w->view_change_target > w->current_view &&
+        bft_vc_tally(w, w->view_change_target) >= join_threshold) {
+        fprintf(stderr, "%s: f+1 (%u >= %u) peers want view %u — voting "
+                "now instead of waiting for our own timeout\n", LOG_TAG,
+                bft_vc_tally(w, w->view_change_target), join_threshold,
+                w->view_change_target);
+        O15H_DIAG(w, "vc_enter_f1", hdr->sender_id,
+                  w->round_state.block_height, w->current_view,
+                  w->view_change_target, w->round_state.phase,
+                  w->round_state.phase_start_time,
+                  time_ms() - w->round_state.phase_start_time, "VIEWCHG", 0,
+                  bft_vc_tally(w, w->view_change_target), join_threshold,
+                  "f+1 adoption pulled us into VIEW_CHANGE");
+        return nodus_witness_bft_initiate_view_change(w);
+    }
 
     /* Check for quorum (shared with initiate_view_change — O15C-C D1:
      * the initiator's own self-record can complete the quorum too). */
@@ -6541,12 +6844,26 @@ int nodus_witness_bft_handle_viewchg(nodus_witness_t *w,
  * own self-record finished. Returns 0 always (diagnostic parity with the
  * old inline tail). */
 static int bft_vc_check_quorum(nodus_witness_t *w) {
-    if ((uint32_t)w->view_change_count < w->bft_config.quorum)
+    /* O15H D9 — the quorum is counted AT THE TARGET, over per-voter
+     * records. `view_change_count` is now the number of occupied slots
+     * (voters with an opinion), which is >= the number backing THIS
+     * target, so using it would complete a view change that no quorum
+     * actually asked for. */
+    if (!w->view_change_in_progress ||
+        w->view_change_target <= w->current_view)
+        return 0;
+    if (bft_vc_tally(w, w->view_change_target) < w->bft_config.quorum)
         return 0;
 
     /* View change quorum reached */
     fprintf(stderr, "%s: view change quorum! new view: %u\n",
             LOG_TAG, w->view_change_target);
+    O15H_DIAG(w, "vc_quorum", w->my_id, w->round_state.block_height,
+              w->current_view, w->view_change_target, w->round_state.phase,
+              w->round_state.phase_start_time,
+              time_ms() - w->round_state.phase_start_time, "-", 0,
+              bft_vc_tally(w, w->view_change_target), w->bft_config.quorum,
+              "view-change quorum reached");
 
     w->current_view = w->view_change_target;
 
@@ -6596,7 +6913,13 @@ static int bft_vc_check_quorum(nodus_witness_t *w) {
         nv.type = NODUS_T3_NEWVIEW;
         nv.txn_id = ++w->next_txn_id;
         nv.newview.new_view = w->current_view;
-        nv.newview.n_proofs = w->view_change_count;
+        /* O15H D9 — the voters backing THIS view, not the number of
+         * occupied record slots. An observability field (tier3.h:297),
+         * but one whose name promises the former; since records now
+         * survive a target change the two numbers differ, and reporting
+         * the slot count would overstate the support for this NEW_VIEW
+         * to anyone reading a log or a capture. */
+        nv.newview.n_proofs = bft_vc_tally(w, w->current_view);
 
         /* C5 — PBFT reproposal rule: pick the highest-height prepared
          * cert from the collected VIEW_CHANGE messages and bind the new
@@ -6618,6 +6941,10 @@ static int bft_vc_check_quorum(nodus_witness_t *w) {
             int src = -1;
             for (int i = 0; i < w->view_change_count; i++) {
                 const nodus_witness_vc_record_t *r = &w->view_changes[i];
+                /* O15H D9 — same target filter as the binding scan; the
+                 * certificate we SHIP must come from a record that
+                 * actually backs the view we are opening. */
+                if (r->target_view != w->current_view) continue;
                 if (!r->prepared.has_prepared) continue;
                 if (r->prepared.height != w->reproposal_height) continue;
                 if (r->prepared.view != w->reproposal_prepared_view) continue;
@@ -6901,6 +7228,14 @@ int nodus_witness_bft_handle_newview(nodus_witness_t *w,
         fprintf(stderr, "%s: accepted NEW_VIEW %u from leader %d%s\n",
                 LOG_TAG, nv->new_view, sender_cm,
                 nv->has_reproposal ? " (reproposal bound)" : "");
+        O15H_DIAG(w, "newview_accept", hdr->sender_id,
+                  w->round_state.block_height, w->current_view,
+                  w->view_change_target, w->round_state.phase,
+                  w->round_state.phase_start_time,
+                  time_ms() - w->round_state.phase_start_time, "NEWVIEW", 0,
+                  0, w->bft_config.quorum,
+                  nv->has_reproposal ? "NEW_VIEW accepted (bound)"
+                                     : "NEW_VIEW accepted (free)");
     }
 
     return 0;
@@ -6975,7 +7310,17 @@ bool nodus_witness_bft_verify_prepared_cert(nodus_witness_t *w,
                 }
             }
         }
-        if (!voter_pk) {
+        /* O15H C5 — MEMBERSHIP AUTHORITY IS THE COMMITTEE AT `height`,
+         * FULL STOP.
+         *
+         * The gossip roster fallback used to run whenever a signer was
+         * not found in that committee, which quietly readmitted exactly
+         * the signers the committee had excluded — the transport roster
+         * deciding consensus membership, the same defect class O15G
+         * removed from cert verification. The fallback survives ONLY for
+         * a chain that HAS no committee at that height (pre-genesis),
+         * where the roster is the documented bootstrap authority. */
+        if (!voter_pk && !have_committee) {
             int ri = nodus_witness_roster_find(&w->roster, vid);
             if (ri >= 0) voter_pk = w->roster.witnesses[ri].pubkey;
         }
@@ -6990,8 +7335,42 @@ bool nodus_witness_bft_verify_prepared_cert(nodus_witness_t *w,
             verified++;
     }
 
+    /* O15H C5 — THE THRESHOLD IS THE QUORUM OF THAT SAME COMMITTEE.
+     *
+     * It used to be w->bft_config.quorum — the quorum in force NOW —
+     * while the signers were resolved from the committee governing
+     * `height`. Two authorities for one decision, and they disagree
+     * across every committee change:
+     *
+     *   set GREW  — a value genuinely prepared under the old, smaller
+     *               quorum is judged against the new, larger one and
+     *               DISCARDED. C5 exists to stop a new leader
+     *               substituting a different value for one that may
+     *               already have been committed; discarding the cert is
+     *               how that becomes a FORK.
+     *   set SHRANK — a cert below the old quorum passes the new, smaller
+     *               one and binds the view to a value nobody prepared.
+     *
+     * A value could have been committed at `height` iff someone
+     * assembled a PREPARE quorum under the committee governing
+     * `height`. So that committee's size decides the threshold, and
+     * dna_bft_quorum is the same function every other quorum on this
+     * chain is derived from. Reachable whenever a height stays pending
+     * across an epoch boundary — the growth boundary this season is
+     * about. */
+    uint32_t required = have_committee
+                          ? dna_bft_quorum((uint32_t)c_count)
+                          : w->bft_config.quorum;
+    bool ok = (verified >= required);
+    if (!ok) {
+        fprintf(stderr, "%s: C5 prepared cert REJECTED (height=%llu view=%u "
+                "verified=%u/%u required=%u committee=%d)\n", LOG_TAG,
+                (unsigned long long)height, view, verified, n_sigs,
+                required, have_committee ? c_count : -1);
+    }
+
     free(committee);
-    return verified >= w->bft_config.quorum;
+    return ok;
 }
 
 /* O15C-D.3 — THE PREPARED-VALUE LOCK.
@@ -7110,6 +7489,18 @@ void nodus_witness_bft_bind_reproposal_from_view_changes(nodus_witness_t *w) {
 
     int best = -1;
     for (int i = 0; i < w->view_change_count; i++) {
+        /* O15H D9 — ONLY records backing the target we are entering.
+         *
+         * This filter carries the safety property the old array-wipe
+         * used to provide. Records now survive a target change (so that
+         * one Byzantine message can no longer reset every honest node's
+         * tally), which means the array can hold certificates attached
+         * to LOWER targets — and letting one of those win this selection
+         * is exactly the leak the wipe existed to prevent: a cert
+         * admitted for view N binding the value proposed in view N+2.
+         * Same guarantee, expressed as a question about each record
+         * instead of as a destructive side effect. */
+        if (w->view_changes[i].target_view != w->view_change_target) continue;
         if (!w->view_changes[i].prepared.has_prepared) continue;
         if (best < 0 ||
             c5_cert_outranks(&w->view_changes[i], &w->view_changes[best]))
@@ -7353,24 +7744,115 @@ static void bft_emit_batch_replies(nodus_witness_t *w, int status,
 void nodus_witness_bft_check_timeout(nodus_witness_t *w) {
     if (!w) return;
 
-    if (w->round_state.phase == NODUS_W_PHASE_IDLE)
+    if (w->round_state.phase == NODUS_W_PHASE_IDLE) {
+        /* O15H TEMPORARY DIAGNOSTIC — the whole point of this return is
+         * what is under investigation: an IDLE node arms no timeout, so
+         * it can never initiate a view change. Record the fact once every
+         * 10 s per witness (the tick runs ~20x/s) with the leadership
+         * inputs, so "14 nodes sat IDLE at view 0 while the epoch leader
+         * was dead" is an observation and not an inference. */
+        if (O15H_DIAG_RATE(w, 1u, 10000u)) {
+            O15H_DIAG(w, "idle_stall", w->my_id,
+                      nodus_witness_block_height(w) + 1, w->current_view,
+                      w->view_change_target, w->round_state.phase,
+                      w->round_state.phase_start_time,
+                      time_ms() - w->round_state.phase_start_time, "-",
+                      nodus_witness_bft_is_leader(w) ? 1 : 0,
+                      (unsigned)w->mempool.count, w->bft_config.quorum,
+                      "IDLE — no timeout armed, no view change possible");
+        }
         return;
+    }
 
     uint64_t elapsed = time_ms() - w->round_state.phase_start_time;
 
-    /* View change stuck: if quorum not reached within viewchg_timeout,
-     * abort and return to IDLE. Prevents node from being permanently stuck. */
+    /* O15H D5 — a stalled view change ESCALATES; it does not give up.
+     *
+     * The old body here returned the node to IDLE with current_view
+     * unchanged and the tally wiped, on the reasoning that this
+     * "prevents the node from being permanently stuck". It does the
+     * opposite. From IDLE this function returns at its first branch, so
+     * the node never times out again; current_view did not move, so the
+     * leader is still the same (possibly dead) node; and nothing else
+     * re-initiates. The node sits idle until some peer's VIEW_CHANGE
+     * happens to arrive — and every peer reached the same dead end.
+     *
+     * That was MASKED until now: D2 (the missing phase_start_time stamp
+     * below) made this branch fire on the very first tick of every view
+     * change, so the constant churn kept re-arming everyone. With the
+     * clock fixed, reaching this point means a genuine 10 s failure to
+     * assemble quorum — and the dead end becomes a real halt. Fixing D2
+     * without fixing this would trade a fast stall for a slow one.
+     *
+     * The PBFT-standard behaviour is to retry the view change at the
+     * NEXT view, and that is what this does. SAFETY IS UNCHANGED:
+     * `current_view` is advanced in exactly one place, on quorum
+     * (bft_vc_check_quorum), and this path does not touch it. Only the
+     * TARGET moves, so leader election, the C5 binding and the NEW_VIEW
+     * proof all keep their existing preconditions. Records for the
+     * abandoned target are cleared for the same reason handle_viewchg
+     * clears them when it adopts a higher target: a lower target's
+     * prepared cert must never be counted in a higher target's scan.
+     *
+     * Convergence: nodes that escalate at slightly different moments
+     * adopt each other's HIGHEST target through handle_viewchg, which
+     * (D2, second half) also restarts the adopter's clock — so an
+     * adopter always gets a full window at the target it converged on.
+     * The interval is deliberately FIXED rather than backed off: a
+     * per-node backoff is per-node timing state, and timing state that
+     * differs between witnesses is what this file exists to avoid. */
     if (w->round_state.phase == NODUS_W_PHASE_VIEW_CHANGE) {
         if (elapsed > w->bft_config.viewchg_timeout_ms) {
-            fprintf(stderr, "%s: view change timeout (%lu ms), "
-                    "returning to IDLE (view stays %u)\n",
-                    LOG_TAG, (unsigned long)elapsed, w->current_view);
-            round_state_free_batch(&w->round_state);
-            w->round_state.phase = NODUS_W_PHASE_IDLE;
-            w->view_change_in_progress = false;
+            bool have_target = (w->view_change_in_progress &&
+                                w->view_change_target > w->current_view);
+
+            /* O15H D9 — plain escalation. The D5b "join the adopted
+             * target instead of overshooting it" branch that used to
+             * live here is GONE because D9 made its premise
+             * unreachable: adoption now requires f+1 backers, and the
+             * f+1 join rule fires on the same condition in the same
+             * call, so a target can no longer be adopted while our own
+             * vote is still missing from it. Keeping a branch whose
+             * condition can never hold would be dead code guarding a
+             * hazard that no longer exists — and the hazard it guarded
+             * (running ahead of the cluster) is now handled properly, by
+             * following the f+1-supported target in handle_viewchg. */
+            uint32_t next_target = have_target ? w->view_change_target + 1
+                                               : w->current_view + 1;
+
+            fprintf(stderr, "%s: view change timeout (%lu ms) at %u/%u — "
+                    "escalating target %u -> %u (current_view stays %u)\n",
+                    LOG_TAG, (unsigned long)elapsed,
+                    bft_vc_tally(w, w->view_change_target),
+                    w->bft_config.quorum,
+                    w->view_change_target, next_target, w->current_view);
+            O15H_DIAG(w, "escalate", w->my_id, w->round_state.block_height,
+                      w->current_view, next_target, w->round_state.phase,
+                      w->round_state.phase_start_time, elapsed, "-", 0,
+                      bft_vc_tally(w, w->view_change_target),
+                      w->bft_config.quorum,
+                      "view-change budget expired");
+
+            /* O15H D9 — no clear on escalation either. Every record is
+             * some voter's own current target; raising OUR target does
+             * not retract theirs, and the per-target tally means records
+             * at other targets cannot contaminate this one. Our own
+             * record follows us, via the upsert in
+             * bft_self_record_view_change. */
+            w->view_change_in_progress = true;
+            w->view_change_target = next_target;
+            /* We have not voted for the NEW target yet — this is what
+             * lets initiate_view_change past its D1 early-return. */
             w->view_change_voted = false;
-            w->view_change_count = 0;
-            memset(&w->round_state, 0, sizeof(w->round_state));
+            /* Fresh window for the new target (D2). */
+            w->round_state.phase_start_time = time_ms();
+
+            /* Re-broadcast + self-record at the escalated target. The
+             * retained batch is deliberately NOT freed: a later view may
+             * still have to re-propose it, and the tick-time guard in
+             * nodus_witness.c releases it once the chain passes its
+             * height. */
+            nodus_witness_bft_initiate_view_change(w);
         }
         return;
     }
@@ -7383,9 +7865,39 @@ void nodus_witness_bft_check_timeout(nodus_witness_t *w) {
         round_state_free_batch(&w->round_state);
 
         w->round_state.phase = NODUS_W_PHASE_VIEW_CHANGE;
+        /* O15H D2 — RE-STAMP THE PHASE CLOCK.
+         *
+         * `elapsed` above is measured from phase_start_time, and that
+         * field is only ever written at round entry (:3997 leader,
+         * :4633 follower, :5249 on PREVOTE quorum). Entering
+         * NODUS_W_PHASE_VIEW_CHANGE without re-stamping left the
+         * VIEW_CHANGE branch of this function measuring the view
+         * change's age from the ROUND's start — and since
+         * viewchg_timeout_ms (10 s) is SHORTER than round_timeout_ms
+         * (15 s, nodus_types.h:161), `elapsed > viewchg_timeout_ms` was
+         * already true the moment the view change began. The next tick
+         * (~150 ms) therefore aborted it and wiped view_change_count.
+         *
+         * Signature in the 2026-08-25 rehearsal: "view change timeout
+         * (16000 ms)" printing the SAME elapsed as the round timeout
+         * that had just fired, at 8/14 votes — after which the tally
+         * restarted at 1/14 and never converged. At N=7 the quorum of 5
+         * usually landed inside that single tick, which is why this bug
+         * only became fatal at N=20.
+         *
+         * (16000 not 15000 because time_ms() is nodus_time_now()*1000,
+         * i.e. one-second granularity — :101.) */
+        w->round_state.phase_start_time = time_ms();
 
         fprintf(stderr, "%s: round timeout (%lu ms), initiating view change\n",
                 LOG_TAG, (unsigned long)elapsed);
+        O15H_DIAG(w, "vc_enter_own_timeout", w->my_id,
+                  w->round_state.block_height, w->current_view,
+                  w->view_change_target, w->round_state.phase,
+                  w->round_state.phase_start_time, elapsed, "-", 0,
+                  bft_vc_tally(w, w->view_change_target),
+                  w->bft_config.quorum,
+                  "own round timeout — clock re-stamped here");
         nodus_witness_bft_initiate_view_change(w);
     }
 }

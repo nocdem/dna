@@ -242,7 +242,14 @@ int main(void) {
         vc.viewchg.last_committed_round = 5;
         CHECK(nodus_witness_bft_handle_viewchg(w, &vc) == 0,
               "peer view change accepted");
-        CHECK(w->view_change_in_progress, "joined the view change");
+        /* O15H D9 — ONE peer message no longer commits this node to the
+         * view; adoption needs f+1 backers (a single Byzantine node must
+         * not be able to drag or reset the cluster). The vote is still
+         * RECORDED, which is what this section's property depends on:
+         * the node must go on to cast and broadcast its OWN vote at its
+         * own timeout, and that is what the assertions below check. */
+        CHECK(!w->view_change_in_progress,
+              "one peer message records but does not commit us to the view");
         CHECK(w->view_change_count == 1, "peer vote recorded");
 
         /* Our own round timeout fires. Pre-fix: initiate_view_change is

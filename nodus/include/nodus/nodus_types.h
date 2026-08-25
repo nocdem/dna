@@ -22,8 +22,8 @@ extern "C" {
 
 #define NODUS_VERSION_MAJOR  0
 #define NODUS_VERSION_MINOR  19
-#define NODUS_VERSION_PATCH  17
-#define NODUS_VERSION_STRING "0.19.17"
+#define NODUS_VERSION_PATCH  18
+#define NODUS_VERSION_STRING "0.19.18"
 
 /* Wire frame.
  *
@@ -160,7 +160,10 @@ extern "C" {
 #define NODUS_T3_MAX_TX_WITNESSES   3
 #define NODUS_T3_ROUND_TIMEOUT_MS   15000
 #define NODUS_T3_VIEWCHG_TIMEOUT_MS 10000
-#define NODUS_T3_MAX_VIEW_CHANGES   3
+/* O15H — NODUS_T3_MAX_VIEW_CHANGES removed with the dead
+ * bft_config.max_view_changes field it initialised; nothing read either.
+ * A view change that misses its window escalates to the next view
+ * (nodus_witness_bft_check_timeout), it is not capped. */
 #define NODUS_T3_EPOCH_DURATION_SEC 60      /* DNAC epoch = 60s */
 /* Witness BFT (Tier 3) protocol version — CLUSTER-INTERNAL ONLY.
  *
