@@ -410,6 +410,20 @@ typedef struct {
      * bootstrap handler can drop excess requests inside the
      * NODUS_W_BOOTSTRAP_CHAIN_Q_MIN_INTERVAL_MS window. */
     uint64_t    last_chain_q_response_ms;
+
+    /* O15G HIGH-1 — per-peer invalid-cert cooldown (LOCAL liveness-only,
+     * NEVER a consensus input). Stamped to time(NULL) + a bounded window
+     * when THIS peer served a sync response whose certs were CONSENSUS_INVALID
+     * against the committed committee (nodus_witness_sync_handle_rsp). While
+     * unexpired, nodus_witness_sync_find_peer / _rotate_peer SKIP this peer, so
+     * a Byzantine height-inflating peer that serves an invalid cert is not
+     * re-selected while an honest peer (any index) is reachable. It self-expires
+     * (a transiently-behind honest peer is never permanently blacklisted) and
+     * only steers WHICH peer to ask — it can never change an accept/reject
+     * verdict. 0 = not in cooldown. Peer slots may be reused by a different
+     * identity across reconnects; the field self-expires, so a stale stamp
+     * on a reused slot at worst delays one sync tick. */
+    uint64_t    sync_bad_until;             /* time(NULL) deadline; 0 = clear */
 } nodus_witness_peer_t;
 
 /* ── Main witness context ────────────────────────────────────────── */
@@ -487,6 +501,20 @@ typedef struct nodus_witness {
 
     /* Zone chain ID */
     uint8_t     chain_id[32];
+
+    /* O15G HIGH-2 — the DISCOVER-agreed genesis chain_def hash, persisted from
+     * bootstrap (nodus_witness_bootstrap.c, after create_chain_db succeeds) so
+     * the legacy genesis-sync leg can bind the synced genesis to the anchor the
+     * quorum agreed on. `g_quorum_cdh` is SHA3-512 over the DISCOVER-quorum's
+     * chain_def blob (== SHA3-512 of the same verbatim chain_def_blob bytes the
+     * genesis TX carries as its trailer). When `g_quorum_cdh_set` is true the
+     * genesis-sync leg verifies block-1 certs against the ANCHORED chain_def's
+     * own validator set — NOT the DHT roster (design §7.6 / §8.1). A
+     * genesis-creating founder or a legacy no-bootstrap fixture leaves it unset,
+     * and that path keeps the legacy roster genesis leg. In-memory only:
+     * bootstrap → sync is one process, so no DB schema is needed. */
+    uint8_t     g_quorum_cdh[64];
+    bool        g_quorum_cdh_set;
 
     /* Ledger V2 (INACTIVE) — optional domain-runtime table override.
      * NULL = the compiled production table (nodus_runtime_builtin_table).
@@ -903,6 +931,41 @@ typedef struct nodus_witness {
         uint64_t last_req_ms;            /* fetch throttle               */
     } v2_join;
 } nodus_witness_t;
+
+/* ── O15G — genesis chain_id derivation (shared by commit_genesis and the
+ * legacy genesis-sync anchor check) ──────────────────────────────────────
+ *
+ * Parse the first-recipient fingerprint out of a serialized genesis TX and
+ * derive its chain_id = SHA3-256(fp_bytes(64) || tx_hash(64)). This is the
+ * EXACT walk + derivation nodus_witness_commit_genesis performs inline when it
+ * bootstraps a fresh chain DB (if(!w->db)); it is factored out so the genesis
+ * sync leg can re-derive and cross-check the synced genesis's chain_id against
+ * the DISCOVER-agreed chain the joiner bootstrapped onto — commit_genesis
+ * SKIPS that check on a bootstrapped joiner (w->db already set). Pure wire
+ * walk, no state.
+ *
+ * @param tx_data       serialized genesis TX
+ * @param tx_len        length of tx_data
+ * @param tx_hash       the genesis TX hash (64 bytes)
+ * @param out_chain_id  32-byte derived chain_id
+ * @return 0 on success, -1 on NULL args / truncated tx / bad fingerprint
+ */
+int nodus_witness_genesis_derive_chain_id(const uint8_t *tx_data,
+                                          uint32_t tx_len,
+                                          const uint8_t *tx_hash,
+                                          uint8_t *out_chain_id);
+
+#ifdef NODUS_WITNESS_INTERNAL_API
+/* ── O15G HIGH-1 — sync peer selection (test-visible internals) ───────────
+ * Un-static'd from nodus_witness_sync.c so the cooldown behaviour can be unit
+ * tested directly. Both SKIP a peer whose sync_bad_until cooldown is unexpired
+ * (time(NULL) timebase). find_peer scans all peers for the highest reachable
+ * one ABOVE local height; rotate_peer scans FORWARD ONLY (strictly higher
+ * index) for another reachable peer at the stuck height. Peer scoring is
+ * node-local liveness steering — never a quorum/verdict input. */
+int nodus_witness_sync_find_peer(nodus_witness_t *w);
+int nodus_witness_sync_rotate_peer(nodus_witness_t *w);
+#endif /* NODUS_WITNESS_INTERNAL_API */
 
 /* Phase 4 / Task 4.2 — intra-batch chained-UTXO context.
  *

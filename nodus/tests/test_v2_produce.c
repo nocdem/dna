@@ -737,6 +737,98 @@ int main(void) {
         free(e3.bytes);
     }
 
+    /* §11 — remote-COMMIT race path precondition + effect (O15G).
+     *
+     * nodus_witness_bft_handle_commit's successor remote path calls
+     * produce_commit with a NON-NULL expected_global_root (the leader's
+     * claimed root, the C3-analog assertion) — the same shape §7 drives.
+     * The O15G bft.c fix broadcasts the resulting rv2out cert; the
+     * pre-fix code DISCARDED it (bft.c copied only global_root). This
+     * section pins the two facts that fix relies on:
+     *   (a) the remote-shape invocation STILL signs + SELF-NOTES a
+     *       broadcastable cert over the node's OWN derived BlockID
+     *       (produce.c:564 — the value handle_commit must put on the
+     *       wire), and
+     *   (b) once such race-path certs circulate, the committing node's
+     *       QC forms — a node that reached its block via the race is not
+     *       stuck at qc NULL, provided the cert reaches quorum.
+     * Without the broadcast, a boundary where every joiner commits via
+     * this race circulates fewer than quorum certs and the QC never
+     * forms on any node (the reported N=7->20 boundary symptom). The
+     * broadcast WIRING itself is exercised only by the multi-node
+     * rehearsal; this proves the precondition it depends on. */
+    {
+        fixture_t R;
+        CHECK(fx_open(&R, "r") == 0, "fixture R open"); OK();
+
+        nodus_witness_mempool_entry_t x;
+        nodus_witness_mempool_entry_t *b1[1] = { &x };
+        mkentry(&x, &e1);
+        nodus_v2_produce_out_t o;
+        /* REMOTE shape: expected_global_root != NULL (the leader's root). */
+        CHECK(nodus_witness_v2_produce_commit(R.w, b1, 1, 1, 42,
+                  A.w->my_id, blk1_root, &o) == 0,
+              "remote-path produce commits with the expected root"); OK();
+        CHECK(o.have_cert == 1,
+              "remote-path produce yields a BROADCASTABLE cert "
+              "(handle_commit must not discard rv2out.have_cert)"); OK();
+        CHECK(memcmp(o.block_id, blk1_id, 64) == 0,
+              "the cert is over the node's OWN derived BlockID"); OK();
+        uint8_t zero_sig[NODUS_SIG_BYTES];
+        memset(zero_sig, 0, sizeof(zero_sig));
+        CHECK(memcmp(o.cert_sig, zero_sig, NODUS_SIG_BYTES) != 0,
+              "the broadcastable cert_sig is populated"); OK();
+
+        /* (a) self-note: the node's OWN cert is already in its pool over
+         * the derived id — so its OWN QC can include itself even though a
+         * node never receives its own broadcast. */
+        CHECK(R.w->v2_certpool.committed && R.w->v2_certpool.height == 1,
+              "pool adopted the committed height"); OK();
+        int self_slot = -1;
+        for (uint32_t i = 0; i < R.w->v2_certpool.n; i++) {
+            if (memcmp(R.w->v2_certpool.slots[i].voter_id,
+                       g_ks[0].voter, 32) == 0) {
+                self_slot = (int)i;
+                break;
+            }
+        }
+        CHECK(self_slot >= 0, "the node SELF-NOTED its own cert"); OK();
+        CHECK(memcmp(R.w->v2_certpool.slots[self_slot].block_id,
+                     blk1_id, 64) == 0,
+              "the self-noted cert is over the derived BlockID"); OK();
+        CHECK(memcmp(R.w->v2_certpool.slots[self_slot].sig,
+                     o.cert_sig, NODUS_SIG_BYTES) == 0,
+              "the self-noted sig IS the broadcast cert_sig"); OK();
+        CHECK(!R.w->v2_certpool.qc_attached,
+              "no QC from the self-note alone (below quorum)"); OK();
+
+        /* (b) circulate quorum-completing peer race-path certs -> QC
+         * forms (self g_ks[0] + g_ks[1..4] = 5 of 7). The committing node
+         * reached its block via the REMOTE path, yet once peer certs
+         * arrive it assembles + attaches the QC. */
+        uint8_t sig[NODUS_SIG_BYTES];
+        for (int k = 1; k <= 4; k++) {
+            CHECK(sign_cert(&g_ks[k], o.block_id, 1, R.chain_id,
+                            R.w->v2_certpool.vset_hash, sig) == 0,
+                  "peer cert sign");
+            nodus_witness_v2_cert_note(R.w, 1, g_ks[k].voter, o.block_id,
+                                       sig);
+        }
+        CHECK(R.w->v2_certpool.qc_attached,
+              "QC forms for a race-path committer once certs circulate");
+        OK();
+        sqlite3_stmt *qst = NULL;
+        CHECK(sqlite3_prepare_v2(R.w->db,
+                  "SELECT qc FROM v2_blocks WHERE global_height = 1",
+                  -1, &qst, NULL) == SQLITE_OK, "qc q");
+        CHECK(sqlite3_step(qst) == SQLITE_ROW &&
+              sqlite3_column_type(qst, 0) != SQLITE_NULL,
+              "QC persisted on the race-path committer's block row"); OK();
+        sqlite3_finalize(qst);
+
+        fx_close(&R);
+    }
+
     free(e1.bytes);
     free(e_other_chain.bytes);
     fx_close(&A);

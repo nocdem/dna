@@ -22,6 +22,7 @@
 #include "witness/nodus_witness_verify.h"
 #include "witness/nodus_witness_handlers.h"
 #include "witness/nodus_witness_cert.h"
+#include "witness/nodus_witness_v2_result.h"  /* typed cert-verify result codes */
 #include "witness/nodus_witness_validator.h"
 #include "witness/nodus_witness_committee.h"
 #include "witness/nodus_witness_delegation.h"
@@ -30,6 +31,7 @@
 #include "witness/nodus_witness_genesis_seed.h"
 #include "witness/nodus_witness_vset.h"        /* S3 epoch validator-set lifecycle */
 #include "witness/nodus_witness_sync.h"        /* A2 simetri: active sync_check trigger */
+#include "witness/nodus_witness_v2_sync2.h"    /* O15G: successor catch-up tick   */
 #include "witness/nodus_witness_v2_activation.h" /* O15C activation authority */
 #include "witness/nodus_witness_v2_produce.h"    /* O15D successor rounds */
 #ifdef NODUS_V2_ACTIVATION_AUTHORITY
@@ -757,6 +759,34 @@ static int nodus_derive_chain_id(const char *genesis_fp,
      * reaching the leader's handler. */
     memset(chain_id_out + 16, 0, 16);
     return 0;
+}
+
+/* O15G — parse the first-recipient fingerprint out of a serialized genesis TX
+ * and derive its chain_id. This is the EXACT walk + derivation commit_genesis
+ * performs inline when bootstrapping a fresh chain DB (below, if(!w->db));
+ * factored out so the genesis sync leg can re-derive the synced genesis's
+ * chain_id and cross-check it against the DISCOVER-agreed chain the joiner
+ * bootstrapped onto (commit_genesis SKIPS that check when w->db is already
+ * set). Pure wire walk, no state. Declared in nodus_witness.h. */
+int nodus_witness_genesis_derive_chain_id(const uint8_t *tx_data,
+                                          uint32_t tx_len,
+                                          const uint8_t *tx_hash,
+                                          uint8_t *out_chain_id) {
+    if (!tx_data || !tx_hash || !out_chain_id) return -1;
+    if (tx_len < DNAC_TX_HEADER_SIZE + 3 + 129) {
+        fprintf(stderr, "%s: genesis tx_data too short for fingerprint (len=%u)\n",
+                LOG_TAG, tx_len);
+        return -1;
+    }
+    size_t fp_off = DNAC_TX_HEADER_SIZE;
+    uint8_t in_count = tx_data[fp_off++];
+    fp_off += (size_t)in_count * (NODUS_T3_NULLIFIER_LEN + 8 + 64);
+    if (fp_off >= tx_len) return -1;
+    uint8_t out_count = tx_data[fp_off++];
+    if (out_count == 0 || fp_off + 1 + 129 > tx_len) return -1;
+    fp_off += 1;  /* output version byte */
+    const char *genesis_fp = (const char *)(tx_data + fp_off);
+    return nodus_derive_chain_id(genesis_fp, tx_hash, out_chain_id);
 }
 
 /* v0.16 stage C.3 — TX-type-aware fee burn helper.
@@ -5755,17 +5785,57 @@ int nodus_witness_bft_handle_commit(nodus_witness_t *w,
                        NODUS_SIG_BYTES);
             }
 
-            if (nodus_witness_verify_sync_certs(cmt->tx_root,
-                                                  cmt->block_height,
-                                                  w->chain_id,
-                                                  &w->roster,
-                                                  sync_certs, cc,
-                                                  w->bft_config.quorum) < 0) {
+            /* O15G — bind the signer pubkey source to the COMMITTED committee
+             * snapshot for this block's height, not the transient transport
+             * roster. Quorum comes from that snapshot (rv_quorum), never
+             * w->bft_config.quorum — which at N>7 could differ from the
+             * signing epoch's quorum and, before this change, silently dropped
+             * a signer absent from the local roster and wedged the node. */
+            uint32_t rv_quorum = 0;
+            int cv = nodus_witness_verify_certs_snapshot(w, cmt->tx_root,
+                                                          cmt->block_height,
+                                                          w->chain_id,
+                                                          sync_certs, cc,
+                                                          &rv_quorum);
+            if (cv < 0) {
+                if (cv == NODUS_V2_NOT_YET_LINKABLE) {
+                    /* The committed committee snapshot for this block's epoch
+                     * is not on this node yet — we are simply behind. This is
+                     * NOT proposer misbehaviour: do not blame, catch up first
+                     * (mirror the height-mismatch sync trigger above).
+                     *
+                     * O15G §8.3 — route to the correct catch-up lane. The
+                     * legacy nodus_witness_sync_check is a NO-OP on a successor
+                     * (it returns early on w->v2_successor), so on a successor
+                     * this NOT_YET_LINKABLE would trigger no recovery at all;
+                     * drive the V2 catch-up tick instead. This only KICKS the
+                     * existing sync2 driver (its own rate limits apply) — it
+                     * does not change sync2 behaviour or wire. */
+                    fprintf(stderr,
+                        "%s: PRECOMMIT cert authority not yet available "
+                        "(h=%llu) — triggering sync\n",
+                        LOG_TAG, (unsigned long long)cmt->block_height);
+                    if (w->v2_successor)
+                        nodus_witness_v2_sync_tick(w);
+                    else
+                        nodus_witness_sync_check(w);
+                    return -1;
+                }
+                if (cv == NODUS_V2_INTERNAL_FAULT) {
+                    /* Local corruption / unreadable committed authority. A node
+                     * that cannot know who was permitted to sign must not vote
+                     * the block down — fail closed, stay silent. */
+                    fprintf(stderr,
+                        "%s: PRECOMMIT cert authority LOCAL FAULT "
+                        "(h=%llu) — refusing to commit (fail-closed)\n",
+                        LOG_TAG, (unsigned long long)cmt->block_height);
+                    return -1;
+                }
                 fprintf(stderr,
                     "%s: PRECOMMIT cert quorum verify FAILED "
                     "(h=%llu, votes=%u, quorum=%u)\n",
                     LOG_TAG, (unsigned long long)cmt->block_height,
-                    cc, w->bft_config.quorum);
+                    cc, rv_quorum);
                 return -1;
             }
         }
@@ -5861,6 +5931,64 @@ int nodus_witness_bft_handle_commit(nodus_witness_t *w,
                 memcpy(w->cached_state_root, rv2out.global_root,
                        NODUS_KEY_BYTES);
                 w->cached_state_root_valid = true;
+
+                /* O15G — circulate OUR OWN DNA.CERT.v2 certificate.
+                 *
+                 * produce_commit already SELF-NOTED our cert into the
+                 * per-height pool (nodus_witness_v2_produce.c:564, coupled
+                 * with rv2out.have_cert in the SAME success branch), so our
+                 * own QC can already include us. What it does NOT do is put
+                 * our cert on the wire — and this remote-COMMIT race path,
+                 * unlike the own-quorum COMMIT build+broadcast (:5575-5638),
+                 * previously discarded rv2out entirely below. A node that
+                 * commits HERE (every just-activated joiner at an N-growth
+                 * boundary, which receives the leader's COMMIT before its own
+                 * precommit quorum finalizes) therefore kept its certificate
+                 * to itself. With a quorum above the count of own-quorum
+                 * committers, NO node ever collected enough certs and the QC
+                 * never formed (v2_blocks.qc NULL on every node at the
+                 * boundary height e*).
+                 *
+                 * Mirror the own-quorum broadcast (:5575-5583): re-carry the
+                 * just-committed batch so the frame satisfies the peer-side
+                 * collection gate at :5699 (batch_count > 0 && has_v2_cert)
+                 * and attach our cert over the BlockID WE derived. NO STORM:
+                 * we commit a given height exactly once (round guard :5704 →
+                 * phase IDLE :6128; a same-height COMMIT under a different
+                 * round dies at the A2 height check :5734 once the tip has
+                 * advanced), so we emit our OWN cert at most once per height,
+                 * and certs RECEIVED from peers are only pooled at :5699,
+                 * never relayed. Heap-allocated: nodus_t3_msg_t carries
+                 * certs[128] (~600 KB) and this frame already holds
+                 * local_entries[]; a stack copy here risks overflow. */
+                if (rv2out.have_cert) {
+                    nodus_t3_msg_t *cc = calloc(1, sizeof(*cc));
+                    if (cc) {
+                        cc->type = NODUS_T3_COMMIT;
+                        cc->txn_id = ++w->next_txn_id;
+                        cc->commit = *cmt;      /* re-carry the batch */
+                        cc->commit.has_v2_cert = 1;
+                        memcpy(cc->commit.v2_block_id, rv2out.block_id,
+                               NODUS_T3_TX_HASH_LEN);
+                        memcpy(cc->commit.v2_cert_sig, rv2out.cert_sig,
+                               NODUS_SIG_BYTES);
+                        /* Derived global root only (F-CONS-06); the engine
+                         * already asserted it equals the leader's claim. */
+                        memcpy(cc->commit.state_root, rv2out.global_root,
+                               NODUS_KEY_BYTES);
+                        nodus_witness_bft_broadcast(w, cc);
+                        free(cc);
+                    } else {
+                        /* A cert we cannot circulate is not a consensus
+                         * fault: our block is committed and our own QC
+                         * already includes us — peers may simply not reach
+                         * quorum from us this round. */
+                        QGP_LOG_ERROR(LOG_TAG,
+                            "v2 cert broadcast alloc failed at height %llu "
+                            "— cert not circulated",
+                            (unsigned long long)cmt->block_height);
+                    }
+                }
             }
         } else if (cmt->batch_count == 1 &&
             local_entries[0].tx_type == NODUS_W_TX_GENESIS) {
@@ -7331,24 +7459,15 @@ int nodus_witness_commit_genesis(nodus_witness_t *w,
                                    const uint8_t *proposer_id) {
     if (!w || !tx_hash || !tx_data) return -1;
 
-    /* Chain DB bootstrap — lifted from legacy nodus_witness_commit_block */
+    /* Chain DB bootstrap — lifted from legacy nodus_witness_commit_block.
+     * The fingerprint walk + chain_id derivation is factored into
+     * nodus_witness_genesis_derive_chain_id (above) so the genesis sync leg can
+     * re-derive against the same code; the too-short/parse diagnostics live in
+     * that helper. */
     if (!w->db) {
-        if (tx_len < DNAC_TX_HEADER_SIZE + 3 + 129) {
-            fprintf(stderr, "%s: genesis tx_data too short for fingerprint (len=%u)\n",
-                    LOG_TAG, tx_len);
-            return -1;
-        }
-        size_t fp_off = DNAC_TX_HEADER_SIZE;
-        uint8_t in_count = tx_data[fp_off++];
-        fp_off += (size_t)in_count * (NODUS_T3_NULLIFIER_LEN + 8 + 64);
-        if (fp_off >= tx_len) return -1;
-        uint8_t out_count = tx_data[fp_off++];
-        if (out_count == 0 || fp_off + 1 + 129 > tx_len) return -1;
-        fp_off += 1;
-        const char *genesis_fp = (const char *)(tx_data + fp_off);
-
         uint8_t derived_chain_id[32];
-        if (nodus_derive_chain_id(genesis_fp, tx_hash, derived_chain_id) != 0) {
+        if (nodus_witness_genesis_derive_chain_id(tx_data, tx_len, tx_hash,
+                                                  derived_chain_id) != 0) {
             fprintf(stderr, "%s: commit_genesis: derive_chain_id failed\n", LOG_TAG);
             return -1;
         }

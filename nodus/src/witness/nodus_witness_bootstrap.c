@@ -977,6 +977,18 @@ void nodus_witness_bootstrap_handle_genesis_rsp(nodus_witness_t *w,
         return;
     }
 
+    /* O15G HIGH-2 — persist the DISCOVER-agreed chain_def hash onto the handle
+     * (in-memory: bootstrap → sync is one process). The chain DB now exists for
+     * g_quorum_cid == w->chain_id, so the anchor is bound to the chain this node
+     * actually adopted. The legacy genesis-sync leg
+     * (nodus_witness_sync_genesis_anchor_check) uses it to reject a forged
+     * genesis whose chain_def does not hash to this agreed value — closing the
+     * partial-eclipse (sync-peer + roster sybils) genesis-forgery path (§8.1).
+     * Setting only on the success path is sufficient: a retry-DISCOVER round
+     * re-agrees g_quorum_cdh and overwrites this on its own success. */
+    memcpy(w->g_quorum_cdh, g_quorum_cdh, 64);
+    w->g_quorum_cdh_set = true;
+
     if (nodus_witness_db_migrate_v12(w) != 0) {
         fprintf(stderr,
                 "WITNESS-BOOTSTRAP: migrate_v12 on new chain DB "

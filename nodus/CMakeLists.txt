@@ -1012,6 +1012,21 @@ register_witness_test(test_v2_qc_authority)
 register_witness_test(test_v2_finalize)
 register_witness_test(test_v2_produce)
 
+# O15G — cert verification bound to the committed committee snapshot: the
+# roster-free Layer-A resolvers, order-free unique Layer-B, snapshot-integrity
+# faults, resolver-only quorum, and roster-immunity determinism twin.
+register_witness_test(test_cert_verify_snapshot)
+
+# O15G Round 2 — HIGH-2 genesis bootstrap-anchor binding
+# (nodus_witness_sync_genesis_anchor_check + verify_certs_chain_def): forged
+# chain_def reject, roster-sybil immunity, chain_id/cert-shortfall/malformed.
+register_witness_test(test_sync_genesis_anchor)
+
+# O15G Round 2 — HIGH-1 per-peer invalid-cert cooldown
+# (nodus_witness_sync_find_peer / _rotate_peer): byzantine height-inflating peer
+# skipped, honest lower-index peer selected, cooldown expiry re-admits.
+register_witness_test(test_sync_peer_cooldown)
+
 # Ledger V2 O15F Task 3 — successor CLAIM ingress (transport-local class
 # 201): the verify divert (admission incl. canonicality, tx_hash, spent
 # and mempool-pending dedup), produce_batch_check duplicate-nullifier

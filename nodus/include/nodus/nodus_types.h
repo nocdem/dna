@@ -22,8 +22,8 @@ extern "C" {
 
 #define NODUS_VERSION_MAJOR  0
 #define NODUS_VERSION_MINOR  19
-#define NODUS_VERSION_PATCH  16
-#define NODUS_VERSION_STRING "0.19.16"
+#define NODUS_VERSION_PATCH  17
+#define NODUS_VERSION_STRING "0.19.17"
 
 /* Wire frame.
  *
@@ -38,7 +38,7 @@ extern "C" {
  * pre-v0.18 client APKs continue to connect. The previous hard cutover
  * (commit 9494d402, 2026-05-02) reverted with this change because it
  * locked out every legacy client without a migration path. T3 BFT
- * messages still emit v0x02 via NODUS_T3_BFT_PROTOCOL_VER for
+ * messages carry their own NODUS_T3_BFT_PROTOCOL_VER (see below) for
  * cluster-internal traffic; legacy acceptance is purely a frame-layer
  * compatibility shim.
  */
@@ -164,6 +164,14 @@ extern "C" {
 #define NODUS_T3_EPOCH_DURATION_SEC 60      /* DNAC epoch = 60s */
 /* Witness BFT (Tier 3) protocol version — CLUSTER-INTERNAL ONLY.
  *
+ * 4 (O15G): the PRECOMMIT/COMMIT cert ACCEPTANCE RULE changed — signer
+ * pubkeys and the verify quorum are now resolved from the committed
+ * committee snapshot for the block's height, not from the transient
+ * transport roster (nodus_witness_verify_certs_snapshot). The cert BYTES
+ * are unchanged, but a v3 and a v4 node can reach DIFFERENT accept/reject
+ * verdicts on the same COMMIT during roster propagation lag, so the two
+ * are not consensus-compatible and the exact-match gate must isolate them.
+ *
  * 3 (O15C-D.4): NEW_VIEW carries the prepared CERTIFICATE (keys rpv/rns/
  * rsg, O15C-D.3). Version 2 nodes skip those keys and fall back to the
  * pre-D.3 local-subset semantics, so the two versions interpret the SAME
@@ -182,12 +190,13 @@ extern "C" {
  * 4004 between validators only, so that precedent does not apply.
  *
  * ⚠ Bumping REQUIRES a coordinated stop-all of the whole fleet
- * (feedback_consensus_deploy_stop_all) — a v2 node cannot participate
- * with v3 nodes by design, which is the entire point.
+ * (feedback_consensus_deploy_stop_all) — an older-version node cannot
+ * participate with a newer-version one by design, which is the entire
+ * point.
  *
  * Bootstrap messages deliberately carry version 1 and are NOT gated;
  * they run before a committee exists. */
-#define NODUS_T3_BFT_PROTOCOL_VER   3
+#define NODUS_T3_BFT_PROTOCOL_VER   4
 
 /* Token creation fee: 1% of genesis supply (10M DNAC = 10^15 raw for 1B supply) */
 #define NODUS_W_TOKEN_CREATE_FEE  1000000000000000ULL

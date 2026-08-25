@@ -19,6 +19,7 @@
 #include "dnac/ledger_ids.h"    /* S3: dna_bft_quorum over the pinned halt set */
 #include "witness/nodus_witness_vset.h"      /* S3: historical-quorum source (1) */
 #include "witness/nodus_witness_committee.h" /* S3: historical-quorum source (2) */
+#include "witness/nodus_witness_v2_result.h" /* O15G typed cert-verify results  */
 #include "witness/nodus_witness_genesis_seed.h" /* S3: genesis quorum source (3) */
 
 #include <openssl/evp.h>
@@ -31,12 +32,21 @@
 
 #include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
 #include "crypto/utils/qgp_log.h"           /* QGP_LOG_* (new code; legacy lines use fprintf) */
+#include "crypto/hash/qgp_sha3.h"           /* O15G: qgp_sha3_512 — the EXACT function
+                                             * bootstrap.c:928 hashed g_quorum_cdh with */
 
 #define LOG_TAG "WITNESS-SYNC"
 
 /* Rate limiting */
 #define SYNC_MIN_INTERVAL_SEC   30
 #define SYNC_MAX_BLOCKS         1000
+
+/* O15G HIGH-1 — per-peer invalid-cert cooldown window. A peer that served a
+ * CONSENSUS_INVALID sync response is skipped by peer selection for this many
+ * seconds (~2 sync intervals), then re-admitted. Bounded + self-healing: it
+ * routes AROUND a Byzantine height-inflating peer without permanently
+ * blacklisting a transiently-behind honest peer. LOCAL liveness only. */
+#define SYNC_BAD_PEER_COOLDOWN_SEC  60
 
 /* ── Helper: send w_sync_req to a peer ──────────────────────────── */
 
@@ -392,20 +402,128 @@ void nodus_witness_halt_recovery_check(nodus_witness_t *w) {
 
 /* ── Find best sync peer ────────────────────────────────────────── */
 
-static int find_sync_peer(nodus_witness_t *w) {
+/* O15G HIGH-1 — un-static'd (declared in nodus_witness.h under
+ * NODUS_WITNESS_INTERNAL_API) so the cooldown behaviour is unit-testable.
+ * SKIPS a peer whose invalid-cert cooldown is unexpired, so a Byzantine
+ * height-inflating peer that served an invalid cert is not re-selected while an
+ * honest peer (ANY index, including a lower one) is reachable. */
+int nodus_witness_sync_find_peer(nodus_witness_t *w) {
     uint64_t local_height = nodus_witness_block_height(w);
+    uint64_t now = (uint64_t)time(NULL);
     int best = -1;
     uint64_t best_height = local_height;
 
     for (int i = 0; i < w->peer_count; i++) {
         if (!w->peers[i].identified || !w->peers[i].conn) continue;
         if (w->peers[i].conn->state != NODUS_CONN_CONNECTED) continue;
+        if (w->peers[i].sync_bad_until > now) continue;   /* invalid-cert cooldown */
         if (w->peers[i].remote_height > best_height) {
             best_height = w->peers[i].remote_height;
             best = i;
         }
     }
     return best;
+}
+
+/* ── O15G — rotate to a DIFFERENT authenticated peer ────────────────────
+ *
+ * When a peer serves a response whose certs are INVALID against the committed
+ * committee, one bad peer must not abandon all catch-up. Scan FORWARD ONLY
+ * (no wrap) for another reachable peer (identified + live conn) that holds the
+ * height we are stuck on, strictly after the current sync peer index. This is a
+ * pure transport-availability scan — the peer count is NEVER an input to any
+ * quorum computation.
+ *
+ * The forward-only bound is load-bearing: each INVALID-cert rotation moves to a
+ * strictly higher index, so the rotation chain is bounded by peer_count and
+ * always terminates in syncing=false. The next nodus_witness_sync_check tick —
+ * rate-limited by SYNC_MIN_INTERVAL_SEC — then restarts from find_sync_peer's
+ * highest peer. A wrapping ring scan would instead be an unbounded, network-
+ * paced retry loop (A→B→A→B) that masks the underlying failure, which this
+ * codebase forbids. Returns the new peer index, or -1 if no higher peer serves.
+ *
+ * O15G HIGH-1 — un-static'd for unit testing; also SKIPS peers in invalid-cert
+ * cooldown (a peer just stamped bad, or a previously-bad peer, is not a
+ * rotation target). */
+int nodus_witness_sync_rotate_peer(nodus_witness_t *w) {
+    int cur = w->sync_state.sync_peer_idx;
+    uint64_t need = w->sync_state.sync_current_height;
+    uint64_t now = (uint64_t)time(NULL);
+    for (int i = cur + 1; i < w->peer_count; i++) {
+        if (!w->peers[i].identified || !w->peers[i].conn) continue;
+        if (w->peers[i].conn->state != NODUS_CONN_CONNECTED) continue;
+        if (w->peers[i].sync_bad_until > now) continue;   /* invalid-cert cooldown */
+        if (w->peers[i].remote_height < need) continue;
+        return i;
+    }
+    return -1;
+}
+
+/* ── O15G HIGH-2 — genesis bootstrap-anchor check ───────────────────────────
+ *
+ * Bind a synced genesis to the DISCOVER-agreed anchor and verify its block-1
+ * certs against the ANCHORED chain_def (design §8.1). Declared in
+ * nodus_witness_cert.h; called by the genesis leg of handle_rsp, and exercised
+ * directly by test_sync_genesis_anchor with hand-built tx_data + chain_def so
+ * the property is unit-tested without a replayable genesis. */
+int nodus_witness_sync_genesis_anchor_check(nodus_witness_t *w,
+                                            const uint8_t *tx_data,
+                                            uint32_t tx_len,
+                                            const uint8_t *tx_hash,
+                                            const uint8_t *block_hash,
+                                            const nodus_t3_sync_cert_t *certs,
+                                            uint32_t cert_count) {
+    if (!w || !tx_data || !tx_hash || !block_hash || !certs)
+        return NODUS_W_GENESIS_ANCHOR_FAULT;
+    if (!w->g_quorum_cdh_set)
+        return NODUS_W_GENESIS_ANCHOR_FAULT;   /* caller MUST gate on this */
+
+    /* 1. Extract the genesis TX's chain_def trailer (verbatim bytes — the same
+     *    bytes bootstrap serves from blocks.chain_def_blob and hashes into the
+     *    anchor). */
+    const uint8_t *cd = NULL;
+    uint32_t cd_len = 0;
+    if (nodus_witness_extract_chain_def(tx_data, tx_len, &cd, &cd_len) != 0 ||
+        !cd || cd_len == 0)
+        return NODUS_W_GENESIS_ANCHOR_MALFORMED;
+
+    /* 2. ANCHOR — SHA3-512(chain_def) == the DISCOVER-agreed g_quorum_cdh (the
+     *    EXACT function bootstrap.c:928 hashed the anchor with). This is the
+     *    LOAD-BEARING check: the genesis tx_hash does NOT cover the chain_def
+     *    trailer (shared/dnac/tx_wire.c:504-506), so nothing else binds the
+     *    validator set. A mismatch is a forged genesis. */
+    uint8_t got_cdh[64];
+    if (qgp_sha3_512(cd, cd_len, got_cdh) != 0)
+        return NODUS_W_GENESIS_ANCHOR_FAULT;
+    if (memcmp(got_cdh, w->g_quorum_cdh, 64) != 0)
+        return NODUS_W_GENESIS_ANCHOR_CDH_MISMATCH;
+
+    /* 3. Belt-and-braces — derive_chain_id(genesis) == the chain we adopted.
+     *    Redundant with the anchor for the validator set, but binds the genesis
+     *    outputs/tx_hash to THIS chain (commit_genesis skips this on a
+     *    bootstrapped joiner because w->db is already set). */
+    uint8_t derived[32];
+    if (nodus_witness_genesis_derive_chain_id(tx_data, tx_len, tx_hash,
+                                              derived) != 0)
+        return NODUS_W_GENESIS_ANCHOR_MALFORMED;
+    if (memcmp(derived, w->chain_id, 32) != 0)
+        return NODUS_W_GENESIS_ANCHOR_CID_MISMATCH;
+
+    /* 4. Verify certs against the ANCHORED chain_def's initial_validators[].
+     *    Genesis signers used a ZERO chain_id at sign time (chain_id is derived
+     *    only in commit_genesis, AFTER quorum), so the preimage chain_id here
+     *    is all-zeros. */
+    uint8_t cert_chain_id_zero[32] = {0};
+    uint32_t q = 0;
+    int cv = nodus_witness_verify_certs_chain_def(block_hash, 1,
+                                                  cert_chain_id_zero,
+                                                  cd, cd_len,
+                                                  certs, cert_count, &q);
+    if (cv == NODUS_V2_INTERNAL_FAULT)
+        return NODUS_W_GENESIS_ANCHOR_FAULT;       /* corrupt anchored chain_def */
+    if (cv == NODUS_V2_CONSENSUS_INVALID)
+        return NODUS_W_GENESIS_ANCHOR_CERT_SHORT;  /* < quorum vs anchored set   */
+    return NODUS_W_GENESIS_ANCHOR_OK;
 }
 
 /* ── Sync check + initiate ──────────────────────────────────────── */
@@ -440,7 +558,7 @@ void nodus_witness_sync_check(nodus_witness_t *w) {
     w->sync_state.last_sync_attempt = now;
 
     /* Check for height gap — find peer with higher chain */
-    int peer_idx = find_sync_peer(w);
+    int peer_idx = nodus_witness_sync_find_peer(w);
     if (peer_idx < 0) return;  /* No peer ahead of us */
 
     uint64_t local_height = nodus_witness_block_height(w);
@@ -492,11 +610,16 @@ void nodus_witness_sync_check(nodus_witness_t *w) {
 
     if (peer_height <= local_height) return;
 
-    /* Don't sync until roster has quorum — cert verification needs roster peers */
-    if (w->bft_config.quorum == 0) {
-        fprintf(stderr, "%s: sync deferred — roster quorum not yet established\n", LOG_TAG);
-        return;
-    }
+    /* O15G — the "may I sync?" precondition is pure TRANSPORT AVAILABILITY,
+     * never roster quorum. cert verification now binds to the committed
+     * committee snapshot (nodus_witness_verify_certs_snapshot), so it no longer
+     * needs the roster to be populated and w->bft_config.quorum is not an input
+     * to it. find_sync_peer above already established the ONLY precondition
+     * that matters: peer_idx >= 0 means there is >= 1 authenticated (identified
+     * + CONNECTED) transport peer, ahead of us, to send the request to. The old
+     * "roster quorum not yet established" gate (which deferred sync until the
+     * DHT-propagated roster filled) is REMOVED — it was the timing-coupled wedge
+     * this season closes. */
 
     fprintf(stderr, "%s: sync needed: local=%llu peer=%llu (peer_idx=%d)\n",
             LOG_TAG, (unsigned long long)local_height,
@@ -899,6 +1022,116 @@ int nodus_witness_sync_handle_rsp(nodus_witness_t *w,
      *
      * For height >= 2 the chain_id is set on every node before
      * cert signing, so the existing w->chain_id is correct. */
+    if (db_height >= 2) {
+        /* ── O15G — heights >= 2 verify signer pubkeys against the COMMITTED
+         * committee snapshot for the block's epoch (roster-free). This is the
+         * sync-path half of the O15F fix. It SUBSUMES the (1)-(4) quorum
+         * fallback chain that used to live here: the snapshot / legacy-recompute
+         * authority (arms 1-2) now lives INSIDE the verifier, its quorum is the
+         * ONLY quorum, and the roster fallback (arm 4, w->bft_config.quorum) is
+         * gone. Genesis (db_height == 1) keeps the legacy roster leg in the
+         * `else` below because at replay-of-block-1 no snapshot authority is
+         * committed yet — the genesis-TX chain_def seat count (arm 3) is the
+         * only source available (design §2.3 / §7.6). */
+        uint32_t rv_quorum = 0;
+        int cv = nodus_witness_verify_certs_snapshot(w, local_block_hash,
+                                                     db_height, w->chain_id,
+                                                     rsp->certs,
+                                                     rsp->cert_count,
+                                                     &rv_quorum);
+        if (cv < 0) {
+            if (cv == NODUS_V2_CONSENSUS_INVALID) {
+                /* This peer's response is INVALID against a KNOWN committee.
+                 * Reject THIS peer and rotate to another that holds the block —
+                 * one invalid peer must not abandon all catch-up.
+                 *
+                 * O15G HIGH-1 — stamp THIS peer's cooldown so a Byzantine
+                 * height-inflating peer that served an invalid cert is not
+                 * re-selected by find_sync_peer on the next tick while an honest
+                 * peer (any index) is reachable. Stamped ONLY on
+                 * CONSENSUS_INVALID (a real verdict against a known committee) —
+                 * never on -2/-3, which are non-verdicts about local state. The
+                 * stamp is applied even if rotation finds no peer this session;
+                 * the next tick then routes around the bad peer. */
+                int cur = w->sync_state.sync_peer_idx;
+                if (cur >= 0 && cur < w->peer_count)
+                    w->peers[cur].sync_bad_until =
+                        (uint64_t)time(NULL) + SYNC_BAD_PEER_COOLDOWN_SEC;
+
+                int nxt = nodus_witness_sync_rotate_peer(w);
+                if (nxt >= 0) {
+                    fprintf(stderr, "%s: cert verify INVALID at height %llu "
+                            "(quorum=%u) — rotating to peer %d\n", LOG_TAG,
+                            (unsigned long long)db_height, rv_quorum, nxt);
+                    w->sync_state.sync_peer_idx = nxt;
+                    return nodus_witness_sync_request_next(w);
+                }
+                fprintf(stderr, "%s: cert verify INVALID at height %llu "
+                        "(quorum=%u) — no other peer to rotate to\n", LOG_TAG,
+                        (unsigned long long)db_height, rv_quorum);
+                w->sync_state.syncing = false;
+                return -1;
+            }
+            if (cv == NODUS_V2_NOT_YET_LINKABLE) {
+                /* Committed authority for this epoch is not present yet — this
+                 * node is behind. Stop THIS attempt; the SYNC_MIN_INTERVAL_SEC
+                 * rate limit in nodus_witness_sync_check is the bounded backoff
+                 * before the next tick retries — no tight loop. */
+                fprintf(stderr, "%s: cert authority not yet available at "
+                        "height %llu — deferring sync (bounded backoff)\n",
+                        LOG_TAG, (unsigned long long)db_height);
+                w->sync_state.syncing = false;
+                return -1;
+            }
+            /* NODUS_V2_INTERNAL_FAULT — local corruption / unreadable committed
+             * authority. Fail closed; this replaces the corrupt-snapshot arm
+             * the old (1)-(4) block had. */
+            fprintf(stderr, "%s: cert authority LOCAL FAULT at height %llu — "
+                    "refusing to verify (fail-closed)\n", LOG_TAG,
+                    (unsigned long long)db_height);
+            w->sync_state.syncing = false;
+            return -1;
+        }
+        fprintf(stderr, "%s: block %llu certs verified: %d/%u (quorum=%u)\n",
+                LOG_TAG, (unsigned long long)db_height,
+                cv, rsp->cert_count, rv_quorum);
+    } else if (w->g_quorum_cdh_set) {
+        /* ── O15G HIGH-2 — ANCHORED genesis leg (db_height == 1) ───────────
+         * This node bootstrapped through DISCOVER, so it holds the
+         * quorum-agreed chain_def hash. Bind the synced genesis to that anchor
+         * and verify block-1 certs against the ANCHORED chain_def's OWN
+         * validator set — NEVER the DHT roster. This closes §7.6 (no DHT-roster
+         * genesis authority) and the partial-eclipse forgery path: a sync peer
+         * plus roster sybils can no longer get a forged validator set adopted,
+         * because the genesis tx_hash does NOT cover the chain_def trailer
+         * (shared/dnac/tx_wire.c:504-506) — the g_quorum_cdh hash is the
+         * load-bearing anchor. */
+        if (rsp->tx_count != 1 ||
+            rsp->batch_txs[0].tx_type != NODUS_W_TX_GENESIS) {
+            fprintf(stderr, "%s: anchored genesis leg: height-1 block is not a "
+                    "single genesis TX — rejecting\n", LOG_TAG);
+            w->sync_state.syncing = false;
+            return -1;
+        }
+        int arc = nodus_witness_sync_genesis_anchor_check(
+                      w, rsp->batch_txs[0].tx_data, rsp->batch_txs[0].tx_len,
+                      rsp->batch_txs[0].tx_hash, local_block_hash,
+                      rsp->certs, rsp->cert_count);
+        if (arc != NODUS_W_GENESIS_ANCHOR_OK) {
+            fprintf(stderr, "%s: genesis anchor check FAILED (rc=%d) at "
+                    "height 1 — forged/mismatched genesis, aborting sync\n",
+                    LOG_TAG, arc);
+            w->sync_state.syncing = false;
+            return -1;
+        }
+        fprintf(stderr, "%s: genesis anchored to DISCOVER cdh; certs verified "
+                "vs anchored chain_def\n", LOG_TAG);
+    } else {
+    /* ── UNANCHORED founder / legacy-fixture genesis leg (db_height == 1) ──
+     * No DISCOVER bootstrap anchor exists (w->g_quorum_cdh_set == false), e.g.
+     * a genesis-creating founder or a legacy fixture. The roster + genesis-TX
+     * chain_def seat count is the only source. Preserved verbatim; §8.1 closes
+     * the roster path for anchored joiners in the branch above. */
     uint8_t cert_chain_id_zero[32] = {0};
     const uint8_t *cert_chain_id =
         (db_height == 1) ? cert_chain_id_zero : w->chain_id;
@@ -922,7 +1155,11 @@ int nodus_witness_sync_handle_rsp(nodus_witness_t *w,
          *      forged count cannot outlive this block;
          *   4. legacy roster quorum (pre-genesis harness paths only).
          * A snapshot row that exists but fails integrity is a FAULT and
-         * the sync fails closed — never a fallback. */
+         * the sync fails closed — never a fallback.
+         *
+         * O15G: this whole (1)-(4) leg now runs ONLY for db_height == 1
+         * (genesis replay). Every height >= 2 is handled by the snapshot
+         * verifier in the `if` branch above. */
         uint32_t sync_quorum = w->bft_config.quorum;   /* (4) fallback */
         {
             uint64_t e_start = (db_height / (uint64_t)DNAC_EPOCH_LENGTH) *
@@ -984,6 +1221,7 @@ int nodus_witness_sync_handle_rsp(nodus_witness_t *w,
         fprintf(stderr, "%s: block %llu certs verified: %d/%u (quorum=%u)\n",
                 LOG_TAG, (unsigned long long)db_height,
                 verified, rsp->cert_count, sync_quorum);
+    }
     }
 
     /* Step d — replay every TX in the block via Phase 6 wrappers */
