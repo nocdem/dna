@@ -27,6 +27,9 @@
 #include "crypto/sign/qgp_dilithium.h"
 
 #include "witness/nodus_witness.h"
+#include "witness/nodus_witness_bft.h"     /* is_leader — §18's precondition */
+#include "witness/nodus_witness_v2_env.h"  /* the seam + refusal KIND        */
+#include "transport/nodus_tcp.h"           /* nodus_time_now — the reaper gate */
 #include "witness/nodus_witness_db.h"
 #include "witness/nodus_witness_v2_schema.h"
 #include "witness/nodus_witness_v2_apply.h"
@@ -208,13 +211,53 @@ typedef struct {
     uint8_t  intent_id[64];
 } test_env_t;
 
+/* The shape §1-§11 use: the fixture's default declared unit ceiling and
+ * the exact 41-byte CHAIN_CONFIG call payload. NODUS_V2_GLOBAL_UNIT_BUDGET
+ * / CC_UNITS is how many of these fit ONE block — see §13. */
+#define CC_UNITS     200000u
+#define CC_CALL_LEN  41u
+
+/*
+ * How many fixture envelopes fit ONE block's unit budget — DERIVED, not
+ * guessed, from two values read in this tree:
+ *   - NODUS_V2_GLOBAL_UNIT_BUDGET (nodus_witness_v2_apply.h) seeds
+ *     budget.global_remaining for every block;
+ *   - dna_meter_plan_build sets total_ceiling = res_max_total_units
+ *     verbatim, and dna_meter_reserve debits exactly total_ceiling from
+ *     the global budget (shared/dnac/res_meter.c) — so each of these
+ *     envelopes costs the block exactly CC_UNITS.
+ * => CC_FIT = 5, and envelope index 5 is the first refused, with
+ *    DNA_METER_ERR_GLOBAL_BUDGET. That is precisely the signature the
+ *    20-node rehearsal reported: "reservation rejected at batch index 5
+ *    (meter status 7)".
+ *
+ * The per-domain budget does NOT bind first: SYSTEM's committed manifest
+ * carries quota_verify_cost = 0 (nodus_witness_domreg.c), which the
+ * engine maps to the same 1,000,000, while one envelope's static_units is
+ * a few tens of thousands of weight-1 units. §14 ASSERTS the meter status
+ * rather than trusting that reasoning.
+ */
+#define CC_FIT ((int)(NODUS_V2_GLOBAL_UNIT_BUDGET / CC_UNITS))
+
 /* Build a valid single-leg SYSTEM CHAIN_CONFIG envelope over the
  * fixture's committed state, signed by quorum committee approvals.
  * `nonce` varies the intent; `chain` overrides the bound chain id
- * (NULL = the fixture chain). */
-static int build_cc_env(fixture_t *fx, uint64_t nonce,
-                        const uint8_t *chain, test_env_t *out) {
+ * (NULL = the fixture chain).
+ *
+ * `units` is the envelope's DECLARED res_max_total_units, which
+ * dna_meter_plan_build takes verbatim as the plan's total_ceiling
+ * (res_meter.c) and dna_meter_reserve then debits from the block's global
+ * budget — so it is the single knob that decides how many of these fit
+ * one block. `call_len` (>= CC_CALL_LEN) zero-pads the call payload,
+ * which grows the envelope's WIRE SIZE without changing what the seam
+ * derives; the preflight seam never interprets call bytes. Both exist so
+ * the capacity sections can drive the two independent bounds — the unit
+ * budget and the absolute block-byte bound — on purpose. */
+static int build_cc_env_ex(fixture_t *fx, uint64_t nonce,
+                           const uint8_t *chain, uint64_t units,
+                           size_t call_len, test_env_t *out) {
     memset(out, 0, sizeof(*out));
+    if (call_len < CC_CALL_LEN) return -1;
     const uint8_t *chain32 = chain ? chain : fx->chain_id;
 
     dna_domain_manifest_t sys_man;
@@ -236,8 +279,9 @@ static int build_cc_env(fixture_t *fx, uint64_t nonce,
     dna_env_preflight_t *pf = calloc(1, sizeof(*pf));
     uint8_t *auth = NULL;
     uint8_t *env_bytes = NULL;
+    uint8_t *call = calloc(1, call_len);      /* zero-padded past byte 41 */
     do {
-        if (!fps || !pf) break;
+        if (!fps || !pf || !call) break;
         uint8_t set_hash[64];
         int bad = 0;
         for (int i = 0; i < cmn; i++)
@@ -250,7 +294,6 @@ static int build_cc_env(fixture_t *fx, uint64_t nonce,
         uint64_t appr_epoch = nodus_v2_epoch_for_height(tip);
         uint32_t quorum = dna_bft_quorum((uint32_t)cmn);
 
-        uint8_t call[41];
         uint64_t nv = 7, eff = tip + 100000, vb = eff + 100000, sa = 1;
         call[0] = 4;                    /* DNAC_CFG_TARGET_ACTIVE_COUNT */
         for (int i = 0; i < 8; i++) call[1 + i]  = (uint8_t)(nv  >> (56 - 8 * i));
@@ -271,7 +314,7 @@ static int build_cc_env(fixture_t *fx, uint64_t nonce,
         leg.hdr.ruleset_version      = sys_man.ruleset_version;
         leg.hdr.access_mode          = DNA_ENV_ACCESS_INVOKE;
         leg.hdr.auth_kind            = NODUS_RT_AUTHKIND_DSA87_CC_V1;
-        leg.hdr.call_len             = sizeof(call);
+        leg.hdr.call_len             = (uint32_t)call_len;
         leg.hdr.auth_len             = (uint32_t)auth_len;
         leg.hdr.res_max_effects      = 4;
         leg.hdr.res_max_effect_bytes = 4096;
@@ -282,7 +325,7 @@ static int build_cc_env(fixture_t *fx, uint64_t nonce,
         memset(&env_in, 0, sizeof(env_in));
         env_in.expiry_height       = 0;
         env_in.fee_amount          = 0;
-        env_in.res_max_total_units = 200000;
+        env_in.res_max_total_units = units;
         env_in.leg_count           = 1;
         env_in.legs                = &leg;
 
@@ -355,11 +398,17 @@ static int build_cc_env(fixture_t *fx, uint64_t nonce,
     } while (0);
 
     free(env_bytes);
+    free(call);
     free(auth);
     free(pf);
     free(fps);
     free(cm);
     return rc;
+}
+
+static int build_cc_env(fixture_t *fx, uint64_t nonce,
+                        const uint8_t *chain, test_env_t *out) {
+    return build_cc_env_ex(fx, nonce, chain, CC_UNITS, CC_CALL_LEN, out);
 }
 
 static void mkentry(nodus_witness_mempool_entry_t *e, const test_env_t *env) {
@@ -369,6 +418,39 @@ static void mkentry(nodus_witness_mempool_entry_t *e, const test_env_t *env) {
     e->tx_data = env->bytes;
     e->tx_len  = (uint32_t)env->len;
 }
+
+/* A HEAP entry owning a COPY of the envelope bytes — mandatory for every
+ * section that lets the shaping path dispose of entries:
+ * nodus_witness_mempool_entry_free() frees both entry->tx_data and the
+ * entry itself, so a stack entry or a borrowed tx_data pointer is a crash
+ * or a double free the moment an entry is dropped or requeued. */
+static nodus_witness_mempool_entry_t *mkentry_heap(const test_env_t *env) {
+    nodus_witness_mempool_entry_t *e = calloc(1, sizeof(*e));
+    if (!e) return NULL;
+    e->tx_data = malloc(env->len);
+    if (!e->tx_data) { free(e); return NULL; }
+    memcpy(e->tx_data, env->bytes, env->len);
+    memcpy(e->tx_hash, env->wire_id, 64);
+    e->tx_type = NODUS_W_TX_V2_ENVELOPE;
+    e->tx_len  = (uint32_t)env->len;
+    return e;
+}
+
+/* Is `wire_id` sitting in the mempool right now? */
+static int pool_holds(nodus_witness_t *w, const uint8_t wire_id[64]) {
+    for (int i = 0; i < w->mempool.count; i++)
+        if (w->mempool.entries[i] &&
+            memcmp(w->mempool.entries[i]->tx_hash, wire_id, 64) == 0)
+            return 1;
+    return 0;
+}
+
+/* ── production internals under test (the apply_tx_to_state precedent:
+ *    non-static, no public header, driven directly by the suite) ─────── */
+
+int nodus_witness_bft_shape_successor_batch(
+        nodus_witness_t *w, nodus_witness_mempool_entry_t **batch, int count);
+int nodus_witness_mempool_reap_epoch(nodus_witness_t *w);
 
 /* one valid DNA.CERT.v2 signature by keyset `k` over `block_id` */
 static int sign_cert(const keyset_t *k, const uint8_t block_id[64],
@@ -827,6 +909,421 @@ int main(void) {
         sqlite3_finalize(qst);
 
         fx_close(&R);
+    }
+
+    /* ══ CAPACITY SEASON — §12-§18 ══════════════════════════════════════
+     * These sections close the coverage hole that let the propose-time
+     * check ship blind to the meter: before them, NO test in this tree
+     * drove a MULTI-ENTRY successor batch. "One envelope fits" was the
+     * only fact ever proven, so a full NODUS_W_MAX_BLOCK_TXS batch the
+     * global unit budget cannot pay for reached the commit engine
+     * unchallenged and killed the round there.
+     *
+     * VACUITY CHECK (done explicitly, not asserted about): §13 is the
+     * anti-vacuity control — a batch that FITS must come back untouched.
+     * Without it, an implementation that truncated every batch to one
+     * entry would satisfy §14-§17. §14 additionally pins the truncation
+     * BOUNDARY (exactly CC_FIT, not "some prefix") and the identity of
+     * every entry on both sides of it, so "truncate to 1 and requeue the
+     * rest" fails it too. §16 pins that the offender was FREED, not
+     * requeued — the one assertion that separates entry-invalid handling
+     * from truncation, and the reason a blanket "requeue everything"
+     * cannot pass this suite either.
+     */
+
+    /* §12 — the refusal CLASSIFIER: one pure table, driven directly.
+     *
+     * FAILS IF: any row of nodus_witness_v2_env_fail_kind
+     * (nodus_witness_v2_env.c) is changed. In particular, routing
+     * DNA_METER_ERR_GLOBAL_BUDGET to ENTRY_INVALID — the pre-fix
+     * behaviour, where a full block destroyed a valid transaction — is
+     * caught by the third check here before any batch is even built. */
+    {
+        CHECK(nodus_witness_v2_env_fail_kind(NODUS_V2_ENV_OK, DNA_ENV_PF_OK,
+                                             DNA_METER_OK) ==
+              NODUS_V2_BATCH_FAIL_NONE, "OK classifies as NONE"); OK();
+        CHECK(nodus_witness_v2_env_fail_kind(NODUS_V2_ENV_ERR_DUP_INTENT,
+                                             DNA_ENV_PF_OK, DNA_METER_OK) ==
+              NODUS_V2_BATCH_FAIL_ENTRY_INVALID,
+              "duplicate intent is an ENTRY verdict"); OK();
+        CHECK(nodus_witness_v2_env_fail_kind(NODUS_V2_ENV_ERR_METER,
+                  DNA_ENV_PF_OK, DNA_METER_ERR_GLOBAL_BUDGET) ==
+              NODUS_V2_BATCH_FAIL_CAPACITY_UNITS,
+              "global budget exhaustion is CAPACITY, never an entry verdict");
+        OK();
+        CHECK(nodus_witness_v2_env_fail_kind(NODUS_V2_ENV_ERR_METER,
+                  DNA_ENV_PF_OK, DNA_METER_ERR_DOMAIN_BUDGET) ==
+              NODUS_V2_BATCH_FAIL_CAPACITY_UNITS,
+              "domain budget exhaustion is CAPACITY too"); OK();
+        CHECK(nodus_witness_v2_env_fail_kind(NODUS_V2_ENV_ERR_METER,
+                  DNA_ENV_PF_OK, DNA_METER_ERR_CEILING) ==
+              NODUS_V2_BATCH_FAIL_ENTRY_INVALID,
+              "an over-ceiling declaration is the ENTRY's own fault"); OK();
+        CHECK(nodus_witness_v2_env_fail_kind(NODUS_V2_ENV_ERR_BLOCK_BYTES,
+                  DNA_ENV_PF_OK, DNA_METER_OK) ==
+              NODUS_V2_BATCH_FAIL_CAPACITY_BYTES,
+              "the block-byte bound is its OWN capacity kind (its "
+              "fail_index names nobody)"); OK();
+        /* The three FAULT rows, copied from the engine's own routing. */
+        CHECK(nodus_witness_v2_env_fail_kind(NODUS_V2_ENV_ERR_PREFLIGHT,
+                  DNA_ENV_PF_ERR_HASH, DNA_METER_OK) ==
+              NODUS_V2_BATCH_FAIL_FAULT,
+              "ERR_HASH is a node fault, never a transaction verdict"); OK();
+        CHECK(nodus_witness_v2_env_fail_kind(NODUS_V2_ENV_ERR_PREFLIGHT,
+                  DNA_ENV_PF_ERR_EXPIRED, DNA_METER_OK) ==
+              NODUS_V2_BATCH_FAIL_ENTRY_INVALID,
+              "expiry IS a transaction verdict"); OK();
+        CHECK(nodus_witness_v2_env_fail_kind(NODUS_V2_ENV_ERR_METER,
+                  DNA_ENV_PF_OK, DNA_METER_ERR_FAULT) ==
+              NODUS_V2_BATCH_FAIL_FAULT,
+              "a meter accounting fault is a node fault"); OK();
+        CHECK(nodus_witness_v2_env_fail_kind(NODUS_V2_ENV_ERR_CHAIN,
+                  DNA_ENV_PF_OK, DNA_METER_OK) ==
+              NODUS_V2_BATCH_FAIL_FAULT,
+              "an underivable chain id is a node fault"); OK();
+    }
+
+    /* Fixture D: a fresh successor at tip 0 for the shaping sections. */
+    fixture_t D;
+    CHECK(fx_open(&D, "d") == 0, "fixture D open"); OK();
+    CHECK(CC_FIT >= 2 && CC_FIT < NODUS_W_MAX_BLOCK_TXS,
+          "fixture arithmetic: a full batch neither fits nor is poison"); OK();
+
+    /* NODUS_W_MAX_BLOCK_TXS distinct, individually-valid envelopes — the
+     * exact shape a leader pops from a busy mempool. */
+    test_env_t big[NODUS_W_MAX_BLOCK_TXS];
+    for (int i = 0; i < NODUS_W_MAX_BLOCK_TXS; i++)
+        CHECK(build_cc_env(&D, 100 + (uint64_t)i, NULL, &big[i]) == 0,
+              "build capacity envelope");
+    OK();
+
+    /* §13 — ANTI-VACUITY CONTROL: a batch that FITS is proposed WHOLE.
+     *
+     * FAILS IF: the shaping loop truncates unconditionally, or the
+     * metered seam rejects a legal in-budget batch. Without this section
+     * every other capacity check below is satisfiable by "always propose
+     * one entry", which is why it runs first. */
+    {
+        nodus_witness_mempool_entry_t *b[NODUS_W_MAX_BLOCK_TXS];
+        for (int i = 0; i < CC_FIT; i++) {
+            b[i] = mkentry_heap(&big[i]);
+            CHECK(b[i] != NULL, "heap entry");
+        }
+        int fi = -1;
+        nodus_v2_batch_check_result_t r;
+        CHECK(nodus_witness_v2_produce_batch_check_ex(D.w, b, CC_FIT, &fi,
+                                                      &r) == 0,
+              "a batch that fits the unit budget passes the metered seam");
+        OK();
+        CHECK(r.kind == NODUS_V2_BATCH_FAIL_NONE, "no refusal kind"); OK();
+
+        int k = nodus_witness_bft_shape_successor_batch(D.w, b, CC_FIT);
+        CHECK(k == CC_FIT, "a fitting batch is shaped to ITSELF"); OK();
+        CHECK(D.w->mempool.count == 0,
+              "nothing was requeued: the whole batch is proposable"); OK();
+        for (int i = 0; i < CC_FIT; i++) {
+            CHECK(b[i] && memcmp(b[i]->tx_hash, big[i].wire_id, 64) == 0,
+                  "the proposal keeps every entry, in order");
+            nodus_witness_mempool_entry_free(b[i]);
+        }
+        OK();
+    }
+
+    /* §14 — OVER-BUDGET batch is TRUNCATED, and the tail is REQUEUED.
+     *
+     * The defect this whole change exists for: a full batch reserves
+     * fine up to CC_FIT and then cannot pay for entry CC_FIT, which the
+     * commit engine turns into a WHOLE-BLOCK rejection (BATCH COMMIT
+     * FAILED + DNAC_STATUS_ERROR to every client in it).
+     *
+     * FAILS IF: the CAPACITY_UNITS branch in
+     * nodus_witness_bft_shape_successor_batch is deleted — the batch then
+     * falls into the entry-invalid path and entry CC_FIT is DESTROYED,
+     * so the tail is one shorter and pool_holds(big[CC_FIT]) is false.
+     * FAILS IF: `bfail > 0` is inverted — the prefix is dropped instead.
+     * FAILS IF: the propose-time check is reverted to the BASE preflight
+     * (nodus_witness_v2_env_preflight_batch) — no meter runs, the check
+     * returns 0 for all ten, and k is NODUS_W_MAX_BLOCK_TXS. */
+    {
+        nodus_witness_mempool_entry_t *b[NODUS_W_MAX_BLOCK_TXS];
+        for (int i = 0; i < NODUS_W_MAX_BLOCK_TXS; i++) {
+            b[i] = mkentry_heap(&big[i]);
+            CHECK(b[i] != NULL, "heap entry");
+        }
+
+        /* The raw seam verdict first: WHICH entry, and for WHICH reason. */
+        int fi = -1;
+        nodus_v2_batch_check_result_t r;
+        CHECK(nodus_witness_v2_produce_batch_check_ex(
+                  D.w, b, NODUS_W_MAX_BLOCK_TXS, &fi, &r) == -1,
+              "a full batch does NOT fit one block's unit budget"); OK();
+        CHECK(r.kind == NODUS_V2_BATCH_FAIL_CAPACITY_UNITS,
+              "and it is refused as CAPACITY, not as a bad entry"); OK();
+        CHECK(r.meter_status == DNA_METER_ERR_GLOBAL_BUDGET,
+              "the GLOBAL unit budget is what binds (status 7 — the "
+              "rehearsal's signature), not the per-domain quota"); OK();
+        CHECK(fi == CC_FIT,
+              "the fit boundary is exactly CC_FIT entries"); OK();
+
+        int k = nodus_witness_bft_shape_successor_batch(
+                    D.w, b, NODUS_W_MAX_BLOCK_TXS);
+        CHECK(k == CC_FIT, "the leader proposes the prefix that fits"); OK();
+        CHECK(D.w->mempool.count == NODUS_W_MAX_BLOCK_TXS - CC_FIT,
+              "and the tail went BACK to the mempool — nothing destroyed");
+        OK();
+        for (int i = 0; i < CC_FIT; i++)
+            CHECK(b[i] && memcmp(b[i]->tx_hash, big[i].wire_id, 64) == 0,
+                  "the proposal is the ORIGINAL prefix, in order");
+        OK();
+        for (int i = CC_FIT; i < NODUS_W_MAX_BLOCK_TXS; i++) {
+            CHECK(b[i] == NULL, "truncated slots are cleared");
+            CHECK(pool_holds(D.w, big[i].wire_id),
+                  "every truncated entry is pending again, not freed");
+        }
+        OK();
+
+        /* The shaped prefix is proposable as-is. */
+        CHECK(nodus_witness_v2_produce_batch_check(D.w, b, k, &fi) == 0,
+              "the truncated proposal passes the seam whole"); OK();
+        for (int i = 0; i < k; i++)
+            nodus_witness_mempool_entry_free(b[i]);
+        nodus_witness_mempool_clear(&D.w->mempool);
+        CHECK(D.w->mempool.count == 0, "pool drained for the next section");
+    }
+
+    /* §15 — a POISON entry (fail_index == 0) is DROPPED, and a good entry
+     * behind it is still proposed.
+     *
+     * The envelope declares more units than a whole EMPTY block has, so
+     * it can never fit any block, at any position. Requeueing it would
+     * re-poison every future round; the fix is that it self-evicts in one.
+     *
+     * FAILS IF: the `bfail > 0` guard on the truncate branch is dropped —
+     * truncating at 0 yields valid == 0, so k is 0 and the good entry
+     * never gets proposed. FAILS IF the poison is requeued instead of
+     * freed — mempool.count is 1, not 0. */
+    {
+        test_env_t poison;
+        CHECK(build_cc_env_ex(&D, 200,  NULL,
+                              (uint64_t)NODUS_V2_GLOBAL_UNIT_BUDGET + 1u,
+                              CC_CALL_LEN, &poison) == 0,
+              "build an envelope that cannot fit an EMPTY block"); OK();
+
+        nodus_witness_mempool_entry_t *b[2];
+        b[0] = mkentry_heap(&poison);
+        b[1] = mkentry_heap(&big[0]);
+        CHECK(b[0] && b[1], "heap entries");
+
+        int fi = -1;
+        nodus_v2_batch_check_result_t r;
+        CHECK(nodus_witness_v2_produce_batch_check_ex(D.w, b, 2, &fi, &r)
+                  == -1, "the poison batch is refused"); OK();
+        CHECK(r.kind == NODUS_V2_BATCH_FAIL_CAPACITY_UNITS &&
+              r.meter_status == DNA_METER_ERR_GLOBAL_BUDGET,
+              "refused for CAPACITY at the very first entry"); OK();
+        CHECK(fi == 0, "the offender is entry 0"); OK();
+
+        int k = nodus_witness_bft_shape_successor_batch(D.w, b, 2);
+        CHECK(k == 1, "the good entry behind the poison is still proposed");
+        OK();
+        CHECK(memcmp(b[0]->tx_hash, big[0].wire_id, 64) == 0,
+              "and it is the GOOD one that survived"); OK();
+        CHECK(D.w->mempool.count == 0,
+              "the poison was FREED, not requeued — it self-evicts"); OK();
+
+        nodus_witness_mempool_entry_free(b[0]);
+        free(poison.bytes);
+    }
+
+    /* §16 — ENTRY-INVALID keeps today's behaviour: dropped, NOT requeued.
+     *
+     * Two copies of one envelope are one semantic transaction under two
+     * wire realizations; the seam refuses the SECOND (ERR_DUP). That is a
+     * verdict about bytes, not about room, so the offender is destroyed
+     * exactly as before this change.
+     *
+     * FAILS IF: the discrimination is made blanket in either direction —
+     * a "requeue everything" shaping leaves mempool.count == 1 here, and
+     * a "truncate on every refusal" shaping proposes 1 entry and requeues
+     * the duplicate instead of freeing it. This section is the reason the
+     * change is a DISCRIMINATION and not a behaviour swap. */
+    {
+        nodus_witness_mempool_entry_t *b[2];
+        b[0] = mkentry_heap(&big[1]);
+        b[1] = mkentry_heap(&big[1]);          /* same bytes = same intent */
+        CHECK(b[0] && b[1], "heap entries");
+
+        int fi = -1;
+        nodus_v2_batch_check_result_t r;
+        CHECK(nodus_witness_v2_produce_batch_check_ex(D.w, b, 2, &fi, &r)
+                  == -1, "duplicate intent refused"); OK();
+        CHECK(r.kind == NODUS_V2_BATCH_FAIL_ENTRY_INVALID,
+              "and classified as an ENTRY verdict, not capacity"); OK();
+        CHECK(fi == 1, "the offender is the second copy"); OK();
+
+        int k = nodus_witness_bft_shape_successor_batch(D.w, b, 2);
+        CHECK(k == 1, "the survivor is proposed"); OK();
+        CHECK(D.w->mempool.count == 0,
+              "the invalid entry was FREED — an entry verdict never "
+              "requeues (this is what separates it from truncation)");
+        OK();
+        nodus_witness_mempool_entry_free(b[0]);
+    }
+
+    /* §17 — the BLOCK-BYTE bound: drop from the TAIL, never at
+     * fail_index.
+     *
+     * Step 4b of the reserve seam sums every accepted envelope's bytes
+     * BEFORE any reservation and, on refusal, reports fail_index 0
+     * regardless of which envelope crossed the bound
+     * (nodus_witness_v2_env.c). Reading that 0 as "entry 0 is poison"
+     * would destroy an innocent entry, so this path shrinks from the tail
+     * instead — and once the batch fits by BYTES, the unit budget still
+     * has to be satisfied, which truncates it further.
+     *
+     * FAILS IF: CAPACITY_BYTES is routed through the truncate-at-index
+     * branch (fail_index 0 => valid 0 => k == 0) or through the drop
+     * branch (entry 0 destroyed => the pool is short by one).
+     * The precondition CHECK below is the vacuity guard: if these
+     * envelopes ever stop summing past the policy's bound, the section
+     * fails loudly instead of silently degenerating into §14. */
+    {
+        /* Each ~290 KB: a 260 KB zero-padded call plus the quorum auth
+         * blob. Ten of them sum past the SYSTEM policy's
+         * max_block_env_bytes = 2 * DNA_ENV_MAX_TOTAL_LEN
+         * (nodus_witness_runtime.c, sys_policy_build). units is raised so
+         * the declaration still covers its own static_units — an
+         * over-ceiling declaration would be an ENTRY verdict (§12) and
+         * would test the wrong branch. */
+        const uint64_t fat_units = 400000u;
+        const size_t   fat_call  = 260000u;
+        test_env_t fat[NODUS_W_MAX_BLOCK_TXS];
+        size_t sum = 0;
+        for (int i = 0; i < NODUS_W_MAX_BLOCK_TXS; i++) {
+            CHECK(build_cc_env_ex(&D, 300 + (uint64_t)i, NULL, fat_units,
+                                  fat_call, &fat[i]) == 0,
+                  "build oversized envelope");
+            sum += fat[i].len;
+        }
+        OK();
+        CHECK(sum > (size_t)2u * (size_t)DNA_ENV_MAX_TOTAL_LEN,
+              "PRECONDITION: the batch really does exceed the policy's "
+              "block-byte bound (else this section proves nothing)"); OK();
+
+        nodus_witness_mempool_entry_t *b[NODUS_W_MAX_BLOCK_TXS];
+        for (int i = 0; i < NODUS_W_MAX_BLOCK_TXS; i++) {
+            b[i] = mkentry_heap(&fat[i]);
+            CHECK(b[i] != NULL, "heap entry");
+        }
+
+        int fi = -1;
+        nodus_v2_batch_check_result_t r;
+        CHECK(nodus_witness_v2_produce_batch_check_ex(
+                  D.w, b, NODUS_W_MAX_BLOCK_TXS, &fi, &r) == -1,
+              "the oversized batch is refused"); OK();
+        CHECK(r.kind == NODUS_V2_BATCH_FAIL_CAPACITY_BYTES,
+              "by the BYTE bound, before any unit reservation — the "
+              "order step 4b calls load-bearing"); OK();
+        CHECK(fi == 0, "and it accuses entry 0, which is not an accusation");
+        OK();
+
+        int k = nodus_witness_bft_shape_successor_batch(
+                    D.w, b, NODUS_W_MAX_BLOCK_TXS);
+        /* Bytes force a shrink; the unit budget then decides the final
+         * size, exactly as in §14 — 1,000,000 / 400,000 = 2. */
+        const int fat_fit = (int)(NODUS_V2_GLOBAL_UNIT_BUDGET / fat_units);
+        CHECK(k == fat_fit, "the proposal is the unit-budget prefix"); OK();
+        CHECK(memcmp(b[0]->tx_hash, fat[0].wire_id, 64) == 0,
+              "entry 0 was NOT treated as the offender"); OK();
+        CHECK(D.w->mempool.count == NODUS_W_MAX_BLOCK_TXS - fat_fit,
+              "every non-proposed entry is pending again — the byte path "
+              "requeues, it does not destroy"); OK();
+        for (int i = fat_fit; i < NODUS_W_MAX_BLOCK_TXS; i++)
+            CHECK(pool_holds(D.w, fat[i].wire_id), "tail entry preserved");
+        OK();
+
+        for (int i = 0; i < k; i++)
+            nodus_witness_mempool_entry_free(b[i]);
+        nodus_witness_mempool_clear(&D.w->mempool);
+        for (int i = 0; i < NODUS_W_MAX_BLOCK_TXS; i++) free(fat[i].bytes);
+    }
+
+    for (int i = 0; i < NODUS_W_MAX_BLOCK_TXS; i++) free(big[i].bytes);
+    fx_close(&D);
+
+    /* §18 — the REAPER runs WHILE LEADING (the removed role gate).
+     *
+     * A leader used to be excluded from nodus_witness_mempool_reap_epoch,
+     * so the only remover of its stale entries was batch selection: an
+     * entry had to be POPPED into a candidate batch and BURNED through
+     * the seam before it could be freed. In the 164744Z rehearsal node1
+     * pooled 26 entries, proposed exactly ONCE, and that single proposal
+     * had to drop 13 stale claims through the seam first.
+     *
+     * FAILS IF: `!nodus_witness_bft_is_leader(w) &&` is restored to the
+     * gate — reap_epoch then declines (-1) and the decided entry survives.
+     * The is_leader precondition CHECK is what makes that true; without
+     * it the section would pass against the old code. */
+    {
+        fixture_t E;
+        CHECK(fx_open(&E, "e") == 0, "fixture E open"); OK();
+
+        test_env_t decided, live;
+        CHECK(build_cc_env(&E, 400, NULL, &decided) == 0, "build decided");
+        CHECK(build_cc_env(&E, 401, NULL, &live) == 0, "build live");
+
+        /* Commit `decided` so its intent is in v2_intent_index — the
+         * exact fact nodus_witness_v2_entry_verdict reads. */
+        {
+            nodus_witness_mempool_entry_t x;
+            nodus_witness_mempool_entry_t *b1[1] = { &x };
+            mkentry(&x, &decided);
+            nodus_v2_produce_out_t o;
+            CHECK(nodus_witness_v2_produce_commit(E.w, b1, 1, 1, 42,
+                      E.w->my_id, NULL, &o) == 0,
+                  "the decided envelope is committed"); OK();
+        }
+
+        /* Make this node the leader. The committee is the 7 seeded
+         * validators, and leader = (epoch + view) % 7, so some view in
+         * [0, 7) elects us — deterministic, no timing involved. */
+        int elected = 0;
+        for (uint32_t v = 0; v < DNAC_COMMITTEE_SIZE + 8u && !elected; v++) {
+            E.w->current_view = v;
+            if (nodus_witness_bft_is_leader(E.w)) elected = 1;
+        }
+        CHECK(elected && nodus_witness_bft_is_leader(E.w),
+              "PRECONDITION: this node IS the leader (without this the "
+              "section cannot see the removed role gate at all)"); OK();
+
+        nodus_witness_mempool_entry_t *ed = mkentry_heap(&decided);
+        nodus_witness_mempool_entry_t *el = mkentry_heap(&live);
+        CHECK(ed && el, "heap entries");
+        CHECK(nodus_witness_mempool_add(&E.w->mempool, ed) == 0, "pool +1");
+        CHECK(nodus_witness_mempool_add(&E.w->mempool, el) == 0, "pool +2");
+        CHECK(E.w->mempool.count == 2, "two pooled entries"); OK();
+
+        /* Open the epoch window and clear the latch — the other gates are
+         * untouched by this change and must still be satisfied. */
+        E.w->last_epoch = nodus_time_now();
+        E.w->last_evict_epoch = E.w->last_epoch - 1;
+
+        int reaped = nodus_witness_mempool_reap_epoch(E.w);
+        CHECK(reaped == 1,
+              "a LEADING node reaps its own pool (role gate removed)"); OK();
+        CHECK(E.w->mempool.count == 1, "exactly one entry left"); OK();
+        CHECK(E.w->mempool.entries[0] &&
+              memcmp(E.w->mempool.entries[0]->tx_hash, live.wire_id, 64) == 0,
+              "the LIVE entry survived; the committed one was reaped"); OK();
+
+        /* The latch still holds: one scan per epoch, leader or not. */
+        CHECK(nodus_witness_mempool_reap_epoch(E.w) == -1,
+              "the last_evict_epoch latch is unchanged"); OK();
+
+        nodus_witness_mempool_clear(&E.w->mempool);
+        free(decided.bytes);
+        free(live.bytes);
+        fx_close(&E);
     }
 
     free(e1.bytes);

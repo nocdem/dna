@@ -15,7 +15,11 @@
 #include "witness/nodus_witness_v2_result.h"
 #include "witness/nodus_witness_v2_env.h"     /* the pre-commit seam    */
 #include "witness/nodus_witness_v2_claims.h"  /* claim admit (class 201)*/
-#include "witness/nodus_witness_domreg.h"     /* committed ruleset ctx  */
+/* nodus_witness_domreg.h is deliberately NOT included any more: the
+ * contextual ruleset table used to be assembled here from per-leg
+ * domreg lookups, and that private assembly is exactly what drifted from
+ * the engine. The table now arrives inside the block-start context
+ * (nodus_witness_v2_env.h), built by the engine's own body. */
 #include "witness/nodus_witness_db.h"
 #include "server/nodus_server.h"       /* w->server->identity (sign key) */
 
@@ -293,15 +297,50 @@ int nodus_witness_v2_claim_entry_nullifier(nodus_witness_t *w,
  * the same committed nullifier IN ONE BATCH — the in-batch dedup the
  * legacy seen_nullifiers machinery cannot be relied on for on the remote-
  * COMMIT path (no such loop there), so the apply-level in-block duplicate
- * reject (nodus_witness_v2_apply.c:1695-1701) stays a BACKSTOP that an
- * honest leader/follower never reaches. Deterministic: bytes + committed
- * state only.
+ * reject (nodus_witness_v2_apply.c) stays a BACKSTOP that an honest
+ * leader/follower never reaches. Deterministic: bytes + committed state
+ * only.
+ *
+ * ── METERING (capacity season) ────────────────────────────────────────
+ * The envelope subset now goes through the SAME entry the commit engine
+ * uses — nodus_witness_v2_env_preflight_reserve_batch, fed the SAME
+ * block-start context (nodus_witness_v2_block_ctx_build). Before this,
+ * the check called the BASE preflight, which takes no policy, no budget
+ * and no meters: the unit budgets and the absolute block-byte bound were
+ * therefore first evaluated at COMMIT, where a miss is a whole-block
+ * verdict. A leader could pop a NODUS_W_MAX_BLOCK_TXS batch the global
+ * unit budget cannot pay for, propose it, win the vote, and then have the
+ * engine reject the block — one dead round and a DNAC_STATUS_ERROR to
+ * every client in it, repeatedly.
+ *
+ * NOT consensus-visible: nothing here changes which blocks the engine
+ * ACCEPTS. It only stops proposing and approving batches the engine would
+ * deterministically reject. No wire format, no protocol version, no
+ * schema, no activation gate is touched.
+ *
+ * The reservation is run against a SCRATCH budget (the context's own,
+ * which dies with this call) and its meters are discarded: this asks the
+ * engine's question, it does not pre-authorize anything and it writes
+ * nothing.
+ *
+ * DETERMINISM: reservation is sequential and ORDER-DEPENDENT (envelope
+ * i+1 is judged against the budget after envelope i's debit), so the
+ * verdict is a function of the entry bytes AND their relative order. Both
+ * this check and the engine derive that order from the same batch array,
+ * in the same index order, so honest nodes handed the same proposal on
+ * the same committed state reach the same answer.
  */
-int nodus_witness_v2_produce_batch_check(nodus_witness_t *w,
-                                         nodus_witness_mempool_entry_t **entries,
-                                         int count,
-                                         int *fail_index_out) {
+int nodus_witness_v2_produce_batch_check_ex(
+        nodus_witness_t *w,
+        nodus_witness_mempool_entry_t **entries,
+        int count,
+        int *fail_index_out,
+        nodus_v2_batch_check_result_t *result_out) {
     if (fail_index_out) *fail_index_out = 0;
+    if (result_out) {
+        memset(result_out, 0, sizeof(*result_out));
+        result_out->kind = NODUS_V2_BATCH_FAIL_FAULT;
+    }
     if (!w || !w->db || !w->v2_successor || !entries || count <= 0 ||
         count > NODUS_W_MAX_BLOCK_TXS)
         return -2;
@@ -316,6 +355,7 @@ int nodus_witness_v2_produce_batch_check(nodus_witness_t *w,
     for (int i = 0; i < count; i++) {
         if (!entries[i] || !entries[i]->tx_data || entries[i]->tx_len == 0) {
             if (fail_index_out) *fail_index_out = i;
+            if (result_out) result_out->kind = NODUS_V2_BATCH_FAIL_ENTRY_INVALID;
             return -1;
         }
         if (entries[i]->tx_type == NODUS_W_TX_V2_ENVELOPE) {
@@ -327,6 +367,7 @@ int nodus_witness_v2_produce_batch_check(nodus_witness_t *w,
             claim_idx[n_claim++] = i;
         } else {
             if (fail_index_out) *fail_index_out = i;
+            if (result_out) result_out->kind = NODUS_V2_BATCH_FAIL_ENTRY_INVALID;
             return -1;                          /* unknown entry class    */
         }
     }
@@ -335,65 +376,91 @@ int nodus_witness_v2_produce_batch_check(nodus_witness_t *w,
     if (nodus_witness_v2_tip_height(w, &candidate) != 0) return -2;
     candidate += 1;
 
-    /* ── ENVELOPE subset: the env-preflight seam (wire + intent dedup) ── */
+    /* ── ENVELOPE subset: the METERED seam (the engine's own entry) ──── */
     if (n_env > 0) {
-        dna_env_leg_ctx_t rulesets[DNA_ENV_MAX_LEGS];
-        size_t n_rulesets = 0;
-        for (int e = 0; e < n_env; e++) {
-            dna_env_view_t view;
-            if (dna_env_decode(envs[e].env_bytes, envs[e].env_len,
-                               &view) != 0) {
-                if (fail_index_out) *fail_index_out = env_idx[e];
-                return -1;
-            }
-            for (uint16_t l = 0; l < view.leg_count; l++) {
-                uint32_t dom = view.leg[l].domain_id;
-                size_t k = 0;
-                while (k < n_rulesets && rulesets[k].domain_id < dom) k++;
-                if (k < n_rulesets && rulesets[k].domain_id == dom) continue;
-                if (n_rulesets >= DNA_ENV_MAX_LEGS) {
-                    if (fail_index_out) *fail_index_out = env_idx[e];
-                    return -1;
-                }
-                dna_domain_manifest_t man;
-                if (nodus_witness_domreg_get(w, dom, NULL, &man, NULL) != 0) {
-                    if (fail_index_out) *fail_index_out = env_idx[e];
-                    return -1;              /* unregistered domain        */
-                }
-                memmove(&rulesets[k + 1], &rulesets[k],
-                        (n_rulesets - k) * sizeof(rulesets[0]));
-                rulesets[k].domain_id       = dom;
-                rulesets[k].ruleset_version = man.ruleset_version;
-                memcpy(rulesets[k].ruleset_hash, man.ruleset_hash,
-                       DNA_ENV_RULESET_HASH_LEN);
-                n_rulesets++;
-            }
-        }
-        if (n_rulesets == 0) {
-            if (fail_index_out) *fail_index_out = env_idx[0];
-            return -1;
+        /* The block-start execution context, built by the engine's own
+         * body: the ACTIVE-domain ruleset table, the per-domain + global
+         * unit budgets and the committed SYSTEM price policy. Building it
+         * here rather than deriving a private table from the batch's legs
+         * is deliberate — a private table admitted domains the engine's
+         * does not (REGISTERED-but-not-ACTIVE, or ACTIVE without a
+         * resolvable runtime), so such an entry passed this check and
+         * then killed the whole block at apply with ERR_CTX_MISSING.
+         * ~5.7 KB — heap, like every other buffer on this path. */
+        nodus_witness_v2_block_ctx_t *bctx = calloc(1, sizeof(*bctx));
+        if (!bctx) return -2;
+        int bcrc = nodus_witness_v2_block_ctx_build(w, bctx);
+        if (bcrc != 0) {
+            /* -1 (SYSTEM unusable) is a chain-state condition no entry in
+             * this batch caused, and -2 is a node-local read failure.
+             * Neither is a verdict about anyone's transaction, so both
+             * surface as a FAULT — the producer must requeue, not drop. */
+            QGP_LOG_ERROR(LOG_TAG, "batch pre-check could not build the "
+                          "block-start context (rc=%d) — no verdict", bcrc);
+            free(bctx);
+            return -2;
         }
 
         dna_env_preflight_t *pf =
             calloc((size_t)n_env, sizeof(dna_env_preflight_t));
-        if (!pf) return -2;
+        dna_meter_t *meters = calloc((size_t)n_env, sizeof(dna_meter_t));
+        if (!pf || !meters) {
+            free(pf);
+            free(meters);
+            free(bctx);
+            return -2;
+        }
         size_t fail_i = 0;
         dna_env_preflight_status_t pst = DNA_ENV_PF_OK;
-        nodus_v2_env_status_t est = nodus_witness_v2_env_preflight_batch(
-            w, candidate, rulesets, n_rulesets, envs, (size_t)n_env, pf,
-            &fail_i, &pst);
+        dna_meter_status_t mst = DNA_METER_OK;
+        nodus_v2_env_status_t est =
+            nodus_witness_v2_env_preflight_reserve_batch(
+                w, candidate, bctx->rulesets, bctx->n_rulesets,
+                bctx->policy, &bctx->budget, envs, (size_t)n_env,
+                pf, meters, &fail_i, &pst, &mst);
+        /* The reservations die with the scratch budget: `meters` is a
+         * local array bound to `bctx->budget`, both freed below, and the
+         * seam already restored the budget byte-identically on any
+         * rejection. Nothing here is durable. */
         free(pf);
+        free(meters);
+        free(bctx);
+
         if (est != NODUS_V2_ENV_OK) {
+            nodus_v2_batch_fail_kind_t kind =
+                nodus_witness_v2_env_fail_kind(est, pst, mst);
+            if (result_out) {
+                result_out->kind         = kind;
+                result_out->env_status   = est;
+                result_out->pf_status    = pst;
+                result_out->meter_status = mst;
+            }
+            if (kind == NODUS_V2_BATCH_FAIL_FAULT) {
+                QGP_LOG_ERROR(LOG_TAG, "batch pre-check FAULTED on the "
+                              "envelope subset (seam=%d pf=%d meter=%d) — "
+                              "no verdict", (int)est, (int)pst, (int)mst);
+                return -2;
+            }
+            /* fail_i maps back to the ORIGINAL batch index. On
+             * CAPACITY_BYTES the seam reports 0 for the whole batch and
+             * that zero accuses nobody — the caller is told so by `kind`
+             * and must not read the index as an offender. */
             if (fail_index_out)
                 *fail_index_out =
                     env_idx[fail_i < (size_t)n_env ? fail_i : 0];
-            QGP_LOG_WARN(LOG_TAG, "batch pre-check rejected envelope entry "
-                         "%zu (seam=%d pf=%d)", fail_i, (int)est, (int)pst);
+            QGP_LOG_WARN(LOG_TAG, "batch pre-check rejected the envelope "
+                         "subset at %zu (kind=%d seam=%d pf=%d meter=%d)",
+                         fail_i, (int)kind, (int)est, (int)pst, (int)mst);
             return -1;
         }
     }
 
-    /* ── CLAIM subset: per-claim admission + in-batch nullifier dedup ── */
+    /* ── CLAIM subset: per-claim admission + in-batch nullifier dedup ──
+     * Claims are not metered: the engine reserves units for ENVELOPES
+     * only (its budget is handed to the envelope seam and to nothing
+     * else), so a claim can never be the entry a capacity failure names.
+     * That is what makes truncating at a capacity fail_index safe — the
+     * surviving prefix is exactly the envelope set that reserved. */
     if (n_claim > 0) {
         uint8_t nuls[NODUS_W_MAX_BLOCK_TXS][64];
         for (int ci = 0; ci < n_claim; ci++) {
@@ -408,6 +475,8 @@ int nodus_witness_v2_produce_batch_check(nodus_witness_t *w,
             free(c);
             if (!ok) {
                 if (fail_index_out) *fail_index_out = oi;
+                if (result_out)
+                    result_out->kind = NODUS_V2_BATCH_FAIL_ENTRY_INVALID;
                 QGP_LOG_WARN(LOG_TAG, "batch pre-check rejected claim entry "
                              "%d (admission)", oi);
                 return -1;
@@ -415,6 +484,8 @@ int nodus_witness_v2_produce_batch_check(nodus_witness_t *w,
             for (int p = 0; p < ci; p++) {
                 if (memcmp(nuls[p], adm.nullifier, 64) == 0) {
                     if (fail_index_out) *fail_index_out = oi;
+                    if (result_out)
+                        result_out->kind = NODUS_V2_BATCH_FAIL_ENTRY_INVALID;
                     QGP_LOG_WARN(LOG_TAG, "batch pre-check: duplicate claim "
                                  "nullifier in one batch (entry %d)", oi);
                     return -1;
@@ -424,7 +495,26 @@ int nodus_witness_v2_produce_batch_check(nodus_witness_t *w,
         }
     }
 
+    if (result_out) result_out->kind = NODUS_V2_BATCH_FAIL_NONE;
     return 0;
+}
+
+/*
+ * The classification-free entry, contract unchanged (produce.h): 0 clean,
+ * -1 entry rejected, -2 node-local fault. Every caller that only needs
+ * "is this batch admissible" — the FOLLOWER proposal check above all —
+ * keeps calling this and keeps its exact verdict semantics: any seam
+ * refusal, now including over-budget, is a non-zero return and therefore
+ * a REJECT vote. A follower has no batch to shape, so the kind buys it
+ * nothing; it must reject a proposal the engine would refuse regardless
+ * of WHY the engine would refuse it.
+ */
+int nodus_witness_v2_produce_batch_check(nodus_witness_t *w,
+                                         nodus_witness_mempool_entry_t **entries,
+                                         int count,
+                                         int *fail_index_out) {
+    return nodus_witness_v2_produce_batch_check_ex(w, entries, count,
+                                                   fail_index_out, NULL);
 }
 
 /* ── the commit handoff ─────────────────────────────────────────────── */

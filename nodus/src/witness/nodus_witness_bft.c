@@ -34,6 +34,8 @@
 #include "witness/nodus_witness_v2_sync2.h"    /* O15G: successor catch-up tick   */
 #include "witness/nodus_witness_v2_activation.h" /* O15C activation authority */
 #include "witness/nodus_witness_v2_produce.h"    /* O15D successor rounds */
+#include "witness/nodus_witness_v2_env.h"        /* metered batch check +
+                                                  * the refusal KIND     */
 #ifdef NODUS_V2_ACTIVATION_AUTHORITY
 #include "witness/nodus_witness_v2_seam.h"       /* O15C successor derivation */
 #endif
@@ -4189,6 +4191,194 @@ static int nodus_extract_output_nullifiers(const uint8_t *tx_data, uint32_t tx_l
     return written;
 }
 
+/* Requeue batch[from, to) into the mempool and NULL the slots. A full or
+ * duplicate-rejecting mempool cannot keep the entry, so it is freed
+ * rather than leaked — the same disposal the Q7 isolation path above
+ * already uses. */
+static void shape_requeue(nodus_witness_t *w,
+                          nodus_witness_mempool_entry_t **batch,
+                          int from, int to) {
+    for (int i = from; i < to; i++) {
+        if (!batch[i]) continue;
+        if (nodus_witness_mempool_add(&w->mempool, batch[i]) != 0)
+            nodus_witness_mempool_entry_free(batch[i]);
+        batch[i] = NULL;
+    }
+}
+
+/* Destroy batch[idx] and close the gap; *valid shrinks by one. Used ONLY
+ * where the entry is known to be permanently unusable — a client that
+ * loses its receipt this way must resubmit. */
+static void shape_drop(nodus_witness_mempool_entry_t **batch, int idx,
+                       int *valid) {
+    nodus_witness_mempool_entry_free(batch[idx]);
+    for (int i = idx; i < *valid - 1; i++)
+        batch[i] = batch[i + 1];
+    batch[*valid - 1] = NULL;
+    (*valid)--;
+}
+
+/*
+ * O15D / capacity season — SUCCESSOR batch SHAPING.
+ *
+ * Bring a popped batch down to something the commit engine will accept,
+ * DESTROYING only what is permanently invalid and REQUEUEING everything
+ * that is merely surplus. Returns the number of entries at the head of
+ * `batch` that are proposable (they stay owned by the caller); every
+ * other slot is NULLed after being requeued or freed.
+ *
+ * ── Why this is not one behaviour ─────────────────────────────────────
+ * The seam refuses a batch for two structurally different reasons, and
+ * the correct response to each is the opposite of the other:
+ *
+ *   ENTRY-INVALID — a specific entry's bytes will never be acceptable
+ *   (malformed, expired, unregistered/inactive domain, duplicate wire or
+ *   intent id, unpriceable op). Drop it, retry the rest. Unchanged
+ *   behaviour, and it is what this loop has always done.
+ *
+ *   CAPACITY — every entry is fine; the BLOCK is full. Before the
+ *   propose-time check became meter-aware this case could not be seen
+ *   here at all: it first appeared at COMMIT, where it is a whole-block
+ *   verdict, and the round died with BATCH COMMIT FAILED. Handled as if
+ *   it were entry-invalid it would be worse than useless — a perfectly
+ *   valid transaction destroyed to make room a shorter batch would have
+ *   had anyway. So: propose the prefix that fits and put the tail BACK.
+ *
+ * ── Truncation happens at PROPOSAL FORMATION ONLY ─────────────────────
+ * Truncating inside the ENGINE would be a consensus bug and is
+ * deliberately not implemented anywhere: the round's vote binds the batch
+ * digest (round_state.tx_hash is the proposal's tx_root, votes carry it
+ * as vote_target, and followers compare it), so committing a truncated
+ * subset would commit a block that differs from the one voted on. Here,
+ * before any digest exists, WHICH entries the leader proposes is already
+ * leader discretion — the fee ordering and the staleness drops above are
+ * the same discretion. Nothing about the set of blocks a follower or the
+ * engine ACCEPTS changes; no wire format, protocol version or schema is
+ * touched.
+ *
+ * ── Determinism ───────────────────────────────────────────────────────
+ * Every decision comes from the seam's verdict, which is a function of
+ * the entry bytes, their order and committed state. Two honest leaders
+ * handed the same popped batch shape it identically. Leaders are not
+ * required to agree on batch CONTENT anyway (mempools differ), but they
+ * must never disagree about VALIDITY — and this function only ever
+ * proposes a prefix the seam has just accepted whole.
+ *
+ * Termination: every iteration either returns or strictly decreases
+ * `valid`, which starts at count <= NODUS_W_MAX_BLOCK_TXS.
+ *
+ * Non-static so test executables (compiled with NODUS_WITNESS_INTERNAL_API
+ * via register_witness_test) can drive the shaping directly, without a
+ * live round; the apply_tx_to_state precedent above. Not declared in any
+ * public header — the one production caller is immediately below.
+ *
+ * @return >0 propose batch[0 .. rc-1]; 0 nothing left to propose;
+ *         -1 node-local fault (everything requeued — open no round).
+ */
+int nodus_witness_bft_shape_successor_batch(
+        nodus_witness_t *w,
+        nodus_witness_mempool_entry_t **batch,
+        int count) {
+    if (!w || !batch || count <= 0 || count > NODUS_W_MAX_BLOCK_TXS)
+        return -1;
+
+    int valid = count;
+    while (valid > 0) {
+        int bfail = 0;
+        nodus_v2_batch_check_result_t res;
+        memset(&res, 0, sizeof(res));   /* the callee fills it on entry;
+                                         * zeroed first so no compiler and
+                                         * no reader has to prove that   */
+        int brc = nodus_witness_v2_produce_batch_check_ex(w, batch, valid,
+                                                          &bfail, &res);
+        if (brc == 0) return valid;              /* proposable as it is   */
+
+        if (brc != -1 || bfail < 0 || bfail >= valid) {
+            /* A node-local fault, or an index this node cannot trust.
+             * Nothing here is any submitter's fault: requeue it all and
+             * open no round. */
+            QGP_LOG_ERROR(LOG_TAG, "successor batch check faulted (rc=%d "
+                          "kind=%d) — requeueing %d entries, no round",
+                          brc, (int)res.kind, valid);
+            shape_requeue(w, batch, 0, valid);
+            return -1;
+        }
+
+        if (res.kind == NODUS_V2_BATCH_FAIL_CAPACITY_UNITS && bfail > 0) {
+            /* The block ran out of UNITS at bfail: entries [0, bfail)
+             * reserved successfully in this very call, so that prefix is
+             * exactly what fits. Propose it and put the tail back — no
+             * valid entry is destroyed and no client loses its receipt.
+             * The re-check below is guaranteed to pass (a prefix of an
+             * accepted reservation sequence, summing to fewer bytes and
+             * holding a subset of the identities), and it is run anyway
+             * so that what we propose is always something the seam has
+             * accepted WHOLE. */
+            QGP_LOG_WARN(LOG_TAG, "successor batch over the unit budget at "
+                         "%d — truncating to %d, requeueing %d (meter "
+                         "status %d)", bfail, bfail, valid - bfail,
+                         (int)res.meter_status);
+            shape_requeue(w, batch, bfail, valid);
+            valid = bfail;
+            continue;
+        }
+
+        if (res.kind == NODUS_V2_BATCH_FAIL_CAPACITY_BYTES) {
+            /* The absolute block-BYTE bound is a whole-batch SUM taken
+             * BEFORE any reservation, so the seam reports fail_index 0
+             * no matter which envelope crossed the bound
+             * (nodus_witness_v2_env.c, step 4b). Reading that 0 as "entry
+             * 0 is poison" would destroy an innocent entry — which is why
+             * this case cannot share the meter path's truncate-at-index.
+             * Shrink from the TAIL instead, one entry per pass, bounded
+             * by the batch size (<= NODUS_W_MAX_BLOCK_TXS iterations).
+             * At valid == 1 the single entry alone exceeds the bound and
+             * can never fit any block, so it is genuinely poison and is
+             * dropped rather than requeued forever. */
+            if (valid == 1) {
+                QGP_LOG_WARN(LOG_TAG, "a single successor entry exceeds the "
+                             "block byte bound — dropping it");
+                shape_drop(batch, 0, &valid);
+            } else {
+                QGP_LOG_WARN(LOG_TAG, "successor batch over the block byte "
+                             "bound — requeueing the last of %d", valid);
+                shape_requeue(w, batch, valid - 1, valid);
+                valid--;
+            }
+            continue;
+        }
+
+        if (res.kind == NODUS_V2_BATCH_FAIL_ENTRY_INVALID ||
+            res.kind == NODUS_V2_BATCH_FAIL_CAPACITY_UNITS) {
+            /* ENTRY_INVALID: today's behaviour, unchanged — the offender
+             * is dropped (freed; its submitter re-submits) and the
+             * survivors retried.
+             *
+             * CAPACITY_UNITS at bfail == 0 lands here too, and that is
+             * the right disposal: index 0 is judged against the FULL
+             * block budget, so an entry that misses there cannot fit an
+             * EMPTY block either. Requeueing it would re-poison every
+             * future round; dropping lets it self-evict in one. */
+            QGP_LOG_WARN(LOG_TAG, "successor batch entry %d rejected by the "
+                         "seam (kind=%d seam=%d pf=%d meter=%d) — dropping "
+                         "it", bfail, (int)res.kind, (int)res.env_status,
+                         (int)res.pf_status, (int)res.meter_status);
+            shape_drop(batch, bfail, &valid);
+            continue;
+        }
+
+        /* NONE with a non-zero return is not reachable from the seam's
+         * contract; treat any unexpected classification the conservative
+         * way — destroy nothing. */
+        QGP_LOG_ERROR(LOG_TAG, "successor batch check returned an "
+                      "unexpected classification (%d) — requeueing %d, no "
+                      "round", (int)res.kind, valid);
+        shape_requeue(w, batch, 0, valid);
+        return -1;
+    }
+    return 0;
+}
+
 int nodus_witness_bft_start_round_from_mempool(nodus_witness_t *w) {
     if (!w || w->mempool.count == 0) return -1;
 
@@ -4362,40 +4552,20 @@ int nodus_witness_bft_start_round_from_mempool(nodus_witness_t *w) {
         return -1;
     }
 
-    /* O15D — SUCCESSOR batch hygiene: run the engine's own pre-commit
-     * seam over the candidate batch (decode, committed ruleset context,
-     * chain binding, expiry, wire- AND intent-level dedup). An entry the
-     * engine would reject at apply is a WHOLE-BLOCK verdict there, so
-     * the offender is dropped HERE (freed — its submitter re-submits)
-     * and the survivors retried, exactly the staleness-drop discipline
-     * above. Deterministic: bytes + committed state only. */
+    /* O15D / capacity season — SUCCESSOR batch hygiene AND capacity fit:
+     * run the engine's own pre-commit seam over the candidate batch
+     * (decode, committed ruleset context, chain binding, expiry, wire-
+     * AND intent-level dedup, block-byte bound, unit reservation), then
+     * shape the batch to what the engine will accept. An entry the engine
+     * would reject at apply is a WHOLE-BLOCK verdict there, so an invalid
+     * offender is dropped HERE and a batch that merely does not FIT is
+     * truncated with its tail requeued. See the function above for why
+     * those two must not share one disposal. */
     if (w->v2_successor) {
-        for (;;) {
-            int bfail = 0;
-            int brc = nodus_witness_v2_produce_batch_check(w, batch, valid,
-                                                           &bfail);
-            if (brc == 0) break;
-            if (brc != -1 || bfail < 0 || bfail >= valid) {
-                /* node-local fault — requeue everything, no round */
-                for (int i = 0; i < valid; i++) {
-                    if (batch[i] &&
-                        nodus_witness_mempool_add(&w->mempool,
-                                                  batch[i]) != 0)
-                        nodus_witness_mempool_entry_free(batch[i]);
-                }
-                w->mempool.last_block_time_ms = nodus_time_now() * 1000ULL;
-                return -1;
-            }
-            QGP_LOG_WARN(LOG_TAG, "successor batch entry %d rejected by "
-                         "the seam — dropping it", bfail);
-            nodus_witness_mempool_entry_free(batch[bfail]);
-            for (int i = bfail; i < valid - 1; i++)
-                batch[i] = batch[i + 1];
-            valid--;
-            if (valid == 0) {
-                w->mempool.last_block_time_ms = nodus_time_now() * 1000ULL;
-                return -1;
-            }
+        valid = nodus_witness_bft_shape_successor_batch(w, batch, valid);
+        if (valid <= 0) {
+            w->mempool.last_block_time_ms = nodus_time_now() * 1000ULL;
+            return -1;
         }
     }
 
@@ -4809,11 +4979,19 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
 
         /* O15D — SUCCESSOR follower batch check: the same engine seam
          * the leader ran (decode, committed ruleset context, chain,
-         * expiry, wire+intent dedup) — deterministic from bytes +
-         * committed state, so every honest follower reaches the same
-         * verdict on the same proposal. A leader proposing a duplicate
-         * intent or a replayed envelope is REJECT-voted here instead of
-         * killing the block at commit. */
+         * expiry, wire+intent dedup, and — capacity season — the block
+         * byte bound plus the unit reservation) — deterministic from
+         * bytes + committed state, so every honest follower reaches the
+         * same verdict on the same proposal. A leader proposing a
+         * duplicate intent, a replayed envelope or a batch the block
+         * budget cannot pay for is REJECT-voted here instead of killing
+         * the block at commit.
+         *
+         * The VERDICT SEMANTICS are deliberately unchanged: a follower
+         * has no batch to shape, so it does not ask WHY the seam refused.
+         * Any refusal is a reject_reason and a REJECT vote — which is the
+         * same answer the engine would give the block anyway. It keeps
+         * calling the classification-free entry for exactly that reason. */
         if (!tx_invalid && w->v2_successor) {
             int bfail = 0;
             if (nodus_witness_v2_produce_batch_check(

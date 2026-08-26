@@ -204,6 +204,74 @@ fail_dup_intent:
     return NODUS_V2_ENV_ERR_DUP_INTENT;
 }
 
+/*
+ * THE ONE seam-status -> producer-action table.
+ *
+ * The FAULT row is copied from the apply engine's own routing of this
+ * seam's rejection (nodus_witness_v2_apply.c, the branch right after
+ * preflight_reserve_batch): ERR_HASH is "this node could not compute" and
+ * env_preflight.h forbids turning it into a transaction rejection;
+ * DNA_METER_ERR_FAULT is an accounting invariant break in this build; an
+ * underivable chain id is a chain-DB read failure. Everything else the
+ * engine treats as a deterministic verdict, and so does this table — the
+ * two must agree, because a propose-time answer that is kinder than the
+ * commit-time answer is exactly the burnt round this classification
+ * exists to prevent, and one that is harsher destroys valid work.
+ *
+ * The CAPACITY rows are the split that is NEW: the engine has no reason
+ * to distinguish "bad entry" from "full block" (it rejects the whole
+ * candidate either way), but a PRODUCER does — one means drop, the other
+ * means propose less.
+ */
+nodus_v2_batch_fail_kind_t nodus_witness_v2_env_fail_kind(
+        nodus_v2_env_status_t st,
+        dna_env_preflight_status_t pf,
+        dna_meter_status_t ms) {
+    switch (st) {
+        case NODUS_V2_ENV_OK:
+            return NODUS_V2_BATCH_FAIL_NONE;
+
+        case NODUS_V2_ENV_ERR_CHAIN:
+            /* No committed genesis, or a chain-DB fault — the helper does
+             * not distinguish, and neither can a verdict. */
+            return NODUS_V2_BATCH_FAIL_FAULT;
+
+        case NODUS_V2_ENV_ERR_PREFLIGHT:
+            return pf == DNA_ENV_PF_ERR_HASH
+                       ? NODUS_V2_BATCH_FAIL_FAULT
+                       : NODUS_V2_BATCH_FAIL_ENTRY_INVALID;
+
+        case NODUS_V2_ENV_ERR_METER:
+            if (ms == DNA_METER_ERR_FAULT)
+                return NODUS_V2_BATCH_FAIL_FAULT;
+            /* 7 and 8 are the only two "the block is FULL" statuses: the
+             * envelope's own plan was priceable and legal, the remaining
+             * budget simply could not pay for it AT THIS POSITION. Every
+             * other meter status (POLICY, OP_WEIGHT, DECL, OVERFLOW,
+             * CEILING, DOMAIN, LIMIT, STATE) is a property of the bytes
+             * and does not improve in a shorter block. */
+            if (ms == DNA_METER_ERR_GLOBAL_BUDGET ||
+                ms == DNA_METER_ERR_DOMAIN_BUDGET)
+                return NODUS_V2_BATCH_FAIL_CAPACITY_UNITS;
+            return NODUS_V2_BATCH_FAIL_ENTRY_INVALID;
+
+        case NODUS_V2_ENV_ERR_BLOCK_BYTES:
+            return NODUS_V2_BATCH_FAIL_CAPACITY_BYTES;
+
+        case NODUS_V2_ENV_ERR_ARG:
+        case NODUS_V2_ENV_ERR_RULESETS:
+        case NODUS_V2_ENV_ERR_CTX_MISSING:
+        case NODUS_V2_ENV_ERR_DUP:
+        case NODUS_V2_ENV_ERR_DUP_INTENT:
+            return NODUS_V2_BATCH_FAIL_ENTRY_INVALID;
+    }
+    /* No default label above: adding a status to the enum must break the
+     * build here rather than silently fall into one of the two actions.
+     * An out-of-enum value still has to answer something, and the
+     * conservative answer is "this node has no verdict". */
+    return NODUS_V2_BATCH_FAIL_FAULT;
+}
+
 int nodus_witness_v2_block_bytes_check(const size_t *lens, size_t n,
                                        uint64_t max_block_env_bytes) {
     if (n == 0 || !lens) return -1;

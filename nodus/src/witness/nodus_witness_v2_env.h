@@ -169,6 +169,135 @@ typedef enum {
 } nodus_v2_env_status_t;
 
 /**
+ * WHY a batch was refused, collapsed to what a PRODUCER can act on.
+ *
+ * The seam answers "which rule did this batch break". A leader shaping a
+ * proposal needs one bit more than that: is the offender BAD (drop it and
+ * move on) or is the BLOCK FULL (keep it, propose less)? Those two demand
+ * opposite handling, and collapsing them is exactly the defect this
+ * classification exists to close — a full block used to be handled as a
+ * bad entry, so a valid transaction was destroyed to make room that a
+ * shorter batch would have had anyway.
+ *
+ * The split is NOT invented here: it mirrors the apply engine's own
+ * FAULT-vs-VERDICT routing (nodus_witness_v2_apply.c, the seam-rejection
+ * branch after preflight_reserve_batch) one-for-one, so the propose-time
+ * answer and the commit-time answer cannot disagree about which rejects
+ * are this node failing to compute and which are statements about the
+ * bytes.
+ */
+typedef enum {
+    NODUS_V2_BATCH_FAIL_NONE = 0,       /* the batch was accepted         */
+    /** A specific ENTRY is invalid — a deterministic verdict about its
+     *  bytes (malformed, expired, unregistered/inactive domain, duplicate
+     *  wire or intent id, unpriceable op, over-declared effects). The
+     *  offender is named by fail_index and will never become valid, so a
+     *  producer drops it. */
+    NODUS_V2_BATCH_FAIL_ENTRY_INVALID,
+    /** The BLOCK ran out of metered UNITS at fail_index: every entry
+     *  BEFORE that index reserved successfully, the one AT it did not
+     *  (DNA_METER_ERR_GLOBAL_BUDGET / DNA_METER_ERR_DOMAIN_BUDGET).
+     *  fail_index IS meaningful and IS the fit boundary. */
+    NODUS_V2_BATCH_FAIL_CAPACITY_UNITS,
+    /** The BLOCK's summed envelope BYTES exceed the policy's absolute
+     *  max_block_env_bytes. This gate is a whole-batch SUM taken before
+     *  any reservation, so it names no offender: fail_index reads 0 and
+     *  that zero is NOT an accusation of entry 0 (nodus_witness_v2_env.c,
+     *  the step-4b reject sets it to 0 regardless of which envelope
+     *  crossed the bound). A producer must shrink the batch, not trust
+     *  the index. */
+    NODUS_V2_BATCH_FAIL_CAPACITY_BYTES,
+    /** THIS NODE could not compute (unreadable committed state, an
+     *  underivable chain id, an allocation failure, a meter accounting
+     *  invariant break). Never a statement about the batch: a producer
+     *  must not destroy anything on it. */
+    NODUS_V2_BATCH_FAIL_FAULT
+} nodus_v2_batch_fail_kind_t;
+
+/** The classified refusal, with the raw statuses kept for logs/tests. */
+typedef struct {
+    nodus_v2_batch_fail_kind_t kind;
+    nodus_v2_env_status_t      env_status;   /* the seam's own status     */
+    dna_env_preflight_status_t pf_status;    /* meaningful on ERR_PREFLIGHT*/
+    dna_meter_status_t         meter_status; /* meaningful on ERR_METER   */
+} nodus_v2_batch_check_result_t;
+
+/**
+ * PURE classification of one seam refusal. No arguments beyond the three
+ * statuses, so it is directly unit-testable and there is exactly ONE
+ * table mapping seam statuses onto producer actions.
+ *
+ * `pf` is consulted ONLY for NODUS_V2_ENV_ERR_PREFLIGHT and `ms` ONLY for
+ * NODUS_V2_ENV_ERR_METER — the seam's own contract says every other
+ * outcome leaves them at their OK values, so routing on the env status
+ * first is mandatory, not stylistic.
+ *
+ * @return NODUS_V2_BATCH_FAIL_NONE for NODUS_V2_ENV_OK.
+ */
+nodus_v2_batch_fail_kind_t nodus_witness_v2_env_fail_kind(
+    nodus_v2_env_status_t st,
+    dna_env_preflight_status_t pf,
+    dna_meter_status_t ms);
+
+/**
+ * Engine bound on registered domains carried by one block-start context.
+ * MUST equal the apply engine's own MAX_DOMS — a _Static_assert in
+ * nodus_witness_v2_apply.c proves it, so the two cannot drift silently.
+ */
+#define NODUS_V2_BLOCK_CTX_MAX_DOMS 64
+
+/**
+ * THE frozen block-start execution context: the contextual ruleset table,
+ * the engine-owned unit budgets and the committed metering policy that
+ * together decide what a candidate block may contain.
+ *
+ * There is ONE builder for this (nodus_witness_v2_block_ctx_build below,
+ * whose body the apply engine itself calls) and that is the whole point.
+ * A second, "equivalent" construction on the propose path is precisely
+ * how a leader ends up proposing batches the commit engine deterministic-
+ * ally rejects: the propose-time table would have to re-derive per-domain
+ * budgets, the SYSTEM-runtime policy and the ACTIVE-domain filter, and
+ * any drift in any of the three is a burnt round.
+ *
+ * ~5.7 KB. Callers HEAP-allocate unless they already own a block-sized
+ * frame (the engine does).
+ */
+typedef struct {
+    dna_env_leg_ctx_t  rulesets[NODUS_V2_BLOCK_CTX_MAX_DOMS];
+    size_t             n_rulesets;
+    dna_meter_budget_t budget;              /* engine-owned remainders    */
+    const dna_meter_policy_t *policy;       /* BORROWED from the resolved
+                                             * SYSTEM runtime — outlives
+                                             * this struct (the runtime
+                                             * registry owns it)          */
+} nodus_witness_v2_block_ctx_t;
+
+/**
+ * Build the block-start execution context from COMMITTED state alone.
+ *
+ * Loads every registered domain under the STRICT ACTIVE preconditions
+ * (each ACTIVE domain resolves to exactly one runtime and has exactly one
+ * persisted head), then fills the context through the same body the apply
+ * engine runs — see the engine's block-start snapshot section.
+ *
+ * Determinism: registry rows are read ORDER BY domain_id ASC, the ruleset
+ * table and the budget's domain array come out strictly ascending by
+ * construction, and the only other input is the SYSTEM runtime's SEALED
+ * compiled policy (verified against its descriptor-committed digest). No
+ * clock, no RNG, no unordered iteration, no write.
+ *
+ * @return  0 built;
+ *         -1 CHAIN-STATE VERDICT: SYSTEM is not ACTIVE / not runtime-
+ *            backed, so no block on this chain is appliable;
+ *         -2 NODE-LOCAL FAULT: registry/head/runtime state unreadable,
+ *            an engine array bound exceeded, or a broken/mutated/digest-
+ *            mismatched compiled policy on THIS node. A caller must not
+ *            turn this into a verdict about anyone's transaction.
+ */
+int nodus_witness_v2_block_ctx_build(nodus_witness_t *w,
+                                     nodus_witness_v2_block_ctx_t *ctx);
+
+/**
  * PURE checked block-byte admission: sum the n envelope lengths with
  * dna_ck_add_u64 and compare against the INCLUSIVE absolute bound.
  * Exposed so the arithmetic is directly unit-testable with synthetic
@@ -352,6 +481,54 @@ nodus_v2_env_status_t nodus_witness_v2_env_preflight_reserve_batch(
     size_t *fail_index_out,
     dna_env_preflight_status_t *pf_status_out,
     dna_meter_status_t *meter_status_out);
+
+/**
+ * The METER-AWARE successor batch pre-check — the producer-facing entry.
+ * Implemented in nodus_witness_v2_produce.c beside the plain
+ * nodus_witness_v2_produce_batch_check, which is now a thin wrapper over
+ * this function (same inputs, classification discarded, contract
+ * byte-identical for every existing caller).
+ *
+ * PLACEMENT NOTE: declared here rather than in nodus_witness_v2_produce.h
+ * because its distinguishing output — nodus_v2_batch_check_result_t — is a
+ * classification of THIS header's statuses, and putting the declaration
+ * beside the classifier keeps one reading order. Callers already include
+ * this header for nodus_v2_envelope_t.
+ *
+ * Runs the ENTIRE commit-time admission the engine runs over a candidate
+ * batch, at the next successor height: for the ENVELOPE subset, the
+ * block-start execution context (nodus_witness_v2_block_ctx_build) fed
+ * into nodus_witness_v2_env_preflight_reserve_batch — strict decode,
+ * committed contextual rulesets, chain binding, expiry, canonical
+ * commitments, wire- AND intent-level dedup, the ABSOLUTE block-byte
+ * bound, and the sequential unit RESERVATION against a SCRATCH copy of
+ * the engine's budget; for the CLAIM subset, per-claim admission plus
+ * in-batch nullifier dedup.
+ *
+ * The reservation outputs are discarded: this asks the engine's question,
+ * it does not pre-authorize anything. Nothing is written, and the budget
+ * mutated is the caller-invisible scratch inside the context.
+ *
+ * Determinism: the answer is a pure function of the entry bytes, their
+ * ORDER, and committed state. Reservation is sequential and order-
+ * dependent, so the envelope subset must be presented in the same
+ * relative order the engine will see — which it is, because both derive
+ * that order from the same batch array.
+ *
+ * @param fail_index_out on -1, the offending entry's index in `entries`.
+ *                       MEANINGFUL ONLY when result_out->kind is
+ *                       ENTRY_INVALID or CAPACITY_UNITS; on
+ *                       CAPACITY_BYTES it reads 0 by construction and
+ *                       accuses nobody.
+ * @param result_out     OPTIONAL. The classified refusal (kind NONE on 0).
+ * @return 0 clean / -1 deterministic batch refusal / -2 node-local fault.
+ */
+int nodus_witness_v2_produce_batch_check_ex(
+    nodus_witness_t *w,
+    nodus_witness_mempool_entry_t **entries,
+    int count,
+    int *fail_index_out,
+    nodus_v2_batch_check_result_t *result_out);
 
 #ifdef __cplusplus
 }

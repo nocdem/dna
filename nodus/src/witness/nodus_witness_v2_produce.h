@@ -170,6 +170,23 @@ int nodus_witness_v2_claim_entry_nullifier(nodus_witness_t *w,
  * drop the offender than burn the round); followers run it on a
  * received proposal (deterministic: bytes + committed state only).
  *
+ * IT ALSO METERS. Until O15I this ran the BARE preflight — no policy, no
+ * budget, no meters — while the reserve variant (the one that charges the
+ * global and per-domain unit budgets and enforces max_block_env_bytes)
+ * had a single caller: the commit engine. So a batch that no budget could
+ * pay for passed here, won its votes, and died at apply as
+ * "BATCH COMMIT FAILED", answering every client with DNAC_STATUS_ERROR.
+ * Measured cost before the fix: 120 failed blocks in one 20-node
+ * rehearsal, 71 of them DNA_METER_ERR_GLOBAL_BUDGET at batch index 5.
+ * The check now builds the SAME block context the engine builds and runs
+ * the reserve seam against a scratch budget.
+ *
+ * This wrapper keeps the original tri-state for callers that only need a
+ * verdict. `..._batch_check_ex` additionally reports the refusal KIND, so
+ * the leader can tell "this batch is too big" (truncate and requeue the
+ * tail) from "this entry is invalid" (drop it) — see
+ * nodus_witness_bft_shape_successor_batch.
+ *
  * @param fail_index_out on -1, the index of the offending entry.
  * @return 0 clean / -1 entry rejected / -2 node-local fault.
  */

@@ -44,6 +44,13 @@
 #define MAX_DOMS 64     /* engine bound on registered domains per DB —
                          * a resource bound, never a protocol maximum    */
 
+/* The block-start context this engine hands out (nodus_witness_v2_env.h)
+ * carries the ruleset table BY VALUE, so its array bound and this
+ * engine's bound are the same number or the shared builder silently
+ * truncates one caller's view of the domain set. Proven, not assumed. */
+_Static_assert(NODUS_V2_BLOCK_CTX_MAX_DOMS == MAX_DOMS,
+               "block-ctx domain bound drifted from the engine's MAX_DOMS");
+
 static int exec_sql(nodus_witness_t *w, const char *sql) {
     char *err = NULL;
     if (sqlite3_exec(w->db, sql, NULL, NULL, &err) != SQLITE_OK) {
@@ -455,6 +462,113 @@ static dom_ctx_t *dom_for(dom_ctx_t *doms, size_t n, uint32_t id) {
     for (size_t i = 0; i < n; i++)
         if (doms[i].domain_id == id) return &doms[i];
     return NULL;
+}
+
+/* ── THE block-start execution context (ONE construction) ───────────── */
+
+/*
+ * Fill the frozen context from an ALREADY-LOADED domain set.
+ *
+ * This is THE body. The apply engine calls it with the doms[] it already
+ * holds; the public nodus_witness_v2_block_ctx_build below calls it after
+ * loading its own. There is deliberately no second implementation, and
+ * that is the entire point of the extraction: the propose-time batch
+ * check asks this exact question, and a leader whose ruleset table,
+ * per-domain unit budgets or price policy differ from the engine's in any
+ * detail proposes batches the engine then deterministically rejects — the
+ * whole block dies and every client in it gets an error. A scratch global
+ * budget alone would NOT do: it omits the per-domain quotas and the
+ * SYSTEM-runtime policy, both of which decide admission.
+ *
+ * NOT consensus-visible: this only MOVES existing engine code. The set of
+ * blocks the engine accepts is unchanged, byte for byte.
+ *
+ * @return 0 / -1 chain-state verdict (SYSTEM unusable) / -2 node fault.
+ */
+static int block_ctx_from_doms(dom_ctx_t *doms, size_t n_dom,
+                               nodus_witness_v2_block_ctx_t *ctx) {
+    if (!doms || !ctx) return -2;
+    memset(ctx, 0, sizeof(*ctx));
+
+    /* Contextual ruleset table: one entry per block-entry-ACTIVE,
+     * runtime-backed domain, ascending by construction (doms[] is ASC).
+     * A leg addressing any OTHER domain dies in the preflight seam
+     * (ERR_CTX_MISSING) — the caller cannot widen this table.
+     *
+     * The engine-owned unit budgets are filled in the SAME walk, so the
+     * two arrays can never disagree about which domains exist. Per-domain
+     * budget = the committed manifest quota where non-zero (denominated
+     * in units — the header's honest label), else the global constant. */
+    ctx->budget.global_remaining = NODUS_V2_GLOBAL_UNIT_BUDGET;
+    for (size_t i = 0; i < n_dom; i++) {
+        if (doms[i].status != DNA_DOMST_ACTIVE || !doms[i].rt) continue;
+        if (ctx->n_rulesets >= MAX_DOMS ||
+            ctx->budget.n_domains >= DNA_METER_MAX_DOMAINS)
+            return -2;                   /* engine bound — resource fault */
+        ctx->rulesets[ctx->n_rulesets].domain_id = doms[i].domain_id;
+        ctx->rulesets[ctx->n_rulesets].ruleset_version =
+            doms[i].man.ruleset_version;
+        memcpy(ctx->rulesets[ctx->n_rulesets].ruleset_hash,
+               doms[i].man.ruleset_hash, DNA_ENV_RULESET_HASH_LEN);
+        ctx->n_rulesets++;
+        ctx->budget.dom[ctx->budget.n_domains].domain_id = doms[i].domain_id;
+        ctx->budget.dom[ctx->budget.n_domains].remaining_units =
+            doms[i].man.quota_verify_cost != 0
+                ? (uint64_t)doms[i].man.quota_verify_cost
+                : (uint64_t)NODUS_V2_GLOBAL_UNIT_BUDGET;
+        ctx->budget.n_domains++;
+    }
+
+    /* THE block metering policy: the resolved SYSTEM runtime's compiled
+     * policy, verified against BOTH its seal and the descriptor-
+     * committed identity digest. SYSTEM is the mandatory protocol
+     * domain (genesis enforces it ACTIVE), so a block on a chain whose
+     * SYSTEM is not executable is unappliable. A missing, unsealed,
+     * mutated or digest-mismatched policy is a BROKEN COMPILED TABLE on
+     * this node — a fault: this node must not vote, and it must
+     * certainly not improvise a price table. */
+    {
+        dom_ctx_t *sys = dom_for(doms, n_dom, DNA_DOMAIN_SYSTEM);
+        if (!sys || sys->status != DNA_DOMST_ACTIVE || !sys->rt)
+            return -1;   /* chain state: SYSTEM not ACTIVE/backed        */
+        uint8_t zero[DNA_DOM_HASH_LEN] = { 0 };
+        uint8_t pd[64];
+        if (!sys->rt->meter_policy ||
+            memcmp(sys->rt->descriptor.meter_policy_digest, zero,
+                   DNA_DOM_HASH_LEN) == 0 ||
+            dna_meter_policy_check(sys->rt->meter_policy) != 0 ||
+            dna_meter_policy_digest(sys->rt->meter_policy, pd) != 0 ||
+            memcmp(pd, sys->rt->descriptor.meter_policy_digest, 64) != 0)
+            return -2;
+        ctx->policy = sys->rt->meter_policy;
+    }
+
+    return 0;
+}
+
+/* Contract: nodus_witness_v2_env.h. */
+int nodus_witness_v2_block_ctx_build(nodus_witness_t *w,
+                                     nodus_witness_v2_block_ctx_t *ctx) {
+    if (!w || !w->db || !ctx) return -2;
+    memset(ctx, 0, sizeof(*ctx));
+
+    /* MAX_DOMS × dom_ctx_t is multi-KB — heap, exactly as the engine's
+     * own block-start load does it. */
+    dom_ctx_t *doms = calloc(MAX_DOMS, sizeof(*doms));
+    if (!doms) return -2;
+    size_t n_dom = 0;
+    /* strict_active=1 — the SAME preconditions the engine demands before
+     * it will apply anything (every ACTIVE domain resolves to exactly one
+     * runtime and has exactly one persisted head). A node that cannot
+     * execute an ACTIVE domain has no business judging a batch against
+     * it either, so an unmet precondition is a node FAULT here, never a
+     * verdict about the batch. */
+    int rc = (doms_load(w, doms, &n_dom, /*strict_active=*/1) != 0)
+                 ? -2
+                 : block_ctx_from_doms(doms, n_dom, ctx);
+    free(doms);
+    if (rc != 0) memset(ctx, 0, sizeof(*ctx));
+    return rc;
 }
 
 /* ── V2 genesis ─────────────────────────────────────────────────────── */
@@ -1349,65 +1463,21 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
         }
     }
 
-    /* Contextual ruleset table: one entry per block-entry-ACTIVE,
-     * runtime-backed domain, ascending by construction (doms[] is ASC).
-     * A leg addressing any OTHER domain dies in the preflight seam
-     * (ERR_CTX_MISSING) — the caller cannot widen this table. */
-    dna_env_leg_ctx_t rulesets[MAX_DOMS];
-    size_t n_rulesets = 0;
-    /* The engine-owned unit budgets for this block. Per-domain budget =
-     * the committed manifest quota where non-zero (denominated in
-     * units — the header's honest label), else the global constant. */
-    dna_meter_budget_t budget;
-    memset(&budget, 0, sizeof(budget));
-    budget.global_remaining = NODUS_V2_GLOBAL_UNIT_BUDGET;
-    for (size_t i = 0; i < n_dom; i++) {
-        if (doms[i].status != DNA_DOMST_ACTIVE || !doms[i].rt) continue;
-        if (n_rulesets >= MAX_DOMS ||
-            budget.n_domains >= DNA_METER_MAX_DOMAINS) {
-            free(doms);
-            return -2;                   /* engine bound — resource fault */
-        }
-        rulesets[n_rulesets].domain_id       = doms[i].domain_id;
-        rulesets[n_rulesets].ruleset_version = doms[i].man.ruleset_version;
-        memcpy(rulesets[n_rulesets].ruleset_hash, doms[i].man.ruleset_hash,
-               DNA_ENV_RULESET_HASH_LEN);
-        n_rulesets++;
-        budget.dom[budget.n_domains].domain_id = doms[i].domain_id;
-        budget.dom[budget.n_domains].remaining_units =
-            doms[i].man.quota_verify_cost != 0
-                ? (uint64_t)doms[i].man.quota_verify_cost
-                : (uint64_t)NODUS_V2_GLOBAL_UNIT_BUDGET;
-        budget.n_domains++;
-    }
-
-    /* THE block metering policy: the resolved SYSTEM runtime's compiled
-     * policy, verified against BOTH its seal and the descriptor-
-     * committed identity digest. SYSTEM is the mandatory protocol
-     * domain (genesis enforces it ACTIVE), so a block on a chain whose
-     * SYSTEM is not executable is unappliable. A missing, unsealed,
-     * mutated or digest-mismatched policy is a BROKEN COMPILED TABLE on
-     * this node — a fault: this node must not vote, and it must
-     * certainly not improvise a price table. */
-    const dna_meter_policy_t *policy = NULL;
+    /* Contextual ruleset table, per-domain unit budgets and THE committed
+     * metering policy — built by the ONE shared body above, from the
+     * doms[] this engine already loaded (no second registry scan). The
+     * propose-time batch check reaches the SAME body through
+     * nodus_witness_v2_block_ctx_build, which is what makes a leader's
+     * pre-commit answer and this engine's answer the same answer.
+     * ~5.7 KB, the same footprint the two locals it replaces had. */
+    nodus_witness_v2_block_ctx_t bctx;
     {
-        dom_ctx_t *sys = dom_for(doms, n_dom, DNA_DOMAIN_SYSTEM);
-        if (!sys || sys->status != DNA_DOMST_ACTIVE || !sys->rt) {
+        int bcrc = block_ctx_from_doms(doms, n_dom, &bctx);
+        if (bcrc != 0) {
             free(doms);
-            return -1;   /* chain state: SYSTEM not ACTIVE/backed        */
+            return bcrc;    /* -1 chain-state verdict / -2 node fault,
+                             * both unchanged from the inline original  */
         }
-        uint8_t zero[DNA_DOM_HASH_LEN] = { 0 };
-        uint8_t pd[64];
-        if (!sys->rt->meter_policy ||
-            memcmp(sys->rt->descriptor.meter_policy_digest, zero,
-                   DNA_DOM_HASH_LEN) == 0 ||
-            dna_meter_policy_check(sys->rt->meter_policy) != 0 ||
-            dna_meter_policy_digest(sys->rt->meter_policy, pd) != 0 ||
-            memcmp(pd, sys->rt->descriptor.meter_policy_digest, 64) != 0) {
-            free(doms);
-            return -2;
-        }
-        policy = sys->rt->meter_policy;
     }
 
     /* ── 0b. envelope preflight + reservation (whole canonical batch) ─
@@ -1449,7 +1519,8 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
         dna_env_preflight_status_t pfst = DNA_ENV_PF_OK;
         dna_meter_status_t mst = DNA_METER_OK;
         nodus_v2_env_status_t est = nodus_witness_v2_env_preflight_reserve_batch(
-            w, blk->global_height, rulesets, n_rulesets, policy, &budget,
+            w, blk->global_height, bctx.rulesets, bctx.n_rulesets,
+            bctx.policy, &bctx.budget,
             blk->envs, blk->n_envs, pf, meters, &fidx, &pfst, &mst);
         if (est != NODUS_V2_ENV_OK) {
             /* FAULT vs VERDICT routing of the seam's rejection: an

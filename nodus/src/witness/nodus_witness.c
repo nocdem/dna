@@ -1142,9 +1142,20 @@ nodus_witness_entry_verdict_t nodus_witness_v2_entry_verdict(
         return NODUS_W_ENTRY_UNJUDGED;
 
     /* A local view, used ONLY to learn which domains the legs address so
-     * the POSITIONAL contextual table can be built — the same two-pass
-     * shape nodus_witness_v2_produce_batch_check uses. ~2.6 KB automatic,
-     * no recursion, exactly as nodus_witness_v2_env.c declares it.
+     * the POSITIONAL contextual table can be built. ~2.6 KB automatic, no
+     * recursion, exactly as nodus_witness_v2_env.c declares it.
+     *
+     * This private per-leg assembly used to be shared with
+     * nodus_witness_v2_produce_batch_check. It is NOT any more, and the
+     * divergence is deliberate: the batch check decides what a BLOCK may
+     * contain, so it must ask the engine's own block-start context
+     * (nodus_witness_v2_block_ctx_build) or it admits what the engine
+     * rejects. This function decides only whether a POOLED ENTRY is
+     * FINISHED, and every contextual mismatch it can hit collapses to
+     * UNJUDGED — "keep it" — which is the conservative side of a reaper.
+     * Using the engine's ACTIVE-only table here would turn a domain that
+     * is merely not ACTIVE YET into a reason to evict, which is exactly
+     * the wrong direction. See the ORDERING CAVEAT below.
      *
      * A rejection here is the SAME verdict the seam would return for the
      * same bytes (it is the same strict decoder, called deterministically
@@ -1320,6 +1331,74 @@ int nodus_witness_mempool_evict_committed(nodus_witness_t *witness) {
     return evicted;
 }
 
+/*
+ * Drain DECIDED mempool entries, once per epoch.
+ *
+ * Forwarded entries (client_conn == NULL) would otherwise be stranded
+ * forever, since no client disconnect triggers remove_by_conn for them.
+ *
+ * O15I P3(c) — the VERDICT: this used to nodus_witness_mempool_clear()
+ * the whole mempool. Under P3(b) a follower legitimately holds forwarded
+ * work so a dead leader's demand exists on more than one node, and those
+ * entries are exactly what arms the P3(a) deadman — a blind wipe deleted
+ * the evidence of the stall, once a minute, while the stall was still
+ * happening. The reaper now drops an entry only when it is FINISHED —
+ * its nullifier already committed, or (O15I V1, successor class-200)
+ * nodus_witness_v2_entry_verdict saying its intent is committed, its
+ * expiry has passed, or its bytes no longer decode. Every one of those
+ * is a test the leader's own batch selection applies too. Full
+ * rationale: nodus_witness.h.
+ *
+ * O15I V1 — THE LATCH. The epoch gate is a ~2 s WINDOW, not an edge, and
+ * the tick runs ~20x/s, so the scan ran ~40 times per epoch. The verdict
+ * now includes the successor entry derivation (a decode plus the full
+ * commitment chain per class-200 entry, which cannot be cached on the
+ * entry), so ~40 passes is no longer a rounding error. `last_evict_epoch`
+ * records the epoch stamp this reaper last ran FOR, collapsing the window
+ * back to one scan. It is set INSIDE the body, after the pool gate: an
+ * epoch in which this node holds nothing must not burn the latch for an
+ * epoch in which it later holds work.
+ *
+ * ── capacity season: THE ROLE GATE IS GONE ────────────────────────────
+ * This used to require `!nodus_witness_bft_is_leader(witness)`, so a node
+ * never cleaned its pool while it was leading — and a leader is precisely
+ * the node whose pool matters, because it is the one selecting batches
+ * from it. The only remover left for a leader's stale entries was batch
+ * selection itself: the entry had to be POPPED into a candidate batch and
+ * BURNED through the seam before it could be freed. Measured in the
+ * 164744Z rehearsal, node1 pooled 26 entries, proposed exactly ONCE, and
+ * that single proposal had to drop 13 stale claims through the seam
+ * before it could form a block. Reaping is read-only over committed state
+ * and cannot touch a round in flight — entries in a live batch were
+ * removed from the pool by mempool_pop_batch — so there was never a
+ * reason for the role to gate it. Every OTHER gate (a non-empty pool, the
+ * epoch window, the last_evict_epoch latch) is unchanged.
+ *
+ * Non-static so test executables (compiled with NODUS_WITNESS_INTERNAL_API
+ * via register_witness_test) can drive the GATE, not just the body — the
+ * removed role condition is only provable by calling this with a witness
+ * that IS the leader. Not declared in any public header; the one
+ * production caller is nodus_witness_tick.
+ *
+ * @return the number of entries evicted, or -1 when a gate declined.
+ */
+int nodus_witness_mempool_reap_epoch(nodus_witness_t *witness) {
+    if (!witness) return -1;
+    if (witness->mempool.count <= 0) return -1;
+    if (nodus_time_now() - witness->last_epoch >= 2) return -1;
+    if (witness->last_evict_epoch == witness->last_epoch) return -1;
+
+    /* Runs once right after the epoch tick rebuilds the roster. */
+    witness->last_evict_epoch = witness->last_epoch;
+    int before = witness->mempool.count;
+    int dropped = nodus_witness_mempool_evict_committed(witness);
+    if (dropped > 0)
+        fprintf(stderr, "WITNESS: evicted %d/%d decided mempool entries "
+                "(%d still pending)\n",
+                dropped, before, witness->mempool.count);
+    return dropped;
+}
+
 void nodus_witness_tick(nodus_witness_t *witness) {
     if (!witness || !witness->running) return;
 
@@ -1385,48 +1464,7 @@ void nodus_witness_tick(nodus_witness_t *witness) {
         }
     }
 
-    /* Drain DECIDED mempool entries when no longer leader.
-     * Only check once per epoch (60s) to avoid flap-induced drops.
-     * Forwarded entries (client_conn == NULL) would be stranded forever
-     * since no client disconnect would trigger remove_by_conn.
-     *
-     * O15I P3(c) — the CADENCE and the GATES are unchanged; only the
-     * VERDICT is. This used to nodus_witness_mempool_clear() the whole
-     * mempool. Under P3(b) a follower legitimately holds forwarded work
-     * so a dead leader's demand exists on more than one node, and those
-     * entries are exactly what arms the P3(a) deadman — so a blind wipe
-     * here would delete the evidence of the stall, once a minute, while
-     * the stall was still happening. The reaper now drops an entry only
-     * when it is FINISHED — its nullifier already committed, or (O15I V1,
-     * successor class-200) nodus_witness_v2_entry_verdict saying its
-     * intent is committed, its expiry has passed, or its bytes no longer
-     * decode. Every one of those is a test the leader's own batch
-     * selection applies too. Full rationale: nodus_witness.h.
-     *
-     * O15I V1 — THE LATCH. The gate below is a ~2 s WINDOW, not an edge,
-     * and this tick runs ~20x/s, so the scan ran ~40 times per epoch. The
-     * verdict now includes the successor entry derivation (a decode plus
-     * the full commitment chain per class-200 entry, which cannot be
-     * cached on the entry), so ~40 passes is no longer a rounding error.
-     * `last_evict_epoch` records the epoch stamp this reaper last ran
-     * FOR, collapsing the window back to one scan.
-     *
-     * It is set INSIDE the body, after the two role/pool gates: an epoch
-     * in which this node is the leader, or holds nothing, must not burn
-     * the latch for an epoch in which it later holds work. */
-    if (!nodus_witness_bft_is_leader(witness) &&
-        witness->mempool.count > 0 &&
-        nodus_time_now() - witness->last_epoch < 2 &&
-        witness->last_evict_epoch != witness->last_epoch) {
-        /* Runs once right after epoch tick rebuilds roster */
-        witness->last_evict_epoch = witness->last_epoch;
-        int before = witness->mempool.count;
-        int dropped = nodus_witness_mempool_evict_committed(witness);
-        if (dropped > 0)
-            fprintf(stderr, "WITNESS: not leader, evicted %d/%d decided "
-                    "mempool entries (%d still pending)\n",
-                    dropped, before, witness->mempool.count);
-    }
+    (void)nodus_witness_mempool_reap_epoch(witness);
 
     /* Peer mesh: reconnection, IDENT exchange */
     nodus_witness_peer_tick(witness);

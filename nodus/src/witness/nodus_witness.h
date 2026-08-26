@@ -1397,9 +1397,18 @@ bool nodus_witness_v2_entry_is_decided(nodus_witness_entry_verdict_t v);
  * included by any node. Before V1 the unjudged set contained EVERY
  * successor class-200 envelope, including settled ones — which is what
  * let one sit in a follower's pool forever and arm the P3 deadman
- * against a healthy leader. The leader-side reap (the successor batch
+ * against a healthy leader. The leader-side drop (the successor batch
  * pre-check, nodus_witness_bft.c "successor batch entry %d rejected by
- * the seam") remains as the backstop it always was.
+ * the seam") remains as a backstop.
+ *
+ * ⚠ THE ROLE GATE IS GONE. This used to run only on a NON-leader, which
+ * meant a node currently leading never cleaned its own pool — stale
+ * entries were removed only by burning them through batch selection, one
+ * proposal at a time. Measured in the 20-node rehearsal
+ * (o15i-ptf-20260826T164744Z): node1 pooled 26 entries, proposed exactly
+ * ONCE, and that single proposal had to drop 13 already-committed claims
+ * through the seam. A leader now reaps like anyone else; the pool-size,
+ * epoch-window and last_evict_epoch gates are unchanged.
  *
  * CALL IT AT MOST ONCE PER EPOCH. The successor half costs a decode plus
  * the full commitment derivation per class-200 entry; the tick's
