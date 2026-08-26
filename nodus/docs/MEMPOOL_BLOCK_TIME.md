@@ -225,9 +225,58 @@ re-stamps the window, so the DB scan and the `is_leader` call cost once per
 `round_timeout_ms`, not once per tick. `current_view` is untouched — it
 still advances only on quorum.
 
+### Pool-then-forward (O15I follow-up)
+
+The 20-node rehearsal proved P3's demand predicate **structurally blind in
+the exact case it exists for**. On the submission target with an
+unreachable leader BOTH halves of `mempool.count > 0 ||
+pending_forward_count > 0` are permanently 0: a non-leader does not pool
+its own client transaction (it forwards it), and the `!leader_conn` path
+answered the client and released the slot in the same breath, discarding
+the work. Measured: after the boundary block committed, the submitter made
+44 forward attempts with 0 successes and the deadman fired **zero** times.
+
+This is PBFT's own mechanism, half-missing. Castro & Liskov OSDI 1999
+§4.1: *"If the client does not receive replies soon enough, it broadcasts
+the request to all replicas. … If the primary does not multicast the
+request to the group, it will eventually be suspected to be faulty by
+enough replicas to cause a view change."* §4.4 gives the timer; §4.1 gives
+the request reaching enough replicas. We had only the first.
+
+A successor non-leader now runs the SAME `NODUS_WITNESS_VERIFY_ADMISSION`
+gate the leader branch runs and **pools the entry before, and
+independently of, the forward** — on every non-leader intake, not only when
+the leader is unreachable, because a leader whose TCP is alive but whose
+witness is wedged accepts the forward and never proposes.
+
+The entry is pooled in the **orphan form** (`client_conn = NULL`,
+`is_forwarded = true`, `forwarder_id = my_id`) — byte-identically the shape
+`nodus_witness_peer_handle_fwd_req` already uses. That is load-bearing, not
+stylistic: `nodus_witness_peer_conn_closed` runs for client connections and
+calls `nodus_witness_mempool_remove_by_conn`, which matches
+`client_conn == conn`, so pooling with the live connection would have the
+client's disconnect delete the entry one step later.
+
+Class-201 claims re-derive their committed nullifier at pool time, exactly
+as the leader branch and the forward intake do. Without it a claim would be
+invisible to the reaper's nullifier walk AND unjudgeable by the entry
+verdict, so nothing could remove it after the chain committed it — the
+quiet-chain churn defect through a new door.
+
+Legacy chains are unchanged: a legacy peer refuses a non-leader
+`w_fwd_req` byte-identically because its forward intake is structural-only,
+so pooled legacy demand could never recruit the f+1 backers a rotation
+needs.
+
+**Client answer on the unreachable-leader path:** the error CODE is
+unchanged (`NODUS_ERR_*` is wire surface); only the message differs, and
+only when the entry really was pooled — the work is queued locally and will
+be proposed once a reachable leader is elected.
+
 **P3(b) — dissemination.** At fire (never at intake, so steady-state
 traffic is unchanged) the node re-broadcasts its mempool entries as
-`w_fwd_req` to the peer set. `nodus_witness_peer_handle_fwd_req` now pools
+`w_fwd_req` to the peer set, skipping entries already decided (same
+per-entry rule the demand predicate applies). `nodus_witness_peer_handle_fwd_req` now pools
 on a non-leader **on successor chains only**: there the entry passes the
 full `NODUS_WITNESS_VERIFY_ADMISSION` lane first. A LEGACY forward is
 handled structurally at that site (nullifier walk, no signature verify), so

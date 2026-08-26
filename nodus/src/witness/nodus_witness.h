@@ -1123,6 +1123,130 @@ int nodus_witness_pending_forward_expire(nodus_witness_t *witness,
                                            uint64_t now_s);
 
 /**
+ * O15J A — POOL-THEN-FORWARD: make a non-leader's client demand VISIBLE.
+ *
+ * ── THE DEFECT THIS EXISTS FOR ────────────────────────────────────────
+ * PBFT's client protocol has two halves. Castro & Liskov OSDI 1999 §4.1:
+ * "If the client does not receive replies soon enough, it broadcasts the
+ * request to all replicas. ... If the primary does not multicast the
+ * request to the group, it will eventually be suspected to be faulty by
+ * enough replicas to cause a view change." §4.4's half — a backup starts
+ * a timer on a request — was implemented. §4.1's half — the request
+ * actually REACHES enough replicas — was not.
+ *
+ * A non-leader's dnac_spend intake took a pending_forwards slot and
+ * forwarded, and a pending_forwards slot carries NO transaction bytes
+ * (see the struct in this file: active / tx_hash / client_conn /
+ * client_txn_id / started_at). When the leader could not be reached the
+ * slot was released and the WORK WAS DISCARDED. Both halves of the P3
+ * stall predicate (`mempool.count > 0 || pending_forward_count > 0`)
+ * therefore read 0 on the one node a client was actually talking to, so
+ * the stall detector could not see that anybody was waiting. Measured on
+ * the 20-node rehearsal: after block 42 committed, node1 made 44 forward
+ * attempts with 0 successes and "P3 committed tip frozen" fired ZERO
+ * times; no round for height 43 was ever opened by any of the 14 alive
+ * nodes.
+ *
+ * This pools the work LOCALLY, before and independently of the forward,
+ * so the demand survives the forward's failure.
+ *
+ * ── WHY THE ENTRY IS POOLED ORPHANED (client_conn == NULL) ────────────
+ * LOAD-BEARING, not stylistic. nodus_witness_peer_conn_closed runs for
+ * CLIENT connections too: it clears pending_forwards by client_conn and
+ * then calls nodus_witness_mempool_remove_by_conn, which matches
+ * `entries[i]->client_conn == conn` and early-returns on a NULL conn. An
+ * entry pooled with the LIVE client conn would therefore be deleted the
+ * moment the CLI disconnects — one step after this function ran — and the
+ * fix would undo itself. The orphan shape (client_conn NULL,
+ * is_forwarded, forwarder_id) is exactly the one
+ * nodus_witness_peer_handle_fwd_req already uses for forwarded entries,
+ * so nothing downstream sees a new kind of entry. `forwarder_id` is OUR
+ * id because we are the node holding the client connection: whichever
+ * node ends up committing this answers w_fwd_rsp to us.
+ *
+ * ── SUCCESSOR-ONLY, AND THAT IS AN ARGUMENT, NOT CONSISTENCY ──────────
+ * On a LEGACY chain a peer refuses a non-leader w_fwd_req byte-
+ * identically (nodus_witness_peer.c), because legacy forward intake is
+ * STRUCTURAL only — a nullifier walk, no signature verification. Pooled
+ * legacy demand could therefore never recruit the f+1 backers a rotation
+ * needs; it would only drive lone view changes nobody joins. Legacy keeps
+ * today's behaviour exactly, and this function reports NOT_APPLICABLE.
+ *
+ * ── IT ADDS NO AUTHORITY ──────────────────────────────────────────────
+ * The bytes pass the SAME NODUS_WITNESS_VERIFY_ADMISSION gate the leader
+ * runs on a direct client submission and the same one a successor peer
+ * runs on a forward, so nothing unverified reaches the pool.
+ * NODUS_W_MAX_MEMPOOL still bounds it and mempool_add still rejects
+ * duplicates by tx_hash.
+ *
+ * ── DETERMINISM ───────────────────────────────────────────────────────
+ * `current_view` is NOT written here — it has exactly five write sites
+ * (nodus_witness_bft.c round entry, the view-change quorum, the NEW_VIEW
+ * accept, nodus_witness_peer.c IDENT adoption, nodus_witness_db.c
+ * restore) and this adds none. Mempool content is per-node INPUT, not
+ * consensus state: block content is still chosen by ONE leader and agreed
+ * by PREVOTE/PRECOMMIT with an independent state_root recompute, so two
+ * nodes holding different pools cannot diverge state. No wire format, no
+ * protocol version, no schema change. Reads only the entry bytes and this
+ * node's own committed DB; no clock branch, no randomness.
+ *
+ * ── LIFECYCLE OF WHAT IT POOLS ────────────────────────────────────────
+ * Orphaned entries are unreachable by remove_by_conn BY DESIGN, so the
+ * O15I P3(c) reaper (nodus_witness_mempool_evict_committed) is what
+ * removes them once the chain decides them — through the committed-
+ * nullifier walk for a class-201 claim (whose nullifier is re-derived
+ * below for exactly that reason) and through
+ * nodus_witness_v2_entry_is_decided for a class-200 envelope.
+ *
+ * @param witness         witness context.
+ * @param tx_data         submitted entry bytes (borrowed; copied on pool).
+ * @param tx_len          length of tx_data.
+ * @param tx_hash         client-supplied 64-byte tx_hash (the pool key).
+ * @param tx_type         byte-derived entry class (200 / 201 on a
+ *                        successor — nodus_witness_v2_classify_entry).
+ * @param nullifiers      concatenated legacy nullifiers, or NULL.
+ * @param nullifier_count number of legacy nullifiers (0 on a successor).
+ * @param client_pk       client Dilithium5 pubkey, or NULL. IGNORED by
+ *                        the successor admission lane
+ *                        (nodus_witness_verify.c casts it to void), but
+ *                        carried onto the entry so the commit path can
+ *                        answer, exactly as the leader branch does.
+ * @param client_sig      client signature, or NULL. Same treatment.
+ * @param fee             declared fee.
+ * @param reject_reason   [out] filled on return -2; may be NULL.
+ * @param reason_size     size of reject_reason.
+ * @return  0  pooled now — this node's demand is visible.
+ *          1  ALREADY held (duplicate tx_hash). Also visible: this is a
+ *             client retry for work we are already carrying, which is why
+ *             it is not an error. Answered by an explicit tx_hash
+ *             pre-check rather than by letting the retry fall through to
+ *             mempool_add, because the two successor entry classes refuse
+ *             a retry in DIFFERENT places: the ENVELOPE lane reaches
+ *             mempool_add's tx_hash dedup, while the CLAIM lane is caught
+ *             earlier by admission's own ADMISSION-mode pending-mempool
+ *             check, which keys on the claim NULLIFIER
+ *             (nodus_witness_verify.c). Without the pre-check a retrying
+ *             claim client would be told its work was not queued when it
+ *             is.
+ *         -1  NOT APPLICABLE — legacy chain. Nothing pooled, by design.
+ *         -2  admission refused (reject_reason filled).
+ *         -3  admission refused: nullifier already spent (double-spend).
+ *         -4  could not pool: allocation failed, pool full, or the
+ *             class-201 nullifier re-derivation failed (fail-closed —
+ *             a 201 entry is NEVER enqueued with nullifier_count 0,
+ *             because batch dedup and the P3(c) reaper both key on it).
+ */
+int nodus_witness_pool_local_demand(nodus_witness_t *witness,
+                                      const uint8_t *tx_data, uint32_t tx_len,
+                                      const uint8_t *tx_hash, uint8_t tx_type,
+                                      const uint8_t *nullifiers,
+                                      uint8_t nullifier_count,
+                                      const uint8_t *client_pk,
+                                      const uint8_t *client_sig,
+                                      uint64_t fee,
+                                      char *reject_reason, size_t reason_size);
+
+/**
  * O15I V1 — can this mempool entry still be included in a block?
  *
  * THE FIVE ANSWERS ARE NOT COLLAPSIBLE. Three of them mean "this entry

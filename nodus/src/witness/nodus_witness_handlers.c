@@ -1728,6 +1728,167 @@ static void handle_dnac_delegations(nodus_witness_t *w,
 }
 
 /* ════════════════════════════════════════════════════════════════════
+ * O15J A — POOL-THEN-FORWARD
+ *
+ * The full contract, the PBFT §4.1 citation and the determinism argument
+ * live on the declaration in witness/nodus_witness.h. What follows is why
+ * the CODE is shaped this way.
+ *
+ * IT IS THE LEADER BRANCH'S CONSTRUCTION, not a second one. The admission
+ * call, the class-201 nullifier re-derivation and the entry fill below are
+ * the same steps handle_dnac_spend's leader branch performs; only the
+ * three routing fields differ, and they differ deliberately — see the
+ * ORPHAN block. A second, subtly different construction is exactly how the
+ * pooled shape would drift away from what the commit path expects.
+ * ════════════════════════════════════════════════════════════════════ */
+
+int nodus_witness_pool_local_demand(nodus_witness_t *w,
+                                      const uint8_t *tx_data, uint32_t tx_len,
+                                      const uint8_t *tx_hash, uint8_t tx_type,
+                                      const uint8_t *nullifiers,
+                                      uint8_t nullifier_count,
+                                      const uint8_t *client_pk,
+                                      const uint8_t *client_sig,
+                                      uint64_t fee,
+                                      char *reject_reason, size_t reason_size) {
+    if (!w || !tx_data || tx_len == 0 || !tx_hash) {
+        if (reject_reason && reason_size)
+            snprintf(reject_reason, reason_size, "null parameter");
+        return -2;
+    }
+
+    /* SUCCESSOR ONLY. A legacy peer refuses a non-leader forward
+     * byte-identically (nodus_witness_peer.c), so legacy demand pooled
+     * here could never recruit the f+1 backers a rotation needs — it
+     * would drive lone view changes nobody joins. Legacy is left exactly
+     * as it was found. */
+    if (!w->v2_successor) return -1;
+
+    /* ── ALREADY OURS? ────────────────────────────────────────────────
+     * Asked FIRST, on the same tx_hash key nodus_witness_mempool_add
+     * dedups on, and it is not merely an optimisation.
+     *
+     * ⚠ THE DISPATCH'S ASSUMPTION DOES NOT HOLD FOR EVERY ENTRY CLASS.
+     * "A client retry meets mempool_add's duplicate rejection" is true
+     * only on the ENVELOPE lane. For a class-201 CLAIM the successor
+     * admission lane has its OWN pending-mempool dedup, in ADMISSION mode
+     * only, keyed on the claim NULLIFIER rather than on tx_hash
+     * (nodus_witness_verify.c, "claim nullifier already pending in
+     * mempool") — so a retry is refused THERE and never reaches
+     * mempool_add at all. Without this pre-check the two classes would
+     * answer a retry differently: 1 (already held) for an envelope, -2
+     * (admission refused) for a claim, and O15J B would then tell a
+     * retrying claim client that its work was NOT queued when it is.
+     *
+     * It also removes real work: a client retrying in a loop during a
+     * stall would otherwise re-run the full claim admission — decode,
+     * canonical re-encode, SHA3-512, distribution proof, ML-DSA-87 leaf
+     * verify — on every attempt, for an entry we already hold. */
+    for (int i = 0; i < w->mempool.count; i++) {
+        const nodus_witness_mempool_entry_t *held = w->mempool.entries[i];
+        if (held && memcmp(held->tx_hash, tx_hash,
+                           NODUS_T3_TX_HASH_LEN) == 0)
+            return 1;
+    }
+
+    /* THE SAME ADMISSION GATE the leader branch runs on a direct client
+     * submission, and the same one a successor peer runs on a forward. It
+     * is what keeps this from widening any trust boundary: nothing
+     * unverified ever reaches a follower's pool. On a successor the lane
+     * ignores pk/sig/fee/nullifiers by contract
+     * (nodus_witness_verify.c), so this node's verdict on these bytes is
+     * identical to the one every other successor node reaches. */
+    char local_reason[256] = {0};
+    int vrc = nodus_witness_verify_transaction(w, tx_data, tx_len,
+                  tx_hash, tx_type,
+                  nullifiers, nullifier_count,
+                  client_pk, client_sig, fee,
+                  NODUS_WITNESS_VERIFY_ADMISSION,
+                  local_reason, sizeof(local_reason));
+    if (vrc != 0) {
+        if (reject_reason && reason_size)
+            snprintf(reject_reason, reason_size, "%s", local_reason);
+        return (vrc == -2) ? -3 : -2;
+    }
+
+    nodus_witness_mempool_entry_t *entry = calloc(1, sizeof(*entry));
+    if (!entry) return -4;
+
+    memcpy(entry->tx_hash, tx_hash, NODUS_T3_TX_HASH_LEN);
+    entry->nullifier_count = nullifier_count;
+    for (int i = 0; i < nullifier_count; i++)
+        memcpy(entry->nullifiers[i], nullifiers + (size_t)i * NODUS_T3_NULLIFIER_LEN,
+               NODUS_T3_NULLIFIER_LEN);
+    entry->tx_type = tx_type;
+    entry->tx_data = malloc(tx_len);
+    if (!entry->tx_data) {
+        free(entry);
+        return -4;
+    }
+    memcpy(entry->tx_data, tx_data, tx_len);
+    entry->tx_len = tx_len;
+
+    /* O15F Task 3 — record the CLAIM's committed nullifier, the same
+     * re-derivation the leader branch and the forward intake both do.
+     * WITHOUT IT THIS WHOLE CHANGE WOULD LEAK: a 201 pooled with
+     * nullifier_count == 0 is invisible to the P3(c) reaper's nullifier
+     * walk AND unjudgeable by nodus_witness_v2_entry_verdict (whose class
+     * gate answers UNJUDGED for everything that is not a class-200
+     * envelope), so nothing could ever remove it once the chain committed
+     * it — the O15I V1 shape, re-entering through a new door. Fail-closed:
+     * a derivation failure pools nothing at all. */
+    if (tx_type == NODUS_W_TX_V2_CLAIM) {
+        if (nodus_witness_v2_claim_entry_nullifier(w, entry->tx_data,
+                entry->tx_len, entry->nullifiers[0]) != 0) {
+            nodus_witness_mempool_entry_free(entry);
+            return -4;
+        }
+        entry->nullifier_count = 1;
+    }
+
+    if (client_pk)
+        memcpy(entry->client_pubkey, client_pk, NODUS_PK_BYTES);
+    if (client_sig)
+        memcpy(entry->client_sig, client_sig, NODUS_SIG_BYTES);
+    entry->fee = fee;
+
+    /* ── THE ORPHAN SHAPE — the three fields that are not the leader's ──
+     * client_conn = NULL is what makes the entry SURVIVE the client
+     * disconnect this function exists to outlive.
+     * nodus_witness_peer_conn_closed runs for client connections and calls
+     * nodus_witness_mempool_remove_by_conn, which matches
+     * `client_conn == conn` and early-returns on a NULL conn. Pooling with
+     * the live conn would have the CLI's disconnect delete this entry one
+     * step after we created it, and the demand would vanish again.
+     *
+     * is_forwarded + forwarder_id = OUR id: this is the routing the commit
+     * path already understands (bft_emit_batch_replies answers
+     * forwarder_id), and WE are the node holding the client connection, so
+     * a w_fwd_rsp from whichever node commits this comes back here. It is
+     * byte-identically the shape nodus_witness_peer_handle_fwd_req pools
+     * a forwarded entry in, so nothing downstream meets a new kind of
+     * entry. */
+    entry->client_conn  = NULL;
+    entry->client_txn_id = 0;
+    entry->is_forwarded = true;
+    memcpy(entry->forwarder_id, w->my_id, NODUS_T3_WITNESS_ID_LEN);
+
+    int rc = nodus_witness_mempool_add(&w->mempool, entry);
+    if (rc == -2) {
+        /* A client retry for work we are ALREADY carrying. The demand is
+         * visible either way, so this is not a failure — it is the
+         * duplicate rejection doing its job. */
+        nodus_witness_mempool_entry_free(entry);
+        return 1;
+    }
+    if (rc != 0) {
+        nodus_witness_mempool_entry_free(entry);
+        return -4;
+    }
+    return 0;
+}
+
+/* ════════════════════════════════════════════════════════════════════
  * dnac_spend — Submit TX for BFT consensus
  *
  * Request:  "a": {"tx":bstr, "hash":bstr(64), "pk":bstr(2592),
@@ -2050,6 +2211,59 @@ static void handle_dnac_spend(nodus_witness_t *w,
     } else {
         fprintf(stderr, "%s: dnac_spend — forwarding to leader\n", LOG_TAG);
 
+        /* ── O15J A — POOL, THEN FORWARD ──────────────────────────────
+         *
+         * BEFORE the forward and INDEPENDENTLY of whether it succeeds.
+         * Full rationale + the PBFT §4.1 citation: the contract on
+         * nodus_witness_pool_local_demand in witness/nodus_witness.h.
+         *
+         * THE ORDERING IS LOAD-BEARING, and not only for the
+         * !leader_conn exit below. EVERY early return between here and
+         * the send is a path that used to DISCARD the client's work: the
+         * pending_forwards table being full, "no leader available", the
+         * empty roster, the encode failure, the send failure. Pooling
+         * first makes the demand visible on all of them.
+         *
+         * ON EVERY NON-LEADER INTAKE, not only when the leader is
+         * unreachable. A leader whose TCP is alive but whose witness is
+         * WEDGED accepts the forward and never proposes — that is the
+         * trapped-validator shape the 20-node rehearsal actually
+         * produced (three validators at DB tip 42 with
+         * round_state.block_height frozen at 36, rejecting every
+         * PROPOSE), and a `!leader_conn`-only pool would miss it
+         * entirely.
+         *
+         * AN ADMISSION REFUSAL DOES NOT STOP THE FORWARD. This node may
+         * simply be behind: converting a follower's local verdict into a
+         * client-visible rejection would refuse transactions the LEADER
+         * would have accepted. The leader stays the authority for the
+         * client's answer; all that is lost is our local copy. */
+        char pool_reason[256] = {0};
+        int pool_rc = nodus_witness_pool_local_demand(w, tx_data,
+                          (uint32_t)tx_len, tx_hash, tx_type,
+                          (const uint8_t *)nullifiers, nullifier_count,
+                          client_pk, client_sig, fee,
+                          pool_reason, sizeof(pool_reason));
+        bool pooled_locally = (pool_rc >= 0);
+        if (pool_rc == 0)
+            fprintf(stderr, "%s: pooled the client's entry locally before "
+                    "forwarding — a dead or wedged leader is no longer the "
+                    "only node that knows a client is waiting "
+                    "(mempool=%d)\n", LOG_TAG, w->mempool.count);
+        else if (pool_rc == 1)
+            fprintf(stderr, "%s: client retry for an entry we already hold "
+                    "(mempool=%d)\n", LOG_TAG, w->mempool.count);
+        else if (pool_rc == -2 || pool_rc == -3)
+            fprintf(stderr, "%s: not pooled locally (admission: %s) — "
+                    "forwarding anyway; the leader is the authority for "
+                    "the client's answer\n", LOG_TAG,
+                    pool_rc == -3 ? "nullifier already spent" : pool_reason);
+        else if (pool_rc == -4)
+            fprintf(stderr, "%s: not pooled locally (pool full or "
+                    "allocation failed) — forwarding anyway\n", LOG_TAG);
+        /* pool_rc == -1 is the LEGACY lane: nothing pooled, by design,
+         * and deliberately silent so legacy logs stay byte-identical. */
+
         /* Find a free pending_forward slot */
         int pf_slot = -1;
         for (int i = 0; i < NODUS_W_MAX_PENDING_FWD; i++) {
@@ -2194,8 +2408,30 @@ static void handle_dnac_spend(nodus_witness_t *w,
         }
 
         if (!leader_conn) {
+            /* O15J B — the CLIENT'S ANSWER on the unreachable-leader
+             * path. The work is no longer discarded here (it was pooled
+             * above), so the message that says it was is now false. The
+             * ERROR CODE IS DELIBERATELY UNCHANGED: NODUS_ERR_* is wire
+             * surface, every deployed client maps these numerically, and
+             * a new code would be a breaking change for a message-only
+             * improvement. Only the human-readable text differs.
+             *
+             * CONDITIONAL ON HAVING ACTUALLY POOLED — on a legacy chain
+             * nothing was, and claiming otherwise would be telling the
+             * client something untrue.
+             *
+             * The client is answered IMMEDIATELY rather than left on the
+             * 30 s pending_forwards timeout: the slot is released on this
+             * path, so nothing would ever answer it. A retry while the
+             * entry sits in our pool meets the ordinary duplicate
+             * rejection in nodus_witness_mempool_add, which is correct
+             * and needs no special case. */
             send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
-                        "leader not connected");
+                        pooled_locally
+                          ? "leader not reachable — request accepted and "
+                            "queued on this node; it will be proposed once "
+                            "the cluster elects a reachable leader"
+                          : "leader not connected");
             w->pending_forwards[pf_slot].active = false;
             w->pending_forward_count--;
             return;

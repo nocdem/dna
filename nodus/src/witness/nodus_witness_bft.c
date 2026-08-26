@@ -7907,7 +7907,51 @@ static void bft_emit_batch_replies(nodus_witness_t *w, int status,
     round_state_free_batch(&w->round_state);
 }
 
-/* ── O15I P3 — the demand-armed follower deadman's two helpers ─────── */
+/* ── O15I P3 — the demand-armed follower deadman's helpers ─────────── */
+
+/**
+ * O15J C — THE per-entry question, in ONE place: can this entry still be
+ * included in a block?
+ *
+ * BOTH P3 helpers below need it. P3(a) asks it to decide whether anything
+ * is worth rotating the view for; P3(b) asks it to decide what is worth
+ * putting on the wire. A second open-coded copy is exactly how the two
+ * would fall out of step — the same drift nodus_witness.h warns about for
+ * the reaper and the demand predicate, which is why that pair shares
+ * nodus_witness_v2_entry_is_decided rather than each listing the verdicts.
+ *
+ * THE RULE IS UNCHANGED from what bft_p3_live_demand applied inline; only
+ * its location moved:
+ *   - nullifier_count == 0 (the successor class-200 envelope shape, and a
+ *     legacy entry with no inputs): the O15I V1 verdict, collapsed through
+ *     the SHARED nodus_witness_v2_entry_is_decided the reaper also uses;
+ *   - otherwise: the committed-nullifier walk, the identical test batch
+ *     selection applies before proposing.
+ *
+ * It is deliberately NOT the reaper's two-step (nullifiers, THEN verdict
+ * as a second opinion). Widening it here would change P3(a)'s firing
+ * behaviour, which is not what O15J is about; the reaper stays the more
+ * thorough of the two and is the one that actually deletes.
+ *
+ * Deterministic and node-local: entry bytes plus this node's own committed
+ * state, no clock and no message. FAIL-CLOSED in the KEEP direction —
+ * anything this node cannot judge answers false ("still live"), which for
+ * a liveness trigger is the conservative side.
+ */
+static bool bft_p3_entry_finished(nodus_witness_t *w,
+                                  const nodus_witness_mempool_entry_t *e) {
+    if (!e) return true;            /* nothing to include, nothing to send */
+
+    if (e->nullifier_count == 0)
+        return nodus_witness_v2_entry_is_decided(
+                   nodus_witness_v2_entry_verdict(w, e->tx_data, e->tx_len));
+
+    for (int j = 0; j < e->nullifier_count; j++) {
+        if (nodus_witness_nullifier_exists(w, e->nullifiers[j]))
+            return true;
+    }
+    return false;
+}
 
 /**
  * P3(a) — is there demand this node could still be waiting on?
@@ -7956,6 +8000,20 @@ static void bft_emit_batch_replies(nodus_witness_t *w, int status,
  * waiting on an answer this node cannot produce, and the forward slot
  * retains no transaction bytes to judge (nodus_witness.h — it carries
  * tx_hash and routing only).
+ *
+ * ⚠ O15J C — THE PER-ENTRY RULE EVERYTHING ABOVE DESCRIBES NOW LIVES IN
+ * bft_p3_entry_finished, unchanged, because P3(b) needs the identical
+ * question answered and a second copy would drift. What stays here is
+ * this function's OWN two rules: the pending-forward short-circuit, and
+ * "one live entry is enough".
+ *
+ * ⚠ AND NOTE WHAT O15J A CHANGED ABOUT THE INPUT, not about this code: a
+ * non-leader now POOLS the client's entry before forwarding
+ * (nodus_witness_pool_local_demand), so on the node a client is actually
+ * talking to `mempool.count` is no longer 0 while a pending_forwards slot
+ * carries the only trace of the request. That is the whole point — this
+ * predicate could not see a waiting client before, because neither half
+ * of its input existed once the forward failed.
  */
 static bool bft_p3_live_demand(nodus_witness_t *w) {
     if (w->pending_forward_count > 0) return true;
@@ -7963,21 +8021,9 @@ static bool bft_p3_live_demand(nodus_witness_t *w) {
     for (int i = 0; i < w->mempool.count; i++) {
         const nodus_witness_mempool_entry_t *e = w->mempool.entries[i];
         if (!e) continue;
-        if (e->nullifier_count == 0) {
-            if (nodus_witness_v2_entry_is_decided(
-                    nodus_witness_v2_entry_verdict(w, e->tx_data, e->tx_len)))
-                continue;              /* finished — not demand */
-            return true;
-        }
-
-        bool decided = false;
-        for (int j = 0; j < e->nullifier_count; j++) {
-            if (nodus_witness_nullifier_exists(w, e->nullifiers[j])) {
-                decided = true;
-                break;
-            }
-        }
-        if (!decided) return true;
+        /* The first live entry short-circuits, exactly as before — which
+         * is what bounds the class-200 derivation cost documented above. */
+        if (!bft_p3_entry_finished(w, e)) return true;
     }
     return false;
 }
@@ -8028,6 +8074,21 @@ static bool bft_p3_live_demand(nodus_witness_t *w) {
  * unclaimed slot 30 s later. The pre-P3 behaviour for the same client
  * was that the transaction never committed at all, so this is strictly
  * better for the chain and no worse for the client.
+ *
+ * ⚠ O15J A ADDS A THIRD KIND, and the same residual covers it — stated
+ * rather than discovered later. A non-leader now pools the client's entry
+ * itself (nodus_witness_pool_local_demand), ORPHANED: client_conn NULL,
+ * is_forwarded true, forwarder_id = OUR id. So the branch below carries
+ * our id, which is correct — we are the node that held the client
+ * connection. But that client was ALREADY answered synchronously at
+ * intake (the O15J B message on the unreachable-leader path, or a
+ * w_fwd_rsp routed through a pending_forwards slot on the ordinary path),
+ * and the slot was released either way. If a remote leader later commits
+ * this entry, its w_fwd_rsp therefore finds no slot and is logged and
+ * dropped, exactly as above. That is the intended shape: the client's
+ * receipt is its retry against the committed chain, and the alternative —
+ * a slot pinned open across a whole view change — is the spurious-timeout
+ * failure the paragraph above rejects.
  */
 static void bft_p3_broadcast_demand(nodus_witness_t *w) {
     if (!w->v2_successor) return;
@@ -8039,9 +8100,32 @@ static void bft_p3_broadcast_demand(nodus_witness_t *w) {
      * hoisting it out of the loop keeps that property here too. */
     nodus_t3_msg_t fwd;
     int sent = 0;
+    int skipped = 0;
     for (int i = 0; i < w->mempool.count; i++) {
         nodus_witness_mempool_entry_t *e = w->mempool.entries[i];
         if (!e || !e->tx_data || e->tx_len == 0) continue;
+
+        /* O15J C — DO NOT DISSEMINATE WHAT THE CHAIN HAS ALREADY
+         * DECIDED, judged by the SAME per-entry rule bft_p3_live_demand
+         * applies (bft_p3_entry_finished — the committed-nullifier walk,
+         * or the O15I V1 verdict for a zero-nullifier entry).
+         *
+         * This is a HONESTY fix, not a safety one, and it is worth saying
+         * which: every recipient already refuses these at its own
+         * admission gate, so the pre-existing behaviour was WASTE rather
+         * than danger. But it was waste with a misleading shape — a
+         * follower whose pool had settled would emit n-1 copies of
+         * finished work at every fire, and the quiet-chain traffic story
+         * has to match what the code does.
+         *
+         * The cost is bounded the same way live_demand's is: this runs
+         * ONLY at the would-fire point, at most once per
+         * round_timeout_ms. Unlike live_demand it does not short-circuit
+         * on the first live entry, so the worst case is one verdict
+         * derivation per pooled class-200 entry — the same bound
+         * nodus_witness_mempool_evict_committed already accepts, and the
+         * loop was already doing NODUS_W_MAX_MEMPOOL broadcasts. */
+        if (bft_p3_entry_finished(w, e)) { skipped++; continue; }
 
         memset(&fwd, 0, sizeof(fwd));
         fwd.type = NODUS_T3_FWD_REQ;
@@ -8063,10 +8147,11 @@ static void bft_p3_broadcast_demand(nodus_witness_t *w) {
             sent++;
     }
 
-    if (sent > 0)
+    if (sent > 0 || skipped > 0)
         fprintf(stderr, "%s: P3 re-broadcast %d/%d mempool entries to the "
-                "peer set — the dead leader is not the only node that may "
-                "hold this work\n", LOG_TAG, sent, w->mempool.count);
+                "peer set (%d already decided, not sent) — the dead leader "
+                "is not the only node that may hold this work\n",
+                LOG_TAG, sent, w->mempool.count, skipped);
 }
 
 void nodus_witness_bft_check_timeout(nodus_witness_t *w) {

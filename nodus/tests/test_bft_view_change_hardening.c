@@ -111,7 +111,9 @@
 #include "witness/nodus_witness_committee.h"
 #include "witness/nodus_witness_db.h"   /* §11 — block_add / block_height,
                                          * §13 — nullifier_add / _exists   */
-#include "witness/nodus_witness_peer.h" /* §13 — handle_fwd_req            */
+#include "witness/nodus_witness_peer.h" /* §13 — handle_fwd_req,
+                                         * §14b — peer_conn_closed         */
+#include "witness/nodus_witness_handlers.h" /* §14a — handle_dnac          */
 #include "witness/nodus_witness_v2_gate.h" /* §13e2 — ingress_is_armed     */
 #include "witness/nodus_witness_vset.h"
 /* §13e3 — the successor-chain fixture (test_v2_claim_ingress.c's shape). */
@@ -128,6 +130,7 @@
 #include "witness/nodus_witness_v2_produce.h"
 #include "nodus/nodus_chain_config.h"
 #include "protocol/nodus_tier3.h"
+#include "protocol/nodus_cbor.h"  /* §14a — the dnac_spend request encoder */
 #include "crypto/nodus_sign.h"
 #include "nodus/nodus_types.h"
 
@@ -921,6 +924,59 @@ static uint8_t *p3c_encode_claim(const dna_claim_t *c, size_t *out_len,
     if (qgp_sha3_512(b, wr, hash) != 0) p3c_die("claim wire hash");
     *out_len = wr;
     return b;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+ * §14 helpers — O15J A, driving the REAL dnac_spend entry point.
+ *
+ * WHY THE PRODUCTION ENTRY POINT AND NOT JUST THE HELPER. A §14 that
+ * only called nodus_witness_pool_local_demand would still pass with the
+ * call site DELETED from handle_dnac_spend's non-leader branch — the
+ * change would be entirely inert and every assertion would stay green.
+ * §14a therefore builds a real CBOR dnac_spend request and dispatches it
+ * through nodus_witness_handle_dnac.
+ * ═══════════════════════════════════════════════════════════════════ */
+
+/* ⚠ ZEROED ON PURPOSE, and this is a safety property, not laziness.
+ * nodus_conn_state_t has NODUS_CONN_CLOSED == 0
+ * (src/transport/nodus_tcp.h), and nodus_tcp_send_progress returns -1 on
+ * a CLOSED conn BEFORE it touches conn->fd. So every send_error the
+ * handler emits on this conn — including the O15J B "leader not
+ * reachable" answer — is a safe no-op, and a zeroed fd is never written
+ * to. `auth_required` is 0 too, so nodus_tcp_send takes no queueing
+ * branch either.
+ *
+ * Its OTHER job is pointer identity: §14b needs one conn value that both
+ * a control mempool entry and nodus_witness_peer_conn_closed can name. */
+static nodus_tcp_conn_t o15j_fake_conn;
+
+/* A real dnac_spend T2 request body: {"a": {"tx":bstr,"hash":bstr,"fee":u}}.
+ * The shape is handle_dnac_spend's own (see its header comment); "pk" and
+ * "sig" are omitted because the SUCCESSOR admission lane casts both to
+ * void (nodus_witness_verify.c), so a successor request that carries them
+ * and one that does not are judged identically. Caller owns the buffer. */
+static uint8_t *o15j_spend_payload(const uint8_t *tx, size_t tx_len,
+                                   const uint8_t hash[NODUS_T3_TX_HASH_LEN],
+                                   uint64_t fee, size_t *out_len) {
+    size_t cap = tx_len + 1024;
+    uint8_t *buf = malloc(cap);
+    if (!buf) { fprintf(stderr, "o15j payload alloc\n"); exit(1); }
+
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    cbor_encode_map(&enc, 1);
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 3);
+    cbor_encode_cstr(&enc, "tx");
+    cbor_encode_bstr(&enc, tx, tx_len);
+    cbor_encode_cstr(&enc, "hash");
+    cbor_encode_bstr(&enc, hash, NODUS_T3_TX_HASH_LEN);
+    cbor_encode_cstr(&enc, "fee");
+    cbor_encode_uint(&enc, fee);
+
+    *out_len = cbor_encoder_len(&enc);
+    if (*out_len == 0) { fprintf(stderr, "o15j payload encode\n"); exit(1); }
+    return buf;
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -3513,6 +3569,552 @@ int main(void) {
 
         free(eexp.bytes);
         free(elive.bytes);
+        free(cx);
+        nodus_witness_mempool_clear(&w->mempool);
+        chain_db_drop(w, dir);
+    }
+
+    /* ── §14 O15J A — POOL-THEN-FORWARD ───────────────────────────────
+     *
+     * THE DEFECT. §13 built the whole P3 deadman on the predicate
+     * `mempool.count > 0 || pending_forward_count > 0`. On the ONE node a
+     * client is actually talking to, BOTH halves read zero: the
+     * non-leader intake took a pending_forwards slot (which carries no
+     * transaction bytes — see the struct in nodus_witness.h) and, when the
+     * leader could not be reached, RELEASED the slot and discarded the
+     * work. Measured on the 20-node rehearsal: after block 42 committed,
+     * node1 made 44 forward attempts with 0 successes and "P3 committed
+     * tip frozen" fired ZERO times; no round for height 43 was ever opened
+     * by any of the 14 alive nodes.
+     *
+     * This is PBFT's own client protocol, half-implemented. §4.4's "a
+     * backup starts a timer on a request" was there; §4.1's "the request
+     * reaches enough replicas" was not.
+     *
+     * WHY THE SECTIONS ARE SHAPED THIS WAY. §14a drives the REAL
+     * production entry point (nodus_witness_handle_dnac with a CBOR
+     * dnac_spend payload) rather than the pooling helper, because a
+     * helper-only test would still pass with the call site DELETED — the
+     * season's recurring vacuity. §14b is the discriminating one for the
+     * ORPHAN shape. ─────────────────────────────────────────────────── */
+
+    /* ── §14a — the CALL SITE: a non-leader intake pools, orphaned ─────
+     *
+     * The fake conn is ZEROED on purpose: nodus_conn_state_t has
+     * NODUS_CONN_CLOSED == 0, and nodus_tcp_send_progress returns -1 on a
+     * CLOSED conn BEFORE it touches the fd, so every send_error on this
+     * path is a safe no-op and no byte is ever written to fd 0.
+     *
+     * The fixture has peer_count == 0, so the leader-conn lookup finds
+     * nothing and the intake takes the O15J B "leader not reachable"
+     * exit — the exact path that used to discard the work. ─────────── */
+    printf("§14a O15J A — a successor NON-LEADER pools the client's entry "
+           "before forwarding, and keeps it when the forward fails\n");
+    {
+        peer_t p[6];
+        for (int i = 0; i < 6; i++) peer_make(&p[i]);
+        nodus_witness_t *w = fixture(&self, p, 6, 3, 15000, 10000);
+        char dir[] = "/tmp/test_bft_o15j_call_XXXXXX";
+        chain_db_open(w, dir, 0x41);
+
+        peer_t all[7];
+        all[0] = self;
+        for (int i = 0; i < 6; i++) all[i + 1] = p[i];
+
+        p3c_chain_t *cx = calloc(1, sizeof(*cx));   /* ~25 KB — heap */
+        if (!cx) { fprintf(stderr, "o15j chain alloc\n"); exit(1); }
+        p3c_make_successor(w, all, 7, cx);
+
+        CHECK(w->v2_successor, "the chain is a committed V2 SUCCESSOR");
+        CHECK(nodus_witness_v2_ingress_is_armed(w) == 1,
+              "and its ingress is ARMED, so admission really runs — a "
+              "closed gate would refuse everything and the pool would stay "
+              "empty for a reason that has nothing to do with O15J");
+
+        dna_claim_t *c = p3c_make_claim(cx, 0);
+        size_t clen = 0;
+        uint8_t chash[64];
+        uint8_t *cbytes = p3c_encode_claim(c, &clen, chash);
+
+        uint8_t want_nul[64];
+        p3c_claim_nullifier(c, want_nul);
+
+        size_t plen = 0;
+        uint8_t *pl = o15j_spend_payload(cbytes, clen, chash, 0, &plen);
+
+        w->current_view = p2_pick_view(w, false);
+        CHECK(!nodus_witness_bft_is_leader(w),
+              "we are NOT the leader — this is the branch that used to "
+              "forward-and-forget");
+        CHECK(w->mempool.count == 0, "the pool starts EMPTY");
+        CHECK(w->pending_forward_count == 0, "and no forward is pending");
+        CHECK(w->peer_count == 0,
+              "no peer connections exist, so the leader can NOT be reached "
+              "— the discard path, reproduced");
+
+        /* THE PRODUCTION ENTRY POINT, not the helper. */
+        nodus_witness_handle_dnac(w, &o15j_fake_conn, pl, plen,
+                                  "dnac_spend", 4242);
+
+        CHECK(w->mempool.count == 1,
+              "the client's entry is POOLED on the node the client is "
+              "talking to — this is the assertion that fails if the "
+              "nodus_witness_pool_local_demand call is deleted from the "
+              "non-leader branch of handle_dnac_spend");
+        CHECK(w->pending_forward_count == 0,
+              "and the pending_forwards slot was released, exactly as "
+              "before — the forward still failed; what changed is that the "
+              "WORK no longer died with it");
+
+        /* THE ORPHAN SHAPE — see §14b for why each field is this value. */
+        nodus_witness_mempool_entry_t *e0 = w->mempool.entries[0];
+        CHECK(e0->client_conn == NULL,
+              "pooled with NO client connection (the orphan form)");
+        CHECK(e0->is_forwarded,
+              "marked forwarded, so the commit path answers a forwarder id "
+              "rather than a client conn it does not have");
+        CHECK(memcmp(e0->forwarder_id, w->my_id,
+                     NODUS_T3_WITNESS_ID_LEN) == 0,
+              "and the forwarder id is OUR id — we hold the client "
+              "connection, so whichever node commits this answers us");
+        CHECK(e0->tx_type == NODUS_W_TX_V2_CLAIM,
+              "pooled as the byte-classified entry class (201)");
+        CHECK(memcmp(e0->tx_hash, chash, NODUS_T3_TX_HASH_LEN) == 0,
+              "keyed on the submitted tx_hash");
+        CHECK(e0->tx_len == (uint32_t)clen &&
+              memcmp(e0->tx_data, cbytes, clen) == 0,
+              "carrying the transaction BYTES — the thing a "
+              "pending_forwards slot never held, and the reason the stall "
+              "detector could not see this client");
+        CHECK(e0->nullifier_count == 1 &&
+              memcmp(e0->nullifiers[0], want_nul, 64) == 0,
+              "with the committed nullifier consensus derives (O15F) — "
+              "§14e is what this is for");
+
+        /* THE CLIENT RETRY, which is the other half of O15J B. The entry
+         * is already ours, so the tx_hash pre-check answers ALREADY HELD
+         * and nothing is double-pooled. See §14c for why that pre-check
+         * exists rather than falling through to mempool_add: on the CLAIM
+         * lane admission's own pending-mempool dedup fires first, so the
+         * two entry classes would otherwise answer a retry differently. */
+        nodus_witness_handle_dnac(w, &o15j_fake_conn, pl, plen,
+                                  "dnac_spend", 4243);
+        CHECK(w->mempool.count == 1,
+              "a client retry while we hold the entry does not double-pool");
+        CHECK(w->mempool.entries[0] == e0,
+              "and it is the SAME entry object — the retry neither "
+              "replaced nor duplicated the work we are already carrying");
+        CHECK(w->pending_forward_count == 0, "and leaks no forward slot");
+
+        free(pl);
+        free(cbytes);
+        free(c);
+        free(cx);
+        nodus_witness_mempool_clear(&w->mempool);
+        chain_db_drop(w, dir);
+    }
+
+    /* ── §14b — DISCONNECT IMMUNITY: the discriminating section ────────
+     *
+     * THE TRAP THIS PINS. nodus_witness_peer_conn_closed runs for CLIENT
+     * connections, not only peer ones: it clears pending_forwards by
+     * client_conn and then calls nodus_witness_mempool_remove_by_conn.
+     * An entry pooled with the LIVE client conn would therefore be deleted
+     * the moment the CLI disconnects — one step after §14a pooled it — and
+     * the entire fix would silently undo itself while every count-based
+     * assertion above still passed.
+     *
+     * ⚠ BOTH ENTRIES ARE IN THE POOL FOR ONE conn_closed CALL, and that is
+     * what makes this discriminating rather than merely true. The control
+     * entry carries the conn and MUST die; the O15J entry carries NULL and
+     * MUST live. A dead eviction path — a fixture where remove_by_conn
+     * never ran at all — fails on the control half, so "it survived"
+     * cannot pass for the wrong reason. ───────────────────────────────── */
+    printf("§14b O15J A — the pooled entry SURVIVES the client disconnect; "
+           "an entry holding the conn does not\n");
+    {
+        peer_t p[6];
+        for (int i = 0; i < 6; i++) peer_make(&p[i]);
+        nodus_witness_t *w = fixture(&self, p, 6, 3, 15000, 10000);
+        char dir[] = "/tmp/test_bft_o15j_disc_XXXXXX";
+        chain_db_open(w, dir, 0x42);
+
+        peer_t all[7];
+        all[0] = self;
+        for (int i = 0; i < 6; i++) all[i + 1] = p[i];
+
+        p3c_chain_t *cx = calloc(1, sizeof(*cx));
+        if (!cx) { fprintf(stderr, "o15j chain alloc\n"); exit(1); }
+        p3c_make_successor(w, all, 7, cx);
+
+        dna_claim_t *c = p3c_make_claim(cx, 0);
+        size_t clen = 0;
+        uint8_t chash[64];
+        uint8_t *cbytes = p3c_encode_claim(c, &clen, chash);
+
+        w->current_view = p2_pick_view(w, false);
+        CHECK(!nodus_witness_bft_is_leader(w), "we are NOT the leader");
+
+        /* THE CONTROL entry: identical in every way that matters EXCEPT
+         * that it holds the client conn. Fee 500 puts it at the head, so
+         * the survivor below has to be MOVED and the compaction really
+         * runs. */
+        nodus_witness_mempool_entry_t *ctl = p3_mkentry(0xC1, 500, 1);
+        ctl->client_conn = &o15j_fake_conn;
+        p3_pool(w, ctl);
+
+        /* THE O15J entry, pooled the production way. */
+        char why[256] = {0};
+        int prc = nodus_witness_pool_local_demand(w, cbytes, (uint32_t)clen,
+                      chash, NODUS_W_TX_V2_CLAIM, NULL, 0, NULL, NULL, 0,
+                      why, sizeof(why));
+        CHECK(prc == 0, "the admissible claim was pooled");
+        CHECK(w->mempool.count == 2, "both entries are in the pool");
+        CHECK(w->mempool.entries[0]->client_conn == &o15j_fake_conn,
+              "the control entry HOLDS the client conn");
+        CHECK(w->mempool.entries[1]->client_conn == NULL,
+              "the O15J entry holds NULL — this single field is the whole "
+              "difference between the two");
+
+        /* ONE call, both entries exposed to it. */
+        nodus_witness_peer_conn_closed(w, &o15j_fake_conn);
+
+        CHECK(w->mempool.count == 1,
+              "exactly one entry was evicted — so remove_by_conn really "
+              "ran; a dead eviction path would leave both and make the "
+              "survival half below meaningless");
+        CHECK(w->mempool.entries[0]->tx_type == NODUS_W_TX_V2_CLAIM &&
+              memcmp(w->mempool.entries[0]->tx_hash, chash,
+                     NODUS_T3_TX_HASH_LEN) == 0,
+              "and the SURVIVOR is the O15J entry, compacted to the head. "
+              "This is the assertion that fails if the helper pools with "
+              "the live conn instead of NULL — the client's disconnect "
+              "would then delete the demand the stall detector needs");
+        CHECK(w->mempool.entries[1] == NULL, "the vacated slot was cleared");
+
+        /* And the same disconnect a second time changes nothing. */
+        nodus_witness_peer_conn_closed(w, &o15j_fake_conn);
+        CHECK(w->mempool.count == 1,
+              "an orphaned entry is unreachable by conn-based eviction, on "
+              "every call — by design; the O15I P3(c) reaper is what "
+              "removes it, and §14e proves it still does");
+
+        free(cbytes);
+        free(c);
+        free(cx);
+        nodus_witness_mempool_clear(&w->mempool);
+        chain_db_drop(w, dir);
+    }
+
+    /* ── §14c — ADMISSION still gates what a follower will hold ────────
+     *
+     * The property that makes pooling on a non-leader safe at all: the
+     * bytes pass the SAME NODUS_WITNESS_VERIFY_ADMISSION lane a direct
+     * client submission takes, so nothing unverified enters the pool.
+     *
+     * THE POSITIVE CONTROL IS IN THE SAME FIXTURE, deliberately: a
+     * negative alone would also pass for a helper that pools NOTHING,
+     * which is the pre-O15J behaviour. ──────────────────────────────── */
+    printf("§14c O15J A — bytes that fail admission are NOT pooled, while "
+           "admissible bytes in the same fixture are\n");
+    {
+        peer_t p[6];
+        for (int i = 0; i < 6; i++) peer_make(&p[i]);
+        nodus_witness_t *w = fixture(&self, p, 6, 3, 15000, 10000);
+        char dir[] = "/tmp/test_bft_o15j_adm_XXXXXX";
+        chain_db_open(w, dir, 0x43);
+
+        peer_t all[7];
+        all[0] = self;
+        for (int i = 0; i < 6; i++) all[i + 1] = p[i];
+
+        p3c_chain_t *cx = calloc(1, sizeof(*cx));
+        if (!cx) { fprintf(stderr, "o15j chain alloc\n"); exit(1); }
+        p3c_make_successor(w, all, 7, cx);
+
+        CHECK(nodus_witness_v2_ingress_is_armed(w) == 1,
+              "the ingress is ARMED — the refusal below is admission's "
+              "verdict on the bytes, not a closed gate (the §13e2 rule)");
+
+        w->current_view = p2_pick_view(w, false);
+        CHECK(!nodus_witness_bft_is_leader(w), "we are NOT the leader");
+
+        /* Bytes with no V2 wire-family marker. */
+        uint8_t raw[256];
+        memset(raw, 0x5A, sizeof(raw));
+        uint8_t rhash[64];
+        memset(rhash, 0x5B, sizeof(rhash));
+
+        char why[256] = {0};
+        /* Classified the way the production intake classifies it — a
+         * hand-picked tx_type would test a path handle_dnac_spend never
+         * produces. */
+        int rrc = nodus_witness_pool_local_demand(w, raw, (uint32_t)sizeof(raw),
+                      rhash,
+                      nodus_witness_v2_classify_entry(raw, (uint32_t)sizeof(raw)),
+                      NULL, 0, NULL, NULL, 0, why, sizeof(why));
+        CHECK(rrc == -2 || rrc == -3,
+              "admission REFUSED the unverified bytes");
+        CHECK(why[0] != '\0',
+              "with a reason, so the follower's log says why it declined");
+        CHECK(w->mempool.count == 0,
+              "and NOTHING was pooled — this is the assertion that fails "
+              "if the `if (vrc != 0)` admission gate is removed from "
+              "nodus_witness_pool_local_demand");
+
+        /* THE POSITIVE CONTROL — same fixture, same call, real claim. */
+        dna_claim_t *c = p3c_make_claim(cx, 0);
+        size_t clen = 0;
+        uint8_t chash[64];
+        uint8_t *cbytes = p3c_encode_claim(c, &clen, chash);
+
+        CHECK(nodus_witness_pool_local_demand(w, cbytes, (uint32_t)clen,
+                  chash, NODUS_W_TX_V2_CLAIM, NULL, 0, NULL, NULL, 0,
+                  why, sizeof(why)) == 0,
+              "an ADMISSIBLE entry in the same fixture IS pooled — so the "
+              "refusal above came from the bytes, not from a helper that "
+              "never pools anything");
+        CHECK(w->mempool.count == 1, "and it is the only thing in the pool");
+
+        /* ── THE RETRY ANSWER, and a correction to the dispatch's premise.
+         *
+         * "A client retry meets mempool_add's duplicate rejection" holds
+         * on the ENVELOPE lane only. For a class-201 CLAIM the successor
+         * admission lane has its OWN pending-mempool dedup, in ADMISSION
+         * mode, keyed on the claim NULLIFIER rather than on tx_hash
+         * (nodus_witness_verify.c, "claim nullifier already pending in
+         * mempool") — so a retried claim is refused THERE and never
+         * reaches mempool_add. Left alone, an envelope retry would answer
+         * 1 and a claim retry -2, and O15J B would then tell a retrying
+         * claim client its work was NOT queued when it is.
+         *
+         * The tx_hash pre-check at the top of the helper is what makes the
+         * two classes agree. THIS assertion is what fails if it is
+         * removed: the claim below would come back -2, not 1. ────────── */
+        memset(why, 0, sizeof(why));
+        CHECK(nodus_witness_pool_local_demand(w, cbytes, (uint32_t)clen,
+                  chash, NODUS_W_TX_V2_CLAIM, NULL, 0, NULL, NULL, 0,
+                  why, sizeof(why)) == 1,
+              "offering the SAME claim twice reports ALREADY HELD (1), not "
+              "an admission refusal — the work is visible either way, and "
+              "the O15J B client-retry answer depends on this being 1");
+        CHECK(why[0] == '\0',
+              "and no rejection reason was produced — nothing was judged, "
+              "because the pre-check answered before admission ran");
+        CHECK(w->mempool.count == 1, "and did not double-pool");
+
+        free(cbytes);
+        free(c);
+        free(cx);
+        nodus_witness_mempool_clear(&w->mempool);
+        chain_db_drop(w, dir);
+    }
+
+    /* ── §14d — LEGACY is byte-identical to before ─────────────────────
+     *
+     * A legacy peer refuses a non-leader w_fwd_req byte-identically
+     * (nodus_witness_peer.c), because legacy forward intake is STRUCTURAL
+     * only — a nullifier walk, no signature verification. Legacy demand
+     * pooled here could therefore never recruit the f+1 backers a rotation
+     * needs; it would drive lone view changes nobody joins.
+     *
+     * ⚠ THE ASSERTION IS ON THE EXACT CODE, not merely on an empty pool.
+     * -1 is NOT APPLICABLE — the successor gate declined before admission
+     * ran at all. If that gate were deleted, the legacy admission lane
+     * WOULD run on these bytes and answer -2/-3 instead; an
+     * `mempool.count == 0` assertion alone would pass either way and pin
+     * nothing. ─────────────────────────────────────────────────────── */
+    printf("§14d O15J A — a LEGACY chain pools nothing, and declines "
+           "BEFORE admission rather than through it\n");
+    {
+        peer_t p[6];
+        for (int i = 0; i < 6; i++) peer_make(&p[i]);
+        nodus_witness_t *w = fixture(&self, p, 6, 3, 15000, 10000);
+        char dir[] = "/tmp/test_bft_o15j_legacy_XXXXXX";
+        chain_db_open(w, dir, 0x44);
+
+        uint64_t tip = seed_blocks(w, 3);
+        CHECK(tip == 3, "seeded chain tip is 3 (see §13a)");
+        CHECK(!w->v2_successor,
+              "this fixture is a LEGACY chain — the lane O15J must leave "
+              "exactly as it found it");
+
+        /* §13e's structurally valid legacy SPEND. */
+        uint8_t ltx[DNAC_TX_HEADER_SIZE + 1 + 136];
+        memset(ltx, 0, sizeof(ltx));
+        ltx[1] = NODUS_W_TX_SPEND;
+        ltx[DNAC_TX_HEADER_SIZE] = 1;                  /* input_count */
+        memset(ltx + DNAC_TX_HEADER_SIZE + 1, 0x7E, NODUS_T3_NULLIFIER_LEN);
+
+        uint8_t lhash[NODUS_T3_TX_HASH_LEN];
+        memset(lhash, 0x7F, sizeof(lhash));
+        uint8_t lnul[NODUS_T3_NULLIFIER_LEN];
+        memset(lnul, 0x7E, sizeof(lnul));
+
+        w->current_view = p2_pick_view(w, false);
+        CHECK(!nodus_witness_bft_is_leader(w), "we are NOT the leader");
+
+        char why[256] = {0};
+        int lrc = nodus_witness_pool_local_demand(w, ltx, (uint32_t)sizeof(ltx),
+                      lhash, NODUS_W_TX_SPEND, lnul, 1, NULL, NULL, 1000,
+                      why, sizeof(why));
+        CHECK(lrc == -1,
+              "the answer is exactly NOT APPLICABLE (-1): the successor "
+              "gate declined. A -2/-3 here would mean the gate was gone "
+              "and the LEGACY admission lane had run instead");
+        CHECK(w->mempool.count == 0, "and a legacy follower pooled nothing");
+        CHECK(why[0] == '\0',
+              "with no rejection reason — nothing was judged, so nothing "
+              "is reported; legacy logs stay as they were");
+
+        /* The successor gate lives in exactly ONE place — this helper — so
+         * the call site in handle_dnac_spend cannot drift away from it. */
+        chain_db_drop(w, dir);
+    }
+
+    /* ── §14e — (B) SILENCE: the verdict machinery still governs the
+     *            newly pooled entries ────────────────────────────────
+     *
+     * THE DOOR O15I V1 CLOSED, RE-OPENED FROM A NEW SIDE. O15J pools a
+     * class-201 CLAIM on a follower, and a claim's verdict is UNJUDGED by
+     * construction (nodus_witness_v2_entry_verdict's class gate answers
+     * only for a class-200 ENVELOPE). The ONLY thing that can ever judge
+     * a pooled claim is its committed NULLIFIER — which exists on the
+     * entry solely because the helper re-derives it (O15F). Delete that
+     * re-derivation and the claim is pooled with nullifier_count == 0:
+     * the reaper's nullifier walk cannot see it, the verdict answers
+     * UNJUDGED, NOTHING removes it, and it arms the P3 deadman against a
+     * healthy leader forever — the exact O15I V1 shape, through a new
+     * door. Both (a) and (c) below fail in that case.
+     *
+     * The order is §13k's, for §13k's reason: the rotation in (b) leaves
+     * the phase in VIEW_CHANGE, so it has to come after the IDLE-branch
+     * observation in (a). ───────────────────────────────────────────── */
+    printf("§14e O15J A — a pooled entry the chain has DECIDED is not "
+           "demand and IS reaped\n");
+    {
+        peer_t p[6];
+        for (int i = 0; i < 6; i++) peer_make(&p[i]);
+        nodus_witness_t *w = fixture(&self, p, 6, 3, 15000, 10000);
+        char dir[] = "/tmp/test_bft_o15j_reap_XXXXXX";
+        chain_db_open(w, dir, 0x45);
+
+        peer_t all[7];
+        all[0] = self;
+        for (int i = 0; i < 6; i++) all[i + 1] = p[i];
+
+        p3c_chain_t *cx = calloc(1, sizeof(*cx));
+        if (!cx) { fprintf(stderr, "o15j chain alloc\n"); exit(1); }
+        p3c_make_successor(w, all, 7, cx);
+
+        dna_claim_t *c = p3c_make_claim(cx, 0);
+        size_t clen = 0;
+        uint8_t chash[64];
+        uint8_t *cbytes = p3c_encode_claim(c, &clen, chash);
+        uint8_t want_nul[64];
+        p3c_claim_nullifier(c, want_nul);
+
+        w->current_view = p2_pick_view(w, false);
+        CHECK(!nodus_witness_bft_is_leader(w), "we are NOT the leader");
+
+        /* Pooled while the claim is still UNSPENT — admission's cross-block
+         * spent check would refuse it after the commit below. fee 500 puts
+         * it at the head so the §14e(c) survivor has to be MOVED. */
+        char why[256] = {0};
+        CHECK(nodus_witness_pool_local_demand(w, cbytes, (uint32_t)clen,
+                  chash, NODUS_W_TX_V2_CLAIM, NULL, 0, NULL, NULL, 500,
+                  why, sizeof(why)) == 0,
+              "the claim is pooled the production way");
+        CHECK(w->mempool.count == 1 &&
+              w->mempool.entries[0]->nullifier_count == 1 &&
+              memcmp(w->mempool.entries[0]->nullifiers[0], want_nul, 64) == 0,
+              "carrying the committed nullifier consensus derives — the "
+              "ONE handle anything has on a pooled class-201 claim");
+        CHECK(nodus_witness_v2_entry_verdict(w, cbytes, (uint32_t)clen) ==
+              NODUS_W_ENTRY_UNJUDGED,
+              "and the class-200 verdict lane says UNJUDGED about it, as "
+              "its class gate must — which is exactly why the nullifier "
+              "above is load-bearing and not decoration");
+
+        /* ⚠ ANTI-VACUITY PAIR, §13f's: nodus_witness_nullifier_exists is
+         * FAIL-CLOSED (it answers "spent" on a missing DB or a failed
+         * query), so both answers are pinned before and after. */
+        CHECK(!nodus_witness_nullifier_exists(w, want_nul),
+              "the chain has NOT yet decided this claim");
+        CHECK(nodus_witness_mempool_evict_committed(w) == 0,
+              "so the reaper takes nothing — an undecided entry is kept");
+        CHECK(w->mempool.count == 1, "and it is still pooled");
+
+        /* THE CHAIN DECIDES IT. */
+        uint8_t ctx[NODUS_T3_TX_HASH_LEN];
+        memset(ctx, 0xC7, sizeof(ctx));
+        CHECK(nodus_witness_nullifier_add(w, want_nul, ctx) == 0,
+              "the claim's nullifier is now COMMITTED on this chain");
+        CHECK(nodus_witness_nullifier_exists(w, want_nul),
+              "and the DB really says so — the fixture is discriminating, "
+              "not failing closed on everything");
+
+        /* (a) NOT DEMAND — the P3 deadman declines. */
+        nodus_witness_bft_check_timeout(w);
+        uint64_t anchored = w->last_seen_tip;
+        CHECK(p3_stamped_now(w->tip_since_ms), "the demand window armed");
+        CHECK(w->pending_forward_count == 0,
+              "and NO pending forward — so the predicate below is about "
+              "the POOLED entry and nothing else");
+        p3_age_window(w, 16000);
+        nodus_witness_bft_check_timeout(w);
+
+        CHECK(w->round_state.phase == NODUS_W_PHASE_IDLE,
+              "the tick left us IDLE — a claim the chain has already "
+              "decided is not a reason to rotate the view, and O15J did "
+              "NOT re-open the O15I V1 churn door");
+        CHECK(!w->view_change_in_progress, "no view change was started");
+        CHECK(w->last_seen_tip == anchored && p3_stamped_now(w->tip_since_ms),
+              "and the would-fire point WAS reached (window re-stamped at "
+              "the same frozen tip) — declined on the verdict, not skipped");
+
+        /* (b) STILL DEMAND — one undecided entry and it fires. Without
+         * this, (a) passes for a predicate that never fires at all, which
+         * would disable the whole P3 deadman. */
+        p3_pool(w, p3_mkentry(0xC5, 100, 1));
+        CHECK(w->mempool.count == 2, "an UNDECIDED entry joins the pool");
+        uint8_t n_undecided[NODUS_T3_NULLIFIER_LEN];
+        p3_nul_of(0xC5, n_undecided);
+        CHECK(!nodus_witness_nullifier_exists(w, n_undecided),
+              "and the chain has NOT decided IT — so the fire below is "
+              "this entry, and the DB is still discriminating");
+        p3_age_window(w, 16000);
+        uint32_t view_before = w->current_view;
+        nodus_witness_bft_check_timeout(w);
+        CHECK(w->round_state.phase == NODUS_W_PHASE_VIEW_CHANGE,
+              "NOW it rotates — so (a)'s silence is the committed-nullifier "
+              "verdict on the O15J entry, not a dead predicate");
+        CHECK(w->current_view == view_before,
+              "current_view is UNTOUCHED — O15J adds none of its five "
+              "write sites; only quorum may advance it");
+
+        /* (c) THE REAPER, the other consumer, over the same two entries. */
+        CHECK(w->mempool.entries[0]->fee == 500 &&
+              w->mempool.entries[1]->fee == 100,
+              "the decided O15J entry is at the head and the undecided one "
+              "behind it — so the survivor has to be MOVED");
+        int dropped = nodus_witness_mempool_evict_committed(w);
+        CHECK(dropped == 1,
+              "exactly ONE entry was reaped. An orphaned entry is "
+              "unreachable by remove_by_conn BY DESIGN (§14b), so this "
+              "reaper is the ONLY thing that removes what O15J pools — if "
+              "the O15F nullifier re-derivation were dropped from the "
+              "helper, this would evict 0 and the entry would leak forever");
+        CHECK(w->mempool.count == 1, "one survives");
+        CHECK(w->mempool.entries[0]->fee == 100,
+              "and it is the UNDECIDED one, compacted to the head — the "
+              "survival half; a reaper that dropped everything fails here");
+        CHECK(w->mempool.entries[1] == NULL, "the vacated slot was cleared");
+        CHECK(nodus_witness_mempool_evict_committed(w) == 0,
+              "a second pass reaps nothing");
+
+        free(cbytes);
+        free(c);
         free(cx);
         nodus_witness_mempool_clear(&w->mempool);
         chain_db_drop(w, dir);
