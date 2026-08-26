@@ -187,6 +187,27 @@ int nodus_witness_v2_gen_is_pure(const char *db_path) {
     int ret = -1;
     sqlite3_stmt *st = NULL;
 
+    /* A TRANSIENT lock must not become a permanent verdict.
+     *
+     * This probe's -1 REFUSES the database at witness_post_open_gate —
+     * deliberately stricter than the seam probe beside it, because a
+     * chain whose role cannot be determined must not be opened as though
+     * it had none. That strictness makes a momentary SQLITE_BUSY/LOCKED
+     * indistinguishable from real corruption, and a node that cannot
+     * open its chain does not come back on its own. nodus/BUGS.md
+     * records the v0.18.19 near-miss of exactly this class: a new hard
+     * -1 that would have bricked every joining node during its bootstrap
+     * window.
+     *
+     * A busy handler is the honest fix: SQLite retries internally, so
+     * BUSY can only reach us after the timeout has elapsed — by which
+     * point it is a real, persistent lock and refusing IS correct. The
+     * database is opened WAL before this runs (nodus_witness.c:317), so
+     * readers do not block writers and this should never fire; the
+     * timeout exists for the cases WAL does not cover (recovery,
+     * checkpoint lock contention), not for the common path. */
+    sqlite3_busy_timeout(db, 5000);
+
     /* Table existence is probed EXPLICITLY, not inferred from a prepare
      * failure: a legacy database simply has no v2_manifests table, and
      * that is a definitive "not a pure chain" (0), not a fault. Only a
@@ -203,7 +224,14 @@ int nodus_witness_v2_gen_is_pure(const char *db_path) {
         int trc = sqlite3_step(tq);
         sqlite3_finalize(tq);
         if (trc == SQLITE_DONE) { sqlite3_close(db); return 0; }
-        if (trc != SQLITE_ROW)  { sqlite3_close(db); return -1; }
+        if (trc != SQLITE_ROW)  {
+            QGP_LOG_ERROR(LOG_TAG,
+                "chain-role probe could not read the catalogue of %s "
+                "after the busy timeout (sqlite rc=%d) — this is a "
+                "persistent fault, not contention", db_path, trc);
+            sqlite3_close(db);
+            return -1;
+        }
     }
 
     if (sqlite3_prepare_v2(db,
