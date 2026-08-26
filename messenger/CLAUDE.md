@@ -112,7 +112,7 @@ Flutter connects to the C library via `dart:ffi`:
 |-----------|--------------|---------|-----------|
 | C Library | `include/dna/version.h` | v0.11.18 | C code changes |
 | Flutter App | `dna_messenger_flutter/pubspec.yaml` | v1.0.0-rc241+10592 | Flutter/Dart changes |
-| Nodus | `../nodus/include/nodus/nodus_types.h` | v0.19.9 | Nodus changes |
+| Nodus | `../nodus/include/nodus/nodus_types.h` | v0.19.19 | Nodus changes |
 
 Flutter app displays **both versions** in Settings:
 - App version: from `pubspec.yaml`
@@ -180,18 +180,18 @@ For **Flutter app** — use the handler pattern, NOT `Platform.isAndroid`:
 ```bash
 CLI=/opt/dna/messenger/build/cli/dna-connect-cli
 
-$CLI lookup-profile <name|fp>    # View any user's full DHT profile
-$CLI lookup <name>               # Check if name is registered
-$CLI send <name> "message"       # Send message by name
-$CLI send <full-fp> "message"    # Send using FULL 128-char fingerprint
-$CLI messages <fp>               # Conversation history
-$CLI check-offline               # Poll DHT for offline messages
-$CLI listen                      # Subscribe to push notifications
-$CLI whoami                      # Current identity
-$CLI contacts                    # List contacts
+# Commands are GROUPED — there is NO bare `lookup`/`send`/`whoami`.
+# Groups: identity, contact, message, group, channel, dna, wallet, dex,
+#         network, version, sign, debug, wall, follow, media
+$CLI help                                # list groups
+$CLI <group>                             # list that group's subcommands (safe)
+$CLI identity whoami                     # current identity
+$CLI identity lookup <name>              # is name registered
+$CLI identity lookup-profile <name|fp>   # full DHT profile
+$CLI message send <name|fp> "message"    # send DM (name or FULL 128-char fp)
 ```
 
-**IMPORTANT:** `send` requires registered name or FULL 128-char fingerprint. Partial fingerprints fail.
+**IMPORTANT:** `message send` requires a registered name or the FULL 128-char fingerprint — partials fail. ALWAYS check `$CLI <group>` help before a verb you haven't used (`feedback_cli_read_help_first`); bare `dna <verb>` with no args can MUTATE (`feedback_cli_no_args_is_not_help`).
 
 ---
 
@@ -203,8 +203,10 @@ UI (Settings > Data & Storage > **Send Debug Log to Developer**) or CLI
 (Kyber1024 + AES-256-GCM) to punk's Kyber key and delivered via DHT.
 
 **A systemd service on this machine (`dna-punk-debug-inbox.service`) decrypts
-and writes every incoming log to `/var/log/dna-debug/`.** It runs 24/7. You do
-not need to start anything.
+and writes every incoming log to `/var/log/dna-debug/`.** ⚠ The service is
+**DISABLED since 2026-05-05** (verified disabled+inactive 2026-08-27) — start it
+with `sudo systemctl start dna-punk-debug-inbox` BEFORE expecting a log to land
+(DHT TTL is 1h; if it isn't running when the user sends, the log is lost).
 
 ### When the user says "I sent a log" / "check my log" / similar — DO THIS
 

@@ -1,6 +1,6 @@
 # DNA Nodus - Post-Quantum DHT Network
 
-**Current Version:** Nodus v0.17.7 | **Last Updated:** 2026-04-24
+**Current Version:** Nodus v0.19.19 | **Last Updated:** 2026-08-27 (version-history notes below are dated snapshots, not current state)
 **Security:** FIPS 204 / ML-DSA-87 (Dilithium5) - NIST Category 5
 
 > **Since v0.10.30 (2026-04-10) Nodus shipped:**
@@ -117,7 +117,7 @@ The messenger integrates directly with Nodus -- no compatibility layer, no OpenD
 
 ## Nodus Production Cluster
 
-Seven nodes running v0.17.7 with cluster membership formed, cross-node replication verified, and DNAC chain `4a68e146` live (9 blocks, 7/7 consistent).
+Seven production nodes with cluster membership formed and cross-node replication verified. (Node/chain versions rotate with deploys — check the cluster itself for current state; the `4a68e146` chain snapshot formerly cited here is from 2026-04.)
 
 | Node | IP | UDP | TCP (DHT) | TCP (Inter-node) | TCP (Channel) | TCP (Witness) |
 |------|-----|-----|-----------|-------------------|---------------|---------------|

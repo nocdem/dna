@@ -1,9 +1,16 @@
 # DNAC Blockchain — Component Status
 
-**Last verified:** 2026-04-15 (against source code, not memory)
-**DNAC version:** v0.14.3
-**Nodus version:** v0.12.12
-**Chain:** `4a68e14678400c693f1cfefe723d7fa5876c3d2d121048961a83b1a18cc1dcbb` (9 blocks, 7/7 consistent)
+> ⚠ **HEADER STALE (note added 2026-08-27):** the wholesale verification below is
+> the 2026-04-15 pass. Current source versions: **DNAC v0.18.6 / Nodus v0.19.19**
+> (Ledger V2 era, branch `feat/ledger-v2-s1-s3`); the chain id below is long gone.
+> Only the dated addendum blocks have been re-verified since — treat everything
+> else as historical until the next full pass. Ledger V2 state: `nodus/CLAUDE.md`
+> season sections + `dnac/CLAUDE.md` header.
+
+**Last verified (wholesale):** 2026-04-15 (against source code, not memory)
+**DNAC version (then):** v0.14.3
+**Nodus version (then):** v0.12.12
+**Chain (then):** `4a68e14678400c693f1cfefe723d7fa5876c3d2d121048961a83b1a18cc1dcbb` (9 blocks, 7/7 consistent)
 
 This document is the **source of truth** for what DNAC has and what it lacks.
 `ROADMAP.md` and `TODO.md` are historical; consult them only for phase history,
@@ -454,7 +461,7 @@ embedded witness module (`nodus/src/witness/`).
   - Friend-of-friend manual whitelist only
 - [ ] **Slashing** — no equivocation detection, conflicting PREVOTE/PRECOMMIT sigs go unpunished
 - [ ] **Unstake mechanism** — time-locked withdrawal (N blocks after request)
-- [ ] **v2 weighted random sortition** — designed as "poor man's VRF", deferred until v1 deterministic top-21 ships
+- [ ] **v2 weighted random sortition** — designed as "poor man's VRF"; v1 shipped as deterministic top-N (top-7 at launch; governance-driven `TARGET_ACTIVE_COUNT` since Ledger V2 S3)
 
 ### Economics
 - [ ] **Witness rewards / fee distribution** — fees currently burn, no payout to active witnesses
