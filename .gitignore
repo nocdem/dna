@@ -63,3 +63,13 @@ BUGS.md
 dnac/docs/WITNESS_NODES.md
 dnac/tools/check_witness_announce.c
 nodus/deploy/nodus.conf.example
+
+# ── Agent/protocol files — local only (2026-08-27) ────────────────────
+# CLAUDE.md carries the ORCHESTRATOR protocol and per-project rules;
+# .claude/agents/ the subagent definitions. They describe how this
+# repository is WORKED ON, not what it ships, and the repo is public.
+# NOTE: git history retains every version already pushed — this governs
+# what HEAD ships, not what has ever been exposed.
+CLAUDE.md
+**/CLAUDE.md
+.claude/
