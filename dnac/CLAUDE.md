@@ -41,8 +41,8 @@ DNAC = **DNA Chain** — a post-quantum UTXO chain (with a ZK/shielded track und
 |-----------|------------|
 | Token Model | UTXO |
 | Signatures | Dilithium5 (Post-Quantum) |
-| Transport | DHT via Nodus (nodus_ops API) |
-| Double-Spend Prevention | Nodus PBFT Witnessing (dynamic roster) |
+| Transport | Nodus TCP witness client (nodus SDK) — DHT storage removed v0.12.0 |
+| Double-Spend Prevention | Witness BFT — chain-derived committee (F17/v0.15.0+; roster is transport-only) |
 | Database | SQLite |
 | ZK (v3, in progress) | STARK range proofs (Plonky3-grounded C ports in `shared/crypto/zk/`) |
 
@@ -467,7 +467,9 @@ full-history storage model.
 - **HARD RULE:** every cryptographic construct MUST cite a pinned reference
   (Plonky3 commit `file:line`, FIPS-202, NIST KAT). See root CLAUDE.md
   `ANA HEDEF: KAFADAN KRİPTO YASAK`. Same-day self-audit is circular and
-  forbidden — crypto audits require 10+ parallel independent subagents.
+  forbidden — crypto audits use parallel independent subagents, scaled per
+  root CLAUDE.md `RED-TEAM ÖLÇEĞİ` (8-13 agents ONLY for consensus/shipped
+  crypto with live consumers; zero-consumer design = 1-2).
 - **Design docs:** `dnac/docs/plans/` (local-only, gitignored — never `git add`).
 
 ---
