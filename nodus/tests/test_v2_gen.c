@@ -953,21 +953,28 @@ static int test_defect_L1F1(void) {
  * dna_dist_leaf_hash. An oracle that disagrees with the thing it is an
  * oracle for is worse than no oracle.
  *
- * ANTI-VACUITY STATUS — MEASURED, NOT ASSERTED, and the honest answer
- * is NOT DISCRIMINATING. Two mutation runs were performed:
- *   M1: `amount < 1` guard in gen_plan_build disabled  → test SURVIVED
- *   M2: dna_dist_check_totals call disabled            → test SURVIVED
- * So neither of the two guards this section was written to defend is
- * what rejects the input, and a third, silent rejector (it logs
- * nothing) has NOT been identified. R1-F4's claim that
- * config_validate ACCEPTS a zero-amount leaf is refuted by the first
- * CHECK below — it rejects — but the reason is unknown.
+ * ANTI-VACUITY STATUS — MEASURED, NOT ASSERTED. Three mutation runs:
+ *   M1: `amount < 1` guard disabled          → SURVIVED
+ *   M2: dna_dist_check_totals call disabled  → SURVIVED
+ *   M3: BOTH disabled together               → KILLED (rc 1, this exact
+ *       assertion: "a zero-amount leaf REJECTS even though the totals
+ *       balance")
  *
- * The section is kept because it PINS the observable behaviour
- * (config_validate and derive agree on this input), which is the
- * property that matters to a caller. It is NOT evidence that either
- * guard works. Labelled this way so a later reader does not count it
- * as a kill it is not; finding the real rejector is open work.
+ * So the two guards are MUTUALLY REDUNDANT on this input and neither
+ * dies alone — the same shape the O12 M8 and O13 M12 campaigns hit,
+ * where a doubly-defended property needs a COMPOUND mutant. There is
+ * no third, hidden rejector; an earlier version of this note claimed
+ * one existed, and it was wrong because M1 and M2 were only ever run
+ * in isolation.
+ *
+ * What this section therefore proves: the PAIR is load-bearing. Delete
+ * either guard and the property still holds; delete both and it does
+ * not. That is a real kill, stated at the granularity at which it is
+ * true.
+ *
+ * R1-F4's claim that config_validate ACCEPTS a zero-amount leaf is
+ * REFUTED: it rejects, via check_totals → dna_dist_converted even
+ * before the explicit guard was added.
  * ══════════════════════════════════════════════════════════════════ */
 static int test_zero_amount_leaf(void) {
     printf("§3.7 R1-F4 — a zero-amount allocation leaf REJECTS\n");
