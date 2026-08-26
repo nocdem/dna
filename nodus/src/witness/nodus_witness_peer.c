@@ -838,8 +838,49 @@ int nodus_witness_peer_handle_fwd_req(nodus_witness_t *w,
         w->pending_roster_ready = false;
     }
 
-    /* Only leader handles forward requests */
-    if (!nodus_witness_bft_is_leader(w)) {
+    /* ── O15I P3(b) — WHO MAY POOL A FORWARDED ENTRY ─────────────────
+     *
+     * Until now this was leader-only, and that is precisely why a dead
+     * leader stalls the chain permanently: a forwarded transaction goes
+     * to the leader and NOWHERE ELSE, so when the leader is gone the
+     * demand exists on exactly one node — the submission target — and
+     * one is far below the f+1 threshold at which peers join its view
+     * change. Pooling on non-leaders is what puts the work where the
+     * NEXT leader can find it.
+     *
+     * SUCCESSOR ONLY, and the scope is not caution for its own sake.
+     * Below, a successor forward runs the full ADMISSION lane
+     * (nodus_witness_verify_transaction, NODUS_WITNESS_VERIFY_ADMISSION)
+     * before anything is pooled — the same gate a direct client
+     * submission passes. A LEGACY forward's handling at this site is
+     * STRUCTURAL only (a nullifier walk over the wire layout, no
+     * signature verification, no double-spend check), so pooling one on
+     * a non-leader would let any roster member push unverified bytes
+     * into every peer's mempool — a trust boundary this change did not
+     * analyse and must not widen. Legacy therefore keeps the original
+     * refusal, byte-identical, and recovers through the rotation itself:
+     * once P3(a) elects a live leader, the ordinary client retry reaches
+     * it.
+     *
+     * A RAW forward is NEVER pooled. Every path from here to the
+     * mempool_add at the end of this function passes the admission call
+     * for a successor entry; a rejection returns -1 exactly as this gate
+     * used to.
+     *
+     * AND A NON-LEADER STILL NEVER STARTS A ROUND. The one branch below
+     * that does — the batch-of-1 genesis path — is keyed on tx_type ==
+     * NODUS_W_TX_GENESIS (0), and on a successor tx_type is overwritten
+     * by nodus_witness_v2_classify_entry, which returns only
+     * NODUS_W_TX_V2_ENVELOPE (200) or NODUS_W_TX_V2_CLAIM (201). So the
+     * genesis branch is unreachable on the path this gate now opens.
+     *
+     * Mempool content is per-node INPUT, not consensus state: the block
+     * is still chosen by ONE leader and agreed by PREVOTE/PRECOMMIT with
+     * an independent state_root recompute, so two nodes holding
+     * different pools cannot diverge state. The existing guards are
+     * untouched — NODUS_W_MAX_MEMPOOL bounds the pool, mempool_add
+     * rejects duplicates by tx_hash, and fee ordering is unchanged. */
+    if (!nodus_witness_bft_is_leader(w) && !w->v2_successor) {
         fprintf(stderr, "%s: w_fwd_req but not leader\n", LOG_TAG);
         return -1;
     }

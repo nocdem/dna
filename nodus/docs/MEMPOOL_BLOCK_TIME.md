@@ -23,6 +23,9 @@ Client → dnac_spend → Leader?
   ├─ YES (genesis)     → legacy single-TX BFT (bypass mempool)
   └─ NO               → forward to leader → leader mempool_add
                         (leader resolved by SORTED RANK — see below)
+                        O15I P3(b): on a SUCCESSOR chain the forward is
+                        also POOLED by non-leaders, after the full
+                        ADMISSION check — see "Demand dissemination"
 
 witness_tick (every ~50ms):
   └─ is_leader? + IDLE? + mempool.count > 0? + 5s elapsed?
@@ -201,6 +204,59 @@ Same `btx`/`bh` extension, plus existing cert/timestamp fields.
 
 ---
 
+## Demand dissemination and the follower reaper (O15I P3)
+
+A forwarded transaction used to reach the leader and **nowhere else**, so
+when the leader was dead the demand existed on exactly one node — the
+submission target. One node is far below the f+1 threshold at which peers
+join a view change (`bft_vc_join_threshold` = max(2, (quorum−1)/2+1) = 7
+at quorum 14), so nothing rotated and the chain halted for the whole
+epoch. `leader = (epoch + view) % n` with `epoch = height /
+DNAC_EPOCH_LENGTH` gives ONE node an entire epoch — **720 heights in
+production** (`dnac/include/dnac/dnac.h:172`).
+
+**P3(a) — demand-armed deadman.** In `check_timeout`'s IDLE branch a
+non-leader that holds live work and whose own committed tip has not moved
+for more than `round_timeout_ms` initiates an ordinary `current_view + 1`
+view change. BOTH halves are required: without the demand half a quiet
+chain would rotate forever; without the frozen-tip half a busy chain would
+rotate away from a healthy leader. Every verdict at the would-fire point
+re-stamps the window, so the DB scan and the `is_leader` call cost once per
+`round_timeout_ms`, not once per tick. `current_view` is untouched — it
+still advances only on quorum.
+
+**P3(b) — dissemination.** At fire (never at intake, so steady-state
+traffic is unchanged) the node re-broadcasts its mempool entries as
+`w_fwd_req` to the peer set. `nodus_witness_peer_handle_fwd_req` now pools
+on a non-leader **on successor chains only**: there the entry passes the
+full `NODUS_WITNESS_VERIFY_ADMISSION` lane first. A LEGACY forward is
+handled structurally at that site (nullifier walk, no signature verify), so
+legacy keeps the original leader-only refusal byte-identical. A RAW,
+pre-admission forward is never pooled. `pending_forwards` carries no
+transaction bytes (only hash / conn / txn_id / started_at), which is why
+the rebroadcast is sourced from the mempool.
+
+**P3(c) — the epoch drain became a reaper.** The drain used to
+`nodus_witness_mempool_clear()` the whole pool once per epoch tick. Under
+P3(b) a follower legitimately holds forwarded work, and that work is
+exactly what arms P3(a) — so a blind wipe deleted the evidence of the
+stall, once a minute, while the stall was happening. Cadence and gates are
+unchanged; only the verdict is: `nodus_witness_mempool_evict_committed`
+drops an entry only when the chain has already decided one of its
+nullifiers, the same test the leader's batch selection applies. This also
+closes a pre-existing gap — nothing previously removed a follower's copy of
+a transaction after it committed.
+
+**Known residual, deliberately not papered over:** a successor class-200
+envelope is pooled with `nullifier_count == 0` (the legacy nullifier walk
+is gated on `!v2_successor`), so the committed-nullifier predicate cannot
+evict it. Such an entry is dropped and freed — not requeued — by the
+successor batch pre-check (`v2_intent_index` dedup) the next time this node
+leads, so the churn is bounded, not unbounded. The leader's own batch
+selection has the identical blind spot.
+
+---
+
 ## Review History (5 rounds, 18 fixes)
 
 ### Round 1 (initial review)
@@ -258,5 +314,8 @@ No new issues found. All 6 verification items passed.
 - Max batch size limited by 128KB wire message (10 TXs at ~9KB each)
 - Theoretical 64KB TX could overflow batch encoding — add size check at mempool insertion
 - Empty blocks not produced — no heartbeat mechanism
-- Mempool has no TTL/age-based eviction (relies on epoch drain)
+- Mempool has no TTL/age-based eviction. Since O15I P3(c) the epoch pass
+  is a committed-nullifier reaper rather than an unconditional drain, so a
+  never-decidable entry is bounded by the 64-slot cap and fee ordering, not
+  by a timer.
 - `send_spend_result` uses save/restore pattern (fragile) — parameterized version cleaner

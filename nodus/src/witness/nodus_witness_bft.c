@@ -7907,6 +7907,140 @@ static void bft_emit_batch_replies(nodus_witness_t *w, int status,
     round_state_free_batch(&w->round_state);
 }
 
+/* ── O15I P3 — the demand-armed follower deadman's two helpers ─────── */
+
+/**
+ * P3(a) — is there demand this node could still be waiting on?
+ *
+ * "Demand" is not "the mempool is non-empty". An entry whose nullifier
+ * the chain has already committed can never be included again — the
+ * leader's own batch selection drops it on sight — so treating it as a
+ * reason to rotate the view would let a settled transaction drive
+ * rotations forever. The predicate here is therefore the SAME one batch
+ * selection uses, applied from the follower's side.
+ *
+ * Called ONLY at the would-fire point, never on the common path: it can
+ * cost up to NODUS_W_MAX_MEMPOOL x NODUS_T3_MAX_TX_INPUTS indexed point
+ * lookups, and the first live entry short-circuits it.
+ *
+ * An entry with nullifier_count == 0 counts as LIVE, because this
+ * predicate has nothing to say about it — that is every successor
+ * class-200 envelope (nodus_witness_peer.c skips the legacy nullifier
+ * walk on a successor). The same caveat, and where those copies are
+ * actually reaped, is documented on nodus_witness_mempool_evict_committed.
+ *
+ * A pending FORWARD counts as live unconditionally: a client is provably
+ * waiting on an answer this node cannot produce, and the forward slot
+ * retains no transaction bytes to judge (nodus_witness.h — it carries
+ * tx_hash and routing only).
+ */
+static bool bft_p3_live_demand(nodus_witness_t *w) {
+    if (w->pending_forward_count > 0) return true;
+
+    for (int i = 0; i < w->mempool.count; i++) {
+        const nodus_witness_mempool_entry_t *e = w->mempool.entries[i];
+        if (!e) continue;
+        if (e->nullifier_count == 0) return true;
+
+        bool decided = false;
+        for (int j = 0; j < e->nullifier_count; j++) {
+            if (nodus_witness_nullifier_exists(w, e->nullifiers[j])) {
+                decided = true;
+                break;
+            }
+        }
+        if (!decided) return true;
+    }
+    return false;
+}
+
+/**
+ * P3(b) — DEMAND DISSEMINATION, at the deadman's fire and nowhere else.
+ *
+ * A forwarded transaction goes to the LEADER only, so when the leader is
+ * dead the demand exists on exactly one node. That is why P3(a) alone
+ * fixes nothing: the one node holding the work initiates a view change,
+ * and 1 is far below the f+1 join threshold, so nobody joins it. This
+ * puts the bytes on every peer, which is what makes the rotation
+ * meaningful — whoever the next leader turns out to be already holds the
+ * work when it gets there.
+ *
+ * NOT AT INTAKE. Steady-state forwarding traffic is unchanged; this runs
+ * at most once per round_timeout_ms, and only on a node that has already
+ * observed the committed tip frozen for a full round with live demand.
+ *
+ * SCOPED TO SUCCESSOR CHAINS, matching the intake side. On a successor
+ * the receiving non-leader runs the full ADMISSION lane before pooling
+ * (nodus_witness_peer.c). On a LEGACY chain that intake is
+ * structural-only — a nullifier walk, no signature verification — so a
+ * legacy peer still refuses a non-leader forward byte-identically, and
+ * broadcasting there would be n-1 copies of a transaction that every
+ * recipient discards. Legacy recovers through the rotation itself: once
+ * a live leader is elected, the ordinary client retry reaches it.
+ *
+ * IT ADDS NO AUTHORITY. The T3 sender must already be in the roster to
+ * be dispatched at all, the transaction is re-verified at intake by the
+ * same admission lane a direct client submission takes, and
+ * NODUS_W_MAX_MEMPOOL bounds what a recipient can be made to hold.
+ *
+ * REPLY ROUTING is carried, not invented. A committing leader answers
+ * fwd_req by sending w_fwd_rsp to `forwarder_id`
+ * (bft_emit_batch_replies). An entry we ourselves received as a forward
+ * already names the node holding the client connection, so its
+ * forwarder_id is preserved verbatim. An entry we took directly from a
+ * client (client_conn set — we were the leader when it arrived) names
+ * US, because no other node knows that client.
+ *
+ * ⚠ RESIDUAL, deliberately not papered over: for that second kind we do
+ * NOT register a pending_forwards slot, so if a remote leader commits
+ * it, the w_fwd_rsp finds no slot and is logged and dropped — that
+ * client gets no receipt on this connection. Registering a slot would be
+ * worse: when WE commit the entry ourselves the client gets its receipt
+ * from send_spend_result AND a spurious NODUS_ERR_TIMEOUT from the
+ * unclaimed slot 30 s later. The pre-P3 behaviour for the same client
+ * was that the transaction never committed at all, so this is strictly
+ * better for the chain and no worse for the client.
+ */
+static void bft_p3_broadcast_demand(nodus_witness_t *w) {
+    if (!w->v2_successor) return;
+
+    /* ONE message object for the whole loop. nodus_t3_msg_t's union is
+     * dominated by NEW_VIEW's 128-slot certificate array, so it is a
+     * large stack object; every other producer in this file declares
+     * exactly one (initiate_view_change, bft_emit_batch_replies), and
+     * hoisting it out of the loop keeps that property here too. */
+    nodus_t3_msg_t fwd;
+    int sent = 0;
+    for (int i = 0; i < w->mempool.count; i++) {
+        nodus_witness_mempool_entry_t *e = w->mempool.entries[i];
+        if (!e || !e->tx_data || e->tx_len == 0) continue;
+
+        memset(&fwd, 0, sizeof(fwd));
+        fwd.type = NODUS_T3_FWD_REQ;
+        fwd.txn_id = ++w->next_txn_id;
+        memcpy(fwd.fwd_req.tx_hash, e->tx_hash, NODUS_T3_TX_HASH_LEN);
+        fwd.fwd_req.tx_data = e->tx_data;
+        fwd.fwd_req.tx_len = e->tx_len;
+        fwd.fwd_req.client_pubkey = e->client_pubkey;
+        fwd.fwd_req.client_sig = e->client_sig;
+        fwd.fwd_req.fee = e->fee;
+        memcpy(fwd.fwd_req.forwarder_id,
+               e->is_forwarded ? e->forwarder_id : w->my_id,
+               NODUS_T3_WITNESS_ID_LEN);
+
+        /* The ordinary broadcast: it fills and signs the header and
+         * sends to every connected identified peer, exactly as PROPOSE
+         * and COMMIT do. */
+        if (nodus_witness_bft_broadcast(w, &fwd) > 0)
+            sent++;
+    }
+
+    if (sent > 0)
+        fprintf(stderr, "%s: P3 re-broadcast %d/%d mempool entries to the "
+                "peer set — the dead leader is not the only node that may "
+                "hold this work\n", LOG_TAG, sent, w->mempool.count);
+}
+
 void nodus_witness_bft_check_timeout(nodus_witness_t *w) {
     if (!w) return;
 
@@ -8054,6 +8188,119 @@ void nodus_witness_bft_check_timeout(nodus_witness_t *w) {
             w->round_state.phase_start_time = time_ms();
             nodus_witness_bft_initiate_view_change(w);
             return;
+        }
+
+        /* ── O15I P3 — THE DEMAND-ARMED FOLLOWER DEADMAN, FIRE ─────────
+         *
+         * P2 above keeps priority: it is the sharper signal (a view
+         * change COMPLETED and the new leader still said nothing), and
+         * its fire returns, so the two can never both act on one tick.
+         *
+         * WHAT THIS ONE CATCHES THAT P2 CANNOT. P2 only ever arms in the
+         * aftermath of a completed view change. The 20-node terminal
+         * state had no view change at all: `leader = (epoch + view) % n`
+         * with `epoch = height / DNAC_EPOCH_LENGTH` gives ONE node an
+         * entire epoch (720 heights in production), only the leader
+         * leaves IDLE on its own (nodus_witness.c, the mempool block
+         * timer), and so with that leader dead every node sat IDLE at
+         * view 0 and NOTHING ever asked for a rotation. Height 43 of
+         * that run recorded zero consensus events of any kind.
+         *
+         * THE EVIDENCE IS LOCAL AND MESSAGE-FREE: our own committed tip
+         * has not moved for longer than a round, while we hold work that
+         * could still be included. Both halves are required —
+         *   - without the DEMAND half a quiet, healthy chain (whose tip
+         *     is legitimately frozen) would rotate the view forever;
+         *   - without the FROZEN-TIP half a busy chain would rotate away
+         *     from a leader that is producing perfectly well.
+         *
+         * ORDER OF THE TESTS IS DELIBERATE, cheapest first — this runs
+         * ~20x/s per witness:
+         *   1. the two counters, free, and they alone short-circuit
+         *      every node on a quiet chain;
+         *   2. one committed-tip read, the same query P1 makes above,
+         *      and only for a node that HAS demand;
+         *   3. the age comparison, free;
+         *   4. the staleness scan, then nodus_witness_bft_is_leader —
+         *      a committee load plus a SHA3-512 per member, which is
+         *      why it is not the first test.
+         *
+         * EVERY VERDICT AT THE WOULD-FIRE POINT RE-STAMPS THE WINDOW,
+         * and that is load-bearing twice over. It bounds steps 4-5 to
+         * once per round_timeout_ms rather than once per tick (a node
+         * whose whole mempool is stale would otherwise re-scan the DB
+         * 20x/s forever); and on the FIRE path it is the same discipline
+         * P2 applies when it zeroes its spent deadline — without it, the
+         * next return to IDLE with the tip still frozen would re-fire on
+         * the very first tick, which is the O15H D2 churn shape entering
+         * through a new door.
+         *
+         * THE PHASE-CLOCK RE-STAMP IS MANDATORY for P2's reason exactly:
+         * initiate_view_change does not stamp phase_start_time, and the
+         * adoption block only stamps when the phase is ALREADY
+         * VIEW_CHANGE (:6807-6808) — which it is not, entering from
+         * IDLE. Without it the VIEW_CHANGE branch below would measure
+         * this view change's age from a round that ended long ago and
+         * escalate the target on the next tick, forever.
+         *
+         * SAFETY. `current_view` is NOT touched here; it advances only
+         * on quorum. Its five write sites are bft.c:4622,
+         * bft_vc_check_quorum, the NEW_VIEW accept,
+         * nodus_witness_peer.c:783 (IDENT adoption) and
+         * nodus_witness_db.c:2176 (restore) — P3 adds none of them. The
+         * TARGET is the ordinary current_view + 1 that
+         * initiate_view_change picks; this path invents no rule.
+         *
+         * LIVENESS COST. A quiet chain has no demand, so nothing ever
+         * arms and there is no idle churn. While genuine demand is
+         * stalled, ONE rotation per round_timeout_ms is the intended
+         * behaviour, not a side effect. */
+        if (w->mempool.count > 0 || w->pending_forward_count > 0) {
+            uint64_t p3_now = time_ms();
+            uint64_t p3_tip = nodus_witness_block_height(w);
+
+            if (w->tip_since_ms == 0 || p3_tip != w->last_seen_tip) {
+                /* First observation, or the chain MOVED — either way the
+                 * leader is doing its job and the window starts now. */
+                w->last_seen_tip = p3_tip;
+                w->tip_since_ms = p3_now;
+            } else if (p3_now - w->tip_since_ms >
+                       w->bft_config.round_timeout_ms) {
+                /* Re-stamp BEFORE deciding, so every verdict below —
+                 * fire, all-stale, or leader — costs one evaluation per
+                 * window and not one per tick. */
+                w->tip_since_ms = p3_now;
+
+                if (bft_p3_live_demand(w) && !nodus_witness_bft_is_leader(w)) {
+                    fprintf(stderr, "%s: P3 committed tip frozen at %llu for "
+                            "more than %u ms with live demand (mempool=%d, "
+                            "fwd=%d) — initiating view change to %u\n",
+                            LOG_TAG, (unsigned long long)p3_tip,
+                            w->bft_config.round_timeout_ms,
+                            w->mempool.count, w->pending_forward_count,
+                            w->current_view + 1);
+                    O15H_DIAG(w, "p3_demand_deadman", w->my_id, p3_tip + 1,
+                              w->current_view, w->current_view + 1,
+                              w->round_state.phase,
+                              w->round_state.phase_start_time,
+                              w->bft_config.round_timeout_ms, "-", 0,
+                              (unsigned)w->mempool.count, w->bft_config.quorum,
+                              "committed tip frozen while demand is pending");
+                    /* Disseminate BEFORE rotating, so the peers already
+                     * hold the work when the rotation completes. */
+                    bft_p3_broadcast_demand(w);
+                    w->round_state.phase_start_time = time_ms();
+                    nodus_witness_bft_initiate_view_change(w);
+                    return;
+                }
+            }
+        } else {
+            /* No demand — the window is not running at all. Clearing it
+             * rather than letting it age is what makes the arm honest:
+             * demand arriving on a long-quiet chain then measures its
+             * wait from the moment it arrived, and the leader gets a
+             * full round to answer it before anyone rotates. */
+            w->tip_since_ms = 0;
         }
 
         /* O15H TEMPORARY DIAGNOSTIC — the whole point of this return is

@@ -60,6 +60,21 @@
  *       NEW_VIEW re-arm/disarm rule on both the view-ADVANCE path and
  *       the self-advanced `==` path, and the PROPOSE disarm.
  *
+ *  P3 — P2 only ever arms in the AFTERMATH of a completed view change,
+ *       and the 20-node terminal state had no view change at all.
+ *       `leader = (epoch + view) % n` with `epoch = height /
+ *       DNAC_EPOCH_LENGTH` gives ONE node an entire epoch — 720 heights
+ *       in production — and only the leader leaves IDLE on its own. So
+ *       when the EPOCH leader died, every node sat IDLE at view 0 and
+ *       nothing ever asked for a rotation: height 43 of that run
+ *       recorded zero consensus events of any kind. P3 is the missing
+ *       spontaneous initiation — a follower that holds work the chain is
+ *       not consuming, with a committed tip that has not moved for a
+ *       full round, asks for the next view. §13 covers the fire, both
+ *       converses (no demand, and a moving tip), the leader exclusion,
+ *       the P3(b) intake scope on legacy vs successor, and the P3(c)
+ *       drain that had to stop wiping the demand this all rests on.
+ *
  * Fixture style follows test_bft_liveness.c: heap witness (multi-MB),
  * real ML-DSA-87 keys so PREVOTE cert_sig verification is the production
  * check rather than a stub.
@@ -68,8 +83,19 @@
 #include "witness/nodus_witness.h"
 #include "witness/nodus_witness_bft.h"
 #include "witness/nodus_witness_committee.h"
-#include "witness/nodus_witness_db.h"   /* §11 — block_add / block_height */
+#include "witness/nodus_witness_db.h"   /* §11 — block_add / block_height,
+                                         * §13 — nullifier_add / _exists   */
+#include "witness/nodus_witness_peer.h" /* §13 — handle_fwd_req            */
+#include "witness/nodus_witness_v2_gate.h" /* §13e2 — ingress_is_armed     */
 #include "witness/nodus_witness_vset.h"
+/* §13e3 — the successor-chain fixture (test_v2_claim_ingress.c's shape). */
+#include "witness/nodus_witness_validator.h"
+#include "witness/nodus_witness_domreg.h"
+#include "witness/nodus_witness_v2_apply.h"
+#include "witness/nodus_witness_v2_epoch.h"
+#include "witness/nodus_witness_v2_schema.h"
+#include "witness/nodus_witness_v2_claims.h"
+#include "nodus/nodus_chain_config.h"
 #include "protocol/nodus_tier3.h"
 #include "crypto/nodus_sign.h"
 #include "nodus/nodus_types.h"
@@ -83,6 +109,9 @@
 #include "dnac/vset_wire.h"
 #include "dnac/env_wire.h"       /* §7 — DNA_ENV_MAX_TOTAL_LEN */
 #include "dnac/ledger_ids.h"     /* §7/§8 — dna_bft_quorum      */
+#include "dnac/transaction.h"    /* §13e — DNAC_TX_HEADER_SIZE  */
+#include "dnac/manifest_wire.h"  /* §13e3 — GenesisManifest + claim codec */
+#include "dnac/domain_wire.h"    /* §13e3 — dna_domman_hash               */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -482,6 +511,384 @@ static void p2_add_reproposal(nodus_t3_msg_t *m, const peer_t *all, int n,
         sign_prepared(m->newview.reproposal_sigs[i].signature, &all[i],
                       prep_view, height, tx_hash);
     }
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+ * §13 helpers — O15I P3, the demand-armed follower deadman.
+ *
+ * P3 reads the COMMITTED TIP on every armed tick, so §13 uses the §11 DB
+ * fixture throughout for the reason §12 does: without a chain DB
+ * nodus_witness_block_height answers 0 forever, the epoch the leader
+ * arithmetic uses is pinned at 0, and — worse for this section — the tip
+ * could never be made to MOVE, which is the whole subject of §13c.
+ * ═══════════════════════════════════════════════════════════════════ */
+
+/* A heap mempool entry. `tag` seeds tx_hash AND the nullifiers, so an
+ * entry's nullifier is derivable from its tag and a test can commit it.
+ * `n_nul == 0` builds the successor-envelope shape: an entry the
+ * committed-nullifier predicate has nothing to say about. */
+static nodus_witness_mempool_entry_t *p3_mkentry(uint8_t tag, uint64_t fee,
+                                                 int n_nul) {
+    nodus_witness_mempool_entry_t *e = calloc(1, sizeof(*e));
+    if (!e) { fprintf(stderr, "p3 entry alloc\n"); exit(1); }
+    memset(e->tx_hash, tag, NODUS_T3_TX_HASH_LEN);
+    e->tx_type = NODUS_W_TX_SPEND;
+    e->nullifier_count = (uint8_t)n_nul;
+    for (int i = 0; i < n_nul; i++)
+        memset(e->nullifiers[i], (uint8_t)(tag + i), NODUS_T3_NULLIFIER_LEN);
+    e->tx_len = 8;
+    e->tx_data = calloc(1, e->tx_len);
+    if (!e->tx_data) { fprintf(stderr, "p3 tx_data alloc\n"); exit(1); }
+    e->fee = fee;
+    return e;
+}
+
+/* Pool an entry and assert it landed — a silent -1 (full / duplicate)
+ * would leave the mempool empty and make every "it fired" assertion
+ * below fail for a reason that has nothing to do with P3. */
+static void p3_pool(nodus_witness_t *w, nodus_witness_mempool_entry_t *e) {
+    int before = w->mempool.count;
+    if (nodus_witness_mempool_add(&w->mempool, e) != 0 ||
+        w->mempool.count != before + 1) {
+        fprintf(stderr, "p3_pool: mempool_add rejected the fixture entry\n");
+        exit(1);
+    }
+}
+
+/* The nullifier p3_mkentry(tag, ...) put in slot 0. */
+static void p3_nul_of(uint8_t tag, uint8_t out[NODUS_T3_NULLIFIER_LEN]) {
+    memset(out, tag, NODUS_T3_NULLIFIER_LEN);
+}
+
+/* Push the demand window's start `age_ms` into the past. age_phase cannot
+ * do this: the window lives on the witness (last_seen_tip / tip_since_ms),
+ * not in round_state, and it is P3's clock rather than the round's.
+ * time_ms() is nodus_time_now()*1000 — ONE-SECOND resolution — so every
+ * age used here is a whole number of seconds. */
+static void p3_age_window(nodus_witness_t *w, uint64_t age_ms) {
+    w->tip_since_ms = nodus_time_now() * 1000ULL - age_ms;
+}
+
+/* Was `stamp` written during this test tick? The one-second clock means
+ * a stamp taken moments ago reads as `now` or, across a second boundary,
+ * `now - 1000`. Mirrors the §12a phase-clock assertion. */
+static bool p3_stamped_now(uint64_t stamp) {
+    return stamp != 0 && stamp >= nodus_time_now() * 1000ULL - 1000ULL;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+ * §13e3 fixture — a REAL successor chain carrying an ADMISSIBLE entry.
+ *
+ * WHY THIS EXISTS AT ALL. §13e2 below proves a successor non-leader
+ * pools NOTHING that fails admission — but that is a NEGATIVE, and both
+ * the old leader-only gate and the new admission gate answer -1 for
+ * bytes admission would refuse. §13e2 therefore does NOT fail if the
+ * P3(b) intake change is reverted. Only POOLING can distinguish them,
+ * and pooling requires an entry that genuinely passes the successor
+ * ADMISSION lane. Hence a real V2 successor chain.
+ *
+ * THE SHAPE IS test_v2_claim_ingress.c's, deliberately unchanged: a
+ * present-distribution GenesisManifest over the REAL registry domain
+ * manifests, with a 3-leaf CORE-native snapshot, so a class-201 CLAIM is
+ * admissible. Every ordering hazard in that sequence is load-bearing and
+ * already resolved there —
+ *   supply + CORE utxo  BEFORE  the registry commits genesis roots,
+ *   validator rows + vset snapshot BEFORE domreg_init_genesis (they feed
+ *   the SYSTEM payload root that genesis re-derives and BYTE-COMPARES),
+ * — so it is reproduced rather than re-derived.
+ *
+ * ONE DEVIATION, and it is in the safe direction: the validator set is
+ * seeded from THIS file's own ML-DSA-87 peers rather than from separate
+ * deterministic keys, so the committee and the gossip roster are the
+ * same seven identities. That is what lets p2_pick_view keep working —
+ * it probes nodus_witness_bft_is_leader over v = 1..roster.n_witnesses,
+ * and a fixture whose committee and roster disagreed in SIZE could make
+ * the probe miss a leader view entirely and exit(1).
+ * ═══════════════════════════════════════════════════════════════════ */
+
+#define P3C_LEAVES 3
+
+typedef struct {
+    uint8_t  chain_id[DNA_CHAIN_ID_LEN];
+    uint8_t  manifest_hash[64];
+    uint8_t  leaf_pk[P3C_LEAVES][QGP_DSA87_PUBLICKEYBYTES];
+    uint8_t  leaf_sk[P3C_LEAVES][QGP_DSA87_SECRETKEYBYTES];
+    dna_dist_leaf_t leaf[P3C_LEAVES];
+    uint8_t  leaf_hash[P3C_LEAVES][64];
+    uint8_t  snapshot_root[64];
+} p3c_chain_t;
+
+/* CORE's native asset is the all-zero token id. */
+static const uint8_t p3c_native_asset[64] = {0};
+
+/* conv 3/2 FLOOR: 10->15, 5->7, 7->10; Σ = 32 = total_claimable. */
+static const uint64_t p3c_src_amount[P3C_LEAVES] = { 10, 5, 7 };
+static const char *p3c_src_id[P3C_LEAVES] = {
+    "src-alpha", "src-beta", "src-gamma"
+};
+
+static void p3c_die(const char *what) {
+    fprintf(stderr, "p3c fixture: %s\n", what);
+    exit(1);
+}
+
+static void p3c_sql(sqlite3 *db, const char *sql) {
+    char *err = NULL;
+    int rc = sqlite3_exec(db, sql, NULL, NULL, &err);
+    if (err) sqlite3_free(err);
+    if (rc != SQLITE_OK) p3c_die("seed SQL");
+}
+
+/* genesis(1000) = CORE utxo(968) + unclaimed distribution(32). The utxo
+ * row is what the CORE supply invariant balances against; without it
+ * genesis refuses its own manifest. */
+static void p3c_seed_supply(nodus_witness_t *w) {
+    p3c_sql(w->db,
+        "INSERT INTO supply_tracking (id, genesis_supply, total_burned, "
+        "total_minted, current_supply, last_tx_hash, last_sequence) "
+        "VALUES (1, 1000, 0, 0, 968, x'00', 0)");
+    p3c_sql(w->db,
+        "INSERT INTO utxo_set (nullifier, owner, amount, token_id, "
+        "tx_hash, output_index, block_height, created_at, unlock_block, "
+        "domain_id) "
+        "VALUES (zeroblob(63)||x'01', 'genesis', 968, zeroblob(64), "
+        "zeroblob(63)||x'aa', 0, 0, 0, 0, 1)");
+}
+
+/* self_stake MUST be 0: the CORE supply invariant counts Σ self_stake,
+ * so a bonded validator would unbalance the seeded supply above. The
+ * fingerprint is 128 lowercase hex chars + NUL — the validator merkle
+ * leaf loader fails CLOSED on a malformed row, and that would take the
+ * SYSTEM payload root (and therefore genesis) down with it. */
+static void p3c_seed_validators(nodus_witness_t *w, const peer_t *all,
+                                int n) {
+    static const char hexd[] = "0123456789abcdef";
+    for (int i = 0; i < n; i++) {
+        dnac_validator_record_t v;
+        memset(&v, 0, sizeof(v));
+        memcpy(v.pubkey, all[i].pk, DNAC_PUBKEY_SIZE);
+        v.self_stake         = 0;
+        v.status             = DNAC_VALIDATOR_ACTIVE;
+        v.active_since_block = 1;
+        uint8_t fpr[64];
+        if (qgp_sha3_512(all[i].pk, DNAC_PUBKEY_SIZE, fpr) != 0)
+            p3c_die("validator fingerprint");
+        for (int b = 0; b < 64; b++) {
+            v.unstake_destination_fp[2 * b]     = hexd[fpr[b] >> 4];
+            v.unstake_destination_fp[2 * b + 1] = hexd[fpr[b] & 0xF];
+        }
+        v.unstake_destination_fp[128] = '\0';
+        if (nodus_validator_insert(w, &v) != 0)
+            p3c_die("validator insert");
+    }
+}
+
+/* Deterministic distribution leaves + the snapshot root the manifest
+ * commits. dna_dist_check_totals is asserted here rather than trusted:
+ * a conversion that did not total 32 would be refused at genesis, and
+ * the failure would surface as an unexplained genesis error. */
+static void p3c_leaves_init(p3c_chain_t *cx) {
+    for (int i = 0; i < P3C_LEAVES; i++) {
+        uint8_t seed[32];
+        memset(seed, (uint8_t)(0x90 + i), sizeof(seed));
+        if (qgp_dsa87_keypair_derand(cx->leaf_pk[i], cx->leaf_sk[i],
+                                     seed) != 0)
+            p3c_die("leaf keygen");
+        memset(&cx->leaf[i], 0, sizeof(cx->leaf[i]));
+        cx->leaf[i].leaf_version  = DNA_DIST_VERSION;
+        cx->leaf[i].source_id_len = (uint16_t)strlen(p3c_src_id[i]);
+        memcpy(cx->leaf[i].source_id, p3c_src_id[i],
+               cx->leaf[i].source_id_len);
+        cx->leaf[i].source_amount = p3c_src_amount[i];
+        if (qgp_sha3_512(cx->leaf_pk[i], QGP_DSA87_PUBLICKEYBYTES,
+                         cx->leaf[i].dest_binding) != 0)
+            p3c_die("leaf dest binding");
+        if (dna_dist_leaf_hash(&cx->leaf[i], cx->leaf_hash[i]) != 0)
+            p3c_die("leaf hash");
+    }
+    if (dna_dist_snapshot_root(cx->leaf, P3C_LEAVES,
+                               cx->snapshot_root) != 0)
+        p3c_die("snapshot root");
+    if (dna_dist_check_totals(cx->leaf, P3C_LEAVES, 3, 2,
+                              DNA_DISTROUND_FLOOR, 32) != 0)
+        p3c_die("distribution totals");
+}
+
+static void p3c_build_manifest(nodus_witness_t *w, p3c_chain_t *cx,
+                               uint8_t *out, size_t cap, size_t *out_len) {
+    dna_domain_manifest_t dm;
+    /* Zeroed so no -Wmaybe-uninitialized path exists: p3c_die exits, but
+     * a compiler that has not inferred that still sees the memcpys. */
+    uint8_t sys_h[64] = {0}, core_h[64] = {0};
+    if (nodus_witness_domreg_get(w, DNA_DOMAIN_SYSTEM, NULL, &dm, NULL) != 0 ||
+        dna_domman_hash(&dm, sys_h) != 0 ||
+        nodus_witness_domreg_get(w, DNA_DOMAIN_CORE, NULL, &dm, NULL) != 0 ||
+        dna_domman_hash(&dm, core_h) != 0)
+        p3c_die("registry manifest hashes");
+
+    dna_gman_t m;
+    memset(&m, 0, sizeof(m));
+    m.manifest_version   = DNA_GMAN_VERSION;
+    m.genesis_supply_raw = 1000;
+    m.domain_count       = 2;
+    m.domains[0].domain_id = DNA_DOMAIN_SYSTEM;
+    memcpy(m.domains[0].manifest_hash, sys_h, 64);
+    m.domains[1].domain_id = DNA_DOMAIN_CORE;
+    memcpy(m.domains[1].manifest_hash, core_h, 64);
+
+    m.dist_present       = 1;
+    m.dist_version       = DNA_DIST_VERSION;
+    m.target_domain_id   = DNA_DOMAIN_CORE;
+    m.target_asset_len   = 64;
+    memcpy(m.target_asset_ref, p3c_native_asset, 64);
+    m.source_tag_len     = (uint16_t)strlen("testnet-generic");
+    memcpy(m.source_tag, "testnet-generic", m.source_tag_len);
+    m.source_commit_len  = 16;
+    memset(m.source_commit, 0x77, 16);
+    memcpy(m.snapshot_root, cx->snapshot_root, 64);
+    m.leaf_count         = P3C_LEAVES;
+    m.conv_numerator     = 3;
+    m.conv_denominator   = 2;
+    m.rounding_mode      = DNA_DISTROUND_FLOOR;
+    m.excluded_amount    = 4;
+    m.total_claimable    = 32;
+    m.claim_start_height = 1;
+    m.claim_end_height   = 1000000;
+    m.auth_mode          = DNA_CLAIMAUTH_DNA_NATIVE;
+    m.fee_mode           = DNA_CLAIMFEE_NONE;
+    m.post_deadline_mode = DNA_POSTDL_RETAIN;
+
+    if (dna_gman_hash(&m, cx->manifest_hash) != 0 ||
+        dna_gman_encode(&m, out, cap, out_len) != 0)
+        p3c_die("genesis manifest encode");
+}
+
+/* Turn the §11 legacy fixture's open DB into a committed V2 SUCCESSOR
+ * chain. Call order is the load-bearing part; see the block comment. */
+static void p3c_make_successor(nodus_witness_t *w, const peer_t *all, int n,
+                               p3c_chain_t *cx) {
+    /* ⚠ The two shipped V2 fixtures (test_v2_produce.c, and
+     * test_v2_claim_ingress.c) both commit genesis with w->server still
+     * NULL and attach the identity afterwards. This fixture inherits a
+     * server from fixture() because is_leader needs one, so the pointer
+     * is parked across the genesis call — the sequence that is proven to
+     * work is reproduced exactly rather than assumed to be insensitive
+     * to it. */
+    struct nodus_server *saved_srv = w->server;
+    w->server = NULL;
+
+    if (nodus_chain_config_db_migrate(w) != 0) p3c_die("cc migrate");
+    if (nodus_witness_db_migrate_v2s9(w) != 0) p3c_die("v2s9 migrate");
+
+    p3c_seed_supply(w);
+    p3c_seed_validators(w, all, n);
+    if (nodus_witness_vset_commit_genesis(w, 1) != 0)
+        p3c_die("vset genesis");
+    if (nodus_witness_domreg_init_genesis(w) != 0)
+        p3c_die("domreg genesis");
+
+    p3c_leaves_init(cx);
+
+    uint8_t mbytes[8192];
+    size_t mlen = 0;
+    p3c_build_manifest(w, cx, mbytes, sizeof(mbytes), &mlen);
+
+    /* Genesis binds validator_set_hash into the chain identity and the
+     * engine requires it to EQUAL the committed epoch-0 authority, so
+     * the COMMITTED hash is read back rather than chosen. */
+    uint8_t vsh[DNA_VSET_HASH_LEN];
+    memset(vsh, 0x77, sizeof(vsh));   /* never read unset — p3c_die exits */
+    {
+        dna_vset_snapshot_t *s0 = NULL;
+        uint32_t sn = 0, sq = 0;
+        if (nodus_witness_v2_epoch_authority_for_height(w, 0, &s0, &sn,
+                                                        &sq) != 0 || !s0) {
+            dna_vset_free(&s0);
+            p3c_die("committed epoch-0 authority");
+        }
+        int hrc = dna_vset_hash(s0, vsh);
+        dna_vset_free(&s0);
+        if (hrc != 0) p3c_die("vset hash");
+    }
+
+    if (nodus_witness_v2_genesis_ex(w, NULL, vsh, 0, mbytes, mlen) != 0)
+        p3c_die("v2 genesis");
+
+    w->server = saved_srv;
+
+    /* The PRODUCTION derivation of the chain id, not a hand-read blob. */
+    if (nodus_witness_v2_chain_id(w, cx->chain_id) != 0)
+        p3c_die("derived chain id");
+
+    w->v2_successor = true;
+    memcpy(w->v2_chain32, cx->chain_id, 32);
+    w->v2_ingress_armed = true;
+}
+
+/* A signed, admissible claim on leaf `leaf`. Heap: dna_claim_t carries a
+ * 2592-byte pubkey plus a 4627-byte signature plus the proof path. */
+static dna_claim_t *p3c_make_claim(const p3c_chain_t *cx, int leaf) {
+    dna_claim_t *c = calloc(1, sizeof(*c));
+    if (!c) { p3c_die("claim alloc"); return NULL; }
+    c->claim_version = DNA_CLAIM_VERSION;
+    memcpy(c->chain_id, cx->chain_id, DNA_CHAIN_ID_LEN);
+    memcpy(c->manifest_hash, cx->manifest_hash, 64);
+    c->leaf_index    = (uint64_t)leaf;
+    c->source_id_len = cx->leaf[leaf].source_id_len;
+    memcpy(c->source_id, cx->leaf[leaf].source_id, c->source_id_len);
+    c->source_amount = cx->leaf[leaf].source_amount;
+    memcpy(c->dest_binding, cx->leaf[leaf].dest_binding, 64);
+
+    uint16_t ns = 0;
+    if (dna_dist_proof_build((const uint8_t (*)[64])cx->leaf_hash,
+                             P3C_LEAVES, (uint64_t)leaf, c->siblings,
+                             &ns) != 0)
+        p3c_die("claim proof");
+    c->n_siblings = ns;
+    c->auth_mode  = DNA_CLAIMAUTH_DNA_NATIVE;
+    memcpy(c->pubkey, cx->leaf_pk[leaf], QGP_DSA87_PUBLICKEYBYTES);
+
+    uint8_t pre[DNA_CLAIM_PREIMAGE_MAX];
+    size_t pre_len = 0;
+    if (dna_claim_preimage(c, pre, &pre_len) != 0) p3c_die("claim preimage");
+    size_t siglen = 0;
+    if (qgp_dsa87_sign(c->signature, &siglen, pre, pre_len,
+                       cx->leaf_sk[leaf]) != 0 || siglen != DNA_CLAIM_SIG_LEN)
+        p3c_die("claim signature");
+    return c;
+}
+
+/* The committed nullifier consensus derives for this claim — the same
+ * value nodus_witness_v2_claim_entry_nullifier must record at intake. */
+static void p3c_claim_nullifier(const dna_claim_t *c, uint8_t nul[64]) {
+    dna_dist_leaf_t leaf;
+    memset(&leaf, 0, sizeof(leaf));
+    leaf.leaf_version  = DNA_DIST_VERSION;
+    leaf.source_id_len = c->source_id_len;
+    memcpy(leaf.source_id, c->source_id, c->source_id_len);
+    leaf.source_amount = c->source_amount;
+    memcpy(leaf.dest_binding, c->dest_binding, 64);
+    uint8_t lh[64];
+    if (dna_dist_leaf_hash(&leaf, lh) != 0) p3c_die("claim leaf hash");
+    if (dna_claim_nullifier(c->chain_id, c->manifest_hash, DNA_DOMAIN_CORE,
+                            p3c_native_asset, 64, lh, nul) != 0)
+        p3c_die("claim nullifier");
+}
+
+/* Canonical wire bytes + the SHA3-512 the admission lane demands as the
+ * submitted tx_hash. Caller owns the buffer. */
+static uint8_t *p3c_encode_claim(const dna_claim_t *c, size_t *out_len,
+                                 uint8_t hash[64]) {
+    size_t need = dna_claim_encoded_len(c);
+    if (need == 0) p3c_die("claim encoded_len");
+    uint8_t *b = malloc(need);
+    if (!b) { p3c_die("claim wire alloc"); return NULL; }
+    size_t wr = 0;
+    if (dna_claim_encode(c, b, need, &wr) != 0 || wr != need)
+        p3c_die("claim encode");
+    if (qgp_sha3_512(b, wr, hash) != 0) p3c_die("claim wire hash");
+    *out_len = wr;
+    return b;
 }
 
 int main(void) {
@@ -1635,6 +2042,564 @@ int main(void) {
         CHECK(w->awaiting_propose_deadline_ms == 0,
               "P2 disarmed: the PROPOSE the deadman waited for arrived");
 
+        chain_db_drop(w, dir);
+    }
+
+    /* ── §13 P3 — the DEMAND-ARMED follower deadman ───────────────────
+     *
+     * P2 (§12) only ever arms in the aftermath of a COMPLETED view
+     * change. The 20-node terminal state had NO view change at all:
+     * `leader = (epoch + view) % n` with `epoch = height /
+     * DNAC_EPOCH_LENGTH` gives one node an entire epoch (720 heights in
+     * production), only the leader leaves IDLE on its own, and so with
+     * that leader dead every node sat IDLE at view 0 while height 43
+     * recorded zero consensus events of any kind. P3 is the spontaneous
+     * initiation that was missing.
+     *
+     * EVERY SECTION BELOW ASSERTS awaiting_propose_deadline_ms == 0
+     * BEFORE THE TICK. Without that, a VIEW_CHANGE observed after the
+     * tick could have come from P2's fire site, and §13 would be
+     * measuring the section above it. ───────────────────────────────── */
+
+    /* ── §13a — demand + a frozen tip rotates the view ───────────────── */
+    printf("§13a P3 — a follower with pending demand and a frozen tip "
+           "initiates a view change\n");
+    {
+        peer_t p[6];
+        for (int i = 0; i < 6; i++) peer_make(&p[i]);
+        nodus_witness_t *w = fixture(&self, p, 6, 3, 15000, 10000);
+        char dir[] = "/tmp/test_bft_p3_fire_XXXXXX";
+        chain_db_open(w, dir, 0x31);
+
+        uint64_t tip = seed_blocks(w, 3);
+        CHECK(tip == 3, "seeded chain tip is 3 — a real committed tip, so "
+                        "the frozen-tip test below is about a number this "
+                        "test chose rather than about an absent DB");
+
+        w->current_view = p2_pick_view(w, false);
+        CHECK(!nodus_witness_bft_is_leader(w),
+              "we are NOT the leader at the view under test");
+        CHECK(w->awaiting_propose_deadline_ms == 0,
+              "P2 is NOT armed — any rotation below is attributable to P3");
+
+        p3_pool(w, p3_mkentry(0x71, 100, 1));
+        CHECK(w->mempool.count == 1, "one pending entry — this node has "
+                                     "demand the leader is not serving");
+
+        /* TICK 1 — the FIRST observation may only ARM. A node that has
+         * just noticed a frozen tip has not yet waited for anything. */
+        nodus_witness_bft_check_timeout(w);
+        CHECK(w->round_state.phase == NODUS_W_PHASE_IDLE,
+              "the first observation arms the window; it does not fire");
+        CHECK(w->last_seen_tip == tip,
+              "and it recorded the REAL committed tip, not a guess");
+        CHECK(p3_stamped_now(w->tip_since_ms),
+              "the window is now running");
+
+        /* TICK 2 — the same tip, one full round_timeout_ms later. */
+        p3_age_window(w, 16000);
+        uint32_t view_before = w->current_view;
+        nodus_witness_bft_check_timeout(w);
+
+        CHECK(w->round_state.phase == NODUS_W_PHASE_VIEW_CHANGE,
+              "the expired demand window initiated a view change from "
+              "IDLE — the state in which 20 nodes previously sat forever");
+        CHECK(w->view_change_target == view_before + 1,
+              "target is the ORDINARY current_view + 1 — P3 invents no "
+              "target rule of its own");
+        /* ⚠ THE SAFETY ASSERTION, the same one §11 and §12a make: a
+         * liveness fix must not buy liveness by moving the leader
+         * without a quorum. */
+        CHECK(w->current_view == view_before,
+              "current_view is UNTOUCHED — only quorum may advance it");
+        CHECK(w->view_change_in_progress && w->view_change_voted,
+              "and we actually voted, so peers can count us toward f+1");
+        CHECK(p3_stamped_now(w->round_state.phase_start_time),
+              "the phase clock was re-stamped at the fire (D2 discipline: "
+              "initiate_view_change does not stamp it, and the adoption "
+              "stamp only fires from an ALREADY-VIEW_CHANGE phase)");
+        CHECK(p3_stamped_now(w->tip_since_ms),
+              "the demand window was re-stamped too — a second rotation "
+              "must wait another full window, not fire on the next tick");
+
+        nodus_witness_mempool_clear(&w->mempool);
+        chain_db_drop(w, dir);
+    }
+
+    /* ── §13b — NO demand, so it never fires ─────────────────────────
+     *
+     * The anti-churn property, and the reason P3 is safe to run on every
+     * IDLE tick of every node. A quiet chain's tip is frozen by
+     * definition; without the demand gate this section's aged window
+     * would rotate the view, and 20 healthy nodes would churn views
+     * forever. Delete the gate and this section fails. ─────────────── */
+    printf("§13b P3 converse — no demand, no rotation, ever\n");
+    {
+        peer_t p[6];
+        for (int i = 0; i < 6; i++) peer_make(&p[i]);
+        nodus_witness_t *w = fixture(&self, p, 6, 3, 15000, 10000);
+        char dir[] = "/tmp/test_bft_p3_quiet_XXXXXX";
+        chain_db_open(w, dir, 0x32);
+
+        uint64_t tip = seed_blocks(w, 3);
+        CHECK(tip == 3, "seeded chain tip is 3 (see §13a)");
+
+        w->current_view = p2_pick_view(w, false);
+        CHECK(!nodus_witness_bft_is_leader(w), "we are NOT the leader");
+        CHECK(w->awaiting_propose_deadline_ms == 0, "P2 is NOT armed");
+        CHECK(w->mempool.count == 0 && w->pending_forward_count == 0,
+              "and there is NOTHING pending — a quiet, healthy chain");
+
+        /* THE ONE DIFFERENCE FROM §13a: no entry. The window is aged
+         * BY HAND to exactly the state §13a fired from, so the only
+         * thing that can stop the rotation is the demand gate. */
+        w->last_seen_tip = tip;
+        p3_age_window(w, 16000);
+        uint64_t aged = w->tip_since_ms;
+        CHECK(aged != 0 && aged + w->bft_config.round_timeout_ms <
+                               nodus_time_now() * 1000ULL,
+              "the window is force-aged well past round_timeout_ms — "
+              "§13a fired from exactly this much elapsed time");
+
+        nodus_witness_bft_check_timeout(w);
+        CHECK(w->round_state.phase == NODUS_W_PHASE_IDLE,
+              "the tick left us IDLE — a quiet chain never rotates");
+        /* ⚠ THIS is the assertion that makes the section discriminating,
+         * not the IDLE one above it. Delete only the OUTER demand gate
+         * and bft_p3_live_demand still answers false on an empty pool,
+         * so "still IDLE" would survive — but the would-fire path
+         * re-stamps the window to NOW rather than clearing it, so this
+         * line fails in exactly that world. */
+        CHECK(w->tip_since_ms == 0,
+              "and the window was DISARMED rather than aged further — "
+              "demand arriving later gets a full fresh window, so the "
+              "leader is never rotated away from on its first block");
+        CHECK(!w->view_change_in_progress,
+              "no view change was started");
+
+        chain_db_drop(w, dir);
+    }
+
+    /* ── §13c — a MOVING tip never fires ─────────────────────────────
+     *
+     * The other half of the conjunction. Without the tip comparison a
+     * busy chain would rotate away from a leader that is producing
+     * perfectly well, once per round_timeout_ms, purely because its
+     * mempool is never empty. ──────────────────────────────────────── */
+    printf("§13c P3 converse — a chain that is ADVANCING never rotates\n");
+    {
+        peer_t p[6];
+        for (int i = 0; i < 6; i++) peer_make(&p[i]);
+        nodus_witness_t *w = fixture(&self, p, 6, 3, 15000, 10000);
+        char dir[] = "/tmp/test_bft_p3_moving_XXXXXX";
+        chain_db_open(w, dir, 0x33);
+
+        uint64_t tip = seed_blocks(w, 3);
+        CHECK(tip == 3, "seeded chain tip is 3 (see §13a)");
+
+        w->current_view = p2_pick_view(w, false);
+        CHECK(!nodus_witness_bft_is_leader(w), "we are NOT the leader");
+        CHECK(w->awaiting_propose_deadline_ms == 0, "P2 is NOT armed");
+
+        p3_pool(w, p3_mkentry(0x73, 100, 1));
+        nodus_witness_bft_check_timeout(w);
+        CHECK(w->last_seen_tip == 3, "the window is anchored at tip 3");
+
+        /* Age it to exactly §13a's firing state, then let the chain do
+         * the one thing that proves the leader is alive. */
+        p3_age_window(w, 16000);
+        uint64_t moved = seed_blocks(w, 1);
+        CHECK(moved == 4, "the chain ADVANCED inside the window");
+
+        nodus_witness_bft_check_timeout(w);
+        CHECK(w->round_state.phase == NODUS_W_PHASE_IDLE,
+              "the tick left us IDLE — demand alone is not a stall");
+        CHECK(w->last_seen_tip == 4,
+              "the observation followed the chain to the new tip");
+        CHECK(p3_stamped_now(w->tip_since_ms),
+              "and the window RESTARTED from the advance, so the next "
+              "rotation would need a full further round of silence");
+        CHECK(!w->view_change_in_progress, "no view change was started");
+
+        nodus_witness_mempool_clear(&w->mempool);
+        chain_db_drop(w, dir);
+    }
+
+    /* ── §13d — the LEADER is excluded ───────────────────────────────
+     *
+     * A leader with demand and a frozen tip is the node that should be
+     * PRODUCING, and the tick's block timer is about to make it do so.
+     * If it rotated instead it would time out against itself and hand
+     * the epoch to someone else on every block.
+     *
+     * The vacuity trap here is real: "still IDLE" is also what a node
+     * that never reached the decision looks like. So the section also
+     * asserts that the would-fire point WAS reached, by checking that
+     * the window it aged came back re-stamped. ─────────────────────── */
+    printf("§13d P3 — the leader evaluates and declines; it never rotates "
+           "away from itself\n");
+    {
+        peer_t p[6];
+        for (int i = 0; i < 6; i++) peer_make(&p[i]);
+        nodus_witness_t *w = fixture(&self, p, 6, 3, 15000, 10000);
+        char dir[] = "/tmp/test_bft_p3_leader_XXXXXX";
+        chain_db_open(w, dir, 0x34);
+
+        uint64_t tip = seed_blocks(w, 3);
+        CHECK(tip == 3, "seeded chain tip is 3 (see §13a)");
+
+        /* The ONLY difference from §13a: a view at which WE lead. */
+        w->current_view = p2_pick_view(w, true);
+        CHECK(nodus_witness_bft_is_leader(w),
+              "we ARE the leader at the view under test");
+        CHECK(w->awaiting_propose_deadline_ms == 0, "P2 is NOT armed");
+
+        p3_pool(w, p3_mkentry(0x74, 100, 1));
+        nodus_witness_bft_check_timeout(w);
+        CHECK(w->last_seen_tip == tip, "the window is anchored at the tip");
+
+        p3_age_window(w, 16000);
+        uint64_t aged = w->tip_since_ms;
+        uint32_t view_before = w->current_view;
+        nodus_witness_bft_check_timeout(w);
+
+        CHECK(w->round_state.phase == NODUS_W_PHASE_IDLE,
+              "an EXPIRED window on the leader does not fire — the leader "
+              "must produce, not rotate");
+        CHECK(w->current_view == view_before, "current_view untouched");
+        CHECK(!w->view_change_in_progress, "no view change was started");
+        /* ⚠ THE ANTI-VACUITY ASSERTION. Had the tick bailed before the
+         * decision — wrong branch, missing demand, unread tip — the
+         * window would still hold the hand-aged value. It does not, so
+         * the leader test is provably what stopped the rotation. */
+        CHECK(w->tip_since_ms != aged && p3_stamped_now(w->tip_since_ms),
+              "the would-fire point WAS reached and re-stamped: the "
+              "leader check is what declined, not an earlier bail-out");
+
+        nodus_witness_mempool_clear(&w->mempool);
+        chain_db_drop(w, dir);
+    }
+
+    /* ── §13e — P3(b) INTAKE: who may pool a forwarded entry ─────────
+     *
+     * A forwarded transaction used to reach the leader and NOWHERE else,
+     * which is why a dead leader stalls the chain: the demand exists on
+     * exactly one node, and one is far below the f+1 join threshold.
+     *
+     * LEGACY IS UNCHANGED, and this section pins that to the LEADERSHIP
+     * TEST rather than to input validity: the identical bytes are
+     * offered twice, differing only in the view — and therefore only in
+     * whether this node is the leader. A reject that came from the wire
+     * layout instead would refuse both. ─────────────────────────────── */
+    printf("§13e P3(b) — the legacy forward gate is still leader-only, "
+           "byte-identically\n");
+    {
+        peer_t p[6];
+        for (int i = 0; i < 6; i++) peer_make(&p[i]);
+        nodus_witness_t *w = fixture(&self, p, 6, 3, 15000, 10000);
+        char dir[] = "/tmp/test_bft_p3_legacy_XXXXXX";
+        chain_db_open(w, dir, 0x35);
+
+        uint64_t tip = seed_blocks(w, 3);
+        CHECK(tip == 3, "seeded chain tip is 3 (see §13a)");
+        CHECK(!w->v2_successor,
+              "this fixture is a LEGACY chain — the lane P3(b) must leave "
+              "exactly as it found it");
+
+        /* A structurally valid legacy SPEND: header, then one input of
+         * nullifier(64) + amount(8) + token_id(64), which is what the
+         * legacy nullifier walk in handle_fwd_req reads. */
+        uint8_t ltx[DNAC_TX_HEADER_SIZE + 1 + 136];
+        memset(ltx, 0, sizeof(ltx));
+        ltx[1] = NODUS_W_TX_SPEND;
+        ltx[DNAC_TX_HEADER_SIZE] = 1;                  /* input_count */
+        memset(ltx + DNAC_TX_HEADER_SIZE + 1, 0x7E, NODUS_T3_NULLIFIER_LEN);
+
+        uint8_t lhash[NODUS_T3_TX_HASH_LEN];
+        memset(lhash, 0x7F, sizeof(lhash));
+
+        nodus_t3_msg_t fm;
+        memset(&fm, 0, sizeof(fm));
+        fm.type = NODUS_T3_FWD_REQ;
+        memcpy(fm.fwd_req.tx_hash, lhash, NODUS_T3_TX_HASH_LEN);
+        fm.fwd_req.tx_data = ltx;
+        fm.fwd_req.tx_len = (uint32_t)sizeof(ltx);
+        fm.fwd_req.fee = 1000;
+        memcpy(fm.fwd_req.forwarder_id, p[0].id, NODUS_T3_WITNESS_ID_LEN);
+
+        /* LEG 1 — NON-leader. */
+        w->current_view = p2_pick_view(w, false);
+        CHECK(!nodus_witness_bft_is_leader(w), "we are NOT the leader");
+        CHECK(nodus_witness_peer_handle_fwd_req(w, &fm) == -1,
+              "a legacy non-leader REFUSES the forward, as before");
+        CHECK(w->mempool.count == 0,
+              "and nothing was pooled — the legacy intake at this site is "
+              "structural only (no signature verify, no double-spend "
+              "check), so pooling there would widen a trust boundary");
+
+        /* LEG 2 — the SAME bytes, the only change being leadership. */
+        w->current_view = p2_pick_view(w, true);
+        CHECK(nodus_witness_bft_is_leader(w), "we ARE the leader now");
+        CHECK(nodus_witness_peer_handle_fwd_req(w, &fm) == 0,
+              "the identical bytes are accepted by the LEADER — so leg 1's "
+              "refusal came from the leadership test, not from the wire");
+        CHECK(w->mempool.count == 1, "and the leader pooled them");
+
+        nodus_witness_mempool_clear(&w->mempool);
+        chain_db_drop(w, dir);
+    }
+
+    /* ── §13e2 — P3(b) on a SUCCESSOR: a RAW forward is never pooled ──
+     *
+     * The successor lane is the one P3(b) opens to non-leaders, and the
+     * property that makes that safe is that NOTHING reaches the mempool
+     * without passing the ADMISSION lane first — the same gate a direct
+     * client submission takes. This section offers a non-leader bytes
+     * that admission refuses and asserts the pool stays empty.
+     *
+     * The ingress gate is ARMED deliberately: with it closed
+     * verify_v2_successor_tx refuses at its first line and the section
+     * would pass without the admission lane ever running — a textbook
+     * vacuous pass. Armed, the refusal below is the wire-family check
+     * inside admission, which is the code this section is about.
+     *
+     * ⚠ THE LIMIT OF THIS SECTION, stated rather than hidden: it is a
+     * SUPPORTING NEGATIVE and it does NOT fail if the P3(b) intake
+     * change is reverted. Both the old leader-only gate and the new
+     * admission gate answer -1 for bytes admission would refuse; the two
+     * are distinguishable only by an entry that PASSES. §13e3 is the leg
+     * that fails on a revert. ───────────────────────────────────────── */
+    printf("§13e2 P3(b) — a successor non-leader pools NOTHING that fails "
+           "admission\n");
+    {
+        peer_t p[6];
+        for (int i = 0; i < 6; i++) peer_make(&p[i]);
+        nodus_witness_t *w = fixture(&self, p, 6, 3, 15000, 10000);
+        char dir[] = "/tmp/test_bft_p3_succ_XXXXXX";
+        chain_db_open(w, dir, 0x36);
+
+        uint64_t tip = seed_blocks(w, 3);
+        CHECK(tip == 3, "seeded chain tip is 3 (see §13a)");
+
+        w->v2_successor = true;
+        w->v2_ingress_armed = true;
+        CHECK(nodus_witness_v2_ingress_is_armed(w) == 1,
+              "the successor ingress is ARMED — admission really runs, so "
+              "the refusal below cannot come from a closed gate");
+
+        /* Bytes with no V2 wire-family marker: admission's envelope lane
+         * refuses them, and the claim lane refuses them as non-canonical. */
+        uint8_t raw[256];
+        memset(raw, 0x5A, sizeof(raw));
+
+        nodus_t3_msg_t fm;
+        memset(&fm, 0, sizeof(fm));
+        fm.type = NODUS_T3_FWD_REQ;
+        memset(fm.fwd_req.tx_hash, 0x5B, NODUS_T3_TX_HASH_LEN);
+        fm.fwd_req.tx_data = raw;
+        fm.fwd_req.tx_len = (uint32_t)sizeof(raw);
+        fm.fwd_req.fee = 1000;
+        memcpy(fm.fwd_req.forwarder_id, p[0].id, NODUS_T3_WITNESS_ID_LEN);
+
+        w->current_view = p2_pick_view(w, false);
+        CHECK(!nodus_witness_bft_is_leader(w), "we are NOT the leader");
+        CHECK(nodus_witness_peer_handle_fwd_req(w, &fm) != 0,
+              "a successor non-leader refuses bytes that fail ADMISSION");
+        CHECK(w->mempool.count == 0,
+              "and pooled nothing — a RAW, unverified forward never "
+              "enters a follower's mempool");
+
+        /* The SAME bytes on the LEADER are refused identically: P3(b)
+         * moved the gate from leadership to admission, so both roles
+         * now give the same answer for the same bytes. */
+        w->current_view = p2_pick_view(w, true);
+        CHECK(nodus_witness_bft_is_leader(w), "we ARE the leader now");
+        CHECK(nodus_witness_peer_handle_fwd_req(w, &fm) != 0,
+              "the leader refuses the identical bytes — the verdict on a "
+              "successor is admission's, not leadership's");
+        CHECK(w->mempool.count == 0, "still nothing pooled");
+
+        chain_db_drop(w, dir);
+    }
+
+    /* ── §13e3 — P3(b) POSITIVE: a successor NON-LEADER pools an entry
+     *            that passes admission ────────────────────────────────
+     *
+     * THE LEG THAT FAILS IF P3(b) IS REVERTED. Everything else in §13e
+     * observes a -1 that both the old and the new gate produce; only a
+     * successful POOL distinguishes them. Pre-P3(b) this call returns -1
+     * at the leader gate and the mempool stays empty.
+     *
+     * The chain is a REAL committed V2 successor with a present
+     * distribution (see the §13e3 fixture block), and the entry is a
+     * REAL signed class-201 claim, so "it was pooled" means it survived
+     * the whole ADMISSION lane: canonical re-encode, SHA3-512 tx_hash
+     * binding, distribution proof against the committed snapshot root,
+     * the leaf's own ML-DSA-87 signature, the claim window, and the
+     * cross-block spent check. There is no way for this section to pass
+     * vacuously — a fixture that failed to arm anything would fail
+     * admission and pool nothing. ─────────────────────────────────── */
+    printf("§13e3 P3(b) — a successor NON-LEADER pools an admissible "
+           "forwarded entry\n");
+    {
+        peer_t p[6];
+        for (int i = 0; i < 6; i++) peer_make(&p[i]);
+        nodus_witness_t *w = fixture(&self, p, 6, 3, 15000, 10000);
+        char dir[] = "/tmp/test_bft_p3_pool_XXXXXX";
+        chain_db_open(w, dir, 0x39);
+
+        peer_t all[7];
+        all[0] = self;
+        for (int i = 0; i < 6; i++) all[i + 1] = p[i];
+
+        p3c_chain_t *cx = calloc(1, sizeof(*cx));   /* ~25 KB — heap */
+        if (!cx) { fprintf(stderr, "p3c chain alloc\n"); exit(1); }
+        p3c_make_successor(w, all, 7, cx);
+
+        CHECK(w->v2_successor, "the chain is a committed V2 SUCCESSOR");
+        CHECK(nodus_witness_v2_ingress_is_armed(w) == 1,
+              "and its ingress is ARMED, so admission really runs");
+
+        dna_claim_t *c = p3c_make_claim(cx, 0);
+        size_t clen = 0;
+        uint8_t chash[64];
+        uint8_t *cbytes = p3c_encode_claim(c, &clen, chash);
+
+        uint8_t want_nul[64];
+        p3c_claim_nullifier(c, want_nul);
+
+        nodus_t3_msg_t fm;
+        memset(&fm, 0, sizeof(fm));
+        fm.type = NODUS_T3_FWD_REQ;
+        memcpy(fm.fwd_req.tx_hash, chash, NODUS_T3_TX_HASH_LEN);
+        fm.fwd_req.tx_data = cbytes;
+        fm.fwd_req.tx_len = (uint32_t)clen;
+        fm.fwd_req.fee = 0;
+        memcpy(fm.fwd_req.forwarder_id, p[0].id, NODUS_T3_WITNESS_ID_LEN);
+
+        w->current_view = p2_pick_view(w, false);
+        CHECK(!nodus_witness_bft_is_leader(w),
+              "we are NOT the leader — pre-P3(b) this call ended here");
+        CHECK(w->mempool.count == 0, "and the pool starts empty");
+
+        CHECK(nodus_witness_peer_handle_fwd_req(w, &fm) == 0,
+              "the forwarded claim was ACCEPTED by a non-leader");
+        CHECK(w->mempool.count == 1,
+              "and POOLED — the dead leader is no longer the only node "
+              "that can hold this work");
+
+        /* The pooled SHAPE, not just the count. */
+        CHECK(w->mempool.entries[0]->tx_type == NODUS_W_TX_V2_CLAIM,
+              "pooled as the byte-classified entry class (201)");
+        CHECK(w->mempool.entries[0]->is_forwarded,
+              "marked forwarded, so the commit path answers the FORWARDER");
+        CHECK(w->mempool.entries[0]->client_conn == NULL,
+              "with no client connection of its own");
+        CHECK(memcmp(w->mempool.entries[0]->forwarder_id, p[0].id,
+                     NODUS_T3_WITNESS_ID_LEN) == 0,
+              "and the forwarder id carried through, so a w_fwd_rsp from "
+              "whichever node commits it reaches the client's node");
+        CHECK(w->mempool.entries[0]->nullifier_count == 1,
+              "the claim's committed nullifier was recorded");
+        CHECK(memcmp(w->mempool.entries[0]->nullifiers[0], want_nul, 64) == 0,
+              "and it is the value consensus derives — batch dedup and the "
+              "P3(c) drain both key on exactly this");
+
+        /* The duplicate guard is untouched by P3(b). */
+        CHECK(nodus_witness_peer_handle_fwd_req(w, &fm) != 0,
+              "the same claim offered twice is refused");
+        CHECK(w->mempool.count == 1, "and did not double-pool");
+
+        free(cbytes);
+        free(c);
+        free(cx);
+        nodus_witness_mempool_clear(&w->mempool);
+        chain_db_drop(w, dir);
+    }
+
+    /* ── §13f — P3(c): the drain evicts the DECIDED, keeps the LIVE ───
+     *
+     * What used to stand in the tick was an unconditional
+     * mempool_clear() on any non-leader once per epoch. Under P3(b) that
+     * deletes, once a minute and mid-stall, exactly the entries that arm
+     * the P3(a) deadman.
+     *
+     * The SURVIVAL half is what makes this discriminating: an eviction
+     * that dropped everything — which is also what a MISSING DB produces,
+     * since nodus_witness_nullifier_exists is fail-closed — would pass
+     * the "stale entry is gone" half on its own. The DB state both
+     * entries depend on is therefore asserted BEFORE the call.
+     *
+     * Driven by calling the function directly rather than through
+     * nodus_witness_tick: the full tick also runs the epoch roster
+     * rebuild, the peer mesh and the bootstrap machine, none of which
+     * this section is about. ───────────────────────────────────────── */
+    printf("§13f P3(c) — the follower drain evicts committed entries and "
+           "keeps the pending ones\n");
+    {
+        peer_t p[6];
+        for (int i = 0; i < 6; i++) peer_make(&p[i]);
+        nodus_witness_t *w = fixture(&self, p, 6, 3, 15000, 10000);
+        char dir[] = "/tmp/test_bft_p3_drain_XXXXXX";
+        chain_db_open(w, dir, 0x37);
+
+        uint64_t tip = seed_blocks(w, 3);
+        CHECK(tip == 3, "seeded chain tip is 3 (see §13a)");
+
+        /* Fees are chosen so the DECIDED entry sits at index 0 and the
+         * LIVE one behind it: the survivor therefore has to be MOVED,
+         * which exercises the compaction rather than a lucky no-op. */
+        p3_pool(w, p3_mkentry(0x81, 500, 1));   /* decided, head */
+        p3_pool(w, p3_mkentry(0x82, 100, 1));   /* live, behind it */
+        p3_pool(w, p3_mkentry(0x83, 50, 0));    /* no nullifiers at all */
+        CHECK(w->mempool.count == 3, "three entries pooled");
+        CHECK(w->mempool.entries[0]->fee == 500 &&
+              w->mempool.entries[1]->fee == 100 &&
+              w->mempool.entries[2]->fee == 50,
+              "and they are in fee order, decided one first");
+
+        uint8_t n_decided[NODUS_T3_NULLIFIER_LEN];
+        uint8_t n_live[NODUS_T3_NULLIFIER_LEN];
+        p3_nul_of(0x81, n_decided);
+        p3_nul_of(0x82, n_live);
+
+        uint8_t ctx[NODUS_T3_TX_HASH_LEN];
+        memset(ctx, 0x81, sizeof(ctx));
+        CHECK(nodus_witness_nullifier_add(w, n_decided, ctx) == 0,
+              "the first entry's nullifier is COMMITTED on this chain");
+
+        /* ⚠ THE ANTI-VACUITY PAIR. nodus_witness_nullifier_exists is
+         * fail-closed — it answers "spent" on a missing DB or a failed
+         * query — so without pinning BOTH answers here, a fixture with
+         * no usable DB would evict everything and the "decided entry is
+         * gone" assertion would pass for entirely the wrong reason. */
+        CHECK(nodus_witness_nullifier_exists(w, n_decided),
+              "the DB really says the first entry is spent");
+        CHECK(!nodus_witness_nullifier_exists(w, n_live),
+              "and really says the second is NOT — so the DB is live and "
+              "discriminating, not failing closed on everything");
+
+        int dropped = nodus_witness_mempool_evict_committed(w);
+
+        CHECK(dropped == 1, "exactly ONE entry was evicted");
+        CHECK(w->mempool.count == 2, "two survive");
+        CHECK(w->mempool.entries[0]->fee == 100,
+              "the LIVE entry survived and was compacted to the head — "
+              "this is the half the old unconditional clear destroyed");
+        CHECK(w->mempool.entries[1]->fee == 50,
+              "and the entry with NO nullifiers survived too: a predicate "
+              "that cannot judge an entry must not delete it (that is "
+              "every successor class-200 envelope)");
+        CHECK(w->mempool.entries[2] == NULL,
+              "the vacated slot was cleared");
+
+        /* Idempotent: nothing further is decided, so nothing further goes. */
+        CHECK(nodus_witness_mempool_evict_committed(w) == 0,
+              "a second pass evicts nothing — the drain reacts to the "
+              "chain's verdict, not to being called");
+        CHECK(w->mempool.count == 2, "and the survivors are still there");
+
+        nodus_witness_mempool_clear(&w->mempool);
         chain_db_drop(w, dir);
     }
 

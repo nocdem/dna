@@ -514,6 +514,46 @@ typedef struct nodus_witness {
      * votes. `current_view` is untouched by the whole mechanism. */
     uint64_t    awaiting_propose_deadline_ms;
 
+    /* O15I P3 — DEMAND-ARMED FOLLOWER DEADMAN (the observation pair).
+     *
+     * `last_seen_tip` is the committed chain height this node last
+     * OBSERVED, and `tip_since_ms` the time_ms() instant at which it was
+     * first observed to hold. `tip_since_ms == 0` means DISARMED — the
+     * window is not running, which is the state of every node with no
+     * pending demand.
+     *
+     * THE HOLE IT CLOSES — the one P2 does not. P2 arms only in the
+     * aftermath of a COMPLETED view change. But `leader = (epoch + view)
+     * % n` with `epoch = height / DNAC_EPOCH_LENGTH` gives ONE leader an
+     * entire epoch (720 heights in production), and only the leader ever
+     * leaves IDLE on its own (nodus_witness.c, the mempool-driven block
+     * timer). So when the epoch leader dies with NO view change in
+     * flight, every node sits IDLE at view 0, check_timeout returns at
+     * its first branch, and NOTHING spontaneously initiates a rotation:
+     * the 20-node rehearsal's height 43 had ZERO consensus events of any
+     * kind and all 20 nodes ended IDLE at view 0. A f+1 join CAN pull an
+     * IDLE node in (handle_viewchg has no phase gate) — what was missing
+     * is a node willing to ask FIRST.
+     *
+     * WHY THE PAIR AND NOT A SINGLE STAMP. "The tip has not moved for
+     * longer than a round" is the only local, message-free evidence a
+     * follower has that the leader is not producing. It needs both the
+     * height that is stuck AND when it got stuck; one field cannot carry
+     * both, and re-deriving "when" from phase_start_time would read a
+     * round that ended long ago.
+     *
+     * NOT PERSISTED, for P2's reason exactly: this is consensus-local
+     * TIMING state, not a decision. A restart comes up disarmed, which
+     * is the correct conservative default — a fresh node has made no
+     * observation about anyone's liveness.
+     *
+     * NOT part of any signed message, vote, block or state_root. Like
+     * P2's deadline it can only ever decide WHEN this node ASKS for a
+     * rotation, never WHAT it votes; `current_view` is untouched by the
+     * whole mechanism (it advances only on quorum). */
+    uint64_t    last_seen_tip;
+    uint64_t    tip_since_ms;
+
     /* O15C-C D2 — bounded out-of-order vote buffer. A PREVOTE/PRECOMMIT
      * that arrives before this node has initialized the round it
      * belongs to (proposal still in flight), or a PRECOMMIT arriving
@@ -1059,6 +1099,50 @@ void nodus_witness_tick(nodus_witness_t *witness);
  * contract is testable deterministically. @return slots expired. */
 int nodus_witness_pending_forward_expire(nodus_witness_t *witness,
                                            uint64_t now_s);
+
+/**
+ * O15I P3(c) — drop the mempool entries the chain has already decided.
+ *
+ * PER-ENTRY, and that is the whole point. What used to stand here was an
+ * UNCONDITIONAL nodus_witness_mempool_clear on any non-leader once per
+ * 60 s epoch tick. Under P3(b) — where a follower now legitimately POOLS
+ * forwarded work so a dead leader's demand survives on more than one
+ * node — that wipe would delete, once a minute and mid-stall, exactly
+ * the entries that arm the P3(a) deadman. Racing it is not an option, so
+ * the wipe is replaced by an eviction with a REASON.
+ *
+ * THE PREDICATE IS THE LEADER'S OWN. An entry is dropped when any of its
+ * nullifiers is already committed — the identical test batch selection
+ * applies before proposing (nodus_witness_bft.c, "mempool TX stale (DB
+ * double-spend), dropping"). So a follower drops exactly what a leader
+ * would refuse to propose, and never more.
+ *
+ * The original drain's PURPOSE is preserved: forwarded entries carry
+ * client_conn == NULL, so no client disconnect ever reaches them through
+ * remove_by_conn and without a reaper they leak. They still have one —
+ * it now fires on the chain's verdict instead of on the clock, which is
+ * also the first thing in this file that removes a follower's copy of a
+ * transaction AFTER it commits.
+ *
+ * ⚠ An entry with nullifier_count == 0 is never evicted here, because
+ * this predicate cannot say anything about it. On a SUCCESSOR chain that
+ * is every class-200 envelope (the legacy nullifier walk is skipped —
+ * nodus_witness_peer.c). Those copies are reaped instead when this node
+ * next becomes leader and the successor batch pre-check drops them
+ * (nodus_witness_bft.c, "successor batch entry %d rejected by the seam").
+ *
+ * Fee ordering is preserved: survivors are compacted in place, keeping
+ * their relative order, exactly as mempool_remove_by_conn does.
+ *
+ * Deterministic and node-local: it reads only this node's own committed
+ * chain, emits nothing, and mempool content is per-node INPUT — block
+ * content is still chosen by ONE leader and agreed by PREVOTE/PRECOMMIT
+ * with an independent state_root recompute, so two nodes evicting
+ * different entries cannot diverge state.
+ *
+ * @return number of entries evicted and freed.
+ */
+int nodus_witness_mempool_evict_committed(nodus_witness_t *witness);
 
 /**
  * Clean up witness resources. Closes DB, clears state.

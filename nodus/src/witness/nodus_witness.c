@@ -1096,6 +1096,54 @@ int nodus_witness_pending_forward_expire(nodus_witness_t *witness,
     return expired;
 }
 
+/* O15I P3(c) — see the contract on nodus_witness.h. */
+int nodus_witness_mempool_evict_committed(nodus_witness_t *witness) {
+    if (!witness) return 0;
+
+    nodus_witness_mempool_t *mp = &witness->mempool;
+    int evicted = 0;
+    int write_idx = 0;
+
+    for (int i = 0; i < mp->count; i++) {
+        nodus_witness_mempool_entry_t *e = mp->entries[i];
+        if (!e) continue;
+
+        /* An entry the predicate cannot judge is KEPT. nullifier_count
+         * is 0 for every successor class-200 envelope, and "I have no
+         * evidence" must never read as "already committed" — that would
+         * turn this reaper back into the unconditional wipe it replaces.
+         *
+         * nodus_witness_nullifier_exists is FAIL-CLOSED (it answers
+         * "spent" on a missing DB or a query error, nodus_witness_db.c).
+         * That inherited posture is deliberate and kept: on a broken DB
+         * this reaper drops rather than accumulates, which is the safe
+         * direction for a bounded 64-slot pool. */
+        bool decided = false;
+        for (int j = 0; j < e->nullifier_count; j++) {
+            if (nodus_witness_nullifier_exists(witness, e->nullifiers[j])) {
+                decided = true;
+                break;
+            }
+        }
+
+        if (decided) {
+            nodus_witness_mempool_entry_free(e);
+            mp->entries[i] = NULL;
+            evicted++;
+        } else {
+            /* Stable compaction — survivors keep their relative order,
+             * so the fee ranking mempool_add established is untouched. */
+            mp->entries[write_idx++] = e;
+        }
+    }
+
+    for (int i = write_idx; i < mp->count; i++)
+        mp->entries[i] = NULL;
+    mp->count = write_idx;
+
+    return evicted;
+}
+
 void nodus_witness_tick(nodus_witness_t *witness) {
     if (!witness || !witness->running) return;
 
@@ -1161,17 +1209,31 @@ void nodus_witness_tick(nodus_witness_t *witness) {
         }
     }
 
-    /* Drain stale mempool entries when no longer leader.
+    /* Drain DECIDED mempool entries when no longer leader.
      * Only check once per epoch (60s) to avoid flap-induced drops.
      * Forwarded entries (client_conn == NULL) would be stranded forever
-     * since no client disconnect would trigger remove_by_conn. */
+     * since no client disconnect would trigger remove_by_conn.
+     *
+     * O15I P3(c) — the CADENCE and the GATES are unchanged; only the
+     * VERDICT is. This used to nodus_witness_mempool_clear() the whole
+     * mempool. Under P3(b) a follower legitimately holds forwarded work
+     * so a dead leader's demand exists on more than one node, and those
+     * entries are exactly what arms the P3(a) deadman — so a blind wipe
+     * here would delete the evidence of the stall, once a minute, while
+     * the stall was still happening. The reaper now drops an entry only
+     * when the chain has already decided its nullifier, which is the
+     * same test the leader's batch selection applies. Full rationale and
+     * the nullifier_count == 0 caveat: nodus_witness.h. */
     if (!nodus_witness_bft_is_leader(witness) &&
         witness->mempool.count > 0 &&
         nodus_time_now() - witness->last_epoch < 2) {
         /* Runs once right after epoch tick rebuilds roster */
-        fprintf(stderr, "WITNESS: not leader, draining %d mempool entries\n",
-                witness->mempool.count);
-        nodus_witness_mempool_clear(&witness->mempool);
+        int before = witness->mempool.count;
+        int dropped = nodus_witness_mempool_evict_committed(witness);
+        if (dropped > 0)
+            fprintf(stderr, "WITNESS: not leader, evicted %d/%d committed "
+                    "mempool entries (%d still pending)\n",
+                    dropped, before, witness->mempool.count);
     }
 
     /* Peer mesh: reconnection, IDENT exchange */
