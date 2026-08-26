@@ -34,6 +34,8 @@
 #include "crypto/utils/qgp_log.h"
 
 #include <sqlite3.h>
+#include <stdarg.h>                    /* the refusal-reason formatter  */
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -915,8 +917,88 @@ int nodus_witness_v2_genesis_ex(nodus_witness_t *w,
 
 /* ── Apply ──────────────────────────────────────────────────────────── */
 
-#define FAIL_POINT(pt) \
-    do { if (blk->fail_at == (pt)) goto fail; } while (0)
+/* ── WHY the engine refused: the diagnostic reason channel ────────────
+ * Contract, in full, at nodus_v2_block_t.out_reason. The three rules
+ * that matter while reading the code below:
+ *
+ *   1. NO VERDICT MOVES. Every macro here only writes characters into
+ *      blk->out_reason. Not one of them returns, jumps, or evaluates a
+ *      condition that a return depends on — the `goto`s and `return`s
+ *      around them are exactly the ones that were there before, which is
+ *      why they were deliberately left VISIBLE at every site instead of
+ *      being folded into the reason macro. A reviewer can diff the set
+ *      of `goto fail` / `goto fail_fault` / `return` statements and see
+ *      that it is unchanged.
+ *   2. THE CLASS TAG IS MECHANICAL. V2AP_VERDICT / V2AP_FAULT /
+ *      V2AP_DEFER stamp the prefix; a site never types it. The macro
+ *      used is paired with the exit taken, so a -2 exit cannot be
+ *      labelled a verdict by a typo.
+ *   3. ASCII AND BOUNDED. Format strings are engine literals. The only
+ *      substitutions are integers, v2ap_hex8 output, and string literals
+ *      the ENGINE picks (a ternary between two fixed phrases, or a
+ *      stringified fault-point name). No block-, peer- or
+ *      runtime-carried text is ever interpolated, so nothing an attacker
+ *      controls reaches a log line as characters.
+ */
+
+/** Write one class-tagged refusal reason. Truncation is silent — a
+ *  clipped diagnostic is strictly better than a branch on a length. */
+__attribute__((format(printf, 4, 5)))
+static void v2ap_reason(char *buf, size_t sz, const char *cls,
+                        const char *fmt, ...) {
+    if (!buf || sz == 0) return;
+    int n = snprintf(buf, sz, "%s", cls);
+    if (n < 0) { buf[0] = '\0'; return; }
+    if ((size_t)n >= sz) return;             /* clipped at the tag alone */
+    va_list ap;
+    va_start(ap, fmt);
+    (void)vsnprintf(buf + n, sz - (size_t)n, fmt, ap);
+    va_end(ap);
+}
+
+/** The first 8 bytes of a 64-byte root/id as lowercase ASCII hex — just
+ *  enough to tell two roots apart in a log without printing 128 chars.
+ *  ASCII by construction, so interpolating it keeps the ASCII rule. */
+static const char *v2ap_hex8(const uint8_t *b, char out[17]) {
+    static const char hx[] = "0123456789abcdef";
+    for (int i = 0; i < 8; i++) {
+        out[i * 2]     = hx[(b[i] >> 4) & 0x0F];
+        out[i * 2 + 1] = hx[b[i] & 0x0F];
+    }
+    out[16] = '\0';
+    return out;
+}
+
+/* Inside nodus_witness_v2_apply_block, where `blk` is the writable
+ * block. */
+#define V2AP_VERDICT(...) \
+    v2ap_reason(blk->out_reason, sizeof blk->out_reason, "VERDICT: ", \
+                __VA_ARGS__)
+#define V2AP_FAULT(...) \
+    v2ap_reason(blk->out_reason, sizeof blk->out_reason, "FAULT: ", \
+                __VA_ARGS__)
+#define V2AP_DEFER(...) \
+    v2ap_reason(blk->out_reason, sizeof blk->out_reason, "DEFER: ", \
+                __VA_ARGS__)
+
+/* Inside exec_one_env, where `blk` is const and the buffer arrives as
+ * the (reason, reason_size) pair the caller aimed at blk->out_reason. */
+#define V2AP_ENV_VERDICT(...) \
+    v2ap_reason(reason, reason_size, "VERDICT: ", __VA_ARGS__)
+#define V2AP_ENV_FAULT(...) \
+    v2ap_reason(reason, reason_size, "FAULT: ", __VA_ARGS__)
+
+/* A fault-injection point firing is a TEST harness event, not a real
+ * defect — it says so in its own words rather than borrowing the words
+ * of the check it stands in for. */
+#define FAIL_POINT(pt)                                                  \
+    do {                                                                \
+        if (blk->fail_at == (pt)) {                                     \
+            V2AP_VERDICT("fault-injection point %s fired (test "        \
+                         "harness; no real check failed)", #pt);        \
+            goto fail;                                                  \
+        }                                                               \
+    } while (0)
 
 /* S7: map the pool module's mutation stages onto this engine's fault
  * points — a stage "fires" (aborts the batch, rolling the ONE block
@@ -1056,8 +1138,13 @@ static int read_req_cmp(const nodus_rt_read_req_t *a,
 #define ENV_FAIL_POINT(pt)                                              \
     do {                                                                \
         if (blk->fail_at == (pt) &&                                     \
-            blk->fail_env_index == (uint32_t)env_index)                 \
+            blk->fail_env_index == (uint32_t)env_index) {               \
+            V2AP_ENV_VERDICT("fault-injection point %s fired at env %u "\
+                             "leg %u (test harness; no real check "     \
+                             "failed)", #pt, (unsigned)env_index,       \
+                             (unsigned)l);                              \
             return -1;                                                  \
+        }                                                               \
     } while (0)
 
 /**
@@ -1067,6 +1154,13 @@ static int read_req_cmp(const nodus_rt_read_req_t *a,
  * per-domain consumed-unit accounting. `auths` is the engine-owned
  * verdict array the pre-BEGIN authorization stage filled (one slot per
  * (envelope, leg), indexed env_index * DNA_ENV_MAX_LEGS + leg).
+ *
+ * `reason`/`reason_size` are the caller's blk->out_reason (this `blk` is
+ * const, so the buffer arrives separately). The CALLEE OWNS the reason:
+ * every failing site here names its own check, and the three call sites
+ * must not overwrite what they are handed — the inner site always knows
+ * more than "envelope N failed".
+ *
  * @return 0 / -1 verdict / -2 node fault. On ANY failure the caller
  * rolls the whole block back — there is no partial-envelope outcome.
  */
@@ -1077,17 +1171,29 @@ static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
                         dom_ctx_t *doms, size_t n_dom,
                         const dna_env_preflight_t *pf, dna_meter_t *m,
                         const nodus_rt_auth_verdict_t *auths,
-                        nodus_rt_read_res_t *reads, uint8_t *resbuf) {
+                        nodus_rt_read_res_t *reads, uint8_t *resbuf,
+                        char *reason, size_t reason_size) {
     /* RESERVED → ACTIVE. The reservation covered the fixed work by
      * construction, so any failure here is an accounting invariant
      * fault of this node, never a budget verdict. */
-    if (dna_meter_activate(m) != DNA_METER_OK) return -2;
+    if (dna_meter_activate(m) != DNA_METER_OK) {
+        V2AP_ENV_FAULT("env %u: meter RESERVED->ACTIVE failed (state %d)",
+                       (unsigned)env_index, (int)m->state);
+        return -2;
+    }
 
     const dna_env_view_t *v = &pf->view;
     for (uint16_t l = 0; l < v->leg_count; l++) {
         dom_ctx_t *d = dom_for(doms, n_dom, v->leg[l].domain_id);
-        if (!d || !d->rt || !d->rt->exec) return -2;  /* admission-scan
+        if (!d || !d->rt || !d->rt->exec) {          /* admission-scan
                                          * invariant — defensive        */
+            V2AP_ENV_FAULT("env %u leg %u domain %u: runtime/exec hook "
+                           "absent inside the txn (admission-scan "
+                           "invariant broken on this node)",
+                           (unsigned)env_index, (unsigned)l,
+                           (unsigned)v->leg[l].domain_id);
+            return -2;
+        }
         const nodus_domain_runtime_t *rt = d->rt;
 
         /* The ENGINE-owned verified verdict for THIS leg. The pre-BEGIN
@@ -1096,7 +1202,13 @@ static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
          * on this node — a fault, never a verdict. */
         const nodus_rt_auth_verdict_t *av =
             &auths[env_index * DNA_ENV_MAX_LEGS + l];
-        if (av->n_signers < 1) return -2;
+        if (av->n_signers < 1) {
+            V2AP_ENV_FAULT("env %u leg %u: empty authorization verdict "
+                           "slot (pre-BEGIN auth stage invariant broken "
+                           "on this node)",
+                           (unsigned)env_index, (unsigned)l);
+            return -2;
+        }
 
         nodus_rt_exec_ctx_t ctx;
         memset(&ctx, 0, sizeof(ctx));
@@ -1124,35 +1236,97 @@ static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
             uint16_t nr = 0;
             int prc = rt->read_plan(rt, v, l, &ctx, reqs,
                                     NODUS_RT_MAX_READS, &nr);
-            if (prc == -2) return -2;    /* hook backend: node fault     */
-            if (prc != 0) return -1;     /* deterministic refusal        */
-            if (nr > NODUS_RT_MAX_READS) return -1;   /* over-plan       */
+            if (prc == -2) {             /* hook backend: node fault     */
+                V2AP_ENV_FAULT("env %u leg %u domain %u op %u: read_plan "
+                               "hook backend failure",
+                               (unsigned)env_index, (unsigned)l,
+                               (unsigned)d->domain_id,
+                               (unsigned)v->leg[l].runtime_op);
+                return -2;
+            }
+            if (prc != 0) {              /* deterministic refusal        */
+                V2AP_ENV_VERDICT("env %u leg %u domain %u op %u: "
+                                 "read_plan refused (rc %d)",
+                                 (unsigned)env_index, (unsigned)l,
+                                 (unsigned)d->domain_id,
+                                 (unsigned)v->leg[l].runtime_op, prc);
+                return -1;
+            }
+            if (nr > NODUS_RT_MAX_READS) {            /* over-plan       */
+                V2AP_ENV_VERDICT("env %u leg %u domain %u: read_plan "
+                                 "over-planned %u reads (max %u)",
+                                 (unsigned)env_index, (unsigned)l,
+                                 (unsigned)d->domain_id, (unsigned)nr,
+                                 (unsigned)NODUS_RT_MAX_READS);
+                return -1;
+            }
             for (uint16_t r = 0; r < nr; r++) {
                 if (reqs[r].key_len < 1 ||
-                    reqs[r].key_len > DNA_EFFECT_MAX_KEY_LEN)
+                    reqs[r].key_len > DNA_EFFECT_MAX_KEY_LEN) {
+                    V2AP_ENV_VERDICT("env %u leg %u domain %u: read %u "
+                                     "key_len %u out of range [1,%u]",
+                                     (unsigned)env_index, (unsigned)l,
+                                     (unsigned)d->domain_id, (unsigned)r,
+                                     (unsigned)reqs[r].key_len,
+                                     (unsigned)DNA_EFFECT_MAX_KEY_LEN);
                     return -1;
+                }
                 /* strictly ascending (op_id, key): duplicates AND
                  * disorder both reject — an ambiguous read list has no
                  * canonical charge order */
-                if (r > 0 && read_req_cmp(&reqs[r - 1], &reqs[r]) >= 0)
+                if (r > 0 && read_req_cmp(&reqs[r - 1], &reqs[r]) >= 0) {
+                    V2AP_ENV_VERDICT("env %u leg %u domain %u: read plan "
+                                     "not strictly ascending at index %u "
+                                     "(duplicate or disordered key)",
+                                     (unsigned)env_index, (unsigned)l,
+                                     (unsigned)d->domain_id, (unsigned)r);
                     return -1;
+                }
             }
             ENV_FAIL_POINT(V2AP_FAIL_AFTER_READ_PLAN);
             for (uint16_t r = 0; r < nr; r++) {
                 nodus_adapter_status_t ast =
                     nodus_witness_v2_read_one(w, rt, &reqs[r], &reads[r]);
                 if (ast == NODUS_ADAPTER_ERR_STORAGE_FAULT ||
-                    ast == NODUS_ADAPTER_ERR_ARG)
+                    ast == NODUS_ADAPTER_ERR_ARG) {
+                    V2AP_ENV_FAULT("env %u leg %u domain %u: mediated "
+                                   "read %u storage/arg fault (adapter "
+                                   "status %d)",
+                                   (unsigned)env_index, (unsigned)l,
+                                   (unsigned)d->domain_id, (unsigned)r,
+                                   (int)ast);
                     return -2;           /* node fault, never "absent"   */
-                if (ast != NODUS_ADAPTER_OK)
+                }
+                if (ast != NODUS_ADAPTER_OK) {
+                    V2AP_ENV_VERDICT("env %u leg %u domain %u: mediated "
+                                     "read %u refused (adapter status "
+                                     "%d)",
+                                     (unsigned)env_index, (unsigned)l,
+                                     (unsigned)d->domain_id, (unsigned)r,
+                                     (int)ast);
                     return -1;           /* NO_ADAPTER/UNKNOWN_OP/SHAPE:
                                           * deterministic verdict        */
+                }
                 /* exactly ONE w_read per executed read, from the sealed
                  * plan-pinned policy — the engine is the only charger */
                 dna_meter_status_t ms =
                     dna_meter_charge_read(m, d->domain_id);
-                if (ms == DNA_METER_ERR_FAULT) return -2;
-                if (ms != DNA_METER_OK) return -1;    /* budget verdict  */
+                if (ms == DNA_METER_ERR_FAULT) {
+                    V2AP_ENV_FAULT("env %u leg %u domain %u: meter "
+                                   "accounting fault charging read %u",
+                                   (unsigned)env_index, (unsigned)l,
+                                   (unsigned)d->domain_id, (unsigned)r);
+                    return -2;
+                }
+                if (ms != DNA_METER_OK) {             /* budget verdict  */
+                    V2AP_ENV_VERDICT("env %u leg %u domain %u: read %u "
+                                     "exceeded the unit budget (meter "
+                                     "status %d)",
+                                     (unsigned)env_index, (unsigned)l,
+                                     (unsigned)d->domain_id, (unsigned)r,
+                                     (int)ms);
+                    return -1;
+                }
             }
             n_reads = nr;
             ENV_FAIL_POINT(V2AP_FAIL_AFTER_READS);
@@ -1164,10 +1338,32 @@ static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
         {
             int xrc = rt->exec(rt, v, l, &ctx, reads, n_reads,
                                resbuf, DNA_EFFECT_MAX_TOTAL_LEN, &rl);
-            if (xrc == -2) return -2;    /* hook backend: node fault     */
-            if (xrc != 0) return -1;     /* deterministic refusal        */
+            if (xrc == -2) {             /* hook backend: node fault     */
+                V2AP_ENV_FAULT("env %u leg %u domain %u op %u: exec hook "
+                               "backend failure",
+                               (unsigned)env_index, (unsigned)l,
+                               (unsigned)d->domain_id,
+                               (unsigned)v->leg[l].runtime_op);
+                return -2;
+            }
+            if (xrc != 0) {              /* deterministic refusal        */
+                V2AP_ENV_VERDICT("env %u leg %u domain %u op %u: runtime "
+                                 "exec refused (rc %d)",
+                                 (unsigned)env_index, (unsigned)l,
+                                 (unsigned)d->domain_id,
+                                 (unsigned)v->leg[l].runtime_op, xrc);
+                return -1;
+            }
         }
-        if (rl > DNA_EFFECT_MAX_TOTAL_LEN) return -1;
+        if (rl > DNA_EFFECT_MAX_TOTAL_LEN) {
+            V2AP_ENV_VERDICT("env %u leg %u domain %u: exec hook claimed "
+                             "%llu result bytes (max %llu)",
+                             (unsigned)env_index, (unsigned)l,
+                             (unsigned)d->domain_id,
+                             (unsigned long long)rl,
+                             (unsigned long long)DNA_EFFECT_MAX_TOTAL_LEN);
+            return -1;
+        }
         ENV_FAIL_POINT(V2AP_FAIL_AFTER_EXEC_HOOK);
 
         /* exact-length strict decode: canonical order, logical-key
@@ -1175,7 +1371,15 @@ static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
          * a malformed result from a compiled runtime is the same bytes
          * on every node, hence a VERDICT */
         dna_effect_view_t ev;
-        if (dna_effect_result_decode(resbuf, rl, &ev) != 0) return -1;
+        if (dna_effect_result_decode(resbuf, rl, &ev) != 0) {
+            V2AP_ENV_VERDICT("env %u leg %u domain %u: strict decode of "
+                             "the %llu-byte runtime result failed "
+                             "(non-canonical effect list)",
+                             (unsigned)env_index, (unsigned)l,
+                             (unsigned)d->domain_id,
+                             (unsigned long long)rl);
+            return -1;
+        }
         ENV_FAIL_POINT(V2AP_FAIL_AFTER_EFFECT_DECODE);
 
         /* charge BEFORE mutation (the season's step order): w_effect ×
@@ -1183,8 +1387,23 @@ static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
          * by the leg's declared ceilings */
         dna_meter_status_t ms = dna_meter_charge_effects(m, d->domain_id,
                                                          &ev);
-        if (ms == DNA_METER_ERR_FAULT) return -2;
-        if (ms != DNA_METER_OK) return -1;
+        if (ms == DNA_METER_ERR_FAULT) {
+            V2AP_ENV_FAULT("env %u leg %u domain %u: meter accounting "
+                           "fault charging %u effects",
+                           (unsigned)env_index, (unsigned)l,
+                           (unsigned)d->domain_id,
+                           (unsigned)ev.effect_count);
+            return -2;
+        }
+        if (ms != DNA_METER_OK) {
+            V2AP_ENV_VERDICT("env %u leg %u domain %u: %u effects "
+                             "exceeded the declared ceiling / unit budget "
+                             "(meter status %d)",
+                             (unsigned)env_index, (unsigned)l,
+                             (unsigned)d->domain_id,
+                             (unsigned)ev.effect_count, (int)ms);
+            return -1;
+        }
         ENV_FAIL_POINT(V2AP_FAIL_AFTER_EFFECT_CHARGE);
 
         /* adapter application: validate → probe → the ONE precondition
@@ -1204,9 +1423,23 @@ static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
             nodus_witness_v2_effects_apply_ex(w, rt, &ev, &fidx,
                                               stop_after);
         if (ast == NODUS_ADAPTER_ERR_STORAGE_FAULT ||
-            ast == NODUS_ADAPTER_ERR_ARG)
+            ast == NODUS_ADAPTER_ERR_ARG) {
+            V2AP_ENV_FAULT("env %u leg %u domain %u: storage/arg fault "
+                           "applying effect %u of %u (adapter status %d)",
+                           (unsigned)env_index, (unsigned)l,
+                           (unsigned)d->domain_id, (unsigned)fidx,
+                           (unsigned)ev.effect_count, (int)ast);
             return -2;                   /* node fault                   */
-        if (ast != NODUS_ADAPTER_OK) return -1;   /* precondition etc.   */
+        }
+        if (ast != NODUS_ADAPTER_OK) {            /* precondition etc.   */
+            V2AP_ENV_VERDICT("env %u leg %u domain %u: effect %u of %u "
+                             "rejected by the adapter (status %d - "
+                             "precondition/probe)",
+                             (unsigned)env_index, (unsigned)l,
+                             (unsigned)d->domain_id, (unsigned)fidx,
+                             (unsigned)ev.effect_count, (int)ast);
+            return -1;
+        }
 
         /* F38 (O11): the leg at blk->fail_leg_index has now FULLY
          * applied every one of its effects, and the NEXT leg of the same
@@ -1219,12 +1452,22 @@ static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
          * it proves is the one every real rejection takes. */
         if (blk->fail_at == V2AP_FAIL_AFTER_LEG_APPLY &&
             blk->fail_env_index == (uint32_t)env_index &&
-            blk->fail_leg_index == (uint32_t)l)
+            blk->fail_leg_index == (uint32_t)l) {
+            V2AP_ENV_VERDICT("fault-injection point "
+                             "V2AP_FAIL_AFTER_LEG_APPLY fired at env %u "
+                             "leg %u (test harness; no real check "
+                             "failed)",
+                             (unsigned)env_index, (unsigned)l);
             return -1;
+        }
     }
 
     /* ACTIVE → FINALIZED: unused units return to the budgets. */
-    if (dna_meter_finalize(m) != DNA_METER_OK) return -2;
+    if (dna_meter_finalize(m) != DNA_METER_OK) {
+        V2AP_ENV_FAULT("env %u: meter ACTIVE->FINALIZED failed (state %d)",
+                       (unsigned)env_index, (int)m->state);
+        return -2;
+    }
 
     /* Per-domain consumed-unit accounting for the DomainUpdate resource
      * fields (ACTUAL consumed units, not the reservation). Bounded by
@@ -1232,10 +1475,22 @@ static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
      * discipline. */
     for (uint16_t l = 0; l < v->leg_count; l++) {
         dom_ctx_t *d = dom_for(doms, n_dom, v->leg[l].domain_id);
-        if (!d) return -2;
-        if (dna_ck_add_u64(d->res_cost, m->dom_consumed[l],
-                           &d->res_cost) != 0)
+        if (!d) {
+            V2AP_ENV_FAULT("env %u leg %u: domain %u vanished from the "
+                           "block-start snapshot during consumed-unit "
+                           "accounting",
+                           (unsigned)env_index, (unsigned)l,
+                           (unsigned)v->leg[l].domain_id);
             return -2;
+        }
+        if (dna_ck_add_u64(d->res_cost, m->dom_consumed[l],
+                           &d->res_cost) != 0) {
+            V2AP_ENV_FAULT("env %u leg %u domain %u: consumed-unit "
+                           "accumulator overflowed",
+                           (unsigned)env_index, (unsigned)l,
+                           (unsigned)d->domain_id);
+            return -2;
+        }
     }
     return 0;
 }
@@ -1248,9 +1503,25 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
      * classification, as nodus_witness_v2_qc.c:24-30. (O14 review R2-F5:
      * this guard had returned -1 since S5, which contradicted the
      * convention the engine states in its own header.) */
-    if (!w || !w->db || !blk || (blk->n_envs > 0 && !blk->envs)) return -2;
+    /* Split from the guard below ONLY so the reason buffer can be cleared
+     * the instant `blk` is known non-NULL. Same operands, same
+     * short-circuit order, same -2: this is the ONE exit in the engine
+     * that cannot carry a reason, because there is no block to write it
+     * into. */
+    if (!w || !w->db || !blk) return -2;
+    blk->out_reason[0] = '\0';
+    if (blk->n_envs > 0 && !blk->envs) {
+        V2AP_FAULT("caller passed n_envs=%llu with a NULL envs array",
+                   (unsigned long long)blk->n_envs);
+        return -2;
+    }
     /* An over-large batch IS a property of the block: verdict. */
-    if (blk->n_envs > NODUS_V2_ENV_BATCH_MAX) return -1;
+    if (blk->n_envs > NODUS_V2_ENV_BATCH_MAX) {
+        V2AP_VERDICT("batch of %llu envelopes exceeds the engine bound %u",
+                     (unsigned long long)blk->n_envs,
+                     (unsigned)NODUS_V2_ENV_BATCH_MAX);
+        return -1;
+    }
 
     /* THIS NODE'S schema level is not a property of the block. A read
      * fault and a version mismatch are both node-local: the block may be
@@ -1266,15 +1537,31 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
         (ver != NODUS_V2_SCHEMA_VERSION_S9 &&
          ver != NODUS_V2_SCHEMA_VERSION_S10 &&
          ver != NODUS_V2_SCHEMA_VERSION_S11 &&
-         ver != NODUS_V2_SCHEMA_VERSION_S12))
+         ver != NODUS_V2_SCHEMA_VERSION_S12)) {
+        V2AP_FAULT("this node's schema version is %u - unreadable or not "
+                   "in the supported set {%u,%u,%u,%u}; nothing about the "
+                   "block was judged",
+                   (unsigned)ver,
+                   (unsigned)NODUS_V2_SCHEMA_VERSION_S9,
+                   (unsigned)NODUS_V2_SCHEMA_VERSION_S10,
+                   (unsigned)NODUS_V2_SCHEMA_VERSION_S11,
+                   (unsigned)NODUS_V2_SCHEMA_VERSION_S12);
         return -2;
+    }
 
     /* ── epoch: DERIVED from the global block count, never trusted ────
      * blk->epoch is caller-carried block material; it MUST equal the
      * canonical derivation or the block is a lie about its own epoch.
      * No clock, no timestamp, no domain_height participates. */
-    if (blk->epoch != nodus_v2_epoch_for_height(blk->global_height))
+    if (blk->epoch != nodus_v2_epoch_for_height(blk->global_height)) {
+        V2AP_VERDICT("block at height %llu declares epoch %llu; the "
+                     "canonical derivation is %llu",
+                     (unsigned long long)blk->global_height,
+                     (unsigned long long)blk->epoch,
+                     (unsigned long long)
+                         nodus_v2_epoch_for_height(blk->global_height));
         return -1;
+    }
 
     /* ── 0. replay / linkage (read-only, pre-transaction) ─────────────
      * O14: the caller no longer supplies an identity. `expect_block_id`
@@ -1301,8 +1588,12 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
             if (sqlite3_prepare_v2(w->db,
                     "SELECT block_id, prev_block_id, header FROM v2_blocks "
                     "WHERE global_height = ?1",
-                    -1, &st, NULL) != SQLITE_OK)
+                    -1, &st, NULL) != SQLITE_OK) {
+                V2AP_FAULT("phase 0: could not prepare the replay probe "
+                           "for height %llu",
+                           (unsigned long long)blk->global_height);
                 return -2;
+            }
             sqlite3_bind_int64(st, 1, (sqlite3_int64)blk->global_height);
             rc = sqlite3_step(st);
             if (rc == SQLITE_ROW) {
@@ -1313,8 +1604,15 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
                  * local row declares a valid, quorum-certified block
                  * consensus-invalid while healthy peers return rc 1.
                  * (O14 review R1-F1.) */
-                if (sqlite3_column_bytes(st, 0) != 64) {
-                    sqlite3_finalize(st);
+                int idlen = sqlite3_column_bytes(st, 0);
+                if (idlen != 64) {
+                    sqlite3_finalize(st);   /* read the length BEFORE the
+                                             * statement is finalized    */
+                    V2AP_FAULT("phase 0: committed block_id at height "
+                               "%llu is %d bytes, not 64 - local row "
+                               "corruption, not a block property",
+                               (unsigned long long)blk->global_height,
+                               idlen);
                     return -2;
                 }
                 int same = (memcmp(sqlite3_column_blob(st, 0),
@@ -1323,9 +1621,15 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
                     /* Serve the COMMITTED identity so the caller can
                      * still compare its certificate against the stored
                      * block without the engine re-executing anything. */
-                    if (sqlite3_column_bytes(st, 1) != 64 ||
-                        sqlite3_column_bytes(st, 2) != DNA_BH2_ENC_SIZE) {
+                    int pvlen = sqlite3_column_bytes(st, 1);
+                    int hdlen = sqlite3_column_bytes(st, 2);
+                    if (pvlen != 64 || hdlen != DNA_BH2_ENC_SIZE) {
                         sqlite3_finalize(st);
+                        V2AP_FAULT("phase 0: committed row at height %llu "
+                                   "is malformed (prev_block_id %d bytes, "
+                                   "header %d bytes) - local corruption",
+                                   (unsigned long long)blk->global_height,
+                                   pvlen, hdlen);
                         return -2;      /* malformed committed row       */
                     }
                     memcpy(blk->out_block_id,
@@ -1336,20 +1640,36 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
                            sqlite3_column_blob(st, 2), DNA_BH2_ENC_SIZE);
                 }
                 sqlite3_finalize(st);
+                if (!same)
+                    V2AP_VERDICT("phase 0: a DIFFERENT block is already "
+                                 "committed at height %llu; the asserted "
+                                 "expect_block_id does not match it",
+                                 (unsigned long long)blk->global_height);
                 return same ? 1 : -1;   /* idempotent / conflicting      */
             }
             sqlite3_finalize(st);
-            if (rc != SQLITE_DONE) return -2;
+            if (rc != SQLITE_DONE) {
+                V2AP_FAULT("phase 0: replay probe for height %llu failed "
+                           "to step (sqlite rc %d)",
+                           (unsigned long long)blk->global_height, rc);
+                return -2;
+            }
         }
 
         /* height continuity + prev linkage */
         uint64_t maxh = 0;
         if (sum_q(w, "SELECT COALESCE(MAX(global_height),0) FROM v2_blocks",
-                  &maxh) != 0)
+                  &maxh) != 0) {
+            V2AP_FAULT("phase 0: could not read MAX(global_height) from "
+                       "v2_blocks on this node");
             return -2;
+        }
         uint64_t rows = 0;
-        if (sum_q(w, "SELECT COUNT(*) FROM v2_blocks", &rows) != 0)
+        if (sum_q(w, "SELECT COUNT(*) FROM v2_blocks", &rows) != 0) {
+            V2AP_FAULT("phase 0: could not read COUNT(*) from v2_blocks "
+                       "on this node");
             return -2;
+        }
 
         /* O15A — the linkage classes, in this order deliberately.
          *
@@ -1358,16 +1678,32 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
          * so a height-0 block arriving here is a statement about THIS
          * block — it cannot be applied through this path at all — and no
          * amount of waiting for predecessors would ever make it valid. */
-        if (blk->global_height == 0) return NODUS_V2_CONSENSUS_INVALID;
+        if (blk->global_height == 0) {
+            V2AP_VERDICT("phase 0: height 0 cannot be applied through "
+                         "this path - genesis has its own entry point "
+                         "(nodus_witness_v2_genesis_ex)");
+            return NODUS_V2_CONSENSUS_INVALID;
+        }
 
         /* No genesis committed HERE yet. The block may be perfectly
          * valid; this node simply has no chain to link it onto. That is
          * absent predecessor state, not a defect in the block. */
-        if (rows == 0) return NODUS_V2_NOT_YET_LINKABLE;
+        if (rows == 0) {
+            V2AP_DEFER("phase 0: no genesis committed on this node, so "
+                       "height %llu has no chain to link onto - NOTHING "
+                       "was judged",
+                       (unsigned long long)blk->global_height);
+            return NODUS_V2_NOT_YET_LINKABLE;
+        }
 
         /* maxh + 1 would wrap at UINT64_MAX and make an impossible height
          * look like the expected next one. Checked before it is used. */
-        if (maxh == UINT64_MAX) return NODUS_V2_INTERNAL_FAULT;
+        if (maxh == UINT64_MAX) {
+            V2AP_FAULT("phase 0: committed head height is UINT64_MAX - "
+                       "maxh+1 would wrap, so no successor height can be "
+                       "computed on this node");
+            return NODUS_V2_INTERNAL_FAULT;
+        }
 
         /* AHEAD of our chain: we cannot evaluate it yet, because the
          * predecessors it builds on are absent here. A node that is
@@ -1376,7 +1712,15 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
          * must not advance a head and must not be held against the peer.
          * Fetching the gap is a SYNC concern and is deliberately not
          * implemented here. */
-        if (blk->global_height > maxh + 1) return NODUS_V2_NOT_YET_LINKABLE;
+        if (blk->global_height > maxh + 1) {
+            V2AP_DEFER("phase 0: height %llu is AHEAD of this node's head "
+                       "%llu (next expected %llu) - predecessor state is "
+                       "absent, NOTHING was judged",
+                       (unsigned long long)blk->global_height,
+                       (unsigned long long)maxh,
+                       (unsigned long long)(maxh + 1));
+            return NODUS_V2_NOT_YET_LINKABLE;
+        }
 
         /* AT or BEHIND the head: evaluable right now, so it gets a real
          * verdict. In follower mode a block at a committed height was
@@ -1384,15 +1728,25 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
          * means a hole in the local chain or, in leader mode, a height
          * already committed — the source-pinned asymmetry documented at
          * the top of this block. */
-        if (blk->global_height != maxh + 1)
+        if (blk->global_height != maxh + 1) {
+            V2AP_VERDICT("phase 0: height %llu is at or below this node's "
+                         "head %llu (next expected %llu) - evaluable now, "
+                         "and it is not the successor",
+                         (unsigned long long)blk->global_height,
+                         (unsigned long long)maxh,
+                         (unsigned long long)(maxh + 1));
             return NODUS_V2_CONSENSUS_INVALID;
+        }
 
         /* prev_block_id is DERIVED from the previous committed row — the
          * caller may only assert it. */
         if (sqlite3_prepare_v2(w->db,
                 "SELECT block_id FROM v2_blocks WHERE global_height = ?1",
-                -1, &st, NULL) != SQLITE_OK)
+                -1, &st, NULL) != SQLITE_OK) {
+            V2AP_FAULT("phase 0: could not prepare the parent lookup for "
+                       "height %llu", (unsigned long long)maxh);
             return -2;
+        }
         sqlite3_bind_int64(st, 1, (sqlite3_int64)maxh);
         rc = sqlite3_step(st);
         int prev_ok = (rc == SQLITE_ROW &&
@@ -1400,11 +1754,23 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
         if (prev_ok)
             memcpy(blk->out_prev_block_id, sqlite3_column_blob(st, 0), 64);
         sqlite3_finalize(st);
-        if (!prev_ok) return -2;        /* missing/malformed parent row  */
+        if (!prev_ok) {                 /* missing/malformed parent row  */
+            V2AP_FAULT("phase 0: parent row at height %llu is missing or "
+                       "malformed on this node (sqlite rc %d)",
+                       (unsigned long long)maxh, rc);
+            return -2;
+        }
         if (blk->expect_prev_block_id &&
             memcmp(blk->expect_prev_block_id, blk->out_prev_block_id, 64)
-                != 0)
-            return -1;                  /* asserted a foreign parent     */
+                != 0) {                 /* asserted a foreign parent     */
+            char e[17], d[17];
+            V2AP_VERDICT("phase 0: asserted prev_block_id %s does not "
+                         "match the committed parent %s at height %llu",
+                         v2ap_hex8(blk->expect_prev_block_id, e),
+                         v2ap_hex8(blk->out_prev_block_id, d),
+                         (unsigned long long)maxh);
+            return -1;
+        }
     }
 
     /* ── 0a. FROZEN BLOCK-START EXECUTION SNAPSHOT (read-only) ────────
@@ -1415,10 +1781,17 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
      * block executes can change what a later transaction in the SAME
      * block resolves. */
     dom_ctx_t *doms = calloc(MAX_DOMS, sizeof(*doms));
-    if (!doms) return -2;
+    if (!doms) {
+        V2AP_FAULT("phase 0a: allocation of the %u-entry domain snapshot "
+                   "failed", (unsigned)MAX_DOMS);
+        return -2;
+    }
     size_t n_dom = 0;
     if (doms_load(w, doms, &n_dom, /*strict_active=*/1) != 0) {
         free(doms);
+        V2AP_FAULT("phase 0a: the domain registry / heads / runtime "
+                   "tuples are unreadable or broken on THIS node - never "
+                   "a statement about the block");
         return -2;   /* registry/head/runtime state unreadable or broken
                       * on THIS node — never a statement about the block */
     }
@@ -1426,6 +1799,8 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
     uint8_t chain_id[DNA_CHAIN_ID_LEN];
     if (nodus_witness_v2_chain_id(w, chain_id) != 0) {
         free(doms);
+        V2AP_FAULT("phase 0a: chain id underivable on this node although "
+                   "linkage proved genesis exists");
         return -2;   /* linkage proved genesis exists; an underivable
                       * chain id here is a node-local read failure       */
     }
@@ -1451,13 +1826,30 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
                 w, blk->global_height, &snap, &vn, &vq) != 0 || !snap) {
             dna_vset_free(&snap);
             free(doms);
+            V2AP_FAULT("phase 0a: no committed validator-set snapshot "
+                       "governs height %llu on this node - cannot know "
+                       "who was permitted to sign, so abstain",
+                       (unsigned long long)blk->global_height);
             return -2;
         }
         int hrc = dna_vset_hash(snap, blk->out_vset_hash);
         dna_vset_free(&snap);
-        if (hrc != 0) { free(doms); return -2; }
+        if (hrc != 0) {
+            free(doms);
+            V2AP_FAULT("phase 0a: hashing the governing validator-set "
+                       "snapshot (%u members, quorum %u) failed",
+                       (unsigned)vn, (unsigned)vq);
+            return -2;
+        }
         if (blk->expect_vset_hash &&
             memcmp(blk->expect_vset_hash, blk->out_vset_hash, 64) != 0) {
+            char e[17], d[17];
+            V2AP_VERDICT("phase 0a: asserted validator_set_hash %s does "
+                         "not match the snapshot governing height %llu "
+                         "(%s, %u members)",
+                         v2ap_hex8(blk->expect_vset_hash, e),
+                         (unsigned long long)blk->global_height,
+                         v2ap_hex8(blk->out_vset_hash, d), (unsigned)vn);
             free(doms);
             return -1;      /* asserted a foreign validator set          */
         }
@@ -1474,6 +1866,18 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
     {
         int bcrc = block_ctx_from_doms(doms, n_dom, &bctx);
         if (bcrc != 0) {
+            /* The class follows the value the builder already chose —
+             * the reason must never re-decide it. */
+            if (bcrc == -1)
+                V2AP_VERDICT("phase 0a: block context (ruleset table / "
+                             "metering policy / unit budgets) rejected "
+                             "the committed chain state across %llu "
+                             "registered domains",
+                             (unsigned long long)n_dom);
+            else
+                V2AP_FAULT("phase 0a: block context build failed on this "
+                           "node (rc %d, %llu registered domains)",
+                           bcrc, (unsigned long long)n_dom);
             free(doms);
             return bcrc;    /* -1 chain-state verdict / -2 node fault,
                              * both unchanged from the inline original  */
@@ -1508,8 +1912,12 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
         resbuf = calloc(1, DNA_EFFECT_MAX_TOTAL_LEN);
         auths  = calloc((size_t)blk->n_envs * DNA_ENV_MAX_LEGS,
                         sizeof(*auths));
-        if (!pf || !meters || !reads || !resbuf || !auths)
+        if (!pf || !meters || !reads || !resbuf || !auths) {
+            V2AP_FAULT("phase 0b: allocation of the preflight/meter/read/"
+                       "result/auth working set for %llu envelopes failed",
+                       (unsigned long long)blk->n_envs);
             goto fail_fault_pre;
+        }
     }
 
 #define RET_VERDICT do { goto fail_verdict_pre; } while (0)
@@ -1532,11 +1940,29 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
                  pfst == DNA_ENV_PF_ERR_HASH) ||
                 (est == NODUS_V2_ENV_ERR_METER &&
                  mst == DNA_METER_ERR_FAULT) ||
-                est == NODUS_V2_ENV_ERR_CHAIN)
+                est == NODUS_V2_ENV_ERR_CHAIN) {
+                V2AP_FAULT("phase 0b: preflight/reserve of envelope %llu "
+                           "of %llu could not be computed on this node "
+                           "(env status %d, preflight %d, meter %d)",
+                           (unsigned long long)fidx,
+                           (unsigned long long)blk->n_envs,
+                           (int)est, (int)pfst, (int)mst);
                 goto fail_fault_pre;
+            }
+            V2AP_VERDICT("phase 0b: envelope %llu of %llu rejected by "
+                         "preflight/reserve (env status %d, preflight %d, "
+                         "meter %d)",
+                         (unsigned long long)fidx,
+                         (unsigned long long)blk->n_envs,
+                         (int)est, (int)pfst, (int)mst);
             RET_VERDICT;
         }
-        if (blk->fail_at == V2AP_FAIL_AFTER_ENV_RESERVE) RET_VERDICT;
+        if (blk->fail_at == V2AP_FAIL_AFTER_ENV_RESERVE) {
+            V2AP_VERDICT("fault-injection point "
+                         "V2AP_FAIL_AFTER_ENV_RESERVE fired (test "
+                         "harness; no real check failed)");
+            RET_VERDICT;
+        }
 
         /* ── COMMITTED-IDENTITY REPLAY GUARD (intent season, pre-BEGIN,
          * read-only) ──────────────────────────────────────────────────
@@ -1564,16 +1990,40 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
             for (int g = 0; g < 2; g++) {
                 sqlite3_stmt *st = NULL;
                 if (sqlite3_prepare_v2(w->db, guard_sql[g], -1, &st,
-                                       NULL) != SQLITE_OK)
+                                       NULL) != SQLITE_OK) {
+                    V2AP_FAULT("phase 0b: could not prepare the %s replay "
+                               "guard for envelope %llu",
+                               g == 0 ? "intent_id" : "wire_id",
+                               (unsigned long long)i);
                     goto fail_fault_pre;
+                }
                 sqlite3_bind_blob(st, 1, guard_id[g], 64, SQLITE_STATIC);
                 int rc = sqlite3_step(st);
                 sqlite3_finalize(st);
-                if (rc == SQLITE_ROW) RET_VERDICT;   /* already committed */
-                if (rc != SQLITE_DONE) goto fail_fault_pre;
+                if (rc == SQLITE_ROW) {              /* already committed */
+                    char h[17];
+                    V2AP_VERDICT("phase 0b: envelope %llu replays an "
+                                 "already-committed %s %s",
+                                 (unsigned long long)i,
+                                 g == 0 ? "intent_id" : "wire_id",
+                                 v2ap_hex8(guard_id[g], h));
+                    RET_VERDICT;
+                }
+                if (rc != SQLITE_DONE) {
+                    V2AP_FAULT("phase 0b: %s replay guard for envelope "
+                               "%llu failed to step (sqlite rc %d)",
+                               g == 0 ? "intent_id" : "wire_id",
+                               (unsigned long long)i, rc);
+                    goto fail_fault_pre;
+                }
             }
         }
-        if (blk->fail_at == V2AP_FAIL_AFTER_INTENT_GUARD) RET_VERDICT;
+        if (blk->fail_at == V2AP_FAIL_AFTER_INTENT_GUARD) {
+            V2AP_VERDICT("fault-injection point "
+                         "V2AP_FAIL_AFTER_INTENT_GUARD fired (test "
+                         "harness; no real check failed)");
+            RET_VERDICT;
+        }
 
         /* Per-leg execution admission against the SNAPSHOT (block-entry
          * status is the executability authority): ACTIVE + runtime +
@@ -1587,20 +2037,62 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
             env_phase[i] = is_sys ? 0 : (v->leg_count > 1 ? 1 : 2);
             for (uint16_t l = 0; l < v->leg_count; l++) {
                 dom_ctx_t *d = dom_for(doms, n_dom, v->leg[l].domain_id);
-                if (!d || d->pre_status != DNA_DOMST_ACTIVE || !d->rt)
+                if (!d || d->pre_status != DNA_DOMST_ACTIVE || !d->rt) {
+                    V2AP_VERDICT("phase 0b admission: env %llu leg %u "
+                                 "names domain %u, which is %s at block "
+                                 "entry",
+                                 (unsigned long long)i, (unsigned)l,
+                                 (unsigned)v->leg[l].domain_id,
+                                 !d ? "not registered"
+                                    : (!d->rt ? "registered with no "
+                                                "resolvable runtime"
+                                              : "registered but not "
+                                                "ACTIVE"));
                     RET_VERDICT;
-                if (!d->rt->exec) RET_VERDICT;   /* no execution hook =
+                }
+                if (!d->rt->exec) {              /* no execution hook =
                                                   * leg fails closed     */
-                if (!d->rt->auth) RET_VERDICT;   /* no authorization
+                    V2AP_VERDICT("phase 0b admission: env %llu leg %u "
+                                 "domain %u has no exec hook - fails "
+                                 "closed",
+                                 (unsigned long long)i, (unsigned)l,
+                                 (unsigned)d->domain_id);
+                    RET_VERDICT;
+                }
+                if (!d->rt->auth) {              /* no authorization
                                                   * hook = leg fails
                                                   * closed (a commitment
                                                   * is not a verdict)    */
-                if (v->leg[l].access_mode != DNA_ENV_ACCESS_INVOKE)
+                    V2AP_VERDICT("phase 0b admission: env %llu leg %u "
+                                 "domain %u has no auth hook - a "
+                                 "commitment is not a verdict, fails "
+                                 "closed",
+                                 (unsigned long long)i, (unsigned)l,
+                                 (unsigned)d->domain_id);
+                    RET_VERDICT;
+                }
+                if (v->leg[l].access_mode != DNA_ENV_ACCESS_INVOKE) {
+                    V2AP_VERDICT("phase 0b admission: env %llu leg %u "
+                                 "domain %u carries access_mode %u; only "
+                                 "INVOKE (%u) is admitted this season",
+                                 (unsigned long long)i, (unsigned)l,
+                                 (unsigned)d->domain_id,
+                                 (unsigned)v->leg[l].access_mode,
+                                 (unsigned)DNA_ENV_ACCESS_INVOKE);
                     RET_VERDICT;                 /* READ legs: later
                                                   * season (honest label)*/
-                if (!rt_owns_runtime_op(d->rt, v->leg[l].runtime_op))
+                }
+                if (!rt_owns_runtime_op(d->rt, v->leg[l].runtime_op)) {
+                    V2AP_VERDICT("phase 0b admission: env %llu leg %u "
+                                 "runtime_op %u is not owned by domain "
+                                 "%u's committed ruleset (version %u)",
+                                 (unsigned long long)i, (unsigned)l,
+                                 (unsigned)v->leg[l].runtime_op,
+                                 (unsigned)d->domain_id,
+                                 (unsigned)d->man.ruleset_version);
                     RET_VERDICT;                 /* op not in the
                                                   * committed ruleset    */
+                }
                 /* capacity season: the runtime's auth-kind ALLOWLIST,
                  * enforced BEFORE any authorization work — a runtime
                  * that never consumes committee approvals cannot be
@@ -1611,13 +2103,26 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
                     uint8_t ak = v->leg[l].auth_kind;
                     if (ak >= 32 ||
                         (d->rt->allowed_auth_kinds &
-                         NODUS_RT_AUTHKIND_BIT(ak)) == 0)
+                         NODUS_RT_AUTHKIND_BIT(ak)) == 0) {
+                        V2AP_VERDICT("phase 0b admission: env %llu leg %u "
+                                     "auth_kind %u is not in domain %u's "
+                                     "runtime allowlist (0x%08x)",
+                                     (unsigned long long)i, (unsigned)l,
+                                     (unsigned)ak, (unsigned)d->domain_id,
+                                     (unsigned)d->rt->allowed_auth_kinds);
                         RET_VERDICT;
+                    }
                     if (ak == NODUS_RT_AUTHKIND_DSA87_CC_V1)
                         need_committee = 1;
                 }
                 d->touched = 1;
-                if (d->n_tx >= MAX_OPS) RET_VERDICT;
+                if (d->n_tx >= MAX_OPS) {
+                    V2AP_VERDICT("phase 0b admission: domain %u would "
+                                 "carry more than the engine bound of %u "
+                                 "transactions in one block",
+                                 (unsigned)d->domain_id, (unsigned)MAX_OPS);
+                    RET_VERDICT;
+                }
                 memcpy(d->wire_ids[d->n_tx++], pf[i].wire_id, 64);
             }
         }
@@ -1637,12 +2142,24 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
         if (need_committee) {
             nodus_committee_member_t *mem = NULL;
             int cm_count = 0;
-            if (blk->global_height == 0) RET_VERDICT;   /* below genesis */
+            if (blk->global_height == 0) {           /* below genesis    */
+                V2AP_VERDICT("phase 0b: a leg carries a committee-indexed "
+                             "authorization at height 0 - the governing "
+                             "height would be below genesis");
+                RET_VERDICT;
+            }
             if (nodus_committee_get_for_block_alloc(
-                    w, blk->global_height - 1, &mem, &cm_count) != 0)
+                    w, blk->global_height - 1, &mem, &cm_count) != 0) {
+                V2AP_FAULT("phase 0b: governing committee lookup at "
+                           "height %llu failed on this node",
+                           (unsigned long long)(blk->global_height - 1));
                 goto fail_fault_pre;
+            }
             if (cm_count < 0 || cm_count > DNA_MAX_ACTIVE_VALIDATORS) {
                 free(mem);
+                V2AP_FAULT("phase 0b: committee resolution returned %d "
+                           "members, outside the contract [0,%u]",
+                           cm_count, (unsigned)DNA_MAX_ACTIVE_VALIDATORS);
                 goto fail_fault_pre;     /* out-of-contract resolution   */
             }
             if (cm_count > 0) {
@@ -1651,6 +2168,8 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
                 cm_fps = malloc((size_t)cm_count * 64);
                 if (!cm_pubkeys || !cm_fps) {
                     free(mem);
+                    V2AP_FAULT("phase 0b: allocation for the %d-member "
+                               "committee snapshot failed", cm_count);
                     goto fail_fault_pre;
                 }
                 for (int ci = 0; ci < cm_count; ci++) {
@@ -1661,6 +2180,9 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
                                      NODUS_CC_PUBKEY_SIZE,
                                      cm_fps[ci]) != 0) {
                         free(mem);
+                        V2AP_FAULT("phase 0b: hash backend failed on "
+                                   "committee member %d of %d", ci,
+                                   cm_count);
                         goto fail_fault_pre;
                     }
                 }
@@ -1668,6 +2190,8 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
                         (const uint8_t (*)[64])cm_fps,
                         (uint32_t)cm_count, cmview.set_hash) != 0) {
                     free(mem);
+                    V2AP_FAULT("phase 0b: committee set-hash over %d "
+                               "members failed", cm_count);
                     goto fail_fault_pre;
                 }
                 cmview.pubkeys = cm_pubkeys;
@@ -1677,7 +2201,12 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
             cmview.count = (uint32_t)cm_count;
             cmview.epoch =
                 nodus_v2_epoch_for_height(blk->global_height - 1);
-            if (blk->fail_at == V2AP_FAIL_AFTER_CC_SNAPSHOT) RET_VERDICT;
+            if (blk->fail_at == V2AP_FAIL_AFTER_CC_SNAPSHOT) {
+                V2AP_VERDICT("fault-injection point "
+                             "V2AP_FAIL_AFTER_CC_SNAPSHOT fired (test "
+                             "harness; no real check failed)");
+                RET_VERDICT;
+            }
         }
 
         /* ── VERIFIED AUTHORIZATION (pre-BEGIN, whole batch) ──────────
@@ -1696,7 +2225,15 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
             const dna_env_view_t *v = &pf[i].view;
             for (uint16_t l = 0; l < v->leg_count; l++) {
                 dom_ctx_t *d = dom_for(doms, n_dom, v->leg[l].domain_id);
-                if (!d || !d->rt || !d->rt->auth) goto fail_fault_pre;
+                if (!d || !d->rt || !d->rt->auth) {
+                    V2AP_FAULT("phase 0b auth: domain %u lost its runtime "
+                               "or auth hook between admission and "
+                               "verification (env %llu leg %u) - engine "
+                               "invariant broken on this node",
+                               (unsigned)v->leg[l].domain_id,
+                               (unsigned long long)i, (unsigned)l);
+                    goto fail_fault_pre;
+                }
                 nodus_rt_exec_ctx_t actx;
                 memset(&actx, 0, sizeof(actx));
                 actx.chain_id            = chain_id;
@@ -1713,11 +2250,32 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
                         ? &cmview : NULL;
                 int arc = d->rt->auth(d->rt, v, l, &actx,
                                       &auths[i * DNA_ENV_MAX_LEGS + l]);
-                if (arc == -2) goto fail_fault_pre;
-                if (arc != 0) RET_VERDICT;
+                if (arc == -2) {
+                    V2AP_FAULT("phase 0b auth: verification backend "
+                               "failed for env %llu leg %u domain %u "
+                               "auth_kind %u",
+                               (unsigned long long)i, (unsigned)l,
+                               (unsigned)d->domain_id,
+                               (unsigned)v->leg[l].auth_kind);
+                    goto fail_fault_pre;
+                }
+                if (arc != 0) {
+                    V2AP_VERDICT("phase 0b auth: env %llu leg %u domain "
+                                 "%u auth_kind %u FAILED verification "
+                                 "against the engine-derived leg digest "
+                                 "(rc %d)",
+                                 (unsigned long long)i, (unsigned)l,
+                                 (unsigned)d->domain_id,
+                                 (unsigned)v->leg[l].auth_kind, arc);
+                    RET_VERDICT;
+                }
             }
         }
-        if (blk->fail_at == V2AP_FAIL_AFTER_AUTH) RET_VERDICT;
+        if (blk->fail_at == V2AP_FAIL_AFTER_AUTH) {
+            V2AP_VERDICT("fault-injection point V2AP_FAIL_AFTER_AUTH "
+                         "fired (test harness; no real check failed)");
+            RET_VERDICT;
+        }
     }
 
     /* global tx-count cap (chain config) + per-domain tx quotas */
@@ -1727,29 +2285,65 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
             DNAC_CFG_MAX_TXS_HARD_CAP);
         if (cap == 0 || cap > DNAC_CFG_MAX_TXS_HARD_CAP)
             cap = DNAC_CFG_MAX_TXS_HARD_CAP;
-        if ((uint64_t)blk->n_envs > cap) RET_VERDICT;
+        if ((uint64_t)blk->n_envs > cap) {
+            V2AP_VERDICT("block carries %llu envelopes; the chain-config "
+                         "cap at height %llu is %llu",
+                         (unsigned long long)blk->n_envs,
+                         (unsigned long long)blk->global_height,
+                         (unsigned long long)cap);
+            RET_VERDICT;
+        }
     }
     for (size_t i = 0; i < n_dom; i++) {
         dom_ctx_t *d = &doms[i];
         if (!d->touched) continue;
         if (d->man.quota_tx_per_block != 0 &&
-            d->n_tx > (uint32_t)d->man.quota_tx_per_block)
+            d->n_tx > (uint32_t)d->man.quota_tx_per_block) {
+            V2AP_VERDICT("domain %u carries %u transactions; its "
+                         "committed manifest quota is %u per block",
+                         (unsigned)d->domain_id, (unsigned)d->n_tx,
+                         (unsigned)d->man.quota_tx_per_block);
             RET_VERDICT;
+        }
     }
 
     /* ── S6 claims: bounds + in-block duplicate nullifiers + touched
      * TARGET domains (pre-txn, read-only) — unchanged from S6; its
      * helpers keep the conflated -1 (header HONEST LABEL). ──────────── */
     if (blk->n_claims > 0) {
-        if (!blk->claims || blk->n_claims > MAX_OPS) RET_VERDICT;
+        if (!blk->claims || blk->n_claims > MAX_OPS) {
+            V2AP_VERDICT("block declares %llu claims with %s array (engine "
+                         "bound %u)",
+                         (unsigned long long)blk->n_claims,
+                         blk->claims ? "an over-long" : "a NULL",
+                         (unsigned)MAX_OPS);
+            RET_VERDICT;
+        }
         for (size_t i = 0; i < blk->n_claims; i++) {
             const dna_claim_t *c = &blk->claims[i];
-            if (dna_claim_validate(c) != 0) RET_VERDICT;
+            if (dna_claim_validate(c) != 0) {
+                V2AP_VERDICT("claim %llu failed dna_claim_validate "
+                             "(malformed shape)", (unsigned long long)i);
+                RET_VERDICT;
+            }
             dna_gman_t m;
             if (nodus_witness_v2_manifest_load_by_hash(w,
-                    c->manifest_hash, &m) != 0)
+                    c->manifest_hash, &m) != 0) {
+                char h[17];
+                V2AP_VERDICT("claim %llu names manifest %s, which is not "
+                             "committed here (helper conflates a read "
+                             "fault - honest label in the header)",
+                             (unsigned long long)i,
+                             v2ap_hex8(c->manifest_hash, h));
                 RET_VERDICT;
-            if (m.dist_present != 1) RET_VERDICT;
+            }
+            if (m.dist_present != 1) {
+                V2AP_VERDICT("claim %llu names a manifest with no "
+                             "distribution section (dist_present %u)",
+                             (unsigned long long)i,
+                             (unsigned)m.dist_present);
+                RET_VERDICT;
+            }
             dna_dist_leaf_t leaf;
             memset(&leaf, 0, sizeof(leaf));
             leaf.leaf_version = DNA_DIST_VERSION;
@@ -1758,22 +2352,44 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
             leaf.source_amount = c->source_amount;
             memcpy(leaf.dest_binding, c->dest_binding, 64);
             uint8_t leaf_hash[64];
-            if (dna_dist_leaf_hash(&leaf, leaf_hash) != 0) RET_VERDICT;
+            if (dna_dist_leaf_hash(&leaf, leaf_hash) != 0) {
+                V2AP_VERDICT("claim %llu: distribution leaf hash could "
+                             "not be derived from its source/dest "
+                             "binding", (unsigned long long)i);
+                RET_VERDICT;
+            }
             if (dna_claim_nullifier(c->chain_id, c->manifest_hash,
                                     m.target_domain_id,
                                     m.target_asset_ref,
                                     m.target_asset_len, leaf_hash,
-                                    claim_nuls[i]) != 0)
+                                    claim_nuls[i]) != 0) {
+                V2AP_VERDICT("claim %llu: nullifier could not be derived "
+                             "for target domain %u",
+                             (unsigned long long)i,
+                             (unsigned)m.target_domain_id);
                 RET_VERDICT;
+            }
             for (size_t j = 0; j < i; j++)
                 if (memcmp(claim_nuls[i], claim_nuls[j], 64) == 0) {
                     QGP_LOG_ERROR(LOG_TAG, "%s",
                         "duplicate claim in one block — rejected");
+                    V2AP_VERDICT("claim %llu duplicates the nullifier of "
+                                 "claim %llu in the same block",
+                                 (unsigned long long)i,
+                                 (unsigned long long)j);
                     RET_VERDICT;
                 }
             dom_ctx_t *d = dom_for(doms, n_dom, m.target_domain_id);
-            if (!d || d->status != DNA_DOMST_ACTIVE || !d->rt)
+            if (!d || d->status != DNA_DOMST_ACTIVE || !d->rt) {
+                V2AP_VERDICT("claim %llu targets domain %u, which is %s",
+                             (unsigned long long)i,
+                             (unsigned)m.target_domain_id,
+                             !d ? "not registered"
+                                : (!d->rt ? "registered with no "
+                                            "resolvable runtime"
+                                          : "registered but not ACTIVE"));
                 RET_VERDICT;
+            }
             d->touched = 1;
         }
     }
@@ -1781,20 +2397,51 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
     /* ── S7 pool batches: shape + canonical batch order + touched
      * owning domains (pre-txn, read-only) — unchanged from S7. ─────── */
     if (blk->n_pool_muts > 0) {
-        if (!blk->pool_muts || blk->n_pool_muts > MAX_OPS) RET_VERDICT;
+        if (!blk->pool_muts || blk->n_pool_muts > MAX_OPS) {
+            V2AP_VERDICT("block declares %llu pool batches with %s array "
+                         "(engine bound %u)",
+                         (unsigned long long)blk->n_pool_muts,
+                         blk->pool_muts ? "an over-long" : "a NULL",
+                         (unsigned)MAX_OPS);
+            RET_VERDICT;
+        }
         for (size_t i = 0; i < blk->n_pool_muts; i++) {
             const nodus_v2_pool_mut_t *m = &blk->pool_muts[i];
-            if (nodus_witness_v2_pool_mut_validate(m) != 0) RET_VERDICT;
+            if (nodus_witness_v2_pool_mut_validate(m) != 0) {
+                V2AP_VERDICT("pool batch %llu (domain %u pool %llu) failed "
+                             "shape validation",
+                             (unsigned long long)i, (unsigned)m->domain_id,
+                             (unsigned long long)m->pool_id);
+                RET_VERDICT;
+            }
             if (i > 0) {
                 const nodus_v2_pool_mut_t *p = &blk->pool_muts[i - 1];
                 if (p->domain_id > m->domain_id ||
                     (p->domain_id == m->domain_id &&
-                     p->pool_id >= m->pool_id))
+                     p->pool_id >= m->pool_id)) {
+                    V2AP_VERDICT("pool batch %llu (domain %u pool %llu) "
+                                 "breaks the strictly ascending "
+                                 "(domain_id, pool_id) order after "
+                                 "(domain %u pool %llu)",
+                                 (unsigned long long)i,
+                                 (unsigned)m->domain_id,
+                                 (unsigned long long)m->pool_id,
+                                 (unsigned)p->domain_id,
+                                 (unsigned long long)p->pool_id);
                     RET_VERDICT;
+                }
             }
             dom_ctx_t *d = dom_for(doms, n_dom, m->domain_id);
-            if (!d || d->status != DNA_DOMST_ACTIVE || !d->rt)
+            if (!d || d->status != DNA_DOMST_ACTIVE || !d->rt) {
+                V2AP_VERDICT("pool batch %llu is owned by domain %u, "
+                             "which is %s",
+                             (unsigned long long)i, (unsigned)m->domain_id,
+                             !d ? "not registered"
+                                : (!d->rt ? "registered with no "
+                                            "resolvable runtime"
+                                          : "registered but not ACTIVE"));
                 RET_VERDICT;
+            }
             d->touched = 1;
         }
     }
@@ -1802,11 +2449,21 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
 #undef RET_VERDICT
 
     /* ── 1. THE transaction ─────────────────────────────────────────── */
-    if (exec_sql(w, "BEGIN IMMEDIATE") != 0) goto fail_fault_pre;
+    if (exec_sql(w, "BEGIN IMMEDIATE") != 0) {
+        V2AP_FAULT("phase 1: BEGIN IMMEDIATE failed on this node's "
+                   "database");
+        goto fail_fault_pre;
+    }
     FAIL_POINT(V2AP_FAIL_AFTER_BEGIN);
 
     /* 2. supply gate (pre-apply) */
-    if (nodus_witness_v2_supply_check(w) != 0) goto fail;
+    if (nodus_witness_v2_supply_check(w) != 0) {
+        V2AP_VERDICT("phase 2: PRE-APPLY supply gate failed - committed "
+                     "state was already non-conserving before this block "
+                     "touched anything (gate helper conflates a read "
+                     "fault: honest label in the header)");
+        goto fail;
+    }
 
     /* 4-6. ENVELOPE EXECUTION in the canonical phase order: SYSTEM-
      * local first, then cross-domain, then domain-local ascending by
@@ -1814,28 +2471,43 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
      * inside the ONE transaction is what makes a later envelope's
      * mediated reads observe an earlier envelope's canonical
      * mutations. */
+    /* exec_one_env OWNS the reason on failure (it names the leg, the
+     * domain, the op and the exact check); these call sites deliberately
+     * do NOT overwrite it. */
     for (size_t i = 0; i < blk->n_envs; i++) {          /* SYSTEM-local  */
         if (env_phase[i] != 0) continue;
         int rc = exec_one_env(w, blk, i, chain_id, blk->epoch, doms,
                               n_dom, &pf[i], &meters[i], auths, reads,
-                              resbuf);
+                              resbuf, blk->out_reason,
+                              sizeof blk->out_reason);
         if (rc == -2) goto fail_fault;
         if (rc != 0) goto fail;
         if (blk->fail_at == V2AP_FAIL_AFTER_ENV_EXEC &&
-            blk->fail_env_index == (uint32_t)i)
+            blk->fail_env_index == (uint32_t)i) {
+            V2AP_VERDICT("fault-injection point V2AP_FAIL_AFTER_ENV_EXEC "
+                         "fired after SYSTEM-phase env %llu (test "
+                         "harness; no real check failed)",
+                         (unsigned long long)i);
             goto fail;
+        }
     }
     FAIL_POINT(V2AP_FAIL_AFTER_SYSTEM);
     for (size_t i = 0; i < blk->n_envs; i++) {          /* cross-domain  */
         if (env_phase[i] != 1) continue;
         int rc = exec_one_env(w, blk, i, chain_id, blk->epoch, doms,
                               n_dom, &pf[i], &meters[i], auths, reads,
-                              resbuf);
+                              resbuf, blk->out_reason,
+                              sizeof blk->out_reason);
         if (rc == -2) goto fail_fault;
         if (rc != 0) goto fail;
         if (blk->fail_at == V2AP_FAIL_AFTER_ENV_EXEC &&
-            blk->fail_env_index == (uint32_t)i)
+            blk->fail_env_index == (uint32_t)i) {
+            V2AP_VERDICT("fault-injection point V2AP_FAIL_AFTER_ENV_EXEC "
+                         "fired after cross-domain env %llu (test "
+                         "harness; no real check failed)",
+                         (unsigned long long)i);
             goto fail;
+        }
     }
     FAIL_POINT(V2AP_FAIL_AFTER_CROSS);
     for (size_t di = 0; di < n_dom; di++) {     /* domain-local, id ASC  */
@@ -1845,16 +2517,29 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
             if (pf[i].view.leg[0].domain_id != d->domain_id) continue;
             int rc = exec_one_env(w, blk, i, chain_id, blk->epoch,
                                   doms, n_dom, &pf[i], &meters[i],
-                                  auths, reads, resbuf);
+                                  auths, reads, resbuf, blk->out_reason,
+                                  sizeof blk->out_reason);
             if (rc == -2) goto fail_fault;
             if (rc != 0) goto fail;
             if (blk->fail_at == V2AP_FAIL_AFTER_ENV_EXEC &&
-                blk->fail_env_index == (uint32_t)i)
+                blk->fail_env_index == (uint32_t)i) {
+                V2AP_VERDICT("fault-injection point "
+                             "V2AP_FAIL_AFTER_ENV_EXEC fired after "
+                             "domain-local env %llu (domain %u) (test "
+                             "harness; no real check failed)",
+                             (unsigned long long)i,
+                             (unsigned)d->domain_id);
                 goto fail;
+            }
         }
         if (blk->fail_at == V2AP_FAIL_AFTER_DOMAIN_BATCH &&
-            blk->fail_domain_batch == d->domain_id)
+            blk->fail_domain_batch == d->domain_id) {
+            V2AP_VERDICT("fault-injection point "
+                         "V2AP_FAIL_AFTER_DOMAIN_BATCH fired after domain "
+                         "%u's batch (test harness; no real check failed)",
+                         (unsigned)d->domain_id);
             goto fail;
+        }
     }
     FAIL_POINT(V2AP_FAIL_AFTER_UTXO);
 
@@ -1864,29 +2549,69 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
         const dna_claim_t *c = &blk->claims[i];
         nodus_v2_claim_admit_t adm;
         if (nodus_witness_v2_claim_admit(w, c, blk->global_height, &adm)
-            != 0)
+            != 0) {
+            V2AP_VERDICT("phase 6b: claim %llu refused at admission "
+                         "(helper conflates a read fault - honest label "
+                         "in the header)", (unsigned long long)i);
             goto fail;
-        if (memcmp(adm.nullifier, claim_nuls[i], 64) != 0) goto fail;
+        }
+        if (memcmp(adm.nullifier, claim_nuls[i], 64) != 0) {
+            char a[17], p[17];
+            V2AP_VERDICT("phase 6b: claim %llu nullifier %s from "
+                         "admission disagrees with the pre-BEGIN "
+                         "derivation %s",
+                         (unsigned long long)i,
+                         v2ap_hex8(adm.nullifier, a),
+                         v2ap_hex8(claim_nuls[i], p));
+            goto fail;
+        }
         uint8_t output_id[64];
         if (nodus_witness_v2_claim_output_create(w, c, &adm,
                                                  blk->global_height,
-                                                 output_id) != 0)
+                                                 output_id) != 0) {
+            V2AP_VERDICT("phase 6b: claim %llu target-runtime output "
+                         "creation failed (helper conflates a read "
+                         "fault)", (unsigned long long)i);
             goto fail;
+        }
         if (blk->fail_at == V2AP_FAIL_AFTER_CLAIM_OUTPUT &&
-            blk->fail_claim_index == (uint32_t)i)
+            blk->fail_claim_index == (uint32_t)i) {
+            V2AP_VERDICT("fault-injection point "
+                         "V2AP_FAIL_AFTER_CLAIM_OUTPUT fired after claim "
+                         "%llu (test harness; no real check failed)",
+                         (unsigned long long)i);
             goto fail;
+        }
         if (nodus_witness_v2_claim_spend_insert(w, c, &adm, output_id,
-                                                blk->global_height) != 0)
+                                                blk->global_height) != 0) {
+            V2AP_VERDICT("phase 6b: claim %llu spent-claim insert failed "
+                         "(helper conflates a read fault)",
+                         (unsigned long long)i);
             goto fail;
+        }
         if (blk->fail_at == V2AP_FAIL_AFTER_CLAIM_SPEND &&
-            blk->fail_claim_index == (uint32_t)i)
+            blk->fail_claim_index == (uint32_t)i) {
+            V2AP_VERDICT("fault-injection point "
+                         "V2AP_FAIL_AFTER_CLAIM_SPEND fired after claim "
+                         "%llu (test harness; no real check failed)",
+                         (unsigned long long)i);
             goto fail;
+        }
         if (nodus_witness_v2_claim_state_update(w, adm.manifest_hash,
-                                                adm.converted) != 0)
+                                                adm.converted) != 0) {
+            V2AP_VERDICT("phase 6b: claim %llu distribution-state "
+                         "decrement failed (helper conflates a read "
+                         "fault)", (unsigned long long)i);
             goto fail;
+        }
         if (blk->fail_at == V2AP_FAIL_AFTER_CLAIM_STATE &&
-            blk->fail_claim_index == (uint32_t)i)
+            blk->fail_claim_index == (uint32_t)i) {
+            V2AP_VERDICT("fault-injection point "
+                         "V2AP_FAIL_AFTER_CLAIM_STATE fired after claim "
+                         "%llu (test harness; no real check failed)",
+                         (unsigned long long)i);
             goto fail;
+        }
     }
 
     /* 6p. S7 pool-state batches (unchanged from S7). */
@@ -1894,8 +2619,16 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
         pool_fault_ctx_t pfc = { blk, i };
         if (nodus_witness_v2_pool_apply(w, &blk->pool_muts[i],
                                         blk->global_height,
-                                        pool_stage_fault, &pfc) != 0)
+                                        pool_stage_fault, &pfc) != 0) {
+            V2AP_VERDICT("phase 6p: pool batch %llu (domain %u pool %llu) "
+                         "refused by the pool module (helper conflates a "
+                         "read fault and the pool fault points - honest "
+                         "label in the header)",
+                         (unsigned long long)i,
+                         (unsigned)blk->pool_muts[i].domain_id,
+                         (unsigned long long)blk->pool_muts[i].pool_id);
             goto fail;
+        }
     }
 
     /* 6c. LIFECYCLE re-scan (unchanged from S5/S6: canonical DomainHead
@@ -1903,9 +2636,15 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
     {
         dom_ctx_t *post = calloc(MAX_DOMS, sizeof(*post));
         size_t n_post = 0;
-        if (!post) goto fail_fault;
+        if (!post) {
+            V2AP_FAULT("phase 6c: allocation of the post-block domain "
+                       "snapshot failed");
+            goto fail_fault;
+        }
         if (doms_load(w, post, &n_post, /*strict_active=*/0) != 0) {
             free(post);
+            V2AP_FAULT("phase 6c: the domain registry became unreadable "
+                       "on this node during the lifecycle re-scan");
             goto fail_fault;
         }
         for (size_t i = 0; i < n_post; i++) {
@@ -1922,12 +2661,26 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
                     QGP_LOG_ERROR(LOG_TAG, "domain %u left RETIRED — "
                                   "terminal state, rejected",
                                   p->domain_id);
+                    /* Reason FIRST: p points into `post`, so reading it
+                     * after free(post) is a use-after-free. */
+                    V2AP_VERDICT("phase 6c: domain %u left the terminal "
+                                 "RETIRED state (now status %u)",
+                                 (unsigned)p->domain_id,
+                                 (unsigned)p->status);
                     free(post);
                     goto fail;
                 }
             } else {
                 p->pre_status = p->status;
-                if (p->has_head) { free(post); goto fail; }
+                if (p->has_head) {
+                    /* Reason FIRST — p points into `post`. */
+                    V2AP_VERDICT("phase 6c: domain %u appeared during "
+                                 "this block already carrying a "
+                                 "committed head",
+                                 (unsigned)p->domain_id);
+                    free(post);
+                    goto fail;
+                }
                 if (p->status == DNA_DOMST_ACTIVE)
                     p->pre_status = DNA_DOMST_REGISTERED;
             }
@@ -1943,15 +2696,35 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
                      * tuple case therefore also reads as -2 here; the
                      * deterministic VERDICTS live in the pre-BEGIN
                      * admission scan. */
+                    /* Reason FIRST — p points into `post`. */
+                    V2AP_FAULT("phase 6c: domain %u is ACTIVE but its "
+                               "runtime tuple no longer resolves on this "
+                               "node (conflated seam - classified "
+                               "node-local, the SAFE direction)",
+                               (unsigned)p->domain_id);
                     free(post);
                     goto fail_fault;
                 }
                 if (!p->has_head) {
                     if (pre && pre->status == DNA_DOMST_ACTIVE) {
+                        /* Reason FIRST — p points into `post`. */
+                        V2AP_VERDICT("phase 6c: domain %u was ACTIVE at "
+                                     "block entry yet has no committed "
+                                     "head - heads are never synthesized "
+                                     "here",
+                                     (unsigned)p->domain_id);
                         free(post);
                         goto fail;
                     }
                     if (head_activate(w, p, blk->global_height) != 0) {
+                        /* Reason FIRST — p points into `post`. */
+                        V2AP_VERDICT("phase 6c: activation head for "
+                                     "domain %u could not be built at "
+                                     "height %llu (runtime state root vs "
+                                     "registry genesis_state_root)",
+                                     (unsigned)p->domain_id,
+                                     (unsigned long long)
+                                         blk->global_height);
                         free(post);
                         goto fail;
                     }
@@ -1961,6 +2734,9 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
         for (size_t i = 0; i < n_dom; i++)
             if (!dom_for(post, n_post, doms[i].domain_id)) {
                 free(post);
+                V2AP_VERDICT("phase 6c: domain %u vanished from the "
+                             "registry during this block",
+                             (unsigned)doms[i].domain_id);
                 goto fail;
             }
         free(doms);
@@ -1980,11 +2756,20 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
         int credited = 0;
         if (nodus_witness_v2_record_attendance(w, blk->global_height,
                                                blk->proposer_id,
-                                               &credited) != 0)
+                                               &credited) != 0) {
+            V2AP_FAULT("phase 6d: O15C attendance credit for the header "
+                       "proposer at height %llu failed on this node",
+                       (unsigned long long)blk->global_height);
             goto fail_fault;
+        }
         if (credited) {
             dom_ctx_t *dsys_att = dom_for(doms, n_dom, DNA_DOMAIN_SYSTEM);
-            if (!dsys_att) goto fail_fault;
+            if (!dsys_att) {
+                V2AP_FAULT("phase 6d: attendance credited but SYSTEM "
+                           "domain %u is absent from the working set",
+                           (unsigned)DNA_DOMAIN_SYSTEM);
+                goto fail_fault;
+            }
             dsys_att->touched = 1;
         }
     }
@@ -2006,8 +2791,13 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
         if (nodus_witness_v2_epoch_boundary_apply(w, blk->global_height,
                                                   chain_id,
                                                   epoch_stage_fault, blk,
-                                                  &ep) != 0)
+                                                  &ep) != 0) {
+            V2AP_FAULT("phase 6e: epoch-boundary apply at height %llu "
+                       "failed - a boundary has no verdict class, its "
+                       "input is committed state and the height alone",
+                       (unsigned long long)blk->global_height);
             goto fail_fault;
+        }
         if (ep.fired) {
             /* TOUCHED DECLARATION. The boundary moves consensus state
              * that feeds domain roots: `validators` and
@@ -2019,21 +2809,42 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
              * released — declaring it on a graduate-free boundary would
              * trip the "declared but changed nothing" reject instead. */
             dom_ctx_t *dsys = dom_for(doms, n_dom, DNA_DOMAIN_SYSTEM);
-            if (!dsys) goto fail_fault;   /* a boundary mutated SYSTEM
+            if (!dsys) {                  /* a boundary mutated SYSTEM
                                            * state on a chain with no
                                            * SYSTEM domain: unresolvable
                                            * on THIS node, fail closed  */
+                V2AP_FAULT("phase 6e: epoch boundary fired at height %llu "
+                           "but SYSTEM domain %u is absent from the "
+                           "working set",
+                           (unsigned long long)blk->global_height,
+                           (unsigned)DNA_DOMAIN_SYSTEM);
+                goto fail_fault;
+            }
             dsys->touched = 1;
             if (ep.n_graduates > 0) {
                 dom_ctx_t *dcore = dom_for(doms, n_dom, DNA_DOMAIN_CORE);
-                if (!dcore) goto fail_fault;
+                if (!dcore) {
+                    V2AP_FAULT("phase 6e: %u graduates released at the "
+                               "boundary but CORE domain %u is absent "
+                               "from the working set",
+                               (unsigned)ep.n_graduates,
+                               (unsigned)DNA_DOMAIN_CORE);
+                    goto fail_fault;
+                }
                 dcore->touched = 1;
             }
         }
     }
 
     /* 7. supply gate (post-stage) */
-    if (nodus_witness_v2_supply_check(w) != 0) goto fail;
+    if (nodus_witness_v2_supply_check(w) != 0) {
+        V2AP_VERDICT("phase 7: POST-STAGE supply gate failed - a "
+                     "registered runtime's conservation invariant does "
+                     "not hold after this block's mutations (gate helper "
+                     "conflates a read fault: honest label in the "
+                     "header)");
+        goto fail;
+    }
     FAIL_POINT(V2AP_FAIL_AFTER_SUPPLY_MUT);
 
     /* 8. domain roots (runtime-dispatched) + untouched-domain guard. */
@@ -2046,23 +2857,46 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
             continue;
         }
         if (d->pre_status == DNA_DOMST_ACTIVE) {
-            if (!d->rt) goto fail_fault; /* was executable at block entry
+            if (!d->rt) {                /* was executable at block entry
                                          * (strict doms_load proved the
                                          * runtime) — losing it mid-block
                                          * is the conflated re-resolution
                                          * seam above: node-local, never
                                          * a verdict                     */
-            if (d->rt->state_root(d->rt, w, d->root_now) != 0)
+                V2AP_FAULT("phase 8: domain %u was executable at block "
+                           "entry but its runtime no longer resolves on "
+                           "this node", (unsigned)d->domain_id);
+                goto fail_fault;
+            }
+            if (d->rt->state_root(d->rt, w, d->root_now) != 0) {
+                V2AP_FAULT("phase 8: domain %u's runtime could not "
+                           "compute its own state root",
+                           (unsigned)d->domain_id);
                 goto fail_fault;        /* the runtime could not compute
                                          * its own root — node fault    */
+            }
             d->root_known = 1;
         }
-        if (d->touched && !d->root_known) goto fail;
+        if (d->touched && !d->root_known) {
+            V2AP_VERDICT("phase 8: domain %u is declared touched but its "
+                         "root is unknowable (block-entry status %u, "
+                         "current status %u)",
+                         (unsigned)d->domain_id, (unsigned)d->pre_status,
+                         (unsigned)d->status);
+            goto fail;
+        }
         if (!d->touched && d->root_known && d->has_head &&
             memcmp(d->root_now, d->head.domain_state_root, 64) != 0) {
+            char n[17], o[17];
             QGP_LOG_ERROR(LOG_TAG,
                 "domain %u mutated without being declared touched",
                 d->domain_id);
+            V2AP_VERDICT("phase 8: UNTOUCHED-DOMAIN GUARD - domain %u was "
+                         "not declared touched yet its root moved %s -> "
+                         "%s (cross-domain substitution)",
+                         (unsigned)d->domain_id,
+                         v2ap_hex8(d->head.domain_state_root, o),
+                         v2ap_hex8(d->root_now, n));
             goto fail;
         }
     }
@@ -2075,8 +2909,15 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
         for (size_t i = 0; i < n_dom; i++) {
             dom_ctx_t *d = &doms[i];
             if (!d->touched) continue;
-            if (memcmp(d->root_now, d->head.domain_state_root, 64) == 0)
+            if (memcmp(d->root_now, d->head.domain_state_root, 64) == 0) {
+                char r[17];
+                V2AP_VERDICT("phase 9: domain %u is declared touched but "
+                             "its root is unchanged at %s - a DECLARED "
+                             "no-op, no fake empty updates",
+                             (unsigned)d->domain_id,
+                             v2ap_hex8(d->root_now, r));
                 goto fail;               /* declared but changed nothing */
+            }
             memset(&d->upd, 0, sizeof(d->upd));
             d->upd.update_version = DNA_DUPD_VERSION;
             d->upd.domain_id = d->domain_id;
@@ -2087,8 +2928,12 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
             memcpy(d->upd.post_root, d->root_now, 64);
             if (dna_v2_tx_batch_root(
                     (const uint8_t (*)[64])d->wire_ids, d->n_tx,
-                    d->upd.tx_batch_root) != 0)
+                    d->upd.tx_batch_root) != 0) {
+                V2AP_FAULT("phase 9: tx_batch_root over domain %u's %u "
+                           "wire ids could not be computed",
+                           (unsigned)d->domain_id, (unsigned)d->n_tx);
                 goto fail_fault;
+            }
             d->upd.ruleset_version = d->man.ruleset_version;
             memcpy(d->upd.ruleset_hash, d->man.ruleset_hash, 64);
             d->upd.res_tx_count = d->n_tx;
@@ -2096,18 +2941,35 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
                                          * units (env legs; claims/pools
                                          * ride their own accounting)   */
             if (prev_update_hash(w, d->domain_id,
-                                 d->upd.prev_update_hash) != 0)
+                                 d->upd.prev_update_hash) != 0) {
+                V2AP_FAULT("phase 9: previous DomainUpdate hash for "
+                           "domain %u is unreadable on this node",
+                           (unsigned)d->domain_id);
                 goto fail_fault;
-            if (dna_dupd_hash(&d->upd, d->upd_hash) != 0) goto fail_fault;
+            }
+            if (dna_dupd_hash(&d->upd, d->upd_hash) != 0) {
+                V2AP_FAULT("phase 9: DomainUpdate hash for domain %u "
+                           "could not be computed",
+                           (unsigned)d->domain_id);
+                goto fail_fault;
+            }
 
             uint8_t enc[DNA_DUPD_ENC_LEN];
-            if (dna_dupd_encode(&d->upd, enc) != 0) goto fail_fault;
+            if (dna_dupd_encode(&d->upd, enc) != 0) {
+                V2AP_FAULT("phase 9: DomainUpdate for domain %u could not "
+                           "be encoded", (unsigned)d->domain_id);
+                goto fail_fault;
+            }
             sqlite3_stmt *st = NULL;
             if (sqlite3_prepare_v2(w->db,
                     "INSERT INTO v2_domain_updates (global_height, "
                     "domain_id, upd, upd_hash) VALUES (?1, ?2, ?3, ?4)",
-                    -1, &st, NULL) != SQLITE_OK)
+                    -1, &st, NULL) != SQLITE_OK) {
+                V2AP_FAULT("phase 9: could not prepare the "
+                           "v2_domain_updates insert for domain %u",
+                           (unsigned)d->domain_id);
                 goto fail_fault;
+            }
             sqlite3_bind_int64(st, 1, (sqlite3_int64)blk->global_height);
             sqlite3_bind_int64(st, 2, (sqlite3_int64)d->domain_id);
             sqlite3_bind_blob(st, 3, enc, DNA_DUPD_ENC_LEN,
@@ -2115,7 +2977,12 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
             sqlite3_bind_blob(st, 4, d->upd_hash, 64, SQLITE_TRANSIENT);
             int rc = sqlite3_step(st);
             sqlite3_finalize(st);
-            if (rc != SQLITE_DONE) goto fail_fault;
+            if (rc != SQLITE_DONE) {
+                V2AP_FAULT("phase 9: v2_domain_updates insert for domain "
+                           "%u failed (sqlite rc %d)",
+                           (unsigned)d->domain_id, rc);
+                goto fail_fault;
+            }
             n_upd++;
         }
         (void)n_upd;
@@ -2132,7 +2999,13 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
             d->newhead.last_updated_global_height = blk->global_height;
             d->newhead.status = d->status;
             d->newhead.ruleset_version = d->man.ruleset_version;
-            if (head_store(w, &d->newhead) != 0) goto fail_fault;
+            if (head_store(w, &d->newhead) != 0) {
+                V2AP_FAULT("phase 10: DomainHead write for domain %u "
+                           "(domain height %llu) failed",
+                           (unsigned)d->domain_id,
+                           (unsigned long long)d->newhead.domain_height);
+                goto fail_fault;
+            }
         }
     }
     FAIL_POINT(V2AP_FAIL_AFTER_HEADS);
@@ -2146,8 +3019,11 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
                 "INSERT INTO v2_root_history (domain_id, domain_height, "
                 "global_height, state_root, upd_hash, ruleset_version, "
                 "ruleset_hash) VALUES (?1,?2,?3,?4,?5,?6,?7)", -1, &st,
-                NULL) != SQLITE_OK)
+                NULL) != SQLITE_OK) {
+            V2AP_FAULT("phase 11: could not prepare the v2_root_history "
+                       "insert for domain %u", (unsigned)d->domain_id);
             goto fail_fault;
+        }
         sqlite3_bind_int64(st, 1, (sqlite3_int64)d->domain_id);
         sqlite3_bind_int64(st, 2, (sqlite3_int64)d->newhead.domain_height);
         sqlite3_bind_int64(st, 3, (sqlite3_int64)blk->global_height);
@@ -2159,7 +3035,12 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
                           SQLITE_TRANSIENT);
         int rc = sqlite3_step(st);
         sqlite3_finalize(st);
-        if (rc != SQLITE_DONE) goto fail_fault;
+        if (rc != SQLITE_DONE) {
+            V2AP_FAULT("phase 11: v2_root_history insert for domain %u "
+                       "failed (sqlite rc %d)",
+                       (unsigned)d->domain_id, rc);
+            goto fail_fault;
+        }
     }
     FAIL_POINT(V2AP_FAIL_AFTER_HISTORY);
 
@@ -2183,8 +3064,12 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
                         "INSERT INTO v2_intent_index (intent_id, tx_id, "
                         "global_height, global_index) "
                         "VALUES (?1,?2,?3,?4)", -1, &st, NULL)
-                    != SQLITE_OK)
+                    != SQLITE_OK) {
+                    V2AP_FAULT("phase 12: could not prepare the "
+                               "v2_intent_index insert for env %llu",
+                               (unsigned long long)i);
                     goto fail_fault;
+                }
                 sqlite3_bind_blob(st, 1, pf[i].intent_id, 64,
                                   SQLITE_TRANSIENT);
                 sqlite3_bind_blob(st, 2, pf[i].wire_id, 64,
@@ -2194,7 +3079,14 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
                 sqlite3_bind_int64(st, 4, (sqlite3_int64)gidx);
                 int rc = sqlite3_step(st);
                 sqlite3_finalize(st);
-                if (rc != SQLITE_DONE) goto fail_fault;
+                if (rc != SQLITE_DONE) {
+                    V2AP_FAULT("phase 12: v2_intent_index insert for env "
+                               "%llu (global index %u) failed (sqlite rc "
+                               "%d) - the pre-BEGIN replay guard and this "
+                               "write disagree",
+                               (unsigned long long)i, (unsigned)gidx, rc);
+                    goto fail_fault;
+                }
                 gidx++;
             }
         }
@@ -2212,11 +3104,24 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
                     touched_ids[t] = v->leg[t].domain_id;
                 uint8_t tl[2 + 4 * DNA_TOUCHED_MAX];
                 size_t tw = 0;
-                if (v->leg_count > DNA_TOUCHED_MAX) goto fail;
+                if (v->leg_count > DNA_TOUCHED_MAX) {
+                    V2AP_VERDICT("phase 12: env %llu declares %u legs; "
+                                 "the touched-set encoding admits at most "
+                                 "%u",
+                                 (unsigned long long)i,
+                                 (unsigned)v->leg_count,
+                                 (unsigned)DNA_TOUCHED_MAX);
+                    goto fail;
+                }
                 if (dna_touched_encode(touched_ids,
                                        (uint16_t)v->leg_count, tl,
-                                       sizeof(tl), &tw) != 0)
+                                       sizeof(tl), &tw) != 0) {
+                    V2AP_FAULT("phase 12: touched-set encoding for env "
+                               "%llu (%u legs) failed",
+                               (unsigned long long)i,
+                               (unsigned)v->leg_count);
                     goto fail_fault;
+                }
                 uint32_t owner = (v->leg_count == 1)
                                      ? v->leg[0].domain_id
                                      : DNA_TX_OWNER_NONE;
@@ -2225,8 +3130,12 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
                         "INSERT INTO v2_tx_index (global_height, "
                         "global_index, tx_id, owner_domain, touched, "
                         "wire_version) VALUES (?1,?2,?3,?4,?5,3)",
-                        -1, &st, NULL) != SQLITE_OK)
+                        -1, &st, NULL) != SQLITE_OK) {
+                    V2AP_FAULT("phase 12: could not prepare the "
+                               "v2_tx_index insert for env %llu",
+                               (unsigned long long)i);
                     goto fail_fault;
+                }
                 sqlite3_bind_int64(st, 1,
                                    (sqlite3_int64)blk->global_height);
                 sqlite3_bind_int64(st, 2, (sqlite3_int64)gidx);
@@ -2236,7 +3145,12 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
                 sqlite3_bind_blob(st, 5, tl, (int)tw, SQLITE_TRANSIENT);
                 int rc = sqlite3_step(st);
                 sqlite3_finalize(st);
-                if (rc != SQLITE_DONE) goto fail_fault;
+                if (rc != SQLITE_DONE) {
+                    V2AP_FAULT("phase 12: v2_tx_index insert for env %llu "
+                               "(global index %u) failed (sqlite rc %d)",
+                               (unsigned long long)i, (unsigned)gidx, rc);
+                    goto fail_fault;
+                }
                 gidx++;
 
                 /* deterministic local index per leg domain: the lookup
@@ -2248,19 +3162,40 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
                 for (uint16_t t = 0; t < v->leg_count; t++) {
                     dom_ctx_t *d = dom_for(doms, n_dom,
                                            v->leg[t].domain_id);
-                    if (!d) goto fail_fault;
+                    if (!d) {
+                        V2AP_FAULT("phase 12: env %llu leg %u names "
+                                   "domain %u, absent from the working "
+                                   "set at index time",
+                                   (unsigned long long)i, (unsigned)t,
+                                   (unsigned)v->leg[t].domain_id);
+                        goto fail_fault;
+                    }
                     uint32_t lidx = 0;
                     if (nodus_witness_v2_local_index_find(
                             (const uint8_t (*)[64])d->wire_ids, d->n_tx,
-                            pf[i].wire_id, &lidx) != 0)
+                            pf[i].wire_id, &lidx) != 0) {
+                        V2AP_FAULT("phase 12: env %llu's wire id is "
+                                   "missing from domain %u's own %u-entry "
+                                   "id list - engine invariant broken on "
+                                   "THIS node (a miss never aliases 0)",
+                                   (unsigned long long)i,
+                                   (unsigned)d->domain_id,
+                                   (unsigned)d->n_tx);
                         goto fail_fault;
+                    }
                     sqlite3_stmt *ls = NULL;
                     if (sqlite3_prepare_v2(w->db,
                             "INSERT INTO v2_tx_local_index (tx_id, "
                             "domain_id, domain_height, local_index) "
                             "VALUES (?1,?2,?3,?4)", -1, &ls, NULL)
-                        != SQLITE_OK)
+                        != SQLITE_OK) {
+                        V2AP_FAULT("phase 12: could not prepare the "
+                                   "v2_tx_local_index insert for env %llu "
+                                   "domain %u",
+                                   (unsigned long long)i,
+                                   (unsigned)d->domain_id);
                         goto fail_fault;
+                    }
                     sqlite3_bind_blob(ls, 1, pf[i].wire_id, 64,
                                       SQLITE_TRANSIENT);
                     sqlite3_bind_int64(ls, 2,
@@ -2270,7 +3205,15 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
                     sqlite3_bind_int64(ls, 4, (sqlite3_int64)lidx);
                     rc = sqlite3_step(ls);
                     sqlite3_finalize(ls);
-                    if (rc != SQLITE_DONE) goto fail_fault;
+                    if (rc != SQLITE_DONE) {
+                        V2AP_FAULT("phase 12: v2_tx_local_index insert "
+                                   "for env %llu domain %u (local index "
+                                   "%u) failed (sqlite rc %d)",
+                                   (unsigned long long)i,
+                                   (unsigned)d->domain_id, (unsigned)lidx,
+                                   rc);
+                        goto fail_fault;
+                    }
                 }
             }
         }
@@ -2297,8 +3240,12 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
                 if (sqlite3_prepare_v2(w->db,
                         "INSERT INTO v2_tx_bytes (global_height, "
                         "global_index, tx_id, env) VALUES (?1,?2,?3,?4)",
-                        -1, &st, NULL) != SQLITE_OK)
+                        -1, &st, NULL) != SQLITE_OK) {
+                    V2AP_FAULT("phase 12b: could not prepare the "
+                               "v2_tx_bytes insert for env %llu",
+                               (unsigned long long)i);
                     goto fail_fault;
+                }
                 sqlite3_bind_int64(st, 1,
                                    (sqlite3_int64)blk->global_height);
                 sqlite3_bind_int64(st, 2, (sqlite3_int64)gidx);
@@ -2309,7 +3256,14 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
                                   SQLITE_TRANSIENT);
                 int rc = sqlite3_step(st);
                 sqlite3_finalize(st);
-                if (rc != SQLITE_DONE) goto fail_fault;
+                if (rc != SQLITE_DONE) {
+                    V2AP_FAULT("phase 12b: v2_tx_bytes insert for env "
+                               "%llu (%llu bytes) failed (sqlite rc %d)",
+                               (unsigned long long)i,
+                               (unsigned long long)blk->envs[i].env_len,
+                               rc);
+                    goto fail_fault;
+                }
                 gidx++;
             }
         }
@@ -2335,13 +3289,23 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
             sqlite3_stmt *st = NULL;
             if (sqlite3_prepare_v2(w->db,
                     "INSERT INTO v2_claim_counts (global_height, n_claims) "
-                    "VALUES (?1,?2)", -1, &st, NULL) != SQLITE_OK)
+                    "VALUES (?1,?2)", -1, &st, NULL) != SQLITE_OK) {
+                V2AP_FAULT("phase 12c: could not prepare the "
+                           "v2_claim_counts insert for height %llu",
+                           (unsigned long long)blk->global_height);
                 goto fail_fault;
+            }
             sqlite3_bind_int64(st, 1, (sqlite3_int64)blk->global_height);
             sqlite3_bind_int64(st, 2, (sqlite3_int64)blk->n_claims);
             int rc = sqlite3_step(st);
             sqlite3_finalize(st);
-            if (rc != SQLITE_DONE) goto fail_fault;
+            if (rc != SQLITE_DONE) {
+                V2AP_FAULT("phase 12c: v2_claim_counts insert for height "
+                           "%llu (%llu claims) failed (sqlite rc %d)",
+                           (unsigned long long)blk->global_height,
+                           (unsigned long long)blk->n_claims, rc);
+                goto fail_fault;
+            }
         }
         for (size_t i = 0; i < blk->n_claims; i++) {
             /* the SAME canonical encoding admission verified — one
@@ -2351,18 +3315,39 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
              * Exact-size heap buffer (worst claim ≈ 11.6 KB — kept off the
              * already-large apply frame). */
             size_t need = dna_claim_encoded_len(&blk->claims[i]);
-            if (need == 0) goto fail_fault;
+            if (need == 0) {
+                V2AP_FAULT("phase 12c: claim %llu re-encode length is 0 "
+                           "although the claim already validated and "
+                           "applied - engine invariant broken on THIS "
+                           "node", (unsigned long long)i);
+                goto fail_fault;
+            }
             uint8_t *cbuf = (uint8_t *)malloc(need);
-            if (!cbuf) goto fail_fault;
+            if (!cbuf) {
+                V2AP_FAULT("phase 12c: allocation of %llu bytes for claim "
+                           "%llu re-encode failed",
+                           (unsigned long long)need,
+                           (unsigned long long)i);
+                goto fail_fault;
+            }
             size_t clen = 0;
             if (dna_claim_encode(&blk->claims[i], cbuf, need, &clen) != 0 ||
                 clen != need) {
                 free(cbuf);
+                V2AP_FAULT("phase 12c: claim %llu re-encode produced %llu "
+                           "bytes, expected %llu",
+                           (unsigned long long)i,
+                           (unsigned long long)clen,
+                           (unsigned long long)need);
                 goto fail_fault;
             }
             uint8_t chash[64];
             if (qgp_sha3_512(cbuf, clen, chash) != 0) {
                 free(cbuf);
+                V2AP_FAULT("phase 12c: hash backend failed over claim "
+                           "%llu's %llu canonical bytes",
+                           (unsigned long long)i,
+                           (unsigned long long)clen);
                 goto fail_fault;
             }
             sqlite3_stmt *st = NULL;
@@ -2371,6 +3356,9 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
                     "claim_index, claim_hash, claim) VALUES (?1,?2,?3,?4)",
                     -1, &st, NULL) != SQLITE_OK) {
                 free(cbuf);
+                V2AP_FAULT("phase 12c: could not prepare the "
+                           "v2_claim_bytes insert for claim %llu",
+                           (unsigned long long)i);
                 goto fail_fault;
             }
             sqlite3_bind_int64(st, 1, (sqlite3_int64)blk->global_height);
@@ -2380,7 +3368,12 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
             int rc = sqlite3_step(st);
             sqlite3_finalize(st);
             free(cbuf);
-            if (rc != SQLITE_DONE) goto fail_fault;
+            if (rc != SQLITE_DONE) {
+                V2AP_FAULT("phase 12c: v2_claim_bytes insert for claim "
+                           "%llu failed (sqlite rc %d)",
+                           (unsigned long long)i, rc);
+                goto fail_fault;
+            }
         }
     }
     FAIL_POINT(V2AP_FAIL_AFTER_CLAIM_BYTES);
@@ -2395,8 +3388,11 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
                     memcpy(all_ids[n_all++], pf[i].wire_id, 64);
         if (dna_v2_tx_batch_root(
                 n_all ? (const uint8_t (*)[64])all_ids : NULL, n_all,
-                blk->out_tx_root) != 0)
+                blk->out_tx_root) != 0) {
+            V2AP_FAULT("phase 13: tx_root over %u derived ids could not "
+                       "be computed", (unsigned)n_all);
             goto fail_fault;
+        }
 
         dna_domain_update_t upd_sorted[MAX_DOMS];
         size_t n_upd = 0;
@@ -2404,8 +3400,12 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
             if (doms[i].touched)
                 upd_sorted[n_upd++] = doms[i].upd;
         if (dna_v2_domain_updates_root(n_upd ? upd_sorted : NULL, n_upd,
-                                       blk->out_dupd_root) != 0)
+                                       blk->out_dupd_root) != 0) {
+            V2AP_FAULT("phase 13: domain_updates_root over %llu updates "
+                       "could not be computed",
+                       (unsigned long long)n_upd);
             goto fail_fault;
+        }
 
         dna_v2_domain_head_t root_heads[MAX_DOMS];
         size_t n_heads = 0;
@@ -2413,25 +3413,72 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
             if (doms[i].has_head)
                 root_heads[n_heads++] = doms[i].newhead;
         if (dna_v2_domains_root(root_heads, n_heads,
-                                blk->out_domains_root) != 0)
+                                blk->out_domains_root) != 0) {
+            V2AP_FAULT("phase 13: domains_root over %llu heads could not "
+                       "be computed", (unsigned long long)n_heads);
             goto fail_fault;
+        }
         if (dna_v2_global_root(blk->out_domains_root,
-                               blk->out_global_root) != 0)
+                               blk->out_global_root) != 0) {
+            V2AP_FAULT("phase 13: global_root could not be computed from "
+                       "domains_root");
             goto fail_fault;
+        }
 
+        /* The expectation compares. These are the follower/leader
+         * assertion channel, and they are the most likely way a block
+         * that every witness VOTED for still dies at commit — so each
+         * one names the field and both values. */
         if (blk->expect_tx_root &&
-            memcmp(blk->expect_tx_root, blk->out_tx_root, 64) != 0)
+            memcmp(blk->expect_tx_root, blk->out_tx_root, 64) != 0) {
+            char e[17], d[17];
+            V2AP_VERDICT("phase 13: tx_root mismatch - asserted %s, "
+                         "engine derived %s over %u transactions at "
+                         "height %llu",
+                         v2ap_hex8(blk->expect_tx_root, e),
+                         v2ap_hex8(blk->out_tx_root, d), (unsigned)n_all,
+                         (unsigned long long)blk->global_height);
             goto fail;
+        }
         if (blk->expect_dupd_root &&
-            memcmp(blk->expect_dupd_root, blk->out_dupd_root, 64) != 0)
+            memcmp(blk->expect_dupd_root, blk->out_dupd_root, 64) != 0) {
+            char e[17], d[17];
+            V2AP_VERDICT("phase 13: domain_updates_root mismatch - "
+                         "asserted %s, engine derived %s over %llu "
+                         "updates at height %llu",
+                         v2ap_hex8(blk->expect_dupd_root, e),
+                         v2ap_hex8(blk->out_dupd_root, d),
+                         (unsigned long long)n_upd,
+                         (unsigned long long)blk->global_height);
             goto fail;
+        }
         if (blk->expect_domains_root &&
             memcmp(blk->expect_domains_root, blk->out_domains_root, 64)
-                != 0)
+                != 0) {
+            char e[17], d[17];
+            V2AP_VERDICT("phase 13: domains_root mismatch - asserted %s, "
+                         "engine derived %s over %llu heads at height "
+                         "%llu",
+                         v2ap_hex8(blk->expect_domains_root, e),
+                         v2ap_hex8(blk->out_domains_root, d),
+                         (unsigned long long)n_heads,
+                         (unsigned long long)blk->global_height);
             goto fail;
+        }
         if (blk->expect_global_root &&
-            memcmp(blk->expect_global_root, blk->out_global_root, 64) != 0)
+            memcmp(blk->expect_global_root, blk->out_global_root, 64)
+                != 0) {
+            char e[17], d[17], dm[17];
+            V2AP_VERDICT("phase 13: global_root mismatch at height %llu - "
+                         "asserted %s, engine derived %s (domains_root "
+                         "%s, %llu heads)",
+                         (unsigned long long)blk->global_height,
+                         v2ap_hex8(blk->expect_global_root, e),
+                         v2ap_hex8(blk->out_global_root, d),
+                         v2ap_hex8(blk->out_domains_root, dm),
+                         (unsigned long long)n_heads);
             goto fail;
+        }
 
         /* ── O14: THE ENGINE BUILDS THE HEADER AND OWNS THE BlockID ────
          * Every field below comes from a LOCALLY DERIVED result or from
@@ -2455,18 +3502,36 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
         memcpy(hdr.proposer_id, blk->proposer_id, 32);
         hdr.timestamp = blk->timestamp;
 
-        if (dna_bh2_encode(&hdr, blk->out_header) != 0) goto fail_fault;
+        if (dna_bh2_encode(&hdr, blk->out_header) != 0) {
+            V2AP_FAULT("phase 13: canonical header v%u encoding failed at "
+                       "height %llu", (unsigned)DNA_BH2_VERSION,
+                       (unsigned long long)blk->global_height);
+            goto fail_fault;
+        }
         FAIL_POINT(V2AP_FAIL_AFTER_HEADER_BUILD);
 
-        if (dna_bh2_block_id(&hdr, blk->out_block_id) != 0) goto fail_fault;
+        if (dna_bh2_block_id(&hdr, blk->out_block_id) != 0) {
+            V2AP_FAULT("phase 13: BlockID over the bound header bytes "
+                       "could not be computed at height %llu",
+                       (unsigned long long)blk->global_height);
+            goto fail_fault;
+        }
 
         /* The assertion, checked against the DERIVED id. A follower whose
          * proposer lied about ANY committed header field — a root, the
          * parent, the validator set, the tx count, the proposer — lands
          * here with a different id and the block dies before COMMIT. */
         if (blk->expect_block_id &&
-            memcmp(blk->expect_block_id, blk->out_block_id, 64) != 0)
+            memcmp(blk->expect_block_id, blk->out_block_id, 64) != 0) {
+            char e[17], d[17];
+            V2AP_VERDICT("phase 13: BlockID mismatch at height %llu - "
+                         "asserted %s, engine derived %s; the proposer "
+                         "misreported at least one bound header field",
+                         (unsigned long long)blk->global_height,
+                         v2ap_hex8(blk->expect_block_id, e),
+                         v2ap_hex8(blk->out_block_id, d));
             goto fail;
+        }
         FAIL_POINT(V2AP_FAIL_AFTER_BLOCK_ID);
 
         /* Same BlockID already committed at ANOTHER height? Checked here,
@@ -2476,13 +3541,26 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
         sqlite3_stmt *st = NULL;
         if (sqlite3_prepare_v2(w->db,
                 "SELECT 1 FROM v2_blocks WHERE block_id = ?1", -1, &st,
-                NULL) != SQLITE_OK)
+                NULL) != SQLITE_OK) {
+            V2AP_FAULT("phase 13: could not prepare the duplicate-BlockID "
+                       "probe");
             goto fail_fault;
+        }
         sqlite3_bind_blob(st, 1, blk->out_block_id, 64, SQLITE_TRANSIENT);
         int drc = sqlite3_step(st);
         sqlite3_finalize(st);
-        if (drc == SQLITE_ROW) goto fail;
-        if (drc != SQLITE_DONE) goto fail_fault;
+        if (drc == SQLITE_ROW) {
+            char d[17];
+            V2AP_VERDICT("phase 13: derived BlockID %s is already "
+                         "committed at ANOTHER height",
+                         v2ap_hex8(blk->out_block_id, d));
+            goto fail;
+        }
+        if (drc != SQLITE_DONE) {
+            V2AP_FAULT("phase 13: duplicate-BlockID probe failed to step "
+                       "(sqlite rc %d)", drc);
+            goto fail_fault;
+        }
 
         st = NULL;
         if (sqlite3_prepare_v2(w->db,
@@ -2491,8 +3569,12 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
                 "domains_root, global_root, vset_hash, tx_count, header, "
                 "qc) "
                 "VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
-                -1, &st, NULL) != SQLITE_OK)
+                -1, &st, NULL) != SQLITE_OK) {
+            V2AP_FAULT("phase 13: could not prepare the v2_blocks "
+                       "metadata insert for height %llu",
+                       (unsigned long long)blk->global_height);
             goto fail_fault;
+        }
         sqlite3_bind_int64(st, 1, (sqlite3_int64)blk->global_height);
         sqlite3_bind_blob(st, 2, blk->out_block_id, 64, SQLITE_TRANSIENT);
         sqlite3_bind_blob(st, 3, blk->out_prev_block_id, 64,
@@ -2517,6 +3599,10 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
         if (blk->qc_bytes && blk->qc_len) {
             if (blk->qc_len > (size_t)DNA_QC_V2_MAX_ENC_LEN) {
                 sqlite3_finalize(st);
+                V2AP_VERDICT("phase 13: the block carries a %llu-byte "
+                             "certificate; no QC can exceed %llu bytes",
+                             (unsigned long long)blk->qc_len,
+                             (unsigned long long)DNA_QC_V2_MAX_ENC_LEN);
                 goto fail;
             }
             sqlite3_bind_blob(st, 12, blk->qc_bytes, (int)blk->qc_len,
@@ -2526,18 +3612,37 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
         }
         int rc = sqlite3_step(st);
         sqlite3_finalize(st);
-        if (rc != SQLITE_DONE) goto fail_fault;
+        if (rc != SQLITE_DONE) {
+            V2AP_FAULT("phase 13: v2_blocks metadata insert for height "
+                       "%llu failed (sqlite rc %d)",
+                       (unsigned long long)blk->global_height, rc);
+            goto fail_fault;
+        }
     }
     FAIL_POINT(V2AP_FAIL_AFTER_BLOCK_META);
 
     /* 14. supply gate (pre-commit) */
-    if (nodus_witness_v2_supply_check(w) != 0) goto fail;
+    if (nodus_witness_v2_supply_check(w) != 0) {
+        V2AP_VERDICT("phase 14: PRE-COMMIT supply gate failed - a "
+                     "registered runtime's conservation invariant does "
+                     "not hold with every row this block wrote (gate "
+                     "helper conflates a read fault: honest label in the "
+                     "header)");
+        goto fail;
+    }
     FAIL_POINT(V2AP_FAIL_BEFORE_COMMIT);
 
     /* 15. COMMIT (or the simulated commit failure) */
-    if (blk->fail_at == V2AP_FAIL_COMMIT) goto fail;
+    if (blk->fail_at == V2AP_FAIL_COMMIT) {
+        V2AP_VERDICT("fault-injection point V2AP_FAIL_COMMIT fired "
+                     "(simulated COMMIT failure; no real check failed)");
+        goto fail;
+    }
     if (exec_sql(w, "COMMIT") != 0) {
         (void)exec_sql(w, "ROLLBACK");
+        V2AP_FAULT("phase 15: COMMIT itself failed at height %llu - "
+                   "rolled back; nothing about the block was judged",
+                   (unsigned long long)blk->global_height);
         goto fail_fault_committed;      /* commit itself failed: node    */
     }
     free(pf); free(meters); free(reads); free(resbuf); free(auths);
@@ -2551,8 +3656,17 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
  * Meter/budget rollback: aborting every non-terminal meter restores the
  * engine-owned budget byte-identically (res_meter abort contract); the
  * budget itself is per-block and dies with this frame, so no residue
- * can reach a later block either way. */
+ * can reach a later block either way.
+ *
+ * Each label ends with the same belt-and-braces line: if the site that
+ * jumped here recorded nothing, say SO — plainly, naming the label —
+ * rather than letting a caller print an empty string or, worse, invent a
+ * cause. Reading out_reason[0] here selects a string and nothing else;
+ * no return code depends on it. */
 fail:
+    if (blk->out_reason[0] == '\0')
+        V2AP_VERDICT("in-transaction rejection with no reason recorded "
+                     "(`fail` label)");
     (void)exec_sql(w, "ROLLBACK");
     meters_abort_all(meters, blk->n_envs);
     free(pf); free(meters); free(reads); free(resbuf); free(auths);
@@ -2563,6 +3677,11 @@ fail:
 fail_fault:
     (void)exec_sql(w, "ROLLBACK");
 fail_fault_committed:
+    /* Both the ROLLBACK path and the direct COMMIT-failure jump land
+     * here, so the fallback lives at THIS label, not at `fail_fault`. */
+    if (blk->out_reason[0] == '\0')
+        V2AP_FAULT("in-transaction node fault with no reason recorded "
+                   "(`fail_fault` label)");
     meters_abort_all(meters, blk->n_envs);
     free(pf); free(meters); free(reads); free(resbuf); free(auths);
     free(cm_pubkeys); free(cm_fps);
@@ -2571,6 +3690,9 @@ fail_fault_committed:
 
 /* pre-transaction exits (nothing to roll back in the database) */
 fail_verdict_pre:
+    if (blk->out_reason[0] == '\0')
+        V2AP_VERDICT("pre-transaction rejection with no reason recorded "
+                     "(`fail_verdict_pre` label)");
     meters_abort_all(meters, blk->n_envs);
     free(pf); free(meters); free(reads); free(resbuf); free(auths);
     free(cm_pubkeys); free(cm_fps);
@@ -2578,6 +3700,9 @@ fail_verdict_pre:
     return -1;
 
 fail_fault_pre:
+    if (blk->out_reason[0] == '\0')
+        V2AP_FAULT("pre-transaction node fault with no reason recorded "
+                   "(`fail_fault_pre` label)");
     meters_abort_all(meters, blk->n_envs);
     free(pf); free(meters); free(reads); free(resbuf); free(auths);
     free(cm_pubkeys); free(cm_fps);

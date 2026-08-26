@@ -592,10 +592,19 @@ int nodus_witness_v2_produce_commit(nodus_witness_t *w,
 
     rc = nodus_witness_v2_apply_block(w, blk);
 
+    /* The engine's own words for WHY it refused. Diagnostic only — it
+     * never changes what this function returns. The existing message
+     * text is kept verbatim and the reason APPENDED, so log greps that
+     * already match "REJECTED by the engine (deterministic verdict)"
+     * keep matching. An empty reason is reported as such rather than
+     * printed as a blank tail. */
+    const char *why = blk->out_reason[0] ? blk->out_reason
+                                         : "(no reason recorded)";
+
     if (rc == NODUS_V2_CONSENSUS_INVALID) {
         QGP_LOG_ERROR(LOG_TAG, "successor block %llu REJECTED by the "
-                      "engine (deterministic verdict)",
-                      (unsigned long long)height);
+                      "engine (deterministic verdict): %s",
+                      (unsigned long long)height, why);
         free(blk);
         free(claims);
         return -1;
@@ -609,8 +618,8 @@ int nodus_witness_v2_produce_commit(nodus_witness_t *w,
          * round machinery's already-committed guards sit in front of
          * this call — bft.c handle_vote/handle_commit round checks). */
         QGP_LOG_ERROR(LOG_TAG, "successor block %llu did not commit "
-                      "(engine rc=%d — node-local, no verdict)",
-                      (unsigned long long)height, rc);
+                      "(engine rc=%d — node-local, no verdict): %s",
+                      (unsigned long long)height, rc, why);
         free(blk);
         free(claims);
         return -2;

@@ -289,6 +289,15 @@ extern "C" {
 #define NODUS_V2_GLOBAL_UNIT_BUDGET  1000000u
 
 /**
+ * Bound on the engine's refusal-reason string (`nodus_v2_block_t
+ * .out_reason`), NUL included. 256 is the size the witness layer already
+ * uses for the same job — nodus_witness.h:236 `char reason[256]` and the
+ * `char *reject_reason, size_t reason_size` pair at
+ * nodus_witness_verify.h:125 — so one convention governs both.
+ */
+#define NODUS_V2_APPLY_REASON_MAX 256
+
+/**
  * The canonical epoch of a global block height — GLOBAL BLOCK COUNT
  * divided by the compile-time epoch length, the SAME convention the
  * shipped consensus surfaces use (leader election
@@ -582,6 +591,43 @@ typedef struct {
      * id — never an input byte — is what `v2_blocks.block_id` stores. */
     uint8_t  out_header[DNA_BH2_ENC_SIZE];
     uint8_t  out_block_id[DNA_BH2_ID_LEN];
+    /* ── WHY the engine refused (DIAGNOSTIC ONLY) ──────────────────────
+     * NUL-terminated ASCII, written by the exact site that refused, so
+     * an operator reading a log can tell WHICH check failed instead of
+     * only that one did. Cleared at entry; non-empty on EVERY refusal
+     * class (-1 / -2 / -3), empty on rc 0/1/2 — a caller that sees an
+     * empty string on a refusal is looking at a path that could not name
+     * itself, not at a missing failure.
+     *
+     * The first token is the CLASS, and it is emitted by the exit macro
+     * itself, never chosen per site, so it cannot drift from the return
+     * code:
+     *   "VERDICT: " -1  a deterministic judgement about the block
+     *   "FAULT: "   -2  THIS NODE could not compute — never a judgement
+     *   "DEFER: "   -3  not evaluable here yet — never a judgement
+     * A fault and a verdict therefore never read alike, which is the
+     * whole point: an operator (and a log grep) must not be able to
+     * mistake "my node is broken" for "the proposer is lying".
+     *
+     * NOT CONSENSUS MATERIAL, and the engine enforces that by
+     * construction: this field is never hashed, never persisted, never
+     * placed on the wire, never entered into any root, header or
+     * preimage, and never read back by the engine — the ONE read is the
+     * `[0] == '\0'` empty test at the exit labels, which selects a
+     * fallback STRING and cannot change a return code or a branch that
+     * leads to one. Two nodes may legitimately print different text for
+     * the same block (a fault reason is local by definition); no node's
+     * verdict depends on any of it.
+     *
+     * ASCII and bounded by construction: every format string is an
+     * engine literal, and every substitution is an integer, a hex
+     * rendering the engine derived, or another literal the ENGINE picked
+     * (a ternary between two fixed phrases, or a stringified
+     * fault-point name). No block-carried, peer-carried or
+     * runtime-carried TEXT is ever interpolated, so nothing an attacker
+     * controls can reach a log line as characters. Truncation at
+     * NODUS_V2_APPLY_REASON_MAX-1 is silent and harmless. */
+    char     out_reason[NODUS_V2_APPLY_REASON_MAX];
 } nodus_v2_block_t;
 
 /** V2 supply-conservation gate (header equation). @return 0 / -1. */
@@ -632,6 +678,16 @@ int nodus_witness_v2_genesis_ex(nodus_witness_t *w,
 
 /**
  * Apply one V2 global block (header contract).
+ *
+ * On every refusal the engine also fills `blk->out_reason` with the
+ * class-tagged text of the site that refused — see the field's contract
+ * in nodus_v2_block_t. It is DIAGNOSTIC ONLY and changes no verdict: the
+ * return codes below are exactly what they were before the reason
+ * existed. The signature is deliberately unchanged so that every
+ * existing caller (nodus_witness_v2_finalize.c:171 and the V2 test
+ * suites) keeps compiling and gets the reason for free in the block it
+ * already owns.
+ *
  * @return 0 committed; 1 idempotent replay (no writes); 2 committed but
  *         the post-commit/pre-cache crash window fired (state IS
  *         committed; restart reconstructs it); -1 CONSENSUS-VERDICT
