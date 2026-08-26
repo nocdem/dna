@@ -225,6 +225,14 @@ set(NODUS_SOURCES
     src/witness/nodus_witness_v2_bundle.c
     src/witness/nodus_witness_v2_join.c
 
+    # Ledger V2 O15J Faz 1 — the PURE-V2 genesis builder: a complete
+    # Ledger V2 chain derived from a local operator config, with no legacy
+    # ancestor. ALWAYS COMPILED and unit-tested, but INERT: nothing on a
+    # running node calls nodus_witness_v2_gen_derive yet — the startup
+    # wiring is not part of Faz 1. Depends on NO activation symbol, so it
+    # survives the removal of the ceremony.
+    src/witness/nodus_witness_v2_gen.c
+
     # Ledger V2 S6 — INACTIVE generic genesis/distribution manifest +
     # claim codec (shared) and the witness-side manifest/claims module
     # (real manifest_root/claims_root legs, distribution accounting,
@@ -565,6 +573,36 @@ function(register_witness_test name)
     add_executable(${name} tests/${name}.c)
     target_link_libraries(${name} nodus dsa nodus)
     target_compile_definitions(${name} PRIVATE NODUS_WITNESS_INTERNAL_API)
+    add_test(NAME ${name} COMMAND ${name})
+endfunction()
+
+# O15J — engine-level tests that drive SYNTHETIC envelopes creating value
+# from nothing (env_core_utxo_create). They cover the apply engine's
+# effect plumbing, not economics, and no genesis seeding can balance
+# conjured value: that is precisely what the CORE conservation equation
+# forbids. Before L2-F1 they passed only because an ABSENT
+# supply_tracking row skipped the equation outright — the same hole that
+# let a production chain run unchecked for its whole life, now a hard
+# refusal.
+#
+# NODUS_V2_TEST_SUPPLY is defined HERE AND NOWHERE ELSE among the targets
+# this project ships. The claims TU is compiled INTO each of these test
+# binaries with the macro rather than into libnodus; libnodus is STATIC,
+# so the linker resolves those symbols from this object and never
+# extracts the archive member — one definition, no duplicates, and the
+# bypass exists in no shipped artefact. Same arrangement and same
+# reasoning as the NODUS_V2_TEST_AUTHORITY gate fixture below.
+#
+# The absence is NOT argued from this comment: test_v2_supply_linked
+# proves it with `nm` against libnodus and nodus-server, so a future edit
+# that leaks the macro onto a library target fails a test.
+function(register_witness_test_supply_bypass name)
+    add_executable(${name} tests/${name}.c
+                   src/witness/nodus_witness_v2_claims.c)
+    target_link_libraries(${name} nodus dsa nodus crypto)
+    target_compile_definitions(${name} PRIVATE
+                               NODUS_WITNESS_INTERNAL_API
+                               NODUS_V2_TEST_SUPPLY=1)
     add_test(NAME ${name} COMMAND ${name})
 endfunction()
 
@@ -930,6 +968,20 @@ add_test(NAME test_v2_gate_linked
                  -DNODUS_SERVER=$<TARGET_FILE:nodus-server>
                  -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/v2_gate_linked.cmake)
 
+# Ledger V2 O15J — the same absence proof for the test-only CONSERVATION
+# bypass. Red-team L2-F1 (CRITICAL) found that an absent supply_tracking
+# row SKIPPED the CORE supply equation for the life of the chain; that is
+# now a hard refusal, and the two engine-level tests that relied on it
+# use an explicit bypass instead. The whole point is that the replacement
+# cannot exist in a shipped artefact where the original could — which
+# only `nm` against the LINKED binaries can show, since those two test
+# binaries compile the bypass in on purpose.
+add_test(NAME test_v2_supply_linked
+         COMMAND ${CMAKE_COMMAND}
+                 -DNODUS_LIB=$<TARGET_FILE:nodus>
+                 -DNODUS_SERVER=$<TARGET_FILE:nodus-server>
+                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/v2_supply_linked.cmake)
+
 # Ledger V2 O15A — obligation 6: the RESTART path runs the same post-open
 # integrity gate as creation. It previously ran neither check, so a
 # database that would have been refused at creation was accepted on every
@@ -982,7 +1034,7 @@ register_witness_test(test_v2_schema)
 # with full-DB digest rollback proof, resource limits, official 1B/70M
 # supply conservation. Execution season: blocks carry ENVELOPES through
 # the typed runtime path (v2_exec_fixture.h scripted runtimes).
-register_witness_test(test_v2_apply)
+register_witness_test_supply_bypass(test_v2_apply)
 
 # Ledger V2 execution season — the engine-level adversarial matrix of
 # the typed execution path: block-count epoch gates, fail-closed local
@@ -992,7 +1044,7 @@ register_witness_test(test_v2_apply)
 # engine-mediated reads (canonical order, same-block observation),
 # hostile runtime results (verdict -1 vs node fault -2), determinism
 # twins + restart.
-register_witness_test(test_v2_exec)
+register_witness_test_supply_bypass(test_v2_exec)
 register_witness_test(test_v2_native)
 
 # Ledger V2 capacity season — legacy 64 KiB vs derived 1 MiB V2 ceiling:
@@ -1013,6 +1065,13 @@ add_test(NAME test_manifest_wire COMMAND test_manifest_wire)
 # adversarial matrix (substitution / replay / early / late / duplicate /
 # spent-after-restart), fault-injection digest rollback, one-owner
 # supply conservation, insertion-order-independent claims_root.
+# O15J review R2-F5 (secondary): test_v2_claims does NOT need the bypass.
+# It never calls v2x_genesis_min, so it never arms it, and all nine of its
+# supply_check assertions run against the LIVE invariant over genuinely
+# seeded rows. What it actually needed was the supply_init seeding at
+# test_v2_claims.c:1066+. Enabling a compile-time conservation off-switch
+# on a target that does not use it only widens the surface the link gate
+# has to defend.
 register_witness_test(test_v2_claims)
 register_witness_test(test_v2_pools)
 
@@ -1065,6 +1124,16 @@ register_witness_test(test_v2_committee_seed)
 # persist/get/apply round-trip, byte-identical base tables + genesis id
 # vs source, wrong-pin/malformed rejection with zero trace.
 register_witness_test(test_v2_bundle)
+
+# Ledger V2 O15J Faz 1 — the PURE-V2 genesis builder: the §0 composition
+# (1 treasury + 7 × 10M self-stake == 10^17) derived from a config with no
+# legacy ancestor, determinism twins (byte-identical chain id / genesis
+# BlockID / whole-database digest from independent derivations), config
+# sensitivity, and one explicit REJECT per red-team defect (L2-F1 absent
+# supply row, L2-F2 total_claimable vs leaves, L2-F3 claim window,
+# L2-F4 graduation-malformed validator, L2-F6 rules P.1/P.2/P.3,
+# L1-F1 validator_stats carried in the genesis bundle).
+register_witness_test(test_v2_gen)
 
 # Ledger V2 O15C — the committed activation authority: shared codecs +
 # digests (KAT-style sensitivity), schema v10 migration/rollback, the

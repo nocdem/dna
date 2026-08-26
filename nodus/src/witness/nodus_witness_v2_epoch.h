@@ -159,6 +159,7 @@
 #include "dnac/ledger_ids.h"        /* DNA_CHAIN_ID_LEN, DNA_DOMAIN_*,
                                      * dna_bft_quorum                   */
 #include "dnac/dnac.h"              /* DNAC_EPOCH_LENGTH                */
+#include "dnac/validator.h"         /* dnac_validator_record_t          */
 #include "dnac/vset_wire.h"         /* dna_vset_snapshot_t              */
 
 #include <stdint.h>
@@ -167,6 +168,23 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/**
+ * The graduation's WRITABLE-SHAPE predicate on a committed validators
+ * row — the SAME conditions stage 2 (RETIRING → UNSTAKED) enforces
+ * before it will pay a graduate out. Exported for O15J L2-F4: a row that
+ * fails this predicate passes genesis (the validator merkle leaf legally
+ * hashes an all-zero fingerprint) and then FAULTS -2 at the first
+ * graduation boundary — a deterministic chain halt with no recovery. A
+ * producer of validator rows (the pure-V2 genesis builder) must be able
+ * to refuse such a row BEFORE it is committed, against this one
+ * authority rather than a copy that can drift out of step with it.
+ *
+ * Pure; touches no database. NULL is 0.
+ *
+ * @return 1 the row is writable-shaped; 0 it is not.
+ */
+int nodus_witness_v2_epoch_val_rec_ok(const dnac_validator_record_t *v);
 
 /** The 16-byte graduation-identity tag (zero-padded, exactly 16 B). */
 #define NODUS_V2_EPGRAD_TAG      "DNA.EPGRAD.v1"

@@ -28,6 +28,8 @@
 #include "crypto/hash/qgp_sha3.h"
 
 #include "witness/nodus_witness.h"
+#include "witness/nodus_witness_db.h"   /* O15J L2-F1 — supply_init */
+#include "witness/nodus_witness_v2_claims.h" /* O15J — test supply bypass */
 #include "witness/nodus_witness_domreg.h"
 #include "witness/nodus_witness_v2_apply.h"
 #include "witness/nodus_witness_vset.h"
@@ -176,6 +178,42 @@ static int v2x_genesis_min(nodus_witness_t *w, const uint8_t vset[64],
     if (nodus_witness_domreg_get(w, DNA_DOMAIN_CORE, NULL, &dm, NULL) != 0)
         return -1;
     if (dna_domman_hash(&dm, core_h) != 0) return -1;
+
+    /* O15J L2-F1 — the supply row must EXIST before a V2 genesis is
+     * committed. It used to be legitimate for this fixture to leave it
+     * absent: nodus_rt_core_invariant returned 0 unconditionally on
+     * `sup_rc == 1`, so the conservation equation was SKIPPED (not
+     * satisfied) and the COALESCE below read the absence as 0. That is
+     * the CRITICAL hole the red-team found — an absent row disables the
+     * invariant for the LIFE of the chain — and the invariant now fails
+     * closed once a committed V2 genesis exists.
+     *
+     * The fixture's intent is unchanged: these are ZERO-supply chains
+     * (the validator rows deliberately carry self_stake = 0, see the
+     * comment above), so a row holding genesis_supply = 0 expresses
+     * exactly what the fixture always meant, and the equation now
+     * genuinely evaluates: 0 == 0. supply_init carries its own
+     * already-initialized probe, so a test that seeded its own supply
+     * first keeps that value. */
+    {
+        uint8_t zero_hash[64];
+        memset(zero_hash, 0, sizeof(zero_hash));
+        /* -2 == "already initialized" (nodus_witness_db.c:952) — a test
+         * that seeded its own supply BEFORE calling the fixture keeps
+         * that value, and that is the expected path, not an error.
+         * Anything else is a genuine failure. */
+        int srv = nodus_witness_supply_init(w, 0, zero_hash);
+        if (srv != 0 && srv != -2) return -1;
+    }
+
+#ifdef NODUS_V2_TEST_SUPPLY
+    /* O15J — the three engine-level targets that drive synthetic
+     * value-creating envelopes arm the test-only conservation bypass
+     * here, so no per-test edit is needed and every other consumer of
+     * this fixture keeps the live invariant. The symbol does not exist
+     * outside those targets (CMakeLists.txt register_witness_test_supply_bypass). */
+    nodus_witness_v2_supply_test_bypass(1);
+#endif
 
     uint64_t supply = 0;
     {

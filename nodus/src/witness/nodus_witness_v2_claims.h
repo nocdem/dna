@@ -201,6 +201,23 @@ int nodus_witness_v2_claim_state_update(nodus_witness_t *w,
                                         const uint8_t manifest_hash[64],
                                         uint64_t converted);
 
+#ifdef NODUS_V2_TEST_SUPPLY
+/**
+ * O15J — TEST-ONLY. Suspend the CORE conservation invariant so an
+ * engine-level test can drive synthetic envelopes that create value from
+ * nothing (effect-plumbing coverage, not economics).
+ *
+ * Declared AND defined only under NODUS_V2_TEST_SUPPLY, which is set for
+ * exactly two test targets and nowhere else. libnodus is static and
+ * the TU is compiled into those binaries, so no shipped artefact
+ * contains this symbol — `test_v2_supply_linked` proves that with `nm`
+ * instead of asserting it here. This replaces the pre-O15J escape (an
+ * absent supply_tracking row silently SKIPPING the equation), which was
+ * reachable in production and is now a hard refusal.
+ */
+void nodus_witness_v2_supply_test_bypass(int on);
+#endif
+
 #ifdef __cplusplus
 }
 #endif

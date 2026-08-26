@@ -26,6 +26,7 @@
  * build: chain-role derivation is what makes a successor database inert
  * (all legacy lanes refuse) on a default binary too. */
 #include "witness/nodus_witness_v2_seam.h"      /* O15C successor derivation */
+#include "witness/nodus_witness_v2_gen.h"       /* O15J pure-V2 chain role   */
 #include "witness/nodus_witness_v2_claims.h"    /* nodus_witness_v2_chain_id */
 #include "witness/nodus_witness_v2_sync2.h"     /* O15E successor sync seam */
 #include "witness/nodus_witness_v2_join.h"      /* O15E pinned-genesis joiner */
@@ -506,7 +507,36 @@ static int witness_post_open_gate(nodus_witness_t *witness,
     witness->v2_successor = false;
     memset(witness->v2_chain32, 0, sizeof(witness->v2_chain32));
     memset(&witness->v2_certpool, 0, sizeof(witness->v2_certpool));
-    if (nodus_witness_v2_seam_is_successor(db_path) == 1) {
+
+    /* ── O15J — a PURE-V2 chain is a V2 chain too ──────────────────────
+     *
+     * The probe above matches only the ceremony's "DNA.LEGACY.TERM.v1"
+     * source binding. A chain built by nodus_witness_v2_gen carries
+     * "DNA.GENESIS.v1" — it has no legacy ancestor — so before this it
+     * reopened with v2_successor = false and every consumer took the
+     * LEGACY branch: nodus_witness_block_height read the empty `blocks`
+     * table and advertised height 0, nodus_witness_genesis_exists was
+     * false so the admission precheck would ADMIT a legacy GENESIS
+     * transaction into the V2 database (the exact hazard the comment
+     * above records), every V2 lane refused, and the first non-bootstrap
+     * epoch halted because the committee seed read the empty `blocks`
+     * table. Review R2 found it; the season's own test had MASKED it by
+     * hard-setting the flag after create_chain_db.
+     *
+     * A probe FAULT (-1) refuses the database. This is deliberately
+     * stricter than the seam probe's behaviour beside it: a chain whose
+     * role cannot be determined must not be opened as though it had no
+     * role, which is precisely the failure being fixed. */
+    int pure_rc = nodus_witness_v2_gen_is_pure(db_path);
+    if (pure_rc < 0) {
+        fprintf(stderr, "%s: chain role undeterminable for %s — refusing "
+                "the database (fail closed)\n", LOG_TAG, db_path);
+        sqlite3_close(witness->db);
+        witness->db = NULL;
+        return -1;
+    }
+
+    if (pure_rc == 1 || nodus_witness_v2_seam_is_successor(db_path) == 1) {
         if (nodus_witness_v2_chain_id(witness,
                                       witness->v2_chain32) != 0) {
             fprintf(stderr, "%s: successor chain id underivable for %s — "

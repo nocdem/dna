@@ -1058,6 +1058,22 @@ int main(void) {
     fx_close(&fx);
 
     /* ── 7. supply (official DNA numbers) ───────────────────────────── */
+    /* O15J — this is the ONE section of this file that tests the
+     * conservation equation ITSELF. The fixture arms a test-only bypass
+     * on EVERY v2x_genesis_min call (:461, :464, :485, :561 above), and
+     * from here to the end of the run this file asserts things about the
+     * live invariant, so it is disarmed once here.
+     *
+     * CORRECTED after review R1: an earlier version of this comment said
+     * the negative assertions (`supply_check(...) != 0`, e.g. the
+     * additive-70M case below) would "pass trivially" with the bypass
+     * armed. That is the wrong polarity — an armed bypass returns 0, so
+     * those assertions FAIL loudly rather than passing. What the disarm
+     * actually protects are the ~15 POSITIVE assertions in this section
+     * (`supply_check(...) == 0`), which an armed bypass satisfies
+     * unconditionally and which would therefore prove nothing. */
+    nodus_witness_v2_supply_test_bypass(0);
+
     fixture_t fs;
     CHECK(fx_open(&fs) == 0, "supply fixture"); OK();
     CHECK(nodus_witness_db_migrate_v2s9(fs.w) == 0, "migrate");
@@ -1208,6 +1224,16 @@ int main(void) {
     /* an engine block that BREAKS supply rolls back completely */
     CHECK(v2x_genesis_min(fs.w, vset, NULL, NULL) == 0,
           "supply-fixture genesis"); OK();
+    /* O15J — v2x_genesis_min RE-ARMS the test-only bypass on every call,
+     * so it must be disarmed again here.
+     *
+     * CORRECTED after review R1: with the bypass live the two assertions
+     * below (`apply_block == -1` and the unchanged-digest check) would
+     * FAIL, not become vacuous — the block would commit. The disarm is
+     * still required; the hazard is simply a loud failure rather than a
+     * silent pass. The silent-pass hazard belongs to the positive
+     * assertions after this point. */
+    nodus_witness_v2_supply_test_bypass(0);
     uint8_t sdg[64], sdg2[64];
     CHECK(db_state_digest(fs.w, sdg) == 0, "digest");
     static v2x_env_t einf;

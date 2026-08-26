@@ -800,6 +800,18 @@ static int sum_q(nodus_witness_t *w, const char *sql, uint64_t *out) {
  * v1 UTXO table is this runtime's domain-local state; another runtime's
  * value must live in its own namespace, never silently summed here.
  */
+#ifdef NODUS_V2_TEST_SUPPLY
+/* Definition and setter exist ONLY in the two test binaries that
+ * compile this TU with NODUS_V2_TEST_SUPPLY. See the block inside
+ * nodus_rt_core_invariant below for the full rationale, and
+ * test_v2_supply_linked for the `nm` proof of absence. */
+static int g_v2_supply_test_bypass = 0;
+
+void nodus_witness_v2_supply_test_bypass(int on) {
+    g_v2_supply_test_bypass = on ? 1 : 0;
+}
+#endif
+
 int nodus_rt_core_invariant(const nodus_domain_runtime_t *rt,
                             struct nodus_witness *wv) {
     nodus_witness_t *w = (nodus_witness_t *)wv;
@@ -828,11 +840,85 @@ int nodus_rt_core_invariant(const nodus_domain_runtime_t *rt,
         }
     }
 
+#ifdef NODUS_V2_TEST_SUPPLY
+    /* ── O15J — TEST-ONLY conservation bypass ─────────────────────────
+     * Engine-level tests (test_v2_apply, test_v2_exec — R2-F5 corrected
+     * the count; test_v2_claims never arms it and was dropped back to a
+     * plain registration) exercise the apply engine's EFFECT PLUMBING
+     * with synthetic
+     * envelopes that create value from nothing (env_core_utxo_create).
+     * No genesis seeding can balance that — conjured value is exactly
+     * what the conservation equation exists to forbid — so those tests
+     * cannot run against a live invariant, and before L2-F1 they only
+     * passed because an absent supply_tracking row SKIPPED the equation
+     * outright. That escape hatch was also the CRITICAL production hole.
+     *
+     * This replaces it with one that CANNOT EXIST IN PRODUCTION: the
+     * flag and its setter are compiled only when NODUS_V2_TEST_SUPPLY is
+     * defined, which happens for those two test targets and nowhere
+     * else. libnodus is STATIC and this TU is compiled INTO each of
+     * those binaries, so the definition exists in no shipped artefact —
+     * the same arrangement, and the same reasoning, as the
+     * NODUS_V2_TEST_AUTHORITY gate fixture (CMakeLists.txt:882-906).
+     * test_v2_supply_linked proves the absence with `nm` rather than
+     * arguing it from this comment.
+     *
+     * Process-global rather than per-handle: these tests are
+     * single-threaded and drive one chain at a time. A per-handle flag
+     * would need a field in the PRODUCTION struct, which is strictly
+     * weaker — this way production has no flag to set. */
+    if (g_v2_supply_test_bypass) return 0;
+#endif
+
     nodus_witness_supply_t sup;
     memset(&sup, 0, sizeof(sup));
     int sup_rc = nodus_witness_supply_get(w, &sup);
     if (sup_rc < 0) return -1;           /* DB error is never a value     */
-    if (sup_rc == 1) return 0;           /* honest pre-genesis            */
+    if (sup_rc == 1) {
+        /* ── O15J L2-F1 (CRITICAL) ────────────────────────────────────
+         * An absent supply_tracking row used to be an unconditional
+         * `return 0` — the whole conservation invariant SKIPPED, not
+         * failed, for the LIFE of the chain. Nothing else catches it
+         * either: the manifest cross-check reads the same absent row as
+         * 0 and compares it to a manifest genesis_supply of 0, so a
+         * chain born without the row passes both gates permanently
+         * (nodus_witness_v2_claims.c manifest_commit, the
+         * "Genesis-supply cross-check" block above).
+         *
+         * "Pre-genesis" is only honest BEFORE a genesis exists. Once a
+         * V2 genesis is committed, the row's absence is not an empty
+         * state — it is a broken one, and the only safe answer is to
+         * fail closed.
+         *
+         * Deliberately SCOPED so the legitimate legacy/pre-genesis
+         * `return 0` is not weakened:
+         *   - no v2_blocks table at all  → legacy DB, never had a V2
+         *     genesis            → 0 (unchanged behaviour)
+         *   - table present, no height-0 row → genuinely pre-genesis
+         *                        → 0 (unchanged behaviour)
+         *   - height-0 row present → a V2 genesis EXISTS → -1
+         *   - any probe fault      → -1, never a value (the probe-fault
+         *     discipline this file's header states). */
+        int has_v2 = table_exists(w, "v2_blocks");
+        if (has_v2 < 0) return -1;
+        if (has_v2 == 0) return 0;       /* legacy DB: honest pre-genesis */
+
+        sqlite3_stmt *gst = NULL;
+        if (sqlite3_prepare_v2(w->db,
+                "SELECT 1 FROM v2_blocks WHERE global_height = 0",
+                -1, &gst, NULL) != SQLITE_OK)
+            return -1;
+        int grc = sqlite3_step(gst);
+        sqlite3_finalize(gst);
+        if (grc == SQLITE_DONE) return 0;    /* pre-genesis, still honest */
+        if (grc != SQLITE_ROW) return -1;    /* fault is never "absent"   */
+
+        QGP_LOG_ERROR(LOG_TAG, "%s",
+            "CORE INVARIANT: supply_tracking row is ABSENT on a chain "
+            "that has a committed V2 genesis — the conservation "
+            "invariant cannot be evaluated, refusing (fail closed)");
+        return -1;
+    }
 
     uint64_t expected = sup.genesis_supply;
     if (sup.total_minted > UINT64_MAX - expected) return -1;

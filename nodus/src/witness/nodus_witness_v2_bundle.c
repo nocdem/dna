@@ -46,6 +46,18 @@ static const bundle_table_t BUNDLE_TABLES[] = {
     { "epoch_state",           "epoch_start_height ASC" },
     { "chain_config_history",  "param_id ASC, effective_block ASC" },
     { "supply_tracking",       "id ASC" },
+    /* O15J L1-F1 (HIGH) — validator_stats was MISSING. The producer
+     * carries six base tables (the seam's carry list,
+     * nodus_witness_v2_seam.c:355-376); this table carried five, and
+     * validator_stats reaches NO committed root, so a joiner's genesis
+     * matched its pin byte-for-byte while its `active_count` stayed at
+     * the create_chain_db seed of 0 (nodus_witness.c:285) instead of the
+     * producer's value. The divergence was SILENT until the first
+     * RETIRING graduation, where v2ep_active_count_dec refuses a counter
+     * that cannot absorb a decrement (nodus_witness_v2_epoch.c:253-263)
+     * — a -2 fault, i.e. a deterministic halt on that node only.
+     * `key` IS the primary key (nodus_witness.c:233-236). */
+    { "validator_stats",       "key ASC" },
 };
 #define BUNDLE_N_TABLES (sizeof(BUNDLE_TABLES) / sizeof(BUNDLE_TABLES[0]))
 

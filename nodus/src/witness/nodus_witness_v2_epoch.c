@@ -101,8 +101,16 @@ static int v2ep_fp_ok(const uint8_t *fp) {
  * Same conditions rtn_val_rec_ok enforces on the canonical record blob
  * (nodus_witness_rt_native.c:3906-3933) — expressed against the decoded
  * struct because this module never encodes one. A failure here is a
- * FAULT, not a verdict: see the header's obligation 1. @return 1/0. */
-static int v2ep_val_rec_ok(const dnac_validator_record_t *v) {
+ * FAULT, not a verdict: see the header's obligation 1. @return 1/0.
+ *
+ * O15J L2-F4: EXPORTED (was static). A genesis builder that seeds
+ * validator rows must be able to refuse a row this predicate would later
+ * reject, because a row that fails here at the FIRST graduation boundary
+ * is a deterministic chain halt (-2, the stage-2 refusal below) with no
+ * recovery. A mirrored copy in the builder would drift; one authority
+ * cannot. */
+int nodus_witness_v2_epoch_val_rec_ok(const dnac_validator_record_t *v) {
+    if (!v) return 0;
     const uint64_t u64s[] = {
         v->self_stake, v->total_delegated, v->external_delegated,
         v->pending_effective_block, v->active_since_block,
@@ -344,7 +352,7 @@ static int v2ep_graduate(nodus_witness_t *w, uint64_t h,
         }
         /* ACTIVATION OBLIGATION 1 (header): a legacy-malformed row is
          * refused, never paid out to and never rewritten. */
-        if (!v2ep_val_rec_ok(&v)) {
+        if (!nodus_witness_v2_epoch_val_rec_ok(&v)) {
             QGP_LOG_ERROR(LOG_TAG, "%s",
                           "graduate row is legacy-malformed: refusing "
                           "the boundary (activation obligation 1)");

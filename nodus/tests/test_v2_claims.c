@@ -1063,6 +1063,18 @@ static int absent_genesis(fixture_t *fx, uint8_t out_sys[64],
     size_t mlen = 0;
     if (dna_gman_encode(&m, mbytes, sizeof(mbytes), &mlen) != 0) return -1;
     uint8_t gid[64], chain[32];
+    /* O15J L2-F1 — the supply row must EXIST before a V2 genesis is
+     * committed; its absence used to SKIP the conservation equation for
+     * the life of the chain and now fails closed. This fixture's intent
+     * is a ZERO-supply chain, so a row holding 0 expresses exactly what
+     * it always meant and the equation genuinely evaluates 0 == 0.
+     * -2 == already initialized (nodus_witness_db.c:952). */
+    {
+        uint8_t zh[64];
+        memset(zh, 0, sizeof(zh));
+        int sv = nodus_witness_supply_init(fx->w, 0, zh);
+        if (sv != 0 && sv != -2) return -1;
+    }
     if (commit_genesis_read(fx, mbytes, mlen, gid, chain) != 0) return -1;
     if (nodus_witness_system_root_v2(fx->w, out_sys) != 0) return -1;
     if (nodus_witness_core_root_v2(fx->w, out_core) != 0) return -1;
