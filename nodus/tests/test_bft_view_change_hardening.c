@@ -75,6 +75,32 @@
  *       the P3(b) intake scope on legacy vs successor, and the P3(c)
  *       drain that had to stop wiping the demand this all rests on.
  *
+ *  O15I follow-up — the three defects an independent verifier found in
+ *  the sections above, each with the coverage that was missing:
+ *
+ *  V3 — bft_p3_live_demand had NO test: no fixture anywhere held a
+ *       NON-EMPTY pool whose entries were ALL decided at an aged window,
+ *       which is the one state the predicate exists to distinguish.
+ *       §13g pins it, §13h is the converse that stops §13g passing for a
+ *       predicate that always answers false.
+ *
+ *  V1 — a successor class-200 ENVELOPE is pooled with nullifier_count
+ *       == 0 and NOTHING could remove it, so a FINISHED envelope read as
+ *       live demand and churned the view against a healthy leader
+ *       forever. Both consumers now ask nodus_witness_v2_entry_verdict
+ *       and collapse it through the ONE shared
+ *       nodus_witness_v2_entry_is_decided rule. §13i covers the
+ *       COMMITTED door, §13k the EXPIRED one (the residual the first cut
+ *       left open by treating every non-OK preflight status as a node
+ *       fault), each with an unfinished envelope carried through as the
+ *       survival half.
+ *
+ *  V2 — bft_config is zero on a calloc'd witness and whenever
+ *       n < NODUS_T3_MIN_WITNESSES, which made both IDLE-branch deadmen
+ *       fire every second. Both are gated on
+ *       nodus_witness_bft_consensus_active; §13j pins each, with its own
+ *       in-fixture converse.
+ *
  * Fixture style follows test_bft_liveness.c: heap witness (multi-MB),
  * real ML-DSA-87 keys so PREVOTE cert_sig verification is the production
  * check rather than a stub.
@@ -95,6 +121,11 @@
 #include "witness/nodus_witness_v2_epoch.h"
 #include "witness/nodus_witness_v2_schema.h"
 #include "witness/nodus_witness_v2_claims.h"
+/* §13i — O15I V1: the committed-INTENT authority. runtime.h supplies the
+ * SYSTEM ruleset op + auth-kind the envelope leg declares; v2_produce.h
+ * the entry classifier and the V2 tip the candidate height comes from. */
+#include "witness/nodus_witness_runtime.h"
+#include "witness/nodus_witness_v2_produce.h"
 #include "nodus/nodus_chain_config.h"
 #include "protocol/nodus_tier3.h"
 #include "crypto/nodus_sign.h"
@@ -108,6 +139,7 @@
 
 #include "dnac/vset_wire.h"
 #include "dnac/env_wire.h"       /* §7 — DNA_ENV_MAX_TOTAL_LEN */
+#include "dnac/env_preflight.h"  /* §13i — the derived intent_id           */
 #include "dnac/ledger_ids.h"     /* §7/§8 — dna_bft_quorum      */
 #include "dnac/transaction.h"    /* §13e — DNAC_TX_HEADER_SIZE  */
 #include "dnac/manifest_wire.h"  /* §13e3 — GenesisManifest + claim codec */
@@ -889,6 +921,202 @@ static uint8_t *p3c_encode_claim(const dna_claim_t *c, size_t *out_len,
     if (qgp_sha3_512(b, wr, hash) != 0) p3c_die("claim wire hash");
     *out_len = wr;
     return b;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+ * §13i helpers — O15I V1, the committed-INTENT verdict on a class-200
+ * successor ENVELOPE.
+ *
+ * WHY AN ENVELOPE AND NOT THE §13e3 CLAIM. A class-201 claim is pooled
+ * WITH its committed nullifier (nodus_witness_peer.c re-derives it at
+ * intake), so the legacy predicate already judges it. The class-200
+ * ENVELOPE is the shape nothing could judge: intake takes the successor
+ * branch, the legacy nullifier walk is skipped, and the entry lands with
+ * nullifier_count == 0. That entry is what V1 is about, so the fixture
+ * has to produce a real one.
+ *
+ * WHAT THESE ENVELOPES ARE NOT. They are NOT admissible transactions and
+ * they are deliberately not made so: `auth_data` is filler, and no
+ * committee approval is built. That is sound because the property under
+ * test is the DERIVATION, and the preflight explicitly decides nothing
+ * about authorization (env_preflight.h, "HONEST LABEL: what the preflight
+ * does NOT decide"). intent_id excludes every authorization byte by
+ * construction (env_wire.h, "DNA.ENVINTID.v1"), so filler auth cannot
+ * change the value under test. The entries are therefore POOLED DIRECTLY
+ * rather than offered to handle_fwd_req — §13e3 already owns the
+ * admission-lane proof.
+ *
+ * `expiry_height` is 0 (= never expires) so the preflight's one height
+ * comparison can never turn this fixture's verdict into a rejection: the
+ * section is about the INDEX answer, not about expiry.
+ * ═══════════════════════════════════════════════════════════════════ */
+
+typedef struct {
+    uint8_t *bytes;
+    size_t   len;
+    uint8_t  intent_id[64];
+} p3c_env_t;
+
+/* A canonical 1-leg SYSTEM envelope plus the intent_id consensus derives
+ * for it. `tag` seeds call_data, so two tags are two DIFFERENT semantic
+ * transactions and therefore two different intent ids — the section
+ * asserts that rather than assuming it.
+ *
+ * `expiry_height` 0 means "never expires" (the codec's own convention).
+ * Any non-zero value at or below the committed tip produces an envelope
+ * the production path will judge EXPIRED, which is what §13k needs. */
+static void p3c_make_env(nodus_witness_t *w, const p3c_chain_t *cx,
+                         uint8_t tag, uint64_t expiry_height,
+                         p3c_env_t *out) {
+    memset(out, 0, sizeof(*out));
+
+    /* The CONTEXTUAL ruleset identity is read from the committed registry
+     * — the same place nodus_witness_v2_entry_verdict reads it. A
+     * hand-picked version/hash would make the two derivations disagree
+     * and the production helper would answer ERR_CTX_*, not "committed". */
+    /* Zeroed for p3c_build_manifest's reason: p3c_die exits, but it is not
+     * declared noreturn, so a compiler that has not inferred that still
+     * sees the reads below. */
+    dna_domain_manifest_t sys;
+    memset(&sys, 0, sizeof(sys));
+    if (nodus_witness_domreg_get(w, DNA_DOMAIN_SYSTEM, NULL, &sys, NULL) != 0) {
+        p3c_die("SYSTEM manifest");
+        return;
+    }
+
+    uint8_t call[32], auth[16];
+    memset(call, tag, sizeof(call));
+    memset(auth, (uint8_t)(tag ^ 0xFF), sizeof(auth));
+
+    dna_env_leg_in_t leg;
+    memset(&leg, 0, sizeof(leg));
+    leg.hdr.domain_id            = DNA_DOMAIN_SYSTEM;
+    leg.hdr.runtime_op           = DNA_SYSRULE_CHAIN_CONFIG;
+    leg.hdr.ruleset_version      = sys.ruleset_version;
+    leg.hdr.access_mode          = DNA_ENV_ACCESS_INVOKE;
+    leg.hdr.auth_kind            = NODUS_RT_AUTHKIND_DSA87_CC_V1;
+    leg.hdr.call_len             = (uint32_t)sizeof(call);
+    leg.hdr.auth_len             = (uint32_t)sizeof(auth);
+    leg.hdr.res_max_effects      = 4;
+    leg.hdr.res_max_effect_bytes = 4096;
+    leg.call_data = call;
+    leg.auth_data = auth;
+
+    dna_env_in_t in;
+    memset(&in, 0, sizeof(in));
+    in.expiry_height       = expiry_height;
+    in.fee_amount          = 0;
+    in.res_max_total_units = 200000;
+    in.leg_count           = 1;
+    in.legs                = &leg;
+
+    size_t need = 0;
+    if (dna_env_encoded_size(&leg, 1, &need) != 0 || need == 0) {
+        p3c_die("env size");
+        return;
+    }
+    out->bytes = malloc(need);
+    if (!out->bytes) { p3c_die("env alloc"); return; }
+    size_t used = 0;
+    if (dna_env_encode(&in, out->bytes, need, &used) != 0 || used != need)
+        p3c_die("env encode");
+    out->len = used;
+
+    uint64_t tip = 0;
+    if (nodus_witness_v2_tip_height(w, &tip) != 0) p3c_die("v2 tip");
+
+    /* THE HEIGHT USED HERE IS FOR THE DERIVATION ONLY, and for an expired
+     * envelope it deliberately is NOT the production candidate.
+     *
+     * intent_id is height-independent — the height enters dna_env_preflight
+     * at exactly one place, the expiry comparison (env_preflight.h step 3)
+     * — so preflighting at a height where this envelope is still valid
+     * yields the SAME intent_id the production path derives at tip + 1.
+     * That is what lets the fixture build an envelope which is expired
+     * from the chain's point of view while still learning its identity.
+     * `expiry_height == H` is accepted by the locked rule (only
+     * `expiry_height < H` rejects), so the expiry height itself is the
+     * natural choice. */
+    uint64_t pf_height = tip + 1;
+    if (expiry_height != 0 && expiry_height < tip + 1)
+        pf_height = expiry_height;
+
+    dna_env_leg_ctx_t lctx;
+    lctx.domain_id       = DNA_DOMAIN_SYSTEM;
+    lctx.ruleset_version = sys.ruleset_version;
+    memcpy(lctx.ruleset_hash, sys.ruleset_hash, DNA_ENV_RULESET_HASH_LEN);
+
+    dna_env_preflight_t *pf = calloc(1, sizeof(*pf));   /* ~15 KB — heap */
+    if (!pf) { p3c_die("preflight alloc"); return; }
+    if (dna_env_preflight(out->bytes, out->len, cx->chain_id, pf_height,
+                          &lctx, 1, pf) != DNA_ENV_PF_OK) {
+        free(pf);
+        p3c_die("env preflight");
+        return;
+    }
+    memcpy(out->intent_id, pf->intent_id, 64);
+    free(pf);
+}
+
+/* Record an intent as COMMITTED, the way the apply engine's index phase
+ * does. tx_id is UNIQUE in the schema, so each call needs its own. */
+static void p3c_commit_intent(nodus_witness_t *w, const uint8_t intent[64],
+                              uint8_t tx_tag, uint64_t height) {
+    uint8_t txid[64];
+    memset(txid, tx_tag, sizeof(txid));
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "INSERT INTO v2_intent_index (intent_id, tx_id, global_height, "
+            "global_index) VALUES (?1, ?2, ?3, 0)", -1, &st, NULL)
+        != SQLITE_OK) {
+        p3c_die("intent insert prepare");
+        return;
+    }
+    sqlite3_bind_blob(st, 1, intent, 64, SQLITE_TRANSIENT);
+    sqlite3_bind_blob(st, 2, txid, 64, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 3, (sqlite3_int64)height);
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE) p3c_die("intent insert");
+}
+
+/* Ask the index DIRECTLY. §13f's anti-vacuity discipline: both answers
+ * are pinned here before any production predicate is consulted, so a
+ * fixture whose index was empty (or whose migration never ran) cannot
+ * make "not committed" look like a verdict. */
+static bool p3c_intent_in_index(nodus_witness_t *w, const uint8_t intent[64]) {
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT 1 FROM v2_intent_index WHERE intent_id = ?1",
+            -1, &st, NULL) != SQLITE_OK) {
+        p3c_die("intent probe prepare");
+        return false;
+    }
+    sqlite3_bind_blob(st, 1, intent, 64, SQLITE_TRANSIENT);
+    bool found = (sqlite3_step(st) == SQLITE_ROW);
+    sqlite3_finalize(st);
+    return found;
+}
+
+/* A heap mempool entry carrying the envelope bytes, in EXACTLY the shape
+ * the successor intake produces: class 200, nullifier_count 0, forwarded,
+ * no client connection. */
+static nodus_witness_mempool_entry_t *p3c_env_entry(const p3c_env_t *e,
+                                                    uint64_t fee) {
+    nodus_witness_mempool_entry_t *m = calloc(1, sizeof(*m));
+    if (!m) { p3c_die("env entry alloc"); return NULL; }
+    if (qgp_sha3_512(e->bytes, e->len, m->tx_hash) != 0)
+        p3c_die("env entry hash");
+    m->tx_type         = NODUS_W_TX_V2_ENVELOPE;
+    m->nullifier_count = 0;
+    m->tx_data = malloc(e->len);
+    if (!m->tx_data) { p3c_die("env entry bytes"); return NULL; }
+    memcpy(m->tx_data, e->bytes, e->len);
+    m->tx_len       = (uint32_t)e->len;
+    m->fee          = fee;
+    m->is_forwarded = true;
+    m->client_conn  = NULL;
+    return m;
 }
 
 int main(void) {
@@ -2599,6 +2827,693 @@ int main(void) {
               "chain's verdict, not to being called");
         CHECK(w->mempool.count == 2, "and the survivors are still there");
 
+        nodus_witness_mempool_clear(&w->mempool);
+        chain_db_drop(w, dir);
+    }
+
+    /* ── §13g — V3: a pool of entries the chain has ALREADY DECIDED is
+     *            not demand ──────────────────────────────────────────
+     *
+     * THE COVERAGE bft_p3_live_demand never had. §13b proves an EMPTY
+     * pool does not fire, but an empty pool never reaches the predicate
+     * at all — the outer `mempool.count > 0` gate takes the disarm
+     * branch. Nothing anywhere held a NON-EMPTY pool whose every entry
+     * was decided at an aged window, which is the single state the
+     * predicate exists to distinguish. Delete `bft_p3_live_demand(w) &&`
+     * from the fire condition and every other §13 section still passes;
+     * this one fails.
+     *
+     * THE ANTI-VACUITY ASSERTION is the tip_since_ms re-stamp, §13d's
+     * device: "still IDLE" is also what a node that never reached the
+     * decision looks like. The re-stamp happens at the top of the
+     * would-fire branch (before the predicate), so seeing it proves the
+     * verdict was actually taken and the ONLY thing that stopped the
+     * rotation was the predicate's answer. ────────────────────────── */
+    printf("§13g P3 — a pool whose entries are ALL already decided is not "
+           "demand\n");
+    {
+        peer_t p[6];
+        for (int i = 0; i < 6; i++) peer_make(&p[i]);
+        nodus_witness_t *w = fixture(&self, p, 6, 3, 15000, 10000);
+        char dir[] = "/tmp/test_bft_p3_stale_XXXXXX";
+        chain_db_open(w, dir, 0x38);
+
+        uint64_t tip = seed_blocks(w, 3);
+        CHECK(tip == 3, "seeded chain tip is 3 (see §13a)");
+
+        w->current_view = p2_pick_view(w, false);
+        CHECK(!nodus_witness_bft_is_leader(w), "we are NOT the leader");
+        CHECK(w->awaiting_propose_deadline_ms == 0,
+              "P2 is NOT armed — any rotation below is attributable to P3");
+        CHECK(w->pending_forward_count == 0,
+              "and NO pending forward — that alone would answer 'live' "
+              "unconditionally and make this section vacuous");
+
+        p3_pool(w, p3_mkentry(0x91, 500, 1));
+        p3_pool(w, p3_mkentry(0x92, 100, 2));
+        CHECK(w->mempool.count == 2,
+              "TWO entries pooled — the pool is NOT empty, so this is not "
+              "§13b's disarm path");
+
+        uint8_t n1[NODUS_T3_NULLIFIER_LEN], n2[NODUS_T3_NULLIFIER_LEN];
+        p3_nul_of(0x91, n1);
+        p3_nul_of(0x92, n2);
+        uint8_t ctx[NODUS_T3_TX_HASH_LEN];
+        memset(ctx, 0x91, sizeof(ctx));
+        CHECK(nodus_witness_nullifier_add(w, n1, ctx) == 0,
+              "the first entry's nullifier is COMMITTED");
+        memset(ctx, 0x92, sizeof(ctx));
+        CHECK(nodus_witness_nullifier_add(w, n2, ctx) == 0,
+              "the second entry's nullifier is COMMITTED too — EVERY entry "
+              "in the pool is now decided");
+
+        /* ⚠ THE ANTI-VACUITY PAIR, §13f's. nullifier_exists is fail-closed,
+         * so a fixture with no usable DB answers "spent" to everything and
+         * would produce this section's verdict for entirely the wrong
+         * reason. The negative control is what rules that out. */
+        uint8_t n_never[NODUS_T3_NULLIFIER_LEN];
+        memset(n_never, 0x9F, sizeof(n_never));
+        CHECK(nodus_witness_nullifier_exists(w, n1) &&
+              nodus_witness_nullifier_exists(w, n2),
+              "the DB really says both pooled entries are spent");
+        CHECK(!nodus_witness_nullifier_exists(w, n_never),
+              "and really says an uncommitted nullifier is NOT — so the DB "
+              "is discriminating, not failing closed on everything");
+
+        /* TICK 1 arms the window; TICK 2, a full round later, decides. */
+        nodus_witness_bft_check_timeout(w);
+        CHECK(w->last_seen_tip == tip, "the window is anchored at the tip");
+        p3_age_window(w, 16000);
+        nodus_witness_bft_check_timeout(w);
+
+        CHECK(w->round_state.phase == NODUS_W_PHASE_IDLE,
+              "the tick left us IDLE — a pool of SETTLED work is not a "
+              "reason to rotate away from a healthy leader");
+        CHECK(!w->view_change_in_progress && !w->view_change_voted,
+              "no view change was started and no vote was cast");
+        /* ⚠ THE DISCRIMINATING LINE. Without it, deleting the predicate
+         * from the fire condition would still have to be caught by the
+         * IDLE assertion alone — and a node that never reached the
+         * decision is also IDLE. This proves the branch RAN. */
+        CHECK(p3_stamped_now(w->tip_since_ms),
+              "and the would-fire point WAS reached (the window was "
+              "re-stamped) — the rotation was declined on the predicate's "
+              "verdict, not skipped");
+        CHECK(w->mempool.count == 2,
+              "check_timeout evicts nothing — the reaper is the tick's job, "
+              "so the next section starts from the same pool shape");
+
+        nodus_witness_mempool_clear(&w->mempool);
+        chain_db_drop(w, dir);
+    }
+
+    /* ── §13h — V3 converse: ONE undecided entry is still demand ──────
+     *
+     * WITHOUT THIS SECTION §13g PASSES TRIVIALLY for a predicate that
+     * always answered false — which would be a worse bug than the one
+     * §13g pins, because it disables the whole P3 deadman. The fixture is
+     * §13g's, one extra entry, and that entry is the only difference.
+     * ──────────────────────────────────────────────────────────────── */
+    printf("§13h P3 converse — ONE undecided entry in an otherwise settled "
+           "pool still rotates\n");
+    {
+        peer_t p[6];
+        for (int i = 0; i < 6; i++) peer_make(&p[i]);
+        nodus_witness_t *w = fixture(&self, p, 6, 3, 15000, 10000);
+        char dir[] = "/tmp/test_bft_p3_onelive_XXXXXX";
+        chain_db_open(w, dir, 0x3D);
+
+        uint64_t tip = seed_blocks(w, 3);
+        CHECK(tip == 3, "seeded chain tip is 3 (see §13a)");
+
+        w->current_view = p2_pick_view(w, false);
+        CHECK(!nodus_witness_bft_is_leader(w), "we are NOT the leader");
+        CHECK(w->awaiting_propose_deadline_ms == 0, "P2 is NOT armed");
+        CHECK(w->pending_forward_count == 0, "and NO pending forward");
+
+        p3_pool(w, p3_mkentry(0x91, 500, 1));   /* decided, as in §13g */
+        p3_pool(w, p3_mkentry(0x93, 100, 1));   /* THE ONE DIFFERENCE   */
+        CHECK(w->mempool.count == 2, "two entries pooled");
+
+        uint8_t n1[NODUS_T3_NULLIFIER_LEN], n_live[NODUS_T3_NULLIFIER_LEN];
+        p3_nul_of(0x91, n1);
+        p3_nul_of(0x93, n_live);
+        uint8_t ctx[NODUS_T3_TX_HASH_LEN];
+        memset(ctx, 0x91, sizeof(ctx));
+        CHECK(nodus_witness_nullifier_add(w, n1, ctx) == 0,
+              "the FIRST entry's nullifier is committed, exactly as §13g");
+        CHECK(nodus_witness_nullifier_exists(w, n1),
+              "and the DB confirms it");
+        CHECK(!nodus_witness_nullifier_exists(w, n_live),
+              "while the SECOND entry is genuinely still includable — this "
+              "is the only thing that differs from §13g");
+
+        nodus_witness_bft_check_timeout(w);
+        CHECK(w->last_seen_tip == tip, "the window is anchored at the tip");
+        p3_age_window(w, 16000);
+        uint32_t view_before = w->current_view;
+        nodus_witness_bft_check_timeout(w);
+
+        CHECK(w->round_state.phase == NODUS_W_PHASE_VIEW_CHANGE,
+              "it DID rotate — so §13g's silence is the predicate finding "
+              "no live entry, not the predicate being dead");
+        CHECK(w->view_change_target == view_before + 1,
+              "target is the ordinary current_view + 1");
+        CHECK(w->current_view == view_before,
+              "current_view is UNTOUCHED — only quorum may advance it");
+
+        nodus_witness_mempool_clear(&w->mempool);
+        chain_db_drop(w, dir);
+    }
+
+    /* ── §13i — V1: a COMMITTED successor envelope is neither demand nor
+     *            a permanent resident ────────────────────────────────
+     *
+     * THE WORST OF THE THREE DEFECTS. A follower pools a successor
+     * class-200 envelope with nullifier_count == 0 (the legacy nullifier
+     * walk is gated on !v2_successor), and NOTHING could ever remove it:
+     * pop_batch is leader-only, remove_by_conn needs a client_conn a
+     * forwarded entry does not have, mempool_clear is teardown, and the
+     * reaper's nullifier loop never even executed for it. bft_p3_live_
+     * demand then answered "live" for it unconditionally — so once the
+     * chain went quiet, that one follower initiated a view change every
+     * round_timeout_ms FOREVER against a perfectly healthy leader, and
+     * with 1 < f+1 nobody joined.
+     *
+     * Both call sites are exercised HERE, in one fixture, because the
+     * whole point of V1 is that they agree: what the reaper deletes must
+     * not be demand, and what it keeps must be.
+     *
+     * THE SURVIVAL HALF IS WHAT MAKES IT DISCRIMINATING. A helper that
+     * always answered "committed" would silence P3 and empty the pool —
+     * and would pass every "the settled one is gone" assertion on its
+     * own. So an UNCOMMITTED envelope is carried through both halves and
+     * asserted to survive both. ───────────────────────────────────── */
+    printf("§13i V1 — a committed-intent successor ENVELOPE is not demand "
+           "and IS reaped; an uncommitted one survives both\n");
+    {
+        peer_t p[6];
+        for (int i = 0; i < 6; i++) peer_make(&p[i]);
+        nodus_witness_t *w = fixture(&self, p, 6, 3, 15000, 10000);
+        char dir[] = "/tmp/test_bft_v1_intent_XXXXXX";
+        chain_db_open(w, dir, 0x3A);
+
+        peer_t all[7];
+        all[0] = self;
+        for (int i = 0; i < 6; i++) all[i + 1] = p[i];
+
+        p3c_chain_t *cx = calloc(1, sizeof(*cx));   /* ~25 KB — heap */
+        if (!cx) { fprintf(stderr, "p3c chain alloc\n"); exit(1); }
+        p3c_make_successor(w, all, 7, cx);
+        CHECK(w->v2_successor, "the chain is a committed V2 SUCCESSOR — the "
+                               "only chain on which class-200 exists");
+        /* Asserted rather than assumed: the genesis sequence above is a
+         * lot of machinery, and if any of it refreshed bft_config the
+         * 16000 ms ageing below would stop meaning "a full round". */
+        CHECK(w->bft_config.round_timeout_ms == 15000 &&
+              nodus_witness_bft_consensus_active(w),
+              "the fixture's BFT config survived genesis, so the ageing "
+              "below really does exceed one round");
+
+        /* BOTH carry expiry_height 0 — never expires — and that is why
+         * this section is INDEPENDENT of the tip, unlike §13k. Height
+         * enters dna_env_preflight at exactly ONE place, the expiry
+         * comparison (env_preflight.h step 3), and 0 "is accepted at
+         * every H" (:192). So these two verdicts are the same whether
+         * the chain sits at genesis (tip 0, candidate 1) or anywhere
+         * later, and §13k's genesis problem cannot reach here. */
+        p3c_env_t ea, eb;
+        p3c_make_env(w, cx, 0x21, 0, &ea);   /* this one will be COMMITTED */
+        p3c_make_env(w, cx, 0x22, 0, &eb);   /* this one will NOT be       */
+        CHECK(memcmp(ea.intent_id, eb.intent_id, 64) != 0,
+              "the two envelopes carry DIFFERENT intents — otherwise the "
+              "survival half below would be testing one value twice");
+        CHECK(nodus_witness_v2_classify_entry(ea.bytes,
+                                              (uint32_t)ea.len) ==
+              NODUS_W_TX_V2_ENVELOPE &&
+              nodus_witness_v2_classify_entry(eb.bytes,
+                                              (uint32_t)eb.len) ==
+              NODUS_W_TX_V2_ENVELOPE,
+              "and both classify as class-200 ENVELOPEs — the shape whose "
+              "nullifier_count is 0 and which nothing could judge");
+
+        p3c_commit_intent(w, ea.intent_id, 0xE1, 1);
+
+        /* ⚠ THE ANTI-VACUITY PAIR. Pin BOTH index answers with a direct
+         * query BEFORE consulting the production predicate: an empty
+         * index — or a migration that never created the table — would
+         * make "not committed" the answer for everything, and the
+         * survival half would pass for the wrong reason. */
+        CHECK(p3c_intent_in_index(w, ea.intent_id),
+              "the index really holds the first envelope's intent");
+        CHECK(!p3c_intent_in_index(w, eb.intent_id),
+              "and really does NOT hold the second's — the index is live "
+              "and discriminating");
+
+        /* (0) THE PREDICATE ITSELF, before either consumer. The exact
+         *     verdict is asserted, not just the collapsed boolean: an
+         *     entry dropped as EXPIRED and one dropped as COMMITTED are
+         *     different facts, and §13k depends on being able to tell
+         *     them apart. */
+        CHECK(nodus_witness_v2_entry_verdict(w, ea.bytes, (uint32_t)ea.len) ==
+              NODUS_W_ENTRY_COMMITTED,
+              "the production helper derives the SAME intent the index "
+              "holds — the derivation matches consensus, not just itself");
+        CHECK(nodus_witness_v2_entry_verdict(w, eb.bytes, (uint32_t)eb.len) ==
+              NODUS_W_ENTRY_LIVE,
+              "and answers LIVE — not merely 'not committed' — for the "
+              "uncommitted one, so the fixture is judged, not unjudgeable");
+
+        /* (a) NOT DEMAND — through nodus_witness_bft_check_timeout, the
+         *     wired path, with ONLY the committed envelope pooled. */
+        p3_pool(w, p3c_env_entry(&ea, 500));
+        CHECK(w->mempool.count == 1, "the settled envelope is pooled");
+        CHECK(w->mempool.entries[0]->nullifier_count == 0,
+              "with nullifier_count 0 — the exact shape successor intake "
+              "produces, and the shape the legacy predicate cannot judge");
+
+        w->current_view = p2_pick_view(w, false);
+        CHECK(!nodus_witness_bft_is_leader(w), "we are NOT the leader");
+        CHECK(w->awaiting_propose_deadline_ms == 0, "P2 is NOT armed");
+        CHECK(w->pending_forward_count == 0, "and NO pending forward");
+
+        nodus_witness_bft_check_timeout(w);
+        uint64_t anchored = w->last_seen_tip;
+        CHECK(p3_stamped_now(w->tip_since_ms),
+              "the demand window armed on the non-empty pool");
+        p3_age_window(w, 16000);
+        nodus_witness_bft_check_timeout(w);
+
+        CHECK(w->round_state.phase == NODUS_W_PHASE_IDLE,
+              "the tick left us IDLE — a SETTLED envelope is not demand. "
+              "Pre-V1 this is the tick that rotated the view, and it did "
+              "so again every round_timeout_ms forever");
+        CHECK(!w->view_change_in_progress,
+              "no view change was started against the healthy leader");
+        CHECK(w->last_seen_tip == anchored && p3_stamped_now(w->tip_since_ms),
+              "and the would-fire point WAS reached (window re-stamped at "
+              "the same frozen tip) — declined on the verdict, not skipped");
+
+        /* (b) STILL DEMAND — add the UNCOMMITTED envelope and it fires.
+         *     This is what stops (a) passing for a helper that answered
+         *     'committed' to everything. */
+        p3_pool(w, p3c_env_entry(&eb, 100));
+        CHECK(w->mempool.count == 2, "the uncommitted envelope joins it");
+        p3_age_window(w, 16000);
+        uint32_t view_before = w->current_view;
+        nodus_witness_bft_check_timeout(w);
+        CHECK(w->round_state.phase == NODUS_W_PHASE_VIEW_CHANGE,
+              "NOW it rotates — an envelope the chain has not committed is "
+              "real demand, and P3 still catches a dead leader");
+        CHECK(w->current_view == view_before,
+              "current_view is UNTOUCHED — only quorum may advance it");
+
+        /* (c) THE REAPER, the other consumer, over the same two entries.
+         *     Fee order puts the committed one at the head, so the
+         *     survivor has to be MOVED — the compaction runs, as in §13f. */
+        CHECK(w->mempool.entries[0]->fee == 500 &&
+              w->mempool.entries[1]->fee == 100,
+              "committed first, uncommitted behind it");
+        int dropped = nodus_witness_mempool_evict_committed(w);
+        CHECK(dropped == 1, "exactly ONE entry was evicted");
+        CHECK(w->mempool.count == 1, "one survives");
+        CHECK(w->mempool.entries[0]->fee == 100,
+              "and it is the UNCOMMITTED one, compacted to the head — the "
+              "survival half; a helper answering 'committed' to everything "
+              "fails here");
+        CHECK(w->mempool.entries[1] == NULL, "the vacated slot was cleared");
+        CHECK(nodus_witness_mempool_evict_committed(w) == 0,
+              "a second pass evicts nothing — the reaper reacts to the "
+              "chain's verdict, not to being called");
+        CHECK(w->mempool.count == 1, "and the survivor is still there");
+
+        free(ea.bytes);
+        free(eb.bytes);
+        free(cx);
+        nodus_witness_mempool_clear(&w->mempool);
+        chain_db_drop(w, dir);
+    }
+
+    /* ── §13j — V2: a ZERO bft_config fires nothing ───────────────────
+     *
+     * nodus_witness_bft_config_init writes round_timeout_ms = 0 AND
+     * viewchg_timeout_ms = 0 whenever n < NODUS_T3_MIN_WITNESSES, and
+     * bft_config is never initialised at witness creation — so a calloc'd
+     * witness carries all-zero until its first refresh. check_timeout has
+     * no consensus-active guard of its own and the tick calls it
+     * unconditionally.
+     *
+     * P2 and P3 are the first IDLE-branch actors to use those fields as
+     * THRESHOLDS. At 0 an armed P2 deadline is already expired and
+     * `now - tip_since_ms > 0` is true at the first one-second boundary,
+     * so a non-leader would rotate every second and then escalate every
+     * second. Both are gated on nodus_witness_bft_consensus_active — the
+     * predicate that already decides whether this node may start a round
+     * at all.
+     *
+     * EACH CASE CARRIES ITS OWN CONVERSE in the same fixture: restore a
+     * real config and the IDENTICAL state fires. Without that, "still
+     * IDLE" would not distinguish "the gate stopped it" from "this
+     * fixture was never fire-ready", and the section would pass with the
+     * gate deleted. ──────────────────────────────────────────────────── */
+    printf("§13j V2 — a zero/uninitialised bft_config arms no IDLE-branch "
+           "deadman (P2 and P3)\n");
+    {
+        /* ── case A: P2's armed deadline ─────────────────────────────── */
+        peer_t p[6];
+        for (int i = 0; i < 6; i++) peer_make(&p[i]);
+        nodus_witness_t *w = fixture(&self, p, 6, 3, 15000, 10000);
+        char dir[] = "/tmp/test_bft_v2_zerocfg_p2_XXXXXX";
+        chain_db_open(w, dir, 0x3B);
+
+        uint64_t tip = seed_blocks(w, 3);
+        CHECK(tip == 3, "seeded chain tip is 3 (see §13a)");
+
+        w->current_view = p2_pick_view(w, false);
+        CHECK(!nodus_witness_bft_is_leader(w), "we are NOT the leader");
+        CHECK(w->mempool.count == 0 && w->pending_forward_count == 0,
+              "and NOTHING is pending — so P3 cannot fire and every verdict "
+              "below is attributable to P2");
+
+        /* Exactly what bft_config_init writes below NODUS_T3_MIN_WITNESSES,
+         * and exactly what a calloc'd witness carries before its first
+         * refresh. */
+        w->bft_config.quorum             = 0;
+        w->bft_config.f_tolerance        = 0;
+        w->bft_config.round_timeout_ms   = 0;
+        w->bft_config.viewchg_timeout_ms = 0;
+        CHECK(!nodus_witness_bft_consensus_active(w),
+              "consensus is NOT active at this config");
+
+        /* Armed AFTER the zeroing, for case B's reason: the whole sequence
+         * under test runs at the zero config, never at the fixture's. */
+        p2_expire(w);
+        CHECK(w->awaiting_propose_deadline_ms != 0,
+              "P2 IS armed and its deadline is in the past — the fire "
+              "condition's other two tests are satisfied");
+
+        nodus_witness_bft_check_timeout(w);
+        CHECK(w->round_state.phase == NODUS_W_PHASE_IDLE,
+              "the tick left us IDLE — a node that may not run a round may "
+              "not rotate the view either");
+        /* ⚠ THE DISCRIMINATING LINE for case A: the fire path ZEROES the
+         * spent deadline before initiating, so a deadline that is still
+         * set proves the fire path was not taken. */
+        CHECK(w->awaiting_propose_deadline_ms != 0,
+              "and the deadline was NOT spent — the fire path zeroes it, so "
+              "this fails the moment the consensus_active gate is removed");
+        CHECK(!w->view_change_in_progress, "no view change was started");
+
+        /* THE CONVERSE, same fixture, same armed deadline: a real config
+         * fires. This is what proves the silence above came from the gate
+         * and not from an unarmable fixture. */
+        w->bft_config.quorum             = 3;
+        w->bft_config.round_timeout_ms   = 15000;
+        w->bft_config.viewchg_timeout_ms = 10000;
+        CHECK(nodus_witness_bft_consensus_active(w),
+              "consensus is active again");
+        nodus_witness_bft_check_timeout(w);
+        CHECK(w->round_state.phase == NODUS_W_PHASE_VIEW_CHANGE,
+              "the IDENTICAL state now rotates — only the config changed");
+        CHECK(w->awaiting_propose_deadline_ms == 0,
+              "and the deadline WAS spent this time");
+
+        chain_db_drop(w, dir);
+    }
+    {
+        /* ── case B: P3's demand window ──────────────────────────────── */
+        peer_t p[6];
+        for (int i = 0; i < 6; i++) peer_make(&p[i]);
+        nodus_witness_t *w = fixture(&self, p, 6, 3, 15000, 10000);
+        char dir[] = "/tmp/test_bft_v2_zerocfg_p3_XXXXXX";
+        chain_db_open(w, dir, 0x3C);
+
+        uint64_t tip = seed_blocks(w, 3);
+        CHECK(tip == 3, "seeded chain tip is 3 (see §13a)");
+
+        w->current_view = p2_pick_view(w, false);
+        CHECK(!nodus_witness_bft_is_leader(w), "we are NOT the leader");
+        CHECK(w->awaiting_propose_deadline_ms == 0,
+              "P2 is NOT armed — every verdict below is attributable to P3");
+
+        /* LIVE demand: an entry whose nullifier the chain has NOT
+         * committed. A settled entry would make this section vacuous —
+         * removing the gate would not fire either, because
+         * bft_p3_live_demand would answer false on its own. */
+        p3_pool(w, p3_mkentry(0xA1, 100, 1));
+        uint8_t na[NODUS_T3_NULLIFIER_LEN];
+        p3_nul_of(0xA1, na);
+        CHECK(w->mempool.count == 1, "one entry pooled");
+        CHECK(!nodus_witness_nullifier_exists(w, na),
+              "and it is genuinely UNDECIDED — real demand, so the only "
+              "thing that can stop the rotation is the config gate");
+
+        w->bft_config.quorum             = 0;
+        w->bft_config.f_tolerance        = 0;
+        w->bft_config.round_timeout_ms   = 0;
+        w->bft_config.viewchg_timeout_ms = 0;
+        CHECK(!nodus_witness_bft_consensus_active(w),
+              "consensus is NOT active at this config");
+
+        /* The window is armed AFTER the zeroing, deliberately: on a
+         * genuinely uninitialised witness the very first tick that sees a
+         * non-empty pool arms, and the next one-second boundary fires. The
+         * whole sequence under test therefore runs at the zero config,
+         * never at the fixture's. */
+        nodus_witness_bft_check_timeout(w);
+        CHECK(w->last_seen_tip == tip,
+              "the window armed at the tip — and it armed UNDER the zero "
+              "config, which is the sequence an uninitialised witness runs");
+
+        /* TWO seconds, not one: time_ms() has one-second granularity, so a
+         * 1000 ms age would still read as "stamped now" afterwards and the
+         * re-stamp assertion below could not tell the two worlds apart. */
+        p3_age_window(w, 2000);
+        CHECK(w->tip_since_ms + w->bft_config.round_timeout_ms <
+              nodus_time_now() * 1000ULL,
+              "and the window is now past a round_timeout_ms of ZERO — the "
+              "age comparison is TRUE, which is the whole defect");
+
+        nodus_witness_bft_check_timeout(w);
+        CHECK(w->round_state.phase == NODUS_W_PHASE_IDLE,
+              "the tick left us IDLE — at a zero timeout this would "
+              "otherwise fire on every one-second boundary, forever");
+        CHECK(!w->view_change_in_progress, "no view change was started");
+        /* ⚠ THE DISCRIMINATING LINE for case B: the re-stamp sits ABOVE
+         * the gate, so it proves the would-fire point was reached and the
+         * gate is the only thing that declined. */
+        CHECK(p3_stamped_now(w->tip_since_ms),
+              "and the would-fire point WAS reached (window re-stamped) — "
+              "so the silence is the gate's doing, not an unaged window");
+
+        /* THE CONVERSE, same fixture, same entry. */
+        w->bft_config.quorum             = 3;
+        w->bft_config.round_timeout_ms   = 15000;
+        w->bft_config.viewchg_timeout_ms = 10000;
+        CHECK(nodus_witness_bft_consensus_active(w),
+              "consensus is active again");
+        p3_age_window(w, 16000);
+        uint32_t view_before = w->current_view;
+        nodus_witness_bft_check_timeout(w);
+        CHECK(w->round_state.phase == NODUS_W_PHASE_VIEW_CHANGE,
+              "the IDENTICAL state now rotates — only the config changed");
+        CHECK(w->current_view == view_before,
+              "current_view is UNTOUCHED — only quorum may advance it");
+
+        nodus_witness_mempool_clear(&w->mempool);
+        chain_db_drop(w, dir);
+    }
+
+    /* ── §13k — V1 (second door): an EXPIRED envelope is FINISHED ─────
+     *
+     * THE RESIDUAL THE FIRST CUT OF V1 LEFT OPEN. That version collapsed
+     * every non-OK preflight outcome to "not committed", which was right
+     * for ERR_HASH and wrong for ERR_EXPIRED: an envelope whose
+     * expiry_height fell below the candidate could never commit, could
+     * never be judged committed, and so was never evicted and counted as
+     * live demand forever — the identical churn V1 exists to remove,
+     * reached through a different status code.
+     *
+     * WHY EXPIRY IS A VERDICT AND ERR_HASH IS NOT — the source draws the
+     * line, this section only pins it. env_preflight.h:91 defines
+     * ERR_EXPIRED as "expiry_height below the candidate", a property of
+     * the envelope's own committed bytes against a tip that only
+     * advances; every honest node at the same tip agrees, and once
+     * expired it stays expired everywhere. ERR_HASH, by contrast, is
+     * documented at :100-110 as "THIS NODE could not compute" with an
+     * explicit "MUST NOT translate it into a transaction rejection".
+     *
+     * THE SURVIVAL HALF, again, is what makes this discriminating: a
+     * verdict function that answered EXPIRED to everything would empty
+     * the pool and silence P3, and would pass the "expired one is gone"
+     * assertion on its own. ─────────────────────────────────────────── */
+    printf("§13k V1 — an EXPIRED successor ENVELOPE is not demand and IS "
+           "reaped; an unexpired one survives both\n");
+    {
+        peer_t p[6];
+        for (int i = 0; i < 6; i++) peer_make(&p[i]);
+        nodus_witness_t *w = fixture(&self, p, 6, 3, 15000, 10000);
+        char dir[] = "/tmp/test_bft_v1_expiry_XXXXXX";
+        chain_db_open(w, dir, 0x3E);
+
+        peer_t all[7];
+        all[0] = self;
+        for (int i = 0; i < 6; i++) all[i + 1] = p[i];
+
+        p3c_chain_t *cx = calloc(1, sizeof(*cx));   /* ~25 KB — heap */
+        if (!cx) { fprintf(stderr, "p3c chain alloc\n"); exit(1); }
+        p3c_make_successor(w, all, 7, cx);
+        CHECK(w->v2_successor, "the chain is a committed V2 SUCCESSOR");
+
+        /* ── ADVANCE THE TIP OFF GENESIS, and why it is REQUIRED ───────
+         *
+         * p3c_make_successor leaves the chain AT genesis, so the v2 tip
+         * is 0 and the production candidate height is 1. The locked
+         * expiry rule is `expiry_height != 0 && expiry_height < H`
+         * (env_preflight.h:188), and 0 is the never-expires sentinel
+         * (:192) — so at H = 1 the only value strictly below the
+         * candidate is the one value that means "no expiry". AN EXPIRED
+         * ENVELOPE IS NOT CONSTRUCTIBLE AT GENESIS. The guard below
+         * caught exactly that on the first run of this section.
+         *
+         * One committed block moves the tip to 1 and the candidate to 2,
+         * which makes expiry_height = 1 genuinely expired. The block is
+         * produced through the PRODUCTION engine entry point with a REAL
+         * signed class-201 claim — test_v2_claim_ingress.c's proven
+         * sequence, and the same claim shape §13e3 already admits — not
+         * a hand-written v2_blocks row. A claim-only batch is supported
+         * by construction: produce_commit sets blk->envs = NULL when the
+         * envelope subset is empty and feeds blk->claims instead. */
+        {
+            dna_claim_t *c = p3c_make_claim(cx, 0);
+            size_t clen = 0;
+            uint8_t chash[64];
+            uint8_t *cbytes = p3c_encode_claim(c, &clen, chash);
+
+            nodus_witness_mempool_entry_t *ce = calloc(1, sizeof(*ce));
+            if (!ce) { fprintf(stderr, "p3k entry alloc\n"); exit(1); }
+            memcpy(ce->tx_hash, chash, NODUS_T3_TX_HASH_LEN);
+            ce->tx_type = NODUS_W_TX_V2_CLAIM;
+            ce->tx_data = cbytes;   /* entry takes ownership */
+            ce->tx_len  = (uint32_t)clen;
+
+            nodus_witness_mempool_entry_t *b1[1] = { ce };
+            nodus_v2_produce_out_t o;
+            CHECK(nodus_witness_v2_produce_commit(w, b1, 1, 1, 42,
+                      w->my_id, NULL, &o) == 0,
+                  "one successor block commits through the production "
+                  "engine — the chain is no longer at genesis");
+
+            nodus_witness_mempool_entry_free(ce);   /* frees cbytes too */
+            free(c);
+        }
+
+        /* The production candidate is v2 tip + 1, and the locked expiry
+         * rule rejects only `expiry_height < H`. With the tip at 1 the
+         * candidate is 2, so an envelope expiring at height 1 is expired
+         * at the candidate and nowhere earlier — the tightest expired
+         * fixture available. */
+        uint64_t v2tip = 0;
+        CHECK(nodus_witness_v2_tip_height(w, &v2tip) == 0 && v2tip >= 1,
+              "the successor chain has a committed v2 tip of at least 1, so "
+              "a NON-ZERO expiry height at or below it exists (0 would mean "
+              "'never expires' and the section would test nothing)");
+        /* Asserted AFTER the commit, not before: this is the config the
+         * 16000 ms ageing below actually runs against, and producing a
+         * block is exactly the kind of machinery that could refresh it. */
+        CHECK(w->bft_config.round_timeout_ms == 15000 &&
+              nodus_witness_bft_consensus_active(w),
+              "and the fixture's BFT config survived genesis AND the block "
+              "commit, so the ageing below really does exceed one round");
+
+        p3c_env_t eexp, elive;
+        p3c_make_env(w, cx, 0x31, v2tip, &eexp);  /* expires AT the tip */
+        p3c_make_env(w, cx, 0x32, 0,     &elive); /* never expires      */
+        CHECK(memcmp(eexp.intent_id, elive.intent_id, 64) != 0,
+              "the two envelopes carry DIFFERENT intents");
+
+        /* ⚠ ANTI-VACUITY: neither intent is in the index. Without this,
+         * an eviction below could be coming from the COMMITTED branch and
+         * the section would not be about expiry at all. */
+        CHECK(!p3c_intent_in_index(w, eexp.intent_id) &&
+              !p3c_intent_in_index(w, elive.intent_id),
+              "NEITHER intent is committed — so every verdict below is "
+              "about EXPIRY and nothing else");
+
+        /* (0) THE VERDICTS, named rather than collapsed. */
+        CHECK(nodus_witness_v2_entry_verdict(w, eexp.bytes,
+                                             (uint32_t)eexp.len) ==
+              NODUS_W_ENTRY_EXPIRED,
+              "the expired envelope is judged EXPIRED — not UNJUDGED, which "
+              "is what the first cut of V1 returned and what left it "
+              "undeletable forever");
+        CHECK(nodus_witness_v2_entry_verdict(w, elive.bytes,
+                                             (uint32_t)elive.len) ==
+              NODUS_W_ENTRY_LIVE,
+              "and the unexpired one is judged LIVE");
+        CHECK(nodus_witness_v2_entry_is_decided(NODUS_W_ENTRY_EXPIRED) &&
+              !nodus_witness_v2_entry_is_decided(NODUS_W_ENTRY_LIVE) &&
+              !nodus_witness_v2_entry_is_decided(NODUS_W_ENTRY_UNJUDGED),
+              "and the SHARED collapse puts EXPIRED on the finished side "
+              "while both keep-side answers stay off it — this is the one "
+              "rule both consumers use, so they cannot drift");
+
+        /* (a) NOT DEMAND — only the expired envelope pooled. */
+        p3_pool(w, p3c_env_entry(&eexp, 500));
+        CHECK(w->mempool.count == 1, "the expired envelope is pooled");
+        CHECK(w->mempool.entries[0]->nullifier_count == 0,
+              "with nullifier_count 0 — the shape the legacy predicate "
+              "cannot judge");
+
+        w->current_view = p2_pick_view(w, false);
+        CHECK(!nodus_witness_bft_is_leader(w), "we are NOT the leader");
+        CHECK(w->awaiting_propose_deadline_ms == 0, "P2 is NOT armed");
+        CHECK(w->pending_forward_count == 0, "and NO pending forward");
+
+        nodus_witness_bft_check_timeout(w);
+        uint64_t anchored = w->last_seen_tip;
+        CHECK(p3_stamped_now(w->tip_since_ms), "the demand window armed");
+        p3_age_window(w, 16000);
+        nodus_witness_bft_check_timeout(w);
+
+        CHECK(w->round_state.phase == NODUS_W_PHASE_IDLE,
+              "the tick left us IDLE — an envelope that can never be "
+              "included is not a reason to rotate the view");
+        CHECK(!w->view_change_in_progress, "no view change was started");
+        CHECK(w->last_seen_tip == anchored && p3_stamped_now(w->tip_since_ms),
+              "and the would-fire point WAS reached (window re-stamped at "
+              "the same frozen tip) — declined on the verdict, not skipped");
+
+        /* (b) STILL DEMAND — the unexpired envelope fires. */
+        p3_pool(w, p3c_env_entry(&elive, 100));
+        CHECK(w->mempool.count == 2, "the unexpired envelope joins it");
+        p3_age_window(w, 16000);
+        uint32_t view_before = w->current_view;
+        nodus_witness_bft_check_timeout(w);
+        CHECK(w->round_state.phase == NODUS_W_PHASE_VIEW_CHANGE,
+              "NOW it rotates — so (a)'s silence is the expiry verdict, not "
+              "a verdict function that calls everything finished");
+        CHECK(w->current_view == view_before,
+              "current_view is UNTOUCHED — only quorum may advance it");
+
+        /* (c) THE REAPER, the other consumer, over the same two entries. */
+        CHECK(w->mempool.entries[0]->fee == 500 &&
+              w->mempool.entries[1]->fee == 100,
+              "expired first, unexpired behind it — so the survivor has to "
+              "be MOVED and the compaction really runs");
+        int dropped = nodus_witness_mempool_evict_committed(w);
+        CHECK(dropped == 1, "exactly ONE entry was evicted");
+        CHECK(w->mempool.count == 1, "one survives");
+        CHECK(w->mempool.entries[0]->fee == 100,
+              "and it is the UNEXPIRED one — the survival half; a verdict "
+              "function answering EXPIRED to everything fails here");
+        CHECK(w->mempool.entries[1] == NULL, "the vacated slot was cleared");
+        CHECK(nodus_witness_mempool_evict_committed(w) == 0,
+              "a second pass evicts nothing");
+
+        free(eexp.bytes);
+        free(elive.bytes);
+        free(cx);
         nodus_witness_mempool_clear(&w->mempool);
         chain_db_drop(w, dir);
     }

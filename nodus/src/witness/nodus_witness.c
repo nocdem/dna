@@ -29,6 +29,13 @@
 #include "witness/nodus_witness_v2_claims.h"    /* nodus_witness_v2_chain_id */
 #include "witness/nodus_witness_v2_sync2.h"     /* O15E successor sync seam */
 #include "witness/nodus_witness_v2_join.h"      /* O15E pinned-genesis joiner */
+/* O15I V1 — the committed-INTENT authority behind the P3(c) reaper and
+ * the P3(a) demand predicate: the envelope preflight seam, the entry
+ * classifier + tip helper, and the domain registry the contextual ruleset
+ * table is resolved from. */
+#include "witness/nodus_witness_v2_env.h"       /* env preflight seam    */
+#include "witness/nodus_witness_v2_produce.h"   /* classify_entry / tip  */
+#include "witness/nodus_witness_domreg.h"       /* contextual rulesets   */
 #include "nodus/nodus_chain_config.h"  /* Stage C.2 vote-req handler */
 #include "crypto/utils/qgp_log.h"
 #include "crypto/hash/qgp_sha3.h"
@@ -877,6 +884,12 @@ static void witness_init_roster(nodus_witness_t *witness) {
     memset(&witness->roster, 0, sizeof(witness->roster));
     witness->roster.version = 1;
     witness->last_epoch = 0;
+    /* O15I V1 — the reaper latch is defined RELATIVE to last_epoch, so it
+     * is reset with it. Not load-bearing (a stale stamp can never equal
+     * the fresh `now` the next epoch tick writes) but leaving the pair
+     * out of step would be state carried across a lifecycle boundary for
+     * no reason. */
+    witness->last_evict_epoch = 0;
     witness->pending_roster_ready = false;
 }
 
@@ -1096,6 +1109,149 @@ int nodus_witness_pending_forward_expire(nodus_witness_t *witness,
     return expired;
 }
 
+/* O15I V1 — see the contract on nodus_witness.h.
+ *
+ * THE FAIL DIRECTION IS PER-CAUSE, not blanket. The first cut of this
+ * function collapsed every non-OK outcome to "not committed", which was
+ * right for ERR_HASH and wrong for the rest: it left an EXPIRED envelope
+ * permanently undeletable and permanently counted as demand, i.e. the
+ * exact churn V1 exists to remove, re-entered through a different door.
+ * The line the source itself draws is the line used here —
+ *   - ERR_HASH is "THIS NODE could not compute", and a consensus caller
+ *     "MUST NOT translate it into a transaction rejection"
+ *     (env_preflight.h:100-110) -> UNJUDGED, keep;
+ *   - ERR_EXPIRED is "expiry_height below the candidate"
+ *     (env_preflight.h:91), a verdict about the ENVELOPE derived from its
+ *     own bytes against a tip that only advances -> EXPIRED, finished;
+ *   - ERR_DECODE comes from a codec that allocates nothing and is a pure
+ *     function of its input (env_wire.h:401-403), so it cannot be
+ *     node-local either -> MALFORMED, finished.
+ * Everything else stays UNJUDGED, which is the conservative side. */
+nodus_witness_entry_verdict_t nodus_witness_v2_entry_verdict(
+        nodus_witness_t *witness, const uint8_t *tx_data, uint32_t tx_len) {
+    if (!witness || !witness->db || !witness->v2_successor ||
+        !tx_data || tx_len == 0)
+        return NODUS_W_ENTRY_UNJUDGED;
+
+    /* Class gate FIRST, and it is what keeps every legacy chain and every
+     * class-201 claim byte-identical to the pre-V1 behaviour: only the
+     * wire-family-marked ENVELOPE has an intent id at all, and only it
+     * reaches the derivation cost below. */
+    if (nodus_witness_v2_classify_entry(tx_data, tx_len) !=
+        NODUS_W_TX_V2_ENVELOPE)
+        return NODUS_W_ENTRY_UNJUDGED;
+
+    /* A local view, used ONLY to learn which domains the legs address so
+     * the POSITIONAL contextual table can be built — the same two-pass
+     * shape nodus_witness_v2_produce_batch_check uses. ~2.6 KB automatic,
+     * no recursion, exactly as nodus_witness_v2_env.c declares it.
+     *
+     * A rejection here is the SAME verdict the seam would return for the
+     * same bytes (it is the same strict decoder, called deterministically
+     * on the same input — the equivalence nodus_witness_v2_env.c documents
+     * at its own pre-decode), so it is reported directly. */
+    dna_env_view_t view;
+    if (dna_env_decode(tx_data, (size_t)tx_len, &view) != 0)
+        return NODUS_W_ENTRY_MALFORMED;
+
+    dna_env_leg_ctx_t rulesets[DNA_ENV_MAX_LEGS];
+    size_t n_rulesets = 0;
+    for (uint16_t l = 0; l < view.leg_count; l++) {
+        uint32_t dom = view.leg[l].domain_id;
+        /* Insertion sort into STRICTLY ASCENDING order — the seam rejects
+         * any other order, and a duplicate domain must collapse to one
+         * entry rather than appear twice. */
+        size_t k = 0;
+        while (k < n_rulesets && rulesets[k].domain_id < dom) k++;
+        if (k < n_rulesets && rulesets[k].domain_id == dom) continue;
+        if (n_rulesets >= DNA_ENV_MAX_LEGS) return NODUS_W_ENTRY_UNJUDGED;
+
+        dna_domain_manifest_t man;
+        if (nodus_witness_domreg_get(witness, dom, NULL, &man, NULL) != 0)
+            return NODUS_W_ENTRY_UNJUDGED;  /* unregistered domain, or a
+                                             * registry fault — and see
+                                             * the ORDERING CAVEAT on the
+                                             * contract: this is reached
+                                             * BEFORE expiry, so it is
+                                             * deliberately the more
+                                             * conservative answer */
+        memmove(&rulesets[k + 1], &rulesets[k],
+                (n_rulesets - k) * sizeof(rulesets[0]));
+        rulesets[k].domain_id       = dom;
+        rulesets[k].ruleset_version = man.ruleset_version;
+        memcpy(rulesets[k].ruleset_hash, man.ruleset_hash,
+               DNA_ENV_RULESET_HASH_LEN);
+        n_rulesets++;
+    }
+    if (n_rulesets == 0) return NODUS_W_ENTRY_UNJUDGED;
+
+    /* The CANDIDATE height, exactly as the producer derives it: the
+     * height this envelope would be included in, never the parent's. It
+     * is the expiry gate's only input, so it must not be guessed. */
+    uint64_t candidate = 0;
+    if (nodus_witness_v2_tip_height(witness, &candidate) != 0)
+        return NODUS_W_ENTRY_UNJUDGED;
+    candidate += 1;
+
+    /* dna_env_preflight_t is ~15 KB (env_preflight.h size audit) — heap,
+     * never the stack, which is the discipline every other caller of this
+     * seam already follows. */
+    dna_env_preflight_t *pf = calloc(1, sizeof(*pf));
+    if (!pf) return NODUS_W_ENTRY_UNJUDGED;
+
+    nodus_v2_envelope_t env;
+    env.env_bytes = tx_data;
+    env.env_len   = (size_t)tx_len;
+
+    size_t fail_i = 0;
+    dna_env_preflight_status_t pst = DNA_ENV_PF_OK;
+    nodus_witness_entry_verdict_t verdict = NODUS_W_ENTRY_UNJUDGED;
+
+    nodus_v2_env_status_t est = nodus_witness_v2_env_preflight_batch(
+            witness, candidate, rulesets, n_rulesets, &env, 1, pf,
+            &fail_i, &pst);
+
+    if (est == NODUS_V2_ENV_OK) {
+        /* BYTE-IDENTICAL to the apply engine's replay guard — one
+         * authority for "this intent is already committed", asked the
+         * same way from both sides. A query that cannot run leaves the
+         * verdict UNJUDGED rather than claiming the entry is live: this
+         * node has no answer, and the fail-closed side is "keep". */
+        sqlite3_stmt *st = NULL;
+        if (sqlite3_prepare_v2(witness->db,
+                "SELECT 1 FROM v2_intent_index WHERE intent_id = ?1",
+                -1, &st, NULL) == SQLITE_OK) {
+            sqlite3_bind_blob(st, 1, pf->intent_id, DNA_ENV_HASH_LEN,
+                              SQLITE_STATIC);
+            int rc = sqlite3_step(st);
+            sqlite3_finalize(st);
+            if (rc == SQLITE_ROW)       verdict = NODUS_W_ENTRY_COMMITTED;
+            else if (rc == SQLITE_DONE) verdict = NODUS_W_ENTRY_LIVE;
+        }
+    } else if (est == NODUS_V2_ENV_ERR_PREFLIGHT) {
+        /* The seam's status is the ONLY place expiry is decided; the
+         * comparison env_preflight.h locks is not re-implemented here. */
+        if (pst == DNA_ENV_PF_ERR_EXPIRED)     verdict = NODUS_W_ENTRY_EXPIRED;
+        else if (pst == DNA_ENV_PF_ERR_DECODE) verdict = NODUS_W_ENTRY_MALFORMED;
+        /* ERR_HASH and the contextual mismatches stay UNJUDGED. */
+    }
+    /* ERR_ARG / ERR_CHAIN / ERR_RULESETS / ERR_CTX_MISSING stay UNJUDGED.
+     * The two duplicate statuses cannot arise: both dedup loops compare
+     * j = i+1 over a batch of one. */
+
+    free(pf);
+    return verdict;
+}
+
+/* O15I V1 — THE ONE collapse rule. See the contract on nodus_witness.h:
+ * open-coding this list at either consumer is how the reaper and the P3
+ * demand predicate would fall out of step. */
+bool nodus_witness_v2_entry_is_decided(nodus_witness_entry_verdict_t v) {
+    return v == NODUS_W_ENTRY_COMMITTED ||
+           v == NODUS_W_ENTRY_EXPIRED   ||
+           v == NODUS_W_ENTRY_MALFORMED;
+}
+
 /* O15I P3(c) — see the contract on nodus_witness.h. */
 int nodus_witness_mempool_evict_committed(nodus_witness_t *witness) {
     if (!witness) return 0;
@@ -1108,9 +1264,8 @@ int nodus_witness_mempool_evict_committed(nodus_witness_t *witness) {
         nodus_witness_mempool_entry_t *e = mp->entries[i];
         if (!e) continue;
 
-        /* An entry the predicate cannot judge is KEPT. nullifier_count
-         * is 0 for every successor class-200 envelope, and "I have no
-         * evidence" must never read as "already committed" — that would
+        /* An entry NEITHER predicate can judge is KEPT: "I have no
+         * evidence" must never read as "already committed", which would
          * turn this reaper back into the unconditional wipe it replaces.
          *
          * nodus_witness_nullifier_exists is FAIL-CLOSED (it answers
@@ -1125,6 +1280,27 @@ int nodus_witness_mempool_evict_committed(nodus_witness_t *witness) {
                 break;
             }
         }
+
+        /* O15I V1 — THE SECOND HALF, and the only one that can judge a
+         * successor class-200 envelope. Those are pooled with
+         * nullifier_count == 0 (the legacy nullifier walk is skipped on a
+         * successor, nodus_witness_peer.c), so the loop above never even
+         * runs for them and NOTHING could ever remove one: mempool_pop_
+         * batch is leader-only, remove_by_conn needs a client_conn a
+         * forwarded entry does not have, and mempool_clear is teardown.
+         * A finished envelope therefore sat in a follower's pool forever
+         * and armed the P3 deadman against a healthy leader.
+         *
+         * Asked SECOND and only when the cheap predicate said nothing:
+         * the derivation is a decode plus the full commitment chain.
+         * The collapse is the SHARED rule, never open-coded here — that
+         * is what keeps this reaper and bft_p3_live_demand agreeing on
+         * exactly which entries are finished. */
+        if (!decided &&
+            nodus_witness_v2_entry_is_decided(
+                nodus_witness_v2_entry_verdict(witness, e->tx_data,
+                                               e->tx_len)))
+            decided = true;
 
         if (decided) {
             nodus_witness_mempool_entry_free(e);
@@ -1221,17 +1397,33 @@ void nodus_witness_tick(nodus_witness_t *witness) {
      * entries are exactly what arms the P3(a) deadman — so a blind wipe
      * here would delete the evidence of the stall, once a minute, while
      * the stall was still happening. The reaper now drops an entry only
-     * when the chain has already decided its nullifier, which is the
-     * same test the leader's batch selection applies. Full rationale and
-     * the nullifier_count == 0 caveat: nodus_witness.h. */
+     * when it is FINISHED — its nullifier already committed, or (O15I V1,
+     * successor class-200) nodus_witness_v2_entry_verdict saying its
+     * intent is committed, its expiry has passed, or its bytes no longer
+     * decode. Every one of those is a test the leader's own batch
+     * selection applies too. Full rationale: nodus_witness.h.
+     *
+     * O15I V1 — THE LATCH. The gate below is a ~2 s WINDOW, not an edge,
+     * and this tick runs ~20x/s, so the scan ran ~40 times per epoch. The
+     * verdict now includes the successor entry derivation (a decode plus
+     * the full commitment chain per class-200 entry, which cannot be
+     * cached on the entry), so ~40 passes is no longer a rounding error.
+     * `last_evict_epoch` records the epoch stamp this reaper last ran
+     * FOR, collapsing the window back to one scan.
+     *
+     * It is set INSIDE the body, after the two role/pool gates: an epoch
+     * in which this node is the leader, or holds nothing, must not burn
+     * the latch for an epoch in which it later holds work. */
     if (!nodus_witness_bft_is_leader(witness) &&
         witness->mempool.count > 0 &&
-        nodus_time_now() - witness->last_epoch < 2) {
+        nodus_time_now() - witness->last_epoch < 2 &&
+        witness->last_evict_epoch != witness->last_epoch) {
         /* Runs once right after epoch tick rebuilds roster */
+        witness->last_evict_epoch = witness->last_epoch;
         int before = witness->mempool.count;
         int dropped = nodus_witness_mempool_evict_committed(witness);
         if (dropped > 0)
-            fprintf(stderr, "WITNESS: not leader, evicted %d/%d committed "
+            fprintf(stderr, "WITNESS: not leader, evicted %d/%d decided "
                     "mempool entries (%d still pending)\n",
                     dropped, before, witness->mempool.count);
     }

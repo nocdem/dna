@@ -578,6 +578,28 @@ typedef struct nodus_witness {
     nodus_witness_roster_t  pending_roster;     /* Built each epoch from DHT + peers */
     bool        pending_roster_ready;           /* Pending roster waiting to swap */
 
+    /* O15I V1 — the P3(c) reaper's ONCE-PER-EPOCH latch.
+     *
+     * The reaper's gate is `nodus_time_now() - last_epoch < 2`, which is a
+     * ~2 s WINDOW and not an edge, and the tick runs ~20x/s — so the scan
+     * actually ran ~40 times per epoch. That was affordable while the
+     * verdict was one indexed nullifier lookup per entry. It is NOT
+     * affordable now that a successor class-200 entry costs a strict
+     * decode plus the full commitment derivation
+     * (nodus_witness_v2_entry_verdict), which cannot be cached on the
+     * entry. This field records the `last_epoch` value the reaper last ran
+     * FOR, so the window produces exactly one scan.
+     *
+     * 0 is the correct calloc default rather than a special case:
+     * `last_epoch` is 0 until the first epoch tick, and for that whole
+     * period `nodus_time_now() - 0 < 2` is false, so the reaper is not
+     * reachable and the latch cannot block a pass that would have run.
+     *
+     * Node-local TIMING state, exactly like the P2/P3 fields above: it
+     * decides WHEN this node reaps its own INPUT pool, never what it
+     * votes. Not persisted, not signed, not part of any root. */
+    uint64_t    last_evict_epoch;
+
     /* Zone chain ID */
     uint8_t     chain_id[32];
 
@@ -1101,6 +1123,117 @@ int nodus_witness_pending_forward_expire(nodus_witness_t *witness,
                                            uint64_t now_s);
 
 /**
+ * O15I V1 — can this mempool entry still be included in a block?
+ *
+ * THE FIVE ANSWERS ARE NOT COLLAPSIBLE. Three of them mean "this entry
+ * can never commit, on any node" and two mean "keep it" — but they mean
+ * it for DIFFERENT reasons, and a caller that logs a drop, or a reader
+ * asking why a stall never cleared, needs the reason. Use
+ * nodus_witness_v2_entry_is_decided to collapse them; never open-code the
+ * collapse, or the two consumers can drift.
+ *
+ * ── THE VERDICT SIDE (the entry is finished) ───────────────────────────
+ * Each of these is a property of the entry's own bytes against committed
+ * state, so every honest node at the same tip reaches the same answer.
+ *
+ *  COMMITTED  the derived intent_id is already in v2_intent_index. A
+ *             committed intent may commit at most ONCE per chain — the
+ *             apply engine rejects the whole candidate block that
+ *             carries a second one — so inclusion is impossible.
+ *  EXPIRED    the preflight answered DNA_ENV_PF_ERR_EXPIRED:
+ *             expiry_height is below the candidate height. The tip only
+ *             advances, so an expired envelope stays expired forever, on
+ *             every node. env_preflight.h:91 classes this as a verdict
+ *             ABOUT THE ENVELOPE, deliberately unlike ERR_HASH.
+ *  MALFORMED  the strict codec rejected the bytes. dna_env_decode
+ *             allocates nothing and is a pure function of its input
+ *             (env_wire.h:401-403), so its rejection cannot be
+ *             node-local: no node can ever include these bytes.
+ *
+ * ── THE KEEP SIDE ─────────────────────────────────────────────────────
+ *  LIVE       judged, and the chain says it could still be included.
+ *  UNJUDGED   THIS NODE could not reach an answer. FAIL-CLOSED, and the
+ *             direction is deliberate: a legacy chain, a class-201
+ *             claim, a domain missing from the registry, an underivable
+ *             chain id, a preflight ERR_HASH (a NODE fault by
+ *             env_preflight.h:100-110's own definition — "MUST NOT
+ *             translate it into a transaction rejection") or a failed
+ *             query all land here. Treating any of them as finished
+ *             would let one starved or half-migrated node delete a
+ *             client's pending work, which is the unconditional wipe the
+ *             reaper replaced. 0 so a zeroed value is the safe answer.
+ */
+typedef enum {
+    NODUS_W_ENTRY_UNJUDGED  = 0,
+    NODUS_W_ENTRY_LIVE      = 1,
+    NODUS_W_ENTRY_COMMITTED = 2,
+    NODUS_W_ENTRY_EXPIRED   = 3,
+    NODUS_W_ENTRY_MALFORMED = 4
+} nodus_witness_entry_verdict_t;
+
+/**
+ * O15I V1 — the verdict on ONE successor class-200 ENVELOPE.
+ *
+ * THE AUTHORITY IS THE ENGINE'S OWN, not a second opinion. It derives the
+ * canonical authorization-witness-independent `intent_id` through the same
+ * preflight seam the apply path uses
+ * (nodus_witness_v2_env_preflight_batch, over the ruleset table built the
+ * way nodus_witness_v2_produce_batch_check builds it) and asks the same
+ * committed index with the same statement the apply engine's replay guard
+ * asks (nodus_witness_v2_apply.c: "SELECT 1 FROM v2_intent_index WHERE
+ * intent_id = ?1"). Expiry is NOT re-implemented here either — it is read
+ * back off that seam's status, so the one comparison env_preflight.h
+ * locks stays in exactly one place.
+ *
+ * WHY IT IS NEEDED AT ALL. A successor class-200 envelope is pooled with
+ * nullifier_count == 0 (nodus_witness_peer.c skips the legacy nullifier
+ * walk on a successor), so the nullifier predicate has nothing to say
+ * about it and BOTH consumers used to answer "undecided" forever:
+ * nodus_witness_mempool_evict_committed could never reap it, and the P3
+ * deadman read it as live demand and rotated the view once per
+ * round_timeout_ms against a healthy leader, on a quiet chain, forever.
+ *
+ * ⚠ ORDERING CAVEAT, stated rather than hidden: the contextual ruleset
+ * table has to resolve before the seam can be called at all, so an
+ * envelope addressing a domain that is NOT in the registry answers
+ * UNJUDGED even if it is also expired. The seam's own frozen order puts
+ * expiry first (env_preflight.h step 3, before the context steps), so
+ * this helper is strictly more conservative than the seam, never less.
+ *
+ * COST, and why nothing is cached: the derived id cannot be stored on the
+ * mempool entry without touching nodus_witness_mempool.h, so it is
+ * derived on demand. That is ~15 KB heap plus a decode and the commitment
+ * chain per class-200 entry, which is why BOTH callers bound how often
+ * they may ask — P3 by its once-per-round_timeout_ms window re-stamp,
+ * the reaper by `last_evict_epoch`.
+ *
+ * Deterministic and node-local: bytes plus this node's own committed
+ * state, no clock, no message, no write.
+ *
+ * @param tx_data mempool entry bytes (borrowed; nothing is retained).
+ * @return one nodus_witness_entry_verdict_t; UNJUDGED for every entry
+ *         this node cannot judge, including every non-successor and
+ *         every class-201 claim.
+ */
+nodus_witness_entry_verdict_t nodus_witness_v2_entry_verdict(
+        nodus_witness_t *witness, const uint8_t *tx_data, uint32_t tx_len);
+
+/**
+ * O15I V1 — THE ONE collapse rule: does this verdict mean the entry can
+ * never be included again?
+ *
+ * It exists so `bft_p3_live_demand` and
+ * nodus_witness_mempool_evict_committed cannot drift: what the reaper
+ * deletes must be exactly what P3 declines to count as demand, and a
+ * second open-coded `== COMMITTED || == EXPIRED` list is precisely how
+ * those two would fall out of step. Both keep-side answers (LIVE and the
+ * fail-closed UNJUDGED) return false.
+ *
+ * @return true for COMMITTED / EXPIRED / MALFORMED, false otherwise.
+ */
+bool nodus_witness_v2_entry_is_decided(nodus_witness_entry_verdict_t v);
+
+/**
  * O15I P3(c) — drop the mempool entries the chain has already decided.
  *
  * PER-ENTRY, and that is the whole point. What used to stand here was an
@@ -1111,11 +1244,15 @@ int nodus_witness_pending_forward_expire(nodus_witness_t *witness,
  * the entries that arm the P3(a) deadman. Racing it is not an option, so
  * the wipe is replaced by an eviction with a REASON.
  *
- * THE PREDICATE IS THE LEADER'S OWN. An entry is dropped when any of its
- * nullifiers is already committed — the identical test batch selection
- * applies before proposing (nodus_witness_bft.c, "mempool TX stale (DB
- * double-spend), dropping"). So a follower drops exactly what a leader
- * would refuse to propose, and never more.
+ * THE PREDICATE IS THE LEADER'S OWN, in BOTH of its halves. An entry is
+ * dropped when any of its nullifiers is already committed — the identical
+ * test batch selection applies before proposing (nodus_witness_bft.c,
+ * "mempool TX stale (DB double-spend), dropping") — OR, on a successor
+ * class-200 envelope, when nodus_witness_v2_entry_verdict says the entry
+ * can never be included again: its intent is already in the committed
+ * index, its expiry_height is below the candidate, or its bytes no longer
+ * decode. So a follower drops exactly what a leader would refuse to
+ * propose, and never more.
  *
  * The original drain's PURPOSE is preserved: forwarded entries carry
  * client_conn == NULL, so no client disconnect ever reaches them through
@@ -1124,12 +1261,27 @@ int nodus_witness_pending_forward_expire(nodus_witness_t *witness,
  * also the first thing in this file that removes a follower's copy of a
  * transaction AFTER it commits.
  *
- * ⚠ An entry with nullifier_count == 0 is never evicted here, because
- * this predicate cannot say anything about it. On a SUCCESSOR chain that
- * is every class-200 envelope (the legacy nullifier walk is skipped —
- * nodus_witness_peer.c). Those copies are reaped instead when this node
- * next becomes leader and the successor batch pre-check drops them
- * (nodus_witness_bft.c, "successor batch entry %d rejected by the seam").
+ * ⚠ O15I V1 — WHAT IS STILL NOT JUDGED. An entry that BOTH predicates
+ * decline is kept, and that is still the correct direction: "I have no
+ * evidence" must never read as "already finished". What remains in that
+ * set is a legacy-chain entry with nullifier_count == 0, and a successor
+ * class-200 envelope this node could not judge — a domain missing from
+ * the registry, an underivable chain id, an ERR_HASH node fault (see
+ * NODUS_W_ENTRY_UNJUDGED). Note that the set is NARROWER than "the
+ * derivation failed": an expired envelope and one whose bytes no longer
+ * decode are both FINISHED, not unjudged, because neither can ever be
+ * included by any node. Before V1 the unjudged set contained EVERY
+ * successor class-200 envelope, including settled ones — which is what
+ * let one sit in a follower's pool forever and arm the P3 deadman
+ * against a healthy leader. The leader-side reap (the successor batch
+ * pre-check, nodus_witness_bft.c "successor batch entry %d rejected by
+ * the seam") remains as the backstop it always was.
+ *
+ * CALL IT AT MOST ONCE PER EPOCH. The successor half costs a decode plus
+ * the full commitment derivation per class-200 entry; the tick's
+ * `last_evict_epoch` latch is what keeps the ~2 s gate from running it
+ * ~40 times per epoch. This function itself is idempotent and imposes no
+ * cadence of its own.
  *
  * Fee ordering is preserved: survivors are compacted in place, keeping
  * their relative order, exactly as mempool_remove_by_conn does.

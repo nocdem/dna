@@ -7921,13 +7921,36 @@ static void bft_emit_batch_replies(nodus_witness_t *w, int status,
  *
  * Called ONLY at the would-fire point, never on the common path: it can
  * cost up to NODUS_W_MAX_MEMPOOL x NODUS_T3_MAX_TX_INPUTS indexed point
- * lookups, and the first live entry short-circuits it.
+ * lookups plus, for a successor class-200 entry, an intent derivation —
+ * and the first live entry short-circuits it. The window re-stamp at the
+ * call site bounds it to once per round_timeout_ms.
  *
- * An entry with nullifier_count == 0 counts as LIVE, because this
- * predicate has nothing to say about it — that is every successor
- * class-200 envelope (nodus_witness_peer.c skips the legacy nullifier
- * walk on a successor). The same caveat, and where those copies are
- * actually reaped, is documented on nodus_witness_mempool_evict_committed.
+ * O15I V1 — A ZERO-NULLIFIER ENTRY IS NOT AUTOMATICALLY LIVE. It used to
+ * be, and that was the defect: a successor class-200 envelope is pooled
+ * with nullifier_count == 0 (nodus_witness_peer.c skips the legacy
+ * nullifier walk on a successor), NOTHING on a follower could ever remove
+ * one, and this predicate answered "live" for it unconditionally. One
+ * finished envelope in one follower's pool therefore initiated a view
+ * change every round_timeout_ms, forever, against a perfectly healthy
+ * leader on a quiet chain — and with 1 < f+1 nobody joined, so the node
+ * escalated inside VIEW_CHANGE while handle_propose refused every
+ * proposal. Such an entry is now judged by
+ * nodus_witness_v2_entry_verdict, collapsed through the SHARED
+ * nodus_witness_v2_entry_is_decided the reaper also uses — so the two
+ * agree by construction: what the reaper deletes is not demand, and what
+ * it keeps is.
+ *
+ * FINISHED covers three shapes, and all three matter here: the intent is
+ * already committed, the envelope has EXPIRED (an expiry_height below the
+ * candidate; the tip only advances, so it can never come back), or the
+ * bytes no longer decode. None of them can ever be included by any node,
+ * so counting them as demand would be asking the cluster to rotate the
+ * view on behalf of a transaction that cannot exist.
+ *
+ * Everything this node genuinely cannot judge — a legacy chain, a
+ * class-201 claim, a missing domain, an ERR_HASH node fault — answers
+ * UNJUDGED and therefore still counts as LIVE, which is the conservative
+ * direction for a liveness trigger.
  *
  * A pending FORWARD counts as live unconditionally: a client is provably
  * waiting on an answer this node cannot produce, and the forward slot
@@ -7940,7 +7963,12 @@ static bool bft_p3_live_demand(nodus_witness_t *w) {
     for (int i = 0; i < w->mempool.count; i++) {
         const nodus_witness_mempool_entry_t *e = w->mempool.entries[i];
         if (!e) continue;
-        if (e->nullifier_count == 0) return true;
+        if (e->nullifier_count == 0) {
+            if (nodus_witness_v2_entry_is_decided(
+                    nodus_witness_v2_entry_verdict(w, e->tx_data, e->tx_len)))
+                continue;              /* finished — not demand */
+            return true;
+        }
 
         bool decided = false;
         for (int j = 0; j < e->nullifier_count; j++) {
@@ -8132,11 +8160,28 @@ void nodus_witness_bft_check_timeout(nodus_witness_t *w) {
          * quiet healthy chain never reaches the body below and there is
          * no idle view churn.
          *
+         * O15I V2 — THE CONSENSUS-ACTIVE GATE COMES FIRST, and it is not
+         * belt-and-braces. nodus_witness_bft_config_init leaves
+         * round_timeout_ms AND viewchg_timeout_ms at 0 whenever
+         * n < NODUS_T3_MIN_WITNESSES (:414-419), and bft_config is not
+         * initialised at witness creation at all — so a calloc'd witness
+         * carries all-zero until the first refresh. This function has no
+         * consensus-active guard of its own and the tick calls it
+         * unconditionally, so with a zero config an armed deadline is
+         * ALREADY expired and this site would fire on the very first
+         * one-second boundary, then escalate every second (the VIEW_CHANGE
+         * branch's budget is 0 too). nodus_witness_bft_consensus_active is
+         * the predicate that already decides whether this node may run
+         * consensus at all (:457, quorum > 0 — the same test that gates
+         * round start at :3944); a node that may not run a round must not
+         * rotate the view either.
+         *
          * ORDER OF THE TESTS IS DELIBERATE, cheapest first: this runs on
          * every tick (~20x/s) for every witness, and
          * nodus_witness_bft_is_leader costs a committee load plus a
-         * SHA3-512 per member. The armed test alone short-circuits it
-         * for every node on a healthy chain.
+         * SHA3-512 per member. The gate and the armed test are one field
+         * load each and together short-circuit every node on a healthy
+         * chain.
          *
          * THE is_leader RE-CHECK is not redundant with the arm-side one:
          * `current_view` can move under an IDLE node between the two
@@ -8167,7 +8212,8 @@ void nodus_witness_bft_check_timeout(nodus_witness_t *w) {
          *
          * TARGET is the ordinary current_view + 1: initiate_view_change
          * picks it, and this path invents no rule of its own. */
-        if (w->awaiting_propose_deadline_ms != 0 &&
+        if (nodus_witness_bft_consensus_active(w) &&
+            w->awaiting_propose_deadline_ms != 0 &&
             time_ms() > w->awaiting_propose_deadline_ms &&
             !nodus_witness_bft_is_leader(w)) {
             fprintf(stderr, "%s: P2 no PROPOSE within %u ms of the view "
@@ -8221,9 +8267,12 @@ void nodus_witness_bft_check_timeout(nodus_witness_t *w) {
          *   2. one committed-tip read, the same query P1 makes above,
          *      and only for a node that HAS demand;
          *   3. the age comparison, free;
-         *   4. the staleness scan, then nodus_witness_bft_is_leader —
-         *      a committee load plus a SHA3-512 per member, which is
-         *      why it is not the first test.
+         *   4. the consensus-active gate (one field load, O15I V2 — see
+         *      the P2 fire site above for why a zero bft_config makes
+         *      step 3 true at every one-second boundary), then the
+         *      staleness scan, then nodus_witness_bft_is_leader — a
+         *      committee load plus a SHA3-512 per member, which is why
+         *      that one is last.
          *
          * EVERY VERDICT AT THE WOULD-FIRE POINT RE-STAMPS THE WINDOW,
          * and that is load-bearing twice over. It bounds steps 4-5 to
@@ -8251,10 +8300,23 @@ void nodus_witness_bft_check_timeout(nodus_witness_t *w) {
          * TARGET is the ordinary current_view + 1 that
          * initiate_view_change picks; this path invents no rule.
          *
-         * LIVENESS COST. A quiet chain has no demand, so nothing ever
-         * arms and there is no idle churn. While genuine demand is
-         * stalled, ONE rotation per round_timeout_ms is the intended
-         * behaviour, not a side effect. */
+         * LIVENESS COST — restated honestly (O15I V1). The original claim
+         * here was "a quiet chain has no demand, so nothing ever arms".
+         * THAT WAS FALSE, and it is the exact hole V1 closes: a follower
+         * holding one settled successor class-200 envelope had a non-empty
+         * mempool on a chain that was otherwise perfectly quiet, so the
+         * window armed and bft_p3_live_demand answered live forever.
+         *
+         * What is true now: the window arms on a NON-EMPTY POOL, which a
+         * quiet chain can still have; the rotation is then gated on
+         * bft_p3_live_demand, which asks the chain whether any pooled
+         * entry could still be included. A pool of FINISHED entries — a
+         * spent nullifier, an already-committed intent, an expired
+         * envelope, or bytes that no longer decode — is not demand and
+         * produces no rotation, and the reaper deletes those copies on
+         * the next epoch anyway. While GENUINE demand is stalled, ONE
+         * rotation per round_timeout_ms is the intended behaviour, not a
+         * side effect. */
         if (w->mempool.count > 0 || w->pending_forward_count > 0) {
             uint64_t p3_now = time_ms();
             uint64_t p3_tip = nodus_witness_block_height(w);
@@ -8271,7 +8333,9 @@ void nodus_witness_bft_check_timeout(nodus_witness_t *w) {
                  * window and not one per tick. */
                 w->tip_since_ms = p3_now;
 
-                if (bft_p3_live_demand(w) && !nodus_witness_bft_is_leader(w)) {
+                if (nodus_witness_bft_consensus_active(w) &&
+                    bft_p3_live_demand(w) &&
+                    !nodus_witness_bft_is_leader(w)) {
                     fprintf(stderr, "%s: P3 committed tip frozen at %llu for "
                             "more than %u ms with live demand (mempool=%d, "
                             "fwd=%d) — initiating view change to %u\n",
