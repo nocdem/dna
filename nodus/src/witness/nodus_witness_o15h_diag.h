@@ -34,9 +34,12 @@
  * REVERT LIST (delete these to remove the instrumentation entirely):
  *   - this header and nodus_witness_o15h_diag.c
  *   - the `O15H_DIAG` option + source entry in nodus/CMakeLists.txt
- *   - every `O15H_DIAG_*(...)` call site (all are one-line, all guarded):
+ *   - every `O15H_DIAG_*(...)` call site (all are one-line, all guarded).
+ *     Grep `O15H_DIAG(` rather than trusting a count here — a later
+ *     season added one and this list had to be corrected:
  *       nodus_witness_bft.c      — 10 round/view-change sites
  *                                + 1 `idle_stall` site in check_timeout
+ *                                + 1 `p2_propose_deadman` site (O15I P2)
  *       nodus_witness_handlers.c — 1 `fwd_leader` site in the T2 spend
  *                                  forward branch (+ its #include)
  */

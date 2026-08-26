@@ -4630,6 +4630,14 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
     w->round_state.round = hdr->round;
     w->round_state.view = hdr->view;
     w->round_state.phase = NODUS_W_PHASE_PREVOTE;
+    /* O15I P2 — DISARM. The leader produced the PROPOSE the deadman was
+     * waiting for; there is nothing left to be dead about. Needs its own
+     * line: the deadline lives on the witness, not in round_state, so
+     * the memset above does not clear it. Unconditional on purpose —
+     * reaching this point means the proposal passed the leader check,
+     * the height check and the C5 binding gate, which is the strongest
+     * liveness evidence this node can get. */
+    w->awaiting_propose_deadline_ms = 0;
     /* A2 fix — anchor height from the proposal (already validated above
      * as == local_next). All cert_sig sign/verify within this round
      * reads from round_state.block_height. */
@@ -5114,6 +5122,18 @@ void nodus_witness_bft_after_successor_commit(nodus_witness_t *w) {
      * it to a future VIEW_CHANGE (H-5 discipline, mirrors :7797-7801). */
     w->last_prepared.present = false;
     nodus_witness_db_save_pbft_state(w);
+
+    /* O15I P2 — DISARM the propose-wait deadman: the chain ADVANCED, so
+     * whatever we were waiting for either happened or stopped mattering.
+     * This helper is the successor lane's single post-commit seam — the
+     * own-quorum path (:5504), the remote-COMMIT path (:6056) and the
+     * SYNC path (nodus_witness_v2_finalize.c:188) all funnel through it,
+     * including the case where the block arrives with NO live local
+     * round to reset. That last case is exactly the one the phase→IDLE
+     * commit resets cannot see, and exactly the one where a spurious
+     * rotation would be worst: a node catching up is not entitled to
+     * conclude the leader is dead. */
+    w->awaiting_propose_deadline_ms = 0;
 
     /* D3 — the committee (and therefore the quorum) that governs the
      * NEXT height. At a growth boundary this is the step that moves a
@@ -6932,11 +6952,60 @@ static int bft_vc_check_quorum(nodus_witness_t *w) {
     w->view_change_voted = false;
     w->round_state.phase = NODUS_W_PHASE_IDLE;
 
+    /* ONE evaluation for the two decisions below. is_leader resolves the
+     * committee from the DB and hashes its members, so asking twice
+     * costs two lookups — and, more to the point, the arm decision and
+     * the send decision must be the SAME answer by construction: every
+     * node either waits or sends, never both and never neither. */
+    bool i_am_leader = nodus_witness_bft_is_leader(w);
+
+    /* ── O15I P2 — ARM THE PROPOSE-WAIT DEADMAN ────────────────────────
+     *
+     * The line above returned us to IDLE, and from IDLE
+     * nodus_witness_bft_check_timeout returns at its first branch: no
+     * timer is armed, so this node can never initiate a view change
+     * again on its own. Only the leader leaves IDLE unprompted
+     * (nodus_witness.c:1153-1162). A rotation onto a dead or silent
+     * leader therefore left EVERY node sitting IDLE forever — the
+     * 20-node terminal halt. This is the timer the two "our round then
+     * times out and rotates the view" comments (:7049, :7623) already
+     * assume exists.
+     *
+     * NOT THE LEADER. The new leader's job here is to SEND — it
+     * broadcasts NEW_VIEW just below and may re-propose the retained
+     * bytes. Arming it would make it time out against itself and rotate
+     * away from a view it was about to serve.
+     *
+     * WHY THIS IS SAFE. Initiating a view change is always safe:
+     * `current_view` advances ONLY on quorum, in bft_vc_check_quorum
+     * (this function). It is written at exactly five places —
+     * bft.c:4622 (round entry from a proposal), the assignment above,
+     * the NEW_VIEW accept, nodus_witness_peer.c:783 (IDENT adoption) and
+     * nodus_witness_db.c:2176 (restore) — and P2 adds none of them. No
+     * vote content changes either: the fire site calls
+     * nodus_witness_bft_initiate_view_change, which carries
+     * `last_prepared` exactly as it does today.
+     *
+     * P2 ADDS NO C5 STATE. The next rotation recomputes the binding from
+     * the prepared certs in view_changes[] through the existing
+     * BIND-OR-CLEAR path (nodus_witness_bft_bind_reproposal_from_view_changes,
+     * called above), so the C5 lock survives the rotation by the
+     * mechanism that already owns it.
+     *
+     * LIVENESS, not churn: the deadline is armed ONLY in the aftermath
+     * of a COMPLETED view change, so a quiet, healthy chain never arms
+     * it at all — there is no idle-view churn on a cluster that is
+     * simply out of transactions. */
+    if (!i_am_leader) {
+        w->awaiting_propose_deadline_ms =
+            time_ms() + w->bft_config.round_timeout_ms;
+    }
+
     /* F17 A4 — if we are the committee-derived new leader for the new
      * view, broadcast NEW_VIEW. is_leader already consults the chain
      * committee for the next block's target; current_view was just
      * updated above so the modulus picks up the new view. */
-    if (nodus_witness_bft_is_leader(w)) {
+    if (i_am_leader) {
         fprintf(stderr, "%s: we are new leader for view %u\n",
                 LOG_TAG, w->current_view);
 
@@ -7236,6 +7305,49 @@ int nodus_witness_bft_handle_newview(nodus_witness_t *w,
         }
     }
 
+    /* ── O15I P2 — THE DEADMAN RULE ON THE *COMMON* PATH ───────────────
+     *
+     * The accept block below is guarded on `nv->new_view >
+     * w->current_view`, and O15C-D.1 measured that this guard is FALSE
+     * on the ordinary path: every node advances its own view the moment
+     * it reaches view-change quorum (:6900), so by the time the leader's
+     * NEW_VIEW arrives new_view == current_view and the whole accept
+     * block is a silent no-op (7/7 nodes self-advanced, ZERO logged
+     * "accepted NEW_VIEW" — see the comment at :6910-6927). Putting the
+     * P2 disarm ONLY in that block would therefore mean it never runs
+     * where it matters: a self-advanced follower, armed at :6933, would
+     * receive the live leader's has_reproposal=false NEW_VIEW, never
+     * disarm, and on a quiet chain (empty mempool → no PROPOSE is due)
+     * fire after one window → rotate → arm again → idle view churn on a
+     * cluster whose leader is perfectly healthy. So the rule is applied
+     * HERE, at `==`, as well as in the accept block below.
+     *
+     * has_reproposal == FALSE → DISARM. The leader has proven liveness
+     * by producing a NEW_VIEW, and it owes no bound PROPOSE. A stall
+     * with nothing pending is a demand-driven stall, which is a
+     * different mechanism's problem, not this deadman's.
+     *
+     * has_reproposal == TRUE → DELIBERATELY UNTOUCHED. We armed at
+     * :6933 with a full window against exactly this leader, and the
+     * MANDATORY re-proposal is what that window is for. Re-arming here
+     * would be worse than a no-op: this handler has no replay guard, so
+     * a peer replaying one NEW_VIEW frame per window could postpone the
+     * deadman indefinitely — a liveness attack costing one stored
+     * message. (At `>` below, re-arming IS correct: that path is a
+     * genuine view advance, and it is the transition that first sets the
+     * binding.)
+     *
+     * Placed after every validation above has passed, so an unverifiable
+     * or non-leader NEW_VIEW can never move our timer. */
+    if (nv->new_view == w->current_view && !nv->has_reproposal) {
+        if (w->awaiting_propose_deadline_ms != 0) {
+            fprintf(stderr, "%s: P2 disarmed — NEW_VIEW at our own view %u "
+                    "proves the leader is live and binds no reproposal\n",
+                    LOG_TAG, w->current_view);
+        }
+        w->awaiting_propose_deadline_ms = 0;
+    }
+
     /* Accept new view if higher than current */
     if (nv->new_view > w->current_view) {
         w->current_view = nv->new_view;
@@ -7248,13 +7360,35 @@ int nodus_witness_bft_handle_newview(nodus_witness_t *w,
         /* C5 — bind first PROPOSE under new view to the reproposal
          * tx_hash (if any). Cleared when that PROPOSE arrives and
          * passes the check in handle_propose. */
+        /* ── O15I P2 — the same rule as at `==` above, on the genuine
+         * view-ADVANCE path. A node reaching here accepts a NEW_VIEW
+         * from someone else, and the sender had to be the expected
+         * leader for nv->new_view (validated at :7112) — so by
+         * construction WE are not that leader and the "leader must send,
+         * not wait" exclusion cannot be violated by arming here.
+         *
+         *  - has_reproposal TRUE → RE-ARM with a full window. The line
+         *    below sets reproposal_required, and handle_propose then
+         *    REFUSES every proposal at this height that does not match
+         *    the binding (:4564-4575). The binding is released only by a
+         *    matching PROPOSE or by the chain reaching its height
+         *    (nodus_witness.c:1141-1152) — and in a halt the chain
+         *    reaches nothing. So a leader that dies after sending
+         *    NEW_VIEW wedges this node silently and permanently. The
+         *    bound PROPOSE is MANDATORY work; this is the window it has
+         *    to appear in.
+         *  - has_reproposal FALSE → DISARM. Nothing is pending and the
+         *    leader has proven liveness. */
         if (nv->has_reproposal) {
             w->reproposal_required = true;
             w->reproposal_height = nv->reproposal_height;
             memcpy(w->reproposal_tx_hash, nv->reproposal_tx_hash,
                    NODUS_T3_TX_HASH_LEN);
+            w->awaiting_propose_deadline_ms =
+                time_ms() + w->bft_config.round_timeout_ms;
         } else {
             w->reproposal_required = false;
+            w->awaiting_propose_deadline_ms = 0;
         }
 
         fprintf(stderr, "%s: accepted NEW_VIEW %u from leader %d%s\n",
@@ -7855,6 +7989,73 @@ void nodus_witness_bft_check_timeout(nodus_witness_t *w) {
     }
 
     if (w->round_state.phase == NODUS_W_PHASE_IDLE) {
+        /* ── O15I P2 — POST-VIEW-CHANGE PROPOSE-WAIT DEADMAN, FIRE ─────
+         *
+         * The one timeout an IDLE node may arm, and the reason this
+         * branch is no longer an unconditional dead end. It is armed
+         * ONLY in the aftermath of a COMPLETED view change and only on a
+         * non-leader (see the arm site in bft_vc_check_quorum), so a
+         * quiet healthy chain never reaches the body below and there is
+         * no idle view churn.
+         *
+         * ORDER OF THE TESTS IS DELIBERATE, cheapest first: this runs on
+         * every tick (~20x/s) for every witness, and
+         * nodus_witness_bft_is_leader costs a committee load plus a
+         * SHA3-512 per member. The armed test alone short-circuits it
+         * for every node on a healthy chain.
+         *
+         * THE is_leader RE-CHECK is not redundant with the arm-side one:
+         * `current_view` can move under an IDLE node between the two
+         * (nodus_witness_peer.c:783, IDENT adoption), and a node that
+         * became the leader in the meantime must SEND rather than rotate
+         * away from its own view. Such a node simply stays armed and
+         * harmless — it disarms at its next commit, at the next accepted
+         * PROPOSE, or at the next completed view change.
+         *
+         * `time_ms()` has one-second granularity (:103), so `>` means
+         * the full round_timeout_ms has genuinely elapsed — the same
+         * comparison the round timeout below uses.
+         *
+         * THE CLOCK RE-STAMP IS MANDATORY, not decoration.
+         * initiate_view_change does NOT stamp phase_start_time, and the
+         * adoption block only stamps when the phase is ALREADY
+         * VIEW_CHANGE (:6807-6808) — which it is not, since we are
+         * entering from IDLE. Without the stamp, the VIEW_CHANGE branch
+         * above would measure this view change's age from a round that
+         * ended long ago and escalate the target on the very next tick,
+         * forever: the O15H D2 defect, re-entered through a new door.
+         * The round-timeout path below stamps for the identical reason.
+         *
+         * The HEIGHT anchor needs nothing here — initiate_view_change's
+         * P1(a) normalization re-anchors a stale IDLE round_state at
+         * tip+1 (:6534-6538), which is precisely the case this fire site
+         * hands it.
+         *
+         * TARGET is the ordinary current_view + 1: initiate_view_change
+         * picks it, and this path invents no rule of its own. */
+        if (w->awaiting_propose_deadline_ms != 0 &&
+            time_ms() > w->awaiting_propose_deadline_ms &&
+            !nodus_witness_bft_is_leader(w)) {
+            fprintf(stderr, "%s: P2 no PROPOSE within %u ms of the view "
+                    "change completing (view %u) — initiating view change "
+                    "to %u\n", LOG_TAG, w->bft_config.round_timeout_ms,
+                    w->current_view, w->current_view + 1);
+            O15H_DIAG(w, "p2_propose_deadman", w->my_id,
+                      nodus_witness_block_height(w) + 1, w->current_view,
+                      w->current_view + 1, w->round_state.phase,
+                      w->round_state.phase_start_time,
+                      w->bft_config.round_timeout_ms, "-", 0,
+                      (unsigned)w->mempool.count, w->bft_config.quorum,
+                      "post-view-change PROPOSE wait expired");
+            /* Disarm BEFORE initiating: the deadline has been spent, and
+             * leaving it set would re-fire on every subsequent tick. The
+             * next completed view change arms the next window. */
+            w->awaiting_propose_deadline_ms = 0;
+            w->round_state.phase_start_time = time_ms();
+            nodus_witness_bft_initiate_view_change(w);
+            return;
+        }
+
         /* O15H TEMPORARY DIAGNOSTIC — the whole point of this return is
          * what is under investigation: an IDLE node arms no timeout, so
          * it can never initiate a view change. Record the fact once every
@@ -8421,6 +8622,19 @@ int nodus_witness_commit_batch(nodus_witness_t *w,
          * restart does not re-attach a stale prepared cert to a
          * future VIEW_CHANGE. */
         nodus_witness_db_save_pbft_state(w);
+
+        /* O15I P2 — DISARM the propose-wait deadman. The legacy mirror
+         * of the successor disarm in
+         * nodus_witness_bft_after_successor_commit: same trigger (a
+         * DURABLY committed block), same reasoning (the chain advanced,
+         * so this node has no grounds to call the leader dead). Inside
+         * the commit_rc == 0 block deliberately — a ROLLED-BACK commit
+         * advanced nothing and must leave the timer running, or a
+         * failing leader would silence the very rotation that recovers
+         * from it. replay_block delegates here too (see the refresh
+         * comment below), so this one line covers both follower paths on
+         * the legacy lane. */
+        w->awaiting_propose_deadline_ms = 0;
 
         /* PR 1 (2026-05-03): Refresh bft_config from on-chain committee
          * AFTER successful commit, mirroring the leader-side round-start

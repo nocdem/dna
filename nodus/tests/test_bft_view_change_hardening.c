@@ -49,6 +49,17 @@
  *       and the height normalization that keeps the release from
  *       killing a view change joined from IDLE.
  *
+ *  P2 — a COMPLETED view change returned the node to IDLE with NO timer
+ *       armed, and check_timeout returns at its first branch from IDLE.
+ *       So a rotation onto a leader that is dead or simply silent left
+ *       EVERY node waiting forever: nothing re-initiates, and only the
+ *       leader leaves IDLE on its own (nodus_witness.c:1153-1162). The
+ *       chain halts with no recovery path — the observed 20-node
+ *       terminal state. §12 covers the arm, the fire, both converses,
+ *       the leader exclusion (which is TWO separate guards), the
+ *       NEW_VIEW re-arm/disarm rule on both the view-ADVANCE path and
+ *       the self-advanced `==` path, and the PROPOSE disarm.
+ *
  * Fixture style follows test_bft_liveness.c: heap witness (multi-MB),
  * real ML-DSA-87 keys so PREVOTE cert_sig verification is the production
  * check rather than a stub.
@@ -351,6 +362,126 @@ static uint64_t seed_blocks(nodus_witness_t *w, int n) {
         }
     }
     return nodus_witness_block_height(w);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+ * §12 helpers — O15I P2, the post-view-change PROPOSE-wait deadman.
+ *
+ * Every P2 assertion turns on WHO THE LEADER IS, and leadership here is
+ * `(epoch + view) % n` against this node's SORTED rank in the roster
+ * (nodus_witness_bft.c:494-509, the pre-genesis fallback these fixtures
+ * take). Witness ids are SHA3-512 of freshly generated ML-DSA keys, so
+ * that rank is DIFFERENT ON EVERY RUN. A hard-coded view would therefore
+ * be a coin flip: the "leader" leg would silently become the "follower"
+ * leg on ~6 runs in 7 and the suite would still print PASS.
+ *
+ * So the view is CHOSEN AT RUNTIME by asking the production predicate,
+ * and every section then asserts the leadership it selected. That makes
+ * the precondition a fact about THIS process instead of an assumption.
+ * ═══════════════════════════════════════════════════════════════════ */
+
+/* Lowest view > 0 at which nodus_witness_bft_is_leader answers
+ * `want_leader`. `current_view` is restored before returning — probing
+ * must not be an edit. Over v = 1..n the modulus visits every slot
+ * exactly once, so both answers exist for any roster. */
+static uint32_t p2_pick_view(nodus_witness_t *w, bool want_leader) {
+    uint32_t saved = w->current_view;
+    for (uint32_t v = 1; v <= w->roster.n_witnesses; v++) {
+        w->current_view = v;
+        bool is_l = nodus_witness_bft_is_leader(w);
+        if (is_l == want_leader) {
+            w->current_view = saved;
+            return v;
+        }
+    }
+    w->current_view = saved;
+    fprintf(stderr, "p2_pick_view: no view with is_leader==%d\n",
+            (int)want_leader);
+    exit(1);
+}
+
+/* The peer that IS the leader at `view`. `all` must be in ROSTER ORDER
+ * (the fixture appends self first, then the peers), and the leader SLOT
+ * is resolved through nodus_witness_roster_sorted_at — never by indexing
+ * witnesses[] with the slot, which is the exact confusion BUGS.md
+ * 2026-08-04 records. */
+static const peer_t *p2_leader_at(nodus_witness_t *w, const peer_t *all,
+                                  uint32_t view) {
+    uint64_t epoch = (nodus_witness_block_height(w) + 1) /
+                     (uint64_t)DNAC_EPOCH_LENGTH;
+    int slot = nodus_witness_bft_leader_index(epoch, view,
+                                              (int)w->roster.n_witnesses);
+    int arr = nodus_witness_roster_sorted_at(&w->roster, slot);
+    if (arr < 0) { fprintf(stderr, "p2_leader_at: no slot %d\n", slot); exit(1); }
+    return &all[arr];
+}
+
+/* Drive a view change all the way to QUORUM at `target`, using only
+ * inbound peer messages — the production path, not a hand-set field.
+ *
+ * With quorum 3 the join threshold is 2 (bft_vc_join_threshold), so the
+ * SECOND peer VIEW_CHANGE both raises the target and pulls us in via the
+ * f+1 join; initiate_view_change then self-records, and its own tail
+ * call to bft_vc_check_quorum sees 3/3 and completes. The post-condition
+ * is asserted here so no §12 section can build on a view change that
+ * quietly failed to complete. */
+static void p2_complete_vc(nodus_witness_t *w, const peer_t *a,
+                           const peer_t *b, uint32_t target) {
+    nodus_t3_msg_t vc;
+    fill_viewchg(&vc, w, a, target);
+    CHECK(nodus_witness_bft_handle_viewchg(w, &vc) == 0,
+          "first peer VIEW_CHANGE recorded");
+    fill_viewchg(&vc, w, b, target);
+    CHECK(nodus_witness_bft_handle_viewchg(w, &vc) == 0,
+          "second peer VIEW_CHANGE recorded");
+    CHECK(w->current_view == target,
+          "view-change QUORUM completed — current_view advanced");
+    CHECK(w->round_state.phase == NODUS_W_PHASE_IDLE,
+          "and the completion put us back to IDLE (where nothing used "
+          "to be armed)");
+}
+
+/* Push the deadman's ABSOLUTE deadline into the past. age_phase cannot
+ * do this: the deadline lives on the witness, not in round_state, and it
+ * is an absolute instant rather than a start stamp. */
+static void p2_expire(nodus_witness_t *w) {
+    w->awaiting_propose_deadline_ms = nodus_time_now() * 1000ULL - 1000ULL;
+}
+
+static void p2_fill_newview(nodus_t3_msg_t *m, nodus_witness_t *w,
+                            const peer_t *from, uint32_t new_view) {
+    memset(m, 0, sizeof(*m));
+    m->type = NODUS_T3_NEWVIEW;
+    m->header.round = w->round_state.round;
+    m->header.view = w->current_view;
+    memcpy(m->header.sender_id, from->id, NODUS_T3_WITNESS_ID_LEN);
+    memcpy(m->header.chain_id, w->chain_id, sizeof(m->header.chain_id));
+    m->header.timestamp = nodus_time_now();
+    nodus_random((uint8_t *)&m->header.nonce, sizeof(m->header.nonce));
+    m->newview.new_view = new_view;
+    m->newview.has_reproposal = false;
+}
+
+/* Attach a REAL prepared certificate: `n` distinct roster members sign
+ * the same 76-byte purpose-0x07 preimage that
+ * nodus_witness_bft_verify_prepared_cert rebuilds. Signing it for real
+ * matters — the has_reproposal branch of handle_newview is fail-closed,
+ * so a stubbed cert would make every "re-arm" assertion vacuous by
+ * never reaching the accept at all. */
+static void p2_add_reproposal(nodus_t3_msg_t *m, const peer_t *all, int n,
+                              uint64_t height, uint32_t prep_view,
+                              const uint8_t *tx_hash) {
+    m->newview.has_reproposal = true;
+    m->newview.reproposal_height = height;
+    m->newview.reproposal_prepared_view = prep_view;
+    memcpy(m->newview.reproposal_tx_hash, tx_hash, NODUS_T3_TX_HASH_LEN);
+    m->newview.reproposal_n_sigs = (uint32_t)n;
+    for (int i = 0; i < n; i++) {
+        memcpy(m->newview.reproposal_sigs[i].voter_id, all[i].id,
+               NODUS_T3_WITNESS_ID_LEN);
+        sign_prepared(m->newview.reproposal_sigs[i].signature, &all[i],
+                      prep_view, height, tx_hash);
+    }
 }
 
 int main(void) {
@@ -1105,6 +1236,404 @@ int main(void) {
               "our vote at the joined target still stands");
         CHECK(w->current_view == 0,
               "and current_view never moved: only quorum advances it");
+
+        chain_db_drop(w, dir);
+    }
+
+    /* ── §12 P2 — the post-view-change PROPOSE-wait deadman ──────────
+     *
+     * Every section below uses the §11 DB fixture. P2's fire site calls
+     * nodus_witness_bft_is_leader on every armed tick and its arm site
+     * calls it once per completed view change; both resolve a committee
+     * from the chain DB before falling back to the roster, and
+     * nodus_witness_block_height answers 0 forever without one — which
+     * would pin the epoch at 0 and make the leader arithmetic a
+     * different question from the one production asks. A roster of 7
+     * (self + 6) gives the modulus every slot to land on. ────────────── */
+
+    /* ── §12a — the deadman ARMS on a non-leader and FIRES ──────────── */
+    printf("§12a P2 — a non-leader arms after the view change and fires\n");
+    {
+        peer_t p[6];
+        for (int i = 0; i < 6; i++) peer_make(&p[i]);
+        /* quorum 3 → join threshold 2, so two peer VIEW_CHANGEs plus our
+         * own self-record complete the quorum exactly. */
+        nodus_witness_t *w = fixture(&self, p, 6, 3, 15000, 10000);
+        char dir[] = "/tmp/test_bft_p2_fire_XXXXXX";
+        chain_db_open(w, dir, 0x21);
+
+        uint64_t tip = seed_blocks(w, 3);
+        CHECK(tip == 3, "seeded chain tip is 3 — a real committed tip, so "
+                        "the epoch the leader arithmetic uses is the one "
+                        "production would compute");
+
+        uint32_t V = p2_pick_view(w, false);
+        p2_complete_vc(w, &p[0], &p[1], V);
+        CHECK(!nodus_witness_bft_is_leader(w),
+              "we are NOT the new leader at the view we completed");
+
+        /* THE ARM. Pre-P2 this field does not exist and the node sits
+         * IDLE with nothing pending — the terminal state. */
+        CHECK(w->awaiting_propose_deadline_ms != 0,
+              "P2 armed the PROPOSE-wait deadman");
+
+        uint32_t view_before = w->current_view;
+        p2_expire(w);
+        nodus_witness_bft_check_timeout(w);
+
+        CHECK(w->round_state.phase == NODUS_W_PHASE_VIEW_CHANGE,
+              "the expired deadman initiated a view change from IDLE — "
+              "the branch that used to be an unconditional dead end");
+        CHECK(w->view_change_target == view_before + 1,
+              "target is the ORDINARY current_view + 1 — P2 invents no "
+              "target rule of its own");
+        /* ⚠ THE SAFETY ASSERTION, the same one §11 makes: a liveness fix
+         * must not buy liveness by moving the leader without a quorum. */
+        CHECK(w->current_view == view_before,
+              "current_view is UNTOUCHED — only quorum may advance it");
+        CHECK(w->view_change_in_progress && w->view_change_voted,
+              "and we actually voted, so peers can count us");
+        CHECK(w->awaiting_propose_deadline_ms == 0,
+              "the spent deadline disarmed — it must not re-fire every tick");
+        /* The D2 discipline: initiate_view_change does NOT stamp the
+         * phase clock and the adoption block only stamps when the phase
+         * is ALREADY VIEW_CHANGE (bft.c:6807-6808), so entering from
+         * IDLE without a stamp here would leave the view change
+         * measuring its age from a round that ended long ago and
+         * escalating the target on the very next tick, forever. */
+        CHECK(w->round_state.phase_start_time >=
+                  nodus_time_now() * 1000ULL - 1000ULL,
+              "the phase clock was re-stamped at the fire (D2 discipline)");
+
+        chain_db_drop(w, dir);
+    }
+
+    /* ── §12b — the converse: it must NOT fire before the deadline ────
+     *
+     * Without this leg an UNCONDITIONAL fire would pass §12a and would
+     * put the whole cluster into permanent view churn. ─────────────── */
+    printf("§12b P2 converse — an unexpired deadman does not fire\n");
+    {
+        peer_t p[6];
+        for (int i = 0; i < 6; i++) peer_make(&p[i]);
+        nodus_witness_t *w = fixture(&self, p, 6, 3, 15000, 10000);
+        char dir[] = "/tmp/test_bft_p2_conv_XXXXXX";
+        chain_db_open(w, dir, 0x22);
+
+        uint64_t tip = seed_blocks(w, 3);
+        CHECK(tip == 3, "seeded chain tip is 3 (see §12a)");
+
+        uint32_t V = p2_pick_view(w, false);
+        p2_complete_vc(w, &p[0], &p[1], V);
+        CHECK(w->awaiting_propose_deadline_ms != 0, "armed");
+        uint64_t armed_at = w->awaiting_propose_deadline_ms;
+
+        /* THE ONE DIFFERENCE FROM §12a: the deadline is not expired. */
+        CHECK(armed_at > nodus_time_now() * 1000ULL,
+              "the deadline is still in the FUTURE");
+
+        nodus_witness_bft_check_timeout(w);
+        CHECK(w->round_state.phase == NODUS_W_PHASE_IDLE,
+              "the tick left us IDLE — no premature rotation");
+        CHECK(w->awaiting_propose_deadline_ms == armed_at,
+              "and the deadline is untouched, still counting down");
+        CHECK(w->current_view == V,
+              "current_view never moved");
+
+        chain_db_drop(w, dir);
+    }
+
+    /* ── §12c — the LEADER is excluded, by TWO independent guards ─────
+     *
+     * The new leader's job is to SEND: it broadcasts NEW_VIEW and may
+     * re-propose the retained bytes. A leader that armed would time out
+     * against itself and rotate away from the view it was about to
+     * serve. The exclusion is asserted at BOTH guards, because they fail
+     * independently: the arm-side one in bft_vc_check_quorum, and the
+     * fire-side one in check_timeout that catches a node which became
+     * leader while already armed (IDENT view adoption,
+     * nodus_witness_peer.c:783). ─────────────────────────────────────── */
+    printf("§12c P2 — the new leader neither arms nor fires\n");
+    {
+        peer_t p[6];
+        for (int i = 0; i < 6; i++) peer_make(&p[i]);
+        nodus_witness_t *w = fixture(&self, p, 6, 3, 15000, 10000);
+        char dir[] = "/tmp/test_bft_p2_leader_XXXXXX";
+        chain_db_open(w, dir, 0x23);
+
+        uint64_t tip = seed_blocks(w, 3);
+        CHECK(tip == 3, "seeded chain tip is 3 (see §12a)");
+
+        /* The ONLY difference from §12a: the view we complete is one at
+         * which WE are the leader. */
+        uint32_t V = p2_pick_view(w, true);
+        p2_complete_vc(w, &p[0], &p[1], V);
+        CHECK(nodus_witness_bft_is_leader(w),
+              "we ARE the new leader at the view we completed");
+
+        /* GUARD 1 — the arm site. */
+        CHECK(w->awaiting_propose_deadline_ms == 0,
+              "the new leader did NOT arm the deadman");
+
+        uint32_t view_before = w->current_view;
+        nodus_witness_bft_check_timeout(w);
+        CHECK(w->round_state.phase == NODUS_W_PHASE_IDLE,
+              "and an unarmed leader tick moves nothing");
+
+        /* GUARD 2 — the fire site, reached only by force-arming. This is
+         * a state the arm site cannot produce, but IDENT view adoption
+         * can: it moves current_view under an IDLE node, so a node armed
+         * as a follower can BECOME the leader while still armed. */
+        p2_expire(w);
+        CHECK(w->awaiting_propose_deadline_ms != 0,
+              "force-armed and expired, standing in for a view adopted "
+              "under us after we armed");
+        nodus_witness_bft_check_timeout(w);
+        CHECK(w->round_state.phase == NODUS_W_PHASE_IDLE,
+              "an EXPIRED deadman on the leader still does not fire — "
+              "the leader must send, not rotate away from itself");
+        CHECK(w->current_view == view_before,
+              "current_view untouched");
+
+        chain_db_drop(w, dir);
+    }
+
+    /* ── §12d — NEW_VIEW on the view-ADVANCE path: re-arm vs disarm ───
+     *
+     * Both legs PRE-ARM by hand, to a value chosen so that the wrong
+     * branch cannot produce the expected answer:
+     *   - re-arm leg starts from an ALREADY-EXPIRED deadline, so "still
+     *     armed" is not enough — the assertion demands a FRESH window.
+     *   - disarm leg starts from a FUTURE deadline, so only an actual
+     *     write of 0 satisfies it.
+     * Inverting the branch fails both. ──────────────────────────────── */
+    printf("§12d P2 — NEW_VIEW re-arms when it binds a reproposal, "
+           "disarms when it does not\n");
+    {
+        peer_t p[6];
+        for (int i = 0; i < 6; i++) peer_make(&p[i]);
+        nodus_witness_t *w = fixture(&self, p, 6, 3, 15000, 10000);
+        char dir[] = "/tmp/test_bft_p2_nv_XXXXXX";
+        chain_db_open(w, dir, 0x24);
+
+        peer_t all[7];
+        all[0] = self;
+        for (int i = 0; i < 6; i++) all[i + 1] = p[i];
+
+        uint64_t tip = seed_blocks(w, 3);
+        CHECK(tip == 3, "seeded chain tip is 3 (see §12a)");
+
+        /* A view we do NOT lead — otherwise the sender could not be the
+         * expected leader and the message would be refused at :7112. */
+        uint32_t V = p2_pick_view(w, false);
+        const peer_t *leader = p2_leader_at(w, all, V);
+        CHECK(memcmp(leader->id, w->my_id, NODUS_T3_WITNESS_ID_LEN) != 0,
+              "the NEW_VIEW's leader is someone else, as the accept "
+              "path requires");
+
+        /* ── LEG 1: has_reproposal = true → RE-ARM. */
+        nodus_t3_msg_t nv;
+        p2_fill_newview(&nv, w, leader, V);
+        p2_add_reproposal(&nv, all, (int)w->bft_config.quorum, tip + 1, 0,
+                          tx_hash);
+        p2_expire(w);                       /* armed, ALREADY expired */
+        CHECK(nodus_witness_bft_handle_newview(w, &nv) == 0,
+              "NEW_VIEW carrying a verifiable prepared cert accepted");
+        CHECK(w->current_view == V,
+              "and it advanced the view (the `>` accept really ran)");
+        CHECK(w->reproposal_required,
+              "the C5 binding is set — a PROPOSE is now MANDATORY, and "
+              "handle_propose refuses every other one at this height");
+        /* THE ASSERTION: a FULL FRESH window, not the expired value we
+         * started from. The binding is released only by a matching
+         * PROPOSE or by the chain reaching its height
+         * (nodus_witness.c:1141-1152) — and in a halt the chain reaches
+         * nothing, so without this re-arm the node wedges silently. */
+        CHECK(w->awaiting_propose_deadline_ms > nodus_time_now() * 1000ULL,
+              "P2 RE-ARMED with a fresh window for the bound PROPOSE");
+
+        /* ── LEG 2: has_reproposal = false → DISARM. A second, higher
+         * view so the `>` accept runs again. */
+        w->reproposal_required = false;
+        uint32_t V2 = 0;
+        for (uint32_t v = V + 1; v <= V + w->roster.n_witnesses; v++) {
+            uint32_t saved = w->current_view;
+            w->current_view = v;
+            bool is_l = nodus_witness_bft_is_leader(w);
+            w->current_view = saved;
+            if (!is_l) { V2 = v; break; }
+        }
+        CHECK(V2 > V, "found a higher view we do not lead");
+        const peer_t *leader2 = p2_leader_at(w, all, V2);
+
+        p2_fill_newview(&nv, w, leader2, V2);   /* has_reproposal = false */
+        w->awaiting_propose_deadline_ms =
+            nodus_time_now() * 1000ULL + 60000ULL;   /* FUTURE */
+        CHECK(nodus_witness_bft_handle_newview(w, &nv) == 0,
+              "NEW_VIEW with no reproposal accepted");
+        CHECK(w->current_view == V2, "and it advanced the view again");
+        CHECK(!w->reproposal_required, "no C5 binding was set");
+        CHECK(w->awaiting_propose_deadline_ms == 0,
+              "P2 DISARMED — the leader proved liveness and owes nothing, "
+              "so a demand-driven stall is a different mechanism's job");
+
+        chain_db_drop(w, dir);
+    }
+
+    /* ── §12e — the SELF-ADVANCED path, which is the COMMON one ───────
+     *
+     * O15C-D.1 measured that every node advances its own view the moment
+     * it reaches view-change quorum (bft.c:6900), so when the leader's
+     * NEW_VIEW finally arrives `new_view == current_view` and the whole
+     * `>` accept block of §12d is a silent no-op — 7/7 nodes
+     * self-advanced with ZERO logged "accepted NEW_VIEW"
+     * (bft.c:6910-6927).
+     *
+     * ⚠ SO §12d ALONE PROVES NOTHING ABOUT PRODUCTION. If the disarm
+     * lived only in the accept block, a self-advanced follower would arm
+     * at the quorum, receive the live leader's NEW_VIEW, never disarm,
+     * and on a quiet chain (no mempool → no PROPOSE is due) fire after
+     * one window → rotate → arm again: permanent view churn behind a
+     * perfectly healthy leader. This section is that path. ──────────── */
+    printf("§12e P2 — a NEW_VIEW at our OWN view disarms; a bound one "
+           "does not extend the window\n");
+    {
+        peer_t p[6];
+        for (int i = 0; i < 6; i++) peer_make(&p[i]);
+        nodus_witness_t *w = fixture(&self, p, 6, 3, 15000, 10000);
+        char dir[] = "/tmp/test_bft_p2_nveq_XXXXXX";
+        chain_db_open(w, dir, 0x25);
+
+        peer_t all[7];
+        all[0] = self;
+        for (int i = 0; i < 6; i++) all[i + 1] = p[i];
+
+        uint64_t tip = seed_blocks(w, 3);
+        CHECK(tip == 3, "seeded chain tip is 3 (see §12a)");
+
+        uint32_t V = p2_pick_view(w, false);
+        const peer_t *leader = p2_leader_at(w, all, V);
+
+        /* Reach V through the PRODUCTION quorum path, exactly as the
+         * live cluster does — which is what makes new_view == current_view
+         * when the leader's message lands. */
+        p2_complete_vc(w, &p[0], &p[1], V);
+        CHECK(w->awaiting_propose_deadline_ms != 0,
+              "self-advancing to V armed us");
+        uint64_t armed_at = w->awaiting_propose_deadline_ms;
+
+        /* ── LEG 1: has_reproposal = false at `==` → DISARM. */
+        nodus_t3_msg_t nv;
+        p2_fill_newview(&nv, w, leader, V);
+        CHECK(nv.newview.new_view == w->current_view,
+              "the NEW_VIEW names the view we ALREADY advanced to — the "
+              "measured common case, where the `>` accept never runs");
+        CHECK(nodus_witness_bft_handle_newview(w, &nv) == 0,
+              "the NEW_VIEW is accepted");
+        CHECK(w->awaiting_propose_deadline_ms == 0,
+              "P2 disarmed on the SELF-ADVANCED path — without this the "
+              "healthy-leader case churns views forever");
+
+        /* ── LEG 2: has_reproposal = true at `==` → LEAVE ALONE. We
+         * already armed a full window against this same leader at the
+         * quorum. Re-arming here would be exploitable: this handler has
+         * no replay guard, so a peer replaying one stored NEW_VIEW per
+         * window could postpone the deadman indefinitely. */
+        w->awaiting_propose_deadline_ms = armed_at;
+        p2_fill_newview(&nv, w, leader, V);
+        p2_add_reproposal(&nv, all, (int)w->bft_config.quorum, tip + 1, 0,
+                          tx_hash);
+        CHECK(!w->reproposal_required,
+              "no binding yet — leg 1 carried none, so leg 2's effect on "
+              "this field is unambiguous");
+        CHECK(nodus_witness_bft_handle_newview(w, &nv) == 0,
+              "a bound NEW_VIEW at our own view is accepted");
+        /* ⚠ ANTI-VACUITY. "The deadline did not change" is ALSO what a
+         * message REJECTED upstream would leave behind, and every
+         * rejection path here returns before the P2 code. The `==`
+         * adoption block (bft.c:7221-7226) is the one thing that only a
+         * validated, bound NEW_VIEW at our own view can set — so this
+         * assertion is what separates "processed, and the timer was
+         * deliberately left alone" from "bounced before P2 was ever
+         * reached". */
+        CHECK(w->reproposal_required,
+              "the bound NEW_VIEW really was processed at `==` (its cert "
+              "verified and the C5 adoption ran)");
+        CHECK(w->awaiting_propose_deadline_ms == armed_at,
+              "the deadline is EXACTLY as it was — not extended, not "
+              "cleared: a replay must not postpone the deadman");
+
+        chain_db_drop(w, dir);
+    }
+
+    /* ── §12f — an accepted PROPOSE disarms ──────────────────────────
+     *
+     * The PROPOSE is what the deadman was waiting for, so its arrival
+     * ends the wait. The disarm sits at the follower's round entry
+     * (bft.c:4620-4640), which runs BEFORE the batch's TX contents are
+     * validated — so a batch this fixture cannot make valid still proves
+     * the point, and the section stays about the ROUND ENTRY rather than
+     * about transaction validity. Reaching PREVOTE at all means the
+     * proposal passed the leader check, the height check and the C5
+     * gate. ─────────────────────────────────────────────────────────── */
+    printf("§12f P2 — an accepted PROPOSE disarms the deadman\n");
+    {
+        peer_t p[6];
+        for (int i = 0; i < 6; i++) peer_make(&p[i]);
+        nodus_witness_t *w = fixture(&self, p, 6, 3, 15000, 10000);
+        char dir[] = "/tmp/test_bft_p2_prop_XXXXXX";
+        chain_db_open(w, dir, 0x26);
+
+        peer_t all[7];
+        all[0] = self;
+        for (int i = 0; i < 6; i++) all[i + 1] = p[i];
+
+        uint64_t tip = seed_blocks(w, 3);
+        CHECK(tip == 3, "seeded chain tip is 3 (see §12a)");
+
+        uint32_t V = p2_pick_view(w, false);
+        const peer_t *leader = p2_leader_at(w, all, V);
+        w->current_view = V;
+
+        /* Armed AND already expired, deliberately: this is the state in
+         * which a missing disarm is not merely untidy but live — the
+         * very next IDLE tick would rotate the view away from a leader
+         * that just proved itself by proposing. */
+        p2_expire(w);
+
+        uint8_t ptx[NODUS_T3_TX_HASH_LEN];
+        memset(ptx, 0xD2, sizeof(ptx));
+
+        nodus_t3_msg_t pm;
+        memset(&pm, 0, sizeof(pm));
+        pm.type = NODUS_T3_PROPOSE;
+        pm.header.round = 9;
+        pm.header.view = V;
+        memcpy(pm.header.sender_id, leader->id, NODUS_T3_WITNESS_ID_LEN);
+        memcpy(pm.header.chain_id, w->chain_id, sizeof(pm.header.chain_id));
+        pm.header.timestamp = nodus_time_now();
+        nodus_random((uint8_t *)&pm.header.nonce, sizeof(pm.header.nonce));
+        pm.propose.batch_count = 1;
+        pm.propose.block_height = tip + 1;
+        memcpy(pm.propose.batch_txs[0].tx_hash, ptx, NODUS_T3_TX_HASH_LEN);
+        pm.propose.batch_txs[0].tx_type = NODUS_W_TX_SPEND;
+        /* tx_root is SHA3-512 over the batch's tx_hashes, the same
+         * derivation handle_propose recomputes (bft.c:4657-4672). */
+        {
+            nodus_key_t bh;
+            if (nodus_hash(ptx, NODUS_T3_TX_HASH_LEN, &bh) != 0) {
+                fprintf(stderr, "tx_root hash\n"); exit(1);
+            }
+            memcpy(pm.propose.tx_root, bh.bytes, NODUS_T3_TX_HASH_LEN);
+        }
+
+        CHECK(nodus_witness_bft_handle_propose(w, &pm) == 0,
+              "the leader's PROPOSE was accepted into a round");
+        CHECK(w->round_state.phase == NODUS_W_PHASE_PREVOTE,
+              "we entered PREVOTE — the round-entry path the disarm "
+              "sits on really ran");
+        CHECK(w->awaiting_propose_deadline_ms == 0,
+              "P2 disarmed: the PROPOSE the deadman waited for arrived");
 
         chain_db_drop(w, dir);
     }

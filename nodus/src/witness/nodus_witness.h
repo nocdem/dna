@@ -481,6 +481,39 @@ typedef struct nodus_witness {
      * resets to IDLE. In-memory only, never persisted. */
     bool        view_change_voted;
 
+    /* O15I P2 — POST-VIEW-CHANGE PROPOSE-WAIT DEADMAN.
+     *
+     * Absolute time_ms() deadline by which the new leader must have
+     * produced work; 0 means DISARMED. Armed only in the aftermath of a
+     * COMPLETED view change, and only on a node that is NOT the new
+     * leader (the leader must SEND, not wait — arming it would make it
+     * time out against itself).
+     *
+     * THE HOLE IT CLOSES. Both completion sites put the node back to
+     * NODUS_W_PHASE_IDLE (nodus_witness_bft.c: the vc-quorum completion
+     * and the NEW_VIEW accept), and nodus_witness_bft_check_timeout
+     * returns at its first branch from IDLE — so an IDLE node arms
+     * nothing and can never initiate a view change. Only the leader
+     * leaves IDLE on its own (nodus_witness.c:1153-1162, mempool-driven).
+     * If the rotation lands on a leader that is dead or silent, EVERY
+     * node sits IDLE forever and the chain halts with no recovery path:
+     * the 20-node terminal state. Two comments in bft.c (:7049, :7623)
+     * already promise "our round then times out and rotates the view" —
+     * behaviour that could not happen from IDLE.
+     *
+     * NOT PERSISTED, deliberately: this is consensus-local TIMING state,
+     * not a decision. A restart comes up disarmed, which is the correct
+     * conservative default — a fresh node has made no observation about
+     * the new leader's liveness, and the ordinary round timeout, the
+     * peers' VIEW_CHANGEs and the f+1 join all still reach it. Writing a
+     * wall-clock deadline through a restart would be the opposite: a
+     * stale absolute timestamp deciding a consensus action.
+     *
+     * NOT part of any signed message, vote, block or state_root — it can
+     * only ever decide WHEN this node asks for a rotation, never WHAT it
+     * votes. `current_view` is untouched by the whole mechanism. */
+    uint64_t    awaiting_propose_deadline_ms;
+
     /* O15C-C D2 — bounded out-of-order vote buffer. A PREVOTE/PRECOMMIT
      * that arrives before this node has initialized the round it
      * belongs to (proposal still in flight), or a PRECOMMIT arriving
