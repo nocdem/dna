@@ -1,5 +1,5 @@
 /*
- * DNA Engine - DNAC (Digital Cash) Module
+ * DNA Engine - DNAC (DNA Chain) Module
  *
  * Wraps libdnac API into the engine async task system.
  * Lazy-initializes dnac_context_t on first use.

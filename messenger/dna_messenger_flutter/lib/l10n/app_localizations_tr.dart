@@ -1609,7 +1609,7 @@ class AppLocalizationsTr extends AppLocalizations {
   String get userProfileLastMonth => 'Son 30 Gün';
 
   @override
-  String get dnacTitle => 'Dijital Para';
+  String get dnacTitle => 'DNA Chain';
 
   @override
   String get dnacBalance => 'Bakiye';

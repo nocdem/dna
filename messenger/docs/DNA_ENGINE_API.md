@@ -10,7 +10,7 @@
 - v1.21.0 (2026-04-17+): Stake-delegation v1 API surface — validator set, per-block reward accrual, delegate/undelegate flows, validator commission updates. TX types `STAKE`, `UNSTAKE`, `DELEGATE`, `UNDELEGATE`, `CLAIM_REWARD`, `VALIDATOR_UPDATE`. Exposed via existing dnac engine handler.
 - v1.20.0 (2026-04-09+): Follow graph API (section 11) — `dna_engine_follow`, `dna_engine_unfollow`, `dna_engine_get_following`, `dna_engine_is_following`, `dna_engine_sync_following_to_dht`, `dna_engine_sync_following_from_dht`. New types: `dna_following_t`, `dna_following_cb`. Free: `dna_free_following`. Plus updated Debug Log API: `dna_engine_debug_log_send`, `_message`, `_message_level`, `_export`.
 - v1.19.0 (2026-04-10): Added DNAC Multi-Token API (section 11c) — `dna_engine_dnac_token_list`, `dna_engine_dnac_token_create`, `dna_engine_dnac_token_balance`. New types: `dna_dnac_token_t`, `dna_dnac_token_list_cb`. Free function: `dna_engine_dnac_free_tokens`.
-- v1.18.0 (2026-04-09): Added DNAC Digital Cash API (section 11b) — `dna_engine_dnac_get_balance`, `dna_engine_dnac_send`, `dna_engine_dnac_sync`, `dna_engine_dnac_get_history`, `dna_engine_dnac_get_utxos`, `dna_engine_dnac_estimate_fee`. New types: `dna_dnac_balance_t`, `dna_dnac_history_t`, `dna_dnac_utxo_t`. Callbacks: `dna_dnac_balance_cb`, `dna_dnac_history_cb`, `dna_dnac_utxos_cb`, `dna_dnac_fee_cb`. Free functions: `dna_engine_dnac_free_history`, `dna_engine_dnac_free_utxos`.
+- v1.18.0 (2026-04-09): Added DNAC (DNA Chain) API (section 11b) — `dna_engine_dnac_get_balance`, `dna_engine_dnac_send`, `dna_engine_dnac_sync`, `dna_engine_dnac_get_history`, `dna_engine_dnac_get_utxos`, `dna_engine_dnac_estimate_fee`. New types: `dna_dnac_balance_t`, `dna_dnac_history_t`, `dna_dnac_utxo_t`. Callbacks: `dna_dnac_balance_cb`, `dna_dnac_history_cb`, `dna_dnac_utxos_cb`, `dna_dnac_fee_cb`. Free functions: `dna_engine_dnac_free_history`, `dna_engine_dnac_free_utxos`.
 - v1.17.0 (2026-04-09): Added Follow API (section 11) — `dna_engine_follow`, `dna_engine_unfollow`, `dna_engine_get_following`, `dna_engine_is_following`, `dna_engine_sync_following_to_dht`, `dna_engine_sync_following_from_dht`. New types: `dna_following_t`, `dna_following_cb`. Free function: `dna_free_following`. Updated Debug Log API (section 10) with `dna_engine_debug_log_send`, `dna_engine_debug_log_message`, `dna_engine_debug_log_message_level`, `dna_engine_debug_log_export`.
 - v1.16.0 (2026-03-11): Added Message Deletion API — `dna_engine_delete_message`, `dna_engine_delete_conversation`, `dna_engine_delete_all_messages`. Three deletion scopes (single, conversation, all) with local delete + DHT outbox rebuild + DELETE notices to contacts + cross-device sync via self-addressed outbox messages. New types: `deleted_by_sender` field in `dna_message_t`, `MESSAGE_TYPE_DELETE` (3), `delete_action_t` enum. DB schema v17: `deleted_by_sender` column.
 - v1.15.0 (2026-03-10): Added mandatory version enforcement — `dna_version_check_result_t` now includes `library_below_minimum` and `app_below_minimum` flags. When local version is below DHT-published minimum, Flutter app blocks usage with UpdateRequiredScreen.
@@ -2493,9 +2493,9 @@ Free following list returned by `dna_engine_get_following`.
 
 ---
 
-## 11b. DNAC Digital Cash
+## 11b. DNAC (DNA Chain)
 
-DNAC (DNA Cash) integration (v0.9.173+). UTXO-based digital cash with BFT witness consensus. All amounts are in raw units (1 DNAC = 100,000,000 raw).
+DNAC (DNA Chain) integration (v0.9.173+). UTXO-based chain with BFT witness consensus. All amounts are in raw units (1 DNAC = 100,000,000 raw).
 
 ### Data Types
 

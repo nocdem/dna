@@ -1516,7 +1516,7 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
             dna_handle_debug_log_send(engine, task);
             break;
 
-        /* DNAC digital cash */
+        /* DNAC — DNA Chain */
         case TASK_DNAC_GET_BALANCE:
             dna_handle_dnac_get_balance(engine, task);
             break;

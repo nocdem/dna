@@ -216,7 +216,7 @@ if(BUILD_SHARED_LIB)
         src/api/engine/dna_call_orch.c
         src/api/engine/dna_engine_calls.c
         src/reaction/reaction_json.c
-        # DNAC (digital cash) — compiled into libdna for single .so
+        # DNAC (DNA Chain) — compiled into libdna for single .so
         ${CMAKE_SOURCE_DIR}/../dnac/src/version.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/wallet/wallet.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/wallet/utxo.c
@@ -391,7 +391,7 @@ else()
         src/api/engine/dna_call_orch.c
         src/api/engine/dna_engine_calls.c
         src/reaction/reaction_json.c
-        # DNAC (digital cash) — compiled into libdna for single .so
+        # DNAC (DNA Chain) — compiled into libdna for single .so
         ${CMAKE_SOURCE_DIR}/../dnac/src/version.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/wallet/wallet.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/wallet/utxo.c
@@ -596,7 +596,7 @@ target_include_directories(dna PUBLIC
     ${CMAKE_SOURCE_DIR}/blockchain/cellframe  # Cellframe blockchain headers
     ${CMAKE_SOURCE_DIR}/blockchain/solana     # Solana blockchain headers
     ${CMAKE_SOURCE_DIR}/blockchain/tron       # TRON blockchain headers
-    ${CMAKE_SOURCE_DIR}/../dnac/include       # DNAC (digital cash) headers
+    ${CMAKE_SOURCE_DIR}/../dnac/include       # DNAC (DNA Chain) headers
     ${CMAKE_SOURCE_DIR}/../dnac/src           # DNAC internal headers
     ${OPENSSL_INCLUDE_DIR}
     # JUICE_INCLUDE_DIRS removed in v0.4.61 - libjuice no longer used

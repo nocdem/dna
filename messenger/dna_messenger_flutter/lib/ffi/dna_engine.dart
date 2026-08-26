@@ -1334,7 +1334,7 @@ class WallNewPostEvent extends DnaEvent {
 }
 
 // =============================================================================
-// DNAC (DIGITAL CASH) MODELS
+// DNAC (DNA CHAIN) MODELS
 // =============================================================================
 
 /// 1 token = 100,000,000 raw units (8 decimals, like Bitcoin satoshis)
@@ -7075,7 +7075,7 @@ class DnaEngine {
   }
 
   // ===========================================================================
-  // DNAC (Digital Cash) Methods
+  // DNAC (DNA Chain) Methods
   // ===========================================================================
 
   /// Get DNAC wallet balance

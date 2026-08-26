@@ -191,7 +191,7 @@ typedef enum {
     /* Debug log inbox (v0.9.164+) */
     TASK_DEBUG_LOG_SEND,
 
-    /* DNAC digital cash (v0.9.173+) */
+    /* DNAC — DNA Chain (v0.9.173+) */
     TASK_DNAC_GET_BALANCE,
     TASK_DNAC_SEND,
     TASK_DNAC_SYNC,
@@ -860,7 +860,7 @@ struct dna_engine {
     bool dm_full_sync_done;          /* True after first full DM sync (prevents double sync on startup) */
     time_t profile_published_at;     /* Timestamp when profile was last published (0 = never) */
 
-    /* DNAC digital cash (lazy init on first wallet access) */
+    /* DNAC — DNA Chain (lazy init on first wallet access) */
     void *dnac_ctx;                  /* dnac_context_t* (NULL until first use) */
 
     /* PQ VoIP calls (Faz A) — owns orchestrator + per-call keystore */

@@ -1293,7 +1293,7 @@ Minimal transaction builder for DNA name registration and token transfers.
 
 ### 9.9 DNAC Witness Consensus (Chain-State-Authoritative Roster)
 
-DNAC (DNA Cash) is the project's own UTXO cash system. Double-spend prevention uses PBFT witnessing embedded in `nodus-server` (not a separate binary). In `main`, the witness roster is *dynamic* — any online nodus node that is reachable via Kademlia routing participates automatically.
+DNAC (DNA Chain) is the project's own UTXO chain. Double-spend prevention uses PBFT witnessing embedded in `nodus-server` (not a separate binary). In `main`, the witness roster is *dynamic* — any online nodus node that is reachable via Kademlia routing participates automatically.
 
 On the `stake-delegation-v1` feature branch this is **replaced with a stake-weighted deterministic top-7 committee derived from on-chain state**. The witness roster and the client-side discovery path (`dnac_discover_witnesses()`) both consult the committee snapshot committed to chain via Merkle `state_root` — not DHT registrations, not TCP 4002 peer lists, not any routing-derived heuristic. Consequences:
 

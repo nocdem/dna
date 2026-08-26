@@ -3053,7 +3053,7 @@ abstract class AppLocalizations {
   /// No description provided for @dnacTitle.
   ///
   /// In en, this message translates to:
-  /// **'Digital Cash'**
+  /// **'DNA Chain'**
   String get dnacTitle;
 
   /// No description provided for @dnacBalance.

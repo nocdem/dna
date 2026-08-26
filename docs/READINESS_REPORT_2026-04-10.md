@@ -110,7 +110,7 @@ Targets: libdna.so (shared), dna-connect-cli
 | Social Wall + Timeline (posts, comments, polls) | COMPLETE |
 | Follow System | COMPLETE |
 | Contact Requests + Blocking | COMPLETE |
-| DNAC Digital Cash Integration | COMPLETE |
+| DNAC (DNA Chain) Integration | COMPLETE |
 | SQLCipher Database Encryption | COMPLETE |
 | Kyber Channel Encryption (all connections) | COMPLETE |
 | TEE Key Wrapping (Android) | COMPLETE |
@@ -150,7 +150,7 @@ Targets: libdna.so (shared), dna-connect-cli
 
 ---
 
-## DNAC (DNA Cash) v0.13.0 - RC READY
+## DNAC (DNA Chain) v0.13.0 - RC READY
 
 ### Build Status: PASS
 ```

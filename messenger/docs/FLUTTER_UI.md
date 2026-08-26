@@ -270,7 +270,7 @@ final conversationProvider = AsyncNotifierProviderFamily<ConversationNotifier, L
      - Transfer message JSON includes `token`, `network`, and `chain` fields
      - Transfer bubble with gradient styling and blockchain verification (orange/green/red border)
    - **Note:** "Backbone" network name has been renamed to "Cellframe" throughout the codebase
-   - **DNAC Wallet:** Digital cash (DNAC) integrated via `dna_engine_dnac.c` engine module
+   - **DNAC Wallet:** DNA Chain (DNAC) integrated via `dna_engine_dnac.c` engine module
      - Balance display, send, sync, transaction history, UTXO management
      - Witness-based consensus (not DHT-stored), syncs from nodus witness nodes
 

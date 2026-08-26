@@ -100,7 +100,7 @@ All connections use Kyber1024 channel encryption for post-quantum security.
 |  - UDP 4000 (Kademlia) + TCP 4001 (Client) + TCP 4002     |
 |    (Inter-node) + TCP 4003 (Channels) + TCP 4004 (Witness) |
 |  - Kyber1024 channel encryption on all connections          |
-|  - Witness BFT consensus for DNAC digital cash              |
+|  - Witness BFT consensus for DNAC (DNA Chain)               |
 |  - SQLite persistence for stored values                     |
 +-------------------------------------------------------------+
 ```

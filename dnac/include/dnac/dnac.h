@@ -1,10 +1,10 @@
 /**
  * @file dnac.h
- * @brief DNAC - Post-Quantum Digital Cash over DHT
+ * @brief DNAC - DNA Chain: post-quantum UTXO ledger
  *
  * Main public API for DNAC wallet operations.
  *
- * DNAC is a digital cash system using:
+ * DNAC (DNA Chain) is a post-quantum UTXO chain using:
  * - UTXO model for transactions
  * - Dilithium5 (PQ) signatures for authorization
  * - DHT for payment message transport

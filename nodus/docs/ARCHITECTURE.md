@@ -1268,7 +1268,7 @@ ctest --output-on-failure
 ## 15. Tier 3 Protocol — DNAC Witness (BFT Consensus)
 
 The DNAC witness module is embedded in the Nodus server as an optional component. When
-enabled via config, it provides UTXO-based digital cash with BFT consensus for
+enabled via config, it provides the DNA Chain UTXO ledger with BFT consensus for
 double-spend prevention.
 
 ### Protocol Overview

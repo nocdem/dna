@@ -653,11 +653,15 @@ These actions are NEVER permitted without explicit request:
 **ALWAYS check the per-project bug files** at the start of a session for open bugs to fix:
 `messenger/BUGS.md`, `nodus/BUGS.md`, `dnac/BUGS.md` (there is no root `BUGS.md`).
 
-## RC PROJECT - BREAKING CHANGES FORBIDDEN
-This project is in **RC (Release Candidate)**. Users have real data. Breaking changes are **FORBIDDEN** by default.
+## BREAKING-CHANGE POLICY — SCOPED PER COMPONENT
+**This rule is component-scoped. Do NOT apply the messenger rule to the chain** (memory: `feedback_no_derived_requirements` — misapplying it burned 3 seasons in 2026-08).
+
+**Messenger (RC — Release Candidate):** users have real data. Breaking changes are **FORBIDDEN** by default.
 - **I CANNOT make breaking changes** without explicit special permission from the user
 - If a task would require a breaking change, **STOP and state:** "This requires a breaking change. I cannot proceed without your explicit permission."
 - Even with permission: require migration path, never hard cutover
+
+**DNA Chain / DNAC / witness (DEVNET):** no real user data to protect. Breaking changes are ALLOWED but require a **chain wipe bundled with a stop-all deploy** (`feedback_consensus_deploy_stop_all`) — never a rolling deploy for consensus/block-format changes. There is NO V1→V2 migration requirement — do not invent one; product decisions are asked at O4.
 
 ---
 
@@ -733,7 +737,7 @@ git push origin main    # GitHub second (mirror)
 ├── shared/crypto/     # Post-quantum crypto (sign/, enc/, hash/, key/, utils/, zk/)
 ├── messenger/         # DNA Connect - C library + Flutter app
 ├── nodus/             # Nodus - DHT server + client SDK (pure C)
-├── dnac/              # DNA Cash - UTXO digital cash over DHT
+├── dnac/              # DNA Chain - UTXO ledger with BFT witness consensus
 ├── explorer/          # DNAC block explorer daemon (scan.cpunk.io) — read-only indexer + JSON API
 ├── cpunk/             # cpunk.io website
 ├── scripts/           # Operational scripts (daily summary, etc.)
@@ -804,7 +808,7 @@ Nodus is a post-quantum Kademlia DHT with BFT witness consensus. Pure C, no C++ 
 
 ### DNAC Architecture
 
-UTXO-based digital cash with BFT witness consensus. See `dnac/CLAUDE.md` for details.
+DNAC = **DNA Chain**: UTXO-based chain with BFT witness consensus. See `dnac/CLAUDE.md` for details.
 
 - `dnac/src/wallet/` — UTXO management, coin selection, balance
 - `dnac/src/transaction/` — TX building, verification, nullifiers, genesis

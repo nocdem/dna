@@ -13,7 +13,7 @@
 
 # DNAC Implementation Roadmap (HISTORICAL — frozen at v0.10.2)
 
-**Project:** DNAC - Post-Quantum Digital Cash over DHT
+**Project:** DNAC - DNA Chain (post-quantum UTXO ledger)
 **Version:** v0.10.2 (FROZEN — current is v0.14.3, see STATUS.md)
 **Status:** Phase 24 Complete (P0 Security Audit)
 
@@ -21,7 +21,7 @@
 
 ## Overview
 
-DNAC is a post-quantum digital cash system that integrates with DNA Connect:
+DNAC (DNA Chain) is a post-quantum UTXO chain that integrates with DNA Connect:
 - **UTXO model** for transactions
 - **DHT** for transport (payments as messages)
 - **Nodus servers** for nullifier witnessing (2-of-3 consensus)

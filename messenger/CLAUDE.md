@@ -1,8 +1,8 @@
 # DNA Connect - Messenger Development Guidelines
 
-**Last Updated:** 2026-06-12 | **Status:** RC (Release Candidate) | **Phase:** 7 (Flutter UI)
+**Last Updated:** 2026-08-27 | **Status:** RC (Release Candidate) | **Phase:** 7 (Flutter UI)
 
-**Versions:** Library v0.11.18 | Flutter v1.0.0-rc241 | Nodus v0.19.9
+**Versions:** Library v0.11.18 | Flutter v1.0.0-rc241 | Nodus v0.19.19
 
 **Note:** Framework rules (ORCHESTRATOR CYCLE O1-O10, agent classes, identity override, protocol mode, violations) are in root `/opt/dna/CLAUDE.md`. This file contains messenger-specific guidelines only.
 
@@ -36,7 +36,7 @@ The DNA Engine (`src/api/dna_engine.c`) is a modular async C library with 22 dom
 | `dna_engine_channels.c` | Channel CRUD, posts, subscriptions (**DISABLED** — guarded by `DNA_CHANNELS_ENABLED`) |
 | `dna_engine_contacts.c` | Contact requests, blocking |
 | `dna_engine_debug_log.c` | Encrypted debug-log send to developer (Kyber1024 + AES-256-GCM) |
-| `dna_engine_dnac.c` | DNAC digital cash (balance, send, sync, history, UTXOs) |
+| `dna_engine_dnac.c` | DNAC — DNA Chain wallet (balance, send, sync, history, UTXOs) |
 | `dna_engine_follow.c` | Follow/unfollow, list, DHT sync |
 | `dna_engine_groups.c` | Group CRUD, GEK encryption, invitations |
 | `dna_engine_helpers.c` | Shared utility functions |

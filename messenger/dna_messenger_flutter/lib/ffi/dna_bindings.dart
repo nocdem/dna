@@ -4510,7 +4510,7 @@ class DnaBindings {
   }
 
   // ===========================================================================
-  // DNAC (Digital Cash) Functions
+  // DNAC (DNA Chain) Functions
   // ===========================================================================
 
   late final _dna_engine_dnac_get_balance = _lib.lookupFunction<
@@ -4839,7 +4839,7 @@ class DnaBindings {
 }
 
 // =============================================================================
-// DNAC (DIGITAL CASH) STRUCTS
+// DNAC (DNA CHAIN) STRUCTS
 // =============================================================================
 
 /// DNAC balance information

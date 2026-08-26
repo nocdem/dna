@@ -1,6 +1,6 @@
 # DNAC - Development Guidelines
 
-**Last Updated:** 2026-08-06 | **Status:** TESTNET (live 7-witness production cluster) | **Version:** v0.18.5-ledgerv2-s9
+**Last Updated:** 2026-08-27 | **Status:** DEVNET (live 7-witness cluster; will be wiped — no real user data) | **Version:** v0.18.6
 
 **Note:** Framework rules (ORCHESTRATOR CYCLE O1-O10, agent classes, identity override, protocol mode, violations) are in root `/opt/dna/CLAUDE.md`. This file contains DNAC-specific guidelines only.
 
@@ -35,7 +35,7 @@ If a Genesis Protocol harness run is not 7/7 identical `state_root`, that is a d
 
 ## Project Overview
 
-DNAC is a **Post-Quantum Zero-Knowledge Cash** system built on top of DNA Connect.
+DNAC = **DNA Chain** — a post-quantum UTXO chain (with a ZK/shielded track under development) built on top of DNA Connect.
 
 | Component | Technology |
 |-----------|------------|
@@ -492,7 +492,7 @@ full-history storage model.
 
 ## Development Phase Policy
 
-**Current Phase:** TESTNET — live 7-witness production cluster with real tester balances.
+**Current Phase:** DEVNET — live 7-witness cluster with tester balances; the chain will be wiped (no real user data to protect). Public messaging may say "live testnet" (`project_cpunk_dna_announcement`), but for engineering decisions this is a devnet — the messenger RC rule does NOT apply here (`feedback_no_derived_requirements`).
 
 **Breaking Changes:** ALLOWED but require a **chain wipe** bundled with a stop-all deploy (memory: `feedback_consensus_deploy_stop_all`) — never a rolling deploy for consensus/block-format changes. Clean implementations preferred; legacy code/protocols can be removed without deprecation.
 
