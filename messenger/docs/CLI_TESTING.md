@@ -785,36 +785,14 @@ Group synced successfully from DHT!
 
 ---
 
-## Feeds v2 Commands
+## Channel Commands (DISABLED subsystem)
 
-Topic-based public feeds with categories and tags. All feeds data is signed with Dilithium5 and stored in DHT with 30-day TTL.
-
-### `feeds create <title> <body> [options]` - Create Topic
-
-Creates a new public topic in the feed system.
-
-```bash
-dna-connect-cli feeds create "My Topic" "This is the body text" --category technology --tags "rust,webdev"
-```
-
-**Options:**
-- `--category <name>` - Category (default: "general"). Valid: general, technology, help, announcements, trading, offtopic
-- `--tags <list>` - Comma-separated tags, max 5 tags, 32 chars each
-
-**Sample Output:**
-```
-Topic: My Topic
-  UUID: 4b7c5dce-28ad-4f45-92d1-c5dae1ed952e
-  Author: 3cbba8d8bf0c3603...
-  Category: e91fadf24f78c081972a2015146e9b7ad4636bb5a208f5733b54ee4407682078
-  Created: 2026-01-30 21:11
-  Tags: rust, webdev
-  Body:
-    This is the body text
-  Verified: yes
-```
-
----
+> **`feeds` does not exist.** The former "Feeds v2" command group was removed from
+> the CLI dispatcher — `dna-connect-cli feeds ...` is an unknown command (this
+> section previously documented it; deleted 2026-08-27 by the doc-vs-code audit).
+> The `channel` group below still exists in the dispatcher, but the channel
+> subsystem is **soft-disabled since 2026-03-28** (`DNA_CHANNELS_ENABLED` off) —
+> expect these verbs to be inert against current builds.
 
 ### `channel get <uuid>` - Get Channel
 
@@ -822,51 +800,6 @@ Retrieves a channel by its UUID.
 
 ```bash
 dna-connect-cli channel get 4b7c5dce-28ad-4f45-92d1-c5dae1ed952e
-```
-
----
-
-### `feeds delete <uuid>` - Delete Topic
-
-Soft-deletes a topic (author only). Topic remains in DHT with `deleted=true` until TTL expires.
-
-```bash
-dna-connect-cli feeds delete 4b7c5dce-28ad-4f45-92d1-c5dae1ed952e
-```
-
----
-
-### `feeds list --category <name> --days <n>` - List by Category
-
-Lists topics in a category from the last N days.
-
-```bash
-dna-connect-cli feeds list --category technology --days 7
-```
-
-**Sample Output:**
-```
-Topics (2):
-
-  1. My Topic
-     UUID: 4b7c5dce-28ad-4f45-92d1-c5dae1ed952e
-     Author: 3cbba8d8bf0c3603...
-     Category: e91fadf24...  |  Created: 2026-01-30 21:11
-
-  2. Another Topic
-     UUID: 7a8b9c0d-1234-5678-90ab-cdef12345678
-     Author: 5a8f2c3d4e6b7a9c...
-     Category: e91fadf24...  |  Created: 2026-01-29 15:30
-```
-
----
-
-### `feeds list-all --days <n>` - List All Topics
-
-Lists all topics from the last N days across all categories.
-
-```bash
-dna-connect-cli feeds list-all --days 7
 ```
 
 ---

@@ -551,47 +551,35 @@ Mobile apps must call `qgp_platform_set_app_dirs(data_dir, cache_dir)` at startu
 
 > **Storage model reference:** See **[DHT_STORAGE_MODEL.md](DHT_STORAGE_MODEL.md)** for detailed documentation of how each data type (DM, Groups, Wall, Channels) is stored on the DHT — including key formats, bucket strategies, serialization, and sync patterns.
 
-### 5.1 DHT Context
+### 5.1 DHT Operations (nodus_ops)
 
-**Location:** `dht/core/dht_context.h`
+**The old `dht_context_t` API documented here previously is REMOVED** — `dht_context_new`,
+`dht_put*`, `dht_get*` no longer exist. All DHT operations go through the Nodus
+singleton wrappers in `dht/shared/nodus_ops.{c,h}`:
 
-**Configuration:**
 ```c
-typedef struct {
-    uint16_t port;                    // UDP 4000 (default)
-    bool is_bootstrap;                // Bootstrap node flag
-    char identity[256];               // Node identity
-    char bootstrap_nodes[5][256];     // Up to 5 bootstrap nodes
-    size_t bootstrap_count;
-    char persistence_path[512];       // SQLite persistence
-} dht_config_t;
+int  nodus_ops_put(const uint8_t *key, size_t key_len,
+                   const uint8_t *data, size_t data_len,
+                   uint32_t ttl, uint64_t vid);
+int  nodus_ops_put_str(const char *str_key, const uint8_t *data, size_t data_len,
+                       uint32_t ttl, uint64_t vid);
+int  nodus_ops_put_permanent(const uint8_t *key, size_t key_len,
+                             const uint8_t *data, size_t data_len, uint64_t vid);
+int  nodus_ops_get(const uint8_t *key, size_t key_len,
+                   uint8_t **data_out, size_t *len_out);
+int  nodus_ops_get_all(const uint8_t *key, size_t key_len,
+                       uint8_t ***values_out, size_t **lens_out, size_t *count_out);
+size_t nodus_ops_listen(const uint8_t *key, size_t key_len,
+                        nodus_ops_listen_cb_t cb, void *ud,
+                        nodus_ops_listen_cleanup_t cleanup);
 ```
 
-**Operations:**
-```c
-// Lifecycle
-dht_context_t* dht_context_new(const dht_config_t *config);
-int dht_context_start(dht_context_t *ctx);
-void dht_context_stop(dht_context_t *ctx);
-void dht_context_free(dht_context_t *ctx);
-
-// Put operations
-int dht_put(ctx, key, key_len, value, value_len);           // 7-day TTL
-int dht_put_ttl(ctx, key, key_len, value, value_len, ttl);  // Custom TTL
-int dht_put_permanent(ctx, key, key_len, value, value_len); // Never expires
-int dht_put_signed(ctx, key, key_len, value, value_len,
-                   value_id, ttl);                           // Signed, replaceable
-
-// Get operations
-int dht_get(ctx, key, key_len, value_out, value_len_out);   // First value
-int dht_get_all(ctx, key, key_len, values_out, lens_out, count_out);
-void dht_get_async(ctx, key, key_len, callback, userdata);  // Non-blocking
-```
+See `DHT_SYSTEM.md` §3.1 for the full surface.
 
 **Value TTLs:**
-- **Permanent**: Identity keys, contact lists (never expire)
-- **365 days**: Name registrations
-- **7 days**: Profiles, groups, offline queue (default)
+- **Permanent**: Identity keys, contact lists, name registrations (never expire)
+- **7 days**: Offline queue, contact requests (default)
+- **30 days**: ACKs, wall/group metadata
 
 ### 5.2 DHT Keyserver
 

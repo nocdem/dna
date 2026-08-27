@@ -118,6 +118,11 @@ All connections use Kyber1024 channel encryption for post-quantum security.
 
 **Note:** The old `dht_context.h/cpp` (OpenDHT wrapper) and related files (`dht_listen.cpp`, `dht_stats.cpp`, `dht_identity.cpp`, `dht_value_storage.cpp`) have been removed. DHT operations now go through the Nodus client SDK via `nodus_ops.c`.
 
+**Signature note (2026-08-27):** some older code blocks in this document still show a
+`dht_context_t *ctx` first parameter. That type is GONE (zero references in headers) —
+the real signatures are context-free and operate on the nodus singleton. When a block
+below disagrees with the header file, the header is authoritative.
+
 ### 3.1 Nodus Operations (nodus_ops.h/c)
 
 The DHT interface layer wrapping the Nodus client singleton. All functions use the nodus singleton internally — no explicit context parameter needed. The client supports concurrent requests (up to 16 in-flight), so multiple threads can call nodus_ops functions simultaneously without external locking.
@@ -470,9 +475,9 @@ Manual message backup/restore for multi-device sync via DHT.
 #### API
 
 ```c
-// Backup all messages to DHT (self-encrypted)
+// Backup all messages to DHT (self-encrypted) — actual signature,
+// dht/client/dht_message_backup.h:135 (context-free, nodus singleton)
 int dht_message_backup_publish(
-    dht_context_t *dht_ctx,
     message_backup_context_t *msg_ctx,
     const char *fingerprint,
     const uint8_t *kyber_pubkey,
@@ -482,9 +487,8 @@ int dht_message_backup_publish(
     int *message_count_out
 );
 
-// Restore messages from DHT backup
+// Restore messages from DHT backup (see header for the full current signature)
 int dht_message_backup_restore(
-    dht_context_t *dht_ctx,
     message_backup_context_t *msg_ctx,
     const char *fingerprint,
     const uint8_t *kyber_privkey,
@@ -562,56 +566,11 @@ This ensures real-time notifications always point to the current day's posts.
 
 ### 5.1 Value Persistence
 
-**Note:** The old `dht_value_storage.h/cpp` (SQLite persistence for OpenDHT bootstrap nodes) has been removed. Value persistence is now handled natively by Nodus servers (SQLite in `/var/lib/nodus/`).
-
-The following statistics and persistence concepts still apply at the Nodus server level:
-
-#### Statistics Structure
-
-```c
-typedef struct {
-    uint64_t total_values;        // Total values currently stored
-    uint64_t storage_size_bytes;  // Database file size in bytes
-    uint64_t put_count;           // Total PUT operations
-    uint64_t get_count;           // Total GET operations
-    uint64_t republish_count;     // Total values republished on startup
-    uint64_t error_count;         // Total errors encountered
-    uint64_t last_cleanup_time;   // Unix timestamp of last cleanup
-    bool republish_in_progress;   // Is background republish still running?
-} dht_storage_stats_t;
-```
-
-#### Selective Persistence
-
-```c
-// Only persist PERMANENT and 365-day values
-bool dht_value_storage_should_persist(uint32_t value_type, uint64_t expires_at);
-// Returns true for:
-// - value_type == 0x1002 (365-day)
-// - expires_at == 0 (permanent)
-// Returns false for 7-day and 30-day values
-```
-
-#### Key Functions
-
-```c
-// Create storage (opens/creates SQLite database)
-dht_value_storage_t* dht_value_storage_new(const char *db_path);
-
-// Store value (filters non-critical values)
-int dht_value_storage_put(dht_value_storage_t *storage,
-                           const dht_value_metadata_t *metadata);
-
-// Async republish all values on startup
-int dht_value_storage_restore_async(dht_value_storage_t *storage,
-                                     struct dht_context *ctx);
-
-// Cleanup expired values
-int dht_value_storage_cleanup(dht_value_storage_t *storage);
-
-// Free storage
-void dht_value_storage_free(dht_value_storage_t *storage);
-```
+The old `dht_value_storage.h/cpp` (SQLite persistence for OpenDHT bootstrap nodes)
+has been **removed** — none of its `dht_value_storage_*` functions exist anywhere in
+the tree. Value persistence is handled natively by Nodus servers (SQLite in
+`/var/lib/nodus/`; see `nodus/src/core/nodus_storage.c`). *(The dead API listing
+that used to sit here was deleted 2026-08-27 by the doc-vs-code audit.)*
 
 ---
 
@@ -835,218 +794,15 @@ User profile storage in DHT.
 
 ---
 
-### 5.6 dht_chunked.h/c (Chunked Storage Layer)
+### 5.6 dht_chunked.h/c + 5.7 dht_publish_queue.h/c — REMOVED
 
-Transparent chunking for large data storage in DHT with ZSTD compression.
-
-#### Chunk Format
-
-**v1 (25-byte header):**
-```
-[4B magic "DNAC"][1B version=1][4B total_chunks][4B chunk_index]
-[4B chunk_data_size][4B original_size][4B crc32][payload...]
-```
-
-**v2 (57-byte header for chunk 0 only, v0.5.25+):**
-```
-[4B magic "DNAC"][1B version=2][4B total_chunks][4B chunk_index]
-[4B chunk_data_size][4B original_size][4B crc32]
-[32B content_hash (SHA3-256 of original uncompressed data)]
-[payload...]
-```
-
-Non-chunk-0 in v2 uses same 25-byte format as v1 (no hash needed).
-
-#### Content Hash (v0.5.25+)
-
-The content hash enables **smart sync optimization**:
-
-1. Fetch chunk 0 only (metadata)
-2. Compare SHA3-256 hash with locally cached hash
-3. If match → skip (data unchanged)
-4. If mismatch → fetch all chunks
-
-**Why SHA3-256 of original data?**
-- Hash computed BEFORE compression ensures content identity
-- Same data = same hash, regardless of compression timing
-- 32 bytes is compact yet collision-resistant
-
-#### DHT Version Consistency (v0.6.76+)
-
-**Problem**: When publishing multi-chunk data, chunks are written sequentially (1, 2, ..., N-1, 0). Different DHT nodes may cache different versions of chunks. A fetch may retrieve chunk 0 from version 2 but chunk 1 from version 1, mixing ZSTD compressed streams and causing decompression failures.
-
-**Solution**: Content hash verification after successful ZSTD decompression:
-1. Decompress reassembled chunks
-2. Compute SHA3-256 of decompressed data
-3. Compare with content hash from chunk 0 header
-4. If mismatch → return `DHT_CHUNK_ERR_HASH_MISMATCH`
-
-**Caller handling**:
-- On `DHT_CHUNK_ERR_HASH_MISMATCH`, retry the fetch after a brief delay (e.g., 1 second)
-- DHT nodes eventually sync to consistent versions
-- Up to 2 retries is typically sufficient
-
-#### Backward Compatibility
-
-| Client | Reading v1 | Reading v2 | Writing |
-|--------|------------|------------|---------|
-| Old (v1) | ✅ Works | ❌ Rejects | v1 |
-| New (v2) | ✅ Works | ✅ Works | v2 |
-
-After 7-day TTL, all DHT data becomes v2 as old clients update.
-
-#### Key Functions
-
-**Thread Safety (v0.6.79+):** `dht_chunked_publish()` uses per-key locking to prevent
-concurrent publishes to the same `base_key` from interleaving chunks. Concurrent
-publishes to different keys run in parallel normally.
-
-```c
-// Publish data with chunking + compression + content hash
-int dht_chunked_publish(dht_context_t *ctx, const char *base_key,
-                        const uint8_t *data, size_t data_len, uint32_t ttl);
-
-// Fetch and decompress data
-int dht_chunked_fetch(dht_context_t *ctx, const char *base_key,
-                      uint8_t **data_out, size_t *data_len_out);
-
-// Fetch metadata only (for hash comparison, v0.5.25+)
-int dht_chunked_fetch_metadata(dht_context_t *ctx, const char *base_key,
-                               uint8_t hash_out[32], uint32_t *original_size_out,
-                               uint32_t *total_chunks_out, bool *is_v2_out);
-
-// Batch fetch multiple keys in parallel
-int dht_chunked_fetch_batch(dht_context_t *ctx, const char **base_keys,
-                            size_t key_count, dht_chunked_batch_result_t **results_out);
-```
-
-#### Constants
-
-| Constant | Value | Description |
-|----------|-------|-------------|
-| `DHT_CHUNK_MAGIC` | 0x444E4143 | "DNAC" in hex |
-| `DHT_CHUNK_VERSION` | 2 | Current write version |
-| `DHT_CHUNK_HEADER_SIZE_V1` | 25 | v1 header size |
-| `DHT_CHUNK_HEADER_SIZE_V2` | 57 | v2 chunk 0 header size |
-| `DHT_CHUNK_HASH_SIZE` | 32 | SHA3-256 output size |
-| `DHT_CHUNK_DATA_SIZE` | 44975 | Payload per chunk |
-
-#### Error Codes (`dht_chunk_error_t`)
-
-| Code | Value | Description |
-|------|-------|-------------|
-| `DHT_CHUNK_OK` | 0 | Success |
-| `DHT_CHUNK_ERR_NULL_PARAM` | -1 | NULL parameter |
-| `DHT_CHUNK_ERR_COMPRESS` | -2 | Compression failed |
-| `DHT_CHUNK_ERR_DECOMPRESS` | -3 | Decompression failed |
-| `DHT_CHUNK_ERR_DHT_PUT` | -4 | DHT put failed |
-| `DHT_CHUNK_ERR_DHT_GET` | -5 | DHT get failed |
-| `DHT_CHUNK_ERR_INVALID_FORMAT` | -6 | Invalid chunk format |
-| `DHT_CHUNK_ERR_CHECKSUM` | -7 | CRC32 checksum mismatch |
-| `DHT_CHUNK_ERR_INCOMPLETE` | -8 | Missing chunks |
-| `DHT_CHUNK_ERR_TIMEOUT` | -9 | Fetch timeout |
-| `DHT_CHUNK_ERR_ALLOC` | -10 | Memory allocation failed |
-| `DHT_CHUNK_ERR_NOT_CONNECTED` | -11 | DHT not connected |
-| `DHT_CHUNK_ERR_HASH_MISMATCH` | -12 | Content hash mismatch (DHT version inconsistency - caller should retry) |
-
----
-
-### 5.7 dht_publish_queue.h/c (Async Publish Queue - v0.6.80+)
-
-Non-blocking publish queue for DHT chunked storage operations. Prevents UI freezes
-during profile, contact list, and group list publishes (which can block 30-60s).
-
-#### Problem Solved
-
-`dht_chunked_publish()` blocks for 30-60 seconds per operation. This freezes UI
-when updating profile, syncing contacts, or publishing group changes. The publish
-queue provides a non-blocking alternative.
-
-#### Architecture
-
-```
-Callers (Profile, Contacts, Groups, etc.)
-         │
-         ▼ dht_chunked_publish_async()
-┌─────────────────────────────────────────┐
-│         DHT Publish Queue               │
-│                                         │
-│  FIFO Queue (linked list)               │
-│  ┌─────┐ → ┌─────┐ → ┌─────┐ → ...     │
-│  │item1│   │item2│   │item3│           │
-│  └─────┘   └─────┘   └─────┘           │
-│                                         │
-│  Single Worker Thread                   │
-│  1. Dequeue item                        │
-│  2. dht_chunked_publish() (sync)        │
-│  3. If fail → retry (max 3x, backoff)   │
-│  4. Invoke callback                     │
-│  5. Next item                           │
-└─────────────────────────────────────────┘
-         │
-         ▼ dht_chunked_publish() (sync)
-      DHT Network
-```
-
-#### Key Features
-
-- **Non-blocking**: Callers return immediately
-- **Automatic retry**: 3 retries with exponential backoff (1s, 2s, 4s)
-- **Per-key serialization**: Relies on existing per-key mutex in `dht_chunked_publish()`
-- **Callback notification**: Optional callback when complete (success/fail/cancelled)
-- **Queue limit**: 256 items max to prevent unbounded memory growth
-- **Fire-and-forget**: Callback can be NULL if caller doesn't need notification
-
-#### API
-
-```c
-// Lifecycle
-dht_publish_queue_t* dht_publish_queue_create(void);
-void dht_publish_queue_destroy(dht_publish_queue_t *queue);
-
-// Submit (non-blocking, data copied internally)
-dht_publish_request_id_t dht_chunked_publish_async(
-    dht_publish_queue_t *queue,
-    dht_context_t *ctx,
-    const char *base_key,
-    const uint8_t *data,
-    size_t data_len,
-    uint32_t ttl_seconds,
-    dht_publish_callback_t callback,  // NULL = fire-and-forget
-    void *user_data
-);
-
-// Control
-int dht_publish_queue_cancel(dht_publish_queue_t *queue, dht_publish_request_id_t id);
-size_t dht_publish_queue_pending_count(dht_publish_queue_t *queue);
-bool dht_publish_queue_is_running(dht_publish_queue_t *queue);
-```
-
-#### Callback
-
-```c
-typedef void (*dht_publish_callback_t)(
-    dht_publish_request_id_t request_id,
-    const char *base_key,
-    int status,      // DHT_PUBLISH_STATUS_OK / _FAILED / _CANCELLED
-    int error_code,  // DHT_CHUNK_* error (only if status != OK)
-    void *user_data
-);
-```
-
-#### Status Codes
-
-| Code | Value | Description |
-|------|-------|-------------|
-| `DHT_PUBLISH_STATUS_OK` | 0 | Publish completed successfully |
-| `DHT_PUBLISH_STATUS_FAILED` | -1 | Failed after all retries |
-| `DHT_PUBLISH_STATUS_CANCELLED` | -2 | Cancelled before completion |
-| `DHT_PUBLISH_STATUS_QUEUE_FULL` | -3 | Queue at capacity (256 items) |
-
-#### Engine Events
-
-- `DNA_EVENT_DHT_PUBLISH_COMPLETE` - Fired when async publish succeeds
-- `DNA_EVENT_DHT_PUBLISH_FAILED` - Fired when async publish fails after retries
+> **Both subsystems were deleted from the tree.** `dht/shared/dht_chunked.{c,h}` and
+> `dht/shared/dht_publish_queue.{c,h}` no longer exist and nothing calls
+> `dht_chunked_*` or `dht_publish_queue_*` — Nodus stores values up to 4MB natively
+> (`NODUS_MAX_VALUE_SIZE`), so the client-side chunking + async-publish-queue layer
+> became dead and was removed. *(The two full API sections that used to sit here
+> were deleted 2026-08-27 by the doc-vs-code audit. `DHT_STORAGE_MODEL.md` §1 —
+> "no chunked storage layer" — is the current model.)*
 
 ---
 
@@ -1416,7 +1172,6 @@ await engine.blockUser(fingerprint, "spam");
 | `dht/client/` | `dht_message_backup.c`, `dht_message_backup.h` | Message backup/restore |
 | `dht/shared/` | `dht_offline_queue.c`, `dht_offline_queue.h` | Offline messaging |
 | `dht/shared/` | `dht_dm_outbox.c`, `dht_dm_outbox.h` | Daily bucket DM outbox |
-| `dht/shared/` | `dht_publish_queue.c`, `dht_publish_queue.h` | Async publish queue |
 | `dht/shared/` | `dht_groups.c`, `dht_groups.h` | Group metadata |
 | `dht/shared/` | `dht_profile.c`, `dht_profile.h` | User profiles |
 | `dht/shared/` | `dht_contact_request.c`, `dht_contact_request.h` | Contact request DHT operations |

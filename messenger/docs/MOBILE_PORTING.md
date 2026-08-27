@@ -1,7 +1,12 @@
 # DNA Connect Mobile Porting Guide
 
-**Last Updated:** 2026-04-24
-**Status:** Android SDK Complete; Flutter UI shipping on Android (v1.0.0-rc235+)
+**Last Updated:** 2026-08-27 (status pass)
+**Status:** Android live via Flutter + dart:ffi (v1.0.0-rc241). ⚠ The "Java SDK
+(io.cpunk.dna.DNAEngine)" layer described below **does not exist in the tree** —
+the shipped Android path is Flutter `dart:ffi` → `libdna.so`, plus a minimal
+Kotlin bridge (`DnaKeyStore.kt`, `MainActivity.kt`) and `jni/dna_jni.c` (TEE
+keystore bridge, 29 JNI exports — not a full API SDK). Treat the Java-SDK
+sections below as the abandoned pre-Flutter plan.
 **Target:** Android first, iOS later
 
 ---
