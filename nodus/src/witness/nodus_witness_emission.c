@@ -6,13 +6,26 @@
 
 #include "witness/nodus_witness_emission.h"
 
-uint64_t nodus_emission_per_block(uint64_t block_height) {
-    uint64_t year_index = block_height / DNAC_BLOCKS_PER_YEAR;
+uint64_t nodus_emission_per_block_ex(uint64_t block_height,
+                                     uint64_t blocks_per_year,
+                                     uint64_t decimal_unit) {
+    /* Not a schedule — and the division below would trap. The load path
+     * refuses a zero-valued committed row, so reaching this is either the
+     * legacy default (impossible: the macro is 6307200) or a caller bug. */
+    if (blocks_per_year == 0) return 0;
+    uint64_t year_index = block_height / blocks_per_year;
     if (year_index >= DNAC_HALVING_YEARS) {
-        return DNAC_EMISSION_FLOOR;
+        return 1ULL * decimal_unit;             /* perpetual floor        */
     }
     /* 32 >> year_index: 32, 16, 8, 4, 2. */
-    return (32ULL >> year_index) * DNAC_DECIMAL_UNIT;
+    return (32ULL >> year_index) * decimal_unit;
+}
+
+uint64_t nodus_emission_per_block(uint64_t block_height) {
+    /* The compiled-constant instance of the SAME curve — one body, so the
+     * parameterized and default answers cannot drift apart. */
+    return nodus_emission_per_block_ex(block_height, DNAC_BLOCKS_PER_YEAR,
+                                       DNAC_DECIMAL_UNIT);
 }
 
 uint64_t nodus_emission_total_minted(uint64_t block_height,

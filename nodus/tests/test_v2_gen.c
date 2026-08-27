@@ -37,6 +37,9 @@
 #include "witness/nodus_witness_v2_apply.h"
 #include "witness/nodus_witness_v2_bundle.h"
 #include "witness/nodus_witness_v2_claims.h"
+#include "witness/nodus_witness_emission.h"  /* DNAC_BLOCKS_PER_YEAR,
+                                              * DNAC_DECIMAL_UNIT (2C)   */
+#include "witness/nodus_witness_v2_econ.h"   /* the committed econ band  */
 #include "witness/nodus_witness_v2_gen.h"
 #include "witness/nodus_witness_v2_schema.h"
 #include "nodus/nodus_chain_config.h"
@@ -209,6 +212,14 @@ static int cfg_make(cfgbox_t *b, uint8_t salt, uint32_t n_alloc,
     c->config_version     = NODUS_V2_GEN_CONFIG_VERSION;
     c->total_supply_raw   = DNAC_DEFAULT_TOTAL_SUPPLY;
     c->epoch_length       = (uint64_t)DNAC_EPOCH_LENGTH;
+    /* Block 2C — the economic parameters. The three schedule constants
+     * MUST equal the compiled ones or the builder refuses; the inflation
+     * start is free, and 1 reproduces the pre-2C behaviour exactly (the
+     * old builder could not express it, so every chain it derived took
+     * the emission gate's 1ULL default). */
+    c->blocks_per_year       = (uint64_t)DNAC_BLOCKS_PER_YEAR;
+    c->decimal_unit          = (uint64_t)DNAC_DECIMAL_UNIT;
+    c->inflation_start_block = 1ULL;
     c->claim_start_height = 0;
     c->claim_end_height   = UINT64_MAX;
     c->n_validators       = N_VAL;
@@ -375,9 +386,14 @@ static int test_happy_path(void) {
                     "WHERE key='active_count'") == (int64_t)N_VAL,
           "active_count == 7");
     CHECK(q1(w->db, "SELECT COUNT(*) FROM delegations") == 0 &&
-          q1(w->db, "SELECT COUNT(*) FROM epoch_state") == 0 &&
-          q1(w->db, "SELECT COUNT(*) FROM chain_config_history") == 0,
-          "delegations / epoch_state / chain_config_history are EMPTY");
+          q1(w->db, "SELECT COUNT(*) FROM epoch_state") == 0,
+          "delegations / epoch_state are EMPTY");
+    /* Block 2C — chain_config_history is NO LONGER empty: it carries the
+     * four committed economic parameters and NOTHING else. The exact
+     * count is the assertion, so a fifth row (a future create_chain_db
+     * seeding something of its own) fails here. */
+    CHECK(q1(w->db, "SELECT COUNT(*) FROM chain_config_history") == 4,
+          "chain_config_history holds exactly the 4 economic parameters");
     CHECK(q1(w->db, "SELECT COUNT(*) FROM validator_set_snapshots") == 2,
           "epoch 0 and epoch E snapshots are committed");
 
@@ -913,6 +929,29 @@ static int test_defect_L1F1(void) {
           "the joiner's active_count equals the producer's 7");
     CHECK(q1(j->db, "SELECT COUNT(*) FROM validators") == (int64_t)N_VAL,
           "and it carries every validator row");
+
+    /* Block 2C — THE JOINER HOLE, closed. A joiner never runs the
+     * builder, so the config→source_commit binding cannot protect it:
+     * before 2C a node built with a different DNAC_BLOCKS_PER_YEAR joined
+     * THIS chain cleanly and then minted a different amount, with nothing
+     * visible on the wire. Only a READABLE COMMITTED value catches that,
+     * and it only works if the band travels in the bundle.
+     * MUTANT KILLED: drop "chain_config_history" from BUNDLE_TABLES
+     * (nodus_witness_v2_bundle.c:47). */
+    {
+        nodus_v2_econ_params_t jp;
+        CHECK(nodus_witness_v2_econ_params_load(j, &jp) == 0 && jp.present,
+              "the joiner adopted the committed economic band");
+        CHECK(jp.blocks_per_year == (uint64_t)DNAC_BLOCKS_PER_YEAR &&
+              jp.decimal_unit    == (uint64_t)DNAC_DECIMAL_UNIT &&
+              jp.epoch_length    == (uint64_t)DNAC_EPOCH_LENGTH,
+              "carrying the PRODUCER's economic values, not its own "
+              "compiled defaults");
+        CHECK(nodus_chain_config_get_u64(
+                  j, (uint8_t)DNAC_CFG_INFLATION_START_BLOCK, 0,
+                  UINT64_MAX) == 1ULL,
+              "and the inflation start arrived as committed state");
+    }
     CHECK(q1(j->db, "SELECT COUNT(*) FROM v2_blocks WHERE global_height=0")
               == 1, "the joiner derived a genesis");
 

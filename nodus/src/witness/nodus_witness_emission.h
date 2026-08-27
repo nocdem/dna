@@ -67,6 +67,37 @@ extern "C" {
 uint64_t nodus_emission_per_block(uint64_t block_height);
 
 /**
+ * The same schedule, evaluated against EXPLICIT parameters instead of the
+ * compiled DNAC_BLOCKS_PER_YEAR / DNAC_DECIMAL_UNIT.
+ *
+ * O15J Faz 2 Block 2C — the reason this exists. Both macros are
+ * `#ifndef`-guarded, so `-D` at compile time changes how much a node
+ * mints, and the Stage F halving test expects exactly such a build:
+ * it requires a binary carrying -DDNAC_BLOCKS_PER_YEAR=<BY> and SKIPs
+ * (exit 99) when the value is not declared
+ * (nodus/tests/integration/stagef/tests/test_halving_boundaries.sh:37,
+ * :57-65). The override is operator-supplied, not a fixed constant.
+ * On a PURE-V2 chain those two values are committed at genesis
+ * (nodus_chain_config.h's reserved econ band) and
+ * nodus_witness_v2_emission_apply feeds the COMMITTED values in here, so
+ * the chain's own genesis decides the curve rather than whichever binary
+ * happens to be running. `nodus_emission_per_block` above is exactly this
+ * function applied to the compiled constants, and remains the entry point
+ * for the legacy lane and for chains that committed nothing.
+ *
+ * `blocks_per_year == 0` returns 0: it is not a schedule, and dividing by
+ * it would trap. Callers must treat a 0 answer at a height that should
+ * mint as a fault, never as "this height mints nothing" — which is why
+ * the load path refuses a zero-valued committed row before it ever gets
+ * here.
+ *
+ * Pure and deterministic in both parameters.
+ */
+uint64_t nodus_emission_per_block_ex(uint64_t block_height,
+                                     uint64_t blocks_per_year,
+                                     uint64_t decimal_unit);
+
+/**
  * Cumulative DNAC minted, in raw units, by summing
  * nodus_emission_per_block(h) over every minted height h in
  * [start_block, block_height] inclusive — the EXACT total the live

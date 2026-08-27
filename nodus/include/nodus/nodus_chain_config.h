@@ -46,6 +46,54 @@ typedef struct nodus_witness nodus_witness_t;
  *     ON chain_config_history (param_id, effective_block);
  * ========================================================================== */
 
+/* ============================================================================
+ * RESERVED param_id BAND — GENESIS ECONOMICS (O15J Faz 2 Block 2C)
+ *
+ * ids 1..DNAC_CFG_PARAM_MAX_ID are the GOVERNANCE space: a committee can
+ * vote them. The band below is the opposite — values written ONCE, by the
+ * pure-V2 genesis builder, that no vote may ever change.
+ *
+ * WHY THIS TABLE. These parameters must be (a) readable by the runtime,
+ * (b) committed into a state root, and (c) carried to a joiner.
+ * chain_config_history is the only store in the tree that is all three:
+ * nodus_chain_config_compute_root scans it WITHOUT a param_id filter and
+ * its root is a SYSTEM leg (nodus_witness_roots_v2.c:266, :285), and
+ * nodus_witness_v2_bundle.c:47 replicates it to joiners.
+ *
+ * WHY GOVERNANCE CANNOT REACH IT. nodus_chain_config_scalar_rules rejects
+ * every id outside 1..CC_PARAM_MAX_ID and its switch has no case for these
+ * (nodus_witness_chain_config.c:497, :515-516), so no CHAIN_CONFIG tx can
+ * insert or replace a band row on either lane. That preserves the property
+ * nodus_witness_emission.h states: a committee vote cannot alter the
+ * emission schedule.
+ *
+ * WHY 200+. The band must never collide with a future
+ * DNAC_CFG_* allocation, which grows upward from 1 (currently 4). Starting
+ * at 200 leaves 195 free governance ids; a future allocation that reaches
+ * this band collides with THIS COMMENT rather than silently overwriting a
+ * committed economic parameter. The ids fit uint8_t, which is what the
+ * merkle leaf preimage stores (nodus_witness_chain_config.c:387).
+ *
+ * NOT cached: cc_cache_warm_from_db skips every id >= CC_PARAM_SLOTS
+ * (nodus_witness_chain_config.c:195) and nodus_chain_config_get_u64
+ * returns default_value for them (:245). Band rows are therefore read by
+ * their own loader, nodus_witness_v2_econ_params_load.
+ * ========================================================================== */
+
+/** Halving period in blocks — the committed DNAC_BLOCKS_PER_YEAR. */
+#define NODUS_CC_ECON_BLOCKS_PER_YEAR   200u
+/** Raw base units per 1 DNAC — the committed DNAC_DECIMAL_UNIT. */
+#define NODUS_CC_ECON_DECIMAL_UNIT      201u
+/** Blocks per epoch — the committed DNAC_EPOCH_LENGTH. */
+#define NODUS_CC_ECON_EPOCH_LENGTH      202u
+
+/** Inclusive band bounds, for range assertions. */
+#define NODUS_CC_ECON_PARAM_MIN         NODUS_CC_ECON_BLOCKS_PER_YEAR
+#define NODUS_CC_ECON_PARAM_MAX         NODUS_CC_ECON_EPOCH_LENGTH
+
+/** Every band row is committed at genesis, so its effective_block is 0. */
+#define NODUS_CC_ECON_EFFECTIVE_BLOCK   0ULL
+
 /**
  * Idempotent CREATE TABLE migration. Uses IF NOT EXISTS so a second run on
  * an already-migrated DB is a no-op (CC-OPS-001 mitigation). Aborts on

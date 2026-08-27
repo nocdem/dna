@@ -73,6 +73,7 @@
 #include "crypto/utils/qgp_log.h"
 #include "crypto/utils/qgp_u128.h"
 
+#include <sqlite3.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -131,6 +132,128 @@ int nodus_witness_v2_settlement_nullifier(const uint8_t tx_hash[64],
 }
 
 /* ══════════════════════════════════════════════════════════════════════
+ * PART 0 — the committed economic parameters (O15J Faz 2 Block 2C)
+ *
+ * Contract, the defect and the binding argument: the header.
+ * ════════════════════════════════════════════════════════════════════ */
+
+int nodus_witness_v2_econ_params_load(nodus_witness_t *w,
+                                      nodus_v2_econ_params_t *out) {
+    if (!out) return -1;
+    memset(out, 0, sizeof(*out));
+    if (!w || !w->db) return -1;
+
+    /* ONE statement over the reserved band. The ORDER BY is explicit and
+     * over a unique key (the band ids are distinct and effective_block is
+     * pinned), so the walk below is identical on every node — the
+     * unordered-iteration rule applies to a read that decides a mint.
+     *
+     * NOT nodus_chain_config_get_u64: that function bounds param_id at
+     * CC_PARAM_SLOTS and answers `default_value` for every band id
+     * (nodus_witness_chain_config.c:245), which would report a committed
+     * row as absent. The warm cache skips the band for the same reason
+     * (:195), so there is nothing to invalidate here either. */
+    static const char *const sql =
+        "SELECT param_id, new_value FROM chain_config_history "
+        "WHERE param_id >= ?1 AND param_id <= ?2 AND effective_block = ?3 "
+        "ORDER BY param_id ASC";
+
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db, sql, -1, &st, NULL) != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "econ params: prepare failed: %s",
+                      sqlite3_errmsg(w->db));
+        return -1;
+    }
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)NODUS_CC_ECON_PARAM_MIN);
+    sqlite3_bind_int64(st, 2, (sqlite3_int64)NODUS_CC_ECON_PARAM_MAX);
+    sqlite3_bind_int64(st, 3, (sqlite3_int64)NODUS_CC_ECON_EFFECTIVE_BLOCK);
+
+    uint64_t got[NODUS_CC_ECON_PARAM_MAX - NODUS_CC_ECON_PARAM_MIN + 1];
+    int      seen[NODUS_CC_ECON_PARAM_MAX - NODUS_CC_ECON_PARAM_MIN + 1];
+    memset(got, 0, sizeof(got));
+    memset(seen, 0, sizeof(seen));
+    /* rc is seeded rather than left indeterminate: the loop below always
+     * assigns it first, but a -Wmaybe-uninitialized build must not have
+     * to prove that, and this tree ships warning-free. */
+    int n = 0, bad = 0, rc = SQLITE_DONE;
+
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        int          pid = sqlite3_column_int(st, 0);
+        sqlite3_int64 nv = sqlite3_column_int64(st, 1);
+        if (pid < (int)NODUS_CC_ECON_PARAM_MIN ||
+            pid > (int)NODUS_CC_ECON_PARAM_MAX) { bad = 1; break; }
+        /* A stored-negative or zero economic parameter is a corrupt row,
+         * never a value: 0 blocks_per_year is not a schedule and 0
+         * decimal_unit mints nothing forever. The same rule the CORE row
+         * reader applies (nodus_witness_rt_native.c:3757-3760). */
+        if (nv <= 0) { bad = 1; break; }
+        int idx = pid - (int)NODUS_CC_ECON_PARAM_MIN;
+        if (seen[idx]) { bad = 1; break; }     /* PK makes this impossible */
+        seen[idx] = 1;
+        got[idx]  = (uint64_t)nv;
+        n++;
+    }
+    sqlite3_finalize(st);
+
+    if (rc != SQLITE_DONE && rc != SQLITE_ROW) {
+        QGP_LOG_ERROR(LOG_TAG, "econ params: scan aborted mid-stream "
+                      "(rc=%d) — a read fault is never 'no band'", rc);
+        return -1;
+    }
+    if (bad) {
+        QGP_LOG_ERROR(LOG_TAG, "%s", "econ params: the committed band holds "
+                      "a malformed row — refusing");
+        return -1;
+    }
+
+    /* ALL or NOTHING. A partial band is a chain whose economics are half
+     * committed and half compiled; there is no answer to give for it. */
+    if (n == 0) {
+        out->present = 0;
+        return 0;                  /* pre-band chain: compiled constants */
+    }
+    if (n != (int)(NODUS_CC_ECON_PARAM_MAX - NODUS_CC_ECON_PARAM_MIN + 1)) {
+        QGP_LOG_ERROR(LOG_TAG, "econ params: the committed band is PARTIAL "
+                      "(%d of %d rows) — this chain has no defined "
+                      "economics", n,
+                      (int)(NODUS_CC_ECON_PARAM_MAX -
+                            NODUS_CC_ECON_PARAM_MIN + 1));
+        return -1;
+    }
+
+    out->blocks_per_year =
+        got[NODUS_CC_ECON_BLOCKS_PER_YEAR - NODUS_CC_ECON_PARAM_MIN];
+    out->decimal_unit =
+        got[NODUS_CC_ECON_DECIMAL_UNIT    - NODUS_CC_ECON_PARAM_MIN];
+    out->epoch_length =
+        got[NODUS_CC_ECON_EPOCH_LENGTH    - NODUS_CC_ECON_PARAM_MIN];
+
+    /* THE BUILD-IDENTITY REFUSAL. Detection, not parameterisation — see
+     * the header for why epoch_length cannot simply be used. Everything
+     * downstream of this point that keys on DNAC_EPOCH_LENGTH (this
+     * module's epoch key at the mint, and its liveness bar at settlement)
+     * is covered by this one check: emission runs on EVERY block, so a
+     * node whose epoch length disagrees with the chain's cannot reach a
+     * settlement at all. */
+    if (out->epoch_length != (uint64_t)DNAC_EPOCH_LENGTH) {
+        QGP_LOG_ERROR(LOG_TAG,
+            "econ params: this chain committed epoch_length %llu at "
+            "genesis, this build compiled %llu — refusing to run rather "
+            "than keying epochs differently from every peer",
+            (unsigned long long)out->epoch_length,
+            (unsigned long long)DNAC_EPOCH_LENGTH);
+        /* Zeroed again so the struct's "valid only when present" contract
+         * is literally true on every -1 exit: a caller that ignores the
+         * return code finds nothing usable rather than a plausible value. */
+        memset(out, 0, sizeof(*out));
+        return -1;
+    }
+
+    out->present = 1;
+    return 0;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
  * PART 1 — per-block emission (bft.c:3638-3720)
  * ════════════════════════════════════════════════════════════════════ */
 
@@ -140,17 +263,53 @@ int nodus_witness_v2_emission_apply(nodus_witness_t *w,
     if (!w || !w->db || !minted_out) return -2;
     *minted_out = 0;
 
+    /* ── THE COMMITTED ECONOMICS, LOADED FIRST (Block 2C) ─────────────
+     * DELIBERATELY ABOVE THE ZERO-MINT EARLY RETURN. Placed below it, the
+     * epoch_length build-identity refusal would never run on a chain with
+     * inflation switched off — the enforcement point would silently
+     * vanish for exactly one class of chain, which is the shape of defect
+     * this task exists to close. Emission is the per-BLOCK hook, so
+     * loading here means every block on a pure-V2 chain validates the
+     * build against the chain's own genesis.
+     *
+     * A FAULT IS NEVER A FALLBACK: -1 becomes -2 and the block fails. An
+     * ABSENT band (present == 0) is a different, legitimate answer — every
+     * chain built before this change, and every seam successor, has no
+     * band and keeps the compiled constants, byte-identically. */
+    nodus_v2_econ_params_t econ;
+    if (nodus_witness_v2_econ_params_load(w, &econ) != 0) {
+        QGP_LOG_ERROR(LOG_TAG,
+            "emission at %llu: the committed economic parameters could not "
+            "be established — refusing to mint",
+            (unsigned long long)global_height);
+        return -2;
+    }
+    const uint64_t by = econ.present ? econ.blocks_per_year
+                                     : (uint64_t)DNAC_BLOCKS_PER_YEAR;
+    const uint64_t du = econ.present ? econ.decimal_unit
+                                     : (uint64_t)DNAC_DECIMAL_UNIT;
+
     /* THE GATE, verbatim (bft.c:3653-3664). The 1ULL default is the
      * source's and is load-bearing: an override this node cannot fetch
      * must not turn emission off HERE while it stays on everywhere else.
      * A pre-wipe chain that really wants emission off stores an explicit
-     * 0, which this expression honours. */
+     * 0, which this expression honours.
+     *
+     * Block 2C — THE DEFAULT IS NOW THE FALLBACK, NOT THE RULE. A pure-V2
+     * chain commits its inflation start AT GENESIS (the builder seeds
+     * DNAC_CFG_INFLATION_START_BLOCK at effective_block 0), so this read
+     * returns the chain's own committed value and the 1ULL below is
+     * reached only by a chain that committed nothing — which is every
+     * chain built before this change, and is exactly the behaviour those
+     * chains already had. Before the builder could seed it, the row was
+     * unreachable at genesis and EVERY derived chain minted from height 1
+     * with no way to configure it. */
     uint64_t inflation_start =
         nodus_chain_config_get_u64(w, DNAC_CFG_INFLATION_START_BLOCK,
                                    global_height, 1ULL);
     uint64_t emission = 0;
     if (inflation_start != 0 && global_height >= inflation_start)
-        emission = nodus_emission_per_block(global_height);
+        emission = nodus_emission_per_block_ex(global_height, by, du);
     if (emission == 0) return 0;
 
     /* ── FAIL-CLOSED PRE-CHECK (divergence 2, and it has teeth) ───────
@@ -183,7 +342,12 @@ int nodus_witness_v2_emission_apply(nodus_witness_t *w,
         return -2;
     }
 
-    /* The canonical epoch key: floor(h / E) * E (bft.c:3675-3678). */
+    /* The canonical epoch key: floor(h / E) * E (bft.c:3675-3678).
+     *
+     * Block 2C — the macro is SAFE HERE because the load above already
+     * refused if the chain committed a different epoch_length. That check
+     * is the reason this line may keep reading DNAC_EPOCH_LENGTH: it is
+     * proven equal to the committed value, not merely assumed to be. */
     uint64_t epoch_start = (global_height / (uint64_t)DNAC_EPOCH_LENGTH) *
                            (uint64_t)DNAC_EPOCH_LENGTH;
 
@@ -590,6 +754,13 @@ int nodus_witness_v2_settlement_apply(nodus_witness_t *w,
                 goto done;
             }
             if (vrc == 0) {
+                /* Block 2C — DNAC_EPOCH_LENGTH is proven equal to the
+                 * chain's COMMITTED epoch_length before this point:
+                 * nodus_witness_v2_emission_apply loads and checks the
+                 * band on every block, and a settlement is only ever
+                 * reached by a node that has been minting. A build that
+                 * disagreed halted long before it could compute a
+                 * liveness bar from the wrong denominator. */
                 uint64_t lhs = cur.signed_blocks_this_epoch *
                                (uint64_t)committee_count * 10000ULL;
                 uint64_t rhs = (uint64_t)DNAC_EPOCH_LENGTH *

@@ -86,14 +86,94 @@ extern "C" {
 #endif
 
 /**
+ * The economic parameters a PURE-V2 chain committed at its own genesis.
+ *
+ * ── THE DEFECT THIS CLOSES (O15J Faz 2 Block 2C) ────────────────────
+ * DNAC_BLOCKS_PER_YEAR, DNAC_DECIMAL_UNIT (nodus_witness_emission.h) and
+ * DNAC_EPOCH_LENGTH (dnac.h) are all `#ifndef`-guarded, so `-D` at
+ * compile time changes how much a node mints and where its epoch
+ * boundaries fall. Before this change none of them appeared in any
+ * committed field: a differently-built node derived the SAME chain id,
+ * joined cleanly, and then credited a different amount at some later
+ * height — a CORE root divergence with nothing visible on the wire.
+ *
+ * The pure-V2 builder now commits all three, at genesis, into the
+ * reserved chain_config_history econ band (nodus_chain_config.h). Two
+ * independent bindings result, and they are NOT the same property:
+ *   1. the values are hashed into `source_commit`, which the manifest
+ *      carries into dna_bh2_genesis_block_id (nodus_witness_v2_apply.c
+ *      :865) — so a config change is a DIFFERENT CHAIN ID;
+ *   2. the values are committed ROWS, so they reach chain_config_root →
+ *      SYSTEM root (nodus_witness_roots_v2.c:266, :285), they travel to
+ *      joiners in the genesis bundle (nodus_witness_v2_bundle.c:47), and
+ *      — the point — the runtime can READ THEM BACK. Binding alone would
+ *      be decorative: a joiner never runs the builder, so only a readable
+ *      committed value can catch a mismatched build that arrived by
+ *      syncing rather than by deriving.
+ *
+ * `present == 0` is the honest answer for every chain built before this
+ * change (and for every seam successor, which has no operator config to
+ * express these values): the compiled constants stand, and behaviour is
+ * byte-identical to what it was. A READ FAULT is never `present == 0`.
+ */
+typedef struct {
+    int      present;          /* 1 the chain committed a band; 0 it did
+                                * not (compiled constants apply)         */
+    uint64_t blocks_per_year;  /* valid only when present                */
+    uint64_t decimal_unit;     /* valid only when present                */
+    uint64_t epoch_length;     /* valid only when present                */
+} nodus_v2_econ_params_t;
+
+/**
+ * Load the committed econ band, and VALIDATE it against this build.
+ *
+ * Three-valued by construction — the shape nodus/CLAUDE.md demands of a
+ * read whose answer reaches consensus:
+ *   0  either all three rows are present and usable (`out->present == 1`)
+ *      or NONE of them is (`out->present == 0`, compiled constants apply)
+ *  -1  a fault: the table is unreadable, the band is PARTIAL (some rows
+ *      present, some absent — a chain in that state has no defined
+ *      economics), a committed value is 0 or stored negative, or the
+ *      committed epoch_length disagrees with the compiled
+ *      DNAC_EPOCH_LENGTH.
+ *
+ * WHY epoch_length IS CHECKED RATHER THAN USED. blocks_per_year and
+ * decimal_unit have exactly one production consumer on this lane
+ * (nodus_witness_v2_emission_apply), so the committed value can simply be
+ * USED. DNAC_EPOCH_LENGTH cannot: it is read as a macro by the vset
+ * snapshot builder (nodus_witness_vset.c:721-722), the committee
+ * selector, the graduation boundary and this module's own settlement
+ * arithmetic. Rewiring every one of those is a different change. Until
+ * then the only honest guarantee is REFUSAL — a build whose epoch length
+ * disagrees with the chain's committed one stops, rather than quietly
+ * keying its epochs differently from its peers. That is DETECTION, and it
+ * is labelled as such rather than sold as parameterisation.
+ *
+ * Pure read; opens no transaction and writes nothing.
+ *
+ * @param w    witness handle (open DB).
+ * @param out  required; always fully initialised, including on -1.
+ * @return 0 / -1 (the reason is logged).
+ */
+int nodus_witness_v2_econ_params_load(nodus_witness_t *w,
+                                      nodus_v2_econ_params_t *out);
+
+/**
  * PER-BLOCK INFLATION EMISSION — the port of nodus_witness_bft.c
  * :3640-3700.
  *
- * Rule, verbatim:
+ * Rule, as IMPLEMENTED (the V1 rule with Block 2C's committed inputs —
+ * the two differ only in where the parameters come from, never in the
+ * arithmetic):
+ *   econ            = econ_params_load()        ← Block 2C, and a FAULT
+ *                                                 here fails the block
+ *   BY, DU          = econ.present ? the chain's COMMITTED values
+ *                                  : DNAC_BLOCKS_PER_YEAR /
+ *                                    DNAC_DECIMAL_UNIT
  *   inflation_start = chain_config(DNAC_CFG_INFLATION_START_BLOCK,
  *                                  at height, DEFAULT 1)
  *   emission = (inflation_start != 0 && height >= inflation_start)
- *              ? nodus_emission_per_block(height) : 0
+ *              ? nodus_emission_per_block_ex(height, BY, DU) : 0
  *   if emission > 0:
  *       supply_tracking.total_minted += emission        (bft.c:3666)
  *       epoch_state[floor(h/E)*E].epoch_pool_accum += emission
@@ -107,6 +187,12 @@ extern "C" {
  * leave it on for another. Two nodes disagreeing about whether a block
  * minted is a state_root split. bft.c:3652-3654 says exactly this, and
  * the value is copied from there rather than chosen here.
+ *
+ * Block 2C narrowed WHEN that default is reached without changing it: a
+ * chain this builder derives commits its own inflation start at genesis,
+ * so the lookup returns a committed row and the 1ULL is reached only by a
+ * chain that committed nothing — which is every chain built before 2C,
+ * and is exactly the behaviour those chains already had.
  *
  * TOUCHED-DOMAIN OBLIGATION OF THE CALLER. A non-zero mint moves
  * supply_tracking — a leg of the CORE state root

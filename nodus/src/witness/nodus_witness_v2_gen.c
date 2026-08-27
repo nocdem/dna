@@ -16,11 +16,16 @@
 
 #include "witness/nodus_witness_db.h"
 #include "witness/nodus_witness_domreg.h"
+#include "witness/nodus_witness_emission.h"  /* DNAC_BLOCKS_PER_YEAR,
+                                              * DNAC_DECIMAL_UNIT — the
+                                              * committed schedule (2C)  */
 #include "witness/nodus_witness_validator.h"
 #include "witness/nodus_witness_vset.h"
 #include "witness/nodus_witness_v2_apply.h"
 #include "witness/nodus_witness_v2_bundle.h"
 #include "witness/nodus_witness_v2_claims.h"
+#include "witness/nodus_witness_v2_econ.h"   /* the committed econ band
+                                              * read-back (Block 2C)     */
 #include "witness/nodus_witness_v2_epoch.h"
 #include "witness/nodus_witness_v2_schema.h"
 #include "nodus/nodus_chain_config.h"
@@ -66,6 +71,22 @@ _Static_assert((uint64_t)NODUS_V2_GEN_MAX_ALLOCS <= DNA_DIST_MAX_LEAVES,
                "the allocation bound must fit the snapshot-tree bound");
 _Static_assert(NODUS_V2_GEN_SRCCOMMIT_LEN == NODUS_T3_TX_HASH_LEN,
                "source_commit doubles as supply_tracking.last_tx_hash");
+/* Block 2C — the reserved econ band must stay OUTSIDE the governance
+ * param space, or a committee vote could rewrite an economic parameter
+ * that this builder committed once and for all. This is the compile-time
+ * half of the guarantee; the runtime half is
+ * nodus_chain_config_scalar_rules' allowlist. */
+_Static_assert(NODUS_CC_ECON_PARAM_MIN > DNAC_CFG_PARAM_MAX_ID,
+               "the reserved economic band overlaps the governance param "
+               "space — a vote could rewrite a genesis economic parameter");
+_Static_assert(NODUS_CC_ECON_PARAM_MAX <= 255u,
+               "a param_id must fit the uint8_t the chain_config merkle "
+               "leaf preimage stores");
+/* source_commit is bound into chain_config_history.tx_hash, which the
+ * schema declares NOT NULL and 64 bytes wide everywhere else. */
+_Static_assert(NODUS_V2_GEN_SRCCOMMIT_LEN == 64,
+               "the seeded econ rows bind source_commit as a 64-byte "
+               "tx_hash");
 
 /* ── little helpers ──────────────────────────────────────────────────── */
 
@@ -357,19 +378,60 @@ static int gen_plan_build(const nodus_v2_gen_config_t *cfg, gen_plan_t *p) {
         return -1;
     }
 
-    /* ── build identity (L1-F3 DETECTION, not removal) ────────────────
-     * DNAC_EPOCH_LENGTH is -D-overridable and reaches the genesis
-     * BlockID through the epoch-keyed vset snapshots
-     * (nodus_witness_vset.c:720-721), so a harness build and a
-     * production build reading the SAME config would otherwise derive
-     * two different chain ids in silence. The config commits the value
-     * it was written for; a build that disagrees refuses to derive. */
+    /* ── build identity: ALL THREE SCHEDULE CONSTANTS ─────────────────
+     * DNAC_EPOCH_LENGTH, DNAC_BLOCKS_PER_YEAR and DNAC_DECIMAL_UNIT are
+     * -D-overridable and every one of them reaches the state root —
+     * epoch_length through the epoch-keyed vset snapshots
+     * (nodus_witness_vset.c:720-721), the other two through the amount
+     * emission mints at every height. The config commits the values it
+     * was written for; a build that disagrees refuses to DERIVE.
+     *
+     * Block 2C — this is one of TWO guards, and they cover different
+     * cases. This one stops a mismatched build from producing a chain it
+     * would then mis-run. It does NOT protect a node that JOINED a chain
+     * it never derived; that case is caught at the first block by
+     * nodus_witness_v2_econ_params_load reading the committed rows
+     * gen_seed_state writes below. Neither guard subsumes the other, so
+     * both exist. (A single mutant removing either one therefore leaves
+     * the other standing — the tests use a COMPOUND mutant and say so.) */
     if (cfg->epoch_length != (uint64_t)DNAC_EPOCH_LENGTH) {
         QGP_LOG_ERROR(LOG_TAG, "config epoch_length %llu != the compiled "
                       "DNAC_EPOCH_LENGTH %llu — this build cannot derive "
                       "this config's chain (fail closed)",
                       (unsigned long long)cfg->epoch_length,
                       (unsigned long long)DNAC_EPOCH_LENGTH);
+        return -1;
+    }
+    if (cfg->blocks_per_year != (uint64_t)DNAC_BLOCKS_PER_YEAR) {
+        QGP_LOG_ERROR(LOG_TAG, "config blocks_per_year %llu != the compiled "
+                      "DNAC_BLOCKS_PER_YEAR %llu — this build cannot derive "
+                      "this config's chain (fail closed)",
+                      (unsigned long long)cfg->blocks_per_year,
+                      (unsigned long long)DNAC_BLOCKS_PER_YEAR);
+        return -1;
+    }
+    if (cfg->decimal_unit != (uint64_t)DNAC_DECIMAL_UNIT) {
+        QGP_LOG_ERROR(LOG_TAG, "config decimal_unit %llu != the compiled "
+                      "DNAC_DECIMAL_UNIT %llu — this build cannot derive "
+                      "this config's chain (fail closed)",
+                      (unsigned long long)cfg->decimal_unit,
+                      (unsigned long long)DNAC_DECIMAL_UNIT);
+        return -1;
+    }
+
+    /* ── the inflation start is FREE, but bounded ─────────────────────
+     * Unlike the three above it is a genuine operator choice: 0 means
+     * emission never runs, any other value is the first minted height.
+     * The bound mirrors the governance rule
+     * (nodus_chain_config_scalar_rules CC_PARAM_INFLATION_START,
+     * nodus_witness_chain_config.c:508-510) — genesis must not commit a
+     * value that no later vote could legally produce, or the chain starts
+     * outside its own parameter space. */
+    if (cfg->inflation_start_block > DNAC_CFG_MAX_INFLATION_START_BLOCK) {
+        QGP_LOG_ERROR(LOG_TAG, "config inflation_start_block %llu exceeds "
+                      "the governance ceiling %llu",
+                      (unsigned long long)cfg->inflation_start_block,
+                      (unsigned long long)DNAC_CFG_MAX_INFLATION_START_BLOCK);
         return -1;
     }
 
@@ -639,7 +701,12 @@ int nodus_witness_v2_gen_config_validate(const nodus_v2_gen_config_t *cfg) {
 /* Layout: the header's table, verbatim. */
 #define GEN_VAL_ENC_LEN  (DNAC_PUBKEY_SIZE + DNAC_PUBKEY_SIZE + \
                           DNAC_FINGERPRINT_SIZE + 8 + 2)
-#define GEN_CFG_HEAD_LEN (NODUS_V2_GEN_CFG_TAG_LEN + 4 + 8 + 8 + 8 + 8 + 2)
+/* tag + config_version(4) + total_supply_raw(8) + epoch_length(8) +
+ * blocks_per_year(8) + decimal_unit(8) + inflation_start_block(8) +
+ * claim_start_height(8) + claim_end_height(8) + validator_count(2).
+ * The three middle u64s are Block 2C's economic parameters. */
+#define GEN_CFG_HEAD_LEN (NODUS_V2_GEN_CFG_TAG_LEN + 4 + 8 + 8 + 8 + 8 + \
+                          8 + 8 + 8 + 2)
 
 static int gen_encode_planned(const nodus_v2_gen_config_t *cfg,
                               const gen_plan_t *plan,
@@ -663,7 +730,15 @@ static int gen_encode_planned(const nodus_v2_gen_config_t *cfg,
 
     put_be32(p, cfg->config_version);      p += 4;
     put_be64(p, cfg->total_supply_raw);    p += 8;
-    put_be64(p, cfg->epoch_length);        p += 8;
+    /* ── the economic parameters (Block 2C) ───────────────────────────
+     * Written UNCONDITIONALLY and fixed-width, like every other field:
+     * no presence byte, no default. Their presence here is what makes
+     * source_commit — and therefore the genesis BlockID and the chain id
+     * — a function of the economics the chain was built for. */
+    put_be64(p, cfg->epoch_length);           p += 8;
+    put_be64(p, cfg->blocks_per_year);        p += 8;
+    put_be64(p, cfg->decimal_unit);           p += 8;
+    put_be64(p, cfg->inflation_start_block);  p += 8;
     put_be64(p, cfg->claim_start_height);  p += 8;
     put_be64(p, cfg->claim_end_height);    p += 8;
     put_be16(p, cfg->n_validators);        p += 2;
@@ -818,10 +893,139 @@ static int gen_seed_state(nodus_witness_t *w2,
         }
     }
 
-    /* delegations, epoch_state and chain_config_history are EMPTY at a
-     * pure-V2 genesis, and that emptiness is ASSERTED rather than
-     * produced by a DELETE — a future create_chain_db that seeded a row
-     * must fail loudly here, not be silently erased.
+    /* ── THE ECONOMIC PARAMETERS, COMMITTED (Block 2C) ────────────────
+     * The chain_config_history table used to be ASSERTED EMPTY here, on
+     * the reasoning that "no governance change can precede genesis". The
+     * assertion was right about GOVERNANCE and wrong about the table: it
+     * is the only store in this tree that is committed into a state root
+     * (chain_config_root is a SYSTEM leg, nodus_witness_roots_v2.c:266,
+     * :285), replicated to joiners (nodus_witness_v2_bundle.c:47) AND
+     * readable by the runtime. So the economic parameters live here.
+     *
+     * Consequence, and it was the mirror-image defect: because the table
+     * had to be empty, the emission gate's
+     * nodus_chain_config_get_u64(..., 1ULL) fell to its default forever
+     * and EVERY chain this builder produced minted from height 1, with no
+     * way to configure that at genesis — only to repeal it by a later
+     * governance vote. The inflation start is now expressible AT GENESIS.
+     *
+     * GOVERNANCE STILL CANNOT REACH THE BAND. Ids 200-202 are outside
+     * 1..CC_PARAM_MAX_ID and have no case in the allowlist switch
+     * (nodus_witness_chain_config.c:497, :515-516), so no CHAIN_CONFIG tx
+     * can ever insert or replace one. That preserves the property
+     * nodus_witness_emission.h states — a committee vote cannot alter the
+     * emission schedule. Id 3 (the inflation start) IS governable, and
+     * always was; genesis now sets its opening value instead of leaving
+     * it to a hardcoded default.
+     *
+     * EVERY COLUMN IS EXPLICIT AND DETERMINISTIC. `tx_hash` is NOT NULL
+     * and carries source_commit — the one 64-byte value that identifies
+     * this genesis, the same choice supply_init makes above and for the
+     * same reason. `created_at_unix` is pinned to 0: a time(NULL) here
+     * would differ per node, and although it reaches no merkle leaf
+     * (nodus_witness_chain_config.c:386-391) it IS carried in the genesis
+     * bundle and IS seen by a whole-database digest, so it would break
+     * the determinism twin. commit_block and proposal_nonce are 0 — no
+     * block committed these and no proposal produced them. */
+    {
+        static const struct { unsigned param; const char *name; } econ[] = {
+            { DNAC_CFG_INFLATION_START_BLOCK, "inflation_start_block" },
+            { NODUS_CC_ECON_BLOCKS_PER_YEAR,  "blocks_per_year"       },
+            { NODUS_CC_ECON_DECIMAL_UNIT,     "decimal_unit"          },
+            { NODUS_CC_ECON_EPOCH_LENGTH,     "epoch_length"          },
+        };
+        const uint64_t val[] = {
+            cfg->inflation_start_block,
+            cfg->blocks_per_year,
+            cfg->decimal_unit,
+            cfg->epoch_length,
+        };
+        const size_t n_econ = sizeof(econ) / sizeof(econ[0]);
+
+        sqlite3_stmt *st = NULL;
+        if (sqlite3_prepare_v2(w2->db,
+                "INSERT INTO chain_config_history (param_id, new_value, "
+                "effective_block, commit_block, tx_hash, proposal_nonce, "
+                "created_at_unix) VALUES (?1, ?2, ?3, 0, ?4, 0, 0)",
+                -1, &st, NULL) != SQLITE_OK) {
+            QGP_LOG_ERROR(LOG_TAG, "%s",
+                          "econ parameter insert could not be prepared");
+            return -1;
+        }
+        /* Insertion order is the array order — a fixed literal, not a
+         * query result — and the row SET is what every reader sorts
+         * (compute_root ORDER BY, the bundle's param_id ASC), so this
+         * loop cannot make two nodes disagree. */
+        for (size_t i = 0; i < n_econ; i++) {
+            sqlite3_reset(st);
+            sqlite3_clear_bindings(st);
+            sqlite3_bind_int64(st, 1, (sqlite3_int64)econ[i].param);
+            sqlite3_bind_int64(st, 2, (sqlite3_int64)val[i]);
+            sqlite3_bind_int64(st, 3,
+                               (sqlite3_int64)NODUS_CC_ECON_EFFECTIVE_BLOCK);
+            sqlite3_bind_blob(st, 4, source_commit,
+                              NODUS_V2_GEN_SRCCOMMIT_LEN, SQLITE_TRANSIENT);
+            if (sqlite3_step(st) != SQLITE_DONE) {
+                QGP_LOG_ERROR(LOG_TAG, "econ parameter %s (id %u) could not "
+                              "be committed: %s", econ[i].name,
+                              econ[i].param, sqlite3_errmsg(w2->db));
+                sqlite3_finalize(st);
+                return -1;
+            }
+        }
+        sqlite3_finalize(st);
+
+        /* The warm chain-config cache is invalidated explicitly: this
+         * INSERT bypasses the mutate path that would do it
+         * (nodus_witness_rt_native.c:4386), and without this the very
+         * next nodus_chain_config_get_u64 would keep serving the 1ULL
+         * inflation default and the seeded row would do nothing. */
+        w2->chain_config_cache_warm = false;
+
+        /* POST-CONDITION: exactly these rows, and NOTHING else. An
+         * exact-count assertion in place of the old emptiness one — a
+         * future create_chain_db that seeded a row of its own must still
+         * fail loudly here rather than ride along into the state root. */
+        {
+            sqlite3_int64 n = -1;
+            if (gen_count(w2->db, "SELECT COUNT(*) FROM chain_config_history",
+                          &n) != 0) return -1;
+            if (n != (sqlite3_int64)n_econ) {
+                QGP_LOG_ERROR(LOG_TAG, "chain_config_history holds %lld rows "
+                              "after seeding %zu economic parameters — "
+                              "refusing", (long long)n, n_econ);
+                return -1;
+            }
+        }
+        /* And they must READ BACK as what the config said. The committed
+         * row is the thing the runtime will obey, so the derivation is
+         * not allowed to ship a chain whose committed economics differ
+         * from the config that was hashed into its identity. */
+        {
+            nodus_v2_econ_params_t chk;
+            if (nodus_witness_v2_econ_params_load(w2, &chk) != 0 ||
+                !chk.present ||
+                chk.blocks_per_year != cfg->blocks_per_year ||
+                chk.decimal_unit    != cfg->decimal_unit ||
+                chk.epoch_length    != cfg->epoch_length) {
+                QGP_LOG_ERROR(LOG_TAG, "%s", "the committed economic band "
+                              "does not read back as the config — ABORT");
+                return -1;
+            }
+            if (nodus_chain_config_get_u64(w2,
+                    (uint8_t)DNAC_CFG_INFLATION_START_BLOCK, 0,
+                    UINT64_MAX) != cfg->inflation_start_block) {
+                QGP_LOG_ERROR(LOG_TAG, "%s", "the committed inflation start "
+                              "does not read back as the config — ABORT");
+                return -1;
+            }
+        }
+    }
+
+    /* delegations and epoch_state are EMPTY at a pure-V2 genesis, and
+     * that emptiness is ASSERTED rather than produced by a DELETE — a
+     * future create_chain_db that seeded a row must fail loudly here, not
+     * be silently erased.
      *
      *   delegations           nothing has delegated yet.
      *   epoch_state           CORRECTED (O15J Faz 2, review R2-F12):
@@ -839,11 +1043,13 @@ static int gen_seed_state(nodus_witness_t *w2,
      *                         no V2 reader produces or consumes. The
      *                         supply invariant COALESCEs the absent sum
      *                         to 0 (nodus_witness_v2_claims.c).
-     *   chain_config_history  no governance change can precede genesis
-     *                         (nodus_witness_vset.c:717-718). */
+     *
+     * chain_config_history is NO LONGER on this list — Block 2C commits
+     * the economic parameters into it above, with its own exact-row
+     * post-condition. */
     {
         static const char *const must_be_empty[] = {
-            "delegations", "epoch_state", "chain_config_history"
+            "delegations", "epoch_state"
         };
         for (size_t i = 0; i < sizeof(must_be_empty) /
                                sizeof(must_be_empty[0]); i++) {

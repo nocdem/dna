@@ -45,19 +45,63 @@
  * insertion order cannot influence a single output byte — including the
  * SQLite rowid order that a whole-database digest sees.
  *
- * ⚠ TWO INPUTS THE CONFIG DOES NOT FULLY FIX (stated, not hidden):
- *   1. DNAC_EPOCH_LENGTH is -D-overridable (dnac.h:168-173) and reaches
- *      the genesis BlockID through the epoch-keyed vset snapshots
- *      (nodus_witness_vset.c:720-721). The config carries `epoch_length`
- *      and the builder REFUSES to derive unless it equals the compiled
- *      DNAC_EPOCH_LENGTH — so a harness build and a production build
- *      reading the same config produce a loud refusal instead of two
- *      silently different chain ids. This is DETECTION, not removal:
- *      the value still reaches the chain id.
- *   2. The compiled SYSTEM/CORE ruleset_version / ruleset_hash pins
- *      reach the chain id through the domain manifests. Nothing here
- *      detects a build mismatch in those. BUILD IDENTITY REMAINS AN
- *      EXPLICIT TRUST ASSUMPTION.
+ * ── THE ECONOMIC PARAMETERS ARE COMMITTED GENESIS STATE (Block 2C) ──
+ * DNAC_BLOCKS_PER_YEAR, DNAC_DECIMAL_UNIT (nodus_witness_emission.h:33,
+ * :41) and DNAC_EPOCH_LENGTH (dnac.h:171) are all `#ifndef`-guarded, so
+ * `-D` changes how much a node mints and where its epoch boundaries fall,
+ * and the Stage F halving test expects exactly such a build: it requires
+ * a binary carrying -DDNAC_BLOCKS_PER_YEAR=<BY> and SKIPs when the value
+ * is not declared (test_halving_boundaries.sh:37, :57-65). They
+ * reach the state root and, before Block 2C, appeared in NO committed
+ * field — so a differently-built node derived the SAME chain id, joined
+ * cleanly, and then credited a different amount at some later height.
+ *
+ * All four economic parameters now travel two INDEPENDENT paths, and the
+ * two are not the same property:
+ *
+ *   A. INTO source_commit. They are fields of the canonical config
+ *      encoding, so source_commit changes with them; the manifest carries
+ *      source_commit into dna_bh2_genesis_block_id as an explicit input
+ *      (nodus_witness_v2_apply.c:865), and chain id = f(genesis BlockID).
+ *      A mismatched build therefore derives a DIFFERENT CHAIN and cannot
+ *      join. An invisible split becomes a loud refusal — that is the
+ *      point, and the accepted consequence is that a harness built with
+ *      a short tokenomic year derives a different chain than production.
+ *      It always WAS a different chain; only the identity was hiding it.
+ *      OPERATIONAL NOTE: such a harness must ALSO put its own <BY> in the
+ *      genesis config, or this builder refuses to derive at all. No
+ *      harness does that today — nothing calls
+ *      nodus_witness_v2_gen_derive on a running node yet (see the NO LIVE
+ *      CONSUMER banner above) — but whoever wires it must.
+ *
+ *   B. INTO COMMITTED, READABLE STATE. gen_seed_state writes them as
+ *      chain_config_history rows at effective_block 0 — the inflation
+ *      start under its existing governance id, the other three in the
+ *      reserved econ band (nodus_chain_config.h). Those rows reach
+ *      chain_config_root → SYSTEM root (nodus_witness_roots_v2.c:266,
+ *      :285) and travel to joiners in the genesis bundle
+ *      (nodus_witness_v2_bundle.c:47). Path A alone would be DECORATIVE:
+ *      a joiner never runs this builder, so only a readable committed
+ *      value can catch a mismatched build that arrived by syncing.
+ *      nodus_witness_v2_econ_params_load is the reader.
+ *
+ * The builder ALSO keeps the fail-closed equality check for all three
+ * schedule constants (it was already there for epoch_length). Both, not
+ * either: the equality check stops a bad DERIVATION at the config, while
+ * the committed rows stop a bad JOIN at the first block. Neither covers
+ * the other's case.
+ *
+ * `inflation_start_block` is the mirror-image fix. This builder used to
+ * ASSERT chain_config_history was empty, so the emission gate's
+ * nodus_chain_config_get_u64(..., 1ULL) fell to its default forever and
+ * every derived chain minted from height 1, configurable only by a later
+ * governance vote. It is now expressible AT GENESIS.
+ *
+ * ⚠ ONE INPUT THE CONFIG STILL DOES NOT FIX (stated, not hidden):
+ *   The compiled SYSTEM/CORE ruleset_version / ruleset_hash pins reach
+ *   the chain id through the domain manifests. Nothing here detects a
+ *   build mismatch in those. BUILD IDENTITY REMAINS AN EXPLICIT TRUST
+ *   ASSUMPTION for that leg.
  *
  * Config sort order controls `source_commit` ONLY. It does NOT control
  * the committed `validator_set_hash`: the committed snapshot order is
@@ -118,8 +162,14 @@
 extern "C" {
 #endif
 
-/** The config schema this build understands. Any other value rejects. */
-#define NODUS_V2_GEN_CONFIG_VERSION   1u
+/** The config schema this build understands. Any other value rejects.
+ *
+ *  2 — O15J Faz 2 Block 2C added the economic parameters
+ *  (blocks_per_year, decimal_unit, inflation_start_block) to the config
+ *  and to the canonical encoding. A version-1 config is REFUSED rather
+ *  than defaulted: the whole point of this change is that an economic
+ *  parameter is never supplied by a structural default. */
+#define NODUS_V2_GEN_CONFIG_VERSION   2u
 
 /**
  * The manifest `source_tag` a pure-V2 genesis carries. Distinct from the
@@ -196,9 +246,24 @@ typedef struct {
 typedef struct {
     uint32_t config_version;     /* NODUS_V2_GEN_CONFIG_VERSION         */
     uint64_t total_supply_raw;   /* == Σ allocations + Σ self_stake     */
+
+    /* ── THE ECONOMIC PARAMETERS (Block 2C) ───────────────────────────
+     * All four are hashed into source_commit AND committed as
+     * chain_config_history rows — see the ECONOMIC PARAMETERS block in
+     * the file header for which binding each one buys. */
     uint64_t epoch_length;       /* MUST equal the compiled
                                   * DNAC_EPOCH_LENGTH — see the
                                   * DETERMINISM note in this header     */
+    uint64_t blocks_per_year;    /* MUST equal the compiled
+                                  * DNAC_BLOCKS_PER_YEAR                */
+    uint64_t decimal_unit;       /* MUST equal the compiled
+                                  * DNAC_DECIMAL_UNIT                   */
+    uint64_t inflation_start_block;
+                                 /* FREE: 0 = emission off for the life
+                                  * of the chain; otherwise the first
+                                  * minted height. Bounded by
+                                  * DNAC_CFG_MAX_INFLATION_START_BLOCK  */
+
     uint64_t claim_start_height; /* MUST be 0                           */
     uint64_t claim_end_height;   /* MUST be UINT64_MAX                  */
 
@@ -219,6 +284,9 @@ typedef struct {
  *   config_version              u32be
  *   total_supply_raw            u64be
  *   epoch_length                u64be
+ *   blocks_per_year             u64be   ← Block 2C
+ *   decimal_unit                u64be   ← Block 2C
+ *   inflation_start_block       u64be   ← Block 2C
  *   claim_start_height          u64be
  *   claim_end_height            u64be
  *   validator_count             u16be

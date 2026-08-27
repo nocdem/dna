@@ -1107,6 +1107,31 @@ register_witness_test(test_v2_epoch)
 # twin seeded in opposite validator order.
 register_witness_test(test_v2_econ)
 
+# O15J Faz 2 Block 2C — the economic parameters are COMMITTED GENESIS
+# STATE. DNAC_BLOCKS_PER_YEAR / DNAC_DECIMAL_UNIT / DNAC_EPOCH_LENGTH are
+# -D-overridable and decide how much is minted and where epoch boundaries
+# fall; before 2C they appeared in no committed field, so a differently
+# built node derived the SAME chain id and then diverged silently. This
+# test pins BOTH bindings INDEPENDENTLY — the canonical config encoding
+# into source_commit, and the committed chain_config_history rows into
+# chain_config_root — because a single mutant of either one survives an
+# end-to-end chain-id assertion. It also covers the mirror-image half:
+# the inflation start is expressible AT GENESIS instead of only
+# repealable by a later governance vote.
+register_witness_test(test_v2_econ_params)
+
+# O15J Block 2 — the per-validator delegator CAP, LEGACY lane.
+# Drives apply_delegate directly through the NODUS_WITNESS_INTERNAL_API
+# surface (the apply_tx_to_state precedent). The Ledger V2 half of the
+# same rule is test_delegator_cap() inside test_v2_native, which owns the
+# envelope fixture.
+#
+# RESTORED during integration: Block 2C's worktree was branched BEFORE
+# Block 2B landed, so copying C's CMakeLists.txt over the tree silently
+# reverted this registration and the suite count stayed flat instead of
+# growing. Caught by counting tests rather than by reading the diff.
+register_witness_test(test_delegator_cap)
+
 register_witness_test(test_v2_qc_authority)
 register_witness_test(test_v2_finalize)
 register_witness_test(test_v2_produce)
@@ -1548,13 +1573,6 @@ register_witness_test(test_block_txs_get)
 
 # "My Delegations" query — DB layer test backing dnac_delegations T3 RPC
 register_witness_test(test_witness_delegations_query)
-
-# O15J Block 2 — the per-validator delegator CAP, LEGACY lane.
-# Drives apply_delegate directly through the NODUS_WITNESS_INTERNAL_API
-# surface (the apply_tx_to_state precedent). The Ledger V2 half of the
-# same rule is test_delegator_cap() inside test_v2_native, which owns the
-# envelope fixture.
-register_witness_test(test_delegator_cap)
 
 # Phase 12 / Task 12.6 — spend_result preimage layout tests
 add_executable(test_spend_preimage tests/test_spend_preimage.c)

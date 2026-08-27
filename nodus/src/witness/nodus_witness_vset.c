@@ -714,8 +714,18 @@ int nodus_witness_vset_commit_genesis(nodus_witness_t *w,
      * nodus_witness_genesis_seed_validators, inside this same
      * transaction, so they are visible to the builder.)
      *
-     * No chain_config_history row can exist at genesis, so both targets
-     * resolve to DNAC_COMMITTEE_SIZE. */
+     * No chain_config_history row for DNAC_CFG_TARGET_ACTIVE_COUNT can
+     * exist at genesis, so both targets resolve to DNAC_COMMITTEE_SIZE.
+     *
+     * CORRECTED (O15J Faz 2 Block 2C): this used to read "No
+     * chain_config_history row can exist at genesis", which is no longer
+     * true — the pure-V2 builder seeds the economic parameters at
+     * effective_block 0 (nodus_witness_v2_gen.c gen_seed_state), and the
+     * test fixture has long seeded an inflation-off row
+     * (nodus/tests/v2_genesis_fixture.h v2x_seed_inflation_off). Neither
+     * writes DNAC_CFG_TARGET_ACTIVE_COUNT, the ONLY id
+     * vset_target_for_epoch reads (:438-440), so the conclusion stands —
+     * but it now rests on the param, not on the table being empty. */
     if (vset_build_and_store(w, 0ULL, block_height) != 0) return -1;
     if (vset_build_and_store(w, (uint64_t)DNAC_EPOCH_LENGTH,
                                block_height) != 0) return -1;

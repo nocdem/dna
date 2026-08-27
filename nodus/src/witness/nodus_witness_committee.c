@@ -353,8 +353,17 @@ int nodus_committee_bootstrap_for_epoch(nodus_witness_t *w,
     /* S3 — the bootstrap epoch reads the SAME target at the SAME key
      * (e_start) as the post-lookback path, so the two never disagree on
      * how many seats the epoch has. At genesis no chain_config_history
-     * row exists, so this is DNAC_COMMITTEE_SIZE and the bootstrap
-     * committee is exactly what it was before S3.
+     * row for DNAC_CFG_TARGET_ACTIVE_COUNT exists, so this is
+     * DNAC_COMMITTEE_SIZE and the bootstrap committee is exactly what it
+     * was before S3.
+     *
+     * CORRECTED (O15J Faz 2 Block 2C): this used to read "no
+     * chain_config_history row exists" — the pure-V2 builder now seeds
+     * the economic parameters at effective_block 0
+     * (nodus_witness_v2_gen.c gen_seed_state). None of them is
+     * DNAC_CFG_TARGET_ACTIVE_COUNT, the only id
+     * committee_target_for_epoch reads (:81-83), so the conclusion is
+     * unchanged — it just no longer rests on the table being empty.
      * e_start is otherwise unused here: bootstrap always seeds its
      * tiebreak from the genesis block's state_root. */
     {
