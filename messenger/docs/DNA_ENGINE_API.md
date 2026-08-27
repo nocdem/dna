@@ -4,9 +4,10 @@
 **Date:** 2026-08-27 (header + dead-section pass; per-function bodies from earlier syncs)
 **Location:** `include/dna/dna_engine.h`
 **Library at last sync:** v0.11.18
-**Coverage note (2026-08-27):** ~30 newer public `dna_engine_*` functions (DNAC
-stake/delegate family, reactions, wall boost, shutdown pair, cached balances, calls)
-are not yet documented here — the header is authoritative.
+**Coverage note (2026-08-27):** the newer public `dna_engine_*` functions (DNAC
+stake/delegate family, reactions, wall boost, shutdown pair, cached balances) are
+documented in `docs/functions/public-api.md` (appended sections); calls are in
+`docs/functions/calls.md`. The header stays authoritative.
 
 **Changelog:**
 - v1.22.0 (2026-04-23): Added DNAC Delegations query API — engine symbol `dna_engine_dnac_get_delegations` (wraps `dnac_get_my_delegations`) for listing the current identity's delegations + accrued rewards. Backed by witness T3 RPC and dnac engine task queue. See commit `5a8609fb` for release.
@@ -1970,7 +1971,8 @@ Sync contacts between local database and DHT for multi-device support.
 
 `dna_engine_subscribe_to_contacts` no longer exists. Listener setup happens
 automatically inside `dna_engine_load_identity()`; the related public entry today is
-`dna_engine_listen_all_contacts_minimal` (see `dna_engine.h`). *(Corrected 2026-08-27.)*
+`dna_engine_listen_all_contacts` (dna_engine.h:2820 — the `_minimal` variant was
+removed in v0.6.15). *(Corrected 2026-08-27.)*
 
 ---
 

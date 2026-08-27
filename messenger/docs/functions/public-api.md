@@ -422,3 +422,112 @@ One-directional follow system. No approval needed, private to owner.
 - DNAC context is lazy-initialized on first API call (no startup cost)
 - Wallet syncs from witness servers (no DHT dependency)
 - Thread-safe init via mutex
+
+---
+
+### DNAC Staking & Delegation (v0.17+, stake-delegation-v1)
+
+Async unless noted; amounts in raw units (1 DNAC = 10^8 raw).
+
+```c
+dna_request_id_t dna_engine_dnac_stake(dna_engine_t *engine,
+    uint16_t commission_bps, const char *unstake_destination_fp,
+    dna_completion_cb callback, void *user_data);            // become a validator (bond >= 10M DNAC)
+dna_request_id_t dna_engine_dnac_unstake(dna_engine_t *engine,
+    dna_completion_cb callback, void *user_data);            // begin RETIRING (2-phase exit)
+dna_request_id_t dna_engine_dnac_delegate(dna_engine_t *engine,
+    const uint8_t *validator_pubkey, uint64_t amount,
+    dna_completion_cb callback, void *user_data);
+dna_request_id_t dna_engine_dnac_undelegate(dna_engine_t *engine,
+    const uint8_t *validator_pubkey, uint64_t amount,
+    dna_completion_cb callback, void *user_data);
+dna_request_id_t dna_engine_dnac_get_delegations(dna_engine_t *engine,
+    dna_dnac_delegations_cb callback, void *user_data);      // my delegations + accrued rewards
+void dna_engine_dnac_free_delegations(dna_dnac_delegation_t *entries, int count);
+dna_request_id_t dna_engine_dnac_validator_list(dna_engine_t *engine,
+    int filter_status, dna_dnac_validator_list_cb callback, void *user_data);
+dna_request_id_t dna_engine_dnac_validator_update(dna_engine_t *engine,
+    uint16_t new_commission_bps, uint64_t signed_at_block,
+    dna_completion_cb callback, void *user_data);
+void dna_engine_dnac_free_validator_entries(dna_dnac_validator_entry_t *entries, int count);
+dna_request_id_t dna_engine_dnac_get_committee(dna_engine_t *engine,
+    dna_dnac_validator_list_cb callback, void *user_data);   // current epoch committee
+dna_request_id_t dna_engine_dnac_get_history_local(dna_engine_t *engine,
+    dna_dnac_history_cb callback, void *user_data);          // history from local DB (no network)
+int dna_engine_dnac_last_send_receipt(dna_engine_t *engine,
+    uint64_t *block_height_out, uint32_t *tx_index_out, uint8_t *tx_hash_out); // sync
+```
+
+### Reactions (message emoji reactions)
+
+```c
+dna_request_id_t dna_engine_send_reaction(dna_engine_t *engine,
+    const char *recipient_fingerprint, const char *target_content_hash,
+    const char *emoji, const char *op /* "add"|"remove" */,
+    dna_completion_cb callback, void *user_data);
+dna_request_id_t dna_engine_get_reactions(dna_engine_t *engine,
+    const char *target_content_hash, dna_reactions_cb callback, void *user_data);
+```
+
+### Wall — boost, tips, images
+
+```c
+dna_request_id_t dna_engine_wall_boost_post(dna_engine_t *engine,
+    const char *text, dna_wall_post_cb callback, void *user_data);
+dna_request_id_t dna_engine_wall_boost_post_with_image(dna_engine_t *engine,
+    const char *text, const char *image_json, dna_wall_post_cb callback, void *user_data);
+dna_request_id_t dna_engine_wall_boost_timeline(dna_engine_t *engine,
+    dna_wall_posts_cb callback, void *user_data);            // global boost feed
+dna_request_id_t dna_engine_wall_get_image(dna_engine_t *engine,
+    const char *post_uuid, dna_wall_image_cb callback, void *user_data);
+dna_request_id_t dna_engine_wall_add_tip_comment(dna_engine_t *engine,
+    const char *post_uuid, const char *body, dna_wall_comment_cb callback, void *user_data);
+```
+
+### Channels — batch/search (subsystem DISABLED since 2026-03-28)
+
+```c
+dna_request_id_t dna_engine_channel_get_batch(dna_engine_t *engine,
+    const char **uuids, int count, dna_channels_cb callback, void *user_data);
+dna_request_id_t dna_engine_channel_search(dna_engine_t *engine,
+    const char *query, int offset, int limit, dna_channels_cb callback, void *user_data);
+```
+
+### Debug log
+
+```c
+dna_request_id_t dna_engine_debug_log_send(dna_engine_t *engine,
+    const char *receiver_fp_hex, const uint8_t *log_body, size_t log_len,
+    const char *hint, dna_completion_cb callback, void *user_data);
+// Hybrid-encrypted (Kyber1024 + AES-256-GCM) log delivery to a developer inbox key.
+```
+
+### Wallet — cached reads + gas
+
+```c
+dna_request_id_t dna_engine_get_cached_balances(dna_engine_t *engine,
+    int wallet_index, dna_balances_cb callback, void *user_data);      // wallet_cache.db, no RPC
+dna_request_id_t dna_engine_get_cached_transactions(dna_engine_t *engine,
+    int wallet_index, const char *network, dna_transactions_cb callback, void *user_data);
+dna_request_id_t dna_engine_estimate_gas_async(dna_engine_t *engine,
+    dna_gas_estimates_cb callback, void *user_data);
+```
+
+### Lifecycle & utility
+
+```c
+void        dna_engine_request_shutdown(dna_engine_t *engine);       // ask workers to wind down
+bool        dna_engine_is_shutdown_requested(dna_engine_t *engine);
+const char* dna_engine_get_data_dir(dna_engine_t *engine);
+int         dna_engine_pubkey_to_fingerprint(const uint8_t *pubkey,
+                size_t pubkey_len, char *out_hex, size_t out_hex_size); // SHA3-512 -> 128 hex
+```
+
+### Removed symbols (do not document as current)
+
+- `dna_engine_list_identities()` — removed v0.3.0 (single-user model); use `dna_engine_has_identity()`.
+- `dna_engine_listen_all_contacts_minimal()` — removed v0.6.15; use `dna_engine_listen_all_contacts()` / polling.
+- `dna_engine_subscribe_to_contacts()` — removed; listener setup happens inside `dna_engine_load_identity()`.
+- `dna_engine_feed_*` family — Feeds v2 subsystem deleted (see DNA_ENGINE_API.md §5a tombstone).
+
+*(Section added 2026-08-27 by the doc-vs-code audit — signatures copied verbatim from `include/dna/dna_engine.h`.)*
