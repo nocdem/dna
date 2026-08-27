@@ -1,6 +1,18 @@
 # DNA Connect - Comprehensive Architecture Documentation
 
-**Version:** 0.11.5 | **Nodus:** v0.17.7 | **Flutter:** v1.0.0-rc235 | **Last Updated:** 2026-04-24 | **Phase:** 7 (Flutter UI)
+**Version:** 0.11.18 | **Nodus:** v0.19.19 | **Flutter:** v1.0.0-rc241 | **Last Updated:** 2026-08-27 (audit pass) | **Phase:** 7 (Flutter UI)
+
+> ⚠ **STALE-ZONE WARNING (2026-08-27 doc-vs-code audit).** The security-relevant
+> errors in this document were fixed (SQLCipher rows, dead `dht_context` API,
+> seed list), but the following zones are still the April-2026 snapshot and are
+> KNOWN to disagree with the tree — verify against source before relying on them:
+> §2 directory tree (`crypto/` now lives in `shared/crypto/`; `transport/` is flat;
+> `messenger/gsk*.c` is now `gek.c`), §4 crypto "Location:" lines (same move),
+> §8.1/§12.2 per-fingerprint `<fp>/keys/<fp>.dsa` layout (real layout is flat
+> `keys/identity.dsa`), §9.1 wallet `.json` file table (removed v1.7.0), §9.9
+> roster paragraph (stake-delegation-v1 MERGED long ago; committee is chain-derived,
+> self-stake is >=10M since Ledger V2 S3), §10.4 function counts, §12.1 "Try P2P
+> Send" flow (removed v0.4.62). A full rewrite is queued as its own doc season.
 
 This document provides a complete technical architecture reference for DNA Connect, derived entirely from source code analysis.
 
@@ -891,7 +903,8 @@ int messenger_mark_conversation_read(ctx, sender_identity);
 
 ### 7.5 Group Symmetric Key (GEK)
 
-**Location:** `messenger/gsk.h`
+**Location:** `messenger/gek.h` (the `gsk_*` names below are the OLD API — every
+function is now `gek_*`; see `gek.h` for the current surface)
 
 **Purpose:** 200x faster group encryption than per-member Kyber encapsulation.
 
@@ -1281,9 +1294,9 @@ Minimal transaction builder for DNA name registration and token transfers.
 
 ### 9.9 DNAC Witness Consensus (Chain-State-Authoritative Roster)
 
-DNAC (DNA Chain) is the project's own UTXO chain. Double-spend prevention uses PBFT witnessing embedded in `nodus-server` (not a separate binary). In `main`, the witness roster is *dynamic* — any online nodus node that is reachable via Kademlia routing participates automatically.
+DNAC (DNA Chain) is the project's own UTXO chain. Double-spend prevention uses BFT witnessing embedded in `nodus-server` (not a separate binary). Since stake-delegation-v1 merged (2026-04) the voting authority on `main` IS the **stake-weighted committee derived from on-chain state** — since Ledger V2 S3 (v0.19.0) served from per-epoch persisted validator-set snapshots, with governance-driven size (`TARGET_ACTIVE_COUNT`, 7 default) and self-stake **>= 10M DNAC** (not exactly 10M). The paragraph below describes that design as it was written pre-merge:
 
-On the `stake-delegation-v1` feature branch this is **replaced with a stake-weighted deterministic top-7 committee derived from on-chain state**. The witness roster and the client-side discovery path (`dnac_discover_witnesses()`) both consult the committee snapshot committed to chain via Merkle `state_root` — not DHT registrations, not TCP 4002 peer lists, not any routing-derived heuristic. Consequences:
+Historically (pre-merge framing): on the `stake-delegation-v1` feature branch this was **replaced with a stake-weighted deterministic top-7 committee derived from on-chain state**. The witness roster and the client-side discovery path (`dnac_discover_witnesses()`) both consult the committee snapshot committed to chain via Merkle `state_root` — not DHT registrations, not TCP 4002 peer lists, not any routing-derived heuristic. Consequences:
 
 - Roster authority moves from the DHT / routing layer to the chain itself. Membership is reproducible from block history alone.
 - Self-stake is a fixed 10,000,000 DNAC per witness; delegators may stake on top. Committee = top 7 by total stake.
