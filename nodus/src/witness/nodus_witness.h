@@ -113,8 +113,12 @@ typedef struct {
 #define NODUS_W_TX_SHIELD           12
 #define NODUS_W_TX_UNSHIELD         13
 /* O15C — Ledger V2 activation authority (legacy-wire governance types).
- * Type 14 stays UNASSIGNED. Admission is compile-gated
- * (NODUS_V2_ACTIVATION_AUTHORITY); production builds reject both. */
+ * RETIRED by O15J Faz 3, which deleted the activation ceremony: a V2 chain
+ * is born V2, so there is no transition for these to schedule or signal.
+ * The ids are KEPT DEFINED and PERMANENTLY INADMISSIBLE — no build accepts
+ * them, nodus_witness_verify.c rejects both by name right after the
+ * tx-hash check, and 15/16 are never reused for a new type. Type 14 stays
+ * UNASSIGNED. */
 #define NODUS_W_TX_V2_SCHEDULE      15
 #define NODUS_W_TX_V2_READY         16
 /* O15D — TRANSPORT-LOCAL discriminator for a Ledger V2 ENVELOPE riding
@@ -720,6 +724,19 @@ typedef struct nodus_witness {
         uint64_t    sync_target_height;   /* peer's height */
         uint64_t    sync_current_height;  /* next block to request */
         uint64_t    last_sync_attempt;    /* rate limit (timestamp) */
+        /* O15J Faz 3 — stall watchdog. Stamped every time a block
+         * REQUEST goes out (sync start + each request_next), i.e. every
+         * time the sync demonstrably moved forward. Deliberately NOT
+         * last_sync_attempt: that one is stamped by sync_check's guard
+         * pass and never refreshed by the response path, so a healthy
+         * multi-block catch-up would look stalled through it.
+         *
+         * `syncing` is otherwise a ONE-WAY latch — every clear of it
+         * lives on a response path, so a response that never arrives
+         * (peer died mid-sync, frame dropped, peer serves nothing)
+         * wedges the node out of sync permanently. See
+         * SYNC_STALL_TIMEOUT_SEC in nodus_witness_sync.c. */
+        uint64_t    sync_last_progress;   /* last request sent (timestamp) */
     } sync_state;
 
     /* Phase 10 / Task 10.1 — cached state_root (RFC 6962 Merkle root over

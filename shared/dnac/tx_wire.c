@@ -279,8 +279,6 @@ static const uint8_t TXW_TAG_V4[11] = {'D','N','A','C','_','T','X','_','V','4',0
 #define TXW_T_UNDELEGATE        7
 #define TXW_T_VALIDATOR_UPDATE  9
 #define TXW_T_CHAIN_CONFIG      10
-#define TXW_T_V2_SCHEDULE       DNAC_TXW_TYPE_V2_SCHEDULE   /* 15 */
-#define TXW_T_V2_READY          DNAC_TXW_TYPE_V2_READY      /* 16 */
 
 int dnac_txw_legacy_tx_hash(const uint8_t chain_id[DNA_CHAIN_ID_LEN],
                             const uint8_t *tx_data, size_t tx_len,
@@ -460,32 +458,6 @@ int dnac_txw_legacy_tx_hash(const uint8_t chain_id[DNA_CHAIN_ID_LEN],
             p += votes_total;
             remaining -= votes_total;
         }
-    } else if (type_byte == TXW_T_V2_SCHEDULE) {
-        /* O15C: fixed section (vote count is its LAST byte, the CC
-         * shape) + votes verbatim — votes ARE in the preimage, the
-         * CHAIN_CONFIG precedent. */
-        size_t fixed = DNAC_TXW_ACT15_FIXED;
-        if (remaining < fixed) goto fail;
-        memcpy(buf + buf_pos, p, fixed);
-        buf_pos += fixed;
-        uint8_t act_vote_count = p[fixed - 1];
-        p += fixed;
-        remaining -= fixed;
-        if (act_vote_count > DNAC_TXW_ACT15_VOTE_BOUND) goto fail;
-        size_t act_votes_total =
-            (size_t)act_vote_count * (size_t)(32 + DNAC_TXW_SIG_LEN);
-        if (remaining < act_votes_total) goto fail;
-        if (act_votes_total > 0) {
-            memcpy(buf + buf_pos, p, act_votes_total);
-            buf_pos += act_votes_total;
-            p += act_votes_total;
-            remaining -= act_votes_total;
-        }
-    } else if (type_byte == TXW_T_V2_READY) {
-        size_t need = DNAC_TXW_ACT16_LEN;
-        if (remaining < need) goto fail;
-        memcpy(buf + buf_pos, p, need);
-        buf_pos += need; p += need; remaining -= need;
     } else if (type_byte == DNAC_TXW_TYPE_SHIELDED) {
         /* Statement bytes hashed verbatim; fri_proof_len + blob excluded
          * (a re-randomized proof of the same statement is the same TX),
@@ -503,7 +475,18 @@ int dnac_txw_legacy_tx_hash(const uint8_t chain_id[DNA_CHAIN_ID_LEN],
     }
     /* UNSTAKE / GENESIS / SPEND / BURN / TOKEN_CREATE: no appended fields.
      * Trailing bytes (the genesis chain_def trailer) are ignored — they are
-     * not part of the preimage, exactly as before. */
+     * not part of the preimage, exactly as before.
+     *
+     * There is deliberately NO terminal `else` that rejects: this chain is a
+     * HASH WALKER, not an admission gate. Any type byte without a branch —
+     * the no-appended-field types above, and equally every UNASSIGNED byte
+     * (14, 15, 16 and 17..255) — hashes header ‖ inputs ‖ outputs ‖ signers
+     * and ignores whatever trails it. Adding a reject here would break the
+     * legitimate no-appended-field types, so admission is NOT this function's
+     * job: the acceptance set is enforced by the callers (the dnac
+     * deserializer's `type > 11` gate and the witness's named rejects).
+     * O15J removed the type 15/16 branches, which returns those two bytes to
+     * this same unassigned treatment; types 0..11 are untouched. */
 
     (void)version_byte;
 

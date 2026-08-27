@@ -10,7 +10,6 @@
 #include "witness/nodus_witness_db.h"
 #include "nodus/nodus_types.h"
 #include "nodus/nodus_chain_config.h"  /* Hard-Fork v1: chain_config_root in compute_state_root */
-#include "witness/nodus_witness_v2_activation.h"  /* O15C: activation_root (v4 builds) */
 #include "crypto/utils/qgp_bench.h"    /* perf harness — ((void)0) in production */
 #include "crypto/utils/qgp_log.h"      /* QGP_LOG_* (new code; legacy lines use fprintf) */
 
@@ -870,56 +869,14 @@ int nodus_merkle_combine_state_root_v3(const uint8_t utxo_root[64],
     return 0;
 }
 
-/* ── Composite state_root combiner — 6-input v4 (O15C activation) ────
- *
- * state_root_v4 = SHA3-512( NODUS_STATE_ROOT_VERSION_V4 (1 byte)
- *                           || utxo_root(64) || validator_root(64)
- *                           || delegation_root(64) || epoch_state_root(64)
- *                           || chain_config_root(64) || activation_root(64) )
- *
- * Appends the Ledger V2 activation-authority tree
- * (nodus_witness_v2_activation_root) as the 6th leg. Computed ONLY by
- * NODUS_V2_ACTIVATION_AUTHORITY builds — a production build never calls
- * this and keeps emitting v3 byte-identically; v3 stays available for
- * historical verification exactly as v1/v2 do.
- */
-int nodus_merkle_combine_state_root_v4(const uint8_t utxo_root[64],
-                                        const uint8_t validator_root[64],
-                                        const uint8_t delegation_root[64],
-                                        const uint8_t epoch_state_root[64],
-                                        const uint8_t chain_config_root[64],
-                                        const uint8_t activation_root[64],
-                                        uint8_t out_state_root[64]) {
-    if (!out_state_root) return -1;
-    if (!utxo_root || !validator_root || !delegation_root ||
-        !epoch_state_root || !chain_config_root || !activation_root) {
-        merkle_tag_hash_zero_on_fail(out_state_root);
-        return -1;
-    }
-
-    EVP_MD_CTX *md = NULL;
-    if (sha3_512_init(&md) != 0) {
-        merkle_tag_hash_zero_on_fail(out_state_root);
-        return -1;
-    }
-    const uint8_t version = NODUS_STATE_ROOT_VERSION_V4;
-    if (EVP_DigestUpdate(md, &version,          1)  != 1 ||
-        EVP_DigestUpdate(md, utxo_root,         64) != 1 ||
-        EVP_DigestUpdate(md, validator_root,    64) != 1 ||
-        EVP_DigestUpdate(md, delegation_root,   64) != 1 ||
-        EVP_DigestUpdate(md, epoch_state_root,  64) != 1 ||
-        EVP_DigestUpdate(md, chain_config_root, 64) != 1 ||
-        EVP_DigestUpdate(md, activation_root,   64) != 1) {
-        EVP_MD_CTX_free(md);
-        merkle_tag_hash_zero_on_fail(out_state_root);
-        return -1;
-    }
-    if (sha3_512_final(md, out_state_root) != 0) {
-        merkle_tag_hash_zero_on_fail(out_state_root);
-        return -1;
-    }
-    return 0;
-}
+/* O15J Faz 3 — the 6-input v4 combiner (which appended the Ledger V2
+ * activation-authority tree under NODUS_STATE_ROOT_VERSION_V4) is DELETED
+ * with the activation ceremony. It was emitted only by the rehearsal
+ * builds of the compile-gated ceremony, which never shipped, so no chain
+ * in existence carries a v4 state_root and there is nothing to verify
+ * historically. v3 above is once again the ONLY composition this tree
+ * emits. The version byte 0x04 is retired, never reused
+ * (nodus/include/nodus/nodus_types.h). */
 
 /* ── Stage B.5 — validator_root (real) ─────────────────────────────── */
 
@@ -1494,30 +1451,10 @@ int nodus_witness_merkle_compute_state_root(nodus_witness_t *w,
      * pre-existing buffer contents are then never silently replaced by
      * the zero sentinel. */
     uint8_t combined[64];
-#ifdef NODUS_V2_ACTIVATION_AUTHORITY
-    /* O15C test-only activation-authority builds: the activation tree is
-     * the 6th leg and the composition version advances to v4. Fails
-     * closed exactly like every other leg. Production builds (no flag)
-     * compile the v3 branch below — byte-identical to O15B. */
-    uint8_t activation_root[64];
-    if (nodus_witness_v2_activation_root(w, activation_root) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "compute_state_root: activation_root failed");
-        QGP_BENCH_END(QGP_BENCH_MERKLE_COMPUTE);
-        return -1;
-    }
-    if (nodus_merkle_combine_state_root_v4(utxo_root,
-                                            validator_root,
-                                            delegation_root,
-                                            epoch_state_root,
-                                            chain_config_root,
-                                            activation_root,
-                                            combined) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "compute_state_root: combine_v4 failed — "
-                      "no root emitted");
-        QGP_BENCH_END(QGP_BENCH_MERKLE_COMPUTE);
-        return -1;
-    }
-#else
+    /* O15J Faz 3 — ONE composition, unconditionally. The v4 leg (the
+     * activation-authority tree, emitted only by the ceremony's rehearsal
+     * builds) is deleted with the ceremony, so there is again exactly one
+     * way this tree emits a state_root. */
     if (nodus_merkle_combine_state_root_v3(utxo_root,
                                             validator_root,
                                             delegation_root,
@@ -1529,7 +1466,6 @@ int nodus_witness_merkle_compute_state_root(nodus_witness_t *w,
         QGP_BENCH_END(QGP_BENCH_MERKLE_COMPUTE);
         return -1;
     }
-#endif
     memcpy(root_out, combined, 64);
     QGP_BENCH_END(QGP_BENCH_MERKLE_COMPUTE);
     return 0;

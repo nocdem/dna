@@ -26,7 +26,6 @@
 #include "witness/nodus_witness.h"
 #include "witness/nodus_witness_db.h"
 #include "witness/nodus_witness_merkle.h"
-#include "witness/nodus_witness_v2_activation.h"  /* O15C v4 branch */
 #include "nodus/nodus_chain_config.h"
 #include "nodus/nodus_types.h"
 
@@ -144,19 +143,11 @@ static void test_healthy_root_unchanged(void) {
     CHECK_EQ(nodus_chain_config_compute_root(w, cc), 0);
 
     uint8_t expected[64];
-#ifdef NODUS_V2_ACTIVATION_AUTHORITY
-    /* O15C rehearsal builds compose state_root v4: the same five real
-     * subtrees plus the activation tree as the sixth leg. The v3 pin
-     * below still holds for production builds — this branch proves the
-     * flag build's composition is exactly combine_v4 over real legs. */
-    uint8_t act[64];
-    CHECK_EQ(nodus_witness_v2_activation_root(w, act), 0);
-    nodus_merkle_combine_state_root_v4(utxo, validator, delegation,
-                                        epoch, cc, act, expected);
-#else
+    /* O15J Faz 3 — the v4 (6-leg) composition went with the activation
+     * ceremony. state_root is v3 over the five real subtrees, in every
+     * build; there is no longer a second composition to branch on. */
     nodus_merkle_combine_state_root_v3(utxo, validator, delegation,
                                         epoch, cc, expected);
-#endif
 
     uint8_t got[64];
     CHECK_EQ(nodus_witness_merkle_compute_state_root(w, got), 0);

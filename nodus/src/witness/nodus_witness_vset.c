@@ -12,10 +12,6 @@
 
 #include "witness/nodus_witness_vset.h"
 #include "witness/nodus_witness_committee.h"
-#ifdef NODUS_V2_ACTIVATION_AUTHORITY
-#include "witness/nodus_witness_v2_activation.h"  /* O15C Stage C exclusion */
-#include "witness/nodus_witness_domreg.h"         /* filter_snapshot helper */
-#endif
 #include "nodus/nodus_chain_config.h"
 #include "dnac/dnac.h"
 #include "dnac/validator.h"
@@ -486,14 +482,8 @@ static int vset_build_and_store(nodus_witness_t *w,
     size_t   blob_len = 0;
     uint8_t  hash[DNA_VSET_HASH_LEN];
 
-#ifdef NODUS_V2_ACTIVATION_AUTHORITY
-    dna_vset_snapshot_t *built = NULL;
-    if (nodus_witness_vset_build_for_epoch(w, e_start, target, &built,
-                                            &blob, &blob_len, hash) != 0) {
-#else
     if (nodus_witness_vset_build_for_epoch(w, e_start, target, NULL,
                                             &blob, &blob_len, hash) != 0) {
-#endif
         /* Includes "committee is empty". On a real chain that is a fault,
          * not an empty set — an epoch with nobody allowed to vote is not
          * a state this ledger can represent. */
@@ -503,50 +493,12 @@ static int vset_build_and_store(nodus_witness_t *w,
         return -1;
     }
 
-#ifdef NODUS_V2_ACTIVATION_AUTHORITY
-    /* ── O15C Stage C — one-shot unready exclusion at the readiness
-     * deadline boundary (created_at_height == the SCHEDULED record's
-     * deadline_height). Selection-only and floor-guarded: members of the
-     * built candidate set without a stored readiness signal leave the
-     * FROZEN set through this ordinary build — bonds, delegations and
-     * status rows untouched (the domreg Stage-C transplant). */
-    do {
-        uint8_t (*excl)[DNA_ACT_VOTER_ID_LEN] = NULL;
-        size_t n_excl = 0;
-        if (!built) break;
-        excl = calloc((size_t)built->active_count, DNA_ACT_VOTER_ID_LEN);
-        if (!excl) { free(blob); dna_vset_free(&built); return -1; }
-        int xrc = nodus_witness_v2_activation_exclusions(
-            w, created_at_height, built,
-            (uint16_t)DNAC_COMMITTEE_SIZE, excl,
-            (size_t)built->active_count, &n_excl);
-        if (xrc < 0) { free(excl); free(blob); dna_vset_free(&built); return -1; }
-        if (xrc != 0 || n_excl == 0) { free(excl); break; }
-
-        dna_vset_snapshot_t *filtered =
-            nodus_witness_domreg_filter_snapshot(built, excl, n_excl);
-        free(excl);
-        if (!filtered) { free(blob); dna_vset_free(&built); return -1; }
-
-        /* Re-encode + re-hash the filtered set; replace the stored bytes. */
-        size_t flen = dna_vset_encoded_len(filtered);
-        uint8_t *fblob = flen ? malloc(flen) : NULL;
-        if (!fblob || dna_vset_encode(filtered, fblob, flen, &flen) != 0 ||
-            dna_vset_hash(filtered, hash) != 0) {
-            free(fblob); dna_vset_free(&filtered);
-            free(blob); dna_vset_free(&built);
-            return -1;
-        }
-        dna_vset_free(&filtered);
-        free(blob);
-        blob = fblob;
-        blob_len = flen;
-        QGP_LOG_WARN(LOG_TAG, "Stage C: %zu unready validator(s) excluded "
-                     "from the epoch-%llu snapshot",
-                     n_excl, (unsigned long long)e_start);
-    } while (0);
-    dna_vset_free(&built);
-#endif
+    /* O15J Faz 3 — the O15C "Stage C" one-shot exclusion of validators
+     * that never signalled activation readiness is deleted with the
+     * ceremony: there is no readiness signal to be missing, so an
+     * ordinary snapshot build is the only build. The `built` snapshot
+     * out-parameter of nodus_witness_vset_build_for_epoch existed solely
+     * to feed that filter and is now passed NULL above. */
 
     int rc = nodus_witness_vset_insert(w, e_start, blob, blob_len, hash,
                                         created_at_height);

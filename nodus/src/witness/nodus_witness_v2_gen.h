@@ -4,14 +4,19 @@
  *        Ledger V2 chain derived from a local operator config, with NO
  *        legacy ancestor.
  *
- * The activation seam (nodus_witness_v2_seam.c) derives a successor from
- * a TERMINAL LEGACY DATABASE. This module derives a chain from NOTHING
- * but a config. It reuses the seam's proven steps 4 and 6-8 verbatim —
- * provisional-DB creation, vset_commit_genesis + domreg_init_genesis +
- * dna_gman_encode + nodus_witness_v2_genesis_ex, the supply
- * post-conditions, the genesis bundle persist, and the
- * rename-only-on-COMPLETE discipline — and replaces exactly the three
- * steps that were legacy-shaped:
+ * This module derives a chain from NOTHING but a config. It is the only
+ * way a Ledger V2 chain is born.
+ *
+ * PROVENANCE (the seam it grew out of is GONE — O15J Faz 3 removed the
+ * whole V1→V2 activation ceremony, including nodus_witness_v2_seam.c).
+ * That seam derived a successor from a TERMINAL LEGACY DATABASE. This
+ * module kept its proven steps 4 and 6-8 verbatim — provisional-DB
+ * creation, vset_commit_genesis + domreg_init_genesis + dna_gman_encode
+ * + nodus_witness_v2_genesis_ex, the supply post-conditions, the genesis
+ * bundle persist, and the rename-only-on-COMPLETE discipline — and
+ * replaced exactly the steps that were legacy-shaped. The step numbers
+ * below are the seam's, kept because they are how this module's own
+ * structure is still organised; the file they refer to no longer exists.
  *
  *   seam step 1  terminal binding       → REPLACED: source_tag is
  *                                         "DNA.GENESIS.v1" and
@@ -362,9 +367,12 @@ int nodus_witness_v2_gen_derive(const char *data_path,
  * Is `db_path` a PURE-V2 chain database — i.e. does it carry a committed
  * height-0 genesis manifest whose source_tag is NODUS_V2_GEN_SOURCE_TAG?
  *
- * The pure-V2 counterpart of nodus_witness_v2_seam_is_successor, which
- * probes for the seam's own tag and therefore does NOT recognise a chain
- * built by this module.
+ * Since O15J Faz 3 this is the ONLY chain-role probe: the activation
+ * seam's counterpart (nodus_witness_v2_seam_is_successor, which matched
+ * the terminal-legacy tag) was removed with the rest of the ceremony.
+ * A database carrying that older tag is therefore no longer recognised
+ * as a V2 chain by anything — see the note in nodus_witness.c's
+ * post-open gate.
  *
  * @return 1 yes, 0 no, -1 the database could not be probed.
  */

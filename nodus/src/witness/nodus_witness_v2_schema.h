@@ -368,27 +368,41 @@ int nodus_witness_db_migrate_v2s9(nodus_witness_t *w);
 int nodus_witness_db_migrate_v2s9_ex(nodus_witness_t *w,
                                      nodus_v2s9_mig_fail_t fail_at);
 
-/* ── S10 migration (O15C — activation authority) ───────────────────────
+/* ── S10 migration (O15C — activation authority; now an EMPTY RUNG) ────
  *
- * Adds the two activation-authority tables (`v2_activation` singleton +
- * `v2_activation_readiness`; DDL single-sourced from
- * nodus_witness_v2_activation_db_migrate). Purely ADDITIVE — no table is
- * dropped or rebuilt, so there is no populated-data refusal: the new
- * tables cannot pre-exist with rows on a version-9 database (nothing
- * below version 10 can write them). Version 11+ fails closed. */
+ * O15C added the two activation-authority tables here (`v2_activation`
+ * singleton + `v2_activation_readiness`, DDL single-sourced from the
+ * activation module). O15J Faz 3 deleted the activation ceremony and
+ * both tables with it, so THIS STAGE CREATES NO TABLE: it only advances
+ * user_version 9 → 10.
+ *
+ * The rung is kept rather than collapsed, and that is a deliberate
+ * choice, not inertia. The ladder is a chain of EXACT predecessors — S11
+ * refuses any version but 10, and the pure-V2 builder climbs to S12
+ * through it — and version-10 databases exist. Renumbering the ladder to
+ * close the gap would invalidate every rung above it for no gain, and a
+ * schema version is a permanent identifier of a shape, not a counter.
+ *
+ * Still purely ADDITIVE (it now adds nothing), so there is no
+ * populated-data refusal. Version 11+ fails closed. */
 #define NODUS_V2_SCHEMA_VERSION_S10  10u
 
+/* The two mid-stage injection points are RETAINED at their numbers even
+ * though the steps they named are gone: removing them would renumber
+ * V2S10MIG_FAIL_BEFORE_COMMIT, silently repointing any caller that
+ * passes it. They now abort a stage that writes only the version. */
 typedef enum {
     V2S10MIG_FAIL_NONE = 0,
     V2S10MIG_FAIL_AFTER_BEGIN,      /* after BEGIN, before any DDL        */
     V2S10MIG_FAIL_AFTER_REVALIDATE, /* in-txn version re-read passed      */
-    V2S10MIG_FAIL_AFTER_TABLES,     /* both activation tables created     */
-    V2S10MIG_FAIL_AFTER_VERIFY,     /* schema-shape verification passed   */
+    V2S10MIG_FAIL_AFTER_TABLES,     /* RETIRED step — no table is created */
+    V2S10MIG_FAIL_AFTER_VERIFY,     /* RETIRED step — nothing to verify   */
     V2S10MIG_FAIL_BEFORE_COMMIT     /* user_version written, pre-COMMIT   */
 } nodus_v2s10_mig_fail_t;
 
-/** Atomic O15C migration. Version 0/5/6/7/8 runs the S9 chain first,
- *  then 9 → 10 atomically with the O15B in-transaction revalidation.
+/** Atomic 9 → 10 version bump. Version 0/5/6/7/8 runs the S9 chain
+ *  first, then 9 → 10 atomically with the O15B in-transaction
+ *  revalidation. Creates no table since O15J Faz 3.
  *  @return 0 migrated or already at 10 (idempotent); -1 failure. */
 int nodus_witness_db_migrate_v2s10(nodus_witness_t *w);
 

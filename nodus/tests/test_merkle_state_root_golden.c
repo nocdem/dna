@@ -65,10 +65,6 @@
 
 #include "witness/nodus_witness_merkle.h"
 #include "witness/nodus_witness.h"
-#ifdef NODUS_V2_ACTIVATION_AUTHORITY
-#include "witness/nodus_witness_v2_activation.h"
-#include "nodus/nodus_chain_config.h"
-#endif
 
 #include <stdint.h>
 #include <stdio.h>
@@ -492,53 +488,11 @@ static void test_golden_state_root(void) {
     if (!w) { FAIL("fixture"); return; }
 
     uint8_t root[64];
-#ifdef NODUS_V2_ACTIVATION_AUTHORITY
-    /* O15C rehearsal builds emit state_root v4 (6th activation leg), so
-     * compute_state_root cannot match the v3 golden — BY DESIGN: the
-     * flag build is a different (test-only) consensus. What this test
-     * guards is preserved in two halves instead:
-     *   1. the RETAINED v3 combiner over the same five real subtrees
-     *      must still reproduce the golden byte-for-byte (historical
-     *      pre-v4 roots stay verifiable under their recorded version);
-     *   2. compute_state_root must equal combine_v4 over those legs
-     *      plus the real activation root (the composition is exactly
-     *      the documented one, nothing else moved). */
-    {
-        uint8_t utxo[64], val[64], del[64], ep[64], cc[64], act[64];
-        if (nodus_witness_merkle_compute_utxo_root(w, utxo) != 0 ||
-            nodus_witness_merkle_compute_validator_root(w, val) != 0 ||
-            nodus_witness_merkle_compute_delegation_root(w, del) != 0 ||
-            nodus_witness_merkle_compute_epoch_state_root(w, ep) != 0 ||
-            nodus_chain_config_compute_root(w, cc) != 0 ||
-            nodus_witness_v2_activation_root(w, act) != 0) {
-            FAIL("subtree recomputation failed");
-            witness_free(w);
-            return;
-        }
-        nodus_merkle_combine_state_root_v3(utxo, val, del, ep, cc, root);
-        if (memcmp(root, GOLDEN_STATE_ROOT, 64) != 0) {
-            FAIL("the RETAINED v3 combiner no longer reproduces the "
-                 "golden — historical verification broke");
-            witness_free(w);
-            return;
-        }
-        uint8_t v4[64], got[64];
-        if (nodus_merkle_combine_state_root_v4(utxo, val, del, ep, cc,
-                                               act, v4) != 0 ||
-            nodus_witness_merkle_compute_state_root(w, got) != 0 ||
-            memcmp(v4, got, 64) != 0) {
-            FAIL("flag-build compute_state_root != combine_v4 over the "
-                 "real legs");
-            witness_free(w);
-            return;
-        }
-        printf("PASS (v4 build: golden holds under the retained v3 "
-               "combiner; live root == combine_v4)\n");
-        passed++;
-        witness_free(w);
-        return;
-    }
-#endif
+    /* O15J Faz 3 — the state_root v4 (6-leg) composition is gone with the
+     * activation ceremony that was its only reason to exist. Production is
+     * and stays v3 over the five real subtrees, which is the composition
+     * GOLDEN_STATE_ROOT has always pinned; the golden VALUE is untouched by
+     * that removal. */
     if (nodus_witness_merkle_compute_state_root(w, root) != 0) {
         FAIL("compute_state_root returned -1");
         witness_free(w);

@@ -47,20 +47,13 @@ option(NODUS_STANDALONE "Include shared crypto sources and log shim" ON)
 #   nodus/docs/plans/2026-04-24-perf-harness-design.md
 option(QGP_BENCH "Enable perf bench instrumentation" OFF)
 
-# ── Ledger V2 O15C — activation authority (TEST-ONLY builds) ─────────────
-# OFF by default and set on NO production target or deploy procedure. ON
-# compiles the activation-authority call sites into libnodus and
-# nodus-server (type-15/16 admission, the boundary state machine, terminal
-# refusal, state_root v4 with the activation leg, schema v10 at open, and
-# the seam that derives the successor V2 chain). A binary built with this
-# ON is a REHEARSAL binary, not a production one — normal non-test
-# execution remains unable to activate V2 (O15C-B §7).
-option(NODUS_V2_ACTIVATION "O15C activation-authority build (test-only)" OFF)
-if(NODUS_V2_ACTIVATION)
-    add_compile_definitions(NODUS_V2_ACTIVATION_AUTHORITY=1)
-    message(WARNING "NODUS_V2_ACTIVATION=ON — building a TEST-ONLY "
-                    "Ledger V2 activation-authority binary")
-endif()
+# O15J Faz 3 — the NODUS_V2_ACTIVATION option (which defined the compile
+# macro NODUS_V2_ACTIVATION_AUTHORITY, producing a "rehearsal" binary with
+# type-15/16 admission, the boundary state machine, terminal refusal,
+# state_root v4 and the successor-derivation seam) is REMOVED with the
+# activation ceremony itself. There is no second build variant of this
+# tree any more: a Ledger V2 chain is born V2, so there is nothing to
+# activate and nothing to gate at compile time.
 if(QGP_BENCH)
     add_compile_definitions(QGP_BENCH)
 endif()
@@ -207,39 +200,43 @@ set(NODUS_SOURCES
     src/witness/nodus_witness_v2_preflight.c
     src/witness/nodus_witness_v2_finalize.c
     # Ledger V2 O15B — the ONE production activation gate, the ingress
-    # adapter it guards, and bounded sync. All PRODUCTION-DORMANT: the gate
-    # can never open in this build (no committed activation authority
-    # exists, and the preflight is structurally never ready), so no V2
-    # frame is ever dispatched. NODUS_V2_TEST_AUTHORITY — the test-only
-    # fixture that can grant synthetic authority — is deliberately NOT
-    # defined on this target; see test_v2_gate_linked, which proves with
-    # `nm` that the symbol is absent from libnodus and nodus-server.
+    # adapter it guards, and bounded sync.
+    #
+    # O15J Faz 3: these are NO LONGER production-dormant. The gate's
+    # authority is now the chain's OWN committed genesis manifest, so on a
+    # pure-V2 database a DEFAULT build can and should open it, arm ingress
+    # and dispatch V2 frames — that is the whole point of a chain born V2.
+    # On any other database the gate reports NO_AUTHORITY and nothing is
+    # dispatched. See nodus_witness_v2_gate.h.
+    #
+    # Still true and still load-bearing: NODUS_V2_TEST_AUTHORITY — the
+    # test-only fixture that can grant SYNTHETIC authority — is
+    # deliberately NOT defined on this target; see test_v2_gate_linked,
+    # which proves with `nm` that the fixture symbols are absent from
+    # libnodus and nodus-server.
     src/witness/nodus_witness_v2_gate.c
     src/witness/nodus_witness_v2_ingress.c
     src/witness/nodus_witness_v2_sync2.c
 
-    # Ledger V2 O15C — the committed activation authority: shared
-    # record/schedule/readiness codec + witness-side record, root,
-    # type-15/16 apply, boundary state machine and terminal refusal.
-    # ALWAYS COMPILED (unit-testable); every call site that could admit a
-    # type-15/16 tx, run the machine, refuse a height, emit state_root v4
-    # or derive the successor chain compiles ONLY under
-    # NODUS_V2_ACTIVATION_AUTHORITY (the NODUS_V2_ACTIVATION option
-    # below, OFF by default — the exact test-target-only gate O15C-A
-    # specified).
-    ${SHARED_DIR}/dnac/activation_wire.c
-    src/witness/nodus_witness_v2_activation.c
-    src/witness/nodus_witness_v2_seam.c
+    # Ledger V2 — successor-chain block production, the genesis bundle
+    # codec that carries a chain's committed base tables, and the joiner
+    # that re-derives a V2 database from that bundle against a local pin.
+    #
+    # O15J Faz 3 removed the activation ceremony that used to head this
+    # block (the shared record/schedule/readiness codec, the witness-side
+    # activation record and root, the type-15/16 apply lanes, the boundary
+    # state machine, terminal refusal and the successor-derivation seam).
+    # These three survive because none of them was ever about the V1→V2
+    # transition — they serve any Ledger V2 chain, however it was born.
     src/witness/nodus_witness_v2_produce.c
     src/witness/nodus_witness_v2_bundle.c
     src/witness/nodus_witness_v2_join.c
 
     # Ledger V2 O15J Faz 1 — the PURE-V2 genesis builder: a complete
     # Ledger V2 chain derived from a local operator config, with no legacy
-    # ancestor. ALWAYS COMPILED and unit-tested, but INERT: nothing on a
-    # running node calls nodus_witness_v2_gen_derive yet — the startup
-    # wiring is not part of Faz 1. Depends on NO activation symbol, so it
-    # survives the removal of the ceremony.
+    # ancestor. Depends on NO activation symbol, which is why it survived
+    # the removal of the ceremony — and is now the ONLY way a V2 chain
+    # comes into being.
     src/witness/nodus_witness_v2_gen.c
 
     # Ledger V2 S6 — INACTIVE generic genesis/distribution manifest +
@@ -918,11 +915,17 @@ add_test(NAME test_v2_migration_toctou COMMAND test_v2_migration_toctou)
 # Ledger V2 O15B — the activation gate, ingress reachability and the
 # network result algebra.
 #
-# NODUS_V2_TEST_AUTHORITY is defined HERE AND NOWHERE ELSE among the
-# targets this project ships. It compiles in the test-only fixture that can
-# grant synthetic activation authority, which is the only way the ARMED
-# ingress/sync paths can be exercised at all — production can never reach
-# them, and shipping them unexercised would be its own hazard.
+# NODUS_V2_TEST_AUTHORITY is defined ONLY on test targets that deliberately
+# compile the gate TU in — today this one and test_v2_sync_claims (:1237) —
+# and on NO library or server target. It compiles in the test-only fixture
+# that can grant synthetic activation authority, which is the only way the
+# ARMED ingress/sync paths can be exercised without deriving a real chain.
+#
+# O15J Faz 3 corrected the older wording here, which claimed "HERE AND
+# NOWHERE ELSE": test_v2_sync_claims has carried the macro alongside this
+# target, so the sentence was false where it mattered most. What is true —
+# and what test_v2_gate_linked actually proves — is the absence from every
+# SHIPPED artefact, which is the claim the gate exists to defend.
 #
 # The symbol's ABSENCE from libnodus and nodus-server is not argued from
 # this line; test_v2_gate_linked proves it with `nm` against the linked
@@ -975,6 +978,7 @@ add_test(NAME test_v2_gate_linked
          COMMAND ${CMAKE_COMMAND}
                  -DNODUS_LIB=$<TARGET_FILE:nodus>
                  -DNODUS_SERVER=$<TARGET_FILE:nodus-server>
+                 -DGATE_PURE=$<TARGET_FILE:test_v2_gate_pure>
                  -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/v2_gate_linked.cmake)
 
 # Ledger V2 O15J — the same absence proof for the test-only CONSERVATION
@@ -1181,23 +1185,35 @@ register_witness_test(test_v2_bundle)
 # L1-F1 validator_stats carried in the genesis bundle).
 register_witness_test(test_v2_gen)
 
-# Ledger V2 O15C — the committed activation authority: shared codecs +
-# digests (KAT-style sensitivity), schema v10 migration/rollback, the
-# type-15/16 apply consensus matrices over REAL ML-DSA-87 committee
-# keys, the boundary state machine (SCHEDULED→READY→ACTIVE, bounded
-# postponement, auto-cancel), terminal-height refusal, Stage C
-# exclusions with the floor guard, the V2 attendance writer (Rule N
-# source) and the 6-leg state_root v4 combiner. Runs identically in
-# both build variants — the module is always compiled; only its
-# production call sites are NODUS_V2_ACTIVATION-gated.
-register_witness_test(test_v2_activation)
-# O15C — the activation SEAM: deterministic successor-chain derivation
-# from a terminal legacy chain (terminal source commitment, S6 claim
-# reserve == migratable value, no spendable UTXO copies, claim
-# decrement + duplicate-claim rejection through the REAL apply engine,
-# derivation determinism twins, tamper sensitivity, fail-closed
-# token/malformed-owner classification, restart re-derivation parity).
-register_witness_test(test_v2_seam)
+# O15J Faz 3 — test_v2_activation and test_v2_seam are GONE with the
+# activation ceremony they covered (the committed activation record and
+# its codecs, the type-15/16 apply matrices, the boundary state machine,
+# terminal-height refusal, Stage C exclusions, the state_root v4
+# combiner, and the successor-derivation seam). Every module under test
+# has been deleted, so the tests are not "disabled" — there is nothing
+# left for them to assert.
+#
+# Ledger V2 O15J Faz 3 — THE GATE ON A DEFAULT BUILD.
+#
+# test_v2_gate (above) compiles the gate TU with NODUS_V2_TEST_AUTHORITY
+# so it can exercise the ARMED paths through the synthetic fixture. That
+# is exactly why it cannot prove the property this one exists for: that a
+# PRODUCTION binary, with no fixture and no build flag, opens the gate on
+# a real pure-V2 chain and refuses everything else.
+#
+# So this target defines NEITHER NODUS_V2_TEST_AUTHORITY NOR any
+# activation macro — it is a default build, and the authority it reads is
+# the chain's own committed genesis manifest. It mirrors
+# register_witness_test (nodus, dsa, nodus + NODUS_WITNESS_INTERNAL_API)
+# and adds `crypto`, which the helper does not link and which building a
+# real V2 chain needs. Written out rather than changed in the helper:
+# editing register_witness_test would silently relink every other witness
+# test.
+add_executable(test_v2_gate_pure tests/test_v2_gate_pure.c)
+target_compile_definitions(test_v2_gate_pure PRIVATE
+               NODUS_WITNESS_INTERNAL_API)
+target_link_libraries(test_v2_gate_pure nodus dsa nodus crypto)
+add_test(NAME test_v2_gate_pure COMMAND test_v2_gate_pure)
 
 # Ledger V2 O15F Task 1 — the successor active-set maximum (30): target
 # clamp, insert/resolve reject, live serve, and the seam terminal-set +
@@ -1912,6 +1928,14 @@ register_witness_test(test_halt_recovery_historical_committee)
 register_witness_test(test_heartbeat_signed_checksum)
 register_witness_test(test_precommit_cert_verify_lazy)
 register_witness_test(test_sync_check_dos_rate_limit)
+
+# O15J Faz 3 — the `syncing` latch must not be one-way. Every clear of
+# sync_state.syncing lives on a response path, so a response that never
+# arrives used to wedge a node out of sync permanently and silently.
+# Locks: no chain DB never latches · a stalled latch is released · a
+# HEALTHY catch-up is not interrupted (the direction a naive watchdog
+# breaks) · progress is tracked separately from the rate-limit stamp.
+register_witness_test(test_sync_stall_watchdog)
 register_witness_test(test_replay_block_historical_committee)
 register_witness_test(test_wire_protocol_version_reject)
 

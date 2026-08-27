@@ -114,17 +114,27 @@ typedef enum {
     /** A read failed; readiness is UNKNOWN, which is not readiness. */
     NODUS_V2_PF_INSPECTION_FAULT              = 14,
     /**
-     * O15C — a committed activation record exists but is malformed
-     * (unknown record_version / state, wrong blob widths). A committed
-     * authority this binary cannot interpret must stop it, never be
-     * silently ignored.
+     * RETIRED VALUE — kept for id stability, NEVER RAISED since O15J.
+     *
+     * O15C raised this when a committed activation record existed but was
+     * malformed (unknown record_version / state, wrong blob widths): a
+     * committed authority this binary could not interpret had to stop it
+     * rather than be silently ignored. O15J Faz 3 deleted the activation
+     * ceremony — no table stores an activation record, no transaction
+     * writes one and no build reads one — so the condition cannot arise.
+     * The check is deleted, the id is not reused.
      */
     NODUS_V2_PF_ACTIVATION_AUTHORITY_MALFORMED = 15,
     /**
-     * O15C — the committed activation target digest D differs from this
-     * build's compiled target (ruleset tuples / header version / schema
-     * version). The chain scheduled a runtime this binary is not — the
-     * node must not participate in the activation.
+     * RETIRED VALUE — kept for id stability, NEVER RAISED since O15J.
+     *
+     * O15C raised this when the committed activation target digest D
+     * differed from the build's compiled target (ruleset tuples / header
+     * version / schema version): the chain had scheduled a runtime this
+     * binary was not, so the node had to stay out of the activation.
+     * O15J Faz 3 deleted the ceremony, and with it both the committed
+     * target and the compiled one. The check is deleted, the id is not
+     * reused.
      */
     NODUS_V2_PF_TARGET_MISMATCH               = 16
 } nodus_v2_pf_issue_t;

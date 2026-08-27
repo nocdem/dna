@@ -7,7 +7,6 @@
  */
 
 #include "witness/nodus_witness_v2_schema.h"
-#include "witness/nodus_witness_v2_activation.h"  /* S10 DDL single source */
 
 #include <sqlite3.h>
 #include <limits.h>
@@ -1078,26 +1077,23 @@ int nodus_witness_db_migrate_v2s10_ex(nodus_witness_t *w,
         if (rv == 0) { already = 1; break; }
         if (fail_at == V2S10MIG_FAIL_AFTER_REVALIDATE) break;
 
-        if (nodus_witness_v2_activation_db_migrate(w) != 0) break;
+        /* O15J Faz 3 — S10 IS NOW AN EMPTY RUNG.
+         *
+         * It created the two activation-authority tables (`v2_activation`
+         * + `v2_activation_readiness`) and verified their exact column
+         * shape. Both went with the activation ceremony, so this stage
+         * creates nothing and there is nothing to verify.
+         *
+         * The RUNG ITSELF STAYS, and deliberately: the ladder is a chain
+         * of exact predecessors (S11 refuses anything but a version-10
+         * database, and nodus_witness_v2_gen_derive climbs to S12 through
+         * it), and version 10 databases exist. Collapsing 9→11 would
+         * renumber every rung above it and strand them. The two fail
+         * injection points below are kept at their numbers for the same
+         * reason — removing them would renumber
+         * V2S10MIG_FAIL_BEFORE_COMMIT — and now simply abort a stage that
+         * writes only the version. */
         if (fail_at == V2S10MIG_FAIL_AFTER_TABLES) break;
-
-        static const char *const act_cols[] = {
-            "id", "record_version", "state", "chain_id", "target",
-            "activation_height", "original_height", "deadline_height",
-            "schedule_digest", "proposal_nonce", "commit_height",
-            "postpone_count"
-        };
-        static const char *const rdy_cols[] = {
-            "schedule_digest", "voter_id", "signal_version",
-            "signal_epoch", "pubkey", "signature"
-        };
-        if (table_cols_exact(w, "v2_activation", act_cols,
-                sizeof(act_cols) / sizeof(act_cols[0])) != 1 ||
-            table_cols_exact(w, "v2_activation_readiness", rdy_cols,
-                sizeof(rdy_cols) / sizeof(rdy_cols[0])) != 1) {
-            QGP_LOG_ERROR(LOG_TAG, "%s", "S10 schema shape drift — refusing");
-            break;
-        }
         if (fail_at == V2S10MIG_FAIL_AFTER_VERIFY) break;
 
         if (exec_sql(w, "PRAGMA user_version = 10") != 0) break;

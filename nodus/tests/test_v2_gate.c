@@ -4,11 +4,11 @@
  *        result algebra.
  *
  * ── WHAT THIS TEST IS FOR ─────────────────────────────────────────────
- * O15B ships the whole Ledger V2 network surface production-dormant. The
- * claim that makes that safe is narrow and checkable:
+ * The claim that makes the Ledger V2 network surface safe is narrow and
+ * checkable:
  *
- *   1. The gate can never open on a production build, and no input
- *      reaches it that could change that.
+ *   1. The gate stays SHUT on a database that is not a Ledger V2 chain,
+ *      and no input reaches it that could change that.
  *   2. Ingress is unreachable unless the gate opened.
  *   3. A V2 frame on an unarmed node produces NOT_ACTIVE with no peer
  *      judgement, no acknowledgement, no queue entry and no state change.
@@ -18,13 +18,32 @@
  * "no state change" half is proven by a whole-database digest across the
  * call rather than by inspection.
  *
+ * ⚠ WHAT NO_AUTHORITY MEANS SINCE O15J Faz 3 ──────────────────────────
+ * The activation ceremony is GONE, and with it the reading of
+ * NO_AUTHORITY this file was written under ("this binary has no
+ * activation authority compiled in"). Authority is now a property of the
+ * DATABASE: a chain whose committed height-0 genesis manifest carries the
+ * pure-V2 source tag IS its own authority, and such a chain opens the
+ * gate in an ORDINARY build.
+ *
+ * Every fixture here is a bare `nodus_witness_create_chain_db` database —
+ * NOT a pure-V2 chain — so every "the gate is shut" assertion below still
+ * holds, but it now means "this database is not a V2 chain", not "this
+ * software cannot activate V2 at all".
+ *
+ * The other half of the contract — that a REAL pure-V2 chain DOES open
+ * the gate and DOES arm, in a build carrying no authority macro at all —
+ * is `test_v2_gate_pure.c`. It must never be merged into this file: this
+ * target compiles the synthetic-authority fixture in, and a test that can
+ * grant itself authority cannot prove authority is derived.
+ *
  * ── ON THE TEST-ONLY AUTHORITY FIXTURE ────────────────────────────────
  * `nodus_witness_v2_gate_test_arm()` exists only under
- * NODUS_V2_TEST_AUTHORITY, which CMake defines on this target and on no
- * library or server target. `test_v2_gate_linked` proves its absence from
- * the shipped binaries with `nm`. Using it here is what lets the ARMED
- * paths — which production can never reach — still be tested rather than
- * shipped unexercised.
+ * NODUS_V2_TEST_AUTHORITY, which CMake defines on test targets that
+ * compile the gate TU in, and on no library or server target.
+ * `test_v2_gate_linked` proves its absence from the shipped binaries with
+ * `nm`. Using it here is what lets the ARMED paths be exercised on a
+ * database that could never open the gate on its own merits.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -140,13 +159,16 @@ int main(void) {
 
     /* ── 1. THE GATE IS CLOSED, AND CLOSED FOR THE RIGHT REASON ────────
      * NO_AUTHORITY, not NOT_READY: the distinction is what tells an
-     * operator "this software cannot activate V2" apart from "this
-     * database is not ready yet", and both are true here. */
+     * operator "this database is not a Ledger V2 chain, so nothing here
+     * could ever activate" apart from "this is a V2 chain but it is not
+     * ready yet". This fixture is a bare chain database with no committed
+     * genesis manifest, so the first is the correct answer. */
     {
         fx_t f = {0};
         CHECK(fx_open(&f, "closed") == 0, "fixture open");
         CHECK(nodus_witness_v2_gate_state(f.w) == NODUS_V2_GATE_NO_AUTHORITY,
-              "the production gate must report NO_AUTHORITY");
+              "a database that is not a Ledger V2 chain must report "
+              "NO_AUTHORITY");
         CHECK(nodus_witness_v2_activation_permitted(f.w) == 0,
               "activation must not be permitted");
         CHECK(strcmp(nodus_witness_v2_gate_state_name(
@@ -346,20 +368,28 @@ int main(void) {
     }
 
 #ifdef NODUS_V2_TEST_AUTHORITY
-    /* ── 10. THE ARMED PATH — reachable ONLY through the test fixture ──
+    /* ── 10. THE ARMED PATH ON A DATABASE THAT COULD NEVER OPEN ────────
      *
-     * Without this section the ingress, queue and sync code would ship
-     * completely unexercised, which is its own hazard. The fixture grants
-     * exactly what production lacks and nothing more, and the two halves
-     * of the gate stay separately controllable so a test cannot silently
-     * conflate them.
+     * This fixture is NOT a Ledger V2 chain, so the only way it reaches
+     * the armed ingress/queue/sync code is the synthetic fixture — and
+     * without this section that code would ship unexercised on this
+     * database shape, which is its own hazard. The fixture grants exactly
+     * the authority half and nothing more, and the two halves of the gate
+     * stay separately controllable so a test cannot silently conflate
+     * them.
+     *
+     * A chain that opens the gate on its OWN committed authority is a
+     * different test entirely (test_v2_gate_pure.c) — and it must stay
+     * different, because it is only meaningful in a build where this
+     * fixture does not exist.
      */
     {
         fx_t f = {0};
         CHECK(fx_open(&f, "armed") == 0, "fixture open");
 
         /* Authority alone is NOT enough — readiness is still evaluated for
-         * real, and no database is ever ready while Rule N stands. */
+         * real, and this bare fixture database has genuine blocking
+         * findings (no V2 schema, no committed genesis). */
         nodus_witness_v2_gate_test_arm(f.w, 0);
         CHECK(nodus_witness_v2_gate_state(f.w) == NODUS_V2_GATE_NOT_READY,
               "authority WITHOUT readiness is NOT_READY, not OPEN");
@@ -400,7 +430,9 @@ int main(void) {
 
         nodus_witness_v2_gate_test_clear(f.w);
         CHECK(nodus_witness_v2_gate_state(f.w) == NODUS_V2_GATE_NO_AUTHORITY,
-              "clearing the fixture restores the production state");
+              "clearing the fixture restores the DERIVED state — and for "
+              "this database that is NO_AUTHORITY, because it is not a "
+              "Ledger V2 chain");
         CHECK(nodus_witness_v2_ingress_is_armed(f.w) == 0,
               "clearing the fixture disarms");
         fx_close(&f);

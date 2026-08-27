@@ -10,10 +10,10 @@
 STAGEF_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 export STAGEF_REPO_ROOT
 
-# Overridable so special-build campaigns (e.g. the O15C activation
-# rehearsal, which runs the NODUS_V2_ACTIVATION test-only build from its
-# own build dir) can point the harness at their binaries without
-# touching the default build tree.
+# Overridable so special-build campaigns (e.g. a run against binaries
+# built with non-default tokenomic constants, such as the halving test's
+# -DDNAC_BLOCKS_PER_YEAR build) can point the harness at their binaries
+# without touching the default build tree.
 STAGEF_NODUS_BIN="${STAGEF_NODUS_BIN:-$STAGEF_REPO_ROOT/nodus/build/nodus-server}"
 STAGEF_DNACLI_BIN="${STAGEF_DNACLI_BIN:-$STAGEF_REPO_ROOT/messenger/build/cli/dna-connect-cli}"
 STAGEF_NODUSCLI_BIN="${STAGEF_NODUSCLI_BIN:-$STAGEF_REPO_ROOT/nodus/build/nodus-cli}"

@@ -32,13 +32,9 @@
 #include "witness/nodus_witness_vset.h"        /* S3 epoch validator-set lifecycle */
 #include "witness/nodus_witness_sync.h"        /* A2 simetri: active sync_check trigger */
 #include "witness/nodus_witness_v2_sync2.h"    /* O15G: successor catch-up tick   */
-#include "witness/nodus_witness_v2_activation.h" /* O15C activation authority */
 #include "witness/nodus_witness_v2_produce.h"    /* O15D successor rounds */
 #include "witness/nodus_witness_v2_env.h"        /* metered batch check +
                                                   * the refusal KIND     */
-#ifdef NODUS_V2_ACTIVATION_AUTHORITY
-#include "witness/nodus_witness_v2_seam.h"       /* O15C successor derivation */
-#endif
 #include "nodus/nodus_chain_config.h"          /* Hard-Fork v1 apply dispatch */
 #include "protocol/nodus_tier3.h"
 #include "server/nodus_server.h"
@@ -2261,22 +2257,10 @@ int apply_tx_to_state(nodus_witness_t *w,
                 failed = true;
             }
         }
-#ifdef NODUS_V2_ACTIVATION_AUTHORITY
-        /* O15C — activation authority (admission is verify-gated to
-         * activation-authority builds; the apply mirrors the
-         * CHAIN_CONFIG lane). */
-        else if (tx_type == NODUS_W_TX_V2_SCHEDULE) {
-            if (nodus_witness_v2_activation_apply(w, tx_data, tx_len,
-                                                  block_height) != 0) {
-                failed = true;
-            }
-        } else if (tx_type == NODUS_W_TX_V2_READY) {
-            if (nodus_witness_v2_activation_apply_ready(w, tx_data, tx_len,
-                                                        block_height) != 0) {
-                failed = true;
-            }
-        }
-#endif
+        /* O15J Faz 3 — the type-15/16 activation apply lanes are DELETED
+         * with the ceremony. Both types are permanently inadmissible at
+         * verify (nodus_witness_verify.c, right after the tx-hash check),
+         * so no such transaction can reach this dispatch. */
     }
 
     /* Phase 6 / Task 31 — fees no longer decrement current_supply.
@@ -2941,29 +2925,10 @@ static int apply_epoch_boundary_transitions(nodus_witness_t *w,
         return -1;
     }
 
-#ifdef NODUS_V2_ACTIVATION_AUTHORITY
-    /* ─────── 6. O15C — activation state machine ───────
-     * Runs AFTER flips (5a) and the next-epoch freeze (5b), so every
-     * snapshot the readiness predicate consults is committed state, and
-     * still inside finalize_block's transaction BEFORE any state_root
-     * computation — a boundary that flips ACTIVE commits that fact in
-     * the terminal block's own root (O15C-B §4E ordering). */
-    {
-        int activated = 0;
-        if (nodus_witness_v2_activation_on_boundary(w, block_height,
-                                                    &activated) != 0) {
-            fprintf(stderr, "%s: epoch_boundary: activation state machine "
-                    "failed at h=%llu\n", LOG_TAG,
-                    (unsigned long long)block_height);
-            return -1;
-        }
-        if (activated) {
-            fprintf(stderr, "%s: LEDGER V2 ACTIVATION COMMITTED at h=%llu — "
-                    "this is the terminal legacy block\n",
-                    LOG_TAG, (unsigned long long)block_height);
-        }
-    }
-#endif
+    /* O15J Faz 3 — step 6 was the O15C activation state machine
+     * (SCHEDULED→READY→ACTIVE at the epoch boundary). It is deleted with
+     * the ceremony: no boundary flips a chain from V1 to V2 any more,
+     * because a V2 chain is born V2. */
 
     return 0;
 }
@@ -4015,17 +3980,10 @@ static int bft_start_round_internal(nodus_witness_t *w,
     /* F17 A2 — recompute BFT config from the chain-derived committee
      * for the next block. This is the authoritative quorum source. */
     uint64_t next_bh = nodus_witness_block_height(w) + 1;
-#ifdef NODUS_V2_ACTIVATION_AUTHORITY
-    /* O15C — terminal refusal: with a committed ACTIVE activation record
-     * the legacy chain ends at H_act; a leader must not even open a
-     * round beyond it. Committed state + height only (fail closed). */
-    if (nodus_witness_v2_activation_refuses_height(w, next_bh)) {
-        fprintf(stderr, "%s: legacy chain is TERMINAL — refusing to "
-                "propose block %llu (V2 activation committed)\n",
-                LOG_TAG, (unsigned long long)next_bh);
-        return -1;
-    }
-#endif
+    /* O15J Faz 3 — the terminal-height refusal (a committed ACTIVE
+     * activation record ending the legacy chain at H_act) is deleted with
+     * the ceremony: no chain is terminal any more, because none is
+     * scheduled to hand over to a successor. */
     /* O15D/O15F — a SUCCESSOR round carries V2 ENVELOPE (200) and CLAIM
      * (201) entries and nothing else: a legacy-typed entry (genesis
      * included) can never open a round on a successor chain. Content
@@ -4899,17 +4857,8 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
                     (unsigned long long)expected_height);
             return -1;
         }
-#ifdef NODUS_V2_ACTIVATION_AUTHORITY
-        /* O15C — terminal refusal (follower side): a committed ACTIVE
-         * activation record forbids every height above H_act. */
-        if (nodus_witness_v2_activation_refuses_height(w,
-                                                       prop->block_height)) {
-            fprintf(stderr, "%s: propose rejected — legacy chain is "
-                    "TERMINAL at the committed activation height\n",
-                    LOG_TAG);
-            return -1;
-        }
-#endif
+        /* O15J Faz 3 — the follower-side terminal refusal is deleted with
+         * the activation ceremony; see the leader-side note above. */
     }
 
     /* Initialize round state from proposal */
@@ -9385,24 +9334,11 @@ int nodus_witness_commit_batch(nodus_witness_t *w,
             return -1;
         }
 
-#ifdef NODUS_V2_ACTIVATION_AUTHORITY
-        /* O15C — after a DURABLY COMMITTED epoch-boundary block, derive
-         * the successor V2 chain iff this boundary sealed the activation
-         * (record ACTIVE). Idempotent, committed-state driven, and
-         * deliberately AFTER the commit: the derivation reads only
-         * committed rows and must never ride inside the block
-         * transaction it derives from. A failure here does not undo the
-         * committed terminal block — the post-open gate retries the
-         * derivation on the next restart (same committed inputs, same
-         * bytes). */
-        if (bh > 0 && (bh % (uint64_t)DNAC_EPOCH_LENGTH) == 0) {
-            if (nodus_witness_v2_seam_maybe_derive(w, NULL) != 0) {
-                QGP_LOG_ERROR(LOG_TAG, "commit_batch: successor "
-                              "derivation FAILED at h=%llu (will retry "
-                              "at next open)", (unsigned long long)bh);
-            }
-        }
-#endif
+        /* O15J Faz 3 — the post-commit successor derivation (deriving a
+         * V2 chain from a terminal legacy chain at the sealing epoch
+         * boundary) is deleted with the activation ceremony. A pure-V2
+         * chain is built once, from a config, by
+         * nodus_witness_v2_gen_derive — never from a predecessor. */
     }
     return commit_rc;
 }
@@ -9426,18 +9362,8 @@ int nodus_witness_replay_block(nodus_witness_t *w,
         return -1;
     }
 
-#ifdef NODUS_V2_ACTIVATION_AUTHORITY
-    /* O15C — terminal refusal (sync side): once the replayed history has
-     * committed an ACTIVE activation record, no legacy block above H_act
-     * exists on any honest chain; a peer offering one is offering a fork
-     * of a terminal chain. */
-    if (nodus_witness_v2_activation_refuses_height(w, rsp_height)) {
-        QGP_LOG_ERROR(LOG_TAG,
-            "replay_block: legacy chain is TERMINAL — refusing synced "
-            "block h=%llu", (unsigned long long)rsp_height);
-        return -1;
-    }
-#endif
+    /* O15J Faz 3 — the sync-side terminal refusal is deleted with the
+     * activation ceremony; see the leader-side note in the propose path. */
 
     /* replay_block uses the same body as commit_batch — the only
      * difference is the height precondition above. Delegate to avoid

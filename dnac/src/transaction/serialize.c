@@ -180,13 +180,6 @@ static size_t calc_tx_size(const dnac_transaction_t *tx) {
         size += DNAC_CC_WIRE_FIXED_LEN +
                 (size_t)n * DNAC_CC_WIRE_PER_VOTE;
     }
-    /* O15C. Activation authority — shared codec, activation_wire.h. */
-    if (tx->type == DNAC_TX_V2_SCHEDULE) {
-        size += dna_act15_wire_encoded_size(&tx->v2_activation_fields);
-    }
-    if (tx->type == DNAC_TX_V2_READY) {
-        size += (size_t)DNA_ACT16_WIRE_LEN;
-    }
     /* Dual-mode S5. Shielded section (only for DNAC_TX_SHIELDED). */
     if (tx->type == DNAC_TX_SHIELDED) {
         size += (size_t)DNAC_TX_SHIELDED_FIXED_SIZE +
@@ -424,25 +417,6 @@ int dnac_tx_serialize(const dnac_transaction_t *tx,
         ptr += written;
     }
 
-    /* O15C. Activation authority — delegated to the shared encoder so
-     * drift between libdna and libnodus cannot silently break consensus. */
-    if (tx->type == DNAC_TX_V2_SCHEDULE) {
-        size_t written = 0;
-        size_t cap = buffer_len - (size_t)(ptr - buffer);
-        if (dna_act15_wire_encode(&tx->v2_activation_fields, ptr, cap,
-                                  &written) != 0)
-            return DNAC_ERROR_INVALID_PARAM;
-        ptr += written;
-    }
-    if (tx->type == DNAC_TX_V2_READY) {
-        size_t written = 0;
-        size_t cap = buffer_len - (size_t)(ptr - buffer);
-        if (dna_act16_wire_encode(&tx->v2_ready_fields, ptr, cap,
-                                  &written) != 0)
-            return DNAC_ERROR_INVALID_PARAM;
-        ptr += written;
-    }
-
     /* Dual-mode S5. Shielded section (only DNAC_TX_SHIELDED; additive trailer,
      * placed after all type-appended fields, before the chain_def trailer). */
     if (tx->type == DNAC_TX_SHIELDED) {
@@ -508,14 +482,12 @@ int dnac_tx_deserialize(const uint8_t *buffer,
      * on every future append, so this bound must never be expressed in terms
      * of it.
      *
-     * O15C (approved consensus change): the activation-authority governance
-     * types 15 (SCHEDULE/CANCEL) and 16 (READY) are legacy-wire types and
-     * are admitted HERE BY NAME — deliberately not by widening the numeric
-     * bound, so 12/13 stay undeserializable and 14 stays unassigned. The
-     * witness admission gate for 15/16 is separately compile-flagged
-     * (NODUS_V2_ACTIVATION_AUTHORITY); this codec only parses shape. */
-    if (tx->type > 11 &&
-        tx->type != DNAC_TX_V2_SCHEDULE && tx->type != DNAC_TX_V2_READY) {
+     * O15J: the activation-authority types 15/16 used to be carved out of this
+     * bound by name. The chain is now born directly from a config — there is no
+     * activation ceremony, so the carve-out and its codec are gone and the bound
+     * is once again the plain literal 11. Types 12, 13, 14, 15, 16 and every
+     * later byte are undeserializable here, with no exceptions to maintain. */
+    if (tx->type > 11) {
         free(tx);
         return DNAC_ERROR_INVALID_PARAM;
     }
@@ -718,27 +690,6 @@ int dnac_tx_deserialize(const uint8_t *buffer,
                    DNAC_CC_WIRE_SIGNATURE_SIZE);
         }
         free(wire);
-        ptr += consumed;
-    }
-    /* O15C. Activation authority — shared decoder (shape only). */
-    if (tx->type == DNAC_TX_V2_SCHEDULE) {
-        size_t consumed = 0;
-        if (dna_act15_wire_decode(ptr, (size_t)(end - ptr),
-                                  &tx->v2_activation_fields,
-                                  &consumed) != 0) {
-            free(tx);
-            return DNAC_ERROR_INVALID_PARAM;
-        }
-        ptr += consumed;
-    }
-    if (tx->type == DNAC_TX_V2_READY) {
-        size_t consumed = 0;
-        if (dna_act16_wire_decode(ptr, (size_t)(end - ptr),
-                                  &tx->v2_ready_fields,
-                                  &consumed) != 0) {
-            free(tx);
-            return DNAC_ERROR_INVALID_PARAM;
-        }
         ptr += consumed;
     }
 

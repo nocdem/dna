@@ -40,15 +40,14 @@ static const bundle_table_t BUNDLE_TABLES[] = {
     /* ORDER BY columns are the tables' actual PRIMARY KEYs (verified
      * against the DDL: nodus_witness.c validators/delegations/
      * epoch_state/supply_tracking, nodus_witness_chain_config.c). A
-     * wrong name would fail the prepare and abort the seam derivation. */
+     * wrong name would fail the prepare and abort the derivation. */
     { "validators",            "pubkey_hash ASC" },
     { "delegations",           "delegator_hash ASC, validator_hash ASC" },
     { "epoch_state",           "epoch_start_height ASC" },
     { "chain_config_history",  "param_id ASC, effective_block ASC" },
     { "supply_tracking",       "id ASC" },
     /* O15J L1-F1 (HIGH) — validator_stats was MISSING. The producer
-     * carries six base tables (the seam's carry list,
-     * nodus_witness_v2_seam.c:355-376); this table carried five, and
+     * carries SIX base tables; this table carried five, and
      * validator_stats reaches NO committed root, so a joiner's genesis
      * matched its pin byte-for-byte while its `active_count` stayed at
      * the create_chain_db seed of 0 (nodus_witness.c:285) instead of the

@@ -3,51 +3,62 @@
  * @brief Ledger V2 O15B — the ONE production activation gate.
  *
  * ═══ WHAT THIS FILE IS FOR ══════════════════════════════════════════════
- * O15B builds the whole V2 network surface — canonical wire, ingress
- * adapters, sync, recovery — and ships it PRODUCTION-DORMANT. This module
- * is what makes "dormant" a structural property instead of a promise.
+ * O15B built the whole V2 network surface — canonical wire, ingress
+ * adapters, sync, recovery — and shipped it PRODUCTION-DORMANT, with this
+ * module making "dormant" a structural property instead of a promise.
+ *
+ * O15J Faz 3 ENDED THE DORMANCY. The V2 lane is no longer something a
+ * future ceremony switches on: a chain is born V2, and this module is now
+ * what decides whether THIS DATABASE IS THAT CHAIN. On a pure-V2 database
+ * a default production build opens the gate, arms ingress and runs the
+ * lane; on anything else it stays shut, and that refusal is still
+ * structural rather than configured.
  *
  * Every production path that would advertise, accept, propose, vote for,
  * finalize, sync or replay a Ledger V2 block asks exactly one question
- * here, and gets one of three answers. Two of them mean "do not proceed".
+ * here, and gets one of FOUR answers. Exactly one of them —
+ * NODUS_V2_GATE_OPEN — means "proceed"; NO_AUTHORITY, NOT_READY and FAULT
+ * all mean "do not", and they are kept distinct because they call for
+ * different operator responses.
  *
- * ═══ WHY IT CAN NEVER OPEN IN THIS BUILD ════════════════════════════════
- * Opening requires BOTH conditions, and BOTH are absent:
+ * ═══ WHAT OPENS IT ══════════════════════════════════════════════════════
+ * Opening requires BOTH conditions:
  *
- *  1. COMMITTED ACTIVATION AUTHORITY — a rule, carried in committed chain
- *     state, that says Ledger V2 is active from some height. **No such
- *     mechanism exists in this tree.** The committed chain-config parameter
- *     space is `DNAC_CFG_MAX_TXS_PER_BLOCK`(1) ..
- *     `DNAC_CFG_TARGET_ACTIVE_COUNT`(4), and
- *     `DNAC_CFG_PARAM_MAX_ID == DNAC_CFG_TARGET_ACTIVE_COUNT`
- *     (dnac/include/dnac/dnac.h:323-327). There is no activation parameter,
- *     no `chain_def` activation field, and no activation table.
+ *  1. COMMITTED AUTHORITY — the chain's OWN GENESIS IDENTITY.
  *
- *     O15B deliberately does NOT add one. Choosing an activation mechanism
- *     is a governance decision about an RC chain — which parameter, which
- *     range, which grace class, how a mixed-version network converges — and
- *     inventing it inside an implementation season is exactly the
- *     fabrication this tree forbids. It is the named work of a separate
- *     authorized season (O15C).
+ *     O15J Faz 3 removed the activation ceremony. There is no longer a
+ *     V1→V2 transition to authorize: a Ledger V2 chain is BORN V2, built
+ *     from an operator config by `nodus_witness_v2_gen_derive` with no
+ *     legacy ancestor. So the authority this gate reads is not a rule
+ *     naming a future height — it is the committed fact that THIS
+ *     DATABASE IS A PURE-V2 CHAIN.
+ *
+ *     Concretely: a height-0 row in `v2_manifests` whose decoded genesis
+ *     manifest has `dist_present == 1` and `source_tag ==
+ *     NODUS_V2_GEN_SOURCE_TAG` ("DNA.GENESIS.v1",
+ *     nodus_witness_v2_gen.h:184-185). That manifest's hash IS the chain
+ *     id, so the predicate rests on the most committed bytes the database
+ *     holds — not on a flag, a build option or an operator decision.
+ *
+ *     `NODUS_V2_GATE_NO_AUTHORITY` therefore now means "THIS IS NOT A
+ *     PURE-V2 CHAIN", not "this software cannot activate V2". The
+ *     historical readings — O15B's structural constant 0, and O15C's
+ *     committed activation record / "DNA.LEGACY.TERM.v1" successor
+ *     binding — are both deleted with the ceremony.
  *
  *  2. PREFLIGHT READINESS — `nodus_witness_v2_preflight()` reporting zero
- *     issues. It raises `NODUS_V2_PF_RULE_N_ATTENDANCE_SOURCE_ABSENT`
- *     UNCONDITIONALLY (nodus_witness_v2_preflight.h:86-102), because Rule N
- *     has no attendance source under V2, so `ready` is structurally always
- *     0 on every database.
+ *     issues over the committed state of that same database.
  *
- * Either one alone would keep the gate shut. Both hold. The gate is
- * therefore CLOSED on every database, in every configuration, always — and
- * that is a property of the source, provable by reading it, not a default
- * someone can flip.
+ * Either one alone keeps the gate shut, and each is evaluated against
+ * committed bytes only.
  *
  * ═══ WHAT CANNOT OPEN IT ════════════════════════════════════════════════
  * By construction there is NO input through which any of these could:
  *
  *   - an environment variable          (nothing here reads getenv)
  *   - a command-line flag              (no parameter carries intent)
- *   - a local database bit             (authority is committed-chain-state
- *                                       only, and no such state exists)
+ *   - a build option                   (the ceremony's compile gate is
+ *                                       gone; there is no second variant)
  *   - an operator override / config    (no file is consulted)
  *   - a peer, a header, or a message   (no network value reaches this)
  *
@@ -56,6 +67,14 @@
  * lane is active. That is the same discipline
  * `nodus_witness_v2_qc_verify()` uses for validator authority: the absence
  * of a parameter is the guarantee.
+ *
+ * ═══ UNKNOWN IS NOT "NO" ════════════════════════════════════════════════
+ * The authority probe is THREE-VALUED. A prepare failure on a table that
+ * exists, a mid-step SQLITE_IOERR/SQLITE_CORRUPT, a NULL/empty manifest
+ * blob or one that fails to decode is a FAULT, reported as
+ * `NODUS_V2_GATE_FAULT` — never folded into NO_AUTHORITY. An absent
+ * `v2_manifests` table, an absent height-0 row, or a row carrying some
+ * other source tag are genuine NO_AUTHORITY answers.
  *
  * ═══ THE TEST-ONLY FIXTURE ══════════════════════════════════════════════
  * Component and end-to-end tests must be able to exercise the ARMED path —
@@ -90,21 +109,23 @@ extern "C" {
  */
 typedef enum {
     /**
-     * No committed activation authority exists. This is what this build
-     * always returns; see the file comment. It is deliberately distinct
-     * from NOT_READY so an operator can tell "this software cannot
-     * activate V2 at all" from "this database is not ready yet".
+     * No committed authority: THIS IS NOT A PURE-V2 CHAIN. The database
+     * carries no height-0 genesis manifest with the pure-V2 source tag —
+     * see the file comment. Deliberately distinct from NOT_READY so an
+     * operator can tell "this is the wrong database for the V2 lane" from
+     * "this is the right database and it is not ready yet".
      */
     NODUS_V2_GATE_NO_AUTHORITY = 0,
     /** Authority exists, but the preflight found blocking issues. */
     NODUS_V2_GATE_NOT_READY    = 1,
-    /** Both conditions hold. Unreachable in this build. */
+    /** Both conditions hold: a pure-V2 chain with a clean preflight. */
     NODUS_V2_GATE_OPEN         = 2,
     /**
      * The gate itself could not be evaluated (NULL handle, no database, a
-     * read fault inside the preflight). Fail-closed and distinct: "we could
-     * not tell" must never be silently reported as "not ready", because the
-     * two call for different operator responses.
+     * read fault in the authority probe or inside the preflight).
+     * Fail-closed and distinct: "we could not tell" must never be silently
+     * reported as "no authority" or as "not ready", because all three call
+     * for different operator responses.
      */
     NODUS_V2_GATE_FAULT        = 3
 } nodus_v2_gate_state_t;
@@ -113,7 +134,8 @@ typedef enum {
 const char *nodus_witness_v2_gate_state_name(nodus_v2_gate_state_t s);
 
 /**
- * Condition 1 alone: does committed activation authority exist?
+ * Condition 1 alone: does committed authority exist — is this a pure-V2
+ * chain?
  *
  * Exposed separately because it is the ONLY half of the gate that can be
  * evaluated without running the preflight — and the preflight itself needs
@@ -122,9 +144,17 @@ const char *nodus_witness_v2_gate_state_name(nodus_v2_gate_state_t s);
  * conditions at the header is what keeps that impossible rather than
  * merely avoided.
  *
- * @return 1 if committed activation authority exists, 0 otherwise. Always
- *         0 in this build; see the file comment for why, and why O15B
- *         deliberately did not add one.
+ * READS THE DATABASE. Since O15J Faz 3 this is a committed-state query
+ * (the height-0 genesis manifest), not the structural constant O15B
+ * shipped — callers on a per-frame hot path should establish the answer
+ * once rather than re-deriving it.
+ *
+ * @return 1 if committed authority exists, 0 otherwise. The 0 FOLDS two
+ *         distinct answers — genuinely absent, and could-not-be-read —
+ *         because every caller of this form consumes it as "may this
+ *         proceed?", where UNKNOWN must read as no. To DISTINGUISH them,
+ *         call nodus_witness_v2_gate_state() and test for
+ *         NODUS_V2_GATE_FAULT.
  */
 int nodus_witness_v2_gate_authority_present(nodus_witness_t *w);
 
@@ -137,7 +167,8 @@ int nodus_witness_v2_gate_authority_present(nodus_witness_t *w);
  *
  * @param w witness handle.
  * @return the gate state; NODUS_V2_GATE_FAULT when it could not be
- *         evaluated. NEVER NODUS_V2_GATE_OPEN in this build.
+ *         evaluated — including an authority probe that could not read the
+ *         database, which is never reported as NO_AUTHORITY.
  */
 nodus_v2_gate_state_t nodus_witness_v2_gate_state(nodus_witness_t *w);
 
@@ -162,21 +193,21 @@ int nodus_witness_v2_activation_permitted(nodus_witness_t *w);
  * this running node has ARMED the V2 message handlers, so a V2 frame
  * arriving on the wire would be dispatched into them.
  *
- * Arming is the only way to become reachable, `nodus_witness_v2_ingress_arm`
- * refuses unless the gate is OPEN, and the gate can never be OPEN here — so
- * a production node is never reachable. The preflight computes reachability
- * from the ACTUAL armed state rather than assuming it, so if some future
- * build ever arms ingress without authority, the preflight says so instead
- * of continuing to argue from a structural claim that has expired.
+ * Arming is the only way to become reachable and
+ * `nodus_witness_v2_ingress_arm` refuses unless the gate is OPEN, so a node
+ * holding anything other than a ready pure-V2 chain is never reachable. The
+ * preflight computes reachability from the ACTUAL armed state rather than
+ * assuming it, so if some future build ever arms ingress without authority,
+ * the preflight says so instead of continuing to argue from a structural
+ * claim that has expired.
  */
 
 /**
  * Arm V2 ingress on this node.
  *
  * @return 0 armed, -1 refused. Refuses whenever
- *         nodus_witness_v2_activation_permitted() is 0, which in this build
- *         is always. On refusal the node is left UNARMED — there is no
- *         partial arming.
+ *         nodus_witness_v2_activation_permitted() is 0. On refusal the node
+ *         is left UNARMED — there is no partial arming.
  */
 int nodus_witness_v2_ingress_arm(nodus_witness_t *w);
 
@@ -202,10 +233,10 @@ int nodus_witness_v2_ingress_is_armed(nodus_witness_t *w);
  *
  * It grants ONLY the authority half. Preflight readiness is still evaluated
  * for real, so a test that arms ingress must also present a database the
- * preflight accepts — which no database does while Rule N stands. Tests
- * that need the armed path therefore also pass `allow_unready`, and that
- * second parameter exists so the two conditions can never be conflated even
- * inside a test.
+ * preflight accepts — which a synthetic fixture database generally is not.
+ * Tests that need the armed path therefore also pass `allow_unready`, and
+ * that second parameter exists so the two conditions can never be conflated
+ * even inside a test.
  *
  * @param w             witness handle.
  * @param allow_unready non-zero to also bypass the readiness half.

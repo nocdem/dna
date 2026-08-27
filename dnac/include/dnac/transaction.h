@@ -14,7 +14,6 @@
 
 #include "dnac.h"
 #include "block.h"  /* for dnac_chain_definition_t (genesis-only field) */
-#include "dnac/activation_wire.h"  /* O15C shared activation wire (types 15/16) */
 #include <stdbool.h>
 
 #ifdef __cplusplus
@@ -392,12 +391,6 @@ struct dnac_transaction {
     dnac_tx_validator_update_fields_t validator_update_fields; /**< valid when type == DNAC_TX_VALIDATOR_UPDATE */
     dnac_tx_chain_config_fields_t     chain_config_fields;     /**< valid when type == DNAC_TX_CHAIN_CONFIG */
     dnac_tx_shielded_fields_t         shielded_fields;         /**< valid when type == DNAC_TX_SHIELDED (dual-mode S5) */
-    /* Ledger V2 O15C — activation authority. The SHARED wire structs are
-     * embedded directly (no client-side mirror to drift): layouts and
-     * digests live in shared/dnac/activation_wire.h. ~596 KiB at the
-     * vote cap — one more reason dnac_transaction_t is heap-only. */
-    dna_act15_wire_t                  v2_activation_fields;    /**< valid when type == DNAC_TX_V2_SCHEDULE */
-    dna_act16_wire_t                  v2_ready_fields;         /**< valid when type == DNAC_TX_V2_READY */
 };
 
 /* ============================================================================

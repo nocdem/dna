@@ -21,7 +21,6 @@
 #include "witness/nodus_witness_v2_epoch.h"
 #include "witness/nodus_witness_v2_gate.h"
 #include "witness/nodus_witness_v2_schema.h"
-#include "witness/nodus_witness_v2_activation.h"
 #include "crypto/utils/qgp_log.h"
 
 #define LOG_TAG "WITNESS_V2_PREFL"
@@ -114,11 +113,16 @@ int nodus_witness_v2_preflight(nodus_witness_t *w,
         out->ready = 0;
         return 0;
     }
-    /* O15F Task 4: a successor derives at S12 (canonical claim byte
-     * availability); O15E S11 (canonical envelope bytes) and the
-     * activation-authority legacy chain at S10 remain accepted. Each is a
-     * purely additive superset of the previous — all activation-ready.
-     * Anything else is unsupported. */
+    /* nodus_witness_v2_gen_derive builds at S12 (canonical claim byte
+     * availability); S11 (canonical envelope bytes) and S10 remain
+     * accepted, each being a purely additive superset of the previous.
+     * Anything else is unsupported.
+     *
+     * O15J Faz 3: S10 is no longer "the activation-authority chain" — its
+     * two tables went with the ceremony and the rung is now a bare
+     * version bump (nodus_witness_v2_schema.h). It stays accepted because
+     * the ladder still passes through it and a database that stopped
+     * there is still a structural superset of S9. */
     if (ver != NODUS_V2_SCHEMA_VERSION_S10 &&
         ver != NODUS_V2_SCHEMA_VERSION_S11 &&
         ver != NODUS_V2_SCHEMA_VERSION_S12)
@@ -126,12 +130,17 @@ int nodus_witness_v2_preflight(nodus_witness_t *w,
 
     /* ── 2. REQUIRED TABLES ───────────────────────────────────────── */
     {
+        /* O15J Faz 3 — "v2_activation" and "v2_activation_readiness" are
+         * REMOVED from this list. The activation ceremony is gone and the
+         * S10 migration no longer creates them, so requiring them would
+         * raise SCHEMA_SHAPE_DRIFT on every database this tree can
+         * produce — making `ready` false, the gate NOT_READY and the V2
+         * lane permanently unarmed. */
         static const char *const required[] = {
             "v2_blocks", "v2_domain_heads", "v2_domain_updates",
             "v2_root_history", "v2_tx_index", "v2_intent_index",
             "v2_manifests", "v2_claims_spent", "validators",
-            "validator_set_snapshots", "supply_tracking",
-            "v2_activation", "v2_activation_readiness"
+            "validator_set_snapshots", "supply_tracking"
         };
         for (size_t i = 0; i < sizeof(required) / sizeof(required[0]); i++) {
             int t = pf_table_exists(w, required[i]);
@@ -297,27 +306,13 @@ int nodus_witness_v2_preflight(nodus_witness_t *w,
      * DELETED, the id is retired, never reused.
      *
      * ── 8b. O15C — committed activation authority sanity ─────────────
-     * A committed record this binary cannot interpret (15), or one
-     * naming a target this binary is not running (16), must block
-     * readiness — the node stays silent rather than participating in an
-     * activation it cannot execute. */
-    {
-        nodus_v2_act_record_t rec;
-        int arc = nodus_witness_v2_activation_get(w, &rec);
-        if (arc < 0) {
-            pf_add(out, NODUS_V2_PF_ACTIVATION_AUTHORITY_MALFORMED);
-        } else if (arc == 0 &&
-                   (rec.state == DNA_ACT_STATE_SCHEDULED ||
-                    rec.state == DNA_ACT_STATE_READY ||
-                    rec.state == DNA_ACT_STATE_ACTIVE)) {
-            uint8_t mine[DNA_ACT_HASH_LEN];
-            if (nodus_witness_v2_activation_compiled_target(mine) != 0) {
-                pf_add(out, NODUS_V2_PF_INSPECTION_FAULT);
-            } else if (memcmp(mine, rec.target, DNA_ACT_HASH_LEN) != 0) {
-                pf_add(out, NODUS_V2_PF_TARGET_MISMATCH);
-            }
-        }
-    }
+     * DELETED by O15J Faz 3, with the ceremony it guarded. It raised
+     * issue 15 for a committed activation record this binary could not
+     * interpret and issue 16 for one naming a target this binary was not
+     * running. There is no activation record any more — no table stores
+     * one, no transaction writes one and no build reads one — so the
+     * check has nothing to consult. Both ids are RETIRED, never reused
+     * (nodus_witness_v2_preflight.h). */
 
     /* ── 9. INGRESS must not be reachable ─────────────────────────────
      *

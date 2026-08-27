@@ -21,10 +21,15 @@
  *                       resolves n=30, quorum=21.
  *   §5  live serve    — a 20-entry successor snapshot serves 20 members
  *                       through get_for_block and yields quorum 14.
- *   §6  seam terminal-set precondition — a >30 transplanted bonded set
- *                       ABORTS derivation fail-closed (no successor DB).
- *   §7  seam carried chain_config — a carried TARGET=31 row ABORTS
- *                       derivation; TARGET=30 (or absent) proceeds.
+ *
+ * O15J Faz 3 — §6 (seam terminal-set precondition) and §7 (seam carried
+ * chain_config reconciliation) are GONE. They drove
+ * nodus_witness_v2_seam_maybe_derive, the legacy→successor activation
+ * seam, which this phase deletes: a V2 chain is now born directly from a
+ * config, so there is no transplanted terminal set to bound and no
+ * carried chain_config row to reconcile. The active-set maximum itself is
+ * unaffected — §1-§5 still enforce it at every write / seed / resolve
+ * point, which is where the invariant actually lives.
  *
  * Copyright (c) 2026 nocdem — SPDX-License-Identifier: MIT
  */
@@ -35,7 +40,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <dirent.h>
 #include <sqlite3.h>
 
 #include "witness/nodus_witness.h"
@@ -44,16 +48,12 @@
 #include "witness/nodus_witness_bft.h"
 #include "witness/nodus_witness_validator.h"
 #include "witness/nodus_witness_v2_epoch.h"
-#include "witness/nodus_witness_v2_seam.h"
-#include "witness/nodus_witness_v2_activation.h"
 #include "witness/nodus_witness_v2_schema.h"
 #include "nodus/nodus_chain_config.h"
 #include "dnac/dnac.h"
 #include "dnac/validator.h"
 #include "dnac/vset_wire.h"
 #include "dnac/ledger_ids.h"
-#include "crypto/sign/qgp_dilithium.h"
-#include "crypto/hash/qgp_sha3.h"
 
 static int g_fail = 0;
 #define CHECK(cond, msg) do { \
@@ -66,7 +66,7 @@ static int g_fail = 0;
 
 #define E ((uint64_t)DNAC_EPOCH_LENGTH)
 
-/* ── plain-witness fixture (no seam) ─────────────────────────────────── */
+/* ── plain-witness fixture ───────────────────────────────────────────── */
 
 static nodus_witness_t *mk_witness(char dir[128], const char *tag) {
     nodus_witness_t *w = calloc(1, sizeof(*w));
@@ -214,10 +214,16 @@ static int test_target_clamp(void) {
     CHECK(insert_validators(w, 31, 0x11) == 0, "31 ACTIVE validators");
     CHECK(insert_cc_target(w, 31) == 0, "chain_config TARGET_ACTIVE_COUNT=31");
 
-    /* A successor seeds its genesis snapshots (epochs 0 and E) here; the
-     * clamp must fire during seeding even though genesis runs before the
-     * activation manifest exists (D1#4 — the seam sets v2_successor early;
-     * this fixture sets it directly, which is what a seam does). */
+    /* A V2 chain seeds its genesis snapshots (epochs 0 and E) here; the
+     * clamp must fire during seeding, which runs BEFORE the committed
+     * genesis manifest this flag is normally derived from (D1#4).
+     *
+     * The flag is therefore SET DIRECTLY: this fixture is a bare chain
+     * database, not a derived V2 chain, so production's role derivation
+     * would (correctly) leave it false and the clamp under test would
+     * never be reached. What is being exercised here is the clamp, not the
+     * role derivation — nodus_witness_v2_gen.c's own tests assert that
+     * flag against a real derived chain rather than assigning it. */
     w->v2_successor = 1;
     CHECK(nodus_witness_vset_commit_genesis(w, 1) == 0,
           "commit_genesis seeds epochs 0 and E on the successor");
@@ -394,279 +400,8 @@ static int test_live_serve(void) {
     return 0;
 }
 
-/* ── seam fixture (terminal legacy chain -> successor derivation) ─────── */
-
-#define N_UTXO 3
-
-static uint8_t g_val_pk[QGP_DSA87_PUBLICKEYBYTES];
-static uint8_t g_val_sk[QGP_DSA87_SECRETKEYBYTES];
-static uint8_t g_own_pk[QGP_DSA87_PUBLICKEYBYTES];
-static uint8_t g_own_sk[QGP_DSA87_SECRETKEYBYTES];
-static char    g_own_fp[129];
-static uint64_t g_amounts[N_UTXO] = { 500, 1200, 4300 };
-static uint8_t  g_nul[N_UTXO][64];
-
-typedef struct {
-    nodus_witness_t *w;
-    char dir[128];
-    uint64_t h_act;
-    uint64_t total;
-} fx_t;
-
-static int fx_seam_exec(sqlite3 *db, const char *sql) {
-    char *err = NULL;
-    if (sqlite3_exec(db, sql, NULL, NULL, &err) != SQLITE_OK) {
-        fprintf(stderr, "fx_seam_exec failed: %s\n", err ? err : "(null)");
-        if (err) sqlite3_free(err);
-        return -1;
-    }
-    return 0;
-}
-
-#define FXSTEP(cond) do { \
-    if (!(cond)) { \
-        fprintf(stderr, "fx_open step failed at line %d\n", __LINE__); \
-        return -1; \
-    } } while (0)
-
-/* Terminal legacy fixture (mirrors test_v2_seam.c fx_open) with knobs:
- *   n_extra_val  : validators inserted BEYOND the base one (distinct keys)
- *   stats_active : validator_stats.active_count value carried by the seam
- *   cc_target    : if nonzero, a chain_config TARGET_ACTIVE_COUNT override
- * The TOTAL bonded (ACTIVE) count is therefore 1 + n_extra_val. */
-static int fx_open_ex(fx_t *fx, const char *tag, int n_extra_val,
-                      int stats_active, uint64_t cc_target) {
-    memset(fx, 0, sizeof(*fx));
-    fx->w = calloc(1, sizeof(*fx->w));
-    if (!fx->w) return -1;
-    snprintf(fx->dir, sizeof(fx->dir), "/tmp/test_v2_amax_seam_%s_XXXXXX",
-             tag);
-    if (!mkdtemp(fx->dir)) { free(fx->w); fx->w = NULL; return -1; }
-    snprintf(fx->w->data_path, sizeof(fx->w->data_path), "%s", fx->dir);
-    uint8_t cid16[16];
-    memset(cid16, 0x6c, sizeof(cid16));
-    FXSTEP(nodus_witness_create_chain_db(fx->w, cid16) == 0);
-    FXSTEP(nodus_witness_db_migrate_v2s10(fx->w) == 0);
-    FXSTEP(nodus_chain_config_db_migrate(fx->w) == 0);
-
-    /* base validator (real key) */
-    {
-        dnac_validator_record_t v;
-        memset(&v, 0, sizeof(v));
-        memcpy(v.pubkey, g_val_pk, sizeof(g_val_pk));
-        v.self_stake         = 0;
-        v.status             = DNAC_VALIDATOR_ACTIVE;
-        v.active_since_block = 1;
-        memset(v.unstake_destination_fp, '3', DNAC_FINGERPRINT_SIZE - 1);
-        v.unstake_destination_fp[DNAC_FINGERPRINT_SIZE - 1] = '\0';
-        FXSTEP(nodus_validator_insert(fx->w, &v) == 0);
-    }
-    /* extra bonded validators (distinct synthetic keys, self_stake 0) */
-    FXSTEP(insert_validators(fx->w, n_extra_val, 0x66) == 0 ||
-           n_extra_val == 0);
-
-    /* validator_stats.active_count (carried verbatim by the seam) */
-    {
-        sqlite3_stmt *st = NULL;
-        FXSTEP(sqlite3_prepare_v2(fx->w->db,
-                   "INSERT OR REPLACE INTO validator_stats VALUES "
-                   "('active_count', ?1)", -1, &st, NULL) == SQLITE_OK);
-        sqlite3_bind_int64(st, 1, (sqlite3_int64)stats_active);
-        int rc = sqlite3_step(st);
-        sqlite3_finalize(st);
-        FXSTEP(rc == SQLITE_DONE);
-    }
-
-    /* optional carried chain_config TARGET_ACTIVE_COUNT override */
-    if (cc_target)
-        FXSTEP(insert_cc_target(fx->w, cc_target) == 0);
-
-    /* spendable native UTXOs */
-    fx->total = 0;
-    for (int i = 0; i < N_UTXO; i++) {
-        sqlite3_stmt *st = NULL;
-        FXSTEP(sqlite3_prepare_v2(fx->w->db,
-                   "INSERT INTO utxo_set (nullifier, owner, amount, token_id,"
-                   " tx_hash, output_index, domain_id) VALUES (?1, ?2, ?3,"
-                   " zeroblob(64), zeroblob(64), ?4, 1)", -1, &st, NULL)
-               == SQLITE_OK);
-        sqlite3_bind_blob(st, 1, g_nul[i], 64, SQLITE_STATIC);
-        sqlite3_bind_text(st, 2, g_own_fp, -1, SQLITE_STATIC);
-        sqlite3_bind_int64(st, 3, (int64_t)g_amounts[i]);
-        sqlite3_bind_int(st, 4, i);
-        int rc = sqlite3_step(st);
-        sqlite3_finalize(st);
-        FXSTEP(rc == SQLITE_DONE);
-        fx->total += g_amounts[i];
-    }
-
-    /* supply: the legacy invariant holds (all value in the UTXO set) */
-    {
-        sqlite3_stmt *st = NULL;
-        FXSTEP(sqlite3_prepare_v2(fx->w->db,
-                   "INSERT INTO supply_tracking (id, genesis_supply,"
-                   " total_burned, total_minted, current_supply,"
-                   " last_tx_hash, last_sequence) VALUES (1, ?1, 0, 0, ?1,"
-                   " zeroblob(64), 0)", -1, &st, NULL) == SQLITE_OK);
-        sqlite3_bind_int64(st, 1, (int64_t)fx->total);
-        int rc = sqlite3_step(st);
-        sqlite3_finalize(st);
-        FXSTEP(rc == SQLITE_DONE);
-    }
-
-    /* terminal boundary block at H_act */
-    fx->h_act = 4 * E;
-    {
-        sqlite3_stmt *st = NULL;
-        FXSTEP(sqlite3_prepare_v2(fx->w->db,
-                   "INSERT INTO blocks (height, tx_root, tx_count, timestamp,"
-                   " proposer_id, prev_hash, state_root) VALUES (?1,"
-                   " zeroblob(64), 1, 12345, zeroblob(32), zeroblob(64), ?2)",
-                   -1, &st, NULL) == SQLITE_OK);
-        uint8_t sr[64];
-        memset(sr, 0x42, sizeof(sr));
-        sqlite3_bind_int64(st, 1, (int64_t)fx->h_act);
-        sqlite3_bind_blob(st, 2, sr, 64, SQLITE_STATIC);
-        int rc = sqlite3_step(st);
-        sqlite3_finalize(st);
-        FXSTEP(rc == SQLITE_DONE);
-    }
-
-    /* the committed ACTIVE activation record (planted directly) */
-    {
-        uint8_t D[64];
-        FXSTEP(nodus_witness_v2_activation_compiled_target(D) == 0);
-        sqlite3_stmt *st = NULL;
-        FXSTEP(sqlite3_prepare_v2(fx->w->db,
-                   "INSERT INTO v2_activation VALUES (1, 1, 3, ?1, ?2, ?3,"
-                   " ?3, ?4, zeroblob(64), 5, 10, 0)", -1, &st, NULL)
-               == SQLITE_OK);
-        sqlite3_bind_blob(st, 1, fx->w->chain_id, 32, SQLITE_STATIC);
-        sqlite3_bind_blob(st, 2, D, 64, SQLITE_STATIC);
-        sqlite3_bind_int64(st, 3, (int64_t)fx->h_act);
-        sqlite3_bind_int64(st, 4, (int64_t)(fx->h_act - 2 * E));
-        int rc = sqlite3_step(st);
-        sqlite3_finalize(st);
-        FXSTEP(rc == SQLITE_DONE);
-    }
-    return 0;
-}
-
-static void fx_close(fx_t *fx) {
-    if (!fx->w) return;
-    if (fx->w->db) { sqlite3_close(fx->w->db); fx->w->db = NULL; }
-    free(fx->w);
-    fx->w = NULL;
-    char cmd[256];
-    snprintf(cmd, sizeof(cmd), "rm -rf %s", fx->dir);
-    (void)system(cmd);
-}
-
-/* Does a successor db (a witness_*.db not named after the 0x6c legacy id)
- * exist in the fixture dir? 1 yes, 0 no. */
-static int successor_exists(const char *dir) {
-    DIR *d = opendir(dir);
-    if (!d) return 0;
-    struct dirent *e;
-    int found = 0;
-    while ((e = readdir(d)) != NULL) {
-        if (strncmp(e->d_name, "witness_", 8) != 0) continue;
-        size_t len = strlen(e->d_name);
-        if (len != 8 + 32 + 3 || strcmp(e->d_name + len - 3, ".db") != 0)
-            continue;
-        if (strncmp(e->d_name + 8, "6c6c6c6c", 8) == 0) continue;
-        found = 1;
-        break;
-    }
-    closedir(d);
-    return found;
-}
-
-static int test_seam_terminal_set(void) {
-    printf("§6 seam terminal-set precondition (>30 bonded aborts)\n");
-
-    /* >30 bonded (31 total ACTIVE, stats=31) — derivation ABORTS */
-    {
-        fx_t f = {0};
-        CHECK(fx_open_ex(&f, "term31", 30, 31, 0) == 0, "fixture 31 bonded");
-        CHECK(q1(f.w->db,
-                 "SELECT COUNT(*) FROM validators WHERE status IN (0,4)")
-                  == 31, "31 bonded rows present");
-        CHECK(nodus_witness_v2_seam_maybe_derive(f.w, NULL) == -1,
-              "a >30 terminal bonded set ABORTS derivation");
-        CHECK(successor_exists(f.dir) == 0,
-              "no successor database was produced");
-        fx_close(&f);
-    }
-
-    /* exactly 30 bonded (stats=30, no cc row) — derivation PROCEEDS.
-     * This is also the carried-chain_config ABSENT case. */
-    {
-        fx_t f = {0};
-        CHECK(fx_open_ex(&f, "term30", 29, 30, 0) == 0, "fixture 30 bonded");
-        CHECK(q1(f.w->db,
-                 "SELECT COUNT(*) FROM validators WHERE status IN (0,4)")
-                  == 30, "30 bonded rows present");
-        CHECK(nodus_witness_v2_seam_maybe_derive(f.w, NULL) == 0,
-              "a 30-bonded terminal set (cc absent) DERIVES");
-        CHECK(successor_exists(f.dir) == 1, "successor database produced");
-        fx_close(&f);
-    }
-
-    OK();
-    printf("  ok: 31 bonded aborts / 30 bonded (cc absent) proceeds\n");
-    return 0;
-}
-
-static int test_seam_carried_cc(void) {
-    printf("§7 seam carried chain_config TARGET reconciliation\n");
-
-    /* carried TARGET=31 (1 bonded validator) — derivation ABORTS */
-    {
-        fx_t f = {0};
-        CHECK(fx_open_ex(&f, "cc31", 0, 1, 31) == 0, "fixture cc=31");
-        CHECK(nodus_witness_v2_seam_maybe_derive(f.w, NULL) == -1,
-              "a carried TARGET_ACTIVE_COUNT=31 ABORTS derivation");
-        CHECK(successor_exists(f.dir) == 0,
-              "no successor database was produced");
-        fx_close(&f);
-    }
-
-    /* carried TARGET=30 — derivation PROCEEDS */
-    {
-        fx_t f = {0};
-        CHECK(fx_open_ex(&f, "cc30", 0, 1, 30) == 0, "fixture cc=30");
-        CHECK(nodus_witness_v2_seam_maybe_derive(f.w, NULL) == 0,
-              "a carried TARGET_ACTIVE_COUNT=30 DERIVES");
-        CHECK(successor_exists(f.dir) == 1, "successor database produced");
-        fx_close(&f);
-    }
-
-    OK();
-    printf("  ok: carried TARGET 31 aborts / 30 proceeds\n");
-    return 0;
-}
-
 int main(void) {
     printf("=== Ledger V2 O15F Task 1 — successor active-set maximum 30 ===\n\n");
-
-    if (qgp_dsa87_keypair(g_val_pk, g_val_sk) != 0 ||
-        qgp_dsa87_keypair(g_own_pk, g_own_sk) != 0) {
-        fprintf(stderr, "keygen failed\n");
-        return 1;
-    }
-    {
-        uint8_t full[64];
-        qgp_sha3_512(g_own_pk, sizeof(g_own_pk), full);
-        for (int i = 0; i < 64; i++)
-            snprintf(g_own_fp + i * 2, 3, "%02x", full[i]);
-        g_own_fp[128] = '\0';
-    }
-    for (int i = 0; i < N_UTXO; i++) {
-        memset(g_nul[i], 0, 64);
-        g_nul[i][0]  = (uint8_t)(0x10 + i);
-        g_nul[i][63] = (uint8_t)i;
-    }
 
     /* Run every section (accumulate) so a failing run shows the FULL
      * failure set, not just the first — the vacuity guard for TDD. */
@@ -676,8 +411,6 @@ int main(void) {
     rc |= test_insert_reject();
     rc |= test_resolve_reject();
     rc |= test_live_serve();
-    rc |= test_seam_terminal_set();
-    rc |= test_seam_carried_cc();
 
     if (rc || g_fail) {
         printf("\nSOME O15F TASK 1 TESTS FAILED\n");

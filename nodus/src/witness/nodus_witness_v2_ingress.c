@@ -383,11 +383,23 @@ int nodus_witness_v2_ingress_block(nodus_witness_t *w,
      * attacker nothing.
      *
      * NOT_ACTIVE is not a verdict — the peer is untouched. */
-    /* Both conditions are CHEAP and neither touches the database.
+    /* `is_armed` is a runtime flag and costs nothing.
      *
-     * `is_armed` is a runtime flag. `gate_authority_present` is the half of
-     * the gate that consults nothing (see gate.h) — in a build without the
-     * test fixture it is a literal 0.
+     * `gate_authority_present` NO LONGER costs nothing, and this comment
+     * used to say it did. O15J Faz 3 removed the activation ceremony and
+     * rewired authority to be DERIVED from the chain's own committed
+     * height-0 genesis manifest, so on an ARMED node this is now two
+     * SQLite statements per frame against a one-row table. It is no
+     * longer "the half of the gate that consults nothing".
+     *
+     * CARRIED OPEN, deliberately, not overlooked: the cheap form is to
+     * settle authority at ARM time (it derives from committed state that
+     * cannot change while the database is open) and have this path read
+     * the settled answer. That was not done here because several tests
+     * set `v2_ingress_armed` directly, so a cached companion flag would
+     * silently disarm them — a change worth making on its own, with its
+     * own test sweep, not as a tail-end edit of a removal phase. The
+     * shape being avoided is the one Review R2 already condemned below.
      *
      * `activation_permitted()` is deliberately NOT used here. It evaluates
      * the FULL preflight, which runs a whole-database supply scan and a

@@ -305,21 +305,13 @@ int nodus_merkle_combine_state_root_v3(const uint8_t utxo_root[64],
                                          const uint8_t chain_config_root[64],
                                          uint8_t out_state_root[64]);
 
-/**
- * O15C — 6-input v4: appends activation_root (the Ledger V2 activation
- * authority tree, nodus_witness_v2_activation_root) under version byte
- * NODUS_STATE_ROOT_VERSION_V4. compute_state_root emits it ONLY in
- * NODUS_V2_ACTIVATION_AUTHORITY builds; production stays on v3
- * byte-identically, and v3 remains callable for historical verification
- * exactly as v1/v2 do. Same 0/-1 failure signalling as v3.
- */
-int nodus_merkle_combine_state_root_v4(const uint8_t utxo_root[64],
-                                         const uint8_t validator_root[64],
-                                         const uint8_t delegation_root[64],
-                                         const uint8_t epoch_state_root[64],
-                                         const uint8_t chain_config_root[64],
-                                         const uint8_t activation_root[64],
-                                         uint8_t out_state_root[64]);
+/* O15J Faz 3 — nodus_merkle_combine_state_root_v4 (the 6-input form that
+ * appended the Ledger V2 activation-authority tree under
+ * NODUS_STATE_ROOT_VERSION_V4) is DELETED with the activation ceremony.
+ * It was only ever emitted by the ceremony's compile-gated rehearsal
+ * builds, which never shipped, so no chain carries a v4 state_root and no
+ * historical verification needs it. v3 above is the only composition this
+ * tree emits; the 0x04 version byte is retired, never reused. */
 
 /**
  * v0.16 — Compute the validator subtree Merkle root directly from the

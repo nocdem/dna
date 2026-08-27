@@ -18,8 +18,14 @@
 #   * view-0 PRECOMMITs are dropped cluster-wide, so the round fails and
 #     a view change starts with a prepared certificate in play;
 #   * each node ALSO drops VIEW_CHANGE from its own list of senders
-#     (NODUS_FAULT_DROP_VC_FROM), so the nodes legitimately collect
-#     DIFFERENT — but individually valid — first-2f+1 subsets.
+#     (NODUS_FAULT_DROP_VC_ROTATE=<k>, k >= 1), so the nodes legitimately
+#     collect DIFFERENT — but individually valid — first-2f+1 subsets.
+#     (This comment named NODUS_FAULT_DROP_VC_FROM until 2026-08-27. No
+#     such variable has ever existed: nodus_witness_fault.c:164 reads
+#     NODUS_FAULT_DROP_VC_ROTATE. Exporting the name written here does
+#     nothing, every node comes up with vc_drop_senders=0, and the
+#     scenario aborts as vacuous — which is exactly how the wrong name
+#     was found.)
 #
 # What must hold after the repair:
 #
@@ -29,8 +35,15 @@
 #   4. NEW_VIEW carried a certificate (not a bare digest), and followers
 #      verified it rather than consulting their own subsets.
 #
-# Requires nodus-server built -DQGP_FAULT_INJECT=ON, and
-# NODUS_FAULT_ARM_FILE exported before stagef_up.sh.
+# Requires nodus-server built -DQGP_FAULT_INJECT=ON, and ALL of these
+# exported BEFORE stagef_up.sh (the server installs the predicate once,
+# at witness init — exporting them later has no effect):
+#
+#   NODUS_FAULT_ARM_FILE=<path>        # armed by TOUCHING this file;
+#                                      # must NOT exist at scenario start
+#   NODUS_FAULT_DROP_TYPE=precommit    # view-0 PRECOMMITs, cluster-wide
+#   NODUS_FAULT_DROP_VIEW=0
+#   NODUS_FAULT_DROP_VC_ROTATE=2       # per-node VIEW_CHANGE drop width
 
 set -euo pipefail
 

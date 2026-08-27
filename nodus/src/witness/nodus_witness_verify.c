@@ -903,16 +903,20 @@ int nodus_witness_verify_transaction(nodus_witness_t *w,
         return -1;
     }
 
-    /* ── O15C: Ledger V2 activation-authority types (15/16) ──────────
-     * Admitted ONLY by NODUS_V2_ACTIVATION_AUTHORITY builds (a CMake
-     * option OFF by default, set on no production target) — the exact
-     * test-target-only gate O15C-A specified. Without the flag the
-     * reject is NAMED, unconditional and fires on either the declared
-     * or the wire type byte (the 12/13 pattern). With the flag the
-     * transaction continues through the generic checks (signers,
-     * balance, fee) and the full semantic rule set runs at apply time
-     * (nodus_witness_v2_activation_apply*), the CHAIN_CONFIG shape. */
-#ifndef NODUS_V2_ACTIVATION_AUTHORITY
+    /* ── Ledger V2 activation-authority types (15/16) — PERMANENT ────
+     * O15J Faz 3 removed the activation ceremony: a V2 chain is now born
+     * V2 and there is no V1→V2 transition for a type-15/16 transaction to
+     * schedule or signal readiness for. The apply lanes, the boundary
+     * state machine and the build option that once admitted these are all
+     * deleted, so these type bytes are PERMANENTLY INADMISSIBLE — no
+     * build of this tree accepts them.
+     *
+     * The reject stays UNCONDITIONAL and NAMED rather than becoming a
+     * fallthrough, exactly like the frozen SHIELD/UNSHIELD (12/13) branch
+     * above: this function has no generic unknown-type reject, so without
+     * this branch a type-15 frame would die namelessly and undiagnosably.
+     * Fires on EITHER the caller-declared type or the WIRE type byte, for
+     * the same forged-pair reason as 12/13. */
     if (tx_type == NODUS_W_TX_V2_SCHEDULE ||
         tx_data[1] == NODUS_W_TX_V2_SCHEDULE ||
         tx_type == NODUS_W_TX_V2_READY ||
@@ -922,12 +926,11 @@ int nodus_witness_verify_transaction(nodus_witness_t *w,
              tx_type == NODUS_W_TX_V2_READY)
                 ? (unsigned)tx_type : (unsigned)tx_data[1];
         snprintf(reject_reason, reason_size,
-                 "type %u (V2 activation authority) requires an "
-                 "activation-authority build — rejected",
+                 "type %u (V2 activation authority) is permanently "
+                 "inadmissible — the activation ceremony is gone",
                  offending);
         return -1;
     }
-#endif
 
     /* ── Phase-C C2.2: shielded (type-11) dispatch ───────────────
      * Right after Check 2 (the V4 tx-hash bound the full shielded

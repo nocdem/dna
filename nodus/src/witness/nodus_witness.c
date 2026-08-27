@@ -18,14 +18,10 @@
 #include "witness/nodus_witness_v2_gate.h"      /* O15B activation gate  */
 #include "witness/nodus_witness_v2_ingress.h"   /* O15B ingress arming   */
 #include "witness/nodus_witness_v2_preflight.h" /* O15A readiness report */
-#ifdef NODUS_V2_ACTIVATION_AUTHORITY
-#include "witness/nodus_witness_v2_schema.h"    /* O15C schema helpers */
-#include "witness/nodus_witness_v2_activation.h" /* O15C activation tables */
-#endif
-/* O15D — the successor probe and the committed chain id compile on EVERY
- * build: chain-role derivation is what makes a successor database inert
- * (all legacy lanes refuse) on a default binary too. */
-#include "witness/nodus_witness_v2_seam.h"      /* O15C successor derivation */
+/* O15J Faz 3 — chain-role derivation is what makes a Ledger V2 database
+ * refuse every legacy lane. With the activation ceremony gone there is
+ * exactly ONE way a V2 chain comes into being, and exactly one probe for
+ * it: nodus_witness_v2_gen_is_pure. */
 #include "witness/nodus_witness_v2_gen.h"       /* O15J pure-V2 chain role   */
 #include "witness/nodus_witness_v2_claims.h"    /* nodus_witness_v2_chain_id */
 #include "witness/nodus_witness_v2_sync2.h"     /* O15E successor sync seam */
@@ -443,27 +439,11 @@ static int witness_post_open_gate(nodus_witness_t *witness,
      * refuses the database, because a legacy chain's open must not come to
      * depend on Ledger V2 state.
      */
-#ifdef NODUS_V2_ACTIVATION_AUTHORITY
-    /* O15C (test-only builds): an activation-authority SERVER needs the
-     * TWO activation tables in every chain database it opens — and ONLY
-     * those. Deliberately NOT the full v2 ladder: its S5 stage rebuilds
-     * `utxo_set` with `domain_id NOT NULL` and no default, which the
-     * LEGACY writers (genesis, spends) never populate — running it on a
-     * live legacy chain broke the genesis supply invariant on the first
-     * rehearsal bring-up. The ladder belongs to the SUCCESSOR database,
-     * where the seam runs it explicitly and only the V2 engine writes.
-     * Idempotent CREATE IF NOT EXISTS (the chain_config migration
-     * pattern); fail closed on failure. Gated on the server backpointer
-     * so bare test-fixture handles keep exact schema semantics. */
-    if (witness->server &&
-        nodus_witness_v2_activation_db_migrate(witness) != 0) {
-        fprintf(stderr, "%s: activation-table migration FAILED for %s — "
-                "refusing the database (fail closed)\n", LOG_TAG, db_path);
-        sqlite3_close(witness->db);
-        witness->db = NULL;
-        return -1;
-    }
-#endif
+    /* O15J Faz 3 — the at-open migration of the two activation tables is
+     * deleted with the ceremony. It ran only in the ceremony's rehearsal
+     * builds, and the tables it created no longer exist in the schema
+     * ladder (nodus_witness_v2_schema.c, S10). Nothing replaces it: a
+     * pure-V2 database is migrated once, by its builder. */
 
     nodus_witness_v2_ingress_disarm(witness);
 
@@ -492,41 +472,40 @@ static int witness_post_open_gate(nodus_witness_t *witness,
 
     /* ── Ledger V2 O15D — chain-role derivation, COMMITTED STATE ONLY ──
      *
-     * A seam SUCCESSOR is recognisable on every build (the probe reads
-     * the committed height-0 genesis manifest's "DNA.LEGACY.TERM.v1"
-     * source binding and compiles always). Deriving the role here — on
-     * BOTH open paths — is what lets every legacy lane refuse on a
-     * successor chain: before this, a default (non-activation) build
-     * pointed at a successor database treated it as an empty legacy
-     * chain and could have committed a LEGACY genesis into it. Now the
-     * successor is inert on such a build (everything refuses), and only
-     * an ARMED node (activation build, gate OPEN) produces V2 blocks.
+     * Deriving the role here — on BOTH open paths — is what lets every
+     * legacy lane refuse on a Ledger V2 chain. Without it, a node pointed
+     * at a V2 database treats it as an empty legacy chain and could
+     * commit a LEGACY genesis into it.
      *
-     * A successor whose committed chain id cannot be derived is
-     * malformed and is REFUSED, never half-adopted. */
+     * O15J Faz 3: the role is now derived from ONE probe. The seam
+     * successor (a chain derived from a terminal legacy chain, bound by
+     * the "DNA.LEGACY.TERM.v1" source tag) is gone with the activation
+     * ceremony, so a pure-V2 chain — height-0 genesis manifest tagged
+     * "DNA.GENESIS.v1" — is the only V2 chain there is.
+     *
+     * A V2 chain whose committed chain id cannot be derived is malformed
+     * and is REFUSED, never half-adopted. */
     witness->v2_successor = false;
     memset(witness->v2_chain32, 0, sizeof(witness->v2_chain32));
     memset(&witness->v2_certpool, 0, sizeof(witness->v2_certpool));
 
-    /* ── O15J — a PURE-V2 chain is a V2 chain too ──────────────────────
+    /* ── O15J — a PURE-V2 chain IS the V2 chain ────────────────────────
      *
-     * The probe above matches only the ceremony's "DNA.LEGACY.TERM.v1"
-     * source binding. A chain built by nodus_witness_v2_gen carries
-     * "DNA.GENESIS.v1" — it has no legacy ancestor — so before this it
-     * reopened with v2_successor = false and every consumer took the
-     * LEGACY branch: nodus_witness_block_height read the empty `blocks`
-     * table and advertised height 0, nodus_witness_genesis_exists was
-     * false so the admission precheck would ADMIT a legacy GENESIS
-     * transaction into the V2 database (the exact hazard the comment
-     * above records), every V2 lane refused, and the first non-bootstrap
-     * epoch halted because the committee seed read the empty `blocks`
-     * table. Review R2 found it; the season's own test had MASKED it by
-     * hard-setting the flag after create_chain_db.
+     * A chain built by nodus_witness_v2_gen carries the "DNA.GENESIS.v1"
+     * source tag and has no legacy ancestor. Recognising it here is what
+     * stops every consumer taking the LEGACY branch: without it,
+     * nodus_witness_block_height reads the empty `blocks` table and
+     * advertises height 0, nodus_witness_genesis_exists is false so the
+     * admission precheck would ADMIT a legacy GENESIS transaction into
+     * the V2 database (the exact hazard the comment above records), every
+     * V2 lane refuses, and the first non-bootstrap epoch halts because
+     * the committee seed reads the empty `blocks` table. Review R2 found
+     * it; the season's own test had MASKED it by hard-setting the flag
+     * after create_chain_db.
      *
-     * A probe FAULT (-1) refuses the database. This is deliberately
-     * stricter than the seam probe's behaviour beside it: a chain whose
-     * role cannot be determined must not be opened as though it had no
-     * role, which is precisely the failure being fixed. */
+     * A probe FAULT (-1) refuses the database: a chain whose role cannot
+     * be determined must not be opened as though it had no role, which is
+     * precisely the failure being fixed. */
     int pure_rc = nodus_witness_v2_gen_is_pure(db_path);
     if (pure_rc < 0) {
         fprintf(stderr, "%s: chain role undeterminable for %s — refusing "
@@ -536,10 +515,10 @@ static int witness_post_open_gate(nodus_witness_t *witness,
         return -1;
     }
 
-    if (pure_rc == 1 || nodus_witness_v2_seam_is_successor(db_path) == 1) {
+    if (pure_rc == 1) {
         if (nodus_witness_v2_chain_id(witness,
                                       witness->v2_chain32) != 0) {
-            fprintf(stderr, "%s: successor chain id underivable for %s — "
+            fprintf(stderr, "%s: Ledger V2 chain id underivable for %s — "
                     "refusing the database (fail closed)\n",
                     LOG_TAG, db_path);
             sqlite3_close(witness->db);
@@ -547,8 +526,8 @@ static int witness_post_open_gate(nodus_witness_t *witness,
             return -1;
         }
         witness->v2_successor = true;
-        fprintf(stderr, "%s: chain role: Ledger V2 SUCCESSOR (legacy "
-                "lanes refuse; production %s)\n", LOG_TAG,
+        fprintf(stderr, "%s: chain role: LEDGER V2 (legacy lanes refuse; "
+                "production %s)\n", LOG_TAG,
                 witness->v2_ingress_armed ? "ARMED" : "not armed");
     }
 
@@ -616,10 +595,6 @@ int nodus_witness_scan_chain_db(nodus_witness_t *witness) {
      */
     char best[256];
     int  have_best = 0;
-#ifdef NODUS_V2_ACTIVATION_AUTHORITY
-    char best_succ[256];
-    int  have_succ = 0;
-#endif
     struct dirent *entry;
     while ((entry = readdir(dir)) != NULL) {
         uint8_t probe[16];
@@ -628,32 +603,14 @@ int nodus_witness_scan_chain_db(nodus_witness_t *witness) {
             snprintf(best, sizeof(best), "%s", entry->d_name);
             have_best = 1;
         }
-#ifdef NODUS_V2_ACTIVATION_AUTHORITY
-        /* O15C — a seam SUCCESSOR (committed genesis manifest bound to a
-         * terminal legacy chain) outranks every legacy candidate: the
-         * committed activation record that authorized deriving it is the
-         * selection authority, not the filename order. Committed bytes
-         * only — the probe decodes the stored manifest. */
-        {
-            char cand[512];
-            snprintf(cand, sizeof(cand), "%s/%s", data_path, entry->d_name);
-            if (nodus_witness_v2_seam_is_successor(cand) == 1 &&
-                (!have_succ || strcmp(entry->d_name, best_succ) < 0)) {
-                snprintf(best_succ, sizeof(best_succ), "%s", entry->d_name);
-                have_succ = 1;
-            }
-        }
-#endif
+        /* O15J Faz 3 — the second pass that let a seam SUCCESSOR outrank
+         * every legacy candidate is deleted with the activation ceremony:
+         * a chain is never derived beside its predecessor any more, so no
+         * data directory holds both and there is nothing to rank. The
+         * lexicographically smallest name is again the only rule, and it
+         * stays a stable total key. */
     }
     closedir(dir);
-#ifdef NODUS_V2_ACTIVATION_AUTHORITY
-    if (have_succ) {
-        snprintf(best, sizeof(best), "%s", best_succ);
-        have_best = 1;
-        fprintf(stderr, "%s: seam successor chain preferred: %s\n",
-                LOG_TAG, best);
-    }
-#endif
     if (!have_best) return -1;      /* No chain DB found — pre-genesis */
 
     uint8_t chain_id[16];
@@ -675,16 +632,9 @@ int nodus_witness_scan_chain_db(nodus_witness_t *witness) {
     /* O15A: the restart path now runs the SAME gate as creation. */
     if (witness_post_open_gate(witness, db_path) != 0) return -1;
 
-#ifdef NODUS_V2_ACTIVATION_AUTHORITY
-    /* O15C — restart-side seam retry: with the chain id installed, a
-     * terminal legacy chain whose successor derivation was interrupted
-     * derives it now, from the same committed inputs (idempotent; a
-     * completed successor short-circuits). Failure is logged, never a
-     * refusal — the legacy DB itself is fine. */
-    if (nodus_witness_v2_seam_maybe_derive(witness, NULL) != 0)
-        fprintf(stderr, "%s: seam successor derivation failed at open "
-                "(will retry next open)\n", LOG_TAG);
-#endif
+    /* O15J Faz 3 — the restart-side seam retry (re-deriving a successor
+     * chain whose derivation was interrupted) is deleted with the
+     * activation ceremony. Nothing derives a chain at open any more. */
 
     char hex[17];
     for (int i = 0; i < 8; i++)

@@ -82,10 +82,38 @@ node_pubkey_hex() {
 # A blind sleep cannot do this: with no TXs there are no blocks, so the
 # original wait_height could only ever time out once the scenario had
 # stopped generating traffic of its own.
+# FAIL ON NO PROGRESS, NOT ON A CLOCK.
+#
+# This used to fail when a wall-clock budget expired, and every call site
+# carried a hand-picked number. Those numbers encoded an assumption about
+# SPEED, and the assumption was wrong in every direction: a pump
+# iteration is `dna sync` (measured 14 s on its own) + `dna send` + a 6 s
+# settle, so ~37 s/block on a healthy localhost cluster and ~63 s/block in
+# section G, where a committee member is dead BY DESIGN and every round
+# waits out its missing vote. The scenario kept failing with the chain
+# healthy and still advancing — `height 15 < 22`, `height 104 < 107` —
+# and each failure invited another number bump. That is the wrong shape:
+# tuning a timeout until a test goes green hides real stalls, and a
+# number calibrated on this machine says nothing about the next one.
+#
+# The property this function actually needs is not "finish within T
+# seconds" but "the chain is still producing blocks". So the failure
+# condition is now STALL: PUMP_STALL_ROUNDS consecutive iterations with
+# NO height change. A slow machine, a slow round, a deliberately degraded
+# cluster — none of them trip it, because each still advances. A wedged
+# chain trips it immediately and reports the height it died at.
+#
+# `timeout` is kept as an ABSOLUTE ceiling so a pathologically slow but
+# technically-advancing chain cannot run forever; it is deliberately
+# generous and is NOT the thing being asserted.
+PUMP_STALL_ROUNDS=8
+
 pump_to_height() {
-    local target="$1" timeout="${2:-600}"
-    local deadline=$(( SECONDS + timeout ))
+    local target="$1" timeout="${2:-7200}"
     local h; h=$(head_height)
+    local last_h="${h:-0}" stalled=0
+
+    local deadline=$(( SECONDS + timeout ))
     local sink; sink=$(cat "$BASE_DIR/node1/identity/nodus.fp")
     while [ "${h:-0}" -lt "$target" ] && [ $SECONDS -lt $deadline ]; do
         # SYNC BEFORE EVERY SEND — not only after a failure.
@@ -113,8 +141,24 @@ pump_to_height() {
         fi
         sleep 6
         h=$(head_height)
+
+        # Progress, not speed, is the assertion.
+        if [ "${h:-0}" -gt "$last_h" ]; then
+            last_h="${h:-0}"
+            stalled=0
+        else
+            stalled=$(( stalled + 1 ))
+            if [ "$stalled" -ge "$PUMP_STALL_ROUNDS" ]; then
+                fail "pump STALLED at height $h (target $target): no block \
+in $PUMP_STALL_ROUNDS consecutive send rounds — the chain has stopped \
+producing, which is a real failure, not a slow machine"
+            fi
+        fi
     done
-    [ "${h:-0}" -ge "$target" ] || fail "pump: height $h < $target (timeout ${timeout}s)"
+    [ "${h:-0}" -ge "$target" ] || \
+        fail "pump: height $h < $target — hit the absolute ${timeout}s \
+ceiling while still advancing (last progress at $last_h). This is NOT a \
+stall; if it is legitimate, the ceiling is too low for this cluster."
     info "pumped to height $h (target $target)"
 }
 
@@ -531,15 +575,33 @@ info "proposing TARGET_ACTIVE_COUNT=9 effective=$EFF (head=$H)"
 # lookback). Drive the chain there — nothing else will.
 info "pumping past the governed boundary and waiting for a 9-member snapshot"
 grown_epoch=""
-grow_deadline=$(( SECONDS + 900 ))
-while [ $SECONDS -lt $grow_deadline ]; do
+# BUDGET FROM THE DISTANCE, NOT A FLAT WALL CLOCK.
+#
+# WAIT ON THE HEIGHT THE CHAIN MUST REACH, NOT ON A CLOCK.
+#
+# The first snapshot that can hold 9 is built at a boundary at or after
+# EFF, so the chain has to travel to about EFF + E_LEN. This used to be a
+# flat wall-clock deadline, which encoded a guess about block rate and
+# gave up at height 37 with EFF=45 while the chain was healthy and still
+# advancing. The honest condition is the DISTANCE: pump until the target
+# height is reached (pump_to_height fails on a real stall), re-checking
+# for the snapshot each round. If the height arrives and the snapshot
+# still has not, THAT is a genuine consensus failure and is reported as
+# one — no timing involved.
+grow_target=$(( EFF + E_LEN ))
+while [ "$(head_height)" -lt "$grow_target" ]; do
     grown_epoch=$(sqlite3 "$(node1_db)" "SELECT epoch_start FROM \
         validator_set_snapshots WHERE active_count = 9 \
         ORDER BY epoch_start LIMIT 1;")
     [ -n "$grown_epoch" ] && break
-    pump_to_height $(( $(head_height) + E_LEN )) 300
+    pump_to_height $(( $(head_height) + E_LEN ))
 done
-[ -n "$grown_epoch" ] || fail "no 9-member snapshot appeared"
+[ -n "$grown_epoch" ] || grown_epoch=$(sqlite3 "$(node1_db)" \
+    "SELECT epoch_start FROM validator_set_snapshots WHERE active_count = 9 \
+     ORDER BY epoch_start LIMIT 1;")
+[ -n "$grown_epoch" ] || fail "no 9-member snapshot appeared even though \
+the chain reached height $(head_height) (>= $grow_target, the first \
+boundary that could carry the governed set) — the grow did not happen"
 info "9-member snapshot for epoch $grown_epoch"
 
 # GOVERNANCE: the set may only grow at a boundary at or after the height
@@ -553,7 +615,7 @@ info "9-member snapshot for epoch $grown_epoch"
 ok "grow happened at boundary $grown_epoch >= effective $EFF"
 
 # Let the grown epoch actually come into force.
-pump_to_height $(( grown_epoch + 3 )) 600
+pump_to_height $(( grown_epoch + 3 ))
 assert_snapshot_series_sane "E/grown"
 assert_snapshots_identical "E/grown"
 assert_state_root_identical "E/grown"
@@ -585,13 +647,18 @@ assert_status_matches_epoch_snapshot "E/grown"
 # DYNAMIC QUORUM: 9 validators ⇒ (2*9)/3 + 1 = 7. The BFT round logs the
 # quorum it is actually enforcing; it must have moved with the snapshot.
 EXPECT_Q=$(( (2 * 9) / 3 + 1 ))
+# Bounded by BLOCKS, not seconds: the quorum is re-derived once per
+# round, so a fixed number of committed blocks is the honest budget and
+# it holds on any machine at any speed. pump_to_height fails on a real
+# stall, so a chain that has stopped is caught there, not here.
 q_seen=0
-q_deadline=$(( SECONDS + 300 ))
-while [ $SECONDS -lt $q_deadline ]; do
+q_rounds=0
+while [ "$q_rounds" -lt $(( 2 * E_LEN )) ]; do
     if grep -q "quorum=$EXPECT_Q)" "$BASE_DIR/node1/nodus.log" 2>/dev/null; then
         q_seen=1; break
     fi
-    pump_to_height $(( $(head_height) + 1 )) 60
+    pump_to_height $(( $(head_height) + 1 ))
+    q_rounds=$(( q_rounds + 1 ))
 done
 [ "$q_seen" -eq 1 ] || fail "dynamic quorum never reached $EXPECT_Q after grow \
 (last seen: $(grep -o 'quorum=[0-9]*' "$BASE_DIR/node1/nodus.log" | tail -1))"
@@ -612,22 +679,30 @@ info "proposing TARGET_ACTIVE_COUNT=7 effective=$EFF2 (head=$H)"
 
 info "pumping past the governed boundary and waiting for a 7-member snapshot"
 shrunk_epoch=""
-shrink_deadline=$(( SECONDS + 900 ))
-while [ $SECONDS -lt $shrink_deadline ]; do
+# Same derivation as the grow wait above — a flat wall clock under-budgets
+# the distance at the harness's real pump rate.
+# Same distance-based wait as the grow above — no wall clock.
+shrink_target=$(( EFF2 + E_LEN ))
+while [ "$(head_height)" -lt "$shrink_target" ]; do
     shrunk_epoch=$(sqlite3 "$(node1_db)" "SELECT epoch_start FROM \
         validator_set_snapshots WHERE active_count = 7 \
         AND epoch_start > $grown_epoch ORDER BY epoch_start LIMIT 1;")
     [ -n "$shrunk_epoch" ] && break
-    pump_to_height $(( $(head_height) + E_LEN )) 300
+    pump_to_height $(( $(head_height) + E_LEN ))
 done
-[ -n "$shrunk_epoch" ] || fail "no post-grow 7-member snapshot appeared"
+[ -n "$shrunk_epoch" ] || shrunk_epoch=$(sqlite3 "$(node1_db)" \
+    "SELECT epoch_start FROM validator_set_snapshots WHERE active_count = 7 \
+     AND epoch_start > $grown_epoch ORDER BY epoch_start LIMIT 1;")
+[ -n "$shrunk_epoch" ] || fail "no post-grow 7-member snapshot appeared even \
+though the chain reached height $(head_height) (>= $shrink_target) — the \
+governed shrink did not happen"
 info "7-member snapshot for epoch $shrunk_epoch"
 [ $(( shrunk_epoch % E_LEN )) -eq 0 ] || \
     fail "shrink landed at epoch_start=$shrunk_epoch, not an epoch boundary"
 [ "$shrunk_epoch" -ge "$EFF2" ] || \
     fail "set shrank at epoch $shrunk_epoch, BEFORE the governed effective height $EFF2"
 
-pump_to_height $(( shrunk_epoch + 3 )) 600
+pump_to_height $(( shrunk_epoch + 3 ))
 assert_snapshot_series_sane "F/shrunk"
 assert_snapshots_identical "F/shrunk"
 assert_state_root_identical "F/shrunk"
@@ -684,7 +759,12 @@ victim_pid=$(pgrep -f "node$victim/identity" | head -1)
 [ -n "$victim_pid" ] || fail "cannot find node$victim pid"
 info "killing node$victim (pid $victim_pid) before boundary $NEXT_B (head=$H)"
 kill -9 "$victim_pid"
-pump_to_height $(( NEXT_B + 2 )) 600
+# A committee member is deliberately dead across this stretch, so each
+# round waits out its missing vote and blocks come roughly half as fast
+# (measured ~63 s vs ~37 s). No special budget is needed: pump_to_height
+# asserts PROGRESS, not speed, so a degraded-but-advancing cluster passes
+# unchanged and only a genuine stall fails.
+pump_to_height $(( NEXT_B + 2 ))
 info "boundary $NEXT_B passed without node$victim — restarting it"
 node_dir="$BASE_DIR/node$victim"
 # shellcheck disable=SC2086

@@ -39,6 +39,33 @@
 
 /* Rate limiting */
 #define SYNC_MIN_INTERVAL_SEC   30
+
+/* How long a sync may make NO progress before the `syncing` latch is
+ * force-released.
+ *
+ * O15J Faz 3 — `sync_state.syncing` is a one-way latch: it is set when a
+ * block request goes out, and every clear lives on a RESPONSE path. A
+ * response that never arrives — the peer died mid-sync, the frame was
+ * dropped, the peer serves nothing — therefore wedges the node OUT OF
+ * SYNC PERMANENTLY, with no error and no recovery. `sync_check` returns
+ * at the "already syncing" guard on every subsequent tick, forever.
+ *
+ * The bootstrap instance of this (a sync started before the chain DB
+ * existed) is fixed at its source, but the latch is reachable from any
+ * lost response, so the general case needs a watchdog too.
+ *
+ * 60 s is two rate-limit intervals: comfortably longer than any healthy
+ * request/response round trip on this network (the stamp is refreshed on
+ * EVERY request, so a catch-up of a thousand blocks keeps resetting it
+ * and is never interrupted), and short enough that a node recovers on
+ * its own within a block or two rather than needing a restart.
+ *
+ * This is a LIVENESS timer on a recovery path, not a consensus branch:
+ * releasing the latch only permits a re-request of blocks the node
+ * already lacks. It cannot change what the node accepts, what it votes,
+ * or any committed value, so it introduces no timing-dependent state
+ * transition. */
+#define SYNC_STALL_TIMEOUT_SEC  60
 #define SYNC_MAX_BLOCKS         1000
 
 /* O15G HIGH-1 — per-peer invalid-cert cooldown window. A peer that served a
@@ -537,11 +564,85 @@ void nodus_witness_sync_check(nodus_witness_t *w) {
      * a named open item, not this path. */
     if (w->v2_successor) return;
 
+    /* A node with NO CHAIN DATABASE has nothing to sync INTO.
+     *
+     * O15J Faz 3 (2026-08-27) — this guard is the fix for a permanent
+     * wedge, not a tidy-up. A brand-new node joining a chain that is
+     * already past genesis runs sync_check while still in bootstrap
+     * DISCOVER, before nodus_witness_create_chain_db has produced a
+     * database (`WITNESS: no chain DB found — pre-genesis state`). Sync
+     * saw local=0 (block_height with no db) against a live peer,
+     * latched `syncing = true` at :~629 and requested block 1 — into
+     * nothing.
+     *
+     * That latch is one-way. Every clear of `sync_state.syncing` lives
+     * on a RESPONSE path; there is no watchdog that clears it when no
+     * usable response ever arrives. So the "Already syncing" guard
+     * immediately below returned on every later tick, forever: the node
+     * completed bootstrap, created its chain DB, joined the peer mesh —
+     * and never fetched a single block. `blocks` and `validators` both
+     * stayed empty, so it could not resolve a committee either, and its
+     * log filled with `C5 prepared cert REJECTED ... committee=-1`.
+     *
+     * Bootstrap's DONE transition already tried to re-enable sync by
+     * resetting `last_sync_attempt` — but that only defeats the RATE
+     * LIMIT guard further down; the `syncing` latch sits ABOVE it and
+     * was never cleared (nodus_witness_bootstrap.c, which now clears it
+     * as well). Refusing to start at all without a database is the
+     * upstream half: the impossible sync is never begun, so there is no
+     * latch to recover from.
+     *
+     * Genesis does NOT come through this path — bootstrap fetches it
+     * with w_genesis_req/w_genesis_rsp and creates the DB from the
+     * response — so nothing is lost by declining to sync before it
+     * exists. Reproduced by `test_vset_grow_shrink.sh` (needs a
+     * short-epoch build); see nodus/BUGS.md. */
+    /* ── STALE-LATCH WATCHDOG — must run BEFORE every guard below ──
+     *
+     * `syncing` used to be a bare `return`, which made it a ONE-WAY
+     * latch: it is set when a request goes out, and every clear of it
+     * lives on a RESPONSE path. A response that never arrives — peer
+     * died mid-sync, frame dropped, peer serves nothing — therefore left
+     * the node permanently unable to sync, silently, with no error and
+     * no recovery short of an operator restart.
+     *
+     * ORDER IS LOAD-BEARING. Releasing a latch is pure cleanup and is
+     * correct whatever the database state or round phase; if the `!w->db`
+     * guard below came first, a node latched while it had no chain DB
+     * could never release — which is precisely the wedge being fixed
+     * (bootstrap DISCOVER starts a sync into a database that does not
+     * exist yet). `test_sync_stall_watchdog.c` fails if these are
+     * reordered.
+     *
+     * `sync_last_progress` is stamped on every request actually sent, so
+     * a healthy catch-up refreshes it block by block and never trips
+     * this — the direction a naive watchdog breaks. Only a sync that has
+     * sent and received nothing for SYNC_STALL_TIMEOUT_SEC is released,
+     * and then we fall THROUGH rather than return, so the same tick
+     * re-evaluates the gap and starts fresh (against a freshly chosen
+     * peer, the old one being the likely reason we stalled). */
+    if (w->sync_state.syncing) {
+        uint64_t now_chk = (uint64_t)time(NULL);
+        if (now_chk - w->sync_state.sync_last_progress
+                < SYNC_STALL_TIMEOUT_SEC)
+            return;                     /* progressing — leave it alone */
+
+        fprintf(stderr, "%s: sync STALLED — no progress for %llus at "
+                "block %llu from peer %d; releasing the latch and "
+                "restarting\n", LOG_TAG,
+                (unsigned long long)(now_chk -
+                                     w->sync_state.sync_last_progress),
+                (unsigned long long)w->sync_state.sync_current_height,
+                w->sync_state.sync_peer_idx);
+        w->sync_state.syncing = false;
+        /* fall through — the guards below decide whether a NEW sync may
+         * start; the latch itself is now clean either way. */
+    }
+
+    if (!w->db) return;
+
     /* Only sync during IDLE phase */
     if (w->round_state.phase != NODUS_W_PHASE_IDLE) return;
-
-    /* Already syncing */
-    if (w->sync_state.syncing) return;
 
     /* Rate limit */
     uint64_t now = (uint64_t)time(NULL);
@@ -630,6 +731,10 @@ void nodus_witness_sync_check(nodus_witness_t *w) {
     w->sync_state.sync_peer_idx = peer_idx;
     w->sync_state.sync_target_height = peer_height;
     w->sync_state.last_sync_attempt = now;
+    /* Stamp progress at the moment the latch is taken, so a request that
+     * fails to send never leaves `syncing` true with a stale (or zero)
+     * progress time that the watchdog would have to interpret. */
+    w->sync_state.sync_last_progress = now;
 
     /* Start from block 1 (genesis is height=1 in DB).
      * If local_height > 0: fork detection from block 1.
@@ -652,6 +757,13 @@ int nodus_witness_sync_request_next(nodus_witness_t *w) {
     }
 
     uint64_t h = w->sync_state.sync_current_height;
+
+    /* O15J Faz 3 — the stall watchdog's progress stamp. Every request
+     * that goes out IS the progress: the response path calls back here
+     * for the next block, so a healthy catch-up refreshes this on every
+     * block and never trips SYNC_STALL_TIMEOUT_SEC, while a sync whose
+     * peer stops answering stops refreshing it and is released. */
+    w->sync_state.sync_last_progress = (uint64_t)time(NULL);
 
     fprintf(stderr, "%s: requesting block %llu from peer %d\n",
             LOG_TAG, (unsigned long long)h, pi);

@@ -246,9 +246,13 @@ The witness carries **two lanes in one binary**. The legacy lane (V1) is what th
 - **Domain model** — state is partitioned into registered domains (SYSTEM, DNA_CORE) with per-domain state roots composed into one global root; new state kinds register a domain instead of forking the root format.
 - **Envelope transactions** — multi-leg envelopes with typed per-domain runtimes (verified authorization, mediated reads, metered execution) and a dual identity (`wire_id` + authorization-witness-stable `intent_id`).
 - **Atomic apply** — one SQLite transaction per global block with deterministic fault-point rollback proofs.
-- **Migration seam** — activation is governed on-chain (quorum-voted SCHEDULE + all-validator READY); at the activation height the legacy chain becomes terminal and each node deterministically derives the successor chain; legacy value migrates via claims.
+- **Birth without an ancestor** — a V2 chain is derived directly from an operator config by `nodus_witness_v2_gen_derive()` (`src/witness/nodus_witness_v2_gen.c`): validators, allocations and the genesis manifest come from the config, and the chain id is the manifest hash. There is no V1→V2 migration and none is planned — moving to V2 means **wiping the V1 chain and starting fresh**.
 
-Ledger V2 is currently **compile-gated** (`NODUS_V2_ACTIVATION` CMake option, default OFF) and not yet active on the production cluster; activation is the next planned step. The grounded V1↔V2 difference reference is [`../docs/ledger-v1-vs-v2.md`](../docs/ledger-v1-vs-v2.md); season-by-season detail lives in [`CLAUDE.md`](CLAUDE.md).
+Ledger V2 is **no longer compile-gated**. The `NODUS_V2_ACTIVATION` CMake option and the whole V1→V2 activation ceremony (quorum-voted SCHEDULE / all-validator READY, the terminal-chain seam, TX types 15 and 16) were removed in season O15J Faz 3.
+
+Activation authority is now a property of the chain itself: `nodus_witness_v2_gate_authority_present()` (`src/witness/nodus_witness_v2_gate.c`) reads the chain's own committed height-0 genesis manifest and grants authority only when its `source_tag` is `NODUS_V2_GEN_SOURCE_TAG` (`"DNA.GENESIS.v1"`). A manifest that cannot be read or decoded yields `NODUS_V2_GATE_FAULT` — never a silent "no authority". A pure-V2 chain therefore opens the gate and arms its V2 ingress at database open, in an ordinary default build.
+
+Nothing about this changes what is deployed: the production cluster still runs the V1 chain, and this change deploys nothing by itself. The grounded V1↔V2 difference reference is [`../docs/ledger-v1-vs-v2.md`](../docs/ledger-v1-vs-v2.md); season-by-season detail lives in [`CLAUDE.md`](CLAUDE.md).
 
 ---
 

@@ -22,8 +22,8 @@ extern "C" {
 
 #define NODUS_VERSION_MAJOR  0
 #define NODUS_VERSION_MINOR  19
-#define NODUS_VERSION_PATCH  19
-#define NODUS_VERSION_STRING "0.19.19"
+#define NODUS_VERSION_PATCH  20
+#define NODUS_VERSION_STRING "0.19.20"
 
 /* Wire frame.
  *
@@ -236,7 +236,10 @@ extern "C" {
                                             * kept defined for combine_v2 archive-replay. */
 #define NODUS_TREE_TAG_CHAIN_CONFIG 0x05u  /* Hard-Fork v1 — chain_config_history tree */
 #define NODUS_TREE_TAG_EPOCH_STATE  0x06u  /* v0.16 — push-settlement epoch state tree */
-#define NODUS_TREE_TAG_ACTIVATION   0x07u  /* O15C — Ledger V2 activation authority tree */
+#define NODUS_TREE_TAG_ACTIVATION   0x07u  /* O15C — Ledger V2 activation authority tree.
+                                            * RETIRED in O15J Faz 3 with the activation
+                                            * ceremony; no tree carries this tag any more.
+                                            * Kept defined so 0x07 is NEVER REUSED. */
 
 /* Composite state_root version byte (CC-AUDIT-002 / Q1 mitigation).
  * Prefixed to the outer SHA3-512 combiner input so cross-version replay
@@ -247,9 +250,15 @@ extern "C" {
 #define NODUS_STATE_ROOT_VERSION_V1 0x01u
 #define NODUS_STATE_ROOT_VERSION_V2 0x02u
 #define NODUS_STATE_ROOT_VERSION_V3 0x03u
-/* O15C — 6-input: appends activation_root (Ledger V2 activation
- * authority). Computed ONLY by NODUS_V2_ACTIVATION_AUTHORITY builds;
- * production builds keep emitting v3 byte-identically. */
+/* O15C — 6-input: appended activation_root (Ledger V2 activation
+ * authority). RETIRED in O15J Faz 3 together with the activation
+ * ceremony and its combiner (nodus_merkle_combine_state_root_v4, now
+ * deleted). It was emitted only by the ceremony's compile-gated
+ * rehearsal builds, which never shipped, so NO chain in existence
+ * carries a v4 state_root and no archive replay needs it — v3 is again
+ * the only composition this tree emits. Kept defined so the version byte
+ * 0x04 is NEVER REUSED: the whole point of the prefix is that a byte
+ * identifies exactly one formula, forever. */
 #define NODUS_STATE_ROOT_VERSION_V4 0x04u
 
 /* CC-OPS-002 / Q14 — Chain-config schema version advertised in w_ident

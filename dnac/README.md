@@ -180,8 +180,16 @@ before signature verification.
 | 8 | was CLAIM_REWARD — retired in the v0.16 reward redesign | reject |
 | 11 (SHIELDED) | shielded transfer (STARK) | assigned, **unconditional reject** until activation |
 | 12 / 13 (SHIELD / UNSHIELD) | shielded entry/exit (Wire V3 only) | assigned, **unconditional reject** |
-| 14 | — | unassigned |
-| 15 / 16 (V2_SCHEDULE / V2_READY) | Ledger V2 activation governance | activation builds only |
+| 14 / 15 / 16 | — | **burned — never reuse** |
+
+Types 14, 15 and 16 are permanently unassigned. 14 was reserved and never
+allocated; 15 and 16 were `V2_SCHEDULE` / `V2_READY`, the Ledger V2
+activation governance types, removed with the activation ceremony in
+season O15J Faz 3. The witness rejects all three by name
+(`nodus/src/witness/nodus_witness_verify.c`) and the client serializer
+refuses every type above 11 — the same freeze that already covers
+SHIELD/UNSHIELD. Recycling a burned id would let an old signed
+transaction be reinterpreted under a new meaning.
 
 ## Ledger V2 (successor chain)
 

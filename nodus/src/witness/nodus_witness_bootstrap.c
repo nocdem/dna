@@ -1065,10 +1065,35 @@ void nodus_witness_bootstrap_handle_genesis_rsp(nodus_witness_t *w,
      * and start sync immediately. */
     w->sync_state.last_sync_attempt = 0;
 
+    /* O15J Faz 3 (2026-08-27) — AND clear the `syncing` latch, which the
+     * reset above does not reach.
+     *
+     * `sync_check` refuses in this order: v2_successor, no-db, non-IDLE
+     * phase, ALREADY-SYNCING, then the rate limit. Resetting
+     * last_sync_attempt only opens the LAST of those. A sync started
+     * before this chain DB existed (the node was in DISCOVER, w->db was
+     * NULL) latched `syncing = true` and could never complete, because
+     * every clear of that flag is on a response path and no watchdog
+     * clears it when no usable response arrives. The node then sat
+     * permanently at the "Already syncing" guard: bootstrap DONE, chain
+     * DB present, peers authenticated, `blocks` empty forever, and
+     * `C5 prepared cert REJECTED ... committee=-1` on every round.
+     *
+     * Whatever was in flight targeted a database that did not exist, so
+     * it is meaningless for the one just created: drop it and let the
+     * next tick evaluate the gap honestly (local=0, peer=tip).
+     * `nodus_witness_sync.c` now also refuses to START a sync with no
+     * db, so this is the second half of a fix whose first half prevents
+     * the state from arising. Both halves are kept: this one also
+     * recovers a latch set by any other pre-DB path.
+     *
+     * Reproduced by `test_vset_grow_shrink.sh`; see nodus/BUGS.md. */
+    w->sync_state.syncing = false;
+
     fprintf(stderr,
             "WITNESS-BOOTSTRAP: state=DONE branch=DISCOVER cid_prefix=%02x%02x%02x%02x "
             "cdb_len=%u settle_until_ms=%llu — chain DB created, "
-            "sync_check will fetch block 2+ to populate state\n",
+            "sync_check will fetch from block 1 to populate state\n",
             g_quorum_cid[0], g_quorum_cid[1],
             g_quorum_cid[2], g_quorum_cid[3],
             msg->w_genesis_rsp.cdb_len,

@@ -11,13 +11,25 @@
 # which is what this does.
 #
 # WHAT WOULD BREAK WITHOUT IT
-# `NODUS_V2_TEST_AUTHORITY` is added to exactly one target in
-# nodus/CMakeLists.txt. Moving it to a directory-scope
+# `NODUS_V2_TEST_AUTHORITY` is added ONLY to test targets that deliberately
+# compile the gate TU in (today: test_v2_gate, test_v2_sync_claims), and to
+# NO library or server target. Moving it to a directory-scope
 # `add_definitions()`, or adding it to the `nodus` library while chasing a
 # build error, would silently compile an authority override into the shipped
 # server. Review catches that only if someone is looking; this fails.
 #
-# Invoked by ctest as: cmake -DNODUS_LIB=... -DNODUS_SERVER=... -P this
+# ── O15J Faz 3: THE THIRD BINARY ───────────────────────────────────────
+# The activation ceremony is gone, and authority is now DERIVED from the
+# chain's own committed genesis manifest. `test_v2_gate_pure` is the test
+# that proves a pure-V2 chain opens the gate in an ordinary build — a claim
+# that is only worth anything while that binary carries NO synthetic
+# authority. If someone ever adds NODUS_V2_TEST_AUTHORITY to that target to
+# turn a red test green, the test would still pass and would have stopped
+# meaning anything. So its symbol table is checked here too, by the same
+# `nm` that polices the shipped artefacts.
+#
+# Invoked by ctest as:
+#   cmake -DNODUS_LIB=... -DNODUS_SERVER=... -DGATE_PURE=... -P this
 cmake_minimum_required(VERSION 3.10)
 
 set(_FORBIDDEN
@@ -81,5 +93,18 @@ endfunction()
 
 _check_binary("${NODUS_LIB}"    "libnodus")
 _check_binary("${NODUS_SERVER}" "nodus-server")
+
+# The pure-gate test must be checkable, and "the argument was not passed"
+# is NOT a pass — the same fail-closed rule this file applies to a missing
+# `nm`. An unverifiable claim is not a verified one.
+if(NOT DEFINED GATE_PURE OR GATE_PURE STREQUAL "")
+    message(FATAL_ERROR
+        "v2_gate_linked: GATE_PURE was not supplied, so it CANNOT BE "
+        "VERIFIED that test_v2_gate_pure carries no synthetic activation "
+        "authority — the property that makes that test mean anything. "
+        "Add -DGATE_PURE=$<TARGET_FILE:test_v2_gate_pure> to this test's "
+        "add_test() COMMAND in nodus/CMakeLists.txt.")
+endif()
+_check_binary("${GATE_PURE}" "test_v2_gate_pure")
 
 message(STATUS "v2_gate_linked: PASS")

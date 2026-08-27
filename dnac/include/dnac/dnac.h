@@ -306,17 +306,17 @@ typedef enum {
                                      *   (Ledger V2 S9). Carried ONLY by the V3 wire — inadmissible on
                                      *   the legacy V2 wire, whose acceptance set is FROZEN at 0..11.
                                      *   REJECT-unconditional until activation. */
-    DNAC_TX_UNSHIELD         = 13,  /**< V3-ONLY: shielded pool → transparent boundary crossing
+    DNAC_TX_UNSHIELD         = 13   /**< V3-ONLY: shielded pool → transparent boundary crossing
                                      *   (Ledger V2 S9). Same freeze as DNAC_TX_SHIELD: never valid on
-                                     *   the legacy V2 wire, REJECT-unconditional until activation.
-                                     *   Type 14 stays UNASSIGNED. */
-    DNAC_TX_V2_SCHEDULE      = 15,  /**< O15C: quorum-voted Ledger V2 activation SCHEDULE/CANCEL.
-                                     *   Legacy-wire governance type (the CHAIN_CONFIG shape); admitted
-                                     *   ONLY by builds compiled with NODUS_V2_ACTIVATION_AUTHORITY —
-                                     *   production builds reject it unconditionally. 14 SKIPPED on
-                                     *   purpose: it stays unassigned per the S9 pin. */
-    DNAC_TX_V2_READY         = 16   /**< O15C: one validator's signed Ledger V2 readiness signal.
-                                     *   Same admission gate as DNAC_TX_V2_SCHEDULE. */
+                                     *   the legacy V2 wire, REJECT-unconditional until activation. */
+    /* Types 14, 15 and 16 are UNASSIGNED and must stay that way.
+     * 14 was never assigned (the S9 pin). 15 and 16 were the O15J-removed
+     * Ledger V2 activation-authority types (SCHEDULE/CANCEL and READY):
+     * the chain is now born directly from a config, so there is no
+     * activation ceremony and no wire codec behind them. They are BURNED,
+     * not free — a future type MUST NOT recycle 14, 15 or 16, because
+     * historical activation-build wire bytes carrying 15/16 still exist
+     * and would silently reinterpret under a recycled meaning. */
 } dnac_tx_type_t;
 
 /* ============================================================================

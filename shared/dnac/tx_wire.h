@@ -124,15 +124,6 @@ extern "C" {
  *  cap, preserving the exact legacy accept/reject surface (pinned by a
  *  _Static_assert in nodus_witness_verify.c). */
 #define DNAC_TXW_CC_VOTE_BOUND   128
-/** Ledger V2 O15C — activation authority types on the legacy wire.
- *  15 = SCHEDULE/CANCEL (quorum-voted), 16 = READY (one validator).
- *  Type 14 stays UNASSIGNED; 12/13 stay V3-only (undeserializable here).
- *  Section layouts: shared/dnac/activation_wire.h (pinned there). */
-#define DNAC_TXW_TYPE_V2_SCHEDULE  15
-#define DNAC_TXW_TYPE_V2_READY     16
-#define DNAC_TXW_ACT15_FIXED       102   /* mirror DNA_ACT15_WIRE_FIXED_LEN */
-#define DNAC_TXW_ACT15_VOTE_BOUND  128   /* mirror DNA_ACT15_WIRE_MAX_SLOTS */
-#define DNAC_TXW_ACT16_LEN         7391  /* mirror DNA_ACT16_WIRE_LEN */
 
 /* ══════════════════════════════════════════════════════════════════════
  * 1. ExecutionContext

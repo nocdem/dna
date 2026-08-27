@@ -6,19 +6,39 @@
 # deterministically across all harness nodes:
 #
 #   1. After bring-up + user funding, all N nodes share a state_root.
-#   2. After N blocks' worth of inflation accumulates into
-#      epoch_state.epoch_pool_accum and an epoch boundary fires
-#      (block_height % DNAC_EPOCH_LENGTH == 0), apply_epoch_settlement
-#      emits UTXOs to committee validators + delegators on every node.
+#   2. Inflation accumulates into epoch_state.epoch_pool_accum; when an
+#      epoch boundary fires (block_height % DNAC_EPOCH_LENGTH == 0),
+#      apply_epoch_settlement DRAINS that pool into synthetic UTXOs for
+#      committee validators + delegators, on every node.
 #   3. Post-settlement state_root MUST still be identical 7/7. Any
 #      divergence is a Stage E determinism bug.
 #
-# Blocks to wait: DNAC_EPOCH_LENGTH (= 720 at canonical 5s blocks).
-# At 5s/block that is ~1 hour per iteration — far beyond the harness
-# budget. The stagef_env.sh harness can optionally override
-# EPOCH_LENGTH at bring-up (env var STAGEF_EPOCH_LENGTH) so local runs
-# can settle every 10–20 blocks. When unset, the full EPOCH_LENGTH
-# wait is used.
+# ── WHY THIS TEST PUMPS TRANSACTIONS (2026-08-27) ────────────────────
+#
+# It used to `sleep EPOCH_LENGTH*5+30` and then re-compare state_roots.
+# That is VACUOUS, and it passed for exactly the wrong reason: this chain
+# produces a block only when there is a transaction to put in one. An idle
+# harness sits at its current height forever, so the sleep expired, the
+# two state_root reads were taken from the SAME committed height, they
+# were trivially identical, and the test reported PASS having crossed no
+# boundary and settled nothing.
+#
+# A green light that cannot go red is worse than no test. So this
+# scenario now DRIVES the chain across a real boundary and asserts the
+# settlement observably happened:
+#
+#   * the pool was non-empty before the boundary,
+#   * a new epoch_state row exists AT the boundary height,
+#   * the pool DRAINED (settlement emitted), and
+#   * new UTXOs appeared — the synthetic payouts themselves.
+#
+# The same lesson is already recorded in test_vset_grow_shrink.sh:80-84
+# ("A blind sleep cannot do this: with no TXs there are no blocks").
+#
+# For a run to finish in harness time the binary must carry a SHORT epoch
+# (-DDNAC_EPOCH_LENGTH=15) and STAGEF_EPOCH_LENGTH must match it. At the
+# production 720 this needs 720 blocks and is a ~1h scenario; the test
+# still runs, it just takes that long.
 #
 # Requires an active Stage F harness (stagef_up.sh).
 #
@@ -39,26 +59,114 @@ if [ -z "${BASE_DIR:-}" ] || [ ! -d "$BASE_DIR" ]; then
 fi
 
 EPOCH_LENGTH="${STAGEF_EPOCH_LENGTH:-720}"
+PUMP_LOG="$BASE_DIR/settlement_pump.log"
 
-# ── Baseline: all nodes agree at bring-up ─────────────────────────────
+info() { echo "[info] $*"; }
+ok()   { echo "[ok] $*"; }
+fail() { echo "[FAIL] $*" >&2; exit "${2:-4}"; }
+
+node1_db()    { stagef_node_chain_db 1; }
+head_height() {
+    sqlite3 "$(node1_db)" "SELECT COALESCE(MAX(height),0) FROM blocks;"
+}
+utxo_count()  {
+    sqlite3 "$(node1_db)" "SELECT COUNT(*) FROM utxo_set;"
+}
+# The accumulator of the CURRENT (highest) epoch row.
+pool_accum()  {
+    sqlite3 "$(node1_db)" \
+        "SELECT COALESCE(epoch_pool_accum,0) FROM epoch_state
+         ORDER BY epoch_start_height DESC LIMIT 1;"
+}
+epoch_row_at() {
+    sqlite3 "$(node1_db)" \
+        "SELECT COUNT(*) FROM epoch_state WHERE epoch_start_height = $1;"
+}
+
+# Drive the chain to >= $1 by submitting one minimal TX per block.
+# Ported verbatim in spirit from test_vset_grow_shrink.sh:85 — including
+# the unconditional `dna sync` before every send, which is what keeps the
+# wallet from deadlocking on an in-flight change output when a BFT round
+# retries (feedback_dnac_sync_between_sends).
+pump_to_height() {
+    local target="$1" timeout="${2:-600}"
+    local deadline=$(( SECONDS + timeout ))
+    local h; h=$(head_height)
+    local sink; sink=$(cat "$BASE_DIR/node1/identity/nodus.fp")
+    while [ "${h:-0}" -lt "$target" ] && [ $SECONDS -lt $deadline ]; do
+        stagef_dna -q dna sync >> "$PUMP_LOG" 2>&1 || true
+        if ! stagef_dna -q dna send "$sink" 1 "pump" >> "$PUMP_LOG" 2>&1; then
+            stagef_dna -q dna sync >> "$PUMP_LOG" 2>&1 || true
+            stagef_dna -q dna send "$sink" 1 "pump" >> "$PUMP_LOG" 2>&1 || true
+        fi
+        sleep 6
+        h=$(head_height)
+    done
+    [ "${h:-0}" -ge "$target" ] || \
+        fail "pump: height $h < $target (timeout ${timeout}s)" 4
+    info "pumped to height $h (target $target)"
+}
+
+# ── Baseline: all nodes agree ─────────────────────────────────────────
 bash "$(dirname "$0")/../stagef_diff.sh" "pre-settlement" || exit 2
 
-# ── Wait one epoch ────────────────────────────────────────────────────
-# 5s per block × EPOCH_LENGTH + 30s slack.
-WAIT_SEC=$(( EPOCH_LENGTH * 5 + 30 ))
+H0=$(head_height)
+info "epoch length: $EPOCH_LENGTH · head height: $H0"
+
+# The next boundary strictly above the current head, plus two blocks so
+# the settling block is itself committed and observable.
+BOUNDARY=$(( ( H0 / EPOCH_LENGTH + 1 ) * EPOCH_LENGTH ))
+TARGET=$(( BOUNDARY + 2 ))
+info "next epoch boundary: $BOUNDARY (pumping to $TARGET)"
+
+# ── The pool must be non-empty, or the boundary settles nothing ───────
+POOL_BEFORE=$(pool_accum)
+info "epoch_pool_accum before: $POOL_BEFORE"
+[ "${POOL_BEFORE:-0}" -gt 0 ] || \
+    fail "epoch_pool_accum is 0 before the boundary — nothing to settle,
+       so crossing it would prove nothing. Inflation is not accruing." 4
+
+UTXO_BEFORE=$(utxo_count)
+info "utxo_set rows before: $UTXO_BEFORE"
+
+# ── Cross a REAL boundary ─────────────────────────────────────────────
 echo ""
-echo "== Waiting ${WAIT_SEC}s for an epoch boundary to fire =="
-sleep "$WAIT_SEC"
+echo "== Pumping to height $TARGET to cross the epoch boundary at $BOUNDARY =="
+# Budget per block, measured rather than assumed: one pump iteration is
+# `dna sync` + `dna send` (two client round trips, each waiting on a BFT
+# round) plus a 6 s settle, which lands around 30 s per block on the
+# 7-node localhost harness — not the 6 s the sleep alone suggests. The
+# first version of this test budgeted 12 s/block and died at height 10 of
+# 17 with the chain healthy and advancing. 45 s/block leaves headroom for
+# a round that has to be retried without hiding a chain that has actually
+# stopped: a genuinely wedged chain still fails, just later.
+PUMP_TIMEOUT=$(( ( TARGET - H0 ) * 45 + 180 ))
+pump_to_height "$TARGET" "$PUMP_TIMEOUT"
+
+# ── The boundary must have FIRED ──────────────────────────────────────
+[ "$(epoch_row_at "$BOUNDARY")" -eq 1 ] || \
+    fail "no epoch_state row at height $BOUNDARY — the boundary did not
+       fire even though the chain passed it" 4
+ok "epoch boundary $BOUNDARY fired (epoch_state row committed)"
+
+# ── Settlement must have DRAINED the pool and PAID OUT ────────────────
+POOL_AFTER=$(pool_accum)
+UTXO_AFTER=$(utxo_count)
+info "epoch_pool_accum after: $POOL_AFTER · utxo_set rows after: $UTXO_AFTER"
+
+[ "${UTXO_AFTER:-0}" -gt "${UTXO_BEFORE:-0}" ] || \
+    fail "utxo_set did not grow across the boundary ($UTXO_BEFORE ->
+       $UTXO_AFTER) — apply_epoch_settlement emitted no synthetic payout" 4
+ok "settlement emitted payouts (utxo_set $UTXO_BEFORE -> $UTXO_AFTER)"
+
+[ "${POOL_AFTER:-0}" -lt "${POOL_BEFORE:-0}" ] || \
+    fail "epoch_pool_accum did not drain ($POOL_BEFORE -> $POOL_AFTER) —
+       the boundary fired but the pool was never pushed out" 4
+ok "epoch pool drained ($POOL_BEFORE -> $POOL_AFTER)"
 
 # ── Post-settlement: state_root MUST still match across all nodes ─────
 bash "$(dirname "$0")/../stagef_diff.sh" "post-settlement" || exit 3
 
-# ── Sanity: at least one committee validator should have accrued a
-# kind=0x20 (validator) or kind=0x21 (delegator) synthetic UTXO. ──
-# Sketch: the diff tool shows per-node UTXO counts; a full verifier
-# would parse witness logs for "emit_synthetic_utxo" entries with
-# kind=0x20/0x21 at the expected settling_epoch_start height.
-# Left as a TODO pending a richer stagef_diff schema.
-
 echo ""
-echo "[PASS] epoch settlement state_root consistent across nodes"
+echo "[PASS] epoch settlement fired at $BOUNDARY, paid out, and left"
+echo "       state_root identical across all nodes"

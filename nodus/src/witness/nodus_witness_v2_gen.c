@@ -444,11 +444,10 @@ static int gen_plan_build(const nodus_v2_gen_config_t *cfg, gen_plan_t *p) {
      * supply equation still balances (the stranded value is counted as
      * unclaimed distribution). Under DNA_POSTDL_RETAIN any window that
      * expires does the same, so the general "end >= 1" satisfiability
-     * rule is not enough. The shipped seam pins [0, UINT64_MAX]
-     * (nodus_witness_v2_seam.c:481-482) and so does this builder: the
-     * fields are carried in the config (they are committed into
-     * source_commit — no hidden defaults) but exactly one pair of
-     * values is accepted. */
+     * rule is not enough. So this builder pins [0, UINT64_MAX] — the
+     * same window the (now removed) activation seam pinned: the fields
+     * are carried in the config (they are committed into source_commit —
+     * no hidden defaults) but exactly one pair of values is accepted. */
     if (cfg->claim_start_height != 0 ||
         cfg->claim_end_height != UINT64_MAX) {
         QGP_LOG_ERROR(LOG_TAG, "claim window [%llu, %llu] is not the "
@@ -668,9 +667,9 @@ static int gen_plan_build(const nodus_v2_gen_config_t *cfg, gen_plan_t *p) {
     }
 
     /* ── L2-F2: total_claimable vs the leaves ─────────────────────────
-     * dna_dist_check_totals had exactly ONE production caller and it was
-     * inside the seam step this builder replaces
-     * (nodus_witness_v2_seam.c:281-286) — so nothing on the new path
+     * dna_dist_check_totals had exactly ONE production caller, and it was
+     * the activation seam's claim-leaf step — the step this builder
+     * replaces, and which no longer exists — so nothing on the new path
      * tied the manifest's total_claimable to the leaf set. It is tied
      * here, over the SAME conversion parameters the manifest commits
      * (1:1, FLOOR), so the committed field cannot lie about the leaves.
@@ -822,9 +821,10 @@ static int gen_seed_state(nodus_witness_t *w2,
      *
      * active_since_block = 1 mirrors the legacy genesis seeder
      * (nodus_witness_genesis_seed.c:116); the attendance watermarks are
-     * 0 because a chain born at height 0 has no attendance history — the
-     * same state the seam RESETS its transplanted rows to
-     * (nodus_witness_v2_seam.c:361-363). */
+     * 0 because a chain born at height 0 has no attendance history. (The
+     * removed activation seam had to RESET these on the rows it
+     * transplanted, for the same reason; here there is nothing to reset,
+     * they are simply written as 0.) */
     for (uint16_t i = 0; i < cfg->n_validators; i++) {
         const nodus_v2_gen_validator_t *v =
             &cfg->validators[plan->val_idx[i]];
@@ -1206,12 +1206,16 @@ int nodus_witness_v2_gen_derive(const char *data_path,
     int ok = -1;
     do {
         if (nodus_witness_create_chain_db(w2, prov16) != 0) break;
-        /* Mark the handle a successor BEFORE any validator-set seeding:
-         * nodus_witness_vset_commit_genesis seeds the epoch-0/E
-         * snapshots through the writer guard, which is gated on
-         * v2_successor; without this the genesis snapshots seed uncapped
-         * (the seam's O15F Task 1, nodus_witness_v2_seam.c:328). A
-         * deterministic local act every node performs identically. */
+        /* Mark the handle a Ledger V2 chain BEFORE any validator-set
+         * seeding. THE ORDER IS THE POINT: the writer guard that clamps
+         * an active set to NODUS_V2_ACTIVE_SET_MAX is gated on
+         * v2_successor (nodus_witness_vset.c:130 and :459), and
+         * nodus_witness_vset_commit_genesis seeds the epoch-0/E snapshots
+         * through that guard. Set the flag after seeding and the genesis
+         * snapshots seed UNCAPPED — committed, and wrong. (This is the
+         * rule the removed activation seam established in O15F Task 1;
+         * the ordering requirement outlived the seam.) A deterministic
+         * local act every node performs identically. */
         w2->v2_successor = 1;
         /* S12: every block a pure-V2 chain commits carries its canonical
          * envelope bytes and its per-block claim bytes + count. */
