@@ -14,6 +14,13 @@
  * The fix keeps the cache COLD on a failed scan, which routes every
  * lookup through the DB-direct fallback the function already had.
  *
+ * O15J Block 2 (A2): that fallback used to be fail-open itself, so
+ * "staying cold" was only ever half a fix. get_u64 is three-valued now
+ * (0 present / 1 genuinely absent / -1 cannot determine). This file is
+ * unchanged in intent — it still pins the CACHE behaviour — and the
+ * call sites below moved to the out-parameter form. The fault channel
+ * and the consumer fail-close live in test_chain_config_failclose.c.
+ *
  * DETERMINISM: the fault is structural, not timed. chain_config_history
  * is a VIEW whose param-2 row projects abs(-9223372036854775808) —
  * SQLite raises "integer overflow" when that row is stepped over. An
@@ -149,7 +156,11 @@ static void test_healthy_warms_and_serves(void) {
     if (!w) { FAIL("alloc"); return; }
     if (fixture(w, 0) != 0) { FAIL("fixture"); witness_free(w); return; }
 
-    uint64_t txs = nodus_chain_config_get_u64(w, P_TXS, 100, TXS_DEFAULT);
+    uint64_t txs = 0;
+    if (nodus_chain_config_get_u64(w, P_TXS, 100, TXS_DEFAULT, &txs) != 0) {
+        FAIL("param 1 lookup did not report an active override");
+        goto done;
+    }
     if (txs != TXS_OVERRIDE) { FAIL("param 1 override not served"); goto done; }
     if (!w->chain_config_cache_warm) { FAIL("cache not warm"); goto done; }
     if (w->chain_config_cache_count[P_TXS] != 1) { FAIL("param 1 not cached"); goto done; }
@@ -159,11 +170,19 @@ static void test_healthy_warms_and_serves(void) {
      * so this row would silently vanish from the warm cache. */
     if (w->chain_config_cache_count[P_TAC] != 1) { FAIL("param 4 not cached"); goto done; }
 
-    uint64_t intv = nodus_chain_config_get_u64(w, P_INTV, 100, INTV_DEFAULT);
-    if (intv != INTV_OVERRIDE) { FAIL("param 2 override not served"); goto done; }
+    uint64_t intv = 0;
+    if (nodus_chain_config_get_u64(w, P_INTV, 100, INTV_DEFAULT, &intv) != 0 ||
+        intv != INTV_OVERRIDE) {
+        FAIL("param 2 override not served");
+        goto done;
+    }
 
-    uint64_t tac = nodus_chain_config_get_u64(w, P_TAC, 100, TAC_DEFAULT);
-    if (tac != TAC_OVERRIDE) { FAIL("param 4 override not served"); goto done; }
+    uint64_t tac = 0;
+    if (nodus_chain_config_get_u64(w, P_TAC, 100, TAC_DEFAULT, &tac) != 0 ||
+        tac != TAC_OVERRIDE) {
+        FAIL("param 4 override not served");
+        goto done;
+    }
 
     PASS();
 done:
@@ -181,7 +200,8 @@ static void test_scan_error_leaves_cache_cold(void) {
     if (fixture(w, P_INTV) != 0) { FAIL("fixture"); witness_free(w); return; }
 
     /* This call performs the warm attempt. */
-    uint64_t txs = nodus_chain_config_get_u64(w, P_TXS, 100, TXS_DEFAULT);
+    uint64_t txs = 0;
+    int txs_rc = nodus_chain_config_get_u64(w, P_TXS, 100, TXS_DEFAULT, &txs);
 
     if (w->chain_config_cache_warm) {
         FAIL("cache marked warm after a failed scan");
@@ -196,16 +216,23 @@ static void test_scan_error_leaves_cache_cold(void) {
 
     /* And the fallback still answers correctly for the readable param:
      * the DB-direct query filters on param_id before projecting
-     * new_value, so the poisoned param-2 row is never evaluated. */
-    if (txs != TXS_OVERRIDE) {
+     * new_value, so the poisoned param-2 row is never evaluated.
+     *
+     * O15J A2 — this is ALSO the load-bearing "a fault stays local to the
+     * param that faulted" pin: a poisoned param 2 must not turn the
+     * param-1 lookup into -1. Over-broad fail-close would take the whole
+     * cluster down on one bad row. */
+    if (txs_rc != 0 || txs != TXS_OVERRIDE) {
         FAIL("DB-direct fallback did not serve the readable override");
         goto done;
     }
 
     /* Repeat: still cold, still correct — the failed warm must not be
      * latched into a wrong answer on any later call either. */
-    uint64_t again = nodus_chain_config_get_u64(w, P_TXS, 100, TXS_DEFAULT);
-    if (again != TXS_OVERRIDE || w->chain_config_cache_warm) {
+    uint64_t again = 0;
+    int again_rc = nodus_chain_config_get_u64(w, P_TXS, 100, TXS_DEFAULT,
+                                              &again);
+    if (again_rc != 0 || again != TXS_OVERRIDE || w->chain_config_cache_warm) {
         FAIL("second lookup diverged from the first");
         goto done;
     }

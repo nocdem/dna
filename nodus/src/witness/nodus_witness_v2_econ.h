@@ -182,11 +182,23 @@ int nodus_witness_v2_econ_params_load(nodus_witness_t *w,
  *       epoch-start committee+delegation snapshot
  *       (nodus_witness_epoch_snapshot_apply, bft.c:3709)
  *
- * THE 1ULL DEFAULT IS LOAD-BEARING, not a convenience: an override that
- * cannot be fetched must not silently disable emission on one node and
- * leave it on for another. Two nodes disagreeing about whether a block
- * minted is a state_root split. bft.c:3652-3654 says exactly this, and
- * the value is copied from there rather than chosen here.
+ * THE 1ULL DEFAULT APPLIES ONLY WHEN THERE IS GENUINELY NO ROW.
+ *
+ * ⚠ CORRECTED, O15J Block 2 (A2). This paragraph used to read: "THE 1ULL
+ * DEFAULT IS LOAD-BEARING, not a convenience: an override that cannot be
+ * fetched must not silently disable emission on one node and leave it on
+ * for another." That justification did not hold. Substituting 1ULL only
+ * covers the direction where the real override would DELAY emission; when
+ * the peers' override starts emission LATER than 1, or is an explicit 0,
+ * the node that could not read it mints blocks its peers do not — the
+ * same state_root split, in the other direction. A default cannot close a
+ * hole whose nature is not knowing which side of it you are on.
+ *
+ * The lookup is three-valued now: rc 1 (no governance row — every chain
+ * today) still yields 1ULL and the historical behaviour byte-for-byte;
+ * rc -1 is a NODE-LOCAL FAULT and this function returns -2 rather than
+ * minting on a schedule it cannot read. The V1 lane's gate
+ * (nodus_witness_bft.c, finalize_block) carries the identical rule.
  *
  * Block 2C narrowed WHEN that default is reached without changing it: a
  * chain this builder derives commits its own inflation start at genesis,

@@ -947,9 +947,13 @@ static int test_defect_L1F1(void) {
               jp.epoch_length    == (uint64_t)DNAC_EPOCH_LENGTH,
               "carrying the PRODUCER's economic values, not its own "
               "compiled defaults");
+        /* Three-valued since Block 2A: rc MUST be 0. An absent row here
+         * would mean the bundle did NOT carry the row, which is exactly
+         * the divergence this assertion exists to catch. */
+        uint64_t j_start = 0;
         CHECK(nodus_chain_config_get_u64(
                   j, (uint8_t)DNAC_CFG_INFLATION_START_BLOCK, 0,
-                  UINT64_MAX) == 1ULL,
+                  UINT64_MAX, &j_start) == 0 && j_start == 1ULL,
               "and the inflation start arrived as committed state");
     }
     CHECK(q1(j->db, "SELECT COUNT(*) FROM v2_blocks WHERE global_height=0")

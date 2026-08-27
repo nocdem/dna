@@ -2285,9 +2285,22 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
 
     /* global tx-count cap (chain config) + per-domain tx quotas */
     {
-        uint64_t cap = nodus_chain_config_get_u64(w,
-            DNAC_CFG_MAX_TXS_PER_BLOCK, blk->global_height,
-            DNAC_CFG_MAX_TXS_HARD_CAP);
+        /* O15J Block 2 (A2) — the cap decides a VERDICT on someone else's
+         * block, so an unreadable cap must be a node FAULT, never a
+         * verdict: a node that answered "invalid" here on a local disk
+         * error would be rejecting a block the rest of the cluster
+         * commits. rc == 1 (genuinely no governance row) still yields the
+         * hard cap, exactly as before. */
+        uint64_t cap = 0;
+        if (nodus_chain_config_get_u64(w,
+                DNAC_CFG_MAX_TXS_PER_BLOCK, blk->global_height,
+                DNAC_CFG_MAX_TXS_HARD_CAP, &cap) < 0) {
+            V2AP_FAULT("the MAX_TXS_PER_BLOCK chain-config override at "
+                       "height %llu is unreadable — this node cannot judge "
+                       "the block's transaction count",
+                       (unsigned long long)blk->global_height);
+            goto fail_fault_pre;
+        }
         if (cap == 0 || cap > DNAC_CFG_MAX_TXS_HARD_CAP)
             cap = DNAC_CFG_MAX_TXS_HARD_CAP;
         if ((uint64_t)blk->n_envs > cap) {

@@ -1012,11 +1012,22 @@ static int gen_seed_state(nodus_witness_t *w2,
                               "does not read back as the config — ABORT");
                 return -1;
             }
-            if (nodus_chain_config_get_u64(w2,
+            /* Block 2A made this read three-valued: rc 0 found, 1 genuinely
+             * absent, -1 fault. Here ALL THREE non-matching outcomes abort,
+             * and deliberately so — this is the derivation's own read-back
+             * post-condition. A row we just wrote must be readable and must
+             * equal what we wrote; "absent" and "unreadable" are both proof
+             * that the commit did not land as intended. The UINT64_MAX
+             * default is now unreachable rather than load-bearing, since
+             * rc != 0 is rejected before the value is compared. */
+            uint64_t seen_start = 0;
+            int start_rc = nodus_chain_config_get_u64(w2,
                     (uint8_t)DNAC_CFG_INFLATION_START_BLOCK, 0,
-                    UINT64_MAX) != cfg->inflation_start_block) {
-                QGP_LOG_ERROR(LOG_TAG, "%s", "the committed inflation start "
-                              "does not read back as the config — ABORT");
+                    UINT64_MAX, &seen_start);
+            if (start_rc != 0 || seen_start != cfg->inflation_start_block) {
+                QGP_LOG_ERROR(LOG_TAG, "the committed inflation start does "
+                              "not read back as the config (rc=%d) — ABORT",
+                              start_rc);
                 return -1;
             }
         }

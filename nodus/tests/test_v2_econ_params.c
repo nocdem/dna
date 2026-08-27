@@ -813,9 +813,13 @@ static int t_inflation_start_from_genesis(void) {
         CHECK(w != NULL, "open");
         OK();
 
+        /* Block 2A made this read three-valued. rc MUST be 0 (found):
+         * an absent row would mean the builder never committed the
+         * value, which is precisely what this assertion denies. */
+        uint64_t got_zero = UINT64_MAX;
         CHECK(nodus_chain_config_get_u64(
                   w, (uint8_t)DNAC_CFG_INFLATION_START_BLOCK, 0,
-                  UINT64_MAX) == 0ULL,
+                  UINT64_MAX, &got_zero) == 0 && got_zero == 0ULL,
               "the gate reads a COMMITTED 0, not its 1ULL default");
 
         for (uint64_t h = 1; h <= 3; h++) {
@@ -847,9 +851,10 @@ static int t_inflation_start_from_genesis(void) {
         CHECK(w != NULL, "open");
         OK();
 
+        uint64_t got_start = 0;
         CHECK(nodus_chain_config_get_u64(
                   w, (uint8_t)DNAC_CFG_INFLATION_START_BLOCK, 0,
-                  UINT64_MAX) == START,
+                  UINT64_MAX, &got_start) == 0 && got_start == START,
               "the committed start is what the gate reads");
 
         for (uint64_t h = 1; h < START; h++) {

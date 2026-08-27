@@ -1496,13 +1496,21 @@ static int test_system_cc(void) {
           "no wall clock in the deterministic lane");
     OK();
     /* scheduled-transition semantics: value governs only from its
-     * effective height (the shipped lookup is the authority) */
-    CHECK(nodus_chain_config_get_u64(fx.w, DNAC_CFG_MAX_TXS_PER_BLOCK,
-                                     999, 10) == 10,
-          "not active before effective height");
-    CHECK(nodus_chain_config_get_u64(fx.w, DNAC_CFG_MAX_TXS_PER_BLOCK,
-                                     1000, 10) == 5,
-          "active from effective height");
+     * effective height (the shipped lookup is the authority).
+     * O15J A2: the lookup is three-valued now — before the effective
+     * height there is genuinely no active row (rc 1, value = default);
+     * from it there is (rc 0, value = the override). Asserting the rc as
+     * well as the value is what makes "not yet active" distinguishable
+     * from "unreadable". */
+    {
+        uint64_t v = 0;
+        CHECK(nodus_chain_config_get_u64(fx.w, DNAC_CFG_MAX_TXS_PER_BLOCK,
+                                         999, 10, &v) == 1 && v == 10,
+              "not active before effective height");
+        CHECK(nodus_chain_config_get_u64(fx.w, DNAC_CFG_MAX_TXS_PER_BLOCK,
+                                         1000, 10, &v) == 0 && v == 5,
+              "active from effective height");
+    }
     OK();
     /* SYSTEM root moved; CORE untouched (root AND height) */
     {

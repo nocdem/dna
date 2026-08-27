@@ -289,24 +289,39 @@ int nodus_witness_v2_emission_apply(nodus_witness_t *w,
     const uint64_t du = econ.present ? econ.decimal_unit
                                      : (uint64_t)DNAC_DECIMAL_UNIT;
 
-    /* THE GATE, verbatim (bft.c:3653-3664). The 1ULL default is the
-     * source's and is load-bearing: an override this node cannot fetch
-     * must not turn emission off HERE while it stays on everywhere else.
-     * A pre-wipe chain that really wants emission off stores an explicit
-     * 0, which this expression honours.
+    /* THE GATE, mirroring the V1 lane — MERGED FROM BLOCKS 2A AND 2C,
+     * which reached this same line from opposite directions.
      *
-     * Block 2C — THE DEFAULT IS NOW THE FALLBACK, NOT THE RULE. A pure-V2
-     * chain commits its inflation start AT GENESIS (the builder seeds
+     * 2C: the default is now the FALLBACK, not the rule. A pure-V2 chain
+     * commits its inflation start AT GENESIS (the builder seeds
      * DNAC_CFG_INFLATION_START_BLOCK at effective_block 0), so this read
-     * returns the chain's own committed value and the 1ULL below is
-     * reached only by a chain that committed nothing — which is every
-     * chain built before this change, and is exactly the behaviour those
-     * chains already had. Before the builder could seed it, the row was
+     * returns the chain's OWN committed value. Before that, the row was
      * unreachable at genesis and EVERY derived chain minted from height 1
-     * with no way to configure it. */
-    uint64_t inflation_start =
-        nodus_chain_config_get_u64(w, DNAC_CFG_INFLATION_START_BLOCK,
-                                   global_height, 1ULL);
+     * with no way to configure it. The 1ULL below is now reached only by
+     * a chain that committed nothing — which is every chain built before
+     * this change, and is exactly the behaviour those chains had.
+     *
+     * 2A: an EARLIER wording called that 1ULL default "load-bearing"
+     * against a node that cannot fetch the override. That was wrong, and
+     * the correction is kept rather than dropped in the merge: the
+     * default only defends the direction where the override would DELAY
+     * emission. When the override starts emission EARLIER than 1 the
+     * default cannot help, and either way an unreadable row means this
+     * node mints on a schedule it cannot prove its peers share. So the
+     * read is three-valued: rc == 1 (genuinely no row) keeps the
+     * historical default, rc < 0 is a NODE FAULT and the block does not
+     * commit. */
+    uint64_t inflation_start = 0;
+    int crc = nodus_chain_config_get_u64(w, DNAC_CFG_INFLATION_START_BLOCK,
+                                         global_height, 1ULL,
+                                         &inflation_start);
+    if (crc < 0) {
+        QGP_LOG_ERROR(LOG_TAG,
+            "emission at %llu: INFLATION_START_BLOCK is unreadable — a "
+            "chain cannot mint on an emission schedule it cannot read",
+            (unsigned long long)global_height);
+        return -2;
+    }
     uint64_t emission = 0;
     if (inflation_start != 0 && global_height >= inflation_start)
         emission = nodus_emission_per_block_ex(global_height, by, du);

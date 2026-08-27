@@ -432,12 +432,27 @@ int nodus_witness_vset_build_for_epoch(nodus_witness_t *w,
 
 /* The epoch's target set size, read from committed chain_config_history.
  * Mirrors committee_target_for_epoch in nodus_witness_committee.c — same
- * param, same default, same clamp — because the snapshot builder and the
- * committee selector MUST agree on how many seats an epoch has. */
-static int vset_target_for_epoch(nodus_witness_t *w, uint64_t e_start) {
-    uint64_t target = nodus_chain_config_get_u64(
+ * param, same default, same clamp, and since O15J A2 the same fail-closed
+ * rule — because the snapshot builder and the committee selector MUST
+ * agree on how many seats an epoch has.
+ *
+ * @param target_out [out] written only on success.
+ * @return 0 target determined, -1 cannot determine (the caller must fail
+ *         the block; a snapshot sized from a guess is a
+ *         validator_set_root divergence). */
+static int vset_target_for_epoch(nodus_witness_t *w, uint64_t e_start,
+                                 int *target_out) {
+    uint64_t target = 0;
+    int crc = nodus_chain_config_get_u64(
         w, (uint8_t)DNAC_CFG_TARGET_ACTIVE_COUNT, e_start,
-        (uint64_t)DNAC_COMMITTEE_SIZE);
+        (uint64_t)DNAC_COMMITTEE_SIZE, &target);
+    if (crc < 0) {
+        QGP_LOG_ERROR(LOG_TAG, "epoch %llu: TARGET_ACTIVE_COUNT is "
+                      "unreadable — refusing to size a validator-set "
+                      "snapshot from a guess",
+                      (unsigned long long)e_start);
+        return -1;
+    }
     if (target < 1) target = 1;
     if (target > (uint64_t)DNA_MAX_ACTIVE_VALIDATORS)
         target = (uint64_t)DNA_MAX_ACTIVE_VALIDATORS;
@@ -447,7 +462,8 @@ static int vset_target_for_epoch(nodus_witness_t *w, uint64_t e_start) {
      * Legacy chains keep the 128 ceiling above. */
     if (w->v2_successor && target > (uint64_t)NODUS_V2_ACTIVE_SET_MAX)
         target = (uint64_t)NODUS_V2_ACTIVE_SET_MAX;
-    return (int)target;
+    *target_out = (int)target;
+    return 0;
 }
 
 /* Build the snapshot for `e_start` and store it. Shared by the boundary
@@ -463,7 +479,8 @@ static int vset_target_for_epoch(nodus_witness_t *w, uint64_t e_start) {
 static int vset_build_and_store(nodus_witness_t *w,
                                   uint64_t e_start,
                                   uint64_t created_at_height) {
-    int target = vset_target_for_epoch(w, e_start);
+    int target = 0;
+    if (vset_target_for_epoch(w, e_start, &target) != 0) return -1;
 
     uint8_t *blob = NULL;
     size_t   blob_len = 0;

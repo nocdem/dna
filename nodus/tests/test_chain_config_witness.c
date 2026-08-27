@@ -45,6 +45,30 @@
     if (!(cond)) { fprintf(stderr, "CHECK fail at %s:%d: %s\n", \
         __FILE__, __LINE__, #cond); exit(1); } } while(0)
 
+/* O15J Block 2 (A2): nodus_chain_config_get_u64 is three-valued now —
+ * 0 override present / 1 genuinely absent / -1 cannot determine — and
+ * writes through an out-parameter. Every assertion in THIS file is about
+ * the VALUE (override semantics, latest-effective-wins, param
+ * reachability), none about the fault channel, so this helper keeps the
+ * original one-line shape.
+ *
+ * A fault deliberately maps to UINT64_MAX, a value no assertion here
+ * expects, so a fault that leaked into a value test fails loudly instead
+ * of masquerading as the default. The fault channel itself is pinned by
+ * test_chain_config_failclose.c. */
+static uint64_t cfg_val(nodus_witness_t *w, uint8_t param_id,
+                        uint64_t current_block, uint64_t default_value) {
+    uint64_t v = 0;
+    int rc = nodus_chain_config_get_u64(w, param_id, current_block,
+                                        default_value, &v);
+    if (rc < 0) {
+        fprintf(stderr, "cfg_val: unexpected FAULT for param %u at %llu\n",
+                (unsigned)param_id, (unsigned long long)current_block);
+        return UINT64_MAX;
+    }
+    return v;
+}
+
 /* Bring up a witness with a fresh data_path and chain DB; the
  * nodus_witness_create_chain_db call runs the full migration chain
  * including our new nodus_chain_config_db_migrate. Returns data_path
@@ -122,10 +146,17 @@ int main(void) {
     {
         char data_path[64];
         nodus_witness_t *w = setup_witness(data_path);
-        CHECK(nodus_chain_config_get_u64(w, DNAC_CFG_MAX_TXS_PER_BLOCK,
-                                           1000, 42ULL) == 42ULL);
-        CHECK(nodus_chain_config_get_u64(w, DNAC_CFG_INFLATION_START_BLOCK,
-                                           5000, 1ULL) == 1ULL);
+        CHECK(cfg_val(w, DNAC_CFG_MAX_TXS_PER_BLOCK, 1000, 42ULL) == 42ULL);
+        CHECK(cfg_val(w, DNAC_CFG_INFLATION_START_BLOCK, 5000, 1ULL) == 1ULL);
+        /* O15J A2: an EMPTY table is ABSENT (rc 1), never a fault — this
+         * is the pin that keeps a pre-genesis / freshly-bootstrapped node
+         * starting. */
+        {
+            uint64_t v = 0;
+            CHECK(nodus_chain_config_get_u64(w, DNAC_CFG_MAX_TXS_PER_BLOCK,
+                                             1000, 42ULL, &v) == 1);
+            CHECK(v == 42ULL);
+        }
         teardown_witness(w, data_path);
     }
 
@@ -136,14 +167,10 @@ int main(void) {
         direct_insert(w, DNAC_CFG_MAX_TXS_PER_BLOCK,
                        5ULL, 1000ULL, 800ULL, 0xABCDULL);
 
-        CHECK(nodus_chain_config_get_u64(w, DNAC_CFG_MAX_TXS_PER_BLOCK,
-                                           999ULL,  10ULL) == 10ULL);
-        CHECK(nodus_chain_config_get_u64(w, DNAC_CFG_MAX_TXS_PER_BLOCK,
-                                           1000ULL, 10ULL) == 5ULL);
-        CHECK(nodus_chain_config_get_u64(w, DNAC_CFG_MAX_TXS_PER_BLOCK,
-                                           9999ULL, 10ULL) == 5ULL);
-        CHECK(nodus_chain_config_get_u64(w, DNAC_CFG_BLOCK_INTERVAL_SEC,
-                                           9999ULL, 5ULL) == 5ULL);
+        CHECK(cfg_val(w, DNAC_CFG_MAX_TXS_PER_BLOCK,  999ULL, 10ULL) == 10ULL);
+        CHECK(cfg_val(w, DNAC_CFG_MAX_TXS_PER_BLOCK, 1000ULL, 10ULL) ==  5ULL);
+        CHECK(cfg_val(w, DNAC_CFG_MAX_TXS_PER_BLOCK, 9999ULL, 10ULL) ==  5ULL);
+        CHECK(cfg_val(w, DNAC_CFG_BLOCK_INTERVAL_SEC, 9999ULL, 5ULL) ==  5ULL);
         teardown_witness(w, data_path);
     }
 
@@ -153,12 +180,9 @@ int main(void) {
         nodus_witness_t *w = setup_witness(data_path);
         direct_insert(w, DNAC_CFG_MAX_TXS_PER_BLOCK, 3ULL, 1000ULL, 800ULL,  0x1ULL);
         direct_insert(w, DNAC_CFG_MAX_TXS_PER_BLOCK, 7ULL, 2000ULL, 1500ULL, 0x2ULL);
-        CHECK(nodus_chain_config_get_u64(w, DNAC_CFG_MAX_TXS_PER_BLOCK,
-                                           1500ULL, 99ULL) == 3ULL);
-        CHECK(nodus_chain_config_get_u64(w, DNAC_CFG_MAX_TXS_PER_BLOCK,
-                                           2000ULL, 99ULL) == 7ULL);
-        CHECK(nodus_chain_config_get_u64(w, DNAC_CFG_MAX_TXS_PER_BLOCK,
-                                           5000ULL, 99ULL) == 7ULL);
+        CHECK(cfg_val(w, DNAC_CFG_MAX_TXS_PER_BLOCK, 1500ULL, 99ULL) == 3ULL);
+        CHECK(cfg_val(w, DNAC_CFG_MAX_TXS_PER_BLOCK, 2000ULL, 99ULL) == 7ULL);
+        CHECK(cfg_val(w, DNAC_CFG_MAX_TXS_PER_BLOCK, 5000ULL, 99ULL) == 7ULL);
         teardown_witness(w, data_path);
     }
 
@@ -251,20 +275,16 @@ int main(void) {
         nodus_witness_t *w = setup_witness(data_path);
 
         /* Cold cache, DB-direct path. */
-        CHECK(nodus_chain_config_get_u64(w, DNAC_CFG_TARGET_ACTIVE_COUNT,
-                                           1000ULL, 7ULL) == 7ULL);
+        CHECK(cfg_val(w, DNAC_CFG_TARGET_ACTIVE_COUNT, 1000ULL, 7ULL) == 7ULL);
 
         direct_insert(w, DNAC_CFG_TARGET_ACTIVE_COUNT,
                        21ULL, 5000ULL, 4000ULL, 0x44ULL);
         w->chain_config_cache_warm = false;   /* force a re-warm over the new row */
 
         /* Before / at / after the effective height. */
-        CHECK(nodus_chain_config_get_u64(w, DNAC_CFG_TARGET_ACTIVE_COUNT,
-                                           4999ULL, 7ULL) == 7ULL);
-        CHECK(nodus_chain_config_get_u64(w, DNAC_CFG_TARGET_ACTIVE_COUNT,
-                                           5000ULL, 7ULL) == 21ULL);
-        CHECK(nodus_chain_config_get_u64(w, DNAC_CFG_TARGET_ACTIVE_COUNT,
-                                           9999ULL, 7ULL) == 21ULL);
+        CHECK(cfg_val(w, DNAC_CFG_TARGET_ACTIVE_COUNT, 4999ULL, 7ULL) ==  7ULL);
+        CHECK(cfg_val(w, DNAC_CFG_TARGET_ACTIVE_COUNT, 5000ULL, 7ULL) == 21ULL);
+        CHECK(cfg_val(w, DNAC_CFG_TARGET_ACTIVE_COUNT, 9999ULL, 7ULL) == 21ULL);
 
         /* Served from the warm cache (not just the DB fallback), and the
          * param-4 row really occupies a cache slot. */
@@ -275,16 +295,25 @@ int main(void) {
         direct_insert(w, DNAC_CFG_TARGET_ACTIVE_COUNT,
                        128ULL, 9000ULL, 8000ULL, 0x55ULL);
         w->chain_config_cache_warm = false;
-        CHECK(nodus_chain_config_get_u64(w, DNAC_CFG_TARGET_ACTIVE_COUNT,
-                                           8999ULL, 7ULL) == 21ULL);
-        CHECK(nodus_chain_config_get_u64(w, DNAC_CFG_TARGET_ACTIVE_COUNT,
-                                           9000ULL, 7ULL) == 128ULL);
+        CHECK(cfg_val(w, DNAC_CFG_TARGET_ACTIVE_COUNT, 8999ULL, 7ULL) ==  21ULL);
+        CHECK(cfg_val(w, DNAC_CFG_TARGET_ACTIVE_COUNT, 9000ULL, 7ULL) == 128ULL);
 
         /* Still out of range one past the allowlist — the guard moved, it
-         * did not disappear. */
-        CHECK(nodus_chain_config_get_u64(w,
-                                           (uint8_t)(DNAC_CFG_PARAM_MAX_ID + 1),
-                                           9999ULL, 1234ULL) == 1234ULL);
+         * did not disappear.
+         *
+         * O15J A2 changed what out-of-range MEANS: it used to hand back
+         * default_value, which is the same answer as "this param has no
+         * override" and so let a typo'd id read as unconfigured chain
+         * state. An id outside the allowlist is a CALLER bug, and the
+         * contract's answer for "I cannot tell you" is -1. The
+         * out-parameter is left untouched. */
+        {
+            uint64_t v = 0xA5A5A5A5A5A5A5A5ULL;
+            CHECK(nodus_chain_config_get_u64(
+                      w, (uint8_t)(DNAC_CFG_PARAM_MAX_ID + 1),
+                      9999ULL, 1234ULL, &v) == -1);
+            CHECK(v == 0xA5A5A5A5A5A5A5A5ULL);
+        }
 
         teardown_witness(w, data_path);
     }

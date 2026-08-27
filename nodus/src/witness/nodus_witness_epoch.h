@@ -109,10 +109,37 @@ void nodus_witness_epoch_free(nodus_epoch_state_t *e);
  * snapshot_hash = SHA3-512(snapshot_blob)
  *
  * If the epoch_state row is missing the function inserts one with
- * epoch_pool_accum = 0. Tolerant of pre-schema test fixtures
- * (returns 0 with no-op).
+ * epoch_pool_accum = 0.
  *
- * @return 0 on success, -1 on fatal internal error.
+ * ── A DB FAULT IS NOT A VALUE (O15J Block 2, A1). ────────────────────
+ * snapshot_hash is a direct state_root input (it is scanned into the
+ * epoch_state leaves), so every input this function reads must be the
+ * real one or the function must fail. Three legs used to substitute a
+ * legitimate-looking value and still return 0 — an unreadable committee
+ * became "empty chain", an unreadable `validators` row became an
+ * all-zero record, and a failed delegation scan became "no delegators".
+ * Each of them let one node's transient IOERR commit a snapshot_hash no
+ * peer could reproduce. All three now propagate -1.
+ *
+ * ABSENT is still not a fault, and the distinction is the point:
+ *   - a committee lookup that SUCCEEDS with zero members (pre-genesis /
+ *     empty chain) still serializes the canonical empty snapshot;
+ *   - a `validators` row that is genuinely missing for a committee
+ *     member is still zero-filled with the member's pubkey carried
+ *     through — reachable and deterministic since S3, where the
+ *     committee can come from a committed validator_set_snapshots row.
+ *
+ * Residual tolerance, deliberately UNCHANGED and NOT part of A1: the
+ * final epoch_state UPDATE still treats a prepare failure as an
+ * advisory no-op and returns 0 (see the "schema missing (test fixture)"
+ * exit in nodus_witness_epoch.c, and the same tolerance inside
+ * nodus_witness_epoch_insert). Same defect class, different leg.
+ *
+ * @return 0 on success, -1 on any fault — including a committee,
+ *         validator or delegation read this node could not complete.
+ *         Callers are consensus paths and MUST fail the block: see
+ *         nodus_witness_bft.c (finalize_block, V1 lane) and
+ *         nodus_witness_v2_econ.c (emission_apply, V2 lane).
  */
 int nodus_witness_epoch_snapshot_apply(nodus_witness_t *w,
                                         uint64_t epoch_start_height);

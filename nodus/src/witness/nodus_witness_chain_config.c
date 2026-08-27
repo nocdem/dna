@@ -205,26 +205,27 @@ static int cc_cache_warm_from_db(nodus_witness_t *w) {
 
     if (rc != SQLITE_DONE) {
         /* Discard the partial fill and stay COLD, so every lookup goes
-         * through the DB-direct fallback (:219-240) instead of being
-         * answered from a truncated override set.
+         * through the DB-direct fallback below instead of being answered
+         * from a truncated override set.
          *
-         * That is strictly better than serving the partial cache — but it
-         * is NOT a guarantee of correctness, and an earlier version of
-         * this comment wrongly claimed it was ("costs speed, not
-         * correctness"). The fallback is itself FAIL-OPEN: a prepare
-         * failure returns default_value (:227-231), and a failed step
-         * leaves out == default_value because sqlite3_step's result is
-         * only compared against SQLITE_ROW (:236-238). The function
-         * returns uint64_t and has no error channel, so a caller cannot
-         * tell "no override exists" from "the table is unreadable".
+         * ⚠ HISTORY, so the next reader does not re-derive it. An earlier
+         * version of this comment claimed staying cold "costs speed, not
+         * correctness". That was FALSE, and a later revision recorded the
+         * reason as a KNOWN REMAINING HOLE: the fallback was itself
+         * FAIL-OPEN — a prepare failure returned default_value and a
+         * failed step left `out == default_value`, because the function
+         * returned uint64_t and had no error channel. A caller could not
+         * tell "no override exists" from "the table is unreadable", so
+         * under an IOERR/CORRUPT fault one node used the DEFAULT fee /
+         * block-interval / inflation-start while healthy peers used the
+         * override.
          *
-         * KNOWN REMAINING HOLE: under the same IOERR/CORRUPT class named
-         * above, this node then uses the DEFAULT fee / block-interval /
-         * inflation-start while healthy peers use the override — the same
-         * divergence, relocated one layer down. Closing it means giving
-         * get_u64 an error channel and making its callers fail closed,
-         * which changes a public signature and every call site; that is a
-         * separate change, not this one. */
+         * CLOSED (O15J Block 2, A2): nodus_chain_config_get_u64 is now
+         * three-valued (0 present / 1 genuinely absent / -1 cannot
+         * determine) and every production caller fails closed on -1.
+         * Staying cold here is now what it always claimed to be: a cost
+         * in speed, because the fallback answers the same question with
+         * the same three outcomes. */
         for (int i = 0; i < CC_PARAM_SLOTS; i++)
             w->chain_config_cache_count[i] = 0;
         w->chain_config_cache_warm = false;
@@ -237,45 +238,98 @@ static int cc_cache_warm_from_db(nodus_witness_t *w) {
     return 0;
 }
 
-uint64_t nodus_chain_config_get_u64(nodus_witness_t *w,
-                                     uint8_t param_id,
-                                     uint64_t current_block,
-                                     uint64_t default_value) {
-    if (!w || !w->db) return default_value;
-    if (param_id >= CC_PARAM_SLOTS) return default_value;  /* defense */
+/* Does a schema object named `chain_config_history` exist at all?
+ *
+ *   1  it exists, 0  it genuinely does not, -1  sqlite_master itself is
+ *   unreadable (a real DB fault).
+ *
+ * Why this probe exists: on a live node the table is created on EVERY
+ * database open (nodus_witness_db.c:1926, reached from nodus_witness.c:356
+ * and the joining-node path nodus_witness_bootstrap.c:992), so "the table
+ * is missing" is only reachable on a hand-rolled unit fixture that never
+ * ran the migration. A fixture holds no governance rows, which is exactly
+ * "no override is active" — answering 1 (absent) there keeps every such
+ * fixture working, while an unreadable table on a real node still faults.
+ * Same shape and same rationale as the sqlite_master probe in
+ * nodus_committee_get_for_block (nodus_witness_committee.c).
+ *
+ * DELIBERATE DEVIATION from that precedent: it filters `type='table'`;
+ * this one matches on NAME ALONE. The only structural way to inject a
+ * mid-scan step fault into this table (the poisoned-VIEW trick used by
+ * test_merkle_scan_fail_close.c) replaces it with a VIEW of the same
+ * name — a type='table' filter would classify that fixture as ABSENT and
+ * make the fault untestable. Matching by name is also the more
+ * conservative reading: any object of that name means reads of it are
+ * meaningful, so a failure to read one is a fault. */
+static int cc_history_exists(nodus_witness_t *w) {
+    sqlite3_stmt *pr = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT 1 FROM sqlite_master WHERE name='chain_config_history'",
+            -1, &pr, NULL) != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "sqlite_master probe prepare failed: %s",
+                      sqlite3_errmsg(w->db));
+        return -1;
+    }
+    int rc = sqlite3_step(pr);
+    sqlite3_finalize(pr);
+    if (rc == SQLITE_ROW)  return 1;
+    if (rc == SQLITE_DONE) return 0;
+    QGP_LOG_ERROR(LOG_TAG, "sqlite_master probe step failed rc=%d: %s",
+                  rc, sqlite3_errmsg(w->db));
+    return -1;
+}
 
-    /* Cache warm-up if needed (CC-OPS-004 / Q16). */
+int nodus_chain_config_get_u64(nodus_witness_t *w,
+                                uint8_t param_id,
+                                uint64_t current_block,
+                                uint64_t default_value,
+                                uint64_t *value_out) {
+    if (!w || !value_out) return -1;
+    /* No open DB is not "no override" — it is "this node cannot answer".
+     * Every consensus path holds an open handle long before it gets here. */
+    if (!w->db) return -1;
+    /* An out-of-range param id is a CALLER bug, not chain state. Returning
+     * the default would let a typo'd id silently read as "unconfigured". */
+    if (param_id >= CC_PARAM_SLOTS) return -1;
+
+    /* Cache warm-up if needed (CC-OPS-004 / Q16). A failure here is not
+     * yet an answer: the DB-direct fallback below re-asks the same
+     * question and produces the same three outcomes. */
     if (!w->chain_config_cache_warm) {
-        if (cc_cache_warm_from_db(w) != 0) {
-            /* Warm-up failed — fall through to DB-direct lookup below
-             * so we never return a WRONG value due to cache miss. */
-        }
+        (void)cc_cache_warm_from_db(w);
     }
 
     /* Fast path: walk cache backwards (rows sorted by effective_block
-     * ascending), first row with effective_block <= current_block wins. */
+     * ascending), first row with effective_block <= current_block wins.
+     * The cache is only ever marked warm after a COMPLETE scan
+     * (cc_cache_warm_from_db discards any partial fill), so a hit here
+     * and the fallback below answer identically. */
     if (w->chain_config_cache_warm) {
         w->chain_config_cache_hits++;
         int n = w->chain_config_cache_count[param_id];
         for (int i = n - 1; i >= 0; i--) {
             if (w->chain_config_cache[param_id][i].effective_block
                 <= current_block) {
-                return w->chain_config_cache[param_id][i].new_value;
+                *value_out = w->chain_config_cache[param_id][i].new_value;
+                return 0;
             }
         }
-        /* No row active at current_block — return default. */
-        return default_value;
+        *value_out = default_value;
+        return 1;                       /* genuinely no active override */
     }
     w->chain_config_cache_misses++;
 
-    /* Cache warm-up failed (or has not run) — fall back to a direct DB
-     * lookup rather than trusting a cache we could not fill.
-     *
-     * ⚠ FAIL-OPEN, and the original wording here ("so we never return a
-     * wrong value because of transient cache failure") was false: both
-     * error exits below yield default_value, which is indistinguishable
-     * from "no override is active". See the KNOWN REMAINING HOLE note in
-     * cc_cache_warm_from_db. */
+    /* Cache warm-up failed (or the table does not exist) — fall back to a
+     * direct DB lookup rather than trusting a cache we could not fill.
+     * Every exit below is one of the three contract values; none of them
+     * substitutes a value for a failure. */
+    int have = cc_history_exists(w);
+    if (have < 0) return -1;            /* cannot even ask               */
+    if (have == 0) {                    /* pre-migration fixture: no rows */
+        *value_out = default_value;
+        return 1;
+    }
+
     const char *sql =
         "SELECT new_value FROM chain_config_history "
         "WHERE param_id = ? AND effective_block <= ? "
@@ -283,19 +337,29 @@ uint64_t nodus_chain_config_get_u64(nodus_witness_t *w,
 
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(w->db, sql, -1, &stmt, NULL) != SQLITE_OK) {
-        QGP_LOG_WARN(LOG_TAG, "get_u64 prepare failed: %s",
-                     sqlite3_errmsg(w->db));
-        return default_value;
+        QGP_LOG_ERROR(LOG_TAG, "get_u64 prepare failed (param %u): %s",
+                      (unsigned)param_id, sqlite3_errmsg(w->db));
+        return -1;
     }
     sqlite3_bind_int(stmt, 1, (int)param_id);
     sqlite3_bind_int64(stmt, 2, (sqlite3_int64)current_block);
 
-    uint64_t out = default_value;
-    if (sqlite3_step(stmt) == SQLITE_ROW) {
-        out = (uint64_t)sqlite3_column_int64(stmt, 0);
+    int rc = sqlite3_step(stmt);
+    int ret;
+    if (rc == SQLITE_ROW) {
+        *value_out = (uint64_t)sqlite3_column_int64(stmt, 0);
+        ret = 0;
+    } else if (rc == SQLITE_DONE) {
+        *value_out = default_value;
+        ret = 1;
+    } else {
+        QGP_LOG_ERROR(LOG_TAG, "get_u64 step failed rc=%d (param %u): %s — "
+                      "the active override cannot be determined", rc,
+                      (unsigned)param_id, sqlite3_errmsg(w->db));
+        ret = -1;
     }
     sqlite3_finalize(stmt);
-    return out;
+    return ret;
 }
 
 /* ============================================================================

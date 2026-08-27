@@ -1614,6 +1614,25 @@ target_link_libraries(test_chain_config_cache_failclose nodus dsa nodus)
 add_test(NAME test_chain_config_cache_failclose
          COMMAND test_chain_config_cache_failclose)
 
+# O15J Block 2 / A2 — nodus_chain_config_get_u64 is three-valued: a
+# governance row that is genuinely ABSENT still yields the default (which
+# is what keeps a pre-genesis or freshly-bootstrapped node starting),
+# while a row that cannot be READ is -1 and every consensus consumer —
+# committee selection, the validator-set snapshot builder, the emission
+# gate — fails closed instead of proceeding on the default. The fault is
+# injected structurally (chain_config_history as a VIEW whose flagged row
+# raises "integer overflow" at step time), so the code under test is the
+# production code and nothing about the test is timing-dependent.
+# Links `crypto` for the same reason test_vset_boundary does: it drives
+# nodus_witness_vset_commit_genesis.
+add_executable(test_chain_config_failclose
+    tests/test_chain_config_failclose.c)
+target_link_libraries(test_chain_config_failclose nodus dsa nodus crypto)
+target_compile_definitions(test_chain_config_failclose PRIVATE
+                           NODUS_WITNESS_INTERNAL_API)
+add_test(NAME test_chain_config_failclose
+         COMMAND test_chain_config_failclose)
+
 # K2 — spend-result failure-path contract: a rolled-back block never
 # produces an APPROVED receipt, and the handlers.c:2161 NULL-message
 # trap stays pinned
@@ -1761,6 +1780,26 @@ register_witness_test(test_emission_boundaries)
 
 # v0.16 Stage D.2 — epoch snapshot empty-chain hash + idempotence smoke
 register_witness_test(test_epoch_snapshot)
+
+# O15J Block 2 / A1 — nodus_witness_epoch_snapshot_apply must HALT on a DB
+# fault instead of hashing a fabricated input into snapshot_hash, which is
+# a state_root leg. Each of the three legs (committee lookup, per-member
+# validators row, per-member delegation scan) gets a FAULT case and an
+# ABSENT case, and each poison is scoped so exactly ONE leg can observe it
+# — otherwise a mutant reverting a single leg would survive behind
+# another leg's guard. Faults are injected structurally, by replacing the
+# table under test with a VIEW whose flagged row raises "integer overflow"
+# at step time; the code under test is unmodified production code.
+# Links `crypto` on top of register_witness_test's set for the same reason
+# test_vset_boundary does: it drives the committee accessor, which reaches
+# the shared validator-set snapshot codec.
+add_executable(test_epoch_snapshot_failclose
+    tests/test_epoch_snapshot_failclose.c)
+target_link_libraries(test_epoch_snapshot_failclose nodus dsa nodus crypto)
+target_compile_definitions(test_epoch_snapshot_failclose PRIVATE
+                           NODUS_WITNESS_INTERNAL_API)
+add_test(NAME test_epoch_snapshot_failclose
+         COMMAND test_epoch_snapshot_failclose)
 
 # Task 62 — dnac_committee_query RPC shape (Phase 14)
 register_witness_test(test_committee_query_rpc)

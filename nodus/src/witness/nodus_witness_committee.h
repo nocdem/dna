@@ -81,19 +81,24 @@ typedef struct {
  * ── S3: THE SET SIZE COMES FROM CHAIN STATE ────────────────────────────
  * The per-epoch target is derived INTERNALLY, not from max_entries:
  *
- *     target      = nodus_chain_config_get_u64(w,
- *                       DNAC_CFG_TARGET_ACTIVE_COUNT, e_start,
- *                       DNAC_COMMITTEE_SIZE)
+ *     nodus_chain_config_get_u64(w, DNAC_CFG_TARGET_ACTIVE_COUNT,
+ *                                e_start, DNAC_COMMITTEE_SIZE, &target)
  *                   clamped to [1, DNAC_MAX_ACTIVE_VALIDATORS]
  *     final_count = min(cand_count, target, max_entries)
  *
  * The lookup is keyed on `e_start` — NOT on the querying block height —
  * so every block of an epoch sees ONE value and a chain_config row whose
  * effective_block falls mid-epoch cannot resize a live committee.
- * nodus_chain_config_get_u64 reads committed chain_config_history rows
- * (nodus_witness_chain_config.c:240), which is the same deterministic,
- * cross-node source the INFLATION_START_BLOCK consumer already uses in
- * finalize_block (nodus_witness_bft.c:3230-3234).
+ * nodus_chain_config_get_u64 reads committed chain_config_history rows,
+ * which is the same deterministic, cross-node source the
+ * INFLATION_START_BLOCK consumer already uses in finalize_block
+ * (nodus_witness_bft.c).
+ *
+ * O15J Block 2 (A2) — the lookup is THREE-VALUED and this function fails
+ * closed on its fault code. "No governance row" (every chain today) still
+ * yields DNAC_COMMITTEE_SIZE and selects exactly as before; "the override
+ * is unreadable" now returns -1 instead of quietly selecting a
+ * default-sized committee that a healthy peer would not have selected.
  *
  * max_entries remains a pure BUFFER capacity: it can only shrink the
  * result, never grow it past the chain-derived target.

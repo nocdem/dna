@@ -13,6 +13,7 @@
 #include "witness/nodus_witness_delegation.h"
 
 #include "crypto/hash/qgp_sha3.h"
+#include "crypto/utils/qgp_log.h"
 
 #include <sqlite3.h>
 #include <stdio.h>
@@ -317,10 +318,34 @@ int nodus_witness_epoch_snapshot_apply(nodus_witness_t *w,
     int rc = nodus_committee_get_for_block_alloc(w, epoch_start_height,
                                                    &committee,
                                                    &committee_count);
-    if (rc != 0 || committee_count == 0) {
-        /* Pre-genesis / empty chain: serialize as the canonical empty
-         * snapshot (committee_count=0 || delegation_count=0). */
-        committee_count = 0;
+    /* ── LEG 1, O15J Block 2 (A1). FAIL CLOSED. ───────────────────────
+     * This used to be `if (rc != 0 || committee_count == 0)`, which read
+     * a FAULT as an empty chain and hashed the canonical empty snapshot
+     * anyway. The two are already distinguishable at this call site and
+     * always were: nodus_committee_get_for_block_alloc returns -1 for a
+     * calloc failure, an unreadable sqlite_master, a snapshot row that
+     * fails hash/decode, and any compute failure beneath it — and
+     * nodus_witness_committee.c justifies the decode case in its own
+     * words, "a node that cannot know its committee must not vote".
+     * Collapsing that into "empty" discarded a fail-closed decision the
+     * layer below had already taken.
+     *
+     * It matters because this blob's SHA3-512 becomes
+     * epoch_state.snapshot_hash, which is scanned into the epoch_state
+     * leaves of state_root. One node's transient IOERR committed a
+     * different root than its peers, silently, because this function then
+     * returned 0.
+     *
+     * rc == 0 with committee_count == 0 is the GENUINE empty chain and
+     * keeps its original behaviour byte-for-byte: the canonical empty
+     * snapshot. */
+    if (rc != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "epoch %llu: the committee could not be "
+                      "determined (rc=%d) — refusing to hash a fabricated "
+                      "empty snapshot into state_root",
+                      (unsigned long long)epoch_start_height, rc);
+        free(committee);
+        return -1;
     }
 
     if (committee_count > 1) {
@@ -343,9 +368,33 @@ int nodus_witness_epoch_snapshot_apply(nodus_witness_t *w,
     for (int i = 0; i < committee_count; i++) {
         dnac_validator_record_t v;
         int vrc = nodus_validator_get(w, committee[i].pubkey, &v);
-        if (vrc != 0) {
-            /* Defensive: zero-fill when committee row missing. Shouldn't
-             * happen — committee accessor reads from the same table. */
+        /* ── LEG 2, O15J Block 2 (A1). ────────────────────────────────
+         * nodus_validator_get has been three-valued all along —
+         * 0 found / 1 not found / -1 prepare or step failure. The old
+         * `vrc != 0` conflated the last two and zero-filled the record
+         * on BOTH, hashing invented stake, commission and status bytes
+         * into snapshot_hash.
+         *
+         * vrc == 1 (row genuinely absent) keeps the historical
+         * behaviour, unchanged: zero-fill and carry the pubkey. That is
+         * a reachable, deterministic state since S3 — the committee may
+         * be served from a committed validator_set_snapshots row whose
+         * member no longer has a live `validators` row, and every node
+         * replaying the same chain sees the same absence.
+         *
+         * vrc < 0 is a node-local fault: two nodes reading the same
+         * committed state get different answers, so this one must not
+         * seal the epoch. */
+        if (vrc < 0) {
+            QGP_LOG_ERROR(LOG_TAG, "epoch %llu: validators row for "
+                          "committee seat %d is unreadable — refusing to "
+                          "hash a zero-filled record into state_root",
+                          (unsigned long long)epoch_start_height, i);
+            free(blob);
+            free(committee);
+            return -1;
+        }
+        if (vrc == 1) {
             memset(&v, 0, sizeof(v));
             memcpy(v.pubkey, committee[i].pubkey, DNAC_PUBKEY_SIZE);
         }
@@ -369,7 +418,26 @@ int nodus_witness_epoch_snapshot_apply(nodus_witness_t *w,
         int lrc = nodus_delegation_list_by_validator(
             w, committee[i].pubkey, dels,
             NODUS_EPOCH_MAX_DELEGS_PER_VAL, &dcount);
-        if (lrc != 0) dcount = 0;
+        /* ── LEG 3, O15J Block 2 (A1). ────────────────────────────────
+         * `if (lrc != 0) dcount = 0;` published "this validator has no
+         * delegators" as a fact on a scan fault. Unlike legs 1 and 2
+         * there is no ABSENT code to preserve here: the underlying
+         * delegation_list_by_hash already reports an empty result as
+         * rc 0 with *count_out == 0 and reserves non-zero for a NULL
+         * argument or a prepare/step failure (it grew its own
+         * post-loop SQLITE_DONE guard). So every non-zero is a fault,
+         * and dropping a validator's whole delegator set changes both
+         * snapshot_hash and, through it, who settlement pays. */
+        if (lrc != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "epoch %llu: delegation scan for "
+                          "committee seat %d failed (rc=%d) — refusing to "
+                          "record an empty delegator set as truth",
+                          (unsigned long long)epoch_start_height, i, lrc);
+            free(dels);
+            free(blob);
+            free(committee);
+            return -1;
+        }
         if (dcount > 1) {
             qsort(dels, (size_t)dcount, sizeof(dels[0]), deleg_cmp);
         }

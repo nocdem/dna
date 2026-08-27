@@ -110,32 +110,63 @@ int nodus_chain_config_db_migrate(nodus_witness_t *w);
  * ========================================================================== */
 
 /**
- * Return the currently-active value for `param_id` at `current_block`.
+ * Read the currently-active value for `param_id` at `current_block`.
  * Monotonic "latest effective_block wins" lookup — matches the canonical
  * SQL query in design §5.9.
  *
- * If no row exists for `param_id` with `effective_block <= current_block`,
- * returns `default_value`.
+ * ── THREE-VALUED SINCE O15J BLOCK 2 (A2). ────────────────────────────
+ * This function used to return `uint64_t` and had NO error channel: a
+ * prepare failure or a failed step handed the caller `default_value`,
+ * indistinguishable from "no override is active". Under an
+ * IOERR/CORRUPT class fault one node therefore used the DEFAULT
+ * fee / block-interval / inflation-start while its healthy peers used
+ * the governance-voted override — a consensus split with no Byzantine
+ * actor. The source named this itself as a "KNOWN REMAINING HOLE"
+ * (nodus_witness_chain_config.c, cc_cache_warm_from_db docblock).
  *
- * Consumer sites (Stage D):
- *   - inflation gate: chain_config_get(INFLATION_START_BLOCK, h, 1) then
- *     nodus_emission_per_block(h) (nodus_witness_emission.h)
- *   - max batch size clamp: chain_config_get(MAX_TXS_PER_BLOCK, h, default)
- *   - proposer timer: chain_config_get(BLOCK_INTERVAL_SEC, h, default)
+ * The contract is now the one `nodus_witness_supply_get` has carried
+ * since v0.18.19: ABSENT and FAULT are different answers.
+ *
+ *   0  an override row is active at `current_block`;
+ *      *value_out = that row's new_value.
+ *   1  no override row is active — genuinely absent (empty table, no
+ *      row at or below `current_block`, or the table does not exist on
+ *      a pre-migration fixture); *value_out = `default_value`, so a
+ *      caller that only cares about the value can use it directly.
+ *  -1  the answer could not be determined (null args, out-of-range
+ *      param id, no open DB, or any SQLite prepare/step failure).
+ *      *value_out is left UNTOUCHED. The caller MUST fail closed —
+ *      it must not vote, propose, seal or commit on a guess.
+ *
+ * Production consumer sites, all fail-closed on -1:
+ *   - inflation gate, V1 lane:  nodus_witness_bft.c
+ *   - inflation gate, V2 lane:  nodus_witness_v2_econ.c
+ *   - epoch seat count:         nodus_witness_committee.c (committee),
+ *                               nodus_witness_vset.c (snapshot builder)
+ *   - proposer batch cap:       nodus_witness_bft.c (abstain from the
+ *                               round; no block on a guessed cap)
+ *   - block tx-count validation: nodus_witness_v2_apply.c (node FAULT,
+ *                               never a verdict on the block)
+ * There is NO production reader of DNAC_CFG_BLOCK_INTERVAL_SEC through
+ * this function — the "proposer timer" consumer this docblock used to
+ * list does not exist in the tree (grep, O15J Block 2 A2). Only
+ * nodus-cli names the param, as a proposal argument.
  *
  * @param w              Witness context (w->db must be open).
  * @param param_id       dnac_chain_config_param_id_t value
  *                       (1..DNAC_CFG_PARAM_MAX_ID; 4 = TARGET_ACTIVE_COUNT
- *                       since Ledger V2 S3). Out-of-range ids return
- *                       default_value.
+ *                       since Ledger V2 S3). Out-of-range ids are a
+ *                       caller bug and return -1.
  * @param current_block  Chain height at which to evaluate the override.
- * @param default_value  Returned if no active override exists.
- * @return Active value on success; default_value on no-row / null args.
+ * @param default_value  Written to *value_out when the answer is 1.
+ * @param value_out      [out] must be non-NULL.
+ * @return 0 override present, 1 genuinely absent, -1 cannot determine.
  */
-uint64_t nodus_chain_config_get_u64(nodus_witness_t *w,
-                                     uint8_t param_id,
-                                     uint64_t current_block,
-                                     uint64_t default_value);
+int nodus_chain_config_get_u64(nodus_witness_t *w,
+                                uint8_t param_id,
+                                uint64_t current_block,
+                                uint64_t default_value,
+                                uint64_t *value_out);
 
 /* ============================================================================
  * Merkle Root (state_root contributor)

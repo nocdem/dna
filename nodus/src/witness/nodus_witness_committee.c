@@ -23,6 +23,7 @@
 #include "dnac/validator.h"
 #include "dnac/block_v2.h"            /* O15E: successor seed row checks */
 #include "crypto/hash/qgp_sha3.h"
+#include "crypto/utils/qgp_log.h"
 
 #include <sqlite3.h>   /* S3: sqlite_master probe in get_for_block */
 #include <stdio.h>
@@ -69,18 +70,38 @@ static int cmp_tiebreak_asc(const void *pa, const void *pb) {
  * chain_config row with a mid-epoch effective_block would resize a live
  * committee. Deterministic cross-node because
  * nodus_chain_config_get_u64 answers from committed chain_config_history
- * rows (nodus_witness_chain_config.c:240-268) — the same source the
- * INFLATION_START_BLOCK consumer uses inside finalize_block
- * (nodus_witness_bft.c:3230-3234).
+ * rows — the same source the INFLATION_START_BLOCK consumer uses inside
+ * finalize_block (nodus_witness_bft.c).
  *
  * The default is DNAC_COMMITTEE_SIZE, so a chain with no governance row
  * (every chain today) selects exactly as it did before S3. The clamp is
  * the release ceiling, defence-in-depth on top of the apply-side range
- * check in nodus_chain_config_apply. */
-static int committee_target_for_epoch(nodus_witness_t *w, uint64_t e_start) {
-    uint64_t target = nodus_chain_config_get_u64(
+ * check in nodus_chain_config_apply.
+ *
+ * O15J Block 2 (A2) — FAIL CLOSED. The lookup is three-valued now, and
+ * `1` (genuinely no governance row) keeps the historical behaviour
+ * byte-for-byte: the default seat count. `-1` means this node cannot
+ * determine how many seats the epoch has, and a node that does not know
+ * the seat count does not know the committee — it must not select one,
+ * because a peer that CAN read the override would select a different
+ * set and the two would disagree on validator_set_root / snapshot_hash
+ * and therefore on state_root.
+ *
+ * @param target_out [out] written only on success.
+ * @return 0 target determined, -1 cannot determine. */
+static int committee_target_for_epoch(nodus_witness_t *w, uint64_t e_start,
+                                      int *target_out) {
+    uint64_t target = 0;
+    int crc = nodus_chain_config_get_u64(
         w, (uint8_t)DNAC_CFG_TARGET_ACTIVE_COUNT, e_start,
-        (uint64_t)DNAC_COMMITTEE_SIZE);
+        (uint64_t)DNAC_COMMITTEE_SIZE, &target);
+    if (crc < 0) {
+        QGP_LOG_ERROR(LOG_TAG, "epoch %llu: TARGET_ACTIVE_COUNT is "
+                      "unreadable — refusing to select a committee on a "
+                      "guessed seat count",
+                      (unsigned long long)e_start);
+        return -1;
+    }
     if (target < 1) target = 1;
     if (target > (uint64_t)DNAC_MAX_ACTIVE_VALIDATORS)
         target = (uint64_t)DNAC_MAX_ACTIVE_VALIDATORS;
@@ -90,7 +111,8 @@ static int committee_target_for_epoch(nodus_witness_t *w, uint64_t e_start) {
      * 128 ceiling above. Mirrors vset_target_for_epoch. */
     if (w->v2_successor && target > (uint64_t)NODUS_V2_ACTIVE_SET_MAX)
         target = (uint64_t)NODUS_V2_ACTIVE_SET_MAX;
-    return (int)target;
+    *target_out = (int)target;
+    return 0;
 }
 
 /* ── O15E Faz A — the successor's committed seed row ──────────────────
@@ -197,8 +219,10 @@ int nodus_committee_compute_for_epoch(nodus_witness_t *w,
                                                     max_entries, count_out);
     }
 
-    /* S3 — the epoch's target set size, from committed chain state. */
-    int target = committee_target_for_epoch(w, e_start);
+    /* S3 — the epoch's target set size, from committed chain state.
+     * O15J A2: unreadable ⇒ no committee, not a default-sized one. */
+    int target = 0;
+    if (committee_target_for_epoch(w, e_start, &target) != 0) return -1;
     if (target < max_entries) max_entries = target;
 
     uint64_t lookback_block = e_start - (uint64_t)DNAC_EPOCH_LENGTH - 1ULL;
@@ -365,9 +389,14 @@ int nodus_committee_bootstrap_for_epoch(nodus_witness_t *w,
      * committee_target_for_epoch reads (:81-83), so the conclusion is
      * unchanged — it just no longer rests on the table being empty.
      * e_start is otherwise unused here: bootstrap always seeds its
-     * tiebreak from the genesis block's state_root. */
+     * tiebreak from the genesis block's state_root.
+     *
+     * O15J A2: same fail-closed rule as the post-lookback path. Note
+     * this does NOT make a pre-genesis node fail — an EMPTY (or not yet
+     * migrated) chain_config_history answers 1/absent, not -1. */
     {
-        int target = committee_target_for_epoch(w, e_start);
+        int target = 0;
+        if (committee_target_for_epoch(w, e_start, &target) != 0) return -1;
         if (target < max_entries) max_entries = target;
     }
 

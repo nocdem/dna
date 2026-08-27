@@ -3734,16 +3734,34 @@ int finalize_block(nodus_witness_t *w,
      *
      * Hard-Fork v1: the INFLATION_START_BLOCK override (chain_config)
      * gates activation. Pre-wipe chains passed 0 (=disabled) here;
-     * v0.16 chains default to 1 (active from block 1). An unfetchable
+     * v0.16 chains default to 1 (active from block 1).
+     *
+     * O15J Block 2 (A2) — this comment used to say "an unfetchable
      * override is treated as 1ULL so that a transient DB fault cannot
-     * silently turn off emission cross-nodes.
+     * silently turn off emission cross-nodes". That was the fail-open,
+     * described as if it were the fix: substituting 1ULL only covers the
+     * case where the override would DELAY emission, and does nothing when
+     * the real override is EARLIER than 1 or when peers read a later
+     * start. Either way the node mints on a schedule it cannot prove its
+     * peers share, and total_minted feeds the supply gate and the
+     * epoch_state leaves of state_root. The read is three-valued now:
+     * genuinely no row still means 1ULL, an unreadable row fails the
+     * block.
      */
     {
-        uint64_t inflation_start =
-            nodus_chain_config_get_u64(w,
+        uint64_t inflation_start = 0;
+        int cfg_rc = nodus_chain_config_get_u64(w,
                                         DNAC_CFG_INFLATION_START_BLOCK,
                                         expected_height,
-                                        1ULL);
+                                        1ULL,
+                                        &inflation_start);
+        if (cfg_rc < 0) {
+            QGP_LOG_ERROR(LOG_TAG, "finalize_block: INFLATION_START_BLOCK "
+                          "unreadable at height %llu — refusing to mint on "
+                          "a guessed emission schedule",
+                          (unsigned long long)expected_height);
+            return -1;
+        }
         uint64_t emission = 0;
         if (inflation_start != 0 && expected_height >= inflation_start) {
             emission = nodus_emission_per_block(expected_height);
@@ -4491,11 +4509,30 @@ int nodus_witness_bft_start_round_from_mempool(nodus_witness_t *w) {
             sqlite3_finalize(st);
         }
     }
-    uint64_t max_override =
-        nodus_chain_config_get_u64(w,
+    /* O15J Block 2 (A2) — ABSTAIN, do not guess.
+     *
+     * A governance cap this node cannot read is not "no cap". Failing the
+     * round here is proportionate and NOT a permanent halt: the caller
+     * treats -1 as "no proposal this tick" and the next tick retries, so a
+     * transient fault costs one round and a persistent one is handled by
+     * view change. Under the same fault finalize_block's INFLATION_START
+     * read above would fail too, so this node could not have committed the
+     * block it was about to propose anyway.
+     *
+     * This check sits BEFORE nodus_witness_mempool_pop_batch deliberately:
+     * abstaining must not pop and strand queued transactions. */
+    uint64_t max_override = 0;
+    if (nodus_chain_config_get_u64(w,
                                     DNAC_CFG_MAX_TXS_PER_BLOCK,
                                     current_tip,
-                                    (uint64_t)NODUS_W_MAX_BLOCK_TXS);
+                                    (uint64_t)NODUS_W_MAX_BLOCK_TXS,
+                                    &max_override) < 0) {
+        QGP_LOG_ERROR(LOG_TAG, "start_round: MAX_TXS_PER_BLOCK unreadable at "
+                      "tip %llu — abstaining from this round rather than "
+                      "proposing under a guessed cap",
+                      (unsigned long long)current_tip);
+        return -1;
+    }
     int effective_max = (max_override < (uint64_t)NODUS_W_MAX_BLOCK_TXS)
                          ? (int)max_override
                          : NODUS_W_MAX_BLOCK_TXS;
@@ -5523,9 +5560,9 @@ static int bft_handle_vote_inner(nodus_witness_t *w, uint8_t msg_type,
          * legacy chain has ever produced; it differs only across a
          * committee CHANGE, which is precisely the case that was
          * broken. */
-        if (load_committee_at_height_alloc(w, w->round_state.block_height,
-                                             &committee, &count) == 0 &&
-            count > 0) {
+        int lc_rc = load_committee_at_height_alloc(
+                        w, w->round_state.block_height, &committee, &count);
+        if (lc_rc == 0 && count > 0) {
             int found = committee_find_pubkey(committee, count, sender_pk);
             free(committee);
             if (found < 0) {
@@ -5538,9 +5575,34 @@ static int bft_handle_vote_inner(nodus_witness_t *w, uint8_t msg_type,
                         count);
                 return -1;
             }
+        } else if (lc_rc != 0) {
+            /* O15J Block 2A — A LOOKUP FAILURE IS NOT PRE-GENESIS.
+             *
+             * This used to share the branch below: any non-success took
+             * the "gossip_idx is sufficient authorization" path, so a
+             * node that could not READ its committee accepted votes from
+             * anyone on the transport roster. Making the chain-config
+             * read fail closed (this season) turned that from a rare
+             * accident into a reachable state, so the two cases are now
+             * separated at the only place that can tell them apart.
+             *
+             * `count == 0` with rc 0 is a genuine, committed answer:
+             * there is no committee yet, and the gossip check really is
+             * the authorization. rc != 0 is NOT an answer — it is the
+             * absence of one, and a node that cannot establish who is
+             * entitled to vote must not count the vote. */
+            free(committee);
+            fprintf(stderr,
+                    "%s: cannot establish the committee at height %llu "
+                    "(rc=%d) — refusing the vote rather than authorising "
+                    "it on the transport roster alone\n",
+                    LOG_TAG,
+                    (unsigned long long)w->round_state.block_height, lc_rc);
+            return -1;
         } else {
-            /* pre-genesis (count 0) or lookup error: gossip_idx check
-             * above is sufficient authorization. */
+            /* rc == 0 && count == 0 — genuinely pre-genesis: no committee
+             * exists yet, so the gossip_idx check above is the
+             * authorization, exactly as before. */
             free(committee);
         }
     }
