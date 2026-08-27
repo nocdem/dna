@@ -1400,10 +1400,18 @@ static int sum_native_dnac_in_out(const uint8_t *tx_data,
  * (DELEGATE consumes DNAC inputs >= amount + fee, outputs are change
  * only; see design 2.4).
  */
-static int apply_delegate(nodus_witness_t *w,
-                           const uint8_t *tx_data, uint32_t tx_len,
-                           uint64_t block_height,
-                           uint64_t committed_fee) {
+/* Non-static so test executables (compiled with NODUS_WITNESS_INTERNAL_API
+ * via register_witness_test) can call directly — the apply_tx_to_state
+ * precedent below. Declared ONLY in nodus_witness_bft_internal.h, never
+ * in a production-facing header; production callers reach it through
+ * apply_tx_to_state's NODUS_W_TX_DELEGATE branch. Exported for the
+ * per-validator delegator-cap regression (O15J Block 2), which needs to
+ * drive this rule without standing up the UTXO/nullifier machinery that
+ * only affects the committed_fee this function is HANDED. */
+int apply_delegate(nodus_witness_t *w,
+                    const uint8_t *tx_data, uint32_t tx_len,
+                    uint64_t block_height,
+                    uint64_t committed_fee) {
     size_t off = 0;
     const uint8_t *signer_pubkey = NULL;
     if (compute_appended_fields_offset(tx_data, tx_len, &off, &signer_pubkey) != 0) {
@@ -1503,6 +1511,58 @@ static int apply_delegate(nodus_witness_t *w,
     /* v0.16: reward accumulator snapshot removed — distribution is now
      * push-per-epoch via apply_epoch_settlement (Stage E). Delegations
      * applied mid-epoch become eligible at the NEXT epoch snapshot. */
+
+    /* O15J Block 2 — per-validator delegator cap, enforced HERE at
+     * admission rather than papered over at snapshot time.
+     *
+     * The epoch snapshot serializes at most
+     * NODUS_MAX_DELEGATORS_PER_VALIDATOR delegators per committee member
+     * (nodus_witness_epoch.c NODUS_EPOCH_MAX_DELEGS_PER_VAL, now an alias
+     * of that same constant) while writing the validator's FULL
+     * total_delegated. Without this gate a validator could hold more
+     * delegators than the blob can carry, and every delegator past the
+     * cap would be unpaid forever with its share burned. Bounding the ROW
+     * COUNT is what makes that impossible — the snapshot can never be
+     * ASKED to truncate.
+     *
+     * VERDICT, not a node fault: the count is a deterministic function of
+     * committed state, so every honest node counts the same rows and
+     * reaches the same answer. It joins the Rule S / not-bonded rejects
+     * above in this function's single -1 class — the same shape
+     * apply_unstake already uses for its Rule A count check below.
+     *
+     * FAIL-CLOSED: an unreadable count REJECTS. It is never read as
+     * "zero, therefore admit" — that would turn a local DB fault into an
+     * admission every honest peer refuses.
+     *
+     * A TOP-UP is still admitted at the cap: an existing (delegator,
+     * validator) row adds no NEW delegator, so the count does not move
+     * and the snapshot still holds everyone. Only a delegator that does
+     * not have a row yet is gated.
+     *
+     * JUDGMENT: nodus_delegation_get returns 1 for absent and -1 for a
+     * read error, and both are treated here as "not an existing
+     * delegator" ⇒ reject. At the cap boundary that is the fail-closed
+     * direction for either cause, so the conflation can never admit. */
+    int deleg_count = 0;
+    if (nodus_delegation_count_by_validator(w, validator_pubkey,
+                                             &deleg_count) != 0) {
+        fprintf(stderr, "%s: apply_delegate: count_by_validator failed — "
+                "delegator cap cannot be evaluated, rejecting\n", LOG_TAG);
+        return -1;
+    }
+    if (deleg_count >= NODUS_MAX_DELEGATORS_PER_VALIDATOR) {
+        dnac_delegation_record_t existing_probe;
+        if (nodus_delegation_get(w, signer_pubkey, validator_pubkey,
+                                  &existing_probe) != 0) {
+            fprintf(stderr, "%s: apply_delegate: validator already has %d "
+                    "delegators (cap %d) and this delegator is not one of "
+                    "them — rejected\n", LOG_TAG, deleg_count,
+                    NODUS_MAX_DELEGATORS_PER_VALIDATOR);
+            return -1;
+        }
+        /* an existing delegator topping up: the row count does not move */
+    }
 
     /* Insert (or update if already exists) delegation row. */
     dnac_delegation_record_t d;

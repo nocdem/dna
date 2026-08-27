@@ -37,6 +37,45 @@ extern "C" {
 #endif
 
 /**
+ * The ONE authority for how many DISTINCT delegators may reference a
+ * single validator (O15J Block 2 — the OPEN HIGH in nodus/BUGS.md).
+ *
+ * WHY THIS EXISTS. nodus_witness_epoch.c serializes at most
+ * NODUS_EPOCH_MAX_DELEGS_PER_VAL delegators per committee member into
+ * the epoch snapshot blob, but nothing ever bounded the underlying row
+ * count. A validator with more delegators than the snapshot can hold
+ * had its FULL total_delegated written into the blob while only a
+ * SUBSET of its delegators appeared in it; settlement then divides by
+ * the full figure and the excluded delegators are never paid — their
+ * share falls into the inner-dust burn, permanently. The truncating
+ * query (delegation_list_by_hash, "... WHERE %s = ? LIMIT ?") has no
+ * ORDER BY, so WHICH delegators were dropped was decided by SQLite's
+ * scan order, i.e. by physical row layout, which two witnesses need
+ * not share after a resync / VACUUM / table rebuild.
+ *
+ * The fix is to make the bound REAL at admission rather than paper
+ * over it at snapshot time: a DELEGATE that would introduce a NEW
+ * delegator to an already-full validator is REJECTED, in both lanes
+ *   - legacy: apply_delegate (nodus_witness_bft.c)
+ *   - Ledger V2: rtn_delegate_exec (nodus_witness_rt_native.c)
+ * so the snapshot can never be ASKED to truncate.
+ *
+ * WHY NOT DNAC_MAX_DELEGATIONS_PER_DELEGATOR. That constant is also
+ * 64, which is exactly why the stale comment this replaces claimed the
+ * snapshot bound "matches STAKE rule G cap". It does not: rule G caps
+ * how many validators ONE DELEGATOR may back (see
+ * nodus_delegation_count_by_delegator below), which is the transposed
+ * relation and bounds nothing about a validator's delegator count.
+ * Reusing it here would re-encode the very misattribution that let
+ * this bug live. Numerically equal today, semantically unrelated, and
+ * either may move without the other.
+ *
+ * COUNTING IS FAIL-CLOSED. A count that cannot be read is never
+ * treated as "zero, therefore admit" — see the two enforcement sites.
+ */
+#define NODUS_MAX_DELEGATORS_PER_VALIDATOR 64
+
+/**
  * Insert a delegation row. The PK (delegator_hash, validator_hash) is
  * computed internally from the record's delegator_pubkey and
  * validator_pubkey using the NODUS_TREE_TAG_DELEGATION (0x03) domain tag.

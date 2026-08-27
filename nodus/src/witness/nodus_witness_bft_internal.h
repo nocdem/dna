@@ -85,6 +85,35 @@ int apply_tx_to_state(nodus_witness_t *w,
                        const uint8_t *client_pubkey,
                        const uint8_t *client_sig);
 
+/* Phase 8 Task 41 — DELEGATE state mutation, the legacy lane's half of
+ * the per-validator delegator cap (O15J Block 2).
+ *
+ * apply_tx_to_state's NODUS_W_TX_DELEGATE branch is the only production
+ * caller. Exported here so the cap regression can drive the rule with a
+ * synthetic tx_data and an explicitly supplied committed_fee: the fee is
+ * an INPUT to this function (update_utxo_set computes it earlier in the
+ * batch), and the UTXO/nullifier machinery that produces it has no
+ * bearing on the delegation rules under test.
+ *
+ * Parameters:
+ *   tx_data / tx_len  serialized DELEGATE TX; the type-specific fields
+ *                     validator_pubkey(2592) ‖ delegation_amount(u64 BE)
+ *                     are appended after the signer section
+ *   block_height      height the TX commits at (becomes
+ *                     delegation.delegated_at_block)
+ *   committed_fee     the fee update_utxo_set already committed; enters
+ *                     the Σin == Σout + fee + amount consistency rule
+ *
+ * Returns 0 on success, -1 on ANY rejection — the legacy lane has a
+ * single failure class and the caller turns it into a whole-block
+ * rollback. Rejections are deterministic functions of committed state
+ * (Rule S, validator status, the delegator cap), so honest nodes agree.
+ */
+int apply_delegate(nodus_witness_t *w,
+                    const uint8_t *tx_data, uint32_t tx_len,
+                    uint64_t block_height,
+                    uint64_t committed_fee);
+
 /* Phase 3 / Task 3.2 — finalize a block from N already-applied TXs.
  *
  * Computes state_root via merkle_compute_utxo_root, runs the supply

@@ -87,6 +87,11 @@
 #include "witness/nodus_witness_runtime.h"
 #include "witness/nodus_witness_v2_adapter.h"
 #include "witness/nodus_witness_validator.h"
+#include "witness/nodus_witness_delegation.h" /* O15J Block 2:
+                                       * NODUS_MAX_DELEGATORS_PER_VALIDATOR
+                                       * — the cap under test, taken from
+                                       * its ONE authority so a drifted
+                                       * copy cannot make these pass  */
 #include "witness/nodus_witness_committee.h"   /* carrier v2: learn the
                                         * resolved governing committee  */
 #include "witness/nodus_witness_vset.h"        /* O11 S5: seed the frozen
@@ -6239,15 +6244,31 @@ static int test_system_delegate(void) {
         uint16_t nr = 0;
         static uint8_t res[DNA_EFFECT_MAX_TOTAL_LEN];
         size_t rl = 0;
+        /* O15J Block 2: THREE reads — the delegator COUNT joined the
+         * plan as the per-validator cap's input (rtn_delegate_read_plan).
+         * UNDELEGATE deliberately still plans two; §U/§UD pin that. */
         CHECK(nodus_rt_system_read_plan(&bt[0], &v, 0, &ctx, reqs,
                                         NODUS_RT_MAX_READS, &nr) == 0 &&
-              nr == 2, "D12 DELEGATE plans validator + delegation reads");
+              nr == 3, "D12 DELEGATE plans validator + delegation + "
+                       "delegator-count reads");
         OK();
+        /* the count key is the DELEGATION-tag hash of the VALIDATOR
+         * pubkey — which is exactly the second half of the composite
+         * (delegator, validator) delegation key, so dk90 + 64 pins it
+         * without a second derivation in the test */
         CHECK(reqs[0].op_id == 4 && reqs[0].key_len == 64 &&
               reqs[1].op_id == 5 && reqs[1].key_len == 128 &&
+              reqs[2].op_id == 6 && reqs[2].key_len == 64 &&
               memcmp(reqs[0].key, vk0, 64) == 0 &&
-              memcmp(reqs[1].key, dk90, 128) == 0,
+              memcmp(reqs[1].key, dk90, 128) == 0 &&
+              memcmp(reqs[2].key, dk90 + 64, 64) == 0,
               "D12 the planned keys are the tag-derived row keys"); OK();
+        /* strictly ascending (op_id, key) — the engine REJECTS a plan
+         * that is not (nodus_witness_v2_apply.c read_req_cmp), so a
+         * mis-ordered third read would kill every DELEGATE */
+        CHECK(reqs[0].op_id < reqs[1].op_id &&
+              reqs[1].op_id < reqs[2].op_id,
+              "D12 the three-read plan is strictly ascending"); OK();
         memset(reads, 0, sizeof(reads));
         for (uint16_t r = 0; r < nr; r++)
             CHECK(nodus_witness_v2_read_one(fx.w, &bt[0], &reqs[r],
@@ -6267,6 +6288,373 @@ static int test_system_delegate(void) {
                                    sizeof(res), &rl) == -1,
               "D12 n_signers != 1 must reject"); OK();
     }
+    fx_close(&fx);
+    return 0;
+}
+
+/* ══ 13b. The per-validator delegator CAP — V2 lane (O15J Block 2) ═══
+ *
+ * The epoch snapshot serializes at most NODUS_MAX_DELEGATORS_PER_VALIDATOR
+ * delegators per committee member while writing the validator's FULL
+ * total_delegated (nodus_witness_epoch.c). Before this cap existed a
+ * validator could hold more delegators than the blob can carry, and
+ * every delegator past the bound was unpaid forever with its share
+ * burned — and WHICH ones were dropped came from SQLite's scan order,
+ * because the truncating query has no ORDER BY.
+ *
+ * These tests pin the ADMISSION gate that makes the truncation
+ * unreachable: rtn_delegate_read_plan's third mediated read and the
+ * verdict in rtn_delegate_exec. The legacy half of the same rule lives
+ * in test_delegator_cap.c (apply_delegate). */
+
+/* Seed `n` synthetic delegation rows against validator `val`.
+ *
+ * The delegator pubkeys are FABRICATED, not Dilithium keys: this file
+ * generates 17 keypairs and the cap needs 64+ distinct delegators, so
+ * real keys cannot express the fixture. Nothing here is signed — the
+ * cap's only input is COUNT(*) over validator_hash, which is a property
+ * of the ROWS, not of any signature.
+ *
+ * amount is ZERO on purpose. The cap does not read it, and a zero keeps
+ * validators.total_delegated untouched, so the fixture's supply identity
+ * (g + m - bu == ux + bo + dl + ep) stays true and every other assertion
+ * below keeps its meaning. Seeding a non-zero amount would create
+ * delegated value out of nothing and silently break that identity. */
+static int seed_synth_dels(nodus_witness_t *w, int val, int n,
+                           uint8_t tag) {
+    uint8_t pre[1 + 2592], vh[64], dh[64], dpk[2592];
+    pre[0] = NODUS_TREE_TAG_DELEGATION;
+    memcpy(pre + 1, g_pk[val], 2592);
+    if (qgp_sha3_512(pre, sizeof(pre), vh) != 0) return -1;
+    for (int i = 0; i < n; i++) {
+        memset(dpk, 0, sizeof(dpk));
+        dpk[0] = tag;
+        dpk[1] = (uint8_t)(i >> 8);
+        dpk[2] = (uint8_t)i;
+        memcpy(pre + 1, dpk, 2592);
+        if (qgp_sha3_512(pre, sizeof(pre), dh) != 0) return -1;
+        sqlite3_stmt *st = NULL;
+        if (sqlite3_prepare_v2(w->db,
+                "INSERT INTO delegations (delegator_hash, validator_hash, "
+                "delegator_pubkey, validator_pubkey, amount, "
+                "delegated_at_block) VALUES (?1, ?2, ?3, ?4, 0, 0)",
+                -1, &st, NULL) != SQLITE_OK)
+            return -1;
+        sqlite3_bind_blob(st, 1, dh, 64, SQLITE_TRANSIENT);
+        sqlite3_bind_blob(st, 2, vh, 64, SQLITE_TRANSIENT);
+        sqlite3_bind_blob(st, 3, dpk, 2592, SQLITE_TRANSIENT);
+        sqlite3_bind_blob(st, 4, g_pk[val], 2592, SQLITE_TRANSIENT);
+        int rc = sqlite3_step(st);
+        sqlite3_finalize(st);
+        if (rc != SQLITE_DONE) return -1;
+    }
+    return 0;
+}
+
+/* how many delegation rows reference validator `val`; -1 on error */
+static int64_t synth_del_count(nodus_witness_t *w, int val) {
+    uint8_t pre[1 + 2592], vh[64];
+    pre[0] = NODUS_TREE_TAG_DELEGATION;
+    memcpy(pre + 1, g_pk[val], 2592);
+    if (qgp_sha3_512(pre, sizeof(pre), vh) != 0) return -1;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT COUNT(*) FROM delegations WHERE validator_hash = ?1",
+            -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_blob(st, 1, vh, 64, SQLITE_TRANSIENT);
+    int64_t out = -1;
+    if (sqlite3_step(st) == SQLITE_ROW) out = sqlite3_column_int64(st, 0);
+    sqlite3_finalize(st);
+    return out;
+}
+
+static int test_delegator_cap_v2(void) {
+    fixture_t fx;
+    env_t e;
+    nodus_v2_block_t b;
+    int rc = 0;
+    int s9[1] = { 9 }, s10[1] = { 10 }, s11[1] = { 11 };
+    int s12[1] = { 12 };
+    static uint8_t scall[8192], fcall[8192];
+    const int CAP = NODUS_MAX_DELEGATORS_PER_VALIDATOR;
+
+    CHECK(fx_genesis(&fx, "dlgcap") == 0, "genesis");
+
+    /* ── C1: AT THE CAP ADMITS ───────────────────────────────────────
+     * validator 0 carries CAP-1 delegators; delegator 9 is the one that
+     * takes it to exactly CAP. If the gate were written `>= CAP - 1`
+     * (or the count were read one row early) this commit would fail. */
+    {
+        uint8_t f9[64];
+        CHECK(seed_synth_dels(fx.w, 0, CAP - 1, 0xA0) == 0, "seed 63");
+        CHECK(synth_del_count(fx.w, 0) == CAP - 1,
+              "C1 fixture starts one BELOW the cap"); OK();
+        CHECK(seed_funding(&fx, 9, DLG_FUND, 0xF1, f9) == 0, "fund 9");
+        uint32_t sl = deleg_call_build(scall, sizeof(scall), 9, 0,
+                                       DLG_AMOUNT);
+        uint32_t fl = fund_call(fcall, sizeof(fcall), f9, 9, DLG_CHANGE,
+                                0x71);
+        CHECK(sl && fl, "call");
+        CHECK(two_leg_build(&fx, &e, DNA_SYSRULE_DELEGATE, scall, sl,
+                            DNA_CORERULE_SYSFUND, fcall, fl, FEE_MIN,
+                            s9, 1, s9, 1, NULL) == 0, "build");
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block(&b, 1, &ve, 1);
+        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+              "C1 the delegation that lands EXACTLY ON the cap commits");
+        OK();
+        CHECK(synth_del_count(fx.w, 0) == CAP,
+              "C1 validator 0 now holds exactly CAP delegators"); OK();
+    }
+
+    /* ── C2: ONE OVER REJECTS, and it is a VERDICT ───────────────────
+     * rc == -1 is the whole point: -2 would mean "node fault, do not
+     * vote", which would let anyone stall a witness by delegating to a
+     * full validator. The digest-identical rollback inside apply_reject
+     * proves the refused block left nothing behind. */
+    {
+        uint8_t f10[64];
+        CHECK(seed_funding(&fx, 10, DLG_FUND, 0xF2, f10) == 0, "fund 10");
+        uint32_t sl = deleg_call_build(scall, sizeof(scall), 10, 0,
+                                       DLG_AMOUNT);
+        uint32_t fl = fund_call(fcall, sizeof(fcall), f10, 10, DLG_CHANGE,
+                                0x72);
+        CHECK(sl && fl, "call");
+        CHECK(two_leg_build(&fx, &e, DNA_SYSRULE_DELEGATE, scall, sl,
+                            DNA_CORERULE_SYSFUND, fcall, fl, FEE_MIN,
+                            s10, 1, s10, 1, NULL) == 0, "build");
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block(&b, 2, &ve, 1);
+        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+              "C2 a NEW delegator past the cap must reject as a VERDICT");
+        OK();
+        CHECK(synth_del_count(fx.w, 0) == CAP,
+              "C2 the refused delegation added no row"); OK();
+
+        /* CONTROL: the very same delegator and amount commit against a
+         * validator that is NOT full. Without this leg C2 would also
+         * pass if the fixture had simply broken key 10's funding. */
+        uint32_t sl2 = deleg_call_build(scall, sizeof(scall), 10, 2,
+                                        DLG_AMOUNT);
+        CHECK(sl2, "call");
+        CHECK(two_leg_build(&fx, &e, DNA_SYSRULE_DELEGATE, scall, sl2,
+                            DNA_CORERULE_SYSFUND, fcall, fl, FEE_MIN,
+                            s10, 1, s10, 1, NULL) == 0, "build");
+        nodus_v2_envelope_t ve2 = { e.bytes, e.len };
+        mk_block(&b, 2, &ve2, 1);
+        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+              "C2 CONTROL the same delegator commits on a NON-full "
+              "validator"); OK();
+    }
+
+    /* ── C3: a TOP-UP at the cap still admits ────────────────────────
+     * delegator 9 already owns a row on validator 0 (C1), so this adds
+     * no NEW delegator and the count cannot move. A gate that ignored
+     * dr->present and rejected on the count alone would fail here —
+     * and would permanently freeze every existing delegator's position
+     * the moment a validator filled up. */
+    {
+        uint8_t f9b[64];
+        CHECK(seed_funding(&fx, 9, DLG_FUND, 0xF3, f9b) == 0, "fund 9b");
+        uint32_t sl = deleg_call_build(scall, sizeof(scall), 9, 0,
+                                       DLG_AMOUNT);
+        uint32_t fl = fund_call(fcall, sizeof(fcall), f9b, 9, DLG_CHANGE,
+                                0x73);
+        CHECK(sl && fl, "call");
+        CHECK(two_leg_build(&fx, &e, DNA_SYSRULE_DELEGATE, scall, sl,
+                            DNA_CORERULE_SYSFUND, fcall, fl, FEE_MIN,
+                            s9, 1, s9, 1, NULL) == 0, "build");
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block(&b, 3, &ve, 1);
+        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+              "C3 an EXISTING delegator may top up at the cap"); OK();
+        CHECK(synth_del_count(fx.w, 0) == CAP,
+              "C3 a top-up moves no row count"); OK();
+        {
+            uint8_t dk[128], d[TDEL_REC_LEN];
+            CHECK(deleg_key_of(9, 0, dk) == 0, "key");
+            CHECK(sysrow_read(fx.w, 5, dk, 128, d, TDEL_REC_LEN) == 1,
+                  "row"); OK();
+            CHECK(tbe64(d + TDEL_AMT_OFF) == DLG_AMOUNT * 2,
+                  "C3 the top-up SUMMED into the existing row"); OK();
+        }
+    }
+
+    /* ── C4: SNAPSHOT PROPERTY — the truncating query can no longer be
+     *    ASKED to truncate ──────────────────────────────────────────
+     * This is the property the whole cap exists for. The epoch snapshot
+     * feeds nodus_delegation_list_by_validator a bound of
+     * NODUS_EPOCH_MAX_DELEGS_PER_VAL, which is an ALIAS of the cap; the
+     * assertion is that a validator driven as hard as the chain allows
+     * still fits inside that bound, so the LIMIT never discards a row
+     * and the missing ORDER BY has no set to choose from. */
+    {
+        char sql[256];
+        CHECK(synth_del_count(fx.w, 0) <= (int64_t)CAP,
+              "C4 no validator can exceed the snapshot's capacity"); OK();
+        /* the bound is interpolated from CAP, never a literal 64 — a
+         * hard-coded copy here would keep passing after the production
+         * constant moved, which is the drift this season exists to end */
+        snprintf(sql, sizeof(sql),
+                 "SELECT COUNT(*) FROM (SELECT validator_hash FROM "
+                 "delegations GROUP BY validator_hash HAVING COUNT(*) > "
+                 "%d)", CAP);
+        CHECK(q1(fx.w, sql) == 0,
+              "C4 NO validator anywhere in the table is over the cap");
+        OK();
+    }
+
+    /* ── C5: the COUNT read is FAIL-CLOSED, at the hook boundary ─────
+     * The count always ANSWERS (0 delegations is a VALUE, not an absent
+     * row), so an absent or mis-sized result means the adapter broke its
+     * own contract on THIS node — a node FAULT (-2), never a verdict and
+     * never "absent, therefore zero, therefore admit". Driven at the
+     * hook because the production adapter cannot be made to lie. */
+    {
+        size_t n = 0;
+        const nodus_domain_runtime_t *bt = nodus_runtime_builtin_table(&n);
+        uint8_t f11[64];
+        CHECK(bt && n == 2, "builtin table");
+        CHECK(seed_funding(&fx, 11, DLG_FUND, 0xF4, f11) == 0, "fund 11");
+        uint32_t sl = deleg_call_build(scall, sizeof(scall), 11, 0,
+                                       DLG_AMOUNT);
+        uint32_t fl = fund_call(fcall, sizeof(fcall), f11, 11, DLG_CHANGE,
+                                0x74);
+        CHECK(sl && fl, "call");
+        CHECK(two_leg_build(&fx, &e, DNA_SYSRULE_DELEGATE, scall, sl,
+                            DNA_CORERULE_SYSFUND, fcall, fl, FEE_MIN,
+                            s11, 1, s11, 1, NULL) == 0, "build");
+        dna_env_view_t v;
+        CHECK(dna_env_decode(e.bytes, e.len, &v) == 0, "decode");
+        nodus_rt_auth_verdict_t av;
+        memset(&av, 0, sizeof(av));
+        av.n_signers = 1;
+        CHECK(qgp_sha3_512(g_pk[11], 2592, av.signer_fp[0]) == 0, "fp");
+        static uint8_t iid[64];
+        memset(iid, 0x5C, 64);
+        nodus_rt_exec_ctx_t ctx;
+        memset(&ctx, 0, sizeof(ctx));
+        ctx.chain_id = fx.chain_id;
+        ctx.global_height = 4;
+        ctx.intent_id = iid;
+        ctx.wire_id = iid;
+        ctx.auth = &av;
+        nodus_rt_read_req_t reqs[NODUS_RT_MAX_READS];
+        nodus_rt_read_res_t reads[NODUS_RT_MAX_READS];
+        uint16_t nr = 0;
+        static uint8_t res[DNA_EFFECT_MAX_TOTAL_LEN];
+        size_t rl = 0;
+        CHECK(nodus_rt_system_read_plan(&bt[0], &v, 0, &ctx, reqs,
+                                        NODUS_RT_MAX_READS, &nr) == 0 &&
+              nr == 3, "C5 DELEGATE plans three reads"); OK();
+        memset(reads, 0, sizeof(reads));
+        for (uint16_t r = 0; r < nr; r++)
+            CHECK(nodus_witness_v2_read_one(fx.w, &bt[0], &reqs[r],
+                                            &reads[r])
+                      == NODUS_ADAPTER_OK, "read");
+        /* the honest round-trip first, so the negatives below are real
+         * differences and not a broken harness: validator 0 is FULL and
+         * key 11 owns no row, so the honest answer is the cap VERDICT */
+        CHECK(reads[2].present == 1 && reads[2].value_len == 8,
+              "C5 the count read answers with a value"); OK();
+        CHECK(tbe64(reads[2].value) == (uint64_t)CAP,
+              "C5 the observed count IS the cap"); OK();
+        CHECK(nodus_rt_system_exec(&bt[0], &v, 0, &ctx, reads, nr, res,
+                                   sizeof(res), &rl) == -1,
+              "C5 a full validator is a VERDICT at the hook too"); OK();
+        /* ABSENT count ⇒ node fault, NOT "zero, therefore admit" */
+        {
+            nodus_rt_read_res_t r2[NODUS_RT_MAX_READS];
+            memcpy(r2, reads, sizeof(r2));
+            r2[2].present = 0;
+            r2[2].value_len = 0;
+            CHECK(nodus_rt_system_exec(&bt[0], &v, 0, &ctx, r2, nr, res,
+                                       sizeof(res), &rl) == -2,
+                  "C5 an ABSENT delegator count is a node FAULT"); OK();
+        }
+        /* mis-sized count ⇒ node fault as well */
+        {
+            nodus_rt_read_res_t r2[NODUS_RT_MAX_READS];
+            memcpy(r2, reads, sizeof(r2));
+            r2[2].value_len = 7;
+            CHECK(nodus_rt_system_exec(&bt[0], &v, 0, &ctx, r2, nr, res,
+                                       sizeof(res), &rl) == -2,
+                  "C5 a mis-sized delegator count is a node FAULT"); OK();
+        }
+        /* and with a count BELOW the cap the very same envelope is
+         * accepted — the gate reads the count, nothing else */
+        {
+            nodus_rt_read_res_t r2[NODUS_RT_MAX_READS];
+            memcpy(r2, reads, sizeof(r2));
+            for (int i = 0; i < 8; i++)
+                r2[2].value[i] =
+                    (uint8_t)(((uint64_t)(CAP - 1)) >> (56 - 8 * i));
+            CHECK(nodus_rt_system_exec(&bt[0], &v, 0, &ctx, r2, nr, res,
+                                       sizeof(res), &rl) == 0,
+                  "C5 one below the cap the SAME envelope is accepted");
+            OK();
+        }
+        /* a plan-shaped 2-read call is the adapter breaking its own
+         * contract — fault, never a silent 2-read fallback that would
+         * skip the cap entirely */
+        CHECK(nodus_rt_system_exec(&bt[0], &v, 0, &ctx, reads, 2, res,
+                                   sizeof(res), &rl) == -2,
+              "C5 a 2-read DELEGATE call is a node FAULT"); OK();
+    }
+
+    /* ── C6: INTRA-BLOCK — two NEW delegators in ONE block cannot both
+     *    slip past a validator sitting at CAP-1 ────────────────────────
+     * The engine applies each leg's effects before the next envelope's
+     * mediated reads run (nodus_witness_v2_apply.c), so envelope 2 must
+     * observe envelope 1's row. If effects were instead batched to block
+     * end, BOTH envelopes would read CAP-1, both would commit, and the
+     * validator would end at CAP+1 with the snapshot silently truncating
+     * — exactly the bug. This is the test that would catch that. */
+    {
+        uint8_t f11[64], f12[64];
+        CHECK(seed_synth_dels(fx.w, 1, CAP - 1, 0xB0) == 0, "seed 63");
+        CHECK(synth_del_count(fx.w, 1) == CAP - 1,
+              "C6 validator 1 starts one below the cap"); OK();
+        CHECK(seed_funding(&fx, 11, DLG_FUND, 0xF5, f11) == 0, "fund 11");
+        CHECK(seed_funding(&fx, 12, DLG_FUND, 0xF6, f12) == 0, "fund 12");
+        /* static: env_t is a 128 KB inline buffer and this block needs
+         * TWO live at once alongside the function's own `e` */
+        static env_t e1, e2;
+        uint32_t sl1 = deleg_call_build(scall, sizeof(scall), 11, 1,
+                                        DLG_AMOUNT);
+        uint32_t fl1 = fund_call(fcall, sizeof(fcall), f11, 11,
+                                 DLG_CHANGE, 0x75);
+        CHECK(sl1 && fl1, "call");
+        CHECK(two_leg_build(&fx, &e1, DNA_SYSRULE_DELEGATE, scall, sl1,
+                            DNA_CORERULE_SYSFUND, fcall, fl1, FEE_MIN,
+                            s11, 1, s11, 1, NULL) == 0, "build");
+        uint32_t sl2 = deleg_call_build(scall, sizeof(scall), 12, 1,
+                                        DLG_AMOUNT);
+        uint32_t fl2 = fund_call(fcall, sizeof(fcall), f12, 12,
+                                 DLG_CHANGE, 0x76);
+        CHECK(sl2 && fl2, "call");
+        CHECK(two_leg_build(&fx, &e2, DNA_SYSRULE_DELEGATE, scall, sl2,
+                            DNA_CORERULE_SYSFUND, fcall, fl2, FEE_MIN,
+                            s12, 1, s12, 1, NULL) == 0, "build");
+        nodus_v2_envelope_t two[2] = { { e1.bytes, e1.len },
+                                       { e2.bytes, e2.len } };
+        mk_block(&b, 4, two, 2);
+        CHECK(apply_reject(fx.w, &b, &rc) == 0 && rc == -1,
+              "C6 two NEW delegators in one block must reject the block");
+        OK();
+        CHECK(synth_del_count(fx.w, 1) == CAP - 1,
+              "C6 the refused block added NO rows"); OK();
+        /* and envelope 1 ALONE commits — the rejection above was the
+         * second delegator crossing the cap, not a broken pair */
+        nodus_v2_envelope_t one = { e1.bytes, e1.len };
+        mk_block(&b, 4, &one, 1);
+        CHECK(nodus_witness_v2_apply_block(fx.w, &b) == 0,
+              "C6 envelope 1 alone commits"); OK();
+        CHECK(synth_del_count(fx.w, 1) == CAP,
+              "C6 validator 1 stops exactly at the cap"); OK();
+    }
+
     fx_close(&fx);
     return 0;
 }
@@ -8646,6 +9034,7 @@ int main(void) {
     if (test_system_stake() != 0) return 1;
     if (test_o11_hook_pins() != 0) return 1;
     if (test_system_delegate() != 0) return 1;
+    if (test_delegator_cap_v2() != 0) return 1;
     if (test_system_unstake() != 0) return 1;
     if (test_system_undelegate() != 0) return 1;
     if (test_o11_fault_matrix() != 0) return 1;

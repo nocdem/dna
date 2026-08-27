@@ -292,6 +292,17 @@
 #include "witness/nodus_witness.h"
 #include "witness/nodus_witness_runtime.h"
 #include "witness/nodus_witness_v2_adapter.h"
+#include "witness/nodus_witness_delegation.h"
+                            /* NODUS_MAX_DELEGATORS_PER_VALIDATOR — the
+                             * ONE authority for the per-validator
+                             * delegator cap. This file already binds the
+                             * `delegations` table directly (the
+                             * rtn_sys_del_fetch / rtn_sys_delegcnt_fetch
+                             * hooks below), so taking the module's own
+                             * policy constant from its header is the
+                             * honest coupling; a second literal 64 here
+                             * is exactly the drift that produced the bug
+                             * this cap fixes (O15J Block 2). */
 #include "nodus/nodus_chain_config.h"
 
 #include "dnac/dnac.h"                 /* DNAC_MIN_FEE_RAW, DNAC_CFG_*   */
@@ -2794,9 +2805,16 @@ static int rtn_stake_read_plan(const dna_env_view_t *env,
     return 0;
 }
 
-/* DELEGATE / UNDELEGATE (O11) share ONE read plan: the target validator
- * row and the (delegator, validator) delegation row. Ascending
- * (op_id, key) by construction: op 4 before op 5. */
+/* UNDELEGATE (O11) read plan: the target validator row and the
+ * (delegator, validator) delegation row. Ascending (op_id, key) by
+ * construction: op 4 before op 5.
+ *
+ * O15J Block 2: DELEGATE used to SHARE this plan. It no longer does —
+ * it needs a third read (the delegator COUNT) that UNDELEGATE has no
+ * use for, and handing UNDELEGATE a read it does not consume would
+ * trip its own `n_reads != 2` contract in rtn_undelegate_exec, i.e.
+ * turn every UNDELEGATE into a node fault. Splitting the plans is what
+ * keeps that op byte-for-byte unchanged; see rtn_delegate_read_plan. */
 static int rtn_deleg_pair_read_plan(const dna_env_view_t *env,
                                     uint16_t leg_index,
                                     nodus_rt_read_req_t *reqs_out,
@@ -2820,6 +2838,57 @@ static int rtn_deleg_pair_read_plan(const dna_env_view_t *env,
                       reqs_out[1].key) != 0)
         return -2;
     *n_out = 2;
+    return 0;
+}
+
+/* DELEGATE (O15J Block 2) read plan: UNDELEGATE's two reads PLUS the
+ * target validator's delegator COUNT, which is the input to the
+ * per-validator cap (NODUS_MAX_DELEGATORS_PER_VALIDATOR).
+ *
+ * Three reads, ascending (op_id, key) by construction: op 4 (validator
+ * row) before op 5 (the delegation row) before op 6 (the count). The
+ * engine enforces STRICT ascent over the plan
+ * (nodus_witness_v2_apply.c read_req_cmp, which compares op_id first),
+ * so the op ids alone order this list and no key comparison is reached.
+ *
+ * The count key is the DELEGATION-tag hash of the validator pubkey —
+ * a different derivation from reqs_out[0]'s VALIDATOR-tag hash of the
+ * same pubkey, exactly as rtn_unstake_read_plan already pairs them.
+ *
+ * COST NOTE, deterministic and identical on every node: DELEGATE now
+ * charges one additional w_read (nodus_witness_v2_apply.c
+ * dna_meter_charge_read, one charge per executed read). That is a
+ * uniform +1 read for every DELEGATE on every witness, not a
+ * node-local difference. */
+static int rtn_delegate_read_plan(const dna_env_view_t *env,
+                                  uint16_t leg_index,
+                                  nodus_rt_read_req_t *reqs_out,
+                                  uint16_t max_reqs, uint16_t *n_out) {
+    rtn_deleg_call_t c;
+    if (rtn_sys_stake_shape(env, leg_index) != 0) return -1;
+    if (rtn_deleg_parse(env->buf + env->call_off[leg_index],
+                        env->leg[leg_index].call_len, &c) != 0)
+        return -1;
+    if (max_reqs < 3) return -1;
+    memset(&reqs_out[0], 0, sizeof(reqs_out[0]));
+    reqs_out[0].op_id = RTN_SYS_OP_VAL;
+    reqs_out[0].key_len = (uint16_t)RTN_VAL_KEY_LEN;
+    if (rtn_tag_key(NODUS_TREE_TAG_VALIDATOR, c.validator_pubkey,
+                    reqs_out[0].key) != 0)
+        return -2;                       /* hash backend: NODE fault     */
+    memset(&reqs_out[1], 0, sizeof(reqs_out[1]));
+    reqs_out[1].op_id = RTN_SYS_OP_DELEG;
+    reqs_out[1].key_len = (uint16_t)RTN_DEL_KEY_LEN;
+    if (rtn_deleg_key(c.delegator_pubkey, c.validator_pubkey,
+                      reqs_out[1].key) != 0)
+        return -2;
+    memset(&reqs_out[2], 0, sizeof(reqs_out[2]));
+    reqs_out[2].op_id = RTN_SYS_OP_DELEGCNT;
+    reqs_out[2].key_len = 64;
+    if (rtn_tag_key(NODUS_TREE_TAG_DELEGATION, c.validator_pubkey,
+                    reqs_out[2].key) != 0)
+        return -2;
+    *n_out = 3;
     return 0;
 }
 
@@ -2889,6 +2958,11 @@ int nodus_rt_system_read_plan(const nodus_domain_runtime_t *rt,
         return rtn_stake_read_plan(env, leg_index, reqs_out, max_reqs,
                                    n_out);
     case DNA_SYSRULE_DELEGATE:
+        /* O15J Block 2: DELEGATE reads the delegator COUNT too — it is
+         * the only one of the pair that can ADD a delegator, so it is
+         * the only one the per-validator cap gates. */
+        return rtn_delegate_read_plan(env, leg_index, reqs_out,
+                                      max_reqs, n_out);
     case DNA_SYSRULE_UNDELEGATE:
         return rtn_deleg_pair_read_plan(env, leg_index, reqs_out,
                                         max_reqs, n_out);
@@ -3109,6 +3183,13 @@ static int rtn_del_rec_ok(const uint8_t *v, const uint8_t *key);
  * chain accepts; importing a client-side floor would reject
  * transactions the live lane commits.
  *
+ * ADDED, and NOT inherited from the legacy source: the per-validator
+ * delegator cap (O15J Block 2, NODUS_MAX_DELEGATORS_PER_VALIDATOR). The
+ * legacy lane never had it — that absence is the bug, not the baseline,
+ * and it is being closed in BOTH lanes in the same change (see
+ * apply_delegate). Labelled here so the "semantics preserved from
+ * apply_delegate" claim above stays literally true of everything else.
+ *
  * @return 0 / -1 verdict / -2 node fault.
  */
 static int rtn_delegate_exec(const dna_env_view_t *env, uint16_t leg_index,
@@ -3136,8 +3217,12 @@ static int rtn_delegate_exec(const dna_env_view_t *env, uint16_t leg_index,
         return -1;                       /* :1374-1383                   */
 
     /* ── mediated reads ─────────────────────────────────────────────── */
-    if (n_reads != 2 || !reads) return -2;
-    const nodus_rt_read_res_t *vr = &reads[0], *dr = &reads[1];
+    /* THREE since O15J Block 2 (rtn_delegate_read_plan): the third is
+     * the delegator COUNT the per-validator cap is decided from. A plan
+     * that hands this exec any other number broke its own contract. */
+    if (n_reads != 3 || !reads) return -2;
+    const nodus_rt_read_res_t *vr = &reads[0], *dr = &reads[1],
+                              *cr = &reads[2];
     if (!vr->present) return -1;         /* unknown validator            */
     if (vr->value_len != RTN_VAL_REC_LEN) return -2;
     if (memcmp(vr->value + RTN_VAL_PK_OFF, c.validator_pubkey,
@@ -3170,6 +3255,37 @@ static int rtn_delegate_exec(const dna_env_view_t *env, uint16_t leg_index,
         if (dr->value_len != RTN_DEL_REC_LEN) return -2;
         if (!rtn_del_rec_ok(dr->value, dkey)) return -1;
     }
+
+    /* ── the per-validator delegator cap (O15J Block 2) ──────────────
+     *
+     * The epoch snapshot carries at most
+     * NODUS_MAX_DELEGATORS_PER_VALIDATOR delegators per committee member
+     * while writing the validator's FULL total_delegated
+     * (nodus_witness_epoch.c). A validator holding more delegators than
+     * the blob can carry would have every delegator past the cap unpaid
+     * forever, its share burned. Capping the ROW COUNT at admission is
+     * what makes the snapshot's truncation unreachable.
+     *
+     * FAIL-CLOSED, and a FAULT rather than a verdict: the count always
+     * ANSWERS — 0 delegations is a VALUE, not an absent row
+     * (rtn_sys_delegcnt_fetch / rtn_sys_read set present=1
+     * unconditionally, and a failed COUNT becomes ERR_STORAGE_FAULT
+     * which the engine turns into -2 before this exec is ever reached).
+     * So an absent or mis-sized count here means the adapter broke its
+     * own contract on THIS node — never a statement about committed
+     * state, therefore never a verdict. Same shape as rtn_unstake_exec's
+     * Rule A read.
+     *
+     * A TOP-UP is exempt: dr->present means this delegator ALREADY has a
+     * row, so the count does not move and the snapshot still holds
+     * everyone. Only a CREATE — a delegator with no row yet — can push
+     * the count past the cap, and only that path is gated. This is the
+     * VERDICT class: the count is a deterministic function of committed
+     * state, so every honest node reaches the same answer. */
+    if (!cr->present || cr->value_len != 8) return -2;
+    if (!dr->present &&
+        rtn_get64(cr->value) >= (uint64_t)NODUS_MAX_DELEGATORS_PER_VALIDATOR)
+        return -1;                       /* validator is full            */
 
     /* ── validator totals: built FROM the observed record, so every
      *    other column is carried through byte-for-byte ──────────────── */

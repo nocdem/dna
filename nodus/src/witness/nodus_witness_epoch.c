@@ -252,9 +252,28 @@ int nodus_witness_epoch_delete(nodus_witness_t *w,
  * than 64 delegators has its FULL total_delegated written into the blob
  * while only 64 delegators appear in it. Settlement divides by the full
  * figure, the excluded delegators are never paid, and their share falls
- * into the inner-dust burn. Recorded as an OPEN HIGH in nodus/BUGS.md;
- * the agreed fix is to enforce this cap for real at admission. */
-#define NODUS_EPOCH_MAX_DELEGS_PER_VAL 64
+ * into the inner-dust burn.
+ *
+ * ⚠ FIXED 2026-08-27 (O15J Block 2). The bound below is no longer a
+ * private 64: it is an ALIAS of NODUS_MAX_DELEGATORS_PER_VALIDATOR
+ * (nodus_witness_delegation.h), which is now ENFORCED AT ADMISSION —
+ * a DELEGATE that would introduce a NEW delegator to an already-full
+ * validator is rejected in both lanes (apply_delegate in
+ * nodus_witness_bft.c, rtn_delegate_exec in nodus_witness_rt_native.c).
+ * So the LIMIT below can no longer be reached by a validator's real row
+ * count, which is what makes the missing ORDER BY unreachable rather
+ * than merely unlikely: there is no over-cap set left to choose from.
+ * The alias is deliberate — the snapshot's capacity and the admission
+ * cap must be ONE number, or the gap between two 64s reopens exactly
+ * this bug. See the header docblock for why the per-DELEGATOR constant
+ * DNAC_MAX_DELEGATIONS_PER_DELEGATOR was NOT reused.
+ *
+ * RESIDUAL, stated honestly: a chain that ALREADY carried an over-cap
+ * validator before this gate existed keeps that row count — admission
+ * cannot retroactively remove delegators — and for that one validator
+ * the unordered truncation above still applies. Unreachable on a chain
+ * capped from genesis. */
+#define NODUS_EPOCH_MAX_DELEGS_PER_VAL NODUS_MAX_DELEGATORS_PER_VALIDATOR
 
 static void be16_into(uint16_t v, uint8_t out[2]) {
     out[0] = (uint8_t)(v >> 8);

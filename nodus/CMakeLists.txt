@@ -1549,6 +1549,13 @@ register_witness_test(test_block_txs_get)
 # "My Delegations" query — DB layer test backing dnac_delegations T3 RPC
 register_witness_test(test_witness_delegations_query)
 
+# O15J Block 2 — the per-validator delegator CAP, LEGACY lane.
+# Drives apply_delegate directly through the NODUS_WITNESS_INTERNAL_API
+# surface (the apply_tx_to_state precedent). The Ledger V2 half of the
+# same rule is test_delegator_cap() inside test_v2_native, which owns the
+# envelope fixture.
+register_witness_test(test_delegator_cap)
+
 # Phase 12 / Task 12.6 — spend_result preimage layout tests
 add_executable(test_spend_preimage tests/test_spend_preimage.c)
 target_link_libraries(test_spend_preimage nodus dsa nodus crypto)
