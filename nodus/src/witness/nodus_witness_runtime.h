@@ -648,6 +648,44 @@ int nodus_rt_system_exec(const nodus_domain_runtime_t *rt,
 extern const struct nodus_domain_adapter NODUS_RT_CORE_ADAPTER;
 extern const struct nodus_domain_adapter NODUS_RT_SYSTEM_ADAPTER;
 
+/* ── O15J Faz 2 — the CORE UTXO record, exported ─────────────────────
+ * The exact byte length of the canonical CORE UTXO effect value. The
+ * LAYOUT stays private to nodus_witness_rt_native.c (its offsets are that
+ * adapter's business); what an engine-internal producer needs is the size
+ * of the buffer it hands to the builder below. A _Static_assert in the .c
+ * pins this name to the adapter's own RTN_UTXO_REC_LEN, so the two cannot
+ * drift apart silently. */
+#define NODUS_RT_CORE_UTXO_REC_LEN 284u
+
+/**
+ * Build ONE canonical CORE UTXO CREATE effect from explicit fields.
+ *
+ * For ENGINE-INTERNAL producers of CORE UTXOs that have no envelope leg
+ * to derive the record from — today: the epoch settlement
+ * (nodus_witness_v2_econ.c). The op id, the mutation kind, the
+ * precondition (PRE_ABSENT) and the two lengths are the RUNTIME's, never
+ * the caller's; only the row's data fields are supplied. That is what
+ * keeps ONE encoder of the 284-byte record in the tree: a settlement UTXO
+ * and a spend output are byte-identical in shape by construction, not by
+ * a comment claiming they are.
+ *
+ * `value` must point at NODUS_RT_CORE_UTXO_REC_LEN writable bytes and
+ * must OUTLIVE the effect and any view decoded from its encoding
+ * (effect_wire.h LIFETIME RULE). `owner_fp_hex` is exactly 128
+ * lowercase-hex characters and is never read past 128.
+ *
+ * @return 0 / -1 on a NULL argument.
+ */
+int nodus_rt_core_utxo_create_eff(dna_effect_in_t *eff, uint8_t *value,
+                                  const uint8_t nullifier[64],
+                                  const char *owner_fp_hex,
+                                  uint64_t amount,
+                                  const uint8_t token_id[64],
+                                  const uint8_t tx_hash[64],
+                                  uint32_t output_index,
+                                  uint64_t block_height,
+                                  uint64_t unlock_block);
+
 #ifdef __cplusplus
 }
 #endif

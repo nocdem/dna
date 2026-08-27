@@ -230,9 +230,30 @@ int nodus_witness_epoch_delete(nodus_witness_t *w,
 /* ── Stage D.1 — apply_epoch_snapshot ──────────────────────────────── */
 
 /* Max delegations per committee member we serialize into the snapshot.
- * Matches STAKE rule G cap so the snapshot is bounded without a DB
+ *
+ * ⚠ CORRECTED 2026-08-27 (O15J review R2-F2). This comment used to read:
+ * "Matches STAKE rule G cap so the snapshot is bounded without a DB
  * count-first scan. Over-cap rows are silently truncated; the sort
- * ORDER BY guarantees deterministic truncation set. */
+ * ORDER BY guarantees deterministic truncation set." BOTH claims were
+ * false, and the second was load-bearing for a determinism argument:
+ *
+ *   1. THERE IS NO `ORDER BY`. The query is
+ *      "... FROM delegations WHERE %s = ? LIMIT ?"
+ *      (nodus_witness_delegation.c). The qsort below runs AFTER the
+ *      LIMIT, so it sorts the SURVIVORS, not the selection — which set
+ *      survives is index-scan order.
+ *   2. "STAKE rule G cap" names nothing that exists here. The only 64 in
+ *      the tree is DNAC_MAX_DELEGATIONS_PER_DELEGATOR
+ *      (dnac/include/dnac/dnac.h) — per DELEGATOR, not per validator —
+ *      and grep finds ZERO enforcement of it. Nothing bounds a
+ *      validator's delegator count.
+ *
+ * Real consequence, deterministic and not a race: a validator with more
+ * than 64 delegators has its FULL total_delegated written into the blob
+ * while only 64 delegators appear in it. Settlement divides by the full
+ * figure, the excluded delegators are never paid, and their share falls
+ * into the inner-dust burn. Recorded as an OPEN HIGH in nodus/BUGS.md;
+ * the agreed fix is to enforce this cap for real at admission. */
 #define NODUS_EPOCH_MAX_DELEGS_PER_VAL 64
 
 static void be16_into(uint16_t v, uint8_t out[2]) {

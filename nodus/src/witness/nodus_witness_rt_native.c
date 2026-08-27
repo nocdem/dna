@@ -983,6 +983,14 @@ static int rtn_sys_stake_auth(const dna_env_view_t *env, uint16_t leg_index,
  * nodus_witness_merkle.c:136) plus the two spendability/provenance
  * columns; created_at is deliberately excluded (wall-clock audit). */
 #define RTN_UTXO_REC_LEN      284u
+/* O15J Faz 2 — the SAME length, exported so an engine-internal producer
+ * of CORE UTXOs (the epoch settlement) can size its value buffer against
+ * this runtime's own authority instead of a copied literal that could
+ * drift out of step with the layout above. The assert is the anti-drift
+ * proof: the two names can never disagree. */
+_Static_assert(NODUS_RT_CORE_UTXO_REC_LEN == RTN_UTXO_REC_LEN,
+               "the exported CORE UTXO record length must equal the "
+               "adapter's own RTN_UTXO_REC_LEN");
 #define RTN_UTXO_OWNER_OFF    0u
 #define RTN_UTXO_AMOUNT_OFF   128u
 #define RTN_UTXO_TOKEN_OFF    136u
@@ -1453,6 +1461,58 @@ static void rtn_utxo_create_eff(dna_effect_in_t *eff, uint8_t *v,
     eff->hdr.value_len = RTN_UTXO_REC_LEN;
     eff->key = out_id;
     eff->value = v;
+}
+
+/* O15J Faz 2 — the SAME canonical CORE UTXO CREATE effect, built from
+ * EXPLICIT fields instead of a spend leg's output record.
+ *
+ * The epoch settlement (nodus_witness_v2_econ.c) is an ENGINE-internal
+ * producer of CORE UTXOs: it has no envelope, no leg and no intent_id, so
+ * it cannot go through rtn_utxo_create_eff — but it must write rows that
+ * are byte-identical in SHAPE to every other CORE UTXO, or the CORE state
+ * root would depend on which producer wrote the row. Sharing this builder
+ * (and the offsets above) is what makes that structural rather than
+ * asserted: there is ONE encoder of the 284-byte record in the tree.
+ *
+ * Every field is the caller's, deliberately: settlement's tx_hash is the
+ * V1 "settlement" digest and its unlock_block is 0, neither of which this
+ * runtime can derive. What the runtime still OWNS is the op id, the kind,
+ * the precondition and the two lengths — the parts a caller must not be
+ * able to choose.
+ *
+ * `value` must be NODUS_RT_CORE_UTXO_REC_LEN bytes and must outlive the
+ * effect (effect_wire.h LIFETIME RULE). `owner_fp_hex` is exactly 128
+ * lowercase-hex chars, NOT NUL-terminated here.
+ *
+ * @return 0 / -1 on a NULL argument. */
+int nodus_rt_core_utxo_create_eff(dna_effect_in_t *eff, uint8_t *value,
+                                  const uint8_t nullifier[64],
+                                  const char *owner_fp_hex,
+                                  uint64_t amount,
+                                  const uint8_t token_id[64],
+                                  const uint8_t tx_hash[64],
+                                  uint32_t output_index,
+                                  uint64_t block_height,
+                                  uint64_t unlock_block) {
+    if (!eff || !value || !nullifier || !owner_fp_hex || !token_id ||
+        !tx_hash)
+        return -1;
+    memset(eff, 0, sizeof(*eff));
+    memcpy(value + RTN_UTXO_OWNER_OFF, owner_fp_hex, 128);
+    rtn_put64(value + RTN_UTXO_AMOUNT_OFF, amount);
+    memcpy(value + RTN_UTXO_TOKEN_OFF, token_id, 64);
+    memcpy(value + RTN_UTXO_TXH_OFF, tx_hash, 64);
+    rtn_put32(value + RTN_UTXO_OIDX_OFF, output_index);
+    rtn_put64(value + RTN_UTXO_BH_OFF, block_height);
+    rtn_put64(value + RTN_UTXO_UNLOCK_OFF, unlock_block);
+    eff->hdr.op_id = RTN_CORE_OP_UTXO;
+    eff->hdr.effect_kind = DNA_EFFECT_CREATE;
+    eff->hdr.precond_tag = DNA_EFFECT_PRE_ABSENT;
+    eff->hdr.key_len = 64;
+    eff->hdr.value_len = RTN_UTXO_REC_LEN;
+    eff->key = nullifier;
+    eff->value = value;
+    return 0;
 }
 
 /* Append the ONE burned-counter SET, bound to the observed pre-state

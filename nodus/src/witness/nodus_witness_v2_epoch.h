@@ -42,28 +42,67 @@
  *      and is a stable total key on every node), bounded by
  *      DNAC_MAX_VALIDATORS. Per graduate, in the legacy order
  *      (bft.c:2465-2560): release UTXO → validators row → active_count.
- *   3. RULE N (liveness / AUTO_RETIRED) — DELIBERATELY NOT MIGRATED.
- *      See the labelled section below.
+ *   2b. EPOCH SETTLEMENT (O15J Faz 2) — nodus_witness_v2_settlement_apply
+ *      drains the ENDED epoch's pool into CORE payout UTXOs and burn.
+ *      Contract and every V1 anchor: nodus_witness_v2_econ.h.
+ *   3. RULE N (liveness / AUTO_RETIRED) — MIGRATED by O15C; see the
+ *      labelled section below.
  *   4. BOUNDARY FLIPS — nodus_witness_vset_apply_boundary_flips(w, H).
  *   5. NEXT SNAPSHOT — nodus_witness_vset_commit_next(w, H).
  *
- * NOT done here, deliberately: no epoch_state mutation. Reward accrual
- * and push-settlement are OUT of the O12 scope; the epoch_state table is
- * left byte-untouched by this module.
+ * ── WHY SETTLEMENT SITS AT 2b AND NOT AFTER RULE N ──────────────────
+ * V1 runs its settlement AFTER the whole boundary transition
+ * (bft.c:3737, transitions at :3594) and resets the per-epoch
+ * signed-block counters at settlement's own tail (bft.c:3350-3360).
+ * The V2 lane cannot copy that position: when O15C transplanted Rule N
+ * it also brought the counter reset along (nodus_witness_v2_epoch.c
+ * :611-622, step d), because at the time nothing else on this lane would
+ * have performed it. Settlement's attendance gate READS that very
+ * counter, so running it after Rule N would read all zeros and burn
+ * every honest validator's share, every epoch, on every node.
  *
- * ── RULE N: NOT MIGRATED (labelled, not forgotten) ──────────────────
+ * Placing it at 2b restores V1's INPUTS exactly: the counters settlement
+ * reads are the ones the epoch actually accumulated, and Rule N's reset
+ * still lands one step later inside the same transaction. Nothing else
+ * is order-sensitive across the two — Rule N reads `last_signed_block`
+ * and `consecutive_missed_epochs`, neither of which settlement writes,
+ * and settlement reads a committed snapshot blob plus that counter,
+ * neither of which Rule N's other statements touch.
+ *
+ * ── THE OTHER HALF OF THE ARGUMENT (review R1-C7) ───────────────────
+ * The paragraph above justifies settlement ↔ Rule N. It does NOT cover
+ * settlement ↔ EMISSION, which the port also inverts: V1 mints before
+ * it settles (bft.c emission block, then :3737); here settlement runs
+ * at boundary step 2b and emission at apply phase 6f, after it.
+ *
+ * That inversion is safe, but NOT for the reason one would reach for
+ * first. `epoch_state` is genuinely key-disjoint — settlement drains and
+ * deletes key H−E while emission accrues into key H, and E > 0. But
+ * `supply_tracking` is NOT: both write the SAME id = 1 row
+ * (nodus_witness_db.c, the add_minted and add_burned UPDATEs). The
+ * inversion survives there on COMMUTATIVITY, not disjointness:
+ *
+ *   - the two UPDATEs touch DISJOINT COLUMNS (total_minted vs
+ *     total_burned) plus a commutative ±current_supply;
+ *   - both are unguarded additive updates — no clamp, no underflow
+ *     branch, so neither has an order-sensitive path;
+ *   - add_minted never touches last_tx_hash / last_sequence;
+ *   - and NOTHING between them reads current_supply: Rule N, the
+ *     boundary flips and vset_commit_next touch only validators,
+ *     validator_stats and validator_set_snapshots. The supply gate is
+ *     phase 7, after both.
+ *
+ * If this ordering is ever revisited, THAT is the argument to re-check —
+ * the epoch-key split is the easy half and it is not the one carrying
+ * the weight.
+ *
+ * ── RULE N: MIGRATED (O15C) ─────────────────────────────────────────
  * The legacy boundary's third transition (liveness-based AUTO_RETIRED,
  * bft.c:2559-2660) reads the per-validator attendance watermark
- * `last_signed_block`, which is written EXCLUSIVELY by the live BFT
- * commit path (nodus_witness_record_attendance, called after cert_store).
- * The inactive V2 engine has no block-signature evidence at all — it
- * never sees a certificate — so it has NO SOURCE for that watermark.
- * Migrating the rule would mean inventing an attendance oracle, which is
- * exactly the class of fabrication this tree forbids. Rule N is
- * therefore DEFERRED to the live-integration season, when the V2 engine
- * is wired behind the real BFT commit path and the watermark exists.
- * Until then the legacy lane owns Rule N and this module does not touch
- * `consecutive_missed_epochs` or `last_signed_block`.
+ * `last_signed_block`. O12 deferred it because the V2 lane had no writer
+ * for that watermark; O15C supplied one
+ * (nodus_witness_v2_record_attendance, below), so the rule now runs here
+ * with the legacy semantics, resolved through the committed snapshot.
  *
  * ── ACTIVATION OBLIGATION 1: legacy-malformed validator rows ────────
  * `validators` is SHARED with the live legacy lane. A row whose
@@ -214,7 +253,14 @@ typedef enum {
     /* O15C — APPENDED (values above are pinned by shipped tests; the
      * stage runs BETWEEN graduation and the flips in execution order,
      * the O15B enum-append discipline). */
-    NODUS_V2_EPST_RULE_N          = 8   /* Rule N settlement applied     */
+    NODUS_V2_EPST_RULE_N          = 8,  /* Rule N settlement applied     */
+    /* O15J Faz 2 — APPENDED for the same reason. Both stages run
+     * BETWEEN graduation and Rule N in execution order; the numbers are
+     * append-only and the engine maps them BY NAME. */
+    NODUS_V2_EPST_SETTLE_EMITTED  = 9,  /* every payout UTXO written,
+                                         * nothing burned or retired yet */
+    NODUS_V2_EPST_SETTLE_APPLIED  = 10  /* burn recorded + epoch row
+                                         * retired                       */
     /* Values ascend in FIRING order. They are module-internal: the
      * engine maps them onto its own frozen F39-F45 ids BY NAME
      * (nodus_witness_v2_apply.c epoch_stage_fault), so nothing outside
@@ -252,6 +298,16 @@ typedef int (*nodus_v2_epoch_fault_fn)(void *ud,
 typedef struct {
     int      fired;         /* 1 = this height IS an epoch boundary     */
     uint32_t n_graduates;   /* RETIRING rows graduated (0 on a no-op)   */
+    /* O15J Faz 2 — the settlement's contribution to the SAME decision.
+     * Settlement writes utxo_set and supply_tracking, both legs of the
+     * CORE state root, so CORE must be declared touched exactly when it
+     * moved either of them: (n_graduates > 0 || n_settle_utxos > 0 ||
+     * settle_burned > 0). A boundary that settles an EMPTY pool moves
+     * neither and must NOT declare CORE — the engine rejects a declared
+     * no-op just as hard as an undeclared mutation
+     * (nodus_witness_v2_apply.c:2888-2919). */
+    uint32_t n_settle_utxos;/* payout UTXOs emitted at this boundary    */
+    uint64_t settle_burned; /* dust + offline shares burned (one total) */
 } nodus_v2_epoch_result_t;
 
 /**

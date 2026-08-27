@@ -649,9 +649,34 @@ static int test_meter_authority(void) {
     uint64_t base_units;
     {
         sqlite3_stmt *st = NULL;
+        /* O15J Faz 2 review R2-F8 — the query used to be
+         *   "... WHERE global_height=1"
+         * with NO domain filter and NO ORDER BY, then took the first row.
+         * That was already an unordered read of a consensus table inside
+         * a test whose whole purpose is to pin determinism; it only
+         * happened to return SYSTEM's row. Once emission makes every
+         * block produce a CORE update too, it can return CORE's
+         * (res_verify_cost == 0) and the arithmetic below fails.
+         *
+         * The ORCHESTRATOR's first response was to quiet this whole file
+         * — justified in a comment claiming "emission adds work to every
+         * block". That is FALSE: emission consumes ZERO metered units
+         * (nodus_witness_v2_econ.c uses direct DB helpers; the typed
+         * effect path has no meter interaction). Quieting deleted
+         * metering coverage on the configuration production actually
+         * runs, to work around a defect in the query. Naming the domain
+         * is the actual fix. */
         CHECK(sqlite3_prepare_v2(fa.w->db,
-              "SELECT upd FROM v2_domain_updates WHERE global_height=1",
-              -1, &st, NULL) == SQLITE_OK && sqlite3_step(st) == SQLITE_ROW,
+              "SELECT upd FROM v2_domain_updates "
+              "WHERE global_height = 1 AND domain_id = ?1",
+              -1, &st, NULL) == SQLITE_OK &&
+              /* The envelope targets CORE (env_utxo -> v2x_env1 domain 1).
+               * "SYSTEM-policy arithmetic" below names the METERING
+               * POLICY's owner, not the touched domain — the units being
+               * checked are CORE's DomainUpdate. */
+              sqlite3_bind_int64(st, 1, (sqlite3_int64)DNA_DOMAIN_CORE)
+                  == SQLITE_OK &&
+              sqlite3_step(st) == SQLITE_ROW,
               "upd");
         dna_domain_update_t u;
         CHECK(dna_dupd_decode(sqlite3_column_blob(st, 0),
@@ -686,9 +711,16 @@ static int test_meter_authority(void) {
         CHECK(memcmp(b2.out_global_root, base_root, 64) == 0,
               "a leg-domain policy changed the committed root"); OK();
         sqlite3_stmt *st = NULL;
+        /* Same unordered-read defect as the baseline capture above
+         * (R2-F8): name the domain instead of taking whichever row the
+         * planner returns first. */
         CHECK(sqlite3_prepare_v2(fb.w->db,
-              "SELECT upd FROM v2_domain_updates WHERE global_height=1",
-              -1, &st, NULL) == SQLITE_OK && sqlite3_step(st) == SQLITE_ROW,
+              "SELECT upd FROM v2_domain_updates "
+              "WHERE global_height = 1 AND domain_id = ?1",
+              -1, &st, NULL) == SQLITE_OK &&
+              sqlite3_bind_int64(st, 1, (sqlite3_int64)DNA_DOMAIN_CORE)
+                  == SQLITE_OK &&
+              sqlite3_step(st) == SQLITE_ROW,
               "upd");
         dna_domain_update_t u;
         CHECK(dna_dupd_decode(sqlite3_column_blob(st, 0),
@@ -977,9 +1009,14 @@ static int test_reads_and_hostile(void) {
     /* read charges are exact: consumed = fixed + effects + 1 read */
     {
         sqlite3_stmt *st = NULL;
+        /* Third instance of the same unordered-read defect (R2-F8). */
         CHECK(sqlite3_prepare_v2(fx.w->db,
-              "SELECT upd FROM v2_domain_updates WHERE global_height=1",
-              -1, &st, NULL) == SQLITE_OK && sqlite3_step(st) == SQLITE_ROW,
+              "SELECT upd FROM v2_domain_updates "
+              "WHERE global_height = 1 AND domain_id = ?1",
+              -1, &st, NULL) == SQLITE_OK &&
+              sqlite3_bind_int64(st, 1, (sqlite3_int64)DNA_DOMAIN_CORE)
+                  == SQLITE_OK &&
+              sqlite3_step(st) == SQLITE_ROW,
               "upd");
         dna_domain_update_t u;
         CHECK(dna_dupd_decode(sqlite3_column_blob(st, 0),
@@ -1192,6 +1229,15 @@ static int test_determinism(void) {
 }
 
 int main(void) {
+    /* O15J Faz 2 — this file runs with emission ON, deliberately.
+     *
+     * An earlier version set `v2x_inflation_off = 1` here on the claim
+     * that "emission adds work to every block". Review R2-F8 refuted it:
+     * emission consumes ZERO metered units. The real breakage was an
+     * unordered, unfiltered read of v2_domain_updates inside the test
+     * (now fixed at its site), and quieting the file would have deleted
+     * metering coverage on the configuration production actually runs. */
+
     if (test_epoch()) return 1;
     if (test_local_index()) return 1;
     if (test_resolution()) return 1;

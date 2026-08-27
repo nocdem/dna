@@ -757,8 +757,40 @@ static int commit_genesis_read(fixture_t *fx, const uint8_t *mbytes,
 
 /* Seed supply so that genesis + minted − burned == utxo + unclaimed
  * (native-target case) — utxo rows carry EXPLICIT CORE ownership. */
+/* O15J Faz 2 — INFLATION OFF for this file's fixtures.
+ *
+ * The V1 economics port makes every block mint, and a mint moves both
+ * supply_tracking (a CORE root leg) and epoch_state (a SYSTEM leg). This
+ * file tests the S6 CLAIM pipeline — distribution roots, nullifiers,
+ * replay, per-domain claims_root ownership — and asserts a supply
+ * composition it controls exactly (`total_minted == 0`). Emission would
+ * make that composition a moving target and the assertions would have to
+ * be loosened, which deletes the property they exist to pin.
+ *
+ * So inflation is turned OFF for these chains rather than the assertions
+ * being weakened. Emission has its own coverage in test_v2_econ, which
+ * builds its own fixtures and runs the LIVE conservation invariant.
+ *
+ * Seeded BEFORE genesis so the row is part of the committed genesis
+ * state on every fixture in this file uniformly — chain_config_history
+ * is a SYSTEM root leg, so a row added AFTER genesis would move a root
+ * the twins compare. The warm cache is cleared explicitly because this
+ * raw INSERT bypasses the mutate path that would invalidate it. */
+static int seed_inflation_off(nodus_witness_t *w) {
+    char cc[320];
+    snprintf(cc, sizeof(cc),
+        "INSERT OR REPLACE INTO chain_config_history (param_id, new_value,"
+        " effective_block, commit_block, tx_hash, proposal_nonce,"
+        " created_at_unix) VALUES (%d, 0, 0, 0, zeroblob(64), 0, 0)",
+        (int)DNAC_CFG_INFLATION_START_BLOCK);
+    if (run_sql(w->db, cc) != 0) return -1;
+    w->chain_config_cache_warm = false;
+    return 0;
+}
+
 static int seed_supply(nodus_witness_t *w, uint64_t genesis_supply,
                        uint64_t utxo_amount) {
+    if (seed_inflation_off(w) != 0) return -1;
     char sql[640];
     snprintf(sql, sizeof(sql),
         "INSERT INTO supply_tracking (id, genesis_supply, total_burned, "

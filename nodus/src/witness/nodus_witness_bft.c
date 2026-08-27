@@ -2950,12 +2950,28 @@ static int apply_epoch_boundary_transitions(nodus_witness_t *w,
  *
  *   delete epoch_state[settling_epoch_start]
  *
- * Attendance check (D6): we read validator.last_signed_block. A
- * validator whose last_signed_block is within the settled epoch
- * range is considered present. This is a coarser gate than the
- * plan's "proposed ≥ 1 block" — last_signed_block is bumped in
- * record_attendance for the BLOCK PROPOSER, so the two are
- * equivalent in practice on a committed chain.
+ * Attendance check (D6) — CORRECTED 2026-08-27. This block used to
+ * describe a `validator.last_signed_block` window check, and argued the
+ * two were "equivalent in practice". THAT IS NOT WHAT THE CODE DOES,
+ * and the argument is the exact one the code below rejects.
+ *
+ * The implementing lines are :3253-3262. They read
+ * `signed_blocks_this_epoch` and require
+ *
+ *     signed_blocks_this_epoch * committee_count * 10000
+ *         >= DNAC_EPOCH_LENGTH * DNAC_LIVENESS_THRESHOLD_BPS
+ *
+ * i.e. the validator must have proposed at least
+ * DNAC_LIVENESS_THRESHOLD_BPS/10000 of the slots its committee size
+ * entitled it to, with `settling_epoch_start == 0` carved out as
+ * unconditionally present.
+ *
+ * The block around :3205-3215 records WHY the binary last-signed check
+ * was replaced: it let a validator take ~83% planned downtime and still
+ * be paid. A
+ * reader who trusted the old wording would re-introduce that defect —
+ * and one nearly did (O15J Faz 2, ported from this comment before the
+ * code was read).
  */
 static uint32_t be32_load(const uint8_t *p) {
     return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
@@ -3378,10 +3394,22 @@ static int apply_epoch_settlement(nodus_witness_t *w,
 
 /* Phase 9 / Task 48 — per-block attendance record.
  *
- * For every PRECOMMIT voter whose witness_id maps to an ACTIVE
- * validator row, update validator.last_signed_block = block_height.
- * Used at the epoch boundary (apply_epoch_boundary_transitions) to
- * decide whether each validator was "present" during the past epoch.
+ * CORRECTED 2026-08-27. This used to say "for every PRECOMMIT voter …
+ * update validator.last_signed_block". Both halves were wrong:
+ *
+ *   WHO  — exactly ONE row is credited, the BLOCK PROPOSER. The scan
+ *          below compares each candidate's SHA3-512 digest against
+ *          `proposer_id` (:3494) and `break`s on the first match
+ *          (:3499); PRECOMMIT voters are never enumerated here.
+ *   WHAT — TWO columns move, not one (:3546-3547):
+ *            last_signed_block        = block_height
+ *            signed_blocks_this_epoch = signed_blocks_this_epoch + 1
+ *          and it is the SECOND one the epoch boundary actually reads
+ *          (the liveness bar at :3255-3261). `last_signed_block` serves
+ *          the monotonic guard at :3534 and nothing else in the
+ *          settlement path.
+ *
+ * Rows are scanned with status IN (ACTIVE, RETIRING).
  *
  * voter_id is the first 32 bytes of SHA3-512(validator_pubkey) — the
  * same truncation the DHT identity layer uses (see

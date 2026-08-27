@@ -824,13 +824,21 @@ static int gen_seed_state(nodus_witness_t *w2,
      * must fail loudly here, not be silently erased.
      *
      *   delegations           nothing has delegated yet.
-     *   epoch_state           the V2 lane has no emission and no
-     *                         settlement (L2-F5), so no pool accrues;
-     *                         fabricating an epoch-0 row would mean
-     *                         inventing a snapshot_hash that no V2
-     *                         reader produces or consumes. The supply
-     *                         invariant COALESCEs the absent sum to 0
-     *                         (nodus_witness_v2_claims.c:851).
+     *   epoch_state           CORRECTED (O15J Faz 2, review R2-F12):
+     *                         this used to say "the V2 lane has no
+     *                         emission and no settlement (L2-F5), so no
+     *                         pool accrues". Faz 2 ported both, so that
+     *                         reason is dead — but the ASSERTION is
+     *                         still right for a different one: at
+     *                         genesis no block has been minted yet, so
+     *                         the first pool row is created by the
+     *                         FIRST mint (nodus_witness_v2_econ.c, the
+     *                         epoch_insert seed branch), not by the
+     *                         builder. Fabricating an epoch-0 row here
+     *                         would mean inventing a snapshot_hash that
+     *                         no V2 reader produces or consumes. The
+     *                         supply invariant COALESCEs the absent sum
+     *                         to 0 (nodus_witness_v2_claims.c).
      *   chain_config_history  no governance change can precede genesis
      *                         (nodus_witness_vset.c:717-718). */
     {

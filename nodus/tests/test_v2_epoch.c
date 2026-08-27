@@ -1089,9 +1089,26 @@ static int test_boundary_chain(void) {
 
     /* ── §3b: the NEXT boundary does not re-graduate ───────────────── */
     {
-        uint64_t utxos_before = q1(fx.w, "SELECT COUNT(*) FROM utxo_set");
+        /* O15J Faz 2: SCOPED to the graduation output index.
+         *
+         * ⚠ The stated cause was CORRECTED by review R2-F10. This
+         * comment used to say the narrowing was needed because "the
+         * boundary now also SETTLES ... into payout UTXOs, so a
+         * whole-table count would grow". That CANNOT HAPPEN IN THIS
+         * FILE: main sets v2x_inflation_off = 1, so no pool ever
+         * accrues and settlement is a permanent no-op here. The
+         * narrowing is still right — it says what the assertion always
+         * meant — but it is a PRECISION fix, not a repair of a break.
+         *
+         * The claim being made here is about the RETIRING scan, and
+         * index 200 is exactly the graduation's own slot
+         * (nodus_witness_v2_epoch.h) — narrowing the query
+         * makes the assertion say what it always meant. */
+        uint64_t grads_before = q1(fx.w, "SELECT COUNT(*) FROM utxo_set "
+                                         "WHERE output_index = 200");
         CHECK(fx_drive_to(&fx, 2 * E) == 0, "drive to 2E");
-        CHECK(q1(fx.w, "SELECT COUNT(*) FROM utxo_set") == utxos_before,
+        CHECK(q1(fx.w, "SELECT COUNT(*) FROM utxo_set "
+                       "WHERE output_index = 200") == grads_before,
               "an UNSTAKED row is not selected by the RETIRING scan — "
               "no second release");
         uint8_t gid2[64], nul2[64];
@@ -2282,6 +2299,12 @@ int main(void) {
     printf("=== Ledger V2 O12 S2/S3 — epoch boundary + snapshot "
            "authority ===\n");
     printf("(INACTIVE: no live consensus path calls this module)\n");
+    /* O15J Faz 2 — this file pins per-block DomainUpdate counts and
+     * whole-table row counts across boundaries. Emission makes every
+     * block produce a SYSTEM and a CORE update, so those counts change
+     * for a reason unrelated to what the file tests. Quiet chain;
+     * emission and settlement are covered by test_v2_econ. */
+    v2x_inflation_off = 1;
     keys_init();
 
     /* S2 — the engine-mandatory boundary transition */

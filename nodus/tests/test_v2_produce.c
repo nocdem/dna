@@ -469,6 +469,12 @@ static int sign_cert(const keyset_t *k, const uint8_t block_id[64],
 /* ── main ───────────────────────────────────────────────────────────── */
 
 int main(void) {
+    /* O15J Faz 2 — this file pins that an UNTOUCHED domain stays at
+     * height 0 across a produced block. A mint touches CORE and SYSTEM on
+     * every block, so that property needs a quiet chain. Emission is
+     * covered by test_v2_econ. */
+    v2x_inflation_off = 1;
+
     CHECK(make_keys() == 0, "keygen");
 
     fixture_t A, B;

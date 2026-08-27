@@ -408,6 +408,14 @@ static void rogue_table_disarm(nodus_witness_t *w) {
 }
 
 int main(void) {
+    /* O15J Faz 2 — this file pins TOUCH ISOLATION ("SYSTEM advanced while
+     * untouched", untouched-domain guards, per-block head heights). The
+     * economics port makes every block mint, and a mint legitimately
+     * moves both CORE (supply_tracking) and SYSTEM (epoch_state), so a
+     * chain with inflation on can no longer express those properties.
+     * Quiet chain here; emission is covered by test_v2_econ. */
+    v2x_inflation_off = 1;
+
     fixture_t fx;
     CHECK(fx_open(&fx) == 0, "fixture"); OK();
     CHECK(nodus_witness_db_migrate_v2s9(fx.w) == 0, "migrate"); OK();
@@ -419,6 +427,11 @@ int main(void) {
      * payload root, so seeding after the capture would move the root out
      * from under the cycle proof below. */
     CHECK(v2x_seed_authority(fx.w) == 0, "seed authority"); OK();
+    /* O15J Faz 2 — same rule, same reason: chain_config_history is also a
+     * SYSTEM payload-root leg, so the inflation-OFF row must be in place
+     * BEFORE the capture below or the cycle proof compares a root taken
+     * without it against a manifest committed with it. */
+    CHECK(v2x_seed_inflation_off(fx.w) == 0, "seed inflation off"); OK();
     uint8_t sys_payload_pre[64], core_pre[64];
     CHECK(nodus_witness_system_payload_root_v2(fx.w, sys_payload_pre) == 0,
           "payload pre"); OK();

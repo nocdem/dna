@@ -1718,6 +1718,12 @@ static int t_corr_startup(void) {
 }
 
 int main(void) {
+    /* O15J Faz 2 — this file pins POOL-ROOT ISOLATION ("a pool block must
+     * not move the SYSTEM root"). A mint moves epoch_state, a SYSTEM leg,
+     * on every block, so that property is inexpressible with inflation on.
+     * Quiet chain; emission is covered by test_v2_econ. */
+    v2x_inflation_off = 1;
+
     if (t_kats()) return 1;
     if (t_core_pool()) return 1;
     if (t_append()) return 1;

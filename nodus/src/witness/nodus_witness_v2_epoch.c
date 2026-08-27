@@ -11,6 +11,7 @@
  */
 
 #include "witness/nodus_witness_v2_epoch.h"
+#include "witness/nodus_witness_v2_econ.h"   /* O15J Faz 2 — settlement */
 #include "witness/nodus_witness_validator.h"
 #include "witness/nodus_witness_vset.h"
 
@@ -651,6 +652,30 @@ int nodus_witness_v2_epoch_boundary_apply(
     if (fault && fault(fault_ud, NODUS_V2_EPST_GRAD_BATCH, UINT32_MAX))
         return -2;
 
+    /* ── EPOCH SETTLEMENT (O15J Faz 2 — V1's economics, ported) ──────
+     * Drains the epoch that JUST ENDED. The key is the canonical
+     * epoch_start of the previous epoch: at H = k*E that is H - E, and
+     * the gate above already proved H is a positive multiple of E, so
+     * the subtraction cannot underflow.
+     *
+     * ORDER IS LOAD-BEARING, and the reason is written out in the
+     * header ("WHY SETTLEMENT SITS AT 2b"): the attendance gate reads
+     * `signed_blocks_this_epoch`, and Rule N's step (d) below RESETS
+     * that column. Settling after Rule N would see zeros and burn every
+     * share on every node — deterministically wrong rather than flaky,
+     * which is worse, not better. Settlement therefore runs BEFORE it,
+     * and deliberately does NOT repeat the reset V1 performs at its own
+     * tail (bft.c:3350-3360): Rule N is about to issue exactly that
+     * UPDATE, inside this same transaction. */
+    if (nodus_witness_v2_settlement_apply(
+            w, global_height - (uint64_t)DNAC_EPOCH_LENGTH,
+            fault, fault_ud,
+            &out->n_settle_utxos, &out->settle_burned) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "settlement failed at boundary %llu",
+                      (unsigned long long)global_height);
+        return -2;
+    }
+
     /* ── RULE N (O15C — the transplanted legacy settlement) ──────────
      * O12 deliberately skipped Rule N because the V2 lane had no
      * attendance writer. O15C supplied it
@@ -666,7 +691,14 @@ int nodus_witness_v2_epoch_boundary_apply(
      *      active_count once per flip;
      *   d. reset every per-epoch signed-block counter for the next epoch.
      * Ordered BEFORE the flips, mirroring the legacy boundary sequence
-     * (1 commissions → 2 graduation → 3 Rule N → 5a flips → 5b freeze). */
+     * (1 commissions → 2 graduation → 2b settlement → 3 Rule N →
+     *  5a flips → 5b freeze).
+     *
+     * O15J Faz 2: step (d) is now the ONLY writer of that reset on this
+     * lane, and the settlement immediately above depends on running
+     * before it. Moving Rule N earlier, or moving the reset into
+     * settlement, breaks one of the two — do neither without reading the
+     * header's "WHY SETTLEMENT SITS AT 2b". */
     if (v2ep_rule_n(w, global_height) != 0) return -2;
     if (fault && fault(fault_ud, NODUS_V2_EPST_RULE_N, UINT32_MAX))
         return -2;
@@ -698,9 +730,12 @@ int nodus_witness_v2_epoch_boundary_apply(
     if (fault && fault(fault_ud, NODUS_V2_EPST_SNAPSHOT_PERSIST, UINT32_MAX))
         return -2;
 
-    QGP_LOG_DEBUG(LOG_TAG, "boundary at %llu applied (%u graduates)",
+    QGP_LOG_DEBUG(LOG_TAG, "boundary at %llu applied (%u graduates, "
+                  "%u settlement utxos, %llu burned)",
                   (unsigned long long)global_height,
-                  (unsigned)out->n_graduates);
+                  (unsigned)out->n_graduates,
+                  (unsigned)out->n_settle_utxos,
+                  (unsigned long long)out->settle_burned);
     return 0;
 }
 

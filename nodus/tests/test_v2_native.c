@@ -1024,8 +1024,29 @@ static int head_root(nodus_witness_t *w, uint32_t dom, uint8_t out[64]) {
  * fixture before the stake lifecycle had an all-zero delegated bucket,
  * so the omission was invisible; a DELEGATE moves value INTO it and the
  * helper would have reported a false violation (the engine's own gate
- * always counted it). The remaining buckets (epoch_pool, unclaimed
- * distribution, shielded) are zero in every fixture in this file. */
+ * always counted it).
+ *
+ * O15J Faz 2: `epoch_pool` was added here because the V2 lane grew a
+ * per-block mint that credits total_minted AND epoch_state.epoch_pool_accum
+ * together (nodus_witness_v2_econ.c, engine phase 6f), so a helper that
+ * counts `m` but not the pool reports a false violation on any minting
+ * chain — the engine's own gate always counted it
+ * (nodus_witness_v2_claims.c).
+ *
+ * ⚠ HONEST LABEL, added by review R2-F7: in THIS file the term is
+ * currently DEAD. main sets v2x_inflation_off = 1 and every fixture
+ * reaches genesis through v2x_genesis_min, so no epoch_state row is ever
+ * created: `ep` is 0 at all 20+ call sites and the identity is
+ * byte-equivalent to its pre-Faz-2 form. A mutant deleting `+ ep` below
+ * survives every assertion in this file.
+ *
+ * It is kept, not reverted, for two reasons: the helper is correct for
+ * the general case and would silently start lying if this file ever
+ * un-quiets, and deleting it would leave the next author to rediscover
+ * the same thing. But it must not be COUNTED as coverage — emission's
+ * effect on the supply identity is proven in test_v2_econ, where the
+ * chain actually mints. Unclaimed distribution and shielded remain zero
+ * in this file. */
 static int supply_identity_holds(nodus_witness_t *w) {
     uint64_t g = q1(w, "SELECT genesis_supply FROM supply_tracking");
     uint64_t m = q1(w, "SELECT total_minted FROM supply_tracking");
@@ -1035,10 +1056,13 @@ static int supply_identity_holds(nodus_witness_t *w) {
     uint64_t bo = q1(w, "SELECT COALESCE(SUM(self_stake),0) FROM validators");
     uint64_t dl = q1(w, "SELECT COALESCE(SUM(total_delegated),0) "
                         "FROM validators");
+    uint64_t ep = q1(w, "SELECT COALESCE(SUM(epoch_pool_accum),0) "
+                        "FROM epoch_state");
     if (g == UINT64_MAX || m == UINT64_MAX || bu == UINT64_MAX ||
-        ux == UINT64_MAX || bo == UINT64_MAX || dl == UINT64_MAX)
+        ux == UINT64_MAX || bo == UINT64_MAX || dl == UINT64_MAX ||
+        ep == UINT64_MAX)
         return 0;
-    return g + m - bu == ux + bo + dl;
+    return g + m - bu == ux + bo + dl + ep;
 }
 
 /* ══ 1. AUTH — the verified boundary ═══════════════════════════════ */
@@ -8589,6 +8613,21 @@ static int test_vupd_hook_pins(void) {
 }
 
 int main(void) {
+    /* O15J Faz 2 — this file pins which domain roots a given runtime op
+     * moves: "op X moves SYSTEM", "op X must NOT move CORE".
+     *
+     * A mint moves BOTH roots on every block, so with inflation on the
+     * "must move" half becomes VACUOUS (true for a reason unrelated to
+     * the op) and the "must not move" half FAILS OUTRIGHT. An earlier
+     * version of this comment said both became "vacuously true" — review
+     * R2-F12 corrected that; only one half is vacuity, the other is a
+     * hard failure.
+     *
+     * Either way the properties are inexpressible on a minting chain, so
+     * this file runs quiet. Emission and settlement have their own
+     * coverage in test_v2_econ. */
+    v2x_inflation_off = 1;
+
     if (keys_init() != 0) {
         fprintf(stderr, "keygen failed\n");
         return 1;

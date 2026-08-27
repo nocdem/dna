@@ -452,7 +452,21 @@ typedef enum {
      * was not committed, or a committed block missing its claim bytes.
      * The count row and the claim rows are one transaction with the
      * block, so both roll back together. */
-    V2AP_FAIL_AFTER_CLAIM_BYTES        = 49  /* claim bytes persisted    */
+    V2AP_FAIL_AFTER_CLAIM_BYTES        = 49, /* claim bytes persisted    */
+
+    /* O15J Faz 2 — the economics hooks. APPENDED; 39-49 are pinned by
+     * shipped tests and are never renumbered.
+     *
+     * 50 fires with every settlement payout UTXO written and NOTHING
+     * burned or retired: the proof obligation is that an interrupt there
+     * leaves no payout row AND no supply movement. 51 fires with the
+     * burn recorded and the settled epoch row retired, one step before
+     * Rule N — the second rollback window. 52 brackets the per-block
+     * mint: total_minted and epoch_pool_accum move together or not at
+     * all, which is the conservation equation's own precondition. */
+    V2AP_FAIL_AFTER_SETTLE_EMITTED     = 50, /* payout UTXOs written     */
+    V2AP_FAIL_AFTER_SETTLE_APPLIED     = 51, /* burn + epoch row retired */
+    V2AP_FAIL_AFTER_EMISSION           = 52  /* per-block mint accrued   */
 } nodus_v2_apply_fail_t;
 
 /*

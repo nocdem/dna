@@ -194,6 +194,15 @@ set(NODUS_SOURCES
     # apply_epoch_boundary_transitions; the legacy lane is untouched and
     # remains the only boundary a running chain executes.
     src/witness/nodus_witness_v2_epoch.c
+
+    # Ledger V2 O15J Faz 2 — V1's economics on the V2 lane: the per-block
+    # inflation mint (engine phase 6f) and the epoch settlement that
+    # drains each epoch's pool into CORE payout UTXOs and burn (boundary
+    # step 2b). Without these a pure-V2 chain mints nothing and — both
+    # lanes already burning every fee — pays validators exactly zero
+    # (the O15J red-team's L2-F5). The spec is the shipped V1
+    # implementation, cited line by line in the source.
+    src/witness/nodus_witness_v2_econ.c
     src/witness/nodus_witness_v2_qc.c
     src/witness/nodus_witness_v2_preflight.c
     src/witness/nodus_witness_v2_finalize.c
@@ -1086,6 +1095,18 @@ register_witness_test(test_v2_pools)
 # full-DB-digest rollback and clean-retry twin identity, restart
 # persistence, and the malformed-row refusal.
 register_witness_test(test_v2_epoch)
+
+# O15J Faz 2 — V1's economics on the V2 lane, driven through the real
+# apply engine against a LIVE conservation invariant (no supply bypass:
+# every value this test moves is minted or burned by the code under
+# test, never conjured). Covers the emission gate and its
+# INFLATION_START_BLOCK boundary from both sides, the epoch-start
+# committee snapshot, the flat and delegated settlement splits, EACH of
+# the three burn legs, the whole-pool leg-completeness identity, the
+# supply equation recomputed term by term, and a two-fixture determinism
+# twin seeded in opposite validator order.
+register_witness_test(test_v2_econ)
+
 register_witness_test(test_v2_qc_authority)
 register_witness_test(test_v2_finalize)
 register_witness_test(test_v2_produce)

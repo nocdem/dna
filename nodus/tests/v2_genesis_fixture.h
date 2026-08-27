@@ -164,9 +164,66 @@ static int v2x_seed_authority(nodus_witness_t *w) {
  * Commits in leader mode (assertion omitted) and reads the committed
  * identity back — the engine derives, the caller observes.
  */
+/* ── O15J Faz 2 — OPT-IN inflation switch ─────────────────────────────
+ *
+ * The V1 economics port makes every block mint, and a mint moves both
+ * supply_tracking (a CORE root leg) and epoch_state (a SYSTEM leg), so
+ * every block now legitimately touches both domains.
+ *
+ * Several tests built on this fixture predate economics and pin
+ * orthogonal properties — touch isolation ("SYSTEM advanced while
+ * untouched"), pool-root stability, per-block DomainUpdate counts,
+ * metering arithmetic, a supply composition with total_minted == 0.
+ * Rewriting those assertions to accept the new movement would delete the
+ * property each one exists to protect.
+ *
+ * A test that needs a quiet chain sets this to 1 BEFORE its first
+ * v2x_genesis_min call. It is deliberately OPT-IN, not the default:
+ * forcing the row on every fixture changes the committed genesis root
+ * (chain_config_history is a SYSTEM leg) and broke five tests that were
+ * previously green — measured, not assumed.
+ *
+ * `static` in a header is correct here: every test is a single TU, so
+ * each gets its own copy and no test can affect another. */
+static int v2x_inflation_off = 0;
+
+/* Seed the inflation-OFF chain-config row. Idempotent.
+ *
+ * chain_config_history is a SYSTEM root leg, so this MOVES the SYSTEM
+ * payload root — exactly like v2x_seed_authority, and with the same
+ * consequence: a fixture that CAPTURES payload roots before genesis must
+ * call this itself before capturing, or its captured root will not match
+ * the committed one. (Measured: calling it only from inside
+ * v2x_genesis_min made test_v2_apply fail its own
+ * "SYSTEM gsr != payload root" assertion.)
+ *
+ * The warm chain-config cache is cleared explicitly: this raw INSERT
+ * bypasses the mutate path that would invalidate it, and without that
+ * get_u64 keeps serving the 1ULL default and the seed does nothing. */
+static int v2x_seed_inflation_off(nodus_witness_t *w) {
+    if (!w || !w->db) return -1;
+    char cc[320];
+    snprintf(cc, sizeof(cc),
+        "INSERT OR REPLACE INTO chain_config_history (param_id,"
+        " new_value, effective_block, commit_block, tx_hash,"
+        " proposal_nonce, created_at_unix)"
+        " VALUES (%d, 0, 0, 0, zeroblob(64), 0, 0)",
+        (int)DNAC_CFG_INFLATION_START_BLOCK);
+    char *cerr = NULL;
+    if (sqlite3_exec(w->db, cc, NULL, NULL, &cerr) != SQLITE_OK) {
+        if (cerr) sqlite3_free(cerr);
+        return -1;
+    }
+    w->chain_config_cache_warm = false;
+    return 0;
+}
+
 static int v2x_genesis_min(nodus_witness_t *w, const uint8_t vset[64],
                            uint8_t out_gid[64], uint8_t out_chain[32]) {
     if (!w || !w->db || !vset) return -1;
+
+    if (v2x_inflation_off && v2x_seed_inflation_off(w) != 0) return -1;
+
     if (v2x_seed_authority(w) != 0) return -1;
     if (nodus_witness_domreg_init_genesis(w) != 0) return -1;
 

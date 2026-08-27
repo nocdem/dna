@@ -20,6 +20,7 @@
 #include "witness/nodus_witness_v2_claims.h"
 #include "witness/nodus_witness_v2_adapter.h"
 #include "witness/nodus_witness_v2_epoch.h"    /* O12 S2: the boundary  */
+#include "witness/nodus_witness_v2_econ.h"     /* O15J Faz 2: emission  */
 #include "witness/nodus_witness_runtime.h"
 #include "witness/nodus_witness_domreg.h"
 #include "witness/nodus_witness_roots_v2.h"
@@ -1058,9 +1059,13 @@ static int epoch_stage_fault(void *ud, nodus_v2_epoch_stage_t s,
         case NODUS_V2_EPST_RULE_N:
             /* O15C — no dedicated injection point: the Rule N rows ride
              * the same ONE transaction, and the surrounding stages
-             * (GRAD_BATCH before, BOUNDARY_FLIPS after) already prove
-             * the rollback bracket for this region. */
+             * (SETTLE_APPLIED before, BOUNDARY_FLIPS after) already
+             * prove the rollback bracket for this region. */
             return 0;
+        case NODUS_V2_EPST_SETTLE_EMITTED:
+            return blk->fail_at == V2AP_FAIL_AFTER_SETTLE_EMITTED;
+        case NODUS_V2_EPST_SETTLE_APPLIED:
+            return blk->fail_at == V2AP_FAIL_AFTER_SETTLE_APPLIED;
         default:
             return 1;                    /* unknown stage: fail closed   */
     }
@@ -2821,13 +2826,24 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
                 goto fail_fault;
             }
             dsys->touched = 1;
-            if (ep.n_graduates > 0) {
+            /* O15J Faz 2 — CORE is touched by a graduation release AND
+             * by the settlement, which writes utxo_set and moves
+             * supply_tracking (both CORE state-root legs,
+             * nodus_witness_roots_v2.c:317-345). A boundary that settles
+             * an EMPTY pool moves neither and must NOT declare CORE:
+             * phase 9 rejects a declared no-op as hard as phase 8
+             * rejects an undeclared mutation. */
+            if (ep.n_graduates > 0 || ep.n_settle_utxos > 0 ||
+                ep.settle_burned > 0) {
                 dom_ctx_t *dcore = dom_for(doms, n_dom, DNA_DOMAIN_CORE);
                 if (!dcore) {
-                    V2AP_FAULT("phase 6e: %u graduates released at the "
-                               "boundary but CORE domain %u is absent "
-                               "from the working set",
+                    V2AP_FAULT("phase 6e: the boundary moved CORE state "
+                               "(%u graduates, %u settlement utxos, %llu "
+                               "burned) but CORE domain %u is absent from "
+                               "the working set",
                                (unsigned)ep.n_graduates,
+                               (unsigned)ep.n_settle_utxos,
+                               (unsigned long long)ep.settle_burned,
                                (unsigned)DNA_DOMAIN_CORE);
                     goto fail_fault;
                 }
@@ -2835,6 +2851,58 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
             }
         }
     }
+
+    /* 6f. O15J Faz 2 — PER-BLOCK INFLATION EMISSION.
+     *
+     * The V1 order is transitions → emission → settlement
+     * (nodus_witness_bft.c:3594, :3638, :3737). This lane keeps the
+     * transitions-then-emission half literally; the settlement half moved
+     * INSIDE the boundary above, one step before Rule N, because Rule N's
+     * transplanted counter reset would otherwise destroy settlement's
+     * attendance input (nodus_witness_v2_epoch.h, "WHY SETTLEMENT SITS
+     * AT 2b"). The two are key-disjoint — at a boundary H the settlement
+     * drains epoch H-E while the mint accrues into epoch H, and E > 0 —
+     * so their relative order changes no committed byte.
+     *
+     * Engine-MANDATORY like the boundary: emission is a function of the
+     * height and committed chain_config alone, never caller-declared, so
+     * it runs unconditionally (a zero-envelope block still mints). It is
+     * a no-op before DNAC_CFG_INFLATION_START_BLOCK.
+     *
+     * Placed AFTER the boundary and BEFORE the supply gate so that the
+     * gate at phase 7 covers the mint this block performed — the same
+     * reason the boundary sits where it does. */
+    {
+        uint64_t minted = 0;
+        if (nodus_witness_v2_emission_apply(w, blk->global_height,
+                                            &minted) != 0) {
+            V2AP_FAULT("phase 6f: per-block emission at height %llu "
+                       "failed - like a boundary it has no verdict class, "
+                       "its input is committed state and the height alone",
+                       (unsigned long long)blk->global_height);
+            goto fail_fault;
+        }
+        if (minted > 0) {
+            /* A mint moves supply_tracking (a CORE state-root leg,
+             * nodus_witness_roots_v2.c:342-345) AND epoch_state (a SYSTEM
+             * leg, :283-284). Both must be declared, and only when the
+             * mint was non-zero. */
+            dom_ctx_t *dcore_em = dom_for(doms, n_dom, DNA_DOMAIN_CORE);
+            dom_ctx_t *dsys_em  = dom_for(doms, n_dom, DNA_DOMAIN_SYSTEM);
+            if (!dcore_em || !dsys_em) {
+                V2AP_FAULT("phase 6f: %llu minted at height %llu but "
+                           "domain %u is absent from the working set",
+                           (unsigned long long)minted,
+                           (unsigned long long)blk->global_height,
+                           (unsigned)(!dcore_em ? DNA_DOMAIN_CORE
+                                                : DNA_DOMAIN_SYSTEM));
+                goto fail_fault;
+            }
+            dcore_em->touched = 1;
+            dsys_em->touched  = 1;
+        }
+    }
+    FAIL_POINT(V2AP_FAIL_AFTER_EMISSION);
 
     /* 7. supply gate (post-stage) */
     if (nodus_witness_v2_supply_check(w) != 0) {
