@@ -6,28 +6,27 @@
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="description"
-    content="DNA Chain is the post-quantum Layer-0 of the DNA ecosystem — the network, transport, storage and consensus substrate that DNA applications and future chains build on. Live testnet."
+    content="DNA Chain is the post-quantum Layer-0 of the DNA ecosystem — the network, transport, storage and consensus substrate that DNA applications and future chains build on. Development network — not open for public use."
   />
   <meta name="keywords"
     content="DNA Chain, DNAC, Layer-0, post-quantum blockchain, BFT consensus, UTXO, zero-knowledge, CPUNK, quantum-safe"
   />
   <meta name="author" content="DNA Protocol" />
-  <!-- DRAFT: flip to "index, follow" at launch -->
-  <meta name="robots" content="noindex, nofollow" />
+  <meta name="robots" content="index, follow" />
   <link rel="canonical" href="https://cpunk.io/dna-chain.html" />
 
   <!-- Open Graph / Social -->
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://cpunk.io/dna-chain.html">
   <meta property="og:title" content="DNA Chain — The Post-Quantum Layer-0 | CPUNK">
-  <meta property="og:description" content="The network, transport, storage and consensus substrate that DNA applications and future chains build on. Live testnet.">
+  <meta property="og:description" content="The network, transport, storage and consensus substrate that DNA applications and future chains build on. Development network — not open for public use.">
   <meta property="og:image" content="https://cpunk.io/images/cpunk_card.jpg">
 
   <!-- Twitter Card -->
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:url" content="https://cpunk.io/dna-chain.html">
   <meta name="twitter:title" content="DNA Chain — The Post-Quantum Layer-0">
-  <meta name="twitter:description" content="The network, transport, storage and consensus substrate that DNA applications and future chains build on. Live testnet.">
+  <meta name="twitter:description" content="The network, transport, storage and consensus substrate that DNA applications and future chains build on. Development network — not open for public use.">
   <meta name="twitter:image" content="https://cpunk.io/images/cpunk_card.jpg">
   <meta name="twitter:site" content="@OfficialCpunk">
 
@@ -1002,6 +1001,10 @@
                 </div>
               </div>
 
+              <a href="/dna-chain.html" class="active" data-i18n="nav.chain">DNA Chain</a>
+
+              <a href="/vote.html" data-i18n="nav.vote">Vote</a>
+
               <a href="/team.html" data-i18n="nav.team">Team</a>
 
               <div class="nav-item" data-dropdown="documents">
@@ -1041,7 +1044,7 @@
               <div class="eyebrow">
                 <span class="eyebrow-dot"></span>
                 <span class="eyebrow-label" data-i18n="chain_page.hero.eyebrow_label">Layer-0</span>
-                <span data-i18n="chain_page.hero.eyebrow_text">Live testnet</span>
+                <span data-i18n="chain_page.hero.eyebrow_text">Development network</span>
               </div>
 
               <h1 data-i18n="chain_page.hero.title">
@@ -1075,14 +1078,14 @@
               </div>
             </div>
 
-            <aside class="hero-split-media" aria-label="DNA Chain live testnet explorer">
+            <aside class="hero-split-media" aria-label="DNA Chain development network explorer">
               <a href="https://scan.cpunk.io" target="_blank" rel="noopener">
                 <img
                   src="/images/scan-explorer.png"
                   alt="scan.cpunk.io — DNA Chain block explorer showing live blocks"
                 />
               </a>
-              <p class="image-caption" data-i18n="chain_page.hero.caption">Watch the testnet live at scan.cpunk.io</p>
+              <p class="image-caption" data-i18n="chain_page.hero.caption">Watch the development network at scan.cpunk.io</p>
             </aside>
           </div>
         </div>
@@ -1314,6 +1317,87 @@
         </div>
       </section>
 
+      <!-- ══ Ledger V2 (next) ══ -->
+      <section id="ledger-v2" class="s-section s-dark">
+        <div class="wrap">
+          <div class="section-header-center reveal">
+            <div class="section-label" data-i18n="chain_page.v2.label">Roadmap</div>
+            <h2 class="section-title" data-i18n="chain_page.v2.title">Ledger V2</h2>
+            <p class="section-desc" style="max-width: 38rem;" data-i18n="chain_page.v2.desc">
+              The next ledger design for DNA Chain &mdash; in development now, arriving with a
+              network reset.
+            </p>
+          </div>
+
+          <div class="token-grid stagger" style="margin-bottom: 1.2rem;">
+            <article class="token-card reveal">
+              <span class="token-card-icon"><svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 8l9 6 9-6"/></svg></span>
+              <h3 data-i18n="chain_page.v2.envelope_title">One transaction, many operations</h3>
+              <p data-i18n="chain_page.v2.envelope_desc">
+                A transaction becomes an envelope carrying ordered operations across the chain's
+                domains. One fee, one signature, one atomic outcome.
+              </p>
+            </article>
+
+            <article class="token-card reveal">
+              <span class="token-card-icon"><svg viewBox="0 0 24 24"><path d="M12 3v4"/><path d="M5 21v-5"/><path d="M12 21v-5"/><path d="M19 21v-5"/><path d="M5 16h14"/><path d="M12 7v9"/></svg></span>
+              <h3 data-i18n="chain_page.v2.root_title">State that grows without hard forks</h3>
+              <p data-i18n="chain_page.v2.root_desc">
+                The state root becomes three-level: each domain commits its own root, and those roll
+                up into one global root. New kinds of state are added by registering a domain &mdash;
+                not by forking the chain.
+              </p>
+            </article>
+
+            <article class="token-card reveal">
+              <span class="token-card-icon"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="7" rx="1"/><rect x="3" y="13" width="18" height="7" rx="1"/><path d="M7 7.5h4"/><path d="M7 16.5h4"/></svg></span>
+              <h3 data-i18n="chain_page.v2.header_title">Blocks that commit their whole header</h3>
+              <p data-i18n="chain_page.v2.header_desc">
+                A block's identity covers its height, epoch, parent, state root and validator set
+                &mdash; not just the transactions inside it.
+              </p>
+            </article>
+
+            <article class="token-card reveal">
+              <span class="token-card-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="9" r="5"/><path d="M9 13.5L7 21l5-2.5L17 21l-2-7.5"/></svg></span>
+              <h3 data-i18n="chain_page.v2.cert_title">Certificates bound to their validator set</h3>
+              <p data-i18n="chain_page.v2.cert_desc">
+                Every finality certificate names the validator set that issued it, so a signature is
+                only ever valid under the set that produced it.
+              </p>
+            </article>
+
+            <article class="token-card reveal">
+              <span class="token-card-icon"><svg viewBox="0 0 24 24"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/><path d="M12 14v2"/></svg></span>
+              <h3 data-i18n="chain_page.v2.pool_title">Shielded transfers as chain state</h3>
+              <p data-i18n="chain_page.v2.pool_desc">
+                Private transfers become first-class: a note-commitment tree and a nullifier
+                accumulator committed in every block, backed by the same STARK proof system as the
+                rest of the chain.
+              </p>
+            </article>
+
+            <article class="token-card reveal">
+              <span class="token-card-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 12l4-2"/><path d="M12 12v-5"/><path d="M7.5 16.5h9"/></svg></span>
+              <h3 data-i18n="chain_page.v2.meter_title">Metered execution</h3>
+              <p data-i18n="chain_page.v2.meter_desc">
+                Each domain's resource pricing is committed on-chain as part of its ruleset, so two
+                validators running the same rules cannot price the same transaction differently.
+              </p>
+            </article>
+          </div>
+
+          <div class="testnet-note reveal">
+            <span class="testnet-note-dot"></span>
+            <span data-i18n="chain_page.v2.note">
+              <strong>Not an upgrade:</strong> Ledger V2 starts as a new chain rather than an upgrade
+              of the current one, so the development network restarts when it lands. Development-network
+              coins have no real-world value.
+            </span>
+          </div>
+        </div>
+      </section>
+
       <!-- ══ Zero-Knowledge ══ -->
       <section id="zk" class="s-section s-gradient">
         <div class="wrap">
@@ -1332,8 +1416,7 @@
                 <li data-i18n="chain_page.zk.li3"><strong>Pure C implementation</strong> &mdash; the same zero-dependency discipline as the chain itself</li>
               </ul>
               <p data-i18n="chain_page.zk.desc2">
-                In active development on the testnet track &mdash; the testnet resets as these
-                features land.
+                In active development &mdash; the network resets as these features land.
               </p>
             </div>
             <div class="dna-visual reveal-right">
@@ -1345,15 +1428,15 @@
         </div>
       </section>
 
-      <!-- ══ Live Testnet ══ -->
+      <!-- ══ Development Network ══ -->
       <section id="testnet" class="s-section s-dark">
         <div class="wrap">
           <div class="section-header-center reveal">
             <div class="section-label" data-i18n="chain_page.testnet.label">Status</div>
-            <h2 class="section-title" data-i18n="chain_page.testnet.title">Live Testnet</h2>
+            <h2 class="section-title" data-i18n="chain_page.testnet.title">Development Network</h2>
             <p class="section-desc" style="max-width: 38rem;" data-i18n="chain_page.testnet.desc">
-              DNA Chain is running today on a live testnet. Blocks are produced, validated, and served
-              in real time &mdash; watch it happen in the block explorer.
+              DNA Chain runs today as a development network &mdash; not open for public use. Blocks are
+              produced, validated and served in real time; watch it happen in the block explorer.
             </p>
             <div style="margin-top: 1.5rem;">
               <a href="https://scan.cpunk.io" target="_blank" rel="noopener" class="btn btn-primary btn-lg" data-i18n="chain_page.testnet.btn_explorer">Open Block Explorer</a>
@@ -1363,9 +1446,10 @@
           <div class="testnet-note reveal">
             <span class="testnet-note-dot"></span>
             <span data-i18n="chain_page.testnet.note">
-              <strong>Testnet status:</strong> zero-knowledge privacy is being integrated now, and the
-              testnet will be reset as those features land. Mainnet is still months away. The CPUNK token
-              lives on Cellframe (CF20) &mdash; DNA Chain is a separate network in testnet.
+              <strong>Status:</strong> DNA Chain is a development network used to build and test the
+              system. It is not open for public use and may be reset during development. A public test
+              network will be announced when it is ready. The CPUNK token lives on Cellframe (CF20)
+              &mdash; DNA Chain is a separate network.
             </span>
           </div>
         </div>
@@ -1377,7 +1461,7 @@
           <div class="cta-box reveal">
             <h2 class="cta-title" data-i18n="chain_page.cta.title">Follow the build</h2>
             <p class="cta-text" data-i18n="chain_page.cta.text">
-              DNA Chain is being built in the open. Watch the testnet, read the code,
+              DNA Chain is being built in the open. Watch the network, read the code,
               and join the conversation.
             </p>
             <div class="cta-actions">
@@ -1403,6 +1487,7 @@
             <a href="/DNA-Connect/wallet.html" data-i18n="footer.wallet">Wallet</a>
             <a href="/DNA-Connect/nodus.html" data-i18n="footer.nodus">Nodus</a>
             <a href="/team.html" data-i18n="footer.team">Team</a>
+            <a href="https://wiki.cpunk.io/" target="_blank" data-i18n="footer.wiki">Wiki</a>
             <a href="/doc/cpunk-litepaper.pdf" target="_blank" data-i18n="footer.litepaper">Litepaper</a>
             <a href="/doc/cpunk-legal.pdf" target="_blank" data-i18n="footer.legal">Legal</a>
             <a href="/privacy.html" data-i18n="footer.privacy">Privacy Policy</a>
