@@ -364,7 +364,7 @@ DNAC (DNA Chain) is a separate UTXO-based chain that operates over Nodus with BF
 
 ### Architecture
 
-DNAC lives in a separate top-level directory (`/opt/dna/dnac/`) and is linked into the messenger as `libdnac`. The engine module `src/api/engine/dna_engine_dnac.c` wraps the DNAC library for async access.
+DNAC lives in a separate top-level directory (`/opt/dna/dnac/`); its sources are compiled **directly into `libdna.so`** by the messenger build (there is no separate `libdnac` in the production link path). The engine module `src/api/engine/dna_engine_dnac.c` wraps the DNAC API for async access.
 
 ### Key Differences from Wallet Chains
 

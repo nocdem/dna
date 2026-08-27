@@ -1,8 +1,8 @@
 # DHT System Documentation
 
-**Last Updated:** 2026-04-24
+**Last Updated:** 2026-08-27 (constants/version pass; body largely from the 2026-04-24 audit)
 **Phase:** 7 (Flutter UI)
-**Versions:** Messenger v0.11.5 | Nodus v0.17.7
+**Versions:** Messenger v0.11.18 | Nodus v0.19.19
 
 Comprehensive documentation of the DNA Connect DHT (Distributed Hash Table) system. The DHT layer is powered by **Nodus**, a pure C Kademlia DHT. OpenDHT has been completely removed.
 
@@ -212,7 +212,7 @@ const char *nodus_ops_fingerprint(void);
 | 365 days (31536000s) | Profiles |
 | 0 (permanent) | Name registrations (v0.3.0+) |
 
-**Note:** Nodus supports values up to 1MB natively. No chunking abstraction is needed at the nodus_ops level.
+**Note:** Nodus supports values up to 4MB natively (`NODUS_MAX_VALUE_SIZE`). No chunking abstraction is needed at the nodus_ops level.
 
 ---
 
@@ -355,16 +355,17 @@ the same outbox key with new messages.
 
 #### Nodus Seed Nodes
 
-The messenger connects to the Nodus production cluster (6 nodes):
+Hardcoded fallback seed list (`nodus_init.c` `g_fallback_nodes`, 7 endpoints — used only when `known_nodes` and config provide nothing):
 
 | Node | IP | TCP Port |
 |------|-----|----------|
 | US-1 | 154.38.182.161 | 4001 |
-| EU-1 | 164.68.105.227 | 4001 |
-| EU-2 | 164.68.116.180 | 4001 |
-| EU-3 | 161.97.85.25 | 4001 |
-| EU-4 | 156.67.24.125 | 4001 |
-| EU-5 | 156.67.25.251 | 4001 |
+| EU-4 | 164.68.105.227 | 4001 |
+| EU-5 | 164.68.116.180 | 4001 |
+| EU-1 | 161.97.85.25 | 4001 |
+| EU-2 | 156.67.24.125 | 4001 |
+| EU-3 | 156.67.25.251 | 4001 |
+| EU-6 | 75.119.141.51 | 4001 |
 
 #### Initialization Flow
 
@@ -1179,32 +1180,18 @@ Nodus is a pure C post-quantum DHT server with PBFT consensus:
 
 ### 7.3 Deployment
 
-**Nodus Test Cluster (3 nodes, v0.5.0):**
-
-| Node | IP | Config |
-|------|-----|--------|
-| nodus-01 | 161.97.85.25 | `/etc/nodus.conf` |
-| nodus-02 | 156.67.24.125 | `/etc/nodus.conf` |
-| nodus-03 | 156.67.25.251 | `/etc/nodus.conf` |
+**One production cluster — the 7 nodes in §1** (US-1, EU-1..EU-6; there is no separate test cluster and no legacy cluster anymore). Config `/etc/nodus.conf`, data `/var/lib/nodus/`, systemd `nodus.service`.
 
 ```bash
 # Build
 cd /opt/dna/nodus/build && cmake .. && make -j$(nproc)
 
-# Deploy to a server
-ssh root@<IP> 'bash /tmp/nodus-redeploy.sh'
+# Deploy (rolling, one node at a time — see nodus/docs/DEPLOY_RUNBOOK.md)
+ssh root@<IP> 'git -C /opt/dna pull && systemctl stop nodus && make -C /opt/dna/nodus/build -j$(nproc) && cp /opt/dna/nodus/build/nodus-server /usr/local/bin/nodus-server && systemctl start nodus && sleep 3 && systemctl is-active nodus'
 
 # Check status
 ssh root@<IP> 'systemctl status nodus'
 ```
-
-**Legacy Production Servers (v0.4.5, still running):**
-
-| Server | IP | Port |
-|--------|-----|------|
-| US-1 | 154.38.182.161 | 4000 |
-| EU-1 | 164.68.105.227 | 4000 |
-| EU-2 | 164.68.116.180 | 4000 |
 
 ### 7.4 Persistence
 
@@ -1410,7 +1397,7 @@ await engine.blockUser(fingerprint, "spam");
 ### Key Sizes
 
 - **Dilithium5 Public Key**: 2592 bytes
-- **Dilithium5 Private Key**: 4864 bytes
+- **Dilithium5 Private Key**: 4896 bytes
 - **Dilithium5 Signature**: 4627 bytes
 - **Kyber1024 Public Key**: 1568 bytes
 - **SHA3-512 Hash**: 64 bytes
@@ -1522,7 +1509,7 @@ classified as one of:
 | 2  | `dht/shared/dht_dm_outbox.h`       | (header — declares salted API) | **Salted** | Salt-required parameter surface. |
 | 3  | `dht/shared/dht_contact_request.c` | per-contact salted | **Salted** | Reference impl for the salt-agreement → salted-publish pattern. |
 | 4  | `dht/shared/dht_offline_queue.c`   | `<recipient_fp>:ack:<sender_fp>:<salt_hex>` (ACK only) | **Salted** | Only ACK helpers remain after Plan 6-06. `make_outbox_base_key` + `dht_retrieve_queued_messages_from_contacts[_parallel]` deleted as dead code. NULL-salt branch in `make_ack_base_key` closed. |
-| 5  | `dht/client/dht_contactlist.c`     | `<identity>:contacts:<salt_hex>` | **Salted** | Per-identity salt. Already correct before Phase 6. |
+| 5  | `dht/client/dht_contactlist.c`     | `<identity>:contactlist` | **Whitelisted encrypted** | UNSALTED single key (dht_contactlist.c:54) — value is self-encrypted (own Kyber pubkey) + Dilithium5-signed; key reveals only "this identity has a contact list". (Row corrected 2026-08-27 — the earlier "salted" classification here was wrong.) |
 | 6  | `dht/client/dna_group_outbox.c`    | `dna:group:<group_uuid>:out:<day>:<salt_hex>` | **Salted (fixed by Phase 6)** | Per-group 32-byte salt from `groups` table (schema v3). Was unsalted before Plan 6-04 (hard cutover; see Plan 6-03 migration and Plan 6-04 executor notes). |
 | 7  | `dht/shared/dht_salt_agreement.c`  | `<fp_lo>:<fp_hi>:salt` | **Whitelisted bootstrap** | Deterministic by protocol necessity — this is the two-party salt agreement helper itself. Value is dual-encrypted (Kyber + AES-GCM). Making the key itself salted creates a chicken-and-egg. Exposure is bounded to the bootstrap handshake window. |
 | 8  | `dht/shared/dht_gek_storage.c`     | `<group_uuid>:gek:<version>` | **Whitelisted encrypted** | GEK distribution to already-known group members. UUID is a shared secret among members; content is encrypted with per-member Kyber wrap. |

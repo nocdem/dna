@@ -1,6 +1,6 @@
 # Nodus — Architecture Documentation
 
-**Version:** 0.17.7 | **Language:** C (pure) | **License:** Proprietary | **Last Updated:** 2026-04-24
+**Version:** 0.19.19 | **Language:** C (pure) | **License:** Proprietary | **Last Updated:** 2026-08-27 (header/deployment pass; foundational body from 2026-04-24)
 
 > **Note (2026-04-24):** This document captures Nodus's foundational architecture (motivation, two-tier protocol, wire format, storage). Features landed since v0.10.11 — F17 committee enforcement, stake-delegation v1, hard-fork mechanism (`DNAC_TX_CHAIN_CONFIG`), Genesis Protocol harness, inflation — are documented in their own design docs under `dnac/docs/plans/` and in `nodus/CLAUDE.md`. The architecture below still applies; those features extend it rather than replace it.
 
@@ -1169,15 +1169,9 @@ by a flag file and runs in the engine's stabilization thread.
 
 ## 13. Deployment
 
-### Test Cluster
+### Production Cluster
 
-Three dedicated servers running Nodus:
-
-| Node | IP | Specs |
-|------|-----|-------|
-| nodus-01 | 161.97.85.25 | 6c/11GB/99GB, Debian 13 |
-| nodus-02 | 156.67.24.125 | 4c/8GB/74GB, Debian 13 |
-| nodus-03 | 156.67.25.251 | 4c/8GB/74GB, Debian 13 |
+Seven production nodes (US-1, EU-1..EU-6) — the single live cluster; details and deploy procedure in `nodus/docs/DEPLOY_RUNBOOK.md` and internal ops docs. (The 3-node "test cluster" table that used to sit here was the pre-2026-04 bring-up set.)
 
 ### Systemd Service
 
@@ -1200,7 +1194,10 @@ WantedBy=multi-user.target
 | Port | Protocol | Purpose |
 |------|----------|---------|
 | 4000 | UDP | Kademlia discovery (T1 PING/PONG/FIND_NODE) |
-| 4001 | TCP | Client connections (T2) + value replication (T1 STORE) |
+| 4001 | TCP | Client connections (T2) + circuit relay |
+| 4002 | TCP | Inter-node: replication, heartbeat, circuit forwarding |
+| 4003 | TCP | Channels (soft-disabled 2026-03-28, port still listens) |
+| 4004 | TCP | Witness BFT (T3) |
 
 ### Identity Management
 
@@ -1219,7 +1216,7 @@ to `/usr/local/bin/`, and restarts the systemd service.
 
 ### Test Suite
 
-13 test files with **139 test functions** covering all modules:
+~125 test source files / 200+ ctest entries today (see `nodus/CLAUDE.md` Test Coverage for the current map). The table below is the foundational-era snapshot:
 
 | Test File | Module Tested | Test Count |
 |-----------|---------------|------------|

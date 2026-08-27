@@ -1,12 +1,15 @@
 # DNA Engine API Reference
 
-**Version:** 1.22.0
-**Date:** 2026-04-24
+**Version:** 1.22.1
+**Date:** 2026-08-27 (header + dead-section pass; per-function bodies from earlier syncs)
 **Location:** `include/dna/dna_engine.h`
-**Library at last sync:** v0.11.5
+**Library at last sync:** v0.11.18
+**Coverage note (2026-08-27):** ~30 newer public `dna_engine_*` functions (DNAC
+stake/delegate family, reactions, wall boost, shutdown pair, cached balances, calls)
+are not yet documented here — the header is authoritative.
 
 **Changelog:**
-- v1.22.0 (2026-04-23): Added DNAC Delegations query API — `dna_engine_dnac_my_delegations` for listing the current identity's delegations + accrued rewards. Backed by witness T3 RPC and dnac engine task queue. See commit `5a8609fb` for release.
+- v1.22.0 (2026-04-23): Added DNAC Delegations query API — engine symbol `dna_engine_dnac_get_delegations` (wraps `dnac_get_my_delegations`) for listing the current identity's delegations + accrued rewards. Backed by witness T3 RPC and dnac engine task queue. See commit `5a8609fb` for release.
 - v1.21.0 (2026-04-17+): Stake-delegation v1 API surface — validator set, per-block reward accrual, delegate/undelegate flows, validator commission updates. TX types `STAKE`, `UNSTAKE`, `DELEGATE`, `UNDELEGATE`, `CLAIM_REWARD`, `VALIDATOR_UPDATE`. Exposed via existing dnac engine handler.
 - v1.20.0 (2026-04-09+): Follow graph API (section 11) — `dna_engine_follow`, `dna_engine_unfollow`, `dna_engine_get_following`, `dna_engine_is_following`, `dna_engine_sync_following_to_dht`, `dna_engine_sync_following_from_dht`. New types: `dna_following_t`, `dna_following_cb`. Free: `dna_free_following`. Plus updated Debug Log API: `dna_engine_debug_log_send`, `_message`, `_message_level`, `_export`.
 - v1.19.0 (2026-04-10): Added DNAC Multi-Token API (section 11c) — `dna_engine_dnac_token_list`, `dna_engine_dnac_token_create`, `dna_engine_dnac_token_balance`. New types: `dna_dnac_token_t`, `dna_dnac_token_list_cb`. Free function: `dna_engine_dnac_free_tokens`.
@@ -2014,6 +2017,10 @@ Checks if media exists on DHT (deduplication check before upload).
 ---
 
 ## 5d. Channels (RSS-like Public Channels)
+
+> **DISABLED since 2026-03-28** — the whole channel subsystem is soft-disabled behind
+> `DNA_CHANNELS_ENABLED` (not defined in current builds). The API below compiles only
+> when that flag is set; the Flutter UI has no channel surface.
 
 Named channels with flat text posts. Posts stored in daily DHT buckets for scalable retrieval.
 

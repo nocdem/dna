@@ -489,8 +489,8 @@ qgp_log_enable_tag("P2P");
 | `keys/identity.dsa` | Dilithium5 private key (4896 bytes) | Password-based (optional) + TEE wrap (Android) |
 | `keys/identity.kem` | Kyber1024 private key (3168 bytes) | Password-based (optional) + TEE wrap (Android) |
 | `mnemonic.enc` | BIP39 mnemonic phrase | KEM + Password (optional) |
-| `db/messages.db` | Message history | Plaintext (SQLite) |
-| `db/contacts.db` | Contact list | Plaintext (SQLite) |
+| `db/messages.db` | Message history | **SQLCipher-encrypted** (v0.9.161+, `dna_db_open_encrypted`) |
+| `db/contacts.db` | Contact list | **SQLCipher-encrypted** (v0.9.161+) |
 | `wallets/wallet.dwallet` | Cellframe wallet | Password-based |
 
 #### Key Encryption (v1.7.0+)
@@ -1799,11 +1799,11 @@ All messages are signed with Dilithium5 before transmission:
 
 | Data | Encryption | Location |
 |------|------------|----------|
-| Private keys | PBKDF2 + AES-256-GCM (optional password), TEE wrap on Android | `<data_dir>/<fp>/keys/*.dsa`, `*.kem` |
-| Mnemonic | KEM + PBKDF2/AES-256-GCM (optional password) | `<data_dir>/<fp>/mnemonic.enc` |
-| Messages | AES-256-GCM (encrypted at rest) | `<data_dir>/<fp>/db/messages.db` |
-| Contacts | Plaintext | Per-identity SQLite |
-| Cache | Plaintext | Per-identity SQLite |
+| Private keys | PBKDF2 + AES-256-GCM (optional password), TEE wrap on Android | `<data_dir>/keys/identity.dsa`, `identity.kem` |
+| Mnemonic | KEM + PBKDF2/AES-256-GCM (optional password) | `<data_dir>/mnemonic.enc` |
+| Messages | SQLCipher (encrypted at rest, v0.9.161+) | `<data_dir>/db/messages.db` |
+| Contacts | SQLCipher (encrypted at rest, v0.9.161+) | Per-identity SQLite |
+| Public-data caches (keyserver, wall, profiles) | Plaintext (public DHT data only) | Per-identity SQLite |
 
 **Note:** `data_dir` defaults to `~/.dna` on desktop, app-specific directory on mobile.
 

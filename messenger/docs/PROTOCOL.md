@@ -1,8 +1,8 @@
 # DNA Connect - Protocol Specifications
 
-**Version:** 1.1
-**Last Updated:** 2026-04-24
-**Library:** v0.11.5 | **Nodus:** v0.17.7
+**Version:** 1.2
+**Last Updated:** 2026-08-27
+**Library:** v0.11.18 | **Nodus:** v0.19.19
 **Security Level:** NIST Category 5 (256-bit quantum)
 
 This document specifies all wire formats and protocols used by DNA Connect.
@@ -226,8 +226,8 @@ The Spillway Protocol manages offline message delivery using a sender-based outb
     alice_fp:outbox:bob_fp:20476:a1b2c3...  (yesterday's messages)
 
   TTL:        7 days (auto-expire, no pruning needed)
-  Put Type:   Signed chunked (value_id=1)
-  Max:        500 messages per day bucket (DoS prevention)
+  Put Type:   Signed (value_id=1)
+  Max:        50 messages per day bucket (DNA_DM_OUTBOX_MAX_MESSAGES_PER_BUCKET, DoS prevention)
 
   ACK (v15, delivery confirmation):
   Recipients publish ACK timestamp per sender
@@ -313,10 +313,11 @@ typedef struct {
 ### 3.5 Constants
 
 ```c
-#define DHT_SPILLWAY_MAGIC         0x444E4120  // "DNA "
-#define DHT_SPILLWAY_VERSION       2
-#define DHT_SPILLWAY_DEFAULT_TTL   604800      // 7 days
-#define DHT_SPILLWAY_WATERMARK_TTL (30 * 24 * 3600)  // 30 days
+/* Actual constant names in code (dht/shared/dht_offline_queue.h) —
+ * "Spillway" is the protocol name, not the identifier prefix: */
+#define DHT_OFFLINE_QUEUE_MAGIC    0x444E4120  // "DNA "
+#define DHT_ACK_TTL                (30 * 24 * 3600)  // 30 days
+/* Message version = 2; default TTL = 7 days (NODUS_DEFAULT_TTL) */
 ```
 
 ### 3.6 Version History

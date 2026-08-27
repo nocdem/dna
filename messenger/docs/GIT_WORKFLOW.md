@@ -37,7 +37,7 @@ Detailed description:
 - Why it changed
 - Any breaking changes
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+Co-Authored-By: Claude <noreply@anthropic.com>
 ```
 
 **Commit Types:** `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `debug`
@@ -214,5 +214,5 @@ git pull --no-rebase  # Use merge strategy
 ---
 
 **See also:**
-- [Development Guidelines](DEVELOPMENT.md) - Code style and testing
+- `messenger/CLAUDE.md` — development guidelines (code style, testing, i18n)
 - [push_both.sh](../push_both.sh) - Automated dual-repo push script
