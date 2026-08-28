@@ -23,9 +23,11 @@ Client → dnac_spend → Leader?
   ├─ YES (genesis)     → legacy single-TX BFT (bypass mempool)
   └─ NO               → forward to leader → leader mempool_add
                         (leader resolved by SORTED RANK — see below)
-                        O15I P3(b): on a SUCCESSOR chain the forward is
-                        also POOLED by non-leaders, after the full
-                        ADMISSION check — see "Demand dissemination"
+                        O15I P3(b) / O15K: on BOTH lanes the forward is
+                        also POOLED by non-leaders, after a verification
+                        at that intake — ADMISSION on a successor,
+                        VALIDATION on legacy (O15K added the legacy one;
+                        that site had none) — see "Demand dissemination"
 
 witness_tick (every ~50ms):
   └─ is_leader? + IDLE? + mempool.count > 0? + 5s elapsed?
@@ -263,10 +265,25 @@ invisible to the reaper's nullifier walk AND unjudgeable by the entry
 verdict, so nothing could remove it after the chain committed it — the
 quiet-chain churn defect through a new door.
 
-Legacy chains are unchanged: a legacy peer refuses a non-leader
-`w_fwd_req` byte-identically because its forward intake is structural-only,
-so pooled legacy demand could never recruit the f+1 backers a rotation
-needs.
+⚠ **O15K SUPERSEDED THIS PARAGRAPH.** It used to read: *"Legacy chains are
+unchanged: a legacy peer refuses a non-leader `w_fwd_req` byte-identically
+because its forward intake is structural-only, so pooled legacy demand
+could never recruit the f+1 backers a rotation needs."*
+
+Both halves were true and together they were the bug. Leaving legacy
+unpooled is exactly why a dead leader halted a legacy chain indefinitely:
+P3(a) arms on `mempool.count > 0 || pending_forward_count > 0`, and on
+legacy both were structurally zero — `pool_local_demand` returned −1, and
+an unreachable leader released the `pending_forwards` slot in the same
+call. The deadman could never arm, so it never fired, so nothing rotated.
+
+O15K opens the lane and answers the objection rather than working around
+it: the reason legacy could not pool was that its forward intake did no
+verification, so O15K **adds that verification at that intake**, for every
+recipient including the leader — which also closed a live defect where the
+leader pooled forwarded bytes with no signature check at all. The f+1
+argument falls with it, because the peer-side refusal it depended on is
+removed in the same change.
 
 **Client answer on the unreachable-leader path:** the error CODE is
 unchanged (`NODUS_ERR_*` is wire surface); only the message differs, and
@@ -276,12 +293,26 @@ be proposed once a reachable leader is elected.
 **P3(b) — dissemination.** At fire (never at intake, so steady-state
 traffic is unchanged) the node re-broadcasts its mempool entries as
 `w_fwd_req` to the peer set, skipping entries already decided (same
-per-entry rule the demand predicate applies). `nodus_witness_peer_handle_fwd_req` now pools
-on a non-leader **on successor chains only**: there the entry passes the
-full `NODUS_WITNESS_VERIFY_ADMISSION` lane first. A LEGACY forward is
-handled structurally at that site (nullifier walk, no signature verify), so
-legacy keeps the original leader-only refusal byte-identical. A RAW,
-pre-admission forward is never pooled. `pending_forwards` carries no
+per-entry rule the demand predicate applies). `nodus_witness_peer_handle_fwd_req` pools
+on a non-leader **on BOTH lanes since O15K** — the successor entry passes
+the full `NODUS_WITNESS_VERIFY_ADMISSION` lane, and the legacy entry now
+passes a verification of its own, added by O15K at that site because it
+had none. Two details of the legacy call are load-bearing and were each
+flagged independently by three reviewers:
+
+- it runs in `NODUS_WITNESS_VERIFY_VALIDATION`, **not** ADMISSION. The two
+  modes differ on the legacy lane by the fee surge alone, and the surge
+  reads node-local `mempool.count` — so ADMISSION would let dissemination,
+  whose whole job is to fill every peer's pool with the same demand,
+  throttle the recovery it exists to produce. Direct client submissions
+  keep ADMISSION; the successor forward keeps ADMISSION too, because its
+  claim dedup is ADMISSION-only;
+- it is placed **after** the structural nullifier parse and is passed the
+  parsed nullifiers. Copying the successor call's `NULL, 0` would make
+  legacy Check 4 refuse everything and turn the whole fix into a silent
+  no-op.
+
+A RAW, pre-admission forward is never pooled. `pending_forwards` carries no
 transaction bytes (only hash / conn / txn_id / started_at), which is why
 the rebroadcast is sourced from the mempool.
 
