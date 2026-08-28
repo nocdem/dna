@@ -59,7 +59,7 @@ Environment:
 > transaction is submitted. Any scenario that just `sleep`s while
 > expecting height to advance is **vacuous** — it will pass by comparing
 > a height against itself. Drive the chain with a pump loop instead
-> (`test_vset_grow_shrink.sh:85`, `test_epoch_settlement.sh:88`).
+> (`test_vset_grow_shrink.sh:215`, `test_epoch_settlement.sh:91`).
 
 | Var | Default | Requires the binary built with | Purpose |
 |---|---|---|---|
@@ -198,9 +198,118 @@ All 24 scripts on disk are listed. **"Plain" means: a default
 |---|---|---|
 | `test_epoch_settlement.sh` | `-DDNAC_EPOCH_LENGTH=<E>` + `STAGEF_EPOCH_LENGTH=<E>` | Push-per-epoch UTXO settlement. **Pumps TXs to cross a real boundary**, then asserts the boundary row committed, the pool DRAINED, payout UTXOs appeared, and state_root is 7/7. (Before 2026-08-27 it only slept, and passed vacuously on an idle chain — see the header in that file.) |
 | `test_halving_boundaries.sh` | `-DDNAC_BLOCKS_PER_YEAR=<BY>` + `STAGEF_BLOCKS_PER_YEAR=<BY>` | Halving schedule cross-node consistency. SKIP (rc=99) when unset. Pumps across the boundary and measures credited emission; allow ≥ 20 min. |
-| `test_vset_grow_shrink.sh` | **FOUR** defines, all four matching env vars: `-DDNAC_EPOCH_LENGTH=<E>`, `-DDNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS=<E>`, `-DDNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS=<E>` (+ `STAGEF_EPOCH_LENGTH`, `STAGEF_CC_GRACE_SAFETY`, `STAGEF_CC_GRACE_ERGONOMIC`) | Ledger V2 S3 dynamic validator set 7 → 9 → 7. Spawns its own extra nodes (node8, node9) and leaves their directories behind. **The grace defines are not optional**: at the production safety grace of 17,280 blocks the scenario's governance step is refused with `[ERR/CHAIN_CONFIG] apply: grace -- effective=45 < commit=7 + grace=17280`, surfacing at the client only as `dnac_spend RPC failed (rc=7)` (`NODUS_ERR_PROTOCOL_ERROR`) — a message that names neither grace nor the missing define. |
+| `test_vset_grow_shrink.sh` | **Compile flags — THREE, all of them:** `-DDNAC_EPOCH_LENGTH=<E>`, `-DDNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS=<E>`, `-DDNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS=<E>`. No fault-injection build — `-DQGP_FAULT_INJECT` is **not** required, section G included. **Environment:** `STAGEF_EPOCH_LENGTH=<E>` matching the binary, exported **before `stagef_up.sh`** (`:52`), and `STAGEF_NODUS_BIN` (`:54`) which it uses to spawn nodes 8/9 and to restart the node section G kills. It does **not** read `STAGEF_CC_GRACE_SAFETY` / `STAGEF_CC_GRACE_ERGONOMIC` — here the two grace values matter only as compile defines; the env vars are read by the `test_cc_*` scenarios. It runs `nodus-cli` from a hardcoded `$STAGEF_REPO_ROOT/nodus/build/nodus-cli` (`:53`), so `STAGEF_NODUSCLI_BIN` does **not** redirect it. No `NODUS_FAULT_*`. | Ledger V2 S3 dynamic validator set 7 → 9 → 7 (sections A-F), then a **derived, deliberately killed epoch leader** the chain must rotate the view past (section G — see below). Spawns its own extra nodes (node8, node9) and leaves their directories behind, plus one committee node kill -9'd and restarted. **The grace defines are not optional**: at the production safety grace of 17,280 blocks the scenario's governance step is refused with `[ERR/CHAIN_CONFIG] apply: grace -- effective=45 < commit=7 + grace=17280`, surfacing at the client only as `dnac_spend RPC failed (rc=7)` (`NODUS_ERR_PROTOCOL_ERROR`) — a message that names neither grace nor the missing define. |
 | `test_v2_grow_7_20.sh` | **BROKEN — do not run** | Wants `-DNODUS_V2_ACTIVATION=ON`, an option deleted with the activation ceremony (O15J Faz 3). Rewriting it is Faz 4's job. |
 | `test_mixed_version_reject.sh` | `STAGEF_LEGACY_NODUS_BIN` | O15C-D.4 — a stale-protocol validator must not participate |
+
+#### `test_vset_grow_shrink.sh` section G — the dead epoch leader
+
+The last section of the last scenario, and the only place the harness
+kills a node it has **PROVEN is the leader**: `test_view_change_fork.sh`
+pauses node 1 whichever slot happens to be leading, and proceeds when no
+view change forms at all (`:116-118`), so it exercises a dead
+*participant*, not a dead *leader*. G's full argument lives in the
+script's own header (`:865-967`); this is the summary the scenario
+tables owe it.
+
+**What it proves.** That a chain whose designated EPOCH LEADER is killed
+recovers by ROTATING THE VIEW past it. The property that would be false
+if G failed: *a BFT chain can make progress across an epoch boundary
+whose designated leader is dead.* It is pinned by three independent
+positive checks, all captured while the victim is still dead (`:1224-1310`):
+
+1. a follower's demand-armed **P3 deadman FIRED** — the count of
+   `P3 committed tip frozen` across every node log INCREASED;
+2. a **view change COMPLETED** — the persisted `pbft_state.current_view`
+   (max over the survivors) advanced **and** some node logged
+   `view change quorum! new view:`. Both are required: the number alone
+   cannot say where the rotation came from;
+3. **leadership genuinely moved** — no block in
+   `[NEXT_B, NEXT_B + E_LEN)` carries the victim's 32-byte witness id in
+   `blocks.proposer_id`, guarded by a non-vacuity check that the range
+   is non-empty.
+
+Then, as before, the restarted node re-converges to byte-identical
+snapshots, `state_root` and block identity.
+
+⚠ **What it no longer does: pass because the chain crossed the
+boundary.** Until 2026-08-27 G killed a **hardcoded node 4** and asserted
+only that blocks kept coming. The leader is `(epoch + view) % n` over a
+committee ordered by stake DESC then by a `state_seed`-derived tiebreak,
+over identities generated fresh on every run — node 4 was the boundary
+leader only by luck, and "the chain crossed the boundary" is fully
+compatible with "the victim was never the leader". The victim is now
+DERIVED: read positionally out of the frozen `validator_set_snapshots`
+row for `epoch_start == NEXT_B` at entry
+`(NEXT_B / E_LEN + current_view) % active_count`, then cross-checked
+against the node's own `nodus.pk` fingerprint prefix (`:1058-1152`).
+Crossing the boundary is now a PRECONDITION, not the assertion.
+
+**What it requires.** Nothing beyond the row above — the same
+short-epoch build (three defines) and `STAGEF_EPOCH_LENGTH` exported
+before bring-up. **G adds no compile flag and no environment variable of
+its own**; it needs no fault-injection build. It DOES require that
+sections A-F ran in the same process: G consumes the 9-bonded /
+7-active cluster they build and the head they leave.
+
+**What it leaves behind.** One committee node `kill -9`'d and restarted
+under a NEW pid (appended to `pids.txt`; its `nodus.log` is appended to,
+not truncated, so it holds two runs). **Which node that is VARIES PER
+RUN** — it is derived from fresh identities, so it is printed, and it
+may be node1. The chain is left a few blocks past the boundary at a
+**permanently higher `current_view`** (`current_view` never resets and is
+persisted per chain DB), with the post-shrink 7-ACTIVE / 2-ELIGIBLE set
+from section F. Nothing is cleaned up.
+
+**How it can lie.**
+
+- **The pump cannot see this halt.** `pump_to_height` fails only after
+  `PUMP_STALL_ROUNDS=8` consecutive no-progress rounds (~5 min at the
+  measured ~37 s/round), while the deadman fires at
+  `NODUS_T3_ROUND_TIMEOUT_MS` = 15 s and a rotation converges well
+  inside a minute. Pump success is therefore **not** evidence and is not
+  asserted as such. Delete the three positive checks and G silently
+  reverts to a liveness test that cannot observe the thing it is named
+  for.
+- **Stale log lines.** Every line G looks for already exists when G
+  starts — `test_view_change_fork.sh` deliberately forces view changes
+  and sorts earlier. G compares BEFORE/AFTER counts and requires an
+  INCREASE; "simplifying" any of them to `grep -q` makes them vacuously
+  true.
+- **View drift redirects leadership — RESIDUAL, NOT CLOSED.** The
+  derivation is only as good as the view it used. The window BEFORE the
+  kill is closed (re-read and re-derive, twice, then fail; plus a check
+  that no survivor already holds a higher view than the node the
+  derivation read). The window AFTER cannot be closed from outside the
+  node: a round timeout while the victim is dead rotates the view and
+  hands leadership to somebody else, and G then **fails on a healthy
+  chain**. It is made DIAGNOSABLE instead — the pre-kill and
+  post-boundary views are printed in every failure message.
+- **A victim that maps to no node, or a missing snapshot row.** An
+  absent `validator_set_snapshots` row for the boundary epoch (after a
+  bounded re-read), a blob whose length disagrees with `active_count`,
+  or a derived leader that is none of this harness's nodes are all
+  **FAILURES**. G must not pump to produce the row — pumping is exactly
+  what would carry the head past the boundary it needs to arrive at with
+  a dead leader.
+- **`rc=99` is BANNED in G.** The runner treats 99 as SKIP and exits 0
+  with SKIPs allowed, and a SKIP needs no `ASSERT_RUN` sentinel — so
+  encoding any of the preconditions above as a skip would make this
+  coverage silently absent while the suite reported green. A skip is not
+  a pass.
+- **A dead reference node.** Every single-node read goes through
+  `$REF_NODE`, re-pointed off the victim before the kill. The old
+  catch-up loop compared node1's height against the victim's, so with
+  `victim == node1` both sides would read the SAME database and the
+  comparison would be trivially true. Reintroduce a raw node1 read here
+  and that returns.
+- **A known false-FAIL residual** (it cannot produce a green): the pump
+  submits through `dna-connect-cli`, and the victim is one of the nodes
+  that CLI may connect to. All committee nodes are in `bootstrap_nodes`
+  and `stagef_dna` rebuilds the list before every call, so there are
+  failover candidates — but the failover ORDER is not verifiable from
+  the script. If the pump stalls immediately after the kill with the
+  cluster otherwise healthy, suspect this before suspecting consensus.
 
 #### Needs a fault-injection build (`-DQGP_FAULT_INJECT=ON` + `NODUS_FAULT_*`)
 
@@ -239,6 +348,11 @@ code under test. Observed, and each cost real debugging time:
   the next one aborts with "arm file already exists".
 - Bootstrap scenarios restart nodes; a scenario run immediately after may
   see a node still syncing and report a false divergence.
+- `test_vset_grow_shrink.sh` **section G** kills and restarts one
+  committee node — a DIFFERENT one on every run — and leaves the cluster
+  at a permanently higher `current_view`. It sorts last, so nothing
+  inherits it inside one sweep; anything you run manually afterwards
+  does.
 
 Bring the cluster up fresh for a scenario whose result you intend to
 trust, or clean the specific residue named above.
@@ -377,6 +491,15 @@ healthy committee, say nothing on the next machine — and a budget raised
 until green will happily swallow a real stall. If a wait needs a bigger
 number to pass, that is the signal to re-express it in blocks or in
 progress, not to raise it.
+
+The worked example is `test_vset_grow_shrink.sh` **section G**: with the
+epoch leader dead by design every round waits out a missing vote
+(measured ~63 s/block against ~37 s on a healthy cluster), so the
+scenario failed repeatedly with the chain advancing normally and each
+failure invited another number bump. A raised pump budget would have
+turned a genuine dead-leader halt into a green. The fix was to assert
+PROGRESS (`PUMP_STALL_ROUNDS`) and to condition the PASS on positive
+rotation evidence — never on the pump finishing.
 
 ## Known limitations
 

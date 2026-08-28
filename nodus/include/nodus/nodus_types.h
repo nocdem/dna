@@ -22,8 +22,8 @@ extern "C" {
 
 #define NODUS_VERSION_MAJOR  0
 #define NODUS_VERSION_MINOR  19
-#define NODUS_VERSION_PATCH  20
-#define NODUS_VERSION_STRING "0.19.20"
+#define NODUS_VERSION_PATCH  21
+#define NODUS_VERSION_STRING "0.19.21"
 
 /* Wire frame.
  *
@@ -222,6 +222,23 @@ extern "C" {
  * reply arrives after the caller gave up and only produces an
  * "unknown txn" warning. */
 #define NODUS_W_PENDING_FWD_TIMEOUT_S 30
+
+/* O15K E1 — how long the chain-DB open waits out a lock before calling it
+ * permanent. A witness restarted immediately after `kill -9` races the
+ * dying process's WAL-recovery lock; without a busy timeout SQLite returns
+ * BUSY at once, the schema exec fails, and the node used to come up
+ * half-open with a ZEROED chain id — which silently disabled both the
+ * CRITICAL-2 cross-chain replay guard and the self-quarantine detector
+ * (nodus/BUGS.md, top OPEN entry).
+ *
+ * 5000 ms is not a new number: it is the value O15J's f08fbcdc already
+ * chose for the same class on the V2 probe connection
+ * (nodus_witness_v2_gen.c). Matching it keeps ONE answer in the tree to
+ * "how long is a lock allowed to be transient". It is also what draws the
+ * transient/permanent boundary without inventing a mechanism — SQLite
+ * retries internally for this long, so a BUSY that outlives it is a
+ * genuinely persistent lock and failing closed is then correct. */
+#define NODUS_W_DB_BUSY_TIMEOUT_MS 5000
 
 /* Merkle tree tags (v1 stake/delegation) — domain separators preventing
  * cross-tree leaf-key collisions (F-CRYPTO-04 red-team mitigation).

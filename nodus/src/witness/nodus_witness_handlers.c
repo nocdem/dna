@@ -1757,12 +1757,77 @@ int nodus_witness_pool_local_demand(nodus_witness_t *w,
         return -2;
     }
 
-    /* SUCCESSOR ONLY. A legacy peer refuses a non-leader forward
-     * byte-identically (nodus_witness_peer.c), so legacy demand pooled
-     * here could never recruit the f+1 backers a rotation needs — it
-     * would drive lone view changes nobody joins. Legacy is left exactly
-     * as it was found. */
-    if (!w->v2_successor) return -1;
+    /* ── O15K §3.1 — THE SUCCESSOR-ONLY GATE IS GONE ──────────────────
+     * `if (!w->v2_successor) return -1;` stood here. Its argument: a
+     * legacy peer refuses a non-leader w_fwd_req byte-identically
+     * (nodus_witness_peer.c:883), so legacy demand pooled here could
+     * never recruit the f+1 backers a rotation needs, and would only
+     * drive lone view changes nobody joins.
+     *
+     * THE PREMISE WAS THE BUG, NOT A SAFEGUARD. That peer-side refusal is
+     * removed in this same change, and leaving legacy unpooled is exactly
+     * what let a dead leader wedge the chain INDEFINITELY rather than for
+     * one epoch: a halted tip freezes the epoch, and the leader is
+     * `(epoch + view) % n` (nodus_witness_bft.c:461,504), so leadership
+     * stays pinned on the dead node until a view change — which nothing
+     * could start, because the P3 deadman arms on
+     * `mempool.count > 0 || pending_forward_count > 0`
+     * (nodus_witness_bft.c:8682) and BOTH inputs read zero on the one
+     * node the client was actually talking to: this gate zeroed the
+     * first, and the `!leader_conn` branch in handle_dnac_spend below
+     * releases the forward slot in the same call, zeroing the second.
+     *
+     * THE MODE STAYS NODUS_WITNESS_VERIFY_ADMISSION (below), and that is
+     * a decision, not an oversight. This is a DIRECT client submission —
+     * the client chose this node, so the node-local fee surge
+     * (nodus_witness_verify.c:1154) is a meaningful intake policy here.
+     * §3.3a's VALIDATION exemption is scoped to FORWARDED / rebroadcast
+     * intake, where the surge would throttle the cluster's own
+     * replication; that is a different door, in a different file.
+     *
+     * ── O15K §3.4 — A LEGACY ENTRY WITH NO NULLIFIER IS NOT DEMAND ────
+     * A legacy entry's ONLY handle is its nullifiers. The O15I P3(c)
+     * reaper evicts through a committed-nullifier walk, and
+     * nodus_witness_v2_entry_verdict answers UNJUDGED for every legacy
+     * chain (nodus_witness.c:1112-1114). Pool one with no nullifier and
+     * NOTHING can ever remove it: it reads as live demand forever and
+     * fires a view change every round_timeout_ms against a HEALTHY
+     * leader — the O15I V1 defect class, re-entering through the legacy
+     * door. The orphan shape below makes it worse, deliberately:
+     * remove_by_conn cannot reach a client_conn == NULL entry either.
+     *
+     * ⚠ THIS IS NOT PURELY BELT-AND-BRACES ON THIS PATH. For an ordinary
+     * legacy type the admission call below refuses the shape itself
+     * (Check 4, nodus_witness_verify.c:989-991) and the guard is
+     * redundant — but a legacy GENESIS returns 0 from admission BEFORE
+     * Check 4 ever runs (nodus_witness_verify.c:952-955), carries no
+     * nullifiers by construction (handle_dnac_spend's extraction skips
+     * it), and a NON-LEADER is reachable with one while the chain is
+     * still pre-genesis. For that entry this guard is the only refusal
+     * there is. The condition mirrors Check 4's exactly, `!nullifiers`
+     * included, so the two cannot drift and the copy loop below can
+     * never walk a NULL array on this lane.
+     *
+     * SCOPED TO LEGACY, AND THAT IS LOAD-BEARING. A successor class-200
+     * ENVELOPE is pooled with nullifier_count == 0 by contract, and a
+     * class-201 CLAIM re-derives its committed nullifier further down.
+     * An unscoped guard would revert O15I and O15J.
+     *
+     * REFUSED AS -2, NEVER THE RETIRED -1. The caller's -1 branch was
+     * deliberately silent so legacy logs stayed byte-identical, so a
+     * repurposed -1 would make a real refusal invisible; -2 is also what
+     * admission itself answers for this shape on every path that runs
+     * Check 4 (verify returns -1, mapped to -2 below). The forward is
+     * NOT stopped — an admission refusal never stopped it — so a
+     * pre-genesis GENESIS submission still reaches the leader exactly as
+     * it did before. */
+    if (!w->v2_successor && (!nullifiers || nullifier_count == 0)) {
+        if (reject_reason && reason_size)
+            snprintf(reject_reason, reason_size,
+                     "legacy entry carries no usable nullifier — nothing "
+                     "could ever evict it from the pool");
+        return -2;
+    }
 
     /* ── ALREADY OURS? ────────────────────────────────────────────────
      * Asked FIRST, on the same tx_hash key nodus_witness_mempool_add
@@ -2261,8 +2326,12 @@ static void handle_dnac_spend(nodus_witness_t *w,
         else if (pool_rc == -4)
             fprintf(stderr, "%s: not pooled locally (pool full or "
                     "allocation failed) — forwarding anyway\n", LOG_TAG);
-        /* pool_rc == -1 is the LEGACY lane: nothing pooled, by design,
-         * and deliberately silent so legacy logs stay byte-identical. */
+        /* O15K §3.1 — there is no -1 branch to write any more. The
+         * successor-only gate that produced it is deleted, so a legacy
+         * chain no longer declines silently: it now either pools (0 / 1
+         * above) or reports admission's own verdict (-2 / -3), and the
+         * legacy log gains exactly the lines the successor lane already
+         * had. -1 is retired, not reassigned. */
 
         /* Find a free pending_forward slot */
         int pf_slot = -1;
@@ -2416,9 +2485,12 @@ static void handle_dnac_spend(nodus_witness_t *w,
              * a new code would be a breaking change for a message-only
              * improvement. Only the human-readable text differs.
              *
-             * CONDITIONAL ON HAVING ACTUALLY POOLED — on a legacy chain
-             * nothing was, and claiming otherwise would be telling the
-             * client something untrue.
+             * CONDITIONAL ON HAVING ACTUALLY POOLED, and claiming
+             * otherwise would be telling the client something untrue.
+             * O15K §3.1 opened this lane to legacy chains too, so the
+             * true branch is now the ordinary one on BOTH lanes; the
+             * false branch is what admission refused (-2 / -3) or what
+             * would not fit (-4), never a whole chain class.
              *
              * The client is answered IMMEDIATELY rather than left on the
              * 30 s pending_forwards timeout: the slot is released on this

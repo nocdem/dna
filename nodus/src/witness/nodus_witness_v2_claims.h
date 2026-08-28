@@ -201,6 +201,39 @@ int nodus_witness_v2_claim_state_update(nodus_witness_t *w,
                                         const uint8_t manifest_hash[64],
                                         uint64_t converted);
 
+/**
+ * O15K V-3 — the ONE spent-claim lookup: does `nullifier` have a row in
+ * v2_claims_spent (the table a CLAIM's commit writes, stage b above)?
+ *
+ * It exists because the answer has two consumers — ADMIT step 9, and the
+ * mempool reaper that decides whether a pooled class-201 entry the chain
+ * has already committed may be dropped (nodus_witness_mempool_evict_
+ * committed). Before O15K the reaper asked the LEGACY `nullifiers` table
+ * instead, which no successor commit ever writes, so a committed claim
+ * was never reaped and read as live demand forever.
+ *
+ * ⚠ THE RETURN IS A TRI-STATE ON PURPOSE — a bool is FORBIDDEN here.
+ * The two callers' safe answers on a fault point in OPPOSITE directions:
+ *
+ *   | caller                | question             | maps -1 to        |
+ *   |-----------------------|----------------------|-------------------|
+ *   | admission (ADMIT §9)  | "may I ADMIT this?"  | SPENT → reject    |
+ *   | reaper (evict)        | "may I DELETE this?" | NOT SPENT → keep  |
+ *
+ * Never admit a possible double-spend; never delete a client's pending
+ * work. A bool would give one of them the dangerous direction, so each
+ * caller maps -1 itself, at its own call site.
+ *
+ * Deterministic and node-local: entry bytes plus this node's committed
+ * state; no clock, no message, no iteration order.
+ *
+ * @return 1 spent / 0 not spent / -1 FAULT ("this node does not know" —
+ *         an absent or unreadable v2_claims_spent is a fault, NEVER
+ *         "not spent").
+ */
+int nodus_witness_v2_claim_nullifier_spent(nodus_witness_t *w,
+                                           const uint8_t nullifier[64]);
+
 #ifdef NODUS_V2_TEST_SUPPLY
 /**
  * O15J — TEST-ONLY. Suspend the CORE conservation invariant so an

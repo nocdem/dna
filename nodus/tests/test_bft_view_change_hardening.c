@@ -101,6 +101,55 @@
  *       nodus_witness_bft_consensus_active; §13j pins each, with its own
  *       in-fixture converse.
  *
+ *  O15K — the LEGACY lane opens, and two defects that are live on the
+ *  devnet close with it. §13e (rewritten) and §13l-§13q assert behaviour
+ *  that does NOT exist yet: they are RED until the O15K change lands,
+ *  which is the only reason they are worth writing. §13r and §13s are the
+ *  deliberate exceptions — KEEP-DIRECTION GUARDS that pass today and say
+ *  so in their own headers; see the §3.5 entry below for why a guard
+ *  against a deletion the code cannot yet perform cannot be red.
+ *  The two rules each obeys, both learned the expensive way and recorded
+ *  at §13e2's own limit note:
+ *
+ *    1. THE ENTRY UNDER TEST ENTERS THROUGH A GATE THE FIX CHANGES —
+ *       nodus_witness_pool_local_demand or
+ *       nodus_witness_peer_handle_fwd_req. p3_pool calls
+ *       nodus_witness_mempool_add DIRECTLY and bypasses every intake gate
+ *       O15K touches, so a case that pools with it and then observes the
+ *       deadman is asserting SHIPPED behaviour. p3_pool appears below only
+ *       where the pooled entry is the INSTRUMENT rather than the subject,
+ *       and each such use says so.
+ *    2. EVERY REFUSAL CARRIES A POSITIVE CONTROL. "It was refused" is
+ *       indistinguishable from the pre-fix early returns —
+ *       pool_local_demand's -1 (nodus_witness_handlers.c) and the legacy
+ *       non-leader refusal (nodus_witness_peer.c) both mean "not pooled"
+ *       for the WRONG reason. So every refusal sits beside an entry that
+ *       DOES pool, and the assertion is on w->mempool.count changing, not
+ *       on a return code alone.
+ *
+ *  §3.1 — a legacy client's demand may be pooled locally (§13l).
+ *  §3.2 / V-1 — the legacy forward intake ran NO admission verify, so a
+ *       legacy LEADER pooled structurally-walkable but cryptographically
+ *       UNVERIFIED bytes. One invalid-signature transaction from any
+ *       remote client therefore poisons the leader's next batch. LIVE ON
+ *       THE DEVNET. §13e (rewritten) and §13n.
+ *  §3.3 — the P3 fire disseminated NOTHING on a legacy chain, so the one
+ *       node holding the work could never recruit the f+1 backers a
+ *       rotation needs (§13p).
+ *  §3.4 / V-8 — a wire input_count byte of 0 walks the legacy structural
+ *       loop zero times and is pooled with nullifier_count == 0: an entry
+ *       no reaper can evict and that reads as live demand forever, i.e.
+ *       the O15I V1 churn re-entering through the legacy door. LIVE ON
+ *       THE DEVNET. §13o.
+ *  §3.5 / V-3 — a successor CLAIM commit writes v2_claims_spent while
+ *       every "is this decided?" question walks the legacy `nullifiers`
+ *       table, so a committed class-201 claim is never reaped (§13q).
+ *       This is the ONE O15K item that teaches the code to DELETE, so
+ *       §13r and §13s assert the KEEP direction: an uncommitted claim and
+ *       a claim judged under a DB fault must both survive. Both are
+ *       GUARDS — they pass today, and they say so — because a wrong
+ *       deletion silently loses work a client is waiting on.
+ *
  * Fixture style follows test_bft_liveness.c: heap witness (multi-MB),
  * real ML-DSA-87 keys so PREVOTE cert_sig verification is the production
  * check rather than a stub.
@@ -114,6 +163,8 @@
 #include "witness/nodus_witness_peer.h" /* §13 — handle_fwd_req,
                                          * §14b — peer_conn_closed         */
 #include "witness/nodus_witness_handlers.h" /* §14a — handle_dnac          */
+#include "witness/nodus_witness_verify.h"   /* §13e/§13l-§13o — the
+                                             * canonical legacy tx_hash    */
 #include "witness/nodus_witness_v2_gate.h" /* §13e2 — ingress_is_armed     */
 #include "witness/nodus_witness_vset.h"
 /* §13e3 — the successor-chain fixture (test_v2_claim_ingress.c's shape). */
@@ -140,6 +191,8 @@
 #include "crypto/sign/qgp_dilithium.h"
 #include "crypto/hash/qgp_sha3.h"
 
+#include "dnac/dnac.h"           /* §13e/§13l-§13o — DNAC_PROTOCOL_VERSION,
+                                  *                  DNAC_MIN_FEE_RAW      */
 #include "dnac/vset_wire.h"
 #include "dnac/env_wire.h"       /* §7 — DNA_ENV_MAX_TOTAL_LEN */
 #include "dnac/env_preflight.h"  /* §13i — the derived intent_id           */
@@ -612,6 +665,213 @@ static bool p3_stamped_now(uint64_t stamp) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════
+ * §13e / §13l-§13o fixture — a REAL, ADMISSIBLE LEGACY transaction.
+ *
+ * WHY THIS HAD TO EXIST. Every O15K legacy case turns on the difference
+ * between bytes the legacy ADMISSION lane accepts and bytes it refuses,
+ * and until now this file had no admissible legacy transaction at all:
+ * §13e's `ltx` is a zero-filled header with one nullifier glued on, which
+ * the pre-O15K structural walk accepts and which admission refuses at its
+ * FIRST check (wrong wire version). A case built on those bytes could
+ * only ever observe a refusal, and a refusal is exactly what the pre-fix
+ * early returns already produce — the vacuity trap §13e2 records.
+ *
+ * THE RECIPE IS NOT INVENTED. It is test_witness_verify.c's
+ * build_tx_data / embed_signer_sig, reproduced field for field, because
+ * that fixture is the shipped proof that these bytes pass
+ * nodus_witness_verify_transaction in ADMISSION mode
+ * (test_witness_verify.c: "valid spend TX passes all checks"). The wire
+ * layout it encodes is the one nodus_witness_verify.c walks:
+ *
+ *   version(1) type(1) timestamp(8) tx_hash(64) committed_fee(8 BE)
+ *   input_count(1)  [ nullifier(64) amount(8) token_id(64) ] * n
+ *   output_count(1) [ version(1) fp(129) amount(8) token_id(64)
+ *                     seed(32) memo_len(1) ] * m
+ *   witness_count(1) = 0
+ *   signer_count(1)  [ pubkey(2592) signature(4627) ] * s
+ *
+ * ONE DELIBERATE DIFFERENCE FROM THE REFERENCE, and it is load-bearing:
+ * the tx_hash is recomputed over w->chain_id, not over a zero chain id.
+ * test_witness_verify.c memsets its whole witness and hashes an explicit
+ * 32-byte zero chain id; chain_db_open here writes 16 tag bytes,
+ * zero-filled to the field's 32 (nodus_witness.c set_chain_id). Hashing
+ * the wrong chain id would fail Check 2 ("tx_hash mismatch") and every
+ * §13e/§13l-§13o accept would silently become a refusal — the whole suite
+ * green for the wrong reason.
+ *
+ * DETERMINISM: the timestamp is derived from the tag, never from the
+ * clock, so two runs build byte-identical transactions.
+ * ═══════════════════════════════════════════════════════════════════ */
+
+/* Σin − Σout = 1,000,000 = NODUS_W_BASE_TX_FEE exactly — the deterministic
+ * floor Check 5 applies in BOTH verify modes. The ADMISSION surge on top
+ * of it is `BASE * (1 + mempool.count / NODUS_W_FEE_SURGE_STEP)`, so every
+ * section below keeps the pool under NODUS_W_FEE_SURGE_STEP entries while
+ * admitting; a fuller pool would raise the bar and turn an intended ACCEPT
+ * into a fee rejection. */
+#define P3L_INPUT_AMOUNT   3000000ULL
+#define P3L_OUTPUT_AMOUNT  2000000ULL
+
+typedef struct {
+    uint8_t  *tx;                            /* wire bytes — heap        */
+    uint32_t  len;
+    uint8_t   hash[NODUS_T3_TX_HASH_LEN];    /* the recomputed tx_hash   */
+    uint8_t   nul[NODUS_T3_NULLIFIER_LEN];   /* input 0's nullifier      */
+    uint64_t  fee;                           /* Σin − Σout, the ONE fee  */
+} p3l_tx_t;
+
+static void p3l_die(const char *what) {
+    fprintf(stderr, "p3l fixture: %s\n", what);
+    exit(1);
+}
+
+/* Build a legacy SPEND signed by `signer`.
+ *
+ * `n_inputs`   1 = the ordinary shape; 0 = the V-8 shape, whose wire
+ *              input_count byte is 0 and whose structural walk therefore
+ *              executes zero times.
+ * `valid_sig`  false corrupts the signature AFTER the tx_hash is fixed.
+ *              The legacy preimage hashes the CALLER-SUPPLIED signer
+ *              pubkeys and length-walks the wire signers section without
+ *              hashing it (nodus_witness_verify.c on
+ *              dnac_txw_legacy_tx_hash), so flipping signature bytes
+ *              leaves the tx_hash — and therefore every structural check
+ *              — intact. The ONLY thing wrong with those bytes is the
+ *              cryptography, which is precisely the V-1 shape. */
+static void p3l_make(nodus_witness_t *w, const peer_t *signer, uint8_t tag,
+                     int n_inputs, bool valid_sig, p3l_tx_t *out) {
+    const size_t IN_SZ  = NODUS_T3_NULLIFIER_LEN + 8 + 64;      /* 136 */
+    const size_t OUT_SZ = 1 + 129 + 8 + 64 + 32 + 1;            /* 235 */
+
+    memset(out, 0, sizeof(*out));
+    size_t size = DNAC_TX_HEADER_SIZE
+                + 1 + (size_t)n_inputs * IN_SZ
+                + 1 + OUT_SZ
+                + 1                                   /* witness_count 0 */
+                + 1 + NODUS_PK_BYTES + NODUS_SIG_BYTES;
+    /* The explicit return after p3l_die follows p3c_make_claim's
+     * convention: the die helper is not declared noreturn, so without it a
+     * compiler still sees a NULL walk below. */
+    uint8_t *buf = calloc(1, size);
+    if (!buf) { p3l_die("tx alloc"); return; }
+
+    uint8_t *p = buf;
+    *p++ = DNAC_PROTOCOL_VERSION;
+    *p++ = NODUS_W_TX_SPEND;
+    uint64_t ts = 1700000000ULL + (uint64_t)tag;   /* derived, not a clock */
+    memcpy(p, &ts, 8); p += 8;
+    p += NODUS_T3_TX_HASH_LEN;                     /* filled after hashing */
+    for (int i = 7; i >= 0; i--)                   /* committed_fee, BE    */
+        *p++ = (uint8_t)((DNAC_MIN_FEE_RAW >> (i * 8)) & 0xFF);
+
+    /* Inputs. The nullifier is derived from the tag exactly as p3_nul_of
+     * derives one, so a test can fund it and later commit it. */
+    *p++ = (uint8_t)n_inputs;
+    memset(out->nul, tag, sizeof(out->nul));
+    for (int i = 0; i < n_inputs; i++) {
+        memcpy(p, out->nul, NODUS_T3_NULLIFIER_LEN);
+        p += NODUS_T3_NULLIFIER_LEN;
+        uint64_t amt = P3L_INPUT_AMOUNT;
+        memcpy(p, &amt, 8); p += 8;
+        p += 64;                                   /* token_id = native   */
+    }
+
+    /* One output to a fingerprint that is NOT the signer's, so the whole
+     * P3L_OUTPUT_AMOUNT counts as a transfer rather than as change. */
+    *p++ = 1;
+    *p++ = 1;                                      /* output version      */
+    memset(p, 0xBB, 129); p += 129;
+    uint64_t oamt = P3L_OUTPUT_AMOUNT;
+    memcpy(p, &oamt, 8); p += 8;
+    p += 64;                                       /* token_id = native   */
+    p += 32;                                       /* nullifier_seed      */
+    *p++ = 0;                                      /* memo_len            */
+
+    *p++ = 0;                                      /* witness_count       */
+    *p++ = 1;                                      /* signer_count        */
+    memcpy(p, signer->pk, NODUS_PK_BYTES); p += NODUS_PK_BYTES;
+    uint8_t *sig_slot = p; p += NODUS_SIG_BYTES;
+
+    out->tx  = buf;
+    out->len = (uint32_t)(p - buf);
+    if ((size_t)out->len != size) p3l_die("wire length drift");
+
+    if (nodus_witness_recompute_tx_hash(w->chain_id, buf, out->len,
+                                        signer->pk, 1, out->hash) != 0)
+        p3l_die("tx_hash recompute");
+    memcpy(buf + 10, out->hash, NODUS_T3_TX_HASH_LEN);
+
+    nodus_sig_t sig;
+    nodus_seckey_t sk;
+    memcpy(sk.bytes, signer->sk, sizeof(sk.bytes));
+    if (nodus_sign(&sig, out->hash, NODUS_T3_TX_HASH_LEN, &sk) != 0)
+        p3l_die("tx signature");
+    memcpy(sig_slot, sig.bytes, NODUS_SIG_BYTES);
+    if (!valid_sig) sig_slot[0] = (uint8_t)(sig_slot[0] ^ 0xFF);
+
+    /* The declared fee the wire and the caller must BOTH agree with:
+     * Check 5's `actual_fee != declared_fee` is deterministic and runs in
+     * both modes, so a mismatch here would refuse the transaction for a
+     * reason no section below is about. For the zero-input shape the value
+     * is carried unchanged and is irrelevant — that transaction never
+     * reaches the balance arithmetic. */
+    out->fee = P3L_INPUT_AMOUNT - P3L_OUTPUT_AMOUNT;
+}
+
+static void p3l_free(p3l_tx_t *t) {
+    free(t->tx);
+    t->tx = NULL;
+    t->len = 0;
+}
+
+/* Put the UTXO the transaction spends into the committed set, owned by
+ * the SIGNER's fingerprint. Check 4 rejects an input whose owner matches
+ * no signer (CRITICAL-4), so funding it to anyone else would make every
+ * "it pooled" assertion below fail for an ownership reason. */
+static void p3l_fund(nodus_witness_t *w, const peer_t *signer,
+                     const p3l_tx_t *t) {
+    nodus_pubkey_t pk;
+    memcpy(pk.bytes, signer->pk, NODUS_PK_BYTES);
+    char fp[129];
+    if (nodus_fingerprint_hex(&pk, fp) != 0) p3l_die("signer fingerprint");
+    uint8_t src[NODUS_T3_TX_HASH_LEN];
+    memset(src, 0x6C, sizeof(src));
+    if (nodus_witness_utxo_add(w, t->nul, fp, P3L_INPUT_AMOUNT, src,
+                               0, 0, NULL) != 0)
+        p3l_die("utxo insert");
+}
+
+/* Is the funding UTXO really there, with the amount the balance check
+ * needs? The §13f anti-vacuity discipline applied to the INPUT side: a
+ * fixture whose utxo_add silently failed would make every accept below
+ * fail as "UTXO not found in set", which reads identically to the
+ * pre-O15K gate refusing. */
+static bool p3l_funded(nodus_witness_t *w, const p3l_tx_t *t) {
+    uint64_t amt = 0;
+    char owner[129] = {0};
+    if (nodus_witness_utxo_lookup_ex(w, t->nul, &amt, owner, NULL, NULL) != 0)
+        return false;
+    return amt == P3L_INPUT_AMOUNT && owner[0] != '\0';
+}
+
+/* A w_fwd_req carrying `t`, forwarded by `from`. The declared fee is the
+ * transaction's own Σin − Σout, which is what Check 5 compares against.
+ * client_pubkey / client_sig stay NULL: the LEGACY admission lane never
+ * reads either parameter (nodus_witness_verify.c casts them to void only
+ * on the successor branch, and the legacy branch verifies the WIRE signer
+ * section instead), so a forward that carries them and one that does not
+ * are judged identically. */
+static void p3l_fwd(nodus_t3_msg_t *m, const p3l_tx_t *t, const peer_t *from) {
+    memset(m, 0, sizeof(*m));
+    m->type = NODUS_T3_FWD_REQ;
+    memcpy(m->fwd_req.tx_hash, t->hash, NODUS_T3_TX_HASH_LEN);
+    m->fwd_req.tx_data = t->tx;
+    m->fwd_req.tx_len  = t->len;
+    m->fwd_req.fee     = t->fee;
+    memcpy(m->fwd_req.forwarder_id, from->id, NODUS_T3_WITNESS_ID_LEN);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
  * §13e3 fixture — a REAL successor chain carrying an ADMISSIBLE entry.
  *
  * WHY THIS EXISTS AT ALL. §13e2 below proves a successor non-leader
@@ -924,6 +1184,76 @@ static uint8_t *p3c_encode_claim(const dna_claim_t *c, size_t *out_len,
     if (qgp_sha3_512(b, wr, hash) != 0) p3c_die("claim wire hash");
     *out_len = wr;
     return b;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+ * §13q-§13s helpers — V-3, the spent-claim table nothing reads.
+ *
+ * A successor CLAIM commit records its nullifier in `v2_claims_spent`
+ * (nodus_witness_v2_claims.c, the spend insert). Every "is this pooled
+ * entry decided?" question instead walks the LEGACY `nullifiers` table —
+ * nodus_witness_nullifier_exists, whose only writer is the legacy commit
+ * path — and nodus_witness_v2_entry_verdict's class gate answers UNJUDGED
+ * for anything that is not a class-200 ENVELOPE. Both halves therefore say
+ * "not decided" about a claim the chain has already committed, so it is
+ * never reaped and reads as live demand forever: the O15I V1 shape in a
+ * lane whose own comments assert it is closed.
+ * ═══════════════════════════════════════════════════════════════════ */
+
+/* Commit a claim through the PRODUCTION execute stages, in their locked
+ * order: the target runtime's claim_apply output, the v2_claims_spent
+ * insert, then the checked distribution decrement. Writing the row by hand
+ * would let this fixture disagree with what a real commit leaves behind —
+ * and the disagreement between two writers is exactly what V-3 is. */
+static void p3c_commit_claim(nodus_witness_t *w, const dna_claim_t *c) {
+    uint64_t h = nodus_witness_block_height(w) + 1;
+    nodus_v2_claim_admit_t adm;
+    memset(&adm, 0, sizeof(adm));
+    if (nodus_witness_v2_claim_admit(w, c, h, &adm) != 0)
+        p3c_die("claim admit");
+    uint8_t out_id[64];
+    if (nodus_witness_v2_claim_output_create(w, c, &adm, h, out_id) != 0)
+        p3c_die("claim output create");
+    if (nodus_witness_v2_claim_spend_insert(w, c, &adm, out_id, h) != 0)
+        p3c_die("claim spend insert");
+    if (nodus_witness_v2_claim_state_update(w, adm.manifest_hash,
+                                            adm.converted) != 0)
+        p3c_die("claim distribution decrement");
+}
+
+/* Ask the SPENT-CLAIM table directly — p3c_intent_in_index's discipline,
+ * applied to the other half of V-3. Both answers are pinned before any
+ * production predicate is consulted, so a fixture whose commit silently
+ * did nothing cannot make "not reaped" look like a verdict.
+ *
+ * A prepare failure here is a FIXTURE bug and dies; §13s, which breaks the
+ * table on purpose, uses p3c_claims_table_readable below instead. */
+static bool p3c_claim_is_spent(nodus_witness_t *w, const uint8_t nul[64]) {
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT 1 FROM v2_claims_spent WHERE nullifier = ?1",
+            -1, &st, NULL) != SQLITE_OK) {
+        p3c_die("claims_spent probe prepare");
+        return false;
+    }
+    sqlite3_bind_blob(st, 1, nul, 64, SQLITE_TRANSIENT);
+    bool found = (sqlite3_step(st) == SQLITE_ROW);
+    sqlite3_finalize(st);
+    return found;
+}
+
+/* Can the spent-claim table be QUERIED AT ALL? §13s drops it to produce a
+ * genuine DB fault, and needs to OBSERVE the fault rather than exit on it.
+ * Kept separate from the probe above precisely so that the "this is a
+ * fixture bug" and "this is the fault under test" cases cannot be
+ * confused. */
+static bool p3c_claims_table_readable(nodus_witness_t *w) {
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db, "SELECT 1 FROM v2_claims_spent LIMIT 1",
+                           -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_finalize(st);
+    return true;
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -1755,7 +2085,7 @@ int main(void) {
         /* A quorum of 5 against a 3-node roster can never be met, so the
          * view change started below CANNOT complete. That matters: within
          * this section's closed world — no messages are delivered, only
-         * check_timeout is called — bft_vc_check_quorum (bft.c:6933) is
+         * check_timeout is called — bft_vc_check_quorum is
          * the one OTHER reachable path back to IDLE, and the quorum puts
          * it structurally out of reach. So P1 is the only remaining
          * explanation for an IDLE phase at the end of this section.
@@ -1791,7 +2121,7 @@ int main(void) {
 
         /* The chain reaches H by some OTHER route — a remote COMMIT at a
          * round number we no longer match, or a SYNC. Neither resets our
-         * phase: the reset at bft.c:6254-6257 requires the round numbers
+         * phase: the reset at the round-equality reset in handle_commit requires the round numbers
          * to be EQUAL, and that is the whole trap. */
         CHECK(seed_blocks(w, 1) == H, "the chain committed height H");
 
@@ -1883,7 +2213,7 @@ int main(void) {
         CHECK(T == 3, "seeded chain tip is 3 (nonzero — see §11)");
 
         /* An IDLE node that JUST COMMITTED height T. The commit reset
-         * (bft.c:6254-6257) puts the phase back to IDLE but leaves the
+         * (the round-equality reset in handle_commit) puts the phase back to IDLE but leaves the
          * finished round's height in round_state — so block_height == T
          * == tip, which is exactly the shape the release matches. */
         memset(&w->round_state, 0, sizeof(w->round_state));
@@ -1913,7 +2243,7 @@ int main(void) {
 
         /* Re-stamp immediately before the tick. initiate_view_change does
          * NOT stamp the phase clock, and the adoption block only does so
-         * when the phase is ALREADY VIEW_CHANGE (bft.c:6807-6808) — which
+         * when the phase is ALREADY VIEW_CHANGE (the adoption stamp in handle_viewchg) — which
          * it was not, since we joined from IDLE. So the joiner inherits
          * whatever clock it had, and this test would otherwise be relying
          * on a 10 s margin instead of on a fact. With the stamp here the
@@ -1988,7 +2318,7 @@ int main(void) {
               "the spent deadline disarmed — it must not re-fire every tick");
         /* The D2 discipline: initiate_view_change does NOT stamp the
          * phase clock and the adoption block only stamps when the phase
-         * is ALREADY VIEW_CHANGE (bft.c:6807-6808), so entering from
+         * is ALREADY VIEW_CHANGE (the adoption stamp in handle_viewchg), so entering from
          * IDLE without a stamp here would leave the view change
          * measuring its age from a round that ended long ago and
          * escalating the target on the very next tick, forever. */
@@ -2174,11 +2504,11 @@ int main(void) {
     /* ── §12e — the SELF-ADVANCED path, which is the COMMON one ───────
      *
      * O15C-D.1 measured that every node advances its own view the moment
-     * it reaches view-change quorum (bft.c:6900), so when the leader's
+     * it reaches view-change quorum (the current_view write in bft_vc_check_quorum), so when the leader's
      * NEW_VIEW finally arrives `new_view == current_view` and the whole
      * `>` accept block of §12d is a silent no-op — 7/7 nodes
      * self-advanced with ZERO logged "accepted NEW_VIEW"
-     * (bft.c:6910-6927).
+     * (the NEW_VIEW accept path).
      *
      * ⚠ SO §12d ALONE PROVES NOTHING ABOUT PRODUCTION. If the disarm
      * lived only in the accept block, a self-advanced follower would arm
@@ -2564,22 +2894,45 @@ int main(void) {
         chain_db_drop(w, dir);
     }
 
-    /* ── §13e — P3(b) INTAKE: who may pool a forwarded entry ─────────
+    /* ── §13e — P3(b) INTAKE on LEGACY: the verdict is ADMISSION's ────
      *
-     * A forwarded transaction used to reach the leader and NOWHERE else,
-     * which is why a dead leader stalls the chain: the demand exists on
-     * exactly one node, and one is far below the f+1 join threshold.
+     * ⚠ REWRITTEN FOR O15K, NOT PATCHED, AND THE OLD SECTION'S POINT NO
+     * LONGER EXISTS. What stood here offered ONE set of bytes at two
+     * views and pinned the difference to the LEADERSHIP TEST: leg 1
+     * refused because we were not the leader, leg 2 accepted because we
+     * were. Its leg 2 therefore PROVED that a legacy leader pools
+     * structurally-walkable but cryptographically UNVERIFIED bytes —
+     * V-1, a defect live on the devnet, asserted as a requirement. And
+     * its leg 1 rationale ("the legacy intake at this site is structural
+     * only … so pooling there would widen a trust boundary") became the
+     * argument FOR §3.2 rather than against it.
      *
-     * LEGACY IS UNCHANGED, and this section pins that to the LEADERSHIP
-     * TEST rather than to input validity: the identical bytes are
-     * offered twice, differing only in the view — and therefore only in
-     * whether this node is the leader. A reject that came from the wire
-     * layout instead would refuse both. ─────────────────────────────── */
-    printf("§13e P3(b) — the legacy forward gate is still leader-only, "
-           "byte-identically\n");
+     * Flipping leg 2's expectation to -1 was rejected: with both legs at
+     * -1 the two refusals are indistinguishable by return value, and the
+     * section's whole subject — telling a LEADERSHIP refusal apart from a
+     * BYTE refusal — is destroyed. So the subject is re-founded on what
+     * O15K makes true, and the observable that separates the two answers
+     * is w->mempool.count, not a return code:
+     *
+     *   the answer a legacy forward gets is ADMISSION's, and it is the
+     *   SAME from both roles.
+     *
+     * Legs 1 and 2 offer the IDENTICAL unverifiable bytes at both views,
+     * so a difference between them could only come from leadership; leg 3
+     * is the POSITIVE CONTROL that stops "refused twice" from meaning
+     * "this node refuses everything", and it is the assertion that
+     * distinguishes the two refusals — the pool MOVES for admissible
+     * bytes and does not move for these.
+     *
+     * The successor half of the same statement is §13e2's; §13m and §13n
+     * carry the two legacy halves separately, each anchored to its own
+     * defect. ────────────────────────────────────────────────────────── */
+    printf("§13e P3(b) — a LEGACY forward gets ADMISSION's verdict, the "
+           "same one from both roles\n");
     {
         peer_t p[6];
         for (int i = 0; i < 6; i++) peer_make(&p[i]);
+        peer_t client; peer_make(&client);
         nodus_witness_t *w = fixture(&self, p, 6, 3, 15000, 10000);
         char dir[] = "/tmp/test_bft_p3_legacy_XXXXXX";
         chain_db_open(w, dir, 0x35);
@@ -2587,48 +2940,72 @@ int main(void) {
         uint64_t tip = seed_blocks(w, 3);
         CHECK(tip == 3, "seeded chain tip is 3 (see §13a)");
         CHECK(!w->v2_successor,
-              "this fixture is a LEGACY chain — the lane P3(b) must leave "
-              "exactly as it found it");
+              "this fixture is a LEGACY chain — the lane O15K opens");
 
-        /* A structurally valid legacy SPEND: header, then one input of
-         * nullifier(64) + amount(8) + token_id(64), which is what the
-         * legacy nullifier walk in handle_fwd_req reads. */
-        uint8_t ltx[DNAC_TX_HEADER_SIZE + 1 + 136];
-        memset(ltx, 0, sizeof(ltx));
-        ltx[1] = NODUS_W_TX_SPEND;
-        ltx[DNAC_TX_HEADER_SIZE] = 1;                  /* input_count */
-        memset(ltx + DNAC_TX_HEADER_SIZE + 1, 0x7E, NODUS_T3_NULLIFIER_LEN);
+        /* The unverifiable transaction is structurally PERFECT: correct
+         * wire version, correct committed_fee, a funded input, a parseable
+         * signer section. The ONE thing wrong with it is that the
+         * signature does not verify — so a refusal below can only have
+         * come from Check 3, and never from the wire layout. */
+        p3l_tx_t bad, good;
+        p3l_make(w, &client, 0x35, 1, false, &bad);
+        p3l_make(w, &client, 0x36, 1, true,  &good);
+        p3l_fund(w, &client, &bad);
+        p3l_fund(w, &client, &good);
+        CHECK(p3l_funded(w, &bad) && p3l_funded(w, &good),
+              "BOTH inputs are really in the committed UTXO set — so a "
+              "refusal below is never 'UTXO not found', which would read "
+              "exactly like the pre-O15K gate declining");
+        CHECK(memcmp(bad.hash, good.hash, NODUS_T3_TX_HASH_LEN) != 0,
+              "and the two carry DIFFERENT tx_hashes, so mempool_add's "
+              "duplicate rejection can never stand in for a refusal");
 
-        uint8_t lhash[NODUS_T3_TX_HASH_LEN];
-        memset(lhash, 0x7F, sizeof(lhash));
-
+        /* ONE message object, re-filled per leg. nodus_t3_msg_t's union is
+         * dominated by the 128-slot certificate arrays, so it is a large
+         * stack object; bft_p3_broadcast_demand hoists a single one out of
+         * its loop for exactly this reason and every section here keeps
+         * that property. */
         nodus_t3_msg_t fm;
-        memset(&fm, 0, sizeof(fm));
-        fm.type = NODUS_T3_FWD_REQ;
-        memcpy(fm.fwd_req.tx_hash, lhash, NODUS_T3_TX_HASH_LEN);
-        fm.fwd_req.tx_data = ltx;
-        fm.fwd_req.tx_len = (uint32_t)sizeof(ltx);
-        fm.fwd_req.fee = 1000;
-        memcpy(fm.fwd_req.forwarder_id, p[0].id, NODUS_T3_WITNESS_ID_LEN);
 
-        /* LEG 1 — NON-leader. */
+        /* LEG 1 — NON-leader, unverifiable bytes. */
         w->current_view = p2_pick_view(w, false);
         CHECK(!nodus_witness_bft_is_leader(w), "we are NOT the leader");
+        p3l_fwd(&fm, &bad, &p[0]);
         CHECK(nodus_witness_peer_handle_fwd_req(w, &fm) == -1,
-              "a legacy non-leader REFUSES the forward, as before");
-        CHECK(w->mempool.count == 0,
-              "and nothing was pooled — the legacy intake at this site is "
-              "structural only (no signature verify, no double-spend "
-              "check), so pooling there would widen a trust boundary");
+              "a non-leader refuses bytes whose signature does not verify");
+        CHECK(w->mempool.count == 0, "and pooled nothing");
 
-        /* LEG 2 — the SAME bytes, the only change being leadership. */
+        /* LEG 2 — the SAME bytes, the only change being leadership. This
+         * is the leg the fix turns from ACCEPT to REFUSE: today this call
+         * returns 0 and the pool holds one entry no node has verified. */
         w->current_view = p2_pick_view(w, true);
         CHECK(nodus_witness_bft_is_leader(w), "we ARE the leader now");
-        CHECK(nodus_witness_peer_handle_fwd_req(w, &fm) == 0,
-              "the identical bytes are accepted by the LEADER — so leg 1's "
-              "refusal came from the leadership test, not from the wire");
-        CHECK(w->mempool.count == 1, "and the leader pooled them");
+        p3l_fwd(&fm, &bad, &p[0]);
+        CHECK(nodus_witness_peer_handle_fwd_req(w, &fm) == -1,
+              "the LEADER refuses the IDENTICAL bytes — the verdict on a "
+              "legacy forward is admission's, not leadership's");
+        CHECK(w->mempool.count == 0,
+              "and pooled nothing either: one mempool, ONE intake gate");
 
+        /* LEG 3 — THE POSITIVE CONTROL. Without it legs 1-2 are satisfied
+         * by a node that refuses everything, which is precisely what the
+         * pre-O15K non-leader did and what a mis-placed verify would do to
+         * both roles. The pool MOVING is the discriminator. */
+        p3l_fwd(&fm, &good, &p[0]);
+        CHECK(nodus_witness_peer_handle_fwd_req(w, &fm) == 0,
+              "an ADMISSIBLE forward is accepted");
+        CHECK(w->mempool.count == 1,
+              "and POOLED — so legs 1-2 refused THESE BYTES, not every "
+              "byte; the difference between the two answers is the "
+              "cryptography, which is the only difference between the "
+              "two transactions");
+        CHECK(memcmp(w->mempool.entries[0]->tx_hash, good.hash,
+                     NODUS_T3_TX_HASH_LEN) == 0,
+              "and the single pooled entry is the VALID one — the "
+              "unverifiable transaction is nowhere in the pool");
+
+        p3l_free(&bad);
+        p3l_free(&good);
         nodus_witness_mempool_clear(&w->mempool);
         chain_db_drop(w, dir);
     }
@@ -3574,6 +3951,861 @@ int main(void) {
         chain_db_drop(w, dir);
     }
 
+    /* ── §13l — O15K §3.1: a LEGACY client's demand is pooled locally ─
+     *
+     * THE HALT THIS OPENS. On a legacy chain the ONE node a client is
+     * talking to had nowhere to put the work: the non-leader intake took
+     * a pending_forwards slot carrying no transaction bytes, and when the
+     * leader could not be reached it RELEASED the slot and discarded the
+     * request. So `mempool.count > 0 || pending_forward_count > 0` — the
+     * predicate the entire P3 deadman arms on — read zero on the only
+     * node that knew a client was waiting.
+     *
+     * ROUTED THROUGH A CHANGED GATE (rule 1): the entry enters through
+     * nodus_witness_pool_local_demand, whose `!w->v2_successor → -1` early
+     * return §3.1 deletes. Pooling it with p3_pool would assert nothing —
+     * that call bypasses this gate entirely.
+     *
+     * THE POSITIVE CONTROL IS LEG 2 (rule 2), and it is what makes leg 1
+     * mean something. Pre-O15K BOTH legs answer -1 with an EMPTY reason
+     * string, because the gate declines before admission runs (that is
+     * §14d's whole assertion). Post-O15K they answer 0 and -2, with a
+     * reason string only on the second — so the pair proves both that the
+     * lane opened and that it opened ONLY to work the chain would accept.
+     *
+     * HOW THIS COULD LIE: if p3l_fund silently failed, leg 1 would answer
+     * -2 ("UTXO not found in set") and look like a gate refusal. p3l_funded
+     * rules that out before either call. ────────────────────────────── */
+    printf("§13l O15K §3.1 — a LEGACY client submission is POOLED as local "
+           "demand; unverifiable bytes still are not\n");
+    {
+        peer_t p[6];
+        for (int i = 0; i < 6; i++) peer_make(&p[i]);
+        peer_t client; peer_make(&client);
+        nodus_witness_t *w = fixture(&self, p, 6, 3, 15000, 10000);
+        char dir[] = "/tmp/test_bft_o15k_local_XXXXXX";
+        chain_db_open(w, dir, 0x51);
+
+        uint64_t tip = seed_blocks(w, 3);
+        CHECK(tip == 3, "seeded chain tip is 3 (see §13a)");
+        CHECK(!w->v2_successor,
+              "this fixture is a LEGACY chain — the lane §3.1 opens");
+
+        w->current_view = p2_pick_view(w, false);
+        CHECK(!nodus_witness_bft_is_leader(w),
+              "we are NOT the leader — the node a stalled client reaches");
+        CHECK(w->mempool.count == 0, "and the pool starts empty");
+
+        p3l_tx_t good, bad;
+        p3l_make(w, &client, 0x51, 1, true,  &good);
+        p3l_make(w, &client, 0x52, 1, false, &bad);
+        p3l_fund(w, &client, &good);
+        p3l_fund(w, &client, &bad);
+        CHECK(p3l_funded(w, &good) && p3l_funded(w, &bad),
+              "BOTH inputs are in the committed UTXO set — so neither "
+              "verdict below can be 'UTXO not found in set'");
+        CHECK(memcmp(good.hash, bad.hash, NODUS_T3_TX_HASH_LEN) != 0,
+              "and the two carry DIFFERENT tx_hashes, so the helper's "
+              "already-held pre-check can never answer for the second");
+
+        /* LEG 1 — the admissible submission. */
+        char why[256] = {0};
+        int prc = nodus_witness_pool_local_demand(w, good.tx, good.len,
+                      good.hash, NODUS_W_TX_SPEND, good.nul, 1,
+                      NULL, NULL, good.fee, why, sizeof(why));
+        CHECK(prc == 0,
+              "a LEGACY client's admissible spend is ACCEPTED as local "
+              "demand — today this returns -1 at the successor gate");
+        CHECK(w->mempool.count == 1,
+              "and the COUNT MOVED: the node the client is talking to now "
+              "holds the work, so the P3 deadman can finally see it");
+
+        /* THE ORPHAN SHAPE — §14a's three fields, for §14a's reasons: the
+         * entry must outlive the client disconnect it exists to survive,
+         * and it must route a remote leader's reply back to US. */
+        CHECK(w->mempool.entries[0]->client_conn == NULL,
+              "pooled with NO client connection, so the CLI's disconnect "
+              "cannot delete it one step after it was created");
+        CHECK(w->mempool.entries[0]->is_forwarded &&
+              memcmp(w->mempool.entries[0]->forwarder_id, w->my_id,
+                     NODUS_T3_WITNESS_ID_LEN) == 0,
+              "and named US as the forwarder — we hold the client");
+        CHECK(w->mempool.entries[0]->nullifier_count == 1 &&
+              memcmp(w->mempool.entries[0]->nullifiers[0], good.nul,
+                     NODUS_T3_NULLIFIER_LEN) == 0,
+              "carrying the input's nullifier — the ONE handle the P3(c) "
+              "reaper and batch selection both key on");
+
+        /* LEG 2 — THE POSITIVE CONTROL'S CONVERSE. Identical shape, one
+         * corrupted signature. */
+        why[0] = '\0';
+        int brc = nodus_witness_pool_local_demand(w, bad.tx, bad.len,
+                      bad.hash, NODUS_W_TX_SPEND, bad.nul, 1,
+                      NULL, NULL, bad.fee, why, sizeof(why));
+        CHECK(brc == -2,
+              "an UNVERIFIABLE spend is refused BY ADMISSION (-2), not by "
+              "an applicability gate (-1) — G3 is satisfied by the verify "
+              "this helper already ran, so opening the lane widened no "
+              "trust boundary");
+        CHECK(why[0] != '\0',
+              "and a rejection REASON was produced, which proves admission "
+              "actually RAN: the pre-O15K -1 leaves this string empty "
+              "because nothing was ever judged (§14d)");
+        CHECK(w->mempool.count == 1,
+              "and the pool is UNCHANGED — the count is the discriminator, "
+              "not the return code");
+
+        p3l_free(&good);
+        p3l_free(&bad);
+        nodus_witness_mempool_clear(&w->mempool);
+        chain_db_drop(w, dir);
+    }
+
+    /* ── §13m — O15K §3.2: a legacy NON-LEADER pools a forward ────────
+     *
+     * THE FOURTH EDIT SITE. A design that opens only pool_local_demand,
+     * the forward verify and the disseminator still ships a system in
+     * which EVERY legacy recipient refuses w_fwd_req: the deadman fires,
+     * the broadcast goes out, nobody pools, f+1 never assembles and the
+     * halt persists — with every other unit case still green. The refusal
+     * lives on its own line in nodus_witness_peer.c
+     * (`!is_leader && !v2_successor → -1`), and this section is what fails
+     * if that line survives.
+     *
+     * WHAT IT ADDS OVER §13e: §13e offers the SAME bytes at both roles to
+     * show the answer no longer depends on the role. This section is about
+     * the ACCEPT specifically — a non-leader's pool GROWING — which is the
+     * half that puts the work where the next leader can find it.
+     *
+     * HOW IT COULD LIE: if the fixture were accidentally a successor
+     * chain, leg 1 would pass on the ALREADY-OPEN successor path and
+     * prove nothing. The !v2_successor assertion rules that out. ─────── */
+    printf("§13m O15K §3.2 — a LEGACY NON-LEADER pools an admissible "
+           "forwarded entry\n");
+    {
+        peer_t p[6];
+        for (int i = 0; i < 6; i++) peer_make(&p[i]);
+        peer_t client; peer_make(&client);
+        nodus_witness_t *w = fixture(&self, p, 6, 3, 15000, 10000);
+        char dir[] = "/tmp/test_bft_o15k_follower_XXXXXX";
+        chain_db_open(w, dir, 0x52);
+
+        uint64_t tip = seed_blocks(w, 3);
+        CHECK(tip == 3, "seeded chain tip is 3 (see §13a)");
+        CHECK(!w->v2_successor,
+              "this fixture is a LEGACY chain — not the successor lane "
+              "§13e3 already covers, which would pass here for free");
+
+        p3l_tx_t good, bad;
+        p3l_make(w, &client, 0x53, 1, true,  &good);
+        p3l_make(w, &client, 0x54, 1, false, &bad);
+        p3l_fund(w, &client, &good);
+        p3l_fund(w, &client, &bad);
+        CHECK(p3l_funded(w, &good) && p3l_funded(w, &bad),
+              "both inputs are in the committed UTXO set");
+
+        nodus_t3_msg_t fm;      /* ONE large object, re-filled — see §13e */
+
+        w->current_view = p2_pick_view(w, false);
+        CHECK(!nodus_witness_bft_is_leader(w),
+              "we are NOT the leader — pre-O15K this call ended at the "
+              "leadership line and nothing else ran");
+        CHECK(w->mempool.count == 0, "and the pool starts empty");
+
+        p3l_fwd(&fm, &good, &p[0]);
+        CHECK(nodus_witness_peer_handle_fwd_req(w, &fm) == 0,
+              "the forwarded spend was ACCEPTED by a non-leader");
+        CHECK(w->mempool.count == 1,
+              "and POOLED — the dead leader is no longer the only node "
+              "that can hold this work, which is what makes an f+1 join "
+              "reachable at all");
+        CHECK(w->mempool.entries[0]->is_forwarded &&
+              memcmp(w->mempool.entries[0]->forwarder_id, p[0].id,
+                     NODUS_T3_WITNESS_ID_LEN) == 0,
+              "with the forwarder id carried through, so a w_fwd_rsp from "
+              "whichever node commits it reaches the client's node");
+        CHECK(w->mempool.entries[0]->client_conn == NULL,
+              "and no client connection of its own");
+        CHECK(w->mempool.entries[0]->nullifier_count == 1 &&
+              memcmp(w->mempool.entries[0]->nullifiers[0], good.nul,
+                     NODUS_T3_NULLIFIER_LEN) == 0,
+              "the structural walk's nullifier was recorded — the reaper "
+              "and batch dedup both key on exactly this");
+
+        /* THE POSITIVE CONTROL'S CONVERSE: the newly opened door admits
+         * only what admission accepts. Pre-O15K this is refused too — by
+         * the leadership line — so it is the accept above, not this, that
+         * discriminates. Stated rather than hidden. */
+        p3l_fwd(&fm, &bad, &p[0]);
+        CHECK(nodus_witness_peer_handle_fwd_req(w, &fm) == -1,
+              "the SAME non-leader refuses a forward whose signature does "
+              "not verify — opening the door did not open it to anything");
+        CHECK(w->mempool.count == 1,
+              "and the pool is unchanged: a follower's mempool never "
+              "receives bytes no node has verified");
+
+        p3l_free(&good);
+        p3l_free(&bad);
+        nodus_witness_mempool_clear(&w->mempool);
+        chain_db_drop(w, dir);
+    }
+
+    /* ── §13n — V-1: the legacy LEADER stops pooling unverified bytes ─
+     *
+     * THE DEFECT, AND IT IS LIVE ON THE DEVNET TODAY. The legacy branch of
+     * nodus_witness_peer_handle_fwd_req performs a STRUCTURAL nullifier
+     * walk and nothing else — no signature verification, no double-spend
+     * check — and then pools. The successor branch verifies; the legacy
+     * branch never did. So one remote client, with NO roster membership,
+     * plants an invalid-signature transaction in the leader's mempool; the
+     * leader proposes a batch containing it; and a single rejected
+     * transaction drops the ENTIRE batch at validation. Legacy block
+     * production stalls for the cost of one malformed submission.
+     *
+     * WHAT IT ADDS OVER §13e: §13e proves the ANSWER is the same from both
+     * roles. This section is about the LEADER specifically, because the
+     * leader is the only role that pools these bytes today — a non-leader
+     * refusal proves nothing, since the pre-fix code refuses every
+     * non-leader forward regardless of the bytes.
+     *
+     * HOW IT COULD LIE: if the bad transaction were malformed in any way
+     * BESIDES the signature, the refusal could come from the structural
+     * walk and would be green today. p3l_make corrupts one signature byte
+     * AFTER the tx_hash is fixed and the input is funded, so the wire is
+     * byte-valid and the UTXO exists. Leg 2 is what proves the leader is
+     * not simply refusing everything. ──────────────────────────────── */
+    printf("§13n O15K V-1 — the legacy LEADER REFUSES a forward whose "
+           "signature does not verify\n");
+    {
+        peer_t p[6];
+        for (int i = 0; i < 6; i++) peer_make(&p[i]);
+        peer_t client; peer_make(&client);
+        nodus_witness_t *w = fixture(&self, p, 6, 3, 15000, 10000);
+        char dir[] = "/tmp/test_bft_o15k_v1_XXXXXX";
+        chain_db_open(w, dir, 0x53);
+
+        uint64_t tip = seed_blocks(w, 3);
+        CHECK(tip == 3, "seeded chain tip is 3 (see §13a)");
+        CHECK(!w->v2_successor, "this fixture is a LEGACY chain");
+
+        p3l_tx_t bad, good;
+        p3l_make(w, &client, 0x55, 1, false, &bad);
+        p3l_make(w, &client, 0x56, 1, true,  &good);
+        p3l_fund(w, &client, &bad);
+        p3l_fund(w, &client, &good);
+        CHECK(p3l_funded(w, &bad) && p3l_funded(w, &good),
+              "both inputs are funded, so the ONLY defect in the first "
+              "transaction is its signature");
+        CHECK(!nodus_witness_nullifier_exists(w, bad.nul) &&
+              !nodus_witness_nullifier_exists(w, good.nul),
+              "and neither input is already spent — so no refusal below "
+              "can be the double-spend check answering instead");
+
+        nodus_t3_msg_t fm;      /* ONE large object, re-filled — see §13e */
+
+        w->current_view = p2_pick_view(w, true);
+        CHECK(nodus_witness_bft_is_leader(w),
+              "we ARE the leader — the ONLY role that pools a legacy "
+              "forward today, and therefore the only one where a refusal "
+              "can discriminate");
+        CHECK(w->mempool.count == 0, "and the pool starts empty");
+
+        p3l_fwd(&fm, &bad, &p[0]);
+        CHECK(nodus_witness_peer_handle_fwd_req(w, &fm) == -1,
+              "the leader REFUSED it — today this returns 0");
+        CHECK(w->mempool.count == 0,
+              "and pooled NOTHING. Today this pool holds one entry that no "
+              "node has verified, and the leader's next batch dies on it");
+
+        /* THE POSITIVE CONTROL. Without it the section is satisfied by a
+         * verify placed so early, or passed such wrong arguments, that it
+         * rejects EVERY legacy forward — a silent no-op that would leave
+         * the halt in place while every refusal assertion stayed green. */
+        p3l_fwd(&fm, &good, &p[0]);
+        CHECK(nodus_witness_peer_handle_fwd_req(w, &fm) == 0,
+              "while an admissible forward from the same peer is accepted");
+        CHECK(w->mempool.count == 1,
+              "and pooled — so the refusal above is a verdict on the "
+              "bytes, not an admission call that refuses everything");
+        CHECK(memcmp(w->mempool.entries[0]->tx_hash, good.hash,
+                     NODUS_T3_TX_HASH_LEN) == 0,
+              "and the one pooled entry is the VALID transaction");
+
+        p3l_free(&bad);
+        p3l_free(&good);
+        nodus_witness_mempool_clear(&w->mempool);
+        chain_db_drop(w, dir);
+    }
+
+    /* ── §13o — V-8: a wire input_count byte of 0 is refused ──────────
+     *
+     * THE DEFECT, AND IT IS ALSO LIVE ON THE DEVNET. The legacy structural
+     * walk reads `nullifier_count = tx_data[input_count_offset]`, bounds it
+     * against NODUS_T3_MAX_TX_INPUTS, and loops. A wire byte of 0 skips
+     * the loop, nothing rejects it, and the entry is pooled with
+     * nullifier_count == 0. Such an entry is PERMANENTLY unremovable:
+     *   - the P3(c) reaper's nullifier walk has nothing to iterate;
+     *   - nodus_witness_v2_entry_verdict answers UNJUDGED for any legacy
+     *     chain, so the second half keeps it too;
+     *   - mempool_pop_batch is leader-only and remove_by_conn needs a
+     *     client_conn a forwarded entry does not have.
+     * bft_p3_live_demand therefore reads it as live demand FOREVER, and
+     * the node initiates a view change every round_timeout_ms against a
+     * perfectly healthy leader until the process restarts. It is the O15I
+     * V1 churn, re-entered through the legacy door.
+     *
+     * ⚠ THIS IS WHY §3.4's GUARD IS LOAD-BEARING AND NOT DEFENCE IN DEPTH.
+     * The argument that legacy admission already rejects zero-input
+     * non-genesis transactions covers only paths that RUN admission, and
+     * this one does not run it at all.
+     *
+     * HOW IT COULD LIE: if the zero-input transaction were malformed in
+     * some OTHER way, its refusal would be structural and green today.
+     * The assertion on the wire byte pins that the ONLY anomaly is the
+     * count, and leg 2 pins that the leader still accepts real work.
+     * ────────────────────────────────────────────────────────────────── */
+    printf("§13o O15K V-8 — a legacy forward whose wire input_count is 0 "
+           "is refused, by BOTH roles\n");
+    {
+        peer_t p[6];
+        for (int i = 0; i < 6; i++) peer_make(&p[i]);
+        peer_t client; peer_make(&client);
+        nodus_witness_t *w = fixture(&self, p, 6, 3, 15000, 10000);
+        char dir[] = "/tmp/test_bft_o15k_v8_XXXXXX";
+        chain_db_open(w, dir, 0x54);
+
+        uint64_t tip = seed_blocks(w, 3);
+        CHECK(tip == 3, "seeded chain tip is 3 (see §13a)");
+        CHECK(!w->v2_successor, "this fixture is a LEGACY chain");
+
+        p3l_tx_t zero_a, zero_b, good;
+        p3l_make(w, &client, 0x57, 0, true, &zero_a);
+        p3l_make(w, &client, 0x58, 0, true, &zero_b);
+        p3l_make(w, &client, 0x59, 1, true, &good);
+        p3l_fund(w, &client, &good);
+        CHECK(zero_a.tx[DNAC_TX_HEADER_SIZE] == 0 &&
+              zero_b.tx[DNAC_TX_HEADER_SIZE] == 0,
+              "the wire input_count byte really is 0 — the ONE byte V-8 "
+              "turns on, at the offset the structural walk reads");
+        CHECK(good.tx[DNAC_TX_HEADER_SIZE] == 1 && p3l_funded(w, &good),
+              "while the control carries one funded input, so the two "
+              "differ in that byte and in nothing else that matters");
+        CHECK(memcmp(zero_a.hash, zero_b.hash, NODUS_T3_TX_HASH_LEN) != 0,
+              "the two zero-input transactions are DISTINCT, so leg 3's "
+              "refusal cannot be mempool_add's duplicate rejection");
+
+        nodus_t3_msg_t fm;      /* ONE large object, re-filled — see §13e */
+
+        /* LEG 1 — the LEADER, the role that pools it today. */
+        w->current_view = p2_pick_view(w, true);
+        CHECK(nodus_witness_bft_is_leader(w), "we ARE the leader");
+        CHECK(w->mempool.count == 0, "and the pool starts empty");
+        p3l_fwd(&fm, &zero_a, &p[0]);
+        CHECK(nodus_witness_peer_handle_fwd_req(w, &fm) == -1,
+              "the leader REFUSES a zero-input forward — today this "
+              "returns 0");
+        CHECK(w->mempool.count == 0,
+              "and pools NOTHING. Today this pool holds an entry with "
+              "nullifier_count == 0 that no reaper on this node can ever "
+              "remove and that arms the deadman every round, forever");
+
+        /* LEG 2 — THE POSITIVE CONTROL. */
+        p3l_fwd(&fm, &good, &p[0]);
+        CHECK(nodus_witness_peer_handle_fwd_req(w, &fm) == 0,
+              "while a one-input admissible forward is accepted");
+        CHECK(w->mempool.count == 1 &&
+              w->mempool.entries[0]->nullifier_count == 1,
+              "and pooled WITH its nullifier — so the refusal above is "
+              "about the zero count, not about legacy forwards in general");
+
+        /* LEG 3 — A GUARD, AND IT IS GREEN TODAY: the pre-O15K non-leader
+         * refuses every forward, so this leg discriminates only in the
+         * POST-fix world. Its job is to catch a guard placed inside the
+         * leader branch instead of at the intake door — which would leave
+         * the newly opened non-leader path (§13m) admitting exactly the
+         * shape V-8 is about. */
+        w->current_view = p2_pick_view(w, false);
+        CHECK(!nodus_witness_bft_is_leader(w), "we are NOT the leader now");
+        p3l_fwd(&fm, &zero_b, &p[0]);
+        CHECK(nodus_witness_peer_handle_fwd_req(w, &fm) == -1,
+              "and a NON-leader refuses the zero-input shape too — the "
+              "guard belongs to the intake door, not to one role");
+        CHECK(w->mempool.count == 1,
+              "the pool is unchanged: §13m's newly opened path did not "
+              "become V-8's new door");
+
+        p3l_free(&zero_a);
+        p3l_free(&zero_b);
+        p3l_free(&good);
+        nodus_witness_mempool_clear(&w->mempool);
+        chain_db_drop(w, dir);
+    }
+
+    /* ── §13p — O15K §3.3: the fire DISSEMINATES on a legacy chain ────
+     *
+     * WHY P3(a) ALONE FIXES NOTHING. A forwarded transaction reaches the
+     * leader and nowhere else, so when the leader is dead the demand lives
+     * on exactly ONE node. That node initiates a view change and 1 is far
+     * below the f+1 join threshold, so nobody joins it: the rotation never
+     * completes and the halt is permanent. Dissemination at the fire is
+     * what makes the rotation assemblable — and today
+     * bft_p3_broadcast_demand returns at its first line on a legacy chain.
+     *
+     * ⚠ THE OBSERVABLE, AND WHY IT IS NOT A LOG LINE. In this peer-less
+     * fixture nodus_witness_bft_broadcast sends to zero connections, so
+     * `sent` stays 0 and the disseminator's summary line never prints —
+     * EVEN AFTER THE FIX. A stderr-grep assertion would therefore be RED
+     * post-fix, which is worse than vacuous. The one honest in-process
+     * discriminator is `++w->next_txn_id`, taken once per LIVE entry
+     * BEFORE the broadcast call, so it is charged whether or not anything
+     * goes on the wire. nodus_witness_bft_initiate_view_change takes one
+     * on the same tick, so only a DELTA separates the two worlds:
+     *   pre-fix  = 1                      (the VIEW_CHANGE alone)
+     *   post-fix = 1 + live entries       (+ one per disseminated entry)
+     *
+     * ⚠ p3_pool IS USED HERE ON PURPOSE, and this is the one place in the
+     * O15K sections where rule 1 is deliberately not applied. The pooled
+     * entries are the INSTRUMENT, not the subject: the subject is the
+     * disseminator's early return. Pooling them through
+     * pool_local_demand would make the section RED at its first CHECK for
+     * a §3.1 reason and it would never reach the delta at all, so the
+     * delta would stop being attributable to §3.3. p3_pool makes the pool
+     * BYTE-IDENTICAL in both worlds, which is what leaves the delta as the
+     * only difference.
+     *
+     * HOW IT COULD LIE: an entry the chain has already decided is SKIPPED
+     * by the disseminator and charges no id, so a fixture whose entries
+     * were committed would show a delta of 1 even after the fix and read
+     * as a failure of §3.3. Both nullifiers are asserted uncommitted.
+     * A tick that never fired would also show a delta of 0-1, so the
+     * VIEW_CHANGE phase is asserted as well. ───────────────────────── */
+    printf("§13p O15K §3.3 — the P3 fire disseminates pooled demand on a "
+           "LEGACY chain\n");
+    {
+        peer_t p[6];
+        for (int i = 0; i < 6; i++) peer_make(&p[i]);
+        nodus_witness_t *w = fixture(&self, p, 6, 3, 15000, 10000);
+        char dir[] = "/tmp/test_bft_o15k_gossip_XXXXXX";
+        chain_db_open(w, dir, 0x55);
+
+        uint64_t tip = seed_blocks(w, 3);
+        CHECK(tip == 3, "seeded chain tip is 3 (see §13a)");
+        CHECK(!w->v2_successor,
+              "this fixture is a LEGACY chain — the lane on which the "
+              "disseminator is a no-op today");
+
+        w->current_view = p2_pick_view(w, false);
+        CHECK(!nodus_witness_bft_is_leader(w), "we are NOT the leader");
+        CHECK(w->awaiting_propose_deadline_ms == 0,
+              "P2 is NOT armed — every id consumed below is attributable "
+              "to the P3 fire path");
+        CHECK(w->pending_forward_count == 0,
+              "and NO pending forward, which would answer 'live' without "
+              "any pooled entry and make the count below meaningless");
+
+        p3_pool(w, p3_mkentry(0x5A, 200, 1));
+        p3_pool(w, p3_mkentry(0x5B, 100, 1));
+        CHECK(w->mempool.count == 2, "TWO entries are pooled");
+
+        uint8_t n1[NODUS_T3_NULLIFIER_LEN], n2[NODUS_T3_NULLIFIER_LEN];
+        p3_nul_of(0x5A, n1);
+        p3_nul_of(0x5B, n2);
+        CHECK(!nodus_witness_nullifier_exists(w, n1) &&
+              !nodus_witness_nullifier_exists(w, n2),
+              "and BOTH are LIVE — a decided entry is skipped by the "
+              "disseminator and charges no transaction id, which would "
+              "make the delta below wrong for a reason that is not §3.3");
+
+        /* TICK 1 — arms the window and consumes nothing from the fire
+         * path, which is why the counter is sampled AFTER it. */
+        nodus_witness_bft_check_timeout(w);
+        CHECK(w->last_seen_tip == tip, "the window is anchored at the tip");
+        CHECK(p3_stamped_now(w->tip_since_ms), "and it is running");
+
+        p3_age_window(w, 16000);
+        uint32_t txn_before  = w->next_txn_id;
+        uint32_t view_before = w->current_view;
+
+        /* TICK 2 — the fire. */
+        nodus_witness_bft_check_timeout(w);
+
+        CHECK(w->round_state.phase == NODUS_W_PHASE_VIEW_CHANGE,
+              "the deadman FIRED — without this the delta below could be "
+              "measuring a tick that decided nothing");
+        CHECK(w->current_view == view_before,
+              "current_view is UNTOUCHED — only quorum may advance it");
+        CHECK(w->next_txn_id - txn_before == 3,
+              "the fire consumed THREE transaction ids: ONE PER LIVE "
+              "POOLED ENTRY disseminated, plus the VIEW_CHANGE itself. "
+              "Today the disseminator returns at its first line on a "
+              "legacy chain and this delta is exactly 1 — the lone view "
+              "change nobody can join");
+
+        nodus_witness_mempool_clear(&w->mempool);
+        chain_db_drop(w, dir);
+    }
+
+    /* ── §13q — V-3: a COMMITTED class-201 claim becomes reapable ─────
+     *
+     * THE DEFECT. A claim's nullifier is committed to `v2_claims_spent`.
+     * Every "is this entry decided?" question walks the LEGACY `nullifiers`
+     * table instead — nodus_witness_nullifier_exists, whose only writer is
+     * the legacy commit path, which a successor commit bypasses — and
+     * nodus_witness_v2_entry_verdict's class gate answers UNJUDGED for a
+     * 201. Both halves say "not decided", so the entry is never reaped and
+     * reads as live demand forever: the O15I V1 shape in a lane whose own
+     * comments assert it is closed. Successor lane, not live today, but
+     * the V2 cutover inherits it.
+     *
+     * ROUTED THROUGH A GATE (rule 1): both claims enter through
+     * nodus_witness_peer_handle_fwd_req on a NON-LEADER, so each is pooled
+     * with the committed nullifier consensus derives rather than one this
+     * test chose. The commit itself runs the PRODUCTION execute stages.
+     *
+     * THE ANTI-VACUITY PAIR IS THE TWO TABLES, named separately, because
+     * naming only one is how V-3 was written in the first place: the
+     * spent-claim table must hold the first nullifier and NOT the second,
+     * and the legacy table must hold NEITHER. If it held either, the
+     * eviction below would be the legacy walk answering and the section
+     * would not be about V-3 at all.
+     *
+     * HOW IT COULD LIE: nodus_witness_nullifier_exists is FAIL-CLOSED — it
+     * answers "spent" on a missing DB — so a fixture with no usable
+     * database would evict everything and pass the delete half on its own.
+     * The survivor assertion is what rules that out. ──────────────────── */
+    printf("§13q O15K V-3 — a COMMITTED class-201 claim is REAPED; the "
+           "uncommitted one beside it survives\n");
+    {
+        peer_t p[6];
+        for (int i = 0; i < 6; i++) peer_make(&p[i]);
+        nodus_witness_t *w = fixture(&self, p, 6, 3, 15000, 10000);
+        char dir[] = "/tmp/test_bft_o15k_v3_XXXXXX";
+        chain_db_open(w, dir, 0x56);
+
+        peer_t all[7];
+        all[0] = self;
+        for (int i = 0; i < 6; i++) all[i + 1] = p[i];
+
+        p3c_chain_t *cx = calloc(1, sizeof(*cx));   /* ~25 KB — heap */
+        if (!cx) { fprintf(stderr, "p3c chain alloc\n"); exit(1); }
+        p3c_make_successor(w, all, 7, cx);
+        CHECK(w->v2_successor, "the chain is a committed V2 SUCCESSOR");
+        CHECK(nodus_witness_v2_ingress_is_armed(w) == 1,
+              "and its ingress is ARMED, so the intake below really runs "
+              "admission rather than declining at a closed gate");
+
+        /* TWO claims on TWO leaves — two different committed nullifiers,
+         * so one can be committed while the other stays live. */
+        dna_claim_t *c0 = p3c_make_claim(cx, 0);
+        dna_claim_t *c1 = p3c_make_claim(cx, 1);
+        size_t l0 = 0, l1 = 0;
+        uint8_t h0[64], h1[64];
+        uint8_t *b0 = p3c_encode_claim(c0, &l0, h0);
+        uint8_t *b1 = p3c_encode_claim(c1, &l1, h1);
+        uint8_t nul0[64], nul1[64];
+        p3c_claim_nullifier(c0, nul0);
+        p3c_claim_nullifier(c1, nul1);
+        CHECK(memcmp(nul0, nul1, 64) != 0,
+              "the two claims carry DIFFERENT committed nullifiers");
+
+        w->current_view = p2_pick_view(w, false);
+        CHECK(!nodus_witness_bft_is_leader(w), "we are NOT the leader");
+
+        /* Pooled BEFORE the commit: admission's own cross-block spent
+         * check would refuse a claim the chain has already taken. Fees put
+         * the doomed entry at the head, so the survivor has to be MOVED
+         * and the compaction really runs (§13f's device). */
+        nodus_t3_msg_t fm;      /* ONE large object, re-filled — see §13e */
+        memset(&fm, 0, sizeof(fm));
+        fm.type = NODUS_T3_FWD_REQ;
+        memcpy(fm.fwd_req.tx_hash, h0, NODUS_T3_TX_HASH_LEN);
+        fm.fwd_req.tx_data = b0;
+        fm.fwd_req.tx_len  = (uint32_t)l0;
+        fm.fwd_req.fee     = 500;
+        memcpy(fm.fwd_req.forwarder_id, p[0].id, NODUS_T3_WITNESS_ID_LEN);
+        CHECK(nodus_witness_peer_handle_fwd_req(w, &fm) == 0,
+              "the claim about to be committed is pooled through the "
+              "production intake");
+
+        memcpy(fm.fwd_req.tx_hash, h1, NODUS_T3_TX_HASH_LEN);
+        fm.fwd_req.tx_data = b1;
+        fm.fwd_req.tx_len  = (uint32_t)l1;
+        fm.fwd_req.fee     = 100;
+        CHECK(nodus_witness_peer_handle_fwd_req(w, &fm) == 0,
+              "and so is the one that must survive it");
+        CHECK(w->mempool.count == 2 &&
+              w->mempool.entries[0]->fee == 500 &&
+              w->mempool.entries[1]->fee == 100,
+              "two entries, the one about to be committed at the head");
+        CHECK(w->mempool.entries[0]->tx_type == NODUS_W_TX_V2_CLAIM &&
+              w->mempool.entries[0]->nullifier_count == 1 &&
+              memcmp(w->mempool.entries[0]->nullifiers[0], nul0, 64) == 0,
+              "class 201, carrying the nullifier CONSENSUS derives — not "
+              "one this test chose");
+
+        /* THE CHAIN COMMITS THE FIRST CLAIM, through the production
+         * execute stages. */
+        p3c_commit_claim(w, c0);
+
+        /* ⚠ THE V-3 ANTI-VACUITY SET — three facts, because V-3 is exactly
+         * a disagreement between two tables. */
+        CHECK(p3c_claim_is_spent(w, nul0),
+              "v2_claims_spent really holds the committed claim");
+        CHECK(!p3c_claim_is_spent(w, nul1),
+              "and really does NOT hold the other — so the table is "
+              "discriminating, not answering yes to everything");
+        CHECK(!nodus_witness_nullifier_exists(w, nul0) &&
+              !nodus_witness_nullifier_exists(w, nul1),
+              "while the LEGACY nullifiers table has nothing to say about "
+              "EITHER. This IS V-3: the commit wrote one table and every "
+              "decided-ness question reads the other");
+        CHECK(nodus_witness_v2_entry_verdict(w, b0, (uint32_t)l0) ==
+              NODUS_W_ENTRY_UNJUDGED,
+              "and the class-200 verdict lane answers UNJUDGED for a 201, "
+              "so the reaper's second half is silent too — which is why "
+              "nothing removes this entry today");
+
+        int dropped = nodus_witness_mempool_evict_committed(w);
+        CHECK(dropped == 1,
+              "exactly ONE entry was reaped. Today this is 0: the walk "
+              "reads `nullifiers`, the commit wrote `v2_claims_spent`, and "
+              "the entry stays in the pool arming the deadman forever");
+        CHECK(w->mempool.count == 1, "one survives");
+        CHECK(w->mempool.entries[0]->fee == 100 &&
+              memcmp(w->mempool.entries[0]->nullifiers[0], nul1, 64) == 0,
+              "and it is the UNCOMMITTED claim, compacted to the head — "
+              "the survival half; a reaper that dropped everything, or a "
+              "fail-closed DB answering 'spent' to all, fails here");
+        CHECK(w->mempool.entries[1] == NULL, "the vacated slot was cleared");
+        CHECK(nodus_witness_mempool_evict_committed(w) == 0,
+              "a second pass reaps nothing — the reaper reacts to the "
+              "chain's verdict, not to being called");
+
+        free(b0); free(b1);
+        free(c0); free(c1);
+        free(cx);
+        nodus_witness_mempool_clear(&w->mempool);
+        chain_db_drop(w, dir);
+    }
+
+    /* ── §13r — V-3 NEGATIVE: an UNCOMMITTED claim SURVIVES a reap ────
+     *
+     * ⚠ A KEEP-DIRECTION GUARD, AND IT PASSES TODAY. Said plainly rather
+     * than dressed up: pre-O15K nothing asks `v2_claims_spent` at all, so
+     * this section cannot discriminate against HEAD. It exists for the
+     * fix, not against the defect.
+     *
+     * WHY IT IS NEVERTHELESS THE MOST IMPORTANT SECTION IN THIS SET. Every
+     * other O15K item teaches the code to REFUSE, and a wrong refusal
+     * costs a client one retry. V-3 teaches it to DELETE, and a wrong
+     * deletion silently loses a transaction a client is waiting on. The
+     * same fact — "is this nullifier in v2_claims_spent?" — serves two
+     * questions whose safe answers point in OPPOSITE directions:
+     *   admission asks "may I admit this?"  → a fault must answer SPENT;
+     *   the reaper asks "may I delete this?" → a fault must answer NOT
+     *   SPENT.
+     * A helper returning a bare bool would hand one of the two callers the
+     * dangerous direction. This section pins the reaper's side for the
+     * ordinary "no row" answer; §13s pins it for the fault.
+     *
+     * IT IS NOT VACUOUS EVEN SO. A legacy entry the chain HAS decided sits
+     * beside the claim and IS evicted in the same call, so the section
+     * fails if the reaper silently stopped running, stopped compacting, or
+     * lost its legacy walk. What it cannot do is fail on HEAD. ───────── */
+    printf("§13r O15K V-3 (keep-direction guard) — an UNCOMMITTED claim "
+           "survives a reap that evicts a decided entry beside it\n");
+    {
+        peer_t p[6];
+        for (int i = 0; i < 6; i++) peer_make(&p[i]);
+        nodus_witness_t *w = fixture(&self, p, 6, 3, 15000, 10000);
+        char dir[] = "/tmp/test_bft_o15k_v3keep_XXXXXX";
+        chain_db_open(w, dir, 0x57);
+
+        peer_t all[7];
+        all[0] = self;
+        for (int i = 0; i < 6; i++) all[i + 1] = p[i];
+
+        p3c_chain_t *cx = calloc(1, sizeof(*cx));
+        if (!cx) { fprintf(stderr, "p3c chain alloc\n"); exit(1); }
+        p3c_make_successor(w, all, 7, cx);
+        CHECK(w->v2_successor, "the chain is a committed V2 SUCCESSOR");
+
+        dna_claim_t *c = p3c_make_claim(cx, 0);
+        size_t clen = 0;
+        uint8_t chash[64];
+        uint8_t *cbytes = p3c_encode_claim(c, &clen, chash);
+        uint8_t want_nul[64];
+        p3c_claim_nullifier(c, want_nul);
+
+        w->current_view = p2_pick_view(w, false);
+        CHECK(!nodus_witness_bft_is_leader(w), "we are NOT the leader");
+
+        /* THE ENTRY UNDER TEST enters through the production intake. */
+        nodus_t3_msg_t fm;
+        memset(&fm, 0, sizeof(fm));
+        fm.type = NODUS_T3_FWD_REQ;
+        memcpy(fm.fwd_req.tx_hash, chash, NODUS_T3_TX_HASH_LEN);
+        fm.fwd_req.tx_data = cbytes;
+        fm.fwd_req.tx_len  = (uint32_t)clen;
+        fm.fwd_req.fee     = 100;
+        memcpy(fm.fwd_req.forwarder_id, p[0].id, NODUS_T3_WITNESS_ID_LEN);
+        CHECK(nodus_witness_peer_handle_fwd_req(w, &fm) == 0,
+              "the uncommitted claim is pooled the production way");
+
+        /* THE ANTI-VACUITY CONTROL is an entry the chain HAS decided, at a
+         * higher fee so it sits at the head and the survivor must MOVE.
+         * p3_pool is correct for it: it is the instrument that proves the
+         * reaper ran, not the subject of the section. */
+        p3_pool(w, p3_mkentry(0x5C, 500, 1));
+        CHECK(w->mempool.count == 2 &&
+              w->mempool.entries[0]->fee == 500 &&
+              w->mempool.entries[1]->fee == 100,
+              "two entries, the decided control at the head");
+
+        uint8_t n_ctl[NODUS_T3_NULLIFIER_LEN];
+        p3_nul_of(0x5C, n_ctl);
+        uint8_t ctx[NODUS_T3_TX_HASH_LEN];
+        memset(ctx, 0x5C, sizeof(ctx));
+        CHECK(nodus_witness_nullifier_add(w, n_ctl, ctx) == 0,
+              "the control's nullifier is COMMITTED on this chain");
+        CHECK(nodus_witness_nullifier_exists(w, n_ctl),
+              "and the legacy table really says so");
+        CHECK(!nodus_witness_nullifier_exists(w, want_nul),
+              "while it says NOTHING about the claim — so the DB is "
+              "discriminating rather than failing closed on everything");
+        CHECK(!p3c_claim_is_spent(w, want_nul),
+              "and v2_claims_spent has no row for the claim either: the "
+              "chain has NOT decided it, by either authority");
+
+        int dropped = nodus_witness_mempool_evict_committed(w);
+        CHECK(dropped == 1,
+              "exactly ONE entry went — so the reaper RAN and is still "
+              "discriminating; without this the section would pass for a "
+              "reaper that had stopped working entirely");
+        CHECK(w->mempool.count == 1, "one survives");
+        CHECK(w->mempool.entries[0]->tx_type == NODUS_W_TX_V2_CLAIM &&
+              memcmp(w->mempool.entries[0]->nullifiers[0], want_nul, 64) == 0,
+              "and it is the UNCOMMITTED CLAIM. A reaper that asked "
+              "v2_claims_spent but mapped 'no row' to DELETE would lose a "
+              "client's pending work exactly here");
+        CHECK(w->mempool.entries[1] == NULL, "the vacated slot was cleared");
+
+        free(cbytes);
+        free(c);
+        free(cx);
+        nodus_witness_mempool_clear(&w->mempool);
+        chain_db_drop(w, dir);
+    }
+
+    /* ── §13s — V-3 NEGATIVE: a DB FAULT leaves the entry alone ───────
+     *
+     * ⚠ ALSO A KEEP-DIRECTION GUARD, AND ALSO GREEN TODAY, for the same
+     * reason: pre-O15K no caller touches `v2_claims_spent`, so breaking it
+     * changes nothing HEAD does. It cannot be made red with the existing
+     * signatures, and pretending otherwise would be worse than saying so.
+     *
+     * WHAT IT PINS. The reaper's existing contract is fail-closed in the
+     * KEEP direction — "anything this node cannot judge answers false,
+     * still live" — and V-3 must not change that. The natural mistake is a
+     * helper that returns a bare bool: a query that cannot even PREPARE
+     * then collapses to `false` at admission (where the safe answer is
+     * SPENT, reject) or to `true` at the reaper (where the safe answer is
+     * NOT SPENT, keep). One tri-state, mapped by each caller, is the only
+     * shape that serves both.
+     *
+     * THE FAULT IS REAL, NOT SIMULATED: the table is DROPPED, so the
+     * production statement genuinely fails to prepare — the same outcome a
+     * corrupted or partially migrated database produces. It is dropped
+     * AFTER the claim is pooled, because admission reads the same table
+     * and would refuse the intake otherwise.
+     *
+     * ANTI-VACUITY: the decided legacy entry beside it must still be
+     * evicted, so the section fails if the fault took the whole reaper
+     * down rather than one of its two questions. ───────────────────── */
+    printf("§13s O15K V-3 (keep-direction guard) — a v2_claims_spent DB "
+           "fault leaves the pooled claim alone\n");
+    {
+        peer_t p[6];
+        for (int i = 0; i < 6; i++) peer_make(&p[i]);
+        nodus_witness_t *w = fixture(&self, p, 6, 3, 15000, 10000);
+        char dir[] = "/tmp/test_bft_o15k_v3fault_XXXXXX";
+        chain_db_open(w, dir, 0x58);
+
+        peer_t all[7];
+        all[0] = self;
+        for (int i = 0; i < 6; i++) all[i + 1] = p[i];
+
+        p3c_chain_t *cx = calloc(1, sizeof(*cx));
+        if (!cx) { fprintf(stderr, "p3c chain alloc\n"); exit(1); }
+        p3c_make_successor(w, all, 7, cx);
+        CHECK(w->v2_successor, "the chain is a committed V2 SUCCESSOR");
+
+        dna_claim_t *c = p3c_make_claim(cx, 0);
+        size_t clen = 0;
+        uint8_t chash[64];
+        uint8_t *cbytes = p3c_encode_claim(c, &clen, chash);
+        uint8_t want_nul[64];
+        p3c_claim_nullifier(c, want_nul);
+
+        w->current_view = p2_pick_view(w, false);
+        CHECK(!nodus_witness_bft_is_leader(w), "we are NOT the leader");
+
+        nodus_t3_msg_t fm;
+        memset(&fm, 0, sizeof(fm));
+        fm.type = NODUS_T3_FWD_REQ;
+        memcpy(fm.fwd_req.tx_hash, chash, NODUS_T3_TX_HASH_LEN);
+        fm.fwd_req.tx_data = cbytes;
+        fm.fwd_req.tx_len  = (uint32_t)clen;
+        fm.fwd_req.fee     = 100;
+        memcpy(fm.fwd_req.forwarder_id, p[0].id, NODUS_T3_WITNESS_ID_LEN);
+        CHECK(nodus_witness_peer_handle_fwd_req(w, &fm) == 0,
+              "the claim is pooled the production way, BEFORE the fault — "
+              "admission reads the same table and would refuse it after");
+
+        p3_pool(w, p3_mkentry(0x5D, 500, 1));
+        uint8_t n_ctl[NODUS_T3_NULLIFIER_LEN];
+        p3_nul_of(0x5D, n_ctl);
+        uint8_t ctx[NODUS_T3_TX_HASH_LEN];
+        memset(ctx, 0x5D, sizeof(ctx));
+        CHECK(nodus_witness_nullifier_add(w, n_ctl, ctx) == 0 &&
+              nodus_witness_nullifier_exists(w, n_ctl),
+              "a DECIDED legacy entry sits beside it, at the head");
+        CHECK(w->mempool.count == 2 &&
+              w->mempool.entries[0]->fee == 500 &&
+              w->mempool.entries[1]->fee == 100,
+              "two entries, the decided one first");
+
+        /* THE FAULT. */
+        CHECK(p3c_claims_table_readable(w),
+              "the spent-claim table is readable BEFORE the fault — so the "
+              "difference below is the fault and not a fixture that never "
+              "had the table");
+        p3c_sql(w->db, "DROP TABLE v2_claims_spent");
+        CHECK(!p3c_claims_table_readable(w),
+              "and the spent-claim query now FAILS TO PREPARE: this is a "
+              "genuine DB fault, the same one a corrupt or half-migrated "
+              "database produces");
+
+        int dropped = nodus_witness_mempool_evict_committed(w);
+        CHECK(dropped == 1,
+              "the reaper still RAN and still evicted the entry the LEGACY "
+              "table decides — the fault took one question down, not the "
+              "whole reaper");
+        CHECK(w->mempool.count == 1, "one survives");
+        CHECK(w->mempool.entries[0]->tx_type == NODUS_W_TX_V2_CLAIM &&
+              memcmp(w->mempool.entries[0]->nullifiers[0], want_nul, 64) == 0,
+              "and it is the CLAIM. A spent-check that answered SPENT on a "
+              "fault — the direction that is CORRECT for admission — would "
+              "have deleted a client's pending work right here");
+        CHECK(w->mempool.entries[1] == NULL, "the vacated slot was cleared");
+
+        free(cbytes);
+        free(c);
+        free(cx);
+        nodus_witness_mempool_clear(&w->mempool);
+        chain_db_drop(w, dir);
+    }
+
     /* ── §14 O15J A — POOL-THEN-FORWARD ───────────────────────────────
      *
      * THE DEFECT. §13 built the whole P3 deadman on the predicate
@@ -3910,22 +5142,38 @@ int main(void) {
         chain_db_drop(w, dir);
     }
 
-    /* ── §14d — LEGACY is byte-identical to before ─────────────────────
+    /* ── §14d — O15K §3.1 SUPERSEDED O15J A's "legacy untouched" ───────
      *
-     * A legacy peer refuses a non-leader w_fwd_req byte-identically
-     * (nodus_witness_peer.c), because legacy forward intake is STRUCTURAL
-     * only — a nullifier walk, no signature verification. Legacy demand
-     * pooled here could therefore never recruit the f+1 backers a rotation
-     * needs; it would drive lone view changes nobody joins.
+     * ⚠ THIS SECTION'S CONTRACT WAS DELIBERATELY INVERTED, and the old
+     * text is kept below so the change is auditable rather than silent.
      *
-     * ⚠ THE ASSERTION IS ON THE EXACT CODE, not merely on an empty pool.
-     * -1 is NOT APPLICABLE — the successor gate declined before admission
-     * ran at all. If that gate were deleted, the legacy admission lane
-     * WOULD run on these bytes and answer -2/-3 instead; an
+     * O15J A shipped `pool_local_demand` with a `!w->v2_successor → -1`
+     * gate and this section asserted it: -1 was NOT APPLICABLE, the
+     * successor gate declining before admission ran, and legacy stayed
+     * byte-identical to before. The reasoning was that a legacy peer
+     * refuses a non-leader forward anyway, so pooled legacy demand could
+     * never recruit the f+1 backers a rotation needs.
+     *
+     * O15K DELETED THAT GATE ON PURPOSE, because the premise turned out
+     * to be the bug rather than a safeguard. Leaving legacy unpooled is
+     * precisely why a dead leader halts the chain indefinitely: the one
+     * node a client reached had nowhere to put the work, so the predicate
+     * the P3 deadman arms on read zero everywhere. §3.2 removes the peer
+     * refusal (`nodus_witness_peer.c:883`) in the same change, so the
+     * f+1 argument above no longer holds either. See
+     * docs/plans/2026-08-27-dead-leader-liveness-design.md §3.1-§3.4, and
+     * the two live defects the same change closes (V-1, V-8).
+     *
+     * ⚠ THE ASSERTION IS STILL ON THE EXACT CODE, not merely on an empty
+     * pool — only the expected code moved. A -1 here now means the O15K
+     * gate deletion was REVERTED and the halt is back; an
      * `mempool.count == 0` assertion alone would pass either way and pin
-     * nothing. ─────────────────────────────────────────────────────── */
-    printf("§14d O15J A — a LEGACY chain pools nothing, and declines "
-           "BEFORE admission rather than through it\n");
+     * nothing. These particular bytes are a zero-filled SPEND with no
+     * signer section, so admission must REFUSE them — which is the point:
+     * the lane is open, and it is open only to work the chain would
+     * accept. ─────────────────────────────────────────────────────── */
+    printf("§14d O15K §3.1 — a LEGACY chain declines THROUGH admission, "
+           "not before it; a -1 here means the fix was reverted\n");
     {
         peer_t p[6];
         for (int i = 0; i < 6; i++) peer_make(&p[i]);
@@ -3958,14 +5206,19 @@ int main(void) {
         int lrc = nodus_witness_pool_local_demand(w, ltx, (uint32_t)sizeof(ltx),
                       lhash, NODUS_W_TX_SPEND, lnul, 1, NULL, NULL, 1000,
                       why, sizeof(why));
-        CHECK(lrc == -1,
-              "the answer is exactly NOT APPLICABLE (-1): the successor "
-              "gate declined. A -2/-3 here would mean the gate was gone "
-              "and the LEGACY admission lane had run instead");
-        CHECK(w->mempool.count == 0, "and a legacy follower pooled nothing");
-        CHECK(why[0] == '\0',
-              "with no rejection reason — nothing was judged, so nothing "
-              "is reported; legacy logs stay as they were");
+        CHECK(lrc != -1,
+              "the NOT APPLICABLE gate is GONE — a -1 here means O15K "
+              "§3.1 was reverted and the dead-leader halt is back");
+        CHECK(lrc == -2,
+              "and the answer is admission's own refusal (-2): these "
+              "bytes carry no signer section, so the LEGACY admission "
+              "lane ran and rejected them. This is the half that proves "
+              "the lane opened ONLY to work the chain would accept");
+        CHECK(w->mempool.count == 0, "and nothing unverifiable was pooled");
+        CHECK(why[0] != '\0',
+              "with a rejection reason — something was JUDGED, which is "
+              "exactly what distinguishes admission's refusal from the "
+              "old gate's silent decline");
 
         /* The successor gate lives in exactly ONE place — this helper — so
          * the call site in handle_dnac_spend cannot drift away from it. */
@@ -4036,23 +5289,47 @@ int main(void) {
               "its class gate must — which is exactly why the nullifier "
               "above is load-bearing and not decoration");
 
-        /* ⚠ ANTI-VACUITY PAIR, §13f's: nodus_witness_nullifier_exists is
-         * FAIL-CLOSED (it answers "spent" on a missing DB or a failed
-         * query), so both answers are pinned before and after. */
-        CHECK(!nodus_witness_nullifier_exists(w, want_nul),
+        /* ⚠ O15K V-3 — THE FIXTURE CHANGED, AND ITS OLD GREEN WAS THE BUG.
+         *
+         * This section used to decide the claim with
+         * nodus_witness_nullifier_add(), i.e. by writing the LEGACY
+         * `nullifiers` table, and then asserted the reaper removed it.
+         * That passed — and passing was the defect. A class-201 claim's
+         * nullifier is committed to `v2_claims_spent`
+         * (nodus_witness_v2_claim_spend_insert); the legacy table's ONLY
+         * writer is apply_tx_to_state, which a successor commit never
+         * reaches (nodus_witness_bft.c: the successor branch runs
+         * nodus_witness_v2_produce_commit, and its own comment records
+         * that commit_batch is not on that path). So the fixture was
+         * simulating a row that cannot exist on a real successor chain,
+         * and the old assertion proved only that the reaper agreed with
+         * an impossible state.
+         *
+         * The chain now decides the claim THE PRODUCTION WAY —
+         * p3c_commit_claim runs admit → output create → spend insert →
+         * distribution decrement — so the row lands where consensus
+         * really puts it, and the reaper's V-3 routing is what has to
+         * find it.
+         *
+         * ⚠ ANTI-VACUITY PAIR, §13f's, now asked of the RIGHT table:
+         * both answers are pinned before and after, so a fixture whose
+         * commit silently did nothing cannot make "not reaped" look like
+         * a verdict. */
+        CHECK(!p3c_claim_is_spent(w, want_nul),
               "the chain has NOT yet decided this claim");
         CHECK(nodus_witness_mempool_evict_committed(w) == 0,
               "so the reaper takes nothing — an undecided entry is kept");
         CHECK(w->mempool.count == 1, "and it is still pooled");
 
-        /* THE CHAIN DECIDES IT. */
-        uint8_t ctx[NODUS_T3_TX_HASH_LEN];
-        memset(ctx, 0xC7, sizeof(ctx));
-        CHECK(nodus_witness_nullifier_add(w, want_nul, ctx) == 0,
-              "the claim's nullifier is now COMMITTED on this chain");
-        CHECK(nodus_witness_nullifier_exists(w, want_nul),
-              "and the DB really says so — the fixture is discriminating, "
-              "not failing closed on everything");
+        /* THE CHAIN DECIDES IT — through the real commit steps. */
+        p3c_commit_claim(w, c);
+        CHECK(p3c_claim_is_spent(w, want_nul),
+              "and v2_claims_spent really says so — the fixture is "
+              "discriminating, not failing closed on everything");
+        CHECK(!nodus_witness_nullifier_exists(w, want_nul),
+              "while the LEGACY table stays empty, which is the whole "
+              "point of V-3: a claim never appears there, so the walk "
+              "that used to be asked could never have found it");
 
         /* (a) NOT DEMAND — the P3 deadman declines. */
         nodus_witness_bft_check_timeout(w);

@@ -48,10 +48,6 @@
 #include "dnac/dnac.h"
 #include "dnac/transaction.h"
 #include "dnac/nodus.h"   /* DNAC_MAX_UTXO_QUERY_RESULTS, DNAC_MAX_TX_SIZE */
-/* O15C — activation authority verb (schedule/ready): shared codec +
- * this build's compiled target digest. */
-#include "dnac/activation_wire.h"
-#include "witness/nodus_witness_v2_activation.h"
 #include "crypto/sign/qgp_dilithium.h"      /* qgp_dsa87_sign (offline votes) */
 /* O15D — `v2-envelope chain-config`: successor-chain envelope builder.
  * Everything is derived from the COMMITTED successor database (read-only
@@ -1273,17 +1269,14 @@ done:
     return rc;
 }
 
-/* ── O15C — `v2-activation` verb (schedule / ready) ────────────────
+/* ── Offline operator key loading (shared helper) ──────────────────
  *
- * Rehearsal driver for the committed Ledger V2 activation authority.
- * Votes and readiness signals are signed OFFLINE from operator-supplied
- * identity directories (--keys d1,d2,...) — the harness owns every node
- * key, so no vote-collect RPC is needed; the witness verifies the
- * signatures against the committee exactly as it would networked ones.
- * The outer transaction is funded and signed by the -i identity and
- * submitted through the ordinary tier-2 dnac_spend lane (the
- * chain-config flow). A production (non-activation) nodus-server
- * REJECTS types 15/16 unconditionally.
+ * Loads a CSV list of operator identity directories (--keys d1,d2,...)
+ * so a verb can sign OFFLINE with keys it holds locally, instead of
+ * needing a vote-collect RPC — the harness owns every node key, and the
+ * witness verifies those signatures against the committee exactly as it
+ * would networked ones. Used by `v2-envelope chain-config`, `v2-claim`
+ * and `v2-envelope stake`.
  */
 static int act_load_keys(const char *csv, nodus_identity_t *out, int cap) {
     int n = 0;
@@ -1300,313 +1293,6 @@ static int act_load_keys(const char *csv, nodus_identity_t *out, int cap) {
         n++;
     }
     return n;
-}
-
-/* Fund, build, sign and submit one type-15/16 tx. `fill` populates the
- * type-specific fields on the created tx. */
-static int act_submit_tx(nodus_client_t *client, uint8_t tx_type,
-                         const uint8_t chain_id[32],
-                         int (*fill)(dnac_transaction_t *tx, void *ud),
-                         void *ud) {
-    int rc = 1;
-    dnac_transaction_t *tx = NULL;
-    nodus_dnac_utxo_result_t utxos;
-    memset(&utxos, 0, sizeof(utxos));
-    bool utxos_valid = false;
-
-    nodus_dnac_fee_info_t fee_info;
-    memset(&fee_info, 0, sizeof(fee_info));
-    if (nodus_client_dnac_fee_info(client, &fee_info) != 0) {
-        fprintf(stderr, "fee info query failed\n");
-        goto done;
-    }
-    uint64_t fee = fee_info.min_fee;
-
-    if (nodus_client_dnac_utxo(client, identity.fingerprint, 100,
-                               &utxos) != 0) {
-        fprintf(stderr, "utxo query failed\n");
-        goto done;
-    }
-    utxos_valid = true;
-
-    static const uint8_t zero_token[DNAC_TOKEN_ID_SIZE] = {0};
-    dnac_utxo_t selected[DNAC_MAX_UTXO_QUERY_RESULTS];
-    int selected_count = 0;
-    uint64_t total_input = 0;
-    for (int i = 0; i < utxos.count && total_input < fee; i++) {
-        const nodus_dnac_utxo_entry_t *e = &utxos.entries[i];
-        if (memcmp(e->token_id, zero_token, DNAC_TOKEN_ID_SIZE) != 0)
-            continue;
-        dnac_utxo_t *s = &selected[selected_count++];
-        memset(s, 0, sizeof(*s));
-        s->version = 1;
-        memcpy(s->tx_hash, e->tx_hash, DNAC_TX_HASH_SIZE);
-        s->output_index = e->output_index;
-        s->amount = e->amount;
-        memcpy(s->nullifier, e->nullifier, DNAC_NULLIFIER_SIZE);
-        snprintf(s->owner_fingerprint, DNAC_FINGERPRINT_SIZE, "%s",
-                 identity.fingerprint);
-        memcpy(s->token_id, zero_token, DNAC_TOKEN_ID_SIZE);
-        total_input += e->amount;
-    }
-    if (total_input < fee) {
-        fprintf(stderr, "insufficient native DNAC: have %llu, need %llu\n",
-                (unsigned long long)total_input, (unsigned long long)fee);
-        goto done;
-    }
-    uint64_t change = total_input - fee;
-
-    tx = dnac_tx_create((dnac_tx_type_t)tx_type);
-    if (!tx) { fprintf(stderr, "tx_create failed\n"); goto done; }
-    for (int i = 0; i < selected_count; i++)
-        if (dnac_tx_add_input(tx, &selected[i]) != DNAC_SUCCESS) {
-            fprintf(stderr, "tx_add_input failed\n");
-            goto done;
-        }
-    if (change > 0) {
-        uint8_t seed_unused[32];
-        if (dnac_tx_add_output(tx, identity.fingerprint, change,
-                               seed_unused) != DNAC_SUCCESS) {
-            fprintf(stderr, "tx_add_output failed\n");
-            goto done;
-        }
-    }
-    if (fill(tx, ud) != 0) { fprintf(stderr, "fill failed\n"); goto done; }
-    memcpy(tx->chain_id, chain_id, 32);
-    tx->committed_fee = fee;
-    memcpy(tx->signers[0].pubkey, identity.pk.bytes, DNAC_PUBKEY_SIZE);
-    tx->signer_count = 1;
-    if (dnac_tx_compute_hash(tx, tx->tx_hash) != DNAC_SUCCESS) {
-        fprintf(stderr, "tx_compute_hash failed\n");
-        goto done;
-    }
-    nodus_sig_t sender_sig;
-    nodus_sign(&sender_sig, tx->tx_hash, DNAC_TX_HASH_SIZE, &identity.sk);
-    memcpy(tx->signers[0].signature, sender_sig.bytes, DNAC_SIGNATURE_SIZE);
-
-    /* Type-15 carries up to ~33 KB of votes at 7 seats — well inside
-     * DNAC_MAX_TX_SIZE (65,536); the encoder rejects anything larger. */
-    static uint8_t tx_bytes[DNAC_MAX_TX_SIZE];
-    size_t tx_len = 0;
-    if (dnac_tx_serialize(tx, tx_bytes, sizeof(tx_bytes), &tx_len)
-        != DNAC_SUCCESS) {
-        fprintf(stderr, "tx_serialize failed\n");
-        goto done;
-    }
-    nodus_pubkey_t sender_pk;
-    memcpy(sender_pk.bytes, identity.pk.bytes, NODUS_PK_BYTES);
-    nodus_dnac_spend_result_t spend_result;
-    memset(&spend_result, 0, sizeof(spend_result));
-    if (nodus_client_dnac_spend(client, tx->tx_hash, tx_bytes,
-                                (uint32_t)tx_len, &sender_pk, &sender_sig,
-                                fee, &spend_result) != 0) {
-        fprintf(stderr, "dnac_spend RPC failed\n");
-        goto done;
-    }
-    printf("TX submitted (type %u). hash=", (unsigned)tx_type);
-    for (int i = 0; i < 8; i++) printf("%02x", tx->tx_hash[i]);
-    printf("...\n");
-    rc = 0;
-done:
-    if (tx) dnac_free_transaction(tx);
-    if (utxos_valid) nodus_client_free_utxo_result(&utxos);
-    return rc;
-}
-
-typedef struct { dna_act15_wire_t *f; } act15_fill_ud_t;
-static int act15_fill(dnac_transaction_t *tx, void *ud) {
-    memcpy(&tx->v2_activation_fields, ((act15_fill_ud_t *)ud)->f,
-           sizeof(dna_act15_wire_t));
-    return 0;
-}
-typedef struct { dna_act16_wire_t *f; } act16_fill_ud_t;
-static int act16_fill(dnac_transaction_t *tx, void *ud) {
-    memcpy(&tx->v2_ready_fields, ((act16_fill_ud_t *)ud)->f,
-           sizeof(dna_act16_wire_t));
-    return 0;
-}
-
-static int hexpair(const char *s, uint8_t *out, size_t n) {
-    if (strlen(s) != n * 2) return -1;
-    for (size_t i = 0; i < n; i++) {
-        unsigned b = 0;
-        if (sscanf(s + i * 2, "%2x", &b) != 1) return -1;
-        out[i] = (uint8_t)b;
-    }
-    return 0;
-}
-
-static int cmd_v2_activation(const char *server_ip, uint16_t server_port,
-                             int argc, char **argv, int cmd_start) {
-    const char *sub = (cmd_start + 1 < argc) ? argv[cmd_start + 1] : NULL;
-    const char *keys_csv = NULL, *digest_hex = NULL;
-    uint64_t height = 0, nonce = 0, epoch = 0;
-    int has_epoch = 0;
-    for (int i = cmd_start + 2; i < argc; i++) {
-        const char *a = argv[i];
-        if (strcmp(a, "--height") == 0 && i + 1 < argc)
-            height = strtoull(argv[++i], NULL, 10);
-        else if (strcmp(a, "--nonce") == 0 && i + 1 < argc)
-            nonce = strtoull(argv[++i], NULL, 10);
-        else if (strcmp(a, "--epoch") == 0 && i + 1 < argc) {
-            epoch = strtoull(argv[++i], NULL, 10);
-            has_epoch = 1;
-        } else if (strcmp(a, "--keys") == 0 && i + 1 < argc)
-            keys_csv = argv[++i];
-        else if (strcmp(a, "--digest") == 0 && i + 1 < argc)
-            digest_hex = argv[++i];
-        else {
-            fprintf(stderr, "Unknown arg: %s\n", a);
-            return 1;
-        }
-    }
-    if (!sub || (strcmp(sub, "schedule") != 0 && strcmp(sub, "ready") != 0)) {
-        fprintf(stderr,
-            "Usage: v2-activation schedule --height <H_act> --nonce <N> "
-            "--keys <dir1,dir2,...>\n"
-            "       v2-activation ready --digest <sched_digest_hex128> "
-            "--keys <dir> [--epoch <E_START>]\n");
-        return 1;
-    }
-
-    nodus_client_t client;
-    nodus_client_config_t cfg;
-    memset(&cfg, 0, sizeof(cfg));
-    snprintf(cfg.servers[0].ip, sizeof(cfg.servers[0].ip), "%s", server_ip);
-    cfg.servers[0].port = server_port;
-    cfg.server_count = 1;
-    cfg.auto_reconnect = false;
-    if (nodus_client_init(&client, &cfg, &identity) != 0 ||
-        nodus_client_connect(&client) != 0) {
-        fprintf(stderr, "client connect failed\n");
-        nodus_client_close(&client);
-        return 1;
-    }
-
-    int rc = 1;
-    nodus_dnac_supply_result_t supply;
-    memset(&supply, 0, sizeof(supply));
-    nodus_dnac_committee_result_t *committee = calloc(1, sizeof(*committee));
-    nodus_identity_t *keys = calloc(16, sizeof(*keys));
-    dna_act15_wire_t *f15 = calloc(1, sizeof(*f15));
-    if (!committee || !keys || !f15) goto done;
-
-    if (nodus_client_dnac_supply(&client, &supply) != 0) {
-        fprintf(stderr, "supply query (chain_id) failed\n");
-        goto done;
-    }
-    if (nodus_client_dnac_committee(&client, committee) != 0) {
-        fprintf(stderr, "committee query failed\n");
-        goto done;
-    }
-
-    uint8_t D[64];
-    if (nodus_witness_v2_activation_compiled_target(D) != 0) {
-        fprintf(stderr, "compiled target derivation failed\n");
-        goto done;
-    }
-    printf("compiled target D = ");
-    for (int i = 0; i < 8; i++) printf("%02x", D[i]);
-    printf("...\n");
-
-    if (strcmp(sub, "schedule") == 0) {
-        if (!keys_csv || height == 0) {
-            fprintf(stderr, "schedule needs --height and --keys\n");
-            goto done;
-        }
-        int nk = act_load_keys(keys_csv, keys, 16);
-        if (nk <= 0) goto done;
-        if (nonce == 0) nodus_random((uint8_t *)&nonce, sizeof(nonce));
-
-        f15->record_version = DNA_ACT_RECORD_VERSION;
-        f15->op = DNA_ACT_OP_SCHEDULE;
-        memcpy(f15->target, D, 64);
-        f15->activation_height = height;
-        f15->proposal_nonce = nonce;
-        f15->signed_at_block = committee->block_height
-                                   ? committee->block_height : 1;
-        f15->valid_before_block = height + 100000;
-
-        uint8_t digest[64];
-        if (dna_act_sched_digest(supply.chain_id, f15->record_version,
-                                 f15->target, height, nonce,
-                                 f15->signed_at_block,
-                                 f15->valid_before_block, digest) != 0)
-            goto done;
-        f15->vote_count = (uint8_t)nk;
-        for (int i = 0; i < nk; i++) {
-            if (nodus_chain_config_derive_witness_id(
-                    keys[i].pk.bytes, f15->votes[i].witness_id) != 0)
-                goto done;
-            size_t sl = 0;
-            if (qgp_dsa87_sign(f15->votes[i].signature, &sl, digest, 64,
-                               keys[i].sk.bytes) != 0)
-                goto done;
-        }
-        act15_fill_ud_t ud = { f15 };
-        if (act_submit_tx(&client, 15, supply.chain_id, act15_fill,
-                          &ud) != 0)
-            goto done;
-        printf("SCHED digest=");
-        for (int i = 0; i < 64; i++) printf("%02x", digest[i]);
-        printf("\nSCHED height=%llu nonce=%llu\n",
-               (unsigned long long)height, (unsigned long long)nonce);
-        rc = 0;
-    } else {
-        /* ready */
-        if (!keys_csv || !digest_hex) {
-            fprintf(stderr, "ready needs --digest and --keys\n");
-            goto done;
-        }
-        int nk = act_load_keys(keys_csv, keys, 16);
-        if (nk != 1) {
-            fprintf(stderr, "ready takes exactly one key dir\n");
-            goto done;
-        }
-        dna_act16_wire_t r;
-        memset(&r, 0, sizeof(r));
-        r.signal_version = DNA_ACT_SIGNAL_VERSION;
-        if (hexpair(digest_hex, r.schedule_digest, 64) != 0) {
-            fprintf(stderr, "bad --digest\n");
-            goto done;
-        }
-        memcpy(r.target, D, 64);
-        if (nodus_chain_config_derive_witness_id(keys[0].pk.bytes,
-                                                 r.voter_id) != 0)
-            goto done;
-        if (!has_epoch) {
-            uint64_t next_h = committee->block_height + 1;
-            epoch = next_h - (next_h % (uint64_t)DNAC_EPOCH_LENGTH);
-        }
-        r.signal_epoch = epoch;
-        memcpy(r.pubkey, keys[0].pk.bytes, DNA_ACT_PUBKEY_LEN);
-        uint8_t digest[64];
-        if (dna_act_ready_digest(r.signal_version, supply.chain_id,
-                                 r.schedule_digest, r.target, r.voter_id,
-                                 r.signal_epoch, digest) != 0)
-            goto done;
-        size_t sl = 0;
-        if (qgp_dsa87_sign(r.signature, &sl, digest, 64,
-                           keys[0].sk.bytes) != 0)
-            goto done;
-        act16_fill_ud_t ud = { &r };
-        if (act_submit_tx(&client, 16, supply.chain_id, act16_fill,
-                          &ud) != 0)
-            goto done;
-        printf("READY voter=");
-        for (int i = 0; i < 8; i++) printf("%02x", r.voter_id[i]);
-        printf("... epoch=%llu\n", (unsigned long long)epoch);
-        rc = 0;
-    }
-done:
-    free(committee);
-    free(f15);
-    if (keys) {
-        for (int i = 0; i < 16; i++) nodus_identity_clear(&keys[i]);
-        free(keys);
-    }
-    nodus_client_close(&client);
-    return rc;
 }
 
 /* ── S3 — `stake` verb ─────────────────────────────────────────────
@@ -2206,9 +1892,9 @@ static int t6_submit(const char *ip, uint16_t port, nodus_identity_t *id,
  *
  * Re-derives the FULL distribution leaf set from the TERMINAL legacy
  * database with the SEAM'S EXACT query and leaf construction
- * (nodus_witness_v2_seam.c:242-271 — source_id = the 64-byte legacy
- * nullifier, source_amount = amount, dest_binding = owner fp → 64 raw
- * bytes, version DNA_DIST_VERSION), asserts the recomputed
+ * (source_id = the 64-byte legacy nullifier, source_amount = amount,
+ * dest_binding = owner fp → 64 raw bytes, version DNA_DIST_VERSION),
+ * asserts the recomputed
  * dna_dist_snapshot_root EQUALS the successor manifest's committed
  * snapshot_root (proving leaf-set equivalence — a mismatch ABORTS and
  * never submits a bad proof), selects the caller's leaf(s) by
@@ -2978,14 +2664,6 @@ int main(int argc, char **argv) {
     /* S3 — stake: bond THIS node identity as a validator. */
     if (strcmp(command, "stake") == 0) {
         int rc = cmd_stake(server_ip, server_port, argc, argv, optind);
-        nodus_identity_clear(&identity);
-        return rc;
-    }
-
-    /* O15C — v2-activation: schedule/ready driver (rehearsal builds). */
-    if (strcmp(command, "v2-activation") == 0) {
-        int rc = cmd_v2_activation(server_ip, server_port, argc, argv,
-                                   optind);
         nodus_identity_clear(&identity);
         return rc;
     }

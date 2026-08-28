@@ -24,9 +24,13 @@
 #      are ELIGIBLE (status 4) with their 10M bond PRESERVED, the
 #      demoted pair is absent from the new authoritative snapshot, and
 #      every historical snapshot is byte-unchanged
-#   G. crash injection: kill -9 one committee node across a boundary,
-#      restart, assert identical snapshots + state_root + block identity
-#      after resync
+#   G. dead EPOCH LEADER: derive the validator that leads the next
+#      boundary epoch from the frozen snapshot, kill -9 exactly that
+#      node, and require the chain to ROTATE THE VIEW past it — proven
+#      by the P3 deadman firing, by a completed view change, and by no
+#      block in that epoch carrying the dead node as proposer — then
+#      restart it and assert identical snapshots + state_root + block
+#      identity after resync
 #
 # BLOCK PRODUCTION IS TX-DRIVEN. nodus_witness_tick only opens a round
 # when the mempool is non-empty (nodus_witness.c, block-timer branch),
@@ -51,6 +55,38 @@ NODUS_BIN="$STAGEF_NODUS_BIN"
 BOND_RAW=1000000000000000            # 10M DNAC
 FUND_RAW=1000100000000000            # 10,001,000 DNAC (bond + fees + buffer)
 
+# THE REFERENCE NODE — the node every single-node read goes through.
+#
+# Sections A-F read the chain through node1 because nothing is dead yet.
+# Section G kills a node that it DERIVES, and that node can be node1. A
+# single-node read against a corpse is not a failure that announces
+# itself: `head_height` would return the dead node's frozen tip, the pump
+# would report a stall on a chain that is advancing fine, and — worst —
+# G's catch-up loop compares the victim's height against `head_height`,
+# so with victim == node1 both sides would read the SAME database and the
+# comparison would be trivially true the instant it ran.
+#
+# So every such read goes through $REF_NODE, which G re-points to a node
+# it has proven is alive and is not the victim BEFORE the kill. It stays
+# 1 for the whole of A-F, so those sections behave exactly as before.
+REF_NODE=1
+
+# Canonical validator-set snapshot wire geometry (shared/dnac/vset_wire.h:
+# DNA_VSET_HDR_LEN=78, DNA_VSET_ENTRY_LEN=2642, voter_id 32 B at entry
+# offset 0, pubkey DNA_VSET_PUBKEY_LEN=2592 at entry offset 32).
+#
+# These are used to read entry k POSITIONALLY. That is the whole point:
+# the snapshot stores its entries in COMMITTEE ORDER by construction
+# (nodus_witness_vset.c builds them straight out of
+# nodus_committee_compute_for_epoch), so slicing by offset READS the
+# committee rank instead of recomputing it. An `instr()`-style search —
+# the pattern snapshot_contains uses — answers MEMBERSHIP, not ORDER, and
+# would happily identify the wrong validator as the leader.
+VSET_HDR_LEN=78
+VSET_ENTRY_LEN=2642
+VSET_VOTER_ID_LEN=32
+VSET_PUBKEY_LEN=2592
+
 fail() { echo "[FAIL] $*" >&2; exit 1; }
 info() { echo "[info] $*"; }
 ok()   { echo "[ok] $*"; }
@@ -64,11 +100,79 @@ running_nodes() {
     done | sort -n
 }
 
-node1_db() { stagef_node_chain_db 1; }
+# The chain DB of the reference node. Was node1_db; it is now named for
+# what it is, because in section G it is deliberately NOT node1.
+ref_db() { stagef_node_chain_db "$REF_NODE"; }
 
 head_height() {
-    local db; db=$(node1_db)
+    local db; db=$(ref_db)
     sqlite3 "$db" "SELECT COALESCE(MAX(height),0) FROM blocks;"
+}
+
+# The BFT view a node currently holds, from its own persisted singleton
+# row (pbft_state, nodus_witness_db.c:2122-2196).
+#
+# current_view is monotonic per chain DB and NEVER resets, and it
+# survives restarts — so it must be READ, never assumed to be 0.
+# test_view_change_fork sorts before this scenario and rotates the view,
+# so by the time G runs the cluster is routinely at a non-zero view.
+#
+# A missing row is the documented fresh-DB state and means view 0 (the
+# loader leaves the default in place, :2155-2160). A FAILED query is not
+# a value: it returns 1 and prints nothing, so no caller can read an
+# error as a view.
+node_view() {
+    local db out
+    db=$(stagef_node_chain_db "$1")
+    [ -n "$db" ] || return 1
+    out=$(sqlite3 "$db" \
+        "SELECT COALESCE(current_view, 0) FROM pbft_state WHERE id = 1;" \
+        2>/dev/null) || return 1
+    [ -z "$out" ] && out=0
+    echo "$out"
+}
+
+# The highest view held by any node EXCEPT $1, which is the node G is
+# about to kill (or has killed).
+#
+# Why the max over a set rather than one node's value: current_view is
+# per-node runtime state with three writers — the view-change quorum
+# itself (nodus_witness_bft.c:7201), adopting a NEW_VIEW (:7634) and
+# adopting a PROPOSE's view (:4870) — so a node that sits out a round can
+# lag, and after the post-shrink demotion the lowest-numbered surviving
+# node is not guaranteed to be one of the seven ACTIVE. The property
+# being asserted is "the cluster rotated", i.e. SOME surviving node
+# advanced, and the max expresses exactly that. Monotonic per node, so
+# monotonic over the set.
+#
+# The victim is excluded from BOTH the before and after readings, so the
+# two are taken over the SAME set and stay comparable — and so that a
+# kill -9'd database with a hot journal is never opened by this script.
+cluster_view_max() {
+    local skip="$1" best=-1 n v
+    for n in $(running_nodes); do
+        [ "$n" = "$skip" ] && continue
+        v=$(node_view "$n") || continue
+        [ "$v" -gt "$best" ] && best="$v"
+    done
+    [ "$best" -ge 0 ] || return 1
+    echo "$best"
+}
+
+# How many times PATTERN appears across EVERY running node's log.
+#
+# Always used as a BEFORE/AFTER delta, never as a bare presence test.
+# The logs are cumulative across the whole harness run and earlier
+# scenarios in it — test_view_change_fork deliberately forces view
+# changes — so "a VIEW_CHANGE line exists" is already true when G starts
+# and proves nothing about G. Only an INCREASE is evidence.
+log_count() {
+    local pat="$1" total=0 n c
+    for n in $(running_nodes); do
+        c=$(grep -c -- "$pat" "$BASE_DIR/node$n/nodus.log" 2>/dev/null || true)
+        total=$(( total + ${c:-0} ))
+    done
+    echo "$total"
 }
 
 # Raw Dilithium5 public key of a harness node, uppercase hex — the exact
@@ -114,7 +218,10 @@ pump_to_height() {
     local last_h="${h:-0}" stalled=0
 
     local deadline=$(( SECONDS + timeout ))
-    local sink; sink=$(cat "$BASE_DIR/node1/identity/nodus.fp")
+    # The sink is a DESTINATION ADDRESS read from a file, so it stays
+    # valid whether or not that node is running — but it is re-pointed
+    # with everything else so no node1 dependency is left to reason about.
+    local sink; sink=$(cat "$BASE_DIR/node$REF_NODE/identity/nodus.fp")
     while [ "${h:-0}" -lt "$target" ] && [ $SECONDS -lt $deadline ]; do
         # SYNC BEFORE EVERY SEND — not only after a failure.
         #
@@ -272,7 +379,7 @@ status_counts() {
 # committed for epoch $1?
 snapshot_contains() {
     local epoch="$1" pk="$2"
-    sqlite3 "$(node1_db)" "SELECT CASE WHEN instr(hex(snapshot_blob), \
+    sqlite3 "$(ref_db)" "SELECT CASE WHEN instr(hex(snapshot_blob), \
         '$pk') > 0 THEN 1 ELSE 0 END FROM validator_set_snapshots \
         WHERE epoch_start = $epoch;"
 }
@@ -294,7 +401,7 @@ assert_status_matches_epoch_snapshot() {
         local h0 e have a_missing e_present h1
         h0=$(head_height)
         e=$(( (h0 / E_LEN) * E_LEN ))
-        have=$(sqlite3 "$(node1_db)" "SELECT COUNT(*) FROM \
+        have=$(sqlite3 "$(ref_db)" "SELECT COUNT(*) FROM \
             validator_set_snapshots WHERE epoch_start = $e;")
         if [ "$have" != "1" ]; then tries=$((tries + 1)); sleep 3; continue; fi
 
@@ -303,13 +410,13 @@ assert_status_matches_epoch_snapshot() {
             [ -z "$pk" ] && continue
             [ "$(snapshot_contains "$e" "$pk")" = "1" ] || a_missing=$((a_missing + 1))
         done <<EOF
-$(sqlite3 "$(node1_db)" "SELECT hex(pubkey) FROM validators WHERE status = 0;")
+$(sqlite3 "$(ref_db)" "SELECT hex(pubkey) FROM validators WHERE status = 0;")
 EOF
         while read -r pk; do
             [ -z "$pk" ] && continue
             [ "$(snapshot_contains "$e" "$pk")" = "0" ] || e_present=$((e_present + 1))
         done <<EOF
-$(sqlite3 "$(node1_db)" "SELECT hex(pubkey) FROM validators WHERE status = 4;")
+$(sqlite3 "$(ref_db)" "SELECT hex(pubkey) FROM validators WHERE status = 4;")
 EOF
         # If the head crossed a boundary mid-read the two sides came from
         # different epochs; retry instead of reporting a race as a
@@ -334,7 +441,7 @@ EOF
 # governed epoch transition at a time.
 assert_snapshot_series_sane() {
     local label="$1"
-    local rows; rows=$(sqlite3 "$(node1_db)" \
+    local rows; rows=$(sqlite3 "$(ref_db)" \
         "SELECT epoch_start FROM validator_set_snapshots ORDER BY epoch_start;")
     local prev=""
     for e in $rows; do
@@ -352,7 +459,7 @@ assert_snapshot_series_sane() {
 # ── A. self-check + genesis snapshots ───────────────────────────────
 
 info "epoch length: $E_LEN (harness) — verifying against binary"
-rows=$(sqlite3 "$(node1_db)" \
+rows=$(sqlite3 "$(ref_db)" \
   "SELECT epoch_start FROM validator_set_snapshots ORDER BY epoch_start;")
 
 # O15B §7 / §16 — THE CHECK WAS ORDER-DEPENDENT, AND THE ORDER CHANGED.
@@ -491,7 +598,7 @@ for n in 8 9; do
     committed=0
     for _ in $(seq 1 15); do
         sleep 4
-        bal=$(sqlite3 "$(node1_db)" "SELECT COALESCE(SUM(amount),0) FROM \
+        bal=$(sqlite3 "$(ref_db)" "SELECT COALESCE(SUM(amount),0) FROM \
             utxo_set WHERE owner = '$fp';" 2>/dev/null || echo 0)
         if [ "${bal:-0}" -ge "$BOND_RAW" ]; then committed=1; break; fi
     done
@@ -503,14 +610,14 @@ assert_state_root_identical "C/funding"
 
 for n in 8 9; do
     info "staking node$n identity"
-    "$NODUS_CLI" -s 127.0.0.1 -p "$(stagef_tcp_port 1)" \
+    "$NODUS_CLI" -s 127.0.0.1 -p "$(stagef_tcp_port "$REF_NODE")" \
         -i "$BASE_DIR/node$n/identity" stake --commission $((500 + n)) \
         > "$BASE_DIR/stake_node$n.log" 2>&1 \
         || fail "nodus-cli stake for node$n (see stake_node$n.log)"
     sleep 8
 done
 
-vcount=$(sqlite3 "$(node1_db)" "SELECT COUNT(*) FROM validators;")
+vcount=$(sqlite3 "$(ref_db)" "SELECT COUNT(*) FROM validators;")
 [ "$vcount" -eq 9 ] || fail "expected 9 validator rows, got $vcount"
 for n in $(running_nodes); do
     c=$(sqlite3 "$(stagef_node_chain_db "$n")" "SELECT COUNT(*) FROM validators;")
@@ -523,7 +630,7 @@ PK8=$(node_pubkey_hex 8)
 PK9=$(node_pubkey_hex 9)
 for pk_label in "8:$PK8" "9:$PK9"; do
     lbl=${pk_label%%:*}; pk=${pk_label#*:}
-    got=$(sqlite3 "$(node1_db)" \
+    got=$(sqlite3 "$(ref_db)" \
         "SELECT COUNT(*) FROM validators WHERE hex(pubkey) = '$pk';")
     [ "$got" -eq 1 ] || fail "node$lbl identity is not a bonded validator"
 done
@@ -536,7 +643,7 @@ stagef_sentinel TARGET_REACHED
 
 # Record the pre-grow authoritative snapshots so section F can prove the
 # historical rows never move.
-PRE_GROW_SERIES=$(sqlite3 "$(node1_db)" "SELECT epoch_start || '|' || \
+PRE_GROW_SERIES=$(sqlite3 "$(ref_db)" "SELECT epoch_start || '|' || \
     active_count || '|' || hex(snapshot_hash) FROM validator_set_snapshots \
     ORDER BY epoch_start;")
 
@@ -546,6 +653,11 @@ PRE_GROW_SERIES=$(sqlite3 "$(node1_db)" "SELECT epoch_start || '|' || \
 # it from this scenario rather than inheriting a balance an earlier
 # alphabetically-ordered scenario happened to leave behind — this
 # scenario has to stand on its own when run in isolation.
+#
+# The proposer identity stays node1's DELIBERATELY: it is the identity
+# this block funds, and E/F both run before section G kills anything, so
+# REF_NODE is still 1 here. Only the CONNECTION target is routed through
+# $REF_NODE, for consistency with every other CLI call.
 V0_FP=$(cat "$BASE_DIR/node1/identity/nodus.fp")
 info "funding node1 witness identity ${V0_FP:0:16}… for the propose fees"
 stagef_dna -q dna sync > "$BASE_DIR/vset_cc_fund.log" 2>&1 || true
@@ -554,7 +666,7 @@ stagef_dna -q dna send "$V0_FP" 100000000 "cc-fee" \
 cc_funded=0
 for _ in $(seq 1 15); do
     sleep 4
-    bal=$(sqlite3 "$(node1_db)" "SELECT COALESCE(SUM(amount),0) FROM \
+    bal=$(sqlite3 "$(ref_db)" "SELECT COALESCE(SUM(amount),0) FROM \
         utxo_set WHERE owner = '$V0_FP';" 2>/dev/null || echo 0)
     if [ "${bal:-0}" -ge 100000000 ]; then cc_funded=1; break; fi
 done
@@ -565,7 +677,7 @@ H=$(head_height)
 # effective: a boundary far enough out to clear grace + one full epoch
 EFF=$(( ((H + 2 * E_LEN) / E_LEN + 1) * E_LEN ))
 info "proposing TARGET_ACTIVE_COUNT=9 effective=$EFF (head=$H)"
-"$NODUS_CLI" -s 127.0.0.1 -p "$(stagef_tcp_port 1)" \
+"$NODUS_CLI" -s 127.0.0.1 -p "$(stagef_tcp_port "$REF_NODE")" \
     -i "$BASE_DIR/node1/identity" chain-config propose \
     --param TARGET_ACTIVE_COUNT --value 9 --effective "$EFF" \
     > "$BASE_DIR/cc_grow.log" 2>&1 || fail "propose grow (see cc_grow.log)"
@@ -590,13 +702,13 @@ grown_epoch=""
 # one — no timing involved.
 grow_target=$(( EFF + E_LEN ))
 while [ "$(head_height)" -lt "$grow_target" ]; do
-    grown_epoch=$(sqlite3 "$(node1_db)" "SELECT epoch_start FROM \
+    grown_epoch=$(sqlite3 "$(ref_db)" "SELECT epoch_start FROM \
         validator_set_snapshots WHERE active_count = 9 \
         ORDER BY epoch_start LIMIT 1;")
     [ -n "$grown_epoch" ] && break
     pump_to_height $(( $(head_height) + E_LEN ))
 done
-[ -n "$grown_epoch" ] || grown_epoch=$(sqlite3 "$(node1_db)" \
+[ -n "$grown_epoch" ] || grown_epoch=$(sqlite3 "$(ref_db)" \
     "SELECT epoch_start FROM validator_set_snapshots WHERE active_count = 9 \
      ORDER BY epoch_start LIMIT 1;")
 [ -n "$grown_epoch" ] || fail "no 9-member snapshot appeared even though \
@@ -621,9 +733,9 @@ assert_snapshots_identical "E/grown"
 assert_state_root_identical "E/grown"
 assert_block_identity_identical "E/grown"
 
-sc=$(status_counts 1)
+sc=$(status_counts "$REF_NODE")
 info "statuses after grow: $sc"
-a9=$(sqlite3 "$(node1_db)" "SELECT COUNT(*) FROM validators WHERE status = 0;")
+a9=$(sqlite3 "$(ref_db)" "SELECT COUNT(*) FROM validators WHERE status = 0;")
 [ "$a9" -eq 9 ] || fail "expected 9 ACTIVE after grow, got: $sc"
 
 # MEMBERSHIP: the authoritative snapshot must actually carry the nine
@@ -638,7 +750,7 @@ while read -r pk; do
     [ -z "$pk" ] && continue
     [ "$(snapshot_contains "$grown_epoch" "$pk")" = "1" ] || missing=$((missing + 1))
 done <<EOF
-$(sqlite3 "$(node1_db)" "SELECT hex(pubkey) FROM validators WHERE status = 0;")
+$(sqlite3 "$(ref_db)" "SELECT hex(pubkey) FROM validators WHERE status = 0;")
 EOF
 [ "$missing" -eq 0 ] || fail "$missing ACTIVE validators missing from the epoch-$grown_epoch snapshot"
 ok "epoch-$grown_epoch snapshot carries all 9 ACTIVE members incl. node8 + node9"
@@ -654,17 +766,17 @@ EXPECT_Q=$(( (2 * 9) / 3 + 1 ))
 q_seen=0
 q_rounds=0
 while [ "$q_rounds" -lt $(( 2 * E_LEN )) ]; do
-    if grep -q "quorum=$EXPECT_Q)" "$BASE_DIR/node1/nodus.log" 2>/dev/null; then
+    if grep -q "quorum=$EXPECT_Q)" "$BASE_DIR/node$REF_NODE/nodus.log" 2>/dev/null; then
         q_seen=1; break
     fi
     pump_to_height $(( $(head_height) + 1 ))
     q_rounds=$(( q_rounds + 1 ))
 done
 [ "$q_seen" -eq 1 ] || fail "dynamic quorum never reached $EXPECT_Q after grow \
-(last seen: $(grep -o 'quorum=[0-9]*' "$BASE_DIR/node1/nodus.log" | tail -1))"
+(last seen: $(grep -o 'quorum=[0-9]*' "$BASE_DIR/node$REF_NODE/nodus.log" | tail -1))"
 ok "dynamic quorum is $EXPECT_Q, matching the 9-member snapshot"
 
-GROWN_SNAP_HASH=$(sqlite3 "$(node1_db)" "SELECT hex(snapshot_hash) FROM \
+GROWN_SNAP_HASH=$(sqlite3 "$(ref_db)" "SELECT hex(snapshot_hash) FROM \
     validator_set_snapshots WHERE epoch_start = $grown_epoch;")
 
 # ── F. shrink: TARGET_ACTIVE_COUNT = 7 ──────────────────────────────
@@ -672,7 +784,7 @@ GROWN_SNAP_HASH=$(sqlite3 "$(node1_db)" "SELECT hex(snapshot_hash) FROM \
 H=$(head_height)
 EFF2=$(( ((H + 2 * E_LEN) / E_LEN + 1) * E_LEN ))
 info "proposing TARGET_ACTIVE_COUNT=7 effective=$EFF2 (head=$H)"
-"$NODUS_CLI" -s 127.0.0.1 -p "$(stagef_tcp_port 1)" \
+"$NODUS_CLI" -s 127.0.0.1 -p "$(stagef_tcp_port "$REF_NODE")" \
     -i "$BASE_DIR/node1/identity" chain-config propose \
     --param TARGET_ACTIVE_COUNT --value 7 --effective "$EFF2" \
     > "$BASE_DIR/cc_shrink.log" 2>&1 || fail "propose shrink (see cc_shrink.log)"
@@ -684,13 +796,13 @@ shrunk_epoch=""
 # Same distance-based wait as the grow above — no wall clock.
 shrink_target=$(( EFF2 + E_LEN ))
 while [ "$(head_height)" -lt "$shrink_target" ]; do
-    shrunk_epoch=$(sqlite3 "$(node1_db)" "SELECT epoch_start FROM \
+    shrunk_epoch=$(sqlite3 "$(ref_db)" "SELECT epoch_start FROM \
         validator_set_snapshots WHERE active_count = 7 \
         AND epoch_start > $grown_epoch ORDER BY epoch_start LIMIT 1;")
     [ -n "$shrunk_epoch" ] && break
     pump_to_height $(( $(head_height) + E_LEN ))
 done
-[ -n "$shrunk_epoch" ] || shrunk_epoch=$(sqlite3 "$(node1_db)" \
+[ -n "$shrunk_epoch" ] || shrunk_epoch=$(sqlite3 "$(ref_db)" \
     "SELECT epoch_start FROM validator_set_snapshots WHERE active_count = 7 \
      AND epoch_start > $grown_epoch ORDER BY epoch_start LIMIT 1;")
 [ -n "$shrunk_epoch" ] || fail "no post-grow 7-member snapshot appeared even \
@@ -708,14 +820,14 @@ assert_snapshots_identical "F/shrunk"
 assert_state_root_identical "F/shrunk"
 assert_block_identity_identical "F/shrunk"
 
-sc=$(status_counts 1)
+sc=$(status_counts "$REF_NODE")
 info "statuses after shrink: $sc"
-el=$(sqlite3 "$(node1_db)" "SELECT COUNT(*) FROM validators WHERE status = 4;")
-ac=$(sqlite3 "$(node1_db)" "SELECT COUNT(*) FROM validators WHERE status = 0;")
+el=$(sqlite3 "$(ref_db)" "SELECT COUNT(*) FROM validators WHERE status = 4;")
+ac=$(sqlite3 "$(ref_db)" "SELECT COUNT(*) FROM validators WHERE status = 0;")
 [ "$el" -eq 2 ] || fail "expected 2 ELIGIBLE after shrink, got: $sc"
 [ "$ac" -eq 7 ] || fail "expected 7 ACTIVE after shrink, got: $sc"
 # Bond preserved on the ELIGIBLE pair — never destroyed or unlocked.
-badbond=$(sqlite3 "$(node1_db)" "SELECT COUNT(*) FROM validators \
+badbond=$(sqlite3 "$(ref_db)" "SELECT COUNT(*) FROM validators \
     WHERE status = 4 AND self_stake < $BOND_RAW;")
 [ "$badbond" -eq 0 ] || fail "an ELIGIBLE validator lost its bond"
 ok "ELIGIBLE pair keeps its bond"
@@ -727,7 +839,7 @@ assert_status_matches_epoch_snapshot "F/shrunk"
 
 # And the shrink itself must have dropped exactly two seats: the epoch
 # that first held 7 after the grow carries seven members, no more.
-sc7=$(sqlite3 "$(node1_db)" "SELECT active_count FROM \
+sc7=$(sqlite3 "$(ref_db)" "SELECT active_count FROM \
     validator_set_snapshots WHERE epoch_start = $shrunk_epoch;")
 [ "$sc7" -eq 7 ] || fail "epoch-$shrunk_epoch snapshot has active_count=$sc7, expected 7"
 ok "the governed shrink dropped exactly 2 seats at epoch $shrunk_epoch"
@@ -735,7 +847,7 @@ ok "the governed shrink dropped exactly 2 seats at epoch $shrunk_epoch"
 # HISTORY: every snapshot committed before the shrink must still read
 # back byte-identically. A later committed set may never rewrite an
 # earlier one.
-NOW_SERIES=$(sqlite3 "$(node1_db)" "SELECT epoch_start || '|' || \
+NOW_SERIES=$(sqlite3 "$(ref_db)" "SELECT epoch_start || '|' || \
     active_count || '|' || hex(snapshot_hash) FROM validator_set_snapshots \
     WHERE epoch_start <= $(echo "$PRE_GROW_SERIES" | tail -1 | cut -d'|' -f1) \
     ORDER BY epoch_start;")
@@ -744,28 +856,380 @@ NOW_SERIES=$(sqlite3 "$(node1_db)" "SELECT epoch_start || '|' || \
     echo "--- now:";         echo "$NOW_SERIES"
     fail "a historical validator-set snapshot changed"
 }
-STILL_GROWN=$(sqlite3 "$(node1_db)" "SELECT hex(snapshot_hash) FROM \
+STILL_GROWN=$(sqlite3 "$(ref_db)" "SELECT hex(snapshot_hash) FROM \
     validator_set_snapshots WHERE epoch_start = $grown_epoch;")
 [ "$STILL_GROWN" = "$GROWN_SNAP_HASH" ] || \
     fail "the 9-member snapshot for epoch $grown_epoch changed after the shrink"
 ok "historical snapshots (incl. the 9-member epoch $grown_epoch) are unchanged"
 
-# ── G. crash injection across a boundary ────────────────────────────
+# ── G. the epoch leader dies and the chain must ROTATE PAST IT ──────
+#
+# WHAT IT PROVES
+#   That a chain whose EPOCH LEADER is killed recovers by rotating the
+#   view. If this section failed, the false property would be: "a BFT
+#   chain can make progress across an epoch boundary whose designated
+#   leader is dead." Concretely it pins three things that are each
+#   independently sufficient to expose the halt this scenario exists for:
+#     1. some follower's demand-armed deadman (P3) actually FIRED;
+#     2. a view change actually COMPLETED — the persisted, quorum-gated
+#        current_view moved, and the cluster logged the completion;
+#     3. no block in the dead leader's epoch carries it as proposer,
+#        i.e. leadership genuinely moved to somebody else.
+#   And then, as before, that the restarted node re-converges to
+#   byte-identical snapshots / state_root / block identity.
+#
+#   ⚠ WHAT IT NO LONGER DOES: pass merely because the chain crossed the
+#   boundary. It used to kill a HARDCODED node 4 and then assert only
+#   that blocks kept coming. The leader for a block is
+#   `(epoch + view) % n` over a committee ordered by stake DESC and then
+#   by SHA3-512(0x02 ‖ pubkey ‖ state_seed) ASC within tied stake groups
+#   (nodus_witness_committee.c:47-64,300-330). Every harness validator
+#   posts the same 10M bond, so the whole committee is ONE tied group and
+#   the rank is entirely state_seed-derived — over identities that are
+#   generated fresh on every run. Node 4 was therefore the leader only by
+#   luck, and "the chain crossed NEXT_B" is fully compatible with "the
+#   victim was never the leader". The victim is now DERIVED.
+#
+# WHAT IT REQUIRES
+#   Compile flags (the binary): the same short-epoch build the whole
+#     scenario needs — -DDNAC_EPOCH_LENGTH=<E>,
+#     -DDNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS=<E>,
+#     -DDNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS=<E>. G adds NO compile
+#     flag of its own: it needs no fault-injection build, and
+#     -DQGP_FAULT_INJECT is NOT required.
+#   Environment (the scripts): STAGEF_EPOCH_LENGTH=<E> exported BEFORE
+#     stagef_up.sh, matching the binary. G adds no NODUS_FAULT_* or
+#     STAGEF_* variable of its own.
+#   State: sections A-F must have run in this process — G consumes the
+#     9-bonded/7-active cluster they build and the head they leave.
+#
+# WHAT IT LEAVES BEHIND
+#   A node that was kill -9'd and then restarted under a NEW pid (appended
+#   to $BASE_DIR/pids.txt; its nodus.log is appended to, not truncated, so
+#   it holds two runs). Which node that is VARIES PER RUN — it is derived,
+#   so it is printed, and it may be node1. The chain is left a few blocks
+#   past the boundary $NEXT_B, at a HIGHER current_view than it started
+#   at (current_view never resets and is persisted per chain DB), and the
+#   validator set is the post-shrink 7-active/2-eligible set from F.
+#   Nothing is cleaned up: G is the last section of the last scenario.
+#
+# HOW IT CAN LIE
+#   1. THE PUMP CANNOT SEE THIS HALT. pump_to_height fails on
+#      PUMP_STALL_ROUNDS=8 consecutive no-progress rounds (~5 min at the
+#      measured ~37 s/round), while the deadman fires at 15 s and a
+#      rotation converges well inside a minute. So pump success is NOT
+#      evidence and is not asserted as such — the three positive checks
+#      below are. If they are ever deleted, G silently returns to being a
+#      liveness test that cannot observe the thing it is named for.
+#   2. STALE LOG LINES. Every log line G looks for also appears earlier in
+#      a full run — test_view_change_fork deliberately forces view changes
+#      and sorts BEFORE this scenario. Presence proves nothing; G compares
+#      BEFORE/AFTER counts and requires an INCREASE. A rewrite that
+#      "simplifies" these to `grep -q` makes all of them vacuously true.
+#   3. VIEW DRIFT REDIRECTS LEADERSHIP. The derivation is only as good as
+#      the view it used. The kill degrades every round to ~63 s, so a
+#      round timeout between the read and the boundary rotates the view
+#      and hands leadership to a DIFFERENT node — the victim is then
+#      merely a dead follower, P3 never fires, and G FAILS ON A HEALTHY
+#      CHAIN. That residual is NOT closed here: it cannot be, from outside
+#      the node. It is made DIAGNOSABLE instead — the pre-kill and
+#      post-boundary views are printed in the failure text, so a redirect
+#      is visible at a glance rather than looking like a consensus bug.
+#      The window before the kill IS closed, by re-reading and re-deriving.
+#   4. A SKIP WOULD HIDE ALL OF IT. rc=99 is BANNED in this section.
+#      genesis_protocol.sh treats 99 as SKIP and exits 0 with SKIPs
+#      allowed (:7,:15,:97-99), and a SKIP needs no ASSERT_RUN sentinel —
+#      so encoding "snapshot row missing" / "view moved twice" / "victim
+#      not derivable" as a skip would make this coverage silently absent
+#      while the suite reported green. Every precondition here FAILS.
+#   5. A DEAD REFERENCE NODE. Every single-node read goes through
+#      $REF_NODE, which is re-pointed off the victim before the kill. If a
+#      future edit reintroduces a raw node1 read into this section, it can
+#      read a frozen database and report a stall — or, in the catch-up
+#      loop, compare the victim against itself and pass instantly.
+#
+# A NOTED FALSE-*FAIL* RESIDUAL (not a lie-path — it cannot produce a
+# green): the pump submits through dna-connect-cli, and the victim is one
+# of the nodes that CLI may connect to. stagef_up.sh writes ALL
+# $STAGEF_COMMITTEE_SIZE nodes into bootstrap_nodes (:75-79,86), not just
+# node1, and stagef_dna scrubs known_nodes/preferred_node before every
+# call (stagef_env.sh:100-107) so the list is rebuilt from the config each
+# time — so the CLI has failover candidates rather than one pinned target.
+# The pre-existing section killed node 4, which was equally in that list,
+# and the pump kept working; that is the evidence this is tolerated. What
+# is NOT verifiable from this script is the CLI's failover ORDER, so if
+# the pump ever stalls immediately after the kill with the cluster
+# otherwise healthy, suspect this before suspecting consensus.
+#
+# NEVER TUNE A TIMEOUT TO MAKE THIS PASS. If G fails while the chain is
+# healthy and still advancing, the wait is mis-expressed, not too short —
+# see lie-path 3 first. This bug was very nearly buried by a raised pump
+# budget.
 
 H=$(head_height)
 NEXT_B=$(( (H / E_LEN + 1) * E_LEN ))
-victim=4
+
+# ── G.1 the frozen snapshot that governs the boundary epoch ─────────
+#
+# The set for epoch NEXT_B was frozen at the PREVIOUS boundary by
+# nodus_witness_vset_commit_next, so by now it is already committed and
+# G must NOT pump to produce it — pumping is exactly what would carry the
+# head past the boundary this section needs to arrive at with a dead
+# leader. A bounded re-read covers a read racing the writer on one node;
+# an absent row after that is a real fault and FAILS.
+snap_have=0
+for _ in $(seq 1 10); do
+    snap_have=$(sqlite3 "$(ref_db)" "SELECT COUNT(*) FROM \
+        validator_set_snapshots WHERE epoch_start = $NEXT_B;" 2>/dev/null || echo 0)
+    [ "${snap_have:-0}" = "1" ] && break
+    sleep 2
+done
+[ "${snap_have:-0}" = "1" ] || fail "no committed validator-set snapshot for \
+the boundary epoch $NEXT_B (head=$H) — the leader for that epoch cannot be \
+derived, and guessing one would make this whole section meaningless"
+
+ACTIVE_COUNT=$(sqlite3 "$(ref_db)" "SELECT active_count FROM \
+    validator_set_snapshots WHERE epoch_start = $NEXT_B;")
+BLOB_LEN=$(sqlite3 "$(ref_db)" "SELECT length(snapshot_blob) FROM \
+    validator_set_snapshots WHERE epoch_start = $NEXT_B;")
+# Both must be non-empty NUMBERS before any arithmetic touches them: an
+# empty cell would otherwise be coerced to 0 inside $(( )) and quietly
+# produce a plausible-looking entry count.
+case "$ACTIVE_COUNT" in ''|*[!0-9]*)
+    fail "epoch-$NEXT_B snapshot has no usable active_count ('$ACTIVE_COUNT')";;
+esac
+case "$BLOB_LEN" in ''|*[!0-9]*)
+    fail "epoch-$NEXT_B snapshot blob has no readable length ('$BLOB_LEN')";;
+esac
+[ "$ACTIVE_COUNT" -ge 1 ] || \
+    fail "epoch-$NEXT_B snapshot has active_count=$ACTIVE_COUNT"
+
+# The column and the blob must agree about how many entries there are.
+# active_count is what the leader formula takes its modulus from, and the
+# blob is what the entry is sliced out of; if they disagree, one of the
+# two is wrong and the derived index would address the wrong bytes.
+BLOB_ENTRIES=$(( (BLOB_LEN - VSET_HDR_LEN) / VSET_ENTRY_LEN ))
+[ $(( VSET_HDR_LEN + BLOB_ENTRIES * VSET_ENTRY_LEN )) -eq "$BLOB_LEN" ] || \
+    fail "epoch-$NEXT_B snapshot blob is $BLOB_LEN bytes, not a whole number \
+of $VSET_ENTRY_LEN-byte entries after the $VSET_HDR_LEN-byte header"
+[ "$BLOB_ENTRIES" -eq "$ACTIVE_COUNT" ] || \
+    fail "epoch-$NEXT_B snapshot says active_count=$ACTIVE_COUNT but its blob \
+carries $BLOB_ENTRIES entries"
+
+# ── G.2 derive the victim: the validator that LEADS epoch NEXT_B ─────
+#
+# Leader rank = (epoch + view) % n, with epoch = height / E_LEN and n the
+# committee size (nodus_witness_bft.c:465-467 and :505-510). NEXT_B is a
+# boundary multiple, so its epoch ordinal is NEXT_B / E_LEN and that one
+# rank leads EVERY block of [NEXT_B, NEXT_B + E_LEN).
+#
+# The rank is turned into an identity by READING the snapshot, never by
+# re-deriving the tiebreak: nodus_witness_vset.c fills entry i straight
+# from nodus_committee_compute_for_epoch's member i, so entry order IS
+# committee order and slicing entry k by byte offset gives rank k.
+#
+# The view is re-read and the whole derivation re-run below if it moved.
+derive_view=""
+victim=""
+DERIVED_OK=0
+for attempt in 1 2; do
+    # Read the view from node1, which is alive for the whole of this
+    # derivation — nothing has been killed yet.
+    derive_view=$(node_view 1) || \
+        fail "cannot read current_view from node1's pbft_state — the leader \
+rank is (epoch + view) % n and is underivable without it"
+
+    LEADER_IDX=$(( (NEXT_B / E_LEN + derive_view) % ACTIVE_COUNT ))
+    # SQLite substr() is 1-indexed and byte-addressed on a BLOB.
+    PK_OFF=$(( VSET_ENTRY_LEN * LEADER_IDX + VSET_HDR_LEN + VSET_VOTER_ID_LEN + 1 ))
+    VID_OFF=$(( VSET_ENTRY_LEN * LEADER_IDX + VSET_HDR_LEN + 1 ))
+    LEADER_PK=$(sqlite3 "$(ref_db)" "SELECT hex(substr(snapshot_blob, \
+        $PK_OFF, $VSET_PUBKEY_LEN)) FROM validator_set_snapshots \
+        WHERE epoch_start = $NEXT_B;")
+    LEADER_WID=$(sqlite3 "$(ref_db)" "SELECT hex(substr(snapshot_blob, \
+        $VID_OFF, $VSET_VOTER_ID_LEN)) FROM validator_set_snapshots \
+        WHERE epoch_start = $NEXT_B;")
+    [ ${#LEADER_PK} -eq $(( VSET_PUBKEY_LEN * 2 )) ] || \
+        fail "entry $LEADER_IDX pubkey slice is ${#LEADER_PK} hex chars, \
+expected $(( VSET_PUBKEY_LEN * 2 )) — the snapshot layout moved"
+
+    # Which of our nodes is that? Matched on the RAW PUBKEY, the same
+    # byte string node_pubkey_hex reads out of the node's own identity.
+    victim=""
+    for n in $(running_nodes); do
+        [ "$(node_pubkey_hex "$n")" = "$LEADER_PK" ] && { victim="$n"; break; }
+    done
+    [ -n "$victim" ] || fail "the epoch-$NEXT_B leader (rank $LEADER_IDX of \
+$ACTIVE_COUNT, view $derive_view) is not any of this harness's nodes — the \
+snapshot names a validator this scenario did not create"
+
+    # The reference node: alive, and NOT the corpse. Lowest running index
+    # that is not the victim, so it is deterministic rather than whichever
+    # one the shell happened to list first.
+    REF_NODE=""
+    for n in $(running_nodes); do
+        [ "$n" = "$victim" ] || { REF_NODE="$n"; break; }
+    done
+    [ -n "$REF_NODE" ] || fail "no running node other than the victim"
+
+    # RE-READ THE VIEW IMMEDIATELY BEFORE THE KILL. A round timeout in the
+    # window between deriving and killing rotates the view and silently
+    # hands leadership to somebody else, which would make the kill land on
+    # an innocent follower and the whole section prove nothing.
+    view_now=$(node_view 1) || fail "cannot re-read current_view before the kill"
+    if [ "$view_now" = "$derive_view" ]; then DERIVED_OK=1; break; fi
+    info "view moved $derive_view -> $view_now during derivation (attempt \
+$attempt) — re-deriving the leader"
+done
+[ "$DERIVED_OK" -eq 1 ] || fail "current_view moved on both derivation \
+attempts (last seen $derive_view -> $view_now) — the epoch leader cannot be \
+pinned down long enough to kill it. This is a FAILURE, never a skip: a \
+skipped G is coverage that did not happen."
+
+info "epoch $NEXT_B leader = rank $LEADER_IDX of $ACTIVE_COUNT at view \
+$derive_view -> node$victim (witness id ${LEADER_WID:0:16}…)"
+info "reference node for every single-node read is now node$REF_NODE"
+
+# Cross-check the two independent derivations of the same 32 bytes: the
+# snapshot's voter_id field (sliced positionally out of the blob) and the
+# first half of the node's own fingerprint file. Both are
+# SHA3-512(pubkey)[0..31] — nodus_chain_config_derive_witness_id vs
+# nodus_fingerprint (nodus_sign.c:241-245) — and it is also exactly what
+# the node writes into blocks.proposer_id (nodus_witness.c:856-858,
+# NODUS_T3_WITNESS_ID_LEN=32). If these disagree, the byte offsets above
+# are wrong and every conclusion drawn from them is worthless.
+VICTIM_FP_WID=$(cut -c1-$(( VSET_VOTER_ID_LEN * 2 )) \
+    < "$BASE_DIR/node$victim/identity/nodus.fp" | tr '[:lower:]' '[:upper:]')
+[ "$VICTIM_FP_WID" = "$LEADER_WID" ] || \
+    fail "snapshot entry $LEADER_IDX voter_id ($LEADER_WID) does not match \
+node$victim's own fingerprint prefix ($VICTIM_FP_WID) — the positional read \
+of the snapshot blob is addressing the wrong bytes"
+
+# ── G.3 baselines, then kill the leader ─────────────────────────────
+#
+# Counted BEFORE the kill because all three log lines already exist in a
+# full run (test_view_change_fork rotates the view and sorts earlier), so
+# only a DELTA is evidence. See lie-path 2.
+P3_BEFORE=$(log_count "P3 committed tip frozen")
+VCQ_BEFORE=$(log_count "view change quorum! new view:")
+VCI_BEFORE=$(log_count "initiated view change to view")
+VIEW_BEFORE=$(cluster_view_max "$victim") || \
+    fail "cannot read current_view from any surviving node"
+
+# THE DERIVATION NODE MUST NOT BE BEHIND THE CLUSTER.
+#
+# The loop above pinned the view by re-reading node1. That closes the
+# window on node1 — but this baseline reads the MAX across the survivors,
+# and if a survivor already holds a HIGHER view then a rotation has
+# completed that node1 has not adopted yet, so the rank derived from
+# node1's view is stale and the kill would land on a follower rather than
+# on the leader. That is lie-path 3, except this instance happens BEFORE
+# the kill and is therefore closable — so it is closed, not documented.
+# Same class as "the view moved on both attempts": a FAILURE, never a
+# skip.
+[ "$VIEW_BEFORE" -eq "$derive_view" ] || \
+    fail "the leader was derived from node1's view ($derive_view) but a \
+surviving node already holds view $VIEW_BEFORE — a rotation has completed \
+that node1 has not adopted, so rank $LEADER_IDX no longer identifies the \
+epoch-$NEXT_B leader and killing node$victim would prove nothing"
+
 victim_pid=$(pgrep -f "node$victim/identity" | head -1)
 [ -n "$victim_pid" ] || fail "cannot find node$victim pid"
-info "killing node$victim (pid $victim_pid) before boundary $NEXT_B (head=$H)"
+info "killing the epoch leader node$victim (pid $victim_pid) before boundary \
+$NEXT_B (head=$H, view=$VIEW_BEFORE, P3 fires so far=$P3_BEFORE)"
 kill -9 "$victim_pid"
-# A committee member is deliberately dead across this stretch, so each
-# round waits out its missing vote and blocks come roughly half as fast
-# (measured ~63 s vs ~37 s). No special budget is needed: pump_to_height
-# asserts PROGRESS, not speed, so a degraded-but-advancing cluster passes
-# unchanged and only a genuine stall fails.
+
+# The DESIGNATED LEADER is deliberately dead across this stretch, so the
+# chain cannot make a single block until the view rotates away from it,
+# and every round after that still waits out the missing vote (measured
+# ~63 s vs ~37 s). No special budget is needed and none may be added:
+# pump_to_height asserts PROGRESS, not speed, so a degraded-but-advancing
+# cluster passes unchanged and only a genuine stall fails. Crossing the
+# boundary is a PRECONDITION for the assertions below, NOT the assertion.
 pump_to_height $(( NEXT_B + 2 ))
-info "boundary $NEXT_B passed without node$victim — restarting it"
+info "boundary $NEXT_B crossed without its designated leader node$victim"
+
+# The scenario has reached the thing it exists to check. Recorded before
+# the assertions run so that a failure below is reported as a consensus
+# failure rather than a broken fixture.
+stagef_sentinel ASSERT_RUN
+
+# ── G.4 POSITIVE ROTATION EVIDENCE ──────────────────────────────────
+#
+# Captured before the restart, so it can only describe the window in
+# which the leader was actually dead.
+VIEW_AFTER=$(cluster_view_max "$victim") || \
+    fail "cannot read current_view from any surviving node after the boundary"
+P3_AFTER=$(log_count "P3 committed tip frozen")
+VCQ_AFTER=$(log_count "view change quorum! new view:")
+VCI_AFTER=$(log_count "initiated view change to view")
+
+# (a) A follower's demand-armed deadman FIRED. Nothing else in the system
+#     can start a round when the leader is dead: only the leader leaves
+#     IDLE unprompted, so without P3 the chain has no event at all and
+#     sits frozen for the whole epoch (nodus_witness_bft.c:8834-8853,
+#     stderr, captured into node$n/nodus.log by the harness).
+[ "$P3_AFTER" -gt "$P3_BEFORE" ] || \
+    fail "the P3 demand-armed deadman never fired while the epoch leader \
+node$victim was dead ($P3_BEFORE -> $P3_AFTER across all node logs). The \
+chain reached $(head_height), but no follower ever noticed a frozen tip with \
+live demand — which is the halt this section exists to catch. Views: \
+$VIEW_BEFORE -> $VIEW_AFTER."
+
+# (b) A view change actually COMPLETED. current_view has exactly three
+#     writers — reaching the view-change quorum
+#     (nodus_witness_bft.c:7201), adopting a NEW_VIEW (:7634) and
+#     adopting a PROPOSE's view (:4870) — and the latter two only ever
+#     carry a view that some node reached quorum on, so an increase
+#     anywhere means a rotation completed somewhere. It is persisted per
+#     chain DB (nodus_witness_db_save_pbft_state, :2122-2153) and
+#     survives restarts, which is why it is read rather than assumed.
+#
+#     The quorum LOG LINE is required alongside the number, because the
+#     number alone cannot say WHERE the rotation came from: only :7201
+#     prints, and the node that printed it is by definition the one whose
+#     quorum caused every other node's adoption. Requiring both means a
+#     view inherited from an earlier scenario cannot stand in for one
+#     this section caused.
+[ "$VIEW_AFTER" -gt "$VIEW_BEFORE" ] || \
+    fail "current_view did not advance while the epoch leader was dead \
+($VIEW_BEFORE -> $VIEW_AFTER, max across the surviving nodes) — the chain \
+crossed $NEXT_B without ever rotating away from node$victim, which means \
+node$victim was not really leading it (see lie-path 3: a view drift after the \
+kill redirects leadership). P3 fires: $P3_BEFORE -> $P3_AFTER."
+[ "$VCQ_AFTER" -gt "$VCQ_BEFORE" ] || \
+    fail "current_view moved ($VIEW_BEFORE -> $VIEW_AFTER) but no node \
+logged a view-change QUORUM in this window (initiations: $VCI_BEFORE -> \
+$VCI_AFTER) — a rotation that no quorum completed is not a recovery"
+ok "view rotated $VIEW_BEFORE -> $VIEW_AFTER past the dead leader \
+(P3 fires +$(( P3_AFTER - P3_BEFORE )), initiations \
++$(( VCI_AFTER - VCI_BEFORE )), quorums +$(( VCQ_AFTER - VCQ_BEFORE )))"
+
+# (c) LEADERSHIP GENUINELY MOVED. Every block of [NEXT_B, NEXT_B+E_LEN)
+#     has the same leader rank, so if the rotation had not happened the
+#     dead node would be the proposer of record for all of them.
+#     proposer_id is the 32-byte witness id (nodus_witness_db.c:606), the
+#     same bytes as the snapshot voter_id matched above.
+PROP_TOTAL=$(sqlite3 "$(ref_db)" "SELECT COUNT(*) FROM blocks \
+    WHERE height >= $NEXT_B AND height < $(( NEXT_B + E_LEN ));")
+PROP_VICTIM=$(sqlite3 "$(ref_db)" "SELECT COUNT(*) FROM blocks \
+    WHERE height >= $NEXT_B AND height < $(( NEXT_B + E_LEN )) \
+      AND hex(COALESCE(proposer_id, x'')) = '$LEADER_WID';")
+# Non-vacuity FIRST: "no block names the victim" is trivially true of an
+# empty range, and an empty range here would mean the boundary was never
+# really crossed.
+[ "${PROP_TOTAL:-0}" -ge 1 ] || \
+    fail "no block at all in [$NEXT_B, $(( NEXT_B + E_LEN ))) on node$REF_NODE \
+— the proposer check would have passed vacuously"
+[ "${PROP_VICTIM:-0}" -eq 0 ] || \
+    fail "$PROP_VICTIM of $PROP_TOTAL blocks in the dead leader's epoch still \
+name node$victim as proposer — leadership never moved"
+ok "all $PROP_TOTAL blocks in epoch $NEXT_B were proposed by somebody other \
+than the dead leader node$victim"
+
+# ── G.5 the corpse rejoins and re-converges ─────────────────────────
+
+info "restarting node$victim"
 node_dir="$BASE_DIR/node$victim"
 # shellcheck disable=SC2086
 "$NODUS_BIN" -c "$BASE_DIR/nodus.json" -b 127.0.0.1 \
@@ -776,7 +1240,15 @@ node_dir="$BASE_DIR/node$victim"
     $SEEDS >> "$node_dir/nodus.log" 2>&1 &
 echo $! >> "$BASE_DIR/pids.txt"
 
-info "waiting for node$victim to catch up"
+# ref_h comes from node$REF_NODE, which is NOT the victim — so this is a
+# real comparison between two different databases.
+#
+# This guard is NEW because the hazard is new: the old section killed a
+# hardcoded node 4, so head_height (node1) was always a different file.
+# Now that the victim is DERIVED it can be node1, and without the
+# re-pointing both sides of `vh >= ref_h` would read the SAME database
+# and the loop would exit on its first iteration having proven nothing.
+info "waiting for node$victim to catch up to node$REF_NODE"
 t=0
 while [ $t -lt 300 ]; do
     ref_h=$(head_height)
@@ -786,16 +1258,18 @@ while [ $t -lt 300 ]; do
     sleep 5; t=$((t + 5))
 done
 [ "${vh:-0}" -ge "$ref_h" ] || fail "node$victim did not catch up ($vh < $ref_h)"
-stagef_sentinel ASSERT_RUN
-assert_snapshot_series_sane "G/crash-recovery"
-assert_snapshots_identical "G/crash-recovery"
-assert_state_root_identical "G/crash-recovery"
-assert_block_identity_identical "G/crash-recovery"
-assert_status_matches_epoch_snapshot "G/crash-recovery"
+assert_snapshot_series_sane "G/leader-recovery"
+assert_snapshots_identical "G/leader-recovery"
+assert_state_root_identical "G/leader-recovery"
+assert_block_identity_identical "G/leader-recovery"
+assert_status_matches_epoch_snapshot "G/leader-recovery"
 
 stagef_sentinel PASS
 echo ""
 echo "[PASS] 7→9→7 dynamic validator set: joins left DISCOVER, snapshots,"
 echo "       governed boundary flips, membership, dynamic quorum, bonds,"
-echo "       historical immutability, state_root, block identity and crash"
-echo "       recovery all identical across nodes"
+echo "       historical immutability, state_root and block identity all"
+echo "       identical across nodes — and the chain rotated the view past"
+echo "       a DERIVED, deliberately killed epoch leader (node$victim,"
+echo "       view $VIEW_BEFORE -> $VIEW_AFTER) and re-converged after it"
+echo "       rejoined"

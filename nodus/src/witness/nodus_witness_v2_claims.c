@@ -444,6 +444,61 @@ int nodus_witness_v2_unclaimed_total(nodus_witness_t *w,
     return 0;
 }
 
+/* ── spent-claim lookup — O15K V-3 ──────────────────────────────────── */
+
+/* THE ONE place `v2_claims_spent` is asked "does this nullifier have a
+ * row?". It used to be open-coded inside the admission verifier below and
+ * nowhere else, which is exactly how V-3 happened: a claim's commit wrote
+ * THIS table (nodus_witness_v2_claim_spend_insert) while every "is this
+ * pooled entry decided?" question walked the LEGACY `nullifiers` table,
+ * whose only writer is the legacy commit path a successor commit
+ * bypasses. Two writers, two readers, no overlap — so a committed claim
+ * read as live demand forever and drove a view change every T against a
+ * healthy leader. One helper, two callers, no drift; the same argument
+ * that keeps bft_p3_entry_finished in one place.
+ *
+ * ⚠ TRI-STATE, AND IT MUST STAY ONE. Do NOT "simplify" this to a bool.
+ * The same fact serves two questions whose SAFE answers point in OPPOSITE
+ * directions, so the mapping of a fault cannot live here — it belongs to
+ * each caller:
+ *
+ *   caller                              question              maps -1 to
+ *   ─────────────────────────────────── ───────────────────── ──────────
+ *   admission (nodus_witness_v2_claim_  "may I ADMIT this?"   SPENT →
+ *   admit, step 9)                                            reject
+ *   reaper (nodus_witness_mempool_      "may I DELETE this?"  NOT SPENT
+ *   evict_committed, nodus_witness.c)                         → keep
+ *
+ * A bool return would silently hand ONE of those two the dangerous
+ * direction: either admitting a possible double-spend, or deleting a
+ * client's pending work with no error anywhere.
+ *
+ * Deterministic and node-local: the answer is a function of the nullifier
+ * bytes and this node's committed state — no clock, no message, no
+ * iteration order.
+ *
+ * @return 1 spent (a row exists) / 0 not spent (no row) / -1 FAULT (the
+ *         query could not be prepared or stepped — this node does not
+ *         know; absence of the table is a fault, never "not spent").
+ */
+int nodus_witness_v2_claim_nullifier_spent(nodus_witness_t *w,
+                                           const uint8_t nullifier[64]) {
+    if (!w || !w->db || !nullifier) return -1;
+
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT 1 FROM v2_claims_spent WHERE nullifier = ?1",
+            -1, &st, NULL) != SQLITE_OK)
+        return -1;                          /* absent/corrupt table = fault */
+    sqlite3_bind_blob(st, 1, nullifier, 64, SQLITE_TRANSIENT);
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+
+    if (rc == SQLITE_ROW)  return 1;
+    if (rc == SQLITE_DONE) return 0;
+    return -1;                              /* mid-step fault ≠ a value     */
+}
+
 /* ── claim pipeline ─────────────────────────────────────────────────── */
 
 int nodus_witness_v2_claim_admit(nodus_witness_t *w,
@@ -544,18 +599,16 @@ int nodus_witness_v2_claim_admit(nodus_witness_t *w,
                             m.target_domain_id, m.target_asset_ref,
                             m.target_asset_len, leaf_hash, nul) != 0)
         return -1;
-    {
-        sqlite3_stmt *st = NULL;
-        if (sqlite3_prepare_v2(w->db,
-                "SELECT 1 FROM v2_claims_spent WHERE nullifier = ?1",
-                -1, &st, NULL) != SQLITE_OK)
-            return -1;
-        sqlite3_bind_blob(st, 1, nul, 64, SQLITE_TRANSIENT);
-        int rc = sqlite3_step(st);
-        sqlite3_finalize(st);
-        if (rc == SQLITE_ROW) return -1;        /* already claimed       */
-        if (rc != SQLITE_DONE) return -1;       /* fault ≠ "not spent"   */
-    }
+    /* O15K V-3 — the lookup moved into the shared tri-state helper above
+     * so this caller and the reaper cannot drift. THIS caller maps the
+     * FAULT to SPENT: the question here is "may I ADMIT this?", and a
+     * node that cannot read the spent set must never admit what may be a
+     * double-spend. The reaper maps the same -1 the OTHER way — see the
+     * table on the helper. The verdict for every input is unchanged: a
+     * prepare failure, a row, and a mid-step fault all rejected before
+     * this refactor too. */
+    if (nodus_witness_v2_claim_nullifier_spent(w, nul) != 0)
+        return -1;              /* 1 = already claimed, -1 = fail closed  */
 
     /* 10. the distribution must cover it — a claim can never mint */
     {

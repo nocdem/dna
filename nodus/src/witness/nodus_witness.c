@@ -302,13 +302,51 @@ void nodus_witness_set_chain_id(nodus_witness_t *witness,
 
 /* ── Open a witness chain DB by full path ────────────────────────── */
 
+/* O15K E2 — FAIL CLOSED. Every failure exit of witness_db_open_path goes
+ * through here, because a half-open handle is the shape this project
+ * forbids under "A DB failure is never a value": sqlite3_open can succeed
+ * and a later step fail, and the old code returned -1 while LEAVING
+ * witness->db assigned. The caller (nodus_witness_scan_chain_db) discards
+ * the rc, so the node came up reporting `chain_db=active` while
+ * nodus_witness_init had already logged "no chain DB found — pre-genesis
+ * state". Worse, the chain id was never installed, and a zeroed chain id
+ * is read as "pre-genesis" by BOTH nodus_witness_bft.c's verify_chain_id
+ * (CRITICAL-2 cross-chain replay protection) and
+ * nodus_witness_peer.c's witness_chain_quorum_observe (the self-quarantine
+ * safety net) — so the node ran with its replay guard off and its
+ * divergence detector blind, and could never verify a certificate again.
+ * Full write-up: nodus/BUGS.md, the top OPEN entry. */
+static int witness_db_open_fail(nodus_witness_t *witness) {
+    if (witness->db) {
+        sqlite3_close(witness->db);
+        witness->db = NULL;
+    }
+    return -1;
+}
+
 static int witness_db_open_path(nodus_witness_t *witness, const char *db_path) {
     int rc = sqlite3_open(db_path, &witness->db);
     if (rc != SQLITE_OK) {
         fprintf(stderr, "%s: failed to open %s: %s\n",
                 LOG_TAG, db_path, sqlite3_errmsg(witness->db));
-        return -1;
+        return witness_db_open_fail(witness);
     }
+
+    /* O15K E1 — WAIT THE LOCK OUT; do not fail on a transient one.
+     * Without a busy timeout SQLite returns SQLITE_BUSY immediately, so a
+     * node restarted while the previous process's WAL recovery is still
+     * settling — the ordinary `kill -9` + restart an operator performs —
+     * failed the schema exec below with "database is locked" and fell
+     * through to the half-open state described above. This is the same
+     * class O15J's f08fbcdc fixed by putting a busy timeout on the V2
+     * probe connection (nodus_witness_v2_gen.c); the MAIN chain-DB
+     * connection never got one, and it is the one every restart uses.
+     *
+     * It also draws the transient/permanent line without inventing a
+     * mechanism: SQLite retries internally for the timeout, so a BUSY
+     * that survives it is a genuinely persistent lock and failing is then
+     * the correct answer. */
+    sqlite3_busy_timeout(witness->db, NODUS_W_DB_BUSY_TIMEOUT_MS);
 
     sqlite3_exec(witness->db, "PRAGMA journal_mode=WAL;", NULL, NULL, NULL);
     sqlite3_exec(witness->db, "PRAGMA synchronous=NORMAL;", NULL, NULL, NULL);
@@ -344,7 +382,7 @@ static int witness_db_open_path(nodus_witness_t *witness, const char *db_path) {
     if (rc != SQLITE_OK) {
         fprintf(stderr, "%s: schema creation failed: %s\n", LOG_TAG, err_msg);
         sqlite3_free(err_msg);
-        return -1;
+        return witness_db_open_fail(witness);
     }
 
     /* Schema v12 migration (Phase 1 / Task 1.1). Idempotent; aborts on
@@ -618,7 +656,6 @@ int nodus_witness_scan_chain_db(nodus_witness_t *witness) {
 
     char db_path[512];
     snprintf(db_path, sizeof(db_path), "%s/%s", data_path, best);
-    if (witness_db_open_path(witness, db_path) != 0) return -1;
 
     /* O15C — the handle's chain id is installed BEFORE the gate: the
      * preflight's chain-id agreement check (issue 8) compares the id
@@ -626,8 +663,28 @@ int nodus_witness_scan_chain_db(nodus_witness_t *witness) {
      * against a still-zeroed handle mis-reported CHAIN_ID_DISAGREEMENT
      * on every V2 successor restart (found by the O15C rehearsal). The
      * filename-derived id is available here either way; the gate only
-     * READS it. */
+     * READS it.
+     *
+     * ⚠ O15K A — AND NOW IT IS INSTALLED BEFORE THE **OPEN**, not merely
+     * before the gate. That comment's own words — "available here either
+     * way" — were true and the call still sat below an open that can
+     * fail, so a failed open threw away an identity we already held. The
+     * consequence was not cosmetic: a zeroed chain id is read as
+     * "pre-genesis" by verify_chain_id (nodus_witness_bft.c, CRITICAL-2)
+     * and by witness_chain_quorum_observe (nodus_witness_peer.c, the
+     * self-quarantine detector), so the node ran with its cross-chain
+     * replay guard off and could not notice its own divergence.
+     *
+     * Safe because the id does not come from the database: it is parsed
+     * from the FILENAME above by witness_chain_id_from_name, which O15A
+     * made fail-closed (exactly 32 lowercase hex, isxdigit-validated),
+     * and `best` was chosen by a stable total order. Nothing between here
+     * and the open reads witness->chain_id, and witness_db_open_path
+     * never reads it at all — so moving the call earlier changes no
+     * successful path, only the failing one. */
     nodus_witness_set_chain_id(witness, chain_id);
+
+    if (witness_db_open_path(witness, db_path) != 0) return -1;
 
     /* O15A: the restart path now runs the SAME gate as creation. */
     if (witness_post_open_gate(witness, db_path) != 0) return -1;
@@ -1263,12 +1320,55 @@ int nodus_witness_mempool_evict_committed(nodus_witness_t *witness) {
          * "spent" on a missing DB or a query error, nodus_witness_db.c).
          * That inherited posture is deliberate and kept: on a broken DB
          * this reaper drops rather than accumulates, which is the safe
-         * direction for a bounded 64-slot pool. */
+         * direction for a bounded 64-slot pool. ⚠ That sentence describes
+         * the LEGACY walk ONLY — since O15K V-3 a class-201 claim is
+         * judged by a different table and fails the OTHER way (keep), for
+         * the reason spelled out on the branch below. */
         bool decided = false;
-        for (int j = 0; j < e->nullifier_count; j++) {
-            if (nodus_witness_nullifier_exists(witness, e->nullifiers[j])) {
-                decided = true;
-                break;
+
+        /* O15K V-3 — ROUTE THE QUESTION BY ENTRY CLASS, because the two
+         * lanes commit a nullifier to two different tables.
+         *
+         * A class-201 CLAIM's nullifier is written to `v2_claims_spent`
+         * (nodus_witness_v2_claim_spend_insert); the legacy walk below
+         * reads `nullifiers`, whose only writer is the legacy commit path
+         * a successor commit bypasses. Asking the legacy table about a
+         * claim therefore always answered "not decided", and the class
+         * gate in nodus_witness_v2_entry_verdict answers UNJUDGED for a
+         * 201, so BOTH halves stayed silent: the entry was never reaped,
+         * read as live demand forever, and rotated the view every
+         * round_timeout_ms against a healthy leader until the pool
+         * filled at NODUS_W_MAX_MEMPOOL and real demand was refused.
+         *
+         * ⚠ THE TWO BRANCHES FAIL IN OPPOSITE DIRECTIONS, DELIBERATELY.
+         * DO NOT UNIFY THEM. nodus_witness_nullifier_exists is
+         * fail-closed to SPENT (drop) — correct for its own callers and
+         * kept byte-identical here. The claim lookup is a TRI-STATE and
+         * ONLY 1 means decided: a -1 fault maps to NOT SPENT, i.e. KEEP.
+         * This branch DELETES, and a wrong deletion silently loses a
+         * transaction a client is waiting on, so the unknown answer must
+         * leave the entry alone. See the table on
+         * nodus_witness_v2_claim_nullifier_spent.
+         *
+         * The claims table is NEVER consulted for a non-claim entry and
+         * the legacy table is never consulted for a claim: the two
+         * nullifier namespaces are distinct, and conflating them could
+         * manufacture a false "spent" verdict on the legacy
+         * double-spend path — worse than the defect this closes. */
+        if (e->tx_type == NODUS_W_TX_V2_CLAIM) {
+            for (int j = 0; j < e->nullifier_count; j++) {
+                if (nodus_witness_v2_claim_nullifier_spent(
+                        witness, e->nullifiers[j]) == 1) {
+                    decided = true;
+                    break;
+                }
+            }
+        } else {
+            for (int j = 0; j < e->nullifier_count; j++) {
+                if (nodus_witness_nullifier_exists(witness, e->nullifiers[j])) {
+                    decided = true;
+                    break;
+                }
             }
         }
 

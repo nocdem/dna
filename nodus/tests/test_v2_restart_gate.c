@@ -237,6 +237,86 @@ int main(void) {
         }
     }
 
+    /* ── 5. O15K E1/E2/A — A CONTENDED OPEN MUST NOT PRODUCE A HALF-OPEN
+     *      NODE WITH A ZEROED CHAIN ID.
+     *
+     * WHAT THIS PROVES. A witness `kill -9`'d and restarted races the
+     * dying process's SQLite lock. Before O15K the schema exec failed
+     * immediately with "database is locked", witness_db_open_path
+     * returned -1 WITHOUT closing the handle, and the scanner returned
+     * before installing the chain id. The node then ran with
+     * `db != NULL` (reporting chain_db=active) and `chain_id == 0` —
+     * which BOTH verify_chain_id (nodus_witness_bft.c, CRITICAL-2
+     * cross-chain replay protection) and witness_chain_quorum_observe
+     * (nodus_witness_peer.c, the self-quarantine detector) read as
+     * "pre-genesis" and skip. It could never verify a certificate again
+     * and could not notice its own divergence. Found by the O15K harness
+     * run; full write-up in nodus/BUGS.md.
+     *
+     * HOW IT COULD LIE. If the interloper's lock were not actually held
+     * when the scan runs, the open would simply succeed and every
+     * assertion below would pass for the wrong reason. So the lock is
+     * taken with BEGIN EXCLUSIVE and its acquisition is asserted first,
+     * and the outcome is split: whichever way the open resolves, the two
+     * invariants this season added must hold. There is deliberately no
+     * assertion that the open FAILS — with E1's busy timeout it may now
+     * legitimately win the race, and demanding a failure would make the
+     * test fail because the fix works.
+     *
+     * ⚠ E1 IS NOT DIRECTLY ASSERTED HERE. A busy timeout is a timing
+     * property; pinning it would mean sleeping and calibrating to this
+     * machine, which this project forbids. What is asserted is the
+     * property that made the defect fatal — the fail-closed handle and
+     * the retained identity — and those hold whether or not the timeout
+     * wins any particular race. */
+    {
+        char d4[256];
+        snprintf(d4, sizeof(d4), "/tmp/test_v2_restart_lock_XXXXXX");
+        CHECK(mkdtemp(d4) != NULL, "tmpdir 4");
+
+        uint8_t lc[16];
+        memset(lc, 0x7b, sizeof(lc));
+        char lpath[512];
+        CHECK(seed_chain(d4, lc, lpath, sizeof(lpath)) == 0, "seed locked");
+
+        /* An independent connection holds a write lock on the file the
+         * scanner is about to open. */
+        sqlite3 *hold = NULL;
+        CHECK(sqlite3_open(lpath, &hold) == SQLITE_OK, "interloper opens");
+        CHECK(sqlite3_exec(hold, "BEGIN EXCLUSIVE;", NULL, NULL, NULL)
+              == SQLITE_OK,
+              "interloper HOLDS the write lock — without this the case "
+              "below would pass on an uncontended open and prove nothing");
+
+        nodus_witness_t *w = fresh_witness(d4);
+        CHECK(w != NULL, "alloc");
+        int rc = nodus_witness_scan_chain_db(w);
+
+        /* A — the identity is parsed from the FILENAME, so it survives
+         * whatever the open does. Pre-O15K this was installed only after
+         * a successful open and a contended open threw it away. */
+        CHECK(memcmp(w->chain_id, lc, 16) == 0,
+              "the chain id is retained even when the open is contended — "
+              "it comes from the filename, not from the database");
+
+        /* E2 — and the handle must never be left half-open. Pre-O15K a
+         * failed schema exec returned -1 with witness->db still assigned,
+         * so the node reported chain_db=active while init had already
+         * logged "no chain DB found". */
+        if (rc != 0)
+            CHECK(w->db == NULL,
+                  "a FAILED open must leave no handle behind — a witness "
+                  "that reports an active chain DB it does not have is "
+                  "the shape 'a DB failure is never a value' forbids");
+        else
+            CHECK(w->db != NULL,
+                  "a SUCCEEDED open must leave a usable handle");
+
+        close_witness(w);
+        sqlite3_exec(hold, "ROLLBACK;", NULL, NULL, NULL);
+        sqlite3_close(hold);
+    }
+
     printf("test_v2_restart_gate: ALL %d checks passed\n", checks);
     return 0;
 }

@@ -1181,13 +1181,50 @@ int nodus_witness_pending_forward_expire(nodus_witness_t *witness,
  * id because we are the node holding the client connection: whichever
  * node ends up committing this answers w_fwd_rsp to us.
  *
- * ── SUCCESSOR-ONLY, AND THAT IS AN ARGUMENT, NOT CONSISTENCY ──────────
- * On a LEGACY chain a peer refuses a non-leader w_fwd_req byte-
- * identically (nodus_witness_peer.c), because legacy forward intake is
- * STRUCTURAL only — a nullifier walk, no signature verification. Pooled
- * legacy demand could therefore never recruit the f+1 backers a rotation
- * needs; it would only drive lone view changes nobody joins. Legacy keeps
- * today's behaviour exactly, and this function reports NOT_APPLICABLE.
+ * ── BOTH LANES — O15K §3.1 REVERSED THE SUCCESSOR-ONLY RULE ───────────
+ * This function used to decline on a LEGACY chain before it judged
+ * anything (`!w->v2_successor -> -1`, NOT_APPLICABLE). That gate is
+ * DELETED and legacy demand is pooled here exactly as successor demand
+ * is, through the same admission gate.
+ *
+ * ⚠ THE OLD ARGUMENT, AND WHY IT WAS WRONG. It ran: a legacy peer
+ * refuses a non-leader w_fwd_req byte-identically
+ * (nodus_witness_peer.c:883), because legacy forward intake is
+ * STRUCTURAL only — a nullifier walk, no signature verification — so
+ * pooled legacy demand could never recruit the f+1 backers a rotation
+ * needs and would only drive lone view changes nobody joins. Both of its
+ * legs fall in the SAME change: §3.2 gives legacy forward intake the
+ * admission verify it never had AND removes that peer-side refusal (its
+ * fourth edit site), and §3.3 opens the dissemination that carries the
+ * demand to peers at all — so legacy demand CAN now assemble f+1. And
+ * the conclusion was never a safeguard in the first place: leaving
+ * legacy unpooled is
+ * precisely what let a dead leader wedge the chain INDEFINITELY rather
+ * than for one epoch. A halted tip freezes the epoch and the leader is
+ * `(epoch + view) % n` (nodus_witness_bft.c:461,504), so leadership stays
+ * pinned on the dead node until a view change; the P3 deadman that would
+ * start one arms on `mempool.count > 0 || pending_forward_count > 0`
+ * (nodus_witness_bft.c:8682), and on the ONE node the client reached
+ * BOTH inputs read zero — this gate zeroed the first, and the
+ * unreachable-leader branch releases the forward slot in the same call,
+ * zeroing the second. Measured: 121 forward attempts, 0 local pools, 0
+ * P3 fires, 0 view-change lines on any of 9 nodes.
+ *
+ * ── §3.4 — A LEGACY ENTRY WITH NO NULLIFIER IS REFUSED ────────────────
+ * A legacy entry's only handle is its nullifiers: the P3(c) reaper evicts
+ * through a committed-nullifier walk and nodus_witness_v2_entry_verdict
+ * answers UNJUDGED for every legacy chain (nodus_witness.c:1112-1114), so
+ * one pooled with none is demand NOTHING can ever retire — a view change
+ * every round_timeout_ms against a HEALTHY leader, the O15I V1 shape
+ * through the legacy door. Refused as -2. Legacy-scoped by necessity: a
+ * successor class-200 envelope legitimately carries nullifier_count == 0.
+ *
+ * ── THE MODE IS ADMISSION ON THIS PATH, DELIBERATELY ──────────────────
+ * A direct client submission is where the node-local fee surge
+ * (nodus_witness_verify.c:1154) is a meaningful intake policy: the client
+ * chose THIS node and can still be told to raise its fee. §3.3a's
+ * VALIDATION exemption covers FORWARDED / rebroadcast intake only, where
+ * the surge would throttle the cluster's own replication.
  *
  * ── IT ADDS NO AUTHORITY ──────────────────────────────────────────────
  * The bytes pass the SAME NODUS_WITNESS_VERIFY_ADMISSION gate the leader
@@ -1210,10 +1247,20 @@ int nodus_witness_pending_forward_expire(nodus_witness_t *witness,
  * ── LIFECYCLE OF WHAT IT POOLS ────────────────────────────────────────
  * Orphaned entries are unreachable by remove_by_conn BY DESIGN, so the
  * O15I P3(c) reaper (nodus_witness_mempool_evict_committed) is what
- * removes them once the chain decides them — through the committed-
- * nullifier walk for a class-201 claim (whose nullifier is re-derived
- * below for exactly that reason) and through
- * nodus_witness_v2_entry_is_decided for a class-200 envelope.
+ * removes them once the chain decides them. Since O15K §3.1 this
+ * function feeds it THREE populations, and the reaper routes the
+ * "already decided?" question BY ENTRY CLASS — the full contract, and
+ * the fault direction, are on its own declaration below:
+ *   - a LEGACY entry — the committed-nullifier walk over the legacy
+ *     `nullifiers` table. Its nullifiers are the ONLY handle it has,
+ *     which is precisely why §3.4 above refuses to pool one that carries
+ *     none: it would be demand nothing could ever retire;
+ *   - a class-201 CLAIM — the same question asked of the SUCCESSOR's
+ *     `v2_claims_spent` table, where a claim's nullifier is actually
+ *     committed (V-3). Its nullifier is re-derived below for exactly
+ *     this reason;
+ *   - a class-200 ENVELOPE — nodus_witness_v2_entry_is_decided, over the
+ *     committed intent index.
  *
  * @param witness         witness context.
  * @param tx_data         submitted entry bytes (borrowed; copied on pool).
@@ -1223,6 +1270,8 @@ int nodus_witness_pending_forward_expire(nodus_witness_t *witness,
  *                        successor — nodus_witness_v2_classify_entry).
  * @param nullifiers      concatenated legacy nullifiers, or NULL.
  * @param nullifier_count number of legacy nullifiers (0 on a successor).
+ *                        On a LEGACY chain 0 — or a NULL nullifiers —
+ *                        is REFUSED, not pooled; see §3.4 above.
  * @param client_pk       client Dilithium5 pubkey, or NULL. IGNORED by
  *                        the successor admission lane
  *                        (nodus_witness_verify.c casts it to void), but
@@ -1245,8 +1294,20 @@ int nodus_witness_pending_forward_expire(nodus_witness_t *witness,
  *             (nodus_witness_verify.c). Without the pre-check a retrying
  *             claim client would be told its work was not queued when it
  *             is.
- *         -1  NOT APPLICABLE — legacy chain. Nothing pooled, by design.
- *         -2  admission refused (reject_reason filled).
+ *         -1  RETIRED by O15K §3.1 and NEVER RETURNED. It used to mean
+ *             NOT APPLICABLE — legacy chain, nothing pooled by design —
+ *             and that gate is exactly what this change deleted. The
+ *             value is retired rather than reassigned so no caller can
+ *             mistake a new class for the old one, and because the one
+ *             call site handled it with a deliberately SILENT branch: a
+ *             repurposed -1 would make a real refusal invisible in the
+ *             log. A -1 observed here means the fix was reverted.
+ *         -2  refused, reject_reason filled. Two producers, and the
+ *             string distinguishes them: admission's own verdict on the
+ *             bytes (either lane), or §3.4's legacy zero-nullifier guard,
+ *             which runs FIRST because a legacy GENESIS never reaches
+ *             admission's equivalent check (nodus_witness_verify.c
+ *             :952-955 returns before Check 4 at :989-991).
  *         -3  admission refused: nullifier already spent (double-spend).
  *         -4  could not pool: allocation failed, pool full, or the
  *             class-201 nullifier re-derivation failed (fail-closed —
@@ -1394,6 +1455,34 @@ bool nodus_witness_v2_entry_is_decided(nodus_witness_entry_verdict_t v);
  * index, its expiry_height is below the candidate, or its bytes no longer
  * decode. So a follower drops exactly what a leader would refuse to
  * propose, and never more.
+ *
+ * ⚠ "ALREADY COMMITTED" IS TWO DIFFERENT TABLES, ROUTED BY ENTRY CLASS
+ * (V-3). A class-201 CLAIM's nullifier is committed to the successor's
+ * `v2_claims_spent` (nodus_witness_v2_claims.c), NOT to the legacy
+ * `nullifiers` table — whose only writer is nodus_witness_nullifier_add
+ * on the legacy commit path. Asking the legacy table about a claim
+ * therefore always answered "not spent", so a claim the chain had
+ * ALREADY COMMITTED could never be reaped: it read as live demand
+ * forever, arming the P3(a) deadman against a HEALTHY leader once per
+ * round for the life of the process. The reaper now routes:
+ * tx_type == NODUS_W_TX_V2_CLAIM asks the claims table through the
+ * shared tri-state helper nodus_witness_v2_claim_nullifier_spent()
+ * (1 spent / 0 not spent / -1 fault); every other entry class keeps the
+ * legacy nullifier walk, byte-unchanged.
+ *
+ * ⚠ AND THE SAME -1 MEANS OPPOSITE THINGS IN THE TWO CALLERS. HERE a
+ * fault maps to KEEP, because this branch DELETES: a wrong deletion
+ * silently loses a transaction a client is still waiting on, and a
+ * kept-too-long entry is merely reaped on the next pass. In the
+ * ADMISSION double-spend path the same -1 maps to SPENT/REJECT, because
+ * that branch decides whether to ADMIT: admitting on a fault is what
+ * lets a double-spend through. Same fact, opposite safe directions —
+ * read only one of the two call sites and you will get this wrong.
+ *
+ * This does NOT widen nodus_witness_v2_entry_verdict's class gate: it
+ * still answers UNJUDGED for a class-201 claim, and that is correct — a
+ * claim has no intent id. The claims-table lookup is an additional,
+ * separate question, not a verdict.
  *
  * The original drain's PURPOSE is preserved: forwarded entries carry
  * client_conn == NULL, so no client disconnect ever reaches them through

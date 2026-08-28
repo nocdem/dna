@@ -84,7 +84,8 @@ epoch_row_at() {
 }
 
 # Drive the chain to >= $1 by submitting one minimal TX per block.
-# Ported verbatim in spirit from test_vset_grow_shrink.sh:85 — including
+# Ported verbatim in spirit from test_vset_grow_shrink.sh's
+# `pump_to_height` — including
 # the unconditional `dna sync` before every send, which is what keeps the
 # wallet from deadlocking on an in-flight change output when a BFT round
 # retries (feedback_dnac_sync_between_sends).

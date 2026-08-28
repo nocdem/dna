@@ -35,6 +35,10 @@
 #include "witness/nodus_witness_v2_produce.h"    /* O15D successor rounds */
 #include "witness/nodus_witness_v2_env.h"        /* metered batch check +
                                                   * the refusal KIND     */
+#include "witness/nodus_witness_v2_claims.h"    /* O15K V-3 — the spent-claim
+                                                  * table a class-201 commit
+                                                  * writes and the legacy
+                                                  * nullifier walk cannot see */
 #include "nodus/nodus_chain_config.h"          /* Hard-Fork v1 apply dispatch */
 #include "protocol/nodus_tier3.h"
 #include "server/nodus_server.h"
@@ -8197,13 +8201,21 @@ static void bft_emit_batch_replies(nodus_witness_t *w, int status,
  * the reaper and the demand predicate, which is why that pair shares
  * nodus_witness_v2_entry_is_decided rather than each listing the verdicts.
  *
- * THE RULE IS UNCHANGED from what bft_p3_live_demand applied inline; only
- * its location moved:
+ * THE RULE, one branch per entry shape:
  *   - nullifier_count == 0 (the successor class-200 envelope shape, and a
  *     legacy entry with no inputs): the O15I V1 verdict, collapsed through
  *     the SHARED nodus_witness_v2_entry_is_decided the reaper also uses;
+ *   - a class-201 CLAIM: the SPENT-CLAIM table, because that is where a
+ *     claim's nullifier is actually committed — O15K V-3, added below,
+ *     and the ONE rule here that did not come across unchanged from what
+ *     bft_p3_live_demand applied inline. Everything else did;
  *   - otherwise: the committed-nullifier walk, the identical test batch
  *     selection applies before proposing.
+ *
+ * The reaper (nodus_witness_mempool_evict_committed) carries the same V-3
+ * routing, and the two MUST keep agreeing for the reason this function
+ * exists in one place at all: what the reaper deletes must not be what
+ * this predicate calls demand.
  *
  * It is deliberately NOT the reaper's two-step (nullifiers, THEN verdict
  * as a second opinion). Widening it here would change P3(a)'s firing
@@ -8222,6 +8234,78 @@ static bool bft_p3_entry_finished(nodus_witness_t *w,
     if (e->nullifier_count == 0)
         return nodus_witness_v2_entry_is_decided(
                    nodus_witness_v2_entry_verdict(w, e->tx_data, e->tx_len));
+
+    /* ⚠ O15K V-3 — A CLASS-201 CLAIM IS ASKED OF A DIFFERENT TABLE, AND
+     * ASKING THE WRONG ONE IS THE WHOLE DEFECT. A claim's nullifier is
+     * committed to `v2_claims_spent` (nodus_witness_v2_claims.c, the
+     * INSERT on the commit path). The walk below reads the LEGACY
+     * `nullifiers` table, whose only writer is the legacy commit path a
+     * successor commit bypasses — so a settled claim can NEVER appear
+     * there. And the other half says nothing either: the class gate in
+     * nodus_witness_v2_entry_verdict answers UNJUDGED for a 201. Both
+     * halves therefore answer "not decided", the entry reads as live
+     * demand forever, and P3 keeps rotating the view against a perfectly
+     * healthy leader — the O15I V1 shape re-entering through the claim
+     * door, in a lane whose own comments assert it is closed.
+     *
+     * ROUTED BY CLASS, and only by class: every other entry keeps the
+     * legacy walk below character-identical. nodus_witness_nullifier_exists
+     * is deliberately NOT taught about this table — merging the two
+     * namespaces could answer "spent" to the legacy double-spend path for
+     * a nullifier that was never a legacy input, which is worse than the
+     * bug being fixed here.
+     *
+     * Reached only with nullifier_count > 0, so nullifiers[0] is the
+     * committed nullifier both intakes re-derive before pooling a 201
+     * (nodus_witness_peer.c / nodus_witness_handlers.c, fail-closed: a
+     * derivation failure pools nothing). The zero-count shape keeps the
+     * verdict branch above, untouched.
+     *
+     * ⚠ ONLY == 1 COUNTS AS FINISHED, AND THAT IS NOT A STYLE CHOICE.
+     * The helper is a TRI-STATE — 1 spent, 0 not spent, -1 DB fault — and
+     * this function's contract is FAIL-CLOSED IN THE KEEP DIRECTION:
+     * anything this node cannot judge answers "still live". So 0 and -1
+     * both map to false. A -1 mapped to "finished" would silently drop a
+     * client's pending work out of the demand this node is willing to
+     * rotate for, on nothing more than a busy database.
+     *
+     * ⚠ THE SAME HELPER MAPS -1 THE OPPOSITE WAY AT THE ADMISSION CALL
+     * SITE, and the two must never be collapsed into one. There it is
+     * deciding whether to ADMIT, so an unknown answers "spent" and the
+     * transaction is REJECTED — never admit a possible double-spend. Here
+     * it is deciding whether an entry may stop counting as demand, so an
+     * unknown answers "still live" — never discard a client's pending
+     * work. One fact, two questions, opposite safe answers; that is
+     * exactly why the helper returns the tri-state instead of a bool and
+     * leaves the mapping to each caller.
+     *
+     * ⚠ AND NOTE THE ASYMMETRY WITH THE BRANCH BELOW, stated because it
+     * is surprising rather than because this change introduces it:
+     * nodus_witness_nullifier_exists is fail-closed toward SPENT (a DB
+     * fault returns true, nodus_witness_db.c — "assuming spent"), so on a
+     * fault the legacy branch answers "finished" while this one answers
+     * "still live". That is pre-existing behaviour on a shipped
+     * double-spend guard and O15K deliberately does not touch it; it is
+     * recorded here so the next reader does not "align" the two by
+     * flipping the direction this comment exists to protect. */
+    /* ⚠ WALK EVERY NULLIFIER, exactly as the reaper does
+     * (nodus_witness_mempool_evict_committed). Both intakes pin a
+     * class-201 entry's count to 1 today (nodus_witness_peer.c and
+     * nodus_witness_handlers.c re-derive the ONE committed nullifier),
+     * so index 0 would be sufficient — but this predicate and the reaper
+     * answer the SAME question, and nodus_witness.h states they must keep
+     * agreeing. Checking only slot 0 here would make them diverge the day
+     * a 201 carries more than one: the reaper would evict the entry while
+     * this predicate still called it live demand, which is the V-3 shape
+     * returning through the door V-3 just closed. Same loop, same
+     * `== 1`-only rule, no drift. */
+    if (e->tx_type == NODUS_W_TX_V2_CLAIM) {
+        for (int j = 0; j < e->nullifier_count; j++) {
+            if (nodus_witness_v2_claim_nullifier_spent(w, e->nullifiers[j]) == 1)
+                return true;
+        }
+        return false;
+    }
 
     for (int j = 0; j < e->nullifier_count; j++) {
         if (nodus_witness_nullifier_exists(w, e->nullifiers[j]))
@@ -8320,19 +8404,78 @@ static bool bft_p3_live_demand(nodus_witness_t *w) {
  * at most once per round_timeout_ms, and only on a node that has already
  * observed the committed tip frozen for a full round with live demand.
  *
- * SCOPED TO SUCCESSOR CHAINS, matching the intake side. On a successor
- * the receiving non-leader runs the full ADMISSION lane before pooling
- * (nodus_witness_peer.c). On a LEGACY chain that intake is
- * structural-only — a nullifier walk, no signature verification — so a
- * legacy peer still refuses a non-leader forward byte-identically, and
- * broadcasting there would be n-1 copies of a transaction that every
- * recipient discards. Legacy recovers through the rotation itself: once
- * a live leader is elected, the ordinary client retry reaches it.
+ * ⚠ O15K §3.3 — NO LONGER SCOPED TO SUCCESSOR CHAINS, AND THE CONTRACT
+ * THAT SCOPED IT CHANGED IN THE SAME COMMIT. What stood here was:
+ *
+ *     "SCOPED TO SUCCESSOR CHAINS, matching the intake side. On a
+ *      successor the receiving non-leader runs the full ADMISSION lane
+ *      before pooling (nodus_witness_peer.c). On a LEGACY chain that
+ *      intake is structural-only — a nullifier walk, no signature
+ *      verification — so a legacy peer still refuses a non-leader
+ *      forward byte-identically, and broadcasting there would be n-1
+ *      copies of a transaction that every recipient discards. Legacy
+ *      recovers through the rotation itself: once a live leader is
+ *      elected, the ordinary client retry reaches it."
+ *
+ * It is quoted rather than deleted because a reader has to be able to
+ * see WHICH premise moved, and that the scoping was reasoned rather
+ * than accidental.
+ *
+ * THE PREMISE MOVED. The legacy non-leader refusal in
+ * nodus_witness_peer_handle_fwd_req is opened, and the verify that
+ * legacy intake never had is added at that same door, ahead of
+ * mempool_add (O15K §3.2). A legacy recipient now POOLS the copy instead
+ * of discarding it, and pools nothing it has not verified — which is
+ * what makes broadcasting here safe rather than merely useful. That gate
+ * and this function are one change: neither is correct without the
+ * other, and shipping this half alone would put unverified bytes into
+ * n-1 mempools.
+ *
+ * AND THE LAST SENTENCE WAS NEVER TRUE. "Legacy recovers through the
+ * rotation itself" ASSUMES A ROTATION, and on legacy there is none to
+ * recover through. The demand lives on the single node that forwarded it
+ * (first paragraph above) while bft_vc_join_threshold floors the join at
+ * 2, so the lone firer escalates alone until P1 releases it, the leader
+ * stays pinned by (epoch + view) % n over a tip that cannot move, and
+ * the client retry that sentence relied on lands on the same dead node
+ * forever. That is the O15K halt as recorded: eight healthy nodes, ~5
+ * minutes, and not one view-change line on any of them.
+ *
+ * ⚠ DISSEMINATION IS ALSO WHAT MAKES STAGGERED DEADMEN CONVERGE — a
+ * determinism property, not merely a delivery one, and worth stating
+ * because nothing else in the design supplies it. Every node's window is
+ * node-local (DG-5), so nodes reach the would-fire point at different
+ * instants; and a peer with an EMPTY pool is not merely late, it is not
+ * armed at all, because the no-demand branch of the P3 arm clears its
+ * window outright. Receiving this broadcast gives it demand, so its next
+ * tick takes the arm's first-observation branch and stamps the window at
+ * that moment: every empty-pool recipient's clock therefore starts when
+ * the FIRST firer spoke, and they mature one round_timeout_ms later
+ * TOGETHER, which is how f+1 assembles out of unsynchronised timers. A
+ * recipient that already held demand keeps its own running window and is
+ * NOT re-synchronised — it was already counting, and does not need to
+ * be. Nothing here branches on a clock, draws randomness, or depends on
+ * iteration order: DG-8 still holds, this loop's only output is a set of
+ * messages and never consensus state.
+ *
+ * ⚠ WHY THE SURGE EXEMPTION IS THIS FUNCTION'S PROBLEM (O15K §3.3a,
+ * DG-3). The admission verdict carries exactly one node-local term — the
+ * fee floor scaled by mempool.count / NODUS_W_FEE_SURGE_STEP (8). This
+ * function deliberately fills every peer's pool with the SAME demand, so
+ * charging replicated bytes that surcharge would throttle the recovery
+ * precisely as it spreads: past the step the floor doubles, fresh client
+ * demand is refused cluster-wide, and the nodes that just received the
+ * rebroadcast never arm. Replicated intake is therefore not charged the
+ * queue-depth surcharge, while a direct client submission still is. That
+ * decision is implemented at the intake door and not here — but this
+ * function is the reason it has to exist.
  *
  * IT ADDS NO AUTHORITY. The T3 sender must already be in the roster to
- * be dispatched at all, the transaction is re-verified at intake by the
- * same admission lane a direct client submission takes, and
- * NODUS_W_MAX_MEMPOOL bounds what a recipient can be made to hold.
+ * be dispatched at all, the transaction is re-verified at intake before
+ * anything can be pooled — on BOTH lanes now (§3.2), with the one
+ * node-local surcharge above deliberately not applied to replicated
+ * bytes — and NODUS_W_MAX_MEMPOOL bounds what a recipient can be made to
+ * hold.
  *
  * REPLY ROUTING is carried, not invented. A committing leader answers
  * fwd_req by sending w_fwd_rsp to `forwarder_id`
@@ -8368,7 +8511,15 @@ static bool bft_p3_live_demand(nodus_witness_t *w) {
  * failure the paragraph above rejects.
  */
 static void bft_p3_broadcast_demand(nodus_witness_t *w) {
-    if (!w->v2_successor) return;
+    /* O15K §3.3 — THE `if (!w->v2_successor) return;` THAT STOOD HERE IS
+     * GONE, and its absence is the fix. It made this function a no-op on
+     * the one lane the halt actually happened on, while NOTHING else in
+     * P3 is successor-scoped: the arm (mempool.count / pending_forwards),
+     * bft_p3_live_demand and the fire gate all run on legacy today. So a
+     * legacy node could already START a view change with the single step
+     * that lets anyone JOIN it switched off — the lone rotation of
+     * O15K §0.5, which 1 < f+1 guarantees nobody joins. Dissemination is
+     * that step, and it now runs on both lanes. */
 
     /* ONE message object for the whole loop. nodus_t3_msg_t's union is
      * dominated by NEW_VIEW's 128-slot certificate array, so it is a

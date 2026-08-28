@@ -838,41 +838,68 @@ int nodus_witness_peer_handle_fwd_req(nodus_witness_t *w,
         w->pending_roster_ready = false;
     }
 
-    /* ── O15I P3(b) — WHO MAY POOL A FORWARDED ENTRY ─────────────────
+    /* ── O15K §3.2 — WHO MAY POOL A FORWARDED ENTRY ──────────────────
      *
-     * Until now this was leader-only, and that is precisely why a dead
-     * leader stalls the chain permanently: a forwarded transaction goes
-     * to the leader and NOWHERE ELSE, so when the leader is gone the
-     * demand exists on exactly one node — the submission target — and
-     * one is far below the f+1 threshold at which peers join its view
-     * change. Pooling on non-leaders is what puts the work where the
-     * NEXT leader can find it.
+     * There is no longer a leadership test here, and its absence is the
+     * edit without which the rest of this season is a no-op.
      *
-     * SUCCESSOR ONLY, and the scope is not caution for its own sake.
-     * Below, a successor forward runs the full ADMISSION lane
-     * (nodus_witness_verify_transaction, NODUS_WITNESS_VERIFY_ADMISSION)
-     * before anything is pooled — the same gate a direct client
-     * submission passes. A LEGACY forward's handling at this site is
-     * STRUCTURAL only (a nullifier walk over the wire layout, no
-     * signature verification, no double-spend check), so pooling one on
-     * a non-leader would let any roster member push unverified bytes
-     * into every peer's mempool — a trust boundary this change did not
-     * analyse and must not widen. Legacy therefore keeps the original
-     * refusal, byte-identical, and recovers through the rotation itself:
-     * once P3(a) elects a live leader, the ordinary client retry reaches
-     * it.
+     * A forwarded transaction goes to the leader and NOWHERE ELSE, so
+     * when the leader is dead the demand exists on exactly one node —
+     * the client's submission target — and one is far below the f+1
+     * threshold at which peers join a view change (bft_vc_join_threshold
+     * in nodus_witness_bft.c, floor 2). A legacy chain therefore stalls
+     * indefinitely: the deadman fires, the demand rebroadcast goes out,
+     * every legacy recipient refuses it AT THIS DOOR, f+1 never
+     * assembles, and the elected leader stays the dead node because the
+     * view only advances on quorum. Pooling on non-leaders is what puts
+     * the work where the NEXT leader can find it.
      *
-     * A RAW forward is NEVER pooled. Every path from here to the
-     * mempool_add at the end of this function passes the admission call
-     * for a successor entry; a rejection returns -1 exactly as this gate
-     * used to.
+     * ── WHAT THIS BLOCK USED TO ARGUE, AND WHY IT NO LONGER HOLDS ──
      *
-     * AND A NON-LEADER STILL NEVER STARTS A ROUND. The one branch below
-     * that does — the batch-of-1 genesis path — is keyed on tx_type ==
-     * NODUS_W_TX_GENESIS (0), and on a successor tx_type is overwritten
-     * by nodus_witness_v2_classify_entry, which returns only
-     * NODUS_W_TX_V2_ENVELOPE (200) or NODUS_W_TX_V2_CLAIM (201). So the
-     * genesis branch is unreachable on the path this gate now opens.
+     * O15I opened this gate to the SUCCESSOR lane only and gave two
+     * reasons, quoted so the change of contract is visible rather than
+     * quietly deleted:
+     *
+     *   (1) "A LEGACY forward's handling at this site is STRUCTURAL only
+     *       … so pooling one on a non-leader would let any roster member
+     *       push unverified bytes into every peer's mempool — a trust
+     *       boundary this change did not analyse and must not widen."
+     *
+     *   (2) "Legacy therefore keeps the original refusal, byte-identical,
+     *       and recovers through the rotation itself: once P3(a) elects a
+     *       live leader, the ordinary client retry reaches it."
+     *
+     * (1) was TRUE OF THE CODE AS IT THEN STOOD, and it is ANSWERED here
+     * rather than ignored. What made legacy pooling unsafe was that the
+     * legacy intake verified nothing; §3.2 adds exactly that verification
+     * at this door, ahead of mempool_add, for every recipient. The trust
+     * boundary is no longer held by the refusal — it is held by the
+     * verify, which is a stronger place to hold it, because it also
+     * covers the LEADER, whose intake this argument never protected.
+     *
+     * (2) WAS NEVER TRUE, and it is the assumption this season exists to
+     * correct. "Recovers through the rotation" presumes a rotation
+     * happens. A forwarded transaction lives on exactly one node, so that
+     * node's view change recruits nobody — bft_vc_join_threshold floors
+     * the join at 2 — and it escalates alone while the client's retry
+     * lands on the same dead leader, forever: a halted chain has a frozen
+     * tip and therefore a frozen epoch, and the view advances only on
+     * quorum. Nothing in the legacy lane was ever going to elect the live
+     * leader that sentence waits for.
+     *
+     * THE VERDICT ON A FORWARD IS ADMISSION'S, NOT LEADERSHIP'S — and
+     * that also closes V-1, which was live on the devnet: the legacy
+     * LEADER's own intake was unverified, so one remote client, with no
+     * roster membership at all, could plant a badly-signed transaction
+     * in the leader's mempool and every follower would then reject the
+     * whole proposed batch it appeared in. One mempool, ONE intake gate.
+     *
+     * A NON-LEADER STILL NEVER STARTS A ROUND. The one branch below that
+     * does — the batch-of-1 genesis path — is left exactly as it was
+     * found: a non-leader that reaches it is refused inside
+     * nodus_witness_bft_start_round_from_entries ("batch start_round but
+     * not leader"), which is where that rule has always lived and where
+     * it is enforced for every other caller too.
      *
      * Mempool content is per-node INPUT, not consensus state: the block
      * is still chosen by ONE leader and agreed by PREVOTE/PRECOMMIT with
@@ -880,10 +907,6 @@ int nodus_witness_peer_handle_fwd_req(nodus_witness_t *w,
      * different pools cannot diverge state. The existing guards are
      * untouched — NODUS_W_MAX_MEMPOOL bounds the pool, mempool_add
      * rejects duplicates by tx_hash, and fee ordering is unchanged. */
-    if (!nodus_witness_bft_is_leader(w) && !w->v2_successor) {
-        fprintf(stderr, "%s: w_fwd_req but not leader\n", LOG_TAG);
-        return -1;
-    }
 
     /* O15H D8 — family-aware (see nodus_t3_tx_size_limit). A non-leader
      * forwards the client's transaction here; refusing a V2 envelope
@@ -909,6 +932,44 @@ int nodus_witness_peer_handle_fwd_req(nodus_witness_t *w,
     uint8_t tx_type = fwd->tx_data[1];
     uint8_t nullifiers[NODUS_T3_MAX_TX_INPUTS][NODUS_T3_NULLIFIER_LEN];
     uint8_t nullifier_count = 0;
+
+    /* ── ALREADY OURS? (O15K V-5) ────────────────────────────────────
+     * Asked BEFORE either verify lane, on the same tx_hash key
+     * nodus_witness_mempool_add dedups on, and mirroring the pre-check
+     * nodus_witness_pool_local_demand already runs on local demand
+     * (nodus_witness_handlers.c).
+     *
+     * Without it the §3.3 demand rebroadcast makes every recipient pay a
+     * full per-signer ML-DSA-87 verify for every duplicate it is sent —
+     * once per rebroadcasting peer, once per window, on entries it
+     * already holds. That cost is V-5 and it is charged on the SUCCESSOR
+     * path TODAY: the verify below has no pre-check of its own, and
+     * mempool_add's duplicate rejection only answers AFTER the whole
+     * admission lane has run (nodus_witness_mempool.c). The two lanes
+     * ask the same question, so they share one check.
+     *
+     * `1`, not a refusal: the entry IS pooled, which is what the sender
+     * wanted, and it is the code pool_local_demand answers a retry with.
+     *
+     * The read is of this node's own mempool and so is node-LOCAL — the
+     * same class as mempool_add's dedup. It can only short-circuit an
+     * entry this node already holds; it can never admit one, and no
+     * consensus output depends on it.
+     *
+     * ⚠ THE GENESIS BRANCH SITS BEHIND THIS CHECK, deliberately, rather
+     * than duplicating the check into each lane: a forwarded genesis
+     * whose claimed tx_hash matched a pooled entry would answer here
+     * instead of starting its batch-of-1 round. That needs a SHA3-512
+     * collision to reach — a genesis entry never enters the mempool (it
+     * goes to nodus_witness_bft_start_round_from_entries), and every
+     * pooled legacy entry's tx_hash is bound to its own bytes by the
+     * verify's Check 2. */
+    for (int i = 0; i < w->mempool.count; i++) {
+        const nodus_witness_mempool_entry_t *held = w->mempool.entries[i];
+        if (held && memcmp(held->tx_hash, fwd->tx_hash,
+                           NODUS_T3_TX_HASH_LEN) == 0)
+            return 1;
+    }
 
     /* O15D/O15F — SUCCESSOR chain: forwarded submissions are V2 ENVELOPE
      * (200) or CLAIM (201) entries, BYTE-classified by the wire-family
@@ -941,6 +1002,108 @@ int nodus_witness_peer_handle_fwd_req(nodus_witness_t *w,
             memcpy(nullifiers[i], fwd->tx_data + offset,
                    NODUS_T3_NULLIFIER_LEN);
             offset += NODUS_T3_NULLIFIER_LEN + 8 + 64; /* nullifier + amount + token_id */
+        }
+    }
+
+    /* ── O15K §3.4 — V-8: a legacy forward that declares NO inputs ───
+     *
+     * The walk above reads `nullifier_count = tx_data[input_count_offset]`
+     * straight off the wire and loops. A byte of 0 skips the loop, and
+     * until this guard nothing refused it: the entry was pooled with
+     * nullifier_count == 0, and such an entry is PERMANENTLY unremovable
+     * on this node. The P3(c) reaper's nullifier walk has nothing to
+     * iterate; nodus_witness_v2_entry_verdict answers UNJUDGED for any
+     * legacy chain, so the second half keeps it too; mempool_pop_batch is
+     * leader-only, and remove_by_conn needs a client_conn a forwarded
+     * entry does not have. bft_p3_live_demand therefore reads it as live
+     * demand FOREVER and the node initiates a view change every
+     * round_timeout_ms against a perfectly healthy leader, until the
+     * process restarts — the O15I V1 churn re-entering by the legacy
+     * door, and live on the devnet today.
+     *
+     * The verify below refuses the same shape at its Check 4 ("no inputs
+     * for non-genesis TX", nodus_witness_verify.c), so this guard is not
+     * the only thing standing between V-8 and the pool. It is kept, and
+     * kept FIRST, because this is the door where the shape is actually
+     * REACHABLE: the invariant is then stated where it is enforced
+     * instead of being inferred from another file's check order.
+     *
+     * It belongs to the DOOR, not to one role. Putting it inside the
+     * leader branch would leave the path §3.2 just opened admitting
+     * exactly the shape this closes. */
+    if (!w->v2_successor && tx_type != NODUS_W_TX_GENESIS &&
+        nullifier_count == 0) {
+        fprintf(stderr, "%s: w_fwd_req refused — legacy entry declares no "
+                "inputs (wire input_count = 0)\n", LOG_TAG);
+        return -1;
+    }
+
+    /* ── O15K §3.2/§3.3a — the LEGACY forward's ADMISSION verify ─────
+     *
+     * The gate this function used to open on leadership alone now opens
+     * on this call, and it runs for ALL recipients — the leader included.
+     * The leader's own legacy intake was never verified (V-1), so this is
+     * not merely the price of opening the non-leader path: it is the fix
+     * for a defect that let one remote client stall legacy block
+     * production with a single badly-signed transaction.
+     *
+     * PLACEMENT IS THE WHOLE RISK, and there are two halves to it.
+     *
+     * AFTER the structural walk, and passed ITS nullifiers. The legacy
+     * lane USES this parameter: Check 4 refuses outright on `!nullifiers
+     * || nullifier_count == 0` and then looks each one up in the UTXO
+     * set for the balance, ownership and Rule-D lock tests, and Check 6
+     * walks the same array for the committed double-spend test
+     * (nodus_witness_verify.c). Copying the successor call's `NULL, 0`
+     * arguments — correct THERE, because verify_v2_successor_tx casts
+     * both to void — would make legacy admission refuse EVERYTHING and
+     * turn this whole change into a silent no-op that still returns -1
+     * everywhere a refusal is expected.
+     *
+     * BEFORE mempool_add on every path that reaches it, so the opened
+     * door can never push unverified bytes into a peer's mempool. The
+     * genesis branch below is deliberately NOT covered: it returns before
+     * mempool_add, it pools nothing, and a non-leader reaching it is
+     * refused inside nodus_witness_bft_start_round_from_entries. Its
+     * bytes are verified on the ordinary propose/commit paths like any
+     * other block content.
+     *
+     * VALIDATION, NOT ADMISSION (§3.3a). The two modes differ on the
+     * legacy lane by exactly one thing: the Check-5 fee SURGE, which
+     * scales the minimum fee with this node's own mempool.count. §3.3's
+     * dissemination deliberately fills every node's pool with the same
+     * demand, so at NODUS_W_FEE_SURGE_STEP pooled entries the ADMISSION
+     * floor doubles and new demand at the base fee is refused
+     * cluster-wide — the recovery mechanism throttling itself at exactly
+     * the moment it is needed. A forwarded entry is the cluster
+     * REPLICATING known demand, not a client choosing a queue, so the
+     * node-local surcharge asks the wrong question of it. Nothing else
+     * is relaxed: Check 0's deterministic fee floor, the in-TX duplicate
+     * nullifiers, tx_hash integrity, every signer's ML-DSA-87 signature,
+     * balance, UTXO ownership, the Rule-D lock and the committed
+     * double-spend all still run, in both modes.
+     *
+     * The SUCCESSOR branch above stays on ADMISSION on purpose: its
+     * class-201 claim path carries a pending-mempool dedup that runs in
+     * ADMISSION mode only (nodus_witness_verify.c), and switching that
+     * branch to VALIDATION would silently drop the dedup. This exemption
+     * is legacy-scoped.
+     *
+     * Every non-zero verdict collapses to -1, including the -2 the
+     * double-spend check returns: a forwarder is not a client and gets no
+     * error taxonomy back — the refusal is the whole answer, and it is
+     * the same code the successor reject above gives. */
+    if (!w->v2_successor && tx_type != NODUS_W_TX_GENESIS) {
+        char reject_reason[256] = {0};
+        if (nodus_witness_verify_transaction(w, fwd->tx_data, fwd->tx_len,
+                fwd->tx_hash, tx_type,
+                (const uint8_t *)nullifiers, nullifier_count,
+                fwd->client_pubkey, fwd->client_sig, fwd->fee,
+                NODUS_WITNESS_VERIFY_VALIDATION,
+                reject_reason, sizeof(reject_reason)) != 0) {
+            fprintf(stderr, "%s: forwarded legacy entry rejected: %s\n",
+                    LOG_TAG, reject_reason);
+            return -1;
         }
     }
 
