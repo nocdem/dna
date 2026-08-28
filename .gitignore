@@ -22,6 +22,17 @@ tasks/
 *.dylib
 **/build-asan/
 
+# Out-of-tree CMake build directories (2026-08-28).
+#
+# Measured: these produced 75,612 of the repository's 75,887 untracked,
+# non-ignored files (99.6%), against 1,996 tracked ones. Only build-asan was
+# listed above, so every other variant counted as repository content.
+#
+# They are build output, not source: zero files under nodus/build-* are
+# tracked. The trailing slash matches directories only, so a file such as
+# messenger/build-android.sh is untouched.
+nodus/build-*/
+
 # Debug log files dumped at repo root
 dna_debug_*.log
 
