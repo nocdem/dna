@@ -249,15 +249,90 @@ static bool is_replay(const uint8_t *sender_id, uint64_t nonce,
 /**
  * CRITICAL-2: Verify message chain_id matches our configured chain_id.
  * Prevents cross-zone replay attacks when multi-zone is enabled.
- * All-zero chain_id means pre-genesis / default zone — skip check.
+ *
+ * O15L DG-1 (G1, G2) — THE DECISION IS A TOTAL FUNCTION OF
+ * (w->chain_id, w->db), not a single all-zero escape hatch:
+ *
+ *   chain_id != 0, db != NULL   healthy, chain known    -> ENFORCE
+ *   chain_id != 0, db == NULL   open failed, id kept    -> ENFORCE
+ *   chain_id == 0, db == NULL   genuine pre-genesis     -> EXEMPT
+ *   chain_id == 0, db != NULL   invariant violation     -> FAIL CLOSED
+ *
+ * The old form exempted the check whenever the local chain_id was
+ * all-zero, and a node could hold a zeroed id while running (O15K). That
+ * made the ABSENCE of an answer an answer that PERMITS — the shape that
+ * forks a chain — and it switched off cross-chain replay protection on
+ * precisely the node least able to notice.
+ *
+ * ⚠ THE IDENTITY IS THE AUTHORITY; the handle only disambiguates a ZERO
+ * identity. nodus/BUGS.md option B proposed testing `w->db == NULL`
+ * directly. Applied literally that INVERTS O15K fix A
+ * (nodus_witness.c:685, the id installed before the open): a node whose
+ * open failed holds exactly (db == NULL, chain_id != 0) — the state fix A
+ * exists to produce — and a bare `db == NULL -> exempt` re-exempts that
+ * very node. Row 2 must ENFORCE.
+ *
+ * Row 3 is the ONLY exemption and is deliberately kept (O15L §8, Q1 ->
+ * option 1). It is structurally load-bearing: genesis flows through these
+ * same handlers, so a node holding no chain must accept those frames or
+ * no chain can ever start. The residual cross-chain replay window that
+ * leaves open for a still-pre-genesis node is accepted risk, recorded
+ * rather than hidden.
+ *
+ * Row 4 is unreachable through the ordinary open paths (every failure
+ * exit of witness_db_open_path closes and NULLs the handle), but it IS
+ * reachable for anyone who can write the data directory: a planted
+ * witness_000...0.db parses as a valid name and yields set_chain_id(0)
+ * on a SUCCESSFUL open. That is why the arm is kept rather than treated
+ * as dead code.
+ *
+ * Cost: the healthy path is the same single 32-byte memcmp as before;
+ * the pointer test is reached only when that memcmp says zero, i.e.
+ * never on a chain past genesis.
  */
-static bool verify_chain_id(nodus_witness_t *w, const uint8_t *msg_chain_id) {
+/* Non-static so test_v2_restart_gate.c can pin the DG-1 matrix directly.
+ * Same rationale as the other de-staticed BFT primitives (see the header
+ * block of nodus_witness_bft_internal.h): static + test linkage do not
+ * compose under CMake's normal flow, and the protection is "no
+ * production-facing header references it" rather than the qualifier.
+ *
+ * O15L Faz 5 — the canonical prototype now lives in
+ * nodus_witness_bft_internal.h and test_v2_restart_gate.c includes it
+ * rather than repeating it, so the test's calls are compiler-checked
+ * against one declaration. The check is ASYMMETRIC and this comment will
+ * not pretend otherwise: THIS translation unit does NOT include that
+ * header. The header's #error gate demands NODUS_WITNESS_INTERNAL_API,
+ * which the build system attaches to test executables via
+ * target_compile_definitions and to no library target — the single
+ * library TU that has the macro, nodus_witness_fault.c, #defines it for
+ * itself under QGP_FAULT_INJECT, so reaching in is never silent, it has
+ * to be asked for in the open — and whose name CMakeLists.txt turns into
+ * a FATAL_ERROR if it is set as a CMake variable in a Release configure.
+ * The same avoidance is why the Phase 6 commit wrappers near the top of
+ * this file carry hand-written forward declarations. Consequence: changing this
+ * signature breaks the TEST's compile — the intended alarm — but nothing
+ * makes the definition and the header agree; that pairing is still a
+ * review obligation. */
+bool verify_chain_id(nodus_witness_t *w, const uint8_t *msg_chain_id) {
     static const uint8_t zero[32] = {0};
-    /* If our chain_id is not set, skip validation (pre-genesis) */
-    if (memcmp(w->chain_id, zero, 32) == 0) return true;
-    /* If message chain_id matches ours, OK */
-    if (memcmp(w->chain_id, msg_chain_id, 32) == 0) return true;
-    fprintf(stderr, "%s: chain_id mismatch — rejecting message\n", LOG_TAG);
+
+    if (memcmp(w->chain_id, zero, 32) != 0) {
+        /* Rows 1 and 2 — we hold an identity, so we enforce it, whatever
+         * state the database handle happens to be in. */
+        if (memcmp(w->chain_id, msg_chain_id, 32) == 0) return true;
+        fprintf(stderr, "%s: chain_id mismatch — rejecting message\n", LOG_TAG);
+        return false;
+    }
+
+    /* Row 3 — no identity AND no chain database: genuine pre-genesis. */
+    if (!w->db) return true;
+
+    /* Row 4 — a zeroed identity with an OPEN chain database is not a
+     * state to reason from. Fail closed, loudly. */
+    fprintf(stderr,
+            "%s: INVARIANT VIOLATION — chain_id is all-zero while the "
+            "chain database is OPEN. This node cannot establish which "
+            "chain it is on; refusing every BFT message.\n", LOG_TAG);
     return false;
 }
 
@@ -302,16 +377,60 @@ static int committee_find_pubkey(const nodus_committee_member_t *arr,
  * gossip-roster bootstrap fallback. This matches the semantic
  * "no on-chain validator set exists yet."
  *
- * @return 0 on success (count_out populated, possibly 0 for pre-genesis
- *         or empty validator table), -1 on DB error after DB is open. */
+ * ── O15L Faz 4 / F-9 — A MISSING HANDLE IS NOT ALWAYS PRE-GENESIS ─────
+ *
+ * `!w->db` used to mean exactly one thing here, and it does not. The
+ * O15L DG-1 matrix separates two nodes that both hold a NULL handle:
+ *
+ *   (chain_id == 0, db == NULL)  genuine pre-genesis. There is no chain,
+ *                                so "no committee" is a true, committed
+ *                                ANSWER, and the gossip-roster bootstrap
+ *                                fallback at every consumer is the
+ *                                documented authorization (F17 A5). This
+ *                                arm is preserved BYTE-IDENTICALLY.
+ *
+ *   (chain_id != 0, db == NULL)  DG-1 row 2 — a node that HOLDS a chain
+ *                                and cannot read it. This is the state
+ *                                O15K's fix A deliberately produces (the
+ *                                identity is installed before the open,
+ *                                nodus_witness.c, so a failed open keeps
+ *                                it). Answering "count 0" for that node
+ *                                handed it the transport roster as
+ *                                consensus-membership authority at every
+ *                                consumer below — G4's exact prohibition,
+ *                                reached through the one door Faz 4's
+ *                                five gates do not guard. It is not an
+ *                                answer; it is the ABSENCE of one.
+ *
+ * Sequencing note: this separation is INERT until those five consumers
+ * fail closed on rc != 0, which is why it lands with them rather than
+ * with the Faz 1 matrix it derives from.
+ *
+ * The refusal is not logged here on purpose: this is a predicate called
+ * from a tick-rate path (nodus_witness_bft_is_leader), and every consumer
+ * that ACTS on the -1 prints its own line naming the site, the height and
+ * — via the `w->db` suffix — this cause. One diagnosis per decision, not
+ * one per query.
+ *
+ * @return 0 on success (count_out populated, possibly 0 for genuine
+ *         pre-genesis or an empty validator table), -1 on DB error or on
+ *         a chain this node holds but cannot read. */
 static int load_committee_at_height(nodus_witness_t *w,
                                       uint64_t block_height,
                                       nodus_committee_member_t *out,
                                       int max_entries,
                                       int *count_out) {
+    static const uint8_t zero_chain[32] = {0};
+
     if (!w || !out || !count_out) return -1;
     *count_out = 0;
-    if (!w->db) return 0;   /* pre-genesis: no chain DB, no committee */
+    if (!w->db) {
+        /* Same 32-byte comparison verify_chain_id makes, so the two gates
+         * cannot disagree about which row of the matrix a node is in. */
+        if (memcmp(w->chain_id, zero_chain, 32) == 0)
+            return 0;       /* genuine pre-genesis: no chain, no committee */
+        return -1;          /* DG-1 row 2: holds a chain, cannot read it */
+    }
     return nodus_committee_get_for_block(w, block_height, out,
                                            max_entries, count_out);
 }
@@ -485,7 +604,36 @@ bool nodus_witness_bft_is_leader(nodus_witness_t *w) {
     int count = 0;
     int my_idx = -1;
     int lc_rc = load_committee_at_height_alloc(w, next_bh, &committee, &count);
-    if (lc_rc == 0 && count > 0) {
+    if (lc_rc != 0) {
+        /* ── O15L Faz 4 / DG-4 / G4 — A FAULT IS NOT AN EMPTY COMMITTEE.
+         *
+         * This used to share the `else` below, so a node that could not
+         * READ its committee elected a leader from the gossip roster —
+         * and if the sorted rank happened to land on itself, it PROPOSED.
+         * A node that cannot establish who is entitled to lead must not
+         * lead. Mirrors the shipped VOTE gate (O15J Block 2A, below).
+         *
+         * Cost is liveness, never safety: a node that declines to lead
+         * simply produces no proposal, and the round rotates to a peer
+         * that can — which is the same outcome as a node being down.
+         *
+         * ⚠ VOLUME. Unlike the four message-handler gates below, this one
+         * is evaluated on EVERY witness tick (nodus_witness.c, the block
+         * timer), so a persistent fault prints on every tick. That is
+         * deliberate and it is the requirement: F-10 records that a silent
+         * fail-closed reproduces the "silent death" class O15K removed,
+         * and this node has stopped participating in consensus — the one
+         * thing an operator must not have to infer from an absence. */
+        free(committee);
+        fprintf(stderr,
+                "%s: is_leader — CANNOT ESTABLISH THE COMMITTEE at height "
+                "%llu (rc=%d%s); refusing to lead rather than electing a "
+                "leader from the transport roster\n",
+                LOG_TAG, (unsigned long long)next_bh, lc_rc,
+                w->db ? "" : ", chain database not open");
+        return false;
+    }
+    if (count > 0) {
         my_idx = committee_find_pubkey(committee, count,
                                          w->server->identity.pk.bytes);
         free(committee);
@@ -493,12 +641,13 @@ bool nodus_witness_bft_is_leader(nodus_witness_t *w) {
     } else {
         free(committee);
         committee = NULL;
-        /* Pre-genesis bootstrap: gossip-roster-based leader selection.
-         * Only active for the genesis round itself. SORTED rank, not
-         * arrival index — the roster is arrival-ordered between epoch
-         * rebuilds, and two nodes with the same set but different
-         * arrival orders would disagree on the leader (BUGS.md
-         * 2026-08-04). */
+        /* rc == 0 && count == 0 — genuinely pre-genesis: a committed
+         * answer that there is no committee yet. Gossip-roster-based
+         * leader selection, unchanged. Only active for the genesis round
+         * itself. SORTED rank, not arrival index — the roster is
+         * arrival-ordered between epoch rebuilds, and two nodes with the
+         * same set but different arrival orders would disagree on the
+         * leader (BUGS.md 2026-08-04). */
         count = (int)w->roster.n_witnesses;
         my_idx = nodus_witness_roster_sorted_find(&w->roster, w->my_id);
     }
@@ -4778,9 +4927,30 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
             return -1;
         }
 
-        if (load_committee_at_height_alloc(w, next_bh, &committee,
-                                             &count) == 0 &&
-            count > 0) {
+        int lc_rc = load_committee_at_height_alloc(w, next_bh, &committee,
+                                                     &count);
+        if (lc_rc != 0) {
+            /* ── O15L Faz 4 / DG-4 / G4 — fail closed, mirroring the
+             * shipped VOTE gate (O15J Block 2A). A node that cannot read
+             * its committee must not accept a proposal on the authority
+             * of the transport roster's sorted rank.
+             *
+             * DEFENCE IN DEPTH, not the first line: the bft_config
+             * refresh above calls the SAME loader at the SAME height, so
+             * on a deterministic fault this handler has already returned
+             * -1 there. This branch exists so the site does not read as
+             * fail-open to the next person, and it catches any future
+             * fault whose window falls between the two calls. */
+            free(committee);
+            fprintf(stderr,
+                    "%s: PROPOSE — CANNOT ESTABLISH THE COMMITTEE at "
+                    "height %llu (rc=%d%s); refusing the proposal rather "
+                    "than ranking the sender in the transport roster\n",
+                    LOG_TAG, (unsigned long long)next_bh, lc_rc,
+                    w->db ? "" : ", chain database not open");
+            return -1;
+        }
+        if (count > 0) {
             sender_idx = committee_find_pubkey(committee, count,
                                                  w->roster.witnesses[gossip_idx].pubkey);
             free(committee);
@@ -4788,12 +4958,12 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
         } else {
             free(committee);
             committee = NULL;
-            /* Pre-genesis bootstrap: leader is a gossip-roster slot —
-             * by SORTED rank, mirroring nodus_witness_bft_is_leader's
-             * fallback exactly; the arrival index (gossip_idx) is
-             * node-local and MUST NOT decide leadership (BUGS.md
-             * 2026-08-04: node7 saw the honest proposer at arrival
-             * index 6, every sorted peer at rank 0). */
+            /* rc == 0 && count == 0 — genuine pre-genesis bootstrap:
+             * leader is a gossip-roster slot, by SORTED rank, mirroring
+             * nodus_witness_bft_is_leader's fallback exactly; the arrival
+             * index (gossip_idx) is node-local and MUST NOT decide
+             * leadership (BUGS.md 2026-08-04: node7 saw the honest
+             * proposer at arrival index 6, every sorted peer at rank 0). */
             count = (int)w->roster.n_witnesses;
             sender_idx = nodus_witness_roster_sorted_find(
                 &w->roster, hdr->sender_id);
@@ -5592,6 +5762,97 @@ static int bft_handle_vote_inner(nodus_witness_t *w, uint8_t msg_type,
         }
     }
 
+    /* ── O15L Faz 3 (F-13) — the PRECOMMIT half of the same check ──────
+     *
+     * WHY IT HAS TO BE HERE AND NOT LATER. Until this block, a PRECOMMIT's
+     * cert_sig was copied into the vote slot unverified (the memcpy below)
+     * while its APPROVE still incremented *approve_count, and that count
+     * ALONE drives the phase advance a few lines down (`required =
+     * w->bft_config.quorum`, `if (*approve_count < required) return 0`,
+     * `phase = next_phase`). So a vote whose certificate is worthless
+     * could carry the round into COMMIT.
+     *
+     * That is a DETERMINISM defect, not merely a missing check. The
+     * moment the phase advances, every later PRECOMMIT is dropped by the
+     * expected_phase guard at the top of this function ("wrong phase —
+     * vote ignored"): there is no "wait for more" state to fall back to.
+     * A node could therefore reach approve_count == quorum with FEWER
+     * than quorum valid certificates and then refuse to commit its own
+     * block — and whether it happened depended on vote ARRIVAL ORDER, not
+     * on the block. Two honest nodes, same block, different verdicts.
+     * The non-malicious trigger is real: a peer in the O15K zeroed-
+     * chain_id state signs its cert over chain_id 0 and fails every
+     * healthy peer's reconstruction below.
+     *
+     * PREVOTE has paid exactly this cost per vote since C5 (the block
+     * above); this is symmetry restoration, one Dilithium5 verify per
+     * event, not a new mechanism. The lazy-verify objection recorded in
+     * test_precommit_cert_verify_lazy.c is about the REMOTE path, where a
+     * whole cert set arrives at once — it does not apply per vote.
+     *
+     * ⚠ THE PREIMAGE IS *NOT* THE PREVOTE ONE. PREVOTE signs the 76-byte
+     * PREPARED preimage (compute_prepared_preimage). A PRECOMMIT cert is
+     * the 144-byte cert preimage, and the four fields are mirrored from
+     * the sign side below (the PREVOTE-quorum arm of this same function):
+     *   block_hash -> w->round_state.tx_hash   (signer passes the same
+     *                 field; the vote_target equality check at the top of
+     *                 this function already proved sender and receiver
+     *                 hold the same value, and tx_hash == tx_root)
+     *   voter_id   -> sender_id                (signer passes w->my_id,
+     *                 which is also what fill_header puts in
+     *                 hdr->sender_id, so these are the same 32 bytes)
+     *   chain_id   -> w->chain_id              (verifier's own, exactly
+     *                 as nodus_witness_verify_certs_snapshot does; the
+     *                 handler's verify_chain_id gate has already proved
+     *                 the sender advertised this same id)
+     *   height     -> w->round_state.block_height
+     *
+     * The height deserves its own note. The sign side computes
+     * `nodus_witness_block_height(w) + 1`, but the ROUND ANCHOR is
+     * round_state.block_height and the two are equal on every node that
+     * is in this round: the leader sets the anchor to block_height(w)+1
+     * at round start, and a follower REJECTS any proposal whose height is
+     * not its own local next before adopting it. Using the anchor is what
+     * makes this gate agree with the remote-COMMIT gate, which verifies
+     * these very certificates at cmt->block_height — i.e. at the leader's
+     * round_state.block_height. Verifying here at a freshly-read
+     * block_height(w)+1 could accept a cert the remote route rejects,
+     * which is precisely the DG-5 promise this season exists to keep.
+     * (The A2 comment at round start already declares round_state.
+     * block_height normative for "all cert_sig signing/verification
+     * within this round"; the sign side is the one that drifted.)
+     *
+     * Scope mirrors PREVOTE exactly: APPROVE only. A REJECT precommit
+     * contributes to no certificate and carries cert_sig = 0 — and no
+     * production path emits one at all. An invalid signature drops the
+     * ENTIRE vote (protocol violation), so it can never reach
+     * *approve_count. */
+    if (msg_type == NODUS_T3_PRECOMMIT &&
+        vote->vote == NODUS_W_VOTE_APPROVE) {
+        uint8_t cert_preimage[NODUS_WITNESS_CERT_PREIMAGE_LEN];
+        if (nodus_witness_compute_cert_preimage(w->round_state.tx_hash,
+                                                  sender_id,
+                                                  w->round_state.block_height,
+                                                  w->chain_id,
+                                                  cert_preimage) != 0) {
+            QGP_LOG_WARN(LOG_TAG, "cert preimage compute failed");
+            return -1;
+        }
+        /* RAW verify, matching the sign side (qgp_dsa87_sign) and both
+         * cert verifiers in nodus_witness_cert.c — tagging one side only
+         * would break the DNAC client, which verifies these same
+         * signatures. */
+        if (qgp_dsa87_verify(vote->cert_sig, NODUS_SIG_BYTES,
+                              cert_preimage, sizeof(cert_preimage),
+                              sender_pk) != 0) {
+            fprintf(stderr, "%s: PRECOMMIT cert_sig verify FAILED "
+                    "(sender gossip=%d, height=%llu) — dropping vote\n",
+                    LOG_TAG, gossip_idx,
+                    (unsigned long long)w->round_state.block_height);
+            return -1;
+        }
+    }
+
     /* Record vote.
      *
      * S3 — this bound is the ARRAY capacity (DNAC_MAX_ACTIVE_VALIDATORS,
@@ -5670,7 +5931,50 @@ static int bft_handle_vote_inner(nodus_witness_t *w, uint8_t msg_type,
          * cleared on successful commit_batch; on a later view-change
          * initiated by this witness, the VIEW_CHANGE message carries
          * these sigs so the new leader can pick the re-proposal. */
-        uint64_t cert_height = nodus_witness_block_height(w) + 1;
+
+        /* O15L Faz 3 — THE ROUND ANCHOR, not a fresh head read.
+         *
+         * This was `nodus_witness_block_height(w) + 1`, which contradicts
+         * the invariant the round-start code declares in its own words:
+         * "All cert_sig signing/verification within this round reads from
+         * round_state.block_height, not from a fresh
+         * nodus_witness_block_height(w)+1 lookup, so leader and followers
+         * agree on the round's height even when local heights have
+         * drifted" (the A2 comment on the leader's round init, mirrored on
+         * handle_propose's). This was the one cert site that never got the
+         * A2 treatment.
+         *
+         * The two expressions are EQUAL on every node that is in the
+         * round, which is why the drift was invisible: the leader sets the
+         * anchor to block_height(w)+1 at round start, and a follower
+         * REFUSES any proposal whose height is not its own local next
+         * before adopting it. They can differ only if this node's head
+         * moves between round start and this line — and that is exactly
+         * the case A2 exists for.
+         *
+         * It became load-bearing with this season's tally-time cert check.
+         * Before it, a PRECOMMIT cert was never verified per vote, so a
+         * drifted signer's certificate was simply copied into a slot and
+         * nobody noticed; now every receiver verifies it against the round
+         * anchor, so a node signing over its own shifted head would have
+         * its vote DROPPED — a liveness loss introduced by making the
+         * check exist. Anchoring both sides removes the possibility
+         * instead of papering over it.
+         *
+         * cert_height has TWO consumers and BOTH want the anchor:
+         *   1. the 144-byte cert preimage below, and
+         *   2. w->last_prepared.height — which must name the height the
+         *      PREPARED signatures collected just below were signed over,
+         *      and those are signed over round_state.block_height (round
+         *      init on the leader, the PREVOTE verify on a follower). A
+         *      VIEW_CHANGE carries this height on the wire, and the
+         *      receiver rebuilds the 76-byte PREPARED preimage from it in
+         *      nodus_witness_bft_verify_prepared_cert — so under drift the
+         *      whole prepared certificate, which is the C5 safety
+         *      evidence, would fail verification on every peer. That is
+         *      the same defect a second time, and one assignment fixes
+         *      both. */
+        uint64_t cert_height = w->round_state.block_height;
         memset(&w->last_prepared, 0, sizeof(w->last_prepared));
         w->last_prepared.present = true;
         w->last_prepared.height = cert_height;
@@ -5828,6 +6132,131 @@ static int bft_handle_vote_inner(nodus_witness_t *w, uint8_t msg_type,
              *
              * Pass round_state.block_height (set at handle_propose's A2
              * fix or local round-init) as expected_height. */
+
+            /* ── O15L Faz 3 (DG-5, DG-6 · G5) — the own-quorum route's
+             * certificate gate. ────────────────────────────────────────
+             *
+             * Three routes reach commit_batch and only two of them used to
+             * check that the block carries a quorum of valid witness
+             * certificates: the remote COMMIT handler and the sync replay
+             * path. THIS one — reached by ANY witness that accumulates a
+             * local precommit quorum, not just the leader — checked
+             * nothing. A node would therefore persist, and then broadcast,
+             * a block on the strength of a vote COUNT alone.
+             *
+             * The gate is the mirror of the remote handler's: the same
+             * nodus_witness_verify_certs_snapshot, over the committed
+             * committee snapshot for this block's height, with the same
+             * chain_id, and the quorum taken from that snapshot
+             * (rv_quorum) rather than w->bft_config.quorum. Same inputs,
+             * same verdict — so a block this node commits is a block the
+             * remote route would accept.
+             *
+             * The inputs are the same values the COMMIT frame built below
+             * puts on the wire, which is what makes "same inputs" true:
+             * tx_root is c_msg.commit.tx_root, block_height is
+             * c_msg.commit.block_height, and the certificate array is
+             * c_msg.commit.certs / n_precommits — all precommits in slot
+             * order, capped identically at NODUS_T3_MAX_WITNESSES. The
+             * verifier drops a non-member, a duplicate signer or a bad
+             * signature individually and never rejects the whole batch, so
+             * the cap and the order cannot change the verdict.
+             *
+             * It goes HERE rather than inside commit_batch (DG-6): that
+             * function takes no certificate parameter, and moving the gate
+             * in would double-verify the two routes that already passed.
+             *
+             * The genesis and successor arms above are deliberately not
+             * gated. Genesis (height 1) has no committed committee to be
+             * the authority yet — the remote handler skips it for the same
+             * reason — and a successor round's finalization artifact is
+             * the QC V2, not the legacy cert table.
+             *
+             * ⚠ AFTER the tally-time cert verify added earlier in this
+             * function, a HEALTHY node can no longer fail this gate: every
+             * cert in round_state.precommits has already been verified
+             * once, our own included (it is signed for real before being
+             * recorded in slot 0). So a failure here is not a routine
+             * outcome to be logged and shrugged at — it means the local
+             * committee authority is unreadable or disagrees with the one
+             * the signers used. Treat it as the bug signal it is. */
+            {
+                /* Same stack array as the remote handler builds, and
+                 * deliberately not the heap form the S3 note above
+                 * prescribes for DNAC_MAX_ACTIVE_VALIDATORS committee
+                 * arrays: this does not raise the process's peak stack.
+                 * The remote-COMMIT path already carries an identical
+                 * NODUS_T3_MAX_WITNESSES cert array into commit_batch
+                 * from the same dispatch depth on the same epoll thread,
+                 * so the two commit routes now cost the same frame
+                 * rather than one costing more than the other. */
+                nodus_t3_sync_cert_t own_certs[NODUS_T3_MAX_WITNESSES];
+                uint32_t oc = w->round_state.precommit_count > 0
+                            ? (uint32_t)w->round_state.precommit_count : 0u;
+                if (oc > (uint32_t)NODUS_T3_MAX_WITNESSES)
+                    oc = (uint32_t)NODUS_T3_MAX_WITNESSES;
+                for (uint32_t ci = 0; ci < oc; ci++) {
+                    memcpy(own_certs[ci].voter_id,
+                           w->round_state.precommits[ci].voter_id,
+                           NODUS_T3_WITNESS_ID_LEN);
+                    memcpy(own_certs[ci].signature,
+                           w->round_state.precommits[ci].signature,
+                           NODUS_SIG_BYTES);
+                }
+
+                uint32_t rv_quorum = 0;
+                int cv = nodus_witness_verify_certs_snapshot(w,
+                             w->round_state.tx_root,
+                             w->round_state.block_height,
+                             w->chain_id, own_certs, oc, &rv_quorum);
+                if (cv < 0) {
+                    /* One message per class. The CONTROL FLOW is identical
+                     * for all of them — a node that cannot prove the block
+                     * carries a valid quorum does not commit it, whatever
+                     * the reason — but the operator needs to be able to
+                     * tell a local authority fault from a genuine
+                     * shortfall. NODUS_V2_NOT_YET_LINKABLE is deliberately
+                     * NOT special-cased: it is dead at this site (this arm
+                     * is legacy-only; successors commit through
+                     * nodus_witness_v2_produce_commit above, and the legacy
+                     * resolver never returns it), so a branch for it would
+                     * be untestable code pretending to be a policy. */
+                    if (cv == NODUS_V2_INTERNAL_FAULT)
+                        QGP_LOG_ERROR(LOG_TAG,
+                            "OWN-QUORUM CERT GATE: cannot establish the "
+                            "committing committee at height %llu — refusing "
+                            "to commit our own block (fail-closed)",
+                            (unsigned long long)w->round_state.block_height);
+                    else
+                        QGP_LOG_ERROR(LOG_TAG,
+                            "OWN-QUORUM CERT GATE FAILED at height %llu "
+                            "(certs=%u, quorum=%u) — this is a BUG signal: "
+                            "every one of these certificates was verified "
+                            "when its vote was tallied",
+                            (unsigned long long)w->round_state.block_height,
+                            oc, rv_quorum);
+
+                    /* F-12 — the round MUST be reset, not merely abandoned.
+                     * Returning from here with phase still at COMMIT is a
+                     * known regression, documented on the sibling
+                     * batch_failed path below: check_timeout would then
+                     * necessarily fire a VIEW_CHANGE carrying a
+                     * w->last_prepared for a height that never landed,
+                     * which a later genuine timeout could bind and
+                     * re-propose, dying on tx_invalid and burning another
+                     * view. With phase == IDLE check_timeout returns at its
+                     * first branch. Same three steps as that path, in the
+                     * same order, and last_prepared is likewise left alone
+                     * — clearing it is a separate consensus decision. */
+                    /* ASCII only: this string goes out on the wire. */
+                    bft_emit_batch_replies(w, DNAC_STATUS_ERROR,
+                        "certificate quorum not established - not committed");
+                    w->round_state.phase = NODUS_W_PHASE_IDLE;
+                    w->round_state.client_conn = NULL;
+                    return -1;
+                }
+            }
+
             batch_failed = (nodus_witness_commit_batch(w,
                                 w->round_state.batch_entries,
                                 w->round_state.batch_count,
@@ -6913,9 +7342,29 @@ int nodus_witness_bft_handle_viewchg(nodus_witness_t *w,
         nodus_committee_member_t *committee = NULL;
         int count = 0;
         bool reject = false;
-        if (load_committee_at_height_alloc(w, next_bh, &committee,
-                                             &count) == 0 &&
-            count > 0 &&
+        int lc_rc = load_committee_at_height_alloc(w, next_bh, &committee,
+                                                     &count);
+        if (lc_rc != 0) {
+            /* ── O15L Faz 4 / DG-4 / G4 — THE WORST SHAPE OF THE FIVE,
+             * because the fault used to leave `reject` at its false
+             * initialiser: a committee-load failure did not fall back to
+             * anything, it ACCEPTED. Any node on the transport roster
+             * could then drive this node's view rotation.
+             *
+             * Fail closed, mirroring the shipped VOTE gate (O15J Block
+             * 2A). Cost is liveness only: declining a VIEW_CHANGE leaves
+             * this node in its old view, where its persisted
+             * last_prepared lock still refuses conflicting values. */
+            free(committee);
+            fprintf(stderr,
+                    "%s: VIEW_CHANGE — CANNOT ESTABLISH THE COMMITTEE at "
+                    "height %llu (rc=%d%s); refusing the view change "
+                    "rather than accepting it on the transport roster\n",
+                    LOG_TAG, (unsigned long long)next_bh, lc_rc,
+                    w->db ? "" : ", chain database not open");
+            return -1;
+        }
+        if (count > 0 &&
             committee_find_pubkey(committee, count, sender_pk) < 0) {
             reject = true;
         }
@@ -6925,7 +7374,8 @@ int nodus_witness_bft_handle_viewchg(nodus_witness_t *w,
                     "%s: VIEW_CHANGE from non-committee sender\n", LOG_TAG);
             return -1;
         }
-        /* else: pre-genesis or committee member, accept. */
+        /* else: rc == 0 with count == 0 (genuine pre-genesis, the gossip
+         * check above is the authorization) or a committee member. */
     }
 
     /* Must be for a future view */
@@ -7436,18 +7886,37 @@ int nodus_witness_bft_handle_newview(nodus_witness_t *w,
         return -1;
     }
 
-    if (load_committee_at_height_alloc(w, next_bh, &committee, &count) == 0 &&
-        count > 0) {
+    int lc_rc = load_committee_at_height_alloc(w, next_bh, &committee, &count);
+    if (lc_rc != 0) {
+        /* ── O15L Faz 4 / DG-4 / G4 — fail closed, mirroring the shipped
+         * VOTE gate (O15J Block 2A). Ranking the sender in the transport
+         * roster during a fault is how a non-member becomes "the expected
+         * leader" and gets to install a new view.
+         *
+         * Cost is liveness only, and RT5 measured the shape: this
+         * handler's return value is discarded by the dispatcher, so a
+         * declining node produces no peer-blame and no rotation — it
+         * stays in its old view, still holding its prepared-value lock. */
+        free(committee);
+        fprintf(stderr,
+                "%s: NEW_VIEW — CANNOT ESTABLISH THE COMMITTEE at height "
+                "%llu (rc=%d%s); refusing the new view rather than "
+                "ranking its sender in the transport roster\n",
+                LOG_TAG, (unsigned long long)next_bh, lc_rc,
+                w->db ? "" : ", chain database not open");
+        return -1;
+    }
+    if (count > 0) {
         sender_idx = committee_find_pubkey(committee, count,
                                              w->roster.witnesses[gossip_idx].pubkey);
     } else {
-        /* Pre-genesis bootstrap: leader is a gossip-roster slot — by
-         * SORTED rank, exactly as nodus_witness_bft_is_leader and the
-         * PROPOSE validator (:4421) do. The arrival index (gossip_idx)
-         * is node-local: two nodes holding the same set but different
-         * arrival orders would disagree on who may send NEW_VIEW, so a
-         * node could reject the honest new leader's NEW_VIEW and the
-         * view change would never complete (O15C-D). */
+        /* rc == 0 && count == 0 — genuine pre-genesis bootstrap: leader is
+         * a gossip-roster slot, by SORTED rank, exactly as
+         * nodus_witness_bft_is_leader and the PROPOSE validator do. The
+         * arrival index (gossip_idx) is node-local: two nodes holding the
+         * same set but different arrival orders would disagree on who may
+         * send NEW_VIEW, so a node could reject the honest new leader's
+         * NEW_VIEW and the view change would never complete (O15C-D). */
         count = (int)w->roster.n_witnesses;
         sender_idx = nodus_witness_roster_sorted_find(&w->roster,
                                                         hdr->sender_id);
@@ -7725,9 +8194,41 @@ bool nodus_witness_bft_verify_prepared_cert(nodus_witness_t *w,
 
     nodus_committee_member_t *committee = NULL;
     int c_count = 0;
-    bool have_committee =
-        (load_committee_at_height_alloc(w, height, &committee, &c_count) == 0 &&
-         c_count > 0);
+    int lc_rc = load_committee_at_height_alloc(w, height, &committee, &c_count);
+    if (lc_rc != 0) {
+        /* ── O15L Faz 4 / DG-4 / G4 — THE HIGHEST-VALUE OF THE FIVE
+         * (red-team F-1). A fault used to leave have_committee false, and
+         * the voter-key resolution below then fell through to the GOSSIP
+         * ROSTER while the threshold came from w->bft_config.quorum:
+         * membership from one authority, threshold from another — the
+         * two-authority split this function's own O15H C5 comment names
+         * as the fork shape.
+         *
+         * The roster is admitted from self-signed DHT nodus:pk
+         * registrations with NO committee check
+         * (nodus_witness_peer.c), so an attacker seating quorum-many keys
+         * there could forge a prepared certificate binding a faulting
+         * victim to a value nobody prepared, at a height of its choosing.
+         *
+         * There is no safe answer to give here without the committee, so
+         * give none: a certificate that cannot be checked is not a
+         * certificate. Fail closed, exactly as the function's own
+         * contract already promises for every other unverifiable input
+         * ("Anything short of that ... is false, i.e. fail-closed"). */
+        free(committee);
+        fprintf(stderr,
+                "%s: C5 prepared cert — CANNOT ESTABLISH THE COMMITTEE at "
+                "height %llu (view=%u rc=%d%s); refusing the certificate "
+                "rather than resolving its voters from the transport "
+                "roster\n",
+                LOG_TAG, (unsigned long long)height, view, lc_rc,
+                w->db ? "" : ", chain database not open");
+        return false;
+    }
+    /* rc == 0 && c_count == 0 is a committed answer — a chain with no
+     * committee at this height (pre-genesis), where the roster IS the
+     * documented bootstrap authority. Preserved verbatim. */
+    bool have_committee = (c_count > 0);
 
     uint32_t verified = 0;
     for (uint32_t i = 0; i < n_sigs; i++) {

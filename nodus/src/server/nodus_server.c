@@ -6112,11 +6112,77 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
     }
     srv->witness->tcp = &srv->witness_tcp;  /* Set before init (preserved across memset) */
     if (nodus_witness_init(srv->witness, srv, &config->witness) != 0) {
-        fprintf(stderr, "Witness module init failed\n");
         free(srv->witness);
         srv->witness = NULL;
-        /* Non-fatal — server can run without witness */
-        fprintf(stderr, "WARNING: running without witness module\n");
+
+        /* ── O15L Faz 2 — A DEGRADED NODE SAYS SO, LOUDLY ─────────────
+         *
+         * This used to be two lines — "Witness module init failed" and
+         * "WARNING: running without witness module" — and neither said
+         * what it COSTS. A reader had to already know that the witness
+         * module is the consensus role to understand that the node just
+         * stopped validating blocks, voting and certifying, and would go
+         * on serving DHT traffic as if nothing had happened. In a journal
+         * full of startup chatter that is indistinguishable from noise.
+         *
+         * The process deliberately does NOT exit. nodus is dual-role, and
+         * the DHT half is fine; killing it to retire the witness half
+         * costs a working service for nothing. Worse, exiting is not free
+         * even for the witness half: nodus/deploy/nodus.service carries
+         * Restart=on-failure with StartLimitBurst=3 and
+         * StartLimitIntervalSec=300, so three exits inside five minutes
+         * leave the unit permanently stopped — the failure mode a
+         * transient database fault must not be able to cause. The
+         * witness-less mode is safe, not latent — but NOT because every
+         * call site is guarded, which is what this comment used to claim
+         * and is false. The two dispatch_t3 sites differ:
+         *
+         *   - on_witness_data (witness port) calls
+         *     nodus_witness_dispatch_t3(srv->witness, ...) with NO
+         *     `if (srv->witness)` around it. What protects it is the
+         *     CALLEE: nodus_witness_dispatch_t3's first line is
+         *     `if (!witness || !payload || len == 0) return;`
+         *     (nodus_witness.c), so a NULL witness is dropped there, not
+         *     here. Any future call site on this path inherits that
+         *     contract and nothing else.
+         *   - dispatch_t2's `w_` branch (client port) IS guarded:
+         *     `strncmp(msg.method, "w_", 2) == 0 && srv->witness`.
+         *
+         * The periodic nodus_witness_tick call in the server loop is
+         * guarded by `if (srv->witness)` AND NULL-checks its own argument
+         * (`if (!witness || !witness->running) return;`), so that one is
+         * safe from either side.
+         *
+         * fprintf(stderr) rather than QGP_LOG_ERROR matches the block
+         * this replaces and the adjacent init logging (this file uses
+         * both); the witness module logs exclusively this way, so the
+         * WITNESS lines this message points at are interleaved with it in
+         * the journal rather than filtered separately. */
+        fprintf(stderr,
+            "ERROR: WITNESS MODULE INIT FAILED — THIS NODE IS RUNNING "
+            "DEGRADED\n");
+        fprintf(stderr,
+            "ERROR:   consensus: NOT PARTICIPATING. This node validates no "
+            "block, casts no vote,\n"
+            "ERROR:              signs no certificate and produces no "
+            "block for as long as it runs.\n");
+        fprintf(stderr,
+            "ERROR:   DHT:       unaffected — Kademlia, storage and client "
+            "service continue.\n");
+        fprintf(stderr,
+            "ERROR:   cause:     named in the WITNESS lines above — a chain "
+            "database that is\n"
+            "ERROR:              PRESENT but unusable (with its sqlite "
+            "fault), a refused startup\n"
+            "ERROR:              gate, or an unmet bootstrap "
+            "precondition.\n");
+        fprintf(stderr,
+            "ERROR:   action:    the process is NOT exiting on purpose "
+            "(nodus.service would stop\n"
+            "ERROR:              the unit after 3 restarts in 300 s, "
+            "retiring the DHT role too).\n"
+            "ERROR:              Fix the database, then restart this "
+            "node.\n");
     }
 
     /* Publish identity to DHT for witness discovery */

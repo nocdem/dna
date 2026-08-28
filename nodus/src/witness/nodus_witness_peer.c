@@ -521,16 +521,69 @@ int nodus_witness_peer_send_ident(nodus_witness_t *w,
  */
 #define WITNESS_CHAIN_QUORUM_WINDOW_SEC  300
 
-static void witness_chain_quorum_observe(nodus_witness_t *w,
-                                          const uint8_t *peer_id,
-                                          const uint8_t *peer_chain_id) {
+/* Non-static so test_v2_restart_gate.c can pin the DG-2 matrix directly.
+ * Same rationale as the de-staticed BFT primitives (see the header block
+ * of nodus_witness_bft_internal.h): static + test linkage do not compose
+ * under CMake's normal flow, and the protection is "no production-facing
+ * header references it" rather than the qualifier.
+ *
+ * O15L Faz 5 — the canonical prototype now lives in
+ * nodus_witness_bft_internal.h (alongside verify_chain_id, its twin in
+ * nodus_witness_bft.c: the two implement the same (chain_id, db) matrix
+ * and must move together), and test_v2_restart_gate.c includes that
+ * header rather than repeating the declaration. The protection is
+ * ASYMMETRIC: this translation unit does NOT include the header. That
+ * header's #error gate demands NODUS_WITNESS_INTERNAL_API, which the
+ * build system attaches to test executables via
+ * target_compile_definitions and to no library target — the single
+ * library TU that has the macro, nodus_witness_fault.c, #defines it for
+ * itself under QGP_FAULT_INJECT, so reaching in is never silent — and
+ * whose name CMakeLists.txt turns into a FATAL_ERROR if it is set as a
+ * CMake variable in a Release configure.
+ * The same avoidance is why nodus_witness_bft.c forward-declares
+ * its Phase 6 commit wrappers by hand. Consequence: changing this
+ * signature breaks the TEST's compile — the intended alarm — but the
+ * definition and the header are still held in agreement by review, not
+ * by the compiler. */
+void witness_chain_quorum_observe(nodus_witness_t *w,
+                                    const uint8_t *peer_id,
+                                    const uint8_t *peer_chain_id) {
     if (!w || !peer_id || !peer_chain_id) return;
     if (w->quarantined) return;  /* Already decided — sticky */
 
-    /* Skip if we are still pre-genesis (all-zero chain_id) */
     static const uint8_t zero[32] = {0};
-    if (memcmp(w->chain_id, zero, 32) == 0) return;
-    /* Skip if peer is pre-genesis (no opinion) */
+
+    /* O15L DG-2 (G3) — THE SAME (chain_id, db) MATRIX verify_chain_id
+     * takes (nodus_witness_bft.c). This is the self-quarantine detector,
+     * so the failure mode of the old all-zero skip was the mirror of the
+     * one there: a node with a zeroed identity went BLIND to its own
+     * divergence at exactly the moment it was most likely to be the
+     * diverged one. Both consumers of that exemption move together, or
+     * fixing one just relocates the hole.
+     *
+     * The observable here is whether an observation is COUNTED:
+     *
+     *   chain_id != 0, db != NULL   healthy               -> OBSERVE
+     *   chain_id != 0, db == NULL   open failed, id kept  -> OBSERVE
+     *   chain_id == 0, db == NULL   genuine pre-genesis   -> skip
+     *   chain_id == 0, db != NULL   invariant violation   -> skip, loudly
+     *
+     * Rows 3 and 4 both count nothing — a node with no identity has no
+     * opinion to compare a peer against — and differ only in that row 4
+     * is a violated invariant and says so. */
+    if (memcmp(w->chain_id, zero, 32) == 0) {
+        if (w->db) {
+            fprintf(stderr,
+                    "%s: INVARIANT VIOLATION — chain_id is all-zero while "
+                    "the chain database is OPEN; the chain-quorum detector "
+                    "cannot judge dissent and is standing down.\n", LOG_TAG);
+        }
+        /* Row 3 (silent) and row 4 (logged): nothing to compare against. */
+        return;
+    }
+
+    /* Skip if peer is pre-genesis (no opinion) — unchanged by O15L; this
+     * is a statement about the PEER, not about us. */
     if (memcmp(peer_chain_id, zero, 32) == 0) return;
 
     /* Only check within startup window — after this we trust the cluster

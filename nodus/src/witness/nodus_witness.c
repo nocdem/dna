@@ -302,12 +302,126 @@ void nodus_witness_set_chain_id(nodus_witness_t *witness,
 
 /* ── Open a witness chain DB by full path ────────────────────────── */
 
-/* O15K E2 — FAIL CLOSED. Every failure exit of witness_db_open_path goes
- * through here, because a half-open handle is the shape this project
- * forbids under "A DB failure is never a value": sqlite3_open can succeed
- * and a later step fail, and the old code returned -1 while LEAVING
- * witness->db assigned. The caller (nodus_witness_scan_chain_db) discards
- * the rc, so the node came up reporting `chain_db=active` while
+/* ── O15L Faz 2 — THE TWO ERROR CLASSES OF A CHAIN-DB OPEN ────────────
+ *
+ * Before O15L every non-OK sqlite return of the open path took the same
+ * exit: refuse, and let nodus_witness_init print "no chain DB found —
+ * pre-genesis state" over it. Two different situations were being folded
+ * into one answer, and neither was served well.
+ *
+ *   TRANSIENT — the fault may not be there a moment from now. This is
+ *   the `kill -9` + restart case O15K E1 was written for: the dying
+ *   process's WAL recovery is still settling, so the open sees BUSY /
+ *   LOCKED. It is also every fault that has nothing to do with THIS
+ *   database's contents — an I/O error, a full filesystem, a failed
+ *   allocation, a file we could not open yet, a WAL protocol collision.
+ *   sqlite3_busy_timeout waits out ONLY the lock classes; IOERR, FULL,
+ *   CANTOPEN, NOMEM and PROTOCOL were never waited for at all.
+ *
+ *   PERMANENT — the fault is a property of the file or of our access to
+ *   it and will be there after any amount of waiting: NOTADB, CORRUPT,
+ *   PERM, AUTH. Retrying these buys nothing and delays the refusal.
+ *   Everything not named transient lands here, so an unrecognised code
+ *   fails closed rather than looping.
+ *
+ * THE CLASSIFICATION IS ON THE PRIMARY CODE (`rc & 0xff`). SQLite may
+ * return an EXTENDED result code, and SQLITE_BUSY_RECOVERY — the
+ * extended form of BUSY — is precisely the WAL-recovery case above. A
+ * switch over the raw value would send it to the permanent arm and
+ * invert the fix it exists to carry.
+ */
+typedef enum {
+    WITNESS_DB_ERR_TRANSIENT = 0,
+    WITNESS_DB_ERR_PERMANENT = 1
+} witness_db_err_class_t;
+
+static witness_db_err_class_t witness_db_err_class(int rc) {
+    switch (rc & 0xff) {
+    case SQLITE_BUSY:      /* incl. SQLITE_BUSY_RECOVERY / _SNAPSHOT     */
+    case SQLITE_LOCKED:
+    case SQLITE_IOERR:     /* every extended IOERR_* folds to this       */
+    case SQLITE_FULL:
+    case SQLITE_CANTOPEN:
+    case SQLITE_NOMEM:
+    case SQLITE_PROTOCOL:
+        return WITNESS_DB_ERR_TRANSIENT;
+    default:
+        /* SQLITE_NOTADB, SQLITE_CORRUPT, SQLITE_PERM, SQLITE_AUTH and
+         * anything this build does not recognise. */
+        return WITNESS_DB_ERR_PERMANENT;
+    }
+}
+
+/* ── O15L Faz 2 — THE RETRY BUDGET, FIXED AND DETERMINISTIC ───────────
+ *
+ * ⚠ NO FLAKINESS IS BEING BOUGHT HERE. The attempt count and the pause
+ * between attempts are compile-time constants: no rand(), no clock read,
+ * no branch on wall time, and no "raise it until it goes green". The
+ * budget is spent identically on every node and on every run; what may
+ * differ is only whether a transient fault happens to clear inside it,
+ * and BOTH outcomes are fail-closed — either the database opens and is
+ * gated, or the node refuses to start its witness role. There is no
+ * third state in which a node runs on a half-opened chain.
+ *
+ * WHY IN-PROCESS AT ALL — this reverses the earlier "no in-process
+ * retry; the supervisor restart IS the backoff" position, on evidence
+ * read out of the shipped unit file. nodus/deploy/nodus.service carries
+ * Restart=on-failure, RestartSec=5, StartLimitBurst=3 and
+ * StartLimitIntervalSec=300: exiting to be restarted spends a FINITE
+ * budget of three attempts in five minutes, after which systemd stops
+ * the unit permanently — and it would retire the node's DHT role, which
+ * has nothing wrong with it, along with the witness role. Waiting in
+ * process is not bounded by that limit and costs nobody else anything.
+ *
+ * WHY THREE ATTEMPTS — it mirrors the supervisor's own answer to "how
+ * many tries is a transient fault worth", StartLimitBurst=3, paid where
+ * it does not consume the supervisor's budget.
+ *
+ * RELATIONSHIP TO NODUS_W_DB_BUSY_TIMEOUT_MS (5000, nodus_types.h:241).
+ * That constant is the tree's ONE answer to "how long is a database lock
+ * transient" — O15K E1 set it on this connection and O15J's f08fbcdc set
+ * the same value on the V2 probe connection. The retry loop does NOT add
+ * a second, larger answer: the budget is DIVIDED across the attempts
+ * (NODUS_W_DB_BUSY_TIMEOUT_MS / NODUS_W_DB_OPEN_ATTEMPTS per attempt), so
+ * the AGGREGATE time this code will wait out a lock is unchanged — only
+ * its shape changes, from one long wait on one connection into three
+ * shorter waits on freshly opened ones. Integer division leaves the
+ * aggregate two milliseconds short of 5000 rather than over it, which is
+ * the right direction: the budget is a ceiling.
+ *
+ * THE PAUSE (250 ms) IS A JUDGMENT VALUE, and the only one here. The
+ * non-lock transient classes get no wait from the busy timeout at all,
+ * so without a pause a SQLITE_NOMEM would be retried three times inside
+ * a few microseconds and the retries would prove nothing. 250 ms is long
+ * enough that an I/O or memory condition can clear and short enough that
+ * it adds at most 500 ms (two pauses) to the worst case.
+ *
+ * WORST CASE, stated so nobody has to derive it: a database locked for
+ * the whole open costs the same aggregate lock wait as before this
+ * change, plus 500 ms of pause. A permanent fault costs ONE attempt —
+ * permanent errors are never retried.
+ */
+#define NODUS_W_DB_OPEN_ATTEMPTS 3
+#define NODUS_W_DB_OPEN_ATTEMPT_BUSY_MS \
+    (NODUS_W_DB_BUSY_TIMEOUT_MS / NODUS_W_DB_OPEN_ATTEMPTS)
+#define NODUS_W_DB_OPEN_RETRY_PAUSE_MS 250
+
+/* Fixed-duration sleep. This translation unit is already POSIX-only
+ * (dirent.h, sys/stat.h), so the _WIN32 arm nodus_client.c:68-75 carries
+ * would be unreachable here. */
+static void witness_sleep_ms(long ms) {
+    struct timespec ts = { ms / 1000, (ms % 1000) * 1000000L };
+    nanosleep(&ts, NULL);
+}
+
+/* O15K E2 — FAIL CLOSED. Every failure exit of witness_db_open_attempt
+ * passes here — and so, transitively, does every failing attempt of
+ * witness_db_open_path — because a half-open handle is the shape this
+ * project forbids under "A DB failure is never a value": sqlite3_open can
+ * succeed and a later step fail, and the old code returned -1 while
+ * LEAVING witness->db assigned. The caller
+ * (nodus_witness_scan_chain_db) discarded the rc, so the node came up
+ * reporting `chain_db=active` while
  * nodus_witness_init had already logged "no chain DB found — pre-genesis
  * state". Worse, the chain id was never installed, and a zeroed chain id
  * is read as "pre-genesis" by BOTH nodus_witness_bft.c's verify_chain_id
@@ -315,7 +429,11 @@ void nodus_witness_set_chain_id(nodus_witness_t *witness,
  * nodus_witness_peer.c's witness_chain_quorum_observe (the self-quarantine
  * safety net) — so the node ran with its replay guard off and its
  * divergence detector blind, and could never verify a certificate again.
- * Full write-up: nodus/BUGS.md, the top OPEN entry. */
+ * Full write-up: nodus/BUGS.md, the entry headed "RESOLVED (O15L,
+ * 2026-08-28): a transient SQLite lock at open left the witness RUNNING
+ * with a ZEROED chain_id". Cited by its heading, not by its position:
+ * this pointer used to read "the top OPEN entry" and rotted the moment
+ * that entry was resolved and a newer one (F-10) took the top slot. */
 static int witness_db_open_fail(nodus_witness_t *witness) {
     if (witness->db) {
         sqlite3_close(witness->db);
@@ -324,12 +442,24 @@ static int witness_db_open_fail(nodus_witness_t *witness) {
     return -1;
 }
 
-static int witness_db_open_path(nodus_witness_t *witness, const char *db_path) {
+/* ONE attempt at bringing `db_path` to a usable handle. Returns SQLITE_OK
+ * on success, otherwise the sqlite code that decided the failure — and on
+ * any failure the handle is CLOSED and NULLed by witness_db_open_fail, so
+ * an attempt never leaves a half-open handle for the next one to inherit.
+ *
+ * Re-entering this function after a failed attempt is safe because every
+ * step in it is idempotent by construction: the ALTERs ignore their
+ * duplicate-column errors, the schema is CREATE TABLE IF NOT EXISTS
+ * throughout, nodus_witness_db_migrate_v12's own header records it as
+ * idempotent, and load_pbft_state only reads. */
+static int witness_db_open_attempt(nodus_witness_t *witness,
+                                   const char *db_path) {
     int rc = sqlite3_open(db_path, &witness->db);
     if (rc != SQLITE_OK) {
         fprintf(stderr, "%s: failed to open %s: %s\n",
                 LOG_TAG, db_path, sqlite3_errmsg(witness->db));
-        return witness_db_open_fail(witness);
+        witness_db_open_fail(witness);
+        return rc;
     }
 
     /* O15K E1 — WAIT THE LOCK OUT; do not fail on a transient one.
@@ -342,11 +472,16 @@ static int witness_db_open_path(nodus_witness_t *witness, const char *db_path) {
      * probe connection (nodus_witness_v2_gen.c); the MAIN chain-DB
      * connection never got one, and it is the one every restart uses.
      *
-     * It also draws the transient/permanent line without inventing a
-     * mechanism: SQLite retries internally for the timeout, so a BUSY
-     * that survives it is a genuinely persistent lock and failing is then
-     * the correct answer. */
-    sqlite3_busy_timeout(witness->db, NODUS_W_DB_BUSY_TIMEOUT_MS);
+     * O15L Faz 2 — the value is now the PER-ATTEMPT share of that same
+     * budget (see NODUS_W_DB_OPEN_ATTEMPT_BUSY_MS above): three attempts
+     * wait out the identical aggregate NODUS_W_DB_BUSY_TIMEOUT_MS, so the
+     * tree still holds ONE answer to "how long is a lock transient".
+     * O15K E1's second paragraph — "a BUSY that survives the timeout is
+     * genuinely persistent, so failing is the correct answer" — is
+     * preserved exactly: that judgement now fires when the AGGREGATE
+     * budget is exhausted rather than after the first share of it, and it
+     * is the caller's transient-exhausted refusal. */
+    sqlite3_busy_timeout(witness->db, NODUS_W_DB_OPEN_ATTEMPT_BUSY_MS);
 
     sqlite3_exec(witness->db, "PRAGMA journal_mode=WAL;", NULL, NULL, NULL);
     sqlite3_exec(witness->db, "PRAGMA synchronous=NORMAL;", NULL, NULL, NULL);
@@ -382,7 +517,8 @@ static int witness_db_open_path(nodus_witness_t *witness, const char *db_path) {
     if (rc != SQLITE_OK) {
         fprintf(stderr, "%s: schema creation failed: %s\n", LOG_TAG, err_msg);
         sqlite3_free(err_msg);
-        return witness_db_open_fail(witness);
+        witness_db_open_fail(witness);
+        return rc;
     }
 
     /* Schema v12 migration (Phase 1 / Task 1.1). Idempotent; aborts on
@@ -397,7 +533,67 @@ static int witness_db_open_path(nodus_witness_t *witness, const char *db_path) {
     nodus_witness_db_load_pbft_state(witness);
 
     fprintf(stderr, "%s: opened database %s\n", LOG_TAG, db_path);
-    return 0;
+    return SQLITE_OK;
+}
+
+/* Open `db_path`, retrying ONLY the transient error classes and only
+ * within the fixed budget documented above. Returns 0 on success, -1 on
+ * refusal; on refusal `*out_class` (optional) says WHICH refusal it was,
+ * so the caller can report a present-but-unusable chain database honestly
+ * instead of letting it be printed as "no chain DB found".
+ *
+ * On every refusal the handle is already closed and NULLed (O15K E2). */
+static int witness_db_open_path(nodus_witness_t *witness, const char *db_path,
+                                witness_db_err_class_t *out_class) {
+    /* Fail closed by default: a caller that reads *out_class after an
+     * unexpected exit must see the class that stops the node, not the one
+     * that keeps it waiting. */
+    if (out_class) *out_class = WITNESS_DB_ERR_PERMANENT;
+
+    for (int attempt = 1; attempt <= NODUS_W_DB_OPEN_ATTEMPTS; attempt++) {
+        int rc = witness_db_open_attempt(witness, db_path);
+        if (rc == SQLITE_OK) return 0;
+
+        witness_db_err_class_t cls = witness_db_err_class(rc);
+        if (cls == WITNESS_DB_ERR_PERMANENT) {
+            /* A property of the file or of our access to it. Waiting
+             * changes nothing, so the refusal is immediate and says so. */
+            fprintf(stderr,
+                    "%s: chain DB %s is PRESENT but UNUSABLE — PERMANENT "
+                    "sqlite fault %d (%s) on attempt %d/%d; not retried\n",
+                    LOG_TAG, db_path, rc, sqlite3_errstr(rc),
+                    attempt, NODUS_W_DB_OPEN_ATTEMPTS);
+            if (out_class) *out_class = WITNESS_DB_ERR_PERMANENT;
+            return -1;
+        }
+
+        if (attempt < NODUS_W_DB_OPEN_ATTEMPTS) {
+            fprintf(stderr,
+                    "%s: chain DB %s not opened — TRANSIENT sqlite fault %d "
+                    "(%s) on attempt %d/%d; retrying in %d ms\n",
+                    LOG_TAG, db_path, rc, sqlite3_errstr(rc),
+                    attempt, NODUS_W_DB_OPEN_ATTEMPTS,
+                    NODUS_W_DB_OPEN_RETRY_PAUSE_MS);
+            witness_sleep_ms(NODUS_W_DB_OPEN_RETRY_PAUSE_MS);
+            continue;
+        }
+
+        /* Budget spent. O15K E1's rule, applied to the aggregate: a
+         * transient fault that outlives the whole budget is treated as
+         * persistent — the node refuses rather than looping forever. */
+        fprintf(stderr,
+                "%s: chain DB %s is PRESENT but UNUSABLE — TRANSIENT sqlite "
+                "fault %d (%s) survived all %d attempts (aggregate lock wait "
+                "%d ms); treating it as persistent\n",
+                LOG_TAG, db_path, rc, sqlite3_errstr(rc),
+                NODUS_W_DB_OPEN_ATTEMPTS,
+                NODUS_W_DB_OPEN_ATTEMPTS * NODUS_W_DB_OPEN_ATTEMPT_BUSY_MS);
+        if (out_class) *out_class = WITNESS_DB_ERR_TRANSIENT;
+        return -1;
+    }
+
+    /* Unreachable: the loop returns on every path. Fail closed anyway. */
+    return witness_db_open_fail(witness);
 }
 
 /* ── Scan data dir for existing witness_*.db → load chain_id ─────── */
@@ -613,11 +809,49 @@ static int witness_chain_id_from_name(const char *d_name, uint8_t out16[16]) {
     return 0;
 }
 
+/* ── O15L Faz 2 — THE SCAN HAS THREE OUTCOMES, NOT TWO ────────────────
+ *
+ * nodus_witness_scan_chain_db returned 0 or -1, and its caller printed
+ * "no chain DB found — pre-genesis state" for EVERY -1. A node whose
+ * chain database sat right there on disk and merely could not be opened
+ * therefore announced — in the one line an operator reads at startup —
+ * that it had never had a chain at all. That is the same class of lie
+ * O15K removed from the docs and the same one that let the half-open
+ * node report `chain_db=active`: a failure being reported as a value.
+ *
+ * The three answers now have three codes. Only ABSENT means pre-genesis,
+ * and it requires the directory to have been READ SUCCESSFULLY and found
+ * to hold no chain database. Everything that is a failure to LOOK — a
+ * NULL handle, an unreadable data directory — is a fault, not an
+ * observation of absence, and must never license the pre-genesis branch.
+ *
+ * The codes are file-local because the function's declaration lives in
+ * nodus_witness.h, which the dispatch that added them could not write.
+ * They are mirrored, with the same warning, in
+ * nodus/tests/test_v2_restart_gate.c. Every existing caller tests
+ * `!= 0` (nodus_witness_v2_join.c:187, nodus_witness_init below), so no
+ * caller changes meaning until it opts in.
+ */
+#define NODUS_W_SCAN_ABSENT              (-1)
+#define NODUS_W_SCAN_UNUSABLE_TRANSIENT  (-2)
+#define NODUS_W_SCAN_UNUSABLE_PERMANENT  (-3)
+
 int nodus_witness_scan_chain_db(nodus_witness_t *witness) {
-    if (!witness) return -1;
+    /* A NULL handle is a node fault, not an observation that there is no
+     * chain — hence PERMANENT rather than ABSENT. */
+    if (!witness) return NODUS_W_SCAN_UNUSABLE_PERMANENT;
     const char *data_path = witness->data_path;
     DIR *dir = opendir(data_path);
-    if (!dir) return -1;
+    if (!dir) {
+        /* We did not look and find nothing; we could not look. A node
+         * that owns a chain must never announce it has none because its
+         * own data directory was unreadable. */
+        fprintf(stderr,
+                "%s: data directory %s could not be read (%s) — this is NOT "
+                "pre-genesis, it is a failure to look\n",
+                LOG_TAG, data_path, strerror(errno));
+        return NODUS_W_SCAN_UNUSABLE_PERMANENT;
+    }
 
     /* O15A — DETERMINISTIC SELECTION.
      *
@@ -649,10 +883,21 @@ int nodus_witness_scan_chain_db(nodus_witness_t *witness) {
          * stays a stable total key. */
     }
     closedir(dir);
-    if (!have_best) return -1;      /* No chain DB found — pre-genesis */
+    /* THE one outcome that is genuine pre-genesis: the directory was read
+     * and holds no chain database. */
+    if (!have_best) return NODUS_W_SCAN_ABSENT;
 
     uint8_t chain_id[16];
-    if (witness_chain_id_from_name(best, chain_id) != 0) return -1;
+    if (witness_chain_id_from_name(best, chain_id) != 0) {
+        /* Unreachable — `best` only ever holds a name this same parser
+         * already accepted — but if the two ever disagreed we would be
+         * holding a chain file we cannot name, which is a fault and not
+         * an absence. */
+        fprintf(stderr,
+                "%s: chain DB %s passed selection but not re-parsing — "
+                "refusing (fail closed)\n", LOG_TAG, best);
+        return NODUS_W_SCAN_UNUSABLE_PERMANENT;
+    }
 
     char db_path[512];
     snprintf(db_path, sizeof(db_path), "%s/%s", data_path, best);
@@ -684,10 +929,37 @@ int nodus_witness_scan_chain_db(nodus_witness_t *witness) {
      * successful path, only the failing one. */
     nodus_witness_set_chain_id(witness, chain_id);
 
-    if (witness_db_open_path(witness, db_path) != 0) return -1;
+    /* O15L Faz 2 — from here on the chain database is PRESENT. Whatever
+     * happens next, this scan may no longer report absence: the two exits
+     * below are "present and unusable", and they differ only in whether
+     * waiting could ever have helped. */
+    witness_db_err_class_t open_cls = WITNESS_DB_ERR_PERMANENT;
+    if (witness_db_open_path(witness, db_path, &open_cls) != 0) {
+        fprintf(stderr,
+                "%s: chain DB present but unusable: %s (%s) — this node "
+                "HOLDS a chain it cannot read; it is NOT pre-genesis\n",
+                LOG_TAG, best,
+                open_cls == WITNESS_DB_ERR_TRANSIENT
+                    ? "transient fault, retries exhausted"
+                    : "permanent fault");
+        return open_cls == WITNESS_DB_ERR_TRANSIENT
+                   ? NODUS_W_SCAN_UNUSABLE_TRANSIENT
+                   : NODUS_W_SCAN_UNUSABLE_PERMANENT;
+    }
 
-    /* O15A: the restart path now runs the SAME gate as creation. */
-    if (witness_post_open_gate(witness, db_path) != 0) return -1;
+    /* O15A: the restart path now runs the SAME gate as creation.
+     * A gate refusal is a judgement about the CONTENTS of a database that
+     * opened fine — S7 pool state that its own tables cannot reproduce, a
+     * failed version firewall, an underivable chain role. Waiting cannot
+     * change any of those, so it is permanent, and it is emphatically not
+     * absence: the gate's own log lines above name what it refused. */
+    if (witness_post_open_gate(witness, db_path) != 0) {
+        fprintf(stderr,
+                "%s: chain DB present but unusable: %s (refused by the "
+                "post-open integrity gate) — this node HOLDS a chain it "
+                "must not use; it is NOT pre-genesis\n", LOG_TAG, best);
+        return NODUS_W_SCAN_UNUSABLE_PERMANENT;
+    }
 
     /* O15J Faz 3 — the restart-side seam retry (re-deriving a successor
      * chain whose derivation was interrupted) is deleted with the
@@ -796,10 +1068,41 @@ int nodus_witness_create_chain_db(nodus_witness_t *witness,
     char db_path[512];
     snprintf(db_path, sizeof(db_path), "%s/%s", witness->data_path, basename);
 
-    if (witness_db_open_path(witness, db_path) != 0)
-        return -1;
-
+    /* ⚠ O15L Faz 1 item 3 — THE IDENTITY IS INSTALLED BEFORE THE OPEN,
+     * mirroring the scan path (the O15K A block above the
+     * nodus_witness_set_chain_id call in nodus_witness_scan_chain_db).
+     * Creation used to open first and set the id afterwards — the exact
+     * asymmetry O15K corrected on the scan side and left standing here.
+     *
+     * It is not merely tidiness. This function closes any previous handle
+     * above WITHOUT clearing witness->chain_id, so under the old order a
+     * successful open produced a window in which the pair was
+     * (db != NULL, chain_id = STALE) — an identity belonging to the chain
+     * we just closed, presented as the identity of the one we just
+     * opened. Both live callers happen to enter with chain_id == 0
+     * today (nodus_witness_bft.c commit_genesis and
+     * nodus_witness_bootstrap.c handle_genesis_rsp), so it is latent
+     * rather than live; the two paths must still read the same way or the
+     * next reader re-derives the bug.
+     *
+     * Safe for the same reason it is safe on the scan path: chain_id is
+     * the caller's argument, not something read out of the database, and
+     * nothing between here and the open reads witness->chain_id —
+     * witness_db_open_path never reads it at all. A FAILED open now
+     * leaves (db == NULL, chain_id != 0), which is DG-1 row 2: the node
+     * keeps enforcing the identity it holds instead of falling back to
+     * the permissive all-zero reading. That retention is the point; do
+     * NOT add a rollback to zero here. */
     nodus_witness_set_chain_id(witness, chain_id);
+
+    /* O15L Faz 2 — the creation path takes the SAME retrying open as the
+     * restart path, and for the same reason O15A hoisted the post-open
+     * gate: two entrances to one database must not have two different
+     * ideas of what a transient fault is. The class is not consulted here
+     * because this caller has exactly one answer to a failed creation —
+     * there is no chain yet, so there is nothing to report as present. */
+    if (witness_db_open_path(witness, db_path, NULL) != 0)
+        return -1;
 
     /* O15A: the SAME gate the restart path runs — see
      * witness_post_open_gate. Previously these two checks lived here
@@ -1024,9 +1327,47 @@ int nodus_witness_init(nodus_witness_t *witness,
 
     /* Scan for existing chain DB (witness_<chain_id>.db).
      * If found: opens DB + sets chain_id.
-     * If not found: db = NULL (pre-genesis state, waiting for genesis TX). */
-    if (nodus_witness_scan_chain_db(witness) != 0) {
+     * If not found: db = NULL (pre-genesis state, waiting for genesis TX).
+     *
+     * ⚠ O15L Faz 2 — THE PRE-GENESIS LINE IS PRINTED FOR ABSENCE ONLY.
+     * It used to be printed for every non-zero return, including the ones
+     * that mean "the chain database is right there and I could not open
+     * it". That sentence is what an operator reads, and on a node that
+     * HOLDS a chain it is false — the same class of lie O15K found in the
+     * docs and the same one the half-open handle told with
+     * `chain_db=active`.
+     *
+     * A present-but-unusable chain database now REFUSES the witness init
+     * rather than continuing as a pretend-fresh node. That is not
+     * severity theatre: a node that believes it is pre-genesis enters the
+     * bootstrap state machine, and a bootstrapping node may create a
+     * chain database or adopt a peer's genesis — beside the chain it
+     * already has and cannot see. The transient class has already spent
+     * its whole retry budget inside the scan by the time it arrives here
+     * (witness_db_open_path), so there is nothing left to wait for. */
+    int scan_rc = nodus_witness_scan_chain_db(witness);
+    if (scan_rc == NODUS_W_SCAN_ABSENT) {
         fprintf(stderr, "%s: no chain DB found — pre-genesis state\n", LOG_TAG);
+    } else if (scan_rc != 0) {
+        /* Deliberately NOT worded as "a chain database is present": the
+         * permanent class also covers a data directory that could not be
+         * read, where presence is exactly what we failed to determine.
+         * Over-claiming here would be the same defect in the opposite
+         * direction. */
+        fprintf(stderr,
+                "%s: REFUSING START — this node could NOT establish that it "
+                "has no chain (%s) in %s. It is not pre-genesis: either a "
+                "chain database is present and unusable, or the data "
+                "directory itself could not be read. Starting as though it "
+                "were fresh would let it bootstrap a SECOND chain beside one "
+                "it cannot see. The WITNESS lines above name the exact "
+                "fault; fix it, then restart.\n",
+                LOG_TAG,
+                scan_rc == NODUS_W_SCAN_UNUSABLE_TRANSIENT
+                    ? "transient fault, in-process retries exhausted"
+                    : "permanent fault",
+                witness->data_path);
+        return -1;
     }
 
     /* O15E Faz D — arm the pinned-genesis joiner if this fresh node has

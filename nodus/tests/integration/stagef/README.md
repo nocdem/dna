@@ -261,6 +261,18 @@ may be node1. The chain is left a few blocks past the boundary at a
 persisted per chain DB), with the post-shrink 7-ACTIVE / 2-ELIGIBLE set
 from section F. Nothing is cleaned up.
 
+⚠ **Since O15L the restart can leave the victim RUNNING WITHOUT its
+witness role.** `kill -9` leaves the dying process's WAL lock behind, and
+the restarting node now waits it out over three attempts sharing one
+`NODUS_W_DB_BUSY_TIMEOUT_MS` budget (`nodus_witness.c:355-407`). If the
+open still fails, `nodus_witness_init` REFUSES rather than pretending to
+be pre-genesis (`:1347-1367`), and `nodus_server_init` keeps the process
+alive as a DHT-only node instead of exiting
+(`nodus_server.c:6114-6169`). So a failed G.5 can leave a node that is
+**up, serving DHT traffic, and casting no vote** — and `running_nodes()`
+reads *directories*, not live witnesses, so the next scenario counts it
+as a participant.
+
 **How it can lie.**
 
 - **The pump cannot see this halt.** `pump_to_height` fails only after
@@ -303,6 +315,19 @@ from section F. Nothing is cleaned up.
   `victim == node1` both sides would read the SAME database and the
   comparison would be trivially true. Reintroduce a raw node1 read here
   and that returns.
+- **G.5's catch-up assertion reports a restart fault as a sync failure,
+  and that has already cost one diagnosis.** The final step waits up to
+  300 s for the victim's `blocks` table to reach `$REF_NODE`'s height and
+  then says `node$victim did not catch up (vh < ref_h)` (`:1251-1260`).
+  That message names a symptom, never a cause. Before O15L a restart
+  that lost the SQLite race came back reporting `chain_db=active` with a
+  **zeroed chain_id**, could not verify a single certificate, and
+  surfaced here as exactly that line — which is how the CRITICAL entry at
+  the top of `nodus/BUGS.md` was found. Today the lock is waited out and,
+  if it still fails, the node prints `REFUSING START` and a multi-line
+  degraded-mode `ERROR:` block instead of failing silently. The
+  assertion is unchanged and still correct; **when it fires, read the
+  victim's `nodus.log` before suspecting consensus.**
 - **A known false-FAIL residual** (it cannot produce a green): the pump
   submits through `dna-connect-cli`, and the victim is one of the nodes
   that CLI may connect to. All committee nodes are in `bootstrap_nodes`

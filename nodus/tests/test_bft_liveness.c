@@ -22,11 +22,38 @@
  *
  * The witness fixture is heap-allocated (multi-MB struct) and uses no
  * chain DB — committee lookups take the documented pre-genesis
- * gossip-roster fallback (F17 A5).
+ * gossip-roster fallback (F17 A5), and w->chain_id is never set, so it
+ * stays all-zero: the pre-genesis row of the O15L identity matrix, which
+ * is why verify_chain_id lets these frames through.
+ *
+ * ── EVERY VOTE THIS FILE INJECTS CARRIES A REAL SIGNATURE (O15L Faz 3) ──
+ *
+ * D2.a's PREVOTEs always did, because C5 verifies a PREVOTE's cert_sig per
+ * vote. D2.b's PRECOMMITs did NOT: they were built with cert_sig zeroed,
+ * which was harmless while a PRECOMMIT's certificate was copied into the
+ * vote slot unverified.
+ *
+ * O15L Faz 3 ended that. A PRECOMMIT is now verified at tally time exactly
+ * as a PREVOTE is, and an APPROVE whose cert_sig does not verify drops the
+ * ENTIRE vote — so the zeroed fixture stopped injecting a vote at all and
+ * D2.b asserted on something that was no longer there ("C precommit
+ * accepted", with the handler logging "PRECOMMIT cert_sig verify FAILED …
+ * height=7"). The fixture now signs the 144-byte cert preimage with each
+ * sender's own key (sign_cert below).
+ *
+ * This changed the FIXTURE, not the PROPERTY. D2.b still proves only that
+ * an early PRECOMMIT is buffered and later counted; the signature is the
+ * precondition for that vote to exist, not a new subject. Anyone adding a
+ * PRECOMMIT to this file must sign it the same way — an unsigned one is
+ * silently dropped and will make its section assert on a vote that never
+ * landed, which is precisely how this file broke.
  */
 
 #include "witness/nodus_witness.h"
 #include "witness/nodus_witness_bft.h"
+#include "witness/nodus_witness_cert.h"   /* O15L Faz 3 — the 144-byte
+                                           * PRECOMMIT cert preimage the
+                                           * D2.b fixture must now sign. */
 #include "protocol/nodus_tier3.h"
 #include "crypto/nodus_sign.h"
 #include "nodus/nodus_types.h"
@@ -131,6 +158,34 @@ static void sign_prepared(uint8_t out_sig[NODUS_SIG_BYTES],
     memcpy(out_sig, sig.bytes, NODUS_SIG_BYTES);
 }
 
+/* Sign the Phase 7.5 PRECOMMIT cert preimage (144 B — domain tag ‖
+ * block_hash ‖ voter_id ‖ height ‖ chain_id, nodus_witness_cert.h) with a
+ * peer's key. The counterpart of sign_prepared above, and needed for the
+ * same reason: since O15L Faz 3 an APPROVE PRECOMMIT whose cert_sig does
+ * not verify is dropped WHOLE, so a fixture that leaves it zeroed no
+ * longer injects a vote at all.
+ *
+ * The signer always names its OWN witness_id, because that is what the
+ * production sign path does and what the tally reconstructs with — it
+ * rebuilds the preimage from the message's sender_id, never from anything
+ * the vote carries. RAW qgp_dsa87_sign, zero-padded to the fixed wire
+ * width: the cert is untagged on both sides, unlike the NDS1-wrapped
+ * PREPARED vote above. */
+static void sign_cert(uint8_t out_sig[NODUS_SIG_BYTES], const peer_t *p,
+                      const uint8_t *tx_hash, uint64_t height,
+                      const uint8_t *chain_id) {
+    uint8_t pre[NODUS_WITNESS_CERT_PREIMAGE_LEN];
+    CHECK(nodus_witness_compute_cert_preimage(tx_hash, p->id, height,
+                                                chain_id, pre) == 0,
+          "cert preimage");
+    size_t siglen = 0;
+    CHECK(qgp_dsa87_sign(out_sig, &siglen, pre, sizeof(pre), p->sk) == 0,
+          "cert sign");
+    CHECK(siglen <= NODUS_SIG_BYTES, "cert sig fits the wire width");
+    if (siglen < NODUS_SIG_BYTES)
+        memset(out_sig + siglen, 0, NODUS_SIG_BYTES - siglen);
+}
+
 /* Bring the fixture into round R exactly the way the follower round-init
  * does (handle_propose :4506-4510 + self prevote record), without
  * driving a full signed proposal through the wire layer. */
@@ -198,23 +253,56 @@ int main(void) {
         nodus_witness_t *w = fixture(&self, (peer_t[]){b, c}, 2, 5);
         enter_round(w, &self, 6, 7, tx_hash);
 
+        /* O15L Faz 3 — both PRECOMMITs below carry a REAL cert now.
+         *
+         * This section's subject is unchanged and is NOT certificate
+         * verification: it is that a PRECOMMIT arriving while this node is
+         * still in PREVOTE gets BUFFERED and then counted after the phase
+         * flips. But a vote can only demonstrate that if it survives to be
+         * counted at all, and since Faz 3 an APPROVE PRECOMMIT whose
+         * cert_sig does not verify is dropped whole — so the zeroed
+         * cert_sig this fixture used to send made the section assert on a
+         * vote that no longer existed. Signing restores the precondition;
+         * it does not move the goalposts. D2.a already signs its PREVOTEs
+         * for exactly the same reason (C5 verifies those per vote), and
+         * this is the same pattern one phase later.
+         *
+         * The height and chain_id are READ FROM THE FIXTURE rather than
+         * written as literals, because they must equal what the tally
+         * reconstructs with: it rebuilds the preimage from
+         * w->round_state.block_height (enter_round put 7 there) and
+         * w->chain_id (all-zero here — this fixture has no chain DB and
+         * never sets one, which is the pre-genesis row of the identity
+         * matrix, so verify_chain_id lets these frames through). Reading
+         * both from w keeps this correct if either ever changes. */
         nodus_t3_msg_t m;
         fill_vote_msg(&m, NODUS_T3_PRECOMMIT, &b, 6, 0, tx_hash);
+        sign_cert(m.vote.cert_sig, &b, tx_hash,
+                  w->round_state.block_height, w->chain_id);
         (void)nodus_witness_bft_handle_vote(w, &m);
         CHECK(w->round_state.precommit_count == 0,
               "early precommit not counted while in PREVOTE");
 
-        /* Simulate the PREVOTE-quorum flip the way handle_vote does. */
+        /* Simulate the PREVOTE-quorum flip the way handle_vote does —
+         * including the certificate, which that arm signs into slot 0
+         * before broadcasting. Leaving it zeroed would make the simulated
+         * state something the production path cannot produce, and would be
+         * a trap for anyone who later lowers this section's quorum far
+         * enough to reach the own-quorum certificate gate. */
         w->round_state.phase = NODUS_W_PHASE_PRECOMMIT;
         memcpy(w->round_state.precommits[0].voter_id, self.id,
                NODUS_T3_WITNESS_ID_LEN);
         memcpy(w->round_state.precommits[0].pubkey, self.pk,
                NODUS_PK_BYTES);
         w->round_state.precommits[0].vote = NODUS_W_VOTE_APPROVE;
+        sign_cert(w->round_state.precommits[0].signature, &self, tx_hash,
+                  w->round_state.block_height, w->chain_id);
         w->round_state.precommit_count = 1;
         w->round_state.precommit_approve_count = 1;
 
         fill_vote_msg(&m, NODUS_T3_PRECOMMIT, &c, 6, 0, tx_hash);
+        sign_cert(m.vote.cert_sig, &c, tx_hash,
+                  w->round_state.block_height, w->chain_id);
         CHECK(nodus_witness_bft_handle_vote(w, &m) == 0,
               "C precommit accepted");
         CHECK(w->round_state.precommit_approve_count == 3,

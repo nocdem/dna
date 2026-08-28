@@ -275,11 +275,44 @@ static int drop_witness_db(nodus_witness_t *w) {
         return -1;
     }
 
-    /* Clear chain_id */
+    /* Clear chain_id.
+     *
+     * ── O15L Faz 4 / F-6 — THE V2 IDENTITY GOES WITH IT ─────────────────
+     *
+     * `v2_successor` and `v2_chain32` are derived from COMMITTED state at
+     * every database open (nodus_witness.c, witness_post_open_gate: false
+     * at the top, true only once the height-0 successor genesis manifest
+     * has been read). The database that carried that state has just been
+     * closed and unlinked, so both are now claims about a chain this node
+     * no longer has.
+     *
+     * Leaving them behind produced the triple
+     * (chain_id == 0, db == NULL, v2_successor == true): the O15L DG-1
+     * matrix reads that as row 3, "genuine pre-genesis, exempt", while
+     * every bare `if (w->v2_successor)` branch still steers the successor
+     * lane at a NULL handle. One node, two irreconcilable answers about
+     * which chain it is on — and after the F-9 loader change above, the
+     * committee lookup would call it pre-genesis (chain_id zero) while
+     * the V2 lanes called it a successor.
+     *
+     * They are cleared HERE, beside chain_id, and deliberately NOT on the
+     * unlink-failure return above: that path leaves the node in DG-1
+     * row 2 (identity retained, handle gone), which F-9 makes inert at
+     * every committee gate — the correct state for a drop that did not
+     * complete. Nothing is lost by clearing: a re-bootstrap re-derives
+     * both from the new database's committed state.
+     *
+     * Verified: on a live witness the only writer that sets
+     * v2_successor false is witness_post_open_gate; the two other
+     * assignments in the tree operate on temporary structs
+     * (nodus_witness_v2_join.c, nodus_witness_v2_gen.c). */
     memset(w->chain_id, 0, 32);
+    w->v2_successor = false;
+    memset(w->v2_chain32, 0, sizeof(w->v2_chain32));
     w->cached_state_root_valid = false;
 
-    fprintf(stderr, "%s: dropped witness DB %s for fork rebuild\n",
+    fprintf(stderr, "%s: dropped witness DB %s for fork rebuild "
+            "(chain_id, v2_successor and v2_chain32 cleared)\n",
             LOG_TAG, db_path);
     return 0;
 }

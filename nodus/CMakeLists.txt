@@ -1003,8 +1003,17 @@ add_test(NAME test_v2_supply_linked
 # now fails closed, and selection follows a stable total order over names
 # rather than readdir order (first-match-wins once activated the wrong
 # chain in production — see witness_archive_stale_chain_dbs).
+#
+# O15L Faz 5 — NODUS_WITNESS_INTERNAL_API is added so this executable can
+# see nodus_witness_bft_internal.h, which now carries the canonical
+# prototypes for the two chain-identity gates this test drives
+# (verify_chain_id, witness_chain_quorum_observe). NOT migrated to the
+# register_witness_test macro: that macro links `nodus dsa nodus` and
+# this target additionally needs `crypto`, so the migration would drop a
+# library. One define is the whole delta.
 add_executable(test_v2_restart_gate tests/test_v2_restart_gate.c)
 target_link_libraries(test_v2_restart_gate nodus dsa nodus crypto)
+target_compile_definitions(test_v2_restart_gate PRIVATE NODUS_WITNESS_INTERNAL_API)
 add_test(NAME test_v2_restart_gate COMMAND test_v2_restart_gate)
 
 # Ledger V2 O15A — obligation 7 (and obligation 8's fail-closed gate): the

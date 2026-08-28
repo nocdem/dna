@@ -207,9 +207,31 @@ typedef struct {
      * Only meaningful for PRECOMMIT; PREVOTE encoders set this to all
      * zeros and PREVOTE decoders ignore it. The signature is over the
      * 144-byte preimage produced by nodus_witness_compute_cert_preimage
-     * (block_hash, voter_id = sender_id, height = local block_height + 1
-     * at the moment of signing, chain_id). Wire-independent: the same
-     * bytes are signed and verified regardless of T3 envelope shape. */
+     * (block_hash, voter_id = sender_id, height, chain_id).
+     * Wire-independent: the same bytes are signed and verified regardless
+     * of T3 envelope shape.
+     *
+     * O15L Faz 3 — `height` is the ROUND ANCHOR, w->round_state.
+     * block_height, on BOTH sides: the signer (nodus_witness_bft.c, the
+     * `cert_height` assignment feeding compute_cert_preimage) and the
+     * tally-time verifier in handle_vote. This comment previously said
+     * "local block_height + 1 at the moment of signing", which was the
+     * old sign-side behaviour and the one cert site that never received
+     * the A2 treatment.
+     *
+     * Why an anchor and not a fresh head read: the A2 rule is that all
+     * cert_sig signing and verification within a round read the height
+     * the round was opened at, so leader and followers agree on the
+     * signed height even if a local head moves mid-round. The leader
+     * sets the anchor to block_height(w)+1 at round start and a follower
+     * refuses any proposal whose height is not its own local next, so
+     * the two expressions are EQUAL for every node actually in the
+     * round — they diverge only when a node's head shifts between round
+     * start and signing, which is precisely the case A2 exists for.
+     * With the per-vote cert check added this season, a signer using its
+     * own shifted head would have its vote DROPPED by every receiver;
+     * anchoring both sides removes that possibility rather than
+     * tolerating it. */
     uint8_t     cert_sig[NODUS_SIG_BYTES];
 } nodus_t3_vote_t;
 

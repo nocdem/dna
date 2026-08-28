@@ -1175,19 +1175,57 @@ Seven production nodes (US-1, EU-1..EU-6) — the single live cluster; details a
 
 ### Systemd Service
 
+The shipped unit is `nodus/deploy/nodus.service`, reproduced here verbatim:
+
 ```ini
 [Unit]
-Description=Nodus DHT Server
-After=network.target
+Description=Nodus - Post-Quantum DHT Server
+Documentation=https://github.com/nocdem/dna
+After=network-online.target
+Wants=network-online.target
+StartLimitBurst=3
+StartLimitIntervalSec=300
 
 [Service]
+Type=simple
+User=root
+Group=root
 ExecStart=/usr/local/bin/nodus-server -c /etc/nodus.conf
-Restart=always
+Restart=on-failure
 RestartSec=5
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/nodus
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=nodus
+LimitNOFILE=65535
+LimitNPROC=4096
 
 [Install]
 WantedBy=multi-user.target
 ```
+
+⚠ **`Restart=on-failure` is bounded, and the bound is a design constraint, not
+a detail.** `StartLimitBurst=3` with `StartLimitIntervalSec=300` means the unit
+may be restarted at most **three times in any 300-second window**; after that
+systemd stops it **permanently** and a human must `systemctl start` it. (Both
+directives live in `[Unit]`, which is where systemd reads the start rate limit
+— placing them under `[Service]` would silently do nothing.)
+
+The consequence is that **"exit and let the supervisor retry" is not a backoff
+strategy in this deployment** — it is a budget of three attempts in five
+minutes, after which the node is down until an operator intervenes, and it
+would retire the node's DHT role along with its witness role. That is why the
+witness's chain-database open **waits inside the process** instead of exiting
+(O15L Faz 2, `nodus_witness.c:355-407`: `NODUS_W_DB_OPEN_ATTEMPTS = 3`, the
+`NODUS_W_DB_BUSY_TIMEOUT_MS` budget divided per attempt, plus a fixed 250 ms
+pause), and why a witness that cannot start runs **degraded rather than
+fatal** (`nodus_server.c:6114-6169`). See §15, *Witness startup and
+chain-database faults*.
 
 ### Ports
 
@@ -1319,6 +1357,58 @@ SQLite tables managed by the witness module (`nodus_witness_db.c`):
 | `epochs` | BFT-signed epoch roots |
 | `supply_state` | Genesis supply, burned fees, current supply |
 | `committed_transactions` | Full serialized TX data (hub/spoke queries) |
+
+### Witness startup and chain-database faults
+
+A node scans its data directory for `witness_<chain_id>.db` at startup
+(`nodus_witness_scan_chain_db`, `nodus_witness.c:835`). That scan has **three**
+outcomes, not two (`:831-833`):
+
+| Code | Meaning | What the node does |
+|---|---|---|
+| `NODUS_W_SCAN_ABSENT` (−1) | the directory was **read successfully** and holds no chain database | genuine pre-genesis; continue into the bootstrap state machine |
+| `NODUS_W_SCAN_UNUSABLE_TRANSIENT` (−2) | a chain database is present; the open failed with a transient sqlite class and the retry budget was spent | **refuse witness init** |
+| `NODUS_W_SCAN_UNUSABLE_PERMANENT` (−3) | a chain database is present and permanently unusable, the post-open integrity gate refused it, or the data directory itself could not be read | **refuse witness init** |
+
+The chain id is parsed from the **filename** and installed *before* the open
+(`:926`), so a node whose open fails still holds the identity it had. Only
+`ABSENT` prints `no chain DB found — pre-genesis state`; every other non-zero
+return prints an explicit `REFUSING START` block naming which class it was and
+returns −1 (`:1344-1367`). The reason is not severity theatre: a node that
+believes it is pre-genesis enters bootstrap, and a bootstrapping node may
+create a chain database or adopt a peer's genesis **beside the chain it
+already has and cannot see**.
+
+**Error classes are separated on the sqlite PRIMARY code (`rc & 0xff`)**, so an
+extended code such as `SQLITE_BUSY_RECOVERY` classifies as `SQLITE_BUSY`
+(`witness_db_err_class`, `:338-353`):
+
+- **transient** — `SQLITE_BUSY`, `SQLITE_LOCKED`, `SQLITE_IOERR`,
+  `SQLITE_FULL`, `SQLITE_CANTOPEN`, `SQLITE_NOMEM`, `SQLITE_PROTOCOL`. Retried
+  up to `NODUS_W_DB_OPEN_ATTEMPTS` (3) times, each attempt carrying
+  `NODUS_W_DB_BUSY_TIMEOUT_MS / 3` of busy timeout so the **aggregate** lock
+  wait is unchanged at `NODUS_W_DB_BUSY_TIMEOUT_MS`
+  (`nodus/include/nodus/nodus_types.h:241`, 5000 ms), with a fixed 250 ms pause
+  between attempts (`:404-407`, `:549-589`).
+- **permanent** — `SQLITE_NOTADB`, `SQLITE_CORRUPT`, `SQLITE_PERM`,
+  `SQLITE_AUTH` and anything the build does not recognise. **Never retried** —
+  an unrecognised code fails closed rather than looping.
+
+**A failed witness init does not kill the process.** `nodus_server_init` frees
+the witness, NULLs it and continues (`nodus_server.c:6114-6169`) — nodus is
+dual-role, the DHT half is unaffected, and exiting would spend the
+`StartLimitBurst=3` budget described in §13 and retire the DHT role too. The
+node is therefore **degraded, and says so loudly**: a multi-line `ERROR:` block
+states that consensus is NOT PARTICIPATING (no block validated, no vote cast,
+no certificate signed, no block produced), that the DHT is unaffected, where
+the cause is named, and that the process is deliberately not exiting.
+Witness-less operation is a defined mode, not a latent crash — but the
+protection is layered, not uniform: `nodus_witness_dispatch_t3` returns
+immediately on a NULL witness (`nodus_witness.c:1975`), the tick
+(`nodus_server.c:6264`) and the post-auth T3 dispatch (`:5105`) are
+additionally guarded by `if (srv->witness)`, while the witness-port dispatch
+(`:5046`) passes the pointer unguarded and relies on that callee NULL check
+alone.
 
 ---
 

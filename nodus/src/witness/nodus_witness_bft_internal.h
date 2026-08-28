@@ -233,6 +233,68 @@ int nodus_witness_replay_block(nodus_witness_t *w,
  * nodus_witness_retained_batch_clear (nodus_witness_bft.h). */
 void nodus_witness_retained_batch_take(nodus_witness_t *w);
 
+/* ── O15L Faz 1 — the two chain-identity gates ────────────────────────
+ *
+ * NOTE ON SCOPE: unlike everything above, ONE of these two is defined in
+ * nodus_witness_peer.c, not nodus_witness_bft.c. This file's opening
+ * block describes the nodus_witness_bft.c case because that was its only
+ * tenant; these two are here because they are the same KIND of symbol —
+ * de-static'd for test reach, referenced by no production-facing header
+ * — and splitting them into a second internal header would give the
+ * project two places to look for one rule. The defining TU is named per
+ * entry below.
+ *
+ * Both implement the SAME (chain_id, db) decision matrix, deliberately:
+ * verify_chain_id is the cross-chain replay gate and
+ * witness_chain_quorum_observe is the self-quarantine detector, and a
+ * node that is blind in one while deaf in the other is the exact failure
+ * O15L closed. They must move together.
+ *
+ * These prototypes are the CANONICAL ones, and test_v2_restart_gate.c
+ * now INCLUDES this header rather than repeating them — it carries
+ * NODUS_WITNESS_INTERNAL_API from its own target_compile_definitions
+ * (nodus/CMakeLists.txt). C linkage does not check signatures, so the
+ * duplicated declaration it used to hold would have drifted from the
+ * definition as a silent ABI mismatch rather than a compile error.
+ *
+ * ⚠ THE PROTECTION IS ONE-DIRECTIONAL, and over-trusting it is the way
+ * it fails. The TEST is compiler-bound to these declarations, so a
+ * signature change breaks its compile — the intended alarm. The DEFINING
+ * translation units are not: nodus_witness_bft.c and
+ * nodus_witness_peer.c cannot include this header (the #error gate above
+ * fires without NODUS_WITNESS_INTERNAL_API, which the build attaches to
+ * test executables and to no library target). Keeping a definition and
+ * its declaration here in agreement therefore remains a review
+ * obligation, not something the compiler enforces.
+ *
+ * Production code reaching for either symbol is a code review failure. */
+
+/* Defined in nodus_witness_bft.c. The cross-chain replay gate every BFT
+ * message handler calls on its header's chain_id. Returns true to admit
+ * the message. Exempts ONLY genuine pre-genesis (zero chain_id AND no
+ * chain database); a zero chain_id with an OPEN database is an invariant
+ * violation and fails closed with a loud log. Production callers are the
+ * five BFT message handlers in that same file and nowhere else (PROPOSE,
+ * VOTE, COMMIT, VIEW_CHANGE, NEW_VIEW — verified tree-wide), each as
+ * `if (!verify_chain_id(w, hdr->chain_id))` on entry. Consumed by
+ * test_v2_restart_gate.c to pin the DG-1 matrix. */
+bool verify_chain_id(nodus_witness_t *w, const uint8_t *msg_chain_id);
+
+/* Defined in nodus_witness_peer.c. The startup chain-id quorum detector:
+ * called from handle_ident for every peer w_ident inside the first 300 s
+ * after witness activation, it counts distinct dissenters and agreers
+ * and self-quarantines the node on a strict majority of dissent (min 2
+ * dissenters). Sticky — agreement evidence never clears a quarantine.
+ * Takes the same (chain_id, db) matrix as verify_chain_id above, so a
+ * node with a zeroed identity can no longer be simultaneously unable to
+ * reject foreign frames and unable to notice it is the diverged one.
+ * nodus_witness_peer_handle_ident is the ONLY production caller (one
+ * call site, verified tree-wide). Consumed by test_v2_restart_gate.c to
+ * pin the DG-2 matrix. */
+void witness_chain_quorum_observe(nodus_witness_t *w,
+                                    const uint8_t *peer_id,
+                                    const uint8_t *peer_chain_id);
+
 /* Phase 9 / Task 48 — nodus_witness_record_attendance is declared
  * publicly in nodus_witness_bft.h. Tests include that header. */
 
