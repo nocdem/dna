@@ -22,8 +22,8 @@ extern "C" {
 
 #define NODUS_VERSION_MAJOR  0
 #define NODUS_VERSION_MINOR  19
-#define NODUS_VERSION_PATCH  24
-#define NODUS_VERSION_STRING "0.19.24"
+#define NODUS_VERSION_PATCH  25
+#define NODUS_VERSION_STRING "0.19.25"
 
 /* Wire frame.
  *
@@ -167,6 +167,22 @@ extern "C" {
 #define NODUS_T3_EPOCH_DURATION_SEC 60      /* DNAC epoch = 60s */
 /* Witness BFT (Tier 3) protocol version — CLUSTER-INTERNAL ONLY.
  *
+ * 5 (O15N Faz 2A): the PREPARED per-voter SIGNATURE DOMAIN changed, in two
+ * independent ways, and both change the signed bytes.
+ *   (a) The preimage grew 76 -> 116 bytes and now leads with the ASCII tag
+ *       "prepared" and the 32-byte chain_id (compute_prepared_preimage,
+ *       nodus_witness_bft.c). Before this, the preimage was only
+ *       view||height||tx_hash, so a signature harvested from a wiped chain
+ *       stayed valid on its successor — this network wipes chains and
+ *       (view, height) pairs repeat.
+ *   (b) purpose 0x07 is now STRICT (nodus_sign_purpose_is_strict): it is
+ *       signed under the NDS1 tag and the raw-verify fallback is refused.
+ *       Previously nodus_sign_tagged DISCARDED the purpose byte and
+ *       nodus_verify_tagged fell back to a raw verify unconditionally, so
+ *       PREPARED had no domain separation at all.
+ * A v4 node and a v5 node therefore produce and accept DIFFERENT bytes for
+ * the same vote; neither can verify the other's prepared certificate.
+ *
  * 4 (O15G): the PRECOMMIT/COMMIT cert ACCEPTANCE RULE changed — signer
  * pubkeys and the verify quorum are now resolved from the committed
  * committee snapshot for the block's height, not from the transient
@@ -199,7 +215,7 @@ extern "C" {
  *
  * Bootstrap messages deliberately carry version 1 and are NOT gated;
  * they run before a committee exists. */
-#define NODUS_T3_BFT_PROTOCOL_VER   4
+#define NODUS_T3_BFT_PROTOCOL_VER   5
 
 /* Token creation fee: 1% of genesis supply (10M DNAC = 10^15 raw for 1B supply) */
 #define NODUS_W_TOKEN_CREATE_FEE  1000000000000000ULL

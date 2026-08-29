@@ -16,7 +16,7 @@
  *       §1 also pins the four preimage fields individually, because a
  *       verifier that reconstructs the WRONG preimage rejects every
  *       certificate and stops the chain: the 144-byte cert preimage (not
- *       PREVOTE's 76-byte PREPARED one), the sender's own voter_id, the
+ *       PREVOTE's 116-byte PREPARED one), the sender's own voter_id, the
  *       verifier's chain_id, and the ROUND ANCHOR height.
  *
  *   §2  The own-quorum commit route — reached by ANY witness that
@@ -52,7 +52,7 @@
  *       signer on its own shifted head would have its vote DROPPED by the
  *       check §1 introduces, and because `last_prepared.height` goes out
  *       on the wire in a VIEW_CHANGE, where the receiver rebuilds the
- *       76-byte PREPARED preimage from it.
+ *       116-byte PREPARED preimage from it.
  *
  * WHAT IT REQUIRES
  *
@@ -304,19 +304,28 @@ static void sign_cert(uint8_t out[NODUS_SIG_BYTES], const peer_t *signer,
         memset(out + siglen, 0, NODUS_SIG_BYTES - siglen);
 }
 
-/** The 76-byte C5 PREPARED signature — PREVOTE's preimage, NOT
+/** The 116-byte C5 PREPARED signature — PREVOTE's preimage, NOT
  *  PRECOMMIT's. §1c feeds one of these as a PRECOMMIT cert_sig to prove
  *  the two preimages are not interchangeable. Layout mirrors
- *  compute_prepared_preimage: view(4B BE) || height(8B BE) || tx_hash. */
+ *  compute_prepared_preimage (O15N Faz 2A): "prepared"(8B ASCII) ||
+ *  chain_id(32B) || view(4B BE) || height(8B BE) || tx_hash(64B).
+ *
+ *  chain_id is passed by the caller from w->chain_id. This file's fixture
+ *  DOES set one (row 1 of the DG-1 identity matrix, :271), so a zero
+ *  literal here would break every section rather than the one under
+ *  test — and §1e's "a cert over a different chain_id is refused" leg
+ *  only means something if the honest legs use the fixture's real one. */
 static void sign_prepared(uint8_t out[NODUS_SIG_BYTES], const peer_t *p,
                           uint32_t view, uint64_t height,
-                          const uint8_t *tx_hash) {
-    uint8_t pre[76];
-    pre[0] = (uint8_t)(view >> 24); pre[1] = (uint8_t)(view >> 16);
-    pre[2] = (uint8_t)(view >> 8);  pre[3] = (uint8_t)view;
+                          const uint8_t *tx_hash, const uint8_t *chain_id) {
+    uint8_t pre[116];
+    memcpy(pre, "prepared", 8);
+    memcpy(pre + 8, chain_id, 32);
+    pre[40] = (uint8_t)(view >> 24); pre[41] = (uint8_t)(view >> 16);
+    pre[42] = (uint8_t)(view >> 8);  pre[43] = (uint8_t)view;
     for (int i = 0; i < 8; i++)
-        pre[4 + i] = (uint8_t)(height >> ((7 - i) * 8));
-    memcpy(pre + 12, tx_hash, NODUS_T3_TX_HASH_LEN);
+        pre[44 + i] = (uint8_t)(height >> ((7 - i) * 8));
+    memcpy(pre + 52, tx_hash, NODUS_T3_TX_HASH_LEN);
     nodus_sig_t sig;
     nodus_seckey_t sk;
     memcpy(sk.bytes, p->sk, sizeof(sk.bytes));
@@ -393,7 +402,7 @@ static void enter_prevote(nodus_witness_t *w, const peer_t *self,
      * round-init path signs, so the cert this round captures is built
      * from a coherent set. */
     sign_prepared(w->round_state.prevotes[0].signature, self, 0, ANCHOR_H,
-                  tx_hash);
+                  tx_hash, w->chain_id);
     w->round_state.prevote_count = 1;
     w->round_state.prevote_approve_count = 1;
 }
@@ -500,14 +509,14 @@ static void section1(void) {
           "§1b approve_count moved");
 
     /* ── §1c — the PREPARED preimage is NOT the cert preimage ────────
-     * A valid 76-byte PREVOTE signature offered as a PRECOMMIT cert_sig
+     * A valid 116-byte PREVOTE signature offered as a PRECOMMIT cert_sig
      * must be refused. Copying PREVOTE's verify call into the PRECOMMIT
      * arm is the single most likely way to get this change wrong, and it
      * would silently accept certificates the remote-COMMIT gate rejects. */
     fill_precommit(&m, w, &c, T, NODUS_W_VOTE_APPROVE);
-    sign_prepared(m.vote.cert_sig, &c, 0, ANCHOR_H, T);
+    sign_prepared(m.vote.cert_sig, &c, 0, ANCHOR_H, T, w->chain_id);
     CHECK(nodus_witness_bft_handle_vote(w, &m) == -1,
-          "§1c a valid PREPARED (76B) signature is not a valid cert");
+          "§1c a valid PREPARED (116B) signature is not a valid cert");
     CHECK(w->round_state.precommit_approve_count == 2,
           "§1c approve_count did not move");
 
@@ -811,11 +820,11 @@ static void section3(void) {
      * that path — it IS that path. */
     nodus_t3_msg_t m;
     fill_prevote(&m, w, &b, T);
-    sign_prepared(m.vote.cert_sig, &b, 0, ANCHOR_H, T);
+    sign_prepared(m.vote.cert_sig, &b, 0, ANCHOR_H, T, w->chain_id);
     CHECK(nodus_witness_bft_handle_vote(w, &m) == 0, "§3 B prevote accepted");
 
     fill_prevote(&m, w, &c, T);
-    sign_prepared(m.vote.cert_sig, &c, 0, ANCHOR_H, T);
+    sign_prepared(m.vote.cert_sig, &c, 0, ANCHOR_H, T, w->chain_id);
     CHECK(nodus_witness_bft_handle_vote(w, &m) == 0, "§3 C prevote accepted");
 
     CHECK(w->round_state.phase == NODUS_W_PHASE_PRECOMMIT,
@@ -835,7 +844,7 @@ static void section3(void) {
     /* ── the prepared cert's height ──────────────────────────────────
      * last_prepared.height names the height whose PREPARED signatures it
      * carries, and those were signed over the anchor. A VIEW_CHANGE puts
-     * this number on the wire and the receiver rebuilds the 76-byte
+     * this number on the wire and the receiver rebuilds the 116-byte
      * PREPARED preimage from it, so a drifted value would make the whole
      * C5 safety certificate unverifiable on every peer. */
     CHECK(w->last_prepared.present, "§3 prepared cert captured");

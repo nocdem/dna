@@ -80,7 +80,7 @@ nodus_v2_env_status_t nodus_witness_v2_env_preflight_batch(
 
     /* The AUTHORITATIVE chain identity: the committed genesis block_id,
      * full 32 bytes. Never w->chain_id — that is the LEGACY value whose
-     * bytes 16..31 are always zero (nodus_witness.c:265-280), and binding
+     * bytes 16..31 are always zero (nodus_witness.c:286-301), and binding
      * a transaction to a half-zero chain id would make two chains sharing
      * a 16-byte prefix indistinguishable. There is no parameter and no
      * fallback: a chain with no committed genesis has no identity, so

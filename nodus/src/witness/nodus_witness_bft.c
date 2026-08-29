@@ -108,28 +108,87 @@ static uint64_t time_ms(void) {
 
 /* ── C5 — PBFT prepared-cert preimage helper ─────────────────────── */
 
-/* Preimage layout (76 bytes): view(4B BE) || height(8B BE) || tx_hash(64B).
- * Signed via nodus_sign_prepared_vote (NDS1 tag + purpose=0x07 wrapping). */
-#define NODUS_WITNESS_PREPARED_PREIMAGE_LEN  76
+/* Preimage layout (116 bytes, O15N Faz 2A — was 76):
+ *
+ *   [0..7]     "prepared"   8 bytes ASCII, NO NUL terminator
+ *   [8..39]    chain_id     32 bytes
+ *   [40..43]   view         uint32 big-endian
+ *   [44..51]   height       uint64 big-endian
+ *   [52..115]  tx_hash      64 bytes (NODUS_T3_TX_HASH_LEN)
+ *
+ * Signed via nodus_sign_prepared_vote, which wraps this in the NDS1 tag
+ * under purpose 0x07. That wrapping is REAL as of this protocol bump: 0x07
+ * is now strict (nodus_sign_purpose_is_strict), so the signer tags and the
+ * verifier refuses an untagged signature. Before the bump the claim was
+ * FALSE — nodus_sign_tagged discarded the purpose byte and signed raw, and
+ * nodus_verify_tagged fell back to a raw verify for every purpose.
+ *
+ * Why chain_id is in here: this network wipes chains, and (view, height)
+ * pairs repeat on the successor. Without a chain identity in the preimage,
+ * a signature harvested before a wipe stays valid after it.
+ *
+ * ⚠ HONEST LABEL — THIS BINDING IS 128 BITS, NOT 256. `w->chain_id` is the
+ * LEGACY identity: 16 significant bytes zero-padded to 32
+ * (nodus_witness_set_chain_id, nodus_witness.c:286-301). The V2 envelope
+ * lane refuses this value for exactly that reason and uses the committed
+ * genesis BlockID instead (nodus_witness_v2_env.c:80-87). It is used HERE
+ * anyway, deliberately: this preimage is built on BOTH the legacy and the
+ * successor lane, the V2 identity does not exist on a legacy chain, and
+ * `verify_chain_id` — the message-layer cross-chain gate this preimage
+ * backs up — already compares these same 32 bytes
+ * (nodus_witness_bft.c, verify_chain_id). Using a different chain identity
+ * here than the gate beside it would be the anomaly. Two chains would have
+ * to share a 16-byte derived prefix to make a harvested signature
+ * transferable; raising this to a full 32-byte identity means giving the
+ * witness a stored untruncated chain hash, which is a change of its own.
+ *
+ * Why the leading "prepared" tag: it separates this statement from any
+ * other 108-byte-suffixed structure that might one day be signed under a
+ * neighbouring purpose, independently of the NDS1 layer above it. */
+#define NODUS_WITNESS_PREPARED_TAG      "prepared"
+#define NODUS_WITNESS_PREPARED_TAG_LEN  8
+#define NODUS_WITNESS_PREPARED_CHAIN_ID_LEN  32
+#define NODUS_WITNESS_PREPARED_PREIMAGE_LEN  116
+
+/* The layout cannot drift from the constant: every field width is summed
+ * here, and the chain_id width is taken from the struct field the callers
+ * actually pass, not from a repeated literal. */
+_Static_assert(NODUS_WITNESS_PREPARED_TAG_LEN + NODUS_WITNESS_PREPARED_CHAIN_ID_LEN +
+                   4 + 8 + NODUS_T3_TX_HASH_LEN ==
+                   NODUS_WITNESS_PREPARED_PREIMAGE_LEN,
+               "PREPARED preimage field widths must sum to 116");
+_Static_assert(sizeof(((nodus_witness_t *)0)->chain_id) ==
+                   NODUS_WITNESS_PREPARED_CHAIN_ID_LEN,
+               "PREPARED preimage assumes nodus_witness_t.chain_id is 32 bytes");
+_Static_assert(sizeof(NODUS_WITNESS_PREPARED_TAG) - 1 ==
+                   NODUS_WITNESS_PREPARED_TAG_LEN,
+               "PREPARED domain tag must be exactly 8 ASCII bytes");
 
 static int compute_prepared_preimage(uint32_t view,
                                        uint64_t height,
                                        const uint8_t *tx_hash,
+                                       const uint8_t *chain_id,
                                        uint8_t out[NODUS_WITNESS_PREPARED_PREIMAGE_LEN]) {
-    if (!tx_hash || !out) return -1;
+    if (!tx_hash || !chain_id || !out) return -1;
 
-    /* [0..3] view (big-endian uint32) */
-    out[0] = (uint8_t)((view >> 24) & 0xFF);
-    out[1] = (uint8_t)((view >> 16) & 0xFF);
-    out[2] = (uint8_t)((view >>  8) & 0xFF);
-    out[3] = (uint8_t)(view & 0xFF);
+    /* [0..7] domain tag, 8 ASCII bytes, no NUL */
+    memcpy(out, NODUS_WITNESS_PREPARED_TAG, NODUS_WITNESS_PREPARED_TAG_LEN);
 
-    /* [4..11] height (big-endian uint64) */
+    /* [8..39] chain_id (32 bytes) */
+    memcpy(out + 8, chain_id, NODUS_WITNESS_PREPARED_CHAIN_ID_LEN);
+
+    /* [40..43] view (big-endian uint32) */
+    out[40] = (uint8_t)((view >> 24) & 0xFF);
+    out[41] = (uint8_t)((view >> 16) & 0xFF);
+    out[42] = (uint8_t)((view >>  8) & 0xFF);
+    out[43] = (uint8_t)(view & 0xFF);
+
+    /* [44..51] height (big-endian uint64) */
     for (int i = 0; i < 8; i++)
-        out[4 + i] = (uint8_t)((height >> ((7 - i) * 8)) & 0xFF);
+        out[44 + i] = (uint8_t)((height >> ((7 - i) * 8)) & 0xFF);
 
-    /* [12..75] tx_hash (64 bytes) */
-    memcpy(out + 12, tx_hash, NODUS_T3_TX_HASH_LEN);
+    /* [52..115] tx_hash (64 bytes) */
+    memcpy(out + 52, tx_hash, NODUS_T3_TX_HASH_LEN);
 
     return 0;
 }
@@ -4247,7 +4306,7 @@ static int bft_start_round_internal(nodus_witness_t *w,
     uint8_t prep_preimage[NODUS_WITNESS_PREPARED_PREIMAGE_LEN];
     uint64_t prep_height = w->round_state.block_height;
     if (compute_prepared_preimage(w->current_view, prep_height, block_hash,
-                                    prep_preimage) != 0) {
+                                    w->chain_id, prep_preimage) != 0) {
         fprintf(stderr, "%s: prepared preimage compute failed — "
                 "aborting round\n", LOG_TAG);
         return -1;
@@ -5302,6 +5361,7 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
         uint64_t prep_height = w->round_state.block_height;
         if (compute_prepared_preimage(w->current_view, prep_height,
                                         w->round_state.tx_hash,
+                                        w->chain_id,
                                         prep_preimage) == 0 &&
             nodus_sign_prepared_vote(&prep_sig, prep_preimage,
                                        sizeof(prep_preimage),
@@ -5744,6 +5804,7 @@ static int bft_handle_vote_inner(nodus_witness_t *w, uint8_t msg_type,
         uint64_t prep_height = w->round_state.block_height;
         if (compute_prepared_preimage(w->current_view, prep_height,
                                         w->round_state.tx_hash,
+                                        w->chain_id,
                                         prep_preimage) != 0) {
             QGP_LOG_WARN(LOG_TAG, "prepared preimage compute failed");
             return -1;
@@ -5790,7 +5851,7 @@ static int bft_handle_vote_inner(nodus_witness_t *w, uint8_t msg_type,
      * test_precommit_cert_verify_lazy.c is about the REMOTE path, where a
      * whole cert set arrives at once — it does not apply per vote.
      *
-     * ⚠ THE PREIMAGE IS *NOT* THE PREVOTE ONE. PREVOTE signs the 76-byte
+     * ⚠ THE PREIMAGE IS *NOT* THE PREVOTE ONE. PREVOTE signs the 116-byte
      * PREPARED preimage (compute_prepared_preimage). A PRECOMMIT cert is
      * the 144-byte cert preimage, and the four fields are mirrored from
      * the sign side below (the PREVOTE-quorum arm of this same function):
@@ -5968,7 +6029,7 @@ static int bft_handle_vote_inner(nodus_witness_t *w, uint8_t msg_type,
          *      and those are signed over round_state.block_height (round
          *      init on the leader, the PREVOTE verify on a follower). A
          *      VIEW_CHANGE carries this height on the wire, and the
-         *      receiver rebuilds the 76-byte PREPARED preimage from it in
+         *      receiver rebuilds the 116-byte PREPARED preimage from it in
          *      nodus_witness_bft_verify_prepared_cert — so under drift the
          *      whole prepared certificate, which is the C5 safety
          *      evidence, would fail verification on every peer. That is
@@ -8257,9 +8318,11 @@ int nodus_witness_bft_handle_newview(nodus_witness_t *w,
 /* O15C-D.3 — verify a prepared certificate presented on the wire.
  *
  * Counts how many of the supplied (voter_id, signature) pairs verify
- * against the 76-byte purpose-0x07 PREPARED preimage built from
- * (view, height, tx_hash), resolving each voter's public key through the
- * committee governing `height`, falling back to the gossip roster on
+ * against the 116-byte purpose-0x07 PREPARED preimage built from
+ * (chain_id, view, height, tx_hash) — chain_id read from `w`, so a
+ * certificate is bound to THIS chain and a pre-wipe one cannot be
+ * replayed onto its successor — resolving each voter's public key through
+ * the committee governing `height`, falling back to the gossip roster on
  * pre-genesis chains — the SAME resolution and the SAME preimage
  * handle_viewchg already applies to a VIEW_CHANGE's cert. A duplicate
  * voter is counted once, so a leader cannot manufacture quorum by
@@ -8282,7 +8345,8 @@ bool nodus_witness_bft_verify_prepared_cert(nodus_witness_t *w,
     if (n_sigs > NODUS_T3_MAX_WITNESSES) return false;
 
     uint8_t prep_preimage[NODUS_WITNESS_PREPARED_PREIMAGE_LEN];
-    if (compute_prepared_preimage(view, height, tx_hash, prep_preimage) != 0)
+    if (compute_prepared_preimage(view, height, tx_hash, w->chain_id,
+                                    prep_preimage) != 0)
         return false;
 
     nodus_committee_member_t *committee = NULL;

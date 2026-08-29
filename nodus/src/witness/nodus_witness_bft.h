@@ -85,9 +85,12 @@ int  nodus_witness_roster_sorted_at(const nodus_witness_roster_t *roster,
 /** O15C-D.3 — verify a prepared certificate presented on the wire.
  *
  * True iff at least quorum-many DISTINCT voters' signatures verify
- * against the 76-byte purpose-0x07 PREPARED preimage for
- * (view, height, tx_hash), using the same committee/roster key
- * resolution handle_viewchg applies. Duplicate voters count once.
+ * against the 116-byte purpose-0x07 PREPARED preimage for
+ * ("prepared" ‖ chain_id ‖ view ‖ height ‖ tx_hash), using the same
+ * committee/roster key resolution handle_viewchg applies. chain_id is
+ * read from `w`, never from the wire, so a certificate harvested before
+ * a chain wipe cannot be replayed onto the successor. Duplicate voters
+ * count once.
  * Anything short of quorum is false — fail-closed. */
 bool nodus_witness_bft_verify_prepared_cert(nodus_witness_t *w,
                                               uint64_t height,

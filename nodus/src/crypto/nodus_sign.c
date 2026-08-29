@@ -69,6 +69,25 @@ static size_t build_tagged_preimage(uint8_t *buf, size_t buf_cap,
     return NODUS_SIGN_HEADER_LEN + data_len;
 }
 
+/* ───── Strictness predicate ────────────────────────────────────────── */
+
+/* The witness-to-witness purposes where the NDS1 tag is MANDATORY.
+ *
+ * ⚠ BOTH SIDES OR IT IS THEATRE. nodus_sign_tagged() and
+ * nodus_verify_tagged() below each consult THIS ONE predicate. Making only
+ * the signer strict would change nothing an attacker must defeat — the
+ * verifier's raw fallback would still accept a signature made over the
+ * undecorated bytes, so the domain separation would exist on paper only.
+ * If you ever add a purpose here, it becomes strict on both sides at once;
+ * that indivisibility is the point of routing both through one function.
+ *
+ * Purposes 0x01-0x05 are deliberately NOT here: the compat bridge for
+ * clients shipped before 11467980 stays exactly as wide as it was. */
+bool nodus_sign_purpose_is_strict(uint8_t purpose) {
+    return purpose == NODUS_PURPOSE_PREPARED ||
+           purpose == NODUS_PURPOSE_VIEWOK;
+}
+
 /* ───── Tagged sign/verify (internal engine) ────────────────────────── */
 
 int nodus_sign_tagged(nodus_sig_t *sig_out,
@@ -77,15 +96,54 @@ int nodus_sign_tagged(nodus_sig_t *sig_out,
                       const nodus_seckey_t *sk) {
     if (!sig_out || !data || !sk) return -1;
 
-    /* COMPAT: sign raw (no NDS1 domain tag) so pre-11467980 clients (e.g.
-     * shipped Flutter libdna) can verify server-produced signatures. The
-     * paired nodus_verify_tagged() still prefers tagged verify and only
-     * falls back to raw, so client→server sigs from new clients continue
-     * to use the stronger domain-tagged path. Net effect: symmetric
-     * compat with old clients at the cost of reopening C2 cross-domain
-     * reuse for signatures THIS node emits. REMOVE this bypass once all
-     * deployed clients ship commit 11467980 or later. */
-    (void)purpose;
+    if (nodus_sign_purpose_is_strict(purpose)) {
+        /* STRICT: sign the NDS1-tagged preimage. Its verify counterpart
+         * refuses the raw fallback for exactly these purposes, so signer
+         * and verifier move together. No compat concern — these domains
+         * are witness-to-witness on port 4004 and never reach a shipped
+         * client; the wire break rides NODUS_T3_BFT_PROTOCOL_VER. */
+        if (data_len > (SIZE_MAX - NODUS_SIGN_HEADER_LEN)) return -1;
+
+        const size_t preimage_len = NODUS_SIGN_HEADER_LEN + data_len;
+        if (preimage_len < data_len) return -1;
+
+        uint8_t stack_buf[8192];
+        uint8_t *buf;
+        uint8_t *heap_buf = NULL;
+
+        if (preimage_len <= sizeof(stack_buf)) {
+            buf = stack_buf;
+        } else {
+            heap_buf = (uint8_t *)malloc(preimage_len);
+            if (!heap_buf) return -1;
+            buf = heap_buf;
+        }
+
+        size_t n = build_tagged_preimage(buf, preimage_len, purpose,
+                                          data, data_len);
+        if (n != preimage_len) {
+            if (heap_buf) free(heap_buf);
+            return -1;
+        }
+
+        size_t slen = 0;
+        int srv = qgp_dsa87_sign(sig_out->bytes, &slen, buf, preimage_len,
+                                  sk->bytes);
+
+        if (heap_buf) free(heap_buf);
+
+        return (srv == 0) ? 0 : -1;
+    }
+
+    /* COMPAT (NON-STRICT PURPOSES ONLY): sign raw (no NDS1 domain tag) so
+     * pre-11467980 clients (e.g. shipped Flutter libdna) can verify
+     * server-produced signatures. The paired nodus_verify_tagged() still
+     * prefers tagged verify and only falls back to raw, so client→server
+     * sigs from new clients continue to use the stronger domain-tagged
+     * path. Net effect: symmetric compat with old clients at the cost of
+     * reopening C2 cross-domain reuse for signatures THIS node emits.
+     * REMOVE this bypass once all deployed clients ship commit 11467980
+     * or later. */
     size_t siglen = 0;
     int rc = qgp_dsa87_sign(sig_out->bytes, &siglen, data, data_len, sk->bytes);
     return (rc == 0) ? 0 : -1;
@@ -127,12 +185,23 @@ int nodus_verify_tagged(const nodus_sig_t *sig,
 
     if (rc == 0) return 0;
 
-    /* Compat fallback — accept raw (pre-11467980) client signatures. The
-     * domain separation closes C2 (cross-domain sig reuse) for new clients;
-     * this bridge lets Flutter/mobile builds still shipped with the old
-     * libdna connect until they update. Keep gated by the auth_initiated_by_us
-     * rule (H8 oracle stays closed either way). REMOVE once all deployed
-     * clients ship commit 11467980 or later. */
+    /* STRICT purposes stop here: the tagged verdict IS the verdict, and the
+     * raw fallback below is unreachable for them.
+     *
+     * ⚠ BOTH SIDES OR IT IS THEATRE. nodus_sign_tagged() signs these
+     * purposes under the tag; if this early return were removed, the
+     * verifier would once again accept a signature made over the
+     * undecorated bytes and the signing-side strictness would buy nothing.
+     * The two halves are only meaningful together. */
+    if (nodus_sign_purpose_is_strict(purpose)) return -1;
+
+    /* Compat fallback (NON-STRICT PURPOSES ONLY) — accept raw
+     * (pre-11467980) client signatures. The domain separation closes C2
+     * (cross-domain sig reuse) for new clients; this bridge lets
+     * Flutter/mobile builds still shipped with the old libdna connect until
+     * they update. Keep gated by the auth_initiated_by_us rule (H8 oracle
+     * stays closed either way). REMOVE once all deployed clients ship
+     * commit 11467980 or later. */
     return qgp_dsa87_verify(sig->bytes, NODUS_SIG_BYTES, data, data_len, pk->bytes);
 }
 

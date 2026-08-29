@@ -139,17 +139,28 @@ static void fill_vote_msg(nodus_t3_msg_t *m, uint8_t type,
     m->vote.vote = 0; /* APPROVE */
 }
 
-/* Sign the C5 PREPARED preimage (view ‖ height ‖ tx_hash, 76 B — the
- * layout documented at nodus_witness_bft.c:104) with a peer's key. */
+/* Sign the C5 PREPARED preimage with a peer's key.
+ *
+ * O15N Faz 2A layout, 116 B — "prepared"(8) ‖ chain_id(32) ‖ view(4 BE) ‖
+ * height(8 BE) ‖ tx_hash(64), the layout documented above
+ * compute_prepared_preimage in nodus_witness_bft.c. chain_id is READ FROM
+ * THE FIXTURE by every caller, for the same reason sign_cert below reads
+ * it: the tally rebuilds the preimage from w->chain_id, so a literal here
+ * would silently stop matching the moment the fixture gains a chain DB.
+ *
+ * nodus_sign_prepared_vote applies the NDS1 tag under purpose 0x07, which
+ * is now STRICT — the raw-signing bypass no longer applies to it. */
 static void sign_prepared(uint8_t out_sig[NODUS_SIG_BYTES],
                           const peer_t *p, uint32_t view, uint64_t height,
-                          const uint8_t *tx_hash) {
-    uint8_t pre[76];
-    pre[0] = (uint8_t)(view >> 24); pre[1] = (uint8_t)(view >> 16);
-    pre[2] = (uint8_t)(view >> 8);  pre[3] = (uint8_t)view;
+                          const uint8_t *tx_hash, const uint8_t *chain_id) {
+    uint8_t pre[116];
+    memcpy(pre, "prepared", 8);
+    memcpy(pre + 8, chain_id, 32);
+    pre[40] = (uint8_t)(view >> 24); pre[41] = (uint8_t)(view >> 16);
+    pre[42] = (uint8_t)(view >> 8);  pre[43] = (uint8_t)view;
     for (int i = 0; i < 8; i++)
-        pre[4 + i] = (uint8_t)(height >> ((7 - i) * 8));
-    memcpy(pre + 12, tx_hash, NODUS_T3_TX_HASH_LEN);
+        pre[44 + i] = (uint8_t)(height >> ((7 - i) * 8));
+    memcpy(pre + 52, tx_hash, NODUS_T3_TX_HASH_LEN);
     nodus_sig_t sig;
     nodus_seckey_t sk;
     memcpy(sk.bytes, p->sk, sizeof(sk.bytes));
@@ -228,7 +239,7 @@ int main(void) {
 
         nodus_t3_msg_t m;
         fill_vote_msg(&m, NODUS_T3_PREVOTE, &b, 6, 0, tx_hash);
-        sign_prepared(m.vote.cert_sig, &b, 0, 7, tx_hash);
+        sign_prepared(m.vote.cert_sig, &b, 0, 7, tx_hash, w->chain_id);
         (void)nodus_witness_bft_handle_vote(w, &m);
         CHECK(w->round_state.prevote_count == 0,
               "early vote not counted into the stale round");
@@ -239,7 +250,7 @@ int main(void) {
          * the buffered early vote from B must be drained and counted
          * alongside it. */
         fill_vote_msg(&m, NODUS_T3_PREVOTE, &c, 6, 0, tx_hash);
-        sign_prepared(m.vote.cert_sig, &c, 0, 7, tx_hash);
+        sign_prepared(m.vote.cert_sig, &c, 0, 7, tx_hash, w->chain_id);
         CHECK(nodus_witness_bft_handle_vote(w, &m) == 0, "C vote accepted");
 
         CHECK(w->round_state.prevote_approve_count == 3,

@@ -41,7 +41,13 @@ extern "C" {
 #define NODUS_PURPOSE_CERT           0x05  /**< BFT commit certificate */
 /* 0x06 reserved for POST (channel posts); not implemented — channels disabled */
 #define NODUS_PURPOSE_PREPARED       0x07  /**< C5: PBFT prepared-cert (per-voter
-                                              sig over view+height+tx_hash) */
+                                              sig over the 116-byte preimage
+                                              "prepared"+chain_id+view+height+
+                                              tx_hash) */
+/** O15N view-authority statement — a node's per-node attestation that it
+ *  observed a view-change quorum. 0x08 is the next free value after
+ *  PREPARED; nothing above it is assigned. */
+#define NODUS_PURPOSE_VIEWOK         0x08
 
 /** Tagged preimage layout:
  *    MAGIC (4) || purpose (1) || data_len_be (4) || data (data_len)
@@ -74,14 +80,36 @@ int nodus_verify(const nodus_sig_t *sig,
 /* ───── Domain-separated wrappers (preferred API) ───────────────────── */
 
 /**
+ * True for the witness-to-witness purposes whose NDS1 domain tag is
+ * MANDATORY on both sides — no raw signing, no raw-verify fallback.
+ *
+ * Strict today: NODUS_PURPOSE_PREPARED (0x07), NODUS_PURPOSE_VIEWOK (0x08).
+ * Everything else keeps the pre-11467980 compat behaviour byte-for-byte.
+ *
+ * ⚠ Both sides or it is theatre: lifting the bypass on the signing half
+ * alone changes nothing an attacker has to defeat, because the verifier
+ * would still accept a raw signature. This one predicate is what keeps
+ * nodus_sign_tagged() and nodus_verify_tagged() from drifting apart.
+ */
+bool nodus_sign_purpose_is_strict(uint8_t purpose);
+
+/**
  * Internal: sign over tagged preimage (MAGIC || purpose || len || data).
  * Public callers should use the purpose-specific wrappers below.
+ *
+ * Strict purposes sign the TAGGED preimage. Non-strict purposes sign the
+ * raw data (the shipped-client compat bridge) — see the comment in
+ * nodus_sign.c.
  */
 int nodus_sign_tagged(nodus_sig_t *sig_out,
                       uint8_t purpose,
                       const uint8_t *data, size_t data_len,
                       const nodus_seckey_t *sk);
 
+/**
+ * Strict purposes: tagged verify ONLY — a raw signature is refused.
+ * Non-strict purposes: tagged verify first, raw verify as a compat fallback.
+ */
 int nodus_verify_tagged(const nodus_sig_t *sig,
                         uint8_t purpose,
                         const uint8_t *data, size_t data_len,
@@ -128,7 +156,10 @@ int nodus_verify_cert(const nodus_sig_t *sig,
                       const nodus_pubkey_t *pk);
 
 /** PREPARED domain (C5) — PBFT prepared-cert per-voter signature.
- *  Preimage: view(4B BE) || height(8B BE) || tx_hash(64B) = 76 bytes. */
+ *  Preimage (116 bytes, built by compute_prepared_preimage in
+ *  nodus_witness_bft.c): "prepared"(8B ASCII, no NUL) || chain_id(32B) ||
+ *  view(4B BE) || height(8B BE) || tx_hash(64B).
+ *  STRICT purpose — NDS1-wrapped on both sides, no raw fallback. */
 int nodus_sign_prepared_vote(nodus_sig_t *sig_out,
                               const uint8_t *preimage, size_t preimage_len,
                               const nodus_seckey_t *sk);

@@ -266,15 +266,22 @@ static void fixture_free(nodus_witness_t *w) {
     free(w);
 }
 
+/* O15N Faz 2A — 116-byte PREPARED preimage: "prepared"(8) ‖ chain_id(32) ‖
+ * view(4 BE) ‖ height(8 BE) ‖ tx_hash(64). chain_id is passed in by every
+ * caller from w->chain_id, because that is what the verifier rebuilds
+ * with; the §11/§12 fixtures DO create a chain DB (0x77 / 0x33), so a
+ * zero literal here would fail those sections and only those. */
 static void sign_prepared(uint8_t out_sig[NODUS_SIG_BYTES], const peer_t *p,
                           uint32_t view, uint64_t height,
-                          const uint8_t *tx_hash) {
-    uint8_t pre[76];
-    pre[0] = (uint8_t)(view >> 24); pre[1] = (uint8_t)(view >> 16);
-    pre[2] = (uint8_t)(view >> 8);  pre[3] = (uint8_t)view;
+                          const uint8_t *tx_hash, const uint8_t *chain_id) {
+    uint8_t pre[116];
+    memcpy(pre, "prepared", 8);
+    memcpy(pre + 8, chain_id, 32);
+    pre[40] = (uint8_t)(view >> 24); pre[41] = (uint8_t)(view >> 16);
+    pre[42] = (uint8_t)(view >> 8);  pre[43] = (uint8_t)view;
     for (int i = 0; i < 8; i++)
-        pre[4 + i] = (uint8_t)(height >> ((7 - i) * 8));
-    memcpy(pre + 12, tx_hash, NODUS_T3_TX_HASH_LEN);
+        pre[44 + i] = (uint8_t)(height >> ((7 - i) * 8));
+    memcpy(pre + 52, tx_hash, NODUS_T3_TX_HASH_LEN);
     nodus_sig_t sig;
     nodus_seckey_t sk;
     memcpy(sk.bytes, p->sk, sizeof(sk.bytes));
@@ -411,7 +418,7 @@ static bool deliver_prevote(nodus_witness_t *w, const peer_t *from,
     memcpy(m.vote.vote_target, tx_hash, NODUS_T3_TX_HASH_LEN);
     m.vote.vote = NODUS_W_VOTE_APPROVE;
     sign_prepared(m.vote.cert_sig, from, w->current_view,
-                  w->round_state.block_height, tx_hash);
+                  w->round_state.block_height, tx_hash, w->chain_id);
 
     int rc = nodus_witness_bft_handle_vote(w, &m);
     int after = w->round_state.prevote_count;
@@ -580,14 +587,15 @@ static void p2_fill_newview(nodus_t3_msg_t *m, nodus_witness_t *w,
 }
 
 /* Attach a REAL prepared certificate: `n` distinct roster members sign
- * the same 76-byte purpose-0x07 preimage that
+ * the same 116-byte purpose-0x07 preimage that
  * nodus_witness_bft_verify_prepared_cert rebuilds. Signing it for real
  * matters — the has_reproposal branch of handle_newview is fail-closed,
  * so a stubbed cert would make every "re-arm" assertion vacuous by
  * never reaching the accept at all. */
 static void p2_add_reproposal(nodus_t3_msg_t *m, const peer_t *all, int n,
                               uint64_t height, uint32_t prep_view,
-                              const uint8_t *tx_hash) {
+                              const uint8_t *tx_hash,
+                              const uint8_t *chain_id) {
     m->newview.has_reproposal = true;
     m->newview.reproposal_height = height;
     m->newview.reproposal_prepared_view = prep_view;
@@ -597,7 +605,7 @@ static void p2_add_reproposal(nodus_t3_msg_t *m, const peer_t *all, int n,
         memcpy(m->newview.reproposal_sigs[i].voter_id, all[i].id,
                NODUS_T3_WITNESS_ID_LEN);
         sign_prepared(m->newview.reproposal_sigs[i].signature, &all[i],
-                      prep_view, height, tx_hash);
+                      prep_view, height, tx_hash, chain_id);
     }
 }
 
@@ -1901,7 +1909,8 @@ int main(void) {
         memset(sigs, 0, sizeof(sigs));
         for (int i = 0; i < 7; i++) {
             memcpy(sigs[i].voter_id, m[i].id, NODUS_T3_WITNESS_ID_LEN);
-            sign_prepared(sigs[i].signature, &m[i], VIEW, H, cert_hash);
+            sign_prepared(sigs[i].signature, &m[i], VIEW, H, cert_hash,
+                          w->chain_id);
         }
 
         CHECK(nodus_witness_bft_verify_prepared_cert(w, H, VIEW, cert_hash,
@@ -1928,7 +1937,8 @@ int main(void) {
         nodus_t3_cert_entry_t mixed[5];
         for (int i = 0; i < 4; i++) mixed[i] = sigs[i];
         memcpy(mixed[4].voter_id, outsider.id, NODUS_T3_WITNESS_ID_LEN);
-        sign_prepared(mixed[4].signature, &outsider, VIEW, H, cert_hash);
+        sign_prepared(mixed[4].signature, &outsider, VIEW, H, cert_hash,
+                      w->chain_id);
         CHECK(!nodus_witness_bft_verify_prepared_cert(w, H, VIEW, cert_hash,
                                                       mixed, 5),
               "a roster member outside the height's committee does not count");
@@ -2037,7 +2047,7 @@ int main(void) {
             memcpy(vc.viewchg.prepared_sigs[i].voter_id, p[i].id,
                    NODUS_T3_WITNESS_ID_LEN);
             sign_prepared(vc.viewchg.prepared_sigs[i].signature, &p[i],
-                          CV, CH, cert_hash);
+                          CV, CH, cert_hash, w->chain_id);
         }
         CHECK(nodus_witness_bft_handle_viewchg(w, &vc) == 0,
               "peer VIEW_CHANGE with a prepared cert recorded");
@@ -2524,7 +2534,7 @@ int main(void) {
         nodus_t3_msg_t nv;
         p2_fill_newview(&nv, w, leader, V);
         p2_add_reproposal(&nv, all, (int)w->bft_config.quorum, tip + 1, 0,
-                          tx_hash);
+                          tx_hash, w->chain_id);
         p2_expire(w);                       /* armed, ALREADY expired */
         CHECK(nodus_witness_bft_handle_newview(w, &nv) == 0,
               "NEW_VIEW carrying a verifiable prepared cert accepted");
@@ -2631,7 +2641,7 @@ int main(void) {
         w->awaiting_propose_deadline_ms = armed_at;
         p2_fill_newview(&nv, w, leader, V);
         p2_add_reproposal(&nv, all, (int)w->bft_config.quorum, tip + 1, 0,
-                          tx_hash);
+                          tx_hash, w->chain_id);
         CHECK(!w->reproposal_required,
               "no binding yet — leg 1 carried none, so leg 2's effect on "
               "this field is unambiguous");

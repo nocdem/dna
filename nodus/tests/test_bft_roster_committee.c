@@ -383,18 +383,25 @@ static int committee_probe(nodus_witness_t *w, uint64_t height,
     return rc;
 }
 
-/** The 76-byte C5 PREPARED preimage — view(4B BE) ‖ height(8B BE) ‖
- *  tx_hash(64B), the layout compute_prepared_preimage produces — signed
- *  with a peer's own key. */
+/** The 116-byte C5 PREPARED preimage (O15N Faz 2A) — "prepared"(8B ASCII)
+ *  ‖ chain_id(32B) ‖ view(4B BE) ‖ height(8B BE) ‖ tx_hash(64B), the
+ *  layout compute_prepared_preimage produces — signed with a peer's own
+ *  key. chain_id comes from the fixture (this one DOES hold a chain
+ *  identity: gate_fill_header below relies on the same field), because
+ *  nodus_witness_bft_verify_prepared_cert rebuilds the preimage from
+ *  w->chain_id. */
 static void gate_sign_prepared(uint8_t out[NODUS_SIG_BYTES],
                                  const gate_peer_t *p, uint32_t view,
-                                 uint64_t height, const uint8_t *tx_hash) {
-    uint8_t pre[76];
-    pre[0] = (uint8_t)(view >> 24); pre[1] = (uint8_t)(view >> 16);
-    pre[2] = (uint8_t)(view >> 8);  pre[3] = (uint8_t)view;
+                                 uint64_t height, const uint8_t *tx_hash,
+                                 const uint8_t *chain_id) {
+    uint8_t pre[116];
+    memcpy(pre, "prepared", 8);
+    memcpy(pre + 8, chain_id, 32);
+    pre[40] = (uint8_t)(view >> 24); pre[41] = (uint8_t)(view >> 16);
+    pre[42] = (uint8_t)(view >> 8);  pre[43] = (uint8_t)view;
     for (int i = 0; i < 8; i++)
-        pre[4 + i] = (uint8_t)(height >> ((7 - i) * 8));
-    memcpy(pre + 12, tx_hash, NODUS_T3_TX_HASH_LEN);
+        pre[44 + i] = (uint8_t)(height >> ((7 - i) * 8));
+    memcpy(pre + 52, tx_hash, NODUS_T3_TX_HASH_LEN);
     nodus_sig_t sig;
     nodus_seckey_t sk;
     memcpy(sk.bytes, p->sk, sizeof(sk.bytes));
@@ -655,7 +662,8 @@ static void gate_scenario_prepared_cert(void) {
     const gate_peer_t *signers[4] = { &self, &b, &c, &d };
     for (int i = 0; i < 4; i++) {
         memcpy(cert[i].voter_id, signers[i]->id, NODUS_T3_WITNESS_ID_LEN);
-        gate_sign_prepared(cert[i].signature, signers[i], V, H, txh);
+        gate_sign_prepared(cert[i].signature, signers[i], V, H, txh,
+                           w->chain_id);
     }
 
     CHECK_WHY(nodus_witness_bft_verify_prepared_cert(w, H, V, txh, cert, 4),

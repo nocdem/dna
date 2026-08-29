@@ -339,8 +339,9 @@ typedef struct {
  *                             the signed PREPARED preimage.
  *   reproposal_n_sigs         number of per-voter signatures carried.
  *   reproposal_sigs           (voter_id, signature) pairs over the
- *                             76-byte purpose-0x07 PREPARED preimage
- *                             (view ‖ height ‖ tx_hash) — the SAME
+ *                             116-byte purpose-0x07 PREPARED preimage
+ *                             ("prepared" ‖ chain_id ‖ view ‖ height ‖
+ *                             tx_hash) — the SAME
  *                             preimage and verification VIEW_CHANGE
  *                             already uses. No new preimage, no new
  *                             domain separation, nothing newly signed:

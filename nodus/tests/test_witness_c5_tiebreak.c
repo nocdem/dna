@@ -190,15 +190,20 @@ static nodus_witness_t *fixture(const peer_t *self, const peer_t *peers,
     return w;
 }
 
+/* O15N Faz 2A — 116-byte PREPARED preimage: "prepared"(8) ‖ chain_id(32) ‖
+ * view(4 BE) ‖ height(8 BE) ‖ tx_hash(64), mirroring
+ * compute_prepared_preimage. */
 static void sign_prepared(uint8_t out[NODUS_SIG_BYTES], const peer_t *p,
                           uint32_t view, uint64_t height,
-                          const uint8_t *tx_hash) {
-    uint8_t pre[76];
-    pre[0] = (uint8_t)(view >> 24); pre[1] = (uint8_t)(view >> 16);
-    pre[2] = (uint8_t)(view >> 8);  pre[3] = (uint8_t)view;
+                          const uint8_t *tx_hash, const uint8_t *chain_id) {
+    uint8_t pre[116];
+    memcpy(pre, "prepared", 8);
+    memcpy(pre + 8, chain_id, 32);
+    pre[40] = (uint8_t)(view >> 24); pre[41] = (uint8_t)(view >> 16);
+    pre[42] = (uint8_t)(view >> 8);  pre[43] = (uint8_t)view;
     for (int i = 0; i < 8; i++)
-        pre[4 + i] = (uint8_t)(height >> ((7 - i) * 8));
-    memcpy(pre + 12, tx_hash, NODUS_T3_TX_HASH_LEN);
+        pre[44 + i] = (uint8_t)(height >> ((7 - i) * 8));
+    memcpy(pre + 52, tx_hash, NODUS_T3_TX_HASH_LEN);
     nodus_sig_t sig;
     nodus_seckey_t sk;
     memcpy(sk.bytes, p->sk, sizeof(sk.bytes));
@@ -206,11 +211,15 @@ static void sign_prepared(uint8_t out[NODUS_SIG_BYTES], const peer_t *p,
     memcpy(out, sig.bytes, NODUS_SIG_BYTES);
 }
 
-/* One VIEW_CHANGE carrying a REAL 2f+1-signed prepared certificate. */
+/* One VIEW_CHANGE carrying a REAL 2f+1-signed prepared certificate.
+ * chain_id is supplied by the caller from the witness that will VERIFY
+ * this certificate, because that is what the verifier rebuilds the
+ * preimage with (O15N Faz 2A). */
 static void make_viewchg(nodus_t3_msg_t *m, const peer_t *from,
                          uint32_t target_view, uint32_t prep_view,
                          uint64_t prep_height, uint8_t hash_byte,
-                         const peer_t *signers, int n_signers)
+                         const peer_t *signers, int n_signers,
+                         const uint8_t *chain_id)
 {
     memset(m, 0, sizeof(*m));
     m->type = NODUS_T3_VIEWCHG;
@@ -229,7 +238,8 @@ static void make_viewchg(nodus_t3_msg_t *m, const peer_t *from,
         memcpy(m->viewchg.prepared_sigs[i].voter_id, signers[i].id,
                NODUS_T3_WITNESS_ID_LEN);
         sign_prepared(m->viewchg.prepared_sigs[i].signature, &signers[i],
-                      prep_view, prep_height, m->viewchg.prepared_tx_hash);
+                      prep_view, prep_height, m->viewchg.prepared_tx_hash,
+                      chain_id);
     }
 }
 
@@ -350,13 +360,22 @@ int main(void) {
         const uint64_t H = 40;
         const uint32_t TARGET_VIEW = 1;
 
-        nodus_t3_msg_t vc_old, vc_new;   /* prepared in view 0 / view 3 */
-        make_viewchg(&vc_old, &all[1], TARGET_VIEW, 0, H, 0x31, all, 3);
-        make_viewchg(&vc_new, &all[2], TARGET_VIEW, 3, H, 0x32, all, 3);
-
-        /* Node A: old cert first.  Node B: new cert first. */
+        /* Node A: old cert first.  Node B: new cert first. Both are built
+         * BEFORE the certificates, because the certificates must be
+         * signed over the chain_id these two will verify against. Both
+         * come from the same calloc'ing fixture and neither creates a
+         * chain DB, so a->chain_id == b->chain_id (all-zero) and ONE
+         * certificate is verifiable by both — which is the precondition
+         * for "the same candidate set, different arrival order". */
         nodus_witness_t *a = fixture(&all[0], &all[1], 3, 3);
         nodus_witness_t *b = fixture(&all[0], &all[1], 3, 3);
+        CHECK(memcmp(a->chain_id, b->chain_id, sizeof(a->chain_id)) == 0);
+
+        nodus_t3_msg_t vc_old, vc_new;   /* prepared in view 0 / view 3 */
+        make_viewchg(&vc_old, &all[1], TARGET_VIEW, 0, H, 0x31, all, 3,
+                     a->chain_id);
+        make_viewchg(&vc_new, &all[2], TARGET_VIEW, 3, H, 0x32, all, 3,
+                     a->chain_id);
 
         for (int i = 0; i < 2; i++) {
             nodus_witness_t *w2 = (i == 0) ? a : b;
