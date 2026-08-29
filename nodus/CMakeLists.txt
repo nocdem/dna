@@ -1901,6 +1901,10 @@ register_witness_test(test_witness_newview_convergence)
 # O15C-D.4 — consensus messages from an incompatible protocol version
 # must be rejected before they can change any BFT state.
 register_witness_test(test_witness_protocol_version_gate)
+# v0.19.24 — IDENT is exempt from the wsig verify, so a peer's advertised
+# current_view is unauthenticated: it must never move this node's PBFT
+# view counter (which decides leader election AND the signed preimage).
+register_witness_test(test_witness_ident_no_view_adopt)
 # O15C-D — MED-27: an accepted dnac_spend must never end without an
 # answer; the 30 s expiry replies instead of dropping the client.
 register_witness_test(test_witness_pending_forward_timeout)

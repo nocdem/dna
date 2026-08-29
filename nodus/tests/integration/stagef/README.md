@@ -371,6 +371,19 @@ code under test. Observed, and each cost real debugging time:
   `nodes did not converge (lo=0 hi=27)`.
 - Any armed fault scenario leaves `NODUS_FAULT_ARM_FILE` in place, and
   the next one aborts with "arm file already exists".
+- **A scenario that COMPLETES a view change disarms the next scenario
+  whose injection is view-scoped.** `NODUS_FAULT_DROP_VIEW` pins the
+  drop to one view number (`nodus_witness_fault.c`), and both
+  `test_med28_reproposal.sh` and `test_newview_convergence.sh` use
+  `DROP_VIEW=0`. But `test_newview_convergence.sh` exists to force a
+  rotation and reports *"view change completed on 7/7"* — so a cluster
+  that has run it is no longer at view 0, the predicate cannot match,
+  and med28 fails at `[FAIL] no node logged a round timeout — the
+  injection did not bite`. Observed 2026-08-29; the same run passed end
+  to end (`round timeout on 6/7`) on a fresh cluster. Either bring the
+  cluster up fresh between the two, or run the view-scoped one FIRST.
+  The alphabetical sweep is safe by luck — `med28` sorts before
+  `newview` — so this bites hand-picked runs, not `genesis_protocol.sh`.
 - Bootstrap scenarios restart nodes; a scenario run immediately after may
   see a node still syncing and report a false divergence.
 - `test_vset_grow_shrink.sh` **section G** kills and restarts one

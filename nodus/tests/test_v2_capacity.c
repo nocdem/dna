@@ -9,7 +9,7 @@
  *      65,536 (NODUS_T3_MAX_TX_SIZE, DNAC_TXW3_MAX_TX_SIZE) while the
  *      V2 envelope ceiling is the independently derived 2^20. Growing
  *      one must never grow the other: the live gates
- *      (nodus_witness_handlers.c:1788, nodus_witness_peer.c:846,
+ *      (nodus_witness_handlers.c:1788, nodus_witness_peer.c:969,
  *      nodus_tier3.c:646/998, nodus_witness_bft.c:4532) all compare
  *      against NODUS_T3_MAX_TX_SIZE, which this test pins.
  *   2. DERIVATION — the worst-case legal envelope arithmetic is

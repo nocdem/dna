@@ -156,12 +156,14 @@ multiple of one second.
 10 s budget expires without quorum, the node clears the collected
 records, raises `view_change_target` by one and re-broadcasts. It does
 **not** return to IDLE: from IDLE `check_timeout` returns immediately, the
-leader is unchanged (`current_view` only moves on quorum), and nothing
-would ever re-initiate. `current_view` is deliberately untouched on this
-path, so leader election and the C5 binding keep their existing
-preconditions. The retry interval is FIXED rather than backed off —
-per-node backoff is per-node timing state, and divergent timing state
-between witnesses is the failure class this file's rules exist to avoid.
+leader is unchanged (this path writes no view), and nothing would ever
+re-initiate. `current_view` is deliberately untouched on this path, so
+leader election and the C5 binding keep their existing preconditions —
+but see **Who writes `current_view`** below: "untouched here" is a
+statement about this path, not a global invariant. The retry interval is
+FIXED rather than backed off — per-node backoff is per-node timing state,
+and divergent timing state between witnesses is the failure class this
+file's rules exist to avoid.
 
 ---
 
@@ -260,8 +262,35 @@ view change. BOTH halves are required: without the demand half a quiet
 chain would rotate forever; without the frozen-tip half a busy chain would
 rotate away from a healthy leader. Every verdict at the would-fire point
 re-stamps the window, so the DB scan and the `is_leader` call cost once per
-`round_timeout_ms`, not once per tick. `current_view` is untouched — it
-still advances only on quorum.
+`round_timeout_ms`, not once per tick. `current_view` is untouched on this
+path — it arms a target, it does not write the counter.
+
+### Who writes `current_view`
+
+The two paragraphs above each make a LOCAL point that is correct: neither
+the stalled-view-change escalation nor the P3(a) deadman writes the view
+counter. Both used to go further and assert a GLOBAL invariant —
+"`current_view` only moves on quorum" — and that has never been true.
+
+As of v0.19.24 the counter is written in **four** places:
+
+| Site | Backed by a proven majority? |
+|---|---|
+| `handle_propose` — unconditionally, from the proposal's view (`nodus_witness_bft.c:5040`) | No |
+| view-change quorum, `bft_vc_check_quorum` (`nodus_witness_bft.c:7703`) | **Yes** |
+| `handle_newview` — `>` accept only (`nodus_witness_bft.c:8196`) | No |
+| restore from disk, H-5 (`nodus_witness_db.c:2176`) | No |
+
+Only the view-change quorum write is backed by a proven majority
+decision. Closing the other two message-driven writes is a separate,
+later protocol-version bump; it is not done here.
+
+A **fifth** writer was removed in v0.19.24: the IDENT handshake in
+`nodus_witness_peer.c` adopted a peer's advertised `current_view`
+directly. T3 IDENT is exempt from the wsig signature verify
+(`nodus_witness.c:2011`), so that value was never authenticated — one
+peer could move another node's leader election and the bytes it signs.
+The field is still carried on the wire, now as gossip/observability only.
 
 ### Pool-then-forward (O15I follow-up)
 

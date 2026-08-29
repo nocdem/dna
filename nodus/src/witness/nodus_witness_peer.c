@@ -823,23 +823,23 @@ int nodus_witness_peer_handle_ident(nodus_witness_t *w,
             memcpy(w->peers[pi].remote_checksum, ident->state_root,
                    NODUS_KEY_BYTES);
 
-            /* View sync: adopt higher view from peer.
-             * Prevents leader election mismatch after restart.
-             * Bounded: reject jumps > 10000 to prevent manipulation.
-             * current_view is not persisted — resets to 0 on restart.
-             * 10000 ~= 14 hours of continuous leader failure at 5s intervals. */
-            if (ident->current_view > w->current_view) {
-                uint32_t delta = ident->current_view - w->current_view;
-                if (delta <= 10000) {
-                    QGP_LOG_INFO(LOG_TAG, "adopting higher view %u from peer "
-                            "(was %u)", ident->current_view, w->current_view);
-                    w->current_view = ident->current_view;
-                } else {
-                    QGP_LOG_WARN(LOG_TAG, "rejecting view jump "
-                            "%u -> %u (delta=%u > 10000)",
-                            w->current_view, ident->current_view, delta);
-                }
-            }
+            /* `ident->current_view` is received and DELIBERATELY not
+             * acted on: it stays on the wire as a gossip / observability
+             * field only. IDENT is EXEMPT from the wsig verify
+             * (nodus_witness.c:2011), and that dispatcher's own comment
+             * says an IDENT's version claim "is unauthenticated and must
+             * not be acted on" (nodus_witness.c:2055-2056) — adopting this
+             * number let ONE unauthenticated peer move our leader
+             * election AND the bytes we sign. The deleted block's stated
+             * premise was FALSE besides: it claimed "current_view is not
+             * persisted — resets to 0 on restart", but H-5 persists it
+             * (nodus_witness_db.c:2130 save, :2176 load), so that
+             * restart argument has not held since H-5. MODEL: CometBFT /
+             * Tendermint writes this same peer announcement to
+             * PeerRoundState and never to `cs.Round`. ACCEPTED COST,
+             * MEASURED: a wiped-DB node stays at view 0. P2 cannot help
+             * — BOTH its arm sites (bft.c:7784, :8230) need a COMPLETED
+             * view change. Recovery is P3: TWO round_timeout windows. */
         }
     }
 

@@ -554,7 +554,7 @@ typedef struct nodus_witness {
      * NOT part of any signed message, vote, block or state_root. Like
      * P2's deadline it can only ever decide WHEN this node ASKS for a
      * rotation, never WHAT it votes; `current_view` is untouched by the
-     * whole mechanism (it advances only on quorum). */
+     * whole mechanism (only bft.c:7703 moves it on quorum). */
     uint64_t    last_seen_tip;
     uint64_t    tip_since_ms;
 
@@ -1234,10 +1234,10 @@ int nodus_witness_pending_forward_expire(nodus_witness_t *witness,
  * duplicates by tx_hash.
  *
  * ── DETERMINISM ───────────────────────────────────────────────────────
- * `current_view` is NOT written here — it has exactly five write sites
+ * `current_view` is NOT written here — it has exactly four write sites
  * (nodus_witness_bft.c round entry, the view-change quorum, the NEW_VIEW
- * accept, nodus_witness_peer.c IDENT adoption, nodus_witness_db.c
- * restore) and this adds none. Mempool content is per-node INPUT, not
+ * accept, nodus_witness_db.c restore; the IDENT adoption that was the
+ * fifth is DELETED, v0.19.24) and this adds none. Mempool is INPUT, not
  * consensus state: block content is still chosen by ONE leader and agreed
  * by PREVOTE/PRECOMMIT with an independent state_root recompute, so two
  * nodes holding different pools cannot diverge state. No wire format, no

@@ -112,8 +112,8 @@ head_height() {
 # The BFT view a node currently holds, from its own persisted singleton
 # row (pbft_state, nodus_witness_db.c:2122-2196).
 #
-# current_view is monotonic per chain DB and NEVER resets, and it
-# survives restarts — so it must be READ, never assumed to be 0.
+# current_view NEVER resets (nothing sets it to 0) and it survives
+# restarts — so it must be READ, never assumed to be 0. NOT monotonic.
 # test_view_change_fork sorts before this scenario and rotates the view,
 # so by the time G runs the cluster is routinely at a non-zero view.
 #
@@ -137,13 +137,13 @@ node_view() {
 #
 # Why the max over a set rather than one node's value: current_view is
 # per-node runtime state with three writers — the view-change quorum
-# itself (nodus_witness_bft.c:7201), adopting a NEW_VIEW (:7634) and
-# adopting a PROPOSE's view (:4870) — so a node that sits out a round can
+# itself (nodus_witness_bft.c:7703), adopting a NEW_VIEW (:8196) and
+# adopting a PROPOSE's view (:5040) — so a node that sits out a round can
 # lag, and after the post-shrink demotion the lowest-numbered surviving
 # node is not guaranteed to be one of the seven ACTIVE. The property
 # being asserted is "the cluster rotated", i.e. SOME surviving node
-# advanced, and the max expresses exactly that. Monotonic per node, so
-# monotonic over the set.
+# advanced, and the max expresses exactly that. NOT monotonic per node:
+# :5040 copies the proposal's view UNCONDITIONALLY and can LOWER it.
 #
 # The victim is excluded from BOTH the before and after readings, so the
 # two are taken over the SAME set and stay comparable — and so that a
@@ -1177,16 +1177,16 @@ live demand — which is the halt this section exists to catch. Views: \
 $VIEW_BEFORE -> $VIEW_AFTER."
 
 # (b) A view change actually COMPLETED. current_view has exactly three
-#     writers — reaching the view-change quorum
-#     (nodus_witness_bft.c:7201), adopting a NEW_VIEW (:7634) and
-#     adopting a PROPOSE's view (:4870) — and the latter two only ever
-#     carry a view that some node reached quorum on, so an increase
-#     anywhere means a rotation completed somewhere. It is persisted per
-#     chain DB (nodus_witness_db_save_pbft_state, :2122-2153) and
-#     survives restarts, which is why it is read rather than assumed.
+#     message-driven writers — the view-change quorum
+#     (nodus_witness_bft.c:7703), adopting a NEW_VIEW (:8196) and
+#     adopting a PROPOSE's view (:5040). ONLY the first is backed by
+#     a proven majority; the other two raise it on the sender's word,
+#     so the LOG LINE below, not the number, is the real evidence.
+#     Persisted per chain DB (nodus_witness_db_save_pbft_state,
+#     :2122-2153), which is why it is read rather than assumed.
 #
 #     The quorum LOG LINE is required alongside the number, because the
-#     number alone cannot say WHERE the rotation came from: only :7201
+#     number alone cannot say WHERE the rotation came from: only :7694
 #     prints, and the node that printed it is by definition the one whose
 #     quorum caused every other node's adoption. Requiring both means a
 #     view inherited from an earlier scenario cannot stand in for one

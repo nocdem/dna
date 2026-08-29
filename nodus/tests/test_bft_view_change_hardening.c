@@ -2439,8 +2439,9 @@ int main(void) {
      * serve. The exclusion is asserted at BOTH guards, because they fail
      * independently: the arm-side one in bft_vc_check_quorum, and the
      * fire-side one in check_timeout that catches a node which became
-     * leader while already armed (IDENT view adoption,
-     * nodus_witness_peer.c:783). ─────────────────────────────────────── */
+     * leader while already armed (handle_newview's accept,
+     * nodus_witness_bft.c:8196 — the IDENT view adoption this used to
+     * name was DELETED in v0.19.24). ────────────────────────────────── */
     printf("§12c P2 — the new leader neither arms nor fires\n");
     {
         peer_t p[6];

@@ -7760,12 +7760,12 @@ static int bft_vc_check_quorum(nodus_witness_t *w) {
      * away from a view it was about to serve.
      *
      * WHY THIS IS SAFE. Initiating a view change is always safe:
-     * `current_view` advances ONLY on quorum, in bft_vc_check_quorum
-     * (this function). It is written at exactly five places —
-     * bft.c:5040 (round entry from a proposal), the assignment above,
-     * bft.c:8156 (the NEW_VIEW accept),
-     * nodus_witness_peer.c:836 (IDENT adoption) and
-     * nodus_witness_db.c:2176 (restore) — and P2 adds none of them. No
+     * this function is the ONLY quorum-backed writer of `current_view`.
+     * The counter has four writers — bft.c:5040 (round entry from a
+     * proposal, UNCONDITIONAL), the assignment above, bft.c:8196 (the
+     * NEW_VIEW accept, `>` guard only) and nodus_witness_db.c:2176
+     * (restore); the fifth, an IDENT adoption, is DELETED (v0.19.24).
+     * P2 adds none of the four. No
      * vote content changes either: the fire site calls
      * nodus_witness_bft_initiate_view_change, which carries
      * `last_prepared` exactly as it does today.
@@ -7926,8 +7926,8 @@ int nodus_witness_bft_handle_newview(nodus_witness_t *w,
      *
      * THE GAP IS REAL. The other four consensus handlers call is_replay
      * (handle_propose :4880, handle_vote :5477, handle_commit :6536,
-     * handle_viewchg :7327). This one does not, and it WRITES
-     * `w->current_view` (:8156) and persists it. A captured NEW_VIEW
+     * handle_viewchg :7379). This one does not, and it WRITES
+     * `w->current_view` (:8196) and persists it. A captured NEW_VIEW
      * frame stays validly signed forever, so re-sending it at a chosen
      * moment against a chosen subset of nodes moves their view up while
      * others stay put — and `current_view` decides leader election.
@@ -8153,12 +8153,12 @@ int nodus_witness_bft_handle_newview(nodus_witness_t *w,
      * The accept block below is guarded on `nv->new_view >
      * w->current_view`, and O15C-D.1 measured that this guard is FALSE
      * on the ordinary path: every node advances its own view the moment
-     * it reaches view-change quorum (:6900), so by the time the leader's
+     * it reaches view-change quorum (:7703), so by the time the leader's
      * NEW_VIEW arrives new_view == current_view and the whole accept
      * block is a silent no-op (7/7 nodes self-advanced, ZERO logged
-     * "accepted NEW_VIEW" — see the comment at :6910-6927). Putting the
+     * "accepted NEW_VIEW" — see the comment at :7713-7730). Putting the
      * P2 disarm ONLY in that block would therefore mean it never runs
-     * where it matters: a self-advanced follower, armed at :6933, would
+     * where it matters: a self-advanced follower, armed at :7784, would
      * receive the live leader's has_reproposal=false NEW_VIEW, never
      * disarm, and on a quiet chain (empty mempool → no PROPOSE is due)
      * fire after one window → rotate → arm again → idle view churn on a
@@ -8206,7 +8206,7 @@ int nodus_witness_bft_handle_newview(nodus_witness_t *w,
         /* ── O15I P2 — the same rule as at `==` above, on the genuine
          * view-ADVANCE path. A node reaching here accepts a NEW_VIEW
          * from someone else, and the sender had to be the expected
-         * leader for nv->new_view (validated at :7112) — so by
+         * leader for nv->new_view (validated at :8022) — so by
          * construction WE are not that leader and the "leader must send,
          * not wait" exclusion cannot be violated by arming here.
          *
@@ -9215,11 +9215,11 @@ void nodus_witness_bft_check_timeout(nodus_witness_t *w) {
      *    broadcast messages, and dropping local round state does not
      *    unsay one. A later PROPOSE builds a fresh round from scratch
      *    (:4620-4645), which overwrites every field cleared here.
-     *  - `current_view` is NOT touched. It is written at exactly five
+     *  - `current_view` is NOT touched. It is written at exactly four
      *    places — bft.c:5040 (round entry from a proposal), bft.c:7703
-     *    (view-change quorum), bft.c:8156 (NEW_VIEW accept),
-     *    nodus_witness_peer.c:836 (IDENT adoption) and
-     *    nodus_witness_db.c:2176 (restore) — and none of them is here.
+     *    (view-change quorum), bft.c:8196 (NEW_VIEW accept) and
+     *    nodus_witness_db.c:2176 (restore); the IDENT adoption that was
+     *    the fifth is DELETED (v0.19.24) — and none of them is here.
      *    Leader election therefore sees no change, so this can neither
      *    invent a leader nor skip one.
      *  - `view_changes[]`, `last_prepared`, `reproposal_*` and
@@ -9291,14 +9291,14 @@ void nodus_witness_bft_check_timeout(nodus_witness_t *w) {
          * chain.
          *
          * THE is_leader RE-CHECK is not redundant with the arm-side one:
-         * `current_view` can move under an IDLE node between the two
-         * (nodus_witness_peer.c:783, IDENT adoption), and a node that
-         * became the leader in the meantime must SEND rather than rotate
-         * away from its own view. Such a node simply stays armed and
-         * harmless — it disarms at its next commit, at the next accepted
-         * PROPOSE, or at the next completed view change.
+         * `current_view` can still move under an IDLE node between the
+         * two — the remaining way is handle_newview's accept (:8196);
+         * the IDENT adoption this used to cite was DELETED in v0.19.24.
+         * A node that became the leader in the meantime must SEND rather
+         * than rotate away from its own view. Such a node stays armed
+         * and harmless: it disarms at its next commit, PROPOSE, or VC.
          *
-         * `time_ms()` has one-second granularity (:103), so `>` means
+         * `time_ms()` has one-second granularity (:105), so `>` means
          * the full round_timeout_ms has genuinely elapsed — the same
          * comparison the round timeout below uses.
          *
@@ -9416,12 +9416,12 @@ void nodus_witness_bft_check_timeout(nodus_witness_t *w) {
          * from a round that ended long ago and escalate the target on
          * the next tick, forever.
          *
-         * SAFETY. `current_view` is NOT touched here; it advances only
-         * on quorum. Its five write sites are bft.c:5040 (round entry
-         * from a proposal), bft.c:7703 (the view-change quorum in
-         * bft_vc_check_quorum), bft.c:8156 (the NEW_VIEW accept),
-         * nodus_witness_peer.c:836 (IDENT adoption) and
-         * nodus_witness_db.c:2176 (restore) — P3 adds none of them. The
+         * SAFETY. `current_view` is NOT touched here; only bft.c:7703
+         * moves it on quorum. Its four write sites are bft.c:5040 (round
+         * entry from a proposal), bft.c:7703 (the view-change quorum in
+         * bft_vc_check_quorum), bft.c:8196 (the NEW_VIEW accept) and
+         * nodus_witness_db.c:2176 (restore); the IDENT adoption that was
+         * the fifth is DELETED (v0.19.24) — P3 adds none of them. The
          * TARGET is the ordinary current_view + 1 that
          * initiate_view_change picks; this path invents no rule.
          *

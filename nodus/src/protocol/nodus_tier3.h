@@ -347,14 +347,26 @@ typedef struct {
  *                             the leader's T3 envelope signature already
  *                             covers these keys.
  *
- * SIZE. One entry is 4659 B, and T3 encodes into NODUS_T3_MAX_MSG_SIZE
- * (128 KB) — so the sender attaches QUORUM-many signatures (the minimal
- * sufficient proof), sorted by voter_id for one canonical encoding.
- * That is comfortable at the shipped n=7 (~22 KB) and bounded around
- * quorum ~27. This ceiling is PRE-EXISTING — VIEW_CHANGE ships the same
- * payload — and is filed separately in nodus/BUGS.md, not introduced
- * here. A cert that will not fit must NEVER be sent as a stripped claim:
- * the leader fails closed and lets the view rotate. */
+ * SIZE. One entry is 4659 B. The binding cap on this path is NOT the
+ * 128 KB NODUS_T3_MAX_MSG_SIZE. Both VIEW_CHANGE
+ * (nodus_witness_bft.c:7357) and NEW_VIEW (nodus_witness_bft.c:7890)
+ * are sent through nodus_witness_bft_broadcast
+ * (nodus_witness_bft.c:774), which encodes into a HEAP buffer of
+ * NODUS_W_MAX_SYNC_RSP_SIZE = 1 MB (nodus_witness_bft.c:805; the
+ * constant is defined above in this header), and nodus_t3_verify
+ * (nodus_tier3.c:2238) heap-allocates the SAME 1 MB — so send and
+ * verify are symmetric. The frame itself is bounded by
+ * NODUS_MAX_FRAME_TCP = 5 MB (nodus_types.h:49).
+ *
+ * 1 MB holds about 225 entries at 4659 B, so the sender can attach
+ * QUORUM-many signatures (the minimal sufficient proof), sorted by
+ * voter_id for one canonical encoding, and quorum-many FITS for every
+ * committee size this array supports: reproposal_sigs is sized
+ * NODUS_T3_MAX_WITNESSES = 128 (nodus_types.h:152), and
+ * dna_bft_quorum(128) = 86 (nodus_witness_bft.c:7069) — about 400 KB.
+ * The shipped n=7 (quorum 5) is ~22 KB. A cert that will not fit must
+ * NEVER be sent as a stripped claim: the leader fails closed and lets
+ * the view rotate. */
 typedef struct {
     uint32_t    new_view;
     uint32_t    n_proofs;
