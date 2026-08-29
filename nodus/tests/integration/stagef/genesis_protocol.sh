@@ -169,8 +169,55 @@ if [ $SCENARIOS_ONLY -eq 0 ]; then
     fi
 fi
 
+# ── Scripts that MUST NOT be in an automated sweep ───────────────────
+#
+# Running the whole directory blindly is NOT a clean sweep, and the
+# README says so at its "Phase 3" bullet. Two scripts here exit non-zero
+# BY DESIGN, and including them made this runner's own red meaningless:
+# a reader who sees `SCENARIOS_RC=1` without opening the per-scenario
+# output concludes the tree is broken when it is not. That cost a full
+# misattribution round on 2026-08-28 — three scenarios that never ran
+# (missing NODUS_FAULT_*) plus these two were reported as eight code
+# failures; exactly one was real, and it was in a test's assertion.
+#
+# To ADD an entry: it must be a script whose non-zero exit is the
+# CORRECT result on a healthy tree, and the reason must already be
+# written in the README's scenario tables. Anything else is a failure
+# and belongs in the count.
+#
+#   test_med28_negative.sh — a NEGATIVE CONTROL. It runs the MED-28
+#     injection against a build with the retention call REMOVED, and is
+#     driven manually against a throwaway neutralized build in /tmp.
+#     Against a healthy build it fails with "a node retained a batch —
+#     this build is NOT neutralized", and that failure is the CORRECT
+#     result. The README: "Never add it to an automated run."
+#   test_v2_grow_7_20.sh — marked "BROKEN — do not run" in the README.
+#     It wants -DNODUS_V2_ACTIVATION=ON, an option deleted with the
+#     activation ceremony (O15J Faz 3). Rewriting it is Faz 4's job.
+#
+# Excluded scripts are ANNOUNCED, never silently skipped — a reader must
+# be able to see that the sweep did not cover them.
+GENESIS_EXCLUDE=(
+    "test_med28_negative"
+    "test_v2_grow_7_20"
+)
+
+is_excluded() {
+    local base="$1" e
+    for e in "${GENESIS_EXCLUDE[@]}"; do
+        [ "$base" = "$e" ] && return 0
+    done
+    return 1
+}
+
 banner "Phase 3: scenario tests (alphabetical, exit-code only)"
 for t in "$HERE"/tests/*.sh; do
+    base=$(basename "$t" .sh)
+    if is_excluded "$base"; then
+        echo "  [EXCLUDED] $base — non-zero exit is the CORRECT result here;"
+        echo "             see GENESIS_EXCLUDE in this script. NOT swept."
+        continue
+    fi
     run_one "$t"
 done
 
