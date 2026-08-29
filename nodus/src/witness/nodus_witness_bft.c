@@ -7244,14 +7244,16 @@ int nodus_witness_bft_initiate_view_change(nodus_witness_t *w) {
      * place when it returns the phase to IDLE. So an IDLE node's height
      * field is the height it LAST worked on — i.e. <= the committed tip.
      *
-     * Two of this function's three callers already hold tip+1 there and
-     * are unaffected: the own-round-timeout entry (:8011) and the
-     * escalation (:7965) both run from inside a live round. The THIRD —
-     * the f+1 join at :6866, reached from handle_viewchg, which has no
-     * phase gate — can pull a node in straight from IDLE, carrying that
-     * stale height. Without this normalization the P1(b) release below
-     * would read `tip >= block_height` as true on the very next tick and
-     * kill the join before it could vote; the joiner would be silenced
+     * FIVE callers reach this function, and they split two ways. TWO run
+     * from inside a LIVE round and already hold tip+1, so for them this
+     * block is a no-op: the view-change escalation (:9562, whose phase is
+     * already NODUS_W_PHASE_VIEW_CHANGE) and the own-round-timeout entry
+     * (:9626). THREE can enter straight from IDLE carrying that stale
+     * height — the f+1 join at :7669, reached from handle_viewchg, which
+     * has no phase gate, and the two IDLE deadmen, P2 at :9313 and P3 at
+     * :9442. Without this normalization the P1(b) release below would
+     * read `tip >= block_height` as true on the very next tick and kill
+     * the entry before it could vote; the joiner would be silenced
      * exactly as O15C-C D1 silenced it, one mechanism further along.
      *
      * A view change is about the NEXT block, so tip+1 is what the field
@@ -7267,6 +7269,56 @@ int nodus_witness_bft_initiate_view_change(nodus_witness_t *w) {
             w->round_state.block_height = committed_tip + 1;
     }
 
+    /* O15M — STAMP THE PHASE CLOCK WHERE THE PHASE CHANGES.
+     *
+     * THE INVARIANT: while `round_state.phase` is
+     * NODUS_W_PHASE_VIEW_CHANGE, `phase_start_time` is the age of the
+     * CURRENT target's window — never a window inherited from a round
+     * that already ended. The two writes belong together, so they sit
+     * together.
+     *
+     * WHY HERE AND NOT AT THE CALL SITES. Of the five callers, four
+     * stamp the clock by hand in the same block just before calling —
+     * P2 at :9312, P3 at :9441, the escalation at :9555 and the own
+     * round timeout at :9615 — and the f+1 join at :7669 does not. A
+     * node pulled into a view change by that join therefore measured its
+     * budget from whatever `phase_start_time` its LAST round left
+     * behind: the field is written at round entry only (:4216 leader,
+     * :5063 follower, :5916 on PREVOTE quorum), and the round-equality
+     * reset in handle_commit (:6984-6987) returns the phase to IDLE
+     * without touching it. That leftover stamp has no bound on its age,
+     * and it only has to exceed viewchg_timeout_ms (10 s) for the
+     * escalation at :9512 to fire on the very next tick — which for a
+     * node whose previous round ran its full round_timeout_ms (15 s,
+     * nodus_types.h:161-162) it already does. That is the O15H D2 shape,
+     * re-entered through a new door.
+     *
+     * WHY AFTER THE EARLY RETURN AT :7226, NOT BEFORE IT. Past that
+     * return the call is genuinely new work — a first vote, or a new
+     * target — so restarting the window is what the invariant asks for.
+     * Stamping BEFORE the return would let a REPEATED call restart an
+     * in-flight window and starve the escalation at :9512 forever, since
+     * that branch is the only thing that ever gives up on a target.
+     * HONESTLY: no current caller can do that. The escalation forces
+     * `view_change_voted` false first (:9553) and the f+1 join is gated
+     * on it being false (:7656); P2 and P3 both live inside the IDLE
+     * branch of nodus_witness_bft_check_timeout and this call moves the
+     * phase out of IDLE, so neither can re-enter until something returns
+     * it there (P2 additionally spends its deadline at :9311, P3
+     * re-stamps its window at :9419). The placement is therefore a
+     * defensive choice against a FUTURE caller, not a fix for a live
+     * path.
+     *
+     * WHAT THIS DOES NOT FIX, and why the four hand-stamps are KEPT
+     * rather than deleted as redundant. When the early return DOES fire
+     * — the flags left true by a dead episode, which :6984-6987 produces
+     * because it resets the phase and writes NEITHER flag — this
+     * function returns without transitioning, without self-recording and
+     * without re-broadcasting. Nothing here runs. In that state the
+     * caller's own stamp is the ONLY thing keeping the escalation's
+     * budget honest, and the own-round-timeout site at :9615 is the one
+     * that reaches it. */
+    w->round_state.phase_start_time = time_ms();
     w->round_state.phase = NODUS_W_PHASE_VIEW_CHANGE;
 
     /* Record our own view-change vote, carrying our own last_prepared.
@@ -7710,8 +7762,9 @@ static int bft_vc_check_quorum(nodus_witness_t *w) {
      * WHY THIS IS SAFE. Initiating a view change is always safe:
      * `current_view` advances ONLY on quorum, in bft_vc_check_quorum
      * (this function). It is written at exactly five places —
-     * bft.c:4622 (round entry from a proposal), the assignment above,
-     * the NEW_VIEW accept, nodus_witness_peer.c:783 (IDENT adoption) and
+     * bft.c:5040 (round entry from a proposal), the assignment above,
+     * bft.c:8156 (the NEW_VIEW accept),
+     * nodus_witness_peer.c:836 (IDENT adoption) and
      * nodus_witness_db.c:2176 (restore) — and P2 adds none of them. No
      * vote content changes either: the fire site calls
      * nodus_witness_bft_initiate_view_change, which carries
@@ -7867,6 +7920,46 @@ int nodus_witness_bft_handle_newview(nodus_witness_t *w,
 
     const nodus_t3_newview_t *nv = &msg->newview;
     const nodus_t3_header_t *hdr = &msg->header;
+
+    /* O15M — A REPLAY CHECK BELONGS HERE AND IS NOT SAFE TO ADD NAIVELY.
+     * MEASURED, then REVERTED. Read this before trying again.
+     *
+     * THE GAP IS REAL. The other four consensus handlers call is_replay
+     * (handle_propose :4880, handle_vote :5477, handle_commit :6536,
+     * handle_viewchg :7327). This one does not, and it WRITES
+     * `w->current_view` (:8156) and persists it. A captured NEW_VIEW
+     * frame stays validly signed forever, so re-sending it at a chosen
+     * moment against a chosen subset of nodes moves their view up while
+     * others stay put — and `current_view` decides leader election.
+     * Today that is masked by handle_propose copying the view back DOWN
+     * unconditionally (:5040), which is the write O15M set out to close.
+     *
+     * WHY THE OBVIOUS FIX IS WRONG. Adding
+     * `if (is_replay(hdr->sender_id, hdr->nonce, hdr->timestamp))
+     *      return -1;` here — exactly the line the other four carry —
+     * STALLS THE CHAIN. Measured 2026-08-28 on the 7-node harness at
+     * DNAC_EPOCH_LENGTH=3 with precommit-drop injection
+     * (NODUS_FAULT_DROP_TYPE=precommit, DROP_VC_ROTATE=2):
+     * `test_newview_convergence.sh` fails with "chain did not advance
+     * past 47 within 240 s". The SAME build with only this line removed
+     * passes (rc=0). The phase-clock stamp added in the same season is
+     * NOT implicated — that was the point of the bisect.
+     *
+     * The reasoning that justified adding it — "every send draws a fresh
+     * CSPRNG nonce in fill_header (:761), so a genuine message can never
+     * collide with the cache; only a byte-identical replay is refused" —
+     * is TRUE about nonces and still did not predict the stall. Whatever
+     * legitimately re-enters this handler is therefore NOT a fresh send:
+     * candidates worth investigating before a second attempt are one
+     * frame arriving over two connections to the same peer, and
+     * is_replay INSERTING the nonce on a call whose handler later
+     * refuses the message for a transient reason (committee not
+     * loadable, cert unverifiable), so that the delivery which WOULD
+     * have succeeded is then refused as a duplicate.
+     *
+     * DO NOT re-add the bare line. A correct fix needs a replay rule
+     * that admits the legitimate re-entry this scenario depends on, and
+     * it needs test_newview_convergence green to prove it. */
 
     /* CRITICAL-2: Chain ID validation */
     if (!verify_chain_id(w, hdr->chain_id))
@@ -9123,9 +9216,9 @@ void nodus_witness_bft_check_timeout(nodus_witness_t *w) {
      *    unsay one. A later PROPOSE builds a fresh round from scratch
      *    (:4620-4645), which overwrites every field cleared here.
      *  - `current_view` is NOT touched. It is written at exactly five
-     *    places — bft.c:4622 (round entry from a proposal), bft.c:6900
-     *    (view-change quorum), bft.c:7241 (NEW_VIEW accept),
-     *    nodus_witness_peer.c:783 (IDENT adoption) and
+     *    places — bft.c:5040 (round entry from a proposal), bft.c:7703
+     *    (view-change quorum), bft.c:8156 (NEW_VIEW accept),
+     *    nodus_witness_peer.c:836 (IDENT adoption) and
      *    nodus_witness_db.c:2176 (restore) — and none of them is here.
      *    Leader election therefore sees no change, so this can neither
      *    invent a leader nor skip one.
@@ -9209,15 +9302,26 @@ void nodus_witness_bft_check_timeout(nodus_witness_t *w) {
          * the full round_timeout_ms has genuinely elapsed — the same
          * comparison the round timeout below uses.
          *
-         * THE CLOCK RE-STAMP IS MANDATORY, not decoration.
-         * initiate_view_change does NOT stamp phase_start_time, and the
-         * adoption block only stamps when the phase is ALREADY
-         * VIEW_CHANGE (:6807-6808) — which it is not, since we are
-         * entering from IDLE. Without the stamp, the VIEW_CHANGE branch
-         * above would measure this view change's age from a round that
-         * ended long ago and escalate the target on the very next tick,
-         * forever: the O15H D2 defect, re-entered through a new door.
-         * The round-timeout path below stamps for the identical reason.
+         * THE CLOCK RE-STAMP IS KEPT, and it is not decoration.
+         *
+         * O15M made initiate_view_change stamp phase_start_time itself,
+         * beside the write that moves the phase to VIEW_CHANGE, so the
+         * invariant "while the phase is VIEW_CHANGE, phase_start_time is
+         * the age of the CURRENT target's window" no longer depends on
+         * every caller remembering. That covers the ordinary path from
+         * here. What it does not cover is the case where
+         * initiate_view_change returns at its early return without
+         * reaching its own stamp — the dead-episode flags described at
+         * the round-timeout site below — and this stamp is what still
+         * bounds the escalation's budget then. The adoption block in
+         * handle_viewchg stamps only when the phase is ALREADY
+         * VIEW_CHANGE (:7610-7611), which it is not here: we are
+         * entering from IDLE. Without a stamp on either side, the
+         * VIEW_CHANGE branch above would measure this view change's age
+         * from a round that ended long ago and escalate the target on
+         * the very next tick, forever: the O15H D2 defect, re-entered
+         * through a new door. The round-timeout path below keeps its
+         * stamp for the identical reason.
          *
          * The HEIGHT anchor needs nothing here — initiate_view_change's
          * P1(a) normalization re-anchors a stale IDLE round_state at
@@ -9298,18 +9402,25 @@ void nodus_witness_bft_check_timeout(nodus_witness_t *w) {
          * the very first tick, which is the O15H D2 churn shape entering
          * through a new door.
          *
-         * THE PHASE-CLOCK RE-STAMP IS MANDATORY for P2's reason exactly:
-         * initiate_view_change does not stamp phase_start_time, and the
-         * adoption block only stamps when the phase is ALREADY
-         * VIEW_CHANGE (:6807-6808) — which it is not, entering from
-         * IDLE. Without it the VIEW_CHANGE branch below would measure
-         * this view change's age from a round that ended long ago and
-         * escalate the target on the next tick, forever.
+         * THE PHASE-CLOCK RE-STAMP IS KEPT for P2's reason exactly.
+         * Since O15M, initiate_view_change stamps phase_start_time
+         * itself, beside the write that moves the phase to VIEW_CHANGE,
+         * so the invariant holds for the ordinary path from here without
+         * this line. It does NOT hold when initiate_view_change returns
+         * at its early return — the dead-episode flags — and this stamp
+         * is what bounds the escalation's budget in that state. The
+         * adoption block in handle_viewchg stamps only when the phase is
+         * ALREADY VIEW_CHANGE (:7610-7611), which it is not here: we are
+         * entering from IDLE. Without a stamp on either side the
+         * VIEW_CHANGE branch below would measure this view change's age
+         * from a round that ended long ago and escalate the target on
+         * the next tick, forever.
          *
          * SAFETY. `current_view` is NOT touched here; it advances only
-         * on quorum. Its five write sites are bft.c:4622,
-         * bft_vc_check_quorum, the NEW_VIEW accept,
-         * nodus_witness_peer.c:783 (IDENT adoption) and
+         * on quorum. Its five write sites are bft.c:5040 (round entry
+         * from a proposal), bft.c:7703 (the view-change quorum in
+         * bft_vc_check_quorum), bft.c:8156 (the NEW_VIEW accept),
+         * nodus_witness_peer.c:836 (IDENT adoption) and
          * nodus_witness_db.c:2176 (restore) — P3 adds none of them. The
          * TARGET is the ordinary current_view + 1 that
          * initiate_view_change picks; this path invents no rule.
@@ -9501,18 +9612,20 @@ void nodus_witness_bft_check_timeout(nodus_witness_t *w) {
         round_state_free_batch(&w->round_state);
 
         w->round_state.phase = NODUS_W_PHASE_VIEW_CHANGE;
-        /* O15H D2 — RE-STAMP THE PHASE CLOCK.
+        /* O15H D2 — RE-STAMP THE PHASE CLOCK. THIS ONE IS LOAD-BEARING,
+         * and it is the reason O15M did not delete the hand-stamps.
          *
          * `elapsed` above is measured from phase_start_time, and that
-         * field is only ever written at round entry (:3997 leader,
-         * :4633 follower, :5249 on PREVOTE quorum). Entering
+         * field is only ever written at round entry (:4216 leader,
+         * :5063 follower, :5916 on PREVOTE quorum). Entering
          * NODUS_W_PHASE_VIEW_CHANGE without re-stamping left the
          * VIEW_CHANGE branch of this function measuring the view
          * change's age from the ROUND's start — and since
          * viewchg_timeout_ms (10 s) is SHORTER than round_timeout_ms
-         * (15 s, nodus_types.h:161), `elapsed > viewchg_timeout_ms` was
-         * already true the moment the view change began. The next tick
-         * (~150 ms) therefore aborted it and wiped view_change_count.
+         * (15 s, nodus_types.h:161-162), `elapsed > viewchg_timeout_ms`
+         * was already true the moment the view change began. The next
+         * tick (~150 ms) therefore aborted it and wiped
+         * view_change_count.
          *
          * Signature in the 2026-08-25 rehearsal: "view change timeout
          * (16000 ms)" printing the SAME elapsed as the round timeout
@@ -9522,7 +9635,23 @@ void nodus_witness_bft_check_timeout(nodus_witness_t *w) {
          * only became fatal at N=20.
          *
          * (16000 not 15000 because time_ms() is nodus_time_now()*1000,
-         * i.e. one-second granularity — :101.) */
+         * i.e. one-second granularity — :105-106.)
+         *
+         * O15M — WHY THIS LINE SURVIVES THE STAMP INSIDE
+         * initiate_view_change. That stamp sits beside the phase write
+         * and cannot be reached when the function returns at its early
+         * return (:7226), which fires on `view_change_in_progress &&
+         * view_change_voted`. Those two flags can BOTH be true here from
+         * an episode that is already dead: the round-equality reset in
+         * handle_commit (:6984-6987) puts the phase back to IDLE and
+         * writes NEITHER of them, so a node that started a view change,
+         * then took a remote COMMIT for the same round, then opened a
+         * fresh round and timed out on it, arrives here still flagged.
+         * The call below then returns immediately — no transition, no
+         * self-record, no re-broadcast — and this line is the only thing
+         * that gives the escalation above a window measured from NOW
+         * rather than from the round that has just ended. Delete it and
+         * D2 returns for exactly that state. */
         w->round_state.phase_start_time = time_ms();
 
         fprintf(stderr, "%s: round timeout (%lu ms), initiating view change\n",

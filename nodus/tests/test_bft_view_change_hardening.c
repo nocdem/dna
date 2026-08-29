@@ -2189,16 +2189,53 @@ int main(void) {
         chain_db_drop(w, dir);
     }
 
-    /* ── §11c P1(a) — a view change JOINED FROM IDLE survives the tick ─
+    /* ── §11c — a view change JOINED FROM IDLE survives the tick ──────
      *
-     * handle_viewchg has no phase gate, so its f+1 join can pull a node
-     * in straight from IDLE. An IDLE node's round_state still carries the
-     * height it LAST worked on — which is <= the committed tip — so
-     * without the P1(a) normalization the joiner enters VIEW_CHANGE
-     * already matching the release's condition and the very next tick
-     * throws it back out. It would be silenced exactly as O15C-C D1
-     * silenced it, one mechanism further along. ─────────────────────── */
-    printf("§11c P1(a) — a view change joined from IDLE is not released\n");
+     * WHAT IT PROVES — two properties of the SAME entry, either of which
+     * alone would silence a joiner:
+     *
+     *   P1(a), the HEIGHT. handle_viewchg has no phase gate, so its f+1
+     *     join can pull a node in straight from IDLE. An IDLE node's
+     *     round_state still carries the height it LAST worked on — which
+     *     is <= the committed tip — so without the normalization inside
+     *     nodus_witness_bft_initiate_view_change the joiner enters
+     *     VIEW_CHANGE already matching the P1 release's condition and the
+     *     very next tick throws it back out. It would be silenced exactly
+     *     as O15C-C D1 silenced it, one mechanism further along.
+     *
+     *   O15M, the CLOCK. That same entry inherits whatever
+     *     phase_start_time its last round left behind, and of the five
+     *     callers of initiate_view_change the f+1 join is the ONE that
+     *     does not stamp the clock itself before calling. If
+     *     initiate_view_change does not stamp it either, the escalation
+     *     branch measures this view change's age from the finished round,
+     *     finds the 10 s budget already spent, and walks the TARGET away
+     *     from the one the cluster is converging on — the O15H D2 shape,
+     *     reached through the join door.
+     *
+     * WHAT IT REQUIRES: nothing beyond a default build. No compile flag
+     * (no QGP_FAULT_INJECT, no DNAC_EPOCH_LENGTH override) and no
+     * environment variable (no STAGEF_*, no NODUS_FAULT_*). The two
+     * budgets are the fixture's own arguments — round 15000 / viewchg
+     * 10000, the production relationship — and the chain is this
+     * section's own temporary database.
+     *
+     * WHAT IT LEAVES BEHIND: nothing. chain_db_drop removes the
+     * /tmp/test_bft_p1_join_* directory and frees the witness. No node is
+     * restarted, no file is armed, no process-wide state is touched.
+     *
+     * HOW IT CAN LIE, two ways, both closed below:
+     *   - If the f+1 join never fires, the tick has no view change to
+     *     escalate and every assertion here passes vacuously. The two
+     *     CHECKs immediately after the join loop are the anti-vacuity
+     *     guards — we actually voted, and the phase actually moved — and
+     *     they MUST stay in front of the tick.
+     *   - If the clock were aged by less than a second it would be
+     *     invisible: time_ms() is nodus_time_now()*1000, so a sub-second
+     *     offset rounds away and the escalation would not fire even on
+     *     the parent tree. The age below is whole seconds for that
+     *     reason. ──────────────────────────────────────────────────── */
+    printf("§11c — a view change joined from IDLE is not released\n");
     {
         peer_t p[6];
         for (int i = 0; i < 6; i++) peer_make(&p[i]);
@@ -2220,9 +2257,22 @@ int main(void) {
         w->round_state.round = 6;
         w->round_state.block_height = T;
         w->round_state.phase = NODUS_W_PHASE_IDLE;
-        /* Stamp the clock fresh, so the ONLY thing that could move the
-         * phase on the tick below is the P1 release. */
-        w->round_state.phase_start_time = nodus_time_now() * 1000ULL;
+        /* AGE THE CLOCK PAST THE VIEW-CHANGE BUDGET, BEFORE THE JOIN.
+         * This is what makes the section discriminate. On the parent
+         * tree nothing on the join path stamps the phase clock, so the
+         * joiner INHERITS this aged value and the tick below computes
+         * elapsed == 12000 > the 10000 ms view-change budget: the
+         * escalation fires and moves the target off 1. With the O15M
+         * stamp at view-change entry, the joiner starts a fresh window
+         * instead and the same tick escalates nothing.
+         *
+         * 12000 is a whole number of seconds because time_ms() has
+         * ONE-SECOND resolution (nodus_time_now()*1000 — see age_phase's
+         * own note): a sub-second offset would be invisible and this
+         * section would then pass on BOTH trees. It clears the 10000 ms
+         * budget by two full seconds and stays under the 15000 ms round
+         * budget, so no assertion here rides on a margin. */
+        age_phase(w, 12000);
 
         nodus_t3_msg_t vc;
         for (int i = 0; i < 3; i++) {
@@ -2235,22 +2285,35 @@ int main(void) {
         CHECK(w->round_state.phase == NODUS_W_PHASE_VIEW_CHANGE,
               "and moved our phase to VIEW_CHANGE");
 
-        /* ⚠ THE DISCRIMINATING ASSERTION. Pre-P1(a) the joiner keeps the
-         * committed height T here, and `tip >= block_height` is already
-         * true before it has said a word. */
+        /* ⚠ DISCRIMINATING ASSERTION #1 — P1(a), the HEIGHT. Without the
+         * normalization the joiner keeps the committed height T here,
+         * and `tip >= block_height` is already true before it has said a
+         * word. */
         CHECK(w->round_state.block_height == T + 1,
               "P1(a) re-anchored the joined view change at tip+1");
 
-        /* Re-stamp immediately before the tick. initiate_view_change does
-         * NOT stamp the phase clock, and the adoption block only does so
-         * when the phase is ALREADY VIEW_CHANGE (the adoption stamp in handle_viewchg) — which
-         * it was not, since we joined from IDLE. So the joiner inherits
-         * whatever clock it had, and this test would otherwise be relying
-         * on a 10 s margin instead of on a fact. With the stamp here the
-         * escalation branch is unreachable BY CONSTRUCTION, and the P1
-         * release is the only thing left that could move the phase. */
-        w->round_state.phase_start_time = nodus_time_now() * 1000ULL;
         nodus_witness_bft_check_timeout(w);
+
+        /* ⚠ DISCRIMINATING ASSERTION #2 — O15M, the CLOCK, and it is the
+         * only assertion in this section that separates the two trees on
+         * the stamp. On the parent tree the joiner inherits the 12 s-old
+         * stamp aged above, the escalation branch finds
+         * `elapsed > viewchg_timeout_ms` and moves the target 1 -> 2, so
+         * THIS LINE FAILS THERE. It can only pass because
+         * nodus_witness_bft_initiate_view_change now stamps
+         * phase_start_time at view-change entry, beside the write that
+         * moves the phase.
+         *
+         * The target is what has to be asserted, for the reason §1
+         * already records: escalation leaves the phase at VIEW_CHANGE and
+         * re-self-records, so phase, in_progress and voted all look
+         * healthy either way. Only the target moves — and a view change
+         * that silently advances its target can never accumulate a
+         * quorum. */
+        CHECK(w->view_change_target == 1,
+              "the tick did NOT escalate — the joiner's window started at "
+              "the join, not at the round that ended before it");
+
         CHECK(w->round_state.phase == NODUS_W_PHASE_VIEW_CHANGE,
               "the tick did NOT release the freshly joined view change");
         CHECK(w->view_change_in_progress && w->view_change_voted,
@@ -2316,12 +2379,16 @@ int main(void) {
               "and we actually voted, so peers can count us");
         CHECK(w->awaiting_propose_deadline_ms == 0,
               "the spent deadline disarmed — it must not re-fire every tick");
-        /* The D2 discipline: initiate_view_change does NOT stamp the
-         * phase clock and the adoption block only stamps when the phase
-         * is ALREADY VIEW_CHANGE (the adoption stamp in handle_viewchg), so entering from
-         * IDLE without a stamp here would leave the view change
-         * measuring its age from a round that ended long ago and
-         * escalating the target on the very next tick, forever. */
+        /* The D2 discipline: while the phase is VIEW_CHANGE,
+         * phase_start_time must be the age of the CURRENT target's
+         * window, never one inherited from a round that ended long ago —
+         * otherwise the escalation branch spends the whole budget on the
+         * first tick and walks the target forever. Since O15M,
+         * initiate_view_change stamps the clock itself beside the phase
+         * write; P2's own stamp before the call covers the one state that
+         * entry cannot reach, the early return on flags left true by a
+         * dead episode. The assertion below is the same property either
+         * way, asked of the STATE rather than of a code path. */
         CHECK(w->round_state.phase_start_time >=
                   nodus_time_now() * 1000ULL - 1000ULL,
               "the phase clock was re-stamped at the fire (D2 discipline)");
@@ -2730,8 +2797,8 @@ int main(void) {
               "and we actually voted, so peers can count us toward f+1");
         CHECK(p3_stamped_now(w->round_state.phase_start_time),
               "the phase clock was re-stamped at the fire (D2 discipline: "
-              "initiate_view_change does not stamp it, and the adoption "
-              "stamp only fires from an ALREADY-VIEW_CHANGE phase)");
+              "in VIEW_CHANGE the clock is the CURRENT target's window, "
+              "never one inherited from a round that already ended)");
         CHECK(p3_stamped_now(w->tip_since_ms),
               "the demand window was re-stamped too — a second rotation "
               "must wait another full window, not fire on the next tick");

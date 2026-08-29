@@ -29,8 +29,36 @@
 #
 #   * the pool was non-empty before the boundary,
 #   * a new epoch_state row exists AT the boundary height,
-#   * the pool DRAINED (settlement emitted), and
+#   * the SETTLED epoch's row is GONE, and
 #   * new UTXOs appeared — the synthetic payouts themselves.
+#
+# ── WHY "GONE" AND NOT "DRAINED TO ZERO" (2026-08-28) ────────────────
+#
+# The third assertion above used to read the accumulator of the HIGHEST
+# epoch_state row before and after, and require it to have DECREASED.
+# That measured two different epochs against each other and could
+# essentially never pass on a live chain.
+#
+# Settlement does not zero anything. apply_epoch_settlement pays the
+# settling epoch out and then DELETES its row — nodus_witness_bft.c, the
+# last statement of that function, whose own comment states the design:
+# "only the current epoch carries a live row; previous-epoch snapshot is
+# discarded". The caller settles `expected_height - DNAC_EPOCH_LENGTH`,
+# i.e. the epoch BEFORE the boundary.
+#
+# So after the boundary the highest row is the NEW epoch, which has been
+# accruing inflation ever since — naturally LARGER than the settled one.
+# The old check compared epoch A's accumulator with epoch B's and
+# reported "the pool was never pushed out" when both halves had in fact
+# worked. Observed 2026-08-28 at DNAC_EPOCH_LENGTH=3: payouts emitted
+# (utxo_set 16 -> 22), boundary row committed, and the assertion still
+# failed on 3200000000 -> 9600000000, on this tree AND on an untouched
+# 11309e06 — because the number it read was never the settled epoch's.
+#
+# The property the test wants is about the SETTLED epoch, and the file
+# already had the right tool for it: epoch_row_at(). It is now used for
+# both halves — the new row exists at the boundary, and the settled row
+# no longer exists.
 #
 # The same lesson is already recorded in test_vset_grow_shrink.sh:80-84
 # ("A blind sleep cannot do this: with no TXs there are no blocks").
@@ -72,11 +100,13 @@ head_height() {
 utxo_count()  {
     sqlite3 "$(node1_db)" "SELECT COUNT(*) FROM utxo_set;"
 }
-# The accumulator of the CURRENT (highest) epoch row.
-pool_accum()  {
+# The accumulator of ONE named epoch. Never "the highest row" — that
+# identity moves across a boundary, which is exactly how the old drain
+# check ended up comparing two different epochs (see the header).
+pool_accum_at() {
     sqlite3 "$(node1_db)" \
         "SELECT COALESCE(epoch_pool_accum,0) FROM epoch_state
-         ORDER BY epoch_start_height DESC LIMIT 1;"
+         WHERE epoch_start_height = $1;"
 }
 epoch_row_at() {
     sqlite3 "$(node1_db)" \
@@ -118,11 +148,18 @@ info "epoch length: $EPOCH_LENGTH · head height: $H0"
 # the settling block is itself committed and observable.
 BOUNDARY=$(( ( H0 / EPOCH_LENGTH + 1 ) * EPOCH_LENGTH ))
 TARGET=$(( BOUNDARY + 2 ))
-info "next epoch boundary: $BOUNDARY (pumping to $TARGET)"
+# The epoch that SETTLES at that boundary is the one before it — the
+# caller passes `expected_height - DNAC_EPOCH_LENGTH` to
+# apply_epoch_settlement. This is the row the assertions below name.
+SETTLING=$(( BOUNDARY - EPOCH_LENGTH ))
+info "next epoch boundary: $BOUNDARY (pumping to $TARGET) · settling epoch starts at $SETTLING"
 
 # ── The pool must be non-empty, or the boundary settles nothing ───────
-POOL_BEFORE=$(pool_accum)
-info "epoch_pool_accum before: $POOL_BEFORE"
+[ "$(epoch_row_at "$SETTLING")" -eq 1 ] || \
+    fail "no epoch_state row at $SETTLING — there is no epoch to settle
+       at boundary $BOUNDARY, so crossing it would prove nothing" 4
+POOL_BEFORE=$(pool_accum_at "$SETTLING")
+info "epoch_pool_accum of the settling epoch ($SETTLING) before: $POOL_BEFORE"
 [ "${POOL_BEFORE:-0}" -gt 0 ] || \
     fail "epoch_pool_accum is 0 before the boundary — nothing to settle,
        so crossing it would prove nothing. Inflation is not accruing." 4
@@ -150,20 +187,24 @@ pump_to_height "$TARGET" "$PUMP_TIMEOUT"
        fire even though the chain passed it" 4
 ok "epoch boundary $BOUNDARY fired (epoch_state row committed)"
 
-# ── Settlement must have DRAINED the pool and PAID OUT ────────────────
-POOL_AFTER=$(pool_accum)
+# ── Settlement must have RETIRED the settled epoch and PAID OUT ───────
 UTXO_AFTER=$(utxo_count)
-info "epoch_pool_accum after: $POOL_AFTER · utxo_set rows after: $UTXO_AFTER"
+info "utxo_set rows after: $UTXO_AFTER"
 
 [ "${UTXO_AFTER:-0}" -gt "${UTXO_BEFORE:-0}" ] || \
     fail "utxo_set did not grow across the boundary ($UTXO_BEFORE ->
        $UTXO_AFTER) — apply_epoch_settlement emitted no synthetic payout" 4
 ok "settlement emitted payouts (utxo_set $UTXO_BEFORE -> $UTXO_AFTER)"
 
-[ "${POOL_AFTER:-0}" -lt "${POOL_BEFORE:-0}" ] || \
-    fail "epoch_pool_accum did not drain ($POOL_BEFORE -> $POOL_AFTER) —
-       the boundary fired but the pool was never pushed out" 4
-ok "epoch pool drained ($POOL_BEFORE -> $POOL_AFTER)"
+# The settled epoch's row is DELETED, not zeroed — see the header. This
+# is the assertion that fails if apply_epoch_settlement never ran for
+# this boundary, and it names ONE epoch so it cannot be satisfied by a
+# different, later row.
+[ "$(epoch_row_at "$SETTLING")" -eq 0 ] || \
+    fail "epoch_state row at $SETTLING still exists after the boundary at
+       $BOUNDARY — the settlement did not retire the epoch it paid out
+       (its accumulator still reads $(pool_accum_at "$SETTLING"))" 4
+ok "settled epoch $SETTLING retired (had $POOL_BEFORE, row now gone)"
 
 # ── Post-settlement: state_root MUST still match across all nodes ─────
 bash "$(dirname "$0")/../stagef_diff.sh" "post-settlement" || exit 3

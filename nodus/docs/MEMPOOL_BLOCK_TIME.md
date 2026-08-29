@@ -103,13 +103,49 @@ when a newer timeout supersedes it, and at teardown.
 `viewchg_timeout_ms` (10 s) once the phase is
 `NODUS_W_PHASE_VIEW_CHANGE`. Because the second budget is the SMALLER of
 the two, the stamp must be reset at every transition or the second budget
-is already spent before it starts. It is now re-stamped at three points:
+is already spent before it starts. It is re-stamped at four points:
 
 | Event | Site | Why |
 |---|---|---|
 | Round entry (propose / accept / PREVOTE quorum) | `bft_start_round*`, `handle_propose`, the PREVOTE-quorum hook | the round budget |
+| **Entering the view change** | `nodus_witness_bft_initiate_view_change`, beside the write that moves the phase | **O15M** — see below |
 | Round timeout → `NODUS_W_PHASE_VIEW_CHANGE` | `check_timeout` | **O15H D2** — without it the view change inherits the round's 15 s and is aborted on the next ~150 ms tick, wiping `view_change_count` |
 | Adopting a HIGHER view-change target | `handle_viewchg` | **O15H D2** — the tally restarts at zero votes, so the window must restart too |
+
+**O15M — the stamp moved to where the phase changes.** The invariant is:
+*while the phase is `NODUS_W_PHASE_VIEW_CHANGE`, `phase_start_time` is the
+age of the CURRENT target's window, never one inherited from a round that
+already ended.* It used to depend on every caller remembering. Four of
+the five callers of `initiate_view_change` stamped by hand; the **f+1
+join** did not, so a node pulled into a view change by a peer's
+VIEW_CHANGE measured its 10 s budget from whatever its last round left
+behind — and a previous round that ran its full 15 s makes that budget
+already spent, so the escalation fired on the very next tick and walked
+the target away from the one the cluster was converging on. That is the
+O15H D2 shape reached through the join door. The stamp now sits beside
+the phase write itself.
+
+**The four hand-stamps are KEPT, not deleted as redundant.**
+`initiate_view_change` returns early when `view_change_in_progress &&
+view_change_voted`, and both flags can be left true by an episode that is
+already over: the round-equality reset in `handle_commit` returns the
+phase to IDLE and writes neither flag. In that state the function returns
+before reaching its own stamp, and the caller's stamp is the only thing
+keeping the escalation's budget honest.
+
+Two consequences worth stating plainly. On the join path the escalation
+now waits a full `viewchg_timeout_ms` instead of firing on the next tick
+— that is the fix, but it does mean a joiner that genuinely cannot
+assemble quorum escalates ~10 s later than it used to. And the four
+callers that hand-stamp now stamp twice; `time_ms()` has one-second
+resolution, so the two values differ by 0 or exactly 1000 ms, and
+`phase_start_time` is never hashed, persisted, or put on the wire.
+
+Regression: `ctest test_bft_view_change_hardening` §11c. It ages the
+phase clock 12 s BEFORE the f+1 join and then asserts
+`view_change_target == 1` after one tick. Removing the stamp makes that
+assertion fail with `view change timeout (12000 ms) … escalating target
+1 -> 2` — verified by running it both ways, not by reading.
 
 Resolution is **one second**, not one millisecond: `time_ms()` is
 `nodus_time_now() * 1000`. A 15 s budget therefore fires at an observed
