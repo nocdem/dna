@@ -39,6 +39,18 @@
                                                   * table a class-201 commit
                                                   * writes and the legacy
                                                   * nullifier walk cannot see */
+#include "witness/nodus_witness_runtime.h"      /* O15N Faz 2B —
+                                                  * nodus_rt_committee_set_hash,
+                                                  * the ONE "DNA.CCSET.v1"
+                                                  * derivation every signer,
+                                                  * the engine and the auth
+                                                  * hook already share.
+                                                  * ALREADY reachable through
+                                                  * nodus_witness_v2_claims.h
+                                                  * above; named here so this
+                                                  * file's dependency does not
+                                                  * rest on another header's
+                                                  * include list. */
 #include "nodus/nodus_chain_config.h"          /* Hard-Fork v1 apply dispatch */
 #include "protocol/nodus_tier3.h"
 #include "server/nodus_server.h"
@@ -191,6 +203,174 @@ static int compute_prepared_preimage(uint32_t view,
     memcpy(out + 52, tx_hash, NODUS_T3_TX_HASH_LEN);
 
     return 0;
+}
+
+/* ── O15N Faz 2B — the VIEW_OK preimage ──────────────────────────── */
+
+/* Preimage layout (148 bytes):
+ *
+ *   [0..7]      "viewok\0\0"        8 bytes: 6 ASCII + 2 NUL pad
+ *   [8..39]     chain_id            32 bytes
+ *   [40..47]    height              uint64 big-endian
+ *   [48..51]    view                uint32 big-endian
+ *   [52..115]   committee_set_hash  64 bytes ("DNA.CCSET.v1")
+ *   [116..147]  voter_id            32 bytes
+ *
+ * Signed via nodus_sign_view_ok under purpose 0x08, which is STRICT
+ * (nodus_sign_purpose_is_strict) — the NDS1 tag is mandatory on the
+ * signing AND the verifying side, so a signature made over the
+ * undecorated bytes is refused.
+ *
+ * WHAT THIS STATEMENT MEANS. Not "I vote for view V" — "I OBSERVED a
+ * view-change quorum for V at height H, under the committee whose set
+ * hash is this". An honest node emits it at exactly one instant: when its
+ * own per-voter tally first reaches quorum (bft_vc_check_quorum). A vote
+ * would NOT be safe to accumulate — voters re-emit at every rung of the
+ * escalation ladder and nothing retracts — but an outcome statement is
+ * produced at most once per (height, view) and describes something that
+ * really happened.
+ *
+ * Field-by-field, why each is in the signed bytes:
+ *
+ *  - chain_id: this network wipes chains and (height, view) pairs repeat
+ *    on the successor. Without it a statement harvested before a wipe
+ *    stays valid after it. Same 32 bytes and the SAME honest label as the
+ *    PREPARED preimage above: w->chain_id is the LEGACY identity, 16
+ *    significant bytes zero-padded to 32 (nodus_witness_set_chain_id,
+ *    nodus_witness.c) — a 128-bit binding, not 256. It is used here for
+ *    the same reason it is used there: verify_chain_id, the message-layer
+ *    gate this backs up, compares these exact bytes, and using a
+ *    different chain identity beside it would be the anomaly.
+ *  - height: a view change is about a specific undecided sequence
+ *    number; without it a statement from one height proves a view at
+ *    every other.
+ *  - view: the counter the statement is evidence for.
+ *  - committee_set_hash: the AUTHORITY the signer measured its own
+ *    quorum against, committing both membership and seat positions
+ *    (nodus_rt_committee_set_hash). A reader that resolves a different
+ *    set knows it cannot judge, instead of judging with the wrong
+ *    denominator.
+ *  - voter_id: makes each statement individual. Without it every signer
+ *    signs identical bytes and one signature is trivially re-labelled
+ *    under another voter's id, so f+1 "distinct" signatures could be one
+ *    signature repeated.
+ *
+ * Why the leading tag is 8 bytes: it matches the other in-preimage tags
+ * in this tree (NODUS_WITNESS_CERT_DOMAIN_TAG, nodus_witness_cert.c) and
+ * the "prepared" tag above. "viewok" is 6 chars, so the two pad bytes are
+ * written EXPLICITLY below — never as a string literal's terminator,
+ * which would leave the second pad byte undefined. */
+#define NODUS_WITNESS_VIEWOK_TAG_LEN        8
+#define NODUS_WITNESS_VIEWOK_TAG_ASCII_LEN  6   /* "viewok", then 2 NUL pad */
+#define NODUS_WITNESS_VIEWOK_CHAIN_ID_LEN   32
+#define NODUS_WITNESS_VIEWOK_SET_HASH_LEN   64
+#define NODUS_WITNESS_VIEWOK_PREIMAGE_LEN   148
+
+/* The layout cannot drift from the constant: every field width is summed
+ * here, the tag is pinned at 8 bytes independently of its ASCII length
+ * (they DIFFER — 6 chars plus 2 pad), and the chain_id width is taken
+ * from the struct field the callers actually pass. */
+_Static_assert(NODUS_WITNESS_VIEWOK_TAG_LEN +
+                   NODUS_WITNESS_VIEWOK_CHAIN_ID_LEN + 8 + 4 +
+                   NODUS_WITNESS_VIEWOK_SET_HASH_LEN +
+                   NODUS_T3_WITNESS_ID_LEN ==
+                   NODUS_WITNESS_VIEWOK_PREIMAGE_LEN,
+               "VIEW_OK preimage field widths must sum to 148");
+_Static_assert(sizeof(((nodus_witness_t *)0)->chain_id) ==
+                   NODUS_WITNESS_VIEWOK_CHAIN_ID_LEN,
+               "VIEW_OK preimage assumes nodus_witness_t.chain_id is 32 bytes");
+_Static_assert(sizeof("viewok") - 1 == NODUS_WITNESS_VIEWOK_TAG_ASCII_LEN,
+               "the VIEW_OK domain tag must be exactly 6 ASCII bytes, "
+               "zero-padded to 8 — the pad is written explicitly");
+_Static_assert(NODUS_WITNESS_VIEWOK_TAG_ASCII_LEN + 2 ==
+                   NODUS_WITNESS_VIEWOK_TAG_LEN,
+               "the VIEW_OK tag is 6 ASCII bytes plus EXACTLY 2 pad bytes; "
+               "both pad bytes are written explicitly, never inherited from "
+               "a string literal's terminator");
+
+static int compute_view_ok_preimage(uint64_t height,
+                                      uint32_t view,
+                                      const uint8_t *set_hash,
+                                      const uint8_t *voter_id,
+                                      const uint8_t *chain_id,
+                                      uint8_t out[NODUS_WITNESS_VIEWOK_PREIMAGE_LEN]) {
+    if (!set_hash || !voter_id || !chain_id || !out) return -1;
+
+    /* [0..7] domain tag: 6 ASCII bytes then TWO explicit NUL pad bytes. */
+    memcpy(out, "viewok", NODUS_WITNESS_VIEWOK_TAG_ASCII_LEN);
+    out[6] = 0x00;
+    out[7] = 0x00;
+
+    /* [8..39] chain_id (32 bytes) */
+    memcpy(out + 8, chain_id, NODUS_WITNESS_VIEWOK_CHAIN_ID_LEN);
+
+    /* [40..47] height (big-endian uint64) */
+    for (int i = 0; i < 8; i++)
+        out[40 + i] = (uint8_t)((height >> ((7 - i) * 8)) & 0xFF);
+
+    /* [48..51] view (big-endian uint32) */
+    out[48] = (uint8_t)((view >> 24) & 0xFF);
+    out[49] = (uint8_t)((view >> 16) & 0xFF);
+    out[50] = (uint8_t)((view >>  8) & 0xFF);
+    out[51] = (uint8_t)(view & 0xFF);
+
+    /* [52..115] committee_set_hash (64 bytes) */
+    memcpy(out + 52, set_hash, NODUS_WITNESS_VIEWOK_SET_HASH_LEN);
+
+    /* [116..147] voter_id (32 bytes) */
+    memcpy(out + 116, voter_id, NODUS_T3_WITNESS_ID_LEN);
+
+    return 0;
+}
+
+/* ── O15N Faz 2B — the committee set hash on the BFT path ────────── */
+
+/* The 64-byte "DNA.CCSET.v1" hash over a resolved committee.
+ *
+ * The derivation itself is NOT reimplemented here: it is
+ * nodus_rt_committee_set_hash (nodus_witness_rt_native.c), the ONE
+ * expression the apply engine, the auth hook and every signer share.
+ * This helper only does what that function's fps[] contract requires —
+ * SHA3-512 each member's pubkey into a fingerprint.
+ *
+ * ⚠ THE ORDER IS NOT SORTED, DELIBERATELY. The fps go in the order the
+ * committee resolver returned them (the stake-ranked seat order), because
+ * the hash commits both MEMBERSHIP AND SEAT POSITIONS — and the seat
+ * order is what leader election reads. Sorting here would make two
+ * committees with the same members but different seats hash identically,
+ * which is exactly the distinction a view-authority statement must keep.
+ *
+ * ⚠ HEAP, NOT STACK. At DNAC_MAX_ACTIVE_VALIDATORS = 128 the fps array is
+ * 8192 bytes; the witness path does not carry multi-kilobyte automatics
+ * (same rule that made load_committee_at_height_alloc heap-allocating).
+ *
+ * A hash-backend failure or an empty committee is a FAULT, not a value:
+ * this returns -1 and the caller fails closed. It never emits a zero or
+ * an "empty set" hash — such a value would be a statement about a
+ * committee that does not exist, and two nodes could agree on it while
+ * agreeing on nothing real.
+ *
+ * @return 0 on success (out64 filled), -1 on any fault. */
+static int compute_committee_set_hash(const nodus_committee_member_t *members,
+                                        int count,
+                                        uint8_t out64[64]) {
+    if (!members || !out64) return -1;
+    if (count <= 0 || count > DNAC_MAX_ACTIVE_VALIDATORS) return -1;
+
+    uint8_t (*fps)[64] = calloc((size_t)count, 64);
+    if (!fps) return -1;
+
+    for (int i = 0; i < count; i++) {
+        if (qgp_sha3_512(members[i].pubkey, DNAC_PUBKEY_SIZE, fps[i]) != 0) {
+            free(fps);
+            return -1;
+        }
+    }
+
+    int rc = nodus_rt_committee_set_hash((const uint8_t (*)[64])fps,
+                                           (uint32_t)count, out64);
+    free(fps);
+    return (rc == 0) ? 0 : -1;
 }
 
 /* ── Replay prevention ───────────────────────────────────────────── */
@@ -8476,6 +8656,279 @@ bool nodus_witness_bft_verify_prepared_cert(nodus_witness_t *w,
 
     free(committee);
     return ok;
+}
+
+/* ════════════════════════════════════════════════════════════════════
+ * O15N Faz 2B — VIEW_OK: producing and verifying view AUTHORITY
+ *
+ * PRIMITIVES ONLY. Nothing in this block is called from any handler,
+ * tick or commit path, and nothing here reads or writes w->current_view,
+ * w->view_change_* or any round state. Wiring them — and changing when
+ * the view counter may move — is a separate slice.
+ * ════════════════════════════════════════════════════════════════════ */
+
+int nodus_witness_bft_sign_view_ok(nodus_witness_t *w,
+                                     uint64_t height, uint32_t view,
+                                     uint8_t set_hash_out[64],
+                                     nodus_sig_t *sig_out) {
+    if (!w || !set_hash_out || !sig_out) return -1;
+    if (!w->server) return -1;
+
+    /* The committee at the height the statement is ABOUT — the same
+     * authority a reader will resolve, so signer and verifier measure
+     * against one set. */
+    nodus_committee_member_t *committee = NULL;
+    int c_count = 0;
+    int lc_rc = load_committee_at_height_alloc(w, height, &committee, &c_count);
+    if (lc_rc != 0) {
+        /* A node that cannot establish who is entitled to decide must not
+         * certify a decision. Same fail-closed rule as is_leader and
+         * verify_prepared_cert above. */
+        free(committee);
+        fprintf(stderr,
+                "%s: VIEW_OK — CANNOT ESTABLISH THE COMMITTEE at height "
+                "%llu (view=%u rc=%d%s); refusing to sign a statement whose "
+                "authority this node cannot name\n",
+                LOG_TAG, (unsigned long long)height, view, lc_rc,
+                w->db ? "" : ", chain database not open");
+        return -1;
+    }
+    if (c_count == 0) {
+        /* rc 0 with count 0 is a COMMITTED answer — pre-genesis, no
+         * committee at this height. verify_prepared_cert treats that as
+         * the documented gossip-roster bootstrap, but this statement
+         * cannot: its whole content is a set hash, and a set hash over an
+         * EMPTY set is not a statement about anything. Refusing here is
+         * also what keeps compute_committee_set_hash from ever having to
+         * invent a value for count 0. */
+        free(committee);
+        fprintf(stderr,
+                "%s: VIEW_OK — no committee at height %llu (view=%u, "
+                "pre-genesis); a set hash over an empty set is not a "
+                "statement, refusing to sign\n",
+                LOG_TAG, (unsigned long long)height, view);
+        return -1;
+    }
+
+    uint8_t set_hash[64];
+    if (compute_committee_set_hash(committee, c_count, set_hash) != 0) {
+        free(committee);
+        fprintf(stderr,
+                "%s: VIEW_OK — committee set-hash over %d members failed at "
+                "height %llu; refusing to sign\n",
+                LOG_TAG, c_count, (unsigned long long)height);
+        return -1;
+    }
+    free(committee);
+    committee = NULL;
+
+    uint8_t preimage[NODUS_WITNESS_VIEWOK_PREIMAGE_LEN];
+    if (compute_view_ok_preimage(height, view, set_hash, w->my_id,
+                                   w->chain_id, preimage) != 0) {
+        return -1;
+    }
+
+    if (nodus_sign_view_ok(sig_out, preimage, sizeof(preimage),
+                             &w->server->identity.sk) != 0) {
+        fprintf(stderr, "%s: VIEW_OK — signing failed at height %llu view "
+                "%u\n", LOG_TAG, (unsigned long long)height, view);
+        return -1;
+    }
+
+    /* Returned so the caller can carry the set hash it was signed under —
+     * a reader that resolves a different set must be able to SEE that,
+     * not silently judge with the wrong denominator. */
+    memcpy(set_hash_out, set_hash, 64);
+    return 0;
+}
+
+int nodus_witness_bft_verify_view_proof(nodus_witness_t *w,
+                                          uint64_t height, uint32_t view,
+                                          const uint8_t set_hash[64],
+                                          const nodus_t3_cert_entry_t *entries,
+                                          uint32_t n_entries) {
+    if (!w || !set_hash || !entries || n_entries == 0) return -1;
+    if (n_entries > NODUS_T3_MAX_WITNESSES) return -1;
+
+    /* ── STEP 1 — the committee at the CARRIED height ─────────────────
+     * Never at this node's own tip. The whole point of a proof is that
+     * its authority comes from the EVIDENCE, not from where the reader
+     * happens to be; resolving at the local tip would make two nodes at
+     * different heights reach different verdicts on identical bytes.
+     *
+     * A load fault is -2, not -1: "I could not read my committee" is the
+     * ABSENCE of an answer, and reporting it as "this proof is invalid"
+     * would blame a peer for this node's own broken database. */
+    nodus_committee_member_t *committee = NULL;
+    int c_count = 0;
+    int lc_rc = load_committee_at_height_alloc(w, height, &committee, &c_count);
+    if (lc_rc != 0) {
+        free(committee);
+        fprintf(stderr,
+                "%s: VIEW_OK proof — CANNOT ESTABLISH THE COMMITTEE at "
+                "height %llu (view=%u rc=%d%s); this node cannot decide\n",
+                LOG_TAG, (unsigned long long)height, view, lc_rc,
+                w->db ? "" : ", chain database not open");
+        return -2;
+    }
+    if (c_count == 0) {
+        /* The committed pre-genesis answer. There is no set to hash, so
+         * step 2 cannot run — and a node with no committee at that height
+         * is behind the evidence it is being shown. It has no verdict to
+         * give. Deliberately NOT the gossip-roster fallback
+         * verify_prepared_cert keeps: that exists for a proof shape which
+         * carries no set hash, and this one does. */
+        free(committee);
+        fprintf(stderr,
+                "%s: VIEW_OK proof — no committee at height %llu (view=%u, "
+                "pre-genesis); no set to measure against, staying silent\n",
+                LOG_TAG, (unsigned long long)height, view);
+        return -2;
+    }
+
+    /* ── STEP 2 — the set hash must be BYTE-EQUAL ─────────────────────
+     * A mismatch is -2, NOT -1. It says "I resolved a DIFFERENT committee
+     * for this height, so I cannot judge this proof", which is a
+     * different fact from "this proof is invalid": the proof may be
+     * perfectly good under the set its signers saw. Calling it invalid
+     * would let a node lagging one epoch boundary behind denounce
+     * statements the rest of the cluster considers sound. */
+    uint8_t local_set_hash[64];
+    if (compute_committee_set_hash(committee, c_count, local_set_hash) != 0) {
+        free(committee);
+        fprintf(stderr,
+                "%s: VIEW_OK proof — committee set-hash over %d members "
+                "failed at height %llu; this node cannot decide\n",
+                LOG_TAG, c_count, (unsigned long long)height);
+        return -2;
+    }
+    if (memcmp(local_set_hash, set_hash, 64) != 0) {
+        fprintf(stderr,
+                "%s: VIEW_OK proof — COMMITTEE SET MISMATCH at height %llu "
+                "(view=%u): carried %02x%02x%02x%02x%02x%02x%02x%02x…, "
+                "resolved %02x%02x%02x%02x%02x%02x%02x%02x… over %d members. "
+                "This node resolved a different set and cannot judge the "
+                "proof; it is NOT reporting the proof invalid\n",
+                LOG_TAG, (unsigned long long)height, view,
+                set_hash[0], set_hash[1], set_hash[2], set_hash[3],
+                set_hash[4], set_hash[5], set_hash[6], set_hash[7],
+                local_set_hash[0], local_set_hash[1], local_set_hash[2],
+                local_set_hash[3], local_set_hash[4], local_set_hash[5],
+                local_set_hash[6], local_set_hash[7], c_count);
+        free(committee);
+        return -2;
+    }
+
+    /* ── STEPS 3-5 — membership, dedup, signature ─────────────────── */
+    uint8_t preimage[NODUS_WITNESS_VIEWOK_PREIMAGE_LEN];
+    uint32_t verified = 0;
+
+    for (uint32_t i = 0; i < n_entries; i++) {
+        const uint8_t *vid = entries[i].voter_id;
+
+        /* STEP 4 — a duplicate voter counts ONCE. Without this, one
+         * genuine statement repeated f+1 times would "prove" a view that
+         * f+1 distinct members never asked for. Quadratic, over an array
+         * bounded by NODUS_T3_MAX_WITNESSES — the same scan
+         * verify_prepared_cert runs. */
+        bool dup = false;
+        for (uint32_t j = 0; j < i; j++) {
+            if (memcmp(entries[j].voter_id, vid,
+                       NODUS_T3_WITNESS_ID_LEN) == 0) {
+                dup = true;
+                break;
+            }
+        }
+        if (dup) continue;
+
+        /* STEP 3 — MEMBERSHIP AUTHORITY IS THAT COMMITTEE, FULL STOP.
+         * The signer's key is resolved by matching SHA3-512(pubkey)
+         * against voter_id, exactly as verify_prepared_cert does. A
+         * non-member is SKIPPED, not fatal: an attacker could otherwise
+         * void a sound proof simply by appending one junk entry to it. */
+        const uint8_t *voter_pk = NULL;
+        for (int ci = 0; ci < c_count; ci++) {
+            nodus_key_t fp;
+            if (qgp_sha3_512(committee[ci].pubkey, DNAC_PUBKEY_SIZE,
+                              fp.bytes) == 0 &&
+                memcmp(fp.bytes, vid, NODUS_T3_WITNESS_ID_LEN) == 0) {
+                voter_pk = committee[ci].pubkey;
+                break;
+            }
+        }
+        if (!voter_pk) continue;
+
+        /* STEP 5 — verify over the rebuilt 148-byte preimage carrying
+         * THIS entry's voter_id. The voter_id is part of the signed
+         * bytes, so the preimage tail is rewritten per entry; a signature
+         * cannot be re-labelled under another member's id. */
+        if (compute_view_ok_preimage(height, view, set_hash, vid,
+                                       w->chain_id, preimage) != 0)
+            continue;
+
+        nodus_sig_t sig_in;
+        nodus_pubkey_t pk_in;
+        memcpy(sig_in.bytes, entries[i].signature, NODUS_SIG_BYTES);
+        memcpy(pk_in.bytes, voter_pk, NODUS_PK_BYTES);
+        if (nodus_verify_view_ok(&sig_in, preimage, sizeof(preimage),
+                                   &pk_in) == 0)
+            verified++;
+    }
+
+    /* ── STEP 6 — f+1 OF THAT COMMITTEE ───────────────────────────────
+     *
+     * WHY f+1 AND NOT A QUORUM. Each of these signatures certifies an
+     * OUTCOME, not a vote. An honest node emits one only after observing
+     * bft_vc_tally(target) >= bft_config.quorum over per-voter records
+     * that each passed the committee-membership gate — so ONE honest
+     * statement already testifies that 2f+1 committee members asked for
+     * that view. With at most f Byzantine signers, f+1 DISTINCT
+     * statements contain at least one honest one, and that one is
+     * sufficient. Demanding a quorum of statements would require 2f+1
+     * nodes to independently reach quorum before any of them could act,
+     * which is a liveness cost bought for no additional safety.
+     *
+     * ⚠ HONEST LABEL: this rests entirely on the correctness of the tally
+     * path it certifies. If an honest node could ever emit this statement
+     * WITHOUT having observed quorum — or could emit two for the same
+     * (height, view) — the f+1 argument collapses. That is the invariant
+     * the producer side must preserve, and it is why the statement is an
+     * outcome rather than a vote: a vote is re-emitted at every rung of
+     * the escalation ladder, so accumulating votes would prove nothing.
+     *
+     * f DERIVATION — from the RESOLVED count, never from w->bft_config.
+     * bft_config is the quorum in force NOW on THIS node; the signers
+     * measured themselves against the committee governing `height`. Two
+     * authorities for one decision disagree across every committee
+     * change, which is the exact defect O15H C5 removed from
+     * verify_prepared_cert (see its threshold comment above).
+     *
+     * The EXPRESSION is bft_vc_join_threshold's, with its one input
+     * swapped: it computes ((quorum - 1) / 2) + 1 with a floor of 2, and
+     * its comment (bft_vc_join_threshold, this file) proves that equals
+     * f = (n-1)/3 exactly across the supported range — n=7 → quorum 5 →
+     * 2+1, n=128 → quorum 86 → 42+1. It cannot be CALLED here because it
+     * reads w->bft_config; deriving f from f_tolerance instead was
+     * rejected there for a reason that applies here verbatim — that field
+     * is a second copy of the same fact and a fixture that sets quorum
+     * without it silently yields f+1 == 1, turning ONE Byzantine message
+     * into an accepted proof. The floor of 2 is kept for the same
+     * anti-amplification reason: below quorum 3 the formula degenerates
+     * to 1, and one signature must never be a proof. */
+    uint32_t q = dna_bft_quorum((uint32_t)c_count);
+    uint32_t required = (q > 1) ? ((q - 1) / 2) + 1 : 0;
+    if (required < 2) required = 2;
+
+    free(committee);
+
+    if (verified < required) {
+        fprintf(stderr, "%s: VIEW_OK proof REJECTED (height=%llu view=%u "
+                "verified=%u/%u required=%u committee=%d)\n", LOG_TAG,
+                (unsigned long long)height, view, verified, n_entries,
+                required, c_count);
+        return -1;
+    }
+    return 0;
 }
 
 /* O15C-D.3 — THE PREPARED-VALUE LOCK.

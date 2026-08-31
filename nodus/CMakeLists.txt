@@ -1905,6 +1905,14 @@ register_witness_test(test_witness_protocol_version_gate)
 # current_view is unauthenticated: it must never move this node's PBFT
 # view counter (which decides leader election AND the signed preimage).
 register_witness_test(test_witness_ident_no_view_adopt)
+# O15N Faz 2B — the VIEW_OK view-authority primitives (purpose 0x08):
+# the 148-byte preimage, the committee set hash the statement is measured
+# against, the producer, and the f+1 proof verifier. PRIMITIVES ONLY —
+# nothing here is on a handler, tick or commit path, and nothing moves
+# w->current_view. Pins the layout, the field bindings, the f+1
+# derivation (from the committee governing the CARRIED height, NOT this
+# node's bft_config) and the fault-vs-verdict split (-2 vs -1).
+register_witness_test(test_view_proof)
 # O15C-D — MED-27: an accepted dnac_spend must never end without an
 # answer; the 30 s expiry replies instead of dropping the client.
 register_witness_test(test_witness_pending_forward_timeout)

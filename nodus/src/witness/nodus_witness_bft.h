@@ -117,6 +117,78 @@ bool nodus_witness_bft_prepared_lock_blocks(const nodus_witness_t *w,
                                               uint64_t height,
                                               const uint8_t *tx_hash);
 
+/* ── O15N Faz 2B — VIEW_OK view-authority primitives ─────────────────
+ *
+ * A VIEW_OK statement certifies the OUTCOME of a view change — "I
+ * observed a view-change quorum for this view, at this height, under this
+ * committee" — and never the votes. An honest node emits one only at the
+ * instant its own tally first reaches quorum, so it is produced at most
+ * once per (height, view) and describes something that really happened.
+ * That is what makes such statements safe to ACCUMULATE; signed votes
+ * would not be, because voters re-emit at every rung of the escalation
+ * ladder and nothing retracts.
+ *
+ * ⚠ PRIMITIVES ONLY. Neither function is called from any handler, tick or
+ * commit path, and neither reads or writes w->current_view or any round
+ * state. They change nothing about when or how the view counter moves.
+ */
+
+/** Produce THIS node's VIEW_OK statement for a completed view change.
+ *
+ * Resolves the committee governing `height`, hashes it into the
+ * "DNA.CCSET.v1" set hash (committing membership AND seat order), builds
+ * the 148-byte purpose-0x08 preimage over
+ * ("viewok\0\0" ‖ chain_id ‖ height ‖ view ‖ set_hash ‖ this node's id)
+ * and signs it. chain_id and voter_id are read from `w`, never supplied,
+ * so a statement cannot be minted for another chain or another signer.
+ *
+ * `set_hash_out` receives the 64-byte set hash the statement was signed
+ * under, so the caller can carry it alongside the signature — a reader
+ * that resolves a different set must be able to see that rather than
+ * judge with the wrong denominator.
+ *
+ * FAIL CLOSED. A committee-load fault is -1, and so is the committed
+ * pre-genesis answer (count 0): a set hash over an empty set is not a
+ * statement about anything.
+ *
+ * PURE PRODUCER — touches no round state.
+ *
+ * @return 0 with sig_out and set_hash_out filled, or -1. */
+int nodus_witness_bft_sign_view_ok(nodus_witness_t *w,
+                                     uint64_t height, uint32_t view,
+                                     uint8_t set_hash_out[64],
+                                     nodus_sig_t *sig_out);
+
+/** Verify a VIEW_OK proof — a bundle of per-voter statements for one
+ * (height, view) under one carried committee set hash.
+ *
+ * Fixed, fail-closed order: resolve the committee at the CARRIED height
+ * (never at this node's tip — authority comes from the evidence);
+ * recompute the set hash and require byte equality; resolve each voter
+ * through that committee by SHA3-512(pubkey) (a non-member is skipped,
+ * not fatal); count duplicate voter_ids once; verify each surviving
+ * signature over the 148-byte preimage rebuilt with THAT entry's
+ * voter_id; require f+1 distinct verified statements, with f derived from
+ * the RESOLVED committee size rather than this node's current bft_config.
+ *
+ * WHY f+1 RATHER THAN A QUORUM: one honest statement already testifies
+ * that 2f+1 members asked for the view, so f+1 distinct statements
+ * contain at least one honest one. This rests on the correctness of the
+ * tally path it certifies — see the full argument at the definition.
+ *
+ * THE THREE RESULTS ARE NOT INTERCHANGEABLE:
+ *   0  — the proof holds.
+ *  -1  — a VERDICT: the proof does not hold (too few distinct valid
+ *        statements, malformed input, more entries than the wire allows).
+ *  -2  — a node-local FAULT: this node CANNOT decide. It could not read
+ *        its committee, has none at that height, or resolved a DIFFERENT
+ *        set than the one carried. Stay silent; never blame the peer. */
+int nodus_witness_bft_verify_view_proof(nodus_witness_t *w,
+                                          uint64_t height, uint32_t view,
+                                          const uint8_t set_hash[64],
+                                          const nodus_t3_cert_entry_t *entries,
+                                          uint32_t n_entries);
+
 /** O15C-D.1 — apply the C5 reproposal selection to THIS node.
  *
  * Binds to the highest-ranked prepared certificate among the collected

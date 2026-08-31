@@ -167,6 +167,20 @@ int nodus_verify_prepared_vote(const nodus_sig_t *sig,
                                 const uint8_t *preimage, size_t preimage_len,
                                 const nodus_pubkey_t *pk);
 
+/** VIEWOK domain (O15N Faz 2B) — one node's statement that IT observed a
+ *  view-change quorum, i.e. the OUTCOME of a view change, never a vote.
+ *  Preimage (148 bytes, built by compute_view_ok_preimage in
+ *  nodus_witness_bft.c): "viewok\0\0"(8B, 6 ASCII + 2 NUL pad) ||
+ *  chain_id(32B) || height(8B BE) || view(4B BE) ||
+ *  committee_set_hash(64B) || voter_id(32B).
+ *  STRICT purpose — NDS1-wrapped on both sides, no raw fallback. */
+int nodus_sign_view_ok(nodus_sig_t *sig_out,
+                        const uint8_t *preimage, size_t preimage_len,
+                        const nodus_seckey_t *sk);
+int nodus_verify_view_ok(const nodus_sig_t *sig,
+                          const uint8_t *preimage, size_t preimage_len,
+                          const nodus_pubkey_t *pk);
+
 /* ───── Hash / identity helpers (unchanged) ─────────────────────────── */
 
 int nodus_hash(const uint8_t *data, size_t data_len, nodus_key_t *hash_out);
