@@ -5479,6 +5479,84 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
          * the activation ceremony; see the leader-side note above. */
     }
 
+    /* ── O15O Faz 6 — THE PREPARED-VALUE LOCK, ENFORCED ───────────────
+     *
+     * ⚠ DO NOT DELETE THIS AS DEAD CODE. It looks unreachable and is not.
+     * nodus_witness_bft_prepared_lock_blocks had ZERO production callers
+     * until this call existed (BUGS.md O15N-L3) — the refusal the
+     * quorum-intersection safety argument in its own header depends on
+     * was compiled, documented, unit-tested, and never consulted by the
+     * consensus path it was written for.
+     *
+     * WHAT IT PROTECTS. PRECOMMIT is sent only on locally observed
+     * prevote quorum, and `last_prepared` is captured in that same block
+     * (:6600-6628), so PRECOMMITTER ⇒ CARRIER: any committed value has
+     * >= 2f+1 carriers, hence >= f+1 honest carriers inside every
+     * quorum-sized set. Each of those must REFUSE a conflicting value at
+     * that height, or a conflicting value can reach quorum and the chain
+     * forks. This call is where that refusal happens.
+     *
+     * HOW THE STATE ARISES — the reason a reader cannot see this path by
+     * inspection, and the reason it was lost. Both batch-abort branches
+     * below set `round_state.phase = NODUS_W_PHASE_IDLE` and DELIBERATELY
+     * leave `last_prepared` intact (the own-quorum cert-gate failure at
+     * :6876-6893 and the commit_batch rollback at :6906-6954; both say in
+     * as many words that clearing it is a separate consensus decision).
+     * Setting IDLE is also what stops check_timeout from firing a
+     * VIEW_CHANGE, so no view change arms `reproposal_required`. The same
+     * leader, in the same view, then proposes a DIFFERENT value at the
+     * same height: the phase gate passes (we are IDLE), the
+     * committee/leader gate passes (same leader, same epoch, same view),
+     * the O15N view-equality gate passes, the C5 gate is SKIPPED because
+     * `reproposal_required` is false, and the height gate passes. Without
+     * this call the node prevotes a value conflicting with the one it
+     * prepared, and nothing consults the lock.
+     *
+     * PLACED AFTER THE A2 HEIGHT BLOCK, BEFORE THE ROUND-STATE INIT, and
+     * both halves are load-bearing:
+     *   - AFTER A2, because the lock is HEIGHT-GATED — it answers false
+     *     unless `last_prepared.height == height`. `last_prepared.height`
+     *     is the ROUND ANCHOR (`round_state.block_height`, :6600), which
+     *     O15L Faz 3 made the anchor rather than a fresh head read. A2 is
+     *     what establishes `prop->block_height == local tip + 1`, putting
+     *     both sides in ONE domain. Called before A2, the gate would
+     *     compare two different things and silently never fire.
+     *   - BEFORE the round-state init, so a refusal writes no round or
+     *     view state — `current_round`, `round_state` and
+     *     `awaiting_propose_deadline_ms` are all written below. Same
+     *     property, and the same reasoning, as the O15N view-equality
+     *     gate above.
+     *
+     * THE VALUE IS `prop->tx_root` and the domains match:
+     * `last_prepared.tx_hash` is copied from `w->round_state.tx_hash`
+     * (:6606), and on this follower path `round_state.tx_hash` is set
+     * from `prop->tx_root` (:5607).
+     *
+     * COST WHEN IT FIRES: this node declines the round. That is a
+     * liveness cost only, and it is the trade every fail-closed gate in
+     * this file makes — the lock is height-gated, so a value learned
+     * through SYNC leaves no stale refusal behind. */
+    if (nodus_witness_bft_prepared_lock_blocks(w, prop->block_height,
+                                                prop->tx_root)) {
+        fprintf(stderr,
+                "%s: PREPARED-VALUE LOCK: refusing a conflicting value at "
+                "height %llu — we prepared "
+                "%02x%02x%02x%02x%02x%02x%02x%02x…, this proposal carries "
+                "%02x%02x%02x%02x%02x%02x%02x%02x… (view=%u). A value we "
+                "prepared has our PRECOMMIT behind it; prevoting a "
+                "different one at the same height is what a fork is made "
+                "of\n",
+                LOG_TAG, (unsigned long long)prop->block_height,
+                w->last_prepared.tx_hash[0], w->last_prepared.tx_hash[1],
+                w->last_prepared.tx_hash[2], w->last_prepared.tx_hash[3],
+                w->last_prepared.tx_hash[4], w->last_prepared.tx_hash[5],
+                w->last_prepared.tx_hash[6], w->last_prepared.tx_hash[7],
+                prop->tx_root[0], prop->tx_root[1], prop->tx_root[2],
+                prop->tx_root[3], prop->tx_root[4], prop->tx_root[5],
+                prop->tx_root[6], prop->tx_root[7], hdr->view);
+        return -1;
+    }
+
     /* Initialize round state from proposal.
      *
      * O15N Faz 2C2 — `w->current_view = hdr->view;` USED TO BE THE NEXT

@@ -2051,6 +2051,46 @@ register_witness_test(test_witness_pbft_save_fault)
 # unlinked at creation).
 register_witness_test(test_witness_commit_committee_gate)
 
+# ── O15O Faz 6 — the PREPARED-VALUE LOCK is CONSULTED ────────────────
+# Bug ref: nodus/BUGS.md O15N-L3. nodus_witness_bft_prepared_lock_blocks —
+# whose own header calls it "the refusal the quorum-intersection safety
+# argument depends on" — had ZERO production callers. It was defined,
+# declared (nodus_witness_bft.h:116) and unit-tested in isolation
+# (test_witness_newview_convergence), and no consensus path consulted it.
+# Faz 6 adds ONE call, in handle_propose, between the A2 height block and
+# the round-state initialisation.
+# The state is reachable, not hypothetical: both batch-abort branches set
+# phase = IDLE and DELIBERATELY leave last_prepared armed. Phase IDLE also
+# silences check_timeout, so no view change arms reproposal_required and
+# the C5 gate is skipped. The same leader can then propose a DIFFERENT
+# value at the same height and pass every remaining gate.
+# Four rows on one fixture shape, one thing moving between them: prepared
+# at H + conflicting proposal at H is REFUSED (the defect); prepared at H +
+# MATCHING proposal is accepted; the lock RELEASED (the commit-success
+# clear of `present` alone) accepts the SAME conflicting proposal; and
+# prepared at a DIFFERENT height accepts it too, which pins the height gate
+# so a block learned through SYNC cannot strand the node. The last three
+# are the anti-vacuity controls and each asserts the lock's refusal line is
+# ABSENT.
+# last_prepared is armed by the PRODUCTION capture — a real prevote quorum
+# through handle_vote; the test never assigns that struct.
+# ⚠ THE ABORT BRANCH ITSELF IS NOT DRIVEN. The reset to IDLE is performed
+# by hand, because reaching a real commit_batch failure needs a
+# VALIDATION-mode batch re-verify with real Dilithium5 payloads — the same
+# wall test_witness_commit_committee_gate and
+# test_witness_height_fault_consumers §4 declined to climb. So this file
+# does NOT prove the abort paths leave the lock armed; that rests on the
+# source comments at the two abort branches. Do not count that row as
+# tested.
+# "Accepted" means the ROUND WAS ENTERED (rc 0, phase PREVOTE), never that
+# a block committed — handle_propose returns 0 even on an unverifiable
+# batch.
+# Needs no compile flag and no environment; every fixture chain stays in
+# epoch 0 (tip 3, heights 4 and 5), so the assertions hold at
+# DNAC_EPOCH_LENGTH 720 and 15 alike. Leaves nothing behind (mkdtemp dirs
+# are removed, capture files are unlinked at creation).
+register_witness_test(test_witness_prepared_lock)
+
 # ── O15O Faz 2 — a quorum of 0 is refused, not obeyed ────────────────
 # Bug ref: nodus/BUGS.md (the view-change threshold row), widened by grep
 # from one site to six. nodus_witness_bft_config_init writes quorum = 0
