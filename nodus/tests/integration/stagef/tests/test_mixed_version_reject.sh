@@ -37,6 +37,38 @@
 # behavioural, and immune to "the logs said so".
 #
 # Env: STAGEF_LEGACY_NODUS_BIN must point at the historical build.
+#
+# ── HOW THIS CAN LIE, and how it did ──────────────────────────────────
+#
+# WHICH SIDE REFUSES DEPENDS ON WHICH LEGACY BINARY YOU BUILD, and §2's
+# anti-vacuity check used to assume the wrong one.
+#
+# The gate was ADDED by the 2 -> 3 bump this scenario was written for, so
+# the v2 binary it was written against had none: it kept talking and the
+# CURRENT nodes refused it. Any legacy binary from v3 onward carries the
+# gate itself — it drops every current-version frame on arrival, never
+# advances, and therefore never sends a consensus vote, so the current
+# nodes log NOTHING. §2 demanded a CURRENT-side refusal and therefore
+# could not pass at all with a modern legacy binary; on 2026-09-01 with
+# a v4 binary against v6 it failed there, with 33 refusals sitting in the
+# legacy node's own log. §2 now accepts EITHER side and says which.
+#
+# A post-gate legacy binary also cannot DECODE new verbs at all — the
+# same run shows `T3 decode failed ... w_viewok` on the legacy node — so
+# an unknown verb is dropped below the gate rather than by it.
+#
+# ⚠ THE REGIMES ARE NOT EQUIVALENT, and §3 is what makes the result mean
+# something either way: with 4 current + 1 legacy = quorum, the chain
+# must STALL. Under a pre-gate legacy binary that proves the current
+# nodes refuse a stale vote; under a post-gate one it proves an isolated
+# stale node cannot make up a quorum. Only the FIRST exercises the
+# CURRENT node's gate — that path's coverage otherwise lives in
+# `ctest test_witness_protocol_version_gate` §2/§3.
+#
+# ⚠ `grep -c` prints "0" AND exits non-zero when it matches nothing.
+# `$(grep -c ... || echo 0)` therefore yields TWO lines and every
+# numeric test on it dies with "integer expression expected". Use
+# `|| true`.
 
 set -uo pipefail
 
@@ -103,13 +135,46 @@ info "head before probe: $H0"
 rc=$(send_tx "$DEST" "d4_mix_probe1"); info "probe1 client rc=$rc"
 sleep 30
 
-rej=0
+# ⚠ COUNT BOTH SIDES. This check is ANTI-VACUITY — it establishes that the
+# version mismatch is real and is being ENFORCED somewhere, so §3's
+# arithmetic is measuring the gate and not an unrelated wedge. Which side
+# refuses depends on WHICH legacy binary is used, and both outcomes are
+# correct:
+#
+#   * A legacy binary from BEFORE the gate existed (v2, the version this
+#     scenario was originally written against) has no gate. It keeps
+#     talking, and the CURRENT nodes are what refuse it.
+#   * A legacy binary from v3 ONWARD carries the gate itself. It drops
+#     every current-version frame on arrival, never advances, and
+#     therefore never sends a consensus vote — so the current nodes have
+#     nothing to refuse and log NOTHING. Measured 2026-09-01 with a v4
+#     legacy binary against v6: 33 refusals on the legacy node, ZERO on
+#     the six current ones, legacy stuck at head 1 while the cluster
+#     reached 2.
+#
+# Requiring the CURRENT side specifically — which this check did until
+# 2026-09-01 — makes the scenario UNPASSABLE with any post-v2 legacy
+# binary, and it failed for that reason rather than for anything about
+# the code.
+#
+# ⚠ `grep -c` prints "0" AND exits 1 when it matches nothing, so the old
+# `|| echo 0` appended a SECOND line and `[ -gt ]` died with "integer
+# expression expected". `|| true` keeps the count and swallows the status.
+rej_cur=0
 for n in $(seq 1 6); do
-    c=$(grep -c "INCOMPATIBLE PEER" "$BASE_DIR/node$n/nodus.log" 2>/dev/null || echo 0)
-    [ "${c:-0}" -gt 0 ] && rej=$((rej+1))
+    c=$(grep -c "INCOMPATIBLE PEER" "$BASE_DIR/node$n/nodus.log" 2>/dev/null || true)
+    [ "${c:-0}" -gt 0 ] && rej_cur=$((rej_cur+1))
 done
-[ "$rej" -ge 1 ] || fail "no current node reported an INCOMPATIBLE PEER — the gate never fired, so nothing is being proven"
-ok "version gate fired on $rej/6 current nodes (diagnostic, not a silent stall)"
+rej_stale=$(grep -c "INCOMPATIBLE PEER" "$BASE_DIR/node$STALE/nodus.log" 2>/dev/null || true)
+rej_stale=${rej_stale:-0}
+info "version-gate refusals: current nodes $rej_cur/6, legacy node$STALE $rej_stale"
+[ "$rej_cur" -ge 1 ] || [ "$rej_stale" -ge 1 ] || \
+    fail "NEITHER side reported an INCOMPATIBLE PEER — the version gate never fired on any node, so the cluster is not actually mixed and nothing below is being proven"
+if [ "$rej_cur" -ge 1 ]; then
+    ok "version gate fired on $rej_cur/6 CURRENT nodes — the legacy node is speaking and is being refused"
+else
+    ok "version gate fired on the LEGACY node ($rej_stale refusals) — it carries the gate itself and self-isolates, so it never reaches the point of voting"
+fi
 
 # ── 3. QUORUM ARITHMETIC — the decisive test ──────────────────────────
 # Stop two CURRENT nodes: live set = 4 current + 1 legacy = 5 = quorum.
