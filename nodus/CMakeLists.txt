@@ -2091,6 +2091,72 @@ register_witness_test(test_witness_commit_committee_gate)
 # are removed, capture files are unlinked at creation).
 register_witness_test(test_witness_prepared_lock)
 
+# ── O15O Faz 5 — the replay cache is PER SENDER, its order NODE-LOCAL ─
+# Bug refs: nodus/BUGS.md O15N-L1 (the attacker half) and "the replay
+# cache can be exhausted by HONEST traffic" (the sizing half). One
+# mechanism, two sides.
+# The shipped cache held 10000 entries GLOBALLY and, at capacity, freed an
+# ENTIRE BUCKET chosen by the smallest `timestamp` — a field written from
+# hdr->timestamp, which the SENDER chooses and signs. One sender could
+# therefore decide which HONEST entries left the table, re-opening replay
+# of captured frames. All six T3 consumers also inserted ABOVE their own
+# chain_id and committee checks, so an unauthorised sender consumed the
+# capacity meant to protect authorised ones. Separately, and with no
+# attacker at all, the global 10000 does not hold honest traffic: at the
+# governance minimum 1 s block interval and ~4 broadcasts per node per
+# round, one sender produces ~1200 nonces per 300 s TTL window, so 9 seats
+# already overflow.
+# Faz 5 splits CHECK from RECORD (is_replay is now pure; nonce_record runs
+# after each handler's committee gate), makes the budget PER SENDER
+# (NONCE_MAX_PER_SENDER 2048, the total DERIVED as per_sender x
+# NODUS_T3_MAX_WITNESSES), and ranks "oldest" by a node-local sequence
+# instead of the wire timestamp.
+# Five sections, in EXECUTION order, each a pair with one thing moving:
+# §1 the anti-vacuity floor (a genuine repeat refused, a fresh nonce
+# accepted); §2 record-after-the-gates — the SAME (sender, nonce) refused
+# by the committee gate and then ADMITTED once the sender is seated, with
+# a third delivery proving the admission did record; §3 the ordering key —
+# two entries from one sender with INVERTED wire stamps, and the one
+# inserted FIRST is the one evicted; §4 a flooder evicts only itself; §5
+# THE ATTACK — a 10500-frame flood cannot evict the victim's nonce.
+# ⚠ THE SECTION ORDER IS REQUIRED, and only for the REVERTED direction.
+# The nonce table is a process-global static with no reset hook (it is
+# `static` in nodus_witness_bft.c and this phase's whitelist has no header
+# to export one through), so the file uses a documented ordering plus
+# disjoint sender identities and deterministic nonces instead. Under the
+# FIXED code the order is irrelevant — budgets are per sender. Under a
+# reverted build a preceding big flood would leave the shared table at its
+# global cap and later sections would evict for reasons unrelated to their
+# subject; small floods first and the one big flood last removes that.
+# ⚠ THE FLOOD IS STAMPED AT `now`, NOT IN THE FUTURE, and the header says
+# why: the TTL comparison `now - n->timestamp >= NONCE_TTL_SECS` is on
+# uint64, so a FUTURE stamp underflows and the entry is treated as already
+# expired. A far-future flood is purged as fast as it is written, never
+# fills a reverted table, and would make §5 pass while proving nothing.
+# O15N-L1's write-up names far-future stamps as the mechanism; that half
+# does not survive contact with the TTL line, while its conclusion does.
+# ⚠ "REFUSED AS A REPLAY" IS OBSERVED INDIRECTLY — rc -1 with an EMPTY
+# stderr window, because the check prints nothing and every other guard on
+# this path prints. No production log line was added for the test, since a
+# line on the replay path is attacker-triggerable log amplification. Named
+# in the test header.
+# Every admitted leg still returns -1: "admitted" means "reached the F02
+# batch re-verify", never "committed a block" — the same wall
+# test_witness_commit_committee_gate.c documents.
+# ⚠ ONE OF THE SIX RECORD SITES IS DRIVEN (handle_commit). The other five
+# are placed by inspection below the same committee gate and are NOT
+# exercised here; do not count them as tested.
+# CAP_MIRROR in the test MUST equal NONCE_MAX_PER_SENDER in
+# nodus_witness_bft.c. A divergence fails loudly (too small a flood ->
+# no eviction; too large -> a second eviction), never quietly.
+# Needs no compile flag and no environment; every fixture chain stays at
+# tip 0 in epoch 0, so the assertions hold at DNAC_EPOCH_LENGTH 720 and 15
+# alike. Runtime is ~14600 handler calls, expected low seconds.
+# Leaves nothing behind on disk (mkdtemp dirs are removed, capture files
+# are unlinked at creation); it DOES leave ~6100 entries in the
+# process-global nonce table, which is why the ordering above is stated.
+register_witness_test(test_witness_replay_cache)
+
 # ── O15O Faz 2 — a quorum of 0 is refused, not obeyed ────────────────
 # Bug ref: nodus/BUGS.md (the view-change threshold row), widened by grep
 # from one site to six. nodus_witness_bft_config_init writes quorum = 0

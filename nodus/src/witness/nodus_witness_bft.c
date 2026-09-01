@@ -386,19 +386,191 @@ static int compute_committee_set_hash(const nodus_committee_member_t *members,
 
 /* ── Nonce hash table (HIGH-2: replaces linear-scan array) ──────── */
 
+/* ════════════════════════════════════════════════════════════════════
+ * O15O Faz 5 — WHO PAYS FOR AN ENTRY, AND WHO DECIDES WHAT LEAVES
+ *
+ * Two defects were closed here, and they are one mechanism seen from two
+ * sides. Both are in nodus/BUGS.md; both are about the SIZE and the
+ * EVICTION ORDER of this cache, not about its hashing.
+ *
+ * ── A. THE ATTACKER ONE (BUGS.md O15N-L1) ────────────────────────────
+ * The table held NONCE_MAX_TOTAL = 10000 entries GLOBALLY and, at
+ * capacity, freed an ENTIRE BUCKET chosen by the smallest `timestamp` —
+ * a field written straight from the caller's `timestamp` argument, which
+ * every one of the six call sites takes from `hdr->timestamp`. THE
+ * SENDER CHOOSES AND SIGNS THAT NUMBER, so a sender decided WHICH honest
+ * entries left the table, and the eviction order of a consensus-path
+ * cache was an attacker input. One crafted frame stamped at the old end
+ * of the freshness window (now - 299) ranks as the global minimum and
+ * takes its whole bucket — roughly 39 entries at capacity, almost all of
+ * them honest — with the bucket selectable by grinding the nonce.
+ *
+ * ⚠ ONE HALF OF THE BUGS.md WRITE-UP DOES NOT SURVIVE THE CODE, and it
+ * is recorded here so nobody re-derives it. That entry names FAR-FUTURE
+ * stamps as the mechanism ("its own entries then rank NEWEST"). They do
+ * not: the TTL comparison is `now - n->timestamp >= NONCE_TTL_SECS` on
+ * uint64 values, so a FUTURE timestamp underflows to ~2^64 and the entry
+ * is treated as ALREADY EXPIRED. Future-stamped entries are purged by
+ * the next sweep of their bucket and can never accumulate, so a
+ * far-future flood fills nothing. The entry's CONCLUSION is right and
+ * its stated route is not; the PAST-stamped route above is the one that
+ * works. The underflow itself is left as-is (it only ever shortens the
+ * life of the stamping sender's OWN entry, which is the same accepted
+ * residual class as record-after-the-gates) and is out of this phase.
+ *
+ * ── B. THE HONEST ONE (BUGS.md, "the replay cache can be exhausted by
+ *      HONEST traffic") ──────────────────────────────────────────────
+ * Derived from shipped constants, no attacker involved:
+ *
+ *     TTL                                   300 s (NONCE_TTL_SECS)
+ *     fastest permitted round                 1 s
+ *                       (DNAC_CFG_MIN_BLOCK_INTERVAL_SEC, dnac.h:341 —
+ *                        governance MAY set it that low, so the bound
+ *                        must hold there)
+ *     broadcasts per node per round           ~4
+ *                       (PREVOTE + PRECOMMIT + COMMIT, plus PROPOSE on
+ *                        the 1-in-n rounds it leads)
+ *     ⇒ per honest sender per TTL window   ~1200 nonces
+ *
+ * Against a global 10000 that is ~8400 at 7 seats (fits, barely),
+ * ~10800 at 9 (over) and ~24000 at 20 (far over). The cache evicted
+ * under NORMAL operation, and every eviction re-opens the window the
+ * cache exists to close — the O15H D9 safety argument leans on it in as
+ * many words (see the note at the VIEW_CHANGE upsert below).
+ *
+ * B IS WHY THE SIZING IS PER-SENDER-FIRST. Dividing a fixed 10000 by n
+ * only moves the squeeze from "the whole table" to "each sender's
+ * slice"; the primitive has to be the share, and the total has to be
+ * derived from it.
+ *
+ * ── THE THREE CHANGES ────────────────────────────────────────────────
+ *
+ * 1. CHECK AND RECORD ARE SEPARATE CALLS. `is_replay` is now PURE: it
+ *    reads, it never inserts and never evicts. `nonce_record` is called
+ *    by each handler AFTER its chain_id AND committee gates have passed
+ *    and BEFORE its first state mutation. An unauthorised sender
+ *    therefore consumes none of the capacity that protects authorised
+ *    ones.
+ *
+ *    ⚠ THE HONEST CONSEQUENCE, stated so the next reader does not have
+ *    to derive it: a frame that passes authorization but is dropped by a
+ *    LATER gate is NOT recorded, so it can be re-presented. That is
+ *    accepted. Replaying an AUTHORISED COMMITTEE MEMBER's own frame is
+ *    what the round, view and height guards exist to handle — a stale
+ *    round dies at the round check, a stale view at the view check, a
+ *    stale height at the height check, and a buffered vote is deduped on
+ *    (sender, type, round, view) with keep-first by
+ *    bft_vote_buffer_insert. It also REMOVES a shipped hazard the O15M
+ *    note in handle_newview names as a candidate cause of its measured
+ *    stall: "is_replay INSERTING the nonce on a call whose handler later
+ *    refuses the message for a transient reason (committee not
+ *    loadable, cert unverifiable), so that the delivery which WOULD have
+ *    succeeded is then refused as a duplicate." That can no longer
+ *    happen for a transient refusal at or below a committee gate.
+ *    NOTHING is added to handle_newview here; that site keeps its
+ *    documented refusal to carry a replay check at all.
+ *
+ * 2. THE BUDGET IS PER SENDER AND THE TOTAL IS DERIVED. See
+ *    NONCE_MAX_PER_SENDER below. When a sender is at ITS cap the entry
+ *    that leaves is THAT SENDER'S OWN OLDEST — a flooder can only ever
+ *    evict itself.
+ *
+ * 3. "OLDEST" IS A NODE-LOCAL COUNTER, NEVER THE WIRE TIMESTAMP. Each
+ *    entry carries `seq`, assigned from a monotonically increasing
+ *    node-local counter at insert.
+ *
+ *    DETERMINISM NOTE: this REMOVES a sender-controlled input from a
+ *    consensus-path decision. It does NOT add a clock — a counter is not
+ *    a time source, it reads nothing outside this table, and two nodes
+ *    are not required to agree on it (the cache is a per-node message-
+ *    admission structure, not consensus state).
+ *
+ * ── WHAT WAS CONSIDERED AND LEFT ─────────────────────────────────────
+ *  - `is_replay`'s ±300 s freshness window still calls time(NULL). It is
+ *    a per-node message-admission gate, it predates this season, and it
+ *    is not this phase's subject. LEFT DELIBERATELY.
+ *  - TTL expiry still measures against the WIRE timestamp, so an entry
+ *    lives between 0 s and 600 s of wall clock rather than exactly 300.
+ *    The freshness window bounds it; the residual is that a sender can
+ *    make its OWN entry expire early and replay its OWN frame, which is
+ *    the same accepted residual class as the record-after-the-gates
+ *    consequence above. Changing the basis to node-local receipt time
+ *    would alter expiry for honest traffic and is not in this phase.
+ *  - malloc failure in nonce_record leaves the frame ADMITTED but
+ *    UNRECORDED. That is the pre-existing behaviour of the shipped code
+ *    (the old insert was `if (node)` with no else) and is unchanged.
+ *
+ * SINGLE-THREADED EPOLL: no locking anywhere in this section, and none
+ * is needed — every caller runs on the one event-loop thread.
+ * ════════════════════════════════════════════════════════════════════ */
+
 #define NONCE_BUCKET_COUNT  256
 #define NONCE_TTL_SECS      300  /* 5 minutes */
-#define NONCE_MAX_TOTAL     10000  /* M-35: Max entries to prevent memory exhaustion */
+
+/* THE PRIMITIVE. 2048 is the ~1200-nonce honest need computed above
+ * (TTL 300 s × 1/interval 1 s × ~4 frames per round) rounded up to the
+ * next power of two for headroom: view-change storms, a leader's extra
+ * PROPOSE, and a node that broadcasts twice on a re-entry all fit under
+ * it without a single eviction. */
+#define NONCE_MAX_PER_SENDER  2048
+
+/* THE DERIVED TOTAL, and it is STRUCTURAL rather than counted.
+ *
+ * There is deliberately NO global counter and NO global eviction path
+ * any more: a cross-sender eviction is precisely the mechanism defect A
+ * exploited, so keeping one "as a backstop" would keep the defect. The
+ * bound holds by construction instead:
+ *
+ *   is_replay never inserts + nonce_record runs only after a committee
+ *   gate ⇒ only committee members (or, pre-genesis, gossip-roster
+ *   members) can ever own an entry ⇒ at most NONCE_MAX_SENDERS distinct
+ *   senders hold entries ⇒ at most NONCE_MAX_SENDERS ×
+ *   NONCE_MAX_PER_SENDER entries exist.
+ *
+ * MEMORY. sizeof(nonce_node_t) is 64 B (32 sender_id + 8 nonce +
+ * 8 timestamp + 8 seq + 8 next). BUGS.md's 56 B is the PRE-`seq` struct;
+ * this phase adds the ordering field, so the honest figures are:
+ *
+ *   n = 7   saturated   7 × 2048 × 64 B  ≈  918 kB
+ *   n = 128 ceiling   128 × 2048 × 64 B  =  16 MiB
+ *
+ * and only if every seat saturates its whole share, which needs the
+ * 1-second block interval AND every seat broadcasting at the cap. At the
+ * shipped devnet shape the live table is ~7 × 1200 × 64 B ≈ 538 kB. The
+ * slot array itself is fixed and tiny (128 × 48 B ≈ 6 kB in .bss). */
+#define NONCE_MAX_SENDERS     NODUS_T3_MAX_WITNESSES
 
 typedef struct nonce_node {
     uint8_t  sender_id[NODUS_T3_WITNESS_ID_LEN];
     uint64_t nonce;
-    uint64_t timestamp;
+    uint64_t timestamp;   /* WIRE stamp — TTL expiry ONLY, never ordering */
+    uint64_t seq;         /* node-local insert order — THE ordering key    */
     struct nonce_node *next;
 } nonce_node_t;
 
-static nonce_node_t *nonce_buckets[NONCE_BUCKET_COUNT];
-static uint32_t nonce_total_count = 0;  /* M-35: Track total entries */
+/* Per-sender accounting. `count` is the number of live nodes carrying
+ * this sender_id; it is maintained by ONE free funnel and ONE insert, so
+ * the two structures cannot drift. A slot with count == 0 is recyclable
+ * even while `used` is still set — releasing it inside the funnel would
+ * mean a caller holding the slot across an eviction could resurrect a
+ * released slot, so release is lazy and lives in nonce_sender_claim. */
+typedef struct {
+    bool     used;
+    uint8_t  sender_id[NODUS_T3_WITNESS_ID_LEN];
+    uint32_t count;
+    uint64_t last_seq;   /* newest seq this sender ever inserted — the
+                          * least-recently-active rule when slots run out */
+} nonce_sender_t;
+
+static nonce_node_t   *nonce_buckets[NONCE_BUCKET_COUNT];
+static nonce_sender_t  nonce_senders[NONCE_MAX_SENDERS];
+
+/* The node-local ordering counter. Starts at 1 so 0 can never be a real
+ * seq, and a slot's last_seq of 0 therefore means "has inserted nothing
+ * yet" — which makes such a slot the first LRU victim, correctly. At one
+ * insert per microsecond a uint64_t wraps in ~584000 years; no wrap
+ * handling is written because none is reachable. */
+static uint64_t nonce_seq_next = 1;
 
 static uint32_t nonce_hash_fn(const uint8_t *sender_id, uint64_t nonce) {
     uint32_t h = 0x811c9dc5;
@@ -413,83 +585,245 @@ static uint32_t nonce_hash_fn(const uint8_t *sender_id, uint64_t nonce) {
     return h % NONCE_BUCKET_COUNT;
 }
 
+/** The slot holding `sender_id`, or NULL. Linear over at most
+ *  NONCE_MAX_SENDERS = 128 slots; a 32-byte memcmp each, and only over
+ *  slots that are in use. */
+static nonce_sender_t *nonce_sender_find(const uint8_t *sender_id) {
+    for (int i = 0; i < NONCE_MAX_SENDERS; i++) {
+        nonce_sender_t *s = &nonce_senders[i];
+        if (s->used && memcmp(s->sender_id, sender_id,
+                              NODUS_T3_WITNESS_ID_LEN) == 0)
+            return s;
+    }
+    return NULL;
+}
+
+/** THE ONE FREE PATH. Unlinks `*pp` from its bucket chain, decrements
+ *  the owning sender's count and frees the node. Every removal in this
+ *  file goes through here, which is what keeps `count` and the chains
+ *  from drifting.
+ *
+ *  `hint` is the owning slot when the caller already has it (every
+ *  per-sender path does), NULL when it does not (the bucket TTL sweep,
+ *  which walks entries of mixed senders). */
+static void nonce_unlink_free(nonce_node_t **pp, nonce_sender_t *hint) {
+    nonce_node_t *n = *pp;
+    *pp = n->next;
+    nonce_sender_t *s = hint ? hint : nonce_sender_find(n->sender_id);
+    if (s && s->count > 0) s->count--;
+    free(n);
+}
+
+/** TTL sweep of ONE bucket. Mixed senders, so no hint. */
 static void nonce_evict_bucket(uint32_t bucket, uint64_t now) {
     nonce_node_t **pp = &nonce_buckets[bucket];
     while (*pp) {
-        if (now - (*pp)->timestamp >= NONCE_TTL_SECS) {
-            nonce_node_t *expired = *pp;
-            *pp = expired->next;
-            free(expired);
-            if (nonce_total_count > 0) nonce_total_count--;
-        } else {
+        if (now - (*pp)->timestamp >= NONCE_TTL_SECS)
+            nonce_unlink_free(pp, NULL);
+        else
             pp = &(*pp)->next;
+    }
+}
+
+/** Free every entry belonging to `s` and release its slot.
+ *
+ *  Reached ONLY when all NONCE_MAX_SENDERS slots are occupied and a new
+ *  authorised sender needs one — which requires more than 128 DISTINCT
+ *  senders that each passed a committee gate inside one 300 s TTL
+ *  window, i.e. a committee turnover at an epoch boundary. Dropping a
+ *  slot re-opens self-replay for that one sender until it inserts again;
+ *  that is the same accepted residual class as record-after-the-gates,
+ *  and it is node-local. */
+static void nonce_sender_drop(nonce_sender_t *s) {
+    for (uint32_t b = 0; b < NONCE_BUCKET_COUNT; b++) {
+        nonce_node_t **pp = &nonce_buckets[b];
+        while (*pp) {
+            if (memcmp((*pp)->sender_id, s->sender_id,
+                       NODUS_T3_WITNESS_ID_LEN) == 0)
+                nonce_unlink_free(pp, s);
+            else
+                pp = &(*pp)->next;
+        }
+    }
+    s->used     = false;
+    s->count    = 0;
+    s->last_seq = 0;
+}
+
+/** The slot for `sender_id`, creating it if needed. Never NULL.
+ *
+ *  A slot that is `used` with count == 0 is recyclable — that is the
+ *  lazy release the funnel deliberately does not perform. If every slot
+ *  is both used and non-empty, the LEAST RECENTLY ACTIVE one (smallest
+ *  last_seq — a node-local counter, never a wire value) is dropped. */
+static nonce_sender_t *nonce_sender_claim(const uint8_t *sender_id) {
+    nonce_sender_t *reusable = NULL;
+
+    for (int i = 0; i < NONCE_MAX_SENDERS; i++) {
+        nonce_sender_t *s = &nonce_senders[i];
+        if (s->used && memcmp(s->sender_id, sender_id,
+                              NODUS_T3_WITNESS_ID_LEN) == 0)
+            return s;
+        if (!reusable && (!s->used || s->count == 0))
+            reusable = s;
+    }
+
+    if (!reusable) {
+        nonce_sender_t *lru = &nonce_senders[0];
+        for (int i = 1; i < NONCE_MAX_SENDERS; i++) {
+            if (nonce_senders[i].last_seq < lru->last_seq)
+                lru = &nonce_senders[i];
+        }
+        nonce_sender_drop(lru);
+        reusable = lru;
+    }
+
+    reusable->used     = true;
+    reusable->count    = 0;
+    reusable->last_seq = 0;
+    memcpy(reusable->sender_id, sender_id, NODUS_T3_WITNESS_ID_LEN);
+    return reusable;
+}
+
+/** Pass 1 of the cap enforcement: free `s`'s EXPIRED entries.
+ *
+ *  Without it, dead entries inflate `count` and a sender would evict
+ *  LIVE nonces while holding hundreds of expired ones — at ~4 frames per
+ *  second that is hundreds of phantom slots. The bucket sweep only ever
+ *  touches the ONE bucket a frame hashes to, so it cannot do this job. */
+static void nonce_sender_sweep(nonce_sender_t *s, uint64_t now) {
+    for (uint32_t b = 0; b < NONCE_BUCKET_COUNT; b++) {
+        nonce_node_t **pp = &nonce_buckets[b];
+        while (*pp) {
+            nonce_node_t *n = *pp;
+            if (memcmp(n->sender_id, s->sender_id,
+                       NODUS_T3_WITNESS_ID_LEN) == 0 &&
+                now - n->timestamp >= NONCE_TTL_SECS)
+                nonce_unlink_free(pp, s);
+            else
+                pp = &n->next;
         }
     }
 }
 
-/* M-35: Evict oldest entries across all buckets when table is full */
-static void nonce_evict_oldest(void) {
-    uint64_t oldest_ts = UINT64_MAX;
-    uint32_t oldest_bucket = 0;
+/** Pass 2: free `s`'s OLDEST entry, ranked by the node-local `seq`.
+ *
+ *  A SECOND full pass rather than one fused pass, deliberately: a fused
+ *  pass has to carry a `nonce_node_t **` to the best-so-far across
+ *  frees, and the argument that the remembered slot cannot dangle is
+ *  subtle enough to be got wrong by a later edit. Two passes cost one
+ *  extra walk of a table whose size is already bounded by the constants
+ *  above, on a path only a sender AT ITS OWN CAP ever reaches. */
+static void nonce_sender_evict_oldest(nonce_sender_t *s) {
+    uint64_t best_seq = UINT64_MAX;
+    uint32_t best_bucket = 0;
 
-    /* Find bucket containing the oldest entry */
     for (uint32_t b = 0; b < NONCE_BUCKET_COUNT; b++) {
         for (nonce_node_t *n = nonce_buckets[b]; n; n = n->next) {
-            if (n->timestamp < oldest_ts) {
-                oldest_ts = n->timestamp;
-                oldest_bucket = b;
+            if (n->seq < best_seq &&
+                memcmp(n->sender_id, s->sender_id,
+                       NODUS_T3_WITNESS_ID_LEN) == 0) {
+                best_seq    = n->seq;
+                best_bucket = b;
             }
         }
     }
+    if (best_seq == UINT64_MAX) return;   /* nothing of ours is live */
 
-    /* Remove all entries from that bucket (batch eviction) */
-    nonce_node_t *head = nonce_buckets[oldest_bucket];
-    nonce_buckets[oldest_bucket] = NULL;
-    while (head) {
-        nonce_node_t *next = head->next;
-        free(head);
-        if (nonce_total_count > 0) nonce_total_count--;
-        head = next;
+    /* `seq` alone would identify the node — the counter never repeats —
+     * but the sender is compared too, so the removal does not rest on an
+     * invariant a reader has to go and check. */
+    nonce_node_t **pp = &nonce_buckets[best_bucket];
+    while (*pp) {
+        if ((*pp)->seq == best_seq &&
+            memcmp((*pp)->sender_id, s->sender_id,
+                   NODUS_T3_WITNESS_ID_LEN) == 0) {
+            nonce_unlink_free(pp, s);
+            return;
+        }
+        pp = &(*pp)->next;
     }
 }
 
+/** THE CHECK — PURE. Reads the table, inserts nothing, evicts nothing.
+ *
+ *  Called at the top of every handler that has a replay gate, exactly
+ *  where it was called before this phase. `nonce_record` is the other
+ *  half and runs after that handler's committee gate.
+ *
+ *  An entry that is past its TTL but has not been swept yet still counts
+ *  as a replay. That is the conservative answer and it is nearly
+ *  unobservable: the freshness window above refuses frames older than
+ *  300 s anyway, and the two bounds differ only on the boundary second
+ *  (`now - ts >= 300` versus `ts + 300 < now`). Answering "not a replay"
+ *  there would be the only direction that can lose a refusal.
+ *
+ *  @return true if the frame must be dropped (stale timestamp, or this
+ *          (sender, nonce) has already been recorded). */
 static bool is_replay(const uint8_t *sender_id, uint64_t nonce,
                        uint64_t timestamp) {
     uint64_t now = (uint64_t)time(NULL);
 
-    /* Reject messages outside ±5 minute window */
+    /* Reject messages outside ±5 minute window. Pre-existing gate, kept
+     * verbatim; its time(NULL) is out of this phase's scope (see the
+     * section header). */
     if (timestamp > now + 300 || timestamp + 300 < now)
         return true;
 
     uint32_t bucket = nonce_hash_fn(sender_id, nonce);
 
-    /* Evict expired entries from this bucket */
-    nonce_evict_bucket(bucket, now);
-
-    /* Check for duplicate */
     for (nonce_node_t *n = nonce_buckets[bucket]; n; n = n->next) {
         if (n->nonce == nonce &&
             memcmp(n->sender_id, sender_id, NODUS_T3_WITNESS_ID_LEN) == 0)
             return true;
     }
+    return false;
+}
 
-    /* M-35: Evict oldest bucket if at capacity */
-    if (nonce_total_count >= NONCE_MAX_TOTAL) {
-        nonce_evict_oldest();
+/** THE RECORD — the only writer.
+ *
+ *  MUST be called only after the calling handler's chain_id AND
+ *  committee gates have passed, and before its first state mutation.
+ *  Idempotent: recording an already-present (sender, nonce) is a no-op,
+ *  so a handler that is reached twice on one frame cannot double-charge
+ *  the sender's budget. */
+static void nonce_record(const uint8_t *sender_id, uint64_t nonce,
+                          uint64_t timestamp) {
+    uint64_t now = (uint64_t)time(NULL);
+    uint32_t bucket = nonce_hash_fn(sender_id, nonce);
+
+    /* Expired entries in THIS bucket go first — they are free capacity
+     * for every sender that hashes here. */
+    nonce_evict_bucket(bucket, now);
+
+    for (nonce_node_t *n = nonce_buckets[bucket]; n; n = n->next) {
+        if (n->nonce == nonce &&
+            memcmp(n->sender_id, sender_id, NODUS_T3_WITNESS_ID_LEN) == 0)
+            return;
     }
 
-    /* Insert new entry at head (no mutex needed — single-threaded epoll) */
+    nonce_sender_t *s = nonce_sender_claim(sender_id);
+
+    if (s->count >= NONCE_MAX_PER_SENDER) {
+        nonce_sender_sweep(s, now);                  /* pass 1 — expired */
+        if (s->count >= NONCE_MAX_PER_SENDER)
+            nonce_sender_evict_oldest(s);            /* pass 2 — its own */
+    }
+
+    /* Insert at head (no mutex needed — single-threaded epoll). The
+     * bucket head is re-read HERE because the two passes above may have
+     * freed a node in this same chain. */
     nonce_node_t *node = malloc(sizeof(nonce_node_t));
     if (node) {
         memcpy(node->sender_id, sender_id, NODUS_T3_WITNESS_ID_LEN);
-        node->nonce = nonce;
+        node->nonce     = nonce;
         node->timestamp = timestamp;
-        node->next = nonce_buckets[bucket];
+        node->seq       = nonce_seq_next++;
+        node->next      = nonce_buckets[bucket];
         nonce_buckets[bucket] = node;
-        nonce_total_count++;
+        s->count++;
+        s->last_seq = node->seq;
     }
-
-    return false;
 }
 
 /* ── Chain ID validation ─────────────────────────────────────────── */
@@ -5220,7 +5554,8 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
     const nodus_t3_propose_t *prop = &msg->propose;
     const nodus_t3_header_t *hdr = &msg->header;
 
-    /* Replay check */
+    /* Replay CHECK — pure, records nothing. The matching nonce_record is
+     * below the leader/committee block (O15O Faz 5). */
     if (is_replay(hdr->sender_id, hdr->nonce, hdr->timestamp))
         return -1;
 
@@ -5346,6 +5681,18 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
             return -1;
         }
     }
+
+    /* O15O Faz 5 — RECORD, now that chain_id and the committee-derived
+     * LEADER check have both passed and before any state mutation. A
+     * sender that is not the leader for this view consumes none of the
+     * cache capacity that protects the ones that are.
+     *
+     * The refusals BELOW this point (view equality, C5 reproposal, the A2
+     * height check) therefore leave the frame recorded and a replay of it
+     * refused. The refusals ABOVE leave nothing — which is the intended
+     * shape: a transient committee-load failure no longer burns the nonce
+     * of the delivery that would have succeeded. */
+    nonce_record(hdr->sender_id, hdr->nonce, hdr->timestamp);
 
     /* ── O15N Faz 2C2 — THE VIEW EQUALITY GATE ────────────────────────
      *
@@ -5949,10 +6296,27 @@ static void bft_vote_buffer_insert(nodus_witness_t *w, uint8_t msg_type,
             (int)w->round_state.phase);
 }
 
+/* `live_hdr` is the O15O Faz 5 record token, and it is the ONLY reason
+ * this function takes a header at all: the committee gate for a vote
+ * lives HERE, not in the public entry point, so the record has to travel
+ * down with the frame.
+ *
+ *   non-NULL — a LIVE frame straight off the wire. Its nonce is recorded
+ *              immediately below the committee gate.
+ *   NULL     — a vote replayed out of w->vote_buffer by
+ *              nodus_witness_bft_drain_vote_buffer, which holds no
+ *              header. Nothing is recorded, and nothing needs to be:
+ *              bft_vote_buffer_insert dedups on
+ *              (sender, msg_type, round, view) keep-first, so a
+ *              re-presented buffered vote can neither take a second slot
+ *              nor displace an honest one, and the duplicate-by-pubkey
+ *              check below refuses a second vote from the same sender in
+ *              the same round regardless. */
 static int bft_handle_vote_inner(nodus_witness_t *w, uint8_t msg_type,
                                  uint64_t round, uint32_t view,
                                  const uint8_t *sender_id,
-                                 const nodus_t3_vote_t *vote);
+                                 const nodus_t3_vote_t *vote,
+                                 const nodus_t3_header_t *live_hdr);
 
 void nodus_witness_bft_drain_vote_buffer(nodus_witness_t *w) {
     if (!w) return;
@@ -5986,7 +6350,8 @@ void nodus_witness_bft_drain_vote_buffer(nodus_witness_t *w) {
             memcpy(v.reason, copy.reason, sizeof(v.reason));
             memcpy(v.cert_sig, copy.cert_sig, NODUS_SIG_BYTES);
             (void)bft_handle_vote_inner(w, copy.msg_type, copy.round,
-                                        copy.view, copy.sender_id, &v);
+                                        copy.view, copy.sender_id, &v,
+                                        /*live_hdr*/ NULL);
             progress = true;
         }
     }
@@ -6001,7 +6366,9 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
 
     const nodus_t3_header_t *hdr = &msg->header;
 
-    /* Replay check */
+    /* Replay CHECK — pure, records nothing. The matching nonce_record is
+     * inside bft_handle_vote_inner, immediately below the committee gate
+     * that lives there (O15O Faz 5). */
     if (is_replay(hdr->sender_id, hdr->nonce, hdr->timestamp))
         return -1;
 
@@ -6027,6 +6394,12 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
             msg->type == NODUS_T3_PRECOMMIT &&
             w->round_state.phase == NODUS_W_PHASE_PREVOTE;
         if (future_round || early_precommit) {
+            /* O15O Faz 5 — NOTHING IS RECORDED ON THIS BRANCH, and it is
+             * the one place a frame is admitted without ever meeting a
+             * committee gate. bft_vote_buffer_insert is what bounds it:
+             * it dedups on (sender, msg_type, round, view) with
+             * keep-first, so a re-presented frame takes no second slot
+             * and can never evict an honest entry. */
             bft_vote_buffer_insert(w, msg->type, hdr->round, hdr->view,
                                    hdr->sender_id, &msg->vote);
             return 0;
@@ -6034,7 +6407,7 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
     }
 
     int rc = bft_handle_vote_inner(w, msg->type, hdr->round, hdr->view,
-                                   hdr->sender_id, &msg->vote);
+                                   hdr->sender_id, &msg->vote, hdr);
     /* A live vote can flip the phase (PREVOTE quorum → PRECOMMIT), which
      * can make buffered votes eligible — drain opportunistically. */
     nodus_witness_bft_drain_vote_buffer(w);
@@ -6162,7 +6535,8 @@ void nodus_witness_bft_after_successor_commit(nodus_witness_t *w) {
 static int bft_handle_vote_inner(nodus_witness_t *w, uint8_t msg_type,
                                  uint64_t round, uint32_t view,
                                  const uint8_t *sender_id,
-                                 const nodus_t3_vote_t *vote) {
+                                 const nodus_t3_vote_t *vote,
+                                 const nodus_t3_header_t *live_hdr) {
     /* Verify round and view match */
     if (round != w->round_state.round ||
         view != w->round_state.view)
@@ -6314,6 +6688,21 @@ static int bft_handle_vote_inner(nodus_witness_t *w, uint8_t msg_type,
             free(committee);
         }
     }
+
+    /* O15O Faz 5 — RECORD, now that the sender is a committee member (or
+     * a roster member pre-genesis) and before the vote is counted. Only a
+     * LIVE frame carries a header to record; a drained buffer entry does
+     * not, and does not need to (see the live_hdr contract at the forward
+     * declaration).
+     *
+     * A refusal BELOW this line — an invalid C5 cert_sig, a full vote
+     * array — leaves the frame recorded. A refusal ABOVE it — wrong
+     * round, wrong phase, unknown sender, a committee-load fault — leaves
+     * nothing, so the retry that would have been counted is not refused
+     * as a duplicate. */
+    if (live_hdr)
+        nonce_record(live_hdr->sender_id, live_hdr->nonce,
+                     live_hdr->timestamp);
 
     /* C5 — verify PREVOTE cert_sig against PREPARED preimage when the
      * vote is APPROVE. REJECT votes do not contribute to the prepared
@@ -7169,7 +7558,8 @@ int nodus_witness_bft_handle_commit(nodus_witness_t *w,
     const nodus_t3_commit_t *cmt = &msg->commit;
     const nodus_t3_header_t *hdr = &msg->header;
 
-    /* Replay check */
+    /* Replay CHECK — pure, records nothing. The matching nonce_record is
+     * below the Faz 4 committee gate (O15O Faz 5). */
     if (is_replay(hdr->sender_id, hdr->nonce, hdr->timestamp))
         return -1;
 
@@ -7287,6 +7677,14 @@ int nodus_witness_bft_handle_commit(nodus_witness_t *w,
         /* else: count == 0 (genuine pre-genesis, the roster check above is
          * the authorization) or a committee member. */
     }
+
+    /* O15O Faz 5 — RECORD, above the FIRST state mutation on this path.
+     * The Faz 4 comment names that mutation as nodus_witness_v2_cert_note
+     * immediately below, and the same argument places the record here: a
+     * non-committee sender leaves ZERO residue, including no entry in the
+     * replay cache that an honest sender would otherwise have to share
+     * capacity with. */
+    nonce_record(hdr->sender_id, hdr->nonce, hdr->timestamp);
 
     /* O15D — successor QC-certificate collection. MUST run BEFORE the
      * already-committed early-return below: on a healthy round every
@@ -8154,7 +8552,12 @@ int nodus_witness_bft_handle_viewchg(nodus_witness_t *w,
     const nodus_t3_viewchg_t *vc = &msg->viewchg;
     const nodus_t3_header_t *hdr = &msg->header;
 
-    /* Replay check */
+    /* Replay CHECK — pure, records nothing. The matching nonce_record is
+     * below the committee gate (O15O Faz 5). The D9 note further down,
+     * which leans on "replayed old messages are already refused by
+     * is_replay() at the top of this function", still holds: the frames
+     * D9 is about are VIEW_CHANGEs from committee members, and those ARE
+     * recorded — below the gate, before the upsert D9 describes. */
     if (is_replay(hdr->sender_id, hdr->nonce, hdr->timestamp))
         return -1;
 
@@ -8222,6 +8625,12 @@ int nodus_witness_bft_handle_viewchg(nodus_witness_t *w,
         /* else: rc == 0 with count == 0 (genuine pre-genesis, the gossip
          * check above is the authorization) or a committee member. */
     }
+
+    /* O15O Faz 5 — RECORD, below the committee gate and above the D9
+     * upsert, which is this handler's first state mutation. A sender that
+     * is not in the committee governing our next height therefore takes
+     * no capacity from the ones that are. */
+    nonce_record(hdr->sender_id, hdr->nonce, hdr->timestamp);
 
     /* Must be for a future view */
     if (vc->new_view <= w->current_view)
@@ -9426,7 +9835,8 @@ int nodus_witness_bft_handle_viewok(nodus_witness_t *w,
     const nodus_t3_viewok_t *v = &msg->viewok;
     const nodus_t3_header_t *hdr = &msg->header;
 
-    /* Replay check */
+    /* Replay CHECK — pure, records nothing. The matching nonce_record is
+     * below the committee gate (O15O Faz 5). */
     if (is_replay(hdr->sender_id, hdr->nonce, hdr->timestamp))
         return -1;
 
@@ -9501,6 +9911,13 @@ int nodus_witness_bft_handle_viewok(nodus_witness_t *w,
         }
     }
 
+    /* O15O Faz 5 — RECORD, below the committee gate and above the direct
+     * verify and the accumulator fold. The gate above exists to BOUND the
+     * signature work an unauthorised sender can make this node do; the
+     * same reasoning applies to the cache capacity it can consume, so the
+     * record belongs on the same side of it. */
+    nonce_record(hdr->sender_id, hdr->nonce, hdr->timestamp);
+
     /* ── A BUNDLE THAT IS ALREADY A PROOF IS JUDGED ON ITS OWN ────────
      *
      * This is what makes the `w_viewok_q` rescue immune to an
@@ -9542,6 +9959,8 @@ int nodus_witness_bft_handle_viewok_req(nodus_witness_t *w,
 
     const nodus_t3_header_t *hdr = &msg->header;
 
+    /* Replay CHECK — pure, records nothing. The matching nonce_record is
+     * below the committee gate (O15O Faz 5). */
     if (is_replay(hdr->sender_id, hdr->nonce, hdr->timestamp))
         return -1;
     if (!verify_chain_id(w, hdr->chain_id))
@@ -9580,6 +9999,15 @@ int nodus_witness_bft_handle_viewok_req(nodus_witness_t *w,
             return -1;
         }
     }
+
+    /* O15O Faz 5 — RECORD, below the committee gate and above the
+     * per-roster-slot response limiter, which is this handler's only
+     * state mutation (viewok_rsp_sent_ms).
+     *
+     * NOTE the "nothing to say" return above the gate: while this node
+     * holds no proof it records nothing at all, so a requester whose ask
+     * arrived too early is not refused as a replay when it asks again. */
+    nonce_record(hdr->sender_id, hdr->nonce, hdr->timestamp);
 
     /* PER-ROSTER-SLOT RESPONSE LIMIT. An answer carries f+1 signatures
      * (~14 KB at n = 7, ~200 KB at n = 128) and costs a Dilithium sign,
@@ -9668,6 +10096,17 @@ int nodus_witness_bft_handle_newview(nodus_witness_t *w,
      * refuses the message for a transient reason (committee not
      * loadable, cert unverifiable), so that the delivery which WOULD
      * have succeeded is then refused as a duplicate.
+     *
+     * ⚠ O15O Faz 5 CLOSED THE SECOND CANDIDATE, AND THAT CHANGES WHAT A
+     * SECOND ATTEMPT WOULD COST — but it does NOT license re-adding the
+     * line here. `is_replay` no longer inserts anything: recording is a
+     * separate `nonce_record` call that each handler makes only after its
+     * own committee gate. A transient committee-load failure therefore
+     * burns no nonce anywhere in this file. The FIRST candidate — one
+     * frame delivered twice — is untouched and would still be refused,
+     * and the measured stall has never been attributed to either
+     * candidate by evidence. The bar is unchanged: a second attempt needs
+     * the mechanism identified and test_newview_convergence green.
      *
      * DO NOT re-add the bare line. A correct fix needs a replay rule
      * that admits the legitimate re-entry this scenario depends on, and

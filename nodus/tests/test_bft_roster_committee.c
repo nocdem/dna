@@ -413,7 +413,13 @@ static void gate_sign_prepared(uint8_t out[NODUS_SIG_BYTES],
 /** Common header fields every crafted BFT message needs to REACH its
  *  committee gate: our chain identity (verify_chain_id runs first and
  *  this fixture holds one), a current timestamp and a fresh nonce (the
- *  ±300 s replay window and the nonce cache both precede the gate). */
+ *  ±300 s replay window and the replay CHECK both precede the gate).
+ *
+ *  O15O Faz 5 correction: the nonce RECORD no longer precedes the gate —
+ *  `is_replay` is now a pure check and `nonce_record` runs BELOW each
+ *  handler's committee gate, so a frame refused there consumes no cache
+ *  slot. A fresh nonce is still needed here, because the CHECK still runs
+ *  first; what changed is that a rejected frame leaves nothing behind. */
 static void gate_fill_header(nodus_t3_msg_t *m, const nodus_witness_t *w,
                                const gate_peer_t *from, uint32_t view) {
     memset(m, 0, sizeof(*m));
