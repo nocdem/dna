@@ -698,7 +698,54 @@ void nodus_witness_sync_check(nodus_witness_t *w) {
     uint64_t local_height = nodus_witness_block_height(w);
     uint64_t peer_height = w->peers[peer_idx].remote_height;
 
-    /* Also check UTXO checksum mismatch at same height (fork detection) */
+    /* ⚠⚠ PARKED FOR DELETION — DO NOT "REPAIR" THIS BLOCK ⚠⚠
+     * (O15O, 2026-09-01. Owner informed and deferred; decision pending.)
+     *
+     * TWO SEPARATE FINDINGS, and the second is why the answer is DELETE
+     * rather than FIX.
+     *
+     * 1. IT DOES NOT RUN. The height is read TWICE from the same query:
+     *    once inside nodus_witness_sync_find_peer (its `best_height =
+     *    local_height` seed), which therefore returns only a peer
+     *    STRICTLY ABOVE it, and again at the `local_height` assignment
+     *    just above, which this test then compares for EQUALITY. On a
+     *    single-threaded loop nothing commits between the two reads, so
+     *    the two values agree and `peer_height == local_height` is
+     *    unreachable. Not dead BY CONSTRUCTION — the reads use the
+     *    fail-open accessor, so a transient DB fault inside find_peer
+     *    (yielding 0) followed by a good read here, with the highest peer
+     *    landing exactly on our height, would open it. That is the only
+     *    path, and it needs a fault plus a coincidence.
+     *
+     * 2. THE STATE IT DEFENDS AGAINST CANNOT OCCUR. A same-height fork
+     *    means two nodes committed DIFFERENT blocks at one height. Two
+     *    quorums must intersect, and with at most f Byzantine the
+     *    intersection contains an honest node — which would have had to
+     *    vote for both. That is the quorum-intersection argument this
+     *    whole consensus rests on; if it is broken, this block is not the
+     *    thing that saves us.
+     *
+     *    The variant that CAN happen is not a fork: the same block
+     *    processed into a different state. That is a determinism defect,
+     *    and finalize_block's state_root comparison already catches it at
+     *    commit and latches safety_halt — earlier and more precisely than
+     *    a checksum poll ever could.
+     *
+     *    Local database corruption produces the same SYMPTOM (our height,
+     *    a different root) without being a fork. Wipe-and-resync would be
+     *    a reasonable cure there — but that is a different feature with a
+     *    different trigger, and it should not be smuggled in under the
+     *    name "fork detection".
+     *
+     * SO: there is no protection missing here. There is dead weight that
+     * READS as protection, which is worse than nothing, because the next
+     * person to audit fork handling will count it. Making it reachable
+     * would enable an irreversible drop_witness_db() on peer-reported
+     * data, for a condition the protocol says cannot arise. The O15O Faz 2
+     * vacuous-quorum guard below stays only so that, if anyone does revive
+     * this, it cannot fire on a quorum of zero.
+     *
+     * See nodus/BUGS.md, the same-height fork-detection entry. */
     if (peer_height == local_height && local_height > 0) {
         /* Same-height fork detection via checksum quorum */
         uint8_t local_cksum[NODUS_KEY_BYTES];
