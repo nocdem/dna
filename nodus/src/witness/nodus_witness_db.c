@@ -2187,18 +2187,36 @@ static void nodus_witness_db_migrate_v15_stake_delegation(nodus_witness_t *w) {
 
 /* Schema v16 migration: singleton pbft_state table.
  *
- * Holds two pieces of BFT runtime state that MUST survive a witness
- * restart:
+ * Holds two pieces of BFT runtime state. They are written together and
+ * read back together, but as of O15P Faz 1 only ONE of them is restored
+ * into consensus state — see nodus_witness_db_load_pbft_state below,
+ * which carries the argument:
  *
- *   current_view       INTEGER  BFT view number (monotonic per chain).
+ *   current_view       INTEGER  BFT view number. WRITTEN on every view
+ *                               move and READ by operators and by the
+ *                               stagef harness as the "a view change
+ *                               completed" probe — but NOT loaded back
+ *                               into w->current_view. A witness comes up
+ *                               at view 0 and pulls a VIEW_OK proof from
+ *                               a peer that is ahead.
  *   last_prepared_blob BLOB     Serialized PBFT-prepared certificate
  *                               from the most recent PREVOTE quorum
- *                               this witness observed locally.
+ *                               this witness observed locally. RESTORED,
+ *                               and it MUST stay that way: it is the
+ *                               prepared-value lock's memory, and the
+ *                               quorum-intersection safety argument
+ *                               depends on that lock surviving a restart.
  *
- * Without persistence, a HAVE_CHAIN restart re-enters consensus at
- * view 0 and finds its votes rejected by peers that already advanced
- * past it (A15 in the PR 3 design threat model). The cluster stalls
- * until that node re-enters via VIEW_CHANGE.
+ * The original H-5 reasoning — recorded because the column outlived it:
+ * without persistence a HAVE_CHAIN restart re-entered consensus at view
+ * 0 and found its votes rejected by peers that had already advanced past
+ * it (A15 in the PR 3 design threat model), and the cluster stalled until
+ * that node re-entered via VIEW_CHANGE. O15N Faz 2C2 removed the stall by
+ * giving the counter a single write site behind a verified VIEW_OK proof
+ * and a pull path for a node that is behind (nodus_witness_bft.c:5746,
+ * :10411), so "behind" became a state the protocol recovers from rather
+ * than one it hangs on. That is what makes discarding the stored view
+ * safe; the blob's half of the argument is untouched and still stands.
  *
  * Singleton via CHECK(id = 1) — same pattern as genesis_state. The
  * UPSERT in nodus_witness_db_save_pbft_state ensures only one row
@@ -2326,13 +2344,83 @@ int nodus_witness_db_save_pbft_state(nodus_witness_t *w) {
     return 0;
 }
 
-/* Load BFT runtime state from the pbft_state singleton row. Idempotent
- * for fresh DBs (no row → leave w->current_view at default 0 and
- * w->last_prepared.present at false). The intended call site is
- * nodus_witness_init AFTER schema migration but BEFORE the witness
- * registers for any T3 dispatch. */
+/* Load BFT runtime state from the pbft_state singleton row.
+ *
+ * TWO FIELDS, TWO OPPOSITE ANSWERS — and the asymmetry is the point:
+ * `last_prepared` IS restored, `current_view` is NOT. Idempotent for
+ * fresh DBs (no row → view 0 and w->last_prepared.present at false).
+ * The intended call site is the chain-DB open (nodus_witness.c
+ * witness_db_open_attempt) AFTER schema migration but BEFORE the witness
+ * registers for any T3 dispatch.
+ *
+ * ── O15P Faz 1 — THE VIEW COUNTER COMES UP AT 0, ALWAYS ──────────────
+ *
+ * WHAT THIS REPLACES, AND WHY IT IS NOT A TIDY-UP. Every node coming up
+ * at the same view is what makes a fleet-wide restart converge, and until
+ * now that guarantee was a HUMAN REMEMBERING A MANUAL STEP: the mandatory
+ * stop-all deploy tells the operator to `DELETE FROM pbft_state`
+ * (docs/DEPLOY_RUNBOOK.md §2.1), so every node came up at 0 together and
+ * nobody needed rescuing. That step is load-bearing TOGETHER with a
+ * second fact — `w->viewok_proof`, the evidence that justified this
+ * node's last view move, is memory-only (nodus/BUGS.md O15N-R2), so a
+ * restarted node holds no proof and can rescue nobody. Drop the runbook
+ * step without persisting the proof and the fleet comes up split across
+ * views with nothing able to serve a proof, converging only through the
+ * slow escalation ladder. Resetting here makes "everyone starts from the
+ * same point" a property the CODE owns, and the runbook step becomes
+ * belt-and-braces instead of the whole belt.
+ *
+ * WHY DISCARDING IT IS SAFE IN BOTH DIRECTIONS — the whole argument:
+ *
+ *   A NODE RESTARTING ALONE drops to view 0, is therefore BEHIND its
+ *   peers, and PULLS the proof from one of them. That path already
+ *   exists and is driven by ordinary traffic, at two call sites, each
+ *   gated on the sender being strictly ahead of us:
+ *     - nodus_witness_bft.c:5746 — handle_propose, when a PROPOSE names a
+ *       view above ours;
+ *     - nodus_witness_bft.c:10411 — handle_newview, on the same condition.
+ *   Both call bft_viewok_send_request; a verified VIEW_OK proof then
+ *   moves the counter through bft_viewok_apply, which is its ONLY other
+ *   write site. Being behind is the state the recovery machinery is
+ *   built for, so this hands it the case it already handles.
+ *
+ *   A NODE RESTARTING WITH EVERYONE ELSE finds every peer at 0 too.
+ *   Nobody is ahead, nobody needs a proof, and the fleet is already
+ *   converged — which is exactly the outcome the runbook step was buying.
+ *
+ * `last_prepared` IS STILL LOADED, and that is not incidental. It is the
+ * prepared-value lock's memory, consulted by
+ * nodus_witness_bft_prepared_lock_blocks (nodus_witness_bft.c:10961) —
+ * the refusal the quorum-intersection safety argument depends on. That
+ * function gates on `present`, `height` and `tx_hash` ONLY; it never
+ * reads `current_view`, so zeroing the counter cannot disable it. Nor
+ * does it degrade C5: the cert's own `view` travels inside the blob and
+ * is what feeds `view_changes[].prepared.view` (:8351) and the outbound
+ * VIEW_CHANGE (:8519), so the canonical (height, view, tx_hash)
+ * selection still ranks on the view the certificate was PREPARED in,
+ * never on the counter this node happens to hold.
+ *
+ * THE ROW IS NOT TOUCHED — READ-ONLY, DELIBERATELY. This function must
+ * not become the runbook's DELETE. witness_db_open_attempt documents its
+ * own re-entry after a failed attempt as safe because "load_pbft_state
+ * only reads" (nodus_witness.c:454), and the stagef harness reads the
+ * stored column as its view-change-completed probe
+ * (tests/integration/stagef/tests/test_vset_grow_shrink.sh:129). The
+ * SAVE side is likewise unchanged: bft_view_move_finish still persists
+ * every view move (:9377). The column keeps its writer and its reader;
+ * it simply stops being an INPUT to this node's consensus state.
+ *
+ * WHAT A RESTART NOW COSTS: one round in which this node declines a
+ * PROPOSE for a view it no longer holds and asks for the proof. That is
+ * a liveness cost, the same trade every fail-closed gate in the consensus
+ * path makes, and it is paid only by a node restarting alone. */
 int nodus_witness_db_load_pbft_state(nodus_witness_t *w) {
     if (!w || !w->db) return -1;
+
+    /* Before the query, so "comes up at 0" holds even when the SELECT
+     * itself fails: a node that cannot read the row must not be left
+     * holding whatever view happened to be in memory. */
+    w->current_view = 0;
 
     sqlite3_stmt *stmt = NULL;
     int rc = sqlite3_prepare_v2(w->db,
@@ -2347,7 +2435,20 @@ int nodus_witness_db_load_pbft_state(nodus_witness_t *w) {
     rc = sqlite3_step(stmt);
     if (rc == SQLITE_ROW) {
         if (sqlite3_column_type(stmt, 0) != SQLITE_NULL) {
-            w->current_view = (uint32_t)sqlite3_column_int64(stmt, 0);
+            /* READ AND DISCARDED. The column is still selected because
+             * the operator is owed the number: without this line a node
+             * that had reached view 9 would come up at 0 in silence, and
+             * the persisted row — which the harness and the runbook both
+             * read — would disagree with the node's live view with
+             * nothing in the log explaining why. */
+            uint32_t stored = (uint32_t)sqlite3_column_int64(stmt, 0);
+            if (stored != 0) {
+                fprintf(stderr,
+                    "[O15P] stored view %u DISCARDED — this node enters "
+                    "consensus at view 0 and pulls a VIEW_OK proof from a "
+                    "peer that is ahead; the counter moves only on a "
+                    "verified proof\n", stored);
+            }
         }
         if (sqlite3_column_type(stmt, 1) != SQLITE_NULL) {
             const void *blob = sqlite3_column_blob(stmt, 1);

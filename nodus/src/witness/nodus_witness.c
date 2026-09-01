@@ -525,11 +525,43 @@ static int witness_db_open_attempt(nodus_witness_t *witness,
      * unrecoverable error. */
     nodus_witness_db_migrate_v12(witness);
 
-    /* PR 3 Yol B / H-5: restore PBFT runtime state across restart.
+    /* PR 3 Yol B / H-5: restore the prepared certificate across restart,
+     * and — O15P Faz 1 — RESET THE VIEW COUNTER TO 0 while doing it.
      * MUST happen after migrate_v12 (which creates the pbft_state
      * table) and BEFORE this witness participates in any consensus
-     * round. Fresh DB or NULL row leaves current_view at 0 and
-     * last_prepared.present at false — same as today's behaviour. */
+     * round. Fresh DB, NULL row and stored-view-of-9 all leave
+     * current_view at 0; only last_prepared is carried over.
+     *
+     * THE RESET LIVES IN THE CALLEE, NOT ON THE LINE BELOW, and the
+     * reason is that this call site is not the whole story:
+     * nodus_witness_db_load_pbft_state has exactly one production caller
+     * — this one — but this function is itself reached from BOTH database
+     * entrances (the restart scan and nodus_witness_create_chain_db), and
+     * re-entered on a retried open attempt. Putting the reset inside the
+     * loader means every one of those, and any future third entrance,
+     * inherits it instead of having to copy a line from here.
+     *
+     * WHAT THE CREATION ENTRANCE MEANS FOR IT, enumerated rather than
+     * waved at — nodus_witness_create_chain_db has four callers:
+     *   - nodus_witness_v2_join.c:132 and nodus_witness_v2_gen.c:1208
+     *     pass a freshly calloc'd SCRATCH witness (:105, :1159), which is
+     *     already at view 0. The reset is a no-op.
+     *   - nodus_witness_bootstrap.c:998 passes the LIVE witness while it
+     *     is still bootstrapping onto a chain it does not yet have, so it
+     *     has taken part in no round on that chain.
+     *   - nodus_witness_bft.c:12358, inside nodus_witness_commit_genesis,
+     *     passes the LIVE witness — and is guarded by `if (!w->db)`, so it
+     *     runs only for a node that has no chain database at all.
+     *
+     * The last one is NOT guaranteed to be a no-op, and saying otherwise
+     * would be wrong: if the genesis round itself passed through a view
+     * change, the node reaches commit_genesis holding a non-zero view and
+     * this zeroes it. That is still correct, for the reason the whole
+     * change rests on — every node committing genesis runs the same
+     * reset, so they move together; and a node that lands at 0 while a
+     * peer is still ahead is simply BEHIND, which is the case the VIEW_OK
+     * pull already handles. Nothing here depends on the reset being
+     * invisible; it depends on being behind being recoverable. */
     nodus_witness_db_load_pbft_state(witness);
 
     fprintf(stderr, "%s: opened database %s\n", LOG_TAG, db_path);

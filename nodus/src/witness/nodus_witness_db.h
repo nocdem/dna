@@ -551,21 +551,33 @@ void nodus_witness_compute_block_hash_ex(uint64_t height,
  */
 int  nodus_witness_db_migrate_v12(nodus_witness_t *w);
 
-/* PR 3 Yol B / H-5 mitigation: persist BFT runtime state across
- * witness restart so a HAVE_CHAIN node does not re-enter consensus at
- * view 0 with empty last_prepared and find its votes rejected by peers
- * that already advanced (A15 in design threat model).
+/* PR 3 Yol B / H-5: the singleton pbft_state row.
+ *
+ * THE PAIR IS ASYMMETRIC — save writes two fields, load restores ONE.
+ * The asymmetry is deliberate (O15P Faz 1) and the full argument lives on
+ * the load implementation in nodus_witness_db.c; the short form is that
+ * `last_prepared` is a SAFETY fact this node must not forget, while
+ * `current_view` is a position it can re-derive from the cluster.
  *
  * save: write w->current_view + w->last_prepared into the singleton
- *       pbft_state row (UPSERT). Returns 0 on success, -1 on SQLite
+ *       pbft_state row (UPSERT). UNCHANGED by O15P: the stored view is
+ *       still the operator's and the stagef harness's evidence that a
+ *       view change completed. Returns 0 on success, -1 on SQLite
  *       error (logged via fprintf).
  *
- * load: restore w->current_view + w->last_prepared from the row, if it
- *       exists. Fresh DB or NULL columns leave the in-memory fields at
- *       their default. last_prepared blob size mismatch (e.g., after a
+ * load: restore w->last_prepared from the row, if it exists, and set
+ *       w->current_view to 0 UNCONDITIONALLY — including when the row is
+ *       absent, when the column is NULL, and when the query itself fails.
+ *       A witness therefore always enters consensus at view 0; if its
+ *       peers are ahead it pulls a VIEW_OK proof from them
+ *       (nodus_witness_bft.c:5746, :10411) and the counter moves only on
+ *       a verified proof. A non-zero stored view is logged as discarded,
+ *       never applied. last_prepared blob size mismatch (e.g., after a
  *       binary upgrade that changed the struct layout) is tolerated by
  *       falling back to present=false rather than corrupting state.
- *       Returns 0 on success, -1 on SQLite error.
+ *       READ-ONLY: it never DELETEs or UPDATEs the row, which is what
+ *       makes re-entry after a failed open attempt safe
+ *       (nodus_witness.c:454). Returns 0 on success, -1 on SQLite error.
  *
  * Both functions assume nodus_witness_db_migrate_v12 has already run
  * so the pbft_state table exists. */

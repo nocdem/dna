@@ -2157,6 +2157,47 @@ register_witness_test(test_witness_prepared_lock)
 # process-global nonce table, which is why the ordering above is stated.
 register_witness_test(test_witness_replay_cache)
 
+# ── O15P Faz 1 — the view counter comes up at 0 ──────────────────────
+# Bug ref: nodus/BUGS.md O15N-R2. `w->viewok_proof` — the evidence that
+# justified this node's last view move — is memory-only, so a restarted
+# node holds none and can rescue nobody. That was survivable only because
+# the mandatory stop-all deploy ALSO clears the pbft_state row
+# (docs/DEPLOY_RUNBOOK.md §2.1), bringing the whole fleet up at view 0
+# together. The two facts held each other up, and one of them was a human
+# remembering a manual step: drop the runbook step without persisting the
+# proof and the fleet comes up split across views with nothing able to
+# serve a proof.
+# The fix is one line of consensus state and no wire change:
+# nodus_witness_db_load_pbft_state discards the stored `current_view` and
+# leaves the witness at 0. A node restarting ALONE is then simply BEHIND,
+# which is a state the protocol already recovers from — it pulls a VIEW_OK
+# proof from a peer that is ahead (nodus_witness_bft.c:5746 in
+# handle_propose, :10411 in handle_newview) and the counter moves only on
+# a verified proof. A node restarting WITH EVERYONE ELSE finds every peer
+# at 0 too. Safe in both directions.
+# `last_prepared` IS STILL LOADED and that is half of what this test
+# guards: it is the prepared-value lock's memory
+# (nodus_witness_bft_prepared_lock_blocks, the O15O Faz 6 refusal), and
+# that lock gates on present/height/tx_hash only — it never reads
+# current_view — so §1 asserts the lock is still armed after the restart,
+# not merely that the struct fields survived.
+# The loader stays READ-ONLY: it never becomes the runbook's DELETE. §1
+# and §4 assert the row still holds its non-zero number afterwards, which
+# is also the only direct evidence that a row was read and that column
+# ignored. The SAVE path is untouched, so the operator's and the stagef
+# harness's view-change evidence keeps landing on disk.
+# Five sections, each a pair on one fixture shape: stored 9 -> 0 with the
+# certificate byte-identical and the lock armed; stored 0 -> 0; no row at
+# all; the loader pulling a LIVE non-zero view down (pinning the reset in
+# the callee rather than at its call site); and a DROP TABLE proving the
+# reset sits BEFORE the query, so an unreadable row still yields 0.
+# No UNREACHED row, no rc=99 skip.
+# Needs no compile flag and no environment; no committee is resolved and
+# no block is committed, so the assertions hold at DNAC_EPOCH_LENGTH 720
+# and 15 alike. Leaves nothing behind (each section's mkdtemp dir is
+# removed, every sqlite handle is closed through nodus_witness_close).
+register_witness_test(test_witness_view_reset_on_start)
+
 # ── O15O Faz 2 — a quorum of 0 is refused, not obeyed ────────────────
 # Bug ref: nodus/BUGS.md (the view-change threshold row), widened by grep
 # from one site to six. nodus_witness_bft_config_init writes quorum = 0
