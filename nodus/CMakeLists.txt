@@ -2074,14 +2074,12 @@ register_witness_test(test_witness_commit_committee_gate)
 # ABSENT.
 # last_prepared is armed by the PRODUCTION capture — a real prevote quorum
 # through handle_vote; the test never assigns that struct.
-# ⚠ THE ABORT BRANCH ITSELF IS NOT DRIVEN. The reset to IDLE is performed
-# by hand, because reaching a real commit_batch failure needs a
-# VALIDATION-mode batch re-verify with real Dilithium5 payloads — the same
-# wall test_witness_commit_committee_gate and
-# test_witness_height_fault_consumers §4 declined to climb. So this file
-# does NOT prove the abort paths leave the lock armed; that rests on the
-# source comments at the two abort branches. Do not count that row as
-# tested.
+# ⚠ THE ABORT BRANCH ITSELF IS NOT DRIVEN BY THIS FILE. The reset to IDLE
+# is performed by hand. O15P Faz 3 —
+# test_witness_prepared_lock_survives_abort, registered below — is what
+# drives the real commit_batch failure and proves the premise; until it
+# existed that claim rested only on the source comments at the two abort
+# branches.
 # "Accepted" means the ROUND WAS ENTERED (rc 0, phase PREVOTE), never that
 # a block committed — handle_propose returns 0 even on an unverifiable
 # batch.
@@ -2090,6 +2088,51 @@ register_witness_test(test_witness_commit_committee_gate)
 # DNAC_EPOCH_LENGTH 720 and 15 alike. Leaves nothing behind (mkdtemp dirs
 # are removed, capture files are unlinked at creation).
 register_witness_test(test_witness_prepared_lock)
+
+# ── O15P Faz 3 — a COLLAPSED ROUND leaves the PREPARED-VALUE LOCK ARMED ─
+# THE PREMISE test_witness_prepared_lock could not reach. That file proves
+# the lock refuses a conflicting value ONCE THE MEMORY IS ARMED and the
+# phase is IDLE, but it resets the phase BY HAND and says so. Without this
+# file the O15O Faz 6 safety argument rests on two source comments.
+# WHAT IT PROVES: when nodus_witness_commit_batch fails and the block is
+# rolled back, the round is reset to NODUS_W_PHASE_IDLE *and*
+# w->last_prepared is STILL ARMED — same height, same value. That state is
+# exactly the one the lock's refusal exists for: PRECOMMITTER => CARRIER,
+# so >= f+1 honest carriers must refuse a conflicting value at that height
+# or the chain forks; if the collapse cleared the lock the refusal could
+# never fire.
+# TWO SECTIONS, TWO FAILURE EXITS INSIDE commit_batch, ONE ABORT BRANCH:
+# §1 the attendance write fails (a real `DROP TABLE validators`, so
+# record_attendance's prepare fails and it returns its documented block-
+# REJECT -1); §2 the M-1 TOCTOU height guard fires (the round anchor is
+# tip+2, so expected_height != local_next under the transaction). Each
+# section asserts its OWN exit fired and the OTHER section's did NOT, so
+# neither can pass for the other's reason.
+# ⚠ THE HARD PART IS LANDING *INSIDE* commit_batch. bft_handle_vote_inner
+# has one more gate between the phase advance and the call — the O15L Faz 3
+# OWN-QUORUM CERT GATE — and that gate ALSO sets phase IDLE and ALSO leaves
+# last_prepared alone, so it would make both assertions pass for the wrong
+# reason. Both sections therefore assert "OWN-QUORUM CERT GATE" is ABSENT
+# and commit_batch's own message is PRESENT.
+# The cert gate is SATISFIED, not bypassed: the fixture primes a seven-
+# member committee and every PRECOMMIT carries a real Dilithium5 signature
+# over the 144-byte cert preimage (ours is signed by the production path
+# itself). dna_bft_quorum(7) == 5 == the five precommits collected, so one
+# bad signature would fail the gate loudly instead of passing quietly.
+# The rollback is asserted on the DATABASE (chain tip unchanged) as well as
+# on stderr, and the batch entries are asserted released — the abort branch
+# frees them through bft_emit_batch_replies, so the test must not.
+# ⚠ NO CLEARING PATH IS EXERCISED. commit_batch clears last_prepared only
+# after a successful db_commit, which would need finalize_block to pass on
+# a hand-seeded chain. This file pins the CURRENT behaviour of the abort
+# branch; if a later change makes an abort CLEAR the lock, it goes red, and
+# that is the intended alarm.
+# Needs no compile flag and no environment. DNAC_EPOCH_LENGTH is READ (each
+# section primes the committee for the epoch containing its own anchor), so
+# it holds at 720 and 15 alike. Leaves nothing on disk; it does leave
+# entries in the process-global replay-nonce table, which is harmless
+# because every message carries a freshly randomised nonce.
+register_witness_test(test_witness_prepared_lock_survives_abort)
 
 # ── O15O Faz 5 — the replay cache is PER SENDER, its order NODE-LOCAL ─
 # Bug refs: nodus/BUGS.md O15N-L1 (the attacker half) and "the replay
@@ -2143,18 +2186,58 @@ register_witness_test(test_witness_prepared_lock)
 # Every admitted leg still returns -1: "admitted" means "reached the F02
 # batch re-verify", never "committed a block" — the same wall
 # test_witness_commit_committee_gate.c documents.
-# ⚠ ONE OF THE SIX RECORD SITES IS DRIVEN (handle_commit). The other five
-# are placed by inspection below the same committee gate and are NOT
-# exercised here; do not count them as tested.
 # CAP_MIRROR in the test MUST equal NONCE_MAX_PER_SENDER in
 # nodus_witness_bft.c. A divergence fails loudly (too small a flood ->
 # no eviction; too large -> a second eviction), never quietly.
+#
+# ── O15P Faz 2 — §6..§11 close the "only one record site is driven" gap ─
+# Until Faz 2 exactly ONE of the six nonce_record call sites was exercised
+# (handle_commit, by §1..§5); the other five were placed by inspection
+# below the same committee gate and a misplaced one would have shipped
+# silently. §6..§10 drive them — one section per handler: PROPOSE, VOTE,
+# VIEW_CHANGE, VIEW_OK, VIEW_OK_REQUEST.
+# Each is the same three legs and all three are required: a well-formed
+# frame is ADMITTED below the record (identified POSITIVELY, by a line the
+# next guard prints or by rc == 0), the IDENTICAL frame is then REFUSED AS
+# A REPLAY, and the same frame with a FRESH nonce is ADMITTED again — the
+# last leg is what excludes "this handler refuses everything".
+# §8, §9 and §10 do NOT rest on silence: every exit above their record
+# returns -1 and every path below it returns 0, so rc alone discriminates.
+# §10 has a second, non-stderr witness — the per-roster-slot response
+# stamp — and CLEARS that stamp before the replay leg, because the limiter
+# also refuses with a SILENT -1 and would otherwise make a build with the
+# record site DELETED still pass.
+# §11 drives the 128-slot SENDER TABLE past capacity and asserts what
+# nonce_sender_claim actually does, not what would be nice: nothing
+# crashes, the newcomer IS recorded, every other sender keeps its entries,
+# and EXACTLY ONE — the least recently active — has all of its freed (the
+# LRU drop, which the production comment calls an accepted node-local
+# residual). It needs TWO roster seatings because the roster, the committee
+# cache and NONCE_MAX_SENDERS are all NODUS_T3_MAX_WITNESSES = 128, so one
+# seating can authorise at most 128 distinct senders.
+# ⚠ §11 MUST RUN LAST. It fills all 128 slots with its own identities,
+# which EVICTS everything the earlier sections left in the table; anything
+# scheduled after it would run against an empty cache. Its own step C also
+# has an internal order requirement (survivors asserted BEFORE the victim
+# is re-delivered, because re-delivering re-records and evicts the next
+# LRU) — the same trap §3 documents one level up.
+# ⚠ THE malloc-FAILURE BRANCH IN nonce_record IS DELIBERATELY UNEXERCISED
+# and the test header says why: proving it needs on-demand allocation
+# failure at one call site, which does not exist in this tree, and a global
+# interposer would break SQLite, Dilithium and the fixture itself. Its only
+# effect is a missed record — fail-open on a cache, not on a gate.
+# handle_newview is NOT a seventh site: it has neither a replay check nor a
+# record, deliberately (its own O15M block records that adding the bare
+# is_replay line stalled the chain on the harness and was reverted).
 # Needs no compile flag and no environment; every fixture chain stays at
 # tip 0 in epoch 0, so the assertions hold at DNAC_EPOCH_LENGTH 720 and 15
-# alike. Runtime is ~14600 handler calls, expected low seconds.
+# alike. §6 solves for its view at RUNTIME from the epoch the macro puts
+# height 1 in, so its "the sender is the leader" precondition does not
+# depend on the epoch length. Runtime is ~14750 handler calls plus 148
+# ML-DSA-87 keypairs, expected low seconds.
 # Leaves nothing behind on disk (mkdtemp dirs are removed, capture files
-# are unlinked at creation); it DOES leave ~6100 entries in the
-# process-global nonce table, which is why the ordering above is stated.
+# are unlinked at creation); it DOES leave the process-global nonce table
+# holding §11's 128 senders, which is why the ordering above is stated.
 register_witness_test(test_witness_replay_cache)
 
 # ── O15P Faz 1 — the view counter comes up at 0 ──────────────────────
