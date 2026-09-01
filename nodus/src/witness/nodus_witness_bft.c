@@ -5997,7 +5997,51 @@ void nodus_witness_bft_after_successor_commit(nodus_witness_t *w) {
      * redundant. Persist the cleared slot so a restart cannot re-attach
      * it to a future VIEW_CHANGE (H-5 discipline, mirrors :7797-7801). */
     w->last_prepared.present = false;
-    nodus_witness_db_save_pbft_state(w);
+
+    /* ── O15O Faz 3 — THE PBFT-STATE SAVE IS LOUD, AND IT IS NOT A HALT ──
+     *
+     * THE RATIONALE IS WRITTEN ONCE, HERE. The other three
+     * nodus_witness_db_save_pbft_state call sites in this file — the C5
+     * prepared-certificate capture in bft_handle_vote_inner, the new view
+     * in bft_view_move_finish, and the cleared slot after a legacy commit
+     * in nodus_witness_commit_batch — carry a one-line back-reference to
+     * this block rather than repeating it.
+     *
+     * WHY THE LOSS IS POSSIBLE AT ALL. The chain connection is opened with
+     * `PRAGMA journal_mode=WAL` and `PRAGMA synchronous=NORMAL`
+     * (nodus_witness.c:486-487). Under that pair sqlite does not fsync the
+     * WAL on every commit, so a row that returned SQLITE_DONE is durable
+     * across a PROCESS crash but NOT across a power loss; and a row whose
+     * prepare or step FAILED (nodus_witness_db.c,
+     * nodus_witness_db_save_pbft_state — both of its -1 returns) was never
+     * written at all. Until this phase all four callers discarded that -1,
+     * so either loss was SILENT: the node came back at a lower view than
+     * it had reached, or without the prepared certificate it had been
+     * protecting a value with, and nothing in the log said so. That
+     * silence is the defect — nodus/BUGS.md O15N-L6.
+     *
+     * WHY A LOG AND NOT A HALT. The owner was asked and decided this
+     * explicitly: a transient disk fault must NOT remove a witness from
+     * consensus. Latching safety_halt here would turn a recoverable local
+     * I/O error into the permanent loss of one vote — and, where the fault
+     * is shared rather than local (a full filesystem, a read-only remount
+     * after a media error), into the simultaneous loss of a whole
+     * committee, which is a halt of the chain rather than of one node.
+     *
+     * The control flow below is therefore DELIBERATELY UNCHANGED: no
+     * halt, no retry loop, no early return, at any of the four sites. The
+     * only behaviour this phase adds is that the loss stops being silent
+     * and names WHICH of the four facts was lost, because those are four
+     * different consequences and an operator has to know which one. */
+    if (nodus_witness_db_save_pbft_state(w) != 0) {
+        QGP_LOG_ERROR(LOG_TAG,
+            "successor commit: the CLEARED prepared slot was NOT persisted "
+            "(stale cert height=%llu view=%u) — this node keeps consensus, "
+            "but after a restart that stale prepared certificate may "
+            "re-attach to a VIEW_CHANGE",
+            (unsigned long long)w->last_prepared.height,
+            (unsigned)w->last_prepared.view);
+    }
 
     /* O15I P2 — DISARM the propose-wait deadman: the chain ADVANCED, so
      * whatever we were waiting for either happened or stopped mattering.
@@ -6505,8 +6549,22 @@ static int bft_handle_vote_inner(nodus_witness_t *w, uint8_t msg_type,
         }
         w->last_prepared.n_sigs = collected;
         /* H-5: persist last_prepared so VIEW_CHANGE after a restart
-         * carries the highest prepared cert this witness saw. */
-        nodus_witness_db_save_pbft_state(w);
+         * carries the highest prepared cert this witness saw.
+         *
+         * O15O Faz 3 — loud, and never a halt. The WAL /
+         * synchronous=NORMAL durability boundary that makes the loss
+         * possible, and the owner's decision to log rather than halt, are
+         * written out once in nodus_witness_bft_after_successor_commit;
+         * this site only names the fact IT loses. */
+        if (nodus_witness_db_save_pbft_state(w) != 0) {
+            fprintf(stderr,
+                "%s: the PREPARED CERTIFICATE was NOT persisted "
+                "(height=%llu view=%u n_sigs=%u) — this node keeps "
+                "consensus and still holds the cert in memory, but after a "
+                "restart it cannot prove the value it prepared here\n",
+                LOG_TAG, (unsigned long long)cert_height,
+                w->current_view, (unsigned)collected);
+        }
         fprintf(stderr, "%s: C5 prepared cert captured (height=%llu, "
                 "view=%u, n_sigs=%u)\n", LOG_TAG,
                 (unsigned long long)cert_height, w->current_view,
@@ -8711,8 +8769,20 @@ static void bft_view_move_finish(nodus_witness_t *w) {
      * mirroring handle_newview's has_reproposal=false branch. */
     nodus_witness_bft_bind_reproposal_from_view_changes(w);
     /* H-5: persist the new view across restart. The ONE save that
-     * follows the ONE write, and the caller must not repeat it. */
-    nodus_witness_db_save_pbft_state(w);
+     * follows the ONE write, and the caller must not repeat it.
+     *
+     * O15O Faz 3 — loud, and never a halt. The WAL / synchronous=NORMAL
+     * durability boundary that makes the loss possible, and the owner's
+     * decision to log rather than halt, are written out once in
+     * nodus_witness_bft_after_successor_commit; this site only names the
+     * fact IT loses. */
+    if (nodus_witness_db_save_pbft_state(w) != 0) {
+        fprintf(stderr,
+            "%s: the NEW VIEW was NOT persisted (view=%u) — this node keeps "
+            "consensus and stays in the view it just entered, but after a "
+            "restart it may come back at a LOWER view than it reached\n",
+            LOG_TAG, w->current_view);
+    }
     w->view_change_in_progress = false;
     w->view_change_voted = false;
     w->round_state.phase = NODUS_W_PHASE_IDLE;
@@ -12009,8 +12079,27 @@ int nodus_witness_commit_batch(nodus_witness_t *w,
         w->last_prepared.present = false;
         /* H-5: persist the cleared last_prepared so a post-commit
          * restart does not re-attach a stale prepared cert to a
-         * future VIEW_CHANGE. */
-        nodus_witness_db_save_pbft_state(w);
+         * future VIEW_CHANGE.
+         *
+         * O15O Faz 3 — loud, and never a halt. The WAL /
+         * synchronous=NORMAL durability boundary that makes the loss
+         * possible, and the owner's decision to log rather than halt, are
+         * written out once in nodus_witness_bft_after_successor_commit;
+         * this site only names the fact IT loses. Deliberately NOT a
+         * rollback: the block above is already durably committed, and
+         * undoing it over a lost bookkeeping row would be a far worse
+         * failure than the stale certificate this warns about. */
+        if (nodus_witness_db_save_pbft_state(w) != 0) {
+            QGP_LOG_ERROR(LOG_TAG,
+                "commit_batch: the CLEARED prepared slot was NOT persisted "
+                "after committing height %llu (stale cert height=%llu "
+                "view=%u) — this node keeps consensus, but after a restart "
+                "that stale prepared certificate may re-attach to a "
+                "VIEW_CHANGE",
+                (unsigned long long)bh,
+                (unsigned long long)w->last_prepared.height,
+                (unsigned)w->last_prepared.view);
+        }
 
         /* O15I P2 — DISARM the propose-wait deadman. The legacy mirror
          * of the successor disarm in

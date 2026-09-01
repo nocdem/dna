@@ -1971,6 +1971,36 @@ register_witness_test(test_witness_block_height_checked)
 # environment; leaves nothing behind (mkdtemp dirs are removed).
 register_witness_test(test_witness_height_fault_consumers)
 
+# ── O15O Faz 3 — a lost pbft_state write is never silent ─────────────
+# Bug ref: nodus/BUGS.md O15N-L6. nodus_witness_db_save_pbft_state returns
+# -1 on a failed prepare or step, and all FOUR of its callers in
+# nodus_witness_bft.c discarded that code. The connection runs
+# synchronous=NORMAL under WAL (nodus_witness.c:486-487), so the write is
+# durable across a process crash but not across a power loss — and a write
+# that never ran is lost either way. A node could therefore come back at a
+# LOWER view than it reached, or without the prepared certificate it was
+# protecting a value with, with no signal that anything was lost. That
+# silence was the defect.
+# The fix is a LOUD LOG AT ALL FOUR SITES AND NOTHING ELSE — the owner
+# decided explicitly that a transient disk fault must not remove a node
+# from consensus, so there is no halt, no retry and no control-flow
+# change. Each line names WHICH of the four facts was lost: the cleared
+# slot after a successor commit, the C5 prepared certificate, the new
+# view, and the cleared slot after a legacy commit.
+# Each site gets a PAIR on one fixture — healthy (the save runs and the
+# pbft_state row lands, and nothing is reported lost) and faulted (a real
+# DROP TABLE pbft_state, the line is emitted and names the specific fact).
+# The faulted leg additionally re-asserts the healthy leg's control-flow
+# facts — the round still advances, the view still moves, the commit still
+# returns 0, safety_halt stays false — which is what proves "log, not
+# halt" was implemented rather than "halt".
+# ALL FOUR SITES ARE COVERED: no UNREACHED row, no rc=99 skip.
+# Needs no compile flag and no environment; every fixture chain stays in
+# epoch 0, so the assertions hold at DNAC_EPOCH_LENGTH 720 and 15 alike.
+# Leaves nothing behind (mkdtemp dirs are removed, capture files are
+# unlinked at creation, §4's database is in memory).
+register_witness_test(test_witness_pbft_save_fault)
+
 # ── O15O Faz 2 — a quorum of 0 is refused, not obeyed ────────────────
 # Bug ref: nodus/BUGS.md (the view-change threshold row), widened by grep
 # from one site to six. nodus_witness_bft_config_init writes quorum = 0
