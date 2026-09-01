@@ -7099,6 +7099,117 @@ int nodus_witness_bft_handle_commit(nodus_witness_t *w,
     if (!verify_chain_id(w, hdr->chain_id))
         return -1;
 
+    /* ── O15O Faz 4 — THE COMMIT SENDER MUST BE A COMMITTEE MEMBER ────
+     *
+     * WHAT WAS MISSING. Five of the six T3 consumers in this file already
+     * resolve the chain-derived committee and check the sender against it
+     * (handle_propose:5296, bft_handle_vote_inner:6193, handle_viewchg:8112,
+     * handle_viewok:9389, handle_viewok_req:9490, handle_newview:9629).
+     * THIS handler had no sender check of any kind. It verifies the
+     * PRECOMMIT CERTIFICATES against the committed authority snapshot far
+     * below (:7331, O15G), and that is what stops a forged batch from
+     * committing — but the SENDER was authorized by w->roster alone, at the
+     * dispatch layer (nodus_witness.c:2035-2083). The roster is fed from
+     * self-published DHT `nodus:pk` records whose only admission tests are
+     * signature validity, expiry and dedup, with no committee filter
+     * (nodus_witness_peer.c). A T3 sender identity therefore costs one
+     * Dilithium keypair plus one DHT put, and such an identity reached
+     * nodus_witness_v2_cert_note and the round/height bookkeeping below.
+     * Bug ref: nodus/BUGS.md O15N-L4.
+     *
+     * WHY HERE. nodus_witness_v2_cert_note immediately below is the FIRST
+     * state mutation on this path — it pools untrusted, sender-supplied
+     * certificate data into w->v2_certpool and can reset that pool to a new
+     * height. Gating ABOVE it means a non-committee sender leaves ZERO
+     * residue: no pooled certificate, no pool reset, no sync kick, no round
+     * or height bookkeeping. That is the same argument the O15C-D.4
+     * consensus-version gate makes for its own placement in
+     * nodus_witness.c:2093-2095.
+     *
+     * WHY THE CARRIED HEIGHT, NOT OUR TIP. cmt->block_height lives inside
+     * the wsig-signed envelope, so it is authenticated as "this sender said
+     * this height", and authority must come from the EVIDENCE rather than
+     * from where the reader happens to stand — the rule handle_viewok
+     * states for v->height (:9377-9380). Two nodes at different tips must
+     * not reach different verdicts on identical bytes. handle_propose and
+     * handle_viewchg resolve at the local tip+1 because the message they
+     * judge is a proposal ABOUT the block this node would build next; a
+     * COMMIT is a claim about a block that already carries its own height.
+     *
+     * ⚠ THIS IS NOT handle_viewok's SHAPE ON count == 0, DELIBERATELY.
+     * That gate DROPS when the committee resolves empty, because it exists
+     * to BOUND signature work and a roster fallback would remove exactly
+     * the bound (:9401-9413). Dropping here would be a chain that cannot
+     * START: the GENESIS block's COMMIT flows through this handler, and
+     * pre-genesis every node resolves an empty committee at the same
+     * moment — so the refusal would be simultaneous and cluster-wide, not
+     * node-local. The shape mirrored here is handle_propose's three
+     * outcomes (:5298-5336):
+     *
+     *   lc_rc != 0     a LOAD FAULT — the ABSENCE of an answer, never an
+     *                  empty committee (load_committee_at_height:628-665).
+     *                  Fail closed: a node that cannot name the authority
+     *                  must not accept a block on the transport roster's
+     *                  say-so. Cost is liveness only — nodus_witness_tick
+     *                  drives sync independently (nodus_witness.c:1842,
+     *                  :1987), so catch-up does not depend on the in-handler
+     *                  sync kick this refusal skips.
+     *   count == 0     the COMMITTED pre-genesis answer (F17 A5). Roster
+     *                  membership IS the authorization, exactly as
+     *                  handle_viewchg states at :8144-8145. Genesis security
+     *                  comes from genesis_verify (Rule P) and honest
+     *                  majority, not from committee gating.
+     *   count > 0      the sender's pubkey must be in the committee.
+     *
+     * MEMBERSHIP, NOT RANK. handle_propose additionally ranks the sender by
+     * SORTED roster position because it must identify one LEADER. A COMMIT
+     * is not leader-gated — every witness broadcasts its own on reaching
+     * its own precommit quorum (:7027-7029) — so requiring a rank here
+     * would refuse the legitimate COMMITs of every non-leader. The
+     * arrival-index hazard the sorted lookup exists to avoid
+     * (nodus/BUGS.md 2026-08-04) does not arise: no index is compared to
+     * anything, and nodus_witness_roster_sorted_find returns >= 0 for
+     * exactly the senders nodus_witness_roster_find does (:971-987).
+     *
+     * THE OTHER HALF OF L4 IS NOT CLOSED HERE — see the residual note at
+     * the dispatch-level wsig verify, nodus_witness.c:2047. */
+    {
+        int gossip_idx = nodus_witness_roster_find(&w->roster,
+                                                     hdr->sender_id);
+        if (gossip_idx < 0) {
+            fprintf(stderr, "%s: COMMIT from unknown sender_id\n", LOG_TAG);
+            return -1;
+        }
+
+        nodus_committee_member_t *committee = NULL;
+        int count = 0;
+        int lc_rc = load_committee_at_height_alloc(w, cmt->block_height,
+                                                     &committee, &count);
+        if (lc_rc != 0) {
+            free(committee);
+            fprintf(stderr,
+                    "%s: COMMIT — CANNOT ESTABLISH THE COMMITTEE at height "
+                    "%llu (rc=%d%s); refusing the commit rather than "
+                    "authorizing the sender on the transport roster\n",
+                    LOG_TAG, (unsigned long long)cmt->block_height, lc_rc,
+                    w->db ? "" : ", chain database not open");
+            return -1;
+        }
+        bool reject = (count > 0 &&
+                       committee_find_pubkey(committee, count,
+                           w->roster.witnesses[gossip_idx].pubkey) < 0);
+        free(committee);
+        if (reject) {
+            fprintf(stderr,
+                    "%s: COMMIT from non-committee sender (roster %d, "
+                    "height %llu)\n", LOG_TAG, gossip_idx,
+                    (unsigned long long)cmt->block_height);
+            return -1;
+        }
+        /* else: count == 0 (genuine pre-genesis, the roster check above is
+         * the authorization) or a committee member. */
+    }
+
     /* O15D — successor QC-certificate collection. MUST run BEFORE the
      * already-committed early-return below: on a healthy round every
      * node commits through its OWN quorum first, so by the time peers'

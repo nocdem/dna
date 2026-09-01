@@ -93,7 +93,7 @@
 #include "witness/nodus_witness_validator.h"
 #include "witness/nodus_witness_committee.h"
 
-/* ── O15L Faz 4 — the five committee-authorization gates under test ── */
+/* ── O15L Faz 4 — the committee-authorization gates (was five; O15O Faz 4 added a SIXTH at handle_commit, covered by test_witness_commit_committee_gate.c — this file still exercises the original five) under test ── */
 #include "witness/nodus_witness_bft.h"
 #include "protocol/nodus_tier3.h"
 #include "crypto/nodus_sign.h"
@@ -959,7 +959,7 @@ int main(void) {
     w.db = NULL;
     rmrf(data_path);
 
-    /* ── O15L Faz 4 — the five committee-authorization gates ─────────
+    /* ── O15L Faz 4 — the committee-authorization gates (was five; O15O Faz 4 added a SIXTH at handle_commit, covered by test_witness_commit_committee_gate.c — this file still exercises the original five) ─────────
      * Each scenario builds its OWN heap fixture and its own chain
      * database, so a fault armed by one cannot bleed into the next. */
     printf("\nO15L Faz 4 — a committee-load FAULT is not an empty "

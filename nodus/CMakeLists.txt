@@ -2001,6 +2001,56 @@ register_witness_test(test_witness_height_fault_consumers)
 # unlinked at creation, §4's database is in memory).
 register_witness_test(test_witness_pbft_save_fault)
 
+# ── O15O Faz 4 — a COMMIT is authorized by the COMMITTEE ─────────────
+# Bug ref: nodus/BUGS.md O15N-L4. Five of the six T3 consumers in
+# nodus_witness_bft.c already resolved the chain-derived committee and
+# measured the sender against it; nodus_witness_bft_handle_commit had no
+# sender check of any kind. It verifies the PRECOMMIT CERTIFICATES against
+# the committed authority snapshot (O15G), which is what stops a forged
+# batch from committing — but the SENDER was authorized by w->roster alone,
+# at the dispatch layer, and the roster admits any self-published DHT
+# `nodus:pk` record with a valid signature (no committee filter). A T3
+# sender identity therefore cost one Dilithium keypair plus one DHT put,
+# and such an identity reached nodus_witness_v2_cert_note — the first state
+# mutation on that path — and the round/height bookkeeping above the
+# certificate check.
+# The gate resolves the committee at the height the message CARRIES, not
+# at this node's tip, so two nodes at different tips cannot reach different
+# verdicts on identical bytes. It mirrors handle_propose's three outcomes:
+# a LOAD FAULT fails closed, a genuinely EMPTY committee takes the F17 A5
+# roster bootstrap, and a populated committee must contain the sender. It
+# is MEMBERSHIP, not rank — a COMMIT is not leader-gated, every witness
+# broadcasts its own.
+# Four sections, each a PAIR on one fixture with exactly one thing moving
+# between the legs: §1 the sender (member admitted, roster-outsider
+# refused), §2 the carried height (the same sender refused at a far epoch
+# and admitted at the local-tip epoch — the only section that separates the
+# carried height from the local tip, since inside epoch 0 the two are
+# indistinguishable), §3 the pre-genesis bootstrap, §4 an armed committee
+# load fault with a disarm that restores the admitted path.
+# ⚠ §3 IS THE LOAD-BEARING ROW: the GENESIS block's COMMIT flows through
+# this handler, so a gate that dropped on an empty committee would stop
+# every node from reaching block 1 at the same moment. §3 pins that the
+# bootstrap admits.
+# ⚠ "cert_note was not reached" IS PROVEN INDIRECTLY. The direct
+# observable (w->v2_certpool) needs w->v2_successor, which is legitimately
+# reachable only by opening a pure-V2 genesis chain; hand-setting it is the
+# masking nodus_witness.c:736-738 records. Instead the admitted leg prints
+# a line from a site strictly BELOW cert_note (the F02 batch re-verify) and
+# the refused leg prints the gate's line and none below it. Named in the
+# test header; it would NOT catch an edit that moved cert_note above the
+# gate.
+# Every admitted leg still returns -1 — that is the PRE-EXISTING outcome, a
+# genuine ACCEPT being out of reach for a unit fixture (same limit
+# test_witness_height_fault_consumers.c §4 documents). "Admitted" here
+# means "reached the F02 verify", never "committed a block".
+# Needs no compile flag and no environment. DNAC_EPOCH_LENGTH is READ, not
+# assumed (§2 computes its far height from the macro), so the assertions
+# hold at the shipped 720 and at the harness's 15 alike.
+# Leaves nothing behind (mkdtemp dirs are removed, capture files are
+# unlinked at creation).
+register_witness_test(test_witness_commit_committee_gate)
+
 # ── O15O Faz 2 — a quorum of 0 is refused, not obeyed ────────────────
 # Bug ref: nodus/BUGS.md (the view-change threshold row), widened by grep
 # from one site to six. nodus_witness_bft_config_init writes quorum = 0

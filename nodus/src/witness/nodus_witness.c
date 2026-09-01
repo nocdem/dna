@@ -2044,7 +2044,33 @@ void nodus_witness_dispatch_t3(nodus_witness_t *witness,
             return;
         }
 
-        /* Verify wsig against sender's roster public key */
+        /* Verify wsig against sender's roster public key.
+         *
+         * ── KNOWN, ACCEPTED RESIDUAL (nodus/BUGS.md O15N-L4) ────────────
+         *
+         * This verify authorizes the FRAME on the transport roster, and the
+         * roster admits any self-published DHT `nodus:pk` record that has a
+         * valid signature, is unexpired and is not a duplicate — there is
+         * no committee filter (nodus_witness_peer.c). A T3 sender identity
+         * therefore costs one Dilithium keypair plus one DHT put.
+         *
+         * O15O Faz 4 closed the consequence that mattered: every
+         * consensus-affecting T3 consumer now re-authorizes the sender
+         * against the chain-derived committee inside its own handler, the
+         * COMMIT handler included (nodus_witness_bft.c, the O15O Faz 4 gate
+         * above nodus_witness_v2_cert_note).
+         *
+         * BINDING THIS VERIFY ITSELF TO THE COMMITTEE IS NOT DONE, AND NOT
+         * AN OVERSIGHT. Resolving a committee requires a height, and no
+         * height is authenticated at this point — the message has not been
+         * signature-checked yet, so nothing inside it can be trusted to
+         * select an authority. The only height available here is this
+         * node's LOCAL tip, and using it would make a node that is BEHIND
+         * refuse frames from a legitimately-seated new validator, including
+         * the very frames that would let it catch up. The residual is
+         * therefore accepted deliberately: an unadmitted identity can spend
+         * this node's Dilithium verify budget on the epoll thread, but it
+         * cannot influence consensus state. */
         nodus_pubkey_t pk;
         memcpy(pk.bytes,
                witness->roster.witnesses[sender_idx].pubkey,
