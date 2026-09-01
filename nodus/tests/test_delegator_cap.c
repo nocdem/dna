@@ -12,12 +12,19 @@
  * inner-dust burn — permanently.
  *
  * Worse, WHICH delegators were dropped was not even stable: the
- * truncating query (nodus_witness_delegation.c delegation_list_by_hash,
- * "... WHERE %s = ? LIMIT ?") has NO ORDER BY, and the caller's qsort
- * runs AFTER the LIMIT — it orders the survivors, not the selection. Two
- * witnesses whose tables hold the same logical rows in a different
- * physical order would pick different subsets → different snapshot blob
- * → different snapshot_hash → different state_root.
+ * truncating query (nodus_witness_delegation.c delegation_list_by_hash)
+ * had NO ORDER BY, and the caller's qsort ran AFTER the LIMIT — it
+ * ordered the survivors, not the selection. Two witnesses whose tables
+ * held the same logical rows in a different physical order would pick
+ * different subsets → different snapshot blob → different snapshot_hash
+ * → different state_root.
+ *
+ * ⚠ PAST TENSE SINCE O15O Faz 7 (v0.19.31): the query now carries
+ * `ORDER BY <the unpinned pubkey column> ASC`, applied before the LIMIT,
+ * so the selection itself is deterministic and the fork path is closed.
+ * `test_delegation_list_order.c` pins that. THIS file's subject is
+ * unaffected — the admission cap is still the real fix, because ordering
+ * a truncation only makes every node lose the SAME delegators, not none.
  *
  * THE FIX UNDER TEST. The cap is enforced at ADMISSION, so the snapshot
  * can never be ASKED to truncate. This file covers the LEGACY lane

@@ -333,22 +333,93 @@ int nodus_delegation_count_by_validator(nodus_witness_t *w,
 
 /* ── List by hash column (shared impl) ──────────────────────────── */
 
+/**
+ * O15O Faz 7 — the LIMIT now truncates against a TOTAL ORDER.
+ *
+ * WHAT WAS WRONG. The query was "... WHERE %s = ? LIMIT ?" with no
+ * ORDER BY at all, so when the filtered set was larger than
+ * max_entries the rows that SURVIVED were whichever ones SQLite's scan
+ * reached first — index-scan order, i.e. physical row layout. Two
+ * witnesses holding the SAME logical rows written in a different order
+ * (a resync, a replay, a VACUUM, a table rebuild) keep DIFFERENT
+ * subsets. The live consumer is the epoch snapshot
+ * (nodus_witness_epoch.c:418), and a differing delegator set there is a
+ * differing snapshot_hash, hence a differing state_root — a chain
+ * split, not a cosmetic difference. The per-node symptom is quieter and
+ * just as bad: the excluded delegators are never paid and their share
+ * falls into the inner-dust burn.
+ *
+ * WHY `order_col` IS A PARAMETER. This is one implementation serving
+ * two queries, and the order key must be the pubkey column that is NOT
+ * the filtered one — filtered on validator_hash ⇒ order by
+ * delegator_pubkey, and the transpose for the other caller. Both
+ * strings come from the two callers below and from nowhere else (the
+ * function is file-static), so the set of values that can reach this
+ * snprintf is closed and consists of caller-supplied constants only.
+ *
+ * WHY THAT IS A TOTAL ORDER. `delegations` is keyed
+ * PRIMARY KEY (delegator_hash, validator_hash) (nodus_witness.c:196),
+ * and every writer derives those hashes from the pubkey columns with
+ * the same tag-prefixed SHA3-512 — this file's delegation_row_hash for
+ * the legacy lane, and rtn_del_rec_ok (nodus_witness_rt_native.c:4127)
+ * which REFUSES any Ledger V2 effect whose key does not hash from its
+ * own pubkeys. So (delegator_pubkey, validator_pubkey) is unique, and
+ * once one of the pair is pinned by the WHERE clause the other is
+ * distinct across the whole result set. The ordering itself is
+ * SQLite's memcmp over BLOBs (collating sequences apply to TEXT only)
+ * and both pubkeys are fixed-length, so it is byte order and nothing
+ * else. The assumption edge, stated rather than hidden: this rests on
+ * SHA3-512 being collision-free, since two pubkeys sharing a hash
+ * would share a PK slot.
+ *
+ * ⚠ NOT A ROWID ORDER, DELIBERATELY. rowid reflects the order rows were
+ * WRITTEN, which is exactly the quantity a resync or a replay is free
+ * to change, so ordering by it would re-state the bug rather than fix
+ * it.
+ *
+ * The by-validator order is the SAME order deleg_cmp imposes
+ * downstream (nodus_witness_epoch.c:298-302, memcmp over
+ * delegator_pubkey), so the snapshot's qsort now re-sorts an
+ * already-sorted array instead of ordering an arbitrarily chosen
+ * subset.
+ *
+ * REACHABILITY, honestly: unreachable today. The per-validator
+ * delegator cap (NODUS_MAX_DELEGATORS_PER_VALIDATOR, enforced at
+ * admission in both lanes) holds the filtered set at or below the bound
+ * the snapshot passes, so there is no over-cap set left to choose from.
+ * Lift or raise that cap — or inherit a chain that already carried an
+ * over-cap validator — and the truncation is live again, which is why
+ * the order is fixed here rather than argued away.
+ */
 static int delegation_list_by_hash(nodus_witness_t *w,
                                    const char *hash_col,
+                                   const char *order_col,
                                    const uint8_t *hash,
                                    dnac_delegation_record_t *out,
                                    int max_entries,
                                    int *count_out) {
-    if (!w || !w->db || !hash_col || !hash || !out || !count_out ||
-        max_entries <= 0) {
+    if (!w || !w->db || !hash_col || !order_col || !hash || !out ||
+        !count_out || max_entries <= 0) {
         return -1;
     }
 
     char sql[256];
-    snprintf(sql, sizeof(sql),
+    int sql_len = snprintf(sql, sizeof(sql),
         "SELECT delegator_pubkey, validator_pubkey, amount, "
         "       delegated_at_block "
-        "FROM delegations WHERE %s = ? LIMIT ?", hash_col);
+        "FROM delegations WHERE %s = ? ORDER BY %s ASC LIMIT ?",
+        hash_col, order_col);
+    /* A silent snprintf truncation that cut the tail back to "... = ?"
+     * would still PREPARE, and would reinstate the unordered LIMIT this
+     * function exists to remove. The buffer is comfortably large for
+     * both call sites; this guard is what keeps that a fact rather than
+     * an assumption. */
+    if (sql_len < 0 || (size_t)sql_len >= sizeof(sql)) {
+        fprintf(stderr, "%s: list SQL did not fit (%d bytes) — refusing to "
+                "run a query whose ORDER BY may be truncated\n",
+                LOG_TAG, sql_len);
+        return -1;
+    }
 
     sqlite3_stmt *stmt = NULL;
     int rc = sqlite3_prepare_v2(w->db, sql, -1, &stmt, NULL);
@@ -388,8 +459,10 @@ int nodus_delegation_list_by_delegator(nodus_witness_t *w,
     if (!delegator_pubkey) return -1;
     uint8_t h[NODUS_DELEGATION_HASH_LEN];
     delegation_row_hash(delegator_pubkey, h);
-    return delegation_list_by_hash(w, "delegator_hash", h, out, max_entries,
-                                   count_out);
+    /* Filtered on the DELEGATOR, so validator_pubkey is the column that
+     * varies across the result set and is therefore the total order. */
+    return delegation_list_by_hash(w, "delegator_hash", "validator_pubkey",
+                                   h, out, max_entries, count_out);
 }
 
 int nodus_delegation_list_by_validator(nodus_witness_t *w,
@@ -400,6 +473,10 @@ int nodus_delegation_list_by_validator(nodus_witness_t *w,
     if (!validator_pubkey) return -1;
     uint8_t h[NODUS_DELEGATION_HASH_LEN];
     delegation_row_hash(validator_pubkey, h);
-    return delegation_list_by_hash(w, "validator_hash", h, out, max_entries,
-                                   count_out);
+    /* Filtered on the VALIDATOR, so delegator_pubkey is the column that
+     * varies — and it is the key deleg_cmp already sorts the epoch
+     * snapshot's survivors by (nodus_witness_epoch.c:298-302), so the
+     * selection and the downstream sort now agree. */
+    return delegation_list_by_hash(w, "validator_hash", "delegator_pubkey",
+                                   h, out, max_entries, count_out);
 }

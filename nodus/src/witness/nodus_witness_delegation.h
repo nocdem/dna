@@ -48,10 +48,19 @@ extern "C" {
  * SUBSET of its delegators appeared in it; settlement then divides by
  * the full figure and the excluded delegators are never paid — their
  * share falls into the inner-dust burn, permanently. The truncating
- * query (delegation_list_by_hash, "... WHERE %s = ? LIMIT ?") has no
- * ORDER BY, so WHICH delegators were dropped was decided by SQLite's
- * scan order, i.e. by physical row layout, which two witnesses need
- * not share after a resync / VACUUM / table rebuild.
+ * query (delegation_list_by_hash) had no ORDER BY, so WHICH delegators
+ * were dropped was decided by SQLite's scan order, i.e. by physical row
+ * layout, which two witnesses need not share after a resync / VACUUM /
+ * table rebuild.
+ *
+ * ⚠ THAT SECOND HALF IS NO LONGER TRUE — O15O Faz 7 (v0.19.31) gave the
+ * query `ORDER BY <the pubkey column not pinned by the WHERE clause>
+ * ASC`, a stable total order (the PK makes the pubkey pair unique, and
+ * SQLite compares BLOBs by memcmp). Every witness now truncates to the
+ * SAME subset. What is unchanged, and is why the admission cap below is
+ * still the real fix: the excluded delegators are still excluded and
+ * still never paid. Determinism was the fork risk; it is not the whole
+ * defect.
  *
  * The fix is to make the bound REAL at admission rather than paper
  * over it at snapshot time: a DELEGATE that would introduce a NEW
@@ -138,7 +147,13 @@ int nodus_delegation_count_by_validator(nodus_witness_t *w,
 
 /**
  * List all delegations owned by the given delegator (up to max_entries).
- * Output records are read in undefined order — caller may sort if needed.
+ *
+ * O15O Faz 7 — output is ordered by `validator_pubkey` ASC (byte order;
+ * SQLite compares BLOBs with memcmp), and the ORDER BY is applied BEFORE
+ * the LIMIT. So when the result is truncated, every node keeps the same
+ * subset. Was "undefined order — caller may sort if needed", which was
+ * true and was the bug: sorting after a truncation orders the survivors,
+ * not the selection.
  *
  * @return 0 on success, -1 on error. *count_out is set on success.
  */

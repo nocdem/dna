@@ -2002,6 +2002,36 @@ register_witness_test(test_witness_height_fault_consumers)
 # unlinked at creation).
 register_witness_test(test_witness_quorum_vacuum)
 
+# ── O15O Faz 7 — the delegation LIMIT truncates against a TOTAL ORDER ─
+# delegation_list_by_hash (nodus_witness_delegation.c) is the only way
+# the epoch snapshot reads a validator's delegators
+# (nodus_witness_epoch.c:418) and it caps the result with a LIMIT. The
+# query carried NO `ORDER BY`, so when the filtered set exceeded the
+# bound the rows that SURVIVED were whichever ones SQLite's scan reached
+# first — index-scan order, i.e. the order the rows were WRITTEN. Two
+# witnesses holding the same rows in a different physical layout keep
+# different subsets: different snapshot blob, different snapshot_hash,
+# different state_root. The fix orders by the pubkey column the WHERE
+# clause does NOT pin, which is a stable TOTAL order because
+# (delegator_pubkey, validator_pubkey) is unique.
+# ⚠ THE PATH IS UNREACHABLE IN PRODUCTION TODAY and the test is
+# deliberately built for the world where it is not: the per-validator
+# delegator cap holds the set at or below the snapshot's bound, so this
+# file inserts rows DIRECTLY through the CRUD writer, bypassing
+# admission, to actually reach the LIMIT. A leg that did not reach it
+# would pass with or without the fix, so every leg asserts BOTH that
+# more rows exist than the bound and that the read came back AT it.
+# Two sections (filter on validator / on delegator, the shared
+# implementation's two parameterisations), each run twice with the SAME
+# rows in DIFFERENT insertion orders; each leg is checked against an
+# independently sorted expectation, and each asserts its result is NOT
+# the first rows it inserted — that last one is what proves the ORDER BY
+# changed the answer.
+# Needs no compile flag and no environment; nothing here reads
+# DNAC_EPOCH_LENGTH, so it holds at production and harness parameters
+# alike. Leaves nothing behind — every fixture is an `:memory:` database.
+register_witness_test(test_delegation_list_order)
+
 # ── PR 1 (2026-05-03) — bft_config follower-path refresh (C-3 fix) ───
 # See docs/plans/2026-05-03-witness-auto-bootstrap-design.md
 register_witness_test(test_witness_bft_config_refresh)

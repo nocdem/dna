@@ -238,11 +238,25 @@ int nodus_witness_epoch_delete(nodus_witness_t *w,
  * ORDER BY guarantees deterministic truncation set." BOTH claims were
  * false, and the second was load-bearing for a determinism argument:
  *
- *   1. THERE IS NO `ORDER BY`. The query is
+ *   1. THERE WAS NO `ORDER BY` — AND NOW THERE IS ONE (O15O Faz 7).
+ *      The history is kept because it is the whole reason this docblock
+ *      exists. As of the 2026-08-27 correction the query read
  *      "... FROM delegations WHERE %s = ? LIMIT ?"
- *      (nodus_witness_delegation.c). The qsort below runs AFTER the
- *      LIMIT, so it sorts the SURVIVORS, not the selection — which set
- *      survives is index-scan order.
+ *      (nodus_witness_delegation.c), so the qsort below ran AFTER the
+ *      LIMIT: it sorted the SURVIVORS rather than choosing them, and
+ *      which set survived was index-scan order — physical row layout,
+ *      which two witnesses need not share after a resync or a rebuild.
+ *      TODAY that query reads
+ *      "... WHERE %s = ? ORDER BY %s ASC LIMIT ?", ordered by the
+ *      pubkey column the WHERE clause does NOT pin — for this call site
+ *      delegator_pubkey. That is a stable TOTAL order, because
+ *      (delegator_pubkey, validator_pubkey) is unique (the delegations
+ *      PK is over the two hashes, and both write lanes derive each hash
+ *      from its own pubkey column — see the docblock on
+ *      delegation_list_by_hash). So the truncation SET is now identical
+ *      on every node, and it is the SAME order deleg_cmp imposes below:
+ *      that qsort re-sorts an already-sorted array instead of being the
+ *      only thing standing between the snapshot and a chain split.
  *   2. "STAKE rule G cap" names nothing that exists here. The only 64 in
  *      the tree is DNAC_MAX_DELEGATIONS_PER_DELEGATOR
  *      (dnac/include/dnac/dnac.h) — per DELEGATOR, not per validator —
@@ -269,11 +283,23 @@ int nodus_witness_epoch_delete(nodus_witness_t *w,
  * this bug. See the header docblock for why the per-DELEGATOR constant
  * DNAC_MAX_DELEGATIONS_PER_DELEGATOR was NOT reused.
  *
- * RESIDUAL, stated honestly: a chain that ALREADY carried an over-cap
- * validator before this gate existed keeps that row count — admission
- * cannot retroactively remove delegators — and for that one validator
- * the unordered truncation above still applies. Unreachable on a chain
- * capped from genesis. */
+ * RESIDUAL, stated honestly, and SMALLER since O15O Faz 7 — but not
+ * gone: a chain that ALREADY carried an over-cap validator before this
+ * gate existed keeps that row count, because admission cannot
+ * retroactively remove delegators, so for that one validator the LIMIT
+ * above still discards rows. What changed is WHICH rows. The truncation
+ * is now deterministic, so every honest node keeps the same delegators
+ * and hashes the same blob: the CHAIN-SPLIT half of the defect is
+ * closed even for that legacy case. The PAYMENT half is not — the
+ * discarded delegators are still never paid and their share still falls
+ * into the inner-dust burn, uniformly on every node. Unreachable on a
+ * chain capped from genesis.
+ *
+ * AND SO THAT "UNREACHABLE" IS NOT READ AS "UNNECESSARY": while the
+ * admission cap holds, this LIMIT never truncates and the ORDER BY
+ * changes no output at all. Raise the cap, remove it, or widen the
+ * snapshot bound past it, and the truncation is live from that moment —
+ * the order is what stops such a change from being a chain split. */
 #define NODUS_EPOCH_MAX_DELEGS_PER_VAL NODUS_MAX_DELEGATORS_PER_VALIDATOR
 
 static void be16_into(uint16_t v, uint8_t out[2]) {
