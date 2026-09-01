@@ -2370,7 +2370,37 @@ static void handle_dnac_spend(nodus_witness_t *w,
         int o15h_slot = -1;
 #endif
         {
-            uint64_t next_bh = nodus_witness_block_height(w) + 1;
+            /* ── O15O Faz 1 — CONVERTED FAIL-CLOSED, and the reason is
+             * that this height is not a label here: it feeds
+             * nodus_committee_get_for_block_alloc below (committee
+             * resolution) AND, through
+             * `epoch = next_bh / DNAC_EPOCH_LENGTH`, the leader index
+             * that decides which peer receives the client's transaction
+             * — including the "we are the leader, nothing to forward"
+             * verdict. A fault answering 0 would elect the height-1
+             * committee's leader at epoch 0 on a chain thousands of
+             * blocks along, and forward a client's spend to a node that
+             * is not the leader (or refuse to forward at all).
+             *
+             * The exit is the one every other failure in this block
+             * takes: answer the client, release the pending_forward slot
+             * we just claimed, return. The entry was already pooled
+             * locally above, so the work is not lost — same reasoning as
+             * the unreachable-leader path below. */
+            uint64_t fwd_tip = 0;
+            if (nodus_witness_block_height_checked(w, &fwd_tip) != 0) {
+                fprintf(stderr,
+                        "%s: w_fwd_req — chain-height read faulted; "
+                        "refusing to elect a leader from the height-1 "
+                        "committee\n", LOG_TAG);
+                send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                            "chain height unavailable — cannot resolve the "
+                            "leader");
+                w->pending_forwards[pf_slot].active = false;
+                w->pending_forward_count--;
+                return;
+            }
+            uint64_t next_bh = fwd_tip + 1;
             /* S3: heap — a DNAC_MAX_ACTIVE_VALIDATORS committee is
              * ~334 KB. Freed on every exit path in this block. */
             nodus_committee_member_t *committee = NULL;

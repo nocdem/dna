@@ -241,6 +241,61 @@ int  nodus_witness_block_get_genesis(nodus_witness_t *w,
                                        nodus_witness_block_t *out,
                                        uint8_t **blob_out,
                                        size_t *blob_len_out);
+/**
+ * The chain height, WITH the DB fault kept distinguishable from it.
+ *
+ * TWO-VALUED (O15O Faz 1). `nodus_witness_block_height` below cannot
+ * report a fault at all: it answers 0 for "the chain is empty" and 0 for
+ * "the query did not run", and 0 is a legitimate height. Every consumer
+ * that decides something — the round anchor, the committee resolved at
+ * height+1, leader election, the signed VIEW_OK preimage — therefore
+ * treated a transient sqlite failure as "this chain is at genesis", which
+ * is the fail-open nodus/CLAUDE.md forbids in one line: A DB FAILURE IS
+ * NEVER A VALUE. Bug ref: nodus/BUGS.md O15N-L2.
+ *
+ * Same discipline, and the same shape, as nodus_witness_supply_get above.
+ *
+ * @param w    witness. NULL is a fault. A NULL w->db is TWO different
+ *             states and is split along the O15L DG-1 matrix, exactly as
+ *             nodus_witness_bft.c's load_committee_at_height splits it at
+ *             :673-683 and with the same 32-byte comparison:
+ *               chain_id all zeros — GENUINE PRE-GENESIS. Success, *out 0.
+ *                 There is no chain, so 0 is a true committed answer, and
+ *                 this is the window the F17 A5 gossip-roster bootstrap
+ *                 runs in. A node in the genesis round is here by
+ *                 construction (commit_genesis is what creates the DB),
+ *                 so refusing it would stop a fresh cluster from ever
+ *                 producing genesis.
+ *               chain_id non-zero — DG-1 ROW 2. Fault, -1. This node
+ *                 holds a chain and cannot read it; 0 would be the
+ *                 fail-open.
+ *             ⚠ THESE TWO GATES ARE ONE RULE IN TWO PLACES — changing
+ *             either without the other lets a node take its height from
+ *             one row of the matrix and its committee from the other.
+ * @param out  receives the height on success. UNTOUCHED on -1, so a
+ *             caller that pre-seeded it cannot mistake a fault for data.
+ *
+ * @return  0  success. *out is the committed tip: the MAX(global_height)
+ *             of v2_blocks on a successor chain (w->v2_successor), the
+ *             MAX(height) of `blocks` on a legacy one, or 0 for a
+ *             genuinely pre-genesis node with no database. A GENUINELY
+ *             EMPTY chain is this case with *out == 0 — that is the whole
+ *             point of separating the two returns.
+ *         -1  NULL w, NULL out, DG-1 row 2 (above), or a sqlite fault on
+ *             either branch: prepare failure (which INCLUDES "no such
+ *             table", the shape a half-migrated or corrupt DB produces),
+ *             or a sqlite3_step return other than SQLITE_ROW /
+ *             SQLITE_DONE. *out is untouched.
+ */
+int nodus_witness_block_height_checked(nodus_witness_t *w, uint64_t *out);
+
+/**
+ * THE FAIL-OPEN FORM. Answers 0 both for an empty chain and for a DB
+ * fault; prefer nodus_witness_block_height_checked in anything that
+ * decides. Kept for the display / advisory callers listed in the block
+ * comment on its definition (nodus_witness_db.c), and loud on stderr
+ * when the underlying read faults so the fault is never silent.
+ */
 uint64_t nodus_witness_block_height(nodus_witness_t *w);
 
 /* ── Genesis state ───────────────────────────────────────────────── */

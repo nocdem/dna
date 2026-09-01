@@ -1940,6 +1940,37 @@ register_witness_test(test_witness_commit_height_match)
 register_witness_test(test_witness_commit_height_zero_legacy)
 register_witness_test(test_witness_sync_rsp_state_root_verify)
 
+# ── O15O Faz 1 — a DB failure is never a height ──────────────────────
+# Bug ref: nodus/BUGS.md O15N-L2. nodus_witness_block_height answered 0
+# both for an empty chain and for a failed query, and that 0 reached the
+# round anchor, committee resolution, leader election and the signed
+# VIEW_OK preimage. Pins the checked accessor's two-valued contract on
+# BOTH chain branches (legacy `blocks`, successor `v2_blocks`), that *out
+# is untouched on a fault, that the fail-open wrapper still answers 0 and
+# logs, and the O15L DG-1 split of a NULL w->db — genuine pre-genesis is
+# success at 0 (the arm a fresh cluster needs to reach genesis at all),
+# a held-but-unreadable chain is a fault. Needs no compile flag and no
+# environment; the fault is a real DROP TABLE, not a mock.
+register_witness_test(test_witness_block_height_checked)
+
+# ── O15O Faz 1 — the CONSUMERS of the checked chain-height accessor ──
+# The sibling of the test above, and the half that was missing. That one
+# pins the ACCESSOR's two-valued contract; this one pins the call sites
+# READING it. Measured, not assumed: reverting every fault return in
+# nodus_witness_block_height_checked to the old fail-open turned only the
+# accessor's own test red — all 214 other tests, every converted consumer
+# among them, stayed green. A build that discarded the whole substance of
+# the phase was indistinguishable from one that kept it.
+# Each consumer gets a PAIR on one fixture — healthy (leads / opens the
+# round / accepts) and faulted (refuses) — the fault being a real DROP
+# TABLE so sqlite3_prepare_v2 genuinely fails. The healthy leg is the
+# anti-vacuity control: "returns -1" proves nothing on its own. The
+# fixture chain is EMPTY on purpose, so a fail-open build's 0 equals the
+# true tip and no downstream height comparison can mask the difference.
+# Bug ref: nodus/BUGS.md O15N-L2. Needs no compile flag and no
+# environment; leaves nothing behind (mkdtemp dirs are removed).
+register_witness_test(test_witness_height_fault_consumers)
+
 # ── PR 1 (2026-05-03) — bft_config follower-path refresh (C-3 fix) ───
 # See docs/plans/2026-05-03-witness-auto-bootstrap-design.md
 register_witness_test(test_witness_bft_config_refresh)

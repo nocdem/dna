@@ -572,7 +572,20 @@ static int verify_v2_successor_claim(nodus_witness_t *w,
             break;
         }
         nodus_v2_claim_admit_t adm;
-        uint64_t candidate = nodus_witness_block_height(w) + 1;
+        /* O15O Faz 1 — claim_admit checks the claim's HEIGHT WINDOW at
+         * this candidate. A fault answering 0 would judge every claim
+         * against height 1: the wrong window, and in VALIDATION mode a
+         * verdict a healthy peer would not reach. Take this function's
+         * own local-fault exit (reject_reason + break, rc stays -1),
+         * identical to the "allocation failed" branch at the top. */
+        uint64_t claim_tip = 0;
+        if (nodus_witness_block_height_checked(w, &claim_tip) != 0) {
+            snprintf(reject_reason, reason_size,
+                     "chain-height read faulted — cannot judge the claim "
+                     "height window");
+            break;
+        }
+        uint64_t candidate = claim_tip + 1;
         if (nodus_witness_v2_claim_admit(w, c, candidate, &adm) != 0) {
             snprintf(reject_reason, reason_size, "claim admission rejected");
             break;
@@ -711,7 +724,21 @@ static int verify_v2_successor_tx(nodus_witness_t *w,
         nodus_v2_envelope_t env = { tx_data, (size_t)tx_len };
         size_t fail_i = 0;
         dna_env_preflight_status_t pst = DNA_ENV_PF_OK;
-        uint64_t candidate = nodus_witness_block_height(w) + 1;
+        /* O15O Faz 1 — the CANDIDATE HEIGHT the engine's preflight seam
+         * evaluates the envelope at. A fault answering 0 would preflight
+         * every envelope at height 1, producing a verdict that depends on
+         * this node's DB health rather than on bytes plus committed
+         * state — the F02 discipline this file states two paragraphs
+         * above. Take the function's own local-fault exit (reject_reason
+         * + break, rc stays -1), as the calloc failure just above does. */
+        uint64_t env_tip = 0;
+        if (nodus_witness_block_height_checked(w, &env_tip) != 0) {
+            snprintf(reject_reason, reason_size,
+                     "chain-height read faulted — cannot preflight the "
+                     "envelope at a candidate height");
+            break;
+        }
+        uint64_t candidate = env_tip + 1;
         nodus_v2_env_status_t est = nodus_witness_v2_env_preflight_batch(
             w, candidate, rulesets, n_rulesets, &env, 1, pf, &fail_i, &pst);
         if (est != NODUS_V2_ENV_OK) {
@@ -1020,7 +1047,19 @@ int nodus_witness_verify_transaction(nodus_witness_t *w,
      * a UTXO with unlock_block > current_block is still in its post-UNSTAKE
      * cooldown window and cannot be spent yet. UTXOs with unlock_block == 0
      * are the normal unlocked case (default for all non-UNSTAKE outputs). */
-    uint64_t current_block = nodus_witness_block_height(w);
+    /* O15O Faz 1 — Rule D's cutoff. A fault answering 0 would make
+     * `unlock_block > current_block` true for every locked UTXO and
+     * reject legitimate spends, and worse, it is the shape where a node's
+     * VALIDATION verdict stops being a function of committed state.
+     * Refuse with this function's own local-fault exit (reject_reason +
+     * return -1), as the null-parameter guard at its top does. */
+    uint64_t current_block = 0;
+    if (nodus_witness_block_height_checked(w, &current_block) != 0) {
+        snprintf(reject_reason, reason_size,
+                 "chain-height read faulted — cannot apply the locked-UTXO "
+                 "cutoff (Rule D)");
+        return -1;
+    }
 
     for (int i = 0; i < nullifier_count; i++) {
         const uint8_t *nul = nullifiers + i * NODUS_T3_NULLIFIER_LEN;

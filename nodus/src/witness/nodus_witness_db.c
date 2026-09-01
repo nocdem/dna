@@ -782,8 +782,87 @@ int nodus_witness_block_get_genesis(nodus_witness_t *w,
     return 0;
 }
 
-uint64_t nodus_witness_block_height(nodus_witness_t *w) {
-    if (!w || !w->db) return 0;
+/* O15O Faz 1 — the real query, with the fault kept distinguishable from
+ * the value. Full contract on the declaration in nodus_witness_db.h.
+ *
+ * Both branches now separate the three sqlite outcomes the old body
+ * collapsed into a bare 0:
+ *   prepare failure                  -> FAULT (includes "no such table")
+ *   step != SQLITE_ROW/SQLITE_DONE   -> FAULT (SQLITE_BUSY, _CORRUPT, …)
+ *   SQLITE_ROW with a NULL / absent aggregate, or SQLITE_DONE
+ *                                    -> SUCCESS, height 0 (empty chain)
+ * SQLITE_DONE cannot occur for either statement — a bare aggregate always
+ * yields exactly one row — but it is admitted rather than treated as a
+ * fault so a future non-aggregate rewrite of either query degrades to
+ * "empty" rather than to "halt". */
+int nodus_witness_block_height_checked(nodus_witness_t *w, uint64_t *out) {
+    if (!out) return -1;
+    if (!w) return -1;
+
+    /* ── A MISSING HANDLE IS NOT ALWAYS A FAULT — the O15L DG-1 matrix ──
+     *
+     * `w->db == NULL` does NOT mean one thing, and answering it with a
+     * single verdict is wrong in one direction or the other. The split
+     * below is the SAME one nodus_witness_bft.c's load_committee_at_height
+     * makes at :673-683, drawn with the SAME 32-byte comparison, so the
+     * two gates cannot disagree about which row of the matrix a node is
+     * in:
+     *
+     *   chain_id == 0, db == NULL   GENUINE PRE-GENESIS. There is no
+     *                               chain, so height 0 is a TRUE COMMITTED
+     *                               ANSWER — the same status
+     *                               load_committee_at_height gives
+     *                               "count 0" there, and the same status
+     *                               an empty `blocks` table gives 0 below.
+     *                               Every consumer is documented to take
+     *                               the gossip-roster bootstrap in this
+     *                               window (F17 A5).
+     *   chain_id != 0, db == NULL   DG-1 ROW 2 — this node HOLDS a chain
+     *                               and cannot read it. Here 0 is the
+     *                               FAIL-OPEN this function exists to
+     *                               remove: it is not an answer, it is the
+     *                               ABSENCE of one, and consumers of that
+     *                               0 went on to resolve a committee at
+     *                               height 1.
+     *
+     * WHY THE FIRST ARM IS LOAD-BEARING, not a courtesy. A node running
+     * the genesis round is in it BY CONSTRUCTION:
+     * nodus_witness_commit_genesis is what CREATES the chain database
+     * (nodus_witness_bft.c, nodus_witness_commit_genesis — its opening
+     * `if (!w->db)` bootstrap, which calls nodus_witness_create_chain_db;
+     * cited by FUNCTION because comments of this length are exactly what
+     * shifts the line numbers around them), so `db` is
+     * NULL until genesis commits.
+     * Answering -1 there makes nodus_witness_bft_is_leader refuse to lead,
+     * bft_start_round_internal refuse to open the round, and
+     * handle_propose / handle_commit refuse the genesis proposal — on
+     * EVERY node at once, because every node is in that state at the same
+     * moment. A fresh cluster would never produce genesis and the chain
+     * would never start. load_committee_at_height's comment (:622-655)
+     * calls this arm "preserved BYTE-IDENTICALLY" for exactly that reason.
+     *
+     * ⚠ THESE TWO GATES ARE ONE RULE IN TWO PLACES. A change to either
+     * MUST change the other. If this function ever says "pre-genesis" for
+     * a node load_committee_at_height calls row 2 (or the reverse), a node
+     * gets its height from one row of the matrix and its committee from
+     * the other — the two would then disagree about whether the node has
+     * a chain at all. Grep DG-1 before touching either. */
+    if (!w->db) {
+        static const uint8_t zero_chain[32] = {0};
+        if (memcmp(w->chain_id, zero_chain, 32) == 0) {
+            /* Deliberately NOT logged. This is a normal, expected state
+             * on a fresh cluster, and the consumers reading it run at
+             * tick rate — the sibling gate declines to log here for the
+             * same reason (nodus_witness_bft.c:657-661). */
+            *out = 0;
+            return 0;
+        }
+        QGP_LOG_ERROR(LOG_TAG,
+            "block_height: this node HOLDS a chain (chain_id set) but its "
+            "database is not open — refusing to answer 0 (DG-1 row 2: an "
+            "absent answer is not height 0)");
+        return -1;
+    }
 
     /* O15D — on a SUCCESSOR chain the chain height IS the committed V2
      * height: the legacy `blocks` table is empty by construction and
@@ -794,30 +873,125 @@ uint64_t nodus_witness_block_height(nodus_witness_t *w) {
      * byte-identically (v2_successor is false there). */
     if (w->v2_successor) {
         sqlite3_stmt *v2 = NULL;
-        if (sqlite3_prepare_v2(w->db,
+        int vrc = sqlite3_prepare_v2(w->db,
                 "SELECT COALESCE(MAX(global_height),0) FROM v2_blocks",
-                -1, &v2, NULL) != SQLITE_OK)
-            return 0;
+                -1, &v2, NULL);
+        if (vrc != SQLITE_OK) {
+            QGP_LOG_ERROR(LOG_TAG,
+                "block_height: v2_blocks prepare failed (rc=%d): %s",
+                vrc, sqlite3_errmsg(w->db));
+            return -1;
+        }
+        vrc = sqlite3_step(v2);
+        if (vrc != SQLITE_ROW && vrc != SQLITE_DONE) {
+            QGP_LOG_ERROR(LOG_TAG,
+                "block_height: v2_blocks step failed (rc=%d): %s",
+                vrc, sqlite3_errmsg(w->db));
+            sqlite3_finalize(v2);
+            return -1;
+        }
         uint64_t vh = 0;
-        if (sqlite3_step(v2) == SQLITE_ROW)
+        /* COALESCE guarantees non-NULL, but the type test costs nothing
+         * and keeps this branch's success rule identical to the legacy
+         * one below: a NULL aggregate is an EMPTY chain, never a fault. */
+        if (vrc == SQLITE_ROW &&
+            sqlite3_column_type(v2, 0) != SQLITE_NULL)
             vh = (uint64_t)sqlite3_column_int64(v2, 0);
         sqlite3_finalize(v2);
-        return vh;
+        *out = vh;
+        return 0;
     }
 
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(w->db,
         "SELECT MAX(height) FROM blocks", -1, &stmt, NULL);
-    if (rc != SQLITE_OK) return 0;
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG,
+            "block_height: blocks prepare failed (rc=%d): %s",
+            rc, sqlite3_errmsg(w->db));
+        return -1;
+    }
+
+    rc = sqlite3_step(stmt);
+    if (rc != SQLITE_ROW && rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG,
+            "block_height: blocks step failed (rc=%d): %s",
+            rc, sqlite3_errmsg(w->db));
+        sqlite3_finalize(stmt);
+        return -1;
+    }
 
     uint64_t height = 0;
-    if (sqlite3_step(stmt) == SQLITE_ROW &&
+    /* MAX() over an empty table yields one row holding NULL — a genuinely
+     * empty chain, and the one case where 0 is the honest answer. */
+    if (rc == SQLITE_ROW &&
         sqlite3_column_type(stmt, 0) != SQLITE_NULL) {
         height = (uint64_t)sqlite3_column_int64(stmt, 0);
     }
 
     sqlite3_finalize(stmt);
-    return height;
+    *out = height;
+    return 0;
+}
+
+/* ── THE FAIL-OPEN FORM — for callers whose answer decides nothing ────
+ *
+ * O15O Faz 1. This wrapper preserves the pre-O15O behaviour EXACTLY: a
+ * DB fault still yields 0, indistinguishable from an empty chain to the
+ * caller. That is safe ONLY where the value labels or advises and never
+ * decides, so every consensus consumer was moved to the checked form.
+ *
+ * What the wrapper adds is that the fault can no longer be SILENT. The
+ * checked form logs the sqlite error text; this line names the FAIL-OPEN
+ * itself, so an operator sees "we answered 0 because the read failed"
+ * instead of inferring it from a chain that appears to be at genesis.
+ * Both reach stderr in a nodus-server build: QGP_LOG_* resolves to
+ * nodus/src/nodus_log_shim.c there, whose qgp_log_ring_add writes
+ * straight to stderr with an [ERR/tag] prefix — the real qgp_log.c, whose
+ * ring buffer nodus never enables, is only linked in the messenger tree.
+ *
+ * THE CALLERS DELIBERATELY LEFT ON THIS FORM (O15O Faz 1 classification;
+ * a bogus 0 at each is either harmless or conservative). Named by their
+ * FUNCTION as well as their line, because prose like this one is what
+ * shifts line numbers: if the two disagree, the function name wins and
+ * the line is stale.
+ *
+ *   bft.c supply_invariant_violated (:1634)
+ *       — advisory; that site's own comment says the invariant stays
+ *         advisory until the lock/pool aggregation lands.
+ *   bft.c bft_handle_vote_inner, commit tail (:6755)
+ *       — labels a legacy commit-certificate row.
+ *   bft.c nodus_witness_bft_handle_commit cert store (:7322)
+ *       — same, on the remote-COMMIT path.
+ *   bft.c nodus_witness_bft_check_timeout, P1 round release (:10863)
+ *       — fail-safe at 0: the block is gated on `block_height != 0`, so
+ *         `0 >= round_height` is false and no round is released. This is
+ *         the LAST remaining fail-open in check_timeout; its sibling, the
+ *         P3 tip-frozen window, was CONVERTED (see the O15O comment
+ *         there), because P3's 0 was NOT fail-safe under a sustained
+ *         fault and could rotate the view against an unread tip.
+ *   nodus_witness_sync.c 471, 698, 989, 1425, 1510
+ *       — a bogus 0 makes this node believe it is empty and sync from
+ *         scratch: wasteful, and the conservative direction.
+ *   nodus_witness_handlers.c 475, 1214, 2896 — RPC / display.
+ *   nodus_witness_peer.c:435 — the height advertised in IDENT.
+ *   nodus_server.c:3800      — RPC status field.
+ *
+ * NOT CLASSIFIED by O15O Faz 1, and therefore untouched rather than
+ * deliberately left: nodus_witness_bft.c nodus_witness_bft_handle_commit
+ * (:7406), which fills the client-visible committed_block_height on the
+ * remote-COMMIT reply path, and nodus_witness_cert.c:169, outside this
+ * phase's file whitelist. */
+uint64_t nodus_witness_block_height(nodus_witness_t *w) {
+    uint64_t h = 0;
+    if (nodus_witness_block_height_checked(w, &h) != 0) {
+        QGP_LOG_ERROR(LOG_TAG,
+            "block_height: READ FAULTED — answering 0 on the FAIL-OPEN "
+            "accessor. If this height reaches a consensus decision, that "
+            "call site belongs on nodus_witness_block_height_checked");
+        return 0;
+    }
+    return h;
 }
 
 /* ── Genesis state ───────────────────────────────────────────────── */

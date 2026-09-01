@@ -847,7 +847,24 @@ bool nodus_witness_bft_is_leader(nodus_witness_t *w) {
     /* F17 A3 — leader is determined by the chain-derived committee for
      * the next block. F17 A5 bootstrap — if committee empty (pre-
      * genesis), fall back to gossip roster. */
-    uint64_t next_bh = nodus_witness_block_height(w) + 1;
+    /* ── O15O Faz 1 — A DB FAULT IS NOT HEIGHT 0.
+     *
+     * The height read below picks the committee AND, through
+     * `epoch = next_bh / DNAC_EPOCH_LENGTH`, the leader index. Answering
+     * 0 on a failed read used to resolve the committee for height 1 at
+     * epoch 0 — on a chain that may be thousands of blocks along — so a
+     * node with a transient DB fault could conclude it was the leader and
+     * PROPOSE. Same conclusion, same cost, same log shape as the
+     * committee fault immediately below: liveness only, never safety. */
+    uint64_t tip_h = 0;
+    if (nodus_witness_block_height_checked(w, &tip_h) != 0) {
+        fprintf(stderr,
+                "%s: is_leader — CANNOT READ THE CHAIN HEIGHT; refusing to "
+                "lead rather than electing a leader for height 1\n",
+                LOG_TAG);
+        return false;
+    }
+    uint64_t next_bh = tip_h + 1;
     nodus_committee_member_t *committee = NULL;
     int count = 0;
     int my_idx = -1;
@@ -1274,7 +1291,17 @@ static int update_utxo_set(nodus_witness_t *w,
         return -1;
     }
 
-    uint64_t block_height = nodus_witness_block_height(w) + 1;
+    /* O15O Faz 1 — the height stamped on every UTXO row this function
+     * writes. A fault answering 0 would create the outputs at height 1,
+     * where the locked-UTXO cutoff (nodus_witness_verify.c Rule D) and
+     * every later height comparison read them. Refuse instead. */
+    uint64_t utxo_tip = 0;
+    if (nodus_witness_block_height_checked(w, &utxo_tip) != 0) {
+        fprintf(stderr, "%s: update_utxo_set: chain-height read faulted — "
+                "refusing to stamp outputs at height 1\n", LOG_TAG);
+        return -1;
+    }
+    uint64_t block_height = utxo_tip + 1;
     int stored = 0;
     uint64_t total_output = 0;
 
@@ -4380,7 +4407,18 @@ static int bft_start_round_internal(nodus_witness_t *w,
 
     /* F17 A2 — recompute BFT config from the chain-derived committee
      * for the next block. This is the authoritative quorum source. */
-    uint64_t next_bh = nodus_witness_block_height(w) + 1;
+    /* O15O Faz 1 — a fault here would set the round's QUORUM from the
+     * committee at height 1. Abort the round start: no state has been
+     * mutated yet at this point, so returning is a clean no-op and the
+     * leader simply produces no proposal this tick. */
+    uint64_t start_tip = 0;
+    if (nodus_witness_block_height_checked(w, &start_tip) != 0) {
+        fprintf(stderr, "%s: start_round — chain-height read faulted; "
+                "refusing to open a round against an unknown tip\n",
+                LOG_TAG);
+        return -1;
+    }
+    uint64_t next_bh = start_tip + 1;
     /* O15J Faz 3 — the terminal-height refusal (a committed ACTIVE
      * activation record ending the legacy chain at H_act) is deleted with
      * the ceremony: no chain is terminal any more, because none is
@@ -4443,6 +4481,35 @@ static int bft_start_round_internal(nodus_witness_t *w,
         memcpy(block_hash, bh.bytes, NODUS_T3_TX_HASH_LEN);
     }
 
+    /* O15O Faz 1 — THE ROUND ANCHOR, read BEFORE any round state is
+     * touched. Every cert_sig preimage in this round is signed over
+     * round_state.block_height, so a fault answering 0 would anchor the
+     * round at height 1 and make this leader sign a PREPARED preimage no
+     * follower can reproduce. Read it here, ahead of the increment and
+     * the memset below, so a fault leaves ROUND state untouched:
+     * current_round is unchanged and the previous round's state is left
+     * exactly as it was for the next tick to re-enter on.
+     *
+     * ⚠ SAID EXACTLY, because an earlier draft of this comment said "with
+     * NOTHING mutated" and that was FALSE. By the time control reaches
+     * here two things have already been written, and both survive this
+     * return: the F17 A2 transport-roster force-swap (:4400-4405) and
+     * `w->bft_config`, rewritten by refresh_bft_config_from_committee at
+     * :4443. That residue is identical to what every pre-existing `return
+     * -1` in this window already leaves (:4438, :4446, :4452, :4457,
+     * :4463), so this fault path is no worse than its neighbours — but
+     * "nothing" was a claim the code contradicts, and the distinction
+     * matters to anyone reasoning about what a failed start_round leaves
+     * behind. Node-local transport/config state: yes. Round or view
+     * state: no. */
+    uint64_t anchor_tip = 0;
+    if (nodus_witness_block_height_checked(w, &anchor_tip) != 0) {
+        fprintf(stderr, "%s: start_round — chain-height read faulted while "
+                "anchoring the round; aborting rather than signing a "
+                "PREPARED preimage at height 1\n", LOG_TAG);
+        return -1;
+    }
+
     /* Initialize round state */
     w->current_round++;
     round_state_free_batch(&w->round_state);
@@ -4456,7 +4523,7 @@ static int bft_start_round_internal(nodus_witness_t *w,
      * round_state.block_height, not from a fresh
      * nodus_witness_block_height(w)+1 lookup, so leader and followers
      * agree on the round's height even when local heights have drifted. */
-    w->round_state.block_height = nodus_witness_block_height(w) + 1;
+    w->round_state.block_height = anchor_tip + 1;
     memcpy(w->round_state.tx_root, block_hash, NODUS_T3_TX_HASH_LEN);
     memcpy(w->round_state.tx_hash, block_hash, NODUS_T3_TX_HASH_LEN);
     w->round_state.proposal_timestamp = (uint64_t)time(NULL);
@@ -5145,7 +5212,18 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
      * for the block this proposal is for. A3 will additionally gate
      * the leader check against this committee (not w->roster). */
     {
-        uint64_t next_bh = nodus_witness_block_height(w) + 1;
+        /* O15O Faz 1 — the quorum this handler will vote under comes from
+         * the committee at this height. A fault answering 0 would load
+         * the committee (and therefore the quorum) for height 1. Refuse
+         * the proposal, exactly as the refresh failure below does. */
+        uint64_t tip = 0;
+        if (nodus_witness_block_height_checked(w, &tip) != 0) {
+            fprintf(stderr, "%s: PROPOSE — chain-height read faulted; "
+                    "refusing rather than refreshing the quorum from the "
+                    "committee at height 1\n", LOG_TAG);
+            return -1;
+        }
+        uint64_t next_bh = tip + 1;
         if (refresh_bft_config_from_committee(w, next_bh) != 0) {
             fprintf(stderr, "%s: failed to load committee for block %llu\n",
                     LOG_TAG, (unsigned long long)next_bh);
@@ -5164,7 +5242,18 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
      * the target block. F17 A5 bootstrap — if committee empty (pre-
      * genesis), fall back to gossip roster. */
     {
-        uint64_t next_bh = nodus_witness_block_height(w) + 1;
+        /* O15O Faz 1 — this height selects the committee the proposal's
+         * sender is ranked against. A fault answering 0 would rank the
+         * sender in the height-1 committee. Refuse; same conclusion and
+         * same cost as the committee fault a few lines below. */
+        uint64_t tip = 0;
+        if (nodus_witness_block_height_checked(w, &tip) != 0) {
+            fprintf(stderr, "%s: PROPOSE — chain-height read faulted; "
+                    "refusing rather than ranking the sender against the "
+                    "committee at height 1\n", LOG_TAG);
+            return -1;
+        }
+        uint64_t next_bh = tip + 1;
         nodus_committee_member_t *committee = NULL;
         int count = 0;
         int sender_idx = -1;
@@ -5290,7 +5379,20 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
      * we stay bound until a conforming PROPOSE arrives or a fresh
      * NEW_VIEW resets us). */
     if (w->reproposal_required) {
-        uint64_t next_bh = nodus_witness_block_height(w) + 1;
+        /* O15O Faz 1 — the C5 gate compares the leader's proposal against
+         * OUR next height. A fault answering 0 makes next_bh 1, which
+         * almost never equals reproposal_height, so the gate would reject
+         * a CONFORMING proposal and keep the binding armed forever. Fail
+         * closed explicitly instead of failing closed by accident, so the
+         * operator sees the cause. */
+        uint64_t tip = 0;
+        if (nodus_witness_block_height_checked(w, &tip) != 0) {
+            fprintf(stderr, "%s: C5 PROPOSE — chain-height read faulted; "
+                    "cannot evaluate the NEW_VIEW reproposal binding — "
+                    "rejecting\n", LOG_TAG);
+            return -1;
+        }
+        uint64_t next_bh = tip + 1;
         if (next_bh != w->reproposal_height ||
             memcmp(prop->tx_root, w->reproposal_tx_hash,
                    NODUS_T3_TX_HASH_LEN) != 0) {
@@ -5315,7 +5417,19 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
      * and reject so the follower triggers sync_check on the next epoch
      * tick rather than signing under an unknown anchor. */
     {
-        uint64_t expected_height = nodus_witness_block_height(w) + 1;
+        /* O15O Faz 1 — this comparison decides whether the follower signs
+         * the round's PREPARED preimage at the leader's height. A fault
+         * answering 0 would accept a proposal at height 1 and reject
+         * every legitimate one. Refuse before any state mutation. */
+        uint64_t tip = 0;
+        if (nodus_witness_block_height_checked(w, &tip) != 0) {
+            fprintf(stderr,
+                    "%s: propose rejected — chain-height read faulted; "
+                    "cannot validate the leader-claimed block_height\n",
+                    LOG_TAG);
+            return -1;
+        }
+        uint64_t expected_height = tip + 1;
         if (prop->block_height == 0) {
             fprintf(stderr,
                     "%s: propose rejected — missing block_height "
@@ -5871,7 +5985,20 @@ void nodus_witness_bft_after_successor_commit(nodus_witness_t *w) {
     /* D3 — the committee (and therefore the quorum) that governs the
      * NEXT height. At a growth boundary this is the step that moves a
      * node from the pre-growth set to the post-growth one. */
-    uint64_t next_bh = nodus_witness_block_height(w) + 1;
+    /* O15O Faz 1 — the height read is latched exactly as the refresh
+     * failure below is, and for the identical reason: a witness that
+     * cannot know which committee governs its next height must not keep
+     * voting. Answering 0 here would refresh the quorum from the height-1
+     * committee on a chain that just committed a block. */
+    uint64_t tip = 0;
+    if (nodus_witness_block_height_checked(w, &tip) != 0) {
+        QGP_LOG_ERROR(LOG_TAG,
+            "successor commit: chain-height read faulted — latching "
+            "safety_halt rather than refreshing the quorum at height 1");
+        w->safety_halt = true;
+        return;
+    }
+    uint64_t next_bh = tip + 1;
     if (refresh_bft_config_from_committee(w, next_bh) != 0) {
         QGP_LOG_ERROR(LOG_TAG,
             "successor commit: bft_config refresh failed (next_bh=%llu) "
@@ -6885,7 +7012,20 @@ int nodus_witness_bft_handle_commit(nodus_witness_t *w,
          * already block legacy frames, but defense in depth here in
          * case CBOR-level cross-version slips through. */
         {
-            uint64_t expected_height = nodus_witness_block_height(w) + 1;
+            /* O15O Faz 1 — this is the guard that stopped US-1's h=114
+             * divergence: it refuses a COMMIT whose height is not ours.
+             * A fault answering 0 would make expected_height 1, so a
+             * COMMIT at height 1 would be APPLIED on a long chain. Refuse
+             * before commit_batch is reached. */
+            uint64_t tip = 0;
+            if (nodus_witness_block_height_checked(w, &tip) != 0) {
+                fprintf(stderr,
+                    "%s: commit rejected — chain-height read faulted; "
+                    "cannot validate the leader-claimed block_height\n",
+                    LOG_TAG);
+                return -1;
+            }
+            uint64_t expected_height = tip + 1;
             if (cmt->block_height == 0) {
                 fprintf(stderr,
                     "%s: commit rejected — missing block_height "
@@ -7572,9 +7712,27 @@ int nodus_witness_bft_initiate_view_change(nodus_witness_t *w) {
      * proposal's height against the same local next-height, so no
      * legitimate round is ever anchored above tip+1 for this to lower. */
     {
-        uint64_t committed_tip = nodus_witness_block_height(w);
-        if (w->round_state.block_height <= committed_tip)
+        /* O15O Faz 1 — THE CLAMP IS SKIPPED ON A FAULT, not applied
+         * against a fallback. The normalization above is only sound
+         * because `committed_tip` is the real tip; a fault answering 0
+         * would drive `round_state.block_height` DOWN to 1 on any chain
+         * past height 1 — and this field is what every cert_sig preimage
+         * in the resulting view change is signed over. Leaving the field
+         * alone is strictly safer: the value already there is a height
+         * this node genuinely worked on, and the P1(b) release below is
+         * itself guarded (it reads the tip through the fail-open
+         * accessor, where a bogus 0 cannot satisfy `0 >= block_height`
+         * for a non-zero height). */
+        uint64_t committed_tip = 0;
+        if (nodus_witness_block_height_checked(w, &committed_tip) != 0) {
+            fprintf(stderr,
+                    "%s: view change — chain-height read faulted; leaving "
+                    "the round anchor at %llu rather than clamping it "
+                    "against an unknown tip\n", LOG_TAG,
+                    (unsigned long long)w->round_state.block_height);
+        } else if (w->round_state.block_height <= committed_tip) {
             w->round_state.block_height = committed_tip + 1;
+        }
     }
 
     /* O15M — STAMP THE PHASE CLOCK WHERE THE PHASE CHANGES.
@@ -7698,7 +7856,21 @@ int nodus_witness_bft_handle_viewchg(nodus_witness_t *w,
     if (gossip_idx < 0) return -1;
     const uint8_t *sender_pk = w->roster.witnesses[gossip_idx].pubkey;
     {
-        uint64_t next_bh = nodus_witness_block_height(w) + 1;
+        /* O15O Faz 1 — the height that selects the committee this
+         * VIEW_CHANGE's sender must belong to. A fault answering 0 would
+         * authorize the sender against the height-1 committee, which is
+         * the same class of hole the committee-load fault below closes:
+         * driving this node's view rotation from the wrong authority.
+         * Refuse; the cost is liveness only, identically argued. */
+        uint64_t tip = 0;
+        if (nodus_witness_block_height_checked(w, &tip) != 0) {
+            fprintf(stderr,
+                    "%s: VIEW_CHANGE — chain-height read faulted; refusing "
+                    "the view change rather than authorizing the sender "
+                    "against the committee at height 1\n", LOG_TAG);
+            return -1;
+        }
+        uint64_t next_bh = tip + 1;
         nodus_committee_member_t *committee = NULL;
         int count = 0;
         bool reject = false;
@@ -8192,6 +8364,21 @@ static void bft_viewok_send_request(nodus_witness_t *w,
     struct nodus_tcp_conn *conn = bft_peer_conn(w, peer_id);
     if (!conn) return;
 
+    /* O15O Faz 1 — read the hint BEFORE building the message, so a fault
+     * means NO REQUEST IS SENT rather than a request carrying height 1.
+     * The hint authorises nothing, but it steers which view the peer
+     * answers about, and asking about height 1 on a long chain wastes the
+     * per-peer rate-limit slot on an answer we would then re-verify
+     * against the wrong committee. Not sending costs one catch-up
+     * attempt, which the interval re-arms. */
+    uint64_t hint_tip = 0;
+    if (nodus_witness_block_height_checked(w, &hint_tip) != 0) {
+        fprintf(stderr, "%s: VIEW_OK — chain-height read faulted; not "
+                "asking roster %d for its view proof (a hint of height 1 "
+                "would be worse than no ask)\n", LOG_TAG, slot);
+        return;
+    }
+
     nodus_t3_msg_t q;
     memset(&q, 0, sizeof(q));
     q.type   = NODUS_T3_VIEWOK_REQ;
@@ -8199,7 +8386,7 @@ static void bft_viewok_send_request(nodus_witness_t *w,
     /* A HINT, authorising nothing: the responder answers about the view
      * IT can prove, and we re-verify against the committee governing the
      * height carried inside its answer (nodus_tier3.h, w_viewok_q). */
-    q.viewok_q.height_hint = nodus_witness_block_height(w) + 1;
+    q.viewok_q.height_hint = hint_tip + 1;
 
     if (bft_send_on_conn(w, &q, conn) == 0) {
         w->viewok_req_sent_ms[slot] = now;
@@ -8280,8 +8467,38 @@ static int bft_vc_check_quorum(nodus_witness_t *w) {
      * reader measure against the same set; round_state's height is
      * written on round ENTRY only and an IDLE node's copy is the height
      * it LAST worked on, which two nodes at the same tip can disagree
-     * about. */
-    int erc = bft_viewok_emit_own(w, nodus_witness_block_height(w) + 1,
+     * about.
+     *
+     * ── O15O Faz 1 — THIS HEIGHT GOES INTO A SIGNED PREIMAGE.
+     *
+     * bft_viewok_emit_own signs a VIEW_OK statement over it and
+     * broadcasts it. A fault answering 0 would put this node's signature
+     * on a statement about height 1 — an artifact that outlives the fault
+     * and that peers verify against the height-1 committee. So on a fault
+     * we DO NOT EMIT. Read once, above both consumers: this is
+     * single-threaded and nothing between them commits a block, so the
+     * two reads the site used to make could only ever agree anyway.
+     *
+     * PLACED AFTER the load-bearing log line above, deliberately. That
+     * line's text and position are pinned by stagef section G, and what
+     * it asserts — that THIS NODE OBSERVED A VIEW-CHANGE QUORUM — is true
+     * regardless of whether we can then read our height. Suppressing it
+     * on a fault would turn section G red on a chain that is merely
+     * degraded.
+     *
+     * RETURNS 0, not -1: this function's contract is "returns 0 always",
+     * and callers at the handle_viewchg and initiate_view_change tails
+     * propagate that value as the handler's verdict. The fail-closed
+     * action here is NOT EMITTING, not a changed return code. */
+    uint64_t vok_tip = 0;
+    if (nodus_witness_block_height_checked(w, &vok_tip) != 0) {
+        fprintf(stderr,
+                "%s: VIEW_OK — chain-height read faulted; NOT signing a "
+                "VIEW_OK statement. A statement about height 1 would be a "
+                "signed artifact this node cannot take back\n", LOG_TAG);
+        return 0;
+    }
+    int erc = bft_viewok_emit_own(w, vok_tip + 1,
                                   w->view_change_target);
     if (erc == 1) {
         /* ── PRE-GENESIS BOOTSTRAP PATH ───────────────────────────────
@@ -8316,7 +8533,12 @@ static int bft_vc_check_quorum(nodus_witness_t *w) {
                 "height %llu, so no statement can exist; moving view "
                 "%u -> %u on our own observed quorum (%u/%u). This path "
                 "is unavailable once genesis seats a committee.\n",
-                LOG_TAG, (unsigned long long)(nodus_witness_block_height(w) + 1),
+                /* O15O Faz 1 — the SAME height the statement was about,
+                 * reused rather than re-queried. Reaching this branch
+                 * means the checked read above succeeded, so there is no
+                 * second fault to handle here; re-querying would only
+                 * reintroduce one. */
+                LOG_TAG, (unsigned long long)(vok_tip + 1),
                 from, w->current_view,
                 bft_vc_tally(w, w->view_change_target),
                 w->bft_config.quorum);
@@ -9062,7 +9284,20 @@ int nodus_witness_bft_handle_newview(nodus_witness_t *w,
     /* F17 A3 — verify sender is the committee-derived expected leader
      * for the new view. F17 A5 bootstrap — fall back to gossip roster
      * when committee is empty (pre-genesis). */
-    uint64_t next_bh = nodus_witness_block_height(w) + 1;
+    /* O15O Faz 1 — this height selects the committee that decides whether
+     * the NEW_VIEW's sender is the expected leader for the new view, and
+     * it is read TWICE more below to bound the reproposal height. A fault
+     * answering 0 would rank the sender in the height-1 committee.
+     * Refuse; same conclusion as the committee fault just below. Read
+     * once and reuse: single-threaded, no commit in between. */
+    uint64_t nv_tip = 0;
+    if (nodus_witness_block_height_checked(w, &nv_tip) != 0) {
+        fprintf(stderr, "%s: NEW_VIEW — chain-height read faulted; "
+                "refusing rather than ranking the sender against the "
+                "committee at height 1\n", LOG_TAG);
+        return -1;
+    }
+    uint64_t next_bh = nv_tip + 1;
     nodus_committee_member_t *committee = NULL;
     int count = 0;
     int sender_idx = -1;
@@ -9172,8 +9407,16 @@ int nodus_witness_bft_handle_newview(nodus_witness_t *w,
                     nv->reproposal_prepared_view, nv->reproposal_n_sigs);
             return -1;
         }
-        /* A leader may not bind a height the chain has already passed. */
-        if (nv->reproposal_height <= nodus_witness_block_height(w)) {
+        /* A leader may not bind a height the chain has already passed.
+         *
+         * O15O Faz 1 — reads the tip CHECKED at the top of this handler
+         * (nv_tip) instead of re-querying. A fault answering 0 would let
+         * a leader bind ANY height above 0, i.e. re-bind a height this
+         * chain has long committed; the handler already returned -1 on
+         * that fault before reaching here. Nothing between the read and
+         * this line commits a block, so the value is the same one the
+         * re-query would have produced. */
+        if (nv->reproposal_height <= nv_tip) {
             fprintf(stderr, "%s: NEW_VIEW reproposal height %llu is at or "
                     "below the committed head — rejecting\n", LOG_TAG,
                     (unsigned long long)nv->reproposal_height);
@@ -9186,8 +9429,12 @@ int nodus_witness_bft_handle_newview(nodus_witness_t *w,
          * (Checking the frozen subset here was the D.3 gap: a carrier
          * with no self-record would have accepted a leader discarding
          * its own evidence.) */
+        /* O15O Faz 1 — same checked tip (nv_tip) as the branch above. A
+         * fault answering 0 would make every held prepared value look
+         * uncommitted and reject every NEW_VIEW that honestly carries no
+         * reproposal; the handler already returned -1 on that fault. */
         if (w->last_prepared.present &&
-            w->last_prepared.height > nodus_witness_block_height(w)) {
+            w->last_prepared.height > nv_tip) {
             fprintf(stderr, "%s: NEW_VIEW has_reproposal=false but WE hold "
                     "an uncommitted prepared value at height %llu — "
                     "rejecting\n", LOG_TAG,
@@ -10729,13 +10976,37 @@ void nodus_witness_bft_check_timeout(nodus_witness_t *w) {
                     "change completing (view %u) — initiating view change "
                     "to %u\n", LOG_TAG, w->bft_config.round_timeout_ms,
                     w->current_view, w->current_view + 1);
-            O15H_DIAG(w, "p2_propose_deadman", w->my_id,
-                      nodus_witness_block_height(w) + 1, w->current_view,
-                      w->current_view + 1, w->round_state.phase,
-                      w->round_state.phase_start_time,
-                      w->bft_config.round_timeout_ms, "-", 0,
-                      (unsigned)w->mempool.count, w->bft_config.quorum,
-                      "post-view-change PROPOSE wait expired");
+#ifdef O15H_DIAG_ENABLED
+            /* O15O Faz 1 — SKIP THE EMIT on a faulted read: a diagnostic
+             * record claiming height 1 on a long chain is worse than an
+             * absent record, because the whole point of the trace is
+             * attribution.
+             *
+             * INSIDE THE COMPILE GATE, and it has to be. O15H_DIAG does
+             * not evaluate its arguments when the option is off
+             * (nodus_witness_o15h_diag.h), so the height query costs a
+             * production build nothing today; hoisting it out here would
+             * add a DB round trip to a default build and break the
+             * byte-identity property that header states is what makes the
+             * instrumentation revertible. Same shape as the o15h_slot
+             * carrier in nodus_witness_handlers.c. */
+            {
+                uint64_t p2_diag_tip = 0;
+                if (nodus_witness_block_height_checked(w, &p2_diag_tip) != 0) {
+                    fprintf(stderr, "%s: P2 deadman — chain-height read "
+                            "faulted; diagnostic record skipped\n", LOG_TAG);
+                } else {
+                    O15H_DIAG(w, "p2_propose_deadman", w->my_id,
+                              p2_diag_tip + 1, w->current_view,
+                              w->current_view + 1, w->round_state.phase,
+                              w->round_state.phase_start_time,
+                              w->bft_config.round_timeout_ms, "-", 0,
+                              (unsigned)w->mempool.count,
+                              w->bft_config.quorum,
+                              "post-view-change PROPOSE wait expired");
+                }
+            }
+#endif
             /* Disarm BEFORE initiating: the deadline has been spent, and
              * leaving it set would re-fire on every subsequent tick. The
              * next completed view change arms the next window. */
@@ -10837,7 +11108,55 @@ void nodus_witness_bft_check_timeout(nodus_witness_t *w) {
          * side effect. */
         if (w->mempool.count > 0 || w->pending_forward_count > 0) {
             uint64_t p3_now = time_ms();
-            uint64_t p3_tip = nodus_witness_block_height(w);
+
+            /* ── O15O Faz 1 — A TIP THIS NODE COULD NOT READ IS NOT A
+             * FROZEN TIP.
+             *
+             * P3's entire premise is an OBSERVATION: this node watched the
+             * committed tip stand still for a full round while demand was
+             * pending, and concluded the leader is not doing its job. A
+             * failed read is not that observation — it is the absence of
+             * one — and acting on it broadcasts a VIEW_CHANGE to the whole
+             * cluster on the strength of a value that was never obtained.
+             *
+             * So the ENTIRE window is skipped: `tip_since_ms` is not
+             * re-stamped, `last_seen_tip` is not touched, and the fire
+             * gate is not evaluated. The window resumes on the next tick
+             * that can actually read the tip, and it resumes from the
+             * observation it genuinely last made.
+             *
+             * ⚠ THIS CONVERTS A PRE-EXISTING HAZARD; IT DOES NOT FIX ONE
+             * O15O CREATED. The old accessor also answered 0 on a fault,
+             * and nodus_witness_bft_is_leader already returned false
+             * through its `lc_rc != 0` branch, so the reachable path was:
+             * a sustained fault stores last_seen_tip = 0, the next tick
+             * compares 0 to 0 and falls through to the `else if`, the
+             * window elapses, and bft_p3_live_demand answers true off
+             * pending_forward_count without touching the DB at all
+             * (:10360-10361) — so the rotation fired against a tip nobody
+             * read. That was true before this phase and is closed here.
+             *
+             * LOG VOLUME — a known deviation, recorded rather than hidden.
+             * O15O asked for one line per window; a per-window limiter
+             * needs per-witness state, and the two fields that could carry
+             * it are the two this branch is required NOT to write, while
+             * nodus_witness.h is outside this phase's file whitelist. So
+             * this prints per tick while a fault persists AND demand is
+             * pending — bounded by the demand test above, and the same
+             * volume nodus_witness_bft_is_leader deliberately accepts for
+             * this exact fault class at this exact tick rate (:868-874:
+             * "a persistent fault prints on every tick. That is deliberate
+             * and it is the requirement"). A dedicated stamp field would
+             * close it in one line. */
+            uint64_t p3_tip = 0;
+            if (nodus_witness_block_height_checked(w, &p3_tip) != 0) {
+                QGP_LOG_ERROR(LOG_TAG,
+                    "P3 deadman: chain-height read faulted — skipping the "
+                    "whole tip-frozen window (no re-stamp, no fire). A tip "
+                    "this node could not read is not a frozen tip, and is "
+                    "no grounds to rotate the view");
+                return;
+            }
 
             if (w->tip_since_ms == 0 || p3_tip != w->last_seen_tip) {
                 /* First observation, or the chain MOVED — either way the
@@ -10892,14 +11211,30 @@ void nodus_witness_bft_check_timeout(nodus_witness_t *w) {
          * inputs, so "14 nodes sat IDLE at view 0 while the epoch leader
          * was dead" is an observation and not an inference. */
         if (O15H_DIAG_RATE(w, 1u, 10000u)) {
-            O15H_DIAG(w, "idle_stall", w->my_id,
-                      nodus_witness_block_height(w) + 1, w->current_view,
-                      w->view_change_target, w->round_state.phase,
-                      w->round_state.phase_start_time,
-                      time_ms() - w->round_state.phase_start_time, "-",
-                      nodus_witness_bft_is_leader(w) ? 1 : 0,
-                      (unsigned)w->mempool.count, w->bft_config.quorum,
-                      "IDLE — no timeout armed, no view change possible");
+            /* O15O Faz 1 — skip the emit on a faulted read, for the same
+             * reason and inside the same compile gate as the P2 record
+             * above: a heartbeat claiming height 1 would misattribute the
+             * very stall this record exists to explain. O15H_DIAG_RATE is
+             * a literal 0 when the option is off, so this whole block is
+             * already dead in a default build; the explicit #ifdef keeps
+             * the height query out of it regardless of how the compiler
+             * folds the constant. */
+#ifdef O15H_DIAG_ENABLED
+            uint64_t idle_diag_tip = 0;
+            if (nodus_witness_block_height_checked(w, &idle_diag_tip) != 0) {
+                fprintf(stderr, "%s: idle_stall — chain-height read "
+                        "faulted; diagnostic record skipped\n", LOG_TAG);
+            } else {
+                O15H_DIAG(w, "idle_stall", w->my_id,
+                          idle_diag_tip + 1, w->current_view,
+                          w->view_change_target, w->round_state.phase,
+                          w->round_state.phase_start_time,
+                          time_ms() - w->round_state.phase_start_time, "-",
+                          nodus_witness_bft_is_leader(w) ? 1 : 0,
+                          (unsigned)w->mempool.count, w->bft_config.quorum,
+                          "IDLE — no timeout armed, no view change possible");
+            }
+#endif
         }
         return;
     }
@@ -11236,7 +11571,19 @@ int nodus_witness_commit_genesis(nodus_witness_t *w,
 
     if (nodus_witness_db_begin(w) != 0) return -1;
 
-    uint64_t bh = nodus_witness_block_height(w) + 1;
+    /* O15O Faz 1 — the height the genesis block is written AT, inside the
+     * open transaction. A fault answering 0 would apply and finalize the
+     * block at height 1 on a chain that is not empty. Roll back and
+     * refuse, exactly as every other failure inside this transaction
+     * does. */
+    uint64_t gen_tip = 0;
+    if (nodus_witness_block_height_checked(w, &gen_tip) != 0) {
+        fprintf(stderr, "%s: commit_genesis — chain-height read faulted "
+                "inside the transaction; rolling back\n", LOG_TAG);
+        nodus_witness_db_rollback(w);
+        return -1;
+    }
+    uint64_t bh = gen_tip + 1;
     if (apply_tx_to_state(w, tx_hash, NODUS_W_TX_GENESIS, NULL, 0,
                            tx_data, tx_len, bh, timestamp, NULL,
                            NULL, NULL) != 0) {
@@ -11314,7 +11661,21 @@ int nodus_witness_commit_batch(nodus_witness_t *w,
      * defense in depth for future threading) is caught. Rollback +
      * return -1 instead of applying at the wrong height — that was
      * the live bug US-1 hit at h=114 on 2026-05-01. */
-    uint64_t local_next = nodus_witness_block_height(w) + 1;
+    /* O15O Faz 1 — this IS the TOCTOU guard, so a fault must take the
+     * same exit the mismatch below takes. Answering 0 would make
+     * local_next 1 and pass any batch claiming height 1 straight into
+     * apply+finalize on a long chain: the exact h=114 shape M-1 exists
+     * to stop. Roll back and refuse. */
+    uint64_t cb_tip = 0;
+    if (nodus_witness_block_height_checked(w, &cb_tip) != 0) {
+        fprintf(stderr,
+            "%s: commit_batch — chain-height read faulted inside the "
+            "transaction; rolling back rather than applying at an "
+            "unverified height\n", LOG_TAG);
+        nodus_witness_db_rollback(w);
+        return -1;
+    }
+    uint64_t local_next = cb_tip + 1;
     if (expected_height != local_next) {
         fprintf(stderr,
             "%s: commit_batch height mismatch "
@@ -11500,7 +11861,22 @@ int nodus_witness_commit_batch(nodus_witness_t *w,
          * (line 3346 returns -1 on refresh failure). Block is durably
          * committed at this point; the halt prevents further BFT
          * participation with potentially stale bft_config. */
-        uint64_t next_bh = nodus_witness_block_height(w) + 1;
+        /* O15O Faz 1 — the height read is latched exactly as the refresh
+         * failure below is, and for the same reason: the block is durably
+         * committed, and a node that cannot establish the committee
+         * governing its next height must not keep participating. A fault
+         * answering 0 would silently refresh the quorum from the height-1
+         * committee immediately after committing a block. */
+        uint64_t pc_tip = 0;
+        if (nodus_witness_block_height_checked(w, &pc_tip) != 0) {
+            QGP_LOG_ERROR(LOG_TAG,
+                "commit_batch: post-commit chain-height read faulted — "
+                "latching safety_halt rather than refreshing the quorum "
+                "at height 1");
+            w->safety_halt = true;
+            return -1;
+        }
+        uint64_t next_bh = pc_tip + 1;
         if (refresh_bft_config_from_committee(w, next_bh) != 0) {
             QGP_LOG_ERROR(LOG_TAG,
                 "commit_batch: post-commit bft_config refresh failed "
@@ -11529,7 +11905,18 @@ int nodus_witness_replay_block(nodus_witness_t *w,
                                  const uint8_t *expected_state_root) {
     if (!w || !entries || count <= 0 || count > NODUS_W_MAX_BLOCK_TXS) return -1;
 
-    uint64_t local_height = nodus_witness_block_height(w);
+    /* O15O Faz 1 — the ordering precondition for a synced block. A fault
+     * answering 0 would accept a sync_rsp at height 1 and hand it to
+     * commit_batch as an already-validated height. Refuse. */
+    uint64_t local_height = 0;
+    if (nodus_witness_block_height_checked(w, &local_height) != 0) {
+        QGP_LOG_ERROR(LOG_TAG,
+            "replay_block: chain-height read faulted — refusing the "
+            "sync_rsp at h=%llu rather than replaying against an "
+            "unknown local tip",
+            (unsigned long long)rsp_height);
+        return -1;
+    }
     if (rsp_height != local_height + 1) {
         QGP_LOG_ERROR(LOG_TAG,
             "replay_block: out-of-order sync_rsp (h=%llu, local=%llu)",

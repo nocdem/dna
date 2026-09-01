@@ -1849,12 +1849,27 @@ void nodus_witness_tick(nodus_witness_t *witness) {
     /* MED-28: drop the retained reproposal batch once the chain has
      * advanced past its height — the C5 binding it exists to satisfy can
      * no longer be issued, so holding the entries would leak them. */
-    if (witness->retained_batch.present &&
-        witness->retained_batch.height <= nodus_witness_block_height(witness)) {
-        fprintf(stderr, "WITNESS: MED-28 retained batch superseded "
-                "(height=%llu committed) — releasing\n",
-                (unsigned long long)witness->retained_batch.height);
-        nodus_witness_retained_batch_clear(witness);
+    /* O15O Faz 1 — RELEASING AGAINST A BOGUS TIP IS THE HARM, so a
+     * faulted height read holds the batch instead of dropping it. These
+     * entries are the reproposal the C5 binding may still have to be
+     * satisfied with; a fault answering 0 cannot make the release
+     * condition true for a non-zero retained height, but stating the
+     * refusal explicitly keeps the guarantee independent of that
+     * arithmetic accident. The read stays behind the `present` test so an
+     * idle tick still costs no DB round trip. */
+    if (witness->retained_batch.present) {
+        uint64_t tip = 0;
+        if (nodus_witness_block_height_checked(witness, &tip) != 0) {
+            fprintf(stderr, "%s: MED-28 — chain-height read faulted; "
+                    "HOLDING the retained batch at height %llu rather "
+                    "than releasing it against an unknown tip\n", LOG_TAG,
+                    (unsigned long long)witness->retained_batch.height);
+        } else if (witness->retained_batch.height <= tip) {
+            fprintf(stderr, "WITNESS: MED-28 retained batch superseded "
+                    "(height=%llu committed) — releasing\n",
+                    (unsigned long long)witness->retained_batch.height);
+            nodus_witness_retained_batch_clear(witness);
+        }
     }
 
     /* O15C-D.1 — release a C5 binding whose height the chain has already
@@ -1862,15 +1877,29 @@ void nodus_witness_tick(nodus_witness_t *witness) {
      * PROPOSE arrives, but a node that instead learns the block through
      * SYNC never runs that gate, and the stale binding would then reject
      * every proposal at every later height. */
-    if (witness->reproposal_required &&
-        nodus_witness_block_height(witness) >= witness->reproposal_height) {
-        fprintf(stderr, "WITNESS: C5 binding at height %llu satisfied by "
-                "committed chain — releasing\n",
-                (unsigned long long)witness->reproposal_height);
-        witness->reproposal_required = false;
-        witness->reproposal_height = 0;
-        witness->reproposal_prepared_view = 0;
-        memset(witness->reproposal_tx_hash, 0, NODUS_T3_TX_HASH_LEN);
+    /* O15O Faz 1 — CLEARING THE BINDING AGAINST A BOGUS TIP IS THE HARM.
+     * The C5 binding is the safety property a view change carries
+     * forward; dropping it because a DB read failed would let the next
+     * leader propose a value the cluster's prepared certificate forbids.
+     * On a fault we keep the binding — the conservative direction, and
+     * the same one the release condition's arithmetic already favours.
+     * Read stays behind the `reproposal_required` test. */
+    if (witness->reproposal_required) {
+        uint64_t tip = 0;
+        if (nodus_witness_block_height_checked(witness, &tip) != 0) {
+            fprintf(stderr, "%s: C5 — chain-height read faulted; KEEPING "
+                    "the binding at height %llu rather than releasing it "
+                    "against an unknown tip\n", LOG_TAG,
+                    (unsigned long long)witness->reproposal_height);
+        } else if (tip >= witness->reproposal_height) {
+            fprintf(stderr, "WITNESS: C5 binding at height %llu satisfied by "
+                    "committed chain — releasing\n",
+                    (unsigned long long)witness->reproposal_height);
+            witness->reproposal_required = false;
+            witness->reproposal_height = 0;
+            witness->reproposal_prepared_view = 0;
+            memset(witness->reproposal_tx_hash, 0, NODUS_T3_TX_HASH_LEN);
+        }
     }
 
     /* Block timer: propose batch if mempool has TXs and interval elapsed */

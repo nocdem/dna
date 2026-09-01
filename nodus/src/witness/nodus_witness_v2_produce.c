@@ -276,10 +276,23 @@ int nodus_witness_v2_claim_entry_nullifier(nodus_witness_t *w,
     int rc = -1;
     if (dna_claim_decode(bytes, (size_t)len, c) == 0) {
         nodus_v2_claim_admit_t adm;
-        uint64_t candidate = nodus_witness_block_height(w) + 1;
-        if (nodus_witness_v2_claim_admit(w, c, candidate, &adm) == 0) {
-            memcpy(out_nullifier, adm.nullifier, 64);
-            rc = 0;
+        /* O15O Faz 1 — the candidate height claim_admit judges the
+         * claim's height window at. A fault answering 0 would derive the
+         * nullifier from an admission decided at height 1; this
+         * nullifier is what the mempool and the in-batch dedup key on.
+         * Leave rc at its -1 initialiser — this function's existing fault
+         * path (the calloc failure above) is the same refusal. */
+        uint64_t claim_tip = 0;
+        if (nodus_witness_block_height_checked(w, &claim_tip) == 0) {
+            uint64_t candidate = claim_tip + 1;
+            if (nodus_witness_v2_claim_admit(w, c, candidate, &adm) == 0) {
+                memcpy(out_nullifier, adm.nullifier, 64);
+                rc = 0;
+            }
+        } else {
+            QGP_LOG_ERROR(LOG_TAG, "claim_entry_nullifier: chain-height "
+                          "read faulted — refusing to derive a nullifier "
+                          "from an admission at height 1");
         }
     }
     free(c);

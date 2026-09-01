@@ -3444,11 +3444,53 @@ int main(void) {
         char dir[] = "/tmp/test_bft_p3_succ_XXXXXX";
         chain_db_open(w, dir, 0x36);
 
-        uint64_t tip = seed_blocks(w, 3);
-        CHECK(tip == 3, "seeded chain tip is 3 (see §13a)");
+        /* ── ⚠ WHY THIS BUILDS A REAL SUCCESSOR AND DOES NOT JUST SET THE
+         *      FLAG — the shortcut this section used to take. ───────────
+         *
+         * What stood here was:
+         *
+         *     uint64_t tip = seed_blocks(w, 3);   // LEGACY blocks table
+         *     w->v2_successor    = true;          // ...claim it is V2
+         *     w->v2_ingress_armed = true;
+         *
+         * — a chain seeded through the LEGACY `blocks` table, then
+         * declared a V2 successor by hand. `v2_blocks` was never created,
+         * so the object this section described did not exist. THAT STATE
+         * IS NOT PRODUCTION-REACHABLE: nodus_witness.c:756-762 sets
+         * v2_successor only when nodus_witness_v2_gen_is_pure() answers 1,
+         * and :744-751 refuses the database outright when that probe
+         * faults. A real successor HAS a v2_blocks table.
+         *
+         * WHY IT PASSED ANYWAY, until it didn't. Every read of the chain
+         * height went through nodus_witness_block_height, which answered 0
+         * for "no such table: v2_blocks" exactly as it answered 0 for an
+         * empty chain. The missing table was therefore INVISIBLE — the
+         * fixture looked like a successor at genesis. O15O Faz 1 made that
+         * read report the fault instead of absorbing it, is_leader now
+         * declines to lead when it cannot read its height, and
+         * p2_pick_view could no longer find any view where this node
+         * leads. The failure was the fixture's, surfaced by the accessor.
+         *
+         * ⚠ SECOND TIME, SAME SHORTCUT. nodus_witness.c:735-739 records
+         * the first: "the first non-bootstrap epoch halts because the
+         * committee seed reads the empty `blocks` table. Review R2 found
+         * it; the season's own test had MASKED it by hard-setting the flag
+         * after create_chain_db." Do not hard-set v2_successor. Build the
+         * chain — p3c_make_successor installs the V2 schema
+         * (nodus_witness_db_migrate_v2s9), seeds the validator set,
+         * commits a real V2 genesis and derives the chain id through the
+         * production path, which is what the other §13e sections already
+         * do. The chain is left AT genesis, so the v2 tip is 0 and the
+         * candidate height is 1; nothing below depends on a deeper tip. */
+        peer_t all[7];
+        all[0] = self;
+        for (int i = 0; i < 6; i++) all[i + 1] = p[i];
 
-        w->v2_successor = true;
-        w->v2_ingress_armed = true;
+        p3c_chain_t *cx = calloc(1, sizeof(*cx));   /* ~25 KB — heap */
+        if (!cx) { fprintf(stderr, "p3c chain alloc\n"); exit(1); }
+        p3c_make_successor(w, all, 7, cx);
+
+        CHECK(w->v2_successor, "the chain is a committed V2 SUCCESSOR");
         CHECK(nodus_witness_v2_ingress_is_armed(w) == 1,
               "the successor ingress is ARMED — admission really runs, so "
               "the refusal below cannot come from a closed gate");
@@ -3485,6 +3527,7 @@ int main(void) {
               "successor is admission's, not leadership's");
         CHECK(w->mempool.count == 0, "still nothing pooled");
 
+        free(cx);
         chain_db_drop(w, dir);
     }
 

@@ -659,8 +659,25 @@ int nodus_witness_peer_handle_ident(nodus_witness_t *w,
         nodus_committee_member_t *committee = NULL;
         int cm_count = 0;
         bool reject = false;
-        if (nodus_committee_get_for_block_alloc(w,
-                                                  nodus_witness_block_height(w) + 1,
+        /* O15O Faz 1 — a faulted height read takes the SAME path this
+         * gate already takes for a committee-lookup failure and for
+         * cm_count == 0: `reject` stays false and the ident is accepted
+         * liberally. That is deliberate and it is the safer of the two
+         * directions HERE, because the alternative is not "refuse" but
+         * "resolve the committee for height 1": a bogus height would ask
+         * the wrong committee and could evict a legitimate peer from the
+         * mesh, which is a liveness failure with no security gain. This
+         * is a defence-in-depth transport gate (F17 B1); vote-time
+         * authorization (A3) is the line that must not fail open, and it
+         * resolves its own committee on the checked accessor. */
+        uint64_t peer_tip = 0;
+        if (nodus_witness_block_height_checked(w, &peer_tip) != 0) {
+            fprintf(stderr,
+                    "%s: w_ident — chain-height read faulted; treating the "
+                    "admission gate as pre-genesis (accept) rather than "
+                    "resolving the committee at height 1\n", LOG_TAG);
+        } else if (nodus_committee_get_for_block_alloc(w,
+                                                  peer_tip + 1,
                                                   &committee,
                                                   &cm_count) == 0 &&
             cm_count > 0) {
