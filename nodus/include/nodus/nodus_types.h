@@ -22,8 +22,8 @@ extern "C" {
 
 #define NODUS_VERSION_MAJOR  0
 #define NODUS_VERSION_MINOR  19
-#define NODUS_VERSION_PATCH  26
-#define NODUS_VERSION_STRING "0.19.26"
+#define NODUS_VERSION_PATCH  27
+#define NODUS_VERSION_STRING "0.19.27"
 
 /* Wire frame.
  *
@@ -167,6 +167,14 @@ extern "C" {
 #define NODUS_T3_EPOCH_DURATION_SEC 60      /* DNAC epoch = 60s */
 /* Witness BFT (Tier 3) protocol version — CLUSTER-INTERNAL ONLY.
  *
+ * 6 (O15N Faz 2C1): two new consensus verbs carrying VIEW AUTHORITY —
+ *   NODUS_T3_VIEWOK (26), a bundle of 1..N per-node statements that a
+ *   view-change quorum was observed, and NODUS_T3_VIEWOK_REQ (27), the
+ *   request for one. A v5 node has no decoder for either and no entry
+ *   for them in the version gate or the quarantine switch, so it can
+ *   neither validate nor safely ignore them. Mixed v5/v6 operation is
+ *   therefore refused rather than degraded.
+ *
  * 5 (O15N Faz 2A): the PREPARED per-voter SIGNATURE DOMAIN changed, in two
  * independent ways, and both change the signed bytes.
  *   (a) The preimage grew 76 -> 116 bytes and now leads with the ASCII tag
@@ -215,7 +223,7 @@ extern "C" {
  *
  * Bootstrap messages deliberately carry version 1 and are NOT gated;
  * they run before a committee exists. */
-#define NODUS_T3_BFT_PROTOCOL_VER   5
+#define NODUS_T3_BFT_PROTOCOL_VER   6
 
 /* Token creation fee: 1% of genesis supply (10M DNAC = 10^15 raw for 1B supply) */
 #define NODUS_W_TOKEN_CREATE_FEE  1000000000000000ULL

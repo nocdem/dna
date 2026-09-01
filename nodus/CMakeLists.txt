@@ -767,6 +767,15 @@ add_test(NAME test_tier3 COMMAND test_tier3)
 # Tier 3 oversize sync_rsp wsig verify regression
 # (Regression for the 2026-05-03 production halt: receiver verify cap
 #  < sender sync_rsp cap, see nodus_t3_verify in nodus_tier3.c.)
+# O15N Faz 2C1 — the VIEW_OK wire (verbs 26/27). Codec level only:
+# nothing sends or handles them yet. Pins the round-trip at N=1 and at
+# the ceiling, BOTH method tables in BOTH directions, the decoder's hard
+# reject of an oversized entry array, and that both sides of the
+# bootstrap-domain predicate are live.
+add_executable(test_viewok_wire tests/test_viewok_wire.c)
+target_link_libraries(test_viewok_wire nodus dsa nodus)
+add_test(NAME test_viewok_wire COMMAND test_viewok_wire)
+
 add_executable(test_tier3_oversize tests/test_tier3_oversize.c)
 target_link_libraries(test_tier3_oversize nodus dsa nodus)
 add_test(NAME test_tier3_oversize COMMAND test_tier3_oversize)

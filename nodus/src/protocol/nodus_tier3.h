@@ -146,6 +146,11 @@ typedef enum {
      * exceeds the 128 KB T3 message bound. */
     NODUS_T3_V2_GBUNDLE_REQ = 24, /* {chain32, pin64, offset}             */
     NODUS_T3_V2_GBUNDLE_RSP = 25, /* {chain32, pin64, total, offset, chunk} */
+    /* O15N Faz 2C1 — VIEW AUTHORITY. One message shape serves two uses:
+     * a broadcast carries n_entries = 1 (this node's own statement), a
+     * proof response carries f+1. Fewer verbs, one decoder, one clamp. */
+    NODUS_T3_VIEWOK     = 26,   /* bundle of 1..N VIEW_OK statements     */
+    NODUS_T3_VIEWOK_REQ = 27,   /* "what view can you prove?"            */
 } nodus_t3_msg_type_t;
 
 /* ── Common witness header ───────────────────────────────────────── */
@@ -379,6 +384,59 @@ typedef struct {
     uint32_t    reproposal_n_sigs;
     nodus_t3_cert_entry_t reproposal_sigs[NODUS_T3_MAX_WITNESSES];
 } nodus_t3_newview_t;
+
+/** w_viewok: a BUNDLE of 1..N VIEW_OK statements for ONE (height, view)
+ * under ONE committee set hash — O15N Faz 2C1.
+ *
+ * Each entry is one node's purpose-0x08 signature over the 148-byte
+ * VIEW_OK preimage (compute_view_ok_preimage, nodus_witness_bft.c):
+ * "viewok\0\0" ‖ chain_id ‖ height ‖ view ‖ set_hash ‖ voter_id. The
+ * statement certifies the OUTCOME of a view change — "I observed a
+ * view-change quorum for this view" — never a vote. See
+ * nodus_witness_bft_verify_view_proof for the f+1 rule and the
+ * fault-vs-verdict split.
+ *
+ * ONE SHAPE, TWO USES: a broadcast carries n_entries = 1 (the sender's
+ * own statement); a response to w_viewok_q carries f+1 (the proof).
+ * There is deliberately no second verb for the second use — one decoder,
+ * one clamp, one place to get the bound right.
+ *
+ * NO chain_id FIELD, AND THAT IS NOT AN OVERSIGHT. The T3 header already
+ * carries one, but more to the point the SIGNED preimage binds the
+ * VERIFIER's own w->chain_id: a statement harvested from another chain
+ * fails signature verification rather than needing a wire comparison.
+ * Adding a wire chain_id would create a second, weaker answer to a
+ * question the signature already settles.
+ *
+ * ⚠ SIZE — A FUTURE SENDER MUST NOT USE THE 128 KB STACK PATTERN.
+ * sizeof(nodus_t3_cert_entry_t) is 4659, so f+1 entries is ~14 KB at
+ * n = 7 but ~200 KB at n = 128. Eleven send sites in this tree encode
+ * into uint8_t buf[NODUS_T3_MAX_MSG_SIZE] — a 128 KB STACK buffer —
+ * which holds 131072/4659 = 28 entries and therefore breaks at n >= 42
+ * (dna_bft_quorum(42) = 29). Send this through the 1 MB HEAP path
+ * nodus_witness_bft_broadcast already uses (NODUS_W_MAX_SYNC_RSP_SIZE,
+ * nodus_witness_bft.c), the same one VIEW_CHANGE and NEW_VIEW ride;
+ * nodus_t3_verify heap-allocates the same size, so send and verify stay
+ * symmetric. */
+typedef struct {
+    uint64_t              height;
+    uint32_t              view;
+    uint8_t               set_hash[64];
+    uint32_t              n_entries;
+    nodus_t3_cert_entry_t entries[NODUS_T3_MAX_WITNESSES];
+} nodus_t3_viewok_t;
+
+/** w_viewok_q: ask a peer for the proof of the view it currently holds.
+ *
+ * `height_hint` is the requester's own next block height. It is a HINT
+ * and authorizes NOTHING: the responder answers about the view IT can
+ * prove, and the requester re-verifies the returned bundle against the
+ * committee governing the height carried INSIDE that bundle. A hint that
+ * is wrong, stale or hostile changes which proof is offered, never
+ * whether it is believed. */
+typedef struct {
+    uint64_t height_hint;
+} nodus_t3_viewok_q_t;
 
 /** w_fwd_req: Non-leader forwards client request to leader */
 typedef struct {
@@ -746,6 +804,8 @@ typedef struct {
         nodus_t3_w_v2_range_r_t  w_v2_range_r;
         nodus_t3_w_v2_gbundle_q_t w_v2_gbundle_q;
         nodus_t3_w_v2_gbundle_r_t w_v2_gbundle_r;
+        nodus_t3_viewok_t         viewok;
+        nodus_t3_viewok_q_t       viewok_q;
     };
 } nodus_t3_msg_t;
 

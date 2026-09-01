@@ -2067,6 +2067,12 @@ void nodus_witness_dispatch_t3(nodus_witness_t *witness,
     case NODUS_T3_NEWVIEW:
     case NODUS_T3_FWD_REQ:
     case NODUS_T3_FWD_RSP:
+    /* O15N Faz 2C1 — view authority. A verb OUTSIDE this list is silently
+     * exempt from mixed-version protection, and these two carry the
+     * evidence that moves the PBFT view counter. The identical list in
+     * the quarantine switch below must move with this one. */
+    case NODUS_T3_VIEWOK:
+    case NODUS_T3_VIEWOK_REQ:
         if (msg.header.version != NODUS_T3_BFT_PROTOCOL_VER) {
             fprintf(stderr,
                     "%s: INCOMPATIBLE PEER — dropping %s from roster %d: "
@@ -2102,6 +2108,11 @@ void nodus_witness_dispatch_t3(nodus_witness_t *witness,
         case NODUS_T3_NEWVIEW:
         case NODUS_T3_FWD_REQ:
         case NODUS_T3_FWD_RSP:
+        /* O15N Faz 2C1 — the same pair as the version gate above. A node
+         * that has self-quarantined for chain disagreement must not keep
+         * taking view authority from the peers it disagrees with. */
+        case NODUS_T3_VIEWOK:
+        case NODUS_T3_VIEWOK_REQ:
             fprintf(stderr, "%s: QUARANTINED — dropping %s (chain_id disagreement with quorum)\n",
                     LOG_TAG, msg.method);
             return;

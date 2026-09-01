@@ -51,6 +51,8 @@ const char *nodus_t3_type_to_method(nodus_t3_msg_type_t type) {
         case NODUS_T3_V2_RANGE_RSP: return "w_v2_range_r";
         case NODUS_T3_V2_GBUNDLE_REQ: return "w_v2_gbundle_q";
         case NODUS_T3_V2_GBUNDLE_RSP: return "w_v2_gbundle_r";
+        case NODUS_T3_VIEWOK:     return "w_viewok";
+        case NODUS_T3_VIEWOK_REQ: return "w_viewok_q";
         default:                 return NULL;
     }
 }
@@ -87,6 +89,11 @@ nodus_t3_msg_type_t nodus_t3_method_to_type(const char *method) {
     if (strcmp(method, "w_v2_range_r") == 0)   return NODUS_T3_V2_RANGE_RSP;
     if (strcmp(method, "w_v2_gbundle_q") == 0) return NODUS_T3_V2_GBUNDLE_REQ;
     if (strcmp(method, "w_v2_gbundle_r") == 0) return NODUS_T3_V2_GBUNDLE_RSP;
+    /* O15N Faz 2C1 — BOTH directions, deliberately adjacent. O15E added
+     * verbs to this file and updated only one of the two tables, so a
+     * frame encoded with an empty method string was undispatchable. */
+    if (strcmp(method, "w_viewok") == 0)       return NODUS_T3_VIEWOK;
+    if (strcmp(method, "w_viewok_q") == 0)     return NODUS_T3_VIEWOK_REQ;
     return 0;
 }
 
@@ -100,6 +107,20 @@ nodus_t3_msg_type_t nodus_t3_method_to_type(const char *method) {
  * remain wire-compatible during rolling deploy. */
 #define NODUS_T3_BOOTSTRAP_SIG_DOMAIN "nodus-t3-v1-bootstrap"
 
+/* O15N Faz 2C1 — VERBS 26/27 ARE DELIBERATELY NOT HERE, and that is a
+ * decision, not an omission.
+ *
+ * A bootstrap verb runs BEFORE a committee exists — that is the whole
+ * reason the set is what it is. A VIEW_OK statement is meaningless
+ * without a committee: its entire content is a committee set hash, and
+ * both sides refuse when there is none (nodus_witness_bft_sign_view_ok
+ * returns -1 on count 0, nodus_witness_bft_verify_view_proof returns -2).
+ * A node asking for a view proof already holds a chain and can resolve
+ * its committee; it is behind the cluster, not pre-genesis.
+ *
+ * Adding them here would prefix their envelope signature with the
+ * bootstrap domain, which no existing test would catch — the O15N
+ * red-team round named this as a decision with no safe default. */
 static bool is_bootstrap_type(nodus_t3_msg_type_t t) {
     return t == NODUS_T3_CHAIN_Q     || t == NODUS_T3_CHAIN_R ||
            t == NODUS_T3_GENESIS_REQ || t == NODUS_T3_GENESIS_RSP;
@@ -283,6 +304,38 @@ static void enc_newview_args(cbor_encoder_t *enc, const nodus_t3_newview_t *n) {
             }
         }
     }
+}
+
+/* O15N Faz 2C1 — VIEW_OK bundle.
+ *
+ * ⚠ THE ARRAY LENGTH IS THE ONLY COUNT. There is deliberately no separate
+ * count key. Its neighbour above emits "psc" alongside the "psgs" array,
+ * and a wire that carries a count AND a length has two sources of truth
+ * that an attacker can make disagree — the exact asymmetry the O15N
+ * red-team round flagged, where "psc" is stored UNBOUNDED from the wire
+ * while its sibling "rns" rejects at decode. One number, decoded from the
+ * array header, clamped there. */
+static void enc_viewok_args(cbor_encoder_t *enc, const nodus_t3_viewok_t *v) {
+    cbor_encode_map(enc, 4);
+    cbor_encode_cstr(enc, "h");   cbor_encode_uint(enc, v->height);
+    cbor_encode_cstr(enc, "v");   cbor_encode_uint(enc, v->view);
+    cbor_encode_cstr(enc, "sh");  cbor_encode_bstr(enc, v->set_hash, 64);
+    cbor_encode_cstr(enc, "sts");
+    cbor_encode_array(enc, (size_t)v->n_entries);
+    for (uint32_t i = 0; i < v->n_entries; i++) {
+        cbor_encode_map(enc, 2);
+        cbor_encode_cstr(enc, "vid");
+        cbor_encode_bstr(enc, v->entries[i].voter_id,
+                         NODUS_T3_WITNESS_ID_LEN);
+        cbor_encode_cstr(enc, "sig");
+        cbor_encode_bstr(enc, v->entries[i].signature, NODUS_SIG_BYTES);
+    }
+}
+
+static void enc_viewok_q_args(cbor_encoder_t *enc,
+                                const nodus_t3_viewok_q_t *q) {
+    cbor_encode_map(enc, 1);
+    cbor_encode_cstr(enc, "hh"); cbor_encode_uint(enc, q->height_hint);
 }
 
 static void enc_fwd_req_args(cbor_encoder_t *enc, const nodus_t3_fwd_req_t *f) {
@@ -624,6 +677,10 @@ static int enc_args(cbor_encoder_t *enc, const nodus_t3_msg_t *msg) {
             enc_w_v2_gbundle_q_args(enc, &msg->w_v2_gbundle_q); break;
         case NODUS_T3_V2_GBUNDLE_RSP:
             enc_w_v2_gbundle_r_args(enc, &msg->w_v2_gbundle_r); break;
+        case NODUS_T3_VIEWOK:
+            enc_viewok_args(enc, &msg->viewok);               break;
+        case NODUS_T3_VIEWOK_REQ:
+            enc_viewok_q_args(enc, &msg->viewok_q);           break;
         default: return -1;
     }
     return 0;
@@ -1194,6 +1251,93 @@ static void dec_newview_args(cbor_decoder_t *dec, size_t count,
             }
         }
         else {
+            cbor_decode_skip(dec);
+        }
+    }
+}
+
+/* O15N Faz 2C1 — VIEW_OK bundle.
+ *
+ * ⚠ THE CLAMP IS A HARD REJECT, NOT A TRUNCATION. Its neighbour above
+ * takes min(arr.count, MAX_WITNESSES) and skips the tail, which is safe
+ * only because every current consumer re-clamps; a consumer written
+ * without one would inherit an attacker-chosen count. Here an oversized
+ * array sets dec->error, which fails the WHOLE frame (nodus_t3_decode
+ * returns -1 on it) — so no consumer of this verb can ever be handed a
+ * count it did not ask for, and none has to remember to re-check.
+ *
+ * n_entries is taken from the array header and NOWHERE else; there is no
+ * count key on this wire to disagree with it. */
+static void dec_viewok_args(cbor_decoder_t *dec, size_t count,
+                              nodus_t3_viewok_t *v) {
+    for (size_t i = 0; i < count; i++) {
+        cbor_item_t key = cbor_decode_next(dec);
+        if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(dec); continue; }
+
+        if (KEY_IS(key, "h")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_UINT) v->height = val.uint_val;
+        }
+        else if (KEY_IS(key, "v")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_UINT) v->view = (uint32_t)val.uint_val;
+        }
+        else if (KEY_IS(key, "sh")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_BSTR && val.bstr.len == 64)
+                memcpy(v->set_hash, val.bstr.ptr, 64);
+        }
+        else if (KEY_IS(key, "sts")) {
+            cbor_item_t arr = cbor_decode_next(dec);
+            if (arr.type != CBOR_ITEM_ARRAY) { cbor_decode_skip(dec); continue; }
+            if (arr.count > NODUS_T3_MAX_WITNESSES) {
+                /* HARD REJECT — see the note above. */
+                dec->error = true;
+                return;
+            }
+            for (size_t j = 0; j < arr.count; j++) {
+                cbor_item_t m = cbor_decode_next(dec);
+                if (m.type != CBOR_ITEM_MAP) { cbor_decode_skip(dec); continue; }
+                for (size_t k = 0; k < m.count; k++) {
+                    cbor_item_t mk = cbor_decode_next(dec);
+                    if (mk.type != CBOR_ITEM_TSTR) {
+                        cbor_decode_skip(dec);
+                        continue;
+                    }
+                    if (KEY_IS(mk, "vid")) {
+                        cbor_item_t mv = cbor_decode_next(dec);
+                        if (mv.type == CBOR_ITEM_BSTR &&
+                            mv.bstr.len == NODUS_T3_WITNESS_ID_LEN)
+                            memcpy(v->entries[j].voter_id, mv.bstr.ptr,
+                                   NODUS_T3_WITNESS_ID_LEN);
+                    } else if (KEY_IS(mk, "sig")) {
+                        cbor_item_t mv = cbor_decode_next(dec);
+                        if (mv.type == CBOR_ITEM_BSTR &&
+                            mv.bstr.len == NODUS_SIG_BYTES)
+                            memcpy(v->entries[j].signature, mv.bstr.ptr,
+                                   NODUS_SIG_BYTES);
+                    } else {
+                        cbor_decode_skip(dec);
+                    }
+                }
+            }
+            v->n_entries = (uint32_t)arr.count;
+        }
+        else {
+            cbor_decode_skip(dec);
+        }
+    }
+}
+
+static void dec_viewok_q_args(cbor_decoder_t *dec, size_t count,
+                                nodus_t3_viewok_q_t *q) {
+    for (size_t i = 0; i < count; i++) {
+        cbor_item_t key = cbor_decode_next(dec);
+        if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(dec); continue; }
+        if (KEY_IS(key, "hh")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_UINT) q->height_hint = val.uint_val;
+        } else {
             cbor_decode_skip(dec);
         }
     }
@@ -2012,6 +2156,12 @@ int nodus_t3_decode(const uint8_t *buf, size_t len, nodus_t3_msg_t *msg) {
                 case NODUS_T3_V2_GBUNDLE_RSP:
                     dec_w_v2_gbundle_r_args(&dec, args.count,
                                             &msg->w_v2_gbundle_r);
+                    break;
+                case NODUS_T3_VIEWOK:
+                    dec_viewok_args(&dec, args.count, &msg->viewok);
+                    break;
+                case NODUS_T3_VIEWOK_REQ:
+                    dec_viewok_q_args(&dec, args.count, &msg->viewok_q);
                     break;
                 default:
                     break;
