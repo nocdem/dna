@@ -128,9 +128,13 @@ bool nodus_witness_bft_prepared_lock_blocks(const nodus_witness_t *w,
  * would not be, because voters re-emit at every rung of the escalation
  * ladder and nothing retracts.
  *
- * ⚠ PRIMITIVES ONLY. Neither function is called from any handler, tick or
- * commit path, and neither reads or writes w->current_view or any round
- * state. They change nothing about when or how the view counter moves.
+ * ⚠ THEY ARE PURE, NOT INERT — Faz 2C2 WIRED THEM. Neither function
+ * reads or writes w->current_view or any round state; everything they
+ * judge arrives as an argument. But sign_view_ok is now called when this
+ * node's own view-change tally reaches quorum, and verify_view_proof
+ * gates the ONE site in nodus_witness_bft.c that assigns to
+ * `current_view`. Changing either one's semantics changes when a live
+ * cluster rotates its leader.
  */
 
 /** Produce THIS node's VIEW_OK statement for a completed view change.
@@ -348,6 +352,64 @@ int nodus_witness_bft_handle_viewchg(nodus_witness_t *w,
 /** Handle decoded NEW_VIEW message. */
 int nodus_witness_bft_handle_newview(nodus_witness_t *w,
                                        const nodus_t3_msg_t *msg);
+
+/* ── O15N Faz 2C2 — VIEW_OK: the only writer of `current_view` ────── */
+
+/** Handle a decoded `w_viewok` bundle — one or more VIEW_OK statements.
+ *
+ * THE ORDER IS FIXED AND FAIL-CLOSED, and the committee gate comes
+ * BEFORE any signature work on purpose. A T3 sender identity costs one
+ * keypair plus one DHT put (nodus/BUGS.md O15N-L4), so authorising this
+ * path on the transport ROSTER would let an attacker mint identities and
+ * make this node burn Dilithium verifies (~370 µs each, measured by the
+ * perf harness) on the epoll thread. Membership of the COMMITTEE
+ * governing the height the bundle carries bounds that to the committee.
+ *
+ *   1. safety_halt / replay / chain_id  — the opening every consensus
+ *      handler in this file shares.
+ *   2. the SENDER must be in the committee at the CARRIED height. A
+ *      committee-load FAULT here is SILENCE: this node cannot name the
+ *      authority, so it neither folds nor blames.
+ *   3. a bundle that is ALREADY a proof (>= f+1 entries for a view above
+ *      ours) is verified on its own merits, independently of the
+ *      accumulator. This is what makes the `w_viewok_q` rescue immune to
+ *      an accumulator poisoned by a member that named an unreachable
+ *      view — see the definition's residual-liveness note.
+ *   4. otherwise the entries are folded into the accumulator, one slot
+ *      per voter, and the accumulator is tried.
+ *
+ * On a verified proof for a view STRICTLY GREATER than `current_view`
+ * the counter moves, the proof is retained, and the post-move work a
+ * completed view change owes (C5 self-bind, persist, phase reset, P2
+ * arm, the new leader's NEW_VIEW) runs — the same block, in the same
+ * order, that reaching one's own quorum used to run inline.
+ *
+ * `nodus_witness_bft_verify_view_proof`'s -2 is NOT a rejection: this
+ * node cannot judge, so it stays silent and KEEPS the accumulator.
+ *
+ * @return 0 if the bundle was folded or applied, -1 if it was refused,
+ *         faulted, or carried nothing this node could use. The dispatcher
+ *         discards this; it exists for the regressions. */
+int nodus_witness_bft_handle_viewok(nodus_witness_t *w,
+                                      const nodus_t3_msg_t *msg);
+
+/** Handle a decoded `w_viewok_q` — "what view can you prove?".
+ *
+ * Answers with the RETAINED PROOF, unicast on the connection the request
+ * arrived on, or with NOTHING if this node holds none. Holding none is
+ * the ordinary state of a node at view 0 that never moved, and it is the
+ * correct answer rather than an error.
+ *
+ * The request's `height_hint` authorises nothing and selects nothing: the
+ * responder answers about the view IT can prove, and the requester
+ * re-verifies the returned bundle against the committee governing the
+ * height carried INSIDE it.
+ *
+ * @return 0 if a proof was sent, -1 if nothing was sent (refused, rate
+ *         limited, or no proof held). */
+int nodus_witness_bft_handle_viewok_req(nodus_witness_t *w,
+                                          struct nodus_tcp_conn *conn,
+                                          const nodus_t3_msg_t *msg);
 
 /* ── View change ─────────────────────────────────────────────────── */
 

@@ -272,25 +272,106 @@ the stalled-view-change escalation nor the P3(a) deadman writes the view
 counter. Both used to go further and assert a GLOBAL invariant —
 "`current_view` only moves on quorum" — and that has never been true.
 
-As of v0.19.24 the counter is written in **four** places:
+**It is true now, and it is stronger than "on quorum".** As of O15N Faz
+2C2 the counter is written in exactly **three** places, and only one of
+them takes anything off the wire:
 
-| Site | Backed by a proven majority? |
+| Site | What authorises it |
 |---|---|
-| `handle_propose` — unconditionally, from the proposal's view (`nodus_witness_bft.c:5040`) | No |
-| view-change quorum, `bft_vc_check_quorum` (`nodus_witness_bft.c:7703`) | **Yes** |
-| `handle_newview` — `>` accept only (`nodus_witness_bft.c:8196`) | No |
-| restore from disk, H-5 (`nodus_witness_db.c:2176`) | No |
+| `bft_viewok_apply` (`nodus_witness_bft.c`) | A **VIEW_OK proof**: f+1 distinct, signature-verified statements for a view strictly above the one held, judged against the committee governing the height the proof carries |
+| `bft_vc_check_quorum`, **pre-genesis bootstrap path only** | This node's own observed quorum, and ONLY while no committee exists at the height — see below |
+| restore from disk, H-5 (`nodus_witness_db.c`) | This node's **own** previously proven value. An attacker cannot write to another node's disk |
 
-Only the view-change quorum write is backed by a proven majority
-decision. Closing the other two message-driven writes is a separate,
-later protocol-version bump; it is not done here.
+**The pre-genesis path is a scoped exception, not a hole, and leaving it
+out would have been the defect.** Before genesis commits there is no
+committee, so `nodus_witness_bft_sign_view_ok` cannot produce a statement
+— not on this node and not on any other. With the proof as the only
+writer, that made the counter immovable: a fresh cluster whose genesis
+round landed on a silent leader could never rotate away from it and the
+chain would simply never start. Two shipped unit tests said so out loud
+(`test_bft_liveness`, `test_witness_newview_convergence`) and the Genesis
+Protocol harness builds exactly that state on every run.
 
-A **fifth** writer was removed in v0.19.24: the IDENT handshake in
-`nodus_witness_peer.c` adopted a peer's advertised `current_view`
-directly. T3 IDENT is exempt from the wsig signature verify
-(`nodus_witness.c:2011`), so that value was never authenticated — one
-peer could move another node's leader election and the bytes it signs.
-The field is still carried on the wire, now as gossip/observability only.
+In that window the node's own observed quorum moves the view, which is
+what this code did before Faz 2C2. It is not a weaker authority than the
+tree already uses there: pre-genesis the gossip roster IS the documented
+authority, for leader election (`nodus_witness_bft_is_leader`'s count-0
+branch) and for prepared-certificate voter resolution
+(`verify_prepared_cert`'s count-0 branch) alike. The window closes the
+instant the genesis block commits and seats a committee, after which
+`sign_view_ok` stops answering 1 and the proof rule is the only rule.
+
+Three message-driven writers were **deleted** in the same slice. Each was
+a path by which one node's signature moved another node's leader
+election:
+
+| Deleted writer | What it allowed |
+|---|---|
+| `handle_propose` — copied the proposal's view UNCONDITIONALLY | The correct leader **for any view** could set this node's counter, in **either direction**. Lowering was the worse half: the leader for a view the cluster had already left could drag a node back to it |
+| `handle_newview` — `>` accept | One signature raised the counter. This handler has no replay guard and cannot safely be given one — the measured O15M note in `nodus_witness_bft_handle_newview` records why adding the obvious `is_replay` line stalled the chain — so a captured frame stayed usable forever |
+| view-change quorum, `bft_vc_check_quorum` | Backed by a real majority, but by a majority **this node alone observed**. Nothing it could show a peer, so a node that missed the votes had no way to be brought along except by the two unproven writes above |
+
+A **fourth** writer was removed earlier, in v0.19.24: the IDENT handshake
+in `nodus_witness_peer.c` adopted a peer's advertised `current_view`
+directly. T3 IDENT is exempt from the wsig signature verify, so that
+value was never authenticated. The field is still carried on the wire,
+now as gossip/observability only.
+
+### When the view moves now
+
+**Reaching your own view-change quorum makes you SPEAK, not move.** At
+the instant `bft_vc_tally(target) >= bft_config.quorum` first holds, the
+node signs ONE `VIEW_OK` statement and broadcasts it
+(`nodus_t3_viewok_t`, verb 26). The statement certifies an **outcome** —
+"I observed a view-change quorum for this view, at this height, under
+this committee set hash" — never a vote. It is signed over a 148-byte
+purpose-0x08 preimage that binds `chain_id`, `height`, `view`, the
+committee set hash and the signer's own id.
+
+**f+1 statements are a proof.** An honest node emits one only after
+observing 2f+1 committee members ask for the view, so a single honest
+statement already testifies to the quorum; f+1 distinct statements
+contain at least one honest one. `f` is derived from the committee
+governing the height the proof carries, never from the reader's own
+`bft_config` — two authorities for one decision disagree across every
+committee change.
+
+**Exactly one statement per (height, view).** The whole f+1 argument
+rests on it, so the producer enforces it: the node's own slot in the
+accumulator is the latch, and the quorum check re-runs on every
+VIEW_CHANGE that arrives afterwards.
+
+**Catch-up.** A node that refuses a PROPOSE or a NEW_VIEW because the
+view does not match, and whose sender is **ahead**, sends `w_viewok_q`
+(verb 27) to that sender — after the leader/committee checks that message
+already performs, so a bare roster member cannot drive a victim into
+asking peers instead of participating. The answer is the retained proof,
+rate-limited per roster slot in both directions. A node that has never
+moved holds no proof and answers nothing; that is the correct answer, not
+an error.
+
+**Three consequences worth stating plainly:**
+
+1. **A node behind in view declines rounds until a proof reaches it.**
+   That is a liveness cost, not a safety one — its persisted
+   `last_prepared` lock still refuses conflicting values while it waits.
+2. **On a chain with NO committee snapshot the view still moves — by the
+   bootstrap path above, never by a proof.** `sign_view_ok` still refuses
+   to SIGN over an empty set (a set hash over no set is not a statement)
+   and `verify_view_proof` still answers -2 there (there is nothing to
+   measure a carried proof against), so no VIEW_OK can exist pre-genesis.
+   The counter moves on the node's own observed quorum instead, and the
+   window closes at the genesis commit.
+3. **The value already on disk was written under the old rules**, so a
+   cutover step is required — see
+   [DEPLOY_RUNBOOK.md §2.1](DEPLOY_RUNBOOK.md).
+
+The `"view change quorum! new view: %u"` log line still fires where a
+node observes its own quorum, and its text is **load-bearing**:
+`tests/integration/stagef/tests/test_vset_grow_shrink.sh` section G
+counts it. What it now means is "this node observed a quorum"; section
+G's other half, the persisted `pbft_state.current_view`, is what
+witnesses the actual move.
 
 ### Pool-then-forward (O15I follow-up)
 

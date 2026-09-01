@@ -847,12 +847,19 @@ static void test_view_proof_body(void) {
 
 /* A witness whose chain database is real but whose validator table is
  * EMPTY — the committed (rc 0, count 0) answer. verify_prepared_cert
- * treats that as the documented gossip-roster bootstrap; VIEW_OK must
- * NOT, because a set hash over an empty set is not a statement about
- * anything. The producer refuses to sign (-1) and the verifier declines
- * to judge (-2). */
+ * treats that as the documented gossip-roster bootstrap; VIEW_OK still
+ * refuses to SIGN, because a set hash over an empty set is not a
+ * statement about anything.
+ *
+ * But the producer answers 1, not -1: a committed "there is nobody to
+ * certify against here", which the caller answers by taking the
+ * pre-genesis BOOTSTRAP path. Reporting it as a fault locked a fresh
+ * chain out of ever rotating once the verified proof became the only
+ * writer of current_view — see the full note at the assertion. The
+ * verifier still declines to judge (-2): there is no set to measure a
+ * carried proof against. */
 static void test_pre_genesis_refusal(void) {
-    TEST("§H no committee at that height — producer -1, verifier -2");
+    TEST("§H no committee at that height — producer 1 (bootstrap), verifier -2");
 
     char dir[] = "/tmp/test_view_proof_pg_XXXXXX";
     if (mkdtemp(dir) == NULL) { FAIL("temp dir"); return; }
@@ -893,8 +900,34 @@ static void test_pre_genesis_refusal(void) {
 
     uint8_t set_hash[64];
     nodus_sig_t sig;
-    if (nodus_witness_bft_sign_view_ok(w, 5, 1, set_hash, &sig) != -1)
-        PG_BAIL("§H the producer must refuse to sign over an empty set");
+    /* ⚠ 1, NOT -1 — AND THE DIFFERENCE IS THE WHOLE POINT.
+     *
+     * The producer still refuses to SIGN: a set hash over an empty set is
+     * not a statement about anything, and this must never become a
+     * signature. What changed in Faz 2C2 is the CLASS of the answer. A
+     * bare -1 said "fault", and once the verified proof became the only
+     * writer of current_view that turned into a LOCK: no committee exists
+     * until the genesis block commits, so no node could sign, so no proof
+     * could exist, so a fresh cluster whose genesis round landed on a
+     * silent leader could never rotate away from it and the chain would
+     * never start. Two shipped tests said so out loud (test_bft_liveness,
+     * test_witness_newview_convergence) and the Genesis Protocol harness
+     * builds exactly that state on every run.
+     *
+     * 1 is the committed answer "there is nobody to certify against at
+     * this height", and the caller answers it by taking the pre-genesis
+     * BOOTSTRAP path — moving on its own observed quorum, on the same
+     * gossip-roster authority this tree already documents for leader
+     * election and prepared-cert voter resolution in this same window.
+     * The window closes the instant genesis seats a committee.
+     *
+     * A -1 here would therefore be a regression to a chain that cannot
+     * start, which is why this asserts the exact value and not "non-zero". */
+    int prc = nodus_witness_bft_sign_view_ok(w, 5, 1, set_hash, &sig);
+    if (prc != 1)
+        PG_BAIL("§H pre-genesis the producer must answer 1 (no committee to "
+                "certify against — take the bootstrap path), never -1 (a "
+                "fault), which would lock a fresh chain out of ever rotating");
 
     /* And the verifier declines rather than convicting. The entries are
      * structurally fine; there is simply no authority to judge them by. */

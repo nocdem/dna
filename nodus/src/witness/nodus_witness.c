@@ -2140,6 +2140,20 @@ void nodus_witness_dispatch_t3(nodus_witness_t *witness,
         nodus_witness_bft_handle_newview(witness, &msg);
         break;
 
+    /* O15N Faz 2C2 — VIEW AUTHORITY. `w_viewok` carries the statements
+     * that are the ONLY thing permitted to move this node's PBFT view
+     * counter; `w_viewok_q` asks a peer for the proof of the view it
+     * holds and is answered on the connection it arrived on, which is
+     * why that handler takes `conn` (the shape w_rost_q already uses).
+     * Both were gated for version and quarantine above; that list and
+     * this dispatch must stay in step. */
+    case NODUS_T3_VIEWOK:
+        nodus_witness_bft_handle_viewok(witness, &msg);
+        break;
+    case NODUS_T3_VIEWOK_REQ:
+        nodus_witness_bft_handle_viewok_req(witness, conn, &msg);
+        break;
+
     /* Peer mesh messages */
     case NODUS_T3_FWD_REQ:
         nodus_witness_peer_handle_fwd_req(witness, &msg);

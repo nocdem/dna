@@ -72,6 +72,8 @@
 
 #include <stdio.h>
 #include <stdint.h>
+#include <stddef.h>   /* O15N Faz 2C2 — offsetof, for the VIEW_OK store's
+                       * layout pin against the wire cert entry */
 #include <string.h>
 #include <stdlib.h>
 #include <time.h>
@@ -111,6 +113,13 @@ int nodus_witness_commit_batch(nodus_witness_t *w,
                                  uint64_t timestamp,
                                  const uint8_t *proposer_id,
                                  const uint8_t *expected_state_root);
+
+/* O15N Faz 2C2 — the catch-up ask. Defined beside the VIEW_OK machinery
+ * below; declared here because handle_propose, which sits far above it,
+ * is one of the two sites that refuse a message for a view mismatch and
+ * therefore one of the two that must ask. */
+static void bft_viewok_send_request(nodus_witness_t *w,
+                                      const uint8_t *peer_id);
 
 /* ── Time helper ─────────────────────────────────────────────────── */
 
@@ -5220,6 +5229,59 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
         }
     }
 
+    /* ── O15N Faz 2C2 — THE VIEW EQUALITY GATE ────────────────────────
+     *
+     * WHAT THIS REPLACES. Below, at the round-state initialisation, this
+     * handler used to execute `w->current_view = hdr->view;`
+     * UNCONDITIONALLY and persist it. A PROPOSE is signed by ONE node —
+     * the leader for the view IT names — so that line let any node that
+     * is the correct leader for SOME view write this node's view
+     * counter, in EITHER direction. Lowering is the worse half and is
+     * the defect this season exists to close: the leader for a view we
+     * have already left could drag us back to it, and `current_view` is
+     * what leader election reads. It also masked the NEW_VIEW replay
+     * gap (see the O15M note in handle_newview): a node pushed up by a
+     * replayed NEW_VIEW was quietly pulled back down here, so the
+     * symptom never surfaced.
+     *
+     * THE RULE NOW: a proposal is for the view we hold, or it is not for
+     * us. Never raise, never lower, WRITE NOTHING.
+     *
+     * PLACED AFTER the leader/committee block above and BEFORE the C5
+     * gate below. What that buys, stated exactly rather than
+     * approximately: `current_round`, `round_state` and
+     * `awaiting_propose_deadline_ms` are all written at the round-state
+     * initialisation further down, so a refusal here leaves every one of
+     * them untouched, and the C5 binding below is neither cleared nor
+     * enforced by a proposal we are not going to take. It is NOT true
+     * that nothing at all has been written by this point — the F17 A2
+     * transport-roster swap and refresh_bft_config_from_committee both
+     * run above, exactly as they do for every other refusal in this
+     * handler. Those are node-local transport/config state, not round or
+     * view state.
+     *
+     * THE ASK IS GATED ON THE SENDER BEING AHEAD, and it sits after the
+     * committee/leader checks deliberately (O15N round 1, K-6): asking on
+     * every mismatch would let any roster member drive a victim into
+     * asking peers for proofs instead of participating. A sender at a
+     * LOWER view is the one behind us — it can teach us nothing, and it
+     * will ask US when it refuses our traffic.
+     *
+     * COST WHEN WE ARE THE ONE BEHIND: this node declines the round and
+     * waits for the proof that moves it. Its own last_prepared lock
+     * still refuses conflicting values while it waits, so declining is
+     * a liveness cost only — the same trade every fail-closed gate in
+     * this file makes. */
+    if (hdr->view != w->current_view) {
+        fprintf(stderr,
+                "%s: PROPOSE at view %u but we hold view %u — refusing; the "
+                "view counter moves only on a verified VIEW_OK proof\n",
+                LOG_TAG, hdr->view, w->current_view);
+        if (hdr->view > w->current_view)
+            bft_viewok_send_request(w, hdr->sender_id);
+        return -1;
+    }
+
     /* C5 — reproposal enforcement. If a recent NEW_VIEW bound us to a
      * specific tx_hash at a specific height, the first PROPOSE under
      * this view must match. Otherwise the leader is attempting to
@@ -5274,12 +5336,17 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
          * the activation ceremony; see the leader-side note above. */
     }
 
-    /* Initialize round state from proposal */
+    /* Initialize round state from proposal.
+     *
+     * O15N Faz 2C2 — `w->current_view = hdr->view;` USED TO BE THE NEXT
+     * LINE, followed by a save_pbft_state whose only purpose was to
+     * persist it. Both are gone: the equality gate above has already
+     * established hdr->view == w->current_view, so the assignment could
+     * only ever be a no-op or the unproven write this slice removes, and
+     * a persist of state nothing changed is work with no reader.
+     * `round_state.view` below therefore records the same number it
+     * always did. */
     w->current_round = hdr->round;
-    w->current_view = hdr->view;
-    /* H-5: persist current_view across restart so a fresh restart does
-     * not vote at view 0 against peers that already advanced. */
-    nodus_witness_db_save_pbft_state(w);
 
     round_state_free_batch(&w->round_state);
     memset(&w->round_state, 0, sizeof(w->round_state));
@@ -7915,10 +7982,258 @@ int nodus_witness_bft_handle_viewchg(nodus_witness_t *w,
     return bft_vc_check_quorum(w);
 }
 
-/* O15C-C D1 — view-change quorum check + completion, factored out of
- * handle_viewchg so initiate_view_change can complete a quorum that its
- * own self-record finished. Returns 0 always (diagnostic parity with the
- * old inline tail). */
+/* ════════════════════════════════════════════════════════════════════
+ * O15N Faz 2C2 — THE VIEW COUNTER MOVES ONLY ON A VERIFIED PROOF
+ *
+ * WHAT CHANGED. `w->current_view` had four writers in this file and only
+ * ONE was backed by a proven majority: a PROPOSE copied the leader's
+ * claimed view unconditionally in EITHER direction (handle_propose), a
+ * NEW_VIEW raised it on a `>` guard alone (handle_newview), and reaching
+ * one's own view-change quorum set it (here). After this slice there is
+ * exactly one writer in this file — bft_viewok_apply, below, on a proof
+ * nodus_witness_bft_verify_view_proof accepted. The fifth writer,
+ * nodus_witness_db.c's restore from disk, is UNTOUCHED and out of scope:
+ * an attacker cannot write to another node's disk, so the restored value
+ * is this node's own previously proven one. The cutover for the value
+ * already on disk under the OLD rules is a deploy step, not code — see
+ * nodus/docs/DEPLOY_RUNBOOK.md §2.1.
+ *
+ * WHY AN OUTCOME AND NOT A VOTE. A VIEW_OK statement says "I observed a
+ * view-change quorum for this view, at this height, under this
+ * committee". An honest node emits exactly one, at ONE instant — when
+ * its own per-voter tally first reaches quorum. So a single honest
+ * statement already testifies that 2f+1 committee members asked for the
+ * view, and f+1 distinct statements contain at least one honest one.
+ * Accumulating signed VOTES could never work: a voter re-emits at every
+ * rung of the escalation ladder and nothing retracts.
+ *
+ * ⚠ THE EXACTLY-ONCE RULE IS WHAT THE f+1 ARGUMENT RESTS ON. It is
+ * enforced by the accumulator itself: this node's own statement occupies
+ * ONE slot keyed by its own voter id, and bft_viewok_emit_own returns
+ * early when that slot is already filled for the anchor it is about to
+ * speak on. The quorum check re-runs on every VIEW_CHANGE that arrives
+ * after quorum, so without that latch one observation would become one
+ * broadcast per late message.
+ *
+ * ⚠ PRE-GENESIS IS A HALT, AND IT IS DELIBERATE, NOT AN OVERSIGHT.
+ * nodus_witness_bft_sign_view_ok refuses when the committee at the
+ * height is EMPTY (its count-0 branch), and
+ * nodus_witness_bft_verify_view_proof answers -2 there. On a chain with
+ * no committee snapshot no statement can be signed, so no proof can
+ * exist, so `current_view` can never move. A cluster whose GENESIS round
+ * lands on a silent leader therefore cannot rotate away from it. This is
+ * the direct consequence of making the counter proof-only while the
+ * proof's authority is the committee, and it is stated here rather than
+ * discovered later.
+ * ════════════════════════════════════════════════════════════════════ */
+
+/* The store mirrors nodus_t3_cert_entry_t so nodus_witness.h does not
+ * have to depend on protocol/nodus_tier3.h, and the verifier takes the
+ * wire type — so one is cast to the other. The C5 NEW_VIEW sender
+ * already performs that cast on the same assumption and NOTHING was
+ * checking it; these pin it at compile time. */
+_Static_assert(sizeof(nodus_witness_prepared_sig_t) ==
+                   sizeof(nodus_t3_cert_entry_t),
+               "VIEW_OK store entry must be layout-identical to the wire "
+               "cert entry it is cast to");
+_Static_assert(offsetof(nodus_witness_prepared_sig_t, voter_id) ==
+                   offsetof(nodus_t3_cert_entry_t, voter_id) &&
+               sizeof(((nodus_witness_prepared_sig_t *)0)->voter_id) ==
+                   sizeof(((nodus_t3_cert_entry_t *)0)->voter_id),
+               "VIEW_OK store voter_id must match the wire voter_id");
+_Static_assert(offsetof(nodus_witness_prepared_sig_t, signature) ==
+                   offsetof(nodus_t3_cert_entry_t, signature) &&
+               sizeof(((nodus_witness_prepared_sig_t *)0)->signature) ==
+                   sizeof(((nodus_t3_cert_entry_t *)0)->signature),
+               "VIEW_OK store signature must match the wire signature");
+_Static_assert(DNAC_MAX_ACTIVE_VALIDATORS <= NODUS_T3_MAX_WITNESSES,
+               "a full VIEW_OK statement set must fit the wire bundle");
+
+/* Rate limits on the catch-up pair, in time_ms() milliseconds. Both are
+ * LIVENESS-ONLY: they decide when a message is SENT, never whether a
+ * received proof is believed, so no consensus decision rides on them.
+ *
+ * 1000 is the same interval the bootstrap w_chain_q limiter uses
+ * (nodus_witness_bootstrap.c, NODUS_W_BOOTSTRAP_CHAIN_Q_MIN_INTERVAL_MS)
+ * and time_ms() has ONE-SECOND granularity (time_ms above), so this is
+ * "at most one per second boundary" — the finest limit expressible on
+ * this clock. The response limit matters more than the request limit: an
+ * answer carries f+1 signatures (~14 KB at n = 7, ~200 KB at n = 128) and
+ * costs a Dilithium sign, so it is the amplification-worthy half. */
+#define NODUS_W_VIEWOK_REQ_MIN_INTERVAL_MS  1000ULL
+#define NODUS_W_VIEWOK_RSP_MIN_INTERVAL_MS  1000ULL
+
+static void bft_viewok_set_anchor(nodus_witness_view_ok_set_t *s,
+                                    uint64_t height, uint32_t view,
+                                    const uint8_t set_hash[64]) {
+    memset(s, 0, sizeof(*s));
+    s->active = true;
+    s->height = height;
+    s->view   = view;
+    memcpy(s->set_hash, set_hash, 64);
+}
+
+/* Slot holding `voter_id`, or -1 — bft_vc_find_voter's discipline
+ * applied to the statement set. */
+static int bft_viewok_find_voter(const nodus_witness_view_ok_set_t *s,
+                                   const uint8_t *voter_id) {
+    for (uint32_t i = 0; i < s->n_entries; i++) {
+        if (memcmp(s->entries[i].voter_id, voter_id,
+                   NODUS_T3_WITNESS_ID_LEN) == 0)
+            return (int)i;
+    }
+    return -1;
+}
+
+/* Record one statement. KEEP-FIRST, not upsert: a voter that already
+ * holds a slot changes nothing.
+ *
+ * The preimage is fully determined by (height, view, set_hash,
+ * voter_id), so a second statement from the same voter for the same
+ * anchor can only be the same claim signed again — there is nothing for
+ * it to say that the first did not. Overwriting would let a member
+ * replace its own valid signature with garbage and pull the verified
+ * count down by one; keeping the first denies it even that.
+ *
+ * @return true iff a NEW voter took a slot. */
+static bool bft_viewok_set_put(nodus_witness_view_ok_set_t *s,
+                                 const uint8_t *voter_id,
+                                 const uint8_t *signature) {
+    if (bft_viewok_find_voter(s, voter_id) >= 0) return false;
+    if (s->n_entries >= DNAC_MAX_ACTIVE_VALIDATORS) return false;
+    uint32_t slot = s->n_entries++;
+    memcpy(s->entries[slot].voter_id, voter_id, NODUS_T3_WITNESS_ID_LEN);
+    memcpy(s->entries[slot].signature, signature, NODUS_SIG_BYTES);
+    return true;
+}
+
+/* The identified peer connection for `witness_id`, or NULL. */
+static struct nodus_tcp_conn *bft_peer_conn(const nodus_witness_t *w,
+                                              const uint8_t *witness_id) {
+    for (int i = 0; i < w->peer_count; i++) {
+        if (!w->peers[i].conn || !w->peers[i].identified) continue;
+        if (memcmp(w->peers[i].witness_id, witness_id,
+                   NODUS_T3_WITNESS_ID_LEN) == 0)
+            return w->peers[i].conn;
+    }
+    return NULL;
+}
+
+/* Encode `msg` once and send it to ONE connection.
+ *
+ * nodus_witness_bft_broadcast's body minus the peer loop. NOT a refactor
+ * of that function: broadcast carries a PROPOSE-only timestamp rule
+ * (fill_header_with_ts, so a follower stores the leader's block
+ * timestamp byte-identically), and no unicast verb carries a block
+ * timestamp. Merging the two would put a PROPOSE-shaped branch on a path
+ * that must never take it.
+ *
+ * HEAP, 1 MB, for the reason nodus_tier3.h states at nodus_t3_viewok_t:
+ * an f+1 bundle is ~14 KB at n = 7 but ~200 KB at n = 128, and the
+ * `uint8_t buf[NODUS_T3_MAX_MSG_SIZE]` pattern used by eleven send sites
+ * in this tree is a 128 KB STACK buffer that breaks at n >= 42.
+ * nodus_t3_verify allocates the same NODUS_W_MAX_SYNC_RSP_SIZE, so send
+ * and verify stay symmetric.
+ *
+ * @return 0 if the frame reached the transport, -1 otherwise. */
+static int bft_send_on_conn(nodus_witness_t *w, nodus_t3_msg_t *msg,
+                              struct nodus_tcp_conn *conn) {
+    if (!w || !msg || !conn || !w->server) return -1;
+
+    fill_header(w, &msg->header);
+    const char *method = nodus_t3_type_to_method(msg->type);
+    if (method)
+        snprintf(msg->method, sizeof(msg->method), "%s", method);
+
+    uint8_t *buf = malloc(NODUS_W_MAX_SYNC_RSP_SIZE);
+    if (!buf) {
+        fprintf(stderr, "%s: malloc failed for T3 %s encode\n",
+                LOG_TAG, msg->method);
+        return -1;
+    }
+    size_t len = 0;
+    if (nodus_t3_encode(msg, &w->server->identity.sk, buf,
+                          NODUS_W_MAX_SYNC_RSP_SIZE, &len) != 0) {
+        fprintf(stderr, "%s: failed to encode T3 %s\n", LOG_TAG, msg->method);
+        free(buf);
+        return -1;
+    }
+    int rc = nodus_tcp_send(conn, buf, len);
+    free(buf);
+    return (rc == 0) ? 0 : -1;
+}
+
+/* THE CATCH-UP ASK. Sent when this node refuses a consensus message
+ * because the view it carries is not the view we hold, and only when the
+ * SENDER is the one ahead.
+ *
+ * THE LIMIT IS KEYED ON THE BOUNDED ROSTER SLOT, never on the sender id
+ * from the wire. A T3 sender identity costs one keypair plus one DHT put
+ * (nodus/BUGS.md O15N-L4), so a free-form key would let an attacker mint
+ * identities and grow the table without bound; the roster slot cannot
+ * exceed NODUS_T3_MAX_WITNESSES by construction.
+ *
+ * The stamp is cleared for ALL peers when the view moves
+ * (bft_viewok_apply), so "outstanding" self-releases on success, and it
+ * re-arms after the interval so a lost or refused response cannot wedge
+ * catch-up permanently. */
+static void bft_viewok_send_request(nodus_witness_t *w,
+                                      const uint8_t *peer_id) {
+    if (!w || !peer_id) return;
+
+    int slot = nodus_witness_roster_find(&w->roster, peer_id);
+    if (slot < 0 || slot >= NODUS_T3_MAX_WITNESSES) return;
+
+    uint64_t now  = time_ms();
+    uint64_t last = w->viewok_req_sent_ms[slot];
+    if (last != 0 && now < last + NODUS_W_VIEWOK_REQ_MIN_INTERVAL_MS)
+        return;
+
+    struct nodus_tcp_conn *conn = bft_peer_conn(w, peer_id);
+    if (!conn) return;
+
+    nodus_t3_msg_t q;
+    memset(&q, 0, sizeof(q));
+    q.type   = NODUS_T3_VIEWOK_REQ;
+    q.txn_id = ++w->next_txn_id;
+    /* A HINT, authorising nothing: the responder answers about the view
+     * IT can prove, and we re-verify against the committee governing the
+     * height carried inside its answer (nodus_tier3.h, w_viewok_q). */
+    q.viewok_q.height_hint = nodus_witness_block_height(w) + 1;
+
+    if (bft_send_on_conn(w, &q, conn) == 0) {
+        w->viewok_req_sent_ms[slot] = now;
+        fprintf(stderr, "%s: VIEW_OK — asked roster %d for the proof of the "
+                "view it holds (we are at view %u, hint h=%llu)\n",
+                LOG_TAG, slot, w->current_view,
+                (unsigned long long)q.viewok_q.height_hint);
+    }
+}
+
+/* Defined below, beside the rest of the VIEW_OK machinery. They are
+ * declared here because bft_vc_check_quorum is what makes this node
+ * SPEAK, and it sits above them so that the post-move block it used to
+ * contain can stay in one piece directly underneath it. */
+static int  bft_viewok_emit_own(nodus_witness_t *w, uint64_t height,
+                                  uint32_t view);
+static void bft_viewok_try_accumulator(nodus_witness_t *w);
+/* Also needed above its definition: the PRE-GENESIS BOOTSTRAP path in
+ * bft_vc_check_quorum moves the view itself and then owes the same
+ * post-move work every other move owes. */
+static void bft_view_move_finish(nodus_witness_t *w);
+
+/* O15C-C D1 — view-change quorum check, factored out of handle_viewchg
+ * so initiate_view_change can complete a quorum that its own self-record
+ * finished. Returns 0 always (diagnostic parity with the old inline
+ * tail).
+ *
+ * ⚠ O15N Faz 2C2 — THIS FUNCTION NO LONGER MOVES THE VIEW. Everything it
+ * used to run after `w->current_view = w->view_change_target;` moved,
+ * unchanged and in the same order, into bft_view_move_finish, which now
+ * runs only at the proof site. Reaching quorum makes this node SPEAK —
+ * it signs one VIEW_OK statement and broadcasts it — and nothing else.
+ * Its own statement may be the f+1st if peers reached quorum first, so
+ * the accumulator is tried immediately afterwards. */
 static int bft_vc_check_quorum(nodus_witness_t *w) {
     /* O15H D9 — the quorum is counted AT THE TARGET, over per-voter
      * records. `view_change_count` is now the number of occupied slots
@@ -7931,7 +8246,25 @@ static int bft_vc_check_quorum(nodus_witness_t *w) {
     if (bft_vc_tally(w, w->view_change_target) < w->bft_config.quorum)
         return 0;
 
-    /* View change quorum reached */
+    /* ⚠ LOAD-BEARING LOG LINE — DO NOT CHANGE ITS TEXT, DO NOT MOVE IT.
+     *
+     * `tests/integration/stagef/tests/test_vset_grow_shrink.sh` section G
+     * COUNTS occurrences of this exact string before and after it kills
+     * the epoch leader and requires an INCREASE. It pairs that count with
+     * the persisted `pbft_state.current_view` advancing, and the harness
+     * README states that BOTH are required because the count alone
+     * cannot say where a rotation came from.
+     *
+     * WHAT IT MEANS CHANGED IN O15N Faz 2C2, WHAT IT SAYS DID NOT. It
+     * used to sit immediately above the write that moved the view, so it
+     * read as "the view moved". It now means "THIS NODE OBSERVED A
+     * VIEW-CHANGE QUORUM" — which is exactly what section G needs from
+     * it, because section G's other half (the persisted counter) is what
+     * witnesses the actual move, and that move now happens at
+     * bft_viewok_apply. Deleting this line, rewording it, or folding it
+     * into the proof site would turn section G red on a healthy chain.
+     * The wording "new view" is therefore kept deliberately, even though
+     * the view is not new until the proof arrives. */
     fprintf(stderr, "%s: view change quorum! new view: %u\n",
             LOG_TAG, w->view_change_target);
     O15H_DIAG(w, "vc_quorum", w->my_id, w->round_state.block_height,
@@ -7941,8 +8274,81 @@ static int bft_vc_check_quorum(nodus_witness_t *w) {
               bft_vc_tally(w, w->view_change_target), w->bft_config.quorum,
               "view-change quorum reached");
 
-    w->current_view = w->view_change_target;
+    /* THE HEIGHT THE STATEMENT IS ABOUT is our next block height, NOT
+     * `round_state.block_height`. Every committee gate in this file
+     * resolves at `nodus_witness_block_height(w) + 1`, so signer and
+     * reader measure against the same set; round_state's height is
+     * written on round ENTRY only and an IDLE node's copy is the height
+     * it LAST worked on, which two nodes at the same tip can disagree
+     * about. */
+    int erc = bft_viewok_emit_own(w, nodus_witness_block_height(w) + 1,
+                                  w->view_change_target);
+    if (erc == 1) {
+        /* ── PRE-GENESIS BOOTSTRAP PATH ───────────────────────────────
+         *
+         * No committee exists at this height, so no VIEW_OK statement
+         * can be signed BY ANYONE — not by us and not by a peer. There
+         * is therefore no proof to wait for, and waiting is not caution,
+         * it is a permanent stop: a fresh cluster whose genesis round
+         * lands on a silent leader could never rotate away from it and
+         * the chain would never start.
+         *
+         * So in this window, and ONLY in this window, the node's own
+         * observed quorum moves the view — which is exactly what this
+         * function did before Faz 2C2. It is not a weaker rule than the
+         * tree already applies here: pre-genesis the gossip roster IS
+         * the documented authority, for leader election
+         * (nodus_witness_bft_is_leader's count-0 branch) and for
+         * prepared-certificate voter resolution (verify_prepared_cert's
+         * count-0 branch) alike. The window closes the instant the
+         * genesis block commits and seats a committee, after which
+         * sign_view_ok stops returning 1 and the proof rule is the only
+         * rule.
+         *
+         * The tally that got us here is the same one that got us here
+         * before: `bft_vc_tally(target) >= bft_config.quorum`, over
+         * per-voter records whose senders passed handle_viewchg's own
+         * authorization. */
+        uint32_t from = w->current_view;
+        w->current_view = w->view_change_target;
+        fprintf(stderr,
+                "%s: VIEW_OK — PRE-GENESIS BOOTSTRAP: no committee at "
+                "height %llu, so no statement can exist; moving view "
+                "%u -> %u on our own observed quorum (%u/%u). This path "
+                "is unavailable once genesis seats a committee.\n",
+                LOG_TAG, (unsigned long long)(nodus_witness_block_height(w) + 1),
+                from, w->current_view,
+                bft_vc_tally(w, w->view_change_target),
+                w->bft_config.quorum);
+        bft_view_move_finish(w);
+        return 0;
+    }
+    bft_viewok_try_accumulator(w);
+    return 0;
+}
 
+/* ── The post-move block ─────────────────────────────────────────────
+ *
+ * Everything a COMPLETED view change owes once the counter has actually
+ * moved. Extracted verbatim from bft_vc_check_quorum's tail, in the same
+ * order, so the measured defects its comments record (O15C-D.1's C5
+ * self-bind and O15I P2's deadman arm) keep both their behaviour and
+ * their reasoning.
+ *
+ * PRECONDITION, and the caller establishes it: `w->current_view` is the
+ * view just entered and `w->view_change_target` equals it. The two
+ * consumers below read the target rather than the view —
+ * bft_self_record_view_change stamps our record at
+ * `view_change_target`, and bind_reproposal_from_view_changes FILTERS
+ * records on it (the O15H D9 filter that replaced the array wipe) — so
+ * a proof that moved us to a view we were NOT chasing must re-point the
+ * target first, or we would bind a certificate admitted for a view we
+ * just left. When the proof carries us past our own target we then hold
+ * no records at the new one and the binding CLEARS; that is
+ * bind-or-clear working as designed, and safety at that height is held
+ * by `last_prepared`, which is separate, persisted, and untouched
+ * here. */
+static void bft_view_move_finish(nodus_witness_t *w) {
     /* O15C-D.3 — our OWN evidence must be in our own decision, on THIS
      * path too. A node reaching quorum from peer VIEW_CHANGEs alone had
      * never run initiate_view_change, so its own prepared certificate was
@@ -7954,23 +8360,31 @@ static int bft_vc_check_quorum(nodus_witness_t *w) {
     /* O15C-D.1 — C5 SELF-BIND.
      *
      * The C5 reproposal rule was armed ONLY in handle_newview, behind
-     * `nv->new_view > w->current_view`. But every node advances its own
-     * view right here on reaching quorum, so by the time the leader's
-     * NEW_VIEW arrives the guard is false and the whole accept block —
-     * including the binding — is skipped, silently and with no log.
+     * `nv->new_view > w->current_view`. But every node advanced its own
+     * view the moment it reached quorum, so by the time the leader's
+     * NEW_VIEW arrived the guard was false and the whole accept block —
+     * including the binding — was skipped, silently and with no log.
      * Proven on the live seven-node cluster (O15C-D.1): 7/7 nodes
      * self-advanced, ZERO logged "accepted NEW_VIEW", and the C5 gate in
      * handle_propose never evaluated once. The rule that is supposed to
      * stop a new leader substituting a different value for a prepared
      * one was therefore not being enforced on the common path.
      *
-     * A node reaching quorum holds the same VIEW_CHANGE records the
-     * leader used, so it can and must apply the same selection itself.
+     * ⚠ O15N Faz 2C2 MADE THAT GUARD PERMANENTLY FALSE rather than
+     * merely usually false: NEW_VIEW no longer writes the view at all,
+     * so this self-bind is now the ONLY site that arms C5 on a view
+     * change. The `==` adoption block in handle_newview can still
+     * REPLACE the binding with a better verified certificate; it can no
+     * longer be the thing that first sets it.
+     *
+     * A node entering a view holds the VIEW_CHANGE records for it, so it
+     * can and must apply the same selection the leader applies.
      * BIND-OR-CLEAR: a stale binding from an earlier view would reject
      * every future proposal, so "no prepared cert" explicitly clears —
      * mirroring handle_newview's has_reproposal=false branch. */
     nodus_witness_bft_bind_reproposal_from_view_changes(w);
-    /* H-5: persist new view across restart. */
+    /* H-5: persist the new view across restart. The ONE save that
+     * follows the ONE write, and the caller must not repeat it. */
     nodus_witness_db_save_pbft_state(w);
     w->view_change_in_progress = false;
     w->view_change_voted = false;
@@ -8000,13 +8414,15 @@ static int bft_vc_check_quorum(nodus_witness_t *w) {
      * bytes. Arming it would make it time out against itself and rotate
      * away from a view it was about to serve.
      *
-     * WHY THIS IS SAFE. Initiating a view change is always safe:
-     * this function is the ONLY quorum-backed writer of `current_view`.
-     * The counter has four writers — bft.c:5040 (round entry from a
-     * proposal, UNCONDITIONAL), the assignment above, bft.c:8196 (the
-     * NEW_VIEW accept, `>` guard only) and nodus_witness_db.c:2176
-     * (restore); the fifth, an IDENT adoption, is DELETED (v0.19.24).
-     * P2 adds none of the four. No
+     * WHY THIS IS SAFE. Initiating a view change is always safe: it
+     * asks, it does not decide. As of O15N Faz 2C2 `current_view` has
+     * exactly TWO writers left in the whole tree — bft_viewok_apply in
+     * this file, on a proof nodus_witness_bft_verify_view_proof
+     * accepted, and nodus_witness_db.c's restore of this node's own
+     * previously proven value. The three unproven message-driven writes
+     * this comment used to enumerate (the PROPOSE copy, the quorum
+     * self-advance, the NEW_VIEW `>` accept) are all gone. P2 adds
+     * neither of the two that remain. No
      * vote content changes either: the fire site calls
      * nodus_witness_bft_initiate_view_change, which carries
      * `last_prepared` exactly as it does today.
@@ -8028,8 +8444,9 @@ static int bft_vc_check_quorum(nodus_witness_t *w) {
 
     /* F17 A4 — if we are the committee-derived new leader for the new
      * view, broadcast NEW_VIEW. is_leader already consults the chain
-     * committee for the next block's target; current_view was just
-     * updated above so the modulus picks up the new view. */
+     * committee for the next block's target; the caller wrote
+     * current_view before entering here, so the modulus picks up the new
+     * view. */
     if (i_am_leader) {
         fprintf(stderr, "%s: we are new leader for view %u\n",
                 LOG_TAG, w->current_view);
@@ -8091,7 +8508,7 @@ static int bft_vc_check_quorum(nodus_witness_t *w) {
                         "NEW_VIEW so the view rotates\n", LOG_TAG,
                         (unsigned long long)w->reproposal_height, take,
                         w->bft_config.quorum);
-                return 0;
+                return;
             }
 
             nv.newview.has_reproposal = true;
@@ -8148,7 +8565,439 @@ static int bft_vc_check_quorum(nodus_witness_t *w) {
                 nv.newview.reproposal_tx_hash);
         }
     }
+}
 
+/* Sign, record and broadcast THIS node's VIEW_OK statement for a view
+ * change whose quorum we have just observed.
+ *
+ * @return 0 if a statement is present in the accumulator for this anchor
+ *         (freshly emitted, or already there);
+ *         1 PRE-GENESIS — no committee exists at this height, so no
+ *         statement CAN be signed and the caller must take the bootstrap
+ *         path (move on its own observed quorum);
+ *         -1 if it could not be signed for any other reason. */
+static int bft_viewok_emit_own(nodus_witness_t *w, uint64_t height,
+                                 uint32_t view) {
+    /* THE EXACTLY-ONCE LATCH. Our own slot in the accumulator IS the
+     * latch: bft_vc_check_quorum re-runs on every VIEW_CHANGE that
+     * arrives after quorum, and without this one observation would
+     * become one broadcast per late message — and the f+1 rule would be
+     * counting a node that spoke many times as many nodes if a peer ever
+     * folded duplicates (it does not, but the invariant must hold at the
+     * PRODUCER, which is where the argument is anchored). */
+    if (w->viewok_acc.active && w->viewok_acc.height == height &&
+        w->viewok_acc.view == view &&
+        bft_viewok_find_voter(&w->viewok_acc, w->my_id) >= 0)
+        return 0;
+
+    uint8_t set_hash[64];
+    nodus_sig_t sig;
+    memset(&sig, 0, sizeof(sig));
+    int src = nodus_witness_bft_sign_view_ok(w, height, view, set_hash, &sig);
+    if (src == 1) {
+        /* PRE-GENESIS. Not a fault and not a refusal — the committed
+         * answer is that no committee exists at this height yet, so no
+         * statement CAN be signed by anyone. Hand it up; the caller takes
+         * the bootstrap path. See the count-0 branch of sign_view_ok for
+         * why that is the tree's existing authority in this window and
+         * not a new trust assumption. */
+        return 1;
+    }
+    if (src != 0) {
+        /* FAIL CLOSED, AND LEAVE EVERYTHING STANDING. This is now only
+         * the committee-LOAD FAULT — a node that cannot read its own
+         * committee. That is not a reason to abandon the view change:
+         * view_change_in_progress, view_change_voted, the records and the
+         * phase clock are all untouched, so the escalation ladder keeps
+         * running and a later attempt succeeds once the committee is
+         * readable again. We simply cannot certify what we observed, so
+         * we say nothing. */
+        fprintf(stderr, "%s: VIEW_OK — reached view-change quorum for view "
+                "%u at height %llu but CANNOT SIGN the statement; the view "
+                "does NOT move and the view change stands\n",
+                LOG_TAG, view, (unsigned long long)height);
+        return -1;
+    }
+
+    /* Re-anchor if this is a different (height, view, set_hash) than the
+     * accumulator currently holds. Our own statement is authoritative
+     * about what WE observed, so it wins over whatever was being
+     * collected — a peer bundle cannot displace our own observation. */
+    if (!w->viewok_acc.active || w->viewok_acc.height != height ||
+        w->viewok_acc.view != view ||
+        memcmp(w->viewok_acc.set_hash, set_hash, 64) != 0)
+        bft_viewok_set_anchor(&w->viewok_acc, height, view, set_hash);
+
+    (void)bft_viewok_set_put(&w->viewok_acc, w->my_id, sig.bytes);
+
+    nodus_t3_msg_t m;
+    memset(&m, 0, sizeof(m));
+    m.type = NODUS_T3_VIEWOK;
+    m.txn_id = ++w->next_txn_id;
+    m.viewok.height = height;
+    m.viewok.view = view;
+    memcpy(m.viewok.set_hash, set_hash, 64);
+    m.viewok.n_entries = 1;
+    memcpy(m.viewok.entries[0].voter_id, w->my_id, NODUS_T3_WITNESS_ID_LEN);
+    memcpy(m.viewok.entries[0].signature, sig.bytes, NODUS_SIG_BYTES);
+
+    int sent = nodus_witness_bft_broadcast(w, &m);
+    fprintf(stderr, "%s: VIEW_OK — statement emitted for view %u at height "
+            "%llu (sent=%d); our own view stays %u until f+1 statements "
+            "prove it\n", LOG_TAG, view, (unsigned long long)height, sent,
+            w->current_view);
+    return 0;
+}
+
+/* ⚠ THE ONE WRITER OF `w->current_view` IN THIS FILE.
+ *
+ * Verify one candidate proof and, if it holds for a view STRICTLY above
+ * ours, move — then retain it and run the post-move block.
+ *
+ * @return  0 the view moved
+ *         -1 a VERDICT: the proof does not hold
+ *         -2 a node-local FAULT: this node cannot decide. Stay silent,
+ *            do not blame the peer, do not drop the accumulator.
+ *          1 the proof is INERT here: it is not about a higher view. */
+static int bft_viewok_apply(nodus_witness_t *w, uint64_t height,
+                              uint32_t view, const uint8_t set_hash[64],
+                              const nodus_witness_prepared_sig_t *entries,
+                              uint32_t n_entries) {
+    if (!w || !entries || n_entries == 0) return -1;
+
+    /* REPLAY / ALREADY THERE. A proof for a view at or below the one we
+     * hold changes nothing — it is either the proof that moved us or an
+     * older one, and re-applying either would only re-run the post-move
+     * block against a view we already entered. */
+    if (view <= w->current_view) return 1;
+
+    int rc = nodus_witness_bft_verify_view_proof(
+                 w, height, view, set_hash,
+                 (const nodus_t3_cert_entry_t *)(const void *)entries,
+                 n_entries);
+    if (rc != 0) return rc;
+
+    uint32_t from = w->current_view;
+
+    /* ── THE WRITE ────────────────────────────────────────────────── */
+    w->current_view = view;
+
+    /* RETAIN, so this node can rescue the node behind it. Kept as it
+     * ARRIVED, entry for entry: this is the evidence that convinced us,
+     * and re-filtering it here would need a second membership resolution
+     * whose answer could differ from the verifier's. A reader skips
+     * whatever it does not recognise (verify_view_proof step 3), so
+     * carrying a member's junk costs bytes and nothing else. */
+    bft_viewok_set_anchor(&w->viewok_proof, height, view, set_hash);
+    for (uint32_t i = 0; i < n_entries; i++)
+        (void)bft_viewok_set_put(&w->viewok_proof, entries[i].voter_id,
+                                 entries[i].signature);
+
+    /* The ask self-releases on success: we have what we were asking for,
+     * from whoever answered, so no peer is still owed a question. */
+    memset(w->viewok_req_sent_ms, 0, sizeof(w->viewok_req_sent_ms));
+
+    fprintf(stderr, "%s: VIEW_OK PROOF ACCEPTED — view %u -> %u at height "
+            "%llu on %u statements\n", LOG_TAG, from, view,
+            (unsigned long long)height, n_entries);
+    O15H_DIAG(w, "viewok_move", w->my_id, w->round_state.block_height,
+              w->current_view, w->view_change_target, w->round_state.phase,
+              w->round_state.phase_start_time,
+              time_ms() - w->round_state.phase_start_time, "VIEWOK", 0,
+              n_entries, w->bft_config.quorum,
+              "verified VIEW_OK proof moved the view");
+
+    /* THE POST-MOVE PRECONDITION. bft_view_move_finish's two record
+     * consumers read `view_change_target`, not `current_view`, so a
+     * proof that carried us past the target we were chasing must
+     * re-point it or the C5 selection would scan records admitted for a
+     * view we just left. See that function's header. */
+    w->view_change_target = w->current_view;
+    bft_view_move_finish(w);
+    return 0;
+}
+
+/* Try the ACCUMULATED statements as a proof.
+ *
+ * THE THRESHOLD USED HERE IS A CHEAP LOCAL PRE-GATE, NOT THE AUTHORITY.
+ * bft_vc_join_threshold reads `w->bft_config.quorum` — the quorum in
+ * force on THIS node — while nodus_witness_bft_verify_view_proof derives
+ * the real f+1 from the committee governing the CARRIED height, which is
+ * the only authority. The two agree whenever this node's config was
+ * refreshed at the same height the statements are about, i.e. in every
+ * ordinary case. When they disagree the cost is bounded and one-sided:
+ * too high a pre-gate delays us until the `w_viewok_q` rescue delivers a
+ * complete bundle (which bypasses this gate entirely), too low a
+ * pre-gate spends verifies that verify_view_proof then declines. Neither
+ * can make an unproven view move. */
+static void bft_viewok_try_accumulator(nodus_witness_t *w) {
+    const nodus_witness_view_ok_set_t *a = &w->viewok_acc;
+    if (!a->active) return;
+    if (a->view <= w->current_view) return;
+    if (a->n_entries < bft_vc_join_threshold(w)) return;
+
+    int rc = bft_viewok_apply(w, a->height, a->view, a->set_hash,
+                                a->entries, a->n_entries);
+    if (rc == -2) {
+        /* THE FAULT ANSWER, AND THE ACCUMULATOR SURVIVES IT. -2 means
+         * this node could not read its committee, has none at that
+         * height, or resolved a DIFFERENT set than the one the signers
+         * used. None of those is a statement about the evidence, so
+         * discarding the evidence would be this node punishing peers for
+         * its own blind spot — and it would have to be re-collected from
+         * scratch once the blind spot cleared. */
+        fprintf(stderr, "%s: VIEW_OK — cannot judge the %u accumulated "
+                "statements for view %u at height %llu; keeping them\n",
+                LOG_TAG, a->n_entries, a->view,
+                (unsigned long long)a->height);
+    }
+}
+
+/* Fold one bundle's statements into the accumulator.
+ *
+ * THE ANCHOR RULE, and its one deliberate asymmetry:
+ *  - a STRICTLY HIGHER view RESETS the accumulator. Statements for
+ *    different views are about different decisions and can never
+ *    co-verify, so they must not share a count.
+ *  - a LOWER view is IGNORED.
+ *  - at the SAME view, a differing height or set hash is IGNORED. Both
+ *    are inside the SIGNED preimage, so statements under a different
+ *    anchor could not verify together no matter how many arrive; folding
+ *    them would inflate the count with entries the verifier will drop.
+ *
+ * ⚠ THE RESET IS AN AMPLIFICATION SURFACE, stated rather than hidden. A
+ * committee member can name an unreachably high view, reset this
+ * accumulator, and its lone statement will never reach f+1 — so the
+ * SINGLE-statement path can be starved by one message, repeatable. What
+ * it CANNOT starve is the rescue: handle_viewok verifies a bundle that
+ * already carries f+1 statements DIRECTLY, before and independently of
+ * this fold, so the `w_viewok_q` answer still moves the view within one
+ * round trip. The residual cost is therefore a delay, not a wedge.
+ *
+ * @return true iff at least one NEW voter took a slot. */
+static bool bft_viewok_fold_bundle(nodus_witness_t *w,
+                                     const nodus_t3_viewok_t *v,
+                                     uint32_t n_entries) {
+    nodus_witness_view_ok_set_t *a = &w->viewok_acc;
+
+    if (!a->active || v->view > a->view) {
+        bft_viewok_set_anchor(a, v->height, v->view, v->set_hash);
+    } else if (v->view < a->view) {
+        return false;
+    } else if (v->height != a->height ||
+               memcmp(v->set_hash, a->set_hash, 64) != 0) {
+        return false;
+    }
+
+    bool changed = false;
+    for (uint32_t i = 0; i < n_entries; i++) {
+        if (bft_viewok_set_put(a, v->entries[i].voter_id,
+                                 v->entries[i].signature))
+            changed = true;
+    }
+    return changed;
+}
+
+int nodus_witness_bft_handle_viewok(nodus_witness_t *w,
+                                      const nodus_t3_msg_t *msg) {
+    if (!w || !msg) return -1;
+
+    /* C3 fix: refuse all BFT participation once safety_halt is latched. */
+    if (w->safety_halt) return -1;
+
+    const nodus_t3_viewok_t *v = &msg->viewok;
+    const nodus_t3_header_t *hdr = &msg->header;
+
+    /* Replay check */
+    if (is_replay(hdr->sender_id, hdr->nonce, hdr->timestamp))
+        return -1;
+
+    /* CRITICAL-2: Chain ID validation */
+    if (!verify_chain_id(w, hdr->chain_id))
+        return -1;
+
+    if (v->n_entries == 0) return -1;
+    uint32_t n_entries = v->n_entries;
+    if (n_entries > NODUS_T3_MAX_WITNESSES)
+        n_entries = NODUS_T3_MAX_WITNESSES;
+
+    /* ── THE COMMITTEE GATE, BEFORE ANY SIGNATURE WORK ────────────────
+     *
+     * The SENDER must be a member of the committee governing the height
+     * the bundle CARRIES — not of the transport roster, and not of the
+     * committee at this node's own tip.
+     *
+     * WHY NOT THE ROSTER. A T3 sender identity costs one keypair plus
+     * one DHT put (nodus/BUGS.md O15N-L4). Authorising on the roster
+     * would let an attacker mint identities and make this node burn
+     * Dilithium verifies (~370 µs each, perf harness) on the epoll
+     * thread, one per entry per bundle. The committee is the bound that
+     * turns that from unbounded into "at most the committee".
+     *
+     * WHY AT THE CARRIED HEIGHT. Same reason verify_view_proof resolves
+     * there: authority comes from the evidence, not from where the
+     * reader happens to stand. Using the local tip would make two nodes
+     * at different heights reach different verdicts on identical bytes.
+     *
+     * A LOAD FAULT IS SILENCE. This node cannot name the authority, so
+     * it has no verdict to give: no fold, no blame, no rotation. */
+    int gossip_idx = nodus_witness_roster_find(&w->roster, hdr->sender_id);
+    if (gossip_idx < 0) return -1;
+    {
+        nodus_committee_member_t *committee = NULL;
+        int count = 0;
+        int lc_rc = load_committee_at_height_alloc(w, v->height, &committee,
+                                                     &count);
+        if (lc_rc != 0) {
+            free(committee);
+            fprintf(stderr,
+                    "%s: VIEW_OK — CANNOT ESTABLISH THE COMMITTEE at height "
+                    "%llu (rc=%d%s); staying silent rather than judging the "
+                    "sender on the transport roster\n",
+                    LOG_TAG, (unsigned long long)v->height, lc_rc,
+                    w->db ? "" : ", chain database not open");
+            return -1;
+        }
+        if (count == 0) {
+            /* The COMMITTED pre-genesis answer. There is no set to be a
+             * member of, and no statement about that height could verify
+             * anyway (verify_view_proof answers -2 there). Deliberately
+             * NOT the gossip-roster bootstrap other gates take: this one
+             * exists to bound signature work, and a roster fallback
+             * would remove exactly the bound. */
+            free(committee);
+            fprintf(stderr,
+                    "%s: VIEW_OK — no committee at height %llu; nothing to "
+                    "measure membership against, dropping\n",
+                    LOG_TAG, (unsigned long long)v->height);
+            return -1;
+        }
+        int member = committee_find_pubkey(
+            committee, count, w->roster.witnesses[gossip_idx].pubkey);
+        free(committee);
+        if (member < 0) {
+            fprintf(stderr, "%s: VIEW_OK from non-committee sender "
+                    "(roster %d, height %llu)\n", LOG_TAG, gossip_idx,
+                    (unsigned long long)v->height);
+            return -1;
+        }
+    }
+
+    /* ── A BUNDLE THAT IS ALREADY A PROOF IS JUDGED ON ITS OWN ────────
+     *
+     * This is what makes the `w_viewok_q` rescue immune to an
+     * accumulator a member has poisoned by naming an unreachable view
+     * (see bft_viewok_fold_bundle). It is also why the n_entries >= 2
+     * guard is here and not lower: 2 is the absolute floor
+     * verify_view_proof enforces, and the ordinary broadcast carries
+     * n_entries == 1 — so steady-state VIEW_OK traffic costs ZERO direct
+     * verifies and only a claimed PROOF pays.
+     *
+     * ⚠ RESIDUAL, stated: a Byzantine COMMITTEE member can still send
+     * unsolicited large bundles and make this node verify them. The
+     * committee gate above is the bound on that, and it is the bound
+     * this design chose. */
+    if (n_entries >= 2 && v->view > w->current_view) {
+        int rc = bft_viewok_apply(
+            w, v->height, v->view, v->set_hash,
+            (const nodus_witness_prepared_sig_t *)(const void *)v->entries,
+            n_entries);
+        if (rc == 0) return 0;
+        /* -1 (does not hold on its own), -2 (we cannot judge) and 1
+         * (inert) all fall through: a bundle short of f+1 is exactly
+         * what the accumulator is for. */
+    }
+
+    if (!bft_viewok_fold_bundle(w, v, n_entries))
+        return 0;               /* nothing new — no verify work to do */
+
+    bft_viewok_try_accumulator(w);
+    return 0;
+}
+
+int nodus_witness_bft_handle_viewok_req(nodus_witness_t *w,
+                                          struct nodus_tcp_conn *conn,
+                                          const nodus_t3_msg_t *msg) {
+    if (!w || !msg || !conn) return -1;
+
+    if (w->safety_halt) return -1;
+
+    const nodus_t3_header_t *hdr = &msg->header;
+
+    if (is_replay(hdr->sender_id, hdr->nonce, hdr->timestamp))
+        return -1;
+    if (!verify_chain_id(w, hdr->chain_id))
+        return -1;
+
+    int gossip_idx = nodus_witness_roster_find(&w->roster, hdr->sender_id);
+    if (gossip_idx < 0 || gossip_idx >= NODUS_T3_MAX_WITNESSES) return -1;
+
+    /* NOTHING TO SAY IS A CORRECT ANSWER. A node at view 0 that never
+     * moved holds no proof; so does a node whose last move predates a
+     * restart, because the store is in-memory by design. Answering
+     * nothing is right in both cases — the requester asks the next peer,
+     * and its own escalation ladder keeps running meanwhile. */
+    if (!w->viewok_proof.active || w->viewok_proof.n_entries == 0)
+        return -1;
+
+    /* The membership gate is the SAME shape as the one on the bundle
+     * path, resolved at the height the ANSWER is about: only a member of
+     * the committee that governs the proof may be handed the proof. The
+     * request's height_hint is not consulted — it authorises nothing. */
+    {
+        nodus_committee_member_t *committee = NULL;
+        int count = 0;
+        int lc_rc = load_committee_at_height_alloc(
+            w, w->viewok_proof.height, &committee, &count);
+        if (lc_rc != 0 || count == 0) {
+            free(committee);
+            return -1;
+        }
+        int member = committee_find_pubkey(
+            committee, count, w->roster.witnesses[gossip_idx].pubkey);
+        free(committee);
+        if (member < 0) {
+            fprintf(stderr, "%s: w_viewok_q from non-committee sender "
+                    "(roster %d)\n", LOG_TAG, gossip_idx);
+            return -1;
+        }
+    }
+
+    /* PER-ROSTER-SLOT RESPONSE LIMIT. An answer carries f+1 signatures
+     * (~14 KB at n = 7, ~200 KB at n = 128) and costs a Dilithium sign,
+     * so it is the amplification-worthy half of this pair — the same
+     * shape as the bootstrap w_chain_q limiter
+     * (nodus_witness_peer_t.last_chain_q_response_ms). Liveness-only: a
+     * dropped answer is re-asked one second later. */
+    uint64_t now  = time_ms();
+    uint64_t last = w->viewok_rsp_sent_ms[gossip_idx];
+    if (last != 0 && now < last + NODUS_W_VIEWOK_RSP_MIN_INTERVAL_MS)
+        return -1;
+
+    nodus_t3_msg_t m;
+    memset(&m, 0, sizeof(m));
+    m.type = NODUS_T3_VIEWOK;
+    m.txn_id = ++w->next_txn_id;
+    m.viewok.height = w->viewok_proof.height;
+    m.viewok.view = w->viewok_proof.view;
+    memcpy(m.viewok.set_hash, w->viewok_proof.set_hash, 64);
+    uint32_t take = w->viewok_proof.n_entries;
+    if (take > NODUS_T3_MAX_WITNESSES) take = NODUS_T3_MAX_WITNESSES;
+    m.viewok.n_entries = take;
+    for (uint32_t i = 0; i < take; i++) {
+        memcpy(m.viewok.entries[i].voter_id,
+               w->viewok_proof.entries[i].voter_id,
+               NODUS_T3_WITNESS_ID_LEN);
+        memcpy(m.viewok.entries[i].signature,
+               w->viewok_proof.entries[i].signature, NODUS_SIG_BYTES);
+    }
+
+    if (bft_send_on_conn(w, &m, conn) != 0) return -1;
+    w->viewok_rsp_sent_ms[gossip_idx] = now;
+    fprintf(stderr, "%s: VIEW_OK — answered roster %d with the retained "
+            "proof of view %u at height %llu (%u statements)\n",
+            LOG_TAG, gossip_idx, m.viewok.view,
+            (unsigned long long)m.viewok.height, take);
     return 0;
 }
 
@@ -8165,15 +9014,19 @@ int nodus_witness_bft_handle_newview(nodus_witness_t *w,
     /* O15M — A REPLAY CHECK BELONGS HERE AND IS NOT SAFE TO ADD NAIVELY.
      * MEASURED, then REVERTED. Read this before trying again.
      *
-     * THE GAP IS REAL. The other four consensus handlers call is_replay
-     * (handle_propose :4880, handle_vote :5477, handle_commit :6536,
-     * handle_viewchg :7379). This one does not, and it WRITES
-     * `w->current_view` (:8196) and persists it. A captured NEW_VIEW
-     * frame stays validly signed forever, so re-sending it at a chosen
-     * moment against a chosen subset of nodes moves their view up while
-     * others stay put — and `current_view` decides leader election.
-     * Today that is masked by handle_propose copying the view back DOWN
-     * unconditionally (:5040), which is the write O15M set out to close.
+     * THE GAP IS REAL, BUT O15N Faz 2C2 REMOVED WHAT MADE IT COST
+     * ANYTHING. The other four consensus handlers call is_replay
+     * (handle_propose, handle_vote, handle_commit, handle_viewchg). This
+     * one still does not — and it USED to write `w->current_view` and
+     * persist it, so a captured NEW_VIEW frame, validly signed forever,
+     * could be re-sent at a chosen moment against a chosen subset to
+     * move their view while others stayed put. That write is now gone:
+     * this handler's remaining effects are the C5 adoption at `==` (a
+     * cert it VERIFIES, and idempotent — re-adopting the same one
+     * changes nothing) and the P2 disarm at `==` (which the paragraph at
+     * that site argues is safe to replay precisely because it disarms
+     * rather than re-arms). The masking write in handle_propose is gone
+     * with it.
      *
      * WHY THE OBVIOUS FIX IS WRONG. Adding
      * `if (is_replay(hdr->sender_id, hdr->nonce, hdr->timestamp))
@@ -8345,13 +9198,20 @@ int nodus_witness_bft_handle_newview(nodus_witness_t *w,
 
     /* ── O15C-D.3 — ADOPTION AT new_view == current_view ─────────────
      *
-     * A node that self-advanced on its own view-change quorum has
-     * current_view already equal to nv->new_view, so the `>` guard below
-     * makes the whole accept block a silent no-op — which is precisely
-     * how a follower ended up enforcing a binding derived from its own
-     * frozen subset while the leader proposed a different, equally valid
-     * one. The certificate is now VERIFIED (above), so we can converge on
-     * it rather than on an accident of delivery.
+     * A node that reached the new view on its own evidence has
+     * current_view already equal to nv->new_view, so a `>` guard makes
+     * an accept block a silent no-op — which is precisely how a follower
+     * ended up enforcing a binding derived from its own frozen subset
+     * while the leader proposed a different, equally valid one. The
+     * certificate is now VERIFIED (above), so we can converge on it
+     * rather than on an accident of delivery.
+     *
+     * ⚠ O15N Faz 2C2 — `==` IS NOW THE ONLY CASE THAT DOES ANYTHING.
+     * NEW_VIEW no longer writes the view (see the refusal at the bottom
+     * of this function), so this block is where the whole C5 adoption
+     * rule lives. It can still REPLACE a binding with a better verified
+     * certificate; the first binding is now always set by
+     * bft_view_move_finish at the proof site.
      *
      * Adopt iff the verified cert OUTRANKS our own binding under the D.2
      * canonical order (height, view, tx_hash). If ours strictly outranks
@@ -8391,35 +9251,40 @@ int nodus_witness_bft_handle_newview(nodus_witness_t *w,
 
     /* ── O15I P2 — THE DEADMAN RULE ON THE *COMMON* PATH ───────────────
      *
-     * The accept block below is guarded on `nv->new_view >
-     * w->current_view`, and O15C-D.1 measured that this guard is FALSE
-     * on the ordinary path: every node advances its own view the moment
-     * it reaches view-change quorum (:7703), so by the time the leader's
-     * NEW_VIEW arrives new_view == current_view and the whole accept
-     * block is a silent no-op (7/7 nodes self-advanced, ZERO logged
-     * "accepted NEW_VIEW" — see the comment at :7713-7730). Putting the
-     * P2 disarm ONLY in that block would therefore mean it never runs
-     * where it matters: a self-advanced follower, armed at :7784, would
-     * receive the live leader's has_reproposal=false NEW_VIEW, never
-     * disarm, and on a quiet chain (empty mempool → no PROPOSE is due)
-     * fire after one window → rotate → arm again → idle view churn on a
-     * cluster whose leader is perfectly healthy. So the rule is applied
-     * HERE, at `==`, as well as in the accept block below.
+     * O15C-D.1 measured that a `>`-guarded accept block is a silent
+     * no-op on the ordinary path: every node reaches the new view on its
+     * own evidence before the leader's NEW_VIEW arrives, so new_view ==
+     * current_view (7/7 nodes advanced, ZERO logged "accepted
+     * NEW_VIEW"). Putting the P2 disarm ONLY in such a block would
+     * therefore mean it never runs where it matters: a follower armed by
+     * bft_view_move_finish would receive the live leader's
+     * has_reproposal=false NEW_VIEW, never disarm, and on a quiet chain
+     * (empty mempool → no PROPOSE is due) fire after one window →
+     * rotate → arm again → idle view churn on a cluster whose leader is
+     * perfectly healthy. So the rule is applied HERE, at `==`.
      *
      * has_reproposal == FALSE → DISARM. The leader has proven liveness
      * by producing a NEW_VIEW, and it owes no bound PROPOSE. A stall
      * with nothing pending is a demand-driven stall, which is a
      * different mechanism's problem, not this deadman's.
      *
-     * has_reproposal == TRUE → DELIBERATELY UNTOUCHED. We armed at
-     * :6933 with a full window against exactly this leader, and the
-     * MANDATORY re-proposal is what that window is for. Re-arming here
-     * would be worse than a no-op: this handler has no replay guard, so
-     * a peer replaying one NEW_VIEW frame per window could postpone the
-     * deadman indefinitely — a liveness attack costing one stored
-     * message. (At `>` below, re-arming IS correct: that path is a
-     * genuine view advance, and it is the transition that first sets the
-     * binding.)
+     * has_reproposal == TRUE → DELIBERATELY UNTOUCHED. We armed with a
+     * full window against exactly this leader, and the MANDATORY
+     * re-proposal is what that window is for. Re-arming here would be
+     * worse than a no-op: this handler has no replay guard, so a peer
+     * replaying one NEW_VIEW frame per window could postpone the deadman
+     * indefinitely — a liveness attack costing one stored message.
+     *
+     * ⚠ O15N Faz 2C2 — THE `>` HALF OF THIS RULE IS GONE WITH ITS BLOCK,
+     * AND ITS RE-ARM IS NOT CARRIED OVER HERE. That re-arm was correct
+     * only because `>` was a genuine view ADVANCE and the transition
+     * that first set the binding; at `==` neither is true, and adding it
+     * would hand a replayer the postponement the paragraph above
+     * refuses. The same reasoning deletes rather than moves the `>`
+     * block's other side effects: its `view_change_in_progress = false`
+     * would silently abandon a view change we are running for a HIGHER
+     * target, and its round_state reset to IDLE would let a replayed
+     * NEW_VIEW kill a live round.
      *
      * Placed after every validation above has passed, so an unverifiable
      * or non-leader NEW_VIEW can never move our timer. */
@@ -8432,60 +9297,36 @@ int nodus_witness_bft_handle_newview(nodus_witness_t *w,
         w->awaiting_propose_deadline_ms = 0;
     }
 
-    /* Accept new view if higher than current */
+    /* ── O15N Faz 2C2 — A NEW_VIEW DOES NOT MOVE THE COUNTER ──────────
+     *
+     * WHAT WAS HERE. `if (nv->new_view > w->current_view) {
+     * w->current_view = nv->new_view; ... }` — a view ADVANCE on a `>`
+     * guard and one signature. That is one node deciding this node's
+     * leader election. This handler also has no replay guard and cannot
+     * safely be given one (see the measured O15M note at the top of this
+     * function), so a captured NEW_VIEW frame stays validly signed
+     * forever and could be re-sent at a chosen moment against a chosen
+     * subset. Until now the damage was masked by handle_propose copying
+     * the view back DOWN unconditionally — a second unproven write
+     * covering for the first.
+     *
+     * WHAT NEW_VIEW STILL DOES, unchanged: it carries the C5 reproposal
+     * certificate, and the adoption block above applies it at `==`. That
+     * was always its safety-relevant job; moving the counter was not.
+     *
+     * A HIGHER new_view now means WE ARE BEHIND, so we ask its sender
+     * for the proof. The sender passed the committee + expected-leader
+     * checks above before we get here (O15N round 1, K-6: asking before
+     * those checks would let any roster member drive a victim into
+     * asking instead of participating). A LOWER new_view means the
+     * SENDER is behind; it can teach us nothing and it will ask us when
+     * it refuses our traffic. */
     if (nv->new_view > w->current_view) {
-        w->current_view = nv->new_view;
-        /* H-5: persist new view across restart. */
-        nodus_witness_db_save_pbft_state(w);
-        w->view_change_in_progress = false;
-        round_state_free_batch(&w->round_state);
-        w->round_state.phase = NODUS_W_PHASE_IDLE;
-
-        /* C5 — bind first PROPOSE under new view to the reproposal
-         * tx_hash (if any). Cleared when that PROPOSE arrives and
-         * passes the check in handle_propose. */
-        /* ── O15I P2 — the same rule as at `==` above, on the genuine
-         * view-ADVANCE path. A node reaching here accepts a NEW_VIEW
-         * from someone else, and the sender had to be the expected
-         * leader for nv->new_view (validated at :8022) — so by
-         * construction WE are not that leader and the "leader must send,
-         * not wait" exclusion cannot be violated by arming here.
-         *
-         *  - has_reproposal TRUE → RE-ARM with a full window. The line
-         *    below sets reproposal_required, and handle_propose then
-         *    REFUSES every proposal at this height that does not match
-         *    the binding (:4564-4575). The binding is released only by a
-         *    matching PROPOSE or by the chain reaching its height
-         *    (nodus_witness.c:1141-1152) — and in a halt the chain
-         *    reaches nothing. So a leader that dies after sending
-         *    NEW_VIEW wedges this node silently and permanently. The
-         *    bound PROPOSE is MANDATORY work; this is the window it has
-         *    to appear in.
-         *  - has_reproposal FALSE → DISARM. Nothing is pending and the
-         *    leader has proven liveness. */
-        if (nv->has_reproposal) {
-            w->reproposal_required = true;
-            w->reproposal_height = nv->reproposal_height;
-            memcpy(w->reproposal_tx_hash, nv->reproposal_tx_hash,
-                   NODUS_T3_TX_HASH_LEN);
-            w->awaiting_propose_deadline_ms =
-                time_ms() + w->bft_config.round_timeout_ms;
-        } else {
-            w->reproposal_required = false;
-            w->awaiting_propose_deadline_ms = 0;
-        }
-
-        fprintf(stderr, "%s: accepted NEW_VIEW %u from leader %d%s\n",
-                LOG_TAG, nv->new_view, sender_cm,
-                nv->has_reproposal ? " (reproposal bound)" : "");
-        O15H_DIAG(w, "newview_accept", hdr->sender_id,
-                  w->round_state.block_height, w->current_view,
-                  w->view_change_target, w->round_state.phase,
-                  w->round_state.phase_start_time,
-                  time_ms() - w->round_state.phase_start_time, "NEWVIEW", 0,
-                  0, w->bft_config.quorum,
-                  nv->has_reproposal ? "NEW_VIEW accepted (bound)"
-                                     : "NEW_VIEW accepted (free)");
+        fprintf(stderr, "%s: NEW_VIEW %u from leader %d is above our view "
+                "%u — the counter moves only on a verified VIEW_OK proof; "
+                "asking for it\n", LOG_TAG, nv->new_view, sender_cm,
+                w->current_view);
+        bft_viewok_send_request(w, hdr->sender_id);
     }
 
     return 0;
@@ -8661,10 +9502,18 @@ bool nodus_witness_bft_verify_prepared_cert(nodus_witness_t *w,
 /* ════════════════════════════════════════════════════════════════════
  * O15N Faz 2B — VIEW_OK: producing and verifying view AUTHORITY
  *
- * PRIMITIVES ONLY. Nothing in this block is called from any handler,
- * tick or commit path, and nothing here reads or writes w->current_view,
- * w->view_change_* or any round state. Wiring them — and changing when
- * the view counter may move — is a separate slice.
+ * PURE PRIMITIVES. Neither function reads or writes w->current_view,
+ * w->view_change_* or any round state; both take everything they judge
+ * as an argument, and both are decided by the committee governing the
+ * height they are given.
+ *
+ * ⚠ THEY ARE NO LONGER INERT. Faz 2C2 WIRED THEM: sign_view_ok is called
+ * from bft_vc_check_quorum when this node's own tally reaches quorum,
+ * and verify_view_proof is called from bft_viewok_apply, which is the
+ * ONE site in this file that assigns to w->current_view. Read the Faz
+ * 2C2 banner above bft_vc_check_quorum before changing either
+ * function's semantics — the f+1 rule below now decides when a live
+ * cluster rotates its leader.
  * ════════════════════════════════════════════════════════════════════ */
 
 int nodus_witness_bft_sign_view_ok(nodus_witness_t *w,
@@ -8695,19 +9544,40 @@ int nodus_witness_bft_sign_view_ok(nodus_witness_t *w,
     }
     if (c_count == 0) {
         /* rc 0 with count 0 is a COMMITTED answer — pre-genesis, no
-         * committee at this height. verify_prepared_cert treats that as
-         * the documented gossip-roster bootstrap, but this statement
-         * cannot: its whole content is a set hash, and a set hash over an
-         * EMPTY set is not a statement about anything. Refusing here is
-         * also what keeps compute_committee_set_hash from ever having to
-         * invent a value for count 0. */
+         * committee at this height. A set hash over an EMPTY set is not a
+         * statement about anything, so this still refuses to SIGN, and
+         * compute_committee_set_hash never has to invent a value for
+         * count 0.
+         *
+         * ⚠ BUT IT IS ITS OWN ANSWER, NOT A FAULT — RETURN 1, NOT -1.
+         *
+         * O15N Faz 2C2 made the verified proof the ONLY writer of
+         * current_view. Combined with a bare -1 here that LOCKED a
+         * pre-genesis chain: no committee exists until the genesis block
+         * commits, so no node could sign, so no proof could exist, so the
+         * view could never move — and a fresh cluster whose genesis round
+         * landed on a silent leader could never rotate away from it. The
+         * chain would simply never start. Two shipped unit tests said so
+         * out loud (test_bft_liveness, test_witness_newview_convergence),
+         * and the Genesis Protocol harness builds exactly that state on
+         * every run.
+         *
+         * The caller answers 1 by taking the PRE-GENESIS BOOTSTRAP path:
+         * it moves the view on its own observed quorum, which is what
+         * this code did before Faz 2C2. That is not a new trust
+         * assumption — pre-genesis the gossip roster IS the documented
+         * authority in this tree, for leader election
+         * (nodus_witness_bft_is_leader) and for prepared-certificate
+         * voter resolution (verify_prepared_cert) alike. This applies it
+         * to the third path in the same window, and the window closes the
+         * instant the genesis block commits and seats a committee. */
         free(committee);
         fprintf(stderr,
                 "%s: VIEW_OK — no committee at height %llu (view=%u, "
-                "pre-genesis); a set hash over an empty set is not a "
-                "statement, refusing to sign\n",
+                "pre-genesis); cannot sign a set hash over an empty set, "
+                "falling back to the documented bootstrap authority\n",
                 LOG_TAG, (unsigned long long)height, view);
-        return -1;
+        return 1;
     }
 
     uint8_t set_hash[64];
@@ -9732,13 +10602,15 @@ void nodus_witness_bft_check_timeout(nodus_witness_t *w) {
      *    broadcast messages, and dropping local round state does not
      *    unsay one. A later PROPOSE builds a fresh round from scratch
      *    (:4620-4645), which overwrites every field cleared here.
-     *  - `current_view` is NOT touched. It is written at exactly four
-     *    places — bft.c:5040 (round entry from a proposal), bft.c:7703
-     *    (view-change quorum), bft.c:8196 (NEW_VIEW accept) and
-     *    nodus_witness_db.c:2176 (restore); the IDENT adoption that was
-     *    the fifth is DELETED (v0.19.24) — and none of them is here.
-     *    Leader election therefore sees no change, so this can neither
-     *    invent a leader nor skip one.
+     *  - `current_view` is NOT touched. As of O15N Faz 2C2 it is written
+     *    in exactly TWO places — bft_viewok_apply in this file, on a
+     *    verified VIEW_OK proof, and nodus_witness_db.c's restore of this
+     *    node's own previously proven value. The three unproven writes
+     *    that used to sit beside them (the PROPOSE copy, the view-change
+     *    quorum self-advance and the NEW_VIEW `>` accept) are gone, and
+     *    the IDENT adoption was DELETED in v0.19.24. Neither survivor is
+     *    here. Leader election therefore sees no change, so this can
+     *    neither invent a leader nor skip one.
      *  - `view_changes[]`, `last_prepared`, `reproposal_*` and
      *    `retained_batch` are deliberately left alone: each has its own
      *    lifecycle (last_prepared is cleared by commit at :8419 and by
@@ -9809,8 +10681,10 @@ void nodus_witness_bft_check_timeout(nodus_witness_t *w) {
          *
          * THE is_leader RE-CHECK is not redundant with the arm-side one:
          * `current_view` can still move under an IDLE node between the
-         * two — the remaining way is handle_newview's accept (:8196);
-         * the IDENT adoption this used to cite was DELETED in v0.19.24.
+         * two — as of O15N Faz 2C2 the remaining way is a verified
+         * VIEW_OK proof arriving in bft_viewok_apply (handle_newview's
+         * accept, which this used to cite, no longer writes the view;
+         * the IDENT adoption was DELETED in v0.19.24).
          * A node that became the leader in the meantime must SEND rather
          * than rotate away from its own view. Such a node stays armed
          * and harmless: it disarms at its next commit, PROPOSE, or VC.
@@ -9933,12 +10807,14 @@ void nodus_witness_bft_check_timeout(nodus_witness_t *w) {
          * from a round that ended long ago and escalate the target on
          * the next tick, forever.
          *
-         * SAFETY. `current_view` is NOT touched here; only bft.c:7703
-         * moves it on quorum. Its four write sites are bft.c:5040 (round
-         * entry from a proposal), bft.c:7703 (the view-change quorum in
-         * bft_vc_check_quorum), bft.c:8196 (the NEW_VIEW accept) and
-         * nodus_witness_db.c:2176 (restore); the IDENT adoption that was
-         * the fifth is DELETED (v0.19.24) — P3 adds none of them. The
+         * SAFETY. `current_view` is NOT touched here. As of O15N Faz 2C2
+         * it has exactly TWO write sites — bft_viewok_apply in this file,
+         * on a verified VIEW_OK proof, and nodus_witness_db.c's restore
+         * of this node's own previously proven value. The three unproven
+         * message-driven writes this comment used to list (the PROPOSE
+         * copy, the view-change quorum self-advance and the NEW_VIEW
+         * accept) are gone, and the IDENT adoption was DELETED in
+         * v0.19.24. P3 adds neither survivor. The
          * TARGET is the ordinary current_view + 1 that
          * initiate_view_change picks; this path invents no rule.
          *
@@ -10050,8 +10926,10 @@ void nodus_witness_bft_check_timeout(nodus_witness_t *w) {
      *
      * The PBFT-standard behaviour is to retry the view change at the
      * NEXT view, and that is what this does. SAFETY IS UNCHANGED:
-     * `current_view` is advanced in exactly one place, on quorum
-     * (bft_vc_check_quorum), and this path does not touch it. Only the
+     * `current_view` is advanced in exactly one place in this file, on a
+     * verified VIEW_OK proof (bft_viewok_apply — O15N Faz 2C2 moved it
+     * there from bft_vc_check_quorum), and this path does not touch it.
+     * Only the
      * TARGET moves, so leader election, the C5 binding and the NEW_VIEW
      * proof all keep their existing preconditions. Records for the
      * abandoned target are cleared for the same reason handle_viewchg

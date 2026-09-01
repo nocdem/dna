@@ -34,6 +34,7 @@ One node at a time for a rolling deploy; all nodes at once for a stop-all.
 |---|---|
 | Anything that changes **which blocks are valid** (verify/admission rules, fee gates, consensus checks) | **STOP-ALL** |
 | `state_root` format / wire format / DB schema | **STOP-ALL + chain wipe** |
+| Changes to **when the PBFT view counter may move** | **STOP-ALL + `pbft_state` reset, NO chain wipe** — see §2.1 |
 | Logging, metrics, non-consensus tooling | Rolling, one node at a time |
 
 **Why stop-all for validity changes:** during a rolling window the cluster runs mixed
@@ -122,6 +123,119 @@ ls -la "$DATA_DIR/archive/$TS/"     # MUST list .db and, if WAL was active, -wal
 
 **One SSH session per node.** Do not write a 7-node `for` loop — a partial failure
 inside a loop is very hard to reason about afterwards.
+
+---
+
+## 2.1 View-authority cutover (O15N Faz 2C2)
+
+**This is a STOP-ALL deploy with NO chain wipe.** The blocks on disk stay. What
+changes is the RULE for moving `w->current_view`, and one persisted row was
+written under the old rule.
+
+**What changed.** Before this build the PBFT view counter had three
+message-driven writers, none of which needed a proof: a PROPOSE copied the
+leader's claimed view unconditionally (in *either* direction), a NEW_VIEW raised
+it on one signature, and reaching your own view-change quorum set it. After it,
+the counter moves in exactly one place — on a **VIEW_OK proof**: f+1 distinct,
+signature-verified statements for a strictly higher view, judged against the
+committee governing the height the proof carries. A PROPOSE at any other view is
+now REFUSED, in both directions. (Mechanism: `nodus/docs/MEMPOOL_BLOCK_TIME.md`,
+"Who writes `current_view`".)
+
+Two ordered steps. **Do them in this order; the reasons are different.**
+
+### Step 1 — QUIESCE the fleet BEFORE stopping it
+
+No transaction in flight, last block committed, on every node.
+
+**Why, and it is not tidiness.** Step 2 clears the `pbft_state` row, and that row
+holds **two** things: `current_view` and `last_prepared_blob`. `last_prepared` is
+the prepared-value lock — the record of a value this node PREVOTE-quorum'd but
+has not yet committed — and it is what makes a node refuse a conflicting value at
+that height. That refusal is the quorum intersection safety relies on. Clearing
+it on ONE node is harmless (the other holders still refuse). Clearing it on
+**every node at the same moment** removes the protection entirely, and a value
+that reached PREVOTE quorum without committing could then be replaced. Quiescing
+first means no such value exists to lose.
+
+```bash
+# On each node: confirm nothing is in flight and the tip is stable.
+nodus/build/nodus-cli cluster-status <host1:4001> <host2:4001> ...
+# Sample twice, ~30 s apart, with NO client traffic being submitted.
+# Required: every node UP, every node the SAME HEIGHT and SAME STATE_ROOT,
+# and the height IDENTICAL between the two samples.
+```
+
+Do not proceed while heights differ or are still advancing.
+
+### Step 2 — Clear the `pbft_state` row on every node, while it is stopped
+
+**Why.** The `current_view` on disk was written under the OLD rules, where an
+unproven message could move it. Every node restores its own value at startup
+(`nodus_witness_db_load_pbft_state`), and those values need not agree — one node
+may have been pushed up by a PROPOSE or a NEW_VIEW that no proof ever backed.
+With the equality gate now in force, a fleet that wakes split across views does
+not converge on its own: **no node accepts another's proposal at all** until the
+escalation ladder happens to land a majority on the same rung. Starting every
+node at view 0 is byte-identical to a fresh cluster, which is the best-tested
+path in the tree.
+
+Run **after** `systemctl stop nodus` on that node and **before** starting it
+again (step 5 of §2). The database must not be open.
+
+```bash
+# Find the real data directory first — do not assume it (see §1).
+grep -E '"?data_path"?' /etc/nodus.conf || echo "not set — default /var/lib/nodus"
+DATA_DIR=<the path you just confirmed>
+
+systemctl is-active nodus            # MUST print "inactive" before touching the DB
+ls "$DATA_DIR"/witness_*.db          # confirm exactly which file you are about to edit
+DB=<the witness_<chain_id>.db you just listed>
+
+# Show the row BEFORE, so the change is recorded rather than assumed:
+sqlite3 "$DB" "SELECT id, current_view FROM pbft_state;"
+
+sqlite3 "$DB" "DELETE FROM pbft_state WHERE id = 1;"
+
+# Verify: zero rows. load_pbft_state with no row leaves current_view at 0
+# and last_prepared absent, which is the fresh-cluster default.
+sqlite3 "$DB" "SELECT COUNT(*) FROM pbft_state;"      # MUST print 0
+```
+
+`pbft_state` is a singleton table (`id` is always 1) created by the schema-v16
+migration. Deleting the row is not a schema change and does not touch blocks,
+nullifiers, UTXOs or validator snapshots.
+
+**If `sqlite3` is not installed on the node**, install it or stop — do not
+improvise with a partial cluster, and do not start a node whose row you could not
+clear. A single node restoring a stale view is the split this step exists to
+prevent.
+
+### After starting: what "correct" looks like
+
+Run §3 as usual, and additionally:
+
+```bash
+journalctl -u nodus -n 500 | grep -i "VIEW_OK"
+```
+
+- `VIEW_OK — statement emitted for view N` on a node that reached its own
+  view-change quorum: expected, and it means the node SPOKE without moving.
+- `VIEW_OK PROOF ACCEPTED — view A -> B`: the counter moved on a proof. This is
+  the only line that means a rotation happened.
+- `VIEW_OK — no committee at height H`: **not** expected on a chain that has
+  committed its genesis. If it appears, the node cannot resolve its committee and
+  its view can never move — diagnose before continuing.
+- A quiet, healthy chain prints none of these. Their absence is not a fault.
+
+### The one behaviour this cutover cannot fix
+
+On a chain with **no committee snapshot at all** — a fleet that has not yet
+committed its genesis block — no VIEW_OK statement can be signed, so no proof can
+exist, so the view cannot move. A brand-new cluster whose genesis round lands on
+a silent leader will not rotate away from it. This does not affect an existing
+chain, which has a committee from its genesis onward; it is recorded here because
+it changes how a **fresh** bring-up must be handled.
 
 ---
 

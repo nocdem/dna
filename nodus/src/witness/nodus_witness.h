@@ -379,6 +379,47 @@ typedef struct {
  */
 void nodus_witness_vc_record_clear(nodus_witness_vc_record_t *vc);
 
+/* ── O15N Faz 2C2 — VIEW_OK statement set ────────────────────────── */
+
+/** A set of VIEW_OK statements about ONE (height, view) under ONE
+ * committee set hash.
+ *
+ * Two of these live on the witness and they are NOT interchangeable:
+ *
+ *  - the ACCUMULATOR is what is currently being COLLECTED. It holds at
+ *    most one statement per voter (`bft_vc_find_voter`'s discipline,
+ *    applied to a second array) and it is reset whenever a statement for
+ *    a STRICTLY HIGHER view arrives.
+ *  - the RETAINED PROOF is what already MOVED this node's view. It is
+ *    the answer to a peer's `w_viewok_q`, and without it a node that
+ *    moved could not rescue the node behind it — which is the only
+ *    reason the artifact is kept at all.
+ *
+ * `entries` reuses `nodus_witness_prepared_sig_t` rather than
+ * `nodus_t3_cert_entry_t` because this header deliberately does not
+ * depend on protocol/nodus_tier3.h (see nodus_witness_pending_vote_t's
+ * note above). The two structs are layout-identical and
+ * nodus_witness_bft.c pins that with a _Static_assert before casting one
+ * to the other — the same cast the C5 NEW_VIEW sender already performs.
+ *
+ * SIZE, stated rather than implied: DNAC_MAX_ACTIVE_VALIDATORS (128) ×
+ * sizeof(nodus_witness_prepared_sig_t) (32 + 4627 = 4659) = 596 352 B per
+ * set, so the pair adds ~1.14 MiB to `nodus_witness_t`. That is
+ * acceptable ONLY because the witness is heap-allocated
+ * (nodus_witness_create); it must never become an automatic.
+ *
+ * `active` is the emptiness flag. A zeroed set is INACTIVE, and "view 0
+ * with no entries" is deliberately not overloaded to mean anything —
+ * view 0 is a real view a proof can be about. */
+typedef struct {
+    bool        active;
+    uint64_t    height;
+    uint32_t    view;
+    uint8_t     set_hash[64];
+    uint32_t    n_entries;
+    nodus_witness_prepared_sig_t entries[DNAC_MAX_ACTIVE_VALIDATORS];
+} nodus_witness_view_ok_set_t;
+
 /* ── Witness peer connection ─────────────────────────────────────── */
 
 typedef struct {
@@ -485,6 +526,48 @@ typedef struct nodus_witness {
      * resets to IDLE. In-memory only, never persisted. */
     bool        view_change_voted;
 
+    /* ── O15N Faz 2C2 — THE VIEW AUTHORITY STORE ─────────────────────
+     *
+     * As of this slice `current_view` moves in nodus_witness_bft.c at
+     * EXACTLY ONE site: a VIEW_OK proof for a strictly higher view that
+     * nodus_witness_bft_verify_view_proof returned 0 for. Reaching one's
+     * OWN view-change quorum no longer moves it, a PROPOSE no longer
+     * copies it, and a NEW_VIEW no longer raises it. These three fields
+     * are the state that makes that possible.
+     *
+     * `viewok_acc` — THE ACCUMULATOR. The statements collected so far for
+     * the (height, view, set_hash) currently being gathered, one slot per
+     * voter. A bundle for a strictly HIGHER view resets it; a lower one
+     * is ignored; at the SAME view a bundle whose height or set hash
+     * differs is ignored, because statements signed under a different
+     * committee anchor can never co-verify (the anchor is inside the
+     * signed preimage) and mixing them would corrupt the count.
+     *
+     * `viewok_proof` — THE RETAINED PROOF that moved us to the view we
+     * hold. Answers a peer's `w_viewok_q`. A node that has never moved
+     * holds none, and answering nothing is then the correct answer.
+     *
+     * `viewok_req_sent_ms` / `viewok_rsp_sent_ms` — per-ROSTER-SLOT
+     * rate-limit stamps, in time_ms(). The index is the bounded roster
+     * slot (nodus_witness_roster_find), never a free-form sender id, so
+     * the table cannot be grown by an attacker minting identities: a T3
+     * sender identity costs one keypair plus one DHT put (nodus/BUGS.md
+     * O15N-L4). `_req` bounds how often WE ask a given peer; `_rsp`
+     * bounds how often we ANSWER one, because a response carries f+1
+     * signatures (~14 KB at n = 7) and costs a Dilithium sign. Both are
+     * LIVENESS-ONLY: they decide when a message is sent, never whether a
+     * received proof is believed. 0 = never sent.
+     *
+     * NOT PERSISTED, deliberately — for the reason the P2/P3 deadmen are
+     * not. The proof is re-derivable from the cluster at any time via
+     * `w_viewok_q`, and a restored counter is this node's own previously
+     * proven value (nodus_witness_db.c load_pbft_state), so nothing here
+     * has to survive a restart for the counter to be sound. */
+    nodus_witness_view_ok_set_t viewok_acc;
+    nodus_witness_view_ok_set_t viewok_proof;
+    uint64_t    viewok_req_sent_ms[NODUS_T3_MAX_WITNESSES];
+    uint64_t    viewok_rsp_sent_ms[NODUS_T3_MAX_WITNESSES];
+
     /* O15I P2 — POST-VIEW-CHANGE PROPOSE-WAIT DEADMAN.
      *
      * Absolute time_ms() deadline by which the new leader must have
@@ -554,7 +637,8 @@ typedef struct nodus_witness {
      * NOT part of any signed message, vote, block or state_root. Like
      * P2's deadline it can only ever decide WHEN this node ASKS for a
      * rotation, never WHAT it votes; `current_view` is untouched by the
-     * whole mechanism (only bft.c:7703 moves it on quorum). */
+     * whole mechanism (as of O15N Faz 2C2 only a verified VIEW_OK proof
+     * moves it — nodus_witness_bft.c, bft_viewok_apply). */
     uint64_t    last_seen_tip;
     uint64_t    tip_since_ms;
 
@@ -1234,10 +1318,12 @@ int nodus_witness_pending_forward_expire(nodus_witness_t *witness,
  * duplicates by tx_hash.
  *
  * ── DETERMINISM ───────────────────────────────────────────────────────
- * `current_view` is NOT written here — it has exactly four write sites
- * (nodus_witness_bft.c round entry, the view-change quorum, the NEW_VIEW
- * accept, nodus_witness_db.c restore; the IDENT adoption that was the
- * fifth is DELETED, v0.19.24) and this adds none. Mempool is INPUT, not
+ * `current_view` is NOT written here — as of O15N Faz 2C2 it has exactly
+ * TWO write sites (nodus_witness_bft.c's bft_viewok_apply, on a verified
+ * VIEW_OK proof, and nodus_witness_db.c's restore of this node's own
+ * previously proven value; the round-entry copy, the view-change quorum
+ * self-advance and the NEW_VIEW accept are gone, and the IDENT adoption
+ * was DELETED in v0.19.24) and this adds none. Mempool is INPUT, not
  * consensus state: block content is still chosen by ONE leader and agreed
  * by PREVOTE/PRECOMMIT with an independent state_root recompute, so two
  * nodes holding different pools cannot diverge state. No wire format, no
