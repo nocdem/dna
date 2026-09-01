@@ -106,7 +106,37 @@ extern "C" {
  *  Identical to the shipped witness formula (nodus_witness_bft.c
  *  nodus_witness_bft_config_init) — n=7 yields the legacy quorum 5.
  *  Always derive n from the validator-set snapshot governing the
- *  signed height/epoch, never from a compile-time committee size. */
+ *  signed height/epoch, never from a compile-time committee size.
+ *
+ *  ── IT DOES NOT AGREE WITH nodus_witness_bft_config_init FOR SMALL n,
+ *  AND THAT IS CORRECT. DO NOT RECONCILE THEM.
+ *
+ *  For n below NODUS_T3_MIN_WITNESSES (5) that initialiser writes
+ *  quorum = 0 while this function keeps applying the formula: n=4 gives
+ *  0 there and 3 here. The two answer different questions.
+ *
+ *  THIS function is the pure formula — "for a set of n validators, how
+ *  many must agree" — and it is asked about sets that ALREADY decided
+ *  something: the committee governing a signed height, a historical
+ *  validator-set snapshot, the seat count in a genesis chain_def. Those
+ *  questions have an answer regardless of how large the set is or
+ *  whether any node is currently participating.
+ *
+ *  THAT function additionally decides whether the LOCAL NODE takes part
+ *  at all, and below the minimum the answer is no. Its 0 is not a small
+ *  threshold; it is the sentinel nodus_witness_bft_consensus_active
+ *  reads, and it must stay 0.
+ *
+ *  Making this function return 0 below the minimum would corrupt every
+ *  historical threshold derived from it — a 4-member epoch's committed
+ *  blocks would verify against a threshold of 0, i.e. against nothing.
+ *  Making that one return 3 for n=4 would silently re-enable consensus
+ *  on a cluster too small to be safe. See the reciprocal note at
+ *  nodus_witness_bft_config_init, and the O15O Faz 2 guards it lists:
+ *  because 0 is a sentinel, `x < quorum` is VACUOUS at 0, so every
+ *  threshold comparison against the witness config must handle 0
+ *  explicitly. Comparisons against THIS function's result never need
+ *  that — it returns at least 1 for every n, including 0. */
 static inline uint32_t dna_bft_quorum(uint32_t n) {
     return (2u * n) / 3u + 1u;
 }

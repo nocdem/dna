@@ -725,6 +725,34 @@ void nodus_witness_sync_check(nodus_witness_t *w) {
                 disagree_count++;
         }
 
+        /* ── O15O Faz 2 — A VACUOUS QUORUM MUST NOT DELETE THE CHAIN ──
+         *
+         * nodus_witness_bft_config_init writes quorum = 0 below
+         * NODUS_T3_MIN_WITNESSES ("consensus disabled"), and the test
+         * below is `disagree_count >= quorum`. At 0 that is true for
+         * EVERY value, including 1 — so the gate collapses from "a BFT
+         * quorum of peers says we are forked" to the bare plurality in
+         * its second clause. The consequence is not a declined vote: it
+         * is drop_witness_db() three lines down, i.e. this node deletes
+         * its committed chain because ONE peer at our height reported a
+         * different checksum. A single Byzantine peer, or one honest peer
+         * mid-reorg, is enough while our roster is below five.
+         *
+         * Refusing here is the `else` branch's exit — "no fork, nothing
+         * to sync" — reached one step earlier and for a stated reason.
+         * Nothing is lost by it: a node that cannot name a quorum cannot
+         * establish a fork either, and the next tick re-evaluates once
+         * the config has been refreshed from a committee. */
+        if (w->bft_config.quorum == 0) {
+            fprintf(stderr, "%s: vacuous quorum — refusing to drop the chain "
+                    "database on a quorum of 0 (%d disagree, %d agree at "
+                    "height %llu). A fork cannot be established by a node "
+                    "whose consensus config is disabled\n",
+                    LOG_TAG, disagree_count, agree_count,
+                    (unsigned long long)local_height);
+            return;
+        }
+
         /* If majority disagrees, we're on wrong fork */
         if (disagree_count >= (int)w->bft_config.quorum && disagree_count > agree_count) {
             fprintf(stderr, "%s: UTXO checksum quorum disagrees (%d vs %d) — "
@@ -1347,6 +1375,38 @@ int nodus_witness_sync_handle_rsp(nodus_witness_t *w,
                 w->sync_state.syncing = false;
                 return -1;
             }
+        }
+
+        /* ── O15O Faz 2 — ARM 4 CAN BE 0, AND 0 ACCEPTS ANYTHING ───────
+         *
+         * Arm (4) above seeds sync_quorum from w->bft_config.quorum,
+         * which nodus_witness_bft_config_init sets to 0 for a roster
+         * below NODUS_T3_MIN_WITNESSES. If arms (1)-(3) then all decline
+         * — no snapshot row, no recomputable historical committee, no
+         * parseable chain_def in the genesis TX — that 0 is what reaches
+         * nodus_witness_verify_sync_certs, whose only threshold test is
+         * `verified < quorum` (nodus_witness_cert.c). At 0 the block is
+         * accepted with ZERO verified certificates, and the very next
+         * step replays it into this node's chain.
+         *
+         * NARROW BUT REAL. O15G confined this whole (1)-(4) leg to
+         * db_height == 1, so it is the genesis replay only — but genesis
+         * is exactly where a joining node has the fewest defences and
+         * where a forged validator set does the most damage.
+         *
+         * The refusal is this leg's own shape — release the sync latch,
+         * return -1 — so the SYNC_MIN_INTERVAL_SEC rate limit in
+         * nodus_witness_sync_check is the backoff and the next tick
+         * retries once an authority exists. */
+        if (sync_quorum == 0) {
+            fprintf(stderr, "%s: vacuous quorum — refusing to verify block "
+                    "%llu certificates against a threshold of 0 (%u certs "
+                    "offered). No validator-set snapshot, no historical "
+                    "committee and no genesis chain_def resolved, and the "
+                    "roster fallback has consensus disabled\n",
+                    LOG_TAG, (unsigned long long)db_height, rsp->cert_count);
+            w->sync_state.syncing = false;
+            return -1;
         }
 
         int verified = nodus_witness_verify_sync_certs(local_block_hash,

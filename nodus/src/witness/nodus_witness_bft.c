@@ -779,7 +779,36 @@ void nodus_witness_bft_config_init(nodus_witness_bft_config_t *cfg,
 
     cfg->n_witnesses = n;
 
-    /* Below minimum — consensus disabled */
+    /* Below minimum — consensus disabled.
+     *
+     * ── THIS DISAGREES WITH dna_bft_quorum, AND THE DISAGREEMENT IS
+     * DELIBERATE. DO NOT "FIX" IT.
+     *
+     * For the same n the two functions answer differently — n=4 gives
+     * dna_bft_quorum(4) = 3 (shared/dnac/ledger_ids.h:110) and 0 here —
+     * because they are answering different questions. dna_bft_quorum is
+     * the PURE FORMULA: "if a set of n validators were to decide
+     * something, how many would that take". This function additionally
+     * decides WHETHER THIS NODE PARTICIPATES AT ALL, and below
+     * NODUS_T3_MIN_WITNESSES the answer is no. The 0 it writes is not a
+     * threshold that happens to be small; it is the sentinel
+     * nodus_witness_bft_consensus_active reads, and it MUST stay 0.
+     *
+     * Reconciling them — making this return dna_bft_quorum(n) for small n
+     * — would silently re-enable consensus on a cluster too small to be
+     * safe. Making dna_bft_quorum return 0 below the minimum would corrupt
+     * every historical-committee threshold derived from it, which is
+     * asked about a set that HAS decided, not about this node.
+     *
+     * ⚠ THE 0 IS A SENTINEL, SO EVERY `<` AGAINST IT IS VACUOUS. That is
+     * the O15O Faz 2 defect class: `x < 0` is false for all x, so an
+     * unguarded threshold test at quorum 0 SUCCEEDS on any input. Six
+     * sites in this tree had to be guarded for that reason — the vote
+     * quorum and the view-change quorum in this file, the prepared-cert
+     * threshold, the NEW_VIEW reproposal sig count, and both the
+     * fork-detection and sync-cert thresholds in nodus_witness_sync.c.
+     * Any NEW comparison against bft_config.quorum must handle 0
+     * explicitly; the sentinel will not do it for you. */
     if (n < NODUS_T3_MIN_WITNESSES) {
         cfg->f_tolerance = 0;
         cfg->quorum = 0;
@@ -6337,6 +6366,43 @@ static int bft_handle_vote_inner(nodus_witness_t *w, uint8_t msg_type,
      * chain_def). Lagging witnesses catch up via block sync. */
     uint32_t required = w->bft_config.quorum;
 
+    /* ── O15O Faz 2 — A QUORUM OF 0 IS NOT A THRESHOLD, IT IS THE ABSENCE
+     * OF ONE.
+     *
+     * nodus_witness_bft_config_init writes quorum = 0 for any n below
+     * NODUS_T3_MIN_WITNESSES and calls that branch "consensus disabled"
+     * (this file, the config section). The value is ALSO the sentinel
+     * nodus_witness_bft_consensus_active reads, so it must stay 0 — but
+     * every `<` against it is then vacuously false, and this comparison
+     * is the worst place in the file for that to be true.
+     *
+     * WHAT IT COSTS HERE. `*approve_count` is at least 1 by the time we
+     * reach this line (the APPROVE increment sits directly above), so
+     * `1 < 0` is false and the FIRST vote to arrive declares quorum. The
+     * phase then advances — and the O15L Faz 3 comment above explains why
+     * that is irreversible: every later vote of the same type is dropped
+     * by the expected_phase gate, there is no "wait for more" state to
+     * return to. A node would carry a round into PRECOMMIT, and from
+     * there into COMMIT, having observed ONE approval. That is a safety
+     * break on the ordinary block path, not a liveness quirk.
+     *
+     * The refusal is `return 0` — the SAME exit the insufficient-approve
+     * case below takes, and for the same reason: the vote itself was
+     * well-formed and is already recorded, so it is not a protocol
+     * violation (-1). What we decline is to CONCLUDE anything from it.
+     * A node whose quorum is 0 is one that does not participate; leaving
+     * the round where it is, is exactly that. */
+    if (required == 0) {
+        fprintf(stderr, "%s: %s vacuous quorum — refusing to advance the "
+                "phase on a quorum of 0 (approve=%d/%d, height=%llu). "
+                "Consensus is disabled on this node until bft_config is "
+                "refreshed from a committee\n", LOG_TAG,
+                msg_type == NODUS_T3_PREVOTE ? "PREVOTE" : "PRECOMMIT",
+                *approve_count, *vote_count,
+                (unsigned long long)w->round_state.block_height);
+        return 0;
+    }
+
     if ((uint32_t)*approve_count < required)
         return 0;  /* Not yet quorum */
 
@@ -8430,6 +8496,45 @@ static int bft_vc_check_quorum(nodus_witness_t *w) {
     if (!w->view_change_in_progress ||
         w->view_change_target <= w->current_view)
         return 0;
+
+    /* ── O15O Faz 2 — WE DO NOT CERTIFY A QUORUM WE CANNOT COUNT ───────
+     *
+     * The tally test below is `< bft_config.quorum`, and
+     * nodus_witness_bft_config_init writes quorum = 0 below
+     * NODUS_T3_MIN_WITNESSES. At 0 the test is false for every tally, so
+     * ANY tally at the target — one VIEW_CHANGE, our own self-record —
+     * "reaches quorum".
+     *
+     * What that produces is not a local mistake but a signed artifact.
+     * The next step is bft_viewok_emit_own, which signs a VIEW_OK
+     * statement and broadcasts it, and a VIEW_OK means precisely "I
+     * observed a quorum asking for this view". A node would put its
+     * signature on that claim having observed one message — and peers
+     * COUNT those statements toward the f+1 that moves their own view
+     * (bft_viewok_apply). The same is true of the pre-genesis bootstrap
+     * branch below, which moves this node's view on the strength of the
+     * very tally being tested here.
+     *
+     * `return 0` matches this function's stated contract ("returns 0
+     * always") and the fail-closed shape the height-fault arm below
+     * already uses: the refusal is NOT EMITTING, never a changed return
+     * code, because the callers at the handle_viewchg and
+     * initiate_view_change tails propagate it as their own verdict.
+     *
+     * ⚠ THE TEXT BELOW DELIBERATELY AVOIDS "view change quorum! new
+     * view:" — stagef test_vset_grow_shrink.sh section G counts that
+     * exact string and an extra occurrence here would be a false
+     * rotation in its ledger. */
+    if (w->bft_config.quorum == 0) {
+        fprintf(stderr, "%s: vacuous quorum — refusing to declare a "
+                "view-change quorum for target %u on a quorum of 0 (%u "
+                "voters at that target). A node with consensus disabled "
+                "does not certify that anyone else reached one\n",
+                LOG_TAG, w->view_change_target,
+                bft_vc_tally(w, w->view_change_target));
+        return 0;
+    }
+
     if (bft_vc_tally(w, w->view_change_target) < w->bft_config.quorum)
         return 0;
 
@@ -8724,6 +8829,38 @@ static void bft_view_move_finish(nodus_witness_t *w) {
                 take = (have > w->bft_config.quorum) ? w->bft_config.quorum
                                                      : have;
             }
+            /* ── O15O Faz 2 — AT QUORUM 0 THE GUARD BELOW NEVER FIRES ──
+             *
+             * `take` is clamped to the quorum, so a quorum of 0 makes it
+             * 0 too, and `0 < 0` is false: the check that exists to stop
+             * us claiming a reproposal we cannot prove is bypassed by the
+             * one value that means we cannot prove anything. This node
+             * would broadcast a NEW_VIEW carrying has_reproposal = true,
+             * a tx_hash, and reproposal_n_sigs = 0 — a binding every
+             * follower is asked to honour with ZERO attached signatures.
+             *
+             * REACHABLE EVEN WITH THE SITE-5 GUARD IN PLACE. That guard
+             * stops bft_vc_check_quorum from moving us here, but this
+             * function's OTHER caller is bft_viewok_apply, on a VERIFIED
+             * VIEW_OK proof — the recovery ladder, which is deliberately
+             * not gated on the local config (it derives its own threshold
+             * from the committee at the carried height). So a node with
+             * quorum 0 can still be carried into a new view by a proof,
+             * find itself leader, and reach this line.
+             *
+             * Same refusal as below, deliberately: bare `return`, no
+             * NEW_VIEW, and the view rotates. */
+            if (w->bft_config.quorum == 0) {
+                fprintf(stderr, "%s: C5 vacuous quorum — refusing to claim a "
+                        "reproposal on a quorum of 0 (height=%llu, %u sigs "
+                        "available) — sending NO NEW_VIEW so the view "
+                        "rotates\n", LOG_TAG,
+                        (unsigned long long)w->reproposal_height,
+                        (src >= 0 && w->view_changes[src].prepared.sigs)
+                            ? w->view_changes[src].prepared.n_sigs : 0u);
+                return;
+            }
+
             if (take < w->bft_config.quorum) {
                 fprintf(stderr, "%s: C5 cannot prove the reproposal "
                         "(height=%llu, sigs=%u < quorum=%u) — sending NO "
@@ -9734,6 +9871,48 @@ bool nodus_witness_bft_verify_prepared_cert(nodus_witness_t *w,
     uint32_t required = have_committee
                           ? dna_bft_quorum((uint32_t)c_count)
                           : w->bft_config.quorum;
+
+    /* ── O15O Faz 2 — THE PRE-GENESIS ARM MUST NOT ANSWER 0 ────────────
+     *
+     * The `have_committee == false` arm above is the documented F17 A5
+     * pre-genesis authority and STAYS. What cannot stay is the value it
+     * can carry: nodus_witness_bft_config_init writes quorum = 0 for a
+     * roster below NODUS_T3_MIN_WITNESSES, and `verified >= 0` is true
+     * for every input — including `verified == 0`, i.e. a certificate in
+     * which not one signature checked out. This function's own contract
+     * promises the opposite ("Anything short of that ... is false, i.e.
+     * fail-closed"), and its own comment eight lines up records why the
+     * roster is the wrong thing to trust unaided: entries are admitted
+     * from self-signed DHT nodus:pk registrations with no committee check
+     * (nodus_witness_peer.c).
+     *
+     * SO IT REFUSES, IT DOES NOT FLOOR. A floor of 2 — the shape
+     * bft_vc_join_threshold uses — is right for THAT function, which is
+     * deciding when this node may SPEAK, and where the floor is an
+     * anti-amplification backstop. Here the question is whether a
+     * CERTIFICATE carries authority, and lowering the bar to 2 would turn
+     * "an attacker needs quorum-many self-registered keys" into "an
+     * attacker needs two". Fail-closed is `false`.
+     *
+     * NOTHING LEGITIMATE LOSES BY IT. A fresh cluster only reaches the
+     * genesis round at all by passing the C-1 seed gate
+     * (nodus_witness_bootstrap.c, seed_count >= DNAC_COMMITTEE_SIZE), so
+     * a real pre-genesis node's roster is at or above the committee size
+     * and its quorum is well clear of 0. And the caller's response to
+     * `false` is to drop the reproposal and rotate the view, which is the
+     * safe outcome the C5 path is built around. */
+    if (required == 0) {
+        free(committee);
+        fprintf(stderr,
+                "%s: C5 vacuous quorum — refusing the certificate at height "
+                "%llu (view=%u, %u/%u signatures verified) rather than "
+                "accepting it against a threshold of 0. The pre-genesis "
+                "roster fallback has no quorum to offer: consensus is "
+                "disabled on this node\n",
+                LOG_TAG, (unsigned long long)height, view, verified, n_sigs);
+        return false;
+    }
+
     bool ok = (verified >= required);
     if (!ok) {
         fprintf(stderr, "%s: C5 prepared cert REJECTED (height=%llu view=%u "

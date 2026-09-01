@@ -380,7 +380,35 @@ int nodus_witness_bootstrap_start(nodus_witness_t *w) {
     if (tip >= 1) {
         /* HAVE_CHAIN branch (C2 — unchanged in C3). */
         w->bootstrap_state = (int)NODUS_W_BOOTSTRAP_HAVE_CHAIN;
-        (void)refresh_bft_config_from_committee(w, (uint64_t)tip);
+
+        /* ── O15O Faz 2 — THE DISCARDED RETURN CODE THAT PRODUCED THE
+         * VACUOUS QUORUM.
+         *
+         * refresh_bft_config_from_committee documents its contract at its
+         * definition (nodus_witness_bft.c): -1 is a DB error and
+         * "w->bft_config left untouched, caller should fail-closed". This
+         * site used to discard it with a (void). At startup bft_config is
+         * whatever calloc left — all zeros — so a failed committee load
+         * here handed the rest of the process a quorum of 0, which is the
+         * state every guard added in this phase exists to refuse. A node
+         * would come up believing it had a chain, with no threshold to
+         * measure anything against.
+         *
+         * The exit is the one this function already takes for the other
+         * DB fault it knows about — the `tip < 0` return -1 a few lines
+         * up. A witness whose committee cannot be read has not started;
+         * saying so lets the caller retry or halt instead of running on
+         * with a config it never wrote. */
+        if (refresh_bft_config_from_committee(w, (uint64_t)tip) != 0) {
+            fprintf(stderr,
+                    "WITNESS-BOOTSTRAP: bft_config refresh FAILED at tip "
+                    "%llu — the committee could not be read, so this node "
+                    "has no quorum to measure anything against. Refusing to "
+                    "complete bootstrap rather than running with a quorum "
+                    "of 0\n",
+                    (unsigned long long)tip);
+            return -1;
+        }
 
         uint32_t rto = w->bft_config.round_timeout_ms;
         if (rto == 0) rto = NODUS_W_BOOTSTRAP_DEFAULT_ROUND_TIMEOUT_MS;
@@ -1040,7 +1068,41 @@ void nodus_witness_bootstrap_handle_genesis_rsp(nodus_witness_t *w,
      * recovery path retries cleanly.
      */
 
-    (void)refresh_bft_config_from_committee(w, 1);
+    /* ── O15O Faz 2 — THE SAME DISCARDED RETURN CODE, IN A void FUNCTION.
+     *
+     * Same contract as the site in nodus_witness_bootstrap_start: -1
+     * means the committee could not be read and "w->bft_config left
+     * untouched, caller should fail-closed". This function is void, so
+     * there is no -1 to return and no caller to hand a verdict to. What
+     * it can do is say so loudly and CHANGE NOTHING — which is what the
+     * untouched config already does.
+     *
+     * ⚠ LEAVING bft_config ALONE IS ONLY FAIL-CLOSED BECAUSE OF THIS
+     * PHASE'S SITE GUARDS, AND WOULD NOT HAVE BEEN BEFORE THEM. Until
+     * O15O Faz 2 a quorum of 0 was the most PERMISSIVE value in the tree,
+     * not the most restrictive: every `<` against it was vacuously false,
+     * so it declared vote quorum on the first vote, verified any prepared
+     * certificate, certified a view-change quorum on one message and
+     * accepted a synced block with no valid certs. With the six guards
+     * added in this phase, 0 now genuinely means "I do not participate" —
+     * so the untouched config IS the fail-closed outcome, and this
+     * function may return without further action. If any of those guards
+     * is ever removed, this site becomes a silent hole again and must be
+     * revisited with it.
+     *
+     * The ordinary case is NOT an error and is not logged as one: the
+     * committee table is legitimately empty here (comment 4 in the block
+     * above), so the call takes the F17 A5 pre-genesis roster fallback
+     * and returns 0. Only a genuine DB fault reaches the branch below. */
+    if (refresh_bft_config_from_committee(w, 1) != 0) {
+        fprintf(stderr,
+                "WITNESS-BOOTSTRAP: bft_config refresh FAILED at height 1 "
+                "— the committee could not be read. bft_config is left "
+                "UNTOUCHED (quorum stays %u); with the O15O Faz 2 threshold "
+                "guards that means this node does not participate in "
+                "consensus until a later refresh succeeds\n",
+                w->bft_config.quorum);
+    }
 
     uint32_t rto = w->bft_config.round_timeout_ms;
     if (rto == 0) rto = NODUS_W_BOOTSTRAP_DEFAULT_ROUND_TIMEOUT_MS;

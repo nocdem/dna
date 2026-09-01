@@ -1971,6 +1971,37 @@ register_witness_test(test_witness_block_height_checked)
 # environment; leaves nothing behind (mkdtemp dirs are removed).
 register_witness_test(test_witness_height_fault_consumers)
 
+# ── O15O Faz 2 — a quorum of 0 is refused, not obeyed ────────────────
+# Bug ref: nodus/BUGS.md (the view-change threshold row), widened by grep
+# from one site to six. nodus_witness_bft_config_init writes quorum = 0
+# below NODUS_T3_MIN_WITNESSES and calls it "consensus disabled" — but
+# every threshold is written `x < quorum`, and `x < 0` is FALSE for every
+# x, so the value meaning "I take no part" was the most PERMISSIVE input
+# the consensus code could receive: vote quorum on the first vote, a
+# view-change quorum on one message, any prepared certificate, a NEW_VIEW
+# claiming a reproposal with zero signatures, and a synced block with no
+# valid certs.
+# Each site gets a PAIR on one fixture — healthy (the threshold is
+# reached only AT its real value) and vacuum (quorum forced to 0, the
+# site refuses). The healthy leg is the anti-vacuity control, and several
+# sections carry TWO of them (below the threshold and at it) so a guard
+# that refused unconditionally cannot pass. §4 reaches quorum 0 through
+# the PRODUCTION initialiser (a four-member roster), not a hand-set
+# field.
+# ⚠ FIVE OF SIX SITES ARE COVERED. §2 (the fork-detection DB drop in
+# nodus_witness_sync_check) cannot be driven from a fixture: find_peer
+# only returns peers STRICTLY ahead of local_height, so the same-height
+# branch guarding drop_witness_db is not entered. It is not provably
+# dead — a TRANSIENT fault between the function's two fail-open height
+# reads would open it — but no fixture can inject one there. The test
+# prints an explicit UNREACHED notice rather than hand-calling an inlined
+# branch; do not count that row as tested.
+# Needs no compile flag and no environment; every fixture chain stays in
+# epoch 0, so the assertions hold at DNAC_EPOCH_LENGTH 720 and 15 alike.
+# Leaves nothing behind (mkdtemp dirs are removed, capture files are
+# unlinked at creation).
+register_witness_test(test_witness_quorum_vacuum)
+
 # ── PR 1 (2026-05-03) — bft_config follower-path refresh (C-3 fix) ───
 # See docs/plans/2026-05-03-witness-auto-bootstrap-design.md
 register_witness_test(test_witness_bft_config_refresh)
