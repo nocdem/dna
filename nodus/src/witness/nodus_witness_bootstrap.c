@@ -16,6 +16,11 @@
 #include "witness/nodus_witness_bootstrap.h"
 #include "witness/nodus_witness.h"
 #include "witness/nodus_witness_bft.h"
+/* O16A / D8 — nodus_witness_v2_tip_height. No include cycle: this header
+ * pulls only witness/nodus_witness.h (already included above) and
+ * witness/nodus_witness_mempool.h, which itself includes only
+ * nodus/nodus_types.h + <stdbool.h> + <stdint.h>. */
+#include "witness/nodus_witness_v2_produce.h"
 #include "protocol/nodus_tier3.h"
 #include "transport/nodus_tcp.h"
 #include "server/nodus_server.h"
@@ -365,6 +370,92 @@ int nodus_witness_bootstrap_start(nodus_witness_t *w) {
     w->bootstrap_next_attempt_ms = 0;
     w->bootstrap_round_deadline_ms = 0;
 
+    /* ── O16A / D8 — A NODE HOLDING A V2 CHAIN MUST NOT BE TOLD IT HAS
+     * NONE.
+     *
+     * WHAT WAS WRONG. This function decided "do I already have a chain"
+     * from chain_tip_height alone, and that query reads the LEGACY
+     * `blocks` table (:146-160). That table has exactly one writer,
+     * nodus_witness_block_add (nodus_witness_db.c:532, insert at :594),
+     * whose only production caller is the legacy finalize_block
+     * (nodus_witness_bft.c:4717) — a path a pure-V2 successor never
+     * executes. The V2 lane writes `v2_blocks` instead
+     * (nodus_witness_v2_apply.c:880, :3648) and the pure-V2 builder never
+     * touches `blocks` (zero matches for it in
+     * nodus_witness_v2_gen.c). The table nevertheless EXISTS and is empty,
+     * because every open applies the full base schema (WITNESS_DB_SCHEMA,
+     * nodus_witness.c:63, exec at :516) — so the query succeeds and
+     * answers 0. It is not a fault the `tip < 0` path would have caught;
+     * it is a confident wrong answer.
+     *
+     * WHAT IT COST. A node holding a derived V2 chain opens it, so
+     * w->db != NULL, the legacy tip reads 0, `tip >= 1` is false and the
+     * node entered the LEGACY DISCOVER state machine. From there exactly
+     * two things could happen and both are fatal: the C-1 seed-count gate
+     * below refuses and nodus_witness_init returns -1, or
+     * nodus_witness_bootstrap_tick (:689) — driven unconditionally from
+     * the witness tick (nodus_witness.c:1866) — burns
+     * NODUS_W_BOOTSTRAP_MAX_ATTEMPTS rounds and calls exit(2) (:798-805).
+     * Two victims: every node that DERIVES the chain, and every joined
+     * node on RESTART (its w->db is non-NULL, so the D5 fresh-joiner
+     * guard below does not fire — correctly, by its own condition). Not a
+     * fork: every node computes the same wrong answer from the same rule.
+     * A liveness wall — nobody stays up. Pre-existing, never observed
+     * because V2 has never been deployed.
+     *
+     * WHY THE DISCRIMINATOR IS THE FLAG AND NOT A HEIGHT. V2 genesis sits
+     * at global_height = 0 (nodus_witness_v2_apply.c:613, :626;
+     * nodus_witness_v2_sync2.c:535), so MAX(global_height) on a freshly
+     * derived chain is 0 — indistinguishable from an empty table by ANY
+     * tip test. Swapping the tip source alone would not have fixed this.
+     * w->v2_successor is the only fact that separates the two, and it is
+     * derived from COMMITTED state at database open
+     * (nodus_witness.c:794, inside the scan reached from
+     * nodus_witness_scan_chain_db at :871). The ordering holds: the scan
+     * runs at nodus_witness.c:1380 and this function at :1443.
+     *
+     * `w->db != NULL &&` is not redundant. (db == NULL, v2_successor ==
+     * true) is a state this codebase explicitly considers
+     * (nodus/tests/test_v2_restart_gate.c:1021-1023); such a node holds
+     * no chain and must keep falling through to the D5 guard and
+     * DISCOVER exactly as before.
+     *
+     * FAIL CLOSED ON A FAULT. A V2 tip that cannot be read takes the same
+     * exit the legacy `tip < 0` fault takes — return -1. A node that
+     * cannot read its own tip has not started, and must never fall
+     * through to DISCOVER on the strength of a failed query.
+     *
+     * THE BRANCH BODY IS REUSED, NOT COPIED, so the O15O Faz 2
+     * refresh_bft_config_from_committee return check below covers this
+     * path too — and it is safe to call at tip 0 on a V2 chain. The
+     * epoch-0 validator-set snapshot is seeded during the derivation
+     * itself (nodus_witness_v2_gen.c:1445 ->
+     * nodus_witness_vset_commit_genesis, nodus_witness_vset.c:698-700),
+     * so nodus_committee_get_for_block serves it from the snapshot
+     * (nodus_witness_committee.c:601-629) and never reaches
+     * nodus_committee_compute_for_epoch, whose lookback at e_start = 0
+     * would underflow (:228). On a zero count the function falls back to
+     * the gossip roster rather than failing (nodus_witness_bft.c:1085-1091).
+     *
+     * THE OTHER TWO LEGACY TIP READERS ARE DELIBERATELY LEFT ALONE.
+     * handle_chain_q (:832, tip read at :892) and handle_genesis_req
+     * (:1032, tip read at :1041) both return early on `tip < 1` — the
+     * design doc names them at their PRE-O16A lines :735 and :884, which
+     * this change and round 1's D5 block have since shifted. On a V2
+     * node the early return means declining to serve
+     * LEGACY discovery, which is CORRECT — a V2 joiner adopts through the
+     * pinned genesis bundle (nodus_witness_v2_join.c), not through
+     * w_chain_q, and that protocol cannot carry a V2 chain anyway. They
+     * were considered here and must not be "fixed" into advertising.
+     *
+     * The V1 path is untouched: w->v2_successor is false on every legacy
+     * node, so v2_chain is false, the else branch below is the same
+     * chain_tip_height read it always was, and the entry condition is the
+     * same `tip >= 1`. This path needs no w->server, so the NULL-server
+     * unit fixtures (test_witness_bootstrap_state_machine.c:119-121)
+     * reach it unchanged. */
+    const bool v2_chain = (w->db != NULL && w->v2_successor);
+
     /* w->db == NULL means witness_scan_chain_db found no witness_*.db
      * file — fresh node, no genesis yet. Treat as tip == 0 so we
      * fall through to the DISCOVER branch instead of the DB-error
@@ -372,12 +463,21 @@ int nodus_witness_bootstrap_start(nodus_witness_t *w) {
     int64_t tip;
     if (w->db == NULL) {
         tip = 0;
+    } else if (v2_chain) {
+        /* The value originates in sqlite3_column_int64
+         * (nodus_witness_v2_produce.c:54), so the round trip
+         * int64 -> uint64 -> int64 -> uint64 (into
+         * refresh_bft_config_from_committee below) is lossless for every
+         * height a chain can hold. */
+        uint64_t v2_tip = 0;
+        if (nodus_witness_v2_tip_height(w, &v2_tip) != 0) return -1;
+        tip = (int64_t)v2_tip;
     } else {
         tip = chain_tip_height(w->db);
         if (tip < 0) return -1;
     }
 
-    if (tip >= 1) {
+    if (v2_chain || tip >= 1) {
         /* HAVE_CHAIN branch (C2 — unchanged in C3). */
         w->bootstrap_state = (int)NODUS_W_BOOTSTRAP_HAVE_CHAIN;
 
@@ -426,6 +526,63 @@ int nodus_witness_bootstrap_start(nodus_witness_t *w) {
     }
 
     /* DISCOVER branch (C3) — chain DB is empty. */
+
+    /* ── O16A / D5 — A PINNED V2 JOINER DOES NOT ENTER LEGACY DISCOVERY
+     *
+     * Two mechanisms could produce a chain on this node and only one of
+     * them may. nodus_witness_v2_join_arm has ALREADY armed the bundle
+     * puller a few lines earlier in the same init (nodus_witness.c:1409)
+     * under EXACTLY this condition — an operator-supplied genesis pin
+     * and no chain database (nodus_witness_v2_join.c:69-84) — so the
+     * condition is written the same way here on purpose: the two must
+     * arm and disarm together, or a future edit to one leaves the other
+     * running.
+     *
+     * What happens without this. The joiner pulls a genesis bundle and
+     * adopts it only when the re-derived BlockID equals the local pin
+     * (nodus_witness_v2_join.c:150-161) — a LOCAL trust anchor. Legacy
+     * DISCOVER decides the same question by a 2f+1 vote of peers over
+     * (chain_id, chain_def_hash). Running both means the node has two
+     * different answers to "which chain am I on", one anchored locally
+     * and one supplied by the network, and DISCOVER's is the one an A2
+     * adversary can influence. It is also plainly wrong on a V2 fleet:
+     * DISCOVER's FETCH_GENESIS path fetches a LEGACY chain_def + genesis
+     * anchor, which a pure-V2 chain does not have.
+     *
+     * The node is left in NODUS_W_BOOTSTRAP_INIT, and that is the honest
+     * state rather than a convenient one — INIT means "the bootstrap
+     * state machine is not driving this node", which is the fact. Every
+     * reader was checked: bootstrap_tick returns immediately
+     * (:691, state != DISCOVER), handle_chain_r (:948) and
+     * handle_genesis_rsp (:1091) return immediately, and handle_chain_q
+     * cannot advertise because chain_tip_height(NULL) is -1 and the
+     * `tip < 1` guard (:892-893) drops the response before any signing.
+     * Nothing outside this module reads bootstrap_state at all (the only
+     * other writer is nodus_witness.c:1163) and no consensus path gates
+     * on DONE, so INIT costs the node nothing it would otherwise have.
+     *
+     * ⚠ ONE DOCUMENTED DIVERGENCE: nodus_witness_bootstrap.h:68-69 says
+     * a 0 return means "state moved out of INIT". On this one path it
+     * does not, and the header cannot be corrected in this change.
+     *
+     * The C-1 gate below is untouched and unreachable from here — a V1
+     * node never sets has_v2_genesis_pin, so it takes the same branch it
+     * always did, seed-count check included. The `w->server` NULL test
+     * is not defensive dressing: the existing tests construct a witness
+     * with no server (test_witness_bootstrap_state_machine.c:119-121)
+     * and the line below already guards for it the same way. */
+    if (w->db == NULL && w->server &&
+        w->server->config.has_v2_genesis_pin) {
+        fprintf(stderr,
+                "WITNESS-BOOTSTRAP: state=INIT branch=V2_PINNED_JOINER — "
+                "an operator genesis pin is set and this node holds no "
+                "chain, so the legacy DISCOVER state machine is NOT "
+                "started. The pinned-genesis joiner is the only thing "
+                "that may produce a chain here; it adopts a peer bundle "
+                "only when the re-derived genesis BlockID equals the "
+                "local pin.\n");
+        return 0;
+    }
 
     /* C-1 startup gate: bootstrap quorum strength MUST equal BFT
      * quorum strength. Operator's seed_nodes config has to include at

@@ -46,8 +46,51 @@ After `w_genesis_rsp` is validated, the bootstrap path creates the chain DB and 
 | H-5 | Persist `current_view + last_prepared` across restart so VIEW_CHANGE post-restart carries highest prepared cert | `pbft_state` table (singleton CHECK id=1) loaded in `nodus_witness_init` |
 | H-7 | Atomic chain DB write via sentinel `.bootstrap_in_progress` + cleanup on next boot if found stale (orphan recovery) | `nodus_witness_check_orphan_bootstrap_sentinel` in `nodus_witness_init` |
 | H-9 | Mixed-version cluster fail-fast: if any peer reports an older `nodus_version` during DISCOVER, exit(3) | `nodus_witness_bootstrap_any_peer_older` in `bootstrap_tick` |
-| H-10 | Partial-wipe XOR boot gate: 3 SQLite DBs (nodus.db, channels.db, witness_*.db) MUST be all-present or all-absent post-genesis | `nodus_server_check_partial_wipe` in `nodus_server_init` (marker-gated; sentinel-takes-precedence) |
+| H-10 | Partial-wipe XOR boot gate: 3 SQLite DBs (nodus.db, channels.db, witness_*.db) MUST be all-present or all-absent post-genesis | `nodus_server_check_partial_wipe` in `nodus_server_init` (marker-gated; sentinel-takes-precedence). The marker is WRITTEN at the bottom of `nodus_server_init` — see below |
 | H-11 | systemd `RestartSec` envelope handles outer recovery after 10 attempts exhausted (exit 2) | `bootstrap_tick` |
+
+### Who writes `.witness_db_seen`, and why it is not written where a chain is born (v0.19.37)
+
+**The marker does not mean "a chain exists". It means "this node has
+completed a normal boot with a chain".** That is the only state in which the
+invariant H-10 enforces is true, because the gate demands all three databases
+and only a completed `nodus_server_init` has created all three.
+
+It is therefore written in exactly one place: the success path at the bottom of
+`nodus_server_init`, guarded on `srv->witness->db` being non-NULL. A pre-genesis
+node has no chain, has not crossed the boundary the marker records, and must not
+arm the gate — arming it would turn its legitimate two-of-three state into a
+refusal.
+
+**The Ledger V2 genesis builder deliberately does NOT write it.**
+`nodus_witness_v2_gen_derive` runs as an offline one-shot (`nodus-server
+--derive-v2-genesis`) that creates exactly ONE of the three databases, and the
+H-10 gate runs BEFORE `nodus_storage_open` and `nodus_channel_store_open` create
+the other two. A marker written there fails the gate on the very next start of a
+freshly provisioned host — and the refusal's printed remedy is to delete all
+three databases, i.e. the chain the ceremony just produced. An earlier cut of
+that work did exactly this; `nodus/tests/test_v2_gen_config.c` §6 now pins the
+inverse (after a derivation, the marker must be ABSENT).
+
+The `nodus_server_init` placement also covers two cases the builder-side write
+structurally could not:
+
+- **A crashed or failed ceremony self-heals** — the write runs on every
+  successful start, so a node that lost the marker gets it back on the next boot
+  rather than needing the operator to notice.
+- **A node that JOINED rather than derived is covered.** The pinned-genesis
+  joiner builds in its own scratch directory (`nodus_witness_v2_join.c`) and
+  `nodus_witness_create_chain_db`'s own marker write lands there and is discarded
+  with it — exactly the same defect, on the other half of the fleet.
+
+Legacy nodes are unaffected: `create_chain_db` still writes the marker at
+genesis, and re-writing an existing file changes nothing.
+
+⚠ **Coverage, stated honestly.** `tests/test_server_partial_wipe_xor.c` covers
+the GATE. `tests/test_v2_gen_config.c` §6 covers the builder NOT writing the
+marker. **The `nodus_server_init` write itself is covered by neither** —
+reaching it needs a server that binds sockets. That is uncovered ground, not
+passing ground.
 
 ## Cabal protections (C-* numbering)
 

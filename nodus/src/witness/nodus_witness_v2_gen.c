@@ -37,7 +37,21 @@
 #include "dnac/vset_wire.h"
 
 #include "crypto/hash/qgp_sha3.h"
+#include "crypto/utils/qgp_fingerprint.h"    /* D7 — the payout-key ↔
+                                              * fingerprint derivation,
+                                              * the SAME converter the
+                                              * legacy staking path uses
+                                              * (nodus_witness_bft.c)   */
 #include "crypto/utils/qgp_log.h"
+
+/* O16A / D3 — for NODUS_PARTIAL_WIPE_GENESIS_MARKER only. This is a
+ * MACRO, not a handle: the module still takes no nodus_server_t and no
+ * nodus_witness_t from a caller, so the G1/G2 argument that nothing
+ * network-supplied can reach a derived byte
+ * (nodus_witness_v2_gen.h:362-364) is untouched. The joiner beside this
+ * one includes the same header for the same reason
+ * (nodus_witness_v2_join.c:20). */
+#include "server/nodus_server.h"
 
 #include <sqlite3.h>
 #include <dirent.h>
@@ -184,7 +198,20 @@ static void gen_scratch_clear(const char *dir) {
 
 /* ── the pure-V2 probe ───────────────────────────────────────────────── */
 
-int nodus_witness_v2_gen_is_pure(const char *db_path) {
+/* The probe body. `nodus_witness_v2_gen_is_pure` is the public,
+ * verdict-only face of this; the derivation additionally needs the
+ * SOURCE COMMIT of a chain it found (D4), and reading it a second time
+ * would mean opening the database twice and — worse — deciding the
+ * verdict against one read and the identity against another.
+ *
+ * The three-valued contract is unchanged (1 pure / 0 not ours /
+ * -1 could not tell). `out_commit` is optional and is written ONLY on a
+ * 1; every other return leaves it untouched, so a caller cannot mistake
+ * an unwritten buffer for a chain's identity. It is exactly
+ * NODUS_V2_GEN_SRCCOMMIT_LEN wide because a manifest carrying any other
+ * length is refused below rather than copied out. */
+static int gen_probe_pure(const char *db_path,
+                          uint8_t out_commit[NODUS_V2_GEN_SRCCOMMIT_LEN]) {
     if (!db_path) return -1;
     sqlite3 *db = NULL;
     if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL)
@@ -276,6 +303,28 @@ int nodus_witness_v2_gen_is_pure(const char *db_path) {
                        m.source_tag_len == NODUS_V2_GEN_SOURCE_TAG_LEN &&
                        memcmp(m.source_tag, NODUS_V2_GEN_SOURCE_TAG,
                               NODUS_V2_GEN_SOURCE_TAG_LEN) == 0) ? 1 : 0;
+                /* D4 — carry the identity out with the verdict, from the
+                 * SAME decoded manifest that produced it. A chain this
+                 * builder made always carries a 64-byte source_commit
+                 * (written at the derivation's manifest step); a
+                 * shorter or absent one is a manifest this builder did
+                 * not write, and answering "yes, pure" while being
+                 * unable to say WHICH chain would hand D4 an empty
+                 * comparison that trivially passes. Fail closed. */
+                if (ret == 1 && out_commit) {
+                    if (m.source_commit_len != NODUS_V2_GEN_SRCCOMMIT_LEN) {
+                        QGP_LOG_ERROR(LOG_TAG,
+                            "%s carries a pure-V2 genesis manifest whose "
+                            "source_commit is %u bytes, not %u — its "
+                            "identity cannot be compared",
+                            db_path, (unsigned)m.source_commit_len,
+                            (unsigned)NODUS_V2_GEN_SRCCOMMIT_LEN);
+                        ret = -1;
+                    } else {
+                        memcpy(out_commit, m.source_commit,
+                               NODUS_V2_GEN_SRCCOMMIT_LEN);
+                    }
+                }
             }
         }
         /* rc is anything else (SQLITE_IOERR, SQLITE_CORRUPT, ...):
@@ -288,9 +337,15 @@ int nodus_witness_v2_gen_is_pure(const char *db_path) {
     return ret;
 }
 
-/* Does `data_path` already hold a pure-V2 chain? 1/0/-1.
- * readdir order does not reach the answer: the result is a pure OR over
- * every entry, so any order produces the same boolean. */
+int nodus_witness_v2_gen_is_pure(const char *db_path) {
+    /* The verdict-only face. Callers that only ask "is this ours?" — the
+     * post-open chain-role gate (nodus_witness.c) and the activation
+     * gate (nodus_witness_v2_gate.c) — get exactly the behaviour they
+     * had; passing NULL skips the identity extraction entirely, so not
+     * one of their code paths changed. */
+    return gen_probe_pure(db_path, NULL);
+}
+
 /* Classify what `data_path` already holds:
  *   0  nothing — no witness_*.db at all
  *   1  a pure-V2 chain this builder produced (idempotent re-derive)
@@ -313,12 +368,29 @@ int nodus_witness_v2_gen_is_pure(const char *db_path) {
  * readdir order does not reach the answer: FOREIGN dominates PURE
  * (both refuse the caller), and a probe fault dominates both, so the
  * result is order-independent — every entry is classified before the
- * function returns. */
-static int gen_chain_db_scan(const char *data_path) {
+ * function returns.
+ *
+ * O16A / D4 — `out_commit` receives the found chain's source_commit and
+ * is written ONLY on a 1. Two properties keep that order-independent
+ * too:
+ *   - the identity comes from the same decoded manifest as the verdict
+ *     (gen_probe_pure), so there is no second read to disagree with;
+ *   - MORE THAN ONE pure chain in the directory is a FAULT (-1), not a
+ *     1. This is the only place the extension touches the existing
+ *     meanings, and it has to: with two pure databases present, "which
+ *     chain is here" has no answer, and returning the one readdir
+ *     happened to hand over first would let filesystem order decide
+ *     whether the derivation refuses. Same class as the R2-F1 coin-flip
+ *     this function was written to close, so it gets the same verdict —
+ *     the caller cannot tell, therefore it must not proceed. */
+static int gen_chain_db_scan(const char *data_path,
+                             uint8_t out_commit[NODUS_V2_GEN_SRCCOMMIT_LEN]) {
     DIR *dir = opendir(data_path);
     if (!dir) return -1;
     struct dirent *e;
-    int saw_pure = 0, saw_foreign = 0, saw_fault = 0;
+    int n_pure = 0, saw_foreign = 0, saw_fault = 0;
+    uint8_t found_commit[NODUS_V2_GEN_SRCCOMMIT_LEN];
+    memset(found_commit, 0, sizeof(found_commit));
     while ((e = readdir(dir)) != NULL) {
         if (strncmp(e->d_name, "witness_", 8) != 0) continue;
         size_t len = strlen(e->d_name);
@@ -326,8 +398,17 @@ static int gen_chain_db_scan(const char *data_path) {
         char path[600];
         int n = snprintf(path, sizeof(path), "%s/%s", data_path, e->d_name);
         if (n < 0 || (size_t)n >= sizeof(path)) { saw_fault = 1; continue; }
-        switch (nodus_witness_v2_gen_is_pure(path)) {
-            case 1:  saw_pure    = 1; break;
+        uint8_t commit[NODUS_V2_GEN_SRCCOMMIT_LEN];
+        memset(commit, 0, sizeof(commit));
+        switch (gen_probe_pure(path, commit)) {
+            case 1:
+                n_pure++;
+                /* Keep the FIRST one only so the buffer is written once;
+                 * n_pure > 1 turns the whole call into a fault below, so
+                 * which one it was never reaches a caller. */
+                if (n_pure == 1)
+                    memcpy(found_commit, commit, sizeof(found_commit));
+                break;
             case 0:  saw_foreign = 1; break;
             default: saw_fault   = 1; break;
         }
@@ -335,7 +416,19 @@ static int gen_chain_db_scan(const char *data_path) {
     closedir(dir);
     if (saw_fault)   return -1;
     if (saw_foreign) return 2;
-    return saw_pure ? 1 : 0;
+    if (n_pure > 1) {
+        QGP_LOG_ERROR(LOG_TAG, "%d pure-V2 chain databases are present in "
+                      "the data path — which chain is here has no answer, "
+                      "so this cannot be an idempotent re-derive. Remove "
+                      "all but the intended one.", n_pure);
+        return -1;
+    }
+    if (n_pure == 1) {
+        if (out_commit)
+            memcpy(out_commit, found_commit, NODUS_V2_GEN_SRCCOMMIT_LEN);
+        return 1;
+    }
+    return 0;
 }
 
 /* ── the validated, sorted derivation plan ───────────────────────────── */
@@ -512,6 +605,65 @@ static int gen_plan_build(const nodus_v2_gen_config_t *cfg, gen_plan_t *p) {
                           "at the first graduation boundary (L2-F4)",
                           (unsigned)i);
             return -1;
+        }
+
+        /* ── D7 / G7 — THE PAYOUT FINGERPRINT MUST DERIVE FROM THE
+         * PAYOUT KEY ─────────────────────────────────────────────────
+         * The predicate above validates the fingerprint's SHAPE. It
+         * cannot validate its MEANING, and the meaning is where the
+         * money is: retirement releases the locked self-bond to the
+         * FINGERPRINT alone (v2ep_release_utxo takes
+         * v.unstake_destination_fp, nodus_witness_v2_epoch.c:397); the
+         * stored payout KEY is never consulted when choosing the
+         * destination. A transcription error in the ceremony config
+         * therefore sends DNAC_SELF_STAKE_AMOUNT to an address nobody
+         * holds a key for — permanently, per validator, with no
+         * on-chain recovery and no later block at which anyone could
+         * notice.
+         *
+         * ⚠ ORDER IS PART OF THE SPEC: this runs AFTER
+         * nodus_witness_v2_epoch_val_rec_ok, never before.
+         * test_v2_gen.c:628-659 mutates the fingerprint four times to
+         * prove the four SHAPE refusals (all-zero, short, uppercase,
+         * missing NUL). Every one of those mutants ALSO fails the
+         * derivation check — so if this ran first it would swallow all
+         * four: they would still assert `!= 0` and still report PASS,
+         * while no longer proving the thing their names claim. Running
+         * second leaves each existing assertion meaning exactly what it
+         * says.
+         *
+         * The derivation reuses the shared helpers rather than a local
+         * hex loop, for the same reason the L2-F4 check calls the
+         * graduation's own exported predicate: the legacy staking path
+         * builds this field with exactly these two calls
+         * (nodus_witness_bft.c:2505-2511), and a second implementation
+         * is a second thing that can drift. */
+        {
+            uint8_t fp_raw[QGP_FP_RAW_BYTES];
+            char    fp_want[QGP_FP_HEX_BUFFER];
+            if (qgp_sha3_512(v->unstake_destination_pubkey,
+                             DNAC_PUBKEY_SIZE, fp_raw) != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "validator[%u] payout fingerprint "
+                              "could not be derived — refusing", (unsigned)i);
+                return -1;
+            }
+            qgp_fp_raw_to_hex(fp_raw, fp_want);
+            /* All DNAC_FINGERPRINT_SIZE bytes, including the terminator:
+             * the predicate above already proved index 128 is 0 on the
+             * config side, and qgp_fp_raw_to_hex writes it on this side,
+             * so a full-width compare is exact rather than optimistic. */
+            if (memcmp(v->unstake_destination_fp, fp_want,
+                       DNAC_FINGERPRINT_SIZE) != 0) {
+                QGP_LOG_ERROR(LOG_TAG,
+                    "validator[%u] unstake_destination_fp does NOT derive "
+                    "from unstake_destination_pubkey — refusing. This "
+                    "validator's %llu raw self-bond would be released to an "
+                    "address no key opens. config=%.128s derived=%.128s",
+                    (unsigned)i,
+                    (unsigned long long)DNAC_SELF_STAKE_AMOUNT,
+                    (const char *)v->unstake_destination_fp, fp_want);
+                return -1;
+            }
         }
 
         if (add_u64(p->stake_total, v->self_stake, &p->stake_total) != 0) {
@@ -1092,7 +1244,9 @@ int nodus_witness_v2_gen_derive(const char *data_path,
     gen_plan_t plan;
     if (gen_plan_build(cfg, &plan) != 0) return -1;
 
-    int pe = gen_chain_db_scan(data_path);
+    uint8_t present_commit[NODUS_V2_GEN_SRCCOMMIT_LEN];
+    memset(present_commit, 0, sizeof(present_commit));
+    int pe = gen_chain_db_scan(data_path, present_commit);
     if (pe < 0) {
         QGP_LOG_ERROR(LOG_TAG, "%s",
             "could not classify the chain databases already in the data "
@@ -1112,17 +1266,63 @@ int nodus_witness_v2_gen_derive(const char *data_path,
         gen_plan_free(&plan);
         return -1;
     }
-    if (pe == 1) {                              /* idempotent */
-        QGP_LOG_INFO(LOG_TAG, "%s",
-                     "a pure-V2 chain already exists — nothing to derive");
-        gen_plan_free(&plan);
-        return 0;
-    }
 
     /* ── 2. The source binding. No terminal block, no legacy chain: the
-     * config IS the source, and source_commit is its digest. ───────── */
+     * config IS the source, and source_commit is its digest.
+     *
+     * Computed BEFORE the idempotency branch, because D4 needs it there:
+     * "a chain already exists" is only a success if it is THIS config's
+     * chain. */
     uint8_t source_commit[NODUS_V2_GEN_SRCCOMMIT_LEN];
     if (gen_source_commit_planned(cfg, &plan, source_commit) != 0) {
+        gen_plan_free(&plan);
+        return -1;
+    }
+
+    if (pe == 1) {
+        /* ── O16A / D4, security goal G4 — IDEMPOTENCY COMPARES THE
+         * CHAIN, NOT JUST ITS TAG ─────────────────────────────────────
+         * This branch used to return 0 on the strength of the source
+         * TAG alone, which every chain this builder produces carries.
+         * So an operator who edited the config and re-ran the tool was
+         * told "a pure-V2 chain already exists — nothing to derive",
+         * given a zero exit code, and left with the chain built from the
+         * OLD config sitting in the data directory. On one node that is
+         * never noticed; on a fleet it surfaces much later as a
+         * join-time identity mismatch, by which point six other nodes
+         * have been configured against the wrong id.
+         *
+         * source_commit is what distinguishes them: it is the digest of
+         * the canonical config encoding, it is carried in the committed
+         * manifest, and the chain id is a function of it
+         * (nodus_witness_v2_gen.h:66-70). Equal → the idempotent success
+         * this branch always claimed to be. Different → REFUSE, printing
+         * both digests, because the operator has to be able to tell
+         * which of the two configs the directory holds.
+         *
+         * The undecidable case never reaches here: gen_chain_db_scan
+         * returns -1 rather than 1 when it cannot read an identity, and
+         * that was handled above. Fail closed on all three legs. */
+        if (memcmp(present_commit, source_commit,
+                   NODUS_V2_GEN_SRCCOMMIT_LEN) == 0) {
+            QGP_LOG_INFO(LOG_TAG, "%s",
+                         "a pure-V2 chain derived from THIS config already "
+                         "exists — nothing to derive");
+            gen_plan_free(&plan);
+            return 0;
+        }
+        {
+            char have[QGP_FP_HEX_BUFFER], want[QGP_FP_HEX_BUFFER];
+            qgp_fp_raw_to_hex(present_commit, have);
+            qgp_fp_raw_to_hex(source_commit, want);
+            QGP_LOG_ERROR(LOG_TAG,
+                "the data path already holds a pure-V2 chain built from a "
+                "DIFFERENT config — refusing to report success. "
+                "present source_commit=%s config source_commit=%s. Either "
+                "this is the wrong config file, or the previous chain must "
+                "be removed before a new one can be derived; deriving is "
+                "never a way to replace a chain in place.", have, want);
+        }
         gen_plan_free(&plan);
         return -1;
     }
@@ -1435,6 +1635,38 @@ int nodus_witness_v2_gen_derive(const char *data_path,
                           strerror(errno));
             break;
         }
+
+        /* ── O16A — THE PARTIAL-WIPE MARKER IS NOT WRITTEN HERE, AND
+         * THAT IS THE CORRECTION ──────────────────────────────────────
+         * An earlier cut of this work dropped the marker into
+         * `data_path` at exactly this point. It was wrong, and the
+         * reason is worth keeping so nobody re-adds it.
+         *
+         * The marker does not mean "a chain exists". It means "this node
+         * has completed a normal boot with a chain", because that is the
+         * only state in which the invariant it arms is true: the gate
+         * (nodus_server_check_partial_wipe) demands that nodus.db,
+         * channels.db and witness_*.db be all-present or all-absent.
+         *
+         * This builder creates exactly ONE of those three. The other two
+         * are created by nodus_server_init, and the gate runs BEFORE
+         * them. So a marker written here makes the very next start fail
+         * the gate on a data directory that has no nodus.db or
+         * channels.db yet — a freshly provisioned host, or one whose
+         * directory was emptied rather than having only witness_* removed
+         * — and the refusal's printed remedy is to delete all three,
+         * i.e. the chain this ceremony just produced.
+         *
+         * Two further holes the placement could not close: a crash
+         * between the rename and the write, and the idempotent re-run
+         * above, which returns before ever reaching this point — so the
+         * natural operator repair ("run it again") did not repair it.
+         *
+         * The write now lives in nodus_server_init, on the success path
+         * after all three databases are open. That placement is true when
+         * it is made, self-heals a crashed or failed ceremony on the next
+         * boot, and covers a node that JOINED rather than derived — which
+         * this path never could. */
 
         if (out_chain32) memcpy(out_chain32, chain32, 32);
         QGP_LOG_INFO(LOG_TAG, "pure Ledger V2 chain derived: %s "

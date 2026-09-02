@@ -1203,6 +1203,31 @@ register_witness_test(test_v2_bundle)
 # L1-F1 validator_stats carried in the genesis bundle).
 register_witness_test(test_v2_gen)
 
+# O16A — the genesis config TEXT form and the three wiring corrections
+# that ride with it: D-I5 (the parser is a pure function of the file's
+# bytes), D7/G7 (the payout fingerprint must derive from the payout
+# key), D4/G4 (idempotency compares source_commit, not just the source
+# tag) and D3/G6 (the partial-wipe marker lands in the REAL data
+# directory).
+#
+# Written out rather than register_witness_test'd for two reasons the
+# helper cannot express: it compiles the PARSER ITSELF as a second
+# source (tools/nodus_v2_gen_config.c — there is no library target for
+# tools/, and duplicating the parser in the test would test the copy),
+# and it needs tools/ on the include path so the test can say
+# #include "nodus_v2_gen_config.h" without a relative path, which this
+# tree forbids. `crypto` is linked for the same reason test_v2_gate_pure
+# links it: this test builds real V2 chains.
+add_executable(test_v2_gen_config
+    tests/test_v2_gen_config.c
+    tools/nodus_v2_gen_config.c)
+target_compile_definitions(test_v2_gen_config PRIVATE
+                           NODUS_WITNESS_INTERNAL_API)
+target_include_directories(test_v2_gen_config PRIVATE
+                           ${CMAKE_CURRENT_SOURCE_DIR}/tools)
+target_link_libraries(test_v2_gen_config nodus dsa nodus crypto)
+add_test(NAME test_v2_gen_config COMMAND test_v2_gen_config)
+
 # O15J Faz 3 — test_v2_activation and test_v2_seam are GONE with the
 # activation ceremony they covered (the committed activation record and
 # its codecs, the type-15/16 apply matrices, the boundary state machine,
@@ -1791,9 +1816,19 @@ add_executable(nodus-circ tools/nodus-circ.c)
 target_link_libraries(nodus-circ nodus dsa nodus)
 target_compile_options(nodus-circ PRIVATE -Wall -Wextra -Wno-unused-parameter)
 
-add_executable(nodus-server tools/nodus-server.c)
+# O16A / D1+D2 — the genesis config parser is compiled INTO the server
+# binary, because --derive-v2-genesis is a mode of this binary rather
+# than a separate tool. That is deliberate: the derivation must run with
+# the SAME compiled DNAC_EPOCH_LENGTH / DNAC_BLOCKS_PER_YEAR /
+# DNAC_DECIMAL_UNIT as the node that will later run the chain, and a
+# second executable is a second place those can differ.
+add_executable(nodus-server
+    tools/nodus-server.c
+    tools/nodus_v2_gen_config.c)
 target_link_libraries(nodus-server nodus dsa nodus)
 target_compile_options(nodus-server PRIVATE -Wall -Wextra -Wno-unused-parameter)
+target_include_directories(nodus-server PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/tools)
 if(JSONC_FOUND)
     target_compile_definitions(nodus-server PRIVATE NODUS_HAS_JSONC)
     target_include_directories(nodus-server PRIVATE ${JSONC_INCLUDE_DIRS})

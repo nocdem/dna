@@ -6185,6 +6185,74 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
             "node.\n");
     }
 
+    /* ── O16A — ARM THE PARTIAL-WIPE GATE, HERE AND NOWHERE ELSE ──────
+     *
+     * WHAT THE MARKER ASSERTS. Not "a chain exists" — "this node has
+     * completed a normal boot with a chain". That distinction is the
+     * whole reason this write sits at the bottom of init rather than
+     * where a chain is first produced. The gate it arms
+     * (nodus_server_check_partial_wipe, called near the top of this
+     * function) demands that nodus.db, channels.db and witness_*.db be
+     * all-present or all-absent, and refuses the start otherwise. The
+     * three are not functionally coupled; the rule is an ACCIDENT
+     * DETECTOR for an operator who removed one of them by hand
+     * (docs/BOOTSTRAP.md, "Operator wiped one of the 3 SQLite DBs by
+     * accident"). Arming it is only honest once all three are real.
+     *
+     * WHY NOT IN THE V2 GENESIS BUILDER. That was the first cut and it
+     * was wrong: nodus_witness_v2_gen_derive runs as an offline one-shot
+     * that creates exactly ONE of the three, and this gate runs BEFORE
+     * nodus_storage_open and nodus_channel_store_open create the other
+     * two. A marker written there fails the gate on the very next start
+     * of a freshly provisioned host, and the refusal's printed remedy is
+     * to delete all three — the chain the ceremony just produced.
+     *
+     * WHAT THIS PLACEMENT ALSO FIXES, for free:
+     *   - a crash or a failed write during the ceremony self-heals on the
+     *     next boot, because this runs on every successful start;
+     *   - a node that JOINED rather than derived is covered, which the
+     *     builder-side write structurally could not do — the joiner
+     *     builds in its own scratch directory (nodus_witness_v2_join.c)
+     *     and nodus_witness_create_chain_db's own marker write lands
+     *     there and is discarded with it (nodus_witness.c:1173-1180);
+     *   - a legacy node keeps the behaviour it already had: its
+     *     create_chain_db wrote the marker at genesis, and re-writing an
+     *     existing file changes nothing.
+     *
+     * GATED ON AN OPEN CHAIN. `srv->witness->db` is non-NULL only when a
+     * chain database was found and opened (nodus_witness_scan_chain_db).
+     * A pre-genesis node has no chain, has not crossed the boundary the
+     * marker records, and must not arm the gate — doing so would make
+     * its perfectly legitimate two-of-three state a refusal.
+     *
+     * NOT FATAL, BUT LOUD. A node is not worse off for a missing marker
+     * than it is today, and the next boot retries; but a gate silently
+     * staying open is exactly what an operator would never otherwise
+     * learn. The file's presence is the signal — its contents are never
+     * read. */
+    if (srv->witness && srv->witness->db) {
+        char marker[640];
+        int mk = snprintf(marker, sizeof(marker), "%s/%s",
+                          config->data_path[0] ? config->data_path : "/tmp",
+                          NODUS_PARTIAL_WIPE_GENESIS_MARKER);
+        if (mk < 0 || (size_t)mk >= sizeof(marker)) {
+            fprintf(stderr,
+                "NODUS_SRV: WARNING data path too long to form %s — the "
+                "partial-wipe gate stays OPEN on this node\n",
+                NODUS_PARTIAL_WIPE_GENESIS_MARKER);
+        } else {
+            FILE *mf = fopen(marker, "w");
+            if (mf) {
+                fclose(mf);
+            } else {
+                fprintf(stderr,
+                    "NODUS_SRV: WARNING failed to write %s: %s — the "
+                    "partial-wipe gate stays OPEN on this node's next "
+                    "boot\n", marker, strerror(errno));
+            }
+        }
+    }
+
     /* Publish identity to DHT for witness discovery */
     nodus_server_publish_identity(srv);
 
