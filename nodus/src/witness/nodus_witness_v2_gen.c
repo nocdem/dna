@@ -338,11 +338,17 @@ static int gen_probe_pure(const char *db_path,
 }
 
 int nodus_witness_v2_gen_is_pure(const char *db_path) {
-    /* The verdict-only face. Callers that only ask "is this ours?" — the
-     * post-open chain-role gate (nodus_witness.c) and the activation
-     * gate (nodus_witness_v2_gate.c) — get exactly the behaviour they
-     * had; passing NULL skips the identity extraction entirely, so not
-     * one of their code paths changed. */
+    /* The verdict-only face. Passing NULL skips the identity extraction
+     * entirely, so this function behaves exactly as it did before D4.
+     *
+     * ⚠ CORRECTED — an earlier version of this comment named
+     * nodus_witness_v2_gate.c as a second caller. It is not one: that
+     * file only MENTIONS this function in prose, and its own predicate
+     * is v2_authority_present. The single production caller is the
+     * post-open chain-role gate at nodus_witness.c:775. The tests call it
+     * directly (test_v2_gate_pure.c, test_v2_gen.c) and are likewise
+     * unaffected. Verified by grep, not by memory — the wrong version of
+     * this sentence survived a review because it read plausibly. */
     return gen_probe_pure(db_path, NULL);
 }
 
@@ -376,13 +382,29 @@ int nodus_witness_v2_gen_is_pure(const char *db_path) {
  *   - the identity comes from the same decoded manifest as the verdict
  *     (gen_probe_pure), so there is no second read to disagree with;
  *   - MORE THAN ONE pure chain in the directory is a FAULT (-1), not a
- *     1. This is the only place the extension touches the existing
- *     meanings, and it has to: with two pure databases present, "which
+ *     1: with two pure databases present, "which
  *     chain is here" has no answer, and returning the one readdir
  *     happened to hand over first would let filesystem order decide
  *     whether the derivation refuses. Same class as the R2-F1 coin-flip
  *     this function was written to close, so it gets the same verdict —
- *     the caller cannot tell, therefore it must not proceed. */
+ *     the caller cannot tell, therefore it must not proceed.
+ *
+ * ⚠ THE EXTENSION MOVES THE EXISTING MEANINGS IN **TWO** PLACES, NOT ONE.
+ * An earlier version of this comment claimed the multi-chain fault above
+ * was the only one. It is not. The second:
+ *
+ *   - a SINGLE pure-tagged database whose genesis manifest carries a
+ *     source_commit of any length other than 64 now returns -1 where it
+ *     previously returned 1. gen_probe_pure refuses the length before it
+ *     will hand an identity out, and this scan turns that into a fault.
+ *     The input is constructible — source_commit_len is a wire field the
+ *     codec bounds only by DNA_GMAN_SRCCOMMIT_MAX
+ *     (shared/dnac/manifest_wire.c) — so the check is load-bearing, not
+ *     decorative.
+ *
+ * Both new outcomes fail CLOSED, which is why the practical risk is low.
+ * The point of recording them is that a future reader must not take "one
+ * addition" on trust, as the previous sentence invited. */
 static int gen_chain_db_scan(const char *data_path,
                              uint8_t out_commit[NODUS_V2_GEN_SRCCOMMIT_LEN]) {
     DIR *dir = opendir(data_path);

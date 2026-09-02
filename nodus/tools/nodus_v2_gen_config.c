@@ -115,6 +115,45 @@ static uint8_t nv2gc_hexval(char c) {
     return (uint8_t)((c <= '9') ? (c - '0') : (c - 'a' + 10));
 }
 
+/* Echo an arbitrary line back to the operator with every byte outside
+ * printable ASCII replaced by '?'.
+ *
+ * WHY THIS EXISTS, given the note above about key charsets. That note is
+ * true for KEY names and false for two other messages: the unknown block
+ * header and the "not 'key = value'" line both print `s` verbatim, and
+ * `s` has only been screened for CR and NUL. An ESC byte survives, so a
+ * malformed line could emit a terminal control sequence into an
+ * operator's session. It is not an attack — a hostile config file means
+ * a hostile operator, which is out of scope — but the file claimed the
+ * possibility away, and a claim that does not hold is worse than no
+ * claim. Truncation is explicit rather than silent: the operator gets a
+ * bounded prefix and is told it is one.
+ *
+ * Diagnostic only. It never touches a byte that reaches the struct. */
+#define NV2GC_ECHO_MAX 96
+static void nv2gc_echo(const char *s, char out[NV2GC_ECHO_MAX + 4]) {
+    size_t i = 0;
+    for (; s[i] && i < NV2GC_ECHO_MAX; i++) {
+        unsigned char c = (unsigned char)s[i];
+        out[i] = (c >= 0x20 && c <= 0x7E) ? (char)c : '?';
+    }
+    if (s[i]) { out[i++] = '.'; out[i++] = '.'; out[i++] = '.'; }
+    out[i] = 0;
+}
+
+/* Does this line begin with a UTF-8 byte-order mark?
+ *
+ * A Windows or macOS editor writes EF BB BF at byte 0 and shows nothing.
+ * Without this the file still refuses — correctly — but with a message
+ * about an unparseable line or a bad key character, and the operator
+ * looks at a line that appears perfectly fine. The ceremony is performed
+ * once, under time pressure, by someone who cannot see the bytes; a
+ * refusal that does not name the cause costs an hour. */
+static int nv2gc_has_bom(const char *s) {
+    const unsigned char *u = (const unsigned char *)s;
+    return u[0] == 0xEF && u[1] == 0xBB && u[2] == 0xBF;
+}
+
 /* ── strict scalar parsers ───────────────────────────────────────────
  * NO strtoull, NO atoi, at any strength of "careful". strtoull accepts
  * a leading sign, leading whitespace whose definition is locale-bound,
@@ -585,10 +624,12 @@ int nodus_v2_gen_config_parse_file(const char *path,
                 if (nv2gc_open_scope(&st, NV2GC_SCOPE_ALLOCATION,
                                      lineno) != 0) goto out;
             } else {
+                char echo[NV2GC_ECHO_MAX + 4];
+                nv2gc_echo(s, echo);
                 fprintf(stderr,
                         "genesis config line %zu: unknown block header '%s' "
                         "— only [validator] and [allocation] exist.\n",
-                        lineno, s);
+                        lineno, echo);
                 goto out;
             }
             continue;
@@ -597,9 +638,20 @@ int nodus_v2_gen_config_parse_file(const char *path,
         /* key = value */
         char *eq = strchr(s, '=');
         if (!eq) {
-            fprintf(stderr,
-                    "genesis config line %zu: not 'key = value' and not a "
-                    "block header.\n", lineno);
+            char echo[NV2GC_ECHO_MAX + 4];
+            nv2gc_echo(s, echo);
+            if (nv2gc_has_bom(s)) {
+                fprintf(stderr,
+                        "genesis config line %zu: the file begins with a "
+                        "UTF-8 byte-order mark (EF BB BF). The line looks "
+                        "correct in an editor because the BOM is invisible. "
+                        "Save the file as UTF-8 WITHOUT a BOM, or strip the "
+                        "first three bytes.\n", lineno);
+            } else {
+                fprintf(stderr,
+                        "genesis config line %zu: not 'key = value' and not "
+                        "a block header: '%s'\n", lineno, echo);
+            }
             goto out;
         }
         *eq = 0;
@@ -620,9 +672,21 @@ int nodus_v2_gen_config_parse_file(const char *path,
         }
         for (size_t i = 0; i < klen; i++) {
             if (nv2gc_is_keychar(key[i])) continue;
-            fprintf(stderr,
-                    "genesis config line %zu: key name contains a byte that "
-                    "is not [a-z0-9_].\n", lineno);
+            /* The BOM lands here when line 1 is a key rather than a
+             * comment, and "a byte that is not [a-z0-9_]" is true but
+             * useless: the operator sees a key that looks perfect. */
+            if (i == 0 && nv2gc_has_bom(key)) {
+                fprintf(stderr,
+                        "genesis config line %zu: the file begins with a "
+                        "UTF-8 byte-order mark (EF BB BF) glued to the key "
+                        "name. It is invisible in an editor. Save as UTF-8 "
+                        "WITHOUT a BOM, or strip the first three bytes.\n",
+                        lineno);
+            } else {
+                fprintf(stderr,
+                        "genesis config line %zu: key name contains a byte "
+                        "that is not [a-z0-9_].\n", lineno);
+            }
             goto out;
         }
         if (vlen == 0) {
@@ -686,6 +750,25 @@ int nodus_v2_gen_config_parse_file(const char *path,
     st.cfg->config_version     = NODUS_V2_GEN_CONFIG_VERSION;
     st.cfg->claim_start_height = 0;
     st.cfg->claim_end_height   = UINT64_MAX;
+
+    /* AT LEAST ONE [allocation] — refused HERE, not left to the builder.
+     *
+     * gen_plan_build does reject n_allocs == 0, so nothing unsafe could
+     * reach a chain either way. But the two refusals are not equally
+     * useful to the person who has to fix the file: this one can say
+     * "your config file has no [allocation] block", while the builder's
+     * arrives after the derivation has begun and names a struct field.
+     * A gap found by a coverage review of the test file, not by a
+     * failure — the parser accepted it and nothing downstream cared,
+     * which is exactly the shape that survives review. */
+    if (st.n_allocs == 0) {
+        fprintf(stderr,
+                "genesis config: not one [allocation] block in the whole "
+                "file. A chain with no distribution has nothing claimable "
+                "and is refused — add at least one, or this is the wrong "
+                "config file.\n");
+        goto out;
+    }
 
     st.cfg->n_allocs = st.n_allocs;
     st.cfg->allocs   = st.allocs;      /* ownership moves to the config */

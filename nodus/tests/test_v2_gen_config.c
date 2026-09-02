@@ -334,6 +334,36 @@ static void expect_refusal(const char *dir, const char *golden,
     unlink(path);
 }
 
+/* Refuse a file given as RAW BYTES rather than as a mutation of the
+ * golden text.
+ *
+ * expect_refusal cannot express three of the cases below: a file
+ * containing a NUL (its needle/replacement plumbing is NUL-terminated),
+ * a file with no trailing newline, and a file that is empty or
+ * truncated at an arbitrary offset. Writing the bytes with an explicit
+ * length is the only way to put the reader in front of the input the
+ * branch actually needs. */
+static void expect_refusal_raw(const char *dir, const char *bytes,
+                               size_t len, const char *what) {
+    char path[256];
+    snprintf(path, sizeof(path), "%s/mutant_raw.conf", dir);
+
+    FILE *fp = fopen(path, "wb");
+    CHECK(fp != NULL, "open raw mutant for writing");
+    if (!fp) return;
+    if (len > 0) {
+        CHECK(fwrite(bytes, 1, len, fp) == len, "write raw mutant");
+    }
+    fclose(fp);
+
+    nodus_v2_gen_config_t *got = NULL;
+    fprintf(stderr, "  -- expecting a refusal: %s\n", what);
+    CHECK(nodus_v2_gen_config_parse_file(path, &got) != 0, what);
+    CHECK(got == NULL, "a refused parse must not hand back a config");
+    nodus_v2_gen_config_free(got);
+    unlink(path);
+}
+
 /* ════════════════════════════════════════════════════════════════════
  * §1 — the golden file parses to the expected struct
  * ══════════════════════════════════════════════════════════════════ */
@@ -616,7 +646,22 @@ static int test_refusals(void) {
     /* SHORT HEX and LONG HEX — the length is exact, and neither
      * direction is repaired. A short pubkey that was zero-extended and a
      * long one that was truncated are both a DIFFERENT validator, hence
-     * a different chain, reported as success. */
+     * a different chain, reported as success.
+     *
+     * ⚠ HOW THE SHORT CASE CAN LIE, and it does not say so on its own.
+     * The SHORT mutant is BACKSTOPPED: it is 5183 characters, so even
+     * with nv2gc_hex's exact-length test deleted the decode loop would
+     * still read index 5183 — the NUL terminator — and refuse on the
+     * charset test instead. This is structural, not incidental: any
+     * short value is caught that way, because the loop always reads to
+     * the full expected length. So a green SHORT case proves "a short
+     * value is refused" and proves NOTHING about which rule refused it.
+     *
+     * The LONG case is the non-vacuous half and carries the weight:
+     * without the length test it would decode the first 5184 characters
+     * and silently truncate, which is exactly the "reported as success"
+     * failure above. Do not delete the LONG case on the grounds that
+     * SHORT already covers the length rule — it does not. */
     {
         char short_pk[2 * DNAC_PUBKEY_SIZE + 32];
         char long_pk[2 * DNAC_PUBKEY_SIZE + 32];
@@ -686,6 +731,115 @@ static int test_refusals(void) {
     /* AN UNKNOWN BLOCK HEADER. */
     expect_refusal(dir, g, "[allocation]\n", "[allocations]\n",
                    "an unknown block header REFUSES");
+
+    /* ── THE BRANCHES THE FIRST CUT LEFT UNCOVERED ───────────────────
+     * Found by a read-only review of this file, not by a failure. Each
+     * one is a distinct refusal branch in the parser that no case above
+     * reaches. Their absence did not mean the parser was wrong — it
+     * meant a green run said less than it appeared to. */
+
+    /* A file whose FIRST byte is a NUL, and a NUL in the middle of a
+     * line. The reader refuses both rather than treating either as a
+     * terminator, because a truncated line is a DIFFERENT config that
+     * would derive silently. */
+    {
+        char nul_mid[64];
+        size_t n = 0;
+        memcpy(nul_mid, "epoch_length = 7", 16); n += 16;
+        nul_mid[n++] = '\0';
+        memcpy(nul_mid + n, "20\n", 3); n += 3;
+        expect_refusal_raw(dir, nul_mid, n,
+                           "an embedded NUL byte REFUSES");
+    }
+
+    /* A LONE CR, not part of a CRLF. Refused, never normalised: a parser
+     * that silently repairs line endings is a parser whose output
+     * depends on which editor wrote the file. */
+    expect_refusal(dir, g, "decimal_unit", "decimal\runit",
+                   "a lone CR REFUSES");
+
+    /* AN EMPTY FILE — the top-level required keys are all missing, and
+     * the EOF scope close is the branch that must catch it. */
+    expect_refusal_raw(dir, "", 0, "an empty file REFUSES");
+
+    /* A FILE WITH NO TRAILING NEWLINE. Every mutant above ends in '\n',
+     * so the readline path that returns the final unterminated line was
+     * never exercised. Here the last line is a truncated key, so the
+     * refusal proves the line was READ (not dropped) as well. */
+    {
+        char *trunc = replace_first(g, "amount = ", "amoun");
+        CHECK(trunc != NULL, "needle present");
+        if (trunc) {
+            size_t L = strlen(trunc);
+            while (L > 0 && trunc[L - 1] == '\n') L--;
+            expect_refusal_raw(dir, trunc, L,
+                               "a final line with NO trailing newline is "
+                               "still read, and still refused");
+            free(trunc);
+        }
+    }
+
+    /* A DUPLICATE KEY INSIDE A BLOCK. §3 already covers a duplicate at
+     * the top level; the per-scope `seen` bitmask is reset on every
+     * scope change, so the block-scoped half is a different branch. */
+    expect_refusal(dir, g, "commission_bps", "self_stake",
+                   "a duplicate key INSIDE a block REFUSES");
+
+    /* MORE [validator] BLOCKS THAN THE ARRAY HOLDS. The bound is
+     * NODUS_V2_GEN_MAX_VALIDATORS and it is the parser's own, checked
+     * before any write — not the exact-count rule, which stays the
+     * builder's. The blocks are copies of one another: the parser has no
+     * opinion about duplicate pubkeys (the builder does), so a copy is
+     * enough to walk the array off its end if the bound were missing.
+     *
+     * ⚠ NOT COVERED, and deliberately: the matching ceiling on
+     * [allocation] blocks (NODUS_V2_GEN_MAX_ALLOCS = 65536). Exercising
+     * it means generating a ~17 MB config file inside a unit test for
+     * one bounds check of the same shape as this one. The bound was read
+     * instead. If that trade ever looks wrong, this is the note that
+     * says it was a trade. */
+    {
+        const char *vb = strstr(g, "[validator]");
+        const char *ab = strstr(g, "[allocation]");
+        CHECK(vb != NULL && ab != NULL && ab > vb, "blocks present");
+        if (vb && ab && ab > vb) {
+            size_t blk = (size_t)(ab - vb);          /* one block + tail */
+            size_t need = strlen(g) + blk * 24 + 1;
+            char *big = calloc(1, need);
+            CHECK(big != NULL, "alloc oversize config");
+            if (big) {
+                size_t head = (size_t)(ab - g);
+                memcpy(big, g, head);                /* 7 validators     */
+                size_t n = head;
+                for (int i = 0; i < 24; i++) {       /* -> 31 validators */
+                    memcpy(big + n, vb, blk);
+                    n += blk;
+                }
+                strcpy(big + n, ab);                 /* the allocations  */
+                expect_refusal_raw(dir, big, strlen(big),
+                                   "more [validator] blocks than the array "
+                                   "holds REFUSES");
+                free(big);
+            }
+        }
+    }
+
+    /* ZERO [allocation] BLOCKS. n_allocs == 0 with a NULL array is the
+     * shape the downstream builder must refuse without dereferencing.
+     *
+     * This case FOUND A REAL GAP: the parser accepted it and left the
+     * refusal to gen_plan_build. Both refuse now, and the parser's
+     * message is the one an operator can act on. */
+    {
+        char *at = strstr(g, "[allocation]");
+        CHECK(at != NULL, "allocation block present");
+        if (at) {
+            size_t head = (size_t)(at - g);
+            expect_refusal_raw(dir, g, head,
+                               "a config with ZERO [allocation] blocks "
+                               "REFUSES");
+        }
+    }
 
     free(g);
     cfg_free(&ref);
