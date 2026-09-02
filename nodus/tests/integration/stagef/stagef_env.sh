@@ -251,9 +251,11 @@ stagef_mk_funded_user() {
         # a witness DB only advances via consensus commit, so any copy
         # showing the UTXO proves the chain committed it. Polling a
         # single fixed node is wrong whenever a test has PAUSED that
-        # node (test_view_change_fork SIGSTOPs node1): the frozen
-        # replica can never show a late commit, and the old node1-only
-        # check reported "chain verified empty" against a stale file
+        # node (test_view_change_fork SIGSTOPs the validator it DERIVES
+        # as the current epoch leader, which is a different node on
+        # every run and may be any of them): the frozen replica can
+        # never show a late commit, and the old node1-only check
+        # reported "chain verified empty" against a stale file
         # (BUGS.md 2026-08-04, H1).
         #
         # O15B §7 — the UTXO must be SPENDABLE, not merely present.
@@ -376,4 +378,248 @@ stagef_dna_as() {
     shift
     rm -f "$test_home/.dna/known_nodes" "$test_home/.dna/preferred_node"
     HOME="$test_home" DNA_NO_FALLBACK=1 "$STAGEF_DNACLI_BIN" "$@"
+}
+
+# ──────────────────────────────────────────────────────────────────────
+# COMMITTEE / EPOCH-LEADER DERIVATION — ONE IMPLEMENTATION, TWO USERS
+#
+# Everything below lived only inside test_vset_grow_shrink.sh until
+# 2026-09-02, when test_view_change_fork.sh needed the same derivation to
+# stop being a coin flip. Copying ~80 lines into a second scenario is
+# exactly how the two drifted apart in the first place: vset section G was
+# taught to kill a DERIVED leader while the fork test went on killing a
+# hardcoded node 1 and calling whatever happened next a pass.
+#
+# MOVED, NOT REWRITTEN. Every function here is the body that was deleted
+# from test_vset_grow_shrink.sh, under the same name, with the same
+# arguments and the same return contract, so that scenario behaves exactly
+# as before. Section G is the suite's only proof that the chain rotates
+# past a dead leader; breaking it silently would be worse than the defect
+# this move exists to fix.
+#
+# ⚠ THIS FILE IS SOURCED BY EVERY SCENARIO. A fault here breaks all of
+# them, not one. Nothing below runs at source time except four integer
+# constant assignments — the rest are function definitions.
+#
+# ⚠ ref_db() reads the CALLER'S $REF_NODE, and that global contract is
+# KEPT DELIBERATELY: test_vset_grow_shrink.sh calls `ref_db` with no
+# arguments at ~30 sites, and re-signaturing it would mean rewriting the
+# section whose behaviour must not change. No default REF_NODE is set
+# here on purpose — a scenario that calls ref_db without setting REF_NODE
+# must fail loudly under `set -u`, not quietly read node1.
+# ──────────────────────────────────────────────────────────────────────
+
+# All node indices that currently have a data dir (1..7 always, 8/9 later).
+running_nodes() {
+    for d in "$BASE_DIR"/node*/; do
+        basename "$d" | sed 's/node//'
+    done | sort -n
+}
+
+# The chain DB of the reference node. Was node1_db; it is now named for
+# what it is, because in the sections that kill or pause a DERIVED node it
+# is deliberately NOT node1.
+ref_db() { stagef_node_chain_db "$REF_NODE"; }
+
+# The BFT view a node currently holds, from its own persisted singleton
+# row (pbft_state, nodus_witness_db.c:2122-2196).
+#
+# current_view NEVER resets (nothing sets it to 0) and it survives
+# restarts — so it must be READ, never assumed to be 0. NOT monotonic.
+# Scenarios that rotate the view sort earlier in a sweep, so by the time a
+# later one runs the cluster is routinely at a non-zero view.
+#
+# A missing row is the documented fresh-DB state and means view 0 (the
+# loader leaves the default in place, :2155-2160). A FAILED query is not
+# a value: it returns 1 and prints nothing, so no caller can read an
+# error as a view.
+node_view() {
+    local db out
+    db=$(stagef_node_chain_db "$1")
+    [ -n "$db" ] || return 1
+    out=$(sqlite3 "$db" \
+        "SELECT COALESCE(current_view, 0) FROM pbft_state WHERE id = 1;" \
+        2>/dev/null) || return 1
+    [ -z "$out" ] && out=0
+    echo "$out"
+}
+
+# The highest view held by any node EXCEPT $1, which is the node the
+# caller is about to kill or pause (or has already).
+#
+# Why the max over a set rather than one node's value: current_view is
+# per-node runtime state with three writers — the view-change quorum
+# itself (nodus_witness_bft.c:7703), adopting a NEW_VIEW (:8196) and
+# adopting a PROPOSE's view (:5040) — so a node that sits out a round can
+# lag, and the lowest-numbered surviving node is not guaranteed to be one
+# of the ACTIVE set. The property being asserted is "the cluster rotated",
+# i.e. SOME surviving node advanced, and the max expresses exactly that.
+# NOT monotonic per node: :5040 copies the proposal's view UNCONDITIONALLY
+# and can LOWER it.
+#
+# The victim is excluded from BOTH the before and after readings, so the
+# two are taken over the SAME set and stay comparable — and so that a
+# kill -9'd database with a hot journal is never opened by this script.
+cluster_view_max() {
+    local skip="$1" best=-1 n v
+    for n in $(running_nodes); do
+        [ "$n" = "$skip" ] && continue
+        v=$(node_view "$n") || continue
+        [ "$v" -gt "$best" ] && best="$v"
+    done
+    [ "$best" -ge 0 ] || return 1
+    echo "$best"
+}
+
+# How many times PATTERN appears across EVERY running node's log.
+#
+# Always used as a BEFORE/AFTER delta, never as a bare presence test.
+# The logs are cumulative across the whole harness run and every earlier
+# scenario in it — several deliberately force view changes — so "a
+# VIEW_CHANGE line exists" is already true when a later scenario starts
+# and proves nothing about it. Only an INCREASE is evidence.
+log_count() {
+    local pat="$1" total=0 n c
+    for n in $(running_nodes); do
+        c=$(grep -c -- "$pat" "$BASE_DIR/node$n/nodus.log" 2>/dev/null || true)
+        total=$(( total + ${c:-0} ))
+    done
+    echo "$total"
+}
+
+# Raw Dilithium5 public key of a harness node, uppercase hex — the exact
+# byte string the validator row and the snapshot blob carry.
+node_pubkey_hex() {
+    xxd -p -u -c 99999 "$BASE_DIR/node$1/identity/nodus.pk"
+}
+
+# Canonical validator-set snapshot wire geometry (shared/dnac/vset_wire.h:
+# DNA_VSET_HDR_LEN=78, DNA_VSET_ENTRY_LEN=2642, voter_id 32 B at entry
+# offset 0, pubkey DNA_VSET_PUBKEY_LEN=2592 at entry offset 32).
+#
+# These are used to read entry k POSITIONALLY. That is the whole point:
+# the snapshot stores its entries in COMMITTEE ORDER by construction
+# (nodus_witness_vset.c:360-378 builds them straight out of
+# nodus_committee_compute_for_epoch), so slicing by offset READS the
+# committee rank instead of recomputing it. An `instr()`-style search —
+# the pattern snapshot_contains uses — answers MEMBERSHIP, not ORDER, and
+# would happily identify the wrong validator as the leader.
+VSET_HDR_LEN=78
+VSET_ENTRY_LEN=2642
+VSET_VOTER_ID_LEN=32
+VSET_PUBKEY_LEN=2592
+
+# stagef_leader_entry DB EPOCH_START E_LEN VIEW
+#
+# THE ONE IMPLEMENTATION of "which validator leads epoch EPOCH_START".
+#
+#   prints on success:  "<rank> <active_count> <pubkey_hex> <voter_id_hex>"
+#   on any fault:       the precise [FAIL] diagnosis on stderr, return 1
+#
+# It never exits and never touches a global, so each caller keeps its own
+# exit code, its own trap and its own resume-the-victim obligation.
+#
+# THE RULE IT ENCODES. Leader rank = (epoch + view) % n, where epoch is
+# the epoch ORDINAL (EPOCH_START / E_LEN) and n is the committee size
+# (nodus_witness_bft_leader_index, nodus_witness_bft.c:1195-1198, called
+# at :1284 with `epoch = next_bh / DNAC_EPOCH_LENGTH`). Note :1229 —
+# `next_bh` is the tip PLUS ONE, so a caller deriving the CURRENT leader
+# from a committed head H must use the epoch of H+1, not of H.
+#
+# WHY IT READS THE SNAPSHOT INSTEAD OF RE-DERIVING THE ORDER. Rank is
+# turned into an identity POSITIONALLY: nodus_witness_vset.c:360-378 fills
+# snapshot entry i straight from nodus_committee_compute_for_epoch's
+# member i, and nodus_committee_get_for_block serves that persisted
+# snapshot as the committee authority for the epoch
+# (nodus_witness_committee.c:548-568). So entry order IS committee order.
+# Re-deriving the stake-DESC / SHA3-512(0x02 ‖ pubkey ‖ state_seed)-ASC
+# tiebreak in shell would be a second implementation of a consensus rule,
+# which is precisely what must not exist.
+#
+# EVERY sqlite3 result is guarded with `|| var=""` so this behaves the
+# same under `set -e` (test_view_change_fork.sh) and without it
+# (test_vset_grow_shrink.sh): a failed query yields an empty value the
+# numeric checks below reject — never an abort, and never a silent 0.
+stagef_leader_entry() {
+    local db="$1" epoch="$2" e_len="$3" view="$4"
+    local active_count blob_len blob_entries rank pk_off vid_off pk wid
+
+    # Guard the inputs before any arithmetic touches them. $(( )) coerces
+    # an empty string to 0, which would turn an unreadable height or view
+    # into a plausible-looking rank.
+    case "$epoch" in ''|*[!0-9]*)
+        echo "[FAIL] stagef_leader_entry: epoch_start '$epoch' is not a number" >&2
+        return 1;;
+    esac
+    case "$e_len" in ''|*[!0-9]*)
+        echo "[FAIL] stagef_leader_entry: epoch length '$e_len' is not a number" >&2
+        return 1;;
+    esac
+    case "$view" in ''|*[!0-9]*)
+        echo "[FAIL] stagef_leader_entry: view '$view' is not a number" >&2
+        return 1;;
+    esac
+    if [ "$e_len" -lt 1 ]; then
+        echo "[FAIL] stagef_leader_entry: epoch length $e_len < 1" >&2
+        return 1
+    fi
+
+    active_count=$(sqlite3 "$db" "SELECT active_count FROM \
+        validator_set_snapshots WHERE epoch_start = $epoch;") || active_count=""
+    blob_len=$(sqlite3 "$db" "SELECT length(snapshot_blob) FROM \
+        validator_set_snapshots WHERE epoch_start = $epoch;") || blob_len=""
+    # Both must be non-empty NUMBERS before any arithmetic touches them: an
+    # empty cell would otherwise be coerced to 0 inside $(( )) and quietly
+    # produce a plausible-looking entry count.
+    case "$active_count" in ''|*[!0-9]*)
+        echo "[FAIL] epoch-$epoch snapshot has no usable active_count ('$active_count')" >&2
+        return 1;;
+    esac
+    case "$blob_len" in ''|*[!0-9]*)
+        echo "[FAIL] epoch-$epoch snapshot blob has no readable length ('$blob_len')" >&2
+        return 1;;
+    esac
+    if [ "$active_count" -lt 1 ]; then
+        echo "[FAIL] epoch-$epoch snapshot has active_count=$active_count" >&2
+        return 1
+    fi
+
+    # The column and the blob must agree about how many entries there are.
+    # active_count is what the leader formula takes its modulus from, and
+    # the blob is what the entry is sliced out of; if they disagree, one of
+    # the two is wrong and the derived index would address the wrong bytes.
+    blob_entries=$(( (blob_len - VSET_HDR_LEN) / VSET_ENTRY_LEN ))
+    if [ $(( VSET_HDR_LEN + blob_entries * VSET_ENTRY_LEN )) -ne "$blob_len" ]; then
+        echo "[FAIL] epoch-$epoch snapshot blob is $blob_len bytes, not a whole \
+number of $VSET_ENTRY_LEN-byte entries after the $VSET_HDR_LEN-byte header" >&2
+        return 1
+    fi
+    if [ "$blob_entries" -ne "$active_count" ]; then
+        echo "[FAIL] epoch-$epoch snapshot says active_count=$active_count but \
+its blob carries $blob_entries entries" >&2
+        return 1
+    fi
+
+    rank=$(( (epoch / e_len + view) % active_count ))
+    # SQLite substr() is 1-indexed and byte-addressed on a BLOB.
+    pk_off=$(( VSET_ENTRY_LEN * rank + VSET_HDR_LEN + VSET_VOTER_ID_LEN + 1 ))
+    vid_off=$(( VSET_ENTRY_LEN * rank + VSET_HDR_LEN + 1 ))
+    pk=$(sqlite3 "$db" "SELECT hex(substr(snapshot_blob, \
+        $pk_off, $VSET_PUBKEY_LEN)) FROM validator_set_snapshots \
+        WHERE epoch_start = $epoch;") || pk=""
+    wid=$(sqlite3 "$db" "SELECT hex(substr(snapshot_blob, \
+        $vid_off, $VSET_VOTER_ID_LEN)) FROM validator_set_snapshots \
+        WHERE epoch_start = $epoch;") || wid=""
+    if [ ${#pk} -ne $(( VSET_PUBKEY_LEN * 2 )) ]; then
+        echo "[FAIL] entry $rank pubkey slice is ${#pk} hex chars, \
+expected $(( VSET_PUBKEY_LEN * 2 )) — the snapshot layout moved" >&2
+        return 1
+    fi
+    if [ ${#wid} -ne $(( VSET_VOTER_ID_LEN * 2 )) ]; then
+        echo "[FAIL] entry $rank voter_id slice is ${#wid} hex chars, \
+expected $(( VSET_VOTER_ID_LEN * 2 )) — the snapshot layout moved" >&2
+        return 1
+    fi
+
+    printf '%s %s %s %s\n' "$rank" "$active_count" "$pk" "$wid"
 }

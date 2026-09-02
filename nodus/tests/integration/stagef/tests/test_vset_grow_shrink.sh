@@ -5,8 +5,17 @@
 # REQUIRES a SHORT-EPOCH nodus build. The harness binaries must be
 # compiled with:
 #     -DDNAC_EPOCH_LENGTH=<E>
-#     -DDNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS=<E>
-#     -DDNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS=<E>
+#     -DDNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS=<G>
+#     -DDNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS=<any>
+# with STAGEF_CC_GRACE_SAFETY=<G> exported to match the SAFETY define.
+#
+# O15P — <G> NO LONGER HAS TO EQUAL <E>. It used to, because the
+# effective-height arithmetic below ignored the grace and only worked
+# while grace <= 2 * epoch; it now reads STAGEF_CC_GRACE_SAFETY. Pick <G>
+# for RUNTIME, not for correctness: the scenario has to drive the chain
+# past the governed boundary twice, so a grace of 24 * <E> (production's
+# ratio) means a very long run. The ERGONOMIC grace is not used by this
+# scenario at all — TARGET_ACTIVE_COUNT is a SAFETY parameter.
 # (dnac.h S3 #ifndef guards) and STAGEF_EPOCH_LENGTH=<E> exported before
 # stagef_up.sh. Section A self-checks the binary's epoch length against
 # the genesis validator-set snapshots and aborts on mismatch.
@@ -71,114 +80,28 @@ FUND_RAW=1000100000000000            # 10,001,000 DNAC (bond + fees + buffer)
 # 1 for the whole of A-F, so those sections behave exactly as before.
 REF_NODE=1
 
-# Canonical validator-set snapshot wire geometry (shared/dnac/vset_wire.h:
-# DNA_VSET_HDR_LEN=78, DNA_VSET_ENTRY_LEN=2642, voter_id 32 B at entry
-# offset 0, pubkey DNA_VSET_PUBKEY_LEN=2592 at entry offset 32).
-#
-# These are used to read entry k POSITIONALLY. That is the whole point:
-# the snapshot stores its entries in COMMITTEE ORDER by construction
-# (nodus_witness_vset.c builds them straight out of
-# nodus_committee_compute_for_epoch), so slicing by offset READS the
-# committee rank instead of recomputing it. An `instr()`-style search —
-# the pattern snapshot_contains uses — answers MEMBERSHIP, not ORDER, and
-# would happily identify the wrong validator as the leader.
-VSET_HDR_LEN=78
-VSET_ENTRY_LEN=2642
-VSET_VOTER_ID_LEN=32
-VSET_PUBKEY_LEN=2592
+# The validator-set snapshot wire geometry (VSET_HDR_LEN, VSET_ENTRY_LEN,
+# VSET_VOTER_ID_LEN, VSET_PUBKEY_LEN) and the leader derivation that reads
+# entry k positionally now live in stagef_env.sh, because
+# test_view_change_fork.sh derives its victim with the SAME rule and a
+# second copy of a consensus rule in shell is how these two scenarios
+# drifted apart. Behaviour here is unchanged; see stagef_leader_entry.
 
 fail() { echo "[FAIL] $*" >&2; exit 1; }
 info() { echo "[info] $*"; }
 ok()   { echo "[ok] $*"; }
 
 # ── helpers ─────────────────────────────────────────────────────────
-
-# All node indices that currently have a data dir (1..7 always, 8/9 later).
-running_nodes() {
-    for d in "$BASE_DIR"/node*/; do
-        basename "$d" | sed 's/node//'
-    done | sort -n
-}
-
-# The chain DB of the reference node. Was node1_db; it is now named for
-# what it is, because in section G it is deliberately NOT node1.
-ref_db() { stagef_node_chain_db "$REF_NODE"; }
+#
+# running_nodes, ref_db, node_view, cluster_view_max, log_count and
+# node_pubkey_hex were MOVED to stagef_env.sh (2026-09-02) so
+# test_view_change_fork.sh derives its victim through the same code
+# instead of a copy. Same names, same arguments, same return contracts —
+# nothing in this scenario calls them differently.
 
 head_height() {
     local db; db=$(ref_db)
     sqlite3 "$db" "SELECT COALESCE(MAX(height),0) FROM blocks;"
-}
-
-# The BFT view a node currently holds, from its own persisted singleton
-# row (pbft_state, nodus_witness_db.c:2122-2196).
-#
-# current_view NEVER resets (nothing sets it to 0) and it survives
-# restarts — so it must be READ, never assumed to be 0. NOT monotonic.
-# test_view_change_fork sorts before this scenario and rotates the view,
-# so by the time G runs the cluster is routinely at a non-zero view.
-#
-# A missing row is the documented fresh-DB state and means view 0 (the
-# loader leaves the default in place, :2155-2160). A FAILED query is not
-# a value: it returns 1 and prints nothing, so no caller can read an
-# error as a view.
-node_view() {
-    local db out
-    db=$(stagef_node_chain_db "$1")
-    [ -n "$db" ] || return 1
-    out=$(sqlite3 "$db" \
-        "SELECT COALESCE(current_view, 0) FROM pbft_state WHERE id = 1;" \
-        2>/dev/null) || return 1
-    [ -z "$out" ] && out=0
-    echo "$out"
-}
-
-# The highest view held by any node EXCEPT $1, which is the node G is
-# about to kill (or has killed).
-#
-# Why the max over a set rather than one node's value: current_view is
-# per-node runtime state with three writers — the view-change quorum
-# itself (nodus_witness_bft.c:7703), adopting a NEW_VIEW (:8196) and
-# adopting a PROPOSE's view (:5040) — so a node that sits out a round can
-# lag, and after the post-shrink demotion the lowest-numbered surviving
-# node is not guaranteed to be one of the seven ACTIVE. The property
-# being asserted is "the cluster rotated", i.e. SOME surviving node
-# advanced, and the max expresses exactly that. NOT monotonic per node:
-# :5040 copies the proposal's view UNCONDITIONALLY and can LOWER it.
-#
-# The victim is excluded from BOTH the before and after readings, so the
-# two are taken over the SAME set and stay comparable — and so that a
-# kill -9'd database with a hot journal is never opened by this script.
-cluster_view_max() {
-    local skip="$1" best=-1 n v
-    for n in $(running_nodes); do
-        [ "$n" = "$skip" ] && continue
-        v=$(node_view "$n") || continue
-        [ "$v" -gt "$best" ] && best="$v"
-    done
-    [ "$best" -ge 0 ] || return 1
-    echo "$best"
-}
-
-# How many times PATTERN appears across EVERY running node's log.
-#
-# Always used as a BEFORE/AFTER delta, never as a bare presence test.
-# The logs are cumulative across the whole harness run and earlier
-# scenarios in it — test_view_change_fork deliberately forces view
-# changes — so "a VIEW_CHANGE line exists" is already true when G starts
-# and proves nothing about G. Only an INCREASE is evidence.
-log_count() {
-    local pat="$1" total=0 n c
-    for n in $(running_nodes); do
-        c=$(grep -c -- "$pat" "$BASE_DIR/node$n/nodus.log" 2>/dev/null || true)
-        total=$(( total + ${c:-0} ))
-    done
-    echo "$total"
-}
-
-# Raw Dilithium5 public key of a harness node, uppercase hex — the exact
-# byte string the validator row and the snapshot blob carry.
-node_pubkey_hex() {
-    xxd -p -u -c 99999 "$BASE_DIR/node$1/identity/nodus.pk"
 }
 
 # Drive the chain to >= $1 by submitting one minimal TX per block.
@@ -674,9 +597,36 @@ done
 ok "node1 witness identity funded (${bal} raw)"
 
 H=$(head_height)
-# effective: a boundary far enough out to clear grace + one full epoch
-EFF=$(( ((H + 2 * E_LEN) / E_LEN + 1) * E_LEN ))
-info "proposing TARGET_ACTIVE_COUNT=9 effective=$EFF (head=$H)"
+# ── effective: a boundary far enough out to clear THE GRACE plus one
+# full epoch. O15P — this now READS the grace.
+#
+# WHAT WAS WRONG. The comment here always claimed the formula cleared the
+# grace; the formula was `((H + 2*E_LEN) / E_LEN + 1) * E_LEN` and never
+# mentioned it. It happened to be right only while grace <= 2 * epoch,
+# which is why the header above demanded GRACE_SAFETY_BLOCKS == E_LEN.
+# The moment the two differ the arithmetic breaks, and the chain — which
+# is correct — refuses the proposal: measured at epoch 7 / safety 21,
+# this proposed effective=21 from head=6 against a requirement of
+# commit + grace = 28.
+#
+# WHY THAT MATTERED BEYOND ONE RED SCENARIO. Production is epoch 720 with
+# SAFETY grace 17280, i.e. 24x the epoch — a relationship this scenario
+# could not express at all, so the governed path had only ever been
+# exercised at grace == epoch, a shape production does not have.
+#
+# TARGET_ACTIVE_COUNT is a SAFETY parameter — verified, not assumed:
+# nodus_chain_config_grace_for_param maps CC_PARAM_TARGET_ACTIVE to
+# DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS. So SAFETY is the grace to clear,
+# and STAGEF_CC_GRACE_SAFETY is the variable that mirrors it
+# (stagef_env.sh already exports it; this file simply never read it).
+#
+# The chain's rule is `effective >= commit_block + grace`, and the commit
+# lands a block or two after H, so clear the grace from H and then round
+# UP to the next boundary — the extra epoch is the margin that keeps the
+# boundary strictly after the effective height.
+G_SAFETY="${STAGEF_CC_GRACE_SAFETY:?STAGEF_CC_GRACE_SAFETY unset — the effective height cannot clear a grace it cannot read}"
+EFF=$(( ((H + G_SAFETY + E_LEN) / E_LEN + 1) * E_LEN ))
+info "proposing TARGET_ACTIVE_COUNT=9 effective=$EFF (head=$H, safety grace=$G_SAFETY, epoch=$E_LEN)"
 "$NODUS_CLI" -s 127.0.0.1 -p "$(stagef_tcp_port "$REF_NODE")" \
     -i "$BASE_DIR/node1/identity" chain-config propose \
     --param TARGET_ACTIVE_COUNT --value 9 --effective "$EFF" \
@@ -782,8 +732,10 @@ GROWN_SNAP_HASH=$(sqlite3 "$(ref_db)" "SELECT hex(snapshot_hash) FROM \
 # ── F. shrink: TARGET_ACTIVE_COUNT = 7 ──────────────────────────────
 
 H=$(head_height)
-EFF2=$(( ((H + 2 * E_LEN) / E_LEN + 1) * E_LEN ))
-info "proposing TARGET_ACTIVE_COUNT=7 effective=$EFF2 (head=$H)"
+# Same rule as the grow proposal above — see the reasoning there. Also a
+# SAFETY parameter, so also the SAFETY grace.
+EFF2=$(( ((H + G_SAFETY + E_LEN) / E_LEN + 1) * E_LEN ))
+info "proposing TARGET_ACTIVE_COUNT=7 effective=$EFF2 (head=$H, safety grace=$G_SAFETY, epoch=$E_LEN)"
 "$NODUS_CLI" -s 127.0.0.1 -p "$(stagef_tcp_port "$REF_NODE")" \
     -i "$BASE_DIR/node1/identity" chain-config propose \
     --param TARGET_ACTIVE_COUNT --value 7 --effective "$EFF2" \
@@ -890,6 +842,16 @@ ok "historical snapshots (incl. the 9-member epoch $grown_epoch) are unchanged"
 #   luck, and "the chain crossed NEXT_B" is fully compatible with "the
 #   victim was never the leader". The victim is now DERIVED.
 #
+#   ⚠ AND THE DERIVATION IS NO LONGER G's ALONE. Since 2026-09-02 the
+#   geometry checks and the positional slice live in stagef_env.sh as
+#   stagef_leader_entry, because test_view_change_fork.sh had the SAME
+#   defect (hardcoded node 1) and fixing it by copying these eighty lines
+#   would have re-created the drift that produced the defect. G still owns
+#   everything around the call — the bounded snapshot re-read, the
+#   two-attempt view pin, the REF_NODE re-point, the fingerprint
+#   cross-check and every `fail` — so a change to the shared function can
+#   only ever make the derivation refuse, never make G assert less.
+#
 # WHAT IT REQUIRES
 #   Compile flags (the binary): the same short-epoch build the whole
 #     scenario needs — -DDNAC_EPOCH_LENGTH=<E>,
@@ -988,45 +950,20 @@ done
 the boundary epoch $NEXT_B (head=$H) — the leader for that epoch cannot be \
 derived, and guessing one would make this whole section meaningless"
 
-ACTIVE_COUNT=$(sqlite3 "$(ref_db)" "SELECT active_count FROM \
-    validator_set_snapshots WHERE epoch_start = $NEXT_B;")
-BLOB_LEN=$(sqlite3 "$(ref_db)" "SELECT length(snapshot_blob) FROM \
-    validator_set_snapshots WHERE epoch_start = $NEXT_B;")
-# Both must be non-empty NUMBERS before any arithmetic touches them: an
-# empty cell would otherwise be coerced to 0 inside $(( )) and quietly
-# produce a plausible-looking entry count.
-case "$ACTIVE_COUNT" in ''|*[!0-9]*)
-    fail "epoch-$NEXT_B snapshot has no usable active_count ('$ACTIVE_COUNT')";;
-esac
-case "$BLOB_LEN" in ''|*[!0-9]*)
-    fail "epoch-$NEXT_B snapshot blob has no readable length ('$BLOB_LEN')";;
-esac
-[ "$ACTIVE_COUNT" -ge 1 ] || \
-    fail "epoch-$NEXT_B snapshot has active_count=$ACTIVE_COUNT"
-
-# The column and the blob must agree about how many entries there are.
-# active_count is what the leader formula takes its modulus from, and the
-# blob is what the entry is sliced out of; if they disagree, one of the
-# two is wrong and the derived index would address the wrong bytes.
-BLOB_ENTRIES=$(( (BLOB_LEN - VSET_HDR_LEN) / VSET_ENTRY_LEN ))
-[ $(( VSET_HDR_LEN + BLOB_ENTRIES * VSET_ENTRY_LEN )) -eq "$BLOB_LEN" ] || \
-    fail "epoch-$NEXT_B snapshot blob is $BLOB_LEN bytes, not a whole number \
-of $VSET_ENTRY_LEN-byte entries after the $VSET_HDR_LEN-byte header"
-[ "$BLOB_ENTRIES" -eq "$ACTIVE_COUNT" ] || \
-    fail "epoch-$NEXT_B snapshot says active_count=$ACTIVE_COUNT but its blob \
-carries $BLOB_ENTRIES entries"
-
 # ── G.2 derive the victim: the validator that LEADS epoch NEXT_B ─────
 #
-# Leader rank = (epoch + view) % n, with epoch = height / E_LEN and n the
-# committee size (nodus_witness_bft.c:465-467 and :505-510). NEXT_B is a
-# boundary multiple, so its epoch ordinal is NEXT_B / E_LEN and that one
-# rank leads EVERY block of [NEXT_B, NEXT_B + E_LEN).
+# Leader rank = (epoch + view) % n, with epoch the epoch ORDINAL and n the
+# committee size (nodus_witness_bft.c:1195-1198, called at :1284). NEXT_B
+# is a boundary multiple, so its epoch ordinal is NEXT_B / E_LEN and that
+# one rank leads EVERY block of [NEXT_B, NEXT_B + E_LEN).
 #
-# The rank is turned into an identity by READING the snapshot, never by
-# re-deriving the tiebreak: nodus_witness_vset.c fills entry i straight
-# from nodus_committee_compute_for_epoch's member i, so entry order IS
-# committee order and slicing entry k by byte offset gives rank k.
+# The arithmetic, the snapshot geometry checks and the positional slice
+# are stagef_leader_entry's (stagef_env.sh) — the SAME code
+# test_view_change_fork.sh derives its victim with. It prints
+# "<rank> <active_count> <pubkey_hex> <voter_id_hex>" and returns 1 with a
+# precise [FAIL] on stderr for every fault it can see, which is why the
+# `|| exit 1` below adds no message of its own: the diagnosis is already
+# printed and a second line would only bury it.
 #
 # The view is re-read and the whole derivation re-run below if it moved.
 derive_view=""
@@ -1039,19 +976,9 @@ for attempt in 1 2; do
         fail "cannot read current_view from node1's pbft_state — the leader \
 rank is (epoch + view) % n and is underivable without it"
 
-    LEADER_IDX=$(( (NEXT_B / E_LEN + derive_view) % ACTIVE_COUNT ))
-    # SQLite substr() is 1-indexed and byte-addressed on a BLOB.
-    PK_OFF=$(( VSET_ENTRY_LEN * LEADER_IDX + VSET_HDR_LEN + VSET_VOTER_ID_LEN + 1 ))
-    VID_OFF=$(( VSET_ENTRY_LEN * LEADER_IDX + VSET_HDR_LEN + 1 ))
-    LEADER_PK=$(sqlite3 "$(ref_db)" "SELECT hex(substr(snapshot_blob, \
-        $PK_OFF, $VSET_PUBKEY_LEN)) FROM validator_set_snapshots \
-        WHERE epoch_start = $NEXT_B;")
-    LEADER_WID=$(sqlite3 "$(ref_db)" "SELECT hex(substr(snapshot_blob, \
-        $VID_OFF, $VSET_VOTER_ID_LEN)) FROM validator_set_snapshots \
-        WHERE epoch_start = $NEXT_B;")
-    [ ${#LEADER_PK} -eq $(( VSET_PUBKEY_LEN * 2 )) ] || \
-        fail "entry $LEADER_IDX pubkey slice is ${#LEADER_PK} hex chars, \
-expected $(( VSET_PUBKEY_LEN * 2 )) — the snapshot layout moved"
+    LEADER_LINE=$(stagef_leader_entry "$(ref_db)" "$NEXT_B" "$E_LEN" \
+        "$derive_view") || exit 1
+    read -r LEADER_IDX ACTIVE_COUNT LEADER_PK LEADER_WID <<< "$LEADER_LINE"
 
     # Which of our nodes is that? Matched on the RAW PUBKEY, the same
     # byte string node_pubkey_hex reads out of the node's own identity.

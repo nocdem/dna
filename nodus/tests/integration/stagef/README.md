@@ -59,7 +59,22 @@ Environment:
 > transaction is submitted. Any scenario that just `sleep`s while
 > expecting height to advance is **vacuous** — it will pass by comparing
 > a height against itself. Drive the chain with a pump loop instead
-> (`test_vset_grow_shrink.sh:215`, `test_epoch_settlement.sh:91`).
+> (`test_vset_grow_shrink.sh:129`, `test_epoch_settlement.sh:122`).
+>
+> **And the same fact silences view changes.** A follower's P3
+> demand-armed deadman is the only thing that can start a round when the
+> leader is unresponsive, and its whole window is gated on pending work —
+> `if (w->mempool.count > 0 || w->pending_forward_count > 0)`,
+> `nodus_witness_bft.c:11986`. The branch below it says so in the node's
+> own words: *"an IDLE node arms no timeout, so it can never initiate a
+> view change"* (`:12084-12089`). So killing or pausing a leader on an
+> idle chain produces **no rotation for as long as you care to wait**,
+> and a scenario that measures "no view change in N seconds" without
+> pending demand has measured nothing. See `test_view_change_fork.sh`
+> lie-path 1.
+> ⚠ The matching log line *"IDLE — no timeout armed, no view change
+> possible"* (`:12111`) is inside `#ifdef O15H_DIAG_ENABLED` and **does
+> not print in a default build** — don't go looking for it in `nodus.log`.
 
 | Var | Default | Requires the binary built with | Purpose |
 |---|---|---|---|
@@ -165,7 +180,7 @@ production (4000-4004) so both can run simultaneously.
 | `stagef_up.sh` | Generate identities + spawn 7 nodus-server + wait peer mesh + submit genesis + fund user |
 | `stagef_down.sh` | Kill PIDs + rm -rf the run dir |
 | `stagef_diff.sh` | Read state_root from each node's witness DB, assert identical across the 7, print |
-| `stagef_env.sh` | Sourced by other scripts; exports `BASE_DIR`, ports, pubkey file paths, `STAGEF_*` overrides |
+| `stagef_env.sh` | Sourced by other scripts; exports `BASE_DIR`, ports, pubkey file paths, `STAGEF_*` overrides. **Also the ONE epoch-leader derivation** (`stagef_leader_entry`, `:543`) plus `running_nodes` / `ref_db` / `node_view` / `cluster_view_max` / `log_count` / `node_pubkey_hex` and the `VSET_*` wire constants (`:384-625`) — moved out of `test_vset_grow_shrink.sh` on 2026-09-02 so `test_view_change_fork.sh` derives its victim with the same code instead of a copy. A fault here breaks **every** scenario, not one. |
 
 ## Scenario tests (`tests/`)
 
@@ -184,7 +199,7 @@ All 24 scripts on disk are listed. **"Plain" means: a default
 | `test_undelegate.sh` | `DELEGATE` → `UNDELEGATE` → state_root 7/7 |
 | `test_unstake.sh` | `UNSTAKE` marks validator RETIRING → state_root 7/7 |
 | `test_validator_update.sh` | `VALIDATOR_UPDATE` schedules a pending commission change → state_root 7/7 |
-| `test_view_change_fork.sh` | C5 view-change + partial-participation safety → state_root converges 7/7 |
+| `test_view_change_fork.sh` | C5 view-change safety against a **DERIVED** epoch leader: pause the validator proven to lead the next block, require a completed view-change quorum **and** a committed TX without it, then state_root 7/7 after it resumes — see below |
 | `test_funding_stability.sh` | Funding-stability proof (O15C-D.1 §5) against the OPEN harness-instability record |
 | `test_bootstrap_cold_dr.sh` | C4 `--cold-bootstrap` operator escape; C-2 cabal-bypass behaviour |
 | `test_bootstrap_join_live.sh` | Witness bootstrap join-live + orphan recovery. **Adds a node8 to the cluster** |
@@ -202,21 +217,130 @@ All 24 scripts on disk are listed. **"Plain" means: a default
 | `test_v2_grow_7_20.sh` | **BROKEN — do not run** | Wants `-DNODUS_V2_ACTIVATION=ON`, an option deleted with the activation ceremony (O15J Faz 3). Rewriting it is Faz 4's job. |
 | `test_mixed_version_reject.sh` | `STAGEF_LEGACY_NODUS_BIN` | O15C-D.4 — a stale-protocol validator must not participate. **Proves it by ARITHMETIC:** one node is swapped to the legacy binary and two current nodes are stopped, so the live set is 4 current + 1 legacy = quorum; if the stale vote counted the chain would advance, so it must STALL and then RESUME when a current node returns. ⚠ **Which side logs `INCOMPATIBLE PEER` depends on the legacy binary you build**, and the anti-vacuity check accepts either: a pre-v3 binary has no gate and keeps talking (the CURRENT nodes refuse it), while any v3+ binary carries the gate, drops every current frame on arrival and never votes (only the LEGACY node logs refusals — measured 2026-09-01, v4 vs v6: 33 on the legacy node, ZERO on the six current). Demanding a current-side refusal made the scenario UNPASSABLE with a modern legacy binary; fixed 2026-09-01 together with a `grep -c \|\| echo 0` bug that produced a two-line count and killed every numeric test on it. **Only a pre-gate legacy binary exercises the CURRENT node's gate** — that path is otherwise covered by `ctest test_witness_protocol_version_gate` §2/§3. |
 
+#### `test_view_change_fork.sh` — the paused epoch leader
+
+**What it proves.** That pausing the validator the cluster has **PROVEN
+is its current epoch leader** does not fork the chain: the survivors
+rotate the view away from it, commit new work without it, and it
+re-converges to the same `state_root` when it resumes. The property that
+would be false if it failed: *a BFT chain can make progress while its
+designated leader is unresponsive, and the leader can rejoin without
+divergence.* The full argument is in the script's own header (`:1-177`);
+this is the summary the tables owe it.
+
+Phase B is the whole scenario. It derives the leader for the epoch of
+**head + 1** (`:261-392`), cross-checks the derived entry against the
+node's own fingerprint (`:394-412`), `SIGSTOP`s exactly that node, and
+then decides on a **truth table over two independent facts** (`:519-579`):
+did a view-change quorum complete, and did a transaction commit? Only
+*both* is a pass; the other three combinations each fail with their own
+diagnosis, because they fail for different reasons.
+
+⚠ **What it no longer does: pass having exercised nothing.** Until
+2026-09-02 it stopped a **hardcoded node 1**. The leader is
+`(epoch + view) % n` (`nodus_witness_bft.c:1195-1198`) over a committee
+ordered by stake then by a `state_seed`-derived tiebreak, over identities
+generated fresh on every run — so whether node 1 held that slot was a
+coin flip. When it did not, no view change was required and a passing run
+printed `view-change activity on 0 nodes` and `C5 reproposal activity on
+0 nodes` immediately before `[PASS]`. The script said so out loud
+("proceeding anyway — the original leader may still be node 1's slot"),
+which read as tolerance but was the scenario conceding it did not control
+its own subject. Both halves are now gone: the victim is DERIVED, and the
+concession is an assertion.
+
+**What it requires.** A default `nodus/build` binary — no compile flag of
+its own, no fault-injection build, no `NODUS_FAULT_*`. **One new
+requirement:** `STAGEF_EPOCH_LENGTH` must MATCH the binary's
+`DNAC_EPOCH_LENGTH`, because the leader rank is derived from the epoch
+ordinal. At the defaults (both 720) that is automatic and the scenario
+stays "plain"; on a short-epoch campaign the `-D` and the env var must
+agree. A mismatch **cannot produce a false green** — it pauses an
+innocent follower, the real leader keeps producing, no view change forms,
+and Phase B fails with the epoch, view and victim printed.
+
+**What it leaves behind.** One committee node `SIGSTOP`ped and then
+`SIGCONT`ed — **a different one on every run**, so it is printed. It
+keeps its original pid (no restart, unlike section G's `kill -9`), and an
+`EXIT` trap resumes it on every early exit. The cluster is left at a
+**higher `current_view`** and with one extra funded user under
+`$BASE_DIR/tusers/`.
+
+**How it can lie.**
+
+- **The idle window proves nothing, and it is not asserted.** The 90 s
+  between the `SIGSTOP` and the funding send **cannot** observe a
+  rotation: with an empty mempool the P3 deadman does not arm at all
+  (`nodus_witness_bft.c:11986`; the comment at `:12084-12089` states it
+  outright). A measurement of "0 of 6 reached view-change quorum in 90 s"
+  taken in **that** window is the predicted behaviour, not a defect. The
+  window is kept and REPORTED; the assertion is taken after the first
+  demand arrives.
+  ⚠ **Do not "fix" it by raising the 90 s** — a bigger idle window is
+  still an idle window. And do not add a transaction pump to make it
+  productive without deciding, deliberately, that the scenario should
+  test something else.
+- **Stale log lines.** `test_med28_reproposal.sh` and
+  `test_newview_convergence.sh` both force view changes and both sort
+  BEFORE this file in the alphabetical sweep, so `grep -q "view change
+  quorum"` is **vacuously true** — it was, in the version this replaced.
+  Every count is now a BEFORE/AFTER delta; only an INCREASE is evidence.
+- **A pass means the REAL leader was paused**, not merely that node 1
+  was. That rests entirely on the derivation and on the `voter_id` ↔
+  fingerprint cross-check that guards it. Remove the cross-check and a
+  wrong-bytes read would signal an innocent node.
+- **View or epoch drift redirects leadership — residual, not closed.**
+  The window before the pause IS closed (head and view re-read, derivation
+  re-run twice, and a survivor already holding a higher view is a
+  FAILURE). After the funding TX arrives a round timeout can still rotate
+  the view and hand leadership elsewhere, and the scenario then fails on a
+  healthy chain. Made diagnosable instead: every failure prints the
+  pre-pause and post-pause views and heights.
+- **A dead reference node.** Every single-node read goes through
+  `$REF_NODE`, re-pointed off the victim before the signal.
+- **`rc=99` is BANNED here**, for the same reason as in section G: the
+  runner treats 99 as SKIP and a SKIP needs no `ASSERT_RUN`.
+- **A known false-FAIL residual — `SIGSTOP` is not `kill -9`, and the
+  client notices.** It cannot produce a green, only a misattributed red.
+  `nodus_client_connect` tries the bootstrap list **in config order**
+  (`nodus_client.c:663-679`) and `stagef_up.sh` writes node1 first. A
+  SIGSTOPped process still holds its listening socket, so the kernel
+  completes the handshake and the **connect succeeds** — then the HELLO
+  times out (`connect_timeout_ms`, default 5000, `:621-622`, `:768`).
+  Section G is immune: `kill -9` closes the socket and the connect is
+  refused at once. So when the derived victim IS node1, the funding TX
+  can be delayed or lost client-side and the cluster never sees demand.
+  Not new — the previous version paused node1 on **every** run and its
+  funding step was observed to succeed, so the client does recover in
+  practice. Phase B's failure branch **splits on the P3 delta** to keep
+  the two apart: `P3 +0` means the cluster never saw demand (suspect this
+  residual and read `tusers/vcfork_*/fund.log`); `P3 > 0` means demand was
+  seen and the rotation still did not converge — that one is the
+  consensus finding.
+- **Known gaps, recorded not hidden:** it records **no reachability
+  sentinels**, so the runner classifies it UNINSTRUMENTED and cannot
+  convert a vacuous PASS into a failure for it (every path to `[PASS]`
+  now runs through the truth table, but the runner does not know that);
+  Phase C still waits with a blind `sleep 30`; and Phase D's
+  `stagef_diff.sh` compares each node's LATEST block, so a node one block
+  behind reads as divergence rather than lag.
+
 #### `test_vset_grow_shrink.sh` section G — the dead epoch leader
 
-The last section of the last scenario, and the only place the harness
-kills a node it has **PROVEN is the leader**: `test_view_change_fork.sh`
-pauses node 1 whichever slot happens to be leading, and proceeds when no
-view change forms at all (`:116-118`), so it exercises a dead
-*participant*, not a dead *leader*. G's full argument lives in the
-script's own header (`:865-967`); this is the summary the scenario
-tables owe it.
+The last section of the last scenario, and the harness's only
+**`kill -9`** of a node it has PROVEN is the leader — where
+`test_view_change_fork.sh` above `SIGSTOP`s one and resumes it. The two
+now share ONE derivation (`stagef_leader_entry` in `stagef_env.sh`);
+before 2026-09-02 only G had it, and the fork test killed a hardcoded
+node 1. G's full argument lives in the script's own header (`:779-896`);
+this is the summary the scenario tables owe it.
 
 **What it proves.** That a chain whose designated EPOCH LEADER is killed
 recovers by ROTATING THE VIEW past it. The property that would be false
 if G failed: *a BFT chain can make progress across an epoch boundary
 whose designated leader is dead.* It is pinned by three independent
-positive checks, all captured while the victim is still dead (`:1224-1310`):
+positive checks, all captured while the victim is still dead
+(`:1046-1118`):
 
 1. a follower's demand-armed **P3 deadman FIRED** — the count of
    `P3 committed tip frozen` across every node log INCREASED;
@@ -242,8 +366,16 @@ compatible with "the victim was never the leader". The victim is now
 DERIVED: read positionally out of the frozen `validator_set_snapshots`
 row for `epoch_start == NEXT_B` at entry
 `(NEXT_B / E_LEN + current_view) % active_count`, then cross-checked
-against the node's own `nodus.pk` fingerprint prefix (`:1058-1152`).
+against the node's own `nodus.pk` fingerprint prefix (`:896-995`).
 Crossing the boundary is now a PRECONDITION, not the assertion.
+
+The geometry checks and the positional slice themselves live in
+`stagef_env.sh` as `stagef_leader_entry` (`:543`) since 2026-09-02, shared
+with `test_view_change_fork.sh`. G still owns everything around the call
+— the bounded snapshot re-read, the two-attempt view pin, the `REF_NODE`
+re-point, the fingerprint cross-check and every `fail` — so a change to
+the shared function can only make the derivation refuse, never make G
+assert less.
 
 **What it requires.** Nothing beyond the row above — the same
 short-epoch build (three defines) and `STAGEF_EPOCH_LENGTH` exported
@@ -318,7 +450,7 @@ as a participant.
 - **G.5's catch-up assertion reports a restart fault as a sync failure,
   and that has already cost one diagnosis.** The final step waits up to
   300 s for the victim's `blocks` table to reach `$REF_NODE`'s height and
-  then says `node$victim did not catch up (vh < ref_h)` (`:1251-1260`).
+  then says `node$victim did not catch up (vh < ref_h)` (`:1140-1149`).
   That message names a symptom, never a cause. Before O15L a restart
   that lost the SQLite race came back reporting `chain_db=active` with a
   **zeroed chain_id**, could not verify a single certificate, and
@@ -386,6 +518,15 @@ code under test. Observed, and each cost real debugging time:
   `newview` — so this bites hand-picked runs, not `genesis_protocol.sh`.
 - Bootstrap scenarios restart nodes; a scenario run immediately after may
   see a node still syncing and report a false divergence.
+- `test_view_change_fork.sh` now pauses and resumes the node it DERIVES
+  as the current epoch leader — a **different one on every run** — and
+  therefore leaves the cluster at a **higher `current_view`** than it
+  found it, plus one extra funded user under `tusers/`. It sorts before
+  `test_vset_grow_shrink.sh`, whose section G is written for exactly that
+  (G counts view-change log lines as BEFORE/AFTER deltas, never as
+  presence, and reads `current_view` rather than assuming 0). Before
+  2026-09-02 it paused a hardcoded node 1 and this was only *sometimes*
+  true; it is now guaranteed on every run.
 - `test_vset_grow_shrink.sh` **section G** kills and restarts one
   committee node — a DIFFERENT one on every run — and leaves the cluster
   at a permanently higher `current_view`. It sorts last, so nothing
@@ -543,8 +684,16 @@ rotation evidence — never on the pump finishing.
 
 - Requires cluster to start from genesis — cannot replay an existing
   chain into the harness.
-- Single machine — can't catch true network-partition bugs (see
-  `test_view_change_fork.sh` for the closest proxy via view change).
+- Single machine — can't catch true network-partition bugs. The closest
+  proxies are process signals against a **derived** leader:
+  `test_view_change_fork.sh` (`SIGSTOP` + resume) and
+  `test_vset_grow_shrink.sh` section G (`kill -9` + restart). Neither
+  produces a partition: the rest of the cluster stays fully connected, so
+  a conflicting-prepared-cert fork is still out of reach.
+- **A dead leader on an IDLE chain never triggers a view change**, by
+  design (`nodus_witness_bft.c:11986`). Any liveness property involving a
+  missing leader must be measured with demand pending, or it measures
+  nothing.
 - `test_halving_boundaries` needs `STAGEF_BLOCKS_PER_YEAR=20` (or
   similar) AND a binary compiled with the matching
   `-DDNAC_BLOCKS_PER_YEAR`; default skips it.
