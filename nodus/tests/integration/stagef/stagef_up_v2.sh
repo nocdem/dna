@@ -20,21 +20,39 @@
 #   rather than negotiated.
 #
 # WHAT IT REQUIRES
-#   Compile flags: NONE beyond a default `nodus/build`. The config's
-#   epoch_length / blocks_per_year / decimal_unit are read from the
-#   binary itself (below), so this script cannot disagree with the
-#   build it is testing — a mismatch is refused by the builder, and the
-#   whole point of reading them out is that the refusal never fires for
-#   a reason the operator has to guess at.
-#   Environment: none. STAGEF_NODUS_BIN / STAGEF_NODUSCLI_BIN are
-#   honoured through stagef_env.sh as usual.
+#   Compile flags: NONE beyond a default `nodus/build`.
+#   Environment: STAGEF_EPOCH_LENGTH / STAGEF_BLOCKS_PER_YEAR /
+#   STAGEF_DECIMAL_UNIT default to the SHIPPED values and are written
+#   into the genesis config. The harness's standing rule applies: they
+#   only tell this SCRIPT what the binary was built with, so setting one
+#   without the matching -D produces a config the builder REFUSES (loudly,
+#   naming both numbers). That refusal is correct — a chain derived at an
+#   epoch length its own binary disagrees with is a chain the fleet
+#   cannot run.
+#   STAGEF_NODUS_BIN / STAGEF_NODUSCLI_BIN honoured as usual.
 #
 # WHAT IT LEAVES BEHIND
 #   A full 7-node cluster running under $BASE_DIR, its path in
 #   /tmp/stagef_current, pids in $BASE_DIR/pids.txt — the same contract
 #   stagef_up.sh leaves, so stagef_down.sh tears this down unchanged.
 #   The genesis config used is kept at $BASE_DIR/v2_genesis.conf; it is
-#   the only artifact that would need to travel to another machine.
+#   the only artifact that would need to travel to another machine. The
+#   chain id and genesis pin are written to $BASE_DIR/v2_chain_id and
+#   $BASE_DIR/v2_genesis_pin so a scenario can READ the fleet's identity
+#   rather than form a second opinion by re-deriving it.
+#
+#   THREE IDENTITIES BESIDE THE SEVEN NODES, each with its own genesis
+#   leaves, because on a V2 chain who can be funded is decided BEFORE the
+#   chain exists:
+#     - every node          one leaf   (so claiming scenarios never
+#                                       compete for the same single-use
+#                                       leaf and stay order-independent)
+#     - $BASE_DIR/v2user    one leaf   NOT a validator, so it can STAKE
+#     - $BASE_DIR/v2pump    many small leaves — a supply of transactions,
+#                                       because a V2 chain makes one block
+#                                       per transaction and a scenario
+#                                       that needs to reach a height has
+#                                       no other way to get there
 #
 # HOW IT CAN LIE
 #   - **Seven identical chain ids from seven identical configs is not a
@@ -45,10 +63,9 @@
 #     an uninitialised byte — and nothing about portability.
 #   - **Bring-up proves birth, not consensus.** Reaching the end of this
 #     script means the nodes started and agree on a genesis they each
-#     computed. It does NOT mean they can commit a block together; the
-#     V2 lane's multi-node behaviour is the scenario suite's job, and at
-#     the time of writing there is no scenario that drives a V2 chain.
-#     Do not read a green bring-up as a green V2 lane.
+#     computed. It does NOT mean they can commit a block together — that
+#     is the scenario suite's job (genesis_protocol_v2.sh). Do not read a
+#     green bring-up as a green V2 lane.
 #   - **The chain-id comparison is the assertion.** Deleting it leaves a
 #     script that starts seven nodes and says nothing about whether they
 #     are on the same chain — they would simply fail to talk to each
@@ -134,6 +151,26 @@ kill "$ug" 2>/dev/null || true; wait "$ug" 2>/dev/null || true
 [ -s "$USER_DIR/identity/nodus.pk" ] || { echo "[FAIL] user identity" >&2; exit 4; }
 echo "[ok] non-validator user identity generated ($USER_DIR/identity)"
 
+# A SECOND non-validator identity, which owns the pump leaves. Kept
+# separate from the user so a scenario that drives the chain hard cannot
+# spend the leaf another scenario is relying on.
+PUMP_DIR="$BASE_DIR/v2pump"
+mkdir -p "$PUMP_DIR/identity" "$PUMP_DIR/data"
+"$STAGEF_NODUS_BIN" -b 127.0.0.1 \
+    -u "$(stagef_udp_port $(( C + 2 )))" -t "$(stagef_tcp_port $(( C + 2 )))" \
+    -p "$(stagef_peer_port $(( C + 2 )))" -C "$(stagef_chan_port $(( C + 2 )))" \
+    -W "$(stagef_witness_port $(( C + 2 )))" \
+    -i "$PUMP_DIR/identity" -d "$PUMP_DIR/data" \
+    > "$PUMP_DIR/identity_gen.log" 2>&1 &
+pg=$!
+for _ in $(seq 1 40); do
+    [ -s "$PUMP_DIR/identity/nodus.pk" ] && [ -s "$PUMP_DIR/identity/nodus.fp" ] && break
+    sleep 0.25
+done
+kill "$pg" 2>/dev/null || true; wait "$pg" 2>/dev/null || true
+[ -s "$PUMP_DIR/identity/nodus.pk" ] || { echo "[FAIL] pump identity" >&2; exit 4; }
+echo "[ok] pump identity generated ($PUMP_DIR/identity)"
+
 # The identity-generation spawn opened a data directory, so each node
 # now holds nodus.db / channels.db. The derivation refuses to run
 # beside a FOREIGN chain database but does not care about these, and
@@ -143,23 +180,23 @@ echo "[ok] non-validator user identity generated ($USER_DIR/identity)"
 # ── 2. the genesis config ───────────────────────────────────────────
 # THE ECONOMIC PARAMETERS MUST MATCH THE BINARY, and there is no way to
 # ask the binary what it was built with — nothing exports them. So they
-# are written here at the SHIPPED defaults, and the honest consequence
-# is stated rather than worked around:
+# are taken from the environment, defaulting to the SHIPPED values, and
+# the harness's existing convention applies unchanged: STAGEF_* tells the
+# SCRIPTS what the binary was built with, and setting one without the
+# matching -D is the mistake the README warns about at the top.
 #
-#   against a default build   → they match, derivation proceeds;
-#   against a short-epoch or short-year build (the ones several
-#   scenarios need) → the BUILDER REFUSES, naming both numbers, and
-#   this script exits 5 with that message on screen.
+#   default build            → the defaults below match, derivation runs;
+#   short-epoch build without STAGEF_EPOCH_LENGTH → the BUILDER REFUSES,
+#     naming both numbers, and this script exits 5 with that on screen.
 #
-# That refusal is the correct outcome, not a defect to route around. A
+# That refusal is the correct outcome, never something to route around: a
 # chain derived at an epoch length its own binary disagrees with is a
-# chain the fleet cannot run — the mismatch is refused again at every
-# node's open (nodus_witness_v2_econ.c). If this script is ever needed
-# against a short-epoch build, override these three to match the build;
-# do NOT make the builder lenient.
-EL=720
-BY=6307200
-DU=100000000
+# chain the fleet cannot run, and the mismatch is refused again at every
+# node's open (nodus_witness_v2_econ.c). Do NOT make the builder lenient.
+EL="${STAGEF_EPOCH_LENGTH:-720}"
+BY="${STAGEF_BLOCKS_PER_YEAR:-6307200}"
+DU="${STAGEF_DECIMAL_UNIT:-100000000}"
+echo "[ok] econ parameters: epoch_length=$EL blocks_per_year=$BY decimal_unit=$DU"
 
 SELF_STAKE=1000000000000000          # DNAC_SELF_STAKE_AMOUNT: 10M x 10^8
 # ONE ALLOCATION PER NODE, not one for the whole chain.
@@ -172,8 +209,12 @@ SELF_STAKE=1000000000000000          # DNAC_SELF_STAKE_AMOUNT: 10M x 10^8
 # which is the property the legacy suite most conspicuously lacks (see
 # the residue list in README.md).
 ALLOC=10000000000000000              # 100M DNAC per leaf, a round number
-# C node leaves + 1 non-validator user leaf.
-TOTAL=$(( SELF_STAKE * C + ALLOC * (C + 1) ))
+# Pump leaves: small, many, and owned by one identity — see the comment
+# at their generation. 40 is enough to cross a short epoch with room to
+# spare; at the shipped 720 nothing can cross a boundary here anyway.
+PUMP_LEAVES="${STAGEF_V2_PUMP_LEAVES:-40}"
+PUMP_ALLOC=1000000000                # 10 DNAC each, deliberately tiny
+TOTAL=$(( SELF_STAKE * C + ALLOC * (C + 1) + PUMP_ALLOC * PUMP_LEAVES ))
 
 CONF="$BASE_DIR/v2_genesis.conf"
 {
@@ -223,8 +264,30 @@ CONF="$BASE_DIR/v2_genesis.conf"
     printf 'source_id    = %0128d\n' "$(( C + 1 ))"
     echo "dest_binding = $(cat "$USER_DIR/identity/nodus.fp")"
     echo "amount       = $ALLOC"
+
+    # ── PUMP LEAVES ─────────────────────────────────────────────────
+    # A V2 chain produces a block only when a transaction arrives, and on
+    # a fresh one the ONLY thing a fresh identity can submit is a claim.
+    # So the number of blocks a scenario can drive is bounded by the
+    # number of unclaimed leaves it can reach — which made an epoch
+    # boundary (E blocks away) unreachable with one leaf per identity.
+    #
+    # dest_binding is per-LEAF, not per-identity, so one identity can own
+    # many leaves and each is a separate claim with its own nullifier.
+    # These belong to the pump identity and exist for exactly that: to
+    # give a scenario a supply of transactions.
+    #
+    # They are the LAST leaves in source_id order, so a scenario that
+    # wants "the next unclaimed pump leaf" can walk forward.
+    for i in $(seq 1 "$PUMP_LEAVES"); do
+        echo ""
+        echo "[allocation]"
+        printf 'source_id    = %0128d\n' "$(( 1000 + i ))"
+        echo "dest_binding = $(cat "$PUMP_DIR/identity/nodus.fp")"
+        echo "amount       = $PUMP_ALLOC"
+    done
 } > "$CONF"
-echo "[ok] v2_genesis.conf built ($C validators, $(( C + 1 )) allocations, $(stat -c%s "$CONF") bytes)"
+echo "[ok] v2_genesis.conf built ($C validators, $(( C + 1 + PUMP_LEAVES )) allocations incl. $PUMP_LEAVES pump leaves, $(stat -c%s "$CONF") bytes)"
 
 # ── 3. derive on every node, INDEPENDENTLY ──────────────────────────
 CHAIN_ID=""; GENESIS_PIN=""

@@ -37,12 +37,21 @@
 #   nothing requires otherwise, and if that ever stops being true the
 #   scenario that broke it is the one with the bug.
 #
+#   ONE EXCEPTION, and it is stated rather than discovered:
+#   test_v2_epoch_boundary.sh runs LAST because it SPENDS THE PUMP LEAVES
+#   to drive the chain across a boundary. Anything that needs a
+#   transaction after it would find none. It is also the only V2 scenario
+#   that needs a short-epoch binary, and it SKIPS (99) rather than
+#   pretending on a default build.
+#
 # ── LEAF BUDGET ─────────────────────────────────────────────────────
-#   A genesis leaf can be claimed exactly ONCE. Three scenarios consume
-#   one each (claim, stake, view_change); the bring-up mints eight. A
-#   second full run against the SAME cluster will fail on the claiming
-#   scenarios, correctly — bring the cluster up fresh, which is what this
-#   runner does by default.
+#   A genesis leaf can be claimed exactly ONCE. The bring-up mints one per
+#   node, one for the non-validator user, and a batch of small PUMP leaves
+#   for driving the chain to a height. Three scenarios consume a single
+#   leaf each (claim, stake, view_change); the epoch scenario consumes the
+#   whole pump batch. A second full run against the SAME cluster fails on
+#   the claiming scenarios, correctly — the default mode brings the
+#   cluster up fresh for exactly that reason.
 #
 # Usage:
 #   bash genesis_protocol_v2.sh              # bring up + run + tear down
@@ -62,6 +71,7 @@ test_v2_partial_wipe.sh
 test_v2_restart_convergence.sh
 test_v2_stake.sh
 test_v2_view_change.sh
+test_v2_epoch_boundary.sh
 "
 
 if [ "$SCENARIOS_ONLY" = 0 ]; then
