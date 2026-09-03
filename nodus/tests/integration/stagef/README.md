@@ -245,6 +245,37 @@ that is not flakiness, it is a single-use subject.
 | `test_v2_join.sh` | A node's databases are WIPED and it rejoins the live fleet with nothing but its identity and the operator's genesis pin. **This is V2's recovery story, and it is not the legacy one** — a legacy node with no chain asks peers for the genesis and adopts what a quorum agrees on; a V2 node adopts a bundle only if it re-derives to the pin it holds locally, so recovery without the pin is deliberately impossible. That is why `test_bootstrap_partial_wipe.sh` cannot simply be pointed at a V2 cluster: its restore step relies on the legacy re-bootstrap. The pin is READ from `$BASE_DIR/v2_genesis_pin`, never re-derived — re-deriving would be a second opinion about the chain's identity. Asserts ADOPTION (a chain DB exists again AND its genesis id equals the fleet's), not that the process started: a node that failed to adopt still listens and still serves DHT. The wipe is verified before the restart, or "it has a chain" afterwards could be the old file. Identity is deliberately kept — a fresh key is not in the genesis validator set. Leaves node 6 with a rebuilt data directory and a truncated log. |
 | `test_v2_restart_convergence.sh` | A V2 node is `kill -9`'d and restarted and must come back ON THE SAME CHAIN in its witness role. Until v0.19.37 it came back believing it had no chain — the presence test read the legacy `blocks` table, which V2 never writes — and entered the legacy DISCOVER machine, which ends in `exit(2)`. ctest covers the branch; this covers the node. Role count is a BEFORE/AFTER delta because the first boot's line is already in the log. Needs no transaction, so it works on a frozen chain too. |
 
+#### Legacy-only gates — there is no V2 counterpart, and that is the answer
+
+Two scenarios in the tables above have **no Ledger V2 variant, by
+construction**. Written down because the obvious next move is to port
+them, and porting them would produce a scenario that tests nothing.
+
+- **`test_bootstrap_mixed_version.sh` (H-9).** The check lives inside
+  `nodus_witness_bootstrap_tick`, which returns immediately unless
+  `bootstrap_state == DISCOVER`. A V2 node takes the HAVE_CHAIN branch
+  (or the pinned-joiner INIT) and never enters DISCOVER, so the gate can
+  never fire on it. Its purpose is narrower than its name suggests: it
+  protects the legacy bootstrap from peers that would not understand T3
+  types 16-19 — the legacy bootstrap messages themselves.
+- **`test_bootstrap_cold_dr.sh` (C-4 / C-2 bypass).** The flag is read in
+  `nodus_witness_bootstrap_handle_chain_q`, and that handler answers from
+  `chain_tip_height`, which reads the LEGACY `blocks` table. On a V2
+  chain that is always 0 and the handler returns before answering. A V2
+  node has nothing to serve over that protocol whether the bypass is set
+  or not.
+
+**What plays their role on V2 is not a port of them:**
+
+| Legacy protection | V2 equivalent | Covered by |
+|---|---|---|
+| C-2 cabal protection during DISCOVER | The **genesis pin**: a joiner adopts a peer's bundle only if it re-derives to the pin it holds locally | `test_v2_join.sh`, plus its wrong-pin negative control |
+| H-9 mixed-version fail-fast | Two things, and both are stronger than a runtime detector: the T3 protocol-version gate on **every** frame (ctest `test_witness_protocol_version_gate`), and the economic build-identity refusal — a differently-built binary derives a **different chain id** and cannot join at all, rather than joining and being caught | ctest + `nodus_witness_v2_econ.c` |
+
+The second row is the interesting one: on V2 a mismatched build does not
+need to be detected at runtime, because it cannot produce the same chain
+in the first place.
+
 #### Needs a specially-built binary
 
 | Script | Requires | Exercises |
