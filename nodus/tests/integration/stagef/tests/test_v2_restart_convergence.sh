@@ -101,7 +101,8 @@ chain_before=$(sqlite3 "$(db_of "$VICTIM")" \
 vlog="$(stagef_node_dir "$VICTIM")/nodus.log"
 role_before=$(grep -c 'chain role: LEDGER V2' "$vlog" || true)
 [ "$role_before" -ge 1 ] || die "node$VICTIM never reported the V2 role before the kill"
-echo "[ok] node$VICTIM baseline: genesis=${chain_before:0:32} role_lines=$role_before"
+hc_before=$(grep -c 'branch=HAVE_CHAIN' "$vlog" || true)
+echo "[ok] node$VICTIM baseline: genesis=${chain_before:0:32} role_lines=$role_before have_chain_lines=$hc_before"
 
 # ── Kill ────────────────────────────────────────────────────────────
 # The victim's own spawn line is reconstructed from stagef_env, not
@@ -151,9 +152,29 @@ sleep 5
 #    the line from the first boot is already in this file.
 role_after=$(grep -c 'chain role: LEDGER V2' "$vlog" || true)
 [ "$role_after" -gt "$role_before" ] || die \
-  "node$VICTIM did NOT report the V2 role after restart (before=$role_before after=$role_after) — \
-this is the shape the pre-v0.19.37 defect had: the node comes up, listens, serves DHT, and holds no witness role"
+  "node$VICTIM did NOT report the V2 role after restart (before=$role_before after=$role_after)"
 echo "[ok] node$VICTIM re-established the LEDGER V2 role ($role_before -> $role_after)"
+
+# 2. AND IT TOOK THE HAVE_CHAIN BRANCH — this is the assertion that
+#    actually detects the pre-v0.19.37 defect, and check 1 above is NOT.
+#
+#    ⚠ MEASURED, NOT ASSUMED. Running this scenario against the parent
+#    binary (3e4ca7c1, before the fix) showed it printing
+#      WITNESS: chain role: LEDGER V2
+#      WITNESS-BOOTSTRAP: state=DISCOVER seed_count=7 threshold=5
+#    — the role line comes from the CHAIN SCAN, which predates the fix,
+#    so check 1 passes on a broken build. The scenario's first cut had
+#    only check 1 and would have gone green on the very defect it names.
+#    The branch line is the one that differs:
+#      fixed  -> state=DONE branch=HAVE_CHAIN
+#      parent -> state=DISCOVER   (then burns attempts toward exit(2))
+#    A BEFORE/AFTER delta again, because the first boot logged one too.
+hc_after=$(grep -c 'branch=HAVE_CHAIN' "$vlog" || true)
+[ "$hc_after" -gt "$hc_before" ] || die \
+  "node$VICTIM did not take the HAVE_CHAIN branch after restart (before=$hc_before after=$hc_after) — \
+it believes it has no chain and has entered the legacy DISCOVER machine, which ends in exit(2). \
+This is exactly the pre-v0.19.37 defect: $(grep -c 'state=DISCOVER' "$vlog" || true) DISCOVER line(s) in its log"
+echo "[ok] node$VICTIM took the HAVE_CHAIN branch ($hc_before -> $hc_after)"
 
 # 2. It refused nothing on the way up.
 if grep -q 'REFUSING START' "$vlog"; then
