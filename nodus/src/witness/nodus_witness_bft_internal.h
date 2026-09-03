@@ -223,10 +223,29 @@ int nodus_witness_replay_block(nodus_witness_t *w,
  * could never be satisfied.
  *
  * Ownership TRANSFERS out of round_state (batch_count is left at 0, so
- * the following round_state reset frees nothing). Only one batch is
- * held: a newer timeout supersedes and frees an older one, matching the
- * C5 rule that binds to the HIGHEST prepared height. No-op when the
- * round holds no batch.
+ * the following round_state reset frees nothing). No-op when the round
+ * holds no batch.
+ *
+ * Only one batch is held, and a newer take supersedes an older one —
+ * WITH ONE EXCEPTION, added 2026-09-03 (nodus/BUGS.md ☠ permanent-stall
+ * entry). If the held batch SATISFIES the live C5 binding
+ * (reproposal_required, matching height and tx_root) and the batch being
+ * offered does NOT, the held one is KEPT and the offered one is
+ * declined; the caller's round_state_free_batch then releases it.
+ *
+ * The old unconditional rule was documented as "matching the C5 rule
+ * that binds to the HIGHEST prepared height", and that reasoning is
+ * where the stall came from: C5 binds on HEIGHT, supersession fired on
+ * EVERY take, including repeated takes at the SAME height. On a stuck
+ * height those are opposites, and retention destroyed the one batch the
+ * cluster was waiting for — on all seven nodes at once.
+ *
+ * CALLED FROM BOTH DOORS OUT OF A ROUND, not just the timeout: the
+ * round-timeout branch AND nodus_witness_bft_initiate_view_change. A
+ * node dragged into a view change by the f+1 join used to abandon its
+ * batch silently, which left at most ONE node in the cluster able to
+ * re-propose. Idempotent across the pair — the second call sees
+ * batch_count == 0 and returns.
  *
  * Exported here for the retention regression only; production callers
  * are inside nodus_witness_bft.c. Release with

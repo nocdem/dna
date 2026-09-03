@@ -140,6 +140,39 @@ void nodus_witness_mempool_remove_by_conn(nodus_witness_mempool_t *mp,
     }
 }
 
+/* ── Remove one entry by tx_hash ────────────────────────────────── */
+
+int nodus_witness_mempool_remove_by_hash(nodus_witness_mempool_t *mp,
+                                          const uint8_t *tx_hash) {
+    if (!mp || !tx_hash) return 0;
+
+    int removed = 0;
+    int write_idx = 0;
+
+    for (int i = 0; i < mp->count; i++) {
+        if (mp->entries[i] &&
+            memcmp(mp->entries[i]->tx_hash, tx_hash,
+                   NODUS_T3_TX_HASH_LEN) == 0) {
+            nodus_witness_mempool_entry_free(mp->entries[i]);
+            mp->entries[i] = NULL;
+            removed++;
+        } else {
+            mp->entries[write_idx++] = mp->entries[i];
+        }
+    }
+
+    for (int i = write_idx; i < mp->count; i++)
+        mp->entries[i] = NULL;
+
+    mp->count = write_idx;
+
+    if (removed > 0) {
+        QGP_LOG_DEBUG(LOG_TAG, "removed %d entries by tx_hash "
+                      "(remaining=%d)", removed, mp->count);
+    }
+    return removed;
+}
+
 /* ── Clear all ──────────────────────────────────────────────────── */
 
 void nodus_witness_mempool_clear(nodus_witness_mempool_t *mp) {

@@ -171,6 +171,46 @@ kill "$pg" 2>/dev/null || true; wait "$pg" 2>/dev/null || true
 [ -s "$PUMP_DIR/identity/nodus.pk" ] || { echo "[FAIL] pump identity" >&2; exit 4; }
 echo "[ok] pump identity generated ($PUMP_DIR/identity)"
 
+# ── 1c. CANDIDATE identities, for the growth scenario ───────────────
+# Off by default. STAGEF_V2_CANDIDATES=<N> generates N more identities,
+# each with a genesis leaf big enough to SELF-BOND, so a scenario can
+# grow the committee by having them stake.
+#
+# They are NOT validators at genesis — that is the whole point. They are
+# funded strangers who become validators on a running chain, which is the
+# only way to test that the committee can grow at all.
+#
+# They live under $BASE_DIR/cand<N>/, NOT under node<N>/, deliberately:
+# running_nodes() enumerates node* DIRECTORIES, so materialising them as
+# nodes here would make every other scenario count 20 participants that
+# hold no chain. The growth scenario starts them itself when it wants
+# them. (That directory-counting trap is exactly what the legacy suite's
+# residue list records about test_bootstrap_join_live.sh's node8.)
+CANDIDATES="${STAGEF_V2_CANDIDATES:-0}"
+if [ "$CANDIDATES" -gt 0 ]; then
+    for i in $(seq 1 "$CANDIDATES"); do
+        cd_dir="$BASE_DIR/cand$i"
+        mkdir -p "$cd_dir/identity" "$cd_dir/data"
+        # Port block past the pump identity's, so an identity-generation
+        # spawn can never collide with a live node.
+        pn=$(( C + 2 + i ))
+        "$STAGEF_NODUS_BIN" -b 127.0.0.1 \
+            -u "$(stagef_udp_port "$pn")" -t "$(stagef_tcp_port "$pn")" \
+            -p "$(stagef_peer_port "$pn")" -C "$(stagef_chan_port "$pn")" \
+            -W "$(stagef_witness_port "$pn")" \
+            -i "$cd_dir/identity" -d "$cd_dir/data" \
+            > "$cd_dir/identity_gen.log" 2>&1 &
+        cg=$!
+        for _ in $(seq 1 40); do
+            [ -s "$cd_dir/identity/nodus.pk" ] && [ -s "$cd_dir/identity/nodus.fp" ] && break
+            sleep 0.25
+        done
+        kill "$cg" 2>/dev/null || true; wait "$cg" 2>/dev/null || true
+        [ -s "$cd_dir/identity/nodus.pk" ] || { echo "[FAIL] candidate $i identity" >&2; exit 4; }
+    done
+    echo "[ok] $CANDIDATES candidate identities generated (\$BASE_DIR/cand1..$CANDIDATES)"
+fi
+
 # The identity-generation spawn opened a data directory, so each node
 # now holds nodus.db / channels.db. The derivation refuses to run
 # beside a FOREIGN chain database but does not care about these, and
@@ -214,7 +254,12 @@ ALLOC=10000000000000000              # 100M DNAC per leaf, a round number
 # spare; at the shipped 720 nothing can cross a boundary here anyway.
 PUMP_LEAVES="${STAGEF_V2_PUMP_LEAVES:-40}"
 PUMP_ALLOC=1000000000                # 10 DNAC each, deliberately tiny
-TOTAL=$(( SELF_STAKE * C + ALLOC * (C + 1) + PUMP_ALLOC * PUMP_LEAVES ))
+# A candidate must be able to SELF-BOND, so its leaf carries the exact
+# bond plus a margin for fees. Anything less and the stake is refused for
+# a reason that has nothing to do with what a growth scenario tests.
+CAND_ALLOC=$(( SELF_STAKE + 100000000000 ))
+TOTAL=$(( SELF_STAKE * C + ALLOC * (C + 1) + PUMP_ALLOC * PUMP_LEAVES \
+          + CAND_ALLOC * CANDIDATES ))
 
 CONF="$BASE_DIR/v2_genesis.conf"
 {
@@ -265,6 +310,18 @@ CONF="$BASE_DIR/v2_genesis.conf"
     echo "dest_binding = $(cat "$USER_DIR/identity/nodus.fp")"
     echo "amount       = $ALLOC"
 
+    # ── CANDIDATE LEAVES ────────────────────────────────────────────
+    # Each candidate gets ONE leaf worth a self-bond plus a margin, so it
+    # can claim and then stake without a second funding step. Numbered in
+    # their own band so the source_id order stays readable.
+    for i in $(seq 1 "$CANDIDATES"); do
+        echo ""
+        echo "[allocation]"
+        printf 'source_id    = %0128d\n' "$(( 2000 + i ))"
+        echo "dest_binding = $(cat "$BASE_DIR/cand$i/identity/nodus.fp")"
+        echo "amount       = $CAND_ALLOC"
+    done
+
     # ── PUMP LEAVES ─────────────────────────────────────────────────
     # A V2 chain produces a block only when a transaction arrives, and on
     # a fresh one the ONLY thing a fresh identity can submit is a claim.
@@ -287,7 +344,7 @@ CONF="$BASE_DIR/v2_genesis.conf"
         echo "amount       = $PUMP_ALLOC"
     done
 } > "$CONF"
-echo "[ok] v2_genesis.conf built ($C validators, $(( C + 1 + PUMP_LEAVES )) allocations incl. $PUMP_LEAVES pump leaves, $(stat -c%s "$CONF") bytes)"
+echo "[ok] v2_genesis.conf built ($C validators, $(( C + 1 + PUMP_LEAVES + CANDIDATES )) allocations incl. $PUMP_LEAVES pump + $CANDIDATES candidate leaves, $(stat -c%s "$CONF") bytes)"
 
 # ── 3. derive on every node, INDEPENDENTLY ──────────────────────────
 CHAIN_ID=""; GENESIS_PIN=""

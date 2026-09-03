@@ -4873,6 +4873,88 @@ static int bft_start_round_internal(nodus_witness_t *w,
         return -1;
     }
 
+    /* ══ C5 — A BOUND LEADER MAY NOT OPEN A NON-CONFORMING ROUND ══════
+     *
+     * THE DEFECT THIS CLOSES (found 2026-09-03, nodus/BUGS.md ☠ entry):
+     * a 7-node V2 chain stopped at height 26 and never produced another
+     * block, burning ~18 view changes per minute, and did NOT recover
+     * when everything that triggered it was removed.
+     *
+     * Until this gate, `reproposal_required` was consulted in exactly
+     * six places — the follower gate (:5757), the NEW_VIEW broadcast
+     * (:9469, :9579), NEW_VIEW handling (:10305, :10317), arming
+     * (:11063, :11070) and the post-repropose clear (:11179) — and in
+     * NONE of them on the way into a round. So a node that a view change
+     * had bound to a specific (height, tx_root) would, on becoming
+     * leader, open a round over whatever its mempool happened to hold.
+     * Its own PROPOSE never passes through the follower gate (stated at
+     * :11175-11178), so nothing caught it. Every follower then rejected
+     * a proposal the leader was itself forbidden to make.
+     *
+     * That alone would only waste views. What made it TERMINAL is the
+     * round-timeout path: when this doomed round times out,
+     * nodus_witness_retained_batch_take (:12218, the sole call site)
+     * OVERWRITES this node's retained copy with the doomed batch. One
+     * pass around the committee and the bound batch exists nowhere, and
+     * try_repropose_retained's "stay silent so the view rotates to a
+     * node that holds it" fallback (:11146-11150) waits forever for a
+     * node that no longer exists. Measured on all seven nodes: ~17
+     * "bound to a reproposal we do not hold" each, ZERO successful
+     * reproposals, retained batch sizes 3 and 5 against a binding formed
+     * over a 1-transaction batch.
+     *
+     * THE RULE, and it is the one followers already obey: if we are
+     * bound and cannot satisfy the binding, we do not propose. Silence
+     * rotates the view to a node that can. This costs a round when a
+     * bound leader has nothing conforming to say — the same liveness
+     * trade every fail-closed gate in this file makes, and cheaper by
+     * far than a proposal guaranteed to be rejected.
+     *
+     * SAFE AGAINST A STALE BINDING: a binding whose height the chain has
+     * already reached is released at tick time by the O15C-D.1 guard in
+     * nodus_witness.c, so this gate cannot wedge a leader at a LATER
+     * height on a binding that can no longer be issued.
+     *
+     * THE LEGITIMATE REPROPOSAL STILL PASSES: try_repropose_retained
+     * (:11133) calls in here with the retained batch while the binding
+     * is still armed — it clears the flag only after we return 0. That
+     * batch's tx_root IS the bound one by its own precondition, so the
+     * comparison below succeeds and the reproposal proceeds. The gate is
+     * content-addressed, not caller-addressed, which is why it can sit
+     * at this single choke point instead of being duplicated per caller.
+     *
+     * Placed AFTER the anchor read and BEFORE `w->current_round++` so a
+     * refusal leaves round and view state untouched, exactly like the
+     * fault returns above it. */
+    if (w->reproposal_required) {
+        uint64_t round_bh = anchor_tip + 1;
+        bool h_ok  = (round_bh == w->reproposal_height);
+        bool tr_ok = (memcmp(block_hash, w->reproposal_tx_hash,
+                             NODUS_T3_TX_HASH_LEN) == 0);
+        if (!h_ok || !tr_ok) {
+            /* Name the clause that fired. The follower gate's message
+             * prints only heights, which on a stuck chain reads as
+             * "expected_h=27 got_h=27 — does not match" and sends the
+             * reader at the wrong field; do not repeat that here. */
+            fprintf(stderr,
+                    "%s: C5 leader — NOT opening a round we are forbidden "
+                    "to propose: bound to height=%llu tx_root=%02x%02x%02x%02x…, "
+                    "this round would be height=%llu tx_root=%02x%02x%02x%02x… "
+                    "(%s%s%s differs). Staying silent so the view rotates to "
+                    "a node holding the bound batch.\n",
+                    LOG_TAG,
+                    (unsigned long long)w->reproposal_height,
+                    w->reproposal_tx_hash[0], w->reproposal_tx_hash[1],
+                    w->reproposal_tx_hash[2], w->reproposal_tx_hash[3],
+                    (unsigned long long)round_bh,
+                    block_hash[0], block_hash[1], block_hash[2], block_hash[3],
+                    h_ok ? "" : "height",
+                    (!h_ok && !tr_ok) ? " and " : "",
+                    tr_ok ? "" : "tx_root");
+            return -1;
+        }
+    }
+
     /* Initialize round state */
     w->current_round++;
     round_state_free_batch(&w->round_state);
@@ -7335,6 +7417,125 @@ static int bft_handle_vote_inner(nodus_witness_t *w, uint8_t msg_type,
             QGP_LOG_ERROR(LOG_TAG, "BATCH COMMIT FAILED round %lu — no COMMIT "
                           "broadcast, clients notified, round reset to IDLE",
                           (unsigned long)w->round_state.round);
+
+            /* ══ A DETERMINISTIC ENGINE VERDICT IS A CLUSTER-WIDE FACT ══
+             *
+             * THE DEFECT THIS CLOSES (nodus/BUGS.md ☠ entry, 2026-09-03,
+             * measured): a chain stopped forever at one height. Sequence,
+             * from every node's log:
+             *
+             *   batch proposal from leader: 1 TXs, APPROVED
+             *   PREVOTE QUORUM! approve=5 >= required=5
+             *   C5 prepared cert captured (height=28, view=0, n_sigs=5)
+             *   PRECOMMIT QUORUM! approve=5 >= required=5
+             *   successor block 28 REJECTED by the engine (deterministic
+             *     verdict): effect 0 of 1 rejected by the adapter
+             *     (status 7 - precondition/probe)
+             *   BATCH COMMIT FAILED round 28
+             *
+             * The entry passes the pre-vote batch check — which validates
+             * SHAPE, CONTEXT and BUDGET but does not execute the ops, so
+             * the adapter's storage preconditions are first evaluated
+             * here, at apply. It then wins a prepared certificate. When
+             * apply refuses it, the round resets but THE CERTIFICATE
+             * SURVIVES, and from then on every view change binds every
+             * node to a block no node can ever apply. The trigger was an
+             * ordinary operator action: the same governance vote
+             * submitted twice, the second one's ABSENT precondition
+             * failing against the row the first one wrote.
+             *
+             * WHY CLEARING IS SAFE HERE AND NOWHERE ELSE — and this is
+             * the whole argument, so read it before touching the
+             * condition. `v2_prc == -1` is NODUS_V2_CONSENSUS_INVALID,
+             * the engine's DETERMINISTIC verdict: a function of the entry
+             * bytes and committed state, so every honest node reaches it
+             * identically. Measured on the failing cluster: all seven
+             * nodes logged the rejection exactly once, byte-identical
+             * text. **No node committed this block, and each one knows
+             * that from its own bytes.** So dropping the certificate is
+             * not a node-local guess about a block others may have
+             * committed — it is the same conclusion, reached
+             * independently, everywhere at once. It needs no evidence
+             * round, no quorum and no new message.
+             *
+             * `v2_prc == -2` (node-local fault, or not-yet-linkable) gets
+             * NONE of this, and must not: there the block may be perfectly
+             * good and committed by every peer, so discarding our
+             * certificate would drop a safety property the cluster still
+             * holds. The produce seam's contract keeps the two apart
+             * (nodus_witness_v2_produce.h:88-96) — this branch reads it
+             * rather than collapsing both into `batch_failed`.
+             *
+             * The predecessor of this code deliberately left
+             * `w->last_prepared` alone, and said so: "clearing it is a
+             * separate consensus decision that belongs to its own
+             * change" (the comment above). This is that change, narrowed
+             * to the one case where the decision is forced by
+             * determinism.
+             *
+             * FOUR THINGS GO, all keyed to THIS height and THIS tx_root
+             * so nothing else is touched:
+             *   1. the poison entries leave our mempool — otherwise they
+             *      are re-proposed forever. Done FIRST, because
+             *      bft_emit_batch_replies below frees round_state's
+             *      copies and the hashes go with them;
+             *   2. the prepared certificate;
+             *   3. the C5 binding, which would otherwise re-adopt the
+             *      certificate at the next view change;
+             *   4. the retained batch held to satisfy that binding.
+             *
+             * This does NOT close the gap that produced the poison entry
+             * — the pre-vote check still does not evaluate storage
+             * preconditions, so such an entry still costs a round and a
+             * view. It makes that cost survivable instead of terminal. */
+            if (v2_prc == -1) {
+                const uint64_t bad_h = w->round_state.block_height;
+                int dropped = 0;
+                for (int pi = 0; pi < w->round_state.batch_count; pi++) {
+                    if (!w->round_state.batch_entries[pi]) continue;
+                    dropped += nodus_witness_mempool_remove_by_hash(
+                        &w->mempool,
+                        w->round_state.batch_entries[pi]->tx_hash);
+                }
+
+                bool cleared_cert = false;
+                if (w->last_prepared.present &&
+                    w->last_prepared.height == bad_h &&
+                    memcmp(w->last_prepared.tx_hash, w->round_state.tx_hash,
+                           NODUS_T3_TX_HASH_LEN) == 0) {
+                    memset(&w->last_prepared, 0, sizeof(w->last_prepared));
+                    cleared_cert = true;
+                }
+
+                bool cleared_bind = false;
+                if (w->reproposal_required &&
+                    w->reproposal_height == bad_h &&
+                    memcmp(w->reproposal_tx_hash, w->round_state.tx_hash,
+                           NODUS_T3_TX_HASH_LEN) == 0) {
+                    w->reproposal_required     = false;
+                    w->reproposal_height       = 0;
+                    w->reproposal_prepared_view = 0;
+                    memset(w->reproposal_tx_hash, 0, NODUS_T3_TX_HASH_LEN);
+                    cleared_bind = true;
+                }
+
+                if (w->retained_batch.present &&
+                    w->retained_batch.height == bad_h &&
+                    memcmp(w->retained_batch.tx_root, w->round_state.tx_hash,
+                           NODUS_T3_TX_HASH_LEN) == 0)
+                    nodus_witness_retained_batch_clear(w);
+
+                QGP_LOG_ERROR(LOG_TAG,
+                    "POISON BATCH at height %llu — the engine's verdict is "
+                    "deterministic, so every node reaches it: dropped %d "
+                    "mempool entr%s, prepared cert %s, C5 binding %s. The "
+                    "chain may now propose a different block at this height",
+                    (unsigned long long)bad_h, dropped,
+                    dropped == 1 ? "y" : "ies",
+                    cleared_cert ? "CLEARED" : "not held here",
+                    cleared_bind ? "CLEARED" : "not held here");
+            }
+
             /* ASCII only: this string goes out on the wire to clients. */
             bft_emit_batch_replies(w, DNAC_STATUS_ERROR,
                                    "batch commit failed - block rolled back");
@@ -8210,6 +8411,14 @@ static int vc_record_alloc_sigs(nodus_witness_vc_record_t *vc,
 /* Forward decl — defined beside handle_viewchg below (O15C-C D1). */
 static int bft_vc_check_quorum(nodus_witness_t *w);
 
+/* Forward decl — defined beside retained_batch_clear near the end of this
+ * file. Needed HERE because nodus_witness_bft_initiate_view_change (just
+ * below) must retain the abandoned round's batch, and that call site sits
+ * ~2700 lines ahead of the definition. Declared locally rather than by
+ * including nodus_witness_bft_internal.h, which is test-only and which
+ * this file deliberately does not pull in (see :102). */
+void nodus_witness_retained_batch_take(nodus_witness_t *w);
+
 /* O15H D5b — the f+1 threshold at which we JOIN a view we did not ask
  * for, DERIVED FROM THE QUORUM IN FORCE.
  *
@@ -8495,6 +8704,44 @@ int nodus_witness_bft_initiate_view_change(nodus_witness_t *w) {
      * caller's own stamp is the ONLY thing keeping the escalation's
      * budget honest, and the own-round-timeout site at :9615 is the one
      * that reaches it. */
+    /* ══ MED-28 — RETAIN ON *EVERY* DOOR OUT OF A ROUND ═══════════════
+     *
+     * This is the third leak in the permanent-stall chain (nodus/BUGS.md
+     * ☠ entry, 2026-09-03), and the one that made the other two look
+     * unfixable: with the first two closed the chain still stopped, and
+     * every node still reported "bound to a reproposal we do not hold".
+     *
+     * There are exactly TWO writes of NODUS_W_PHASE_VIEW_CHANGE in this
+     * file. The round-timeout branch retains the batch before it
+     * (:12361). THIS one — the shared entry point every view change goes
+     * through — did not. So only the single node whose OWN round timed
+     * out ever kept a copy; every other node, pulled into the same view
+     * change through the f+1 join (:7669) or P2/P3, abandoned its round
+     * and dropped the batch silently.
+     *
+     * That is fatal for MED-28's whole premise. The reproposal fallback
+     * is "stay silent so the view rotates to a node that HOLDS the
+     * bytes" — but at most one node ever held them, and if that node was
+     * not the next leader (6 chances in 7), nobody could satisfy the
+     * binding. The cluster then rotated views forever over a value none
+     * of its members could produce.
+     *
+     * Retaining here makes every committee member a candidate
+     * re-proposer instead of one. Safe on every caller:
+     *   - the round-timeout path already took the batch, leaving
+     *     batch_count == 0, and take() returns immediately on that — so
+     *     this is a no-op there, not a double take;
+     *   - a node with no active round has nothing to take;
+     *   - the guard added to take() above refuses to overwrite a batch
+     *     that satisfies the LIVE binding, so a node holding the wanted
+     *     bytes cannot lose them to a later, unrelated view change.
+     *
+     * free_batch mirrors the timeout branch: take() moves the pointers
+     * out and zeroes batch_count, so this frees only what take()
+     * declined to keep. Exactly one owner at every instant. */
+    nodus_witness_retained_batch_take(w);
+    round_state_free_batch(&w->round_state);
+
     w->round_state.phase_start_time = time_ms();
     w->round_state.phase = NODUS_W_PHASE_VIEW_CHANGE;
 
@@ -11106,6 +11353,64 @@ void nodus_witness_retained_batch_clear(nodus_witness_t *w) {
  * binds to the HIGHEST prepared height. */
 void nodus_witness_retained_batch_take(nodus_witness_t *w) {
     if (!w || w->round_state.batch_count <= 0) return;
+
+    /* ══ NEVER DESTROY THE BATCH OUR LIVE BINDING DEMANDS ═════════════
+     *
+     * The supersession rule this function was written with — see the
+     * header comment above: "a newer timeout supersedes an older one,
+     * matching the C5 rule that binds to the HIGHEST prepared height" —
+     * is keyed on the WRONG THING, and that is the second half of the
+     * permanent stall recorded in nodus/BUGS.md (☠ entry, 2026-09-03).
+     *
+     * C5 binds to the highest prepared HEIGHT. Supersession here fires
+     * on EVERY timeout, including repeated timeouts at the SAME height.
+     * While the chain advances the two agree, because each new timeout
+     * is at a greater height. On a STUCK height they are opposites: the
+     * binding stays pinned to the first round's tx_root while every
+     * subsequent timeout at that same height overwrites the only copy of
+     * it. Retention then destroys exactly what it exists to preserve —
+     * and a stuck height is the ONLY situation retention is for.
+     *
+     * Measured when this bit: a binding formed over a 1-transaction
+     * batch, and every retention afterwards holding 3 or 5 entries
+     * (mempool kept growing), on all seven nodes at once. Nobody held
+     * the bound bytes, so nobody could ever repropose them, so the view
+     * rotated forever.
+     *
+     * THE RULE: if we are holding a batch that SATISFIES the live
+     * binding, and the round that just timed out does NOT, we keep what
+     * we have and let the timing-out batch go. The caller frees it via
+     * round_state_free_batch immediately after we return, so ownership
+     * stays single and nothing leaks.
+     *
+     * The conforming batch is still allowed to overwrite itself — same
+     * height, same tx_root, so the replacement is a copy of the same
+     * bytes and the invariant is unchanged.
+     *
+     * This guard is the belt to the round-start gate's braces: with a
+     * bound leader no longer able to open a non-conforming round, this
+     * path should rarely fire — but "should" is not a mechanism, and the
+     * cost of being wrong here is a chain that cannot be restarted. */
+    if (w->retained_batch.present && w->reproposal_required &&
+        w->retained_batch.height == w->reproposal_height &&
+        memcmp(w->retained_batch.tx_root, w->reproposal_tx_hash,
+               NODUS_T3_TX_HASH_LEN) == 0) {
+        bool timing_out_conforms =
+            (w->round_state.block_height == w->reproposal_height) &&
+            (memcmp(w->round_state.tx_root, w->reproposal_tx_hash,
+                    NODUS_T3_TX_HASH_LEN) == 0);
+        if (!timing_out_conforms) {
+            fprintf(stderr, "%s: MED-28 KEEPING the retained batch (%d "
+                    "entries, height=%llu) — it satisfies our live C5 "
+                    "binding and the round that just timed out "
+                    "(height=%llu) does not; dropping the timing-out "
+                    "batch instead\n", LOG_TAG,
+                    w->retained_batch.count,
+                    (unsigned long long)w->retained_batch.height,
+                    (unsigned long long)w->round_state.block_height);
+            return;
+        }
+    }
 
     nodus_witness_retained_batch_clear(w);
 

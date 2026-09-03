@@ -84,6 +84,23 @@ int nodus_witness_mempool_pop_batch(nodus_witness_mempool_t *mp,
  * Remove all entries associated with a client connection.
  * Called when connection is closed. Frees removed entries.
  */
+/**
+ * Remove every entry whose tx_hash matches, freeing it.
+ *
+ * Added 2026-09-03 for the POISON-ENTRY drop (nodus/BUGS.md ☠ entry): an
+ * entry the engine rejects with a DETERMINISTIC verdict at apply must not
+ * sit in the mempool waiting to be proposed again. Every node reaches the
+ * same verdict on the same bytes, so every node drops it independently —
+ * no message, no quorum. The client already has its ERROR reply and may
+ * re-submit; this is a drop, not a permanent blacklist.
+ *
+ * Order-preserving (fee order survives), like remove_by_conn.
+ *
+ * @return how many entries were removed (0 if the hash was not held).
+ */
+int nodus_witness_mempool_remove_by_hash(nodus_witness_mempool_t *mp,
+                                          const uint8_t *tx_hash);
+
 void nodus_witness_mempool_remove_by_conn(nodus_witness_mempool_t *mp,
                                             struct nodus_tcp_conn *conn);
 
