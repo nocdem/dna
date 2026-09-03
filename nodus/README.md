@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="#license"><img src="https://img.shields.io/badge/License-Apache%202.0-blue" alt="Apache 2.0"></a>
-  <a href="#status"><img src="https://img.shields.io/badge/Status-RC%20v0.19.40-orange" alt="RC"></a>
+  <a href="#status"><img src="https://img.shields.io/badge/Status-RC%20v0.19.41-orange" alt="RC"></a>
   <a href="#security"><img src="https://img.shields.io/badge/Crypto-Dilithium5%20(FIPS%20204)-red" alt="Dilithium5"></a>
 </p>
 
@@ -136,10 +136,18 @@ ctest --output-on-failure    # 200 registered tests (~125 test source files)
 | Merkle / state_root | `test_witness_merkle`, `test_merkle_proof`, `test_state_root_4subtree`, `test_merkle_scan_fail_close` |
 | Ledger V2 | `test_v2_apply`, `test_v2_native`, `test_v2_epoch`, `test_v2_finalize`, `test_v2_produce`, `test_block_v2`, `test_v2_qc_authority`, `test_domain_wire`, `test_v2_pools`, `test_v2_claims` |
 
-Integration tests (Genesis Protocol harness, 7-node localhost):
+Integration tests (Genesis Protocol harness, 7-node localhost) — **two lanes, both need running**:
 ```bash
-bash nodus/tests/integration/stagef/stagef_up.sh
+# Legacy chain — genesis is a TRANSACTION submitted to a running cluster
+bash nodus/tests/integration/stagef/genesis_protocol.sh
+
+# Ledger V2 chain — genesis is DERIVED OFFLINE from an operator config
+bash nodus/tests/integration/stagef/genesis_protocol_v2.sh
 ```
+
+The consensus code is one implementation threaded with `v2_successor`
+branches: a legacy cluster never takes them and a V2 cluster never takes
+the other side, so a green on one lane says nothing about the other.
 
 ---
 

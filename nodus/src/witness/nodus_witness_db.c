@@ -2033,24 +2033,81 @@ static void nodus_witness_db_migrate_v15_stake_delegation(nodus_witness_t *w);
 static void nodus_witness_db_migrate_v16_pbft_state(nodus_witness_t *w);
 static void nodus_witness_db_migrate_v17_supply_total_minted(nodus_witness_t *w);
 
+/* Does `table` already have a column called `column`? 1 / 0 / -1 fault.
+ *
+ * Exists so a migration can ASK instead of inferring the answer from an
+ * error message — see the block in migrate_v12 below for what that cost.
+ * PRAGMA table_info is the tree's existing idiom for this
+ * (nodus_witness_v2_schema.c, nodus_witness_v2_claims.c). */
+static int db_column_exists(nodus_witness_t *w, const char *table,
+                            const char *column) {
+    if (!w || !w->db || !table || !column) return -1;
+    char sql[256];
+    int n = snprintf(sql, sizeof(sql), "PRAGMA table_info(\"%s\")", table);
+    if (n < 0 || (size_t)n >= sizeof(sql)) return -1;
+
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db, sql, -1, &st, NULL) != SQLITE_OK) return -1;
+
+    int found = 0, rc;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        const unsigned char *name = sqlite3_column_text(st, 1);  /* col 1 = name */
+        if (name && strcmp((const char *)name, column) == 0) { found = 1; break; }
+    }
+    /* A break on a match leaves rc == SQLITE_ROW, which is not a fault. */
+    if (!found && rc != SQLITE_DONE) { sqlite3_finalize(st); return -1; }
+    sqlite3_finalize(st);
+    return found;
+}
+
 int nodus_witness_db_migrate_v12(nodus_witness_t *w) {
     if (!w || !w->db) return -1;
 
-    /* tx_index column: idempotent via duplicate-column tolerance.
-     * sqlite3 returns SQLITE_ERROR with errmsg "duplicate column name" on
-     * re-run; treat it as success. */
+    /* ── tx_index column ─────────────────────────────────────────────
+     *
+     * ASK WHETHER THE COLUMN IS THERE; DO NOT READ SQLITE'S PROSE.
+     *
+     * This used to run the ALTER unconditionally and decide what the
+     * failure MEANT by searching the error message for the English
+     * substring "duplicate column name" — treating a hit as success and
+     * anything else as fatal, with an abort(). Two things were wrong with
+     * that, and the second is why it mattered:
+     *
+     *   1. The message is SQLite's, not ours. It is not part of any
+     *      documented interface and there is no distinct result code for
+     *      this case, so the check could only ever be a string match.
+     *   2. This function runs on EVERY chain-database open
+     *      (nodus_witness.c witness_db_open_attempt, and the joining path
+     *      in nodus_witness_bootstrap.c) — a fresh V2 chain included. If a
+     *      future SQLite reworded that sentence, the substring would stop
+     *      matching, the normal re-run would be classified as a real
+     *      failure, and EVERY NODE WOULD abort() ON STARTUP the moment the
+     *      library was upgraded. Low probability, fleet-wide blast radius,
+     *      and nothing in the code said so.
+     *
+     * Asking removes the dependency entirely: with the column present we
+     * skip the ALTER, so any ALTER failure that does happen is a genuine
+     * one and the abort() below means what it says. A probe FAULT is also
+     * fatal rather than assumed-absent — running an ALTER because we could
+     * not tell would put the guess back. */
     {
-        char *err = NULL;
-        int rc = sqlite3_exec(w->db,
-            "ALTER TABLE committed_transactions "
-            "ADD COLUMN tx_index INTEGER NOT NULL DEFAULT 0",
-            NULL, NULL, &err);
-        if (rc != SQLITE_OK) {
-            const char *msg = err ? err : "(null)";
-            if (!strstr(msg, "duplicate column name")) {
-                /* Real failure — log and abort with the pinned literal */
+        int have = db_column_exists(w, "committed_transactions", "tx_index");
+        if (have < 0) {
+            fprintf(stderr, "MIGRATION FAILURE: could not determine whether "
+                            "committed_transactions.tx_index exists: %s\n",
+                    sqlite3_errmsg(w->db));
+            abort();
+        }
+        if (have == 0) {
+            char *err = NULL;
+            int rc = sqlite3_exec(w->db,
+                "ALTER TABLE committed_transactions "
+                "ADD COLUMN tx_index INTEGER NOT NULL DEFAULT 0",
+                NULL, NULL, &err);
+            if (rc != SQLITE_OK) {
                 fprintf(stderr, "MIGRATION FAILURE: ALTER ADD tx_index failed "
-                                "with sqlite error %d: %s\n", rc, msg);
+                                "with sqlite error %d: %s\n",
+                        rc, err ? err : "(null)");
                 if (err) sqlite3_free(err);
                 abort();
             }
