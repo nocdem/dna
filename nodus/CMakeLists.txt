@@ -1802,6 +1802,10 @@ set(DNAC_TX_WIRE_SOURCES
 
 add_executable(nodus-cli
     tools/nodus-cli.c
+    # O16A — `v2-claim --config` rebuilds the distribution leaves from the
+    # genesis config, which is where a PURE V2 chain's leaves come from.
+    # Same parser the derivation itself uses, so the two cannot drift.
+    tools/nodus_v2_gen_config.c
     ${DNAC_TX_WIRE_SOURCES})
 target_link_libraries(nodus-cli nodus dsa nodus)
 target_compile_options(nodus-cli PRIVATE -Wall -Wextra -Wno-unused-parameter)

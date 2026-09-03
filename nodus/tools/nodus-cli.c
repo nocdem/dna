@@ -66,6 +66,8 @@
 #include "witness/nodus_witness_v2_produce.h"  /* tip height                */
 #include "witness/nodus_witness_v2_apply.h"    /* nodus_v2_epoch_for_height */
 #include "witness/nodus_witness_runtime.h"     /* set-hash / approval digest */
+#include "witness/nodus_witness_v2_gen.h"      /* NODUS_V2_GEN_SRCID_LEN     */
+#include "nodus_v2_gen_config.h"               /* O16A: v2-claim --config    */
 #include "crypto/hash/qgp_sha3.h"
 #include "crypto/utils/qgp_fingerprint.h"      /* O15F T6: fp raw<->hex      */
 #endif
@@ -1965,25 +1967,134 @@ static long claim_derive_legacy_leaves(sqlite3 *legacy,
     return (long)n;
 }
 
+/* qsort comparator over the canonical leaf order (source_id ASC).
+ * dna_dist_leaf_cmp is the same predicate nodus_witness_v2_gen.c sorts
+ * with; using it here rather than a hand-rolled memcmp is what keeps the
+ * two orderings from drifting. */
+static int claim_leaf_qcmp(const void *a, const void *b) {
+    return dna_dist_leaf_cmp((const dna_dist_leaf_t *)a,
+                             (const dna_dist_leaf_t *)b);
+}
+
+/* Rebuild the distribution leaves of a PURE V2 chain from its genesis
+ * config file.
+ *
+ * ── WHY THIS EXISTS ─────────────────────────────────────────────────
+ *
+ * claim_derive_legacy_leaves above reads the TERMINAL LEGACY chain's
+ * utxo_set: on the seam path, a V2 chain's distribution WAS the V1
+ * chain's unspent outputs, so the leaf identity was (nullifier, owner,
+ * amount). That was correct for as long as V2 was reached by migrating
+ * a V1 chain.
+ *
+ * The 2026-08-27 cutover decision removed that path: a V2 chain is now
+ * born from an operator config with its own allocation list, and the
+ * leaf identity is (source_id, dest_binding, amount) — a different shape
+ * from a different source. With only the legacy builder, `v2-claim`
+ * required a --legacy-db that a hard cutover never produces, so on a
+ * pure V2 chain NOBODY COULD CLAIM: the distribution root was committed
+ * and unreachable, no coin outside the validators' locked self-bond
+ * could move, and a chain that produces no block without a transaction
+ * would have sat at its genesis height forever.
+ *
+ * ── WHAT MAKES A WRONG LEAF SET SAFE ────────────────────────────────
+ *
+ * Nothing here is trusted. The caller recomputes dna_dist_snapshot_root
+ * over whatever this returns and compares it to the root the chain
+ * COMMITTED at genesis; a mismatch aborts before a single proof is
+ * built. So the failure mode of a wrong config or a wrong ordering is a
+ * refusal, never a proof against a foreign tree.
+ *
+ * The construction below mirrors gen_plan_build
+ * (nodus_witness_v2_gen.c) field for field, including the sort and the
+ * amount >= 1 rule, because that is the tree the chain committed.
+ *
+ * @return leaf count, or -1. *out receives a malloc'd array.
+ */
+static long claim_derive_config_leaves(const char *conf_path,
+                                       dna_dist_leaf_t **out) {
+    *out = NULL;
+    nodus_v2_gen_config_t *cfg = NULL;
+    if (nodus_v2_gen_config_parse_file(conf_path, &cfg) != 0 || !cfg)
+        return -1;                       /* the parser already said why */
+
+    if (cfg->n_allocs < 1) {
+        fprintf(stderr, "genesis config carries no allocation\n");
+        nodus_v2_gen_config_free(cfg);
+        return -1;
+    }
+
+    dna_dist_leaf_t *leaves = calloc((size_t)cfg->n_allocs, sizeof(*leaves));
+    if (!leaves) { nodus_v2_gen_config_free(cfg); return -1; }
+
+    for (uint32_t i = 0; i < cfg->n_allocs; i++) {
+        dna_dist_leaf_t *L = &leaves[i];
+        L->leaf_version  = DNA_DIST_VERSION;
+        L->source_id_len = (uint16_t)NODUS_V2_GEN_SRCID_LEN;
+        memcpy(L->source_id, cfg->allocs[i].source_id,
+               NODUS_V2_GEN_SRCID_LEN);
+        if (cfg->allocs[i].amount < 1) {
+            fprintf(stderr, "allocation[%u] amount is 0 — the builder "
+                            "refuses such a config, so no chain can carry "
+                            "this leaf\n", i);
+            free(leaves); nodus_v2_gen_config_free(cfg); return -1;
+        }
+        L->source_amount = cfg->allocs[i].amount;
+        memcpy(L->dest_binding, cfg->allocs[i].dest_binding, 64);
+    }
+
+    /* Canonical order: source_id ASC. The snapshot root accepts no
+     * other, so file order cannot reach the tree. */
+    qsort(leaves, (size_t)cfg->n_allocs, sizeof(*leaves), claim_leaf_qcmp);
+    for (uint32_t i = 1; i < cfg->n_allocs; i++) {
+        if (dna_dist_leaf_cmp(&leaves[i - 1], &leaves[i]) >= 0) {
+            fprintf(stderr, "duplicate allocation source_id in the config\n");
+            free(leaves); nodus_v2_gen_config_free(cfg); return -1;
+        }
+    }
+
+    long n = (long)cfg->n_allocs;
+    nodus_v2_gen_config_free(cfg);
+    *out = leaves;
+    return n;
+}
+
 static int cmd_v2_claim(const char *server_ip, uint16_t server_port,
                         int argc, char **argv, int cmd_start) {
     const char *legacy_db = NULL, *succ_db = NULL, *keys_csv = NULL;
+    const char *conf_path = NULL;
     const char *submit = NULL;
-    int dry_run = 0;
+    int dry_run = 0, bad_arg = 0;
 
     for (int i = cmd_start + 1; i < argc; i++) {
         const char *a = argv[i];
         if      (!strcmp(a, "--legacy-db") && i + 1 < argc) legacy_db = argv[++i];
+        else if (!strcmp(a, "--config")    && i + 1 < argc) conf_path = argv[++i];
         else if (!strcmp(a, "--db")        && i + 1 < argc) succ_db   = argv[++i];
         else if (!strcmp(a, "--keys")      && i + 1 < argc) keys_csv  = argv[++i];
         else if (!strcmp(a, "--submit")    && i + 1 < argc) submit    = argv[++i];
         else if (!strcmp(a, "--dry-run"))                   dry_run   = 1;
-        else { legacy_db = NULL; break; }
+        else { bad_arg = 1; break; }
     }
-    if (!legacy_db || !succ_db || !keys_csv || (!submit && !dry_run)) {
+    /* Exactly one leaf source. Both would be a question with two answers
+     * and no way to say which the chain committed; neither cannot build
+     * a tree at all. */
+    if (bad_arg || (!legacy_db && !conf_path) || (legacy_db && conf_path) ||
+        !succ_db || !keys_csv || (!submit && !dry_run)) {
         fprintf(stderr,
-            "Usage: v2-claim --legacy-db <terminal.db> --db <successor.db> "
-            "--keys <keydir> (--dry-run | --submit ip:port)\n");
+            "Usage: v2-claim (--config <genesis.conf> | --legacy-db <terminal.db>)\n"
+            "                --db <successor.db> --keys <keydir>\n"
+            "                (--dry-run | --submit ip:port)\n"
+            "\n"
+            "  --config     a PURE V2 chain: leaves come from the genesis\n"
+            "               config's allocation list. This is the hard-cutover\n"
+            "               case and the one a fresh fleet needs.\n"
+            "  --legacy-db  a SEAM chain: leaves are the terminal V1 chain's\n"
+            "               unspent outputs. Only for a chain that was migrated\n"
+            "               rather than born.\n"
+            "\n"
+            "Either way the rebuilt leaf set is checked against the snapshot\n"
+            "root the chain committed; a mismatch refuses before any proof.\n");
         return 1;
     }
 
@@ -2038,16 +2149,28 @@ static int cmd_v2_claim(const char *server_ip, uint16_t server_port,
     uint8_t manifest_hash[64];
     if (dna_gman_hash(&m, manifest_hash) != 0) goto done;
 
-    /* Re-derive the FULL leaf set from the terminal legacy DB. */
-    if (sqlite3_open_v2(legacy_db, &legacy, SQLITE_OPEN_READONLY, NULL)
-        != SQLITE_OK || !legacy) {
-        fprintf(stderr, "cannot open %s read-only\n", legacy_db);
-        goto done;
-    }
-    n_leaves = claim_derive_legacy_leaves(legacy, &leaves);
-    if (n_leaves < 1) {
-        fprintf(stderr, "legacy leaf-set derivation failed (fail-closed)\n");
-        goto done;
+    /* Re-derive the FULL leaf set — from whichever source this chain was
+     * born with. Both paths are fail-closed, and both answer to the same
+     * snapshot-root equivalence check a few lines below. */
+    if (conf_path) {
+        n_leaves = claim_derive_config_leaves(conf_path, &leaves);
+        if (n_leaves < 1) {
+            fprintf(stderr, "config leaf-set derivation failed "
+                            "(fail-closed)\n");
+            goto done;
+        }
+    } else {
+        if (sqlite3_open_v2(legacy_db, &legacy, SQLITE_OPEN_READONLY, NULL)
+            != SQLITE_OK || !legacy) {
+            fprintf(stderr, "cannot open %s read-only\n", legacy_db);
+            goto done;
+        }
+        n_leaves = claim_derive_legacy_leaves(legacy, &leaves);
+        if (n_leaves < 1) {
+            fprintf(stderr, "legacy leaf-set derivation failed "
+                            "(fail-closed)\n");
+            goto done;
+        }
     }
     if ((uint64_t)n_leaves != m.leaf_count) {
         fprintf(stderr, "leaf count %ld != committed leaf_count %llu — "
