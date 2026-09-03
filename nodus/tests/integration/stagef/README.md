@@ -16,9 +16,18 @@ cd /opt/dna/nodus/build     && make -j$(nproc)
 cd /opt/dna/messenger/build && make -j$(nproc)
 cd /opt/dna/dnac/build      && make -j$(nproc)   # rebuilds libdnac.a
 
-# Run the full protocol (ctest + bring-up + all scenarios + teardown)
+# Run the full protocol on the LEGACY lane
 bash /opt/dna/nodus/tests/integration/stagef/genesis_protocol.sh
+
+# Run it on the Ledger V2 lane (bring-up is different: no genesis TX)
+bash /opt/dna/nodus/tests/integration/stagef/genesis_protocol_v2.sh
 ```
+
+**Both lanes need running.** The consensus code is one implementation
+threaded with `v2_successor` branches; a legacy cluster never takes them
+and a V2 cluster never takes the other side. The v0.19.37 startup defect
+lived in such a branch, inside a file that season had been editing, and
+no legacy run could have seen it.
 
 Exit code 0 = green, 1 = any scenario FAIL. Full stdout of any
 failing test is echoed unbounded — no tail, no grep, no filter.
@@ -176,7 +185,8 @@ production (4000-4004) so both can run simultaneously.
 
 | Script | Purpose |
 |---|---|
-| `genesis_protocol.sh` | Top-level runner: ctest + bring-up + all scenarios + teardown. Exit-code-only assertion. |
+| `genesis_protocol.sh` | Top-level runner for the LEGACY lane: ctest + bring-up + all scenarios + teardown. Exit-code-only assertion. |
+| `genesis_protocol_v2.sh` | The same for the **Ledger V2 lane**: `stagef_up_v2.sh` + the six V2 scenarios + teardown. `--scenarios` runs against an already-up V2 cluster. **It does NOT glob `tests/*.sh`** — the legacy runner does, which is why its own rc=1 is not evidence on its own (the sweep includes a negative control whose failure is correct and a script marked BROKEN). The V2 list is explicit, so a red run means a red scenario. Reports SKIPs separately and says in as many words that a skip is not a pass. **Leaf budget:** three scenarios consume one single-use genesis leaf each and the bring-up mints eight, so a second run against the SAME cluster fails on the claiming scenarios — correctly. Default mode brings the cluster up fresh. |
 | `stagef_up.sh` | Generate identities + spawn 7 nodus-server + wait peer mesh + submit genesis + fund user. **Births a LEGACY chain** — the genesis is a TRANSACTION submitted to the running cluster. |
 | `stagef_up_v2.sh` | The Ledger V2 counterpart, and born a completely different way: no transaction and no cluster. Each node runs the OFFLINE one-shot `nodus-server --derive-v2-genesis` against one shared config file **before anything is listening**, and agreement is CHECKED (all 7 chain ids must be identical) rather than negotiated. Then spawns the 7 and asserts each came up reporting `chain role: LEDGER V2` — listening is not evidence, since nodus keeps serving DHT traffic when the witness module refuses to init. Leaves the same `pids.txt` / pointer contract, so `stagef_down.sh` tears it down unchanged; the config is kept at `$BASE_DIR/v2_genesis.conf`. **What it does NOT prove:** that the seven can commit a block together — no scenario drives a V2 chain yet (`test_v2_grow_7_20.sh` is the broken placeholder). A green bring-up is a green BIRTH, not a green V2 lane. Its full four-part header is in the script. |
 | `stagef_down.sh` | Kill PIDs + rm -rf the run dir |
