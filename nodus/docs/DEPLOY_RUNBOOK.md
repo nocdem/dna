@@ -140,6 +140,23 @@ produces a DIFFERENT chain that cannot join — a loud refusal, not a silent spl
    ```bash
    rm "$DATA_DIR"/witness_*.db*
    ```
+2b. **Check for leftover sentinels.** Two dot-files live beside the chain and
+   **survive step 2** — `rm witness_*` does not match a name starting with a
+   dot:
+
+   ```bash
+   ls -la "$DATA_DIR"/.bootstrap_in_progress "$DATA_DIR"/.recovery_in_progress 2>/dev/null
+   ```
+
+   Either one means a node died mid-operation and was never restarted since.
+   `--derive-v2-genesis` refuses while either is present and prints the remedy,
+   so you cannot walk past this by accident — but knowing why saves the
+   guesswork. `.bootstrap_in_progress` is the dangerous one: without that
+   refusal, the next start after a successful ceremony would ARCHIVE the chain
+   you just derived and come up reporting "no chain DB found — pre-genesis
+   state", with no error anywhere. Establish why the node died, then remove the
+   file.
+
 3. **Put the SAME config file on every node.** Byte-identical. Verify with a
    checksum, do not eyeball it:
    ```bash

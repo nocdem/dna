@@ -18,6 +18,7 @@
 #include "dnac/block_v2.h"                /* dna_bh2_derive_chain_id         */
 
 #include <dirent.h>
+#include <sys/stat.h>                     /* O16A — derive-time sentinel check */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -220,7 +221,102 @@ static int read_genesis_block_id(const char *db_path,
 
 /* Parse the config, derive the chain into `data_path`, print the two
  * values the ceremony needs, and return the process exit code. */
+/* Refuse to derive into a data directory that still carries unfinished
+ * business from a previous life.
+ *
+ * ── WHAT WOULD HAVE TO HAPPEN, because a risk without a cause is a
+ * guess ──────────────────────────────────────────────────────────────
+ *
+ * Two dotfiles live beside the chain, and BOTH SURVIVE THE CEREMONY'S
+ * WIPE: the runbook removes `witness_*`, and a name beginning with a dot
+ * does not match that glob.
+ *
+ *   .bootstrap_in_progress — written by the LEGACY FETCH_GENESIS handler
+ *     before it creates a chain database, unlinked on its success path.
+ *     Present at boot, it means a previous bootstrap died mid-write.
+ *
+ *   .recovery_in_progress — armed by halt recovery between dropping the
+ *     witness database and replaying the first block.
+ *
+ * For either to be sitting here when the ceremony runs, a node must have
+ * died inside one of those windows AND never been restarted since —
+ * because the very next start clears the first and refuses on the
+ * second. A stop-all cutover is exactly the situation that supplies the
+ * "never restarted": the node crashed, nobody brought it back, and the
+ * operator moved straight to the ceremony.
+ *
+ * ── WHY THIS IS WORTH A CHECK, given how narrow that is ──────────────
+ *
+ * The two consequences are not equally survivable. `.recovery_in_progress`
+ * REFUSES the start, loudly, printing its own remedy — annoying, not
+ * dangerous. `.bootstrap_in_progress` is the dangerous one: witness init
+ * hands it to nodus_witness_check_orphan_bootstrap_sentinel, which calls
+ * witness_archive_stale_chain_dbs(data_path, NULL) — and NULL means
+ * archive EVERY witness_<hex>.db in the directory, including the genesis
+ * chain derived twenty minutes earlier. It then clears the sentinel and
+ * the node comes up reporting "no chain DB found — pre-genesis state".
+ * A correct ceremony, silently undone, with no error anywhere.
+ *
+ * ── WHY HERE AND NOT IN THE ARCHIVE PATH ─────────────────────────────
+ *
+ * The archive is not wrong about what it was written for: a partial
+ * database from a crashed legacy bootstrap IS garbage. It is wrong only
+ * about a pure-V2 chain, which that path never produced. Teaching it the
+ * difference means touching witness init; refusing here costs one stat
+ * per ceremony and puts the message in front of the operator at the one
+ * moment they are present, with nothing derived yet to lose.
+ *
+ * And the window closes behind us: after the ceremony a V2 node cannot
+ * write .bootstrap_in_progress again, because reaching FETCH_GENESIS
+ * requires the legacy DISCOVER branch, which a node holding a pure-V2
+ * chain no longer enters (nodus_witness_bootstrap_start, v0.19.37).
+ *
+ * @return 0 clean, -1 refuse. */
+static int derive_precheck_sentinels(const char *data_path) {
+    static const struct {
+        const char *name;
+        const char *what;
+    } sentinels[] = {
+        { ".bootstrap_in_progress",
+          "a previous LEGACY bootstrap died mid-write. Left in place, the "
+          "next start would ARCHIVE the chain this ceremony is about to "
+          "derive and come up as if it had none" },
+        { ".recovery_in_progress",
+          "a previous halt recovery did not finish. Left in place, the "
+          "next start refuses outright" },
+    };
+
+    int bad = 0;
+    for (size_t i = 0; i < sizeof(sentinels) / sizeof(sentinels[0]); i++) {
+        char p[640];
+        int n = snprintf(p, sizeof(p), "%s/%s", data_path, sentinels[i].name);
+        if (n < 0 || (size_t)n >= sizeof(p)) {
+            fprintf(stderr, "data path too long to check for %s\n",
+                    sentinels[i].name);
+            return -1;
+        }
+        struct stat st;
+        if (stat(p, &st) != 0) continue;          /* absent — the normal case */
+
+        fprintf(stderr,
+                "REFUSING TO DERIVE — %s is present in %s.\n"
+                "  What it means: %s.\n"
+                "  Note it survived the wipe: the runbook removes "
+                "witness_*, and a dot-file does not match that glob.\n"
+                "  Fix: establish why the node died, then `rm %s` and "
+                "re-run this command.\n",
+                sentinels[i].name, data_path, sentinels[i].what, p);
+        bad = 1;
+    }
+    return bad ? -1 : 0;
+}
+
 static int run_derive_v2_genesis(const char *cfg_path, const char *data_path) {
+    /* BEFORE the config is even parsed: nothing has been done yet, so a
+     * refusal here costs the operator nothing but a message. */
+    if (derive_precheck_sentinels(data_path) != 0)
+        return 1;
+
     nodus_v2_gen_config_t *cfg = NULL;
     if (nodus_v2_gen_config_parse_file(cfg_path, &cfg) != 0) {
         fprintf(stderr, "genesis config %s was REFUSED — nothing derived.\n",
