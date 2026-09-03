@@ -210,14 +210,18 @@ snap_hash()  { sqlite3 -readonly "$1" "SELECT hex(snapshot_hash) FROM validator_
 # liveness matrix reads the difference, because "no block" only means
 # anything after "something was submitted".
 pump_once() {
-    local log="$BASE_DIR/grow_pump_one.log"
+    local log="$BASE_DIR/grow_pump_one.log" crc
     : > "$log"
     "$CLI" -s 127.0.0.1 -p "$PORT1" v2-claim --config "$CONF" --db "$SDB" \
         --keys "$PUMP" --submit "127.0.0.1:$PORT1" > "$log" 2>&1
+    crc=$?
     cat "$log" >> "$BASE_DIR/grow_pump.log"
     grep -q '^committed: height=' "$log" && return 0
-    # No leaf left to claim: the builder refuses before it ever submits.
-    grep -qiE "no unclaimed|nothing to claim|0 leaves|already claimed" "$log" && return 2
+    # v2-claim returns 2, and says so, when every leaf bound to this key is
+    # already claimed. Before v0.19.46 it re-submitted spent leaves instead,
+    # which is what made "no block" ambiguous here.
+    [ "$crc" = 2 ] && return 2
+    grep -q 'nothing to submit' "$log" && return 2
     return 1
 }
 

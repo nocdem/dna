@@ -2213,7 +2213,7 @@ static int cmd_v2_claim(const char *server_ip, uint16_t server_port,
         goto done;
     }
 
-    int matched = 0;
+    int matched = 0, submitted = 0, skipped = 0;
     for (long idx = 0; idx < n_leaves; idx++) {
         if (memcmp(leaves[idx].dest_binding, my_binding, 64) != 0) continue;
         matched++;
@@ -2284,15 +2284,60 @@ static int cmd_v2_claim(const char *server_ip, uint16_t server_port,
             printf("  LOCAL ADMIT: OK (converted=%llu)\n",
                    (unsigned long long)adm.converted);
         } else {
+            /* ── SKIP A LEAF THE CHAIN HAS ALREADY SETTLED ────────────
+             *
+             * Without this the verb re-submits every leaf this key owns
+             * on every invocation, spent or not, because the loop above
+             * selects purely on dest_binding. A second call therefore
+             * hands the cluster transactions that can never commit.
+             *
+             * That is not a cosmetic waste. Until v0.19.45 a node that
+             * refused such a claim at admission still FORWARDED it and
+             * still counted it as live demand, arming a view change it
+             * could not disseminate — one node escalated its target from
+             * 2 to 318 at 1/14 for the best part of an hour (nodus/BUGS.md,
+             * the N=20 entry). The chain no longer dies of it, but the
+             * round and the client's 30-second wait are still burned, and
+             * a harness using this verb as a block pump cannot tell
+             * "nothing left to submit" from "the chain would not commit"
+             * — which is exactly the confound that cost a full diagnosis.
+             *
+             * The check is the ENGINE'S OWN, the same call the --dry-run
+             * branch above makes, against the same read-only view. Not a
+             * private reimplementation: a second opinion about what is
+             * spent is how the pre-check/apply divergence recorded in the
+             * same bug file came about.
+             *
+             * SKIP, never abort: the other leaves this key owns may be
+             * perfectly claimable, and one settled leaf must not hide
+             * them. */
+            nodus_v2_claim_admit_t adm;
+            memset(&adm, 0, sizeof(adm));
+            if (nodus_witness_v2_claim_admit(wr, &c, tip + 1, &adm) != 0) {
+                skipped++;
+                continue;
+            }
             if (t6_submit(sip, sport, &keys[0], tx_hash, bytes,
                           (uint32_t)blen) != 0)
                 goto done;
+            submitted++;
         }
     }
     if (!matched) {
         fprintf(stderr, "no distribution leaf binds this key\n");
         goto done;
     }
+    /* Say which of the two "nothing happened" cases this was, so a caller
+     * driving blocks with this verb can tell them apart. */
+    if (!dry_run && submitted == 0 && skipped > 0) {
+        fprintf(stderr, "v2-claim: all %d leaf/leaves bound to this key are "
+                "already claimed — nothing to submit\n", skipped);
+        rc = 2;
+        goto done;
+    }
+    if (!dry_run && skipped > 0)
+        fprintf(stderr, "v2-claim: submitted %d, skipped %d already-claimed\n",
+                submitted, skipped);
     rc = 0;
 
 done:
