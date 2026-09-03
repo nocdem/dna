@@ -105,6 +105,35 @@ for n in $(seq 1 "$C"); do
 done
 echo "[ok] $C identities generated"
 
+# ── 1b. one NON-VALIDATOR identity ──────────────────────────────────
+# The seven node identities are all genesis validators with a bonded
+# self-stake, so any scenario that tries to STAKE as one of them is
+# correctly refused — the engine says
+#   "env 0 leg 0 domain 0 op 1: runtime exec refused"
+# and it is right. A scenario needs an identity that is NOT already a
+# validator, and on a V2 chain the only way to give it spendable value
+# is a genesis allocation, decided before the chain exists.
+#
+# This is a real difference from the legacy harness, where a user is
+# funded by a transaction after bring-up. Here, who can be funded is a
+# GENESIS decision.
+USER_DIR="$BASE_DIR/v2user"
+mkdir -p "$USER_DIR/identity" "$USER_DIR/data"
+"$STAGEF_NODUS_BIN" -b 127.0.0.1 \
+    -u "$(stagef_udp_port $(( C + 1 )))" -t "$(stagef_tcp_port $(( C + 1 )))" \
+    -p "$(stagef_peer_port $(( C + 1 )))" -C "$(stagef_chan_port $(( C + 1 )))" \
+    -W "$(stagef_witness_port $(( C + 1 )))" \
+    -i "$USER_DIR/identity" -d "$USER_DIR/data" \
+    > "$USER_DIR/identity_gen.log" 2>&1 &
+ug=$!
+for _ in $(seq 1 40); do
+    [ -s "$USER_DIR/identity/nodus.pk" ] && [ -s "$USER_DIR/identity/nodus.fp" ] && break
+    sleep 0.25
+done
+kill "$ug" 2>/dev/null || true; wait "$ug" 2>/dev/null || true
+[ -s "$USER_DIR/identity/nodus.pk" ] || { echo "[FAIL] user identity" >&2; exit 4; }
+echo "[ok] non-validator user identity generated ($USER_DIR/identity)"
+
 # The identity-generation spawn opened a data directory, so each node
 # now holds nodus.db / channels.db. The derivation refuses to run
 # beside a FOREIGN chain database but does not care about these, and
@@ -133,8 +162,18 @@ BY=6307200
 DU=100000000
 
 SELF_STAKE=1000000000000000          # DNAC_SELF_STAKE_AMOUNT: 10M x 10^8
-TOTAL=100000000000000000             # matches the legacy harness supply
-ALLOC=$(( TOTAL - SELF_STAKE * C ))
+# ONE ALLOCATION PER NODE, not one for the whole chain.
+#
+# A distribution leaf can be claimed exactly once — the claim nullifier
+# makes sure of it — so a single shared allocation would let the FIRST
+# scenario that claims it succeed and every later one fail for a reason
+# that has nothing to do with what it tests. Giving each node its own
+# leaf makes the scenarios independent of each other and of run order,
+# which is the property the legacy suite most conspicuously lacks (see
+# the residue list in README.md).
+ALLOC=10000000000000000              # 100M DNAC per leaf, a round number
+# C node leaves + 1 non-validator user leaf.
+TOTAL=$(( SELF_STAKE * C + ALLOC * (C + 1) ))
 
 CONF="$BASE_DIR/v2_genesis.conf"
 {
@@ -164,15 +203,28 @@ CONF="$BASE_DIR/v2_genesis.conf"
         echo "self_stake                 = $SELF_STAKE"
         echo "commission_bps             = 500"
     done
+    # One leaf per node. source_id is operator-chosen and only has to be
+    # unique; a zero-padded ordinal keeps the file readable and the
+    # canonical source_id-ASC order equal to node order, which makes a
+    # scenario's "my leaf" trivially predictable.
+    for n in $(seq 1 "$C"); do
+        echo ""
+        echo "[allocation]"
+        printf 'source_id    = %0128d\n' "$n"
+        # dest_binding is SHA3-512(claimant pubkey), and a node's own
+        # nodus.fp IS that value for its own key — so node N, and only
+        # node N, can claim leaf N.
+        echo "dest_binding = $(cat "$(stagef_node_dir "$n")/identity/nodus.fp")"
+        echo "amount       = $ALLOC"
+    done
+    # The non-validator user's leaf, numbered past the nodes.
     echo ""
     echo "[allocation]"
-    echo "source_id    = $(printf 'a%.0s' $(seq 1 128))"
-    # dest_binding is SHA3-512(claimant pubkey); node1's own fingerprint
-    # is that value for node1's key, so node1 can claim it.
-    echo "dest_binding = $(cat "$(stagef_node_dir 1)/identity/nodus.fp")"
+    printf 'source_id    = %0128d\n' "$(( C + 1 ))"
+    echo "dest_binding = $(cat "$USER_DIR/identity/nodus.fp")"
     echo "amount       = $ALLOC"
 } > "$CONF"
-echo "[ok] v2_genesis.conf built ($C validators, 1 allocation, $(stat -c%s "$CONF") bytes)"
+echo "[ok] v2_genesis.conf built ($C validators, $(( C + 1 )) allocations, $(stat -c%s "$CONF") bytes)"
 
 # ── 3. derive on every node, INDEPENDENTLY ──────────────────────────
 CHAIN_ID=""; GENESIS_PIN=""
@@ -263,5 +315,6 @@ echo "  BASE_DIR:       $BASE_DIR"
 echo "  chain-id:       $CHAIN_ID"
 echo "  v2-genesis-pin: $GENESIS_PIN"
 echo "  config:         $CONF"
+echo "  user identity:  $USER_DIR/identity  (NOT a validator; owns leaf $(( C + 1 )))"
 echo ""
 echo "Teardown: bash $(dirname "$0")/stagef_down.sh"

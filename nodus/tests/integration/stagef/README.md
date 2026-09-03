@@ -208,6 +208,30 @@ All 24 scripts on disk are listed. **"Plain" means: a default
 | `test_bootstrap_partial_wipe.sh` | H-10 partial-wipe XOR boot gate (E5): `nodus_server_init` must refuse to start |
 | `test_bootstrap_replay_attack.sh` | C-4 nonce-mismatch replay rejection (drives an in-process unit test) |
 
+#### Ledger V2 — needs a cluster from `stagef_up_v2.sh`
+
+**These are the ONLY scenarios that exercise the V2 lane.** Everything in
+the tables above runs on a LEGACY chain: it tests the shared consensus layer
+(which V2 inherits unchanged, and which is genuine V2 coverage) plus a chain
+format that the cutover is replacing. Until 2026-09-03 the V2 lane's only
+scenario was `test_v2_grow_7_20.sh`, which has been BROKEN since the
+activation ceremony was deleted.
+
+Each exits **99 on a legacy cluster** rather than pretending to have tested a
+V2 property. They are order-INDEPENDENT of each other: `stagef_up_v2.sh` gives
+every node, and one extra non-validator identity, its own genesis allocation,
+so no two scenarios compete for the same single-use leaf.
+
+⚠ **A genesis leaf can be claimed exactly once.** Re-running a claiming
+scenario on the same cluster FAILS, correctly. Bring the cluster up fresh —
+that is not flakiness, it is a single-use subject.
+
+| Script | Exercises |
+|---|---|
+| `test_v2_claim.sh` | A genesis allocation is claimed and the chain moves. **The V2 apply engine measured across nodes** — the question this harness exists to ask, which V2 had never been asked. On a pure V2 chain a claim is also the only transaction that can come FIRST: every coin outside the validators' locked bond enters through the distribution. Asserts the height DELTA before the state_root comparison, because agreement over an unchanged tip is agreement about nothing. Uses node 2's leaf. |
+| `test_v2_stake.sh` | A `v2-envelope stake` SPENDS a claimed output, writes a validators row and locks a bond — reaching parts of the state root a claim never touches. Self-contained: it claims its own funding first, so it does not depend on `test_v2_claim.sh` having run. **Uses the non-validator user identity**, not a node: all seven node identities are already genesis validators and staking as one is refused (correctly — `runtime exec refused`); the first cut of this scenario read that refusal as a failure and was wrong. Asserts a height delta for the claim and the stake SEPARATELY, or the stake's +1 would be carried by the funding. |
+| `test_v2_restart_convergence.sh` | A V2 node is `kill -9`'d and restarted and must come back ON THE SAME CHAIN in its witness role. Until v0.19.37 it came back believing it had no chain — the presence test read the legacy `blocks` table, which V2 never writes — and entered the legacy DISCOVER machine, which ends in `exit(2)`. ctest covers the branch; this covers the node. Role count is a BEFORE/AFTER delta because the first boot's line is already in the log. Needs no transaction, so it works on a frozen chain too. |
+
 #### Needs a specially-built binary
 
 | Script | Requires | Exercises |
