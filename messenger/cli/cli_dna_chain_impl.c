@@ -460,6 +460,7 @@ int dna_chain_cmd_history(dnac_context_t *ctx, int limit) {
     int count = 0;
 
     /* Fetch from Nodus (authoritative source) */
+    int local_only = 0;
     int rc = dnac_get_remote_history(ctx, &history, &count);
     if (rc != DNAC_SUCCESS) {
         /* Fallback to local cache if network fails */
@@ -470,11 +471,50 @@ int dna_chain_cmd_history(dnac_context_t *ctx, int limit) {
             fprintf(stderr, "Error: %s\n", dnac_error_string(rc));
             return 1;
         }
+        local_only = 1;
+    } else if (count == 0) {
+        /* THE NETWORK ANSWERED, AND ANSWERED ZERO.
+         *
+         * The fallback above fires only when the CALL fails, which is
+         * not the case that matters on a Ledger V2 chain: there the RPC
+         * succeeds and truthfully returns nothing, because the node
+         * answers it from two LEGACY tables that the V2 engine never
+         * writes and no V2 reader exists yet (see the pre-V2 list). The
+         * wallet's own record of what THIS wallet sent is sitting in the
+         * local database the whole time, and the old control flow walked
+         * straight past it to print "No transaction history."
+         *
+         * A successful empty answer is therefore a reason to CONSULT the
+         * local record, not to conclude there is none. It is NOT a
+         * reason to overrule the network: what the local database holds
+         * is this wallet's own outgoing side, so anything shown from it
+         * is labelled as such rather than presented as chain state.
+         *
+         * A local read that fails here is not fatal — the network's
+         * "zero" is still a valid answer, and printing an error over it
+         * would turn a working empty history into a failure. */
+        dnac_tx_history_t *local = NULL;
+        int local_count = 0;
+        if (dnac_get_history(ctx, &local, &local_count) == DNAC_SUCCESS &&
+            local_count > 0) {
+            dnac_free_history(history, count);
+            history = local;
+            count = local_count;
+            local_only = 1;
+        } else {
+            dnac_free_history(local, local_count);
+        }
     }
 
     if (count == 0) {
         printf("No transaction history.\n");
         return 0;
+    }
+
+    if (local_only) {
+        printf("Showing this wallet's own record — the network reported no "
+               "transactions for this address.\n"
+               "Anything sent TO you will not appear here.\n");
     }
 
     int display_count = (limit > 0 && limit < count) ? limit : count;
