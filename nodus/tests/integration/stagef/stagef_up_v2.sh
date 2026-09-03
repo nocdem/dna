@@ -259,6 +259,12 @@ echo "[ok] all $C nodes derived a byte-identical chain"
 echo "     chain-id       $CHAIN_ID"
 echo "     v2-genesis-pin $GENESIS_PIN"
 
+# Persist both, because a scenario that needs the pin must not re-derive
+# it: re-derivation would be a SECOND opinion about the chain's identity,
+# and a scenario is supposed to check the fleet's, not form its own.
+printf '%s\n' "$CHAIN_ID"    > "$BASE_DIR/v2_chain_id"
+printf '%s\n' "$GENESIS_PIN" > "$BASE_DIR/v2_genesis_pin"
+
 # ── 4. spawn ────────────────────────────────────────────────────────
 SEEDS=""
 for n in $(seq 1 "$C"); do SEEDS="$SEEDS -s 127.0.0.1:$(stagef_udp_port "$n")"; done
