@@ -8495,16 +8495,64 @@ static uint32_t bft_vc_tally(const nodus_witness_t *w, uint32_t target) {
     return n;
 }
 
+/* How many voters sit at `target` OR ABOVE.
+ *
+ * ⚠ ADOPTION ONLY. Never use this for the QUORUM decision — that stays
+ * on the exact-match bft_vc_tally above, because a NEW_VIEW proof asserts
+ * that f+1 replicas signed FOR THAT VIEW, and a cumulative count would
+ * not support that claim.
+ *
+ * Why adoption needs it (nodus/BUGS.md, the N=20 scatter entry, measured
+ * 2026-09-04): every voter keeps ONE record and its own escalation moves
+ * that record (the O15H D9 upsert below), so a node LEAVES a target the
+ * instant its 11-second timer fires. Escalation is +1 per tick on each
+ * node's own clock, and the phase difference set at arming time is
+ * preserved forever — a node 16 steps behind stays 16 steps behind. With
+ * the exact-match tally, adoption of another target needs f+1 voters
+ * sitting on that exact value simultaneously, while assembling f+1 on one
+ * value is what adoption was supposed to accomplish. A group smaller than
+ * f+1 that armed together is then a stable attractor: it can neither grow
+ * nor be joined.
+ *
+ * Measured on a 20-node committee at exact quorum: targets
+ * 159 / 175×5 / 10, five nodes locked in step, every node's tally stuck at
+ * 5 against a threshold of 7, one node climbing target 2 → 318 alone, one
+ * block committed in an hour. Feeding all seven armed nodes work changed
+ * nothing — the scatter is structural, not a demand shortage.
+ *
+ * Records only ever move UPWARD, so "at or above T" is exactly the
+ * Castro-Liskov condition this threshold means to express: *f+1 replicas
+ * are asking to leave at least this view*. The exact-match form is
+ * STRICTER than the safety argument requires, and that surplus strictness
+ * is the whole deadlock. No timing state, no backoff, no per-node clock —
+ * the property this file exists to protect is untouched. */
+static uint32_t bft_vc_tally_at_or_above(const nodus_witness_t *w,
+                                          uint32_t target) {
+    uint32_t n = 0;
+    for (int i = 0; i < w->view_change_count; i++)
+        if (w->view_changes[i].target_view >= target) n++;
+    return n;
+}
+
 /* The highest target above `current_view` that f+1 voters back, or 0 if
  * none does. Scanning the records rather than tracking a "pending view"
- * keeps ONE source of truth for what the cluster is asking for. */
+ * keeps ONE source of truth for what the cluster is asking for.
+ *
+ * "Back" is the CUMULATIVE test above: f+1 voters at that target or past
+ * it. Because the count is monotone decreasing in the target, the highest
+ * qualifying value is well defined and deterministic — every node holding
+ * the same records picks the same one, which is what makes this usable in
+ * consensus at all. On the measured deadlock (records 159, 175×5, 10) it
+ * answers 10: seven voters have all passed it, so the cluster adopts and
+ * the view moves, instead of six nodes waiting on a seventh that is 165
+ * steps away and receding. */
 static uint32_t bft_vc_best_supported_target(const nodus_witness_t *w) {
     uint32_t thr = bft_vc_join_threshold(w);
     uint32_t best = 0;
     for (int i = 0; i < w->view_change_count; i++) {
         uint32_t t = w->view_changes[i].target_view;
         if (t <= w->current_view || t <= best) continue;
-        if (bft_vc_tally(w, t) >= thr) best = t;
+        if (bft_vc_tally_at_or_above(w, t) >= thr) best = t;
     }
     return best;
 }
