@@ -144,7 +144,7 @@ Runner phases:
 
 1. **Phase 1** — full nodus `ctest` suite in `nodus/build` (200 registered tests; STUB-by-design skips are recognized, real failures abort).
 2. **Phase 2** — `stagef_down.sh` + `stagef_up.sh` (spawn 7 nodes, submit genesis).
-3. **Phase 3** — every `tests/*.sh` in alphabetical order (24 scripts on disk). Per-test `bash <script>`, exit-code only. Note that running the whole directory blindly is NOT a clean sweep: `test_med28_negative.sh` is a negative control that must fail on a healthy build, `test_v2_grow_7_20.sh` is currently broken by design, several scenarios need a differently-compiled binary, and the order effects listed under **Scenario tests** apply.
+3. **Phase 3** — every `tests/*.sh` in alphabetical order (24 scripts on disk). Per-test `bash <script>`, exit-code only. Note that running the whole directory blindly is NOT a clean sweep: `test_med28_negative.sh` is a negative control that must fail on a healthy build, `test_v2_grow_7_20.sh` needs its own cluster and leaves a 20-node committee behind, several scenarios need a differently-compiled binary, and the order effects listed under **Scenario tests** apply.
 4. **Phase 4** — `stagef_down.sh`.
 
 ## Layout
@@ -224,13 +224,21 @@ All 24 scripts on disk are listed. **"Plain" means: a default
 the tables above runs on a LEGACY chain: it tests the shared consensus layer
 (which V2 inherits unchanged, and which is genuine V2 coverage) plus a chain
 format that the cutover is replacing. Until 2026-09-03 the V2 lane's only
-scenario was `test_v2_grow_7_20.sh`, which has been BROKEN since the
-activation ceremony was deleted.
+scenario was `test_v2_grow_7_20.sh`, and it had been BROKEN since the
+activation ceremony was deleted — it funded its candidates on a LEGACY chain
+before activation, a world that no longer exists. It was rewritten on
+2026-09-04 against the pure-V2 birth path.
 
 Each exits **99 on a legacy cluster** rather than pretending to have tested a
 V2 property. They are order-INDEPENDENT of each other: `stagef_up_v2.sh` gives
 every node, and one extra non-validator identity, its own genesis allocation,
 so no two scenarios compete for the same single-use leaf.
+
+⚠ **`test_v2_grow_7_20.sh` is the exception to all of that** — it is the one
+V2 scenario with heavy residue and an order constraint. Run it LAST or on its
+own cluster. It needs `STAGEF_V2_CANDIDATES=13` exported before bring-up and a
+short-epoch binary, takes ~30 minutes, and leaves a permanent 20-node
+committee behind. Its four-part header carries the full arithmetic.
 
 ⚠ **A genesis leaf can be claimed exactly once.** Re-running a claiming
 scenario on the same cluster FAILS, correctly. Bring the cluster up fresh —
@@ -284,7 +292,7 @@ in the first place.
 | `test_epoch_settlement.sh` | `-DDNAC_EPOCH_LENGTH=<E>` + `STAGEF_EPOCH_LENGTH=<E>` | Push-per-epoch UTXO settlement. **Pumps TXs to cross a real boundary**, then asserts the boundary row committed, the pool DRAINED, payout UTXOs appeared, and state_root is 7/7. (Before 2026-08-27 it only slept, and passed vacuously on an idle chain — see the header in that file.) |
 | `test_halving_boundaries.sh` | `-DDNAC_BLOCKS_PER_YEAR=<BY>` + `STAGEF_BLOCKS_PER_YEAR=<BY>` | Halving schedule cross-node consistency. SKIP (rc=99) when unset. Pumps across the boundary and measures credited emission; allow ≥ 20 min. |
 | `test_vset_grow_shrink.sh` | **Compile flags — THREE, all of them:** `-DDNAC_EPOCH_LENGTH=<E>`, `-DDNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS=<E>`, `-DDNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS=<E>`. No fault-injection build — `-DQGP_FAULT_INJECT` is **not** required, section G included. **Environment:** `STAGEF_EPOCH_LENGTH=<E>` matching the binary, exported **before `stagef_up.sh`** (`:52`), and `STAGEF_NODUS_BIN` (`:54`) which it uses to spawn nodes 8/9 and to restart the node section G kills. It does **not** read `STAGEF_CC_GRACE_SAFETY` / `STAGEF_CC_GRACE_ERGONOMIC` — here the two grace values matter only as compile defines; the env vars are read by the `test_cc_*` scenarios. It runs `nodus-cli` from a hardcoded `$STAGEF_REPO_ROOT/nodus/build/nodus-cli` (`:53`), so `STAGEF_NODUSCLI_BIN` does **not** redirect it. No `NODUS_FAULT_*`. | Ledger V2 S3 dynamic validator set 7 → 9 → 7 (sections A-F), then a **derived, deliberately killed epoch leader** the chain must rotate the view past (section G — see below). Spawns its own extra nodes (node8, node9) and leaves their directories behind, plus one committee node kill -9'd and restarted. **The grace defines are not optional**: at the production safety grace of 17,280 blocks the scenario's governance step is refused with `[ERR/CHAIN_CONFIG] apply: grace -- effective=45 < commit=7 + grace=17280`, surfacing at the client only as `dnac_spend RPC failed (rc=7)` (`NODUS_ERR_PROTOCOL_ERROR`) — a message that names neither grace nor the missing define. |
-| `test_v2_grow_7_20.sh` | **BROKEN — do not run** | Wants `-DNODUS_V2_ACTIVATION=ON`, an option deleted with the activation ceremony (O15J Faz 3). Rewriting it is Faz 4's job. |
+| `test_v2_grow_7_20.sh` | **The committee grows 7 → 14 → 20 by governance** — and it is the heaviest scenario in the suite. 13 funded strangers bond and become validators on a live chain; a vote raises the target (31, above the V2 ceiling of 30, is refused first); tenure (Rule R) gates selection so epoch 2E is still 7; the growth lands at epochs 3E and 4E, proven four ways (snapshot count, snapshot hash across all 20, the block header's validator-set digest changing, and the boundary block's certificate); then quorum is walked up and down, a full restart, a missed epoch, and a cold replay by a node that was never present. | **Needs `-DDNAC_EPOCH_LENGTH=15` + `-DDNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS=15`, and `STAGEF_V2_CANDIDATES=13` exported BEFORE bring-up** (0 → skips). ~30 min. **Run LAST or standalone**: it leaves 13 extra nodes running, a permanent 20-node committee, every candidate leaf spent, and the chain past three boundaries. Joining is DHT-gated and takes MINUTES — the long waits are measured, not padding. **STEP 6a currently FAILS on a real defect** (view-change target scatter at N=20, `nodus/BUGS.md`); everything up to and including STEP 4e passes. |
 | `test_mixed_version_reject.sh` | `STAGEF_LEGACY_NODUS_BIN` | O15C-D.4 — a stale-protocol validator must not participate. **Proves it by ARITHMETIC:** one node is swapped to the legacy binary and two current nodes are stopped, so the live set is 4 current + 1 legacy = quorum; if the stale vote counted the chain would advance, so it must STALL and then RESUME when a current node returns. ⚠ **Which side logs `INCOMPATIBLE PEER` depends on the legacy binary you build**, and the anti-vacuity check accepts either: a pre-v3 binary has no gate and keeps talking (the CURRENT nodes refuse it), while any v3+ binary carries the gate, drops every current frame on arrival and never votes (only the LEGACY node logs refusals — measured 2026-09-01, v4 vs v6: 33 on the legacy node, ZERO on the six current). Demanding a current-side refusal made the scenario UNPASSABLE with a modern legacy binary; fixed 2026-09-01 together with a `grep -c \|\| echo 0` bug that produced a two-line count and killed every numeric test on it. **Only a pre-gate legacy binary exercises the CURRENT node's gate** — that path is otherwise covered by `ctest test_witness_protocol_version_gate` §2/§3. |
 
 #### `test_view_change_fork.sh` — the paused epoch leader
