@@ -11835,8 +11835,42 @@ static bool bft_p3_entry_finished(nodus_witness_t *w,
  * of its input existed once the forward failed.
  */
 static bool bft_p3_live_demand(nodus_witness_t *w) {
-    if (w->pending_forward_count > 0) return true;
-
+    /* ⚠ THE `pending_forward_count > 0` SHORT-CIRCUIT THAT STOOD HERE IS
+     * DELETED. It armed the deadman on the mere EXISTENCE of a forwarded
+     * transaction, without asking whether that work was still live — or
+     * even whether this node held its bytes.
+     *
+     * WHY THAT IS WRONG, and it is the same argument P3(b) is built on:
+     * a forwarded transaction goes to the LEADER only, so demand starts
+     * out on exactly one node, and 1 is far below the f+1 join threshold.
+     * The ONLY thing that turns 1 into f+1 is P3(b) putting the bytes on
+     * every peer. So arming on demand this node CANNOT DISSEMINATE arms a
+     * rotation that can never recruit anyone — a lone view-change storm.
+     *
+     * That is not hypothetical (nodus/BUGS.md, N=20 scatter entry, 2026-09-04).
+     * A client submitted a claim whose leaf was already claimed. This node
+     * rejected it at admission and forwarded it anyway — correctly, since
+     * "the leader is the authority for the client's answer" and a local
+     * refusal may only mean this node is behind (handle_dnac_spend). But
+     * the refusal ALSO meant the entry was never pooled, so:
+     *   - P3(a) armed, on the forward counter alone;
+     *   - P3(b) had nothing to send — it disseminates only mempool entries
+     *     that pass bft_p3_entry_finished, and this one was not there.
+     * The node then escalated its view-change target from 2 to 318, one
+     * step every 11 seconds, tallying 1/14 every single time, for the best
+     * part of an hour. Nothing could ever join it.
+     *
+     * THE RULE NOW: demand is what the mempool holds and P3(b) can share.
+     * A forward that WAS pooled (pool_rc >= 0) is in the mempool and the
+     * scan below finds it, so nothing legitimate is lost — the counter was
+     * only ever load-bearing for the un-poolable case, which is exactly
+     * the case that must not arm.
+     *
+     * NOT A SAFETY CHANGE: refusing to arm costs a rotation this node
+     * wanted, never a block anyone commits. And a node that genuinely is
+     * behind — the reason the forward is sent despite a local refusal —
+     * gains nothing from rotating a leader the rest of the cluster is
+     * still happily following. */
     for (int i = 0; i < w->mempool.count; i++) {
         const nodus_witness_mempool_entry_t *e = w->mempool.entries[i];
         if (!e) continue;
