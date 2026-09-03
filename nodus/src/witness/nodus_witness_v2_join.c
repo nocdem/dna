@@ -242,27 +242,71 @@ void nodus_witness_v2_join_handle_gbundle_r(nodus_witness_t *w,
     }
 }
 
+/* Say — at most once a minute — WHY a joiner is not asking anyone.
+ *
+ * A stuck joiner used to log its arm line and then nothing at all, which
+ * is how one silently sat for 9 minutes without a chain while its peers
+ * all held one. Both early returns below are invisible states; this makes
+ * them nameable from a log file. */
+static void join_diag(nodus_witness_t *w, uint64_t now, const char *why) {
+    if (w->v2_join.last_diag_ms != 0 &&
+        now - w->v2_join.last_diag_ms < 60000ULL) return;
+    w->v2_join.last_diag_ms = now;
+    QGP_LOG_WARN(LOG_TAG, "joiner is NOT requesting a genesis bundle: %s "
+                 "(peer_count=%d, bytes accumulated=%zu) — it holds no "
+                 "chain and is serving DHT only",
+                 why, w->peer_count, w->v2_join.acc_len);
+}
+
 void nodus_witness_v2_join_tick(nodus_witness_t *w) {
     if (!w || !w->v2_join.active) return;
-    if (w->peer_count <= 0) return;
 
     uint64_t now = join_mono_ms();
+    if (w->peer_count <= 0) {
+        join_diag(w, now, "no witness peers in the table");
+        return;
+    }
+
     if (w->v2_join.last_req_ms != 0 &&
         now - w->v2_join.last_req_ms < V2JOIN_REQ_INTERVAL_MS)
         return;
 
     /* One request to one identified peer per interval, at the current
      * accumulated offset. The response accumulates; when complete, the
-     * handler adopts. A dead/mismatched peer simply yields nothing and
-     * the next tick asks again (round-robin over peers by tick timing). */
+     * handler adopts.
+     *
+     * ROUND-ROBIN, AND IT IS REAL NOW. This loop used to take peers[0]
+     * and break, while the comment claimed "round-robin over peers by
+     * tick timing" — rotation that only happened if something else
+     * reordered the array. A peer can decline to serve for two reasons a
+     * joiner cannot see: it holds no chain itself (another joiner — they
+     * enter each other's transport rosters through the DHT registry,
+     * which applies no committee filter), or it holds the chain but has
+     * not yet learned this sender's pubkey and answers
+     * "w_v2_gbundle_q from unknown sender, ignoring". Either way the
+     * request is wasted, and without rotation EVERY later request is
+     * wasted the same way. Measured before this change: 1 of 13
+     * simultaneous joiners never adopted, twice.
+     *
+     * The cursor advances once per ATTEMPT, not per candidate, so one
+     * unhelpful peer costs exactly one interval. */
     struct nodus_tcp_conn *conn = NULL;
-    for (int i = 0; i < w->peer_count; i++) {
-        if (w->peers[i].conn && w->peers[i].identified) {
-            conn = w->peers[i].conn;
-            break;
+    if (w->peer_count > 0) {
+        for (int k = 0; k < w->peer_count; k++) {
+            int i = (int)((w->v2_join.peer_rr + (uint32_t)k) %
+                          (uint32_t)w->peer_count);
+            if (w->peers[i].conn && w->peers[i].identified) {
+                conn = w->peers[i].conn;
+                w->v2_join.peer_rr = (uint32_t)((i + 1) % w->peer_count);
+                break;
+            }
         }
     }
-    if (!conn) return;
+    if (!conn) {
+        join_diag(w, now, "no peer in the table is both connected and "
+                          "identified");
+        return;
+    }
 
     nodus_t3_msg_t req;
     memset(&req, 0, sizeof(req));

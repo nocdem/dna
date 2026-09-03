@@ -1131,6 +1131,18 @@ typedef struct nodus_witness {
         size_t   acc_len;                /* bytes received contiguously  */
         size_t   acc_total;              /* expected total (0 = unknown) */
         uint64_t last_req_ms;            /* fetch throttle               */
+        /* Round-robin cursor over the witness-peer table, added
+         * 2026-09-03. Before it, the tick took the FIRST identified peer
+         * and broke, so a joiner whose peers[0] would not serve it asked
+         * that same peer forever — measured: 1 of 13 simultaneous joiners
+         * never adopted, over 9 minutes and again over 4 after a clean
+         * restart. Advancing per attempt costs one interval per unhelpful
+         * peer instead of the whole join. See nodus/BUGS.md. */
+        uint32_t peer_rr;
+        /* Rate limit for the "why am I not asking" diagnostic below, so a
+         * stuck joiner names its own early return once a minute instead
+         * of never (its logs showed the arm line and then silence). */
+        uint64_t last_diag_ms;
     } v2_join;
 } nodus_witness_t;
 
