@@ -224,10 +224,46 @@ typedef struct {
  * vote handler consumes; mirrored rather than embedded so this header
  * does not grow a protocol/nodus_tier3.h dependency. bft.c copies
  * field-by-field in both directions (no type punning). */
-#define NODUS_W_VOTE_BUFFER_CAP          32
 /* Only rounds this close ahead of the live/settled round are buffered;
  * anything further is treated exactly as before (ignored as stale/far). */
 #define NODUS_W_VOTE_BUFFER_ROUND_AHEAD  2
+
+/* ⚠ THIS CAPACITY IS AN ARITHMETIC CONSEQUENCE, NOT A ROUND NUMBER.
+ *
+ * It was 32, which is what a SEVEN-node committee needs and what a
+ * twenty-node committee silently loses votes at. The bound is:
+ *
+ *     ROUND_AHEAD rounds × 2 vote types (PREVOTE, PRECOMMIT)
+ *                        × committee size
+ *
+ *   N=7   → 2 × 2 × 7   =  28   fits in 32
+ *   N=20  → 2 × 2 × 20  =  80   does NOT fit in 32
+ *   N=128 → 2 × 2 × 128 = 512   the release ceiling
+ *
+ * WHAT THE OLD VALUE COST, measured on test_v2_grow_7_20.sh at N=20
+ * (nodus/BUGS.md, N=20 entry): **2348 early votes dropped** across one
+ * run, `vote buffer full — dropping early PREVOTE/PRECOMMIT` on EVERY
+ * node, up to 45 in a single 600-line window. A dropped early vote is
+ * gone for good — there is no resend — so it is simply a vote the round
+ * can never count. A round needs `quorum` prevotes, which at 14 of 20
+ * alive is 14 of 14 with no slack at all, so losing any of them makes
+ * the round unwinnable. This is why the chain committed at 20/20 and
+ * could not at 14/20.
+ *
+ * Sized to DNAC_MAX_ACTIVE_VALIDATORS so the buffer cannot be the
+ * limiting factor at any committee this release admits. ~5 KB per entry,
+ * so ~2.5 MB — and nodus_witness_t is heap-allocated
+ * (nodus_server.c:6108, `calloc(1, sizeof(nodus_witness_t))`), on a
+ * struct that already carries last_prepared.sigs[128] at ~4.7 KB each.
+ * Correctness of a consensus round is worth the megabytes; silently
+ * discarding votes is not.
+ *
+ * If this ever needs to shrink, shrink ROUND_AHEAD — that is a policy
+ * choice about how far out of order the transport may deliver. Shrinking
+ * the capacity alone re-creates exactly this defect at some committee
+ * size, without saying which. */
+#define NODUS_W_VOTE_BUFFER_CAP \
+    (NODUS_W_VOTE_BUFFER_ROUND_AHEAD * 2 * DNAC_MAX_ACTIVE_VALIDATORS)
 
 typedef struct {
     bool        used;

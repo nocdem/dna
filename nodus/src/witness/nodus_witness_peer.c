@@ -386,12 +386,43 @@ int nodus_witness_rebuild_roster_from_peers(nodus_witness_t *w,
         }
         if (dup) continue;
 
+        /* ⚠ AN ENTRY WE CANNOT KEY IS WORSE THAN NO ENTRY — DO NOT ADD IT.
+         *
+         * This block used to write the witness_id unconditionally and the
+         * pubkey only `if (ri >= 0)`. `out` is memset to zero at the top of
+         * this function, so a peer whose key this node has not learned yet
+         * was added with a REAL id and an ALL-ZERO public key.
+         *
+         * What that costs, and it is permanent:
+         *   1. nodus_witness_roster_find() matches on witness_id, so the
+         *      lookup SUCCEEDS and nodus_t3_verify runs against the zero
+         *      key — every frame from that peer fails
+         *      (`T3 <method> wsig verification failed (roster N)`).
+         *   2. The duplicate check at the top of this same merge is ALSO
+         *      by witness_id, so once the keyless entry exists the correct
+         *      one can never replace it. The node is locked out of that
+         *      peer for good.
+         *
+         * Measured on test_v2_grow_7_20.sh STEP 6c at N=20 (nodus/BUGS.md,
+         * N=20 entry): `cand3` logged 143 consecutive verification failures,
+         * all against one roster index, and stalled at 13/13 prevotes
+         * needing 14 — the single peer it could not verify was the missing
+         * vote. `cand1` and `cand4` showed the same shape, 132 and 133
+         * failures against a different index, on an earlier run. At exact
+         * quorum every alive node must vote, so ONE unverifiable peer is
+         * the difference between a chain that commits and one that cannot.
+         *
+         * Skipping is safe and self-healing: the peer is added on a later
+         * rebuild, once its key arrives through IDENT or the DHT `nodus:pk`
+         * registry. A missing entry costs one rebuild; a keyless one costs
+         * the peer forever. */
+        int ri = nodus_witness_roster_find(&w->roster, peer->witness_id);
+        if (ri < 0) continue;
+
         nodus_witness_roster_entry_t *entry =
             &out->witnesses[out->n_witnesses];
         memcpy(entry->witness_id, peer->witness_id, NODUS_T3_WITNESS_ID_LEN);
-        int ri = nodus_witness_roster_find(&w->roster, peer->witness_id);
-        if (ri >= 0)
-            memcpy(entry->pubkey, w->roster.witnesses[ri].pubkey, NODUS_PK_BYTES);
+        memcpy(entry->pubkey, w->roster.witnesses[ri].pubkey, NODUS_PK_BYTES);
         snprintf(entry->address, sizeof(entry->address), "%s", peer->address);
         entry->active = true;
         out->n_witnesses++;

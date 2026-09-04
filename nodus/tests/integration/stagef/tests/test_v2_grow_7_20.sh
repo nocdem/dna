@@ -636,7 +636,23 @@ echo
 echo "[PASS] a V2 committee grew $ORIG → $mid → $TOTAL by governance, on the boundary,"
 echo "       with quorum tracking it in both directions, surviving a full restart,"
 echo "       a missed epoch, and a cold replay by a node that was never present."
-echo "       Parameters: DNAC_EPOCH_LENGTH=$E, grace ${STAGEF_CC_GRACE_SAFETY:-15}."
+# ⚠ REPORT THE PARAMETERS THE BINARY WAS BUILT WITH, NOT THE ONES THE
+# SHELL HAPPENS TO HOLD. STAGEF_CC_GRACE_SAFETY defaults to the PRODUCTION
+# 17280 in stagef_env.sh:60, so printing it made a run on a grace-15 binary
+# claim it had been made at production grace — the exact dishonest-parameter
+# report this file's header forbids. The environment variable only tells the
+# SCRIPT what to write into a config; it cannot say what the binary carries.
+# Read the grace out of the build's own cache when that is knowable, and say
+# so plainly when it is not.
+_grace="unknown (set -DDNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS is compiled in; \
+this script cannot read it)"
+_cache="$(dirname "$STAGEF_NODUS_BIN")/CMakeCache.txt"
+if [ -f "$_cache" ]; then
+    _g=$(grep -o 'DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS=[0-9]*' "$_cache" \
+         | head -1 | cut -d= -f2)
+    [ -n "$_g" ] && _grace="$_g (from the binary's CMakeCache)"
+fi
+echo "       Parameters: DNAC_EPOCH_LENGTH=$E, SAFETY grace $_grace."
 echo "       This proves the LOGIC at those constants and nothing about production"
 echo "       magnitudes (720 / 17280)."
 exit 0
